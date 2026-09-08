@@ -131,6 +131,17 @@ pub const ENV_PY_UTF8: &str = "PYTHONUTF8";
 /// 로 **파이썬 기동 자체가 죽는다**(실측). 빈 문자열은 미설정 취급(끔). 반드시 이 상수만 쓴다.
 pub const PY_UTF8_ON: &str = "1";
 
+/// 표준 스트림(stdio) 인코딩 고정 — `PYTHONUTF8` 의 짝(TICKET=cys-phoenix-korean-windows S2).
+/// UTF-8 모드가 켜지면 stdio 도 utf-8 이 되지만, **UTF-8 모드를 끄는 env 가 사용자 프로필에
+/// 이미 있거나**(PYTHONUTF8=0) 인터프리터가 그 모드를 모르는 경우 stdio 만 다시 콘솔
+/// 코드페이지로 붕괴한다. 그 잔여 경로를 stdio 축에서 직접 못박는다.
+pub const ENV_PY_IO_ENCODING: &str = "PYTHONIOENCODING";
+/// `ENV_PY_IO_ENCODING` 의 값. ★`"utf-8"` 단독을 쓰지 않는다 — 그러면 오류 처리기가 strict 라
+/// surrogateescape 로 읽어들인 비-UTF-8 파일명 등을 출력하는 순간 UnicodeEncodeError 로 죽어
+/// **막으려던 병을 다른 입구로 다시 들인다**. `backslashreplace` 는 무엇이었는지 남기면서
+/// 절대 예외를 던지지 않는다(팩 파이썬의 `sys.stdout.reconfigure` 선택과 같은 값 규약).
+pub const PY_IO_ENCODING_UTF8: &str = "utf-8:backslashreplace";
+
 /// 동봉 Python 을 **직접** 스폰하는 모든 지점의 단일 팩토리(SEAL-1 · 중복 구현 금지).
 /// `std::process::Command::new(python)` 을 이걸로 바꾸기만 하면 `.pyc` 번들 오염이 봉쇄된다.
 ///
@@ -142,6 +153,13 @@ pub const PY_UTF8_ON: &str = "1";
 pub fn python_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     cmd.env(ENV_PY_NO_BYTECODE, PY_NO_BYTECODE_ON);
+    // ★S2(TICKET=cys-phoenix-korean-windows): 인코딩 규약도 이 팩토리가 소유한다.
+    //   콜드부트 auto-restore(`run_auto_restore_once`)는 pane 이 아니라 이 팩토리로 스폰되는데,
+    //   PYTHONUTF8 이 `spawn_env_pairs`(셸 경유 경로)에만 있어 **같은 병을 한 자리만 고친**
+    //   형태였다 — 한국어 Windows 재부팅에서 피닉스가 로그 첫 줄에 즉사(부활 0 · 오너 실측
+    //   2026-09-08). 직스폰 층에도 같은 쌍을 얹어 두 층의 규약을 일치시킨다.
+    cmd.env(ENV_PY_UTF8, PY_UTF8_ON);
+    cmd.env(ENV_PY_IO_ENCODING, PY_IO_ENCODING_UTF8);
     cmd
 }
 
@@ -1688,6 +1706,12 @@ pub fn spawn_env_pairs(
     // ④ 감사 blocker #4(W-B2): cp949 콘솔 상속 python 의 UnicodeEncodeError 즉사 봉인 — UTF-8
     //    모드 강제(③처럼 무조건 쌍). 값 규약("1"만 유효·그 외 기동 fatal)은 ENV_PY_UTF8 주석.
     env.push((ENV_PY_UTF8.to_string(), PY_UTF8_ON.to_string()));
+    // ④-b S2: stdio 축 못박기. ④가 UTF-8 모드를 켜도, 사용자 프로필의 PYTHONUTF8=0 이
+    //   나중에 이기는 조합에서는 stdio 만 코드페이지로 돌아간다. 층1(python_command)과 같은 쌍.
+    env.push((
+        ENV_PY_IO_ENCODING.to_string(),
+        PY_IO_ENCODING_UTF8.to_string(),
+    ));
     // ⑤ U-20: Windows 동봉 bash 를 벤더 훅 실행기에 알린다. 판정은 순수 코어 두 개가 소유하고
     //    여기서는 **관측만** 한다 — OS·디스크(해소기) · 사용자 env(1회 판독) · 마스터 롤백
     //    스위치(1회 판독). 조건 미충족이면 쌍이 하나도 늘지 않는다(종전 동작 그대로).
@@ -3215,6 +3239,70 @@ mod tests {
                     .map(|(_, v)| v.as_str()),
                 Some(PY_UTF8_ON),
                 "PYTHONUTF8=1 무조건 쌍이 빠졌다 — cp949 Windows 에서 부트 체인 python 이 즉사한다"
+            );
+        }
+    }
+
+    /// ★S2 회귀 핀(TICKET=cys-phoenix-korean-windows · 한국어 Windows 콜드부트 부활 0 실사고):
+    /// 파이썬 인코딩 규약은 **두 층이 같아야** 한다 —
+    ///   층1 `python_command`  : 우리가 python 을 **직접** 스폰하는 자리(콜드부트 auto-restore·office-bridge·cys 헬퍼)
+    ///   층2 `spawn_env_pairs` : 셸을 거쳐 python 이 도는 자리(pane·스케줄 잡·훅)
+    /// 사고 당시 PYTHONUTF8 은 층2 에만 있었다. 그래서 재부팅 직후 피닉스(층1 스폰)가 로그
+    /// 첫 줄의 「—」에서 UnicodeEncodeError 로 즉사하고 부활이 0 이 됐다(오너 실측 2026-09-08).
+    /// 한 층에서만 빼도 이 테스트가 죽어야 한다 — 그것이 이 핀의 존재 이유다.
+    #[test]
+    fn python_encoding_contract_is_identical_in_both_spawn_layers() {
+        // 값 규약 핀 — 이름과 값 둘 다.
+        assert_eq!(ENV_PY_IO_ENCODING, "PYTHONIOENCODING");
+        assert_eq!(PY_IO_ENCODING_UTF8, "utf-8:backslashreplace");
+        // ★값이 아니라 **성질**도 못박는다: 오류 처리기가 붙어 있어야 한다.
+        //   `"utf-8"` 단독(=strict)으로 되돌리면, surrogateescape 로 읽힌 비-UTF-8 파일명을
+        //   출력하는 순간 다시 UnicodeEncodeError 로 죽는다 — 막으려던 병의 다른 입구다.
+        let (enc, handler) = PY_IO_ENCODING_UTF8
+            .split_once(':')
+            .expect("PYTHONIOENCODING 은 <encoding>:<errors> 형태여야 한다(strict 복귀 금지)");
+        assert_eq!(enc, "utf-8");
+        assert!(
+            matches!(handler, "backslashreplace" | "replace" | "surrogateescape" | "ignore"),
+            "예외를 던지지 않는 오류 처리기여야 한다 — 지금은 {handler:?}"
+        );
+
+        // 층1 — 직스폰 팩토리.
+        let cmd = python_command("python3");
+        let get = |key: &str| {
+            cmd.get_envs()
+                .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+                .and_then(|(_, v)| v)
+                .map(|v| v.to_string_lossy().into_owned())
+        };
+        assert_eq!(
+            get(ENV_PY_UTF8).as_deref(),
+            Some(PY_UTF8_ON),
+            "python_command 에 PYTHONUTF8 이 없다 — 콜드부트 auto-restore 가 cp949 로 되돌아간다"
+        );
+        assert_eq!(
+            get(ENV_PY_IO_ENCODING).as_deref(),
+            Some(PY_IO_ENCODING_UTF8),
+            "python_command 에 PYTHONIOENCODING 이 없다 — stdio 축이 다시 콘솔 코드페이지로 붕괴한다"
+        );
+
+        // 층2 — 상속 env. 조건 조합과 무관하게 같은 값이 나가야 한다.
+        let exe_dir = Path::new("/nonexistent-exe-dir-for-pin");
+        for pairs in [
+            spawn_env_pairs(exe_dir, "/usr/bin:/bin", Some("/Users/user"), None),
+            spawn_env_pairs(exe_dir, "", None, Some("C:\\Users\\x")),
+        ] {
+            let find = |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.clone())
+            };
+            assert_eq!(find(ENV_PY_UTF8).as_deref(), Some(PY_UTF8_ON));
+            assert_eq!(
+                find(ENV_PY_IO_ENCODING).as_deref(),
+                Some(PY_IO_ENCODING_UTF8),
+                "두 층의 인코딩 규약이 갈렸다 — 한쪽 경로만 고쳐진 상태로 출하된다"
             );
         }
     }

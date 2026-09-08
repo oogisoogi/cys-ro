@@ -1663,6 +1663,11 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf) {
                 // 여기서 `.pyc` 를 쓰면 코드서명 봉인이 깨진다. tokio 빌더라 python_command 팩토리를
                 // 못 쓰므로 같은 상수를 직접 소비한다(규약 산재 아님 · lib.rs ENV_PY_NO_BYTECODE).
                 .env(cys::ENV_PY_NO_BYTECODE, cys::PY_NO_BYTECODE_ON)
+                // ★S2(TICKET=cys-phoenix-korean-windows): 인코딩 규약도 같은 이유로 직접 소비한다.
+                // tokio 빌더라 python_command 팩토리를 못 타므로, 그 팩토리가 얹는 쌍과 **같은 상수**를
+                // 여기서도 얹는다(한국어 Windows 에서 브리지 로그 한 줄에 즉사하지 않게).
+                .env(cys::ENV_PY_UTF8, cys::PY_UTF8_ON)
+                .env(cys::ENV_PY_IO_ENCODING, cys::PY_IO_ENCODING_UTF8)
                 // 런타임 상태는 팩 트리 밖으로(팩 본체 오염 0 — 팩 편입 계약 HUD_STATE_DIR).
                 .env("HUD_STATE_DIR", state_dir.join("office-bridge"))
                 .stdin(std::process::Stdio::null())

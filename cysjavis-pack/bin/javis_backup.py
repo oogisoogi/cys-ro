@@ -41,6 +41,23 @@ import tarfile
 import tempfile
 import time
 
+# ★S1ⓒ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 형제 스윕).
+#   피닉스가 이 스크립트를 실행하고 그 출력을 읽는다 — 로케일 코덱(cp949 등)에 묶이면 한국어 Windows 에서
+#   로그 한 줄의 비-ASCII 에 UnicodeEncodeError 로 죽어 부활 체인을 함께 끊는다.
+for _std in ("stdout", "stderr"):
+    try:
+        getattr(sys, _std).reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        try:
+            import io as _io
+            _b = getattr(getattr(sys, _std), "buffer", None)
+            if _b is not None:
+                setattr(sys, _std, _io.TextIOWrapper(_b, encoding="utf-8",
+                                                     errors="backslashreplace", line_buffering=True))
+        except Exception:
+            pass
+
+
 HOME = os.path.expanduser("~")
 
 # 분류 패턴(결정론) — 우선순위: 비밀 > 대용량 > 정체성. 파일명·상대경로 양쪽에 매칭(안전 방향).
@@ -79,7 +96,7 @@ def _atomic_write_json(path, obj):
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, ".tmp-%d-%s" % (os.getpid(), os.path.basename(path)))
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)
         f.flush()
         os.fsync(f.fileno())
@@ -138,7 +155,7 @@ def encrypt_file(plain_path, enc_path, passphrase):
     iv = os.urandom(16)
     key = _derive_key(passphrase, salt)
     r = subprocess.run([_openssl(), "enc", "-aes-256-cbc", "-K", key.hex(), "-iv", iv.hex(),
-                        "-in", plain_path, "-out", enc_path], capture_output=True, text=True)
+                        "-in", plain_path, "-out", enc_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         die("openssl 암호화 실패: %s" % (r.stderr or "").strip())
     return {"cipher": "aes-256-cbc", "kdf": "pbkdf2_hmac_sha256", "iterations": PBKDF2_ITERS,
@@ -150,7 +167,7 @@ def decrypt_file(enc_path, plain_path, passphrase, header):
     iv = bytes.fromhex(header["iv"])
     key = _derive_key(passphrase, salt, header.get("iterations", PBKDF2_ITERS))
     r = subprocess.run([_openssl(), "enc", "-d", "-aes-256-cbc", "-K", key.hex(), "-iv", iv.hex(),
-                        "-in", enc_path, "-out", plain_path], capture_output=True, text=True)
+                        "-in", enc_path, "-out", plain_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         die("openssl 복호화 실패(키 불일치 의심): %s" % (r.stderr or "").strip())
 
@@ -160,7 +177,7 @@ def decrypt_file(enc_path, plain_path, passphrase, header):
 def get_passphrase(key_file=None):
     """사용자 제공 키 — --key-file 우선, 없으면 env CYS_BACKUP_KEY, 둘 다 없으면 None(평문). ★코드 하드코딩 0."""
     if key_file and os.path.isfile(key_file):
-        return open(key_file).read().strip()
+        return open(key_file, encoding="utf-8").read().strip()
     env = os.environ.get("CYS_BACKUP_KEY")
     return env if env else None
 
@@ -224,7 +241,7 @@ def do_backup(out_dir, home, roots=None, passphrase=None):
 
 
 def do_restore(in_dir, dest, passphrase=None):
-    manifest = json.load(open(os.path.join(in_dir, "manifest.json")))
+    manifest = json.load(open(os.path.join(in_dir, "manifest.json"), encoding="utf-8"))
     os.makedirs(dest, exist_ok=True)
     stored = manifest["tier1_identity"]["stored"]  # 'offsite/tier1.tar[.enc]'
     src = os.path.join(in_dir, stored)
@@ -245,7 +262,7 @@ def do_restore(in_dir, dest, passphrase=None):
 
 
 def do_verify(in_dir, passphrase=None):
-    manifest = json.load(open(os.path.join(in_dir, "manifest.json")))
+    manifest = json.load(open(os.path.join(in_dir, "manifest.json"), encoding="utf-8"))
     stored = manifest["tier1_identity"]["stored"]
     src = os.path.join(in_dir, stored)
     if manifest.get("encrypted"):
@@ -278,7 +295,7 @@ def protection_status(home=HOME, backup_dir=None, offsite_anchor=None, recent_da
     if not os.path.isfile(man):
         return dict(base, grade="RED", reasons=["백업 미구성(manifest 없음) — 무방비"])
     try:
-        m = json.load(open(man))
+        m = json.load(open(man, encoding="utf-8"))
     except Exception:
         return dict(base, grade="RED", reasons=["manifest 손상 — 신뢰 불가"])
     age_days = (time.time() - m.get("created_at", 0)) / 86400.0
@@ -313,19 +330,19 @@ def _build_synth_home(root):
     os.makedirs(os.path.join(pack, "_round"))
     os.makedirs(os.path.join(pack, "creds"))
     # Tier1 정체성
-    open(os.path.join(pack, "soul.md"), "w").write("SOUL identity\n")
-    open(os.path.join(pack, "directives", "WORKER_DIRECTIVE.md"), "w").write("worker rules\n")
-    open(os.path.join(pack, "skills", "s1", "SKILL.md"), "w").write("skill body\n")
-    open(os.path.join(pack, "memory", "MEMORY.md"), "w").write("index\n")
-    open(os.path.join(pack, "_round", "STATE.md"), "w").write("state\n")
-    open(os.path.join(pack, "agents.json"), "w").write('{"a":1}\n')
+    open(os.path.join(pack, "soul.md"), "w", encoding="utf-8").write("SOUL identity\n")
+    open(os.path.join(pack, "directives", "WORKER_DIRECTIVE.md"), "w", encoding="utf-8").write("worker rules\n")
+    open(os.path.join(pack, "skills", "s1", "SKILL.md"), "w", encoding="utf-8").write("skill body\n")
+    open(os.path.join(pack, "memory", "MEMORY.md"), "w", encoding="utf-8").write("index\n")
+    open(os.path.join(pack, "_round", "STATE.md"), "w", encoding="utf-8").write("state\n")
+    open(os.path.join(pack, "agents.json"), "w", encoding="utf-8").write('{"a":1}\n')
     # Tier2 비밀(누출되면 안 됨)
-    open(os.path.join(pack, "session.token"), "w").write(SECRET_MARK + "\n")
-    open(os.path.join(pack, "creds", "auth.json"), "w").write('{"token":"' + SECRET_MARK + '"}\n')
-    open(os.path.join(pack, ".env"), "w").write("API_KEY=" + SECRET_MARK + "\n")
+    open(os.path.join(pack, "session.token"), "w", encoding="utf-8").write(SECRET_MARK + "\n")
+    open(os.path.join(pack, "creds", "auth.json"), "w", encoding="utf-8").write('{"token":"' + SECRET_MARK + '"}\n')
+    open(os.path.join(pack, ".env"), "w", encoding="utf-8").write("API_KEY=" + SECRET_MARK + "\n")
     # Tier3 대용량
     open(os.path.join(pack, "transcripts.db"), "wb").write(b"\x00" * 8192)
-    open(os.path.join(pack, "cysd.log"), "w").write("log line\n" * 100)
+    open(os.path.join(pack, "cysd.log"), "w", encoding="utf-8").write("log line\n" * 100)
     return root
 
 
@@ -352,7 +369,7 @@ def do_self_test():
 
         # T2: 암호화 백업 → 복원 → 원본 해시 동일(왕복)
         key = os.path.join(work, "scratch.key")
-        open(key, "w").write("scratch-test-passphrase-only\n")
+        open(key, "w", encoding="utf-8").write("scratch-test-passphrase-only\n")
         out = os.path.join(work, "backup")
         man = do_backup(out, home, passphrase=get_passphrase(key))
         assert man["encrypted"], "T2: 암호화 플래그 미설정"

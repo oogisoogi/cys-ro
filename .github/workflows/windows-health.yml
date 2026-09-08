@@ -170,6 +170,22 @@ jobs:
       #   전 데몬을 죽이고 사용자 데이터를 옮기는 최고 위험 등급이라, Windows 회귀를 잡지 못하는
       #   게이트로는 출하할 수 없다. 대상을 `factory_reset::` 로 좁혀 예산을 지킨다.
       #   ⚠이 스텝에 `if:` 조건을 달지 마라 — 위 잡 주석의 근거와 동일(돌지 않는 초록 금지).
+      # ★S4ⓑ(TICKET=cys-phoenix-korean-windows): 인코딩 독립성 **Windows 실기** 축.
+      #   오너 실기(한국어 Windows)에서 콜드부트 피닉스가 저널의 UTF-8 「—」에 UnicodeDecodeError,
+      #   그 예외를 찍으려던 로그에서 다시 UnicodeEncodeError 로 죽어 부활이 0 이 됐다.
+      #   ⚠이 러너는 **영문 코드페이지**(cp1252)라 그냥 두면 「—」가 인코딩돼 결함을 못 잡는다 —
+      #     그것이 이 결함이 CI 를 통과해 출하된 이유다(대조군: mac=UTF-8 · 러너=cp1252 · 실기=cp949).
+      #   그래서 두 겹으로 조인다: ⑴콘솔 코드페이지를 949 로(가능하면) ⑵스모크가 자식에게
+      #     PYTHONUTF8=0 · PYTHONIOENCODING=cp949 를 직접 준다. ⑵가 판정을 지므로 ⑴이 실패해도
+      #     축은 살아 있다(chcp 는 실패해도 잡을 죽이지 않는다 — 강화이지 전제가 아니다).
+      #   ★잡 레벨 env PYTHONUTF8=1 은 이 스텝을 무력화하지 않는다: 스모크가 자식 env 를
+      #     덮어쓴다(부모만 utf-8 로 남아 요약을 출력한다).
+      - name: 불사조 인코딩 독립성 스모크 (적대 로케일 · Windows 실기)
+        shell: cmd
+        run: |
+          chcp 949 || ver > nul
+          python cysjavis-pack\bin\javis_phoenix_encoding_smoke.py
+
       - name: Rust 툴체인 (factory-reset Windows 계약 검증용)
         uses: dtolnay/rust-toolchain@stable
 

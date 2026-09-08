@@ -54,6 +54,27 @@ import subprocess
 import sys
 import time
 
+# ★S1ⓐ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 한국어 윈도우 콜드부트 즉사 수리).
+#   실사고: 한국어 Windows 는 파이썬 표준 스트림이 콘솔 코드페이지(cp949)에 묶여, 로그의 UTF-8 「—」에서
+#   UnicodeEncodeError 로 부활 전체가 즉사했다. **로그가 로그를 죽이는 자리**라 예외 처리 경로까지 함께 무너진다.
+#   ∴ 이 모듈은 자기 표준 스트림을 로케일과 무관하게 utf-8 로 고정한다. errors=backslashreplace 는
+#   재구성이 끝내 안 되는 극단에서도 **죽지 않고 무엇이었는지 남기기** 위한 선택이다.
+#   ⚠로그 문구의 「—」를 ASCII 로 바꿔 회피하지 않는다 — 다음 비-ASCII 문자가 같은 자리에서 또 죽인다.
+for _std in ("stdout", "stderr"):
+    try:
+        getattr(sys, _std).reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        # reconfigure 부재(구 런타임)·재구성 불가(비 TextIO 리다이렉트) → 래핑 폴백.
+        # 실패해도 조용히 통과한다 — 인코딩 보정 실패가 부활 자체를 막아서는 안 된다(가용성 우선).
+        try:
+            import io as _io
+            _b = getattr(getattr(sys, _std), "buffer", None)
+            if _b is not None:
+                setattr(sys, _std, _io.TextIOWrapper(_b, encoding="utf-8",
+                                                     errors="backslashreplace", line_buffering=True))
+        except Exception:
+            pass
+
 HOME = os.path.expanduser("~")
 
 # 플랫폼 분기(Windows 패리티) — 상태 디렉터리·소켓 규약이 Rust(src/lib.rs·state.rs)와 정합해야 한다.
@@ -174,7 +195,8 @@ _IDENTITY_RETRY_SLEEP = float(os.environ.get("PHOENIX_IDENTITY_RETRY_SLEEP", "1.
 def _cys_self_identity(candidate):
     """후보 cys 자신의 3필드 self-report(`cys phoenix-identity` — 데몬 불요·컴파일타임 상수). 실패=None."""
     try:
-        r = subprocess.run([candidate, "phoenix-identity"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run([candidate, "phoenix-identity"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=10)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
     try:
@@ -190,7 +212,8 @@ def _daemon_identity(candidate, socket):
         cmd += ["--socket", socket]
     cmd += ["status", "--json"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=12)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
     try:
@@ -357,7 +380,8 @@ def _emit_evt(evt_type, **fields):
     for k, v in fields.items():
         cmd += ["--field", "%s=%s" % (k, v)]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=8)
         return r.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
@@ -472,7 +496,8 @@ def cys(*args, socket=None, timeout=25):
     if IS_WINDOWS:
         return _run_capture(cmd, env, timeout)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, env=env)
         return r
     except subprocess.TimeoutExpired as e:
         class _R:
@@ -541,7 +566,7 @@ def read_topology(socket):
     if not os.path.exists(p):
         return {"entries": [], "updated_at": 0, "_path": p, "_missing": True}
     try:
-        t = json.load(open(p))
+        t = json.load(open(p, encoding="utf-8"))
         t["_path"] = p
         return t
     except Exception as e:
@@ -562,7 +587,7 @@ def _roster_file_status(path):
     if not os.path.exists(path):
         return "missing"
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             json.load(f)
         return "valid"
     except Exception:
@@ -577,7 +602,7 @@ def load_desired_roster(socket):
     p = desired_roster_path(socket)
     if os.path.exists(p):
         try:
-            d = json.load(open(p))
+            d = json.load(open(p, encoding="utf-8"))
             return d.get("roster", {}), set(d.get("tombstones", []))
         except Exception:
             # ★C2: 손상은 침묵 빈집합이 아니라 로그(sentinel 이 run_restore 진입에서 부활 차단). 전체 복원 체인=W3.
@@ -604,7 +629,7 @@ def _snapshot_roster_entries(socket):
         tp = os.path.join(gen_root, g, "topology.json")
         if os.path.exists(tp):
             try:
-                t = json.load(open(tp))
+                t = json.load(open(tp, encoding="utf-8"))
                 return {e["role"]: e for e in t.get("entries", []) if e.get("role")}
             except Exception:
                 continue
@@ -625,7 +650,7 @@ def _snapshot_tombstones(socket):
         tp = os.path.join(gen_root, g, "topology.json")
         if os.path.exists(tp):
             try:
-                t = json.load(open(tp))
+                t = json.load(open(tp, encoding="utf-8"))
                 return set(x for x in t.get("tombstones", []) if isinstance(x, str))
             except Exception:
                 continue
@@ -896,7 +921,7 @@ def _acquire_roster_lock(socket, tag="roster", tries=40, sleep=0.05):
     (P1-8)을 제거. 끝내 못 잡거나 락 기구 미가용이면 fail-open(핸들 보유·경고) — 무한 블록/행 금지. 반환 handle|None."""
     try:
         p = os.path.join(phoenix_home(socket), "%s.lock" % tag)
-        f = open(p, "a+")  # 무truncate·생성·byte0 락 대상(Windows msvcrt 영역 일치)
+        f = open(p, "a+", encoding="utf-8")  # 무truncate·생성·byte0 락 대상(Windows msvcrt 영역 일치)
     except Exception:
         return None
     for _ in range(max(1, tries)):
@@ -934,7 +959,7 @@ def _observe_and_persist_roster_locked(socket, rebase=False):
     try:
         _dp = desired_roster_path(socket)
         if os.path.exists(_dp):
-            prev = json.load(open(_dp))
+            prev = json.load(open(_dp, encoding="utf-8"))
     except Exception:
         prev = {}
     last_seen_rev = prev.get("tombstones_rev")
@@ -1089,7 +1114,7 @@ def discover_depts():
         pass
     if os.path.isfile(depts_json):
         try:
-            reg = json.load(open(depts_json))
+            reg = json.load(open(depts_json, encoding="utf-8"))
             for dept, meta in (reg.get("depts") or {}).items():
                 info = found.setdefault(dept, {})
                 sock = (meta or {}).get("socket")
@@ -1111,7 +1136,7 @@ def load_dept_roster(socket):
     p = dept_roster_path(socket)
     if os.path.exists(p):
         try:
-            d = json.load(open(p))
+            d = json.load(open(p, encoding="utf-8"))
             return d.get("roster", {}), set(d.get("tombstones", []))
         except Exception:
             pass
@@ -1138,7 +1163,7 @@ def _observe_and_persist_depts_locked(socket, rebase=False):
     try:
         _dp = dept_roster_path(socket)
         if os.path.exists(_dp):
-            _prev_prov = json.load(open(_dp)).get("recovered_from")
+            _prev_prov = json.load(open(_dp, encoding="utf-8")).get("recovered_from")
     except Exception:
         _prev_prov = None
     for dept, info in discover_depts().items():
@@ -1261,7 +1286,7 @@ def load_journal(socket, ticket_id):
     p = journal_path(socket, ticket_id)
     if os.path.exists(p):
         try:
-            return json.load(open(p))
+            return json.load(open(p, encoding="utf-8"))
         except Exception as _e:
             # ★C2 2단계 보조상태(W3): 저널은 retention-critical 이 아니다(단계 진행 캐시 — 소실 시 재수행). 손상 시
             #   hard-fail 하지 않고 격리(.corrupt-<ts>·최근3)+경고 후 fresh 로 시작한다. 단 '침묵 삼킴'(try:pass)은
@@ -1326,7 +1351,7 @@ def breaker_check_and_record(socket):
     attempts = []
     if os.path.exists(p):
         try:
-            attempts = json.load(open(p)).get("attempts", [])
+            attempts = json.load(open(p, encoding="utf-8")).get("attempts", [])
         except Exception:
             isolated = _isolate_corrupt(p)  # 손상 격리(.corrupt-<ts>·최근3 prune)
             log("★P2-6: breaker.json 손상 — 격리(%s) 후 빈 카운트 재시작(침묵 리셋 아님·경고). "
@@ -1355,7 +1380,8 @@ def rollback_proposal(socket):
         #   무가드 시 스냅샷 도구가 15초 초과하면 traceback→이유 없는 exit 1(P1-5). 롤백 '제안'은 부가정보이므로
         #   실패해도 restore 판정을 죽이지 않고 note 로 정직히 남긴다.
         try:
-            r = subprocess.run([sys.executable, snap, "list"], capture_output=True, text=True, timeout=15)
+            r = subprocess.run([sys.executable, snap, "list"], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=15)
             prop["generations_raw"] = (r.stdout or r.stderr or "").strip()[:600]
             gens = re.findall(r"(\d{8}T\d{6}Z)", r.stdout or "")
             prop["generations"] = gens
@@ -1554,7 +1580,7 @@ def _acquire_restore_lease(socket):
     restore 이중 스폰)을 제거. 락 기구 미가용만 fail-open."""
     try:
         lease_path = os.path.join(phoenix_home(socket), "restore.lease")
-        f = open(lease_path, "a+")  # 무truncate·생성·byte0 락 대상(Windows msvcrt 영역 일치)
+        f = open(lease_path, "a+", encoding="utf-8")  # 무truncate·생성·byte0 락 대상(Windows msvcrt 영역 일치)
     except Exception:
         return True, None  # 락 파일 생성 실패 = 게이트 없이 진행(가용성 우선 fail-open)
     r = _try_lock_nb(f)
@@ -2195,7 +2221,7 @@ def _read_worker_todo():
     per_file, last_section = [], None
     for cand in files:
         try:
-            txt = open(cand, errors="replace").read()
+            txt = open(cand, encoding="utf-8", errors="replace").read()
         except OSError:
             continue
         o, d = txt.count("- [ ]"), txt.count("- [x]")
@@ -2228,7 +2254,7 @@ def cmd_status(args):
     home = phoenix_home(socket)
     journals = [f for f in os.listdir(home) if f.startswith("journal-")] if os.path.isdir(home) else []
     bp = breaker_file(socket)
-    breaker = json.load(open(bp)) if os.path.exists(bp) else {"attempts": []}
+    breaker = json.load(open(bp, encoding="utf-8")) if os.path.exists(bp) else {"attempts": []}
     now = _now()
     recent = [t for t in breaker.get("attempts", []) if now - t <= BREAKER_T]
     st = {
@@ -2259,12 +2285,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TOPO="$HERE/topology.json"
 echo "== 불사조 수동 복원 (세대: $HERE) =="
 if [ ! -f "$TOPO" ]; then echo "!! topology.json 없음 — 복원 불가"; exit 1; fi
-echo "재건 대상 역할:"; python3 -c "import json;[print(' -',e['role'],'/',e.get('agent'),'/ sid',e.get('session_id')) for e in json.load(open('$TOPO'))['entries']]"
+echo "재건 대상 역할:"; python3 -c "import json;[print(' -',e['role'],'/',e.get('agent'),'/ sid',e.get('session_id')) for e in json.load(open('$TOPO', encoding='utf-8'))['entries']]"
 echo ""
 echo "아래 명령을 한 줄씩 확인 후 실행하라(순차 기동 — 동시 resume 폭주 방지 §10.4):"
 python3 - "$TOPO" <<'PY'
 import json,sys
-t=json.load(open(sys.argv[1]))
+t=json.load(open(sys.argv[1], encoding='utf-8'))
 for e in t.get('entries',[]):
     role=e['role']; agent=e.get('agent','claude')
     print("cys launch-agent --role %s --agent %s   # 기동 후 각성 확인, 필요시 cys reinject --role %s" % (role, agent, role))
@@ -2284,7 +2310,7 @@ def cmd_gen_manual(args):
     _atomic_write_json(os.path.join(dest, "topology.json"),
                        {"entries": topo.get("entries", []), "updated_at": topo.get("updated_at", 0)})
     sp = os.path.join(dest, "manual_restore.sh")
-    with open(sp, "w") as f:
+    with open(sp, "w", encoding="utf-8") as f:
         f.write(MANUAL_RESTORE_TEMPLATE)
     os.chmod(sp, 0o755)
     out = {"manual_restore_script": sp, "topology_copy": os.path.join(dest, "topology.json"),
@@ -2341,7 +2367,7 @@ def cmd_gen_protect(args):
 done
 echo "※ hook 사망=조용한 해제 방향이므로 hook 생존을 신뢰 원장의 감시 항목에 포함할 것(§11.2 meta-drill)."
 '''
-    with open(dest, "w") as f:
+    with open(dest, "w", encoding="utf-8") as f:
         f.write(body)
     os.chmod(dest, 0o755)
     out = {"protect_script": dest, "applied": False, "mode": "dry-run",
@@ -2618,7 +2644,7 @@ def load_deploy_journal(socket, ticket):
     p = deploy_journal_path(socket, ticket)
     if os.path.exists(p):
         try:
-            return json.load(open(p))
+            return json.load(open(p, encoding="utf-8"))
         except Exception:
             # ★C2 2단계 보조상태(W3): deploy 저널도 재개 캐시(비 retention) — 손상 시 격리+경고 후 fresh.
             isolated = _isolate_corrupt(p)
@@ -2760,7 +2786,7 @@ def _deploy_snapshot(socket, roster):
         # ★.ps1 은 PowerShell 로 실행 — 실행권한 비트(chmod) 개념 없음(생략).
     else:
         runbook = os.path.join(gen_dir, "MANUAL_RESTORE.sh")
-        with open(runbook, "w") as f:
+        with open(runbook, "w", encoding="utf-8") as f:
             f.write(_render_deploy_runbook(roster))
         os.chmod(runbook, 0o755)
     return {"ok": bool(gen_name), "gen_root": gen_root, "gen": gen_name, "gen_dir": gen_dir,

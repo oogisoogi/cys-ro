@@ -8556,6 +8556,64 @@ mod tests {
         s.id
     }
 
+    /// ★S3 특성 시험(TICKET=cys-phoenix-korean-windows) — **지금의 동작을 못박는다**(원함이 아니라 사실).
+    ///
+    /// `topology.json` 의 entries 는 actual-state 다: `persist_topology` 가 "지금 살아 있고 지금 역할을
+    /// 쥔" 좌석만 조립한다. 그런데 에이전트가 유예를 넘겨 사라지면 `release_role_after_agent_death` 가
+    /// 역할 딱지를 회수하고 곧바로 영속한다 — 그 순간 **그 역할은 저장본에서 사라진다**. 좌석(셸)은
+    /// 살아 있고 묘비도 안 남으므로, 이후 `cys restore` 는 그 역할을 되살릴 수도, 왜 없는지 설명할 수도
+    /// 없다. 「사고사는 부활시킨다」는 원칙이 겨냥한 바로 그 사건이 기록 자체를 지우는 구조다.
+    ///
+    /// 오너 실측(2026-09-08 한국어 Windows)의 「설치 직후 cys list 에는 role=master 가 있었는데
+    /// topology.json 에는 없다」와 형태가 일치하는 후보 기전이며, 이 시험은 그 기전이 **실재함**만
+    /// 증명한다(그 기계에서 실제로 이것이었는지는 별개 — 판별은 그 파일의 tombstones 배열이 진다).
+    #[test]
+    fn agent_death_erases_the_role_from_persisted_topology_without_a_tombstone() {
+        let daemon = drill_daemon("role-erosion");
+        let id = spawn_role_surface(&daemon, "master");
+        persist_topology(&daemon);
+
+        let dir = crate::state::state_dir(&daemon.socket_path);
+        let read_topo = || -> serde_json::Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(dir.join("topology.json")).expect("topology.json 실재"),
+            )
+            .expect("topology.json 파싱")
+        };
+        let has_master = |t: &serde_json::Value| {
+            t["entries"]
+                .as_array()
+                .map(|a| a.iter().any(|e| e["role"] == "master"))
+                .unwrap_or(false)
+        };
+        assert!(
+            has_master(&read_topo()),
+            "선행 조건 미성립 — 살아 있는 master 좌석이 애초에 영속되지 않았다(이 시험이 대상에 닿지 못했다)"
+        );
+
+        // 에이전트만 사라진다(좌석=셸은 그대로). 이것이 '사고사' 의 정의다.
+        let s = daemon.surfaces.lock().unwrap().get(&id).cloned().unwrap();
+        assert!(
+            super::release_role_after_agent_death(&daemon, &s),
+            "역할 회수가 일어나야 이후 단언이 의미를 가진다"
+        );
+
+        let t = read_topo();
+        assert!(
+            !has_master(&t),
+            "이 시험이 못박으려는 기전이 사라졌다 — 지금은 역할이 저장본에 남는다(설계가 바뀌었으면 이 문서를 갱신하라)"
+        );
+        assert!(
+            daemon.surfaces.lock().unwrap().contains_key(&id),
+            "좌석은 살아 있어야 한다 — '좌석까지 사라졌다' 면 이 시험은 다른 것을 재고 있다"
+        );
+        assert_eq!(
+            t["tombstones"].as_array().map(|a| a.len()).unwrap_or(0),
+            0,
+            "묘비도 남지 않는다 — restore 는 '없어진 이유' 조차 말할 수 없다(이것이 이 기전의 핵심 해악)"
+        );
+    }
+
     /// watchdog가 자력종료(exited) surface를 회수해도 역할을 묘비에 올리지 않는다 —
     /// phoenix가 desired_roster로 되살려야 하므로. 역할 매핑 정리는 여전히 일어나야 한다.
     #[test]

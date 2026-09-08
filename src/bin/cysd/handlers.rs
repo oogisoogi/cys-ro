@@ -8437,6 +8437,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★S3 회귀 핀(TICKET=cys-phoenix-korean-windows · 오너 실측 2026-09-08 한국어 Windows).
+    ///
+    /// 증상: 설치기가 `cys new-surface --role master` 로 master 를 세웠고 `cys list` 는 role=master 를
+    /// 보여줬는데, 재부팅 뒤 `topology.json` 에는 master 가 없었다(부서 노드는 있었다) — 그래서 앱의
+    /// 「재시작」(`cys restore --include-master`)이 master 만 되살리지 못한다.
+    ///
+    /// ★이 티켓의 첫 가설(「create 아크에 영속이 없다」)은 **뮤테이션이 반증했다**: 영속은 이미
+    /// `state.rs::create_surface_with_env` 말미의 `if role.is_some() { persist_topology }` 가 하고 있다.
+    /// 그래서 핸들러에 같은 호출을 더한 것은 수리가 아니라 중복 쓰기였고, 되돌렸다.
+    ///
+    /// 이 핀이 지키는 것은 그 불변식 자체다 — **create 응답이 성공으로 나가는 시점에 그 역할은 이미
+    /// 디스크에 있어야 한다**. 사이에 아무 RPC 도 끼우지 않는다(끼우면 다른 영속 트리거가 대신
+    /// 통과시켜 핀이 공허해진다). 층이 어디든 이 관계가 깨지면 적색이 되는 것이 목적이다.
+    /// 이 축의 뮤테이션 조준점은 핸들러가 아니라 `state.rs` 의 그 한 줄이다
+    /// (scripts/phoenix_encoding_mutants.py M4).
+    #[test]
+    fn role_bearing_surface_is_persisted_at_create_not_at_some_later_event() {
+        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let (daemon, dir) = daemon_with_acl("create-persist", r#"{"default":"allow","rules":[]}"#);
+        let topo_path = dir.join("topology.json");
+        assert!(
+            !topo_path.exists(),
+            "선행 조건 미성립 — 시작부터 topology.json 이 있으면 이 핀은 무엇도 증명하지 못한다"
+        );
+
+        let Reply::Single(created) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: json!({ "role": "master", "cmd": "sleep 30" }),
+            },
+            None,
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(created["ok"], json!(true), "선행 조건 미성립 — create 자체가 실패했다 ({created})");
+
+        let roles_on_disk = || -> Vec<String> {
+            let Ok(txt) = std::fs::read_to_string(&topo_path) else {
+                return Vec::new();
+            };
+            let v: serde_json::Value = serde_json::from_str(&txt).expect("topology.json 파싱");
+            v["entries"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e["role"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert!(
+            roles_on_disk().iter().any(|r| r == "master"),
+            "역할을 달고 태어난 좌석이 create 시점에 영속되지 않았다 — 재부팅 뒤 restore 가 그 역할을 모른다 (disk={:?})",
+            roles_on_disk()
+        );
+
+        // 대조군: 역할 없는 좌석은 조립 대상이 아니므로 entries 를 늘리지 않는다(과도 쓰기 금지).
+        let before = roles_on_disk().len();
+        let Reply::Single(scratch) = dispatch(
+            &daemon,
+            Request {
+                id: json!(2),
+                method: "surface.create".into(),
+                params: json!({ "cmd": "sleep 30" }),
+            },
+            None,
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(scratch["ok"], json!(true), "대조군 create 실패 ({scratch})");
+        assert_eq!(
+            roles_on_disk().len(),
+            before,
+            "역할 없는 좌석이 topology entries 를 늘렸다 — 조립 계약이 바뀌었다"
+        );
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ★결함#6-b 예약어 핀 — `owner` 는 데몬이 **도출**하는 신원 등급이지 pane 이 자칭할 수
     /// 있는 역할이 아니다. 자칭이 열리면 부서 ACL 첫 줄 `{"from":"owner","to":"*","allow":true}`
     /// 가 그 pane 에게 그대로 열려 '워커 직접 조향 차단'이 무력화된다(claim_role·create 대칭).

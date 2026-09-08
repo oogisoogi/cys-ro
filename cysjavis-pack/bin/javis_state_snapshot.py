@@ -38,6 +38,23 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
+# ★S1ⓒ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 형제 스윕).
+#   피닉스가 이 스크립트를 실행하고 그 출력을 읽는다 — 로케일 코덱(cp949 등)에 묶이면 한국어 Windows 에서
+#   로그 한 줄의 비-ASCII 에 UnicodeEncodeError 로 죽어 부활 체인을 함께 끊는다.
+for _std in ("stdout", "stderr"):
+    try:
+        getattr(sys, _std).reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        try:
+            import io as _io
+            _b = getattr(getattr(sys, _std), "buffer", None)
+            if _b is not None:
+                setattr(sys, _std, _io.TextIOWrapper(_b, encoding="utf-8",
+                                                     errors="backslashreplace", line_buffering=True))
+        except Exception:
+            pass
+
+
 HOME = os.path.expanduser("~")
 
 # 세대 보관 루트 (이 스크립트가 쓰기를 허용받은 유일한 출력 경로)
@@ -95,7 +112,7 @@ def _dept_state_dirs(state_root, depts_json=None, windows=None, localappdata=Non
     dj = depts_json or os.path.join(os.path.dirname(os.path.dirname(state_root)), ".cys", "depts.json")
     if os.path.isfile(dj):
         try:
-            reg = json.load(open(dj))
+            reg = json.load(open(dj, encoding="utf-8"))
             for _name, meta in (reg.get("depts") or {}).items():
                 sock = (meta or {}).get("socket")
                 if sock:
@@ -273,7 +290,7 @@ def do_snapshot(sources=None, gen_root=GEN_ROOT, dry_run=False, crash_hook=None)
             })
 
         mpath = os.path.join(tmp_dir, "manifest.json")
-        with open(mpath, "w") as mf:
+        with open(mpath, "w", encoding="utf-8") as mf:
             json.dump(manifest, mf, indent=2, ensure_ascii=False)
             mf.flush()
             os.fsync(mf.fileno())
@@ -395,7 +412,7 @@ def do_verify(gen_root=GEN_ROOT, gen=None):
             all_ok = False
             continue
         try:
-            with open(mpath) as f:
+            with open(mpath, encoding="utf-8") as f:
                 manifest = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             print(f"[verify] {name}: manifest 파싱 실패 {e} FAIL")
@@ -497,16 +514,16 @@ def do_self_test():
         state_root6 = os.path.join(home6, ".local", "state")
         main6 = os.path.join(state_root6, "cys")
         os.makedirs(main6)
-        with open(os.path.join(main6, "topology.json"), "w") as f:
+        with open(os.path.join(main6, "topology.json"), "w", encoding="utf-8") as f:
             f.write('{"entries":[{"role":"worker"}]}')
         os.makedirs(os.path.join(home6, ".cys"))
         # registry 는 dept-A 만 등록(stale) — 하지만 디스크엔 dept-A·dept-B 둘 다 존재
-        with open(os.path.join(home6, ".cys", "depts.json"), "w") as f:
+        with open(os.path.join(home6, ".cys", "depts.json"), "w", encoding="utf-8") as f:
             json.dump({"depts": {"dept-A": {"socket": os.path.join(state_root6, "cys-dept-dept-A", "cys.sock")}}}, f)
         for dep in ("cys-dept-dept-A", "cys-dept-dept-B"):
             dd = os.path.join(state_root6, dep)
             os.makedirs(dd)
-            with open(os.path.join(dd, "schedule_state.json"), "w") as f:
+            with open(os.path.join(dd, "schedule_state.json"), "w", encoding="utf-8") as f:
                 f.write('{"jobs":[]}')
             # 대형 산출물(포함되면 안 됨)
             with open(os.path.join(dd, "analytics.db"), "wb") as f:
@@ -519,7 +536,7 @@ def do_self_test():
         gen6_root = os.path.join(workdir, "gen6")
         do_snapshot(sources=srcs6, gen_root=gen6_root)
         gdir6 = os.path.join(gen6_root, list_generations(gen6_root)[0])
-        man6 = json.load(open(os.path.join(gdir6, "manifest.json")))
+        man6 = json.load(open(os.path.join(gdir6, "manifest.json"), encoding="utf-8"))
         stored_srcs = [e["source"] for e in man6["files"]]
         assert any("cys-dept-dept-B" in s for s in stored_srcs), "T6: 스냅샷에 부서 선언상태 미포함"
         assert do_verify(gen_root=gen6_root) == 0, "T6: 부서 포함 세대 무결성 실패"

@@ -24,6 +24,23 @@ import time
 #   (bin/ 을 stdlib 앞에 놓지 않아 미래의 이름충돌 shadowing 을 원천 차단).
 #   선례(append 형태): javis_report.py:33-34.
 #   (hooks/inject_gate.py:22 는 insert(0) + CYS_PACK_DIR 기반 경로 — 형태가 다르므로 선례 아님)
+# ★S1ⓒ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 형제 스윕).
+#   피닉스가 이 스크립트를 실행하고 그 출력을 읽는다 — 로케일 코덱(cp949 등)에 묶이면 한국어 Windows 에서
+#   로그 한 줄의 비-ASCII 에 UnicodeEncodeError 로 죽어 부활 체인을 함께 끊는다.
+for _std in ("stdout", "stderr"):
+    try:
+        getattr(sys, _std).reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        try:
+            import io as _io
+            _b = getattr(getattr(sys, _std), "buffer", None)
+            if _b is not None:
+                setattr(sys, _std, _io.TextIOWrapper(_b, encoding="utf-8",
+                                                     errors="backslashreplace", line_buffering=True))
+        except Exception:
+            pass
+
+
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SELF_DIR not in sys.path:
     sys.path.append(_SELF_DIR)
@@ -54,7 +71,7 @@ def _resolve_slug_from_socket():
         return "main"   # 본부 기본(CYS_SOCKET 미설정 노드 = 본부)
     reg = os.environ.get("CYS_DEPTS_JSON") or os.path.expanduser("~/.cys/depts.json")
     try:
-        with open(reg) as f:
+        with open(reg, encoding="utf-8") as f:
             depts = (json.load(f) or {}).get("depts") or {}
     except (OSError, ValueError):
         return None
@@ -67,7 +84,7 @@ def _resolve_slug_from_socket():
 def _resolve_surface_ref():
     """`cys identify` → caller.surface_ref (P2-4). 실패·surface 밖이면 None."""
     try:
-        out = subprocess.run([CYS_BIN, "identify"], capture_output=True, text=True, timeout=5)
+        out = subprocess.run([CYS_BIN, "identify"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
     except Exception:
         return None
     if out.returncode != 0:

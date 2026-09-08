@@ -317,10 +317,17 @@ tauri.conf.json · ui/package.json · dist-win/cys-x64.wxs · Cargo.lock 2엔트
 ### 5-5. 추가 봉합 1건 — pyseal 센서스 (커밋 `ca4d65b`)
 
 CI 실측(run 34230927538 · job macos-rust-pack): `FAIL ⓑ 참조 파일 집합 21개 고정 — 실측 22 ·
-신규 ['cysjavis-pack/bin/javis_phoenix_encoding_smoke.py']`. 우리 S1 커밋이 들여온 파일이 니들
-(`PYTHONDONTWRITEBYTECODE`)을 보유하는데 핀 목록에 없었다.
+신규 ['cysjavis-pack/bin/javis_phoenix_encoding_smoke.py']`. 우리 S1 커밋이 들여온 파일이 **봉인 니들**
+(바이트코드 쓰기를 끄는 env 변수 — 정확한 상수는 `test_pyseal_census.py` 의 `REF_NEEDLES` 가 정본)을
+보유하는데 핀 목록에 없었다.
 **봉인 점검 결과 = 새 python 진입점이자 강제점이 맞다**(`sys.executable` 로 자기 자식을 띄우고 그
-자식 env 에 `PYTHONDONTWRITEBYTECODE="1"` 을 건다 · `:56`). 규약대로 근거 주석과 함께 등재했다.
+자식 env 에 그 봉인 변수를 `"1"` 로 건다 · `:56`). 규약대로 근거 주석과 함께 등재했다.
+· ★**이 보고서가 니들 상수를 리터럴로 적지 않는 이유**(2026-09-09 실측): 센서스는 확장자 13종
+  **전수 스캔**이라 `.md` 도 센다 — 초판은 §5-5 에 그 상수를 인용했다가 **이 문서 자신이**
+  참조 파일 집합을 22→23 으로 늘려 ci-branch 를 적색으로 만들었다(run `34241773714`).
+  핀을 우회한 것이 아니라 **상수의 정본을 한 곳(`REF_NEEDLES`)으로 두고 문서는 가리키기만** 한다.
+  (등재 경로도 규약상 유효하지만 그것은 팩 파일 수정 = 동봉 팩·번들이 바뀌므로, 이미 서명된
+  번들과의 정합을 지키기 위해 docs 전용 처방을 택했다 — master 판정 2026-09-09.)
 · 부기(로컬 전용 잡음): 이 센서스는 **파일시스템 walk** 라 `.gitignore` 를 따르지 않아 로컬
   `.briefs/`(추적 0건)를 신규로 센다. CI 체크아웃엔 없으므로 핀 값 **22** 가 정본이다.
 

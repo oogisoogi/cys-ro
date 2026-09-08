@@ -18,6 +18,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOV = os.path.join(ROOT, "src", "bin", "cysd", "governance.rs")
+STATE = os.path.join(ROOT, "src", "bin", "cysd", "state.rs")
+HANDLERS = os.path.join(ROOT, "src", "bin", "cysd", "handlers.rs")
 CARGO = os.environ.get("CARGO", os.path.expanduser("~/.cargo/bin/cargo"))
 BUILD = [CARGO, "build", "--bin", "cysd", "--bin", "cys"]
 # ★프로브는 target/debug 바이너리를 돌린다 — 변이를 **빌드해 넣지 않으면** 옛 바이너리를 재고
@@ -25,6 +27,7 @@ BUILD = [CARGO, "build", "--bin", "cysd", "--bin", "cys"]
 #   스스로 재빌드하는 cargo test 뿐이었다). 그래서 프로브 축은 빌드를 자기 앞에 달고 다닌다.
 PROBE = [sys.executable, os.path.join(ROOT, "scripts", "s3_coldboot_probe.py")]
 RUST = [CARGO, "test", "--bin", "cysd", "agent_death_keeps"]
+D2_RUST = [CARGO, "test", "--bin", "cysd", "new_surface_agent_flag"]
 
 MUTANTS = [
     {
@@ -63,6 +66,25 @@ MUTANTS = [
                     [CARGO, "test", "--bin", "cysd", "preserved_entries_are_unique"])],
     },
     {
+        "id": "S3-D2-M6-선언-무시",
+        "why": "스폰 시점 선언(--agent)을 좌석 메타로 쓰지 않는다 — 엔트리가 다시 agent:null 이 되고 "
+               "restore 가 master 를 'agent 미상'으로 제외해야 한다.",
+        "file": STATE,
+        "old": "            agent_meta: Mutex::new(agent.clone().map(|a| (a.clone(), a))),",
+        "new": "            agent_meta: Mutex::new({ let _ = &agent; None }),  // MUTANT S3-D2-M6",
+        "checks": [("cargo test new_surface_agent_flag", D2_RUST),
+                   ("격리 콜드부트 프로브", PROBE)],
+    },
+    {
+        "id": "S3-D2-M7-배선-절단",
+        "why": "핸들러가 검증한 선언을 생성 함수에 넘기지 않는다 — CLI 플래그가 조용히 무의미해져야 한다.",
+        "file": HANDLERS,
+        "old": "                declared_agent,\n            ) {",
+        "new": "                { let _ = declared_agent; None },  // MUTANT S3-D2-M7\n            ) {",
+        "checks": [("cargo test new_surface_agent_flag", D2_RUST),
+                   ("격리 콜드부트 프로브", PROBE)],
+    },
+    {
         "id": "S3-M3-live-중복",
         "why": "live 중복 제거를 지운다 — 같은 역할이 두 줄이 돼 restore 이중 스폰으로 샌다.",
         "old": "        .filter_map(|e| e[\"role\"].as_str().map(String::from))\n        .collect();\n    let mut entries = entries;",
@@ -89,16 +111,17 @@ def main():
 
     verdicts = []
     for m in MUTANTS:
-        orig = open(GOV, encoding="utf-8").read()
+        src = m.get("file", GOV)          # 조준 파일(기본 governance.rs · D2 축은 state/handlers)
+        orig = open(src, encoding="utf-8").read()
         applied = False
         try:
             if orig.count(m["old"]) != 1:
                 verdicts.append((m["id"], "NOT-APPLIED",
                                  "치환 대상 %d건(예상 1) — 소스가 이동했다" % orig.count(m["old"])))
                 continue
-            open(GOV, "w", encoding="utf-8").write(orig.replace(m["old"], m["new"], 1))
+            open(src, "w", encoding="utf-8").write(orig.replace(m["old"], m["new"], 1))
             applied = True
-            assert m["new"] in open(GOV, encoding="utf-8").read(), "변이가 디스크에 없다"
+            assert m["new"] in open(src, encoding="utf-8").read(), "변이가 디스크에 없다"
             brc, bout = run(BUILD)          # 변이를 바이너리에 실어야 프로브 축이 대상에 닿는다
             if brc != 0:
                 verdicts.append((m["id"], "NOT-APPLIED",
@@ -117,7 +140,7 @@ def main():
                                  "어느 축도 못 잡았다: " + " · ".join(n for n, _ in m["checks"])))
         finally:
             if applied:
-                open(GOV, "w", encoding="utf-8").write(orig)
+                open(src, "w", encoding="utf-8").write(orig)
                 run(BUILD)   # 바이너리도 원복 — 안 하면 다음 축이 남의 변이를 잰다
 
     print("\n[s3-mutants] 판정")

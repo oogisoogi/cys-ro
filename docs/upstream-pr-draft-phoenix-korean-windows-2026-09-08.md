@@ -134,9 +134,16 @@ the next non-ASCII character someone types.
 
 ## CI evidence
 
-<!-- ⚠ 채우거나 지우십시오. 이 브랜치는 아직 push 되지 않아 Windows 러너가 0회 돌았습니다. -->
-- macOS lane: `<run URL>`
-- Windows lane: `<run URL>`
+Measured on the fork's branch (`feat/phoenix-korean-windows`, head `a7b54a0`):
+
+- Windows lane (`windows-health.yml`, the H-WIN suite that actually runs the cp949 axis):
+  **success** — run `34226769155`.
+- macOS lane (`ci-branch.yml`): **failure** — run `34226769113`. The boot-health suite reports
+  `pass=146 fail=1 skip=1`; the single failure is `H-SECRET-1` ("secrets/PII left in the live tree
+  blocks publication"), which is **pre-existing base debt on this fork, unrelated to this change**
+  — the same job failed identically on the two preceding commits (`34215327192`, `34212972198`).
+  It is called out here rather than hidden: this PR's own axes are green, and that lane will stay
+  red until the secret-scan debt is cleared separately.
 
 ## Second defect in the same report: the fleet record deletes itself (S3)
 
@@ -175,24 +182,61 @@ deliberately retired role is not preserved.
   app or `~/.cys` touched): preservation axis PASS, tombstone axis PASS.
 - The characterization test that had pinned the old behaviour is replaced by an invariant test, with
   the reason recorded in place so a future reader can see why it was turned around.
-- Mutants 3/3 killed (`scripts/s3_topology_mutants.py`): remove the preservation, ignore tombstones,
-  drop the live-dedupe.
-- `cargo test --bin cysd` 830 pass · `--lib` 414 pass.
+- Mutants **7/7 killed** (`scripts/s3_topology_mutants.py`): remove the preservation, ignore
+  tombstones, drop the live-dedupe, swallow a corrupt file, allow duplicate roles, **ignore the
+  declared agent (D2-M6)**, **cut the handler wiring (D2-M7)**. Each mutant is compiled into the
+  binaries *before* the probe runs — an earlier revision measured a stale `target/debug` and read
+  false greens, so the probe axis now carries its build with it.
+- `cargo test`: `--lib` 414 pass · `--bin cys` 189 pass · `--bin cysd` 833 pass · 0 failed.
 
-### What this does NOT fix (read this before assuming the symptom is gone)
+### The other half: the record was preserved, but `master` still had no agent (D2)
 
-**`master` still will not come back on that machine**, for a second and independent reason. The
-installer creates it with `cys new-surface --role master --cmd <claude>`, and that path never records
-an agent — `agent_meta` is only ever written by `surface.set_meta`, which `cys launch-agent` calls and
-`new-surface` does not. So the entry carries `"agent": null`, and `run_restore` skips it:
+Preserving the record is necessary but not sufficient. On that machine `master` still did not come
+back, for a second and independent reason: the installer creates it with
+`cys new-surface --role master --cmd <claude>`, and that path never recorded an agent. `agent_meta`
+had exactly one writer — `surface.set_meta`, which `cys launch-agent` calls and `new-surface` does
+not. So the entry carried `"agent": null` and `run_restore` skipped it:
 
 ```
 · master: agent 미상 — 건너뜀 (claim-role로 등록된 pane)        # with --include-master
 · master: 제외 (restore 실행자가 보통 master — --include-master로 포함)   # without it
 ```
 
-Both messages are reproduced in the isolated probe (step [5]). Preserving the record is necessary but
-not sufficient; the second half is an installer/CLI contract question and is being decided separately.
+Both messages are reproduced in the isolated probe (step [5]).
+
+**Fix: let the spawner declare what it is starting** — a new optional flag,
+`cys new-surface --agent <name>`.
+
+- **No default.** Without the flag the behaviour is byte-for-byte what it was: a bare shell with no
+  agent registered. This is a widening of what a caller *may* say, not a change of what happens when
+  it says nothing.
+- The declared name is carried into `create_surface_with_env` and the seat is **born** with it, so
+  the role and the agent land in the **same single** `persist_topology` write. Setting the meta after
+  the fact and persisting again would leave a window in which the file holds `role` without `agent`
+  — a crash in that window reproduces exactly the defect this PR is fixing, in miniature.
+- `agent_bin` is the declared name itself. Liveness matching (`cmdline_matches_agent_exec`) compares
+  basenames, and the declared name *is* the executable name (`claude` matches `claude`, `claude.exe`,
+  `claude.js`). A precise absolute path can still be supplied afterwards by `surface.set_meta`, which
+  is what `launch-agent` does.
+- An empty/blank name is rejected with `invalid_params` **before the PTY is spawned**, mirroring the
+  reserved-role gate's placement (a rejected create must not leave a zombie shell behind).
+- This is a **declaration**, not an observation, so it is confirmed immediately. The two-sample
+  confirmation that `claim_role` uses on Windows exists because *observing* a wrapper-launched agent
+  is ambiguous; the process that spawns the seat is not guessing about what it starts.
+
+Verified by a contract test on both paths (flag present → the entry carries the agent at create;
+flag absent → `agent: null`, unchanged) and by the isolated probe: with `--agent`, a cold boot
+followed by `cys restore --include-master` no longer prints `agent 미상 — 건너뜀` for `master`, while
+a seat created without the flag still does (in-run control).
+
+**Still outstanding, in a different repository:** the installer must actually pass the flag. Exactly
+one argument has to be added to the master spawn it already performs:
+
+```
+cys new-surface --role master --cwd <dir> --cmd <claude …> --agent claude
+```
+
+That change lives in the installer (`jarvis-habitat`), not here, and is tracked separately.
 
 ## 두 번째 결함 — 함대 기록이 스스로를 지운다 (S3 · 한국어)
 
@@ -210,11 +254,37 @@ master 가 빠진 것입니다.
 **수리**: 삭제 조건을 **의도 삭제(묘비) 하나로** 좁혔습니다. 이 저장소가 이미 세운 「의도삭제 >
 강제부활」과 같은 방향입니다. 부활 정책은 건드리지 않았고, 묘비는 그대로 이깁니다.
 
-**이 수리가 고치지 못하는 것**: 그 기계에서 **master 는 여전히 돌아오지 않습니다.** 설치기가
-`cys new-surface --role master --cmd <claude>` 로 세우는데 그 경로는 agent 를 기록하지 않기
-때문입니다(`agent_meta` 는 `surface.set_meta` 만 쓰고, 그것을 부르는 것은 `launch-agent` 이지
-`new-surface` 가 아닙니다). 그래서 엔트리가 `"agent": null` 이고 `run_restore` 가 건너뜁니다.
-기록 보존은 필요조건이지 충분조건이 아니며, 나머지 절반은 설치기·CLI 계약 문제로 따로 판단합니다.
+**나머지 절반 — 기록은 남았는데 agent 가 없었다 (D2)**: 기록 보존은 필요조건이지 충분조건이
+아닙니다. 그 기계에서 master 가 여전히 돌아오지 않은 두 번째 이유는, 설치기가
+`cys new-surface --role master --cmd <claude>` 로 세우는데 **그 경로에 agent 를 적는 writer 가
+없었다**는 것입니다(`agent_meta` 의 유일 writer = `surface.set_meta` · 그것을 부르는 것은
+`launch-agent` 이지 `new-surface` 가 아닙니다). 그래서 엔트리가 `"agent": null` 이고
+`run_restore` 가 그 역할을 건너뜁니다(격리 프로브 [5] 로 2종 메시지 모두 재현).
+
+**수리 = 스폰하는 쪽이 무엇을 띄우는지 선언한다** — 선택 플래그 `cys new-surface --agent <name>` 신설.
+- **기본값 없음**: 플래그가 없으면 종전과 완전히 같습니다(agent 미등록 빈 셸). 「말할 수 있는 것」이
+  넓어질 뿐, 말하지 않았을 때의 동작은 한 바이트도 바뀌지 않습니다.
+- 선언값은 `create_surface_with_env` 까지 내려가 좌석이 **태어날 때** 메타가 되고, role 과 함께
+  **단 한 번의** `persist_topology` 에 실립니다. 생성 뒤에 메타를 얹고 다시 영속하면 디스크에
+  「role 있음 · agent 없음」 엔트리가 존재하는 창이 생기고, 그 창에서 죽으면 **이 PR 이 고치는
+  결함이 축소판으로 재현**됩니다.
+- `agent_bin` 은 선언 이름 그대로입니다 — 생존 매칭(`cmdline_matches_agent_exec`)이 보는 것은
+  basename 이고, 선언 이름이 곧 실행 파일명입니다. 절대경로가 필요하면 종전대로
+  `surface.set_meta`(launch-agent 경로)가 덮습니다.
+- 빈 이름은 **PTY 스폰 전에** `invalid_params` 로 거부합니다(예약어 게이트와 같은 자리 규약 —
+  거부된 create 가 좀비 셸을 남기면 안 됩니다).
+- 이것은 **관측이 아니라 선언**이라 즉시 확정합니다. `claim_role` 의 Windows 2-표본 확정은
+  래퍼 기동 관측이 모호하기 때문에 있는 장치이고, 스폰한 프로세스는 자기가 무엇을 띄우는지
+  추정하지 않습니다.
+
+검증: 계약 테스트가 두 경로를 모두 못박고(플래그 있음 → create 시점 엔트리에 agent · 없음 →
+`agent: null` 불변), 격리 프로브에서 `--agent` 로 세운 master 는 콜드부트 뒤
+`cys restore --include-master` 가 더 이상 `agent 미상 — 건너뜀` 으로 제외하지 않습니다
+(같은 실행 안에서 플래그 없이 만든 좌석은 여전히 제외됩니다 = 대조군).
+
+**남은 것(다른 저장소)**: 설치기가 그 플래그를 실제로 넘겨야 합니다. 이미 하고 있는 master 스폰에
+**인자 하나**를 더하면 됩니다 — `cys new-surface --role master --cwd <dir> --cmd <claude …> --agent claude`.
+그 변경은 설치기(`jarvis-habitat`) 몫이고 여기가 아니며, 별도로 추적합니다.
 
 ## Notes / limits (honest)
 
@@ -223,6 +293,10 @@ master 가 빠진 것입니다.
 - `chcp 949` in the Windows step is a *strengthening*, not the basis of the verdict: the smoke gives
   its child `PYTHONUTF8=0` and `PYTHONIOENCODING=cp949` directly, so the axis survives even if `chcp`
   has no effect on Python's locale codec on that runner.
-- A separate observation from the same customer machine — `topology.json` had no `master` entry even
-  though `cys list` showed `role=master` — is **not** addressed by this PR. It has its own candidate
-  mechanisms and is not an encoding problem. It is tracked separately.
+- The second observation from the same customer machine — `topology.json` had no `master` entry even
+  though `cys list` showed `role=master` — **is** addressed by this PR (see the S3 sections above);
+  it is not an encoding problem and was diagnosed and fixed on its own evidence. One half of it, the
+  installer passing `--agent claude`, lives in another repository and is still open.
+- The S3 cold-boot probe is an isolated harness (own temp dir, own socket, own pack, process-group
+  teardown). It does **not** reboot a machine — `kill -9` on the daemon's process group is the
+  approximation, and that is stated rather than glossed.

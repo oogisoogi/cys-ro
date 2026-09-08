@@ -2935,6 +2935,23 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     ));
                 }
             }
+            // ★S3-D2 입구 검증(PTY 스폰 **전** — 예약어 게이트와 같은 자리 규약): 빈 이름은
+            // 좌석에 「무엇을 띄우는지」를 말하지 않은 것과 같은데 메타는 생겨 사망감지·restore 가
+            // 빈 문자열을 에이전트로 읽는다. set_meta 의 동일 거부(missing agent)와 대칭이다.
+            // 부재(null)는 오류가 아니다 — 그것이 기본값이고 종전 동작이다.
+            let declared_agent = match params.get("agent") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(v) => match v.as_str().map(str::trim) {
+                    Some(a) if !a.is_empty() => Some(a.to_string()),
+                    _ => {
+                        return Reply::Single(err_response(
+                            &id,
+                            "invalid_params",
+                            "agent must be a non-empty string when provided",
+                        ))
+                    }
+                },
+            };
             // ★SEAT: 승계 대상(구 좌석)을 생성 성공 후 마무리(role 해제·큐 이관)하기 위해 상위 스코프에 둔다.
             let mut seat_takeover_from: Option<u64> = None;
             // (W2 · G14) announce 를 성공 아크로 미루므로 role 문자열도 상위 스코프에 보존한다.
@@ -3110,6 +3127,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 cols,
                 &env_pairs,
                 cfg_override,
+                declared_agent,
             ) {
                 Ok(s) => {
                     // ★(W2 · B6) 각성 래치 하이드레이션 — **restore 전용 채널**.
@@ -9550,6 +9568,96 @@ mod tests {
             roles_on_disk().len(),
             before,
             "역할 없는 좌석이 topology entries 를 늘렸다 — 조립 계약이 바뀌었다"
+        );
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★S3-D2 계약 핀(TICKET=cys-phoenix-s3-master-persist) — `new-surface --agent <name>`.
+    ///
+    /// 무엇을 지키는가: **설치기가 세운 master 가 콜드부트 뒤 되살아날 수 있는 형태로 기록된다.**
+    /// 설치기는 `cys new-surface --role master --cmd …` 로 master 를 세우는데, 그 경로엔 agent 를
+    /// 적는 writer 가 없어(유일 writer = `launch-agent` 의 set_meta) topology 엔트리가 `agent:null`
+    /// 로 남았고, `cys restore` 는 그 역할을 "agent 미상 — 건너뜀"(cys.rs) 으로 **영구 제외**했다.
+    /// D2 결정(master · 2026-09-08) = 선택 플래그 신설 — 스폰하는 쪽이 무엇을 띄우는지 선언한다.
+    ///
+    /// 세 축을 한 번에 못박는다(플래그 유무 2경로 + 입구 검증):
+    ///   ⓐ 플래그 있음 → create 응답 시점에 **디스크 엔트리가 agent 를 갖는다**(role 과 같은 쓰기).
+    ///   ⓑ 플래그 없음 → `agent:null` = **종전 동작 완전 동일**(기본값 없음의 정의).
+    ///   ⓒ 빈 문자열 → invalid_params 이고 **PTY 는 태어나지 않는다**(예약어 게이트와 같은 자리 규약).
+    /// ⓐ가 깨지면 오너 기계의 증상(재부팅 뒤 master 소실)이 그대로 돌아온다.
+    #[test]
+    fn new_surface_agent_flag_records_agent_meta_with_the_role_at_create() {
+        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let (daemon, dir) = daemon_with_acl("create-agent", r#"{"default":"allow","rules":[]}"#);
+        let topo_path = dir.join("topology.json");
+
+        let create = |seq: u64, params: serde_json::Value| -> serde_json::Value {
+            let Reply::Single(r) = dispatch(
+                &daemon,
+                Request { id: json!(seq), method: "surface.create".into(), params },
+                None,
+            ) else {
+                panic!("expected single reply");
+            };
+            r
+        };
+        let entry_of = |role: &str| -> serde_json::Value {
+            let txt = std::fs::read_to_string(&topo_path).expect("topology.json 읽기");
+            let v: serde_json::Value = serde_json::from_str(&txt).expect("topology.json 파싱");
+            v["entries"]
+                .as_array()
+                .expect("entries 배열")
+                .iter()
+                .find(|e| e["role"].as_str() == Some(role))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        };
+
+        // ⓐ 플래그 있음 — 선언한 agent 가 role 과 **같은 영속**에 실린다.
+        let r = create(1, json!({"role": "master", "agent": "claude", "cmd": "sleep 30"}));
+        assert_eq!(r["ok"], json!(true), "선행 조건 미성립 — create 자체가 실패했다 ({r})");
+        let master = entry_of("master");
+        assert_eq!(
+            master["agent"],
+            json!("claude"),
+            "★설치기 경로로 태어난 master 가 agent 없이 영속됐다 — 콜드부트 restore 가 \
+             'agent 미상 — 건너뜀' 으로 영구 제외한다 (entry={master})"
+        );
+        assert_eq!(
+            master["agent_bin"],
+            json!("claude"),
+            "agent_bin 이 비면 생존 매칭(cmdline_matches_agent_exec)의 basename 이 사라진다 (entry={master})"
+        );
+
+        // ⓑ 대조군: 플래그 없음 = 종전 동작(빈 셸 · agent 미등록).
+        let r2 = create(2, json!({"role": "cso", "cmd": "sleep 30"}));
+        assert_eq!(r2["ok"], json!(true), "대조군 create 실패 ({r2})");
+        let cso = entry_of("cso");
+        assert_eq!(
+            cso["role"],
+            json!("cso"),
+            "대조군 엔트리 자체가 없다 — 이 축은 무엇도 증명하지 못한다 (entry={cso})"
+        );
+        assert_eq!(
+            cso["agent"],
+            serde_json::Value::Null,
+            "★플래그 없는 create 가 agent 를 지어냈다 — 기본값 없음(기존 동작 불변)이 깨졌다 (entry={cso})"
+        );
+
+        // ⓒ 빈 이름은 입구에서 거부되고 좌석도 태어나지 않는다.
+        let live_before = daemon.surfaces.lock().unwrap().len();
+        let r3 = create(3, json!({"role": "worker", "agent": "   ", "cmd": "sleep 30"}));
+        assert_eq!(
+            r3["error"]["code"],
+            json!("invalid_params"),
+            "빈 agent 이름이 통과했다 — 사망감지·restore 가 빈 문자열을 에이전트로 읽는다 ({r3})"
+        );
+        assert_eq!(
+            daemon.surfaces.lock().unwrap().len(),
+            live_before,
+            "거부인데 PTY 가 태어났다 — 예약어 게이트와 같은 '스폰 전 차단' 자리 규약이 깨졌다"
         );
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);

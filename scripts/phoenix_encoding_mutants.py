@@ -32,10 +32,13 @@ CARGO = os.environ.get("CARGO", os.path.expanduser("~/.cargo/bin/cargo"))
 MUTANTS = [
     {
         "id": "M1-reconfigure-제거",
-        "why": "S1ⓐ — 표준 스트림 utf-8 고정을 지운다. 로그 한 줄의 「—」에서 다시 즉사해야 한다.",
+        "why": "S1ⓐ — 표준 스트림 utf-8 고정을 지운다. 로그 한 줄의 「—」에서 다시 즉사해야 한다.\n"
+               "       ★조준점이 한 번 옮겨졌다: import guard 대응으로 루프를 _pin_utf8_stream 헬퍼로\n"
+               "       바꾸면서 옛 앵커가 소멸했고, 그때 이 하네스가 NOT-APPLIED(측정 실패)로 정직하게\n"
+               "       울었다 — 초록으로 넘어가지 않은 것이 이 어휘의 존재 이유다.",
         "file": PHOENIX,
-        "old": '        getattr(sys, _std).reconfigure(encoding="utf-8", errors="backslashreplace")',
-        "new": '        pass  # MUTANT M1',
+        "old": '        stream.reconfigure(encoding="utf-8", errors="backslashreplace")\n        return stream',
+        "new": '        return stream  # MUTANT M1',
         "check": ENC_SMOKE,
         "check_name": "phoenix 인코딩 스모크",
     },

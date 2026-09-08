@@ -27,18 +27,31 @@ import time
 # ★S1ⓒ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 형제 스윕).
 #   피닉스가 이 스크립트를 실행하고 그 출력을 읽는다 — 로케일 코덱(cp949 등)에 묶이면 한국어 Windows 에서
 #   로그 한 줄의 비-ASCII 에 UnicodeEncodeError 로 죽어 부활 체인을 함께 끊는다.
-for _std in ("stdout", "stderr"):
+def _pin_utf8_stream(stream):
+    """표준 스트림 하나를 utf-8 로 고정해 돌려준다(끝내 못 고치면 원본 그대로).
+
+    ★sys 속성을 동적으로 갈아끼우는 형태를 쓰지 않는다 — import guard
+      (bin/tests/test_import_guard.py:370)가 그 형태를 속성 이름과 무관하게
+      「sys.path 를 우회한 상태 전이」로 보고 거부한다. 게이트를 우회하지 말고
+      **정적으로 증명 가능한 형태**(아래 명시 대입)로 쓴다."""
     try:
-        getattr(sys, _std).reconfigure(encoding="utf-8", errors="backslashreplace")
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        return stream
     except Exception:
-        try:
-            import io as _io
-            _b = getattr(getattr(sys, _std), "buffer", None)
-            if _b is not None:
-                setattr(sys, _std, _io.TextIOWrapper(_b, encoding="utf-8",
-                                                     errors="backslashreplace", line_buffering=True))
-        except Exception:
-            pass
+        pass
+    try:  # reconfigure 부재(구 런타임)·재구성 불가(비 TextIO 리다이렉트) → 래핑 폴백
+        import io as _io
+        _buf = getattr(stream, "buffer", None)
+        if _buf is not None:
+            return _io.TextIOWrapper(_buf, encoding="utf-8",
+                                     errors="backslashreplace", line_buffering=True)
+    except Exception:
+        pass
+    return stream  # 조용히 통과 — 인코딩 보정 실패가 본 작업을 막아서는 안 된다(가용성 우선)
+
+
+sys.stdout = _pin_utf8_stream(sys.stdout)
+sys.stderr = _pin_utf8_stream(sys.stderr)
 
 
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))

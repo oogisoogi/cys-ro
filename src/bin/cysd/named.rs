@@ -98,17 +98,35 @@ pub fn write_state(socket_path: &Path, body: &str) {
     }
 }
 
-/// 기본 매핑 — 경로 접두 → 보고자 이름.
+/// 기본 매핑 — **홈 상대** 경로 접두 → 보고자 이름.
 ///
 /// ★오너가 지정한 두 개가 기본값이다. env `CYS_NAMED_REPORTERS`로 재정의할 수 있게 둔 이유는
 /// 이 경로가 이 기계의 사정이기 때문이다 — 코드에 박으면 다른 기계에서 조용히 아무도 안 잡힌다.
-const DEFAULT_MAP: [(&str, &str); 2] = [
-    ("/Users/oogisoogi/axdev/cso", "cso"),
-    ("/Users/oogisoogi/axdev", "master"),
-];
+/// ★절대경로 리터럴이 아니라 홈 상대로 적는다(H-SECRET-1 · PUBLIC 발행 차단 게이트):
+/// 개인 홈경로가 트리에 박히면 `scripts/secret-scan.sh` 가 발행을 막는다. **해소값은 종전과
+/// 같다** — `$HOME/axdev{,/cso}` 이고, 오너 기계에서 두 문자열은 글자 그대로 동일하다.
+/// 홈을 못 찾으면 기본 매핑은 **빈 목록**이다: 없는 홈을 근거로 이름을 지어내지 않는다
+/// (아래 `resolve_name` 의 「판별 불가면 이름을 짓지 않는다」와 같은 규율).
+const DEFAULT_MAP_REL: [(&str, &str); 2] = [("axdev/cso", "cso"), ("axdev", "master")];
+
+/// 기본 매핑을 홈으로 해소한다. 홈 부재 = 빈 목록(위 상수 주석의 규율).
+fn default_mapping() -> Vec<(String, String)> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    DEFAULT_MAP_REL
+        .iter()
+        .map(|(rel, n)| {
+            (
+                home.join(rel).to_string_lossy().trim_end_matches('/').to_string(),
+                n.to_string(),
+            )
+        })
+        .collect()
+}
 
 /// env 형식: `<경로>=<이름>` 을 `:` 로 이어 붙인다.
-/// 예) `CYS_NAMED_REPORTERS=/Users/o/axdev=master:/Users/o/axdev/cso=cso`
+/// 예) `CYS_NAMED_REPORTERS=/Users/user/axdev=master:/Users/user/axdev/cso=cso`
 fn mapping() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = match std::env::var("CYS_NAMED_REPORTERS") {
         Ok(s) if !s.trim().is_empty() => s
@@ -122,10 +140,7 @@ fn mapping() -> Vec<(String, String)> {
                 Some((p.trim_end_matches('/').to_string(), n.to_string()))
             })
             .collect(),
-        _ => DEFAULT_MAP
-            .iter()
-            .map(|(p, n)| (p.to_string(), n.to_string()))
-            .collect(),
+        _ => default_mapping(),
     };
     // ★긴 경로가 먼저 오게 정렬한다 — 최장 접두 일치를 위해서다.
     //   이게 없으면 `/…/axdev` 가 `/…/axdev/cso` 를 먼저 먹어 CSO 가 영원히 master로 보고된다
@@ -289,25 +304,29 @@ mod tests {
     fn resolve_name_mapping_rules() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CYS_NAMED_REPORTERS");
+        // ★기준 경로는 **홈에서 해소**한다 — 개인 홈경로 리터럴은 발행 게이트가 막는다
+        //   (H-SECRET-1). 재는 관계는 종전과 같다: 기본 매핑 = `$HOME/axdev{,/cso}`.
+        let home = dirs::home_dir().expect("홈이 없으면 기본 매핑 자체가 빈 목록이라 이 검체가 성립하지 않는다");
+        let ax = home.join("axdev").to_string_lossy().to_string();
         // ① 기본 매핑 — 오너가 지정한 두 경로.
-        assert_eq!(resolve_name("/Users/oogisoogi/axdev").as_deref(), Some("master"));
+        assert_eq!(resolve_name(&ax).as_deref(), Some("master"));
         // ★최장 접두 — cso가 master에 먹히면 안 된다(정렬이 없으면 여기서 master가 나온다).
-        assert_eq!(resolve_name("/Users/oogisoogi/axdev/cso").as_deref(), Some("cso"));
-        assert_eq!(resolve_name("/Users/oogisoogi/axdev/cso/sub").as_deref(), Some("cso"));
+        assert_eq!(resolve_name(&format!("{ax}/cso")).as_deref(), Some("cso"));
+        assert_eq!(resolve_name(&format!("{ax}/cso/sub")).as_deref(), Some("cso"));
         // 하위 경로도 그 역할로 본다(세션이 하위 폴더에서 열려 있을 수 있다).
-        assert_eq!(resolve_name("/Users/oogisoogi/axdev/eduscan").as_deref(), Some("master"));
+        assert_eq!(resolve_name(&format!("{ax}/eduscan")).as_deref(), Some("master"));
 
         // ② 판별 불가 — 라벨을 짓지 않는다.
-        assert_eq!(resolve_name("/Users/oogisoogi/cys-terminal-src"), None);
+        assert_eq!(resolve_name(&home.join("cys-terminal-src").to_string_lossy()), None);
         assert_eq!(resolve_name(""), None);
         // 형제 디렉터리를 접두로 오인하지 않는다(`/axdev-old`가 `/axdev`에 걸리면 안 된다).
-        assert_eq!(resolve_name("/Users/oogisoogi/axdev-old"), None);
+        assert_eq!(resolve_name(&format!("{ax}-old")), None);
 
         // ③ env 재정의 — 치환이지 병합이 아니다.
         std::env::set_var("CYS_NAMED_REPORTERS", "/tmp/a=alpha:/tmp/a/b=beta");
         assert_eq!(resolve_name("/tmp/a").as_deref(), Some("alpha"));
         assert_eq!(resolve_name("/tmp/a/b").as_deref(), Some("beta"));
-        assert_eq!(resolve_name("/Users/oogisoogi/axdev"), None, "재정의하면 기본값은 안 걸린다");
+        assert_eq!(resolve_name(&ax), None, "재정의하면 기본값은 안 걸린다");
         std::env::remove_var("CYS_NAMED_REPORTERS");
     }
 

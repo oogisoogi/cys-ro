@@ -682,7 +682,7 @@ async fn keychain_token() -> Result<String, String> {
 /// usage API 1회 조회. 토큰은 argv가 아니라 **stdin(curl --config -)** 으로만 건넨다.
 async fn fetch_oauth_usage(token: &str) -> Result<Value, String> {
     // curl 설정 파일 문법: `key = "value"`. 값 안의 큰따옴표만 이스케이프하면 된다.
-    // 토큰은 `sk-ant-oat…` 형태라 따옴표가 없지만, 형태를 믿지 않고 escape한다.
+    // 토큰은 `sk-ant-…` 형태라 따옴표가 없지만, 형태를 믿지 않고 escape한다.
     let esc = token.replace('\\', "\\\\").replace('"', "\\\"");
     let cfg = format!(
         concat!(

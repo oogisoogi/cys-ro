@@ -20954,17 +20954,17 @@ mod tests {
     #[test]
     fn statusline_named_params_carry_cwd_and_observation() {
         let v = json!({
-            "workspace": {"current_dir": "/Users/oogisoogi/axdev"},
+            "workspace": {"current_dir": "/Users/user/axdev"},
             "model": {"display_name": "Opus 4.8"},
             "context_window": {"context_window_size": 200000, "used_percentage": 11.0}
         });
         let p = statusline_to_named_params(&v);
-        assert_eq!(p["cwd"], json!("/Users/oogisoogi/axdev"));
+        assert_eq!(p["cwd"], json!("/Users/user/axdev"));
         assert_eq!(p["ctx_pct"].as_f64(), Some(11.0));
         assert_eq!(p["ctx_window"].as_u64(), Some(200000));
         // 구버전 필드(cwd 최상위)도 읽는다 — statusline 스키마가 바뀐 이력이 있다.
-        let old = json!({"cwd": "/Users/oogisoogi/axdev/cso", "context_window": {"used_percentage": 7.0}});
-        assert_eq!(statusline_to_named_params(&old)["cwd"], json!("/Users/oogisoogi/axdev/cso"));
+        let old = json!({"cwd": "/Users/user/axdev/cso", "context_window": {"used_percentage": 7.0}});
+        assert_eq!(statusline_to_named_params(&old)["cwd"], json!("/Users/user/axdev/cso"));
         // cwd를 전혀 모르면 빈 문자열 — 데몬이 그것을 「판별 불가」로 처리한다(라벨을 짓지 않는다).
         assert_eq!(statusline_to_named_params(&json!({}))["cwd"], json!(""));
     }

@@ -1,6 +1,6 @@
 # 판정문 — cys 페인 제목 생성 로직 규명 (번호 반영 가능성)
 
-- 작성: worker@surface:297 (cwd `/Users/oogisoogi/cys-terminal-src`)
+- 작성: worker@surface:297 (cwd `/Users/user/cys-terminal-src`)
 - 일시: 2026-07-27
 - 범위: 규명·판정만. 구현·수정·빌드·설치 0건. `cys` 상태 변경 명령 0건.
 - 실측 기준: 소스 `cys-terminal-src` @ `7e19cc0` (버전 0.13.20) + 설치본 `/Applications/cys.app` (`cys --version` = 0.13.20)
@@ -58,8 +58,8 @@ master의 추정 `<role>-<agent> · <cwd basename>` 은 **맞다.** 소스(위) 
 
 ```
 $ cys list
-surface:285  role=worker-3  pid=52569  exited=false  worker-3-claude · channels          /Users/oogisoogi/.claude/channels
-surface:297  role=worker    pid=88966  exited=false  worker-claude · cys-terminal-src    /Users/oogisoogi/cys-terminal-src
+surface:285  role=worker-3  pid=52569  exited=false  worker-3-claude · channels          /Users/user/.claude/channels
+surface:297  role=worker    pid=88966  exited=false  worker-claude · cys-terminal-src    /Users/user/cys-terminal-src
 ```
 
 `worker-3`+`claude`+`channels`, `worker`+`claude`+`cys-terminal-src` — 조합 규칙과 정확히 일치.

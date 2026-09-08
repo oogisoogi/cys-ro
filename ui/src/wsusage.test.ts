@@ -313,7 +313,7 @@ describe("renderSignature", () => {
 const ACCT_CLAUDE: AccountLike = {
   provider: "claude",
   account_id: "66e877cb-727f-4fb1-8ec9-8f2e8fa68f18",
-  label: "oogisoogi@gmail.com",
+  label: "owner@example.com",
   rate: [
     { label: "5h", used_pct: 53, resets_at: 1786068600 },
     { label: "7d", used_pct: 10, resets_at: 1786654800 },
@@ -349,7 +349,7 @@ describe("accountRates — 페인이 없어도 계정 사용량은 있다", () =
       "codex/7d/52",
     ]);
     // 계정 신원이 실려 있어야 범위 머리표가 계정별로 갈린다.
-    expect(rows[0].accountLabel).toBe("oogisoogi@gmail.com");
+    expect(rows[0].accountLabel).toBe("owner@example.com");
     expect(rows[0].accountId).toBe("66e877cb-727f-4fb1-8ec9-8f2e8fa68f18");
   });
 
@@ -446,7 +446,7 @@ describe("scopedRates — 「7d·Fable」 실게이지", () => {
     expect(rows[0].agent).toBe("claude");
     // 계정 신원 — 이 값이 비면 범위 머리표가 갈리지 않아 「누구의 한도인지」를 잃는다.
     expect(rows[0].accountId).toBe("66e877cb-727f-4fb1-8ec9-8f2e8fa68f18");
-    expect(rows[0].accountLabel).toBe("oogisoogi@gmail.com");
+    expect(rows[0].accountLabel).toBe("owner@example.com");
     // 리셋 시각은 게이지가 준 값과 짝을 유지한다(다른 창 것을 끌어오지 않는다).
     expect(rows[0].resetsAt).toBe(1786654800);
   });

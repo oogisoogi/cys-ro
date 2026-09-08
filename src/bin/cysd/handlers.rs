@@ -16638,11 +16638,16 @@ mod tests {
     fn usage_report_named_persists_across_restart() {
         let _guard = crate::named::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CYS_NAMED_REPORTERS"); // 기본 매핑(axdev/cso=cso)으로 판정하게 둔다
+        // ★기본 매핑은 **홈 파생**이다(named.rs `DEFAULT_MAP_REL` · H-SECRET-1) — 그래서 검체의
+        //   cwd 도 같은 홈에서 해소해야 한다. 개인 홈경로를 리터럴로 적으면 ⑴발행 게이트에
+        //   걸리고 ⑵홈이 다른 러너에서 판별이 실패해 이 검체가 아무것도 못 잰다.
+        let home = dirs::home_dir().expect("홈이 없으면 기본 매핑이 빈 목록이라 이 검체가 성립하지 않는다");
+        let cso_cwd = home.join("axdev").join("cso").to_string_lossy().to_string();
         let daemon = isolated_daemon();
         let req = Request {
             id: json!(1),
             method: "usage.report_named".into(),
-            params: json!({"cwd": "/Users/oogisoogi/axdev/cso", "ctx_pct": 7.0, "ctx_tokens": 14_000}),
+            params: json!({"cwd": cso_cwd, "ctx_pct": 7.0, "ctx_tokens": 14_000}),
         };
         let Reply::Single(resp) = dispatch(&daemon, req, None) else {
             panic!("expected single reply");
@@ -16670,7 +16675,7 @@ mod tests {
         let req2 = Request {
             id: json!(2),
             method: "usage.report_named".into(),
-            params: json!({"cwd": "/Users/oogisoogi/cys-terminal-src", "ctx_pct": 99.0}),
+            params: json!({"cwd": home.join("cys-terminal-src").to_string_lossy(), "ctx_pct": 99.0}),
         };
         let Reply::Single(resp2) = dispatch(&daemon, req2, None) else {
             panic!("expected single reply");

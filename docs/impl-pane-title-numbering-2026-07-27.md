@@ -11,12 +11,12 @@
 
 ```
 # 적용 전 (cys list)
-surface:285  role=worker-3  worker-3-claude · channels          /Users/oogisoogi/.claude/channels
-surface:297  role=worker    worker-claude · cys-terminal-src    /Users/oogisoogi/cys-terminal-src
+surface:285  role=worker-3  worker-3-claude · channels          /Users/user/.claude/channels
+surface:297  role=worker    worker-claude · cys-terminal-src    /Users/user/cys-terminal-src
 
 # 적용 후 (cys list)
-surface:285  role=worker-3  285 · channels                      /Users/oogisoogi/.claude/channels
-surface:297  role=worker    297 · cys-terminal-src              /Users/oogisoogi/cys-terminal-src
+surface:285  role=worker-3  285 · channels                      /Users/user/.claude/channels
+surface:297  role=worker    297 · cys-terminal-src              /Users/user/cys-terminal-src
 ```
 
 멱등 확인 — 같은 명령 재실행:

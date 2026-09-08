@@ -138,6 +138,84 @@ the next non-ASCII character someone types.
 - macOS lane: `<run URL>`
 - Windows lane: `<run URL>`
 
+## Second defect in the same report: the fleet record deletes itself (S3)
+
+The same customer report carried a second symptom: after a reboot, `topology.json` had the four
+department roles but **no `master`**, even though `cys list` had shown `role=master` right after
+install. `tombstones` was empty, and `updated_at` was the cold-boot timestamp **+9 seconds** — the
+file had been rewritten just after boot, and `master` was gone from that rewrite.
+
+### Cause
+
+`persist_topology` built `entries` as pure **actual-state**: only seats that are alive *right now*
+and hold a role *right now*. Right after a cold boot there are zero seats, so the moment anything
+creates a single seat, persistence runs and **every role that is not currently alive disappears from
+the file**.
+
+Reproduced in isolation (`scripts/s3_coldboot_probe.py`, step [4]): plant five roles
+(`master`, `cso`, two reviewers, `worker`), start the daemon, create **one** seat (`cso`) — the file
+is left holding `cso` alone. That is the customer's end state.
+
+The damage is self-amplifying: once the record is gone, **the next boot has nothing left to restore
+from**. A role can be lost by one unlucky ordering and can never come back on its own.
+
+### Fix
+
+Narrow the deletion condition to **intentional deletion only** — which is the direction this project
+already committed to with "deliberate removal outweighs forced revival". An entry is preserved when
+it was in the previous persisted file, is not currently live, and is not tombstoned.
+
+Revival policy is untouched. This change only protects the record; what gets revived is still decided
+by `run_restore` / phoenix, and those still skip tombstoned roles. **Tombstones still win** — a
+deliberately retired role is not preserved.
+
+### Verification
+
+- Isolated probe (its own temp dir, own socket, own pack; process-group teardown; no live daemon,
+  app or `~/.cys` touched): preservation axis PASS, tombstone axis PASS.
+- The characterization test that had pinned the old behaviour is replaced by an invariant test, with
+  the reason recorded in place so a future reader can see why it was turned around.
+- Mutants 3/3 killed (`scripts/s3_topology_mutants.py`): remove the preservation, ignore tombstones,
+  drop the live-dedupe.
+- `cargo test --bin cysd` 830 pass · `--lib` 414 pass.
+
+### What this does NOT fix (read this before assuming the symptom is gone)
+
+**`master` still will not come back on that machine**, for a second and independent reason. The
+installer creates it with `cys new-surface --role master --cmd <claude>`, and that path never records
+an agent — `agent_meta` is only ever written by `surface.set_meta`, which `cys launch-agent` calls and
+`new-surface` does not. So the entry carries `"agent": null`, and `run_restore` skips it:
+
+```
+· master: agent 미상 — 건너뜀 (claim-role로 등록된 pane)        # with --include-master
+· master: 제외 (restore 실행자가 보통 master — --include-master로 포함)   # without it
+```
+
+Both messages are reproduced in the isolated probe (step [5]). Preserving the record is necessary but
+not sufficient; the second half is an installer/CLI contract question and is being decided separately.
+
+## 두 번째 결함 — 함대 기록이 스스로를 지운다 (S3 · 한국어)
+
+같은 제보에 두 번째 증상이 있었습니다. 재부팅 뒤 `topology.json` 에 부서 역할 4개는 있는데
+**`master` 만 없었습니다.** 설치 직후 `cys list` 는 `role=master` 를 보여줬는데도 그렇습니다.
+묘비는 비어 있었고 `updated_at` 은 콜드부트 **+9초** — 부팅 직후 파일이 다시 쓰였고 그 재기록에서
+master 가 빠진 것입니다.
+
+**원인**: `persist_topology` 의 `entries` 는 순수 actual-state 였습니다. 지금 살아 있고 지금 역할을
+쥔 좌석만 조립합니다. 콜드부트 직후에는 좌석이 0이므로, 무엇이든 좌석을 **하나만** 만들어도 그
+순간 영속이 돌고 **살아있지 않은 역할이 전부 파일에서 사라집니다.**
+격리 재현: 5역할을 심고 좌석 하나(`cso`)만 만들자 파일에 `cso` 하나만 남았습니다.
+★자기증폭이 본체입니다 — 한 번 사라지면 **다음 부팅엔 되살릴 근거조차 없습니다.**
+
+**수리**: 삭제 조건을 **의도 삭제(묘비) 하나로** 좁혔습니다. 이 저장소가 이미 세운 「의도삭제 >
+강제부활」과 같은 방향입니다. 부활 정책은 건드리지 않았고, 묘비는 그대로 이깁니다.
+
+**이 수리가 고치지 못하는 것**: 그 기계에서 **master 는 여전히 돌아오지 않습니다.** 설치기가
+`cys new-surface --role master --cmd <claude>` 로 세우는데 그 경로는 agent 를 기록하지 않기
+때문입니다(`agent_meta` 는 `surface.set_meta` 만 쓰고, 그것을 부르는 것은 `launch-agent` 이지
+`new-surface` 가 아닙니다). 그래서 엔트리가 `"agent": null` 이고 `run_restore` 가 건너뜁니다.
+기록 보존은 필요조건이지 충분조건이 아니며, 나머지 절반은 설치기·CLI 계약 문제로 따로 판단합니다.
+
 ## Notes / limits (honest)
 
 - The Windows CI step is **wired but has never executed** in this branch. What is measured today is

@@ -1679,6 +1679,12 @@ pub struct Daemon {
     /// tokio 핸들러가 동시에 호출할 수 있는데 write_json_atomic의 tmp 이름이 고정이라 동시 쓰기가
     /// 파일을 파손할 수 있다 — G1 이후 WAL은 queue_seq 시드·entry id의 근거라 손상 대가가 크다.
     pub queue_persist_lock: Mutex<()>,
+    /// ★S3(TICKET=cys-phoenix-s3-master-persist): `persist_topology` 직렬화 락
+    /// (`feed_persist_lock`·`queue_persist_lock` 관례 동형). 그 함수는 이제 **직전 영속본을 읽어**
+    /// 살아있지 않은 역할을 보존하므로 read-modify-write 가 됐다 — 두 호출이 겹치면 한쪽이 읽은
+    /// 뒤 다른 쪽이 쓴 보존분을 덮어 되돌릴 수 있다. 호출부가 여럿(handlers·state·watchdog)이라
+    /// 함수 자신이 직렬화를 소유한다.
+    pub topology_persist_lock: Mutex<()>,
     pub config: Config,
     pub socket_path: PathBuf,
     pub started_at: f64,
@@ -2376,6 +2382,7 @@ impl Daemon {
             restored_queue: Mutex::new(restored_qentries),
             queue_seq: AtomicU64::new(queue_seq_seed),
             queue_persist_lock: Mutex::new(()),
+            topology_persist_lock: Mutex::new(()),
             config: Config::from_env(),
             recall_tx: Mutex::new(crate::recall::spawn_writer(socket_path.clone())),
             socket_path,

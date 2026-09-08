@@ -136,11 +136,23 @@ pub const PY_UTF8_ON: &str = "1";
 /// 이미 있거나**(PYTHONUTF8=0) 인터프리터가 그 모드를 모르는 경우 stdio 만 다시 콘솔
 /// 코드페이지로 붕괴한다. 그 잔여 경로를 stdio 축에서 직접 못박는다.
 pub const ENV_PY_IO_ENCODING: &str = "PYTHONIOENCODING";
-/// `ENV_PY_IO_ENCODING` 의 값. ★`"utf-8"` 단독을 쓰지 않는다 — 그러면 오류 처리기가 strict 라
-/// surrogateescape 로 읽어들인 비-UTF-8 파일명 등을 출력하는 순간 UnicodeEncodeError 로 죽어
-/// **막으려던 병을 다른 입구로 다시 들인다**. `backslashreplace` 는 무엇이었는지 남기면서
-/// 절대 예외를 던지지 않는다(팩 파이썬의 `sys.stdout.reconfigure` 선택과 같은 값 규약).
-pub const PY_IO_ENCODING_UTF8: &str = "utf-8:backslashreplace";
+/// `ENV_PY_IO_ENCODING` 의 값. 두 가지가 **의도적으로** 정해져 있다.
+///
+/// ① `"utf-8"` **단독을 쓰지 않는다**: 그러면 오류 처리기가 `strict` 가 되고, surrogateescape 로
+///    읽어들인 비-UTF-8 파일명 등을 출력하는 순간 UnicodeEncodeError 로 죽어 **막으려던 병을
+///    다른 입구로 다시 들인다**.
+/// ② 처리기는 `surrogateescape` — `backslashreplace` 가 아니다. 이유는 **기존 동작 보존**이다:
+///    `spawn_env_pairs`(층2)는 이미 `PYTHONUTF8=1` 을 실어 왔고 UTF-8 모드의 stdio 기본 처리기가
+///    바로 `surrogateescape` 다(실측: `PYTHONUTF8=1` → `encoding=utf-8 errors=surrogateescape`).
+///    거기서 `backslashreplace` 로 바꾸면 그 층을 상속하는 **사용자 훅**의 출력이 조용히 달라진다 —
+///    깨진 파일명이 원래 바이트로 왕복되던 것이 `\udcff` 같은 이스케이프로 나가고, 그 출력을
+///    파이프로 받던 쪽이 다른 것을 읽는다. 이 상수의 목적은 「UTF-8 모드가 꺼져도 stdio 만은
+///    UTF-8 로 남게 못박는 것」이지 처리기를 바꾸는 것이 아니다 — 그래서 층2 델타는 **정확히 0**이다.
+///    (팩 파이썬 `javis_phoenix.py` 의 `reconfigure` 는 `backslashreplace` 를 쓴다. 그쪽은 우리 소유
+///     코드이고 「진단이 진단을 죽이지 않게」가 더 중요한 자리라 값이 갈리는 것이 의도다.)
+/// ★두 처리기 모두 utf-8 대상에서는 예외를 던지지 않는다(실측). 갈리는 것은 안전성이 아니라
+///  「기존 소비자가 보던 바이트가 그대로인가」다.
+pub const PY_IO_ENCODING_UTF8: &str = "utf-8:surrogateescape";
 
 /// 동봉 Python 을 **직접** 스폰하는 모든 지점의 단일 팩토리(SEAL-1 · 중복 구현 금지).
 /// `std::process::Command::new(python)` 을 이걸로 바꾸기만 하면 `.pyc` 번들 오염이 봉쇄된다.
@@ -1706,8 +1718,10 @@ pub fn spawn_env_pairs(
     // ④ 감사 blocker #4(W-B2): cp949 콘솔 상속 python 의 UnicodeEncodeError 즉사 봉인 — UTF-8
     //    모드 강제(③처럼 무조건 쌍). 값 규약("1"만 유효·그 외 기동 fatal)은 ENV_PY_UTF8 주석.
     env.push((ENV_PY_UTF8.to_string(), PY_UTF8_ON.to_string()));
-    // ④-b S2: stdio 축 못박기. ④가 UTF-8 모드를 켜도, 사용자 프로필의 PYTHONUTF8=0 이
-    //   나중에 이기는 조합에서는 stdio 만 코드페이지로 돌아간다. 층1(python_command)과 같은 쌍.
+    // ④-b S2: stdio 축을 명시로 못박는다. ④가 UTF-8 모드를 켜면 stdio 도 이미 utf-8 이지만,
+    //   그것은 **모드가 존중될 때만** 참인 파생 사실이다 — 값 규약을 어긴 PYTHONUTF8 이 끼거나
+    //   모드를 모르는 인터프리터가 오면 stdio 만 코드페이지로 돌아간다. 층1과 같은 쌍이며,
+    //   값이 UTF-8 모드의 기본과 동일해 **이 층의 동작 델타는 0**이다(상수 주석 ② 참조).
     env.push((
         ENV_PY_IO_ENCODING.to_string(),
         PY_IO_ENCODING_UTF8.to_string(),
@@ -3254,7 +3268,7 @@ mod tests {
     fn python_encoding_contract_is_identical_in_both_spawn_layers() {
         // 값 규약 핀 — 이름과 값 둘 다.
         assert_eq!(ENV_PY_IO_ENCODING, "PYTHONIOENCODING");
-        assert_eq!(PY_IO_ENCODING_UTF8, "utf-8:backslashreplace");
+        assert_eq!(PY_IO_ENCODING_UTF8, "utf-8:surrogateescape");
         // ★값이 아니라 **성질**도 못박는다: 오류 처리기가 붙어 있어야 한다.
         //   `"utf-8"` 단독(=strict)으로 되돌리면, surrogateescape 로 읽힌 비-UTF-8 파일명을
         //   출력하는 순간 다시 UnicodeEncodeError 로 죽는다 — 막으려던 병의 다른 입구다.

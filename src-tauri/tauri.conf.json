@@ -46,9 +46,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5RTYwQTcwMjk0OUQ2QzMKUldURDFra3BjQXJtT1dvZVBUdHk5VnlvKzBJeVNneE11UzdpWFQzVHFoMDFtUG4wZWpkdGlHZ0wK",
+      "pubkey": "<<MASTER_PUBKEY>>",
       "endpoints": [
-        "https://github.com/idoforgod/cys-terminal/releases/latest/download/latest.json"
+        "https://github.com/oogisoogi/cys-terminal/releases/latest/download/latest.json"
       ]
     }
   }

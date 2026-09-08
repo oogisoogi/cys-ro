@@ -2536,6 +2536,13 @@ fn check_launch_flags(
 /// json! 조립하므로 '조립에 추가하지 않는 한' 배제가 기본값이다 — 아래 조립에 seat_token 을
 /// 추가하는 변경은 계약 위반(회귀 핀 `seat_token_never_persisted_or_listed` 가 적색으로 잡는다).
 pub fn persist_topology(daemon: &Arc<Daemon>) {
+    // ★S3(agy R1 #3): 이 함수는 직전 영속본을 읽어 보존을 결정하므로 read-modify-write 다.
+    //   두 호출이 겹치면 한쪽이 읽은 뒤 다른 쪽이 쓴 보존분을 덮어 되돌릴 수 있다.
+    //   feed_persist_lock·queue_persist_lock 과 같은 관례로 함수 자신이 직렬화를 소유한다.
+    let _persist_guard = daemon
+        .topology_persist_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let entries: Vec<serde_json::Value> = daemon
         .surfaces
         .lock()
@@ -2605,20 +2612,61 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
     //   ⛔부활 정책은 **무접촉**이다: 이 함수는 기록만 지킨다. 무엇을 되살릴지는 여전히
     //     run_restore/phoenix 가 정하고, 그쪽은 묘비를 건너뛰며 agent 미상 엔트리도 건너뛴다.
     //   ⛔묘비는 그대로 이긴다 — 폐역된 역할(맥 운영의 master·cso)은 보존 대상이 아니다.
-    let live_roles: std::collections::HashSet<String> = entries
+    let tomb_set: std::collections::HashSet<&str> = tombstones.iter().map(|s| s.as_str()).collect();
+    let mut seen: std::collections::HashSet<String> = entries
         .iter()
         .filter_map(|e| e["role"].as_str().map(String::from))
         .collect();
-    let tomb_set: std::collections::HashSet<&str> = tombstones.iter().map(|s| s.as_str()).collect();
     let mut entries = entries;
-    for prev in load_topology(daemon).as_array().into_iter().flatten() {
-        let Some(role) = prev["role"].as_str() else {
-            continue; // 역할 없는 잔재는 조립 대상이 아니었다 — 되살리지 않는다
-        };
-        if live_roles.contains(role) || tomb_set.contains(role) {
-            continue;
+    // ★손상 3분류(agy R1 #1): **부재**(fresh install — 보존할 것이 없다)와 **손상**(읽었지만 못
+    //   읽는다 — 무엇이 있었는지 모른다)을 구분한다. 구분하지 않으면 손상 한 번에 보존 대상이
+    //   조용히 전멸해 **이 커밋이 고치려는 결함을 디스크 I/O 시점에 스스로 재현한다.**
+    //   손상은 조용히 지나가지 않는다 — 원본을 `.corrupt-<epoch>` 로 격리해 증거를 남기고 경고한다
+    //   (팩 파이썬 phoenix 의 C2 격리 규약과 같은 형태 · 정지하지 않고 앞으로 간다).
+    match read_persisted_entries(&crate::state::state_dir(&daemon.socket_path)) {
+        PrevTopology::Missing => {}
+        PrevTopology::Corrupt { path, why } => {
+            let iso = path.with_extension(format!("json.corrupt-{}", now_epoch() as u64));
+            let moved = std::fs::rename(&path, &iso).is_ok();
+            eprintln!(
+                "[cysd] topology.json 손상({why}) — 보존 대상을 알 수 없다. {} \
+                 이번 영속은 살아 있는 좌석만 쓴다(살아있지 않던 역할은 이 파일에서 복구 불가).",
+                if moved {
+                    format!("원본을 {} 로 격리했다.", iso.display())
+                } else {
+                    "원본 격리도 실패했다(권한·경로).".to_string()
+                }
+            );
+            daemon.push_feed_notification(
+                "error",
+                "topology 손상",
+                "topology.json 을 읽지 못해 살아있지 않던 역할 기록을 이어받지 못했다(격리본 확인 필요).",
+                None,
+            );
         }
-        entries.push(prev.clone());
+        PrevTopology::Valid(prev_entries) => {
+            for prev in prev_entries {
+                let Some(role) = prev["role"].as_str() else {
+                    continue; // 역할 없는 잔재는 조립 대상이 아니었다 — 되살리지 않는다
+                };
+                // 묘비 = 의도 삭제 → 보존 대상 아님. seen = live + 이미 보존한 역할
+                // (agy R1 #4: 직전 파일에 같은 역할이 두 줄이면 그대로 복제될 수 있었다 —
+                //  역할당 한 줄만 통과시킨다. 중복은 restore 이중 스폰으로 샌다).
+                if tomb_set.contains(role) || !seen.insert(role.to_string()) {
+                    continue;
+                }
+                let mut kept = prev.clone();
+                // ★stale 관측 슬롯 제거(agy R1 #2 의 정당한 절반): gate_pending 은 **살아 있는 좌석의
+                //   관문 관측**이라 죽은 엔트리에 남으면 사람이 옛 보류를 현재로 읽는다. 이 키만 뗀다.
+                //   ⛔agent·session_id 는 **떼지 않는다** — 처방대로 비우면 run_restore 가
+                //     "agent 미상 — 건너뜀"(cys.rs:13075)으로 그 역할을 영구히 못 되살린다.
+                //     그것이 바로 이 티켓에서 master 가 못 돌아온 두 번째 결함의 형태다.
+                if let Some(obj) = kept.as_object_mut() {
+                    obj.remove(cys::GATE_PENDING_KEY);
+                }
+                entries.push(kept);
+            }
+        }
     }
     let content = serde_json::to_string_pretty(&json!({
         "schema_version": 1,          // ★A-S1 스키마 마커 — 이 키 부재=legacy topology(phoenix 는 경고+진행)
@@ -2669,6 +2717,51 @@ pub fn load_topology(daemon: &Arc<Daemon>) -> serde_json::Value {
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .map(|v| v["entries"].clone())
         .unwrap_or_else(|| json!([]))
+}
+
+/// 직전 영속본 3분류 — **부재와 손상을 구분한다.** 구분하지 않으면 손상이 「보존할 것이 없다」로
+/// 위장해 살아있지 않던 역할이 조용히 전멸한다(S3 가 고치려는 결함의 I/O 판).
+enum PrevTopology {
+    /// 파일 자체가 없다 — 첫 기동의 정상 상태. 보존할 것이 없다.
+    Missing,
+    /// 읽었지만 해석할 수 없다 — **무엇이 있었는지 모른다.** 조용히 지나가면 안 된다.
+    Corrupt {
+        path: std::path::PathBuf,
+        why: String,
+    },
+    Valid(Vec<serde_json::Value>),
+}
+
+fn read_persisted_entries(dir: &std::path::Path) -> PrevTopology {
+    let path = dir.join("topology.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return PrevTopology::Missing,
+        Err(e) => {
+            return PrevTopology::Corrupt {
+                path,
+                why: format!("읽기 실패: {e}"),
+            }
+        }
+    };
+    let v: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return PrevTopology::Corrupt {
+                path,
+                why: format!("JSON 파싱 실패: {e}"),
+            }
+        }
+    };
+    match v.get("entries") {
+        Some(serde_json::Value::Array(a)) => PrevTopology::Valid(a.clone()),
+        // entries 키가 없거나 배열이 아니다 = 스키마가 우리 것이 아니다. 빈 배열로 읽으면
+        // "보존할 것 없음"과 구별되지 않으므로 손상으로 분류한다(fail-safe 방향).
+        _ => PrevTopology::Corrupt {
+            path,
+            why: "entries 키 부재 또는 배열 아님".to_string(),
+        },
+    }
 }
 
 fn _tombs_from_value(v: &serde_json::Value) -> std::collections::HashSet<String> {
@@ -9896,6 +9989,84 @@ mod tests {
             after_tomb.iter().any(|r| r == "cso"),
             "묘비가 무관한 역할까지 지웠다 (disk={after_tomb:?})"
         );
+    }
+
+    /// ★S3 손상 내성(agy R1 #1) — **부재와 손상을 구분한다.**
+    ///
+    /// 보존이 「직전 파일을 읽어서」 이뤄지므로, 그 읽기가 실패했을 때 빈 배열로 폴백하면
+    /// 손상 한 번에 살아있지 않던 역할이 통째로 사라진다 — 이 커밋이 고치려는 결함을
+    /// 디스크 I/O 시점에 스스로 재현하는 형태다. 그래서 손상은 **조용히 지나가지 않는다**:
+    /// 원본을 격리해 증거를 남기고 경고한다(정지하지는 않는다 — 가용성).
+    #[test]
+    fn corrupt_topology_is_isolated_not_silently_swallowed() {
+        let daemon = drill_daemon("topo-corrupt");
+        let dir = crate::state::state_dir(&daemon.socket_path);
+        let path = dir.join("topology.json");
+
+        // 손상본을 깔고(=우리 스키마가 아니다) 살아 있는 좌석 하나로 영속을 돌린다.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "{ this is not json").unwrap();
+        spawn_role_surface(&daemon, "cso");
+        persist_topology(&daemon);
+
+        // ① 새 파일은 정상이어야 한다(정지하지 않는다).
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("새 topology 기록"))
+                .expect("새 topology 는 파싱돼야 한다");
+        assert!(
+            v["entries"]
+                .as_array()
+                .map(|a| a.iter().any(|e| e["role"] == "cso"))
+                .unwrap_or(false),
+            "손상 뒤 살아 있는 좌석조차 기록되지 않았다 — 가용성이 깨졌다"
+        );
+
+        // ② ★손상본이 격리돼 남아야 한다 — 「조용히 삼켰다」와 구별되는 유일한 증거다.
+        let isolated: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("topology.json.corrupt-"))
+            .collect();
+        assert_eq!(
+            isolated.len(),
+            1,
+            "손상본 격리가 없다 — 무엇을 잃었는지 사후에 알 수 없다 (dir={:?})",
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// ★S3 중복 차단(agy R1 #4) — 직전 파일에 같은 역할이 두 줄이어도 보존은 한 줄만 통과시킨다.
+    /// 중복은 `run_restore` 가 역할마다 기동을 시도하므로 **이중 스폰**으로 샌다.
+    #[test]
+    fn preserved_entries_are_unique_per_role_even_if_the_previous_file_had_duplicates() {
+        let daemon = drill_daemon("topo-dup");
+        let dir = crate::state::state_dir(&daemon.socket_path);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("topology.json"),
+            r#"{"schema_version":1,"tombstones":[],"tombstones_rev":0,"updated_at":1.0,
+                "entries":[{"role":"master","agent":"claude","cwd":"/a"},
+                           {"role":"master","agent":"claude","cwd":"/b"}]}"#,
+        )
+        .unwrap();
+        spawn_role_surface(&daemon, "cso");
+        persist_topology(&daemon);
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("topology.json")).unwrap())
+                .unwrap();
+        let masters = v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["role"] == "master")
+            .count();
+        assert_eq!(masters, 1, "중복 역할이 그대로 복제됐다 (entries={:?})", v["entries"]);
     }
 
     /// watchdog가 자력종료(exited) surface를 회수해도 역할을 묘비에 올리지 않는다 —

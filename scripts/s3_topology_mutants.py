@@ -30,22 +30,43 @@ MUTANTS = [
     {
         "id": "S3-M1-보존-제거",
         "why": "수리 자체를 되돌린다 — 살아있지 않은 기록이 다시 쓸려나가야 한다.",
-        "old": "        entries.push(prev.clone());\n",
-        "new": "        let _ = prev;  // MUTANT S3-M1\n",
+        "old": "                entries.push(kept);\n",
+        "new": "                let _ = kept;  // MUTANT S3-M1\n",
         "checks": [("격리 콜드부트 프로브", PROBE), ("cargo test agent_death_keeps", RUST)],
     },
     {
         "id": "S3-M2-묘비-무시",
         "why": "묘비 조건을 지운다 — 폐역 역할까지 보존돼 좀비 부활 구멍이 열려야 한다.",
-        "old": "        if live_roles.contains(role) || tomb_set.contains(role) {",
-        "new": "        if live_roles.contains(role) {  // MUTANT S3-M2",
+        "old": "                if tomb_set.contains(role) || !seen.insert(role.to_string()) {",
+        "new": "                if !seen.insert(role.to_string()) {  // MUTANT S3-M2",
         "checks": [("격리 콜드부트 프로브", PROBE), ("cargo test agent_death_keeps", RUST)],
+    },
+    {
+        "id": "S3-M4-손상-삼킴",
+        "why": "손상 분기를 부재와 같이 취급한다(agy R1 #1) — 손상 한 번에 보존 대상이 조용히 전멸해야 한다.",
+        # 조준점 = **손상을 만들어 내는 자리**(read_persisted_entries 의 파싱 실패 분기).
+        # 소비 분기에 guard 를 다는 형태는 match 를 비-망라로 만들어 컴파일이 안 됐다 —
+        # NOT-APPLIED 로 정직하게 울었고 그래서 조준을 여기로 옮겼다.
+        "old": '        Err(e) => {\n            return PrevTopology::Corrupt {\n'
+               '                path,\n                why: format!("JSON \ud30c\uc2f1 \uc2e4\ud328: {e}"),\n            }\n        }',
+        "new": '        Err(e) => {\n            let _ = (&path, &e);  // MUTANT S3-M4\n'
+               '            return PrevTopology::Missing;\n        }',
+        "checks": [("cargo test corrupt_topology", [CARGO, "test", "--bin", "cysd",
+                                                     "corrupt_topology_is_isolated"])],
+    },
+    {
+        "id": "S3-M5-중복-허용",
+        "why": "역할 유일성 가드를 지운다(agy R1 #4) — 직전 파일의 중복이 그대로 복제돼야 한다.",
+        "old": "                if tomb_set.contains(role) || !seen.insert(role.to_string()) {",
+        "new": "                if tomb_set.contains(role) { let _ = seen.insert(role.to_string());",
+        "checks": [("cargo test preserved_entries_are_unique",
+                    [CARGO, "test", "--bin", "cysd", "preserved_entries_are_unique"])],
     },
     {
         "id": "S3-M3-live-중복",
         "why": "live 중복 제거를 지운다 — 같은 역할이 두 줄이 돼 restore 이중 스폰으로 샌다.",
-        "old": "        if live_roles.contains(role) || tomb_set.contains(role) {",
-        "new": "        if tomb_set.contains(role) {  // MUTANT S3-M3",
+        "old": "        .filter_map(|e| e[\"role\"].as_str().map(String::from))\n        .collect();\n    let mut entries = entries;",
+        "new": "        .filter_map(|e| e[\"role\"].as_str().map(String::from))\n        .filter(|_| false)  // MUTANT S3-M3\n        .collect();\n    let mut entries = entries;",
         "checks": [("cargo test agent_death_keeps", RUST)],
     },
 ]

@@ -48,6 +48,12 @@ enum Command {
         /// Register this surface under a role (master/worker/cso/reviewer/...)
         #[arg(long)]
         role: Option<String>,
+        /// ★S3-D2: 이 좌석에서 **무엇을 띄우는지**를 스폰 시점에 선언한다(claude/codex/…).
+        /// 지정하면 데몬이 그 값을 좌석의 agent 메타로 기록하고 topology 에 함께 영속한다 —
+        /// 콜드부트 뒤 `cys restore` 가 그 역할을 "agent 미상 — 건너뜀" 으로 제외하지 않는다.
+        /// **기본값 없음**: 지정하지 않으면 종전과 완전히 동일하다(빈 셸 = agent 미등록).
+        #[arg(long)]
+        agent: Option<String>,
         #[arg(long, default_value_t = 35)]
         rows: u16,
         #[arg(long, default_value_t = 120)]
@@ -2691,10 +2697,12 @@ fn run(command: Command) -> i32 {
             Ok(())
         }
 
-        Command::NewSurface { cwd, cmd, title, role, rows, cols } => {
+        Command::NewSurface { cwd, cmd, title, role, agent, rows, cols } => {
             request(
                 "surface.create",
-                json!({"cwd": cwd, "cmd": cmd, "title": title, "role": role, "rows": rows, "cols": cols}),
+                // (S3-D2) `agent` 는 부재 시 null 로 나간다 = 데몬이 메타를 쓰지 않는다(기존 동작).
+                json!({"cwd": cwd, "cmd": cmd, "title": title, "role": role, "agent": agent,
+                       "rows": rows, "cols": cols}),
             )
             .map(|r| println!("{}", r["surface_ref"].as_str().unwrap_or("?")))
         }

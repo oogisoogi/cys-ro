@@ -2812,7 +2812,7 @@ impl Daemon {
         rows: u16,
         cols: u16,
     ) -> Result<Arc<Surface>, String> {
-        self.create_surface_with_env(cwd, cmd, title, role, rows, cols, &[], None)
+        self.create_surface_with_env(cwd, cmd, title, role, rows, cols, &[], None, None)
     }
 
     /// create_surface + PTY env 주입(RC-3 B′). `env`의 (k,v)를 builder.env로 실어 pane에 직접 전달한다
@@ -2829,6 +2829,14 @@ impl Daemon {
         cols: u16,
         env: &[(String, String)],
         claude_config_dir_override: Option<String>,
+        // ★S3-D2(TICKET=cys-phoenix-s3-master-persist): 스폰 시점에 **선언된** agent 이름.
+        //   `cys new-surface --agent <name>` 만이 채운다(부재=None=종전 동작 완전 동일).
+        //   여기서 받는 이유 = **원자성**이다: 이 함수 말미의 `if role.is_some() { persist_topology }`
+        //   단 한 번의 쓰기에 role 과 agent 가 함께 실린다. 생성 뒤 핸들러가 메타를 얹고 다시
+        //   영속하면 그 사이에 「role 있음 · agent 없음」 엔트리가 디스크에 존재하는 창이 생기고,
+        //   그 창에서 죽으면 restore 가 그 역할을 "agent 미상 — 건너뜀" 으로 영구 제외한다
+        //   (= 이 티켓이 고치는 결함 그 자체의 축소판).
+        agent: Option<String>,
     ) -> Result<Arc<Surface>, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let pty = native_pty_system();
@@ -3068,7 +3076,13 @@ impl Daemon {
             seat_agent_cache: AtomicBool::new(false),
             // ★G5-③: 확정 대기 관측은 항상 빈 채로 출발 — claim_role(windows)만이 기록한다.
             pending_agent_obs: Mutex::new(None),
-            agent_meta: Mutex::new(None),
+            // ★S3-D2: 선언된 agent 로 태어난다(부재=None=종전). bin 은 이름 그대로 둔다 —
+            //   생존 매칭(cmdline_matches_agent_exec)이 쓰는 것은 basename 이고, 선언 이름이
+            //   곧 실행 파일명이다(claude→claude/claude.exe/claude.js 토큰 일치). 절대경로가
+            //   필요하면 종전대로 `surface.set_meta` 가 정밀값으로 덮는다(launch-agent 경로).
+            //   ⚠관측이 아니라 **선언**이므로 Windows 2-표본 확정(claim_role 의 pending_agent_obs)
+            //   대상이 아니다 — 스폰한 쪽이 무엇을 띄우는지 아는 것은 추정이 아니다.
+            agent_meta: Mutex::new(agent.clone().map(|a| (a.clone(), a))),
             agent_seen: AtomicBool::new(false),
             agent_exit_notified: AtomicBool::new(false),
             crash_notified: AtomicBool::new(false),
@@ -4391,13 +4405,14 @@ mod tests {
             .create_surface_with_env(
                 None, Some("sleep 30".into()), None, Some("worker-1".into()), 24, 80,
                 &[("CLAUDE_CONFIG_DIR".to_string(), "/x/.cys/claude".to_string())],
-                None,
+                None, None,
             )
             .unwrap();
         assert!(s1.env_injected, "env 주입 surface는 env_injected=true여야 node-recover 허용");
         let s2 = daemon
             .create_surface_with_env(
                 None, Some("sleep 30".into()), None, Some("worker-2".into()), 24, 80, &[], None,
+                None,
             )
             .unwrap();
         assert!(!s2.env_injected, "env 미주입 surface는 env_injected=false → Windows node-recover fail-closed");
@@ -4417,7 +4432,7 @@ mod tests {
             .create_surface_with_env(
                 None, Some("sleep 30".into()), None, Some("worker-3".into()), 24, 80,
                 &[(cys::ENV_CLAUDE_NO_ALT_SCREEN.to_string(), "1".to_string())],
-                None,
+                None, None,
             )
             .unwrap();
         assert!(
@@ -4459,12 +4474,12 @@ mod tests {
         assert!(daemon.master_claimed_at.lock().unwrap().is_none(), "기동 직후 None");
         // 비-master → 스탬프 없음
         daemon
-            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("worker".into()), 24, 80, &[], None)
+            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("worker".into()), 24, 80, &[], None, None)
             .unwrap();
         assert!(daemon.master_claimed_at.lock().unwrap().is_none(), "worker 생성은 master_claimed_at 무영향");
         // master 부활 → 스탬프(approval.sign 동결 해제)
         daemon
-            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80, &[], None)
+            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80, &[], None, None)
             .unwrap();
         assert!(daemon.master_claimed_at.lock().unwrap().is_some(),
                 "master 부활 시 master_claimed_at 스탬프돼야 approval.sign 가능(P1-2)");
@@ -4487,6 +4502,7 @@ mod tests {
                 80,
                 &[],
                 Some(recorded.to_string()),
+                None,
             )
             .unwrap();
         assert_eq!(

@@ -218,6 +218,56 @@ def main():
                     print("      | %s" % line[:160])
             with open(h.topo_path(), "w", encoding="utf-8") as f:
                 json.dump(planted, f, ensure_ascii=False)   # 다음 회차를 위해 원상 복구
+        # ── 6) ★D2 축: master 엔트리에 agent 가 있으면 restore 가 그 역할을 **대상으로 삼는가** ──
+        #    이 축이 묻는 것은 "부활에 성공했는가"가 아니라 **"제외되지 않았는가"** 다.
+        #    설치기 경로(new-surface --role master --cmd …)는 agent 를 적는 writer 가 없어
+        #    엔트리가 agent:null 로 남았고, restore 는 그것을 "agent 미상 — 건너뜀"으로 영구
+        #    제외했다(cys.rs run_restore). D2 = `--agent <name>` 선택 플래그로 스폰하는 쪽이
+        #    무엇을 띄우는지 선언한다. 여기서는 실 에이전트를 띄우지 않으므로(격리 계약)
+        #    스펙이 없는 이름을 쓴다 — 기동은 실패해도 **대상 포함**은 관측된다.
+        h.kill_daemon_hard()
+        try:
+            os.remove(h.topo_path())
+        except FileNotFoundError:
+            pass
+        h.start_daemon(CYS_NO_AUTORESTORE="1")
+        r = h.cys("new-surface", "--role", "master", "--agent", "fakeagent", "--cmd", "sleep 300")
+        if r.returncode != 0:
+            print("\n[6] --agent 플래그 미해석(%s) — D2 미구현 세계이거나 CLI 회귀다"
+                  % (r.stderr or r.stdout or "")[:120].replace(chr(10), " "))
+            VERDICT_FAIL = True
+        h.cys("new-surface", "--role", "worker", "--cmd", "sleep 300")   # 대조군(플래그 없음)
+        print("\n[6] D2 — 설치기 경로에 --agent 를 실었다")
+        d2 = show("master(--agent fakeagent) + worker(무플래그)", h)
+        d2_map = dict(d2 or [])
+        if d2_map.get("master") != "fakeagent":
+            print("  ⇒ 기록 축: FAIL — master 엔트리에 agent 가 없다(disk=%s)" % (d2,))
+            VERDICT_FAIL = True
+        else:
+            print("  ⇒ 기록 축: PASS — master 엔트리 agent=fakeagent")
+        if d2_map.get("worker") is not None:
+            print("  ⇒ 대조군 축: FAIL — 플래그 없는 좌석에 agent 가 생겼다(기본값 없음이 깨졌다)")
+            VERDICT_FAIL = True
+        else:
+            print("  ⇒ 대조군 축: PASS — 무플래그 좌석은 종전대로 agent 미등록")
+
+        h.kill_daemon_hard()          # 재부팅 근사
+        h.start_daemon(CYS_NO_AUTORESTORE="1")
+        rr = h.cys("restore", "--include-master", timeout=90)
+        print("\n[6b] 콜드부트 뒤 cys restore --include-master → rc=%s" % rr.returncode)
+        master_lines = []
+        for line in (rr.stdout or "").splitlines():
+            if line.strip():
+                print("      | %s" % line[:160])
+            if "master" in line:
+                master_lines.append(line)
+        included = bool(master_lines) and not any("agent 미상" in l for l in master_lines)
+        print("  ⇒ 부활 대상 축: master 가 restore 대상에 포함됐는가 → %s"
+              % ("PASS(포함 — 'agent 미상' 제외 없음)" if included
+                 else "FAIL(제외됨 — 재부팅해도 master 는 돌아오지 않는다)"))
+        if not included:
+            VERDICT_FAIL = True
+
         if VERDICT_FAIL:
             print("\n[probe] FAIL — S3 보존 불변식이 깨졌다")
             return 1

@@ -2591,6 +2591,35 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
     }
     let rev = daemon.tombstones_rev.load(std::sync::atomic::Ordering::SeqCst);
     let dir = crate::state::state_dir(&daemon.socket_path);
+    // ★S3(TICKET=cys-phoenix-s3-master-persist): **살아 있지 않다는 이유로 기록을 지우지 않는다.**
+    //
+    // 종전 entries 는 순수 actual-state 였다 — 지금 살아 있고 지금 역할을 쥔 좌석만 조립했다.
+    // 그래서 콜드부트 직후(좌석 0) 누가 좌석을 **하나만** 만들어도 그 순간 영속이 돌아
+    // 나머지 역할이 파일에서 통째로 사라졌다. 격리 재현(scripts/s3_coldboot_probe.py [4]):
+    //   심은 5역할(master·cso·reviewer×2·worker) → cso 좌석 1개 생성 → 파일에 cso 하나만 남음.
+    // 오너 윈 노트북 실측과 같은 형태다(재부팅 +9초에 topology 재기록 · master 소실 · 묘비 0).
+    // ★자기증폭이 이 결함의 본체다: 한 번 사라지면 다음 부팅엔 되살릴 근거조차 없다.
+    //
+    // 수리 = 삭제 조건을 **의도 삭제 하나로 좁힌다**(1급 원칙 「의도삭제 > 강제부활」과 정확히 같은 방향).
+    //   보존 대상 = 직전 영속본에 있었고 · 지금 live 가 아니고 · 묘비가 아닌 역할.
+    //   ⛔부활 정책은 **무접촉**이다: 이 함수는 기록만 지킨다. 무엇을 되살릴지는 여전히
+    //     run_restore/phoenix 가 정하고, 그쪽은 묘비를 건너뛰며 agent 미상 엔트리도 건너뛴다.
+    //   ⛔묘비는 그대로 이긴다 — 폐역된 역할(맥 운영의 master·cso)은 보존 대상이 아니다.
+    let live_roles: std::collections::HashSet<String> = entries
+        .iter()
+        .filter_map(|e| e["role"].as_str().map(String::from))
+        .collect();
+    let tomb_set: std::collections::HashSet<&str> = tombstones.iter().map(|s| s.as_str()).collect();
+    let mut entries = entries;
+    for prev in load_topology(daemon).as_array().into_iter().flatten() {
+        let Some(role) = prev["role"].as_str() else {
+            continue; // 역할 없는 잔재는 조립 대상이 아니었다 — 되살리지 않는다
+        };
+        if live_roles.contains(role) || tomb_set.contains(role) {
+            continue;
+        }
+        entries.push(prev.clone());
+    }
     let content = serde_json::to_string_pretty(&json!({
         "schema_version": 1,          // ★A-S1 스키마 마커 — 이 키 부재=legacy topology(phoenix 는 경고+진행)
         "tombstones_rev": rev,        // ★A-S1 단조 카운터
@@ -8556,61 +8585,85 @@ mod tests {
         s.id
     }
 
-    /// ★S3 특성 시험(TICKET=cys-phoenix-korean-windows) — **지금의 동작을 못박는다**(원함이 아니라 사실).
+    /// ★S3 불변식(TICKET=cys-phoenix-s3-master-persist) — **살아 있지 않다는 이유로 기록을 지우지 않는다.**
     ///
-    /// `topology.json` 의 entries 는 actual-state 다: `persist_topology` 가 "지금 살아 있고 지금 역할을
-    /// 쥔" 좌석만 조립한다. 그런데 에이전트가 유예를 넘겨 사라지면 `release_role_after_agent_death` 가
-    /// 역할 딱지를 회수하고 곧바로 영속한다 — 그 순간 **그 역할은 저장본에서 사라진다**. 좌석(셸)은
-    /// 살아 있고 묘비도 안 남으므로, 이후 `cys restore` 는 그 역할을 되살릴 수도, 왜 없는지 설명할 수도
-    /// 없다. 「사고사는 부활시킨다」는 원칙이 겨냥한 바로 그 사건이 기록 자체를 지우는 구조다.
+    /// ⚠이 시험은 같은 자리에서 **정반대를 못박던 특성 시험을 대체한다**. 그 옛 시험
+    /// (`agent_death_erases_the_role_from_persisted_topology_without_a_tombstone`)은
+    /// 「에이전트가 죽으면 그 역할이 저장본에서 사라진다」를 *사실로서* 고정했고, 그것은 옳았다 —
+    /// 그때의 동작이 실제로 그랬기 때문이다. 지운 이유는 그 동작이 결함으로 판정됐기 때문이지
+    /// 시험이 틀려서가 아니다. 되돌리려는 사람이 그 경위를 볼 수 있게 여기 남긴다.
     ///
-    /// 오너 실측(2026-09-08 한국어 Windows)의 「설치 직후 cys list 에는 role=master 가 있었는데
-    /// topology.json 에는 없다」와 형태가 일치하는 후보 기전이며, 이 시험은 그 기전이 **실재함**만
-    /// 증명한다(그 기계에서 실제로 이것이었는지는 별개 — 판별은 그 파일의 tombstones 배열이 진다).
+    /// 결함의 본체는 자기증폭이었다: 기록이 사라지면 **다음 부팅엔 되살릴 근거조차 없다.**
+    /// 오너 윈 노트북에서 master 가 정확히 그렇게 사라졌다(재부팅 +9초 재기록 · 묘비 0).
     #[test]
-    fn agent_death_erases_the_role_from_persisted_topology_without_a_tombstone() {
-        let daemon = drill_daemon("role-erosion");
+    fn agent_death_keeps_the_role_in_persisted_topology_and_only_tombstone_removes_it() {
+        let daemon = drill_daemon("role-preserve");
         let id = spawn_role_surface(&daemon, "master");
         persist_topology(&daemon);
 
         let dir = crate::state::state_dir(&daemon.socket_path);
-        let read_topo = || -> serde_json::Value {
-            serde_json::from_str(
-                &std::fs::read_to_string(dir.join("topology.json")).expect("topology.json 실재"),
-            )
-            .expect("topology.json 파싱")
-        };
-        let has_master = |t: &serde_json::Value| {
-            t["entries"]
+        let roles_on_disk = || -> Vec<String> {
+            let Ok(txt) = std::fs::read_to_string(dir.join("topology.json")) else {
+                return Vec::new();
+            };
+            let v: serde_json::Value = serde_json::from_str(&txt).expect("topology.json 파싱");
+            v["entries"]
                 .as_array()
-                .map(|a| a.iter().any(|e| e["role"] == "master"))
-                .unwrap_or(false)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e["role"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
         };
         assert!(
-            has_master(&read_topo()),
-            "선행 조건 미성립 — 살아 있는 master 좌석이 애초에 영속되지 않았다(이 시험이 대상에 닿지 못했다)"
+            roles_on_disk().iter().any(|r| r == "master"),
+            "선행 조건 미성립 — 살아 있는 master 좌석이 애초에 영속되지 않았다(대상 미접촉)"
         );
 
-        // 에이전트만 사라진다(좌석=셸은 그대로). 이것이 '사고사' 의 정의다.
+        // ① 사고사(에이전트만 사라짐 · 좌석=셸은 그대로) — 기록은 살아 있어야 한다.
         let s = daemon.surfaces.lock().unwrap().get(&id).cloned().unwrap();
         assert!(
             super::release_role_after_agent_death(&daemon, &s),
             "역할 회수가 일어나야 이후 단언이 의미를 가진다"
         );
+        assert!(
+            roles_on_disk().iter().any(|r| r == "master"),
+            "사고사가 기록을 지웠다 — 이것이 오너 기계에서 master 가 사라진 그 결함이다 (disk={:?})",
+            roles_on_disk()
+        );
 
-        let t = read_topo();
+        // ② 살아있지 않은 역할 옆에서 **다른 좌석이 새로 생겨도** 기록은 유지돼야 한다.
+        //    (콜드부트 직후 부서 노드만 부활하던 그 창이 정확히 이 모양이다.)
+        spawn_role_surface(&daemon, "cso");
+        persist_topology(&daemon);
+        let after = roles_on_disk();
         assert!(
-            !has_master(&t),
-            "이 시험이 못박으려는 기전이 사라졌다 — 지금은 역할이 저장본에 남는다(설계가 바뀌었으면 이 문서를 갱신하라)"
+            after.iter().any(|r| r == "master") && after.iter().any(|r| r == "cso"),
+            "새 좌석 생성이 살아있지 않은 역할을 쓸어냈다 (disk={after:?})"
         );
-        assert!(
-            daemon.surfaces.lock().unwrap().contains_key(&id),
-            "좌석은 살아 있어야 한다 — '좌석까지 사라졌다' 면 이 시험은 다른 것을 재고 있다"
-        );
+        // ★역할당 정확히 한 줄 — 보존이 live 엔트리와 겹치면 같은 역할이 두 번 실린다.
+        //   restore 는 entries 를 순회하며 역할마다 기동을 시도하므로 중복은 이중 스폰으로 샌다.
+        let mut uniq = after.clone();
+        uniq.sort();
+        uniq.dedup();
         assert_eq!(
-            t["tombstones"].as_array().map(|a| a.len()).unwrap_or(0),
-            0,
-            "묘비도 남지 않는다 — restore 는 '없어진 이유' 조차 말할 수 없다(이것이 이 기전의 핵심 해악)"
+            uniq.len(),
+            after.len(),
+            "같은 역할이 두 번 실렸다 — 보존이 live 를 덮어쓰지 않고 겹쳤다 (disk={after:?})"
+        );
+
+        // ③ ★묘비는 그대로 이긴다 — 의도 삭제만이 기록을 지운다(1급 원칙 무손상).
+        daemon.tombstones.lock().unwrap().insert("master".into());
+        persist_topology(&daemon);
+        let after_tomb = roles_on_disk();
+        assert!(
+            !after_tomb.iter().any(|r| r == "master"),
+            "묘비가 기록을 지우지 못했다 — 폐역이 무력해지면 좀비 부활이 열린다 (disk={after_tomb:?})"
+        );
+        assert!(
+            after_tomb.iter().any(|r| r == "cso"),
+            "묘비가 무관한 역할까지 지웠다 (disk={after_tomb:?})"
         );
     }
 

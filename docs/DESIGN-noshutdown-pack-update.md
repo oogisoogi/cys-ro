@@ -236,6 +236,9 @@ cysd·cys-app·세션 프로세스는 **그 무엇도 종료/재시작되지 않
 3. **reinject → pack-update가 apply 후 자동**(idle·dedup 게이트). 단일 write path=`reinject.mark` RPC(`src/bin/cysd/handlers.rs:1980`).
 4. **★심링크 마이그레이션 → 안 함**. ⑤ apply-lock+epoch 폴백을 **최종 채택**(live `round/` 무접촉). `with_apply_lock`+`install_from_iter`(.pack-version=epoch 맨 마지막). ★한계 정직 문서화: 외부 동시 reader(compose_directive·read_board_catalog)에 대한 multi-file SET 일관성은 writer-side 배타로만 보장(sub-second·수동트리거라 노출 창 희소·reinject는 apply 후)(`src/bin/cys.rs:4193` 독스트링). 강화 옵션(reader shared-flock)은 가용성 트레이드오프로 보류·master 판단 시 추가.
 5. **서명 유효창 → 기존 Tauri 키 재사용**(신규키 X·`build.rs` embed 단일SOT key_id=39E60A702949D6C3). per-manifest `expires_at`=릴리스 CI 90일(`release.yml` EXPIRES_DAYS)·키 `not_after` 필수(`src/packsig.rs`).
+   · ★후행 정정(2026-09-08 · TICKET=cys-fork-rebase-v0.14.30): 개발자 업데이트 중단으로 **우리 포크가 배포자**가 되면서
+     이 「기존 Tauri 키 재사용」 결정은 종료됐다 — master 가 새 키쌍을 만들었고 단일 SOT 는 그대로지만
+     key_id 는 **54FBA04AD0E0F49D** 다. 위 `39E60A702949D6C3` 은 **당시 기록**으로 남긴다(사후 수정하지 않는다).
 
 **구현 상태: R2 P1~P7 전부 완료**(11 tracked +1763/-17·신규 packsig.rs·trusted-keys.json·noshutdown_verify.py·격리 E2E PASS·미커밋). 발행(git push·gh release·cysd 재시작)은 오너 승인 게이트.
 

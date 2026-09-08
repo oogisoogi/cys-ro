@@ -20,7 +20,11 @@ permissions:
   contents: write          # 비공개 repo에 릴리스 생성·자산 업로드(+ relocate 단계 다운로드)에 필요
 
 env:
-  SRC_REPO: idoforgod/cys-terminal              # 공개 소스 repo = 공개 배포 원본 (updater 대상)
+  SRC_REPO: oogisoogi/cys-terminal              # 공개 소스 repo = 공개 배포 원본 (updater 대상)
+                                                # ★2026-09-08 전환(TICKET=cys-fork-rebase-v0.14.30):
+                                                #   개발자 업데이트 중단 → 우리 포크가 배포자다.
+                                                #   tauri.conf.json updater endpoints 와 **같은 레포**를 가리켜야
+                                                #   업데이트가 우리 릴리스를 본다(엇갈리면 벤더 판이 우리를 덮는다).
   # ★Tauri CLI 버전 고정 — 단일 SOT (W5-1 · 2026-08-29). NSIS 설치기 템플릿(installer.nsi)은 CLI
   #   버전에 결박되고, 훅(src-tauri/nsis-hooks.nsh)은 2.11.4 템플릿의 include 순서·define 계약
   #   (NSIS-CONTRACT.md §7)에 대해 컴파일 검증됐다. 종전 floating `@2` 는 오늘 2.11.4 로 해소돼
@@ -751,6 +755,10 @@ jobs:
           # ③ 음성 대조(R1 codex medium 수용): 공개 v0.14.0(구베이스·VCRUNTIME 감염 실물)에 같은
           #   게이트를 돌려 ①임포트 스윕 true-positive(exit 1)와 ②마커 3종 전부 부재(0/3)를
           #   결정론으로 증명한다 — "신버전 존재·구버전 부재" 양방향 판별력의 CI 증거.
+          # ⚠아래 URL 이 **벤더 레포(idoforgod)로 남아 있는 것은 의도**다(2026-09-08 포크 전환 시 확인).
+          #   이것은 배포 대상이 아니라 **불변 과거 산출물을 쓰는 음성 대조 픽스처**다 —
+          #   우리 포크에는 v0.14.0 자산이 없으므로 우리 레포로 바꾸면 404 로 게이트가 죽는다.
+          #   SRC_REPO(발행 대상)만 우리 것으로 바꾸고 이 픽스처는 그대로 둔다.
           curl -fsSL -o /tmp/cys-neg-base.exe \
             https://github.com/idoforgod/cys-terminal/releases/download/v0.14.0/cys_0.14.0_x64-setup.exe
           set +e
@@ -846,7 +854,9 @@ jobs:
     needs: [build, windows-health-gate]
     runs-on: ubuntu-latest
     env:
-      KEY_ID: '39E60A702949D6C3'    # 임베드 키링(cysjavis-pack/trusted-keys.json) key_id — manifest.key_id
+      KEY_ID: '54FBA04AD0E0F49D'    # 임베드 키링(cysjavis-pack/trusted-keys.json) key_id — manifest.key_id
+                                    # ★2026-09-08 포크 전환: 벤더 키(39E60A702949D6C3)가 아니라
+                                    #   우리 배포 키의 실제 id 다(tauri.conf.json updater.pubkey 파생).
       EXPIRES_DAYS: '90'            # 서명 신선도 유효창(§6-5 트레이드오프 — Replay 차단 vs 재발행 부담)
       # ★무중단 팩 채널 안전 하한(2026-07-12 오너 확정). seed-once 상태 보호(memory/·SESSION_STATE
       # 불가침)는 0.12.48+ 바이너리 코드다 — 공란이면 ≤0.12.47 구버전 pack-update가 사용자 상태를

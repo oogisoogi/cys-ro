@@ -25,7 +25,7 @@ name: release-publish
 #   시간만큼 그 창이 열린다. 승인 UX 를 위해 안전성을 내주지 않는다.
 #
 # 사용:
-#   gh workflow run release-publish.yml -R idoforgod/cys-terminal --ref <ALLOWED_REF> \
+#   gh workflow run release-publish.yml -R oogisoogi/cys-terminal --ref <ALLOWED_REF> \
 #     -f tag=vX.Y.Z -f release_bundle_sha256=<SHA256SUMS.txt 의 sha256> -f confirm=PUBLISH
 #   ★<ALLOWED_REF> 는 environment `release-production` 의 deployment branch policy 가
 #     허용하는 ref 여야 한다(허용 밖이면 step 실행 전에 job 이 죽는다).
@@ -86,7 +86,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           EXPECTED_BUNDLE_SHA256: ${{ inputs.release_bundle_sha256 }}
-          SRC_REPO: idoforgod/cys-terminal
+          SRC_REPO: oogisoogi/cys-terminal
         shell: bash
         run: |
           set -euo pipefail
@@ -111,7 +111,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
-          SRC_REPO: idoforgod/cys-terminal
+          SRC_REPO: oogisoogi/cys-terminal
         shell: bash
         run: |
           set -euo pipefail

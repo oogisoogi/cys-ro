@@ -223,6 +223,14 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   자기가 검사할 대상을 오염시켜 '추가 파일' 오탐을 만든다(SEAL-1 과 같은 계급).
     ".github/workflows/release.yml",
     ".github/workflows/windows-build.yml",
+    # ★2026-09-08 등재(TICKET=cys-fork-rebase-v0.14.30 · 유입 커밋 = 피닉스 S1 인코딩 독립성 스모크).
+    #   **봉인 점검 결과(등재 = 이 선언)**: 이것은 **새 python 진입점이자 강제점이 맞다** —
+    #   `subprocess.run([sys.executable, __file__, "--case", …])` 로 자기 자신을 자식으로 띄우고,
+    #   그 자식 env 에 `PYTHONDONTWRITEBYTECODE="1"` 을 직접 건다(:56). 봉인이 필요한 이유가
+    #   이 스모크에서는 특히 구체적이다: 자식은 **적대 로케일**(PYTHONUTF8=0 · LC_ALL=C ·
+    #   PYTHONIOENCODING=cp949)로 도는데, 그 상태에서 __pycache__ 를 쓰면 팩 트리에 로케일
+    #   의존 산물이 남아 SEAL-1(.pyc 번들 오염) 과 같은 계급의 오염이 된다.
+    "cysjavis-pack/bin/javis_phoenix_encoding_smoke.py",
     "cysjavis-pack/bin/tests/run_bootstrap_health.py",
     # ★2026-09-04 W-A A2 등재 — 훅 런처/본체 분할 검체. **봉인 점검 결과(등재 = 이 선언)**:
     #   python 서브프로세스를 하나도 띄우지 않는다(스폰 대상은 전부 `sh`/`dash`/`bash` 런처다) —

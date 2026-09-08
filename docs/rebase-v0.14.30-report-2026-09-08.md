@@ -262,7 +262,7 @@ upstream **249커밋**(v0.14.27 → v0.14.30)을 편입하고 그 위에 우리 
 | 파일 | 건수 | 성격 | 처방 |
 |---|---|---|---|
 | `src/bin/cysd/named.rs` | 10 | ★**유일한 런타임 건** — 기본 보고자 매핑이 개인 홈경로 리터럴 2개 | `DEFAULT_MAP_REL`(홈 상대) + `dirs::home_dir()` 해소. **오너 기계 해소값은 종전과 글자 그대로 동일**. 홈 부재 = 빈 목록(이름을 지어내지 않는다) |
-| docs 2종(pane-title-numbering impl·verdict) | 7 | 붙여넣은 CLI 출력 | `/Users/user` 더미로 치환 |
+| docs 2종(pane-title-numbering impl·verdict) | 7 | 붙여넣은 CLI 출력 | 홈경로를 더미 계정 홈(계정명 `user`)으로 치환 |
 | `src/bin/cys.rs` | 4 | statusline 픽스처(통과 경로 · 매핑 의존 없음) | 더미 경로 |
 | `src/bin/cysd/handlers.rs` | 2 | `usage_report_named` 검체 — **기본 매핑에 의존**한다 | cwd 도 `dirs::home_dir()` 에서 해소(리터럴로 두면 홈이 다른 러너에서 판별 실패 → 검체가 무측정이 된다) |
 | `ui/src/wsusage.test.ts` | 3 | 오너 이메일 | `owner@example.com` |
@@ -351,7 +351,7 @@ non-force 미러 push 한다. **향후 규약: 통합 브랜치 `rebase/vX` + CI
 | `34232768251` | windows-health(push·미러) | `e459d31` | ✅ **success** | Windows 실기 레인 |
 | `34234946110` | windows-health(push·미러) | **`9375c1a`(최종)** | ✅ **success** | 〃 — **최종 커밋에서 요구 2종(ci-branch·windows-health) 모두 초록** |
 | `34232768385` | windows-build(push·미러) | `e459d31` | ✅ success | `fix/**` 트리거로 함께 기동(브리프 요구 항목 아님 — 부수 관측) |
-| `34234945170` | windows-build(push·미러) | `9375c1a` | ⚠ a1 failure → a2 재실행 | 실패 지점 = `T4-14 이미지 잠금 업그레이드 회귀` 스텝의 **미가드 예외**: `The process cannot access the file 'C:\Users\runneradmin\AppData\Local\cys\cys.exe' because it is being used by another process` = 하네스 자신의 파일 잠금 경합. 같은 워크플로가 직전 커밋(`e459d31`)에서 초록이었고, 이 커밋의 diff(7파일)에 windows-build 가 참조하는 것이 **0건**(`KEY_ID`·`SRC_REPO`·`trusted-keys` 참조 0)이라 **플레이크로 판단**하고 재실행했다 |
+| `34234945170` | windows-build(push·미러) | `9375c1a` | ⚠ a1 failure → a2 재실행 | 실패 지점 = `T4-14 이미지 잠금 업그레이드 회귀` 스텝의 **미가드 예외**: `The process cannot access the file '%LOCALAPPDATA%\cys\cys.exe' because it is being used by another process`(경로 표기만 환경변수로 일반화 — 원문은 러너 계정 홈 아래 절대경로) = 하네스 자신의 파일 잠금 경합. 같은 워크플로가 직전 커밋(`e459d31`)에서 초록이었고, 이 커밋의 diff(7파일)에 windows-build 가 참조하는 것이 **0건**(`KEY_ID`·`SRC_REPO`·`trusted-keys` 참조 0)이라 **플레이크로 판단**하고 재실행했다 |
 
 ⇒ **적색 3건은 전부 원인이 규명되고 봉합됐다**(H-SECRET-1 → `78ac6e8` · pyseal 핀 → `ca4d65b` ·
 pubkey 표식 → `e459d31`). ★**검체를 고쳐 초록으로 만든 것은 하나도 없다** — 러너 헤더 계약 ④

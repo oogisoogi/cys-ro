@@ -535,8 +535,51 @@ jobs:
       # ★v0.14.0 (2026-07-28): 인증서(Q43YA2NMF9) 취득 후 첫 서명 릴리스 — 종전 '미서명 slim 빌드' 스텝을
       #   build-macos-signed.sh(서명+공증+staple+dedup+DMG+업데이터 재서명 완결형) 호출로 교체한다.
       #   스크립트가 dedup·UDZO DMG·app.tar.gz 재서명을 전부 품으므로 종전 스텝의 ①~④와 기능 동일 + 서명·공증.
-      - name: Import Developer ID into ephemeral keychain (macOS 전용)
+      # ★맥 서명 시크릿 프리플라이트 (2026-09-08 포크 전환 · TICKET=cys-fork-rebase-v0.14.30 · master 지시)
+      #   왜: 아래 두 스텝은 APPLE_* 시크릿을 **전제**로 짜여 있어, 시크릿이 없는 상태로 태그를 밀면
+      #   `import-macos-signing-certificate.sh` 가 잡을 통째로 죽인다(= 태그 레인 hard-fail).
+      #   개발자 업데이트 중단으로 우리 포크가 배포자가 된 지금, 그 전제는 「아직 없을 수 있는 것」이다.
+      #   ⚠★이 게이트가 하는 일과 하지 않는 일을 정확히 적는다:
+      #     · 한다 = 시크릿 부재를 **잡 실패가 아니라 명시적 skip + 경고**로 바꾼다(Windows 레그는 계속 간다).
+      #     · 하지 않는다 = **맥 없는 릴리스를 발행 가능하게 만들지 않는다.** `scripts/release-verify.py`
+      #       REQUIRED_ASSETS 가 DMG 2종을 요구하므로 공개 승격은 여전히 차단된다 — 그것이 설계 의도다
+      #       (「macOS 업데이터가 죽은 묶음」의 통과 금지 · 그 스크립트 머리말 §(2) 실측 반증 기록 참조).
+      - name: macOS 서명 시크릿 프리플라이트 (부재 시 맥 레그 skip)
+        id: macsign
         if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_B64: ${{ secrets.APPLE_CERTIFICATE_B64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in APPLE_CERTIFICATE_B64 APPLE_CERTIFICATE_PASSWORD APPLE_KEYCHAIN_PASSWORD \
+                   APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            eval "val=\${$v:-}"
+            [ -n "$val" ] || missing="$missing $v"
+          done
+          if [ -z "$missing" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "OK: 맥 서명 시크릿 7종 전부 존재 — 서명·공증 레그 정상 진행"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=macOS 레그 skip::APPLE_* 시크릿 부재($missing ) — 맥 서명·공증·게이트·업로드를 건너뛴다. ★이 태그로는 공개 발행이 불가능하다(release-verify REQUIRED_ASSETS 가 DMG 2종을 요구). 시크릿 등록 후 다시 태그하라."
+            {
+              echo "### macOS 레그 skip (서명 시크릿 부재)"
+              echo "- 부재:$missing"
+              echo "- 결과: DMG·업데이터 tar/sig 미생성 -> **이 태그는 공개 승격 불가**(설계된 차단)"
+              echo "- 조치: 레포 Settings > Secrets 에 APPLE_* 7종 등록 후 재태그"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Import Developer ID into ephemeral keychain (macOS 전용)
+        if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE_B64: ${{ secrets.APPLE_CERTIFICATE_B64 }}
@@ -546,7 +589,7 @@ jobs:
         run: bash scripts/import-macos-signing-certificate.sh
 
       - name: Build, notarize, staple + 산출물 정규화 (macOS 전용)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'
         shell: bash
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -640,7 +683,7 @@ jobs:
           python3 "$f"
 
       - name: macOS Gatekeeper 게이트 (quarantine 부착 + spctl 실평가 · 업로드 전)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -813,6 +856,10 @@ jobs:
       #   시킨다(macOS=재빌드 fat 재역참조 방지·Windows=게이트 미통과 바이트 업로드 방지). tauri-action은
       #   표준 경로의 그 산출물을 수집·업로드·latest.json 병합만 수행한다.
       - name: Build, sign, and release (private)
+        # ★맥 레그 skip 시 수집·업로드도 건너뛴다(위 프리플라이트) — 산출물이 없는데 수집을 돌리면
+        #   tauri-action 이 **빈손으로 성공**하거나 재빌드를 시도한다(둘 다 거짓 초록의 경로다).
+        #   Windows 레그는 이 조건과 무관하게 항상 돈다.
+        if: matrix.platform != 'macos-latest' || steps.macsign.outputs.enabled == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

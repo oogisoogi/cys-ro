@@ -234,7 +234,7 @@ upstream **249커밋**(v0.14.27 → v0.14.30)을 편입하고 그 위에 우리 
 
 | 워크플로 | 트리거 | 필요한 시크릿 | 우리 포크에서 걸리는 것 | 판정 |
 |---|---|---|---|---|
-| `release.yml` | tag `v*` · dispatch | `TAURI_SIGNING_PRIVATE_KEY`(필수) · `APPLE_CERTIFICATE_B64` · `APPLE_CERTIFICATE_PASSWORD` · `APPLE_KEYCHAIN_PASSWORD` · `APPLE_SIGNING_IDENTITY` · `APPLE_ID` · `APPLE_PASSWORD` · `APPLE_TEAM_ID` · `GITHUB_TOKEN`(자동) | ①맥 잡의 인증서 반입 스텝에 **부재 시 우회 조건이 없다**(`if:` 가드 없음) → Apple 시크릿 없이 태그를 밀면 **맥 잡이 hard-fail** ②~~`env.SRC_REPO` 가 벤더 레포~~ → **`oogisoogi/cys-terminal` 로 교체 완료**(커밋 `9375c1a`) | ⚠**①(Apple 시크릿)만 남았다** — 태그 전 결정 필요 |
+| `release.yml` | tag `v*` · dispatch | `TAURI_SIGNING_PRIVATE_KEY`(필수) · `APPLE_CERTIFICATE_B64` · `APPLE_CERTIFICATE_PASSWORD` · `APPLE_KEYCHAIN_PASSWORD` · `APPLE_SIGNING_IDENTITY` · `APPLE_ID` · `APPLE_PASSWORD` · `APPLE_TEAM_ID` · `GITHUB_TOKEN`(자동) | ①맥 잡의 인증서 반입 스텝에 **부재 시 우회 조건이 없다**(`if:` 가드 없음) → Apple 시크릿 없이 태그를 밀면 **맥 잡이 hard-fail** ②~~`env.SRC_REPO` 가 벤더 레포~~ → **교체 완료**(커밋 `9375c1a`) | ①은 **조건부 skip 게이트**로 hard-fail 만 제거(§5-7) — 발행하려면 시크릿이 여전히 필요 |
 | `windows-build.yml` | branch `feat/windows-x64-dist`·`fix/**` · dispatch | 없음 | 없음 — NSIS 산출물은 `target/<triple>/release/bundle/nsis/cys_*_x64-setup.exe` 로 고정 수집 | ✅ 그대로 사용 가능(이번 미러 push 로 실제 기동됨) |
 | `release-publish.yml` | dispatch 전용(`tag`+`release_bundle_sha256`+`confirm=PUBLISH`) | `GITHUB_TOKEN` | ~~`SRC_REPO` 벤더~~ → **교체 완료**(`:89`,`:114` + 사용례 주석 `:28`) | ⛔공개 승격 경로 — **박사님/master 게이트** |
 | `pack-release.yml` | tag `pack-v*` | `TAURI_SIGNING_PRIVATE_KEY` · `GITHUB_TOKEN` | ~~`SRC_REPO` 벤더~~ → **교체 완료** · `gh release create -R $SRC_REPO` 가 이제 우리 레포 | ⛔팩 릴리스 경로 — 태그 push 는 master 게이트 |
@@ -298,6 +298,21 @@ tauri.conf.json · ui/package.json · dist-win/cys-x64.wxs · Cargo.lock 2엔트
 
 문법 검사: `actionlint` 부재 → PyYAML 파싱으로 대체 실측(3파일 파싱 OK · jobs 목록 확인).
 ⛔워크플로 실행·태그 push·Release 발행 = **0건**.
+
+### 5-7. 맥 서명 시크릿 조건부 게이트 (r2 · master 지시)
+
+`release.yml` 맥 레그는 `APPLE_*` 시크릿을 **전제**로 짜여 있어, 시크릿 없는 상태로 태그를 밀면
+`import-macos-signing-certificate.sh` 가 잡을 통째로 죽였다(태그 레인 hard-fail). 프리플라이트 스텝
+(`id: macsign`)이 7종 존재를 재고, 부재면 맥 전용 3스텝(인증서 반입 · 빌드/공증/정규화 · Gatekeeper
+게이트)과 **수집·업로드 스텝의 맥 레그**를 skip 한다(Windows 레그는 무관하게 계속 간다).
+
+★**이 게이트가 하지 않는 것을 명시한다**: **맥 없는 릴리스를 발행 가능하게 만들지 않는다.**
+`scripts/release-verify.py` `REQUIRED_ASSETS` 가 DMG 2종을 요구하므로 공개 승격은 여전히 차단된다 —
+그것이 설계 의도다(「macOS 업데이터가 죽은 묶음」의 통과 금지). 그래서 skip 경로는 조용하지 않다:
+`::warning` + job summary 에 부재 시크릿 목록과 「이 태그는 공개 승격 불가」를 남긴다.
+
+검증: PyYAML 파싱 OK(build 잡 25스텝 · 가드 4곳 확인) · 판정 셸은 러너와 같은 **bash 3.2** 에서
+3분기(전부 존재 / 전부 부재 / 일부 부재) 실측 통과.
 
 ### 5-5. 추가 봉합 1건 — pyseal 센서스 (커밋 `ca4d65b`)
 
@@ -406,8 +421,10 @@ spctl -a -vv → rejected · origin=cys-local  (exit 3 — 로컬 인증서라 �
 1. ~~키링 `key_id` 라벨~~ → **해소**(master 판정 = 수정 · 커밋 `9375c1a` · 5곳 동기). §5-1
 2. ~~릴리스 워크플로 `SRC_REPO`~~ → **해소**(master 판정 = 수정 · 커밋 `9375c1a` · 음성 대조 픽스처
    1건만 의도적으로 벤더 유지). §5-6
-3. **【결정필요】 맥 서명·공증 시크릿** — `release.yml` 맥 잡에 부재 시 우회 조건이 없다.
-   Apple 시크릿을 넣든지, 맥 잡을 조건부로 만들든지 결정이 필요하다. §5-2
+3. **맥 서명·공증 시크릿** — master 판정으로 **조건부 skip 게이트를 넣었다**(§5-7). 이제 시크릿이
+   없어도 태그 레인이 죽지 않는다. 다만 ★**맥 자산 없는 태그는 여전히 공개 승격이 불가능하다**
+   (`release-verify.py` REQUIRED_ASSETS 가 DMG 2종을 요구 — 설계된 차단). **실제 발행 전 APPLE_* 7종
+   등록이 필요하다**(master/박사님).
 4. **박사님 게이트** — 공개 이력에 남은 개인정보 27건(이력 재작성 = force-push 영역). §5-3
 5. **master 집행** — 빌드 산출 `.app` 의 설치(백업 → ditto → canary) · 릴리스 태그 `v0.14.30`.
 6. **측정 밖(정직)** — `set_meta` 전이 구간 무시험 · 프로브는 실제 재부팅이 아닌 `kill -9` 근사. §4-4

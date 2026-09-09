@@ -24,9 +24,25 @@ name: release-publish
 #   승격 사이에 draft 가 바뀌는 TOCTOU 창이 없다. job 을 쪼개 검증을 앞당기면 승인 대기
 #   시간만큼 그 창이 열린다. 승인 UX 를 위해 안전성을 내주지 않는다.
 #
+# ★2026-09-09 신설 — `dry_run`(기본 **true**) · TICKET=cys-release-first-publish
+#   발행은 비가역이다. 그런데 종전 이 레인에는 "검증만 돌려 보는" 입구가 없어서, 자산이 온전한지
+#   보려면 **발행 의사(confirm=PUBLISH)를 표명한 채** 오너 승인 대기까지 들어가야 했다.
+#   그래서 검증(가역)과 발행(비가역)을 잡 2개로 가른다:
+#     · `verify`  — 언제나 돈다. 승인 게이트 없음. 내려받아 검증하고 **산출물 표**를 요약에 남긴다.
+#     · `publish` — `dry_run == false` 일 때만 돈다. environment 승인 뒤 **자기 손으로 다시**
+#                   내려받아 다시 검증하고 승격한다.
+#   ⚠publish 가 verify 의 결과를 **신뢰하지 않고 다시 받는 것**은 낭비가 아니라 설계다. 승인 대기
+#     동안 draft 가 바뀔 수 있으므로(TOCTOU), 승격과 같은 잡 안에서 다운로드·검증이 연속돼야 한다.
+#     아래 「`environment:` 는 job 레벨 게이트라」 절이 그 이유를 적고 있다 — 그 계약은 그대로다.
+#   ⚠기본값이 true 인 것이 요점이다. 손이 미끄러져 입력을 비운 채 실행해도 발행되지 않는다.
+#
 # 사용:
+#   # ① 먼저 dry-run (기본값 — 검증·산출물 표만)
 #   gh workflow run release-publish.yml -R oogisoogi/cys-terminal --ref <ALLOWED_REF> \
 #     -f tag=vX.Y.Z -f release_bundle_sha256=<SHA256SUMS.txt 의 sha256> -f confirm=PUBLISH
+#   # ② 실제 발행 (master 만 — 박사님 승인 뒤)
+#   gh workflow run release-publish.yml -R oogisoogi/cys-terminal --ref <ALLOWED_REF> \
+#     -f tag=vX.Y.Z -f release_bundle_sha256=<...> -f confirm=PUBLISH -f dry_run=false
 #   ★<ALLOWED_REF> 는 environment `release-production` 의 deployment branch policy 가
 #     허용하는 ref 여야 한다(허용 밖이면 step 실행 전에 job 이 죽는다).
 
@@ -45,6 +61,11 @@ on:
         description: Type PUBLISH to request public promotion
         required: true
         type: string
+      dry_run:
+        description: 'Verify only — download and re-verify the draft, publish nothing (default)'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -54,8 +75,88 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # ── 잡① 검증 전용 — 승인 게이트 없음. dry_run 여부와 무관하게 **항상** 돈다. ──────────
+  #   하는 일: 태그 트리 + 검증 도구를 받아 검증기 자기시험 → draft 전 자산 다운로드 →
+  #   release-verify.py → 산출물 표(파일·크기·sha256)를 잡 요약에 남긴다.
+  #   ⛔ 이 잡은 **아무것도 발행하지 않는다.** `gh release edit` 가 여기 없는 것이 그 보증이다.
+  verify:
     if: inputs.confirm == 'PUBLISH'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+
+      - name: Self-test the verifier before trusting it
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .release-tools/scripts/release-verify.py \
+            || { echo "verifier missing from tooling checkout" >&2; exit 1; }
+          python3 .release-tools/scripts/tests/test_release_verify.py
+
+      - name: Download the draft and verify it (publishes nothing)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          EXPECTED_BUNDLE_SHA256: ${{ inputs.release_bundle_sha256 }}
+          SRC_REPO: oogisoogi/cys-terminal
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid tag" >&2; exit 2; }
+          [[ "$EXPECTED_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid release digest" >&2; exit 2; }
+          sh scripts/version-check.sh "$TAG"
+          IS_DRAFT="$(gh release view "$TAG" -R "$SRC_REPO" --json isDraft --jq .isDraft)"
+          [ "$IS_DRAFT" = "true" ] || { echo "release is not a draft" >&2; exit 1; }
+          mkdir reviewed-release
+          gh release download "$TAG" -R "$SRC_REPO" --dir reviewed-release
+          VERSION="${TAG#v}"
+          python3 .release-tools/scripts/release-verify.py \
+            --version "$VERSION" --release-dir reviewed-release --print-assets
+          ACTUAL_BUNDLE_SHA256="$(shasum -a 256 reviewed-release/SHA256SUMS.txt | awk '{print $1}')"
+          [ "$ACTUAL_BUNDLE_SHA256" = "$EXPECTED_BUNDLE_SHA256" ] || {
+            echo "reviewed release digest mismatch" >&2
+            exit 1
+          }
+
+          # ★산출물 표 — 사람이 발행 버튼을 누르기 전에 보는 것이 이 표다.
+          {
+            echo "### $TAG 산출물 (dry_run=${{ inputs.dry_run }})"
+            echo
+            echo "| 파일 | 바이트 | sha256 |"
+            echo "|---|---:|---|"
+            for f in $(ls reviewed-release | sort); do
+              printf "| %s | %s | %s |\n" "$f" \
+                "$(wc -c < "reviewed-release/$f" | tr -d ' ')" \
+                "$(shasum -a 256 "reviewed-release/$f" | awk '{print $1}')"
+            done
+            echo
+            echo "- SHA256SUMS.txt 다이제스트: \`$ACTUAL_BUNDLE_SHA256\` (입력과 일치)"
+            if grep -q '"darwin-' reviewed-release/latest.json; then
+              echo "- 맥 자산: **포함**"
+            else
+              echo "- 맥 자산: **미포함(윈도우 단독 배포)** — 맥 사용자는 이 릴리스를 받지 않는다"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Say plainly that nothing was published
+        if: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          echo "✅ dry-run 완료 — 검증만 했고 **발행은 하지 않았다**(dry_run=true)."
+          echo "실제 발행은 master 가 dry_run=false 로 다시 실행한다."
+          echo "> ✅ dry-run — 검증만 수행, 발행 0건" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 잡② 발행 — `dry_run == false` 일 때만. 오너 승인(environment) 뒤 다시 받아 다시 검증한다. ──
+  publish:
+    if: inputs.confirm == 'PUBLISH' && inputs.dry_run == false
+    needs: verify
     environment: release-production
     runs-on: ubuntu-latest
     steps:

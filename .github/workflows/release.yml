@@ -541,9 +541,13 @@ jobs:
       #   개발자 업데이트 중단으로 우리 포크가 배포자가 된 지금, 그 전제는 「아직 없을 수 있는 것」이다.
       #   ⚠★이 게이트가 하는 일과 하지 않는 일을 정확히 적는다:
       #     · 한다 = 시크릿 부재를 **잡 실패가 아니라 명시적 skip + 경고**로 바꾼다(Windows 레그는 계속 간다).
-      #     · 하지 않는다 = **맥 없는 릴리스를 발행 가능하게 만들지 않는다.** `scripts/release-verify.py`
-      #       REQUIRED_ASSETS 가 DMG 2종을 요구하므로 공개 승격은 여전히 차단된다 — 그것이 설계 의도다
-      #       (「macOS 업데이터가 죽은 묶음」의 통과 금지 · 그 스크립트 머리말 §(2) 실측 반증 기록 참조).
+      #     · 하지 않는다 = 맥이 **반쪽**인 묶음을 통과시키지 않는다.
+      #   ★2026-09-09 개정(TICKET=cys-release-first-publish · 박사님 09:05 「맥 서명 없이 윈도우 먼저」):
+      #     종전 이 주석은 「맥 없는 릴리스는 발행 불가 — 그것이 설계 의도」라고 적혀 있었다. 그 차단은
+      #     오너 결정으로 **의도적으로 열렸다.** `scripts/release-verify.py` 가 DMG 를 `MAC_ASSETS` 로
+      #     갈라 「맥 레인 전부-또는-전무」로 판정하므로, 맥이 **통째로** 빠진 묶음은 「윈도우 단독 배포」로
+      #     발행 가능하다(로그에 「맥 자산 미포함」 명시). 반쪽 묶음의 차단은 그대로다 —
+      #     DMG 만 있거나 darwin 행만 있는 묶음은 여전히 즉사한다(그 파일 머리말 §맥 레인).
       - name: macOS 서명 시크릿 프리플라이트 (부재 시 맥 레그 skip)
         id: macsign
         if: matrix.platform == 'macos-latest'
@@ -569,12 +573,16 @@ jobs:
             echo "OK: 맥 서명 시크릿 7종 전부 존재 — 서명·공증 레그 정상 진행"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=macOS 레그 skip::APPLE_* 시크릿 부재($missing ) — 맥 서명·공증·게이트·업로드를 건너뛴다. ★이 태그로는 공개 발행이 불가능하다(release-verify REQUIRED_ASSETS 가 DMG 2종을 요구). 시크릿 등록 후 다시 태그하라."
+            echo "::warning title=macOS 레그 skip::APPLE_* 시크릿 부재($missing ) — 맥 서명·공증·게이트·업로드를 건너뛴다. 이 태그는 **윈도우 단독 배포**로 발행 가능하다(맥 사용자는 이 릴리스를 받지 않는다). 맥까지 담으려면 APPLE_* 7종 등록 후 재태그하라."
             {
               echo "### macOS 레그 skip (서명 시크릿 부재)"
               echo "- 부재:$missing"
-              echo "- 결과: DMG·업데이터 tar/sig 미생성 -> **이 태그는 공개 승격 불가**(설계된 차단)"
-              echo "- 조치: 레포 Settings > Secrets 에 APPLE_* 7종 등록 후 재태그"
+              echo "- 결과: DMG·업데이터 tar/sig 미생성 -> 이 태그는 **윈도우 단독 배포**"
+              echo "- 발행: 가능하다(2026-09-09~). release-verify.py 가 「맥 레인 전무」를 인정하고"
+              echo "  로그에 \`맥 자산 미포함(윈도우 단독 배포)\` 를 명시한다. 맥이 **반쪽**이면 여전히 차단."
+              echo "- 맥 사용자 영향: 앱 내 Update 는 오류가 아니라 **「업데이트 없음」**으로 돈다"
+              echo "  (check_update 의 updater_target_absent — darwin 행 부재를 없음으로 접는다)"
+              echo "- 조치(맥까지 담으려면): 레포 Settings > Secrets 에 APPLE_* 7종 등록 후 재태그"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 

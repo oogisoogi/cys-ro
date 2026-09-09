@@ -31,6 +31,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import struct
 import subprocess
@@ -168,6 +169,149 @@ class GatekeeperGateHookTests(unittest.TestCase):
         self.assertEqual(self.calls(), [])
         loud = [ln for ln in err.splitlines() if ln.startswith("!!!!")]
         self.assertGreaterEqual(len(loud), 2, "LOUD 경고 2줄 계약 위반: %r" % err)
+
+
+class MacAbsentBundleTests(unittest.TestCase):
+    """★2026-09-09 신설 — 「맥 미포함 묶음」 skip 이 **정확히 하나의 문**만 여는지 못박는다.
+
+    이 분기는 발행 게이트를 건너뛰는 유일한 비-LOUD 경로다. 그래서 여기서 물어야 할 것은
+    "통과하는가"가 아니라 **"통과하지 말아야 할 이웃 상태들이 전부 죽는가"** 다:
+      · 근거(latest.json)가 없는 0종 묶음      → 판정 불가
+      · latest.json 이 darwin 을 주장하는 0종  → 판정 불가(없는 파일을 받으러 가는 묶음)
+      · DMG 가 한 짝만 있는 반쪽 묶음          → 판정 불가(종전 경로 그대로)
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self.log = os.path.join(self.root, "calls.log")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def fake_gate(self, name, rc=0):
+        path = os.path.join(self.root, name)
+        with open(path, "w") as fh:
+            fh.write('#!/bin/sh\necho "%s $*" >> "%s"\nexit %d\n' % (name, self.log, rc))
+        os.chmod(path, 0o755)
+        return path
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as fh:
+            return fh.read().splitlines()
+
+    def write_latest(self, platform_keys):
+        obj = {"version": V, "notes": "n", "pub_date": "2026-09-09T00:00:00Z",
+               "platforms": {k: {"signature": "s", "url": "u"} for k in platform_keys}}
+        with open(os.path.join(self.root, "latest.json"), "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+
+    def add_dmg(self, arch):
+        with open(os.path.join(self.root, "cys_%s_%s.dmg" % (V, arch)), "wb") as fh:
+            fh.write(b"\x78\x01fake-dmg-" + arch.encode())
+
+    def run_gate(self, **kw):
+        kw.setdefault("sys_platform", "darwin")
+        kw.setdefault("machine", "arm64")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = rp.gatekeeper_gate(self.root, V,
+                                    gate_script=self.fake_gate("gate.sh"),
+                                    user_path_script=self.fake_gate("userpath.sh"), **kw)
+        return rc, out.getvalue(), err.getvalue()
+
+    # ── 여는 문 하나 ──────────────────────────────────────────────────────
+    def test_30_windows_only_bundle_skips_with_stated_reason(self):
+        """맥 0종 + darwin 행 0 = 대상 없음. 게이트는 **돌지도 않아야** 한다(척도 남기기 금지)."""
+        self.write_latest(["windows-x86_64", "windows-x86_64-nsis"])
+        rc, out, _ = self.run_gate()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.calls(), [], "평가할 대상이 없는데 게이트를 돌린 기록이 남았다")
+        self.assertIn("맥 미포함", out)
+        self.assertIn("윈도우 단독", out)
+
+    def test_31_skip_holds_off_macos_too(self):
+        """맥 바이트가 0종이면 어느 OS 에서 돌리든 답이 같다 — 리눅스 러너에서도 대상 없음."""
+        self.write_latest(["windows-x86_64", "windows-x86_64-nsis"])
+        rc, _, _ = self.run_gate(sys_platform="linux")
+        self.assertEqual(rc, 0)
+
+    # ── 죽어야 할 이웃 상태들 ─────────────────────────────────────────────
+    def test_32_no_latest_json_is_not_a_declaration(self):
+        """latest.json 이 없으면 「미포함」을 확인할 근거가 없다 — 통과로 접지 않는다."""
+        rc, _, err = self.run_gate()
+        self.assertEqual(rc, 2)
+        self.assertIn("::error::", err)
+        self.assertEqual(self.calls(), [])
+
+    def test_33_darwin_rows_without_mac_assets_is_fail_closed(self):
+        """latest.json 은 맥을 주장하는데 맥 자산이 0종 = 맥 사용자가 없는 파일을 받으러 간다."""
+        self.write_latest(["windows-x86_64", "windows-x86_64-nsis",
+                           "darwin-aarch64", "darwin-aarch64-app",
+                           "darwin-x86_64", "darwin-x86_64-app"])
+        rc, _, err = self.run_gate()
+        self.assertEqual(rc, 2)
+        self.assertIn("::error::", err)
+
+    def test_34_half_mac_lane_still_fail_closed(self):
+        """DMG 한 짝만 있는 묶음은 skip 대상이 아니다 — 종전 경로에서 그대로 죽는다."""
+        self.add_dmg("aarch64")
+        self.write_latest(["windows-x86_64", "windows-x86_64-nsis"])
+        rc, _, err = self.run_gate()
+        self.assertEqual(rc, 2)
+        self.assertIn("::error::", err)
+
+    def test_35_updater_tarball_alone_blocks_skip(self):
+        """DMG 는 없고 맥 업데이터 tar 만 남은 묶음도 「미포함」이 아니다."""
+        with open(os.path.join(self.root, "cys_aarch64.app.tar.gz"), "wb") as fh:
+            fh.write(b"\x1f\x8bfake")
+        self.write_latest(["windows-x86_64", "windows-x86_64-nsis"])
+        rc, _, _ = self.run_gate()
+        self.assertEqual(rc, 2)
+
+    def test_36_full_mac_bundle_still_gated(self):
+        """맥이 전부 있는 묶음은 종전과 똑같이 **게이트 필수** — 완화가 새지 않았는지 본다."""
+        for arch in ("aarch64", "x64"):
+            self.add_dmg(arch)
+        for n in ("cys_aarch64.app.tar.gz", "cys_aarch64.app.tar.gz.sig",
+                  "cys_x64.app.tar.gz", "cys_x64.app.tar.gz.sig"):
+            with open(os.path.join(self.root, n), "wb") as fh:
+                fh.write(b"x")
+        self.write_latest(["windows-x86_64", "windows-x86_64-nsis",
+                           "darwin-aarch64", "darwin-aarch64-app",
+                           "darwin-x86_64", "darwin-x86_64-app"])
+        rc, _, _ = self.run_gate()
+        self.assertEqual(rc, 0)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("gate.sh")]), 2,
+                         "맥 포함 묶음인데 정적 게이트가 DMG 2종을 보지 않았다")
+
+
+class ReleaseRepoPinTests(unittest.TestCase):
+    """배포 원본 레포 = 우리 포크. `release-verify.py` 와 **같은 값**이어야 한다 —
+    두 스크립트가 갈리면 후처리가 만든 묶음을 검증기가 죽인다(또는 그 반대)."""
+
+    def test_37_default_repo_is_our_fork(self):
+        self.assertEqual(rp.RELEASE_REPO, "oogisoogi/cys-terminal")
+
+    def test_38_matches_release_verify(self):
+        rv_path = os.path.join(_HERE, "..", "release-verify.py")
+        spec = importlib.util.spec_from_file_location("release_verify_pin", rv_path)
+        rv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rv)
+        self.assertEqual(rp.RELEASE_REPO, rv.RELEASE_REPO,
+                         "후처리와 검증기의 배포 원본이 갈렸다")
+
+    def test_39_mac_lane_matches_release_verify(self):
+        """맥 레인 목록도 두 파일이 같아야 한다(주석이 아니라 검사로 묶는다)."""
+        rv_path = os.path.join(_HERE, "..", "release-verify.py")
+        spec = importlib.util.spec_from_file_location("release_verify_pin2", rv_path)
+        rv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rv)
+        self.assertEqual(sorted(n.format(v=V) for n in rp.MAC_LANE),
+                         rv.mac_lane_files(V),
+                         "후처리 MAC_LANE 과 검증기 mac_lane_files() 가 갈렸다")
 
 
 class MainWiringContractTests(unittest.TestCase):

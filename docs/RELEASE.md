@@ -16,6 +16,9 @@
 > Windows 인스톨러는 **NSIS**다(`src-tauri/tauri.windows.conf.json targets:["nsis"]`) — 아래 §2·부록의
 > 수동 MSI/WiX 경로는 **legacy(폐기·참고용)**이며 따르지 마라.
 
+> ★발행 한 동작의 경로와 **롤백 절차**는 `docs/RELEASE-ROLLBACK.md` 1쪽으로 분리했다
+> (2026-09-09 · 방아쇠 분리 · 맥 미포함 릴리스 특이사항 포함).
+
 ## 0-A. 업데이트 발행 이원화 정책 (2026-07-12 오너 확정)
 
 > **두 레인으로 발행한다.**

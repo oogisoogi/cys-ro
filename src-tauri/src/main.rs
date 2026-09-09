@@ -5328,17 +5328,49 @@ fn autotest_patch_install() -> bool {
     cys::env_compat("CYS_AUTOTEST_PATCH_INSTALL").as_deref() == Some("1")
 }
 
+/// 이 플랫폼 행이 원격 latest.json 에 **없다**는 뜻의 오류인가?
+///
+/// ★왜 이 판정이 필요한가 (2026-09-09 · TICKET=cys-release-first-publish · 실측)
+///   `tauri-plugin-updater` 2.10.1 의 `Updater::check()` 는 `should_update` 분기보다 **앞에서**
+///   `get_urls(...)?` 를 부른다(updater.rs:535). 그래서 latest.json 의 `platforms` 에 이 플랫폼
+///   키가 없으면 — 새 버전이 있든 없든 무관하게 — `Err(TargetsNotFound)` 로 끝난다
+///   (updater.rs:597 · 단일 타깃 지정 시엔 `TargetNotFound`).
+///   그 오류가 그대로 올라오면 UI 는 "업데이트 확인 실패"(ui/src/main.ts 의 catch)를 띄운다.
+///   그러나 **사실은 실패가 아니다** — 이 릴리스가 이 플랫폼용 산출물을 담지 않았을 뿐이다.
+///   박사님 09:05 결정(「맥 서명 없이 윈도우 먼저」)으로 당분간 우리 릴리스의 latest.json 에는
+///   darwin 행이 없다. 맥 사용자에게 그건 "없음"이지 "고장"이 아니다.
+/// ⚠이 판정은 **딱 두 변종만** 접는다. 네트워크·서명·파싱 오류는 종전 그대로 오류로 올라간다 —
+///   "업데이트가 조용해지는" 쪽으로 넓히면 진짜 고장이 침묵한다.
+fn updater_target_absent(e: &tauri_plugin_updater::Error) -> bool {
+    matches!(
+        e,
+        tauri_plugin_updater::Error::TargetNotFound(_)
+            | tauri_plugin_updater::Error::TargetsNotFound(_)
+    )
+}
+
 /// 업데이트 확인: 새 버전이 있으면 (version, notes)를 반환, 없으면 null.
 #[tauri::command]
 async fn check_update(app: AppHandle) -> Result<Option<Value>, String> {
     let updater = build_updater(&app)?;
-    match updater.check().await.map_err(|e| e.to_string())? {
-        Some(update) => Ok(Some(json!({
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(json!({
             "version": update.version,
             "current": update.current_version,
             "notes": update.body,
         }))),
-        None => Ok(None),
+        Ok(None) => Ok(None),
+        // ★조용히 삼키지 않는다(마스터 판정 2026-09-09) — 사용자에겐 "업데이트 없음"이지만
+        //   로그에는 **왜** 없는지가 남아야 한다. 이 줄이 없으면 "우리 릴리스에 이 플랫폼이
+        //   빠졌다"와 "정말 최신이다"가 운영자 눈에 구분되지 않는다.
+        Err(e) if updater_target_absent(&e) => {
+            eprintln!(
+                "[cys-app] 업데이트 확인: 이 플랫폼용 릴리스 없음 — 원격 latest.json 의 \
+                 platforms 에 이 타깃 행이 없다({e}). 업데이트 없음으로 처리한다."
+            );
+            Ok(None)
+        }
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -6008,6 +6040,35 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★맥 미포함 릴리스 회귀 핀 (2026-09-09 · TICKET=cys-release-first-publish)
+    ///
+    /// 지키는 계약은 둘이고, **둘째가 본체**다:
+    ///   ① latest.json 에 이 플랫폼 행이 없다 = "업데이트 없음"(오류 아님).
+    ///   ② 그 외 오류는 **여전히 오류**다 — 넓히면 네트워크·서명 고장이 "최신입니다"로 둔갑한다.
+    /// 실측 근거: tauri-plugin-updater 2.10.1 이 `should_update` 판정 **전에** `get_urls()?` 를
+    /// 부르므로, darwin 행이 없는 latest.json 에서는 버전이 같아도 Err 가 난다.
+    #[test]
+    fn updater_target_absent_folds_only_the_two_missing_target_variants() {
+        use tauri_plugin_updater::Error;
+
+        // ① 접어야 하는 것 — 이 플랫폼용 산출물이 릴리스에 없다.
+        assert!(updater_target_absent(&Error::TargetNotFound(
+            "darwin-aarch64".into()
+        )));
+        assert!(updater_target_absent(&Error::TargetsNotFound(vec![
+            "darwin-aarch64-app".into(),
+            "darwin-aarch64".into(),
+        ])));
+
+        // ② 접으면 안 되는 것 — 전부 진짜 고장이다.
+        assert!(!updater_target_absent(&Error::ReleaseNotFound));
+        assert!(!updater_target_absent(&Error::EmptyEndpoints));
+        assert!(!updater_target_absent(&Error::UnsupportedOs));
+        assert!(!updater_target_absent(&Error::UnsupportedArch));
+        assert!(!updater_target_absent(&Error::Network("timeout".into())));
+        assert!(!updater_target_absent(&Error::FailedToDetermineExtractPath));
+    }
 
     /// ★SEAL-DIAG 스로틀 회귀 핀: **파손은 마커로 침묵시킬 수 없다.**
     /// 스로틀의 목적은 평시 `codesign --deep` 비용 절감이지 고장 은폐가 아니다 —

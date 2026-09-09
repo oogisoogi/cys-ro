@@ -307,6 +307,9 @@ tauri.conf.json · ui/package.json · dist-win/cys-x64.wxs · Cargo.lock 2엔트
 게이트)과 **수집·업로드 스텝의 맥 레그**를 skip 한다(Windows 레그는 무관하게 계속 간다).
 
 ★**이 게이트가 하지 않는 것을 명시한다**: **맥 없는 릴리스를 발행 가능하게 만들지 않는다.**
+(★2026-09-09 갱신 — 아래 문장은 그날 이후 **효력 없음**: 박사님 09:05 결정으로 DMG 요구가
+`MAC_ASSETS` 로 갈라져 「맥 통째 부재」는 윈도우 단독 배포로 발행 가능하다. 반쪽 차단만 남았다.
+현행 = `docs/RELEASE-ROLLBACK.md` · `scripts/release-verify.py` 머리말 §맥 레인.)
 `scripts/release-verify.py` `REQUIRED_ASSETS` 가 DMG 2종을 요구하므로 공개 승격은 여전히 차단된다 —
 그것이 설계 의도다(「macOS 업데이터가 죽은 묶음」의 통과 금지). 그래서 skip 경로는 조용하지 않다:
 `::warning` + job summary 에 부재 시크릿 목록과 「이 태그는 공개 승격 불가」를 남긴다.
@@ -430,7 +433,9 @@ spctl -a -vv → rejected · origin=cys-local  (exit 3 — 로컬 인증서라 �
    1건만 의도적으로 벤더 유지). §5-6
 3. **맥 서명·공증 시크릿** — master 판정으로 **조건부 skip 게이트를 넣었다**(§5-7). 이제 시크릿이
    없어도 태그 레인이 죽지 않는다. 다만 ★**맥 자산 없는 태그는 여전히 공개 승격이 불가능하다**
-   (`release-verify.py` REQUIRED_ASSETS 가 DMG 2종을 요구 — 설계된 차단). **실제 발행 전 APPLE_* 7종
+   (`release-verify.py` REQUIRED_ASSETS 가 DMG 2종을 요구 — 설계된 차단).
+   ★2026-09-09 이후 이 괄호는 **stale** 이다(맥 전무 = 윈도우 단독 발행 허용 · 반쪽만 차단).
+   **실제 발행 전 APPLE_* 7종
    등록이 필요하다**(master/박사님).
 4. **박사님 게이트** — 공개 이력에 남은 개인정보 27건(이력 재작성 = force-push 영역). §5-3
 5. **master 집행** — 빌드 산출 `.app` 의 설치(백업 → ditto → canary) · 릴리스 태그 `v0.14.30`.

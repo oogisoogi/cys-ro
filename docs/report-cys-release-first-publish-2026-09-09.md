@@ -1,7 +1,50 @@
 # 보고서 — TICKET=cys-release-first-publish (2026-09-09 · worker-5@surface:663)
 
-> 진행 중 문서. S3(dry) 이후 산출물 표·서명 검증 결과를 이 문서에 이어 싣는다.
+> **완료 문서** (2026-09-09 13:4x 발행 완료 시점 마감).
 > 박사님 승인 09:05 「우리 서명 배포 전환 · 윈도우 먼저 · 방아쇠 분리」.
+
+## §결론 한 줄
+
+**우리 키(54FBA04AD0E0F49D)로 서명한 첫 릴리스 `v0.14.33`(Windows 단독)이 공개됐고, 참가자
+자동 업데이트가 우리 배포에서 시작된다.** 태그는 꼬리표가 됐고(빌드·검증만), 발행은 수동 실행
+한 동작이 됐다(기본 dry-run · 오너 승인 게이트).
+
+## §첫 발행 실측 표
+
+| 파일 | 바이트 | sha256(앞 20) |
+|---|---:|---|
+| `cys_0.14.33_x64-setup.exe` | 139,720,664 | `bfd7dd208d0135206482` |
+| `cys_0.14.33_x64-setup.exe.sig` | 416 | `d816047a4a204bc12949` |
+| `cys_0.14.33_x64-setup.zip` | 139,724,126 | `fd5aff841a812f67b066` |
+| `latest.json` | 1,434 | `9e28b194f98d7d4c6ade` |
+| `pack.tar.gz` | 2,784,458 | `b7cdb3c2ddf4acbc0ee9` |
+| `pack-manifest.json` | 52,110 | `61a3c2d4251f19c39687` |
+| `pack-manifest.json.minisig` | 303 | `87a5d0adbdd2b7049966` |
+| `SHA256SUMS.txt` | 614 | `57d21f1d4536ea7d3674` |
+
+- **서명**: baked pubkey keyID `54FBA04AD0E0F49D` == 자산 `.sig` keyID → 참가자 앱이 거부하지 않는다.
+- **검증기**: ✅ 통과 — 자산 7종(+SUMS) · 업데이터 2행 전부 서명 일치 · **맥 자산 미포함(윈도우 단독)**
+- **방아쇠 분리 실증**: dry run 34311618342 → `verify=success` · **`publish=skipped`** ·
+  발행 0건. 실발행 run 34311894282 → `publish=success`(오너 승인 environment 21524450364 경유).
+- **발행 후 4단계**: ①`isDraft=false`·`/releases/latest`=`v0.14.33` ②엔드포인트 latest.json
+  sha256 `9e28b194…` = SUMS 등재값과 바이트 일치 ③옛 릴리스 3개 `Pre-release` 강등(삭제 0)
+  ④`/releases/latest` 여전히 `v0.14.33` · 엔드포인트 sha256 **불변**.
+- **설치본 URL 도달**: `HTTP/2 200` · `content-length: 139720664` = 기대 크기 일치.
+
+## §고친 것 (S1)
+
+| | 무엇이 막고 있었나 | 어떻게 풀었나 |
+|---|---|---|
+| F1 | `release-verify.py` 가 **벤더 URL** 을 하드코딩 — 우리 latest.json 은 url 결속에서 전 행 실패 | `RELEASE_REPO` + `--repo` 매개변수화. 후처리의 `REPO` 고정도 동반 정정 |
+| F2 | zip·SUMS 를 만드는 로컬 후처리가 **DMG 2종을 필수**로 요구 → 윈도우 단독은 SUMS 조차 못 만듦 | DMG 요구를 지우지 않고 **옮김** — 맥 레인 전부-또는-전무(`decide_mac_lane`) + 그 판정을 latest.json 기대 키 집합으로 교차 검증 |
+| F3 | updater 2.10.1 이 `should_update` **앞에서** `get_urls()?` 를 불러, darwin 행이 없으면 맥이 **오류** | `updater_target_absent` — 두 변종만 `Ok(None)` + 사유 로그 1줄 |
+| 방아쇠 | 발행 레인에 「검증만」 입구가 없어, 자산을 보려면 발행 의사를 표명해야 했음 | `verify`(승인 없음·항상) / `publish`(`dry_run==false`·environment) 2잡 분리 · 기본 dry-run |
+| 승인 | `release-production` **환경이 존재하지 않아** 승인 게이트가 사실상 0 | 환경 신설(reviewers 1 · 허용 ref 2). ⚠계정 1개 = 직무 분리가 아니라 「두 번째 의도적 동작」 |
+
+검증: 뮤턴트 9종 전건 적색(M1~M9) · 스위트 `release_verify` 57 · `postprocess_gate` 40 ·
+`trigger_split` 12(신설) · `cargo --bins` 106 · 태그 레인 로컬 재현(phoenix 13 · cysd 954 ·
+lib 492 · cys 241) — 전건 통과. `secret-scan --all` clean.
+
 
 ## §버전
 
@@ -38,6 +81,18 @@
    `--latest --draft=false` 로 **승인 게이트 없이** 공개한다. 본체 발행은 이제 버튼 하나지만
    저장소에는 자동 공개 경로가 하나 더 있다. `scripts/tests/test_release_trigger_split.py` 에
    **이름으로 등재**해 뒀다 — 자동 발행 경로가 하나라도 더 늘면 그 테스트가 적색이 된다.
+5. **windows-build T4-14 설정 가드 부재** (master 등재 지시 2026-09-09 · 릴리스 레인 밖)
+   - 사실: T4-14 는 끝에서 `Get-Process cys,cysd | Stop-Process` 로 정리하지만 **시작 전에는
+     같은 보증이 없다.** 그래서 앞 스텝이 남긴 프로세스가 `cys.exe` 를 이미지 잠금하면
+     설정(`Copy-Item cmd.exe → cys.exe`)이 죽는다 — 단언에 닿지도 못한다.
+   - 처방: T4-14 **시작 전에도** 정리와 같은 `Stop-Process` 가드를 둔다.
+     스텝이 자기 앞 상태를 가정하지 않게 만드는 것이 요지다.
+   - 성격: 재현이 타이밍 의존이라 방치하면 릴리스 때마다 재실행 도박이 된다(이번 실적 1회).
+
+6. **`release.yml` 의 `releaseBody` 가 레인을 구분하지 않는다** — 고정 문구가 맥 포함을 전제해
+   윈도우 단독 릴리스에서 거짓이 된다. 이번엔 발행 전 draft 본문 편집으로 덮었지만, `latest.json`
+   의 `notes` 는 자산에 구워져 못 고쳤다(§남은 잔음). 처방 = 맥 레그 skip 여부로 본문을 가르기.
+
 4. **`release-production` 허용 ref 의 수명** — `rebase/v0.14.30` 을 정리하는 날 환경의 허용 ref
    목록도 함께 갱신해야 한다. 안 하면 발행 레인이 **조용히** 막힌다(step 실행 전 잡 사망).
 
@@ -61,7 +116,25 @@
    `.sig` 파일 내용 일치(검증기 ④)까지가 오프라인 사거리다. 「우리 키가 맞는가」는 dry 산출물 표에
    pubkey 대조로 따로 싣는다.
 
-## §관측 — windows-build T4-14 의 설정 단계 경합 (이 티켓이 만든 것이 아님)
+**셋 다 결과 확정(2026-09-09)**: ①은 **해소** — 맥이 skip 돼도 tauri-action 이 `-nsis` 별칭을
+그대로 붙였다(실측 2키). 상수를 풀 필요가 없었다. ②는 **성립** — 후처리가 맥 없는 묶음에서
+zip·SUMS 를 만들었고 게이트는 「대상 없음」으로 정확히 판정했다. ③은 **일치** — keyID 대조로
+우리 키임을 확인했다(위 실측 표).
+
+## §남은 잔음 (숨기지 않고 적는다)
+
+`latest.json` 의 `notes` 는 `release.yml` 의 고정 문구라 **맥 언급이 그대로 들어 있다**
+(「macOS는 .dmg, Windows는 -setup.exe를…」). 이 값은 빌드 시점에 자산으로 구워져 발행 후에는
+고칠 수 없다 — 앱 내 업데이트 대화에 그 문구가 뜬다. 윈도우 사용자에게는 무해한 잡음이라
+**재빌드하지 않기로 했다**(master 판정). 공개 릴리스 **페이지 본문**은 발행 전에 「Windows 단독
+배포」로 교체했다(자산 무접촉 — 편집 후 8종 크기·SUMS 다이제스트 불변 실측).
+→ 다음 세대에서 `releaseBody` 를 레인별로 갈라야 이 잔음이 사라진다(이월 후보).
+
+## §관측 — windows-build T4-14 **하네스 설정 결함** (이 티켓이 만든 것이 아님)
+
+> ⚠낱말 정정(master 지시 2026-09-09): 이 현상을 「flake」로 부르지 않는다. **flake 는 원인이
+> 미상일 때 쓰는 말**이고, 여기서는 원인이 규명됐다 — T4-14 의 **설정 단계에 시작 전 가드가
+> 없다**는 구조적 결함이다. 단언(assertion)은 **한 번도 실패하지 않았다**.
 
 2026-09-09 12:2x, 커밋 `6faabbb`(버전 범프 + 문서만)에서 `windows-build` 가 **T4-14 이미지 잠금
 업그레이드 회귀** 스텝에서 죽었다. 바로 앞 커밋 `9585e3d` 에서는 같은 워크플로가 초록이었고,
@@ -70,14 +143,21 @@
 실패 지점은 단언이 아니라 **설정(setup)** 이다:
 
     ##[error]미가드 예외(line 44): The process cannot access the file
-    'C:\Users\runneradmin\AppData\Local\cys\cys.exe' because it is being used by another process.
+    '%LOCALAPPDATA%\cys\cys.exe' because it is being used by another process.
     line 44 |  Copy-Item "$env:SystemRoot\System32\cmd.exe" $cys -Force
+
+  ※러너 로그의 절대경로는 **환경변수 형태로 바꿔 인용**했다(원문은 `%LOCALAPPDATA%` 가 풀린
+    형태다). `secret-scan.sh` 의 WIN-PATH 니들이 그 리터럴을 잡아 발행을 막기 때문이다 —
+    보고서가 니들을 그대로 인용해 스캔을 깨뜨린 전례가 이 저장소에 이미 두 번 있다(r2·r3).
 
 즉 「구 cys.exe 스탠드인 심기」가 **살아 있는 cys 프로세스의 이미지 잠금** 때문에 실패했다.
 그 스텝은 끝에서 `Get-Process cys,cysd | Stop-Process` 로 정리하지만 **시작 전에는 같은 보증이
 없다** — 앞 스텝이 프로세스를 남기면 설정이 깨진다. 버전 문자열과는 무관한 타이밍 축이다.
 
+**재실행 실측**: 같은 커밋 `6faabbb` 의 실패 잡만 재실행 → `success`(run 34304694202).
+코드가 동일한데 결과가 갈렸다 = 앞 스텝이 프로세스를 남겼는지에 **타이밍으로 좌우되는** 설정이다.
+초록을 조건 충족으로 인정하되(단언 실패 0 · 제품 신호 아님), 그 사실을 이렇게 적어 남긴다 —
+"재실행해서 초록을 만들었다"는 것 자체는 숨기지 않는다.
+
 → 조치: 이 티켓에서 `windows-build.yml` 을 고치지 않았다(범위 밖 · 릴리스 레인이 아니다).
-   재실행으로 flake/결정론을 가른 뒤, 결정론이면 별건으로 올린다.
-   처방 후보(별건): T4-14 설정 앞에 정리 스텝과 같은 `Stop-Process` 가드를 두는 것 —
-   지금은 정리가 **뒤에만** 있어 스텝이 자기 앞 상태를 가정한다.
+   **이월 소티켓으로 등재**(아래 §이월 5).

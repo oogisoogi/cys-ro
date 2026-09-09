@@ -75,6 +75,7 @@ gh release view -R oogisoogi/cys-terminal --json tagName,isDraft   # 되읽어 �
 > **0.12.58 매니페스트**(옛 `feat/tab-ui-font-blink` 릴리스의 latest.json)로 떨어진다.
 > 확인: `gh release list -R oogisoogi/cys-terminal` — 옛 3개에 `Pre-release` 표시가 있어야 한다.
 > 아니면 §3-b 를 **먼저** 집행하고 나서 이 절로 돌아와라.
+> ✅ 2026-09-09 첫 발행 직후 셋 다 강등 완료(실측) — 지금은 이 선행 조건이 충족돼 있다.
 
 ```bash
 gh release edit v<문제> -R oogisoogi/cys-terminal --tag v<문제> --draft=true   # 1순위: 비공개로
@@ -108,6 +109,13 @@ done
 ⛔**순서 불변** — 첫 발행 시의 집행 순서는 이렇게 넷이다:
   ① 우리 릴리스 공개(`--draft=false --latest`) → ② `curl -sL <endpoint>` 로 latest.json 왕복 확인
   → ③ **그 뒤** 옛 3개 prerelease 강등 → ④ 엔드포인트 재확인(여전히 우리 것인가).
+
+**집행 실적 2026-09-09 (v0.14.33 첫 발행)** — 네 단계 그대로, 실측:
+  ① `isDraft=false` · `publishedAt=2026-09-09T04:41:27Z` · `/releases/latest` = `v0.14.33`
+  ② 엔드포인트 latest.json = version 0.14.33 · platforms 2키 · darwin 0 ·
+     sha256 `9e28b194…5adb1d` = SUMS 등재값과 **바이트 일치**
+  ③ 옛 3개 → `Pre-release` (삭제 0)
+  ④ `/releases/latest` = **여전히 `v0.14.33`** · 엔드포인트 재왕복 sha256 **불변**(`9e28b194…`)
 먼저 내리면 non-prerelease 릴리스가 하나도 없는 순간이 생기고, 그 창에서 `/releases/latest` 는
 **404** 가 된다 — 업데이터에겐 「업데이트 없음」이 아니라 **오류**다.
 ⛔삭제는 하지 마라(prerelease 는 되돌릴 수 있고 삭제는 못 되돌린다).

@@ -60,3 +60,24 @@
 3. **서명 검증** — `.sig` 가 우리 키(54FBA04A)로 만들어졌는지는 `latest.json` 의 signature 와
    `.sig` 파일 내용 일치(검증기 ④)까지가 오프라인 사거리다. 「우리 키가 맞는가」는 dry 산출물 표에
    pubkey 대조로 따로 싣는다.
+
+## §관측 — windows-build T4-14 의 설정 단계 경합 (이 티켓이 만든 것이 아님)
+
+2026-09-09 12:2x, 커밋 `6faabbb`(버전 범프 + 문서만)에서 `windows-build` 가 **T4-14 이미지 잠금
+업그레이드 회귀** 스텝에서 죽었다. 바로 앞 커밋 `9585e3d` 에서는 같은 워크플로가 초록이었고,
+두 커밋의 차이는 **버전 문자열과 문서뿐**이다.
+
+실패 지점은 단언이 아니라 **설정(setup)** 이다:
+
+    ##[error]미가드 예외(line 44): The process cannot access the file
+    'C:\Users\runneradmin\AppData\Local\cys\cys.exe' because it is being used by another process.
+    line 44 |  Copy-Item "$env:SystemRoot\System32\cmd.exe" $cys -Force
+
+즉 「구 cys.exe 스탠드인 심기」가 **살아 있는 cys 프로세스의 이미지 잠금** 때문에 실패했다.
+그 스텝은 끝에서 `Get-Process cys,cysd | Stop-Process` 로 정리하지만 **시작 전에는 같은 보증이
+없다** — 앞 스텝이 프로세스를 남기면 설정이 깨진다. 버전 문자열과는 무관한 타이밍 축이다.
+
+→ 조치: 이 티켓에서 `windows-build.yml` 을 고치지 않았다(범위 밖 · 릴리스 레인이 아니다).
+   재실행으로 flake/결정론을 가른 뒤, 결정론이면 별건으로 올린다.
+   처방 후보(별건): T4-14 설정 앞에 정리 스텝과 같은 `Stop-Process` 가드를 두는 것 —
+   지금은 정리가 **뒤에만** 있어 스텝이 자기 앞 상태를 가정한다.

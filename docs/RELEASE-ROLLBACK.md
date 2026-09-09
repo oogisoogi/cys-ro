@@ -10,6 +10,12 @@
 > patch 를 최소 1 올린다** — 벤더 0.14.30 을 리베이스했으면 우리는 0.14.31, 다음에 벤더 0.14.31 을
 > 리베이스하면 우리는 0.14.32.
 
+**실패한 태그의 번호는 재사용하지 않는다.** 태그를 달고 빌드가 적색이면 그 번호는 거기서 끝이고,
+수리 뒤에는 **다음 번호**로 다시 낸다(실측 사례 2026-09-09: v0.14.31 빌드 적색 → 수리 → v0.14.32).
+이유는 태그를 옮기는 것이 곧 force 이고, 같은 번호가 두 트리를 가리킨 이력이 남으면 「무엇이
+v0.14.31 이었나」를 나중에 아무도 확정할 수 없기 때문이다. 실패 태그는 **존치**한다(삭제 금지) —
+그것이 "이 번호는 발행되지 않았다"는 기록이다.
+
 **왜**: 같은 태그 이름이 두 판을 가리키면 영구 분기가 된다. 실측(2026-09-09) — upstream 의
 `v0.14.30` 은 `bc01f43` 을 가리키는데 그 위에 우리 커밋이 **47개** 쌓여 있었다. 그 상태로 우리도
 `v0.14.30` 을 달면 두 원격을 가진 사람에게 같은 이름이 서로 다른 커밋 둘을 뜻하게 된다.
@@ -57,15 +63,47 @@ gh release view -R oogisoogi/cys-terminal --json tagName,isDraft   # 되읽어 �
 `latest` 를 되돌린 **뒤에** 판단한다. 순서를 바꾸지 마라 — 지우는 동안 그것이 latest 면 그 창에
 들어온 참가자가 404 를 본다.
 
+> ⚠**손대기 전에 먼저 확인하라 — 옛 릴리스 3개가 prerelease 상태인가?**
+> 아니라면 우리 릴리스를 draft 로 내리는 순간 `/releases/latest` 의 fallback 이
+> **0.12.58 매니페스트**(옛 `feat/tab-ui-font-blink` 릴리스의 latest.json)로 떨어진다.
+> 확인: `gh release list -R oogisoogi/cys-terminal` — 옛 3개에 `Pre-release` 표시가 있어야 한다.
+> 아니면 §3-b 를 **먼저** 집행하고 나서 이 절로 돌아와라.
+
 ```bash
 gh release edit v<문제> -R oogisoogi/cys-terminal --tag v<문제> --draft=true   # 1순위: 비공개로
 gh release delete v<문제> -R oogisoogi/cys-terminal                            # 최후: 삭제
 ```
 
 - **1순위는 draft 로 되돌리는 것**이다. 자산이 보존돼 원인 규명이 가능하고, 되살릴 수 있다.
+- ⚠**되돌린 뒤 `latest` 가 어디로 떨어지는지 반드시 확인하라.** GitHub 의 `/releases/latest` 는
+  「draft·prerelease 가 아닌 릴리스」 중에서 고른다. 우리 릴리스를 draft 로 내리면 자동으로
+  **그 다음 후보**가 latest 가 된다. 실측(2026-09-09): 이 저장소에는 2026-07 의 옛 릴리스 3개가
+  남아 있고 그중 `feat/tab-ui-font-blink` 가 **0.12.58 짜리 latest.json 을 자산으로 갖고 있다**.
+  즉 롤백이 엔드포인트를 「업데이트 없음」이 아니라 **0.12.58 매니페스트**로 떨어뜨릴 수 있다.
+  롤백 직후 `curl -sL <endpoint>` 로 무엇이 나오는지 눈으로 보고, 아니면 §2 로 명시 복원하라.
 - 삭제는 자산까지 사라진다. 사후 분석이 불가능해지므로 오너 지시가 있을 때만.
 - 태그(`refs/tags/vX.Y.Z`) 는 **남겨 둔다**. 태그를 지우고 같은 이름으로 다시 자르면
   이미 그 태그를 받아 간 클론과 이력이 갈린다.
+
+## 3-b. 옛 릴리스 강등 — 첫 발행의 **고정 절차 ④** (선택 사항 아님)
+
+master 결정 2026-09-09. 2026-07 세대의 옛 릴리스 3개(`feat/tab-ui-font-blink`·
+`fix/shift-enter-newline`·`fix/hangul-ime-composition-leak`)는 브랜치명 태그로 만들어진 것이고,
+첫째 것이 우리 첫 발행 직전까지 **Latest** 였다. 이들을 prerelease 로 내려야 §3 의
+「fallback 이 0.12.58 로 떨어지는」 지뢰가 사라진다.
+
+```bash
+for T in feat/tab-ui-font-blink fix/shift-enter-newline fix/hangul-ime-composition-leak; do
+  gh release edit "$T" -R oogisoogi/cys-terminal --prerelease      # 가역
+done
+```
+
+⛔**순서 불변** — 첫 발행 시의 집행 순서는 이렇게 넷이다:
+  ① 우리 릴리스 공개(`--draft=false --latest`) → ② `curl -sL <endpoint>` 로 latest.json 왕복 확인
+  → ③ **그 뒤** 옛 3개 prerelease 강등 → ④ 엔드포인트 재확인(여전히 우리 것인가).
+먼저 내리면 non-prerelease 릴리스가 하나도 없는 순간이 생기고, 그 창에서 `/releases/latest` 는
+**404** 가 된다 — 업데이터에겐 「업데이트 없음」이 아니라 **오류**다.
+⛔삭제는 하지 마라(prerelease 는 되돌릴 수 있고 삭제는 못 되돌린다).
 
 ## 4. 되돌릴 수 **없는** 것 — 정직하게 적는다
 

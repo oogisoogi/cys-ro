@@ -6,7 +6,7 @@
 
 실행: python3 cysjavis-pack/bin/tests/test_phoenix_w5_windows.py  (0=전건 PASS)
 """
-import importlib.util, os, sys, tempfile
+import importlib.util, os, re, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PH = os.path.normpath(os.path.join(HERE, "..", "javis_phoenix.py"))
@@ -65,9 +65,22 @@ def main():
 
     # ── open 모드 계약: lease/lock 파일은 truncate 금지(a+)여야 Windows msvcrt byte0 영역이 일치한다 ──
     #   (회귀 핀: 과거 "w" 는 truncate 로 동시 open 시 msvcrt 영역/락이 어긋날 수 있었다 — 소스 문자열 검증.)
+    #
+    # ★2026-09-09 수리(TICKET=cys-release-first-publish): 종전 이 두 줄은 **완전 리터럴**
+    #   `open(lease_path, "a+")` 를 찾았다. 그런데 229df16(2026-09-08 · 로케일 코덱 독립화)이
+    #   같은 호출에 `encoding="utf-8"` 을 **덧붙이면서** 리터럴이 어긋나 핀이 적색이 됐다 —
+    #   모드는 여전히 `a+` 이고 계약은 지켜졌는데 검사만 깨진 것이다. 실측: javis_phoenix.py:1594
+    #   `open(lease_path, "a+", encoding="utf-8")` · :935 `open(p, "a+", encoding="utf-8")`.
+    #   ⚠이 핀은 태그 push 에서만 도는 release 전용 스위트라(ci-branch 는 `test_phoenix_*` 를
+    #     돌리지 않는다) 09-08 부터 오늘 첫 태그까지 **아무도 못 봤다.**
+    #   고친 방향: 핀을 **약화하지 않고** 인자 추가에 둔감하게 바꿨다. 대상 호출을 전부 찾아
+    #   **모드가 하나도 빠짐없이 `a+` 인지**를 본다 — 하나라도 "w"(truncate)로 회귀하면 죽고,
+    #   호출이 아예 사라져도 죽는다(빈 목록 = 실패). 종전 리터럴보다 잡는 범위가 넓다.
     src = open(PH, encoding="utf-8").read()
-    check("D2 restore.lease open 모드 a+(무truncate)", 'open(lease_path, "a+")' in src)
-    check("D2 roster/dept lock open 모드 a+(무truncate)", 'open(p, "a+")' in src)
+    for label, target in (("restore.lease", "lease_path"), ("roster/dept lock", "p")):
+        modes = re.findall(r'open\(%s,\s*"([^"]+)"' % re.escape(target), src)
+        check("D2 %s open 모드 a+(무truncate) · 실측 %r" % (label, modes),
+              bool(modes) and all(m == "a+" for m in modes))
     check("D2 _try_lock_nb 에 msvcrt.locking(LK_NBLCK) 배선", "msvcrt.locking" in src and "LK_NBLCK" in src)
 
     import shutil

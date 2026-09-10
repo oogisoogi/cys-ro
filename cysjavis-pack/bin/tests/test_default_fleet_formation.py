@@ -711,7 +711,10 @@ def _bare_boot_reviewers(text):
     """`javis_orchestra.py boot-reviewers` 중 `--spawn` 이 뒤따르지 않는 출현(순수)."""
     import re
     out = []
-    for m in re.finditer(r"javis_orchestra\.py\s+boot-reviewers", text):
+    # ★따옴표 허용: 디렉티브는 `"${CYS_PACK_DIR…}/bin/javis_orchestra.py" boot-reviewers` 형태로도
+    #   쓴다. `\s+` 만 보면 그 형태를 통째로 놓쳐 게이트에 사각이 생긴다(안 잡는 게이트는 게이트가
+    #   아니다 — 이 파일이 ⓕ에서 이미 배운 교훈).
+    for m in re.finditer(r"javis_orchestra\.py[\"'`]?\s+boot-reviewers", text):
         tail = text[m.end():m.end() + 12]
         if not tail.lstrip().startswith("--spawn"):
             out.append(text[max(0, m.start() - 40):m.end() + 20].replace("\n", " "))
@@ -728,8 +731,13 @@ def t_ack_remedy_docs():
         bare = _bare_boot_reviewers(src)
         check("ⓗ %s — 무플래그 boot-reviewers 처방 0" % rel, not bare, repr(bare[:2]))
     # 음성 픽스처: 무플래그 줄을 하나 심으면 반드시 잡혀야 한다.
-    check("ⓗ 재출현 탐지(게이트 실효 증명)",
+    check("ⓗ 재출현 탐지(게이트 실효 증명 · 맨 호출)",
           len(_bare_boot_reviewers("처방: javis_orchestra.py boot-reviewers 로 재각성")) == 1)
+    check("ⓗ 재출현 탐지(따옴표 경로 형태도 잡는다 — 사각 0)",
+          len(_bare_boot_reviewers('`"$P/bin/javis_orchestra.py" boot-reviewers` 로 재각성')) == 1)
+    check("ⓗ --spawn 이 붙은 정상 처방은 잡지 않는다(위경보 0)",
+          _bare_boot_reviewers('"$P/bin/javis_orchestra.py" boot-reviewers --spawn') == []
+          and _bare_boot_reviewers("javis_orchestra.py boot-reviewers --spawn") == [])
 
 
 def main():

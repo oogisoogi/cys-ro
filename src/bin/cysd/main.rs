@@ -1105,6 +1105,20 @@ async fn async_main() {
     );
     scrub_claude_session_env();
 
+    // ★(1R#4 · 2026-09-10) Windows 자식 수명 결박을 **상속**으로 세운다 — 데몬 자신을 프로세스
+    //   수명 Job(KILL_ON_JOB_CLOSE)에 넣으면 이후 CreateProcess 되는 모든 자손이 커널 수준에서
+    //   생성 시점에 결박된다(경쟁 창 0 · 손자까지 포함). 종전의 '스폰 후 자식별 편입'은
+    //   ⓐ편입 전 데몬 사망 ⓑ편입 전 손자 생성 ⓒ실패 무시 세 구멍이 있었고, 그 결과가
+    //   09-10 참가자 기계의 고아 python3.exe(설치 폴더 삭제 불가 → 재설치 정지)다.
+    //   ★여기가 지점인 이유: 어떤 자식보다 **먼저**여야 한다(소켓 락·pack 설치·워치독 전).
+    //   실패는 강등 모드다 — 죽지 않고 크게 보고하고, 자식별 명시 편입 폴백이 살아난다.
+    #[cfg(windows)]
+    if let Err(e) = crate::state::winjob::bind_self() {
+        eprintln!(
+            "[cysd] ⚠ 자식 수명 결박 강등: {e}\n             [cysd]   ↳ 데몬이 비정상 종료(taskkill /F·제거)되면 런타임 자식이 고아로 남을 수 있다."
+        );
+    }
+
     // 티켓⑤ 강제발화 — 데몬을 띄우지 않고 OAuth usage 프로브만 1회 돌고 끝난다(accounts 주석 참조).
     // ★소켓 락보다 **먼저** 분기한다: 이 모드는 데몬이 아니므로 락을 잡으면 안 되고(라이브 데몬과
     //   경합), 상태 디렉터리에도 손대지 않아야 한다.
@@ -1712,7 +1726,9 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf) {
                     //   winjob 참조). best-effort — 편입 실패가 브리지 기동을 막지 않는다.
                     #[cfg(windows)]
                     if let Some(pid) = child.id() {
-                        crate::state::winjob::assign_child(pid);
+                        if let Err(e) = crate::state::winjob::assign_child(pid) {
+                            eprintln!("[cysd] ⚠ office-bridge pid={pid} Job 결박 실패: {e}");
+                        }
                     }
                     eprintln!("[cysd] office-bridge spawned (127.0.0.1:{port})");
                     let _ = child.wait().await; // 사망 감지 → 아래 백오프 후 루프가 재스폰 판단
@@ -2199,7 +2215,9 @@ fn run_auto_restore_once(
     //   남으면 설치 폴더 삭제·재설치를 막는다(09-10 office-bridge 고아와 같은 계급). 이 데몬을
     //   위한 복원이므로 데몬이 없어지면 함께 끝나는 것이 옳다. PTY 자식과 같은 Job·같은 헬퍼.
     #[cfg(windows)]
-    crate::state::winjob::assign_child(pid);
+    if let Err(e) = crate::state::winjob::assign_child(pid) {
+        eprintln!("[cysd] ⚠ auto-restore pid={pid} Job 결박 실패: {e}");
+    }
     // spawn 직후 다른 blocking 없이 최우선으로 start_time 확보(publication race 최소화·C2).
     // bounded retry(3회) — 갓 스폰된 자식이 프로세스표에 반영될 짧은 창을 흡수한다.
     let start_time = {

@@ -1407,11 +1407,19 @@ def rollback_proposal(socket):
 
 # ------------------------------------------------------------------ spawn 백엔드
 
-def spawn_production(socket, pending_roles, include_master=False):
-    """실 프리미티브 재사용: cys restore 로 죽은 역할 일괄 재기동(세션핀 resume 경로)."""
+def spawn_production(socket, pending_roles, include_master=False, cwd=None):
+    """실 프리미티브 재사용: cys restore 로 죽은 역할 일괄 재기동(세션핀 resume 경로).
+
+    ★cwd(1R#2 · 2026-09-10 codex): `cys restore` 는 `--cwd` 가 있으면 그것이 저장 엔트리의
+      cwd 를 **이긴다**(cys.rs run_restore: `cwd.or_else(entry.cwd)`). 참가자 기계의 기존
+      토폴로지에는 자식 cwd 가 **홈**으로 굳어 있어, 정상 resume 이 성공해도 자식이 다시 홈에서
+      떠 폴더 신뢰 관문에 갇혔다 — 그 자리를 덮는 유일한 손잡이가 이 인자다.
+      **언제 덮는지는 호출부가 `restore_cwd_override` 로 결정한다**(무조건 덮지 않는다)."""
     args = ["restore"]
     if include_master:
         args.append("--include-master")
+    if cwd:
+        args += ["--cwd", cwd]
     r = cys(*args, socket=socket, timeout=90)
     return {"backend": "production(cys restore)", "rc": r.returncode,
             "out": (r.stdout or r.stderr or "").strip()[:800]}
@@ -1435,7 +1443,50 @@ def master_seat_cwd_from_status(obj):
     return None
 
 
-def master_seat_cwd(socket):
+def home_like(cwd):
+    """이 cwd 가 **'아무도 말해 주지 않은 값'(홈)** 인가 — 순수·self-test 핀.
+
+    빈 값도 홈으로 본다(미지정 = launch-agent 기본 = 홈). 대소문자·구분자 정규화는 Windows
+    (드라이브 경로의 대소문자·역슬래시 표기 차이)를 위해서다."""
+    if not cwd:
+        return True
+    n = lambda p: os.path.normcase(os.path.normpath(os.path.expanduser(p)))   # noqa: E731
+    return n(cwd) == n("~")
+
+
+def fresh_child_cwd(saved_cwd, master_cwd):
+    """fresh 강등 자식이 뜰 폴더 — **순수 함수**(1R#2 · self-test 핀).
+
+    저장된 cwd 가 홈(=말해 주지 않은 값)이면 master 기준값이 이기고, 진짜 작업 폴더면 그대로
+    둔다. 종전 순서(저장 cwd 무조건 우선)는 참가자 기계에 굳어 있는 홈 잔재를 그대로 되살려
+    폴더 신뢰 관문에 다시 갇히게 했다 — 그 선택을 호출부 표현식에 두면 시험이 닿지 못하므로
+    (1R 지적: 시험이 '이미 고른 값'만 넣고 있었다) 이름 있는 함수로 꺼낸다."""
+    saved = (saved_cwd or "").strip()
+    return master_cwd if home_like(saved) else saved
+
+
+def restore_cwd_override(entries, roles, master_cwd):
+    """정상 복원(`cys restore`)에 실을 `--cwd` 또는 None — **순수 함수**(1R#2 · self-test 핀).
+
+    계약: master 좌석 cwd 가 해소됐고, **부활 대상 자식 전원의 저장 cwd 가 홈(또는 미지정)** 일
+    때만 덮는다.
+    ★왜 무조건 덮지 않는가: `--cwd` 는 저장 엔트리를 **전부** 이긴다. 다중 프로젝트 함대
+      (워커가 각자 워크트리에 사는 우리 맥 같은 배치)에서 무조건 덮으면 복원이 전 좌석을
+      master 폴더로 **이주**시킨다 — 고치려던 것보다 큰 파괴다. 한 명이라도 진짜 작업 폴더를
+      갖고 있으면 아무것도 덮지 않고, 그 레인의 홈 잔재는 fresh 폴백이 개별로 교정한다.
+    ★master 자신은 판정에서 제외한다(그의 cwd 가 곧 기준값이다)."""
+    if not master_cwd:
+        return None
+    targets = [r for r in (roles or []) if r != "master"]
+    if not targets:
+        return None
+    for r in targets:
+        if not home_like((entries.get(r) or {}).get("cwd")):
+            return None
+    return master_cwd
+
+
+def master_seat_cwd(socket, entries=None):
     """라이브 master 좌석의 생성 cwd(= 자식이 상속할 작업 폴더) 또는 None.
 
     ★P2(2026-09-10 참가자 기계 실측): fresh 강등이 cwd 없이 launch-agent 를 부르면 자식이 **홈**
@@ -1444,8 +1495,17 @@ def master_seat_cwd(socket):
       비었을 때 이 함수가 master 좌석의 폴더를 물려준다.
     ★실패는 조용히 None(= 종전 동작인 홈) — 상속은 개선이지 전제가 아니다.
     ★`_live_surfaces_raw` 를 쓰지 않는 이유: 그 파서는 liveness 판정용이라 cwd 를 버린다.
-      liveness 계약(몽키패치 지점)을 건드리지 않으려고 status 를 직접 읽는다."""
-    return master_seat_cwd_from_status(_status_json(socket))
+      liveness 계약(몽키패치 지점)을 건드리지 않으려고 status 를 직접 읽는다.
+    ★2순위 = **영속 토폴로지의 master 엔트리**(1R#2): master 좌석이 지금 죽어 있으면 라이브
+      관측에는 없다 — 그때가 바로 부활이 필요한 순간이고, 그 순간에 기준 폴더를 못 찾으면
+      자식이 다시 홈에서 뜬다. 기록된 master 의 cwd 가 그 기준이다(홈이면 기준으로 쓰지 않는다 —
+      홈은 '말해 주지 않은 값'이라 상속해도 관문이 그대로다)."""
+    live = master_seat_cwd_from_status(_status_json(socket))
+    if live:
+        return live
+    ent = (entries or {}).get("master") or {}
+    cwd = (ent.get("cwd") or "").strip()
+    return cwd if cwd and not home_like(cwd) else None
 
 
 def spawn_fresh_production(socket, role, agent, cwd=None):
@@ -1867,6 +1927,15 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     #    prod: cys restore 는 idempotent(죽은 역할만 재스폰)이라 재호출로 미스폰 역할만 다시 시도된다.
     #    stub: 역할별 재시도. 스폰 후 settle·회차별 backoff 증가로 동시 경합(부활 폭풍)을 완화한다. ──
     need = [r for r in pending if not stage_done(j, r, "spawn") and r not in role_surface]
+    # ★1R#2(2026-09-10): 기준 폴더를 **1회** 해소한다 — 라이브 master → 영속 토폴로지 master 순.
+    #   `restore_cwd` 는 정상 복원(cys restore)에 실을 override 이고(전원 홈일 때만 · 다중
+    #   프로젝트 함대 보호는 `restore_cwd_override` 주석), `master_cwd` 는 fresh 폴백이 개별
+    #   좌석의 홈 잔재를 교정할 때 쓰는 기준값이다. 둘 다 None 이면 종전 동작 그대로다.
+    master_cwd = master_seat_cwd(socket, entries)
+    restore_cwd = restore_cwd_override(entries, need, master_cwd)
+    if restore_cwd:
+        log("★복원 cwd 상속: 부활 대상 자식의 저장 cwd 가 전원 홈 → master 좌석 폴더(%s)로 복원한다"
+            % restore_cwd)
     attempt = 0
     while need and attempt <= SPAWN_RETRIES:
         if stub:
@@ -1886,7 +1955,8 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                     jevent(j, role, "spawn", "retry" if attempt < SPAWN_RETRIES else "fail",
                            "%s (attempt %d)" % (msg, attempt))
         else:
-            res = spawn_production(socket, need, include_master=include_master)
+            res = spawn_production(socket, need, include_master=include_master,
+                                   cwd=restore_cwd)
             jevent(j, "*", "spawn", "ok" if res["rc"] == 0 else "fail",
                    "attempt %d · %s" % (attempt, json.dumps(res, ensure_ascii=False)))
             time.sleep(SPAWN_SETTLE)  # surface 등장 정착 대기(readiness 경합 완화)
@@ -1927,8 +1997,10 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                 ref, msg = spawn_surrogate(socket, role, fresh_sid, attempt=attempt, mode="fresh")
             else:
                 agent = entries.get(role, {}).get("agent", "claude")
-                # ★P2: 원 좌석 cwd 1순위 → master 좌석 cwd 상속 → None(홈·종전 동작).
-                fresh_cwd = (entries.get(role, {}).get("cwd") or "").strip() or master_seat_cwd(socket)
+                # ★P2(1R#2 개정): 저장 cwd 가 **홈(=말해 주지 않은 값)이면 master 기준값이
+                #   이긴다**. 종전 순서(저장 cwd 우선)는 참가자 기계에 굳어 있는 홈 잔재를
+                #   그대로 되살려 관문에 다시 갇히게 했다. 진짜 작업 폴더를 가진 좌석은 그대로 둔다.
+                fresh_cwd = fresh_child_cwd(entries.get(role, {}).get("cwd"), master_cwd)
                 res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)
                 time.sleep(SPAWN_SETTLE)
                 alive = [s for s in live_role_surfaces(socket).get(role, []) if not s["exited"]]

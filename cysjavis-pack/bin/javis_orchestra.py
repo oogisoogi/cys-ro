@@ -332,15 +332,29 @@ def participant_profile(detect=None, agents=None, roster=None):
     return not any(e["native"] for e in roster)
 
 
+def required_roles_for(roster):
+    """★해소된 리뷰어 로스터 → 유효 의무 역할(순수 · **단일 파생점**).
+
+    ★1R BLOCKER(2026-09-10 codex): 이 문장이 두 곳에 사본으로 있었다 —
+      `effective_required_roles` 는 참가자 프로파일을 적용해 ['cso','worker'] 를 냈는데,
+      **판정의 정본인 `check_verdicts` 는 제 손으로 다시 조립해** 리뷰어 2기를 계속 요구했다.
+      결과: boot-reviewers 는 0기를 띄우고 exit 0 인데 ⑤check 는 그 2기의 부재를 결손으로
+      보고 → 영구 결손·재시도. **스폰하는 쪽과 요구하는 쪽이 다른 문장을 읽으면 부트는 낫지
+      않는다.** 두 소비자가 이제 이 함수 하나를 읽는다(사본 0).
+    ★roster 를 인자로 받는 이유: 감지는 호출부가 이미 1회 해소했다 — 여기서 다시 감지하면
+      같은 호출 안에서 프로파일이 갈릴 수 있다(비결정론)."""
+    if participant_profile(roster=roster):
+        return ["cso", "worker"]
+    return ["cso", "worker"] + [e["role"] for e in roster]
+
+
 def effective_required_roles(detect=None, agents=None):
     """check 가 검증할 유효 의무 역할.
 
     표준 프로파일  = cso·worker + 유효 리뷰어 로스터(감지 폴백 적용 — 종전과 동일).
-    참가자 프로파일 = cso·worker (리뷰어는 required 밖 — `participant_profile` 참조)."""
-    roster = reviewer_roster(detect, agents)
-    if participant_profile(roster=roster):
-        return ["cso", "worker"]
-    return ["cso", "worker"] + [e["role"] for e in roster]
+    참가자 프로파일 = cso·worker (리뷰어는 required 밖 — `participant_profile` 참조).
+    ★판정식은 `required_roles_for` 하나다(check_verdicts 와 공유 — 사본 금지)."""
+    return required_roles_for(reviewer_roster(detect, agents))
 
 
 # ─────────────────── B18: 팀 구성 안내 문구의 단일 파생 소스 (H-DOC-2) ───────────────────
@@ -355,13 +369,27 @@ def team_roster_note(required=None):
       **금지**다 — check 의 required 집합이 master 를 요구하면 레거시 master(자기 좌석을
       스스로 세지 못하는 구 데몬 조합)에서 부트 전체가 사망한다. master 는 '선언한 자기 자신'
       이므로 required 밖에 있는 것이 정상이고, 안내 문구에서만 `+1` 로 합산한다.
-    ★감지 미호출: `REQUIRED_ROLES`(표준 상수)만 읽는다 — 훅 발화 경로의 안내 1줄을 위해
-      `cys agent-detect` 서브프로세스를 띄우지 않는다(발화 지연 0). 대체 슬롯 치환 가능성은
-      문구로 고지한다(로스터 실체는 ⑤check 가 판정).
+    ★감지 호출로 전환(1R#5 · 2026-09-10 codex): 종전 계약은 "감지 미호출 — `REQUIRED_ROLES`
+      상수만 읽는다(발화 지연 0)" 였다. 그 대가가 이제 **거짓 안내**다: 참가자 기계(네이티브
+      리뷰어 CLI 전무)에서 실제 완료 조건은 3노드인데 훅은 5노드를 요구한다고 말했고, 그
+      문장을 읽은 master 가 리뷰어 좌석을 손으로 다시 세우면 이 티켓이 없앤 상시 점유가
+      사람 손으로 되살아난다. **틀린 안내를 빨리 내는 것보다 맞는 안내가 낫다.**
+      비용은 `cys agent-detect` 서브프로세스 1회(프로세스당 캐시 · 이 경로는 훅 1회성 호출).
+      감지가 실패하면 종전 상수(`REQUIRED_ROLES`)로 조용히 강등한다 — 안내 1줄 때문에 훅이
+      죽으면 안 된다(구 계약의 안전 방향은 그대로 보존).
+    ★required 를 명시로 주면 감지를 아예 하지 않는다(순수 호출·테스트·소비자 지정).
     """
-    roles = ["master"] + list(REQUIRED_ROLES if required is None else required)
-    return ("%s (필수 역할 전원+master — 총 %d노드 · 리뷰어는 미감지 시 Claude 대체 슬롯으로 치환)"
-            % ("·".join(roles), len(roles)))
+    if required is None:
+        try:
+            required = effective_required_roles()
+        except Exception:
+            required = REQUIRED_ROLES
+    roles = ["master"] + list(required)
+    tail = ("리뷰어는 미감지 시 Claude 대체 슬롯으로 치환"
+            if any(r.startswith("reviewer") for r in roles)
+            else PARTICIPANT_PROFILE_NOTE)
+    return ("%s (필수 역할 전원+master — 총 %d노드 · %s)"
+            % ("·".join(roles), len(roles), tail))
 
 
 # ★팩 경로 env 키의 우선순위 목록(W14 S19). Rust 정본 `src/pack.rs::PACK_DIR_ENV_KEYS`와
@@ -606,7 +634,10 @@ def check_verdicts(status, detect=None, agents=None):
     """
     bn = _boot_node()
     roster = reviewer_roster(detect, agents)
-    required = ["cso", "worker"] + [e["role"] for e in roster]
+    # ★1R BLOCKER 수리(2026-09-10): 필수 역할을 여기서 다시 조립하지 않는다 —
+    #   `effective_required_roles` 와 **같은 함수**(required_roles_for)를 읽는다. 종전 사본은
+    #   참가자 기계에서 스폰 0 · 요구 2 의 영구 결손을 만들었다(그 자리가 이 줄이었다).
+    required = required_roles_for(roster)
     live = live_role_names(status)
     # 등급 우선순위(높을수록 건강) — 동족 좌석이 여러 개일 때 **가장 건강한 좌석**이 요건을 대표한다.
     # ★왜: worker 가 3개 있고 그중 하나만 죽었을 때 죽은 좌석을 대표로 뽑으면 '미기동' 오판이 나고,
@@ -1115,13 +1146,24 @@ def cmd_check(args):
         print(json.dumps(_check_payload(verdicts, roster, alive_optional, axes, ack, _why),
                          ensure_ascii=False, sort_keys=True))
         return check_exit_code(axes, ack)
-    print("LLM orchestrating 노드 점검 (4종 의무 + grok 선택):")
-    # 리뷰어 대체 고지(2026-06-14 — 정직한 라벨링: 보편적이나 벤더 다양성은 약함)
-    for e in roster:
-        if not e["native"]:
-            print("  ⚠ %s 미감지(%s) → %s(Claude 대체) — 보편적이나 벤더 다양성 약함, "
-                  "페르소나/렌즈/익명화로 보완(REVIEWER_DIRECTIVE §6)"
-                  % (e["substituted_for"], e["reason"], e["role"]))
+    # ★1R#1 후속(2026-09-10): 머리글·진단 행도 프로파일 파생이다. 종전에는 참가자 기계에서
+    #   「4종 의무」 머리글 아래에 **대체 리뷰어 2기 미감지 경고**가 그대로 찍혔다 — check 는
+    #   그 좌석을 요구하지도 않는데(required 밖) 사람에게는 결손처럼 읽히는 거짓 진단이다.
+    _participant = participant_profile(roster=roster)
+    print("LLM orchestrating 노드 점검 (%s):"
+          % ("참가자 프로파일 — 의무 %d종 · %s" % (len(required), PARTICIPANT_PROFILE_NOTE)
+             if _participant else "4종 의무 + grok 선택"))
+    if _participant:
+        # 결손이 아니라 **정상 상태**다 — 처방(cys boot)도 붙이지 않는다.
+        print("  · 리뷰어 미기동 = 정상(네이티브 CLI 전무) · 의뢰 시: "
+              "javis_boot_node.py --role reviewer-claude-1 --agent claude")
+    else:
+        # 리뷰어 대체 고지(2026-06-14 — 정직한 라벨링: 보편적이나 벤더 다양성은 약함)
+        for e in roster:
+            if not e["native"]:
+                print("  ⚠ %s 미감지(%s) → %s(Claude 대체) — 보편적이나 벤더 다양성 약함, "
+                      "페르소나/렌즈/익명화로 보완(REVIEWER_DIRECTIVE §6)"
+                      % (e["substituted_for"], e["reason"], e["role"]))
     # ★missing·gated 는 위 `verdict_axes` 가 이미 산출했다(값·순서 동일) — 여기서는 표현만 한다.
     for r in required:
         v = verdicts[r]
@@ -3169,10 +3211,17 @@ def cmd_self_test(args):
         # ── B18: 팀 구성 안내 파생(H-DOC-2) — 리터럴 금지·master 는 required 밖 ──
         assert "master" not in REQUIRED_ROLES, \
             "REQUIRED_ROLES 에 master 가 들어갔다(금지 방향 ② — 레거시 master 부트 사망)"
-        _note = team_roster_note()
+        # ★1R#5: 안내는 이제 **프로파일 파생**이다 — 감지에 의존하지 않는 계약만 여기서 잰다
+        #   (명시 required 주입 = 순수 호출). 표준·참가자 두 형상을 모두 고정한다.
+        _note = team_roster_note(REQUIRED_ROLES)
         assert _note.startswith("master·"), "팀 구성 안내가 master 로 시작하지 않는다"
         assert "총 %d노드" % (len(REQUIRED_ROLES) + 1) in _note, \
             "노드 수가 REQUIRED_ROLES+1 파생이 아니다: %s" % _note
+        _pnote = team_roster_note(["cso", "worker"])
+        assert "총 3노드" in _pnote and "reviewer" not in _pnote, \
+            "참가자 프로파일 안내가 3노드·리뷰어 부재로 파생되지 않음: %s" % _pnote
+        assert PARTICIPANT_PROFILE_NOTE in _pnote, \
+            "참가자 안내에 온디맨드 고지 부재: %s" % _pnote
         for _r in REQUIRED_ROLES:
             assert _r in _note, "필수 역할 %s 가 안내에서 누락" % _r
         # 편성이 바뀌면 숫자·역할명이 **따라 움직인다**(사본 드리프트 불가능성 증명)

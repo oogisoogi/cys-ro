@@ -166,6 +166,12 @@ def _ensure_harness(m, live, installed, resource_ok):
     feeds = []
     m.gate_check = lambda: True
     m._installed_clis = lambda: set(installed)
+    # ★1R#3(2026-09-10): 프로파일 사실은 이제 orchestra 해소(`native_reviewer_present`)에서 온다.
+    #   그것은 `cys agent-detect`·agents.json 을 만지는 **외부 접촉**이라 밀폐 하네스가 스텁해야
+    #   한다(안 하면 검체가 러너 기계의 agy·codex 설치 여부로 갈린다 — 우리 맥에서 초록,
+    #   깨끗한 기계에서 적색인 그 계급의 결함). 스텁은 이 검체가 세운 전제(installed)를 따른다.
+    m.native_reviewer_present = lambda: (
+        bool(set(installed) & m.REVIEWER_CLIS) if installed else None)
     # ★N-7: 스텁 시그니처는 실함수(`_live_roles(socket, require_live_agent=True)`)와 일치시킨다.
     #   종전 `lambda socket=None` 은 좌석 관측 호출(`_live_roles(socket, require_live_agent=False)`)이
     #   추가되는 순간 TypeError 로 조용히 깨진다 — 미래 파손의 씨앗이라 실시그니처를 그대로 받는다.
@@ -186,8 +192,8 @@ def ensure_order_gate(m):
         check("9a 로스터 complete + 자원 hard → complete", False, "ensure 미구현")
         return
     saved = {k: getattr(m, k) for k in
-             ("gate_check", "_installed_clis", "_live_roles", "_resource_ok",
-              "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt")}
+             ("gate_check", "_installed_clis", "native_reviewer_present", "_live_roles",
+              "_resource_ok", "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt")}
     saved_state = os.environ.get("CYS_STATE_DIR")
     td = tempfile.mkdtemp(prefix="fmens-")
     os.environ["CYS_STATE_DIR"] = td

@@ -113,11 +113,20 @@
    팩 — 부서 레인이 base 팩 상태를 읽는 교차 오염 금지). 미완 작업·미해결 게이트가
    있으면 RECOVERY.md 프로토콜로 **복원 모드**에 진입한다(완료된 단계 반복 금지).
 ④ **노드 자동 기동 (생략 금지·앵커4-1 의무)**: `cys boot` 를 실행한다 — 설치된 CLI를 자동
-   감지해 **CSO·워커(claude)·리뷰어 agy(Antigravity CLI)·리뷰어 codex 4종을 의무 기동**하고(grok은 설치 시
-   추가 리뷰어로 선택 기동) 지침 주입·프롬프트 대기까지 완료한다(미설치 CLI 자동 건너뜀 ·
-   이미 가동 중인 역할 중복 기동 없음). **"필요할 때 띄우겠다"로 미루지 마라** — 이 4종이 떠야
-   '프로젝트 실행 준비 완료'다. 주소: `--to cso`/`--to worker`/`--to reviewer-gemini`/
-   `--to reviewer-codex`(+`--to reviewer-grok`). **부서 레인은 ④-c 분기가 우선한다(CEO 티켓 게이트)**.
+   감지해 **의무 노드를 기동**하고 지침 주입·프롬프트 대기까지 완료한다(미설치 CLI 자동 건너뜀 ·
+   이미 가동 중인 역할 중복 기동 없음). **"필요할 때 띄우겠다"로 미루지 마라** — 의무 노드가
+   떠야 '프로젝트 실행 준비 완료'다.
+   ★**의무 노드 집합은 편성 프로파일이 정한다**(2026-09-10 · 리터럴 금지):
+   · **표준 프로파일**(agy·codex 중 하나라도 실재) = **CSO·워커(claude)·리뷰어 agy(Antigravity
+     CLI)·리뷰어 codex 4종**(grok은 설치 시 추가 리뷰어로 선택 기동).
+   · **참가자 프로파일**(네이티브 리뷰어 CLI 전무) = **CSO·워커 2종**. 리뷰어는 의무가 아니라
+     **온디맨드**이며, 그 부재는 결손이 아니다 — 아래 ④-b 를 그대로 따르고 **손으로 리뷰어
+     좌석을 만들지 마라**(이 티켓이 없앤 상시 점유가 사람 손으로 되살아난다).
+   ★어느 프로파일인지는 산문으로 재추론하지 않는다. 결정론 출력만이 사실이다:
+   `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" check` 의 머리글과
+   `--note-team-roster` 안내가 그 프로파일에서 파생된 실제 의무 집합을 말한다.
+   주소: `--to cso`/`--to worker`(+표준 프로파일이면 `--to reviewer-gemini`/`--to reviewer-codex`/
+   `--to reviewer-grok`). **부서 레인은 ④-c 분기가 우선한다(CEO 티켓 게이트)**.
    ④-b **리뷰어 감지·편성 프로파일 (멈춤 금지 · 제품 기본 절차)**: `cys boot`가 미설치
    리뷰어를 건너뛰면 리뷰어 0개로 check가 영영 실패해 부트가 멈춘다. 이를 막기 위해
    `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" boot-reviewers` 를
@@ -143,7 +152,7 @@
    레인에 적용된다). 이 분기는 훅·javis_bootstrap.py가 결정론으로
    집행하므로 LLM이 재추론하지 않는다. **"부서장은 무조건 단독 대기"라는 규칙은 폐기됐다** — 부서장도
    티켓만 발급되면 4종 팀을 갖는다(단독 대기는 각성 기본값이 아니라 티켓 부재 시의 강등 상태다).
-   **4종 생존은 결정론으로 확인한다** —
+   **의무 노드 생존은 결정론으로 확인한다**(집합은 프로파일 파생 — ④ 참조) —
    `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" check`
    가 READY를 낼 때까지 '준비 완료'를 선언하지 마라(눈대중 금지). 부재 노드가 있으면 재기동한다.
 ⑤ **승인 채널 확보**: `cys events --category feed --category watchdog --category queue
@@ -509,6 +518,8 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
   surface 폐쇄)는 master 승인 후 집행한다.
 - 워커에게 서버성 프로세스는 `cys run -- <명령>`(종료 시 그룹 강제 종료)를 쓰게 한다.
 - CSO가 죽으면(surface.exited) master는 재기동한다 — 4종 의무 노드는 항상 생존해야 한다
+  (★집합은 **편성 프로파일 파생**이다 — 참가자 프로파일에서는 CSO·워커 2종이고 리뷰어 부재는
+   결손이 아니다. ④ 참조. CSO 는 어느 프로파일에서도 의무다)
   (`javis_orchestra.py check`로 결정론 확인).
 - 죽은(`exited=true`) 좌석의 pane 잔재 회수는 `cys reap-surface <surface>`다(★G4 전용 RPC
   `surface.reap` — master/cso pane 전용·7조건 게이트·exit 7=게이트 거부). 상설 집행 주체는

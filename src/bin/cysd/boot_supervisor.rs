@@ -1845,7 +1845,9 @@ fn run_ensure_team(
             //   매달리면 데몬이 죽어도 python 이 남는다(office-bridge 고아와 같은 계급).
             //   PTY 자식과 같은 Job·같은 헬퍼 · best-effort(편입 실패가 부트를 막지 않는다).
             #[cfg(windows)]
-            crate::state::winjob::assign_child(pid);
+            if let Err(e) = crate::state::winjob::assign_child(pid) {
+                eprintln!("[cysd] ⚠ 부트 체인 pid={pid} Job 결박 실패: {e}");
+            }
             // 핸들 즉시 드롭 = 기다리지 않는다(감독자 cadence 를 자식이 잡아먹지 않는다).
             // ★정직 명문(P2 · 2차 성찰 P2-3): 자식 exit 을 관측하지 않으므로 '스폰 성공=인텐트
             //   제거'이고, exit 11(싱글플라이트 skip)도 exit 10(session_error)도 여기서는

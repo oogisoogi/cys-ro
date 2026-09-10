@@ -22,6 +22,7 @@ pub const DEFAULT_COLS: u16 = 120;
 //   자식을 편입하면 데몬 프로세스 종료 시 OS 가 Job 핸들을 닫아 편입된 전 자식·손자를 강제 종료한다.
 #[cfg(windows)]
 pub(crate) mod winjob {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
@@ -36,22 +37,73 @@ pub(crate) mod winjob {
     // 데몬 소유 Job(프로세스 수명 = 핸들 수명, 명시 close 없음 → 프로세스 종료 시 OS 가 닫아 KILL 발동).
     //   HANDLE(=*mut c_void)은 !Send 이므로 usize 로 보관한다(핸들 값 자체는 프로세스 전역 유효).
     static JOB: OnceLock<usize> = OnceLock::new();
+    /// 데몬 **자신**이 Job 에 들어갔는가 — 참이면 이후 모든 자손이 상속으로 결박된다.
+    static SELF_BOUND: AtomicBool = AtomicBool::new(false);
 
-    fn job() -> HANDLE {
-        (*JOB.get_or_init(|| unsafe {
+    /// Job 핸들 생성·설정. ★실패를 **삼키지 않는다**(1R#4 · 2026-09-10 codex): 종전 `job()` 은
+    /// `CreateJobObjectW`/`SetInformationJobObject` 실패를 무시하고 null·미설정 핸들을 OnceLock 에
+    /// **영구 캐시**했다 — 그러면 이후 전 편입이 조용히 무동작이 되는데 호출부는 "스폰 성공"을
+    /// 보고했다. 측정 불능이 통과로 접히는, 이 저장소가 반복해 낸 사고의 형태다.
+    fn job() -> Result<HANDLE, String> {
+        let h = (*JOB.get_or_init(|| unsafe {
             let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if !h.is_null() {
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                SetInformationJobObject(
-                    h,
-                    JobObjectExtendedLimitInformation,
-                    (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
+            if h.is_null() {
+                return 0usize;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                h,
+                JobObjectExtendedLimitInformation,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                // KILL_ON_JOB_CLOSE 가 안 걸린 Job 은 **결박이 아니다** — 캐시하지 않고 버린다.
+                CloseHandle(h);
+                return 0usize;
             }
             h as usize
-        })) as HANDLE
+        })) as HANDLE;
+        if h.is_null() {
+            return Err(format!(
+                "Job 생성/설정 실패(GetLastError={}) — 자식 수명 결박 불가",
+                unsafe { windows_sys::Win32::Foundation::GetLastError() }
+            ));
+        }
+        Ok(h)
+    }
+
+    /// ★(1R#4) **데몬 자신을 Job 에 넣는다** — 이후 모든 자손이 *생성 시점에* 상속으로 결박된다.
+    ///
+    /// 종전 설계(자식 스폰 **후** `AssignProcessToJobObject`)에는 두 구멍이 있었다:
+    ///   ⓐ 경쟁 창 — 자식은 이미 실행 중이라, 편입 전에 데몬이 죽으면 그 자식은 고아로 남고,
+    ///     그 창에서 자식이 만든 **손자**는 영영 Job 밖이다(소급 포획 없음).
+    ///   ⓑ 실패 무시 — 편입이 실패해도 호출부는 성공을 보고했다.
+    /// 자기 편입은 둘을 한 번에 없앤다: 상속은 커널이 CreateProcess 시점에 하므로 창이 없고,
+    /// 실패는 부트 1회 지점에서 크게 보고된다.
+    ///
+    /// 반환 Ok = 이후 자손 전부 결박 · Err = **강등 모드**(호출부가 loud 보고 · 자식별 명시
+    /// 편입 폴백이 살아난다). Windows 8+ 는 중첩 Job 을 지원하므로 러너·설치기가 우리를 이미
+    /// 다른 Job 에 넣어 두었어도 이 편입은 성립한다.
+    pub fn bind_self() -> Result<(), String> {
+        let j = job()?;
+        unsafe {
+            let me = windows_sys::Win32::System::Threading::GetCurrentProcess();
+            if AssignProcessToJobObject(j, me) == 0 {
+                return Err(format!(
+                    "데몬 자기 Job 편입 실패(GetLastError={}) — 자손 상속 결박 불가(자식별 명시 편입으로 강등)",
+                    windows_sys::Win32::Foundation::GetLastError()
+                ));
+            }
+        }
+        SELF_BOUND.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// 데몬 자신이 Job 에 결박됐는가(=자손이 상속으로 결박되는가).
+    pub fn self_bound() -> bool {
+        SELF_BOUND.load(Ordering::Relaxed)
     }
 
     /// PTY 자식(pid)을 데몬 소유 Job(KILL_ON_JOB_CLOSE)에 편입 — 데몬 사후 자식·손자 동반사망(mac SIGKILL 대칭).
@@ -59,21 +111,35 @@ pub(crate) mod winjob {
     /// CREATE_SUSPENDED→resume 은 ConPTY 계약과 충돌한다 — 채택하지 않았다. 편입 이후 자식이 만드는 손자는
     /// Job 을 상속(자동 편입)하고, 편입 직전 sub-ms 창의 손자만 이론적 이탈(에이전트 실무상 무해). best-effort
     /// (실패해도 스폰을 죽이지 않는다 — 잔존 위험은 unix 대비로만 존재, 가용성 우선).
-    pub fn assign_child(pid: u32) {
+    pub fn assign_child(pid: u32) -> Result<(), String> {
         if pid == 0 {
-            return;
+            return Err("pid=0 — 편입 대상 없음".into());
         }
+        // ★(1R#4) 자기 편입이 성립했으면 자식은 **이미 상속으로 결박돼 있다**. 같은 Job 에 다시
+        //   편입하면 ERROR_ACCESS_DENIED 가 나므로(중복 편입 금지) 여기서 끝낸다 — 없는 실패를
+        //   만들어 로그를 오염시키지 않는다. 이 분기가 곧 '경쟁 창 0' 의 근거다.
+        if self_bound() {
+            return Ok(());
+        }
+        let j = job()?;
         unsafe {
-            let j = job();
-            if j.is_null() {
-                return;
-            }
             let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-            if !proc.is_null() {
-                AssignProcessToJobObject(j, proc);
-                CloseHandle(proc);
+            if proc.is_null() {
+                return Err(format!(
+                    "OpenProcess(pid={pid}) 실패(GetLastError={}) — 자식 미결박",
+                    windows_sys::Win32::Foundation::GetLastError()
+                ));
+            }
+            let ok = AssignProcessToJobObject(j, proc) != 0;
+            let err = windows_sys::Win32::Foundation::GetLastError();
+            CloseHandle(proc);
+            if !ok {
+                return Err(format!(
+                    "AssignProcessToJobObject(pid={pid}) 실패(GetLastError={err}) — 자식 미결박"
+                ));
             }
         }
+        Ok(())
     }
 }
 
@@ -3209,9 +3275,14 @@ impl Daemon {
             .spawn_command(builder)
             .map_err(|e| format!("spawn failed: {e}"))?;
         let pid = child.process_id().unwrap_or(0);
-        // ★D3(W5): 스폰 직후 자식을 데몬 소유 Job 에 편입 — 데몬 사후 동반사망(Windows P2-9). unix 는 no-op.
+        // ★D3(W5): 자식을 데몬 소유 Job 에 결박 — 데몬 사후 동반사망(Windows P2-9). unix 는 no-op.
+        //   ★(1R#4) 자기 편입(bind_self)이 성립한 정상 경로에서는 **상속으로 이미 결박**돼 있어
+        //   이 호출은 Ok 로 즉시 끝난다(경쟁 창 0). 강등 모드에서만 실제 편입을 시도하고,
+        //   실패는 **조용히 넘어가지 않는다**(종전엔 반환값이 없어 실패가 보이지 않았다).
         #[cfg(windows)]
-        winjob::assign_child(pid);
+        if let Err(e) = winjob::assign_child(pid) {
+            eprintln!("[cysd] ⚠ PTY 자식 pid={pid} Job 결박 실패: {e} — 데몬 사후 고아 가능");
+        }
         drop(pair.slave);
 
         let reader = pair
@@ -4428,6 +4499,81 @@ fn default_health_rules() -> Vec<HealthRule> {
             })
         })
         .collect()
+}
+
+// ── ★(1R#4) Windows 자식 수명 결박 **실측** 축(문자열 계수 폐기) ─────────────────────────
+//   codex 1R 이 정확히 지적한 것: 소스에 `assign_child` 가 몇 번 나오는지 세는 시험은 죽은
+//   코드·편입 실패·경쟁 창을 전부 통과시킨다. 결박은 **커널에 물어야** 안다(IsProcessInJob).
+//   이 배터리는 windows-health 레인의 `cargo test --bin cysd` 에서 실제로 돈다(실기).
+#[cfg(all(test, windows))]
+mod winjob_binding_tests {
+    use super::winjob;
+
+    /// 자식 pid 가 **어떤 Job 에든** 속해 있는가(커널 사실). 우리 Job 특정은 하지 않는다 —
+    /// 러너가 우리를 바깥 Job 에 넣어 둔 경우 중첩 Job 이 되어 특정 핸들 비교가 무의미해진다.
+    /// 이 축이 재는 것은 "결박이 되었는가" 하나다.
+    fn in_any_job(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            assert!(!h.is_null(), "OpenProcess(pid={pid}) 실패 — 측정 불능은 통과가 아니다");
+            let mut yes: i32 = 0;
+            let ok = IsProcessInJob(h, std::ptr::null_mut(), &mut yes);
+            CloseHandle(h);
+            assert!(ok != 0, "IsProcessInJob 실패 — 측정 불능은 통과가 아니다");
+            yes != 0
+        }
+    }
+
+    /// ★핵심 축: 데몬이 자기 Job 에 들어간 뒤 스폰한 자식은 **상속으로** 결박된다.
+    /// bind_self 가 실패하면(강등 모드) 자식별 명시 편입이 그 자리를 메워야 한다 — 어느
+    /// 경로든 최종 상태는 "자식이 Job 안"이어야 하고, 그것을 실측한다.
+    #[test]
+    fn spawned_child_is_actually_bound_to_a_job() {
+        let degraded = winjob::bind_self().err();
+        if let Some(e) = &degraded {
+            eprintln!("[test] bind_self 강등({e}) — 자식별 명시 편입 폴백 경로를 잰다");
+        }
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 20 127.0.0.1 >NUL"])
+            .spawn()
+            .expect("테스트 자식 스폰 실패");
+        let pid = child.id();
+        if degraded.is_some() {
+            winjob::assign_child(pid).expect("강등 모드 명시 편입이 실패 — 자식 미결박 방치");
+        }
+        let bound = in_any_job(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            bound,
+            "스폰된 자식이 어떤 Job 에도 속하지 않는다 — 데몬 사후 고아 경로가 열려 있다"
+        );
+    }
+
+    /// 자기 편입이 성립한 뒤의 `assign_child` 는 **중복 편입을 시도하지 않고** Ok 다.
+    /// (같은 Job 재편입은 ERROR_ACCESS_DENIED 라, 이 분기가 없으면 정상 경로가 매번 거짓
+    ///  실패 로그를 뿜는다 — 로그 오염은 다음 진단을 못 하게 만든다.)
+    #[test]
+    fn assign_child_is_noop_after_self_bind() {
+        let _ = winjob::bind_self();
+        if winjob::self_bound() {
+            assert!(
+                winjob::assign_child(std::process::id()).is_ok(),
+                "자기 편입 후 assign_child 가 실패를 냈다(중복 편입 시도 잔존)"
+            );
+        }
+    }
+
+    /// pid=0 은 편입 대상이 아니다 — **에러**여야 한다(종전엔 조용한 return 이었다).
+    #[test]
+    fn assign_child_rejects_pid_zero() {
+        assert!(winjob::assign_child(0).is_err(), "pid=0 이 조용히 성공으로 접힘");
+    }
 }
 
 #[cfg(test)]

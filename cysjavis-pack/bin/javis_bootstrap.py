@@ -3667,19 +3667,47 @@ def cmd_self_test():
                 detect=lambda a, g=None: (False, "stub-missing"), agents={})
             assert nat == ["cso", "worker", "reviewer-gemini", "reviewer-codex"], \
                 "네이티브 로스터 계약 이탈: %r" % (nat,)
-            assert sub == ["cso", "worker", "reviewer-claude-1", "reviewer-claude-2"], \
-                "대체 로스터 계약 이탈: %r" % (sub,)
-            # 신 판정이 두 로스터를 각각 그대로 소비하는지(이름공간 결박 확인)
+            # ★참가자 프로파일(P1 · 2026-09-10 · TICKET=pack-participant-formation): 네이티브
+            #   리뷰어 CLI 가 **전무**한 기계에서는 대체 리뷰어를 의무 역할로 세우지 않는다
+            #   (구 계약 = ["cso","worker","reviewer-claude-1","reviewer-claude-2"]). 그 좌석이
+            #   required 에 있으면 결손 판정이 매 부팅 2기를 되살려 리뷰 의뢰 0인 기계의 주간
+            #   한도를 태웠다(실측). 대체 슬롯 자체는 살아 있고(reviewer_roster 무수정) 의뢰 시
+            #   같은 이름으로 선다 — 없앤 것은 능력이 아니라 상시 점유다.
+            assert sub == ["cso", "worker"], \
+                "참가자 프로파일 의무역할 계약 이탈(리뷰어 상시 점유 부활): %r" % (sub,)
+            # 혼합(네이티브 1종만 실재) = 참가자 아님 → 현행 대체 폴백이 그대로 유지된다.
+            mix = _orch_st.effective_required_roles(
+                detect=lambda a, g=None: (a == "gemini", "stub-mixed"), agents={})
+            assert mix == ["cso", "worker", "reviewer-gemini", "reviewer-claude-2"], \
+                "혼합 로스터 계약 이탈(현행 폴백 소멸): %r" % (mix,)
+            # 신 판정이 각 로스터를 그대로 소비하는지(이름공간 결박 확인)
             assert _team_roster_deficit(nat, set(healthy5))[0] is False, "네이티브 로스터 결박 실패"
-            assert _team_roster_deficit(sub, set(healthy5))[0] is True, \
+            # ★대체 이름공간의 결박은 이제 **혼합 로스터**로 잰다: 참가자 프로파일의 sub 에는
+            #   대체 좌석 이름이 아예 없으므로(리뷰어가 required 밖) 그 검체로는 이름공간을
+            #   못 잰다. mix 는 reviewer-claude-2 를 요구하고 healthy5 에는 그 좌석이 없다 —
+            #   원 검체가 재려던 사실(대체 요구를 네이티브 좌석이 대신 채우지 못한다)은 그대로다.
+            assert _team_roster_deficit(mix, set(healthy5))[0] is True, \
                 "대체 로스터 요구인데 네이티브 좌석으로 결손 0(이름공간 미결박)"
+            # 참가자 프로파일에서는 cso·worker 생존이면 결손 0 이 **정상**이다(리뷰어 부재는 결원 아님).
+            assert _team_roster_deficit(sub, set(healthy5))[0] is False, \
+                "참가자 프로파일에서 리뷰어 부재를 결손으로 계상(상시 점유 부활 경로)"
+            assert _team_roster_deficit(sub, {"cso"})[0] is True, \
+                "참가자 프로파일에서도 worker 부재는 결손이어야 한다(완화 아님)"
         # 반환 계약(roles XOR 사유) — 반환 이상은 폴백으로 강등하고 crash하지 않는다
         req, why_no = _required_roles_from_orchestra()
         assert (req is None) != (why_no is None), \
             "_required_roles_from_orchestra 반환 계약 위반(roles/사유 동시 유효 또는 동시 부재)"
         if req is not None:
-            assert "cso" in req and "worker" in req and len(req) >= 4, \
-                "orchestra 의무 역할 목록이 cso·worker+리뷰어 2를 포함하지 않음: %r" % (req,)
+            # ★프로파일 의존(P1 · 2026-09-10): 표준 = cso·worker + 리뷰어 2(네이티브 또는 대체) ·
+            #   참가자(네이티브 리뷰어 CLI 전무) = cso·worker 2. **어느 프로파일이든 cso·worker 는
+            #   반드시 있고, 그 밖의 항목은 전부 리뷰어다** — 이 두 문장이 프로파일과 무관한 계약이다.
+            #   (len>=4 리터럴은 참가자 기계에서 항상 거짓이라 폐기했다 — 이 self-test 는 라이브
+            #    감지를 쓰므로 agy·codex 없는 기계에서 무조건 죽었다.)
+            assert "cso" in req and "worker" in req, \
+                "orchestra 의무 역할 목록에 cso·worker 부재: %r" % (req,)
+            _extra = [r for r in req if r not in ("cso", "worker")]
+            assert len(_extra) in (0, 2) and all(r.startswith("reviewer-") for r in _extra), \
+                "의무 역할의 잉여 항목이 리뷰어 2(표준) 또는 0(참가자)이 아님: %r" % (req,)
         # ⓘ _role_satisfied 순수 규약 — worker만 접두, 그 밖은 정확일치
         assert _role_satisfied("worker", {"worker-3"}) is True, "worker 접두 수용 소실"
         assert _role_satisfied("cso", {"cso-1"}) is False, "cso 접두 관용 잔재(check 규약 이탈)"

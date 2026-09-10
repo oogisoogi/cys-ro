@@ -228,6 +228,19 @@ const WIN_CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 /// 콘솔 없는 프로세스(cysd·cys-app)가 콘솔 자식을 낳을 때 빈 검은 창이 뜨는 실사고(2026-07-10) 차단.
 #[cfg(windows)]
 const WIN_CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Windows `CREATE_BREAKAWAY_FROM_JOB` — 자식을 **부모가 속한 Job 밖**에서 만든다.
+///
+/// ★2R codex #8(2026-09-11): `Survivor` 는 "부모가 죽어도 살아남는다"를 약속하는데, Windows
+/// 에서 트리 종료의 실제 주체는 프로세스 그룹이 아니라 **Job object** 다(kill-on-close). 부모
+/// (`cys`·GUI)가 러너·설치기·짧은 수명 job 안에서 돌면 그 아래에서 태어난 cysd 는 job 상속으로
+/// 함께 죽는다 — 데몬의 자기 Job 편입(`cysd/state.rs::winjob::bind_self`)은 **중첩 Job 을 하나
+/// 더 만들 뿐 상속된 소속을 지우지 못한다**. 상속 사슬에서 빠지는 유일한 수단이 이 생성 flag다.
+/// ★대가: 부모 Job 이 `JOB_OBJECT_LIMIT_BREAKAWAY_OK` 를 주지 않으면 `CreateProcess` 자체가
+/// `ERROR_ACCESS_DENIED(5)` 로 **실패한다**. 그래서 호출부는 실패를 삼키지 않고 **소리 내어**
+/// 경고한 뒤 breakaway 없는 값으로 1회 재시도한다(`ChildLifetime::win_flags_without_breakaway`).
+/// Job 밖에서 도는 평범한 경우엔 이 flag 가 **무시**되므로 종전 경로에 회귀가 없다.
+#[cfg(windows)]
+pub const WIN_CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
 /// **자식 생사 등급** — "이 자식은 부모가 죽을 때 같이 죽어야 하는가"를 스폰 지점마다 명시한다.
 ///
@@ -292,11 +305,20 @@ impl ChildLifetime {
     #[cfg(windows)]
     const fn win_creation_flags(self) -> u32 {
         match self {
-            ChildLifetime::Survivor => WIN_CREATE_NEW_PROCESS_GROUP | WIN_CREATE_NO_WINDOW,
+            ChildLifetime::Survivor => {
+                WIN_CREATE_NEW_PROCESS_GROUP | WIN_CREATE_NO_WINDOW | WIN_CREATE_BREAKAWAY_FROM_JOB
+            }
             ChildLifetime::GroupScoped => WIN_CREATE_NEW_PROCESS_GROUP | WIN_CREATE_NO_WINDOW,
             ChildLifetime::ConsoleScoped => 0,
             ChildLifetime::Attached => WIN_CREATE_NO_WINDOW,
         }
+    }
+
+    /// breakaway 를 뺀 flag word — 부모 Job 이 breakaway 를 불허할 때의 **유일한 폴백값**.
+    /// 새 상수를 적지 않고 정의처 하나에서 **파생**한다(flag word 가 두 벌이 되면 다음 드리프트다).
+    #[cfg(windows)]
+    pub const fn win_flags_without_breakaway(self) -> u32 {
+        self.win_creation_flags() & !WIN_CREATE_BREAKAWAY_FROM_JOB
     }
 
     /// unix 에서 새 세션(`setsid`)으로 떼어낼 등급인가.
@@ -327,6 +349,12 @@ pub trait SpawnPolicy {
     fn spawn_policy(&mut self, class: ChildLifetime) -> &mut Self;
     /// 이 자식(및 그 자손)이 라이벌 데몬을 autostart 하지 못하게 봉인한다.
     fn no_autostart(&mut self) -> &mut Self;
+    /// **Windows 전용 폴백**: 부모 Job 이 breakaway 를 불허해 스폰이 `ERROR_ACCESS_DENIED` 로
+    /// 죽었을 때, 같은 등급의 flag word 에서 breakaway 만 빼고 다시 얹는다(unix 무동작).
+    /// `creation_flags` 는 덮어쓰기라 재호출이 곧 교체다 — 반쪽 flag 가 생기지 않는다.
+    /// ⚠이 폴백은 **약속의 강등**이다: 그 자식은 부모 Job 과 함께 죽을 수 있다. 호출부는
+    /// 반드시 사람이 읽는 경고를 함께 낸다(조용한 강등 금지).
+    fn relax_job_breakaway(&mut self, class: ChildLifetime) -> &mut Self;
 }
 
 macro_rules! impl_spawn_policy {
@@ -364,6 +392,18 @@ macro_rules! impl_spawn_policy {
 
             fn no_autostart(&mut self) -> &mut Self {
                 self.env(ENV_NO_AUTOSTART, NO_AUTOSTART_ON)
+            }
+
+            fn relax_job_breakaway(&mut self, class: ChildLifetime) -> &mut Self {
+                #[cfg(windows)]
+                {
+                    self.creation_flags(class.win_flags_without_breakaway());
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = class;
+                }
+                self
             }
         }
     };
@@ -5160,10 +5200,12 @@ mod spawn_policy_tests {
                 );
                 assert_eq!(
                     (prod.matches("pre_exec(").count(), prod.matches("creation_flags(").count()),
-                    (1, 3),
+                    (1, 5),
                     "정의처의 원시 호출 개수가 동결값을 벗어났다 — 정의처 안에서 새 분리 지점이 \
-                     늘었거나 헬퍼가 갈라졌다(등급표 `win_creation_flags` 1 + 그 호출 1 + \
-                     실제 적용 1 · `pre_exec` 1)"
+                     늘었거나 헬퍼가 갈라졌다. 동결 내역(2026-09-11 · 2R codex #8 로 3→5): \
+                     등급표 `win_creation_flags` 정의 1 + 그 호출 1 + 실제 적용 1 \
+                     + breakaway 폴백 파생 `win_flags_without_breakaway` 안의 정의처 재사용 1 \
+                     + 그 폴백의 실제 적용 1 · `pre_exec` 1"
                 );
                 continue;
             }

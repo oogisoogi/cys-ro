@@ -149,7 +149,7 @@ done
   - `javis_bootstrap.py`(현행 폴백 경로) — 0·3·4·5·6·7·8·9·10·11·64. **13·14·15 를 내지
     않는다**(코드 상수 실측) — 이 셋을 이 주체에 적으면 유령 계약이다.
   - `javis_orchestra.py check` — 0 READY · 1 미달(부재·관문보류·**역할 주소 미해소**) ·
-    **2 측정불가(보존 — 통과도 실패도 아니다)** · **12 ack_pending**(4종 생존은 충족인데 리뷰어
+    **2 측정불가(보존 — 통과도 실패도 아니다)** · **12 ack_pending**(기본 함대 생존은 충족인데 연 리뷰어
     각성 ACK 미확인) · 64. **12 의 소비자 매핑**: `review-prompt`·`round-init` 는 **자기 exit 12
     로 차단**(리뷰 의뢰문을 내지 않는다) · ⑤check 단계는 **0 으로 접고 라벨만** 붙인다(부트
     완주는 막지 않는다) · `gate-status` 는 **무접촉**. 되돌리는 손잡이는 `CYS_BOOT_GATES=0`.
@@ -220,7 +220,8 @@ done
    본부(base) 레인 팀 기동은 티켓 불요(기존 동작 — 단, 결손 기준 자원 게이트는 base 포함 전
    레인에 적용된다). 이 분기는 훅·javis_bootstrap.py가 결정론으로
    집행하므로 LLM이 재추론하지 않는다. **"부서장은 무조건 단독 대기"라는 규칙은 폐기됐다** — 부서장도
-   티켓만 발급되면 4종 팀을 갖는다(단독 대기는 각성 기본값이 아니라 티켓 부재 시의 강등 상태다).
+   티켓만 발급되면 **기본 함대**(master·CSO·worker 3기)를 갖는다(단독 대기는 각성 기본값이
+   아니라 티켓 부재 시의 강등 상태다).
    **기본 함대 생존은 결정론으로 확인한다**(리뷰어는 대상이 아니다 — ④ 참조) —
    `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" check`
    가 READY를 낼 때까지 '준비 완료'를 선언하지 마라(눈대중 금지). 부재 노드가 있으면 재기동한다.
@@ -369,7 +370,10 @@ done
 - **★'새 워커/병렬 작업' 지시 = 기존 노드 유지 + 새 surface 추가 (제품 기본 절차 · 심각 실수 재발방지)**: "또 다른 워커를 띄워라"·"새 워커로 X 시작"은 **기존 워커·작업을 그대로 두고 새 surface에 워커를 추가**하라는 뜻이다 — 기존 워커를 죽이거나 교체하는 게 절대 아니다(cys는 worker role 복수 surface 허용 — 동시 운영 가능). 동시에 도착한 지시들의 **대상 노드를 혼동하지 마라**(별개 surface·별개 미션). ★**파괴적·비가역 행동**(worker SIGKILL·kill·close-surface·작업 중단·노드 교체) **전에는 반드시 의도를 명시 확인**한다(절대 강조 4규칙 c) — 정당한 교착 재기동이라도 그 노드의 미션이 '중단'인지 '유지·재개'인지 먼저 확정한다. 추측으로 비가역 실행 절대 금지. 상세 `feedback_new_worker_adds_surface`.
 - 노드 기동은 `cys launch-agent --role worker|cso|reviewer-gemini|reviewer-codex --agent <cli>`
   — 지침이 자동 주입된다. ⚠리뷰어 역할명은 **에이전트별**(reviewer-gemini·reviewer-codex)로
-  쓴다 — generic `reviewer`로 기동·등록하면 orchestra check의 4종 생존 판정이 실패한다.
+  쓴다 — generic `reviewer`는 슬롯 표(`REVIEWER_SLOTS`) 밖 이름이라, 각성 ACK 가 미확인일 때
+  orchestra 가 **자동 교정 명령을 내지 못하고**(에이전트 미상) 사람 단계로 강등된다.
+  ⚠2026-09-11 개정: 살아 있는 `reviewer*` 좌석은 이름과 무관하게 **전부 ACK 대상**이다
+  (구 문언 「4종 생존 판정이 실패한다」는 기본 함대 정책 이후 사실이 아니다).
 - 수동 기동 시에도 **가장 먼저** 해당 DIRECTIVE를 주입해 각성시킨 뒤 작업을 위임한다.
   지침 없는 노드는 단순 단말로 수렴한다 — 치명적 품질 저하의 근원.
 - **탭 명명·작업 폴더 규칙**: launch-agent가 타이틀에 **워크플로우 폴더명**을 자동으로 박는다
@@ -577,7 +581,8 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
 즉시 승인한다 — 데몬이 approval_patterns로 감지해 feed로 격상하니 §4 즉결로 처리한다.
 
 ## 8. 자원 거버넌스 감독 — CSO 상시 기동 (앵커4-1)
-**CSO는 LLM orchestrating 4종 의무 노드다 — 프로젝트 시작 시 `cys boot`로 상시 기동된다**
+**CSO는 LLM orchestrating 기본 함대(master·CSO·worker 3기)의 의무 노드다 — 프로젝트
+시작 시 `cys boot`로 상시 기동된다**
 (앵커4가 §8 구(舊) 3단 정책의 "평시 미기동"을 대체한다). CSO는 상주하며 시스템·자원·노드
 생태계를 총괄한다:
 - 터미널이 기계 감시(watchdog·원장·자동 정리)를 24시간 수행하고, CSO는 그 신호를 판단·집행한다
@@ -586,7 +591,7 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
 - 가벼운 경보는 master도 직접 대응할 수 있다(`cys ps`·`cys kill`). 중대 조치(노드 강제 종료·
   surface 폐쇄)는 master 승인 후 집행한다.
 - 워커에게 서버성 프로세스는 `cys run -- <명령>`(종료 시 그룹 강제 종료)를 쓰게 한다.
-- CSO가 죽으면(surface.exited) master는 재기동한다 — 4종 의무 노드는 항상 생존해야 한다
+- CSO가 죽으면(surface.exited) master는 재기동한다 — 기본 함대 의무 노드는 항상 생존해야 한다
   (★2026-09-10 개정: **기본 함대는 master·CSO·worker 3기**다. 리뷰어는 온디맨드라 그 부재는
    결손이 아니다 — ④ 참조. 이 줄이 말하는 상시 생존 의무의 대상은 **CSO** 다)
   (`javis_orchestra.py check`로 결정론 확인).

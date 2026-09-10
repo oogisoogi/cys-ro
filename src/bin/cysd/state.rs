@@ -45,33 +45,80 @@ pub(crate) mod winjob {
     /// **영구 캐시**했다 — 그러면 이후 전 편입이 조용히 무동작이 되는데 호출부는 "스폰 성공"을
     /// 보고했다. 측정 불능이 통과로 접히는, 이 저장소가 반복해 낸 사고의 형태다.
     fn job() -> Result<HANDLE, String> {
-        let h = (*JOB.get_or_init(|| unsafe {
+        // ★2R codex #4 수리(2026-09-11): 종전 `get_or_init` 는 실패 시 `0usize` 를 **OnceLock 에
+        //   영구 저장**했다 — 주석은 "캐시하지 않고 버린다" 였는데 코드는 정확히 반대였다.
+        //   그래서 부팅 순간의 **일시적** 실패(핸들 고갈·정책 훅·권한 순간 부재) 하나가
+        //   프로세스 수명 내내 강등 모드를 못 벗어나게 만들었다. 성공만 캐시한다.
+        if let Some(&cached) = JOB.get() {
+            if cached != 0 {
+                return Ok(cached as HANDLE);
+            }
+        }
+        let created: Result<usize, u32> = unsafe {
             let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if h.is_null() {
-                return 0usize;
+                Err(windows_sys::Win32::Foundation::GetLastError())
+            } else {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    h,
+                    JobObjectExtendedLimitInformation,
+                    (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    // KILL_ON_JOB_CLOSE 가 안 걸린 Job 은 **결박이 아니다** — 버린다.
+                    let e = windows_sys::Win32::Foundation::GetLastError();
+                    CloseHandle(h);
+                    Err(e)
+                } else {
+                    Ok(h as usize)
+                }
             }
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if SetInformationJobObject(
-                h,
-                JobObjectExtendedLimitInformation,
-                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            ) == 0
-            {
-                // KILL_ON_JOB_CLOSE 가 안 걸린 Job 은 **결박이 아니다** — 캐시하지 않고 버린다.
-                CloseHandle(h);
-                return 0usize;
+        };
+        match created {
+            Err(e) => Err(format!(
+                "Job 생성/설정 실패(GetLastError={e}) — 자식 수명 결박 불가 \
+                 (실패는 캐시하지 않는다 · 다음 스폰에서 재시도한다)"
+            )),
+            Ok(h) => {
+                // 경쟁에서 졌으면 내 Job 을 닫는다(핸들 누수 0 · 승자가 정본).
+                if JOB.set(h).is_err() {
+                    unsafe { CloseHandle(h as HANDLE) };
+                }
+                Ok(*JOB.get().expect("방금 set 했거나 경쟁 승자가 있다") as HANDLE)
             }
-            h as usize
-        })) as HANDLE;
-        if h.is_null() {
-            return Err(format!(
-                "Job 생성/설정 실패(GetLastError={}) — 자식 수명 결박 불가",
-                unsafe { windows_sys::Win32::Foundation::GetLastError() }
-            ));
         }
-        Ok(h)
+    }
+
+    /// (테스트·진단) pid 가 **데몬 소유 Job** 에 속하는가 — `null` 핸들 질의가 아니다.
+    ///
+    /// ★2R codex #4 후단: 종전 커널 축은 `IsProcessInJob(h, null, ..)` 로 "**아무** Job 에든
+    /// 속하는가"를 물었다. 그것은 러너·설치기가 만든 바깥 Job 만으로도 참이 되므로, **우리
+    /// Job 이 생성조차 안 됐어도 초록**이었다(공허한 통과). 특정 핸들로 물으면 중첩 Job 에서도
+    /// 의미가 있다 — 커널은 그 Job **또는 그 하위 Job** 소속을 참으로 답한다.
+    pub fn in_our_job(pid: u32) -> Result<bool, String> {
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+        let j = job()?;
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return Err(format!(
+                    "OpenProcess(pid={pid}) 실패(GetLastError={})",
+                    windows_sys::Win32::Foundation::GetLastError()
+                ));
+            }
+            let mut yes: i32 = 0;
+            let ok = IsProcessInJob(h, j, &mut yes);
+            let e = windows_sys::Win32::Foundation::GetLastError();
+            CloseHandle(h);
+            if ok == 0 {
+                return Err(format!("IsProcessInJob 실패(GetLastError={e})"));
+            }
+            Ok(yes != 0)
+        }
     }
 
     /// ★(1R#4) **데몬 자신을 Job 에 넣는다** — 이후 모든 자손이 *생성 시점에* 상속으로 결박된다.
@@ -4509,24 +4556,16 @@ fn default_health_rules() -> Vec<HealthRule> {
 mod winjob_binding_tests {
     use super::winjob;
 
-    /// 자식 pid 가 **어떤 Job 에든** 속해 있는가(커널 사실). 우리 Job 특정은 하지 않는다 —
-    /// 러너가 우리를 바깥 Job 에 넣어 둔 경우 중첩 Job 이 되어 특정 핸들 비교가 무의미해진다.
-    /// 이 축이 재는 것은 "결박이 되었는가" 하나다.
-    fn in_any_job(pid: u32) -> bool {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-        unsafe {
-            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            assert!(!h.is_null(), "OpenProcess(pid={pid}) 실패 — 측정 불능은 통과가 아니다");
-            let mut yes: i32 = 0;
-            let ok = IsProcessInJob(h, std::ptr::null_mut(), &mut yes);
-            CloseHandle(h);
-            assert!(ok != 0, "IsProcessInJob 실패 — 측정 불능은 통과가 아니다");
-            yes != 0
-        }
+    /// 자식 pid 가 **cysd 소유 Job** 에 속해 있는가(커널 사실 · 프로덕션 술어 재사용).
+    ///
+    /// ★2R codex #4 수리(2026-09-11): 종전 축은 `IsProcessInJob(h, null, ..)` = "**아무** Job
+    /// 에든 속하는가"였다. CI 러너·설치기가 우리를 바깥 Job 에 넣어 두면 그 사실만으로 참이
+    /// 되므로 **우리 Job 이 만들어지지 않았어도 초록**이었다 — 이 배터리가 증명해야 할 바로
+    /// 그것(데몬 소유 Job 결박)을 재지 않는 공허한 통과다. 중첩 Job 은 특정 질의를 무의미하게
+    /// 만들지 않는다: 커널은 지정한 Job **또는 그 하위 Job** 소속을 참으로 답한다.
+    /// 측정 실패는 통과가 아니다 — Err 를 그대로 터뜨린다.
+    fn in_our_job(pid: u32) -> bool {
+        winjob::in_our_job(pid).expect("Job 소속 측정 실패 — 측정 불능은 통과가 아니다")
     }
 
     /// ★핵심 축: 데몬이 자기 Job 에 들어간 뒤 스폰한 자식은 **상속으로** 결박된다.
@@ -4546,12 +4585,12 @@ mod winjob_binding_tests {
         if degraded.is_some() {
             winjob::assign_child(pid).expect("강등 모드 명시 편입이 실패 — 자식 미결박 방치");
         }
-        let bound = in_any_job(pid);
+        let bound = in_our_job(pid);
         let _ = child.kill();
         let _ = child.wait();
         assert!(
             bound,
-            "스폰된 자식이 어떤 Job 에도 속하지 않는다 — 데몬 사후 고아 경로가 열려 있다"
+            "스폰된 자식이 **cysd 소유 Job** 에 없다 — 데몬 사후 고아 경로가 열려 있다"
         );
     }
 

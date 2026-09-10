@@ -211,6 +211,13 @@ enum Command {
     },
     /// T2-6 조직 복원: 토폴로지 스냅샷의 죽은 역할들을 일괄 재기동·재주입 (작업 재개는 master 판단)
     Restore {
+        /// 홈·미지정으로 굳은 좌석만 이 폴더로 교정 (per-entry-cwd — 유효한 작업 폴더는 불변)
+        ///
+        /// ★도움말의 `per-entry-cwd` 는 **능력 토큰**이다: 팩(javis_phoenix)이
+        /// `cys restore --help` 에서 이 토큰을 찾아 구 바이너리(전역 override)와 신 바이너리
+        /// (항목별 override)를 가른다. 구 바이너리에 혼합 함대 override 를 실으면 유효 좌석이
+        /// 이주하므로, 토큰이 없으면 팩은 종전(전원 홈일 때만) 계약으로 물러선다.
+        /// **이 문구를 바꿀 때 토큰을 지우지 마라** — 지우면 팩이 조용히 보수 모드로 굳는다.
         #[arg(long)]
         cwd: Option<String>,
         /// master 역할도 재기동 대상에 포함 (기본 제외 — restore 실행자가 보통 master)
@@ -2246,17 +2253,46 @@ fn ensure_daemon_lane_pack(cmd: &mut std::process::Command) -> std::io::Result<(
 /// 실측(PROBE_RESULTS.md V-c · PROBE_RESULTS_WINDOWS.md WIN-3 H4)에서 훅/부모가 잘릴 때
 /// 그룹에 남은 자식이 함께 죽는 것도 확인됐다(그 관측의 결정적 축은 unix 경로다).
 /// `setsid`(mac 부재)·`setsid.exe`(동봉 PortableGit 부재)로는 우회할 수 없어 **스폰 flag 가
-/// 유일한 수단**이라는 것도 그대로다. 다만 Windows 에서 트리 종료로부터의 생존이 필요하다면
-/// 다음 수단은 이 flag 가 아니라 **job object 비상속**(`CREATE_BREAKAWAY_FROM_JOB` 등)이며,
-/// 그것은 이 단위의 범위 밖이고 **실기 검증 없이 손대지 않는다**(이 저장소는 Windows 크로스
-/// 타입체크조차 불가능하다 — 검증 없는 flag 추가는 개선이 아니라 미검증 변경이다).
+/// 유일한 수단**이라는 것도 그대로다.
+///
+/// ★**2R codex #8 수리(2026-09-11) — 위 문단이 "범위 밖"으로 미뤄 둔 그 수단을 넣었다**:
+/// `Survivor` 의 Windows flag word 에 `CREATE_BREAKAWAY_FROM_JOB` 이 **포함된다**(정의처 =
+/// `cys::ChildLifetime::win_creation_flags`). 근거는 codex 2R #8 이 적은 그대로다 — 데몬의
+/// 자기 Job 편입은 **중첩 Job 을 하나 더 만들 뿐** 부모에게서 상속된 kill-on-close 소속을
+/// 지우지 못하므로, `cys`·GUI 가 짧은 수명 Job 안에서 돌면 "살아남는 자식"이라는 등급의
+/// 약속이 Windows 에서만 거짓이 된다.
+/// ★**실패를 소리 내기**: 부모 Job 이 breakaway 를 불허하면 `CreateProcess` 가
+/// `ERROR_ACCESS_DENIED(5)` 로 죽는다. 그때 조용히 포기하면 데몬이 아예 안 뜨는 **더 큰 회귀**
+/// 이므로, 경고를 stderr 로 내고 breakaway 없는 값으로 **1회 재시도**한다(강등을 숨기지 않는다).
+/// Job 밖에서 도는 평범한 경우 이 flag 는 커널이 **무시**하므로 종전 경로는 무회귀다.
+/// ★검증 경계(정직): 이 저장소는 Windows 크로스 타입체크가 불가능하다 — 이 arm 의 직접 검증은
+/// **윈 러너 스모크**(job 안에서 cys 기동 → 부모 종료 → cysd 생존)이며 CI windows 레인이 맡는다.
 fn spawn_detached_daemon(path: &std::path::Path) -> std::io::Result<()> {
     use cys::SpawnPolicy;
-    let mut cmd = std::process::Command::new(path);
-    // ★G34: 스폰 전 (소켓,팩) 쌍 보증 — 거부 시 스폰 자체를 하지 않는다.
-    ensure_daemon_lane_pack(&mut cmd)?;
-    cmd.spawn_policy(cys::ChildLifetime::Survivor);
-    cmd.spawn().map(|_| ())
+    let build = |breakaway: bool| -> std::io::Result<std::process::Command> {
+        let mut cmd = std::process::Command::new(path);
+        // ★G34: 스폰 전 (소켓,팩) 쌍 보증 — 거부 시 스폰 자체를 하지 않는다.
+        ensure_daemon_lane_pack(&mut cmd)?;
+        cmd.spawn_policy(cys::ChildLifetime::Survivor);
+        if !breakaway {
+            cmd.relax_job_breakaway(cys::ChildLifetime::Survivor);
+        }
+        Ok(cmd)
+    };
+    match build(true)?.spawn() {
+        Ok(_) => Ok(()),
+        #[cfg(windows)]
+        Err(e) if e.raw_os_error() == Some(5) => {
+            eprintln!(
+                "[cys] ⚠ 데몬 분리 기동: 부모 Job 이 breakaway 를 불허한다(ERROR_ACCESS_DENIED) — \
+                 CREATE_BREAKAWAY_FROM_JOB 없이 재시도한다. 이 창에서 뜬 cysd 는 **부모 Job 이 \
+                 닫힐 때 함께 죽을 수 있다**(자동 기동이 아니라 Task Scheduler 로 cysd 를 직접 \
+                 띄우면 이 강등을 피한다)."
+            );
+            build(false)?.spawn().map(|_| ())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// socket-ready 실측 폴링(최대 4초=40×100ms). launchd kickstart·sibling spawn 양 경로가 공유.
@@ -12334,6 +12370,46 @@ fn verify_todo_counted(path: &std::path::Path, scope: &str) -> Result<(), String
     Ok(())
 }
 
+/// cwd가 **"아무도 말해 주지 않은 값"(홈·빈 값)** 인가 — 순수 함수(진리표 테스트 가능).
+///
+/// ★왜 필요한가(2R codex #2): `restore --cwd`는 저장 엔트리의 cwd를 **전부** 이겼다. 그래서
+/// 홈에 굳은 좌석 하나를 고치려고 override를 실으면, 자기 워크트리에 제대로 사는 다른 죽은
+/// 좌석까지 master 폴더로 **이주**했다. 이 술어가 "고쳐야 할 값"과 "지켜야 할 값"을 가른다.
+/// 팩 쪽 같은 술어 = `javis_phoenix.py::home_like` (두 곳이 같은 규칙을 말해야 한다).
+fn is_home_like_cwd(cwd: &str, home: &str) -> bool {
+    let norm = |p: &str| {
+        let t = p.trim().trim_end_matches(['/', '\\']);
+        if cfg!(windows) { t.to_ascii_lowercase().replace('\\', "/") } else { t.to_string() }
+    };
+    let c = norm(cwd);
+    c.is_empty() || c == norm(home)
+}
+
+/// **항목별** restore cwd 선택 — 순수 함수(진리표 테스트 가능 · `exists` 주입).
+///
+/// 규칙 셋(우선순위 순):
+/// ① 저장 cwd 가 **실재하는 진짜 작업 폴더**면 그것이 이긴다 — override 는 그 좌석을 옮기지 못한다.
+/// ② 아니면(홈·미지정·소실 경로) override 가 채운다 — override 도 실재해야 채택된다.
+/// ③ override 도 못 쓰면 저장값을 그대로 돌려준다(홈이라도 종전 동작 보존 · 새 실패를 만들지 않는다).
+///
+/// ★`exists` 를 인자로 받는 이유: 존재 검사는 디스크 사실이라 시험이 닿을 수 없다. 술어를
+/// 주입하면 "실재하는 작업 폴더는 지킨다"와 "소실된 경로는 버린다"를 둘 다 결정론으로 잰다.
+fn restore_target_cwd(
+    saved: Option<&str>,
+    override_cwd: Option<&str>,
+    home: &str,
+    exists: &dyn Fn(&str) -> bool,
+) -> Option<String> {
+    let usable = |p: Option<&str>| -> Option<String> {
+        let v = p?.trim();
+        (!v.is_empty() && exists(v)).then(|| v.to_string())
+    };
+    match usable(saved) {
+        Some(s) if !is_home_like_cwd(&s, home) => Some(s),
+        other => usable(override_cwd).or(other),
+    }
+}
+
 /// 루트 cwd("/"·"\\"·"C:\\" 류)를 home으로 교정 — 순수 함수(진리표 테스트 가능).
 /// 근거: launchd/Finder 상속으로 루트에서 태어난 노드·roster 오염 실사고(2026-07-15).
 fn sanitize_launch_cwd(cwd: String) -> String {
@@ -14482,9 +14558,22 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 println!("· {role}: agent 미상 — 건너뜀 (claim-role로 등록된 pane){hint}");
                 continue;
             };
-            let target_cwd = cwd
-                .clone()
-                .or_else(|| entry["cwd"].as_str().map(String::from));
+            // ★2R codex #2 수리(2026-09-11) — **항목별 override**: 전역 `--cwd`가 저장
+            // 엔트리를 전부 이기던 자리다. 이제 저장 cwd가 **진짜 작업 폴더**면 그것이 이기고,
+            // 홈·미지정("말해 주지 않은 값")일 때만 override가 채운다.
+            // · 고치려는 병: 참가자 기계의 자식 좌석 cwd가 홈으로 굳어 폴더 신뢰 관문에 갇힌 것.
+            // · 만들면 안 되는 병: 자기 워크트리에 사는 좌석을 master 폴더로 이주시키는 것
+            //   (복원 1회로 다중 프로젝트 함대가 무너진다 — 고치려던 것보다 큰 파괴).
+            // · 존재하지 않는 폴더는 채택하지 않는다(넷째 구멍): 좌석의 cwd는 **과거의 사실**
+            //   이라 삭제된 워크트리가 그대로 굳어 있을 수 있고, cysd는 그 값을 PTY 빌더에
+            //   직접 넣는다(state.rs) — 부활이 필요한 순간에 스폰이 깨진다. 없으면 다음 후보로.
+            let home = cys::home_dir().to_string_lossy().into_owned();
+            let target_cwd = restore_target_cwd(
+                entry["cwd"].as_str(),
+                cwd.as_deref(),
+                &home,
+                &|p| std::path::Path::new(p).is_dir(),
+            );
             // (4b) saved entry의 session_id를 꺼내 정확한 세션 재개(없으면 fallback)
             let sess = entry["session_id"].as_str().map(String::from);
             // (W1) topology에 기록된 원 계정 config_dir을 넘긴다(구 topology=None → 기존 템플릿 동작).
@@ -19020,6 +19109,75 @@ mod tests {
         assert_eq!(sanitize_launch_cwd("/Users/x".into()), "/Users/x");
         assert_eq!(sanitize_launch_cwd("/Users/x/".into()), "/Users/x/");
         assert_eq!(sanitize_launch_cwd("C:\\work".into()), "C:\\work");
+    }
+
+    // ★항목별 restore override(2R codex #2): "고쳐야 할 값(홈)"과 "지켜야 할 값(작업 폴더)".
+    #[test]
+    fn is_home_like_cwd_truth_table() {
+        let home = "/Users/x";
+        assert!(is_home_like_cwd("", home));
+        assert!(is_home_like_cwd("   ", home));
+        assert!(is_home_like_cwd("/Users/x", home));
+        assert!(is_home_like_cwd("/Users/x/", home));
+        assert!(!is_home_like_cwd("/Users/x/proj", home));
+        assert!(!is_home_like_cwd("/proj/wt", home));
+        // 홈의 **부분 문자열**이라고 홈이 아니다(접두 일치로 접으면 자식 폴더가 전부 홈이 된다).
+        assert!(!is_home_like_cwd("/Users/xy", home));
+    }
+
+    // ★항목별 restore override 진리표(2R codex #2) — 지켜야 할 값과 고쳐야 할 값.
+    #[test]
+    fn restore_target_cwd_truth_table() {
+        let home = "/Users/x";
+        let all = |_: &str| true;           // 전부 실재
+        let none = |_: &str| false;         // 전부 소실
+        let only = |k: &'static str| move |p: &str| p == k;
+
+        // ① 유효한 작업 폴더는 override 가 있어도 **이주하지 않는다**(셋째 구멍).
+        assert_eq!(
+            restore_target_cwd(Some("/proj/wt"), Some("/jarvis"), home, &all).as_deref(),
+            Some("/proj/wt")
+        );
+        // ② 홈·빈 값·미지정은 override 가 채운다(둘째 구멍 — 혼합 함대에서도 고쳐진다).
+        assert_eq!(
+            restore_target_cwd(Some(home), Some("/jarvis"), home, &all).as_deref(),
+            Some("/jarvis")
+        );
+        assert_eq!(
+            restore_target_cwd(Some(""), Some("/jarvis"), home, &all).as_deref(),
+            Some("/jarvis")
+        );
+        assert_eq!(
+            restore_target_cwd(None, Some("/jarvis"), home, &all).as_deref(),
+            Some("/jarvis")
+        );
+        // ③ override 가 없으면 저장값 그대로(홈이라도 — 종전 동작 보존).
+        assert_eq!(
+            restore_target_cwd(Some(home), None, home, &all).as_deref(),
+            Some(home)
+        );
+        // ④ **소실된** 저장 폴더는 채택하지 않는다(넷째 구멍) — override 가 대신 선다.
+        assert_eq!(
+            restore_target_cwd(Some("/gone/wt"), Some("/jarvis"), home, &only("/jarvis"))
+                .as_deref(),
+            Some("/jarvis")
+        );
+        // ⑤ 둘 다 소실이면 None — 없는 폴더를 실어 보내 스폰을 깨뜨리지 않는다.
+        assert_eq!(
+            restore_target_cwd(Some("/gone/wt"), Some("/also/gone"), home, &none),
+            None
+        );
+    }
+
+    // ★도움말 능력 토큰이 살아 있는가 — 지워지면 팩이 조용히 보수 모드로 굳는다(회귀 핀).
+    #[test]
+    fn restore_cwd_help_carries_capability_token() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        assert!(
+            prod.contains("per-entry-cwd"),
+            "restore --cwd 도움말의 능력 토큰이 사라졌다 — javis_phoenix 의 탐침이 영구 보수 모드가 된다"
+        );
     }
 
     // pack-update·compose 통합테스트는 동일 전역 env(ENV_PACK_DIR/ENV_CONFIG_DIR/ENV_SOCKET)를

@@ -107,10 +107,53 @@ def t_orchestra():
           O._shared_verdict_deficit(_ST, detect=_detect(False), agents=AGENTS)[0] is False)
 
     # ACK 축 — 기본 함대에서는 리뷰어 행 자체가 없다(없는 좌석의 pending 금지).
-    v, _r = O.check_verdicts(_ST, detect=_detect(False), agents=AGENTS)
-    ack = O.ack_axis(_ST, v, _r)
-    check("ⓐ4f 기본 함대 ACK 축에 리뷰어 행 0",
-          not (ack.get("pending") or ack.get("unmeasured")), repr(ack))
+    # ★2R #10 둘째 수리: 종전 검체는 `boot_v2_enabled` 없는 status 를 먹여 **축이 꺼진 채**로
+    #   초록이었다(axis=False → 세 목록이 전부 None → `not (...)` 가 자동 참). 축을 **켜고** 잰다.
+    _ST_V2 = dict(_ST, boot_v2_enabled=True)
+    v, _r = O.check_verdicts(_ST_V2, detect=_detect(False), agents=AGENTS)
+    ack = O.ack_axis(_ST_V2, v, _r)
+    check("ⓐ4f 기본 함대 ACK 축(켜짐)에 리뷰어 행 0",
+          ack.get("axis") is True and ack.get("pending") == [] and ack.get("ok") == []
+          and ack.get("unmeasured") == [], repr(ack))
+
+    # ★★2R BLOCKER #7 회귀 핀 — **감지 로스터 밖에서 열린 살아 있는 리뷰어**도 ACK 대상이다.
+    #   종전 `ack_axis` 는 대상을 `reviewer_roster()`(2슬롯)로 좁혀, `reviewer-grok` 같은
+    #   임의 이름 좌석이 `ack_nonce_ok=false` 여도 pending=[] · exit 0 으로 게이트를 우회했다.
+    _ST_GROK = {"boot_v2_enabled": True, "surfaces": [
+        {"role": "cso", "exited": False, "awakened_at": 1.0, "ack_nonce_ok": True},
+        {"role": "worker", "exited": False, "awakened_at": 1.0, "ack_nonce_ok": True},
+        {"role": "reviewer-grok", "exited": False, "agent_alive": True,
+         "ack_nonce_ok": False}]}
+    v_g, r_g = O.check_verdicts(_ST_GROK, detect=_detect(False), agents=AGENTS)
+    check("ⓐ4f-1 살아 있는 임의 이름 리뷰어가 판정 대상에 든다",
+          "reviewer-grok" in v_g, repr(sorted(v_g)))
+    ack_g = O.ack_axis(_ST_GROK, v_g, r_g)
+    check("ⓐ4f-2 그 좌석의 ack_nonce_ok=false 는 **pending 으로 집계**된다(축소 구멍 봉인)",
+          ack_g.get("pending") == ["reviewer-grok"], repr(ack_g))
+    check("ⓐ4f-3 exit 는 0 이 아니다(12 ack_pending) — 「presence must be awake」",
+          O.check_exit_code({"ready_missing": []}, ack_g) == O.CHECK_EXIT_ACK_PENDING,
+          repr(O.check_exit_code({"ready_missing": []}, ack_g)))
+    # 로스터를 **비워도** 결과가 같아야 한다 = 대상 집합이 로스터에서 왔던 의존이 끊겼다는 증거.
+    check("ⓐ4f-4 로스터가 비어도 동일 판정(로스터 의존 제거의 직접 증거)",
+          O.ack_axis(_ST_GROK, v_g, [])["pending"] == ["reviewer-grok"],
+          repr(O.ack_axis(_ST_GROK, v_g, [])))
+
+    # ★★2R HIGH #9 회귀 핀 — 처방이 **실제로 교정하는가**(맨 boot-reviewers = 스폰 0).
+    _rem_known = O.ack_remedy(["reviewer-gemini"])
+    check("ⓐ4f-5 처방에 --spawn 이 있다(맨 호출은 리뷰어 0기 스폰 = 무동작)",
+          "boot-reviewers --spawn" in _rem_known, _rem_known)
+    check("ⓐ4f-6 처방의 per-role 경로에 --agent 가 채워진다(없으면 boot_node 가 exit 2 로 거절)",
+          "javis_boot_node.py --role reviewer-gemini --agent gemini" in _rem_known, _rem_known)
+    check("ⓐ4f-7 Claude 대체 좌석의 에이전트도 표에서 해소된다",
+          O.reviewer_boot_agent("reviewer-claude-2") == "claude"
+          and O.reviewer_boot_agent("reviewer-codex") == "codex"
+          and O.reviewer_boot_agent("reviewer-grok") is None)
+    _rem_unknown = O.ack_remedy(["reviewer-grok"])
+    check("ⓐ4f-8 표 밖 좌석은 **교정 불가를 명시**한다(추측 --agent 금지 · 사람이 할 일)",
+          "자동 교정 불가" in _rem_unknown and "사람이 할 일" in _rem_unknown
+          and "--agent <에이전트>" in _rem_unknown, _rem_unknown)
+    check("ⓐ4f-9 표 밖 좌석 처방에 맨 boot-reviewers 를 내지 않는다",
+          "boot-reviewers" not in _rem_unknown, _rem_unknown)
 
     # cmd_check 종단 — 데몬 왕복만 스텁하고 **실제 exit code** 를 잰다.
     import argparse
@@ -134,6 +177,9 @@ def t_orchestra():
         spawn = False
 
     booted = []
+    # ★프로덕션 함수를 **치환 전에** 붙잡아 둔다 — 아래 ⓐ9a 가 실제 호출 사슬을 재려면
+    #   여기서 씌우는 람다가 아니라 원본이 필요하다(치환 후 복원 = 람다 복원이라 무의미).
+    _PROD_BOOT_ONE = O._boot_one_node
     O._boot_one_node = lambda role, agent, timeout=None: (
         booted.append((role, agent)) or (True, 0, O.EXIT_CLASS_OK, "stub"))
     # ★우리 맥 형상(네이티브 2기 실재)에서도 기본은 0 이어야 한다 — 정책이 보편이라는 증거.
@@ -170,6 +216,34 @@ def t_orchestra():
     check("ⓐ8 --spawn → 리뷰어 2기 실제 기동(온디맨드 경로 성공)",
           booted == [("reviewer-gemini", "gemini"), ("reviewer-codex", "codex")], repr(booted))
     check("ⓐ9 --spawn 2기 각성 → exit 0", rc == 0, "rc=%r" % rc)
+
+    # ★2R #10 첫째 수리 — 위 ⓐ8·ⓐ9 는 `_boot_one_node` 를 **람다로 치환**해 재므로 실제
+    #   호출 사슬(subprocess → javis_boot_node.py → --agent 계약)을 하나도 밟지 않는다.
+    #   여기서는 **프로덕션 `_boot_one_node` 를 그대로 두고** 경계를 한 칸 아래(subprocess.run)
+    #   로 내려 잡아, 실제로 조립돼 나가는 argv 를 잰다. 데몬·실 스폰은 여전히 무접촉이다.
+    class _RC(object):
+        returncode = 0
+
+    argvs = []
+    _sv_boot, _sv_run = O._boot_one_node, O.subprocess.run
+    try:
+        O._boot_one_node = _PROD_BOOT_ONE                 # 프로덕션 함수 복원(람다 치환 해제)
+        O.subprocess.run = lambda cmd, **kw: (argvs.append(list(cmd)) or _RC())
+        O.reviewer_roster = lambda detect=None, agents=None: [
+            {"role": "reviewer-gemini", "agent": "gemini", "native": True,
+             "substituted_for": None, "reason": "밀폐"},
+            {"role": "reviewer-claude-2", "agent": "claude", "native": False,
+             "substituted_for": "codex", "reason": "밀폐"}]
+        rc_real = O.cmd_boot_reviewers(_Spawn())
+    finally:
+        O._boot_one_node, O.subprocess.run = _sv_boot, _sv_run
+    check("ⓐ9a --spawn 이 **실제 호출 사슬**로 javis_boot_node.py 를 부른다(람다 우회 아님)",
+          len(argvs) == 2 and all(a[1].endswith("javis_boot_node.py") for a in argvs),
+          repr(argvs))
+    check("ⓐ9b 조립된 argv 에 --role/--agent 가 실린다(--agent 부재는 boot_node 가 exit 2 로 거절)",
+          [(a[a.index("--role") + 1], a[a.index("--agent") + 1]) for a in argvs]
+          == [("reviewer-gemini", "gemini"), ("reviewer-claude-2", "claude")], repr(argvs))
+    check("ⓐ9c 실 사슬 경로도 exit 0", rc_real == 0, "rc=%r" % rc_real)
 
     # 훅 안내 문구도 같은 정책에서 파생된다(리터럴 금지).
     note = O.team_roster_note()
@@ -238,14 +312,25 @@ def t_phoenix():
           P.restore_cwd_override(ENT_HOME, ["cso", "worker"], "/jarvis") == "/jarvis",
           repr(P.restore_cwd_override(ENT_HOME, ["cso", "worker"], "/jarvis")))
     ENT_MIX = dict(ENT_HOME, worker={"cwd": "/proj/wt"})
-    check("ⓑ4c 한 명이라도 진짜 작업 폴더면 **아무것도 덮지 않는다**(함대 이주 금지)",
+    # ★2R codex #2 둘째 구멍 + #10 셋째 — 종전 검체는 혼합 함대의 **실패를 축복**했다("아무것도
+    #   덮지 않는다" = 홈에 굳은 cso 가 영영 안 고쳐진다). 이제 계약이 바이너리 능력별로 둘이다.
+    check("ⓑ4c 구 바이너리(전역 override)에서는 한 명이라도 작업 폴더면 덮지 않는다(이주 금지)",
           P.restore_cwd_override(ENT_MIX, ["cso", "worker"], "/jarvis") is None)
+    check("ⓑ4c-1 신 바이너리(항목별)에서는 홈 좌석이 있으면 덮는다 — 유효 좌석은 바이너리가 지킨다",
+          P.restore_cwd_override(ENT_MIX, ["cso", "worker"], "/jarvis", per_entry=True)
+          == "/jarvis")
+    check("ⓑ4c-2 항목별이라도 **홈 좌석이 하나도 없으면** 덮지 않는다(무의미한 override 금지)",
+          P.restore_cwd_override({"cso": {"cwd": "/a/wt"}, "worker": {"cwd": "/b/wt"}},
+                                 ["cso", "worker"], "/jarvis", per_entry=True) is None)
     check("ⓑ4d master cwd 미해소면 override 없음(종전 동작)",
           P.restore_cwd_override(ENT_HOME, ["cso"], None) is None)
     check("ⓑ4e 대상이 master 뿐이면 override 없음(자기 기준값을 자기에게 덮지 않는다)",
           P.restore_cwd_override(ENT_HOME, ["master"], "/jarvis") is None)
     # master 부재 케이스 — 라이브에 없으면 **영속 토폴로지**의 master 엔트리가 기준이 된다.
-    _sv_status = P._status_json
+    # ★2R #2 넷째 구멍(2026-09-11): 이제 기준 폴더는 **실재하는 디렉터리**여야 채택된다.
+    #   합성 경로(/jarvis·/live)는 실디스크에 없으므로 존재 술어를 주입해 밀폐를 유지한다.
+    _sv_status, _sv_isdir = P._status_json, P._isdir
+    P._isdir = lambda p: p in ("/jarvis", "/live", "/proj/wt", os.path.expanduser("~"))
     try:
         P._status_json = lambda socket: {"surfaces": []}
         check("ⓑ4f 라이브 master 부재 → 영속 토폴로지 master cwd 로 폴백",
@@ -258,8 +343,61 @@ def t_phoenix():
             {"role": "master", "exited": False, "cwd": "/live"}]}
         check("ⓑ4i 라이브 master 가 1순위(영속보다 우선)",
               P.master_seat_cwd("/s.sock", {"master": {"cwd": "/old"}}) == "/live")
+        # ★2R #2 첫째 구멍 — 라이브 master 가 **홈**이면 채택하지 않고 영속으로 흘려보낸다.
+        #   (codex 가 `master_seat_cwd(...) == 홈` 을 직접 재현한 자리다.)
+        P._status_json = lambda socket: {"surfaces": [
+            {"role": "master", "exited": False, "cwd": HOME}]}
+        check("ⓑ4i-1 라이브 master 가 홈이면 기준으로 쓰지 않는다(영속 non-HOME 으로 폴백)",
+              P.master_seat_cwd("/s.sock", {"master": {"cwd": "/jarvis"}}) == "/jarvis")
+        check("ⓑ4i-2 라이브·영속 둘 다 홈이면 None(홈은 절대 기준이 아니다)",
+              P.master_seat_cwd("/s.sock", {"master": {"cwd": HOME}}) is None)
+        check("ⓑ4i-3 순수 파서 자체가 홈 좌석을 돌려주지 않는다",
+              P.master_seat_cwd_from_status(
+                  {"surfaces": [{"role": "master", "exited": False, "cwd": HOME}]}) is None)
+        # ★넷째 구멍 — **소실된** 폴더는 채택하지 않는다(cysd 가 PTY 빌더에 그대로 넣는다).
+        P._status_json = lambda socket: {"surfaces": [
+            {"role": "master", "exited": False, "cwd": "/gone/wt"}]}
+        check("ⓑ4i-4 라이브 기준 폴더가 실재하지 않으면 채택 금지(영속으로 폴백)",
+              P.master_seat_cwd("/s.sock", {"master": {"cwd": "/jarvis"}}) == "/jarvis")
+        check("ⓑ4i-5 영속 기준 폴더도 소실이면 None",
+              P.master_seat_cwd("/s.sock", {"master": {"cwd": "/gone/too"}}) is None)
+        check("ⓑ4i-6 _dir_ok 진리표(빈 값·소실·실재)",
+              P._dir_ok("") is False and P._dir_ok("/gone/wt") is False
+              and P._dir_ok("/jarvis") is True)
     finally:
-        P._status_json = _sv_status
+        P._status_json, P._isdir = _sv_status, _sv_isdir
+
+    # ★능력 탐침(2R #2) — 팩↔바이너리 스큐를 **실측**으로 가른다(버전 문자열 추론 금지).
+    class _H(object):
+        def __init__(self, rc, out):
+            self.returncode, self.stdout, self.stderr = rc, out, ""
+
+    _sv_cys_probe = P.cys
+    try:
+        for name, rc, out, want in (
+                ("토큰 있음 → 항목별 지원", 0, "  --cwd <CWD>  ... (per-entry-cwd — ...)", True),
+                ("토큰 없음(구 바이너리) → 미지원", 0, "  --cwd <CWD>  복원 폴더", False),
+                ("도움말 실패(rc≠0) → 미지원(보수)", 2, "per-entry-cwd", False)):
+            P._PER_ENTRY_CACHE.clear()
+            P.cys = lambda *a, **kw: _H(rc, out)
+            got = P.restore_supports_per_entry_cwd("/s.sock")
+            check("ⓑ4p 능력 탐침 — %s" % name, got is want, repr(got))
+        # 측정 자체가 던져도 부활 경로를 죽이지 않는다(보수적으로 미지원).
+        P._PER_ENTRY_CACHE.clear()
+        P.cys = lambda *a, **kw: (_ for _ in ()).throw(OSError("cys 부재"))
+        check("ⓑ4p-1 탐침 예외 → 미지원으로 접는다(부활 경로 보존)",
+              P.restore_supports_per_entry_cwd("/s.sock") is False)
+    finally:
+        P.cys = _sv_cys_probe
+        P._PER_ENTRY_CACHE.clear()
+
+    # ★배선 소스 핀 — 호출부가 탐침 결과를 override 결정에 **실제로 넘기는가**.
+    #   (순수 함수만 재고 배선을 안 재면, 계약이 맞아도 실경로가 구 계약으로 굳는다.)
+    _src = io.open(os.path.join(BIN, "javis_phoenix.py"), encoding="utf-8").read()
+    check("ⓑ4q 호출부가 restore_supports_per_entry_cwd 결과를 per_entry= 로 전달",
+          "restore_supports_per_entry_cwd(socket)" in _src
+          and "per_entry=per_entry" in _src,
+          "배선이 끊겼다 — 순수 함수는 맞는데 실경로가 종전 계약으로 굳는다")
 
     # 정상 복원이 실제로 --cwd 를 실어 보내는가.
     seen_r = []
@@ -468,8 +606,39 @@ def t_attribution():
               "블록을 지웠는데도 통과 — 파일 어딘가의 무관한 idoforgod 를 세고 있다")
 
 
+# ── ⓖ 릴리스 본문 = **자산 유무 파생**(2026-09-11 · 항목9) ─────────────────────────────
+# ★윈도우 단독 태그(맥 서명 시크릿 부재 → 맥 레그 명시 skip)에서도 본문이 ".dmg 를 받으라"고
+#   안내하면, 릴리스 페이지가 **존재하지 않는 자산**을 가리킨다. 본문의 설치 안내 줄은
+#   리터럴이 아니라 파생값이어야 한다.
+def t_release_body_derived():
+    rel = ".github/workflows/release.yml"
+    try:
+        src = io.open(os.path.join(REPO, rel), encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        check("ⓖ %s 판독" % rel, False, str(e))
+        return
+    body = _block_scalar(src, "releaseBody")
+    check("ⓖ releaseBody 블록 추출", bool(body), "자리가 사라졌다(측정 불능은 통과가 아니다)")
+    check("ⓖ 설치 안내가 **파생값**이다(리터럴 .dmg 금지)",
+          bool(body) and ".dmg" not in body
+          and "steps.relbody.outputs.install_line" in body,
+          (body or "")[:200])
+    check("ⓖ 파생 스텝이 실재하고 맥 레그 판정과 같은 소스를 읽는다",
+          "id: relbody" in src and "steps.macsign.outputs.enabled" in src
+          and "APPLE_CERTIFICATE_B64 != ''" in src,
+          "파생 스텝·판정 소스 부재 — 본문이 다시 리터럴로 굳는다")
+    # 음성 픽스처: 파생 참조를 지우고 리터럴로 되돌리면 반드시 적색이어야 한다.
+    mutated = src.replace("${{ steps.relbody.outputs.install_line }}",
+                          "macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요.")
+    mbody = _block_scalar(mutated, "releaseBody")
+    check("ⓖ 리터럴 회귀 시 적색(게이트 실효 증명)",
+          bool(mbody) and ".dmg" in mbody,
+          "리터럴로 되돌려도 초록 — 이 축은 아무것도 재지 않는다")
+
+
 def main():
     t_attribution()
+    t_release_body_derived()
     t_orchestra()
     t_formation()
     t_phoenix()

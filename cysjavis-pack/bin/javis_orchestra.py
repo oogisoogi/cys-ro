@@ -895,7 +895,7 @@ def _row_ack_state(row):
     return "ok" if v else "pending"
 
 
-def ack_axis(status, verdicts, roster):
+def ack_axis(status, verdicts, roster=None):
     """★(부트 v2 §2-9) 리뷰어 각성 ACK 축 — 순수 함수(status·판정만 · 데몬 왕복 0).
 
     반환 {"axis": bool, "pending": [role]|None, "ok": [role]|None, "unmeasured": [role]|None}
@@ -904,12 +904,23 @@ def ack_axis(status, verdicts, roster):
       않는 이유는 이 파일이 `awake_pending` 에서 이미 밝힌 것과 같다 — 빈 목록은 "재어 보니
       전원 ACK"라는 **거짓 초록**이고, 측정 불능은 통과가 아니다.
     · 대상은 **리뷰어 역할**뿐이다(명세 [가정 A]: Claude 좌석은 결정론 ACK, 리뷰어만
-      degraded terminal 을 정상으로 인정하되 리뷰 게이트를 막는다). 로스터가 실충전자를
-      알려주므로 대체 좌석(reviewer-claude-N)도 그 이름의 행에서 읽는다.
+      degraded terminal 을 정상으로 인정하되 리뷰 게이트를 막는다). 실충전자는 판정의
+      `filler` 가 알려주므로 대체 좌석(reviewer-claude-N)도 그 이름의 행에서 읽는다.
+    · ★**2R BLOCKER #7 수리(2026-09-11)**: 대상 집합을 `roster`(감지된 2슬롯)로 좁히지
+      않는다. 종전 구현은 `roster ∩ verdicts` 였고, 그래서 **감지 로스터 밖에서 열린 살아
+      있는 리뷰어**(`reviewer-grok` · 감지 변경 후 남은 구 Claude 대체 좌석 · 사람이 손으로
+      연 임의 이름 좌석)가 `ack_nonce_ok=false` 여도 `pending=[]` · exit 0 으로 **게이트를
+      통째로 우회**했다(codex 2R 직접 재현). 정본 규칙은 「presence must be awake」 —
+      **연 좌석은 전부 재고 대상**이다. 그래서 `verdicts` 안의 `reviewer*` **전건**을 센다.
+      `check_verdicts` 가 이미 살아 있는 `reviewer*` 를 required 에 더해 두므로(같은 술어
+      `startswith("reviewer")`), 두 함수가 **같은 집합**을 보게 되어 축소 구멍이 구조적으로
+      닫힌다. 방향은 한쪽뿐이다 — 종전 대상은 전부 새 대상에 포함된다(축소 0·확대만).
+    · `roster` 인자는 **호출 호환**을 위해 남긴다(check·리뷰 게이트·self-test 가 넘긴다).
+      더는 대상을 좁히지 않으므로 판정에 관여하지 않는다.
     · ready 미충족 역할은 아예 세지 않는다 — 그쪽은 `ready_missing` 이 말하는 **다른 사실**
       (좌석이 없다)이고, 없는 좌석의 ACK 를 pending 이라 부르면 처방이 겹쳐 뒤집힌다.
     """
-    reviewer_roles = [e["role"] for e in (roster or []) if e.get("role") in (verdicts or {})]
+    reviewer_roles = sorted(r for r in (verdicts or {}) if str(r).startswith("reviewer"))
     if not ack_axis_enabled(status):
         return {"axis": False, "pending": None, "ok": None, "unmeasured": None}
     rows = {}
@@ -939,21 +950,62 @@ def check_exit_code(axes, ack):
     return CHECK_EXIT_READY
 
 
+def reviewer_boot_agent(role):
+    """리뷰어 역할 → `javis_boot_node.py --agent` 에 넣을 **실 에이전트** | None(표 밖 좌석).
+
+    ★왜 `BOOT_PLAN` 이 아닌가(2R HIGH #9 의 뿌리): 기본 함대 정책(2026-09-10)으로 리뷰어가
+      `BOOT_PLAN` 에서 빠졌는데 `ack_remedy` 는 그 표를 계속 읽었다 — `next(...)` 가 None 을
+      돌려주니 `--agent` 없는 줄이 처방으로 나갔고, `javis_boot_node.py` 는 `--agent` 부재를
+      **exit 2 로 거절**한다(그 파일 "error: 기동에는 --agent 필수"). 즉 처방을 그대로 쳐도
+      아무 일도 일어나지 않았다. 리뷰어 에이전트의 SOT 는 `REVIEWER_SLOTS` 다 — 네이티브
+      좌석과 Claude 대체 좌석 **둘 다** 이 표에 있다.
+    ★표 밖(사람이 손으로 연 `reviewer-grok` 등)은 None 이다 — 추측한 에이전트를 처방에
+      적으면 그것이 곧 새로운 거짓 처방이다."""
+    for nrole, nagent, srole, sagent in REVIEWER_SLOTS:
+        if role == nrole:
+            return nagent
+        if role == srole:
+            return sagent
+    return None
+
+
 def ack_remedy(roles):
-    """ACK 미확인 좌석의 **실재하는** 처방 1줄(순수 함수).
+    """ACK 미확인 좌석의 **실제로 교정하는** 처방 1줄(순수 함수).
 
     ★명세 §3-2 는 처방으로 `javis_boot_node.py --role <r> --verify` 를 적었으나 그 플래그는
-      실재하지 않는다(javis_boot_node.py 의 argparse 실측 — --role/--agent/--reclaim/
+      실재하지 않는다(javis_boot_node.py 의 argparse 실측 — --role/--agent/--cwd/--reclaim/
       --self-test/--json/--idle/--timeout 뿐). 없는 명령을 처방으로 내면 이 파일이 U-10 에서
-      스스로 금지한 **거짓 처방**이 된다. 그래서 실재 경로 둘로 적는다."""
+      스스로 금지한 **거짓 처방**이 된다.
+    ★**2R HIGH #9 수리(2026-09-11)** — 실재하기만 해서는 부족하고 **교정해야** 한다:
+      · `boot-reviewers` **맨 호출은 리뷰어를 0기 스폰한다**(기본 함대 정책 · 같은 파일
+        `cmd_boot_reviewers` 의 조기 반환). 그것을 ACK 처방으로 내면 사람이 명령을 치고도
+        상태가 그대로다 — 가장 나쁜 종류의 거짓 처방(무해해 보이는 무동작)이다. 그래서
+        **`--spawn` 을 반드시 붙인다**.
+      · 에이전트는 `REVIEWER_SLOTS`(=`reviewer_boot_agent`)에서 해소해 `--agent` 를 **항상**
+        채운다.
+    ★**교정 불가는 교정 불가라고 적는다**(브리프 요구): 표 밖 좌석은 에이전트를 알 수 없고,
+      `--reclaim` 은 **살아 있는 좌석을 회수하지 않는다**(javis_boot_node.reclaim 의
+      `node_alive` 가드 — 건강한 quiet 노드 오살 차단). 살아 있는데 arm 이 없는 좌석은
+      기계가 고칠 수 없으므로 **사람이 할 일**을 명시한다."""
     if not roles:
         return ""
-    agents = []
+    known, unknown = [], []
     for r in roles:
-        a = next((ag for role, ag, _p in BOOT_PLAN if role == r), None)
-        agents.append("javis_boot_node.py --role %s%s" % (r, (" --agent %s" % a) if a else ""))
-    return ("javis_orchestra.py boot-reviewers (감지·대체 폴백 포함) 또는 %s"
-            % " · ".join(agents))
+        a = reviewer_boot_agent(r)
+        (known if a else unknown).append((r, a))
+    parts = []
+    if known:
+        parts.append("javis_orchestra.py boot-reviewers --spawn (감지·Claude 대체 폴백 포함) 또는 %s"
+                     % " · ".join("javis_boot_node.py --role %s --agent %s" % (r, a)
+                                  for r, a in known))
+    if unknown:
+        parts.append("표(REVIEWER_SLOTS) 밖 좌석 %s = **자동 교정 불가**(에이전트 미상 · "
+                     "--reclaim 은 살아 있는 좌석을 회수하지 않는다) → 사람이 할 일: "
+                     "그 pane 을 닫고 `javis_boot_node.py --role <역할> --agent <에이전트>` 로 "
+                     "다시 열어 감독자 arm 을 받게 하라(arm 없는 좌석은 ACK 자체가 성립하지 "
+                     "않는다 — cysd boot_supervisor.ack_nonce_ok: arm 부재 시 false)"
+                     % ", ".join(r for r, _ in unknown))
+    return " / ".join(parts)
 
 
 def addr_registry_roles():
@@ -1172,7 +1224,8 @@ def cmd_check(args):
     if missing:
         # ★B1 정책 열 소비: 부재가 전부 Degrade(리뷰어)면 처방은 boot-reviewers(대체 폴백 포함)다.
         only_degrade = all(plan_policy(m) == FAIL_DEGRADE for m in missing)
-        howto = ("javis_orchestra.py boot-reviewers (리뷰어 감지·자동 폴백)" if only_degrade
+        # ★2R HIGH #9 와 같은 결함(맨 호출 = 스폰 0): 결손 처방에도 `--spawn` 을 붙인다.
+        howto = ("javis_orchestra.py boot-reviewers --spawn (리뷰어 감지·자동 폴백)" if only_degrade
                  else "cys boot")
         print("종합: 필수 %d/%d 생존 — 부재: %s → `%s`로 기동하라"
               % (len(required) - len(missing), len(required), ", ".join(missing), howto))

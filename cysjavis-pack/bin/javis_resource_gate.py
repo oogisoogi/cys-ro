@@ -259,6 +259,14 @@ def measure(a):
     # 측정 실패는 0으로 조용히 넘기지 않고 measure_errors로 신호(P-ORCH-1) — 소비자(evaluate)가
     # 최소 soft로 격상해 '측정 실패=조용한 allow'를 차단한다.
     errors = []
+    # ★2R 항목9(2026-09-11) — **구조적 부재 ≠ 측정 실패**. 그 플랫폼에 그 지표가 아예 없는
+    #   경우(Windows 의 1분 부하 평균)는 "재려 했는데 못 쟀다"가 아니라 "잴 것이 없다"이며,
+    #   경고가 아니다. 종전엔 둘이 `measure_errors` 로 합류해 **윈도우에서는 매 부트마다
+    #   soft_warn 이 떴다**(노트북 req-14448 실측 = 소음). 소음이 상시화되면 진짜 자원 경고가
+    #   같은 자리에 떠도 아무도 읽지 않는다 — 이 축의 신뢰가 소음의 대가다.
+    #   ⚠완화가 아니라 **분리**다: 값은 여전히 None 이고, 그 사실은 `measure_unavailable` 로
+    #     JSON·경고문에 그대로 남는다(조용한 삭제 금지).
+    unavailable = []
     need_ps = a.servers_override is None or a.nodes_override is None
     lines = _ps_lines() if need_ps else None
     ps_failed = need_ps and lines is None
@@ -293,11 +301,18 @@ def measure(a):
     if a.load_override is not None:
         load1 = a.load_override
     else:
-        try:
-            load1 = os.getloadavg()[0]
-        except (OSError, AttributeError):
-            errors.append("load(getloadavg)")
+        _getloadavg = getattr(os, "getloadavg", None)
+        if _getloadavg is None:
+            # 플랫폼이 그 지표를 제공하지 않는다(Windows) — 경고가 아니라 **부재 사실**이다.
+            unavailable.append("load(플랫폼 미제공)")
             load1 = None
+        else:
+            try:
+                load1 = _getloadavg()[0]
+            except OSError:
+                # 있는데 실패했다 = 진짜 측정 실패(조용한 allow 금지 · 종전 계약 그대로).
+                errors.append("load(getloadavg)")
+                load1 = None
     ncpu = os.cpu_count() or 1
 
     # STEP B(★A3 치환): 활성 부서·좌석은 부서 데몬 응답(_dept_roster)에서 — 소켓 파일 수
@@ -318,6 +333,7 @@ def measure(a):
             "ncpu": ncpu,
             "load_ratio": round(load1 / ncpu, 3) if load1 is not None else None,
             "context_pct": a.context, "measure_errors": errors,
+            "measure_unavailable": unavailable,
             "active_depts": active_depts, "dept_seats": roster["seats"], "depts": roster["depts"],
             "nodes_hard_effective": nodes_hard_effective}
 
@@ -457,6 +473,9 @@ def cmd_check(a):
     warnings = []
     if m["measure_errors"]:
         warnings.append("measure_error:" + ",".join(m["measure_errors"]))
+    # ★항목9: 부재는 **고지하되 격상하지 않는다** — 침묵도 경고도 아닌 제3의 사실.
+    if m.get("measure_unavailable"):
+        warnings.append("measure_unavailable:" + ",".join(m["measure_unavailable"]))
     if m["context_pct"] is None:
         warnings.append("context_unmeasured")
     # ★T9: 비정수 CYS_FORMATION_BUDGET 는 판정 무접촉(발화 조건 미충족)이되 침묵하지 않는다.
@@ -1048,6 +1067,39 @@ def self_test():
     chk(rc == EXIT_HARD, "로스터 0 + nodes 20 이 hard(2) 아님(floor 18 회귀 · 음성 대조): rc=%r" % rc)
     rc, _doc = _check_json(quiet + ["--nodes-override", "21", "--dept-roster-override", r9])
     chk(rc == EXIT_HARD, "1부서 9좌석+nodes 21 이 hard(2) 아님(21≥21): rc=%r" % rc)
+
+    # ── ★항목9(2026-09-11): 구조적 부재 ≠ 측정 실패 (윈 soft_warn 소음 봉인) ──
+    #    `--load-override` 없이 부하 지표를 **없는 플랫폼**처럼 만들고 잰다(윈 대역).
+    noload = ["check", "--json", "--servers-override", "0", "--nodes-override", "0"] + ro
+    _sv_gla = getattr(os, "getloadavg", None)
+    try:
+        if _sv_gla is not None:
+            del os.getloadavg
+        rc, doc = _check_json(noload)
+        me = doc.get("measured") or {}
+        chk(rc == EXIT_ALLOW and doc.get("verdict") == "allow",
+            "부하 지표 미제공 플랫폼이 soft_warn 을 냄(윈 소음 회귀): rc=%r verdict=%r"
+            % (rc, doc.get("verdict")))
+        chk(not [e for e in (me.get("measure_errors") or []) if e.startswith("load")],
+            "구조적 부재가 measure_errors 로 합류: %r" % me.get("measure_errors"))
+        chk(any(u.startswith("load") for u in (me.get("measure_unavailable") or [])),
+            "부재 사실이 어디에도 안 남았다(조용한 삭제 금지): %r" % me.get("measure_unavailable"))
+        chk(any(w.startswith("measure_unavailable:") for w in (doc.get("warnings") or [])),
+            "부재 고지가 warnings 에 없다: %r" % doc.get("warnings"))
+        # 음성 대조 — **있는데 실패**하면 여전히 측정 실패(soft)다. 완화가 아니라 분리라는 증거.
+        def _boom():
+            raise OSError("측정 실패 대역")
+        os.getloadavg = _boom
+        rc, doc = _check_json(noload)
+        chk(rc == EXIT_SOFT and "load(getloadavg)" in ((doc.get("measured") or {})
+                                                       .get("measure_errors") or []),
+            "실제 측정 실패가 soft 로 안 잡힌다(분리가 완화가 됐다): rc=%r measured=%r"
+            % (rc, doc.get("measured")))
+    finally:
+        if _sv_gla is not None:
+            os.getloadavg = _sv_gla
+        elif hasattr(os, "getloadavg"):
+            del os.getloadavg
     # (e) --nodes-hard 명시는 로스터보다 우선(종전 규약 유지)
     rc, doc = _check_json(quiet + ["--nodes-override", "0", "--nodes-hard", "7",
                                    "--dept-roster-override", r10])

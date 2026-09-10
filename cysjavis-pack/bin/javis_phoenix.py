@@ -1431,14 +1431,20 @@ def master_seat_cwd_from_status(obj):
     ★live_cwd 가 아니라 cwd 다: 상속 대상은 '설치기가 신뢰를 심어 둔 폴더'이지 마스터가 잠시
       cd 해 간 현재 폴더가 아니다. live_cwd 를 물려주면 자식이 신뢰되지 않은 폴더에서 떠
       폴더 신뢰 관문에 갇힌다 — 이 수리가 고치려는 바로 그 증상이다.
-    ★exited 좌석·빈 cwd 는 무시(빈 문자열은 launch-agent 에서 '미지정'과 같아야 한다)."""
+    ★exited 좌석·빈 cwd 는 무시(빈 문자열은 launch-agent 에서 '미지정'과 같아야 한다).
+    ★**2R codex #2 첫째 구멍 수리(2026-09-11)**: 라이브 master 의 생성 cwd 가 **홈**이면
+      채택하지 않는다. 종전에는 홈이어도 그대로 돌려주고 호출부가 그 값으로 조기 반환해,
+      "홈은 절대 기준이 될 수 없다"는 이 파일의 규칙이 라이브 경로에서만 깨졌다(codex 가
+      `master_seat_cwd(...) == 홈` 을 직접 재현). 홈은 '말해 주지 않은 값'이므로 상속해 봐야
+      자식이 다시 관문에 갇힌다 — 채택하지 않고 **다음 후보(영속 토폴로지)로 흘려보낸다**.
+      좌석이 여럿이면(멀티 master 표본) 홈이 아닌 좌석을 계속 찾는다."""
     for srf in (obj or {}).get("surfaces") or []:
         if srf.get("exited"):
             continue
         if (srf.get("role") or "") != "master":
             continue
         cwd = (srf.get("cwd") or "").strip()
-        if cwd:
+        if cwd and not home_like(cwd):
             return cwd
     return None
 
@@ -1454,6 +1460,53 @@ def home_like(cwd):
     return n(cwd) == n("~")
 
 
+# ★몽키패치 지점(순수 시험용): 실디스크에 /jarvis 를 만들 수 없는 시험이 이 훅을 바꾼다.
+_isdir = os.path.isdir
+
+
+def _dir_ok(path):
+    """그 경로가 **지금 실재하는 디렉터리**인가 — 기준 폴더 채택의 마지막 관문.
+
+    ★2R codex #2 넷째 구멍(2026-09-11): 라이브·영속 어느 쪽도 존재를 묻지 않았다. 좌석의
+      cwd 는 **과거의 사실**이다 — 지워진 워크트리·이름이 바뀐 폴더가 토폴로지에 그대로 굳는다.
+      그 값을 실어 보내면 cysd 가 PTY 빌더에 직접 넣고(src/bin/cysd/state.rs) **스폰이 깨진다**:
+      부활이 가장 필요한 순간에 부활이 죽는 형태다. 없으면 채택하지 않고 None 으로 접는다
+      (= 종전 동작인 홈 · 상속은 개선이지 전제가 아니다).
+    ★예외를 삼키는 이유: 권한 없는 경로·깨진 심링크에서 `isdir` 가 던지면 그것도 '못 쓴다'와
+      같은 사실이다. 판정 함수가 부활 경로를 죽이지 않게 한다."""
+    try:
+        return bool(path) and bool(_isdir(os.path.expanduser(path)))
+    except OSError:
+        return False
+
+
+RESTORE_PER_ENTRY_TOKEN = "per-entry-cwd"
+_PER_ENTRY_CACHE = {}
+
+
+def restore_supports_per_entry_cwd(socket=None):
+    """이 기계의 `cys restore --cwd` 가 **항목별**인가 — `--help` 능력 토큰 실측(1회 캐시).
+
+    ★왜 버전 비교가 아니라 토큰인가: 개발 빌드·핫픽스·팩만 먼저 올라간 조합에서 버전 문자열
+      비교는 거짓말을 한다. 도움말에 박힌 `per-entry-cwd`(cys.rs `Command::Restore::cwd` 의
+      doc 주석 · 그쪽에 회귀 핀 있음)는 **그 바이너리가 실제로 무엇을 하는가**의 표식이다.
+    ★왜 이 탐침이 필요한가(팩↔바이너리 스큐): 구 바이너리의 `--cwd` 는 저장 엔트리를 **전부**
+      이긴다. 혼합 함대(홈 좌석 + 워크트리 좌석)에 override 를 실으면 유효 좌석이 이주한다 —
+      고치려던 것보다 큰 파괴다. 토큰이 없으면 종전(전원 홈일 때만) 계약으로 물러선다.
+    ★측정 실패(cys 부재·타임아웃)는 **미지원으로 접는다** — 불확실할 때 보수적인 쪽이
+      '이주 안 함'이다."""
+    key = socket or ""
+    if key in _PER_ENTRY_CACHE:
+        return _PER_ENTRY_CACHE[key]
+    try:
+        r = cys("restore", "--help", socket=socket, timeout=10)
+        ok = r.returncode == 0 and RESTORE_PER_ENTRY_TOKEN in ((r.stdout or "") + (r.stderr or ""))
+    except Exception:
+        ok = False
+    _PER_ENTRY_CACHE[key] = ok
+    return ok
+
+
 def fresh_child_cwd(saved_cwd, master_cwd):
     """fresh 강등 자식이 뜰 폴더 — **순수 함수**(1R#2 · self-test 핀).
 
@@ -1465,25 +1518,33 @@ def fresh_child_cwd(saved_cwd, master_cwd):
     return master_cwd if home_like(saved) else saved
 
 
-def restore_cwd_override(entries, roles, master_cwd):
-    """정상 복원(`cys restore`)에 실을 `--cwd` 또는 None — **순수 함수**(1R#2 · self-test 핀).
+def restore_cwd_override(entries, roles, master_cwd, per_entry=False):
+    """정상 복원(`cys restore`)에 실을 `--cwd` 또는 None — **순수 함수**(self-test 핀).
 
-    계약: master 좌석 cwd 가 해소됐고, **부활 대상 자식 전원의 저장 cwd 가 홈(또는 미지정)** 일
-    때만 덮는다.
-    ★왜 무조건 덮지 않는가: `--cwd` 는 저장 엔트리를 **전부** 이긴다. 다중 프로젝트 함대
-      (워커가 각자 워크트리에 사는 우리 맥 같은 배치)에서 무조건 덮으면 복원이 전 좌석을
-      master 폴더로 **이주**시킨다 — 고치려던 것보다 큰 파괴다. 한 명이라도 진짜 작업 폴더를
-      갖고 있으면 아무것도 덮지 않고, 그 레인의 홈 잔재는 fresh 폴백이 개별로 교정한다.
+    ★계약이 바이너리 능력에 따라 둘이다(`per_entry` · 호출부가 `restore_supports_per_entry_cwd`
+      로 실측해 넘긴다):
+      · `per_entry=False`(구 바이너리 = 전역 override): **부활 대상 자식 전원의 저장 cwd 가
+        홈(또는 미지정)** 일 때만 덮는다. 그쪽 `--cwd` 는 저장 엔트리를 전부 이기므로, 한 명이라도
+        진짜 작업 폴더를 갖고 있으면 복원이 그 좌석을 master 폴더로 **이주**시킨다 — 고치려던
+        것보다 큰 파괴다. 그래서 아무것도 덮지 않는다(종전 계약 그대로 보존).
+      · `per_entry=True`(신 바이너리 = 항목별 override): **홈 좌석이 하나라도 있으면 덮는다.**
+        유효한 작업 폴더는 바이너리가 지킨다(cys.rs `run_restore` — 저장 cwd 가 홈이 아니면
+        그것이 이긴다).
+    ★**2R codex #2 둘째·셋째 구멍 수리(2026-09-11)**: 종전은 all-or-nothing 이라 혼합 함대
+      (`{cso: 홈, worker: /proj}`)에서 **아무것도 고치지 못했다** — 맨 restore 로 cso 가 홈에
+      그대로 떠서 `spawned` 로 마킹되고, 개별 좌석을 고치는 fresh 폴백은 **도달조차 하지
+      않았다**(성공했으니까). 셋째 구멍(전역 override 가 대상 밖 죽은 좌석까지 이주시킴)도
+      같은 수리로 닫힌다 — 항목별 판정은 대상 여부와 무관하게 각 엔트리의 저장 cwd 를 지킨다.
     ★master 자신은 판정에서 제외한다(그의 cwd 가 곧 기준값이다)."""
     if not master_cwd:
         return None
     targets = [r for r in (roles or []) if r != "master"]
     if not targets:
         return None
-    for r in targets:
-        if not home_like((entries.get(r) or {}).get("cwd")):
-            return None
-    return master_cwd
+    home_targets = [r for r in targets if home_like((entries.get(r) or {}).get("cwd"))]
+    if per_entry:
+        return master_cwd if home_targets else None
+    return master_cwd if len(home_targets) == len(targets) else None
 
 
 def master_seat_cwd(socket, entries=None):
@@ -1501,11 +1562,11 @@ def master_seat_cwd(socket, entries=None):
       자식이 다시 홈에서 뜬다. 기록된 master 의 cwd 가 그 기준이다(홈이면 기준으로 쓰지 않는다 —
       홈은 '말해 주지 않은 값'이라 상속해도 관문이 그대로다)."""
     live = master_seat_cwd_from_status(_status_json(socket))
-    if live:
+    if live and _dir_ok(live):
         return live
     ent = (entries or {}).get("master") or {}
     cwd = (ent.get("cwd") or "").strip()
-    return cwd if cwd and not home_like(cwd) else None
+    return cwd if cwd and not home_like(cwd) and _dir_ok(cwd) else None
 
 
 def spawn_fresh_production(socket, role, agent, cwd=None):
@@ -1932,10 +1993,16 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     #   프로젝트 함대 보호는 `restore_cwd_override` 주석), `master_cwd` 는 fresh 폴백이 개별
     #   좌석의 홈 잔재를 교정할 때 쓰는 기준값이다. 둘 다 None 이면 종전 동작 그대로다.
     master_cwd = master_seat_cwd(socket, entries)
-    restore_cwd = restore_cwd_override(entries, need, master_cwd)
+    # ★2R#2(2026-09-11): override 계약은 **이 기계의 바이너리 능력**에 달렸다 — stub 경로는
+    #   실 restore 를 부르지 않으므로 탐침도 돌리지 않는다(밀폐 유지·서브프로세스 0).
+    per_entry = (not stub) and restore_supports_per_entry_cwd(socket)
+    restore_cwd = restore_cwd_override(entries, need, master_cwd, per_entry=per_entry)
     if restore_cwd:
-        log("★복원 cwd 상속: 부활 대상 자식의 저장 cwd 가 전원 홈 → master 좌석 폴더(%s)로 복원한다"
-            % restore_cwd)
+        log("★복원 cwd 상속: 홈으로 굳은 부활 대상을 master 좌석 폴더(%s)로 교정한다 "
+            "(항목별 override=%s — %s)"
+            % (restore_cwd, per_entry,
+               "유효한 작업 폴더 좌석은 바이너리가 지킨다" if per_entry
+               else "구 바이너리(전역 override) — 대상 전원이 홈일 때만 덮는다"))
     attempt = 0
     while need and attempt <= SPAWN_RETRIES:
         if stub:

@@ -858,6 +858,28 @@ jobs:
           }
           Write-Host "VERSIONINFO 게이트 통과: 3종 전부 수치 버전 == $expected"
 
+      # ★릴리스 본문 설치 안내는 **그 태그에 실제로 오르는 자산**에서 파생한다(2026-09-11 · 항목9).
+      #   종전 본문은 "macOS는 .dmg, Windows는 -setup.exe"를 **리터럴**로 박았다. 맥 서명 시크릿이
+      #   없어 맥 레그가 명시 skip 된 태그(= 윈도우 단독 배포)에서도 그 문장이 그대로 나가,
+      #   릴리스 페이지가 **존재하지 않는 자산을 안내**했다(맥 사용자가 받으러 왔다가 못 받는다).
+      #   판정 소스는 하나다 — 위 macOS 프리플라이트(`steps.macsign.outputs.enabled`). Windows
+      #   레그에는 그 스텝이 돌지 않으므로(맥 전용 if) 같은 근거인 **시크릿 실재**로 판단한다.
+      - name: 릴리스 본문 설치 안내 파생 (맥 자산 유무)
+        id: relbody
+        shell: bash
+        env:
+          MAC_ENABLED: ${{ steps.macsign.outputs.enabled }}
+          HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE_B64 != '' }}
+        run: |
+          set -euo pipefail
+          if [ "${MAC_ENABLED:-}" = "true" ] || { [ -z "${MAC_ENABLED:-}" ] && [ "${HAS_APPLE_CERT:-false}" = "true" ]; }; then
+            line="macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다."
+          else
+            line="Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다. (이 태그는 윈도우 단독 배포입니다 — macOS 자산은 포함되지 않습니다.)"
+          fi
+          echo "install_line=$line" >> "$GITHUB_OUTPUT"
+          echo "본문 설치 안내: $line"
+
       # tauri build → beforeBuildCommand(bundle-prep.sh)가 UI 번들 + cys/cysd 릴리스 빌드 + externalBin
       # 배치 → 번들(dmg/app) → createUpdaterArtifacts(.app.tar.gz + .sig + latest.json) → 비공개 repo 릴리스 업로드.
       # Windows: NSIS setup.exe + .sig — tauri-action이 같은 릴리스의 latest.json에 platforms.windows-x86_64를 병합.
@@ -891,7 +913,7 @@ jobs:
           #   붙이는 방식은 한 번 빠지면 배포 조건이 깨진다. 검사 축은
           #   `cysjavis-pack/bin/tests/test_default_fleet_formation.py` ⓕ(본문에 idoforgod 부재 = 적색).
           releaseBody: |
-            cys 터미널 ${{ github.ref_name }}. macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다.
+            cys 터미널 ${{ github.ref_name }}. ${{ steps.relbody.outputs.install_line }}
 
             ---
             cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다. 원작 저장소: https://github.com/idoforgod/cys-terminal

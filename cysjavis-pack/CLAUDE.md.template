@@ -9,7 +9,8 @@
 1. `~/.cys/pack/directives/` 의 해당 `*_DIRECTIVE.md` 와 `~/.cys/pack/soul.md` 를 읽고 각성한다.
 2. `cys claim-role <master|worker|cso|reviewer-gemini|reviewer-codex>` 로 자기 surface를
    역할 주소로 등록한다. ⚠리뷰어는 **에이전트별 역할명**(reviewer-gemini·reviewer-codex)을
-   쓴다 — generic `reviewer`로 등록하면 orchestra check의 4종 생존 판정이 실패한다.
+   쓴다 — generic `reviewer`는 슬롯 표 밖 이름이라 ACK 미확인 시 자동 교정 명령이 나오지
+   않는다(사람 단계로 강등).
    launch-agent/boot로 기동됐다면 이미 등록돼 있다(`cys list` role 열 확인 — 재등록 금지).
 3. 마스터 선언이면 부트는 **산문으로 수행하지 않는다** — 계약의 정본은 MASTER_DIRECTIVE
    **§0-A(실행 주체 단일 계약)** 이고, 이 파일은 그 포인터일 뿐이다. 두 갈래만 있다:
@@ -35,8 +36,8 @@
 `cys events` 구독).
 
 ```bash
-cys boot                                        # 4종 의무 노드 부트(CSO·worker·agy·codex+grok 선택)
-python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" check   # 4종 생존 결정론 확인
+cys boot                                        # 기본 함대 부트(master·CSO·worker 3기 · 리뷰어는 온디맨드)
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" check   # 기본 함대 생존 결정론 확인
 python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" task-prompt --task "<T>" --scope "<범위>" --success "<기준>"  # 위임 티켓 (워커 생존 게이트 + 절대 강조 4규칙 자동 주입)
 python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" gate-status --task "<T>"   # 자율주행 축1 — 게이트 4자 수렴 결정론 판정 (CONVERGED=다음 단계 자동 착수)
 python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" next-action                # 자율주행 축3 — 다음 액션 큐 결정론 추출 (0=착수 가 / 3=임무 미지정→보고·정지 / 1=빈 큐 / 2=신규)

@@ -30,7 +30,7 @@
     비상 플래그 없이는 구조적으로 FAIL 한다(docs/RELEASE.md 복구 절차 참조).
   옵션: --unsafe-skip-gatekeeper  Gatekeeper 게이트 생략 — 비상 탈출구(LOUD 경고·평시 금지,
         `--force-no-verify` 선례와 동형: 어떤 자동 경로도 이 플래그를 실어서는 안 된다)
-        --repo owner/name        배포 원본 레포(기본 oogisoogi/cys-terminal)
+        --repo owner/name        배포 원본 레포(기본 oogisoogi/cys-ro)
 
 ★맥 미포함 묶음 (2026-09-09 · 박사님 09:05 「맥 서명 없이 윈도우 먼저」)
   Apple 시크릿 7종이 없는 동안 release.yml 의 macOS 레그는 명시 skip 되고, 그 태그의 드래프트에는
@@ -56,7 +56,7 @@ import urllib.request
 #   만들려 했다(= 우리 태그에는 두 자산이 영원히 안 붙는다).
 #   ⚠`release-verify.py` 의 `RELEASE_REPO` · `release.yml` 의 `SRC_REPO` ·
 #     `src-tauri/tauri.conf.json` 의 updater endpoints 와 **같은 레포**여야 한다.
-RELEASE_REPO = "oogisoogi/cys-terminal"
+RELEASE_REPO = "oogisoogi/cys-ro"
 REPO = RELEASE_REPO          # 하위 호환 별칭 — main() 이 --repo 로 덮는다
 BACKUP_ROOT = os.path.expanduser("~/cys-release-backup")
 SUMS_NAME = "SHA256SUMS.txt"          # ★과거 관례 — `SHA256SUMS`(확장자 없음) 아님

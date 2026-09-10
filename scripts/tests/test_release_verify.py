@@ -512,7 +512,7 @@ class ReleaseRepoBindingTests(unittest.TestCase):
     """
 
     def test_50_default_repo_is_our_fork(self):
-        self.assertEqual(rv.RELEASE_REPO, "oogisoogi/cys-terminal",
+        self.assertEqual(rv.RELEASE_REPO, "oogisoogi/cys-ro",
                          "배포 원본이 우리 포크가 아니다 — tauri.conf endpoints·release.yml "
                          "SRC_REPO 와 같은 레포여야 한다")
 

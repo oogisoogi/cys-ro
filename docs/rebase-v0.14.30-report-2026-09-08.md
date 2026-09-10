@@ -201,7 +201,7 @@ upstream **249커밋**(v0.14.27 → v0.14.30)을 편입하고 그 위에 우리 
 
 | 항목 | 이전(벤더) | 지금(우리) |
 |---|---|---|
-| `endpoints[0]` | `github.com/idoforgod/cys-terminal/releases/latest/download/latest.json` | **`github.com/oogisoogi/cys-terminal/releases/latest/download/latest.json`** |
+| `endpoints[0]` | `github.com/idoforgod/cys-terminal/releases/latest/download/latest.json` | **`github.com/oogisoogi/cys-ro/releases/latest/download/latest.json`** |
 | `pubkey` | 벤더 키(`39E60A70…` 라벨) | **master 생성 신규 키**(키 id **54FBA04AD0E0F49D**) |
 
 - ⚠**endpoint 교체가 없으면 벤더 판이 우리 수정을 덮는다**(정책 §0 · 맥 사고 3회 계보).
@@ -286,7 +286,7 @@ tauri.conf.json · ui/package.json · dist-win/cys-x64.wxs · Cargo.lock 2엔트
 ### 5-6. 배포자 전환 마감 — SRC_REPO 교체 (커밋 `9375c1a` · master 판정 집행)
 
 발행 대상 상수를 우리 포크로 바꿨다: `release.yml:23` · `pack-release.yml:23` ·
-`release-publish.yml:89,114`(+ 사용례 주석 `:28`) → **`oogisoogi/cys-terminal`**.
+`release-publish.yml:89,114`(+ 사용례 주석 `:28`) → **`oogisoogi/cys-ro`**.
 이유는 §5-1 과 같은 것 하나다 — **updater endpoints 와 발행 대상이 같은 레포여야** 우리 릴리스가
 우리 앱에 닿는다. 엇갈리면 벤더 판이 우리 수정을 덮는다.
 

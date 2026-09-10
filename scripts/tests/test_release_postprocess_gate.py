@@ -293,7 +293,7 @@ class ReleaseRepoPinTests(unittest.TestCase):
     두 스크립트가 갈리면 후처리가 만든 묶음을 검증기가 죽인다(또는 그 반대)."""
 
     def test_37_default_repo_is_our_fork(self):
-        self.assertEqual(rp.RELEASE_REPO, "oogisoogi/cys-terminal")
+        self.assertEqual(rp.RELEASE_REPO, "oogisoogi/cys-ro")
 
     def test_38_matches_release_verify(self):
         rv_path = os.path.join(_HERE, "..", "release-verify.py")

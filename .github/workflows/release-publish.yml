@@ -38,10 +38,10 @@ name: release-publish
 #
 # 사용:
 #   # ① 먼저 dry-run (기본값 — 검증·산출물 표만)
-#   gh workflow run release-publish.yml -R oogisoogi/cys-terminal --ref <ALLOWED_REF> \
+#   gh workflow run release-publish.yml -R oogisoogi/cys-ro --ref <ALLOWED_REF> \
 #     -f tag=vX.Y.Z -f release_bundle_sha256=<SHA256SUMS.txt 의 sha256> -f confirm=PUBLISH
 #   # ② 실제 발행 (master 만 — 박사님 승인 뒤)
-#   gh workflow run release-publish.yml -R oogisoogi/cys-terminal --ref <ALLOWED_REF> \
+#   gh workflow run release-publish.yml -R oogisoogi/cys-ro --ref <ALLOWED_REF> \
 #     -f tag=vX.Y.Z -f release_bundle_sha256=<...> -f confirm=PUBLISH -f dry_run=false
 #   ★<ALLOWED_REF> 는 environment `release-production` 의 deployment branch policy 가
 #     허용하는 ref 여야 한다(허용 밖이면 step 실행 전에 job 이 죽는다).
@@ -105,7 +105,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           EXPECTED_BUNDLE_SHA256: ${{ inputs.release_bundle_sha256 }}
-          SRC_REPO: oogisoogi/cys-terminal
+          SRC_REPO: oogisoogi/cys-ro
         shell: bash
         run: |
           set -euo pipefail
@@ -187,7 +187,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           EXPECTED_BUNDLE_SHA256: ${{ inputs.release_bundle_sha256 }}
-          SRC_REPO: oogisoogi/cys-terminal
+          SRC_REPO: oogisoogi/cys-ro
         shell: bash
         run: |
           set -euo pipefail
@@ -212,7 +212,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
-          SRC_REPO: oogisoogi/cys-terminal
+          SRC_REPO: oogisoogi/cys-ro
         shell: bash
         run: |
           set -euo pipefail

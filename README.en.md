@@ -80,7 +80,7 @@ releases back up gets written down.
 
 ## Install
 
-Grab the latest from [Releases](https://github.com/oogisoogi/cys-terminal/releases/latest).
+Grab the latest from [Releases](https://github.com/oogisoogi/cys-ro/releases/latest).
 Recipients **do not install a daemon separately** — the app boots it and installs the
 pack automatically.
 
@@ -482,7 +482,7 @@ events. The exhaustive lists and the environment-variable table are in
 ## Source build (for contributors)
 
 ```bash
-git clone https://github.com/oogisoogi/cys-terminal
+git clone https://github.com/oogisoogi/cys-ro
 cargo build --release
 ./target/release/cysd &                       # daemon (duplicate boot auto-refused)
 

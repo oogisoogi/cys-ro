@@ -20,7 +20,7 @@ on:
       - "pack-v*"
 
 env:
-  SRC_REPO: oogisoogi/cys-terminal   # 2026-09-08 포크 전환(TICKET=cys-fork-rebase-v0.14.30)
+  SRC_REPO: oogisoogi/cys-ro   # 2026-09-08 포크 전환(TICKET=cys-fork-rebase-v0.14.30)
 
 jobs:
   pack-only:

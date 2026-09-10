@@ -6763,15 +6763,27 @@ def h_doc_2():
     r = _run([PY, os.path.join(BIN_DIR, "javis_orchestra.py"), "--note-team-roster"])
     need(r.returncode == 0 and r.stdout.strip(), "--note-team-roster 산출 실패: %s" % r.stderr[-300:])
     note = r.stdout.strip()
-    # ② 실제 REQUIRED_ROLES 를 읽어 +1 파생인지 대조(숫자·역할명 전건)
+    # ② 실제 의무 역할을 읽어 +1 파생인지 대조(숫자·역할명 전건)
+    #    ★2026-09-10(참가자 프로파일 · TICKET=pack-participant-formation r2): 대조 기준이
+    #      `REQUIRED_ROLES`(표준 상수)에서 **`effective_required_roles()`**(그 기계의 실제 의무
+    #      집합)로 옮겨졌다. 안내가 프로파일 파생이 됐기 때문이다 — 상수와 대조하면 agy·codex 가
+    #      없는 **깨끗한 기계에서만** 적색이 나는(=개발자 기계에서는 안 보이는) 검체가 된다.
+    #      그 형상은 이 러너가 `_roster_pin` 주석에서 이미 근저원인으로 적어 둔 계급이다.
+    #      금지 방향 ②(master 는 required 밖)는 **상수**로 계속 잰다 — 그것은 프로파일 무관 계약이다.
     probe = "import sys;sys.path.insert(0, sys.argv[1]);import javis_orchestra as o;" \
-            "print(repr(o.REQUIRED_ROLES))"
+            "print(repr(o.REQUIRED_ROLES));print(repr(list(o.effective_required_roles())))"
     rr = _run([PY, "-c", probe, BIN_DIR])
-    need(rr.returncode == 0, "REQUIRED_ROLES 조회 실패: %s" % rr.stderr[-300:])
-    required = eval(rr.stdout.strip())          # 리스트 리터럴(신뢰 경계: 우리 코드 산출)
-    need("master" not in required,
+    need(rr.returncode == 0, "의무 역할 조회 실패: %s" % rr.stderr[-300:])
+    _lines = rr.stdout.strip().splitlines()
+    need(len(_lines) == 2, "의무 역할 프로브 출력 이상: %r" % (rr.stdout,))
+    standard = eval(_lines[0])                  # 리스트 리터럴(신뢰 경계: 우리 코드 산출)
+    required = eval(_lines[1])                  # 이 기계의 유효 의무 집합(프로파일 적용)
+    need("master" not in standard,
          "REQUIRED_ROLES 에 master 가 들어갔다 — 금지 방향 ②(레거시 master 부트 사망)")
-    need("총 %d노드" % (len(required) + 1) in note, "노드 수가 REQUIRED_ROLES+1 파생이 아니다: %s" % note)
+    need("master" not in required,
+         "유효 의무 역할에 master 가 들어갔다 — 금지 방향 ②")
+    need("총 %d노드" % (len(required) + 1) in note,
+         "노드 수가 유효 의무역할+1 파생이 아니다(안내=%s / 유효=%r)" % (note, required))
     for role in required:
         need(role in note, "필수 역할 %s 가 안내에 없다: %s" % (role, note))
     need(note.startswith("master·"), "안내가 master 로 시작하지 않는다: %s" % note)

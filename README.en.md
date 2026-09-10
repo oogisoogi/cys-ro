@@ -13,6 +13,16 @@ talk to each other over sockets, and monitor cost, context, and hardware in real
 
 *한국어 문서(전체 레퍼런스 포함)는 [README.md](README.md)를 보세요.*
 
+## Original author
+
+cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아
+oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다.
+원작 저장소: https://github.com/idoforgod/cys-terminal
+
+*(English)* The original author of cys terminal is CYSJavis (GitHub: idoforgod). This build is a
+derivative distribution — built, signed and published by oogisoogi from the original (MIT) with the
+original author's permission. Upstream: https://github.com/idoforgod/cys-terminal
+
 ## Docs
 
 | Doc | Contents |
@@ -70,7 +80,7 @@ releases back up gets written down.
 
 ## Install
 
-Grab the latest from [Releases](https://github.com/idoforgod/cys-terminal/releases/latest).
+Grab the latest from [Releases](https://github.com/oogisoogi/cys-terminal/releases/latest).
 Recipients **do not install a daemon separately** — the app boots it and installs the
 pack automatically.
 
@@ -472,7 +482,7 @@ events. The exhaustive lists and the environment-variable table are in
 ## Source build (for contributors)
 
 ```bash
-git clone https://github.com/idoforgod/cys-terminal
+git clone https://github.com/oogisoogi/cys-terminal
 cargo build --release
 ./target/release/cysd &                       # daemon (duplicate boot auto-refused)
 

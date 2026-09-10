@@ -12,6 +12,12 @@
 
 *Read this in [English](README.en.md).*
 
+## 원작자
+
+cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아
+oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다.
+원작 저장소: https://github.com/idoforgod/cys-terminal
+
 ## 문서
 
 | 문서 | 내용 |
@@ -59,7 +65,7 @@
 
 ## 설치
 
-[Releases](https://github.com/idoforgod/cys-terminal/releases/latest)에서 받으세요.
+[Releases](https://github.com/oogisoogi/cys-terminal/releases/latest)에서 받으세요.
 받는 사람은 **데몬을 따로 설치할 필요가 없습니다** — 앱이 자동 기동하고 팩도 자동 설치됩니다.
 
 - **macOS**: `cys_<버전>_aarch64.dmg` (Apple Silicon) — 동봉된 **"Install cys.app" 도우미**가
@@ -485,7 +491,7 @@ NDJSON(한 줄 = JSON 하나), RPC 수십 종 + `channel.*` 13종, 이벤트 수
 ## 소스 빌드 (기여 시)
 
 ```bash
-git clone https://github.com/idoforgod/cys-terminal
+git clone https://github.com/oogisoogi/cys-terminal
 cargo build --release
 ./target/release/cysd &                      # 데몬 (중복 기동 자동 거부)
 

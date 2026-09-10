@@ -886,7 +886,15 @@ jobs:
           tagName: ${{ github.ref_name }}
           # Phase 2(릴리스 통합·2026-07-03): 소스 repo가 public이 되면서 이 릴리스가 곧 공개 배포다.
           releaseName: 'cys ${{ github.ref_name }}'
-          releaseBody: 'cys 터미널 ${{ github.ref_name }}. macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다.'
+          # ★원작자 표기 고정 블록(박사님 지시 2026-09-10 · 원작자 통화 허락 조건 = 최초 개발자 명시).
+          #   문안 정본은 README「원작자」절이며 **매 세대 자동 포함**된다 — 사람이 발행 때마다
+          #   붙이는 방식은 한 번 빠지면 배포 조건이 깨진다. 검사 축은
+          #   `cysjavis-pack/bin/tests/test_participant_formation.py` ⓕ(본문에 idoforgod 부재 = 적색).
+          releaseBody: |
+            cys 터미널 ${{ github.ref_name }}. macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다.
+
+            ---
+            cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다. 원작 저장소: https://github.com/idoforgod/cys-terminal
           releaseDraft: true      # ★v0.14.0(2026-07-28): draft 생성까지만 — 공개 발행·latest 마킹은 오너 승인 후
                                   #   별도 집행(발행=외부 공개 denylist). 구 'false 자동발행'은 승인 게이트와 충돌.
           prerelease: false

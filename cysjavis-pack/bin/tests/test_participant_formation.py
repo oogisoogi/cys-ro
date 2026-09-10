@@ -206,7 +206,36 @@ def t_winjob():
     check("ⓒ Job 편입 호출 지점 전수 = 4(드리프트 경보)", total == 4, "total=%d" % total)
 
 
+# ── ⓕ 원작자 표기(박사님 지시 2026-09-10 · 원작자 통화 허락 조건 = 최초 개발자 명시) ──────
+# 조건이 걸린 표기는 **사람이 매번 붙이는 방식으로는 지켜지지 않는다**(한 세대만 빠져도 조건 위반).
+# 그래서 발행 본문 템플릿·README·앱 표기를 기계가 매번 확인한다. 검사 축은 하나다: 「idoforgod」.
+ATTRIB_SITES = [
+    (".github/workflows/release.yml", "본체 릴리스 본문 템플릿(releaseBody)"),
+    (".github/workflows/pack-release.yml", "팩-only 릴리스 본문(--notes-file)"),
+    ("README.md", "포크 README 최상단 「원작자」 절"),
+    ("README.en.md", "영문 README 「Original author」 절"),
+    ("ui/index.html", "앱 안 표기(사이드바 상주 한 줄 #ws-credit)"),
+]
+
+
+def t_attribution():
+    for rel, what in ATTRIB_SITES:
+        try:
+            src = io.open(os.path.join(REPO, rel), encoding="utf-8", errors="replace").read()
+        except OSError as e:
+            check("ⓕ %s 판독" % rel, False, str(e))
+            continue
+        check("ⓕ %s — 원작자 표기(%s)" % (rel, what), "idoforgod" in src,
+              "「idoforgod」 부재 = 배포 조건 위반")
+    # 앱 표기는 **조건부 렌더가 아니어야** 한다 — hidden 이면 사라질 수 있고, 사라지면 조건 위반이다.
+    html = io.open(os.path.join(REPO, "ui/index.html"), encoding="utf-8", errors="replace").read()
+    line = [l for l in html.splitlines() if 'id="ws-credit"' in l]
+    check("ⓕ 앱 표기는 hidden 속성 없이 상주", bool(line) and " hidden" not in line[0],
+          repr(line[:1]))
+
+
 def main():
+    t_attribution()
     t_orchestra()
     t_formation()
     t_phoenix()

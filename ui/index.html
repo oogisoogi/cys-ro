@@ -33,6 +33,10 @@
       <!-- 사용량 패널(오너 요청 2026-08-07): 주간 토큰 사용량 + 페인별 CTX를 한 곳에 모아 표시.
            워크스페이스 목록 아래 빈 공간에 상주한다. 데이터가 없으면 통째로 숨는다(hidden). -->
       <div id="ws-usage" hidden></div>
+      <!-- 원작자 표기(박사님 지시 2026-09-10 · 원작자 통화 허락 조건) — **항상 보이는 한 줄**.
+           #ws-usage 는 데이터가 없으면 통째로 숨으므로 그 안에 넣지 않는다(표기가 사라지면
+           조건 위반이다). 문안 정본은 README「원작자」절이고 여기 title 이 그 전문을 나른다. -->
+      <div id="ws-credit" title="cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다. 원작 저장소: https://github.com/idoforgod/cys-terminal">원작 CYSJavis(idoforgod) · MIT · 파생판 배포 oogisoogi</div>
     </nav>
     <div id="wsbar-drag" title="드래그로 사이드바 폭 조절 · 더블클릭=기본폭"></div>
     <aside id="ft-panel" hidden>

@@ -404,9 +404,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # ★원작자 표기 고정 블록(박사님 지시 2026-09-10 · 원작자 통화 허락 조건 = 최초 개발자 명시).
+          #   본문을 파일로 조립하는 이유: `--notes` 인라인은 줄바꿈을 못 실어 블록이 한 줄로 뭉개진다.
+          #   문안 정본 = README「원작자」절 · 검사 축 = test_participant_formation.py ⓕ(idoforgod 부재=적색).
+          #   heredoc 은 비인용(<<NOTES)이라 $MIN_BINARY 가 펴진다 — 본문에 백틱·타 변수는 없다.
+          cat > release-notes.md <<NOTES
+          팩-only 릴리스 — 본체 버전 불변(min_binary $MIN_BINARY+ 무중단 적용). latest.json은 직전 본체 릴리스 캐리포워드.
+
+          ---
+          cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다. 원작 저장소: https://github.com/idoforgod/cys-terminal
+          NOTES
           gh release create "$GITHUB_REF_NAME" -R "$SRC_REPO" \
             --title "pack $PACK_VERSION (팩-only 무중단)" \
-            --notes "팩-only 릴리스 — 본체 버전 불변(min_binary $MIN_BINARY+ 무중단 적용). latest.json은 직전 본체 릴리스 캐리포워드." \
+            --notes-file release-notes.md \
             pack.tar.gz pack-manifest.json pack-manifest.json.minisig latest.json
           gh release edit "$GITHUB_REF_NAME" -R "$SRC_REPO" --latest --draft=false
           echo "✅ pack-only 릴리스 발행: $GITHUB_REF_NAME (pack_version=$PACK_VERSION)"

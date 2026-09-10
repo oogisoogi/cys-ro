@@ -81,7 +81,10 @@ STATES = ["complete", "partial", "pending-cli", "pending-resource", "failed"]
 
 # 의무 편성 로스터 + 역할→CLI 바이너리 매핑(probe_cli 대상 = claude/agy/codex).
 # ★이 상수는 불변이다 — 외부 세션이 맡는 역할의 제외는 env 파생값(effective_required_roles) 이다.
-REQUIRED_ROLES = ("master", "cso", "worker", "reviewer-gemini", "reviewer-codex")
+# ★기본 함대(박사님 결정 2026-09-10 · 보편 정책): master·cso·worker. 리뷰어는 **온디맨드**라
+#   편성이 세우지도, 결원으로 세지도 않는다(감지 없음 = 파일 간 판정 불일치도 없음).
+#   리뷰어를 여는 경로는 그대로다: javis_orchestra.py boot-reviewers --spawn · javis_boot_node.py.
+REQUIRED_ROLES = ("master", "cso", "worker")
 ROLE_CLI = {
     "master": "claude", "cso": "claude", "worker": "claude",
     "reviewer-gemini": "agy", "reviewer-codex": "codex",
@@ -91,12 +94,13 @@ ROLE_AGENT = {
     "master": "claude", "cso": "claude", "worker": "claude",
     "reviewer-gemini": "gemini", "reviewer-codex": "codex",
 }
-REQUIRED_CLIS = {"claude", "agy", "codex"}
-# ★참가자 프로파일(P1 · 2026-09-10) — 리뷰어 축(역할·CLI). 판정은 `participant_profile` 하나다.
-REVIEWER_CLIS = frozenset({"agy", "codex"})
+# ★기본 함대는 claude 하나로 선다(cso·worker·master 전부 claude). agy·codex 는 리뷰어를 열 때만
+#   필요하므로 **필수 CLI 가 아니다** — 종전에는 그 둘의 부재가 `partial:agy,codex` 로 영구
+#   고정돼 편성이 영영 complete 가 되지 못했다(배너 불멸).
+REQUIRED_CLIS = {"claude"}
+# 리뷰어 축(온디맨드 · 편성 대상 아님) — 문구·역할명 인용처.
 REVIEWER_ROLES = frozenset({"reviewer-gemini", "reviewer-codex"})
-# 문구 단일 소스(javis_orchestra.PARTICIPANT_PROFILE_NOTE 와 같은 뜻 — 두 파일이 각자 인용한다).
-PARTICIPANT_PROFILE_NOTE = "의뢰 시 기동합니다(온디맨드)"
+ONDEMAND_REVIEWER_NOTE = "리뷰어는 필요할 때 엽니다(온디맨드)"
 
 # kill-switch(paused) 존중 훅 표식(test_formation #7 fallback).
 PAUSE_HONORED = True
@@ -305,65 +309,7 @@ def acquire_lock(socket):
 
 
 # ── ③ 상태 판정(순수 함수 · test_formation #2~#5) ──
-def native_reviewer_present():
-    """이 기계에 네이티브 리뷰어(agy·codex)가 실재하는가 — **orchestra 와 같은 해소**(1R#3).
-
-    ★왜 probe_cli 로는 안 되는가(2026-09-10 codex 1R HIGH): formation 은 로그인셸 `command -v`
-      로 판정하고 orchestra 는 `cys agent-detect` + `agents.json` 의 **절대경로**(출하 기본값이
-      `~/.local/bin/agy` 다 — PATH 해소가 불안정해서 그렇게 박아 두었다)로 판정한다. 그래서
-      「PATH 에는 없고 절대경로로만 설치된 agy」 기계에서 두 판정이 갈렸다: orchestra 는
-      혼합(네이티브 1 + Claude 대체 1)인데 formation 은 참가자로 보고 **리뷰어를 통째로
-      편성에서 지웠다**. 프로파일은 조직 전체의 단일 사실이어야 한다 — 그 사실의 소유자는
-      리뷰어 슬롯을 정의한 orchestra 다.
-    ★해소 실패(팩 스큐·부서 팩 결손)는 None 을 돌려 호출부가 종전 휴리스틱(probe 집합)으로
-      강등하게 한다 — 감지가 죽어서 편성이 멈추면 안 된다(이 파일의 일관된 안전 방향).
-    반환: True(네이티브 있음) / False(전무) / None(판정 불가 — 호출부 폴백)."""
-    try:
-        import javis_orchestra as _orch
-        roster = _orch.reviewer_roster()
-        if not roster:
-            return None
-        return any(e.get("native") for e in roster)
-    except Exception:
-        return None
-
-
-def participant_profile(installed, native_reviewer=None):
-    """★참가자 프로파일(P1 · 2026-09-10) — 네이티브 리뷰어(agy·codex)가 **하나도 없는** 기계.
-
-    True 면 리뷰어는 **온디맨드**다: 편성이 리뷰어 좌석을 결원으로 세지 않고(complete 를 막지
-    않고), 필수 CLI 집합에서도 agy·codex 를 뺀다.
-
-    ★판정 소스(1R#3 수리): `native_reviewer` 를 주면 그것이 사실이다 — 운영 경로에서는
-      `ensure` 가 `native_reviewer_present()`(=orchestra 해소)로 **1회** 구해 내려보낸다.
-      미지정이면 종전 휴리스틱(probe 로 해소된 `installed` 집합)으로 강등한다: 순수 호출
-      (classify 직접 호출·self-test)과 orchestra 부재 레인이 그 경로다.
-    ★CLI 전무(installed 공집합)는 **판정 유보**(False)다: 그 레인은 온보딩 pending-cli 이고,
-      '리뷰어가 없다'가 아니라 '아직 아무것도 없다'다. 종전 pending-cli 문구·집합을 그대로
-      보존한다(회귀 0 — 설치 안내 화면이 이 티켓의 범위가 아니다).
-    ★네이티브가 하나라도 있으면 False = 우리 맥·혼합 기계 **현행 동작 완전 보존**."""
-    installed = set(installed or [])
-    if not installed:
-        return False
-    if native_reviewer is None:
-        return not (installed & REVIEWER_CLIS)
-    return not native_reviewer
-
-
-def profile_required_roles(installed, external=None, native_reviewer=None):
-    """이 기계에서 실제로 요구하는 편성 역할(순수 · 프로파일 적용 · P1).
-
-    표준 프로파일  = `effective_required_roles(external)` 그대로(종전 동작).
-    참가자 프로파일 = 거기서 리뷰어 역할을 뺀 것 = master·cso·worker.
-    ★native_reviewer 는 `participant_profile` 과 같은 계약(주입 우선·미지정=휴리스틱)."""
-    roles = effective_required_roles(external)
-    if participant_profile(installed, native_reviewer):
-        return tuple(r for r in roles if r not in REVIEWER_ROLES)
-    return roles
-
-
-def classify(installed=None, live=None, resource_ok=True, external_roles=None,
-             native_reviewer=None):
+def classify(installed=None, live=None, resource_ok=True, external_roles=None):
     """설치 CLI 집합 · 라이브 역할 집합 · 자원 여유 → 상태 문자열.
       resource_ok False               → pending-resource
       installed 공집합(CLI 전무)        → pending-cli:{roles}
@@ -379,15 +325,8 @@ def classify(installed=None, live=None, resource_ok=True, external_roles=None,
     live = set(live or [])
     if not resource_ok:
         return "pending-resource"
-    required = set(profile_required_roles(installed, external_roles, native_reviewer))
-    required_clis = set(REQUIRED_CLIS)
-    # ★참가자 프로파일: 리뷰어는 결원이 아니다 — 역할(profile_required_roles)·CLI 양쪽에서
-    #   요건을 뺀다. 종전에는 agy·codex 부재가 `partial:agy,codex` 로 **영구 고정**돼 편성이
-    #   영영 complete 가 되지 못했다(배너 불멸 + 결손 판정이 매 틱 리뷰어를 다시 요구).
-    #   네이티브가 하나라도 있는 기계에서는 이 분기가 발화하지 않아 종전 판정과 바이트 동일하다.
-    if participant_profile(installed, native_reviewer):
-        required_clis -= REVIEWER_CLIS
-    missing_clis = sorted(required_clis - installed)
+    required = set(effective_required_roles(external_roles))
+    missing_clis = sorted(REQUIRED_CLIS - installed)
     if not installed:
         return "pending-cli:" + ",".join(sorted(required))
     if required.issubset(live) and not missing_clis:
@@ -958,29 +897,20 @@ def _feed_for_state(state, detail=None):
     elif kind == "complete":
         # ★본문은 프로파일 파생(P1) — 호출자(_surface)가 준 본문이 있으면 그것을 쓴다.
         #   표준 프로파일에서 `_complete_feed_body` 는 종전 문장과 **자구 동일**이라 회귀 0.
-        _feed("부서 팀 편성 완결", detail or _complete_feed_body(None), fk)
+        _feed("부서 팀 편성 완결", detail or _complete_feed_body(), fk)
     elif kind == "failed":
         _feed("부서 팀 편성 실패", "편성에 실패했습니다(%s) — boot-last.json·formation 상태 "
               "파일에서 원인을 확인하세요." % state, fk)
 
 
-def _complete_feed_body(installed, native_reviewer=None):
-    """complete 피드 본문(순수 · 프로파일 파생 · P1).
+def _complete_feed_body():
+    """complete 피드 본문(순수 · 기본 함대 파생).
 
-    표준 프로파일 문장은 종전과 **자구 동일**하다(회귀 0). 참가자 프로파일에서는 리뷰어 부재가
-    결원이 아니라는 사실을 사용자에게 정직하게 말한다 — 종전 문장을 그대로 쓰면 실제로는 3기가
-    선 기계에서 "reviewer-gemini·reviewer-codex 전부 기동 완료" 라는 **거짓 보고**가 된다."""
-    if participant_profile(installed, native_reviewer):
-        return ("master + cso·worker 기동 완료 — 네이티브 리뷰어 CLI(agy·codex)가 없는 기계라 "
-                "리뷰어는 %s. 결원이 아닙니다." % PARTICIPANT_PROFILE_NOTE)
-    return ("master + 4종 의무 노드(cso·worker·reviewer-gemini·"
-            "reviewer-codex) 전부 기동 완료.")
-
-
-def _profile_note(installed, native_reviewer=None):
-    """detail·상태파일용 프로파일 표기 — 표준 프로파일이면 **빈 문자열**(detail 바이트 동일)."""
-    return ((" · 참가자 프로파일: %s" % PARTICIPANT_PROFILE_NOTE)
-            if participant_profile(installed, native_reviewer) else "")
+    ★리뷰어 부재가 결원이 아니라는 사실을 사용자에게 정직하게 말한다. 종전 문장
+      ("master + 4종 의무 노드(cso·worker·reviewer-gemini·reviewer-codex) 전부 기동 완료")은
+      실제로는 3기가 선 기계에서 **거짓 보고**였다 — 리터럴이 아니라 로스터에서 파생한다."""
+    return ("기본 함대 기동 완료 — %s. %s(결원이 아닙니다)."
+            % ("·".join(REQUIRED_ROLES), ONDEMAND_REVIEWER_NOTE))
 
 
 def _read_state_obj(socket):
@@ -1067,11 +997,6 @@ def ensure(socket=None, cwd=None, force_surface=False):
 
         # ③ CLI 가용성(로그인셸 우산 프로브 — 이 ensure 에서 1회만 수행하고 이하 전 경로가 재사용)
         installed = _installed_clis()
-        # ③-b ★프로파일 사실 해소(1R#3 · 2026-09-10): 네이티브 리뷰어 실재는 **orchestra 와 같은
-        #     해소**(agent-detect·agents.json 절대경로)를 쓴다. 여기서 **1회** 구해 이하 전 경로에
-        #     내려보낸다 — 경로마다 다시 물으면 한 ensure 안에서 프로파일이 갈릴 수 있다.
-        #     None(해소 불가)은 그대로 내려가 각 판정이 종전 휴리스틱(probe 집합)으로 강등한다.
-        native_rev = native_reviewer_present()
 
         # ③′ ★로스터 우선 판정(자원 게이트보다 먼저 — 2026-07-26 배너 불멸 수리).
         #    이미 complete(5역할 전원 생존)면 **새로 뜰 노드가 0** 이므로 자원 게이트를 볼 이유가 없다.
@@ -1085,15 +1010,13 @@ def ensure(socket=None, cwd=None, force_surface=False):
         # ★T9 시도 원장 이월(생존 관측 리셋·수명 만료 회수) — 이하 전 경로가 이 원장을 기록한다.
         attempts = _attempts_carry(prev_obj, live_now)
         if live_now is not None and classify(installed=installed, live=live_now,
-                                             resource_ok=True,
-                                             native_reviewer=native_rev) == "complete":
+                                             resource_ok=True) == "complete":
             state = "complete"
             detail = ("라이브 로스터 이미 완결(%d역할 생존) — 신규 기동 0 · 자원 게이트 무관"
-                      % len(profile_required_roles(installed, native_reviewer=native_rev))
-                      + _external_note() + _profile_note(installed, native_rev))
+                      % len(effective_required_roles()) + _external_note())
             _write_state(socket, state, detail, live_now, attempts=attempts)
             _surface(socket, prev, state, force=force_surface,
-                     detail=_complete_feed_body(installed, native_rev))
+                     detail=_complete_feed_body())
             return state, detail
 
         # ④ 자원 게이트(complete 가 **아닐 때만** — 실제로 노드를 스폰하는 경로에서만 예산을 본다)
@@ -1114,8 +1037,7 @@ def ensure(socket=None, cwd=None, force_surface=False):
         # CLI 전무 → pending-cli(빈 셸 유지·온보딩 보존)
         if not installed:
             live = live_now or set()   # ③′ 관측 재사용(cys list 중복 호출 0)
-            state = classify(installed=installed, live=live, resource_ok=True,
-                             native_reviewer=native_rev)
+            state = classify(installed=installed, live=live, resource_ok=True)
             detail = "CLI 미설치 — 빈 셸 유지·편성 대기(설치 시 자동 완결)" + _external_note()
             _write_state(socket, state, detail, live, attempts=attempts)
             _surface(socket, prev, state, force=force_surface)
@@ -1131,7 +1053,7 @@ def ensure(socket=None, cwd=None, force_surface=False):
         child_cwd, child_cwd_resolved = cwd, cwd is not None
         # ★외부 역할은 order 에서 뺀다(2026-08-01) — 생성 자체를 하지 않는다. env 미설정이면
         #   effective_required_roles() == REQUIRED_ROLES 라 종전 순서·집합과 완전히 동일하다.
-        order = list(profile_required_roles(installed, native_reviewer=native_rev))
+        order = list(effective_required_roles())
         for role in order:
             cli = ROLE_CLI[role]
             if cli not in installed:
@@ -1161,11 +1083,9 @@ def ensure(socket=None, cwd=None, force_surface=False):
         live = _live_roles(socket)
         if live is None:
             live = booted
-        state = classify(installed=installed, live=live, resource_ok=True,
-                         native_reviewer=native_rev)
+        state = classify(installed=installed, live=live, resource_ok=True)
         detail = "편성 실행 — 기동=%s · 설치CLI=%s" % (
             ",".join(sorted(booted)) or "없음", ",".join(sorted(installed))) + _external_note()
-        detail += _profile_note(installed, native_rev)
         if child_cwd and cwd is None:
             detail += " · 자식 cwd 상속=%s(master 좌석)" % child_cwd
         if held:
@@ -1175,8 +1095,7 @@ def ensure(socket=None, cwd=None, force_surface=False):
         # 표면화) 로 교체한다. 편성 ensure 가 스케줄 주기(10분)로 붙으면 매 틱마다 사용자에게 토스트가
         # 갔다. prev 는 ensure 진입부에서 읽은 직전 상태 — 동일 kind 면 _surface 계약대로 생략된다.
         _surface(socket, prev, state, force=force_surface,
-                 detail=(_complete_feed_body(installed, native_rev)
-                         if state == "complete" else None))
+                 detail=_complete_feed_body() if state == "complete" else None)
         # ★A2(SURVEY B3 Q2-①): 소진/쿨다운 보류는 종전 stderr 1줄뿐이라 심박 명령 꼬리의 `|| true` 가
         #   삼켰다(어디에도 남지 않음). 상태파일 held 키(위) + 보류 목록이 **직전 상태파일과 달라졌을
         #   때만** feed 1건 — 같은 보류가 유지되는 매 틱은 침묵(스팸 0) · 해소는 키 소멸로만 표기.
@@ -1265,37 +1184,28 @@ def self_test():
                            resource_ok=True)) == "pending-cli", "pending-cli 오판")
     ck(classify(installed={"claude", "agy", "codex"}, live={"master"},
                 resource_ok=False) == "pending-resource", "pending-resource 오판")
-    # 부분 설치를 complete 로 오판 금지(Sim S2-5) — ★네이티브 리뷰어 CLI 가 **있는** 기계 한정.
-    #   (claude+agy 인데 codex 부재 = 리뷰어 축이 살아 있는 기계의 반쪽 설치 → complete 금지)
-    ck(classify(installed={"claude", "agy"}, live=set(REQUIRED_ROLES),
-                resource_ok=True) != "complete", "부분 CLI 를 complete 로 오판")
-    # ★참가자 프로파일(P1 · 2026-09-10): 네이티브 리뷰어 CLI 전무 = claude 만 있는 기계.
-    #   리뷰어는 온디맨드이므로 master·cso·worker 3기 생존이면 **complete 가 정상**이다.
-    #   종전에는 이 레인이 `partial:agy,codex` 로 영구 고정돼 편성이 영영 완결되지 못했고,
-    #   그 미완결이 매 틱 리뷰어 요구로 되돌아왔다(참가자 기계 실측 · 토큰 소모원).
-    ck(participant_profile({"claude"}) is True, "claude 단독 기계가 참가자 프로파일 미판정")
-    # ★1R#3: 주입된 사실(orchestra 해소)이 probe 휴리스틱을 **이긴다** — PATH 밖 절대경로 agy 만
-    #   설치된 기계에서 formation 이 참가자로 오판해 리뷰어를 통째로 지우던 자리.
-    ck(participant_profile({"claude"}, native_reviewer=True) is False,
-       "네이티브 실재 주입인데 참가자로 오판(1R#3 재발 — 혼합 편성 소멸)")
-    ck(participant_profile({"claude", "agy"}, native_reviewer=False) is True,
-       "네이티브 부재 주입인데 probe 집합이 이겼다(판정 소스 이원화)")
-    ck(profile_required_roles({"claude"}, native_reviewer=True) == REQUIRED_ROLES,
-       "네이티브 실재 주입에서 편성 역할이 축소됨")
-    ck(classify(installed={"claude"}, live=set(REQUIRED_ROLES), resource_ok=True,
-                native_reviewer=True) != "complete",
-       "네이티브 실재 주입인데 agy·codex 미설치가 complete 로 승격(부분 설치 오판)")
-    ck(participant_profile({"claude"}, native_reviewer=None) is True,
-       "주입 None 이 휴리스틱 폴백으로 흐르지 않음")
-    ck(participant_profile({"claude", "agy"}) is False, "네이티브 1종 실재가 참가자로 오판")
-    ck(participant_profile(set()) is False, "CLI 전무는 판정 유보(pending-cli 레인 보존)")
+    # ★기본 함대(박사님 결정 2026-09-10 · 보편): master·cso·worker 3기 생존 + claude 설치면
+    #   **complete 가 정상**이다. 종전에는 agy·codex 부재가 `partial:agy,codex` 로 영구 고정돼
+    #   편성이 영영 완결되지 못했고(배너 불멸), 그 미완결이 매 틱 리뷰어 요구로 되돌아왔다.
     ck(classify(installed={"claude"}, live={"master", "cso", "worker"},
-                resource_ok=True) == "complete", "참가자 프로파일 3기 편성이 complete 아님")
+                resource_ok=True) == "complete", "기본 함대 3기 편성이 complete 아님")
+    ck(REQUIRED_CLIS == {"claude"}, "필수 CLI 가 claude 하나가 아니다(리뷰어 CLI 부활)")
+    ck(not any(r.startswith("reviewer") for r in REQUIRED_ROLES),
+       "편성 로스터에 리뷰어가 되살아났다(상시 점유 부활)")
+    # 완화 아님: 결원은 여전히 complete 가 아니다 · agy·codex 유무는 판정에 **무관**하다.
     ck(classify(installed={"claude"}, live={"master", "cso"},
-                resource_ok=True) == "partial:booting", "참가자 프로파일 결원이 partial 아님")
-    # 참가자 프로파일이라도 CLI 전무 레인 문구는 종전 그대로(온보딩 보존)
+                resource_ok=True) == "partial:booting", "기본 함대 결원이 partial 아님")
+    ck(classify(installed={"claude", "agy", "codex"}, live={"master", "cso", "worker"},
+                resource_ok=True) == "complete",
+       "리뷰어 CLI 실재가 판정에 영향을 준다(감지 부활 — 파일 간 불일치의 씨앗)")
+    ck(classify(installed={"claude"}, live={"master", "cso", "worker"}, resource_ok=True) ==
+       classify(installed={"claude", "agy", "codex"}, live={"master", "cso", "worker"},
+                resource_ok=True),
+       "같은 로스터인데 CLI 집합에 따라 상태가 갈린다(정책 단일화 이탈)")
+    # CLI 전무 레인 문구는 종전 그대로(온보딩 보존)
     ck(classify(installed=set(), live=set(), resource_ok=True) ==
        "pending-cli:" + ",".join(sorted(REQUIRED_ROLES)), "pending-cli 집합 변형(온보딩 회귀)")
+    ck("reviewer" not in _complete_feed_body(), "완결 피드 본문에 리뷰어 잔존")
     # 락 키 유일성(부서 basename 동일 → 전체 경로 유일화)
     ck(_sanitize_key("/s/cys-dept-dept-1/cys.sock") !=
        _sanitize_key("/s/cys-dept-dept-2/cys.sock"), "동일 basename 두 부서 키 충돌")
@@ -1326,25 +1236,22 @@ def self_test():
     # ★외부 역할 제외(2026-08-01) — env 미설정 회귀 + 제외 시 로스터/생성 경로 이탈.
     #   env 를 직접 만지지 않고 external_roles 인자로 검증(테스트 격리 · 프로세스 env 오염 0).
     ck(effective_required_roles(external=()) == REQUIRED_ROLES, "제외 0 이면 로스터 불변")
-    ck(effective_required_roles(external={"master"}) ==
-       ("cso", "worker", "reviewer-gemini", "reviewer-codex"),
-       "master 제외 시 의무 4종만 남아야(순서 보존)")
+    ck(effective_required_roles(external={"master"}) == ("cso", "worker"),
+       "master 제외 시 기본 함대 나머지만 남아야(순서 보존)")
     # master 없는 로스터 + master 제외 → complete(외부 세션 담당이므로 결원 아님)
-    ck(classify(installed={"claude", "agy", "codex"},
-                live={"cso", "worker", "reviewer-gemini", "reviewer-codex"},
+    ck(classify(installed={"claude"}, live={"cso", "worker"},
                 resource_ok=True, external_roles={"master"}) == "complete",
        "master 외부 제외인데 complete 로 안 올라감")
     # 같은 입력에 제외가 없으면 complete 가 **아니어야** 한다(제외가 판정을 실제로 바꾼다는 증거)
-    ck(classify(installed={"claude", "agy", "codex"},
-                live={"cso", "worker", "reviewer-gemini", "reviewer-codex"},
+    ck(classify(installed={"claude"}, live={"cso", "worker"},
                 resource_ok=True, external_roles=()) != "complete",
        "제외 없이 master 결원을 complete 로 오판")
-    # 의무 4종은 제외해도 결원이다(master 제외가 4종 계약을 갉아먹지 않음)
-    ck(classify(installed={"claude", "agy", "codex"}, live={"cso", "worker"},
+    # 나머지 의무는 제외해도 결원이다(master 제외가 기본 함대 계약을 갉아먹지 않음)
+    ck(classify(installed={"claude"}, live={"cso"},
                 resource_ok=True, external_roles={"master"}) != "complete",
-       "master 제외가 의무 4종 결원까지 덮음")
+       "master 제외가 나머지 의무 결원까지 덮음")
     ck(classify(installed=set(), live=set(), resource_ok=True,
-                external_roles={"master"}) == "pending-cli:cso,reviewer-codex,reviewer-gemini,worker",
+                external_roles={"master"}) == "pending-cli:cso,worker",
        "pending-cli 역할 목록에서 외부 역할 미제외")
     # ★kill-switch fail-closed 봉인(2026-08-01 F1) — 판정은 순수 함수 _gate_verdict 로 핀한다
     #   (subprocess·파일 접촉 0 = 라이브 데몬 무접촉·환경 무관 결정론).

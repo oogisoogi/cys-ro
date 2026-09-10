@@ -1941,7 +1941,10 @@ def _dept_fallback(log, claim_out):
 # 총수 4 비교는 reviewer 4개 생존+cso/worker 사망을 결손 0으로 오판했다(R1-MED-1).
 # ★★이 가족 접두 계수는 이제 **폴백 전용**이다 — 1차 경로는 아래 `_team_roster_deficit`
 # (javis_orchestra.effective_required_roles 소비). 근거·경계는 그 함수 주석 참조(T-0147-7 W0 지혈).
-_REQUIRED_COMPOSITION = (("cso", 1), ("worker", 1), ("reviewer", 2))
+# ★기본 함대(박사님 결정 2026-09-10 · 보편): 리뷰어는 의무가 아니다 — 이 폴백 계수에서도 뺀다.
+#   남겨 두면 orchestra 소비 불가 레인(팩 스큐)에서만 '리뷰어 2 부족'이 되살아나 ④ 부트가
+#   매번 도는, 프로파일이 아니라 **경로**에 따라 정책이 갈리는 상태가 된다.
+_REQUIRED_COMPOSITION = (("cso", 1), ("worker", 1))
 
 
 def _team_composition_deficit(counts):
@@ -2023,7 +2026,8 @@ def _cys_status_json():
         return None
 
 
-def _shared_verdict_deficit(status, requery=None, tick_s=None, detect=None, agents=None):
+def _shared_verdict_deficit(status, requery=None, tick_s=None, detect=None, agents=None,
+                            required=None):
     """★부트 ④ 결손 산출 — `javis_orchestra._shared_verdict_deficit`(정본) **위임 소비**(W-B3 배선).
 
     정본(orchestra 판)은 check_verdicts(⑤check 판정 코어) 소비에 더해 **unknown 등급을
@@ -2057,12 +2061,19 @@ def _shared_verdict_deficit(status, requery=None, tick_s=None, detect=None, agen
         _fn = getattr(_orch, "_shared_verdict_deficit", None)
         if _fn is not None:
             try:
+                # ★required 주입(2026-09-10 기본 함대): 미지정이면 정본이 기본 함대를 쓴다.
+                #   명시로 주는 경로 = **리뷰어를 연 뒤**의 계약을 재는 검체·소비자.
                 return _fn(status, requery=requery, tick_s=tick_s,
-                           detect=detect, agents=agents)
+                           detect=detect, agents=agents, required=required)
             except TypeError:
-                if detect is None and agents is None:
+                if detect is None and agents is None and required is None:
                     raise
-                return _fn(status, requery=requery, tick_s=tick_s)
+                # 구 팩 스큐 사다리: required → detect/agents 순으로 벗겨 재시도한다.
+                try:
+                    return _fn(status, requery=requery, tick_s=tick_s,
+                               detect=detect, agents=agents)
+                except TypeError:
+                    return _fn(status, requery=requery, tick_s=tick_s)
         skew_why = "구 팩 스큐(javis_orchestra 에 _shared_verdict_deficit 부재)"
     except Exception as e:
         skew_why = "orchestra 위임 불가(%s: %s)" % (type(e).__name__, e)
@@ -3606,8 +3617,14 @@ def cmd_self_test():
         half, why = _team_composition_deficit({"cso": 0, "worker": 0, "reviewer": 4})
         assert half is True, "반쪽 팀(reviewer만 4)이 결손 0으로 오판(총수 비교 잔재)"
         assert "cso" in why and "worker" in why, "결손 사유에 결손 역할 미명시: %s" % why
-        assert _team_composition_deficit({"cso": 1, "worker": 1, "reviewer": 1})[0] is True, \
-            "reviewer 1(<2)이 결손 0으로 오판"
+        # ★기본 함대(2026-09-10): 리뷰어 수는 이 판정에 **관여하지 않는다**(온디맨드).
+        #   구 핀("reviewer 1<2 는 결손")은 상시 점유를 강제하던 자리라 폐기하고, 그 자리에
+        #   **정책 방향을 반대로 못박는** 핀을 넣는다: 리뷰어가 0이어도 결손이 아니고,
+        #   리뷰어가 몇이든 cso·worker 결손을 가리지 못한다.
+        assert _team_composition_deficit({"cso": 1, "worker": 1, "reviewer": 0})[0] is False, \
+            "리뷰어 0이 결손으로 계상됐다(상시 점유 부활)"
+        assert _team_composition_deficit({"cso": 1, "worker": 0, "reviewer": 9})[0] is True, \
+            "리뷰어 다수가 worker 결손을 덮었다(가족 접두 계수의 원 결함 재발)"
         assert _team_composition_deficit({})[0] is True, "빈 카운트가 결손 0으로 오판"
 
         # ── t7: 로스터 결손 판정(W0 P0 지혈 — G26 + A1 '결손 0 오판' 절반) ──
@@ -3637,8 +3654,11 @@ def cmd_self_test():
         healthy5 = ["cso", "worker", "reviewer-gemini", "reviewer-codex", "reviewer-grok"]
         assert _old(healthy5) is False and _new(healthy5) is False, \
             "정상 5노드가 결손>0으로 오판(재선언 오탐 hard-block 부활 — 역방향 회귀)"
-        # ⓓ 결손 1(reviewer-codex 부재) — 구·신 모두 결손 존재(합치 검체)
-        one_missing = ["cso", "worker", "reviewer-gemini"]
+        # ⓓ 결손 1 — 구·신 모두 결손 존재(합치 검체).
+        #   ★2026-09-10: 대상을 reviewer-codex 부재 → **worker 부재**로 옮겼다. 기본 함대에서
+        #   리뷰어는 어느 판정에도 의무가 아니라 구 계수(_old)가 그 부재를 결손으로 보지 않는다 —
+        #   두 판정이 합치하는지를 재는 검체이므로 **양쪽이 함께 보는 결손**으로 전제를 옮긴다.
+        one_missing = ["cso", "reviewer-gemini"]
         assert _old(one_missing) is True and _new(one_missing) is True, \
             "결손 1 검체에서 신구 판정 불일치"
         # ⓔ worker-N 접두 수용 — cmd_check(orchestra.py:239-241)와 동일 규약 유지(역방향 회귀 금지)
@@ -3661,38 +3681,32 @@ def cmd_self_test():
         except Exception:                                             # pragma: no cover
             _orch_st = None       # 팩 스큐·부서 팩 결손 — 폴백 계약은 아래 반환 계약 assert가 지킨다
         if _orch_st is not None:
+            # ★기본 함대 정책(박사님 결정 2026-09-10 · 보편): 의무 역할은 **감지와 무관하게**
+            #   cso·worker 다. 구 계약(감지 시 네이티브 2기 / 미감지 시 Claude 대체 2기를 의무로)은
+            #   둘 다 폐기됐다 — 리뷰어가 required 에 있으면 결손 판정이 매 부팅 그 좌석을 세운다.
+            #   ★감지 3형상에서 **같은 답**이어야 한다 = 파일 간 감지 불일치가 구조적으로 불가능.
             nat = _orch_st.effective_required_roles(
                 detect=lambda a, g=None: (True, "stub-installed"), agents={})
             sub = _orch_st.effective_required_roles(
                 detect=lambda a, g=None: (False, "stub-missing"), agents={})
-            assert nat == ["cso", "worker", "reviewer-gemini", "reviewer-codex"], \
-                "네이티브 로스터 계약 이탈: %r" % (nat,)
-            # ★참가자 프로파일(P1 · 2026-09-10 · TICKET=pack-participant-formation): 네이티브
-            #   리뷰어 CLI 가 **전무**한 기계에서는 대체 리뷰어를 의무 역할로 세우지 않는다
-            #   (구 계약 = ["cso","worker","reviewer-claude-1","reviewer-claude-2"]). 그 좌석이
-            #   required 에 있으면 결손 판정이 매 부팅 2기를 되살려 리뷰 의뢰 0인 기계의 주간
-            #   한도를 태웠다(실측). 대체 슬롯 자체는 살아 있고(reviewer_roster 무수정) 의뢰 시
-            #   같은 이름으로 선다 — 없앤 것은 능력이 아니라 상시 점유다.
-            assert sub == ["cso", "worker"], \
-                "참가자 프로파일 의무역할 계약 이탈(리뷰어 상시 점유 부활): %r" % (sub,)
-            # 혼합(네이티브 1종만 실재) = 참가자 아님 → 현행 대체 폴백이 그대로 유지된다.
             mix = _orch_st.effective_required_roles(
                 detect=lambda a, g=None: (a == "gemini", "stub-mixed"), agents={})
-            assert mix == ["cso", "worker", "reviewer-gemini", "reviewer-claude-2"], \
-                "혼합 로스터 계약 이탈(현행 폴백 소멸): %r" % (mix,)
-            # 신 판정이 각 로스터를 그대로 소비하는지(이름공간 결박 확인)
-            assert _team_roster_deficit(nat, set(healthy5))[0] is False, "네이티브 로스터 결박 실패"
-            # ★대체 이름공간의 결박은 이제 **혼합 로스터**로 잰다: 참가자 프로파일의 sub 에는
-            #   대체 좌석 이름이 아예 없으므로(리뷰어가 required 밖) 그 검체로는 이름공간을
-            #   못 잰다. mix 는 reviewer-claude-2 를 요구하고 healthy5 에는 그 좌석이 없다 —
-            #   원 검체가 재려던 사실(대체 요구를 네이티브 좌석이 대신 채우지 못한다)은 그대로다.
-            assert _team_roster_deficit(mix, set(healthy5))[0] is True, \
+            assert nat == sub == mix == ["cso", "worker"], \
+                "의무 역할이 감지에 따라 갈렸다(기본 함대 정책 이탈): nat=%r sub=%r mix=%r" % (
+                    nat, sub, mix)
+            # 신 판정이 그 목록을 그대로 소비하는지(이름공간 결박 확인)
+            assert _team_roster_deficit(nat, set(healthy5))[0] is False, "기본 함대 결박 실패"
+            # 이름공간 결박: **대체 좌석 이름**을 요구하면 네이티브 좌석이 대신 채우지 못한다.
+            #   (리뷰어를 연 뒤의 계약 — required 를 명시로 주는 경로가 그것이다.)
+            assert _team_roster_deficit(
+                ["cso", "worker", "reviewer-claude-1", "reviewer-claude-2"],
+                set(healthy5))[0] is True, \
                 "대체 로스터 요구인데 네이티브 좌석으로 결손 0(이름공간 미결박)"
-            # 참가자 프로파일에서는 cso·worker 생존이면 결손 0 이 **정상**이다(리뷰어 부재는 결원 아님).
-            assert _team_roster_deficit(sub, set(healthy5))[0] is False, \
-                "참가자 프로파일에서 리뷰어 부재를 결손으로 계상(상시 점유 부활 경로)"
-            assert _team_roster_deficit(sub, {"cso"})[0] is True, \
-                "참가자 프로파일에서도 worker 부재는 결손이어야 한다(완화 아님)"
+            # 기본 함대에서 리뷰어 부재 = 결손 0 이 정상 · worker 부재 = 여전히 결손(완화 아님)
+            assert _team_roster_deficit(nat, {"cso", "worker"})[0] is False, \
+                "기본 함대 전원 생존인데 결손으로 계상"
+            assert _team_roster_deficit(nat, {"cso"})[0] is True, \
+                "worker 부재가 결손이 아니다(완화)"
         # 반환 계약(roles XOR 사유) — 반환 이상은 폴백으로 강등하고 crash하지 않는다
         req, why_no = _required_roles_from_orchestra()
         assert (req is None) != (why_no is None), \

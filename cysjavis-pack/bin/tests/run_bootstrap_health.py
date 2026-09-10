@@ -4433,6 +4433,17 @@ def _roster_pin(native):
     return detect
 
 
+def _req_open(detect):
+    """★리뷰어를 **연 뒤**의 required 목록(2026-09-10 기본 함대 정책의 짝).
+
+    기본 함대(master·cso·worker)에서 리뷰어는 의무가 아니므로 `check_verdicts` 는 기본적으로
+    리뷰어 행을 만들지 않는다. 아래 검체들이 재는 것(G26 이름공간·B2 대체 충전·B1 정책 열)은
+    **리뷰어가 열려 있을 때의 계약**이라, 그 전제를 `required=` 주입으로 명시해 세운다 —
+    검체를 지우는 대신 정확한 전제를 준다(계약이 죽으면 회귀가 무증상으로 산다)."""
+    _BN, _O, _B = _shared_pred()
+    return ["cso", "worker"] + [e["role"] for e in _O.reviewer_roster(detect)]
+
+
 def _vd(verdicts, role, ctx=""):
     """`verdicts[role]` — 없을 때 **터지지 않고 판정한다**(전제 부재는 진단이지 크래시가 아니다).
 
@@ -4476,13 +4487,13 @@ def h_pred_1():
         D = _roster_pin(pin)
         for name, rows in _SEAT_CORPUS.items():
             st = _fx(rows)
-            verdicts, _roster = O.check_verdicts(st, detect=D)
+            verdicts, _roster = O.check_verdicts(st, detect=D, required=_req_open(D))
             check_missing = sorted(r for r, v in verdicts.items() if not v["satisfied"])
             unknown_ok = sorted(r for r, v in verdicts.items()
                                 if v["satisfied"] and v["grade"] == "unknown")
             # 밀폐 주입: 재조회=같은 fixture(잔존 unknown 재현)·tick 0 — 수면 0·데몬 왕복 0.
             has, why = B._shared_verdict_deficit(st, requery=lambda st=st: st, tick_s=0,
-                                                 detect=D)
+                                                 detect=D, required=_req_open(D))
             need(has is not None, "[native=%r] %s: 공유 판정 소비 실패 — %s" % (pin, name, why))
             # 차분 계약: check 부재 ⟺ 결손>0. ★유일 예외 = unknown 잔존(W-B3 — 의도된 차분).
             expect = bool(check_missing) or bool(unknown_ok)
@@ -4494,16 +4505,17 @@ def h_pred_1():
     DN = _roster_pin(True)
     # G26 좌석: grok·cso-1 은 의무 슬롯을 채우지 못한다(양쪽 동일 결론).
     st = _fx(_SEAT_CORPUS["g26_variant_seats"])
-    v, _ = O.check_verdicts(st, detect=DN)
+    v, _ = O.check_verdicts(st, detect=DN, required=_req_open(DN))
     need(not _vd(v, "cso", "G26")["satisfied"], "cso-1 변형 좌석이 의무 cso 를 충족(G26 재발)")
     need(not _vd(v, "reviewer-gemini", "G26")["satisfied"],
          "reviewer-grok 이 의무 리뷰어 슬롯을 충족(G26 재발)")
-    need(B._shared_verdict_deficit(st, requery=lambda: st, tick_s=0, detect=DN)[0] is True,
+    need(B._shared_verdict_deficit(st, requery=lambda: st, tick_s=0, detect=DN,
+                                   required=_req_open(DN))[0] is True,
          "G26 좌석에서 결손 0 오판")
     # 대조군: 정상 팀은 양쪽 모두 충족.
     st_ok = _fx(_SEAT_CORPUS["healthy_latched"])
     need(B._shared_verdict_deficit(st_ok, requery=lambda: st_ok, tick_s=0,
-                                   detect=DN)[0] is False,
+                                   detect=DN, required=_req_open(DN))[0] is False,
          "정상 팀을 결손>0 으로 오판(역방향 회귀)")
     # ★W-B3 신계약 3단 통제 — 로스터 **두 형상 전수**(주입으로 전제를 세운다):
     #   ⓐ ⑤check satisfied 불변(unknown=충족측) ⓑ 잔존 unknown ⟹ 결손>0(의도된 차분·배선 발효)
@@ -4514,17 +4526,19 @@ def h_pred_1():
         unk_st = _fx([{"role": req_roles[0], "exited": False, "seat": "unknown"}] +
                      [{"role": r, "exited": False, "awakened_at": 1.0} for r in req_roles[1:]])
         ok_st = _fx([{"role": r, "exited": False, "awakened_at": 1.0} for r in req_roles])
-        v_unk, _ = O.check_verdicts(unk_st, detect=D)
+        v_unk, _ = O.check_verdicts(unk_st, detect=D, required=_req_open(D))
         vu = _vd(v_unk, req_roles[0], "W-B3 unknown 통제(native=%r)" % pin)
         need(vu["grade"] == "unknown",
              "[native=%r] unknown 통제 fixture 가 unknown 등급이 아님" % pin)
         need(vu["satisfied"] is True,
              "[native=%r] ⑤check 가 unknown 을 미충족으로 뒤집음(콜드스타트 exit 6 라이브락 재발)"
              % pin)
-        need(B._shared_verdict_deficit(unk_st, requery=lambda: unk_st, tick_s=0,
+        need(B._shared_verdict_deficit(unk_st, required=_req_open(D),
+                                       requery=lambda: unk_st, tick_s=0,
                                        detect=D)[0] is True,
              "[native=%r] 잔존 unknown 이 결손으로 계상되지 않음(W-B3 배선 미발효)" % pin)
-        need(B._shared_verdict_deficit(unk_st, requery=lambda: ok_st, tick_s=0,
+        need(B._shared_verdict_deficit(unk_st, required=_req_open(D),
+                                       requery=lambda: ok_st, tick_s=0,
                                        detect=D)[0] is False,
              "[native=%r] 재조회 생존 확인된 unknown 을 결손으로 계상(불필요 boot·churn)" % pin)
     # ★배선 실재 핀(소비자 0 재발 금지): bootstrap 판은 orchestra 정본으로 위임하고, 로컬
@@ -4688,21 +4702,21 @@ def h_seat_4axis():
     need(BN.node_liveness(gated, req[0])[0] == BN.LIVENESS_GATED,
          "python 이 관문 좌석을 제4 등급으로 읽지 않는다")
     # 축③ orchestra check_verdicts — **충족 아님**
-    v_gate, _ = O.check_verdicts(gated, detect=D)
+    v_gate, _ = O.check_verdicts(gated, detect=D, required=req)
     need(v_gate[req[0]]["grade"] == BN.LIVENESS_GATED, "check 가 제4 등급을 전달하지 않는다")
     need(v_gate[req[0]]["satisfied"] is False,
          "관문 보류가 충족으로 접혔다 — 관문에 갇힌 팀이 READY 로 집계된다(이 단위의 존재 이유 소멸)")
     # 축④ 결손 산출(부트 경로) — 충족 아님이므로 결손>0
-    has, why = B._shared_verdict_deficit(gated, requery=lambda: gated, tick_s=0, detect=D)
+    has, why = B._shared_verdict_deficit(gated, requery=lambda: gated, tick_s=0, detect=D, required=req)
     need(has is True, "관문 보류인데 결손 0(부트가 영영 호출되지 않는다): %s" % why)
     # ★차분 0 계약: 세 축이 같은 결론(미충족 ⟺ 결손>0)이고, 대조군에서 셋 다 뒤집힌다.
     for name, st in (("구 데몬(키 부재)", plain), ("신 데몬 무보류(null)", nulled)):
         need(BN.node_liveness(st, req[0])[0] == BN.LIVENESS_PRESUMED,
              "%s 에서 종전 등급이 변형됐다(혼재 안전 붕괴 — 부재 ≠ 부정)" % name)
-        vv, _ = O.check_verdicts(st, detect=D)
+        vv, _ = O.check_verdicts(st, detect=D, required=req)
         need(vv[req[0]]["satisfied"] is True, "%s 에서 충족이 뒤집혔다(위경보)" % name)
         need(B._shared_verdict_deficit(st, requery=lambda st=st: st, tick_s=0,
-                                       detect=D)[0] is False,
+                                       detect=D, required=req)[0] is False,
              "%s 에서 결손이 발생했다(불필요 boot churn)" % name)
     notes.append("축②③④ 차분 0(관문=미충족∧결손>0 · 대조군 2종=충족∧결손0)")
 
@@ -4722,10 +4736,10 @@ def h_seat_4axis():
         need(BN.gate_pending_axis_enabled() is False, "킬스위치 '0' 이 축을 끄지 못한다")
         need(BN.node_liveness(gated, req[0])[0] == BN.LIVENESS_PRESUMED,
              "킬스위치 off 인데 python 축이 살아 있다")
-        vv, _ = O.check_verdicts(gated, detect=D)
+        vv, _ = O.check_verdicts(gated, detect=D, required=req)
         need(vv[req[0]]["satisfied"] is True, "킬스위치 off 인데 check 가 여전히 미충족")
         need(B._shared_verdict_deficit(gated, requery=lambda: gated, tick_s=0,
-                                       detect=D)[0] is False,
+                                       detect=D, required=req)[0] is False,
              "킬스위치 off 인데 결손이 남는다(롤백 1지점 계약 붕괴)")
     finally:
         if _prev is None:
@@ -4750,10 +4764,10 @@ def h_seat_4axis():
                  % (_label, _env, _on))
             need(BN.node_liveness(gated, req[0])[0] == BN.LIVENESS_PRESUMED,
                  "%s 스위치 off 인데 python 축이 살아 있다" % _label)
-            need(O.check_verdicts(gated, detect=D)[0][req[0]]["satisfied"] is True,
+            need(O.check_verdicts(gated, detect=D, required=req)[0][req[0]]["satisfied"] is True,
                  "%s 스위치 off 인데 check 가 여전히 미충족" % _label)
             need(B._shared_verdict_deficit(gated, requery=lambda: gated, tick_s=0,
-                                           detect=D)[0] is False,
+                                           detect=D, required=req)[0] is False,
                  "%s 스위치 off 인데 결손이 남는다(불필요 boot churn)" % _label)
             for _l in _loose:
                 os.environ[_env] = _l
@@ -5484,12 +5498,14 @@ def h_pred_4():
     #   CLI 가 깔려 있어야만 우연히 성립했고, 깨끗한 기계에서는 없는 키를 색인해 크래시했다.
     DN = _roster_pin(True)
     st = _fx(_SEAT_CORPUS["substitute_filled"])
-    v, _ = O.check_verdicts(st, detect=DN)
+    # ★2026-09-10(기본 함대): 리뷰어는 기본 required 밖이라 그 전제를 `required=` 로 세운다.
+    _reqN = _req_open(DN)
+    v, _ = O.check_verdicts(st, detect=DN, required=_reqN)
     vc = _vd(v, "reviewer-codex", "B2 대체 충전")
     need(vc["satisfied"] is True, "대체 좌석 재해소 실패(B2 영구 적색)")
     need(vc["native"] is False, "실충전자 라벨(native=False) 누락")
     need(vc["filler"] == "reviewer-claude-2", "실충전자 이름 오류")
-    need(B._shared_verdict_deficit(st, detect=DN)[0] is False,
+    need(B._shared_verdict_deficit(st, detect=DN, required=_reqN)[0] is False,
          "대체 충전 팀에서 결손>0(재선언 불회복)")
     # boot-reviewers 가 실충전자를 고지한다(은닉 성공 금지)
     osrc = _read(os.path.join(BIN_DIR, "javis_orchestra.py"))
@@ -5676,6 +5692,8 @@ def h_pred_7():
     need(O.plan_mandatory_roles() == ["cso", "worker"],
          "Fatal 집합 변형(리뷰어가 Fatal 이면 B1 재발): %r" % O.plan_mandatory_roles())
     # ② Fatal ⊆ 유효 의무 역할(부트가 요구하는 것을 check 도 본다)
+    #    ★2026-09-10: 기본 함대에서는 둘이 **같은 집합**이다(cso·worker) — 부트가 세우는 것과
+    #      check 가 요구하는 것이 정확히 일치한다는 뜻이라, 이 포함관계가 등호로 성립한다.
     for detect in (yes, no):
         eff = O.effective_required_roles(detect=detect, agents=synth)
         need(set(O.plan_mandatory_roles()) <= set(eff),
@@ -5685,17 +5703,25 @@ def h_pred_7():
         subs = {s for _n, _na, s, _sa in O.REVIEWER_SLOTS}
         need(all(r in plan_roles or r in subs for r in eff),
              "고아 의무 요건(PLAN·슬롯 어디에도 없음): %r" % eff)
-    # ④ 결손 구성 3자 대조 — Degrade 만 부재면 결손>0 이지만 처방은 boot-reviewers 다
+    # ④ 결손 구성 3자 대조
     st = _fx([{"role": "cso", "exited": False, "awakened_at": 1.0},
               {"role": "worker", "exited": False, "awakened_at": 1.0}])
-    # ★로스터 밀폐: '리뷰어 전원 부재' 라는 전제는 어느 슬롯 형상인지를 못박아야 재현된다.
     D7 = _roster_pin(True)
-    has, why = B._shared_verdict_deficit(st, detect=D7)
-    need(has is True, "리뷰어 전원 부재인데 결손 0")
-    v, _ = O.check_verdicts(st, detect=D7)
+    # ★2026-09-10(기본 함대 · 박사님 결정): 기본 required 에서 리뷰어 부재는 **결손이 아니다**.
+    #   그것이 이 세대가 고친 것이므로 여기서 그 방향을 못박는다(구 단언은 상시 점유를 강제했다).
+    need(B._shared_verdict_deficit(st, detect=D7)[0] is False,
+         "기본 함대(cso·worker) 전원 생존인데 결손>0 — 리뷰어 상시 점유가 되살아났다")
+    # 리뷰어를 **연 뒤**(required 주입)에는 그 부재가 결손이고, 처방은 boot-reviewers 다.
+    _req7 = _req_open(D7)
+    has, why = B._shared_verdict_deficit(st, detect=D7, required=_req7)
+    need(has is True, "리뷰어를 연 전제(required 주입)에서 전원 부재인데 결손 0")
+    v, _ = O.check_verdicts(st, detect=D7, required=_req7)
     missing = [r for r, x in v.items() if not x["satisfied"]]
-    need(missing and all(O.plan_policy(m) == O.FAIL_DEGRADE for m in missing),
-         "부재 역할의 정책이 Degrade 가 아니다: %r" % [(m, O.plan_policy(m)) for m in missing])
+    need(missing and all(m.startswith("reviewer") for m in missing),
+         "부재 역할이 리뷰어가 아니다: %r" % (missing,))
+    need(all(O.plan_policy(m) == O.FAIL_DEGRADE for m in missing),
+         "부재 리뷰어의 정책이 Degrade 가 아니다(PLAN 미등재는 보수적으로 Degrade): %r"
+         % [(m, O.plan_policy(m)) for m in missing])
     # ⑤ Rust PLAN 정책 열 ↔ python 정본 파리티(H-EXIT-4 와 동일 대조 — 이중 결박)
     csrc = _repo_file(os.path.join("src", "bin", "cys.rs"))
     seg = csrc[csrc.find("const BOOT_PLAN"):]

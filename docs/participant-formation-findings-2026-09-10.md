@@ -14,13 +14,16 @@ Claude 구독 1개. 이하 「실측」은 그 기계에서 관측된 사실이�
 ① ④-b `boot-reviewers` 가 2기를 스폰하고 ② ⑤ `check`·부트 결손 판정이 그 좌석의 부재를
 결손으로 세어 ④를 다시 돌렸다 — 닫아도 되살아나는 고리의 정체가 이것이다.
 
-**수리** 편성 프로파일 도입. 판정 소스는 **네이티브 CLI 실재 여부 하나**(설정 파일 추가 0):
-- 네이티브(agy·codex)가 **하나도 없으면** 참가자 프로파일 → 리뷰어는 **온디맨드**.
-  `boot-reviewers` 스폰 0·exit 0(Degrade 아님) · 의무 역할 = `cso·worker` ·
-  formation 도 리뷰어를 결원·필수 CLI 양쪽에서 제외.
-- 하나라도 있으면 **현행 동작 완전 보존**(우리 맥 = 네이티브 2 · 혼합 기계 = 네이티브 1 + 대체 1).
-- 기동 경로는 남는다: `javis_boot_node.py --role reviewer-claude-1 --agent claude`.
-  없앤 것은 능력이 아니라 **상시 점유**다.
+**수리(개정 2026-09-10 · 박사님 결정)** — **프로파일 감지를 폐기하고 보편 정책으로 단순화**했다:
+**기본 함대 = master · CSO · worker 1기. 리뷰어는 필요할 때 연다.**
+- `REQUIRED_ROLES`·`BOOT_PLAN`(python·Rust 양쪽)·formation 로스터·`check_verdicts`·
+  `team_roster_note`·디렉티브가 전부 이 3기 고정을 읽는다. **감지 코드가 판정에 없다.**
+- `boot-reviewers` 는 기본 스폰 0(무플래그=보고만·exit 0). `--spawn` 일 때만 연다 —
+  감지·대체 폴백·2차 폴백 로직은 **무수정**으로 그 경로 안에 살아 있다.
+- 중간 세대였던 「참가자 프로파일(네이티브 CLI 실재 여부로 편성을 가름)」은 폐기됐다.
+  그 설계의 실패 지점이 codex 1R 의 BLOCKER·HIGH ③ 였다: 감지가 파일마다 갈리면
+  (formation=`command -v` vs orchestra=agent-detect·절대경로) **같은 기계가 두 편성으로 읽힌다**.
+  감지가 없으면 불일치도 없다 — 정책 단일화가 그 결함군을 뿌리째 없앤다.
 
 부수 수리: formation 이 `partial:agy,codex` 로 **영구 고정**되던 것(배너 불멸)이 함께 풀린다.
 complete 피드 본문도 프로파일 파생으로 바꿨다 — 3기가 선 기계에 「reviewer-gemini·
@@ -75,7 +78,7 @@ master 페인에 `[관문감지] surface:N … (id=folder-trust)` 8건.
 (이 셋 중 뒤 둘은 핸들을 즉시 드롭하거나 대기만 해서 `kill_on_drop` 조차 없었다).
 
 ⚠**정직한 한계**: 「부모 종료 후 자식 부재」의 **런타임 실측은 Windows 실기 몫**이다. 이 커밋에
-실린 것은 소스 트립와이어(편입 지점 전수 4 고정 · `test_participant_formation.py` ⓒ)뿐이다.
+실린 것은 소스 트립와이어(편입 지점 전수 4 고정 · `test_default_fleet_formation.py` ⓒ)뿐이다.
 
 ## P4 재부팅 뒤 자동 시작 — 규명 + 문구 정정
 

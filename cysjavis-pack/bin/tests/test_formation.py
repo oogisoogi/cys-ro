@@ -166,12 +166,6 @@ def _ensure_harness(m, live, installed, resource_ok):
     feeds = []
     m.gate_check = lambda: True
     m._installed_clis = lambda: set(installed)
-    # ★1R#3(2026-09-10): 프로파일 사실은 이제 orchestra 해소(`native_reviewer_present`)에서 온다.
-    #   그것은 `cys agent-detect`·agents.json 을 만지는 **외부 접촉**이라 밀폐 하네스가 스텁해야
-    #   한다(안 하면 검체가 러너 기계의 agy·codex 설치 여부로 갈린다 — 우리 맥에서 초록,
-    #   깨끗한 기계에서 적색인 그 계급의 결함). 스텁은 이 검체가 세운 전제(installed)를 따른다.
-    m.native_reviewer_present = lambda: (
-        bool(set(installed) & m.REVIEWER_CLIS) if installed else None)
     # ★N-7: 스텁 시그니처는 실함수(`_live_roles(socket, require_live_agent=True)`)와 일치시킨다.
     #   종전 `lambda socket=None` 은 좌석 관측 호출(`_live_roles(socket, require_live_agent=False)`)이
     #   추가되는 순간 TypeError 로 조용히 깨진다 — 미래 파손의 씨앗이라 실시그니처를 그대로 받는다.
@@ -192,8 +186,8 @@ def ensure_order_gate(m):
         check("9a 로스터 complete + 자원 hard → complete", False, "ensure 미구현")
         return
     saved = {k: getattr(m, k) for k in
-             ("gate_check", "_installed_clis", "native_reviewer_present", "_live_roles",
-              "_resource_ok", "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt")}
+             ("gate_check", "_installed_clis", "_live_roles", "_resource_ok",
+              "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt")}
     saved_state = os.environ.get("CYS_STATE_DIR")
     td = tempfile.mkdtemp(prefix="fmens-")
     os.environ["CYS_STATE_DIR"] = td
@@ -232,30 +226,28 @@ def ensure_order_gate(m):
               and "자동으로 편성이 완결" not in pend[0][2]
               and "재시작 또는 부서 재기동" in pend[0][2], "feeds=%r" % (feeds,))
 
-        # (b3) 로스터 complete 인데 CLI 부분 설치 → complete 로 승격 금지(부분 설치 오판 차단).
-        # ★참가자 프로파일(P1 · 2026-09-10) 이후 이 검체의 전제는 **네이티브 리뷰어 CLI 가 있는
-        #   기계**다 — claude+agy 인데 codex 부재(리뷰어 축이 살아 있는 기계의 반쪽 설치).
-        #   claude 단독 기계는 더 이상 '부분 설치'가 아니라 참가자 프로파일이고, 그 레인의
-        #   기대값은 아래 9b6 이 따로 잰다(구 검체를 지우지 않고 전제를 정확히 한다).
-        feeds = _ensure_harness(m, live=REQUIRED, installed={"claude", "agy"}, resource_ok=False)
+        # (b3) ★기본 함대(2026-09-10): 필수 CLI 가 claude 하나가 되어 '부분 설치' 형상은
+        #      **claude 부재**뿐이다. 그 레인에서 로스터가 전원이어도 complete 로 올라가면 안 된다
+        #      (INV-1). 구 검체(claude+agy 인데 codex 부재)는 전제 자체가 소멸해 이 형상으로 옮겼다.
+        feeds = _ensure_harness(m, live=REQUIRED, installed=set(), resource_ok=False)
         state, _d = m.ensure(socket="/tmp/b3.sock")
-        check("9b5 부분 CLI 는 로스터 전원이어도 complete 아님(INV-1)",
+        check("9b5 CLI 미설치는 로스터 전원이어도 complete 아님(INV-1)",
               state != "complete" and not [f for f in feeds if f[0] == "formation-complete"],
               "state=%r feeds=%r" % (state, feeds))
 
-        # (b4) ★참가자 프로파일: claude 단독 기계에서 master·cso·worker 3기 = complete 가 정상.
+        # (b4) ★기본 함대: claude 만 있어도 master·cso·worker 3기면 complete 가 정상.
         #      종전에는 agy·codex 부재가 `partial:agy,codex` 로 영구 고정돼 편성이 영영 완결되지
         #      못했고(배너 불멸), 그 미완결이 매 틱 리뷰어 요구로 되돌아왔다(토큰 소모원).
         feeds = _ensure_harness(m, live={"master", "cso", "worker"}, installed={"claude"},
                                 resource_ok=True)
         state, _d = m.ensure(socket="/tmp/b4.sock")
-        check("9b6 참가자 프로파일(claude 단독) 3기 편성 = complete",
+        check("9b6 기본 함대(claude 단독) 3기 편성 = complete",
               state == "complete" and [f for f in feeds if f[0] == "formation-complete"],
               "state=%r feeds=%r" % (state, feeds))
         # 같은 프로파일에서 결원(worker 부재)은 여전히 complete 가 아니다 — 완화 아님의 증거.
         feeds = _ensure_harness(m, live={"master", "cso"}, installed={"claude"}, resource_ok=True)
         state, _d = m.ensure(socket="/tmp/b5.sock")
-        check("9b7 참가자 프로파일에서도 결원은 complete 아님",
+        check("9b7 기본 함대에서도 결원은 complete 아님",
               state != "complete" and not [f for f in feeds if f[0] == "formation-complete"],
               "state=%r feeds=%r" % (state, feeds))
 
@@ -407,8 +399,7 @@ def ensure_order_gate(m):
         finally:
             m.FORMATION_RETRY_COOLDOWN_S = saved_cd
         check("13a 시도 원장 유계 — 비생존 역할 스폰 시도 = MAX(3)·소진 후 보류",
-              boots.count("worker") == 3 and boots.count("reviewer-gemini") == 3
-              and boots.count("reviewer-codex") == 3,
+              boots.count("worker") == 3,
               "boots=%r" % {r: boots.count(r) for r in set(boots)})
         check("13b 생존 좌석(cso)은 원장 무카운트 — 입양·멱등 경로 보존(매 ensure 호출)",
               boots.count("cso") == 10, "cso=%d" % boots.count("cso"))
@@ -420,7 +411,7 @@ def ensure_order_gate(m):
         for _ in range(10):
             m.ensure(socket="/tmp/led-b.sock")
         check("13c 쿨다운(30s) — 연속 10회 ensure 에 역할당 시도 1회(백오프 유계)",
-              boots2.count("worker") == 1 and boots2.count("reviewer-codex") == 1,
+              boots2.count("worker") == 1,
               "boots=%r" % {r: boots2.count(r) for r in set(boots2)})
         _ = feeds
     finally:

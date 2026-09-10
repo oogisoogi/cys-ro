@@ -109,8 +109,17 @@ for _s in (sys.stdout, sys.stderr):
 # 4차 앵커4-1: 프로젝트 상주 의무 노드(grok은 선택). 이것은 *표준(Tier-2 이상) 기본 로스터*다.
 # ★check 가 실제로 검증하는 것은 effective_required_roles()(=감지 폴백 적용) — REQUIRED_ROLES 는
 # 계약·문서용 표준 상수로 보존한다. agy/codex 미감지 시 리뷰어 슬롯은 Claude 대체로 치환된다.
-REQUIRED_ROLES = ["cso", "worker", "reviewer-gemini", "reviewer-codex"]
-OPTIONAL_ROLES = ["reviewer-grok"]
+# ★기본 함대 정책(박사님 결정 2026-09-10 · 보편 · 프로파일 구분 없음):
+#   **master · cso · worker 1기**가 기본 함대이고 **리뷰어는 필요할 때 연다**.
+#   그래서 이 목록에서 리뷰어가 빠졌다 — 상시 점유가 사라진 자리가 여기다.
+#   ★왜 '감지'가 아니라 '정책'인가: 직전 설계는 네이티브 CLI 실재 여부로 프로파일을 갈랐는데,
+#     그 감지가 파일마다 갈리면(formation=`command -v` vs orchestra=agent-detect·절대경로)
+#     같은 기계가 두 편성으로 읽혔다(codex 1R HIGH ③). 감지 코드가 없으면 불일치도 없다.
+#   ★리뷰어를 없앤 것이 아니다: 슬롯·기동 경로·디렉티브 §11(중요 포인트 리뷰어 의무)은 그대로다.
+#     여는 방법 = `javis_orchestra.py boot-reviewers --spawn` 또는
+#                 `javis_boot_node.py --role reviewer-gemini --agent gemini`.
+REQUIRED_ROLES = ["cso", "worker"]
+OPTIONAL_ROLES = ["reviewer-gemini", "reviewer-codex", "reviewer-grok"]
 MAX_ROUNDS = 10  # 마스터 헌장 제9조: 잠근 합격 기준의 미달 항목 0 또는 10R 상한 도달 시 멈춘다
 
 # ★리뷰어 슬롯 + 무구독 폴백(2026-06-14): agy(reviewer-gemini)·codex(reviewer-codex)는
@@ -134,12 +143,13 @@ REVIEWER_SLOTS = [
 #   (④ 는 통과하는데 ⑤ check 가 네이티브 리뷰어를 계속 요구해 영구 적색).
 FAIL_FATAL = "Fatal"
 FAIL_DEGRADE = "Degrade"
+# ★기본 함대 정책(2026-09-10): 리뷰어 행을 뺐다 — `cys boot` 는 **기본 함대만** 세운다.
+#   리뷰어는 의뢰 시 명시 기동(boot-reviewers --spawn · launch-agent)이며, 그 경로는
+#   `REVIEWER_SLOTS` 가 그대로 정의한다(정책이 바뀐 것이지 능력이 사라진 것이 아니다).
+#   ★Rust `cys.rs::BOOT_PLAN` 과 **행 단위 기계 대조**된다(H-PRED-7) — 함께 옮겨야 한다.
 BOOT_PLAN = [
     ("cso", "claude", FAIL_FATAL),
     ("worker", "claude", FAIL_FATAL),
-    ("reviewer-gemini", "gemini", FAIL_DEGRADE),
-    ("reviewer-codex", "codex", FAIL_DEGRADE),
-    ("reviewer-grok", "grok", FAIL_DEGRADE),
 ]
 
 
@@ -307,54 +317,24 @@ def reviewer_roster(detect=None, agents=None):
     return roster
 
 
-# ─────────────────── 참가자 프로파일(P1 · 2026-09-10) ───────────────────
-# 리뷰어 상시 점유 → 온디맨드. 판정 소스는 **네이티브 CLI 실재 여부 하나**다(설정 파일 없음).
-PARTICIPANT_PROFILE_NOTE = "리뷰어 = 의뢰 시 기동(온디맨드 · 참가자 프로파일)"
-
-
-def participant_profile(detect=None, agents=None, roster=None):
-    """★참가자 프로파일 판정(결정론 · 설정 파일 추가 없음).
-
-    True = 이 기계에 **네이티브 리뷰어 CLI 가 하나도 없다**(agy·codex 전무).
-    그런 기계에서 Claude 대체 리뷰어 2기를 매 부팅 세우는 것은 *일 없는 좌석의 토큰 소모*다
-    (2026-09-10 참가자 기계 실측: 리뷰 의뢰 0인데 화면에 「86% weekly limit」 · 사용자가 닫아도
-    결손 판정이 다시 세운다). 이 프로파일에서 리뷰어는 **온디맨드**다 — 부트가 스폰하지 않고,
-    check·결손 판정도 부재를 결손으로 세지 않는다(**Degrade 가 아니라 정상 상태**).
-    의뢰가 실제로 생기면 그때 세운다:
-        `javis_boot_node.py --role reviewer-claude-1 --agent claude`
-    (기동 경로는 그대로 남는다 — 없앤 것은 능력이 아니라 **상시 점유**다.)
-    ★네이티브가 하나라도 있으면 False = 우리 맥(agy·codex 실재) **현행 동작 완전 보존**.
-      한쪽만 있는 기계도 현행 그대로다(있는 쪽 네이티브 + 없는 쪽 Claude 대체) — 이 티켓이
-      바꾸는 것은 '네이티브 0' 기계 하나뿐이다.
-    ★roster 주입은 재감지 회피용(같은 프로세스에서 로스터를 이미 해소한 호출부 전용).
-    """
-    roster = reviewer_roster(detect, agents) if roster is None else roster
-    return not any(e["native"] for e in roster)
-
-
-def required_roles_for(roster):
-    """★해소된 리뷰어 로스터 → 유효 의무 역할(순수 · **단일 파생점**).
-
-    ★1R BLOCKER(2026-09-10 codex): 이 문장이 두 곳에 사본으로 있었다 —
-      `effective_required_roles` 는 참가자 프로파일을 적용해 ['cso','worker'] 를 냈는데,
-      **판정의 정본인 `check_verdicts` 는 제 손으로 다시 조립해** 리뷰어 2기를 계속 요구했다.
-      결과: boot-reviewers 는 0기를 띄우고 exit 0 인데 ⑤check 는 그 2기의 부재를 결손으로
-      보고 → 영구 결손·재시도. **스폰하는 쪽과 요구하는 쪽이 다른 문장을 읽으면 부트는 낫지
-      않는다.** 두 소비자가 이제 이 함수 하나를 읽는다(사본 0).
-    ★roster 를 인자로 받는 이유: 감지는 호출부가 이미 1회 해소했다 — 여기서 다시 감지하면
-      같은 호출 안에서 프로파일이 갈릴 수 있다(비결정론)."""
-    if participant_profile(roster=roster):
-        return ["cso", "worker"]
-    return ["cso", "worker"] + [e["role"] for e in roster]
+# ─────────────────── 기본 함대 · 리뷰어 온디맨드(2026-09-10 박사님 결정) ───────────────────
+ONDEMAND_REVIEWER_NOTE = "리뷰어 = 필요할 때 연다(온디맨드 · 기본 스폰 0)"
+ONDEMAND_REVIEWER_HOWTO = (
+    "javis_orchestra.py boot-reviewers --spawn  또는  "
+    "javis_boot_node.py --role reviewer-gemini --agent gemini")
 
 
 def effective_required_roles(detect=None, agents=None):
-    """check 가 검증할 유효 의무 역할.
+    """check 가 검증할 유효 의무 역할 = **기본 함대**(cso·worker).
 
-    표준 프로파일  = cso·worker + 유효 리뷰어 로스터(감지 폴백 적용 — 종전과 동일).
-    참가자 프로파일 = cso·worker (리뷰어는 required 밖 — `participant_profile` 참조).
-    ★판정식은 `required_roles_for` 하나다(check_verdicts 와 공유 — 사본 금지)."""
-    return required_roles_for(reviewer_roster(detect, agents))
+    ★2026-09-10(박사님 결정 · 보편 정책): 리뷰어는 **의무가 아니다**. 그 부재는 결손이 아니라
+      정상 상태이고, 필요할 때 명시로 연다(`ONDEMAND_REVIEWER_HOWTO`).
+    ★감지 인자(detect/agents)는 **받되 쓰지 않는다** — 시그니처 호환 유지가 목적이다(이 함수의
+      소비자가 밀폐 주입 규약으로 호출한다: javis_bootstrap·건강성 러너·self-test). 감지가
+      판정에 관여하지 않으므로 파일 간 감지 불일치(codex 1R HIGH ③)가 **구조적으로 불가능**하다.
+    ★`REQUIRED_ROLES` 를 그대로 돌려주지 않고 사본을 만드는 이유: 호출부가 반환 리스트를
+      변형해도 모듈 상수가 오염되지 않게 한다(종전 동작 보존)."""
+    return list(REQUIRED_ROLES)
 
 
 # ─────────────────── B18: 팀 구성 안내 문구의 단일 파생 소스 (H-DOC-2) ───────────────────
@@ -369,25 +349,14 @@ def team_roster_note(required=None):
       **금지**다 — check 의 required 집합이 master 를 요구하면 레거시 master(자기 좌석을
       스스로 세지 못하는 구 데몬 조합)에서 부트 전체가 사망한다. master 는 '선언한 자기 자신'
       이므로 required 밖에 있는 것이 정상이고, 안내 문구에서만 `+1` 로 합산한다.
-    ★감지 호출로 전환(1R#5 · 2026-09-10 codex): 종전 계약은 "감지 미호출 — `REQUIRED_ROLES`
-      상수만 읽는다(발화 지연 0)" 였다. 그 대가가 이제 **거짓 안내**다: 참가자 기계(네이티브
-      리뷰어 CLI 전무)에서 실제 완료 조건은 3노드인데 훅은 5노드를 요구한다고 말했고, 그
-      문장을 읽은 master 가 리뷰어 좌석을 손으로 다시 세우면 이 티켓이 없앤 상시 점유가
-      사람 손으로 되살아난다. **틀린 안내를 빨리 내는 것보다 맞는 안내가 낫다.**
-      비용은 `cys agent-detect` 서브프로세스 1회(프로세스당 캐시 · 이 경로는 훅 1회성 호출).
-      감지가 실패하면 종전 상수(`REQUIRED_ROLES`)로 조용히 강등한다 — 안내 1줄 때문에 훅이
-      죽으면 안 된다(구 계약의 안전 방향은 그대로 보존).
-    ★required 를 명시로 주면 감지를 아예 하지 않는다(순수 호출·테스트·소비자 지정).
+    ★감지 미호출(2026-09-10 기본 함대 정책으로 **복원**): 의무 집합이 상수가 됐으므로 안내도
+      상수 파생이면 충분하다 — `cys agent-detect` 서브프로세스가 필요 없다(훅 발화 지연 0).
+      직전 세대가 감지를 끌어들인 이유(프로파일별로 숫자가 달라짐)가 정책 단일화로 소멸했다.
+    ★required 를 명시로 주면 그것을 쓴다(순수 호출·테스트·소비자 지정).
     """
-    if required is None:
-        try:
-            required = effective_required_roles()
-        except Exception:
-            required = REQUIRED_ROLES
-    roles = ["master"] + list(required)
+    roles = ["master"] + list(REQUIRED_ROLES if required is None else required)
     tail = ("리뷰어는 미감지 시 Claude 대체 슬롯으로 치환"
-            if any(r.startswith("reviewer") for r in roles)
-            else PARTICIPANT_PROFILE_NOTE)
+            if any(r.startswith("reviewer") for r in roles) else ONDEMAND_REVIEWER_NOTE)
     return ("%s (필수 역할 전원+master — 총 %d노드 · %s)"
             % ("·".join(roles), len(roles), tail))
 
@@ -605,7 +574,7 @@ def verdict_axes(verdicts):
             "awake_pending": pending if on else None}
 
 
-def check_verdicts(status, detect=None, agents=None):
+def check_verdicts(status, detect=None, agents=None, required=None):
     """★check 판정의 순수 함수 코어 — (verdicts, roster). 데몬 왕복 0(status 주입).
 
     ★detect/agents 주입 (2026-08-22): `reviewer_roster` 와 **동일한 밀폐 규약**이다(그 함수는
@@ -633,12 +602,26 @@ def check_verdicts(status, detect=None, agents=None):
     ★결손 판정(javis_bootstrap)·wakeup zombie 가드·reclaim 이 같은 함수를 소비한다(A1 클래스).
     """
     bn = _boot_node()
+    # ★로스터는 **보고·기동 경로용**이다(판정에 쓰지 않는다 — 2026-09-10 기본 함대 정책).
+    #   `--json` payload 의 roster 필드와 ack 축이 소비한다.
     roster = reviewer_roster(detect, agents)
     # ★1R BLOCKER 수리(2026-09-10): 필수 역할을 여기서 다시 조립하지 않는다 —
-    #   `effective_required_roles` 와 **같은 함수**(required_roles_for)를 읽는다. 종전 사본은
-    #   참가자 기계에서 스폰 0 · 요구 2 의 영구 결손을 만들었다(그 자리가 이 줄이었다).
-    required = required_roles_for(roster)
+    #   `effective_required_roles` 와 **같은 함수**를 읽는다. 종전 사본(cso·worker + 로스터)은
+    #   스폰 0 · 요구 2 의 영구 결손을 만들었다(그 자리가 정확히 이 줄이었다).
+    # ★required 주입(2026-09-10): 기본은 기본 함대(cso·worker)다. 명시로 주면 그 집합을 잰다.
     live = live_role_names(status)
+    if required:
+        required = list(required)
+    else:
+        required = effective_required_roles(detect, agents)
+        # ★**연 리뷰어는 판정 대상이다**(기본 함대 정책의 짝): 리뷰어 부재는 결손이 아니지만,
+        #   일단 연 좌석은 등급·ACK 축이 잡아야 한다. 그러지 않으면 `--spawn` 으로 띄운 리뷰어가
+        #   각성했는지 여부를 아무도 말해 주지 않고(ACK 축은 리뷰어 전용이라 통째로 죽는다),
+        #   리뷰 게이트가 '미인증 리뷰어'를 정상으로 통과시킨다.
+        #   판정 방향은 한쪽뿐이다 — **살아 있으면 추가**, 없으면 요구하지 않는다.
+        required += sorted(r for r in live
+                           if r.startswith("reviewer") and r not in required)
+
     # 등급 우선순위(높을수록 건강) — 동족 좌석이 여러 개일 때 **가장 건강한 좌석**이 요건을 대표한다.
     # ★왜: worker 가 3개 있고 그중 하나만 죽었을 때 죽은 좌석을 대표로 뽑으면 '미기동' 오판이 나고,
     #   그 오판이 결손>0 → 불필요한 스폰·재선언 churn(자가치유가 아니라 자가교란)으로 번진다.
@@ -733,7 +716,8 @@ class VerdictDeficit(tuple):
         return self[1]
 
 
-def _shared_verdict_deficit(status, requery=None, tick_s=None, detect=None, agents=None):
+def _shared_verdict_deficit(status, requery=None, tick_s=None, detect=None, agents=None,
+                            required=None):
     """★부트 경로 전용 결손 산출(W-B1 ③) — (결손 bool, 사유) | (None, 소비불가 사유).
 
     check_verdicts(⑤check 의 판정 코어)를 **소비만** 하고 그 satisfied 를 재정의하지 않는다.
@@ -778,7 +762,10 @@ def _shared_verdict_deficit(status, requery=None, tick_s=None, detect=None, agen
       이다 — 빈 집계를 내면 '재어 보니 이상 없음'이라는 거짓 초록이 된다."""
     bn = _boot_node()
     try:
-        verdicts, _roster = check_verdicts(status, detect=detect, agents=agents)
+        # ★required 주입(2026-09-10): check_verdicts 와 **같은 계약**이다(미지정=기본 함대).
+        #   리뷰어를 연 뒤의 결손·완주 축을 재는 경로가 이 인자를 쓴다.
+        verdicts, _roster = check_verdicts(status, detect=detect, agents=agents,
+                                           required=required)
     except Exception as e:
         return VerdictDeficit(None, "check_verdicts 소비 불가(%s: %s)"
                               % (type(e).__name__, e))
@@ -1146,24 +1133,12 @@ def cmd_check(args):
         print(json.dumps(_check_payload(verdicts, roster, alive_optional, axes, ack, _why),
                          ensure_ascii=False, sort_keys=True))
         return check_exit_code(axes, ack)
-    # ★1R#1 후속(2026-09-10): 머리글·진단 행도 프로파일 파생이다. 종전에는 참가자 기계에서
-    #   「4종 의무」 머리글 아래에 **대체 리뷰어 2기 미감지 경고**가 그대로 찍혔다 — check 는
-    #   그 좌석을 요구하지도 않는데(required 밖) 사람에게는 결손처럼 읽히는 거짓 진단이다.
-    _participant = participant_profile(roster=roster)
-    print("LLM orchestrating 노드 점검 (%s):"
-          % ("참가자 프로파일 — 의무 %d종 · %s" % (len(required), PARTICIPANT_PROFILE_NOTE)
-             if _participant else "4종 의무 + grok 선택"))
-    if _participant:
-        # 결손이 아니라 **정상 상태**다 — 처방(cys boot)도 붙이지 않는다.
-        print("  · 리뷰어 미기동 = 정상(네이티브 CLI 전무) · 의뢰 시: "
-              "javis_boot_node.py --role reviewer-claude-1 --agent claude")
-    else:
-        # 리뷰어 대체 고지(2026-06-14 — 정직한 라벨링: 보편적이나 벤더 다양성은 약함)
-        for e in roster:
-            if not e["native"]:
-                print("  ⚠ %s 미감지(%s) → %s(Claude 대체) — 보편적이나 벤더 다양성 약함, "
-                      "페르소나/렌즈/익명화로 보완(REVIEWER_DIRECTIVE §6)"
-                      % (e["substituted_for"], e["reason"], e["role"]))
+    # ★기본 함대 정책(2026-09-10): 머리글·안내는 **의무 집합 파생**이다. 종전에는 「4종 의무」
+    #   머리글 아래에 리뷰어 미감지 경고가 찍혔는데, check 는 그 좌석을 요구하지도 않으므로
+    #   사람에게는 결손처럼 읽히는 **거짓 진단**이었다. 리뷰어는 결손이 아니라 '아직 안 연 것'이다.
+    print("LLM orchestrating 노드 점검 (기본 함대 %d종 + master · %s):"
+          % (len(required), ONDEMAND_REVIEWER_NOTE))
+    print("  · 리뷰어 미기동 = 정상 · 열려면: %s" % ONDEMAND_REVIEWER_HOWTO)
     # ★missing·gated 는 위 `verdict_axes` 가 이미 산출했다(값·순서 동일) — 여기서는 표현만 한다.
     for r in required:
         v = verdicts[r]
@@ -1312,20 +1287,23 @@ def cmd_boot_reviewers(args):
     2층 감지: (1) 바이너리 미설치 → 즉시 대체(detect_reviewer). (2) 설치됐으나 부트가
     각성(set-status ack)에 실패(미인증·깨짐) → 대체로 2차 폴백. 절대 halt 하지 않는다."""
     roster = reviewer_roster()
-    # ★참가자 프로파일(P1 · 2026-09-10): 네이티브 리뷰어 CLI 가 **하나도 없는** 기계에서는
-    #   Claude 대체 2기를 세우지 않는다. 이것은 실패도 Degrade 도 아니라 **정상 상태**다 —
-    #   리뷰어는 의뢰가 생길 때 세운다(`participant_profile` 주석의 기동 1줄 참조).
-    #   exit 0 인 이유: ④-b 소비부(javis_bootstrap)가 비0 을 '리뷰어 부족' 경고로 읽는데,
-    #   여기서는 부족이 아니다(⑤check 의 effective_required_roles 도 리뷰어를 요구하지 않는다).
-    if participant_profile(roster=roster):
-        print("[boot-reviewers] 참가자 프로파일 — 네이티브 리뷰어 CLI 전무 → **스폰 0** · %s"
-              % PARTICIPANT_PROFILE_NOTE)
-        for (nrole, _na, _sr, _sa), e in zip(REVIEWER_SLOTS, roster):
-            print("  · %-18s 미감지(%s) — 대체 스폰 안 함(온디맨드)" % (nrole, e["reason"]))
-        print("  ↳ 의뢰 시 기동: javis_boot_node.py --role reviewer-claude-1 --agent claude")
-        print("종합: 리뷰어 0/0 — 참가자 프로파일(요구 없음 · Degrade 아님)")
+    # ★기본 함대 정책(박사님 결정 2026-09-10 · 보편): **기본 스폰 0**. 리뷰어는 필요할 때
+    #   명시로 연다 — `--spawn` 이 그 명시다(플래그 없이 부르면 로스터만 보고하고 끝난다).
+    #   ★왜 기본이 0 인가: 리뷰 의뢰가 0인 기계에서 리뷰어 좌석은 **일 없는 토큰 소모**다
+    #     (2026-09-10 실측: 화면 「86% weekly limit」 · 사용자가 닫아도 결손 판정이 되살렸다).
+    #   ★exit 0 인 이유: ④-b 소비부(javis_bootstrap)가 비0 을 '리뷰어 부족' 경고로 읽는데,
+    #     기본 스폰 0 은 부족이 아니다(⑤check 의 의무 집합에도 리뷰어가 없다).
+    #   ★능력은 그대로다: 아래 실기동 경로는 `--spawn` 으로 **그대로** 살아 있고, 감지·대체
+    #     폴백·2차 폴백 로직도 무수정이다. 바뀐 것은 '언제 부르는가' 하나다.
+    if not getattr(args, "spawn", False):
+        print("[boot-reviewers] 기본 함대 정책 — **스폰 0**(%s)" % ONDEMAND_REVIEWER_NOTE)
+        for (nrole, nagent, srole, _sa), e in zip(REVIEWER_SLOTS, roster):
+            print("  · %-18s 후보=%s(%s) — 지금은 열지 않음"
+                  % (nrole, e["role"], "네이티브" if e["native"] else "Claude 대체"))
+        print("  ↳ 열려면: %s" % ONDEMAND_REVIEWER_HOWTO)
+        print("종합: 리뷰어 0기 — 기본 함대 정책(요구 없음 · Degrade 아님)")
         return 0
-    print("[boot-reviewers] 리뷰어 슬롯 기동 (미감지/각성실패 시 Claude 대체로 자동 폴백):")
+    print("[boot-reviewers] --spawn — 리뷰어 슬롯 기동 (미감지/각성실패 시 Claude 대체로 자동 폴백):")
     results = []
     fillers = []          # ★B2: 슬롯을 **실제로 채운** 역할 — check 재해소의 근거(라벨링 대상)
     for (nrole, nagent, srole, sagent), e in zip(REVIEWER_SLOTS, roster):
@@ -2864,8 +2842,10 @@ def cmd_guard_master_claim(args):
 def cmd_self_test(args):
     """순수 로직 자기검증 (cys 의존 없음) — preflight C19가 호출. assert 실패는 exit 1."""
     try:
-        assert REQUIRED_ROLES == ["cso", "worker", "reviewer-gemini", "reviewer-codex"], \
-            "4종 의무 노드 목록이 변형됐다"
+        # ★기본 함대(박사님 결정 2026-09-10 · 보편 정책): master + cso·worker.
+        #   구 핀은 리뷰어 2기를 의무로 못박고 있었다 — 그 상시 점유를 없앤 것이 이 세대다.
+        assert REQUIRED_ROLES == ["cso", "worker"], \
+            "기본 함대 의무 노드 목록이 변형됐다: %r" % (REQUIRED_ROLES,)
         assert MAX_ROUNDS == 10, "라운드 상한은 10이어야 한다(앵커4 5-8)"
         # round_path 경로 탈출 방지: 악성 task가 round 디렉터리 밖으로 못 나간다(실효 검증).
         rnd_dir = os.path.realpath(os.path.join(pack_dir(), "round"))
@@ -3189,24 +3169,21 @@ def cmd_self_test(args):
         mix = lambda a, ag=None: (a == "gemini", "mix")
         rmix = reviewer_roster(detect=mix, agents=synth_ag)
         assert [e["role"] for e in rmix] == ["reviewer-gemini", "reviewer-claude-2"], "혼합 로스터 오류"
-        # ★참가자 프로파일(P1 · 2026-09-10): 네이티브 **전무**면 리뷰어는 required 밖(온디맨드).
-        #   구 계약(미감지 → Claude 대체 2기를 의무 역할로 치환)은 이 레인에서 폐기됐다 —
-        #   대체 좌석이 required 에 있으면 결손 판정이 매 부팅 그 2기를 다시 세웠다(토큰 소모).
-        #   ★로스터 자체(reviewer_roster)는 무수정이다: '의뢰가 오면 누가 채우는가' 표는 그대로
-        #   살아 있어야 온디맨드 기동이 같은 이름으로 선다(위 rno 핀이 그 사실을 지킨다).
-        assert participant_profile(detect=no, agents=synth_ag) is True, \
-            "네이티브 리뷰어 CLI 전무가 참가자 프로파일로 판정되지 않음"
-        assert effective_required_roles(detect=no, agents=synth_ag) == ["cso", "worker"], \
-            "참가자 프로파일에서 리뷰어가 의무 역할로 남았다(상시 점유 부활)"
-        # 혼합(gemini 만 실재) = 참가자 아님 → 현행 동작(네이티브 1 + Claude 대체 1) 보존
-        assert participant_profile(detect=mix, agents=synth_ag) is False, \
-            "네이티브 1종 실재 기계가 참가자 프로파일로 오판(현행 편성 소멸)"
-        assert effective_required_roles(detect=mix, agents=synth_ag) == \
-            ["cso", "worker", "reviewer-gemini", "reviewer-claude-2"], "혼합 유효 의무역할 오류"
-        assert participant_profile(detect=yes, agents=synth_ag) is False, \
-            "네이티브 2종 실재(우리 맥)가 참가자 프로파일로 오판"
-        assert effective_required_roles(detect=yes, agents=synth_ag) == REQUIRED_ROLES, \
-            "감지 시 유효 의무역할이 표준과 불일치"
+        # ★기본 함대 정책(박사님 결정 2026-09-10 · 보편): 의무 역할은 **감지와 무관하게** cso·worker.
+        #   구 계약(미감지 → Claude 대체 2기를 의무로 치환 / 감지 시 네이티브 2기를 의무로)은
+        #   둘 다 폐기됐다 — 리뷰어가 required 에 있으면 결손 판정이 매 부팅 그 좌석을 세운다.
+        #   ★로스터 자체(reviewer_roster)는 무수정이다: '열 때 누가 채우는가' 표는 그대로 살아
+        #   있어야 온디맨드 기동이 같은 이름으로 선다(위 rno/ryes/rmix 핀이 그 사실을 지킨다).
+        #   ★감지 3형상 전부에서 **같은 답**이어야 한다 — 그것이 '감지 불일치 구조적 불가'의 핀이다.
+        for _d in (no, yes, mix):
+            assert effective_required_roles(detect=_d, agents=synth_ag) == ["cso", "worker"], \
+                "의무 역할이 감지에 따라 갈렸다(기본 함대 정책 이탈): %r" % (
+                    effective_required_roles(detect=_d, agents=synth_ag),)
+        assert effective_required_roles() == REQUIRED_ROLES, "무주입 호출이 상수와 불일치"
+        assert effective_required_roles() is not REQUIRED_ROLES, \
+            "반환이 모듈 상수 자체다 — 호출부 변형이 상수를 오염시킨다"
+        assert not any(r.startswith("reviewer") for r in REQUIRED_ROLES), \
+            "REQUIRED_ROLES 에 리뷰어가 있다(상시 점유 부활)"
 
         # ── B18: 팀 구성 안내 파생(H-DOC-2) — 리터럴 금지·master 는 required 밖 ──
         assert "master" not in REQUIRED_ROLES, \
@@ -3217,11 +3194,11 @@ def cmd_self_test(args):
         assert _note.startswith("master·"), "팀 구성 안내가 master 로 시작하지 않는다"
         assert "총 %d노드" % (len(REQUIRED_ROLES) + 1) in _note, \
             "노드 수가 REQUIRED_ROLES+1 파생이 아니다: %s" % _note
-        _pnote = team_roster_note(["cso", "worker"])
+        _pnote = team_roster_note()
         assert "총 3노드" in _pnote and "reviewer" not in _pnote, \
-            "참가자 프로파일 안내가 3노드·리뷰어 부재로 파생되지 않음: %s" % _pnote
-        assert PARTICIPANT_PROFILE_NOTE in _pnote, \
-            "참가자 안내에 온디맨드 고지 부재: %s" % _pnote
+            "기본 함대 안내가 3노드(master·cso·worker)로 파생되지 않음: %s" % _pnote
+        assert ONDEMAND_REVIEWER_NOTE in _pnote, \
+            "안내에 리뷰어 온디맨드 고지 부재: %s" % _pnote
         for _r in REQUIRED_ROLES:
             assert _r in _note, "필수 역할 %s 가 안내에서 누락" % _r
         # 편성이 바뀌면 숫자·역할명이 **따라 움직인다**(사본 드리프트 불가능성 증명)
@@ -3360,9 +3337,13 @@ def cmd_self_test(args):
 
         # ─────────── W2: B1 PLAN 정책 열 · B2 slot_satisfied · check_verdicts · A12 분류 ───────────
         # B1: 정책이 편성과 같은 행에 있고, Fatal 집합 = cso·worker(조직 최소 실행 단위)뿐이다.
-        assert [r for r, _a, _p in BOOT_PLAN] == \
-            ["cso", "worker", "reviewer-gemini", "reviewer-codex", "reviewer-grok"], \
-            "BOOT_PLAN 편성 변형(cys boot PLAN 과 파리티 깨짐)"
+        # ★기본 함대(2026-09-10): `cys boot` 는 cso·worker 만 세운다 — 리뷰어 행은 뺐다.
+        #   Rust `cys.rs::BOOT_PLAN` 과 행 단위 파리티(H-PRED-7)라 **함께** 옮겨야 한다.
+        assert [r for r, _a, _p in BOOT_PLAN] == ["cso", "worker"], \
+            "BOOT_PLAN 편성 변형(cys boot PLAN 과 파리티 깨짐): %r" % (
+                [r for r, _a, _p in BOOT_PLAN],)
+        assert not any(r.startswith("reviewer") for r, _a, _p in BOOT_PLAN), \
+            "BOOT_PLAN 에 리뷰어가 되살아났다(기본 스폰 0 정책 이탈)"
         assert plan_mandatory_roles() == ["cso", "worker"], \
             "Fatal 집합 변형 — 리뷰어가 Fatal 이면 리뷰어 1종 고장이 팀 전체 부트를 죽인다(B1 재발)"
         assert plan_policy("reviewer-gemini") == FAIL_DEGRADE, "네이티브 리뷰어가 Degrade 아님"
@@ -3401,7 +3382,10 @@ def cmd_self_test(args):
         # ★밀폐 주입(2026-08-22): 로스터를 감지 결과가 아니라 테스트 상수로 고정한다. 종전엔
         #   실감지를 타서 agy·codex 미설치 기계(신규 사용자 대다수)에서 required 에
         #   reviewer-gemini 가 없어 아래 단언이 KeyError 트레이스백으로 죽었다.
-        _v, _ = check_verdicts(_st(_base), detect=_yes, agents=_synth)
+        # ★리뷰어를 **연 상태**의 계약(B2/B6)을 잰다 — 기본 함대에서는 required 밖이므로
+        #   명시 주입으로 그 경로를 살려 둔다(계약을 지우는 대신 정확한 전제를 준다).
+        _REV_REQ = ["cso", "worker", "reviewer-gemini", "reviewer-codex"]
+        _v, _ = check_verdicts(_st(_base), detect=_yes, agents=_synth, required=_REV_REQ)
         assert _v["cso"]["grade"] == "awake_confirmed", "래치 좌석이 각성확정 아님"
         assert _v["worker"]["satisfied"] and _v["worker"]["filler"] == "worker-2", \
             "worker-2 dedup 좌석이 worker 요건을 못 채움"
@@ -3415,7 +3399,8 @@ def cmd_self_test(args):
                 {"role": "worker", "exited": False, "awakened_at": 1.0},
                 {"role": "reviewer-gemini", "exited": False, "awakened_at": 1.0},
                 {"role": "reviewer-claude-2", "exited": False, "awakened_at": 1.0}]
-        _v2, _ = check_verdicts(_st(_sub), detect=_yes, agents=_synth)   # ★밀폐 주입(위와 동일 사유)
+        _v2, _ = check_verdicts(_st(_sub), detect=_yes, agents=_synth,
+                                required=_REV_REQ)   # ★밀폐 주입(위와 동일 사유)
         assert _v2["reviewer-codex"]["satisfied"] is True, "대체 좌석 재해소 실패(B2)"
         assert _v2["reviewer-codex"]["native"] is False, "실충전자 라벨(native=False) 누락"
 
@@ -3439,7 +3424,8 @@ def cmd_self_test(args):
                 assert _awake_grade() == _bn_mod.LIVENESS_AWAKE, \
                     "각성확정 등급명 드리프트(리터럴 잔존 — 비교가 조용히 항상 False 가 된다)"
             # ⓐ 판정 dict: ready = satisfied 별칭(값 동일) · awake = 각성확정만
-            _v3, _r3 = check_verdicts(_st(_base), detect=_yes, agents=_synth)
+            _v3, _r3 = check_verdicts(_st(_base), detect=_yes, agents=_synth,
+                                      required=_REV_REQ)
             for _r, _vv in _v3.items():
                 assert _vv["ready"] is _vv["satisfied"], \
                     "%s: ready 가 satisfied 별칭이 아니다(새 축이 종전 축을 바꿨다)" % _r
@@ -3500,7 +3486,7 @@ def cmd_self_test(args):
                 {"role": "reviewer-gemini", "exited": False, "agent_alive": True},
                 {"role": "reviewer-codex", "exited": False, "awakened_at": 1.0}])
             _dp = _shared_verdict_deficit(_st_presumed, requery=lambda: _st_presumed, tick_s=0,
-                                          detect=_yes, agents=_synth)
+                                          detect=_yes, agents=_synth, required=_REV_REQ)
             assert _dp[0] is False, \
                 "생존추정(각성 미확정) 좌석이 결손으로 계상됐다 — awake 축이 부트 판정에 " \
                 "새어 들어갔다(1단 무동작 위반 · 불필요 boot churn): %s" % _dp[1]
@@ -3548,14 +3534,18 @@ def cmd_self_test(args):
             #   레지스트리에서 역할 하나만 사라지면 — 이것이 "좌석은 사는데 주소가 없다" 다 —
             #   `cmd_check` 가 exit 1 을 내야 한다. 종전 구현은 생존 판정과 **같은 집합**을 다시
             #   봐서 이 상태를 만들 수조차 없었다(게이트 도달 불가·검체 공허).
-            globals()["addr_registry_roles"] = lambda: _reg_full - {"reviewer-gemini"}
+            # ★2026-09-10: 대상 역할을 reviewer-gemini → **worker** 로 옮겼다. 기본 함대에서
+            #   리뷰어는 required 밖이라 그 주소가 사라져도 게이트가 발화하지 않는다(검체가
+            #   도달 불가가 된다) — 재려는 사실("좌석은 사는데 주소가 없다")은 의무 역할에서
+            #   그대로 재현된다. 검체를 지운 것이 아니라 **살아 있는 전제로 옮긴 것**이다.
+            globals()["addr_registry_roles"] = lambda: _reg_full - {"worker"}
             _ab = io.StringIO()
             with contextlib.redirect_stdout(_ab):
                 _rc_addr = cmd_check(_CkBare())
             _aout = _ab.getvalue()
             assert _rc_addr == CHECK_EXIT_MISSING, \
                 "레지스트리에서 주소만 사라졌는데 exit 1 이 아니다(게이트 도달 불가): %s" % _rc_addr
-            assert "주소 미해소" in _aout and "reviewer-gemini" in _aout, \
+            assert "주소 미해소" in _aout and "worker" in _aout, \
                 "주소 미해소 라벨이 산문에 없다: %r" % _aout[-200:]
             _aj = io.StringIO()
             with contextlib.redirect_stdout(_aj):
@@ -3617,7 +3607,8 @@ def cmd_self_test(args):
                 os.environ[_knob] = "0"
                 try:
                     assert awake_axis_enabled() is False, "%s=0 이 축을 끄지 못한다" % _knob
-                    _voff, _ = check_verdicts(_st(_base), detect=_yes, agents=_synth)
+                    _voff, _ = check_verdicts(_st(_base), detect=_yes, agents=_synth,
+                                              required=_REV_REQ)
                     assert _voff == {r: {k: x for k, x in v.items()
                                          if k not in ("ready", "awake")}
                                      for r, v in _v3.items()}, \
@@ -3783,7 +3774,11 @@ def main():
                          "이 null 이면 미측정(축 off·구 팩 스큐)이지 '각성 없음'이 아니다")
 
     br = sub.add_parser("boot-reviewers",
-                        help="리뷰어(agy·codex) 감지→기동. 미감지/각성실패 시 Claude 대체로 자동 폴백(멈춤 없음)")
+                        help="리뷰어 슬롯 보고(기본 스폰 0). --spawn 을 주면 감지→기동"
+                             "(미감지/각성실패 시 Claude 대체로 자동 폴백)")
+    # ★기본 함대 정책(2026-09-10): 기동은 **명시 플래그**로만. 무플래그 호출은 보고만 하고 exit 0.
+    br.add_argument("--spawn", action="store_true",
+                    help="실제로 리뷰어를 연다(기본은 열지 않는다 — 리뷰어는 온디맨드)")
     br.add_argument("--plan", action="store_true", help="기동 없이 감지 결과 로스터만 출력(dry-run)")
 
     rp = sub.add_parser("review-prompt", help="제약 포함 리뷰 의뢰 프롬프트 생성")

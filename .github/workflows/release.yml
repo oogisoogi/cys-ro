@@ -413,7 +413,7 @@ jobs:
                    test_bootlast_golden_lock_parity test_bootv2_doc_contract test_pyseal_census \
                    test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root \
                    test_preflight_hook_body test_preflight_npm_prefix test_learn_digest_queue \
-                   test_participant_formation test_formation; do
+                   test_default_fleet_formation test_formation; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== declared-state test: $t =="
@@ -889,7 +889,7 @@ jobs:
           # ★원작자 표기 고정 블록(박사님 지시 2026-09-10 · 원작자 통화 허락 조건 = 최초 개발자 명시).
           #   문안 정본은 README「원작자」절이며 **매 세대 자동 포함**된다 — 사람이 발행 때마다
           #   붙이는 방식은 한 번 빠지면 배포 조건이 깨진다. 검사 축은
-          #   `cysjavis-pack/bin/tests/test_participant_formation.py` ⓕ(본문에 idoforgod 부재 = 적색).
+          #   `cysjavis-pack/bin/tests/test_default_fleet_formation.py` ⓕ(본문에 idoforgod 부재 = 적색).
           releaseBody: |
             cys 터미널 ${{ github.ref_name }}. macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다.
 
@@ -1057,7 +1057,7 @@ jobs:
                    test_bootlast_golden_lock_parity test_bootv2_doc_contract test_pyseal_census \
                    test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root \
                    test_preflight_hook_body test_preflight_npm_prefix test_learn_digest_queue \
-                   test_participant_formation test_formation; do
+                   test_default_fleet_formation test_formation; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack] declared-state test: $t =="

@@ -673,7 +673,7 @@ enum Command {
         #[arg(long)]
         cwd: Option<String>,
     },
-    /// Boot the standard node set — 설치된 CLI만 자동 감지·기동·지침 주입. 표준 편성 4종(CSO 먼저 + worker claude + reviewer agy/codex) + 선택 grok
+    /// Boot the standard node set — 설치된 CLI만 자동 감지·기동·지침 주입. **기본 함대 = CSO + worker(claude)**. 리뷰어는 온디맨드(javis_orchestra.py boot-reviewers --spawn)
     Boot {
         /// Working directory for launched nodes
         #[arg(long)]
@@ -7537,12 +7537,15 @@ fn pidfile_holder_dead(pid: u32) -> bool {
 ///   mandatory=false ↔ `FAIL_DEGRADE` (리뷰어 — 경고 강등 후 ④-b·⑤ 계속. 대체 폴백으로 보완)
 /// 종전엔 이 판정이 편성 테이블 **밖**(호출부 산문)에 있어, 리뷰어 1종 고장이 팀 전체 부트 실패로
 /// 번지는 영구 데드엔드였다(B1). 정책을 편성과 같은 행에 둔다 — 소비자는 산문 대신 이 열을 읽는다.
+/// ★기본 함대 정책(박사님 결정 2026-09-10 · 보편 · 프로파일 구분 없음): **master · cso · worker**
+/// 가 기본 함대이고 **리뷰어는 필요할 때 연다**. 그래서 리뷰어 3행을 이 표에서 뺐다 —
+/// `cys boot` 는 이제 기본 함대만 세운다.
+/// ★없앤 것은 능력이 아니라 상시 점유다: 리뷰어를 여는 경로는 그대로다 —
+///   `javis_orchestra.py boot-reviewers --spawn` · `cys launch-agent --role reviewer-gemini --agent gemini`.
+/// ★python 정본 `javis_orchestra.BOOT_PLAN` 과 **행 단위** 기계 대조된다(H-PRED-7) — 함께 옮긴다.
 const BOOT_PLAN: &[(&str, &str, bool)] = &[
     ("cso", "claude", true),
     ("worker", "claude", true),
-    ("reviewer-gemini", "gemini", false),
-    ("reviewer-codex", "codex", false),
-    ("reviewer-grok", "grok", false),
 ];
 
 /// ★(W2 · A1 클래스 · B3) `cys boot` 의 **스킵 술어** 3등급 — surface.list 한 행 → 판정.

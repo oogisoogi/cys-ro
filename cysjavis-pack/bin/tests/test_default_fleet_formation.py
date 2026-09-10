@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_participant_formation.py — 참가자 프로파일 + 자식 좌석 cwd 상속 회귀 핀
+"""test_default_fleet_formation.py — 참가자 프로파일 + 자식 좌석 cwd 상속 회귀 핀
 (TICKET=pack-participant-formation · 2026-09-10).
 
 봉인 대상(참가자 기계 실측 3건 · 박사님 노트북 · 우리 빌드 0.14.33 · 설치기 v0.3.7):
@@ -10,7 +10,7 @@
   ⓑ P2 — 편성·phoenix 가 자식 좌석을 홈 cwd 로 띄워 폴더 신뢰 관문(기본 선택 = No, exit)에
      갇혔다. 계약: 자식 cwd = master 좌석의 **생성 cwd**(설치기가 신뢰를 심어 둔 JarvisHome).
 
-전부 순수/스텁 — 라이브 데몬·실 스폰 무접촉. 실행: python3 test_participant_formation.py
+전부 순수/스텁 — 라이브 데몬·실 스폰 무접촉. 실행: python3 test_default_fleet_formation.py
 """
 import importlib.util
 import io
@@ -56,50 +56,66 @@ AGENTS = {"gemini": {"cmd": "/x/agy"}, "codex": {"cmd": "/x/codex"}, "claude": {
 def t_orchestra():
     O = _load("javis_orchestra")
 
-    # ⓐ 판정 — 네이티브 전무 = 참가자 · 하나라도 있으면 아니다.
-    check("ⓐ1 네이티브 전무 → 참가자 프로파일",
-          O.participant_profile(detect=_detect(False), agents=AGENTS) is True)
-    check("ⓐ2 네이티브 실재 → 참가자 아님(우리 맥 현행 보존)",
-          O.participant_profile(detect=_detect(True), agents=AGENTS) is False)
-    mix = lambda a, ag=None: (a == "gemini", "mix")  # noqa: E731
-    check("ⓐ3 네이티브 1종만 실재 → 참가자 아님(혼합 = 현행 대체 폴백 유지)",
-          O.participant_profile(detect=mix, agents=AGENTS) is False)
+    # ⓐ 기본 함대 — 의무 역할은 **감지와 무관하게** cso·worker. 감지 코드가 판정에 없으면
+    #   파일 간 판정 불일치(1R HIGH ③)도 구조적으로 불가능하다.
+    mix = lambda a, ag=None: (a == "gemini", "mix")   # noqa: E731
+    for name, d in (("미감지", _detect(False)), ("전부 감지", _detect(True)), ("혼합", mix)):
+        got = O.effective_required_roles(detect=d, agents=AGENTS)
+        check("ⓐ1 의무 역할이 감지(%s)와 무관하게 cso·worker" % name,
+              got == ["cso", "worker"], repr(got))
+    check("ⓐ2 REQUIRED_ROLES 에 리뷰어 없음(상시 점유 부활 차단)",
+          not any(r.startswith("reviewer") for r in O.REQUIRED_ROLES), repr(O.REQUIRED_ROLES))
+    check("ⓐ3 BOOT_PLAN(=cys boot 대상)에도 리뷰어 없음",
+          [r for r, _a, _p in O.BOOT_PLAN] == ["cso", "worker"],
+          repr([r for r, _a, _p in O.BOOT_PLAN]))
+    check("ⓐ3b 리뷰어 슬롯 표는 **살아 있다**(열 때 누가 채우는가 — 능력 제거 아님)",
+          [s[0] for s in O.REVIEWER_SLOTS] == ["reviewer-gemini", "reviewer-codex"],
+          repr(O.REVIEWER_SLOTS))
 
-    # ⓐ 의무 역할 — 참가자에서 리뷰어가 required 밖(결손 판정이 되살리지 못하는 근거).
-    check("ⓐ4 참가자 유효 의무역할 = cso·worker",
-          O.effective_required_roles(detect=_detect(False), agents=AGENTS) == ["cso", "worker"],
-          repr(O.effective_required_roles(detect=_detect(False), agents=AGENTS)))
-    check("ⓐ5 네이티브 실재 유효 의무역할 = 표준 4역할(현행 보존)",
-          O.effective_required_roles(detect=_detect(True), agents=AGENTS) == O.REQUIRED_ROLES,
-          repr(O.effective_required_roles(detect=_detect(True), agents=AGENTS)))
-
-    # ★1R#1 BLOCKER — **판정의 정본**이 같은 프로파일을 쓰는가. 종전에는 check_verdicts 가
-    #   required 를 제 손으로 다시 조립해 리뷰어 2기를 계속 요구했다(스폰 0 · 요구 2 = 영구 결손).
-    #   effective_required_roles 만 재는 시험은 그 사실을 볼 수 없었다 — 그래서 정본을 직접 잰다.
+    # ★1R#1 BLOCKER — **판정의 정본**이 같은 목록을 쓰는가. 종전에는 check_verdicts 가 required 를
+    #   제 손으로 다시 조립해 리뷰어 2기를 계속 요구했다(스폰 0 · 요구 2 = 영구 결손).
     _ST = {"surfaces": [{"role": "cso", "exited": False, "awakened_at": 1.0},
                         {"role": "worker", "exited": False, "awakened_at": 1.0}]}
+    for name, d in (("미감지", _detect(False)), ("전부 감지", _detect(True))):
+        v, _r = O.check_verdicts(_ST, detect=d, agents=AGENTS)
+        check("ⓐ4a check_verdicts 필수 역할 == {cso, worker} (%s)" % name,
+              sorted(v) == ["cso", "worker"], repr(sorted(v)))
+        check("ⓐ4b 두 좌석 생존 → 전원 충족 (%s)" % name,
+              all(x["satisfied"] for x in v.values()), repr(v))
+        has, why = O._shared_verdict_deficit(_ST, detect=d, agents=AGENTS)
+        check("ⓐ4c 기본 함대 결손 0 — 부트 ④ 재시도 고리 차단 (%s)" % name, has is False, why)
+    # 완화 아님: 의무 역할이 빠지면 여전히 결손이다.
+    _ST1 = {"surfaces": [{"role": "cso", "exited": False, "awakened_at": 1.0}]}
+    check("ⓐ4d worker 부재는 여전히 결손",
+          O._shared_verdict_deficit(_ST1, detect=_detect(True), agents=AGENTS)[0] is True)
+    # 리뷰어를 **연 뒤**의 계약은 required 주입으로 그대로 살아 있다(능력 제거 아님).
+    _REQ = ["cso", "worker", "reviewer-gemini", "reviewer-codex"]
+    v_open, _ = O.check_verdicts(_ST, detect=_detect(True), agents=AGENTS, required=_REQ)
+    check("ⓐ4e required 주입 시 리뷰어 좌석도 판정 대상이 된다(온디맨드 경로 계약 보존)",
+          sorted(v_open) == sorted(_REQ) and v_open["reviewer-gemini"]["satisfied"] is False,
+          repr(sorted(v_open)))
+    # ★기본 함대 정책의 **짝**: 연 리뷰어는 판정 대상이 된다(부재는 요구하지 않지만, 띄운
+    #   좌석의 각성 여부는 누군가 말해야 한다 — ACK 축이 리뷰어 전용이라 이게 없으면 통째로 죽는다).
+    _ST_OPEN = {"surfaces": [
+        {"role": "cso", "exited": False, "awakened_at": 1.0},
+        {"role": "worker", "exited": False, "awakened_at": 1.0},
+        {"role": "reviewer-gemini", "exited": False, "agent_alive": True}]}
+    v_live, _ = O.check_verdicts(_ST_OPEN, detect=_detect(False), agents=AGENTS)
+    check("ⓐ4e-1 살아 있는 리뷰어 좌석은 판정 대상에 편입된다",
+          sorted(v_live) == ["cso", "reviewer-gemini", "worker"], repr(sorted(v_live)))
+    check("ⓐ4e-2 그러나 **부재** 리뷰어는 여전히 요구하지 않는다(결손 0)",
+          O._shared_verdict_deficit(_ST, detect=_detect(False), agents=AGENTS)[0] is False)
+
+    # ACK 축 — 기본 함대에서는 리뷰어 행 자체가 없다(없는 좌석의 pending 금지).
     v, _r = O.check_verdicts(_ST, detect=_detect(False), agents=AGENTS)
-    check("ⓐ4a check_verdicts 필수 역할 == {cso, worker}(정본 파생 일치)",
-          sorted(v) == ["cso", "worker"], repr(sorted(v)))
-    check("ⓐ4b 두 좌석 생존 → 전원 충족", all(x["satisfied"] for x in v.values()),
-          repr({k: x["satisfied"] for k, x in v.items()}))
-    has, why = O._shared_verdict_deficit(_ST, detect=_detect(False), agents=AGENTS)
-    check("ⓐ4c 참가자 기계 결손 0(부트 ④ 재시도 고리 차단)", has is False, why)
-    # 네이티브 기계에서는 같은 status 가 여전히 결손>0 이어야 한다(완화 아님의 증거).
-    has_n, _ = O._shared_verdict_deficit(_ST, detect=_detect(True), agents=AGENTS)
-    check("ⓐ4d 네이티브 기계에서는 리뷰어 부재가 여전히 결손", has_n is True)
-    # ACK 축 — 참가자 프로파일에서는 리뷰어 행 자체가 없어야 한다(없는 좌석의 pending 금지).
     ack = O.ack_axis(_ST, v, _r)
-    check("ⓐ4e 참가자 ACK 축에 리뷰어 행 0",
+    check("ⓐ4f 기본 함대 ACK 축에 리뷰어 행 0",
           not (ack.get("pending") or ack.get("unmeasured")), repr(ack))
 
     # cmd_check 종단 — 데몬 왕복만 스텁하고 **실제 exit code** 를 잰다.
     import argparse
-    _saved_status, _saved_roster = O.cys_status, O.reviewer_roster
-    _saved_addr = O.addr_registry_roles
+    _sv = (O.cys_status, O.reviewer_roster, O.addr_registry_roles)
     O.cys_status = lambda: _ST
-    # 주소 레지스트리는 `cys list` RPC(별도 자료원)라 밀폐 스텁 대상이다 — 이 검체가 재는 것은
-    # **프로파일 파생**이지 주소성 축이 아니다(그 축은 자기 검체를 따로 갖고 있다).
     O.addr_registry_roles = lambda: {"cso", "worker"}
     O.reviewer_roster = lambda detect=None, agents=None: [
         {"role": "reviewer-claude-1", "agent": "claude", "native": False,
@@ -109,93 +125,82 @@ def t_orchestra():
     try:
         rc = O.cmd_check(argparse.Namespace())
     finally:
-        O.cys_status, O.reviewer_roster = _saved_status, _saved_roster
-        O.addr_registry_roles = _saved_addr
-    check("ⓐ4f 참가자 기계 `orchestra check` exit 0(READY)", rc == 0, "rc=%r" % rc)
+        O.cys_status, O.reviewer_roster, O.addr_registry_roles = _sv
+    check("ⓐ4g 기본 함대 `orchestra check` exit 0(READY)", rc == 0, "rc=%r" % rc)
 
-    # ⓐ 실스폰 — boot-reviewers 가 참가자 기계에서 **한 좌석도** 띄우지 않는다.
+    # ⓐ 실스폰 — boot-reviewers 는 **기본 스폰 0**, `--spawn` 일 때만 연다.
     class _Args(object):
         plan = False
+        spawn = False
 
     booted = []
     O._boot_one_node = lambda role, agent, timeout=None: (
         booted.append((role, agent)) or (True, 0, O.EXIT_CLASS_OK, "stub"))
-
-    O.reviewer_roster = lambda detect=None, agents=None: [
-        {"role": "reviewer-claude-1", "agent": "claude", "native": False,
-         "substituted_for": "gemini", "reason": "밀폐"},
-        {"role": "reviewer-claude-2", "agent": "claude", "native": False,
-         "substituted_for": "codex", "reason": "밀폐"}]
-    rc = O.cmd_boot_reviewers(_Args())
-    check("ⓐ6 참가자 프로파일 boot-reviewers → 스폰 0", booted == [], repr(booted))
-    check("ⓐ7 참가자 프로파일 boot-reviewers → exit 0(Degrade 아님·정상 상태)", rc == 0, "rc=%r" % rc)
-
-    # ⓐ′ 네이티브 로스터에서는 종전대로 2기를 띄운다(기능 제거 아님).
-    booted[:] = []
+    # ★우리 맥 형상(네이티브 2기 실재)에서도 기본은 0 이어야 한다 — 정책이 보편이라는 증거.
     O.reviewer_roster = lambda detect=None, agents=None: [
         {"role": "reviewer-gemini", "agent": "gemini", "native": True,
          "substituted_for": None, "reason": "밀폐"},
         {"role": "reviewer-codex", "agent": "codex", "native": True,
          "substituted_for": None, "reason": "밀폐"}]
     rc = O.cmd_boot_reviewers(_Args())
-    check("ⓐ8 네이티브 로스터 boot-reviewers → 2기 스폰 유지",
+    check("ⓐ5 네이티브 실재 기계에서도 기본 스폰 0(보편 정책)", booted == [], repr(booted))
+    check("ⓐ6 기본 스폰 0 → exit 0(Degrade 아님)", rc == 0, "rc=%r" % rc)
+    # 미감지 로스터에서도 마찬가지(대체 2기를 몰래 세우지 않는다)
+    booted[:] = []
+    O.reviewer_roster = lambda detect=None, agents=None: [
+        {"role": "reviewer-claude-1", "agent": "claude", "native": False,
+         "substituted_for": "gemini", "reason": "밀폐"},
+        {"role": "reviewer-claude-2", "agent": "claude", "native": False,
+         "substituted_for": "codex", "reason": "밀폐"}]
+    check("ⓐ7 미감지 로스터에서도 기본 스폰 0",
+          O.cmd_boot_reviewers(_Args()) == 0 and booted == [], repr(booted))
+
+    # ★온디맨드 기동 1회 — `--spawn` 이면 실제로 연다(능력이 살아 있다는 증거).
+    class _Spawn(object):
+        plan = False
+        spawn = True
+
+    booted[:] = []
+    O.reviewer_roster = lambda detect=None, agents=None: [
+        {"role": "reviewer-gemini", "agent": "gemini", "native": True,
+         "substituted_for": None, "reason": "밀폐"},
+        {"role": "reviewer-codex", "agent": "codex", "native": True,
+         "substituted_for": None, "reason": "밀폐"}]
+    rc = O.cmd_boot_reviewers(_Spawn())
+    check("ⓐ8 --spawn → 리뷰어 2기 실제 기동(온디맨드 경로 성공)",
           booted == [("reviewer-gemini", "gemini"), ("reviewer-codex", "codex")], repr(booted))
-    check("ⓐ9 네이티브 2기 각성 → exit 0", rc == 0, "rc=%r" % rc)
+    check("ⓐ9 --spawn 2기 각성 → exit 0", rc == 0, "rc=%r" % rc)
+
+    # 훅 안내 문구도 같은 정책에서 파생된다(리터럴 금지).
+    note = O.team_roster_note()
+    check("ⓐ10 팀 안내 = master·cso·worker 3노드 · 리뷰어 온디맨드 고지",
+          "총 3노드" in note and "reviewer" not in note
+          and O.ONDEMAND_REVIEWER_NOTE in note, note)
 
 
 def t_formation():
     F = _load("javis_formation")
 
-    check("ⓐ10 formation 참가자 판정(claude 단독)", F.participant_profile({"claude"}) is True)
-    check("ⓐ11 formation 네이티브 실재 → 참가자 아님",
-          F.participant_profile({"claude", "agy"}) is False)
-    check("ⓐ12 CLI 전무는 판정 유보(온보딩 pending-cli 보존)",
-          F.participant_profile(set()) is False)
-    check("ⓐ13 참가자 3기 = complete(구: partial:agy,codex 영구 고정)",
+    check("ⓐ11 편성 로스터 = master·cso·worker(리뷰어 부재)",
+          F.REQUIRED_ROLES == ("master", "cso", "worker"), repr(F.REQUIRED_ROLES))
+    check("ⓐ12 필수 CLI = claude 하나(agy·codex 부재가 partial 을 만들지 않는다)",
+          F.REQUIRED_CLIS == {"claude"}, repr(F.REQUIRED_CLIS))
+    check("ⓐ13 3기 생존 = complete(구: partial:agy,codex 영구 고정)",
           F.classify(installed={"claude"}, live={"master", "cso", "worker"},
                      resource_ok=True) == "complete",
           F.classify(installed={"claude"}, live={"master", "cso", "worker"}, resource_ok=True))
-    check("ⓐ14 참가자여도 결원은 complete 아님(완화 아님)",
+    check("ⓐ14 결원은 여전히 complete 아님(완화 아님)",
           F.classify(installed={"claude"}, live={"master", "cso"},
                      resource_ok=True) != "complete")
-    check("ⓐ15 네이티브 반쪽 설치는 여전히 complete 아님(Sim S2-5 보존)",
-          F.classify(installed={"claude", "agy"}, live=set(F.REQUIRED_ROLES),
-                     resource_ok=True) != "complete")
-    check("ⓐ16 참가자 편성 대상 역할 = master·cso·worker",
-          F.profile_required_roles({"claude"}) == ("master", "cso", "worker"),
-          repr(F.profile_required_roles({"claude"})))
-    check("ⓐ17 complete 피드 본문이 프로파일을 정직하게 말한다",
-          "reviewer-gemini" not in F._complete_feed_body({"claude"})
-          and "reviewer-gemini" in F._complete_feed_body({"claude", "agy", "codex"}),
-          F._complete_feed_body({"claude"}))
-
-    # ★1R#3 — 프로파일 사실은 **orchestra 해소**에서 온다(formation 의 command -v 아님).
-    #   재현 형상: agents.json 의 agy 는 출하 기본이 절대경로(~/.local/bin/agy)라 PATH 에 없다.
-    #   그 기계에서 orchestra 는 혼합(네이티브 1 + 대체 1)인데 formation 은 probe 로 참가자라
-    #   판정해 **리뷰어를 편성에서 통째로 지웠다**.
-    check("ⓐ18 주입된 네이티브 사실이 probe 휴리스틱을 이긴다",
-          F.participant_profile({"claude"}, native_reviewer=True) is False)
-    check("ⓐ19 그 기계의 편성 역할 = 표준 4역할 + master(혼합 편성 유지)",
-          F.profile_required_roles({"claude"}, native_reviewer=True) == F.REQUIRED_ROLES,
-          repr(F.profile_required_roles({"claude"}, native_reviewer=True)))
-    check("ⓐ20 반대 방향도 주입이 이긴다(agy 설치돼 있으나 네이티브 부재 판정)",
-          F.participant_profile({"claude", "agy"}, native_reviewer=False) is True)
-    # 해소기 자체 — orchestra 로스터의 native 플래그를 그대로 돌려주는가(폴백 None 포함).
-    import javis_orchestra as _O
-    _sv = _O.reviewer_roster
-    try:
-        _O.reviewer_roster = lambda detect=None, agents=None: [
-            {"role": "reviewer-gemini", "agent": "gemini", "native": True,
-             "substituted_for": None, "reason": "절대경로 실재"},
-            {"role": "reviewer-claude-2", "agent": "claude", "native": False,
-             "substituted_for": "codex", "reason": "부재"}]
-        check("ⓐ21 native_reviewer_present = orchestra 로스터 파생(절대경로 agy → True)",
-              F.native_reviewer_present() is True)
-        _O.reviewer_roster = lambda detect=None, agents=None: []
-        check("ⓐ22 로스터 비었으면 None(판정 불가 — 호출부가 휴리스틱으로 강등)",
-              F.native_reviewer_present() is None)
-    finally:
-        _O.reviewer_roster = _sv
+    check("ⓐ15 리뷰어 CLI 유무가 판정에 **무관**(감지 부활 차단)",
+          F.classify(installed={"claude"}, live={"master", "cso", "worker"},
+                     resource_ok=True)
+          == F.classify(installed={"claude", "agy", "codex"},
+                        live={"master", "cso", "worker"}, resource_ok=True))
+    check("ⓐ16 완결 피드 본문에 리뷰어 잔존 0(거짓 보고 차단)",
+          "reviewer" not in F._complete_feed_body(), F._complete_feed_body())
+    check("ⓐ17 편성 모듈에 프로파일 감지 함수가 없다(불일치의 씨앗 제거)",
+          not hasattr(F, "participant_profile") and not hasattr(F, "native_reviewer_present"))
 
     # ⓑ 자식 cwd 상속 — 순수 파서(생성 cwd 우선 · live_cwd 아님 · exited 무시).
     obj = {"surfaces": [

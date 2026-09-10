@@ -188,7 +188,7 @@ jobs:
                    test_bootlast_golden_lock_parity test_bootv2_doc_contract test_pyseal_census \
                    test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root \
                    test_preflight_hook_body test_preflight_npm_prefix test_learn_digest_queue \
-                   test_participant_formation test_formation; do
+                   test_default_fleet_formation test_formation; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack-only] declared-state test: $t =="
@@ -406,7 +406,7 @@ jobs:
           set -euo pipefail
           # ★원작자 표기 고정 블록(박사님 지시 2026-09-10 · 원작자 통화 허락 조건 = 최초 개발자 명시).
           #   본문을 파일로 조립하는 이유: `--notes` 인라인은 줄바꿈을 못 실어 블록이 한 줄로 뭉개진다.
-          #   문안 정본 = README「원작자」절 · 검사 축 = test_participant_formation.py ⓕ(idoforgod 부재=적색).
+          #   문안 정본 = README「원작자」절 · 검사 축 = test_default_fleet_formation.py ⓕ(idoforgod 부재=적색).
           #   heredoc 은 비인용(<<NOTES)이라 $MIN_BINARY 가 펴진다 — 본문에 백틱·타 변수는 없다.
           cat > release-notes.md <<NOTES
           팩-only 릴리스 — 본체 버전 불변(min_binary $MIN_BINARY+ 무중단 적용). latest.json은 직전 본체 릴리스 캐리포워드.

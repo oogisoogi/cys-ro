@@ -307,9 +307,40 @@ def reviewer_roster(detect=None, agents=None):
     return roster
 
 
+# ─────────────────── 참가자 프로파일(P1 · 2026-09-10) ───────────────────
+# 리뷰어 상시 점유 → 온디맨드. 판정 소스는 **네이티브 CLI 실재 여부 하나**다(설정 파일 없음).
+PARTICIPANT_PROFILE_NOTE = "리뷰어 = 의뢰 시 기동(온디맨드 · 참가자 프로파일)"
+
+
+def participant_profile(detect=None, agents=None, roster=None):
+    """★참가자 프로파일 판정(결정론 · 설정 파일 추가 없음).
+
+    True = 이 기계에 **네이티브 리뷰어 CLI 가 하나도 없다**(agy·codex 전무).
+    그런 기계에서 Claude 대체 리뷰어 2기를 매 부팅 세우는 것은 *일 없는 좌석의 토큰 소모*다
+    (2026-09-10 참가자 기계 실측: 리뷰 의뢰 0인데 화면에 「86% weekly limit」 · 사용자가 닫아도
+    결손 판정이 다시 세운다). 이 프로파일에서 리뷰어는 **온디맨드**다 — 부트가 스폰하지 않고,
+    check·결손 판정도 부재를 결손으로 세지 않는다(**Degrade 가 아니라 정상 상태**).
+    의뢰가 실제로 생기면 그때 세운다:
+        `javis_boot_node.py --role reviewer-claude-1 --agent claude`
+    (기동 경로는 그대로 남는다 — 없앤 것은 능력이 아니라 **상시 점유**다.)
+    ★네이티브가 하나라도 있으면 False = 우리 맥(agy·codex 실재) **현행 동작 완전 보존**.
+      한쪽만 있는 기계도 현행 그대로다(있는 쪽 네이티브 + 없는 쪽 Claude 대체) — 이 티켓이
+      바꾸는 것은 '네이티브 0' 기계 하나뿐이다.
+    ★roster 주입은 재감지 회피용(같은 프로세스에서 로스터를 이미 해소한 호출부 전용).
+    """
+    roster = reviewer_roster(detect, agents) if roster is None else roster
+    return not any(e["native"] for e in roster)
+
+
 def effective_required_roles(detect=None, agents=None):
-    """check 가 검증할 유효 의무 역할 = cso·worker + 유효 리뷰어 로스터(감지 폴백 적용)."""
-    return ["cso", "worker"] + [e["role"] for e in reviewer_roster(detect, agents)]
+    """check 가 검증할 유효 의무 역할.
+
+    표준 프로파일  = cso·worker + 유효 리뷰어 로스터(감지 폴백 적용 — 종전과 동일).
+    참가자 프로파일 = cso·worker (리뷰어는 required 밖 — `participant_profile` 참조)."""
+    roster = reviewer_roster(detect, agents)
+    if participant_profile(roster=roster):
+        return ["cso", "worker"]
+    return ["cso", "worker"] + [e["role"] for e in roster]
 
 
 # ─────────────────── B18: 팀 구성 안내 문구의 단일 파생 소스 (H-DOC-2) ───────────────────
@@ -1239,6 +1270,19 @@ def cmd_boot_reviewers(args):
     2층 감지: (1) 바이너리 미설치 → 즉시 대체(detect_reviewer). (2) 설치됐으나 부트가
     각성(set-status ack)에 실패(미인증·깨짐) → 대체로 2차 폴백. 절대 halt 하지 않는다."""
     roster = reviewer_roster()
+    # ★참가자 프로파일(P1 · 2026-09-10): 네이티브 리뷰어 CLI 가 **하나도 없는** 기계에서는
+    #   Claude 대체 2기를 세우지 않는다. 이것은 실패도 Degrade 도 아니라 **정상 상태**다 —
+    #   리뷰어는 의뢰가 생길 때 세운다(`participant_profile` 주석의 기동 1줄 참조).
+    #   exit 0 인 이유: ④-b 소비부(javis_bootstrap)가 비0 을 '리뷰어 부족' 경고로 읽는데,
+    #   여기서는 부족이 아니다(⑤check 의 effective_required_roles 도 리뷰어를 요구하지 않는다).
+    if participant_profile(roster=roster):
+        print("[boot-reviewers] 참가자 프로파일 — 네이티브 리뷰어 CLI 전무 → **스폰 0** · %s"
+              % PARTICIPANT_PROFILE_NOTE)
+        for (nrole, _na, _sr, _sa), e in zip(REVIEWER_SLOTS, roster):
+            print("  · %-18s 미감지(%s) — 대체 스폰 안 함(온디맨드)" % (nrole, e["reason"]))
+        print("  ↳ 의뢰 시 기동: javis_boot_node.py --role reviewer-claude-1 --agent claude")
+        print("종합: 리뷰어 0/0 — 참가자 프로파일(요구 없음 · Degrade 아님)")
+        return 0
     print("[boot-reviewers] 리뷰어 슬롯 기동 (미감지/각성실패 시 Claude 대체로 자동 폴백):")
     results = []
     fillers = []          # ★B2: 슬롯을 **실제로 채운** 역할 — check 재해소의 근거(라벨링 대상)
@@ -3103,9 +3147,22 @@ def cmd_self_test(args):
         mix = lambda a, ag=None: (a == "gemini", "mix")
         rmix = reviewer_roster(detect=mix, agents=synth_ag)
         assert [e["role"] for e in rmix] == ["reviewer-gemini", "reviewer-claude-2"], "혼합 로스터 오류"
-        # effective_required_roles: 미감지 시 의무 역할이 Claude 대체로 치환(check 가 영영 부재 보고 안 함)
-        assert effective_required_roles(detect=no, agents=synth_ag) == \
-            ["cso", "worker", "reviewer-claude-1", "reviewer-claude-2"], "유효 의무역할 치환 오류"
+        # ★참가자 프로파일(P1 · 2026-09-10): 네이티브 **전무**면 리뷰어는 required 밖(온디맨드).
+        #   구 계약(미감지 → Claude 대체 2기를 의무 역할로 치환)은 이 레인에서 폐기됐다 —
+        #   대체 좌석이 required 에 있으면 결손 판정이 매 부팅 그 2기를 다시 세웠다(토큰 소모).
+        #   ★로스터 자체(reviewer_roster)는 무수정이다: '의뢰가 오면 누가 채우는가' 표는 그대로
+        #   살아 있어야 온디맨드 기동이 같은 이름으로 선다(위 rno 핀이 그 사실을 지킨다).
+        assert participant_profile(detect=no, agents=synth_ag) is True, \
+            "네이티브 리뷰어 CLI 전무가 참가자 프로파일로 판정되지 않음"
+        assert effective_required_roles(detect=no, agents=synth_ag) == ["cso", "worker"], \
+            "참가자 프로파일에서 리뷰어가 의무 역할로 남았다(상시 점유 부활)"
+        # 혼합(gemini 만 실재) = 참가자 아님 → 현행 동작(네이티브 1 + Claude 대체 1) 보존
+        assert participant_profile(detect=mix, agents=synth_ag) is False, \
+            "네이티브 1종 실재 기계가 참가자 프로파일로 오판(현행 편성 소멸)"
+        assert effective_required_roles(detect=mix, agents=synth_ag) == \
+            ["cso", "worker", "reviewer-gemini", "reviewer-claude-2"], "혼합 유효 의무역할 오류"
+        assert participant_profile(detect=yes, agents=synth_ag) is False, \
+            "네이티브 2종 실재(우리 맥)가 참가자 프로파일로 오판"
         assert effective_required_roles(detect=yes, agents=synth_ag) == REQUIRED_ROLES, \
             "감지 시 유효 의무역할이 표준과 불일치"
 

@@ -227,11 +227,76 @@ def ensure_order_gate(m):
               and "재시작 또는 부서 재기동" in pend[0][2], "feeds=%r" % (feeds,))
 
         # (b3) 로스터 complete 인데 CLI 부분 설치 → complete 로 승격 금지(부분 설치 오판 차단).
-        feeds = _ensure_harness(m, live=REQUIRED, installed={"claude"}, resource_ok=False)
+        # ★참가자 프로파일(P1 · 2026-09-10) 이후 이 검체의 전제는 **네이티브 리뷰어 CLI 가 있는
+        #   기계**다 — claude+agy 인데 codex 부재(리뷰어 축이 살아 있는 기계의 반쪽 설치).
+        #   claude 단독 기계는 더 이상 '부분 설치'가 아니라 참가자 프로파일이고, 그 레인의
+        #   기대값은 아래 9b6 이 따로 잰다(구 검체를 지우지 않고 전제를 정확히 한다).
+        feeds = _ensure_harness(m, live=REQUIRED, installed={"claude", "agy"}, resource_ok=False)
         state, _d = m.ensure(socket="/tmp/b3.sock")
         check("9b5 부분 CLI 는 로스터 전원이어도 complete 아님(INV-1)",
               state != "complete" and not [f for f in feeds if f[0] == "formation-complete"],
               "state=%r feeds=%r" % (state, feeds))
+
+        # (b4) ★참가자 프로파일: claude 단독 기계에서 master·cso·worker 3기 = complete 가 정상.
+        #      종전에는 agy·codex 부재가 `partial:agy,codex` 로 영구 고정돼 편성이 영영 완결되지
+        #      못했고(배너 불멸), 그 미완결이 매 틱 리뷰어 요구로 되돌아왔다(토큰 소모원).
+        feeds = _ensure_harness(m, live={"master", "cso", "worker"}, installed={"claude"},
+                                resource_ok=True)
+        state, _d = m.ensure(socket="/tmp/b4.sock")
+        check("9b6 참가자 프로파일(claude 단독) 3기 편성 = complete",
+              state == "complete" and [f for f in feeds if f[0] == "formation-complete"],
+              "state=%r feeds=%r" % (state, feeds))
+        # 같은 프로파일에서 결원(worker 부재)은 여전히 complete 가 아니다 — 완화 아님의 증거.
+        feeds = _ensure_harness(m, live={"master", "cso"}, installed={"claude"}, resource_ok=True)
+        state, _d = m.ensure(socket="/tmp/b5.sock")
+        check("9b7 참가자 프로파일에서도 결원은 complete 아님",
+              state != "complete" and not [f for f in feeds if f[0] == "formation-complete"],
+              "state=%r feeds=%r" % (state, feeds))
+
+        # (b6) ★ⓑ 자식 좌석 cwd 상속(P2): 호출자가 cwd 를 주지 않으면 자식은 **master 좌석의
+        #      cwd**(설치기가 신뢰를 심어 둔 JarvisHome)를 물려받아야 한다. 종전에는 None(홈)이
+        #      내려가 자식이 폴더 신뢰 관문에 갇혔다(참가자 기계 실측 8건).
+        seen_cwd = []
+        _ensure_harness(m, live=set(), installed={"claude"}, resource_ok=True)
+        m._boot_node = lambda role, socket, cwd=None, timeout=200: (
+            seen_cwd.append((role, cwd)) or (True, "stub"))
+        m._master_seat_cwd = lambda socket: "/Users/x/install-jarvis"
+        m.ensure(socket="/tmp/b6.sock")
+        check("9b8 자식 좌석 cwd = master 좌석 cwd 상속(cwd 미지정 호출)",
+              seen_cwd and all(c == "/Users/x/install-jarvis" for _r, c in seen_cwd),
+              "seen=%r" % (seen_cwd,))
+        # master 좌석 cwd 를 못 얻으면 종전 동작(None=홈)으로 조용히 되돌아간다 — 상속은 전제가 아니다.
+        seen_cwd2 = []
+        _ensure_harness(m, live=set(), installed={"claude"}, resource_ok=True)
+        m._boot_node = lambda role, socket, cwd=None, timeout=200: (
+            seen_cwd2.append((role, cwd)) or (True, "stub"))
+        m._master_seat_cwd = lambda socket: None
+        m.ensure(socket="/tmp/b7.sock")
+        check("9b9 master cwd 미해소 → None(홈) 폴백 · 편성은 계속",
+              seen_cwd2 and all(c is None for _r, c in seen_cwd2), "seen=%r" % (seen_cwd2,))
+        # 상속 해소는 호출당 1회여야 한다(역할마다 status 재질의 금지).
+        calls = []
+        _ensure_harness(m, live=set(), installed={"claude"}, resource_ok=True)
+        m._boot_node = lambda role, socket, cwd=None, timeout=200: (True, "stub")
+        m._master_seat_cwd = lambda socket: (calls.append(socket) or "/j")
+        m.ensure(socket="/tmp/b8.sock")
+        check("9b10 cwd 상속 해소는 ensure 호출당 1회(status 재질의 0)",
+              len(calls) == 1, "calls=%r" % (calls,))
+        # 순수 파서: master 좌석의 **생성 cwd**(live_cwd 아님)를 고른다 · exited 좌석 무시.
+        obj = {"surfaces": [
+            {"role": "master", "exited": True, "cwd": "/dead"},
+            {"role": "worker", "exited": False, "cwd": "/w"},
+            {"role": "master", "exited": False, "cwd": "/jarvis", "live_cwd": "/tmp/elsewhere"},
+        ]}
+        check("9b11 _master_seat_cwd_from_status = 생존 master 의 생성 cwd",
+              m._master_seat_cwd_from_status(obj) == "/jarvis",
+              "got=%r" % (m._master_seat_cwd_from_status(obj),))
+        check("9b12 master 좌석 부재·빈 cwd → None",
+              m._master_seat_cwd_from_status({"surfaces": [{"role": "cso", "exited": False,
+                                                            "cwd": "/c"}]}) is None
+              and m._master_seat_cwd_from_status(
+                  {"surfaces": [{"role": "master", "exited": False, "cwd": ""}]}) is None,
+              "빈 cwd/부재 처리 오류")
 
         # (c) 동일 kind 연속 10회 ensure → 표면화(feed) 는 1회만(주기 심박 토스트 스팸 차단).
         feeds = _ensure_harness(m, live=REQUIRED, installed=all_clis, resource_ok=False)

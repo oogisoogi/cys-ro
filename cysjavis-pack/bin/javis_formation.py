@@ -92,6 +92,11 @@ ROLE_AGENT = {
     "reviewer-gemini": "gemini", "reviewer-codex": "codex",
 }
 REQUIRED_CLIS = {"claude", "agy", "codex"}
+# ★참가자 프로파일(P1 · 2026-09-10) — 리뷰어 축(역할·CLI). 판정은 `participant_profile` 하나다.
+REVIEWER_CLIS = frozenset({"agy", "codex"})
+REVIEWER_ROLES = frozenset({"reviewer-gemini", "reviewer-codex"})
+# 문구 단일 소스(javis_orchestra.PARTICIPANT_PROFILE_NOTE 와 같은 뜻 — 두 파일이 각자 인용한다).
+PARTICIPANT_PROFILE_NOTE = "의뢰 시 기동합니다(온디맨드)"
 
 # kill-switch(paused) 존중 훅 표식(test_formation #7 fallback).
 PAUSE_HONORED = True
@@ -300,6 +305,35 @@ def acquire_lock(socket):
 
 
 # ── ③ 상태 판정(순수 함수 · test_formation #2~#5) ──
+def participant_profile(installed):
+    """★참가자 프로파일(P1 · 2026-09-10) — 네이티브 리뷰어 CLI(agy·codex)가 **하나도 없는** 기계.
+
+    True 면 리뷰어는 **온디맨드**다: 편성이 리뷰어 좌석을 결원으로 세지 않고(complete 를 막지
+    않고), 필수 CLI 집합에서도 agy·codex 를 뺀다. 판정 소스는 `javis_orchestra.participant_profile`
+    과 같은 사실(**네이티브 CLI 실재 여부**)이고, 여기서는 이미 해소된 `installed` 집합을
+    그대로 쓴다 — 새 감지 서브프로세스를 띄우지 않는다(같은 ensure 안에서 probe 는 1회다).
+
+    ★CLI 전무(installed 공집합)는 **판정 유보**(False)다: 그 레인은 온보딩 pending-cli 이고,
+      '리뷰어가 없다'가 아니라 '아직 아무것도 없다'다. 종전 pending-cli 문구·집합을 그대로
+      보존한다(회귀 0 — 설치 안내 화면이 이 티켓의 범위가 아니다).
+    ★네이티브가 하나라도 있으면 False = 우리 맥(agy·codex 실재) **현행 동작 완전 보존**."""
+    installed = set(installed or [])
+    if not installed:
+        return False
+    return not (installed & REVIEWER_CLIS)
+
+
+def profile_required_roles(installed, external=None):
+    """이 기계에서 실제로 요구하는 편성 역할(순수 · 프로파일 적용 · P1).
+
+    표준 프로파일  = `effective_required_roles(external)` 그대로(종전 동작).
+    참가자 프로파일 = 거기서 리뷰어 역할을 뺀 것 = master·cso·worker."""
+    roles = effective_required_roles(external)
+    if participant_profile(installed):
+        return tuple(r for r in roles if r not in REVIEWER_ROLES)
+    return roles
+
+
 def classify(installed=None, live=None, resource_ok=True, external_roles=None):
     """설치 CLI 집합 · 라이브 역할 집합 · 자원 여유 → 상태 문자열.
       resource_ok False               → pending-resource
@@ -316,8 +350,15 @@ def classify(installed=None, live=None, resource_ok=True, external_roles=None):
     live = set(live or [])
     if not resource_ok:
         return "pending-resource"
-    required = set(effective_required_roles(external_roles))
-    missing_clis = sorted(REQUIRED_CLIS - installed)
+    required = set(profile_required_roles(installed, external_roles))
+    required_clis = set(REQUIRED_CLIS)
+    # ★참가자 프로파일: 리뷰어는 결원이 아니다 — 역할(profile_required_roles)·CLI 양쪽에서
+    #   요건을 뺀다. 종전에는 agy·codex 부재가 `partial:agy,codex` 로 **영구 고정**돼 편성이
+    #   영영 complete 가 되지 못했다(배너 불멸 + 결손 판정이 매 틱 리뷰어를 다시 요구).
+    #   네이티브가 하나라도 있는 기계에서는 이 분기가 발화하지 않아 종전 판정과 바이트 동일하다.
+    if participant_profile(installed):
+        required_clis -= REVIEWER_CLIS
+    missing_clis = sorted(required_clis - installed)
     if not installed:
         return "pending-cli:" + ",".join(sorted(required))
     if required.issubset(live) and not missing_clis:
@@ -460,6 +501,48 @@ def _live_roles(socket, require_live_agent=True):
     if r.returncode != 0:
         return None
     return _roster_from_list_tsv(r.stdout or "")
+
+
+def _master_seat_cwd_from_status(obj):
+    """`cys status --json` → master 좌석의 **생성 cwd** 또는 None(순수·self-test 핀).
+
+    ★왜 `cwd` 이고 `live_cwd` 가 아닌가: 상속시키려는 것은 "설치기가 신뢰를 심어 둔 작업 폴더"
+      (JarvisHome)이지 마스터가 그 뒤 `cd` 로 옮겨 간 현재 폴더가 아니다. live_cwd 를 물려주면
+      마스터가 잠시 다른 폴더에 들어가 있던 순간에 태어난 자식이 **신뢰되지 않은 폴더**에서 떠
+      폴더 신뢰 관문에 갇힌다 — 이 티켓이 고치려는 바로 그 증상이다.
+    ★exited 좌석은 보지 않는다(죽은 좌석의 폴더를 상속할 이유가 없다). 값이 빈 문자열이면
+      None 으로 접는다 — 빈 cwd 는 launch-agent 에서 '미지정'과 같아야 한다."""
+    for srf in (obj or {}).get("surfaces") or []:
+        if srf.get("exited"):
+            continue
+        if _canonical_role(srf.get("role") or "") != "master":
+            continue
+        cwd = (srf.get("cwd") or "").strip()
+        if cwd:
+            return cwd
+    return None
+
+
+def _master_seat_cwd(socket):
+    """라이브 master 좌석의 생성 cwd(=자식이 상속할 작업 폴더) 또는 None.
+
+    ★P2(2026-09-10 참가자 기계 실측): 설치기는 master 좌석만 `--cwd <JarvisHome>` 로 띄우고
+      (그 폴더에 Claude Code 신뢰를 미리 심어 둔다), 편성이 세우는 cso·worker·리뷰어는 cwd
+      미지정 → **홈**에서 떠서 「Yes, I trust this folder」 관문(기본 선택 = No, exit)에 갇혔다.
+      좌석은 살아 있는데 입력을 못 받으니 부트가 영영 끝나지 않는다.
+    ★실패는 조용히 None(= 종전 동작인 홈 cwd). 상속은 개선이지 전제가 아니다 — 데몬 무응답이
+      편성을 멈추면 안 된다."""
+    env = dict(os.environ)
+    if socket:
+        env["CYS_SOCKET"] = socket
+    try:
+        r = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True,
+                           timeout=15, env=env)
+        if r.returncode == 0:
+            return _master_seat_cwd_from_status(json.loads(r.stdout or "{}"))
+    except Exception:
+        pass
+    return None
 
 
 def _installed_clis():
@@ -844,11 +927,30 @@ def _feed_for_state(state, detail=None):
         #   ensure ④ 가 게이트 축으로 만든 본문(detail)을 쓰고, 미제공(JSON 부재)이면 축 없는 일반 문구.
         _feed("부서 팀 편성 대기(자원)", detail or _resource_feed_body(None), fk)
     elif kind == "complete":
-        _feed("부서 팀 편성 완결", "master + 4종 의무 노드(cso·worker·reviewer-gemini·"
-              "reviewer-codex) 전부 기동 완료.", fk)
+        # ★본문은 프로파일 파생(P1) — 호출자(_surface)가 준 본문이 있으면 그것을 쓴다.
+        #   표준 프로파일에서 `_complete_feed_body` 는 종전 문장과 **자구 동일**이라 회귀 0.
+        _feed("부서 팀 편성 완결", detail or _complete_feed_body(None), fk)
     elif kind == "failed":
         _feed("부서 팀 편성 실패", "편성에 실패했습니다(%s) — boot-last.json·formation 상태 "
               "파일에서 원인을 확인하세요." % state, fk)
+
+
+def _complete_feed_body(installed):
+    """complete 피드 본문(순수 · 프로파일 파생 · P1).
+
+    표준 프로파일 문장은 종전과 **자구 동일**하다(회귀 0). 참가자 프로파일에서는 리뷰어 부재가
+    결원이 아니라는 사실을 사용자에게 정직하게 말한다 — 종전 문장을 그대로 쓰면 실제로는 3기가
+    선 기계에서 "reviewer-gemini·reviewer-codex 전부 기동 완료" 라는 **거짓 보고**가 된다."""
+    if participant_profile(installed):
+        return ("master + cso·worker 기동 완료 — 네이티브 리뷰어 CLI(agy·codex)가 없는 기계라 "
+                "리뷰어는 %s. 결원이 아닙니다." % PARTICIPANT_PROFILE_NOTE)
+    return ("master + 4종 의무 노드(cso·worker·reviewer-gemini·"
+            "reviewer-codex) 전부 기동 완료.")
+
+
+def _profile_note(installed):
+    """detail·상태파일용 프로파일 표기 — 표준 프로파일이면 **빈 문자열**(detail 바이트 동일)."""
+    return (" · 참가자 프로파일: %s" % PARTICIPANT_PROFILE_NOTE) if participant_profile(installed) else ""
 
 
 def _read_state_obj(socket):
@@ -950,10 +1052,12 @@ def ensure(socket=None, cwd=None, force_surface=False):
         if live_now is not None and classify(installed=installed, live=live_now,
                                              resource_ok=True) == "complete":
             state = "complete"
-            detail = ("라이브 로스터 이미 완결(5역할 생존) — 신규 기동 0 · 자원 게이트 무관"
-                      + _external_note())
+            detail = ("라이브 로스터 이미 완결(%d역할 생존) — 신규 기동 0 · 자원 게이트 무관"
+                      % len(profile_required_roles(installed))
+                      + _external_note() + _profile_note(installed))
             _write_state(socket, state, detail, live_now, attempts=attempts)
-            _surface(socket, prev, state, force=force_surface)
+            _surface(socket, prev, state, force=force_surface,
+                     detail=_complete_feed_body(installed))
             return state, detail
 
         # ④ 자원 게이트(complete 가 **아닐 때만** — 실제로 노드를 스폰하는 경로에서만 예산을 본다)
@@ -983,9 +1087,14 @@ def ensure(socket=None, cwd=None, force_surface=False):
         # ⑤⑥ 설치된 CLI 기준 최대 편성. master 먼저(입양 경로) → CSO → 나머지.
         booted = set()
         held = []
+        # ★ⓑ 자식 좌석 cwd 상속(P2 · 2026-09-10): 호출자가 cwd 를 주지 않으면 **master 좌석의
+        #   cwd**(설치기가 신뢰를 심어 둔 JarvisHome)를 자식이 물려받는다. master 좌석이 없거나
+        #   데몬이 답하지 않으면 None = 홈(종전 동작) — 상속은 개선이지 전제가 아니다.
+        #   해소는 **1회**다(역할마다 status 를 다시 묻지 않는다 · master 를 먼저 세운 뒤 묻는다).
+        child_cwd, child_cwd_resolved = cwd, cwd is not None
         # ★외부 역할은 order 에서 뺀다(2026-08-01) — 생성 자체를 하지 않는다. env 미설정이면
         #   effective_required_roles() == REQUIRED_ROLES 라 종전 순서·집합과 완전히 동일하다.
-        order = list(effective_required_roles())
+        order = list(profile_required_roles(installed))
         for role in order:
             cli = ROLE_CLI[role]
             if cli not in installed:
@@ -1004,7 +1113,10 @@ def ensure(socket=None, cwd=None, force_surface=False):
             if role == "master":
                 ok, _d = _ensure_master_seat(socket, cwd)
             else:
-                ok, _d = _boot_node(role, socket, cwd)
+                if not child_cwd_resolved:
+                    child_cwd = _master_seat_cwd(socket)
+                    child_cwd_resolved = True
+                ok, _d = _boot_node(role, socket, child_cwd)
             if ok:
                 booted.add(role)
 
@@ -1015,13 +1127,17 @@ def ensure(socket=None, cwd=None, force_surface=False):
         state = classify(installed=installed, live=live, resource_ok=True)
         detail = "편성 실행 — 기동=%s · 설치CLI=%s" % (
             ",".join(sorted(booted)) or "없음", ",".join(sorted(installed))) + _external_note()
+        detail += _profile_note(installed)
+        if child_cwd and cwd is None:
+            detail += " · 자식 cwd 상속=%s(master 좌석)" % child_cwd
         if held:
             detail += " · 시도원장 보류=%s" % ",".join(held)
         _write_state(socket, state, detail, live, attempts=attempts, held=held)
         # ★주기 실행 스팸 차단(2026-07-26): 무조건 _feed_for_state 였던 자리를 _surface(전이 시에만
         # 표면화) 로 교체한다. 편성 ensure 가 스케줄 주기(10분)로 붙으면 매 틱마다 사용자에게 토스트가
         # 갔다. prev 는 ensure 진입부에서 읽은 직전 상태 — 동일 kind 면 _surface 계약대로 생략된다.
-        _surface(socket, prev, state, force=force_surface)
+        _surface(socket, prev, state, force=force_surface,
+                 detail=_complete_feed_body(installed) if state == "complete" else None)
         # ★A2(SURVEY B3 Q2-①): 소진/쿨다운 보류는 종전 stderr 1줄뿐이라 심박 명령 꼬리의 `|| true` 가
         #   삼켰다(어디에도 남지 않음). 상태파일 held 키(위) + 보류 목록이 **직전 상태파일과 달라졌을
         #   때만** feed 1건 — 같은 보류가 유지되는 매 틱은 침묵(스팸 0) · 해소는 키 소멸로만 표기.
@@ -1110,9 +1226,24 @@ def self_test():
                            resource_ok=True)) == "pending-cli", "pending-cli 오판")
     ck(classify(installed={"claude", "agy", "codex"}, live={"master"},
                 resource_ok=False) == "pending-resource", "pending-resource 오판")
-    # 부분 설치를 complete 로 오판 금지(Sim S2-5)
-    ck(classify(installed={"claude"}, live=set(REQUIRED_ROLES),
+    # 부분 설치를 complete 로 오판 금지(Sim S2-5) — ★네이티브 리뷰어 CLI 가 **있는** 기계 한정.
+    #   (claude+agy 인데 codex 부재 = 리뷰어 축이 살아 있는 기계의 반쪽 설치 → complete 금지)
+    ck(classify(installed={"claude", "agy"}, live=set(REQUIRED_ROLES),
                 resource_ok=True) != "complete", "부분 CLI 를 complete 로 오판")
+    # ★참가자 프로파일(P1 · 2026-09-10): 네이티브 리뷰어 CLI 전무 = claude 만 있는 기계.
+    #   리뷰어는 온디맨드이므로 master·cso·worker 3기 생존이면 **complete 가 정상**이다.
+    #   종전에는 이 레인이 `partial:agy,codex` 로 영구 고정돼 편성이 영영 완결되지 못했고,
+    #   그 미완결이 매 틱 리뷰어 요구로 되돌아왔다(참가자 기계 실측 · 토큰 소모원).
+    ck(participant_profile({"claude"}) is True, "claude 단독 기계가 참가자 프로파일 미판정")
+    ck(participant_profile({"claude", "agy"}) is False, "네이티브 1종 실재가 참가자로 오판")
+    ck(participant_profile(set()) is False, "CLI 전무는 판정 유보(pending-cli 레인 보존)")
+    ck(classify(installed={"claude"}, live={"master", "cso", "worker"},
+                resource_ok=True) == "complete", "참가자 프로파일 3기 편성이 complete 아님")
+    ck(classify(installed={"claude"}, live={"master", "cso"},
+                resource_ok=True) == "partial:booting", "참가자 프로파일 결원이 partial 아님")
+    # 참가자 프로파일이라도 CLI 전무 레인 문구는 종전 그대로(온보딩 보존)
+    ck(classify(installed=set(), live=set(), resource_ok=True) ==
+       "pending-cli:" + ",".join(sorted(REQUIRED_ROLES)), "pending-cli 집합 변형(온보딩 회귀)")
     # 락 키 유일성(부서 basename 동일 → 전체 경로 유일화)
     ck(_sanitize_key("/s/cys-dept-dept-1/cys.sock") !=
        _sanitize_key("/s/cys-dept-dept-2/cys.sock"), "동일 basename 두 부서 키 충돌")

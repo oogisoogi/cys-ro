@@ -1417,12 +1417,48 @@ def spawn_production(socket, pending_roles, include_master=False):
             "out": (r.stdout or r.stderr or "").strip()[:800]}
 
 
-def spawn_fresh_production(socket, role, agent):
+def master_seat_cwd_from_status(obj):
+    """`cys status --json` → master 좌석의 **생성 cwd** 또는 None(순수 · self-test 핀).
+
+    ★live_cwd 가 아니라 cwd 다: 상속 대상은 '설치기가 신뢰를 심어 둔 폴더'이지 마스터가 잠시
+      cd 해 간 현재 폴더가 아니다. live_cwd 를 물려주면 자식이 신뢰되지 않은 폴더에서 떠
+      폴더 신뢰 관문에 갇힌다 — 이 수리가 고치려는 바로 그 증상이다.
+    ★exited 좌석·빈 cwd 는 무시(빈 문자열은 launch-agent 에서 '미지정'과 같아야 한다)."""
+    for srf in (obj or {}).get("surfaces") or []:
+        if srf.get("exited"):
+            continue
+        if (srf.get("role") or "") != "master":
+            continue
+        cwd = (srf.get("cwd") or "").strip()
+        if cwd:
+            return cwd
+    return None
+
+
+def master_seat_cwd(socket):
+    """라이브 master 좌석의 생성 cwd(= 자식이 상속할 작업 폴더) 또는 None.
+
+    ★P2(2026-09-10 참가자 기계 실측): fresh 강등이 cwd 없이 launch-agent 를 부르면 자식이 **홈**
+      에서 떠서 Claude Code 폴더 신뢰 관문(기본 선택 = No, exit)에 갇힌다 — 좌석은 살아 있는데
+      입력을 못 받아 부활이 끝나지 않는다. 원 좌석의 cwd(topology entry)가 1순위이고, 그것이
+      비었을 때 이 함수가 master 좌석의 폴더를 물려준다.
+    ★실패는 조용히 None(= 종전 동작인 홈) — 상속은 개선이지 전제가 아니다.
+    ★`_live_surfaces_raw` 를 쓰지 않는 이유: 그 파서는 liveness 판정용이라 cwd 를 버린다.
+      liveness 계약(몽키패치 지점)을 건드리지 않으려고 status 를 직접 읽는다."""
+    return master_seat_cwd_from_status(_status_json(socket))
+
+
+def spawn_fresh_production(socket, role, agent, cwd=None):
     """★Phase11 독약세션 fresh-fallback(prod): 무 resume 로 새 세션 기동(cys launch-agent).
     cys restore 는 topology 의 session_id 를 resume 하므로 독약 세션이면 계속 실패한다 → 세션핀을 버리고
     launch-agent 로 fresh 기동한다. launch-agent 는 역할 디렉티브를 자동 주입한다(각성). 세션 보존은 포기하지만
-    (원 세션이 독약이므로 불가피) 노드는 부활한다. 원장(SESSION_STATE/TODO) 재주입은 후행 reinject 단계가 담당."""
-    r = cys("launch-agent", "--role", role, "--agent", agent or "claude", socket=socket, timeout=60)
+    (원 세션이 독약이므로 불가피) 노드는 부활한다. 원장(SESSION_STATE/TODO) 재주입은 후행 reinject 단계가 담당.
+    ★cwd(P2 · 2026-09-10): 원 좌석의 작업 폴더를 물려준다 — 미지정이면 launch-agent 기본(홈)이라
+    폴더 신뢰 관문에 갇힌다(`master_seat_cwd` 주석 참조). None 이면 인자 자체를 넣지 않는다(종전 동작)."""
+    argv = ["launch-agent", "--role", role, "--agent", agent or "claude"]
+    if cwd:
+        argv += ["--cwd", cwd]
+    r = cys(*argv, socket=socket, timeout=60)
     return {"rc": r.returncode, "out": (r.stdout or r.stderr or "").strip()[:400]}
 
 
@@ -1891,7 +1927,9 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                 ref, msg = spawn_surrogate(socket, role, fresh_sid, attempt=attempt, mode="fresh")
             else:
                 agent = entries.get(role, {}).get("agent", "claude")
-                res = spawn_fresh_production(socket, role, agent)
+                # ★P2: 원 좌석 cwd 1순위 → master 좌석 cwd 상속 → None(홈·종전 동작).
+                fresh_cwd = (entries.get(role, {}).get("cwd") or "").strip() or master_seat_cwd(socket)
+                res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)
                 time.sleep(SPAWN_SETTLE)
                 alive = [s for s in live_role_surfaces(socket).get(role, []) if not s["exited"]]
                 ref = alive[0]["surface"] if alive else None

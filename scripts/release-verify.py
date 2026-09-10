@@ -85,7 +85,7 @@
 사용:
   python3 scripts/release-verify.py --version 0.14.19 --release-dir ~/cys-release-backup/v0.14.19-assets
   python3 scripts/release-verify.py --version 0.14.19 --release-dir reviewed-release --print-assets
-  python3 scripts/release-verify.py --version 0.14.30 --release-dir d --repo oogisoogi/cys-terminal
+  python3 scripts/release-verify.py --version 0.14.30 --release-dir d --repo oogisoogi/cys-ro
 
 종료코드: 0=통과, 1=검증 실패, 2=인자 오류
 """
@@ -117,7 +117,7 @@ TOKEN_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 #   ③ 에서 **전 행 실패**했다 — REQUIRED_ASSETS 를 어떻게 풀든 발행이 불가능한 상태였다.
 #   ⚠이 값 · `release.yml` 의 `SRC_REPO` · `src-tauri/tauri.conf.json` 의 updater endpoints 는
 #     **같은 레포**여야 한다. 엇갈리면 업데이터가 남의 판을 본다(전환 시 세 곳 동시 수정).
-RELEASE_REPO = "oogisoogi/cys-terminal"
+RELEASE_REPO = "oogisoogi/cys-ro"
 
 # ★SUMS 와 무관한 독립 하한선 ① — 이게 없으면 "빌드 자체가 안 돼 SUMS 에도 안 실린 자산"을 못 잡는다.
 #   `{v}` 는 --version 으로 채운다. 여기 없는 자산은 아래 `UPDATER_PLATFORMS` 가 강제한다.

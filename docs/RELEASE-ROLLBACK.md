@@ -58,8 +58,8 @@ v0.14.31 이었나」를 나중에 아무도 확정할 수 없기 때문이다. 
 
 ```bash
 # 직전 정상 릴리스를 다시 latest 로 —— 이것만으로 신규 업데이트 유입이 멈춘다
-gh release edit v<이전> -R oogisoogi/cys-terminal --tag v<이전> --latest
-gh release view -R oogisoogi/cys-terminal --json tagName,isDraft   # 되읽어 확인
+gh release edit v<이전> -R oogisoogi/cys-ro --tag v<이전> --latest
+gh release view -R oogisoogi/cys-ro --json tagName,isDraft   # 되읽어 확인
 ```
 
 ⚠`--tag` 를 반드시 동봉한다 — `tag_name` 을 빠뜨린 릴리스 PATCH 는 태그를 `untagged-<sha>` 로
@@ -73,13 +73,13 @@ gh release view -R oogisoogi/cys-terminal --json tagName,isDraft   # 되읽어 �
 > ⚠**손대기 전에 먼저 확인하라 — 옛 릴리스 3개가 prerelease 상태인가?**
 > 아니라면 우리 릴리스를 draft 로 내리는 순간 `/releases/latest` 의 fallback 이
 > **0.12.58 매니페스트**(옛 `feat/tab-ui-font-blink` 릴리스의 latest.json)로 떨어진다.
-> 확인: `gh release list -R oogisoogi/cys-terminal` — 옛 3개에 `Pre-release` 표시가 있어야 한다.
+> 확인: `gh release list -R oogisoogi/cys-ro` — 옛 3개에 `Pre-release` 표시가 있어야 한다.
 > 아니면 §3-b 를 **먼저** 집행하고 나서 이 절로 돌아와라.
 > ✅ 2026-09-09 첫 발행 직후 셋 다 강등 완료(실측) — 지금은 이 선행 조건이 충족돼 있다.
 
 ```bash
-gh release edit v<문제> -R oogisoogi/cys-terminal --tag v<문제> --draft=true   # 1순위: 비공개로
-gh release delete v<문제> -R oogisoogi/cys-terminal                            # 최후: 삭제
+gh release edit v<문제> -R oogisoogi/cys-ro --tag v<문제> --draft=true   # 1순위: 비공개로
+gh release delete v<문제> -R oogisoogi/cys-ro                            # 최후: 삭제
 ```
 
 - **1순위는 draft 로 되돌리는 것**이다. 자산이 보존돼 원인 규명이 가능하고, 되살릴 수 있다.
@@ -102,7 +102,7 @@ master 결정 2026-09-09. 2026-07 세대의 옛 릴리스 3개(`feat/tab-ui-font
 
 ```bash
 for T in feat/tab-ui-font-blink fix/shift-enter-newline fix/hangul-ime-composition-leak; do
-  gh release edit "$T" -R oogisoogi/cys-terminal --prerelease      # 가역
+  gh release edit "$T" -R oogisoogi/cys-ro --prerelease      # 가역
 done
 ```
 

@@ -20,7 +20,7 @@ permissions:
   contents: write          # 비공개 repo에 릴리스 생성·자산 업로드(+ relocate 단계 다운로드)에 필요
 
 env:
-  SRC_REPO: oogisoogi/cys-terminal              # 공개 소스 repo = 공개 배포 원본 (updater 대상)
+  SRC_REPO: oogisoogi/cys-ro              # 공개 소스 repo = 공개 배포 원본 (updater 대상)
                                                 # ★2026-09-08 전환(TICKET=cys-fork-rebase-v0.14.30):
                                                 #   개발자 업데이트 중단 → 우리 포크가 배포자다.
                                                 #   tauri.conf.json updater endpoints 와 **같은 레포**를 가리켜야

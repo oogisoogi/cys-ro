@@ -19115,21 +19115,25 @@ mod tests {
     // ★항목별 restore override(2R codex #2): "고쳐야 할 값(홈)"과 "지켜야 할 값(작업 폴더)".
     #[test]
     fn is_home_like_cwd_truth_table() {
-        let home = "/Users/x";
+        // ★픽스처 경로에 `/Users/<이름>` 을 쓰지 않는다 — 발행 전 secret-scan 의 개인경로
+        //   하드게이트(scripts/secret-scan.sh 규칙 1)가 더미 목록 밖 이름을 차단한다
+        //   (2026-09-11 windows-build 적색으로 실측). 술어는 인자로 받은 home 과만 비교하므로
+        //   경로 모양이 무엇이든 진리표의 의미는 같다.
+        let home = "/base/home";
         assert!(is_home_like_cwd("", home));
         assert!(is_home_like_cwd("   ", home));
-        assert!(is_home_like_cwd("/Users/x", home));
-        assert!(is_home_like_cwd("/Users/x/", home));
-        assert!(!is_home_like_cwd("/Users/x/proj", home));
+        assert!(is_home_like_cwd("/base/home", home));
+        assert!(is_home_like_cwd("/base/home/", home));
+        assert!(!is_home_like_cwd("/base/home/proj", home));
         assert!(!is_home_like_cwd("/proj/wt", home));
         // 홈의 **부분 문자열**이라고 홈이 아니다(접두 일치로 접으면 자식 폴더가 전부 홈이 된다).
-        assert!(!is_home_like_cwd("/Users/xy", home));
+        assert!(!is_home_like_cwd("/base/homex", home));
     }
 
     // ★항목별 restore override 진리표(2R codex #2) — 지켜야 할 값과 고쳐야 할 값.
     #[test]
     fn restore_target_cwd_truth_table() {
-        let home = "/Users/x";
+        let home = "/base/home";      // ★위와 같은 이유로 `/Users/<이름>` 을 쓰지 않는다
         let all = |_: &str| true;           // 전부 실재
         let none = |_: &str| false;         // 전부 소실
         let only = |k: &'static str| move |p: &str| p == k;

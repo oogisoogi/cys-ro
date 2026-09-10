@@ -1147,30 +1147,35 @@ def _plan_directive_hashes():
 #   디렉티브를 정합시키는 순간 이 술어가 **조용히 False** 가 됐다(사본 드리프트의 교과서적
 #   형태: 정책을 고치면 사본이 거짓말을 시작한다). 이제 preflight 에서 **파생**한다.
 #   폴백 리터럴은 preflight 를 못 읽을 때만 쓰고, 그때도 '문서가 존재한다'는 최소 사실만 본다.
-_C03_MARKER_KEYS = ("javis_preflight", "master")
-
-
 def _c03_marker_pins():
-    """C03 대표 마커 목록 — **preflight 의 `C03_MARKER_PINS` 를 읽는다**(사본 금지).
+    """C03 대표 마커 목록 — **preflight 의 `C03_MARKER_PINS` 를 읽는다** | None(정본 부재).
 
     ★1R codex 지적 반영(2026-09-11): 중간 개정에서 「기본 함대」 두 글자만 봤는데, 그 토큰은
       문서 곳곳에 나오므로 정책 문장이 통째로 지워져도 통과하는 **공허한 게이트**였다. 지금은
-      정책을 판별하는 고유 문구(구성·리뷰어 경계)를 SOT 에서 그대로 받는다."""
+      정책을 판별하는 고유 문구(구성·리뷰어 경계)를 SOT 에서 그대로 받는다.
+    ★2R codex 지적 반영: 정본 로드 실패를 **약한 로컬 사본**(javis_preflight·master 두 일반
+      토큰)으로 대체하던 것이 fail-open 이었다 — 그 둘은 어지간한 문서면 다 들어 있어, 정본이
+      사라진 순간 게이트가 조용히 「통과」로 바뀐다. 사본을 없애고 **None(측정 불능)** 을
+      돌려준다. 이 파일이 반복해 지켜 온 규율과 같다: **측정 불능은 통과가 아니다.**"""
     try:
         import javis_preflight as _pf          # 지연 import(훅 경로 비용 0.04s 실측)
-        return list(_pf.C03_MARKER_PINS)
+        pins = [p for p in _pf.C03_MARKER_PINS if p]
     except Exception:
-        return list(_C03_MARKER_KEYS)
+        return None
+    return pins or None
 
 
 def _c03_pass():
     """MASTER_DIRECTIVE 에 표준 핀 조항이 살아있는가(C03.pin.master 취지)."""
+    marks = _c03_marker_pins()
+    if not marks:
+        return False        # 정본(핀 SOT) 부재 = 측정 불능 = 통과 아님(2R codex)
     p = os.path.join(_directives_dir(), "MASTER_DIRECTIVE.md")
     try:
         text = open(p, encoding="utf-8", errors="replace").read()
     except OSError:
         return False
-    return all(m in text for m in _c03_marker_pins())
+    return all(m in text for m in marks)
 
 
 class RosterPlan(object):

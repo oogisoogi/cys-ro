@@ -292,6 +292,22 @@ def t_formation():
     check("ⓐ18b 대표 마커(정체 'master' 제외)는 CONTENT_PINS 의 부분집합이다",
           all(m in _pins for m in marks if m != "master"),
           repr([m for m in marks if m != "master" and m not in _pins]))
+    # ★2R codex 지적 ③: 정본(SOT) 로드 실패를 **약한 로컬 사본**으로 대체하면 fail-open 이다.
+    #   그 사본(javis_preflight·master)은 어지간한 문서면 다 들어 있어, 정본이 사라진 순간
+    #   게이트가 조용히 통과로 바뀐다. 측정 불능은 통과가 아니다 — None·False 여야 한다.
+    import types as _types
+    _sv_mod = sys.modules.get("javis_preflight")
+    try:
+        sys.modules["javis_preflight"] = _types.ModuleType("javis_preflight")   # SOT 결손 대역
+        check("ⓐ18c 정본 부재 → 마커 None(약한 사본으로 대체하지 않는다)",
+              F._c03_marker_pins() is None)
+        check("ⓐ18d 정본 부재 → c03_pass False(fail-closed · 일반 토큰 문서도 통과 금지)",
+              F._c03_pass() is False)
+    finally:
+        if _sv_mod is not None:
+            sys.modules["javis_preflight"] = _sv_mod
+        else:
+            sys.modules.pop("javis_preflight", None)
     check("ⓐ19 repo 디렉티브가 C03 취지를 통과한다(정합 후에도 초록)",
           F._c03_pass() is True)
     # 음성 픽스처: 대표 마커를 지운 문서는 반드시 적색이어야 한다.
@@ -683,6 +699,15 @@ def t_release_body_derived():
     check("ⓖ2 윈도우 레그 폴백이 **그 7종 전부**를 본다(인증서 1종 판정 금지)",
           bool(fallback) and all(("secrets.%s != ''" % n) in fallback for n in want),
           (fallback or "")[:200])
+    # ★2R codex 지적 ②: **토큰 존재만** 보면 AND 를 OR 로 바꾼 변이가 통과한다(부분 설정에서
+    #   .dmg 오안내가 그대로 되살아난다). 논리곱 **구조**를 잰다 — 7항 · && 6개 · || 0개.
+    check("ⓖ2a 폴백 식이 7종을 **논리곱**으로 결합한다(&& 6 · || 0)",
+          bool(fallback) and fallback.count("&&") == len(want) - 1
+          and "||" not in fallback, (fallback or "")[:200])
+    or_mut = (fallback or "").replace("&&", "||")
+    check("ⓖ2b AND→OR 변이는 적색이어야 한다(거짓 초록 차단)",
+          not (or_mut.count("&&") == len(want) - 1 and "||" not in or_mut),
+          "OR 변이가 구조 검사를 통과했다 — 이 축은 논리곱을 재지 않는다")
     # 음성 픽스처: 인증서 1종만 보는 식으로 되돌리면 반드시 적색이어야 한다.
     mutated = src.replace(fallback or "@@none@@", "${{ secrets.APPLE_CERTIFICATE_B64 != '' }}")
     mfb = _has_apple_secrets_expr(mutated)
@@ -738,6 +763,18 @@ def t_ack_remedy_docs():
     check("ⓗ --spawn 이 붙은 정상 처방은 잡지 않는다(위경보 0)",
           _bare_boot_reviewers('"$P/bin/javis_orchestra.py" boot-reviewers --spawn') == []
           and _bare_boot_reviewers("javis_orchestra.py boot-reviewers --spawn") == [])
+    # ★2R codex 지적 ①: 합성 문자열이 아니라 **실제 디렉티브 문면**에서 `--spawn` 만 뗀 변이가
+    #   반드시 잡혀야 한다 — 검체가 실물 형식을 못 읽으면 재발을 못 막는다.
+    for rel in ("directives/MASTER_DIRECTIVE.md", "directives/CEO_TEMPLATE.md",
+                "directives/REVIEWER_DIRECTIVE.md"):
+        try:
+            real = io.open(os.path.join(PACK, rel), encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        mut = real.replace("boot-reviewers --spawn", "boot-reviewers")
+        check("ⓗ %s — 실제 문면에서 --spawn 제거 시 적색" % rel,
+              real != mut and len(_bare_boot_reviewers(mut)) >= 1,
+              "실물 변이를 못 잡는다 — 검체가 실제 형식(따옴표 경로 포함)을 읽지 못한다")
 
 
 def main():

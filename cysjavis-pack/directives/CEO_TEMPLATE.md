@@ -166,7 +166,7 @@ done
 | terminal.kind | 뜻(발생) | reason | 네가 할 일(처방) |
 |---|---|---|---|
 | `completed` | ⑤check READY — 정상 완주 | — | 없음 |
-| `completed_degraded` | READY 이나 리뷰어 각성 ACK 미확인 | `ack_pending` | 막히는 것은 **리뷰 게이트뿐**이다 — `javis_orchestra.py boot-reviewers` 또는 `javis_boot_node.py --role <역할> --agent <에이전트>` 로 그 좌석만 재각성 |
+| `completed_degraded` | READY 이나 리뷰어 각성 ACK 미확인 | `ack_pending` | 막히는 것은 **리뷰 게이트뿐**이다 — `javis_orchestra.py boot-reviewers --spawn` 또는 `javis_boot_node.py --role <역할> --agent <에이전트>` 로 그 좌석만 재각성 (⚠`--spawn` 없는 맨 호출은 기본 함대 정책상 **리뷰어 0기 스폰** = 교정 안 됨) |
 | `declined` | claim 정당거부(rc 7) — 살아있는 master 가 이미 있다 | `master_held_elsewhere` | 기존 master 에 인계하고 정지 |
 | `session_error` | claim 컨텍스트 오류(rc 10) | `surface_missing` / `daemon_unreachable` | 위 boot-last `retry_eligible` 규약을 따른다(값이 없거나 측정 불능이면 **재실행 금지**) |
 | `aborted` | 실행 전제가 깨져 중단 | `master_gone` / `busy_other_executor` / `resource_hard`(rc 9) / `lease_fenced` / `version_incompatible` | reason 별 처방 — `resource_hard` 는 자원 정리 후 재선언 · `lease_fenced` 는 **무조치**(새 러너가 소유) |

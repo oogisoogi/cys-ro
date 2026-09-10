@@ -3000,9 +3000,9 @@ def _cmd_run_chain(log):
         if gate_rc is not None:
             return gate_rc  # EXIT_RESOURCE_HARD(9) = 자원 hard_block(팀 기동 0·escalation)
 
-        # ④ 4종 의무 노드 기동 — 결손>0에서만 호출(결손 0=스폰 경로 미진입)
+        # ④ 기본 함대 기동 — 결손>0에서만 호출(결손 0=스폰 경로 미진입)
         boot_budget = _budget_derived("cys_boot_outer_s", 300)
-        _progress("④ 4종 의무 노드 기동 중(최대 %ds — 예산 파생)…" % boot_budget)
+        _progress("④ 기본 함대 기동 중(최대 %ds — 예산 파생)…" % boot_budget)
         code, out = _run(["cys", "boot", "--json"], timeout=boot_budget)
         # ★★팩↔바이너리 스큐 방어(온보딩 치명 위험 차단): 구 `cys` 바이너리는 `--json` 을 모르므로
         #   clap 이 **사용오류(exit 2)** 로 즉사한다 — 그대로 두면 아래 `_boot_fatal_verdict` 가
@@ -3101,7 +3101,7 @@ def _cmd_run_chain(log):
         log.step(STEP.CHECK, code, out, suffix="#%d" % attempt)
         if code == 0:
             break
-        # ★(부트 v2 §2-9 소비자 매핑) exit 12 = ack_pending — **필수 4종은 전원 ready** 이고
+        # ★(부트 v2 §2-9 소비자 매핑) exit 12 = ack_pending — **의무 역할은 전원 ready** 이고
         #   리뷰어 각성 ACK 만 미확인이다. 부트 완주의 기준은 ready 축이므로 여기서는 0 으로
         #   접고 라벨만 남긴다. 차단은 리뷰 게이트(review-prompt·round-init)가 소유한다 —
         #   리뷰어 하나의 확률적 각성이 팀 전체 기동을 인질로 잡으면 안 된다([가정 A]).

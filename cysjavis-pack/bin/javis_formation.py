@@ -7,8 +7,10 @@
 
 상태(FormationState): complete / partial:{missing_clis} / pending-cli:{roles} /
                       pending-resource / failed:{cause}.
-  complete = master + 4종 의무(cso·worker·reviewer-gemini·reviewer-codex) 전부 기동일 때만
-             (리뷰어 없는 부서는 라운드 루프 불능 → complete 오판 금지·Sim S2-5).
+  complete = 기본 함대(master·cso·worker) 전부 기동일 때만
+             (★2026-09-10 기본 함대 정책: 리뷰어는 온디맨드 — 그 부재는 결원이 아니다.
+              구 문언 「4종 의무(…reviewer-gemini·reviewer-codex)」는 3기가 선 기계에서
+              complete 를 영영 못 내던 거짓 기준이었다).
   partial  = 설치된 부분만 기동 + 부족 CLI 목록(설치 시 자동 승급).
   pending-cli = CLI 전무 → 빈 셸 유지(온보딩 보존·기능1).
   pending-resource = 자원 게이트 hard(servers/nodes/load_ratio/context_pct/formation_budget 중 하나 —
@@ -1140,6 +1142,27 @@ def _plan_directive_hashes():
             for role, fn in _ROLE_DIRECTIVE_FILE.items()}
 
 
+# ★C03 대표 마커의 **정의처는 preflight 의 CONTENT_PINS 다**(2026-09-11 · 2R codex #5 연쇄).
+#   종전엔 여기에 리터럴 사본("4종 의무 노드")이 박혀 있었다 — 그래서 기본 함대 정책으로
+#   디렉티브를 정합시키는 순간 이 술어가 **조용히 False** 가 됐다(사본 드리프트의 교과서적
+#   형태: 정책을 고치면 사본이 거짓말을 시작한다). 이제 preflight 에서 **파생**한다.
+#   폴백 리터럴은 preflight 를 못 읽을 때만 쓰고, 그때도 '문서가 존재한다'는 최소 사실만 본다.
+_C03_MARKER_KEYS = ("javis_preflight", "master")
+
+
+def _c03_marker_pins():
+    """C03 대표 마커 목록 — **preflight 의 `C03_MARKER_PINS` 를 읽는다**(사본 금지).
+
+    ★1R codex 지적 반영(2026-09-11): 중간 개정에서 「기본 함대」 두 글자만 봤는데, 그 토큰은
+      문서 곳곳에 나오므로 정책 문장이 통째로 지워져도 통과하는 **공허한 게이트**였다. 지금은
+      정책을 판별하는 고유 문구(구성·리뷰어 경계)를 SOT 에서 그대로 받는다."""
+    try:
+        import javis_preflight as _pf          # 지연 import(훅 경로 비용 0.04s 실측)
+        return list(_pf.C03_MARKER_PINS)
+    except Exception:
+        return list(_C03_MARKER_KEYS)
+
+
 def _c03_pass():
     """MASTER_DIRECTIVE 에 표준 핀 조항이 살아있는가(C03.pin.master 취지)."""
     p = os.path.join(_directives_dir(), "MASTER_DIRECTIVE.md")
@@ -1147,8 +1170,7 @@ def _c03_pass():
         text = open(p, encoding="utf-8", errors="replace").read()
     except OSError:
         return False
-    # 표준 핀 대표 마커(preflight CONTENT_PINS 부분집합 — 존재로 C03 취지 확인).
-    return ("javis_preflight" in text) and ("4종 의무 노드" in text) and ("master" in text)
+    return all(m in text for m in _c03_marker_pins())
 
 
 class RosterPlan(object):

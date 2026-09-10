@@ -869,10 +869,18 @@ jobs:
         shell: bash
         env:
           MAC_ENABLED: ${{ steps.macsign.outputs.enabled }}
-          HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE_B64 != '' }}
+          # ★1R codex 지적 수리(2026-09-11): 종전엔 **인증서 1종**만 봤다. 맥 프리플라이트는
+          #   APPLE_* **7종 전수**를 요구하므로(위 macsign 스텝), 인증서만 있고 나머지 중 하나가
+          #   없는 부분 설정에서 맥 레그는 skip 되는데 본문은 .dmg 를 안내했다 — 존재하지 않는
+          #   자산으로 사용자를 보내는, 이 수리가 없애려던 바로 그 병이다. **같은 7종**을 본다.
+          #   ⚠정직한 한계: 시크릿 완비는 맥 자산의 **필요조건**이지 충분조건이 아니다(빌드·공증
+          #     실패 가능). 다만 그 경우 맥 레그 잡 자체가 실패해 드래프트 발행 경로가 멈추므로
+          #     (release-verify 의 「맥 레인 전부-또는-전무」 규율이 그 뒤를 한 번 더 잡는다)
+          #     본문만 초록으로 남는 조합은 생기지 않는다.
+          HAS_APPLE_SECRETS: ${{ secrets.APPLE_CERTIFICATE_B64 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_KEYCHAIN_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         run: |
           set -euo pipefail
-          if [ "${MAC_ENABLED:-}" = "true" ] || { [ -z "${MAC_ENABLED:-}" ] && [ "${HAS_APPLE_CERT:-false}" = "true" ]; }; then
+          if [ "${MAC_ENABLED:-}" = "true" ] || { [ -z "${MAC_ENABLED:-}" ] && [ "${HAS_APPLE_SECRETS:-false}" = "true" ]; }; then
             line="macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다."
           else
             line="Windows는 -setup.exe를 내려받아 설치하세요. 기존 사용자는 앱 내 Update 버튼으로 자동 갱신됩니다. (이 태그는 윈도우 단독 배포입니다 — macOS 자산은 포함되지 않습니다.)"

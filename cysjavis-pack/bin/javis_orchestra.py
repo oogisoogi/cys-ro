@@ -7,7 +7,8 @@ master가 (a) "4개 노드 다 떴나"를 눈대중 판단, (b) 리뷰 프롬프
 그 사실을 산출한다(LLM 자연어 재추론 금지 — 출력만이 사실).
 
 서브커맨드:
-  check [--json]                4종 의무 노드(cso·worker·reviewer-gemini·reviewer-codex)
+  check [--json]                기본 함대(cso·worker · 리뷰어는 온디맨드라 의무 아님 —
+                                단 **연 리뷰어 좌석은 판정·ACK 대상**)
                                 생존을 cys status로 판정.
                                 --json: 완주 2축(ready ∧ awake)을 기계 판독 payload 1줄로
                                 노출(U-25 1단 — **관측 전용**: exit 계약도 사람용 출력도
@@ -1144,7 +1145,7 @@ def _check_unknown_payload(why):
     }
 
 
-# ── check: 4종 의무 노드 생존 판정 ──
+# ── check: 기본 함대 생존 판정(+ 연 리뷰어 좌석) ──
 def cmd_check(args):
     status = cys_status()
     if status is None:
@@ -2033,7 +2034,7 @@ def cmd_task_prompt(args):
                   "대상 생존 미확인 상태로는 티켓을 내지 않는다.", file=sys.stderr)
             return 2
         if not live_roles(status).get(args.to):
-            print("[task-prompt] 대상 '%s' 미기동 — 티켓 미출력. `cys boot`(4종 의무 기동) 또는 "
+            print("[task-prompt] 대상 '%s' 미기동 — 티켓 미출력. `cys boot`(기본 함대 기동) 또는 "
                   "`cys launch-agent --role %s --agent claude`로 기동 후 재실행하라."
                   % (args.to, args.to), file=sys.stderr)
             return 1
@@ -3820,7 +3821,7 @@ def main():
     ap = UsageExitParser(description="LLM 오케스트레이션 결정론 도구(앵커4)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    ck = sub.add_parser("check", help="4종 의무 노드 생존 판정")
+    ck = sub.add_parser("check", help="기본 함대 생존 판정(+ 연 리뷰어 좌석 ACK)")
     ck.add_argument("--json", action="store_true",
                     help="완주 2축(ready ∧ awake)을 stdout 에 1줄 JSON 으로 출력(U-25 1단 — "
                          "관측 전용: exit 계약 무변경 · 사람용 산문 미출력). awake·awake_pending "

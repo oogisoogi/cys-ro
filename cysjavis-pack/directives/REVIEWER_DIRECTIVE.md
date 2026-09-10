@@ -131,7 +131,7 @@ CYS_PACK_DIR 설정 시 그 하위 — 진행% 집계기의 기본 스캔 경로
 
 ## 6. Claude 대체 리뷰어 모드 (무구독 폴백 — 네 역할이 `reviewer-claude-1/2`일 때)
 사용자에게 agy(Antigravity)·codex 구독·CLI가 없으면 master가 너(Claude)를 그 리뷰어 슬롯에
-대체 기동한다(`javis_orchestra.py boot-reviewers`의 자동 폴백). 이때 반드시 지킨다:
+대체 기동한다(`javis_orchestra.py boot-reviewers --spawn`의 자동 폴백 — 맨 호출은 스폰 0). 이때 반드시 지킨다:
 
 - **정직한 라벨링(환각0)**: 이 구성은 *보편적이고 리뷰 품질은 높지만* agy·codex 같은 **벤더(모델
   패밀리) 다양성은 약하다**. master·워커·너가 모두 Claude면 **사각지대(blind spot)가 상관**되어

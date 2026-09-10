@@ -276,6 +276,36 @@ def t_formation():
     check("ⓐ17 편성 모듈에 프로파일 감지 함수가 없다(불일치의 씨앗 제거)",
           not hasattr(F, "participant_profile") and not hasattr(F, "native_reviewer_present"))
 
+    # ★C03 대표 마커가 **preflight 에서 파생**되는가(2026-09-11 · 사본 드리프트 봉인).
+    #   종전엔 여기에 리터럴 "4종 의무 노드" 사본이 박혀 있어, 기본 함대 정책으로 디렉티브를
+    #   정합시키는 순간 `_c03_pass()` 가 **조용히 False** 가 됐다(정책을 고치면 사본이 거짓말).
+    marks = F._c03_marker_pins()
+    import javis_preflight as PF
+    check("ⓐ18 C03 대표 마커가 preflight SOT(C03_MARKER_PINS)에서 온다(리터럴 사본 0)",
+          marks == list(PF.C03_MARKER_PINS) and "4종 의무 노드" not in marks, repr(marks))
+    # ★1R codex 지적: 「기본 함대」 두 글자는 **판별력이 없다**(문서 곳곳에 나온다).
+    #   정책을 판별하는 고유 문구여야 하고, 그 문구는 CONTENT_PINS 에도 실재해야 한다.
+    _pins = [p for p, _l in PF.CONTENT_PINS["MASTER_DIRECTIVE.md"]]
+    check("ⓐ18a 대표 마커가 정책을 **판별**한다(구성·리뷰어 경계 고유 문구)",
+          "기본 함대 = master · CSO · worker 1기" in marks
+          and "리뷰어는 기본 함대가 아니다" in marks and "기본 함대" not in marks, repr(marks))
+    check("ⓐ18b 대표 마커(정체 'master' 제외)는 CONTENT_PINS 의 부분집합이다",
+          all(m in _pins for m in marks if m != "master"),
+          repr([m for m in marks if m != "master" and m not in _pins]))
+    check("ⓐ19 repo 디렉티브가 C03 취지를 통과한다(정합 후에도 초록)",
+          F._c03_pass() is True)
+    # 음성 픽스처: 대표 마커를 지운 문서는 반드시 적색이어야 한다.
+    import tempfile
+    _sv_dd = F._directives_dir
+    try:
+        tmp = tempfile.mkdtemp()
+        io.open(os.path.join(tmp, "MASTER_DIRECTIVE.md"), "w", encoding="utf-8").write(
+            "master 만 있고 대표 마커는 없다\n")
+        F._directives_dir = lambda: tmp
+        check("ⓐ20 대표 마커 없는 문서는 적색(게이트 실효 증명)", F._c03_pass() is False)
+    finally:
+        F._directives_dir = _sv_dd
+
     # ⓑ 자식 cwd 상속 — 순수 파서(생성 cwd 우선 · live_cwd 아님 · exited 무시).
     obj = {"surfaces": [
         {"role": "master", "exited": True, "cwd": "/dead"},
@@ -606,6 +636,23 @@ def t_attribution():
               "블록을 지웠는데도 통과 — 파일 어딘가의 무관한 idoforgod 를 세고 있다")
 
 
+def _apple_secret_names(text):
+    """맥 서명 프리플라이트가 요구하는 APPLE_* 이름 목록 — 그 스텝의 `for v in …` 에서 파생."""
+    import re
+    m = re.search(r"for v in ((?:APPLE_[A-Z0-9_]+|\\\s*|\s)+);\s*do", text)
+    if not m:
+        return []
+    return sorted(set(re.findall(r"APPLE_[A-Z0-9_]+", m.group(1))))
+
+
+def _has_apple_secrets_expr(text):
+    """`HAS_APPLE_SECRETS:` 한 줄의 `${{ … }}` 식(순수). 없으면 None."""
+    for ln in text.splitlines():
+        if ln.strip().startswith("HAS_APPLE_SECRETS:"):
+            return ln.split(":", 1)[1].strip()
+    return None
+
+
 # ── ⓖ 릴리스 본문 = **자산 유무 파생**(2026-09-11 · 항목9) ─────────────────────────────
 # ★윈도우 단독 태그(맥 서명 시크릿 부재 → 맥 레그 명시 skip)에서도 본문이 ".dmg 를 받으라"고
 #   안내하면, 릴리스 페이지가 **존재하지 않는 자산**을 가리킨다. 본문의 설치 안내 줄은
@@ -624,21 +671,71 @@ def t_release_body_derived():
           and "steps.relbody.outputs.install_line" in body,
           (body or "")[:200])
     check("ⓖ 파생 스텝이 실재하고 맥 레그 판정과 같은 소스를 읽는다",
-          "id: relbody" in src and "steps.macsign.outputs.enabled" in src
-          and "APPLE_CERTIFICATE_B64 != ''" in src,
+          "id: relbody" in src and "steps.macsign.outputs.enabled" in src,
           "파생 스텝·판정 소스 부재 — 본문이 다시 리터럴로 굳는다")
+    # ★1R codex 지적: 인증서 1종만 보면 **부분 설정**(cert 있고 나머지 중 하나 없음)에서
+    #   맥 레그는 skip 인데 본문은 .dmg 를 안내한다. 기대 목록을 **맥 프리플라이트에서 파생**해
+    #   (사본 금지) 폴백 식이 그 7종을 전부 보는지 대조한다.
+    want = _apple_secret_names(src)
+    fallback = _has_apple_secrets_expr(src)
+    check("ⓖ1 맥 프리플라이트가 요구하는 APPLE_* 목록 추출(7종)",
+          len(want) == 7, repr(want))
+    check("ⓖ2 윈도우 레그 폴백이 **그 7종 전부**를 본다(인증서 1종 판정 금지)",
+          bool(fallback) and all(("secrets.%s != ''" % n) in fallback for n in want),
+          (fallback or "")[:200])
+    # 음성 픽스처: 인증서 1종만 보는 식으로 되돌리면 반드시 적색이어야 한다.
+    mutated = src.replace(fallback or "@@none@@", "${{ secrets.APPLE_CERTIFICATE_B64 != '' }}")
+    mfb = _has_apple_secrets_expr(mutated)
+    check("ⓖ3 인증서 1종 판정으로 회귀 시 적색(게이트 실효 증명)",
+          not (mfb and all(("secrets.%s != ''" % n) in mfb for n in want)),
+          "1종 판정으로 되돌려도 초록 — 이 축은 아무것도 재지 않는다")
     # 음성 픽스처: 파생 참조를 지우고 리터럴로 되돌리면 반드시 적색이어야 한다.
-    mutated = src.replace("${{ steps.relbody.outputs.install_line }}",
-                          "macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요.")
-    mbody = _block_scalar(mutated, "releaseBody")
-    check("ⓖ 리터럴 회귀 시 적색(게이트 실효 증명)",
-          bool(mbody) and ".dmg" in mbody,
+    lit = src.replace("${{ steps.relbody.outputs.install_line }}",
+                      "macOS는 .dmg, Windows는 -setup.exe를 내려받아 설치하세요.")
+    lbody = _block_scalar(lit, "releaseBody")
+    check("ⓖ4 리터럴 회귀 시 적색(게이트 실효 증명)",
+          bool(lbody) and ".dmg" in lbody,
           "리터럴로 되돌려도 초록 — 이 축은 아무것도 재지 않는다")
+
+
+# ── ⓗ ACK 처방 동기 — 문서가 **교정하지 않는 명령**을 처방하지 않는가(1R codex 지적) ─────────
+# ★`boot-reviewers` 맨 호출은 기본 함대 정책상 리뷰어를 0기 스폰한다(조기 반환). 코드에서
+#   처방을 고쳐도 문서 소비자(master·CEO·리뷰어)가 무플래그 줄을 읽으면 결과는 같다 —
+#   사람이 명령을 치고도 상태가 그대로인 **무동작 거짓 처방**이다.
+ACK_RX_FILES = ["directives/MASTER_DIRECTIVE.md", "directives/CEO_TEMPLATE.md",
+                "directives/REVIEWER_DIRECTIVE.md", "CLAUDE.md.template"]
+PACK = os.path.join(REPO, "cysjavis-pack")
+
+
+def _bare_boot_reviewers(text):
+    """`javis_orchestra.py boot-reviewers` 중 `--spawn` 이 뒤따르지 않는 출현(순수)."""
+    import re
+    out = []
+    for m in re.finditer(r"javis_orchestra\.py\s+boot-reviewers", text):
+        tail = text[m.end():m.end() + 12]
+        if not tail.lstrip().startswith("--spawn"):
+            out.append(text[max(0, m.start() - 40):m.end() + 20].replace("\n", " "))
+    return out
+
+
+def t_ack_remedy_docs():
+    for rel in ACK_RX_FILES:
+        try:
+            src = io.open(os.path.join(PACK, rel), encoding="utf-8", errors="replace").read()
+        except OSError as e:
+            check("ⓗ %s 판독" % rel, False, str(e))
+            continue
+        bare = _bare_boot_reviewers(src)
+        check("ⓗ %s — 무플래그 boot-reviewers 처방 0" % rel, not bare, repr(bare[:2]))
+    # 음성 픽스처: 무플래그 줄을 하나 심으면 반드시 잡혀야 한다.
+    check("ⓗ 재출현 탐지(게이트 실효 증명)",
+          len(_bare_boot_reviewers("처방: javis_orchestra.py boot-reviewers 로 재각성")) == 1)
 
 
 def main():
     t_attribution()
     t_release_body_derived()
+    t_ack_remedy_docs()
     t_orchestra()
     t_formation()
     t_phoenix()

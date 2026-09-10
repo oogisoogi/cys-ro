@@ -1840,6 +1840,12 @@ fn run_ensure_team(
     match cmd.spawn() {
         Ok(child) => {
             let pid = child.id().unwrap_or(0);
+            // ★(P3) Windows 자식 수명 결박 — 데몬 소유 Job(KILL_ON_JOB_CLOSE) 편입.
+            //   이 자식은 **핸들을 즉시 드롭**하므로 `kill_on_drop` 조차 없다: 부트 체인이
+            //   매달리면 데몬이 죽어도 python 이 남는다(office-bridge 고아와 같은 계급).
+            //   PTY 자식과 같은 Job·같은 헬퍼 · best-effort(편입 실패가 부트를 막지 않는다).
+            #[cfg(windows)]
+            crate::state::winjob::assign_child(pid);
             // 핸들 즉시 드롭 = 기다리지 않는다(감독자 cadence 를 자식이 잡아먹지 않는다).
             // ★정직 명문(P2 · 2차 성찰 P2-3): 자식 exit 을 관측하지 않으므로 '스폰 성공=인텐트
             //   제거'이고, exit 11(싱글플라이트 skip)도 exit 10(session_error)도 여기서는

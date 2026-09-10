@@ -1702,6 +1702,18 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf) {
             }
             match cmd.spawn() {
                 Ok(mut child) => {
+                    // ★(P3 · 2026-09-10 참가자 기계 실측) Windows 자식 수명 결박 — 데몬 소유
+                    //   Job(KILL_ON_JOB_CLOSE)에 편입한다. `kill_on_drop(true)` 는 **이 tokio
+                    //   태스크가 Child 를 드롭할 때만** 동작한다: 설정 앱 제거·taskkill /F 처럼
+                    //   cysd 가 드롭 없이 사라지는 경로에서는 브리지 python3.exe 가 고아로 남았다
+                    //   (실측: cysd.exe 소멸 뒤에도 pid 17600 · CPU 324s 생존 → 설치 폴더 삭제 불가
+                    //   → 재설치 정지). Job 은 프로세스 종료 시 OS 가 핸들을 닫아 강제 종료한다.
+                    //   ★PTY 자식이 쓰는 것과 **같은 Job·같은 헬퍼**다(새 규약 발명 0 · state.rs
+                    //   winjob 참조). best-effort — 편입 실패가 브리지 기동을 막지 않는다.
+                    #[cfg(windows)]
+                    if let Some(pid) = child.id() {
+                        crate::state::winjob::assign_child(pid);
+                    }
                     eprintln!("[cysd] office-bridge spawned (127.0.0.1:{port})");
                     let _ = child.wait().await; // 사망 감지 → 아래 백오프 후 루프가 재스폰 판단
                     eprintln!("[cysd] office-bridge exited — 60s 후 재확인");
@@ -2182,6 +2194,12 @@ fn run_auto_restore_once(
         }
     };
     let pid = child.id();
+    // ★(P3) Windows 자식 수명 결박 — 데몬 소유 Job(KILL_ON_JOB_CLOSE) 편입. 이 자식은 콜드부트
+    //   복원(수십 초~분)이라 **데몬이 사라지는 창과 겹칠 수 있고**, 그 순간 복원 python 이 고아로
+    //   남으면 설치 폴더 삭제·재설치를 막는다(09-10 office-bridge 고아와 같은 계급). 이 데몬을
+    //   위한 복원이므로 데몬이 없어지면 함께 끝나는 것이 옳다. PTY 자식과 같은 Job·같은 헬퍼.
+    #[cfg(windows)]
+    crate::state::winjob::assign_child(pid);
     // spawn 직후 다른 blocking 없이 최우선으로 start_time 확보(publication race 최소화·C2).
     // bounded retry(3회) — 갓 스폰된 자식이 프로세스표에 반영될 짧은 창을 흡수한다.
     let start_time = {

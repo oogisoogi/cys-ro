@@ -12685,7 +12685,14 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     if !out.status.success() {
                         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
                     }
-                    println!("작업 스케줄러 등록 완료 (로그온 시 자동 기동 + 사망 시 자동 재기동 지원 — RestartOnFailure PT1M×10·실행시간 무제한).");
+                    // ★문구 정직화(P4 · 2026-09-10 참가자 기계 실측): 이 태스크의 Action 은
+                    //   **cysd.exe 하나**다 — 로그온 시 뜨는 것은 데몬이지 cys 앱 창이 아니다.
+                    //   종전 문구("로그온 시 자동 기동")를 사용자는 "재부팅하면 cys 가 뜬다"로
+                    //   읽었고, 창이 없으니 "자동 시작이 안 된다"고 판단해 매번 손으로 앱을 켰다
+                    //   (실측: 태스크는 Ready·Limited 로 멀쩡히 등록돼 있었다 — 등록이 아니라
+                    //   **문구**가 틀렸다). 보장하는 것과 보장하지 않는 것을 같은 줄에서 말한다.
+                    println!("작업 스케줄러 등록 완료 — 로그온 시 **cysd(데몬)** 자동 기동 + 사망 시 자동 재기동(RestartOnFailure PT1M×10·실행시간 무제한).");
+                    println!("↳ cys **앱 창**은 이 태스크가 띄우지 않는다(데몬 전용 등록). 창이 필요하면 앱을 직접 실행하라 — CLI(`cys ...`)는 데몬만 있으면 동작한다.");
                     Ok(())
                 }
                 DaemonAction::Uninstall => {

@@ -13,6 +13,7 @@
 전부 순수/스텁 — 라이브 데몬·실 스폰 무접촉. 실행: python3 test_participant_formation.py
 """
 import importlib.util
+import io
 import os
 import sys
 
@@ -173,10 +174,43 @@ def t_phoenix():
           seen and "--cwd" not in seen[0], repr(seen))
 
 
+# ── ⓒ P3: Windows 자식 수명 결박(Job Object) — **소스 트립와이어** ──────────────────────
+# ★정직한 한계: 이것은 "부모 종료 후 자식 부재"의 **실측이 아니다**(그 측정은 Windows 실기가
+#   필요하다 — windows-health 러너·실기 절차로 별도 수행). 여기서 잠그는 것은 계약의 **드리프트**
+#   하나다: cysd 가 낳는 장수 자식이 데몬 소유 Job(KILL_ON_JOB_CLOSE)에 편입되지 않은 채
+#   추가되는 것. 참가자 기계 실측(2026-09-10)에서 office-bridge python3.exe 가 cysd 소멸 뒤에도
+#   살아남아 설치 폴더 삭제를 막고 재설치를 정지시킨 결함이 정확히 그 형태였다.
+REPO = os.path.normpath(os.path.join(BIN, "..", ".."))
+# (파일, 그 파일이 낳는 자식) — 편입 누락 시 고아가 되는 지점 전수.
+JOB_BOUND_SITES = [
+    ("src/bin/cysd/state.rs", "PTY 좌석 자식(D3·W5 원본 계약)"),
+    ("src/bin/cysd/main.rs", "office-bridge python3(장수 · 09-10 고아 실측 지점) + auto-restore python3"),
+    ("src/bin/cysd/boot_supervisor.rs", "부트 체인 python3(핸들 즉시 드롭 = kill_on_drop 조차 없음)"),
+]
+
+
+def t_winjob():
+    total = 0
+    for rel, what in JOB_BOUND_SITES:
+        path = os.path.join(REPO, rel)
+        try:
+            src = io.open(path, encoding="utf-8", errors="replace").read()
+        except OSError as e:
+            check("ⓒ %s 판독" % rel, False, str(e))
+            continue
+        n = src.count("winjob::assign_child(")
+        total += n
+        check("ⓒ %s — Job 편입 존재(%s)" % (rel, what), n >= 1, "hits=%d" % n)
+    # 호출 4(PTY·office-bridge·auto-restore·부트 체인). 값이 흔들리면 **새 자식이 결박 없이 늘었거나 결박이 사라진 것**이다 —
+    # 어느 쪽이든 사람이 한 번 생각해야 한다(경보이지 금지가 아니다).
+    check("ⓒ Job 편입 호출 지점 전수 = 4(드리프트 경보)", total == 4, "total=%d" % total)
+
+
 def main():
     t_orchestra()
     t_formation()
     t_phoenix()
+    t_winjob()
     print("\n=== %d/%d PASS (fails: %s) ===" % (_total[0] - len(fails), _total[0], fails))
     return 0 if not fails else 1
 

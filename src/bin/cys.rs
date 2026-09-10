@@ -211,13 +211,14 @@ enum Command {
     },
     /// T2-6 조직 복원: 토폴로지 스냅샷의 죽은 역할들을 일괄 재기동·재주입 (작업 재개는 master 판단)
     Restore {
+        // ★도움말 문자열의 `per-entry-cwd` 는 **능력 토큰**이다: 팩(javis_phoenix)이
+        // `cys restore --help` 에서 이 토큰을 찾아 구 바이너리(전역 override)와 신 바이너리
+        // (항목별 override)를 가른다. 구 바이너리에 혼합 함대 override 를 실으면 유효 좌석이
+        // 이주하므로, 토큰이 없으면 팩은 종전(전원 홈일 때만) 계약으로 물러선다.
+        // **이 한 줄을 바꿀 때 토큰을 지우지 마라** — 지우면 팩이 조용히 보수 모드로 굳는다
+        // (회귀 핀: `restore_cwd_help_carries_capability_token`). 설명은 help 를 부풀리지 않게
+        // 일반 주석으로 둔다 — 사용자가 읽는 것은 위 한 줄이다.
         /// 홈·미지정으로 굳은 좌석만 이 폴더로 교정 (per-entry-cwd — 유효한 작업 폴더는 불변)
-        ///
-        /// ★도움말의 `per-entry-cwd` 는 **능력 토큰**이다: 팩(javis_phoenix)이
-        /// `cys restore --help` 에서 이 토큰을 찾아 구 바이너리(전역 override)와 신 바이너리
-        /// (항목별 override)를 가른다. 구 바이너리에 혼합 함대 override 를 실으면 유효 좌석이
-        /// 이주하므로, 토큰이 없으면 팩은 종전(전원 홈일 때만) 계약으로 물러선다.
-        /// **이 문구를 바꿀 때 토큰을 지우지 마라** — 지우면 팩이 조용히 보수 모드로 굳는다.
         #[arg(long)]
         cwd: Option<String>,
         /// master 역할도 재기동 대상에 포함 (기본 제외 — restore 실행자가 보통 master)

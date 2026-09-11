@@ -79,6 +79,19 @@
   `release-publish.yml` 의 2차 체크아웃(`path: .release-tools`, ref = 워크플로 자신의
   `github.sha`)이 그것이다. 발행 대상 태그 트리에 이 파일이 없어도 검증이 성립한다
   (v0.14.19 태그는 이 파일보다 먼저 잘렸다 — 그래서 태그 트리에서 부르면 `can't open file` 로 죽는다).
+  ★예외 1건(2026-09-12 · TICKET=cys-v01436-pack-url): 8단계 팩 replay 단조 검사는 **벤더 latest
+  팩 매니페스트**를 비교 기준으로 쓴다. 그 한 파일만 `main()` 이 공개 URL 에서 받는다(토큰 불요).
+  `verify()` 자체는 여전히 순수 함수다 — 벤더 매니페스트를 인자로 받는다(생략 불가 · 기본값 없음).
+  네트워크가 없으면 **통과가 아니라 실패**다. 오프라인 재현은 `--vendor-manifest-file` 로 한다.
+
+★8단계 — 팩 replay 단조 (2026-09-12 · TICKET=cys-v01436-pack-url)
+  사용자 기계는 설치에 성공한 팩의 signed_at 을 `~/.cys/.pack-accepted.json` 에 적고, 다음 팩은
+  그보다 **엄격히 새 signed_at** 이어야 받는다(`src/packsig.rs` ⓔ). 벤더 팩을 한 번이라도 받은
+  기계는 벤더 signed_at 을 기준선으로 들고 있다. 우리 팩의 signed_at 이 그 값 이하이면 그 기계는
+  우리 팩을 replay 로 **조용히 영구 거부**한다. 그래서 발행 직전에 「우리 signed_at > 벤더 latest
+  signed_at」 을 단언한다. 실측(2026-09-12): 우리 1789091457 > 벤더 1789084036.
+  ⚠사거리: 비교 대상은 **벤더의 현재 latest** 한 판이다. 벤더가 발행을 멈추면(자산 404) 이 검사는
+  조회 불가로 발행을 막는다 — 그때는 사람이 기준을 다시 정해야 한다(조용한 통과로 풀지 않는다).
 
 동반 회귀 테스트: `python3 scripts/tests/test_release_verify.py` (합성 픽스처 · 네트워크 불요)
 
@@ -86,6 +99,7 @@
   python3 scripts/release-verify.py --version 0.14.19 --release-dir ~/cys-release-backup/v0.14.19-assets
   python3 scripts/release-verify.py --version 0.14.19 --release-dir reviewed-release --print-assets
   python3 scripts/release-verify.py --version 0.14.30 --release-dir d --repo oogisoogi/cys-ro
+  python3 scripts/release-verify.py --version 0.14.36 --release-dir d --vendor-manifest-file vendor.json
 
 종료코드: 0=통과, 1=검증 실패, 2=인자 오류
 """
@@ -97,6 +111,7 @@ import json
 import os
 import re
 import sys
+import urllib.request
 import zipfile
 import zlib
 from datetime import datetime
@@ -118,6 +133,11 @@ TOKEN_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 #   ⚠이 값 · `release.yml` 의 `SRC_REPO` · `src-tauri/tauri.conf.json` 의 updater endpoints 는
 #     **같은 레포**여야 한다. 엇갈리면 업데이터가 남의 판을 본다(전환 시 세 곳 동시 수정).
 RELEASE_REPO = "oogisoogi/cys-ro"
+
+# ★8단계 비교 기준 — 벤더 latest 팩 매니페스트(검사용 상수 · 배포 원본이 아니다).
+#   사용자 기계의 replay 기준선이 될 수 있는 **남의 판**이다. 우리 팩이 이보다 새로 서명돼야 한다.
+VENDOR_PACK_MANIFEST_URL = \
+    "https://github.com/idoforgod/cys-terminal/releases/latest/download/pack-manifest.json"
 
 # ★SUMS 와 무관한 독립 하한선 ① — 이게 없으면 "빌드 자체가 안 돼 SUMS 에도 안 실린 자산"을 못 잡는다.
 #   `{v}` 는 --version 으로 채운다. 여기 없는 자산은 아래 `UPDATER_PLATFORMS` 가 강제한다.
@@ -486,7 +506,55 @@ def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
     return sorted(platforms)
 
 
-def verify(version, release_dir, repo=RELEASE_REPO):
+def _signed_at(obj, what):
+    """signed_at 을 **정확히 int** 로만 받는다 — bool(True 는 int 하위형)·문자열·실수는 거부."""
+    if not isinstance(obj, dict):
+        raise VerifyError("%s 가 JSON 객체가 아니다" % what)
+    value = obj.get("signed_at")
+    if type(value) is not int:
+        raise VerifyError("%s 의 signed_at 이 정수가 아니다: %r" % (what, value))
+    return value
+
+
+def load_vendor_manifest(url=VENDOR_PACK_MANIFEST_URL, path=None, timeout=30):
+    """8단계 비교 기준을 얻는다. 받지 못하면 **실패**다(모르는 채 발행하지 않는다)."""
+    try:
+        if path is not None:
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.read()
+            src = path
+        else:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+            src = url
+    except Exception as e:
+        raise VerifyError("벤더 팩 매니페스트 조회 불가 — replay 단조를 판정할 수 없어 발행을 막는다"
+                          "(%s: %s: %s)" % (path or url, type(e).__name__, e))
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        raise VerifyError("벤더 팩 매니페스트가 JSON 이 아니다(%s): %s" % (src, e))
+
+
+def check_pack_replay_monotonic(files, vendor_manifest):
+    """우리 pack-manifest.json 의 signed_at 이 벤더 latest 보다 **엄격히 커야** 한다.
+
+    같거나 작으면 벤더 팩을 받은 기계가 우리 팩을 replay 로 거부한다(`src/packsig.rs` ⓔ 는 `<=` 거부).
+    """
+    try:
+        ours = json.loads(read_text_strict(files["pack-manifest.json"], "pack-manifest.json"))
+    except ValueError as e:
+        raise VerifyError("pack-manifest.json 이 JSON 이 아니다: %s" % e)
+    ours_at = _signed_at(ours, "pack-manifest.json")
+    vendor_at = _signed_at(vendor_manifest, "벤더 latest 팩 매니페스트")
+    if ours_at <= vendor_at:
+        raise VerifyError("팩 replay 단조 위반 — 우리 signed_at %d <= 벤더 latest signed_at %d. "
+                          "벤더 팩을 받은 기계가 이 팩을 replay 로 거부한다(다시 서명하라)"
+                          % (ours_at, vendor_at))
+    return ours_at, vendor_at
+
+
+def verify(version, release_dir, vendor_manifest, repo=RELEASE_REPO):
     if not VERSION_RE.match(version):
         raise VerifyError("--version 은 X.Y.Z 여야 한다: %r" % version)
 
@@ -536,6 +604,9 @@ def verify(version, release_dir, repo=RELEASE_REPO):
     # ── 7. 업데이터(latest.json) 교차 대조 ──
     platforms = check_latest_json(version, files, sums, mac_included, repo=repo)
 
+    # ── 8. 팩 replay 단조 — 벤더 팩을 받은 기계도 이 팩을 받을 수 있는가 ──
+    check_pack_replay_monotonic(files, vendor_manifest)
+
     return sorted(sums), platforms, mac_included
 
 
@@ -548,10 +619,16 @@ def main():
     #   플래그는 포크·미러에서 같은 검증기를 재현하기 위한 것이지, 배포 원본을 흔들라는 게 아니다.
     ap.add_argument("--repo", default=RELEASE_REPO,
                     help="배포 원본 레포 owner/name (기본 %(default)s — latest.json url 결속 판정 기준)")
+    # ★8단계 기준의 오프라인 재현용. 생략하면 벤더 URL 에서 받는다 — 건너뛰는 선택지는 없다.
+    ap.add_argument("--vendor-manifest-file", default=None,
+                    help="벤더 latest pack-manifest.json 사본 경로 (기본: %s 에서 받음)"
+                         % VENDOR_PACK_MANIFEST_URL)
     args = ap.parse_args()
 
     try:
-        assets, platforms, mac_included = verify(args.version, args.release_dir, repo=args.repo)
+        vendor = load_vendor_manifest(path=args.vendor_manifest_file)
+        assets, platforms, mac_included = verify(args.version, args.release_dir, vendor,
+                                                 repo=args.repo)
     except VerifyError as e:
         print("::error::릴리스 검증 실패 — %s" % e, file=sys.stderr)
         return 1

@@ -42,6 +42,10 @@ V = "0.14.19"
 #   그래서 검증기 쪽 배포 원본이 벤더로 남아 있는 동안에도 이 테스트는 초록이었다 — 포크 전환
 #   차단(F1)을 회귀 자산이 하나도 못 잡은 이유다. 이름을 참조해 그 괴리 자체를 없앤다.
 BASE = "https://github.com/%s/releases/download/v%s/" % (rv.RELEASE_REPO, V)
+# ★8단계(팩 replay 단조 · 2026-09-12) 픽스처 — 우리 팩이 벤더 latest 보다 **1초** 새로 서명된
+#   최소 통과 형태. 1초 차이로 둬야 `<=` → `<` 완화 같은 경계 회귀가 test_61 에서 드러난다.
+FIXTURE_SIGNED_AT = 1789091457
+VENDOR = {"pack_version": "0.14.33", "signed_at": FIXTURE_SIGNED_AT - 1}
 
 
 def _sig_text(tag):
@@ -89,7 +93,8 @@ def build_fixture(root, mac=True):
         w("cys_x64.app.tar.gz", gzip.compress(b"macos-intel-app-bundle" * 32))
     w("cys_%s_x64-setup.exe" % V, exe_bytes)
     w("pack.tar.gz", gzip.compress(b"cysjavis-pack-payload" * 32))
-    w("pack-manifest.json", json.dumps({"files": [], "expires_at": "2027-01-01T00:00:00Z"}).encode())
+    w("pack-manifest.json", json.dumps({"files": [], "expires_at": "2027-01-01T00:00:00Z",
+                                        "signed_at": FIXTURE_SIGNED_AT}).encode())
     w("pack-manifest.json.minisig",
       b"untrusted comment: minisign signature\nRWQfixture\n")
 
@@ -142,13 +147,13 @@ class ReleaseVerifyTests(unittest.TestCase):
             json.dump(obj, fh, ensure_ascii=False)
 
     def assert_pass(self):
-        assets, platforms, mac_included = rv.verify(V, self.root)
+        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR)
         return assets, platforms, mac_included
 
     def assert_fail(self, needle):
         """비영 종료 사유에 needle 이 들어 있어야 한다 — '조용한 통과'를 막는 본체."""
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root)
+            rv.verify(V, self.root, VENDOR)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
         return str(cm.exception)
@@ -411,12 +416,12 @@ class ReleaseVerifyTests(unittest.TestCase):
     def test_32_empty_dir(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d)
+                rv.verify(V, d, VENDOR)
             self.assertIn("비어 있다", str(cm.exception))
 
     def test_33_missing_dir(self):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, os.path.join(self.root, "no-such-dir"))
+            rv.verify(V, os.path.join(self.root, "no-such-dir"), VENDOR)
         self.assertIn("릴리스 디렉터리가 없다", str(cm.exception))
 
 
@@ -448,13 +453,13 @@ class WindowsOnlyLaneTests(unittest.TestCase):
 
     def assert_fail(self, needle):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root)
+            rv.verify(V, self.root, VENDOR)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
 
     def test_40_windows_only_passes_and_reports_mac_absent(self):
         """맥 자산 0종 + darwin 행 0 = 통과하되 **미포함으로 판정**돼야 한다."""
-        assets, platforms, mac_included = rv.verify(V, self.root)
+        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR)
         self.assertFalse(mac_included, "맥 미포함 묶음인데 포함으로 판정됐다")
         self.assertEqual(platforms, sorted(rv.REQUIRED_PLATFORMS))
         # 반환되는 `assets` 는 SUMS 등재분이다 — SHA256SUMS.txt 자신은 자기 제외 규약으로 빠진다.
@@ -528,7 +533,7 @@ class ReleaseRepoBindingTests(unittest.TestCase):
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d)
+                rv.verify(V, d, VENDOR)
             self.assertIn("url 결속 위반", str(cm.exception))
 
     def test_52_repo_override_changes_the_verdict(self):
@@ -543,17 +548,139 @@ class ReleaseRepoBindingTests(unittest.TestCase):
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
             with self.assertRaises(rv.VerifyError):
-                rv.verify(V, d)                                   # 기본(우리 포크)으로는 실패
-            _, _, mac = rv.verify(V, d, repo="someone/cys-mirror")  # 지목하면 통과
+                rv.verify(V, d, VENDOR)                                   # 기본(우리 포크)으로는 실패
+            _, _, mac = rv.verify(V, d, VENDOR, repo="someone/cys-mirror")  # 지목하면 통과
             self.assertFalse(mac)
+
+
+class PackReplayMonotonicTests(unittest.TestCase):
+    """★2026-09-12 신설(TICKET=cys-v01436-pack-url) — 8단계 팩 replay 단조.
+
+    지키는 계약: 우리 pack-manifest.json signed_at > 벤더 latest signed_at. 같거나 작으면 벤더 팩을
+    받은 기계(`~/.cys/.pack-accepted.json` 기준선 보유)가 우리 팩을 replay 로 영구 거부한다
+    (`src/packsig.rs` ⓔ 는 `<=` 를 거부한다). 그리고 이 검사는 **건너뛸 수 없어야** 한다.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        build_fixture(self.root, mac=False)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def rewrite_ours(self, **fields):
+        path = os.path.join(self.root, "pack-manifest.json")
+        obj = json.load(open(path, encoding="utf-8"))
+        for k, v in fields.items():
+            if v is KeyError:
+                obj.pop(k, None)
+            else:
+                obj[k] = v
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+        write_sums(self.root)
+
+    def assert_fail(self, vendor, needle):
+        with self.assertRaises(rv.VerifyError) as cm:
+            rv.verify(V, self.root, vendor)
+        self.assertIn(needle, str(cm.exception),
+                      "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
+
+    def test_60_ours_newer_passes(self):
+        rv.verify(V, self.root, VENDOR)
+        files = rv.collect_files(self.root)
+        self.assertEqual(rv.check_pack_replay_monotonic(files, VENDOR),
+                         (FIXTURE_SIGNED_AT, FIXTURE_SIGNED_AT - 1))
+
+    def test_61_equal_signed_at_rejected(self):
+        """★경계 — 같은 초도 거부다(수용 측이 `<=` 를 거부하므로 발행 측도 엄격 부등호)."""
+        self.assert_fail({"signed_at": FIXTURE_SIGNED_AT}, "팩 replay 단조 위반")
+
+    def test_62_vendor_newer_rejected(self):
+        self.assert_fail({"signed_at": FIXTURE_SIGNED_AT + 86400}, "팩 replay 단조 위반")
+
+    def test_63_ours_signed_at_missing(self):
+        self.rewrite_ours(signed_at=KeyError)
+        self.assert_fail(VENDOR, "pack-manifest.json 의 signed_at 이 정수가 아니다")
+
+    def test_64_ours_signed_at_not_exact_int(self):
+        """bool 은 int 하위형이라 isinstance 로는 통과한다 — 정확 타입으로 막는다."""
+        for bad in (True, str(FIXTURE_SIGNED_AT), float(FIXTURE_SIGNED_AT)):
+            with self.subTest(bad=bad):
+                self.rewrite_ours(signed_at=bad)
+                self.assert_fail(VENDOR, "pack-manifest.json 의 signed_at 이 정수가 아니다")
+
+    def test_65_vendor_manifest_malformed(self):
+        self.assert_fail({}, "벤더 latest 팩 매니페스트 의 signed_at 이 정수가 아니다")
+        self.assert_fail([], "벤더 latest 팩 매니페스트 가 JSON 객체가 아니다")
+        self.assert_fail(None, "벤더 latest 팩 매니페스트 가 JSON 객체가 아니다")
+
+    def test_66_vendor_manifest_is_not_optional(self):
+        """★건너뛰는 선택지가 없어야 한다 — 기본값을 붙이는 순간 호출부가 조용히 생략할 수 있다."""
+        import inspect
+        param = inspect.signature(rv.verify).parameters["vendor_manifest"]
+        self.assertIs(param.default, inspect.Parameter.empty,
+                      "verify() 의 vendor_manifest 에 기본값이 생겼다 — 8단계를 생략할 수 있게 된다")
+
+    def test_67_vendor_fetch_failure_is_failure(self):
+        """네트워크 불가 = 통과가 아니라 실패(명시 사유)."""
+        from unittest import mock
+        with mock.patch.object(rv.urllib.request, "urlopen", side_effect=OSError("offline")):
+            with self.assertRaises(rv.VerifyError) as cm:
+                rv.load_vendor_manifest()
+        self.assertIn("벤더 팩 매니페스트 조회 불가", str(cm.exception))
+        self.assertIn(rv.VENDOR_PACK_MANIFEST_URL, str(cm.exception))
+
+    def test_68_vendor_file_not_json(self):
+        path = os.path.join(self.root, "..", os.path.basename(self.root) + "-vendor.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("<html>not json</html>")
+        try:
+            with self.assertRaises(rv.VerifyError) as cm:
+                rv.load_vendor_manifest(path=path)
+            self.assertIn("벤더 팩 매니페스트가 JSON 이 아니다", str(cm.exception))
+        finally:
+            os.remove(path)
+
+    def test_69_vendor_url_is_vendor_not_our_fork(self):
+        """비교 기준이 우리 레포를 가리키면 자기 자신과 비교하는 검사가 된다."""
+        self.assertIn("/idoforgod/cys-terminal/", rv.VENDOR_PACK_MANIFEST_URL)
+        self.assertNotIn(rv.RELEASE_REPO, rv.VENDOR_PACK_MANIFEST_URL)
+        self.assertTrue(rv.VENDOR_PACK_MANIFEST_URL.endswith("/releases/latest/download/pack-manifest.json"))
 
 
 class ExitCodeContractTests(unittest.TestCase):
     """★워크플로 계약 — `set -euo pipefail` 아래에서 종료코드가 곧 fail-closed 다."""
 
-    def run_cli(self, *args):
-        return subprocess.run([sys.executable, os.path.abspath(_RV_PATH)] + list(args),
-                              capture_output=True, text=True)
+    def run_cli(self, *args, vendor=VENDOR):
+        """8단계 기준은 사본 파일로 넘긴다 — 테스트가 네트워크에 닿지 않게(vendor=None 이면 안 넘김)."""
+        with tempfile.TemporaryDirectory() as vd:
+            extra = []
+            if vendor is not None:
+                vf = os.path.join(vd, "vendor-pack-manifest.json")
+                with open(vf, "w", encoding="utf-8") as fh:
+                    json.dump(vendor, fh)
+                extra = ["--vendor-manifest-file", vf]
+            return subprocess.run([sys.executable, os.path.abspath(_RV_PATH)] + list(args) + extra,
+                                  capture_output=True, text=True)
+
+    def test_exit_1_when_vendor_manifest_unreadable(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_fixture(d)
+            r = self.run_cli("--version", V, "--release-dir", d,
+                             "--vendor-manifest-file", os.path.join(d, "no-such-vendor.json"),
+                             vendor=None)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("벤더 팩 매니페스트 조회 불가", r.stderr)
+
+    def test_exit_1_when_replay_monotonic_violated(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_fixture(d)
+            r = self.run_cli("--version", V, "--release-dir", d,
+                             vendor={"signed_at": FIXTURE_SIGNED_AT})
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("팩 replay 단조 위반", r.stderr)
 
     def test_exit_0_on_pass(self):
         with tempfile.TemporaryDirectory() as d:

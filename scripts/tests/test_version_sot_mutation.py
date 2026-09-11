@@ -13,7 +13,13 @@
   · 각 변조는 '정확히 1개 SOT 만 구버전'이어야 유효하다 — 그 조건까지 단언한다.
   · 양성 대조(무변조 사본은 통과)를 함께 돌린다. 없으면 '검사기가 항상 빨간' 경우를 못 본다.
 
-실행: python3 scripts/tests/test_version_sot_mutation.py     (stdlib 전용 · 네트워크 무접촉)
+★벤더 태그 동명 충돌 대조 (2026-09-12 · TICKET=cys-v01436-pack-url)
+  version-check.sh 는 태그 인자가 있으면 벤더 원격에 같은 이름의 태그가 있는지도 본다. 여기서는
+  `CYS_VENDOR_TAGS_REMOTE` 에 **로컬 저장소**를 넣어 네트워크 없이 5상태를 재현한다 —
+  충돌 없음(통과) · 충돌(실패) · 조회 불가(실패) · 태그 인자 없음(원격 미조회) · 꼬리만 같은 이름(통과).
+  ★모든 run() 이 원격을 명시로 받는다 — 기본값을 두면 한 호출이 실제 벤더 URL 로 새어 나간다.
+
+실행: python3 scripts/tests/test_version_sot_mutation.py     (stdlib + git · 네트워크 무접촉)
 종료: 0=전건 기대대로 · 1=하나라도 어긋남
 """
 import os
@@ -94,9 +100,27 @@ def apply_mutation(root, rel, rule, new, old):
     return idx + 1
 
 
-def run(root, *args):
-    p = subprocess.run(["sh", SCRIPT, *args], cwd=root, capture_output=True, text=True)
+def run(root, remote, *args):
+    env = dict(os.environ, CYS_VENDOR_TAGS_REMOTE=remote)
+    p = subprocess.run(["sh", SCRIPT, *args], cwd=root, capture_output=True, text=True, env=env)
     return p.returncode, p.stdout + p.stderr
+
+
+def git(*args, cwd=None):
+    subprocess.run(["git", "-c", "user.name=vsot", "-c", "user.email=vsot@example.invalid",
+                    "-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false", *args],
+                   cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def make_remote(path, tags=()):
+    """벤더 원격 대역(로컬 저장소). tags 의 이름마다 **경량** 태그를 단다 —
+    벤더 v0.14.34·35 가 경량 태그라 ref 1줄만 나오는 가장 좁은 형태로 재현한다."""
+    git("init", "-q", path)
+    if tags:
+        git("commit", "-q", "--allow-empty", "-m", "vendor-stand-in", cwd=path)
+        for tag in tags:
+            git("tag", tag, cwd=path)
+    return path
 
 
 def parse_rows(out):
@@ -117,11 +141,19 @@ def main():
     print("버전 SOT mutation 음성 대조 — NEW=%s OLD=%s" % (new, old))
 
     with tempfile.TemporaryDirectory(prefix="cys-vsot-") as tmp:
+        # 벤더 원격 대역 — 기본은 태그 없는 저장소(충돌 없음). 네트워크에 닿는 호출은 없다.
+        empty = make_remote(os.path.join(tmp, "vendor-empty"))
+        collide = make_remote(os.path.join(tmp, "vendor-collide"), tags=("v" + new,))
+        # 이름이 **비슷하기만** 한 태그 2종 — 꼬리 일치(x/vN)와 부분 문자열(vN-rc1). 둘 다 충돌이 아니다.
+        # ★부분 문자열 쪽이 없으면 `index($2, t)` 로 완화된 판정이 살아남는다(뮤테이션 실측 2026-09-12).
+        tail_only = make_remote(os.path.join(tmp, "vendor-tail"), tags=("x/v" + new, "v" + new + "-rc1"))
+        missing = os.path.join(tmp, "vendor-missing")          # 존재하지 않는 원격 = 조회 불가
+
         # ── 양성 대조: 무변조 사본은 반드시 통과 (검사기가 무조건 빨갛지 않음을 먼저 증명) ──
         base = os.path.join(tmp, "pristine")
         seed(base)
-        rc, out = run(base)
-        rct, _ = run(base, "v" + new)
+        rc, out = run(base, empty)
+        rct, _ = run(base, empty, "v" + new)
         rows = parse_rows(out)
         ok = rc == 0 and rct == 0 and len(rows) == 8 and all(v == new for v in rows.values())
         print("  [양성] 무변조 사본 rc=%d rc(tag)=%d 표 %d행 → %s" % (rc, rct, len(rows), "ok" if ok else "FAIL"))
@@ -133,8 +165,8 @@ def main():
             work = os.path.join(tmp, "mut_" + sid)
             seed(work)
             line_no = apply_mutation(work, rel, rule, new, old)
-            rc, out = run(work)
-            rct, _ = run(work, "v" + new)
+            rc, out = run(work, empty)
+            rct, _ = run(work, empty, "v" + new)
             rows = parse_rows(out)
             olds = [k for k, v in rows.items() if v == old]
             news = [k for k, v in rows.items() if v == new]
@@ -147,13 +179,38 @@ def main():
             if not nonzero:
                 fails.append("%s: 누락을 만들었는데 게이트가 통과했다(rc=%d rc_tag=%d)" % (sid, rc, rct))
 
+        # ── 벤더 태그 동명 충돌 대조 5종 — 전부 무변조 사본(SOT 8곳 일치)에서 원격만 바꾼다 ──
+        #    (id, 원격, 인자, 비영 기대, 출력에 있어야 할 문구 / None=「벤더 태그」 문구 자체가 없어야 함)
+        vcases = [
+            ("V1", empty, ("v" + new,), False, "✅ 벤더 태그 동명 충돌 없음"),
+            ("V2", collide, ("v" + new,), True, "❌ 벤더 태그 동명 충돌 —"),
+            ("V3", missing, ("v" + new,), True, "❌ 벤더 태그 조회 불가"),
+            ("V4", missing, (), False, None),
+            ("V5", tail_only, ("v" + new,), False, "✅ 벤더 태그 동명 충돌 없음"),
+        ]
+        for vid, remote, args, want_nonzero, needle in vcases:
+            rc, out = run(base, remote, *args)
+            rows = parse_rows(out)
+            sot_ok = len(rows) == 8 and all(v == new for v in rows.values())
+            rc_ok = (rc != 0) if want_nonzero else (rc == 0)
+            text_ok = ("벤더 태그" not in out) if needle is None else (needle in out)
+            ok = sot_ok and rc_ok and text_ok
+            print("  [벤더] %s %-15s 인자=%-9s rc=%d SOT일치=%s 문구=%s → %s"
+                  % (vid, os.path.basename(remote), args[0] if args else "(없음)", rc, sot_ok,
+                     text_ok, "ok" if ok else "FAIL"))
+            if not ok:
+                fails.append("%s: 벤더 태그 대조 어긋남(rc=%d sot=%s 문구=%s): %r"
+                             % (vid, rc, sot_ok, text_ok, out[-400:]))
+
     print()
     if fails:
         for f in fails:
             print("FAIL " + f)
         print("=== %d건 어긋남 ===" % len(fails))
         return 1
-    print("=== 양성 1 + 음성 8 = 9건 전건 기대대로 (8곳 중 어느 하나가 누락돼도 게이트가 죽는다) ===")
+    print("=== 양성 1 + 음성 %d + 벤더 %d = %d건 전건 기대대로 "
+          "(8곳 중 어느 하나가 누락돼도 · 벤더에 같은 태그가 있거나 조회가 안 돼도 게이트가 죽는다) ==="
+          % (len(MUTATIONS), len(vcases), 1 + len(MUTATIONS) + len(vcases)))
     return 0
 
 

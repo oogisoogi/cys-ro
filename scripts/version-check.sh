@@ -95,4 +95,36 @@ if [ "${1:-}" != "" ]; then
   fi
 fi
 
+# ★벤더 태그 동명 충돌 검사 (2026-09-12 · TICKET=cys-v01436-pack-url)
+#   왜: 벤더(idoforgod/cys-terminal)와 우리 포크가 같은 번호 계열을 쓴다. 실측(2026-09-12
+#   git ls-remote): 벤더 v0.14.31~35 가 우리 태그와 **같은 이름·다른 커밋**이다(우리 v0.14.33 =
+#   6faabbb ↔ 벤더 7879421). 같은 이름의 두 판이 돌면 "v0.14.33 을 설치했다"가 어느 판인지
+#   말해 주지 못한다. 그래서 태그를 단언하는 발행 직전 경로에서, 벤더에 같은 이름이 이미 있으면
+#   막는다.
+#   · 태그 인자가 있을 때만 돈다(인자 없는 상호 일치 검사는 네트워크를 쓰지 않는다).
+#   · 조회 불가(오프라인·원격 오류)는 **통과가 아니라 실패**다 — 충돌 여부를 모르는 채 발행하지 않는다.
+#   · CYS_VENDOR_TAGS_REMOTE 는 시험용 원격 치환 자리다(test_version_sot_mutation.py 가 로컬
+#     저장소를 넣어 네트워크 없이 3상태를 재현한다). 릴리스 워크플로는 이 변수를 주지 않는다.
+if [ "${1:-}" != "" ]; then
+  VTAG="v${1#v}"
+  VENDOR_TAGS_REMOTE="${CYS_VENDOR_TAGS_REMOTE:-https://github.com/idoforgod/cys-terminal.git}"
+  if VOUT=$(GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 \
+              ls-remote --tags "$VENDOR_TAGS_REMOTE" 2>&1); then
+    # 정확 일치만 센다 — ls-remote 패턴은 꼬리 일치라 refs/tags/x/v0.14.36 까지 잡는다.
+    # 경량 태그는 ref 1줄, 주석 태그는 ref + ^{} 2줄로 나온다(둘 다 충돌이다).
+    VHIT=$(printf '%s\n' "$VOUT" | awk -v t="refs/tags/$VTAG" '$2 == t || $2 == t "^{}"' | wc -l | tr -d ' ')
+    if [ "$VHIT" != "0" ]; then
+      echo "❌ 벤더 태그 동명 충돌 — $VTAG 가 벤더 원격에 이미 있다($VENDOR_TAGS_REMOTE)."
+      echo "   ↳ 같은 이름·다른 커밋의 판이 둘이 된다. 번호를 올려 벤더에 없는 태그로 발행하라."
+      rc=1
+    else
+      echo "✅ 벤더 태그 동명 충돌 없음: $VTAG (조회 원격 $VENDOR_TAGS_REMOTE)"
+    fi
+  else
+    echo "❌ 벤더 태그 조회 불가 — 충돌 여부를 판정할 수 없어 실패로 처리한다($VENDOR_TAGS_REMOTE)."
+    printf '%s\n' "$VOUT" | sed '/^[[:space:]]*$/d' | tail -3 | sed 's/^/   ↳ /'
+    rc=1
+  fi
+fi
+
 exit $rc

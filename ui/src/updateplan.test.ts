@@ -39,10 +39,18 @@ describe("updatePlan — 옵션 2 분기 판정(문자열 핀 = 회귀 0 증명)
     const p = updatePlan({ ...base, binVersion: null, packVersion: "0.12.58", binaryTooOld: true });
     expect(p.kind).toBe("binary-required");
     expect(p.badge).toBe("!");
-    expect(p.title).toBe("팩 0.12.58: 본체 업데이트 필요 (홈페이지에서 다운로드)");
+    expect(p.title).toBe("팩 0.12.58: 본체 업데이트 필요 (설치 사이트에서 다운로드)");
     expect(p.toastMsg).toBe(
-      "새 팩 0.12.58은 더 새로운 본체를 요구합니다 — 홈페이지(jarvis-install.godmeyou.kr)에서 본체 업데이트 후 적용됩니다.",
+      "새 팩 0.12.58은 더 새로운 본체를 요구합니다 — 설치 사이트(https://jarvis-install.godmeyou.kr)에서 본체 업데이트 후 적용됩니다.",
     );
+    // ★안내 링크는 문장과 **독립으로** 판정한다(r2 · codex·agy 1R) — scheme 이 빠지면 링크로 인식되지 않는다.
+    const link = p.toastMsg.match(/https?:\/\/[^\s)]+/);
+    expect(link).not.toBeNull();
+    const u = new URL(link![0]);
+    expect(u.protocol).toBe("https:");
+    expect(u.host).toBe("jarvis-install.godmeyou.kr");
+    expect(p.title).not.toContain("홈페이지");
+    expect(p.toastMsg).not.toContain("홈페이지");
   });
 
   test("업데이트 없음 + 양쪽 체크 성공 → '0' 배지(종전)", () => {

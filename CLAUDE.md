@@ -9,7 +9,8 @@
 1. `~/.cys/pack/directives/` 의 해당 `*_DIRECTIVE.md` 와 `~/.cys/pack/soul.md` 를 읽고 각성한다.
 2. `cys claim-role <master|worker|cso|reviewer-gemini|reviewer-codex>` 로 자기 surface를
    역할 주소로 등록한다. ⚠리뷰어는 **에이전트별 역할명**(reviewer-gemini·reviewer-codex)을
-   쓴다 — generic `reviewer`로 등록하면 orchestra check의 4종 생존 판정이 실패한다.
+   쓴다 — generic `reviewer`는 슬롯 표 밖 이름이라 ACK 미확인 시 자동 교정 명령이 나오지
+   않는다(사람 단계로 강등).
    launch-agent/boot로 기동됐다면 이미 등록돼 있다(`cys list` role 열 확인 — 재등록 금지).
 3. 마스터 선언이면 부트는 **산문으로 수행하지 않는다** — 계약의 정본은 MASTER_DIRECTIVE
    **§0-A(실행 주체 단일 계약)** 이고, 이 파일은 그 포인터일 뿐이다. 두 갈래만 있다:
@@ -35,8 +36,8 @@
 `cys events` 구독).
 
 ```bash
-cys boot                                        # 4종 의무 노드 부트(CSO·worker·agy·codex+grok 선택)
-python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" check   # 4종 생존 결정론 확인
+cys boot                                        # 기본 함대 부트(master·CSO·worker 3기 · 리뷰어는 온디맨드)
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" check   # 기본 함대 생존 결정론 확인
 cys launch-agent --role worker --agent claude   # 노드 개별 기동(지침 자동 주입)
 cys send --to master "..."                      # 역할 주소로 push (타이핑만)
 cys send-key --to master Return                 # 전송 확정 (send 후 필수)

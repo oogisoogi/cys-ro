@@ -80,6 +80,49 @@ pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs bu
   pack_current_for 게이트(디스크 ≥ 바이너리 = 스킵)로 아예 실행되지 않는 것이 **정상 동작**이다
   (2026-07-12 도입 — 종전의 "스윕 실행 → 다운그레이드 가드 no-op" 소음 제거). 수동 `cys init-pack`은
   게이트를 타지 않고 여전히 다운그레이드 가드에 막힌다(동일 최종 상태·이중 방어).
+- **★PACK_MIN_BINARY 0.14.29 유지 근거 — v0.14.36 판정 (2026-09-12 · TICKET=cys-v01436-pack-url r2)**.
+  ⓐ 이 판의 팩 트리는 v0.14.35 와 **바이트 동일**하다: `git diff v0.14.35 -- cysjavis-pack/` = 0줄.
+  이번 릴리스로 팩 쪽 위험이 늘지 않는다.
+  ⓑ v0.14.35 팩이 쓰는 표면 중 **0.14.29 바이너리에 없는 것은 6종**이고, 전부 런타임 탐침·폴백이 있다
+  (위 규칙이 말하는 「지시」가 아니다). 0.14.29 부재 근거는 `git grep -c <이름> v0.14.29 -- src src-tauri scripts .github` = 0
+  (1번만 v0.14.29 `src/bin/cys.rs:734` 가 필드 없는 `UserPromptSubmit,`).
+
+  | # | 0.14.29 에 없는 표면 | 팩 쪽 탐침·폴백 위치(v0.14.36 트리) | 0.14.29 에서의 거동 |
+  |---|---|---|---|
+  | 1 | `cys hook user-prompt-submit --input` | `cysjavis-pack/hooks/role-bootstrap.sh:115` `--help` 탐침 → `role-bootstrap-legacy.sh`(:179-180) | 종전 경로(3왕복)로 동작 |
+  | 2 | `cys restore --help` 의 `per-entry-cwd` 토큰 | `cysjavis-pack/bin/javis_phoenix.py:1487` `restore_supports_per_entry_cwd`(:1503 토큰 대조) → `:1521` `per_entry=False` | 전원 홈 좌석일 때만 cwd override(종전 계약) |
+  | 3 | `org.status` 키 `boot_v2_enabled` | `cysjavis-pack/bin/javis_orchestra.py:869-882` `ack_axis_enabled` — 부재 = False | ACK 축 꺼짐 |
+  | 4 | `org.status` 키 `surfaces[].ack_nonce_ok` | `cysjavis-pack/bin/javis_orchestra.py:891` — 키 부재 = 미측정 | 게이트가 막지 않음 |
+  | 5 | `org.status` 키 `daemon.npm_prefix_polluted` | `cysjavis-pack/bin/javis_preflight.py:5507-5508` — 키 부재 = SKIP | C81 SKIP |
+  | 6 | 빌드 산출물 `runtime-manifest.json` | `cysjavis-pack/bin/javis_preflight.py:5657` `RUNTIME_SEAL_SINCE = "0.14.30"` · `:5707` 버전 비교 | C80 SKIP |
+
+  ⓒ 새 서브커맨드 이름은 0개이고, 팩이 직접 부르는 RPC 는 `events.stream` 하나(0.14.29 에 있음)다.
+  ⓓ 따라서 상향하지 않는다(두 레인 모두 0.14.29).
+  ⚠**한계**: 이 표는 **정적 대조**다. 실제 0.14.29 바이너리와 이 팩을 조합해 각 탐침이 실제로 폴백하는지
+  재는 실기 시험은 **별건 티켓**이다(master 결정 2026-09-12). 팩-온리 레인의 `Verify with min_binary verifier`
+  는 하한 바이너리로 서명·설치 dry-run 을 증명할 뿐 위 6종의 런타임 폴백은 재지 않는다. 줄번호는
+  v0.14.36 트리 기준이라 뒤 판에서 옮겨질 수 있다.
+
+### 팩 replay 단조 런북 (2026-09-12 · TICKET=cys-v01436-pack-url r2)
+
+사용자 기계는 받은 팩의 signed_at 을 `~/.cys/.pack-accepted.json` 에 적고, 그 값 **이하** signed_at 의 팩을
+replay 로 거부한다(`src/packsig.rs` ⓔ). 벤더 팩을 받은 기계는 벤더 signed_at 을 기준선으로 들고 있다.
+그래서 두 레인이 발행 직전에 「우리 signed_at > 벤더 latest signed_at」 을 단언한다:
+본체 레인 = `release-publish.yml` → `scripts/release-verify.py` 8단계 · 팩-온리 레인 = `pack-release.yml` →
+`release-verify.py --pack-only`(같은 함수). 둘 다 우리·벤더 signed_at 이 `now-90일 ≤ signed_at ≤ now+300초`
+안에 있는지도 본다.
+
+- **발행 전에 `팩 replay 단조 위반`으로 막혔다** = 벤더가 우리보다 늦게 서명했다.
+  ① 재서명 — 새 signed_at 으로 매니페스트를 다시 만들고 서명한다(본체 레인은 태그 빌드 재실행 · 팩-온리는 pack 태그 재실행)
+  → ② 재검증 — 같은 게이트를 다시 돌린다 → ③ 재발행.
+- **발행한 뒤에 벤더가 더 늦게 서명한 것을 발견했다** = 우리 판을 이미 받은 기계는 영향이 없다(기준선이 우리 판).
+  벤더 팩을 먼저 받은 기계만 우리 판을 거부한다. 다음 판 발행에서 흡수한다(새 서명이 벤더보다 늦으면 해소).
+  급하면 위 ①~③ 으로 재발행한다.
+- **`타당 범위 밖`** — 우리 쪽이면 러너 시계와 `--signed-at` 인자를 확인하고 재서명한다. 벤더 쪽(미래 시각 서명 ·
+  90일 넘게 멈춤)이면 비교 기준을 사람이 다시 정한다. 조용한 통과로 풀지 않는다(master 에 결정 요청).
+- **`벤더 팩 매니페스트 조회 불가`** — 네트워크 또는 벤더 자산 404. 재시도해도 안 되면 master 판단(기준 재정의).
+- **채택하지 않은 것**: 관측 최대값(high-water) 영속 · 발행 시 파일 override 금지 — master r2 판정(우리 규모에
+  과잉이고, 실패 양상이 재서명 1회로 회복된다).
 
 ## 0. 버전 위치 (범프 시 모두 갱신 — **게이트 강제 8곳**)
 

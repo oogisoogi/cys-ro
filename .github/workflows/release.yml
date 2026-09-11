@@ -978,6 +978,8 @@ jobs:
       #   system 파일의 벤더 미전진 보존·전진 시 자동 3-way)은 0.14.29 바이너리에서 처음 생긴다 —
       #   ≤0.14.28 스윕은 종전대로 vendor 본으로 치유해 팩 자신의 약속이 거짓이 된다(기능 의존 —
       #   RELEASE.md 불변 규칙). pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약).
+      # ★v0.14.36 유지 판정(2026-09-12 · TICKET=cys-v01436-pack-url r2) — 0.14.29 에 없는 표면 6종과
+      #   각 탐침·폴백 위치의 근거표 = docs/RELEASE.md 「PACK_MIN_BINARY 0.14.29 유지 근거」 항목.
       PACK_MIN_BINARY: '0.14.29'
     steps:
       - uses: actions/checkout@v4

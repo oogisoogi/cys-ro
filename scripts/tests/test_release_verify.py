@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -44,7 +45,8 @@ V = "0.14.19"
 BASE = "https://github.com/%s/releases/download/v%s/" % (rv.RELEASE_REPO, V)
 # ★8단계(팩 replay 단조 · 2026-09-12) 픽스처 — 우리 팩이 벤더 latest 보다 **1초** 새로 서명된
 #   최소 통과 형태. 1초 차이로 둬야 `<=` → `<` 완화 같은 경계 회귀가 test_61 에서 드러난다.
-FIXTURE_SIGNED_AT = 1789091457
+#   ★r2: 타당 범위(now-90일..now+300초)가 생겨 고정 시각은 90일 뒤 스스로 적색이 된다 — 실행 시각 기준.
+FIXTURE_SIGNED_AT = int(time.time()) - 3600
 VENDOR = {"pack_version": "0.14.33", "signed_at": FIXTURE_SIGNED_AT - 1}
 
 
@@ -598,7 +600,9 @@ class PackReplayMonotonicTests(unittest.TestCase):
         self.assert_fail({"signed_at": FIXTURE_SIGNED_AT}, "팩 replay 단조 위반")
 
     def test_62_vendor_newer_rejected(self):
-        self.assert_fail({"signed_at": FIXTURE_SIGNED_AT + 86400}, "팩 replay 단조 위반")
+        # ★벤더가 더 늦게 서명했지만 타당 범위(now+300초) 안 — 범위 검사가 아니라 단조 검사가 죽여야 한다.
+        #   (r2 R4 이후 +1일 값은 범위 밖으로 먼저 죽어 이 축을 재지 못했다 — 대조군 적색으로 실측)
+        self.assert_fail({"signed_at": FIXTURE_SIGNED_AT + 60}, "팩 replay 단조 위반")
 
     def test_63_ours_signed_at_missing(self):
         self.rewrite_ours(signed_at=KeyError)
@@ -648,6 +652,139 @@ class PackReplayMonotonicTests(unittest.TestCase):
         self.assertIn("/idoforgod/cys-terminal/", rv.VENDOR_PACK_MANIFEST_URL)
         self.assertNotIn(rv.RELEASE_REPO, rv.VENDOR_PACK_MANIFEST_URL)
         self.assertTrue(rv.VENDOR_PACK_MANIFEST_URL.endswith("/releases/latest/download/pack-manifest.json"))
+
+
+class SignedAtPlausibilityTests(unittest.TestCase):
+    """★r2 R4 — signed_at 타당 범위 `now-90일 ≤ signed_at ≤ now+300초`(우리·벤더 둘 다).
+
+    각 음성 케이스는 **단조 조건은 만족**하게 골랐다(우리 > 벤더) — 타당 범위 검사를 지우면
+    통과해 버리도록. 그래야 이 검사가 살아 있는지를 잰다.
+    """
+
+    NOW = 1_800_000_000
+    AGE = 90 * 86400
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._tmp.name, "pack-manifest.json")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def check(self, ours, vendor):
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump({"signed_at": ours}, fh)
+        return rv.check_pack_replay_monotonic({"pack-manifest.json": self.path},
+                                              {"signed_at": vendor}, now=self.NOW)
+
+    def assert_fail(self, ours, vendor, needle):
+        with self.assertRaises(rv.VerifyError) as cm:
+            self.check(ours, vendor)
+        self.assertIn(needle, str(cm.exception),
+                      "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
+
+    def test_70_window_constants(self):
+        self.assertEqual(rv.SIGNED_AT_MAX_AGE_SEC, 90 * 86400)
+        self.assertEqual(rv.SIGNED_AT_MAX_FUTURE_SEC, 300)
+
+    def test_71_future_skew_boundary_passes(self):
+        self.assertEqual(self.check(self.NOW + 300, self.NOW), (self.NOW + 300, self.NOW))
+
+    def test_72_ours_beyond_future_skew(self):
+        self.assert_fail(self.NOW + 301, self.NOW, "pack-manifest.json 의 signed_at 이 타당 범위 밖")
+
+    def test_73_age_boundary_passes(self):
+        self.check(self.NOW - self.AGE + 1, self.NOW - self.AGE)
+
+    def test_74_ours_too_old(self):
+        self.assert_fail(self.NOW - self.AGE - 1, self.NOW - self.AGE - 2,
+                         "pack-manifest.json 의 signed_at 이 타당 범위 밖")
+
+    def test_75_vendor_future_signature(self):
+        """벤더가 미래 시각으로 서명했으면 그걸 기준으로 삼지 않는다(실패로 사람에게 올린다)."""
+        self.assert_fail(self.NOW + 300, self.NOW + 301,
+                         "벤더 latest 팩 매니페스트 의 signed_at 이 타당 범위 밖")
+
+    def test_76_vendor_too_old(self):
+        self.assert_fail(self.NOW, self.NOW - self.AGE - 1,
+                         "벤더 latest 팩 매니페스트 의 signed_at 이 타당 범위 밖")
+
+    def test_77_negative_signed_at(self):
+        self.assert_fail(-1, -2, "pack-manifest.json 의 signed_at 이 타당 범위 밖")
+
+    def test_78_verify_threads_now_into_step8(self):
+        """verify() 가 now 를 8단계까지 전달하는가 — 픽스처(1시간 전 서명)를 91일 뒤 시각으로 재면 실패."""
+        with tempfile.TemporaryDirectory() as d:
+            build_fixture(d, mac=False)
+            with self.assertRaises(rv.VerifyError) as cm:
+                rv.verify(V, d, VENDOR, now=FIXTURE_SIGNED_AT + self.AGE + 10)
+            self.assertIn("타당 범위 밖", str(cm.exception))
+
+
+class PackOnlyLaneTests(unittest.TestCase):
+    """★r2 R1 — 팩 전용 레인이 replay 단조 검사를 우회하지 못한다.
+
+    ①진입점(`--pack-only`)이 같은 함수로 판정하고 종료코드로 막는가 ②`pack-release.yml` 이 그
+    진입점을 **발행 단계 이전·서명 이후**에 조건 없이 부르는가(워크플로 문면 검체).
+    """
+
+    WF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                      ".github", "workflows", "pack-release.yml")
+
+    def run_pack_only(self, manifest, vendor=VENDOR, extra=()):
+        with tempfile.TemporaryDirectory() as d:
+            args = ["--pack-only"]
+            if manifest is not None:
+                mp = os.path.join(d, "pack-manifest.json")
+                with open(mp, "w", encoding="utf-8") as fh:
+                    json.dump(manifest, fh)
+                args += ["--pack-manifest", mp]
+            if vendor is not None:
+                vf = os.path.join(d, "vendor-pack-manifest.json")
+                with open(vf, "w", encoding="utf-8") as fh:
+                    json.dump(vendor, fh)
+                args += ["--vendor-manifest-file", vf]
+            return subprocess.run([sys.executable, os.path.abspath(_RV_PATH)] + args + list(extra),
+                                  capture_output=True, text=True)
+
+    def test_80_pack_only_pass(self):
+        r = self.run_pack_only({"signed_at": FIXTURE_SIGNED_AT})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("팩 replay 단조 통과", r.stdout)
+
+    def test_81_pack_only_violation_exit_1(self):
+        r = self.run_pack_only({"signed_at": FIXTURE_SIGNED_AT}, vendor={"signed_at": FIXTURE_SIGNED_AT})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("팩 replay 단조 위반", r.stderr)
+
+    def test_82_pack_only_requires_manifest(self):
+        r = self.run_pack_only(None)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_83_pack_only_vendor_unreadable_exit_1(self):
+        r = self.run_pack_only({"signed_at": FIXTURE_SIGNED_AT}, vendor=None,
+                               extra=("--vendor-manifest-file", os.path.join(tempfile.gettempdir(),
+                                                                             "no-such-vendor-pack.json")))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("벤더 팩 매니페스트 조회 불가", r.stderr)
+
+    def test_84_pack_release_lane_runs_gate_between_sign_and_publish(self):
+        with open(self.WF, encoding="utf-8") as fh:
+            body = "\n".join(l for l in fh.read().splitlines() if not l.lstrip().startswith("#"))
+        gate = body.find("scripts/release-verify.py --pack-only")
+        sign = body.find("- name: Sign pack-manifest.json")
+        publish = body.find("gh release create")
+        self.assertNotEqual(gate, -1, "pack-release.yml 이 --pack-only 검사를 부르지 않는다(우회)")
+        self.assertNotEqual(sign, -1, "서명 단계를 못 찾았다 — 워크플로 구조 변경 의심")
+        self.assertNotEqual(publish, -1, "발행 명령을 못 찾았다 — 워크플로 구조 변경 의심")
+        self.assertLess(sign, gate, "replay 검사가 서명 이전에 있다 — 최종 매니페스트를 재지 않는다")
+        self.assertLess(gate, publish, "replay 검사가 발행 이후에 있다 — 막지 못한다")
+        start = body.rfind("- name:", 0, gate)
+        end = body.find("- name:", gate)
+        step = body[start:end if end != -1 else len(body)]
+        for bad in ("continue-on-error", "if:", "|| true", "--vendor-manifest-file"):
+            self.assertNotIn(bad, step, "replay 검사 단계에 우회 여지 %r 가 있다" % bad)
+        self.assertIn("--pack-manifest pack-manifest.json", step)
 
 
 class ExitCodeContractTests(unittest.TestCase):

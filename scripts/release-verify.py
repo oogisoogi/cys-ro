@@ -92,6 +92,14 @@
   signed_at」 을 단언한다. 실측(2026-09-12): 우리 1789091457 > 벤더 1789084036.
   ⚠사거리: 비교 대상은 **벤더의 현재 latest** 한 판이다. 벤더가 발행을 멈추면(자산 404) 이 검사는
   조회 불가로 발행을 막는다 — 그때는 사람이 기준을 다시 정해야 한다(조용한 통과로 풀지 않는다).
+  ★r2 보강(codex·agy 1R):
+    · signed_at 타당 범위 — 우리·벤더 **둘 다** `now-90일 ≤ signed_at ≤ now+300초`. 음수·유물·미래
+      시각 서명은 비교를 무의미하게 하거나(미래 서명은 기준선을 영구히 올린다) 실패로 떨어진다.
+    · 팩 전용 레인(`pack-release.yml`)도 같은 함수를 부른다 — `--pack-only --pack-manifest <경로>`
+      (자산 묶음 검증 없이 8단계만 · 발행 단계 직전). 두 레인이 한 구현을 공유한다(중복 0).
+    · 발행 뒤 벤더가 더 늦게 서명한 경우의 대처는 docs/RELEASE.md 「팩 replay 단조 런북」 절.
+    · 관측 최대값 영속(high-water)·파일 override 금지는 채택하지 않았다(master r2 판정 — 실패 양상이
+      재서명 1회로 회복되는 규모라 과잉).
 
 동반 회귀 테스트: `python3 scripts/tests/test_release_verify.py` (합성 픽스처 · 네트워크 불요)
 
@@ -100,6 +108,7 @@
   python3 scripts/release-verify.py --version 0.14.19 --release-dir reviewed-release --print-assets
   python3 scripts/release-verify.py --version 0.14.30 --release-dir d --repo oogisoogi/cys-ro
   python3 scripts/release-verify.py --version 0.14.36 --release-dir d --vendor-manifest-file vendor.json
+  python3 scripts/release-verify.py --pack-only --pack-manifest pack-manifest.json      # 팩 전용 레인
 
 종료코드: 0=통과, 1=검증 실패, 2=인자 오류
 """
@@ -111,6 +120,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 import zipfile
 import zlib
@@ -138,6 +148,13 @@ RELEASE_REPO = "oogisoogi/cys-ro"
 #   사용자 기계의 replay 기준선이 될 수 있는 **남의 판**이다. 우리 팩이 이보다 새로 서명돼야 한다.
 VENDOR_PACK_MANIFEST_URL = \
     "https://github.com/idoforgod/cys-terminal/releases/latest/download/pack-manifest.json"
+
+# ★signed_at 타당 범위(r2 · codex 1R BLOCK) — 우리·벤더 둘 다 적용한다.
+#   미래 시각 서명은 사용자 기계의 replay 기준선을 영구히 끌어올리고, 음수·오래된 유물은 비교를
+#   무의미하게 만든다. 과거 90일 = 벤더가 그보다 오래 멈춰 있으면 기준 자체를 사람이 다시 정한다
+#   (조용한 통과 금지). 미래 300초 = 러너 시계 오차 허용폭.
+SIGNED_AT_MAX_AGE_SEC = 90 * 86400
+SIGNED_AT_MAX_FUTURE_SEC = 300
 
 # ★SUMS 와 무관한 독립 하한선 ① — 이게 없으면 "빌드 자체가 안 돼 SUMS 에도 안 실린 자산"을 못 잡는다.
 #   `{v}` 는 --version 으로 채운다. 여기 없는 자산은 아래 `UPDATER_PLATFORMS` 가 강제한다.
@@ -506,13 +523,17 @@ def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
     return sorted(platforms)
 
 
-def _signed_at(obj, what):
-    """signed_at 을 **정확히 int** 로만 받는다 — bool(True 는 int 하위형)·문자열·실수는 거부."""
+def _signed_at(obj, what, now):
+    """signed_at 을 **정확히 int** 로만 받고(bool·문자열·실수 거부) 타당 범위를 확인한다."""
     if not isinstance(obj, dict):
         raise VerifyError("%s 가 JSON 객체가 아니다" % what)
     value = obj.get("signed_at")
     if type(value) is not int:
         raise VerifyError("%s 의 signed_at 이 정수가 아니다: %r" % (what, value))
+    lo, hi = now - SIGNED_AT_MAX_AGE_SEC, now + SIGNED_AT_MAX_FUTURE_SEC
+    if not (lo <= value <= hi):
+        raise VerifyError("%s 의 signed_at 이 타당 범위 밖이다: %d (허용 [%d, %d] = now-90일..now+300초 · now=%d)"
+                          % (what, value, lo, hi, now))
     return value
 
 
@@ -536,7 +557,7 @@ def load_vendor_manifest(url=VENDOR_PACK_MANIFEST_URL, path=None, timeout=30):
         raise VerifyError("벤더 팩 매니페스트가 JSON 이 아니다(%s): %s" % (src, e))
 
 
-def check_pack_replay_monotonic(files, vendor_manifest):
+def check_pack_replay_monotonic(files, vendor_manifest, now=None):
     """우리 pack-manifest.json 의 signed_at 이 벤더 latest 보다 **엄격히 커야** 한다.
 
     같거나 작으면 벤더 팩을 받은 기계가 우리 팩을 replay 로 거부한다(`src/packsig.rs` ⓔ 는 `<=` 거부).
@@ -545,8 +566,10 @@ def check_pack_replay_monotonic(files, vendor_manifest):
         ours = json.loads(read_text_strict(files["pack-manifest.json"], "pack-manifest.json"))
     except ValueError as e:
         raise VerifyError("pack-manifest.json 이 JSON 이 아니다: %s" % e)
-    ours_at = _signed_at(ours, "pack-manifest.json")
-    vendor_at = _signed_at(vendor_manifest, "벤더 latest 팩 매니페스트")
+    if now is None:
+        now = int(time.time())
+    ours_at = _signed_at(ours, "pack-manifest.json", now)
+    vendor_at = _signed_at(vendor_manifest, "벤더 latest 팩 매니페스트", now)
     if ours_at <= vendor_at:
         raise VerifyError("팩 replay 단조 위반 — 우리 signed_at %d <= 벤더 latest signed_at %d. "
                           "벤더 팩을 받은 기계가 이 팩을 replay 로 거부한다(다시 서명하라)"
@@ -554,7 +577,7 @@ def check_pack_replay_monotonic(files, vendor_manifest):
     return ours_at, vendor_at
 
 
-def verify(version, release_dir, vendor_manifest, repo=RELEASE_REPO):
+def verify(version, release_dir, vendor_manifest, repo=RELEASE_REPO, now=None):
     if not VERSION_RE.match(version):
         raise VerifyError("--version 은 X.Y.Z 여야 한다: %r" % version)
 
@@ -605,15 +628,19 @@ def verify(version, release_dir, vendor_manifest, repo=RELEASE_REPO):
     platforms = check_latest_json(version, files, sums, mac_included, repo=repo)
 
     # ── 8. 팩 replay 단조 — 벤더 팩을 받은 기계도 이 팩을 받을 수 있는가 ──
-    check_pack_replay_monotonic(files, vendor_manifest)
+    check_pack_replay_monotonic(files, vendor_manifest, now=now)
 
     return sorted(sums), platforms, mac_included
 
 
 def main():
     ap = argparse.ArgumentParser(description="릴리스 자산 묶음을 오프라인으로 검증한다")
-    ap.add_argument("--version", required=True, help="기대 버전 (X.Y.Z — 태그의 v 를 뗀 값)")
-    ap.add_argument("--release-dir", required=True, help="전 자산을 내려받아 둔 디렉터리")
+    ap.add_argument("--version", help="기대 버전 (X.Y.Z — 태그의 v 를 뗀 값 · 전체 검증 시 필수)")
+    ap.add_argument("--release-dir", help="전 자산을 내려받아 둔 디렉터리 (전체 검증 시 필수)")
+    # ★r2 R1 — 팩 전용 레인(pack-release.yml)의 진입점. 8단계(팩 replay 단조)만 돈다(같은 함수).
+    ap.add_argument("--pack-only", action="store_true",
+                    help="자산 묶음 없이 팩 replay 단조(8단계)만 검사 — --pack-manifest 필수")
+    ap.add_argument("--pack-manifest", default=None, help="--pack-only 대상 pack-manifest.json 경로")
     ap.add_argument("--print-assets", action="store_true", help="검증된 자산명을 한 줄씩 출력")
     # ★매개변수화하되 **기본값이 곧 정본**이다(마스터 판정 2026-09-09 · REPO 1곳).
     #   플래그는 포크·미러에서 같은 검증기를 재현하기 위한 것이지, 배포 원본을 흔들라는 게 아니다.
@@ -624,6 +651,29 @@ def main():
                     help="벤더 latest pack-manifest.json 사본 경로 (기본: %s 에서 받음)"
                          % VENDOR_PACK_MANIFEST_URL)
     args = ap.parse_args()
+
+    if args.pack_only:
+        if not args.pack_manifest:
+            ap.error("--pack-only 에는 --pack-manifest 가 필요하다")
+        try:
+            if os.path.islink(args.pack_manifest) or not os.path.isfile(args.pack_manifest):
+                raise VerifyError("pack-manifest 파일이 없다(또는 심볼릭 링크): %s" % args.pack_manifest)
+            vendor = load_vendor_manifest(path=args.vendor_manifest_file)
+            ours_at, vendor_at = check_pack_replay_monotonic(
+                {"pack-manifest.json": args.pack_manifest}, vendor)
+        except VerifyError as e:
+            print("::error::팩 replay 단조 검증 실패 — %s" % e, file=sys.stderr)
+            return 1
+        except Exception as e:
+            print("::error::팩 replay 단조 검증 중단(판정 불가) — %s: %s"
+                  % (type(e).__name__, e), file=sys.stderr)
+            return 1
+        print("✅ 팩 replay 단조 통과 — 우리 signed_at %d > 벤더 latest signed_at %d"
+              % (ours_at, vendor_at))
+        return 0
+
+    if not args.version or not args.release_dir:
+        ap.error("전체 검증에는 --version 과 --release-dir 가 필요하다(팩 전용은 --pack-only)")
 
     try:
         vendor = load_vendor_manifest(path=args.vendor_manifest_file)

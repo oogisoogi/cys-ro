@@ -6072,6 +6072,18 @@ mod tests {
             !default_pack_manifest_url().contains("idoforgod"),
             "팩 매니페스트 URL 이 벤더 레포로 되돌아갔다"
         );
+        // ★독립 핀(r2 · codex 1R MED): 파생 대조만으로는 두 곳을 **함께** 엉뚱한 저장소로 옮기면
+        //   초록이다. 배포 원본(host github.com · 우리 포크 latest 릴리스 경로)을 따로 못박는다.
+        const OUR_LATEST: &str = "https://github.com/oogisoogi/cys-ro/releases/latest/download/";
+        for (what, url) in [
+            ("updater endpoint", endpoint.to_string()),
+            ("pack manifest", default_pack_manifest_url()),
+        ] {
+            assert!(
+                url.starts_with(OUR_LATEST),
+                "{what} 가 우리 포크 latest 릴리스를 가리키지 않는다: {url}"
+            );
+        }
     }
 
     /// ★맥 미포함 릴리스 회귀 핀 (2026-09-09 · TICKET=cys-release-first-publish)

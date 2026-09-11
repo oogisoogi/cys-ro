@@ -5378,7 +5378,10 @@ async fn check_update(app: AppHandle) -> Result<Option<Value>, String> {
 /// release 'latest' 자산에 동봉된다(release.yml이 함께 업로드, DESIGN §5 파일맵).
 fn default_pack_manifest_url() -> String {
     // Phase 2 릴리스 통합(2026-07-03): 배포 원본 = 공개 소스 repo. 구 repo는 전환기 미러.
-    "https://github.com/idoforgod/cys-terminal/releases/latest/download/pack-manifest.json"
+    // ★2026-09-12(TICKET=cys-v01436-pack-url): 배포자 = 우리 포크. 종전 벤더 URL 이 남아 앱이 벤더 팩
+    //   배지를 띄우고 설치는 키링 불일치로 반드시 실패했다. tauri.conf updater endpoint 와 같은 레포여야
+    //   한다 — 시험 `default_pack_manifest_url_shares_repo_with_updater_endpoint` 가 그 관계를 못박는다.
+    "https://github.com/oogisoogi/cys-ro/releases/latest/download/pack-manifest.json"
         .to_string()
 }
 
@@ -6040,6 +6043,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★팩 원격 매니페스트 URL 결속 핀 (2026-09-12 · TICKET=cys-v01436-pack-url)
+    ///
+    /// 앱이 6시간마다 읽는 pack-manifest.json 은 업데이터(latest.json)와 **같은 레포의 latest
+    /// 릴리스**여야 한다. 종전 이 URL 만 벤더로 남아, 앱은 벤더 팩 배지를 띄우고 설치는 키링
+    /// 불일치로 반드시 실패했으며 우리 팩 레인은 앱에 보이지 않았다.
+    /// 값을 따로 박지 않고 tauri.conf 의 updater endpoint 에서 **파생 대조**한다 — 두 곳을 함께
+    /// 옮기면 초록, 한 곳만 어긋나면 적색(두 벌이 사이좋게 틀리는 경로를 막는다).
+    #[test]
+    fn default_pack_manifest_url_shares_repo_with_updater_endpoint() {
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json 파싱 실패");
+        let endpoints = conf["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("plugins.updater.endpoints 배열이 없다");
+        assert_eq!(endpoints.len(), 1, "updater endpoint 가 1개가 아니다 — 대조 기준이 모호하다");
+        let endpoint = endpoints[0].as_str().expect("updater endpoint 가 문자열이 아니다");
+        let base = endpoint
+            .strip_suffix("/latest.json")
+            .expect("updater endpoint 가 .../latest.json 형태가 아니다");
+        assert_eq!(
+            default_pack_manifest_url(),
+            format!("{base}/pack-manifest.json"),
+            "팩 매니페스트 URL 이 업데이터와 다른 레포·경로를 가리킨다"
+        );
+        assert!(
+            !default_pack_manifest_url().contains("idoforgod"),
+            "팩 매니페스트 URL 이 벤더 레포로 되돌아갔다"
+        );
+    }
 
     /// ★맥 미포함 릴리스 회귀 핀 (2026-09-09 · TICKET=cys-release-first-publish)
     ///

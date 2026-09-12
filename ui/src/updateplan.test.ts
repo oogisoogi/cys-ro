@@ -41,8 +41,10 @@ describe("updatePlan — 옵션 2 분기 판정(문자열 핀 = 회귀 0 증명)
     expect(p.badge).toBe("!");
     expect(p.title).toBe("팩 0.12.58: 본체 업데이트 필요 (설치 사이트에서 다운로드)");
     expect(p.toastMsg).toBe(
-      "새 팩 0.12.58은 더 새로운 본체를 요구합니다 — 설치 사이트(https://jarvis-install.godmeyou.kr)에서 본체 업데이트 후 적용됩니다.",
+      "새 팩 0.12.58은 더 새로운 본체를 요구합니다 — 본체를 업데이트한 뒤 적용됩니다. 설치 사이트: https://jarvis-install.godmeyou.kr",
     );
+    // ★r3 S3 — URL 바로 뒤에 괄호·문자가 붙으면 링크 파서가 그것까지 주소로 먹는다. 뒤는 공백이나 끝이어야 한다.
+    expect(p.toastMsg).toMatch(/https:\/\/jarvis-install\.godmeyou\.kr(\s|$)/);
     // ★안내 링크는 문장과 **독립으로** 판정한다(r2 · codex·agy 1R) — scheme 이 빠지면 링크로 인식되지 않는다.
     const link = p.toastMsg.match(/https?:\/\/[^\s)]+/);
     expect(link).not.toBeNull();

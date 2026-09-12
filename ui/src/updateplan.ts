@@ -63,7 +63,7 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       title: `팩 ${i.packVersion}: 본체 업데이트 필요 (설치 사이트에서 다운로드)`,
       toastMsg:
         `새 팩 ${i.packVersion}은 더 새로운 본체를 요구합니다 — ` +
-        `설치 사이트(https://jarvis-install.godmeyou.kr)에서 본체 업데이트 후 적용됩니다.`,
+        `본체를 업데이트한 뒤 적용됩니다. 설치 사이트: https://jarvis-install.godmeyou.kr`,
     };
   }
   if (!i.binCheckFailed && !i.packCheckFailed) {

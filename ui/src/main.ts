@@ -5231,7 +5231,7 @@ async function promptBinaryPatch() {
     `새 본체 버전 ${v} — 패치 설치`,
     `새 본체(앱) ${v}을 패치 방식으로 설치합니다: 저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 ` +
       `재시작합니다. 부서·노드는 재시작 후 자동 복원됩니다(대화 기억 포함). 마지막 미저장분은 손실될 수 ` +
-      `있습니다.\n\n지금 설치하시겠습니까? (수동 설치는 설치 사이트 https://jarvis-install.godmeyou.kr)`,
+      `있습니다.\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr`,
     "설치",
   );
   if (!ok) return;

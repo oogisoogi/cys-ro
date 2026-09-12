@@ -6072,16 +6072,37 @@ mod tests {
             !default_pack_manifest_url().contains("idoforgod"),
             "팩 매니페스트 URL 이 벤더 레포로 되돌아갔다"
         );
-        // ★독립 핀(r2 · codex 1R MED): 파생 대조만으로는 두 곳을 **함께** 엉뚱한 저장소로 옮기면
-        //   초록이다. 배포 원본(host github.com · 우리 포크 latest 릴리스 경로)을 따로 못박는다.
-        const OUR_LATEST: &str = "https://github.com/oogisoogi/cys-ro/releases/latest/download/";
-        for (what, url) in [
-            ("updater endpoint", endpoint.to_string()),
-            ("pack manifest", default_pack_manifest_url()),
+        // ★독립 핀(r2 R5 → r3 S2 · codex·agy 2R): 파생 대조만으로는 두 곳을 **함께** 엉뚱한 저장소로
+        //   옮기면 초록이고, 접두 비교(starts_with)는 `.../download/../다른경로`·파일명 변조를 통과시킨다.
+        //   URL 을 파싱해 scheme·host·**정확한 경로**를 따로 못박는다(파서가 `..` 를 정규화한다).
+        for (what, url, path) in [
+            (
+                "updater endpoint",
+                endpoint.to_string(),
+                "/oogisoogi/cys-ro/releases/latest/download/latest.json",
+            ),
+            (
+                "pack manifest",
+                default_pack_manifest_url(),
+                "/oogisoogi/cys-ro/releases/latest/download/pack-manifest.json",
+            ),
         ] {
+            let parsed = tauri::Url::parse(&url)
+                .unwrap_or_else(|e| panic!("{what} URL 파싱 실패({e}): {url}"));
+            assert_eq!(parsed.scheme(), "https", "{what} scheme 이 https 가 아니다: {url}");
+            assert_eq!(
+                parsed.host_str(),
+                Some("github.com"),
+                "{what} host 가 github.com 이 아니다: {url}"
+            );
+            assert_eq!(
+                parsed.path(),
+                path,
+                "{what} 경로가 우리 포크 latest 릴리스 자산이 아니다: {url}"
+            );
             assert!(
-                url.starts_with(OUR_LATEST),
-                "{what} 가 우리 포크 latest 릴리스를 가리키지 않는다: {url}"
+                parsed.query().is_none() && parsed.fragment().is_none(),
+                "{what} 에 query/fragment 가 붙었다: {url}"
             );
         }
     }

@@ -655,7 +655,7 @@ class PackReplayMonotonicTests(unittest.TestCase):
 
 
 class SignedAtPlausibilityTests(unittest.TestCase):
-    """★r2 R4 — signed_at 타당 범위 `now-90일 ≤ signed_at ≤ now+300초`(우리·벤더 둘 다).
+    """★r2 R4 · r3 S1 — signed_at 타당 범위: 우리 `now-90일 ≤ signed_at ≤ now+300초` · 벤더 `≤ now+300초`(과거 하한 없음).
 
     각 음성 케이스는 **단조 조건은 만족**하게 골랐다(우리 > 벤더) — 타당 범위 검사를 지우면
     통과해 버리도록. 그래야 이 검사가 살아 있는지를 잰다.
@@ -705,9 +705,16 @@ class SignedAtPlausibilityTests(unittest.TestCase):
         self.assert_fail(self.NOW + 300, self.NOW + 301,
                          "벤더 latest 팩 매니페스트 의 signed_at 이 타당 범위 밖")
 
-    def test_76_vendor_too_old(self):
-        self.assert_fail(self.NOW, self.NOW - self.AGE - 1,
-                         "벤더 latest 팩 매니페스트 의 signed_at 이 타당 범위 밖")
+    def test_76_vendor_old_signature_still_a_valid_baseline(self):
+        """★r3 S1 — 벤더가 100일 발행을 멈췄어도 그 옛 signed_at 은 안전한 비교 기준이다(가용성).
+        과거 90일 하한은 **우리 산출물에만** 적용한다 — 벤더 휴면이 우리 발행을 막으면 안 된다."""
+        old = self.NOW - 100 * 86400
+        self.assertEqual(self.check(self.NOW, old), (self.NOW, old))
+
+    def test_76b_ours_100_days_old_still_rejected(self):
+        """같은 100일 전 값이 **우리** 매니페스트면 여전히 실패 — 하한 면제는 벤더 쪽 한정."""
+        self.assert_fail(self.NOW - 100 * 86400, self.NOW - 101 * 86400,
+                         "pack-manifest.json 의 signed_at 이 타당 범위 밖")
 
     def test_77_negative_signed_at(self):
         self.assert_fail(-1, -2, "pack-manifest.json 의 signed_at 이 타당 범위 밖")

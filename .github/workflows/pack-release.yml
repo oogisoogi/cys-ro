@@ -403,7 +403,7 @@ jobs:
       #   사용자 기계는 받은 팩의 signed_at 이하를 replay 로 거부한다(src/packsig.rs ⓔ). 벤더 팩을 받은
       #   기계에서 우리 팩이 조용히 영구 거부되지 않게, **서명 이후·발행 직전**에 우리 signed_at > 벤더
       #   latest signed_at 을 단언한다. 본체 레인(release-publish → release-verify.py 8단계)과 **같은 함수**다.
-      #   조회 불가·타당 범위(now-90일..now+300초) 밖 = 실패 = 아래 발행 단계가 돌지 않는다.
+      #   조회 불가·타당 범위 밖(우리 now-90일..now+300초 · 벤더 now+300초 상한만) = 실패 = 아래 발행 단계가 돌지 않는다.
       #   ⚠이 단계에 조건·실패 무시·사본 파일 지정을 붙이지 마라(PackOnlyLaneTests test_84 가 문면으로 막는다).
       - name: Pack replay monotonic gate (publish 차단)
         run: |

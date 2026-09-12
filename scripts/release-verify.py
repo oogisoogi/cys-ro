@@ -93,8 +93,9 @@
   ⚠사거리: 비교 대상은 **벤더의 현재 latest** 한 판이다. 벤더가 발행을 멈추면(자산 404) 이 검사는
   조회 불가로 발행을 막는다 — 그때는 사람이 기준을 다시 정해야 한다(조용한 통과로 풀지 않는다).
   ★r2 보강(codex·agy 1R):
-    · signed_at 타당 범위 — 우리·벤더 **둘 다** `now-90일 ≤ signed_at ≤ now+300초`. 음수·유물·미래
-      시각 서명은 비교를 무의미하게 하거나(미래 서명은 기준선을 영구히 올린다) 실패로 떨어진다.
+    · signed_at 타당 범위 — 우리 매니페스트 `now-90일 ≤ signed_at ≤ now+300초` · 벤더 매니페스트
+      `signed_at ≤ now+300초`(과거 하한 없음 · r3 S1 — 벤더 휴면이 우리 발행을 막지 않게). 우리 쪽의
+      음수·유물·미래 서명과 벤더 쪽의 미래 서명(기준선을 영구히 올린다)은 실패로 떨어진다.
     · 팩 전용 레인(`pack-release.yml`)도 같은 함수를 부른다 — `--pack-only --pack-manifest <경로>`
       (자산 묶음 검증 없이 8단계만 · 발행 단계 직전). 두 레인이 한 구현을 공유한다(중복 0).
     · 발행 뒤 벤더가 더 늦게 서명한 경우의 대처는 docs/RELEASE.md 「팩 replay 단조 런북」 절.
@@ -149,10 +150,11 @@ RELEASE_REPO = "oogisoogi/cys-ro"
 VENDOR_PACK_MANIFEST_URL = \
     "https://github.com/idoforgod/cys-terminal/releases/latest/download/pack-manifest.json"
 
-# ★signed_at 타당 범위(r2 · codex 1R BLOCK) — 우리·벤더 둘 다 적용한다.
-#   미래 시각 서명은 사용자 기계의 replay 기준선을 영구히 끌어올리고, 음수·오래된 유물은 비교를
-#   무의미하게 만든다. 과거 90일 = 벤더가 그보다 오래 멈춰 있으면 기준 자체를 사람이 다시 정한다
-#   (조용한 통과 금지). 미래 300초 = 러너 시계 오차 허용폭.
+# ★signed_at 타당 범위(r2 · codex 1R BLOCK · r3 S1 개정).
+#   미래 시각 서명은 사용자 기계의 replay 기준선을 영구히 끌어올린다 → 상한(+300초 · 러너 시계 오차
+#   허용폭)은 우리·벤더 둘 다. 과거 90일 하한은 **우리 산출물에만** — 음수·오래된 유물 서명을 막는다.
+#   벤더에는 하한을 두지 않는다: 벤더가 오래 발행을 멈춰도 그 옛 값은 안전한 비교 기준이고, 하한을
+#   걸면 벤더 휴면이 우리 발행을 막는다(2R codex·agy 가용성 결함).
 SIGNED_AT_MAX_AGE_SEC = 90 * 86400
 SIGNED_AT_MAX_FUTURE_SEC = 300
 
@@ -523,17 +525,26 @@ def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
     return sorted(platforms)
 
 
-def _signed_at(obj, what, now):
-    """signed_at 을 **정확히 int** 로만 받고(bool·문자열·실수 거부) 타당 범위를 확인한다."""
+def _signed_at(obj, what, now, age_floor=True):
+    """signed_at 을 **정확히 int** 로만 받고(bool·문자열·실수 거부) 타당 범위를 확인한다.
+
+    age_floor=False(벤더 매니페스트 · r3 S1): 과거 90일 하한을 적용하지 않는다 — 벤더가 오래 발행을
+    멈춰도 그 옛 값은 여전히 안전한 비교 기준이다. 미래 +300초 상한은 둘 다 적용한다.
+    """
     if not isinstance(obj, dict):
         raise VerifyError("%s 가 JSON 객체가 아니다" % what)
     value = obj.get("signed_at")
     if type(value) is not int:
         raise VerifyError("%s 의 signed_at 이 정수가 아니다: %r" % (what, value))
-    lo, hi = now - SIGNED_AT_MAX_AGE_SEC, now + SIGNED_AT_MAX_FUTURE_SEC
-    if not (lo <= value <= hi):
-        raise VerifyError("%s 의 signed_at 이 타당 범위 밖이다: %d (허용 [%d, %d] = now-90일..now+300초 · now=%d)"
-                          % (what, value, lo, hi, now))
+    hi = now + SIGNED_AT_MAX_FUTURE_SEC
+    if age_floor:
+        lo = now - SIGNED_AT_MAX_AGE_SEC
+        if not (lo <= value <= hi):
+            raise VerifyError("%s 의 signed_at 이 타당 범위 밖이다: %d (허용 [%d, %d] = now-90일..now+300초 · now=%d)"
+                              % (what, value, lo, hi, now))
+    elif value > hi:
+        raise VerifyError("%s 의 signed_at 이 타당 범위 밖이다: %d (허용 상한 %d = now+300초 · now=%d)"
+                          % (what, value, hi, now))
     return value
 
 
@@ -569,7 +580,7 @@ def check_pack_replay_monotonic(files, vendor_manifest, now=None):
     if now is None:
         now = int(time.time())
     ours_at = _signed_at(ours, "pack-manifest.json", now)
-    vendor_at = _signed_at(vendor_manifest, "벤더 latest 팩 매니페스트", now)
+    vendor_at = _signed_at(vendor_manifest, "벤더 latest 팩 매니페스트", now, age_floor=False)
     if ours_at <= vendor_at:
         raise VerifyError("팩 replay 단조 위반 — 우리 signed_at %d <= 벤더 latest signed_at %d. "
                           "벤더 팩을 받은 기계가 이 팩을 replay 로 거부한다(다시 서명하라)"

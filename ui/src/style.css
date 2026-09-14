@@ -224,6 +224,11 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 /* 낡은 관측은 흐리게 — 「지금 값」으로 읽히지 않게. 판정 문턱은 wsusage.ts의 USAGE_STALE_SECS.
    rate 행에도 같은 규율을 적용한다 — 초판은 rate에 stale 표시가 없어 낡은 95%가 최신처럼 보였다. */
 .wsu-ctx.stale, .wsu-rate.stale { opacity: .45; }
+/* 데몬이 판정한 죽은 창(리셋 지남·24h 무관측 · TICKET=cys-usage-stale-rate) — 숫자 대신 「—」와 사유를 회색으로.
+   행은 숨기지 않는다(숨기면 「없다」와 「죽었다」가 구분 안 된다). 사유 칸이 트랙 자리를 대신 차지한다. */
+.wsu-rate.dead .wsu-rate-name, .wsu-rate-pct.dead, .wsu-rate-dead { color: #6e7681; }
+.wsu-rate-dead { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wsu-scope.dead { opacity: .5; }
 /* 미관측 pane — 지우지 않고 「—」로 남긴다. 「측정 전」과 「그런 pane 없음」은 다른 것이다. */
 .wsu-ctx.unobserved { opacity: .6; }
 .wsu-ctx.unobserved .cc-tbar-track { background: rgba(255,255,255,.04); }
@@ -919,6 +924,9 @@ body.cc-office #cc-view-office { flex: 1; min-height: 0; }
 .cc-acct-badges { display: flex; flex-wrap: wrap; gap: 4px; flex: none; }
 .cc-acct-badge { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(100,116,139,.18); color: #94a3b8; }
 .cc-acct-badge.warn { background: rgba(245,158,11,.16); color: #f59e0b; }
+/* 죽은 창·죽은 계정(데몬 stale 판정) — 사이드바 .wsu-rate.dead 와 같은 규율 */
+.cc-tbar.dead .cc-tbar-pct, .cc-tbar.dead .cc-tbar-reset { color: #64748b; }
+.cc-acct-row.dead { opacity: .5; }
 #btn-cc-acct-redact { background: none; border: none; cursor: pointer; font-size: 12px; opacity: .5; padding: 0 4px; }
 #btn-cc-acct-redact.active { opacity: 1; }
 

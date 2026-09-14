@@ -13,6 +13,11 @@ export interface RateWindowLike {
   label: string;
   used_pct: number;
   resets_at: number | null;
+  // 데몬(cysd accounts.rs)이 읽기 시점에 판정한 「죽은 창」 표지 — 계정 저장소 유래에만 있다.
+  // 사유: "resets_at_passed"(리셋 지남) | "no_observation_24h"(24시간 무관측). ★부재 = 옛 판본 데몬
+  // (부서 데몬이 구 판본일 수 있다) — 종전 동작 그대로 숫자를 그린다(여기서 추정으로 채우지 않는다).
+  stale?: boolean;
+  stale_reason?: string | null;
 }
 export interface UsageLike {
   agent: string;
@@ -67,6 +72,11 @@ export interface RateRow {
   // ★관측 시각 원본. 나이는 그릴 때마다 다시 계산해야 하므로(재생성 없이 갱신) 원본을 들고 다닌다.
   updatedAt: number;
   stale: boolean;
+  // ★`stale`(120초 — 관측이 조금 낡음 · 흐리게)과 다른 축: 데몬이 판정한 **값 자체가 죽은 창**.
+  //   참이면 숫자 대신 「—」와 사유를 그린다(TICKET=cys-usage-stale-rate). 행은 지우지 않는다 —
+  //   지우면 「그런 계정 없음」과 「관측이 끊겼음」이 구별되지 않는다.
+  windowStale: boolean;
+  windowStaleReason: string | null;
 }
 
 // ★키 구분자는 JSON 인코딩으로 만든다. 초판은 NUL 제어문자를 소스에 직접 넣었는데,
@@ -110,6 +120,9 @@ export function aggregateRates(surfaces: SurfaceLike[], nowSecs: number): RateRo
         ageSecs: age,
         updatedAt: u.updated_at,
         stale: isStale,
+        // surface 관측은 살아 있는 페인의 값이다 — 데몬의 계정 창 판정 대상이 아니다.
+        windowStale: false,
+        windowStaleReason: null,
       };
       const slot = best.get(k) ?? { fresh: null, stale: null };
       const side = isStale ? "stale" : "fresh";
@@ -164,6 +177,9 @@ export interface ScopedGaugeLike {
   resets_at: number | null;
   updated_at: number;
   source: string;
+  // RateWindowLike와 같은 데몬 판정 표지(부재 = 옛 판본 데몬).
+  stale?: boolean;
+  stale_reason?: string | null;
 }
 
 export interface AccountLike {
@@ -203,6 +219,9 @@ export function accountRates(accounts: AccountLike[] | null | undefined, nowSecs
         ageSecs: age,
         updatedAt,
         stale: age > USAGE_STALE_SECS,
+        // 데몬 판정을 그대로 싣는다. 사유는 stale:true일 때만(짝 유지 — 신선 창에 사유가 붙어 오면 버린다).
+        windowStale: w.stale === true,
+        windowStaleReason: w.stale === true ? (w.stale_reason ?? null) : null,
       });
     }
   }
@@ -242,6 +261,9 @@ export function scopedRates(accounts: AccountLike[] | null | undefined, nowSecs:
         ageSecs: age,
         updatedAt,
         stale: age > USAGE_STALE_SECS,
+        // accountRates와 같은 규율 — 게이지 자기 관측 시각으로 데몬이 판정한 값.
+        windowStale: g.stale === true,
+        windowStaleReason: g.stale === true ? (g.stale_reason ?? null) : null,
       });
     }
   }
@@ -521,7 +543,7 @@ export function renderSignature(
         //   식별자(accountId)만 넣으면 라벨 변경이 화면에 반영되지 않는다.
         `${showScope ? x.socket + "/" + x.agent + "/" + x.accountLabel : ""}|${x.label}|${Math.round(x.usedPct)}|${
           x.resetsAt ?? ""
-        }|${x.stale ? 1 : 0}`,
+        }|${x.stale ? 1 : 0}|${x.windowStale ? 1 : 0}`,
     )
     .join(";");
   const c = ctxRows
@@ -543,4 +565,11 @@ export function renderSignature(
 export function ageAt(updatedAt: number, nowSecs: number): number {
   if (!updatedAt) return 0;
   return Math.max(0, Math.round(nowSecs - updatedAt));
+}
+
+// 죽은 창의 사유 문구 — 사이드바·CC가 「—」 옆에 회색으로 붙인다(문자열을 여기 두는 이유 = oldestFootText 주석).
+// 리셋이 지났으면 나이보다 그 사실이 먼저다(데몬 판정 순서와 같다). 그 밖에는 관측 나이를 적는다.
+export function windowStaleText(reason: string | null, updatedAt: number, nowSecs: number): string {
+  if (reason === "resets_at_passed") return "리셋 지남";
+  return `관측 ${ageText(ageAt(updatedAt, nowSecs))}`;
 }

@@ -25,6 +25,9 @@ const SNAPSHOT_RETAIN_SECS: f64 = 30.0 * 86400.0;
 const PRUNE_INTERVAL_SECS: f64 = 6.0 * 3600.0;
 /// 부트 복원 창(초) — 이 안의 마지막 스냅샷으로 계정 뷰를 예열(stale 표시). 7일.
 const BOOT_RESTORE_SECS: f64 = 7.0 * 86400.0;
+/// rate 창 무관측 만료(초) — 계정 관측이 이보다 오래되면 창을 stale로 표기한다. 24시간.
+/// ★읽기 시점 판정이다(상태 파괴 없음): used_pct는 그대로 내보내고 `stale`·`stale_reason`만 덧붙인다.
+const RATE_STALE_NO_OBS_SECS: f64 = 24.0 * 3600.0;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AccountKey {
@@ -829,7 +832,10 @@ pub fn local_json(daemon: &Arc<Daemon>, now: f64) -> Value {
                     "label": v.label,
                     "plan": v.plan,
                     "profiles": v.profiles.iter().collect::<Vec<_>>(),
-                    "rate": v.rate,
+                    // ★창마다 stale·stale_reason을 덧붙인다(읽기 시점 판정 · 상태 파괴 없음). used_pct·resets_at은
+                    //   **그대로** 숫자로 나간다 — 소비자(usage-gate·sentinel·statusline)가 숫자 계약에 묶여 있다.
+                    //   관측 시각 = 계정 updated_at(rate 슬롯의 시각).
+                    "rate": v.rate.iter().map(|w| rate_window_json(w, v.updated_at, now)).collect::<Vec<_>>(),
                     "updated_at": if v.updated_at > 0.0 { json!(v.updated_at) } else { Value::Null },
                     "stale_secs": if v.updated_at > 0.0 { json!((now - v.updated_at).max(0.0)) } else { Value::Null },
                     "source": v.source,
@@ -842,6 +848,9 @@ pub fn local_json(daemon: &Arc<Daemon>, now: f64) -> Value {
                         "resets_at": g.resets_at,
                         "updated_at": g.updated_at,
                         "source": g.source,
+                        // 스코프 게이지는 자기 관측 시각(g.updated_at)으로 잰다 — 위 주석과 같은 이유.
+                        "stale": rate_window_stale_reason(g.resets_at, g.updated_at, now).is_some(),
+                        "stale_reason": rate_window_stale_reason(g.resets_at, g.updated_at, now),
                     })).collect::<Vec<_>>(),
                 })
             })
@@ -872,6 +881,37 @@ pub fn local_json(daemon: &Arc<Daemon>, now: f64) -> Value {
         }
     }
     Value::Array(rows)
+}
+
+/// rate 창 stale 사유(순수 — 테스트 핀). None = 신선. (TICKET=cys-usage-stale-rate)
+///
+/// 왜: `~/.antigravity` 폴더만 있어도 계정이 등록되고(seed_known), 마지막 관측값(agy-rpc 09-12)이
+/// 프로세스 0인 채로 71시간 뒤에도 살아 있는 숫자처럼 나갔다 — 계정 rate 창에는 만료 규칙이 없었다
+/// (usage.rs idle_stale_transition은 세션 매핑 전용).
+/// ① `resets_at < now` → `resets_at_passed`: 그 %는 이미 리셋된 창의 값이다. ★먼저 본다 —
+///    관측이 신선해도 리셋이 지났으면 값은 죽었다.
+/// ② `now - observed_at > 24h` → `no_observation_24h`. observed_at<=0(관측 전)도 여기로 떨어진다.
+/// 경계는 둘 다 엄격 부등호: 리셋 시각 그 순간·정확히 24h 경과는 아직 신선.
+pub fn rate_window_stale_reason(resets_at: Option<f64>, observed_at: f64, now: f64) -> Option<&'static str> {
+    if matches!(resets_at, Some(r) if r < now) {
+        return Some("resets_at_passed");
+    }
+    if observed_at <= 0.0 || now - observed_at > RATE_STALE_NO_OBS_SECS {
+        return Some("no_observation_24h");
+    }
+    None
+}
+
+/// rate 창 1개 → JSON. 종전 직렬화(`label`·`used_pct`·`resets_at`)를 그대로 두고 두 필드만 더한다.
+fn rate_window_json(w: &RateWindow, observed_at: f64, now: f64) -> Value {
+    let why = rate_window_stale_reason(w.resets_at, observed_at, now);
+    json!({
+        "label": w.label,
+        "used_pct": w.used_pct,
+        "resets_at": w.resets_at,
+        "stale": why.is_some(),
+        "stale_reason": why,
+    })
 }
 
 /// 선형 소진 예측(순수 — 테스트 핀): 시계열 최소자승 기울기로 100% 도달 시각.
@@ -1087,5 +1127,75 @@ mod tests {
         assert!(resolve(&mut st, "mystery", "").is_none());
         // claude인데 신원 해석 불가 → None(스킵 — 유령 계정 금지)
         assert!(resolve(&mut st, "claude", "/nonexist/projects/x/s.jsonl").is_none());
+    }
+
+    // ── rate 창 stale 판정 (TICKET=cys-usage-stale-rate) ──
+    // 실측값(2026-09-15 08:5x `cys usage-accounts --json` antigravity 행 · 프로세스 0):
+    //   updated_at 1789172019.27(09-12 09:13 KST) · 5h resets_at 1789182252(09-12 12:04) used_pct 6.13813
+    //   · 7d resets_at 1789689571(09-18) · stale_secs 257276 → 조회 시각 ≈ 1789429295.
+    const AGY_OBS: f64 = 1789172019.271695;
+    const AGY_5H_RESET: f64 = 1789182252.0;
+    const AGY_7D_RESET: f64 = 1789689571.0;
+    const AGY_NOW: f64 = 1789429295.0;
+
+    #[test]
+    fn rate_window_fresh_is_not_stale() {
+        let now = 1_000_000.0;
+        // 관측 1분 전 · 리셋은 미래 → 신선
+        assert_eq!(rate_window_stale_reason(Some(now + 3600.0), now - 60.0, now), None);
+        // resets_at 미상이어도 관측이 신선하면 신선
+        assert_eq!(rate_window_stale_reason(None, now - 3600.0, now), None);
+        // 경계: 리셋 시각 그 순간·정확히 24h 경과는 아직 신선(엄격 부등호)
+        assert_eq!(rate_window_stale_reason(Some(now), now - 60.0, now), None);
+        assert_eq!(rate_window_stale_reason(None, now - RATE_STALE_NO_OBS_SECS, now), None);
+        // JSON: 신선 창도 stale 필드를 명시적으로 들고 나간다(false·null) — 필드 부재(옛 데몬)와 구별
+        let w = RateWindow { label: "5h".into(), used_pct: 41.0, resets_at: Some(now + 3600.0) };
+        let j = rate_window_json(&w, now - 60.0, now);
+        assert_eq!(j["stale"], json!(false));
+        assert!(j.get("stale_reason").is_some_and(|x| x.is_null()), "키는 있고 값은 null");
+        assert_eq!(j["used_pct"], json!(41.0));
+    }
+
+    #[test]
+    fn rate_window_resets_at_passed() {
+        // 실측 agy 5h 창: 리셋(09-12 12:04)이 지났다 — 24h 무관측도 참이지만 사유는 리셋이 우선
+        assert_eq!(
+            rate_window_stale_reason(Some(AGY_5H_RESET), AGY_OBS, AGY_NOW),
+            Some("resets_at_passed")
+        );
+        // 관측이 방금이어도 리셋이 지났으면 죽은 값 — 나이와 무관
+        assert_eq!(
+            rate_window_stale_reason(Some(AGY_NOW - 1.0), AGY_NOW - 5.0, AGY_NOW),
+            Some("resets_at_passed")
+        );
+        // ★계약: used_pct·resets_at은 숫자 그대로 — null로 바꾸지 않는다(소비자 숫자 계약)
+        let w = RateWindow {
+            label: "5h".into(),
+            used_pct: 6.138129999999997,
+            resets_at: Some(AGY_5H_RESET),
+        };
+        let j = rate_window_json(&w, AGY_OBS, AGY_NOW);
+        assert_eq!(j["label"], json!("5h"));
+        assert_eq!(j["used_pct"].as_f64(), Some(6.138129999999997));
+        assert_eq!(j["resets_at"].as_f64(), Some(AGY_5H_RESET));
+        assert_eq!(j["stale"], json!(true));
+        assert_eq!(j["stale_reason"], json!("resets_at_passed"));
+    }
+
+    #[test]
+    fn rate_window_no_observation_24h() {
+        // 실측 agy 7d 창: 리셋은 미래(09-18)지만 관측이 71h 전 → 무관측 사유
+        assert_eq!(
+            rate_window_stale_reason(Some(AGY_7D_RESET), AGY_OBS, AGY_NOW),
+            Some("no_observation_24h")
+        );
+        let now = 1_000_000.0;
+        // 24h + 1초
+        assert_eq!(
+            rate_window_stale_reason(None, now - RATE_STALE_NO_OBS_SECS - 1.0, now),
+            Some("no_observation_24h")
+        );
+        // 관측 전(0.0) — 나이를 셀 수 없으면 신선이라 주장하지 않는다
+        assert_eq!(rate_window_stale_reason(Some(now + 60.0), 0.0, now), Some("no_observation_24h"));
     }
 }

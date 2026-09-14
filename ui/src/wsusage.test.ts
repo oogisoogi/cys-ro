@@ -29,6 +29,7 @@ import {
   shortSocketTag,
   sourceGrade,
   USAGE_STALE_SECS,
+  windowStaleText,
   type AccountLike,
   type NamedReporterLike,
   type SurfaceLike,
@@ -392,6 +393,72 @@ describe("accountRates — 페인이 없어도 계정 사용량은 있다", () =
       "zz-second/5h",
       "zz-second/7d",
     ]);
+  });
+});
+
+// ── 죽은 창(데몬 stale 판정) — TICKET=cys-usage-stale-rate
+// ★픽스처 = 실측 agy 행(2026-09-15 08:5x `cys usage-accounts --json` · 프로세스 0)에 새 필드를 얹은 형태.
+const ACCT_AGY_DEAD: AccountLike = {
+  provider: "antigravity",
+  account_id: "default",
+  label: "Antigravity (agy)",
+  rate: [
+    { label: "5h", used_pct: 6.138129999999997, resets_at: 1789182252, stale: true, stale_reason: "resets_at_passed" },
+    { label: "7d", used_pct: 8.881649999999997, resets_at: 1789689571, stale: true, stale_reason: "no_observation_24h" },
+  ],
+  updated_at: 1789172019.271695,
+};
+const AGY_NOW = 1789429295;
+
+describe("죽은 창 — 데몬 stale 판정을 행에 싣는다", () => {
+  test("★데몬이 stale:true를 주면 windowStale·사유가 실린다 — 숫자(usedPct)는 버리지 않는다", () => {
+    const rows = accountRates([ACCT_AGY_DEAD], AGY_NOW);
+    expect(rows.map((r) => `${r.label}/${r.windowStale}/${r.windowStaleReason}`)).toEqual([
+      "5h/true/resets_at_passed",
+      "7d/true/no_observation_24h",
+    ]);
+    expect(rows[0].usedPct).toBe(6.138129999999997);
+  });
+
+  test("필드가 없는 응답(옛 판본 부서 데몬)·surface 관측 = 살아 있는 창 — 추정으로 죽이지 않는다", () => {
+    const rows = accountRates([ACCT_CLAUDE], ANOW);
+    expect(rows.length).toBe(2);
+    expect(rows.every((r) => r.windowStale === false && r.windowStaleReason === null)).toBe(true);
+    const s = aggregateRates([sf(1, { usage: fresh({ rate: [{ label: "5h", used_pct: 10, resets_at: null }] }) })], NOW);
+    expect(s[0].windowStale).toBe(false);
+  });
+
+  test("stale:false 창에 사유가 붙어 와도 싣지 않는다 — 판정과 사유의 짝 유지", () => {
+    const odd: AccountLike = {
+      ...ACCT_CLAUDE,
+      rate: [{ label: "5h", used_pct: 53, resets_at: 1786068600, stale: false, stale_reason: "resets_at_passed" }],
+    };
+    const rows = accountRates([odd], ANOW);
+    expect(rows[0].windowStale).toBe(false);
+    expect(rows[0].windowStaleReason).toBeNull();
+  });
+
+  test("모델 스코프 게이지도 같은 규율", () => {
+    const a: AccountLike = {
+      ...ACCT_CLAUDE,
+      scoped: [
+        { model: "Fable", used_pct: 6, resets_at: 1786000000, updated_at: ANOW - 10, source: "oauth", stale: true, stale_reason: "resets_at_passed" },
+      ],
+    };
+    const rows = scopedRates([a], ANOW);
+    expect(rows[0].windowStale).toBe(true);
+    expect(rows[0].windowStaleReason).toBe("resets_at_passed");
+  });
+
+  test("★죽음 전이는 렌더 서명을 바꾼다 — 안 바뀌면 화면이 옛 숫자에 머문다", () => {
+    const live = accountRates([ACCT_CLAUDE], ANOW);
+    const dead = live.map((r) => ({ ...r, windowStale: true, windowStaleReason: "resets_at_passed" }));
+    expect(renderSignature(dead, [], false, false)).not.toBe(renderSignature(live, [], false, false));
+  });
+
+  test("사유 문구 — 리셋 지남이 나이보다 먼저, 그 밖은 관측 나이", () => {
+    expect(windowStaleText("resets_at_passed", 1789172019.271695, AGY_NOW)).toBe("리셋 지남");
+    expect(windowStaleText("no_observation_24h", 1789172019.271695, AGY_NOW)).toBe("관측 71시간 전");
   });
 });
 

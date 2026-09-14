@@ -64,6 +64,7 @@ import {
   shortSocketTag,
   sourceGrade,
   USAGE_STALE_SECS,
+  windowStaleText,
   type AccountLike,
   type NamedReporterLike,
   type SurfaceLike,
@@ -376,12 +377,16 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
     head.textContent = "사용량";
     frag.appendChild(head);
     let curScope = "";
+    // 계정(범위)의 창이 전부 죽었으면 머리표도 흐린다 — 숨기지는 않는다(없음 ≠ 죽음).
+    const liveScopes = new Set(
+      rates.filter((x) => !x.windowStale).map((x) => JSON.stringify([x.socket, x.agent, x.accountId])),
+    );
     for (const r of rates) {
       const scope = JSON.stringify([r.socket, r.agent, r.accountId]);
       if (showScope && scope !== curScope) {
         curScope = scope;
         const sh = document.createElement("div");
-        sh.className = "wsu-scope";
+        sh.className = `wsu-scope${liveScopes.has(scope) ? "" : " dead"}`;
         const tag = shortSocketTag(r.socket);
         // ★계정 라벨이 있으면 그것을 쓴다 — 같은 claude 계정이 둘일 때 「claude」만으로는
         //   두 블록이 구별되지 않는다. 라벨이 없으면(surface 유래) 종전대로 에이전트 이름만.
@@ -391,25 +396,46 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
         frag.appendChild(sh);
       }
       const row = document.createElement("div");
-      row.className = `wsu-rate${r.stale ? " stale" : ""}`;
+      row.className = `wsu-rate${r.stale ? " stale" : ""}${r.windowStale ? " dead" : ""}`;
       const name = document.createElement("span");
       name.className = "wsu-rate-name";
       name.textContent = r.label;
-      const track = document.createElement("span");
-      track.className = "cc-tbar-track";
-      const fill = document.createElement("span");
-      const sev = sevClassFor(r.usedPct, 70, 90);
-      fill.className = `cc-tbar-fill${sev ? " " + sev : ""}`;
-      fill.style.width = `${Math.min(100, Math.max(0, r.usedPct))}%`;
-      track.appendChild(fill);
-      const pct = document.createElement("span");
-      pct.className = `wsu-rate-pct${sev ? " " + sev : ""}`;
-      pct.textContent = `${Math.round(r.usedPct)}%`;
-      row.append(name, track, pct);
+      if (r.windowStale) {
+        // ★데몬이 죽었다고 판정한 창(리셋 지남·24h 무관측) — 마지막 숫자를 게이지로 그리면 살아 있는
+        //   값으로 읽힌다(박사님 09-15 「사용하지 않는데 계속 남아 있는 이유」). 트랙 자리에 사유, % 자리에 「—」.
+        const why = document.createElement("span");
+        why.className = "wsu-rate-dead";
+        why.textContent = windowStaleText(r.windowStaleReason, r.updatedAt, nowSecs);
+        usageAgeUpdaters.push((n) => {
+          why.textContent = windowStaleText(r.windowStaleReason, r.updatedAt, n);
+        });
+        const pct = document.createElement("span");
+        pct.className = "wsu-rate-pct dead";
+        pct.textContent = "—";
+        row.append(name, why, pct);
+      } else {
+        const track = document.createElement("span");
+        track.className = "cc-tbar-track";
+        const fill = document.createElement("span");
+        const sev = sevClassFor(r.usedPct, 70, 90);
+        fill.className = `cc-tbar-fill${sev ? " " + sev : ""}`;
+        fill.style.width = `${Math.min(100, Math.max(0, r.usedPct))}%`;
+        track.appendChild(fill);
+        const pct = document.createElement("span");
+        pct.className = `wsu-rate-pct${sev ? " " + sev : ""}`;
+        pct.textContent = `${Math.round(r.usedPct)}%`;
+        row.append(name, track, pct);
+      }
       const mkRateTitle = (nowSecs2: number) => {
         const tag2 = shortSocketTag(r.socket);
         const who2 = r.accountLabel ? `${r.agent} · ${r.accountLabel}` : r.agent;
-        const tip = [`${who2}${tag2 ? ` (데몬 ${tag2})` : ""} · ${r.label} ${Math.round(r.usedPct)}%`];
+        const tip = [
+          `${who2}${tag2 ? ` (데몬 ${tag2})` : ""} · ${r.label} ${r.windowStale ? "—" : `${Math.round(r.usedPct)}%`}`,
+        ];
+        if (r.windowStale)
+          tip.push(
+            `⚠ 표시 중단 — ${windowStaleText(r.windowStaleReason, r.updatedAt, nowSecs2)} (마지막 관측값 ${Math.round(r.usedPct)}%)`,
+          );
         if (tag2) tip.push(`소켓 ${r.socket}`); // 태그가 겹칠 수 있으니 전체 경로를 남긴다
         if (r.resetsAt) {
           const d = new Date(r.resetsAt * 1000);
@@ -626,6 +652,7 @@ function ccAcctMax(label: string): { used: number; reset: number | null; acct: s
       if (r.label !== label) continue;
       const used = Number(r.used_pct);
       if (!Number.isFinite(used)) continue;
+      if (r.stale === true) continue; // 데몬이 죽었다고 판정한 창은 KPI 「최고 사용 계정」 후보가 아니다
       if (!best || used > best.used)
         best = { used, reset: r.resets_at ?? null, acct: String(a.label ?? a.account_id ?? "?") };
     }
@@ -647,22 +674,31 @@ function renderAccounts() {
       const label = ccEsc(ccAcctLabel(String(a.label ?? a.account_id ?? "?")));
       const plan = a.plan ? `<span class="cc-acct-plan">${ccEsc(String(a.plan))}</span>` : "";
       // 게이지 — rate limit 임계(70/90)로 sevClass. cc-tbar 재사용.
+      // ★데몬이 죽었다고 판정한 창(stale:true)은 채움·숫자를 그리지 않고 「—」+사유(회색) — 사이드바와 같은 규율.
       const gauges = ["5h", "7d"]
         .map((lab) => {
           const r = (a.rate ?? []).find((x: any) => x.label === lab);
+          const dead = !!r && r.stale === true;
           const used = r ? Math.round(Number(r.used_pct)) : 0;
-          const reset = r && r.resets_at != null ? ccReset(lab, r.resets_at) : "";
-          const fill = r ? `<span class="cc-tbar-fill ${sevClass(used, 70, 90)}" style="width:${Math.min(100, used)}%"></span>` : "";
-          return `<div class="cc-tbar"><span class="cc-tbar-lab">${lab}</span><span class="cc-tbar-track">${fill}</span><span class="cc-tbar-pct">${r ? used + "%" : "—"}</span><span class="cc-tbar-reset">${reset}</span></div>`;
+          const reset = dead
+            ? ccEsc(windowStaleText(r.stale_reason ?? null, Number(a.updated_at) || 0, Date.now() / 1000))
+            : r && r.resets_at != null
+              ? ccReset(lab, r.resets_at)
+              : "";
+          const fill = r && !dead ? `<span class="cc-tbar-fill ${sevClass(used, 70, 90)}" style="width:${Math.min(100, used)}%"></span>` : "";
+          return `<div class="cc-tbar${dead ? " dead" : ""}"><span class="cc-tbar-lab">${lab}</span><span class="cc-tbar-track">${fill}</span><span class="cc-tbar-pct">${r && !dead ? used + "%" : "—"}</span><span class="cc-tbar-reset">${reset}</span></div>`;
         })
         .join("");
+      // 계정의 창(rate + 스코프 게이지)이 전부 죽었으면 행을 흐린다 — 숨기지 않는다(숨기면 「없다」와 「죽었다」가 구분 안 된다).
+      const wins: any[] = [...(a.rate ?? []), ...(a.scoped ?? [])];
+      const allDead = wins.length > 0 && wins.every((w) => w?.stale === true);
       const badges: string[] = [];
       if (a.updated_at == null) badges.push(`<span class="cc-acct-badge">관측 없음</span>`);
       if (a.adapter === false) badges.push(`<span class="cc-acct-badge">관측 어댑터 없음</span>`);
       const stale = Number(a.stale_secs);
       if (Number.isFinite(stale) && stale > 120) badges.push(`<span class="cc-acct-badge">${Math.round(stale / 60)}분 전 관측</span>`);
       if (a.exhaust_at != null) badges.push(`<span class="cc-acct-badge warn">이 속도면 ${ccHHMM(Number(a.exhaust_at))} 소진</span>`);
-      return `<div class="cc-acct-row"><span class="cc-acct-prov">[${prov}]</span><span class="cc-acct-label">${label}</span>${plan}<div class="cc-acct-gauges">${gauges}</div><span class="cc-acct-badges">${badges.join("")}</span></div>`;
+      return `<div class="cc-acct-row${allDead ? " dead" : ""}"><span class="cc-acct-prov">[${prov}]</span><span class="cc-acct-label">${label}</span>${plan}<div class="cc-acct-gauges">${gauges}</div><span class="cc-acct-badges">${badges.join("")}</span></div>`;
     })
     .join("");
 }

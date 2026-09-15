@@ -14992,6 +14992,9 @@ fn build_pack_manifest_value(
         json!(pack_version.unwrap_or(env!("CARGO_PKG_VERSION"))),
     );
     obj.insert("min_binary_version".into(), json!(min_binary_version));
+    // ★cysr 1.0.0(TICKET=cysr-brand-version): 이 manifest 를 만든 바이너리의 build_id 병기 — 판번이
+    //   같은 두 발행을 사람과 게이트가 구별하는 표식. 소비자는 키별 수동 추출이라 구 바이너리는 무시한다.
+    obj.insert("build_id".into(), json!(cys::pack::build_id()));
     if let Some(k) = key_id {
         obj.insert("key_id".into(), json!(k));
     }

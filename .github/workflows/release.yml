@@ -144,6 +144,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ★cysr 1.0.0 build_id(TICKET=cysr-brand-version · master 결정 2026-09-15): 같은 판번 안에서 내용이
+      #   바뀐 발행을 업데이터가 구별하는 표식. 형식 = `<커밋 12자>.<커밋 시각 UTC yyyymmddTHHMMZ>`.
+      #   ★빌드 벽시계가 아니라 커밋 시각인 이유: 매트릭스 3레그·pack-artifacts 가 **같은 값**을 가져야
+      #   latest.json 한 줄·pack-manifest 와 바이너리가 맞는다 — 레그마다 빌드 시각이 달라 각자 찍으면
+      #   같은 발행 안에서 build_id 가 셋으로 갈린다. build.rs 가 이 env 를 CYS_BUILD_ID 로 굽는다.
+      - name: Stamp CYSR_BUILD_ID (build_id 단일 값)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BID="$(git rev-parse --short=12 HEAD).$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%dT%H%MZ HEAD)"
+          [[ "$BID" =~ ^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$ ]] || { echo "::error::build_id 형식 오류: $BID"; exit 1; }
+          echo "CYSR_BUILD_ID=$BID" >> "$GITHUB_ENV"
+          echo "build_id=$BID"
+
       # ★S27 교정(2026-07-26) — `src/` 모듈 선언 ↔ git 추적 파일 정합 사전 게이트.
       # **왜 첫 잡의 첫 스텝인가**: `src/lib.rs` 가 `pub mod X;` 를 선언했는데 `src/X.rs` 가 미추적이면
       # 태그 체크아웃에는 그 파일이 없고 **전 레그(macOS×2·Windows)가 컴파일 즉사**한다. 종전에는
@@ -984,6 +998,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ★cysr 1.0.0 build_id(TICKET=cysr-brand-version · master 결정 2026-09-15): 같은 판번 안에서 내용이
+      #   바뀐 발행을 업데이터가 구별하는 표식. 형식 = `<커밋 12자>.<커밋 시각 UTC yyyymmddTHHMMZ>`.
+      #   ★빌드 벽시계가 아니라 커밋 시각인 이유: 매트릭스 3레그·pack-artifacts 가 **같은 값**을 가져야
+      #   latest.json 한 줄·pack-manifest 와 바이너리가 맞는다 — 레그마다 빌드 시각이 달라 각자 찍으면
+      #   같은 발행 안에서 build_id 가 셋으로 갈린다. build.rs 가 이 env 를 CYS_BUILD_ID 로 굽는다.
+      - name: Stamp CYSR_BUILD_ID (build_id 단일 값)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BID="$(git rev-parse --short=12 HEAD).$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%dT%H%MZ HEAD)"
+          [[ "$BID" =~ ^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$ ]] || { echo "::error::build_id 형식 오류: $BID"; exit 1; }
+          echo "CYSR_BUILD_ID=$BID" >> "$GITHUB_ENV"
+          echo "build_id=$BID"
+
       # ★시크릿/개인정보 발행 hard-gate (팩 바이너리 빌드·임베드 전 최우선). 아래 scan-pack-secrets.sh는
       # cysjavis-pack 트리만·개인 계정 핸들 허용이라, 여기서 whole-repo 엄격 스캔(secret-scan.sh --all:
       # 개인 홈경로·개인 프로필 디렉토리·개인 핸들·이메일·키토큰)을 fail-closed로 선행해 누출을 이중 차단한다.
@@ -1333,3 +1361,44 @@ jobs:
   # (Phase 2-4 완결·2026-07-03) 전환기 미러(relocate) 잡 제거 — 구 repo(cys-terminal-releases)는
   # Archive됨. 마지막 미러(v0.10.0·자산 URL=소스 repo)가 읽기 전용으로 영구 생존하므로,
   # 늦게 업데이트하는 구 설치본도 그 경로로 이주 가능하다.
+
+  # ★cysr 1.0.0 build_id 병기(TICKET=cysr-brand-version · master 결정 2026-09-15).
+  #   업데이터는 「판번 비교 → 같으면 build_id 비교」로 받고, release-verify.py 9단계는 「build_id 가
+  #   다른데 판번이 같으면 발행 거부」로 막는다. 둘 다 latest.json 의 build_id 를 읽는데, latest.json 은
+  #   tauri-action 이 3레그 병합으로 만들어 그 칸이 없다 → 전 레그가 끝난 뒤 한 번 병기한다.
+  #   값 = build 잡의 Stamp CYSR_BUILD_ID 스텝과 **같은 산식**(커밋 12자 + 커밋 시각) — 같은 커밋이면
+  #   같은 값이 나오므로 잡 사이 전달이 필요 없다.
+  #   ⚠순서: release-postprocess.py(SHA256SUMS.txt 생성)는 이 잡 **뒤**에 돌아야 한다 — 앞이면 SUMS 의
+  #     latest.json 해시가 병기 전 값이라 release-verify 5단계에서 체크섬 불일치로 죽는다(fail-closed).
+  stamp-latest-build-id:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp build_id into draft latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BID="$(git rev-parse --short=12 HEAD).$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%dT%H%MZ HEAD)"
+          [[ "$BID" =~ ^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$ ]] || { echo "::error::build_id 형식 오류: $BID"; exit 1; }
+          mkdir -p stamp
+          gh release download "$TAG" -R "$REPO" -p latest.json -D stamp --clobber
+          BID="$BID" python3 - <<'PY'
+          import json, os
+          p = "stamp/latest.json"
+          bid = os.environ["BID"]
+          d = json.load(open(p, encoding="utf-8"))
+          old = d.get("build_id")
+          if old not in (None, bid):
+              print("::error::latest.json 에 다른 build_id 가 이미 있다: %r != %r" % (old, bid))
+              raise SystemExit(1)
+          d["build_id"] = bid
+          with open(p, "w", encoding="utf-8") as fh:
+              json.dump(d, fh, ensure_ascii=False, indent=2)
+          print("build_id =", bid)
+          PY
+          gh release upload "$TAG" stamp/latest.json -R "$REPO" --clobber

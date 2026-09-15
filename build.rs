@@ -34,15 +34,15 @@ fn main() {
     // 폴백 cys 가 데몬과 같은 빌드인지 교차대조하는 anti-shadowing 근거(embedded pack hash·protocol version 과 함께).
     // build.rs 는 이미 git 에 하드 의존(위 ls-files)하므로 추가 의존 없음. 실패 시 "unknown"(대조에서 불일치로 안전측).
     println!("cargo:rerun-if-changed=.git/HEAD");
-    let build_id = Command::new("git")
-        .args(["rev-parse", "--short=12", "HEAD"])
-        .current_dir(&manifest_dir)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
+    // ★cysr 1.0.0(TICKET=cysr-brand-version · master 결정 2026-09-15): 같은 판번이라도 내용이 바뀌면
+    //   업데이트돼야 한다 → 업데이터가 판번 다음으로 build_id 를 대조한다. 형식 =
+    //   `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`. 릴리스 CI 는 매트릭스 레그가 같은 값을 갖도록
+    //   CYSR_BUILD_ID 를 넘긴다(레그마다 빌드 시각이 달라 각자 찍으면 latest.json 한 줄과 어긋난다).
+    println!("cargo:rerun-if-env-changed=CYSR_BUILD_ID");
+    let build_id = match env::var("CYSR_BUILD_ID") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => local_build_id(&manifest_dir),
+    };
     println!("cargo:rustc-env=CYS_BUILD_ID={build_id}");
 
     // 추적 파일 → cysjavis-pack/ 접두 제거한 rel. 제외규칙(기존 walk와 동형): 경로 컴포넌트가
@@ -266,6 +266,48 @@ fn embed_windows_resources() {
         .set_manifest(MANIFEST);
     res.compile()
         .expect("Windows 리소스 컴파일 실패(rc.exe 부재?) — PE 메타데이터 임베드 불가");
+}
+
+/// CYSR_BUILD_ID 미지정(로컬 빌드)일 때의 build_id — `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`.
+/// git 실패 시 커밋 자리는 "unknown"(업데이터 대조에서 불일치 = 안전측). 시각은 build.rs 가 다시 돌 때만
+/// 갱신된다(rerun 조건 밖의 편집은 옛 시각·옛 dirty 표기를 유지한다 — 로컬 판별용이라 수용).
+fn local_build_id(manifest_dir: &str) -> String {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(manifest_dir)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let sha = git(&["rev-parse", "--short=12", "HEAD"])
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{sha}{}.{}", if dirty { "-dirty" } else { "" }, utc_stamp(secs))
+}
+
+/// epoch 초 → `yyyymmddTHHMMZ`(UTC). chrono build-dep 없이 역법 변환(Howard Hinnant civil_from_days).
+fn utc_stamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}{m:02}{d:02}T{:02}{:02}Z", rem / 3_600, (rem % 3_600) / 60)
 }
 
 /// tauri.conf.json 등에서 `"key": "value"` 첫 매치의 value를 추출(JSON 파서 build-dep 없이).

@@ -5309,6 +5309,28 @@ async fn rotate_dept_daemon(app: AppHandle, name: String, force: bool, skip_drai
 /// 경로는 tauri.conf 기본 엔드포인트 그대로). ★서명 검증 불변: 설치는 baked pubkey로 .sig를
 /// 검증하므로 엔드포인트 교체가 위조 패키지 설치를 허용하지 않는다.
 fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    build_updater_with(app, false)
+}
+
+/// `same_version_ok=true` 는 판번이 **같은** 원격판도 「업데이트 있음」으로 본다. 반드시
+/// `same_version_verdict` 가 원격 build_id ≠ 내 build_id 를 확인한 뒤에만 쓴다(판번·build_id 이중
+/// 게이트 · TICKET=cysr-brand-version · master 결정 2026-09-15). false 면 종전 경로와 바이트 동일.
+fn build_updater_with(
+    app: &AppHandle,
+    same_version_ok: bool,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    if same_version_ok {
+        let mut builder = app
+            .updater_builder()
+            .version_comparator(|current, release| release.version >= current);
+        if let Some(u) = cys::env_compat("CYS_UPDATE_MANIFEST_URL") {
+            let url: tauri::Url = u
+                .parse()
+                .map_err(|e| format!("CYS_UPDATE_MANIFEST_URL 파싱 실패: {e}"))?;
+            builder = builder.endpoints(vec![url]).map_err(|e| e.to_string())?;
+        }
+        return builder.build().map_err(|e| e.to_string());
+    }
     if let Some(u) = cys::env_compat("CYS_UPDATE_MANIFEST_URL") {
         let url: tauri::Url = u
             .parse()
@@ -5329,6 +5351,123 @@ fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, Strin
 #[tauri::command]
 fn autotest_patch_install() -> bool {
     cys::env_compat("CYS_AUTOTEST_PATCH_INSTALL").as_deref() == Some("1")
+}
+
+/// 판번이 같을 때만 타는 희귀 분기의 판정 결과.
+#[derive(Debug, PartialEq)]
+enum SameVersionVerdict {
+    /// 같은 판인데 원격 build_id 가 내 것과 다르다 — 내용이 바뀐 수정본이므로 받는다.
+    Update,
+    /// 받지 않는다(사유는 로그·시험용).
+    Skip(&'static str),
+}
+
+/// ★판번·build_id 이중 게이트의 앱 쪽 2순위 판정(순수 — 회귀 시험 대상 · TICKET=cysr-brand-version).
+///   1순위 판번 비교는 플러그인 기본 규칙 `release.version > current_version`(tauri-plugin-updater
+///   2.10.1 updater.rs:532)이 이미 끝냈다. 여기는 **판번이 같을 때만** 온다.
+///   · 원격 build_id 가 없다(0.14.x 구판 latest.json) → 판번만 본다 = 건너뜀
+///   · 내 build_id 를 모른다("unknown" — git 없이 빌드) → 건너뜀(같은 판을 매번 헛받는 반복 방지)
+///   · 같은 build_id → 건너뜀 · 다른 build_id → 업데이트
+/// latest.json 의 build_id 칸은 플러그인의 RemoteRelease 가 버리므로(updater.rs:92-101) 앱이 따로 읽는다.
+fn same_version_verdict(current_version: &str, local_build_id: &str, remote: &Value) -> SameVersionVerdict {
+    let Some(rv) = remote.get("version").and_then(|v| v.as_str()) else {
+        return SameVersionVerdict::Skip("원격 latest.json 에 version 이 없다");
+    };
+    if rv.trim().trim_start_matches('v') != current_version {
+        return SameVersionVerdict::Skip("판번이 다르다 — 판번 비교가 이미 결정했다");
+    }
+    let Some(remote_build) = remote
+        .get("build_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return SameVersionVerdict::Skip("원격 build_id 없음 — 구판 latest.json 은 판번만 본다");
+    };
+    let local = local_build_id.trim();
+    if local.is_empty() || local == "unknown" {
+        return SameVersionVerdict::Skip("내 build_id 를 모른다 — 헛업데이트 반복 방지");
+    }
+    if remote_build == local {
+        SameVersionVerdict::Skip("같은 판·같은 build_id")
+    } else {
+        SameVersionVerdict::Update
+    }
+}
+
+/// 원격 latest.json URL — 테스트 env(CYS_UPDATE_MANIFEST_URL)가 있으면 그것, 없으면 tauri.conf 의
+/// updater endpoint(업데이터 본체가 보는 것과 같은 주소).
+fn latest_json_url() -> Option<String> {
+    if let Some(u) = cys::env_compat("CYS_UPDATE_MANIFEST_URL") {
+        return Some(u);
+    }
+    let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).ok()?;
+    conf["plugins"]["updater"]["endpoints"][0]
+        .as_str()
+        .map(str::to_string)
+}
+
+/// 판번 동일 분기 — 원격 latest.json 을 따로 받아 build_id 를 대조하고, 다르면 같은 판을 받는다.
+/// ★조회 실패·판정 불가는 전부 「건너뜀 + 로그」다(master 결정: 업데이트 강행 금지).
+async fn same_version_rebuild_check(app: &AppHandle) -> Option<tauri_plugin_updater::Update> {
+    let url = latest_json_url()?;
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-fsSL", "--max-time", "20", &url]);
+        // GUI(무콘솔)가 콘솔 자식(curl)을 숨김 없이 낳으면 윈도우에서 창이 깜빡인다(check_pack_update 와 동형).
+        no_console(&mut cmd);
+        cmd.output()
+    })
+    .await;
+    let remote: Value = match joined {
+        Ok(Ok(out)) if out.status.success() => match serde_json::from_slice(&out.stdout) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[cys-app] 업데이트 확인(판번 동일 분기): latest.json 파싱 실패로 건너뜀 — {e}");
+                return None;
+            }
+        },
+        Ok(Ok(out)) => {
+            eprintln!(
+                "[cys-app] 업데이트 확인(판번 동일 분기): latest.json 조회 실패(code {:?})로 건너뜀",
+                out.status.code()
+            );
+            return None;
+        }
+        Ok(Err(e)) => {
+            eprintln!("[cys-app] 업데이트 확인(판번 동일 분기): curl 실행 실패로 건너뜀 — {e}");
+            return None;
+        }
+        Err(e) => {
+            eprintln!("[cys-app] 업데이트 확인(판번 동일 분기): 조회 태스크 실패로 건너뜀 — {e}");
+            return None;
+        }
+    };
+    let current = app.package_info().version.to_string();
+    match same_version_verdict(&current, cys::pack::build_id(), &remote) {
+        SameVersionVerdict::Skip(_) => None,
+        SameVersionVerdict::Update => {
+            eprintln!(
+                "[cys-app] 업데이트 확인: 같은 판({current})이지만 build_id 가 다르다(내 {} · 원격 {}) — 수정본으로 받는다",
+                cys::pack::build_id(),
+                remote["build_id"].as_str().unwrap_or("")
+            );
+            let updater = match build_updater_with(app, true) {
+                Ok(u) => u,
+                Err(e) => {
+                    eprintln!("[cys-app] 업데이트 확인(판번 동일 분기): updater 구성 실패로 건너뜀 — {e}");
+                    return None;
+                }
+            };
+            match updater.check().await {
+                Ok(u) => u,
+                Err(e) => {
+                    eprintln!("[cys-app] 업데이트 확인(판번 동일 분기): 재확인 실패로 건너뜀 — {e}");
+                    None
+                }
+            }
+        }
+    }
 }
 
 /// 이 플랫폼 행이 원격 latest.json 에 **없다**는 뜻의 오류인가?
@@ -5362,7 +5501,14 @@ async fn check_update(app: AppHandle) -> Result<Option<Value>, String> {
             "current": update.current_version,
             "notes": update.body,
         }))),
-        Ok(None) => Ok(None),
+        // 판번 비교로는 「없음」— 판번이 같으면 build_id 로 한 번 더 본다(이중 게이트 2순위).
+        Ok(None) => Ok(same_version_rebuild_check(&app).await.map(|update| {
+            json!({
+                "version": update.version,
+                "current": update.current_version,
+                "notes": update.body,
+            })
+        })),
         // ★조용히 삼키지 않는다(마스터 판정 2026-09-09) — 사용자에겐 "업데이트 없음"이지만
         //   로그에는 **왜** 없는지가 남아야 한다. 이 줄이 없으면 "우리 릴리스에 이 플랫폼이
         //   빠졌다"와 "정말 최신이다"가 운영자 눈에 구분되지 않는다.
@@ -5489,11 +5635,13 @@ async fn install_update(app: AppHandle, force: bool) -> Result<(), String> {
     }
     // 2) 업데이트 받아 설치 (.app 번들 교체 — 새 cysd/cys 동봉)
     let updater = build_updater(&app)?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or("no update available")?;
+    let update = match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => u,
+        // 판번이 같으면 build_id 가 다를 때만 받는다(check_update 와 같은 이중 게이트).
+        None => same_version_rebuild_check(&app)
+            .await
+            .ok_or("no update available")?,
+    };
     let _ = app.emit("update-progress", json!({"phase": "download"}));
     update
         .download_and_install(
@@ -6144,6 +6292,64 @@ mod tests {
         assert!(!updater_target_absent(&Error::UnsupportedArch));
         assert!(!updater_target_absent(&Error::Network("timeout".into())));
         assert!(!updater_target_absent(&Error::FailedToDetermineExtractPath));
+    }
+
+    /// ★판번·build_id 이중 게이트의 앱 쪽 회귀 핀(TICKET=cysr-brand-version · master 결정 2026-09-15).
+    ///   master 가 지정한 3케이스(같은 판·다른 build_id / 같은 판·같은 build_id / build_id 부재 구판) +
+    ///   경계(판번 다름 · v 접두 · 빈 build_id · 내 build_id 모름).
+    #[test]
+    fn same_version_verdict_updates_only_on_a_different_build_id() {
+        use SameVersionVerdict::{Skip, Update};
+        let local = "0123456789ab.20260915T1030Z";
+        let other = "fedcba987654.20260916T0000Z";
+        // ① 같은 판·다른 build_id → 업데이트
+        assert_eq!(
+            same_version_verdict("1.0.0", local, &json!({"version": "1.0.0", "build_id": other})),
+            Update
+        );
+        // ② 같은 판·같은 build_id → 건너뜀
+        assert!(matches!(
+            same_version_verdict("1.0.0", local, &json!({"version": "1.0.0", "build_id": local})),
+            Skip(_)
+        ));
+        // ③ build_id 부재 구판 latest.json → 판번만 본다(같은 판이면 건너뜀)
+        assert!(matches!(
+            same_version_verdict("1.0.0", local, &json!({"version": "1.0.0"})),
+            Skip(_)
+        ));
+        assert!(matches!(
+            same_version_verdict("1.0.0", local, &json!({"version": "1.0.0", "build_id": "  "})),
+            Skip(_)
+        ));
+        // 판번이 다르면 이 분기의 몫이 아니다(1순위 판번 비교가 결정한다)
+        assert!(matches!(
+            same_version_verdict("1.0.0", local, &json!({"version": "0.14.37", "build_id": other})),
+            Skip(_)
+        ));
+        // v 접두 관용
+        assert_eq!(
+            same_version_verdict("1.0.0", local, &json!({"version": "v1.0.0", "build_id": other})),
+            Update
+        );
+        // 내 build_id 를 모르면 같은 판을 매번 헛받는 반복을 막는다
+        assert!(matches!(
+            same_version_verdict("1.0.0", "unknown", &json!({"version": "1.0.0", "build_id": other})),
+            Skip(_)
+        ));
+    }
+
+    /// 판번 동일 분기가 읽는 latest.json 주소 = 업데이터 본체가 보는 tauri.conf endpoint 와 같다.
+    #[test]
+    fn latest_json_url_is_the_updater_endpoint() {
+        if cys::env_compat("CYS_UPDATE_MANIFEST_URL").is_some() {
+            return; // 테스트 env 오버라이드 중에는 이 대조가 의미 없다
+        }
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            latest_json_url().as_deref(),
+            conf["plugins"]["updater"]["endpoints"][0].as_str()
+        );
+        assert!(latest_json_url().unwrap().ends_with("/latest.json"));
     }
 
     /// ★SEAL-DIAG 스로틀 회귀 핀: **파손은 마커로 침묵시킬 수 없다.**

@@ -48,6 +48,9 @@ BASE = "https://github.com/%s/releases/download/v%s/" % (rv.RELEASE_REPO, V)
 #   ★r2: 타당 범위(now-90일..now+300초)가 생겨 고정 시각은 90일 뒤 스스로 적색이 된다 — 실행 시각 기준.
 FIXTURE_SIGNED_AT = int(time.time()) - 3600
 VENDOR = {"pack_version": "0.14.33", "signed_at": FIXTURE_SIGNED_AT - 1}
+# ★9단계(판번 증가 · cysr 1.0.0) 픽스처 — 픽스처 판(V)이 직전 공개판보다 **높은** 최소 통과 형태.
+BID = "0123456789ab.20260915T1030Z"
+PREV = {"version": "0.14.18", "build_id": "fedcba987654.20260801T0000Z"}
 
 
 def _sig_text(tag):
@@ -123,6 +126,7 @@ def build_fixture(root, mac=True):
         "notes": "cys %s — 릴리스 안내" % V,
         "pub_date": "2026-08-17T14:36:35Z",
         "platforms": platforms,
+        "build_id": BID,
     }, ensure_ascii=False).encode())
 
     write_sums(root)
@@ -149,13 +153,13 @@ class ReleaseVerifyTests(unittest.TestCase):
             json.dump(obj, fh, ensure_ascii=False)
 
     def assert_pass(self):
-        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR)
+        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR, PREV)
         return assets, platforms, mac_included
 
     def assert_fail(self, needle):
         """비영 종료 사유에 needle 이 들어 있어야 한다 — '조용한 통과'를 막는 본체."""
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR)
+            rv.verify(V, self.root, VENDOR, PREV)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
         return str(cm.exception)
@@ -418,12 +422,12 @@ class ReleaseVerifyTests(unittest.TestCase):
     def test_32_empty_dir(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d, VENDOR)
+                rv.verify(V, d, VENDOR, PREV)
             self.assertIn("비어 있다", str(cm.exception))
 
     def test_33_missing_dir(self):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, os.path.join(self.root, "no-such-dir"), VENDOR)
+            rv.verify(V, os.path.join(self.root, "no-such-dir"), VENDOR, PREV)
         self.assertIn("릴리스 디렉터리가 없다", str(cm.exception))
 
 
@@ -455,13 +459,13 @@ class WindowsOnlyLaneTests(unittest.TestCase):
 
     def assert_fail(self, needle):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR)
+            rv.verify(V, self.root, VENDOR, PREV)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
 
     def test_40_windows_only_passes_and_reports_mac_absent(self):
         """맥 자산 0종 + darwin 행 0 = 통과하되 **미포함으로 판정**돼야 한다."""
-        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR)
+        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR, PREV)
         self.assertFalse(mac_included, "맥 미포함 묶음인데 포함으로 판정됐다")
         self.assertEqual(platforms, sorted(rv.REQUIRED_PLATFORMS))
         # 반환되는 `assets` 는 SUMS 등재분이다 — SHA256SUMS.txt 자신은 자기 제외 규약으로 빠진다.
@@ -535,7 +539,7 @@ class ReleaseRepoBindingTests(unittest.TestCase):
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d, VENDOR)
+                rv.verify(V, d, VENDOR, PREV)
             self.assertIn("url 결속 위반", str(cm.exception))
 
     def test_52_repo_override_changes_the_verdict(self):
@@ -550,8 +554,8 @@ class ReleaseRepoBindingTests(unittest.TestCase):
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
             with self.assertRaises(rv.VerifyError):
-                rv.verify(V, d, VENDOR)                                   # 기본(우리 포크)으로는 실패
-            _, _, mac = rv.verify(V, d, VENDOR, repo="someone/cys-mirror")  # 지목하면 통과
+                rv.verify(V, d, VENDOR, PREV)                                   # 기본(우리 포크)으로는 실패
+            _, _, mac = rv.verify(V, d, VENDOR, PREV, repo="someone/cys-mirror")  # 지목하면 통과
             self.assertFalse(mac)
 
 
@@ -585,12 +589,12 @@ class PackReplayMonotonicTests(unittest.TestCase):
 
     def assert_fail(self, vendor, needle):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, vendor)
+            rv.verify(V, self.root, vendor, PREV)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
 
     def test_60_ours_newer_passes(self):
-        rv.verify(V, self.root, VENDOR)
+        rv.verify(V, self.root, VENDOR, PREV)
         files = rv.collect_files(self.root)
         self.assertEqual(rv.check_pack_replay_monotonic(files, VENDOR),
                          (FIXTURE_SIGNED_AT, FIXTURE_SIGNED_AT - 1))
@@ -724,7 +728,7 @@ class SignedAtPlausibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             build_fixture(d, mac=False)
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d, VENDOR, now=FIXTURE_SIGNED_AT + self.AGE + 10)
+                rv.verify(V, d, VENDOR, PREV, now=FIXTURE_SIGNED_AT + self.AGE + 10)
             self.assertIn("타당 범위 밖", str(cm.exception))
 
 
@@ -797,8 +801,10 @@ class PackOnlyLaneTests(unittest.TestCase):
 class ExitCodeContractTests(unittest.TestCase):
     """★워크플로 계약 — `set -euo pipefail` 아래에서 종료코드가 곧 fail-closed 다."""
 
-    def run_cli(self, *args, vendor=VENDOR):
-        """8단계 기준은 사본 파일로 넘긴다 — 테스트가 네트워크에 닿지 않게(vendor=None 이면 안 넘김)."""
+    def run_cli(self, *args, vendor=VENDOR, prev=PREV):
+        """8·9단계 기준은 사본 파일로 넘긴다 — 테스트가 네트워크에 닿지 않게(None 이면 안 넘김).
+        ★9단계(cysr 1.0.0): prev 를 안 넘기면 CLI 가 실제 공개판 latest.json 을 받아 판정한다 —
+          2026-09-15 실측: 공개판 0.14.36 > 픽스처 0.14.19 → 「판번 역행」 적색(fail-closed 확인)."""
         with tempfile.TemporaryDirectory() as vd:
             extra = []
             if vendor is not None:
@@ -806,6 +812,11 @@ class ExitCodeContractTests(unittest.TestCase):
                 with open(vf, "w", encoding="utf-8") as fh:
                     json.dump(vendor, fh)
                 extra = ["--vendor-manifest-file", vf]
+            if prev is not None:
+                pf = os.path.join(vd, "previous-latest.json")
+                with open(pf, "w", encoding="utf-8") as fh:
+                    json.dump(prev, fh)
+                extra += ["--previous-latest-file", pf]
             return subprocess.run([sys.executable, os.path.abspath(_RV_PATH)] + list(args) + extra,
                                   capture_output=True, text=True)
 
@@ -817,6 +828,23 @@ class ExitCodeContractTests(unittest.TestCase):
                              vendor=None)
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertIn("벤더 팩 매니페스트 조회 불가", r.stderr)
+
+    def test_exit_1_when_previous_latest_unreadable(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_fixture(d)
+            r = self.run_cli("--version", V, "--release-dir", d,
+                             "--previous-latest-file", os.path.join(d, "no-such-previous.json"),
+                             prev=None)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("직전 공개판 latest.json 조회 불가", r.stderr)
+
+    def test_exit_1_when_version_not_bumped(self):
+        with tempfile.TemporaryDirectory() as d:
+            build_fixture(d)
+            r = self.run_cli("--version", V, "--release-dir", d,
+                             prev={"version": V, "build_id": "fedcba987654.20260801T0000Z"})
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("판번 미증가", r.stderr)
 
     def test_exit_1_when_replay_monotonic_violated(self):
         with tempfile.TemporaryDirectory() as d:
@@ -917,6 +945,65 @@ class ConstantsSanityTests(unittest.TestCase):
         for name in sorted(covered):
             self.assertTrue(any(name.endswith(sfx) for sfx, _ in rv.ASSET_SHAPES),
                             "지문 규칙이 없는 자산: %s" % name)
+
+
+class VersionProgressGateTests(unittest.TestCase):
+    """9단계 — 판번·build_id 이중 게이트의 발행 쪽 방어선(TICKET=cysr-brand-version · 2026-09-15)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = build_fixture(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def set_build_id(self, bid):
+        p = os.path.join(self.root, "latest.json")
+        d = json.load(open(p, encoding="utf-8"))
+        d["build_id"] = bid
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(d, fh, ensure_ascii=False)
+        write_sums(self.root)
+
+    def fail_with(self, prev, needle):
+        with self.assertRaises(rv.VerifyError) as cm:
+            rv.verify(V, self.root, VENDOR, prev)
+        self.assertIn(needle, str(cm.exception))
+
+    def test_91_higher_version_passes_even_if_previous_has_no_build_id(self):
+        rv.verify(V, self.root, VENDOR, {"version": "0.14.18"})          # 0.14.x 구판 = build_id 없음
+
+    def test_92_same_version_different_build_id_is_refused(self):
+        self.fail_with({"version": V, "build_id": "fedcba987654.20260801T0000Z"}, "판번 미증가")
+
+    def test_93_same_version_same_build_id_passes(self):
+        rv.verify(V, self.root, VENDOR, {"version": V, "build_id": BID})  # 공개된 그 발행의 재검증
+
+    def test_94_lower_version_is_refused(self):
+        self.fail_with({"version": "0.14.20", "build_id": BID}, "판번 역행")
+
+    def test_95_same_version_previous_without_build_id_is_refused(self):
+        self.fail_with({"version": "v" + V}, "판번 미증가")
+
+    def test_96_missing_or_dirty_build_id_is_refused(self):
+        for bad in (None, "", "0123456789ab-dirty.20260915T1030Z", "0123456789AB.20260915T1030Z",
+                    "0123456789ab.20260915T1030Z\n"):
+            with self.subTest(bad=bad):
+                self.set_build_id(bad)
+                self.fail_with(PREV, "build_id 형식 오류")
+
+    def test_97_previous_unreadable_is_a_failure_not_a_skip(self):
+        with self.assertRaises(rv.VerifyError) as cm:
+            rv.load_previous_latest("unused", path=os.path.join(self.root, "no-such-latest.json"))
+        self.assertIn("조회 불가", str(cm.exception))
+        with self.assertRaises(rv.VerifyError):
+            rv.verify(V, self.root, VENDOR, ["not", "an", "object"])
+
+    def test_98_previous_latest_has_no_default(self):
+        import inspect
+        param = inspect.signature(rv.verify).parameters["previous_latest"]
+        self.assertIs(param.default, inspect.Parameter.empty,
+                      "verify() 의 previous_latest 에 기본값이 생겼다 — 9단계를 생략할 수 있게 된다")
 
 
 if __name__ == "__main__":

@@ -144,6 +144,8 @@ TOKEN_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 #   ⚠이 값 · `release.yml` 의 `SRC_REPO` · `src-tauri/tauri.conf.json` 의 updater endpoints 는
 #     **같은 레포**여야 한다. 엇갈리면 업데이터가 남의 판을 본다(전환 시 세 곳 동시 수정).
 RELEASE_REPO = "oogisoogi/cys-ro"
+# ★9단계 비교 기준 = 지금 **공개된** latest.json(드래프트는 releases/latest 에 안 잡힌다).
+PREVIOUS_LATEST_URL_TPL = "https://github.com/%s/releases/latest/download/latest.json"
 
 # ★8단계 비교 기준 — 벤더 latest 팩 매니페스트(검사용 상수 · 배포 원본이 아니다).
 #   사용자 기계의 replay 기준선이 될 수 있는 **남의 판**이다. 우리 팩이 이보다 새로 서명돼야 한다.
@@ -212,7 +214,11 @@ MAC_PLATFORMS = {
 # 맥 포함 묶음의 기대 전집합(종전 상수와 같은 6키) — 외부 소비자·테스트가 이 이름을 쓴다.
 UPDATER_PLATFORMS = dict(REQUIRED_PLATFORMS, **MAC_PLATFORMS)
 # latest.json 최상위 필드 집합 — notes 삭제·임의 키 주입을 잡는다(0418f17 판본에서 계승).
-LATEST_JSON_FIELDS = {"version", "notes", "pub_date", "platforms"}
+LATEST_JSON_FIELDS = {"version", "notes", "pub_date", "platforms", "build_id"}
+# ★build_id(cysr 1.0.0 · TICKET=cysr-brand-version · master 결정 2026-09-15) — 판번이 같은 두 발행을
+#   구별하는 표식. release.yml `stamp-latest-build-id` 잡이 병기한다. 형식 = `<커밋 12자>.<커밋 시각
+#   UTC yyyymmddTHHMMZ>`. 발행물에 `-dirty` 는 허용하지 않는다(CI 는 깨끗한 체크아웃에서만 빌드한다).
+BUILD_ID_RE = re.compile(r"^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$")
 
 # ★독립 하한선 ③ — 확장자별 컨테이너 지문. 이름만 맞고 알맹이가 0바이트/쓰레기인 묶음을 잡는다.
 #   전부 로컬 백업 v0.14.19 실측으로 대조했다(2026-08-18 · 13종 전수):
@@ -473,6 +479,11 @@ def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
     # 문장)과 어긋나 깨졌다. "비어 있지 않은 문자열"까지만 요구한다.
     if not isinstance(latest.get("notes"), str) or not latest["notes"].strip():
         raise VerifyError("latest.json notes 가 비어 있거나 문자열이 아니다: %r" % (latest.get("notes"),))
+    build_id = latest.get("build_id")
+    # fullmatch — `$` 는 끝 개행 앞에서도 맞아 "…Z\n" 을 통과시킨다(test_96 이 잡은 실측).
+    if not isinstance(build_id, str) or not BUILD_ID_RE.fullmatch(build_id):
+        raise VerifyError("latest.json build_id 형식 오류: %r (기대 <커밋 12자>.<yyyymmddTHHMMZ> · -dirty 불가)"
+                          % (build_id,))
 
     pub_date = latest.get("pub_date")
     if not isinstance(pub_date, str):
@@ -588,7 +599,58 @@ def check_pack_replay_monotonic(files, vendor_manifest, now=None):
     return ours_at, vendor_at
 
 
-def verify(version, release_dir, vendor_manifest, repo=RELEASE_REPO, now=None):
+def load_previous_latest(url, path=None, timeout=30):
+    """9단계 비교 기준(지금 공개된 latest.json)을 얻는다. 받지 못하면 **실패**다(모르는 채 발행하지 않는다)."""
+    try:
+        if path is not None:
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.read()
+        else:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+    except Exception as e:
+        raise VerifyError("직전 공개판 latest.json 조회 불가 — 판번 증가를 판정할 수 없어 발행을 막는다"
+                          "(%s: %s: %s)" % (path or url, type(e).__name__, e))
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        raise VerifyError("직전 공개판 latest.json 이 JSON 이 아니다(%s): %s" % (path or url, e))
+
+
+def check_version_progress(files, previous):
+    """판번·build_id 이중 게이트의 **발행 쪽 방어선**(TICKET=cysr-brand-version · master 결정 2026-09-15).
+
+    업데이터는 판번이 같아도 build_id 가 다르면 받는다 — 그 경로는 희귀 분기로만 남기고, 정상 발행은
+    판번(patch 이상)을 반드시 올리게 여기서 막는다:
+      · 새 판번 <  직전 공개판  → 거부(역행)
+      · 새 판번 == 직전 공개판 → build_id 까지 같을 때만 통과(이미 공개된 그 발행의 재검증).
+        build_id 가 다르거나 직전판에 build_id 가 없으면 거부("내용은 바뀌었는데 판번 미증가").
+      · 새 판번 >  직전 공개판 → 통과(직전판의 build_id 유무 무관 — 0.14.x 구판 호환).
+    """
+    try:
+        new = json.loads(read_text_strict(files["latest.json"], "latest.json"))
+    except ValueError as e:
+        raise VerifyError("latest.json 이 JSON 이 아니다: %s" % e)
+    if not isinstance(previous, dict):
+        raise VerifyError("직전 공개판 latest.json 이 JSON 객체가 아니다")
+    pv = previous.get("version")
+    if not isinstance(pv, str) or not VERSION_RE.match(pv.strip().lstrip("v")):
+        raise VerifyError("직전 공개판 latest.json version 을 읽을 수 없다: %r" % (pv,))
+    nv = new.get("version")
+    if not isinstance(nv, str) or not VERSION_RE.match(nv):
+        raise VerifyError("latest.json version 을 읽을 수 없다: %r" % (nv,))
+    pt = tuple(int(x) for x in pv.strip().lstrip("v").split("."))
+    nt = tuple(int(x) for x in nv.split("."))
+    pb = previous.get("build_id")
+    if nt < pt:
+        raise VerifyError("판번 역행 — 새 판 %s < 직전 공개판 %s" % (nv, pv))
+    if nt == pt and (pb is None or pb != new.get("build_id")):
+        raise VerifyError("판번 미증가 — 직전 공개판 %s(build_id %r)과 판번이 같은데 build_id 가 %r 로 다르다. "
+                          "내용이 바뀐 발행은 판번(patch 이상)을 올려라" % (pv, pb, new.get("build_id")))
+    return pv, pb
+
+
+def verify(version, release_dir, vendor_manifest, previous_latest, repo=RELEASE_REPO, now=None):
     if not VERSION_RE.match(version):
         raise VerifyError("--version 은 X.Y.Z 여야 한다: %r" % version)
 
@@ -641,6 +703,9 @@ def verify(version, release_dir, vendor_manifest, repo=RELEASE_REPO, now=None):
     # ── 8. 팩 replay 단조 — 벤더 팩을 받은 기계도 이 팩을 받을 수 있는가 ──
     check_pack_replay_monotonic(files, vendor_manifest, now=now)
 
+    # ── 9. 판번 증가 — build_id 가 다른 발행이 판번을 안 올리고 나가는 것을 막는다 ──
+    check_version_progress(files, previous_latest)
+
     return sorted(sums), platforms, mac_included
 
 
@@ -661,6 +726,10 @@ def main():
     ap.add_argument("--vendor-manifest-file", default=None,
                     help="벤더 latest pack-manifest.json 사본 경로 (기본: %s 에서 받음)"
                          % VENDOR_PACK_MANIFEST_URL)
+    # ★9단계 기준의 오프라인 재현용. 생략하면 --repo 의 공개 latest.json 을 받는다 — 건너뛰는 선택지는 없다.
+    ap.add_argument("--previous-latest-file", default=None,
+                    help="직전 공개판 latest.json 사본 경로 (기본: %s 에서 받음)"
+                         % (PREVIOUS_LATEST_URL_TPL % "<repo>"))
     args = ap.parse_args()
 
     if args.pack_only:
@@ -688,7 +757,8 @@ def main():
 
     try:
         vendor = load_vendor_manifest(path=args.vendor_manifest_file)
-        assets, platforms, mac_included = verify(args.version, args.release_dir, vendor,
+        previous = load_previous_latest(PREVIOUS_LATEST_URL_TPL % args.repo, path=args.previous_latest_file)
+        assets, platforms, mac_included = verify(args.version, args.release_dir, vendor, previous,
                                                  repo=args.repo)
     except VerifyError as e:
         print("::error::릴리스 검증 실패 — %s" % e, file=sys.stderr)

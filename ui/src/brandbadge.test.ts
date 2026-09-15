@@ -25,8 +25,15 @@ describe("ⓐ 표시명 cysr", () => {
     expect(main).not.toContain("`cys Control Center · v${");
   });
 
-  it("식별자·실행파일 이름은 그대로다(제자리 업데이트 연속성)", () => {
-    expect(conf.productName).toBe("cys");
+  // ★판정 이력(되돌림 방지): 2026-09-15 master 설계 결정은 「표시명만 · productName 은 cys 유지
+  //   (제자리 업데이트 연속성)」이었다. 2026-09-16 00:4x 박사님 지시 「설치되는 앱 이름도 cysr」로
+  //   productName 은 cysr 가 됐다(TICKET=cysr-product-rename · master 결정 A). 연속성은 이제
+  //   productName 이 아니라 NSIS 훅이 진다 — 설치 폴더를 %LOCALAPPDATA%\cys 에 고정하고 옛 이름의
+  //   제어판 키·바로가기만 정리한다(src-tauri/nsis-hooks.nsh ⓪-b · 컴파일 하네스 N8).
+  //   identifier(업데이터·서명 연속성)와 명령어 이름 cys 는 여전히 그대로다.
+  it("productName 은 cysr · 식별자는 그대로다(제자리 업데이트 연속성)", () => {
+    expect(conf.productName).toBe("cysr");
+    expect(conf.productName).not.toBe("cys");
     expect(conf.identifier).toBe("com.cysjavis.terminal");
   });
 

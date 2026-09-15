@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "cys",
+  "productName": "cysr",
   "version": "1.0.0",
   "identifier": "com.cysjavis.terminal",
   "build": {

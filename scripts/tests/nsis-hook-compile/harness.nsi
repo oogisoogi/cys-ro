@@ -23,11 +23,21 @@ Unicode true
 !include "build\nsis-hooks.nsh"
 
 ; ── template-supplied symbols (defined AFTER the hook include, as in installer.nsi) ──
-!define PRODUCTNAME "cys"
+!define PRODUCTNAME "cysr"
 !define VERSION "0.14.28"
 !define MAINBINARYNAME "cys-app"
 !define MAINBINARYSRCPATH "build\binaries\cys-app.exe"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
+!define MANUFACTURER "cysjavis"
+!define MANUKEY "Software\${MANUFACTURER}"
+
+; template-supplied macros (utils.nsh) the POSTINSTALL rename migration inserts.
+; Stubs with the same stack contract: IsShortcutTarget leaves one value on the stack.
+!macro IsShortcutTarget shortcut target
+  Push 0
+!macroend
+!macro SetLnkAppUserModelId shortcut
+!macroend
 
 Name "${PRODUCTNAME} hook harness"
 OutFile "build\harness-setup.exe"

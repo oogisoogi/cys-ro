@@ -176,6 +176,28 @@ else
   exit 1
 fi
 
+# N8 — (cysr-product-rename · 2026-09-16) rename migration pins. The install dir must be
+# pinned back to the daemon state dir BEFORE the unlock sweep and the placement touch
+# $INSTDIR; the legacy-name cleanup must run after the desktop shortcut call, remove only
+# registry keys/shortcuts (never the folder = state dir), and delete exactly 2 keys.
+n8_pin_line=$(grep -n '^cys_pre_dir_kept:' "$HOOK" | head -1 | cut -d: -f1)
+n8_sweep_line=$(grep -n 'unlock-sweep.ps1" w' "$HOOK" | head -1 | cut -d: -f1)
+# the hook is CRLF (.gitattributes) — strip CR so line-anchored patterns can match
+n8_mig=$(awk '/Call CreateOrUpdateDesktopShortcut/,/^cys_post_legacy_done:/' "$HOOK" | tr -d '\r')
+n8_rm=$(printf '%s\n' "$n8_mig" | grep -cE 'RMDir|Delete "\$INSTDIR' || true)
+n8_keys=$(printf '%s\n' "$n8_mig" | grep -c 'DeleteRegKey' || true)
+n8_legacy=$(grep -c '!define CYS_LEGACY_PRODUCT "cys"' "$HOOK" || true)
+n8_pre=$(awk '/^cys_pre_single:/,/^cys_pre_dir_kept:/' "$HOOK" | tr -d '\r')
+n8_pinbody=$(printf '%s\n' "$n8_pre" | grep -cE '^  StrCmp \$INSTDIR "\$LOCALAPPDATA\\\$\{PRODUCTNAME\}" 0 cys_pre_dir_kept$|^  StrCpy \$INSTDIR \$R0$|^  SetOutPath \$INSTDIR$' || true)
+n8_guards=$(printf '%s\n' "$n8_mig" | grep -cE '^  StrCmp \$R0 "\$INSTDIR" ' || true)
+if [ -z "$n8_pin_line" ] || [ -z "$n8_sweep_line" ] || [ "$n8_pin_line" -ge "$n8_sweep_line" ] \
+   || [ "$n8_rm" != "0" ] || [ "$n8_keys" != "2" ] || [ "$n8_legacy" != "1" ] \
+   || [ "$n8_pinbody" != "3" ] || [ "$n8_guards" != "2" ]; then
+  echo "FAIL[N8]: rename migration drifted — pin line=$n8_pin_line (must be < sweep line=$n8_sweep_line) · folder deletes in migration=$n8_rm (want 0) · DeleteRegKey=$n8_keys (want 2) · legacy define=$n8_legacy (want 1) · pin body lines=$n8_pinbody (want 3) · ownership guards=$n8_guards (want 2)" >&2
+  exit 1
+fi
+echo "nsis-hook-compile: N8 OK (install dir pinned before sweep; legacy cleanup deletes 2 keys + shortcuts, never the state folder)"
+
 # ── re-verify the positive with restored inputs (negatives must leave no residue) ──
 "$MAKENSIS" -V2 -WX -INPUTCHARSET UTF8 harness.nsi >/dev/null
 echo "nsis-hook-compile: OK (hook compiled, macros inserted, getdllversion oracle exercised, 3 negative controls + token, census and anchor pins verified)"

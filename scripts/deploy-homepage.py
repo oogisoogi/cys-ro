@@ -377,8 +377,8 @@ def main(argv):
     apply_ = "--apply" in argv[3:]
     e = load_env()
 
-    four = ["cys_%s_aarch64.dmg" % ver, "cys_%s_x64.dmg" % ver,
-            "cys_%s_x64-setup.exe" % ver, "cys_%s_x64-setup.zip" % ver]
+    four = ["cysr_%s_aarch64.dmg" % ver, "cysr_%s_x64.dmg" % ver,
+            "cysr_%s_x64-setup.exe" % ver, "cysr_%s_x64-setup.zip" % ver]
     upload = [f for f in sorted(os.listdir(assets)) if os.path.isfile(os.path.join(assets, f))]
     missing = [f for f in four if f not in upload]
     if missing:
@@ -387,7 +387,7 @@ def main(argv):
 
     # ── 현재 라이브 상태 ──
     live = ftp_list(e, "downloads/")
-    old_versions = sorted({m.group(1) for l in live for m in [re.search(r"cys_(\d+\.\d+\.\d+)_", l)] if m}
+    old_versions = sorted({m.group(1) for l in live for m in [re.search(r"cysr?_(\d+\.\d+\.\d+)_", l)] if m}
                           - {ver})
     print("라이브 downloads/ 항목 %d · 구버전 %s" % (len(live), old_versions or "없음"))
 
@@ -472,7 +472,7 @@ def main(argv):
     print("── 구버전 자산 정리 (최신 1개 정책) ──")
     for l in live:
         name = l.split()[-1] if l.split() else ""
-        m = re.search(r"cys_(\d+\.\d+\.\d+)_", name)
+        m = re.search(r"cysr?_(\d+\.\d+\.\d+)_", name)
         if m and m.group(1) != ver:
             print("  %s rm %s" % ("✓" if ftp_delete(e, "downloads/" + name) else "✗", name))
     print("\n✅ 홈페이지 배포 완료")

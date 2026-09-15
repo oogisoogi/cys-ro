@@ -16,8 +16,8 @@ REPO="${3:-cys-terminal}"
 NOTES="${UPDATE_NOTES:-cys $VERSION}"
 
 BUNDLE="target/release/bundle/macos"
-SIG_FILE="$BUNDLE/cys.app.tar.gz.sig"
-TARBALL="$BUNDLE/cys.app.tar.gz"
+SIG_FILE="$BUNDLE/cysr.app.tar.gz.sig"
+TARBALL="$BUNDLE/cysr.app.tar.gz"
 
 if [ ! -f "$SIG_FILE" ]; then
   echo "error: $SIG_FILE 없음 — 먼저 서명 키로 tauri build를 실행하라:" >&2
@@ -27,7 +27,7 @@ fi
 
 SIGNATURE="$(cat "$SIG_FILE")"
 # 업로드 자산 이름(릴리스에 올릴 표준 이름) — latest.json의 url과 일치해야 한다
-ASSET="cys-${VERSION}-macos-aarch64.app.tar.gz"
+ASSET="cysr-${VERSION}-macos-aarch64.app.tar.gz"
 URL="https://github.com/${OWNER}/${REPO}/releases/download/v${VERSION}/${ASSET}"
 PUBDATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -55,6 +55,6 @@ echo "GitHub 릴리스에 올릴 자산: 위 두 파일 + DMG"
 echo "  gh release create v${VERSION} \\"
 echo "    dist-update/latest.json \\"
 echo "    dist-update/${ASSET} \\"
-echo "    dist-mac/cys-${VERSION}-macos-arm64.dmg"
+echo "    dist-mac/cysr-${VERSION}-macos-arm64.dmg"
 echo ""
 echo "⚠ Intel(x86_64)·Windows 플랫폼 키는 각 타깃 빌드 후 platforms에 추가하라(RELEASE.md)."

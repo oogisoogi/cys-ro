@@ -1214,3 +1214,75 @@ jobs:
           if ($code -ne 0) { throw "T6: 형제 import 가드 회귀 실패 (exit=$code) — 배송 런타임에서 팩 스크립트의 형제 import 가 깨진다" }
           Write-Host "OK: T6 형제 import 가드 회귀 통과 (동봉 embeddable python312._pth 실런타임 · 음성 대조 확인)"
           exit 0
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # T7 제품 이름 개명 이전 실기 (cysr-product-rename · 2026-09-16 · master 결정 A).
+      # 옛 이름(productName=cys) 1.0.0 공개 설치본을 깐 기계에 이번 빌드(productName=cysr)를 업데이트
+      # 모드(/UPDATE — tauri-plugin-updater 가 붙이는 인자)로 덮는다. 기대:
+      #   R1 설치기 exit 0 · R2 %LOCALAPPDATA%\cysr 폴더가 생기지 않는다(두 번째 설치 0)
+      #   R3 %LOCALAPPDATA%\cys 의 cys.exe = 이번 빌드 사이드카 · 버전 마커 = 이번 빌드
+      #   R4 제어판 키 Uninstall\cysr 가 그 폴더를 가리키고 Uninstall\cys 는 없다
+      #   R5 제어판에 우리 항목이 정확히 1개 · R6 설치 위치 키도 cysr 하나(옛 cys 없음)
+      #   R7/R8 옛 「cys」 시작 메뉴·바탕화면 바로가기가 있었다면 사라지고 「cysr」 로 바뀐다
+      # ⚠작업 스케줄러 경로는 이 스텝이 재지 않는다 — 결정 A 에서 폴더가 안 바뀌어 경로도 그대로이고,
+      #   등록은 앱 GUI 첫 기동(onboarding)이 하므로 무인 러너에서는 발화하지 않는다.
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: T7 제품 이름 개명 이전 실기 (구 cys 1.0.0 → 이번 빌드 /UPDATE)
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expVer = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $newName = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).productName
+          if ($newName -ne 'cysr') { throw "T7: 이 스텝은 productName=cysr 빌드 전용이다 (지금 '$newName')" }
+          $setup = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "T7: 이번 빌드 setup.exe 미발견" }
+          if ($setup.Name -notlike 'cysr_*_x64-setup.exe') { throw "T7: 설치 파일 이름이 productName 파생이 아니다: $($setup.Name)" }
+          $uninstRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $dir = Join-Path $env:LOCALAPPDATA 'cys'
+          $newDir = Join-Path $env:LOCALAPPDATA 'cysr'
+
+          # ① 앞 스텝들이 깐 이번 빌드를 걷어 「옛 이름 설치만 있는 기계」를 만든다.
+          Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $un = Join-Path $dir 'uninstall.exe'
+          if (Test-Path $un) { Start-Process -FilePath $un -ArgumentList '/S' -Wait; Start-Sleep 5 }
+          Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          foreach ($k in 'cys','cysr') { Remove-Item "$uninstRoot\$k" -Recurse -Force -ErrorAction SilentlyContinue }
+          if (Test-Path $newDir) { throw "T7 사전: $newDir 가 이미 있다 — 깨끗한 출발점이 아니다" }
+
+          # ② 옛 이름 공개 설치본(1.0.0 · productName=cys) 설치
+          $old = Join-Path $env:RUNNER_TEMP 'cys_1.0.0_x64-setup.exe'
+          Invoke-WebRequest -Uri 'https://github.com/oogisoogi/cys-ro/releases/download/v1.0.0/cys_1.0.0_x64-setup.exe' -OutFile $old
+          $oi = Start-Process -FilePath $old -ArgumentList '/S' -PassThru -Wait
+          if ($oi.ExitCode -ne 0) { throw "T7 사전: 1.0.0 설치 실패 exit=$($oi.ExitCode)" }
+          Start-Sleep 5
+          Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (-not (Test-Path "$uninstRoot\cys")) { throw "T7 사전: 1.0.0 이 Uninstall\cys 키를 만들지 않았다 — 옛 상태 재현 실패" }
+          $smDir = [Environment]::GetFolderPath('Programs'); $dtDir = [Environment]::GetFolderPath('Desktop')
+          $smOld = Test-Path (Join-Path $smDir 'cys.lnk'); $dtOld = Test-Path (Join-Path $dtDir 'cys.lnk')
+          Write-Host "T7 사전상태: Uninstall\cys 있음 · 시작 메뉴 cys.lnk=$smOld · 바탕화면 cys.lnk=$dtOld"
+
+          # ③ 이번 빌드를 업데이트 모드로 덮는다
+          $ni = Start-Process -FilePath $setup.FullName -ArgumentList '/S','/UPDATE' -PassThru -Wait
+          Start-Sleep 3
+          Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+          # ④ 판정
+          $res = [ordered]@{}
+          $res.R1 = ($ni.ExitCode -eq 0)
+          $res.R2 = -not (Test-Path $newDir)
+          $srcCys = Get-ChildItem 'src-tauri/binaries/cys-*.exe' | Select-Object -First 1
+          $marker = Join-Path $dir 'cys-installed-version.txt'
+          $res.R3 = (Test-Path (Join-Path $dir 'cys.exe')) -and ((Get-FileHash (Join-Path $dir 'cys.exe')).Hash -eq (Get-FileHash $srcCys.FullName).Hash) -and (Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $expVer)
+          $loc = (Get-ItemProperty "$uninstRoot\cysr" -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation
+          $res.R4 = ($loc -and ($loc.Trim('"').TrimEnd('\') -ieq $dir)) -and -not (Test-Path "$uninstRoot\cys")
+          $ours = @(Get-ChildItem $uninstRoot | ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -in @('cys','cysr') })
+          $res.R5 = ($ours.Count -eq 1)
+          $locKeys = @(Get-ChildItem 'HKCU:\Software' -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.PSPath -ErrorAction SilentlyContinue } | Where-Object { $_.PSChildName -in @('cys','cysr') -and ((Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).'(default)' -ieq $dir) })
+          $res.R6 = ($locKeys.Count -eq 1) -and ($locKeys[0].PSChildName -eq 'cysr')
+          $res.R7 = (-not $smOld) -or ((-not (Test-Path (Join-Path $smDir 'cys.lnk'))) -and (Test-Path (Join-Path $smDir 'cysr.lnk')))
+          $res.R8 = (-not $dtOld) -or ((-not (Test-Path (Join-Path $dtDir 'cys.lnk'))) -and (Test-Path (Join-Path $dtDir 'cysr.lnk')))
+          foreach ($k in $res.Keys) { Write-Host ("T7-{0} RESULT: {1}" -f $k, $(if ($res[$k]) { 'PASS' } else { 'FAIL' })) }
+          Write-Host ("진단: 설치기 exit={0} · cysr InstallLocation='{1}' · 우리 제어판 항목={2} · 위치 키={3}" -f $ni.ExitCode, $loc, $ours.Count, (($locKeys | ForEach-Object { $_.Name }) -join ', '))
+          if ($res.Values -contains $false) { throw "T7: 제품 이름 개명 이전 실기 실패" }
+          Write-Host "OK: T7 이전 실기 통과 — 두 번째 설치 0 · 제어판 1항목 · 옛 이름 흔적 정리"

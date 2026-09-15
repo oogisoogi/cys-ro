@@ -94,7 +94,8 @@ const TEMP_SWEEP_PREFIX: [&str; 7] = [
 
 /// ★★Windows 전용 치명 방어(감사 확정 2026-08-16): `%LOCALAPPDATA%\cys` 는 **NSIS 설치
 /// 디렉토리이자 동시에 메인 데몬의 상태 디렉토리**다(tauri.windows.conf.json installMode
-/// "currentUser" + productName "cys" · cysd/state.rs state_dir). 그래서 이 디렉토리를 통째로
+/// "currentUser" · cysd/state.rs state_dir · productName 이 cysr 로 바뀐 뒤로는 NSIS 훅 ⓪-b 가
+/// 설치 폴더를 이 자리에 고정한다). 그래서 이 디렉토리를 통째로
 /// 격리하면 **앱 자신(cys.exe·cysd.exe·runtime/·resources/)을 언인스톨**해 버린다.
 /// → `~/.cys` 와 같은 교리를 적용한다: **알려진 상태 항목만** 격리하고 나머지(=설치본)는 보존.
 /// 놓친 상태 파일이 남는 것은 불편이지만, 앱을 옮기는 것은 복구 불능급 사고다(fail-safe 방향).

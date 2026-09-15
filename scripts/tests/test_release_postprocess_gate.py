@@ -58,7 +58,7 @@ class GatekeeperGateHookTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = self._tmp.name
         for arch in ("aarch64", "x64"):
-            with open(os.path.join(self.root, "cys_%s_%s.dmg" % (V, arch)), "wb") as fh:
+            with open(os.path.join(self.root, "cysr_%s_%s.dmg" % (V, arch)), "wb") as fh:
                 fh.write(b"\x78\x01fake-dmg-" + arch.encode())
         self.log = os.path.join(self.root, "calls.log")
 
@@ -99,8 +99,8 @@ class GatekeeperGateHookTests(unittest.TestCase):
         static_calls = [c for c in self.calls() if c.startswith("gate.sh")]
         self.assertEqual(len(static_calls), 2, "정적판이 DMG 2종 전부를 보지 않았다")
         joined = "\n".join(static_calls)
-        self.assertIn("cys_%s_aarch64.dmg" % V, joined)
-        self.assertIn("cys_%s_x64.dmg" % V, joined)
+        self.assertIn("cysr_%s_aarch64.dmg" % V, joined)
+        self.assertIn("cysr_%s_x64.dmg" % V, joined)
 
     def test_01_native_dmg_also_gets_user_path_gate(self):
         """arm64 맥에서 aarch64 DMG 에 상위판(⑥ 봉인 자기파괴 재현)이 안 얹히면
@@ -109,7 +109,7 @@ class GatekeeperGateHookTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         user_calls = [c for c in self.calls() if c.startswith("userpath.sh")]
         self.assertEqual(len(user_calls), 1)
-        self.assertIn("cys_%s_aarch64.dmg" % V, user_calls[0])
+        self.assertIn("cysr_%s_aarch64.dmg" % V, user_calls[0])
 
     def test_02_nonnative_dmg_stays_static_only(self):
         """arm64 에서 x64 DMG 에 상위판을 걸면 Rosetta 2 의존으로 구조적 FAIL 이 되고,
@@ -117,7 +117,7 @@ class GatekeeperGateHookTests(unittest.TestCase):
         「verify-gatekeeper-user-path.sh 와의 관계」의 분리 근거)."""
         self.run_gate(machine="arm64")
         self.assertEqual([c for c in self.calls()
-                          if c.startswith("userpath.sh") and ("cys_%s_x64.dmg" % V) in c], [])
+                          if c.startswith("userpath.sh") and ("cysr_%s_x64.dmg" % V) in c], [])
 
     def test_03_intel_host_flips_native_to_x64(self):
         """호스트 아키 판정이 고정(aarch64)이면 Intel 맥에서 돌릴 때 상위판이
@@ -126,7 +126,7 @@ class GatekeeperGateHookTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         user_calls = [c for c in self.calls() if c.startswith("userpath.sh")]
         self.assertEqual(len(user_calls), 1)
-        self.assertIn("cys_%s_x64.dmg" % V, user_calls[0])
+        self.assertIn("cysr_%s_x64.dmg" % V, user_calls[0])
 
     # ── 1. fail-closed: 통과해선 안 될 rc ─────────────────────────────────
     def test_04_gate_exit1_blocks_with_nonzero(self):
@@ -156,7 +156,7 @@ class GatekeeperGateHookTests(unittest.TestCase):
 
     def test_08_missing_dmg_is_fail_closed(self):
         """대상 DMG 부재를 통과로 세면 '자산이 없어서 검사를 못 한 묶음'이 발행된다."""
-        os.remove(os.path.join(self.root, "cys_%s_x64.dmg" % V))
+        os.remove(os.path.join(self.root, "cysr_%s_x64.dmg" % V))
         rc, _ = self.run_gate()
         self.assertEqual(rc, 2)
 
@@ -209,7 +209,7 @@ class MacAbsentBundleTests(unittest.TestCase):
             json.dump(obj, fh)
 
     def add_dmg(self, arch):
-        with open(os.path.join(self.root, "cys_%s_%s.dmg" % (V, arch)), "wb") as fh:
+        with open(os.path.join(self.root, "cysr_%s_%s.dmg" % (V, arch)), "wb") as fh:
             fh.write(b"\x78\x01fake-dmg-" + arch.encode())
 
     def run_gate(self, **kw):
@@ -265,7 +265,7 @@ class MacAbsentBundleTests(unittest.TestCase):
 
     def test_35_updater_tarball_alone_blocks_skip(self):
         """DMG 는 없고 맥 업데이터 tar 만 남은 묶음도 「미포함」이 아니다."""
-        with open(os.path.join(self.root, "cys_aarch64.app.tar.gz"), "wb") as fh:
+        with open(os.path.join(self.root, "cysr_aarch64.app.tar.gz"), "wb") as fh:
             fh.write(b"\x1f\x8bfake")
         self.write_latest(["windows-x86_64", "windows-x86_64-nsis"])
         rc, _, _ = self.run_gate()
@@ -275,8 +275,8 @@ class MacAbsentBundleTests(unittest.TestCase):
         """맥이 전부 있는 묶음은 종전과 똑같이 **게이트 필수** — 완화가 새지 않았는지 본다."""
         for arch in ("aarch64", "x64"):
             self.add_dmg(arch)
-        for n in ("cys_aarch64.app.tar.gz", "cys_aarch64.app.tar.gz.sig",
-                  "cys_x64.app.tar.gz", "cys_x64.app.tar.gz.sig"):
+        for n in ("cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
+                  "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig"):
             with open(os.path.join(self.root, n), "wb") as fh:
                 fh.write(b"x")
         self.write_latest(["windows-x86_64", "windows-x86_64-nsis",

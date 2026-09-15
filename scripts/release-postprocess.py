@@ -44,6 +44,7 @@
 """
 import hashlib
 import json
+import re
 import os
 import platform
 import subprocess
@@ -138,6 +139,30 @@ def mac_lane_absent(outdir, version):
     except (ValueError, OSError):
         return False                      # 읽지 못하면 판정 불가 — 종전 경로로 보낸다
     return not any(k.startswith("darwin-") for k in platforms)
+
+
+# ★cysr 1.0.0(TICKET=cysr-brand-version): latest.json 의 build_id 는 release.yml `stamp-latest-build-id`
+#   잡이 **빌드 뒤에** 병기한다. 이 스크립트는 워크플로 잡이 아니라 사람이 부르는 단계라 `needs:` 로
+#   순서를 강제할 수 없다 — 병기 전에 SHA256SUMS.txt 를 만들면 그 해시가 병기 전 latest.json 을 박제해
+#   release-verify 5단계에서 멈춘다. 그래서 여기서 **병기 완료를 확인한 뒤에만** SUMS 를 만든다.
+#   (agy 1R 지적 2026-09-15: 전제 「후처리 잡이 있다」는 틀렸으나 가리킨 순서 위험은 실재 — 이 가드로 닫는다.)
+BUILD_ID_RE = re.compile(r"[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z")
+
+
+def latest_build_id_problem(outdir):
+    """latest.json 에 build_id 가 병기됐는가 — 문제 문장(차단 사유) 또는 None(통과)."""
+    latest = os.path.join(outdir, "latest.json")
+    if not os.path.exists(latest):
+        return "latest.json 이 릴리스에 없다 — CI 완주를 먼저 확인하라"
+    try:
+        with open(latest, encoding="utf-8") as fh:
+            bid = json.load(fh).get("build_id")
+    except (ValueError, OSError, AttributeError) as e:
+        return "latest.json 을 읽을 수 없다(%s)" % e
+    if not isinstance(bid, str) or not BUILD_ID_RE.fullmatch(bid):
+        return ("latest.json 에 build_id 가 아직 없다(%r) — release.yml stamp-latest-build-id 잡 완료 뒤에 "
+                "다시 돌려라(지금 SHA256SUMS 를 만들면 병기 전 해시가 박제된다)" % (bid,))
+    return None
 
 
 def gatekeeper_gate(outdir, version, unsafe_skip=False,
@@ -273,6 +298,12 @@ def main(argv):
                 print("::error::크기 불일치 %s: %d != %d" % (a["name"], got, a["size"]), file=sys.stderr)
                 return 1
         by_name[a["name"]] = dest
+
+    # ── 1-b. build_id 병기 완료 확인 (SHA256SUMS 박제 전) ──
+    problem = latest_build_id_problem(outdir)
+    if problem:
+        print("::error::%s" % problem, file=sys.stderr)
+        return 1
 
     # ── 2. zip 변형 (없으면 생성) ──
     exe = "cys_%s_x64-setup.exe" % version

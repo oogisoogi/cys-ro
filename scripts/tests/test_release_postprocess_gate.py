@@ -720,5 +720,48 @@ class RuntimeManifestAxisTests(unittest.TestCase):
                                  "발행 경로가 진단 전용 플래그를 실었다: %s" % path)
 
 
+class BuildIdStampedTests(unittest.TestCase):
+    """1-b 단계 — build_id 병기 전에는 SHA256SUMS 를 만들지 않는다(TICKET=cysr-brand-version)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write_latest(self, obj):
+        with open(os.path.join(self.root, "latest.json"), "w", encoding="utf-8") as fh:
+            fh.write(obj if isinstance(obj, str) else json.dumps(obj))
+
+    def test_40_stamped_passes(self):
+        self.write_latest({"version": "1.0.0", "build_id": "0123456789ab.20260915T1030Z"})
+        self.assertIsNone(rp.latest_build_id_problem(self.root))
+
+    def test_41_unstamped_blocks(self):
+        self.write_latest({"version": "1.0.0"})
+        self.assertIn("stamp-latest-build-id", rp.latest_build_id_problem(self.root))
+
+    def test_42_malformed_or_trailing_newline_blocks(self):
+        for bad in ("", "0123456789ab-dirty.20260915T1030Z", "0123456789ab.20260915T1030Z\n", 12):
+            with self.subTest(bad=bad):
+                self.write_latest({"version": "1.0.0", "build_id": bad})
+                self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+
+    def test_43_missing_or_unreadable_blocks(self):
+        self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+        self.write_latest("{not json")
+        self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+        self.write_latest("[1, 2]")
+        self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+
+    def test_44_main_checks_before_writing_sums(self):
+        with open(_RP_PATH, encoding="utf-8") as fh:
+            src = fh.read()
+        main = src[src.index("def main(argv):"):]
+        self.assertLess(main.index("latest_build_id_problem(outdir)"), main.index("SHA256SUMS.txt — 자기 자신 제외"),
+                        "build_id 확인이 SUMS 생성보다 뒤에 있다 — 병기 전 해시가 박제된다")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1542,6 +1542,35 @@ def seat_fresh_cwd(role, fresh_cwd, master_cwd, log_fn=None):
     return cwd
 
 
+def fresh_awaken(socket, role, surface, cwd, since, pid, log_fn=None):
+    """fresh 강등 자식의 각성 보장 — javis_boot_node LAUNCH 직후와 **같은 함수**(javis_awaken.ensure_awake ·
+    TICKET=pack-awaken-enter). launch-agent 로 방금 띄운 새 프로세스라 Return 을 허용한다.
+    모듈 부재·예외는 루프만 건너뛴다(종전 동작 — 뒤의 reinject 단계가 그대로 돈다). 반환 = 저널 한 조각."""
+    try:
+        aw_bin = os.path.dirname(os.path.abspath(__file__))
+        if aw_bin not in sys.path:
+            sys.path.insert(0, aw_bin)
+        import javis_awaken
+
+        def _run(args):
+            r = cys(*args, socket=socket, timeout=15)
+            return r.returncode, r.stdout or ""
+        if not cwd:
+            cwd = (javis_awaken.surface_row(_run, surface=surface) or {}).get("cwd")
+        if not cwd:
+            return "awaken=skip(cwd 해석 불가)"
+        res = javis_awaken.ensure_awake(role, surface, cwd, since, _run, pid=pid,
+                                        may_return=True, socket=socket)
+    except Exception as e:
+        if log_fn:
+            log_fn("각성 보장 루프 예외(%s) — 건너뜀: %s" % (role, e))
+        return "awaken=skip(%s)" % type(e).__name__
+    line = javis_awaken.describe(res)
+    if log_fn:
+        log_fn("★각성 보장(%s): %s" % (role, line))
+    return line
+
+
 def restore_cwd_override(entries, roles, master_cwd, per_entry=False):
     """정상 복원(`cys restore`)에 실을 `--cwd` 또는 None — **순수 함수**(self-test 핀).
 
@@ -2095,11 +2124,15 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                 # ★좌석별 폴더(TICKET=cys-seat-folders · 2026-09-15): master 기준값으로 뜨게 된 자식은
                 #   그 아래 자기 좌석 폴더로 옮긴다(판정·준비 = seat_fresh_cwd · 시험 핀).
                 fresh_cwd = seat_fresh_cwd(role, fresh_cwd, master_cwd, log_fn=log)
+                fresh_at = time.time()
                 res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)
                 time.sleep(SPAWN_SETTLE)
                 alive = [s for s in live_role_surfaces(socket).get(role, []) if not s["exited"]]
                 ref = alive[0]["surface"] if alive else None
                 msg = "cys launch-agent(fresh·rc=%s) → %s" % (res["rc"], ref or res["out"])
+                if ref:
+                    msg += " · " + fresh_awaken(socket, role, ref, fresh_cwd, fresh_at,
+                                                alive[0].get("pid"), log_fn=log)
             if ref:
                 role_surface[role] = ref
                 rr = j["roles"].setdefault(role, {"stages": {}})

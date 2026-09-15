@@ -58,12 +58,26 @@ def current_version():
 
 
 def older(ver):
-    """같은 형식의 '이전' 버전 문자열 하나 — 패치 자리를 1 내린다(실재 릴리스일 필요 없다)."""
+    """같은 형식의 '이전' 버전 문자열 하나 — 0 이 아닌 가장 낮은 자리를 1 내린다(실재 릴리스일 필요 없다).
+
+    ★(2026-09-15 · TICKET=cysr-brand-version) 종전엔 패치 자리만 `max(0, patch-1)` 로 내려서 patch 가 0 인
+      판(1.0.0)에서 OLD == NEW 가 됐다 — 8종 변조가 전부 무변조가 되어 CI 에서 16건 어긋남으로 죽었다
+      (run 34961327054 · macos-rust-pack). 가장 낮은 0 아닌 자리를 내려 언제나 다른 값을 만든다.
+    """
     parts = ver.split(".")
-    if len(parts) < 3 or not parts[-1].isdigit():
+    if len(parts) < 3 or not all(p.isdigit() for p in parts[:3]):
         return ver + "-old"
-    parts[-1] = str(max(0, int(parts[-1]) - 1))
-    return ".".join(parts)
+    nums = [int(p) for p in parts[:3]]
+    for i in (2, 1, 0):
+        if nums[i] > 0:
+            nums[i] -= 1
+            out = ".".join(str(n) for n in nums)
+            break
+    else:
+        out = ver + "-old"                      # 0.0.0 — 내릴 자리가 없다
+    if out == ver:
+        raise SystemExit("older(%r) 가 같은 값을 냈다 — 변조가 무변조가 된다(fail-closed)" % ver)
+    return out
 
 
 def seed(dst):

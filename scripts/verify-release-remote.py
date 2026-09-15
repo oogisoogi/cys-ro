@@ -76,8 +76,9 @@ TRANSLOCATION_EXPECT = 0
 
 
 # ⑧ 전용 — 파일명에 버전이 없어 ⑥ 의 구버전 정규식에 걸리지 않는 자산(실측 8종).
-VERSIONLESS_ASSETS = ("cys_aarch64.app.tar.gz", "cys_aarch64.app.tar.gz.sig",
-                      "cys_x64.app.tar.gz", "cys_x64.app.tar.gz.sig",
+# ★자산 이름 cysr_ (1.0.1 · cysr-product-rename 742 — deploy-homepage.py 와 같은 이름).
+VERSIONLESS_ASSETS = ("cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
+                      "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig",
                       "latest.json", "pack.tar.gz",
                       "pack-manifest.json", "pack-manifest.json.minisig")
 
@@ -240,8 +241,8 @@ def main(argv):
         return 2
     ver = argv[1]
     prev = argv[2] if len(argv) > 2 else None
-    four = ["cys_%s_aarch64.dmg" % ver, "cys_%s_x64.dmg" % ver,
-            "cys_%s_x64-setup.exe" % ver, "cys_%s_x64-setup.zip" % ver]
+    four = ["cysr_%s_aarch64.dmg" % ver, "cysr_%s_x64.dmg" % ver,
+            "cysr_%s_x64-setup.exe" % ver, "cysr_%s_x64-setup.zip" % ver]
 
     main_html = get(SITE + "/")
     if not main_html:
@@ -326,8 +327,9 @@ def main(argv):
     # ⑥ SHA256SUMS.txt
     sums = get("%s/downloads/SHA256SUMS.txt" % SITE)
     lines = [l for l in sums.splitlines() if l.strip()]
-    newn = sum(1 for l in lines if ("cys_%s_" % ver) in l)
-    oldn = sum(1 for l in lines if re.search(r"cys_\d+\.\d+\.\d+_", l) and ("cys_%s_" % ver) not in l)
+    # 구버전 = 옛 이름(cys_)·새 이름(cysr_) 둘 다 센다 — 이름이 바뀐 판에서 옛 cys_ 줄이 남아도 잡힌다.
+    newn = sum(1 for l in lines if ("cysr_%s_" % ver) in l)
+    oldn = sum(1 for l in lines if re.search(r"cysr?_\d+\.\d+\.\d+_", l) and ("cysr_%s_" % ver) not in l)
     ok6 = bool(lines) and newn >= 4 and oldn == 0
     detail = "총 %d줄 · 신버전 %d · 구버전 %d" % (len(lines), newn, oldn)
     # 실자산 바이트 해시 대조 — 표기만 갱신되고 바이트가 구버전인 사고 차단

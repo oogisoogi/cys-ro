@@ -107,7 +107,7 @@ if [ -z "$DMG_SRC" ]; then
     aarch64|x64) ;;
     *) echo "✗ --arch 는 aarch64|x64" >&2; exit 2 ;;
   esac
-  DMG_SRC="$SITE_DL/cys_${VERSION}_${ARCH}.dmg"
+  DMG_SRC="$SITE_DL/cysr_${VERSION}_${ARCH}.dmg"   # 자산 이름 cysr_ (1.0.1 · deploy-homepage.py 와 같은 이름)
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gk-user-path.XXXXXX")" || exit 2

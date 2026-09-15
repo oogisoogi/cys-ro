@@ -1178,6 +1178,11 @@ class KeyBridgeVersionProgressCrossTests(unittest.TestCase):
             ok = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root,
                                                "--prev-tauri-conf", conf, key_id=None)
             self.assertEqual(ok.returncode, 0, ok.stderr)
+            # 직전판 파일의 build_id 까지 CLI 가 온전히 넘기는가 — 같은 판번·같은 build_id 는 통과여야 한다.
+            same = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root,
+                                                 "--prev-tauri-conf", conf, key_id=None,
+                                                 prev={"version": V, "build_id": BID})
+            self.assertEqual(same.returncode, 0, same.stderr)
             bad = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root,
                                                 "--prev-tauri-conf", conf, key_id=None,
                                                 prev={"version": "0.14.20", "build_id": BID})

@@ -5,6 +5,12 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU0RkJBMDRBRDBFMEY0OUQKUldTZDlPRFFTcUQ3VkQ5M284TVJWMUd6ZnBLbHcwTFFMeHlqazBiZUt2MWNWUklmd0RuVGxKaDAK",
       "not_after": "2030-01-01T00:00:00Z",
       "comment": "용도=pack · 옛 공용 키(업데이터와 공유하던 키). 회전 완료 판에서 제거 — docs/KEY-ROTATION.md"
+    },
+    {
+      "key_id": "C81BCA7B89578FDE",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4MUJDQTdCODk1NzhGREUKUldUZWoxZUplOG9ieVBHWTV5MHovMjhXYXN3bjR5OWttRFZCWFpFMEx3cnR5S2QwNEU4KzBWcWgK",
+      "not_after": "2030-01-01T00:00:00Z",
+      "comment": "용도=pack · P2(키 브리지로 추가 — 신뢰 시작 = 이 키가 박힌 바이너리 배포 시점). docs/KEY-ROTATION.md"
     }
   ],
   "revoked_key_ids": []

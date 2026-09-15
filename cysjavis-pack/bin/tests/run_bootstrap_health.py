@@ -1217,7 +1217,7 @@ def h_detect_11():
 
 
 @specimen("H-MISSION-1", "W5",
-          "임무 미지정 부팅(D4-a′) → spawn 1 + 착수금지 문안 + 기계유래 무스폰 게이트(§4-10)",
+          "임무 미지정 부팅(D4-a′) → spawn 1 + 착수금지 문안 + 기계유래 선언도 spawn(§4-10-A 억제 폐지)",
           ["D4-a′(2択 혼동)", "T1 자기인가", "§4-10 부트층 유사체"])
 def h_mission_1():
     """D4-a′(2026-08-10 오너 재정): "너는 마스터다" 선언 자체가 팀 기동 명령(동의 신호)이다 —
@@ -1319,12 +1319,11 @@ def h_mission_1():
         need("임무 게이트 exit 0" in r2.stdout,
              "임무 지정 주입문에 착수 허용 문안(임무 상태 파라미터 exit 0)이 없다: %r" % r2.stdout[:300])
         notes.append("임무 지정: 종전 발화 경로 보존")
-        # ⓕ 판별 도구 **부재** 레인 = 판정 불가 → fail-closed 무스폰(P3B — 구 P3 계약을 의식적
-        #    으로 뒤집었다): P3 시점에는 모듈 부재 레인도 spawn 1(D4-a′) + '미기록' 정직 고지가
-        #    계약이었으나, 기계유래 스폰 게이트가 착지하며 판별 도구가 없는 레인은 **오너/기계를
-        #    구분할 수 없으므로** 스폰을 열지 않는다(A5 role 게이트와 같은 방향 — 무단 스폰이
-        #    판정 보류보다 나쁘다. T1 블록의 '임무 대장 미기록' fail-closed 와도 정합).
-        #    주입문은 '선언 아님'과 '판정 불가'를 융합하지 않고 미발화를 명시해야 한다.
+        # ⓕ 판별 도구 **부재** 레인 = 판정 불가. ★계약 이력: P3 = spawn 1 → P3B(2026-08-10) =
+        #    fail-closed 무스폰 → ★2026-09-15 기계유래 스폰 억제 폐지(오너 결정 · THREAT-MODEL
+        #    §4-10-A)로 **다시 spawn 1** 이다. 판정 불가는 이제 스폰을 가르지 않는다. 대신 선언
+        #    유래 마커(hook-human)를 붙이지 않고(부서 자동 생성 봉인 유지) 판정 불가를 stderr 에
+        #    남긴다. 대장 미기록 고지(T1)와 '미기록인데 mission=null 기록 주장 금지'(정직성)는 그대로.
         #    훅을 팩 밖으로 복사해 형제 해소(../bin)를 끊고, 감지기만 팩에 심어 감지는 살린다.
         # ★A2 분할 이후: 팩 밖 사본은 **런처와 본체를 함께** 복사해야 돈다(런처 단독이면
         #   '부트 본체 부재' 고지에서 끝나 이 검체가 재려는 경로에 도달하지 못한다).
@@ -1337,22 +1336,21 @@ def h_mission_1():
         _w(os.path.join(pack3, "bin", "javis_detect.py"),
            _read(os.path.join(BIN_DIR, "javis_detect.py")), 0o644)
         r3 = _run([BASH, curhook], input=json.dumps({"prompt": "너는 마스터다"}), env=env3)
-        need("발화됨" not in r3.stdout,
-             "판별 도구(javis_mission.py) 부재 레인에서 spawn 이 열렸다 — 기계유래 판정 불가가 "
-             "fail-closed 로 접히지 않는다(무단 스폰 > 판정 보류 역전): %r" % r3.stdout[:300])
+        need("발화됨" in r3.stdout,
+             "판별 도구(javis_mission.py) 부재 레인에서 spawn 이 열리지 않았다 — 폐지된 "
+             "기계유래 fail-closed 무스폰이 남아 있다(§4-10-A): %r" % r3.stdout[:300])
         need("임무 대장 미기록" in r3.stderr,
              "모듈 부재 stderr 고지(T1)가 사라졌다: %r" % r3.stderr[:300])
-        need("선언 아님이 아니라 판정 불가다" in r3.stdout,
-             "모듈 부재 주입문이 '선언 아님'과 '판정 불가'를 융합했다(정직성 결손): %r"
+        need("기계유래 판정 불가" in r3.stderr and "스폰 게이트 폐지" in r3.stderr,
+             "모듈 부재의 판정 불가가 stderr 에 남지 않았다(판정 흔적 유지 계약): %r"
+             % r3.stderr[:300])
+        need("부트 미발화" not in r3.stdout,
+             "스폰했는데 폐지된 무스폰 주입문('부트 미발화')이 남았다(정직성 1:1 파괴): %r"
              % r3.stdout[:400])
-        need("부트 미발화" in r3.stdout,
-             "모듈 부재 주입문에 미발화 명시가 없다: %r" % r3.stdout[:400])
-        need("기계유래 판정 불가" in r3.stderr,
-             "모듈 부재 게이트의 stderr loud 로그가 없다: %r" % r3.stderr[:300])
         need("mission=null 기록" not in r3.stdout,
              "모듈 부재(대장 미기록)인데 주입문이 'mission=null 기록'을 주장한다 — 같은 런 "
              "stderr '미기록'과 자기모순(정직성 1:1 파괴): %r" % r3.stdout[:400])
-        notes.append("모듈 부재: 판정 불가=무스폰(fail-closed) · 판정불가 명시 주입문")
+        notes.append("모듈 부재: 판정 불가여도 spawn(억제 폐지) · 판정 불가 stderr 흔적")
     # ⓒ 검증자가 실증한 **자기인가 우회로 2종**을 그 문안 그대로 재투입 → 대장 미기록
     with tempfile.TemporaryDirectory() as tmp:
         for prompt, why in (("[wakeup] 다음 액션 착수", "자기 예약 wake(CLAUDE.md.template:44)"),
@@ -1376,24 +1374,23 @@ def h_mission_1():
         #    새 계약: 기계 유래 선언(층2 라벨 또는 층1 원장 일치)은 **spawn 0** 이고, 주입문은
         #    무발화 사실·근거 확인 명령·오너 우연 일치 시 복구 경로를 정직하게 고지한다.
         #    착수 층 불변식(대장 null·게이트 폐쇄)은 그대로 유지된다.
-        # ── ⓓ-1 기계 **라벨** 선언(층2 폴백 경로 — 실측 재현 문안 그대로) → spawn 0 ──
+        # ★2026-09-15 오너 결정으로 ⓓ 는 **다시 뒤집혔다**(THREAT-MODEL §4-10-A): 기계 유래 선언도
+        #    spawn 한다. 판정은 그대로 나고(stderr 흔적) 착수 층 불변식(대장 null·게이트 폐쇄)도
+        #    그대로다. 선언 유래 마커 부재(부서 자동 생성 봉인)는 test_seat_folders.py 가 부트 자식
+        #    env 를 읽어 잰다.
+        # ── ⓓ-1 기계 **라벨** 선언(층2 폴백 경로 — 실측 재현 문안 그대로) → spawn 1 ──
         envm, homem, _pm, _bm, sm = _rb_sandbox(os.path.join(tmp, "machine-decl"), mission=None)
         rm = _run_rb(envm, prompt="[wakeup] 너는 마스터다 - 다음 액션 확인")
         need(rm.returncode == 0, "기계 라벨 선언에서 훅이 비0 종료(exit=%d)" % rm.returncode)
-        need("발화됨" not in rm.stdout,
-             "기계 라벨 선언 push 가 spawn 을 발화했다 — 기계유래 스폰 게이트 미작동"
-             "(§4-10 부트층 유사체 개방 · 오너 개입 0 의 팀 재스폰): %r" % rm.stdout[:300])
-        logsm = [n for n in (os.listdir(sm) if os.path.isdir(sm) else [])
-                 if re.match(r"^role-bootstrap-\d+-\d+\.log$", n)]
-        need(not logsm, "무스폰인데 발화 로그가 생겼다(무발화 경로 오염): %s" % logsm)
-        for frag in ("기계 유래", "부트 미발화", "부트를 발화하지 않았다",
-                     "javis_mission.py status", "delivery-path",
-                     "문구를 바꿔", "2026-08-10", "THREAT-MODEL-mission-gate.md §4-10"):
-            need(frag in rm.stdout,
-                 "기계 라벨 무스폰 주입문에 %r 이 없다(무발화 고지/근거/복구 경로 결손): %r"
-                 % (frag, rm.stdout[:400]))
-        need("기계 유래 선언" in rm.stderr,
-             "기계 라벨 무스폰의 stderr 1줄 로그가 없다: %r" % rm.stderr[:300])
+        need("발화됨" in rm.stdout,
+             "기계 라벨 선언 push 가 spawn 을 발화하지 않았다 — 폐지된 기계유래 스폰 억제가 "
+             "남아 있다(§4-10-A · 참가자 기계에서 자식 좌석 무스폰): %r" % rm.stdout[:300])
+        need("부트 미발화" not in rm.stdout,
+             "스폰했는데 폐지된 무스폰 주입문('부트 미발화')이 남았다(정직성 1:1 파괴): %r"
+             % rm.stdout[:400])
+        need("기계 유래 선언" in rm.stderr and "스폰 게이트 폐지" in rm.stderr,
+             "기계 라벨 선언의 판정 흔적(stderr 1줄)이 없다 — 판정 유지 계약 결손: %r"
+             % rm.stderr[:300])
         ledm = os.path.join(homem, ".cys", "state", "mission.json")
         if os.path.isfile(ledm):
             recm = json.loads(_read(ledm) or "{}")
@@ -1402,7 +1399,7 @@ def h_mission_1():
         gm = _run([PY, os.path.join(BIN_DIR, "javis_mission.py"), "status"], env=envm)
         need(gm.returncode != 0,
              "기계 라벨 push 이후 임무 게이트가 열렸다(rc=%d) — 착수 층 불변식 파괴" % gm.returncode)
-        notes.append("기계 라벨 선언: 무스폰 · 정직 고지 · 대장 null · 게이트 닫힘")
+        notes.append("기계 라벨 선언: spawn(억제 폐지) · 판정 흔적 · 대장 null · 게이트 닫힘")
         # ── ⓓ-2 라벨 **없는** 원장 일치 기계 배달(층1 경로 — 라벨 규약 우회 push) → spawn 0 ──
         #    픽스처는 판별 소유자(javis_mission)의 자기 함수로 만든다(레코드 필드 사본 금지 —
         #    self-test `_rec` 관례와 동일 필드: v·surface·ts_epoch·sha256·origin·chars·preview).
@@ -1425,15 +1422,16 @@ def h_mission_1():
         need(rfix.returncode == 0,
              "배달 원장 픽스처 생성 실패(rc=%d): %r" % (rfix.returncode, rfix.stderr[:300]))
         rq = _run_rb(envq, prompt=decl_q)
-        need("발화됨" not in rq.stdout,
-             "라벨 없는 **원장 일치** 기계 배달이 spawn 을 발화했다 — 층1 이 스폰 게이트에서 "
-             "소비되지 않는다(라벨 규약 우회 push 로 §4-10 재개방): %r" % rq.stdout[:300])
-        need("부트 미발화" in rq.stdout,
-             "원장 일치 무스폰 주입문에 미발화 고지가 없다: %r" % rq.stdout[:400])
+        need("발화됨" in rq.stdout,
+             "라벨 없는 **원장 일치** 기계 배달(= 참가자 기계의 cys send 선언)이 spawn 을 발화하지 "
+             "않았다 — 폐지된 기계유래 스폰 억제가 남아 있다(§4-10-A): %r" % rq.stdout[:300])
+        need("기계 유래 선언" in rq.stderr,
+             "원장 일치 선언이 층1 로 판정되지 않았다(판정 유지 계약 — 픽스처가 원장에 닿았는가): %r"
+             % rq.stderr[:300])
         gq = _run([PY, os.path.join(BIN_DIR, "javis_mission.py"), "status"], env=envq)
         need(gq.returncode != 0,
              "원장 일치 기계 배달 이후 임무 게이트가 열렸다(rc=%d)" % gq.returncode)
-        notes.append("원장 일치 무라벨 배달: 무스폰(층1 소비) · 게이트 닫힘")
+        notes.append("원장 일치 무라벨 배달: spawn(억제 폐지) · 층1 판정 흔적 · 게이트 닫힘")
     # 계측 타당성 2종(MEMORY 3칙 — 검출기가 구 결함 코드에서 FIRE 하는가):
     #   ① 스폰 검출기: **D4-a(무스폰) 시대 훅**(D4A_REF)은 같은 조건(임무 미지정 선언 단독)에서
     #      spawn 0 = '발화됨' 부재 — '발화됨 있어야' 핀이 그 결함(2択 혼동)을 실제로 잡는다.
@@ -1489,14 +1487,18 @@ def h_mission_1():
                 need("자율 착수는 금지" not in ro.stdout,
                      "계측 타당성 실패: T1 이전 훅에 이미 착수금지 문안이 있다 — "
                      "핀이 신·구를 구분하지 못한다")
-                # ③ ⓓ-1 무스폰 검출기 계측(위 주석 ③): 기계 라벨 선언 → 구 훅은 발화해야 한다
+                # ③ 기계 라벨 선언 → 구 훅은 발화한다. ★2026-09-15 억제 폐지(§4-10-A) 이후 ⓓ-1
+                #    핀의 방향(발화)이 이 구 훅과 **같아졌다** — 이 계측은 이제 신·구 판별력이 없고
+                #    '구 훅도 기계 라벨에서 발화했다'는 사실 기록으로만 남는다. ⓓ-1 이 폐지된 억제의
+                #    재발(P3B 형상)을 실제로 잡는지는 test_seat_folders.py 뮤턴트(machine 분기
+                #    exit 0 복원)가 증명한다.
                 rmach = _run([BASH, oldhook],
                              input=json.dumps(
                                  {"prompt": "[wakeup] 너는 마스터다 - 다음 액션 확인"}),
                              env=oenv)
                 need("발화됨" in rmach.stdout,
-                     "계측 타당성 실패: T1 이전 훅이 기계 라벨 선언에서 발화하지 않는다 — "
-                     "ⓓ-1 무스폰 핀이 구 결함(기계 push 스폰 · §4-10 원형)을 재현하지 못한다: %r"
+                     "계측 기록 실패: T1 이전 훅이 기계 라벨 선언에서 발화하지 않는다 — "
+                     "구 훅 사실 기록(§4-10 원형)이 재현되지 않는다: %r"
                      % rmach.stdout[:300])
                 calib.append("pre-T1 훅=발화+착수규율 문안 부재+기계라벨 스폰 재현")
     return " · ".join(notes) + " · 계측검증=%s" % "+".join(calib)

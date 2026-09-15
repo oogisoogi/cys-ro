@@ -368,6 +368,8 @@ pub struct DesiredHook {
 ///
 /// 그 30초가 얼마나 얇은지는 훅 자신의 데드라인 합으로 계산된다(`cysjavis-pack/hooks/role-bootstrap.sh`):
 /// 역할 게이트 2s + 임무 record 5s + 임무 path 5s + machine-origin 5s + 선행 claim 10s = **27s**.
+/// (+ 2026-09-15 기계유래 스폰 억제 폐지 이후 **human 이 아닌 선언에서만** 층0 재확인 3s — 레거시 본체
+///  `role-bootstrap-legacy.sh` 의 L0_KIND · 그 경로의 최악 합은 30s 로 이 상한에 닿는다.)
 /// 여기에 인터프리터 냉시작(Windows python 은 회당 수 초)이 4회 얹히면 상한을 넘는다 —
 /// mac 에서는 멀쩡하고 Windows 설치본에서만 부트가 사라지는 그 계열이다.
 pub const HOOK_TIMEOUT_PLATFORM_DEFAULT_UPS_S: u64 = 30;

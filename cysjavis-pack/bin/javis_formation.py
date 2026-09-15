@@ -754,6 +754,26 @@ def _attempt_record(attempts, role, now=None):
     attempts[role] = {"count": cnt + 1, "last_at": now}
 
 
+def _role_seat_cwd(base, role, notes):
+    """자식 좌석이 뜰 cwd — 좌석별 폴더(TICKET=cys-seat-folders · 2026-09-15).
+
+    기준 폴더(master 좌석 cwd)가 있으면 그 아래 자기 폴더(cso/ · workers/wN/)를 준비해 돌려준다
+    (폴더 생성·얇은 CLAUDE.md·폴더 신뢰 시드 = javis_seat 단일 소유). 기준이 없거나(None = 홈
+    종전 동작)·역할이 대상이 아니거나·모듈/폴더 준비가 실패하면 **base 그대로**다 — 좌석 폴더는
+    개선이지 전제가 아니다. 결과 1줄은 notes 에 쌓아 상태파일 detail 로 남긴다."""
+    if not base:
+        return base
+    try:
+        import javis_seat
+        role_cwd, res = javis_seat.seat_cwd(base, role, pack_dir=PACK_DIR)
+    except Exception as e:
+        notes.append("%s:좌석 폴더 준비 예외(%s)" % (role, e))
+        return base
+    if res is not None:
+        notes.append("%s:%s" % (role, javis_seat.describe(res)))
+    return role_cwd
+
+
 # ── ⑤⑥ 노드 부착(전부 javis_boot_node 재사용 — 신규 spawn 로직 0) ──
 def _boot_node(role, socket, cwd=None, timeout=200):
     """javis_boot_node 재사용 — 입양 경로(점유만·미각성 seat 에 claude 부착)·already_up 멱등.
@@ -1048,6 +1068,7 @@ def ensure(socket=None, cwd=None, force_surface=False):
         # ⑤⑥ 설치된 CLI 기준 최대 편성. master 먼저(입양 경로) → CSO → 나머지.
         booted = set()
         held = []
+        seat_notes = []   # 좌석별 폴더 준비 결과(역할별 1줄 · 상태파일 detail 에 싣는다)
         # ★ⓑ 자식 좌석 cwd 상속(P2 · 2026-09-10): 호출자가 cwd 를 주지 않으면 **master 좌석의
         #   cwd**(설치기가 신뢰를 심어 둔 JarvisHome)를 자식이 물려받는다. master 좌석이 없거나
         #   데몬이 답하지 않으면 None = 홈(종전 동작) — 상속은 개선이지 전제가 아니다.
@@ -1077,7 +1098,7 @@ def ensure(socket=None, cwd=None, force_surface=False):
                 if not child_cwd_resolved:
                     child_cwd = _master_seat_cwd(socket)
                     child_cwd_resolved = True
-                ok, _d = _boot_node(role, socket, child_cwd)
+                ok, _d = _boot_node(role, socket, _role_seat_cwd(child_cwd, role, seat_notes))
             if ok:
                 booted.add(role)
 
@@ -1088,6 +1109,8 @@ def ensure(socket=None, cwd=None, force_surface=False):
         state = classify(installed=installed, live=live, resource_ok=True)
         detail = "편성 실행 — 기동=%s · 설치CLI=%s" % (
             ",".join(sorted(booted)) or "없음", ",".join(sorted(installed))) + _external_note()
+        if seat_notes:
+            detail += " · 좌석 폴더=" + " / ".join(seat_notes)
         if child_cwd and cwd is None:
             detail += " · 자식 cwd 상속=%s(master 좌석)" % child_cwd
         if held:

@@ -1,0 +1,21 @@
+{
+  "_comment": "좌석 역할 → 좌석 폴더(마스터 좌석 폴더 기준 상대경로) 골든 표. python javis_seat.seat_subdir 과 Rust cys::seat::seat_subdir 가 둘 다 이 표로 시험한다. null = 좌석 폴더를 만들지 않는다(마스터 좌석 폴더를 그대로 쓴다).",
+  "cases": [
+    ["cso", "cso"],
+    ["worker", "workers/w1"],
+    ["worker-1", "workers/w1"],
+    ["worker-2", "workers/w2"],
+    ["worker-02", "workers/w2"],
+    ["worker-10", "workers/w10"],
+    ["master", null],
+    ["reviewer-gemini", null],
+    ["reviewer-codex", null],
+    ["cso-2", null],
+    ["worker-0", null],
+    ["worker-x", null],
+    ["worker-", null],
+    ["worker-12345", null],
+    ["worker-2/..", null],
+    ["", null]
+  ]
+}

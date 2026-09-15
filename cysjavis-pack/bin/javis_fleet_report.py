@@ -34,6 +34,11 @@ import subprocess
 import sys
 import time
 
+# Windows: cysd(콘솔 없음)가 띄운 스케줄 잡의 python 이 콘솔 자식(cys.exe·powershell·python)을
+# 그냥 스폰하면 새 콘솔 창이 할당돼 주기마다 창이 깜빡인다(javis_hud_bridge.NOWIN 과 같은 실사고
+# 계열 · TICKET=cysr-brand-version). 이 파일의 모든 subprocess 호출에 **NOWIN 을 전개한다. 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # fleet DB 라벨(개행 든 손상 dir·무관 dir claude/cmux/gh/pnpm/fnm_multishells 배제).
 LABEL_RE = re.compile(r"^(cys|cys-ceo|cys-dept-[A-Za-z0-9-]+|aiterm)$")
 
@@ -173,7 +178,7 @@ def mine_missed_savings(days, limit):
         try:
             r = subprocess.run([cys, "recall", idiom, "--days", str(days),
                                "--limit", str(limit)], capture_output=True,
-                              text=True, timeout=20)
+                              text=True, timeout=20, **NOWIN)
             hits = sum(1 for ln in r.stdout.splitlines() if "● Bash(" in ln)
         except Exception:
             hits = 0
@@ -198,7 +203,7 @@ def pack_version_advisory():
         if not (os.path.isfile(semver) and cys):
             return None
         out = subprocess.run([cys, "--version"], capture_output=True, text=True,
-                             timeout=15).stdout
+                             timeout=15, **NOWIN).stdout
         m = re.search(r"(\d+\.\d+\.\d+\S*)", out or "")
         if not m:
             return None
@@ -209,7 +214,7 @@ def pack_version_advisory():
             return None
         r = subprocess.run([sys.executable, semver, "gate", "--local-file", cargo,
                            "--remote", installed, "--field", "version", "--json"],
-                          capture_output=True, text=True, timeout=15)
+                          capture_output=True, text=True, timeout=15, **NOWIN)
         # exit 10=UPDATE_AVAILABLE 도 정상 advisory 신호(여기선 흡수·non-zero 전파 안 함).
         data = json.loads(r.stdout or "{}")
         return {"verdict": data.get("verdict"), "installed_cys": installed,
@@ -378,7 +383,7 @@ def push_to_master(text):
         return False
     try:
         subprocess.run([cys, "send", "--queued", "--to", "master", text],
-                      capture_output=True, timeout=15)
+                      capture_output=True, timeout=15, **NOWIN)
         return True
     except Exception:
         return False

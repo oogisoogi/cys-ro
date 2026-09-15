@@ -10,7 +10,7 @@
 //!
 //! 잠금 순서 불변식: accounts → (해제) → analytics. 역순 금지(교착).
 
-use crate::state::Daemon;
+use crate::state::{Daemon, HideConsole};
 use crate::usage::RateWindow;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -430,7 +430,9 @@ pub fn spawn_custom_adapters(daemon: Arc<Daemon>) {
             loop {
                 // 플랫폼별 셸 위임 — Windows는 sh 부재(cmd /C). 실패는 무해(다음 주기 재시도).
                 let fut = if cfg!(windows) {
-                    tokio::process::Command::new("cmd").args(["/C", &cmd]).output()
+                    // ★콘솔 없는 cysd 가 콘솔 자식(cmd)을 숨김 없이 낳으면 주기마다 새 콘솔 창이 뜬다
+                    // (TICKET=cysr-brand-version — 이 줄만 스폰 규약에서 빠져 있었다).
+                    tokio::process::Command::new("cmd").args(["/C", &cmd]).hide_console().output()
                 } else {
                     tokio::process::Command::new("sh").args(["-c", &cmd]).output()
                 };
@@ -969,6 +971,25 @@ pub fn alert_rates(daemon: &Arc<Daemon>) -> Vec<(String, String, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★콘솔 창 깜빡임 회귀 핀(TICKET=cysr-brand-version): 주기 cmd 어댑터가 Windows `cmd /C` 를
+    /// 창 숨김 없이 낳으면 콘솔 없는 cysd 아래에서 주기마다 새 콘솔 창이 뜬다. 그 스폰 문장에
+    /// `.hide_console()` 이 붙어 있는지 **프로덕션 구간 소스**로 못박는다(Windows 동작 자체는 못 잰다).
+    #[test]
+    fn periodic_cmd_adapter_spawn_hides_console() {
+        let src = include_str!("accounts.rs");
+        let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
+        let spawns: Vec<&str> = prod
+            .lines()
+            .filter(|l| l.contains("Command::new(\"cmd\")"))
+            .collect();
+        assert_eq!(spawns.len(), 1, "cmd 스폰 문장 수가 바뀌었다 — 이 핀의 대상을 다시 확인하라: {spawns:?}");
+        assert!(
+            spawns[0].contains(".hide_console()"),
+            "cmd /C 스폰에 hide_console 이 없다 — 윈도우에서 주기마다 콘솔 창이 뜬다: {}",
+            spawns[0].trim()
+        );
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("cys-acct-{}-{}", std::process::id(), tag));

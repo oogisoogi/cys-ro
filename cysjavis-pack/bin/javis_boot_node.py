@@ -75,6 +75,11 @@ import subprocess
 import sys
 import time
 
+# Windows: cysd(콘솔 없음)가 띄운 스케줄 잡의 python 이 콘솔 자식(cys.exe·powershell·python)을
+# 그냥 스폰하면 새 콘솔 창이 할당돼 주기마다 창이 깜빡인다(javis_hud_bridge.NOWIN 과 같은 실사고
+# 계열 · TICKET=cysr-brand-version). 이 파일의 모든 subprocess 호출에 **NOWIN 을 전개한다. 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★로케일 비의존 I/O(W-A4 · 선례 javis_bootstrap.py R3/D-IMPL-3 · javis_detect.py G9): ANSI
 #   코드페이지가 UTF-8 이 아닌 Windows(한국어 cp949·서구 cp1252·일본 cp932)에서 stdout 이
 #   파이프로 캡처되면 한글 진단·`—` 류 특수문자 출력이 UnicodeEncodeError 로 즉사한다 —
@@ -186,7 +191,7 @@ ROLE_DIRECTIVE = {
 # ───────────────────────── cys 호출 ─────────────────────────
 def run(args, timeout=15):
     try:
-        r = subprocess.run(args, capture_output=True, timeout=timeout)
+        r = subprocess.run(args, capture_output=True, timeout=timeout, **NOWIN)
         return r.returncode, r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace")
     except Exception as e:
         return 255, "", str(e)

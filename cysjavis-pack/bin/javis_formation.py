@@ -50,6 +50,11 @@ import subprocess
 import sys
 import time
 
+# Windows: cysd(콘솔 없음)가 띄운 스케줄 잡의 python 이 콘솔 자식(cys.exe·powershell·python)을
+# 그냥 스폰하면 새 콘솔 창이 할당돼 주기마다 창이 깜빡인다(javis_hud_bridge.NOWIN 과 같은 실사고
+# 계열 · TICKET=cysr-brand-version). 이 파일의 모든 subprocess 호출에 **NOWIN 을 전개한다. 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 # ★형제 모듈 경로 가드 — **모듈 레벨**이어야 한다(2026-08-01 적대검증 A3 수리).
 #   종전에는 이 가드가 _installed_clis() 안, 그것도 `import javis_cli_probe` 실패 뒤
@@ -132,7 +137,7 @@ def _sanitize_key(socket):
 
 def _run(argv, timeout=30):
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **NOWIN)
         return r.returncode, (r.stdout or ""), (r.stderr or "")
     except Exception as e:
         return 127, "", str(e)
@@ -458,14 +463,14 @@ def _live_roles(socket, require_live_agent=True):
         env["CYS_SOCKET"] = socket
     try:
         r = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True,
-                           timeout=15, env=env)
+                           timeout=15, env=env, **NOWIN)
         if r.returncode == 0:
             return _roster_from_status(json.loads(r.stdout or "{}"), require_live_agent)
     except Exception:
         pass
     try:
         r = subprocess.run(["cys", "list"], capture_output=True, text=True,
-                           timeout=15, env=env)
+                           timeout=15, env=env, **NOWIN)
     except Exception:
         return None
     if r.returncode != 0:
@@ -507,7 +512,7 @@ def _master_seat_cwd(socket):
         env["CYS_SOCKET"] = socket
     try:
         r = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True,
-                           timeout=15, env=env)
+                           timeout=15, env=env, **NOWIN)
         if r.returncode == 0:
             return _master_seat_cwd_from_status(json.loads(r.stdout or "{}"))
     except Exception:
@@ -773,7 +778,7 @@ def _boot_node(role, socket, cwd=None, timeout=200):
     if socket:
         env["CYS_SOCKET"] = socket
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
         return r.returncode == 0, (r.stdout or r.stderr or "").strip()[:200]
     except Exception as e:
         return False, "boot_node 예외: %s" % e

@@ -84,6 +84,11 @@ import time
 from datetime import date, timedelta
 from urllib.parse import urlparse
 
+# Windows: cysd(콘솔 없음)가 띄운 스케줄 잡의 python 이 콘솔 자식(cys.exe·powershell·python)을
+# 그냥 스폰하면 새 콘솔 창이 할당돼 주기마다 창이 깜빡인다(javis_hud_bridge.NOWIN 과 같은 실사고
+# 계열 · TICKET=cysr-brand-version). 이 파일의 모든 subprocess 호출에 **NOWIN 을 전개한다. 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 RSI = os.path.join(HERE, "javis_rsi.py")
 MEM = os.path.join(HERE, "javis_memory.py")
@@ -459,7 +464,7 @@ def _round_rec(state, rid):
 
 def _run(tool, args):
     """위임 도구 호출 — (rc, stdout, stderr). 환경(CYS_ROUND_DIR 등) 승계."""
-    r = subprocess.run([sys.executable, tool] + args, capture_output=True, text=True, env=dict(os.environ))
+    r = subprocess.run([sys.executable, tool] + args, capture_output=True, text=True, env=dict(os.environ), **NOWIN)
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
@@ -473,7 +478,7 @@ def _push_checkpoint(state, rid):
         return
     try:
         subprocess.run(["cys", "learn-checkpoint"], input=json.dumps(payload, ensure_ascii=False),
-                       text=True, timeout=5, capture_output=True)
+                       text=True, timeout=5, capture_output=True, **NOWIN)
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -508,7 +513,7 @@ def _enforce_gate(gi, step, state, fallback, extra=None):
     if extra:
         gi.update(extra)
     r = subprocess.run(["bash", GATE], input=json.dumps(gi, ensure_ascii=False),
-                       capture_output=True, text=True, env=dict(os.environ))
+                       capture_output=True, text=True, env=dict(os.environ), **NOWIN)
     if r.returncode != 0:
         return False, "rsi-gate DENY(봉쇄 미통과): " + (r.stderr.strip() or r.stdout.strip())
     return True, "gate allow"

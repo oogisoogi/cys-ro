@@ -39,6 +39,11 @@ import sys
 import threading
 import time
 
+# Windows: cysd(콘솔 없음)가 띄운 스케줄 잡의 python 이 콘솔 자식(cys.exe·powershell·python)을
+# 그냥 스폰하면 새 콘솔 창이 할당돼 주기마다 창이 깜빡인다(javis_hud_bridge.NOWIN 과 같은 실사고
+# 계열 · TICKET=cysr-brand-version). 이 파일의 모든 subprocess 호출에 **NOWIN 을 전개한다. 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★Windows 즉사 차단(P0): top-level `import fcntl` 은 Windows 에 그 모듈이 없어
 #   ModuleNotFoundError 로 이 스크립트 **전체**를 불능화한다 — javis_org.py:9-22 가 같은
 #   사고를 먼저 겪고 msvcrt 폴백으로 지혈한 선례가 있다.
@@ -188,7 +193,7 @@ def run(cmd, timeout=RUN_TIMEOUT, stdin_text=None):
     """subprocess 러너 — (rc, stdout, stderr). 예외도 rc!=0 로 정규화(fail-soft)."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout, input=stdin_text)
+                           timeout=timeout, input=stdin_text, **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:  # noqa: BLE001 — 러너는 절대 예외를 올리지 않는다
         return 127, "", "runner error: %s" % e
@@ -440,7 +445,7 @@ def run_wakeup(cmd, timeout=RUN_TIMEOUT, stdin_text=None):
     """
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout, input=stdin_text, env=wakeup_env())
+                           timeout=timeout, input=stdin_text, env=wakeup_env(), **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:  # noqa: BLE001 — 러너는 절대 예외를 올리지 않는다
         return 127, "", "runner error: %s" % e
@@ -1406,7 +1411,7 @@ def _spawn_executor(cycle_id, role):
          "--cycle-id", str(cycle_id), "--role", role],
         stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
         start_new_session=True, close_fds=True, cwd=PROJECT,
-        env=dict(os.environ))
+        env=dict(os.environ), **NOWIN)
     return p.pid
 
 
@@ -1521,7 +1526,7 @@ def cmd_execute(args):
     ledger_append("cycle", "cycle-autopilot",
                   {"phase": "fired", "id": nonce_for(cid), "role": role})
     child = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **NOWIN)
     # 자식 출력은 별도 스레드로 계속 빨아낸다 — 1s 폴링 루프가 PIPE 를 안 읽어 자식이
     # 블로킹되면 kill-switch 감시 자체가 무의미해진다.
     sink = {"buf": []}

@@ -944,14 +944,11 @@ function updateCcStale() {
   }
 }
 
-// E6 경보 — 헤더 배지(개수) + Live 뷰 상단 스트립. severity: warn(주황)/crit(빨강).
+// E6 경보 — Live 뷰 상단 스트립(Control Center 를 열어야 보인다). severity: warn(주황)/crit(빨강).
+// ★헤더 개수 배지(⚠N)는 제거했다(박사님 결정 2026-09-15 · TICKET=cysr-brand-version ⓔ): 경보 4종
+//   (rate_limit·weekly_cost·weekly_tokens·tool_fail)은 참가자가 조치할 수 있는 일이 아니다.
 function renderAlerts(a: any) {
   const list: any[] = a?.alerts ?? [];
-  const crit = list.filter((x) => x.severity === "crit").length;
-  const badge = document.getElementById("cc-alertbadge")!;
-  badge.hidden = list.length === 0;
-  badge.textContent = list.length ? `⚠ ${list.length}` : "";
-  badge.className = "cc-alert-badge " + (crit > 0 ? "crit" : "warn");
   document.getElementById("cc-alerts")!.innerHTML = list
     .map(
       (x) =>

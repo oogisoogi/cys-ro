@@ -578,11 +578,7 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 .cc-fail-badge.warn { background: rgba(245,158,11,.18); color: #f59e0b; }
 .cc-fail-badge.crit { background: rgba(239,68,68,.18); color: #ef4444; }
 .cc-agent-roles { font-size: 11px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
-/* E6 경보 — 헤더 배지 + Live 스트립 */
-.cc-alert-badge { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 10px; letter-spacing: .03em; }
-.cc-alert-badge[hidden] { display: none; }
-.cc-alert-badge.warn { background: rgba(245,158,11,.18); color: #f59e0b; }
-.cc-alert-badge.crit { background: rgba(239,68,68,.2); color: #ef4444; animation: cc-blink 1.4s infinite; }
+/* E6 경보 — Live 스트립(헤더 개수 배지는 2026-09-15 제거 · TICKET=cysr-brand-version ⓔ) */
 .cc-alerts:empty { display: none; }
 .cc-alerts { display: flex; flex-direction: column; gap: 6px; }
 .cc-alert-row { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 10px; font-size: 13px;

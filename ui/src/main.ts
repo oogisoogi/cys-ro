@@ -69,6 +69,18 @@ import {
   type NamedReporterLike,
   type SurfaceLike,
 } from "./wsusage";
+import {
+  ACCEPT_ATTR,
+  attachBlockReason,
+  attachmentKind,
+  errorText,
+  FEEDBACK_NOTICE_TEXT,
+  formatBytes,
+  resultMessage,
+  validateText,
+  type Attached,
+  type SubmitResult,
+} from "./feedback";
 import { routeOnData } from "./mousefilter";
 import { MouseTrackingFilter, MOUSE_ALL_OFF } from "./trackfilter";
 import {
@@ -7577,6 +7589,191 @@ function applyWsbarFontStep(dir: number) {
 }
 document.getElementById("btn-ws-font-minus")?.addEventListener("click", () => applyWsbarFontStep(-1));
 document.getElementById("btn-ws-font-plus")?.addEventListener("click", () => applyWsbarFontStep(+1));
+
+// ---------- 피드백 창(TICKET=cys-feedback-menu 2026-09-15) ----------
+// 순수 로직 = feedback.ts · 전송·보관함·재시도·캡처 = Rust feedback.rs. 여기는 DOM 배선만 한다.
+let feedbackOpen = false;
+async function openFeedbackModal() {
+  if (feedbackOpen) return;
+  feedbackOpen = true;
+  let draft: { id: string; capture_supported: boolean };
+  try {
+    draft = (await invoke("feedback_new_draft")) as { id: string; capture_supported: boolean };
+  } catch (e) {
+    feedbackOpen = false;
+    await confirmModal("피드백", `피드백 창을 열지 못했습니다: ${String(e)}`, "확인", "닫기");
+    return;
+  }
+  const attached: Attached[] = [];
+  let captureFile: string | null = null;
+  let busy = false;
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML =
+    `<div class="modal feedback-modal"><h3>피드백 보내기</h3>` +
+    `<p class="modal-label">제목</p><input class="modal-input fb-title" type="text" />` +
+    `<p class="modal-label">내용 — 아쉬운 점이나 문제를 적어 주세요</p>` +
+    `<textarea class="modal-input fb-body" rows="6"></textarea>` +
+    `<p class="modal-label">연락처(선택) — 답을 받고 싶으시면 적어 주세요</p>` +
+    `<input class="modal-input fb-contact" type="text" />` +
+    `<label class="feedback-row fb-capture-row"><input type="checkbox" class="fb-capture" /> 지금 화면을 캡처해 함께 보내기</label>` +
+    `<div class="feedback-row"><button type="button" class="fb-pick">사진·영상 붙이기</button>` +
+    `<span class="fb-limit">사진 5장(한 장 5MB)·영상 1개(95MB)까지</span>` +
+    `<input type="file" class="fb-file" multiple hidden /></div>` +
+    `<ul class="feedback-files"></ul>` +
+    `<p class="feedback-notice"></p><p class="feedback-status"></p>` +
+    `<div class="modal-btns"><button class="modal-no">취소</button><button class="modal-yes">보내기</button></div></div>`;
+  const q = <T extends Element>(sel: string) => ov.querySelector(sel) as T;
+  q<HTMLElement>(".feedback-notice").textContent = FEEDBACK_NOTICE_TEXT;
+  const capBox = q<HTMLInputElement>(".fb-capture");
+  if (!draft.capture_supported) q<HTMLElement>(".fb-capture-row").hidden = true;
+  const fileInput = q<HTMLInputElement>(".fb-file");
+  fileInput.accept = ACCEPT_ATTR;
+  const list = q<HTMLUListElement>(".feedback-files");
+  const yes = q<HTMLButtonElement>(".modal-yes");
+  const no = q<HTMLButtonElement>(".modal-no");
+  const status = (msg: string) => (q<HTMLElement>(".feedback-status").textContent = msg);
+  const setBusy = (b: boolean) => {
+    busy = b;
+    yes.disabled = b;
+    no.disabled = b;
+    q<HTMLButtonElement>(".fb-pick").disabled = b;
+    capBox.disabled = b;
+  };
+  const close = (discardDraft: boolean) => {
+    ov.remove();
+    feedbackOpen = false;
+    if (discardDraft) void invoke("feedback_discard", { draft: draft.id }).catch(() => {});
+  };
+  const removeAttached = async (file: string) => {
+    try {
+      await invoke("feedback_unstage", { draft: draft.id, file });
+    } catch {
+      /* 이미 없는 파일 — 목록에서만 뺀다 */
+    }
+    const i = attached.findIndex((a) => a.file === file);
+    if (i >= 0) attached.splice(i, 1);
+    if (file === captureFile) {
+      captureFile = null;
+      capBox.checked = false;
+    }
+    renderFiles();
+  };
+  const renderFiles = () => {
+    list.textContent = "";
+    for (const a of attached) {
+      const li = document.createElement("li");
+      const label = document.createElement("span");
+      label.textContent = `${a.kind === "photo" ? "사진" : "영상"} · ${a.name} · ${formatBytes(a.bytes)}`;
+      const x = document.createElement("button");
+      x.type = "button";
+      x.textContent = "×";
+      x.title = "빼기";
+      x.addEventListener("click", () => {
+        if (!busy) void removeAttached(a.file);
+      });
+      li.append(label, x);
+      list.appendChild(li);
+    }
+  };
+  capBox.addEventListener("change", async () => {
+    if (!capBox.checked) {
+      if (captureFile) await removeAttached(captureFile);
+      return;
+    }
+    const reason = attachBlockReason(attached, "photo", 1);
+    if (reason) {
+      capBox.checked = false;
+      status(reason);
+      return;
+    }
+    capBox.disabled = true;
+    // 창을 가린 채로 찍는다 — 사용자가 보던 화면을 보내려는 것이지 이 창을 보내려는 것이 아니다.
+    ov.style.visibility = "hidden";
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 250))));
+    try {
+      const r = (await invoke("feedback_capture", { draft: draft.id })) as { file: string; bytes: number };
+      attached.push({ kind: "photo", file: r.file, name: "화면 캡처", bytes: r.bytes });
+      captureFile = r.file;
+      status("");
+    } catch {
+      capBox.checked = false;
+      status("화면을 캡처하지 못했습니다.");
+    } finally {
+      ov.style.visibility = "";
+      capBox.disabled = false;
+      renderFiles();
+    }
+  });
+  q<HTMLButtonElement>(".fb-pick").addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", async () => {
+    const files = Array.from(fileInput.files ?? []);
+    fileInput.value = "";
+    for (const f of files) {
+      const kind = attachmentKind(f.name);
+      if (!kind) {
+        status(`${f.name}: 사진(jpg·png·webp·heic)이나 영상(mp4·mov·webm)만 붙일 수 있습니다.`);
+        continue;
+      }
+      const reason = attachBlockReason(attached, kind, f.size);
+      if (reason) {
+        status(`${f.name}: ${reason}`);
+        continue;
+      }
+      status(`${f.name} 붙이는 중…`);
+      try {
+        // 바이트는 JSON 이 아닌 원시 본문으로 넘긴다(영상을 base64 로 부풀리지 않는다).
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const r = (await (window.__TAURI__.core.invoke as any)("feedback_stage_file", bytes, {
+          headers: { "x-draft": draft.id, "x-kind": kind, "x-name": encodeURIComponent(f.name) },
+        })) as { file: string; bytes: number };
+        attached.push({ kind, file: r.file, name: f.name, bytes: r.bytes });
+        status("");
+      } catch (e) {
+        status(`${f.name}: ${errorText(String(e))}`);
+      }
+      renderFiles();
+    }
+  });
+  no.addEventListener("click", () => {
+    if (!busy) close(true);
+  });
+  yes.addEventListener("click", async () => {
+    const title = q<HTMLInputElement>(".fb-title").value;
+    const body = q<HTMLTextAreaElement>(".fb-body").value;
+    const contact = q<HTMLInputElement>(".fb-contact").value;
+    const errs = validateText(title, body, contact);
+    if (errs.length) {
+      status(errs.join(" "));
+      return;
+    }
+    setBusy(true);
+    status(attached.length ? "보내는 중… 첨부가 크면 시간이 걸립니다." : "보내는 중…");
+    const names: Record<string, string> = {};
+    for (const a of attached) names[a.file] = a.name;
+    let res: SubmitResult;
+    try {
+      res = (await invoke("feedback_submit", { draft: draft.id, title, body, contact, names })) as SubmitResult;
+    } catch (e) {
+      res = { state: "rejected", error: String(e) };
+    }
+    const m = resultMessage(res);
+    if (!m.ok) {
+      setBusy(false);
+      status(m.text);
+      return;
+    }
+    close(false); // 보냄 = Rust 가 폴더를 지웠다 · 보관 = 다시 보내야 하므로 지우면 안 된다
+    void confirmModal("피드백", m.text, "확인", "닫기");
+  });
+  document.body.appendChild(ov);
+  setTimeout(() => q<HTMLInputElement>(".fb-title").focus(), 50);
+}
+document.getElementById("ws-feedback")?.addEventListener("click", () => void openFeedbackModal());
+// 보내지 못해 둔 피드백을 다시 보낸다 — 켜고 30초 뒤 한 번, 그 뒤 10분마다(때가 안 된 건은 Rust 가 건너뛴다).
+const FEEDBACK_FLUSH_MS = 10 * 60_000;
+setTimeout(() => void invoke("feedback_flush").catch(() => {}), 30_000);
+setInterval(() => void invoke("feedback_flush").catch(() => {}), FEEDBACK_FLUSH_MS);
 // 멀티마스터 F4 + ＋부서 자동화(패치5): 새 부서(독립 데몬) workspace 런칭. 부서 번호는 백엔드가 확정.
 const deptBtn = document.getElementById("btn-ws-dept") as HTMLButtonElement | null;
 // 부서 런칭 실행(공통) — placeholder 탭·in-flight 버튼 가드. catalogKey=undefined → 레거시 dept-N.

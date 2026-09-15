@@ -133,6 +133,23 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 /* 원작자 표기(박사님 지시 2026-09-10) — 사이드바 최하단 상주 한 줄.
    ★hidden 속성도 조건부 렌더도 두지 않는다: 표기가 조건부면 언젠가 사라지고, 사라지는 순간
    원작자와의 배포 조건이 깨진다. 사이드바가 아무리 좁아도 줄바꿈으로 살아남게(ellipsis 금지). */
+/* 피드백 버튼(2026-09-15) — 사용량 패널 아래 한 줄. 글자 축은 사이드바 공통 --wsbar-font. */
+#ws-feedback {
+  flex: none; margin: 4px 8px 6px; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--hairline); background: transparent; color: var(--muted, #8b949e);
+  font-size: calc(12px * var(--wsbar-font, 1)); text-align: left; cursor: pointer;
+}
+#ws-feedback:hover { color: var(--text, #e2e8f0); border-color: var(--border); }
+/* 피드백 창 — .modal 재사용 · 폭만 넓힌다 */
+.modal.feedback-modal { max-width: 540px; width: calc(100vw - 48px); max-height: 88vh; overflow-y: auto; }
+.feedback-modal .modal-input { min-height: auto; margin-bottom: 8px; }
+.feedback-modal textarea.modal-input { min-height: 120px; }
+.feedback-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 6px 0; flex-wrap: wrap; }
+.feedback-files { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 12px; }
+.feedback-files li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.feedback-files button { background: none; border: none; color: #8b949e; cursor: pointer; }
+.modal p.feedback-notice { font-size: 11px; line-height: 1.5; color: #94a3b8; margin: 8px 0 12px; }
+.modal p.feedback-status { font-size: 12px; margin: 0 0 10px; min-height: 16px; color: #f59e0b; }
 #ws-credit {
   flex: none; padding: 6px 8px 8px; border-top: 1px solid var(--hairline);
   font-size: calc(11px * var(--wsbar-font, 1)); line-height: 1.35;

@@ -11,6 +11,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
+// 사이드바 「피드백」(앱 층 · TICKET=cys-feedback-menu) — 접수·첨부 올리기·보관함 재시도·화면 캡처.
+mod feedback;
+
 type Stream = Box<dyn AsyncReadWrite>;
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
@@ -5818,6 +5821,13 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .manage(Attachments(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
+            feedback::feedback_new_draft,
+            feedback::feedback_stage_file,
+            feedback::feedback_unstage,
+            feedback::feedback_discard,
+            feedback::feedback_capture,
+            feedback::feedback_submit,
+            feedback::feedback_flush,
             dept_tombstone_by_socket,
             dept_tombstones,
             start_master,

@@ -346,8 +346,9 @@ _static_ctx() {
 }
 
 # ── ★W-F2 note 인코딩 가드 — 단일 소스(사본 드리프트 금지) ──
-# 이 훅의 모든 `"$CYS_PY" -c` note 발행 블록(기계유래·판정불가·BOOT 부재·발화 실패·발화 성공·
-# P2 frontdoor — 현재 6곳)은 반드시 이 변수를 인접 문자열 연결(POSIX)로 앞세워 시작한다:
+# 이 훅의 모든 `"$CYS_PY" -c` note 발행 블록(BOOT 부재·발화 실패·발화 성공·P2 frontdoor — 현재
+# 4곳 · 2026-09-15 기계유래·판정불가 무스폰 note 2곳은 스폰 억제 폐지로 삭제)은 반드시 이 변수를
+# 인접 문자열 연결(POSIX)로 앞세워 시작한다:
 #     "$CYS_PY" -c "$CYS_NOTE_IO_GUARD"'…개행…본문…'
 # 왜 변수 1곳인가: 340653d 가 같은 결함 클래스를 팩 3파일에서 고칠 때 이 훅은 2블록만
 # 가드를 얻고 3블록(BOOT 부재·발화 실패·발화 성공)이 무가드로 남았다(사본이 낡는
@@ -715,58 +716,56 @@ if [ -f "$MISSION" ]; then
     _cys_mo_read "$MO_OUT"
   fi
 fi
-if [ "$MO_TOKEN" = "machine" ]; then
-  # 기계 유래 확정 — 무스폰. 주입문은 정직하게: 무엇을 감지했고 왜 발화하지 않았는지 + 근거
-  # 확인 명령 + 오너 우연 일치(거짓 양성 수용 — 비대칭 원칙) 시의 복구 경로.
-  echo "[cys-hook] role-bootstrap: 기계 유래 선언(machine-origin 토큰=machine · 보조 rc=$MO_RC) — 무스폰(부트 미발화)" >&2
-  "$CYS_PY" -c "$CYS_NOTE_IO_GUARD"'
-note=("[기계 유래 선언 감지 — 부트 미발화] 이 문단을 넣은 것은 모델이 아니라 이 컴퓨터에 설치된 "
-      "프로그램의 훅(%s/hooks/role-bootstrap.sh)이다. 원문을 열어 대조해도 된다. "
-      "방금 입력에서 마스터 선언 패턴이 감지됐지만, 기계유래 판별(bin/javis_mission.py machine-origin — "
-      "층1 배달 원장 해시 대조 · 층2 push 라벨)이 이 텍스트를 **기계 유래**(스케줄 wake·큐 배달·"
-      "노드 push 등 기계 배달)로 판정했다. 오너가 직접 타이핑한 선언만 팀 기동 명령이다"
-      "(2026-08-10 오너 재정의 동의 귀속 한계 — 기계 텍스트에는 \"선언=기동 명령\"의 동의가 실려 있지 않다). "
-      "그래서 부트를 발화하지 않았다 — 팀은 뜨지 않았고 설정 파일도 재작성되지 않았다. "
-      "이 훅이 실행한 것은 판정용 읽기 헬퍼(surface-role·감지기·machine-origin)와 임무 대장 record 1회뿐이고, "
-      "기계 유래 프롬프트에서 record 는 대장을 바꾸지 않는다(착수 권한 미발급 유지). "
-      "근거 확인: bin/javis_mission.py status · bin/javis_mission.py delivery-path --json (배달 원장 진단). "
-      "드물게 **오너가 직접 친 문장이 최근 기계 배달과 정규화 후 완전히 같아** 이렇게 접힐 수 있다 — "
-      "그 경우 같은 문장 재입력이나 공백만 바꾼 재입력은 소용없다(해시는 공백 정규화 후 대조다). "
-      "**문구를 바꿔**(단어를 더하거나 달리 써서) 재선언하면 기동된다. "
-      "판별 범위·잔여위험: docs/THREAT-MODEL-mission-gate.md §4-10."
-      ) % (sys.argv[1],)
-print(json.dumps({"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":note}}, ensure_ascii=False))' \
-    "$PACK"
-  exit 0
-elif [ "$MO_TOKEN" != "human" ]; then
-  # 판정 불가(토큰 부재=타임아웃·인터프리터/모듈 문제·모듈 부재 · 토큰 unknown=파싱 실패·빈
-  # 프롬프트·판정 본문 크래시) — fail-closed 무스폰 + loud(A22 관례). '선언 아님'과 '판정
-  # 불가'를 융합하지 않는다. rc 는 진단용 보조 정보로만 병기한다.
-  MO_WHY="토큰=${MO_TOKEN:-부재} 토큰줄수=$MO_TOKEN_N 보조rc=${MO_RC:-모듈 부재(javis_mission.py 없음)}"
-  echo "[cys-hook] role-bootstrap: 기계유래 판정 불가(machine-origin $MO_WHY) — 무스폰(fail-closed)" >&2
-  _notify_bg "부트스트랩 판정 불가(기계유래 판별 실패)" \
-    "마스터 선언은 감지됐지만 javis_mission.py machine-origin 이 오너 타이핑/기계 배달 여부를 판정하지 못했습니다($MO_WHY). 팀 기동이 발화되지 않았습니다."
-  "$CYS_PY" -c "$CYS_NOTE_IO_GUARD"'
-note=("[결정론 부트스트랩 판정 불가 - 기계유래 판별 실패] 마스터 선언 패턴은 감지됐지만, 그 선언이 "
-      "오너 타이핑인지 기계 배달인지 판별하는 도구(bin/javis_mission.py machine-origin)가 판정하지 "
-      "못했다(%s — 판정 근거는 stdout 토큰이고 rc 는 보조 진단이다). "
-      "**선언 아님이 아니라 판정 불가다 — 부트 미발화**(fail-closed: 무단 스폰이 "
-      "판정 보류보다 나쁘다). 팀은 뜨지 않았다 - 부트가 시작됐다고 보고하지 마라. "
-      "조치: bin/javis_mission.py status · delivery-path 로 판별 도구·배달 원장 상태를 확인하고 "
-      "(모듈 부재면 팩 배포 preflight --fix · pack-heal), 오너가 직접 타이핑한 선언이었다면 "
-      "재선언하라. 승인 Feed에도 알림을 시도했다."
-      ) % (sys.argv[1],)
-print(json.dumps({"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":note}}, ensure_ascii=False))' \
-    "$MO_WHY"
-  exit 0
+# ── ★기계유래 스폰 게이트 폐지(2026-09-15 · 오너 결정 · TICKET=cys-seat-folders ⓓ) ────────────────
+# 종전(2026-08-10~) 이 자리는 machine-origin 토큰이 machine(기계 유래) 또는 판정 불가면 **무스폰**
+# 으로 exit 0 했다. 참가자 기계에서 `cys send` 로 들어온 선언이 기계 유래로 접혀 자식 좌석이 뜨지
+# 않는 증상이 실측됐고, 오너가 이 억제를 폐지했다. **판정(machine-origin)·임무 대장 record·진단
+# 로그는 그대로 유지**하고, 달라지는 것은 스폰 억제뿐이다:
+#   · human     → 종전 그대로 + 선언 유래 마커 hook-human(부서 자동 생성 허용)
+#   · machine   → 스폰한다. 마커는 **붙이지 않는다** — 오너 타이핑이 보증되지 않은 선언이 부서를
+#                 증식시키는 경로(2026-08-12 폭주 봉인 ⓑ)는 계속 닫혀 있다.
+#   · 판정 불가 → machine 과 같다(판정이 스폰을 가르지 않으므로 fail-closed 대상이 사라졌다).
+# 기계 유래 선언은 임무 대장을 바꾸지 않는다(착수 권한 미발급 — record 층 불변식은 그대로).
+# 폐지 사유·잔여 위험 = docs/THREAT-MODEL-mission-gate.md §4-10-A.
+# ★층0·층0-c 재확인(codex 1R #4 · Rust `declaration_spawn_origin` 과 같은 순서): 배달 원장 판정은
+#   harness 판정보다 **먼저** 접히므로, 원장과 일치한 harness 알림·기동 명령문도 machine 으로 온다.
+#   억제 폐지는 '배달된 선언'에 대한 것이지 harness 알림·기동 명령문에 대한 것이 아니다 — 그 둘이면
+#   종전대로 무스폰. 판정자는 javis_mission 의 같은 함수(셸 사본 0). 도구 실패는 스폰 쪽으로 접는다
+#   (억제 폐지 후의 기본값 · 판정 불가를 이유로 선언을 다시 막지 않는다).
+#   ★데드라인 3s(5s 아님): UserPromptSubmit 기본 timeout 30s 에 훅 데드라인 합이 이미 27s 다
+#   (src/pack.rs HOOK_TIMEOUT_PLATFORM_DEFAULT_UPS_S 주석). 이 재확인은 human 이 아닌 선언에서만 돈다.
+if [ "$MO_TOKEN" != "human" ] && [ -n "$MISSION_N" ] && [ -f "$MISSION_N" ]; then
+  L0_KIND="$(CYS_L0_INPUT="$INPUT" cys_timeout_run 3 "$CYS_PY" -c 'import os, sys, json
+sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[1])))
+import javis_mission as m
+p = (json.loads(os.environ.get("CYS_L0_INPUT") or "{}") or {}).get("prompt") or ""
+print("harness" if m.harness_origin(p)[0] else ("boot-command" if m.boot_command_origin(p)[0] else "none"))' "$MISSION_N" 2>/dev/null)"
+  case "$L0_KIND" in
+    harness|boot-command)
+      echo "[cys-hook] role-bootstrap: 기계 유래 프롬프트가 층0 ${L0_KIND} 로도 판정 — 선언 경로 아님(무스폰 · 억제 폐지 대상 밖)" >&2
+      exit 0 ;;
+  esac
 fi
-# MO_TOKEN=human: 오너 타이핑 간주(판정 본문 완주 + exit 1 계약의 stdout 표명) — 종전 D4-a′
-# 경로 그대로 진행한다.
+if [ "$MO_TOKEN" = "human" ]; then
+  CYS_DECL_ORIGIN_MARK="hook-human"
+elif [ "$MO_TOKEN" = "machine" ]; then
+  CYS_DECL_ORIGIN_MARK=""
+  echo "[cys-hook] role-bootstrap: 기계 유래 선언(machine-origin 토큰=machine · 보조 rc=$MO_RC) — 스폰 게이트 폐지(2026-09-15)로 부트 진행 · 선언 유래 마커 없음(부서 자동 생성 불가)" >&2
+else
+  CYS_DECL_ORIGIN_MARK=""
+  MO_WHY="토큰=${MO_TOKEN:-부재} 토큰줄수=$MO_TOKEN_N 보조rc=${MO_RC:-모듈 부재(javis_mission.py 없음)}"
+  echo "[cys-hook] role-bootstrap: 기계유래 판정 불가(machine-origin $MO_WHY) — 스폰 게이트 폐지(2026-09-15)로 부트 진행 · 선언 유래 마커 없음(부서 자동 생성 불가)" >&2
+fi
 # ★선언 유래 마커(2026-08-12 · 폭주 봉인 ⓑ 실강제): 아래 스폰이 상속하는 env 에 human 판정
 #   통과 사실을 싣는다. javis_bootstrap._dept_fallback 은 이 마커가 있을 때만 부서 자동 생성을
 #   허용한다 — CLAUDE.md §0 폴백(직접 실행)은 마커가 없어 구계약(정당거부 안내)으로 흐른다.
 #   이 export 는 훅 프로세스와 그 자식(부트 스폰)에만 미친다(선언 pane 셸 env 무오염).
-export CYS_DECL_ORIGIN="hook-human"
+#   ★기계 유래·판정 불가 선언은 마커를 **지운다**(상속된 값이 새어 들어가지 않게 unset).
+if [ -n "$CYS_DECL_ORIGIN_MARK" ]; then
+  export CYS_DECL_ORIGIN="$CYS_DECL_ORIGIN_MARK"
+else
+  unset CYS_DECL_ORIGIN
+fi
 
 BOOT="$PACK/bin/javis_bootstrap.py"
 # ★BOOT 부재 명시 실패(증분1): 부서 팩에 javis_bootstrap.py가 없는 레인은 종전엔 조용한 무산이라
@@ -842,11 +841,11 @@ esac
 # ★기계유래 검사(2026-08-10 P3 적대검증 → P3B 수리 — docs/THREAT-MODEL-mission-gate.md §4-10):
 #   구 D4-a 의 MISSION_RC==0 요구는 기계 push 를 **우연히** 걸렀고(층1/층2 폴드 → 임무 미발급 →
 #   rc≠0 → 무스폰), D4-a′ 는 그 상관 게이트를 제거했다. 그 공백(오너 개입 0 의 팀 재스폰·
-#   preflight --fix 설정 재작성)은 이제 위 **기계유래 스폰 게이트**(machine-origin — 판정 소유자
-#   javis_mission 층1/층2 재사용)가 결정론으로 닫는다: 여기 도달했다는 것은 그 게이트가 이
-#   선언을 오너 타이핑으로 판정(exit 1)했다는 뜻이다. 판별 범위는 원장·라벨이 보는 데까지다 —
-#   그 밖(동일 UID 직접 위조 등 OUT OF SCOPE)은 §4-10·§2 의 잔여위험으로 남고, 임무 미지정
-#   문안이 그 한계를 정직하게 고지한다.
+#   preflight --fix 설정 재작성)은 P3B 기계유래 스폰 게이트가 닫았었다. ★2026-09-15 오너 결정으로
+#   그 **스폰 억제는 폐지**됐다(§4-10-A) — 여기 도달했다는 것은 더 이상 '오너 타이핑 판정'을 뜻하지
+#   않는다. 판정 결과(MO_TOKEN)는 여전히 나고, 임무 미지정 문안은 그 판정을 **관측 그대로** 고지한다
+#   (human = 오너 타이핑 판정 · machine = 기계 배달 판정 · 그 밖 = 판정 불가). 착수 권한은 어느
+#   경우에도 발급되지 않는다(기계 유래는 대장을 바꾸지 않는다).
 if [ "$MISSION_RC" -eq 0 ]; then
   MISSION_SENT="임무 게이트 exit 0 — 오너가 이 세션에 임무를 지정했다. 구동 보고 후 next-action 규율대로 자율 착수가 허용된다."
 else
@@ -866,7 +865,14 @@ else
   else
     LEDGER_SENT="임무 대장 기록 판정이 완료되지 못했다(record exit $RECORD_RC — 판독 불가·타임아웃 등). 대장($MISSION_LEDGER) 기록 여부는 미확인이다 — javis_mission.py status 로 확인하라."
   fi
-  MISSION_SENT="임무 게이트 폐쇄(임무 미지정) — 이 세션에 자율 착수 권한이 발급되지 않았다(임무 없음·판독 불가·기계 유래 폴드 등 판정 불능은 전부 fail-closed 로 여기에 접힌다). $LEDGER_SENT 훅은 마스터 선언 감지로 팀 기동을 발화했다(오너 재정 2026-08-10: 선언=팀 기동 명령). ★이 선언은 spawn 전 기계유래 게이트(javis_mission.py machine-origin — 층1 배달 원장 해시 대조·층2 push 라벨)가 **오너 타이핑으로 판정(exit 1)** 한 텍스트다 — 기계 배달(스케줄 wake·큐/노드 push)로 판정됐다면 부트는 발화되지 않았을 것이다. 다만 판별은 원장·라벨이 보는 범위까지다: 그 밖(동일 UID 직접 위조 등)은 잔여위험이다(docs/THREAT-MODEL-mission-gate.md §4-10 · 임무 대장은 열리지 않았으므로 착수 권한도 발급되지 않는다). 그러나 ★자율 착수는 금지다: 이전 세션 잔무 큐(SESSION_STATE)는 보고 대상이지 착수 대상이 아니다(2026-08-01 무한 작업 사고 재발 방지 — next-action 이 exit 3 으로 거부한다). 팀 기동 사실과 대기 중 작업 목록만 보고하고 멈춰 오너 임무를 기다려라."
+  # ★판정 관측 문안(2026-09-15 · 스폰 억제 폐지 §4-10-A): 종전 문안은 "여기 도달 = 오너 타이핑 판정"을
+  #   단언했지만 억제 폐지 후 기계 유래·판정 불가 선언도 여기 도달한다 — 판정값(MO_TOKEN) 그대로 적는다.
+  case "$MO_TOKEN" in
+    human)   ORIGIN_SENT="이 선언은 기계유래 판정(javis_mission.py machine-origin — 층1 배달 원장 해시 대조·층2 push 라벨)이 오너 타이핑으로 판정한 텍스트다(2026-09-15 이후 기계 배달로 판정된 선언도 팀은 띄우지만 선언 유래 보증이 없어 부서 자동 생성은 열리지 않는다 — 이 선언은 보증이 있다)." ;;
+    machine) ORIGIN_SENT="이 선언은 기계유래 판정(javis_mission.py machine-origin)이 **기계 배달**(스케줄 wake·큐/노드 push·cys send 등)로 판정한 텍스트다. 2026-09-15 오너 결정으로 기계 배달 선언도 팀을 띄운다 — 단 선언 유래 보증이 없어 부서 자동 생성은 열리지 않는다." ;;
+    *)       ORIGIN_SENT="이 선언은 기계유래 판정(javis_mission.py machine-origin)이 **판정하지 못한** 텍스트다(훅 stderr 에 사유). 2026-09-15 오너 결정으로 판정 불가도 팀을 띄운다 — 단 선언 유래 보증이 없어 부서 자동 생성은 열리지 않는다." ;;
+  esac
+  MISSION_SENT="임무 게이트 폐쇄(임무 미지정) — 이 세션에 자율 착수 권한이 발급되지 않았다(임무 없음·판독 불가·기계 유래 폴드 등 판정 불능은 전부 fail-closed 로 여기에 접힌다). $LEDGER_SENT 훅은 마스터 선언 감지로 팀 기동을 발화했다(오너 재정 2026-08-10: 선언=팀 기동 명령). ★$ORIGIN_SENT 판별은 원장·라벨이 보는 범위까지다: 그 밖(동일 UID 직접 위조 등)은 잔여위험이다(docs/THREAT-MODEL-mission-gate.md §4-10·§4-10-A · 임무 대장은 열리지 않았으므로 착수 권한도 발급되지 않는다). 그러나 ★자율 착수는 금지다: 이전 세션 잔무 큐(SESSION_STATE)는 보고 대상이지 착수 대상이 아니다(2026-08-01 무한 작업 사고 재발 방지 — next-action 이 exit 3 으로 거부한다). 팀 기동 사실과 대기 중 작업 목록만 보고하고 멈춰 오너 임무를 기다려라."
 fi
 
 # ── 중복 억제는 python 싱글플라이트 락이 단일 소유(증분1): 종전의 PIDF 진행-가드·SOCK_KEY는 제거했다.

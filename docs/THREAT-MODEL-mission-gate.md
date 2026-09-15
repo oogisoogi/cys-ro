@@ -444,6 +444,30 @@ OUT OF SCOPE를 상대로 우리가 가진 것은 차단이 아니라 **흔적**
       11)·감독자 시도 상한(MAX_ATTEMPTS)으로 유계다 ④흔적: `intent_retired` 이벤트·소진 시
       `bootstrap-fail` feed(§3 교리 — 차단이 아니라 감사 가능성).
 
+10-A. **기계유래 스폰 억제 폐지 (2026-09-15 오너 결정 · TICKET=cys-seat-folders ⓓ)** — 위 10의
+    P3B 수리 가운데 **스폰 억제 분기만** 제거했다. 판정(`javis_mission.py machine-origin` · Rust
+    `hook.machine_origin`)·임무 대장 기록(기계 유래는 흔적만 · 착수 권한 미발급)·진단 로그는 그대로다.
+    · **폐지 사유**: 참가자 기계에서 설치기·마스터가 `cys send` 로 넣은 마스터 선언이 배달 원장
+      층1 대조로 기계 유래로 접혀 **자식 좌석이 뜨지 않았다**(v0.14.37 실측 · 설치기 wake 첫 프롬프트
+      경로로 우회 중이었다). 억제가 막던 위험(오너 개입 0 의 팀 재스폰)보다, 억제가 만든 장애
+      (정상 설치 경로에서 팀이 안 뜸)가 실사용에서 더 크다고 오너가 판정했다.
+    · **지금의 동작**: 기계 유래(판정 불가 폴드 포함)로 판정된 마스터 선언도 선언 경로(claim →
+      부트 인텐트)로 간다. 단 **선언 유래 보증을 싣지 않는다** — Rust 훅은 `decl_origin` 을 빈 값으로,
+      레거시 셸 본체는 `CYS_DECL_ORIGIN` 을 unset 으로 넘긴다. 따라서 `javis_bootstrap._dept_fallback`
+      의 **부서 자동 생성은 계속 닫혀 있다**(2026-08-12 폭주 봉인 ⓑ 유지 — 기계 배달 반복이 부서를
+      증식시키는 경로는 이번 폐지로 열리지 않는다). harness 알림(층0)·기동 명령문(층0-c)은 종전대로
+      처리완료다(선언 경로로 가지 않는다).
+    · **다시 열린 잔여 위험(수용)**: ⓐ 반복 배달원(스케줄 wake·큐 배달·노드 push)이 마스터 선언
+      문구를 master stdin 에 넣으면 오너 개입 0 으로 **팀 재스폰**이 일어날 수 있다. 유계 요인 —
+      부트 레인 싱글플라이트(패자 exit 11)·감독자 시도 상한(MAX_ATTEMPTS)·이미 생존한 좌석은
+      재기동하지 않는 `cys boot` 스킵 술어. ⓑ 재스폰 경로의 preflight 가 `~/.claude*/settings.json`
+      훅 등록을 다시 확인·기록할 수 있다(멱등 병합 — 사용자 값 덮어쓰기 아님). ⓒ 부활 스폰마다
+      디렉티브급 push 가 공유 원장을 소모하는 2차 결합(위 10 · 2차 결합)이 기계 선언 경로에도
+      적용된다. 완화는 종전과 같다: `cys pause` · 부트 고지 · `intent_retired`/`bootstrap-fail` 흔적.
+    · **회귀 핀**: `run_bootstrap_health.py` H-MISSION-1 ⓓ-1·ⓓ-2·ⓕ 가 "기계 유래 선언 = 스폰 +
+      선언 유래 마커 없음"으로 뒤집혔고, `test_seat_folders.py` 가 레거시 셸 경로를, `cys.rs`
+      `declaration_spawn_origin` 검체가 Rust 훅 경로를 고정한다.
+
 11. **seat 토큰의 신뢰 등급 — 거버넌스 구분이지 보안 경계가 아니다 (P1 · 2026-08-26 등재 ·
     수용)** — claim_role·hook.decide 좌석 인가의 1차 축인 seat 토큰(`CYS_SEAT_TOKEN` ·
     `state.rs::mint_seat_token` — 데몬이 스폰 시 발급해 pane PTY env 로만 배달하는 세대 각인

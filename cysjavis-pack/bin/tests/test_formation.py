@@ -254,15 +254,35 @@ def ensure_order_gate(m):
         # (b6) ★ⓑ 자식 좌석 cwd 상속(P2): 호출자가 cwd 를 주지 않으면 자식은 **master 좌석의
         #      cwd**(설치기가 신뢰를 심어 둔 JarvisHome)를 물려받아야 한다. 종전에는 None(홈)이
         #      내려가 자식이 폴더 신뢰 관문에 갇혔다(참가자 기계 실측 8건).
+        #      ★좌석별 폴더(TICKET=cys-seat-folders · 2026-09-15): 상속한 master 폴더를 **기준**으로
+        #      자식은 그 아래 자기 폴더(cso/ · workers/w1/)에서 뜬다. 기준은 실제로 만들 수 있는
+        #      임시 폴더여야 한다 — 쓸 수 없는 경로(/Users/x/…)면 준비 실패 폴백으로 기준 그대로가
+        #      내려가 이 핀이 좌석 폴더를 한 번도 만나지 않는다(공허 통과). 신뢰 시드가 실사용 프로필
+        #      (~/.cys/claude)을 건드리지 않게 CYS_ACCOUNT_DIR 도 임시 폴더로 격리한다.
         seen_cwd = []
-        _ensure_harness(m, live=set(), installed={"claude"}, resource_ok=True)
-        m._boot_node = lambda role, socket, cwd=None, timeout=200: (
-            seen_cwd.append((role, cwd)) or (True, "stub"))
-        m._master_seat_cwd = lambda socket: "/Users/x/install-jarvis"
-        m.ensure(socket="/tmp/b6.sock")
-        check("9b8 자식 좌석 cwd = master 좌석 cwd 상속(cwd 미지정 호출)",
-              seen_cwd and all(c == "/Users/x/install-jarvis" for _r, c in seen_cwd),
-              "seen=%r" % (seen_cwd,))
+        seat_tmp = tempfile.mkdtemp(prefix="fmseat-")
+        seat_base = os.path.join(seat_tmp, "install-jarvis")
+        os.makedirs(seat_base)
+        saved_acct = os.environ.get("CYS_ACCOUNT_DIR")
+        os.environ["CYS_ACCOUNT_DIR"] = os.path.join(seat_tmp, "profile")
+        try:
+            _ensure_harness(m, live=set(), installed={"claude"}, resource_ok=True)
+            m._boot_node = lambda role, socket, cwd=None, timeout=200: (
+                seen_cwd.append((role, cwd)) or (True, "stub"))
+            m._master_seat_cwd = lambda socket: seat_base
+            m.ensure(socket="/tmp/b6.sock")
+        finally:
+            if saved_acct is None:
+                os.environ.pop("CYS_ACCOUNT_DIR", None)
+            else:
+                os.environ["CYS_ACCOUNT_DIR"] = saved_acct
+        want_seat = {"cso": os.path.join(seat_base, "cso"),
+                     "worker": os.path.join(seat_base, "workers", "w1")}
+        check("9b8 자식 좌석 cwd = master 좌석 폴더 아래 자기 좌석 폴더(cwd 미지정 호출)",
+              seen_cwd and all(c == want_seat.get(r) for r, c in seen_cwd)
+              and all(os.path.isdir(c) for _r, c in seen_cwd),
+              "seen=%r want=%r" % (seen_cwd, want_seat))
+        shutil.rmtree(seat_tmp, ignore_errors=True)
         # master 좌석 cwd 를 못 얻으면 종전 동작(None=홈)으로 조용히 되돌아간다 — 상속은 전제가 아니다.
         seen_cwd2 = []
         _ensure_harness(m, live=set(), installed={"claude"}, resource_ok=True)

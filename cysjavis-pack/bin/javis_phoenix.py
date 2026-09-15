@@ -1518,6 +1518,30 @@ def fresh_child_cwd(saved_cwd, master_cwd):
     return master_cwd if home_like(saved) else saved
 
 
+def seat_fresh_cwd(role, fresh_cwd, master_cwd, log_fn=None):
+    """fresh 강등 자식의 최종 cwd — 좌석별 폴더(TICKET=cys-seat-folders · 2026-09-15 · 시험 핀).
+
+    master 기준값으로 뜨게 된 자식(저장 cwd 가 홈이었거나 v0.14.34~37 상속으로 master 폴더 자체가
+    저장된 좌석)은 그 아래 자기 좌석 폴더(cso/ · workers/wN/)로 옮긴다(폴더·CLAUDE.md·신뢰 시드 =
+    javis_seat 단일 소유). 진짜 작업 폴더를 가진 좌석·master 기준 없음·대상 아닌 역할·준비 실패·
+    모듈 부재는 전부 **fresh_cwd 그대로**다(종전 동작)."""
+    if not master_cwd or fresh_cwd != master_cwd:
+        return fresh_cwd
+    try:
+        seat_bin = os.path.dirname(os.path.abspath(__file__))
+        if seat_bin not in sys.path:
+            sys.path.insert(0, seat_bin)
+        import javis_seat
+        cwd, res = javis_seat.seat_cwd(master_cwd, role)
+    except Exception as e:
+        if log_fn:
+            log_fn("좌석 폴더 준비 예외(%s) — master 폴더로 띄운다: %s" % (role, e))
+        return fresh_cwd
+    if res is not None and log_fn:
+        log_fn("★좌석 폴더(%s): %s" % (role, javis_seat.describe(res)))
+    return cwd
+
+
 def restore_cwd_override(entries, roles, master_cwd, per_entry=False):
     """정상 복원(`cys restore`)에 실을 `--cwd` 또는 None — **순수 함수**(self-test 핀).
 
@@ -2068,6 +2092,9 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                 #   이긴다**. 종전 순서(저장 cwd 우선)는 참가자 기계에 굳어 있는 홈 잔재를
                 #   그대로 되살려 관문에 다시 갇히게 했다. 진짜 작업 폴더를 가진 좌석은 그대로 둔다.
                 fresh_cwd = fresh_child_cwd(entries.get(role, {}).get("cwd"), master_cwd)
+                # ★좌석별 폴더(TICKET=cys-seat-folders · 2026-09-15): master 기준값으로 뜨게 된 자식은
+                #   그 아래 자기 좌석 폴더로 옮긴다(판정·준비 = seat_fresh_cwd · 시험 핀).
+                fresh_cwd = seat_fresh_cwd(role, fresh_cwd, master_cwd, log_fn=log)
                 res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)
                 time.sleep(SPAWN_SETTLE)
                 alive = [s for s in live_role_surfaces(socket).get(role, []) if not s["exited"]]

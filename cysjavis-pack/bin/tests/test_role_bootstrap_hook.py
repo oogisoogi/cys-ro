@@ -359,10 +359,13 @@ def note_cp949_survival(fails):
         hook_src = f.read()
 
     # ① 배선 정합(정적) — ★P2 개정: frontdoor note 블록 신설로 5→6(R3-P2-7 ⓒ · 약화 아님,
-    #   블록 수 증가에 따른 계약 핀 갱신 — 훅 정의부 주석 '현재 6곳'과 동기).
+    #   블록 수 증가에 따른 계약 핀 갱신 — 훅 정의부 주석 '현재 N곳'과 동기).
+    #   ★2026-09-15 개정 6→4: 기계유래 스폰 억제 폐지(TICKET=cys-seat-folders ⓓ)로 무스폰 note
+    #   블록 2개(기계유래·판정불가)가 **삭제**됐다 — 남은 4블록(BOOT 부재·발화 실패·발화 성공·
+    #   P2 frontdoor)은 전부 가드를 유지한다(블록 수 감소에 따른 핀 갱신 · 약화 아님).
     n_sites = hook_src.count('-c "$CYS_NOTE_IO_GUARD"' + "'\n")
-    if n_sites != 6:
-        fails.append("W-F2 배선: 가드 변수 call site %d≠6 — note 블록을 추가/제거했다면 이 핀과 "
+    if n_sites != 4:
+        fails.append("W-F2 배선: 가드 변수 call site %d≠4 — note 블록을 추가/제거했다면 이 핀과 "
                      "훅 정의부 주석을 함께 갱신하라" % n_sites)
     if "-c 'import json,sys" in hook_src:
         fails.append("W-F2 배선: 가드 변수를 우회하는 인라인 `-c 'import json,sys` 블록 잔존"
@@ -622,6 +625,11 @@ def _run_hook_mission_mock(fails, name, mission_py, prompt="너는 마스터다"
     if os.path.isfile(calls_p):
         with open(calls_p, encoding="utf-8") as f:
             calls = [ln.split()[0] for ln in f.read().splitlines() if ln.strip()]
+    # ★2026-09-15 층0 재확인(스폰 억제 폐지 · §4-10-A)은 서브커맨드 왕복이 아니라 javis_mission 을
+    #   **import** 해 harness_origin·boot_command_origin 을 부른다. 이 목은 import 시점에도 argv 를
+    #   남기므로(그때 argv[1] = 모듈 파일 경로) 그 줄을 왕복 계수에서 뺀다 — 서브커맨드 왕복 수
+    #   계약(P0-5)은 그대로다. 제외는 '첫 토큰이 javis_mission.py 경로'인 줄로만 좁힌다.
+    calls = [c for c in calls if not c.endswith("javis_mission.py")]
     return r, calls
 
 
@@ -665,20 +673,22 @@ def triage_batch_protocol(fails):
             fails.append("P0-5 ⓐ: 정상 배치를 구팩으로 오판해 폴백했다: %r" % r.stderr[:300])
         if r.returncode != 0:
             fails.append("P0-5 ⓐ: 훅 exit %d ≠ 0 (훅은 반드시 exit 0 계약)" % r.returncode)
-    # ⓑ 중도 사망 — record 생존 + MO fail-closed 무스폰 + 재시도 없음
+    # ⓑ 중도 사망 — record 생존 + MO 판정 불가 + 재시도 없음.
+    #    ★2026-09-15 기계유래 스폰 억제 폐지(THREAT-MODEL §4-10-A): 판정 불가도 이제 spawn 한다
+    #    (종전 fail-closed 무스폰은 폐지). 판정 불가 흔적(stderr)은 그대로 남아야 한다.
     r, calls = _run_hook_mission_mock(fails, "중도 사망", _TRIAGE_MIDDEATH)
     if r is not None:
-        if "발화됨" in r.stdout:
-            fails.append("P0-5 ⓑ: MO 라인 없는 중도 사망인데 spawn 이 열렸다(fail-open — "
-                         "치명): %r" % r.stdout[:300])
+        if "발화됨" not in r.stdout:
+            fails.append("P0-5 ⓑ: MO 라인 없는 중도 사망에서 spawn 이 열리지 않았다 — 폐지된 "
+                         "fail-closed 무스폰 잔존: %r" % r.stdout[:300])
         if "record=1" not in r.stderr:
             fails.append("P0-5 ⓑ: 중도 사망에서 record 판정이 생존하지 않았다(증분 라인 "
                          "프로토콜 소실): %r" % r.stderr[:300])
         if "기계유래 판정 불가" not in r.stderr:
-            fails.append("P0-5 ⓑ: MO 토큰 부재가 판정 불가 fail-closed 로 접히지 않았다: %r"
+            fails.append("P0-5 ⓑ: MO 토큰 부재가 판정 불가로 접히지 않았다(판정 흔적 소실): %r"
                          % r.stderr[:300])
-        if "선언 아님이 아니라 판정 불가다" not in r.stdout:
-            fails.append("P0-5 ⓑ: 판정 불가 주입문(선언 아님/판정 불가 분리)이 없다: %r"
+        if "선언 아님이 아니라 판정 불가다" in r.stdout:
+            fails.append("P0-5 ⓑ: 스폰했는데 폐지된 무스폰 주입문이 남았다(정직성 1:1): %r"
                          % r.stdout[:300])
         # ★핀 개정(R2-1 · 2026-08-26): 종전 단언은 `calls == ["hook-triage"]`(재왕복 0)이었다.
         #   그 단언의 근거는 '크래시까지 **구팩 3왕복** 폴백으로 접으면 wedge 최악 지연이
@@ -750,13 +760,19 @@ def triage_batch_protocol(fails):
         if r.returncode != 0:
             fails.append("P0-5 ⓔ: 훅 exit %d ≠ 0 (훅은 반드시 exit 0 계약)" % r.returncode)
     # ⓕ ★path 개행 주입이 MO 판정을 뒤집지 못한다(R2-2 회귀 핀 · 2026-08-26)
-    #    진짜 판정은 machine(무스폰)인데 위조 줄이 human 을 심는다 — 판독기가 **정확 일치 +
-    #    토큰 줄 개수 1** 이므로 개수 2 = 판정 불가 = 무스폰이다(fail-open 방향 봉인).
+    #    진짜 판정은 machine 인데 위조 줄이 human 을 심는다 — 판독기가 **정확 일치 + 토큰 줄 개수
+    #    1** 이므로 개수 2 = 판정 불가다. ★2026-09-15 기계유래 스폰 억제 폐지(THREAT-MODEL
+    #    §4-10-A) 이후 판정 불가도 스폰은 열린다 — 위조가 여전히 얻지 못하는 것은 **선언 유래
+    #    마커 hook-human**(부서 자동 생성 권한)이고, 그 축은 test_seat_folders.py 가 부트 자식
+    #    env 를 직접 읽어 잰다. 여기서는 판독기의 판정 불가 접힘(위조 의심 고지·재왕복 0)을 잰다.
     r, calls = _run_hook_mission_mock(fails, "path 개행 주입", _TRIAGE_INJECT)
     if r is not None:
-        if "발화됨" in r.stdout:
-            fails.append("P0-2 ⓕ: path 필드 개행 주입이 기계유래 게이트를 우회해 spawn 을 "
-                         "열었다(fail-open — 치명): %r" % r.stdout[:400])
+        if "발화됨" not in r.stdout:
+            fails.append("P0-2 ⓕ: 스폰 억제 폐지 후에도 판정 불가(위조 의심)에서 spawn 이 "
+                         "열리지 않았다(폐지된 억제 잔존): %r" % r.stdout[:400])
+        if "기계유래 판정 불가" not in r.stderr:
+            fails.append("P0-2 ⓕ: 위조 의심이 판정 불가로 접히지 않았다 — 위조 human 줄이 "
+                         "채택됐을 수 있다(마커 부여 경로): %r" % r.stderr[:400])
         if "위조 의심" not in r.stderr:
             fails.append("P0-5 ⓕ: 토큰 줄 복수가 위조 의심으로 고지되지 않았다(조용한 판정): "
                          "%r" % r.stderr[:300])

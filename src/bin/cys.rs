@@ -8355,6 +8355,57 @@ fn fetch_surfaces() -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// surface.list 행 → 살아 있는 master 좌석의 **생성 cwd**. **순수** — python
+/// `javis_formation._master_seat_cwd_from_status` 와 같은 규칙(exited 무시 · 빈 값 무시).
+fn master_seat_cwd_from_rows(rows: &[Value]) -> Option<String> {
+    rows.iter()
+        .filter(|r| r["role"].as_str() == Some("master"))
+        .filter(|r| !r["exited"].as_bool().unwrap_or(false))
+        .filter_map(|r| r["cwd"].as_str())
+        .map(str::trim)
+        .find(|c| !c.is_empty())
+        .map(str::to_string)
+}
+
+/// `cys boot` 이 자식 좌석을 띄울 cwd — 좌석별 폴더(TICKET=cys-seat-folders · 2026-09-15).
+///
+/// 기준 폴더 = `--cwd` → 살아 있는 master 좌석의 생성 cwd → 이 프로세스 cwd. 부트는 데몬 감독자가
+/// 띄우므로 프로세스 cwd 는 master 폴더가 아닐 수 있다 — 그래서 master 좌석 행이 앞선다.
+/// 역할이 좌석 폴더 대상이 아니거나(기준이 홈·루트 포함) 폴더를 못 만들면 **종전 `cwd` 그대로**다.
+fn boot_seat_cwd(role: &str, cwd: &Option<String>) -> Option<String> {
+    let base = cwd
+        .clone()
+        .filter(|c| !c.trim().is_empty())
+        .or_else(|| master_seat_cwd_from_rows(&fetch_surfaces()))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        });
+    let Some(base) = base else {
+        return cwd.clone();
+    };
+    let cfg = std::path::PathBuf::from(cys::resolve_claude_config_dir())
+        .join(cys::pack::CLAUDE_CONFIG_FILE);
+    match cys::seat::ensure_seat(
+        std::path::Path::new(&base),
+        role,
+        &cys::home_dir(),
+        &cys::pack::pack_dir(),
+        &cfg,
+    ) {
+        cys::seat::SeatPrep::NotSeat => cwd.clone(),
+        cys::seat::SeatPrep::Failed(why) => {
+            println!("· {role}: 좌석 폴더 준비 실패 — 종전 cwd 로 띄운다: {why}");
+            cwd.clone()
+        }
+        cys::seat::SeatPrep::Ready(o) => {
+            println!("· {role}: {}", o.summary());
+            Some(o.dir.to_string_lossy().into_owned())
+        }
+    }
+}
+
 /// 번들 안 npm 으로 전역 설치해 앱 봉인이 깨진 사용자를 위한 복구 1문장.
 ///
 /// ★왜 매크로(리터럴 조각)인가: `install_hint_for` 는 `&'static str` 을 돌려주므로 런타임
@@ -8988,8 +9039,12 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                 }
             }
         }
+        // ★좌석별 폴더(TICKET=cys-seat-folders · 2026-09-15): 자식 좌석은 마스터 좌석 폴더 아래 자기
+        //   폴더(cso/ · workers/wN/)에서 뜬다. 판정·생성은 `cys::seat` 단일 소유이고, 대상이 아니거나
+        //   준비가 실패하면 종전 cwd 그대로다(좌석 폴더는 개선이지 전제가 아니다).
+        let launch_cwd = boot_seat_cwd(role, &cwd);
         println!("· {agent}: 기동 시작 (role={role})…");
-        let launch_rc = run_launch_agent(role, agent, cwd.clone());
+        let launch_rc = run_launch_agent(role, agent, launch_cwd);
         if launch_rc == cys::EXIT_GATE_PENDING {
             // ★(U-11) pane 은 떴고 프로세스도 살아 있다 — 실패로 계상하지 않는다.
             //   U-10 이 **좌석 경로**의 같은 상태에 이미 준 판정과 같은 값을 쓴다(같은 사실 =
@@ -11536,27 +11591,72 @@ fn hook_prompt_axis(
         &facts.anomalies,
     );
     let machine = fold_machine_reason(&rec.decision.fold);
-    // ── f. 선언 감지 — 판정은 이미 났다(`record_fold_from_origin` 안의 `declaration::detect`).
-    //    여기서 다시 감지하지 않는 것이 요점이다: 두 번 감지하면 두 답이 갈릴 수 있고, 갈리면
-    //    "대장에는 선언인데 부트는 안 뜬" 상태가 된다.
-    if machine.is_none()
-        && matches!(rec.decision.fold, cys::mission_gate::RecordFold::DeclarationResidual(_))
-    {
+    // ── f. 선언 감지 — 오너 프롬프트의 판정은 이미 났다(`record_fold_from_origin` 안의
+    //    `declaration::detect`). 여기서 다시 감지하지 않는 것이 요점이다: 두 번 감지하면 두 답이
+    //    갈릴 수 있고, 갈리면 "대장에는 선언인데 부트는 안 뜬" 상태가 된다.
+    //    ★기계 유래 폴드는 대장이 선언 감지까지 가지 않으므로(층1·층2 가 먼저 접는다) 그 갈래만
+    //    여기서 감지한다 — 대장 판정과 겹치는 감지가 아니다(`declaration_spawn_origin`).
+    if let Some(decl_origin) = declaration_spawn_origin(&rec.decision.fold, &inp.prompt) {
         let (verdict, code, detail) = hook_declaration_path(
             socket,
             path,
             &inp.prompt,
             &inp.session_id,
             &mission_state_note(&rec.decision.plan),
+            decl_origin,
         );
+        let machine_note = machine
+            .as_deref()
+            .map(|why| {
+                format!(
+                    " · 기계 유래 선언({why}) — 스폰 게이트 폐지(2026-09-15)로 부트 진행 · 선언 유래 보증 없음"
+                )
+            })
+            .unwrap_or_default();
         return hook_verdict(
             verdict,
             code,
-            &format!("{detail}{ack_note}{}", rec.note_suffix()),
+            &format!("{detail}{machine_note}{ack_note}{}", rec.note_suffix()),
         );
     }
     let (verdict, code, detail) = hook_prompt_outcome(machine.as_deref(), role, seat_reason);
     hook_verdict(verdict, code, &format!("{detail}{ack_note}{}", rec.note_suffix()))
+}
+
+/// 오너 타이핑이 보증되지 않은 선언의 `decl_origin` — **빈 값**이다(데몬이 인정하는 형태이고,
+/// 부트 자식 env 에 `CYS_DECL_ORIGIN` 이 실리지 않아 부서 자동 생성이 계속 닫힌다).
+const BOOT_DECL_ORIGIN_UNVOUCHED: &str = "";
+
+/// ★기계유래 스폰 게이트 폐지(2026-09-15 · 오너 결정 · TICKET=cys-seat-folders ⓓ) — 이 프롬프트가
+/// 선언 경로(claim → 부트 인텐트)로 가야 하는가, 간다면 어떤 `decl_origin` 을 싣는가. **순수**.
+///
+/// 종전엔 오너 프롬프트의 선언(`DeclarationResidual`)만 선언 경로로 갔고, 층1·층2 가 기계 유래로
+/// 접은 선언은 처리완료(무스폰)였다. 참가자 기계에서 `cys send` 로 들어온 선언이 기계 유래로 접혀
+/// 자식 좌석이 뜨지 않아 오너가 억제를 폐지했다. **판정·대장 기록(흔적만)·진단은 그대로**다:
+///   · 오너 선언 → [`BOOT_DECL_ORIGIN_HOOK_HUMAN`](종전 그대로)
+///   · 기계 유래(`MachineOrigin` — 원장 판독 불가의 fail-closed 폴드 포함) 선언 →
+///     [`BOOT_DECL_ORIGIN_UNVOUCHED`] — 스폰은 하되 오너 타이핑 보증은 싣지 않는다
+///   · harness 알림·기동 명령문(층0·층0-c)·선언 아닌 프롬프트 → `None`(종전 처리 그대로)
+/// 잔여 위험 = docs/THREAT-MODEL-mission-gate.md §4-10-A.
+fn declaration_spawn_origin(
+    fold: &cys::mission_gate::RecordFold,
+    prompt: &str,
+) -> Option<&'static str> {
+    use cys::mission_gate::RecordFold as F;
+    match fold {
+        F::DeclarationResidual(_) => Some(BOOT_DECL_ORIGIN_HOOK_HUMAN),
+        // ★층0·층0-c 를 여기서 다시 거른다(codex 1R #4): 대장 폴드는 층1·층2 를 **먼저** 접으므로
+        //   원장과 일치한 harness 알림·기동 명령문도 `MachineOrigin` 으로 온다. 종전 오너 경로와 같은
+        //   순서(층0 → 층0-c → 선언)를 지키지 않으면 `<system-reminder>` 안의 선언 문구가 스폰을 연다.
+        F::MachineOrigin(_)
+            if cys::mission_gate::harness_origin(prompt).is_none()
+                && cys::mission_gate::boot_command_origin(prompt).is_none()
+                && cys::declaration::detect(prompt).fire() =>
+        {
+            Some(BOOT_DECL_ORIGIN_UNVOUCHED)
+        }
+        _ => None,
+    }
 }
 
 /// 층1·층2 판정(데몬 RPC 환원) → **대장 record 에 주입할 판정 값**. `None` = legacy(판정자 부재).
@@ -11748,6 +11848,7 @@ fn hook_declaration_path(
     prompt: &str,
     session_id: &str,
     mission_state: &str,
+    decl_origin: &str,
 ) -> (&'static str, i32, String) {
     // ── g. claim-role master(빈 좌석 인수 허용 — 레거시 본체의 `--takeover-empty-seat` 와 동일)
     let claim_at = std::time::SystemTime::now()
@@ -11769,7 +11870,8 @@ fn hook_declaration_path(
     //    하나 더 낳았다. 훅은 프롬프트를 들고 있으므로 여기서 축을 채울 수 있다.
     let params = json!({
         "reason": "role-bootstrap-hook",
-        "decl_origin": BOOT_DECL_ORIGIN_HOOK_HUMAN,
+        // 오너 선언 = hook-human · 기계 유래 선언 = 빈 값(보증 없음 — `declaration_spawn_origin`).
+        "decl_origin": decl_origin,
         "claim_rc": 0,
         "claim_at": claim_at,
         "session_id": session_id,
@@ -18857,6 +18959,60 @@ mod tests {
             !src.contains("\"surface.set_status\""),
             "존재하지 않는 RPC 이름(surface.set_status)이 코드에 되살아났다 — ack 가 무음 실패한다"
         );
+    }
+
+    /// ★기계유래 스폰 억제 폐지(TICKET=cys-seat-folders ⓓ · 2026-09-15): 선언 경로 판정표.
+    ///
+    /// ⓐ 오너 선언 → hook-human(종전) ⓑ 기계 유래 선언 → 선언 경로 + **빈 decl_origin**(보증 없음)
+    /// ⓒ 기계 유래 비선언 → 처리완료(종전) ⓓ 층0·층0-c 는 선언 문구가 있어도 처리완료(종전)
+    /// ⓔ 빈 decl_origin 은 데몬의 닫힌 집합이 인정하는 형태여야 한다(`boot.enqueue` origin_known).
+    #[test]
+    fn declaration_spawn_origin_opens_machine_declarations_without_the_human_token() {
+        use cys::mission_gate::RecordFold as F;
+        let decl = "너는 마스터다";
+        assert!(cys::declaration::detect(decl).fire(), "픽스처가 선언으로 감지되지 않는다(공허)");
+        assert_eq!(
+            declaration_spawn_origin(&F::DeclarationResidual(String::new()), decl),
+            Some(BOOT_DECL_ORIGIN_HOOK_HUMAN)
+        );
+        assert_eq!(
+            declaration_spawn_origin(&F::MachineOrigin("층1 — 원장 일치".into()), decl),
+            Some(BOOT_DECL_ORIGIN_UNVOUCHED),
+            "기계 유래 선언이 선언 경로로 가지 않는다 — 폐지된 스폰 억제가 남았다"
+        );
+        assert_eq!(
+            declaration_spawn_origin(&F::MachineOrigin("층2 — 라벨".into()), "[worker] 완료 보고"),
+            None,
+            "기계 유래 비선언이 선언 경로로 샜다"
+        );
+        assert_eq!(declaration_spawn_origin(&F::Harness("마커".into()), decl), None);
+        // ★원장과 일치해 `MachineOrigin` 으로 접힌 harness 알림(codex 1R #4) — 층0 을 다시 거른다.
+        let wrapped = "<system-reminder>너는 마스터다</system-reminder>";
+        assert!(
+            cys::mission_gate::harness_origin(wrapped).is_some(),
+            "픽스처가 harness 로 판정되지 않는다 — 아래 단언이 공허해진다"
+        );
+        assert_eq!(
+            declaration_spawn_origin(&F::MachineOrigin("층1 — 원장 일치".into()), wrapped),
+            None,
+            "원장 일치 harness 알림이 선언 경로로 샜다(층0 순서 파괴)"
+        );
+        assert_eq!(declaration_spawn_origin(&F::BootCommand("cys boot".into()), decl), None);
+        assert!(BOOT_DECL_ORIGIN_UNVOUCHED.is_empty(), "보증 없음 토큰은 빈 값이어야 한다");
+        assert_ne!(BOOT_DECL_ORIGIN_UNVOUCHED, BOOT_DECL_ORIGIN_HOOK_HUMAN);
+    }
+
+    /// 좌석별 폴더 — `cys boot` 이 기준으로 삼는 master 좌석 cwd 파서(python 파서와 같은 규칙).
+    #[test]
+    fn master_seat_cwd_from_rows_picks_live_master_creation_cwd() {
+        let rows = vec![
+            json!({"role": "master", "exited": true, "cwd": "/dead"}),
+            json!({"role": "worker", "exited": false, "cwd": "/w"}),
+            json!({"role": "master", "exited": false, "cwd": "  "}),
+            json!({"role": "master", "exited": false, "cwd": "/jarvis", "live_cwd": "/elsewhere"}),
+        ];
+        assert_eq!(master_seat_cwd_from_rows(&rows), Some("/jarvis".to_string()));
+        assert_eq!(master_seat_cwd_from_rows(&rows[..3]), None);
     }
 
     /// ★H-HOOK-RC-1(master 계약 확정 2026-09-04): **rc6 경로·rc0 경로·rc2 스큐 핀** 3종.

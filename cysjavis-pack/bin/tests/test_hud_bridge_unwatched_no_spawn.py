@@ -58,9 +58,17 @@ class UnwatchedNoSpawn(unittest.TestCase):
         t.start()
 
     def tearDown(self):
+        # ★순서가 계약이다(agy R2 · 누수 지적): 원본 run_json 을 되돌리기 **전에** 모든 클라이언트를
+        #   떼어 루프를 대기로 돌려놓는다. 붙은 채 되돌리면 남은 daemon 스레드가 진짜 `cys` 를 스폰한다.
+        with self.hub.lock:
+            clients = list(self.hub.clients)
+        for q in clients:
+            self.hub.detach(q)
+        self.assertFalse(self.hub.watched.is_set())
+        time.sleep(0.1)   # 진행 중이던 한 바퀴가 가짜 run_json 으로 끝날 시간
         HB.run_json = self._orig_run_json
         HB.FLEET_POLL_SECS = self._orig_poll
-        # 스레드는 daemon — 다음 테스트에 새지 않게 영구 대기 상태로 남긴다(클라이언트 0).
+        # 스레드는 daemon — 클라이언트 0 이므로 영구 대기(스폰 0) 상태로 남는다.
 
     def n(self):
         with self.lock:

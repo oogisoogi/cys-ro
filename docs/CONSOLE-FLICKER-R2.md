@@ -93,6 +93,14 @@
   ⇒ 이 변경으로 새로 생긴 팩 시험 실패 0.
 - `javis_completion_guard --self-test`(격리 env) OK — 창 숨김 병합 뒤 그룹 스폰·taskkill 경로 포함.
 
+### agy 2R — REVISE (evidence 3) · 처리
+| 지적 | 판정 | 처리·근거 |
+|---|---|---|
+| ① `test_hud_bridge_unwatched_no_spawn` 가 attach 후 detach 누락 → tearDown 이 원본 run_json 을 되돌린 뒤 남은 daemon 스레드가 진짜 `cys` 를 스폰 | **수용** | tearDown 이 원본 복구 **전에** 모든 클라이언트를 떼고 watched 꺼짐을 단언 · 재실행 3/3 OK |
+| ② pythonw 부재 시 python3 폴백이 숨김을 안 탄다 | 반박 | 폴백이든 아니든 같은 빌더다 — `main.rs:1677` `Command::new(&python)` 뒤 `main.rs:1699` `cmd.hide_console()` 가 무조건 걸린다(인터프리터 선택과 무관) |
+| ③ `javis_preflight.py:2267` `start_new_session=True` 가 윈도에서 ValueError | 반박 | CPython 윈도 `_execute_child` 는 그 인자를 `unused_start_new_session` 으로 받아 **무시**한다(로컬 3.13 `subprocess.py:1461` · 3.14 `:1460` 실측). 동봉 3.12 소스는 이 기계에 없어 미실측(같은 서명으로 추정 · 확신 Med). 이 인자는 이번 변경 전부터 있었다 |
+| 논쟁 — R1 반박(무인 스폰 0) 타당성 | 리뷰어 동의 | agy 2R 가 「R1 의 느린 폴링 요구는 기각이 맞다」고 판정 |
+
 ## 6-3. 주체 ② — 아고라 참가자 클라이언트의 PowerShell `Get-Acl` (별도 저장소 jarvis-agora)
 - 작업 트리 ~/axdev/.wt/agora-acl-nowin2 · 브랜치 fix/acl-nowin-r2 · base 4582cb6(master#f15e8288·#d574408f 지정).
   (먼저 받은 board 트리 75d4fb8 에는 이 코드가 없어 재지정을 요청했다.)

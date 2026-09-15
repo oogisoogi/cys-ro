@@ -509,6 +509,8 @@ edge를 1회성으로 노출하는 신호(예 `pane.ready` push)를 도입하면
   (`{key_id, pubkey, not_after}[]` — ★`not_after`는 **모든 팩 서명키에 필수**, optional 아님: 만료 없는
   키는 영구 유효라 fail-closed 위반)으로 둔다. `build.rs`가 `tauri.conf.json` pubkey + 회전용 키링
   파일에서 생성(§7-①의 embed 경로 확장).
+  ★(2026-09-15 개정 · TICKET=key-bridge) `tauri.conf.json` pubkey 주입은 제거됐다 — 업데이터 키와 팩 키를
+  분리하면서 팩 키링은 `cysjavis-pack/trusted-keys.json` 원문만 embed 한다. 회전 절차 정본 = `docs/KEY-ROTATION.md`.
 - **manifest에 key_id**: `pack-manifest.json`에 서명 `key_id`를 명시 → 검증 시 **해당 key_id의
   非만료(now < not_after)·非폐기 키로만** 대조. 알 수 없는/만료/폐기/`not_after` 없는 key_id = 거부(fail-closed).
 - **회전 절차**: 새 키를 키링에 추가한 **바이너리 릴리스**를 먼저 배포(중첩 윈도) → 신키로 서명

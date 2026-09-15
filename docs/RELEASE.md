@@ -475,6 +475,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
 `~/.tauri/cys-updater.key`(private)를 **분실하면 이후 버전에 서명할 수 없어 자동 업데이트가 영구 중단**됩니다.
 - 안전한 곳(암호 관리자·오프라인 백업)에 보관. git에 절대 커밋 금지.
 - 공개키(`tauri.conf.json`의 `pubkey`)는 이미 사용자 앱에 박혀 있어, 같은 private 키로만 새 업데이트를 서명할 수 있습니다.
+- ★키를 바꾸는(업데이터·팩 키 분리 포함) 유일한 절차 = `docs/KEY-ROTATION.md`(키 브리지 — 두 판에 걸쳐 건넌다). 발행 게이트 `release-verify.py` 7-b 가 「업데이터 서명 key id == 직전 판 conf pubkey key id」를 강제한다.
 
 ## 4. 릴리스 전 체크리스트
 

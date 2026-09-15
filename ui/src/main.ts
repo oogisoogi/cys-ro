@@ -1902,7 +1902,7 @@ function renderControlCenter(d: any) {
   }
 
   document.getElementById("cc-footer")!.textContent =
-    `cys Control Center · v${d.version ?? ""} · 대시보드 5초 · 하드웨어 2초 갱신`;
+    `cysr Control Center · v${d.version ?? ""} · 대시보드 5초 · 하드웨어 2초 갱신`;
 }
 
 function renderLiveBody(d: any, fleet: any[]) {
@@ -7072,7 +7072,7 @@ async function start() {
     const msg =
       typeof e.payload === "string"
         ? e.payload
-        : "cys 설치본의 일부 구성요소가 빠졌습니다. 최신 DMG로 재설치해 주세요.";
+        : "cysr 설치본의 일부 구성요소가 빠졌습니다. 최신 DMG로 재설치해 주세요.";
     stickyToast("bundle-damaged", "health", "설치본이 온전하지 않습니다 — 재설치 필요", msg);
   });
   // ★[F3 재-pull] listen 등록 **직후** 1회 재-pull: start() 의 기동 pull 과 위 listen 등록

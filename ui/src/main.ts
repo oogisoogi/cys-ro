@@ -13,6 +13,7 @@ import { DEFAULT_BG, readableForeground } from "./theme";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import { classifyDrainVerifyFallback, drainVerifyFallbackToast } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
+import { appVersionLabel, appVersionTitle, daemonInfoLabel } from "./headerlabels";
 import {
   deptPlaceholderLabel,
   deptSlugOfSocket,
@@ -6780,8 +6781,34 @@ function onDaemonEvent(event: Record<string, unknown>) {
 
 // ---------- startup / session restore ----------
 
+// 헤더 데몬 라벨 갱신(TICKET=cysr-ui-polish-101 ⓑ) — 첫 텍스트 노드만 바꿔 뒤에 붙은 스큐 배지를 지우지 않는다.
+async function refreshDaemonInfo(info: HTMLElement) {
+  try {
+    const st = (await invoke("daemon_status")) as Record<string, unknown>;
+    const text = daemonInfoLabel(st);
+    const first = info.firstChild;
+    if (first && first.nodeType === Node.TEXT_NODE) first.textContent = text;
+    else info.insertBefore(document.createTextNode(text), first);
+  } catch {
+    /* 재기동 전이 중 조회 실패 — 다음 재연결 이벤트가 회수 */
+  }
+}
+
 async function start() {
   const info = document.getElementById("daemon-info")!;
+  // 앱 판번 상시 표시(TICKET=cysr-ui-polish-101 ⓐ) — 데몬 대기 전에 채운다(연결 전에도 판번은 보여야 지원이 된다).
+  void (async () => {
+    const el = document.getElementById("app-ver");
+    if (!el) return;
+    try {
+      const ver = (await invoke("app_version")) as string;
+      const buildId = ((await invoke("app_build_id").catch(() => "")) as string) ?? "";
+      el.textContent = appVersionLabel(ver);
+      el.title = appVersionTitle(ver, buildId);
+    } catch {
+      /* 판번 조회 실패 — 라벨 비움(부가 표시라 시작 무영향) */
+    }
+  })();
   // ★T2 안전모드 pull(emit-before-listen 레이스 회피): 백엔드가 비정규 실행 위치(translocation/DMG 등)
   // 면 데몬이 뜨지 않아 아래 daemon-ready await 가 영원히 안 풀린다. 그 await **전에** 백엔드를 직접
   // 조회해(데몬 무관 순수 커맨드) 안내를 확정 표시한다. translocation-blocked 이벤트는 벨트앤서스펜더
@@ -6890,7 +6917,7 @@ async function start() {
   });
 
   const status = (await invoke("daemon_status")) as Record<string, unknown>;
-  info.textContent = `daemon pid=${status.daemon_pid} sock=${status.socket_path}`;
+  info.textContent = daemonInfoLabel(status);
 
   // 버전 스큐 세대교체(메인 + 부서 데몬) — 시작 1회 + 5분 주기 재검(B). 무중단 rename-swap의 짝으로
   // 구 데몬(lame-duck) 스큐를 비차단 배지로 알리고, 잃을 세션 0인 노드는 무손실 자동 교대한다.
@@ -6899,6 +6926,12 @@ async function start() {
   setInterval(() => void checkVersionSkew(), 5 * 60_000);
 
   await listen("daemon-event", (e) => onDaemonEvent(e.payload as Record<string, unknown>));
+  // ⓑ 데몬 재기동 뒤 스트림 재수립(main.rs spawn_event_forwarder) → pid·소켓 라벨을 다시 쓴다.
+  //   같은 순간 스큐 배지도 다시 판정한다(agy 1R 수용 — 교대 뒤 옛 배지가 다음 5분 주기까지 남던 자리).
+  await listen("daemon-reconnected", () => {
+    void refreshDaemonInfo(info);
+    void checkVersionSkew();
+  });
 
   // ── 파일 드래그&드롭 → 드롭한 pane의 PTY에 경로 주입(iTerm2 동작) ──
   // dragDropEnabled 기본 활성이라 Tauri가 OS 드롭을 가로채 tauri://drag-drop로 준다(HTML5 drop 미발화).

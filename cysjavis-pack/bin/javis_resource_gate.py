@@ -58,7 +58,9 @@ import errno
 import glob
 import json
 import os
+import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -248,6 +250,14 @@ def _ps_lines():
         return None
 
 
+def _ps_structurally_absent():
+    """프로세스 표 축이 **구조적 부재**인가(TICKET=cysr-ui-polish-101 ⓒ) — Windows 이고 PATH 에 `ps` 가
+    없을 때만 참이다. ★플랫폼 조건이 필수다(agy 1R 수용): POSIX 에서 `ps` 가 안 보이는 것은 축소된
+    PATH 등 환경 결함이지 부재가 아니다 — 그걸 부재로 접으면 진짜 과부하를 조용히 숨긴다(종전 soft 유지).
+    Windows 에 Git Bash 등의 `ps` 가 보이면 재기를 시도하고, 실패하면 역시 측정 실패다."""
+    return platform.system() == "Windows" and shutil.which("ps") is None
+
+
 def _count_matching(lines, patterns, exclude_patterns=()):
     regs = [re.compile(p) for p in patterns]
     excl = [re.compile(p, re.IGNORECASE) for p in exclude_patterns]
@@ -275,7 +285,14 @@ def measure(a):
     unavailable = []
     need_ps = a.servers_override is None or a.nodes_override is None
     lines = _ps_lines() if need_ps else None
-    ps_failed = need_ps and lines is None
+    # ★TICKET=cysr-ui-polish-101 ⓒ(2026-09-16 참가자 윈도 실기) — 항목9 의 짝. Windows 에는 `ps` 가
+    #   없어 nodes(ps) 가 매 부트 measure_errors 로 들어가 soft_warn → 부트스트랩 승인 알림 → Control
+    #   Center 배지가 영구히 남았다(load 부재는 항목9 로 이미 분리돼 있었다 — CSO 가 본 메모는 그 줄).
+    #   실행 파일이 **없음** = 부재 고지(판정 제외) · **있는데 실패** = 종전대로 측정 실패(soft).
+    ps_absent = need_ps and lines is None and _ps_structurally_absent()
+    ps_failed = need_ps and lines is None and not ps_absent
+    if ps_absent:
+        unavailable.append("ps(플랫폼 미제공)")
 
     # ★A3-b(dept-1 22:05 실측): servers 의 정본은 **프로세스 원장**(`cys ps`)이다 — 논리 서버 1개가
     #   래퍼 체인(cys run → npm exec vite → node vite) 때문에 ps 패턴에서 3으로 세어져 hard(3)에
@@ -289,8 +306,10 @@ def measure(a):
         errors.extend(led_errors)
         if led is not None:
             servers = led
-        elif ps_failed:
-            errors.append("servers(ps)")
+        elif lines is None:
+            # 원장 실패는 위에서 이미 servers(ledger) 오류로 남았다 — 패턴 폴백 불가 사유만 가른다.
+            if ps_failed:
+                errors.append("servers(ps)")
             servers = None
         else:
             roots = _server_procs(lines)          # 패턴 폴백(체인 루트 접기)
@@ -298,8 +317,9 @@ def measure(a):
 
     if a.nodes_override is not None:
         nodes = a.nodes_override
-    elif ps_failed:
-        errors.append("nodes(ps)")
+    elif lines is None:
+        if ps_failed:
+            errors.append("nodes(ps)")
         nodes = None
     else:
         nodes = _count_matching(lines, NODE_PATTERNS, NODE_EXCLUDE_PATTERNS)
@@ -1106,6 +1126,45 @@ def self_test():
             os.getloadavg = _sv_gla
         elif hasattr(os, "getloadavg"):
             del os.getloadavg
+
+    # ── ★TICKET=cysr-ui-polish-101 ⓒ: ps 실행 파일 부재(윈도) = 구조적 부재 ≠ 측정 실패 ──
+    nops = ["check", "--json", "--servers-override", "0", "--load-override", "0.0"] + ro
+    _g = globals()
+    # 판정 술어 자체 — 플랫폼 조건 없이는 참이 되지 않는다(POSIX 축소 PATH 를 부재로 접지 않는다).
+    _sv_sys, _sv_which = platform.system, shutil.which
+    try:
+        shutil.which = lambda name: None
+        platform.system = lambda: "Darwin"
+        chk(_ps_structurally_absent() is False, "POSIX 에서 ps 미발견이 구조적 부재로 접혔다(과부하 은폐 경로)")
+        platform.system = lambda: "Windows"
+        chk(_ps_structurally_absent() is True, "Windows 에서 ps 부재가 구조적 부재로 안 잡힌다")
+        shutil.which = lambda name: "C:\\Git\\usr\\bin\\ps.exe"
+        chk(_ps_structurally_absent() is False, "Windows 에 ps 가 보이는데 부재로 접었다(재기 시도 생략)")
+    finally:
+        platform.system, shutil.which = _sv_sys, _sv_which
+    _sv_pa, _sv_pl = _g["_ps_structurally_absent"], _g["_ps_lines"]
+    try:
+        _g["_ps_structurally_absent"] = lambda: True
+        _g["_ps_lines"] = lambda: None
+        rc, doc = _check_json(nops)
+        me = doc.get("measured") or {}
+        chk(rc == EXIT_ALLOW and doc.get("verdict") == "allow",
+            "ps 미제공 플랫폼이 soft_warn 을 냄(윈 승인 배지 회귀): rc=%r verdict=%r measured=%r"
+            % (rc, doc.get("verdict"), me))
+        chk(not [e for e in (me.get("measure_errors") or []) if e.endswith("(ps)")],
+            "ps 부재가 measure_errors 로 합류: %r" % me.get("measure_errors"))
+        chk(any(u.startswith("ps") for u in (me.get("measure_unavailable") or [])),
+            "ps 부재 사실이 어디에도 안 남았다(조용한 삭제 금지): %r" % me.get("measure_unavailable"))
+        chk(me.get("nodes") is None, "ps 없이 nodes 값이 생겼다: %r" % me.get("nodes"))
+        # 음성 대조 — 구조적 부재가 아닌데 ps 표를 못 얻으면 여전히 측정 실패(soft)다.
+        _g["_ps_structurally_absent"] = lambda: False
+        rc, doc = _check_json(nops)
+        chk(rc == EXIT_SOFT and "nodes(ps)" in ((doc.get("measured") or {})
+                                                .get("measure_errors") or []),
+            "ps 가 있는데 실패한 것이 soft 로 안 잡힌다(분리가 완화가 됐다): rc=%r measured=%r"
+            % (rc, doc.get("measured")))
+    finally:
+        _g["_ps_structurally_absent"], _g["_ps_lines"] = _sv_pa, _sv_pl
     # (e) --nodes-hard 명시는 로스터보다 우선(종전 규약 유지)
     rc, doc = _check_json(quiet + ["--nodes-override", "0", "--nodes-hard", "7",
                                    "--dept-roster-override", r10])

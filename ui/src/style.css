@@ -34,6 +34,8 @@ html, body {
   -webkit-user-select: none; user-select: none;
 }
 #brand { font-weight: 700; color: var(--accent); }
+/* 앱 판번 상시 표시(TICKET=cysr-ui-polish-101 ⓐ) — 브랜드 옆 소형 · build_id 는 툴팁 */
+#app-ver { color: #8b949e; font-size: calc(10px * var(--ui-chrome-scale)); margin-left: -4px; }
 #daemon-info { color: #8b949e; font-size: calc(11px * var(--ui-chrome-scale)); }
 /* P2 버전 스큐 배지 — lame-duck 데몬(세션 보존) 안내. 경고색이되 위협적이지 않게(불안 방지가 목적).
    클릭 = 데몬 교대(manualRotateSkewed — 메인+부서 순차). */

@@ -1189,6 +1189,40 @@ class KeyBridgeVersionProgressCrossTests(unittest.TestCase):
             self.assertEqual(bad.returncode, 1, bad.stdout)
             self.assertIn("판번 역행", bad.stderr)
 
+    def test_x7_cli_both_gates_broken_key_gate_reports_first(self):
+        """codex 1R 지적 경로 — CLI 에서도 둘 다 깨지면 7-b 사유가 먼저 나온다."""
+        r = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root,
+                                          key_id=OTHER_KEY_ID, prev={"version": "0.14.20", "build_id": BID})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("업데이터 서명 키 불일치", r.stderr)
+        self.assertNotIn("판번 역행", r.stderr)
+
+    def test_x8_cli_key_sources_are_mutually_exclusive(self):
+        """codex 1R 지적 경로 — --updater-key-id 와 --prev-tauri-conf 동시 지정은 사용법 오류(2)."""
+        with tempfile.TemporaryDirectory() as cd:
+            conf = os.path.join(cd, "tauri.conf.json")
+            with open(conf, "w", encoding="utf-8") as fh:
+                json.dump({"plugins": {"updater": {"pubkey": _tauri_pub(FIXTURE_KEY_ID)}}}, fh)
+            r = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root,
+                                              "--prev-tauri-conf", conf)   # key_id 기본값도 함께 넘어간다
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_x9_previous_latest_remote_fetch_success_and_failure(self):
+        """codex 1R 지적 경로 — --previous-latest-file 생략 시의 원격 조회를 네트워크 없이 통제한다."""
+        from unittest import mock
+        url = rv.PREVIOUS_LATEST_URL_TPL % rv.RELEASE_REPO
+        body = json.dumps({"version": "0.14.36"}).encode()
+        fake = mock.MagicMock()
+        fake.__enter__.return_value.read.return_value = body
+        with mock.patch.object(rv.urllib.request, "urlopen", return_value=fake) as uo:
+            self.assertEqual(rv.load_previous_latest(url), {"version": "0.14.36"})
+        self.assertEqual(uo.call_args[0][0], url)
+        with mock.patch.object(rv.urllib.request, "urlopen", side_effect=OSError("offline")):
+            with self.assertRaises(rv.VerifyError) as cm:
+                rv.load_previous_latest(url)
+        self.assertIn("직전 공개판 latest.json 조회 불가", str(cm.exception))
+        self.assertIn(url, str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

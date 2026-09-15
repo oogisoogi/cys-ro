@@ -114,6 +114,13 @@ try:
 except Exception:                                     # 부서 팩 결손·팩 스큐 — 새 크래시 지점 금지
     _budget = None
 
+# ★각성 보장 루프(TICKET=pack-awaken-enter) — javis_phoenix fresh 경로와 공유하는 단일 구현.
+#   import 실패(팩 스큐)는 루프만 건너뛴다 — 종전 부트 흐름은 그대로다.
+try:
+    import javis_awaken as _awaken
+except Exception:
+    _awaken = None
+
 
 def budget(name, fallback):
     """예산 leaf 해소 — javis_budget 가 유일 SOT. 소비 불가 시 명시 폴백(조용한 접힘 금지)."""
@@ -1203,10 +1210,15 @@ def main():
         if not a.json:
             print("[boot-node:%s] %s" % (stage, msg))
 
+    awaken = {}
+
     def done(result, reason, surface=None, code=0):
         if a.json:
-            print(json.dumps({"role": a.role, "result": result, "reason": reason,
-                              "surface": surface, "log": log}, ensure_ascii=False))
+            out = {"role": a.role, "result": result, "reason": reason,
+                   "surface": surface, "log": log}
+            if awaken:
+                out["awaken"] = awaken.get("awaken")
+            print(json.dumps(out, ensure_ascii=False))
         return code
 
     status = cys_status()
@@ -1245,7 +1257,9 @@ def main():
 
     # 2) LAUNCH — role 보유 surface 가 없을 때만(F2: 허위 실패보고 무시·재조회)
     row = role_surface_row(a.role)
+    launched_at = None
     if row is None:
+        launched_at = time.time()
         cmd = ["cys", "launch-agent", "--role", a.role, "--agent", a.agent]
         if a.cwd:
             cmd += ["--cwd", a.cwd]
@@ -1264,6 +1278,23 @@ def main():
     else:
         emit("precheck", "%s 가 이미 role 보유(미각성) — 입양해 주입(재기동 안 함)" % row["surface_ref"])
     surface = row["surface_ref"]
+
+    # 2-1) AWAKEN — launch-agent 의 지침 붙여넣기가 제출됐는지 세션 jsonl 로 재고, 안 됐으면 Return.
+    #   ★Return 은 이 런이 방금 띄운 새 프로세스에만(이전 대화 0 = 프롬프트 제안 원천 없음).
+    #   입양 좌석은 이전 대화가 있을 수 있어 아래 종전 흐름(queued 주입·ack)에 맡긴다.
+    if launched_at is not None and _awaken is not None:
+        def _aw_run(args):
+            rc, out, _ = run(["cys"] + list(args), timeout=12)
+            return rc, out
+        srow = _awaken.surface_row(_aw_run, surface=surface) or {}
+        aw_cwd = srow.get("cwd") or a.cwd
+        if aw_cwd:
+            awaken.update(_awaken.ensure_awake(
+                a.role, surface, aw_cwd, launched_at, _aw_run, pid=row.get("pid"),
+                may_return=True, socket=os.environ.get("CYS_SOCKET")))
+            emit("awaken", _awaken.describe(awaken))
+        else:
+            emit("awaken", "좌석 cwd 해석 불가 — 각성 보장 루프 생략")
 
     # 3) POLL-IDLE — 시작 애니메이션이 가라앉을 때까지(F1 핵심). 폴링 중 각성되면 즉시 종료.
     settled = False

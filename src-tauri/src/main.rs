@@ -1345,12 +1345,27 @@ if [ -e {b} ] || [ -L {b} ]; then echo {collide} >&2; exit 1; fi; \
         )
     };
     format!(
-        "{SCRIPT_PATH_PRELUDE}/bin/mkdir -p {td} && {c} && {d}",
+        "{SCRIPT_PATH_PRELUDE}/bin/mkdir -p {td} && {c} && {r} && {d}",
         td = sh_squote(target_dir),
         c = link(cys, "cys"),
+        // (cysr-alias · 2026-09-16) 명령 별칭 `cysr` = 같은 번들 `cys` 를 가리키는 세 번째 링크.
+        // 대상이 `…/MacOS/cys` 라 BUNDLE_LINK_PATTERN·links_into_cys_bundle 이 그대로 "우리 링크"로
+        // 판정한다(멱등·백업·해제 규칙 공유 — 새 판정 없음).
+        r = link(cys, CLI_ALIAS_NAME),
         d = link(cysd, "cysd"),
     )
 }
+
+/// (cysr-alias · 2026-09-16) 명령 별칭 이름. 실행파일·번들·팩 호출은 `cys` 그대로 두고(제자리 업데이트
+/// 연속성) 사람이 치는 이름만 하나 더 둔다.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const CLI_ALIAS_NAME: &str = "cysr";
+
+/// (cysr-alias) `/usr/local/bin` 에 설치·해제·백업 관측하는 링크 이름 전부. 상태 등급
+/// (`classify_cli_links` — ours/partial)은 종전대로 `cys`·`cysd` 두 자리만 본다: 별칭이 없는
+/// 1.0.0 설치본을 "반쪽 설치" 경고로 뒤집지 않기 위해서다(별칭 결손은 notes 로만 알린다).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const CLI_LINK_NAMES: [&str; 3] = ["cys", "cysd", CLI_ALIAS_NAME];
 
 /// (I4) 승격 스크립트 머리에 박는 PATH 고정. 절대경로 호출과 **둘 다** 쓴다 — 절대경로를 빠뜨린
 /// 명령이 하나라도 생겨도 상속 PATH 로 새지 않게 하는 두 번째 방어선이다.
@@ -2372,7 +2387,7 @@ async fn install_cli_to_path() -> Result<InstallCliReport, String> {
 
         // (BLOCK-1c) 승격 **전** 관측. 사후에 보면 이미 심볼릭으로 바뀐 뒤라 "원래 무엇이 있었는지"를
         // 알 수 없다. 여기서 잡은 것만이 스크립트가 백업으로 옮길 대상이다.
-        let pre_probes: Vec<LinkProbe> = ["cys", "cysd"]
+        let pre_probes: Vec<LinkProbe> = CLI_LINK_NAMES
             .iter()
             .map(|n| probe_link(&format!("{target_dir}/{n}")))
             .collect();
@@ -2901,6 +2916,29 @@ fn classify_cli_links(probes: &[LinkProbe]) -> CliLinkState {
     }
 }
 
+/// (cysr-alias · 2026-09-16) 별칭 링크(`/usr/local/bin/cysr`) 고지(순수). `cys`·`cysd` 가 이미
+/// 설치된 상태(ours/partial)에서만 말한다 — 설치 전이면 설치 버튼이 세 링크를 함께 만든다.
+/// 우리 링크면 무음. 결손(1.0.0 이하 설치본)·남의 파일은 사실만 싣고 등급(state)은 건드리지 않는다.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn cli_alias_note(installed: bool, alias: &LinkProbe) -> Option<String> {
+    if !installed {
+        return None;
+    }
+    match decide_cli_uninstall(alias) {
+        UninstallAction::Remove => None,
+        UninstallAction::SkipAbsent => Some(format!(
+            "{} — 명령 별칭 cysr 링크가 없습니다(이전 판에서 설치한 경우). 해제한 뒤 다시 설치하면 \
+cysr 로도 실행됩니다 · 지금도 cys 는 그대로 동작합니다.",
+            alias.path
+        )),
+        UninstallAction::SkipNotSymlink | UninstallAction::SkipForeignTarget => Some(format!(
+            "{} — 이 앱의 것이 아닌 cysr 가 이미 있어 별칭 링크를 쓰지 않습니다(설치를 다시 하면 \
+백업한 뒤 링크합니다).",
+            alias.path
+        )),
+    }
+}
+
 // ★G9(2026-08-25 5R) **삭제됨: `CliButtonLabel` 열거형과 `cli_button_label` 판정.**
 //
 // I2 가 만든 이 판정은 프로덕션에서 **아무도 부르지 않는 죽은 코드**였다(버튼 라벨은 전적으로
@@ -2975,12 +3013,12 @@ async fn uninstall_cli_from_path() -> Result<UninstallCliReport, String> {
     #[cfg(target_os = "macos")]
     {
         let target_dir = "/usr/local/bin";
-        let probes: Vec<LinkProbe> = ["cys", "cysd"]
+        let probes: Vec<LinkProbe> = CLI_LINK_NAMES
             .iter()
             .map(|n| probe_link(&format!("{target_dir}/{n}")))
             .collect();
         // (I3③) 설치가 남겨 둔 백업본을 관측해 계획에 넣는다 — 우리 이름 규칙에 맞는 것만.
-        let backups = observe_leftover_backups(target_dir, &["cys", "cysd"]);
+        let backups = observe_leftover_backups(target_dir, &CLI_LINK_NAMES);
         let plan = plan_cli_uninstall(&probes, &backups);
         let skipped_benign = all_skips_benign(&plan.skipped_reasons);
         let Some(arg) = plan.osascript_arg.clone() else {
@@ -3076,7 +3114,7 @@ async fn uninstall_cli_from_path() -> Result<UninstallCliReport, String> {
         }
         // (I3①) 되돌리지 못하고 남은 백업본은 계속 고지한다 — 사용자가 자기 파일을 잃지 않아야 한다.
         // (G2) 삭제 명령 문장은 UI 소유다. 같은 사실은 `cli_install_status.backups` 기계 필드가 상시 든다.
-        for bak in observe_leftover_backups(target_dir, &["cys", "cysd"]) {
+        for bak in observe_leftover_backups(target_dir, &CLI_LINK_NAMES) {
             warnings.push(format!(
                 "{bak} — 설치 때 백업해 둔 원본이 아직 남아 있습니다."
             ));
@@ -3178,6 +3216,13 @@ async fn cli_install_status() -> Result<CliInstallStatusReport, String> {
                 _ => None,
             })
             .collect();
+        // (cysr-alias) 별칭 링크 결손·남의 파일은 등급을 바꾸지 않고 notes 로만 알린다.
+        if let Some(n) = cli_alias_note(
+            matches!(state, CliLinkState::Ours | CliLinkState::Partial),
+            &probe_link(&format!("{target_dir}/{CLI_ALIAS_NAME}")),
+        ) {
+            notes.push(n);
+        }
         // ★G4(2026-08-25 5R) **상태 조회에도 cysd 를 넣는다(계열).** 4R 까지 PATH 축(그림자) 관측은
         // 설치 경로에만 있었다 — 그래서 "cysd 가 다른 곳에서 가려진다"는 사실은 설치 직후 토스트
         // 한 번뿐이었고, 그것을 놓친 사용자는 데몬 버전이 어긋나는 이유를 **다시는** 알 수 없었다.
@@ -3209,7 +3254,7 @@ async fn cli_install_status() -> Result<CliInstallStatusReport, String> {
             cys_link,
             cysd_link,
             notes,
-            backups: observe_leftover_backups(target_dir, &["cys", "cysd"]),
+            backups: observe_leftover_backups(target_dir, &CLI_LINK_NAMES),
         })
     }
 }
@@ -6718,6 +6763,16 @@ echo '{MSG}/usr/local/bin/cys.cys-backup-1700000000 (그 자리의 /usr/local/bi
 /bin/mv '/usr/local/bin/cys' '/usr/local/bin/cys.cys-backup-1700000000' \
 && echo 'CYS-BACKED-UP:/usr/local/bin/cys:/usr/local/bin/cys.cys-backup-1700000000'; fi; fi && \
 /bin/ln -sfn '/Applications/cys.app/Contents/MacOS/cys' '/usr/local/bin/cys' && \
+if [ -e '/usr/local/bin/cysr' ] || [ -L '/usr/local/bin/cysr' ]; then _cys_bak=1; \
+if [ -L '/usr/local/bin/cysr' ]; then _cys_t=$(/usr/bin/readlink '/usr/local/bin/cysr' | {NORM}); \
+case \"$_cys_t\" in \
+*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd) _cys_bak=0;; esac; fi; \
+if [ \"$_cys_bak\" = 1 ]; then \
+if [ -e '/usr/local/bin/cysr.cys-backup-1700000000' ] || [ -L '/usr/local/bin/cysr.cys-backup-1700000000' ]; then \
+echo '{MSG}/usr/local/bin/cysr.cys-backup-1700000000 (그 자리의 /usr/local/bin/cysr 는 그대로 두었습니다. 1초 뒤 다시 시도하세요)' >&2; exit 1; fi; \
+/bin/mv '/usr/local/bin/cysr' '/usr/local/bin/cysr.cys-backup-1700000000' \
+&& echo 'CYS-BACKED-UP:/usr/local/bin/cysr:/usr/local/bin/cysr.cys-backup-1700000000'; fi; fi && \
+/bin/ln -sfn '/Applications/cys.app/Contents/MacOS/cys' '/usr/local/bin/cysr' && \
 if [ -e '/usr/local/bin/cysd' ] || [ -L '/usr/local/bin/cysd' ]; then _cys_bak=1; \
 if [ -L '/usr/local/bin/cysd' ]; then _cys_t=$(/usr/bin/readlink '/usr/local/bin/cysd' | {NORM}); \
 case \"$_cys_t\" in \
@@ -6825,6 +6880,76 @@ echo '{MSG}/usr/local/bin/cysd.cys-backup-1700000000 (그 자리의 /usr/local/b
             "심볼릭 재설치가 백업을 쌓았다(멱등성 깨짐)"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (cysr-alias · 2026-09-16) 설치 스크립트가 명령 별칭 `cysr` 링크를 **번들 `cys`** 로 만들고,
+    /// 그 링크를 해제·멱등 판정이 "우리 링크"로 읽는다(새 판정 없이 기존 규칙 공유). 남의 `cysr`
+    /// 실체 파일은 기존 규칙대로 백업된다.
+    #[cfg(unix)]
+    #[test]
+    fn build_install_script_links_cysr_alias_to_bundle_cys() {
+        let base = std::env::temp_dir().join(format!("cys-alias-inst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let bin = base.join("bin");
+        let src = base.join("cys.app/Contents/MacOS");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("cys"), "OURS").unwrap();
+        std::fs::write(src.join("cysd"), "OURSD").unwrap();
+        std::fs::write(bin.join("cysr"), "FOREIGN-CYSR").unwrap();
+        let td = bin.to_string_lossy().to_string();
+
+        assert!(CLI_LINK_NAMES.contains(&"cysr"), "설치·해제 이름 목록에 cysr 가 없다");
+        let script = build_install_script(&src.join("cys"), &src.join("cysd"), &td, "A1");
+        let st = std::process::Command::new("/bin/sh").arg("-c").arg(&script).status().unwrap();
+        assert!(st.success(), "설치 스크립트 실패: {script}");
+
+        let target = std::fs::read_link(bin.join("cysr")).expect("cysr 심볼릭이 없다");
+        assert_eq!(target, src.join("cys"), "cysr 는 번들 cys 를 가리켜야 한다");
+        assert_eq!(std::fs::read_to_string(bin.join("cysr")).unwrap(), "OURS");
+        assert_eq!(
+            std::fs::read_to_string(bin.join("cysr.cys-backup-A1")).unwrap_or_default(),
+            "FOREIGN-CYSR",
+            "남의 cysr 실체 파일이 백업되지 않았다"
+        );
+        // 해제 판정·링크 판정이 별칭을 우리 링크로 본다(해제 목록에서 빠지면 root 링크가 남는다).
+        assert_eq!(
+            decide_cli_uninstall(&probe_link(&bin.join("cysr").to_string_lossy())),
+            UninstallAction::Remove
+        );
+        // 멱등: 재설치가 별칭 백업을 쌓지 않는다.
+        let s2 = build_install_script(&src.join("cys"), &src.join("cysd"), &td, "A2");
+        assert!(std::process::Command::new("/bin/sh").arg("-c").arg(&s2).status().unwrap().success());
+        assert!(!bin.join("cysr.cys-backup-A2").exists(), "별칭 재설치가 백업을 쌓았다");
+
+        // 해제 스크립트가 별칭 링크를 지운다(설치·해제 대칭).
+        let paths: Vec<String> = CLI_LINK_NAMES.iter().map(|n| format!("{td}/{n}")).collect();
+        let un = build_uninstall_script(&paths, &[]);
+        assert!(std::process::Command::new("/bin/sh").arg("-c").arg(&un).status().unwrap().success());
+        assert!(std::fs::symlink_metadata(bin.join("cysr")).is_err(), "해제가 cysr 링크를 남겼다");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (cysr-alias) 별칭 결손 고지(순수) 진리표 — 설치 전·우리 링크는 무음, 결손·남의 것은 고지.
+    #[test]
+    fn cli_alias_note_truth_table() {
+        let p = |present, is_symlink, t: Option<&str>| LinkProbe {
+            path: "/usr/local/bin/cysr".into(),
+            present,
+            is_symlink,
+            link_target: t.map(String::from),
+        };
+        let ours = p(true, true, Some("/Applications/cys.app/Contents/MacOS/cys"));
+        let absent = p(false, false, None);
+        let file = p(true, false, None);
+        let foreign = p(true, true, Some("/opt/homebrew/bin/cysr"));
+        assert_eq!(cli_alias_note(true, &ours), None);
+        for probe in [&ours, &absent, &file, &foreign] {
+            assert_eq!(cli_alias_note(false, probe), None, "설치 전에는 말하지 않는다");
+        }
+        assert!(cli_alias_note(true, &absent).unwrap().contains("링크가 없습니다"));
+        assert!(cli_alias_note(true, &file).unwrap().contains("이 앱의 것이 아닌 cysr"));
+        assert!(cli_alias_note(true, &foreign).unwrap().contains("이 앱의 것이 아닌 cysr"));
     }
 
     /// ★C1(2026-08-25 4R) **파괴 대칭 회귀 핀**: 설치는 남의 *심볼릭*도 백업한다.

@@ -214,6 +214,16 @@ jobs:
           # 뒤 스텝들이 **같은 트리**를 보도록 확정값을 넘긴다(경로 + 검증된 마커 값).
           "CYS_INSTALL_DIR=$dir"        | Out-File -FilePath $env:GITHUB_ENV -Append
           "CYS_INSTALL_VER=$markerVer"  | Out-File -FilePath $env:GITHUB_ENV -Append
+          # ★(cysr-alias · 2026-09-16) 명령 별칭 cysr.exe — POSTINSTALL(cys_post_ok)이 검증된 cys.exe 를
+          #   복사한다. 존재 + 바이트 동일 + `--version` 출력 동일을 단언한다(존재만 보면 구본 잔존을 못 가른다).
+          $cysExe  = Join-Path $dir 'cys.exe'
+          $cysrExe = Join-Path $dir 'cysr.exe'
+          if (-not (Test-Path $cysrExe)) { throw "A1: 명령 별칭 cysr.exe 부재: $cysrExe (POSTINSTALL 사본 회귀)" }
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $cysrExe).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $cysExe).Hash) { throw "A1: cysr.exe != cys.exe (바이트 불일치 — 구본 별칭 잔존)" }
+          $vCys  = ((& $cysExe --version) -join "`n").Trim();  if ($LASTEXITCODE -ne 0) { throw "A1: cys --version exit=$LASTEXITCODE" }
+          $vCysr = ((& $cysrExe --version) -join "`n").Trim(); if ($LASTEXITCODE -ne 0) { throw "A1: cysr --version exit=$LASTEXITCODE" }
+          if ($vCys -ne $vCysr) { throw "A1: cysr --version('$vCysr') != cys --version('$vCys')" }
+          Write-Host "A1 RESULT: PASS  cysr.exe == cys.exe (sha · --version '$vCysr')"
           $rt = Join-Path $dir 'runtime'
           Write-Host "install dir: $dir  (버전 마커=$markerVer == 이번 빌드 $expVer)"
           Write-Host "== runtime top-level =="; if (Test-Path $rt) { Get-ChildItem $rt | Select-Object -ExpandProperty Name } else { throw "runtime 폴더 없음: $rt" }
@@ -691,6 +701,12 @@ jobs:
           Write-Host ("T4-11 RESULT: {0}  새 cys.exe 존재(CLI 소실 회귀 잠금)" -f ($(if($cliOk){'PASS'}else{'FAIL'})))
           $freshOk = $freshCys -and $freshCysd
           Write-Host ("T4-12 RESULT: {0}  설치된 cys/cysd = 방금 빌드한 사이드카와 바이트 동일(신본 반영 · cys={1} cysd={2})" -f ($(if($freshOk){'PASS'}else{'FAIL'})), $freshCys, $freshCysd)
+          # ★T4-16 (cysr-alias · 2026-09-16) 재설치(업데이트 경로) 후에도 명령 별칭 cysr.exe 가 유지되고
+          #   이번 빌드 cys 와 바이트 동일해야 한다 — 라이브 데몬·세션 위 재설치에서 별칭만 구본으로 남는
+          #   무증상 반쪽을 잡는다.
+          $cysr = Join-Path $dir 'cysr.exe'
+          $aliasOk = (Test-Path $cysr) -and ((ShaOf $cysr) -eq (ShaOf $srcCys.FullName))
+          Write-Host ("T4-16 RESULT: {0}  재설치 후 cysr.exe 유지 · 이번 빌드 cys 와 바이트 동일(sha={1})" -f ($(if($aliasOk){'PASS'}else{'FAIL'})), (ShaOf $cysr))
           $bashAlive = -not $bp.HasExited
           Write-Host ("T4-7 RESULT: {0}  잠금 bash 생존(무사망)" -f ($(if($bashAlive){'PASS'}else{'FAIL'})))
           $msysOk = Test-Path (Join-Path $dir 'runtime\git\usr\bin\msys-2.0.dll')
@@ -700,7 +716,7 @@ jobs:
           $noFail = -not (Test-Path $failMark)
           if (-not $noFail) { Write-Host "== cys-install-failure.txt =="; Get-Content $failMark }
           Write-Host ("T4-13 RESULT: {0}  설치 실패 흔적(cys-install-failure.txt) 부재" -f ($(if($noFail){'PASS'}else{'FAIL'})))
-          if (-not ($alive -and $sessOk -and $prevOk -and $newOk -and $cliOk -and $freshOk -and $noFail -and $bashAlive -and $msysOk)) { Write-Host "== after list =="; Write-Host $after.Out; throw "T4: 무중단 재설치 assert 실패" }
+          if (-not ($alive -and $sessOk -and $prevOk -and $newOk -and $cliOk -and $freshOk -and $aliasOk -and $noFail -and $bashAlive -and $msysOk)) { Write-Host "== after list =="; Write-Host $after.Out; throw "T4: 무중단 재설치 assert 실패" }
 
           # ③' T4-9 rotate_daemon 1단계 스모크: 스큐(lame-duck) 상태의 구 데몬이 drain RPC를 봉사하는지.
           # rotate_daemon(src-tauri/main.rs)은 drain을 best-effort(let _ =)로 취급하므로 exit 코드는

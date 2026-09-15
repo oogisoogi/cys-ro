@@ -140,6 +140,18 @@ if printf '%s' "$n5_outside" | grep -q '/T'; then
 fi
 echo "nsis-hook-compile: N5 OK (taskkill census 9 inside PREUNINSTALL / 10 total; the 1 outside is GUI-only, no /T)"
 
+# N7 — (cysr-alias · 2026-09-16) command alias pin. POSTINSTALL must copy the verified cys.exe
+# to cysr.exe on the success branch (after cys_post_ok — never before the gates), and
+# PREUNINSTALL must delete it (the uninstaller does not track hook-created files).
+n7_post=$(awk '/^cys_post_ok:/,/!macroend/' "$HOOK" | grep -c 'CopyFiles /SILENT "\$INSTDIR\\cys.exe" "\$INSTDIR\\cysr.exe"' || true)
+n7_early=$(awk '/NSIS_HOOK_POSTINSTALL/,/^cys_post_ok:/' "$HOOK" | grep -c 'cysr.exe' || true)
+n7_un=$(awk '/NSIS_HOOK_PREUNINSTALL/,/!macroend/' "$HOOK" | grep -c 'Delete "\$INSTDIR\\cysr.exe"' || true)
+if [ "$n7_post" != "1" ] || [ "$n7_early" != "0" ] || [ "$n7_un" != "1" ]; then
+  echo "FAIL[N7]: cysr alias drifted — copy after cys_post_ok=$n7_post (want 1) · mentions before cys_post_ok=$n7_early (want 0) · uninstall delete=$n7_un (want 1)" >&2
+  exit 1
+fi
+echo "nsis-hook-compile: N7 OK (cysr.exe copied only on the success branch; removed on uninstall)"
+
 # N6 — checklist anchors are real. docs/WINDOWS-UPGRADE-ATOMICITY-CHECKLIST.md cites the
 # hook by ANCHOR (macro/label/function names — raw line numbers rotted twice, R2/R3):
 # every cited anchor must exist verbatim in the hook, and raw hook line-number citations

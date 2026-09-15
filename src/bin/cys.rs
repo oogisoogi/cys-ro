@@ -18114,6 +18114,33 @@ extern "C" fn scoped_cleanup_handler(sig: libc::c_int) {
 mod tests {
     use super::*;
 
+    /// (cysr-alias · 2026-09-16) 명령 별칭 `cysr` 는 같은 바이너리를 다른 이름(맥 심링크 · 윈 사본)으로
+    /// 부른다. 출력이 호출 이름(argv[0])을 따라가면 `cysr --version` ≠ `cys --version` 이 되어 도구·스크립트의
+    /// 버전 대조가 갈린다 — clap `name = "cys"` 고정이 그 불변식의 근거이므로 렌더 결과로 못박는다.
+    #[test]
+    fn cysr_alias_version_and_help_do_not_follow_argv0() {
+        use clap::CommandFactory;
+        let render = |argv0: &str, flag: &str| -> (clap::error::ErrorKind, String) {
+            match Cli::command().try_get_matches_from([argv0, flag]) {
+                Ok(_) => panic!("{flag} 는 조기 종료(DisplayVersion/DisplayHelp)여야 한다"),
+                Err(e) => (e.kind(), e.render().to_string()),
+            }
+        };
+        for flag in ["--version", "-V"] {
+            let (k1, a) = render("cys", flag);
+            let (k2, b) = render("cysr", flag);
+            assert_eq!(k1, clap::error::ErrorKind::DisplayVersion);
+            assert_eq!(k2, clap::error::ErrorKind::DisplayVersion);
+            assert_eq!(a, b, "{flag}: cysr 와 cys 의 버전 출력이 갈렸다");
+            assert_eq!(a.trim(), format!("cys {}", env!("CARGO_PKG_VERSION")));
+        }
+        // 절대경로·윈도 확장자로 불려도 같다(심링크 경로 · cysr.exe 사본).
+        let (_, win) = render(r"C:\Users\u\AppData\Local\cys\cysr.exe", "--version");
+        let (_, mac) = render("/usr/local/bin/cysr", "--version");
+        assert_eq!(win, render("cys", "--version").1);
+        assert_eq!(mac, render("cys", "--version").1);
+    }
+
     /// ★A12 승격 가드 단위 테스트(v4 · W4): 승격 중(.pre-ceo 존재) base MASTER 를 덮는
     /// 두 동사(take-new·rollback)만 거부 — keep-mine 경로·타 파일·비승격 상태·--force-vendor
     /// 는 통과. 거부 문안에 keep-mine 절차(merge)/재설치·promote-ceo(rollback) 안내가 실린다.

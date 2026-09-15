@@ -550,7 +550,7 @@ export function cliButtonView(
       label: "셸 cys 해제",
       intent,
       title:
-        "/usr/local/bin 의 cys·cysd 심링크 제거(1회 관리자 승인) — 확인 창이 먼저 뜹니다" + suffix,
+        "/usr/local/bin 의 cys·cysd·cysr 심링크 제거(1회 관리자 승인) — 확인 창이 먼저 뜹니다" + suffix,
     };
   }
   if (state === "absent") {
@@ -1171,7 +1171,7 @@ export function uninstallResultToast(rep: UninstallCliReport, links: readonly st
     category: "watchdog",
     title: "⚠ 해제할 심링크 없음",
     body:
-      "/usr/local/bin 에 이 앱이 만든 cys·cysd 심링크가 없습니다 — 지운 것이 없습니다." +
+      "/usr/local/bin 에 이 앱이 만든 cys·cysd·cysr 심링크가 없습니다 — 지운 것이 없습니다." +
       (parts.benign.length > 0 ? `\n${parts.benign.join("\n")}` : "") +
       warnTail("⚠"),
     sticky: warnings.length > 0,

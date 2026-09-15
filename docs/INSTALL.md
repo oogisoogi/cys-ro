@@ -155,7 +155,8 @@ codesign --verify --strict --verbose /Applications/cys.app
 에이전트 자율 실행·자율 클릭 금지.**
 
 1. **권장 — GUI 1클릭(1회 관리자 승인):** Control Center 헤더 → **"셸에 cys 설치"** 클릭 →
-   macOS 비밀번호 1회 입력. `/usr/local/bin/cys`·`/usr/local/bin/cysd` 심볼릭이 생깁니다.
+   macOS 비밀번호 1회 입력. `/usr/local/bin/cys`·`/usr/local/bin/cysd`·`/usr/local/bin/cysr` 심볼릭이
+   생깁니다(`cysr` = 1.0.1부터의 명령 이름 · `cys` 와 같은 번들 파일을 가리킴 · `cys` 도 그대로 동작).
    버튼은 macOS에서만 나타납니다(Windows·Linux에서는 표시되지 않습니다).
    - 클릭 뒤 결과 알림이 **성공(✅)/경고(⚠) 두 등급**으로 옵니다. 규칙은 하나입니다:
      **확인할 것이 하나라도 남으면 ✅ 가 아니라 ⚠ 입니다.** 링크는 만들어졌지만 백업이 일어났거나
@@ -287,8 +288,9 @@ SRC=/Applications/cys.app/Contents/MacOS
 DST=/usr/local/bin
 STAMP=$(date +%s)
 mkdir -p "$DST" || exit 1
-for f in cys cysd; do
+for f in cys cysd cysr; do
   d=$DST/$f
+  s=$f; [ "$f" = cysr ] && s=cys   # cysr = 명령 별칭(번들 cys 를 가리킴)
   if [ -e "$d" ] || [ -L "$d" ]; then
     ours=no
     if [ -L "$d" ]; then
@@ -307,8 +309,8 @@ for f in cys cysd; do
       echo "이미 이 앱의 링크입니다(백업하지 않습니다): $d"
     fi
   fi
-  ln -sfn "$SRC/$f" "$d" || exit 1
-  echo "링크를 만들었습니다: $d -> $SRC/$f"
+  ln -sfn "$SRC/$s" "$d" || exit 1
+  echo "링크를 만들었습니다: $d -> $SRC/$s"
 done
 '
 ```
@@ -344,7 +346,7 @@ done
 # 🧑 [HUMAN] 수동 해제 — 심볼릭 링크이고 그 대상이 cys.app 안일 때만 지웁니다(버튼과 같은 규칙)
 sudo sh -c '
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
-for d in /usr/local/bin/cys /usr/local/bin/cysd; do
+for d in /usr/local/bin/cys /usr/local/bin/cysd /usr/local/bin/cysr; do
   if [ ! -L "$d" ]; then
     if [ -e "$d" ]; then echo "건너뜁니다(심볼릭 링크가 아닙니다 — 남의 파일일 수 있습니다): $d"
     else echo "없습니다: $d"; fi

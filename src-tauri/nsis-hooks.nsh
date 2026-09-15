@@ -788,6 +788,20 @@ cys_post_ok:
 cys_post_nomarker:
   ClearErrors
 
+  ; (cysr-alias · 2026-09-16) command alias cysr.exe = byte copy of the verified cys.exe.
+  ;   Placed only here (after every gate passed) so the alias is always the build the oracle
+  ;   accepted. pane PATH puts $INSTDIR first, so `cysr` resolves beside `cys`.
+  ;   A cysr.exe held open by a running CLI was already moved aside by the PREINSTALL
+  ;   unlock-sweep (root top level, not in its skip list) as cysr.exe.prev<rand>, which the
+  ;   cysd leftover sweep reclaims. Failure is loud but not fatal: cys.exe itself is intact.
+  ClearErrors
+  Delete "$INSTDIR\cysr.exe"
+  CopyFiles /SILENT "$INSTDIR\cys.exe" "$INSTDIR\cysr.exe"
+  IfErrors 0 cys_post_alias_ok
+  DetailPrint "cys: WARNING - cysr.exe alias could not be refreshed (cys.exe still works)"
+cys_post_alias_ok:
+  ClearErrors
+
   ; 바탕화면 바로가기 자동 생성(2026-07-05 오너 지시). Tauri NSIS 템플릿은 일반 GUI 설치에서
   ; 마침 페이지 체크박스(사용자 클릭)에만 의존해 자동 생성이 아니다 — 템플릿 내장 함수를 직접 호출해
   ; 설치 완료 시 항상 생성한다. 함수 내부 가드를 그대로 재사용: 업데이트(/UPDATE)·무바로가기(/NS)
@@ -825,6 +839,8 @@ cys_post_nomarker:
   Delete "$INSTDIR\cys.prev*.exe"
   Delete "$INSTDIR\cysd.prev*.exe"
   Delete "$INSTDIR\cys-app.prev*.exe"
+  Delete "$INSTDIR\cysr.exe"                    ; (cysr-alias) POSTINSTALL copy — not tracked by the uninstaller
+  Delete "$INSTDIR\cysr.exe.prev*"
   Delete "$INSTDIR\cys-install-failure.txt"
   Delete "$INSTDIR\cys-installed-version.txt"   ; 버전 마커(언인스톨러 미추적 파일)
   ; 잠금 스윕 잔해(*.prev<rand> — 언인스톨러 미추적 파일)까지 정리해 빈 폴더 잔존을 막는다.

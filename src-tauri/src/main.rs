@@ -200,6 +200,12 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// 앱 build_id(git HEAD SHA 임베드) — 상단바 판번 라벨 툴팁용(TICKET=cysr-ui-polish-101 ⓐ).
+#[tauri::command]
+fn app_build_id() -> String {
+    cys::pack::build_id().to_string()
+}
+
 #[tauri::command]
 async fn list_surfaces(socket: Option<String>) -> Result<Value, String> {
     rpc_on(&resolve_socket(&socket), "surface.list", json!({})).await
@@ -4260,11 +4266,17 @@ fn spawn_event_forwarder(app: AppHandle, socket: std::path::PathBuf) {
     tauri::async_runtime::spawn(async move {
         let mut after_seq: Option<u64> = None;
         let mut fails: u32 = 0;
+        // ★TICKET=cysr-ui-polish-101 ⓑ: 한 번이라도 스트림을 세운 뒤의 재수립 = 데몬 재기동(pid 교체) 가능.
+        //   UI 헤더 「daemon pid=…」 라벨은 시작 1회만 쓰여 재기동 뒤에도 옛 pid 를 보였다(실기 4116→10132).
+        let mut ever_connected = false;
         loop {
             let mut connected = false;
             let attempt: Result<(), String> = async {
                 let mut stream = connect_to(&socket).await?;
                 connected = true; // 연결 수립 — dead-socket 아님
+                if ever_connected {
+                    let _ = app.emit("daemon-reconnected", json!({"socket_slug": slug}));
+                }
                 let req = json!({"id": 1, "method": "events.stream",
                                  "params": {"after_seq": after_seq}});
                 let mut line = serde_json::to_vec(&req).unwrap_or_default();
@@ -4291,6 +4303,7 @@ fn spawn_event_forwarder(app: AppHandle, socket: std::path::PathBuf) {
             // dead-socket 회수: 연속 연결 실패(스트림 수립 실패)가 ~30s 넘으면 forwarder 종료.
             // 스트림 수립 후 종료(데몬 재시작 등)는 정상 재연결 대상이라 카운터를 리셋한다.
             if connected {
+                ever_connected = true;
                 fails = 0;
             } else {
                 fails += 1;
@@ -6093,6 +6106,7 @@ fn main() {
             uninstall_cli_from_path,
             cli_install_status,
             app_version,
+            app_build_id,
             boot_verdict,
             // ATOMIC-1 짝: 설치본이 '반쪽 번들'인지 기동 시 스스로 확인해 복구 절차를 준다.
             bundle_integrity,

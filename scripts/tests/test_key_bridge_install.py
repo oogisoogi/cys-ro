@@ -7,12 +7,10 @@ import base64
 import importlib.util
 import json
 import os
-import shutil
 import tempfile
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_REPO = os.path.join(_HERE, "..", "..")
 _spec = importlib.util.spec_from_file_location("key_bridge_install", os.path.join(_HERE, "..", "key-bridge-install.py"))
 kbi = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(kbi)
@@ -28,13 +26,29 @@ def pub(key_id, raw_text=False):
     return text if raw_text else base64.b64encode(text.encode()).decode()
 
 
+def write_baseline(root):
+    """기입 **전** 기준본(1.0.0 브리지 직전 상태)을 합성한다 — 업데이터 pubkey = 팩 키링 항목 = 옛 키.
+
+    ★실트리 복사 금지(2026-09-15 · master 실키 기입 a08df40 후 적색 실증): 저장소의 두 파일은 키를
+      기입하는 순간 「기입 후」 상태가 되어 이 도구의 전제(현재 업데이터 키 ∈ 팩 키링)를 스스로 깨뜨린다.
+      시험의 입력은 트리 상태와 무관한 고정 기준본이어야 한다.
+    """
+    os.makedirs(os.path.join(root, "src-tauri"), exist_ok=True)
+    os.makedirs(os.path.join(root, "cysjavis-pack"), exist_ok=True)
+    conf = {"productName": "cys", "plugins": {"updater": {"pubkey": pub(OLD_ID), "endpoints": ["https://example.invalid/latest.json"]}}}
+    with open(os.path.join(root, "src-tauri/tauri.conf.json"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(conf, ensure_ascii=False, indent=2) + "\n")
+    ring = {"keys": [{"key_id": OLD_ID, "pubkey": pub(OLD_ID), "not_after": "2030-01-01T00:00:00Z"}],
+            "revoked_key_ids": []}
+    with open(os.path.join(root, "cysjavis-pack/trusted-keys.json"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(ring, ensure_ascii=False, indent=2) + "\n")
+
+
 class KeyBridgeInstallTests(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.root = self._td.name
-        for rel in ("src-tauri/tauri.conf.json", "cysjavis-pack/trusted-keys.json"):
-            os.makedirs(os.path.dirname(os.path.join(self.root, rel)), exist_ok=True)
-            shutil.copy(os.path.join(_REPO, rel), os.path.join(self.root, rel))
+        write_baseline(self.root)
 
     def tearDown(self):
         self._td.cleanup()

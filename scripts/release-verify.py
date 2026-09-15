@@ -115,6 +115,7 @@
 """
 import argparse
 import base64
+import calendar
 import gzip
 import hashlib
 import json
@@ -662,6 +663,11 @@ def _minisign_line_key_id(b64_text, byte_len, what):
         text = base64.b64decode(b64_text.strip(), validate=True).decode("utf-8")
     except (ValueError, UnicodeDecodeError) as e:
         raise VerifyError("%s 가 base64 로 감싼 minisign 텍스트가 아니다: %s" % (what, e))
+    return _minisign_text_key_id(text, byte_len, what)
+
+
+def _minisign_text_key_id(text, byte_len, what):
+    """풀린 minisign 텍스트(표준 `.minisig`·`.pub`)에서 첫 본문 줄의 key id 를 뽑는다."""
     body = next((ln.strip() for ln in text.splitlines()
                  if ln.strip() and not ln.strip().startswith("untrusted comment:")), None)
     if body is None:
@@ -721,7 +727,81 @@ def check_updater_signing_key(files, names, expected_key_id):
     return sigs
 
 
-def verify(version, release_dir, vendor_manifest, updater_key_id, previous_latest, repo=RELEASE_REPO, now=None):
+def load_pack_keyring(path):
+    """직전 판 태그의 `cysjavis-pack/trusted-keys.json`(= 설치된 앱에 박힌 팩 키링) → ({key_id: not_after epoch}, 폐기 집합).
+
+    항목마다 공개키에서 key id 를 다시 파생해 적힌 key_id 와 대조한다(`src/packsig.rs`
+    `embedded_keyring_key_ids_match_pubkeys` 와 같은 규칙) — 오기된 기준으로 판정하지 않는다.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise VerifyError("직전 판 팩 키링을 읽을 수 없다(%s): %s" % (path, e))
+    keys = data.get("keys") if isinstance(data, dict) else None
+    if not isinstance(keys, list) or not keys:
+        raise VerifyError("직전 판 팩 키링에 keys 가 없다: %s" % path)
+    revoked = data.get("revoked_key_ids", [])
+    if not isinstance(revoked, list) or not all(isinstance(r, str) for r in revoked):
+        raise VerifyError("직전 판 팩 키링 revoked_key_ids 형식 오류: %s" % path)
+    out = {}
+    for k in keys:
+        kid = k.get("key_id") if isinstance(k, dict) else None
+        if not isinstance(kid, str) or not KEY_ID_RE.match(kid):
+            raise VerifyError("직전 판 팩 키링 key_id 형식 오류(16자 대문자 hex): %r" % (kid,))
+        pub = k.get("pubkey")
+        if not isinstance(pub, str) or not pub.strip():
+            raise VerifyError("직전 판 팩 키링 %s 에 pubkey 가 없다" % kid)
+        derived = tauri_pubkey_key_id(pub, "직전 판 팩 키링 공개키 %s" % kid)
+        if derived != kid:
+            raise VerifyError("직전 판 팩 키링 key_id %s ≠ 공개키 파생 key id %s" % (kid, derived))
+        na = k.get("not_after")
+        try:
+            out[kid] = calendar.timegm(time.strptime(na, "%Y-%m-%dT%H:%M:%SZ"))
+        except (TypeError, ValueError):
+            raise VerifyError("직전 판 팩 키링 %s 의 not_after 를 읽을 수 없다: %r" % (kid, na))
+    return out, set(revoked)
+
+
+def check_pack_signing_key(files, pack_keyring, now=None):
+    """★8-a 팩 서명 키 게이트(TICKET=cys-v101-integrate · docs/KEY-ROTATION.md §4).
+
+    팩 매니페스트의 key_id 가 **직전 판 바이너리에 박힌 팩 키링**에 있고(폐기·만료 아님), `.minisig` 의
+    key id 가 그 key_id 와 같아야 한다. 설치된 앱은 manifest key_id 로 자기 키링에서 공개키를 골라
+    서명을 검증한다(`src/packsig.rs` ⓑ) — 키링에 없는 키로 서명하면 전 사용자의 팩 갱신이
+    「알 수 없는 key_id」로 멈추고, key_id 칸과 실제 서명 키가 어긋나면 서명 검증에서 멈춘다.
+    실사례 위험: 업데이터 비밀과 팩 비밀을 가르지 않은 채 업데이터 키를 회전하면 팩이 새 업데이터 키로
+    서명된다. ★사거리: key id 대조까지다(암호 검증은 CI 의 실검증 단계가 진다 — 7-b 와 같다).
+    """
+    keys, revoked = pack_keyring
+    try:
+        man = json.loads(read_text_strict(files["pack-manifest.json"], "pack-manifest.json"))
+    except ValueError as e:
+        raise VerifyError("pack-manifest.json 이 JSON 이 아니다: %s" % e)
+    mid = man.get("key_id") if isinstance(man, dict) else None
+    if type(mid) is not str or not KEY_ID_RE.match(mid):
+        raise VerifyError("pack-manifest.json key_id 형식 오류(16자 대문자 hex): %r" % (mid,))
+    sid = _minisign_text_key_id(read_text_strict(files["pack-manifest.json.minisig"],
+                                                 "pack-manifest.json.minisig"),
+                                74, "팩 매니페스트 서명(.minisig)")
+    if sid != mid:
+        raise VerifyError("팩 서명 키 불일치: .minisig key id %s ≠ pack-manifest.json key_id %s "
+                          "— 설치된 앱의 서명 검증에서 거부된다" % (sid, mid))
+    if mid in revoked:
+        raise VerifyError("팩 서명 키 %s 가 직전 판 팩 키링에서 폐기돼 있다" % mid)
+    if mid not in keys:
+        raise VerifyError("팩 서명 키 %s 가 직전 판 바이너리 팩 키링(%s)에 없다 — 설치된 앱이 이 팩을 "
+                          "「알 수 없는 key_id」로 거부한다" % (mid, ", ".join(sorted(keys))))
+    if now is None:
+        now = int(time.time())
+    if now >= keys[mid]:
+        raise VerifyError("팩 서명 키 %s 가 직전 판 팩 키링에서 만료됐다(not_after %d <= now %d)"
+                          % (mid, keys[mid], now))
+    return mid
+
+
+def verify(version, release_dir, vendor_manifest, updater_key_id, previous_latest, pack_keyring,
+           repo=RELEASE_REPO, now=None):
     if not VERSION_RE.match(version):
         raise VerifyError("--version 은 X.Y.Z 여야 한다: %r" % version)
 
@@ -774,6 +854,9 @@ def verify(version, release_dir, vendor_manifest, updater_key_id, previous_lates
     # ── 7-b. 업데이터 서명 키 == 직전 판 바이너리 pubkey 키 (키 브리지 게이트) ──
     check_updater_signing_key(files, listed, updater_key_id)
 
+    # ── 8-a. 팩 서명 키 ∈ 직전 판 바이너리 팩 키링 · .minisig key id == manifest key_id ──
+    check_pack_signing_key(files, pack_keyring, now=now)
+
     # ── 8. 팩 replay 단조 — 벤더 팩을 받은 기계도 이 팩을 받을 수 있는가 ──
     check_pack_replay_monotonic(files, vendor_manifest, now=now)
 
@@ -810,14 +893,24 @@ def main():
                         help="직전 판 바이너리 updater pubkey 의 key id(16자 대문자 hex)")
     keysrc.add_argument("--prev-tauri-conf", default=None,
                         help="직전 판 태그의 src-tauri/tauri.conf.json 사본 경로(pubkey 에서 key id 파생)")
+    # ★8-a(팩 서명 키 게이트)의 기준 — 전체 검증·--pack-only 모두 필수. 생략해서 건너뛰는 선택지는 없다.
+    ap.add_argument("--prev-pack-keyring", default=None,
+                    help="직전 판(팩-온리 레인은 min_binary 판) 태그의 cysjavis-pack/trusted-keys.json 사본 경로")
     args = ap.parse_args()
 
     if args.pack_only:
         if not args.pack_manifest:
             ap.error("--pack-only 에는 --pack-manifest 가 필요하다")
+        if not args.prev_pack_keyring:
+            ap.error("--pack-only 에는 --prev-pack-keyring 이 필요하다(팩 서명 키 게이트)")
         try:
-            if os.path.islink(args.pack_manifest) or not os.path.isfile(args.pack_manifest):
-                raise VerifyError("pack-manifest 파일이 없다(또는 심볼릭 링크): %s" % args.pack_manifest)
+            minisig = args.pack_manifest + ".minisig"
+            for path in (args.pack_manifest, minisig):
+                if os.path.islink(path) or not os.path.isfile(path):
+                    raise VerifyError("팩 파일이 없다(또는 심볼릭 링크): %s" % path)
+            pack_key = check_pack_signing_key(
+                {"pack-manifest.json": args.pack_manifest, "pack-manifest.json.minisig": minisig},
+                load_pack_keyring(args.prev_pack_keyring))
             vendor = load_vendor_manifest(path=args.vendor_manifest_file)
             ours_at, vendor_at = check_pack_replay_monotonic(
                 {"pack-manifest.json": args.pack_manifest}, vendor)
@@ -828,6 +921,7 @@ def main():
             print("::error::팩 replay 단조 검증 중단(판정 불가) — %s: %s"
                   % (type(e).__name__, e), file=sys.stderr)
             return 1
+        print("✅ 팩 서명 키 %s ∈ 기준 팩 키링 · .minisig key id 일치" % pack_key)
         print("✅ 팩 replay 단조 통과 — 우리 signed_at %d > 벤더 latest signed_at %d"
               % (ours_at, vendor_at))
         return 0
@@ -836,14 +930,17 @@ def main():
         ap.error("전체 검증에는 --version 과 --release-dir 가 필요하다(팩 전용은 --pack-only)")
     if not args.updater_key_id and not args.prev_tauri_conf:
         ap.error("전체 검증에는 --updater-key-id 또는 --prev-tauri-conf 가 필요하다(키 브리지 게이트)")
+    if not args.prev_pack_keyring:
+        ap.error("전체 검증에는 --prev-pack-keyring 이 필요하다(팩 서명 키 게이트)")
 
     try:
         vendor = load_vendor_manifest(path=args.vendor_manifest_file)
         previous = load_previous_latest(PREVIOUS_LATEST_URL_TPL % args.repo, path=args.previous_latest_file)
         updater_key_id = (args.updater_key_id if args.updater_key_id
                           else key_id_from_tauri_conf(args.prev_tauri_conf))
+        pack_keyring = load_pack_keyring(args.prev_pack_keyring)
         assets, platforms, mac_included = verify(args.version, args.release_dir, vendor,
-                                                 updater_key_id, previous, repo=args.repo)
+                                                 updater_key_id, previous, pack_keyring, repo=args.repo)
     except VerifyError as e:
         print("::error::릴리스 검증 실패 — %s" % e, file=sys.stderr)
         return 1

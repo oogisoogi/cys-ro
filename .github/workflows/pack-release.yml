@@ -28,7 +28,7 @@ jobs:
     permissions:
       contents: write
     env:
-      KEY_ID: '54FBA04AD0E0F49D'    # 임베드 키링(cysjavis-pack/trusted-keys.json) key_id (2026-09-08 포크 전환)
+      KEY_ID: 'C81BCA7B89578FDE'    # 임베드 키링(cysjavis-pack/trusted-keys.json) key_id — P2(1.0.1 팩 키 회전 · docs/KEY-ROTATION.md §4 · 종전 54FBA04AD0E0F49D)
       EXPIRES_DAYS: '90'            # 서명 신선도 유효창(release.yml과 동일)
       # ★min_binary는 정책 파생(해법③⑤ · 2026-07-14): scripts/min-binary-policy.sh가
       # max(security-floor.txt, 지원창 하한)을 계산 — 손설정 하한의 '잊음' 실패 계급 제거.
@@ -55,7 +55,10 @@ jobs:
       #
       # 값 지정 시 정책이 무시되고 "min_binary 정책 오버라이드 사용" ::warning 이 로그에 남는다
       #   (아래 Compute min_binary 스텝) — 의도된 흔적이다. 근거를 커밋에 남길 것.
-      PACK_MIN_BINARY_OVERRIDE: '0.14.29'
+      # ★1.0.0 상향(2026-09-16 · TICKET=cys-v101-integrate · master#b39abd5c) — 팩 서명 키가 P2 로 바뀌었고
+      #   P2 는 1.0.0 바이너리 키링에서 처음 신뢰된다(≤0.14.x 키링 = 옛 키만 → 서명 거부). 아래 하한 검증기도
+      #   v$MIN_BINARY 로 빌드되므로 0.14.29 로 두면 발행이 막힌다. release.yml PACK_MIN_BINARY 와 동시 상향.
+      PACK_MIN_BINARY_OVERRIDE: '1.0.0'
     steps:
       - uses: actions/checkout@v4
 
@@ -345,13 +348,16 @@ jobs:
 
       - name: Sign pack-manifest.json (minisign)
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # ★팩 전용 비밀(1.0.1 · docs/KEY-ROTATION.md §4) — 업데이터 비밀(TAURI_SIGNING_PRIVATE_KEY = A2)과 가른다.
+          #   같은 비밀을 쓰면 업데이터 키 회전이 팩 서명 키까지 바꿔 설치본 팩 키링과 어긋난다. 값 = P2 = KEY_ID.
+          CYS_PACK_SIGNING_PRIVATE_KEY: ${{ secrets.CYS_PACK_SIGNING_PRIVATE_KEY }}
+          CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY 미설정"; exit 1; }
+          test -n "${CYS_PACK_SIGNING_PRIVATE_KEY:-}" || { echo "::error::CYS_PACK_SIGNING_PRIVATE_KEY 미설정"; exit 1; }
           bunx @tauri-apps/cli@2 signer sign \
-            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
-            --password "" \
+            --private-key "$CYS_PACK_SIGNING_PRIVATE_KEY" \
+            --password "${CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
             pack-manifest.json
           base64 --decode pack-manifest.json.sig > pack-manifest.json.minisig
 
@@ -408,7 +414,11 @@ jobs:
       - name: Pack replay monotonic gate (publish 차단)
         run: |
           set -euo pipefail
-          python3 scripts/release-verify.py --pack-only --pack-manifest pack-manifest.json
+          # ★8-a 기준 = 하한(v$MIN_BINARY) 태그의 팩 키링 — 이 팩을 받을 수 있다고 선언한 가장 낮은 바이너리.
+          git fetch --no-tags --depth=1 origin "refs/tags/v$MIN_BINARY:refs/tags/v$MIN_BINARY"
+          git show "v$MIN_BINARY:cysjavis-pack/trusted-keys.json" > prev-trusted-keys.json
+          python3 scripts/release-verify.py --pack-only --pack-manifest pack-manifest.json \
+            --prev-pack-keyring prev-trusted-keys.json
 
       - name: Create pack release + upload assets
         env:

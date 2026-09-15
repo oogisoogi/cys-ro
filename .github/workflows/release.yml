@@ -962,7 +962,7 @@ jobs:
     needs: [build, windows-health-gate]
     runs-on: ubuntu-latest
     env:
-      KEY_ID: '54FBA04AD0E0F49D'    # 임베드 키링(cysjavis-pack/trusted-keys.json) key_id — manifest.key_id
+      KEY_ID: 'C81BCA7B89578FDE'    # 임베드 키링(cysjavis-pack/trusted-keys.json) key_id — manifest.key_id · P2(1.0.1 팩 키 회전 · 종전 54FBA04AD0E0F49D)
                                     # ★2026-09-08 포크 전환: 벤더 키(39E60A702949D6C3)가 아니라
                                     #   우리 배포 키의 실제 id 다(cysjavis-pack/trusted-keys.json 항목).
                                     # ★2026-09-15 키 분리: 팩 키는 업데이터 pubkey 와 독립이다 — 1.0.1 에서 P2 id 로
@@ -996,7 +996,10 @@ jobs:
       #   RELEASE.md 불변 규칙). pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약).
       # ★v0.14.36 유지 판정(2026-09-12 · TICKET=cys-v01436-pack-url r2) — 0.14.29 에 없는 표면 6종과
       #   각 탐침·폴백 위치의 근거표 = docs/RELEASE.md 「PACK_MIN_BINARY 0.14.29 유지 근거」 항목.
-      PACK_MIN_BINARY: '0.14.29'
+      # ★1.0.0 상향(2026-09-16 · TICKET=cys-v101-integrate · master#b39abd5c) — 팩 서명 키 P2 는 1.0.0 키링에서
+      #   처음 신뢰된다. 0.14.29 로 서명하면 0.14.29~0.14.37 이 「호환」으로 적힌 채 서명을 거부한다(선언 거짓).
+      #   pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약).
+      PACK_MIN_BINARY: '1.0.0'
     steps:
       - uses: actions/checkout@v4
 
@@ -1321,13 +1324,16 @@ jobs:
       # (.minisig)로 변환한다 — packsig::verify(minisign_verify::Signature::decode)가 표준 형식을 기대.
       - name: Sign pack-manifest.json (minisign)
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # ★팩 전용 비밀(1.0.1 · docs/KEY-ROTATION.md §4) — 업데이터 비밀(TAURI_SIGNING_PRIVATE_KEY = A2)과 가른다.
+          #   같은 비밀을 쓰면 업데이터 키 회전이 팩 서명 키까지 바꿔 설치본 팩 키링과 어긋난다. 값 = P2 = KEY_ID.
+          CYS_PACK_SIGNING_PRIVATE_KEY: ${{ secrets.CYS_PACK_SIGNING_PRIVATE_KEY }}
+          CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY 미설정 — 팩 서명 불가"; exit 1; }
+          test -n "${CYS_PACK_SIGNING_PRIVATE_KEY:-}" || { echo "::error::CYS_PACK_SIGNING_PRIVATE_KEY 미설정 — 팩 서명 불가"; exit 1; }
           bunx "@tauri-apps/cli@${TAURI_CLI_VERSION}" signer sign \
-            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
-            --password "" \
+            --private-key "$CYS_PACK_SIGNING_PRIVATE_KEY" \
+            --password "${CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
             pack-manifest.json
           # tauri .sig(전체 base64) → 표준 minisign 텍스트(.minisig).
           base64 --decode pack-manifest.json.sig > pack-manifest.json.minisig

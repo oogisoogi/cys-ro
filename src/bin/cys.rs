@@ -18135,7 +18135,7 @@ mod tests {
             assert_eq!(a.trim(), format!("cys {}", env!("CARGO_PKG_VERSION")));
         }
         // 절대경로·윈도 확장자로 불려도 같다(심링크 경로 · cysr.exe 사본).
-        let (_, win) = render(r"C:\Users\u\AppData\Local\cys\cysr.exe", "--version");
+        let (_, win) = render(r"C:\Users\user\AppData\Local\cys\cysr.exe", "--version");
         let (_, mac) = render("/usr/local/bin/cysr", "--version");
         assert_eq!(win, render("cys", "--version").1);
         assert_eq!(mac, render("cys", "--version").1);

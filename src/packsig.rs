@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-// build.rs 자동 생성 키링(tauri.conf.json pubkey + cysjavis-pack/trusted-keys.json 병합).
+// build.rs 자동 생성 키링(cysjavis-pack/trusted-keys.json 원문 — 2026-09-15 키 분리로 tauri pubkey 주입 제거).
 include!(concat!(env!("OUT_DIR"), "/pack_keyring.rs"));
 
 /// 신뢰 키링 엔트리. `not_after`(RFC3339)는 ★전 서명키 필수(만료 없는 영구키 = fail-closed 위반).
@@ -336,6 +336,38 @@ pub(crate) fn verify_minisign(pubkey: &str, data: &[u8], sig_bytes: &[u8]) -> Re
         .map_err(|e| format!("서명 검증 실패: {e}"))
 }
 
+/// minisign 공개키의 key_id(16자 대문자 hex — minisign·tauri 가 `.pub` 주석에 찍는 값과 같은 표기).
+/// pubkey 는 tauri식(전체 .pub 파일 base64) 또는 raw 키라인 base64 둘 다 수용.
+/// 키 분리(docs/KEY-ROTATION.md) 이후 키링 항목의 key_id 는 손으로 적힌 값이라, 공개키에서 파생한
+/// 값과 일치하는지 시험이 대조한다(오기 = 그 키로 서명한 팩 전량 「알 수 없는 key_id」 거부).
+pub fn pubkey_key_id(pubkey: &str) -> Result<String, String> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let pubkey = pubkey.trim();
+    let decoded = b64
+        .decode(pubkey)
+        .map_err(|e| format!("pubkey base64 디코드 실패: {e}"))?;
+    // raw 키라인 = 2바이트 알고리즘 + 8바이트 keynum + 32바이트 공개키 = 42바이트.
+    let raw = if decoded.len() == 42 {
+        decoded
+    } else {
+        let text = String::from_utf8(decoded).map_err(|e| format!("pubkey 텍스트 아님: {e}"))?;
+        let key_line = text
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with("untrusted comment:"))
+            .next_back()
+            .ok_or_else(|| "pubkey 키라인 부재".to_string())?;
+        b64.decode(key_line)
+            .map_err(|e| format!("pubkey 키라인 base64 디코드 실패: {e}"))?
+    };
+    if raw.len() != 42 {
+        return Err(format!("pubkey 키라인 길이 {} ≠ 42바이트", raw.len()));
+    }
+    // keynum 은 리틀엔디언 u64 — 표기는 바이트를 뒤집은 hex(minisign `{:016X}` 와 동일).
+    Ok(raw[2..10].iter().rev().map(|b| format!("{b:02X}")).collect())
+}
+
 /// tauri식(전체 .pub 파일 base64) 또는 raw 키라인 base64에서 minisign PublicKey 로드.
 fn load_public_key(pubkey: &str) -> Result<minisign_verify::PublicKey, String> {
     use minisign_verify::PublicKey;
@@ -363,8 +395,8 @@ fn load_public_key(pubkey: &str) -> Result<minisign_verify::PublicKey, String> {
 mod tests {
     use super::*;
 
-    /// embed 키링이 파싱되고 부트스트랩 키(build.rs가 tauri pubkey 주입)가 비어있지 않다 —
-    /// build.rs 병합·OUT_DIR 방출이 깨지면 여기서 잡힌다(결정론 게이트).
+    /// embed 키링이 파싱되고 부트스트랩 키(trusted-keys.json 명시 공개키 — 2026-09-15 주입 제거)가
+    /// 비어있지 않다 — build.rs OUT_DIR 방출이 깨지면 여기서 잡힌다(결정론 게이트).
     #[test]
     fn embedded_keyring_parses_with_bootstrap_pubkey() {
         let kr: Keyring = serde_json::from_str(TRUSTED_KEYS_JSON).expect("embed 키링 파싱 실패");
@@ -378,6 +410,142 @@ mod tests {
         assert!(!boot.not_after.is_empty(), "not_after 부재(fail-closed 위반)");
         // 부트스트랩 pubkey는 실제 minisign 공개키로 로드 가능해야 한다(형식 검증).
         load_public_key(&boot.pubkey).expect("부트스트랩 pubkey 로드 실패");
+    }
+
+    /// 키 분리(TICKET=key-bridge): 키링의 **모든** 항목에서 key_id == 공개키 파생 key_id.
+    /// 손으로 적은 key_id 오기는 그 키로 서명한 팩 전량을 조용히 거부시킨다 — 여기서 잡는다.
+    #[test]
+    fn embedded_keyring_key_ids_match_pubkeys() {
+        let kr = embedded_keyring().expect("embed 키링 파싱 실패");
+        assert!(!kr.keys.is_empty());
+        for k in &kr.keys {
+            let derived = pubkey_key_id(&k.pubkey).expect("pubkey key_id 파생 실패");
+            assert_eq!(derived, k.key_id, "키링 key_id 와 공개키 파생 key_id 불일치");
+            load_public_key(&k.pubkey).expect("키링 pubkey 로드 실패");
+        }
+    }
+
+    /// 키 분리 불변식: 팩 키링은 업데이터 pubkey(tauri.conf.json)에서 **파생되지 않는다**.
+    /// build.rs 주입이 되살아나면(= 업데이터 키 회전이 팩 신뢰를 조용히 바꾸는 결합) 빨개진다 —
+    /// 키링 원문 파일과 embed 상수가 바이트 동일해야 한다.
+    #[test]
+    fn embedded_keyring_is_trusted_keys_file_verbatim() {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/cysjavis-pack/trusted-keys.json"));
+        assert_eq!(TRUSTED_KEYS_JSON, src, "embed 키링이 trusted-keys.json 원문과 다르다(주입 재발?)");
+    }
+
+    /// pubkey_key_id 는 두 표기(raw 키라인·tauri식 전체 .pub base64)에서 minisign 이 찍는 id 와 같다.
+    #[test]
+    fn pubkey_key_id_matches_minisign_box_comment() {
+        use base64::Engine;
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let boxed = kp.pk.to_box().unwrap().into_string();
+        let want = boxed
+            .lines()
+            .next()
+            .and_then(|l| l.rsplit(' ').next())
+            .unwrap()
+            .to_string();
+        assert_eq!(want.len(), 16);
+        assert_eq!(pubkey_key_id(&kp.pk.to_base64()).unwrap(), want, "raw 키라인 표기");
+        let tauri_form = base64::engine::general_purpose::STANDARD.encode(boxed.as_bytes());
+        assert_eq!(pubkey_key_id(&tauri_form).unwrap(), want, "tauri식 표기");
+        assert!(pubkey_key_id("not-base64!!").is_err());
+    }
+
+    // ── 키 브리지(TICKET=key-bridge · docs/KEY-ROTATION.md) ──────────────────────────
+    /// (tauri식 pubkey, key_id, 서명기) — tauri.conf.json·trusted-keys.json 과 같은 표기로 만든다.
+    fn gen_tauri_key() -> (String, String, impl Fn(&[u8]) -> String) {
+        use base64::Engine;
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().expect("keypair 생성 실패");
+        let boxed = kp.pk.to_box().unwrap().into_string();
+        let pub_b64 = base64::engine::general_purpose::STANDARD.encode(boxed.as_bytes());
+        let key_id = pubkey_key_id(&pub_b64).unwrap();
+        let sk = kp.sk;
+        let signer = move |data: &[u8]| -> String {
+            let sig_box = minisign::sign(None, &sk, std::io::Cursor::new(data.to_vec()), None, None)
+                .expect("서명 실패");
+            sig_box.into_string()
+        };
+        (pub_b64, key_id, signer)
+    }
+
+    /// tauri-plugin-updater 2.10.1 `updater.rs::verify_signature` 의 판정을 그대로 옮긴 것(비공개 함수라
+    /// 직접 못 부른다). pubkey·서명 모두 base64 로 감싼 minisign 텍스트, allow_legacy=true.
+    fn tauri_updater_verify(data: &[u8], sig_b64: &str, pub_b64: &str) -> Result<(), String> {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let pub_txt = String::from_utf8(b64.decode(pub_b64).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let pk = minisign_verify::PublicKey::decode(&pub_txt).map_err(|e| e.to_string())?;
+        let sig_txt = String::from_utf8(b64.decode(sig_b64).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let sig = minisign_verify::Signature::decode(&sig_txt).map_err(|e| e.to_string())?;
+        pk.verify(data, &sig, true).map_err(|e| e.to_string())
+    }
+
+    /// 업데이터 브리지 3판정: ①옛 pubkey 바이너리(0.14.x)가 옛 키로 서명한 1.0.0 자산을 받는다
+    /// ②A2 pubkey 바이너리(1.0.0)는 옛 키 서명 자산을 **거부**한다(= 1.0.1 을 옛 키로 서명하면 끊긴다)
+    /// ③A2 pubkey 바이너리는 A2 서명 자산(1.0.1)을 받는다.
+    #[test]
+    fn updater_bridge_old_signed_accepted_by_old_rejected_by_a2() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let (old_pub, old_id, old_sign) = gen_tauri_key();
+        let (a2_pub, a2_id, a2_sign) = gen_tauri_key();
+        assert_ne!(old_id, a2_id);
+        let asset_100 = b"cys 1.0.0 updater bundle bytes";
+        let asset_101 = b"cys 1.0.1 updater bundle bytes";
+        let sig_100_old = b64.encode(old_sign(asset_100));
+        let sig_101_a2 = b64.encode(a2_sign(asset_101));
+        let sig_101_old = b64.encode(old_sign(asset_101));
+
+        tauri_updater_verify(asset_100, &sig_100_old, &old_pub).expect("①0.14.x 가 1.0.0(옛 키)을 거부");
+        assert!(
+            tauri_updater_verify(asset_101, &sig_101_old, &a2_pub).is_err(),
+            "②A2 바이너리가 옛 키 서명을 받았다 — 회전이 무의미"
+        );
+        tauri_updater_verify(asset_101, &sig_101_a2, &a2_pub).expect("③1.0.0 이 1.0.1(A2)을 거부");
+        // 대조: 0.14.x 바이너리는 A2 서명을 못 받는다(= 브리지 판을 건너뛰면 끊긴다 — 런북 경고의 근거).
+        assert!(tauri_updater_verify(asset_101, &sig_101_a2, &old_pub).is_err());
+    }
+
+    /// 팩 이중 신뢰: 키링에 옛 키·P2 가 함께 있으면 둘 중 어느 키로 서명한 팩도 받고,
+    /// P2 key_id 를 사칭한 제3 키 서명·미지 key_id 는 거부한다.
+    #[test]
+    fn pack_dual_trust_old_and_p2_both_accepted() {
+        let (old_pub, old_id, old_sign) = gen_tauri_key();
+        let (p2_pub, p2_id, p2_sign) = gen_tauri_key();
+        let (_x_pub, x_id, x_sign) = gen_tauri_key();
+        let kr = Keyring {
+            keys: vec![
+                TrustedKey { key_id: old_id.clone(), pubkey: old_pub, not_after: "2030-01-01T00:00:00Z".into() },
+                TrustedKey { key_id: p2_id.clone(), pubkey: p2_pub, not_after: "2031-01-01T00:00:00Z".into() },
+            ],
+            revoked_key_ids: vec![],
+        };
+        let (s, now, exp) = (1_700_000_000i64, 1_700_000_100i64, 1_700_100_000i64);
+
+        let acc = tmp_accepted("dual-old");
+        let _ = std::fs::remove_file(&acc);
+        let m_old = manifest_json(&old_id, "1.0.0", s, exp);
+        verify_with_keyring(&m_old, old_sign(&m_old).as_bytes(), now, &acc, &kr)
+            .expect("옛 키 서명 팩이 거부됨(이중 신뢰 붕괴)");
+
+        let acc2 = tmp_accepted("dual-p2");
+        let _ = std::fs::remove_file(&acc2);
+        let m_p2 = manifest_json(&p2_id, "1.0.1", s, exp);
+        verify_with_keyring(&m_p2, p2_sign(&m_p2).as_bytes(), now, &acc2, &kr)
+            .expect("P2 서명 팩이 거부됨(이중 신뢰 붕괴)");
+
+        // P2 key_id 를 달고 제3 키로 서명 → 서명 단계 거부.
+        let forged = x_sign(&m_p2);
+        assert!(verify_with_keyring(&m_p2, forged.as_bytes(), now, &acc2, &kr).is_err());
+        // 키링에 없는 key_id → 거부.
+        let m_x = manifest_json(&x_id, "1.0.1", s, exp);
+        assert!(verify_with_keyring(&m_x, x_sign(&m_x).as_bytes(), now, &acc2, &kr).is_err());
+        let _ = std::fs::remove_file(&acc);
+        let _ = std::fs::remove_file(&acc2);
     }
 
     // ── 테스트 fixture: minisign keypair 생성 + manifest 서명 ──────────────────────

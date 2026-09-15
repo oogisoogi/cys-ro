@@ -135,6 +135,8 @@ ROW_RE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9_.-]+)$")
 # 파일명에 박힌 버전 토큰(X.Y.Z)을 뽑는다. `cys_aarch64.app.tar.gz` 처럼 토큰이 없는 이름도
 # 정상이므로(업데이터 자산은 버전을 안 달고 나온다) "있으면 일치해야 한다"로 다룬다.
 TOKEN_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+# minisign key id 표기 — `.pub`·서명 주석에 찍히는 16자 대문자 hex(리틀엔디언 keynum 을 뒤집은 값).
+KEY_ID_RE = re.compile(r"^[0-9A-F]{16}$")
 
 # ★배포 원본 레포 — latest.json 의 url 결속(③)을 이 값으로 판정한다.
 #   ★2026-09-09 정정(TICKET=cys-release-first-publish): 종전 값은 벤더 `idoforgod/cys-terminal`
@@ -650,7 +652,76 @@ def check_version_progress(files, previous):
     return pv, pb
 
 
-def verify(version, release_dir, vendor_manifest, previous_latest, repo=RELEASE_REPO, now=None):
+def _minisign_line_key_id(b64_text, byte_len, what):
+    """base64 로 감싼 minisign 텍스트(tauri 표기)에서 첫 본문 줄의 key id 를 뽑는다.
+
+    공개키 본문 = 2B 알고리즘 + 8B keynum + 32B 키(42B) · 서명 본문 = 2B + 8B + 64B(74B).
+    keynum 은 리틀엔디언이라 표기는 바이트를 뒤집은 hex 다(minisign `{:016X}`).
+    """
+    try:
+        text = base64.b64decode(b64_text.strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as e:
+        raise VerifyError("%s 가 base64 로 감싼 minisign 텍스트가 아니다: %s" % (what, e))
+    body = next((ln.strip() for ln in text.splitlines()
+                 if ln.strip() and not ln.strip().startswith("untrusted comment:")), None)
+    if body is None:
+        raise VerifyError("%s 에 본문 줄이 없다" % what)
+    try:
+        raw = base64.b64decode(body, validate=True)
+    except ValueError as e:
+        raise VerifyError("%s 본문 줄이 base64 가 아니다: %s" % (what, e))
+    if len(raw) != byte_len:
+        raise VerifyError("%s 본문 길이 %d바이트 ≠ %d바이트" % (what, len(raw), byte_len))
+    return raw[2:10][::-1].hex().upper()
+
+
+def updater_sig_key_id(sig_b64, what="업데이터 서명"):
+    return _minisign_line_key_id(sig_b64, 74, what)
+
+
+def tauri_pubkey_key_id(pub_b64, what="tauri updater pubkey"):
+    return _minisign_line_key_id(pub_b64, 42, what)
+
+
+def key_id_from_tauri_conf(path):
+    """직전 판 `src-tauri/tauri.conf.json` 의 plugins.updater.pubkey → key id."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            conf = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise VerifyError("직전 판 tauri.conf.json 을 읽을 수 없다(%s): %s" % (path, e))
+    pub = ((conf.get("plugins") or {}).get("updater") or {}).get("pubkey") if isinstance(conf, dict) else None
+    if not isinstance(pub, str) or not pub.strip():
+        raise VerifyError("직전 판 tauri.conf.json 에 plugins.updater.pubkey 가 없다: %s" % path)
+    return tauri_pubkey_key_id(pub, "직전 판 updater pubkey")
+
+
+def check_updater_signing_key(files, names, expected_key_id):
+    """★키 브리지 게이트(2026-09-15 · TICKET=key-bridge · docs/KEY-ROTATION.md).
+
+    업데이터 서명(.sig) **전부**의 key id 가 **직전 판 바이너리에 박힌 pubkey** 의 key id 와 같아야 한다.
+    이미 설치된 앱은 자기 바이너리의 pubkey 로만 새 판을 검증한다 — 서명 키가 다르면 전 사용자의
+    앱 내 Update 가 「서명 검증 실패」로 조용히 멈춘다. 브리지 판(1.0.0)은 pubkey 를 새 키(A2)로 바꾸고도
+    **옛 키로 서명**해야 하고, 다음 판(1.0.1)은 A2 로 서명해야 한다. 어느 쪽을 틀려도 여기서 죽는다.
+    ★사거리: key id 대조까지다(암호 검증은 하지 않는다 — 파이썬 표준 라이브러리에 ed25519 가 없다).
+      서명 자체의 진위는 CI 의 실서명 경로와 앱 업데이터가 진다. 이 게이트가 막는 것은 「키를 잘못
+      고른 발행」이다.
+    """
+    if not KEY_ID_RE.match(expected_key_id or ""):
+        raise VerifyError("기대 업데이터 key id 형식 오류(16자 대문자 hex): %r" % (expected_key_id,))
+    sigs = sorted(n for n in names if n.endswith(".sig"))
+    if not sigs:
+        raise VerifyError("업데이터 서명(.sig)이 하나도 없다 — 서명 키를 판정할 수 없다")
+    for name in sigs:
+        got = updater_sig_key_id(read_text_strict(files[name], name), name)
+        if got != expected_key_id:
+            raise VerifyError("업데이터 서명 키 불일치: %s 의 key id %s ≠ 직전 판 바이너리 pubkey key id %s "
+                              "— 이대로 발행하면 설치된 앱이 이 판을 거부한다(키 브리지 절차 위반)"
+                              % (name, got, expected_key_id))
+    return sigs
+
+
+def verify(version, release_dir, vendor_manifest, updater_key_id, previous_latest, repo=RELEASE_REPO, now=None):
     if not VERSION_RE.match(version):
         raise VerifyError("--version 은 X.Y.Z 여야 한다: %r" % version)
 
@@ -700,6 +771,9 @@ def verify(version, release_dir, vendor_manifest, previous_latest, repo=RELEASE_
     # ── 7. 업데이터(latest.json) 교차 대조 ──
     platforms = check_latest_json(version, files, sums, mac_included, repo=repo)
 
+    # ── 7-b. 업데이터 서명 키 == 직전 판 바이너리 pubkey 키 (키 브리지 게이트) ──
+    check_updater_signing_key(files, listed, updater_key_id)
+
     # ── 8. 팩 replay 단조 — 벤더 팩을 받은 기계도 이 팩을 받을 수 있는가 ──
     check_pack_replay_monotonic(files, vendor_manifest, now=now)
 
@@ -730,6 +804,12 @@ def main():
     ap.add_argument("--previous-latest-file", default=None,
                     help="직전 공개판 latest.json 사본 경로 (기본: %s 에서 받음)"
                          % (PREVIOUS_LATEST_URL_TPL % "<repo>"))
+    # ★7-b(키 브리지 게이트)의 기준 — 둘 중 하나 필수(전체 검증 시). 생략해서 건너뛰는 선택지는 없다.
+    keysrc = ap.add_mutually_exclusive_group()
+    keysrc.add_argument("--updater-key-id", default=None,
+                        help="직전 판 바이너리 updater pubkey 의 key id(16자 대문자 hex)")
+    keysrc.add_argument("--prev-tauri-conf", default=None,
+                        help="직전 판 태그의 src-tauri/tauri.conf.json 사본 경로(pubkey 에서 key id 파생)")
     args = ap.parse_args()
 
     if args.pack_only:
@@ -754,12 +834,16 @@ def main():
 
     if not args.version or not args.release_dir:
         ap.error("전체 검증에는 --version 과 --release-dir 가 필요하다(팩 전용은 --pack-only)")
+    if not args.updater_key_id and not args.prev_tauri_conf:
+        ap.error("전체 검증에는 --updater-key-id 또는 --prev-tauri-conf 가 필요하다(키 브리지 게이트)")
 
     try:
         vendor = load_vendor_manifest(path=args.vendor_manifest_file)
         previous = load_previous_latest(PREVIOUS_LATEST_URL_TPL % args.repo, path=args.previous_latest_file)
-        assets, platforms, mac_included = verify(args.version, args.release_dir, vendor, previous,
-                                                 repo=args.repo)
+        updater_key_id = (args.updater_key_id if args.updater_key_id
+                          else key_id_from_tauri_conf(args.prev_tauri_conf))
+        assets, platforms, mac_included = verify(args.version, args.release_dir, vendor,
+                                                 updater_key_id, previous, repo=args.repo)
     except VerifyError as e:
         print("::error::릴리스 검증 실패 — %s" % e, file=sys.stderr)
         return 1

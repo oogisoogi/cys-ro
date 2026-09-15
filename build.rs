@@ -158,22 +158,37 @@ fn main() {
     let kinds_json = "{\n  \"edit_kind\": [\"avatar\", \"broll\", \"graphic\", \"caption\", \"audio\", \"music\"],\n  \"mode\": [\"fullscreen\", \"left-card\", \"rounded-crop-pip\"],\n  \"transition\": [\"cut\", \"dissolve\", \"slide\"]\n}\n";
     fs::write(Path::new(&out_dir).join("cys_kinds.json"), kinds_json).expect("cys_kinds.json 생성 실패");
 
-    // §7-①/⑩: minisign 신뢰 키링 embed. 공개키 단일 SOT = src-tauri/tauri.conf.json(updater.pubkey).
-    // build.rs가 그 pubkey를 회전용 키링(cysjavis-pack/trusted-keys.json)의 부트스트랩 엔트리
-    // (pubkey "")에 주입해 병합 → OUT_DIR 상수로 방출(skills walk와 동형 코드젠·손목록 드리프트 0).
-    // 키를 두 곳에 두지 않으므로 양쪽 동일 보장. 기존 skills/kinds 코드젠은 불변(추가만).
-    println!("cargo:rerun-if-changed=src-tauri/tauri.conf.json");
+    // §7-①/⑩: minisign 신뢰 키링 embed. 팩 신뢰 키의 단일 SOT = cysjavis-pack/trusted-keys.json.
+    // ★2026-09-15 키 분리(TICKET=key-bridge · docs/KEY-ROTATION.md): 종전엔 tauri.conf.json 의
+    //   updater.pubkey 를 이 파일의 빈 pubkey("") 칸에 주입했다. 업데이터 키를 회전하는 순간 그 주입이
+    //   팩 키 항목(key_id 54FB…)에 **다른 키의 공개키**를 넣어 옛 키 서명 팩을 전부 거부시킨다.
+    //   그래서 주입을 없애고 공개키를 이 파일에 명시한다. 업데이터 키와 팩 키는 이제 서로 독립이다.
+    // 빈 pubkey·형식 오류 key_id 는 빌드를 죽인다(조용히 「아무 팩도 못 받는 바이너리」 출하 차단).
+    // key_id ↔ pubkey 파생 일치는 packsig.rs 시험(embedded_keyring_key_ids_match_pubkeys)이 잰다.
     println!("cargo:rerun-if-changed=cysjavis-pack/trusted-keys.json");
-    let tauri_conf =
-        fs::read_to_string("src-tauri/tauri.conf.json").expect("tauri.conf.json 읽기 실패");
-    let pubkey = extract_json_string(&tauri_conf, "pubkey")
-        .expect("tauri.conf.json updater.pubkey 부재 — 키링 embed 불가");
-    let keyring_src =
+    let keyring =
         fs::read_to_string("cysjavis-pack/trusted-keys.json").expect("trusted-keys.json 읽기 실패");
-    // 부트스트랩 엔트리의 빈 pubkey("")에 tauri pubkey 주입(단일 SOT 유지).
-    let keyring = keyring_src.replace("\"pubkey\": \"\"", &format!("\"pubkey\": \"{pubkey}\""));
+    let parsed_keyring: serde_json::Value =
+        serde_json::from_str(&keyring).expect("trusted-keys.json 파싱 실패 — 빌드 중단");
+    let keys = parsed_keyring
+        .get("keys")
+        .and_then(|v| v.as_array())
+        .expect("trusted-keys.json 에 keys 배열 부재 — 빌드 중단");
+    if keys.is_empty() {
+        panic!("trusted-keys.json keys 가 비었다 — 팩을 하나도 못 받는 바이너리 출하 금지(빌드 중단)");
+    }
+    for k in keys {
+        let key_id = k.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
+        let pubkey = k.get("pubkey").and_then(|v| v.as_str()).unwrap_or("");
+        if key_id.len() != 16 || !key_id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()) {
+            panic!("trusted-keys.json key_id 형식 오류(16자 대문자 hex 필요): {key_id:?} — 빌드 중단");
+        }
+        if pubkey.trim().is_empty() {
+            panic!("trusted-keys.json key_id {key_id} 의 pubkey 가 비었다 — 빌드 중단");
+        }
+    }
     let keyring_code = format!(
-        "/// build.rs 자동 생성 — minisign 신뢰 키링(tauri.conf.json pubkey + trusted-keys.json 병합).\npub const TRUSTED_KEYS_JSON: &str = r####\"{keyring}\"####;\n"
+        "/// build.rs 자동 생성 — minisign 팩 신뢰 키링(cysjavis-pack/trusted-keys.json 원문 · 업데이터 pubkey 와 독립).\npub const TRUSTED_KEYS_JSON: &str = r####\"{keyring}\"####;\n"
     );
     fs::write(Path::new(&out_dir).join("pack_keyring.rs"), keyring_code)
         .expect("pack_keyring.rs 생성 실패");
@@ -310,13 +325,3 @@ fn utc_stamp(secs: u64) -> String {
     format!("{y:04}{m:02}{d:02}T{:02}{:02}Z", rem / 3_600, (rem % 3_600) / 60)
 }
 
-/// tauri.conf.json 등에서 `"key": "value"` 첫 매치의 value를 추출(JSON 파서 build-dep 없이).
-/// minisign base64 pubkey엔 `"`가 없어 안전. updater.pubkey가 파일 내 유일한 "pubkey"다.
-fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let start = json.find(&needle)? + needle.len();
-    let after_colon = &json[start..][json[start..].find(':')? + 1..];
-    let q1 = after_colon.find('"')? + 1;
-    let q2 = after_colon[q1..].find('"')? + q1;
-    Some(after_colon[q1..q2].to_string())
-}

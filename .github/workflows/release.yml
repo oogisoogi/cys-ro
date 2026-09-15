@@ -964,7 +964,9 @@ jobs:
     env:
       KEY_ID: '54FBA04AD0E0F49D'    # 임베드 키링(cysjavis-pack/trusted-keys.json) key_id — manifest.key_id
                                     # ★2026-09-08 포크 전환: 벤더 키(39E60A702949D6C3)가 아니라
-                                    #   우리 배포 키의 실제 id 다(tauri.conf.json updater.pubkey 파생).
+                                    #   우리 배포 키의 실제 id 다(cysjavis-pack/trusted-keys.json 항목).
+                                    # ★2026-09-15 키 분리: 팩 키는 업데이터 pubkey 와 독립이다 — 1.0.1 에서 P2 id 로
+                                    #   바꾼다(docs/KEY-ROTATION.md §4 · 1.0.0 브리지 판은 이 값 유지).
       EXPIRES_DAYS: '90'            # 서명 신선도 유효창(§6-5 트레이드오프 — Replay 차단 vs 재발행 부담)
       # ★무중단 팩 채널 안전 하한(2026-07-12 오너 확정). seed-once 상태 보호(memory/·SESSION_STATE
       # 불가침)는 0.12.48+ 바이너리 코드다 — 공란이면 ≤0.12.47 구버전 pack-update가 사용자 상태를

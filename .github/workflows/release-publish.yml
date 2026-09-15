@@ -117,8 +117,16 @@ jobs:
           mkdir reviewed-release
           gh release download "$TAG" -R "$SRC_REPO" --dir reviewed-release
           VERSION="${TAG#v}"
+          # ★7-b 키 브리지 게이트 기준(2026-09-15 · docs/KEY-ROTATION.md) — 직전 공개 판 태그의
+          #   tauri.conf.json(= 설치된 앱에 박힌 updater pubkey). 이 판의 업데이터 서명은 그 키여야 한다.
+          PREV_TAG="$(gh release view -R "$SRC_REPO" --json tagName --jq .tagName)"
+          [[ "$PREV_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid previous release tag: $PREV_TAG" >&2; exit 1; }
+          [ "$PREV_TAG" != "$TAG" ] || { echo "previous release equals target tag" >&2; exit 1; }
+          git fetch --no-tags --depth=1 origin "refs/tags/$PREV_TAG:refs/tags/$PREV_TAG"
+          git show "$PREV_TAG:src-tauri/tauri.conf.json" > prev-tauri.conf.json
           python3 .release-tools/scripts/release-verify.py \
-            --version "$VERSION" --release-dir reviewed-release --print-assets
+            --version "$VERSION" --release-dir reviewed-release --print-assets \
+            --prev-tauri-conf prev-tauri.conf.json
           ACTUAL_BUNDLE_SHA256="$(shasum -a 256 reviewed-release/SHA256SUMS.txt | awk '{print $1}')"
           [ "$ACTUAL_BUNDLE_SHA256" = "$EXPECTED_BUNDLE_SHA256" ] || {
             echo "reviewed release digest mismatch" >&2
@@ -199,8 +207,15 @@ jobs:
           mkdir reviewed-release
           gh release download "$TAG" -R "$SRC_REPO" --dir reviewed-release
           VERSION="${TAG#v}"
+          # ★7-b 기준 — 위 검증 잡과 같은 유도(직전 공개 판 태그의 tauri.conf.json).
+          PREV_TAG="$(gh release view -R "$SRC_REPO" --json tagName --jq .tagName)"
+          [[ "$PREV_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid previous release tag: $PREV_TAG" >&2; exit 1; }
+          [ "$PREV_TAG" != "$TAG" ] || { echo "previous release equals target tag" >&2; exit 1; }
+          git fetch --no-tags --depth=1 origin "refs/tags/$PREV_TAG:refs/tags/$PREV_TAG"
+          git show "$PREV_TAG:src-tauri/tauri.conf.json" > prev-tauri.conf.json
           python3 .release-tools/scripts/release-verify.py \
-            --version "$VERSION" --release-dir reviewed-release
+            --version "$VERSION" --release-dir reviewed-release \
+            --prev-tauri-conf prev-tauri.conf.json
           ACTUAL_BUNDLE_SHA256="$(shasum -a 256 reviewed-release/SHA256SUMS.txt | awk '{print $1}')"
           [ "$ACTUAL_BUNDLE_SHA256" = "$EXPECTED_BUNDLE_SHA256" ] || {
             echo "reviewed release digest mismatch" >&2

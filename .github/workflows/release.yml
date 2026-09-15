@@ -1325,7 +1325,8 @@ jobs:
       - name: Sign pack-manifest.json (minisign)
         env:
           # ★팩 전용 비밀(1.0.1 · docs/KEY-ROTATION.md §4) — 업데이터 비밀(TAURI_SIGNING_PRIVATE_KEY = A2)과 가른다.
-          #   같은 비밀을 쓰면 업데이터 키 회전이 팩 서명 키까지 바꿔 설치본 팩 키링과 어긋난다. 값 = P2 = KEY_ID.
+          #   같은 비밀을 쓰면 업데이터 키 회전이 팩 서명 키까지 바꿔 설치본 팩 키링과 어긋난다.
+          #   비밀 값 = P2 **개인키 전문**(tauri signer 키 파일 내용) — 짧은 키 id 가 아니다. 그 키의 id 가 위 KEY_ID 다.
           CYS_PACK_SIGNING_PRIVATE_KEY: ${{ secrets.CYS_PACK_SIGNING_PRIVATE_KEY }}
           CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.CYS_PACK_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |

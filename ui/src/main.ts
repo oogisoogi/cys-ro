@@ -5671,11 +5671,15 @@ async function promptPackInstall() {
   }
 }
 
-/// Update 버튼 디스패처 — 가용 업데이트 종류에 따라 경로를 고른다.
-/// 본체(바이너리)=패치 설치(오너 2026-07-15 재배선·재시작+자동복원) → 무중단 팩 → 미확인 시 수동 재확인.
+/// Update 버튼 — **누를 때마다 새로 확인하고, 그 한 번의 판정으로 배지와 동작을 함께 정한다.**
+/// ★TICKET=cysr-console-flicker-r2 ⓔ(2026-09-16 신규 1.0.0 설치본 실기): 배지는 떠 있는데 누르면
+///   「최신·추가 업데이트 없음」. 종전 디스패처는 **이전 확인이 남긴 캐시**(updateAvailable·
+///   packUpdateAvailable)로 경로를 골라, 배지를 만든 판정과 클릭이 보는 판정이 서로 다른 시점의
+///   값이었다(시작 직후 확인 → 이후 상태 변화). 이제 클릭 = checkForUpdate(false) 하나 —
+///   updatePlan 이 배지 텍스트와 비silent 동작(본체 패치·팩 무중단·본체 필요 안내·최신 안내)을
+///   같은 입력에서 정하고, 「없음」이면 그 자리에서 배지를 "0" 으로 갱신한다.
+///   (본체+팩 동시·호환이면 팩 무중단 + 본체 토스트 — updateplan.ts 옵션 2 설계 그대로.)
 async function onUpdateButton() {
-  if (updateAvailable) return promptBinaryPatch();
-  if (packUpdateAvailable && !packUpdateAvailable.binary_too_old) return promptPackInstall();
   return checkForUpdate(false);
 }
 

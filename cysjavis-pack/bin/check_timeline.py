@@ -45,6 +45,13 @@ import re
 import subprocess
 import sys
 
+import os
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ── 정수-틱 격자 (OpenCut media_time.rs:9-10 클린룸 이식) ──
 TICKS_PER_SECOND = 120_000
 
@@ -177,7 +184,7 @@ def probe_fps(video_path):
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=r_frame_rate", "-of", "default=nk=1:np=1", video_path],
             capture_output=True, text=True, timeout=30,
-        )
+         **NOWIN)
     except FileNotFoundError:
         return None, "ffprobe 없음 — 팩 전제(ffmpeg 동봉 ffprobe) 설치 필요"
     except subprocess.TimeoutExpired:

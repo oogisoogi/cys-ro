@@ -188,7 +188,7 @@ jobs:
                    test_bootlast_golden_lock_parity test_bootv2_doc_contract test_pyseal_census \
                    test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root \
                    test_preflight_hook_body test_preflight_npm_prefix test_learn_digest_queue \
-                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn; do
+                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack-only] declared-state test: $t =="

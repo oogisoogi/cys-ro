@@ -141,6 +141,12 @@ import time
 import traceback
 import uuid
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장
 #   (javis_wakeup.py:50-52·javis_task.py:64 관례 답습).
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -483,7 +489,7 @@ def _emit(evt_type, fields):
     if not env.get("HUD_STATE_DIR") and _ROOT_FROM_ENV:
         env["HUD_STATE_DIR"] = os.path.join(ROOT, "_round", "hud")
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env, **NOWIN)
         return r.returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
@@ -1032,7 +1038,7 @@ def _run_wakeup(args, timeout=20):
     env["CYS_NO_AUTOSTART"] = "1"
     try:
         return subprocess.run([sys.executable, wk] + args, capture_output=True,
-                              text=True, timeout=timeout, env=env)
+                              text=True, timeout=timeout, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError):
         return None
 
@@ -1507,7 +1513,7 @@ def _daemon_fingerprint():
     env["CYS_NO_AUTOSTART"] = "1"
     try:
         r = subprocess.run([_cys_bin(), "status", "--json"], capture_output=True,
-                           text=True, timeout=5, env=env)
+                           text=True, timeout=5, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError):
         return None
     if r.returncode != 0:
@@ -2602,13 +2608,13 @@ def self_test(a=None):
 
         def run_q(root, argv, env_extra=None, now=None, timeout=120):
             r = subprocess.run([sys.executable, self_path] + argv, capture_output=True,
-                               text=True, env=env_for(root, env_extra, now), timeout=timeout)
+                               text=True, env=env_for(root, env_extra, now), timeout=timeout, **NOWIN)
             return r.returncode, r.stdout, r.stderr
 
         def popen_q(root, argv, env_extra=None, now=None):
             return subprocess.Popen([sys.executable, self_path] + argv,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                    env=env_for(root, env_extra, now))
+                                    env=env_for(root, env_extra, now), **NOWIN)
 
         def wk_pending(root):
             d = os.path.join(root, "_round", "wakeups", "pending")
@@ -3342,7 +3348,7 @@ def self_test(a=None):
             argvK = ([cmd_, "--request-id", "Z1", "--class", "approval", "--source", "s1",
                       "--summary", "x"] if cmd_ == "submit" else [cmd_])
             r = subprocess.run([sys.executable, self_path] + argvK, capture_output=True,
-                               text=True, env=envK, cwd=cwdK, timeout=60)
+                               text=True, env=envK, cwd=cwdK, timeout=60, **NOWIN)
             chk(r.returncode == want,
                 "ⓚJAVIS_ROOT 미설정 %s 처리 오류: rc=%s(기대 %s) %s"
                 % (cmd_, r.returncode, want, r.stderr[:160]))

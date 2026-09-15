@@ -32,6 +32,12 @@ import subprocess
 import sys
 
 
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
+
 def pack_dir():
     for key in ("CYS_PACK_DIR", "JAVIS_PACK_DIR", "AITERM_JARVIS_DIR"):
         v = os.environ.get(key, "")
@@ -83,7 +89,7 @@ def git_repo_root(cwd):
         return None
     try:
         r = subprocess.run([git, "rev-parse", "--show-toplevel"],
-                           cwd=cwd, capture_output=True, timeout=10)
+                           cwd=cwd, capture_output=True, timeout=10, **NOWIN)
         if r.returncode != 0:
             return None
         return r.stdout.decode("utf-8", "replace").strip() or None
@@ -102,7 +108,7 @@ def git_diff_for_path(root, base, path):
         # 새 파일이 아직 add 안 됐으면 git이 추적하지 않아 diff가 비므로, intent-to-add를
         # 적용한 것과 동등하게 보이도록 --no-index 폴백을 추가한다(추적 안 된 신규 파일 대비).
         r = subprocess.run([git, "diff", base, "--", path],
-                           cwd=root, capture_output=True, timeout=60)
+                           cwd=root, capture_output=True, timeout=60, **NOWIN)
         text = r.stdout.decode("utf-8", "replace")
         if text.strip():
             return text
@@ -110,11 +116,11 @@ def git_diff_for_path(root, base, path):
         abspath = path if os.path.isabs(path) else os.path.join(root, path)
         if os.path.isfile(abspath):
             chk = subprocess.run([git, "ls-files", "--error-unmatch", "--", path],
-                                 cwd=root, capture_output=True, timeout=10)
+                                 cwd=root, capture_output=True, timeout=10, **NOWIN)
             if chk.returncode != 0:  # 추적되지 않음 → 신규 파일
                 ni = subprocess.run(
                     [git, "diff", "--no-index", "--", os.devnull, abspath],
-                    cwd=root, capture_output=True, timeout=60)
+                    cwd=root, capture_output=True, timeout=60, **NOWIN)
                 return ni.stdout.decode("utf-8", "replace")
         return text
     except Exception:

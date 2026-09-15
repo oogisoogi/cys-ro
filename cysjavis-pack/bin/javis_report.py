@@ -25,6 +25,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ── 선언 기반 판정 (C1 · DESIGN_declared-state.md §4-5 · M1 병행 단계) ─────────────
 # 파서는 `javis_todo_decl`이 단일 구현이다(재구현 금지 — 2언어 파리티 계약 ADR-2의 Python 측).
 # 임포트 실패는 **치명이 아니다**: 팩이 부분 갱신된 스큐 상태에서도 소비자는 계속 돌아야 한다
@@ -138,7 +144,7 @@ def cys_status():
     if not cys:
         return None
     try:
-        r = subprocess.run([cys, "status", "--json"], capture_output=True, timeout=10)
+        r = subprocess.run([cys, "status", "--json"], capture_output=True, timeout=10, **NOWIN)
         if r.returncode != 0:
             return None
         return json.loads(r.stdout.decode("utf-8", "replace"))

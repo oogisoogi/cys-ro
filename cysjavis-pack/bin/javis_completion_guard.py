@@ -146,6 +146,12 @@ import threading
 import time
 import uuid
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬 경로 가드(javis_task.py:64 관례) — 형제 모듈 import 보장.
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SELF_DIR not in sys.path:
@@ -276,7 +282,7 @@ def _win_taskkill(pid):
     """
     with contextlib.suppress(Exception):
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, **NOWIN)
 
 
 def _kill_active_groups():
@@ -430,7 +436,7 @@ def _emit(evt_type, fields):
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     with contextlib.suppress(Exception):
-        subprocess.run(argv, capture_output=True, text=True, timeout=5, env=env)
+        subprocess.run(argv, capture_output=True, text=True, timeout=5, env=env, **NOWIN)
 
 
 def _alert_once(sid, kind, evt_type, fields):
@@ -587,7 +593,7 @@ def _fetch_status_json():
     env["CYS_NO_AUTOSTART"] = "1"
     try:
         r = subprocess.run([_cys_bin(), "status", "--json"], capture_output=True,
-                           text=True, timeout=5, env=env)
+                           text=True, timeout=5, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError):
         return None
     if r.returncode != 0:
@@ -667,7 +673,7 @@ def _resource_gate(ctx_pct):
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError) as e:
         return "infra", "resource_gate 실행 실패: %s" % e, None
     rc = r.returncode
@@ -932,7 +938,7 @@ def _maybe_demote_calibrated(task_id, state, spec):
     with contextlib.suppress(Exception):
         subprocess.run([sys.executable, jt, "set-verify-spec", task_id,
                         "--demote-calibrated"],
-                       capture_output=True, text=True, timeout=10, env=env)
+                       capture_output=True, text=True, timeout=10, env=env, **NOWIN)
 
 
 def _grill_active():
@@ -987,15 +993,17 @@ def _popen_group(argv, cwd, timeout):
 
     POSIX = setsid 그룹 + killpg / Windows = CREATE_NEW_PROCESS_GROUP + taskkill /T(E1-3).
     """
-    kw = {}
-    if os.name == "posix":
-        kw["start_new_session"] = True  # setsid — 그룹 리더로 스폰
-    else:
-        # E1-3: 새 프로세스 그룹으로 스폰 — 부모(훅)의 Ctrl 이벤트가 verify 로 전파되지 않고,
-        #       종료는 taskkill /T 가 트리를 따라간다.
-        kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # POSIX = setsid(그룹 리더로 스폰) · Windows = E1-3 새 프로세스 그룹 — 부모(훅)의 Ctrl 이벤트가
+    # verify 로 전파되지 않고, 종료는 taskkill /T 가 트리를 따라간다.
+    # ★창 숨김은 같은 creationflags 에 OR 로 합쳐 **명시 키워드**로 넘긴다 — `**NOWIN` 을 따로 전개하면
+    #   키가 겹쳐 윈도에서만 TypeError(multiple values)로 죽고, dict 전개에 숨기면 정적 게이트가 못 본다
+    #   (TICKET=cysr-console-flicker-r2). POSIX 의 creationflags=0 은 허용값, Windows 는 start_new_session 무시.
+    posix = os.name == "posix"
+    flags = 0 if posix else (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                             | NOWIN.get("creationflags", 0))
     p = subprocess.Popen(argv, cwd=cwd or None, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kw)
+                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         start_new_session=posix, creationflags=flags)
     # F1: 활성 그룹 등록 — _Deadline·최상위 예외로 이 함수가 중도 이탈하면 등록이 남고,
     #     핸들러(_kill_active_groups)가 정리한다. finally 해제는 금지 — 예외 unwinding 중
     #     해제되면 핸들러가 죽일 대상을 잃는다(고아 재발).
@@ -1339,7 +1347,7 @@ def _wakeup(argv_tail):
     env["CYS_NO_AUTOSTART"] = "1"
     with contextlib.suppress(Exception):
         r = subprocess.run([sys.executable, wk] + argv_tail, capture_output=True,
-                           text=True, timeout=5, env=env)
+                           text=True, timeout=5, env=env, **NOWIN)
         return r.returncode in (0, 5)  # 5=EXIT_EMPTY(이미 배달·억제) — 성공 취급(autopilot 전례)
     return False
 
@@ -1953,7 +1961,7 @@ def self_test():
             stdin_text = json.dumps(stdin_obj or {"stop_hook_active": False,
                                                   "transcript_path": "/nonexistent.jsonl"})
             r = subprocess.run([sys.executable, self_path], input=stdin_text,
-                               capture_output=True, text=True, env=env, timeout=120)
+                               capture_output=True, text=True, env=env, timeout=120, **NOWIN)
             return r.returncode, r.stdout, r.stderr
 
         def run_cli(root, args, env_extra=None):
@@ -1971,7 +1979,7 @@ def self_test():
             if env_extra:
                 env.update(env_extra)
             r = subprocess.run([sys.executable, self_path] + list(args),
-                               capture_output=True, text=True, env=env, timeout=120)
+                               capture_output=True, text=True, env=env, timeout=120, **NOWIN)
             return r.returncode, r.stdout, r.stderr
 
         def gstate(root, tid):
@@ -2281,7 +2289,7 @@ def self_test():
                        "PATH": shim_dir + os.pathsep + os.environ.get("PATH", "")})
         r_dc = subprocess.run([sys.executable, os.path.join(_SELF_DIR, "javis_task.py"),
                                "checkout", "T1", "--owner", "w-b2"],
-                              capture_output=True, text=True, env=env_dc, timeout=60)
+                              capture_output=True, text=True, env=env_dc, timeout=60, **NOWIN)
         chk(r_dc.returncode == 0 and "calibrated 강등" in r_dc.stderr,
             "B2 강등 후 strict checkout 거동(통과+경고) 실패: rc=%s err=%s"
             % (r_dc.returncode, r_dc.stderr[:300]))
@@ -2621,7 +2629,7 @@ def self_test():
         dl_saved = {"ROOT": g["ROOT"], "TASKS_DIR": g["TASKS_DIR"],
                     "hud": os.environ.get("HUD_STATE_DIR")}
         p_track = subprocess.Popen(["sleep", "60"], start_new_session=True,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NOWIN)
         try:
             g["ROOT"], g["TASKS_DIR"] = droot, dtasks
             os.environ["HUD_STATE_DIR"] = os.path.join(droot, "hud")
@@ -2723,11 +2731,11 @@ def self_test():
         env_jt.update({"JAVIS_ROOT": root, "CYS_NO_AUTOSTART": "1",
                        "PATH": shim_dir + os.pathsep + os.environ.get("PATH", "")})
         r1 = subprocess.run([sys.executable, jt, "create", "TF3", "--id", "TF3"],
-                            capture_output=True, text=True, env=env_jt, timeout=60)
+                            capture_output=True, text=True, env=env_jt, timeout=60, **NOWIN)
         chk(r1.returncode == 0, "F3 create 실패: %s" % r1.stderr[:200])
         r2 = subprocess.run([sys.executable, jt, "checkout", "TF3", "--owner", "master",
                              "--claim-surface", "7"],
-                            capture_output=True, text=True, env=env_jt, timeout=60)
+                            capture_output=True, text=True, env=env_jt, timeout=60, **NOWIN)
         chk(r2.returncode == 0, "F3 checkout --claim-surface 실패: rc=%s %s"
             % (r2.returncode, r2.stderr[:300]))
         f3_cl, _e3 = _read_json(os.path.join(tasks, ".guard-claim.7"))
@@ -2759,7 +2767,7 @@ def self_test():
                         "--servers-override 0 --nodes-override 0 --load-override 0.0",
                     "PATH": shim_dir + os.pathsep + os.environ.get("PATH", "")})
         r2 = subprocess.run([sys.executable, self_path], input="not-json{{{",
-                            capture_output=True, text=True, env=env, timeout=60).returncode
+                            capture_output=True, text=True, env=env, timeout=60, **NOWIN).returncode
         adverse.append(("stdin 비JSON", r2))
         # 태스크 레코드 부재
         mk_claim(tasks, "7", "Tghost")

@@ -41,6 +41,12 @@ import tarfile
 import tempfile
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★S1ⓒ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 형제 스윕).
 #   피닉스가 이 스크립트를 실행하고 그 출력을 읽는다 — 로케일 코덱(cp949 등)에 묶이면 한국어 Windows 에서
 #   로그 한 줄의 비-ASCII 에 UnicodeEncodeError 로 죽어 부활 체인을 함께 끊는다.
@@ -168,7 +174,7 @@ def encrypt_file(plain_path, enc_path, passphrase):
     iv = os.urandom(16)
     key = _derive_key(passphrase, salt)
     r = subprocess.run([_openssl(), "enc", "-aes-256-cbc", "-K", key.hex(), "-iv", iv.hex(),
-                        "-in", plain_path, "-out", enc_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                        "-in", plain_path, "-out", enc_path], capture_output=True, text=True, encoding="utf-8", errors="replace", **NOWIN)
     if r.returncode != 0:
         die("openssl 암호화 실패: %s" % (r.stderr or "").strip())
     return {"cipher": "aes-256-cbc", "kdf": "pbkdf2_hmac_sha256", "iterations": PBKDF2_ITERS,
@@ -180,7 +186,7 @@ def decrypt_file(enc_path, plain_path, passphrase, header):
     iv = bytes.fromhex(header["iv"])
     key = _derive_key(passphrase, salt, header.get("iterations", PBKDF2_ITERS))
     r = subprocess.run([_openssl(), "enc", "-d", "-aes-256-cbc", "-K", key.hex(), "-iv", iv.hex(),
-                        "-in", enc_path, "-out", plain_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                        "-in", enc_path, "-out", plain_path], capture_output=True, text=True, encoding="utf-8", errors="replace", **NOWIN)
     if r.returncode != 0:
         die("openssl 복호화 실패(키 불일치 의심): %s" % (r.stderr or "").strip())
 

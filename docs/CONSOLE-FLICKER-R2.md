@@ -72,6 +72,43 @@
 | 논쟁 — 둘째 클라이언트 접속 시 첫 프레임 지연 | 기각 | 첫 SSE 프레임은 현재 world 스냅샷을 즉시 보낸다(`_sse`) — 빈 화면이 아니다. |
 | 논쟁 — 포그라운드 `cys daemon install` 의 whoami/schtasks 숨김 | 기각 | 전부 `.output()` 캡처라 사용자 출력 경로가 아니고, CREATE_NO_WINDOW 는 권한 상승(UAC)과 무관하다. |
 
+## 6-2. master#1330e449 반영 — 결정적 증거(박사님 노트북 WMI 1분) 이후
+- 확정 주체 ①: `cys.exe fleet --json`/`status --json` · 부모 = python3.exe(오피스 브리지) · 2~6초 간격.
+  처방 = ⓐ 무인 게이팅(위 3-1) ⓑ cysd 가 브리지를 동봉 **pythonw.exe** 로 우선 스폰(`bundled_pythonw` · 없으면 종전 python3) —
+  `cargo check --bin cysd` 통과. ⓒ 브리지의 subprocess 5곳은 NOWIN 유지(`test_nowin_periodic_spawns` 핀).
+- 확정 주체 ②: 아고라 참가자 클라이언트(pythonw) → `powershell Get-Acl` — 별도 저장소(jarvis-agora-board) 별 커밋.
+- 팩 전수: 「출력을 캡처하는 subprocess 호출은 창을 숨긴다」 규칙으로 213건 중 누락 188건(46파일)에 `**NOWIN` 편입.
+  출력을 터미널로 흘리는 7건은 제외(숨기면 출력이 사라지고 pane 자식은 ConPTY 에서 떨어진다).
+  ★편입 중 발견·수정: `javis_completion_guard._popen_group` 은 이미 `creationflags=CREATE_NEW_PROCESS_GROUP` 을 싣고 있어
+  `**NOWIN` 병기가 윈도에서만 키 중복 TypeError 가 됐을 것 → 같은 칸에 OR 로 합쳤다.
+- 규칙 게이트 `test_nowin_captured_spawns`(팩 전체 · 계수 하한 · `from subprocess import` 별칭 금지 · 셀프테스트) — CI 4목록 등재.
+  뮤턴트 4/4 KILLED(사본 트리): P1 NOWIN 1곳 제거 · P2 정의 flag 값 변조 · P3 별칭 import 추가 · P4 숨김 없는 powershell check_output 추가.
+- Tauri 크레이트 `cargo check` 통과(이 워크트리에 없는 ui/dist·사이드카·runtime 을 TAURI_CONFIG 덮어쓰기로 우회 — 코드 컴파일만 검증).
+- 팩 시험 전수(83파일) 대조: 1차 기준선은 `cysjavis-pack` 만 떠낸 사본이라 저장소 전체를 읽는 시험 7건이 환경 탓으로
+  적색이었다 → **대조 무효로 판정하고 폐기**. 편집 트리에서 적색이 남은 3건만 따로 쟀다:
+  · `test_phoenix_e2e_replacement` — 단독 재실행 5/5 PASS(두 전수 실행이 동시에 돌던 간섭).
+  · `test_preflight_phase1_checks` · `test_verify_gate` — 격리 env(JAVIS_ROOT·CYS_PROBE_RUNS) 부재로 거부(rc 2) →
+    격리 env 로 재실행: 전자 24/24 OK(편집 트리·a587c7e 전체 사본 동일) · 후자 1/9 실패(`test_04_brief_paths` ·
+    `'additionalContext' not found in ''`) — **a587c7e 전체 사본에서도 같은 케이스·같은 단언으로 실패 = 이 변경 이전부터**.
+  ⇒ 이 변경으로 새로 생긴 팩 시험 실패 0.
+- `javis_completion_guard --self-test`(격리 env) OK — 창 숨김 병합 뒤 그룹 스폰·taskkill 경로 포함.
+
+## 6-3. 주체 ② — 아고라 참가자 클라이언트의 PowerShell `Get-Acl` (별도 저장소 jarvis-agora)
+- 작업 트리 ~/axdev/.wt/agora-acl-nowin2 · 브랜치 fix/acl-nowin-r2 · base 4582cb6(master#f15e8288·#d574408f 지정).
+  (먼저 받은 board 트리 75d4fb8 에는 이 코드가 없어 재지정을 요청했다.)
+- 왜 주기적인가: `participant.load()` 가 한 번 불릴 때마다 `_require_mode` → `_windows_acl_sids` 로 PowerShell 을
+  **두 번**(설정 폴더·participant.json) 띄운다. `load()` 는 MCP 도구 호출(`tools.py`)·상주 방문(`resident` · 기본 10분 StartInterval)
+  마다 돈다 — WMI 의 「23:38:02 2건」이 한 번의 load 와 맞는다.
+- 처방(최소): `participant._hidden_window_kwargs()` — 윈도우에서만 `creationflags=CREATE_NO_WINDOW` +
+  `STARTUPINFO(STARTF_USESHOWWINDOW · SW_HIDE)` · 타 OS 빈 dict. `Get-Acl` 의 `subprocess.run` 에 전개.
+- 시험: selftest 케이스 「윈도우: Get-Acl 자식 창 숨김」(윈도 흉내로 실제 넘어간 인자를 잡아 flag·SW_HIDE 단언 · 비윈도 무변경 단언).
+  뮤턴트: A1 flag 제거 · A2 SW_HIDE 제거 · A3 전개 제거 → 각 기대 단언으로 KILLED · A4 비윈도에서도 flag 부착 →
+  단언 도달 전 AttributeError(비윈도 파이썬에 STARTUPINFO 없음)로 적색 — 크래시 킬(속성 위반이 맥에서 즉사로 드러남).
+  ★첫 뮤턴트 실행에서 원본 케이스 자체가 적색이었다(헬퍼만 만들고 호출에 전개를 빠뜨림) — 원본 선확인 덕에 공허 킬을 버리고 수정 후 재측정.
+- 같은 부류로 남은 아고라 스폰(이번 최소 처방 밖 · master 판단): `ssh-keygen`(sign.py·signer.py·keygen.py·roster.py) ·
+  `git`/`gh`(store_github.py) · selfcheck.py — 출력 캡처형이며 pythonw 아래에서 불리면 같은 깜빡임이 날 수 있다.
+
 ## 7. 한계(정직)
+- 기계적 편입은 맥에서 NOWIN 이 빈 dict 라 행동 무변경이고, 윈도 실행 검증은 없다 — 윈도에서 `**kw` 류 동적 전개와의 키 중복은 정적으로 1건만 찾았다(수정). 동적으로 creationflags 를 싣는 다른 경로가 있으면 윈도 CI 팩 시험이 잡는다.
 - 윈도우에서 창이 실제로 안 뜨는지는 이 브랜치에서 재지 않았다(맥 작업트리). 박사님 샌드박스 A/B(CYS_NO_OFFICE_BRIDGE=1) 결과가 주체 확정의 정본이다.
 - 게이트는 정적 계수다 — 기존 원시 스폰의 윈도 도달 여부는 표 2 의 수동 분류에 기댄다.

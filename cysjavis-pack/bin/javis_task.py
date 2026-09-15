@@ -117,6 +117,12 @@ import sys
 import time
 import uuid
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★Windows 즉사 차단(P0): top-level `import fcntl` 은 Windows 에 그 모듈이 없어
 #   ModuleNotFoundError 로 이 스크립트 **전체**를 불능화한다 — javis_org.py:9-22 가 같은
 #   사고를 먼저 겪고 msvcrt 폴백으로 지혈한 선례가 있다.
@@ -587,7 +593,7 @@ def _notify_verify_missing(task_id, why, waiver=False):
         r = subprocess.run(base + ["enqueue", "--to", "master", "--task", task_key,
                                    "--reason", reason,
                                    "--idempotency-key", task_id, "--severity", "warn"],
-                           capture_output=True, text=True, timeout=5, env=env)
+                           capture_output=True, text=True, timeout=5, env=env, **NOWIN)
         enq_ok = (r.returncode == 0)
     if enq_ok:
         with contextlib.suppress(OSError):
@@ -595,7 +601,7 @@ def _notify_verify_missing(task_id, why, waiver=False):
                 f.write(_now() + "\n")
     with contextlib.suppress(Exception):
         subprocess.run(base + ["drain", "--deliver", "--target", "master"],
-                       capture_output=True, text=True, timeout=5, env=env)
+                       capture_output=True, text=True, timeout=5, env=env, **NOWIN)
 
 
 def _now():
@@ -1351,7 +1357,7 @@ def _resolve_caller():
     try:
         import subprocess  # E1 self-test 관례(지역 import) — 모듈 상단 결합 회피
         out = subprocess.run([os.environ.get("CYS_BIN", "cys"), "identify"],
-                             capture_output=True, text=True, timeout=5)
+                             capture_output=True, text=True, timeout=5, **NOWIN)
         if out.returncode == 0:
             ref = ((json.loads(out.stdout) or {}).get("caller") or {}).get("surface_ref")
             if isinstance(ref, str) and ref:
@@ -1436,7 +1442,7 @@ def _radio_done_gate(task_id, task, radio_node, refs):
     if refs:
         argv += ["--refs", refs]
     try:
-        r = subprocess.run(argv, capture_output=True, timeout=120)
+        r = subprocess.run(argv, capture_output=True, timeout=120, **NOWIN)
     except Exception as e:
         msg = "radio done-check 실행 불가: %s" % e
         if mode == "strict":
@@ -2009,7 +2015,7 @@ def cmd_self_test(args):
         if env_extra:
             env.update(env_extra)
         r = subprocess.run([sys.executable, self_path] + argv,
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=env, **NOWIN)
         return r.returncode, r.stdout, r.stderr
 
     def read_task(root, tid):

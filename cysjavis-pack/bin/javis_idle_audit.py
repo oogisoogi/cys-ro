@@ -24,6 +24,12 @@ import os
 import subprocess
 import sys
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 CYS_TIMEOUT = 10          # 초 — cys 서브프로세스 타임아웃
 DEFAULT_IDLE_HOURS = 6.0  # 이 시간 초과 유휴만 후보 (④)
 DEFAULT_CPU_MAX = 1.0     # 이 %CPU 미만만 후보 (③)
@@ -103,7 +109,7 @@ def collect_procs():
         out = subprocess.run(
             ['ps', '-axo', 'pid,ppid,%cpu,etime,stat,tty,command'],
             capture_output=True, text=True, timeout=CYS_TIMEOUT,
-        ).stdout
+         **NOWIN).stdout
     except (OSError, subprocess.TimeoutExpired):
         return {}, []
     all_by_pid, targets = {}, []
@@ -124,7 +130,7 @@ def _run_cys(args):
     """cys 서브커맨드 실행. (ok, stdout). 실패·부재면 (False, '')."""
     try:
         r = subprocess.run(['cys'] + args, capture_output=True,
-                           text=True, timeout=CYS_TIMEOUT)
+                           text=True, timeout=CYS_TIMEOUT, **NOWIN)
     except (OSError, subprocess.TimeoutExpired):
         return False, ''
     if r.returncode != 0:

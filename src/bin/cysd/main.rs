@@ -1661,7 +1661,12 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf) {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     tokio::spawn(async move {
         let exe_dir_ref = exe_dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
-        let python = bundled_python3(exe_dir_ref).unwrap_or_else(|| "python3".to_string());
+        // ★TICKET=cysr-console-flicker-r2(master#1330e449 · 박사님 노트북 WMI 실측): 윈도우에서 브리지가
+        //   콘솔 서브시스템 python3.exe 로 떠 있었고 그 자식 cys.exe 들이 주기적으로 창을 띄웠다.
+        //   브리지는 콘솔이 필요 없는 장수 서버라 동봉 pythonw.exe(GUI 서브시스템)를 우선한다 — 없으면 종전 경로.
+        let python = bundled_pythonw(exe_dir_ref)
+            .or_else(|| bundled_python3(exe_dir_ref))
+            .unwrap_or_else(|| "python3".to_string());
         let log_path = state_dir.join("office-bridge.log");
         loop {
             // 단일 인스턴스 가드 — 이미 서비스 중(선행 데몬·수동 기동)이면 스폰하지 않고 재확인만.
@@ -1743,6 +1748,19 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf) {
 
 /// ★B3: 동봉 runtime python3 절대경로(exe 옆 번들). runtime_bin_dirs(pane 자식과 동일 SOT)에서 python3 실행파일을
 /// 찾는다. 없으면 None(호출측이 "python3" 리터럴로 폴백 — PATH 선두주입이 동봉본을 잡거나 시스템 python3).
+/// 동봉 pythonw.exe(Windows GUI 서브시스템 · 콘솔 없음) — 콘솔이 필요 없는 장수 python 전용.
+/// Windows 외 플랫폼은 항상 None(호출부가 `bundled_python3` 로 폴백).
+pub(crate) fn bundled_pythonw(exe_dir: &std::path::Path) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    cys::runtime_bin_dirs(exe_dir)
+        .into_iter()
+        .map(|d| d.join("pythonw.exe"))
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 pub(crate) fn bundled_python3(exe_dir: &std::path::Path) -> Option<String> {
     let names: &[&str] = if cfg!(windows) {
         &["python3.exe", "python.exe"]

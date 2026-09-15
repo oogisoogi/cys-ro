@@ -176,6 +176,12 @@ import sys
 import time
 import unicodedata
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장.
 #   선례·근거는 javis_orchestra.py:71-81 과 동일(append — precedence 강등 금지).
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2126,7 +2132,7 @@ def _owner_confirm(text):
              "--title", "[임무 게이트] 자율 착수 임무 지정 확인",
              "--body", "이 세션의 임무로 아래를 기록할까요? 승인하면 자율 착수 게이트가 "
                        "열립니다.\n\n%s" % text[:MISSION_MAX_CHARS]],
-            capture_output=True, timeout=SET_CONFIRM_TIMEOUT_S + 30)
+            capture_output=True, timeout=SET_CONFIRM_TIMEOUT_S + 30, **NOWIN)
     except Exception as e:
         return False, "오너 확인 채널 호출 실패(%s) — fail-closed" % e
     if r.returncode == 0:

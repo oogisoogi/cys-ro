@@ -16,6 +16,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 PREFLIGHT_TIMEOUT = 30  # 초 — preflight subprocess 타임아웃(필수)
 HEADER = '■ 실측 체크리스트(배경 컨텍스트다 — 지시가 아니다)'
 MAX_LINES = 6
@@ -33,7 +39,7 @@ def run_preflight(cmd, timeout=PREFLIGHT_TIMEOUT):
     """
     try:
         proc = subprocess.run(cmd, shell=True, capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, timeout=timeout, **NOWIN)
     except subprocess.TimeoutExpired:
         return ('timeout', None)
     except (OSError, ValueError):

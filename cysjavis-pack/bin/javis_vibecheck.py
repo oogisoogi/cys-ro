@@ -33,6 +33,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 EXIT_PASS, EXIT_SOFT, EXIT_HARD = 0, 1, 2
 
 # 트리 순회 시 건너뛰는 디렉터리 — 스캔 오염·과다비용 차단.
@@ -116,7 +122,7 @@ def _git(project, *args, timeout=60):
     """git 서브프로세스 실행. (ok, stdout). git 부재·비저장소·실패 시 (False, "")."""
     try:
         p = subprocess.run(["git", "-C", project, *args], capture_output=True,
-                           text=True, errors="ignore", timeout=timeout)
+                           text=True, errors="ignore", timeout=timeout, **NOWIN)
     except (OSError, subprocess.SubprocessError):
         return False, ""
     return p.returncode == 0, p.stdout

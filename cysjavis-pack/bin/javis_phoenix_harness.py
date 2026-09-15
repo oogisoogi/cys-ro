@@ -46,6 +46,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장.
 #   ._pth 는 표준 경로 계산을 우회해 **스크립트 폴더를 sys.path 에 넣지 않는다**.
 #   unix/mac 은 스크립트 폴더가 이미 sys.path[0] 이라 이 블록은 무동작(멱등).
@@ -219,7 +225,7 @@ def cys(*args, timeout=20, socket=True):
     for k in ("AITERM_SOCKET",):  # 클라이언트가 실수로 라이브로 새지 않게
         env.pop(k, None)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
         return r
     except subprocess.TimeoutExpired as e:
         class _R:
@@ -238,7 +244,7 @@ def harness_ping():
 def live_surfaces():
     """라이브 데몬의 surface 목록(무접촉 관측 — 소켓 오버라이드 없음)."""
     try:
-        r = subprocess.run([CYS, "list"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run([CYS, "list"], capture_output=True, text=True, timeout=10, **NOWIN)
     except Exception:
         return []
     return [l for l in (r.stdout or "").splitlines() if l.startswith("surface:")]
@@ -254,7 +260,7 @@ def harness_daemon_pids():
     harn_dir_rp = os.path.realpath(HARN_DIR)
     harn_sock_rp = os.path.realpath(HARN_SOCK)
     try:
-        out = subprocess.run(["pgrep", "-x", "cysd"], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(["pgrep", "-x", "cysd"], capture_output=True, text=True, timeout=10, **NOWIN).stdout
     except Exception:
         return pids
     for line in out.split():
@@ -263,7 +269,7 @@ def harness_daemon_pids():
             continue
         try:
             # lsof -Fn: NUL 없는 이름 필드만(파싱 안정) — 각 열린 파일 경로를 realpath 로 해소해 대조.
-            ls = subprocess.run(["lsof", "-p", pid, "-Fn"], capture_output=True, text=True, timeout=10).stdout
+            ls = subprocess.run(["lsof", "-p", pid, "-Fn"], capture_output=True, text=True, timeout=10, **NOWIN).stdout
         except Exception:
             continue
         matched = False
@@ -285,7 +291,7 @@ def _descendants(root_pids):
     """root_pids 의 전(全) 자손 pid 집합 — ps 실측 부모체인(pid/ppid 기반). ★Phase11 ②: 실행 경로 문자열
     (pkill -f 'sleep 600')이 아니라 pid 관계로 추적하므로 심링크·명령명 변형에 면역이고 무관 프로세스 collateral 0."""
     try:
-        out = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True, text=True, timeout=10, **NOWIN).stdout
     except Exception:
         return set()
     children = {}
@@ -329,7 +335,7 @@ def start_daemon(wait=12.0):
     lf = open(DAEMON_LOG, "ab")
     _tracked_daemon = subprocess.Popen(
         [CYSD], env=_daemon_env(), stdout=lf, stderr=lf,
-        cwd=HARN_DIR, preexec_fn=os.setsid,   # ← 새 세션/프로세스그룹 → killpg 대상
+        cwd=HARN_DIR, preexec_fn=os.setsid, **NOWIN,   # ← 새 세션/프로세스그룹 → killpg 대상
     )
     t0 = time.time()
     while time.time() - t0 < wait:
@@ -831,7 +837,7 @@ def _q_startup_lock_contention():
     ev["primary_alive"] = harness_ping()
     # 같은 격리 소켓에 두 번째 cysd 기동 시도 → startup lock 경합 재현
     p = subprocess.run([CYSD], env=_daemon_env(), capture_output=True, text=True,
-                       cwd=HARN_DIR, timeout=8)
+                       cwd=HARN_DIR, timeout=8, **NOWIN)
     combined = (p.stdout or "") + (p.stderr or "")
     ev["second_cysd_rc"] = p.returncode
     ev["second_cysd_output"] = combined.strip()[:400]
@@ -917,7 +923,7 @@ def _phoenix(*args, extra_env=None, timeout=60):
     if extra_env:
         env.update(extra_env)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
         return r
     except subprocess.TimeoutExpired as e:
         class _R:
@@ -1199,7 +1205,7 @@ def cmd_phoenix_p5_redelivery(args):
         ev["redelivery_pass"] = None
         ev["live_unchanged"] = live_before == len(live_surfaces())
         teardown(verbose=True)
-        subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True)
+        subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
         print(json.dumps(ev, ensure_ascii=False, indent=2))
         return ev
     cys("pause", timeout=10)
@@ -1224,7 +1230,7 @@ def cmd_phoenix_p5_redelivery(args):
     ev["delivered_to_new_worker"] = bool(scr and "P5_REDELIV_MSG" in (scr.stdout or ""))
     remain = teardown(verbose=True)
     # sleep 600 stub 정리
-    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
     ev["redelivery_pass"] = ev["restored_present"] and ev["queue_empty_after"] and ev["delivered_to_new_worker"]
     ev["live_unchanged"] = live_before == len(live_surfaces())
     ev["residual_zero"] = not remain
@@ -1379,7 +1385,7 @@ def cmd_phoenix_p7_inherit(args):
         "import sys; sys.path.insert(0, %r); import javis_state_snapshot as m; "
         "print(chr(10).join(m.default_sources(state_root=%r, depts_json=%r)))"
         % (os.path.dirname(snap), dept_root, depts_json)],
-        capture_output=True, text=True, timeout=15)
+        capture_output=True, text=True, timeout=15, **NOWIN)
     src_lines = probe.stdout or ""
     ev["snapshot_covers_alpha"] = ("cys-dept-alpha" in src_lines and "schedule_state.json" in src_lines)
     ev["snapshot_covers_beta"] = ("cys-dept-beta" in src_lines)
@@ -1389,7 +1395,7 @@ def cmd_phoenix_p7_inherit(args):
         _kill_pg(p, signal.SIGKILL)
     global _tracked_daemon
     _tracked_daemon = None
-    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
     time.sleep(0.6)
     _wipe_daemon_state()  # ★cysd 자동복원 차단(phoenix roster 보존) → dead_by_desired 결정론
     start_daemon()
@@ -1417,7 +1423,7 @@ def cmd_phoenix_p7_inherit(args):
     ev["crash_role_still_kept"] = "worker" in roster2
 
     remain = teardown(verbose=True)
-    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
     ev["live_unchanged"] = live_before == len(live_surfaces())
     ev["residual_zero"] = not remain
     ev["p7_pass"] = bool(
@@ -1445,7 +1451,7 @@ def cmd_phoenix_p8_backup(args):
     scratch = _tf.mkdtemp(prefix="cys-p8-", dir="/tmp")
     try:
         # 1) 함수 self-test(단위 계층)
-        rs = subprocess.run([sys.executable, BACKUP, "self-test"], capture_output=True, text=True, timeout=90)
+        rs = subprocess.run([sys.executable, BACKUP, "self-test"], capture_output=True, text=True, timeout=90, **NOWIN)
         ev["selftest_pass"] = rs.returncode == 0 and "self-test 전체 PASS" in (rs.stdout or "")
 
         # 2) CLI E2E(통합 계층) — 합성 home 스크래치
@@ -1464,7 +1470,7 @@ def cmd_phoenix_p8_backup(args):
             e = {k: v for k, v in os.environ.items() if k not in LEAKY_ENV}
             if env:
                 e.update(env)
-            return subprocess.run([sys.executable, BACKUP, *a], capture_output=True, text=True, timeout=45, env=e)
+            return subprocess.run([sys.executable, BACKUP, *a], capture_output=True, text=True, timeout=45, env=e, **NOWIN)
 
         clsj = json.loads(cli("classify", "--home", home).stdout)
         ev["cli_classify_tier2_has_token"] = any("api.token" in f for f in clsj["tier2_secrets_excluded"])
@@ -1496,7 +1502,7 @@ def cmd_phoenix_p8_backup(args):
         # 4) phoenix status 가 protection 등급 노출(배선 확인)
         penv = {k: v for k, v in os.environ.items() if k not in LEAKY_ENV}
         pr = subprocess.run([sys.executable, PHOENIX, "--socket", HARN_SOCK, "status"],
-                            capture_output=True, text=True, timeout=25, env=penv)
+                            capture_output=True, text=True, timeout=25, env=penv, **NOWIN)
         try:
             pj = json.loads(pr.stdout[pr.stdout.find("{"):])
             ev["phoenix_status_has_protection"] = "grade" in (pj.get("protection") or {})
@@ -1564,7 +1570,7 @@ def cmd_phoenix_p9_catastrophe(args):
 
         # 백업(Tier1 암호화)
         br = subprocess.run([sys.executable, BACKUP, "backup", "--out", os.path.join(scratch, "bk"),
-                             "--home", bhome, "--key-file", key], capture_output=True, text=True, timeout=45)
+                             "--home", bhome, "--key-file", key], capture_output=True, text=True, timeout=45, **NOWIN)
         ev["backup_ok"] = br.returncode == 0
 
         # ★전멸(Phase11 ②: realpath/pid 기반·빗나감0): 격리 데몬 + 전 자손(stub surface 자식 포함)을 pid 로 kill.
@@ -1597,7 +1603,7 @@ def cmd_phoenix_p9_catastrophe(args):
         # 백업 복원 → 원본 해시 동일
         dest = os.path.join(scratch, "restored")
         rr = subprocess.run([sys.executable, BACKUP, "restore", "--in", os.path.join(scratch, "bk"),
-                             "--dest", dest, "--key-file", key], capture_output=True, text=True, timeout=45)
+                             "--dest", dest, "--key-file", key], capture_output=True, text=True, timeout=45, **NOWIN)
         ev["restore_backup_ok"] = rr.returncode == 0
         mism = [rel for rel, h in orig_hashes.items()
                 if not os.path.isfile(os.path.join(dest, rel)) or _sha256(os.path.join(dest, rel)) != h]
@@ -1605,7 +1611,7 @@ def cmd_phoenix_p9_catastrophe(args):
         ev["hash_mismatches"] = mism
     finally:
         teardown(verbose=True)
-        subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True)
+        subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
         _sh.rmtree(scratch, ignore_errors=True)
     ev["live_unchanged"] = live_before == len(live_surfaces())
     ev["scratch_cleaned"] = not os.path.exists(scratch)
@@ -1638,7 +1644,7 @@ def cmd_phoenix_p9_failsafe(args):
     try:
         # (a) 백업 미구성 → 정직 RED (미상을 GREEN 아닌 RED로 = fail-safe)
         st = subprocess.run([sys.executable, BACKUP, "status", "--home", scratch], capture_output=True, text=True,
-                            timeout=20, env=dict(clean_env, CYS_BACKUP_DIR=os.path.join(scratch, "none")))
+                            timeout=20, env=dict(clean_env, CYS_BACKUP_DIR=os.path.join(scratch, "none")), **NOWIN)
         ev["a_backup_absent_red"] = json.loads(st.stdout)["grade"] == "RED"
 
         # (b) roster 손상 → 보수적 재spawn(침묵 skip 아님)
@@ -1678,10 +1684,10 @@ def cmd_phoenix_p9_failsafe(args):
         k = os.path.join(scratch, "k")
         open(k, "w").write("kk\n")
         subprocess.run([sys.executable, BACKUP, "backup", "--out", os.path.join(scratch, "bk"),
-                        "--home", bhome, "--key-file", k], capture_output=True, timeout=30)
+                        "--home", bhome, "--key-file", k], capture_output=True, timeout=30, **NOWIN)
         nokey = subprocess.run([sys.executable, BACKUP, "restore", "--in", os.path.join(scratch, "bk"),
                                 "--dest", os.path.join(scratch, "d")], capture_output=True, text=True, timeout=30,
-                               env={kk: vv for kk, vv in clean_env.items() if kk != "CYS_BACKUP_KEY"})
+                               env={kk: vv for kk, vv in clean_env.items() if kk != "CYS_BACKUP_KEY"}, **NOWIN)
         ev["e_restore_nokey_fails"] = nokey.returncode != 0
     finally:
         teardown(verbose=True)
@@ -1706,7 +1712,7 @@ def cmd_phoenix_p9_ci(args):
              "phoenix-p7-inherit", "phoenix-p8-backup", "phoenix-drill"]
     results = {}
     for cmd in suite:
-        r = subprocess.run(me + [cmd], capture_output=True, text=True, timeout=600)
+        r = subprocess.run(me + [cmd], capture_output=True, text=True, timeout=600, **NOWIN)
         results[cmd] = r.returncode
         tag = "PASS" if r.returncode == 0 else ("SKIP(precondition)" if r.returncode == 77 else "FAIL")
         log("CI %s → exit %s (%s)" % (cmd, r.returncode, tag))
@@ -1767,8 +1773,8 @@ def cmd_phoenix_p10_populated(args):
                     GIT_COMMITTER_NAME="drill", GIT_COMMITTER_EMAIL="d@x")
         try:
             for gcmd in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "work"]):
-                subprocess.run(["git", "-C", proj] + gcmd, capture_output=True, env=genv, timeout=15)
-            g = subprocess.run(["git", "-C", proj, "rev-parse", "HEAD"], capture_output=True, text=True, env=genv, timeout=10)
+                subprocess.run(["git", "-C", proj] + gcmd, capture_output=True, env=genv, timeout=15, **NOWIN)
+            g = subprocess.run(["git", "-C", proj, "rev-parse", "HEAD"], capture_output=True, text=True, env=genv, timeout=10, **NOWIN)
             ev["git_project"] = g.returncode == 0
             ev["git_commit"] = (g.stdout or "").strip()[:12]
         except Exception as e:
@@ -1789,7 +1795,7 @@ def cmd_phoenix_p10_populated(args):
 
         # 백업(Tier1 암호화)
         br = subprocess.run([sys.executable, BACKUP, "backup", "--out", os.path.join(scratch, "bk"),
-                             "--home", home, "--key-file", key], capture_output=True, text=True, timeout=60)
+                             "--home", home, "--key-file", key], capture_output=True, text=True, timeout=60, **NOWIN)
         ev["backup_ok"] = br.returncode == 0
 
         # ★전멸(Phase11 ②: realpath/pid 기반·빗나감0): 격리 데몬 + 전 자손(stub 포함) pid kill + topology 소거
@@ -1823,7 +1829,7 @@ def cmd_phoenix_p10_populated(args):
         # 프로젝트 상태 복원 → 해시 동일
         dest = os.path.join(scratch, "restored")
         rsb = subprocess.run([sys.executable, BACKUP, "restore", "--in", os.path.join(scratch, "bk"),
-                              "--dest", dest, "--key-file", key], capture_output=True, text=True, timeout=60)
+                              "--dest", dest, "--key-file", key], capture_output=True, text=True, timeout=60, **NOWIN)
         ev["restore_backup_ok"] = rsb.returncode == 0
         mism = [rel for rel, h in orig.items()
                 if not os.path.isfile(os.path.join(dest, rel)) or _sha256(os.path.join(dest, rel)) != h]

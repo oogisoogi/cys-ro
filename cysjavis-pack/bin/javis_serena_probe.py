@@ -19,6 +19,12 @@ import json
 import os
 import sys
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 try:
     import psutil  # child-tree cap 용 — 부재 시 graceful 강등(heartbeat 는 stdlib 로 계속).
     _HAS_PSUTIL = True
@@ -109,7 +115,7 @@ def send_alert(role, msg):
         return False
     try:
         subprocess.run([cys, "send", "--queued", "--to", role, msg],
-                       capture_output=True, timeout=15)
+                       capture_output=True, timeout=15, **NOWIN)
         return True
     except Exception as e:
         sys.stderr.write("[serena-probe] alert 전송 실패: %s (%s)\n" % (e, msg))

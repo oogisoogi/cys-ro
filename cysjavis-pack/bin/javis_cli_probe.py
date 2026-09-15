@@ -24,6 +24,12 @@ import shlex
 import subprocess
 import sys
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # read-only 계약 표식(온보딩 무간섭 — 설치·수정 부작용 0). test_cli_probe #4 가 이 표식을 검증한다.
 PROBE_READONLY = True
 
@@ -53,7 +59,7 @@ def _resolve_posix(name):
     cmd = "command -v -- %s" % shlex.quote(name)
     try:
         r = subprocess.run([sh, "-lc", cmd], capture_output=True, text=True,
-                           timeout=_PROBE_TIMEOUT)
+                           timeout=_PROBE_TIMEOUT, **NOWIN)
     except Exception:
         return None
     if r.returncode != 0:
@@ -75,7 +81,7 @@ def _resolve_windows(name):
     if bash:
         try:
             r = subprocess.run([bash, "-lc", "command -v -- %s" % shlex.quote(name)],
-                               capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+                               capture_output=True, text=True, timeout=_PROBE_TIMEOUT, **NOWIN)
             if r.returncode == 0:
                 lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
                 if lines:
@@ -85,7 +91,7 @@ def _resolve_windows(name):
     # where 폴백
     try:
         r = subprocess.run(["where", name], capture_output=True, text=True,
-                           timeout=_PROBE_TIMEOUT)
+                           timeout=_PROBE_TIMEOUT, **NOWIN)
         if r.returncode == 0:
             lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
             if lines:

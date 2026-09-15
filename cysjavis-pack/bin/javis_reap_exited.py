@@ -49,6 +49,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 TIMEOUT = 20
 
 
@@ -64,7 +70,7 @@ def _log_dir():
 def _run(cmd, timeout=TIMEOUT):
     """subprocess 러너 — (rc, stdout, stderr). 예외도 rc!=0로 정규화(fail-soft)."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:
         return 127, "", "runner error: %s" % e

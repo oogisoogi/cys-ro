@@ -7,6 +7,12 @@ exit: 0=성공 1=위반/실패 2=입출력 3=권한(CSO아님) 4=대상없음
 """
 import argparse, json, os, sys, hashlib, subprocess, tempfile, tarfile, time, shutil
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # RC-6: OS중립 파일락 — unix는 fcntl.flock(제로 회귀·파일 닫힐 때 자동 해제), Windows는 fcntl
 # 부재라 msvcrt 바이트락으로 폴백(과거 top-level `import fcntl`이 Windows에서 즉시 ModuleNotFoundError로
 # javis_org 전체 불능이던 P0 차단). 락 실패해도 최종 원자교체(os.replace)가 일관성 보장 → best-effort.
@@ -230,7 +236,7 @@ def intake_ok(surfaces, idle_max=600):
 def dept_status(socket):
     """부서 소켓의 cys status --json 회수."""
     r = subprocess.run(["cys", "--socket", socket, "status", "--json"],
-                       capture_output=True, text=True, env={**os.environ, "CYS_NO_AUTOSTART": "1"})
+                       capture_output=True, text=True, env={**os.environ, "CYS_NO_AUTOSTART": "1"}, **NOWIN)
     if r.returncode != 0: return None
     try: return json.loads(r.stdout)
     except Exception: return None
@@ -287,7 +293,7 @@ def _audit_daemon_status(socket=None):
     else:
         cmd = ["cys", "--socket", socket, "status", "--json"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=10)
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=10, **NOWIN)
     except FileNotFoundError:
         return None, "cys-not-found"
     except subprocess.TimeoutExpired:
@@ -513,7 +519,7 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
         return actions  # down 실패로 cmd_destroy가 비0 판정
     down_cmd = [cys_dept, "down", name] + (["--purge-state"] if purge_state else [])
     r = subprocess.run(down_cmd, capture_output=True, text=True,
-                       env={**os.environ, "CYS_TRASH_STAMP": ts})
+                       env={**os.environ, "CYS_TRASH_STAMP": ts}, **NOWIN)
     actions.append(("down", r.returncode))
     # ★F1(reviewer1): down 실패(특히 --purge-state의 state 격리 실패=exit 3)를 삼키지 않는다 —
     #   사유를 stderr로 정직 보고하고 최종 exit는 cmd_destroy가 비0으로 판정한다. 부분 실패라도
@@ -539,7 +545,7 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
         dept_roster = expand("~/.local/state/cys/phoenix/dept_roster.json")
         vr = subprocess.run(["python3", verifier, "--dept", name,
                              "--state-root", state_root, "--depts-json", DEPTS,
-                             "--dept-roster", dept_roster], capture_output=True, text=True)
+                             "--dept-roster", dept_roster], capture_output=True, text=True, **NOWIN)
         actions.append(("verify", vr.returncode))
         if vr.returncode != 0:
             sys.stderr.write("[destroy] %s: 사후 검증 실패(rc=%d) — %s\n"
@@ -610,7 +616,7 @@ def create_dept(key):
     """cys-dept create 위임. 부서장 각성·미션주입·격리·멱등 전부 cys-dept 책임."""
     require_cso()  # 게이트를 효과 함수에 (R1 REVISE-1) — import 직접호출 우회 차단
     r = subprocess.run(["cys-dept", "create", key], capture_output=True, text=True,
-                       env={**os.environ})  # 부모 role 상속(require_cso로 cso 보장·하류 가드 유지)
+                       env={**os.environ}, **NOWIN)  # 부모 role 상속(require_cso로 cso 보장·하류 가드 유지)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 def dispatch_task(t):
@@ -619,7 +625,7 @@ def dispatch_task(t):
            "--task", t["task"], "--scope", t["scope"], "--to", t.get("to","worker")]
     if t.get("success"): cmd += ["--success", t["success"]]
     if t.get("dont"): cmd += ["--dont", t["dont"]]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, **NOWIN)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 def apply_manifest(m):

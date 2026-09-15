@@ -34,6 +34,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★Windows 즉사 차단(P0): top-level `import fcntl` 은 Windows 에 그 모듈이 없어
 #   ModuleNotFoundError 로 이 스크립트 **전체**를 불능화한다 — javis_org.py:9-22 가 같은
 #   사고를 먼저 겪고 msvcrt 폴백으로 지혈한 선례가 있다.
@@ -112,7 +118,7 @@ def _resolve_caller(args):
         return env
     try:
         out = subprocess.run([CYS_BIN, "identify"], capture_output=True,
-                             text=True, timeout=5)
+                             text=True, timeout=5, **NOWIN)
         if out.returncode == 0:
             ref = ((json.loads(out.stdout) or {}).get("caller") or {}).get("surface_ref")
             if isinstance(ref, str) and ref:
@@ -204,7 +210,7 @@ class _ReadError(Exception):
 
 def _read_screen_live(ref):
     out = subprocess.run([CYS_BIN, "read-screen", "--surface", ref],
-                         capture_output=True, text=True, timeout=12)
+                         capture_output=True, text=True, timeout=12, **NOWIN)
     if out.returncode != 0:
         raise _ReadError(f"cys read-screen exit {out.returncode}")
     return out.stdout
@@ -303,7 +309,7 @@ def _parse_ps(text):
 
 def _ps_live():
     out = subprocess.run(["ps", "-axo", "pid,ppid,command"],
-                         capture_output=True, text=True, timeout=12)
+                         capture_output=True, text=True, timeout=12, **NOWIN)
     if out.returncode != 0:
         raise _ReadError(f"ps exit {out.returncode}")
     return out.stdout
@@ -414,7 +420,7 @@ def probe_verdict_match(args):
         cli = [sys.executable, os.path.join(pack, "bin", "javis_verdict.py")]
     try:
         vr = subprocess.run(cli + ["validate", args.file],
-                            capture_output=True, text=True, timeout=20)
+                            capture_output=True, text=True, timeout=20, **NOWIN)
     except (OSError, subprocess.SubprocessError) as e:
         return EXIT_INDET, f"verdict validator unavailable: {e}"
     if vr.returncode != 0:
@@ -437,7 +443,7 @@ def _load_status(args):
     if args.status_file:
         return json.loads(open(args.status_file, encoding="utf-8").read())
     out = subprocess.run([CYS_BIN, "status", "--json"],
-                         capture_output=True, text=True, timeout=12)
+                         capture_output=True, text=True, timeout=12, **NOWIN)
     if out.returncode != 0:
         raise _ReadError(f"cys status exit {out.returncode}")
     return json.loads(out.stdout)

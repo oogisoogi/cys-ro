@@ -117,6 +117,12 @@ import sys
 import tempfile
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장.
 #   ._pth 는 표준 경로 계산을 우회해 **스크립트 폴더를 sys.path 에 넣지 않는다**
 #   (2026-07-29 Windows 0.14.4 실측: `ModuleNotFoundError: No module named 'javis_scrub'`).
@@ -606,7 +612,7 @@ def _run(cmd, timeout=120, env=None):
     호출부 전용(additive · 기존 호출자 무영향)."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           encoding="utf-8", errors="replace", env=env)
+                           encoding="utf-8", errors="replace", env=env, **NOWIN)
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except FileNotFoundError:
         return 127, "명령 없음: %s" % cmd[0]
@@ -622,7 +628,7 @@ def _run_split(cmd, timeout=120):
       `_run` 은 종전 소비처(산문 진단 목적)가 많아 계약을 바꾸지 않고 그대로 둔다(무접촉)."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           encoding="utf-8", errors="replace")
+                           encoding="utf-8", errors="replace", **NOWIN)
         return r.returncode, (r.stdout or ""), (r.stderr or "")
     except FileNotFoundError:
         return 127, "", "명령 없음: %s" % cmd[0]
@@ -736,7 +742,7 @@ def _notify_loud(title, body):
         ("send", ["cys", "send", "--queued", "--to", "master", "[부트 중단] %s — %s" % (title, body)]),
     ):
         try:
-            r = subprocess.run(cmd, capture_output=True, timeout=10)
+            r = subprocess.run(cmd, capture_output=True, timeout=10, **NOWIN)
             if r.returncode == 0:
                 return name
         except Exception:
@@ -1618,7 +1624,7 @@ def _run_env(cmd, env, timeout=120):
     'stdout 마지막 줄=부서명' 계약을 병합 텍스트에서 긁는 오파싱 방지)."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           encoding="utf-8", errors="replace", env=env)
+                           encoding="utf-8", errors="replace", env=env, **NOWIN)
         return r.returncode, (r.stdout or ""), (r.stderr or "")
     except FileNotFoundError:
         return 127, "", "명령 없음: %s" % cmd[0]
@@ -2493,7 +2499,7 @@ def _cys_dept_name_ok_batch(names):
     script = fndef + '\nfor n in "$@"; do dept_name_ok "$n" && echo Y || echo N; done\n'
     try:
         r = subprocess.run([bash, "-c", script, "_"] + list(names),
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, **NOWIN)
     except Exception as e:
         return None, ("drift", "추출한 dept_name_ok 실행에 실패했다(%s: %s)"
                       % (type(e).__name__, e))

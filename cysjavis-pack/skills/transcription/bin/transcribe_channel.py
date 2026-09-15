@@ -42,6 +42,12 @@ import tempfile
 from urllib.parse import urlsplit
 
 
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
+
 # ── 의존 모듈 결정론 로드 (pack 트리 내 경로 — SOT/LIVE 양쪽 동형) ──────────────
 def _pack_dir() -> str:
     env = os.environ.get("CYS_PACK_DIR")
@@ -90,7 +96,7 @@ def _ytdlp_audio(url: str, out_wav: str, *, env, timeout: int = 600) -> str:
          "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
          "-o", out_wav, url],
         capture_output=True, text=True, encoding="utf-8", errors="strict",
-        env=env, timeout=timeout, check=True,
+        env=env, timeout=timeout, check=True, **NOWIN,
     )
     return out_wav
 

@@ -80,6 +80,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장.
 #   ._pth 는 표준 경로 계산을 우회해 **스크립트 폴더를 sys.path 에 넣지 않는다**
 #   (2026-07-29 Windows 0.14.4 실측: `ModuleNotFoundError: No module named 'javis_scrub'`).
@@ -260,7 +266,7 @@ def cys_agent_detect(timeout=10):
     if cys:
         try:
             r = subprocess.run([cys, "agent-detect", "--json"],
-                               capture_output=True, timeout=timeout)
+                               capture_output=True, timeout=timeout, **NOWIN)
             if r.returncode == 0:
                 d = json.loads((r.stdout or b"").decode("utf-8", "replace"))
                 a = d.get("agents")
@@ -408,7 +414,7 @@ def cys_status():
         return None
     try:
         r = subprocess.run([cys, "status", "--json"], capture_output=True,
-                           timeout=_cys_status_timeout_s())
+                           timeout=_cys_status_timeout_s(), **NOWIN)
         if r.returncode != 0:
             return None
         return json.loads(r.stdout.decode("utf-8", "replace"))
@@ -1789,7 +1795,7 @@ def resolve_manifest_phase(manifest, phase_id):
         return None, []
     try:
         r = subprocess.run([sys.executable, tool, "phase", manifest, "--phase", phase_id, "--json"],
-                           capture_output=True, timeout=30)
+                           capture_output=True, timeout=30, **NOWIN)
         if r.returncode != 0:
             return None, []
         data = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
@@ -2210,7 +2216,7 @@ def cmd_round_log(args):
             # RC-6(D6): shell=True는 OS 기본 셸(unix=/bin/sh·Windows=cmd.exe)로 실행 — from_cmd는
             # OS중립 기계검증 명령(빌드·테스트) 전제다. bash 전용 문법을 넣으면 Windows cmd.exe에서
             # 실패하므로 RSI machine-eval 티켓은 OS중립 명령을 쓴다(저 consumer 영향·T3 실측 후 재판단).
-            r = subprocess.run(args.from_cmd, shell=True, capture_output=True, timeout=1800)
+            r = subprocess.run(args.from_cmd, shell=True, capture_output=True, timeout=1800, **NOWIN)
             tail = (r.stdout or r.stderr or b"").decode("utf-8", "replace").strip()
             # ★G8(cokacdir 성찰 2026-07-04 · _round/NODE_MEASURED_CONTRACT.md §2):
             #   exit 0은 PASS의 필요조건일 뿐이다 — ①stdout 에러형상(agy는 에러문을 stdout에
@@ -2832,7 +2838,7 @@ def _cys_list_masters():
     if not cys:
         return None
     try:
-        r = subprocess.run([cys, "list"], capture_output=True, timeout=10)
+        r = subprocess.run([cys, "list"], capture_output=True, timeout=10, **NOWIN)
     except Exception:
         return None
     if r.returncode != 0:

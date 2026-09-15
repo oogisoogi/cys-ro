@@ -21,6 +21,12 @@ import os
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 ROOT = os.environ.get("JAVIS_ROOT") or os.getcwd()  # 개인경로 하드코딩 금지(pack scan gate)
 
 KINDS = ["wrong-target", "missing-context", "re-explore"]  # 오리엔테이션 실패 유형
@@ -124,7 +130,7 @@ def cmd_self_test(args):
         env = dict(os.environ)
         env["JAVIS_ROOT"] = root
         r = subprocess.run([sys.executable, self_path] + argv,
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=env, **NOWIN)
         return r.returncode, r.stdout, r.stderr
 
     try:

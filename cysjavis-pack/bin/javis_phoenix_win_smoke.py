@@ -34,6 +34,12 @@ import sys
 import threading
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장.
 #   ._pth 는 표준 경로 계산을 우회해 **스크립트 폴더를 sys.path 에 넣지 않는다**
 #   (2026-07-29 Windows 0.14.4 실측: `ModuleNotFoundError: No module named 'javis_scrub'`).
@@ -165,7 +171,7 @@ def teardown_daemon(pipe, state_dir=None, tracked=None):
             pid = json.loads(txt[i:]).get("daemon_pid")
             if isinstance(pid, int):
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, timeout=10, **NOWIN)
     except Exception:
         pass
     if tracked is not None:
@@ -359,7 +365,7 @@ def case7_keepalive_respawn():
     installed = False
     try:
         # 클린 시작: 잔류 cysd 제거 + 기존 태스크 해제
-        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], capture_output=True, timeout=15)
+        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], capture_output=True, timeout=15, **NOWIN)
         _PH.cys("daemon", "uninstall", socket=None, timeout=20)
         time.sleep(1)
         inst = _PH.cys("daemon", "install", socket=None, timeout=30)
@@ -386,7 +392,7 @@ def case7_keepalive_respawn():
         # ★비정상 종료(crash 시뮬레이션): taskkill /F → action exit≠0 → 스케줄러 RestartOnFailure
         _cp("⑦ taskkill (crash)")
         if isinstance(pid, int):
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, timeout=15)
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, timeout=15, **NOWIN)
         t0 = time.time()
         # ★순수 관측: 재기동 유발(cys list·schtasks /Run) 없이 ping(autostart 안 함)만 폴링 — 되살리면 스케줄러 뿐.
         #   ★판정 재정의(CI run 28736698338 교훈): Task Scheduler 실전 재기동 지연은 PT1M 설정보다 길다(실측 ~4분·
@@ -429,14 +435,14 @@ def case7_keepalive_respawn():
         _cp("⑦ teardown")
         if installed:
             _PH.cys("daemon", "uninstall", socket=None, timeout=20)  # ★태스크 먼저 제거(추가 respawn 차단)
-        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], capture_output=True, timeout=15)
+        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], capture_output=True, timeout=15, **NOWIN)
 
 
 def _alive_pid(pid):
     """Windows: PID 생존 여부(tasklist 필터). 죽었으면 'No tasks' 출력(pid 미포함)."""
     try:
         r = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10, **NOWIN)
         return str(pid) in (r.stdout or "")
     except Exception:
         return False
@@ -499,7 +505,7 @@ def case9_job_kill_on_close():
         check("⑨ 손자 생존(kill 전)", _alive_pid(gpid), "gpid=%s" % gpid)
         # ★cysd 만 /F kill(자식 트리 /T 아님) → Job KILL_ON_JOB_CLOSE 로만 손자가 죽어야 한다.
         _cp("⑨ taskkill cysd (no /T)")
-        subprocess.run(["taskkill", "/PID", str(tracked.pid), "/F"], capture_output=True, timeout=10)
+        subprocess.run(["taskkill", "/PID", str(tracked.pid), "/F"], capture_output=True, timeout=10, **NOWIN)
         dead = False
         for _ in range(30):  # ~15s
             _cp("⑨ waiting grandchild co-death")
@@ -513,7 +519,7 @@ def case9_job_kill_on_close():
         _cp("⑨ teardown")
         try:
             if gpid and _alive_pid(gpid):
-                subprocess.run(["taskkill", "/PID", str(gpid), "/F"], capture_output=True, timeout=8)
+                subprocess.run(["taskkill", "/PID", str(gpid), "/F"], capture_output=True, timeout=8, **NOWIN)
         except Exception:
             pass
         teardown_daemon(pipe, state_dir=sd, tracked=tracked)

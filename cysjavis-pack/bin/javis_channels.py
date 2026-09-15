@@ -32,6 +32,12 @@ import shutil
 import subprocess
 import sys
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ── 채널 레지스트리: tier 자기선언(PHIL-09 정직한 tier). tier∈{0,1,2} — unknown=self-test FAIL ──
 # 0=zero-config 무인증, 1=쿠키/UA, 2=토큰. blocked_note = negative-knowledge 1급 데이터.
 CHANNEL_REGISTRY = {
@@ -136,7 +142,7 @@ def run_live(channels):
                 for c in channels}, "battery-absent"
     try:
         r = subprocess.run([sys.executable, bp, "--json"] + list(channels),
-                           capture_output=True, timeout=180)
+                           capture_output=True, timeout=180, **NOWIN)
     except Exception as e:
         return {c: [{"ok": False, "status": 0, "error": "%s" % e,
                      "route": "coverage_battery(run-failed)"}] for c in channels}, "run-failed"

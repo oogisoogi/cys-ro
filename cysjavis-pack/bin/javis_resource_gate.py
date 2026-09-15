@@ -64,6 +64,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 EXIT_ALLOW, EXIT_SOFT, EXIT_HARD = 0, 1, 2
 # ★A13(T-0147-7 W2 · 하드 제약 8) — argparse 의 exit 2 ↔ EXIT_HARD=2 **의미 공간 충돌** 해소.
 #   종전에는 `check --unknown-flag` 같은 사용오류가 argparse 기본 동작으로 exit 2 를 냈고,
@@ -186,7 +192,7 @@ def _dept_roster(override=None):
         try:
             p = subprocess.run(["cys", "status", "--json", "--socket", sock],
                                capture_output=True, encoding="utf-8", errors="replace",
-                               timeout=DEPT_STATUS_TIMEOUT)
+                               timeout=DEPT_STATUS_TIMEOUT, **NOWIN)
             if p.returncode != 0:
                 raise ValueError("rc=%d" % p.returncode)
             doc = json.loads(p.stdout)
@@ -236,7 +242,7 @@ def _ps_lines():
     # 측정 실패는 None으로 신호(빈 리스트로 위장하면 '0=건강'으로 조용히 통과 — P-ORCH-1).
     try:
         out = subprocess.run(["ps", "-axo", "pid,command"], capture_output=True,
-                             text=True, timeout=10).stdout
+                             text=True, timeout=10, **NOWIN).stdout
         return out.splitlines()[1:]
     except (subprocess.SubprocessError, OSError):
         return None
@@ -355,7 +361,7 @@ def _rate_accounts(a):
     else:
         try:
             out = subprocess.run(["cys", "usage-accounts", "--json"],
-                                 capture_output=True, text=True, timeout=3).stdout
+                                 capture_output=True, text=True, timeout=3, **NOWIN).stdout
             data = json.loads(out)
         except (subprocess.SubprocessError, OSError, ValueError):
             return None
@@ -552,7 +558,7 @@ def _ppid_map():
     """pid → ppid. 조회 실패는 None(체인 접기 불가 — 호출부가 measure_errors 로 신호한다)."""
     try:
         out = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True,
-                             text=True, timeout=10).stdout
+                             text=True, timeout=10, **NOWIN).stdout
     except (subprocess.SubprocessError, OSError):
         return None
     m = {}
@@ -619,7 +625,7 @@ def _ledger_servers(override=None, socket_path=None):
 
     def _run_ps(argv):
         p = subprocess.run(argv, capture_output=True, encoding="utf-8",
-                           errors="replace", timeout=LEDGER_TIMEOUT)
+                           errors="replace", timeout=LEDGER_TIMEOUT, **NOWIN)
         if p.returncode != 0:
             raise ValueError("rc=%d" % p.returncode)
         return p.stdout
@@ -655,7 +661,7 @@ def _descendants(roots):
     """pid/ppid 체인 전(全) 자손 — phoenix_harness._descendants 동형(문자열 매칭 아님·collateral 0)."""
     try:
         out = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True,
-                             text=True, timeout=10).stdout
+                             text=True, timeout=10, **NOWIN).stdout
     except (subprocess.SubprocessError, OSError):
         return set()
     kids = {}
@@ -676,7 +682,7 @@ def _proc_age_sec(pid):
     """ps etime([[dd-]hh:]mm:ss) → 초. 조회 불가 시 None."""
     try:
         et = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)],
-                            capture_output=True, text=True, timeout=10).stdout.strip()
+                            capture_output=True, text=True, timeout=10, **NOWIN).stdout.strip()
         if not et:
             return None
         days, rest = (et.split("-", 1) + [""])[:2] if "-" in et else ("0", et)
@@ -732,7 +738,7 @@ def cmd_enforce(a):
         for v in victims:
             try:
                 st = subprocess.run(["ps", "-o", "pid=", "-p", str(v)],
-                                    capture_output=True, text=True, timeout=10).stdout.strip()
+                                    capture_output=True, text=True, timeout=10, **NOWIN).stdout.strip()
             except (subprocess.SubprocessError, OSError):
                 st = ""
             if st:
@@ -744,7 +750,7 @@ def cmd_enforce(a):
         for v in victims:  # 좀비 인지 집계 — kill(v,0) 프로브는 좀비에 성공해 잔존으로 오판(G5 동형)
             try:
                 st = subprocess.run(["ps", "-o", "state=", "-p", str(v)],
-                                    capture_output=True, text=True, timeout=10).stdout.strip()
+                                    capture_output=True, text=True, timeout=10, **NOWIN).stdout.strip()
             except (subprocess.SubprocessError, OSError):
                 st = ""
             if not st or st.startswith("Z"):

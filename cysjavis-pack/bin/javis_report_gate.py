@@ -52,6 +52,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장.
 #   ._pth 는 표준 경로 계산을 우회해 **스크립트 폴더를 sys.path 에 넣지 않는다**.
 #   선례(append 형태): javis_wakeup.py:43-45 · javis_report.py:33-34.
@@ -1332,7 +1338,7 @@ class Runner:
         script = os.path.join(self.pack_bin, "javis_report.py")
         try:
             r = subprocess.run([sys.executable, script, "--json"],
-                               capture_output=True, text=True, timeout=self.timeout)
+                               capture_output=True, text=True, timeout=self.timeout, **NOWIN)
         except (subprocess.SubprocessError, OSError) as e:
             return False, None, "수집 실행 실패: %s" % e
         if r.returncode != 0:
@@ -1351,7 +1357,7 @@ class Runner:
             argv += ["--field", "%s=%s" % (k, val)]
         argv += ["--spool", "--surface", surface]
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout)
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout, **NOWIN)
             return r.returncode, r.stdout, r.stderr
         except (subprocess.SubprocessError, OSError) as e:
             return 1, "", str(e)
@@ -1369,7 +1375,7 @@ class Runner:
             argv += ["--severity", severity]
         try:
             r = subprocess.run(argv, capture_output=True, text=True,
-                               timeout=self.timeout, env=self.wk_env)
+                               timeout=self.timeout, env=self.wk_env, **NOWIN)
         except (subprocess.SubprocessError, OSError):
             return 1, None
         wid = None
@@ -1391,7 +1397,7 @@ class Runner:
             argv += ["--target", target]
         try:
             r = subprocess.run(argv, capture_output=True, text=True,
-                               timeout=self.timeout, env=self.wk_env)
+                               timeout=self.timeout, env=self.wk_env, **NOWIN)
         except (subprocess.SubprocessError, OSError):
             return 1, 0
         delivered = 0
@@ -1487,7 +1493,7 @@ class Runner:
         env = dict(os.environ, JAVIS_ROOT=self.task_root)
         try:
             r = subprocess.run([sys.executable, script, "list"],
-                               capture_output=True, text=True, timeout=self.timeout, env=env)
+                               capture_output=True, text=True, timeout=self.timeout, env=env, **NOWIN)
         except (subprocess.SubprocessError, OSError) as e:
             return False, None, "task list 실행 실패: %s" % e
         if r.returncode != 0:
@@ -1503,7 +1509,7 @@ class Runner:
         (제거하지 않는 이유: 외부 대역·테스트가 이 표면을 참조하고, 표면 제거는 계약 파괴다.)"""
         try:
             r = subprocess.run([self.cys_bin, "send", "--queued", "--to", to, body],
-                               capture_output=True, text=True, timeout=self.timeout)
+                               capture_output=True, text=True, timeout=self.timeout, **NOWIN)
             return r.returncode
         except (subprocess.SubprocessError, OSError):
             return 1

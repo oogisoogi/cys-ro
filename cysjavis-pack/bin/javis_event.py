@@ -16,6 +16,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★번들 파이썬(Windows embeddable · python312._pth) 경로 가드 — 형제 모듈 import 보장.
 #   ._pth 는 표준 경로 계산을 우회해 **스크립트 폴더를 sys.path 에 넣지 않는다**
 #   (2026-07-29 Windows 0.14.4 실측: `ModuleNotFoundError: No module named 'javis_scrub'`).
@@ -97,7 +103,7 @@ def _resolve_slug_from_socket():
 def _resolve_surface_ref():
     """`cys identify` → caller.surface_ref (P2-4). 실패·surface 밖이면 None."""
     try:
-        out = subprocess.run([CYS_BIN, "identify"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        out = subprocess.run([CYS_BIN, "identify"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN)
     except Exception:
         return None
     if out.returncode != 0:

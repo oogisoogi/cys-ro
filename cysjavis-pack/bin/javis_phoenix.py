@@ -54,6 +54,12 @@ import subprocess
 import sys
 import time
 
+
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # ★S1ⓐ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 한국어 윈도우 콜드부트 즉사 수리).
 #   실사고: 한국어 Windows 는 파이썬 표준 스트림이 콘솔 코드페이지(cp949)에 묶여, 로그의 UTF-8 「—」에서
 #   UnicodeEncodeError 로 부활 전체가 즉사했다. **로그가 로그를 죽이는 자리**라 예외 처리 경로까지 함께 무너진다.
@@ -207,7 +213,7 @@ def _cys_self_identity(candidate):
     """후보 cys 자신의 3필드 self-report(`cys phoenix-identity` — 데몬 불요·컴파일타임 상수). 실패=None."""
     try:
         r = subprocess.run([candidate, "phoenix-identity"], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=10)
+                           encoding="utf-8", errors="replace", timeout=10, **NOWIN)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
     try:
@@ -224,7 +230,7 @@ def _daemon_identity(candidate, socket):
     cmd += ["status", "--json"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=12)
+                           encoding="utf-8", errors="replace", timeout=12, **NOWIN)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
     try:
@@ -392,7 +398,7 @@ def _emit_evt(evt_type, **fields):
         cmd += ["--field", "%s=%s" % (k, v)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=8)
+                           encoding="utf-8", errors="replace", timeout=8, **NOWIN)
         return r.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
@@ -467,7 +473,7 @@ def _run_capture(cmd, env, timeout):
     r = _CapR()
     try:
         try:
-            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=of, stderr=ef, env=env)
+            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=of, stderr=ef, env=env, **NOWIN)
         except (FileNotFoundError, OSError) as e:
             # ★codex major(Windows 대칭): cys.exe 미해석/실행불가 → 비구조화 crash 대신 구조화 실패(rc=127).
             r.returncode = 127
@@ -508,7 +514,7 @@ def cys(*args, socket=None, timeout=25):
         return _run_capture(cmd, env, timeout)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout, env=env)
+                           encoding="utf-8", errors="replace", timeout=timeout, env=env, **NOWIN)
         return r
     except subprocess.TimeoutExpired as e:
         class _R:
@@ -1392,7 +1398,7 @@ def rollback_proposal(socket):
         #   실패해도 restore 판정을 죽이지 않고 note 로 정직히 남긴다.
         try:
             r = subprocess.run([sys.executable, snap, "list"], capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=15)
+                               encoding="utf-8", errors="replace", timeout=15, **NOWIN)
             prop["generations_raw"] = (r.stdout or r.stderr or "").strip()[:600]
             gens = re.findall(r"(\d{8}T\d{6}Z)", r.stdout or "")
             prop["generations"] = gens
@@ -2608,7 +2614,7 @@ def _launchctl_bin():
 def _launchctl(*args, timeout=10):
     try:
         return subprocess.run([_launchctl_bin()] + [str(a) for a in args],
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout, **NOWIN)
     except Exception as e:
         class _R:
             returncode = 127
@@ -2687,7 +2693,7 @@ def cmd_launchd_ensure(args):
 def _schtasks(*args, timeout=10):
     try:
         return subprocess.run(["schtasks"] + [str(a) for a in args],
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout, **NOWIN)
     except Exception as e:
         class _R:
             returncode = 127
@@ -2700,7 +2706,7 @@ def _schtasks_has_restart_on_failure(task):
     """schtasks /Query /XML 에 RestartOnFailure 존재 여부(=진짜 KeepAlive 켜짐 · Rust cys daemon install 이 심는 XML).
     ★null 바이트 제거로 UTF-16/UTF-8 출력 모두에서 ASCII 태그를 안정 검출(UTF-16LE 는 ASCII 사이에 0x00 이 낀다)."""
     try:
-        r = subprocess.run(["schtasks", "/Query", "/TN", task, "/XML"], capture_output=True, timeout=8)
+        r = subprocess.run(["schtasks", "/Query", "/TN", task, "/XML"], capture_output=True, timeout=8, **NOWIN)
         raw = (r.stdout or b"").replace(b"\x00", b"")
         return b"RestartOnFailure" in raw
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -2780,7 +2786,7 @@ def _win_restart_daemon(socket, timeout):
     if pid:
         try:
             kr = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=15, **NOWIN)
             res["taskkill_rc"] = kr.returncode
             res["taskkill_out"] = ((kr.stdout or "") + (kr.stderr or "")).strip()[:200]
         except Exception as e:
@@ -3017,7 +3023,7 @@ def _deploy_restart(socket, restart_hook, timeout):
         res["path"] = "hook(격리·injected)"
         res["hook"] = restart_hook
         try:
-            r = subprocess.run(restart_hook, shell=True, capture_output=True, text=True, timeout=max(timeout, 30))
+            r = subprocess.run(restart_hook, shell=True, capture_output=True, text=True, timeout=max(timeout, 30), **NOWIN)
             res["hook_rc"] = r.returncode
             res["hook_out"] = (r.stdout or r.stderr or "").strip()[-500:]
         except subprocess.TimeoutExpired:
@@ -3214,7 +3220,7 @@ def cmd_deploy(args):
         # ── apply (선택) — 실패 시 재시작 진입 금지(부작용 확산 차단) ──
         if apply_cmd and not _same_gen("apply"):
             try:
-                ar = subprocess.run(apply_cmd, shell=True, capture_output=True, text=True, timeout=600)
+                ar = subprocess.run(apply_cmd, shell=True, capture_output=True, text=True, timeout=600, **NOWIN)
                 arc, aout, aerr = ar.returncode, (ar.stdout or "")[-600:], (ar.stderr or "")[-400:]
             except subprocess.TimeoutExpired:
                 arc, aout, aerr = 124, "", "TIMEOUT"

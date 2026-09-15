@@ -721,7 +721,10 @@ class RuntimeManifestAxisTests(unittest.TestCase):
 
 
 class BuildIdStampedTests(unittest.TestCase):
-    """1-b 단계 — build_id 병기 전에는 SHA256SUMS 를 만들지 않는다(TICKET=cysr-brand-version)."""
+    """1-b 단계 — **이 발행의** build_id 병기 전에는 SHA256SUMS 를 만들지 않는다(TICKET=cysr-brand-version)."""
+
+    C12 = "0123456789ab"
+    BID = "0123456789ab.20260915T1030Z"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -734,33 +737,60 @@ class BuildIdStampedTests(unittest.TestCase):
         with open(os.path.join(self.root, "latest.json"), "w", encoding="utf-8") as fh:
             fh.write(obj if isinstance(obj, str) else json.dumps(obj))
 
-    def test_40_stamped_passes(self):
-        self.write_latest({"version": "1.0.0", "build_id": "0123456789ab.20260915T1030Z"})
-        self.assertIsNone(rp.latest_build_id_problem(self.root))
+    def problem(self, version="1.0.0", commit12=C12):
+        return rp.latest_build_id_problem(self.root, version, commit12)
+
+    def test_40_stamped_this_release_passes(self):
+        self.write_latest({"version": "1.0.0", "build_id": self.BID})
+        self.assertIsNone(self.problem())
 
     def test_41_unstamped_blocks(self):
         self.write_latest({"version": "1.0.0"})
-        self.assertIn("stamp-latest-build-id", rp.latest_build_id_problem(self.root))
+        self.assertIn("stamp-latest-build-id", self.problem())
 
     def test_42_malformed_or_trailing_newline_blocks(self):
-        for bad in ("", "0123456789ab-dirty.20260915T1030Z", "0123456789ab.20260915T1030Z\n", 12):
+        for bad in ("", "0123456789ab-dirty.20260915T1030Z", self.BID + "\n", 12):
             with self.subTest(bad=bad):
                 self.write_latest({"version": "1.0.0", "build_id": bad})
-                self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+                self.assertIsNotNone(self.problem())
 
     def test_43_missing_or_unreadable_blocks(self):
-        self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+        self.assertIsNotNone(self.problem())
         self.write_latest("{not json")
-        self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+        self.assertIsNotNone(self.problem())
         self.write_latest("[1, 2]")
-        self.assertIsNotNone(rp.latest_build_id_problem(self.root))
+        self.assertIsNotNone(self.problem())
 
     def test_44_main_checks_before_writing_sums(self):
         with open(_RP_PATH, encoding="utf-8") as fh:
             src = fh.read()
         main = src[src.index("def main(argv):"):]
-        self.assertLess(main.index("latest_build_id_problem(outdir)"), main.index("SHA256SUMS.txt — 자기 자신 제외"),
+        self.assertLess(main.index("latest_build_id_problem(outdir"), main.index("SHA256SUMS.txt — 자기 자신 제외"),
                         "build_id 확인이 SUMS 생성보다 뒤에 있다 — 병기 전 해시가 박제된다")
+
+    def test_45_stale_latest_from_other_version_blocks(self):
+        self.write_latest({"version": "0.14.37", "build_id": self.BID})    # 형식은 맞는 옛 파일
+        self.assertIn("판번이 이 태그와 다르다", self.problem())
+
+    def test_46_build_id_of_other_commit_blocks(self):
+        self.write_latest({"version": "1.0.0", "build_id": "fedcba987654.20260915T1030Z"})
+        self.assertIn("태그 커밋", self.problem())
+
+    def test_47_unresolvable_tag_commit_is_block_not_pass(self):
+        self.write_latest({"version": "1.0.0", "build_id": self.BID})
+        self.assertIn("git fetch --tags", self.problem(commit12=None))
+
+    def test_48_tag_commit12_reads_git_and_rejects_garbage(self):
+        class R:
+            def __init__(self, rc, out): self.returncode, self.stdout = rc, out
+        self.assertEqual(rp.tag_commit12("v1.0.0", run=lambda *a, **k: R(0, self.C12 + "\n")), self.C12)
+        self.assertIsNone(rp.tag_commit12("v1.0.0", run=lambda *a, **k: R(128, "")))
+        self.assertIsNone(rp.tag_commit12("v1.0.0", run=lambda *a, **k: R(0, "not-a-sha\n")))
+
+    def test_49_latest_json_is_never_taken_from_cache(self):
+        with open(_RP_PATH, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('a["name"] != "latest.json" and os.path.exists(dest)', src)
 
 
 if __name__ == "__main__":

@@ -149,19 +149,42 @@ def mac_lane_absent(outdir, version):
 BUILD_ID_RE = re.compile(r"[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z")
 
 
-def latest_build_id_problem(outdir):
-    """latest.json 에 build_id 가 병기됐는가 — 문제 문장(차단 사유) 또는 None(통과)."""
+def tag_commit12(tag, run=subprocess.run):
+    """태그가 가리키는 커밋의 앞 12자(로컬 git) — 확인 불가면 None."""
+    try:
+        r = run(["git", "-C", HERE, "rev-parse", "--short=12", "%s^{commit}" % tag],
+                capture_output=True, text=True)
+    except OSError:
+        return None
+    out = (r.stdout or "").strip()
+    return out if r.returncode == 0 and re.fullmatch(r"[0-9a-f]{12}", out) else None
+
+
+def latest_build_id_problem(outdir, version, commit12):
+    """latest.json 에 **이 발행의** build_id 가 병기됐는가 — 문제 문장(차단 사유) 또는 None(통과).
+
+    형식만 보면 남아 있던 옛 latest.json(다른 판·다른 커밋)이 통과한다(agy 2R 지적) — 그래서
+    ⑴ version == 이 태그의 판 ⑵ build_id 앞 12자 == 태그 커밋까지 대조한다. 태그 커밋을 확인할 수
+    없으면(commit12=None) 통과가 아니라 차단이다(모르는 채 SUMS 를 박제하지 않는다).
+    """
     latest = os.path.join(outdir, "latest.json")
     if not os.path.exists(latest):
         return "latest.json 이 릴리스에 없다 — CI 완주를 먼저 확인하라"
     try:
         with open(latest, encoding="utf-8") as fh:
-            bid = json.load(fh).get("build_id")
+            doc = json.load(fh)
+        bid, lv = doc.get("build_id"), doc.get("version")
     except (ValueError, OSError, AttributeError) as e:
         return "latest.json 을 읽을 수 없다(%s)" % e
+    if lv != version:
+        return "latest.json 판번이 이 태그와 다르다(%r ≠ %s) — 옛 파일이 남았거나 다른 발행이다" % (lv, version)
     if not isinstance(bid, str) or not BUILD_ID_RE.fullmatch(bid):
         return ("latest.json 에 build_id 가 아직 없다(%r) — release.yml stamp-latest-build-id 잡 완료 뒤에 "
                 "다시 돌려라(지금 SHA256SUMS 를 만들면 병기 전 해시가 박제된다)" % (bid,))
+    if commit12 is None:
+        return "태그 커밋을 확인할 수 없다 — git fetch --tags 후 다시 돌려라(build_id 대조 불가 = 통과 아님)"
+    if not bid.startswith(commit12 + "."):
+        return "latest.json build_id(%s)가 태그 커밋(%s)의 것이 아니다 — 다른 빌드의 파일이다" % (bid, commit12)
     return None
 
 
@@ -288,7 +311,8 @@ def main(argv):
     by_name = {}
     for a in rel.get("assets", []):
         dest = os.path.join(outdir, a["name"])
-        if os.path.exists(dest) and os.path.getsize(dest) == a["size"]:
+        # latest.json 은 stamp 잡이 빌드 뒤에 다시 올리는 파일이라 캐시를 믿지 않는다(크기가 우연히 같은 옛 파일 방지).
+        if a["name"] != "latest.json" and os.path.exists(dest) and os.path.getsize(dest) == a["size"]:
             print("  (캐시) %-34s %12d" % (a["name"], a["size"]))
         else:
             print("  받는 중 %-34s %12d …" % (a["name"], a["size"]), flush=True)
@@ -300,7 +324,7 @@ def main(argv):
         by_name[a["name"]] = dest
 
     # ── 1-b. build_id 병기 완료 확인 (SHA256SUMS 박제 전) ──
-    problem = latest_build_id_problem(outdir)
+    problem = latest_build_id_problem(outdir, version, tag_commit12(tag))
     if problem:
         print("::error::%s" % problem, file=sys.stderr)
         return 1

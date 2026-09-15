@@ -2195,6 +2195,15 @@ fn strip_settings_matching(
                 .and_then(|rest| {
                     rest.rfind(" sh ")
                         .or_else(|| rest.rfind(" bash "))
+                        // win-hooks-no-bash 폴백 형식: ` <절대경로>/bash.exe "<script>"`
+                        .or_else(|| {
+                            // 따옴표 런처(공백 경로)면 여는 따옴표 앞 공백, 맨 경로면 직전 공백.
+                            let head = &rest[..rest.rfind("/bash.exe")?];
+                            match head.rfind(" \"") {
+                                Some(q) if !head[q + 2..].contains('"') => Some(q),
+                                _ => head.rfind(' '),
+                            }
+                        })
                         .map(|i| rest[..i].to_string())
                 })
                 .and_then(|q| shell_unquote_single(&q));
@@ -2745,6 +2754,39 @@ mod tests {
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&s).unwrap()).unwrap();
         assert_eq!(root["statusLine"]["command"], "my status");
+    }
+
+    /// win-hooks-no-bash 회귀: bash 가 PATH 에 없어 절대경로 런처로 등록된 형식(맨 경로 · 공백
+    /// 따옴표 경로)에서도 이전 statusLine 이 원복된다 — 이전 값 안의 따옴표·공백에 속지 않는다.
+    #[test]
+    fn strip_restores_prev_statusline_windows_launcher_fallback() {
+        for (i, launcher) in [
+            "C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe",
+            "\"C:/Program Files/Git/bin/bash.exe\"",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let td = test_home(&format!("winstatus-fb{i}"));
+            let cys_base = td.join(".cys");
+            let s = td.join(".claude/settings.json");
+            let win_cmd = format!(
+                "CYS_PREV_STATUSLINE='echo \"a b\"' {launcher} \"{}/pack/hooks/cys-statusline.sh\"",
+                cys_base.to_string_lossy().replace('\\', "/")
+            );
+            touch(
+                &s,
+                &serde_json::to_string_pretty(&serde_json::json!({
+                    "statusLine": {"type": "command", "command": win_cmd}
+                }))
+                .unwrap(),
+            );
+            let removed = strip_cys_from_settings(&s, &cys_base).unwrap();
+            assert!(removed.iter().any(|r| r.contains("원복")), "{launcher}: {removed:?}");
+            let root: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&s).unwrap()).unwrap();
+            assert_eq!(root["statusLine"]["command"], "echo \"a b\"", "{launcher}");
+        }
     }
 
     /// ★A3 회귀(ABSOLUTE ANCHOR): 센티널은 **fail-open** 이어야 한다 — 만료·고아 센티널이

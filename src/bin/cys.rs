@@ -4920,6 +4920,9 @@ fn warn_if_awakening_hooks_missing(config_dir: Option<&str>, role: &str, agent: 
         return;
     }
     let Some(cfg) = config_dir else { return };
+    if !cys::pack::shell_hooks_supported() {
+        return; // win-hooks-no-bash: 미등록이 정답인 기계 — 결손 경고 금지(강등 고지는 병합기·doctor)
+    }
     let settings = std::path::Path::new(cfg).join("settings.json");
     let root = std::fs::read_to_string(&settings)
         .ok()
@@ -5357,6 +5360,15 @@ fn diag_hook(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     //   재생산한다 — 같은 run 바로 뒤의 dept-hook-residue 가 그것을 '산 부서 오염'으로 재탐지하는
     //   자기모순(한 doctor 실행이 쓰고 지운다). 데몬 경로(merge_awakening_hooks_into_personal_profiles
     //   base-전용 게이트)·init-pack CLI 게이트와 동형이다.
+    // ★win-hooks-no-bash: 셸 훅 실행 수단이 없는 Windows — 미등록이 정답(안전 강등)이다.
+    if !cys::pack::shell_hooks_supported() {
+        return DiagItem {
+            name: "hook",
+            status: DiagStatus::Warn,
+            detail: cys::pack::shell_hooks_degraded_note(cys::pack::AWAKENING_HOOKS.len()),
+            action: "Git for Windows 설치 후 cys doctor --fix".into(),
+        };
+    }
     if cys::pack::dept_scope_of(&ctx.pack_dir).is_some() {
         return diag_hook_dept(ctx, fix, std::env::var("CYS_ACCOUNT_DIR").ok().as_deref());
     }

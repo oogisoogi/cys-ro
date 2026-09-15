@@ -4727,7 +4727,10 @@ class Preflight:
         candidates = []
         if os.environ.get("CYS_BIN"):
             candidates.append(os.environ["CYS_BIN"])
+        # ★(cysr-product-rename) 새로 깐 맥 = cysr.app · 업데이터로 올라온 맥 = cys.app(제자리 교체).
         candidates += [
+            "/Applications/cysr.app/Contents/MacOS/cys",
+            os.path.expanduser("~/Applications/cysr.app/Contents/MacOS/cys"),
             "/Applications/cys.app/Contents/MacOS/cys",
             os.path.expanduser("~/Applications/cys.app/Contents/MacOS/cys"),
             os.path.expanduser("~/.local/bin/cys"),
@@ -4899,8 +4902,9 @@ class Preflight:
             symptoms.append("last exit code=78(EX_CONFIG)")
         # program 경로가 /Applications/cys.app 이 아니면 소멸 번들 유추 채택(inferred stale).
         m = re.search(r"^\s*program\s*=\s*(.+?)\s*$", out, re.MULTILINE | re.IGNORECASE)
-        if m and "/Applications/cys.app/" not in m.group(1):
-            symptoms.append("program=%s (inferred stale — /Applications/cys.app 아님)"
+        # ★(cysr-product-rename) 새 설치 = cysr.app · 업데이터로 올라온 설치 = cys.app — 둘 다 정상 자리.
+        if m and not any(("/Applications/%s/" % b) in m.group(1) for b in ("cysr.app", "cys.app")):
+            symptoms.append("program=%s (inferred stale — /Applications/cysr.app·cys.app 아님)"
                             % m.group(1).strip())
         if symptoms:
             self.add(cid, WARN,
@@ -5412,8 +5416,9 @@ class Preflight:
             b = self._app_bundle_of(cys)
             if b:
                 return b
-        if os.path.isdir("/Applications/cys.app/Contents"):
-            return "/Applications/cys.app"
+        for b in ("/Applications/cysr.app", "/Applications/cys.app"):   # (cysr-product-rename) 새 이름 우선
+            if os.path.isdir(b + "/Contents"):
+                return b
         return None
 
     # ── C77 임무 게이트 (2026-08-01 실사고 T1 — 임무 없는 부팅의 자율 착수 차단) ──

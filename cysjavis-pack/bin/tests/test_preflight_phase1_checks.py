@@ -510,5 +510,39 @@ class TestC76(Base):
             self.assertIn("특정되지 않음", detail)
 
 
+# ══ C70 — launchd 잡 스테일 징후: 번들 이름 두 개(cysr-product-rename · 2026-09-16) ═════════
+#
+# 새로 까는 맥 = /Applications/cysr.app · 업데이터로 올라온 맥 = /Applications/cys.app(제자리 교체).
+# 둘 다 정상 자리다 — 한쪽만 인정하면 다른 쪽 전원에게 거짓 「inferred stale」 WARN 이 뜬다.
+# 라이브 무접촉: launchctl 을 부르지 않는다 — shutil.which·subprocess.run 을 가짜로 바꿔 출력만 준다.
+class TestC70(Base):
+    def _run_with_program(self, program):
+        import subprocess
+        class _R:
+            returncode = 0
+            stdout = ("gui/501/com.cysjavis.cysd = {\n\tprogram = %s\n\tstate = running\n}\n" % program).encode()
+            stderr = b""
+        saved = (pf.sys.platform, pf.shutil.which, pf.subprocess.run)
+        pf.sys.platform = "darwin"
+        pf.shutil.which = lambda name: "/bin/launchctl" if name == "launchctl" else saved[1](name)
+        pf.subprocess.run = lambda *a, **k: _R()
+        try:
+            return self.check("c70_launchd_job", "C70")
+        finally:
+            pf.sys.platform, pf.shutil.which, pf.subprocess.run = saved
+            assert subprocess.run is saved[2]
+
+    def test_both_bundle_names_are_not_stale(self):
+        for program in ("/Applications/cysr.app/Contents/MacOS/cysd",
+                        "/Applications/cys.app/Contents/MacOS/cysd"):
+            st, detail = self._run_with_program(program)
+            self.assertEqual(st, PASS, "%s → %s" % (program, detail))
+
+    def test_volume_bundle_is_inferred_stale(self):
+        st, detail = self._run_with_program("/Volumes/cysr/cysr.app/Contents/MacOS/cysd")
+        self.assertEqual(st, WARN, detail)
+        self.assertIn("inferred stale", detail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

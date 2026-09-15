@@ -112,9 +112,10 @@ def _resolve_cysd():
     override = os.environ.get("PHOENIX_HARNESS_CYSD")
     if override and os.path.exists(override):
         return os.path.realpath(override)
-    cand = "/Applications/cys.app/Contents/MacOS/cysd"
-    if os.path.exists(cand):
-        return cand
+    # (cysr-product-rename) 새 설치 = cysr.app · 업데이터로 올라온 설치 = cys.app
+    for cand in ("/Applications/cysr.app/Contents/MacOS/cysd", "/Applications/cys.app/Contents/MacOS/cysd"):
+        if os.path.exists(cand):
+            return cand
     p = shutil_which("cysd")
     if p:
         return os.path.realpath(p)

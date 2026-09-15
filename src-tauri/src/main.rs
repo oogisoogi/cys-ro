@@ -797,10 +797,13 @@ fn classify_bundle_dir(macos_dir: &std::path::Path) -> BundleKind {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        if name.starts_with("cys.app.bak") || name.starts_with("cys.app.prev") {
+        if BUNDLE_NAMES
+            .iter()
+            .any(|b| name.starts_with(&format!("{b}.bak")) || name.starts_with(&format!("{b}.prev")))
+        {
             return BundleKind::Backup;
         }
-        if name == "cys.app" {
+        if BUNDLE_NAMES.contains(&name.as_str()) {
             let parent = b
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
@@ -1381,12 +1384,23 @@ const SCRIPT_PATH_PRELUDE: &str = "export PATH=/usr/bin:/bin:/usr/sbin:/sbin; ";
 /// (`/a/cys.app/Contents/MacOS/cys.app/Contents/MacOS/cys`)에서 셸=지운다 / Rust=남긴다로 갈렸다.
 /// 이제 Rust 도 `ends_with` 로 같은 뜻을 본다 — 두 접미사 상수를 여기서 함께 정의해 드리프트를 막고,
 /// 회귀핀(`bundle_link_pattern_and_rust_suffixes_are_one_rule`)이 둘의 합성을 못박는다.
+///
+/// ★(cysr-product-rename · 2026-09-16 · master 결정 A) 번들 이름이 **둘**이다. productName 이 cysr 가
+/// 되어 새로 까는 맥은 `cysr.app` 이지만, tauri-plugin-updater 는 tar 최상위 이름을 버리고 **기존 번들
+/// 자리에 그대로** 넣으므로(2.10.1 updater.rs:1235·1302) 업데이트로 올라온 맥은 계속 `cys.app` 이다.
+/// 한쪽만 인정하면 다른 쪽 전원이 안전모드·「남의 링크」로 떨어진다 — 정규 판정·링크 판정은 둘 다 본다.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const BUNDLE_NAMES: [&str; 2] = ["cys.app", "cysr.app"];
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const BUNDLE_LINK_SUFFIX_CYS: &str = "/cys.app/Contents/MacOS/cys";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const BUNDLE_LINK_SUFFIX_CYSD: &str = "/cys.app/Contents/MacOS/cysd";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const BUNDLE_LINK_PATTERN: &str = "*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd";
+const BUNDLE_LINK_SUFFIX_CYSR_APP_CYS: &str = "/cysr.app/Contents/MacOS/cys";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const BUNDLE_LINK_SUFFIX_CYSR_APP_CYSD: &str = "/cysr.app/Contents/MacOS/cysd";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const BUNDLE_LINK_PATTERN: &str = "*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd|*/cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd";
 
 /// ★MAJOR-6(2026-08-25 5R) **판정과 집행을 같은 정규화 위에 세운다**(셸 파이프 한 토막).
 ///
@@ -1978,7 +1992,7 @@ fn strict_install_bundle_ok(macos_dir: &std::path::Path, home: &std::path::Path)
     let Some(bundle) = contents.parent() else {
         return false;
     };
-    if bundle.file_name().map(|n| n != "cys.app").unwrap_or(true) {
+    if bundle.file_name().map(|n| !BUNDLE_NAMES.iter().any(|b| n == *b)).unwrap_or(true) {
         return false;
     }
     let Some(parent) = bundle.parent() else {
@@ -2538,7 +2552,10 @@ fn links_into_cys_bundle(target: &str) -> bool {
     // ★MAJOR-6(5R) `split_once`(첫 마커) → **접미사 정확 일치**. 셸 `case` 의 `*/…/cys` 는 접미사
     // 대조이므로, 마커가 두 번 나오는 경로에서 예전 판정은 셸과 반대 결론을 냈다.
     let target = normalize_path_str(target);
-    target.ends_with(BUNDLE_LINK_SUFFIX_CYS) || target.ends_with(BUNDLE_LINK_SUFFIX_CYSD)
+    target.ends_with(BUNDLE_LINK_SUFFIX_CYS)
+        || target.ends_with(BUNDLE_LINK_SUFFIX_CYSD)
+        || target.ends_with(BUNDLE_LINK_SUFFIX_CYSR_APP_CYS)
+        || target.ends_with(BUNDLE_LINK_SUFFIX_CYSR_APP_CYSD)
 }
 
 /// 한 경로의 해제 판정(순수). 가드는 둘이고 순서가 곧 안전성이다: ①심볼릭이 아니면 즉시 포기
@@ -6756,7 +6773,7 @@ mod tests {
 if [ -e '/usr/local/bin/cys' ] || [ -L '/usr/local/bin/cys' ]; then _cys_bak=1; \
 if [ -L '/usr/local/bin/cys' ]; then _cys_t=$(/usr/bin/readlink '/usr/local/bin/cys' | {NORM}); \
 case \"$_cys_t\" in \
-*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd) _cys_bak=0;; esac; fi; \
+*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd|*/cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd) _cys_bak=0;; esac; fi; \
 if [ \"$_cys_bak\" = 1 ]; then \
 if [ -e '/usr/local/bin/cys.cys-backup-1700000000' ] || [ -L '/usr/local/bin/cys.cys-backup-1700000000' ]; then \
 echo '{MSG}/usr/local/bin/cys.cys-backup-1700000000 (그 자리의 /usr/local/bin/cys 는 그대로 두었습니다. 1초 뒤 다시 시도하세요)' >&2; exit 1; fi; \
@@ -6766,7 +6783,7 @@ echo '{MSG}/usr/local/bin/cys.cys-backup-1700000000 (그 자리의 /usr/local/bi
 if [ -e '/usr/local/bin/cysr' ] || [ -L '/usr/local/bin/cysr' ]; then _cys_bak=1; \
 if [ -L '/usr/local/bin/cysr' ]; then _cys_t=$(/usr/bin/readlink '/usr/local/bin/cysr' | {NORM}); \
 case \"$_cys_t\" in \
-*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd) _cys_bak=0;; esac; fi; \
+*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd|*/cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd) _cys_bak=0;; esac; fi; \
 if [ \"$_cys_bak\" = 1 ]; then \
 if [ -e '/usr/local/bin/cysr.cys-backup-1700000000' ] || [ -L '/usr/local/bin/cysr.cys-backup-1700000000' ]; then \
 echo '{MSG}/usr/local/bin/cysr.cys-backup-1700000000 (그 자리의 /usr/local/bin/cysr 는 그대로 두었습니다. 1초 뒤 다시 시도하세요)' >&2; exit 1; fi; \
@@ -6776,7 +6793,7 @@ echo '{MSG}/usr/local/bin/cysr.cys-backup-1700000000 (그 자리의 /usr/local/b
 if [ -e '/usr/local/bin/cysd' ] || [ -L '/usr/local/bin/cysd' ]; then _cys_bak=1; \
 if [ -L '/usr/local/bin/cysd' ]; then _cys_t=$(/usr/bin/readlink '/usr/local/bin/cysd' | {NORM}); \
 case \"$_cys_t\" in \
-*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd) _cys_bak=0;; esac; fi; \
+*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd|*/cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd) _cys_bak=0;; esac; fi; \
 if [ \"$_cys_bak\" = 1 ]; then \
 if [ -e '/usr/local/bin/cysd.cys-backup-1700000000' ] || [ -L '/usr/local/bin/cysd.cys-backup-1700000000' ]; then \
 echo '{MSG}/usr/local/bin/cysd.cys-backup-1700000000 (그 자리의 /usr/local/bin/cysd 는 그대로 두었습니다. 1초 뒤 다시 시도하세요)' >&2; exit 1; fi; \
@@ -7199,6 +7216,30 @@ echo '{MSG}/usr/local/bin/cysd.cys-backup-1700000000 (그 자리의 /usr/local/b
             classify_bundle_dir(Path::new("/Users/x/Downloads/cys.app/Contents/MacOS")),
             BundleKind::NonStandard
         );
+        // (cysr-product-rename) 새 설치 번들 cysr.app 도 같은 4분류를 받는다 · 비슷한 이름은 정규가 아니다.
+        assert_eq!(
+            classify_bundle_dir(Path::new("/Applications/cysr.app/Contents/MacOS")),
+            BundleKind::Canonical
+        );
+        assert_eq!(
+            classify_bundle_dir(Path::new("/Users/x/Applications/cysr.app/Contents/MacOS")),
+            BundleKind::Canonical
+        );
+        assert_eq!(
+            classify_bundle_dir(Path::new("/Applications/cysr.app.bak-1/Contents/MacOS")),
+            BundleKind::Backup
+        );
+        assert_eq!(
+            classify_bundle_dir(Path::new("/Applications/cysr.app.prev-2/Contents/MacOS")),
+            BundleKind::Backup
+        );
+        assert_eq!(
+            classify_bundle_dir(Path::new("/Users/x/Downloads/cysr.app/Contents/MacOS")),
+            BundleKind::NonStandard
+        );
+        for near in ["/Applications/xcysr.app/Contents/MacOS", "/Applications/cys.appx/Contents/MacOS"] {
+            assert_eq!(classify_bundle_dir(Path::new(near)), BundleKind::NonStandard, "{near}");
+        }
     }
 
     #[test]
@@ -7536,6 +7577,19 @@ __cys_probe_begin_d__\n/b/cysd\n__cys_probe_end_d__\n";
         ));
         assert!(strict_install_bundle_ok(
             Path::new("/Users/x/Applications/cys.app/Contents/MacOS"),
+            home
+        ));
+        // (cysr-product-rename) 새 설치 번들 이름 cysr.app 도 두 자리 모두 통과 · 비슷한 이름은 거부.
+        assert!(strict_install_bundle_ok(
+            Path::new("/Applications/cysr.app/Contents/MacOS"),
+            home
+        ));
+        assert!(strict_install_bundle_ok(
+            Path::new("/Users/x/Applications/cysr.app/Contents/MacOS"),
+            home
+        ));
+        assert!(!strict_install_bundle_ok(
+            Path::new("/Applications/xcysr.app/Contents/MacOS"),
             home
         ));
         // ★반례: classify_bundle_dir 은 이 셋을 전부 Canonical 로 본다(그게 결함이었다).
@@ -8180,6 +8234,12 @@ echo {PROBE_BEGIN_MARK_D}; which -a cysd-no-such-binary-xyz; echo {PROBE_END_MAR
     fn links_into_cys_bundle_matches_only_bundle_binaries() {
         assert!(links_into_cys_bundle("/Applications/cys.app/Contents/MacOS/cys"));
         assert!(links_into_cys_bundle("/Users/x/Applications/cys.app/Contents/MacOS/cysd"));
+        // (cysr-product-rename) 새 설치 번들 이름도 우리 링크다 — 이름 경계는 접미사 앞 `/` 가 지킨다.
+        assert!(links_into_cys_bundle("/Applications/cysr.app/Contents/MacOS/cys"));
+        assert!(links_into_cys_bundle("/Users/x/Applications/cysr.app/Contents/MacOS/cysd"));
+        assert!(!links_into_cys_bundle("/Applications/cysr.app.bak-1/Contents/MacOS/cys"));
+        assert!(!links_into_cys_bundle("/Applications/xcysr.app/Contents/MacOS/cys"));
+        assert!(!links_into_cys_bundle("/Applications/cysr.app/Contents/MacOS/cys-app"));
         // 백업 번들·타 앱·임의 경로는 우리 링크가 아니다.
         assert!(!links_into_cys_bundle("/Applications/cys.app.bak-044/Contents/MacOS/cys"));
         assert!(!links_into_cys_bundle("/Applications/Other.app/Contents/MacOS/cys"));
@@ -9783,9 +9843,16 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
     fn bundle_link_pattern_and_rust_suffixes_are_one_rule() {
         assert_eq!(
             BUNDLE_LINK_PATTERN,
-            format!("*{BUNDLE_LINK_SUFFIX_CYS}|*{BUNDLE_LINK_SUFFIX_CYSD}"),
+            format!(
+                "*{BUNDLE_LINK_SUFFIX_CYS}|*{BUNDLE_LINK_SUFFIX_CYSD}|*{BUNDLE_LINK_SUFFIX_CYSR_APP_CYS}|*{BUNDLE_LINK_SUFFIX_CYSR_APP_CYSD}"
+            ),
             "셸 패턴과 Rust 접미사가 갈라지면 판정과 집행이 다른 결론을 낸다"
         );
+        // (cysr-product-rename) 번들 이름 목록의 모든 이름이 cys·cysd 두 접미사로 패턴에 실려 있다.
+        for b in BUNDLE_NAMES {
+            assert!(BUNDLE_LINK_PATTERN.contains(&format!("*/{b}/Contents/MacOS/cys|")), "{b} cys 누락");
+            assert!(BUNDLE_LINK_PATTERN.contains(&format!("*/{b}/Contents/MacOS/cysd")), "{b} cysd 누락");
+        }
     }
 
     /// ★MAJOR-6 **판정(Rust) ↔ 집행(셸) 일치**를 실물 `/bin/sh` 로 확인한다.
@@ -9808,6 +9875,9 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
             "/a/cys.app/Contents/MacOS/cys.app/Contents/MacOS/cys",
             "/Applications/Other.app/Contents/MacOS/cys",
             "/Applications/cys.app.bak-1/Contents/MacOS/cys",
+            "/Applications/cysr.app/Contents/MacOS/cys",
+            "/Applications//cysr.app/Contents/MacOS/cysd",
+            "/Applications/cysr.app.bak-1/Contents/MacOS/cys",
             "/opt/homebrew/bin/cys",
             "/Applications/cys.app/Contents/MacOS/cys-app",
         ];

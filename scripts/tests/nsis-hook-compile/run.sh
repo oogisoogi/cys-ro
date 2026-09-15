@@ -190,13 +190,26 @@ n8_legacy=$(grep -c '!define CYS_LEGACY_PRODUCT "cys"' "$HOOK" || true)
 n8_pre=$(awk '/^cys_pre_single:/,/^cys_pre_dir_kept:/' "$HOOK" | tr -d '\r')
 n8_pinbody=$(printf '%s\n' "$n8_pre" | grep -cE '^  StrCmp \$INSTDIR "\$LOCALAPPDATA\\\$\{PRODUCTNAME\}" 0 cys_pre_dir_kept$|^  StrCpy \$INSTDIR \$R0$|^  SetOutPath \$INSTDIR$' || true)
 n8_guards=$(printf '%s\n' "$n8_mig" | grep -cE '^  StrCmp \$R0 "\$INSTDIR" ' || true)
+# N8-b — (2026-09-16 · T7 R2) the stray new-name folder sweep. The template runs
+# `SetOutPath $INSTDIR` (installer.nsi:639) BEFORE this hook, so it CREATES
+# $LOCALAPPDATA\<productName> before the pin can redirect; the pin block removes that
+# leftover. Three things must hold and none of them is visible to the model (the pin
+# block is out of its scope), so they are pinned statically here:
+#   · exactly one RMDir in the pre block, and it names the template default
+#   · it is NEVER recursive — `RMDir /r` there would delete a real installation
+#     someone had put in that folder, which is the whole point of the empty-only cap
+#   · it is skipped when the pin target IS that folder (StrCmp … cys_pre_dir_pinned 0)
+n8_rmdir=$(printf '%s\n' "$n8_pre" | grep -cE '^  RMDir "\$LOCALAPPDATA\\\$\{PRODUCTNAME\}"$' || true)
+n8_rmdir_rec=$(printf '%s\n' "$n8_pre" | grep -cE '^[[:space:]]*RMDir[[:space:]]+/[rR]' || true)
+n8_rmdir_guard=$(printf '%s\n' "$n8_pre" | grep -cE '^  StrCmp \$INSTDIR "\$LOCALAPPDATA\\\$\{PRODUCTNAME\}" cys_pre_dir_pinned 0$' || true)
 if [ -z "$n8_pin_line" ] || [ -z "$n8_sweep_line" ] || [ "$n8_pin_line" -ge "$n8_sweep_line" ] \
    || [ "$n8_rm" != "0" ] || [ "$n8_keys" != "2" ] || [ "$n8_legacy" != "1" ] \
-   || [ "$n8_pinbody" != "3" ] || [ "$n8_guards" != "2" ]; then
-  echo "FAIL[N8]: rename migration drifted — pin line=$n8_pin_line (must be < sweep line=$n8_sweep_line) · folder deletes in migration=$n8_rm (want 0) · DeleteRegKey=$n8_keys (want 2) · legacy define=$n8_legacy (want 1) · pin body lines=$n8_pinbody (want 3) · ownership guards=$n8_guards (want 2)" >&2
+   || [ "$n8_pinbody" != "3" ] || [ "$n8_guards" != "2" ] \
+   || [ "$n8_rmdir" != "1" ] || [ "$n8_rmdir_rec" != "0" ] || [ "$n8_rmdir_guard" != "1" ]; then
+  echo "FAIL[N8]: rename migration drifted — pin line=$n8_pin_line (must be < sweep line=$n8_sweep_line) · folder deletes in migration=$n8_rm (want 0) · DeleteRegKey=$n8_keys (want 2) · legacy define=$n8_legacy (want 1) · pin body lines=$n8_pinbody (want 3) · ownership guards=$n8_guards (want 2) · stray-folder RMDir=$n8_rmdir (want 1) · recursive RMDir=$n8_rmdir_rec (want 0) · its skip guard=$n8_rmdir_guard (want 1)" >&2
   exit 1
 fi
-echo "nsis-hook-compile: N8 OK (install dir pinned before sweep; legacy cleanup deletes 2 keys + shortcuts, never the state folder)"
+echo "nsis-hook-compile: N8 OK (install dir pinned before sweep; stray new-name folder swept non-recursively behind its guard; legacy cleanup deletes 2 keys + shortcuts, never the state folder)"
 
 # ── re-verify the positive with restored inputs (negatives must leave no residue) ──
 "$MAKENSIS" -V2 -WX -INPUTCHARSET UTF8 harness.nsi >/dev/null

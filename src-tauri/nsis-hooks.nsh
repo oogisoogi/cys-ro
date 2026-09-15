@@ -588,7 +588,11 @@ FunctionEnd
   ;    · 핸들은 의도적으로 닫지 않는다 — 프로세스 종료가 해제이며, 그 수명이 곧 잠금이다.
   ;    · 진 쪽은 **Quit**(Abort 아님)으로 나간다: Abort 는 .onInstFailed 콜백(구조 매크로)을
   ;      발화시켜, 아무것도 안 한 인스턴스가 이긴 쪽의 `.new` 스테이징을 지울 수 있다.
-  ;      Quit 은 콜백 없이 즉시 종료라 부작용이 0이다(이 시점까지 파일 접촉 0).
+  ;      Quit 은 콜백 없이 즉시 종료라 부작용이 0이다(이 시점까지 **우리** 파일 접촉 0).
+  ;      ⚠정직 한계: 템플릿이 훅보다 먼저 `SetOutPath $INSTDIR`(installer.nsi:639)를 돌려
+  ;      폴더를 이미 만들어 둔다. 개명 뒤 그것은 $LOCALAPPDATA\${PRODUCTNAME} 이고, 진
+  ;      인스턴스는 핀(⓪-b)에 닿기 전에 나가므로 그 빈 폴더가 남는다 — 동시 2인스턴스
+  ;      에서만 생기는 잔여이며, 다음 단독 설치의 ⓪-b-2 가 회수한다.
   ;    · exit 5 = "다른 설치기 인스턴스 실행 중 · 무접촉"(NSIS-CONTRACT §4 신설 행).
   ;    · ERROR_ALREADY_EXISTS(183) 외에, 핸들 0 + ERROR_ACCESS_DENIED(5)도 '이미 존재'다
   ;      (다른 무결성 수준의 인스턴스가 선점). 그 밖의 생성 실패는 fail-open(설치 계속) —
@@ -629,6 +633,17 @@ cys_pre_single:
 cys_pre_dir_pin:
   StrCpy $INSTDIR $R0
   SetOutPath $INSTDIR
+  ;    ⓪-b-2 ★핀 직후 「새 이름 유령 폴더」를 걷는다 (T7 R2 · 실기 run 35030187792 에서 적발).
+  ;    템플릿 Section Install 의 첫 줄 `SetOutPath $INSTDIR`(installer.nsi:639)는 이 훅
+  ;    (:642)보다 **먼저** 돌고, SetOutPath 는 없는 폴더를 **만든다**. 즉 핀이 끼어들 기회를
+  ;    얻기 전에 $LOCALAPPDATA\${PRODUCTNAME} 가 실제로 생성돼 있다. 핀 뒤 그 폴더는 아무것도
+  ;    안 든 유령이고, 템플릿 제거기는 $INSTDIR(=핀된 폴더)만 지우므로 **영구히 남는다**.
+  ;    · RMDir 은 **빈 폴더만** 지운다 — 누군가 진짜로 거기 설치했다면 무접촉이다(안전 상한).
+  ;    · 바로 위 SetOutPath 로 현재 폴더가 이미 옮겨졌기에 지울 수 있다(cwd 는 못 지운다).
+  ;    · 핀 대상이 그 폴더 자신이면(옛 이름 키가 그렇게 가리키는 기계) 건너뛴다.
+  StrCmp $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}" cys_pre_dir_pinned 0
+  RMDir "$LOCALAPPDATA\${PRODUCTNAME}"
+cys_pre_dir_pinned:
   DetailPrint "cys: install dir pinned to $INSTDIR (daemon state dir)"
 cys_pre_dir_kept:
   ClearErrors

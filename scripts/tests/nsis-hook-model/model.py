@@ -50,11 +50,17 @@ WHAT IS MODELED / NOT MODELED
                passed (past cys_post_ok/cys_post_nomarker) copy the verified cys.exe
                to cysr.exe — not a canonical, no exit code, no failure file, no
                marker; a failed copy only DetailPrints (non-fatal).
-             * PREINSTALL `cys_pre_dir_pin` / `cys_pre_dir_kept` (cysr-product-rename
-               84f16d8): before the sweep, when $INSTDIR is still the template default
-               for the new productName, re-point it to the legacy folder (registry
-               install-location or $LOCALAPPDATA\\cys) — chooses WHICH folder the
-               modeled machine runs in; the machine itself is unchanged.
+             * PREINSTALL `cys_pre_dir_pin` / `cys_pre_dir_pinned` / `cys_pre_dir_kept`
+               (cysr-product-rename 84f16d8; `cys_pre_dir_pinned` + the RMDir added
+               2026-09-16 for T7 R2): before the sweep, when $INSTDIR is still the
+               template default for the new productName, re-point it to the legacy
+               folder (registry install-location or $LOCALAPPDATA\\cys), then RMDir the
+               template default the template's own `SetOutPath $INSTDIR`
+               (installer.nsi:639, which runs BEFORE this hook) had already created —
+               RMDir removes empty directories only, so a real installation there is
+               never touched. Both steps only choose WHICH folder the modeled machine
+               runs in and drop an empty stray beside it; the machine itself, the three
+               canonicals, the failure file and the markers are unchanged.
              * POSTINSTALL `cys_post_legacy_*` (84f16d8): delete old-name uninstall /
                install-location registry keys and start-menu/desktop .lnk that point at
                $INSTDIR, recreate new-name .lnk — registry + shortcuts only (both out of
@@ -125,7 +131,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "5f51cf1af480caba33d225f200b3e422bb11c095a570cb2df48c7f01fcea909f"
+GUARD_PIN = "b2a500013096399a563c7fff8a0b35b5439c170025b5003fece9dfb5857a9e55"
 
 
 def hook_path():

@@ -1248,7 +1248,7 @@ jobs:
           if (Test-Path $un) { Start-Process -FilePath $un -ArgumentList '/S' -Wait; Start-Sleep 5 }
           Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           foreach ($k in 'cys','cysr') { Remove-Item "$uninstRoot\$k" -Recurse -Force -ErrorAction SilentlyContinue }
-          if (Test-Path $newDir) { throw "T7 사전: $newDir 가 이미 있다 — 깨끗한 출발점이 아니다" }
+          if (Test-Path $newDir) { $stray = @(Get-ChildItem $newDir -Force -ErrorAction SilentlyContinue).Count; throw "T7 사전: $newDir 가 이미 있다 (항목 $stray 개 — 0 이면 템플릿 SetOutPath 가 만든 유령 폴더를 훅 ⓪-b-2 가 못 걷은 것, 1+ 이면 진짜 두 번째 설치) — 깨끗한 출발점이 아니다" }
 
           # ② 옛 이름 공개 설치본(1.0.0 · productName=cys) 설치
           $old = Join-Path $env:RUNNER_TEMP 'cys_1.0.0_x64-setup.exe'
@@ -1283,6 +1283,7 @@ jobs:
           $res.R7 = (-not $smOld) -or ((-not (Test-Path (Join-Path $smDir 'cys.lnk'))) -and (Test-Path (Join-Path $smDir 'cysr.lnk')))
           $res.R8 = (-not $dtOld) -or ((-not (Test-Path (Join-Path $dtDir 'cys.lnk'))) -and (Test-Path (Join-Path $dtDir 'cysr.lnk')))
           foreach ($k in $res.Keys) { Write-Host ("T7-{0} RESULT: {1}" -f $k, $(if ($res[$k]) { 'PASS' } else { 'FAIL' })) }
-          Write-Host ("진단: 설치기 exit={0} · cysr InstallLocation='{1}' · 우리 제어판 항목={2} · 위치 키={3}" -f $ni.ExitCode, $loc, $ours.Count, (($locKeys | ForEach-Object { $_.Name }) -join ', '))
+          $strayN = if (Test-Path $newDir) { @(Get-ChildItem $newDir -Force -ErrorAction SilentlyContinue).Count } else { '없음' }
+          Write-Host ("진단: 설치기 exit={0} · cysr InstallLocation='{1}' · 우리 제어판 항목={2} · 위치 키={3} · {4} 항목수={5} (R2 는 이 폴더가 '없음' 이어야 통과 — 0 이면 훅 ⓪-b-2 회수 실패, 1+ 이면 두 번째 설치)" -f $ni.ExitCode, $loc, $ours.Count, (($locKeys | ForEach-Object { $_.Name }) -join ', '), $newDir, $strayN)
           if ($res.Values -contains $false) { throw "T7: 제품 이름 개명 이전 실기 실패" }
           Write-Host "OK: T7 이전 실기 통과 — 두 번째 설치 0 · 제어판 1항목 · 옛 이름 흔적 정리"

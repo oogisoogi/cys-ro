@@ -2053,7 +2053,7 @@ fn xml_escape(s: &str) -> String {
 /// 현재 사용자 식별자("DOMAIN\\User") — 태스크 principal/trigger 의 UserId. whoami 우선(정확), env 폴백.
 #[cfg(windows)]
 fn current_user_id() -> Option<String> {
-    if let Ok(out) = std::process::Command::new("whoami").output() {
+    if let Ok(out) = cys::hidden_command("whoami").output() {
         if out.status.success() {
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !s.is_empty() {
@@ -2139,7 +2139,7 @@ fn write_utf16le_bom(path: &std::path::Path, s: &str) -> std::io::Result<()> {
 /// UTF-16/UTF-8 출력 모두에서 ASCII 태그를 안정 검출(UTF-16LE 는 ASCII 사이에 0x00 이 낀다).
 #[cfg(windows)]
 fn task_has_restart_on_failure(task: &str) -> bool {
-    std::process::Command::new("schtasks")
+    cys::hidden_command("schtasks")
         .args(["/Query", "/TN", task, "/XML"])
         .output()
         .map(|o| {
@@ -7556,7 +7556,7 @@ fn pidfile_reclaimable(pidfile: &std::path::Path) -> bool {
 /// javis_lock.py 의 pid 사망 검사와 동형 규약(H-CONC-2 스테일 회수 계약의 Rust 측 절반).
 #[cfg(not(unix))]
 fn pidfile_holder_dead(pid: u32) -> bool {
-    match std::process::Command::new("tasklist")
+    match cys::hidden_command("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH"])
         .output()
     {
@@ -8527,7 +8527,7 @@ fn which_in_path(bin: &str) -> (bool, Option<std::path::PathBuf>) {
     let prog = "where";
     #[cfg(not(windows))]
     let prog = "which";
-    match std::process::Command::new(prog).arg(bin).output() {
+    match cys::hidden_command(prog).arg(bin).output() {
         Ok(o) if o.status.success() => {
             let s = String::from_utf8_lossy(&o.stdout);
             let first = s
@@ -12857,7 +12857,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     let xml = cysd_task_xml(&daemon, &user);
                     let xml_path = std::env::temp_dir().join("cysd-task.xml");
                     write_utf16le_bom(&xml_path, &xml).map_err(|e| format!("태스크 XML 기록 실패: {e}"))?;
-                    let out = std::process::Command::new("schtasks")
+                    let out = cys::hidden_command("schtasks")
                         .args(["/Create", "/XML"])
                         .arg(&xml_path)
                         .args(["/TN", TASK, "/F"])
@@ -12878,7 +12878,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     Ok(())
                 }
                 DaemonAction::Uninstall => {
-                    let out = std::process::Command::new("schtasks")
+                    let out = cys::hidden_command("schtasks")
                         .args(["/Delete", "/TN", TASK, "/F"])
                         .output()
                         .map_err(|e| e.to_string())?;
@@ -12889,7 +12889,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     Ok(())
                 }
                 DaemonAction::Status => {
-                    let registered = std::process::Command::new("schtasks")
+                    let registered = cys::hidden_command("schtasks")
                         .args(["/Query", "/TN", TASK])
                         .output()
                         .map(|o| o.status.success())

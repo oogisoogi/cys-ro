@@ -601,11 +601,10 @@ impl Curl {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(sink))
             .stderr(std::process::Stdio::null());
-        #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
+            // 콘솔 창 숨김 — flag word 는 cys::ChildLifetime 등급표가 유일 정의처(TICKET=cysr-console-flicker-r2).
+            use cys::SpawnPolicy as _;
+            cmd.spawn_policy(cys::ChildLifetime::Attached);
         }
         let result = match cmd.spawn() {
             Err(e) => HttpResp { status: None, body: String::new(), err: Some(format!("curl: {e}")) },

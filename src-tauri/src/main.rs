@@ -4050,17 +4050,12 @@ fn maybe_macos_onboard() -> bool {
 
 /// Windows: GUI(windows_subsystem)가 콘솔 바이너리(cys/cysd/python3)를 스폰할 때 콘솔 창이
 /// 뜨지 않게 CREATE_NO_WINDOW 를 붙인다(검은 빈 Windows Terminal 창·ConPTY 오염 방지). 타 OS 무동작.
+///
+/// ★flag word 는 여기서 직접 적지 않는다(TICKET=cysr-console-flicker-r2) — `cys::ChildLifetime`
+/// 등급표가 유일한 정의처이고, GUI 도 그 `Attached` 등급을 탄다(종전 원시 flag 와 같은 값).
 fn no_console(cmd: &mut std::process::Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = cmd;
-    }
+    use cys::SpawnPolicy as _;
+    cmd.spawn_policy(cys::ChildLifetime::Attached);
 }
 
 /// ★W3(2026-08-29 · 설치 중 라이벌 데몬 차단): GUI 가 낳는 **관측·업데이트류** 사이드카

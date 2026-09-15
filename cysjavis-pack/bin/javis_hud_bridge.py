@@ -765,16 +765,22 @@ class Hub:
     def __init__(self):
         self.lock = threading.Lock()
         self.clients = set()
+        # 접속 클라이언트 존재 신호(TICKET=cysr-console-flicker-r2) — fleet_loop 가 이것으로
+        # 「보는 사람이 없으면 cys 를 스폰하지 않는다」를 지킨다.
+        self.watched = threading.Event()
 
     def attach(self):
         q = Queue(maxsize=500)
         with self.lock:
             self.clients.add(q)
+            self.watched.set()
         return q
 
     def detach(self, q):
         with self.lock:
             self.clients.discard(q)
+            if not self.clients:
+                self.watched.clear()
 
     def publish(self, frame):
         data = json.dumps(frame, ensure_ascii=False)
@@ -1447,7 +1453,17 @@ def run_json(args, timeout=10):
 
 
 def fleet_loop(world, hub, poke):
+    """fleet·status 폴링 — **접속 클라이언트가 있을 때만** cys 를 스폰한다.
+
+    ★TICKET=cysr-console-flicker-r2(2026-09-15 · 1.0.0 윈도우 참가자 기기 실측): 종전엔 보는
+      사람이 없어도 2초마다 cys.exe 를 두 번씩 낳았다 — 오피스 탭을 한 번도 안 연 기계에서도
+      상주 스폰이었고, 윈도우에서 약 2초 주기 cys.exe+conhost 생성으로 관측됐다. 클라이언트가
+      0이면 attach 신호(hub.watched)를 기다리며 **스폰 0**, 접속 즉시 한 바퀴 돌아 화면을 채운다.
+    """
     while True:
+        if not hub.watched.is_set():
+            hub.watched.wait()     # 보는 사람 0 — 스폰 없이 접속을 기다린다
+            continue               # 깨어난 뒤 조건을 다시 본다(가짜 깨움·즉시 이탈 대비)
         fleet = run_json(["fleet", "--json"])
         status = run_json(["status", "--json"])
         patches, structural = world.merge_fleet(fleet, status)

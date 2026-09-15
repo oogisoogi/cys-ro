@@ -420,6 +420,30 @@ use std::os::windows::process::CommandExt as _;
 impl_spawn_policy!(std::process::Command);
 impl_spawn_policy!(tokio::process::Command);
 
+/// **숨김 자식의 단일 조립점**(TICKET=cysr-console-flicker-r2) — `Command::new` + `Attached` 등급.
+///
+/// 콘솔 없는 프로세스(cysd·cys-app)나 그 자손이 콘솔 바이너리(cmd·curl·schtasks·tasklist·
+/// whoami·cys.exe)를 플래그 없이 낳으면 Windows 는 자식마다 **새 콘솔 창**을 할당한다(1.0.0
+/// 참가자 기기 깜빡임 실측 2026-09-15). 지점마다 `hide_console()` 을 기억해 붙이는 방식은
+/// 스폰이 새로 생길 때마다 또 빠졌다(9501dd6·accounts.rs cmd 선례) — 그래서 **처음부터 숨긴
+/// 빌더**를 돌려준다. unix 에서는 `Attached` 가 아무 flag 도 얹지 않으므로 행동 무변경이다.
+///
+/// ⚠대상이 아닌 것: 사용자 콘솔을 물려받아야 하는 전경 자식(`cys run` = `ConsoleScoped`)·
+/// 분리 자식(`Survivor`·`GroupScoped`)은 이 헬퍼가 아니라 `spawn_policy` 로 등급을 직접 적는다.
+/// 이 헬퍼 밖의 `Command::new` 는 `spawn_policy_tests::raw_command_new_census_is_frozen` 이 센다.
+pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.spawn_policy(ChildLifetime::Attached);
+    cmd
+}
+
+/// [`hidden_command`] 의 tokio 판 — 같은 등급·같은 flag.
+pub fn hidden_tokio_command<S: AsRef<std::ffi::OsStr>>(program: S) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.spawn_policy(ChildLifetime::Attached);
+    cmd
+}
+
 /// 이행기 호환: CYS_* 우선 → 구 JAVIS_* → 구 AITERM_* 순 폴백.
 pub fn env_compat(primary: &str) -> Option<String> {
     let javis = primary.replacen("CYS_", "JAVIS_", 1);
@@ -5237,6 +5261,133 @@ mod spawn_policy_tests {
             "정의처 면제가 {definition_sites}건 — 0이면 스캔이 정의처를 못 봤다는 뜻이고 \
              (수집기 고장) 2 이상이면 면제가 번진 것이다"
         );
+    }
+
+    /// GUI 크레이트(`src-tauri/src`) 소스 — 같은 저장소의 다른 크레이트라 `spawn_scan_files` 가
+    /// 안 닿는다. 파일 읽기만 하므로 의존 추가 없음.
+    fn tauri_scan_files() -> Vec<(String, String)> {
+        // 하위 디렉터리까지 재귀(agy 1R — 단일 깊이 스캔은 새 모듈 폴더를 조용히 빼먹는다).
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut stack = vec![manifest.join("src-tauri").join("src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("GUI 소스 디렉터리를 읽지 못했다 {}: {e}", dir.display()))
+            {
+                let p = entry.expect("디렉터리 항목").path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
+                    let rel = p.strip_prefix(manifest).unwrap().to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
+                    out.push((rel, std::fs::read_to_string(&p).expect("GUI 소스 읽기")));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// 헬퍼([`crate::hidden_command`]) 밖 원시 `Command::new(` 의 **파일별 동결 계수**
+    /// (TICKET=cysr-console-flicker-r2 · 2026-09-15 · base 8876204 에서 윈도 도달 무플래그 스폰 8곳을
+    /// 헬퍼로 옮긴 뒤의 실측값).
+    ///
+    /// 왜 계수 동결인가: 콘솔 창 누락은 mac/Linux 무증상·CI 초록인 채 윈도우 참가자 기기에서만
+    /// 난다(1.0.0 실측). 지점마다 등급을 기억해 붙이는 방식은 9501dd6·accounts.rs 에서 두 번
+    /// 빠졌다. 그래서 **새 원시 스폰이 생기는 순간** 적색으로 만들어, 쓰는 사람이 `hidden_command`
+    /// 또는 `spawn_policy(<등급>)` 를 고르게 한다. 기존 지점은 macOS 전용(launchctl·codesign)·
+    /// 테스트 헬퍼 문자열·등급을 이미 체인에 단 곳이라 계수로만 묶는다(지점별 분류는 보고서 표).
+    /// 숫자를 늘릴 때는 그 스폰이 ⓐ윈도에서 안 도는가 ⓑ등급을 체인에 달았는가를 먼저 적어라.
+    const RAW_COMMAND_NEW_FROZEN: &[(&str, usize)] = &[
+        ("src-tauri/src/feedback.rs", 2),
+        ("src-tauri/src/main.rs", 39),
+        ("src/app_bundle.rs", 4),
+        ("src/bin/cys.rs", 15),
+        ("src/bin/cysd/accounts.rs", 2),
+        ("src/bin/cysd/boot_supervisor.rs", 1),
+        ("src/bin/cysd/channels.rs", 2),
+        ("src/bin/cysd/governance.rs", 2),
+        ("src/bin/cysd/hwmon.rs", 3),
+        ("src/bin/cysd/main.rs", 1),
+        ("src/bin/cysd/schedule.rs", 3),
+        ("src/bin/cysd/state.rs", 3),
+        ("src/bin/cysd/usage.rs", 3),
+        ("src/factory_reset.rs", 7),
+        ("src/launchd.rs", 4),
+        ("src/lib.rs", 6),
+    ];
+
+    #[test]
+    fn raw_command_new_census_is_frozen() {
+        let mut actual: std::collections::BTreeMap<String, usize> = Default::default();
+        let tauri = tauri_scan_files();
+        assert!(
+            tauri.iter().any(|(n, s)| n == "src-tauri/src/main.rs" && s.contains("fn no_console(")),
+            "GUI 수집물이 실물이 아니다 — 스캔이 허공을 보고 있다"
+        );
+        for (name, src) in spawn_scan_files().iter().chain(tauri.iter()) {
+            // 괄호를 떼고 센다(agy 1R — `Command::new (` 처럼 공백 하나로 빠져나가는 길 차단).
+            let n = production_slice(src).matches("Command::new").count();
+            if n > 0 {
+                actual.insert(name.clone(), n);
+            }
+        }
+        let frozen: std::collections::BTreeMap<String, usize> =
+            RAW_COMMAND_NEW_FROZEN.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        // 계측 타당성 — 헬퍼 정의처 자신이 계수에 잡혀야 스캔이 대상에 닿은 것이다.
+        assert!(actual.get("src/lib.rs").copied().unwrap_or(0) >= 2, "lib.rs 헬퍼 정의가 안 잡혔다");
+        assert_eq!(
+            actual, frozen,
+            "헬퍼 밖 원시 `Command::new(` 계수가 동결값과 다르다 — 새 스폰이면 \
+             cys::hidden_command / hidden_tokio_command(윈도 콘솔 창 숨김) 또는 \
+             spawn_policy(<등급>) 를 써라. 실측 표 전문: {actual:?}"
+        );
+    }
+
+    /// GUI 에는 flag word 원시 적용이 0 — 등급표(`ChildLifetime`)만 쓴다(정의처가 둘이면 드리프트).
+    #[test]
+    fn tauri_has_no_raw_creation_flags() {
+        let tauri = tauri_scan_files();
+        assert!(tauri.len() >= 2, "GUI 수집 {}건", tauri.len());
+        for (name, src) in &tauri {
+            let prod = production_slice(src);
+            for needle in ["creation_flags(", "0x0800_0000", "CREATE_NO_WINDOW:"] {
+                assert_eq!(prod.matches(needle).count(), 0, "{name} 에 `{needle}` 원시 사용");
+            }
+        }
+        let (_, main) = tauri.iter().find(|(n, _)| n == "src-tauri/src/main.rs").unwrap();
+        assert!(
+            production_slice(main).contains("cmd.spawn_policy(cys::ChildLifetime::Attached);"),
+            "no_console 이 등급표를 경유하지 않는다"
+        );
+    }
+
+    /// 헬퍼가 정말 `Attached` 등급을 싣는가 + 윈도 도달 콘솔 스폰(1.0.0 무플래그 8곳)이 헬퍼를 탄다.
+    #[test]
+    fn hidden_command_helpers_and_windows_sites_are_wired() {
+        let files = spawn_scan_files();
+        let get = |n: &str| {
+            production_slice(&files.iter().find(|(f, _)| f == n).unwrap_or_else(|| panic!("{n}")).1)
+        };
+        let lib = get("src/lib.rs");
+        for f in ["pub fn hidden_command<", "pub fn hidden_tokio_command<"] {
+            let body = &lib[lib.find(f).unwrap_or_else(|| panic!("{f} 없음"))..];
+            let body = &body[..body.find("\n}\n").expect("함수 끝")];
+            assert!(body.contains("cmd.spawn_policy(ChildLifetime::Attached);"), "{f} 가 숨김 등급을 안 싣는다");
+        }
+        let cli = get("src/bin/cys.rs");
+        for (needle, n) in [
+            ("cys::hidden_command(\"whoami\")", 1),
+            ("cys::hidden_command(\"tasklist\")", 1),
+            ("cys::hidden_command(\"schtasks\")", 4),
+            ("cys::hidden_command(prog)", 1),
+        ] {
+            assert_eq!(cli.matches(needle).count(), n, "cys.rs `{needle}` 편입 계수");
+        }
+        assert!(get("src/bin/cysd/accounts.rs").contains("cys::hidden_tokio_command(program)"));
+        // unix 행동 무변경 — 헬퍼 경유 스폰이 그대로 돈다.
+        #[cfg(unix)]
+        assert!(crate::hidden_command("true").status().expect("spawn").success());
     }
 
     /// 등급 선언(`spawn_policy(`)과 콘솔 은폐 별칭(`hide_console(`)의 **병용**을 찾는다

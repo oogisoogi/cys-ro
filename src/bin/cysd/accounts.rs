@@ -639,7 +639,8 @@ fn note_oauth(
 /// 외부 명령 1회 실행 — 표준입력을 주고 stdout을 받는다. 실패는 사유 문자열로.
 async fn run_capture(program: &str, args: &[&str], stdin_data: Option<&str>) -> Result<Vec<u8>, String> {
     use tokio::io::AsyncWriteExt;
-    let mut cmd = tokio::process::Command::new(program);
+    // ★콘솔 없는 cysd 의 주기 프로브(curl) — 숨김 조립점 경유(TICKET=cysr-console-flicker-r2).
+    let mut cmd = cys::hidden_tokio_command(program);
     cmd.args(args)
         .stdin(if stdin_data.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())

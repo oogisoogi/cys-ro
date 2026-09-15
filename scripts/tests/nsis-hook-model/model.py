@@ -44,6 +44,25 @@ WHAT IS MODELED / NOT MODELED
              what the invariants protect), and compile-time gates (S5 "sidecar
              without VERSIONINFO" is a build failure by !error; the runtime path
              is unreachable — proven by harness negative control N1).
+  not modeled — added after the W7 pin (1.0.1 · judged invariant-neutral · re-pinned in
+             the SAME commit as this note · TICKET=cys-v101-integrate):
+             * POSTINSTALL `cys_post_alias_ok` (cysr-alias 6537958): after every gate
+               passed (past cys_post_ok/cys_post_nomarker) copy the verified cys.exe
+               to cysr.exe — not a canonical, no exit code, no failure file, no
+               marker; a failed copy only DetailPrints (non-fatal).
+             * PREINSTALL `cys_pre_dir_pin` / `cys_pre_dir_kept` (cysr-product-rename
+               84f16d8): before the sweep, when $INSTDIR is still the template default
+               for the new productName, re-point it to the legacy folder (registry
+               install-location or $LOCALAPPDATA\\cys) — chooses WHICH folder the
+               modeled machine runs in; the machine itself is unchanged.
+             * POSTINSTALL `cys_post_legacy_*` (84f16d8): delete old-name uninstall /
+               install-location registry keys and start-menu/desktop .lnk that point at
+               $INSTDIR, recreate new-name .lnk — registry + shortcuts only (both out of
+               scope above); never touches the three canonicals.
+             None of the three reads or writes cys/cysd/cys-app, the failure file, the
+             success/version marker, or SetErrorLevel — so I1/I3/I4 are unaffected. The
+             census pin moved only because labels/tokens, the POSTINSTALL body and its
+             !insertmacro sequence (IsShortcutTarget · SetLnkAppUserModelId) changed.
 
 INVARIANTS (mechanical form of hook R1/R3/R4 with the honest scopes of
 NSIS-CONTRACT §9 — the model refuses to over-claim):
@@ -106,7 +125,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "a0f620836f70fb30e6a2065f6b7afb9d74f3247562d470df37c95085572cc5be"
+GUARD_PIN = "5f51cf1af480caba33d225f200b3e422bb11c095a570cb2df48c7f01fcea909f"
 
 
 def hook_path():

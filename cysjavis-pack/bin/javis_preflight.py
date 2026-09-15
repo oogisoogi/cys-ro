@@ -646,8 +646,71 @@ def _cys_hook_cmd(script_name):
     Unix: 기존 `sh <abs>` 무변경(회귀0 — 기존 install 문자열·matcher 그대로 유지)."""
     script = os.path.join(pack_dir(), "hooks", script_name)
     if os.name == "nt":
-        return 'bash "%s"' % script.replace("\\", "/")
+        # 런처가 없으면 종전 문자열을 낸다 — **등록 여부는 `shell_hooks_supported()` 가 가른다**.
+        return '%s "%s"' % (_win_hook_launcher() or "bash", script.replace("\\", "/"))
     return "sh " + script
+
+
+# ★win-hooks-no-bash(2026-09-16 · 샌드박스 실증: 깨끗한 Windows 에 git-bash 없음 → 매 턴 훅마다
+#   「bash 인식 불가」 오류가 사용자 화면에 찍히고 셸 훅 전부가 죽었다).
+#   Windows 훅 런처 해소 — Rust `pack::windows_hook_launcher_from` 와 **같은 순서·같은 후보·같은
+#   문자열**이어야 한다(두 writer 가 같은 명령을 내야 중복 append 0).
+#   ① PATH 에 bash → `bash` (종전 문자열과 바이트 동일)
+#   ② 알려진 설치 위치 — 순서대로 첫 실재:
+#      cys 동봉 PortableGit `%LOCALAPPDATA%\cys\runtime\git\bin\bash.exe`(1.0.1 설치 폴더 고정 ·
+#      nsis-hooks.nsh ⓪-b) · `%ProgramFiles%\Git\bin\bash.exe` · `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`
+#      · `%LOCALAPPDATA%\PortableGit\bin\bash.exe`
+#      정슬래시 절대경로. **공백이 없으면 따옴표를 붙이지 않는다** — bash 를 못 찾은 Claude Code 는
+#      훅을 PowerShell 로 띄우는데, PowerShell 은 따옴표로 시작하는 줄을 실행이 아니라 문자열로
+#      읽는다(맨 경로는 bash·cmd·PowerShell 셋 다 실행된다).
+#      ⚠잔여 위험(agy 1R 지적 · 정직 고지): **공백 경로 후보는 따옴표를 붙일 수밖에 없고**, 그 기계가
+#      훅을 PowerShell 로 띄우면 그 한 후보는 실행되지 않는다. 그럼에도 남겨 두는 근거 = 공백 후보는
+#      `%ProgramFiles%\Git`(Claude Code 가 스스로 탐색하는 표준 위치)뿐이라, 거기에 git-bash 가 있으면
+#      벤더가 훅을 bash 로 띄우고 따옴표 형식이 정상 동작한다. 8.3 단축경로 변환은 기계마다 값이
+#      달라 python·Rust 문자열 동일성(중복 등록 0)을 깨므로 쓰지 않는다. Windows 실기 확인 대기.
+#   ③ 어디에도 없으면 None — 셸 훅을 **등록하지 않는다**(안전 강등 · 없는 bash 를 흉내 내지 않는다).
+def _win_bash_candidates(localappdata, program_files):
+    out = []
+    if localappdata:
+        out.append(localappdata + "\\cys\\runtime\\git\\bin\\bash.exe")
+    if program_files:
+        out.append(program_files + "\\Git\\bin\\bash.exe")
+    if localappdata:
+        out.append(localappdata + "\\Programs\\Git\\bin\\bash.exe")
+        out.append(localappdata + "\\PortableGit\\bin\\bash.exe")
+    return out
+
+
+def _win_hook_launcher_from(bash_on_path, candidates, isfile):
+    """순수 판정: 훅 런처 문자열 또는 None(셸 훅 실행 수단 없음)."""
+    if bash_on_path:
+        return "bash"
+    for c in candidates:
+        if isfile(c):
+            p = c.replace("\\", "/")
+            return '"%s"' % p if " " in p else p
+    return None
+
+
+def _win_hook_launcher():
+    return _win_hook_launcher_from(
+        shutil.which("bash") is not None,
+        _win_bash_candidates(os.environ.get("LOCALAPPDATA"), os.environ.get("ProgramFiles")),
+        os.path.isfile)
+
+
+def shell_hooks_supported():
+    """이 기계에서 `.sh` 훅을 실행할 수단이 있나. unix = 항상(sh). Windows = 런처 해소 성공."""
+    return os.name != "nt" or _win_hook_launcher() is not None
+
+
+# 강등 고지(로그·preflight 행 1줄) — Rust `pack::shell_hooks_degraded_note` 와 같은 문장.
+# ★잃는 것을 함께 적는다(agy 1R 수용): 개수만 적으면 사용자는 **무엇이 안 되는지** 모른다.
+#   강등이 기능을 없애는 것이 아니라, bash 가 없어 이미 죽어 있던 기능을 조용하게 만드는 것이다.
+SHELL_HOOK_DEGRADED_NOTE = ("bash 없음 → 셸 훅 %d개 미등록(안전 강등 · 각성(SessionStart 지침 재주입 · "
+                            "UserPromptSubmit 부트 발화)과 자기교정·이벤트 적재 훅이 발화하지 않는다 — "
+                            "bash 없이는 등록해도 매 턴 오류만 난다) — Git for Windows 설치 후 "
+                            "`javis_preflight.py --fix` 재실행 시 자동 등록")
 
 
 # ★G10(W3): '우리 훅인가' 판정의 소유 술어. 종전 술어는 `script_name in c and "hooks" in c` 라는
@@ -1032,6 +1095,42 @@ class Preflight:
         sink = getattr(self._local, "sink", None)
         target = self.results if sink is None else sink
         target.append({"id": cid, "status": status, "detail": detail})
+
+    def _degrade_shell_hooks(self, pairs, extra=0):
+        """win-hooks-no-bash: 셸 훅 실행 수단이 있으면 None. 없으면 등록을 건너뛰게 고지 문장을
+        돌려주고, --fix 에서는 이미 등록된 **우리** 훅(G10 술어)을 걷어낸다(사용자 훅 불가침).
+        pairs = [(event, script)] · extra = 이벤트 밖 등록 수(statusLine)."""
+        if shell_hooks_supported():
+            return None
+        note = SHELL_HOOK_DEGRADED_NOTE % (len(pairs) + extra)
+        if not self.fix or not pairs:
+            return note
+        targets, _forbidden = resolve_registration_targets()
+        prefix = (os.path.join(pack_dir(), "hooks") + os.sep).replace("\\", "/")
+        dropped = 0
+        for t in targets:
+            try:
+                data = json.load(open(t, encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            hooks = data.get("hooks") if isinstance(data, dict) else None
+            if not isinstance(hooks, dict):
+                continue
+            todo = [(ev, s) for ev, s in pairs
+                    if any(isinstance(e, dict) and any(
+                        isinstance(h, dict) and _hook_entry_is_ours(h.get("command", ""), s, prefix)
+                        for h in e.get("hooks", [])) for e in hooks.get(ev) or [])]
+            if not todo:
+                continue                     # 걷을 것이 없으면 파일을 쓰지 않는다
+
+            def _mutate(d, todo=todo):
+                hk = d.setdefault("hooks", {})
+                for ev, s in todo:
+                    kept, _have = _prune_stale_hook_entries(hk.get(ev) or [], s, None)
+                    hk[ev] = kept
+            if _settings_rmw(t, _mutate) is None:
+                dropped += len(todo)
+        return note + (" · 기존 우리 훅 %d건 제거" % dropped if dropped else "")
 
     def skipped(self, cid):
         if cid in self.skips:
@@ -1687,6 +1786,10 @@ class Preflight:
         cid = "C08.hook-registered"
         if self.skipped(cid):
             return
+        _deg = self._degrade_shell_hooks([("SessionStart", "session-start.sh")])
+        if _deg:
+            self.add(cid, WARN, _deg)
+            return
         # ★G1: 등록 대상은 sentinel 계약으로 받는다 — '금지'(격리 팩)와 '미발견'(신규 머신)은
         #   처방이 정반대다(등록 0 vs 기본 프로필 생성). 폴백은 resolve 가 소유한다.
         targets, forbidden = resolve_registration_targets()
@@ -1755,6 +1858,10 @@ class Preflight:
             if not (self.fix and self.repair_via_init_pack() and os.path.isfile(script)):
                 self.add(cid, FAIL, "hooks/cys-statusline.sh 없음 — `cys init-pack` 또는 --fix")
                 return
+        _deg = self._degrade_shell_hooks([], extra=1)   # statusLine 은 체인 보존 때문에 걷지 않는다
+        if _deg:
+            self.add(cid, WARN, _deg)
+            return
         targets, forbidden = resolve_registration_targets()   # ★G1 sentinel
         if forbidden and not targets:
             self.add(cid, SKIP, "등록 대상 없음 — %s" % forbidden)
@@ -1795,6 +1902,10 @@ class Preflight:
             if not (self.fix and self.repair_via_init_pack() and os.path.isfile(script)):
                 self.add(cid, WARN, "hooks/%s 없음 — `cys init-pack` 또는 --fix" % self.EVENT_HOOK)
                 return
+        _deg = self._degrade_shell_hooks([(ev, self.EVENT_HOOK) for ev in self.EVENT_HOOK_EVENTS])
+        if _deg:
+            self.add(cid, WARN, _deg)
+            return
         targets, forbidden = resolve_registration_targets()   # ★G1 sentinel
         if forbidden and not targets:
             self.add(cid, SKIP, "등록 대상 없음 — %s" % forbidden)
@@ -3769,7 +3880,10 @@ class Preflight:
                 os.chmod(hook_path, mode | 0o755)
                 fixed.append("게이트 hook 실행권한")
         # (d) PreToolUse 게이트 hook 등록 (결정론 — .appbuild 밖 fail-open이라 안전)
-        if os.path.isfile(hook_path):
+        _deg = self._degrade_shell_hooks([("PreToolUse", APPBUILD_HOOK)])
+        if _deg:
+            warns.append(_deg)
+        if os.path.isfile(hook_path) and not _deg:
             targets, forbidden = resolve_registration_targets()   # ★G1 sentinel(폴백 소유자)
             if forbidden and not targets:
                 warns.append("등록 대상 없음 — %s" % forbidden)
@@ -3840,6 +3954,18 @@ class Preflight:
                     fixed.append("%s 실행권한" % os.path.basename(_p))
 
         # (b) 이벤트별 등록 (멱등 — 구 .config 경로는 미인정이라 패키지 경로로 신규 등록)
+        # ★win-hooks-no-bash: 셸 훅 실행 수단이 없으면 등록하지 않는다 — 각성 훅 결손도 FAIL 이
+        #   아니라 강등 WARN(원인은 등록부가 아니라 환경 능력 부재 · 등록해도 매 턴 오류만 낸다).
+        #   (a)·(a-2) 실재 결손 FAIL 은 그대로 보고한다.
+        _deg = self._degrade_shell_hooks(
+            [(ev, s) for s, evs in SELFCORR_HOOKS for ev, _m in evs])
+        if _deg:
+            detail = "자기교정·영속성 hook 파일 실재 · " + _deg
+            if fails:
+                self.add(cid, FAIL, detail + " · ★각성 훅 본체/스크립트 결손: " + " | ".join(fails[:6]))
+            else:
+                self.add(cid, WARN, detail + (" · " + " | ".join(warns[:6]) if warns else ""))
+            return
         # ★G1 sentinel: 격리(부서/임시) 팩은 글로벌 폴백 없이 등록 0 — 폴백은 resolve 가 소유한다.
         targets, forbidden = resolve_registration_targets()
         if forbidden and not targets:
@@ -4099,6 +4225,10 @@ class Preflight:
         if forbidden and not targets:
             self.add(cid, SKIP, "등록 대상 없음 — %s" % forbidden)
             return
+        _deg = self._degrade_shell_hooks([(ev, h) for h, ev, _m in GRILL_HOOKS])
+        if _deg:
+            warns.append(_deg)
+            targets = []                 # 등록 루프는 실재 검사만 남긴다(미등록 계수 0)
         for hname, hevent, hmatcher in GRILL_HOOKS:
             hook = os.path.join(pd, "hooks", hname)
             if not os.path.isfile(hook):

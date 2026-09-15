@@ -452,10 +452,101 @@ pub fn declared_timeout_for(h: &DesiredHook) -> Option<u64> {
 pub fn hook_command_for(pack_dir: &Path, script: &str) -> String {
     let path = pack_dir.join("hooks").join(script);
     if cfg!(windows) {
-        format!("bash \"{}\"", path.display().to_string().replace('\\', "/"))
+        // 런처가 없으면 종전 문자열 — **등록 여부는 [`shell_hooks_supported`] 가 가른다**.
+        let launcher = windows_hook_launcher().unwrap_or_else(|| "bash".to_string());
+        format!("{launcher} \"{}\"", path.display().to_string().replace('\\', "/"))
     } else {
         format!("sh {}", path.display())
     }
+}
+
+/// ★win-hooks-no-bash(2026-09-16 · 샌드박스 실증: git-bash 없는 Windows 에서 매 턴 훅마다
+/// 「bash 인식 불가」 오류 · 셸 훅 전멸). Windows 훅 런처 후보 — `javis_preflight._win_bash_candidates`
+/// 와 **같은 순서·같은 문자열**(두 writer 가 같은 명령을 내야 중복 append 0).
+/// cys 동봉 PortableGit(1.0.1 설치 폴더 고정 `%LOCALAPPDATA%\cys` · nsis-hooks.nsh ⓪-b) →
+/// `%ProgramFiles%\Git` → `%LOCALAPPDATA%\Programs\Git` → `%LOCALAPPDATA%\PortableGit`.
+pub fn windows_bash_candidates_from(
+    localappdata: Option<&str>,
+    program_files: Option<&str>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(la) = localappdata.filter(|s| !s.is_empty()) {
+        out.push(format!("{la}\\cys\\runtime\\git\\bin\\bash.exe"));
+    }
+    if let Some(pf) = program_files.filter(|s| !s.is_empty()) {
+        out.push(format!("{pf}\\Git\\bin\\bash.exe"));
+    }
+    if let Some(la) = localappdata.filter(|s| !s.is_empty()) {
+        out.push(format!("{la}\\Programs\\Git\\bin\\bash.exe"));
+        out.push(format!("{la}\\PortableGit\\bin\\bash.exe"));
+    }
+    out
+}
+
+/// 순수 판정: 훅 런처 문자열 또는 `None`(셸 훅 실행 수단 없음 → 등록하지 않는다).
+/// PATH 에 bash 가 있으면 `bash`(종전과 바이트 동일). 없으면 첫 실재 후보의 정슬래시 절대경로 —
+/// **공백이 없으면 따옴표 없이**: bash 를 못 찾은 Claude Code 는 훅을 PowerShell 로 띄우는데
+/// PowerShell 은 따옴표로 시작하는 줄을 문자열로 읽는다(맨 경로는 bash·cmd·PowerShell 모두 실행).
+/// ⚠잔여 위험(agy 1R · 정직 고지): 공백 경로 후보(`%ProgramFiles%\Git` 하나뿐)는 따옴표가 불가피해
+/// PowerShell 로 띄우는 기계에서는 그 후보만 실행되지 않는다. 남기는 근거 = 그 위치는 Claude Code 가
+/// 스스로 탐색하는 표준 자리라 거기에 git-bash 가 있으면 벤더가 훅을 bash 로 띄운다. 8.3 단축경로는
+/// 기계마다 달라 python 과의 문자열 동일성(중복 등록 0)을 깬다. Windows 실기 확인 대기.
+pub fn windows_hook_launcher_from(
+    bash_on_path: bool,
+    candidates: &[String],
+    is_file: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if bash_on_path {
+        return Some("bash".to_string());
+    }
+    candidates.iter().find(|c| is_file(c)).map(|c| {
+        let p = c.replace('\\', "/");
+        if p.contains(' ') {
+            format!("\"{p}\"")
+        } else {
+            p
+        }
+    })
+}
+
+/// PATH 위 bash(PATHEXT 확장자) 실재 — python `shutil.which("bash")` 의 대응.
+fn bash_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    std::env::split_paths(&path).any(|d| {
+        exts.split(';')
+            .filter(|e| !e.is_empty())
+            .any(|e| d.join(format!("bash{e}")).is_file())
+    })
+}
+
+pub fn windows_hook_launcher() -> Option<String> {
+    windows_hook_launcher_from(
+        bash_on_path(),
+        &windows_bash_candidates_from(
+            std::env::var("LOCALAPPDATA").ok().as_deref(),
+            std::env::var("ProgramFiles").ok().as_deref(),
+        ),
+        |p| Path::new(p).is_file(),
+    )
+}
+
+/// 이 기계에서 `.sh` 훅을 실행할 수단이 있나. unix = 항상(`sh`). Windows = 런처 해소 성공.
+pub fn shell_hooks_supported() -> bool {
+    !cfg!(windows) || windows_hook_launcher().is_some()
+}
+
+/// 강등 고지 1줄 — `javis_preflight.SHELL_HOOK_DEGRADED_NOTE` 와 같은 문장.
+/// ★잃는 것을 함께 적는다(agy 1R 수용): 개수만 적으면 사용자는 무엇이 안 되는지 모른다.
+pub fn shell_hooks_degraded_note(n: usize) -> String {
+    format!(
+        "bash 없음 → 셸 훅 {n}개 미등록(안전 강등 · 각성(SessionStart 지침 재주입 · \
+         UserPromptSubmit 부트 발화)과 자기교정·이벤트 적재 훅이 발화하지 않는다 — \
+         bash 없이는 등록해도 매 턴 오류만 난다) — Git for Windows 설치 후 \
+         `javis_preflight.py --fix` 재실행 시 자동 등록"
+    )
 }
 
 /// settings.json hook 객체의 `timeout` 을 수로 읽는다. 수가 아니면 `None`(= 미기록 취급).
@@ -627,6 +718,11 @@ pub fn merge_desired_hooks(
     pack_dir: &Path,
     hooks: &[DesiredHook],
 ) -> Result<Vec<String>, String> {
+    // ★win-hooks-no-bash: 실행 수단 없는 셸 훅은 등록하지 않는다(안전 강등 · 파일 무접촉).
+    if !shell_hooks_supported() {
+        eprintln!("[pack] {}", shell_hooks_degraded_note(hooks.len()));
+        return Ok(vec![]);
+    }
     if std::fs::symlink_metadata(settings_path)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false)
@@ -808,6 +904,10 @@ pub fn verify_desired_hooks_registered(
     pack_dir: &Path,
     hooks: &[DesiredHook],
 ) -> Vec<String> {
+    // ★win-hooks-no-bash: 강등된 기계의 소망 집합은 비어 있다(미등록이 정답 — 결손 아님).
+    if !shell_hooks_supported() {
+        return vec![];
+    }
     let root: serde_json::Value = std::fs::read_to_string(settings_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -4703,6 +4803,39 @@ mod tests {
             assert!(cmd.ends_with('"'), "windows quote 종료: {cmd:?}");
             assert!(cmd.contains("pack dir"), "공백 경로 보존: {cmd:?}");
         }
+    }
+
+    #[test]
+    fn windows_hook_launcher_resolution_contract() {
+        // win-hooks-no-bash: python `_win_bash_candidates`·`_win_hook_launcher_from` 와 같은 순서·문자열.
+        let la = "C:\\Users\\user\\AppData\\Local";
+        let c = windows_bash_candidates_from(Some(la), Some("C:\\Program Files"));
+        assert_eq!(
+            c,
+            vec![
+                "C:\\Users\\user\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe".to_string(),
+                "C:\\Program Files\\Git\\bin\\bash.exe".to_string(),
+                "C:\\Users\\user\\AppData\\Local\\Programs\\Git\\bin\\bash.exe".to_string(),
+                "C:\\Users\\user\\AppData\\Local\\PortableGit\\bin\\bash.exe".to_string(),
+            ]
+        );
+        // PATH 에 bash → 종전 문자열(바이트 동일)
+        assert_eq!(windows_hook_launcher_from(true, &c, |_| true).as_deref(), Some("bash"));
+        // 어디에도 없음 → None(등록 안 함)
+        assert_eq!(windows_hook_launcher_from(false, &c, |_| false), None);
+        // 동봉 PortableGit 우선 · 공백 없으면 따옴표 없음
+        assert_eq!(
+            windows_hook_launcher_from(false, &c, |_| true).as_deref(),
+            Some("C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe")
+        );
+        // 공백 경로는 따옴표
+        assert_eq!(
+            windows_hook_launcher_from(false, &c, |p| p.starts_with("C:\\Program Files")).as_deref(),
+            Some("\"C:/Program Files/Git/bin/bash.exe\"")
+        );
+        assert!(windows_bash_candidates_from(None, None).is_empty());
+        #[cfg(unix)]
+        assert!(shell_hooks_supported(), "unix 는 항상 sh");
     }
 
     #[test]

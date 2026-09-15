@@ -608,6 +608,31 @@ cys_pre_dupquit:
 cys_pre_single:
   ClearErrors
 
+  ; ⓪-b ★설치 폴더 고정 (cysr-product-rename · 2026-09-16 · master 결정 A).
+  ;    productName 이 "cys" → "cysr" 로 바뀌면 템플릿 .onInit 의 기본값이 $LOCALAPPDATA\cysr
+  ;    가 되고(installer.nsi:514) 이전 위치 복원도 새 이름의 키만 읽는다(:897-901). 그러면
+  ;    1.0.0 이하 위로 업데이트(/UPDATE)가 두 번째 설치를 만든다. 그런데 기본 데몬의 상태
+  ;    폴더는 productName 과 무관하게 %LOCALAPPDATA%\cys 로 박혀 있다(src/bin/cysd/state.rs
+  ;    state_dir) — 설치 폴더를 옮기면 L4 전제(설치 루트 = 상태 폴더)가 깨진다.
+  ;    그래서 **새 이름의 기본값 그대로일 때만** 옛 자리로 되돌린다: 옛 이름 키
+  ;    Software\<제조사>\cys 의 기록 → 없으면 $LOCALAPPDATA\cys. 사용자가 설치 마법사에서
+  ;    다른 폴더를 직접 고른 경우는 건드리지 않는다. 이 고정은 스윕·배치보다 먼저여야 한다
+  ;    (둘 다 $INSTDIR 를 본다). 한계(정직): 설치 마법사 폴더 칸에는 \cysr 가 보인 채 \cys 에 깔린다.
+  !ifndef CYS_LEGACY_PRODUCT
+    !define CYS_LEGACY_PRODUCT "cys"
+  !endif
+  StrCmp $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}" 0 cys_pre_dir_kept
+  StrCpy $R0 "$LOCALAPPDATA\${CYS_LEGACY_PRODUCT}"
+  ReadRegStr $R1 SHCTX "${MANUKEY}\${CYS_LEGACY_PRODUCT}" ""
+  StrCmp $R1 "" cys_pre_dir_pin 0
+  StrCpy $R0 $R1
+cys_pre_dir_pin:
+  StrCpy $INSTDIR $R0
+  SetOutPath $INSTDIR
+  DetailPrint "cys: install dir pinned to $INSTDIR (daemon state dir)"
+cys_pre_dir_kept:
+  ClearErrors
+
   ; ① GUI만 종료 — ★/T 금지(L1): GUI 가 cysd 를 평범한 자식으로 스폰하므로 트리 kill 은
   ;    데몬과 전 PTY 세션을 함께 죽인다(0.14.27 실측 결함). updater 경로면 이미 종료 중이라
   ;    멱등. 세션은 데몬 소유 — 무손실.
@@ -808,6 +833,51 @@ cys_post_alias_ok:
   ; 모드는 스킵, 기존 .lnk는 타겟만 갱신(멱등 — silent/passive의 템플릿 자체 호출과 중복돼도 무해).
   ; 제거는 템플릿 uninstaller가 "$DESKTOP\<제품명>.lnk"를 지우므로 별도 처리 불요.
   Call CreateOrUpdateDesktopShortcut
+
+  ; ★옛 이름(cys) 흔적 이전 (cysr-product-rename · 2026-09-16 · master 결정 A).
+  ;   템플릿은 새 이름으로 제어판 키(Uninstall\cysr) · 설치 위치 키 · 바로가기를 쓰지만 옛 이름의
+  ;   것은 모른다 ⇒ 그대로 두면 제어판 항목이 2개가 되고 옛 「cys」 바로가기가 남는다.
+  ;   **우리 폴더($INSTDIR)를 가리키는 것만** 지운다(남의 설치·다른 폴더는 무접촉). 폴더와
+  ;   그 안의 상태 파일은 절대 지우지 않는다 — 상태 폴더이기 때문이다(PREINSTALL ⓪-b).
+  ;   옛 제거 프로그램(uninstall.exe)은 부르지 않는다: 그 PREUNINSTALL 이 데몬·전 세션을
+  ;   트리 kill 한다. uninstall.exe 는 같은 자리에 새 것으로 이미 덮였다.
+  ;   업데이트(/UPDATE)에서 템플릿은 바로가기를 새로 만들지 않으므로(installer.nsi:936-943),
+  ;   옛 바로가기를 지운 경우에만 새 이름으로 다시 만든다. 작업 표시줄 고정은 풀지 않는다.
+  ;   모든 단계는 실패해도 설치 성공을 뒤집지 않는다(보이는 이름 정리일 뿐 — 로그만 남긴다).
+  StrCmp "${PRODUCTNAME}" "${CYS_LEGACY_PRODUCT}" cys_post_legacy_done 0
+  ReadRegStr $R0 SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${CYS_LEGACY_PRODUCT}" "InstallLocation"
+  StrCmp $R0 "$\"$INSTDIR$\"" cys_post_legacy_key_del 0
+  StrCmp $R0 "$INSTDIR" cys_post_legacy_key_del cys_post_legacy_key_kept
+cys_post_legacy_key_del:
+  DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${CYS_LEGACY_PRODUCT}"
+  DetailPrint "cys-rename: removed legacy uninstall entry ${CYS_LEGACY_PRODUCT}"
+cys_post_legacy_key_kept:
+  ReadRegStr $R0 SHCTX "${MANUKEY}\${CYS_LEGACY_PRODUCT}" ""
+  StrCmp $R0 "$INSTDIR" 0 cys_post_legacy_loc_kept
+  DeleteRegKey SHCTX "${MANUKEY}\${CYS_LEGACY_PRODUCT}"
+  DetailPrint "cys-rename: removed legacy install-location key ${CYS_LEGACY_PRODUCT}"
+cys_post_legacy_loc_kept:
+  IfFileExists "$SMPROGRAMS\${CYS_LEGACY_PRODUCT}.lnk" 0 cys_post_legacy_sm_done
+  !insertmacro IsShortcutTarget "$SMPROGRAMS\${CYS_LEGACY_PRODUCT}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $R0
+  StrCmp $R0 "1" 0 cys_post_legacy_sm_done
+  Delete "$SMPROGRAMS\${CYS_LEGACY_PRODUCT}.lnk"
+  DetailPrint "cys-rename: removed legacy start menu shortcut ${CYS_LEGACY_PRODUCT}.lnk"
+  IfFileExists "$SMPROGRAMS\${PRODUCTNAME}.lnk" cys_post_legacy_sm_done 0
+  CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+cys_post_legacy_sm_done:
+  IfFileExists "$DESKTOP\${CYS_LEGACY_PRODUCT}.lnk" 0 cys_post_legacy_done
+  !insertmacro IsShortcutTarget "$DESKTOP\${CYS_LEGACY_PRODUCT}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $R0
+  StrCmp $R0 "1" 0 cys_post_legacy_done
+  Delete "$DESKTOP\${CYS_LEGACY_PRODUCT}.lnk"
+  DetailPrint "cys-rename: removed legacy desktop shortcut ${CYS_LEGACY_PRODUCT}.lnk"
+  IfFileExists "$DESKTOP\${PRODUCTNAME}.lnk" cys_post_legacy_done 0
+  CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+cys_post_legacy_done:
+  ClearErrors
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

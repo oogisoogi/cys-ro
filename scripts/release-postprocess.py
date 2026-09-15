@@ -111,9 +111,9 @@ USER_PATH_GATE = os.path.join(HERE, "verify-gatekeeper-user-path.sh")
 
 # 맥 레인 전집합 6종 — `release-verify.py` 의 `mac_lane_files()` 와 **같은 목록**이어야 한다.
 #   (두 파일이 갈리면 후처리는 통과시킨 묶음을 검증기가 죽인다 — 그 어긋남 자체가 사고다.)
-MAC_LANE = ("cys_{v}_aarch64.dmg", "cys_{v}_x64.dmg",
-            "cys_aarch64.app.tar.gz", "cys_aarch64.app.tar.gz.sig",
-            "cys_x64.app.tar.gz", "cys_x64.app.tar.gz.sig")
+MAC_LANE = ("cysr_{v}_aarch64.dmg", "cysr_{v}_x64.dmg",
+            "cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
+            "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig")
 
 
 def mac_lane_absent(outdir, version):
@@ -245,7 +245,7 @@ def gatekeeper_gate(outdir, version, unsafe_skip=False,
     native_arch = "aarch64" if machine == "arm64" else "x64"
     print("\n═══ Gatekeeper 게이트 — 발행될 실물 바이트(draft 백업 DMG 2종) 실평가 ═══", flush=True)
     for arch in ("aarch64", "x64"):
-        dmg = os.path.join(outdir, "cys_%s_%s.dmg" % (version, arch))
+        dmg = os.path.join(outdir, "cysr_%s_%s.dmg" % (version, arch))
         if not os.path.exists(dmg):
             print("::error::게이트 대상 DMG 없음: %s — 판정 불가=통과 아님" % dmg, file=sys.stderr)
             return 2
@@ -330,8 +330,8 @@ def main(argv):
         return 1
 
     # ── 2. zip 변형 (없으면 생성) ──
-    exe = "cys_%s_x64-setup.exe" % version
-    zipname = "cys_%s_x64-setup.zip" % version
+    exe = "cysr_%s_x64-setup.exe" % version
+    zipname = "cysr_%s_x64-setup.zip" % version
     if exe not in by_name:
         print("::error::%s 가 릴리스에 없다 — CI 완주를 먼저 확인하라" % exe, file=sys.stderr)
         return 1
@@ -371,7 +371,7 @@ def main(argv):
     win_only = mac_lane_absent(outdir, version)
     want = [exe, zipname]
     if not win_only:
-        want = ["cys_%s_aarch64.dmg" % version, "cys_%s_x64.dmg" % version] + want
+        want = ["cysr_%s_aarch64.dmg" % version, "cysr_%s_x64.dmg" % version] + want
     missing = [w for w in want if w not in by_name]
     if missing:
         print("::error::배포 자산 누락: %s" % ", ".join(missing), file=sys.stderr)

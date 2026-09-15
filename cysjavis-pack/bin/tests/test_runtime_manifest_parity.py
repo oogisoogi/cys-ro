@@ -153,7 +153,8 @@ class ManifestSchemaParityTests(unittest.TestCase):
     def test_windows_install_probe_is_pinned_to_the_installer_contract_path(self):
         """LOCALAPPDATA 재귀 검색의 첫 cysd.exe 를 쓰면 잔존 설치를 검증할 수 있다 —
         초록이 거짓이 되는 무증상 오검증이다. 매니페스트 실기 검증과 그 앞의 설치 스텝은
-        installer 계약 경로(%LOCALAPPDATA%\\cys · installMode=currentUser + productName=cys)와
+        installer 계약 경로(%LOCALAPPDATA%\\cys · installMode=currentUser + NSIS 훅 ⓪-b 폴더 고정 ·
+        productName 이 cysr 여도 이 자리)와
         버전 마커 동일성(cys-installed-version.txt == 이번 빌드)으로 고정돼야 한다."""
         wb = os.path.join(REPO, ".github", "workflows", "windows-build.yml")
         self.assertTrue(os.path.isfile(wb), "windows-build.yml 이 사라졌다")

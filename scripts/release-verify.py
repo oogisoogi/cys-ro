@@ -18,7 +18,7 @@
        옛 판본은 notes 를 `f"cys {version}"` 로 못박았는데 실물은 한국어 안내 문장이다.
     3) 그 뒤로도 platforms 집합이 어긋난다 — 옛 판본은 3종만 허용하나 실물은 6종
        (`-app`·`-nsis` 별칭 추가). 업데이터 자산명도 옛 판본은 `cys_<V>_aarch64.app.tar.gz`
-       를 가정하나 실물은 **버전 토큰이 없는** `cys_aarch64.app.tar.gz` 다 →
+       를 가정하나 실물은 **버전 토큰이 없는** `cysr_aarch64.app.tar.gz` 다 →
        `files[...]` KeyError 가 except 튜플에 없어 사유 없는 트레이스백으로 죽는다
        (비영 종료라 fail-closed 이긴 하나 "명확한 사유 출력" 계약 위반).
   즉 옛 판본은 v0.14.19 의 자산 계약과 어긋난다. 그래서 **검증 강도는 그대로 물려받고**
@@ -133,7 +133,7 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 # `<64자 소문자 hex><공백 2칸><파일명>` — shasum -a 256 의 기본 출력 형식.
 # 파일명 문자셋을 좁게 못박아 경로 탈출(`../`)·공백 트릭을 원천 차단한다.
 ROW_RE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9_.-]+)$")
-# 파일명에 박힌 버전 토큰(X.Y.Z)을 뽑는다. `cys_aarch64.app.tar.gz` 처럼 토큰이 없는 이름도
+# 파일명에 박힌 버전 토큰(X.Y.Z)을 뽑는다. `cysr_aarch64.app.tar.gz` 처럼 토큰이 없는 이름도
 # 정상이므로(업데이터 자산은 버전을 안 달고 나온다) "있으면 일치해야 한다"로 다룬다.
 TOKEN_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # minisign key id 표기 — `.pub`·서명 주석에 찍히는 16자 대문자 hex(리틀엔디언 keynum 을 뒤집은 값).
@@ -178,8 +178,8 @@ SIGNED_AT_MAX_FUTURE_SEC = 300
 #   「DMG 는 있는데 darwin 행이 없다」도, 「darwin 행은 있는데 DMG 가 없다」도 여전히 죽는다.
 #   달라진 것은 **양쪽 다 통째로 없는 묶음**을 「윈도우 단독 배포」로 명시 통과시키는 것뿐이다.
 REQUIRED_ASSETS = (
-    "cys_{v}_x64-setup.exe",      # Windows 다운로드 버튼
-    "cys_{v}_x64-setup.zip",      # .exe 직다운이 막힌 환경용 4번째 버튼
+    "cysr_{v}_x64-setup.exe",      # Windows 다운로드 버튼
+    "cysr_{v}_x64-setup.zip",      # .exe 직다운이 막힌 환경용 4번째 버튼
     "latest.json",                # 앱 내 Update 버튼(업데이터)의 정본
     "pack.tar.gz",                # cysjavis 팩 본체
     "pack-manifest.json",         # 팩 매니페스트
@@ -189,8 +189,8 @@ REQUIRED_ASSETS = (
 # ★맥 레인의 다운로드 버튼 자산. 업데이터 4종(tar.gz 2 + .sig 2)은 `MAC_PLATFORMS` 가 강제하며,
 #   `mac_lane_files()` 가 이 둘을 합쳐 "맥 레인 전집합 6종"을 만든다.
 MAC_ASSETS = (
-    "cys_{v}_aarch64.dmg",        # macOS Apple Silicon 다운로드 버튼
-    "cys_{v}_x64.dmg",            # macOS Intel 다운로드 버튼
+    "cysr_{v}_aarch64.dmg",        # macOS Apple Silicon 다운로드 버튼
+    "cysr_{v}_x64.dmg",            # macOS Intel 다운로드 버튼
 )
 
 # ★독립 하한선 ② — 업데이터 표면의 정본. **키 집합과 키→자산 결속을 둘 다 못박는다.**
@@ -205,14 +205,14 @@ MAC_ASSETS = (
 #   아니라 묶음에 따라 정해진다**: 윈도우 단독이면 2키, 맥 포함이면 6키. 어느 쪽이든 `!=` 대조라
 #   행이 하나라도 줄거나 늘면 죽는다(fail-open 이 열리지 않는다).
 REQUIRED_PLATFORMS = {
-    "windows-x86_64":      "cys_{v}_x64-setup.exe",
-    "windows-x86_64-nsis": "cys_{v}_x64-setup.exe",
+    "windows-x86_64":      "cysr_{v}_x64-setup.exe",
+    "windows-x86_64-nsis": "cysr_{v}_x64-setup.exe",
 }
 MAC_PLATFORMS = {
-    "darwin-aarch64":      "cys_aarch64.app.tar.gz",
-    "darwin-aarch64-app":  "cys_aarch64.app.tar.gz",
-    "darwin-x86_64":       "cys_x64.app.tar.gz",
-    "darwin-x86_64-app":   "cys_x64.app.tar.gz",
+    "darwin-aarch64":      "cysr_aarch64.app.tar.gz",
+    "darwin-aarch64-app":  "cysr_aarch64.app.tar.gz",
+    "darwin-x86_64":       "cysr_x64.app.tar.gz",
+    "darwin-x86_64-app":   "cysr_x64.app.tar.gz",
 }
 # 맥 포함 묶음의 기대 전집합(종전 상수와 같은 6키) — 외부 소비자·테스트가 이 이름을 쓴다.
 UPDATER_PLATFORMS = dict(REQUIRED_PLATFORMS, **MAC_PLATFORMS)
@@ -317,8 +317,8 @@ def check_version_tokens(version, names):
 
 def check_windows_zip(version, files):
     """zip 이 setup.exe **한 개**만, 바이트 동일하게 품고 있는지(0418f17 판본에서 계승)."""
-    exe = "cys_%s_x64-setup.exe" % version
-    zipname = "cys_%s_x64-setup.zip" % version
+    exe = "cysr_%s_x64-setup.exe" % version
+    zipname = "cysr_%s_x64-setup.zip" % version
     with zipfile.ZipFile(files[zipname]) as archive:
         members = archive.namelist()
         if members != [exe]:

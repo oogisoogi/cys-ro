@@ -285,6 +285,8 @@ def probe_submit(args):
 # 훨씬 위험하므로, 의심스러우면 막고 수동 확인(3/2)한다.
 DAEMON_MARKERS = (
     "cys.app/Contents/Resources/runtime",
+    "cysr.app/Contents/Resources/runtime",   # (cysr-product-rename) 새 설치 번들 이름 — 위 조각을 부분일치로 품지 않는다
+
     "javis_hud_bridge",
     "cys-dept-",
     "cysd",

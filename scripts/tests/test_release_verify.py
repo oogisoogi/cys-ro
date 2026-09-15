@@ -44,6 +44,35 @@ V = "0.14.19"
 #   그래서 검증기 쪽 배포 원본이 벤더로 남아 있는 동안에도 이 테스트는 초록이었다 — 포크 전환
 #   차단(F1)을 회귀 자산이 하나도 못 잡은 이유다. 이름을 참조해 그 괴리 자체를 없앤다.
 BASE = "https://github.com/%s/releases/download/v%s/" % (rv.RELEASE_REPO, V)
+
+
+class AssetNamesFollowProductName(unittest.TestCase):
+    """★자산 이름 = tauri.conf productName 파생 (cysr-product-rename · 2026-09-16).
+
+    tauri 번들러는 설치 파일·dmg·업데이터 tar 이름을 productName 으로 만든다. 검증기·후처리는
+    그 이름을 문자열로 들고 있으므로, productName 을 바꾸고 이 표를 안 바꾸면 발행이 「자산 부재」로
+    죽고(반대면 옛 이름을 통과시킨다). 표를 설정에서 읽어 오지 않고 **대조**로 묶는 이유:
+    검증기는 저장소 없이도 단독으로 돌아야 한다(scripts/release-verify.py 머리말).
+    """
+
+    def setUp(self):
+        conf = os.path.join(os.path.dirname(_RV_PATH), "..", "src-tauri", "tauri.conf.json")
+        with open(conf, encoding="utf-8") as fh:
+            self.product = json.load(fh)["productName"]
+        rp_path = os.path.join(os.path.dirname(_RV_PATH), "release-postprocess.py")
+        spec = importlib.util.spec_from_file_location("release_postprocess_names", rp_path)
+        self.rp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.rp)
+
+    def test_every_asset_name_starts_with_product_name(self):
+        prefix = self.product + "_"
+        names = (list(rv.REQUIRED_ASSETS) + list(rv.MAC_ASSETS)
+                 + list(rv.REQUIRED_PLATFORMS.values()) + list(rv.MAC_PLATFORMS.values())
+                 + list(self.rp.MAC_LANE))
+        product_assets = [n for n in names if not n.startswith(("latest", "pack"))]
+        self.assertGreaterEqual(len(product_assets), 12, product_assets)
+        wrong = [n for n in product_assets if not n.startswith(prefix)]
+        self.assertEqual(wrong, [], "productName=%r 인데 자산 이름이 다르다" % self.product)
 # ★8단계(팩 replay 단조 · 2026-09-12) 픽스처 — 우리 팩이 벤더 latest 보다 **1초** 새로 서명된
 #   최소 통과 형태. 1초 차이로 둬야 `<=` → `<` 완화 같은 경계 회귀가 test_61 에서 드러난다.
 #   ★r2: 타당 범위(now-90일..now+300초)가 생겨 고정 시각은 90일 뒤 스스로 적색이 된다 — 실행 시각 기준.
@@ -132,11 +161,11 @@ def build_fixture(root, mac=True):
             fh.write(data)
 
     if mac:
-        w("cys_%s_aarch64.dmg" % V, _dmg_bytes(b"macos-arm-disk-image" * 16))
-        w("cys_%s_x64.dmg" % V, _dmg_bytes(b"macos-intel-disk-image" * 16))
-        w("cys_aarch64.app.tar.gz", gzip.compress(b"macos-arm-app-bundle" * 32))
-        w("cys_x64.app.tar.gz", gzip.compress(b"macos-intel-app-bundle" * 32))
-    w("cys_%s_x64-setup.exe" % V, exe_bytes)
+        w("cysr_%s_aarch64.dmg" % V, _dmg_bytes(b"macos-arm-disk-image" * 16))
+        w("cysr_%s_x64.dmg" % V, _dmg_bytes(b"macos-intel-disk-image" * 16))
+        w("cysr_aarch64.app.tar.gz", gzip.compress(b"macos-arm-app-bundle" * 32))
+        w("cysr_x64.app.tar.gz", gzip.compress(b"macos-intel-app-bundle" * 32))
+    w("cysr_%s_x64-setup.exe" % V, exe_bytes)
     w("pack.tar.gz", gzip.compress(b"cysjavis-pack-payload" * 32))
     w("pack-manifest.json", json.dumps({"files": [], "expires_at": "2027-01-01T00:00:00Z",
                                         "signed_at": FIXTURE_SIGNED_AT,
@@ -144,13 +173,13 @@ def build_fixture(root, mac=True):
     w("pack-manifest.json.minisig", _minisig_text("pack").encode())
 
     # zip 은 setup.exe **한 개**만, 바이트 동일하게 품어야 한다.
-    with zipfile.ZipFile(os.path.join(root, "cys_%s_x64-setup.zip" % V), "w") as z:
-        z.writestr("cys_%s_x64-setup.exe" % V, exe_bytes)
+    with zipfile.ZipFile(os.path.join(root, "cysr_%s_x64-setup.zip" % V), "w") as z:
+        z.writestr("cysr_%s_x64-setup.exe" % V, exe_bytes)
 
-    sigs = {"cys_%s_x64-setup.exe.sig" % V: _sig_text("win")}
+    sigs = {"cysr_%s_x64-setup.exe.sig" % V: _sig_text("win")}
     if mac:
-        sigs["cys_aarch64.app.tar.gz.sig"] = _sig_text("arm")
-        sigs["cys_x64.app.tar.gz.sig"] = _sig_text("intel")
+        sigs["cysr_aarch64.app.tar.gz.sig"] = _sig_text("arm")
+        sigs["cysr_x64.app.tar.gz.sig"] = _sig_text("intel")
     for name, text in sigs.items():
         w(name, (text + "\n").encode())
 
@@ -213,7 +242,7 @@ class ReleaseVerifyTests(unittest.TestCase):
 
     # ── 1. 완전성(디렉터리 ↔ SUMS 양방향) ─────────────────────────────────
     def test_01_asset_missing_from_dir(self):
-        os.remove(self.p("cys_%s_x64.dmg" % V))
+        os.remove(self.p("cysr_%s_x64.dmg" % V))
         self.assert_fail("자산 누락")
 
     def test_02_unlisted_stowaway(self):
@@ -236,7 +265,7 @@ class ReleaseVerifyTests(unittest.TestCase):
 
     def test_04b_mac_lane_half_removed(self):
         """★맥 레인 전부-또는-전무 — DMG 한 짝만 사라진 묶음은 통과해선 안 된다."""
-        os.remove(self.p("cys_%s_aarch64.dmg" % V))
+        os.remove(self.p("cysr_%s_aarch64.dmg" % V))
         write_sums(self.root)
         self.assert_fail("맥 레인이 반쪽이다")
 
@@ -268,32 +297,32 @@ class ReleaseVerifyTests(unittest.TestCase):
     def test_09_version_token_mismatch(self):
         """구버전 자산이 섞여 든 묶음. ★REQUIRED_ASSETS 8종이 아닌 자산으로 찔러야
         3단계까지 도달한다 — 8종 중 하나면 2단계(배포 필수 자산 누락)가 먼저 잡는다."""
-        stale = "cys_0.14.18_x64-setup.exe.sig"
-        os.rename(self.p("cys_%s_x64-setup.exe.sig" % V), self.p(stale))
+        stale = "cysr_0.14.18_x64-setup.exe.sig"
+        os.rename(self.p("cysr_%s_x64-setup.exe.sig" % V), self.p(stale))
         write_sums(self.root)
         self.assert_fail("파일명 버전 토큰 불일치")
 
     def test_09b_required_asset_wins_over_token_check(self):
         """같은 사고라도 필수 자산이면 2단계가 먼저 잡는다 — 사유 순서를 못박는다."""
-        os.rename(self.p("cys_%s_x64-setup.zip" % V), self.p("cys_0.14.18_x64-setup.zip"))
+        os.rename(self.p("cysr_%s_x64-setup.zip" % V), self.p("cysr_0.14.18_x64-setup.zip"))
         write_sums(self.root)
         self.assert_fail("배포 필수 자산 누락")
 
     def test_09c_stale_dmg_name_caught_as_half_lane(self):
         """구버전 토큰이 박힌 DMG = 그 버전의 맥 레인은 반쪽이다 — 2-b 가 잡는다."""
-        os.rename(self.p("cys_%s_x64.dmg" % V), self.p("cys_0.14.18_x64.dmg"))
+        os.rename(self.p("cysr_%s_x64.dmg" % V), self.p("cysr_0.14.18_x64.dmg"))
         write_sums(self.root)
         self.assert_fail("맥 레인이 반쪽이다")
 
     # ── 4. 컨테이너 지문(ASSET_SHAPES) ────────────────────────────────────
     #    ★SUMS 를 쓰레기에 맞춰 재생성해도 통과해선 안 된다.
     def test_10_zero_byte_asset(self):
-        open(self.p("cys_%s_aarch64.dmg" % V), "wb").close()
+        open(self.p("cysr_%s_aarch64.dmg" % V), "wb").close()
         write_sums(self.root)
         self.assert_fail("0바이트")
 
     def test_11_dmg_without_koly_trailer(self):
-        open(self.p("cys_%s_x64.dmg" % V), "wb").write(b"\x78\x01" + b"J" * 4096)
+        open(self.p("cysr_%s_x64.dmg" % V), "wb").write(b"\x78\x01" + b"J" * 4096)
         write_sums(self.root)
         self.assert_fail("koly")
 
@@ -304,18 +333,18 @@ class ReleaseVerifyTests(unittest.TestCase):
 
     def test_13_targz_truncated_midstream(self):
         """머리 매직은 멀쩡한데 중간에서 잘린 tar.gz — 끝까지 풀어야만 잡힌다."""
-        raw = open(self.p("cys_aarch64.app.tar.gz"), "rb").read()
-        open(self.p("cys_aarch64.app.tar.gz"), "wb").write(raw[: len(raw) // 2])
+        raw = open(self.p("cysr_aarch64.app.tar.gz"), "rb").read()
+        open(self.p("cysr_aarch64.app.tar.gz"), "wb").write(raw[: len(raw) // 2])
         write_sums(self.root)
         self.assert_fail("gzip 스트림이 끝까지 풀리지 않는다")
 
     def test_14_exe_not_pe(self):
-        open(self.p("cys_%s_x64-setup.exe" % V), "wb").write(b"#!/bin/sh\necho pwned\n")
+        open(self.p("cysr_%s_x64-setup.exe" % V), "wb").write(b"#!/bin/sh\necho pwned\n")
         write_sums(self.root)
         self.assert_fail("컨테이너 지문 불일치")
 
     def test_15_sig_not_base64(self):
-        open(self.p("cys_x64.app.tar.gz.sig"), "wb").write(b"!!! not base64 !!!")
+        open(self.p("cysr_x64.app.tar.gz.sig"), "wb").write(b"!!! not base64 !!!")
         latest = self.load_latest()
         for key in ("darwin-x86_64", "darwin-x86_64-app"):
             latest["platforms"][key]["signature"] = "!!! not base64 !!!"
@@ -330,20 +359,20 @@ class ReleaseVerifyTests(unittest.TestCase):
 
     def test_17_unknown_extension_rejected(self):
         """배포 구성이 몰래 늘어나는 걸 막는다 — 사람이 상수를 고쳐야 통과한다."""
-        open(self.p("cys_%s_x64.msi" % V), "wb").write(b"\xd0\xcf\x11\xe0msi")
+        open(self.p("cysr_%s_x64.msi" % V), "wb").write(b"\xd0\xcf\x11\xe0msi")
         write_sums(self.root)
         self.assert_fail("확장자 규칙에 없는 자산")
 
     # ── 5. Windows zip ↔ exe ──────────────────────────────────────────────
     def test_18_zip_holds_different_bytes(self):
-        with zipfile.ZipFile(self.p("cys_%s_x64-setup.zip" % V), "w") as z:
-            z.writestr("cys_%s_x64-setup.exe" % V, b"MZ\x90\x00different-installer")
+        with zipfile.ZipFile(self.p("cysr_%s_x64-setup.zip" % V), "w") as z:
+            z.writestr("cysr_%s_x64-setup.exe" % V, b"MZ\x90\x00different-installer")
         write_sums(self.root)
         self.assert_fail("바이트 동일하지 않다")
 
     def test_19_zip_holds_extra_member(self):
-        exe = "cys_%s_x64-setup.exe" % V
-        with zipfile.ZipFile(self.p("cys_%s_x64-setup.zip" % V), "w") as z:
+        exe = "cysr_%s_x64-setup.exe" % V
+        with zipfile.ZipFile(self.p("cysr_%s_x64-setup.zip" % V), "w") as z:
             z.writestr(exe, open(self.p(exe), "rb").read())
             z.writestr("README.txt", b"stowaway")
         write_sums(self.root)
@@ -371,8 +400,8 @@ class ReleaseVerifyTests(unittest.TestCase):
         Update 가 죽은 묶음. 2026-09-09 분할 뒤에도 이건 「맥 레인 반쪽」으로 즉사한다 —
         맥 레인을 통째로 뺀 윈도우 단독 배포(test_22b)와 **혼동되지 않는다는 것**이 요지다.
         """
-        for name in ("cys_aarch64.app.tar.gz", "cys_aarch64.app.tar.gz.sig",
-                     "cys_x64.app.tar.gz", "cys_x64.app.tar.gz.sig"):
+        for name in ("cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
+                     "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig"):
             os.remove(self.p(name))
         latest = self.load_latest()
         latest["platforms"] = {k: v for k, v in latest["platforms"].items()
@@ -387,7 +416,7 @@ class ReleaseVerifyTests(unittest.TestCase):
         6행 전부를 Windows 설치본으로 덮는다. = macOS 업데이터가 NSIS exe 를 받는 묶음.
         """
         latest = self.load_latest()
-        exe = "cys_%s_x64-setup.exe" % V
+        exe = "cysr_%s_x64-setup.exe" % V
         sig = open(self.p(exe + ".sig"), encoding="utf-8").read().strip()
         for key in latest["platforms"]:
             latest["platforms"][key] = {"signature": sig, "url": BASE + exe}
@@ -397,7 +426,7 @@ class ReleaseVerifyTests(unittest.TestCase):
 
     def test_24_single_row_repointed(self):
         latest = self.load_latest()
-        latest["platforms"]["darwin-aarch64"]["url"] = BASE + "cys_x64.app.tar.gz"
+        latest["platforms"]["darwin-aarch64"]["url"] = BASE + "cysr_x64.app.tar.gz"
         self.save_latest(latest)
         write_sums(self.root)
         self.assert_fail("url 결속 위반")
@@ -416,13 +445,13 @@ class ReleaseVerifyTests(unittest.TestCase):
         2-b 가 **더 먼저·더 구체적인 사유**로 잡는다(그 경로는 test_26b 가 박제).
         윈도우 exe 서명에는 그런 상위 그물이 없으므로 이 테스트의 원래 취지가 여기 남는다.
         """
-        os.remove(self.p("cys_%s_x64-setup.exe.sig" % V))
+        os.remove(self.p("cysr_%s_x64-setup.exe.sig" % V))
         write_sums(self.root)
         self.assert_fail("서명 파일이 없다")
 
     def test_26b_mac_sig_removed_is_a_half_lane(self):
         """맥 서명 1종 증발 = 맥 레인 반쪽 — 사유가 더 구체적인 쪽으로 바뀐 것을 못박는다."""
-        os.remove(self.p("cys_aarch64.app.tar.gz.sig"))
+        os.remove(self.p("cysr_aarch64.app.tar.gz.sig"))
         write_sums(self.root)
         self.assert_fail("맥 레인이 반쪽이다")
 
@@ -514,15 +543,15 @@ class WindowsOnlyLaneTests(unittest.TestCase):
 
     def test_41_windows_lane_still_required(self):
         """맥을 뺐다고 윈도우까지 물러지면 안 된다 — exe 가 없으면 여전히 즉사."""
-        os.remove(self.p("cys_%s_x64-setup.exe" % V))
-        os.remove(self.p("cys_%s_x64-setup.zip" % V))
+        os.remove(self.p("cysr_%s_x64-setup.exe" % V))
+        os.remove(self.p("cysr_%s_x64-setup.zip" % V))
         write_sums(self.root)
         self.assert_fail("배포 필수 자산 누락")
 
     def test_42_darwin_rows_without_mac_assets(self):
         """★latest.json 만 맥을 주장하는 묶음 — 맥 사용자가 없는 파일을 받으러 간다."""
         latest = self.load_latest()
-        exe = "cys_%s_x64-setup.exe" % V
+        exe = "cysr_%s_x64-setup.exe" % V
         sig = open(self.p(exe + ".sig"), encoding="utf-8").read().strip()
         for key, tpl in rv.MAC_PLATFORMS.items():
             latest["platforms"][key] = {"signature": sig, "url": BASE + tpl.format(v=V)}
@@ -532,7 +561,7 @@ class WindowsOnlyLaneTests(unittest.TestCase):
 
     def test_43_dmg_smuggled_in_without_updater_lane(self):
         """★DMG 만 슬쩍 낀 묶음 — 다운로드는 되는데 앱 내 Update 는 죽는다. 반쪽이다."""
-        with open(self.p("cys_%s_aarch64.dmg" % V), "wb") as fh:
+        with open(self.p("cysr_%s_aarch64.dmg" % V), "wb") as fh:
             fh.write(_dmg_bytes(b"macos-arm-disk-image" * 16))
         write_sums(self.root)
         self.assert_fail("맥 레인이 반쪽이다")
@@ -574,7 +603,7 @@ class ReleaseRepoBindingTests(unittest.TestCase):
             latest = json.load(open(os.path.join(d, "latest.json"), encoding="utf-8"))
             vendor = "https://github.com/idoforgod/cys-terminal/releases/download/v%s/" % V
             for key in latest["platforms"]:
-                latest["platforms"][key]["url"] = vendor + "cys_%s_x64-setup.exe" % V
+                latest["platforms"][key]["url"] = vendor + "cysr_%s_x64-setup.exe" % V
             with open(os.path.join(d, "latest.json"), "w", encoding="utf-8") as fh:
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
@@ -589,7 +618,7 @@ class ReleaseRepoBindingTests(unittest.TestCase):
             latest = json.load(open(os.path.join(d, "latest.json"), encoding="utf-8"))
             other = "https://github.com/someone/cys-mirror/releases/download/v%s/" % V
             for key in latest["platforms"]:
-                latest["platforms"][key]["url"] = other + "cys_%s_x64-setup.exe" % V
+                latest["platforms"][key]["url"] = other + "cysr_%s_x64-setup.exe" % V
             with open(os.path.join(d, "latest.json"), "w", encoding="utf-8") as fh:
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
@@ -1006,10 +1035,10 @@ class KeyBridgeGateTests(unittest.TestCase):
     def test_kb3_reject_when_one_platform_sig_uses_other_key(self):
         """한 레그만 다른 키 — 전수 대조가 아니면 빠져나간다."""
         build_fixture(self.root)
-        self._resign_all(OTHER_KEY_ID, only="cys_x64.app.tar.gz.sig")
+        self._resign_all(OTHER_KEY_ID, only="cysr_x64.app.tar.gz.sig")
         with self.assertRaises(rv.VerifyError) as cm:
             rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
-        self.assertIn("cys_x64.app.tar.gz.sig", str(cm.exception))
+        self.assertIn("cysr_x64.app.tar.gz.sig", str(cm.exception))
 
     def test_kb4_windows_only_bundle_also_gated(self):
         build_fixture(self.root, mac=False)
@@ -1213,8 +1242,8 @@ class ConstantsSanityTests(unittest.TestCase):
         self.assertEqual(set(rv.REQUIRED_ASSETS) & set(rv.MAC_ASSETS), set(),
                          "필수 레인과 맥 레인이 겹친다")
         self.assertEqual(sorted(set(rv.REQUIRED_ASSETS) | set(rv.MAC_ASSETS)),
-                         sorted(("cys_{v}_aarch64.dmg", "cys_{v}_x64.dmg",
-                                 "cys_{v}_x64-setup.exe", "cys_{v}_x64-setup.zip",
+                         sorted(("cysr_{v}_aarch64.dmg", "cysr_{v}_x64.dmg",
+                                 "cysr_{v}_x64-setup.exe", "cysr_{v}_x64-setup.zip",
                                  "latest.json", "pack.tar.gz", "pack-manifest.json",
                                  "pack-manifest.json.minisig")),
                          "분할 전 8종의 합이 아니다 — 자산이 조용히 빠졌거나 늘었다")

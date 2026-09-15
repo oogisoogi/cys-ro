@@ -145,8 +145,8 @@ echo "== 앱 번들 빌드(서명만·공증 보류) v$VERSION =="
 env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID -u APPLE_API_KEY -u APPLE_API_ISSUER \
   bun x "@tauri-apps/cli@${TAURI_CLI_VERSION}" build ${TAURI_TARGET_ARGS[@]+"${TAURI_TARGET_ARGS[@]}"} --bundles app
 
-APP="$BUNDLE_BASE/macos/cys.app"
-DMG="$BUNDLE_BASE/dmg/cys_${VERSION}_${DMG_ARCH}.dmg"
+APP="$BUNDLE_BASE/macos/cysr.app"
+DMG="$BUNDLE_BASE/dmg/cysr_${VERSION}_${DMG_ARCH}.dmg"
 
 # ── SEAL-2 반입 확인: 선컴파일 산출물이 실제로 .app 안에 실렸는가 (fail-closed) ──
 # Tauri 번들러가 `__pycache__` 를 빠뜨리면 선컴파일을 해도 봉인엔 안 들어가고, 사용자 머신에서
@@ -263,13 +263,13 @@ xcrun notarytool submit "$APPZIP" "${NOTARY_ARGS[@]}" --wait
 xcrun stapler staple "$APP"
 rm -f "$APPZIP"
 
-# 업데이터 아티팩트 재생성(dedup 반영): Tauri가 만든 fat cys.app.tar.gz(447MB)를 dedup·staple된 앱으로
+# 업데이터 아티팩트 재생성(dedup 반영): Tauri가 만든 fat cysr.app.tar.gz(447MB)를 dedup·staple된 앱으로
 # 다시 tar(심볼릭링크 보존 → 다운로드 축소)하고 업데이터 키로 재서명. make-update-manifest.sh가 이 .sig를 읽는다.
 # (주의: Tauri 업데이터 *클라이언트*의 심볼릭링크 보존은 버전의존 #7480 — 다운로드는 축소되나 설치 후 on-disk
 #  크기는 클라이언트 tauri 동작에 좌우될 수 있음. 신규 설치 경로인 DMG는 확실히 축소된다.)
 if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   echo "== 업데이터 tar.gz 재생성(dedup 반영) + 재서명 =="
-  ( cd "$(dirname "$APP")" && tar czf cys.app.tar.gz cys.app )
+  ( cd "$(dirname "$APP")" && tar czf cysr.app.tar.gz cysr.app )
   bun x "@tauri-apps/cli@${TAURI_CLI_VERSION}" signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "" "$APP.tar.gz"
 fi
 
@@ -369,11 +369,11 @@ fi
 
 echo "== 배포본 정리 + 자동업데이트 매니페스트 =="
 mkdir -p dist-mac
-cp "$DMG" "dist-mac/cys-${VERSION}-macos-${DIST_ARCH}.dmg"
+cp "$DMG" "dist-mac/cysr-${VERSION}-macos-${DIST_ARCH}.dmg"
 # 실패 가시화(2026-07-28): 종전 '>/dev/null || true'는 실패를 완전 무음 처리했다.
 # CI에서는 tauri-action이 latest.json을 생성하므로 이 매니페스트는 미사용(비치명) —
 # 따라서 hard-fail 대신 '보이는 경고'로 표면화한다. 로컬 수동 배포 경로에서만 확인 필요.
 sh scripts/make-update-manifest.sh "$VERSION" idoforgod cys-terminal \
   || echo "  ⚠ make-update-manifest 실패(비치명 — CI는 tauri-action이 latest.json 생성. 로컬 수동 배포 시에만 조치)" >&2
-echo "✓ 공증 빌드 완료: dist-mac/cys-${VERSION}-macos-${DIST_ARCH}.dmg"
+echo "✓ 공증 빌드 완료: dist-mac/cysr-${VERSION}-macos-${DIST_ARCH}.dmg"
 echo "  → ad-hoc 재서명·xattr 우회 불필요. gh release 발행은 오너 승인 후."

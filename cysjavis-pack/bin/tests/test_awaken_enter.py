@@ -170,6 +170,14 @@ def run_cases(mod, verbose=True):
         rd2 = ensure(cfgdir=cfg_d2, runner=FakeCys())
         chk("D2 옛 세션 파일을 보지 않음", rd2["awaken"] == mod.AWAKEN_UNCONFIRMED, str(rd2["evidence"]))
 
+        # D3 — 빠른 재시작: 직전 세션 레코드가 스폰 1초 전(파일 mtime 여유 안)이어도 각성이 아니다
+        cfg_d3 = os.path.join(root, "claude-d3")
+        since = time.time()
+        write_session(cfg_d3, slug_dir, cwd, [user_rec(cwd, since - 1.0)])
+        rd3 = ensure(cfgdir=cfg_d3, runner=FakeCys())
+        chk("D3 스폰 1초 전 레코드(재시작 틈)를 각성으로 세지 않음", rd3["awaken"] == mod.AWAKEN_UNCONFIRMED,
+            str(rd3["evidence"]))
+
         # E — 입양 좌석: Return 금지
         cfg_e = os.path.join(root, "claude-e")
         since = time.time()
@@ -205,6 +213,67 @@ def run_cases(mod, verbose=True):
         rh = ensure(cfgdir=cfg_h, c=unicodedata.normalize("NFD", nfc), runner=fh)
         chk("H NFD cwd → NFC 슬러그 폴더 confirmed", rh["awaken"] == mod.AWAKEN_CONFIRMED and not fh.returns(),
             str(rh["evidence"]))
+
+        # G2 — 윈도 모양 경로: 역슬래시·드라이브 대소문자가 달라도 cwd 대조 폴백이 맞춘다
+        cfg_g2 = os.path.join(root, "claude-g2")
+        wcwd = "C:\\Jarvis\\workers\\w1"
+        since = time.time()
+        write_session(cfg_g2, "-elsewhere", "c:/Jarvis/workers/w1", [user_rec("c:/Jarvis/workers/w1", time.time())])
+        fg2 = FakeCys()
+        rg2 = ensure(cfgdir=cfg_g2, c=wcwd, runner=fg2)
+        chk("G2 윈도 경로 표기 차이 → cwd 대조 confirmed · Return 0",
+            rg2["awaken"] == mod.AWAKEN_CONFIRMED and not fg2.returns(), str(rg2["evidence"]))
+
+        # N — master 경로 nudge: 기록된 같은 pid 의 unconfirmed 좌석에만 Return
+        cfg_n = os.path.join(root, "claude-n")
+        prev_cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+        prev_acct = os.environ.get("CYS_ACCOUNT_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = cfg_n
+        os.environ["CYS_ACCOUNT_DIR"] = cfg_n
+        prev_runner, prev_sleep = mod.default_runner, mod._sleep
+        try:
+            mod._sleep = nosleep
+            listing = "surface:9\trole=worker\tpid=42\texited=false\t9 · worker\t%s\n" % cwd
+
+            class ListCys(FakeCys):
+                def __call__(self, args):
+                    if list(args) == ["list"]:
+                        self.calls.append(["list"])
+                        return 0, listing
+                    return FakeCys.__call__(self, args)
+
+            def nudge(fake, st):
+                if st is None:
+                    try:
+                        os.unlink(mod.state_path("worker"))
+                    except OSError:
+                        pass
+                else:
+                    mod._write_state(st)
+                mod.default_runner = lambda socket=None, timeout=12: fake
+                import types
+                return mod.cmd_nudge(types.SimpleNamespace(role="worker", socket=None, json=True))
+
+            base = {"role": "worker", "surface": "surface:9", "pid": 42, "cwd": cwd,
+                    "since": time.time(), "awaken": mod.AWAKEN_UNCONFIRMED}
+            n1 = ListCys()
+            rc1 = nudge(n1, dict(base))
+            chk("N1 같은 pid·unconfirmed → nudge 가 Return 보냄", len(n1.returns()) == 3 and rc1 == 1,
+                "rc=%s returns=%d" % (rc1, len(n1.returns())))
+            n2 = ListCys()
+            rc2 = nudge(n2, dict(base, pid=7))
+            chk("N2 pid 가 갈렸으면 Return 0", not n2.returns() and rc2 == 1, "rc=%s %s" % (rc2, n2.returns()))
+            n3 = ListCys()
+            rc3 = nudge(n3, None)
+            chk("N3 기록 없음 → exit 2 · Return 0 · 측정 없음", rc3 == 2 and not n3.returns(),
+                "rc=%s calls=%s" % (rc3, n3.calls))
+        finally:
+            mod.default_runner, mod._sleep = prev_runner, prev_sleep
+            for k, v in (("CLAUDE_CONFIG_DIR", prev_cfg), ("CYS_ACCOUNT_DIR", prev_acct)):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
         # I — 직접 Return 거부 → --queued 1회 전환
         cfg_i = os.path.join(root, "claude-i")
@@ -293,7 +362,12 @@ def wiring_pins():
 
 # ───────────────────────── 뮤턴트 ─────────────────────────
 MUTANTS = [
-    ("M1 시각 필터 제거(지난 세션을 각성으로)", "if t is None or t >= floor:", "if True:"),
+    ("M1 시각 필터 제거(지난 세션을 각성으로)", "if t is None or t >= rec_floor:", "if True:"),
+    ("M10 윈도 경로 정규화 제거", "if _norm(c) in norms:", "if c in variants:"),
+    ("M11 nudge 같은 pid 검사 제거", 'and st.get("pid") == row["pid"]', ""),
+    ("M12 nudge 기록 없음 가드 제거", 'if not st or st.get("since") is None:', "if False:"),
+    ("M13 레코드 시각에 여유 재도입(재시작 틈)", "if t is None or t >= rec_floor:",
+     "if t is None or t >= since - SINCE_SLACK_S:"),
     ("M2 이미 각성이어도 Return", 'if m["user"] == 0 and may_return:', "if may_return:"),
     ("M3 Return 미전송", "            send_return(runner, surface)\n", "            pass\n"),
     ("M4 master 보고 제거", 'if awaken == AWAKEN_UNCONFIRMED and report and role != "master":', "if False:"),

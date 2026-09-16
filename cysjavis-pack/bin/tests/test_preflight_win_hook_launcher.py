@@ -120,7 +120,7 @@ def run_axes(PF, root, sink=None):
     check("A2 nt+bash → 셸 훅 지원", sup is True, repr(sup), sink)
 
     # ── C. 폴백 경로(후보 순서 · 따옴표 규칙)
-    la, pf = "C:\\Users\\user\\AppData\\Local", "C:\\Program Files"
+    la, pf = "C:\\Users\\x\\AppData\\Local", "C:\\Program Files"
     cands = PF._win_bash_candidates(la, pf)
     check("C1 후보 순서(cys 동봉 → ProgramFiles Git → Programs Git → PortableGit)",
           cands == [la + "\\cys\\runtime\\git\\bin\\bash.exe", pf + "\\Git\\bin\\bash.exe",
@@ -131,7 +131,7 @@ def run_axes(PF, root, sink=None):
         got_c = PF._cys_hook_cmd("session-start.sh")
         sup_c = PF.shell_hooks_supported()
     check("C2 동봉 PortableGit 실재 → 맨 절대경로 런처(공백 없음 = 따옴표 없음)",
-          got_c == 'C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe "%s"' % ss, repr(got_c), sink)
+          got_c == 'C:/Users/x/AppData/Local/cys/runtime/git/bin/bash.exe "%s"' % ss, repr(got_c), sink)
     check("C3 폴백 실재 → 셸 훅 지원", sup_c is True, repr(sup_c), sink)
     with windows_like(PF, pack, home, cfg, which=None, localappdata=la, program_files=pf,
                       isfile=lambda p: p.startswith(pf)):

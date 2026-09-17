@@ -230,9 +230,22 @@ for src, role in (("startup", "worker-1"), ("clear", "worker-1"), ("resume", "ma
     hin = _json.dumps({"transcript_path": jp, "source": src}) + "\n"
     code, out, err = run_hook(env, role=role, stdin_text=hin)
     check("8e source=%s role=%s 무주입" % (src, role), RESTORE_HEAD not in out and code == 0)
-# T5 회귀: 입력 줄을 변수로 한 번 읽도록 바꾼 뒤에도 usage-register 가 같은 transcript_path 를 받는다
-_calls = open(os.path.join(tmp, "calls.log"), encoding="utf-8").read() if os.path.exists(os.path.join(tmp, "calls.log")) else ""
-check("8g T5 usage-register 에 transcript 전달 유지", ("usage-register --transcript " + jp) in _calls, _calls[-300:])
+# T5 회귀: 입력 줄을 변수로 한 번 읽도록 바꾼 뒤에도 usage-register 가 같은 transcript_path 를 받는다.
+#   ★전용 경로(앞 케이스가 남긴 calls.log 줄로 통과하는 공허 차단 · agy 1R Med) — 호출 전 부재 선-assert.
+t5p = os.path.join(tmp, "t5-only.jsonl")
+_jsonl(t5p, [AWAKEN])
+_cl = os.path.join(tmp, "calls.log")
+_before = open(_cl, encoding="utf-8").read() if os.path.exists(_cl) else ""
+check("8g0 선-assert: 전용 경로가 아직 기록에 없다", t5p not in _before)
+run_hook(env, role="worker-1", stdin_text=_json.dumps({"transcript_path": t5p, "source": "startup"}) + "\n")
+_calls = open(_cl, encoding="utf-8").read() if os.path.exists(_cl) else ""
+check("8g T5 usage-register 에 transcript 전달 유지", ("usage-register --transcript " + t5p) in _calls[len(_before):], _calls[-300:])
+# 비 UTF-8 바이트가 섞인 기록도 계수를 완수한다(errors=replace · agy 1R Low) — 실패 로그 없이 0건 → 주입
+bad = os.path.join(tmp, "badbytes.jsonl")
+with open(bad, "wb") as f:
+    f.write((_json.dumps(AWAKEN, ensure_ascii=False) + "\n").encode("utf-8") + b"\xff\xfe broken line\n")
+code, out, err = run_hook(env, role="worker-1", stdin_text=_json.dumps({"transcript_path": bad, "source": "resume"}) + "\n")
+check("8h 비 UTF-8 줄 포함 기록 → 계수 완수·주입", RESTORE_HEAD in out and "계수 실패" not in err and code == 0, err[-200:])
 # 세기 실패(기록 파일 없음 · 입력 JSON 파손) → 무주입 + stderr 1줄 · exit 0
 for label, hin in (("no-file", _json.dumps({"transcript_path": os.path.join(tmp, "nope.jsonl"), "source": "resume"}) + "\n"),
                    ("bad-json", "{not json\n")):

@@ -238,7 +238,7 @@ if h.get("source")!="resume":
     print("SKIP"); raise SystemExit(0)
 tp=h.get("transcript_path") or ""
 try:
-    f=open(tp,encoding="utf-8")
+    f=open(tp,encoding="utf-8",errors="replace")
 except Exception:
     print("ERR transcript"); raise SystemExit(0)
 texts=[]

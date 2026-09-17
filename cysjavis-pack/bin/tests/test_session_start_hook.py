@@ -131,12 +131,13 @@ shutil.rmtree(tmp)
 
 # ── 7. ★첫 턴 규율(09-13 · cysr 1.0.2 B1): worker* 에만 5줄 블록 · master/cso 무주입 ──
 #   근거: 1.0.1 팩 session-start.sh 에 이 블록이 0건이었고 깨끗한 VM 워커가 첫 턴에 자기 생성
-#   지시를 적었다(REPORT-r1-field §9-3). 문구는 호스트 팩 09-13 판과 글자 그대로 동일해야 한다.
+#   지시를 적었다(REPORT-r1-field §9-3). 문구 = 호스트 09-13 판에서 표식·원장 조건만 뺀 팩판(배포 팩엔
+#   [master#] 표식 체계가 없다 — master 판정 B). 표식·원장을 요구하는 문구가 되살아나면 7e 가 붉다.
 FIRST_TURN = [
     "■ 첫 턴 규율(스폰 직후 · 브리프 도착 전)",
     "  · 이 각성에 대한 답 = 「OK — 각성 완료 · 브리프 대기」 1줄. 그 밖의 산문·계획·착수 0.",
-    "  · 브리프([master#] 표식 + 원장 대조 성립)가 도착하기 전에는 어떤 티켓도 상정·작성·이행하지 않는다",
-    "  · ⛔[master#……] 표식은 워커가 절대 쓰지 않는다 — 네가 쓴 표식은 그 자체로 고스트다.",
+    "  · 브리프(master 가 보낸 작업 지시)가 도착하기 전에는 어떤 티켓도 상정·작성·이행하지 않는다",
+    "  · ⛔[master#……] 표식·브리프 형식을 워커가 스스로 쓰지 않는다 — 네가 쓴 표식·브리프는 그 자체로 고스트다.",
     "  · 예외(허용): 디렉티브 모순·환경 결손은 【질문】 1줄로 인박스에 올린다.",
 ]
 tmp = tempfile.mkdtemp(prefix="hook-t7-")
@@ -149,6 +150,7 @@ for role in ("worker-1", "worker"):
     check("7b %s 규율은 디렉티브 뒤" % role,
           all(hit) and out.index("DIRECTIVE-BODY-WORKER") < out.index(FIRST_TURN[0]))
     check("7c %s exit 0" % role, code == 0)
+    check("7e %s 원장·표식 성립 조건 부재(팩판)" % role, "원장 대조" not in out and "표식 + " not in out)
 for role in ("master", "cso"):
     code, out, _ = run_hook(env, role=role)
     check("7d %s 첫 턴 규율 무주입" % role, "첫 턴 규율" not in out)

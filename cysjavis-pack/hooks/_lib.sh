@@ -148,9 +148,9 @@ _cys_is_darwin() {
   [ "$(uname -s 2>/dev/null)" = "Darwin" ]
 }
 
-# $1 이 CLT 스텁이면 0. 실행 없는 판별: `<root>/usr/bin/<이름>` 이고 맥이며 `xcode-select -p` 가 실패.
+# $1 이 CLT 스텁이면 0(파이썬·git 공통). 실행 없는 판별: `<root>/usr/bin/<이름>` 이고 맥이며 `xcode-select -p` 가 실패.
 # 판별기(xcode-select) 자체가 없으면 스텁으로 본다 — 모르는 쪽을 실행하지 않는 방향이 안전측이다.
-cys_py_is_clt_stub() {
+cys_is_clt_stub() {
   _cys_sr="${CYS_TEST_SYSROOT:-}"
   case "${1:-}" in
     "$_cys_sr/usr/bin/"*) ;;
@@ -196,31 +196,37 @@ _cys_bundle_py() {
   return 1
 }
 
-# 맥 PATH 후보 — 종전 `command -v python3 || python || py` 와 같은 이름 순서·PATH 순서로 걷되
-# 스텁은 건너뛰고 뒤 후보를 계속 본다(command -v 는 첫 일치 하나만 알려 줘 스텁 뒤를 못 본다).
-_cys_path_py_darwin() {
+# 맥 PATH 주사 — 이름 하나를 PATH 순서로 찾되 스텁은 건너뛰고 뒤 후보를 계속 본다
+# (`command -v` 는 첫 일치 하나만 알려 줘 스텁 뒤에 있는 진짜 도구를 못 본다).
+_cys_path_scan() {
   _cys_ifs="$IFS"
   case "$-" in *f*) _cys_nof=1 ;; *) _cys_nof=0; set -f ;; esac
   IFS=:
-  for _cys_nm in python3 python py; do
-    for _cys_dir in ${PATH:-}; do
-      [ -n "$_cys_dir" ] || continue
-      _cys_c="$_cys_dir/$_cys_nm"
-      [ -f "$_cys_c" ] && [ -x "$_cys_c" ] || continue
-      cys_py_is_clt_stub "$_cys_c" && continue
-      IFS="$_cys_ifs"; [ "$_cys_nof" = 1 ] || set +f
-      printf '%s' "$_cys_c"
-      return 0
-    done
+  for _cys_dir in ${PATH:-}; do
+    [ -n "$_cys_dir" ] || continue
+    _cys_c="$_cys_dir/${1:-}"
+    [ -f "$_cys_c" ] && [ -x "$_cys_c" ] || continue
+    cys_is_clt_stub "$_cys_c" && continue
+    IFS="$_cys_ifs"; [ "$_cys_nof" = 1 ] || set +f
+    printf '%s' "$_cys_c"
+    return 0
   done
   IFS="$_cys_ifs"; [ "$_cys_nof" = 1 ] || set +f
+  return 1
+}
+
+# 맥 파이썬 후보 — 종전 `command -v python3 || python || py` 와 같은 이름 순서.
+_cys_path_py_darwin() {
+  for _cys_nm in python3 python py; do
+    _cys_path_scan "$_cys_nm" && return 0
+  done
   return 1
 }
 
 cys_resolve_py() {
   if [ -n "${CYS_PY:-}" ]; then
     if [ -x "${CYS_PY}" ] || command -v "${CYS_PY}" >/dev/null 2>&1; then
-      if ! cys_py_is_clt_stub "$(command -v "${CYS_PY}" 2>/dev/null || printf '%s' "${CYS_PY}")"; then
+      if ! cys_is_clt_stub "$(command -v "${CYS_PY}" 2>/dev/null || printf '%s' "${CYS_PY}")"; then
         export CYS_PY
         return 0
       fi
@@ -235,6 +241,22 @@ cys_resolve_py() {
   [ -n "${CYS_PY:-}" ]
 }
 
+# git 해소 — `command -v git` 은 CLT 스텁도 통과하고, 그 스텁을 **실행하면** 사용자 화면에
+# 개발자 도구 설치 창이 뜬다(791 실기: 설치 중 실제 발생). 파이썬과 같은 판별로 스텁을 걸러
+# 「git 부재」로 접는다 — 부재 시 동작은 각 호출부의 기존 부재 분기 그대로다.
+# 결과는 CYS_GIT(없으면 빈 값 · rc 1).
+cys_have_git() {
+  CYS_GIT=""
+  if _cys_is_darwin; then
+    _cys_g="$(_cys_path_scan git || printf '%s' '')"
+  else
+    _cys_g="$(command -v git 2>/dev/null || printf '%s' '')"
+  fi
+  [ -n "$_cys_g" ] || return 1
+  CYS_GIT="$_cys_g"
+  return 0
+}
+
 # 게이트 훅(guard·actprobe-kill-gate)용 절대경로 해소 — 두 훅이 각자 갖던 후보 루프의 공용판.
 # 순서 = 위 해소기 결과(절대경로화) → PATH 빈곤 환경(GUI 기동) 대비 고정 절대경로 꼬리.
 # 꼬리도 스텁은 건너뛴다. 결과는 CYS_PYBIN(없으면 빈 값 · rc 1 → 각 훅의 기존 부재 분기).
@@ -247,7 +269,7 @@ cys_resolve_pybin() {
   for _cys_c in /opt/homebrew/bin/python3 /usr/bin/python3 /usr/local/bin/python3; do
     _cys_c="${CYS_TEST_SYSROOT:-}$_cys_c"
     [ -x "$_cys_c" ] || continue
-    cys_py_is_clt_stub "$_cys_c" && continue
+    cys_is_clt_stub "$_cys_c" && continue
     CYS_PYBIN="$_cys_c"
     return 0
   done

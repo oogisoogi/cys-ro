@@ -18,6 +18,8 @@ Darwin/Linux 를 흉내 낸다. 실제 /usr/bin 은 PATH 에 넣지 않는다(�
   ⓕ 비맥: 해소 결과가 수정 전 해소기(base 판 원문)와 문자열까지 같다(번들·스텁 판정 무관)
   ⓖ guard.sh: 스텁만 있으면 STRICT deny·LOOSE 백스톱(종전 스텁-크래시와 같은 결말) · 번들 있으면 파서 판정
   ⓗ actprobe-kill-gate.sh: 스텁만 있으면 fail-open WARN(exit 0)
+  ⓘ git 도 같은 판별(r2): _lib cys_have_git · 부트 경로 훅(vibe-doc-sync·50-state-ledger) ·
+     javis_preflight.usable_git — 스텁은 부재로 접고 **실행 0회**, 스텁 뒤의 진짜 git 은 찾는다
 뮤테이션 검산: PYRES_HOOKS_DIR 로 훅 폴더를 바꿔 끼워 변이 사본을 잰다(하네스는 이 파일 그대로).
 """
 import json
@@ -346,6 +348,118 @@ def main():
         check("c10 kill-gate 스텁만 → 파이썬 부재 fail-open(exit 0)", r.returncode == 0 and "부재" in r.stderr,
               "rc=%s err=%r" % (r.returncode, r.stderr[-300:]))
         check("c10 kill-gate 스텁 미실행", b.executed() == [], repr(b.executed()))
+    finally:
+        b.close()
+
+    # ── 케이스 11: git 해소(_lib cys_have_git) — 스텁 배제·뒤 후보 탐색·CLT 있으면 채택 ──
+    def have_git(box, dirs, extra=None):
+        for m in os.listdir(box.marks):
+            os.remove(os.path.join(box.marks, m))
+        script = (". '%s'\ncys_have_git; printf 'RC=%%s\\n' \"$?\"; printf 'GIT=%%s\\n' \"$CYS_GIT\"\n" % LIB)
+        r = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                           env=box.env(dirs, extra), timeout=30)
+        out = dict(l.split("=", 1) for l in r.stdout.splitlines() if "=" in l)
+        return out.get("GIT", "<none>"), out.get("RC", "<none>")
+
+    b = Box()
+    try:
+        stub_git = b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+        g, rc = have_git(b, [os.path.join(b.root, "usr", "bin")])
+        check("c11a 스텁 git 만 → 부재(rc 1·빈 값)", g == "" and rc == "1", "git=%r rc=%r" % (g, rc))
+        check("c11a 스텁 git 미실행", b.executed() == [], repr(b.executed()))
+        real_git = b.fake_py(os.path.join(b.t, "rg", "git"), "REALGIT")
+        g, rc = have_git(b, [os.path.join(b.root, "usr", "bin"), os.path.dirname(real_git)])
+        check("c11b 스텁 뒤의 진짜 git 채택", g == real_git and rc == "0", "git=%r" % g)
+        check("c11b 스텁 git 미실행", "STUBGIT" not in b.executed(), repr(b.executed()))
+    finally:
+        b.close()
+    b = Box(clt=True)
+    try:
+        stub_git = b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+        g, rc = have_git(b, [os.path.join(b.root, "usr", "bin")])
+        check("c11c CLT 있으면 /usr/bin/git 채택", g == stub_git and rc == "0", "git=%r" % g)
+        check("c11c 해소 중 실행 0", b.executed() == [], repr(b.executed()))
+    finally:
+        b.close()
+    b = Box(os_name="Linux")
+    try:
+        sys_git = b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+        g, rc = have_git(b, [os.path.join(b.root, "usr", "bin")])
+        check("c11d 비맥은 스텁 판정 비적용(종전대로 채택)", g == sys_git and rc == "0", "git=%r" % g)
+    finally:
+        b.close()
+
+    # ── 케이스 12: 부트 경로 훅 — vibe-doc-sync.sh 가 스텁 git 을 실행하지 않는다 ──
+    doc_sync = os.path.join(HOOKS, "vibecoding", "vibe-doc-sync.sh")
+    b = Box()
+    try:
+        bun = b.bundle(os.path.join(b.root, "Applications", "cysr.app"), "BUNDLE")
+        b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+        code_file = os.path.join(b.t, "proj", "a.py")
+        _w(code_file, "x = 1\n", 0o644)
+        e = b.env([os.path.join(b.root, "usr", "bin"), b.toolbin()])
+        r = subprocess.run(["/bin/bash", doc_sync],
+                           input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": code_file}}),
+                           capture_output=True, text=True, env=e, timeout=60)
+        check("c12 선행: doc-sync 프리루드 적재·번들 파이썬 사용", "_lib.sh 소실" not in r.stderr and "BUNDLE" in b.executed(),
+              "err=%r exec=%r" % (r.stderr[-200:], b.executed()))
+        check("c12 doc-sync 가 스텁 git 을 실행하지 않는다(exit 0)", r.returncode == 0 and "STUBGIT" not in b.executed(),
+              "rc=%s exec=%r" % (r.returncode, b.executed()))
+    finally:
+        b.close()
+
+    # ── 케이스 13: javis_preflight.usable_git — 스텁은 부재·뒤 후보는 채택(실행 0) ──
+    pf = os.path.join(SELF, "..", "javis_preflight.py")
+    b = Box()
+    try:
+        b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+        probe = ("import sys, os\n"
+                 "sys.path.insert(0, %r)\n"
+                 "import javis_preflight as P\n"
+                 "print('GIT=%%s' %% (P.usable_git() or ''))\n" % os.path.dirname(os.path.abspath(pf)))
+        e = dict(b.env([os.path.join(b.root, "usr", "bin")]))
+        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=e, timeout=120)
+        got = [l for l in r.stdout.splitlines() if l.startswith("GIT=")]
+        check("c13a preflight usable_git: 스텁만 → None", got == ["GIT="], "out=%r err=%r" % (r.stdout[-300:], r.stderr[-300:]))
+        check("c13a 스텁 git 미실행", b.executed() == [], repr(b.executed()))
+        real_git = b.fake_py(os.path.join(b.t, "rg", "git"), "REALGIT")
+        e = dict(b.env([os.path.join(b.root, "usr", "bin"), os.path.dirname(real_git)]))
+        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=e, timeout=120)
+        got = [l for l in r.stdout.splitlines() if l.startswith("GIT=")]
+        check("c13b preflight usable_git: 스텁 뒤의 진짜 git 채택", got == ["GIT=" + real_git],
+              "out=%r" % r.stdout[-300:])
+        check("c13b 스텁 git 미실행", "STUBGIT" not in b.executed(), repr(b.executed()))
+    finally:
+        b.close()
+
+    # ── 케이스 14: 부트 경로 훅 — 50-state-ledger.sh(git commit 감지) ──
+    ledger = os.path.join(HOOKS, "fullauto", "50-state-ledger.sh")
+
+    def run_ledger(box, dirs, extra=None):
+        for m in os.listdir(box.marks):
+            os.remove(os.path.join(box.marks, m))
+        binf = os.path.join(box.t, "javis_state_ledger.py")
+        _w(binf, "import sys\n", 0o644)
+        e = box.env(dirs + [box.toolbin()], dict(extra or {}, CYS_STATE_LEDGER_BIN=binf))
+        return subprocess.run(["/bin/sh", ledger],
+                              input=json.dumps({"tool_name": "Bash", "cwd": box.t,
+                                                "tool_input": {"command": "git commit -m x"}}),
+                              capture_output=True, text=True, env=e, timeout=60)
+
+    b = Box()
+    try:
+        b.bundle(os.path.join(b.root, "Applications", "cysr.app"), "BUNDLE")
+        b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+        r = run_ledger(b, [os.path.join(b.root, "usr", "bin")])
+        check("c14a 선행: state-ledger 프리루드 적재·번들 파이썬 사용",
+              "_lib.sh 소실" not in r.stderr and "BUNDLE" in b.executed(),
+              "err=%r exec=%r" % (r.stderr[-200:], b.executed()))
+        check("c14a state-ledger 가 스텁 git 을 실행하지 않는다(exit 0)",
+              r.returncode == 0 and "STUBGIT" not in b.executed(), "rc=%s exec=%r" % (r.returncode, b.executed()))
+        # 대조군: 진짜 git 이 PATH 에 있으면 그 자리에서 git 을 실제로 부른다(가드가 경로 위에 있음을 증명)
+        real_git = b.fake_py(os.path.join(b.t, "rg", "git"), "REALGIT")
+        r = run_ledger(b, [os.path.join(b.root, "usr", "bin"), os.path.dirname(real_git)])
+        check("c14b 대조군: 진짜 git 은 그대로 호출된다", "REALGIT" in b.executed(), repr(b.executed()))
     finally:
         b.close()
 

@@ -126,7 +126,9 @@ MDIR="${CYS_STATE_DIR:-$HOME/.cys/state}/state_ledger"
 
 case "$KIND" in
   commit)
-    command -v git >/dev/null 2>&1 || exit 0
+    # ★cysr-102-pack-c: 스텁 배제 판별(프리루드 공용) — 개발자 도구가 없는 맥의 /usr/bin/git 은
+    #   실행하는 순간 설치 창을 띄운다. 스텁이면 여기서 기존 「git 부재」 분기로 접는다.
+    cys_have_git || exit 0
     RD="$EXTRA"
     # 힌트가 미확장 변수/틸드로 온 경우 최소 확장($HOME·~ 접두만 — eval 금지)
     case "$RD" in
@@ -135,12 +137,12 @@ case "$KIND" in
     esac
     [ -n "$RD" ] && [ -d "$RD" ] || RD="$CWD"
     [ -n "$RD" ] && [ -d "$RD" ] || exit 0
-    TOP=$($TO git -C "$RD" rev-parse --show-toplevel 2>/dev/null)
+    TOP=$($TO "$CYS_GIT" -C "$RD" rev-parse --show-toplevel 2>/dev/null)
     [ -n "$TOP" ] || exit 0
     # 성공 판정(exit code 는 훅 입력에 없다): HEAD 가 '방금' 생긴 커밋일 때만 기록한다.
     #   실패한 commit 은 HEAD 를 갱신하지 않으므로 오래된 %ct 로 걸러지고,
     #   동일 HEAD 재기록은 아래 마커가 막는다(재실행·중복 훅 대비).
-    INFO=$($TO git -C "$TOP" log -1 --format='%H%n%ct%n%s' 2>/dev/null)
+    INFO=$($TO "$CYS_GIT" -C "$TOP" log -1 --format='%H%n%ct%n%s' 2>/dev/null)
     [ -n "$INFO" ] || exit 0
     HASH=$(printf '%s\n' "$INFO" | sed -n '1p')
     CT=$(printf '%s\n' "$INFO" | sed -n '2p')

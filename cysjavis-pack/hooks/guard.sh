@@ -63,13 +63,10 @@ INPUT="$(cat)"
 # G22: 인터프리터 후보에 python·py 추가 — Windows에는 `python3` 명령이 없고 python/py만 있는
 # 경우가 흔하다. 후보 **순서 = 우선순위**이고 절대경로 후보(homebrew·/usr/bin)는 PATH 빈곤 환경
 # (GUI 기동)의 belt-and-braces다. 프리루드가 해소한 CYS_PY를 최우선 후보로 둔다(단일 SOT).
+# ★cysr-102-pack-c: 후보 루프를 프리루드 공용 해소기(cys_resolve_pybin)로 모았다 — 개발자 도구가
+#   없는 맥의 /usr/bin/python3 스텁을 이 훅도 실행하지 않는다(부재 = 아래 기존 분기 그대로).
 PYBIN=""
-for c in "${CYS_PY:-python3}" python3 python py \
-         /opt/homebrew/bin/python3 /usr/bin/python3 /usr/local/bin/python3; do
-  [ -n "$c" ] || continue
-  if command -v "$c" >/dev/null 2>&1; then PYBIN="$(command -v "$c")"; break; fi
-  [ -x "$c" ] && PYBIN="$c" && break
-done
+cys_resolve_pybin && PYBIN="$CYS_PYBIN"
 # 테스트 전용(GUARD_TEST_MODE): python 부재 시뮬레이션으로 잔여5(STRICT fail-closed) 검증
 [ "${GUARD_TEST_MODE:-0}" = "1" ] && [ "${GUARD_FORCE_NOPY:-0}" = "1" ] && PYBIN=""
 

@@ -30,13 +30,15 @@ case "$FP" in
 esac
 
 # git 저장소에서만 동작(작업 트리 문서 변경 여부 판별) — git 부재 시 skip
-command -v git >/dev/null 2>&1 || exit 0
+# ★cysr-102-pack-c: 판별은 프리루드 공용 해소기로. `command -v git` 만 보면 개발자 도구가 없는
+# 맥의 /usr/bin/git 스텁을 통과시키고, 그것을 실행하는 순간 설치 창이 뜬다(스텁 = 부재 취급).
+cys_have_git || exit 0
 DIR=$(dirname "$FP")
 [ -d "$DIR" ] || exit 0
-ROOT=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || exit 0
+ROOT=$("$CYS_GIT" -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || exit 0
 
 # 작업 트리 변경 목록 — 코드 변경은 있는데 .md 변경이 0이면 doc-sync 리마인드
-CHANGED=$(git -C "$ROOT" status --porcelain 2>/dev/null)
+CHANGED=$("$CYS_GIT" -C "$ROOT" status --porcelain 2>/dev/null)
 [ -n "$CHANGED" ] || exit 0
 printf '%s\n' "$CHANGED" | grep -qiE '\.md( ->|$)' && exit 0   # 문서 변경 동반 → 통과
 

@@ -20,13 +20,9 @@ set -u
 
 # ── 인터프리터 해석 (없으면 hook JSON 파싱 불가 = 인프라 fail-open) ───────────
 # G22: 후보에 python·py 추가(Windows는 python3 명령이 없다). 프리루드 해소값을 최우선 후보로.
+# ★cysr-102-pack-c: 후보 루프 → 프리루드 공용 해소기(cys_resolve_pybin · 맥 CLT 스텁 배제).
 PYBIN=""
-for c in "${CYS_PY:-python3}" python3 python py \
-         /opt/homebrew/bin/python3 /usr/bin/python3 /usr/local/bin/python3; do
-  [ -n "$c" ] || continue
-  if command -v "$c" >/dev/null 2>&1; then PYBIN="$(command -v "$c")"; break; fi
-  [ -x "$c" ] && { PYBIN="$c"; break; }
-done
+cys_resolve_pybin && PYBIN="$CYS_PYBIN"
 if [ -z "$PYBIN" ]; then
   echo "kill-gate: WARN python(3) 부재 — hook JSON 파싱 불가 · fail-open" >&2
   exit 0

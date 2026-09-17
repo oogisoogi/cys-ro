@@ -638,6 +638,52 @@ def gate_command_with_lane(command, state_dir):
     return '%s="%s" %s' % (GATE_STATE_ENV, state_dir, command)
 
 
+def clt_stub(path):
+    """macOS 개발자 도구(CLT) 스텁이면 True — **실행하지 않고** 판정한다(cysr-102-pack-c).
+
+    CLT 미설치 맥의 `/usr/bin/{git,python3,...}` 은 실체 없는 스텁이라, 실행하면
+    「No developer tools were found, requesting install」 창을 사용자 화면에 띄우고 rc 1 로
+    끝난다(791 VM 실기: 설치 도중 실제 발생). 그래서 판별에 스텁을 부르지 않는다 —
+    경로(<root>/usr/bin/<이름>) + `xcode-select -p` 실패로만 본다. 판별기(xcode-select)가
+    없으면 스텁으로 본다(모르는 쪽을 실행하지 않는 방향 = 훅 프리루드 `cys_is_clt_stub` 과 동일 규약).
+    `CYS_TEST_SYSROOT` 는 시험 전용 접두다(운영에선 비어 있다 — 훅 프리루드와 같은 이름·같은 뜻).
+    """
+    if sys.platform != "darwin" or not path:
+        return False
+    root = os.environ.get("CYS_TEST_SYSROOT", "")
+    if os.path.dirname(path) != root + "/usr/bin":
+        return False
+    xs = root + "/usr/bin/xcode-select"
+    if not os.access(xs, os.X_OK):
+        return True
+    try:
+        return subprocess.run([xs, "-p"], capture_output=True, timeout=10,
+                              **NOWIN).returncode != 0
+    except Exception:
+        return True
+
+
+def usable_git():
+    """쓸 수 있는 git 절대경로 또는 None — CLT 스텁은 **부재로 친다**(위 clt_stub 참조).
+
+    `shutil.which("git")` 만 보면 스텁도 통과해, 호출부가 그것을 실행하는 순간 설치 창이 뜨고
+    명령은 실패한다. 부재로 접으면 호출부의 기존 「git 없음」 분기가 그대로 발동한다.
+    """
+    g = shutil.which("git")
+    if not g:
+        return None
+    if not clt_stub(g):
+        return g
+    # 스텁 뒤에 진짜 git 이 있을 수 있다(PATH 순서) — which 는 첫 일치만 알려 준다.
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d:
+            continue
+        cand = os.path.join(d, "git")
+        if os.access(cand, os.X_OK) and os.path.isfile(cand) and not clt_stub(cand):
+            return cand
+    return None
+
+
 def _cys_hook_cmd(script_name):
     """Claude settings.json hook 명령 문자열(단일 진실 — 모든 등록부 공용).
     Windows: git-bash `bash`로 명시 호출 + **정슬래시 + 따옴표**. 미따옴표 역슬래시 경로는 bash가
@@ -3345,21 +3391,22 @@ class Preflight:
                             "harness-creator 툴체인 git clone(핀 %s)" % HARNESS_PIN[:8],
                             denylist_class="external_install")
             return
-        if self.fix and shutil.which("git") and self.may_mutate(
+        gitbin = usable_git()
+        if self.fix and gitbin and self.may_mutate(
                 cid, "subprocess_install", "git clone %s → %s" % (HARNESS_REPO, dst),
                 "harness-creator 툴체인 git clone(핀 %s)" % HARNESS_PIN[:8],
                 denylist_class="external_install"):
             try:
-                ok = subprocess.run(["git", "clone", HARNESS_REPO, dst],
+                ok = subprocess.run([gitbin, "clone", HARNESS_REPO, dst],
                                     capture_output=True, timeout=300, **NOWIN).returncode == 0
                 if ok:
                     # 핀은 검증돼야 핀이다 — checkout rc와 HEAD==핀을 기계 확인하지
                     # 않으면 핀 부재(force-push·레포 교체) 시 조용히 moving HEAD로
                     # 남아 FIXED가 거짓 핀 주장이 된다(공급망 표면).
-                    co = subprocess.run(["git", "-C", dst, "checkout", HARNESS_PIN],
+                    co = subprocess.run([gitbin, "-C", dst, "checkout", HARNESS_PIN],
                                         capture_output=True, timeout=60, **NOWIN).returncode
                     head = subprocess.run(
-                        ["git", "-C", dst, "rev-parse", "HEAD"],
+                        [gitbin, "-C", dst, "rev-parse", "HEAD"],
                         capture_output=True, timeout=15, **NOWIN).stdout.decode().strip()
                     ok = co == 0 and head == HARNESS_PIN
             except Exception:

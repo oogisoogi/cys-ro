@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
+import { adoptLayoutIfRowOnly } from "./adoptlayout";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -2329,6 +2330,7 @@ async function refreshPaneTitles() {
     // 멀티마스터 F4: workspace별 소켓을 순회 — 각 데몬의 surface를 그 소켓 ws에만 귀속시킨다.
     const sockets = [...new Set(workspaces.map((w) => w.socket))];
     let adopted = false;
+    const adoptedWs = new Set<Workspace>();
     // 사이드바 사용량 패널용 수집 — 이미 도는 폴링에 얹는다(새 폴링을 만들지 않는다).
     // 이번 틱에 성공한 소켓만 담고, 실패한 소켓은 lastSurfacesBySocket의 직전 값으로 메운다.
     const socketRows = new Map<string, SurfaceLike[]>();
@@ -2382,6 +2384,15 @@ async function refreshPaneTitles() {
           ? { type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }
           : { type: "pane", sid: s.surface_id };
         adopted = true;
+        adoptedWs.add(ws);
+      }
+      // ★cysr 1.0.2 B3: 입양이 루트를 매번 0.5 로 감싸 [[[셸|master]|cso]|worker] = 1/8·1/8·1/4·1/2 가 됐다
+      //   (깨끗한 VM run4 · 마스터 칸 ≈100px). 입양이 일어난 ws 만 기존 좌→우 순서 그대로 열을 다시 짠다 —
+      //   master 열 = 화면 1/3 이상(열 2개면 1/2) · 나머지 균등. ★좁힌 판(master 판정 B): 트리가 순수 row 열뿐일
+      //   때만 다시 짠다 — 사용자가 세로(col) 분할·중첩을 만든 ws 는 무접촉(기존 0.5 감싸기 그대로).
+      const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
+      for (const ws of adoptedWs) {
+        if (ws.tree && (ws.socket ?? undefined) === (sk ?? undefined)) ws.tree = adoptLayoutIfRowOnly(ws.tree, masterSids);
       }
      } catch {
        // ★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다(codex [High] 수리).

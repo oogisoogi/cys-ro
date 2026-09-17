@@ -1289,6 +1289,83 @@ def _live_role_surfaces_checked(socket):
     return d, _LAST_LIVENESS_KNOWN
 
 
+# ★cysr-102 A3(2026-09-17 · run7 실측): VM 재기동 뒤 `cys list` 는 role=master 인데 좌석 셸(zsh pid 664)
+#   아래에 claude 프로세스가 없었다. 종전 생존 증거는 전부 데몬 표시(exited·seat)와 세션핀 대조였고,
+#   세션핀은 topology.json 에 **재기동을 넘어 남아** expected==observed 가 되므로 죽은 좌석이 VERIFIED 로
+#   읽힐 수 있었다. 커널 사실 하나를 더 본다 — 「좌석 셸의 자손에 그 에이전트 프로세스가 있는가」.
+#   판정은 3값이며 **'dead' 일 때만** 행동이 바뀐다(ps 부재 = Windows·실패 = 'unknown' = 종전 동작).
+#   행동 변화는 분류뿐이다: 생존 목록에서 빼고(부활 대상) · verified/fresh 로 확정하지 않고 fresh
+#   재기동 경로로 보낸다. 좌석 파괴·회수(close-surface)는 추가하지 않는다.
+#   ⚠스폰 **직후** 확인(SPAWN_SETTLE 1s)에는 이 축을 쓰지 않는다 — 명령 타이핑→exec 사이에 'dead' 로
+#   읽혀 cys restore 재시도(이중 기동)를 부를 수 있다. 쓰는 곳 = 대상 산정(정상 상태)·verify(ready·grace 뒤).
+AGENT_PROC_TOKENS = ("claude", "codex", "gemini", "agy", "grok")
+
+
+def _ps_table():
+    """{pid: (ppid, args)} — ps 부재(Windows)·실패·빈 출력 = None(판정 불가)."""
+    if os.name == "nt":
+        return None
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,ppid=,args="], capture_output=True, text=True,
+                           timeout=10, **NOWIN)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    table = {}
+    for line in (r.stdout or "").splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 2:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        table[pid] = (ppid, parts[2] if len(parts) > 2 else "")
+    return table or None
+
+
+def agent_process_verdict(shell_pid, agent, table):
+    """순수 판정: 좌석 셸(shell_pid)의 자손 중 에이전트 프로세스가 있는가 → 'alive'|'dead'|'unknown'.
+    unknown = 표 없음·셸 pid 미상·셸이 표에 없음(이미 exited 축 소관). 자손의 인자 문자열에 에이전트
+    토큰(AGENT_PROC_TOKENS + 로스터 agent 이름)이 들어 있으면 alive — `node …/claude-code/cli.js` 형태 포함."""
+    if not table or not isinstance(shell_pid, int) or shell_pid <= 0 or shell_pid not in table:
+        return "unknown"
+    tokens = set(AGENT_PROC_TOKENS)
+    if agent:
+        tokens.add(str(agent).lower())
+    children = {}
+    for pid, (ppid, _args) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    seen, stack = set(), list(children.get(shell_pid, []))
+    while stack:
+        pid = stack.pop()
+        if pid in seen or pid == shell_pid:
+            continue
+        seen.add(pid)
+        args = (table.get(pid) or (None, ""))[1].lower()
+        if any(t in args for t in tokens):
+            return "alive"
+        stack.extend(children.get(pid, []))
+    return "dead"
+
+
+def _surface_shell_pids(socket):
+    """surface_ref → 좌석 셸 OS pid(`cys list` pid= 열 — status --json 은 pid 미노출). 실패 = {}."""
+    r = cys("list", socket=socket, timeout=12)
+    out = {}
+    for line in (r.stdout or "").splitlines():
+        mm = re.match(r"(surface:\d+)\s+role=\S+\s+pid=(\d+)\s+exited=\S+", line)
+        if mm:
+            out[mm.group(1)] = int(mm.group(2))
+    return out
+
+
+def surface_agent_verdict(socket, surface, agent):
+    """좌석 1개의 ps 축 판정(실측 1회) — 'alive'|'dead'|'unknown'."""
+    return agent_process_verdict(_surface_shell_pids(socket).get(surface), agent, _ps_table())
+
+
 # ------------------------------------------------------------------ 저널
 
 def journal_path(socket, ticket_id):
@@ -1940,12 +2017,28 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     #   대상역할에 master 부재 → 아래 completeness 가 master 를 검증조차 않고 COMPLETE 선언 = 침묵 성공).
     #   좌석이 비었으면(seat=='empty') 그 역할은 살아있는 게 아니라 **부활 대상**이다.
     #   seat 키가 없는 구 데몬에선 None → 종전 규칙으로 degrade(하위호환).
+    # ★cysr-102 A3: ps 축은 prod 에서만(stub 대역은 실 프로세스가 아니다) · 표·pid 는 1회만 잰다.
+    _ps_cache = {}
+
+    def _ps_dead(role, surface):
+        if stub:
+            return False
+        if "t" not in _ps_cache:
+            _ps_cache["t"], _ps_cache["p"] = _ps_table(), _surface_shell_pids(socket)
+        v = agent_process_verdict(_ps_cache["p"].get(surface),
+                                  entries.get(role, {}).get("agent", "claude"), _ps_cache["t"])
+        if v == "dead":
+            log("★ps 축: role=%s %s 좌석 셸 아래 에이전트 프로세스 부재 — 생존 아님(부활 대상)" % (role, surface))
+        return v == "dead"
+
     def _alive(role):
         for s in live.get(role, []):
             if s["exited"]:
                 continue
             if s.get("seat") == "empty":
                 continue  # 좌석은 있으나 아무도 앉아 있지 않다 — 부활시킨다(in-seat 연결은 cys restore 담당)
+            if _ps_dead(role, s.get("surface")):
+                continue  # ★A3: 표시(role=·seat)는 살아 있으나 에이전트 프로세스가 없다
             return True
         return False
 
@@ -2062,6 +2155,10 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
             % (restore_cwd, per_entry,
                "유효한 작업 폴더 좌석은 바이너리가 지킨다" if per_entry
                else "구 바이너리(전역 override) — 대상 전원이 홈일 때만 덮는다"))
+    # ★cysr-102 A3: 직전 verify 가 ps 축으로 「에이전트 부재」를 본 역할은 resume(cys restore) 재시도를
+    #   반복하지 않고 곧장 fresh 재기동 경로로 보낸다(세션핀 resume 이 같은 죽은 좌석을 다시 가리키므로).
+    forced_fresh = [r for r in need if (j["roles"].get(r) or {}).get("force_fresh")]
+    need = [r for r in need if r not in forced_fresh]
     attempt = 0
     while need and attempt <= SPAWN_RETRIES:
         if stub:
@@ -2113,6 +2210,7 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     #    roster 를 막지 않고, 세션핀을 버리고 fresh(무 resume) 재기동으로 '강등'해 부활을 마무리한다.
     #    fresh 는 원 세션 보존이 아니라 새 세션 + 디렉티브/원장 재주입이다(정직: resumed→fresh 전환을 저널에 명시).
     #    fresh 는 최후수단 — resume 성공/재시도 회복은 이 지점에 오지 않는다.
+    need = need + [r for r in forced_fresh if r not in need]
     if need and POISON_FRESH_FALLBACK:
         fresh_still = []
         for role in need:
@@ -2145,6 +2243,7 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                 rr["surface"] = ref
                 rr["expected_sid"] = exp            # 원 세션핀(독약) 보존 기록 — verify 에서 '보존 실패'로 정직 대조
                 rr["fresh_fallback"] = True          # ★정직: resumed→fresh 강등(세션 보존 포기·의도적 전환)
+                rr.pop("force_fresh", None)          # ★A3: fresh 경로를 탔다 — 다음 verify 가 다시 잰다
                 mark_stage(j, role, "spawn", True, "★fresh 강등(독약 세션): " + msg)
                 jevent(j, role, "spawn", "fresh_fallback",
                        "resume %d회 소진→fresh 강등(무 resume 재기동): %s" % (SPAWN_RETRIES, msg))
@@ -2213,6 +2312,18 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                     reason = "핀 부재(expected 미기록)"
             else:
                 reason = "세션 일치"
+        # ★cysr-102 A3: 세션핀 일치·fresh 라벨은 에이전트 생존의 증거가 아니다(topology 세션핀은 재기동을
+        #   넘어 남는다). 좌석 셸 아래 에이전트 프로세스가 없으면 성공으로 확정하지 않고 fresh 경로로 보낸다
+        #   — spawn 단계 완료 표시를 내려 다음 사이클이 이 역할을 다시 집고, force_fresh 로 resume 을 건너뛴다.
+        if not stub and outcome in ("verified", "fresh"):
+            _agent = entries.get(role, {}).get("agent", "claude")
+            if surface_agent_verdict(socket, surface, _agent) == "dead":
+                reason = ("★ps 축: %s 좌석 셸 아래 %s 프로세스 부재 — %s 라벨을 확정하지 않는다"
+                          "(세션핀은 재기동을 넘어 남는다 · verified 오판 금지) → fresh 재기동 경로"
+                          % (surface, _agent, outcome))
+                outcome = "unverified"
+                j["roles"][role]["force_fresh"] = True
+                mark_stage(j, role, "spawn", False, reason)
         j["roles"][role]["outcome"] = outcome
         j["roles"][role]["verify_reason"] = reason
         # ★P2-3: verify done 은 outcome 이 verified/fresh(성공 부활)일 때만 True. unverified(transient/fork)는

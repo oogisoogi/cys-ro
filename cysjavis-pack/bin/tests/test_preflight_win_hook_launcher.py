@@ -97,6 +97,12 @@ def build_pack(PF, pack):
         io.open(os.path.join(pack, rel), "w", encoding="utf-8").write("#!/bin/bash\nexit 0\n")
     os.makedirs(os.path.join(pack, "bin"), exist_ok=True)
     io.open(os.path.join(pack, "bin", "javis_reflect.py"), "w", encoding="utf-8").write("#\n")
+    # ★C55(grill) — 09-16 07:24 실증 Stop 오류 3건 중 grill-stop 의 등록처. 엔진 self-test 는
+    #   rc 0 가짜로 통과시켜(엔진 판정은 이 시험 대상 아님) 행 상태가 훅 축만으로 갈리게 한다.
+    for h, _ev, _m in PF.GRILL_HOOKS:
+        io.open(os.path.join(pack, "hooks", h), "w", encoding="utf-8").write("#!/bin/sh\nexit 0\n")
+    io.open(os.path.join(pack, "bin", PF.GRILL_ENGINE), "w", encoding="utf-8").write(
+        "import sys\nsys.exit(0)\n")
 
 
 def run_axes(PF, root, sink=None):
@@ -142,9 +148,11 @@ def run_axes(PF, root, sink=None):
     # ── B. bash 어디에도 없음 → 0건 등록 · 기존 우리 훅 제거 · 사용자 훅 보존 · 고지 1줄
     settings = os.path.join(cfg, "settings.json")
     ours = 'bash "%s"' % ss
+    ours_gs = 'bash "%s"' % os.path.join(pack, "hooks", PF.GRILL_STOP_HOOK)   # 1.0.0 이 남긴 Stop 엔트리
     user = {"hooks": [{"type": "command", "command": "sh ~/myhooks/session-start.sh"}]}
     io.open(settings, "w", encoding="utf-8").write(json.dumps({"hooks": {
-        "SessionStart": [{"hooks": [{"type": "command", "command": ours}]}, user]}}))
+        "SessionStart": [{"hooks": [{"type": "command", "command": ours}]}, user],
+        "Stop": [{"hooks": [{"type": "command", "command": ours_gs}]}]}}))
     with windows_like(PF, pack, home, cfg, which=None, localappdata=os.path.join(root, "noLA"),
                       program_files=os.path.join(root, "noPF"), isfile=lambda p: False):
         sup_b = PF.shell_hooks_supported()
@@ -152,6 +160,7 @@ def run_axes(PF, root, sink=None):
         pf_obj.c08_hook_registered()
         pf_obj.c28_self_correction()
         pf_obj.c33_event_hooks()
+        pf_obj.c55_grill_gate()
     check("B1 nt+bash 없음 → 셸 훅 미지원", sup_b is False, repr(sup_b), sink)
     data = json.load(io.open(settings, encoding="utf-8"))
     cmds = [h.get("command", "") for arr in (data.get("hooks") or {}).values()
@@ -161,7 +170,7 @@ def run_axes(PF, root, sink=None):
           not [c for c in cmds if pack_fwd in c], repr(cmds), sink)
     check("B3 사용자 동명 훅 보존(G10)", "sh ~/myhooks/session-start.sh" in cmds, repr(cmds), sink)
     rows = {r["id"]: r for r in pf_obj.results}
-    for cid in ("C08.hook-registered", "C28.self-correction", "C33.event-hooks"):
+    for cid in ("C08.hook-registered", "C28.self-correction", "C33.event-hooks", "C55.grill-gate"):
         r = rows.get(cid) or {}
         det = r.get("detail", "")
         check("B4 %s = WARN(FAIL 아님) + 강등 고지 정확히 1줄" % cid,
@@ -205,6 +214,8 @@ try:
          "    for c in []:\n        if isfile(c):"),
         ("M3 고지 제거", "        note = SHELL_HOOK_DEGRADED_NOTE % (len(pairs) + extra)",
          '        note = "강등"'),
+        ("M4 C55 강등 분기 제거", "        _deg = self._degrade_shell_hooks([(ev, h) for h, ev, _m in GRILL_HOOKS])",
+         "        _deg = None"),
     ]
     for i, (name, old, new) in enumerate(mutants):
         check("%s — 앵커 정확히 1곳(변이 적용 확인)" % name, src.count(old) == 1, str(src.count(old)))

@@ -383,6 +383,10 @@ def _base_env(extra=None, drop=()):
               # ★임무 게이트 신호는 러너 환경에서 새어 들어오면 안 된다(검체가 자기 조건을
               #   명시적으로 만든다 — `_rb_sandbox(mission=...)`).
               "CYS_MISSION",
+              # ★인터프리터 지정값 누수 차단(cysr-102-pack-c): 운영자 셸에 CYS_PY 가 있으면
+              #   검체가 그 인터프리터로 돌아 목·PATH 조건이 조용히 무력화된다. 목을 쓰는
+              #   검체는 `_rb_sandbox` 가 명시 주입한다(strip 은 extra 적용 **전**이다).
+              "CYS_PY",
               # ★제품 롤백 스위치 누수 차단(U-27 · 2026-08-24 · 미측정 축 전수 점검의 부산물).
               #   이것들은 **제품의** 판정 축을 끄는 스위치다(마스터·강등·축·주입 가드). 운영자
               #   셸에 하나라도 켜져 있으면 검체가 띄우는 훅·부트가 **가드가 꺼진 제품**을 재고,
@@ -426,8 +430,10 @@ def _rb_sandbox(tmp, *, boot_body=None, surface=True, mock_py=None, pack_has_boo
         _w(os.path.join(pack, "bin", "javis_bootstrap.py"),
            boot_body if boot_body is not None else "print('MOCK-BOOT')\n", 0o644)
     _mock_cys(bindir, tmp, 'case "$1" in surface-role) echo ""; exit 0;; esac')
+    mock_py_path = None
     if mock_py:
-        _w(os.path.join(bindir, "python3"), mock_py)
+        mock_py_path = os.path.join(bindir, "python3")
+        _w(mock_py_path, mock_py)
     # ★CYS_STATE_DIR 명시 핀(2026-08-10 Windows 실기 run 31403557039 근저원인): 종전엔 HOME 만
     #   덮어 상태를 격리했는데, **ntpath.expanduser 는 env HOME 을 무시**하고 USERPROFILE 을
     #   쓴다(javis_bootstrap.HOME=expanduser("~")). 그래서 Windows 에서는 env 미설정 네이티브
@@ -439,6 +445,14 @@ def _rb_sandbox(tmp, *, boot_body=None, surface=True, mock_py=None, pack_has_boo
     #   기존값을 보존하므로 훅 경유·직접 실행 어느 쪽도 같은 경로를 본다.
     env = _base_env({"HOME": home, "CYS_PACK_DIR": pack, "CYS_STATE_DIR": state,
                      "PATH": bindir + os.pathsep + os.environ.get("PATH", "")})
+    # ★목 인터프리터는 PATH 만으로는 더 이상 고정되지 않는다(cysr-102-pack-c): 훅 프리루드가
+    #   맥에서 **앱 번들 동봉 파이썬을 PATH 후보보다 먼저** 고르기 때문이다(개발자 도구 없는 맥의
+    #   /usr/bin/python3 스텁 배제 수리). 러너를 돌리는 맥에 앱이 설치돼 있으면 목이 통째로
+    #   비껴가 H-DETECT-10(pre-exec 사망 목)이 거짓 적색이 된다 — 실측 확인.
+    #   → 목을 쓰는 검체는 `CYS_PY` 로 **명시 지정**한다(해소 순서 ⓐ = 지정값 존중 · 신·구 해소기
+    #   모두 같은 규약이라 계측기 자기검증(구 코드 재현)도 그대로 성립한다).
+    if mock_py_path:
+        env["CYS_PY"] = mock_py_path
     if surface:
         env["CYS_SURFACE_ID"] = "7"
     if mission:

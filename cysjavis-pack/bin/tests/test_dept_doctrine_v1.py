@@ -250,11 +250,12 @@ class DeptTicketGate(unittest.TestCase):
         self.assertEqual((data.get("result") or {}).get("failed_step"), "resource-gate")
         self.assertNotIn("④boot", _steps(data), "hard-block 후에도 팀 기동으로 진행")
         self.assertIn("④′resource-gate-notify", _steps(data), "CEO escalation 알림 흔적 부재")
-        # cysr-102 A2: 즉시 확정이 아니라 최초 1 + 재측정 6 = 게이트 측정 7회 뒤 exit 9
+        # cysr-102 A2 r2: servers hard 는 기다려도 안 풀리는 사유 — 재측정 0 · 게이트 측정 1회 뒤 즉시 exit 9
+        #   (load 트립만 30s×6 재측정 — 그 축은 test_resource_gate_notify_rule ⑧⑨⑪ 가 잰다)
         self.assertEqual([s for s in _steps(data) if s.startswith("④′resource-gate")
                           and not s.startswith("④′resource-gate-")],
-                         ["④′resource-gate"] + ["④′resource-gate#%d" % i for i in range(2, 8)],
-                         "hard 재측정 회수 ≠ 6(유계 재측정 미발동 또는 상한 이탈)")
+                         ["④′resource-gate"],
+                         "비-load hard 인데 재측정 발생(escalation 지연)")
         self.assertFalse(any(line.split()[0:1] == ["boot"] for line in open(self.cys_log)),
                          "hard-block인데 cys boot 호출됨")
 

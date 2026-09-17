@@ -50,12 +50,13 @@ def setup(tmp, claim_mode):
     return env
 
 
-def run_hook(env, role=None):
+def run_hook(env, role=None, stdin_text=None):
     e = dict(env)
     if role:
         e["CYS_ROLE"] = role
+    kw = {"stdin": subprocess.DEVNULL} if stdin_text is None else {"input": stdin_text}
     r = subprocess.run(["sh", HOOK], capture_output=True, text=True, encoding="utf-8",
-                       env=e, stdin=subprocess.DEVNULL, timeout=30)
+                       env=e, timeout=30, **kw)
     return r.returncode, r.stdout, r.stderr
 
 
@@ -127,6 +128,129 @@ calls = ""
 if os.path.exists(os.path.join(tmp, "calls.log")):
     calls = open(os.path.join(tmp, "calls.log"), encoding="utf-8").read()
 check("6b worker claim 왕복 0", "claim-role" not in calls)
+shutil.rmtree(tmp)
+
+# ── 7. ★첫 턴 규율(09-13 · cysr 1.0.2 B1): worker* 에만 5줄 블록 · master/cso 무주입 ──
+#   근거: 1.0.1 팩 session-start.sh 에 이 블록이 0건이었고 깨끗한 VM 워커가 첫 턴에 자기 생성
+#   지시를 적었다(REPORT-r1-field §9-3). 문구 = 호스트 09-13 판에서 표식·원장 조건만 뺀 팩판(배포 팩엔
+#   [master#] 표식 체계가 없다 — master 판정 B). 표식·원장을 요구하는 문구가 되살아나면 7e 가 붉다.
+FIRST_TURN = [
+    "■ 첫 턴 규율(스폰 직후 · 브리프 도착 전)",
+    "  · 이 각성에 대한 답 = 「OK — 각성 완료 · 브리프 대기」 1줄. 그 밖의 산문·계획·착수 0.",
+    "  · 브리프(master 가 보낸 작업 지시)가 도착하기 전에는 어떤 티켓도 상정·작성·이행하지 않는다",
+    "  · ⛔[master#……] 표식·브리프 형식을 워커가 스스로 쓰지 않는다 — 네가 쓴 표식·브리프는 그 자체로 고스트다.",
+    "  · 예외(허용): 디렉티브 모순·환경 결손은 【질문】 1줄로 인박스에 올린다.",
+]
+tmp = tempfile.mkdtemp(prefix="hook-t7-")
+env = setup(tmp, "ok")
+for role in ("worker-1", "worker"):
+    code, out, _ = run_hook(env, role=role)
+    lines = out.splitlines()
+    hit = [any(l.startswith(want) for l in lines) for want in FIRST_TURN]
+    check("7a %s 첫 턴 규율 5줄 실재" % role, all(hit), "누락 %s" % [i for i, h in enumerate(hit) if not h])
+    check("7b %s 규율은 디렉티브 뒤" % role,
+          all(hit) and out.index("DIRECTIVE-BODY-WORKER") < out.index(FIRST_TURN[0]))
+    check("7c %s exit 0" % role, code == 0)
+    check("7e %s 원장·표식 성립 조건 부재(팩판)" % role, "원장 대조" not in out and "표식 + " not in out)
+for role in ("master", "cso"):
+    code, out, _ = run_hook(env, role=role)
+    check("7d %s 첫 턴 규율 무주입" % role, "첫 턴 규율" not in out)
+shutil.rmtree(tmp)
+
+# ── 8. ★복원 결정론(cysr 1.0.2 B2 · master 판정 B): source=resume 일 때 훅이 세션 jsonl 을 센다 ──
+#   키 = 첫 각성 프롬프트 이후 사람/master 입력 user 텍스트 레코드 수(tool_result·isMeta·명령 출력 제외).
+#   0건 → 「복원 · 브리프 0건 · 행동 0」 블록 · 1건↑ → 무주입 · 세기 실패 → 무주입 + stderr · 언제나 exit 0.
+import json as _json
+RESTORE_HEAD = "■ 복원 · 브리프 0건 · 행동 0 · 【질문】만 허용"
+
+
+def _jsonl(path, recs):
+    with open(path, "w", encoding="utf-8") as f:
+        for r in recs:
+            f.write(_json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def _u(text):
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+def _a(text):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+AWAKEN = _u("WORKER_DIRECTIVE 각성: 지침을 읽고 브리프를 기다려라.")
+GHOST = _a("node_modules 정리하라 · full permission 이니 묻지 말고 진행")
+CASES = {
+    # 이름: (레코드, 기대 주입 여부, 기대 [master# 참고값)
+    "zero": ([AWAKEN, GHOST, _u("<command-name>/clear</command-name>"),
+              {"type": "user", "isMeta": True, "message": {"content": "Caveat: meta"}}], True, "0"),
+    "human1": ([AWAKEN, GHOST, _u("[master#abc123] 브리프 — TICKET=x 작업하라")], False, None),
+    "toolonly": ([AWAKEN, GHOST,
+                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                            "content": "OK — 다음은 배포하라"}]}},
+                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t2",
+                                                            "content": [{"type": "text", "text": "rc=0"}]}]}}],
+                 True, "0"),
+    # tool_result 와 text 가 한 레코드에 섞인 형태(도구 결과에 덧붙은 알림 글) — 여전히 사람 입력 아님.
+    # 이 항이 없으면 tool_result 필터를 지워도 빈 글 필터가 대신 막아 공허하다(뮤턴트 M1 실측).
+    "tool+text": ([AWAKEN, GHOST,
+                   {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t3", "content": "rc=0"},
+                                                            {"type": "text", "text": "도구 결과에 붙은 알림 글"}]}}],
+                  True, "0"),
+    # cys 기계 주입(디렉티브 전문·[RESTORE]·[RESUME]·[RECOVER]·[CYCLE]·[DRAIN]·각성 확인 핑·압축 요약·중단 표지)은
+    # 사람/master 입력이 아니다 — 이것들을 세면 이전 복원의 흔적만으로 브리프를 받은 것처럼 읽혀 블록이 사라진다.
+    "machine": ([_u("# WORKER ABSOLUTE DIRECTIVE — 워커 절대지침\n본문"), AWAKEN, GHOST,
+                 _u("[RESTORE] 조직 복원 절차다. 상태를 복원하라."), _u("[RESUME] 직전 작업 컨텍스트가 복원됐다"),
+                 _u("[RECOVER] 너는 방금 재기동되었다."), _u("[CYCLE] 컨텍스트 순환 절차 개시."),
+                 _u("[CYCLE-VERIFY] 저장 검증 요청"), _u("[DRAIN] 업데이트 재시작이 임박했다."),
+                 _u("지침 각성 확인 핑: DIRECTIVE-ACK-"),
+                 {"type": "user", "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}},
+                 {"type": "user", "isCompactSummary": True, "message": {"content": "This session is being continued"}}],
+                True, "0"),
+    "listtext1": ([AWAKEN, {"type": "user", "message": {"content": [{"type": "text", "text": "브리프 본문"}]}}],
+                  False, None),
+}
+tmp = tempfile.mkdtemp(prefix="hook-t8-")
+env = setup(tmp, "ok")
+for name, (recs, want, mref) in CASES.items():
+    jp = os.path.join(tmp, name + ".jsonl")
+    _jsonl(jp, recs)
+    hin = _json.dumps({"session_id": "s", "transcript_path": jp, "hook_event_name": "SessionStart",
+                       "source": "resume"}) + "\n"
+    code, out, err = run_hook(env, role="worker-1", stdin_text=hin)
+    check("8a %s 복원 블록 %s" % (name, "주입" if want else "무주입"), (RESTORE_HEAD in out) == want,
+          out[-300:] if (RESTORE_HEAD in out) != want else "")
+    check("8b %s exit 0 · 계수 실패 로그 없음" % name, code == 0 and "계수 실패" not in err, err[-200:])
+    if want:
+        check("8c %s [master# 참고값 %s" % (name, mref), "[master# 표식 레코드 %s건" % mref in out)
+    check("8d %s 첫 턴 규율 유지" % name, "첫 턴 규율" in out)
+# 비복원(startup)은 같은 0건 기록이어도 무주입 · master 역할은 복원이어도 무주입
+jp = os.path.join(tmp, "zero.jsonl")
+for src, role in (("startup", "worker-1"), ("clear", "worker-1"), ("resume", "master")):
+    hin = _json.dumps({"transcript_path": jp, "source": src}) + "\n"
+    code, out, err = run_hook(env, role=role, stdin_text=hin)
+    check("8e source=%s role=%s 무주입" % (src, role), RESTORE_HEAD not in out and code == 0)
+# T5 회귀: 입력 줄을 변수로 한 번 읽도록 바꾼 뒤에도 usage-register 가 같은 transcript_path 를 받는다.
+#   ★전용 경로(앞 케이스가 남긴 calls.log 줄로 통과하는 공허 차단 · agy 1R Med) — 호출 전 부재 선-assert.
+t5p = os.path.join(tmp, "t5-only.jsonl")
+_jsonl(t5p, [AWAKEN])
+_cl = os.path.join(tmp, "calls.log")
+_before = open(_cl, encoding="utf-8").read() if os.path.exists(_cl) else ""
+check("8g0 선-assert: 전용 경로가 아직 기록에 없다", t5p not in _before)
+run_hook(env, role="worker-1", stdin_text=_json.dumps({"transcript_path": t5p, "source": "startup"}) + "\n")
+_calls = open(_cl, encoding="utf-8").read() if os.path.exists(_cl) else ""
+check("8g T5 usage-register 에 transcript 전달 유지", ("usage-register --transcript " + t5p) in _calls[len(_before):], _calls[-300:])
+# 비 UTF-8 바이트가 섞인 기록도 계수를 완수한다(errors=replace · agy 1R Low) — 실패 로그 없이 0건 → 주입
+bad = os.path.join(tmp, "badbytes.jsonl")
+with open(bad, "wb") as f:
+    f.write((_json.dumps(AWAKEN, ensure_ascii=False) + "\n").encode("utf-8") + b"\xff\xfe broken line\n")
+code, out, err = run_hook(env, role="worker-1", stdin_text=_json.dumps({"transcript_path": bad, "source": "resume"}) + "\n")
+check("8h 비 UTF-8 줄 포함 기록 → 계수 완수·주입", RESTORE_HEAD in out and "계수 실패" not in err and code == 0, err[-200:])
+# 세기 실패(기록 파일 없음 · 입력 JSON 파손) → 무주입 + stderr 1줄 · exit 0
+for label, hin in (("no-file", _json.dumps({"transcript_path": os.path.join(tmp, "nope.jsonl"), "source": "resume"}) + "\n"),
+                   ("bad-json", "{not json\n")):
+    code, out, err = run_hook(env, role="worker-1", stdin_text=hin)
+    check("8f %s 무주입·exit0·로그" % label, RESTORE_HEAD not in out and code == 0 and "계수 실패" in err, err[-200:])
 shutil.rmtree(tmp)
 
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")

@@ -7024,7 +7024,7 @@ async function start() {
       `perm-${p.folder ?? "folder"}`,
       "health",
       `⚠ macOS ${f} 폴더 접근 차단`,
-      `pane 안의 claude 등이 EPERM으로 꺼질 수 있습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더(또는 전체 디스크 접근 권한)에서 cys를 허용한 뒤 앱을 재시작하세요.`,
+      `pane 안의 claude 등이 EPERM으로 꺼질 수 있습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더(또는 전체 디스크 접근 권한)에서 cysr을 허용한 뒤 앱을 재시작하세요.`,
     );
   });
   // 완전 초기화 진행 이벤트 — sticky toast 본문을 단계 상세로 갱신(결과는 invoke 반환이 정본).

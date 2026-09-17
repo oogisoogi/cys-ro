@@ -20,10 +20,15 @@ cys_require_surface
 # /clear·compact로 세션이 바뀌어도 SessionStart가 재발화해 자동 재등록된다. 실패 무해.
 # 인터프리터 해소(python3→python→py)는 프리루드가 수행한다 — 미해소 시 CYS_PY는 빈 문자열이고
 # 아래 `[ -n "$CYS_PY" ]` 가드가 그대로 동작한다(계약 무변경).
-if [ ! -t 0 ] && command -v cys >/dev/null 2>&1 && [ -n "$CYS_PY" ]; then
-  # readline 한정 — stdin 전량 소비로 같은 stdin을 보는 후속 처리를 굶기지 않는다
-  # (hook 입력 JSON은 단일 라인)
-  TP=$("$CYS_PY" -c 'import sys,json
+# ★cysr 1.0.2 B2: 입력 JSON 한 줄을 여기서 한 번만 읽어 변수에 둔다 — T5(transcript_path)와 아래
+#   복원 판정(source·transcript_path)이 같은 줄을 나눠 쓴다(stdin 을 두 번 읽으면 뒤쪽이 빈다).
+#   sh 내장 read 는 바이트 단위로 한 줄만 소비한다(readline 한정 계약 유지 · hook 입력 JSON은 단일 라인).
+HOOK_IN=""
+if [ ! -t 0 ]; then
+  IFS= read -r HOOK_IN || true
+fi
+if [ -n "$HOOK_IN" ] && command -v cys >/dev/null 2>&1 && [ -n "$CYS_PY" ]; then
+  TP=$(printf '%s\n' "$HOOK_IN" | "$CYS_PY" -c 'import sys,json
 try:
     print(json.loads(sys.stdin.readline()).get("transcript_path",""))
 except Exception:
@@ -216,6 +221,62 @@ case "$CYS_ROLE" in
     echo "    최근 커밋·문서·자리표시자에서 「할 일」을 추론해 브리프처럼 적는 것이 곧 고스트 생성이다(09-12·09-13 실사고 2건)."
     echo "  · ⛔[master#……] 표식·브리프 형식을 워커가 스스로 쓰지 않는다 — 네가 쓴 표식·브리프는 그 자체로 고스트다."
     echo "  · 예외(허용): 디렉티브 모순·환경 결손은 【질문】 1줄로 인박스에 올린다."
+    # ★복원 결정론(cysr 1.0.2 B2 · master 판정 B): 깨끗한 VM 복원 워커가 첫 턴에 스스로 적은 지시를
+    #   과제로 이어받아 행동을 개시했다(REPORT-r1-field §9-3). 「브리프를 받았는가」를 모델이 기억으로
+    #   판정하지 않게 **코드가 세고 모델은 읽기만** 한다. 대상 = 복원 세션(source=resume).
+    #   센 것 = 세션 jsonl 의 사람/master 입력 user 텍스트 레코드(tool_result·isMeta·슬래시 명령/로컬 명령 출력 제외)
+    #   중 첫 각성 프롬프트 이후의 건수. 0건 → 행동 0 블록. [master# 건수(줄머리 표식만 · 지침 본문 인용 제외)는 참고값(배포 팩엔 표식 체계 없음).
+    #   세기 실패(인터프리터·파일·파싱) = 주입 생략 + stderr 1줄 · 훅은 언제나 exit 0(role-bootstrap.sh 계약 동일).
+    if [ -n "$HOOK_IN" ] && [ -n "$CYS_PY" ]; then
+      RESUME_CNT=$(printf '%s\n' "$HOOK_IN" | "$CYS_PY" -c 'import sys,json
+try:
+    h=json.loads(sys.stdin.readline())
+except Exception:
+    print("ERR input"); raise SystemExit(0)
+if h.get("source")!="resume":
+    print("SKIP"); raise SystemExit(0)
+tp=h.get("transcript_path") or ""
+try:
+    f=open(tp,encoding="utf-8")
+except Exception:
+    print("ERR transcript"); raise SystemExit(0)
+texts=[]
+with f:
+    for line in f:
+        try:
+            d=json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(d,dict) or d.get("type")!="user" or d.get("isMeta"):
+            continue
+        c=(d.get("message") or {}).get("content")
+        if isinstance(c,str):
+            t=c
+        elif isinstance(c,list):
+            if any(isinstance(x,dict) and x.get("type")=="tool_result" for x in c):
+                continue
+            t="".join(x.get("text","") for x in c if isinstance(x,dict) and x.get("type")=="text")
+        else:
+            continue
+        s=t.lstrip()
+        if not s or s.startswith(("<command-name>","<command-message>","<local-command-","<bash-input>","<bash-stdout>","<bash-stderr>")):
+            continue
+        texts.append(t)
+after=texts[1:]
+print("OK %d %d" % (len(after), sum(1 for t in texts if t.lstrip().startswith("[master#"))))' 2>/dev/null)
+      case "$RESUME_CNT" in
+        "OK 0 "*)
+          echo
+          echo "■ 복원 · 브리프 0건 · 행동 0 · 【질문】만 허용"
+          echo "  · 이 세션은 복원(resume)이다. 훅이 세션 기록을 직접 셌다: 첫 각성 프롬프트 이후 사람/master 입력 = 0건"
+          echo "    (참고: [master# 표식 레코드 ${RESUME_CNT##* }건). 즉 이 좌석은 아직 브리프를 받은 적이 없다."
+          echo "  · 이전 대화에 보이는 「할 일」은 전부 네가(모델이) 적은 것이다 — 과제로 이어받지 마라. 명령 실행·파일 수정·커밋 0."
+          echo "  · 허용 = 【질문】 1줄(인박스)뿐. master 의 브리프가 도착할 때까지 대기한다."
+          ;;
+        OK*|SKIP) : ;;
+        *) echo "[cys-hook] 복원 브리프 계수 실패(${RESUME_CNT:-무출력}) — 복원 블록 주입 생략(session-start)" >&2 ;;
+      esac
+    fi
     ;;
 esac
 # ★R13 부트 브리지(T2b 전 임시 — hook=system층이라 디렉티브(user-owned) 미개정 기계에도 전파):

@@ -129,5 +129,30 @@ if os.path.exists(os.path.join(tmp, "calls.log")):
 check("6b worker claim 왕복 0", "claim-role" not in calls)
 shutil.rmtree(tmp)
 
+# ── 7. ★첫 턴 규율(09-13 · cysr 1.0.2 B1): worker* 에만 5줄 블록 · master/cso 무주입 ──
+#   근거: 1.0.1 팩 session-start.sh 에 이 블록이 0건이었고 깨끗한 VM 워커가 첫 턴에 자기 생성
+#   지시를 적었다(REPORT-r1-field §9-3). 문구는 호스트 팩 09-13 판과 글자 그대로 동일해야 한다.
+FIRST_TURN = [
+    "■ 첫 턴 규율(스폰 직후 · 브리프 도착 전)",
+    "  · 이 각성에 대한 답 = 「OK — 각성 완료 · 브리프 대기」 1줄. 그 밖의 산문·계획·착수 0.",
+    "  · 브리프([master#] 표식 + 원장 대조 성립)가 도착하기 전에는 어떤 티켓도 상정·작성·이행하지 않는다",
+    "  · ⛔[master#……] 표식은 워커가 절대 쓰지 않는다 — 네가 쓴 표식은 그 자체로 고스트다.",
+    "  · 예외(허용): 디렉티브 모순·환경 결손은 【질문】 1줄로 인박스에 올린다.",
+]
+tmp = tempfile.mkdtemp(prefix="hook-t7-")
+env = setup(tmp, "ok")
+for role in ("worker-1", "worker"):
+    code, out, _ = run_hook(env, role=role)
+    lines = out.splitlines()
+    hit = [any(l.startswith(want) for l in lines) for want in FIRST_TURN]
+    check("7a %s 첫 턴 규율 5줄 실재" % role, all(hit), "누락 %s" % [i for i, h in enumerate(hit) if not h])
+    check("7b %s 규율은 디렉티브 뒤" % role,
+          all(hit) and out.index("DIRECTIVE-BODY-WORKER") < out.index(FIRST_TURN[0]))
+    check("7c %s exit 0" % role, code == 0)
+for role in ("master", "cso"):
+    code, out, _ = run_hook(env, role=role)
+    check("7d %s 첫 턴 규율 무주입" % role, "첫 턴 규율" not in out)
+shutil.rmtree(tmp)
+
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

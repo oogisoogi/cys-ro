@@ -224,7 +224,8 @@ case "$CYS_ROLE" in
     # ★복원 결정론(cysr 1.0.2 B2 · master 판정 B): 깨끗한 VM 복원 워커가 첫 턴에 스스로 적은 지시를
     #   과제로 이어받아 행동을 개시했다(REPORT-r1-field §9-3). 「브리프를 받았는가」를 모델이 기억으로
     #   판정하지 않게 **코드가 세고 모델은 읽기만** 한다. 대상 = 복원 세션(source=resume).
-    #   센 것 = 세션 jsonl 의 사람/master 입력 user 텍스트 레코드(tool_result·isMeta·슬래시 명령/로컬 명령 출력 제외)
+    #   센 것 = 세션 jsonl 의 사람/master 입력 user 텍스트 레코드(tool_result·isMeta·압축 요약·슬래시 명령/로컬 명령 출력·
+#   cys 기계 주입 문구([RESUME]·[RESTORE]·[RECOVER]·[CYCLE]·[DRAIN]·각성 확인 핑)·디렉티브 전문·사용자 중단 표지 제외)
     #   중 첫 각성 프롬프트 이후의 건수. 0건 → 행동 0 블록. [master# 건수(줄머리 표식만 · 지침 본문 인용 제외)는 참고값(배포 팩엔 표식 체계 없음).
     #   세기 실패(인터프리터·파일·파싱) = 주입 생략 + stderr 1줄 · 훅은 언제나 exit 0(role-bootstrap.sh 계약 동일).
     if [ -n "$HOOK_IN" ] && [ -n "$CYS_PY" ]; then
@@ -247,7 +248,7 @@ with f:
             d=json.loads(line)
         except Exception:
             continue
-        if not isinstance(d,dict) or d.get("type")!="user" or d.get("isMeta"):
+        if not isinstance(d,dict) or d.get("type")!="user" or d.get("isMeta") or d.get("isCompactSummary"):
             continue
         c=(d.get("message") or {}).get("content")
         if isinstance(c,str):
@@ -260,6 +261,11 @@ with f:
             continue
         s=t.lstrip()
         if not s or s.startswith(("<command-name>","<command-message>","<local-command-","<bash-input>","<bash-stdout>","<bash-stderr>")):
+            continue
+        # cys 가 user 입력으로 주입하는 기계 문구(src/bin/cys.rs inject_text 호출부 실측) + 디렉티브 전문 + 사용자 중단 표지
+        if s.startswith(("[RESUME]","[RESTORE]","[RECOVER]","[CYCLE]","[CYCLE-VERIFY]","[DRAIN]","지침 각성 확인 핑","[Request interrupted by user")):
+            continue
+        if "ABSOLUTE DIRECTIVE" in s.split("\n",1)[0] and s.startswith("#"):
             continue
         texts.append(t)
 after=texts[1:]

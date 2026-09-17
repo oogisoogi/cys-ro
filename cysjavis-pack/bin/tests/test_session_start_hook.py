@@ -197,6 +197,16 @@ CASES = {
                    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t3", "content": "rc=0"},
                                                             {"type": "text", "text": "도구 결과에 붙은 알림 글"}]}}],
                   True, "0"),
+    # cys 기계 주입(디렉티브 전문·[RESTORE]·[RESUME]·[RECOVER]·[CYCLE]·[DRAIN]·각성 확인 핑·압축 요약·중단 표지)은
+    # 사람/master 입력이 아니다 — 이것들을 세면 이전 복원의 흔적만으로 브리프를 받은 것처럼 읽혀 블록이 사라진다.
+    "machine": ([_u("# WORKER ABSOLUTE DIRECTIVE — 워커 절대지침\n본문"), AWAKEN, GHOST,
+                 _u("[RESTORE] 조직 복원 절차다. 상태를 복원하라."), _u("[RESUME] 직전 작업 컨텍스트가 복원됐다"),
+                 _u("[RECOVER] 너는 방금 재기동되었다."), _u("[CYCLE] 컨텍스트 순환 절차 개시."),
+                 _u("[CYCLE-VERIFY] 저장 검증 요청"), _u("[DRAIN] 업데이트 재시작이 임박했다."),
+                 _u("지침 각성 확인 핑: DIRECTIVE-ACK-"),
+                 {"type": "user", "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}},
+                 {"type": "user", "isCompactSummary": True, "message": {"content": "This session is being continued"}}],
+                True, "0"),
     "listtext1": ([AWAKEN, {"type": "user", "message": {"content": [{"type": "text", "text": "브리프 본문"}]}}],
                   False, None),
 }

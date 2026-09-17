@@ -2377,13 +2377,41 @@ def _fatal_detail(bad, out):
     return "의무(Fatal) 역할 기동 실패: %s\n%s" % (detail, out)
 
 
-def _run_resource_gate(py, log):
-    """결손>0 확정 후의 자원 사전 게이트(호출부가 결손 0이면 이 함수를 호출하지 않는다).
-    반환: None=진행 / 9=hard-block(팀 기동 0·CEO escalation)."""
-    gate = os.path.join(PACK, "bin", "javis_resource_gate.py")
-    if not os.path.isfile(gate):
-        log.step(STEP.RESOURCE_GATE_ABSENT, 0, "결손>0이나 resource_gate 부재 — 게이트 생략(계속)")
-        return None
+# ★cysr-102 A2(2026-09-17): hard_block 을 한 번의 측정으로 확정하지 않는다 — 유계 재측정.
+#   load1 은 1분 지수평균이라 설치·첫 기동 직후의 일시 스파이크가 그대로 hard 로 읽힌다
+#   (run6 실측: load_ratio 3.11 → 5분 뒤 0.79 · 연수 실기 맥 09-17 자식 자리 240s 미형성 유력 원인).
+#   hard-block 이고 **hard 트립이 전부 load_ratio 일 때만**(master 판정 r2 · 2026-09-17) RESOURCE_GATE_RECHECK_S
+#   간격으로 최대 RESOURCE_GATE_RECHECKS 회 다시 잰다 — servers·nodes 등 기다려도 안 풀리는 사유나 load 와의
+#   복합이면 종전대로 즉시 차단(escalation 지연 0).
+#   그 사이 hard 가 아니게 되면 그 판정으로 진행하고, 끝까지 hard 면 종전 경로(exit 9·CEO escalation).
+#   상한 고정(무한 대기 0 · 최악 추가 대기 = 30s×6 = 180s). 게이트 스크립트·exit 계약 무접촉.
+RESOURCE_GATE_RECHECKS = 6
+RESOURCE_GATE_RECHECK_METRICS = ("load_ratio",)   # 시간이 지나면 풀리는 사유(1분 평균)만
+
+
+def _hard_is_transient_load(gate_json):
+    """순수 판정: hard 트립이 1개 이상이고 **전부** 재측정 대상 지표(load_ratio)인가. 복합·미상 = False."""
+    hard = [t for t in ((gate_json or {}).get("trips") or []) if isinstance(t, dict) and t.get("level") == "hard"]
+    return bool(hard) and all(t.get("metric") in RESOURCE_GATE_RECHECK_METRICS for t in hard)
+
+
+def _recheck_interval_s(raw, default=30.0):
+    """재측정 간격(초). env CYS_BOOT_RESOURCE_RECHECK_S 는 **간격만** 바꾼다(CYS_BOOT_CHECK_INTERVAL_S 선례 ·
+    subprocess 시험의 실 대기 제거용) — 회수 상한(RESOURCE_GATE_RECHECKS)은 env 로 못 바꾼다.
+    파싱 불가·음수·비유한 = 기본값(조용히 0 이 되어 재측정이 무의미해지는 것을 막는다)."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return v if 0 <= v < float("inf") else default
+
+
+RESOURCE_GATE_RECHECK_S = _recheck_interval_s(os.environ.get("CYS_BOOT_RESOURCE_RECHECK_S", "30"))
+_resource_gate_sleep = time.sleep   # 시험 주입점(실 대기 제거) — 운영 경로는 time.sleep
+
+
+def _measure_resource_gate(py, gate):
+    """게이트 1회 측정 → (code, verdict, why, out, gate_json). 부작용 = 게이트 subprocess(+exit 2 면 cys list)뿐."""
     # ★A13 잠복 경로 차단(착수 전 재검증 산물): 종전 호출은 `_run`(stdout+stderr **병합**)의
     #   병합 텍스트를 json.loads 에 넣었다. 게이트가 stderr 를 한 줄이라도 흘리는 날(파이썬 경고·
     #   미래 진단 로그) 파싱이 깨져 `gate_json=None` 이 되고, exit 2 + json None 은
@@ -2399,7 +2427,28 @@ def _run_resource_gate(py, log):
     live = _live_node_count() if code == 2 else None
     verdict, why = _resource_gate_decision(code, gate_json, live)
     out = (gout or "") + (("\n[stderr] " + gerr.strip()) if (gerr or "").strip() else "")
+    return code, verdict, why, out, gate_json
+
+
+def _run_resource_gate(py, log):
+    """결손>0 확정 후의 자원 사전 게이트(호출부가 결손 0이면 이 함수를 호출하지 않는다).
+    반환: None=진행 / 9=hard-block(재측정 RESOURCE_GATE_RECHECKS 회 뒤에도 hard · 팀 기동 0·CEO escalation)."""
+    gate = os.path.join(PACK, "bin", "javis_resource_gate.py")
+    if not os.path.isfile(gate):
+        log.step(STEP.RESOURCE_GATE_ABSENT, 0, "결손>0이나 resource_gate 부재 — 게이트 생략(계속)")
+        return None
+    code, verdict, why, out, gate_json = _measure_resource_gate(py, gate)
     log.step(STEP.RESOURCE_GATE, code, "결손>0 · verdict=%s · %s\n%s" % (verdict, why, out))
+    recheck = 0
+    while (verdict == "hard-block" and _hard_is_transient_load(gate_json)
+           and recheck < RESOURCE_GATE_RECHECKS):
+        recheck += 1
+        _progress("⏳ 자원 hard_block — %ds 뒤 재측정 %d/%d(load1 은 1분 평균 · 일시 스파이크 소멸 대기): %s"
+                  % (RESOURCE_GATE_RECHECK_S, recheck, RESOURCE_GATE_RECHECKS, why))
+        _resource_gate_sleep(RESOURCE_GATE_RECHECK_S)
+        code, verdict, why, out, gate_json = _measure_resource_gate(py, gate)
+        log.step(STEP.RESOURCE_GATE, code, "재측정 %d/%d · verdict=%s · %s\n%s"
+                 % (recheck, RESOURCE_GATE_RECHECKS, verdict, why, out), suffix="#%d" % (recheck + 1))
     if verdict in ("usage-error", "unknown-exit"):
         # ★조용한 allow 금지 — 측정 실패는 시끄럽게(loud) 남기고 진행한다(fail-open 제거).
         _progress("⚠ 자원 게이트 측정 실패(%s) — 자원 판정 없이 진행: %s" % (verdict, why))

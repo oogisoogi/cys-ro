@@ -18,6 +18,7 @@ Darwin/Linux 를 흉내 낸다. 실제 /usr/bin 은 PATH 에 넣지 않는다(�
   ⓕ 비맥: 해소 결과가 수정 전 해소기(base 판 원문)와 문자열까지 같다(번들·스텁 판정 무관)
   ⓖ guard.sh: 스텁만 있으면 STRICT deny·LOOSE 백스톱(종전 스텁-크래시와 같은 결말) · 번들 있으면 파서 판정
   ⓗ actprobe-kill-gate.sh: 스텁만 있으면 fail-open WARN(exit 0)
+  ⓙ agy 1R 봉합: PATH 항목 끝 슬래시(이중 슬래시 경로) · IFS 설정여부 복원 · set -f 복원
   ⓘ git 도 같은 판별(r2): _lib cys_have_git · 부트 경로 훅(vibe-doc-sync·50-state-ledger) ·
      javis_preflight.usable_git — 스텁은 부재로 접고 **실행 0회**, 스텁 뒤의 진짜 git 은 찾는다
 뮤테이션 검산: PYRES_HOOKS_DIR 로 훅 폴더를 바꿔 끼워 변이 사본을 잰다(하네스는 이 파일 그대로).
@@ -460,6 +461,38 @@ def main():
         real_git = b.fake_py(os.path.join(b.t, "rg", "git"), "REALGIT")
         r = run_ledger(b, [os.path.join(b.root, "usr", "bin"), os.path.dirname(real_git)])
         check("c14b 대조군: 진짜 git 은 그대로 호출된다", "REALGIT" in b.executed(), repr(b.executed()))
+    finally:
+        b.close()
+
+    # ── 케이스 15: agy 1R 지적 봉합 — PATH 항목 끝 슬래시 · IFS 설정여부 복원 ──
+    b = Box()
+    try:
+        brew = b.fake_py(os.path.join(b.t, "brew", "bin", "python3"), "BREW")
+        # PATH 항목이 슬래시로 끝나면 후보가 `/usr/bin//python3` 가 된다 — 정규화 전에는 스텁 판정이 비껴갔다
+        py, rc, pybin, r = resolve(b, [os.path.join(b.root, "usr", "bin") + "/", os.path.dirname(brew)])
+        check("c15a PATH 끝 슬래시에서도 스텁 배제", py == brew, "py=%r" % py)
+        check("c15a 스텁 미실행", b.executed() == [], repr(b.executed()))
+        # 술어 직접 호출 — 이중 슬래시·하위 디렉터리
+        script = (". '%s'\n"
+                  "cys_is_clt_stub '%s/usr/bin//python3' && echo DOUBLE=stub || echo DOUBLE=notstub\n"
+                  "cys_is_clt_stub '%s/usr/bin/sub/python3' && echo SUB=stub || echo SUB=notstub\n"
+                  % (LIB, b.root, b.root))
+        r2 = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                            env=b.env([]), timeout=30)
+        check("c15b 이중 슬래시 경로도 스텁으로 판정", "DOUBLE=stub" in r2.stdout, repr(r2.stdout))
+        check("c15b 하위 디렉터리 python3 는 스텁 아님(과탐 방지)", "SUB=notstub" in r2.stdout, repr(r2.stdout))
+        # IFS 는 「값」이 아니라 「설정 여부」까지 복원돼야 한다(미설정을 빈 값으로 만들면 단어분리가 꺼진다)
+        script = (". '%s'\n"
+                  "unset IFS; _cys_path_scan ls >/dev/null 2>&1; "
+                  "if [ \"${IFS+set}\" = set ]; then echo UNSET=broken; else echo UNSET=ok; fi\n"
+                  "IFS=X; _cys_path_scan ls >/dev/null 2>&1; [ \"$IFS\" = X ] && echo VAL=ok || echo VAL=broken\n"
+                  "set +f; _cys_path_scan ls >/dev/null 2>&1; case \"$-\" in *f*) echo GLOB=broken;; *) echo GLOB=ok;; esac\n"
+                  % LIB)
+        r3 = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                            env=b.env([b.toolbin()]), timeout=30)
+        check("c15c 미설정 IFS 는 미설정으로 복원", "UNSET=ok" in r3.stdout, repr(r3.stdout))
+        check("c15c 설정된 IFS 값 보존", "VAL=ok" in r3.stdout, repr(r3.stdout))
+        check("c15c set -f 상태 보존(원래 꺼져 있었으면 꺼진 채로)", "GLOB=ok" in r3.stdout, repr(r3.stdout))
     finally:
         b.close()
 

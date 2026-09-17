@@ -152,11 +152,27 @@ _cys_is_darwin() {
 # 판별기(xcode-select) 자체가 없으면 스텁으로 본다 — 모르는 쪽을 실행하지 않는 방향이 안전측이다.
 cys_is_clt_stub() {
   _cys_sr="${CYS_TEST_SYSROOT:-}"
-  case "${1:-}" in
+  # ★경로 정규화 선행(agy 1R 지적 1 · 2026-09-18): PATH 항목이 `/usr/bin/` 처럼 슬래시로 끝나면
+  #   후보가 `/usr/bin//python3` 가 되고, 접두를 떼면 `/python3` 가 남아 「하위 디렉터리」로 읽혀
+  #   스텁 판정이 통째로 비껴간다(실측 재현). 중복 슬래시를 접고 끝 슬래시를 떼고 본다.
+  _cys_sp="${1:-}"
+  while :; do
+    case "$_cys_sp" in
+      *//*) _cys_sp="${_cys_sp%%//*}/${_cys_sp#*//}" ;;
+      *) break ;;
+    esac
+  done
+  while :; do
+    case "$_cys_sp" in
+      */) _cys_sp="${_cys_sp%/}" ;;
+      *) break ;;
+    esac
+  done
+  case "$_cys_sp" in
     "$_cys_sr/usr/bin/"*) ;;
     *) return 1 ;;
   esac
-  case "${1#"$_cys_sr/usr/bin/"}" in
+  case "${_cys_sp#"$_cys_sr/usr/bin/"}" in
     */*|"") return 1 ;;
   esac
   _cys_is_darwin || return 1
@@ -196,10 +212,20 @@ _cys_bundle_py() {
   return 1
 }
 
+# _cys_path_scan 이 바꾼 셸 상태(IFS·set -f)를 원래대로 — 미설정이던 IFS 는 unset 으로 되돌린다.
+_cys_restore_scan_state() {
+  if [ "${_cys_ifs_set:-0}" = 1 ]; then IFS="$_cys_ifs"; else unset IFS; fi
+  [ "${_cys_nof:-0}" = 1 ] || set +f
+}
+
 # 맥 PATH 주사 — 이름 하나를 PATH 순서로 찾되 스텁은 건너뛰고 뒤 후보를 계속 본다
 # (`command -v` 는 첫 일치 하나만 알려 줘 스텁 뒤에 있는 진짜 도구를 못 본다).
 _cys_path_scan() {
-  _cys_ifs="$IFS"
+  # ★IFS 복원은 「값」이 아니라 「설정 여부」까지 되돌린다(agy 1R 지적 2): 미설정 IFS 를 빈 문자열로
+  #   복원하면 단어 분리가 통째로 꺼진다. 지금은 호출이 전부 $(...) 서브셸이라 새지 않지만,
+  #   공용 프리루드 함수는 다른 훅이 직접 부를 수 있으므로 여기서 닫는다.
+  _cys_ifs_set=0
+  [ "${IFS+set}" = set ] && { _cys_ifs_set=1; _cys_ifs="$IFS"; }
   case "$-" in *f*) _cys_nof=1 ;; *) _cys_nof=0; set -f ;; esac
   IFS=:
   for _cys_dir in ${PATH:-}; do
@@ -207,11 +233,11 @@ _cys_path_scan() {
     _cys_c="$_cys_dir/${1:-}"
     [ -f "$_cys_c" ] && [ -x "$_cys_c" ] || continue
     cys_is_clt_stub "$_cys_c" && continue
-    IFS="$_cys_ifs"; [ "$_cys_nof" = 1 ] || set +f
+    _cys_restore_scan_state
     printf '%s' "$_cys_c"
     return 0
   done
-  IFS="$_cys_ifs"; [ "$_cys_nof" = 1 ] || set +f
+  _cys_restore_scan_state
   return 1
 }
 

@@ -1015,6 +1015,107 @@ for _n in [n for n in dir(TestReviewR1) if n.startswith("test_")]:
     setattr(TestReviewR2, _n, None)
 
 
+class TestReviewA12c(Base):
+    """A1-2c · VERIFY-dept-impl-r1.md 「수정 필수 표」 #1~#4 (뮤턴트는 43→46, #3 은 시험만)."""
+
+    def test_a1_2c_1_schema_mismatch_registry_holds_destruction(self):
+        """#1: depts.json 이 파싱은 되지만 스키마가 어긋난 경우(리스트)도 RegistryUnreadable —
+        F12(test_f12_unreadable_registry_holds_destruction)는 JSON 파싱 실패(잘린 파일)만 잰다.
+        같은 처리(지우기·원장 이동 보류)를 스키마 불일치 분기(:266)로 따로 잰다."""
+        rid = self.proposed_confirmed()
+        s2 = os.path.join(self.home, ".local/state/cys-dept-dept-2/cys.sock")
+        import javis_formation as jf
+        fd = os.path.join(os.environ["CYS_STATE_DIR"], "formation")
+        os.makedirs(fd, exist_ok=True)
+        led = os.path.join(fd, jf._sanitize_key(s2) + ".json")
+        json.dump({"state": "complete", "socket": s2}, open(led, "w"))
+        json.dump({"depts": []}, open(os.environ["CYS_DEPTS_JSON"], "w"))   # 파싱은 되나 스키마 불일치(list)
+        with self.assertRaises(self.m.RegistryUnreadable, msg="이 시험이 실제로 스키마 분기를 때리는지 먼저 확인"):
+            self.m.registry()
+        self.assertEqual(self.tick(), 0)
+        self.assertTrue(os.path.exists(led), "스키마 불일치를 「부서 없음」으로 읽고 원장을 옮겼다")
+        self.assertEqual(self.req(rid)["state"], "confirmed", "스키마 불일치 위에서 생성을 집행했다")
+
+    def test_a1_2c_2_discard_refuses_when_dept_exists(self):
+        """#2: 가동 부서가 있는 create 요청은 discard 로 지울 수 없다 —
+        exit 7 exists ∧ 카탈로그·미션·CLAUDE.md 불변(파괴 방지 게이트 :960 의 시험 0건을 메운다)."""
+        rid = self.proposed_confirmed()
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["state"], "created")
+        cat_before = open(os.environ["CYS_DEPT_CATALOG"], "rb").read()
+        mf = os.path.join(os.environ["CYS_DEPT_MISSIONS"], r["key"] + ".md")
+        self.assertTrue(os.path.exists(mf), "생성이 미션 파일을 남기지 않았다 — 전제 확인")
+        mission_before = open(mf, "rb").read()
+        cm = os.path.join(r["cwd"], "CLAUDE.md")
+        md_before = open(cm, "rb").read()
+        rc, o = self.run_cmd("discard", rid)
+        self.assertEqual(rc, 7, o)
+        self.assertEqual(o.get("reason"), "exists")
+        self.assertEqual(self.req(rid)["state"], "created", "거부됐는데 요청 상태를 바꿨다")
+        self.assertEqual(open(os.environ["CYS_DEPT_CATALOG"], "rb").read(), cat_before, "카탈로그 불변")
+        self.assertEqual(open(mf, "rb").read(), mission_before, "미션 파일 불변")
+        self.assertEqual(open(cm, "rb").read(), md_before, "CLAUDE.md 불변")
+
+    def test_a1_2c_3_close_step_crash_isolated(self):
+        """#3: `_close_step` 도 생성 경로(agy F1·test_agy_f1_step_crash_fails_request_not_tick)와 동형 —
+        예외가 나면 failed(crash:...) 로 격리되고 다음 틱은 rc 0.
+        ★실측 함정(브리프 CYS_DEPT_ORG_BIN=없는 파일 지시와 다름): _close_step 은 `[sys.executable, org, ...]`
+        로 부르므로 org 를 없는 경로로 둬도 예외가 아니라 rc=2("can't open file")만 나 _fail(close_rc:2) 로
+        정상 처리된다(subprocess.run(["python3","/no/such","destroy"]) 로 직접 확인 — 예외 0). 같은 파일의
+        기존 관례(test_2r_f11_kickoff_unsent_releases_marker)대로 subprocess.run 자체를 몽키패치해
+        진짜 예외를 주입한다 — 【판단】으로 HANDOFF-A1-2c 에 기재."""
+        rid = self.proposed_confirmed()
+        self.tick()
+        self.set_formation("dept-1", "partial:x")
+        rc, o = self.run_cmd("propose", "--close", "설교준비부")
+        cid = o["request"]
+        self.run_cmd("confirm", cid)
+        real_run = self.m.subprocess.run
+
+        def boom(argv, *a, **k):
+            if "destroy" in argv:
+                raise RuntimeError("org 실행 중 예외 주입")
+            return real_run(argv, *a, **k)
+        self.m.subprocess.run = boom
+        try:
+            self.assertEqual(self.tick(), 0, "요청 하나의 예외가 틱 전체를 죽이면 안 된다")
+        finally:
+            self.m.subprocess.run = real_run
+        c = self.req(cid)
+        self.assertEqual(c["state"], "failed")
+        self.assertTrue(c["fail_reason"].startswith("crash:"), c["fail_reason"])
+        self.assertEqual(self.tick(), 0, "다음 틱이 같은 자리에서 또 죽지 않는다")
+
+    def test_a1_2c_4_result_notify_recorded_before_send(self):
+        """#4: 「부서결과」 알림도 가동 알림(running_notified)과 동형 — 기록+저장을 전송보다 먼저 해서
+        전송 직후 사망해도 다음 틱이 재전송하지 않는다. 전송이 나가는 바로 그 순간의 디스크 상태를
+        몽키패치로 관측해 순서를 직접 증명한다(예외를 던지면 _notify 자신의 try/except Exception 이
+        삼켜 버려 순서를 못 재므로 이 방식이 정본)."""
+        rid = self.proposed_confirmed()
+        r = self.req(rid)                                  # state == "confirmed" · 아직 미알림 키
+        seen = {}
+        real_run = self.m.subprocess.run
+
+        def spy(argv, *a, **k):
+            if "send" in argv:
+                on_disk = self.m.load_req(rid)
+                seen["at_send"] = list(on_disk.get("notified") or [])
+            return real_run(argv, *a, **k)
+        self.m.subprocess.run = spy
+        try:
+            self.m._notify(r, "부서결과")
+        finally:
+            self.m.subprocess.run = real_run
+        self.assertIn("부서결과:confirmed", seen.get("at_send", []),
+                      "전송이 나가는 순간 이미 idempotency 키가 디스크에 저장돼 있어야 한다"
+                      " — 안 그러면 전송 직후 사망 시 다음 틱이 재전송한다")
+        sends_before = len([a for a in self.cys_log() if a and a[0] == "send"])
+        self.m._notify(self.m.load_req(rid), "부서결과")
+        sends_after = len([a for a in self.cys_log() if a and a[0] == "send"])
+        self.assertEqual(sends_before, sends_after, "같은 상태의 재알림은 재전송 0")
+
+
 class TestNoProduction(unittest.TestCase):
     """하네스가 실 자원을 건드리지 않았다는 것을 시험 스스로 단언한다."""
     def test_real_request_root_untouched(self):

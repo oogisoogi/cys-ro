@@ -1151,10 +1151,14 @@ def _event(r, what):
 
 def _notify(r, tag):
     """상태 전이당 1회 · base 소켓 · --queued(Return 없음). ACL 에 막혀도 기능은 선다(마스터가 턴마다
-    status --pending 을 부른다) — 결과는 기록만 한다."""
+    status --pending 을 부른다) — 결과는 기록만 한다.
+    ★A1-2c(수정 필수 표 #4): 기록+저장을 **먼저**, 전송은 그 뒤(가동 알림 running_notified 벨트와 동형) —
+    전송 직후·저장 전에 죽어도 다음 틱이 같은 알림을 다시 보내지 않는다(중복 창 봉합)."""
     key = "%s:%s" % (tag, r.get("state"))
     if key in (r.get("notified") or []):
         return
+    r.setdefault("notified", []).append(key)
+    save_req(r)
     body = "[%s] %s" % (tag, r["id"])
     try:
         env = dict(os.environ)
@@ -1163,7 +1167,6 @@ def _notify(r, tag):
         rc = p.returncode
     except Exception:
         rc = 127
-    r.setdefault("notified", []).append(key)
     _event(r, "notify %s rc=%s" % (tag, rc))
 
 

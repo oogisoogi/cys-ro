@@ -135,10 +135,18 @@ M = [
   "        raise RegistryUnreadable(\"%s: %s\" % (type(e).__name__, e))\n",
   "        return {}\n",
   ["test_f12_unreadable_registry_holds_destruction"]),
- ("M30-running-save-after", "codex F14 — 가동 알림 기록을 보낸 뒤에 저장",
+ ("M30-running-save-after", "codex F14 — 가동 알림 기록을 보낸 뒤에 저장"
+  "(★A1-2c #4 이후 재판정 — 이 벨트 단독 제거는 이제 층 방어로 생존 예상. 근거는 M30a)",
   "                        r[\"running_notified\"] = now()\n                        save_req(r)\n",
   "                        r[\"running_notified\"] = now()\n",
-  ["test_f14_running_notify_not_duplicated_after_crash"]),
+  []),
+ ("M30a-running+notify-save-after", "codex F14 + A1-2c #4 — 두 벨트 동시 끄기(층 방어 실증 · M7/M7a 동형 —"
+  " M30 단독은 _notify 자신의 선저장(A1-2c #4)이 받쳐 생존하고, 둘 다 끄면 다시 중복 발송이 드러난다)",
+  "                        r[\"running_notified\"] = now()\n                        save_req(r)\n",
+  "                        r[\"running_notified\"] = now()\n",
+  ["test_f14_running_notify_not_duplicated_after_crash"],
+  [('    key = "%s:%s" % (tag, r.get("state"))\n    if key in (r.get("notified") or []):\n        return\n    r.setdefault("notified", []).append(key)\n    save_req(r)\n    body = "[%s] %s" % (tag, r["id"])\n    try:\n        env = dict(os.environ)\n        p = subprocess.run([_cys_bin(), "send", "--queued", "--to", "master", body], capture_output=True,\n                           text=True, timeout=20, env=env, **NOWIN)\n        rc = p.returncode\n    except Exception:\n        rc = 127\n    _event(r, "notify %s rc=%s" % (tag, rc))\n',
+    '    key = "%s:%s" % (tag, r.get("state"))\n    if key in (r.get("notified") or []):\n        return\n    body = "[%s] %s" % (tag, r["id"])\n    try:\n        env = dict(os.environ)\n        p = subprocess.run([_cys_bin(), "send", "--queued", "--to", "master", body], capture_output=True,\n                           text=True, timeout=20, env=env, **NOWIN)\n        rc = p.returncode\n    except Exception:\n        rc = 127\n    r.setdefault("notified", []).append(key)\n    _event(r, "notify %s rc=%s" % (tag, rc))\n')]),
  ("M31-md-read-raises", "codex F15 — 안내문 읽기 실패가 요청 판정이 아니라 예외",
   "        return \"claude_md_changed\"\n    if sha256_text(text) != r[\"claude_md_sha256\"]:\n        return \"claude_md_changed\"\n    dest",
   "        raise\n    if sha256_text(text) != r[\"claude_md_sha256\"]:\n        return \"claude_md_changed\"\n    dest",
@@ -188,6 +196,19 @@ M = [
   "            if _generated_untouched(cm):\n",
   "            if True:\n",
   ["test_2r_f12_discard_keeps_edited_claude_md"]),
+ # ── A1-2c · VERIFY-dept-impl-r1.md 「수정 필수 표」 반영(수리 1건당 뮤턴트 1 · #3 은 시험만이라 뮤턴트 없음) ──
+ ("M43-schema-mismatch-lenient", "VERIFY #1 — depts 스키마 불일치를 「부서 없음」으로",
+  '    if not isinstance(d, dict) or not all(isinstance(e, dict) for e in d.values()):\n        raise RegistryUnreadable("스키마 불일치(depts 가 객체의 객체가 아님)")\n',
+  '    if not isinstance(d, dict) or not all(isinstance(e, dict) for e in d.values()):\n        return {}\n',
+  ["test_a1_2c_1_schema_mismatch_registry_holds_destruction"]),
+ ("M44-discard-exists-off", "VERIFY #2 — 가동 부서가 있는 create 요청도 discard 허용",
+  '    if r.get("kind") == "create" and r.get("key") and reg_name_for_key(r["key"], reg):\n        return _refuse("이미 만들어진 부서가 있어 지울 수 없습니다 — 닫기로 말씀해 주세요.", code=7, reason="exists")\n',
+  '    if False:\n        return _refuse("이미 만들어진 부서가 있어 지울 수 없습니다 — 닫기로 말씀해 주세요.", code=7, reason="exists")\n',
+  ["test_a1_2c_2_discard_refuses_when_dept_exists"]),
+ ("M45-notify-save-after-send", "VERIFY #4 — 「부서결과」 알림 기록·저장을 전송 뒤로(중복 창 되돌리기)",
+  '    key = "%s:%s" % (tag, r.get("state"))\n    if key in (r.get("notified") or []):\n        return\n    r.setdefault("notified", []).append(key)\n    save_req(r)\n    body = "[%s] %s" % (tag, r["id"])\n    try:\n        env = dict(os.environ)\n        p = subprocess.run([_cys_bin(), "send", "--queued", "--to", "master", body], capture_output=True,\n                           text=True, timeout=20, env=env, **NOWIN)\n        rc = p.returncode\n    except Exception:\n        rc = 127\n    _event(r, "notify %s rc=%s" % (tag, rc))\n',
+  '    key = "%s:%s" % (tag, r.get("state"))\n    if key in (r.get("notified") or []):\n        return\n    body = "[%s] %s" % (tag, r["id"])\n    try:\n        env = dict(os.environ)\n        p = subprocess.run([_cys_bin(), "send", "--queued", "--to", "master", body], capture_output=True,\n                           text=True, timeout=20, env=env, **NOWIN)\n        rc = p.returncode\n    except Exception:\n        rc = 127\n    r.setdefault("notified", []).append(key)\n    _event(r, "notify %s rc=%s" % (tag, rc))\n',
+  ["test_a1_2c_4_result_notify_recorded_before_send"]),
 ]
 
 

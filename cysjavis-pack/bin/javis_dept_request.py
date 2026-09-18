@@ -197,6 +197,35 @@ def save_req(r):
     atomic_write_json(os.path.join(req_dir(r["id"]), "request.json"), r)
 
 
+def _req_lock(rid):
+    """요청 하나의 짧은 상태 전이 잠금(차단 · 5초 상한). ★codex 1R F8: 제안 교체(superseded)와 확인(confirmed)은
+    둘 다 proposed 에서만 떠나는 전이라, 잠금 안에서 **다시 읽은** 상태가 proposed 일 때만 쓴다."""
+    import javis_lock
+    return javis_lock.FileLock(os.path.join(req_dir(rid), ".rlock"), owner="dept-request",
+                               blocking=True, timeout=5.0)
+
+
+def transition(rid, from_states, mutate):
+    """잠금 → 디스크 재독 → 상태가 from_states 일 때만 mutate(r) 후 저장. 반환 = (적용했는가, 최신 r)."""
+    import javis_lock
+    lk = _req_lock(rid)
+    if lk.acquire() != javis_lock.ACQUIRED:
+        return False, load_req(rid)
+    try:
+        r = load_req(rid)
+        if not r or r.get("state") not in from_states:
+            return False, r
+        mutate(r)
+        save_req(r)
+        return True, r
+    finally:
+        lk.release()
+
+
+def said_path(rid):
+    return os.path.join(req_dir(rid), "said.json")
+
+
 def all_reqs():
     rd = root_dir()
     try:
@@ -217,10 +246,24 @@ def new_req_id():
     return "dr-%s-%s" % (datetime.datetime.now().strftime("%y%m%d-%H%M%S"), secrets.token_hex(2))
 
 
+class RegistryUnreadable(Exception):
+    """레지스트리(depts.json)가 있는데 읽거나 해석할 수 없다 — 「부서 없음」과 구별한다(codex 1R F12).
+    이 예외가 난 틱·동사는 생성·닫기·고아 판정·지우기를 보류한다(부재를 근거로 한 파괴 금지)."""
+
+
 def registry():
-    reg = load_json(depts_json(), {"depts": {}}) or {"depts": {}}
-    d = reg.get("depts")
-    return d if isinstance(d, dict) else {}
+    p = depts_json()
+    try:
+        with open(p, encoding="utf-8") as f:
+            reg = json.load(f)
+    except FileNotFoundError:
+        return {}                                    # 파일 없음 = 정상 부재(부서를 한 번도 안 만든 기계)
+    except (OSError, ValueError) as e:
+        raise RegistryUnreadable("%s: %s" % (type(e).__name__, e))
+    d = reg.get("depts") if isinstance(reg, dict) else None
+    if not isinstance(d, dict) or not all(isinstance(e, dict) for e in d.values()):
+        raise RegistryUnreadable("스키마 불일치(depts 가 객체의 객체가 아님)")
+    return d
 
 
 def catalog():
@@ -284,10 +327,12 @@ def name_problem(disp):
 
 
 def live_depts(reg=None, ts=None):
-    """살아 있는 부서 = 레지스트리 항목 중 묘비 없는 것(메뉴로 만든 부서 포함 — 경로 무관)."""
+    """상한·닫기 후보가 세는 부서 = 레지스트리 항목 **전부**(메뉴로 만든 부서 포함 — 경로 무관).
+    ★codex 1R F4: 묘비만으로 빼지 않는다 — 묘비 잔존(T∧G)은 판정표가 「가동 중일 수 있음」으로 인정하는
+    상태라, 빼면 살아 있는 부서를 0개로 세어 상한을 넘긴다. 닫는 중(묘비 선기록 · 등재 잔존)도 세는 쪽이
+    보수적이다(거부 방향). ts 인자는 호출부 호환용으로만 남는다."""
     reg = registry() if reg is None else reg
-    ts = tombstones() if ts is None else ts
-    return {n: e for n, e in reg.items() if n not in ts}
+    return dict(reg)
 
 
 def display_of(name, e, cat=None):
@@ -482,11 +527,12 @@ def claude_md_marker(path):
 
 # ── propose ───────────────────────────────────────────────────────────────────
 def _supersede_open(except_id=None):
+    def sup(r):
+        r["state"] = "superseded"
+        r["superseded_at"] = now()
     for r in all_reqs():
         if r.get("state") == "proposed" and r["id"] != except_id:
-            r["state"] = "superseded"
-            r["superseded_at"] = now()
-            save_req(r)
+            transition(r["id"], ("proposed",), sup)      # F8: 그 사이 확인된 요청은 건드리지 않는다
 
 
 def _refuse(say, code=5, **kw):
@@ -579,7 +625,7 @@ def _propose_close(a, reg, ts, cat, live):
     rid = new_req_id()
     r = {"id": rid, "kind": "close", "state": "proposed", "created_at": now(), "target": target,
          "display": display_of(target, e, cat), "cwd": e.get("cwd"), "key": e.get("mission_key"),
-         "last_dept": len(live) == 1, "events": []}
+         "socket": e.get("socket"), "last_dept": len(live) == 1, "events": []}
     os.makedirs(req_dir(rid), exist_ok=True)
     card = render_close_card(r)
     atomic_write_text(os.path.join(req_dir(rid), "card.txt"), card)
@@ -621,9 +667,15 @@ def cmd_confirm(a):
     # ★2R ① 순서 계약: request.json(confirmed) 을 **먼저** 영속하고 표지를 **나중에** 만든다.
     #   틱은 스캔 **전에** 표지를 rename 으로 치우므로(_pending_claim), 어떤 교차에서도
     #   「표지가 있거나 · 틱의 스캔이 이 확인을 본다」 둘 중 하나가 성립한다.
-    r["state"] = "confirmed"
-    r["confirmed_at"] = now()
-    save_req(r)
+    def conf(x):
+        x["state"] = "confirmed"
+        x["confirmed_at"] = now()
+    ok, cur = transition(r["id"], ("proposed",), conf)   # F8: 읽은 뒤 교체된 제안을 되살리지 않는다
+    if not ok:
+        if cur and cur.get("state") == "superseded":
+            return _refuse("앞서 보여 드린 제안은 새 제안으로 바뀌었습니다. 새 제안을 다시 보여 드립니다.",
+                           code=6, reason="superseded")
+        return _refuse("이 제안은 이미 처리됐습니다(%s)." % (cur or {}).get("state"), code=7, reason="state")
     touch_pending()
     out({"ok": True, "request": r["id"], "say": "확인했습니다. 1분 안에 시작합니다 — 다 되면 알려 드리겠습니다."})
     return 0
@@ -822,9 +874,9 @@ def cmd_status(a):
         if not r:
             return _refuse("그런 번호가 없습니다.", code=4)
         v = verdict_for(r, reg, ts, cat)
-        r["said_row"] = v["row"]
-        r["said_state"] = r["state"]
-        save_req(r)
+        # ★codex 1R F8: 「말했다」 기록은 별도 파일 — request.json 을 통째로 다시 쓰면 그 사이 확인·집행이 저장한
+        #   상태를 옛 객체로 되돌린다(lost-update). 이 동사는 이제 request.json 의 쓰는 이가 아니다.
+        atomic_write_json(said_path(r["id"]), {"row": v["row"], "state": r["state"], "at": now()})
         out(v)
         return 0
     for r in reqs:
@@ -834,12 +886,14 @@ def cmd_status(a):
             if r["state"] == "proposed" or now() - (r.get("updated_at") or 0) > 7 * DAY:
                 continue
         v = verdict_for(r, reg, ts, cat)
-        if a.pending and r.get("said_row") == v["row"] and r.get("said_state") == r["state"]:
+        said = load_json(said_path(r["id"]), None) or {}
+        if a.pending and said.get("row") == v["row"] and said.get("state") == r["state"]:
             continue
         rows.append(v)
     if a.all:
-        claimed = {reg_name_for_key(r.get("key"), reg) for r in reqs if r.get("key")} | \
-                  {r.get("dept_name") for r in reqs}
+        # ★codex 1R F3: 옛 요청의 dept_name 으로 번호를 「이미 보고됨」 처리하면, 그 번호를 다른 부서가 재사용했을
+        #   때 새 부서(묘비 잔존 포함)가 표에서 통째로 빠진다 — 키로 지금 소유가 확인되는 이름만 뺀다.
+        claimed = {reg_name_for_key(r.get("key"), reg) for r in reqs if r.get("key")}
         for n in sorted(reg):
             if n in claimed:
                 continue
@@ -853,7 +907,28 @@ def cmd_discard(a):
     r = load_req(a.request)
     if not r:
         return _refuse("그런 번호가 없습니다.", code=4)
-    reg = registry()
+    # ★codex 1R F11: 지우기는 틱과 같은 잠금 안에서만 — 집행 중인 생성과 교차하면 자식이 쓰는 파일을 지우고,
+    #   틱의 옛 객체 저장이 discarded 를 되돌린다. 틱이 돌고 있으면 거부(1분 뒤 다시).
+    if not acquire_lock():
+        return _refuse("지금 부서 일을 처리하는 중이라 잠시 뒤에 다시 말씀해 주세요.", code=7, reason="busy")
+    try:
+        return _discard_locked(a)
+    finally:
+        release_lock()
+
+
+def _discard_locked(a):
+    r = load_req(a.request)
+    if not r:
+        return _refuse("그런 번호가 없습니다.", code=4)
+    if r.get("state") == "confirmed" or (r.get("create_pid") and _pid_alive(r["create_pid"])):
+        return _refuse("부서를 만드는 중이라 지금은 지울 수 없습니다. 다 되면 닫기로 말씀해 주세요.",
+                       code=7, reason="in_flight")
+    try:
+        reg = registry()
+    except RegistryUnreadable:
+        return _refuse("부서 목록을 읽지 못해 지우지 않았습니다. 잠시 뒤 다시 말씀해 주세요.", code=7,
+                       reason="registry_unreadable")
     if r.get("kind") == "create" and r.get("key") and reg_name_for_key(r["key"], reg):
         return _refuse("이미 만들어진 부서가 있어 지울 수 없습니다 — 닫기로 말씀해 주세요.", code=7, reason="exists")
     removed = []
@@ -898,7 +973,8 @@ def cmd_kickoff(a):
         return _refuse("그런 부서 요청이 없습니다.", code=4)
     if not r.get("first_task"):
         return _refuse("처음 맡길 일이 기록돼 있지 않습니다.", code=7, reason="no_first_task")
-    if r.get("kicked_off_at"):
+    kp = os.path.join(req_dir(r["id"]), "kickoff.json")
+    if r.get("kicked_off_at") or os.path.exists(kp):
         return _refuse("첫 일은 이미 전했습니다.", code=7, reason="already")
     reg, ts, cat = registry(), tombstones(), catalog()
     v = verdict_for(r, reg, ts, cat)
@@ -909,21 +985,31 @@ def cmd_kickoff(a):
     sock = (reg.get(name) or {}).get("socket") or dept_sock(name)
     body = "[부서시작 %s] (CLAUDE.md sha256 %s) 오너가 처음 맡긴 일: %s" % (
         r["id"], r["claude_md_marker_sha"][:12], r["first_task"])
+    # ★codex 1R F8: 「1회」 기록은 request.json 이 아니라 원자 생성 표지(O_EXCL) — 동시 kickoff 둘 중 하나만 보낸다.
+    try:
+        fd = os.open(kp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return _refuse("첫 일은 이미 전했습니다.", code=7, reason="already")
+    os.close(fd)
     # ★--queued 는 CR 을 포함해 배달한다 — Return 을 덧붙이지 않는다(이중 제출 · cys.rs 큐 배달 주석).
     p = subprocess.run([_cys_bin(), "--socket", sock, "send", "--queued", "--to", "master", body],
                        capture_output=True, text=True, timeout=20, **NOWIN)
     if p.returncode != 0:
+        _rm(kp)
         return _refuse("부서장에게 전하지 못했습니다(rc=%d). 그 부서 화면의 부서장에게 직접 말씀해 주세요."
                        % p.returncode, code=1, reason="send_failed")
-    r["kicked_off_at"] = now()
-    save_req(r)
+    atomic_write_json(kp, {"kicked_off_at": now()})
     out({"ok": True, "request": r["id"], "say": "부서장에게 처음 맡기실 일을 전했습니다."})
     return 0
 
 
 # ── tick ──────────────────────────────────────────────────────────────────────
 def lock_path():
-    return os.path.join(root_dir(), ".lock")
+    # ★codex 1R F9: 옛 mkdir 잠금(`.lock` 디렉터리)은 죽은 소유자 회수가 「읽기 → rename」 두 단계라, 같은
+    #   죽은 pid 를 읽은 두 틱 중 늦은 쪽이 앞선 틱의 **새** 잠금을 rename 해 둘 다 들어갔다. OS 파일 잠금
+    #   (javis_lock.FileLock · flock/msvcrt)은 보유 프로세스가 죽으면 커널이 풀어 주므로 회수 단계 자체가 없다.
+    #   파일 이름을 바꿔 옛 판이 남긴 `.lock` 디렉터리와 섞이지 않게 한다.
+    return os.path.join(root_dir(), ".tick.lock")
 
 
 def _pid_alive(pid):
@@ -947,37 +1033,26 @@ def _pid_alive(pid):
             return False
 
 
+_LOCK = None
+
+
 def acquire_lock():
-    """mkdir 원자 잠금 · 소유자 pid 사망 시 rename 원자 회수(한 명만 성공)."""
-    lp = lock_path()
+    """틱 직렬화 잠금(비차단). 틱·discard 가 공유한다(codex 1R F11). 반환 = 잡았는가."""
+    global _LOCK
+    import javis_lock
     os.makedirs(root_dir(), exist_ok=True)
-    for _ in range(2):
-        try:
-            os.mkdir(lp)
-            atomic_write_json(os.path.join(lp, "owner.json"), {"pid": os.getpid(), "since": now()})
-            return True
-        except FileExistsError:
-            o = load_json(os.path.join(lp, "owner.json"), {}) or {}
-            pid = o.get("pid")
-            if pid and _pid_alive(pid):
-                return False
-            if not pid:
-                try:
-                    if now() - os.path.getmtime(lp) < 60:   # 소유자 기록 전 찰나 — 회수하지 않는다
-                        return False
-                except OSError:
-                    continue
-            stale = "%s.stale-%d-%s" % (lp, os.getpid(), secrets.token_hex(3))
-            try:
-                os.rename(lp, stale)                     # 회수 권리 = rename 한 명만
-            except OSError:
-                return False
-            shutil.rmtree(stale, ignore_errors=True)
-    return False
+    lk = javis_lock.FileLock(lock_path(), owner="dept-request")
+    if lk.acquire() != javis_lock.ACQUIRED:
+        return False
+    _LOCK = lk
+    return True
 
 
 def release_lock():
-    shutil.rmtree(lock_path(), ignore_errors=True)
+    global _LOCK
+    if _LOCK is not None:
+        _LOCK.release()
+        _LOCK = None
 
 
 def _pending_claim():
@@ -1116,16 +1191,17 @@ def _sweep(reqs):
         age = t - (r.get("updated_at") or r.get("created_at") or t)
         d = req_dir(r["id"])
         utter = os.path.join(d, "utterance.txt")
-        if st in ("superseded", "expired", "discarded"):
-            if age > 30 * DAY:
-                _rm(d)
-                continue
-            if age > 7 * DAY and os.path.exists(utter):
-                _rm(utter)
-        elif st in ("closed", "failed") or (st in ("created", "reused") and r.get("running_notified")):
-            if age > 30 * DAY and os.path.exists(utter):
-                _rm(utter)
-    moved = cleanup_orphan_ledgers()
+        # ★codex 1R F1: 발화 원문은 **모든 상태**에서 제안 시각(created_at · 불변) 7일 뒤 지운다 — 저장 때마다
+        #   바뀌는 updated_at 을 쓰면 보관 기한이 계속 연장되고, 상태별 분기는 빠지는 상태를 만든다.
+        if t - (r.get("created_at") or t) > 7 * DAY and os.path.exists(utter):
+            _rm(utter)
+        if st in ("superseded", "expired", "discarded") and age > 30 * DAY:
+            _rm(d)                                      # 폴더 보존은 별도 계산(마지막 움직임 30일)
+            continue
+    try:
+        moved = cleanup_orphan_ledgers()
+    except RegistryUnreadable:
+        moved = []                                      # F12: 부재를 근거로 옮기지 않는다
     # 자가복구 벨트: 진행 중 요청이 있는데 표지가 없으면 다시 세운다(어떤 경로로 잃었든 1분 안에 회복).
     if any(_in_progress(r) for r in reqs if os.path.isdir(req_dir(r["id"]))) and \
             not os.path.exists(pending_path()) and _SELF_HEAL:
@@ -1169,18 +1245,28 @@ def cys_dept_bin():
     return os.environ.get("CYS_DEPT_BIN") or os.path.join(HERE, "cys-dept")
 
 
-def _spawn_create(key, cysd):
+def create_out_path(key, call):
+    return os.path.join(root_dir(), ".create-%s-%d.out" % (key, call))
+
+
+def _spawn_create(key, cysd, call):
     env = dict(os.environ)
     env["CYS_ROLE"] = "cso"
     env["PATH"] = os.path.dirname(cysd) + os.pathsep + env.get("PATH", "")
     logp = os.path.join(root_dir(), ".create-%s.log" % key)
     lf = open(logp, "ab")
+    # ★codex 1R F16: stdout 도 파일로 — 틱이 기다림 상한에서 먼저 끝나도 떼어 낸 자식이 이후 쓰는 결과
+    #   (마지막 줄 = dept-N)가 SIGPIPE/EPIPE 로 죽지 않는다. 호출 번호별 파일이라 재호출과 섞이지 않는다.
+    of = open(create_out_path(key, call), "wb")
     # ★V-DETACH(R1): 틱 세션에서 떼어 낸다 — POSIX = 새 세션, Windows = 새 프로세스 그룹 + 창 숨김
     #   (CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP · 출력을 받는 호출이라 창 숨김 계약 대상).
     flags = (0x08000000 | 0x00000200) if os.name == "nt" else 0
-    p = subprocess.Popen([cys_dept_bin(), "create", key], stdout=subprocess.PIPE, stderr=lf,
-                         stdin=subprocess.DEVNULL, env=env, creationflags=flags,
-                         start_new_session=(os.name != "nt"))
+    try:
+        p = subprocess.Popen([cys_dept_bin(), "create", key], stdout=of, stderr=lf,
+                             stdin=subprocess.DEVNULL, env=env, creationflags=flags,
+                             start_new_session=(os.name != "nt"))
+    finally:
+        of.close()                                        # 자식이 자기 사본을 쥔다 — 부모는 닫는다
     return p, lf
 
 
@@ -1198,15 +1284,59 @@ def _seed_account(cat_path, acct_key):
     return False
 
 
+def _generated_untouched(path):
+    """표식 줄의 sha256 = 표식 아래 전부의 해시인가(= 우리가 쓴 그대로 · 사람이 고치지 않았다)."""
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+    first, sep, rest = text.partition("\n")
+    m = re.match(r"^<!-- cys-dept-mission request=\S+ sha256=([0-9a-f]{64}) -->$", first)
+    return bool(sep and m and sha256_text(rest) == m.group(1))
+
+
 def _write_claude_md(r):
-    with open(os.path.join(req_dir(r["id"]), "claude_md.txt"), encoding="utf-8") as f:
-        text = f.read()
+    # ★codex 1R F15: 확인 뒤 안내문 파일이 사라지거나 해독 불가로 바뀐 것도 「바뀌었다」다(틱 전체 사망 금지).
+    try:
+        with open(os.path.join(req_dir(r["id"]), "claude_md.txt"), encoding="utf-8", newline="") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return "claude_md_changed"
     if sha256_text(text) != r["claude_md_sha256"]:
         return "claude_md_changed"
     dest = os.path.join(r["cwd"], "CLAUDE.md")
-    if os.path.exists(dest) and not claude_md_marker(dest):
-        return "claude_md_conflict"            # 사용자 파일 보존이 우선
-    atomic_write_text(dest, text)
+    if os.path.exists(dest):
+        # ★codex 1R F6: 표식만 보고 덮지 않는다 — ⑴이 요청의 바이트 그대로면 그대로 둔다 ⑵표식 자기 해시가
+        #   맞는(사람이 안 고친) 생성 파일만 교체한다 ⑶그 밖(표식을 남긴 채 사람이 고친 파일 포함)은 충돌.
+        try:
+            with open(dest, encoding="utf-8", newline="") as f:
+                if f.read() == text:
+                    return None
+        except (OSError, UnicodeDecodeError):
+            return "claude_md_conflict"
+        if not claude_md_marker(dest) or not _generated_untouched(dest):
+            return "claude_md_conflict"            # 사용자 파일 보존이 우선
+        atomic_write_text(dest, text)
+        return None
+    # 새로 놓기 = no-clobber: 임시 파일을 link 로 붙인다(그 사이 사람이 만든 파일이 있으면 실패 → 충돌).
+    d = os.path.dirname(dest)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, dest)
+        except FileExistsError:
+            return "claude_md_conflict"
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
     return None
 
 
@@ -1244,18 +1374,24 @@ def _finish_create(r, name, pre_reg):
     r["dept_name"] = name
     r["state"] = "reused" if name in pre_reg else "created"
     javis_org.backfill_mission_key(depts_json(), r["key"], r["key"], r["display"])
-    if name in tombstones():
+    # ★codex 1R F17: 해소 재시도는 **첫 호출 전에 이미 있던** 묘비(= 옛 부서의 잔존물)에만 한다. 생성 뒤에 새로
+    #   생긴 묘비는 GUI 가 방금 이 부서를 닫으며 먼저 적은 의도 기록일 수 있다 — 지우면 닫은 부서가 되살아난다.
+    if name in (r.get("pre_ts") or []) and name in tombstones():
         ok = _retry_tombstone_remove(name)
         r["tombstone_retry"] = "resolved" if ok else "residue"
     _event(r, "%s %s" % (r["state"], name))
 
 
 def _create_step(r, st, reqs):
-    """ⓓ 생성 1건."""
+    """ⓓ 생성 1건.
+    ★codex 1R F2·F5·F7: 재진입(이미 한 번이라도 create 를 부른 요청 — 디스크 상태가 confirmed 로 남은 채 틱이
+    죽은 경우 포함)은 언제나 ⑴첫 자식 생존 ⑵등재 여부를 먼저 보고, 새로 부를 때는 첫 호출과 **같은** 상한·
+    간격·자원·안내문 검사를 다시 지난다. 호출 의도(호출 수·시각·간격 기준)는 spawn **전에** 영속한다."""
     import javis_org
     reg, ts = registry(), tombstones()
     t = now()
-    if r["state"] == "create-timeout":
+    reentry = r["state"] == "create-timeout" or bool(r.get("create_calls"))
+    if reentry:
         pid = r.get("create_pid")
         if pid and _pid_alive(pid):
             # ★2R ⑦: 첫 자식이 살아 있으면 재호출하지 않는다(그 자식의 EXIT trap 이 두 번째 등재를 지운다).
@@ -1269,19 +1405,19 @@ def _create_step(r, st, reqs):
         if (r.get("create_calls") or 0) >= MAX_CREATE_CALLS:
             _fail(r, "create_timeout_exhausted")
             return
-    else:
-        live = live_depts(reg, ts)
-        if len(live) >= chat_cap():
-            _fail(r, "cap:%d" % len(live))
-            return
-        last = (st.get("last_create_at") or 0)
-        if t - last < CREATE_GAP_SEC():
-            r["waiting_gap"] = True
-            return
-        gate = resource_check()
-        if gate.get("verdict") == "hard_block":
-            _fail(r, "resource")
-            return
+    live = live_depts(reg, ts)
+    if len(live) >= chat_cap():
+        _fail(r, "cap:%d" % len(live))
+        return
+    last = (st.get("last_create_at") or 0)
+    if t - last < CREATE_GAP_SEC():
+        r["waiting_gap"] = True
+        return
+    gate = resource_check()
+    if gate.get("verdict") == "hard_block":
+        _fail(r, "resource")
+        return
+    if not reentry:
         # 효과 함수 순서: catalog_upsert → write_mission → ensure_dirs → CLAUDE.md → create → backfill
         seeded = _seed_account(catalog_json(), r["account"])
         if seeded:
@@ -1291,31 +1427,42 @@ def _create_step(r, st, reqs):
         javis_org.MISSIONS = missions_dir()
         javis_org.write_mission(r["key"], "# %s\n%s\n" % (r["display"], r["mission"]))
         javis_org.ensure_dirs({"cwd": r["cwd"]})
-        err = _write_claude_md(r)
-        if err:
-            _fail(r, err, leftover="카탈로그 항목 1개(지우기로 걷을 수 있습니다)")
-            return
+    err = _write_claude_md(r)                            # 재호출 직전에도 안내문을 다시 대조한다(F7)
+    if err:
+        _fail(r, err, leftover="카탈로그 항목 1개(지우기로 걷을 수 있습니다)")
+        return
     cysd = find_cysd()
     if not cysd:
         _fail(r, "cysd_not_found")
         return
     r["pre_reg"] = sorted(registry())
+    if "pre_ts" not in r:
+        r["pre_ts"] = sorted(tombstones())               # F17: 첫 호출 전 묘비 스냅샷
     r["create_started_at"] = r.get("create_started_at") or t
     r["create_calls"] = (r.get("create_calls") or 0) + 1
+    r.pop("create_pid", None)
     st["last_create_at"] = t
     r.pop("waiting_gap", None)
-    p, lf = _spawn_create(r["key"], cysd)
+    atomic_write_json(tick_state_path(), st)             # F2: 간격 기준을 spawn 전에 영속
+    save_req(r)                                          # F2: 호출 의도를 spawn 전에 영속
+    call = r["create_calls"]
+    p, lf = _spawn_create(r["key"], cysd, call)
     r["create_pid"] = p.pid
     save_req(r)                                          # 기다리는 동안 틱이 죽어도 pid 가 남는다
     try:
-        so, _ = p.communicate(timeout=CREATE_WAIT_SEC())
+        p.wait(timeout=CREATE_WAIT_SEC())
     except subprocess.TimeoutExpired:
         r["state"] = "create-timeout"
         _event(r, "create-timeout pid=%s" % p.pid)
         lf.close()
         return
     lf.close()
-    lines = [x.strip() for x in (so or b"").decode("utf-8", "replace").splitlines() if x.strip()]
+    try:
+        with open(create_out_path(r["key"], call), "rb") as f:
+            so = f.read()
+    except OSError:
+        so = b""
+    lines = [x.strip() for x in so.decode("utf-8", "replace").splitlines() if x.strip()]
     name = lines[-1] if lines else ""
     if p.returncode == 0 and re.match(r"^dept-\d+$", name):
         _finish_create(r, name, r["pre_reg"])
@@ -1330,6 +1477,13 @@ def _close_step(r):
         r["state"] = "closed"
         _event(r, "closed(already)")
         return
+    # ★codex 1R F10: 번호(dept-N)는 재사용된다 — 카드에서 확인받은 부서와 지금 그 번호의 부서가 같은지
+    #   (맡은 일 키·폴더·소켓 · 카드에 기록된 칸만) 대조하고, 하나라도 다르면 닫지 않는다(비가역 방향 차단).
+    cur = reg[r["target"]]
+    for f_req, f_reg in (("key", "mission_key"), ("cwd", "cwd"), ("socket", "socket")):
+        if f_req in r and r.get(f_req) != cur.get(f_reg):
+            _fail(r, "target_changed:%s" % f_req)
+            return
     r["close_started_at"] = now()
     org = os.environ.get("CYS_DEPT_ORG_BIN") or os.path.join(HERE, "javis_org.py")
     env = dict(os.environ)
@@ -1349,6 +1503,27 @@ def _close_step(r):
     cleanup_orphan_ledgers()                           # B-1: 닫기 직후 그 부서의 편성 원장을 치운다
 
 
+def _tick_log(msg):
+    try:
+        with open(os.path.join(root_dir(), "tick-errors.log"), "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (iso(), msg))
+    except OSError:
+        pass
+
+
+def _run_step(r, step):
+    """★agy 1R F1: 요청 하나의 집행이 예외로 죽으면 그 요청만 failed(crash:…) 로 닫는다 — 안 그러면 요청이
+    confirmed 로 남아 매분 같은 자리에서 틱 전체가 죽는다(나머지 요청 전부 영구 정지)."""
+    try:
+        step()
+    except RegistryUnreadable as e:
+        _tick_log("registry_unreadable(step) %s %s" % (r.get("id"), e))   # 판정 보류 — 다음 틱에 다시
+    except Exception as e:
+        _fail(r, "crash:%s" % type(e).__name__)
+        _tick_log("crash %s %s: %s" % (r.get("id"), type(e).__name__, e))
+    save_req(r)
+
+
 def cmd_tick(a):
     if os.environ.get("CYS_ROLE") != "cso":
         sys.stderr.write("[dept-request] tick 은 스케줄 틱(dept-request-tick) 전용 — CYS_ROLE=cso 신원 밖 호출 거부\n")
@@ -1364,14 +1539,20 @@ def cmd_tick(a):
         had = _pending_claim()                         # ★스캔 전에 표지를 치운다(2R ①)
         reqs = all_reqs()
         st = load_json(tick_state_path(), {}) or {}
-        if had or any(_in_progress(r) for r in reqs):
+        try:
+            registry()
+            reg_ok = True
+        except RegistryUnreadable as e:
+            # ★codex 1R F12: 부서 목록을 못 읽으면 생성·닫기·가동 판정을 이번 틱에 보류한다(부재 취급 금지).
+            reg_ok = False
+            _tick_log("registry_unreadable %s" % e)
+        if reg_ok and (had or any(_in_progress(r) for r in reqs)):
             creates = sorted([r for r in reqs if r.get("kind") == "create" and r["state"] in IN_FLIGHT],
                              key=lambda r: (r["state"] != "create-timeout", r.get("confirmed_at") or 0))
             if creates:                                # 한 틱에 생성 1건(4군 ①)
                 r = creates[0]
                 before = r["state"]
-                _create_step(r, st, reqs)
-                save_req(r)
+                _run_step(r, lambda: _create_step(r, st, reqs))
                 atomic_write_json(tick_state_path(), st)
                 if r["state"] != before:
                     _notify(r, "부서결과")
@@ -1380,18 +1561,27 @@ def cmd_tick(a):
                             key=lambda r: r.get("confirmed_at") or 0)
             if closes:                                 # 한 틱에 닫기 1건
                 r = closes[0]
-                _close_step(r)
-                save_req(r)
-                _notify(r, "부서결과")
-                save_req(r)
+                before = r["state"]
+                _run_step(r, lambda: _close_step(r))
+                if r["state"] != before:
+                    _notify(r, "부서결과")
+                    save_req(r)
             # ⓖ 가동 알림 — created/reused 중 판정이 가동으로 처음 바뀐 것
-            reg, ts, cat = registry(), tombstones(), catalog()
-            for r in all_reqs():
+            try:
+                reg, ts, cat = registry(), tombstones(), catalog()
+                later = all_reqs()
+            except RegistryUnreadable as e:
+                _tick_log("registry_unreadable(running) %s" % e)
+                later = []
+            for r in later:
                 if r.get("kind") == "create" and r["state"] in ("created", "reused") and \
                         not r.get("running_notified") and _in_progress(r):
                     v = verdict_for(r, reg, ts, cat)
                     if v["row"] == 12:
+                        # ★codex 1R F14: 기록을 **먼저** 영속하고 보낸다 — 보낸 뒤 저장 전에 죽으면 다음 틱이
+                        #   같은 알림을 또 보냈다(중복). 유실 쪽은 마스터의 status --pending 이 매 턴 받친다.
                         r["running_notified"] = now()
+                        save_req(r)
                         _notify(r, "부서가동")
                         save_req(r)
         _pending_finalize(any(_in_progress(r) for r in all_reqs()))
@@ -1521,7 +1711,11 @@ def main(argv=None):
         if a.close is None and not (a.name and a.mission and a.claude_md_file):
             sys.stderr.write("propose: --name · --mission · --claude-md-file 필수(또는 --close <이름>)\n")
             return 2
-        return cmd_propose(a)
+        try:
+            return cmd_propose(a)
+        except RegistryUnreadable as e:
+            return _refuse("부서 목록을 읽지 못해 제안하지 않았습니다(%s). 잠시 뒤 다시 말씀해 주세요." % e,
+                           code=2, reason="registry_unreadable")
     fn = {"confirm": cmd_confirm, "tick": cmd_tick, "status": cmd_status, "kickoff": cmd_kickoff,
           "discard": cmd_discard}.get(a.cmd)
     if a.cmd == "self-test":
@@ -1529,7 +1723,11 @@ def main(argv=None):
     if not fn:
         ap.print_help()
         return 2
-    return fn(a)
+    try:
+        return fn(a)
+    except RegistryUnreadable as e:
+        return _refuse("부서 목록을 읽지 못했습니다(%s). 잠시 뒤 다시 말씀해 주세요." % e, code=2,
+                       reason="registry_unreadable")
 
 
 if __name__ == "__main__":

@@ -28,9 +28,9 @@
 | `propose --close <이름>` | 마스터(본부) | 표시명 · 카탈로그 표시명 · 시스템 이름(`dept-N`) 중 하나 | 닫기 카드(후보 1개) · 후보 여럿이면 거부(exit 5 · `candidates`) · 없으면 거부(exit 4) |
 | `confirm <번호>` | 마스터(본부) | 요청 번호 | 사용자 「네」 뒤. `request.json` 을 `confirmed` 로 영속한 **뒤에** `.pending` 표지를 만든다 |
 | `tick` | **스케줄 틱만** | — | 집행기(§4). `CYS_ROLE=cso` 가 아니면 exit 3 |
-| `status` | 마스터 | `--pending` · `--all` · `--say <번호>` | 판정표(§5). `--say` 는 그 판정을 「말했다」로 기록 |
+| `status` | 마스터 | `--pending` · `--all` · `--say <번호>` | 판정표(§5). `--say` 는 그 판정을 「말했다」로 기록(`said.json` · `request.json` 은 쓰지 않는다 — codex 1R F8) |
 | `kickoff <번호>` | 마스터(본부) | 요청 번호 | 첫 일 한 문장을 부서장에게 요청당 1회(가동 판정일 때만) |
-| `discard <번호>` | 마스터 | 요청 번호 | 레지스트리에 대응 부서가 **없을 때만** 이 요청이 넣은 카탈로그 항목·미션 파일·표식 있는 `CLAUDE.md` 를 걷는다 |
+| `discard <번호>` | 마스터 | 요청 번호 | 레지스트리에 대응 부서가 **없을 때만** 이 요청이 넣은 카탈로그 항목·미션 파일·표식 있는 `CLAUDE.md` 를 걷는다. 틱과 **같은 잠금** 안에서만 하고(틱이 돌면 exit 7 `busy`), `confirmed` 이거나 첫 자식이 살아 있으면 거부(exit 7 `in_flight` · codex 1R F11) |
 | `self-test` | 누구나 | — | 결정 트리 전 조합 · 키 계약 · javis_org 의미 대조 · 내장 뮤턴트 |
 
 ※브리프의 동사 나열(`propose/confirm/apply/status/discard`)의 `apply` 는 이 도구에서 `tick` 의 생성 단계(§4 ⓓ)다 — 사람·마스터가 부를 수 있는 `apply` 동사는 두지 않았다(설계 §3-4: 집행은 틱만).
@@ -41,12 +41,12 @@
 |---|---|
 | 0 | 성공(틱의 정상 skip 포함) |
 | 1 | 내부 오류 · 자기시험 실패 · kickoff 발신 실패 |
-| 2 | 사용 오류 · 입출력 실패(필수 인자 없음 · 본문 파일 못 읽음) |
+| 2 | 사용 오류 · 입출력 실패(필수 인자 없음 · 본문 파일 못 읽음 · 레지스트리를 못 읽음 `registry_unreadable` — codex 1R F12) |
 | 3 | `tick` 을 CSO 신원 밖에서 부름 |
 | 4 | 대상 없음(번호 없음 · 닫을 부서 못 찾음) |
 | 5 | 거부 — 중복 이름 · 상한 · 부서 레인 · 자원 hard · 닫기 후보 여럿 |
 | 6 | 낡은 번호(`superseded` 제안의 `confirm`) |
-| 7 | 상태 불일치(이미 처리됨 · 가동 전 kickoff · 이미 만든 부서의 discard · 안내문 변조) |
+| 7 | 상태 불일치(이미 처리됨 · 가동 전 kickoff · 이미 만든 부서의 discard · 안내문 변조 · 틱 처리 중 discard · 만드는 중 discard) |
 
 거부(5·6·7·4)도 stdout 에 `{"ok": false, "say": "<사용자에게 할 말>", "reason": "<기계 사유>"}` 를 낸다. 마스터는 `say` 를 **그대로** 말한다.
 
@@ -56,13 +56,13 @@
 - `confirm` 성공: `{"ok": true, "request": …, "say": "확인했습니다. 1분 안에 시작합니다 — 다 되면 알려 드리겠습니다."}`
 - `status`: `{"ok": true, "rows": [판정, …]}` · `status --say`: 판정 1개
 - 판정: `{"request", "dept", "row": 1~13, "verdict", "axes": {R,G,T,D,F,P,E}, "say"[, "tombstone_residue": true]}`
-- `reason` 값: `lane` · `name` · `duplicate` · `cap` · `resource` · `mission` · `io` · `not_found` · `ambiguous` · `superseded` · `state` · `claude_md_changed` · `exists` · `no_first_task` · `already` · `not_running` · `send_failed`
+- `reason` 값: `lane` · `name` · `duplicate` · `cap` · `resource` · `mission` · `io` · `not_found` · `ambiguous` · `superseded` · `state` · `claude_md_changed` · `exists` · `no_first_task` · `already` · `not_running` · `send_failed` · `busy` · `in_flight` · `registry_unreadable`
 
 ### 2-3. 요청 상태
 
 `proposed` → (`superseded` | `discarded` | `confirmed`) → (`expired` | `created` | `reused` | `create-timeout` | `failed` | `closed`)
 
-`fail_reason` 값: `cap:<n>` · `resource` · `claude_md_conflict` · `claude_md_changed` · `cysd_not_found` · `create_rc:<n>` · `create_hang` · `create_timeout_exhausted` · `close_rc:<n>`
+`fail_reason` 값: `cap:<n>` · `resource` · `claude_md_conflict` · `claude_md_changed` · `cysd_not_found` · `create_rc:<n>` · `create_hang` · `create_timeout_exhausted` · `close_rc:<n>` · `target_changed:<key|cwd|socket>`(닫기 대상 번호가 다른 부서가 됨 — codex 1R F10) · `crash:<예외 이름>`(요청 하나의 집행이 예외로 죽음 — agy 1R F1)
 
 ## 3. 파일
 
@@ -73,8 +73,9 @@
 | `…/<번호>/claude_md.txt` | 부서 폴더에 쓸 `CLAUDE.md` 전문(sha256 을 request.json 에 잠금) |
 | `…/<번호>/utterance.txt` | 발화 원문(개인정보 — 수명 §4 ⓑ) |
 | `~/.cys/dept-requests/.pending` | 생성 단계 표지(`confirm` 이 만들고 틱이 스캔 **전에** rename 으로 치움) |
-| `~/.cys/dept-requests/.lock/` | 틱 전역 잠금(mkdir 원자 · 소유자 pid 사망 시 rename 원자 회수) |
-| `~/.cys/dept-requests/.last-sweep` · `.tick-state.json` · `status-unknown.log` · `.create-<키>.log` | 청소 시각 · 직전 생성 시각 · 판정 불능 원값 · create 진단 |
+| `~/.cys/dept-requests/.tick.lock` | 틱·discard 공용 잠금(OS 파일 잠금 `javis_lock.FileLock` — 보유 프로세스가 죽으면 커널이 푼다 · 회수 단계 없음 · codex 1R F9). 옛 판의 `.lock/` 디렉터리 방식은 폐기 |
+| `…/<번호>/.rlock` · `said.json` · `kickoff.json` | 제안 교체·확인 전이 잠금(F8) · `status --say` 기록 · kickoff 1회 원자 표지(O_EXCL) |
+| `~/.cys/dept-requests/.last-sweep` · `.tick-state.json` · `status-unknown.log` · `.create-<키>.log` · `.create-<키>-<n>.out` · `tick-errors.log` | 청소 시각 · 직전 생성 시각 · 판정 불능 원값 · create 진단(stderr) · n번째 create 호출의 stdout(파일 — 틱이 먼저 끝나도 자식이 파이프로 죽지 않는다 · F16) · 요청 단위 크래시·레지스트리 판독 실패 기록 |
 | `<작업폴더>/CLAUDE.md` | 첫 줄 표식 `<!-- cys-dept-mission request=… sha256=… -->` + 역할 안내 고정 줄 + 본문 |
 
 팩토리 리셋 목록에 `dept-requests` 를 넣었다(`src/factory_reset.rs`).
@@ -87,12 +88,12 @@
 
 한 틱의 순서(전부 멱등):
 
-1. ⓐ 전역 잠금(못 잡으면 exit 0)
-2. ⓑ **청소 — 매 틱 무조건**: 만료(확인 뒤 30분 넘게 집행이 시작되지 않은 요청) · 요청 폴더 수명(`superseded`·`expired`·`discarded` = 발화 원문 7일·폴더 30일 / `closed`·`failed`·가동 완료 = 발화 원문 30일) · 고아 편성 원장 청소(§4-1) · 자가복구(진행 중 요청이 있는데 표지가 없으면 다시 세움)
-3. 표지 선점: `.pending` → `.pending.claimed-<pid>` rename(스캔 **전**)
-4. ⓓ 생성 1건: 가장 오래된 `create-timeout`, 없으면 가장 오래 기다린 `confirmed` 1건만. 상한(살아 있는 부서 < 2 · 메뉴 부서 포함) · 간격 10분 · 자원 hard 재점검 → 계정 시드 → `catalog_upsert` → `write_mission` → `ensure_dirs` → `CLAUDE.md` → `cysd` 탐색 → `cys-dept create <키>`(절대경로 · `start_new_session` · 기다림 300초) → `backfill_mission_key` → 묘비 잔존 시 해소 1회 재시도
-5. ⓔ 닫기 1건: `javis_org.py destroy --dept <dept-N> --purge --purge-state`(CSO 신원 · `--purge-workdir` 없음) → 원장 청소
-6. ⓕ·ⓖ 알림: 상태 전이당 1회 `cys send --queued --to master "[부서결과] <번호>"` · 가동 판정 처음 1회 `"[부서가동] <번호>"` (Return 을 덧붙이지 않는다 — 큐 배달이 CR 을 포함한다)
+1. ⓐ 전역 잠금(OS 파일 잠금 · 못 잡으면 exit 0)
+2. ⓑ **청소 — 매 틱 무조건**: 만료(확인 뒤 30분 넘게 집행이 시작되지 않은 요청) · 개인정보 수명(발화 원문 = **모든 상태**에서 제안 시각 `created_at` 7일 뒤 삭제 — codex 1R F1) · 요청 폴더 수명(`superseded`·`expired`·`discarded` = 마지막 움직임 30일) · 고아 편성 원장 청소(§4-1 · 레지스트리를 못 읽으면 보류) · 자가복구(진행 중 요청이 있는데 표지가 없으면 다시 세움)
+3. 표지 선점: `.pending` → `.pending.claimed-<pid>` rename(스캔 **전**). 이어서 레지스트리를 읽을 수 없으면(파일은 있는데 해석 불가) 이번 틱의 생성·닫기·가동 판정 전부 보류(`tick-errors.log` · codex 1R F12)
+4. ⓓ 생성 1건: 가장 오래된 `create-timeout`, 없으면 가장 오래 기다린 `confirmed` 1건만. 상한(레지스트리 항목 전부 < 2 · 메뉴 부서 · 묘비 잔존 부서 포함 — codex 1R F4) · 간격 10분 · 자원 hard 재점검 → 계정 시드 → `catalog_upsert` → `write_mission` → `ensure_dirs` → `CLAUDE.md` → `cysd` 탐색 → 호출 의도(호출 수·시각·간격 기준) 영속 → `cys-dept create <키>`(절대경로 · `start_new_session` · stdout 은 파일 · 기다림 300초) → `backfill_mission_key` → **첫 호출 전부터 있던** 묘비만 해소 1회 재시도(생성 뒤 새로 생긴 묘비 = GUI 닫기의 의도 기록일 수 있어 건드리지 않음 · codex 1R F17). 요청 하나의 집행이 예외로 죽으면 그 요청만 `failed(crash:…)`(agy 1R F1)
+5. ⓔ 닫기 1건: 카드에 기록한 맡은 일 키·폴더·소켓이 지금 그 번호의 부서와 같을 때만(다르면 `failed(target_changed:…)` · codex 1R F10) `javis_org.py destroy --dept <dept-N> --purge --purge-state`(CSO 신원 · `--purge-workdir` 없음) → 원장 청소
+6. ⓕ·ⓖ 알림: 상태 전이당 1회 `cys send --queued --to master "[부서결과] <번호>"` · 가동 판정 처음 1회 `"[부서가동] <번호>"` (Return 을 덧붙이지 않는다 — 큐 배달이 CR 을 포함한다). 보장 = **최대 1회**(기록을 먼저 영속하고 보낸다 · codex 1R F14) — 보내기 실패·유실은 마스터가 매 턴 부르는 `status --pending` 이 받친다
 7. 표지 결론: 진행 중 요청이 있으면 표지를 만든다. **지우지 않는다**(치운 것은 3 이 이미 했고, 그 뒤에 생긴 표지는 이 틱이 못 본 confirm 의 것이다)
 8. 잠금 해제
 
@@ -106,6 +107,8 @@
 ### 4-2. create-timeout(2R ⑦)
 
 300초 안에 끝나지 않으면 `create-timeout` 으로 기록하고 첫 자식 pid 를 남긴다. 다음 틱들은 **그 pid 가 살아 있으면 재호출하지 않는다**(첫 자식의 EXIT trap 이 두 번째 등재를 지우는 경합 방지). 죽었으면 레지스트리에서 `mission_key == 키` 를 찾아 판정하고, 없을 때만 다시 부른다(요청당 2회). 첫 자식이 1시간 넘게 살아 있으면 `failed(create_hang)`.
+
+★codex 1R F2·F5·F7(A1-2b): 이 재진입 규칙은 `create-timeout` 상태만이 아니라 **한 번이라도 create 를 부른 모든 요청**에 적용된다 — 틱이 기다리다 죽으면 디스크 상태는 `confirmed` 로 남기 때문이다. 다시 부를 때는 첫 호출과 같은 상한·간격 10분·자원·안내문(`claude_md.txt` 해시 + 설치된 `CLAUDE.md`) 검사를 다시 지난다. 남은 창: spawn 과 pid 기록 사이(마이크로초 단위)에 틱이 죽으면 pid 가 없어 생존 검사를 못 한다 — 그 경우에도 호출 수·간격 기준은 spawn 전에 영속돼 있어 10분 뒤 재호출·요청당 2회 상한은 지켜진다.
 
 ## 5. 판정표(결정 트리 · 위에서부터 첫 매칭)
 
@@ -131,6 +134,7 @@
 - **P 축**: `gate_pending` 이 하나라도 null 이 아니면 open. 전부 null 이면 `javis_boot_node.gate_pending_axis_enabled()`(데몬과 같은 3스위치 미러)가 참일 때만 closed, 아니면 unknown(C18 — null 은 「관문 없음」과 「축이 꺼짐」을 구별하지 못한다).
 - **망라성**: 1296 조합 전부가 1~13 중 한 행에 떨어지고 1~12 행이 전부 도달된다(self-test). 13행 조합 36개는 전부 `R=없음 ∧ ¬G ∧ ¬T`(요청도 부서도 없는 이름)뿐이다 — self-test 가 전수 출력한다.
 - **설계 문장 정정 1건**: 설계 §6-2 는 「8행을 지우면 13번으로 떨어진다」고 적었으나 실제로는 **9행(「켜는 중」)** 이 받는다 — 꺼진 부서를 켜는 중이라고 말하게 되므로 더 나쁘다. 내장 뮤턴트는 실제 귀착 행(9)으로 단언한다.
+  - 정정 주석(2026-09-18 · TICKET=dept-impl-A1-2b): 이 정정(「8행→9행」)은 master 판정으로 승인됐다(HANDOFF-A1-2 §4 판단 7건 전건 승인). 설계 v2.1 §6-2 의 「13번」 문장은 이 문서로 대체된다.
 - 닫기 요청(`kind=close`)은 이 트리 밖의 짧은 표로 말한다(확인 대기 · 닫을 차례 · 만료 · 닫힘 · 실패).
 
 ## 6. 카드
@@ -153,14 +157,14 @@
 ## 8. 미션 배달
 
 - 영속 채널 = 부서 작업 폴더의 `CLAUDE.md`. **실제로 이 파일을 cwd 로 읽는 것은 부서장(master) 좌석 하나다**(`cys-dept` 가 master 만 `--cwd <작업폴더>` 로 띄운다). 운영 담당·작업자는 편성이 `<작업폴더>/cso/` · `<작업폴더>/workers/w1/` 에 띄우고, 그 폴더에는 `javis_seat` 의 얇은 `CLAUDE.md` 가 먼저 있다 — 상위 파일은 상위 폴더 탐색으로만 닿고 두 파일의 우선순위는 미확인이다(2R 1-A · V-MISSION 관찰 항목).
-- 이미 `CLAUDE.md` 가 있으면: 첫 줄 표식이 있으면 교체, 없으면(사용자 파일) 건드리지 않고 `failed(claude_md_conflict)`.
-- 확인 뒤 `claude_md.txt` 가 바뀌면(sha256 불일치) `confirm` 은 exit 7, 틱은 `failed(claude_md_changed)`.
+- 이미 `CLAUDE.md` 가 있으면(codex 1R F6): ⑴이 요청의 바이트 그대로면 그대로 둔다 ⑵첫 줄 표식이 있고 표식의 sha256 이 표식 아래 전부와 맞으면(= 생성한 그대로 · 사람이 안 고침) 교체 ⑶그 밖(표식 없는 사용자 파일 · 표식을 남긴 채 사람이 고친 파일)은 건드리지 않고 `failed(claude_md_conflict)`. 없으면 임시 파일을 `link` 로 붙여 **no-clobber** 로 놓는다(그 사이 사람이 만든 파일이 있으면 충돌). 남은 창: ⑵의 대조와 교체 사이에 사람이 고치는 경합은 닫지 못했다.
+- 확인 뒤 `claude_md.txt` 가 바뀌거나 사라지거나 해독 불가가 되면 `confirm` 은 exit 7, 틱은 `failed(claude_md_changed)`(재호출 직전에도 다시 대조 · codex 1R F7·F15).
 - `kickoff` 본문: `[부서시작 <번호>] (CLAUDE.md sha256 <앞 12자리>) 오너가 처음 맡긴 일: <카드에 보였던 그 문장>` — 12자리는 `CLAUDE.md` 표식 줄의 sha256 과 같은 값이다(부서장이 대조).
 
 ## 9. 시험·뮤턴트
 
 - `python3 -m unittest tests.test_dept_request`(bin 폴더에서) — 임시 HOME · 가짜 cys/cys-dept/cysd/org · 실 `~/.cys/dept-requests` 무접촉 단언.
-- `python3 tests/mut_dept_request.py` — 변이 17종. 적용 단언 → 기대 킬러 시험 이름으로 귀속 → import 오류는 CRASH(측정 무효)로 따로 센다. `M7a`(본부 제외만 끄기)는 부서 모양 판별이 두 번째 벨트라 **생존이 예상값**이고, 두 벨트를 함께 끈 `M7` 이 킬되는 것으로 그물을 증명한다.
+- `python3 tests/mut_dept_request.py` — 변이 34종(A1-2 17종 + A1-2b 리뷰 수리 17종 M17~M33 · 수리 1건당 1). 적용 단언 → 기대 킬러 시험 이름으로 귀속 → import 오류는 CRASH(측정 무효)로 따로 센다. `M7a`(본부 제외만 끄기)는 부서 모양 판별이 두 번째 벨트라 **생존이 예상값**이고, 두 벨트를 함께 끈 `M7` 이 킬되는 것으로 그물을 증명한다.
 - `python3 javis_dept_request.py self-test` — 결정 트리 1296 조합 · 13행 조합 전수 출력 · 내장 뮤턴트(8행 삭제 · 옛 5행) · javis_org 의미 대조(+한 글자 변이) · 레인 · 계정 키.
 - Rust: `cargo test --bin cysd builtin` — 잡 계약 핀(command 레인 · base_only · 마커 · CSO 신원 · 표지 게이트 부재 · 매분 · 버전 불변) + id 선점 conflict 핀.
 

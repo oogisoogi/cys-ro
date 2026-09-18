@@ -89,8 +89,16 @@ if cmd == "create":
     reg["depts"][name] = {"socket": os.path.join(home, ".local/state/cys-dept-%s/cys.sock" % name),
                           "mission_key": arg, "display_name": dep["display"], "cwd": dep["cwd"]}
     json.dump(reg, open(reg_p, "w"))
+    if os.environ.get("FAKE_CREATE_TOMB") == "1":      # 생성 직후 GUI 가 닫으며 묘비를 먼저 적은 경우
+        tp = os.path.join(os.environ["CYS_BASE_STATE_DIR"], "dept_tombstones.json")
+        d = json.load(open(tp)) if os.path.exists(tp) else {"dept_tombstones": []}
+        d["dept_tombstones"] = sorted(set(d["dept_tombstones"]) | {name}); json.dump(d, open(tp, "w"))
+    time.sleep(float(os.environ.get("FAKE_CREATE_SLEEP_AFTER", "0")))
     print("[cys-dept] create 완료", file=sys.stderr)
-    print(name); sys.exit(0)
+    print(name, flush=True)
+    with open(os.path.join(home, "fake-cys-dept.log"), "a") as f:
+        f.write(json.dumps(["printed", name]) + "\n")
+    sys.exit(0)
 if cmd == "down":
     reg = json.load(open(reg_p)); reg["depts"].pop(arg, None); json.dump(reg, open(reg_p, "w")); sys.exit(0)
 sys.exit(0)
@@ -342,7 +350,8 @@ class TestCritical2SweepUngated(Base):
         self.m.atomic_write_text(os.path.join(self.m.req_dir(old["id"]), "utterance.txt"), "발화 원문")
         self.m.save_req(old)
         rj = os.path.join(self.m.req_dir(old["id"]), "request.json")
-        d = json.load(open(rj)); d["updated_at"] = time.time() - 8 * 86400; json.dump(d, open(rj, "w"))
+        d = json.load(open(rj)); d["updated_at"] = d["created_at"] = time.time() - 8 * 86400
+        json.dump(d, open(rj, "w"))
         self.m._SELF_HEAL = False
         self.tick()
         self.assertEqual(self.req(rid)["state"], "expired", "만료가 게이트 뒤에 갇혔다")
@@ -467,6 +476,9 @@ class TestCreateTimeout(Base):
         rid = self.proposed_confirmed()
         os.environ["CYS_DEPT_CREATE_WAIT_SEC"] = "1"
         os.environ["FAKE_CREATE_SLEEP"] = "6"
+        # A1-2b(codex F5): 재호출도 10분 간격을 지나므로 간격 벨트가 생존 검사를 가린다(M9 층 방어 실측) —
+        # 간격을 0 으로 빼 생존 검사 축만 잰다.
+        os.environ["CYS_DEPT_CREATE_GAP_SEC"] = "0"
         self.tick()
         r = self.req(rid)
         self.assertEqual(r["state"], "create-timeout")
@@ -584,6 +596,297 @@ class TestSelfTest(Base):
         with redirect_stdout(buf):
             rc = self.m.self_test()
         self.assertEqual(rc, 0, buf.getvalue()[-2000:])
+
+
+class TestReviewR1(Base):
+    """A1-2b · agy 1R F1 + codex 1R 수용분 — 수리 1건당 시험 1(뮤턴트 하네스 M17~ 가 이름으로 귀속한다)."""
+
+    def _tick_proc(self, extra=None):
+        env = dict(os.environ, CYS_ROLE="cso", PYTHONPATH=BIN, PYTHONWARNINGS="ignore")
+        env.update(extra or {})
+        return subprocess.Popen([sys.executable, MOD_PATH, "tick"], env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+
+    def _wait(self, cond, sec):
+        end = time.time() + sec
+        while time.time() < end:
+            if cond():
+                return True
+            time.sleep(0.1)
+        return cond()
+
+    def _reap_child(self, rid, sec=10):
+        pid = (self.req(rid) or {}).get("create_pid")
+        if pid:
+            self._wait(lambda: not self.m._pid_alive(pid), sec)
+
+    def _creates(self):
+        p = os.path.join(self.home, "fake-cys-dept.log")
+        return [json.loads(l) for l in open(p) if json.loads(l)[0] == "create"] if os.path.exists(p) else []
+
+    def test_agy_f1_step_crash_fails_request_not_tick(self):
+        rid = self.proposed_confirmed()
+        os.environ["CYS_DEPT_BIN"] = os.path.join(self.tmp, "없는-cys-dept")
+        self.assertEqual(self.tick(), 0, "요청 하나의 예외가 틱 전체를 죽이면 안 된다")
+        r = self.req(rid)
+        self.assertEqual(r["state"], "failed")
+        self.assertTrue(r["fail_reason"].startswith("crash:"), r["fail_reason"])
+        self.assertEqual(self.tick(), 0, "다음 틱이 같은 자리에서 또 죽지 않는다")
+
+    def test_f1_utterance_deleted_7d_after_proposal_in_any_state(self):
+        utter = os.path.join(self.tmp, "u.txt")
+        open(utter, "w").write("사용자 발화 원문")
+        rc, o = self.run_cmd("propose", "--name", "가부서", "--mission", "일", "--claude-md-file", self.body,
+                             "--utterance-file", utter)
+        r = self.req(o["request"])
+        r["state"] = "created"                       # 가동 알림 전 · 옛 코드엔 삭제 분기가 없던 상태
+        r["created_at"] = time.time() - 8 * 86400
+        self.m.save_req(r)                           # updated_at = 지금(저장 때마다 연장되던 기준)
+        self.tick()
+        self.assertFalse(os.path.exists(os.path.join(self.m.req_dir(r["id"]), "utterance.txt")))
+
+    def test_f2_no_respawn_when_tick_died_mid_wait(self):
+        rid = self.proposed_confirmed()
+        os.environ["CYS_DEPT_CREATE_GAP_SEC"] = "0"   # 간격 벨트를 빼고 생존 검사만 잰다
+        p = self._tick_proc({"FAKE_CREATE_SLEEP": "4", "CYS_DEPT_CREATE_WAIT_SEC": "60"})
+        try:
+            self.assertTrue(self._wait(lambda: (self.req(rid) or {}).get("create_pid"), 8), "첫 호출 pid 기록")
+            self.assertTrue(self._wait(lambda: len(self._creates()) == 1, 8), "첫 자식 기동")
+            p.kill()
+            p.wait()
+            self.assertEqual(self.req(rid)["state"], "confirmed", "틱이 기다리다 죽으면 디스크는 confirmed")
+            self.tick()
+            self.assertEqual(len(self._creates()), 1, "살아 있는 첫 자식을 두고 다시 부르면 안 된다")
+            self.assertEqual(self.req(rid)["create_calls"], 1)
+        finally:
+            self._reap_child(rid)
+
+    def test_f3_reused_number_listed_in_status_all(self):
+        rid = self.proposed_confirmed()
+        self.tick()
+        reg = self.reg()
+        reg["dept-1"]["mission_key"] = "zz0000"          # 닫힌 뒤 같은 번호를 메뉴 부서가 재사용
+        json.dump({"depts": reg}, open(os.environ["CYS_DEPTS_JSON"], "w"))
+        tp = os.path.join(os.environ["CYS_BASE_STATE_DIR"], "dept_tombstones.json")
+        json.dump({"dept_tombstones": ["dept-1"]}, open(tp, "w"))
+        rc, o = self.run_cmd("status", "--all")
+        mine = [x for x in o["rows"] if x["request"] == rid]
+        self.assertEqual(mine[0]["row"], 5, "이 요청의 부서는 닫혔다")
+        other = [x for x in o["rows"] if x["request"] is None and x["dept"] == "dept-1"]
+        self.assertEqual(len(other), 1, "번호를 재사용한 부서가 표에서 빠졌다: %s" % o["rows"])
+        self.assertTrue(other[0].get("tombstone_residue"))
+
+    def test_f4_tombstone_residue_counts_toward_cap(self):
+        json.dump({"depts": {"dept-1": {"socket": "/x/cys-dept-dept-1/cys.sock"},
+                             "dept-2": {"socket": "/x/cys-dept-dept-2/cys.sock"}}},
+                  open(os.environ["CYS_DEPTS_JSON"], "w"))
+        tp = os.path.join(os.environ["CYS_BASE_STATE_DIR"], "dept_tombstones.json")
+        json.dump({"dept_tombstones": ["dept-1"]}, open(tp, "w"))
+        rc, o = self.propose()
+        self.assertEqual(rc, 5, o)
+        self.assertEqual(o.get("reason"), "cap")
+
+    def _timeout_then_dead_unregistered(self, rid):
+        os.environ["CYS_DEPT_CREATE_WAIT_SEC"] = "1"
+        os.environ["FAKE_CREATE_SLEEP"] = "2"
+        os.environ["FAKE_CREATE_RC"] = "1"            # 등재 없이 끝나는 첫 자식
+        self.tick()
+        self.assertEqual(self.req(rid)["state"], "create-timeout")
+        self._reap_child(rid)
+        os.environ.pop("FAKE_CREATE_RC")
+        os.environ["FAKE_CREATE_SLEEP"] = "0"
+        os.environ["CYS_DEPT_CREATE_WAIT_SEC"] = "20"
+
+    def test_f5_retry_respects_gap(self):
+        rid = self.proposed_confirmed()
+        self._timeout_then_dead_unregistered(rid)
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["create_calls"], 1, "재호출도 10분 간격을 지킨다")
+        self.assertTrue(r.get("waiting_gap"))
+        os.environ["CYS_DEPT_CREATE_GAP_SEC"] = "0"
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["create_calls"], 2)
+        self.assertEqual(r["state"], "created", r.get("events"))
+
+    def test_f6_edited_generated_claude_md_is_conflict(self):
+        rid = self.proposed_confirmed()
+        r = self.req(rid)
+        os.makedirs(r["cwd"], exist_ok=True)
+        text, _ = self.m.build_claude_md("dr-old-0000", r["display"], "옛 일", "옛 본문\n")
+        dest = os.path.join(r["cwd"], "CLAUDE.md")
+        open(dest, "w", encoding="utf-8").write(text + "사람이 덧붙인 줄\n")
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r.get("fail_reason"), "claude_md_conflict")
+        self.assertTrue(open(dest, encoding="utf-8").read().endswith("사람이 덧붙인 줄\n"))
+
+    def test_f6_untouched_generated_claude_md_is_replaced(self):
+        rid = self.proposed_confirmed()
+        r = self.req(rid)
+        os.makedirs(r["cwd"], exist_ok=True)
+        text, _ = self.m.build_claude_md("dr-old-0000", r["display"], "옛 일", "옛 본문\n")
+        open(os.path.join(r["cwd"], "CLAUDE.md"), "w", encoding="utf-8").write(text)
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["state"], "created", r.get("events"))
+        self.assertTrue(open(os.path.join(r["cwd"], "CLAUDE.md"), encoding="utf-8").readline()
+                        .startswith("<!-- cys-dept-mission request=%s " % rid))
+
+    def test_f7_retry_rechecks_claude_md(self):
+        rid = self.proposed_confirmed()
+        self._timeout_then_dead_unregistered(rid)
+        with open(os.path.join(self.m.req_dir(rid), "claude_md.txt"), "a") as f:
+            f.write("재호출 전에 덧붙인 지시\n")
+        os.environ["CYS_DEPT_CREATE_GAP_SEC"] = "0"
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r.get("fail_reason"), "claude_md_changed")
+        self.assertEqual(r["create_calls"], 1)
+
+    def test_f8_stale_writers_do_not_revert_confirm(self):
+        rc, o = self.propose()
+        rid = o["request"]
+        stale = [self.req(rid)]                          # 교체하려는 쪽이 읽은 순간은 proposed
+        self.run_cmd("confirm", rid)
+        real = self.m.all_reqs
+        self.m.all_reqs = lambda: stale
+        try:
+            self.m._supersede_open(except_id="dr-other")
+        finally:
+            self.m.all_reqs = real
+        self.assertEqual(self.req(rid)["state"], "confirmed", "옛 객체가 확인을 superseded 로 되돌렸다")
+        rj = os.path.join(self.m.req_dir(rid), "request.json")
+        before = open(rj, "rb").read()
+        self.run_cmd("status", "--say", rid)
+        self.assertEqual(open(rj, "rb").read(), before, "status --say 는 request.json 을 쓰지 않는다")
+
+    def test_f9_tick_lock_is_kernel_held(self):
+        rid = self.proposed_confirmed()
+        lp = self.m.lock_path()
+        code = ("import sys,time; sys.path.insert(0,%r); import javis_lock; "
+                "l=javis_lock.FileLock(%r); assert l.acquire()=='acquired'; print('held',flush=True); "
+                "time.sleep(60)" % (BIN, lp))
+        h = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(h.stdout.readline().strip(), "held")
+            self.assertEqual(self.tick(), 0)
+            self.assertEqual(self.req(rid)["state"], "confirmed", "잠금 보유자가 살아 있는데 틱이 들어갔다")
+        finally:
+            h.kill()
+            h.wait()
+        self.tick()                                      # 보유자가 강제 종료되면 커널이 푼다(회수 단계 없음)
+        self.assertEqual(self.req(rid)["state"], "created")
+
+    def test_f10_close_refuses_when_number_now_other_dept(self):
+        self.proposed_confirmed()
+        self.tick()
+        rc, o = self.run_cmd("propose", "--close", "설교준비부")
+        cid = o["request"]
+        self.run_cmd("confirm", cid)
+        reg = self.reg()
+        reg["dept-1"]["mission_key"] = "zz0000"          # 그 사이 같은 번호가 다른 부서가 됐다
+        json.dump({"depts": reg}, open(os.environ["CYS_DEPTS_JSON"], "w"))
+        self.tick()
+        c = self.req(cid)
+        self.assertEqual(c["state"], "failed")
+        self.assertTrue(c["fail_reason"].startswith("target_changed"), c["fail_reason"])
+        self.assertIn("dept-1", self.reg(), "확인받지 않은 부서를 닫았다")
+        self.assertFalse(os.path.exists(os.path.join(self.home, "fake-org.log")))
+
+    def test_f11_discard_waits_for_tick_lock(self):
+        rc, o = self.propose()
+        rid = o["request"]
+        import javis_lock
+        os.makedirs(self.m.root_dir(), exist_ok=True)
+        hold = javis_lock.FileLock(self.m.lock_path())
+        self.assertEqual(hold.acquire(), "acquired")
+        try:
+            rc, o2 = self.run_cmd("discard", rid)
+            self.assertEqual(rc, 7, o2)
+            self.assertEqual(self.req(rid)["state"], "proposed")
+        finally:
+            hold.release()
+        self.assertEqual(self.run_cmd("discard", rid)[0], 0)
+        self.assertEqual(self.req(rid)["state"], "discarded")
+
+    def test_f11_discard_refuses_live_create(self):
+        rid = self.proposed_confirmed()
+        os.environ["CYS_DEPT_CREATE_WAIT_SEC"] = "1"
+        os.environ["FAKE_CREATE_SLEEP"] = "4"
+        self.tick()
+        try:
+            self.assertEqual(self.req(rid)["state"], "create-timeout")
+            rc, o = self.run_cmd("discard", rid)
+            self.assertEqual(rc, 7, o)
+            self.assertEqual(o.get("reason"), "in_flight")
+        finally:
+            self._reap_child(rid)
+
+    def test_f12_unreadable_registry_holds_destruction(self):
+        rid = self.proposed_confirmed()
+        s2 = os.path.join(self.home, ".local/state/cys-dept-dept-2/cys.sock")
+        import javis_formation as jf
+        fd = os.path.join(os.environ["CYS_STATE_DIR"], "formation")
+        os.makedirs(fd, exist_ok=True)
+        led = os.path.join(fd, jf._sanitize_key(s2) + ".json")
+        json.dump({"state": "complete", "socket": s2}, open(led, "w"))
+        open(os.environ["CYS_DEPTS_JSON"], "w").write('{"depts": {"dept-2": ')     # 쓰는 도중에 읽힌 파일
+        self.assertEqual(self.tick(), 0)
+        self.assertTrue(os.path.exists(led), "못 읽은 목록을 「부서 없음」으로 읽고 원장을 옮겼다")
+        self.assertEqual(self.req(rid)["state"], "confirmed", "못 읽은 목록 위에서 생성을 집행했다")
+        rc, o = self.propose("다른부서")
+        self.assertEqual(rc, 2, o)
+
+    def test_f14_running_notify_not_duplicated_after_crash(self):
+        rid = self.proposed_confirmed()
+        self.tick()
+        self.set_alive("dept-1")
+        self.set_formation("dept-1")
+        real = self.m._notify
+
+        def sent_then_die(r, tag):
+            real(r, tag)
+            if tag == "부서가동":
+                raise RuntimeError("보낸 뒤 저장 전 사망")
+        self.m._notify = sent_then_die
+        try:
+            with self.assertRaises(RuntimeError):
+                self.tick()
+        finally:
+            self.m._notify = real
+        self.tick()
+        runs = [a for a in self.cys_log() if a and a[0] == "send" and "[부서가동] %s" % rid in a]
+        self.assertEqual(len(runs), 1, "가동 알림이 중복 발송됐다")
+
+    def test_f15_missing_claude_md_is_request_failure(self):
+        rid = self.proposed_confirmed()
+        os.remove(os.path.join(self.m.req_dir(rid), "claude_md.txt"))
+        self.assertEqual(self.tick(), 0)
+        self.assertEqual(self.req(rid)["fail_reason"], "claude_md_changed")
+
+    def test_f16_detached_child_output_survives_tick_exit(self):
+        rid = self.proposed_confirmed()
+        p = self._tick_proc({"CYS_DEPT_CREATE_WAIT_SEC": "1", "FAKE_CREATE_SLEEP_AFTER": "3"})
+        p.wait(timeout=30)
+        self.assertEqual(self.req(rid)["state"], "create-timeout")
+        self._reap_child(rid)
+        printed = [json.loads(l) for l in open(os.path.join(self.home, "fake-cys-dept.log"))
+                   if json.loads(l)[0] == "printed"]
+        self.assertEqual(len(printed), 1, "틱이 끝난 뒤 자식이 결과를 쓰다 죽었다(파이프)")
+        self.tick()
+        self.assertEqual(self.req(rid)["state"], "created")
+
+    def test_f17_fresh_tombstone_after_create_is_kept(self):
+        rid = self.proposed_confirmed()
+        os.environ["FAKE_CREATE_TOMB"] = "1"
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["state"], "created")
+        self.assertNotIn("tombstone_retry", r)
+        tp = os.path.join(os.environ["CYS_BASE_STATE_DIR"], "dept_tombstones.json")
+        self.assertIn("dept-1", json.load(open(tp))["dept_tombstones"], "방금 닫힌 부서의 묘비를 지웠다")
 
 
 class TestNoProduction(unittest.TestCase):

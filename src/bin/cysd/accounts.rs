@@ -31,7 +31,7 @@ const RATE_STALE_NO_OBS_SECS: f64 = 24.0 * 3600.0;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AccountKey {
-    pub provider: String,   // "claude" | "codex" | "antigravity" | (accounts.json 선언 provider)
+    pub provider: String,   // "claude" | "codex" | (accounts.json 선언 provider)
     pub account_id: String, // claude: accountUuid · 그 외 단일 홈: "default"
 }
 
@@ -59,12 +59,12 @@ pub struct ScopedGauge {
 #[derive(Clone, Debug)]
 pub struct AccountView {
     pub key: AccountKey,
-    pub label: String,        // claude: 이메일 · codex: "OpenAI Codex" · agy: "Antigravity (agy)"
+    pub label: String,        // claude: 이메일 · codex: "OpenAI Codex"
     pub plan: Option<String>, // oauthAccount rate limit tier — 값이 있을 때만 UI 표시
     pub profiles: BTreeSet<String>, // 이 계정으로 관측된 프로필 dir들(홈 상대 표기)
     pub rate: Vec<RateWindow>,
     pub updated_at: f64, // 0.0 = 관측 전(발견만)
-    pub source: String,  // "statusline" | "rollout" | "agy-rpc" | "adapter:<p>" | "oauth" | "snapshot"(부트 복원)
+    pub source: String,  // "statusline" | "rollout" | "adapter:<p>" | "oauth" | "snapshot"(부트 복원)
     pub adapter: bool,   // false = 관측 어댑터 없음(accounts.json adapter:"none" 선언 계정)
     /// 모델 스코프 주간 게이지(위 주석) — rate 슬롯과 독립. 빈 벡터 = 관측 없음(그리지 않는다).
     pub scoped: Vec<ScopedGauge>,
@@ -168,12 +168,9 @@ fn resolve(
             None,
             Some(".codex".into()),
         )),
-        "gemini" | "agy" | "antigravity" => Some((
-            AccountKey { provider: "antigravity".into(), account_id: "default".into() },
-            "Antigravity (agy)".into(),
-            None,
-            Some(".antigravity".into()),
-        )),
+        // usage-noagy(2026-09-19 박사님 결정): agy(gemini)는 계정 사용량 표에서 뺀다 — 의미 없음.
+        // note_rate가 이 분기로 오면 None → 호출부(usage.rs update_agy_usage)의 note_rate 호출은
+        // 그대로 남아 있어도 무조건 no-op이다(HANDOFF-usage-noagy.md 결정 기록).
         _ => None,
     }
 }
@@ -305,27 +302,7 @@ pub fn seed_known(daemon: &Arc<Daemon>) {
                         scoped: Vec::new(),
                     });
             }
-            if home.join(".antigravity").is_dir() {
-                st.views
-                    .entry(AccountKey {
-                        provider: "antigravity".into(),
-                        account_id: "default".into(),
-                    })
-                    .or_insert_with(|| AccountView {
-                        key: AccountKey {
-                            provider: "antigravity".into(),
-                            account_id: "default".into(),
-                        },
-                        label: "Antigravity (agy)".into(),
-                        plan: None,
-                        profiles: BTreeSet::from([".antigravity".to_string()]),
-                        rate: Vec::new(),
-                        updated_at: 0.0,
-                        source: String::new(),
-                        adapter: true,
-                        scoped: Vec::new(),
-                    });
-            }
+            // usage-noagy(2026-09-19): antigravity(agy) 자동 시딩 제거 — 박사님 결정("의미가 없다").
         }
         // 선언 계정(~/.cys/accounts.json — pack 밖: pack 스윕/치유 사정권 회피)
         let decl = home.join(".cys/accounts.json");
@@ -373,6 +350,11 @@ pub fn seed_known(daemon: &Arc<Daemon>) {
     if let Some(rows) = rows {
         let mut st = daemon.accounts.lock().unwrap();
         for (ts, provider, account, label, win, pct, resets) in rows {
+            // usage-noagy(2026-09-19): 옛 analytics.db에 antigravity 스냅샷 행이 남아 있어도
+            // 부트 복원에서 버린다 — 코드에서 시딩을 지워도 과거 기록으로 되살아나면 의미가 없다.
+            if provider == "antigravity" {
+                continue;
+            }
             let key = AccountKey { provider, account_id: account };
             let v = st.views.entry(key.clone()).or_insert_with(|| AccountView {
                 key,
@@ -1139,16 +1121,119 @@ mod tests {
     #[test]
     fn resolve_agents() {
         let mut st = AccountsState::default();
-        // codex/agy는 세션 파일 불요·단일 계정
+        // codex는 세션 파일 불요·단일 계정
         let (k, l, _, _) = resolve(&mut st, "codex", "").unwrap();
         assert_eq!((k.provider.as_str(), k.account_id.as_str()), ("codex", "default"));
         assert_eq!(l, "OpenAI Codex");
-        let (k, ..) = resolve(&mut st, "gemini", "").unwrap();
-        assert_eq!(k.provider, "antigravity");
+        // usage-noagy(2026-09-19): gemini/agy/antigravity는 더 이상 계정으로 귀속되지 않는다
+        // — 박사님 결정("토큰 사용량 표시 기능에서 agy는 삭제하자. 의미가 없다").
+        for agent in ["gemini", "agy", "antigravity"] {
+            assert!(
+                resolve(&mut st, agent, "").is_none(),
+                "{agent} 가 여전히 계정으로 귀속된다 — usage-noagy 회귀"
+            );
+        }
         // 미지 agent → None
         assert!(resolve(&mut st, "mystery", "").is_none());
         // claude인데 신원 해석 불가 → None(스킵 — 유령 계정 금지)
         assert!(resolve(&mut st, "claude", "/nonexist/projects/x/s.jsonl").is_none());
+    }
+
+    // ── usage-noagy(TICKET=usage-noagy 2026-09-19): agy(antigravity) 계정 표 제외 회귀 ──
+
+    /// 테스트 전용 격리 데몬 — schedule.rs test_daemon과 같은 패턴(고유 임시 소켓 dir).
+    fn test_daemon() -> Arc<Daemon> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "cys-acct-daemon-{}-{}-{}",
+            std::process::id(),
+            crate::state::now_epoch().to_bits(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&d);
+        Daemon::new(d.join("cysd.sock"))
+    }
+
+    /// HOME 환경변수를 건드리는 테스트끼리 직렬화 — handlers.rs ACL_ENV_LOCK과 같은 이유
+    /// (병렬 실행 시 서로 다른 테스트가 같은 프로세스 전역 HOME을 밟는다).
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// ★뮤턴트 1: `~/.antigravity` 디렉터리가 있어도 seed_known은 antigravity 계정을 만들지 않는다
+    /// — seed_known의 antigravity 시딩 블록을 되살리면 이 시험이 적색이 된다.
+    #[test]
+    fn seed_known_ignores_antigravity_dir() {
+        let _g = HOME_ENV_LOCK.lock().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let fake_home = tmp("seed-antigravity-dir");
+        std::fs::create_dir_all(fake_home.join(".antigravity")).unwrap();
+        std::env::set_var("HOME", &fake_home);
+
+        let daemon = test_daemon();
+        seed_known(&daemon);
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let st = daemon.accounts.lock().unwrap();
+        assert!(
+            !st.views.keys().any(|k| k.provider == "antigravity"),
+            "~/.antigravity 존재만으로 계정이 등록됐다 — usage-noagy 회귀: {:?}",
+            st.views.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// 옛 analytics.db(코드 개정 전에 기록된)에 antigravity 스냅샷 행이 남아 있어도,
+    /// 부트 복원(seed_known)이 그 행으로 계정을 되살리지 않는다 — 클로드 계정 등 다른 provider
+    /// 행은 그대로 복원돼야 한다(필터가 antigravity만 정확히 겨눈다는 것을 함께 확인).
+    #[test]
+    fn seed_known_drops_antigravity_snapshot_rows() {
+        let _g = HOME_ENV_LOCK.lock().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let fake_home = tmp("seed-antigravity-snapshot");
+        std::env::set_var("HOME", &fake_home);
+
+        let daemon = test_daemon();
+        let now = crate::state::now_epoch();
+        {
+            let guard = daemon.analytics.lock().unwrap();
+            let conn = guard.as_ref().expect("test_daemon 은 analytics.db 를 연다");
+            crate::analytics::record_rate_snapshot(
+                conn, now, "antigravity", "default", "Antigravity (agy)", "5h", 42.0, None,
+            );
+            crate::analytics::record_rate_snapshot(
+                conn, now, "claude", "snap-u1", "a@b.c", "5h", 10.0, None,
+            );
+        }
+        seed_known(&daemon);
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let st = daemon.accounts.lock().unwrap();
+        assert!(
+            !st.views.keys().any(|k| k.provider == "antigravity"),
+            "옛 analytics.db 의 antigravity 스냅샷 행이 부트 복원에서 되살아났다"
+        );
+        assert!(
+            st.views.keys().any(|k| k.provider == "claude" && k.account_id == "snap-u1"),
+            "필터가 antigravity 아닌 행까지 지웠다 — claude 스냅샷 복원 실패"
+        );
+    }
+
+    /// note_rate("gemini", …)는 resolve()가 None을 내므로 호출이 남아 있어도 계정 표에 반영 0이다
+    /// — usage.rs의 update_agy_usage 호출부는 그대로 두되 no-op임을 여기서 못박는다
+    /// (HANDOFF-usage-noagy.md "호출 유지·no-op" 결정의 회귀 시험).
+    #[test]
+    fn note_rate_gemini_is_noop() {
+        let daemon = test_daemon();
+        let rate = vec![RateWindow { label: "5h".into(), used_pct: 50.0, resets_at: None }];
+        note_rate(&daemon, "gemini", "", &rate, "agy-rpc", crate::state::now_epoch());
+        let st = daemon.accounts.lock().unwrap();
+        assert!(st.views.is_empty(), "gemini note_rate 가 계정을 만들었다 — usage-noagy 회귀");
     }
 
     // ── rate 창 stale 판정 (TICKET=cys-usage-stale-rate) ──

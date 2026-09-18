@@ -73,3 +73,25 @@ python3 -c "import sys;sys.path.insert(0,'cysjavis-pack/bin');import javis_prefl
 - [ ] 등록 후 `timeout: 5` 가 두 엔트리에 박혔는지(`HOOK_TIMEOUT_S`).
 - [ ] CI 미러 push(3레인 등재분) · 릴리스 노트 1줄(마스터 첫 세션 주입 변경 · 오버레이 처음 도달 · 사건 주입).
 - [ ] 윈도 실기(W7·W9 — PortableGit sh 에서 셸 내장 거름·글자 수).
+
+## 6. T3-verify 결과 (worker-4 surface:813 · TICKET=injection-slim-T3-verify · 2026-09-18 19:35~20:0x)
+
+§2 미완 4건 처리 결과. 증거 폴더 = 세션 스크래치 `…/eaa6a685-9cb3-4b87-b90c-68437229d62d/scratchpad/`(`e2e/` · `suite/` · `agy/`).
+
+| 항목 | 결과 |
+|---|---|
+| E2E 1회차(수정 전 a56df481) | 세션 0c1f001e · 6단계 기대대로 · 사본 `e2e/r1/transcript.jsonl`(sha256 75ef4b60…) |
+| E2E 2회차(수정 후 0845f949) | 세션 0672f692 · 6단계 기대대로 · 사본 `e2e/transcript.jsonl`(sha256 a41aff8e…) · 원장 4행(§1-A·§2 inject · §14 deny · §0-C inject) · 서브에이전트 훅 첨부 0 · 원장 행 0 |
+| 계정2 부산물 | `~/.cys/claude/projects/-private-tmp-claude-501--Users-oogisoogi-axdev--wt-cys-v110-inject-eaa6a685-9cb3-4b87-b90c-68437229d62d-scratchpad-e2e-cwd/` 사본 해시 일치 확인 후 삭제 |
+| health 전건 | 수정 전 GREEN 149/0/1skip(H-WIN-11) 404.0s · 수정 후 GREEN 149/0/1skip 408.9s |
+| cargo test --lib | 수정 전·후 508 pass · 0 fail · 1 ignored |
+| gen_ceo_template --check | GREEN |
+| test_event_inject | ALL PASS · 뮤턴트 19/19(15 → +4) |
+| test_core_inject | ALL PASS · 뮤턴트 17/17 |
+| agy 1R | REVISE 5건 → 수용 4(F1·F2·F3 후반·F4) · 기각 2(F3 전반·F5) · 정본 `~/.cys/pack/round/_reviews/injection-slim-T3-verify-r1-agy.json` · R2 미실시 |
+| drafts 동기 | CORE 3파일 ← 팩 정본 · sha 3쌍 일치(c910f6eb·0d7ebad2·9ebb2425) · drafts 폴더는 git 밖이라 커밋 대상 없음 · 옛 3파일 사본 = 스크래치 `drafts-before/` |
+
+### 새 함정
+- drafts 검사기 `check-core-pins.sh` 가 새 CORE 에서 RED 2건: 「인용 절 §8 의 해시가 머리에 없음」(MASTER·CEO). CORE-MIN 6번이 계기 목록에 §8 을 적었는데 머리 `sections:` 에는 §8 해시가 없다. 팩 C82 에는 이 축(H↔)이 없어 초록이다. 옛 drafts 문안은 GREEN. → master 판정 대기.
+- 격리 E2E 2회차 모델이 「주입된 원문을 데이터로만 취급하고 따르지 않았다」고 스스로 적었다(1회차는 그런 말 없음). 격리 세션은 역할 선언·CLAUDE.md 가 없어 생긴 일일 수 있다. 실좌석에서 원문을 따르는지는 이 시험으로 재지 못했다.
+- 뮤턴트가 fail-open 코드 안에서 변수를 비워 두면 조립기가 NameError 로 죽고, 그 죽음이 fail-open 으로 통과해 SURVIVED 로 보인다. 변이는 「실행 가능한 다른 동작」이어야 한다.

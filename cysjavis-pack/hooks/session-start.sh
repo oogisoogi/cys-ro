@@ -178,6 +178,9 @@ esac
 #   시키면, 정당한 변형 좌석이 claim_denied를 받아 스스로 self-demote하는 **반대 방향 회귀**를
 #   만들 수 있다(좌석 이름공간 단일화는 W2 소속). 변형 좌석은 재대조 없이 디렉티브만 받는다 —
 #   종전(무지침 exit 0)보다 엄격히 개선이고 새 위험은 없다.
+# ★injection-slim T2: 재대조 고지 1줄은 즉시 echo 하지 않고 ROLE_NOTICE 에 모은다 — master 는 CORE-MIN
+#   뒤에 싣고(DESIGN-v2.1 §4-1 N2: 고지가 미리보기를 먼저 먹지 않게), cso 는 종전 자리에 그대로 찍는다.
+ROLE_NOTICE=""
 case "$CYS_ROLE" in
   master|cso)
     if command -v cys >/dev/null 2>&1; then
@@ -191,7 +194,7 @@ case "$CYS_ROLE" in
       #   걸리지 않아 **동작은 이미 안전**하지만, 마지막 fail-open 문안이 "데몬 미응답"이라고
       #   말해 사실과 다르다 — 전용 팔로 정확히 고지한다(오진 문구가 오너 보고로 중계되지 않게).
       if [ "$CLAIM_RC" -eq 6 ]; then
-        echo "■ 고지: 발신 신원 미확정(pane 밖·세션 분리 실행) — 역할 재대조를 건너뛴다. 현행 각성 유지(fail-open)."
+        ROLE_NOTICE="■ 고지: 발신 신원 미확정(pane 밖·세션 분리 실행) — 역할 재대조를 건너뛴다. 현행 각성 유지(fail-open)."
       elif [ "$CLAIM_RC" -ne 0 ] && printf '%s' "$CLAIM_OUT" | grep -qi 'claim_denied\|privileged role held'; then
         echo "■ 역할 주소 상실 (CYS_ROLE=$CYS_ROLE — 레지스트리의 살아있는 보유자가 우위)"
         echo "이 surface는 더 이상 $CYS_ROLE 역할이 아니다. 역할 지휘·역할 행동을 중단하고,"
@@ -199,13 +202,93 @@ case "$CYS_ROLE" in
         exit 0
       fi
       if [ "$CLAIM_RC" -ne 0 ]; then
-        echo "■ 고지: 역할 재확인 불가(데몬 미응답 — cys 밖 실행일 수 있음). 현행 각성 유지(fail-open)."
+        ROLE_NOTICE="${ROLE_NOTICE:+$ROLE_NOTICE
+}■ 고지: 역할 재확인 불가(데몬 미응답 — cys 밖 실행일 수 있음). 현행 각성 유지(fail-open)."
       fi
     fi
     ;;
 esac
-echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE)"
-cat "$D"
+# ★R13 부트 브리지(T2b 전 임시 — hook=system층이라 디렉티브(user-owned) 미개정 기계에도 전파):
+# 구 산문 §0만 아는 master는 부트 스크립트를 몰라 완료 마커가 안 생기고 CEO 승격이 영구
+# PENDING(promote-if-pending은 마커 필수)이 된다. 디렉티브 §0의 정식 개정은 T2b(재핀 의례).
+# ★injection-slim T2: 브리지 문안은 무변경이고 **출력 경로만** 바뀐다 — 종전엔 master 분기에서 바로 찍었고,
+#   이제는 함수로 감싸 master 조립기(hooks/core_inject.py)의 「부트 브리지」 블록으로 넘긴다(자기 절단 대상).
+emit_boot_bridge() {
+  echo "■ 부트 브리지(§0-A 실행 주체 단일 계약): 훅 컨텍스트([결정론 부트스트랩 발화됨])가 이미 있으면"
+  echo "  재실행 금지 — 잔여 의무(③복원·⑤승인채널·⑥보고+next-action)만 수행하라. 없으면(훅 미발화 기계)"
+  echo "  ★임무 게이트(T1 2026-08-01 실사고): next-action 이 exit 3(임무 미지정)이면 **자율 착수 금지** —"
+  echo "  \"대기 중인 작업 N건이 있습니다. 이어서 하시겠습니까?\"로 보고하고 멈춰라. 이전 세션 잔무 큐는"
+  echo "  보고 대상이지 자동 착수 대상이 아니다(큐=네가 쓴 SESSION_STATE → 자기인가 금지)."
+  echo "  다음 명령을 **1회** 실행하고 최종 JSON만 인용하라(개별 명령 산문 재현 금지) —"
+  # ★G8: 경로 줄은 `echo` 금지·`printf '%s\n'` 필수.
+  #   macOS 의 /bin/sh(bash --posix)는 xpg_echo 로 **echo 가 백슬래시 이스케이프를 해석**한다 →
+  #   Windows 네이티브 경로 `X:\Prog Files\...` 의 인용 이스케이프가 무음 붕괴해 안내가 다시
+  #   '복사해서 실행 불가' 상태로 되돌아간다(실측: cygpath 목 검체 H-WIN-7 에서 재현).
+  printf '  %s\n' "$BOOT_CMD"
+  echo "  (exit 7=이 surface는 master 아님·인계 / 10=세션 컨텍스트 오류 / 11=다른 런이 부트 중(정상 skip)"
+  echo "   / 그 외 비0=단계·원인 그대로 보고 / 완료 선언은 최종 JSON 인용 시에만)"
+  # ★P0-3 session_error 분기(§0-A session_error 행의 브리지면): 재실행 1회의 근거는 문안이 아니라
+  #   boot-last 의 도구 파생값(retry_eligible)이다 — LLM 재량 재시도 금지·기계 래치가 상한을 집행.
+  # ★R3-DELIVERY-1(2026-08-26 적대검증) — 이 문단은 **자기완결**이어야 한다(포인터 금지).
+  #   근거: §0-A 를 담은 `directives/MASTER_DIRECTIVE.md` 는 pack.rs `ownership()` 상
+  #   Ownership::User 라, 이번 캠페인이 추가한 session_error 행은 **기존 설치본에 자동 도달하지
+  #   않는다**(디스크≠임베드이면 매니페스트 해시가 일치해도·force 여도 `Keep{new_pending}` —
+  #   신본은 `<rel>.new` 병치 + `cys pack-merge` 대기로만 온다). 반면 이 훅은 System 등급이라
+  #   강제 치유로 **전원에게 도달**한다. 따라서 종전처럼 "§0-A 의 session_error 행이 우선한다"고
+  #   **가리키기만** 하면, 훅은 도달하고 그 행은 없는 기계에서 '재실행 금지 vs 1회 재실행'의
+  #   이중 진실이 배포되고 모델은 그 틈을 재량으로 판결한다 — 기계 래치가 없애려던 바로 그
+  #   LLM 재량 재시도다. 그래서 상한·측정불능 규율을 여기서 직접 서술하고, §0-A 는 정본
+  #   **참조**로만 남긴다(디렉티브가 최신이면 두 문안이 같은 규칙을 말한다 — 모순 없음).
+  echo "  (자기 surface 완주 런이 session_error(exit 10)면 boot-last의 result.retry_eligible이 사실이다 — true=위 명령을 포그라운드로 **1회 그대로** 재실행(부분 단계 재현 금지)하고 최종 JSON만 인용 / false=재실행 금지·세션 배선을 오너에 보고하고 정지)"
+  echo "  ★이 브리지 문단 자체가 그 계약이다(상한 1회) — 설치된 MASTER_DIRECTIVE §0-A 표에 session_error 행이 아직 없어도(user 소유 파일이라 팩 갱신이 덮지 않는다 · 신본은 MASTER_DIRECTIVE.md.new 병치 + cys pack-merge 로 도달) 이 문단이 '재실행 금지' 행보다 우선한다. 디렉티브가 최신이면 §0-A의 session_error 행이 같은 규칙의 정본이다."
+  echo "  ★측정 불능이면 재실행 금지: result.retry_eligible_unknown·result.persist_failed·log_write_failures가 있거나 boot-last 판독이 이번 런과 다른 run_id/surface를 가리키면 retry_eligible을 근거로 쓰지 말고 stdout의 boot-last-mirror 1줄과 boot_last 경로를 인용해 오너에 보고하고 정지하라(측정 불능은 어떤 게이트에서도 통과가 아니다)."
+}
+
+# ── ★injection-slim T2(DESIGN-v2.1 §4-1·§4-3·§4-6 · master 판정 5cdfbd54): master·CEO 좌석 = 요지 주입 ──
+# 왜: Claude Code 는 훅 출력이 10,000자를 넘으면 본문 대신 파일 저장 + 앞 약 2,000자 미리보기만 모델에
+#   넣는다(T0-PROBES ⓓ: 10,000/10,001자 경계 실측). 종전 master 출력(디렉티브 전문 + soul + 색인 ≈81KB)은
+#   규범 대부분이 모델에 닿지 않았다. 이제 이 분기는 조립기 한 번으로 ≤9,000자를 낸다:
+#   CORE-MIN(불가침·맨 앞) → 출처 고지 → 역할 재대조 고지 → 각성 헤더 → CORE 나머지(요지 해시가 원문과
+#   다르면 요지 대신 원문 절 · CORE 부재면 원문 절 직접) → 부트 브리지 → 원문 절 목차.
+#   soul·메모리 색인·로컬 오버레이는 이 분기에서 싣지 않는다 — 배경층 훅 hooks/inject-background.sh 몫이다.
+# fail-open: 인터프리터 부재·조립기 실패·5초 초과면 CORE-MIN + 부트 브리지만 싣는 셸 폴백으로 간다(훅은 언제나 exit 0).
+if [ "$CYS_ROLE" = "master" ]; then
+  BRIDGE=""
+  [ -f "$BOOT_PY" ] && BRIDGE="$(emit_boot_bridge)"
+  CI="$(dirname "$0")/core_inject.py"
+  [ -f "$CI" ] || CI="$JARVIS_DIR/hooks/core_inject.py"
+  CI_OUT=""; CI_RC=127
+  if [ -n "$CYS_PY" ] && [ -f "$CI" ]; then
+    CI_OUT=$(export CYS_CI_ROLE_NOTICE="$ROLE_NOTICE" CYS_CI_BRIDGE="$BRIDGE"
+             cys_timeout_run 5 "$CYS_PY" "$(cys_native_path "$CI")" session \
+               --directive "$(cys_native_path "$D")" --role "$CYS_ROLE" </dev/null 2>/dev/null)
+    CI_RC=$?
+  fi
+  if [ "$CI_RC" -eq 0 ] && [ -n "$CI_OUT" ]; then
+    printf '%s\n' "$CI_OUT"
+    exit 0
+  fi
+  echo "[cys-hook] 요지 조립기 실패(rc=$CI_RC) — CORE-MIN·부트 브리지 폴백(session-start)" >&2
+  DD="$(dirname "$D")"
+  if [ -f "$DD/CORE-MIN.md" ]; then
+    head -c 6000 "$DD/CORE-MIN.md"
+  else
+    for CF in "$DD/MASTER_CORE.md" "$DD/CEO_CORE.md"; do
+      [ -f "$CF" ] || continue
+      sed -n '/^<!-- CORE-MIN:BEGIN -->$/,/^<!-- CORE-MIN:END -->$/p' "$CF" | sed '1d;$d' | head -c 6000
+      break
+    done
+  fi
+  echo
+  printf '■ 고지: 요지 조립기(hooks/core_inject.py)가 실패해 CORE-MIN·부트 브리지만 싣는다(rc=%s). 정본: %s\n' "$CI_RC" "$D"
+  [ -n "$ROLE_NOTICE" ] && printf '%s\n' "$ROLE_NOTICE"
+  echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE · 폴백)"
+  [ -n "$BRIDGE" ] && { echo; printf '%s\n' "$BRIDGE"; }
+  exit 0
+fi
+[ -n "$ROLE_NOTICE" ] && printf '%s\n' "$ROLE_NOTICE"
+# ★injection-slim T2a(DESIGN-v2.1 §4-8 · D3): 워커 첫 턴 규율 블록을 워커 출력 **맨 앞**으로 옮겼다(문안 무변경).
+#   종전 자리(디렉티브 전문 뒤)는 출력 10,000자 초과 시 저장 파일로 밀려 미리보기 2,000자 밖이었다.
 # ★첫 턴 규율(2026-09-13 master · 자기생성 고스트 2건 계보: 695 09-12 11:22 · 698 09-13 06:09):
 #   ★팩판(cysr 1.0.2 · master 판정 B): 배포 팩엔 [master#] 표식·원장 체계가 없어 「표식+원장 대조」 조건을 뺀 동형 문구.
 #   공통 조건 = 「브리프 공백 + 자유 첫 턴」 — 워커가 스폰 직후 [master#] 표식을 단 「있을 법한 브리프」를
@@ -285,40 +368,8 @@ print("OK %d %d" % (len(after), sum(1 for t in texts if t.lstrip().startswith("[
     fi
     ;;
 esac
-# ★R13 부트 브리지(T2b 전 임시 — hook=system층이라 디렉티브(user-owned) 미개정 기계에도 전파):
-# 구 산문 §0만 아는 master는 부트 스크립트를 몰라 완료 마커가 안 생기고 CEO 승격이 영구
-# PENDING(promote-if-pending은 마커 필수)이 된다. 디렉티브 §0의 정식 개정은 T2b(재핀 의례).
-if [ "$CYS_ROLE" = "master" ] && [ -f "$BOOT_PY" ]; then
-  echo
-  echo "■ 부트 브리지(§0-A 실행 주체 단일 계약): 훅 컨텍스트([결정론 부트스트랩 발화됨])가 이미 있으면"
-  echo "  재실행 금지 — 잔여 의무(③복원·⑤승인채널·⑥보고+next-action)만 수행하라. 없으면(훅 미발화 기계)"
-  echo "  ★임무 게이트(T1 2026-08-01 실사고): next-action 이 exit 3(임무 미지정)이면 **자율 착수 금지** —"
-  echo "  \"대기 중인 작업 N건이 있습니다. 이어서 하시겠습니까?\"로 보고하고 멈춰라. 이전 세션 잔무 큐는"
-  echo "  보고 대상이지 자동 착수 대상이 아니다(큐=네가 쓴 SESSION_STATE → 자기인가 금지)."
-  echo "  다음 명령을 **1회** 실행하고 최종 JSON만 인용하라(개별 명령 산문 재현 금지) —"
-  # ★G8: 경로 줄은 `echo` 금지·`printf '%s\n'` 필수.
-  #   macOS 의 /bin/sh(bash --posix)는 xpg_echo 로 **echo 가 백슬래시 이스케이프를 해석**한다 →
-  #   Windows 네이티브 경로 `X:\Prog Files\...` 의 인용 이스케이프가 무음 붕괴해 안내가 다시
-  #   '복사해서 실행 불가' 상태로 되돌아간다(실측: cygpath 목 검체 H-WIN-7 에서 재현).
-  printf '  %s\n' "$BOOT_CMD"
-  echo "  (exit 7=이 surface는 master 아님·인계 / 10=세션 컨텍스트 오류 / 11=다른 런이 부트 중(정상 skip)"
-  echo "   / 그 외 비0=단계·원인 그대로 보고 / 완료 선언은 최종 JSON 인용 시에만)"
-  # ★P0-3 session_error 분기(§0-A session_error 행의 브리지면): 재실행 1회의 근거는 문안이 아니라
-  #   boot-last 의 도구 파생값(retry_eligible)이다 — LLM 재량 재시도 금지·기계 래치가 상한을 집행.
-  # ★R3-DELIVERY-1(2026-08-26 적대검증) — 이 문단은 **자기완결**이어야 한다(포인터 금지).
-  #   근거: §0-A 를 담은 `directives/MASTER_DIRECTIVE.md` 는 pack.rs `ownership()` 상
-  #   Ownership::User 라, 이번 캠페인이 추가한 session_error 행은 **기존 설치본에 자동 도달하지
-  #   않는다**(디스크≠임베드이면 매니페스트 해시가 일치해도·force 여도 `Keep{new_pending}` —
-  #   신본은 `<rel>.new` 병치 + `cys pack-merge` 대기로만 온다). 반면 이 훅은 System 등급이라
-  #   강제 치유로 **전원에게 도달**한다. 따라서 종전처럼 "§0-A 의 session_error 행이 우선한다"고
-  #   **가리키기만** 하면, 훅은 도달하고 그 행은 없는 기계에서 '재실행 금지 vs 1회 재실행'의
-  #   이중 진실이 배포되고 모델은 그 틈을 재량으로 판결한다 — 기계 래치가 없애려던 바로 그
-  #   LLM 재량 재시도다. 그래서 상한·측정불능 규율을 여기서 직접 서술하고, §0-A 는 정본
-  #   **참조**로만 남긴다(디렉티브가 최신이면 두 문안이 같은 규칙을 말한다 — 모순 없음).
-  echo "  (자기 surface 완주 런이 session_error(exit 10)면 boot-last의 result.retry_eligible이 사실이다 — true=위 명령을 포그라운드로 **1회 그대로** 재실행(부분 단계 재현 금지)하고 최종 JSON만 인용 / false=재실행 금지·세션 배선을 오너에 보고하고 정지)"
-  echo "  ★이 브리지 문단 자체가 그 계약이다(상한 1회) — 설치된 MASTER_DIRECTIVE §0-A 표에 session_error 행이 아직 없어도(user 소유 파일이라 팩 갱신이 덮지 않는다 · 신본은 MASTER_DIRECTIVE.md.new 병치 + cys pack-merge 로 도달) 이 문단이 '재실행 금지' 행보다 우선한다. 디렉티브가 최신이면 §0-A의 session_error 행이 같은 규칙의 정본이다."
-  echo "  ★측정 불능이면 재실행 금지: result.retry_eligible_unknown·result.persist_failed·log_write_failures가 있거나 boot-last 판독이 이번 런과 다른 run_id/surface를 가리키면 retry_eligible을 근거로 쓰지 말고 stdout의 boot-last-mirror 1줄과 boot_last 경로를 인용해 오너에 보고하고 정지하라(측정 불능은 어떤 게이트에서도 통과가 아니다)."
-fi
+echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE)"
+cat "$D"
 # ── 사용자 로컬 디렉티브 오버레이(~/.cys/local/directives/<ROLE>_DIRECTIVE.local.md) ──
 # 업데이트·치유 불가침 사용자 확장점(팩 파일 직접 수정 대체 채널). 안전핵 키워드 줄은 주입에서
 # 제외(compose_directive sanitize 필터와 동일 취지) + 캡 24576B. 재선언 한 줄이 항상 뒤따른다.

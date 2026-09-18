@@ -16,8 +16,9 @@
 
 | 커밋 | 내용 |
 |---|---|
-| `095de5ba` | 도구·시험 27건·뮤턴트 하네스·schedule.rs 틱·factory_reset·CI 3레인 등재·CLI 계약 문서 |
-| (이 HANDOFF 커밋) | 창 숨김 계약 수리(Popen `creationflags` 명시) · 뮤턴트 M15 재조준 · HANDOFF |
+| `095de5ba` | 도구·시험 27건·뮤턴트 하네스(17종)·schedule.rs 틱·factory_reset·CI 3레인 등재·CLI 계약 문서 — **창 숨김 계약 수리(Popen `creationflags` 명시)·M9/M14/M15 재조준도 이 커밋에 이미 들어 있다** |
+| `20dfc7bb` | HANDOFF 추가만(파일 1개). ⚠커밋 메시지가 창 숨김 수리·재조준을 이 커밋 내용처럼 적었으나 **사실과 다르다** — 그 변경은 `095de5ba` 에 있다(`git show --stat 20dfc7bb` = HANDOFF 1파일) |
+| (이 정정 커밋) | 위 표 정정 |
 
 ## 2. 브리프 항목 ↔ 코드 위치(전부 `cysjavis-pack/bin/javis_dept_request.py`)
 

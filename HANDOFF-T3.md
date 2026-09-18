@@ -73,6 +73,7 @@ python3 -c "import sys;sys.path.insert(0,'cysjavis-pack/bin');import javis_prefl
 - [ ] 등록 후 `timeout: 5` 가 두 엔트리에 박혔는지(`HOOK_TIMEOUT_S`).
 - [ ] CI 미러 push(3레인 등재분) · 릴리스 노트 1줄(마스터 첫 세션 주입 변경 · 오버레이 처음 도달 · 사건 주입).
 - [ ] 윈도 실기(W7·W9 — PortableGit sh 에서 셸 내장 거름·글자 수).
+- [ ] 실좌석 1회 순종 관측(master a6031f0c 채택): 배포 후 cmux 실 master 좌석에서 트리거 명령 1회 → 주입 원문을 「데이터로만」 취급하지 않고 지시로 따르는지 관측(격리 E2E 2회차 모델이 따르지 않았다고 적음 — §6 함정). 셸 거름 `[[:space:]]` 가 PortableGit sh 에서 도는지도 W 실기에 포함.
 
 ## 6. T3-verify 결과 (worker-4 surface:813 · TICKET=injection-slim-T3-verify · 2026-09-18 19:35~20:0x)
 
@@ -95,3 +96,7 @@ python3 -c "import sys;sys.path.insert(0,'cysjavis-pack/bin');import javis_prefl
 - drafts 검사기 `check-core-pins.sh` 가 새 CORE 에서 RED 2건: 「인용 절 §8 의 해시가 머리에 없음」(MASTER·CEO). CORE-MIN 6번이 계기 목록에 §8 을 적었는데 머리 `sections:` 에는 §8 해시가 없다. 팩 C82 에는 이 축(H↔)이 없어 초록이다. 옛 drafts 문안은 GREEN. → master 판정 대기.
 - 격리 E2E 2회차 모델이 「주입된 원문을 데이터로만 취급하고 따르지 않았다」고 스스로 적었다(1회차는 그런 말 없음). 격리 세션은 역할 선언·CLAUDE.md 가 없어 생긴 일일 수 있다. 실좌석에서 원문을 따르는지는 이 시험으로 재지 못했다.
 - 뮤턴트가 fail-open 코드 안에서 변수를 비워 두면 조립기가 NameError 로 죽고, 그 죽음이 fail-open 으로 통과해 SURVIVED 로 보인다. 변이는 「실행 가능한 다른 동작」이어야 한다.
+
+### §6 후속(master a6031f0c 결정 A)
+- MASTER_CORE·CEO_CORE 머리 sections:/body_sections: 에 `§8=444d61de18ce772d` 추가(주석 · 주입 글자 0 · drafts 분할기와 팩 split_sections 해시 일치). drafts 검사기 RESULT GREEN · 팩 C82 문제 0(15절 대조).
+- drafts `check_core_pins.py` 자기검사 뮤턴트 「M CORE-MIN 과대」의 찾을 문자열을 새 6번 문안(「6. 뒤에 나머지 요지」)으로 교체 — 옛 문안이라 NOT-APPLIED → rc 1 이던 것을 12/12 KILLED · rc 0 으로 복원. drafts 는 git 밖(옛 파일 사본 = 스크래치 drafts-before/).

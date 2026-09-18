@@ -1,7 +1,7 @@
 <!-- javis:core v1 · kind=master · target=directives/MASTER_DIRECTIVE.md · base=cys-pack v1.0.2
      target_file_sha256=63963ab94b3b8cd7217ee9645f557a460e2f8369a1932352a0b905acb7085be1
      section_hash = sha256(절 본문 · 제목 줄 포함 · 코드 울타리 인식 분할 · 끝 줄바꿈 1개)[:16] · 분할기 = sections.py(초안 위치 drafts/)
-     sections: 머리=49d3804ed13d45e3 §0-A=dc2d4c9672adb5ec §0-B=4a1eb9b1bc78a3ff §0-C=a43037e394dbd742 §1-A=d0708b52defd410f §2=dfcf85999b203f7d §4=c8f986eb5a70b42f §6=3813b383fee8de16 §7=f399e48e162da7e0 §9=aa7968e0b1ff518d §11=0e06ae245a3a8210 §12=75b606869b744d71 §13=8ba89c5639721646 §14=12bb19a8b4bc1e53
+     sections: 머리=49d3804ed13d45e3 §0-A=dc2d4c9672adb5ec §0-B=4a1eb9b1bc78a3ff §0-C=a43037e394dbd742 §1-A=d0708b52defd410f §2=dfcf85999b203f7d §4=c8f986eb5a70b42f §6=3813b383fee8de16 §7=f399e48e162da7e0 §8=444d61de18ce772d §9=aa7968e0b1ff518d §11=0e06ae245a3a8210 §12=75b606869b744d71 §13=8ba89c5639721646 §14=12bb19a8b4bc1e53
      규칙: 디스크 원문의 위 절 해시가 하나라도 다르면 이 요지를 싣지 말고 원문 해당 절을 싣는다(DESIGN-v2 §4-6-3). 이 주석은 주입하지 않는다.
      이름 규칙: 파일명이 _DIRECTIVE.md 로 끝나면 안 된다(System 소유 유지 · DESIGN-v2 F2). -->
 <!-- CORE-MIN:BEGIN -->

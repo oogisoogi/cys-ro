@@ -450,6 +450,13 @@ LOCK_STALE_S = 10
 PY_NAMES = re.compile(r"^(python|python3|python3\.\d+|py|pythonw)(\.exe)?$", re.I)
 SHELLS = ("sh", "bash", "zsh", "dash", "ksh")
 WRAPPERS = ("command", "builtin", "exec", "nohup", "time", "sudo", "caffeinate", "xargs")
+# 래퍼 옵션 중 값을 한 개 더 먹는 것(agy 1R F1 — `sudo -u root python …` 에서 root 를 실행 파일로 읽던 과소검출)
+WRAPPER_ARGOPTS = {
+    "sudo": ("-u", "-g", "-h", "-p", "-C", "-r", "-t", "-U", "-D", "-R", "-T"),
+    "xargs": ("-I", "-L", "-n", "-P", "-s", "-E", "-d", "-a", "-J", "-R", "-S"),
+    "time": ("-f", "-o"),
+    "caffeinate": ("-t", "-w"),
+}
 
 
 class ParseFail(Exception):
@@ -759,7 +766,7 @@ def command_head(toks):
         if b in WRAPPERS:
             k += 1
             while k < len(t) and t[k].startswith("-"):
-                k += 1
+                k += 2 if t[k] in WRAPPER_ARGOPTS.get(b, ()) else 1
             continue
         return t[k:]
     return []
@@ -892,6 +899,13 @@ def _lock(lockdir):
 
 
 def _unlock(lockdir):
+    # 내 락일 때만 푼다(agy 1R F2 — 늦게 깨어난 옛 소유자가 회수자의 새 락을 지우지 않게). owner 판독 불가 = 종전대로 푼다.
+    try:
+        with open(os.path.join(lockdir, "owner")) as f:
+            if int(f.read().split()[0]) != os.getpid():
+                return
+    except (OSError, ValueError, IndexError):
+        pass
     try:
         os.remove(os.path.join(lockdir, "owner"))
     except OSError:
@@ -1009,9 +1023,23 @@ def cmd_event(a):
             rows.append({"ts": now, "mode": "inject", "key": key, "act": act, "chars": ulen(head + ob), "trigger": label})
             total += ulen(head + ob)
         if deny is not None:
-            out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                          "permissionDecisionReason": deny}}
-            rows = [r for r in rows if r["mode"] == "deny"]   # 보류된 명령 — 원문 주입분은 재실행 때 싣는다
+            # 거부는 원장에 남은 뒤에만 낸다(agy 1R F3 — 원장에 못 쓰면 매번 「첫 실행」으로 읽혀 영구 거부가 된다 ·
+            #   판독 불가와 같은 fail-open: 거부를 버리고 아래 추가 문맥 경로로 간다)
+            try:
+                _append(ledger, [r for r in rows if r["mode"] == "deny"])
+                out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                              "permissionDecisionReason": deny}}
+                rows = []                                         # 보류된 명령 — 원문 주입분은 재실행 때 싣는다
+                if not locked:
+                    try:
+                        _append(ledger, [{"ts": now, "mode": "lock_fail"}])
+                    except OSError:
+                        pass
+            except OSError:
+                deny = None
+                rows = [r for r in rows if r["mode"] != "deny"]
+        if deny is not None:
+            pass
         elif blocks:
             body, dropped, partial = assemble(blocks, dpath)
             dropped = set(dropped) | ({partial} if partial else set())

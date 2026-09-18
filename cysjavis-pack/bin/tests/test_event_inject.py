@@ -7,15 +7,15 @@
 무엇을 고정하나:
   T  트리거 사전 행렬: 표의 모든 행이 제 절로 걸린다(CEO 전용 행은 master 좌석에서 안 걸린다)
   N  오탐 음성 대조: grep 패턴 · 인용 heredoc 보고문 · 문서 인용(echo "…") · 커밋 메시지 · 주석 · 무관 명령 → 0건
-  X  실행 경로 양성: || · $(…) · 큰따옴표 안 $(…) · 백틱 · sh -c · 셸이 받는 heredoc · 비인용 heredoc 본문의 $(…) · env/timeout 접두 · cys --socket
+  X  실행 경로 양성: || · $(…) · 큰따옴표 안 $(…) · 백틱 · sh -c · 셸이 받는 heredoc · 비인용 heredoc 본문의 $(…) · env/timeout 접두 · cys --socket · sudo/xargs 값 옵션 · 훅 경로(cys --surface … feed · 다중 공백)
   R  훅 가드: 역할(worker·cso·reviewer·미지정) · surface 없음 · 서브에이전트(agent_id) → 0바이트 · 원장 파일 0
   O  세션당 절별 1회: 두 번째 같은 트리거 = 무출력 · 다른 세션 = 다시 주입
-  D  §14 거부(D10): 첫 mission set = deny + §14 원문 · 재실행 = 허용 + §0-C 원문 · 원장 판독 불가 = 거부 안 함(fail-open)
+  D  §14 거부(D10): 첫 mission set = deny + §14 원문 · 재실행 = 허용 + §0-C 원문 · 원장 판독 불가·쓰기 불가 = 거부 안 함(fail-open)
   F  총량 울타리: 누적이 24,000자에 닿으면 원문 대신 「주입 상한 도달」 + 줄 범위
   S  출력 상한: gate-status(§0-C + §7 = 11,000자+) → ≤9,000자 · 못 실은 §7 은 원장에 안 남아 다음에 실린다
   M  제목 삭제: 디렉티브에서 「## 2.」 제목을 지우면 「찾지 못했다」 고지 + preflight C82 적색
   P  파싱 실패: 닫히지 않은 따옴표 → 무출력 · 원장 parse_fail
-  L  락: 죽은 pid 의 낡은 락 회수 · 살아 있는 락이면 주입은 하고 lock_fail 기록
+  L  락: 죽은 pid 의 낡은 락 회수 · 살아 있는 락이면 주입은 하고 lock_fail 기록 · _unlock 은 내 락만 푼다
   Z  비일치 경로 외부 프로세스 0: PATH = 기록용 가짜 명령 폴더 · 비트리거 → 가짜 기록·stderr·stdout 0(대조군: 트리거면 같은 측정기에 호출이 잡힌다)
   C  CEO 좌석: cys-dept → [부서 수명주기] 원문 · 본문 § 절 줄 번호 = CEO 템플릿 기준
   Q  목차 표지: 트리거 사전의 모든 절 키가 목차에서 「⇐」 표시를 받는다(사전에서 파생)
@@ -135,6 +135,13 @@ POS = [
     ("cys --socket", "cys --socket a.sock launch-agent --role w", "§2"),
     ("파이프 뒤", "true | python3 bin/javis_orchestra.py task-prompt --task t", "§1-A"),
     ("서브셸 그룹", "(cd x && cys feed list)", "§4"),
+    ("sudo 값 옵션(-u root)", "sudo -u root python3 bin/javis_mission.py set x", "§14"),
+    ("xargs 값 옵션(-I {})", "echo a | xargs -I {} cys feed push", "§4"),
+]
+# 훅(셸 1차 거름) 경로 양성 — 파이썬 판정기가 잡는 것을 셸이 먼저 거르지 않는가(agy 1R F4)
+POS_HOOK = [
+    ("cys --surface 뒤 feed", "cys --surface S1 feed push --wait", "§4"),
+    ("cys 와 feed 사이 공백 2개", "cys  feed list", "§4"),
 ]
 
 
@@ -155,6 +162,9 @@ def s_X(pack, tmp):
     for name, cmd, key in POS:
         keys = [k for k, _a, _b, _l in ci.trigger_hits(cmd, "master")]
         ok &= check("X 양성 %s → %s" % (name, key), key in keys, str(keys))
+    for i, (name, cmd, key) in enumerate(POS_HOOK):
+        rc, out, _e, _t = fire(pack, tmp, cmd, sid="xh%d" % i)
+        ok &= check("X 훅 경로 양성 %s → %s 원문" % (name, key), rc == 0 and ("■ 원문 %s (줄" % key) in ctx(out))
     return ok
 
 
@@ -213,6 +223,32 @@ def s_D(pack, tmp):
     e["CYS_STATE_DIR"] = os.path.join(t2, "state")
     rc, out, _e, _t = fire(pack, tmp, cmd, sid="s9", env=e)
     ok &= check("D 원장 판독 불가 → 거부하지 않는다", rc == 0 and (out or {}).get("permissionDecision") != "deny")
+    # 읽기만 불가(깨진 UTF-8)·쓰기는 됨 — 위 폴더 판은 쓰기도 실패해 F3 방어층이 함께 막는다. 판독 축만 따로 잰다
+    t4 = os.path.join(tmp, "badutf8")
+    os.makedirs(os.path.join(t4, "state", "directive-event"))
+    with open(os.path.join(t4, "state", "directive-event", "s7.jsonl"), "wb") as f:
+        f.write(b"\xff\xfe\xfd\n")
+    e = env_for(tmp, pack)
+    e["CYS_STATE_DIR"] = os.path.join(t4, "state")
+    rc, out, _e, _t = fire(pack, tmp, cmd, sid="s7", env=e)
+    ok &= check("D 원장 판독 불가(깨진 UTF-8 · 쓰기 가능) → 거부하지 않는다",
+                rc == 0 and (out or {}).get("permissionDecision") != "deny")
+    # 원장 폴더 쓰기 불가 → 거부하지 않는다(agy 1R F3 — 못 쓰면 매번 첫 실행으로 읽혀 영구 거부가 된다)
+    t3 = os.path.join(tmp, "unwritable")
+    ro = os.path.join(t3, "state", "directive-event")
+    os.makedirs(ro)
+    os.chmod(ro, 0o500)
+    try:
+        e = env_for(tmp, pack)
+        e["CYS_STATE_DIR"] = os.path.join(t3, "state")
+        dec = []
+        for _i in range(2):
+            rc, out, _e, _t = fire(pack, tmp, cmd, sid="s8", env=e)
+            dec.append((rc, (out or {}).get("permissionDecision")))
+        ok &= check("D 원장 쓰기 불가 → 두 번 다 거부하지 않는다(fail-open)",
+                    all(r == 0 and d != "deny" for r, d in dec), str(dec))
+    finally:
+        os.chmod(ro, 0o700)
     # mission status 는 거부 대상이 아니다
     rc, out, _e, _t = fire(pack, tmp, 'python3 bin/javis_mission.py status', sid="s3")
     ok &= check("D mission status = 거부 없음 · §0-C 주입", (out or {}).get("permissionDecision") is None
@@ -285,6 +321,20 @@ def s_L(pack, tmp):
     ok &= check("L 살아 있는 락 → 주입은 한다 + lock_fail 기록", "■ 원문 §4" in ctx(out)
                 and "lock_fail" in [r["mode"] for r in ledger_rows(tmp, "s4")])
     ok &= check("L 남의 락은 건드리지 않는다", os.path.isdir(os.path.join(d, "s4.jsonl.lock")))
+    # 늦게 깨어난 옛 소유자의 _unlock 이 회수자의 새 락을 지우지 않는다(agy 1R F2)
+    ci = ci_mod(pack)
+    l5 = os.path.join(d, "s5.jsonl.lock")
+    got = ci._lock(l5)
+    with open(os.path.join(l5, "owner"), "w") as f:
+        f.write("%d %f\n" % (os.getppid(), time.time()))   # 회수자(다른 pid)가 새로 잡은 락
+    ci._unlock(l5)
+    kept = os.path.isdir(l5)
+    ok &= check("L _unlock = 내 락일 때만 푼다(남의 owner 면 그대로)", got and kept)
+    if kept:
+        with open(os.path.join(l5, "owner"), "w") as f:
+            f.write("%d %f\n" % (os.getpid(), time.time()))
+        ci._unlock(l5)
+        ok &= check("L _unlock 대조군: 내 owner 면 푼다", not os.path.exists(l5))
     return ok
 
 
@@ -304,7 +354,7 @@ def s_Z(pack, tmp):
     e.pop("CYS_PY", None)
     sh = shutil.which("sh")
     ok = True
-    for cmd in ("ls -la && git status", "grep -n launch x", "echo hello"):
+    for cmd in ("ls -la && git status", "grep -n launch x", "echo hello", "cat ~/cys-data/feed.log"):
         r = subprocess.run([sh, os.path.join(pack, "hooks", "directive-event-inject.sh")], input=hook_in(cmd),
                            capture_output=True, text=True, env=e, timeout=20)
         calls = open(log).read() if os.path.isfile(log) else ""
@@ -402,6 +452,17 @@ MUTANTS = [
      "            raise OSError('회수 금지')\n", "L"),
     ("1차 거름 무력화(모든 입력 통과) → Z", "hooks/directive-event-inject.sh",
      "  *) exit 0 ;;\nesac\n\n_H=", "  *) ;;\nesac\n\n_H=", "Z"),
+    ("래퍼 값 옵션 무시(sudo -u root 의 root 를 실행 파일로) → X", "hooks/core_inject.py",
+     "                k += 2 if t[k] in WRAPPER_ARGOPTS.get(b, ()) else 1\n", "                k += 1\n", "X"),
+    ("_unlock 소유자 대조 제거 → L", "hooks/core_inject.py",
+     "            if int(f.read().split()[0]) != os.getpid():\n                return\n",
+     "            pass\n", "L"),
+    ("거부 전 원장 기록 확인 제거(쓰기 실패해도 거부) → D", "hooks/core_inject.py",
+     "            except OSError:\n                deny = None\n",
+     "            except OSError:\n                out = {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", "
+     "\"permissionDecision\": \"deny\", \"permissionDecisionReason\": deny}}\n", "D"),
+    ("셸 거름 feed 를 옛 고정 문자열로 → X", "hooks/directive-event-inject.sh",
+     "|*cys*[[:space:]]feed*|", "|*'cys feed'*|", "X"),
     ("CEO 전용 행을 master 좌석에도 → T", "hooks/core_inject.py",
      '                if seat == "ceo" and kind != "ceo":\n                    continue\n                if tk != ek',
      '                if tk != ek', "T"),

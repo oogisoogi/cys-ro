@@ -11,6 +11,7 @@
 #   ① 역할 가드(master 외 즉시 종료 — ~/.claude/settings.json 에 등록돼도 cmux master·워커에서 무동작 · F1·U7)
 #   ② stdin 1회 판독(셸 내장 read) ③ 서브에이전트(agent_id 키) 즉시 종료(master 판정 · T0 ⓒ)
 #   ④ 트리거 낱말 1차 거름(case) — 여기까지 **외부 프로세스 0**(비일치 경로 비용 = 셸 내장뿐 · §4-5 판정 1)
+#      feed 는 「cys … 공백 feed」로 거른다(agy 1R F4 — `cys --surface S feed`·다중 공백을 파이썬 판정기에 넘긴다 · 경로 속 feed 낱말은 공백이 앞에 없어 안 걸린다)
 #   ⑤ 걸린 경우에만 프리루드·파이썬(내부 상한 5초 · 등록 timeout 5초와 이중).
 # 계약: fail-open(무슨 일이 있어도 exit 0 · 조립기 실패 = 무출력 = 명령 그대로 진행) · stdout = 훅 JSON 한 개 또는 무출력.
 [ "${CYS_ROLE:-}" = "master" ] || exit 0
@@ -27,7 +28,7 @@ case "$HOOK_IN" in
   *'"agent_id"'*) exit 0 ;;
 esac
 case "$HOOK_IN" in
-  *javis_orchestra*|*javis_mission*|*javis_resource_gate*|*launch-agent*|*'cys feed'*|*'cys --socket'*|*'cys -s '*|*cys-dept*) ;;
+  *javis_orchestra*|*javis_mission*|*javis_resource_gate*|*launch-agent*|*cys*[[:space:]]feed*|*cys-dept*) ;;
   *) exit 0 ;;
 esac
 

@@ -410,26 +410,42 @@ def main():
         b.close()
 
     # ── 케이스 13: javis_preflight.usable_git — 스텁은 부재·뒤 후보는 채택(실행 0) ──
+    # 파이썬 clt_stub() 은 가짜 uname 이 아니라 sys.platform 으로 맥을 판정한다(javis_preflight.clt_stub).
+    # 그래서 러너 OS 를 따르지 않도록 프로브가 import 뒤 sys.platform 을 명시 고정한다 — 맥·리눅스
+    # 어느 러너에서도 Darwin 분기(c13a·b)와 비맥 분기(c13c · c11d 동형)를 둘 다 잰다
+    # (1.0.2 release 레인 ubuntu 에서 고정 없이 돌아 비맥 경로로 새어 c13a·b 적색 — cysr-102-release-gate-c13).
     pf = os.path.join(SELF, "..", "javis_preflight.py")
-    b = Box()
-    try:
-        b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+
+    def probe_git(box, dirs, plat):
         probe = ("import sys, os\n"
                  "sys.path.insert(0, %r)\n"
                  "import javis_preflight as P\n"
-                 "print('GIT=%%s' %% (P.usable_git() or ''))\n" % os.path.dirname(os.path.abspath(pf)))
-        e = dict(b.env([os.path.join(b.root, "usr", "bin")]))
-        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=e, timeout=120)
-        got = [l for l in r.stdout.splitlines() if l.startswith("GIT=")]
+                 "sys.platform = %r\n"
+                 "print('PLAT=%%s' %% sys.platform)\n"
+                 "print('GIT=%%s' %% (P.usable_git() or ''))\n" % (os.path.dirname(os.path.abspath(pf)), plat))
+        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                           env=dict(box.env(dirs)), timeout=120)
+        lines = r.stdout.splitlines()
+        return [l for l in lines if l.startswith("GIT=")], [l for l in lines if l.startswith("PLAT=")], r
+
+    b = Box()
+    try:
+        stub_git = b.fake_py(os.path.join(b.root, "usr", "bin", "git"), "STUBGIT", real=False)
+        got, plat, r = probe_git(b, [os.path.join(b.root, "usr", "bin")], "darwin")
+        check("c13 선행: 프로브가 Darwin 분기로 평가됨", plat == ["PLAT=darwin"], "plat=%r err=%r" % (plat, r.stderr[-300:]))
         check("c13a preflight usable_git: 스텁만 → None", got == ["GIT="], "out=%r err=%r" % (r.stdout[-300:], r.stderr[-300:]))
         check("c13a 스텁 git 미실행", b.executed() == [], repr(b.executed()))
         real_git = b.fake_py(os.path.join(b.t, "rg", "git"), "REALGIT")
-        e = dict(b.env([os.path.join(b.root, "usr", "bin"), os.path.dirname(real_git)]))
-        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=e, timeout=120)
-        got = [l for l in r.stdout.splitlines() if l.startswith("GIT=")]
+        got, plat, r = probe_git(b, [os.path.join(b.root, "usr", "bin"), os.path.dirname(real_git)], "darwin")
         check("c13b preflight usable_git: 스텁 뒤의 진짜 git 채택", got == ["GIT=" + real_git],
               "out=%r" % r.stdout[-300:])
         check("c13b 스텁 git 미실행", "STUBGIT" not in b.executed(), repr(b.executed()))
+        # 비맥: 스텁 판정 비적용 — 첫 후보를 종전대로 채택(c11d 의 파이썬 판본)
+        got, plat, r = probe_git(b, [os.path.join(b.root, "usr", "bin"), os.path.dirname(real_git)], "linux")
+        check("c13c 선행: 프로브가 비맥 분기로 평가됨", plat == ["PLAT=linux"], "plat=%r" % plat)
+        check("c13c 비맥은 스텁 판정 비적용(종전대로 첫 후보 채택)", got == ["GIT=" + stub_git],
+              "out=%r err=%r" % (r.stdout[-300:], r.stderr[-300:]))
+        check("c13c usable_git 은 후보를 실행하지 않는다", "STUBGIT" not in b.executed(), repr(b.executed()))
     finally:
         b.close()
 

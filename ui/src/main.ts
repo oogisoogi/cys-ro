@@ -2585,10 +2585,12 @@ async function openNewlyRegisteredDepts(): Promise<boolean> {
   if (seen !== null && depts.some((d) => !seen.has(d.socket))) {
     tombs = null; // 못 읽으면 null 그대로 = fail-closed(다음 틱 재시도)
     if (claimFlight("tombs:")) {
-      const call = rpcT(invoke("dept_tombstones"), T_REG);
-      releaseFlightWhenSettled("tombs:", call);
+      // ★가드는 **생 invoke** 에 건다(위 in-flight 교리 · 기존 3곳과 동형) — rpcT 래핑에 걸면 JS 가
+      // 포기하는 순간(T_REG) 풀려, 느린 데몬에 다음 틱이 요청을 또 얹는다(적대 r1 중요①).
+      const raw = invoke("dept_tombstones");
+      releaseFlightWhenSettled("tombs:", raw);
       try {
-        tombs = new Set((await call) as string[]);
+        tombs = new Set((await rpcT(raw, T_REG)) as string[]);
       } catch {
         tombs = null;
       }

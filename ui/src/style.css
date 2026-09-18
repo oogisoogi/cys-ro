@@ -128,7 +128,7 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
    ② ＋부서 알약 크기는 위 알약 규칙이 그대로 준다(선택자만 새 자리로 옮겼다 — id 2개 특이도 유지). */
 #ws-dept-row { flex: none; padding: 2px 8px 4px; }
 #ws-dept-hint {
-  font-size: calc(14px * var(--wsbar-font, 1)); color: var(--muted, inherit); opacity: .85;
+  font-size: calc(14px * var(--wsbar-font, 1)); color: var(--muted, #8b949e); opacity: .85;
   line-height: 1.35; overflow-wrap: anywhere;
 }
 #ws-dept-expert summary {

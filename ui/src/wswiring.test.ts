@@ -339,6 +339,22 @@ describe("M7① — 켜져 있는 동안 생긴 부서는 3초 틱이 탭을 연
     // 새 타이머 금지 — 틱에 편승한다.
     expect(/setInterval|setTimeout/.test(h)).toBe(false);
   });
+  it("★묘비 in-flight 가드는 rpcT 래핑이 아니라 **생 invoke promise** 에 걸린다(원 호출이 끝날 때 해제)", () => {
+    const h = newDeptHelperSlice();
+    const m = /releaseFlightWhenSettled\("tombs:", (\w+)\);/.exec(h);
+    expect(m).not.toBeNull();
+    const v = m![1];
+    // 가드에 넘긴 변수는 생 invoke 로 만들어진다 — rpcT(...) 로 만들어졌으면 적색.
+    expect(new RegExp(`const ${v} = invoke\\("dept_tombstones"\\);`).test(h)).toBe(true);
+    // 시간 상한은 그 생 promise 를 감싸 기다리는 쪽에만 있다.
+    expect(new RegExp(`await rpcT\\(${v}, T_REG\\)`).test(h)).toBe(true);
+  });
+  it("틱이 만든 탭도 시작 대조와 같은 표식·그룹 재결속을 갖는다", () => {
+    const h = newDeptHelperSlice();
+    expect(h).toContain("ws.autoCreated = true");
+    expect(h).toContain("ws.groupId = g.id");
+    expect(h).toContain("workspaces.push(ws);");
+  });
   it("★시작 대조가 본 레지스트리를 seen 으로 심는다 — 이게 없으면 닫힌 탭 판정 기준이 없다", () => {
     expect(restoreSlice().includes("if (registered !== null) deptSeen = new Set(displayBySocket.keys());")).toBe(true);
   });
@@ -354,5 +370,7 @@ describe("M7② V-12 — 앱이 꺼진 채 생긴 부서는 시작 대조가 탭
     expect(/missingKnownWorkspaces\(\s*workspaces,\s*\[\.\.\.displayBySocket\]/.test(r)).toBe(true);
     // 반복문이 그 결과를 **그대로** 순회한다 — 앞에 다른 식이 끼면(예: 빈 배열 ?? …) 호출은 남아도 탭은 안 생긴다.
     expect(r.includes("for (const spec of missingKnownWorkspaces(")).toBe(true);
+    // 루프 **본문**이 만든 탭을 실제로 목록에 넣는다(적대 r1 중요② · M9: push 삭제 생존).
+    expect(/for \(const spec of missingKnownWorkspaces\([\s\S]{0,1500}?workspaces\.push\(ws\);/.test(r)).toBe(true);
   });
 });

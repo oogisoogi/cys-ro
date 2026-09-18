@@ -93,3 +93,38 @@ Claude Code가 산식을 바꾸면 시험은 초록으로 남고 운영에서 �
 - `cys todo-path`가 이 워커(role=worker)에게 `WORKER_3_TODO.md`를 줬는데, 그 파일은 다른 워커의 활성 원장(installer-0325-r2)이었다.
   그래서 덮어쓰지 않았고 todo는 세션 스크래치에 뒀다(기지 사실 `cys-todo-path-collides-for-generic-worker-role`의 재발).
 - 계정 행 육안 확인(Fable 셋째 줄)은 앱 빌드 뒤 가능하다 = master 게이트.
+
+## 라이브 실측 캡처 (master 요청 · 2026-09-19 · 읽기만)
+| 시각(KST) | 원천 | 계정 | 5h | 7d | 7d·Fable | 리셋 |
+|---|---|---|---|---|---|---|
+| 07:1x (직접 조회) | 키체인 `…-a5d624bb`(`~/.cys/claude`) → usage API 200 · 2,354B | B d1599af5 | 3% | 43% | **40%** | 5h 11:50 · 7d/Fable 09-24 17:00 |
+| 07:1x (직접 조회) | 키체인 `Claude Code-credentials`(`~/.claude`) → 200 · 2,351B | A 66e877cb | 2% | 15% | 21% | 5h 12:10 · 7d/Fable 09-25 06:00 |
+| 07:22:03 | `target/debug/cysd --oauth-usage-probe`(d7b890f3 빌드) | B | 3% | 43% | **40%** | 동일 |
+| 07:22:03 | 같은 강제발화 | A | — | — | — | `.claude` HTTP 429 · 나머지 두 항목 401 |
+| 07:2x | 운영 데몬(`cys usage-accounts --json` · 옛 코드) | A | 2% | 15% | 21% (80초 전 oauth) | — |
+| 07:2x | 같은 운영 데몬 | B | 2% | 43% | **없음(scoped [])** · source=statusline | — |
+원본 응답 두 개는 `src/bin/cysd/testdata/oauth_usage_account_{a,b}.json`에 바이트 그대로 있다(식별 정보 0).
+(리셋 시각 = 응답 RFC3339를 KST로 바꾼 값.)
+
+## master 확인 요청 2건 (07:26 【승인】 병기)
+### ① 운영 데몬 안에서 계정A를 이중 프로브하지 않는가 → 데몬 하나 안에서는 하지 않는다
+- 루프를 띄우는 곳은 `main.rs:1313` `accounts::spawn_claude_oauth_probe` 한 곳뿐이다(`git grep` 전수).
+  종전 기본 프로브 함수 `oauth_probe_once`는 **삭제**됐다(`git grep oauth_probe_once` 0건). 옛 루프와 새 루프가 함께 도는 경로는 없다.
+- 한 바퀴(`probe_round`) 안에서 대상은 accountUuid당 1개다(`probe_targets`가 uuid로 묶는다).
+  계정 안에서는 첫 성공에서 멈춘다(`probe_account`의 `return Ok(())`). 다음 후보는 앞 후보가 실패했을 때만 부르고, 그 후보는 **다른 토큰**(다른 키체인 항목)이다.
+  ⇒ 같은 토큰은 데몬 1개당 180초에 최대 1회다(실패 백오프 중이면 그보다 적다).
+- ⚠**데몬 여러 개 사이는 별개다(실측 07:2x)**: cysd가 3개 떠 있다. 운영 `/Applications/cys.app/.../cysd`(pid 872) 외에
+  `~/axdev/.wt/cys-v102-merge/target/debug/cysd` 2개(pid 22184 · 23469, 09-18 20:49 기동, **ppid 1 = 고아**)가 있다.
+  둘 다 `HOME`이 실제 사용자 홈이고 소켓은 `/tmp/b1.sock`·`/tmp/b5.sock`이다. 옛 코드이므로 각자 계정A 기본 토큰을 180초마다 조회한다.
+  ⇒ 지금 계정A 토큰은 180초에 3회 이상 조회되고 있다. 이것이 강제발화 429의 유력한 원인이다(판단 · 확신도 Med).
+  제 프로세스가 아니라서 종료하지 않았다 = **master 판단 사안**.
+  ⚠이 수정본이 배포된 뒤 같은 고아가 새 코드로 뜨면 계정B 토큰도 데몬 수만큼 겹쳐 조회된다. 기존 성질(데몬마다 프로브)이 계정 수만큼 넓어지는 것이다.
+### ② 429는 백오프로 흡수되고 값은 유지되는가 → 그렇다(시험으로 고정)
+- 429는 `fetch_oauth_usage`에서 `Err("HTTP 429")`가 된다. 후보가 전부 실패하면 `probe_round`의 Err 가지로 가서 그 계정만 백오프한다.
+- 백오프 = **180s × 2^n − 90s(반 주기), n = min(연속 실패, 3)** → 270s · 630s · 1350s(상한).
+  종전 「180s × 2^n · 상한 3(최대 24분)」과 거의 같다. 반 주기를 뺀 이유는 조회 소요만큼 늦게 오는 틱이 기한을 못 넘겨 한 틱을 더 건너뛰는 것을 막기 위해서다(상한 22.5분).
+- 실패 시 `note_oauth`를 부르지 않는다 ⇒ rate·scoped·updated_at·source가 **그대로** 남는다.
+  「죽은 값」 강등은 쓰기에서 하지 않고, 읽기 시점 판정(`rate_window_stale_reason`: 리셋 시각 지남 또는 24시간 무관측)만 한다.
+- 시험 `probe_failure_keeps_previous_values_and_backs_off`: 값이 있는 계정A에 429 → 값·관측 시각·Fable 유지 + 백오프 (1회, +270s).
+  뮤턴트(실패 가지에서 rate를 비움) → 이 시험 적색 → 원복 뒤 20/20 초록.
+- 시험 수: cysd 970 passed · 1 ignored(969 + 1).

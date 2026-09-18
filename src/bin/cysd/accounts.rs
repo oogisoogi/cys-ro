@@ -1421,6 +1421,31 @@ mod tests {
         assert_eq!(bo.get("uuid-a").map(|x| x.0), Some(2));
     }
 
+    /// 429(또는 어떤 실패)는 값을 건드리지 않는다 — 직전 rate·scoped·관측 시각이 그대로 남고
+    /// (죽은 값 강등은 읽기 시점 판정 rate_window_stale_reason 몫), 그 계정만 백오프한다.
+    #[tokio::test]
+    async fn probe_failure_keeps_previous_values_and_backs_off() {
+        let (home, dirs) = two_account_home("probe-429");
+        let d = test_daemon();
+        let targets = probe_targets(&mut d.accounts.lock().unwrap(), &home, &dirs);
+        let (rate, scoped) = parse_oauth_usage(&oauth_fixture_account('a'), 1000.0);
+        note_oauth(&d, "uuid-a", "a@x.y", &rate, &scoped, 1000.0);
+        let before = view_of(&d, "uuid-a").unwrap();
+        let fetch = |_s: String| async move { Err::<Value, String>("HTTP 429".to_string()) };
+        let mut bo = ProbeBackoff::new();
+        probe_round(&d, &targets, &mut bo, 1180.0, &fetch).await;
+        let after = view_of(&d, "uuid-a").unwrap();
+        assert_eq!(after.updated_at, before.updated_at, "관측 시각 유지(신선한 척도, 지우기도 없음)");
+        assert_eq!(
+            after.rate.iter().map(|w| w.used_pct).collect::<Vec<_>>(),
+            before.rate.iter().map(|w| w.used_pct).collect::<Vec<_>>()
+        );
+        assert_eq!(after.scoped.len(), 1, "Fable 게이지도 유지");
+        assert_eq!(after.source, "oauth");
+        // 백오프: 1회 실패 → 180×2^1 − 90 = 270초 뒤까지 대기.
+        assert_eq!(bo.get("uuid-a"), Some(&(1, 1180.0 + 270.0)));
+    }
+
     /// 응답에 모델 스코프 창이 없으면 옛 게이지를 지운다(없다 ≠ 죽었다 — 행을 그리지 않게).
     #[test]
     fn note_oauth_clears_scoped_when_server_has_none() {

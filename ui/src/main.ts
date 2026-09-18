@@ -7601,6 +7601,7 @@ async function start() {
   let launched = 0;
   let cappedLaunch = 0; // 회차 상한으로 미룸(제품이 의도적으로 조절)
   let budgetLaunch = 0; // 복원 예산 소진으로 미룸(그 기계의 데몬이 느리다 — 원인이 다르다)
+  let tombUnknownLaunch = 0; // 삭제 기록(묘비)을 못 읽어 죽은 부서 재기동을 보류(백엔드 HoldRelaunch 와 대칭)
   const deptWsList = workspaces.filter((w) => w.socket);
   for (let di = 0; di < deptWsList.length; di++) {
     const ws = deptWsList[di];
@@ -7647,6 +7648,17 @@ async function start() {
     }
     // 등록된(또는 레지스트리 미조회) 부서 → 재-launch. ★시나리오4: rename으로 ws.name이 바뀌어도
     // socket(진짜 정체·불변)에서 원래 부서명을 역산해 호출 — '다른 소켓 새 데몬'이 원래 데몬을 고아화하지 않게.
+    // ★묘비 미상 = 죽은 부서 재기동 보류(A2-2 r2 · 적대 검증 P1-A · 백엔드 `DeptRestoreAction::HoldRelaunch` 와 대칭).
+    // 위 묘비 검사(`deptTombs && …`)는 조회에 **실패하면(null)** 통째로 건너뛰어진다. 그 상태로 여기까지 오면
+    // `launch_dept_daemon` → `cys-dept launch` 가 성공 말미에 **묘비를 지운다** — GUI 밖(CLI·에이전트)에서 지운 부서가
+    // 되살아나고, 삭제 기록은 영구히 사라지고, 5역할 편성까지 딸려 뜬다. 레지스트리 등재가 무음 실패로 남은 경우
+    // (위 WP-3 주석이 스스로 예상한 시나리오)는 한 번의 조회 실패로 충분히 여기 닿는다.
+    // 살아 있는 부서는 위 `if (alive) continue` 에서 이미 빠졌으므로 **탭 손실은 0** 이다 — 탭은 그대로 두고
+    // 재기동만 다음 기동으로 미룬다(묘비를 읽을 수 있을 때 다시 판정한다).
+    if (deptTombs === null) {
+      tombUnknownLaunch += 1;
+      continue;
+    }
     // ★팬아웃 상한(2026-09-16 성찰 2회 · A① 폭주): `cys-dept launch` 한 번은 데몬 기동으로 끝나지
     // 않는다 — CEO 승격·티켓 발급·묘비 해소에 이어 **5역할 편성 기동**까지 부수효과로 착수한다.
     // 이번 판이 탭의 진실원을 레지스트리로 옮기면서, 등재만 돼 있고 한 번도 연 적 없는 부서까지
@@ -7685,6 +7697,13 @@ async function start() {
       "데몬 응답이 느려 이번 기동에서는 시간 안에 켜지 못했습니다. 탭은 그대로 있으니 [지금 켜기]를 누르거나 앱을 다시 켜 주세요.",
     );
   }
+  if (tombUnknownLaunch > 0) {
+    toast(
+      "watchdog",
+      `부서 ${tombUnknownLaunch}곳은 이번에 켜지 않았습니다`,
+      "지운 부서 기록을 읽지 못해서, 지운 부서가 다시 살아나지 않도록 멈춰 둔 부서를 이번에는 켜지 않았습니다. 탭은 그대로 있습니다. 앱을 다시 켜면 다시 확인합니다.",
+    );
+  }
 
   // 소켓별 live 집계 — 데몬 미응답(ok=false) 소켓은 판정 보류(죽은 pane 제거 스킵, ws 보존).
   const sockets = [...new Set(workspaces.map((w) => w.socket))];
@@ -7715,8 +7734,8 @@ async function start() {
   for (const ws of workspaces) {
     const lb = liveBySock.get(ws.socket);
     if (!lb || !lb.ok) continue;
-    // ★복원 시점의 술어는 `deadLiveSids`(= live 에 없는 것 전부)다. 3초 틱의 `ghostSids`
-    // (= 데몬이 기록조차 모르는 것)와 **의도적으로 다르다** — 왜 달라야 하는지는 wsreconcile.ts
+    // ★복원 시점의 술어는 `deadLiveSids`(= live 에 없는 것 전부)다. 3초 틱이 `advanceGhostStrikes` 안에서
+    // 쓰는 `ghostSids`(= 데몬이 기록조차 모르는 것)와 **의도적으로 다르다** — 왜 달라야 하는지는 wsreconcile.ts
     // 의 두 함수 머리말에 있다(복원 시점엔 종료 pane 을 보여 줄 런타임이 없다). 술어 자체는
     // 두 경우 모두 그 모듈 한 곳에만 있다.
     for (const sid of deadLiveSids(collectSids(ws.tree), lb.ids)) {

@@ -3490,8 +3490,11 @@ fn spawn_org_restore(app: AppHandle) {
         // 그 launch 는 성공 말미에 묘비까지 지운다(cysjavis-pack/bin/cys-dept). 즉 일시적 RPC 실패
         // 한 번이 "지운 부서는 되살아나지 않는다"는 계약을 **영구히** 깨고 그 부서의 팀까지 다시
         // 띄운다(비가역). 반대 방향의 대가는 "이번 복원에서 부서 재기동을 건너뛴다" 뿐이고,
-        // 그것은 다음 앱 기동이 그대로 회복한다. UI 쪽(ui/src/wsreconcile.ts missingKnownWorkspaces)
-        // 도 같은 판정으로 통일돼 있다 — 두 리바이버가 반대 방향이면 약한 쪽이 계약을 무효화한다.
+        // 그것은 다음 앱 기동이 그대로 회복한다. 두 리바이버가 반대 방향이면 약한 쪽이 계약을
+        // 무효화하므로 UI 의 두 경로도 같은 방향으로 맞췄다 — ⑴ 새 탭 생성(ui/src/wsreconcile.ts
+        // missingKnownWorkspaces: 묘비 미상이면 부서 탭을 만들지 않음) ⑵ 저장본 탭의 죽은 부서 재기동
+        // (ui/src/main.ts 부서 확보 루프: 묘비 미상이면 launch_dept_daemon 보류 · A2-2 r2 적대 검증 P1-A
+        // 로 정렬 — r1 까지는 이 경로만 반대 방향이었다). 살아 있는 부서 탭은 두 경로 모두 손대지 않는다.
         let tombs: Option<std::collections::HashSet<String>> =
             rpc_oneshot(&cys::socket_path(), "dept_tombstone.list", json!({}))
                 .await
@@ -10621,10 +10624,12 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         assert!(body.contains("DelegateOutcome::Served => return Ok(()),"), "위임 성공 시 형제 spawn 생략 누락");
     }
 
-    /// X-1 은 KeepAlive·plist 를 건드리지 않는다(X-2 범위 밖) — SIGTERM 된 데몬은 여전히 launchd 가 되살린다.
+    /// X-1 은 plist 의 KeepAlive·RunAtLoad 값을 건드리지 않는다(X-2 범위 밖) — 이 시험이 증명하는 것은
+    /// 렌더된 plist 문자열뿐이다. 「SIGTERM 된 데몬을 launchd 가 되살린다」는 여기서 증명하지 않는다
+    /// (VM 시나리오 S2b 판정선: kill -TERM 뒤 60초 안 launchctl runs +1).
     #[cfg(target_os = "macos")]
     #[test]
-    fn x1_plist_keepalive_unchanged_so_sigterm_daemon_is_revived() {
+    fn x1_does_not_touch_plist_keepalive() {
         let plist = cys::launchd::render_plist(
             std::path::Path::new("/Applications/cys.app/Contents/MacOS/cysd"),
             std::path::Path::new("/tmp/cysd.log"),

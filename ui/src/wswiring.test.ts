@@ -298,3 +298,18 @@ describe("복원 브리핑 카드 — 자동으로 아무것도 보내지 않는
     expect(cardSlice().includes("innerHTML")).toBe(false);
   });
 });
+
+describe("복원 배선 — 묘비를 못 읽으면 저장본의 죽은 부서도 다시 켜지 않는다(A2-2 r2 · P1-A)", () => {
+  it("★launch_dept_daemon 앞에 묘비 미상 보류가 있고, 살아 있는 부서 판정(alive) 뒤다", () => {
+    const s = restoreSlice();
+    const alive = s.indexOf("if (alive) continue;");
+    const hold = s.indexOf("if (deptTombs === null) {\n      tombUnknownLaunch += 1;\n      continue;\n    }");
+    const launch = s.indexOf('invoke("launch_dept_daemon"');
+    expect(alive).toBeGreaterThan(0);
+    expect(hold).toBeGreaterThan(alive); // 살아 있는 부서는 먼저 빠진다 = 탭 손실 0
+    expect(launch).toBeGreaterThan(hold); // 재기동 호출보다 앞이다
+  });
+  it("보류 사유를 다른 미룸(상한·예산)과 섞지 않고 따로 알린다", () => {
+    expect(code.includes("`부서 ${tombUnknownLaunch}곳은 이번에 켜지 않았습니다`")).toBe(true);
+  });
+});

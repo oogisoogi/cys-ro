@@ -183,9 +183,12 @@ export function advanceGhostStrikes(
   const evict: number[] = [];
   if (knownIds.size === 0) return { next, evict }; // 판정 보류(위 설명)
   const inTree = new Set(treeSids.map(keyOf));
+  // 「유령」 술어는 ghostSids 한 곳에만 둔다(A2-2 r2 · 적대 검증 P2-A — 종전엔 여기 인라인 복제라
+  // ghostSids 가 호출부 0건인 채 시험만 초록이었다). 3초 틱은 이 함수를 거쳐 ghostSids 를 쓴다.
+  const ghosts = new Set(ghostSids(treeSids, knownIds));
   for (const sid of treeSids) {
     const k = keyOf(sid);
-    if (knownIds.has(sid)) {
+    if (!ghosts.has(sid)) {
       next.delete(k); // 살아 돌아왔다 — 누적 해제
       continue;
     }

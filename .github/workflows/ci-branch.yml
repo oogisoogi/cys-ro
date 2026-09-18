@@ -532,12 +532,17 @@ jobs:
           #   봉인 축 11개(추가·삭제·내용변경·심링크↔실복사본 양방향·실행비트·미추적·결정론·
           #   판정불가 3종·자기제외) · 뮤테이션 5종 RED 실측으로 게이트 실효 확인 ·
           #   3완전 레인 동시·대칭 등재(release 는 양 루프) · 격리 tempdir 하네스(라이브 무접촉) · 실측 0.9s.
+          # ★injection-slim T2·T3(2026-09-18): test_core_inject 편입 — master·CEO 요지 주입 조립기
+          #   (hooks/core_inject.py session·background·event)·사건 훅(directive-event-inject.sh)·preflight C82 의
+          #   회귀 핀. 대상은 전부 배송 팩 내용물이다. 3완전 레인 동시·대칭 등재(release 는 양 루프) ·
+          #   격리 스크래치 팩·가짜 cys 하네스(라이브 무접촉) · 실측 약 11s.
           for t in test_report_ghost test_hud_bridge_skew test_todo_shared_constants test_todo_stamp \
                    test_import_guard test_radio test_scrub test_bootstrap_chain test_snapshot \
                    test_dept_name_guard test_preflight_c03_states test_content_pins_parity \
                    test_role_bootstrap_hook test_seat_latch_negation \
                    test_hud_bridge_backoff test_preflight_c11b_seal test_wakeup_liveness \
                    test_session_start_hook \
+                   test_core_inject \
                    test_py_resolver_clt_stub \
                    test_preflight_c62_c68_ledger \
                    test_runtime_seal test_preflight_c80_runtime_seal test_runtime_manifest_parity \

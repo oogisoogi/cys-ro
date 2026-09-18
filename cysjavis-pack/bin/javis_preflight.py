@@ -373,6 +373,15 @@ SELFCORR_HOOKS = [
     # ★W-C1(커스텀 생존 2026-07-17): vendor(system·임베드) 팩 파일 수정 감지 → 치유 예고 +
     # 영속 경로 안내(additionalContext WARN — BLOCK 아님·자기발화 봉쇄 금지 경계 준수).
     ("pack-guard.sh", [("PostToolUse", "Write|Edit|MultiEdit")]),
+    # ★injection-slim T3(2026-09-18 · DESIGN-v2.1 §4-4·§4-5 · master 판정 5cdfbd54 ②A·6255b46b): 마스터 주입 축소
+    #   2행을 한 번에 등록한다 — ②' 배경층(soul·메모리 색인·오버레이 · 복원 source 의 §9·§11 원문)과
+    #   ⓓ 사건 적시 주입(PreToolUse Bash — 상황 절 원문 · §14 는 세션당 1회 거부). 둘 다 첫 줄 역할 가드
+    #   (master 외 즉시 exit 0)가 유일한 방어다: 이 표는 base 레인에서 ~/.claude/settings.json(cmux 페인)에도
+    #   등록된다(U7 · discover_claude_settings). 선언 timeout 5초 = HOOK_TIMEOUT_S(미선언이면 하네스 기본
+    #   600초를 물려받아 걸리는 순간 Bash 한 번이 최대 10분 멈춘다 — §4-5). 각성 티어가 아니다(없어도 부트는
+    #   발화) → Rust AWAKENING_HOOKS 에 넣지 않는다(H-SEED-1 ⓐ 이벤트 집합 계약 · 비각성 훅 = C28 단독 등록 선례).
+    ("inject-background.sh", [("SessionStart", None)]),
+    ("directive-event-inject.sh", [("PreToolUse", "Bash")]),
 ]
 
 # ★훅 **본체** — 실재 전용(등록 대상 아님 · 부트 v2 A2 분할 2026-09-04).
@@ -430,6 +439,10 @@ NPM_PREFIX_BUNDLE_WARNING = (
 HOOK_TIMEOUT_PLATFORM_DEFAULT_UPS_S = 30
 HOOK_TIMEOUT_S = {
     ("role-bootstrap.sh", "UserPromptSubmit"): 600,
+    # injection-slim T3: 새 훅 2행은 **짧게** 선언한다(하한 5초 — 두 훅 모두 내부 상한 cys_timeout_run 5 ·
+    #   fail-open). 사건 훅은 모든 Bash 앞에서 돈다 — 미선언(기본 600초)이면 걸리는 순간 Bash 한 번이 10분 멈춘다.
+    ("inject-background.sh", "SessionStart"): 5,
+    ("directive-event-inject.sh", "PreToolUse"): 5,
 }
 
 # ★U-21 롤백 스위치(축 1지점) — Rust `pack::hook_timeout_axis_legacy_from` 의 파이썬 미러.
@@ -891,6 +904,37 @@ def core_injection_problems(pack, sh=None, timeout=20, home=None):
         core_ok = ok and emb is not None and (core_min is None or emb == core_min)
     if core_min is not None and _core_ulen(core_min) > 1600:
         probs.append("CORE-MIN.md %d자 > 1,600(미리보기 안 보장 폭 초과)" % _core_ulen(core_min))
+    # ⑤ 사건 주입 트리거 제목 실재(injection-slim T3 · DESIGN §4-6-5) — 사전의 절 키가 디렉티브(코드 울타리 밖)에
+    #   없으면 그 명령에서 원문 대신 「찾지 못했다」 고지만 나간다. 설치 디렉티브 + 팩의 CEO 템플릿 둘 다 잰다.
+    trig = getattr(ci, "EVENT_TRIGGERS", None)
+    if trig is None:
+        probs.append("core_inject.py 에 EVENT_TRIGGERS(사건 주입 사전) 없음 — 사건 훅이 아무것도 싣지 못한다")
+    else:
+        _texts = [("MASTER_DIRECTIVE.md", dtext)]
+        _ceo_p = os.path.join(ddir, "CEO_TEMPLATE.md")
+        if os.path.isfile(_ceo_p):
+            _texts.append(("CEO_TEMPLATE.md", ci.read(_ceo_p)))
+        _nkeys = 0
+        for _fn, _t in _texts:
+            _k = ci.detect_kind(_t)
+            _secs = ci.all_sections(_t, _k)
+            for _tk, _tn, _ts, _keys, _act, _seat, _b in trig:
+                if _seat == "ceo" and _k != "ceo":
+                    continue
+                for _key in _keys:
+                    _nkeys += 1
+                    if ci.find_section(_secs, _key) is None:
+                        probs.append("사건 주입 트리거 절 %s 가 %s 에 없다(제목 변경?) — 트리거 %s %s 에서 원문 대신 "
+                                     "「찾지 못했다」 고지만 나간다" % (_key, _fn, _tn, _ts or ""))
+        notes.append("사건 트리거 절 %d건 실재 대조" % _nkeys)
+        # ⑥ CORE-MIN 6번이 사전의 계기 이름을 전부 말하는가(문안 드리프트 — 사전에 행을 더하고 CORE-MIN 을 안 고친 경우)
+        if core_min is not None:
+            for _tk, _tn, _ts, _keys, _act, _seat, _b in trig:
+                if _seat != "all":
+                    continue
+                _needle = ("%s %s" % (_tn, _ts)) if _act == "deny" else (_ts or re.sub(r"\.py$", "", _tn))
+                if _needle not in core_min:
+                    probs.append("CORE-MIN.md 가 사건 주입 계기 「%s」 를 말하지 않는다(사전과 문안 드리프트)" % _needle)
     # ①② 드라이런 — 격리 PATH 의 가짜 cys
     sh = sh or shutil.which("sh") or shutil.which("bash")
     if not sh:
@@ -938,6 +982,37 @@ def core_injection_problems(pack, sh=None, timeout=20, home=None):
                     probs.append("%s(source=%s) 출력 %d자 > %d(저장·미리보기로 떨어질 위험)" % (h, src, n, CORE_INJECT_HARD))
                 if h == "session-start.sh" and core_ok and core_min is not None and not r.stdout.startswith(core_min):
                     probs.append("session-start(source=%s) 출력 맨 앞이 CORE-MIN 이 아니다" % src)
+        # ⑦ 사건 훅 드라이런(T3) — 트리거 1건은 원문 JSON(≤상한 · rc 0) · 비트리거는 무출력 · 원장은 격리 폴더
+        ev = os.path.join(hooks, "directive-event-inject.sh")
+        if not os.path.isfile(ev):
+            probs.append("훅 부재 hooks/directive-event-inject.sh(사건 주입 없음 — CORE-MIN 6번이 거짓이 된다)")
+        else:
+            env_ev = dict(env, CYS_STATE_DIR=os.path.join(tmp, "state"))
+            for _cmd, _want in (("cys launch-agent --role worker", "원문 §2"), ("ls -la", None)):
+                _in = json.dumps({"session_id": "c82-dryrun", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                  "tool_input": {"command": _cmd}}, ensure_ascii=False) + "\n"
+                try:
+                    r = subprocess.run([sh, ev], input=_in, capture_output=True, text=True, encoding="utf-8",
+                                       errors="replace", env=env_ev, timeout=timeout, **NOWIN)
+                except subprocess.TimeoutExpired:
+                    probs.append("directive-event-inject(%s) %d초 초과" % (_cmd, timeout))
+                    continue
+                if r.returncode != 0:
+                    probs.append("directive-event-inject(%s) rc=%d(훅은 언제나 0이어야 한다)" % (_cmd, r.returncode))
+                if _want is None:
+                    if r.stdout.strip():
+                        probs.append("directive-event-inject: 비트리거 명령(%s)에 출력이 있다" % _cmd)
+                    continue
+                try:
+                    _ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+                except (ValueError, KeyError, TypeError):
+                    probs.append("directive-event-inject(%s): 훅 JSON(additionalContext) 아님 — %r" % (_cmd, r.stdout[:120]))
+                    continue
+                sizes.append("event/launch-agent=%d" % _core_ulen(_ctx))
+                if _want not in _ctx:
+                    probs.append("directive-event-inject(%s): 절 원문(%s) 없음" % (_cmd, _want))
+                if _core_ulen(_ctx) > CORE_INJECT_HARD:
+                    probs.append("directive-event-inject 출력 %d자 > %d" % (_core_ulen(_ctx), CORE_INJECT_HARD))
         notes.append("드라이런 " + " ".join(sizes))
         calls = open(log, encoding="utf-8").read() if os.path.isfile(log) else ""
         if "claim-role master" not in calls:
@@ -4192,7 +4267,7 @@ class Preflight:
                         (fails if tier_fatal else warns).append(
                             "%s %s(%s) 미등록%s" % (os.path.basename(t), script_name, event,
                                                    "(--fix로 등록)" if tier_fatal else "(--fix)"))
-        detail = "자기교정·영속성 hook(inject·save·reflect-scan·commit-nudge·role-bootstrap·pack-guard) 6종 + reflect 엔진"
+        detail = "자기교정·영속성 hook(inject·save·reflect-scan·commit-nudge·role-bootstrap·pack-guard·inject-background·directive-event-inject) 8종 + reflect 엔진"
         if fixed:
             shown = "; ".join(fixed[:6]) + (" …+%d" % (len(fixed) - 6) if len(fixed) > 6 else "")
             detail += " · " + shown

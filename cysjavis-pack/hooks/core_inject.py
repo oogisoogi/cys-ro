@@ -12,6 +12,9 @@
   background  훅 ②'(inject-background.sh) — (복원 source) §11 원문 → §9 원문 → soul → 메모리 색인 →
               로컬 오버레이
   verify      CORE 해시 대조만(preflight 용 · JSON)
+  event       PreToolUse(Bash) 사건 훅 ⓓ(directive-event-inject.sh · T3) — stdin 훅 JSON · 트리거 사전
+              EVENT_TRIGGERS 일치 시 절 원문을 additionalContext 로(세션당 절별 1회 · 총량 24,000자) ·
+              §14 는 세션 첫 1회 거부+원문(D10) · stdout = 훅 JSON 또는 무출력
 
 규칙(§4-3 규칙 0): 블록을 덧붙이기 전에 「누적 + 이 블록 ≤ LIMIT(8,800)」을 검사한다. 넘으면 그 블록부터
 뒤는 통째로 싣지 않고 이름을 마지막 줄에 고지한다. 한 블록 자체가 LIMIT 를 넘을 때만 그 블록 안에서
@@ -237,7 +240,24 @@ def assemble(blocks, where, limit=LIMIT, hard=HARD):
     return body, dropped, partial
 
 
-# ── 목차(사실형 · master 판정 5cdfbd54 ①A) ───────────────────────────────────────
+# ── 목차(T2 사실형 → T3 자동 주입 문안 · master 판정 5cdfbd54 ①A · 브리프 T3 §2) ─────────────
+def auto_marks(kind):
+    """절 키 → 자동 주입 계기 이름표 목록. 트리거 사전(EVENT_TRIGGERS)과 복원 주입(§9·§11)에서 **파생**한다 —
+    목차가 사전과 따로 놀 수 없게(사본 0)."""
+    m = {"§9": ["복원"], "§11": ["복원"]}
+    for tk, tn, tsub, keys, act, seat, _basis in EVENT_TRIGGERS:
+        if seat == "ceo" and kind != "ceo":
+            continue
+        short = re.sub(r"^javis_|\.py$", "", tn)
+        label = {"py": tsub or short, "cys": "cys " + tn}.get(tk, tn)
+        if act == "deny":
+            label = "%s %s(1회 보류)" % (short, tsub) if tk == "py" and tsub else label + "(1회 보류)"
+        for k in keys:
+            if label not in m.setdefault(k, []):
+                m[k].append(label)
+    return m
+
+
 def toc_block(directive_text, kind, path):
     rows = []
     for key, secs, off in section_spaces(directive_text, kind):
@@ -248,11 +268,14 @@ def toc_block(directive_text, kind, path):
     rows.sort()
     if not rows:
         return ""
-    lines = ["■ 원문 절 목차 — 정본 %s. 필요하면 그 절의 줄 범위만 읽어라(예: sed -n '시작,끝p' <경로>). 원문과 이 요지가 다르면 원문을 따른다." % path]
+    marks = auto_marks(kind)
+    lines = ["■ 원문 절 목차 — 정본 %s. ⇐ 표시 절은 그 계기(명령 실행·세션 복원)에 원문이 자동으로 들어온다(명령 결과와 함께 · 세션당 절별 1회). "
+             "나머지는 필요하면 그 절의 줄 범위만 읽어라(예: sed -n '시작,끝p' <경로>). 원문과 이 요지가 다르면 원문을 따른다." % path]
     for a, b, k, title in rows:
         t = re.sub(r"^\d+(?:-[A-Z])?\.\s*", "", title).replace("*", "")
         t = t if len(t) <= 34 else t[:33] + "…"
-        lines.append("· %s %s — 줄 %d–%d" % (k, t, a, b))
+        mk = marks.get(k) or ([v for kk, v in marks.items() if kk.startswith("[") and k.startswith(kk[:-1])] or [None])[0]
+        lines.append("· %s %s — 줄 %d–%d%s" % (k, t, a, b, (" ⇐ " + "·".join(mk)) if mk else ""))
     return "\n".join(lines) + "\n"
 
 
@@ -403,6 +426,614 @@ def cmd_verify(a):
     return 0 if res.get("ok") else 1
 
 
+# ── 사건 주입 ⓓ(injection-slim T3 · DESIGN-v2.1 §4-5 · master 6255b46b PreToolUse · b286f358 D10=A) ──
+# ★트리거 사전 = 데이터 표 · 수정 = 1줄(행 추가·삭제·절 키 변경). 판정 코드는 이 표만 읽는다.
+#   열: (실행 파일 종류, 이름, 하위 명령 또는 None=아무거나, 절 키들, 동작, 근거)
+#   종류: "py" = 파이썬 스크립트 basename(인터프리터 경유·직접 실행 모두) · "cys" = cys 하위 명령 · "exe" = 실행 파일 basename
+#   동작: "ctx" = additionalContext(결과 옆 도착 · T0 ⓑ) · "deny" = 세션당 1회 거부 + 사유에 원문(D10 · 재실행 허용)
+#   좌석: "all" = master·CEO 공통 · "ceo" = CEO 템플릿 좌석에서만
+EVENT_TRIGGERS = (
+    ("py", "javis_orchestra.py", "next-action", ("§0-C",), "ctx", "all", "§0-C 임무 게이트 — next-action exit 계약"),
+    ("py", "javis_orchestra.py", "gate-status", ("§0-C", "§7"), "ctx", "all", "§0-C·§14 축1 수렴 판정 · §7 라운드 루프"),
+    ("py", "javis_mission.py", None, ("§0-C",), "ctx", "all", "§0-C 임무 대장(status·set·clear)"),
+    ("py", "javis_mission.py", "set", ("§14",), "deny", "all", "§14 시동 조건을 master 쪽에서 참으로 만드는 유일한 Bash 경로(D10=A)"),
+    ("py", "javis_orchestra.py", "task-prompt", ("§1-A", "§2"), "ctx", "all", "§1-A 위임 · §2 노드 각성(티켓 선행)"),
+    ("cys", "launch-agent", None, ("§1-A", "§2"), "ctx", "all", "§2 노드 생성·각성"),
+    ("py", "javis_orchestra.py", "review-prompt", ("§7",), "ctx", "all", "§7 리뷰 라운드"),
+    ("py", "javis_orchestra.py", "round-log", ("§7",), "ctx", "all", "§7 라운드 기록 · §14 축1 machine 기록"),
+    ("cys", "feed", None, ("§4",), "ctx", "all", "§4 승인 처리"),
+    ("py", "javis_resource_gate.py", None, ("§8",), "ctx", "all", "§8 자원 거버넌스"),
+    ("exe", "cys-dept", None, ("[부서 수명주기]",), "ctx", "ceo", "CEO [부서 수명주기] 단일소유 강제"),
+)
+EVENT_TOTAL_CAP = 24000       # 세션당 ⓓ 총량(글자 · §4-5) — 트리거 대상 전부를 한 번씩 넣은 크기가 들어간다
+LOCK_STALE_S = 10
+PY_NAMES = re.compile(r"^(python|python3|python3\.\d+|py|pythonw)(\.exe)?$", re.I)
+SHELLS = ("sh", "bash", "zsh", "dash", "ksh")
+WRAPPERS = ("command", "builtin", "exec", "nohup", "time", "sudo", "caffeinate", "xargs")
+
+
+class ParseFail(Exception):
+    pass
+
+
+def _match_close(s, i, open_ch="(", close_ch=")"):
+    """s[i] == open_ch 에서 짝 닫힘 위치 — 따옴표·이스케이프 인식. 없으면 ParseFail."""
+    depth = 0
+    k = i
+    n = len(s)
+    while k < n:
+        c = s[k]
+        if c == "\\":
+            k += 2
+            continue
+        if c == "'":
+            j = s.find("'", k + 1)
+            if j < 0:
+                raise ParseFail("열린 작은따옴표")
+            k = j + 1
+            continue
+        if c == '"':
+            k = _dq_end(s, k)[0] + 1
+            continue
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+            if depth == 0:
+                return k
+        k += 1
+    raise ParseFail("닫히지 않은 " + open_ch)
+
+
+def _bt_end(s, i):
+    k = i + 1
+    while k < len(s):
+        if s[k] == "\\":
+            k += 2
+            continue
+        if s[k] == "`":
+            return k
+        k += 1
+    raise ParseFail("닫히지 않은 백틱")
+
+
+def _dq_end(s, i):
+    """s[i] == '"' — (닫는 위치, 안에서 실행되는 명령 치환 본문 목록, 치환을 X 로 바꾼 본문)."""
+    k = i + 1
+    nested = []
+    buf = []
+    n = len(s)
+    while k < n:
+        c = s[k]
+        if c == "\\":
+            buf.append(s[k:k + 2])
+            k += 2
+            continue
+        if c == '"':
+            return k, nested, "".join(buf)
+        if s.startswith("$((", k):
+            j = s.find("))", k)
+            if j < 0:
+                raise ParseFail("닫히지 않은 $((")
+            buf.append("X")
+            k = j + 2
+            continue
+        if s.startswith("$(", k):
+            j = _match_close(s, k + 1)
+            nested.append(s[k + 2:j])
+            buf.append("X")
+            k = j + 1
+            continue
+        if c == "`":
+            j = _bt_end(s, k)
+            nested.append(s[k + 1:j])
+            buf.append("X")
+            k = j + 1
+            continue
+        buf.append(c)
+        k += 1
+    raise ParseFail("닫히지 않은 큰따옴표")
+
+
+def _substitutions(text):
+    """확장되는 글(비인용 heredoc 본문)에서 실행되는 명령 치환 본문만 뽑는다. 판독 불가면 ParseFail."""
+    out = []
+    k = 0
+    n = len(text)
+    while k < n:
+        if text[k] == "\\":
+            k += 2
+            continue
+        if text.startswith("$((", k):
+            j = text.find("))", k)
+            k = n if j < 0 else j + 2
+            continue
+        if text.startswith("$(", k):
+            j = _match_close(text, k + 1)
+            out.append(text[k + 2:j])
+            k = j + 1
+            continue
+        if text[k] == "`":
+            j = _bt_end(text, k)
+            out.append(text[k + 1:j])
+            k = j + 1
+            continue
+        k += 1
+    return out
+
+
+_SEP_BEFORE = " \t\n;|&(){}"
+
+
+def split_commands(s, depth=0):
+    """셸 명령 문자열 → 실행되는 단순 명령들의 토큰 목록(재귀 포함). DESIGN §4-5 트리거 판정 2.
+    · 구분자 | ; && || & 줄바꿈 ( ) { } 로 세그먼트를 나눈다.
+    · 명령 치환 $(…)·백틱(큰따옴표 안 포함)과 그룹 (…)·{ …; } 안은 한 번 더 세그먼트화한다.
+    · 작은따옴표·heredoc 본문은 실행되지 않으므로 대조하지 않는다 — 단 heredoc 을 받는 쪽이 셸(sh·bash…)이면
+      그 본문은 실행되므로 재귀한다. sh -c '…'·eval 인자도 재귀한다(아래 command_heads).
+    · 주석(#)은 버린다. 파싱 실패 = ParseFail(호출측: 주입하지 않고 원장에 parse_fail)."""
+    if depth > 6:
+        raise ParseFail("재귀 깊이 초과")
+    out = []
+    segs = []           # [(세그먼트 본문, [heredoc 본문…])]
+    cur = []
+    nested = []
+    pending = []        # 이 줄에서 연 heredoc: (구분자, 탭 제거)
+    heredoc_bodies = []
+    i = 0
+    n = len(s)
+
+    def cut():
+        t = "".join(cur).strip()
+        if t:
+            segs.append((t, list(heredoc_bodies)))
+        elif heredoc_bodies:
+            segs.append(("", list(heredoc_bodies)))
+        cur[:] = []
+        heredoc_bodies[:] = []
+
+    while i < n:
+        c = s[i]
+        word_start = i == 0 or s[i - 1] in _SEP_BEFORE
+        if c == "\\":
+            if s.startswith("\\\n", i):
+                i += 2
+                continue
+            cur.append(s[i:i + 2])
+            i += 2
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j < 0:
+                raise ParseFail("열린 작은따옴표")
+            cur.append(s[i:j + 1])
+            i = j + 1
+            continue
+        if c == '"':
+            j, nn, inner = _dq_end(s, i)
+            nested.extend(nn)
+            cur.append('"' + inner + '"')
+            i = j + 1
+            continue
+        if c == "#" and word_start:
+            j = s.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if s.startswith("$((", i):
+            j = s.find("))", i)
+            if j < 0:
+                raise ParseFail("닫히지 않은 $((")
+            cur.append("X")
+            i = j + 2
+            continue
+        if s.startswith("$(", i):
+            j = _match_close(s, i + 1)
+            nested.append(s[i + 2:j])
+            cur.append("X")
+            i = j + 1
+            continue
+        if s.startswith("${", i):
+            j = _match_close(s, i + 1, "{", "}")
+            cur.append(s[i:j + 1])
+            i = j + 1
+            continue
+        if c == "`":
+            j = _bt_end(s, i)
+            nested.append(s[i + 1:j])
+            cur.append("X")
+            i = j + 1
+            continue
+        if s.startswith("<<", i) and not s.startswith("<<<", i):
+            k = i + 2
+            strip = False
+            if k < n and s[k] == "-":
+                strip = True
+                k += 1
+            while k < n and s[k] in " \t":
+                k += 1
+            m = re.match(r"""(['"]?)(\\?)([A-Za-z0-9_.\-]+)\1""", s[k:])
+            if not m:
+                raise ParseFail("heredoc 구분자 판독 불가")
+            # 인용 구분자('EOF'·"EOF"·\EOF) = 본문 확장 없음 · 비인용 = 본문의 $(…)·백틱이 실행된다
+            pending.append((m.group(3), strip, bool(m.group(1) or m.group(2))))
+            cur.append(" ")
+            i = k + m.end()
+            continue
+        if c in "<>":
+            m = re.match(r"[<>]+&?-?\d*", s[i:])
+            cur.append(" " + m.group(0) + " ")
+            i += m.end()
+            continue
+        if c == "&" and s.startswith("&>", i):
+            cur.append(" &> ")
+            i += 2
+            continue
+        if c == "\n":
+            cut_needed = True
+            i += 1
+            for delim, strip, quoted in pending:
+                body = []
+                while True:
+                    if i >= n:
+                        raise ParseFail("닫히지 않은 heredoc " + delim)
+                    j = s.find("\n", i)
+                    line = s[i:] if j < 0 else s[i:j]
+                    i = n if j < 0 else j + 1
+                    if (line.lstrip("\t") if strip else line) == delim:
+                        break
+                    body.append(line)
+                heredoc_bodies.append("\n".join(body))
+                if not quoted:
+                    nested.extend(_substitutions("\n".join(body)))
+            pending = []
+            if cut_needed:
+                cut()
+            continue
+        if c in ";|&()":
+            cut()
+            i += 1
+            continue
+        if c == "{" and word_start and (i + 1 >= n or s[i + 1] in " \t\n"):
+            cut()
+            i += 1
+            continue
+        if c == "}" and word_start:
+            cut()
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    if pending:
+        raise ParseFail("닫히지 않은 heredoc")
+    cut()
+    for text, bodies in segs:
+        toks = []
+        if text:
+            try:
+                toks = shlex_split(text)
+            except ValueError as e:
+                raise ParseFail("토큰화 실패: %s" % e)
+        if toks:
+            out.append(toks)
+            for sub in inner_scripts(toks):
+                out.extend(split_commands(sub, depth + 1))
+            head = command_head(toks)
+            if head and os.path.basename(head[0]) in SHELLS and not any(t == "-c" for t in toks):
+                for b in bodies:
+                    out.extend(split_commands(b, depth + 1))
+    for sub in nested:
+        out.extend(split_commands(sub, depth + 1))
+    return out
+
+
+def shlex_split(text):
+    import shlex
+    return shlex.split(text, comments=False, posix=True)
+
+
+def command_head(toks):
+    """환경 대입·래퍼(env·command·timeout·nice…)·리다이렉션을 벗긴 실행 토큰부터의 목록."""
+    t = [x for x in toks]
+    k = 0
+    while k < len(t):
+        x = t[k]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", x) or re.match(r"^\d*[<>&]", x):
+            k += 1
+            continue
+        b = os.path.basename(x)
+        if b == "env":
+            k += 1
+            while k < len(t) and (t[k].startswith("-") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t[k])):
+                k += 2 if t[k] in ("-u", "-C", "-S") else 1
+            continue
+        if b in ("timeout", "gtimeout", "nice"):
+            k += 1
+            while k < len(t) and t[k].startswith("-"):
+                k += 2 if t[k] in ("-s", "-k", "-n", "--signal", "--kill-after") else 1
+            if b != "nice" and k < len(t):
+                k += 1           # 지속 시간
+            continue
+        if b == "cys_timeout_run":
+            k += 2
+            continue
+        if b in WRAPPERS:
+            k += 1
+            while k < len(t) and t[k].startswith("-"):
+                k += 1
+            continue
+        return t[k:]
+    return []
+
+
+def inner_scripts(toks):
+    """sh -c '…' · eval … 처럼 인자가 곧 셸 명령인 경우 그 문자열."""
+    h = command_head(toks)
+    if not h:
+        return []
+    b = os.path.basename(h[0])
+    if b == "eval":
+        return [" ".join(h[1:])]
+    if b in SHELLS and "-c" in h:
+        i = h.index("-c")
+        if i + 1 < len(h):
+            return [h[i + 1]]
+    return []
+
+
+def command_matches(toks):
+    """토큰 목록 → [(종류, 이름, 하위 명령)] 후보(보통 0~1개)."""
+    h = command_head(toks)
+    if not h:
+        return []
+    b = re.sub(r"\.exe$", "", os.path.basename(h[0].replace("\\", "/")), flags=re.I)
+    rest = h[1:]
+    if PY_NAMES.match(b) or h[0] in ("$CYS_PY", "${CYS_PY}", "$PY", "$PYTHON"):
+        while rest and rest[0].startswith("-"):
+            if rest[0] in ("-c", "-m"):
+                return []
+            rest = rest[1:]
+        if not rest:
+            return []
+        b = os.path.basename(rest[0].replace("\\", "/"))
+        rest = rest[1:]
+    if b.endswith(".py"):
+        sub = next((x for x in rest if not x.startswith("-")), None)
+        return [("py", b, sub)]
+    if b == "cys":
+        while rest and rest[0].startswith("-"):
+            rest = rest[2:] if rest[0] in ("--socket", "-s", "--surface") else rest[1:]
+        return [("cys", rest[0], None)] if rest else []
+    return [("exe", b, None)]
+
+
+def trigger_hits(command, kind):
+    """명령 → [(절 키, 동작, 근거, 트리거 이름표)] (등장 순 · 중복 제거). ParseFail 은 호출측으로."""
+    hits = []
+    seen = set()
+    for toks in split_commands(command):
+        for ek, name, sub in command_matches(toks):
+            for tk, tn, tsub, keys, act, seat, basis in EVENT_TRIGGERS:
+                if seat == "ceo" and kind != "ceo":
+                    continue
+                if tk != ek or tn != name:
+                    continue
+                if tsub is not None and tsub != sub:
+                    continue
+                label = "%s %s" % (tn, tsub) if tsub else tn
+                for k in keys:
+                    if (k, act) in seen:
+                        continue
+                    seen.add((k, act))
+                    hits.append((k, act, basis, label))
+    return hits
+
+
+def find_section(allsecs, key):
+    if key in allsecs:
+        return allsecs[key]
+    if key.startswith("[") and key.endswith("]"):
+        for k, s in allsecs.items():
+            if k.startswith(key[:-1]):
+                return s
+    return None
+
+
+def all_sections(dtext, kind):
+    allsecs = {}
+    for _key, secs, off in section_spaces(dtext, kind):
+        for k, s in secs.items():
+            allsecs.setdefault(k, dict(s, off=off))
+    return allsecs
+
+
+# ── 원장(세션당 1회 · 총량) — mkdir 원자 락 + rename 회수(macOS 에 flock 없음 · DESIGN §4-5) ──
+def _lock(lockdir):
+    for _attempt in range(2):
+        try:
+            os.mkdir(lockdir)
+            try:
+                with open(os.path.join(lockdir, "owner"), "w") as f:
+                    f.write("%d %f\n" % (os.getpid(), __import__("time").time()))
+            except OSError:
+                pass
+            return True
+        except FileExistsError:
+            pass
+        except OSError:
+            return False
+        stale = False
+        try:
+            with open(os.path.join(lockdir, "owner")) as f:
+                pid_s, ts_s = f.read().split()[:2]
+            age = __import__("time").time() - float(ts_s)
+            alive = True
+            try:
+                os.kill(int(pid_s), 0)
+            except ProcessLookupError:
+                alive = False
+            except OSError:
+                alive = True
+            stale = age > LOCK_STALE_S or not alive
+        except (OSError, ValueError):
+            try:
+                stale = __import__("time").time() - os.stat(lockdir).st_mtime > LOCK_STALE_S
+            except OSError:
+                stale = False
+        if not stale:
+            __import__("time").sleep(0.05)
+            continue
+        grave = "%s.stale.%d.%d" % (lockdir, os.getpid(), __import__("random").randrange(1 << 30))
+        try:
+            os.rename(lockdir, grave)     # 회수 권리는 rename 성공자 한 명뿐
+        except OSError:
+            continue
+        __import__("shutil").rmtree(grave, ignore_errors=True)
+    return False
+
+
+def _unlock(lockdir):
+    try:
+        os.remove(os.path.join(lockdir, "owner"))
+    except OSError:
+        pass
+    try:
+        os.rmdir(lockdir)
+    except OSError:
+        pass
+
+
+def read_ledger(path):
+    """(done{(키, 동작)}, 총량) · 파일 없음 = 빈 원장 · 판독 실패 = None."""
+    done = set()
+    total = 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue            # 반쯤 쓴 줄 1개는 건너뛴다(중복 주입 = 무해 · 누락 = 유해)
+                if r.get("mode") in ("inject", "deny", "fence", "miss"):
+                    done.add((r.get("key"), r.get("act", "ctx")))
+                if r.get("mode") in ("inject", "deny"):
+                    total += int(r.get("chars") or 0)
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError):
+        return None
+    return done, total
+
+
+def _append(path, rows):
+    with open(path, "a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def cmd_event(a):
+    import time
+    raw = sys.stdin.read()
+    try:
+        h = json.loads(raw)
+    except ValueError:
+        return 0
+    if not isinstance(h, dict) or "agent_id" in h:     # 서브에이전트 = 대상 아님(master 판정 · T0 ⓒ)
+        return 0
+    if h.get("tool_name") != "Bash":
+        return 0
+    cmd = ((h.get("tool_input") or {}).get("command")) or ""
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(h.get("session_id") or ""))[:80]
+    if not cmd or not sid:
+        return 0
+    dpath = a.directive
+    dtext = read(dpath)
+    kind = detect_kind(dtext)
+    ldir = os.path.join(a.state_dir, "directive-event")
+    ledger = os.path.join(ldir, sid + ".jsonl")
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    try:
+        hits = trigger_hits(cmd, kind)
+    except ParseFail as e:
+        try:
+            os.makedirs(ldir, exist_ok=True)
+            _append(ledger, [{"ts": now, "mode": "parse_fail", "why": str(e)[:120]}])
+        except OSError:
+            pass
+        return 0
+    if not hits:
+        return 0
+    allsecs = all_sections(dtext, kind)
+    try:
+        os.makedirs(ldir, exist_ok=True)
+    except OSError:
+        pass
+    lockdir = ledger + ".lock"
+    locked = _lock(lockdir)
+    try:
+        st = read_ledger(ledger)
+        readable = st is not None
+        done, total = st if readable else (set(), 0)
+        rows = []
+        blocks = []
+        deny = None
+        for key, act, basis, label in hits:
+            if (key, act) in done:
+                continue
+            sec = find_section(allsecs, key)
+            if act == "deny":
+                if not readable or sec is None:
+                    continue           # 판독 실패·절 부재 = 허용(fail-open · D10 조건)
+                body, _cut = cap_lines(original_block(sec, key), LIMIT - 600)
+                deny = ("■ 이 명령(%s)은 %s의 적용 대상입니다(근거: %s). 이 세션에서 처음 실행돼 한 번 보류했습니다. "
+                        "정본 원문(%s)을 아래에 붙입니다. 확인했으면 같은 명령을 다시 실행하십시오 — 두 번째부터는 보류하지 않습니다.\n"
+                        % (label, key, basis, dpath)) + body
+                rows.append({"ts": now, "mode": "deny", "key": key, "act": act, "chars": ulen(deny), "trigger": label})
+                continue
+            if sec is None:
+                blocks.append((key, "■ 절 %s 를 찾지 못했다(제목 변경?) — 트리거 %s · 원문: %s\n" % (key, label, dpath), False))
+                rows.append({"ts": now, "mode": "miss", "key": key, "act": act, "trigger": label})
+                continue
+            a_ = sec["line"] + sec.get("off", 0)
+            b_ = sec["end"] + sec.get("off", 0)
+            ob = original_block(sec, key)
+            if total + ulen(ob) > EVENT_TOTAL_CAP:
+                blocks.append((key, "■ 주입 상한 도달 — %s 원문 생략(이 세션 누적 %d자 · 상한 %d). 필요하면 이 절의 줄 범위만 읽어라: %s 줄 %d–%d\n"
+                               % (key, total, EVENT_TOTAL_CAP, dpath, a_, b_), False))
+                rows.append({"ts": now, "mode": "fence", "key": key, "act": act, "trigger": label})
+                continue
+            head = "■ 사건 주입 — 방금 명령(%s)은 %s 적용 대상이다(근거: %s). 정본 원문이다 — 요지와 다르면 원문을 따른다.\n" % (label, key, basis)
+            blocks.append((key, head + ob, False))
+            rows.append({"ts": now, "mode": "inject", "key": key, "act": act, "chars": ulen(head + ob), "trigger": label})
+            total += ulen(head + ob)
+        if deny is not None:
+            out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                          "permissionDecisionReason": deny}}
+            rows = [r for r in rows if r["mode"] == "deny"]   # 보류된 명령 — 원문 주입분은 재실행 때 싣는다
+        elif blocks:
+            body, dropped, partial = assemble(blocks, dpath)
+            dropped = set(dropped) | ({partial} if partial else set())
+            rows = [r for r in rows if r.get("key") not in dropped]
+            out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": body}}
+        else:
+            out = None
+        if rows:
+            if not locked:
+                rows.append({"ts": now, "mode": "lock_fail"})
+            try:
+                _append(ledger, rows)
+            except OSError:
+                pass
+    finally:
+        if locked:
+            _unlock(lockdir)
+    if out is not None:
+        sys.stdout.write(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="core_inject.py")
@@ -421,11 +1052,16 @@ def main(argv):
     b.add_argument("--report")
     v = sp.add_parser("verify")
     v.add_argument("--directive", required=True)
+    e = sp.add_parser("event")
+    e.add_argument("--directive", required=True)
+    e.add_argument("--state-dir", default=os.environ.get("CYS_STATE_DIR")
+                   or os.path.join(os.path.expanduser("~"), ".cys", "state"))
     a = ap.parse_args(argv)
     # 훅이 만든 동적 블록은 env 로 받는다(인자 인용·길이 문제 회피 · 값이 없으면 빈 블록 = 건너뜀).
     a.role_notice = os.environ.get("CYS_CI_ROLE_NOTICE", "")
     a.bridge = os.environ.get("CYS_CI_BRIDGE", "")
-    return {"session": cmd_session, "background": cmd_background, "verify": cmd_verify}[a.cmd](a)
+    return {"session": cmd_session, "background": cmd_background, "verify": cmd_verify,
+            "event": cmd_event}[a.cmd](a)
 
 
 if __name__ == "__main__":

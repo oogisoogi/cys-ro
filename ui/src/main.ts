@@ -619,7 +619,8 @@ function ccReset(label: string, epoch: number | null): string {
   if (!epoch) return "";
   const d = new Date(epoch * 1000);
   const p = (x: number) => String(x).padStart(2, "0");
-  return label === "7d"
+  // ★주간 창은 날짜로 — `startsWith("7d")`라야 「7d·Fable」도 날짜가 붙는다(=== "7d"면 시:분만 나와 오늘 리셋으로 읽힌다).
+  return label.startsWith("7d")
     ? `리셋 ${p(d.getMonth() + 1)}/${p(d.getDate())}`
     : `리셋 ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
@@ -689,20 +690,27 @@ function renderAccounts() {
       const plan = a.plan ? `<span class="cc-acct-plan">${ccEsc(String(a.plan))}</span>` : "";
       // 게이지 — rate limit 임계(70/90)로 sevClass. cc-tbar 재사용.
       // ★데몬이 죽었다고 판정한 창(stale:true)은 채움·숫자를 그리지 않고 「—」+사유(회색) — 사이드바와 같은 규율.
-      const gauges = ["5h", "7d"]
-        .map((lab) => {
-          const r = (a.rate ?? []).find((x: any) => x.label === lab);
-          const dead = !!r && r.stale === true;
-          const used = r ? Math.round(Number(r.used_pct)) : 0;
-          const reset = dead
-            ? ccEsc(windowStaleText(r.stale_reason ?? null, Number(a.updated_at) || 0, Date.now() / 1000))
-            : r && r.resets_at != null
-              ? ccReset(lab, r.resets_at)
-              : "";
-          const fill = r && !dead ? `<span class="cc-tbar-fill ${sevClass(used, 70, 90)}" style="width:${Math.min(100, used)}%"></span>` : "";
-          return `<div class="cc-tbar${dead ? " dead" : ""}"><span class="cc-tbar-lab">${lab}</span><span class="cc-tbar-track">${fill}</span><span class="cc-tbar-pct">${r && !dead ? used + "%" : "—"}</span><span class="cc-tbar-reset">${reset}</span></div>`;
-        })
-        .join("");
+      // r = 창 1개(없으면 undefined) · observedAt = 그 창의 관측 시각(stale 사유 문구용).
+      const gauge = (lab: string, r: any, observedAt: number) => {
+        const dead = !!r && r.stale === true;
+        const used = r ? Math.round(Number(r.used_pct)) : 0;
+        const reset = dead
+          ? ccEsc(windowStaleText(r.stale_reason ?? null, observedAt, Date.now() / 1000))
+          : r && r.resets_at != null
+            ? ccReset(lab, r.resets_at)
+            : "";
+        const fill = r && !dead ? `<span class="cc-tbar-fill ${sevClass(used, 70, 90)}" style="width:${Math.min(100, used)}%"></span>` : "";
+        return `<div class="cc-tbar${dead ? " dead" : ""}"><span class="cc-tbar-lab">${ccEsc(lab)}</span><span class="cc-tbar-track">${fill}</span><span class="cc-tbar-pct">${r && !dead ? used + "%" : "—"}</span><span class="cc-tbar-reset">${reset}</span></div>`;
+      };
+      // 5h·7d는 늘 두 줄(없으면 「—」 — 없다/죽었다 구분은 rate 창에만) + 모델 스코프 게이지(「7d·Fable」)는
+      // 서버가 준 것만 그린다(TICKET=usage-two-accounts · 박사님 09-19 「클로드 방식대로 5h/7d/fable만」).
+      // ★스코프 게이지는 자기 관측 시각(g.updated_at)을 쓴다 — 계정 updated_at(rate 슬롯)과 별개다.
+      const gauges =
+        ["5h", "7d"].map((lab) => gauge(lab, (a.rate ?? []).find((x: any) => x.label === lab), Number(a.updated_at) || 0)).join("") +
+        (a.scoped ?? [])
+          .filter((g: any) => g && typeof g.model === "string" && g.model)
+          .map((g: any) => gauge(`7d·${g.model}`, g, Number(g.updated_at) || 0))
+          .join("");
       // 계정의 창(rate + 스코프 게이지)이 전부 죽었으면 행을 흐린다 — 숨기지 않는다(숨기면 「없다」와 「죽었다」가 구분 안 된다).
       const wins: any[] = [...(a.rate ?? []), ...(a.scoped ?? [])];
       const allDead = wins.length > 0 && wins.every((w) => w?.stale === true);

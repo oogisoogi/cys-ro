@@ -140,6 +140,7 @@ ACCOUNT_MODE_DEFAULT = "shared"
 STATES = ("proposed", "superseded", "confirmed", "expired", "created", "reused",
           "create-timeout", "failed", "closed", "discarded")
 IN_FLIGHT = ("confirmed", "create-timeout")
+DISCARDABLE = tuple(x for x in STATES if x not in ("confirmed", "discarded"))
 
 
 def now():
@@ -535,6 +536,21 @@ def _supersede_open(except_id=None):
             transition(r["id"], ("proposed",), sup)      # F8: 그 사이 확인된 요청은 건드리지 않는다
 
 
+def _publish(r):
+    """★2R(codex F13): 동시 propose 둘이 서로의 저장 전에 스캔을 마치면 둘 다 proposed 로 남았다 — 옛 제안 교체와
+    새 제안 저장을 하나의 제안 잠금 안에서 한다(요청별 잠금은 서로 다른 새 요청을 직렬화하지 못한다)."""
+    import javis_lock
+    lk = javis_lock.FileLock(os.path.join(root_dir(), ".propose.lock"), owner="dept-request",
+                             blocking=True, timeout=10.0)
+    got = lk.acquire() == javis_lock.ACQUIRED
+    try:
+        save_req(r)
+        _supersede_open(except_id=r["id"])
+    finally:
+        if got:
+            lk.release()
+
+
 def _refuse(say, code=5, **kw):
     out(dict({"ok": False, "say": say}, **kw))
     return code
@@ -595,8 +611,7 @@ def cmd_propose(a):
         atomic_write_text(os.path.join(req_dir(rid), "utterance.txt"), utter)
     card = render_create_card(r, gate, len(live))
     atomic_write_text(os.path.join(req_dir(rid), "card.txt"), card)
-    _supersede_open(except_id=rid)       # 열린 제안은 언제나 1장(2-1 ②) — 새 것을 쓴 뒤 옛 것을 닫는다
-    save_req(r)
+    _publish(r)                          # 열린 제안은 언제나 1장(2-1 ②)
     out({"ok": True, "request": rid, "card": card})
     return 0
 
@@ -629,8 +644,7 @@ def _propose_close(a, reg, ts, cat, live):
     os.makedirs(req_dir(rid), exist_ok=True)
     card = render_close_card(r)
     atomic_write_text(os.path.join(req_dir(rid), "card.txt"), card)
-    _supersede_open(except_id=rid)
-    save_req(r)
+    _publish(r)
     out({"ok": True, "request": rid, "card": card})
     return 0
 
@@ -792,6 +806,11 @@ FAIL_SAY = {
     "cap": "그 사이 부서가 %d개가 되어(메뉴로 만드신 부서 포함) 더 만들 수 없었습니다." ,
     "resource": "컴퓨터가 너무 바빠서 만들지 못했습니다. 조금 뒤에 다시 말씀해 주세요.",
     "create_hang": "부서를 만드는 일이 너무 오래 걸려 멈췄습니다.",
+    # A1-2b 2R(agy): 이 사유들이 날것(「(사유: …)」)으로 나가지 않게
+    "create_timeout_exhausted": "부서를 만드는 일이 두 번 모두 제시간에 끝나지 않아 멈췄습니다.",
+    "crash": "부서 일을 처리하던 중 내부 오류가 나서 멈췄습니다.",
+    "target_changed": "확인하신 뒤 그 번호의 부서가 다른 부서로 바뀌어 있어서 닫지 않았습니다. 지금 부서 목록을 다시 보여 드릴까요?",
+    "close_rc": "닫는 프로그램이 실패했습니다.",
 }
 
 
@@ -801,8 +820,12 @@ def say_for(row, r, name, x, reg=None, cat=None):
         return {"proposed": "아직 확인을 받지 않은 닫기 제안입니다.",
                 "confirmed": "「%s」을 닫을 차례를 기다리고 있습니다 — 1분 안에 시작합니다." % disp,
                 "expired": "확인하신 뒤 30분 안에 닫지 못했습니다(컴퓨터가 잠들었던 경우 등). 다시 닫을까요?",
-                "closed": "「%s」은 닫혀 있습니다." % disp,
-                "failed": "「%s」을 닫지 못했습니다(%s)." % (disp, r.get("fail_reason") or "사유 불명"),
+                # 2R(codex F3): 닫은 뒤 같은 키의 부서가 다시 등록됐으면 「닫혀 있다」는 지금의 사실이 아니다
+                "closed": ("「%s」은 닫았으나 지금 다시 등록돼 있습니다(메뉴로 다시 여신 경우 등)." % disp
+                           if x.get("G") else "「%s」은 닫혀 있습니다." % disp),
+                "failed": "「%s」을 닫지 못했습니다. %s" % (
+                    disp, FAIL_SAY.get((r.get("fail_reason") or "").split(":")[0]) or
+                    "(사유: %s)" % (r.get("fail_reason") or "사유 불명")),
                 }.get(r["state"], "닫기 요청 상태: %s" % r["state"])
     if row == 1:
         return "「%s」은 제가 만든 부서가 아닙니다(메뉴로 만들어진 부서)." % disp
@@ -825,6 +848,9 @@ def say_for(row, r, name, x, reg=None, cat=None):
                     "만듭니다.")
         return "「%s」을 만들 차례를 기다리고 있습니다 — 1분 안에 시작합니다." % disp
     if row == 7:
+        if (r or {}).get("state") == "create-timeout" and r.get("waiting_gap"):
+            return ("「%s」을 만들다 한 번 멈췄습니다 — 앞선 시도 뒤 10분이 지나면 자동으로 다시 만듭니다. "
+                    "그만두시려면 지우라고 말씀해 주세요." % disp)
         return "「%s」을 만들다 멈췄습니다. 이어서 만들까요, 지울까요?" % disp
     if row == 8:
         return ("「%s」이 지금 꺼져 있습니다. 컴퓨터를 다시 켠 뒤 그 부서 화면을 아직 열지 않으셨다면 이런 상태가 "
@@ -893,7 +919,8 @@ def cmd_status(a):
     if a.all:
         # ★codex 1R F3: 옛 요청의 dept_name 으로 번호를 「이미 보고됨」 처리하면, 그 번호를 다른 부서가 재사용했을
         #   때 새 부서(묘비 잔존 포함)가 표에서 통째로 빠진다 — 키로 지금 소유가 확인되는 이름만 뺀다.
-        claimed = {reg_name_for_key(r.get("key"), reg) for r in reqs if r.get("key")}
+        claimed = {reg_name_for_key(r.get("key"), reg) for r in reqs
+                   if r.get("key") and r.get("kind") == "create"}   # 2R F3: 닫기 요청은 부서를 소유하지 않는다
         for n in sorted(reg):
             if n in claimed:
                 continue
@@ -931,8 +958,19 @@ def _discard_locked(a):
                        reason="registry_unreadable")
     if r.get("kind") == "create" and r.get("key") and reg_name_for_key(r["key"], reg):
         return _refuse("이미 만들어진 부서가 있어 지울 수 없습니다 — 닫기로 말씀해 주세요.", code=7, reason="exists")
-    removed = []
-    if r.get("kind") == "create" and r.get("state") not in ("proposed", "superseded"):
+    prev = {}
+
+    def disc(x):
+        prev["state"] = x["state"]
+        x["state"] = "discarded"
+        x["discarded_at"] = now()
+    # ★2R(codex F2): 상태 쓰기는 confirm 과 같은 요청 잠금 안에서 **다시 읽은** 상태로 — 옛 객체로 저장하면
+    #   그 사이의 확인을 지운다. 걷기는 전이가 성립한 뒤에만.
+    ok, cur = transition(r["id"], DISCARDABLE, disc)
+    if not ok:
+        return _refuse("이 요청은 지금 지울 수 없습니다(%s)." % (cur or {}).get("state"), code=7, reason="state")
+    removed, kept = [], []
+    if r.get("kind") == "create" and prev["state"] not in ("proposed", "superseded"):
         import javis_org
         key = r["key"]
         lock = catalog_json() + ".lock"
@@ -951,12 +989,17 @@ def _discard_locked(a):
         cm = os.path.join(r["cwd"], "CLAUDE.md")
         mk = claude_md_marker(cm)
         if mk and ("request=%s " % r["id"]) in mk:
-            os.remove(cm)
-            removed.append("CLAUDE.md")
-    r["state"] = "discarded"
-    r["discarded_at"] = now()
-    save_req(r)
-    out({"ok": True, "request": r["id"], "removed": removed, "say": "지웠습니다."})
+            # ★2R(codex F12): 표식이 이 요청 것이어도 사람이 고쳤으면(표식 자기 해시 불일치) 지우지 않는다
+            if _generated_untouched(cm):
+                os.remove(cm)
+                removed.append("CLAUDE.md")
+            else:
+                kept.append(cm)
+    res = {"ok": True, "request": r["id"], "removed": removed, "say": "지웠습니다."}
+    if kept:
+        res["kept"] = kept
+        res["say"] = "지웠습니다. 다만 부서 폴더의 안내 파일(CLAUDE.md)은 고치신 흔적이 있어 남겨 두었습니다."
+    out(res)
     return 0
 
 
@@ -992,8 +1035,17 @@ def cmd_kickoff(a):
         return _refuse("첫 일은 이미 전했습니다.", code=7, reason="already")
     os.close(fd)
     # ★--queued 는 CR 을 포함해 배달한다 — Return 을 덧붙이지 않는다(이중 제출 · cys.rs 큐 배달 주석).
-    p = subprocess.run([_cys_bin(), "--socket", sock, "send", "--queued", "--to", "master", body],
-                       capture_output=True, text=True, timeout=20, **NOWIN)
+    try:
+        p = subprocess.run([_cys_bin(), "--socket", sock, "send", "--queued", "--to", "master", body],
+                           capture_output=True, text=True, timeout=20, **NOWIN)
+    except subprocess.TimeoutExpired:
+        atomic_write_json(kp, {"uncertain": True, "at": now()})   # 2R(codex F11): 전해졌는지 모른다 — 재발송 금지
+        return _refuse("부서장에게 전해졌는지 확인하지 못했습니다. 그 부서 화면에서 첫 일이 도착했는지 봐 주세요.",
+                       code=1, reason="send_uncertain")
+    except OSError as e:
+        _rm(kp)                                            # 2R(codex F11): 보내기 시작도 못 함 = 확실한 미전송
+        return _refuse("부서장에게 전하지 못했습니다(%s). 그 부서 화면의 부서장에게 직접 말씀해 주세요."
+                       % type(e).__name__, code=1, reason="send_failed")
     if p.returncode != 0:
         _rm(kp)
         return _refuse("부서장에게 전하지 못했습니다(rc=%d). 그 부서 화면의 부서장에게 직접 말씀해 주세요."
@@ -1170,6 +1222,9 @@ def _rm(path):
         return True
     except FileNotFoundError:
         return False
+    except OSError as e:                                   # 2R(codex F9): 권한 등 — 항목 단위로 기록하고 계속
+        _tick_log("rm_failed %s %s: %s" % (path, type(e).__name__, e))
+        return False
 
 
 def _sweep(reqs):
@@ -1198,6 +1253,18 @@ def _sweep(reqs):
         if st in ("superseded", "expired", "discarded") and age > 30 * DAY:
             _rm(d)                                      # 폴더 보존은 별도 계산(마지막 움직임 30일)
             continue
+    known = {r["id"] for r in reqs}
+    try:
+        orphans = [n for n in os.listdir(root_dir()) if n.startswith("dr-") and n not in known]
+    except OSError:
+        orphans = []
+    for n in orphans:                                   # 2R(codex F8): 기록이 없어도 원문은 파일 시각 기준 7일
+        u = os.path.join(root_dir(), n, "utterance.txt")
+        try:
+            if t - os.path.getmtime(u) > 7 * DAY:
+                _rm(u)
+        except OSError:
+            pass
     try:
         moved = cleanup_orphan_ledgers()
     except RegistryUnreadable:
@@ -1309,16 +1376,14 @@ def _write_claude_md(r):
     if os.path.exists(dest):
         # ★codex 1R F6: 표식만 보고 덮지 않는다 — ⑴이 요청의 바이트 그대로면 그대로 둔다 ⑵표식 자기 해시가
         #   맞는(사람이 안 고친) 생성 파일만 교체한다 ⑶그 밖(표식을 남긴 채 사람이 고친 파일 포함)은 충돌.
+        #   ★2R(codex F4): 「사람이 안 고친 생성 파일이면 교체」도 대조와 교체 사이 창이 남아 없앴다 — 이 요청의
+        #   바이트와 다르면 무엇이든 충돌(옛 실패 요청의 잔여물은 그 요청의 「지우기」로 걷는다).
         try:
             with open(dest, encoding="utf-8", newline="") as f:
-                if f.read() == text:
-                    return None
+                same = f.read() == text
         except (OSError, UnicodeDecodeError):
-            return "claude_md_conflict"
-        if not claude_md_marker(dest) or not _generated_untouched(dest):
-            return "claude_md_conflict"            # 사용자 파일 보존이 우선
-        atomic_write_text(dest, text)
-        return None
+            same = False
+        return None if same else "claude_md_conflict"      # 사용자 파일 보존이 우선
     # 새로 놓기 = no-clobber: 임시 파일을 link 로 붙인다(그 사이 사람이 만든 파일이 있으면 실패 → 충돌).
     d = os.path.dirname(dest)
     os.makedirs(d, exist_ok=True)
@@ -1402,6 +1467,10 @@ def _create_step(r, st, reqs):
         if name:
             _finish_create(r, name, r.get("pre_reg") or [])
             return
+        if not pid and t - (r.get("create_started_at") or t) < CREATE_HANG_SEC():
+            # ★2R(codex F1): spawn 과 pid 기록 사이에 틱이 죽으면 첫 자식의 생사를 알 수 없다 — 간격·호출 수는
+            #   종료의 증명이 아니므로, 생사 불명이면 hang 상한(1시간)까지 다시 부르지 않는다(안전 방향).
+            return
         if (r.get("create_calls") or 0) >= MAX_CREATE_CALLS:
             _fail(r, "create_timeout_exhausted")
             return
@@ -1441,7 +1510,7 @@ def _create_step(r, st, reqs):
     r["create_started_at"] = r.get("create_started_at") or t
     r["create_calls"] = (r.get("create_calls") or 0) + 1
     r.pop("create_pid", None)
-    st["last_create_at"] = t
+    st["last_create_at"] = now()                       # 2R(codex F15): 자원 검사·파일 작업 뒤, spawn 직전 시각
     r.pop("waiting_gap", None)
     atomic_write_json(tick_state_path(), st)             # F2: 간격 기준을 spawn 전에 영속
     save_req(r)                                          # F2: 호출 의도를 spawn 전에 영속

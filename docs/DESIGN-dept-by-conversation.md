@@ -56,7 +56,7 @@
 - `confirm` 성공: `{"ok": true, "request": …, "say": "확인했습니다. 1분 안에 시작합니다 — 다 되면 알려 드리겠습니다."}`
 - `status`: `{"ok": true, "rows": [판정, …]}` · `status --say`: 판정 1개
 - 판정: `{"request", "dept", "row": 1~13, "verdict", "axes": {R,G,T,D,F,P,E}, "say"[, "tombstone_residue": true]}`
-- `reason` 값: `lane` · `name` · `duplicate` · `cap` · `resource` · `mission` · `io` · `not_found` · `ambiguous` · `superseded` · `state` · `claude_md_changed` · `exists` · `no_first_task` · `already` · `not_running` · `send_failed` · `busy` · `in_flight` · `registry_unreadable`
+- `reason` 값: `lane` · `name` · `duplicate` · `cap` · `resource` · `mission` · `io` · `not_found` · `ambiguous` · `superseded` · `state` · `claude_md_changed` · `exists` · `no_first_task` · `already` · `not_running` · `send_failed` · `send_uncertain`(kickoff 전송 timeout — 재발송 금지 · 2R F11) · `busy` · `in_flight` · `registry_unreadable`
 
 ### 2-3. 요청 상태
 
@@ -157,14 +157,15 @@
 ## 8. 미션 배달
 
 - 영속 채널 = 부서 작업 폴더의 `CLAUDE.md`. **실제로 이 파일을 cwd 로 읽는 것은 부서장(master) 좌석 하나다**(`cys-dept` 가 master 만 `--cwd <작업폴더>` 로 띄운다). 운영 담당·작업자는 편성이 `<작업폴더>/cso/` · `<작업폴더>/workers/w1/` 에 띄우고, 그 폴더에는 `javis_seat` 의 얇은 `CLAUDE.md` 가 먼저 있다 — 상위 파일은 상위 폴더 탐색으로만 닿고 두 파일의 우선순위는 미확인이다(2R 1-A · V-MISSION 관찰 항목).
-- 이미 `CLAUDE.md` 가 있으면(codex 1R F6): ⑴이 요청의 바이트 그대로면 그대로 둔다 ⑵첫 줄 표식이 있고 표식의 sha256 이 표식 아래 전부와 맞으면(= 생성한 그대로 · 사람이 안 고침) 교체 ⑶그 밖(표식 없는 사용자 파일 · 표식을 남긴 채 사람이 고친 파일)은 건드리지 않고 `failed(claude_md_conflict)`. 없으면 임시 파일을 `link` 로 붙여 **no-clobber** 로 놓는다(그 사이 사람이 만든 파일이 있으면 충돌). 남은 창: ⑵의 대조와 교체 사이에 사람이 고치는 경합은 닫지 못했다.
+- 이미 `CLAUDE.md` 가 있으면(codex 1R F6 · 2R F4): 이 요청의 바이트와 **같을 때만** 그대로 두고, 다르면 무엇이든(표식 없는 사용자 파일 · 사람이 고친 생성 파일 · 다른 요청의 생성 파일) 건드리지 않고 `failed(claude_md_conflict)` — 교체 분기는 없다(대조와 교체 사이 창 제거). 옛 실패 요청의 잔여물은 그 요청의 `discard` 로 걷는다. 없으면 임시 파일을 `link` 로 붙여 **no-clobber** 로 놓는다.
+- `discard` 는 표식이 그 요청 것이고 표식 자기 해시가 맞을 때만 `CLAUDE.md` 를 지운다 — 사람이 고쳤으면 남기고 `kept` 로 알린다(2R F12).
 - 확인 뒤 `claude_md.txt` 가 바뀌거나 사라지거나 해독 불가가 되면 `confirm` 은 exit 7, 틱은 `failed(claude_md_changed)`(재호출 직전에도 다시 대조 · codex 1R F7·F15).
 - `kickoff` 본문: `[부서시작 <번호>] (CLAUDE.md sha256 <앞 12자리>) 오너가 처음 맡긴 일: <카드에 보였던 그 문장>` — 12자리는 `CLAUDE.md` 표식 줄의 sha256 과 같은 값이다(부서장이 대조).
 
 ## 9. 시험·뮤턴트
 
 - `python3 -m unittest tests.test_dept_request`(bin 폴더에서) — 임시 HOME · 가짜 cys/cys-dept/cysd/org · 실 `~/.cys/dept-requests` 무접촉 단언.
-- `python3 tests/mut_dept_request.py` — 변이 34종(A1-2 17종 + A1-2b 리뷰 수리 17종 M17~M33 · 수리 1건당 1). 적용 단언 → 기대 킬러 시험 이름으로 귀속 → import 오류는 CRASH(측정 무효)로 따로 센다. `M7a`(본부 제외만 끄기)는 부서 모양 판별이 두 번째 벨트라 **생존이 예상값**이고, 두 벨트를 함께 끈 `M7` 이 킬되는 것으로 그물을 증명한다.
+- `python3 tests/mut_dept_request.py` — 변이 43종(A1-2 17종 + A1-2b 1R 17종 M17~M33 + 2R 9종 M34~M42 · 수리 1건당 1 · 2R F13·F15 는 결정론 시험 부재로 뮤턴트 없음 — 심사표 정직 고지). 적용 단언 → 기대 킬러 시험 이름으로 귀속 → import 오류는 CRASH(측정 무효)로 따로 센다. `M7a`(본부 제외만 끄기)는 부서 모양 판별이 두 번째 벨트라 **생존이 예상값**이고, 두 벨트를 함께 끈 `M7` 이 킬되는 것으로 그물을 증명한다.
 - `python3 javis_dept_request.py self-test` — 결정 트리 1296 조합 · 13행 조합 전수 출력 · 내장 뮤턴트(8행 삭제 · 옛 5행) · javis_org 의미 대조(+한 글자 변이) · 레인 · 계정 키.
 - Rust: `cargo test --bin cysd builtin` — 잡 계약 핀(command 레인 · base_only · 마커 · CSO 신원 · 표지 게이트 부재 · 매분 · 버전 불변) + id 선점 conflict 핀.
 

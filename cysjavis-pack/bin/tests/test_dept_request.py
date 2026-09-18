@@ -722,7 +722,8 @@ class TestReviewR1(Base):
         self.assertEqual(r.get("fail_reason"), "claude_md_conflict")
         self.assertTrue(open(dest, encoding="utf-8").read().endswith("사람이 덧붙인 줄\n"))
 
-    def test_f6_untouched_generated_claude_md_is_replaced(self):
+    def test_f6_other_request_generated_claude_md_is_conflict(self):
+        """2R(codex F4): 사람이 안 고친 다른 요청의 생성 파일도 이제 교체하지 않는다(대조~교체 창 제거)."""
         rid = self.proposed_confirmed()
         r = self.req(rid)
         os.makedirs(r["cwd"], exist_ok=True)
@@ -730,9 +731,8 @@ class TestReviewR1(Base):
         open(os.path.join(r["cwd"], "CLAUDE.md"), "w", encoding="utf-8").write(text)
         self.tick()
         r = self.req(rid)
-        self.assertEqual(r["state"], "created", r.get("events"))
-        self.assertTrue(open(os.path.join(r["cwd"], "CLAUDE.md"), encoding="utf-8").readline()
-                        .startswith("<!-- cys-dept-mission request=%s " % rid))
+        self.assertEqual(r.get("fail_reason"), "claude_md_conflict")
+        self.assertEqual(open(os.path.join(r["cwd"], "CLAUDE.md"), encoding="utf-8").read(), text)
 
     def test_f7_retry_rechecks_claude_md(self):
         rid = self.proposed_confirmed()
@@ -887,6 +887,132 @@ class TestReviewR1(Base):
         self.assertNotIn("tombstone_retry", r)
         tp = os.path.join(os.environ["CYS_BASE_STATE_DIR"], "dept_tombstones.json")
         self.assertIn("dept-1", json.load(open(tp))["dept_tombstones"], "방금 닫힌 부서의 묘비를 지웠다")
+
+
+class TestReviewR2(TestReviewR1):
+    """A1-2b · 2R(agy·codex) 수용분 — 뮤턴트 M34~ 가 이름으로 귀속한다(상위 클래스 시험은 다시 돌지 않게 지운다)."""
+
+    def test_2r_agy_row7_waiting_gap_says_auto_retry(self):
+        rid = self.proposed_confirmed()
+        self._timeout_then_dead_unregistered(rid)
+        self.tick()
+        rc, o = self.run_cmd("status", "--say", rid)
+        self.assertEqual(o["row"], 7)
+        self.assertIn("자동으로", o["say"], "자동 재시도 대기를 「멈췄습니다 · 이어서 만들까요」로 말했다")
+
+    def test_2r_agy_fail_say_has_no_raw_reason(self):
+        rid = self.proposed_confirmed()
+        os.environ["CYS_DEPT_BIN"] = os.path.join(self.tmp, "없는-cys-dept")
+        self.tick()
+        rc, o = self.run_cmd("status", "--say", rid)
+        self.assertNotIn("(사유:", o["say"], o["say"])
+
+    def test_2r_f1_unknown_child_blocks_recall(self):
+        rid = self.proposed_confirmed()
+        r = self.req(rid)
+        r["create_calls"] = 1
+        r["create_started_at"] = time.time()             # spawn 뒤 pid 기록 전에 틱이 죽은 흔적
+        self.m.save_req(r)
+        os.environ["CYS_DEPT_CREATE_GAP_SEC"] = "0"
+        self.tick()
+        self.assertEqual(self._creates(), [], "첫 자식 생사 불명인데 다시 불렀다")
+
+    def test_2r_f2_discard_stale_read_keeps_confirm(self):
+        rc, o = self.propose()
+        rid = o["request"]
+        stale = self.req(rid)
+        self.run_cmd("confirm", rid)
+        real, n = self.m.load_req, [0]
+
+        def fake(x):
+            n[0] += 1
+            return json.loads(json.dumps(stale)) if n[0] <= 2 else real(x)   # 두 번째 읽기까지 옛 proposed
+        self.m.load_req = fake
+        try:
+            rc, o2 = self.run_cmd("discard", rid)
+        finally:
+            self.m.load_req = real
+        self.assertEqual(rc, 7, o2)
+        self.assertEqual(self.req(rid)["state"], "confirmed", "옛 객체의 discarded 가 확인을 지웠다")
+
+    def test_2r_f3_closed_menu_dept_reregistered_is_listed(self):
+        cwd = os.path.join(self.home, "Desktop", "CYSjavis", "메뉴부서")
+        e = {"socket": os.path.join(self.home, ".local/state/cys-dept-dept-1/cys.sock"), "mission_key": "mk0001",
+             "display_name": "메뉴부서", "cwd": cwd}
+        json.dump({"depts": {"dept-1": e}}, open(os.environ["CYS_DEPTS_JSON"], "w"))
+        rc, o = self.run_cmd("propose", "--close", "메뉴부서")
+        cid = o["request"]
+        self.run_cmd("confirm", cid)
+        self.tick()
+        self.assertEqual(self.req(cid)["state"], "closed")
+        json.dump({"depts": {"dept-1": e}}, open(os.environ["CYS_DEPTS_JSON"], "w"))   # 메뉴로 다시 열었다
+        rc, o = self.run_cmd("status", "--say", cid)
+        self.assertIn("다시", o["say"])
+        rc, o = self.run_cmd("status", "--all")
+        self.assertTrue([x for x in o["rows"] if x["request"] is None and x["dept"] == "dept-1"],
+                        "닫기 요청이 지금 살아 있는 부서 행을 가렸다: %s" % o["rows"])
+
+    def test_2r_f8_orphan_request_dir_utterance_7d(self):
+        d = os.path.join(self.m.root_dir(), "dr-000000-000000-dead")
+        os.makedirs(d)
+        u = os.path.join(d, "utterance.txt")
+        open(u, "w").write("원문")
+        old = time.time() - 8 * 86400
+        os.utime(u, (old, old))
+        self.tick()
+        self.assertFalse(os.path.exists(u), "request.json 없는 폴더의 원문이 영구히 남는다")
+
+    def test_2r_f9_rm_failure_does_not_kill_tick(self):
+        rc, o = self.run_cmd("propose", "--name", "가부서", "--mission", "일", "--claude-md-file", self.body,
+                             "--utterance-file", self.body)
+        r = self.req(o["request"])
+        r["state"] = "superseded"
+        r["created_at"] = time.time() - 8 * 86400
+        self.m.save_req(r)
+        d = self.m.req_dir(r["id"])
+        os.chmod(d, 0o500)                               # 원문 삭제가 PermissionError
+        try:
+            rid = self.proposed_confirmed("나부서")
+            self.assertEqual(self.tick(), 0)
+            self.assertEqual(self.req(rid)["state"], "created", "청소 항목 하나의 실패가 틱을 죽였다")
+        finally:
+            os.chmod(d, 0o700)
+
+    def test_2r_f11_kickoff_unsent_releases_marker(self):
+        rid = self.proposed_confirmed(first="본문 자료 모으기")
+        self.tick()
+        self.set_alive("dept-1")
+        self.set_formation("dept-1")
+        real = self.m.subprocess.run
+
+        def boom(argv, *a, **k):
+            if "send" in argv:
+                raise FileNotFoundError("cys")
+            return real(argv, *a, **k)
+        self.m.subprocess.run = boom
+        try:
+            self.assertEqual(self.run_cmd("kickoff", rid)[0], 1)
+        finally:
+            self.m.subprocess.run = real
+        self.assertEqual(self.run_cmd("kickoff", rid)[0], 0, "보내지도 못했는데 「이미 전했습니다」로 막혔다")
+
+    def test_2r_f12_discard_keeps_edited_claude_md(self):
+        rid = self.proposed_confirmed()
+        os.environ["FAKE_CREATE_RC"] = "3"
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["state"], "failed")
+        cm = os.path.join(r["cwd"], "CLAUDE.md")
+        with open(cm, "a", encoding="utf-8") as f:
+            f.write("사람이 덧붙인 줄\n")
+        rc, o = self.run_cmd("discard", rid)
+        self.assertEqual(rc, 0, o)
+        self.assertTrue(os.path.exists(cm), "사람이 고친 CLAUDE.md 를 지웠다")
+        self.assertIn(cm, o.get("kept", []))
+
+
+for _n in [n for n in dir(TestReviewR1) if n.startswith("test_")]:
+    setattr(TestReviewR2, _n, None)
 
 
 class TestNoProduction(unittest.TestCase):

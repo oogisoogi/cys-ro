@@ -665,18 +665,48 @@ async fn run_capture(program: &str, args: &[&str], stdin_data: Option<&str>) -> 
     Ok(out.stdout)
 }
 
-/// 키체인에서 Claude Code OAuth 액세스 토큰. **반환값을 로그에 찍지 마라.**
+/// 프로필 dir → 키체인 서비스명. **순수 판정**(IO 없음) — B4(TICKET=v110-misc)의 그물이다.
 ///
-/// ★키체인 서비스명 `Claude Code-credentials`(접미 없음) = 기본 설정 dir(`~/.claude`)의 자격증명이다.
-/// 접미가 붙은 항목들(`…-<hash>`)은 `CLAUDE_CONFIG_DIR`로 갈라 둔 다른 설정 dir의 것이다.
-/// 그래서 계정 귀속도 `~/.claude/.claude.json`의 accountUuid로 잡는다(짝이 맞는 쌍을 쓴다).
-async fn keychain_token() -> Result<String, String> {
-    let raw = run_capture(
-        "security",
-        &["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-        None,
-    )
-    .await?;
+/// 기본 프로필(`~/.claude`)은 이미 실측으로 검증된 접미 없는 레거시 서비스명을 그대로 쓴다
+/// (2026-08-07 오너 승인 티켓⑤ 실측 — 건드리지 않는다). 그 외 프로필은
+/// `Claude Code-credentials-<sha256(절대경로)[..8]>`(pack.rs config_dir 문서화 실측
+/// 2026-08-23 — `~/.claude`=bdf68cc2·`~/.cys/claude`=c45eaec5·`~/.claude-3`=8e88d2ce 등
+/// 7항목 대조 확정). ⚠이 공식은 Claude Code CLI의 비공개 내부 규약을 관측으로 재구성한
+/// 것이다 — 서비스명이 틀려도 `keychain_token`이 `find-generic-password` 종료코드로
+/// 정직하게 실패할 뿐(공통모드로 안 묶인다·자격증명을 잘못 읽어 섞어 쓰는 경로 없음).
+fn keychain_service_for(dir: &Path, home: &Path) -> String {
+    if dir == home.join(".claude") {
+        return "Claude Code-credentials".to_string();
+    }
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(dir.to_string_lossy().as_bytes()));
+    format!("Claude Code-credentials-{}", &digest[..8])
+}
+
+/// 신원 목록(프로필 dir·uuid·email) → 프로브 대상(대표 dir 1개·uuid·email·서비스명) 목록.
+/// **순수 판정**(IO 없음) — 같은 accountUuid로 귀속되는 프로필(`.claude`·`.cys/claude-*` 등
+/// 부서 프로필 다수가 흔히 같은 계정)은 먼저 만난 dir 하나로만 추려 불필요한 반복 키체인
+/// 조회를 피한다. ★B4 회귀 핀의 실제 그물: 두 번째 이후 계정이 통째로 빠지는 형태(종전
+/// oauth_probe_once가 `~/.claude` 하나만 보던 결함)를 이 함수의 출력 길이·uuid 집합으로 잡는다.
+fn plan_oauth_probe_targets(
+    idents: &[(PathBuf, String, String)],
+    home: &Path,
+) -> Vec<(PathBuf, String, String, String)> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::new();
+    for (dir, uuid, email) in idents {
+        if !seen.insert(uuid.clone()) {
+            continue; // 같은 계정 재등장 — 이미 대상에 있음
+        }
+        let service = keychain_service_for(dir, home);
+        out.push((dir.clone(), uuid.clone(), email.clone(), service));
+    }
+    out
+}
+
+/// 키체인에서 Claude Code OAuth 액세스 토큰. **반환값을 로그에 찍지 마라.**
+async fn keychain_token(service: &str) -> Result<String, String> {
+    let raw = run_capture("security", &["find-generic-password", "-s", service, "-w"], None).await?;
     let v: Value = serde_json::from_slice(&raw).map_err(|_| "키체인 항목이 JSON이 아니다".to_string())?;
     v.pointer("/claudeAiOauth/accessToken")
         .and_then(|x| x.as_str())
@@ -712,27 +742,61 @@ async fn fetch_oauth_usage(token: &str) -> Result<Value, String> {
     serde_json::from_str(body).map_err(|_| "응답이 JSON이 아니다".to_string())
 }
 
-/// 프로브 1회 — 토큰 → 조회 → 파싱 → 계정 반영.
+/// 프로브 1회 — 프로필마다 토큰 → 조회 → 파싱 → 계정 반영(다중 계정 순회).
+///
+/// ★B4(TICKET=v110-misc) 수리: 종전엔 `~/.claude`(기본 프로필) 하나만 봤다 — seed_known·
+/// note_rate가 이미 쓰는 `cys::profile_gate::enumerate_profile_dirs`를 여기도 쓴다(정본
+/// 재사용 — 별도 열거 규칙 금지). 프로필/키체인 항목 부재는 fail-soft로 다음 프로필로
+/// 넘어간다 — **전부** 실패했을 때만 Err(기존 백오프 계약 유지 — 한 계정만 실패해도 전체를
+/// 재시도 지연시키지 않는다). 읽기만(자격증명 복사·쓰기 0) · 토큰은 로그·반환값에 없다.
 async fn oauth_probe_once(daemon: &Arc<Daemon>) -> Result<(), String> {
-    let token = keychain_token().await?;
-    let v = fetch_oauth_usage(&token).await?;
-    drop(token); // 필요 이상으로 들고 있지 않는다
-    let now = crate::state::now_epoch();
-    let (rate, scoped) = parse_oauth_usage(&v, now);
-    if rate.is_empty() && scoped.is_empty() {
-        return Err("응답에 한도 정보가 없다(형태 변경?)".into());
-    }
-    // 계정 귀속 — 짝이 맞는 설정 dir(~/.claude)의 신원. 없으면 **쓰지 않는다**(유령 계정 0).
     let home = dirs::home_dir().ok_or_else(|| "홈 dir 불명".to_string())?;
-    let ident = {
+    let now = crate::state::now_epoch();
+    let dirs_found = cys::profile_gate::enumerate_profile_dirs(&home);
+    let idents: Vec<(PathBuf, String, String)> = {
         let mut st = daemon.accounts.lock().unwrap();
-        claude_identity(&mut st, &home.join(".claude"))
+        dirs_found
+            .into_iter()
+            .filter_map(|dir| {
+                claude_identity(&mut st, &dir).map(|(uuid, email, _plan)| (dir, uuid, email))
+            })
+            .collect()
     };
-    let Some((uuid, email, _plan)) = ident else {
-        return Err("~/.claude/.claude.json에 oauthAccount 신원이 없다".into());
-    };
-    note_oauth(daemon, &uuid, &email, &rate, &scoped, now);
-    Ok(())
+    let targets = plan_oauth_probe_targets(&idents, &home);
+    if targets.is_empty() {
+        return Err("프로필 신원 0건(.claude.json에 oauthAccount 없음)".into());
+    }
+    let mut any_ok = false;
+    let mut last_err = String::new();
+    for (_dir, uuid, email, service) in targets {
+        let token = match keychain_token(&service).await {
+            Ok(t) => t,
+            Err(e) => {
+                last_err = format!("{uuid}: {e}");
+                continue;
+            }
+        };
+        let v = match fetch_oauth_usage(&token).await {
+            Ok(v) => v,
+            Err(e) => {
+                last_err = format!("{uuid}: {e}");
+                continue;
+            }
+        };
+        drop(token); // 필요 이상으로 들고 있지 않는다
+        let (rate, scoped) = parse_oauth_usage(&v, now);
+        if rate.is_empty() && scoped.is_empty() {
+            last_err = format!("{uuid}: 응답에 한도 정보가 없다(형태 변경?)");
+            continue;
+        }
+        note_oauth(daemon, &uuid, &email, &rate, &scoped, now);
+        any_ok = true;
+    }
+    if any_ok {
+        Ok(())
+    } else {
+        Err(last_err)
+    }
 }
 
 /// 실패 1줄의 정본 문구 — 상주 프로브와 강제발화가 **같은 문장**을 쓴다.
@@ -749,36 +813,64 @@ fn oauth_lost_line(e: &str) -> String {
 /// 데몬 본체를 띄우지 않고 **같은 코드**로 그 컨텍스트를 찍어 볼 수 있어야 검증이 성립한다.
 /// ⛔출력에는 값(%·리셋 시각)만 싣는다. 토큰은 어떤 경로로도 나가지 않는다.
 /// 반환 = 프로세스 종료코드(0 정상 · 1 원천 소실).
+///
+/// ★B4(TICKET=v110-misc): oauth_probe_once와 같은 다중 프로필 순회로 갱신 — 기본 프로필만
+/// 찍으면 강제발화 진단이 계정2 소실을 재현하지 못해 이 진단 자체가 무의미해진다.
 pub async fn oauth_probe_report() -> i32 {
     let now = crate::state::now_epoch();
-    let r = async {
-        let token = keychain_token().await?;
-        let v = fetch_oauth_usage(&token).await?;
-        Ok::<_, String>(parse_oauth_usage(&v, now))
-    }
-    .await;
-    match r {
-        Err(e) => {
-            eprintln!("{}", oauth_lost_line(&e));
-            1
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => {
+            eprintln!("{}", oauth_lost_line("홈 dir 불명"));
+            return 1;
         }
-        Ok((rate, scoped)) if rate.is_empty() && scoped.is_empty() => {
-            eprintln!("{}", oauth_lost_line("응답에 한도 정보가 없다(형태 변경?)"));
-            1
-        }
-        Ok((rate, scoped)) => {
-            for w in &rate {
-                println!("[cysd] oauth-usage: {} {:.0}% resets_at={:?}", w.label, w.used_pct, w.resets_at);
+    };
+    let dirs_found = cys::profile_gate::enumerate_profile_dirs(&home);
+    let mut idents: Vec<(PathBuf, String, String)> = Vec::new();
+    {
+        let mut st = AccountsState::default();
+        for dir in dirs_found {
+            if let Some((uuid, email, _plan)) = claude_identity(&mut st, &dir) {
+                idents.push((dir, uuid, email));
             }
-            for g in &scoped {
-                println!(
-                    "[cysd] oauth-usage: 7d·{} {:.0}% resets_at={:?}",
-                    g.model, g.used_pct, g.resets_at
-                );
-            }
-            0
         }
     }
+    let targets = plan_oauth_probe_targets(&idents, &home);
+    if targets.is_empty() {
+        eprintln!("{}", oauth_lost_line("프로필 신원 0건(.claude.json에 oauthAccount 없음)"));
+        return 1;
+    }
+    let mut any_ok = false;
+    for (_dir, uuid, _email, service) in targets {
+        let r = async {
+            let token = keychain_token(&service).await?;
+            let v = fetch_oauth_usage(&token).await?;
+            Ok::<_, String>(parse_oauth_usage(&v, now))
+        }
+        .await;
+        match r {
+            Err(e) => eprintln!("{}", oauth_lost_line(&format!("{uuid}: {e}"))),
+            Ok((rate, scoped)) if rate.is_empty() && scoped.is_empty() => {
+                eprintln!("{}", oauth_lost_line(&format!("{uuid}: 응답에 한도 정보가 없다(형태 변경?)")));
+            }
+            Ok((rate, scoped)) => {
+                for w in &rate {
+                    println!(
+                        "[cysd] oauth-usage: {uuid} {} {:.0}% resets_at={:?}",
+                        w.label, w.used_pct, w.resets_at
+                    );
+                }
+                for g in &scoped {
+                    println!(
+                        "[cysd] oauth-usage: {uuid} 7d·{} {:.0}% resets_at={:?}",
+                        g.model, g.used_pct, g.resets_at
+                    );
+                }
+                any_ok = true;
+            }
+        }
+    }
+    i32::from(!any_ok)
 }
 
 /// claude 계정 OAuth usage 프로브 상주 — 주기 조회·실패 시 백오프.
@@ -1015,6 +1107,59 @@ mod tests {
             profile_dir_from_session("C:\\Users\\x\\.claude\\projects\\-a\\s.jsonl"),
             Some(PathBuf::from("C:/Users/x/.claude"))
         );
+    }
+
+    /// ★B4(TICKET=v110-misc) 회귀 핀 — 서비스명 판정. 기본 프로필(`~/.claude`)은 종전 검증된
+    /// 접미 없는 이름을 유지하고, 그 외 프로필은 서로 다른(결정론) 접미 해시를 받는다. 이게
+    /// 깨지면(예: 전부 같은 이름으로 되돌아가면) 여러 계정이 같은 키체인 항목을 가리켜 조용히
+    /// 뒤섞이거나 두 번째 계정의 조회가 아예 무의미해진다.
+    #[test]
+    fn keychain_service_for_default_vs_other_profile() {
+        let home = Path::new("/Users/fixture-home");
+        assert_eq!(
+            keychain_service_for(&home.join(".claude"), home),
+            "Claude Code-credentials",
+            "기본 프로필은 실측 검증된 레거시 이름을 유지해야 한다"
+        );
+        let acct2 = keychain_service_for(&home.join(".claude-acct2"), home);
+        assert_ne!(acct2, "Claude Code-credentials", "비기본 프로필이 기본 서비스명으로 회귀");
+        assert!(acct2.starts_with("Claude Code-credentials-"), "비기본 프로필은 해시 접미가 붙어야 함");
+        assert_eq!(
+            acct2.len(),
+            "Claude Code-credentials-".len() + 8,
+            "접미는 sha256 앞 8 hex여야 함"
+        );
+        // 결정론 — 같은 입력 → 같은 서비스명(재시도·로그가 안정적이어야 함).
+        assert_eq!(acct2, keychain_service_for(&home.join(".claude-acct2"), home));
+        // 서로 다른 프로필은 서로 다른 서비스명 — 계정 뒤섞임 방지의 핵심 불변식.
+        let dept = keychain_service_for(&home.join(".cys/claude"), home);
+        assert_ne!(acct2, dept);
+    }
+
+    /// ★B4(TICKET=v110-misc) 회귀 핀 — 대상 산출. 저장 픽스처 2계정(+같은 계정의 중복
+    /// 프로필 1개)으로 ⑴같은 계정은 1건으로 접히고 ⑵두 계정 모두 목록에 남으며 ⑶서로 다른
+    /// 서비스명을 받는지 확인한다. 종전 결함(기본 프로필 1개만 보던 oauth_probe_once)이면
+    /// 애초에 이 함수가 idents 2건을 못 받는다 — 이 시험은 그 앞단(다중 프로필 신원 수집)이
+    /// 아니라 뒷단(계정별 대표 선정)이 옳게 접히는지를 겨눈다.
+    #[test]
+    fn plan_oauth_probe_targets_dedupes_same_account_and_keeps_second_account() {
+        let home = Path::new("/Users/fixture-home");
+        let idents = vec![
+            (home.join(".claude"), "uuid-A".to_string(), "a@x.com".to_string()),
+            (home.join(".cys/claude-axdev"), "uuid-A".to_string(), "a@x.com".to_string()),
+            (home.join(".claude-acct2"), "uuid-B".to_string(), "b@x.com".to_string()),
+        ];
+        let targets = plan_oauth_probe_targets(&idents, home);
+        assert_eq!(targets.len(), 2, "같은 계정(uuid-A) 중복 프로필은 1건으로 접혀야 한다");
+        let uuids: Vec<&str> = targets.iter().map(|t| t.1.as_str()).collect();
+        assert_eq!(
+            uuids,
+            vec!["uuid-A", "uuid-B"],
+            "★B4 실사고 재현: 두 번째 계정이 통째로 빠지면 이 assert가 잡는다"
+        );
+        assert_ne!(targets[0].3, targets[1].3, "서로 다른 계정은 서로 다른 키체인 서비스명이어야 함");
+        assert_eq!(targets[0].3, "Claude Code-credentials");
+        assert!(targets[1].3.starts_with("Claude Code-credentials-"));
     }
 
     #[test]

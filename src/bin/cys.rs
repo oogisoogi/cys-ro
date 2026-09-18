@@ -16395,6 +16395,17 @@ fn run_pack_merge(
                         &rel, "take-new", &ours, &theirs, &verify_label, &flag_list(&[]),
                     ));
                     println!("✅ {rel} ← vendor 신버전 채택");
+                } else {
+                    // ★B2(TICKET=v110-misc): 확인 거부(또는 비대화형 stdin EOF)를 성공과 같은
+                    //   침묵으로 두면 rc=0만 보는 호출자가 승격됐다고 오판한다(헌법 파일은
+                    //   --yes도 여기서 걸린다 — is_const 분기). '취소됨'은 이 함수의 다른
+                    //   confirm 거부 경로(pack-rollback 등)와 같은 문구·같은 rc=0 관례를 따른다
+                    //   — 무접촉임을 감사 원장에도 남긴다(거부도 사실의 일부).
+                    audit(&merge_audit_entry(
+                        &rel, "take-new", &ours, &ours, &verify_label,
+                        &flag_list(&["declined"]),
+                    ));
+                    println!("취소됨 — '{rel}' 은 vendor 신버전으로 교체되지 않았습니다(.new 유지).");
                 }
                 return 0;
             }
@@ -25734,6 +25745,94 @@ mod tests {
         );
         cys::pack::save_merge_pending(&td, &pending);
         (td, rel, embed, env)
+    }
+
+    /// t4_new_pending_fixture 동형이나 rel 을 **헌법 파일**(`_DIRECTIVE.md`)로 고정 — B2 회귀 전용.
+    /// MASTER_DIRECTIVE_REL 은 피한다(A12 승격 가드가 별도 분기라 이 시험의 관심사와 섞인다).
+    fn t_const_new_pending_fixture(tag: &str) -> (std::path::PathBuf, String, String, cys::pack::EnvGuard) {
+        let td = std::env::temp_dir().join(format!("cys-tconst-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        let env = cys::pack::EnvGuard::set(cys::pack::ENV_PACK_DIR, &td);
+        let (rel, embed) = cys::pack::PACK_ALL
+            .iter()
+            .find(|(r, _)| cys::pack::is_constitution_file(r) && *r != MASTER_DIRECTIVE_REL)
+            .map(|(r, c)| (r.to_string(), c.to_string()))
+            .expect("헌법 파일 rel 실재");
+        let target = td.join(&rel);
+        if let Some(par) = target.parent() {
+            std::fs::create_dir_all(par).unwrap();
+        }
+        std::fs::write(&target, "MY-EDIT\n").unwrap();
+        std::fs::write(td.join(format!("{rel}.new")), &embed).unwrap();
+        let mut pending = serde_json::Map::new();
+        pending.insert(
+            rel.clone(),
+            serde_json::json!({
+                "kind": "new-pending", "side": format!("{rel}.new"),
+                "version": env!("CARGO_PKG_VERSION"), "ts": 0,
+            }),
+        );
+        cys::pack::save_merge_pending(&td, &pending);
+        (td, rel, embed, env)
+    }
+
+    /// ★B2(TICKET=v110-misc) 회귀 핀 — 근본원인: 헌법 파일은 `--yes`가 무시되고 대화형 확인이
+    /// 필수인데(W-D4), confirm() 거부(비대화형 stdin=EOF 포함)를 성공과 구별 없이 `return 0`
+    /// 했다. 자동화 호출자(스크립트·에이전트)가 rc=0만 보고 승격됐다고 오판 — cysr-110 B2의
+    /// 실사고(`.new`·구판 MASTER_DIRECTIVE.md 병치)가 바로 이 무음 경로다. 이 시험은 실 프로세스
+    /// stdin이 이미 EOF인 이 실행 환경(비대화형 하네스)에서 그 경로를 결정론 재현한다 — 별도
+    /// 서브프로세스·시뮬레이션 불요(stdin_probe 로 사전 확인: read_line 즉시 n=0).
+    #[test]
+    fn take_new_on_constitution_file_declines_noninteractive_without_promoting() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (td, rel, embed, _env) = t_const_new_pending_fixture("decline");
+        assert!(cys::pack::is_constitution_file(&rel), "픽스처는 헌법 파일이어야 함");
+        let rc = run_pack_merge(
+            Some(rel.clone()),
+            true,  // take_new
+            false, // keep_mine
+            false, // ai
+            false, // to_local
+            false, // propose
+            true,  // yes — 헌법 파일에서는 무시되고 대화형 확인으로 강등돼야 함
+            false, // force_vendor
+            false, // dry_run
+            false, // force_unsafe_core
+            None,
+        );
+        assert_eq!(rc, 0, "취소도 rc=0 관례(다른 confirm 거부 경로와 동형) — 판정은 상태로 한다");
+        assert_eq!(
+            std::fs::read_to_string(td.join(&rel)).unwrap(),
+            "MY-EDIT\n",
+            "본체 무접촉 — 확인 거부는 아무것도 쓰지 않아야 한다"
+        );
+        assert_eq!(
+            std::fs::read_to_string(td.join(format!("{rel}.new"))).unwrap(),
+            embed,
+            ".new 그대로 — 소거되지 않아야 한다(승격 미완의 증거)"
+        );
+        let pending_after = cys::pack::load_merge_pending(&td);
+        assert!(
+            pending_after.get(&rel).is_some(),
+            "원장에서 해소되지 않아야 한다(승격 안 됐는데 해소되면 다음 preflight C62/C68이 '해결됨'으로 오판)"
+        );
+        // ★상태(위 3건)만으로는 이 회귀를 못 잡는다 — 구버전도 상태는 이미 무접촉이었고 달랐던
+        //   것은 오직 '흔적'이다. 감사 원장이 이번 시도를 declined로 남겼는지가 진짜 그물이다
+        //   (mutation 확인 2026-09-18: 이 assert 없이는 else 분기 통째 삭제가 SURVIVED).
+        let audit_log = std::fs::read_to_string(td.join(cys::pack::MERGE_AUDIT_FILE))
+            .expect("declined 시도도 감사 원장에 남아야 한다(무흔적 재시도 방지)");
+        let declined_line = audit_log
+            .lines()
+            .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| {
+                v.get("file").and_then(|x| x.as_str()) == Some(rel.as_str())
+                    && v.get("flags")
+                        .and_then(|f| f.as_array())
+                        .is_some_and(|f| f.iter().any(|x| x.as_str() == Some("declined")))
+            });
+        assert!(declined_line.is_some(), "감사 원장에 flags:[declined] 줄이 있어야 한다 — 원문: {audit_log}");
+        let _ = std::fs::remove_dir_all(&td);
     }
 
     /// 3중 전진 불변식 공용 assert — manifest[rel]==hash(pristine) ∧ pristine==theirs.

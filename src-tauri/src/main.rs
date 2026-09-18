@@ -3451,14 +3451,48 @@ fn nudge_folder_permissions(app: &AppHandle) {
 /// list_depts() 순회: 부서 데몬이 살아있으면 사이드카 restore(부서 소켓), 죽었으면 기존 launch 경로
 /// (launch_dept_daemon)로 재기동한다 — 재기동된 부서 데몬은 콜드부트 auto-restore로 노드를 되살린다
 /// (src/bin/cysd/main.rs). run_restore 멱등이라 콜드부트 복원과 겹쳐도 안전.
+/// 부서 복원 순회의 1부서 판정(순수 함수 — T2 묘비 게이트 · 89d41130+3baa488b 합본).
+/// `tombs` = None 이면 묘비 조회 실패(미상).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeptRestoreAction {
+    /// 묘비 부서 — 재기동 제외(생존이면 reap).
+    Tombstoned,
+    /// 묘비 미상 + 죽은 부서 — 되살리기만 보류(fail-closed · 부활은 비가역).
+    HoldRelaunch,
+    /// 살아 있는 부서 — 사이드카 노드 복원(묘비 미상이어도 진행 · 부활 아님).
+    SidecarRestore,
+    /// 묘비 확인됨 + 비묘비 + 죽은 부서 — launch 경로로 재기동.
+    Relaunch,
+}
+
+fn dept_restore_action(
+    tombs: Option<&std::collections::HashSet<String>>,
+    name: &str,
+    alive: bool,
+) -> DeptRestoreAction {
+    match tombs {
+        Some(t) if t.contains(name) => DeptRestoreAction::Tombstoned,
+        _ if alive => DeptRestoreAction::SidecarRestore,
+        None => DeptRestoreAction::HoldRelaunch,
+        Some(_) => DeptRestoreAction::Relaunch,
+    }
+}
+
 fn spawn_org_restore(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _ = app.emit("restore-progress", json!({"phase": "start"}));
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
         let hq_ok = run_sidecar_restore(None).await;
         // ★WP-3 리바이버 게이트: base 데몬 dept 묘비 — 삭제-의도 부서는 재기동에서 제외(+생존 시 reap).
-        // RPC 실패=빈 집합(보수적 fail-open: 묘비 부재=현행 거동 — 롤백 불변식 "부재=제약 없음").
-        let tombs: std::collections::HashSet<String> =
+        //
+        // ★fail-closed 전환(2026-09-17 · v0.14.37 성찰 3회). 종전 주석은 "RPC 실패=빈 집합(보수적
+        // fail-open)" 이었다. 그 방향이 보수적이 아니다 — 빈 집합이면 **삭제한 부서가 되살아나고**,
+        // 그 launch 는 성공 말미에 묘비까지 지운다(cysjavis-pack/bin/cys-dept). 즉 일시적 RPC 실패
+        // 한 번이 "지운 부서는 되살아나지 않는다"는 계약을 **영구히** 깨고 그 부서의 팀까지 다시
+        // 띄운다(비가역). 반대 방향의 대가는 "이번 복원에서 부서 재기동을 건너뛴다" 뿐이고,
+        // 그것은 다음 앱 기동이 그대로 회복한다. UI 쪽(ui/src/wsreconcile.ts missingKnownWorkspaces)
+        // 도 같은 판정으로 통일돼 있다 — 두 리바이버가 반대 방향이면 약한 쪽이 계약을 무효화한다.
+        let tombs: Option<std::collections::HashSet<String>> =
             rpc_oneshot(&cys::socket_path(), "dept_tombstone.list", json!({}))
                 .await
                 .ok()
@@ -3466,8 +3500,16 @@ fn spawn_org_restore(app: AppHandle) {
                     v.get("dept_tombstones").and_then(|a| a.as_array()).map(|a| {
                         a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
                     })
-                })
-                .unwrap_or_default();
+                });
+        // ★보류 범위는 **되살리는 행위**로 좁힌다(성찰 3회 정밀화). 순회 자체를 건너뛰면 살아 있는
+        // 부서의 사이드카 복원까지 막는데, 그쪽은 부활이 아니라 이미 도는 데몬의 노드 복원이라
+        // 묘비와 무관하다. 막아야 할 것은 '죽은 부서를 다시 띄우는 것' 하나다.
+        if tombs.is_none() {
+            let _ = app.emit(
+                "restore-progress",
+                json!({"phase": "skip", "detail": "삭제 기록을 읽지 못함 — 죽은 부서 재기동만 보류(살아 있는 부서는 그대로 복원 · 다음 기동 재시도)"}),
+            );
+        }
         // 부서 순회 — 등록 부서(depts.json)만 대상(유령 부서 재-launch 차단).
         let mut ok = 0usize;
         let mut fail = 0usize;
@@ -3487,9 +3529,10 @@ fn spawn_org_restore(app: AppHandle) {
                     .await
                     .map(|r| r.is_ok())
                     .unwrap_or(false);
+                    let action = dept_restore_action(tombs.as_ref(), name, alive);
                     // ★WP-3: 묘비 부서 — 재기동 금지. 생존이면 reap(정리 대기 프로세스 — 묘비가
                     // 부활을 이미 차단하므로 좀비 아님. teardown 실패=WARN·차회 부팅 재평가로 수렴).
-                    if tombs.contains(name.as_str()) {
+                    if action == DeptRestoreAction::Tombstoned {
                         let mut detail = "삭제-의도 묘비 — 재기동 제외".to_string();
                         if alive {
                             let _ = stop_dept_daemon_by_socket(
@@ -3517,7 +3560,16 @@ fn spawn_org_restore(app: AppHandle) {
                         );
                         continue;
                     }
-                    let dept_ok = if alive {
+                    // ★묘비 미상이면 **죽은 부서를 되살리지 않는다**(부활은 비가역 — UI 쪽
+                    // missingKnownWorkspaces 와 같은 방향). 살아 있는 부서는 아래 정상 경로.
+                    if action == DeptRestoreAction::HoldRelaunch {
+                        let _ = app.emit(
+                            "restore-progress",
+                            json!({"phase": "skip", "dept": name, "detail": "삭제 기록 미상 — 재기동 보류"}),
+                        );
+                        continue;
+                    }
+                    let dept_ok = if action == DeptRestoreAction::SidecarRestore {
                         run_sidecar_restore(Some(sock.clone())).await
                     } else {
                         // 죽은 부서 → 기존 launch 경로 재사용(콜드부트 auto-restore가 노드 부활).
@@ -4193,6 +4245,67 @@ fn inject_runtime_path(cmd: &mut std::process::Command) {
 }
 
 /// Ensure aitermd is running: try to connect, otherwise spawn the bundled/sibling binary.
+/// ★X-1: 앱 ensure_daemon 의 launchd 위임 **총** 예산(launchctl list + kickstart + 소켓 대기 합산).
+/// ensure_daemon 은 앱 setup 부트 경로에서 await 되므로 상한이 곧 부트 지연 상한이다 — 6초 초과 금지.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const LAUNCHD_DELEGATE_BUDGET: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// ★X-1: launchd 위임 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum DelegateOutcome {
+    /// launchd 미적재 — 위임 대상 아님(종전대로 형제 spawn).
+    NotLoaded,
+    /// kickstart 후 예산 안에 소켓 응답 — 형제 spawn 불요.
+    Served,
+    /// 적재돼 있으나 kickstart 실패·무응답 또는 예산 안 소켓 미기동 — 형제 spawn 폴백.
+    Fallback(&'static str),
+}
+
+/// ★X-1: launchd 위임 절차(적재 확인 → kickstart → 소켓 대기)를 **총 예산 `budget`** 안에서 수행.
+/// `is_loaded`·`kickstart` 는 동기 `launchctl` 서브프로세스라 spawn_blocking 으로 돌려 async
+/// 런타임을 막지 않고, 각 단계는 같은 마감 시각(deadline)으로 잘린다(무응답 launchctl 이 부트를
+/// 붙잡지 못함). 의존(launchctl·connect)을 주입받아 단위 테스트가 순서·예산을 결정론 검증한다.
+/// `should_delegate` = 적재 확인 + 위임 판정(mac 호출부: `should_delegate_autostart(is_loaded())`) —
+/// 판정을 주입받아 이 함수는 플랫폼 중립이다(최상위 cfg 게이트 금지 규약 · BLOCK-B).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+async fn delegate_autostart_with<L, K, P, Fut>(
+    budget: std::time::Duration,
+    should_delegate: L,
+    kickstart: K,
+    mut probe: P,
+) -> DelegateOutcome
+where
+    L: FnOnce() -> bool + Send + 'static,
+    K: FnOnce() -> bool + Send + 'static,
+    P: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + budget;
+    let delegate = match tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(should_delegate)).await {
+        Ok(Ok(d)) => d,
+        _ => return DelegateOutcome::Fallback("launchctl list 무응답"),
+    };
+    if !delegate {
+        return DelegateOutcome::NotLoaded;
+    }
+    match tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(kickstart)).await {
+        Ok(Ok(true)) => {}
+        Ok(_) => return DelegateOutcome::Fallback("launchctl kickstart 실패"),
+        Err(_) => return DelegateOutcome::Fallback("launchctl kickstart 무응답"),
+    }
+    let tick = std::time::Duration::from_millis(100);
+    loop {
+        if let Ok(true) = tokio::time::timeout_at(deadline, probe()).await {
+            return DelegateOutcome::Served;
+        }
+        if tokio::time::Instant::now() + tick >= deadline {
+            return DelegateOutcome::Fallback("kickstart 후 예산 안 소켓 미기동");
+        }
+        tokio::time::sleep(tick).await;
+    }
+}
+
 async fn ensure_daemon() -> Result<(), String> {
     if connect().await.is_ok() {
         return Ok(());
@@ -4202,6 +4315,27 @@ async fn ensure_daemon() -> Result<(), String> {
     // fail-open 판정(TTL·pid 생존)이라 리셋이 비정상 종료해도 다음 기동은 정상이다.
     if cys::factory_reset::reset_in_progress() {
         return Err("완전 초기화가 진행 중 — 데몬 기동을 보류한다(완료 후 앱을 다시 실행하라)".into());
+    }
+    // ★X-1: launchd 가 cysd 를 적재 중이면 형제 spawn 전에 kickstart 로 위임한다(CLI connect() 와
+    // 대칭 — src/bin/cys.rs). 종전엔 앱이 곧장 형제 cysd 를 띄워 launchd-cysd 와 시동 잠금을
+    // 다퉜고, 진 쪽(launchd KeepAlive)이 ~10초마다 영구 재시도했다. 위임 총 예산 6초 뒤에만 형제
+    // spawn 폴백(개발 환경·미승인 백그라운드 항목). KeepAlive·plist 는 건드리지 않는다(X-2 범위 밖).
+    #[cfg(target_os = "macos")]
+    {
+        let outcome = delegate_autostart_with(
+            LAUNCHD_DELEGATE_BUDGET,
+            || cys::launchd::should_delegate_autostart(cys::launchd::is_loaded()),
+            cys::launchd::kickstart,
+            || async { connect().await.is_ok() },
+        )
+        .await;
+        match outcome {
+            DelegateOutcome::Served => return Ok(()),
+            DelegateOutcome::NotLoaded => {}
+            DelegateOutcome::Fallback(why) => {
+                eprintln!("[cys-app] launchd 위임 실패({why}) — 형제 cysd spawn 폴백");
+            }
+        }
     }
     let exe_dir = std::env::current_exe()
         .ok()
@@ -10309,6 +10443,194 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
             .filter(|l| l.starts_with("#[cfg(") && (l.contains("unix") || l.contains("target_os") || l.contains("windows")))
             .count();
         assert!(counted >= 10, "스캐너가 최상위 cfg 속성을 못 찾고 있다(counted={counted})");
+    }
+
+
+    // ═══ T2(restore-impl-A2-2) — 묘비 게이트 판정: 89d41130(fail-closed) + 3baa488b(보류=죽은 부서 재기동만) ═══
+
+    fn tomb_set(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn t2_lookup_ok_tombstoned_dept_is_never_revived() {
+        let t = tomb_set(&["gone"]);
+        assert_eq!(dept_restore_action(Some(&t), "gone", false), DeptRestoreAction::Tombstoned);
+        assert_eq!(dept_restore_action(Some(&t), "gone", true), DeptRestoreAction::Tombstoned);
+    }
+
+    #[test]
+    fn t2_lookup_failed_dead_dept_is_not_relaunched() {
+        // 묘비 미상 + 죽은 부서 = 부활 보류(fail-closed · 부활은 비가역).
+        assert_eq!(dept_restore_action(None, "d", false), DeptRestoreAction::HoldRelaunch);
+    }
+
+    #[test]
+    fn t2_lookup_failed_live_dept_restore_proceeds() {
+        // 적대검증 critical ②: 묘비 RPC 가 늘 실패하는 기계(구 데몬)에서도 살아 있는 부서의
+        // 사이드카 복원은 진행돼야 한다(89d41130 단독 = 전 부서 탭·데몬 상실).
+        assert_eq!(dept_restore_action(None, "d", true), DeptRestoreAction::SidecarRestore);
+    }
+
+    #[test]
+    fn t2_lookup_ok_non_tombstoned_depts_proceed() {
+        let t = tomb_set(&["other"]);
+        assert_eq!(dept_restore_action(Some(&t), "d", true), DeptRestoreAction::SidecarRestore);
+        assert_eq!(dept_restore_action(Some(&t), "d", false), DeptRestoreAction::Relaunch);
+        let empty = tomb_set(&[]);
+        assert_eq!(dept_restore_action(Some(&empty), "d", false), DeptRestoreAction::Relaunch);
+    }
+
+    /// T2 배선 핀: spawn_org_restore 가 판정 함수를 거치고, 보류(HoldRelaunch)는 launch 전에 `continue` 한다.
+    #[test]
+    fn t2_spawn_org_restore_routes_through_decision_and_holds_before_launch() {
+        let src = include_str!("main.rs");
+        let start = src.find("fn spawn_org_restore(app: AppHandle) {").expect("spawn_org_restore");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("fn end")];
+        assert!(body.contains("dept_restore_action(tombs.as_ref(), name, alive)"), "판정 함수 미경유");
+        let hold = body.find("if action == DeptRestoreAction::HoldRelaunch {").expect("보류 분기 누락");
+        let launch = body.find("launch_dept_daemon(").expect("launch 경로");
+        let cont = body[hold..].find("continue;").map(|i| i + hold).expect("보류 분기 continue");
+        assert!(hold < cont && cont < launch, "보류는 launch 전에 continue 해야 한다");
+        assert!(body.contains("if action == DeptRestoreAction::SidecarRestore {"), "생존 부서 경로 누락");
+    }
+
+    // ═══ X-1(restore-impl-A2-2) — 앱 ensure_daemon 의 launchd 위임 ═══
+
+    fn x1_rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_time()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn x1_delegate_budget_is_at_most_six_seconds() {
+        // 적대검증 critical ③: ensure_daemon 은 앱 setup 에서 await — 위임 총 예산 = 부트 지연 상한.
+        assert!(LAUNCHD_DELEGATE_BUDGET <= std::time::Duration::from_secs(6));
+        assert!(LAUNCHD_DELEGATE_BUDGET >= std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn x1_loaded_kickstarts_then_waits_for_socket_and_skips_spawn() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        let rt = x1_rt();
+        let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let (o1, o2, o3, p) = (order.clone(), order.clone(), order.clone(), probes.clone());
+        let out = rt.block_on(delegate_autostart_with(
+            std::time::Duration::from_secs(2),
+            move || { o1.lock().unwrap().push("is_loaded"); true },
+            move || { o2.lock().unwrap().push("kickstart"); true },
+            move || {
+                let o3 = o3.clone();
+                let p = p.clone();
+                async move {
+                    o3.lock().unwrap().push("probe");
+                    p.fetch_add(1, Ordering::SeqCst) >= 2 // 3번째 프로브에서 소켓 기동
+                }
+            },
+        ));
+        rt.shutdown_background();
+        assert_eq!(out, DelegateOutcome::Served);
+        let order = order.lock().unwrap().clone();
+        assert_eq!(&order[..2], &["is_loaded", "kickstart"], "{order:?}");
+        assert_eq!(probes.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn x1_loaded_but_socket_never_up_falls_back_within_budget() {
+        let rt = x1_rt();
+        let budget = std::time::Duration::from_millis(400);
+        let t0 = std::time::Instant::now();
+        let out = rt.block_on(delegate_autostart_with(budget, || true, || true, || async { false }));
+        let el = t0.elapsed();
+        rt.shutdown_background();
+        assert!(matches!(out, DelegateOutcome::Fallback(_)), "{out:?}");
+        assert!(el <= budget + std::time::Duration::from_millis(300), "예산 초과: {el:?}");
+    }
+
+    #[test]
+    fn x1_hung_launchctl_is_cut_by_total_budget() {
+        // launchctl 무응답(동기 서브프로세스 정지)이 부트를 붙잡지 못한다 — spawn_blocking + 마감.
+        let budget = std::time::Duration::from_millis(300);
+        let hang = || { std::thread::sleep(std::time::Duration::from_secs(3)); true };
+        for (loaded_hangs, name) in [(true, "is_loaded"), (false, "kickstart")] {
+            let rt = x1_rt();
+            let t0 = std::time::Instant::now();
+            let out = if loaded_hangs {
+                rt.block_on(delegate_autostart_with(budget, hang, || true, || async { true }))
+            } else {
+                rt.block_on(delegate_autostart_with(budget, || true, hang, || async { true }))
+            };
+            let el = t0.elapsed();
+            rt.shutdown_background();
+            assert!(matches!(out, DelegateOutcome::Fallback(_)), "{name}: {out:?}");
+            assert!(el < std::time::Duration::from_millis(1500), "{name} 무응답이 예산을 넘김: {el:?}");
+        }
+    }
+
+    #[test]
+    fn x1_kickstart_failure_falls_back_without_waiting() {
+        let rt = x1_rt();
+        let t0 = std::time::Instant::now();
+        let out = rt.block_on(delegate_autostart_with(
+            std::time::Duration::from_secs(5), || true, || false, || async { true },
+        ));
+        rt.shutdown_background();
+        assert_eq!(out, DelegateOutcome::Fallback("launchctl kickstart 실패"));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn x1_not_loaded_goes_straight_to_sibling_spawn_as_before() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let rt = x1_rt();
+        let kicked = Arc::new(AtomicBool::new(false));
+        let probed = Arc::new(AtomicBool::new(false));
+        let (k, p) = (kicked.clone(), probed.clone());
+        let out = rt.block_on(delegate_autostart_with(
+            std::time::Duration::from_secs(5),
+            || false,
+            move || { k.store(true, Ordering::SeqCst); true },
+            move || { p.store(true, Ordering::SeqCst); async { true } },
+        ));
+        rt.shutdown_background();
+        assert_eq!(out, DelegateOutcome::NotLoaded);
+        assert!(!kicked.load(Ordering::SeqCst), "미적재인데 kickstart 호출");
+        assert!(!probed.load(Ordering::SeqCst), "미적재인데 소켓 대기");
+    }
+
+    /// X-1 배선 핀: ensure_daemon 이 (초기화 중 가드 뒤·형제 spawn 앞에서) 위임을 거친다.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn x1_ensure_daemon_delegates_before_sibling_spawn() {
+        let src = include_str!("main.rs");
+        let start = src.find("async fn ensure_daemon() -> Result<(), String> {").expect("ensure_daemon");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("fn end")];
+        let reset = body.find("reset_in_progress()").expect("초기화 가드");
+        let deleg = body.find("delegate_autostart_with(").expect("launchd 위임 배선 누락");
+        let spawn = body.find(".spawn()").expect("형제 spawn");
+        assert!(reset < deleg && deleg < spawn, "순서: 초기화 가드 → 위임 → 형제 spawn");
+        assert!(body.contains("LAUNCHD_DELEGATE_BUDGET"), "위임 예산 상수 미사용");
+        assert!(body.contains("DelegateOutcome::Served => return Ok(()),"), "위임 성공 시 형제 spawn 생략 누락");
+    }
+
+    /// X-1 은 KeepAlive·plist 를 건드리지 않는다(X-2 범위 밖) — SIGTERM 된 데몬은 여전히 launchd 가 되살린다.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn x1_plist_keepalive_unchanged_so_sigterm_daemon_is_revived() {
+        let plist = cys::launchd::render_plist(
+            std::path::Path::new("/Applications/cys.app/Contents/MacOS/cysd"),
+            std::path::Path::new("/tmp/cysd.log"),
+        );
+        assert!(plist.contains("<key>KeepAlive</key><true/>"), "KeepAlive 변경 금지(X-2 범위 밖)");
+        assert!(plist.contains("<key>RunAtLoad</key><true/>"));
     }
 
 }

@@ -1465,6 +1465,95 @@ def breaker_reset(socket):
         _atomic_write_json(p, {"attempts": [], "N": BREAKER_N, "T": BREAKER_T})
 
 
+# ★R4-2(TICKET=restore-impl-A2-2): 같은 부트 세대(epoch) 안 역할별 재스폰 상한.
+#   R4 실측: master 가 SIGTERM 으로 죽은 뒤 같은 epoch 의 spawn 완료 마크가 「이미 완료 — 재개」 skip 을
+#   영구화했다. R4-1 이 그 마크를 「지금 죽었으면 무효」로 바꾸면, 이번엔 반대 방향 — 뜨자마자 죽는 역할의
+#   무한 재스폰 — 이 열린다. M5 차단기(T초 창 N회)는 창 밖으로 느리게 도는 크래시루프를 못 잡고, 성공
+#   부활(VERIFIED)마다 창이 리셋되므로 「살아났다 죽기」 반복을 영영 못 센다. 그래서 창이 아니라 **세대**로
+#   센다: 이 파일은 {epoch, counts:{role: 이 세대의 스폰 발주 횟수}} 이고, 세대가 바뀌면(데몬 재기동) 0 에서
+#   다시 센다. 발주 1회차 = 부활, 2회차부터 = 재스폰. 재스폰이 RESPAWN_CAP 을 넘으려 하면 기존 차단기
+#   경로(BREAKER_OPEN · exit 5 · 재시도 금지 · 사람 승인)로 간다.
+#   ⚠breaker_reset 과 묶지 않는다 — 묶으면 성공 부활마다 상한이 리셋돼 R4 루프를 못 끊는다.
+#   ⚠프루닝은 「이번 사이클에 손댄 역할」이 아니라 「아직 부활 자격이 있는 역할」(desired 로스터 − 묘비)
+#     기준이다. 손댄 역할로 자르면 상한에 걸려 **건너뛴** 역할의 카운트가 지워져 다음 사이클에 상한이
+#     리셋된다(= 캡이 한 사이클만 유효한 가짜 캡).
+#   해제 = 데몬 재기동(새 epoch) 또는 사람이 respawn-cap.json 삭제.
+RESPAWN_CAP = int(os.environ.get("PHOENIX_RESPAWN_CAP", "3"))
+
+
+def respawn_cap_file(socket):
+    return os.path.join(phoenix_home(socket), "respawn-cap.json")
+
+
+def load_respawn_counts(socket, epoch):
+    """현재 epoch 의 역할별 스폰 발주 횟수. 파일 부재·손상·다른 epoch = 빈 카운트(손상은 격리+경고)."""
+    p = respawn_cap_file(socket)
+    if not os.path.exists(p):
+        return {}
+    try:
+        obj = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        isolated = _isolate_corrupt(p)
+        log("★R4-2: respawn-cap.json 손상 — 격리(%s) 후 빈 카운트(경고 · 침묵 리셋 아님)." % isolated)
+        _emit_evt("agent.error", agent="phoenix", summary="respawn-cap.json 손상 격리+리셋 — 세대 재스폰 상한 일시 약화")
+        return {}
+    if not isinstance(obj, dict) or obj.get("epoch") != epoch:
+        return {}
+    counts = obj.get("counts") or {}
+    return {str(k): int(v) for k, v in counts.items() if isinstance(v, int)}
+
+
+def save_respawn_counts(socket, epoch, counts):
+    _atomic_write_json(respawn_cap_file(socket), {"epoch": epoch, "counts": counts, "cap": RESPAWN_CAP})
+
+
+def prune_respawn_counts(counts, eligible):
+    """R4-2 프루닝(순수): 부활 자격이 남은 역할(eligible)만 남긴다 — 이번 사이클 행동 집합이 아니다."""
+    return {r: n for r, n in counts.items() if r in eligible}
+
+
+def respawn_capped(counts, role):
+    """다음 발주가 RESPAWN_CAP 번째를 넘는 재스폰인가(발주 1회차=부활 · 이후=재스폰)."""
+    return counts.get(role, 0) - 1 >= RESPAWN_CAP
+
+
+# ★I-4(TICKET=restore-impl-A2-2 · T6 주입 정책): 부활 뒤 ACK 핑(reinject --check 2회)은 응답이 없으면
+#   디렉티브 전문 재주입(실측 66~136KB)으로 번진다. 오너 확정 정책 = 「대화는 자동 복원 · 재개 지시는 주입하지
+#   않는다」 — 그래서 핑은 **싸다는 것이 측정될 때만** 쏜다: 세션 캐시가 살아 있거나(마지막 활동 < 1h) 세션이
+#   작을 때(< 100k 토큰). 측정 근거 = 데몬 status 의 surface.usage(ctx_tokens · session_file — usage 수집기가
+#   세션 jsonl 을 tail 한 값). 측정 불가(usage 없음·status 미도달) = **핑하지 않는다**(unknown 에 주입 금지)
+#   — 그 경우 프로세스(agent_alive·seat)·화면(ready 단계) 생존만으로 unverified(no-ping) 을 기록한다.
+ACK_PING_CACHE_SECS = int(os.environ.get("PHOENIX_ACK_CACHE_SECS", "3600"))
+ACK_PING_MAX_TOKENS = int(os.environ.get("PHOENIX_ACK_MAX_TOKENS", "100000"))
+
+
+def ack_ping_gate(socket, surface, now=None):
+    """(allow:bool, reason:str, rec:dict) — ACK 핑 허용 여부. rec = status 의 그 surface 레코드({} = 미관측)."""
+    st = _status_json(socket)
+    if st is None:
+        return False, "status 미도달 — 세션 크기·나이 측정 불가", {}
+    rec = {}
+    for s in st.get("surfaces", []):
+        if s.get("surface_ref") == surface:
+            rec = s
+            break
+    usage = rec.get("usage") if isinstance(rec.get("usage"), dict) else {}
+    tok = usage.get("ctx_tokens")
+    if isinstance(tok, int) and not isinstance(tok, bool) and tok < ACK_PING_MAX_TOKENS:
+        return True, "ctx_tokens=%d < %d" % (tok, ACK_PING_MAX_TOKENS), rec
+    sf = usage.get("session_file")
+    if sf:
+        try:
+            age = (now if now is not None else time.time()) - os.path.getmtime(sf)
+        except OSError:
+            age = None
+        if age is not None and age < ACK_PING_CACHE_SECS:
+            return True, "세션 마지막 활동 %ds 전 < %ds(캐시 생존)" % (int(age), ACK_PING_CACHE_SECS), rec
+        return False, ("세션 %s(ctx_tokens=%s) — 캐시 만료·대형 세션" % (
+            "나이 측정 불가" if age is None else "마지막 활동 %ds 전" % int(age), tok)), rec
+    return False, "usage 미관측(ctx_tokens=%s·session_file 없음) — 측정 불가" % tok, rec
+
+
 def rollback_proposal(socket):
     """직전 GREEN 세대로의 롤백 제안(제안만 — 실행 금지). javis_state_snapshot list 재사용."""
     snap = os.path.join(os.path.dirname(os.path.abspath(__file__)), "javis_state_snapshot.py")
@@ -1716,6 +1805,21 @@ def spawn_fresh_production(socket, role, agent, cwd=None):
     if cwd:
         argv += ["--cwd", cwd]
     r = cys(*argv, socket=socket, timeout=60)
+    return {"rc": r.returncode, "out": (r.stdout or r.stderr or "").strip()[:400]}
+
+
+def spawn_in_seat_production(socket, include_master=False, cwd=None):
+    """★R4-3 빈 좌석 재사용(prod): `cys restore --no-resume` — 역할의 좌석이 이미 있고 비어 있으면(seat=empty)
+    cys restore 가 **새 surface 를 만들지 않고 그 좌석에 직접** 에이전트를 기동한다(cys.rs run_restore 의
+    in-seat 연결 · 기존 경로 재사용 — 새 부활 엔진 아님). fresh 강등 단계에서 부르므로 --no-resume(세션핀
+    독약/부재 가정). launch-agent 는 늘 새 좌석을 만들고 역할을 뺏어 가 좌석이 증식한다(4→5 실측:
+    surface:7 역할 상실 + 새 surface:14 master)."""
+    args = ["restore", "--no-resume"]
+    if include_master:
+        args.append("--include-master")
+    if cwd:
+        args += ["--cwd", cwd]
+    r = cys(*args, socket=socket, timeout=90)
     return {"rc": r.returncode, "out": (r.stdout or r.stderr or "").strip()[:400]}
 
 
@@ -2020,18 +2124,48 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     # ★cysr-102 A3: ps 축은 prod 에서만(stub 대역은 실 프로세스가 아니다) · 표·pid 는 1회만 잰다.
     _ps_cache = {}
 
-    def _ps_dead(role, surface):
+    # ★R4-4(TICKET=restore-impl-A2-2 · R4-1 의 **선행 조건**): 사망 판정 3값 — 'alive'|'dead'|'unknown'.
+    #   종전: Windows 는 _ps_table()=None → agent_process_verdict='unknown' → _ps_dead=False → 에이전트가
+    #   죽은 좌석이 **살아 있는 것으로** 읽혔다. 그 위에 R4-1(「마크가 있어도 지금 죽었으면 재스폰」)을 얹으면
+    #   Windows 에선 「지금 죽었다」가 영영 참이 되지 않으므로 **R4 수리는 Mac 전용**이 된다. 그래서 ps 축이
+    #   없을 때(None)는 데몬이 이미 내보내는 사실을 쓴다 — status --json 의 surface.agent_alive
+    #   (3상 · 데몬 watchdog 이 자손 argv 로 「보였다가 사라짐」을 확정했을 때만 false · 미관측 = null).
+    #   새 주기 프로세스(tasklist/powershell)는 만들지 않는다 — 이미 받은 live 스냅샷을 읽을 뿐이다.
+    #     agent_alive is False → 'dead'(데몬 확정 사망) · True → 'alive' · None → 'unknown'
+    #   ★unknown 의 처리(보수적 선택 · 양방향 사고를 둘 다 막는다):
+    #     (a) 침묵 영구 미부활 금지 → unknown 은 「살아 있음」이 아니다: R4 skip 근거(_alive)가 되지 못하고,
+    #         결과(liveness_unknown_roles)·저널에 명시되며, 이 세대에 부활시킨 적 있는(spawn 마크) 역할이면
+    #         agent.error EVT 로 사람에게 올린다.
+    #     (b) 스폰 폭풍 금지 → unknown 은 「죽음」도 아니다: 부활 대상(target)에 넣지 않는다(맹목 재스폰 0).
+    #         데몬이 한 번도 관측 못 한 좌석(argv 매칭 불가 환경)마다 매 사이클 재스폰하면 살아 있는 좌석 위에
+    #         이중 기동이 쌓인다.
+    #   Mac(ps 표 있음)은 종전 규칙 그대로다(표가 있는데 셸 pid 미상 = exited 축 소관 = 종전처럼 생존 취급).
+    def _proc_verdict(role, surface):
         if stub:
-            return False
+            return "alive"  # stub 대역은 실 프로세스가 아니다(종전: ps 축 미적용)
         if "t" not in _ps_cache:
-            _ps_cache["t"], _ps_cache["p"] = _ps_table(), _surface_shell_pids(socket)
+            _ps_cache["t"] = _ps_table()
+            _ps_cache["p"] = _surface_shell_pids(socket) if _ps_cache["t"] is not None else {}
+        if _ps_cache["t"] is None:
+            rec = next((s for s in live.get(role, []) if s.get("surface") == surface), {})
+            aa = rec.get("agent_alive")
+            if aa is False:
+                log("★R4-4: role=%s %s ps 축 부재 — 데몬 agent_alive=false(사망 확정) → 생존 아님" % (role, surface))
+                return "dead"
+            if aa is True:
+                return "alive"
+            return "unknown"
         v = agent_process_verdict(_ps_cache["p"].get(surface),
                                   entries.get(role, {}).get("agent", "claude"), _ps_cache["t"])
         if v == "dead":
             log("★ps 축: role=%s %s 좌석 셸 아래 에이전트 프로세스 부재 — 생존 아님(부활 대상)" % (role, surface))
-        return v == "dead"
+        return "dead" if v == "dead" else "alive"
 
-    def _alive(role):
+    def _ps_dead(role, surface):
+        return _proc_verdict(role, surface) == "dead"
+
+    def _role_liveness(role):
+        unknown = False
         for s in live.get(role, []):
             if s["exited"]:
                 continue
@@ -2039,8 +2173,14 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                 continue  # 좌석은 있으나 아무도 앉아 있지 않다 — 부활시킨다(in-seat 연결은 cys restore 담당)
             if _ps_dead(role, s.get("surface")):
                 continue  # ★A3: 표시(role=·seat)는 살아 있으나 에이전트 프로세스가 없다
-            return True
-        return False
+            if _proc_verdict(role, s.get("surface")) == "unknown":
+                unknown = True  # ★R4-4: ps 축 부재 + 데몬 미관측 — 살아 있다고 말할 근거 없음
+                continue
+            return "alive"
+        return "unknown" if unknown else "dead"
+
+    def _alive(role):
+        return _role_liveness(role) == "alive"
 
     # ★SEAT: 빈 좌석으로 판정돼 부활 대상이 된 역할(정직 보고용) — completeness 의 manual_seats 근거.
     def _empty_seat_roles():
@@ -2059,7 +2199,21 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     #   (--ignore-tombstones 류)는 추가하지 않는다 — 정당한 재편입은 untomb RPC(cys tombstone --remove)가 정도(正道)다.
     _requested = roles if roles is not None else [r for r in entries if not _alive(r)]
     _tomb_skipped = [r for r in _requested if r in _tombstones]
-    target_roles = [r for r in _requested if not _alive(r) and r not in _tombstones]
+    # ★R4-4: 부활 대상 = 'dead' 만. 'unknown' 은 따로 모아 정직 보고한다(맹목 재스폰도 침묵 생존 취급도 아님).
+    target_roles = [r for r in _requested if _role_liveness(r) == "dead" and r not in _tombstones]
+    liveness_unknown_roles = [r for r in _requested
+                              if r not in _tombstones and _role_liveness(r) == "unknown"]
+    for _r in liveness_unknown_roles:
+        _had_mark = stage_done(j, _r, "spawn")
+        jevent(j, _r, "target", "liveness_unknown",
+               "ps 축 부재 + 데몬 agent_alive 미관측 — 생존도 사망도 확정 불가 → 자동 부활 보류(맹목 재스폰 0) · "
+               "생존 취급도 아님%s" % (" · ★이 세대에 부활시킨 역할(spawn 마크)" if _had_mark else ""))
+        if _had_mark:
+            _emit_evt("agent.error", agent="phoenix",
+                      summary="role=%s 생존 확인 불가(ps 축 부재·데몬 미관측) — 자동 부활 보류, 사람 확인 필요" % _r)
+    if liveness_unknown_roles:
+        log("★R4-4 liveness unknown: %s — 부활 보류·정직 보고(생존 취급 아님)." % liveness_unknown_roles)
+        save_journal(socket, ticket, j)
     if _tomb_skipped:
         log("★묘비 필터: 요청 역할 중 폐역(tombstone) %s 은 부활 대상에서 제외(의도삭제>강제부활). untomb 로만 재편입." % _tomb_skipped)
         for _r in _tomb_skipped:
@@ -2117,8 +2271,38 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                    "alert": "정지 후 사람 승인 필요 — 자동 롤백/재부활을 실행하지 않는다."}
             print(json.dumps(out, ensure_ascii=False, indent=2))
             return out
+    # ★R4-2 세대 재스폰 상한: 카운트는 부활 **자격**(desired 로스터 − 묘비) 기준으로 프루닝한다 — 이번 사이클에
+    #   손댄 역할 기준이 아니다(상한에 걸려 건너뛴 역할의 카운트가 지워지면 캡이 리셋된다).
+    _acted = []  # 이번 사이클에 스폰을 발주한 역할 — ⛔프루닝 기준으로 쓰지 않는다(아래 _eligible 이 기준)
+    _eligible = {r for r in entries if r not in _tombstones}
+    _respawn_counts = prune_respawn_counts(load_respawn_counts(socket, _ACTIVE_EPOCH), _eligible)
+    _capped = [r for r in target_roles if respawn_capped(_respawn_counts, r)]
+    save_respawn_counts(socket, _ACTIVE_EPOCH, _respawn_counts)
+    if _capped:
+        # 기존 차단기 경로(BREAKER_OPEN · exit 5 · 재시도 금지). 이 사이클은 **아무도 스폰하지 않는다** —
+        #   prod 의 `cys restore` 는 역할 지정 없이 죽은 역할 전원을 되살리므로, 다른 역할을 위해 부르는 순간
+        #   상한에 걸린 역할도 함께 되살아나 캡이 우회된다(캡을 실효로 만드는 유일한 방법이 전체 정지다).
+        for _r in _capped:
+            jevent(j, _r, "spawn", "respawn_cap",
+                   "같은 세대(epoch=%s) 재스폰 %d회 = 상한 %d 도달 — 자동 재스폰 정지(BREAKER_OPEN · 사람 승인)"
+                   % (_ACTIVE_EPOCH, _respawn_counts.get(_r, 0) - 1, RESPAWN_CAP))
+        save_journal(socket, ticket, j)
+        log("★R4-2 세대 재스폰 상한 도달: %s (상한 %d · epoch=%s) — 자동 부활 정지." % (_capped, RESPAWN_CAP, _ACTIVE_EPOCH))
+        _emit_evt("agent.error", agent="phoenix",
+                  summary="세대 재스폰 상한(%d) 도달 %s — 크래시루프 의심, 자동 부활 정지" % (RESPAWN_CAP, _capped))
+        out = {"phoenix_restore": "BREAKER_OPEN", "breaker_reason": "respawn_cap",
+               "respawn_capped_roles": _capped, "respawn_cap": RESPAWN_CAP,
+               "respawn_counts": _respawn_counts, "boot_epoch": _ACTIVE_EPOCH,
+               "rollback_proposal": rollback_proposal(socket),
+               "alert": ("정지 후 사람 승인 필요 — 같은 부트 세대 안에서 재스폰 상한을 넘었다. "
+                         "해제 = 데몬 재기동(새 세대) 또는 원인 확인 후 respawn-cap.json 삭제.")}
+        if print_result:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        return out
     # dedup(P4): 이 티켓 저널에서 이미 verify까지 done 인 역할은 skip
-    pending = [r for r in target_roles if not stage_done(j, r, "verify")]
+    # ★R4-1: 단 「verify 완료」는 **지금 살아 있을 때만** skip 근거다. 같은 세대에 부활·검증된 뒤 다시 죽은
+    #   역할(R4: master SIGTERM)을 verify 마크 하나로 영구 제외하면 침묵 영구 미부활이 된다.
+    pending = [r for r in target_roles if not (stage_done(j, r, "verify") and _alive(r))]
     log("티켓=%s · 대상역할=%s · 이번 진행=%s (완료 skip=%s)" % (
         ticket, target_roles, pending, [r for r in target_roles if r not in pending]))
 
@@ -2131,15 +2315,36 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
         except Exception:
             forced_sids = {}
     # 이미 완료(재개)된 역할 먼저 매핑
+    # ★R4-1: skip 조건 = 「spawn 완료 마크 ∧ **지금 다시 잰** _alive(role)」. 마크만 보면(종전) 같은 세대 안에서
+    #   죽은 역할이 「이미 완료 — 재개」로 영구 skip 된다(R4 실측: master 좌석 role=master·exited=false·agent 없음).
+    #   ★P1-3: 「pending 에 있다」로 판정하지 않는다 — 명시 --roles 경로가 살아 있는 역할을 오재스폰하지 않도록
+    #   근거는 언제나 생존 재평가다. 마크가 있는데 지금 죽었으면 마크(와 그 뒤 단계)를 무효화하고 재스폰한다.
     for role in pending:
-        if stage_done(j, role, "spawn"):
+        if stage_done(j, role, "spawn") and _alive(role):
             role_surface[role] = j["roles"][role].get("surface")
             jevent(j, role, "spawn", "skip", "이미 완료 — 재개")
+        elif stage_done(j, role, "spawn"):
+            for _st in STAGES:
+                mark_stage(j, role, _st, False, "spawn_mark_invalidated: dead_now")
+            jevent(j, role, "spawn", "spawn_mark_invalidated: dead_now",
+                   "같은 세대 spawn 마크(%s)가 있으나 지금 생존 아님 — 마크 무효화 후 재스폰"
+                   % (j["roles"][role].get("surface"),))
+            log("★R4-1: role=%s spawn 마크 무효화(dead_now) → 재스폰." % role)
 
     # ── ★Phase 10: 스폰 완결성(retry-until-full) — 미스폰 역할을 백오프로 재시도한다(DRILL_LIVE_3 cso 3/4 수리).
     #    prod: cys restore 는 idempotent(죽은 역할만 재스폰)이라 재호출로 미스폰 역할만 다시 시도된다.
     #    stub: 역할별 재시도. 스폰 후 settle·회차별 backoff 증가로 동시 경합(부활 폭풍)을 완화한다. ──
     need = [r for r in pending if not stage_done(j, r, "spawn") and r not in role_surface]
+    # ★R4-2: 이번 사이클의 스폰 발주를 역할별 1회로 센다(재시도 회차·fresh 강등은 같은 발주의 일부).
+    #   스폰 **전**에 영속한다 — 스폰 도중 phoenix 가 죽어도 발주 사실은 남는다(카운트 유실 = 캡 우회).
+    if need:
+        for _r in need:
+            _acted.append(_r)
+            _respawn_counts[_r] = _respawn_counts.get(_r, 0) + 1
+            if _respawn_counts[_r] > 1:
+                jevent(j, _r, "spawn", "respawn_count",
+                       "같은 세대 재스폰 %d/%d회" % (_respawn_counts[_r] - 1, RESPAWN_CAP))
+        save_respawn_counts(socket, _ACTIVE_EPOCH, _respawn_counts)
     # ★1R#2(2026-09-10): 기준 폴더를 **1회** 해소한다 — 라이브 master → 영속 토폴로지 master 순.
     #   `restore_cwd` 는 정상 복원(cys restore)에 실을 override 이고(전원 홈일 때만 · 다중
     #   프로젝트 함대 보호는 `restore_cwd_override` 주석), `master_cwd` 는 fresh 폴백이 개별
@@ -2213,12 +2418,68 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     need = need + [r for r in forced_fresh if r not in need]
     if need and POISON_FRESH_FALLBACK:
         fresh_still = []
+        # ★R4-3 빈 좌석 재사용(prod): fresh 대상 역할이 **빈 좌석**(role 보유·exited=false·seat=empty)을 이미
+        #   갖고 있으면 launch-agent(새 좌석 + 역할 탈취 = 좌석 증식 · 4→5 실측)로 가지 않고 cys restore 의
+        #   in-seat 연결로 그 좌석에 앉힌다(spawn_in_seat_production — 기존 경로 재사용). 재사용이 안 되면
+        #   그 빈 좌석을 기존 --reap 로 회수한 뒤 fresh 로 간다(좌석 수 불변). 판정은 데몬 좌석 사실(seat)만
+        #   소비한다. 회수 안전: 데몬의 수동 회수 판정이 agent_alive·자손 프로세스가 있는 좌석을 거부한다
+        #   (watchdog 지연으로 방금 앉은 좌석이 아직 empty 로 읽혀도 파괴되지 않는다).
+        seat_adopt = {}
+        if not stub:
+            _lv = live_role_surfaces(socket)
+            _empties = {}
+            _before = {}  # 시도 전 역할별 좌석(비종료) — 시도 뒤 「새로 생긴 좌석」 판별용
+            for _r in need:
+                _before[_r] = {s.get("surface") for s in _lv.get(_r, []) if not s["exited"]}
+                _refs = [s.get("surface") for s in _lv.get(_r, [])
+                         if not s["exited"] and s.get("seat") == "empty" and s.get("surface")]
+                if _refs:
+                    _empties[_r] = _refs
+            if _empties:
+                _res = spawn_in_seat_production(socket, include_master=include_master or "master" in _empties,
+                                                cwd=restore_cwd)
+                jevent(j, "*", "spawn", "in_seat_attempt",
+                       "빈 좌석 재사용 시도 %s · %s" % (_empties, json.dumps(_res, ensure_ascii=False)))
+                # 채택 규칙: ⓐ빈 좌석이 점유로 바뀜(재사용) ⓑ시도 전에 없던 좌석이 점유로 떠 있음(cys restore 는
+                #   역할 지정 없이 죽은 역할 전원을 기동하므로 need 의 다른 역할도 여기서 떴을 수 있다 — 채택하지
+                #   않으면 아래 launch-agent 가 이중 기동한다). 시도 전부터 있던 점유 좌석(A3: 표시 occupied +
+                #   ps 죽음)은 채택하지 않는다 — 그것은 부활이 아니다.
+                for _poll in range(3):
+                    time.sleep(SPAWN_SETTLE)
+                    _lv = live_role_surfaces(socket)
+                    for _r in need:
+                        if _r in seat_adopt:
+                            continue
+                        _refs = _empties.get(_r, [])
+                        for s in _lv.get(_r, []):
+                            _ref = s.get("surface")
+                            if s["exited"] or s.get("seat") == "empty":
+                                continue
+                            if not (s.get("seat") == "occupied" or s.get("agent_alive") is True):
+                                continue
+                            if _ref in _refs or _ref not in _before.get(_r, set()):
+                                seat_adopt[_r] = (_ref, _ref in _refs)
+                                break
+                    if all(_r in seat_adopt for _r in _empties):
+                        break
+                for _r, _refs in _empties.items():
+                    if _r in seat_adopt and seat_adopt[_r][1]:
+                        continue  # 그 좌석에 앉았다 — 회수할 빈 좌석 없음
+                    for _ref in _refs:
+                        _rr = cys("close-surface", _ref, "--reap", socket=socket, timeout=12)
+                        jevent(j, _r, "spawn", "empty_seat_reaped" if getattr(_rr, "returncode", 1) == 0
+                               else "empty_seat_reap_failed",
+                               "빈 좌석 %s 재사용 불가 → Reap 회수(좌석 증식 방지)" % _ref)
         for role in need:
             exp = entries.get(role, {}).get("session_id", "")
             if stub:
                 # fresh stub = 새 세션(원 poison sid 아님)으로 뜬다 — observed≠expected 로 정직 반영.
                 fresh_sid = "FRESH-" + _slug(role)
                 ref, msg = spawn_surrogate(socket, role, fresh_sid, attempt=attempt, mode="fresh")
+            elif role in seat_adopt:
+                ref = seat_adopt[role][0]
+                msg = ("★R4-3 좌석 내 재연결(cys restore --no-resume · %s) → %s"
+                       % ("빈 좌석 재사용" if seat_adopt[role][1] else "cys restore 가 연 좌석 채택", ref))
             else:
                 agent = entries.get(role, {}).get("agent", "claude")
                 # ★P2(1R#2 개정): 저장 cwd 가 **홈(=말해 주지 않은 값)이면 master 기준값이
@@ -2277,13 +2538,31 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
             mark_stage(j, role, "resume", sid is not None, "observed_sid=%s | %s" % (sid, ev))
             jevent(j, role, "resume", "ok" if sid else "fail", "observed_sid=%s" % sid)
             save_journal(socket, ticket, j)
+        # ★I-4 ACK 핑 관문(prod): 싸다는 것이 측정될 때만 핑(reinject --check · g2) — 아니면 unverified(no-ping).
+        #   no-ping 은 프로세스(데몬 agent_alive·seat)·화면(ready 단계) 생존만 기록하고 주입은 0 이다.
+        _no_ping = False
+        if not stub and not (stage_done(j, role, "reinject") and stage_done(j, role, "g2_ack")):
+            _allow, _why, _rec = ack_ping_gate(socket, surface)
+            if not _allow:
+                _no_ping = True
+                _live_ev = "process(agent_alive=%s·seat=%s) · screen(ready=%s)" % (
+                    _rec.get("agent_alive"), _rec.get("seat"), stage_done(j, role, "ready"))
+                _ev = "unverified(no-ping): %s — ACK 핑·디렉티브 재주입 0 · 생존 근거 %s" % (_why, _live_ev)
+                j["roles"][role]["ack"] = "unverified(no-ping)"
+                if not stage_done(j, role, "reinject"):
+                    mark_stage(j, role, "reinject", True, _ev); jevent(j, role, "reinject", "no_ping", _ev)
+                if not stage_done(j, role, "g2_ack"):
+                    mark_stage(j, role, "g2_ack", False, _ev); jevent(j, role, "g2_ack", "unverified(no-ping)", _ev)
+                save_journal(socket, ticket, j)
+            else:
+                j["roles"][role]["ack"] = "ping(%s)" % _why
         # reinject
         if not stage_done(j, role, "reinject"):
             ok, ev = stage_reinject(socket, role, surface, stub)
             mark_stage(j, role, "reinject", ok, ev); jevent(j, role, "reinject", "ok" if ok else "warn", ev)
             save_journal(socket, ticket, j)
         # g2_ack (best-effort; 실패해도 전진하되 verify에서 정직 라벨)
-        if not stage_done(j, role, "g2_ack"):
+        if not stage_done(j, role, "g2_ack") and not _no_ping:
             ok, ev = stage_g2_ack(socket, role, surface, stub)
             mark_stage(j, role, "g2_ack", ok, ev); jevent(j, role, "g2_ack", "ok" if ok else "degraded", ev)
             save_journal(socket, ticket, j)
@@ -2391,6 +2670,10 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     if completeness == "INCOMPLETE":
         honesty += (" ★INCOMPLETE — 재시도 소진 후에도 미부활 역할=%s. 침묵 성공 금지: "
                     "이 역할들은 실제로 부활하지 않았다(escalation 필요·master/사람 개입)." % incomplete_roles)
+    if liveness_unknown_roles:
+        honesty += (" ★생존 확인 불가=%s: ps 축이 없고(Windows 등) 데몬도 에이전트를 관측하지 못해 살았는지 죽었는지 "
+                    "모른다 — 자동 부활을 보류했다(맹목 재스폰 0). 살아 있다는 뜻이 아니다(사람 확인 필요)."
+                    % liveness_unknown_roles)
     if manual_seats:
         honesty += (" ★빈 좌석 잔존=%s: 이 역할들은 surface(좌석)는 있으나 **에이전트가 앉아 있지 않다**"
                     "(자손 프로세스 0 — 커널 사실). 부활이 아니라 '사람이 그 pane 에서 직접 agent 를 "
@@ -2407,6 +2690,7 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
         "completeness": completeness,          # ★Phase10: readiness 기반 전원 부활 판정
         "incomplete_roles": incomplete_roles,  # ★Phase10: 미부활 역할 정직 명시(침묵 성공 금지)
         "manual_seats": manual_seats,          # ★SEAT: 좌석은 있으나 에이전트 부재(사람 개입 필요) — 정직 명시
+        "liveness_unknown_roles": liveness_unknown_roles,  # ★R4-4: 생존·사망 확정 불가(부활 보류 · 생존 취급 아님)
         "fresh_fallback_roles": fresh_fallback_roles,  # ★Phase11: 독약 세션→fresh 강등 역할 정직 명시
         "ready_roles": ready_roles,
         "ticket": ticket,

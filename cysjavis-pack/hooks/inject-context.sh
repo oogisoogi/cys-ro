@@ -231,7 +231,10 @@ fi
 
 # ---------- 복원 모드 신호 (순환의존 해소 — 모순 1) ----------
 case "$SOURCE" in
-  startup|resume) OUT="${OUT}▶ 복원 모드(source=$SOURCE): RECOVERY.md 절차 실행 → G2 실측 대조(git·pane·server) → 배달 원장 다이제스트(BOOT_SNAPSHOT.md 있으면 그것 · 귀속 판별은 MASTER_DIRECTIVE '귀속 판별' 절(절이 없으면 constitution 병합 대기 — cys pack-merge 승인 필요)) → 미해결 게이트부터 재개.\n";;
+  # ★T6 I-2(TICKET=restore-impl-A2-2 · 오너 확정 정책): 「대화는 자동 복원 · 이어서 하라는 지시는 주입하지 않는다 ·
+  #   일은 사용자의 말 뒤에만」. 종전 문안의 끝(→ 미해결 게이트부터 …)이 복원 세션마다 자율 착수를 지시했다.
+  #   임무 게이트는 그대로다 — 오너가 이 세션에 임무를 지정한 좌석(next-action exit 0)만 그 임무를 이어간다.
+  startup|resume) OUT="${OUT}▶ 복원 모드(source=$SOURCE): 상태만 복원하고 대기 — RECOVERY.md 절차로 상태를 읽고 G2 실측 대조(git·pane·server)·배달 원장 다이제스트(BOOT_SNAPSHOT.md 있으면 그것 · 귀속 판별은 MASTER_DIRECTIVE '귀속 판별' 절(절이 없으면 constitution 병합 대기 — cys pack-merge 승인 필요))까지만 수행한다. 이어서 할 일은 사용자(또는 임무 게이트)의 지시 뒤에 — 임무 게이트: next-action 이 exit 0(오너가 이 세션에 임무 지정)이면 그 임무를 이어가고, exit 3(임무 미지정)이면 대기 중인 작업을 보고만 하고 멈춘다.\n";;
   clear)          OUT="${OUT}▶ 작업 계속(source=clear): 위 작업기억 이어서 진행.\n";;
   compact)        OUT="${OUT}▶ 압축 직후(source=compact): 작업기억 보충 완료. 진행 중 작업 계속.\n";;
 esac

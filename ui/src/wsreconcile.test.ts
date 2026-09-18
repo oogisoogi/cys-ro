@@ -14,6 +14,7 @@ import {
   advanceGhostStrikes,
   sameSocket,
   scaleForPlatform,
+  newlyRegisteredDepts,
   type ReconcileWs,
   type LiveProbe,
 } from "./wsreconcile";
@@ -292,5 +293,84 @@ describe("scaleForPlatform — 이 판의 유일한 Windows 분기", () => {
   it("0 과 큰 값에서도 단조", () => {
     expect(scaleForPlatform(0, true)).toBe(0);
     expect(scaleForPlatform(60_000, true)).toBeGreaterThan(scaleForPlatform(60_000, false));
+  });
+});
+
+// ─── A1-3 M7 — 새 부서 탭 자동 열림 ────────────────────────────────────────────
+describe("M7② V-12 — 앱이 꺼진 채 만들어진 부서는 시작 때 탭이 열린다", () => {
+  it("저장본 = 본부 + 옛 부서 · 레지스트리 = 옛 부서 + 새 부서 → 새 부서 탭 1개만 만든다", () => {
+    // 깨지면: 마스터가 말로 만든 부서가 앱을 다시 켜도 화면에 안 나타난다(V-12).
+    const saved = [base({}), dept({}, DEPT)];
+    const out = missingKnownWorkspaces(
+      saved,
+      [{ socket: DEPT, label: "옛 부서" }, { socket: DEPT2, label: "설교준비부" }],
+      NO_TOMBS,
+      deptNameOf,
+    );
+    expect(out).toEqual([{ socket: DEPT2, name: "설교준비부" }]);
+  });
+});
+
+describe("newlyRegisteredDepts — 켜져 있는 동안 새로 생긴 부서만 연다(M7①)", () => {
+  const reg1 = [{ socket: DEPT, label: "옛 부서" }];
+  const reg2 = [...reg1, { socket: DEPT2, label: "설교준비부" }];
+
+  it("★핵심: 이번 세션에 처음 보는 소켓 → 탭 명세 1개", () => {
+    // 깨지면: 마스터에게 말로 만든 부서의 화면이 앱을 다시 켜기 전까지 안 뜬다.
+    const r = newlyRegisteredDepts([base({})], reg2, new Set([DEPT]), NO_TOMBS, deptNameOf);
+    expect(r.open).toEqual([{ socket: DEPT2, name: "설교준비부" }]);
+    expect(r.seen.has(DEPT2)).toBe(true);
+  });
+
+  it("①폭주(멱등): 같은 결과를 다음 틱에 넣으면 또 열지 않는다", () => {
+    const t1 = newlyRegisteredDepts([base({})], reg2, new Set([DEPT]), NO_TOMBS, deptNameOf);
+    const t2 = newlyRegisteredDepts([base({}), dept(null, DEPT2)], reg2, t1.seen, NO_TOMBS, deptNameOf);
+    expect(t2.open).toEqual([]);
+    // 탭을 붙이기 전에 틱이 한 번 더 돌아도(목록 미반영) 이미 본 소켓이라 열지 않는다.
+    const t3 = newlyRegisteredDepts([base({})], reg2, t1.seen, NO_TOMBS, deptNameOf);
+    expect(t3.open).toEqual([]);
+  });
+
+  it("③자가치유: 사용자가 닫은 부서 탭(본 적 있는 소켓)은 되살리지 않는다", () => {
+    // 깨지면: 닫은 부서 탭이 3초마다 다시 생겨 닫을 수 없는 탭이 된다.
+    const r = newlyRegisteredDepts([base({})], reg2, new Set([DEPT, DEPT2]), NO_TOMBS, deptNameOf);
+    expect(r.open).toEqual([]);
+  });
+
+  it("seen 이 아직 없으면(시작 대조가 레지스트리를 못 읽음) 지금 목록을 심기만 하고 열지 않는다", () => {
+    const r = newlyRegisteredDepts([base({})], reg2, null, NO_TOMBS, deptNameOf);
+    expect(r.open).toEqual([]);
+    expect([...r.seen].sort()).toEqual([DEPT, DEPT2].sort());
+  });
+
+  it("＋부서 런칭 중(placeholder)이면 판정을 보류한다 — 같은 부서 탭 2개 방지", () => {
+    const pend: ReconcileWs = { tree: null, pending: true };
+    const r = newlyRegisteredDepts([base({}), pend], reg2, new Set([DEPT]), NO_TOMBS, deptNameOf);
+    expect(r.open).toEqual([]);
+    expect(r.seen.has(DEPT2)).toBe(false); // 보류일 뿐 — 다음 틱에 다시 본다
+  });
+
+  it("묘비 조회 실패(null)면 열지 않고 '본 것'으로도 적지 않는다(다음 틱 재시도)", () => {
+    const r = newlyRegisteredDepts([base({})], reg2, new Set([DEPT]), null, deptNameOf);
+    expect(r.open).toEqual([]);
+    expect(r.seen.has(DEPT2)).toBe(false);
+  });
+
+  it("묘비가 있는 부서는 새로 보여도 열지 않는다", () => {
+    const r = newlyRegisteredDepts([base({})], reg2, new Set([DEPT]), new Set(["dept-2"]), deptNameOf);
+    expect(r.open).toEqual([]);
+    expect(r.seen.has(DEPT2)).toBe(true);
+  });
+
+  it("이미 같은 소켓 탭이 있으면(＋부서로 연 부서) 또 만들지 않는다", () => {
+    const r = newlyRegisteredDepts([base({}), dept({}, DEPT2)], reg2, new Set([DEPT]), NO_TOMBS, deptNameOf);
+    expect(r.open).toEqual([]);
+  });
+
+  it("레지스트리에서 빠진 소켓은 seen 에서 지운다 — 지운 뒤 다시 만들면 새 부서로 연다", () => {
+    const t1 = newlyRegisteredDepts([base({})], reg1, new Set([DEPT, DEPT2]), NO_TOMBS, deptNameOf);
+    expect(t1.seen.has(DEPT2)).toBe(false);
+    const t2 = newlyRegisteredDepts([base({})], reg2, t1.seen, NO_TOMBS, deptNameOf);
+    expect(t2.open).toEqual([{ socket: DEPT2, name: "설교준비부" }]);
   });
 });

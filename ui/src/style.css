@@ -119,9 +119,22 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
    ③ 특이도 — `#btn-master-start`(id 1개)는 위 `#wsbar-head button`(id 1 + 타입 1)에 **진다**.
       그래서 헤더 id 를 앞에 붙여 id 2개로 이긴다. 이 줄을 짧게 고쳐 쓰면 조용히 무효가 된다.
    ④ 축은 그대로 --wsbar-font 하나다 — A−/A＋ 가 알약까지 함께 키우고 줄인다(메뉴 배율 비연동 불변). */
-#wsbar-head #btn-master-start, #wsbar-head #btn-dept-master, #wsbar-head #btn-ws-dept {
+#wsbar-head #btn-master-start, #wsbar-head #btn-dept-master, #ws-dept-expert #btn-ws-dept {
   font-size: calc(14px * var(--wsbar-font, 1)); padding: 0 6px;
 }
+/* A1-3 M1 — ＋부서는 머리줄을 떠나 접힌 「전문가용」 칸으로 한 단 내려갔다(index.html 주석).
+   ① 안내 한 줄은 왕초보가 제일 먼저 읽는 자리라 상단 버튼과 같은 사이드바 배율 축에 매되, 버튼이
+      아니라 글이므로 한 단계 작게·흐리게 둔다. 좁은 사이드바에서 넘치면 줄바꿈한다(잘리면 안 된다).
+   ② ＋부서 알약 크기는 위 알약 규칙이 그대로 준다(선택자만 새 자리로 옮겼다 — id 2개 특이도 유지). */
+#ws-dept-row { flex: none; padding: 2px 8px 4px; }
+#ws-dept-hint {
+  font-size: calc(14px * var(--wsbar-font, 1)); color: var(--muted, inherit); opacity: .85;
+  line-height: 1.35; overflow-wrap: anywhere;
+}
+#ws-dept-expert summary {
+  font-size: calc(12px * var(--wsbar-font, 1)); opacity: .6; cursor: pointer; margin-top: 2px;
+}
+#ws-dept-expert[open] summary { margin-bottom: 4px; }
 #ws-tabs {
   flex: 1; display: flex; flex-direction: column; gap: 2px;
   overflow-y: auto; padding: 2px 8px 10px;

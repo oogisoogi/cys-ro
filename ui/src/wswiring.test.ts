@@ -313,3 +313,46 @@ describe("복원 배선 — 묘비를 못 읽으면 저장본의 죽은 부서�
     expect(code.includes("`부서 ${tombUnknownLaunch}곳은 이번에 켜지 않았습니다`")).toBe(true);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// A1-3 M7 — 새 부서 탭 자동 열림의 배선 핀. 판정은 wsreconcile(순수·wsreconcile.test.ts)에,
+// 여기서는 「그 판정이 실제 경로에 꽂혀 있다」만 잰다.
+// ────────────────────────────────────────────────────────────────────────────
+function newDeptHelperSlice(): string {
+  const a = src.indexOf("async function openNewlyRegisteredDepts(): Promise<boolean> {");
+  const b = src.indexOf("\n}\n", a);
+  expect(a).toBeGreaterThan(0);
+  expect(b).toBeGreaterThan(a);
+  return src.slice(a, b);
+}
+
+describe("M7① — 켜져 있는 동안 생긴 부서는 3초 틱이 탭을 연다", () => {
+  it("★3초 틱이 소켓 집계 **앞**에서 새 부서 탭 열기를 부른다(같은 틱에 입양까지)", () => {
+    expect(refreshSlice().includes("if (await openNewlyRegisteredDepts()) layoutChanged = true;")).toBe(true);
+  });
+  it("열기 판정은 걸러지지 않은 workspaces 와 이번 세션의 seen 으로 한다 · 결과 seen 을 되저장한다", () => {
+    const h = newDeptHelperSlice();
+    expect(/newlyRegisteredDepts\(workspaces, depts, seen, tombs, deptNameFromSocket\)/.test(h)).toBe(true);
+    expect(h.includes("deptSeen = step.seen;")).toBe(true);
+    // 묘비는 소켓 요청 쌓임 방지 가드 아래에서만 읽는다(①폭주 축).
+    expect(h.includes('claimFlight("tombs:")')).toBe(true);
+    // 새 타이머 금지 — 틱에 편승한다.
+    expect(/setInterval|setTimeout/.test(h)).toBe(false);
+  });
+  it("★시작 대조가 본 레지스트리를 seen 으로 심는다 — 이게 없으면 닫힌 탭 판정 기준이 없다", () => {
+    expect(restoreSlice().includes("if (registered !== null) deptSeen = new Set(displayBySocket.keys());")).toBe(true);
+  });
+});
+
+describe("M7② V-12 — 앱이 꺼진 채 생긴 부서는 시작 대조가 탭을 만든다(기존 경로 재사용 · 중복 구현 없음)", () => {
+  it("시작 대조(missingKnownWorkspaces)는 부서 데몬 확보 루프보다 앞이고 레지스트리 전체를 넘긴다", () => {
+    const r = restoreSlice();
+    const iMissing = r.indexOf("missingKnownWorkspaces(");
+    const iLoop = r.indexOf("const deptWsList = workspaces.filter((w) => w.socket);");
+    expect(iMissing).toBeGreaterThan(0);
+    expect(iLoop).toBeGreaterThan(iMissing);
+    expect(/missingKnownWorkspaces\(\s*workspaces,\s*\[\.\.\.displayBySocket\]/.test(r)).toBe(true);
+    // 반복문이 그 결과를 **그대로** 순회한다 — 앞에 다른 식이 끼면(예: 빈 배열 ?? …) 호출은 남아도 탭은 안 생긴다.
+    expect(r.includes("for (const spec of missingKnownWorkspaces(")).toBe(true);
+  });
+});

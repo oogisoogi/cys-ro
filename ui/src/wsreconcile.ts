@@ -223,3 +223,53 @@ export function advanceGhostStrikes(
 export function scaleForPlatform(ms: number, isWindows: boolean): number {
   return isWindows ? ms * 2 : ms;
 }
+
+/** newlyRegisteredDepts 의 결과 — 이번에 열 탭 명세와 다음 틱에 쓸 '본 적 있는 소켓' 집합. */
+export interface NewDeptStep {
+  open: MissingWsSpec[];
+  seen: Set<string>;
+}
+
+/**
+ * 앱이 **켜져 있는 동안** 레지스트리에 새로 등재된 부서의 탭 명세를 돌려준다(A1-3 M7①).
+ *
+ * `missingKnownWorkspaces` 와 왜 다른가: 그 함수는 시작 1회용이라 "레지스트리에 있는데 탭이 없다"
+ * 전부를 연다. 같은 술어를 3초 틱에 쓰면 **사용자가 닫은 부서 탭이 3초마다 되살아난다**(자가치유가
+ * 사용자 의도를 이기는 축). 그래서 틱은 "이번 세션에 **처음 보는** 소켓"만 연다 — 한 번 본 소켓은
+ * 탭을 닫아도 다시 열지 않고, 다음 앱 시작의 `missingKnownWorkspaces` 가 계약대로 다룬다.
+ *
+ * · `seen === null`(시작 대조가 레지스트리를 못 읽은 채 틱이 처음 돈다) → 지금 목록을 전부 '본 것'으로
+ *   심고 아무것도 열지 않는다. 모르는 과거를 '새로 생김'으로 읽으면 닫힌 탭을 되살리게 된다.
+ * · `pendingLaunch`(＋부서 런칭 중 placeholder 가 있다) → 판정을 통째로 보류한다(seen 도 안 바꾼다).
+ *   런칭 중 레지스트리에 먼저 등재되면 placeholder 와 틱이 같은 부서에 탭 두 개를 만든다.
+ * · `tombs === null`(묘비 조회 실패) → 새 소켓을 열지도, '본 것'으로 표시하지도 않는다 — 다음 틱 재시도.
+ *   `missingKnownWorkspaces` 와 같은 fail-closed(지운 부서 부활은 비가역).
+ * · 레지스트리에서 사라진 소켓은 seen 에서 뺀다 — 지운 뒤 같은 이름으로 다시 만들면 '새 부서'다.
+ *
+ * 부작용 없음 — 호출측이 id 발급·push 를 한다(main.ts 3초 틱 배선).
+ */
+export function newlyRegisteredDepts(
+  list: readonly ReconcileWs[],
+  depts: readonly KnownDept[],
+  seen: ReadonlySet<string> | null,
+  tombs: ReadonlySet<string> | null,
+  deptNameOf: (socket: string) => string | null,
+): NewDeptStep {
+  const regSockets = new Set(depts.map((d) => d.socket));
+  if (seen === null) return { open: [], seen: regSockets };
+  if (list.some((w) => w.pending)) return { open: [], seen: new Set(seen) };
+  const next = new Set([...seen].filter((s) => regSockets.has(s)));
+  const fresh = depts.filter((d) => !next.has(d.socket));
+  if (fresh.length === 0) return { open: [], seen: next };
+  if (tombs === null) return { open: [], seen: next };
+  const open: MissingWsSpec[] = [];
+  for (const d of fresh) {
+    next.add(d.socket);
+    const dn = deptNameOf(d.socket);
+    if (dn && tombs.has(dn)) continue;
+    if (list.some((w) => sameSocket(w.socket, d.socket))) continue;
+    if (open.some((s) => sameSocket(s.socket, d.socket))) continue;
+    open.push({ socket: d.socket, name: d.label || dn || undefined });
+  }
+  return { open, seen: next };
+}

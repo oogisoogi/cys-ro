@@ -32,6 +32,8 @@ import {
   advanceGhostStrikes,
   scaleForPlatform,
   sameSocket,
+  newlyRegisteredDepts,
+  type KnownDept,
 } from "./wsreconcile";
 import {
   RESET_PHRASE,
@@ -2389,6 +2391,10 @@ let started = false; // start()의 세션 복원이 끝나기 전 인터벌 자�
 // 치우되, **단발 응답으로는 치우지 않는다** — 데몬이 한 틱만 부분/빈 목록을 돌려줘도 트리가 통째로
 // 증발하면 '터미널에 글자가 하나도 안 보이는' 최악이 된다. 2회 연속 같은 판정일 때만 집행한다.
 let ghostStrike = new Map<string, number>();
+// ★A1-3 M7①: 이번 세션에 '본 적 있는' 부서 소켓. 시작 대조가 레지스트리를 읽으면 그때 심고,
+// 못 읽었으면 null 로 두어 첫 틱이 심는다(newlyRegisteredDepts 설명). 한 번 본 부서는 탭을 닫아도
+// 틱이 되살리지 않는다 — 닫은 탭이 3초마다 돌아오는 자가치유 과잉을 막는 것이 이 집합의 일이다.
+let deptSeen: Set<string> | null = null;
 // ★in-flight 가드(2026-09-16 성찰 1회 · A① 폭주 축 차단): JS 의 시간 상한은 **JS 쪽 포기**일 뿐
 // Rust/데몬 쪽 왕복을 취소하지 못한다. 상한만 두고 3초마다 같은 소켓에 새 요청을 또 보내면,
 // 응답이 8초 넘게 걸리는 데몬 하나에 요청이 **무계로 쌓인다**(Tauri 는 소켓별 연결을 뮤텍스로
@@ -2428,6 +2434,10 @@ async function refreshPaneTitles() {
       activeWs = 0;
       layoutChanged = true;
     }
+    // ★A1-3 M7①: 켜져 있는 동안 새로 생긴 부서(마스터가 말로 만든 부서 등)의 탭을 연다. 부서 생성을
+    // 알리는 데몬 이벤트가 없어 이 3초 틱에 얹는다(새 타이머 없음). 아래 소켓 집계보다 **앞**에 둬서
+    // 같은 틱에 입양까지 이어진다.
+    if (await openNewlyRegisteredDepts()) layoutChanged = true;
     const sockets = [...new Set(workspaces.map((w) => w.socket))];
     let adopted = false;
     const adoptedWs = new Set<Workspace>();
@@ -2552,6 +2562,51 @@ async function refreshPaneTitles() {
   updateFtRoot(); // cd 추적 — 파일 트리 루트도 따라간다
 }
 setInterval(refreshPaneTitles, 3000);
+
+/**
+ * A1-3 M7① 배선 — 레지스트리에 새로 등재된 부서의 탭을 만든다(판정 = wsreconcile.newlyRegisteredDepts).
+ * 평시 비용 = 레지스트리 파일 읽기 1회. 묘비(기본 데몬 RPC)는 새 소켓 후보가 있을 때만 읽는다.
+ * 탭을 만들었으면 true(호출측이 render). 포커스는 옮기지 않는다 — 지금 보는 화면을 빼앗지 않는다.
+ */
+async function openNewlyRegisteredDepts(): Promise<boolean> {
+  let depts: KnownDept[];
+  try {
+    const reg = (await rpcT(invoke("list_depts"), T_REG)) as {
+      depts?: Record<string, { socket?: string; display_name?: string }>;
+    };
+    depts = Object.entries(reg.depts ?? {})
+      .filter(([, e]) => !!e?.socket)
+      .map(([dname, e]) => ({ socket: e.socket as string, label: e.display_name ?? dname }));
+  } catch {
+    return false; // 레지스트리 미조회 — 이번 틱은 판정하지 않는다
+  }
+  const seen = deptSeen;
+  let tombs: Set<string> | null = new Set();
+  if (seen !== null && depts.some((d) => !seen.has(d.socket))) {
+    tombs = null; // 못 읽으면 null 그대로 = fail-closed(다음 틱 재시도)
+    if (claimFlight("tombs:")) {
+      // ★가드는 **생 invoke** 에 건다(위 in-flight 교리 · 기존 3곳과 동형) — rpcT 래핑에 걸면 JS 가
+      // 포기하는 순간(T_REG) 풀려, 느린 데몬에 다음 틱이 요청을 또 얹는다(적대 r1 중요①).
+      const raw = invoke("dept_tombstones");
+      releaseFlightWhenSettled("tombs:", raw);
+      try {
+        tombs = new Set((await rpcT(raw, T_REG)) as string[]);
+      } catch {
+        tombs = null;
+      }
+    }
+  }
+  const step = newlyRegisteredDepts(workspaces, depts, seen, tombs, deptNameFromSocket);
+  deptSeen = step.seen;
+  for (const spec of step.open) {
+    const ws: Workspace = { id: wsCounter++, name: spec.name ?? UNTITLED, tree: null, socket: spec.socket };
+    ws.autoCreated = true; // 사용자가 연 적 없는 탭(시작 대조와 같은 표식)
+    const g = groups.find((gg) => gg.anchorSocket === spec.socket);
+    if (g) ws.groupId = g.id;
+    workspaces.push(ws);
+  }
+  return step.open.length > 0;
+}
 
 // 2-click 삭제 확인의 armed 상태 아이콘 — 이모지(🗑)는 컬러 글리프라 CSS 틴트 불가, 인라인 SVG 사용
 const TRASH_SVG =
@@ -7575,6 +7630,9 @@ async function start() {
   // 유일 멤버 부서 ws 가 저장본에서 빠진 그룹을 '멤버 0'으로 보고 이미 해체해 버린다.
   // 그러면 방금 되붙인 groupId 가 죽은 그룹을 가리켜 다음 정규화에서 조용히 지워진다.
   groups = normalizeGroups(workspaces, groups);
+  // ★A1-3 M7①: 시작 대조가 본 레지스트리를 3초 틱의 '본 적 있는 부서'로 심는다 — 이 뒤로 새로
+  // 등재되는 부서만 틱이 연다. 레지스트리를 못 읽었으면 null 로 두고 첫 틱이 심는다(열지 않고).
+  if (registered !== null) deptSeen = new Set(displayBySocket.keys());
 
   // ★결측 고지(무음 금지): 묘비를 못 읽어 부서 탭을 만들지 않았다면 그 사실을 말한다.
   // 판정 자체는 옳지만(지운 부서 부활은 비가역), 사용자에게는 '부서가 또 사라졌다'로 보인다.

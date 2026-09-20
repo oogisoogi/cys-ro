@@ -89,9 +89,9 @@ describe("WSU_FONT_PX — CSS와 산식이 같은 수를 쓰는가", () => {
   //    ⚠이 목록은 손으로 관리한다 — 새 사이드바 요소를 추가하면서 여기 안 적으면 그 요소만
   //      옛 크기로 남는다. 그 누락을 잡는 것이 아래 「사이드바 전역 훑기」 케이스다.
   const PILL_SELECTOR =
-    "#wsbar-head #btn-master-start, #wsbar-head #btn-dept-master, #wsbar-head #btn-ws-dept";
+    "#wsbar-head #btn-master-start, #wsbar-head #btn-dept-master, #ws-dept-expert #btn-ws-dept";
   const SIDEBAR_SELECTORS = [
-    "#wsbar-head button", // 상단 버튼 6종(A−·A＋·▶CEO·▶부서장·＋부서·＋)을 한 자리에서
+    "#wsbar-head button", // 상단 버튼 5종(A−·A＋·▶CEO·▶부서장·＋)을 한 자리에서 — ＋부서는 A1-3 M1 로 전문가용 칸에
     PILL_SELECTOR, // 알약 3종의 **재지정**(14px) — 위 6종 규칙을 이기는 자리라 여기도 배율 축이어야 한다
     ".ws-tab .ws-name", // 워크스페이스 제목
     ".ws-tab .ws-sub", // 부제(페인 수·데몬)
@@ -103,6 +103,8 @@ describe("WSU_FONT_PX — CSS와 산식이 같은 수를 쓰는가", () => {
     ".ws-approve-badge", // 승인 대기 배지(제목 행)
     ".ws-group-count", // 그룹 멤버 수
     ".ws-group-add", // 그룹 ＋
+    "#ws-dept-hint", // A1-3 M1 안내 한 줄(＋부서가 떠난 자리)
+    "#ws-dept-expert summary", // A1-3 M1 「전문가용」 접힘 머리
   ];
   it.each(SIDEBAR_SELECTORS)("%s 의 글자 크기가 사이드바 배율에 매여 있다", (sel: string) => {
     const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
@@ -131,7 +133,8 @@ describe("WSU_FONT_PX — CSS와 산식이 같은 수를 쓰는가", () => {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
     const head = html.match(/<div id="wsbar-head">([\s\S]*?)<\/div>/);
     expect(head).not.toBeNull();
-    expect((head![1].match(/<button/g) ?? []).length).toBe(6); // 버튼은 하나도 잃지 않았다
+    // 6 → 5: ＋부서는 잃은 것이 아니라 A1-3 M1 로 전문가용 칸에 옮겼다(아래 M1 케이스가 그 실재를 잰다).
+    expect((head![1].match(/<button/g) ?? []).length).toBe(5);
     expect(head![1]).not.toContain("<span"); // 라벨 자리(span)가 통째로 없어야 한다
     // ★「'워크스페이스'라는 글자가 없다」로 재면 안 된다 — ＋ 버튼의 title="새 워크스페이스"에
     //   그 낱말이 남아 있고 그것은 **툴팁이지 라벨이 아니다**(초판이 여기서 거짓 적색을 냈다).
@@ -354,5 +357,42 @@ describe("showsRowAge — 나이 칸을 낼 자리가 있는가", () => {
       expect(showsRowAge(WSBAR_W_MAX, bad)).toBe(showsRowAge(WSBAR_W_MAX, 1));
       expect(showsRowAge(WSBAR_W_DEFAULT, bad)).toBe(showsRowAge(WSBAR_W_DEFAULT, 1));
     }
+  });
+});
+
+// ─── A1-3 M1 — 부서 메뉴를 한 단 내리고 그 자리에 말로 부탁하는 안내 ───────────────────
+describe("A1-3 M1 — ＋부서는 전문가용 칸으로, 머리줄 아래엔 안내 한 줄", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const head = html.match(/<div id="wsbar-head">([\s\S]*?)<\/div>/)![1];
+  const hint = html.match(/<div id="ws-dept-hint">([\s\S]*?)<\/div>/);
+
+  it("머리줄에는 ＋부서가 없고, 버튼 요소는 접힌 전문가용 칸 안에 그대로 있다", () => {
+    expect(head).not.toContain('id="btn-ws-dept"');
+    // 요소를 지우면 main.ts launchDept 의 연타 차단 가드(deptBtn.disabled)가 통째로 꺼진다.
+    expect(/<details id="ws-dept-expert">[\s\S]*?id="btn-ws-dept"[\s\S]*?<\/details>/.test(html)).toBe(true);
+    expect(html.match(/id="btn-ws-dept"/g)?.length).toBe(1);
+  });
+
+  it("안내 한 줄이 머리줄 바로 다음(원래 자리)에 있다", () => {
+    expect(hint).not.toBeNull();
+    const iHead = html.indexOf('<div id="wsbar-head">');
+    const iHint = html.indexOf('<div id="ws-dept-hint">');
+    const iTabs = html.indexOf('<div id="ws-tabs">');
+    expect(iHead).toBeGreaterThan(-1);
+    expect(iHint).toBeGreaterThan(iHead);
+    expect(iHint).toBeLessThan(iTabs);
+  });
+
+  it("★안내 문안 = 왕초보 말투 · 내부 용어 0 · 괄호 부기 0", () => {
+    const text = hint![1].trim();
+    expect(text).toContain("마스터에게 말로 부탁하세요");
+    expect(text.includes("\n")).toBe(false); // 한 줄
+    const INTERNAL = [
+      "dept", "데몬", "daemon", "레거시", "CEO", "부서장", "워크스페이스", "workspace",
+      "surface", "pane", "페인", "소켓", "socket", "cys", "카탈로그", "catalog", "노드", "node",
+      "CLI", "레지스트리", "런칭", "launch", "세션", "session",
+    ];
+    for (const w of INTERNAL) expect(text.toLowerCase()).not.toContain(w.toLowerCase());
+    expect(/[()（）\[\]「」『』<>]/.test(text)).toBe(false);
   });
 });

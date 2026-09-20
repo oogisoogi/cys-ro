@@ -202,11 +202,13 @@ misc **B4** 와 usage **two-accounts** 가 **같은 결함**(OAuth 프로브가 
 ⚠이월: `fix/v110-mac-x64` 브랜치 **자체는 아직 적색**이다(이 수리가 그 브랜치엔 없다) — 871 에 전달할지
 통합본 수리로 갈음할지는 master 판정(워커→워커 직통 0).
 
-미실행 1건: `cysjavis-pack/bin/tests/mut_dept_request.py`(47종) — §9 함정의 덮어쓰기 사고 구간에 걸쳐 돌아
-결과를 폐기했고, 그 뒤 **push 를 위해 트리를 깨끗하게 유지**해야 해서 push 뒤로 미뤘다. dept 브랜치 자체
-라운드에서 45 KILLED + M7a·M30 층 방어 생존으로 확인된 하네스이고, 이 통합에서 `javis_dept_request.py` 는
-**한 줄도 바뀌지 않았다**(`git diff rebase/v1.0.2..HEAD -- cysjavis-pack/bin/javis_dept_request.py` 가
-dept 브랜치의 추가분과 동일) — 그래도 「안 쟀다」는 「초록」이 아니므로 미실행으로 적는다.
+`cysjavis-pack/bin/tests/mut_dept_request.py`(47종) — **단독 재실행 완료 · 판정 토큰 `MUTANTS ALL-KILLED`**
+(약 26분 · 도구가 낸 최종 토큰을 그대로 인용한다. dept 브랜치 라운드의 계약은 「45 KILLED + M7a·M30 은
+층 방어라 예상 생존(killers 빈 목록)」이고, 그 예상 생존을 포함해 하네스가 내는 통과 토큰이 이것이다).
+꼬리 13종 실측 = M33~M45 전부 KILLED(각 적색 1건 · 지정 시험 이름이 로그에 함께 찍힌다).
+하네스 원복 실측: `javis_dept_request.py == HEAD` · 파일 내 `MUTANT` 표지 0건 · `git status` 깨끗.
+경위 부기: 1차 실행은 §9 함정의 덮어쓰기 사고 구간에 걸쳐 돌아 **결과를 폐기하고 TaskStop 으로 정지**시켰다
+(정지 뒤 변이 잔존 0 실측). 이 값은 그 뒤 **단독으로** 다시 돌린 것이다.
 
 ## 5. 이월 ISSUES B9·B10·B11 — dept 079abc88 반영 여부 (구현 금지 · 표기만)
 

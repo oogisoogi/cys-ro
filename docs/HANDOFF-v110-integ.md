@@ -142,6 +142,8 @@ misc **B4** 와 usage **two-accounts** 가 **같은 결함**(OAuth 프로브가 
 | `scripts/tests/test_darwin_update_row.py` | rc 0 | darwin-update 자체 |
 | `scripts/tests/test_darwin_updater_tarball.py` | rc 0 | darwin-update 자체 |
 | `scripts/tests/test_release_postprocess_gate.py` | rc 0 | mac-x64 가 행 추가 |
+| `test_runtime_manifest_parity.py` | Ran 10 tests / OK | ⚠수리 뒤 값 — §4-B |
+| **ci-branch (GitHub Actions · 3레인)** | **run 35506008147 = completed/success** · `nsis-hook-harness` ✅ · `boot-health-full` ✅ · `macos-rust-pack` ✅ | 직전 run 35505521696 은 `macos-rust-pack` ❌ — §4-B |
 
 ### 4-A. 브랜치별 대표 뮤턴트 재실행 (병합 뒤에도 그물이 산다 · 변이 적용·원복 실측 · 전부 KILLED)
 
@@ -153,6 +155,52 @@ misc **B4** 와 usage **two-accounts** 가 **같은 결함**(OAuth 프로브가 
 | inject | MX1 규율을 디렉티브 뒤로 / MX2 resume 머리 규율 제거 / MX3 T6 상한 무력화 / MX4 기계문구 제외 제거 / MX5 master 조립기 분기 제거 | 7b / F4·G2 / F1~F4 / G1·G2 / F2·F3·F6·F7b·2x1 | 5/5 KILLED |
 | misc·usage | M-A 서비스명 하드코딩 되돌림 / M-B 대상을 기본 dir 로 좁힘 | §2-② 표 | 2/2 KILLED · 각 적색 3 |
 | (통합 자체) | 내 HANDOFF §8 의 `ln -sfn` 레시피 | `clipath.test.ts` MINOR-5 배포문서 파괴명령 핀 | **적색 → 문서를 비파괴 형태로 고쳐 초록**(핀을 끄지 않았다) |
+
+### 4-B. CI 적색 1건의 귀속과 수리 (커밋 cbad0a2e)
+
+`rebase/v1.1` 은 `ci-branch` 의 push 트리거(`on.push.branches = ['feat/**','fix/**']`)에 **안 걸린다** —
+`rebase/**` 가 없다. 그래서 push 로는 발화하지 않고 같은 파일의 `workflow_dispatch: {}` 로 ref 를 지정해
+수동 발화했다(트리거 설정은 고치지 않았다 — 범위 밖 · master 결정으로 올렸다).
+
+첫 런 **35505521696** 에서 `macos-rust-pack` 이 적색이었다 — `test_runtime_manifest_parity` 의
+`ManifestSchemaParityTests` 3건(`test_both_lanes_invoke_the_same_generator` ·
+`test_mac_generates_from_the_app_tree_not_the_source_tree` · `test_manifest_basename_is_identical_everywhere`),
+`AssertionError: 'cysjavis-pack/bin/javis_runtime_seal.py' not found in '…build-macos-signed.sh…'`.
+
+| 대조 | 값 | 판정 |
+|---|---|---|
+| 기준선 `rebase/v1.0.2` 사본에서 같은 시험 | Ran 10 tests / **OK**(rc 0) | 선재 결함 아님 |
+| 그 레인 마지막 CI(`fix/rebase-v1.0.2` run 35293221582) | success | 선재 결함 아님 |
+| `fix/v110-mac-x64` **자체** CI(run 35505024771) | **failure · 같은 3건 · 같은 Traceback** | 병합 조작이 아니라 **그 브랜치가 들여온 것** |
+| 내 병합의 그 파일 접촉 | 충돌 0 · 편집 0(자동 병합) | 같은 결론 |
+
+원인 = `14964bf2` 가 비-Apple 단계(봉인 생성기 호출 포함)를 `scripts/lib/mac-bundle-common.sh` 로 옮겼고,
+이 시험은 `scripts/build-macos-signed.sh` **본문만** 읽는다. 호출은 `mac-bundle-common.sh:183` 에 실재한다 —
+**제품 결함이 아니라 간접참조가 정적 가드를 눈 멀게 한 것**이다.
+
+수리(검사식 완화 0 · 단언은 오히려 좁혔다):
+1. `mac_lane_parts()` — 레인 = 진입 스크립트 + 그것이 `.`/`source` 하는 lib 합집합. master 처방의
+   「lib 등재」를 **손 목록이 아니라 source 줄 파생**으로 구현했다(손 목록은 같은 사고를 다음 이름으로
+   재생산한다). source 대상이 실재하지 않으면 실패(fail-closed) · 변수가 든 경로는 정적 해소에서 제외.
+2. 창(window) 축은 「emit 호출이 적힌 파일 안에서, 그 호출 자리에서」 뜬다.
+3. ★**강화** — master 지정 뮤턴트가 1차에 **SURVIVED** 였다. 종전 단언이 「경로가 있다」+「emit 이 어딘가
+   있다」 두 조각이라, 같은 lib 의 `… javis_runtime_seal.py verify` 줄이 경로 조각을 채워 **emit 호출만
+   지워도 초록**이었다. `EMIT_CALL_RE`(경로 + 하위명령 `emit`)로 emit 호출 자체를 묻게 해서 닫았다.
+   ⇒ 처방을 그대로만 이행하면 「고쳤다」가 거짓이 될 자리였다.
+
+| 뮤턴트 | 적색 |
+|---|---|
+| MP1 lib 의 emit 호출 삭제(master 지정) | 2건(generator · app-tree) |
+| MP1b `emit` → `verify` 바꿔치기 | 2건 |
+| MP2 진입 스크립트의 source 줄 제거 | 3건 |
+| MP3 source 대상을 없는 파일로(fail-closed) | 3건 |
+| MP4 emit 대상을 소스 트리로 | 1건(app-tree) |
+| MP5 산출 파일명 2곳 변조 | 1건(basename) |
+
+6/6 KILLED(변이 적용·원복 실측). 재발화 run **35506008147 = 3레인 전부 success**.
+
+⚠이월: `fix/v110-mac-x64` 브랜치 **자체는 아직 적색**이다(이 수리가 그 브랜치엔 없다) — 871 에 전달할지
+통합본 수리로 갈음할지는 master 판정(워커→워커 직통 0).
 
 미실행 1건: `cysjavis-pack/bin/tests/mut_dept_request.py`(47종) — §9 함정의 덮어쓰기 사고 구간에 걸쳐 돌아
 결과를 폐기했고, 그 뒤 **push 를 위해 트리를 깨끗하게 유지**해야 해서 push 뒤로 미뤘다. dept 브랜치 자체

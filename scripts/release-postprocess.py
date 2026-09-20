@@ -111,18 +111,27 @@ USER_PATH_GATE = os.path.join(HERE, "verify-gatekeeper-user-path.sh")
 
 # 맥 레인 전집합 6종 — `release-verify.py` 의 `mac_lane_files()` 와 **같은 목록**이어야 한다.
 #   (두 파일이 갈리면 후처리는 통과시킨 묶음을 검증기가 죽인다 — 그 어긋남 자체가 사고다.)
-MAC_LANE = ("cysr_{v}_aarch64.dmg", "cysr_{v}_x64.dmg",
+#   ★2026-09-20(TICKET=v110-mac-lane · master 기술 판정): 앞 2종을 DMG → **배포 zip** 으로 옮겼다.
+#     우리 포크는 DMG 를 만든 적이 없다(유료 Apple 서명 부재 → CI 맥 레그 비발행 · 로컬
+#     자체서명 빌드 산출 = zip). 그래서 종전 상수는 **영원히 없는 자산**을 요구했고 v1.1.0
+#     후처리가 실제로 거기서 죽었다: 「::error::배포 자산 누락: cysr_1.1.0_aarch64.dmg,
+#     cysr_1.1.0_x64.dmg」. 개수 6과 전부-또는-전무 계약은 그대로다 — 조준만 실재 자산으로.
+MAC_LANE = ("cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip",
             "cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
             "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig")
 
 # ★맥 **배포 zip** 2종 (2026-09-20 · TICKET=v110-mac-x64) — 설치기가 실제로 받아 까는 자산이다.
-#   DMG 는 사람이 손으로 끌어 넣는 길이고, 설치 도우미(install-master/bootstrap.sh)는 이 zip 을 받아
-#   풀어 넣는다. 그래서 **설치기 핀(크기·지문·CDHash)의 출처가 바로 이 zip 과 SHA256SUMS.txt** 다.
+#   설치 도우미(install-master/bootstrap.sh)는 이 zip 을 받아 풀어 넣는다. 그래서
+#   **설치기 핀(크기·지문·CDHash)의 출처가 바로 이 zip 과 SHA256SUMS.txt** 다.
+#   ★2026-09-20 TICKET=v110-mac-lane: 이 2종이 **맥 레인의 다운로드 버튼 자산 그 자체**가 되면서
+#     `MAC_LANE` 의 앞 2칸과 같은 이름이 됐다. 이름을 두 벌 적으면 그중 하나가 반드시 뒤처지므로
+#     **`MAC_LANE` 에서 파생**한다(`build_decl_line`·`mac_lane_files()` 와 같은 교리).
+#     ⇒ `want` 구성에서도 zip 을 두 번 싣지 않는다(아래 4단계 — dmg 2줄은 그래서 삭제됐다).
 #   ⚠이 2종은 CI 가 만들지 않는다 — 유료 Apple 서명이 없어 macOS 레그가 macsign 게이트에서 비발행이고
 #     (아래 「CI 비발행」 주석), 우리는 로컬에서 자체서명(cys-local)으로 빌드해 손으로 올린다.
 #   ⇒ 후처리는 이 2종을 **알아야** 한다: SHA256SUMS.txt 에 줄이 실리고(자산 전수라 자동), 빠졌을 때
 #     누락으로 잡힌다(아래 want). 몰랐던 동안 인텔 자산이 없다는 사실을 아무 게이트도 말하지 않았다.
-MAC_DIST_ZIPS = ("cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip")
+MAC_DIST_ZIPS = tuple(n for n in MAC_LANE if n.endswith(".zip"))
 
 
 def mac_lane_absent(outdir, version):
@@ -373,15 +382,18 @@ def main(argv):
     if bad:
         return 1
     # 홈페이지 다운로드 버튼이 전부 들어 있는가(누락 0 — 오너 지시 ⓑ)
-    #   ★2026-09-09: DMG 2종은 **맥 레인이 포함된 묶음에서만** 요구한다. 맥이 통째로 빠진
-    #   윈도우 단독 묶음에서 DMG 를 요구하면 SUMS 를 만들지 못해 발행 자체가 불가능해진다.
+    #   ★2026-09-09: 맥 다운로드 자산은 **맥 레인이 포함된 묶음에서만** 요구한다. 맥이 통째로 빠진
+    #   윈도우 단독 묶음에서 그것을 요구하면 SUMS 를 만들지 못해 발행 자체가 불가능해진다.
     #   맥이 반쪽인 묶음은 아래 게이트(mac_lane_state)가 판정 불가로 죽인다 — 여기서 느슨해진
     #   만큼을 거기서 그대로 받는다.
+    #   ★2026-09-20 TICKET=v110-mac-lane: 종전에 여기 있던 DMG 2줄을 삭제했다. 우리 포크가
+    #   만든 적 없는 자산이라 맥이 실재하는 v1.1.0 묶음을 「누락」으로 죽이고 있었다(실측 오류
+    #   원문은 `MAC_LANE` 주석). 맥 다운로드 자산의 정본은 이제 아래 배포 zip 2종 하나뿐이고,
+    #   **두 번 싣지 않는다**(MAC_DIST_ZIPS 는 MAC_LANE 에서 파생 — 중복 요구 0).
     win_only = mac_lane_absent(outdir, version)
     want = [exe, zipname]
     if not win_only:
-        want = ["cysr_%s_aarch64.dmg" % version, "cysr_%s_x64.dmg" % version] + want
-        # ★맥 배포 zip 2종도 함께 요구한다(2026-09-20). 설치기가 받는 자산이 이것이고, 한쪽이 없으면
+        # ★맥 배포 zip 2종을 요구한다(2026-09-20). 설치기가 받는 자산이 이것이고, 한쪽이 없으면
         #   그 칩의 사람들은 설치가 통째로 막힌다 — 인텔 자산이 없던 1.0.2 가 정확히 그 상태였다.
         #   ⚠1.0.2 이하 태그를 다시 후처리하면 x64 zip 이 없어 여기서 적색이다. 그것이 의도다
         #     (그 태그는 인텔 맥을 덮지 않는다 — 통과시키면 그 사실이 다시 조용해진다).

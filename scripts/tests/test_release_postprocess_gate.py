@@ -208,9 +208,16 @@ class MacAbsentBundleTests(unittest.TestCase):
         with open(os.path.join(self.root, "latest.json"), "w", encoding="utf-8") as fh:
             json.dump(obj, fh)
 
-    def add_dmg(self, arch):
-        with open(os.path.join(self.root, "cysr_%s_%s.dmg" % (V, arch)), "wb") as fh:
-            fh.write(b"\x78\x01fake-dmg-" + arch.encode())
+    def add_mac_zip(self, arch):
+        """맥 레인의 다운로드 자산 = 배포 zip (2026-09-20 · TICKET=v110-mac-lane 전환 후).
+
+        ★`mac_lane_absent()` 는 `MAC_LANE` 이름으로만 존재를 센다 — 그 목록 밖 자산(예 DMG)을
+          아무리 넣어도 「맥 포함」이 되지 않는다. 이 헬퍼가 그 목록 안의 이름을 만든다.
+        """
+        name = {"aarch64": "cysr-macos-arm64-v%s.zip" % V,
+                "x64": "cysr-macos-x64-v%s.zip" % V}[arch]
+        with open(os.path.join(self.root, name), "wb") as fh:
+            fh.write(b"PK\x03\x04fake-zip-" + arch.encode())
 
     def run_gate(self, **kw):
         kw.setdefault("sys_platform", "darwin")
@@ -256,15 +263,15 @@ class MacAbsentBundleTests(unittest.TestCase):
         self.assertIn("::error::", err)
 
     def test_34_half_mac_lane_still_fail_closed(self):
-        """DMG 한 짝만 있는 묶음은 skip 대상이 아니다 — 종전 경로에서 그대로 죽는다."""
-        self.add_dmg("aarch64")
+        """배포 zip 한 짝만 있는 묶음은 skip 대상이 아니다 — 종전 경로에서 그대로 죽는다."""
+        self.add_mac_zip("aarch64")
         self.write_latest(["windows-x86_64", "windows-x86_64-nsis"])
         rc, _, err = self.run_gate()
         self.assertEqual(rc, 2)
         self.assertIn("::error::", err)
 
     def test_35_updater_tarball_alone_blocks_skip(self):
-        """DMG 는 없고 맥 업데이터 tar 만 남은 묶음도 「미포함」이 아니다."""
+        """배포 zip 은 없고 맥 업데이터 tar 만 남은 묶음도 「미포함」이 아니다."""
         with open(os.path.join(self.root, "cysr_aarch64.app.tar.gz"), "wb") as fh:
             fh.write(b"\x1f\x8bfake")
         self.write_latest(["windows-x86_64", "windows-x86_64-nsis"])
@@ -274,7 +281,7 @@ class MacAbsentBundleTests(unittest.TestCase):
     def test_36_full_mac_bundle_still_gated(self):
         """맥이 전부 있는 묶음은 종전과 똑같이 **게이트 필수** — 완화가 새지 않았는지 본다."""
         for arch in ("aarch64", "x64"):
-            self.add_dmg(arch)
+            self.add_mac_zip(arch)
         for n in ("cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
                   "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig"):
             with open(os.path.join(self.root, n), "wb") as fh:

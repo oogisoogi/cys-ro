@@ -337,6 +337,23 @@ class MainWiringContractTests(unittest.TestCase):
         """반환값을 버리면(호출만 하면) 비영 rc 가 통과로 둔갑한다."""
         self.assertIn("if gate_rc:\n        return gate_rc", self.src)
 
+    def test_12b_mac_dist_zips_required_when_mac_lane_present(self):
+        """맥 배포 zip 2종(설치기가 실제로 받는 자산)이 **누락 검사에 실려 있는가**.
+
+        ★이 두 줄이 없던 동안 v1.0.2 는 인텔용 zip 이 **아예 없는 채로** 발행됐고, 어떤 게이트도
+          그것을 말하지 않았다(인텔 맥은 설치기가 원작자 판으로 갈라졌다 — 2026-09-20 전환의 계기).
+        main 은 토큰이 필요해 밀폐 실행이 불가하므로 위 test_10~12 와 같은 소스 계약으로 박는다.
+        """
+        self.assertEqual(rp.MAC_DIST_ZIPS,
+                         ("cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip"),
+                         "맥 배포 zip 이름이 바뀌었다 — 설치기 핀(CYS_FORK_FILE·CYS_FORK_X64_FILE)과 함께 봐야 한다")
+        # 맥 레인이 있는 묶음에서만 요구한다(윈도우 단독 묶음은 종전대로 통과) — 그 조건 안에 있는지까지 본다.
+        block = self.src[self.src.index("win_only = mac_lane_absent("):self.src.index("missing = [w for w in want")]
+        self.assertIn("if not win_only:", block)
+        self.assertIn("want = [n.format(v=version) for n in MAC_DIST_ZIPS] + want",
+                      block.split("if not win_only:", 1)[1],
+                      "배포 zip 요구가 맥 레인 조건 안에 없다 — 윈도우 단독 발행이 막히거나(위) 인텔 누락이 조용하다(아래)")
+
 
 class DiagnoseFlagAbsencePins(unittest.TestCase):
     """F2 핀 — 진단 전용 플래그(--diagnose-degraded-ok·--seal2-only)가 발행 경로에 실리는

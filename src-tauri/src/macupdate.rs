@@ -31,8 +31,15 @@ use std::path::{Path, PathBuf};
 pub enum UpdateFail {
     /// 이 플랫폼 행이 원격 latest.json 에 없다 — 고장이 아니라 「이 판에 맥 자산이 없음」.
     NoRow(String),
-    /// 행은 있으나 검증에 필요한 칸이 빠졌다(url·sha256·size·cdhash). fail-closed.
+    /// 행은 있으나 검증에 필요한 칸이 빠졌다(zip_url·zip_sha256·zip_size·zip_cdhash). fail-closed.
     Field(String),
+    /// 행은 있으나 **맥 zip 항목**(`zip_url`)이 없다 — 「이 판에 우리 경로의 맥 자산이 없음」.
+    ///
+    /// ★`url` 로 대신하지 않는다. 같은 darwin 행의 `url` 은 **구판(1.0.2·플러그인 경로)이 먹는
+    ///   `.app.tar.gz`** 자리다(`docs/DARWIN-UPDATER-LEGACY-LANE.md`). 그것을 zip 으로 읽으면
+    ///   받아 놓고 풀지 못하거나, 더 나쁘게 **다른 물건을 설치**한다. 한 칸을 두 소비자가
+    ///   나눠 쓰던 것이 이 결함의 뿌리였다 — 칸을 갈랐으므로 읽는 쪽도 제 칸만 읽는다.
+    ZipAbsent,
     /// 받은 바이트 수가 매니페스트와 다르다.
     Size { expected: u64, actual: u64 },
     /// 내용 해시가 매니페스트와 다르다.
@@ -54,6 +61,11 @@ impl std::fmt::Display for UpdateFail {
             UpdateFail::Field(k) => write!(
                 f,
                 "manifest_field: darwin 행에 {k} 가 없다 — 검증할 수 없으므로 설치하지 않는다"
+            ),
+            UpdateFail::ZipAbsent => write!(
+                f,
+                "mac_zip_absent: 이 판의 매니페스트에는 맥 zip 항목이 없습니다 — \
+url 칸은 구판 tar.gz 자리라 설치에 쓰지 않는다"
             ),
             UpdateFail::Size { expected, actual } => write!(
                 f,
@@ -95,6 +107,7 @@ pub fn darwin_target() -> &'static str {
 /// 검증에 필요한 네 값 — 하나라도 없으면 설치하지 않는다(fail-closed).
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct DarwinAsset {
+    /// **zip** 자산의 주소 = 매니페스트의 `zip_url`(행의 `url` 이 아니다 — 그건 구판 tar.gz 자리).
     pub url: String,
     pub sha256: String,
     pub size: u64,
@@ -110,7 +123,29 @@ fn nonempty(v: &Value, key: &str) -> Result<String, UpdateFail> {
         .ok_or_else(|| UpdateFail::Field(key.to_string()))
 }
 
+/// darwin 행에서 **우리 칸**을 읽는다 — `zip_*` 우선, 없으면 옛 이름(전환기 행)으로 내려간다.
+///
+/// ★`zip_url` 만은 내려가지 않는다(아래 `pick_darwin_asset` 참조). 나머지 셋은 전환기 행
+///   (1.1.0 발행본 = `url`=zip + `sha256`/`size`/`cdhash`)을 위해 옛 이름도 받는다.
+fn zip_field(row: &Value, key: &str) -> Result<String, UpdateFail> {
+    let zip_key = format!("zip_{key}");
+    match nonempty(row, &zip_key) {
+        Ok(v) => Ok(v),
+        Err(_) => nonempty(row, key).map_err(|_| UpdateFail::Field(zip_key)),
+    }
+}
+
 /// latest.json 에서 이 타깃의 맥 자산을 뽑는다.
+///
+/// ★★**한 행, 두 소비자** (TICKET=v110-zipurl · 2026-09-20). 같은 `platforms["darwin-*"]` 행을
+///   서로 다른 두 클라이언트가 읽는다:
+///     · **구판(1.0.2)** = tauri-plugin-updater 경로 → `url` 을 **tar.gz** 로 받아 푼다.
+///     · **이 앱(1.1+)** = 이 모듈 → **zip** 을 받아 sha256·크기·CDHash 로 정박한다.
+///   두 소비자가 `url` 한 칸을 나눠 쓰면 어느 쪽이든 한쪽이 반드시 틀린 물건을 받는다.
+///   그래서 칸을 갈랐다 — 구판은 `url`·`signature`, 우리는 `zip_url`·`zip_sha256`·`zip_size`·
+///   `zip_cdhash`. **이 함수는 `url` 을 절대 zip 으로 읽지 않는다**(`zip_url` 부재 = 거부).
+///   행을 그렇게 찍는 쪽은 `scripts/make-update-manifest.sh`(구판 절반) +
+///   `scripts/make-darwin-update-row.py`(우리 절반·병합)다.
 ///
 /// ★`signature` 칸은 **읽지 않는다**(우리 신뢰 정박점이 아니다). 그러나 그 칸이 매니페스트에
 ///   있어야 하는 이유는 따로 있다 — 플러그인의 `ReleaseManifestPlatform` 이 `url`+`signature`
@@ -122,16 +157,19 @@ pub fn pick_darwin_asset(manifest: &Value, target: &str) -> Result<DarwinAsset, 
         .get("platforms")
         .and_then(|p| p.get(target))
         .ok_or_else(|| UpdateFail::NoRow(target.to_string()))?;
+    // ★zip_url 이 없으면 **거부**다 — url 로 대신 읽지 않는다(그 칸은 구판 tar.gz 자리).
+    let url = nonempty(row, "zip_url").map_err(|_| UpdateFail::ZipAbsent)?;
     let size = row
-        .get("size")
+        .get("zip_size")
+        .or_else(|| row.get("size"))
         .and_then(|x| x.as_u64())
         .filter(|n| *n > 0)
-        .ok_or_else(|| UpdateFail::Field("size".to_string()))?;
+        .ok_or_else(|| UpdateFail::Field("zip_size".to_string()))?;
     Ok(DarwinAsset {
-        url: nonempty(row, "url")?,
-        sha256: nonempty(row, "sha256")?.to_lowercase(),
+        url,
+        sha256: zip_field(row, "sha256")?.to_lowercase(),
         size,
-        cdhash: nonempty(row, "cdhash")?.to_lowercase(),
+        cdhash: zip_field(row, "cdhash")?.to_lowercase(),
     })
 }
 
@@ -403,12 +441,15 @@ mod tests {
             "build_id": "abcdef012345.20260920T0000Z",
             "platforms": {
                 "windows-x86_64": {"signature": "sig", "url": "https://x/setup.exe"},
+                // ★발행본 모양 그대로 — 한 행에 두 소비자의 칸이 나란히 있다.
+                //   url/signature = 구판(플러그인·tar.gz) · zip_* = 이 앱.
                 "darwin-aarch64": {
-                    "signature": "",
-                    "url": "https://x/cysr-macos-arm64-v1.1.0.zip",
-                    "sha256": "AABB",
-                    "size": 471899457u64,
-                    "cdhash": "DEADBEEF"
+                    "signature": "dW50cnVzdGVk",
+                    "url": "https://x/cysr_aarch64.app.tar.gz",
+                    "zip_url": "https://x/cysr-macos-arm64-v1.1.0.zip",
+                    "zip_sha256": "AABB",
+                    "zip_size": 471899457u64,
+                    "zip_cdhash": "DEADBEEF"
                 }
             }
         })
@@ -432,24 +473,71 @@ mod tests {
     /// ★검증 칸이 빠진 행은 「설치」가 아니라 「거부」다 — 측정 불가를 통과로 읽지 않는다.
     #[test]
     fn missing_verification_field_is_fail_closed() {
-        for drop in ["url", "sha256", "size", "cdhash"] {
+        for drop in ["zip_sha256", "zip_size", "zip_cdhash"] {
             let mut m = manifest();
-            m["platforms"]["darwin-aarch64"]
-                .as_object_mut()
-                .unwrap()
-                .remove(drop);
+            let row = m["platforms"]["darwin-aarch64"].as_object_mut().unwrap();
+            row.remove(drop);
+            // 옛 이름으로 내려가는 길도 함께 막아야 「결손」이 성립한다(전환기 행 폴백).
+            row.remove(drop.trim_start_matches("zip_"));
             let e = pick_darwin_asset(&m, "darwin-aarch64").unwrap_err();
             assert_eq!(e, UpdateFail::Field(drop.to_string()), "{drop} 결손이 거부되지 않았다");
         }
     }
 
+    /// ★★이 티켓의 축 — **`url` 을 zip 으로 오독하지 않는다.**
+    ///
+    /// 행에 `url`(구판 tar.gz)만 있고 `zip_url` 이 없으면 거부다. 이 단언이 빠지면 1.2 발행 때
+    /// 1.1 맥이 tar.gz 를 zip 으로 받아 설치를 시도한다(이 티켓이 막으려는 바로 그 사고).
+    #[test]
+    fn row_without_zip_url_is_refused_not_read_as_zip() {
+        let mut m = manifest();
+        let row = m["platforms"]["darwin-aarch64"].as_object_mut().unwrap();
+        row.remove("zip_url");
+        let e = pick_darwin_asset(&m, "darwin-aarch64").unwrap_err();
+        assert_eq!(e, UpdateFail::ZipAbsent);
+        let msg = e.to_string();
+        assert!(msg.starts_with("mac_zip_absent:"), "코드 접두가 계약이다: {msg}");
+        assert!(
+            msg.contains("이 판의 매니페스트에는 맥 zip 항목이 없습니다"),
+            "사유 문구가 없다: {msg}"
+        );
+        // 그리고 그 거부는 **판정 전체**로 올라간다 — Skip(조용한 무시)이 아니다.
+        assert_eq!(
+            decide_darwin_update(&m, "darwin-aarch64", "1.0.2", "x"),
+            DarwinVerdict::Fail(UpdateFail::ZipAbsent)
+        );
+    }
+
+    /// `zip_url` 이 있으면 그것을 받는다 — 같은 행의 `url`(tar.gz)은 쳐다보지 않는다.
+    #[test]
+    fn zip_url_is_taken_over_legacy_url() {
+        let a = pick_darwin_asset(&manifest(), "darwin-aarch64").unwrap();
+        assert_eq!(a.url, "https://x/cysr-macos-arm64-v1.1.0.zip");
+        assert!(!a.url.ends_with(".app.tar.gz"), "구판 자산을 집었다: {}", a.url);
+    }
+
+    /// 전환기 행(1.1.0 발행본 = zip_url + 옛 이름 셋)도 읽힌다 — 내려가는 길은 셋뿐이다.
+    #[test]
+    fn transitional_row_falls_back_for_hash_fields_only() {
+        let m = json!({
+            "platforms": {"darwin-aarch64": {
+                "signature": "",
+                "zip_url": "https://x/a.zip",
+                "sha256": "AA", "size": 7u64, "cdhash": "BB"
+            }}
+        });
+        let a = pick_darwin_asset(&m, "darwin-aarch64").unwrap();
+        assert_eq!((a.url.as_str(), a.sha256.as_str(), a.size, a.cdhash.as_str()),
+                   ("https://x/a.zip", "aa", 7, "bb"));
+    }
+
     #[test]
     fn zero_size_is_rejected() {
         let mut m = manifest();
-        m["platforms"]["darwin-aarch64"]["size"] = json!(0);
+        m["platforms"]["darwin-aarch64"]["zip_size"] = json!(0);
         assert_eq!(
             pick_darwin_asset(&m, "darwin-aarch64").unwrap_err(),
-            UpdateFail::Field("size".into())
+            UpdateFail::Field("zip_size".into())
         );
     }
 
@@ -495,6 +583,7 @@ mod tests {
             DarwinVerdict::Install { version, asset, .. } => {
                 assert_eq!(version, "1.1.0");
                 assert_eq!(asset.url, "https://x/cysr-macos-arm64-v1.1.0.zip");
+                assert_eq!(asset.size, 471899457);
             }
             other => panic!("새 판을 받지 않았다: {other:?}"),
         }

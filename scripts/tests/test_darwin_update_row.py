@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """latest.json 맥 행 생성기 회귀 — B7 · TICKET=v110-darwin-update.
 
-이 시험이 지키는 성질 셋:
-  ① 검증 칸 넷(url·sha256·size·cdhash)을 **실측으로** 채운다 — 하나라도 없으면 앱이 거부한다.
+이 시험이 지키는 성질:
+  ① 검증 칸 넷(zip_url·zip_sha256·zip_size·zip_cdhash)을 **실측으로** 채운다 — 하나라도 없으면 앱이 거부한다.
+  ①-b 병합이 **구판 절반(url=tar.gz · signature)을 보존**한다 — 덮어쓰면 1.0.2 맥의 갱신이 끊긴다.
   ② `signature` 칸을 비워서라도 반드시 넣는다 — 없으면 platforms 전체 역직렬화가 깨져 **윈도**
      사용자의 업데이트까지 죽는다(tauri-plugin-updater 의 untagged enum).
   ③ 병합이 기존 행(윈도 발행본)을 건드리지 않는다.
@@ -22,6 +23,11 @@ spec = importlib.util.spec_from_file_location("darwin_row", os.path.join(os.path
 darwin_row = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(darwin_row)
 
+LEGACY_HALF = {
+    "signature": "dW50cnVzdGVkY29tbWVudA==",
+    "url": "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.0/cysr_aarch64.app.tar.gz",
+}
+
 WIN_ROW = {
     "signature": "dW50cnVzdGVk...",
     "url": "https://github.com/oogisoogi/cys-ro/releases/download/v1.0.2/cysr_1.0.2_x64-setup.exe",
@@ -40,16 +46,49 @@ class DarwinRow(unittest.TestCase):
 
     def test_row_carries_all_four_verification_fields(self):
         row = darwin_row.build_row("1.1.0", self.zip, "ABCD1234")
-        self.assertEqual(row["size"], 104)
-        self.assertEqual(len(row["sha256"]), 64)
-        self.assertEqual(row["cdhash"], "abcd1234")  # 소문자 정규화(앱 쪽 대조와 같은 규칙)
-        self.assertTrue(row["url"].endswith("/v1.1.0/cysr-macos-arm64-v1.1.0.zip"))
+        self.assertEqual(row["zip_size"], 104)
+        self.assertEqual(len(row["zip_sha256"]), 64)
+        self.assertEqual(row["zip_cdhash"], "abcd1234")  # 소문자 정규화(앱 쪽 대조와 같은 규칙)
+        self.assertTrue(row["zip_url"].endswith("/v1.1.0/cysr-macos-arm64-v1.1.0.zip"))
+
+    def test_app_half_never_writes_the_legacy_url_slot(self):
+        """★이 티켓의 축 — 앱 절반은 `url` 칸을 **건드리지 않는다**.
+
+        건드리면 구판(1.0.2)이 우리 zip 을 tar.gz 로 풀려다 실패한다. 칸을 가른 뜻이 여기 있다.
+        """
+        row = darwin_row.build_row("1.1.0", self.zip, "ab")
+        self.assertNotIn("url", row)
+        self.assertEqual(sorted(row), sorted(darwin_row.ZIP_KEYS))
 
     def test_signature_key_always_present(self):
         # ★이 한 줄이 윈도 업데이트를 지킨다 — 값이 아니라 **키의 존재**가 계약이다.
+        # (구판 절반이 그 칸의 주인이므로, 병합 결과에서 단언한다.)
+        manifest = {"version": "1.1.0", "platforms": {"darwin-aarch64": dict(LEGACY_HALF)}}
+        out = darwin_row.merge_row(manifest, "darwin-aarch64",
+                                   darwin_row.build_row("1.1.0", self.zip, "ab"))
+        self.assertIn("signature", out["platforms"]["darwin-aarch64"])
+        self.assertEqual(darwin_row.every_row_has_url_and_signature(out), [])
+
+    def test_merge_preserves_the_legacy_half(self):
+        """★회귀 그물 — 종전 merge_row 는 행을 **대체**해 구판 절반을 지웠다."""
+        manifest = {"version": "1.1.0", "platforms": {"darwin-aarch64": dict(LEGACY_HALF)}}
         row = darwin_row.build_row("1.1.0", self.zip, "ab")
-        self.assertIn("signature", row)
-        self.assertIsInstance(row["signature"], str)
+        out = darwin_row.merge_row(manifest, "darwin-aarch64", row)
+        merged = out["platforms"]["darwin-aarch64"]
+        self.assertEqual(merged["url"], LEGACY_HALF["url"])
+        self.assertEqual(merged["signature"], LEGACY_HALF["signature"])
+        self.assertTrue(merged["url"].endswith(".app.tar.gz"))
+        self.assertEqual(merged["zip_url"], row["zip_url"])
+        self.assertNotEqual(merged["url"], merged["zip_url"], "두 소비자가 같은 자산을 받고 있다")
+
+    def test_legacy_half_predicate_is_fail_closed(self):
+        ok = dict(LEGACY_HALF); ok.update({"zip_url": "z"})
+        self.assertIsNone(darwin_row.legacy_half_problem(ok))
+        # url 부재 · zip 을 가리키는 url · signature 부재 — 셋 다 차단 사유다.
+        self.assertIsNotNone(darwin_row.legacy_half_problem({"signature": ""}))
+        self.assertIsNotNone(darwin_row.legacy_half_problem(
+            {"signature": "", "url": "https://x/cysr-macos-arm64-v1.1.0.zip"}))
+        self.assertIsNotNone(darwin_row.legacy_half_problem({"url": LEGACY_HALF["url"]}))
 
     def test_missing_cdhash_is_fail_closed(self):
         with self.assertRaises(SystemExit):
@@ -75,15 +114,41 @@ class DarwinRow(unittest.TestCase):
         self.assertEqual(darwin_row.parse_cdhash(out), "0a1b2c3d")
         self.assertIsNone(darwin_row.parse_cdhash("CDHash 없음"))
 
-    def test_cli_merge_writes_file(self):
+    def _manifest_file(self, darwin=None):
         path = os.path.join(self.tmp.name, "latest.json")
+        platforms = {"windows-x86_64": dict(WIN_ROW)}
+        if darwin is not None:
+            platforms["darwin-aarch64"] = dict(darwin)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"version": "1.1.0", "platforms": {"windows-x86_64": dict(WIN_ROW)}}, fh)
+            json.dump({"version": "1.1.0", "platforms": platforms}, fh)
+        return path
+
+    def test_cli_merge_writes_file(self):
+        path = self._manifest_file(LEGACY_HALF)
         rc = darwin_row.main(["--version", "1.1.0", "--zip", self.zip, "--cdhash", "ab", "--merge", path])
         self.assertEqual(rc, 0)
         with open(path, encoding="utf-8") as fh:
             out = json.load(fh)
         self.assertEqual(sorted(out["platforms"]), ["darwin-aarch64", "windows-x86_64"])
+        self.assertEqual(out["platforms"]["darwin-aarch64"]["url"], LEGACY_HALF["url"])
+        self.assertIn("zip_url", out["platforms"]["darwin-aarch64"])
+
+    def test_cli_refuses_when_legacy_half_absent(self):
+        """구판 절반이 없는 매니페스트에 앱 절반만 얹어 발행하지 않는다(1.0.2 갱신 보호)."""
+        path = self._manifest_file()
+        with self.assertRaises(SystemExit):
+            darwin_row.main(["--version", "1.1.0", "--zip", self.zip, "--cdhash", "ab", "--merge", path])
+
+    def test_cli_can_supply_the_legacy_half(self):
+        path = self._manifest_file()
+        rc = darwin_row.main(["--version", "1.1.0", "--zip", self.zip, "--cdhash", "ab",
+                              "--merge", path,
+                              "--tarball-url", LEGACY_HALF["url"], "--tarball-sig", "sig"])
+        self.assertEqual(rc, 0)
+        with open(path, encoding="utf-8") as fh:
+            row = json.load(fh)["platforms"]["darwin-aarch64"]
+        self.assertEqual(row["url"], LEGACY_HALF["url"])
+        self.assertEqual(row["signature"], "sig")
 
 
 class PublishedManifestShape(unittest.TestCase):

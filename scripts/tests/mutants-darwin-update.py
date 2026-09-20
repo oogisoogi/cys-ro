@@ -23,10 +23,12 @@ MAIN = "src-tauri/src/main.rs"
 SWEEP = "ui/src/exitedsweep.ts"
 LABELS = "ui/src/headerlabels.ts"
 ROWGEN = "scripts/make-darwin-update-row.py"
+MANGEN = "scripts/make-update-manifest.sh"
 
 RUST = [CARGO, "test", "-p", "cys-app"]
 BUN = ["bun", "test", "ui/src"]
 PYROW = [sys.executable, "scripts/tests/test_darwin_update_row.py"]
+PYALIGN = [sys.executable, "scripts/tests/test_darwin_asset_name_alignment.py"]
 
 # (id, 파일, 찾을 것, 바꿀 것, 돌릴 명령, 이 변이가 죽어야 하는 축)
 MUTANTS = [
@@ -73,10 +75,27 @@ MUTANTS = [
      "  const v = ver ? `v${ver} ` : \"\";",
      "  const v = \"\";",
      BUN, "데몬 판번 상시 표시"),
-    ("m11-row-signature", ROWGEN,
-     "        \"signature\": \"\",",
-     "        # signature 칸을 뺀다(윈도 업데이트를 죽이는 그 결손)\n",
-     PYROW, "latest.json 행의 signature 키 존재"),
+    # ★m11 개정(2026-09-20 · TICKET=v110-zipurl): 초판은 build_row 안의 `"signature": "",` 를
+    #   겨눴다. 그 줄은 **이사했다** — 이제 signature 칸의 주인은 구판 절반(make-update-manifest.sh)
+    #   이고, 행 생성기는 그 칸이 성립하는지를 `legacy_half_problem` 로 **검사**한다.
+    #   조준을 옮기지 않으면 치환 0건(NOT-APPLIED)이 되어 그 축이 조용히 무측정으로 남는다.
+    ("m11-legacy-signature-check", ROWGEN,
+     "    if \"signature\" not in row:",
+     "    if False:",
+     PYROW, "latest.json 행의 signature 키 존재(윈도 업데이트 보호)"),
+    # ★이 티켓이 새로 세운 축 셋 — 각각 「수리 이전 동작」으로 되돌리는 변이다.
+    ("m12-merge-clobbers-legacy", ROWGEN,
+     "    merged = dict(existing) if isinstance(existing, dict) else {}",
+     "    merged = {}",
+     PYROW, "병합이 구판 절반(url=tar.gz·signature)을 보존한다"),
+    ("m13-zip-url-ignored", MAC,
+     "    let url = nonempty(row, \"zip_url\").map_err(|_| UpdateFail::ZipAbsent)?;",
+     "    let url = nonempty(row, \"url\")?;",
+     RUST + ["macupdate"], "url 을 zip 으로 오독하지 않는다(zip_url 부재 = 거부)"),
+    ("m14-asset-name-split", MANGEN,
+     "  ASSET=\"cysr_${ARCH}.app.tar.gz\"",
+     "  ASSET=\"cysr-${VERSION}-macos-${ARCH}.app.tar.gz\"",
+     PYALIGN, "두 생성기·발행 레인의 자산 이름 정렬"),
 ]
 
 

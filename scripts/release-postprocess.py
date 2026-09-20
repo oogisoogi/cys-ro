@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """릴리스 후처리 — CI 완주 후 배포 자산을 완성한다 (2026-07-29 신설).
 
-★배경: 릴리스 CI(`release.yml`)는 DMG 2종 · setup.exe · 업데이터 자산 · 팩 3종까지 만들지만,
+★배경: 릴리스 CI(`release.yml`)는 setup.exe · 업데이터 자산 · 팩 3종까지 만들지만,
 **홈페이지가 쓰는 나머지 2종은 만들지 않는다**:
   · `cys_<V>_x64-setup.zip`  — 4번째 다운로드 버튼(.exe 직다운 차단 환경용)
   · `SHA256SUMS.txt`         — 전 자산 무결성 목록
@@ -13,9 +13,11 @@
   2. `make-win-zip.py` 로 zip 변형 생성(기존 발행본 바이트 재현 확인됨)
   3. `SHA256SUMS.txt` 생성 — **자기 자신을 뺀 전 자산**(과거 관례: 13자산)
   4. 자기 검증: zip 왕복 · SUMS 전 줄 재계산 대조 · 누락 0
-  5. ★Gatekeeper 게이트(F2 · 2026-08-20 신설): 백업 DMG 2종 = **발행될 실물 바이트**에
-     `release-gate-gatekeeper.sh`(정적 실평가)를, 네이티브 아키텍처 DMG 에는 추가로
-     `verify-gatekeeper-user-path.sh`(⑥ 봉인 자기파괴 재현 포함)를 돌린다.
+  5. ★Gatekeeper 게이트(F2 · 2026-08-20 신설 · 2026-09-20 조준 전환): 백업 **배포 zip 2종 속
+     .app** = 발행될 실물 바이트에 `release-gate-gatekeeper.sh --lane self-signed` 를 돌린다.
+     (구판은 DMG 2종을 조준했다 — 우리 포크가 만든 적 없는 자산이라 영원히 rc=2 였다.
+      `verify-gatekeeper-user-path.sh` 는 DMG 전용이라 이 레인의 대상이 아니며, 그 사유를
+      출력에 인쇄한다 — 무음 제거가 아니다.)
      rc≠0(1=FAIL·2=판정 불가) 이면 **전체 비영 종료 — --apply 거부**(측정 불능≠통과).
      macOS 밖에서는 게이트가 못 돈다 = 판정 불가로 fail-closed(무음 skip 금지).
   6. `--apply` 면 zip·SUMS 를 릴리스에 업로드
@@ -34,21 +36,27 @@
 
 ★맥 미포함 묶음 (2026-09-09 · 박사님 09:05 「맥 서명 없이 윈도우 먼저」)
   Apple 시크릿 7종이 없는 동안 release.yml 의 macOS 레그는 명시 skip 되고, 그 태그의 드래프트에는
-  DMG·맥 업데이터 자산이 **하나도** 오르지 않는다. 종전 이 스크립트는 그런 묶음에서
-  ①4단계 `want4` 가 DMG 2종 누락으로 죽고 ②5단계 게이트가 대상 DMG 부재로 rc=2 를 냈다.
+  맥 다운로드·업데이터 자산이 **하나도** 오르지 않는다. 종전 이 스크립트는 그런 묶음에서
+  ①4단계 `want4` 가 맥 자산 누락으로 죽고 ②5단계 게이트가 대상 부재로 rc=2 를 냈다.
   즉 **윈도우 단독 릴리스는 SHA256SUMS.txt 를 만들 수조차 없었다** — 발행 불가의 실질적 원인.
   지금은 「맥 레인 전부-또는-전무」로 판정한다(release-verify.py 와 같은 규율):
-    · DMG 2종 + 맥 업데이터 4종이 **전부 있으면** 종전과 똑같이 게이트가 **필수**다.
+    · 배포 zip 2종 + 맥 업데이터 4종이 **전부 있으면** 종전과 똑같이 게이트가 **필수**다.
     · **하나도 없고** latest.json 에 darwin 행도 0이면 「맥 미포함」으로 명시 skip 한다.
-    · 그 사이 어떤 상태(반쪽·DMG 만·darwin 행만)도 **판정 불가(2)** 다 — 완화가 아니라 이동이다.
+    · 그 사이 어떤 상태(반쪽·zip 만·darwin 행만)도 **판정 불가(2)** 다 — 완화가 아니라 이동이다.
+
+★맥 다운로드 자산 = 배포 zip (2026-09-20 · TICKET=v110-mac-lane · master 기술 판정)
+  이 스크립트의 맥 조준은 DMG 에서 **배포 zip 2종**으로 옮겨졌다. 근거·실측 오류 원문은
+  아래 `MAC_LANE` 주석에 있다. DMG 는 「요구하지 않되 거부하지도 않는다」.
 """
 import hashlib
 import json
 import re
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 
 # ★배포 원본 레포 (2026-09-09 정정 · TICKET=cys-release-first-publish)
@@ -111,18 +119,27 @@ USER_PATH_GATE = os.path.join(HERE, "verify-gatekeeper-user-path.sh")
 
 # 맥 레인 전집합 6종 — `release-verify.py` 의 `mac_lane_files()` 와 **같은 목록**이어야 한다.
 #   (두 파일이 갈리면 후처리는 통과시킨 묶음을 검증기가 죽인다 — 그 어긋남 자체가 사고다.)
-MAC_LANE = ("cysr_{v}_aarch64.dmg", "cysr_{v}_x64.dmg",
+#   ★2026-09-20(TICKET=v110-mac-lane · master 기술 판정): 앞 2종을 DMG → **배포 zip** 으로 옮겼다.
+#     우리 포크는 DMG 를 만든 적이 없다(유료 Apple 서명 부재 → CI 맥 레그 비발행 · 로컬
+#     자체서명 빌드 산출 = zip). 그래서 종전 상수는 **영원히 없는 자산**을 요구했고 v1.1.0
+#     후처리가 실제로 거기서 죽었다: 「::error::배포 자산 누락: cysr_1.1.0_aarch64.dmg,
+#     cysr_1.1.0_x64.dmg」. 개수 6과 전부-또는-전무 계약은 그대로다 — 조준만 실재 자산으로.
+MAC_LANE = ("cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip",
             "cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
             "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig")
 
 # ★맥 **배포 zip** 2종 (2026-09-20 · TICKET=v110-mac-x64) — 설치기가 실제로 받아 까는 자산이다.
-#   DMG 는 사람이 손으로 끌어 넣는 길이고, 설치 도우미(install-master/bootstrap.sh)는 이 zip 을 받아
-#   풀어 넣는다. 그래서 **설치기 핀(크기·지문·CDHash)의 출처가 바로 이 zip 과 SHA256SUMS.txt** 다.
+#   설치 도우미(install-master/bootstrap.sh)는 이 zip 을 받아 풀어 넣는다. 그래서
+#   **설치기 핀(크기·지문·CDHash)의 출처가 바로 이 zip 과 SHA256SUMS.txt** 다.
+#   ★2026-09-20 TICKET=v110-mac-lane: 이 2종이 **맥 레인의 다운로드 버튼 자산 그 자체**가 되면서
+#     `MAC_LANE` 의 앞 2칸과 같은 이름이 됐다. 이름을 두 벌 적으면 그중 하나가 반드시 뒤처지므로
+#     **`MAC_LANE` 에서 파생**한다(`build_decl_line`·`mac_lane_files()` 와 같은 교리).
+#     ⇒ `want` 구성에서도 zip 을 두 번 싣지 않는다(아래 4단계 — dmg 2줄은 그래서 삭제됐다).
 #   ⚠이 2종은 CI 가 만들지 않는다 — 유료 Apple 서명이 없어 macOS 레그가 macsign 게이트에서 비발행이고
 #     (아래 「CI 비발행」 주석), 우리는 로컬에서 자체서명(cys-local)으로 빌드해 손으로 올린다.
 #   ⇒ 후처리는 이 2종을 **알아야** 한다: SHA256SUMS.txt 에 줄이 실리고(자산 전수라 자동), 빠졌을 때
 #     누락으로 잡힌다(아래 want). 몰랐던 동안 인텔 자산이 없다는 사실을 아무 게이트도 말하지 않았다.
-MAC_DIST_ZIPS = ("cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip")
+MAC_DIST_ZIPS = tuple(n for n in MAC_LANE if n.endswith(".zip"))
 
 
 def mac_lane_absent(outdir, version):
@@ -132,7 +149,7 @@ def mac_lane_absent(outdir, version):
     (latest.json 이 아예 없으면 확인할 근거가 없으므로 False — 판정을 통과 쪽으로 접지 않는다.)
 
     ★이 함수는 **좁게 설계됐다.** 「맥이 반쪽인가」를 여기서 판정하지 않는다 — 그건 아래 게이트가
-      이미 하던 일이다(대상 DMG 부재 = rc 2). 반쪽 묶음은 이 함수가 False 를 주고 종전 경로로
+      이미 하던 일이다(대상 배포 zip 부재 = rc 2). 반쪽 묶음은 이 함수가 False 를 주고 종전 경로로
       흘러가 거기서 죽는다. 새 분기를 넓게 잡을수록 기존 fail-closed 경로를 덮어쓸 위험만 커진다.
       즉 이 함수가 여는 문은 **정확히 하나** — 맥이 통째로 없는 윈도우 단독 묶음뿐이다.
     """
@@ -197,10 +214,41 @@ def latest_build_id_problem(outdir, version, commit12):
     return None
 
 
+def mac_zip_lane(version):
+    """게이트 대상 = (배포 zip 파일명, 아키텍처) 쌍. **이름에서 파생한다**(상수 두 벌 금지).
+
+    아키텍처 토큰이 두 어휘로 갈려 있는 것이 이 함수의 존재 이유다 — 자산 이름은
+    `arm64`/`x64` 를 쓰고 게이트·플랫폼 키는 `aarch64`/`x64` 를 쓴다. 손으로 두 벌 적으면
+    한쪽이 반드시 뒤처지므로 여기서 한 번만 옮긴다. 모르는 토큰은 **추측하지 않고 죽는다**.
+    """
+    pairs = []
+    for tpl in MAC_DIST_ZIPS:
+        name = tpl.format(v=version)
+        m = re.search(r"-macos-([A-Za-z0-9_]+)-v", name)
+        arch = {"arm64": "aarch64", "x64": "x64"}.get(m.group(1) if m else None)
+        if arch is None:
+            raise ValueError("맥 배포 zip 이름에서 아키텍처를 못 읽었다: %s" % name)
+        pairs.append((name, arch))
+    return pairs
+
+
 def gatekeeper_gate(outdir, version, unsafe_skip=False,
                     gate_script=GATE_SCRIPT, user_path_script=USER_PATH_GATE,
                     sys_platform=None, machine=None, run=subprocess.run):
-    """발행될 실물 바이트(draft 백업 DMG 2종)에 대한 Gatekeeper 실평가 게이트 (F2).
+    """발행될 실물 바이트(draft 백업 **배포 zip 2종 속 .app**)에 대한 Gatekeeper 게이트 (F2).
+
+    ★2026-09-20(TICKET=v110-mac-lane · master 범위 확대 승인): 조준을 DMG → 배포 zip 으로 옮겼다.
+      종전 이 함수는 `cysr_<v>_<arch>.dmg` 를 이름으로 찾았는데 **우리 포크는 그 파일을 만든 적이
+      없다**. 1.0.2 가 초록이었던 것은 게이트가 통과해서가 아니라 맥 업데이터 tar 가 없어
+      `mac_lane_absent` 의 「대상 없음」 경로로 빠졌기 때문이다 — 즉 **우리 자체서명 산출을 이
+      게이트가 잰 적은 0회**다. 그 공백을 여기서 닫는다.
+    ★레인 축: 우리 맥 산출은 cys-local 자체서명이라 공증 축(③ stapler · ④ spctl)이 원리적으로
+      성립하지 않는다. 게이트 스크립트에 `--lane self-signed` 를 주어 **①quarantine ②codesign
+      --deep --strict ⑤SEAL-2 ⑥첫-부팅 기록자는 필수로 돌리고, 공증 2축만 사유를 인쇄하고 제외**
+      한다(무음 skip 아님 · SKIP 계수로 표시). 「다운로드한 앱이 열리는가」의 보증은 이 게이트가
+      아니라 VM 실기(tests/mac-pin-release.sh)와 S1/S2 절차서가 진다.
+    ★`verify-gatekeeper-user-path.sh` 는 **DMG 전용**(hdiutil attach)이라 이 레인의 대상이 아니다.
+      호출을 조용히 지우지 않고 사유를 출력에 남긴다.
 
     ★왜 여기인가: CI 게이트(release.yml:429 부근)는 **빌드 산출물**을 업로드 전에 본다.
     그러나 발행 판정의 대상은 이 스크립트가 방금 받은 **백업 자산 = 실제로 발행될 바이트**다.
@@ -209,7 +257,8 @@ def gatekeeper_gate(outdir, version, unsafe_skip=False,
     fail-closed 계약 (측정 불능은 통과가 아니다 — verify-gatekeeper-user-path.sh 관례):
       · 게이트 rc 1(FAIL)·2(판정 불가) 모두 그대로 비영 반환 → main 이 그 값으로 종료한다.
       · macOS 가 아니면 게이트 자체가 못 돈다(hdiutil·spctl·codesign 부재) = 판정 불가 → 2.
-      · 대상 DMG 부재도 판정 불가 = 2. 무음 skip 경로는 없다.
+      · 대상 배포 zip 부재·해제 실패·최상위 .app 이 1개가 아님 = 전부 판정 불가 = 2.
+        무음 skip 경로는 없다.
 
     반환: 0=통과 · 비영=차단(--apply 거부). 키워드 인자(gate_script·user_path_script·
     sys_platform·machine·run)는 테스트 주입 전용이다 — test_release_postprocess_gate.py 가
@@ -226,7 +275,7 @@ def gatekeeper_gate(outdir, version, unsafe_skip=False,
     #   평가할 맥 바이트가 0종이면 "macOS 에서 다시 돌려라"는 지시가 성립하지 않는다 —
     #   어떤 맥에서 돌려도 평가할 것이 없다. 그 경우의 정직한 답은 skip 이 아니라 「대상 없음」이다.
     #   ⚠여는 문은 정확히 하나뿐이다(mac_lane_absent 의 좁은 조건). 맥이 반쪽인 묶음은 여기를
-    #     통과하지 못하고 아래 「게이트 대상 DMG 없음」에서 종전 그대로 rc=2 로 죽는다.
+    #     통과하지 못하고 아래 「게이트 대상 배포 zip 없음」에서 종전 그대로 rc=2 로 죽는다.
     if mac_lane_absent(outdir, version):
         print("\n═══ Gatekeeper 게이트 — 대상 없음(맥 미포함 묶음) ═══", flush=True)
         print("  맥 레인 6종 0개 · latest.json darwin 행 0 — 평가할 맥 바이트가 없다.")
@@ -246,30 +295,49 @@ def gatekeeper_gate(outdir, version, unsafe_skip=False,
               % sys_platform, file=sys.stderr)
         return 2
 
-    # 상위판(⑥ 봉인 자기파괴 재현 = 동봉 python 실제 스폰)은 **네이티브 아키텍처 DMG 에만**.
-    # 비네이티브 쪽을 정적판만으로 두는 근거: verify-gatekeeper-user-path.sh 는 대상 아키텍처
-    # python 을 실행하므로 arm64 맥에서 x64 DMG 는 Rosetta 2 의존이 생기고, 없으면 구조적
-    # FAIL 이다. 정적판은 실행 0으로 양쪽 결정론 — release-gate-gatekeeper.sh 머리 주석
-    # 「scripts/verify-gatekeeper-user-path.sh 와의 관계」(행번호는 병렬 수정으로 유동).
     native_arch = "aarch64" if machine == "arm64" else "x64"
-    print("\n═══ Gatekeeper 게이트 — 발행될 실물 바이트(draft 백업 DMG 2종) 실평가 ═══", flush=True)
-    for arch in ("aarch64", "x64"):
-        dmg = os.path.join(outdir, "cysr_%s_%s.dmg" % (version, arch))
-        if not os.path.exists(dmg):
-            print("::error::게이트 대상 DMG 없음: %s — 판정 불가=통과 아님" % dmg, file=sys.stderr)
+    print("\n═══ Gatekeeper 게이트 — 발행될 실물 바이트(draft 백업 배포 zip 2종 속 .app) 실평가 ═══",
+          flush=True)
+    print("  레인 = self-signed(cys-local 자체서명 · 공증 없음) — 공증 2축(③ stapler · ④ spctl)은"
+          " 게이트 스크립트가 사유를 인쇄하고 SKIP 으로 센다(무음 skip 아님).")
+    print("  ※verify-gatekeeper-user-path.sh(사용자 경로 재현)는 **DMG 전용**(hdiutil attach)이라"
+          " 이 레인의 대상이 아니다 — 호출하지 않는다. 그 보증은 VM 실기"
+          " tests/mac-pin-release.sh + S1/S2 절차서가 진다. (네이티브 아키텍처 = %s)" % native_arch)
+    for name, arch in mac_zip_lane(version):
+        zpath = os.path.join(outdir, name)
+        if not os.path.exists(zpath):
+            print("::error::게이트 대상 배포 zip 없음: %s — 판정 불가=통과 아님" % zpath,
+                  file=sys.stderr)
             return 2
-        cmds = [["bash", gate_script, dmg]]
-        if arch == native_arch:
-            cmds.append(["bash", user_path_script, dmg])
-        for cmd in cmds:
-            print("  → %s %s" % (os.path.basename(cmd[1]), os.path.basename(dmg)), flush=True)
+        work = tempfile.mkdtemp(prefix="cys-gk-zip.")
+        try:
+            # ditto = Finder 압축 해제와 같은 경로 — 확장속성·심볼릭링크·권한을 보존한다.
+            # unzip(1) 로 풀면 번들 메타가 깨져 ② codesign 이 **우리 잘못이 아닌 이유로** 죽는다.
+            ex = run(["ditto", "-x", "-k", zpath, work])
+            if ex.returncode != 0:
+                print("::error::배포 zip 해제 실패 rc=%d: %s — 판정 불가=통과 아님"
+                      % (ex.returncode, name), file=sys.stderr)
+                return 2
+            apps = sorted(n for n in os.listdir(work) if n.endswith(".app"))
+            if len(apps) != 1:
+                # 최상위가 .app 하나라는 것이 이 자산의 형태다(cysr 1.0.1 실측). 둘이거나 0이면
+                # 우리가 아는 물건이 아니다 — 아무거나 골라 평가하면 무엇을 쟀는지 알 수 없다.
+                print("::error::배포 zip 최상위 .app 이 1개가 아니다(%d개: %s): %s — 판정 불가"
+                      % (len(apps), ", ".join(apps) or "없음", name), file=sys.stderr)
+                return 2
+            app = os.path.join(work, apps[0])
+            cmd = ["bash", gate_script, "--lane", "self-signed", app]
+            print("  → %s --lane self-signed %s (%s · %s)"
+                  % (os.path.basename(gate_script), apps[0], arch, name), flush=True)
             rc = run(cmd).returncode
             if rc != 0:
                 print("::error::Gatekeeper 게이트 차단 rc=%d (%s · %s) — 1=FAIL·2=판정 불가, "
                       "둘 다 발행 금지(--apply 거부)"
-                      % (rc, os.path.basename(cmd[1]), os.path.basename(dmg)), file=sys.stderr)
+                      % (rc, os.path.basename(gate_script), name), file=sys.stderr)
                 return rc
-    print("  ✓ Gatekeeper 게이트 통과 — DMG 2종(네이티브 %s 는 사용자 경로 재현 ⑥ 포함)" % native_arch)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    print("  ✓ Gatekeeper 게이트 통과 — 배포 zip 2종 속 .app (레인 self-signed · 공증 2축 제외 고지됨)")
     return 0
 
 
@@ -373,15 +441,18 @@ def main(argv):
     if bad:
         return 1
     # 홈페이지 다운로드 버튼이 전부 들어 있는가(누락 0 — 오너 지시 ⓑ)
-    #   ★2026-09-09: DMG 2종은 **맥 레인이 포함된 묶음에서만** 요구한다. 맥이 통째로 빠진
-    #   윈도우 단독 묶음에서 DMG 를 요구하면 SUMS 를 만들지 못해 발행 자체가 불가능해진다.
+    #   ★2026-09-09: 맥 다운로드 자산은 **맥 레인이 포함된 묶음에서만** 요구한다. 맥이 통째로 빠진
+    #   윈도우 단독 묶음에서 그것을 요구하면 SUMS 를 만들지 못해 발행 자체가 불가능해진다.
     #   맥이 반쪽인 묶음은 아래 게이트(mac_lane_state)가 판정 불가로 죽인다 — 여기서 느슨해진
     #   만큼을 거기서 그대로 받는다.
+    #   ★2026-09-20 TICKET=v110-mac-lane: 종전에 여기 있던 DMG 2줄을 삭제했다. 우리 포크가
+    #   만든 적 없는 자산이라 맥이 실재하는 v1.1.0 묶음을 「누락」으로 죽이고 있었다(실측 오류
+    #   원문은 `MAC_LANE` 주석). 맥 다운로드 자산의 정본은 이제 아래 배포 zip 2종 하나뿐이고,
+    #   **두 번 싣지 않는다**(MAC_DIST_ZIPS 는 MAC_LANE 에서 파생 — 중복 요구 0).
     win_only = mac_lane_absent(outdir, version)
     want = [exe, zipname]
     if not win_only:
-        want = ["cysr_%s_aarch64.dmg" % version, "cysr_%s_x64.dmg" % version] + want
-        # ★맥 배포 zip 2종도 함께 요구한다(2026-09-20). 설치기가 받는 자산이 이것이고, 한쪽이 없으면
+        # ★맥 배포 zip 2종을 요구한다(2026-09-20). 설치기가 받는 자산이 이것이고, 한쪽이 없으면
         #   그 칩의 사람들은 설치가 통째로 막힌다 — 인텔 자산이 없던 1.0.2 가 정확히 그 상태였다.
         #   ⚠1.0.2 이하 태그를 다시 후처리하면 x64 zip 이 없어 여기서 적색이다. 그것이 의도다
         #     (그 태그는 인텔 맥을 덮지 않는다 — 통과시키면 그 사실이 다시 조용해진다).

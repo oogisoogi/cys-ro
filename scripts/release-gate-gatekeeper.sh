@@ -8,6 +8,21 @@
 #   보던 종전 검증이 2026-08-01 사고("손상되었기 때문에 열 수 없습니다")를 한 번도 재현하지
 #   못한 이유가 그것이다. 여기서는 실측 형식의 quarantine 을 부착한 뒤 평가한다.
 #
+# ★레인 축 (2026-09-20 · TICKET=v110-mac-lane · master 범위 확대 승인)
+#   이 게이트는 **공증 레인 전용으로 태어났다** — ③ stapler·④ spctl 은 Apple 공증을 전제한다.
+#   우리 포크의 맥 산출은 cys-local **자체서명**(공증 없음)이라 그 두 축이 원리적으로 성립하지
+#   않는다. 그대로 두면 게이트가 상시 적색이 되어 결국 우회되고, 조용히 빼면 무음 fail-open 이다.
+#   ⇒ 축을 **이름 붙여 가른다**:
+#     · `--lane auto`(기본) = `codesign -dv` 의 `Authority=` 사슬 실측으로 판별하고 **근거를 인쇄**.
+#       `Authority=Developer ID Application: …` 이 있으면 notarized, 없으면 self-signed.
+#       ⚠codesign 판독 자체가 실패하면 **notarized 로 접는다**(판별 불가는 관용이 아니다).
+#     · self-signed 레인 = ①quarantine ②codesign --deep --strict ⑤SEAL-2 ⑥첫-부팅 기록자 **필수**.
+#       ③④ 만 사유를 인쇄하고 **SKIP 으로 센다**(판정 줄 `SKIP=n` · 기계 요약 `GATE_SKIPPED=n`).
+#     · notarized 레인 = 종전 6축 그대로.
+#   ★이 게이트가 **더 이상 보증하지 않는 것**을 이름으로 적는다: self-signed 레인에서
+#     「다운로드한 앱이 사용자 맥에서 열리는가」는 여기서 안 잰다. 그 보증은 VM 실기
+#     (tests/mac-pin-release.sh)와 S1/S2 절차서로 이사했다.
+#
 # 검사 (대상 앱마다)
 #   ① quarantine 부착·상속   — DMG 에 부착 → 마운트 → ditto 복사본이 quarantine 을 상속했는지
 #   ② codesign --verify --deep --strict --verbose=2  — 봉인 무결(파손·추가 파일 검출)
@@ -104,6 +119,14 @@ QVAL=""
 TARGET=""
 DIAG_DEGRADED=0
 SEAL2_ONLY=0
+# ★레인 축 (2026-09-20 · TICKET=v110-mac-lane · master 범위 확대 승인)
+#   이 게이트의 ③(stapler)·④(spctl) 는 **공증(notarization)을 전제**한다. 우리 포크의 맥 산출은
+#   cys-local **자체서명**(공증 없음)이라 그 두 축은 원리적으로 성립하지 않는다 — 그대로 두면
+#   게이트가 상시 적색이 되고(그러면 누군가 게이트를 우회한다), 조용히 빼면 무음 fail-open 이다.
+#   그래서 축을 **이름 붙여 가른다**: 레인을 판별하고, 제외한 축을 SKIP 으로 **세어 인쇄**한다.
+#   auto = codesign 신원 실측으로 판별(판별 근거를 출력에 인쇄) · self-signed/notarized = 강제.
+LANE="auto"
+SKIP_N=0
 
 usage() {
   cat <<'USAGE'
@@ -113,6 +136,11 @@ usage() {
   --quarantine-value <str>  부착할 com.apple.quarantine 값(기본: <flags>;<epoch16>;CI;<UUID>)
   --diagnose-degraded-ok    진단 전용: degraded(spctl assessments disabled) 폐쇄를 열어
                             ①②③⑤⑥ 강등 평가를 돈다 — **발행 경로 사용 금지**(테스트 핀)
+  --lane <auto|self-signed|notarized>
+                            공증 축(③ stapler · ④ spctl)의 적용 레인. 기본 auto =
+                            codesign 신원 실측으로 판별하고 **근거를 인쇄**한다.
+                            self-signed = 공증 2축을 사유 인쇄 후 SKIP(①②⑤⑥ 은 필수 유지)
+                            notarized   = 종전 6축 전부 필수
   --seal2-only              진단 전용: 대상 .app 에 ⑤ SEAL-2 전칭 검사만 단독 실행
   --runtime-manifest-only   진단 전용: 대상 .app 에 ⑧ runtime-manifest 대조만 단독 실행
   -h, --help                이 도움말
@@ -125,6 +153,13 @@ while [ $# -gt 0 ]; do
     --keep) KEEP=1; shift ;;
     --quarantine-value) QVAL="${2:-}"; shift 2 ;;
     --diagnose-degraded-ok) DIAG_DEGRADED=1; shift ;;
+    --lane)
+      LANE="${2:-}"
+      case "$LANE" in
+        auto|self-signed|notarized) ;;
+        *) echo "✗ --lane 은 auto|self-signed|notarized (받은 값: '"'"'$LANE'"'"')" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
     --seal2-only) SEAL2_ONLY=1; shift ;;
     --runtime-manifest-only) RTMAN_ONLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -185,7 +220,37 @@ PASS_N=0
 FAIL_N=0
 ok()   { PASS_N=$((PASS_N+1)); printf 'PASS %s%s\n' "$1" "${2:+ | $2}"; }
 bad()  { FAIL_N=$((FAIL_N+1)); printf 'FAIL %s%s\n' "$1" "${2:+ | $2}"; }
+# ★SKIP 은 **세어서** 인쇄한다 — 「돌았는데 통과」와 「안 돌았다」가 판정 줄에서 구별되게.
+#   사유 없는 skip 은 금지다(둘째 인자 필수 — 비면 그 자체가 결함이다).
+skipped() { SKIP_N=$((SKIP_N+1)); printf 'SKIP %s | %s\n' "$1" "$2"; }
 info() { printf '     %s\n' "$1"; }
+
+# ── 레인 판별 (auto) — codesign 신원 실측. 판별 **근거를 인쇄**한다 ──
+#   Apple 공증 레인의 서명 신원은 `Authority=Developer ID Application: …` 이다.
+#   우리 자체서명(cys-local)은 그 권위 사슬이 없다 — 그 부재가 곧 판별이다.
+#   ⚠판별이 불가능하면(codesign 실패) 추측하지 않는다: notarized 로 접어 **엄격한 쪽**으로
+#     보낸다(fail-closed — 자체서명 관용을 판별 실패로 얻을 수 없게).
+#   ⚠구현 주의(2026-09-20 실사격에서 실제로 밟은 함정): 이 함수는 **값을 stdout 으로 돌려주지
+#     않는다**. 근거 인쇄와 반환을 같은 stdout 에 얹으면 `$(detect_lane …)` 가 근거 문장까지
+#     통째로 삼켜 레인 값이 「     레인 판별 근거(codesign -dv): Authority=cys-local」 이 된다
+#     (실측: 그 상태에서 ③④ 가 self-signed 분기를 못 타 FAIL=2·rc 1). 그래서 전역 변수로 돌려준다.
+DETECTED_LANE=""
+detect_lane() {
+  local app="$1" out rc auth
+  out="$(codesign -dv --verbose=4 "$app" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    info "레인 판별: codesign 판독 실패(rc=$rc) — notarized 로 접는다(판별 불가는 관용이 아니다)"
+    DETECTED_LANE="notarized"
+    return 0
+  fi
+  auth="$(printf '%s\n' "$out" | grep '^Authority=' | head -3 | tr '\n' ' ')"
+  info "레인 판별 근거(codesign -dv): ${auth:-Authority= 줄 없음(서명 사슬 부재)}"
+  if printf '%s\n' "$out" | grep -q '^Authority=Developer ID Application'; then
+    DETECTED_LANE="notarized"
+  else
+    DETECTED_LANE="self-signed"
+  fi
+}
 
 # ── ⑤ SEAL-2 불변식 전칭(∀) 정적 검사 (실행 0 — 러너 python3 단일 호출 1회 · 전량 판독) ──
 # 불변식(정의처 scripts/precompile-bundled-python.sh): 동봉 런타임 트리의 모든 .py 는
@@ -554,6 +619,7 @@ echo
 [ -n "$QVAL" ] || QVAL="0083;$(printf '%x' "$(date +%s)");CI;$(uuidgen)"
 
 APPS=()          # 평가 대상 .app 원본 경로
+LANE_SEEN=""     # 앱마다 판정된 레인의 합(둘이 갈리면 mixed) — 판정 줄·기계 요약에 인쇄
 SRC_KIND=""
 # ⑦ DMG 봉투 축 결과(dmg 분기에서만 채워진다) — set -u 안전 초기화 · 미실행 = 빈 값(0 으로 오독 금지)
 ST7_OUT=""; ST7_RC=""; SP7_OUT=""; SP7_RC=""
@@ -665,6 +731,20 @@ for APP_SRC in "${APPS[@]}"; do
         "복사본에 quarantine 없음 — Gatekeeper 전체 재검증 경로가 안 돈다(검증 무효)"
   fi
 
+  # ── 레인 판정(앱마다) — 공증 2축(③④)의 적용 여부가 여기서 갈린다 ──
+  if [ "$LANE" = "auto" ]; then
+    detect_lane "$APP"; APP_LANE="$DETECTED_LANE"
+  else
+    APP_LANE="$LANE"
+    info "레인 판별 생략: --lane $LANE 으로 명시 지정됨(실측 판별 아님)"
+  fi
+  info "레인 판정($APP_NAME): $APP_LANE $( [ "$APP_LANE" = "self-signed" ] && echo '— 공증 2축(③④) 대상 아님' || echo '— 공증 2축(③④) 필수' )"
+  case "$LANE_SEEN" in
+    "") LANE_SEEN="$APP_LANE" ;;
+    "$APP_LANE") ;;
+    *) LANE_SEEN="mixed" ;;
+  esac
+
   # ── ② 봉인 무결 ──
   CS_OUT="$(codesign --verify --deep --strict --verbose=2 "$APP" 2>&1)"; CS_RC=$?
   if [ "$CS_RC" -eq 0 ]; then
@@ -678,15 +758,21 @@ for APP_SRC in "${APPS[@]}"; do
   fi
 
   # ── ③ 공증 티켓 동봉 (강등 모드의 유일한 공증 증거) ──
-  ST_OUT="$(xcrun stapler validate "$APP" 2>&1)"; ST_RC=$?
-  if [ "$ST_RC" -eq 0 ]; then
-    ok "③ stapler validate($APP_NAME)" "공증 티켓 동봉 확인"
+  if [ "$APP_LANE" = "self-signed" ]; then
+    skipped "③ stapler validate($APP_NAME)" "자체서명 레인 = 대상 아님(공증 없음). 「다운로드한 앱이 사용자 맥에서 열리는가」의 보증은 이 게이트가 아니라 VM 실기 tests/mac-pin-release.sh + S1/S2 절차서가 진다"
   else
-    bad "③ stapler validate($APP_NAME)" "rc=$ST_RC · $(printf '%s' "$ST_OUT" | tail -2 | tr '\n' ' ')"
+    ST_OUT="$(xcrun stapler validate "$APP" 2>&1)"; ST_RC=$?
+    if [ "$ST_RC" -eq 0 ]; then
+      ok "③ stapler validate($APP_NAME)" "공증 티켓 동봉 확인"
+    else
+      bad "③ stapler validate($APP_NAME)" "rc=$ST_RC · $(printf '%s' "$ST_OUT" | tail -2 | tr '\n' ' ')"
+    fi
   fi
 
   # ── ④ Gatekeeper 실평가 (full 모드에서만 · degraded 는 위 배너로 고지) ──
-  if [ "$MODE" = "full" ]; then
+  if [ "$APP_LANE" = "self-signed" ]; then
+    skipped "④ spctl --assess --type execute($APP_NAME)" "자체서명 레인 = 대상 아님(공증 없음 · Gatekeeper 는 이 신원을 구조적으로 거절한다 — rejected 는 산출물 결함이 아니라 레인의 성질이다)"
+  elif [ "$MODE" = "full" ]; then
     SPCTL_OUT="$(spctl --assess --type execute --verbose=4 "$APP" 2>&1)"; SPCTL_RC=$?
     if [ "$SPCTL_RC" -eq 0 ] && printf '%s' "$SPCTL_OUT" | grep -q "accepted"; then
       ok "④ spctl --assess --type execute($APP_NAME)" "$(printf '%s' "$SPCTL_OUT" | tr '\n' ' ' | sed "s|$APP|<app>|g")"
@@ -755,7 +841,11 @@ fi
 
 echo "═══ 판정 ═══"
 echo "모드: $MODE $( [ "$MODE" = "degraded" ] && echo '(spctl 실평가 미수행 — 강등)' )"
-echo "PASS=$PASS_N · FAIL=$FAIL_N"
+echo "레인: ${LANE_SEEN:-미판정}$( [ "$LANE" = "auto" ] && echo ' (auto · codesign 실측)' || echo " (--lane $LANE 명시)" )"
+echo "PASS=$PASS_N · FAIL=$FAIL_N · SKIP=$SKIP_N"
+if [ "$SKIP_N" -gt 0 ]; then
+  echo "  ※SKIP $SKIP_N 건은 **안 돈 축**이다 — 통과가 아니다. 위 SKIP 줄의 사유를 읽어라."
+fi
 RC=0
 if [ "$FAIL_N" -gt 0 ]; then
   echo "✗ Gatekeeper 게이트 FAIL — 이 산출물은 업로드·발행 금지"
@@ -763,9 +853,16 @@ if [ "$FAIL_N" -gt 0 ]; then
   RC=1
 elif [ "$MODE" = "degraded" ]; then
   echo "✓ [진단 전용] 강등 모드 전 항목 PASS — Gatekeeper 실평가는 수행되지 않았다(발행 판정 아님 · --diagnose-degraded-ok · 배너 고지됨)"
+elif [ "$SKIP_N" -gt 0 ]; then
+  # ★요약 칸이 상세를 앞질러 거짓말하지 않게 한다 — self-signed 레인에서는 ④(Gatekeeper 실평가)가
+  #   돌지 않았으므로 「Gatekeeper 실평가를 통과했다」는 문장을 쓸 수 없다(실측 2026-09-20: 그
+  #   문장이 SKIP=2 인 출력에 그대로 찍혔다). 무엇을 쟀는지만 말한다.
+  echo "✓ 수행한 축 전부 PASS — 단 $SKIP_N 개 축은 이 레인의 대상이 아니어서 돌지 않았다(레인 ${LANE_SEEN:-미판정} · 위 SKIP 줄의 사유 참조)"
 else
   echo "✓ 전 항목 PASS — 격리된 사본이 Gatekeeper 실평가를 통과했다"
 fi
 # 기계 요약(마지막 줄 고정 · 헤더 종료 코드 항 참조) — CI 가 GITHUB_STEP_SUMMARY 로 승격한다.
+#   ★GATE_LANE 은 GATE_MODE **앞**에 둔다 — 마지막 줄이 GATE_MODE 라는 계약은 소비자가 이미 쓰고 있다.
+echo "GATE_LANE=${LANE_SEEN:-unknown} GATE_SKIPPED=$SKIP_N"
 echo "GATE_MODE=$MODE"
 exit "$RC"

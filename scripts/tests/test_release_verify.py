@@ -65,14 +65,22 @@ class AssetNamesFollowProductName(unittest.TestCase):
         spec.loader.exec_module(self.rp)
 
     def test_every_asset_name_starts_with_product_name(self):
-        prefix = self.product + "_"
+        # ★구분자는 둘이다(2026-09-20 · TICKET=v110-mac-lane). tauri 번들러 산출은 `<product>_…`,
+        #   우리 **로컬 자체서명 빌드**가 내는 맥 배포 zip 은 `<product>-macos-<arch>-v<판>.zip` 이다
+        #   (scripts/build-macos-local.sh 명명 · 벤더 번들러를 거치지 않는 자산이라 관례가 다르다).
+        #   지키려는 계약은 구분자가 아니라 **제품 이름으로 시작한다**는 것 — 그것만 단언한다.
+        prefixes = (self.product + "_", self.product + "-")
         names = (list(rv.REQUIRED_ASSETS) + list(rv.MAC_ASSETS)
                  + list(rv.REQUIRED_PLATFORMS.values()) + list(rv.MAC_PLATFORMS.values())
                  + list(self.rp.MAC_LANE))
         product_assets = [n for n in names if not n.startswith(("latest", "pack"))]
         self.assertGreaterEqual(len(product_assets), 12, product_assets)
-        wrong = [n for n in product_assets if not n.startswith(prefix)]
+        wrong = [n for n in product_assets if not n.startswith(prefixes)]
         self.assertEqual(wrong, [], "productName=%r 인데 자산 이름이 다르다" % self.product)
+        # 맥 배포 zip 2종이 실제로 하이픈 관례를 쓰고 있는지도 박는다 — 위 완화가 무엇을
+        # 받아들였는지 이름으로 남긴다(완화만 하고 대상을 안 적으면 다음 사람이 못 읽는다).
+        self.assertEqual(sorted(n for n in self.rp.MAC_LANE if n.endswith(".zip")),
+                         ["cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip"])
 # ★8단계(팩 replay 단조 · 2026-09-12) 픽스처 — 우리 팩이 벤더 latest 보다 **1초** 새로 서명된
 #   최소 통과 형태. 1초 차이로 둬야 `<=` → `<` 완화 같은 경계 회귀가 test_61 에서 드러난다.
 #   ★r2: 타당 범위(now-90일..now+300초)가 생겨 고정 시각은 90일 뒤 스스로 적색이 된다 — 실행 시각 기준.
@@ -129,8 +137,22 @@ def _tauri_pub(key_id):
 
 
 def _dmg_bytes(payload):
-    """UDIF dmg 재현 — 머리는 zlib(78 01), **끝 512B 가 'koly' 트레일러**."""
+    """UDIF dmg 재현 — 머리는 zlib(78 01), **끝 512B 가 'koly' 트레일러**.
+
+    ★2026-09-20(TICKET=v110-mac-lane) 이후 DMG 는 **요구되지 않는다**. 그래도 이 헬퍼는 남긴다 —
+      `ASSET_SHAPES` 의 `.dmg` 규칙(있으면 검사)과 「무단 자산 유입」 경로를 계속 박제하기 때문이다.
+    """
     return b"\x78\x01" + payload + b"koly" + b"\x00" * 508
+
+
+def _mac_dist_zip(path, payload):
+    """맥 배포 zip 재현 — 최상위가 `cysr.app/` 하나인 실물 구조(cysr 1.0.1 자산 실측 형태).
+
+    ★실물 zip 이어야 한다: 검증기 5단계가 멤버를 끝까지 스트리밍하므로 가짜 PK 머리로는 안 된다.
+    """
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("cysr.app/Contents/Info.plist", b"<plist/>")
+        z.writestr("cysr.app/Contents/MacOS/cys-app", payload)
 
 
 def write_sums(root):
@@ -161,8 +183,10 @@ def build_fixture(root, mac=True):
             fh.write(data)
 
     if mac:
-        w("cysr_%s_aarch64.dmg" % V, _dmg_bytes(b"macos-arm-disk-image" * 16))
-        w("cysr_%s_x64.dmg" % V, _dmg_bytes(b"macos-intel-disk-image" * 16))
+        _mac_dist_zip(os.path.join(root, "cysr-macos-arm64-v%s.zip" % V),
+                      b"macos-arm-app-payload" * 16)
+        _mac_dist_zip(os.path.join(root, "cysr-macos-x64-v%s.zip" % V),
+                      b"macos-intel-app-payload" * 16)
         w("cysr_aarch64.app.tar.gz", gzip.compress(b"macos-arm-app-bundle" * 32))
         w("cysr_x64.app.tar.gz", gzip.compress(b"macos-intel-app-bundle" * 32))
     w("cysr_%s_x64-setup.exe" % V, exe_bytes)
@@ -242,7 +266,9 @@ class ReleaseVerifyTests(unittest.TestCase):
 
     # ── 1. 완전성(디렉터리 ↔ SUMS 양방향) ─────────────────────────────────
     def test_01_asset_missing_from_dir(self):
-        os.remove(self.p("cysr_%s_x64.dmg" % V))
+        # ★2026-09-20: 찌르는 대상이 DMG → 맥 **배포 zip** 으로 바뀌었다(계약 전환).
+        #   SUMS 줄은 남겨 둔다 — 1단계(디렉터리↔SUMS)가 2-b(맥 레인)보다 앞이라 '자산 누락'이 정본이다.
+        os.remove(self.p("cysr-macos-x64-v%s.zip" % V))
         self.assert_fail("자산 누락")
 
     def test_02_unlisted_stowaway(self):
@@ -264,8 +290,8 @@ class ReleaseVerifyTests(unittest.TestCase):
         self.assert_fail("배포 필수 자산 누락")
 
     def test_04b_mac_lane_half_removed(self):
-        """★맥 레인 전부-또는-전무 — DMG 한 짝만 사라진 묶음은 통과해선 안 된다."""
-        os.remove(self.p("cysr_%s_aarch64.dmg" % V))
+        """★맥 레인 전부-또는-전무 — 배포 zip 한 짝만 사라진 묶음은 통과해선 안 된다."""
+        os.remove(self.p("cysr-macos-arm64-v%s.zip" % V))
         write_sums(self.root)
         self.assert_fail("맥 레인이 반쪽이다")
 
@@ -308,9 +334,9 @@ class ReleaseVerifyTests(unittest.TestCase):
         write_sums(self.root)
         self.assert_fail("배포 필수 자산 누락")
 
-    def test_09c_stale_dmg_name_caught_as_half_lane(self):
-        """구버전 토큰이 박힌 DMG = 그 버전의 맥 레인은 반쪽이다 — 2-b 가 잡는다."""
-        os.rename(self.p("cysr_%s_x64.dmg" % V), self.p("cysr_0.14.18_x64.dmg"))
+    def test_09c_stale_mac_zip_name_caught_as_half_lane(self):
+        """구버전 토큰이 박힌 맥 배포 zip = 그 버전의 맥 레인은 반쪽이다 — 2-b 가 잡는다."""
+        os.rename(self.p("cysr-macos-x64-v%s.zip" % V), self.p("cysr-macos-x64-v0.14.18.zip"))
         write_sums(self.root)
         self.assert_fail("맥 레인이 반쪽이다")
 
@@ -532,6 +558,10 @@ class WindowsOnlyLaneTests(unittest.TestCase):
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
 
+    def assert_ok(self):
+        """죽지 않아야 하는 입력 — 반환된 맥 포함 판정까지 돌려준다(관용 시험용)."""
+        return rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+
     def test_40_windows_only_passes_and_reports_mac_absent(self):
         """맥 자산 0종 + darwin 행 0 = 통과하되 **미포함으로 판정**돼야 한다."""
         assets, platforms, mac_included = rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
@@ -559,12 +589,31 @@ class WindowsOnlyLaneTests(unittest.TestCase):
         write_sums(self.root)
         self.assert_fail("platforms 키 집합 오류")
 
-    def test_43_dmg_smuggled_in_without_updater_lane(self):
-        """★DMG 만 슬쩍 낀 묶음 — 다운로드는 되는데 앱 내 Update 는 죽는다. 반쪽이다."""
+    def test_43_mac_zip_smuggled_in_without_updater_lane(self):
+        """★맥 배포 zip 만 슬쩍 낀 묶음 — 다운로드는 되는데 앱 내 Update 는 죽는다. 반쪽이다."""
+        _mac_dist_zip(self.p("cysr-macos-arm64-v%s.zip" % V), b"macos-arm-app-payload" * 16)
+        write_sums(self.root)
+        self.assert_fail("맥 레인이 반쪽이다")
+
+    def test_43b_stray_dmg_is_tolerated_not_required(self):
+        """★2026-09-20 계약(master 판정): DMG 는 **요구하지 않되 거부하지도 않는다**.
+
+        종전에는 DMG 한 짝이 곧 「맥 레인 반쪽」이었다. 이제 맥 레인의 다운로드 자산은 배포
+        zip 이므로 DMG 는 레인 밖 자산이다 — 섞여 들어와도 묶음이 죽지 않고, 대신
+        `ASSET_SHAPES` 의 `.dmg` 규칙이 그대로 껍데기를 검사한다(아래 짝 시험이 그것을 박는다).
+        ⚠이 시험이 없으면 「관용」이 코드 어디에도 적히지 않아 다음 사람이 되살린다.
+        """
         with open(self.p("cysr_%s_aarch64.dmg" % V), "wb") as fh:
             fh.write(_dmg_bytes(b"macos-arm-disk-image" * 16))
         write_sums(self.root)
-        self.assert_fail("맥 레인이 반쪽이다")
+        self.assert_ok()
+
+    def test_43c_stray_dmg_still_shape_checked(self):
+        """관용은 무검사가 아니다 — 껍데기가 깨진 DMG 는 섞이는 순간 죽는다."""
+        with open(self.p("cysr_%s_aarch64.dmg" % V), "wb") as fh:
+            fh.write(b"\x78\x01" + b"J" * 4096)      # koly 트레일러 없음
+        write_sums(self.root)
+        self.assert_fail("koly")
 
     def test_44_windows_platform_row_dropped(self):
         """윈도우 단독인데 윈도우 행이 줄면 = 아무도 못 받는 묶음."""
@@ -1242,7 +1291,7 @@ class ConstantsSanityTests(unittest.TestCase):
         self.assertEqual(set(rv.REQUIRED_ASSETS) & set(rv.MAC_ASSETS), set(),
                          "필수 레인과 맥 레인이 겹친다")
         self.assertEqual(sorted(set(rv.REQUIRED_ASSETS) | set(rv.MAC_ASSETS)),
-                         sorted(("cysr_{v}_aarch64.dmg", "cysr_{v}_x64.dmg",
+                         sorted(("cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip",
                                  "cysr_{v}_x64-setup.exe", "cysr_{v}_x64-setup.zip",
                                  "latest.json", "pack.tar.gz", "pack-manifest.json",
                                  "pack-manifest.json.minisig")),

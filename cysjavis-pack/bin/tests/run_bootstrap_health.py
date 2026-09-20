@@ -593,7 +593,12 @@ def h_secret_1():
     need(os.path.isfile(scan), "발행 게이트 스캐너 부재: %s" % scan)
 
     def _scan(*args):
-        return _run([BASH, scan] + list(args), cwd=REPO_DIR, timeout=300)
+        # ★상한 300→600 (2026-09-20 · release run 35508900699 윈 레그 사고 · TICKET=v110-secret-scan):
+        #   `--all` 이 Windows Git bash 에서 300초를 넘겨 태그 레인이 죽었다(1.0.2 는 286초 = 여유 5%
+        #   미만이었고 추적 파일 994→1045 증가가 문턱을 넘겼다). 스캐너 자체는 배치화로 macOS 17.4s→3.0s
+        #   가 됐지만, 이 상한은 **그 수리가 도는 것과 무관한 벨트**다 — 수리가 회귀해도 정지가 아니라
+        #   적색으로 드러나게 여유를 둔다(상한을 키운 것이 수리를 대신하지 않는다).
+        return _run([BASH, scan] + list(args), cwd=REPO_DIR, timeout=600)
 
     def _labels(out):
         return {ln.split("\t", 1)[0] for ln in out.splitlines() if "\t" in ln}

@@ -177,3 +177,134 @@ cys --socket $S list                     # 기대: 1 · master / 2 · cso / 3 ·
 읽어 자산 이름 `cysr_${VERSION}_${ARCH}` 를 만든다. `src-tauri/Cargo.toml:3` 도 `1.0.2` 로 동기돼 있다.
 ⚠브리프의 「tauri.conf.json 은 0.14.37」은 이 브랜치에서 **거짓**이다(실측 `1.0.2`).
 이 티켓은 판번을 바꾸지 않았다.
+
+---
+
+## 7. §v1.1.1 — 특성 칸 규칙 개정 (TICKET=v111-panetitle · 2026-09-21)
+
+### 7-1. 오너 지시와 관측
+오너 원문(2026-09-21 08:2x · 윈 1.1.0 갱신 실기 08:15 캡처를 보고):
+
+> 「현재 머리글을 보면 번호+모델 이후 내용이 너무 길다. master, cso 하나면 충분하고, 워커도
+> 맡은 역할 키워드 1나면 된다. 없으면 worker1이고」
+
+그때 화면에 있던 제목 = `38 · Opus · master-claude · install-jarvis` (네 칸).
+
+### 7-2. 왜 네 칸이 됐나 — 원인은 두 겹이다(둘 다 코드 실측)
+1. **특성을 cwd basename 에서 뽑았다**(§2 의 1.1.0 규칙). 폴더 이름(`install-jarvis`)이 제목에 들어온다.
+2. **`cys launch-agent` 의 `surface.create` 페이로드에 `agent` 키가 없다**(`src/bin/cys.rs:12635`).
+   ⇒ create 시점 `agent_meta` 가 `None` ⇒ 1.1.0 의 `is_machine_title` 이 `{role}-{agent}` 를 대조할
+   재료를 못 얻어, CLI 가 지은 `master-claude · install-jarvis` 를 **무접촉 ④(사람이 지은 이름)** 으로
+   판정하고 번호만 앞에 붙였다. 즉 role-agent 결합명은 **가드가 의도대로 작동한 결과**로 살아남았다.
+
+★그래서 1번만 고치면 참가자 기기 제목은 그대로였다 — 특성 산출 함수에 **도달조차 하지 않는다**.
+이 자리가 이 티켓에서 가장 중요한 발견이다(브리프는 1번만 지목했다).
+
+### 7-3. 새 규칙 — 특성은 role 하나에서만 나온다 (cwd 미참조)
+
+| role | 특성 | 근거 |
+|---|---|---|
+| `master` / `master-2` | `master` / `master2` | 역할명 자체가 특성(좌석 폴더가 그 노드를 말해 주지 않는다) |
+| `cso` / `cso-2` | `cso` / `cso2` | 〃 |
+| `worker-eduscan` | `eduscan` | 맡은 역할 키워드 1단어 |
+| `worker-research` | `research` | 〃 |
+| `worker` | `worker1` | 키워드 없음 → 머리+서수 |
+| `worker-3` | `worker3` | 서수 = 생성 순(role 서수를 배정하는 쪽이 생성 순으로 준다) |
+| `reviewer-gemini` / `reviewer-codex` | `gemini` / `codex` | 키워드 규칙 동형 — ⚠브리프 괄호 예는 `reviewer1` 이었다(§7-6 미결 1) |
+| `reviewer` | `reviewer1` | 키워드 없음 |
+
+결과 = `38 · Opus · master` · `36 · Opus · cso` · `37 · Opus · worker1` · `41 · Sonnet · eduscan`.
+
+**무접촉 4조건은 그대로다**(규칙이 바뀌어도 경계는 안 바뀐다). 모델 칸의 주인(`retitle_with_model`)도
+그대로다 — create 는 번호·특성만 세우고 첫 statusline 턴에 모델 칸이 붙는다.
+
+### 7-4. 위 2번에 대한 봉합 — 기계 제목 판정 = **생산자 출력의 정확 재구성**
+- 판정은 추측이 아니라 **재구성**이다. 두 생산자 모두 정의가 저장소 안에 있다:
+  `surface {id}`(데몬 기본값) · `{role}-{agent}` / `{role}-{agent} · {cwd basename}`(CLI `workflow_title`).
+- agent 를 알면 그 이름 하나로, 모르면(현 launch-agent 페이로드) **닫힌 어휘**
+  `AGENT_NAMES = [claude, gemini, codex, grok]` 을 차례로 넣어 재구성하고 **전체 일치**만 인정한다.
+- ★cwd 는 **알아보는 데만** 쓴다(특성을 짓는 데는 안 쓴다 — v1.1.1 규칙). 이 대조가 빠지면
+  사람이 지은 `worker-claude · 회의록` 이 기계 제목으로 오인돼 「회의록」이 지워진다.
+  ⇒ 이것은 가정이 아니라 **agy 이종 리뷰 R1 이 반례로 제시**했고(문제점 1), 그 지적을 수용해
+  접두 휴리스틱을 전체 일치로 바꾼 것이다. 뮤턴트 M4 가 그 축을 잰다(접두로 되돌리면 적색).
+- ★재구성이 빗나가면(다른 cwd·어휘에 없는 새 에이전트) 판정은 false 로 떨어져 제목이
+  **사람 이름처럼 보존**된다 — 길어질 뿐 잃는 것은 없다(**안전 방향**).
+  항구 처방은 호출부가 agent 를 싣는 것이다(§7-6 미결 2 = 1.1.2 티켓).
+
+### 7-4-1. 번호가 이미 붙은 네 칸 제목의 단축 (agy R1 문제점 3 수용)
+무접촉 ②(이미 내 번호로 시작하면 무접촉)를 글자 그대로 두면, 1.1.0 이 지은
+`38 · Opus · master-claude · install-jarvis` 는 **번호를 갖고 있다는 이유로 영구 방치**된다 —
+이 티켓의 목적이 그 기기에서 달성되지 않는다. 그래서 ② 안에서 한 겹 더 본다:
+번호(와 모델 칸)를 떼어 낸 **본문이 기계 제목이면 규칙대로 다시 짓고**, 아니면 종전대로 무접촉.
+모델 칸은 있는 그대로 옮긴다(그 칸의 주인은 `retitle_with_model` 이다).
+· 실측: `38 · Opus · master-2-claude · install-jarvis` → `6 · Opus · master2`(번호는 자기 것으로).
+· 사람 이름은 여전히 안 건드린다: `60 · worker-claude · 회의록` → 무접촉.
+
+### 7-5. 증거 (전부 이 티켓에서 직접 돌린 것)
+```
+ⓐ cargo test --bin cysd panetitle        → 21 passed / 0 failed
+   cargo test --bin cysd (전건)            → 982 passed / 0 failed / 1 ignored (rc 0)
+   cargo test --bin cys workflow_title    → 1 passed (CLI 미변경 확인)
+ⓑ 뮤턴트 9/9 KILLED (기준선 초록 선확인 · 변이 디스크 선-assert · 복원 finally)
+   M1 master·cso 분기 제거                   → 5건 적색
+   M2 worker1 서수 누락                      → 4건
+   M3 worker-3 가 3 이 됨                     → 3건
+   M4 기계 제목 판정을 접두 휴리스틱으로 완화   → 1건(사람 이름 꼬리 유실 축)
+   M5 멱등 무접촉 제거                        → 4건
+   M6 한 단어 가드(one_word) 제거             → 2건
+   M7 레거시 단축 제거                        → 1건
+   M8 특성 산출 되돌림(꼬리 오염)              → 4건
+   M9 정화 순서 되돌림                        → 2건
+   ★M8 자리에 처음 뒀던 「split_role 의 trim 제거」는 **SURVIVED** 였다 — one_word 가 그 trim 을
+     흡수하므로 구별되지 않는 **등가 뮤턴트**였다. 그래서 중복 trim 을 코드에서 지웠다(§7-5-1).
+ⓒ 격리 cysd(디버그 · /tmp 짧은 소켓 · HOME 격리 · CYS_BOOT_GATES=0 · killpg · 라이브 무접촉)
+   [A] create 직후        1 · master  2 · cso  3 · worker1  4 · eduscan
+                          5 · worker-2-claude · 회의록      ← 사람이 지은 이름은 보존
+   [B] usage.report 1회 뒤 1 · Opus · master  2 · Opus · cso  3 · Opus · worker1  4 · Sonnet · eduscan
+   [C] 레거시 네 칸 제목 투입(`38 · Opus · master-2-claude · install-jarvis`) → `6 · Opus · master2`
+```
+재현: 입력을 참가자 기기와 같게 넣는다 — `cys new-surface --role <role> --cwd <폴더> --title
+"<role>-claude · <폴더 basename>"`(agent 키 없음) 뒤 `usage.report {surface_id, model}` 1회.
+⚠title 의 폴더와 `--cwd` 의 basename 이 **어긋나면** 기계 제목 재구성이 빗나가 제목이 보존된다
+(설계상 안전 방향이지만, 재현 실패를 결함으로 오독하기 쉽다 — 실제 CLI 는 둘을 같은 값으로 낸다).
+
+### 7-5-1. 「한 단어」 가드(one_word) — 왜 뒀나
+데몬은 role 문자열의 **글자를 검증하지 않는다**(`surface.create` 의 `--role` 은 임의 문자열 · 저장소
+전수 grep 에서 role charset 검증 0건). 공백이 섞이면 제목 한 칸이 두 낱말이 되고, 구분자(` · `)가
+섞이면 **없던 칸이 하나 생겨** 모델 칸 판정(`retitle_with_model`)이 엉뚱한 조각을 집는다.
+`one_word()` 는 그 구조 오염만 막는다 — **실 입력에는 무동작**이다(우리 생산자가 내는 role 에는
+공백이 없다). 도달 불가한 장식이 아니라는 근거 = 임의 caller 가 그 role 을 보낼 수 있다는 것이고,
+뮤턴트 M6 이 그 축을 잰다.
+
+### 7-5-2. 이종 검증 라운드 (agy R1 · 2026-09-21)
+`agy -p`(gemini) 1라운드 = **REVISE 4건**. 처리:
+| 지적 | 판정 | 처리 |
+|---|---|---|
+| ①접두 판정이 `worker-claude · 회의록` 을 먹는다 | **수용** | 판정을 생산자 출력 **전체 일치 재구성**으로 교체(§7-4) · 뮤턴트 M4 |
+| ②-1 `master - 2` 가 master 분기를 놓친다 | **수용** | `one_word` 정화를 조립 **전**으로(§7-5-1) · 뮤턴트 M9 |
+| ②-2 `worker-a-b` 의 하이픈 | **반박** | 하이픈은 공백이 아니다 — `eduscan-daily` 는 한 낱말이고 `reviewer-gemini → gemini` 와 같은 계열이다. 계약은 「공백·구분자·보이지 않는 글자 없음」으로 명시(시험 표에 `worker-eduscan-daily` 고정) |
+| ②-3 제로폭 공백(U+200B)이 통과한다 | **수용** | 금지 목록 대신 **허용 구조**(영숫자·하이픈·밑줄만 남김)로 전환 · 뮤턴트 M6 |
+| ③번호 붙은 네 칸 제목이 영구 방치된다 | **수용** | ② 안에서 본문이 기계 제목이면 단축(§7-4-1) · 뮤턴트 M7 · 격리 실측 [C] |
+| ④시험 표에 이상한 role 이 없다 | **부분 반박** | 지적 시점의 판본에는 이미 `my worker`·`worker- 2`·`a · b`·NBSP 가 들어 있었다(리뷰어가 받은 전문이 그 편집 **이전** 것이었다). 그럼에도 U+200B·탭·`·`(이름이 안 남는 role)을 추가했다 |
+
+### 7-6. 미결 · 함정 (다음 사람이 반드시 알아야 할 것)
+1. **reviewer 계열 특성 — 확정됐다**(master 판정 `[master#6f1fee58]` 2026-09-21 08:39:58 · 원장 4요건
+   성립). `reviewer-gemini → gemini` · `reviewer-codex → codex` 로 **A 채택**. 근거 = 오너 규칙
+   「맡은 역할 키워드 1단어」와 같은 판정이고 화면에서 리뷰어가 갈린다. 브리프 괄호 예(`reviewer1`)는
+   예시였고 **문면보다 규칙이 우선**한다는 것이 그 판정의 내용이다. (`reviewer` 단독은 여전히 `reviewer1`.)
+2. **⑵ 항구 처방 = 1.1.2 티켓**(master 판정 `[master#6f1fee58]` — 별도 티켓 채택. 이 티켓은 아래 봉합으로
+   커밋한다). **`launch-agent` 페이로드에 agent 키 싣기**는 이 티켓에서 **하지 않았다**. `agent_meta` 가 create
+   시점에 채워지면 사망 감지(`governance` agent_seen)·topology 영속·형제 create ACL 까지 함께 움직인다
+   — 제목 티켓의 외과 범위를 넘는다. 별도 티켓으로 올렸고, 그때 `handlers.rs:4762` 주석이 적은
+   「agent_meta=None 이라 topology 에 agent 없이 영속돼 콜드부트 부활이 그 역할을 제외한다」가 함께 닫힌다.
+3. **우리 맥의 라이브 팩 `~/.cys/pack/bin/javis_panetitle.py` 는 여전히 cwd basename 규칙이다**
+   (읽기만 함 · 라이브 무접촉 · master 접수 `[master#6f1fee58]`: 무접촉 유지 · 우리 맥 1.1.1 갱신 때
+   master 가 유지보수 창에서 정렬한다 · 저장소 대상 없음 확인). 그 스크립트를 돌리면 **우리 기기에서만** 제목이 옛 규칙으로 되돌아간다.
+   ⚠저장소에는 이 파일이 **없다**(`cysjavis-pack/bin/javis_panetitle.py` 부재 — grep 확정). 그래서
+   이 티켓의 「동형 수정」 대상이 repo 안에 없다. 팩 갱신은 master 게이트.
+4. **이미 떠 있는 좌석은 안 고쳐진다** — `initial_title` 은 create 에서만 돈다. 업데이트 뒤에도 기존
+   페인은 옛 제목을 유지하고, 다음 `launch-agent`·`restore` 때 새로 지어진다(restore 는 저장된 제목이
+   아니라 `workflow_title` 을 다시 계산해 보낸다 — `src/bin/cys.rs:12635`).
+5. **기계 제목 재구성은 cwd 에 의존한다** — 데몬이 들고 있는 `s.cwd` 와 CLI 가 `workflow_title` 에
+   쓴 cwd 가 어긋나면(경로 정규화·심볼릭 링크 등) 재구성이 빗나가 제목이 **길게 보존**된다.
+   안전 방향이지만 「왜 안 짧아지지」의 1번 확인 항목이다(격리 실측에서는 둘이 같아 4/4 일치).

@@ -62,10 +62,13 @@ MUTANTS = [
      "  if (!armed) return [];",
      "  if (false) return [];",
      BUN, "복원 직후 1회 무장(평시 스윕 금지)"),
-    ("m9-sweep-empty", SWEEP,
-     "  if (surfaces.length === 0) return [];",
-     "  if (surfaces.length === -1) return [];",
-     BUN, "빈 목록 = 판정 보류"),
+    # ★m9 개정(2026-09-20): 초판은 `surfaces.length === 0` 가드를 겨눴는데 SURVIVED 였다 —
+    #   그 줄이 **아무것도 지키지 않는 줄**이었기 때문이다(빈 목록에서는 고를 것이 원리적으로 없다).
+    #   줄을 걷어내고, 그 성질을 실제로 떠받치는 것(술어의 방향)을 겨눈다.
+    ("m9-sweep-direction", SWEEP,
+     "  return treeSids.filter((sid) => exited.has(sid));",
+     "  return treeSids.filter((sid) => !exited.has(sid));",
+     BUN, "빈 목록 = 판정 보류 · 「있고 exited 인 것만」 방향"),
     ("m10-daemon-ver", LABELS,
      "  const v = ver ? `v${ver} ` : \"\";",
      "  const v = \"\";",

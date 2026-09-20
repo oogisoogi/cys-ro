@@ -20,8 +20,22 @@
 - `tauri-plugin-updater` 2.10.1 의 맥 설치 경로는 **tar.gz 전용**(`updater.rs:1233`) — 우리 zip 을 못 푼다. 그래서 맥은 자체 경로.
 - 판번 정본은 `src-tauri/tauri.conf.json`(1.0.2) + `src-tauri/Cargo.toml`(1.0.2) + 루트 `Cargo.toml`(1.0.2). **브리프의 「tauri.conf.json 은 0.14.37」은 이 기준 커밋에서는 사실이 아니다**(이미 1.0.2로 정렬돼 있다). 판번은 이 티켓에서 바꾸지 않았다.
 
+## 1-b. master 판정 B(2026-09-20 `[master#1c38c0ab]`) 로 추가된 것
+
+| 항목 | 무엇을 했나 | 어디 |
+|---|---|---|
+| 구판 레인 자산 | 1.0.2 가 먹는 `cysr_<arch>.app.tar.gz`(+`.sig`) 생성 — 최상위 1개 강제 · AppleDouble 거부 · 키 없으면 rc 3 + 자리표시 | `scripts/make-darwin-updater-tarball.sh` (시험 5건) |
+| 실측표 | 구판이 요구하는 자산 이름·서명 형식·tar 구조를 `updater.rs` 줄번호와 함께 표로 | `docs/DARWIN-UPDATER-LEGACY-LANE.md` §1 |
+| VM 절차서 | Tart `jarvis-clean-vanilla` 8단계 · 합격 판정 · 실패 시 C 경로 | 같은 문서 §3 |
+
+★그 문서 §4 = **B 확정 시 함께 집행할 잔여 1건**(한 행이 두 소비자를 먹여야 하는 충돌 — `zip_url` 분리).
+  이것은 master 결정 사항이라 이 티켓에서 집행하지 않았다.
+
 ## 2. 미완 · 다음 사람이 이어받을 것
 
+0. **한 행 두 소비자 충돌(B 확정 시 필수)** — `platforms["darwin-aarch64"].url` 은 구판이 받는 주소다.
+   1.1 앱은 지금 그 `url` 을 zip 으로 읽으므로, 구판 레인을 함께 올리면 **둘 중 하나가 틀린 것을 받는다**.
+   처방 = `zip_url` 칸 분리(1.1 은 `zip_url` 우선·없으면 거부). 상세 = `docs/DARWIN-UPDATER-LEGACY-LANE.md` §4.
 1. **B16 배치 규칙 미편입** — `fix/v110-panetitle` 브랜치가 없다(`git branch -a` 실측). `ui/src/exitedsweep.ts` 의
    `applyB16Placement()` 가 **이음매**로 남아 있고 지금은 `{applied:false, reason:…}` 를 돌려주며 호출부가 로그를 남긴다.
    그 브랜치가 오면 이 함수 본문만 채우면 된다(호출부는 그대로).
@@ -59,7 +73,8 @@ cd ~/axdev/.wt/cys-v110-darwin-update
 sh scripts/bundle-prep.sh                     # 사이드카·UI (최초 1회 · rc 0)
 cargo test -p cys-app                         # 앱 크레이트 전건(맥 업데이트 판정 14건 포함)
 bun test ui/src                               # UI 전건
-python3 scripts/tests/test_darwin_update_row.py   # latest.json 맥 행 생성기
+python3 scripts/tests/test_darwin_update_row.py      # latest.json 맥 행 생성기
+python3 scripts/tests/test_darwin_updater_tarball.py # 구판 레인 tar.gz 생성기
 python3 scripts/tests/mutants-darwin-update.py    # 뮤턴트 배터리(새 축이 무는지)
 ```
 

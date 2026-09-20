@@ -5762,9 +5762,10 @@ async fn check_update_plugin(app: AppHandle) -> Result<Option<Value>, String> {
 async fn fetch_latest_json() -> Result<Value, String> {
     let url = latest_json_url().ok_or("업데이트 주소(updater endpoint)를 읽지 못했다")?;
     let out = tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("curl");
+        // ★원시 Command 를 쓰지 않는다 — `cys::hidden_command` 가 윈도 콘솔 창 숨김 등급을
+        //   체인에 달아 준다(raw_command_new_census_is_frozen 이 그 선택을 강제한다).
+        let mut cmd = cys::hidden_command("curl");
         cmd.args(["-fsSL", "--max-time", "20", &url]);
-        no_console(&mut cmd);
         cmd.output()
     })
     .await
@@ -5880,7 +5881,7 @@ async fn install_update_darwin(app: AppHandle, force: bool) -> Result<(), String
     let url = asset.url.clone();
     let zip_for_child = zip.clone();
     let mut child = {
-        let mut cmd = std::process::Command::new("curl");
+        let mut cmd = cys::hidden_command("curl");
         cmd.args([
             "-fL",
             "--retry",
@@ -5893,7 +5894,6 @@ async fn install_update_darwin(app: AppHandle, force: bool) -> Result<(), String
         ]);
         cmd.arg(&zip_for_child);
         cmd.arg(&url);
-        no_console(&mut cmd);
         match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -5946,9 +5946,8 @@ async fn install_update_darwin(app: AppHandle, force: bool) -> Result<(), String
     let unzip = {
         let (z, d) = (zip.clone(), staged_dir.clone());
         tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new("/usr/bin/ditto");
+            let mut cmd = cys::hidden_command("/usr/bin/ditto");
             cmd.arg("-x").arg("-k").arg(&z).arg(&d);
-            no_console(&mut cmd);
             cmd.output()
         })
         .await
@@ -5979,9 +5978,8 @@ async fn install_update_darwin(app: AppHandle, force: bool) -> Result<(), String
     let verify = {
         let p = staged_app.clone();
         tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new("/usr/bin/codesign");
+            let mut cmd = cys::hidden_command("/usr/bin/codesign");
             cmd.args(["--verify", "--deep", "--strict", "--verbose=2"]).arg(&p);
-            no_console(&mut cmd);
             cmd.output()
         })
         .await
@@ -6005,9 +6003,8 @@ async fn install_update_darwin(app: AppHandle, force: bool) -> Result<(), String
     let show = {
         let p = staged_app.clone();
         tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new("/usr/bin/codesign");
+            let mut cmd = cys::hidden_command("/usr/bin/codesign");
             cmd.args(["-dvvv"]).arg(&p);
-            no_console(&mut cmd);
             cmd.output()
         })
         .await

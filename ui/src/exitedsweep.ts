@@ -13,17 +13,20 @@
 
 export type SurfaceRow = { surface_id: number; exited?: boolean };
 
-/// 칠 대상 sid 목록. 판정은 셋 다 참일 때만 나온다:
-///   ① armed(복원 완료 직후 1회) ② 데몬 목록이 비어 있지 않다 ③ 그 기록이 exited=true 다.
-/// ②를 요구하는 이유는 유령 수렴과 같다 — 데몬이 한 틱 빈 목록을 돌려줄 때 화면을 통째로 비우지
-/// 않기 위해서다(빈 목록 = 판정 보류이지 "전부 죽었다"가 아니다).
+/// 칠 대상 sid 목록. 판정은 둘 다 참일 때만 나온다:
+///   ① armed(복원 완료 직후 1회) ② 데몬 기록이 exited=true 다.
+///
+/// ★「데몬이 빈 목록을 돌려줘도 화면을 비우지 않는다」는 여기서 **가드가 아니라 술어의 방향**으로
+///   성립한다. 유령 수렴은 "목록에 **없는** 것"을 치기 때문에 빈 목록이 곧 전멸 판정이 되어 명시
+///   가드가 필요했다. 이쪽은 "목록에 **있고 exited 인** 것"만 치므로 빈 목록에서는 고를 것이 원리적으로
+///   없다. (초판에는 `surfaces.length === 0` 가드가 있었는데, 뮤턴트 m9 가 그 줄을 지워도 아무 시험도
+///   빨개지지 않음을 보여 줬다 — 지키는 일이 없는 줄이었다. 성질은 아래 시험이 직접 잰다.)
 export function exitedSweepTargets(
   armed: boolean,
   treeSids: readonly number[],
   surfaces: readonly SurfaceRow[],
 ): number[] {
   if (!armed) return [];
-  if (surfaces.length === 0) return [];
   const exited = new Set(surfaces.filter((s) => s.exited === true).map((s) => s.surface_id));
   return treeSids.filter((sid) => exited.has(sid));
 }

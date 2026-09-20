@@ -14586,14 +14586,16 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
     }
 }
 
-/// ★W2 복원 디렉티브 분기: 워커·리뷰어는 master 지시를 기다리지만, master는 지시할 상위가 없다 —
-/// RECOVERY 프로토콜로 스스로 상태를 복원하고 미해결 게이트부터 자율 재개한다(콜드부트
-/// auto-restore가 master를 포함하는 경로).
+/// ★W2 복원 디렉티브 분기: 워커·리뷰어는 master 지시를 기다리고, master는 RECOVERY 프로토콜로
+/// 스스로 상태를 복원한 뒤 **대기**한다(콜드부트 auto-restore가 master를 포함하는 경로).
+/// ★I-1: 종전 master 문구는 「미해결 게이트부터 자율 재개하라」였다 — 복원만으로 자율 착수가
+/// 일어나 임무 게이트(§0-C: 임무 미지정이면 자율 착수 금지)를 우회했다. 재개는 사용자 또는
+/// 임무 게이트의 지시 뒤에만.
 /// ★SEAT: fresh 기동과 **좌석 내 재연결(in-seat)** 두 경로가 같은 문구를 쓰도록 함수로 둔다 —
 /// 인라인 중복이면 한쪽만 고쳐지는 드리프트가 난다(복원 계약은 경로와 무관하게 하나다).
 fn restore_directive(role: &str) -> &'static str {
     if role == "master" {
-        "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 미해결 게이트부터 자율 재개하라."
+        "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하고 대기하라. 재개는 사용자(또는 임무 게이트)의 지시 뒤에."
     } else {
         "[RESTORE] 조직 복원 절차다. _round/SESSION_STATE.md와 자기 TODO를 읽고 상태를 복원하라. ★작업 재개는 하지 말고 master의 지시를 기다려라."
     }
@@ -18125,6 +18127,20 @@ extern "C" fn scoped_cleanup_handler(sig: libc::c_int) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★I-1(restore-impl-A2-2): master 복원 디렉티브는 복원 후 **대기**다 — 「재개하라」 지시가
+    /// 들어가면 복원만으로 자율 착수가 일어나 임무 게이트(§0-C)를 우회한다. 비-master 는 종전 그대로.
+    #[test]
+    fn restore_directive_master_waits_and_never_orders_resume() {
+        let m = restore_directive("master");
+        assert!(m.starts_with("[RESTORE] 조직 복원 절차다(master)."), "형식 유지: {m}");
+        assert!(!m.contains("재개하라"), "master 복원 문구에 재개 지시 금지: {m}");
+        assert!(m.contains("상태를 복원하고 대기하라"), "대기 지시 누락: {m}");
+        assert!(m.contains("재개는 사용자(또는 임무 게이트)의 지시 뒤에"), "재개 조건 누락: {m}");
+        let w = restore_directive("worker");
+        assert!(w.contains("master의 지시를 기다려라"), "비-master 문구 불변: {w}");
+        assert!(!w.contains("재개하라"), "{w}");
+    }
 
     /// (cysr-alias · 2026-09-16) 명령 별칭 `cysr` 는 같은 바이너리를 다른 이름(맥 심링크 · 윈 사본)으로
     /// 부른다. 출력이 호출 이름(argv[0])을 따라가면 `cysr --version` ≠ `cys --version` 이 되어 도구·스크립트의

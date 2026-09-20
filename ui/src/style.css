@@ -905,6 +905,13 @@ body.cc-glance #cc-view-feed .feed-item button { font-size: 16px; padding: 10px 
   animation: cc-sweep 0.9s linear infinite;
 }
 .dept-pending-msg { font-size: 13px; opacity: 0.8; }
+/* 확보 못 한 부서 탭의 '지금 켜기' — 모달 버튼과 같은 관용구(비활성 시각화 포함).
+   ★종전에는 이 상태가 아무것도 그리지 않는 백지였다(2026-09-17 성찰 3회). */
+.dept-idle-btn {
+  margin-top: 14px; padding: 7px 16px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; font-size: 13px;
+}
+.dept-idle-btn:disabled { opacity: .5; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .ws-tab-spinner, .dept-spinner { animation: none; border-top-color: var(--accent); }
 }
@@ -980,3 +987,19 @@ body.cc-office #cc-view-office { flex: 1; min-height: 0; }
 .pane.inject-flash .pane-title { background: rgba(47,129,247,.35); transition: background .6s; }
 /* F6: 전출 대상 ws 탭 하이라이트 */
 .ws-tab.transfer-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
+/* 복원 브리핑 카드(A2-2 T8) — 마스터 자리 1곳 · 앱이 다시 켜졌을 때 1회 */
+#restore-brief {
+  position: fixed; right: 16px; bottom: 16px; z-index: 900; max-width: min(440px, calc(100vw - 32px));
+  max-height: 70vh; overflow: auto; padding: 14px 16px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--canvas-text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .35); font-size: 13px;
+}
+#restore-brief .rb-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+#restore-brief .rb-head { font-weight: 600; margin-top: 8px; }
+#restore-brief ul { margin: 4px 0 0; padding-left: 18px; }
+#restore-brief .rb-foot { margin-top: 10px; opacity: .75; font-size: 12px; }
+#restore-brief .rb-row { display: flex; gap: 8px; align-items: center; }
+#restore-brief .rb-close {
+  margin-top: 14px; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: inherit; cursor: pointer; font-size: 13px;
+}

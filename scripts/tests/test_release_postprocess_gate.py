@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 # ★하이픈 파일명(`release-postprocess.py`)은 `import` 문으로 못 부른다 — importlib 로 직접
 #   적재한다(test_release_verify.py 와 같은 이유·같은 관례).
@@ -53,13 +54,28 @@ _RELEASE_YML = os.path.join(_HERE, "..", "..", ".github", "workflows", "release.
 V = "0.14.19"
 
 
+def write_app_zip(path, apps=("cysr.app",)):
+    """맥 배포 zip 픽스처 — 최상위가 `.app` 디렉터리인 **실물 zip**(cysr 1.0.1 자산 형태).
+
+    ★페이크 바이트로 못 대신한다: gatekeeper_gate 가 `ditto -x -k` 로 실제로 풀고 최상위
+      `.app` 이 정확히 1개인지 센다. 그 계약을 시험이 우회하면 초록이 아무것도 증명하지 않는다.
+    """
+    with zipfile.ZipFile(path, "w") as z:
+        if not apps:
+            z.writestr("README.txt", b"no app here")
+        for app in apps:
+            z.writestr("%s/Contents/Info.plist" % app, b"<plist/>")
+            z.writestr("%s/Contents/MacOS/cys-app" % app, b"fake-macho")
+
+
 class GatekeeperGateHookTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = self._tmp.name
-        for arch in ("aarch64", "x64"):
-            with open(os.path.join(self.root, "cysr_%s_%s.dmg" % (V, arch)), "wb") as fh:
-                fh.write(b"\x78\x01fake-dmg-" + arch.encode())
+        # ★2026-09-20 전환: 게이트 대상이 DMG → **배포 zip 속 .app** 이다. 페이크로는 안 된다 —
+        #   gatekeeper_gate 가 `ditto -x -k` 로 실제로 풀고 최상위 .app 이 1개인지 세기 때문이다.
+        for name in ("cysr-macos-arm64-v%s.zip" % V, "cysr-macos-x64-v%s.zip" % V):
+            write_app_zip(os.path.join(self.root, name))
         self.log = os.path.join(self.root, "calls.log")
 
     def tearDown(self):
@@ -92,45 +108,55 @@ class GatekeeperGateHookTests(unittest.TestCase):
         return rc, err.getvalue()
 
     # ── 0. 기준선 ─────────────────────────────────────────────────────────
-    def test_00_exit0_passes_and_covers_both_dmgs(self):
-        """이게 깨지면 정상 릴리스가 발행 불능(과차단) — 또는 DMG 한쪽이 무검증으로 샌다."""
+    def test_00_exit0_passes_and_covers_both_mac_zips(self):
+        """이게 깨지면 정상 릴리스가 발행 불능(과차단) — 또는 배포 zip 한쪽이 무검증으로 샌다."""
         rc, _ = self.run_gate(gate_rc=0, user_rc=0)
         self.assertEqual(rc, 0)
         static_calls = [c for c in self.calls() if c.startswith("gate.sh")]
-        self.assertEqual(len(static_calls), 2, "정적판이 DMG 2종 전부를 보지 않았다")
-        joined = "\n".join(static_calls)
-        self.assertIn("cysr_%s_aarch64.dmg" % V, joined)
-        self.assertIn("cysr_%s_x64.dmg" % V, joined)
+        self.assertEqual(len(static_calls), 2, "정적판이 배포 zip 2종 전부를 보지 않았다")
+        for c in static_calls:
+            self.assertIn("--lane self-signed", c,
+                          "레인 축을 안 주면 게이트가 공증 2축을 요구해 우리 산출은 상시 FAIL 이다")
+            self.assertRegex(c, r"\.app(\s|$)", "게이트 대상이 .app 이 아니다: %r" % c)
 
-    def test_01_native_dmg_also_gets_user_path_gate(self):
-        """arm64 맥에서 aarch64 DMG 에 상위판(⑥ 봉인 자기파괴 재현)이 안 얹히면
-        2026-08-01 사고 경로(.pyc 봉인 자기파괴)가 발행 층위에서 무검증으로 남는다."""
-        rc, _ = self.run_gate(machine="arm64")
+    def test_01_user_path_gate_is_not_called_and_reason_is_printed(self):
+        """★무음 제거 금지 — verify-gatekeeper-user-path.sh 는 DMG 전용(hdiutil attach)이라
+        이 레인의 대상이 아니다. **부르지 않되 사유를 출력에 남긴다.**"""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = rp.gatekeeper_gate(self.root, V, sys_platform="darwin", machine="arm64",
+                                    gate_script=self.fake_gate("gate.sh", 0),
+                                    user_path_script=self.fake_gate("userpath.sh", 0))
         self.assertEqual(rc, 0)
-        user_calls = [c for c in self.calls() if c.startswith("userpath.sh")]
-        self.assertEqual(len(user_calls), 1)
-        self.assertIn("cysr_%s_aarch64.dmg" % V, user_calls[0])
+        self.assertEqual([c for c in self.calls() if c.startswith("userpath.sh")], [],
+                         "DMG 전용 게이트를 .app 레인에서 불렀다")
+        printed = out.getvalue()
+        self.assertIn("verify-gatekeeper-user-path.sh", printed,
+                      "부르지 않은 사실이 출력에 없다 — 조용한 제거는 fail-open 과 구별되지 않는다")
+        self.assertIn("DMG 전용", printed)
 
-    def test_02_nonnative_dmg_stays_static_only(self):
-        """arm64 에서 x64 DMG 에 상위판을 걸면 Rosetta 2 의존으로 구조적 FAIL 이 되고,
-        늘 빨간 게이트는 사람이 끄게 된다(release-gate-gatekeeper.sh 머리 주석
-        「verify-gatekeeper-user-path.sh 와의 관계」의 분리 근거)."""
-        self.run_gate(machine="arm64")
-        self.assertEqual([c for c in self.calls()
-                          if c.startswith("userpath.sh") and ("cysr_%s_x64.dmg" % V) in c], [])
+    def test_02_lane_flag_is_not_silently_droppable(self):
+        """레인 인자를 빼면 자체서명 산출이 공증 축에서 죽는다 — 인자 자체를 계약으로 박는다."""
+        self.run_gate()
+        for c in [c for c in self.calls() if c.startswith("gate.sh")]:
+            self.assertIn("--lane", c)
 
-    def test_03_intel_host_flips_native_to_x64(self):
-        """호스트 아키 판정이 고정(aarch64)이면 Intel 맥에서 돌릴 때 상위판이
-        자기가 실행 못 하는 DMG 를 잡아 구조적 FAIL — native 는 호스트를 따라야 한다."""
-        rc, _ = self.run_gate(machine="x86_64")
-        self.assertEqual(rc, 0)
-        user_calls = [c for c in self.calls() if c.startswith("userpath.sh")]
-        self.assertEqual(len(user_calls), 1)
-        self.assertIn("cysr_%s_x64.dmg" % V, user_calls[0])
+    def test_03_native_arch_is_reported_from_host(self):
+        """네이티브 아키 판정은 사라진 게 아니라 **출력으로** 남는다(호스트를 따라야 한다)."""
+        for machine, token in (("arm64", "aarch64"), ("x86_64", "x64")):
+            with self.subTest(machine=machine):
+                self._tmp.cleanup()
+                self.setUp()
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    rp.gatekeeper_gate(self.root, V, sys_platform="darwin", machine=machine,
+                                       gate_script=self.fake_gate("gate.sh", 0),
+                                       user_path_script=self.fake_gate("userpath.sh", 0))
+                self.assertIn("네이티브 아키텍처 = %s" % token, out.getvalue())
 
     # ── 1. fail-closed: 통과해선 안 될 rc ─────────────────────────────────
     def test_04_gate_exit1_blocks_with_nonzero(self):
-        """rc=1(FAIL)을 통과로 세면 봉인 파손 DMG 가 그대로 --apply 된다."""
+        """rc=1(FAIL)을 통과로 세면 봉인 파손 산출물이 그대로 --apply 된다."""
         rc, err = self.run_gate(gate_rc=1)
         self.assertEqual(rc, 1)
         self.assertIn("::error::", err)
@@ -141,10 +167,11 @@ class GatekeeperGateHookTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("::error::", err)
 
-    def test_06_user_path_failure_blocks_even_when_static_passed(self):
-        """정적판 PASS 가 상위판 FAIL 을 덮으면 ⑥(봉인 자기파괴)이 장식이 된다."""
+    def test_06_user_path_rc_cannot_affect_verdict(self):
+        """DMG 전용 게이트를 안 부르므로 그 rc 는 판정에 **닿지 않는다**(호출 0이 근거)."""
         rc, _ = self.run_gate(gate_rc=0, user_rc=1)
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 0)
+        self.assertEqual([c for c in self.calls() if c.startswith("userpath.sh")], [])
 
     def test_07_non_macos_is_fail_closed_not_skip(self):
         """macOS 밖 무음 skip = 무검증 발행. 판정 불가(비영)로 죽고, 게이트를 돌린
@@ -154,11 +181,31 @@ class GatekeeperGateHookTests(unittest.TestCase):
         self.assertIn("::error::", err)
         self.assertEqual(self.calls(), [])
 
-    def test_08_missing_dmg_is_fail_closed(self):
-        """대상 DMG 부재를 통과로 세면 '자산이 없어서 검사를 못 한 묶음'이 발행된다."""
-        os.remove(os.path.join(self.root, "cysr_%s_x64.dmg" % V))
-        rc, _ = self.run_gate()
+    def test_08_missing_mac_zip_is_fail_closed(self):
+        """대상 배포 zip 부재를 통과로 세면 '자산이 없어서 검사를 못 한 묶음'이 발행된다."""
+        os.remove(os.path.join(self.root, "cysr-macos-x64-v%s.zip" % V))
+        rc, err = self.run_gate()
         self.assertEqual(rc, 2)
+        self.assertIn("::error::", err)
+
+    def test_08b_unextractable_zip_is_undecidable_not_pass(self):
+        """풀리지 않는 zip = 측정 불능. skip 도 통과도 아니다."""
+        with open(os.path.join(self.root, "cysr-macos-x64-v%s.zip" % V), "wb") as fh:
+            fh.write(b"PK\x03\x04not-a-real-zip")
+        rc, err = self.run_gate()
+        self.assertEqual(rc, 2)
+        self.assertIn("::error::", err)
+
+    def test_08c_zip_without_exactly_one_app_is_undecidable(self):
+        """최상위 .app 이 0개거나 2개면 **무엇을 쟀는지 알 수 없다** — 아무거나 고르지 않는다."""
+        for apps in ([], ["cysr.app", "other.app"]):
+            with self.subTest(apps=apps):
+                self._tmp.cleanup()
+                self.setUp()
+                write_app_zip(os.path.join(self.root, "cysr-macos-x64-v%s.zip" % V), apps=apps)
+                rc, err = self.run_gate()
+                self.assertEqual(rc, 2)
+                self.assertIn("::error::", err)
 
     # ── 2. 비상 탈출구 ────────────────────────────────────────────────────
     def test_09_unsafe_skip_opens_loudly_and_runs_nothing(self):
@@ -216,8 +263,8 @@ class MacAbsentBundleTests(unittest.TestCase):
         """
         name = {"aarch64": "cysr-macos-arm64-v%s.zip" % V,
                 "x64": "cysr-macos-x64-v%s.zip" % V}[arch]
-        with open(os.path.join(self.root, name), "wb") as fh:
-            fh.write(b"PK\x03\x04fake-zip-" + arch.encode())
+        # 실물 zip 이어야 한다 — 게이트가 ditto 로 풀어 최상위 .app 을 센다(write_app_zip 주석).
+        write_app_zip(os.path.join(self.root, name))
 
     def run_gate(self, **kw):
         kw.setdefault("sys_platform", "darwin")
@@ -292,7 +339,7 @@ class MacAbsentBundleTests(unittest.TestCase):
         rc, _, _ = self.run_gate()
         self.assertEqual(rc, 0)
         self.assertEqual(len([c for c in self.calls() if c.startswith("gate.sh")]), 2,
-                         "맥 포함 묶음인데 정적 게이트가 DMG 2종을 보지 않았다")
+                         "맥 포함 묶음인데 정적 게이트가 배포 zip 2종을 보지 않았다")
 
 
 class ReleaseRepoPinTests(unittest.TestCase):
@@ -643,6 +690,165 @@ class DmgAxisTests(unittest.TestCase):
         for flag in DiagnoseFlagAbsencePins.DIAG_FLAGS:
             self.assertNotIn(flag, yml,
                              "release.yml 이 진단 전용 플래그를 실었다: %s" % flag)
+
+
+class LaneAxisTests(unittest.TestCase):
+    """레인 축 — 공증 2축(③ stapler · ④ spctl)의 적용 여부 (2026-09-20 · TICKET=v110-mac-lane).
+
+    ★왜 이 축이 생겼나: 이 게이트는 **공증 레인 전용으로 태어났다**. 우리 포크의 맥 산출은
+      cys-local 자체서명(공증 없음)이라 ③④ 가 원리적으로 성립하지 않는다. 그대로 두면 게이트가
+      상시 적색이 되어 결국 우회되고, 조용히 빼면 무음 fail-open 이다. 그래서 **이름 붙여 가르고
+      SKIP 으로 센다**.
+    ★여기서 못박는 것:
+      (a) 소스 계약 — SKIP 이 계수·인쇄되고, 판별기가 값을 stdout 으로 돌려주지 않는다.
+      (b) 동작 — self-signed 레인은 ③④ 를 SKIP(사유 동반)하고 PASS 로 세지 않는다.
+      (c) 뮤턴트 — 같은 자체서명 앱을 notarized 레인으로 강제하면 ③④ 가 FAIL 로 죽는다
+          (= 이 두 축이 '항상 초록인 검사'가 아님을 음성 대조로 증명).
+      (d) fail-closed — 판별 불가(서명 없음)는 관용이 아니라 **엄격한 쪽(notarized)** 으로 접는다.
+    """
+
+    @staticmethod
+    def _gate_src():
+        with open(_GATE_SH, encoding="utf-8") as fh:
+            return fh.read()
+
+    @staticmethod
+    def _mini_app(root, adhoc_sign):
+        """⑤ SEAL-2 를 통과하는 합성 .app. adhoc_sign=True 면 **임시(ad-hoc) 서명**을 붙인다.
+
+        ad-hoc 서명은 `Authority=` 권위 사슬이 없다 — 즉 우리 cys-local 자체서명과 **같은 축**에
+        떨어진다(Developer ID 아님). 그래서 레인 판별의 재료로 쓸 수 있다.
+        """
+        app = os.path.join(root, "Fake.app")
+        pkg = os.path.join(app, "Contents", "Resources", "runtime", "python", "lib", "pkg")
+        cache = os.path.join(pkg, "__pycache__")
+        macos = os.path.join(app, "Contents", "MacOS")
+        os.makedirs(cache)
+        os.makedirs(macos)
+        # ★번들 골격(Info.plist + 주 실행파일)이 없으면 codesign 이 'bundle format unrecognized'
+        #   로 거절한다(실측) — 서명 픽스처는 형태를 갖춰야 재료가 된다.
+        with open(os.path.join(app, "Contents", "Info.plist"), "w", encoding="utf-8") as fh:
+            fh.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                     '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                     '<plist version="1.0"><dict>\n'
+                     '<key>CFBundleExecutable</key><string>fake</string>\n'
+                     '<key>CFBundleIdentifier</key><string>com.example.fake</string>\n'
+                     '<key>CFBundleName</key><string>Fake</string>\n'
+                     '<key>CFBundlePackageType</key><string>APPL</string>\n'
+                     '<key>CFBundleShortVersionString</key><string>1.0</string>\n'
+                     '</dict></plist>\n')
+        exe = os.path.join(macos, "fake")
+        with open(exe, "w") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(exe, 0o755)
+        with open(os.path.join(pkg, "a.py"), "w") as fh:
+            fh.write("x = 1\n")
+        for opt in ("", ".opt-1", ".opt-2"):
+            with open(os.path.join(cache, "a.cpython-312%s.pyc" % opt), "wb") as fh:
+                fh.write(b"\x6f\x0d\x0d\x0a" + struct.pack("<I", 1) + b"\x00" * 8)
+        if adhoc_sign:
+            # ad-hoc(-s -) 서명은 Authority= 권위 사슬이 없다 = 우리 cys-local 자체서명과 같은 축.
+            p = subprocess.run(["codesign", "-s", "-", "--force", app],
+                               capture_output=True, text=True)
+            if p.returncode != 0:      # 측정 재료를 못 만들면 그 시험은 공허하다 — 조용히 넘기지 않는다
+                raise unittest.SkipTest("ad-hoc 서명 실패: %s" % (p.stderr or p.stdout).strip()[:200])
+        return app
+
+    @staticmethod
+    def _run(target, *args):
+        p = subprocess.run(["bash", _GATE_SH, *args, target], capture_output=True, text=True)
+        return p.returncode, p.stdout + p.stderr
+
+    # ── (a) 소스 계약 — 플랫폼 무관 ────────────────────────────────────────
+    def test_50_skip_is_counted_and_printed(self):
+        """★'무음 제외' 로 바꾸면 여기서 죽는다 — SKIP 은 세어지고 인쇄돼야 한다.
+
+        이 단언이 없으면 누군가 `skipped()` 를 no-op 으로 만들어도 스위트가 전부 초록이고,
+        판정 줄에는 「전 항목 PASS」만 남는다(= 안 돈 축이 통과로 둔갑).
+        """
+        src = self._gate_src()
+        self.assertIn("SKIP_N=$((SKIP_N+1))", src, "SKIP 계수기가 사라졌다")
+        self.assertIn("printf 'SKIP %s | %s\\n'", src, "SKIP 인쇄가 사라졌다")
+        self.assertIn('echo "PASS=$PASS_N · FAIL=$FAIL_N · SKIP=$SKIP_N"', src,
+                      "판정 줄에서 SKIP 계수가 빠졌다")
+        self.assertIn("GATE_SKIPPED=$SKIP_N", src, "기계 요약에서 SKIP 계수가 빠졌다")
+        # 제외에는 사유가 붙어야 한다 — 사유 없는 skip 은 미탐과 구별되지 않는다.
+        for axis in ("③ stapler validate", "④ spctl --assess --type execute"):
+            i = src.index('skipped "%s($APP_NAME)"' % axis)
+            line = src[i:src.index("\n", i)]
+            self.assertIn("자체서명 레인 = 대상 아님", line, "제외 사유가 없다: %r" % line)
+
+    def test_51_detect_lane_does_not_return_through_stdout(self):
+        """★2026-09-20 실사격 회귀 핀 — 판별기가 근거를 stdout 에 찍으면서 값도 stdout 으로
+        돌려주면 `$(detect_lane …)` 가 근거 문장을 통째로 삼켜 레인 값이 쓰레기가 된다
+        (그 상태에서 self-signed 분기를 못 타 FAIL=2·rc 1 이 났다). 전역 변수 반환이 계약이다.
+        """
+        src = self._gate_src()
+        self.assertIn('DETECTED_LANE="self-signed"', src)
+        self.assertIn('DETECTED_LANE="notarized"', src)
+        # ★주석은 빼고 **선언문만** 본다 — 이 규율을 설명하는 주석 자체에 금지 형태가 등장하므로,
+        #   원문 그대로 묻으면 가드가 자기 설명에 걸린다(실측: 여기서 실제로 걸렸다).
+        code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn('$(detect_lane', code,
+                         "판별기를 명령 치환으로 부르면 근거 인쇄가 반환값에 섞인다(실측 회귀)")
+        self.assertIn('detect_lane "$APP"; APP_LANE="$DETECTED_LANE"', code)
+
+    def test_52_unknown_lane_value_is_rejected(self):
+        """레인 값 오타를 조용히 받으면(=auto 로 접으면) 지정한 줄 알고 안 지정된다."""
+        rc, out = self._run("/nonexistent.app", "--lane", "bogus")
+        self.assertEqual(rc, 2)
+        self.assertIn("--lane 은 auto|self-signed|notarized", out)
+
+    # ── (b)(c)(d) 동작 — darwin 한정 ──────────────────────────────────────
+    @unittest.skipUnless(sys.platform == "darwin",
+                         "게이트 실행은 macOS 도구(codesign·spctl·xcrun)를 요구한다")
+    def test_53_self_signed_lane_skips_notarization_axes(self):
+        with tempfile.TemporaryDirectory() as td:
+            app = self._mini_app(td, adhoc_sign=True)
+            _rc, out = self._run(app, "--lane", "self-signed")
+            self.assertIn("SKIP ③ stapler validate", out, out[-1500:])
+            self.assertIn("SKIP ④ spctl --assess --type execute", out, out[-1500:])
+            self.assertIn("PASS=", out)
+            self.assertIn("SKIP=2", out, "제외 2축이 계수되지 않았다\n%s" % out[-1500:])
+            self.assertIn("GATE_LANE=self-signed GATE_SKIPPED=2", out, out[-1500:])
+            # 제외를 PASS 로 세면 안 된다 — 안 돈 축이 통과로 집계되는 것이 이 절의 금지선이다.
+            self.assertEqual([ln for ln in out.splitlines()
+                              if ln.startswith(("PASS ③", "PASS ④"))], [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS 도구 필요")
+    def test_54_forcing_notarized_lane_kills_the_same_app(self):
+        """★음성 대조(뮤턴트) — 같은 앱을 공증 레인으로 강제하면 ③④ 가 FAIL 로 죽는다.
+
+        이것이 없으면 (b)의 SKIP 은 '원래 통과했을 축을 뺀 것'과 구별되지 않는다.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            app = self._mini_app(td, adhoc_sign=True)
+            rc, out = self._run(app, "--lane", "notarized")
+            self.assertIn("FAIL ③ stapler validate", out, out[-1500:])
+            self.assertNotEqual(rc, 0, "공증 축이 실패했는데 게이트가 통과했다")
+            self.assertIn("GATE_SKIPPED=0", out, out[-1500:])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS 도구 필요")
+    def test_55_auto_detects_self_signed_and_prints_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            app = self._mini_app(td, adhoc_sign=True)
+            _rc, out = self._run(app, "--lane", "auto")
+            self.assertIn("레인 판별 근거(codesign -dv)", out,
+                          "판별 근거를 인쇄하지 않으면 판정을 사람이 감사할 수 없다")
+            self.assertIn("GATE_LANE=self-signed", out, out[-1500:])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS 도구 필요")
+    def test_56_undecidable_signature_folds_to_strict_lane(self):
+        """★fail-closed — 서명이 아예 없어 판별이 불가하면 **관용 쪽으로 접지 않는다**.
+
+        여기를 self-signed 로 접으면 '서명을 지우는 것'이 곧 공증 축 면제가 된다.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            app = self._mini_app(td, adhoc_sign=False)
+            rc, out = self._run(app, "--lane", "auto")
+            self.assertIn("GATE_LANE=notarized", out, out[-1500:])
+            self.assertNotEqual(rc, 0)
 
 
 class RuntimeManifestAxisTests(unittest.TestCase):

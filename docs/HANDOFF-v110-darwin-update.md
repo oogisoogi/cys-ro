@@ -28,6 +28,8 @@
 | 실측표 | 구판이 요구하는 자산 이름·서명 형식·tar 구조를 `updater.rs` 줄번호와 함께 표로 | `docs/DARWIN-UPDATER-LEGACY-LANE.md` §1 |
 | VM 절차서 | Tart `jarvis-clean-vanilla` 8단계 · 합격 판정 · 실패 시 C 경로 | 같은 문서 §3 |
 
+| B16 결선 | `fix/v110-panetitle` 516d39d8 병합 + 스윕 직후 `formationIfRowOnly(ws.tree, roleBySid)` 배선 — roleBySid 는 **닫은 뒤** 살아 있는 좌석만으로 만든다 | `ui/src/main.ts` `refreshPaneTitles` · 시험 3건(`exitedsweep.test.ts`) |
+
 ★그 문서 §4 = **B 확정 시 함께 집행할 잔여 1건**(한 행이 두 소비자를 먹여야 하는 충돌 — `zip_url` 분리).
   이것은 master 결정 사항이라 이 티켓에서 집행하지 않았다.
 
@@ -36,9 +38,8 @@
 0. **한 행 두 소비자 충돌(B 확정 시 필수)** — `platforms["darwin-aarch64"].url` 은 구판이 받는 주소다.
    1.1 앱은 지금 그 `url` 을 zip 으로 읽으므로, 구판 레인을 함께 올리면 **둘 중 하나가 틀린 것을 받는다**.
    처방 = `zip_url` 칸 분리(1.1 은 `zip_url` 우선·없으면 거부). 상세 = `docs/DARWIN-UPDATER-LEGACY-LANE.md` §4.
-1. **B16 배치 규칙 미편입** — `fix/v110-panetitle` 브랜치가 없다(`git branch -a` 실측). `ui/src/exitedsweep.ts` 의
-   `applyB16Placement()` 가 **이음매**로 남아 있고 지금은 `{applied:false, reason:…}` 를 돌려주며 호출부가 로그를 남긴다.
-   그 브랜치가 오면 이 함수 본문만 채우면 된다(호출부는 그대로).
+1. ~~B16 배치 규칙 미편입~~ → **결선 완료**(master 보충 `[master#9c2276f3]` · 2026-09-20).
+   `applyB16Placement()` 이음매는 **지웠다** — 진짜 함수가 왔는데 「미편입」을 돌려주는 함수를 남기면 그 자체가 거짓말이 된다.
 2. **실기 교체 미실행** — 브리프의 금지선대로 이 맥에서 실제 교체를 돌리지 않았다. 격리 경로 2개가 준비돼 있다:
    `CYS_UPDATE_APP_PATH=<시험용 번들>` · `CYS_UPDATE_DRY_RUN=1`(검증까지만·교체 안 함, UI 에 「드라이런」 토스트).
    다음 라운드에서 이 두 env 로 **1회 실사격**(가짜 zip 으로 5종 실패 + 진짜 zip 으로 성공)이 필요하다.
@@ -47,6 +48,22 @@
    빌드(`bundle-prep.sh`)는 rc 0 으로 완주했다(그 스크립트가 `cargo build --release --bin cys --bin cysd` 를 포함).
 4. **`release-verify.py` · `release-postprocess.py` 의 맥 레인 규칙은 아직 「tar.gz 4종」 기준** — 우리가 zip 으로
    발행하면 그 검사가 「반쪽(판정 불가·rc 2)」으로 읽는다. 발행 파이프라인을 zip 레인으로 넓히는 것은 별도 티켓.
+
+## 2-b. 게이트 실측(최종 · 병합·결선 뒤 재실행)
+
+| 게이트 | 결과 | 비고 |
+|---|---|---|
+| `cargo test`(워크스페이스 전건) | **4개 바이너리 전부 ok · 1,728 pass · 0 fail**(212.6s+62.5s+41.2s) | src-tauri 는 워크스페이스 멤버라 함께 돈다 |
+| `bun test ui/src` | 993 pass · 0 fail | |
+| 뮤턴트 배터리 11종 | **11/11 KILLED** | `scripts/tests/mutants-darwin-update.py` |
+| `test_darwin_update_row.py` | 8 pass | |
+| `test_darwin_updater_tarball.py` | 5 pass | |
+| UI 타입체크 | 오류 4건 **전부 선재**(base d22f7f6a 동일 · bun `toMatch` 타입 결손) | 신규 0 |
+| 맥 로컬 전체 빌드(`build-macos-signed.sh`) | **미실행** | runtime 439MB 조립+서명+공증 경로 · 사이드카 릴리스 빌드(`bundle-prep.sh`)는 rc 0 |
+
+★뮤턴트 m9 의 이력: 초판은 `surfaces.length === 0` 가드를 겨눴는데 **SURVIVED** 했다 — 그 줄이 아무것도
+지키지 않는 줄이었기 때문이다(빈 목록에서는 고를 것이 원리적으로 없다). 줄을 걷어내고, 그 성질을 실제로
+떠받치는 것(술어의 방향)을 겨누도록 다시 조준했다. **가드를 살리려고 시험을 고치지 않았다.**
 
 ## 3. 함정 (다음 사람이 반드시 알아야 할 것)
 
@@ -62,6 +79,11 @@
 - 백업은 교체 대상과 **같은 부모 폴더**에 둔다(다른 볼륨이면 rename 이 복사가 되고 되돌리기 전제가 깨진다).
 - `#[cfg(target_os = …)]` 를 **최상위 아이템에 걸지 마라** — `blockb_no_new_file_level_cfg_gated_items` 핀이 막는다.
   함수는 모든 기판에서 컴파일되게 두고 본문(또는 호출부)에서 `cfg!()` 로 갈라라. 이 티켓도 처음에 그 핀에 걸렸다.
+- **원시 `Command::new` 는 쓰지 마라** — `raw_command_new_census_is_frozen`(src/lib.rs)이 파일별 계수를 동결해
+  두었다. 새 스폰은 `cys::hidden_command` / `hidden_tokio_command`(윈도 콘솔 창 숨김 등급이 체인에 붙는다)로 낸다.
+  이 티켓도 curl·ditto·codesign 5곳을 원시로 썼다가 그 핀에 걸렸고, 헬퍼로 옮겨 계수를 그대로 유지했다.
+- `adoptlayout.test.ts` 의 B3 호출부 핀도 **조준을 옮겼다**: 집합 이름 `adoptedWs` → `relayoutWs`(입양분 +
+  스윕분). 축(「그 ws 에만·그 뒤에 재배치」)은 그대로다.
 - `gui_spec_w3_sites_consume_sealed_builder` 핀의 조준을 **이 티켓에서 옮겼다**: `install_update`(이제 얇은
   분기 함수) → `install_update_plugin` + `restart_after_update`. 옛 조준을 그대로 뒀으면 빈 dispatcher 를 재는
   상시 초록이 됐을 자리다. 뮤턴트 `m7-w3-seal` 이 그 핀이 아직 무는지 확인한다.

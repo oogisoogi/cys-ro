@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import sys
+import re
 import tempfile
 import unittest
 
@@ -39,6 +40,8 @@ import javis_runtime_seal as rs  # noqa: E402
 
 TOOL_REL = "cysjavis-pack/bin/javis_runtime_seal.py"
 MAC_WIRING = os.path.join(REPO, "scripts", "build-macos-signed.sh")
+# 봉인 생성기 **emit** 호출 1건(하위 명령까지) — 경로만 묻던 종전 단언의 구멍을 막는다.
+EMIT_CALL_RE = re.escape(TOOL_REL) + r"\s+emit\b"
 WIN_WIRING = [os.path.join(REPO, ".github", "workflows", "release.yml"),
               os.path.join(REPO, ".github", "workflows", "windows-build.yml")]
 APP_BUNDLE_RS = os.path.join(REPO, "src", "app_bundle.rs")
@@ -47,6 +50,41 @@ APP_BUNDLE_RS = os.path.join(REPO, "src", "app_bundle.rs")
 def read(p):
     with open(p, encoding="utf-8") as f:
         return f.read()
+
+
+def mac_lane_parts():
+    """mac 레인 = **진입 스크립트 + 그것이 source 하는 lib 들**. [(경로, 본문)] 로 돌려준다.
+
+    ★재조준(TICKET=v110-integ · 2026-09-20): fix/v110-mac-x64 14964bf2 가 비-Apple 단계
+    (봉인 생성기 호출 포함)를 `scripts/lib/mac-bundle-common.sh` 로 옮겼다. 진입 스크립트 **본문만**
+    읽던 종전 판독은 그 순간 호출을 못 봐 세 시험이 적색이 됐다 — 제품 결함이 아니라
+    **간접참조가 정적 가드를 눈 멀게 한 것**이다. 검사식은 그대로 두고(무엇이 있어야 하는가는
+    안 바꿨다) **읽는 범위만** 실제 레인 모양으로 맞춘다.
+
+    lib 목록을 손으로 적지 않는다 — 진입 스크립트의 `. <경로>` / `source <경로>` 줄에서 파생한다
+    (lib 이름이 또 바뀌어도 따라간다). 적은 경로가 실재하지 않으면 **실패**다(fail-closed —
+    없는 파일을 조용히 건너뛰면 그 자리가 다시 무검증이 된다).
+    """
+    entry = read(MAC_WIRING)
+    parts = [(MAC_WIRING, entry)]
+    for line in entry.split("\n"):
+        t = line.strip()
+        if t.startswith("#"):
+            continue
+        m = re.match(r"^(?:\.|source)\s+(\S+)", t)
+        if not m:
+            continue
+        rel = m.group(1).strip('"\'')
+        if "$" in rel:          # 변수가 든 경로는 정적으로 풀 수 없다 — 따로 본다
+            continue
+        path = rel if os.path.isabs(rel) else os.path.join(REPO, rel)
+        assert os.path.isfile(path), "mac 진입 스크립트가 source 하는 파일이 없다: %s" % rel
+        parts.append((path, read(path)))
+    return parts
+
+
+def mac_lane_text():
+    return "\n".join(t for _, t in mac_lane_parts())
 
 
 class ManifestSchemaParityTests(unittest.TestCase):
@@ -116,9 +154,14 @@ class ManifestSchemaParityTests(unittest.TestCase):
     # ── ① 같은 생성기 배선 ─────────────────────────────────────────────
     def test_both_lanes_invoke_the_same_generator(self):
         self.assertTrue(os.path.isfile(MAC_WIRING), "mac 배선 파일이 사라졌다: %s" % MAC_WIRING)
-        mac = read(MAC_WIRING)
+        # 레인 = 진입 스크립트 + source 되는 lib(위 mac_lane_parts 주석 참조).
+        mac = mac_lane_text()
         self.assertIn(TOOL_REL, mac, "mac 빌드가 봉인 생성기를 부르지 않는다")
-        self.assertIn("emit", mac)
+        # ★강화(TICKET=v110-integ 뮤테이션 MP1 실측): 종전 단언은 `TOOL_REL 이 있다` + `emit 이
+        #   어딘가 있다` 두 조각이라, 같은 lib 에 `… javis_runtime_seal.py verify` 줄이 함께 있으면
+        #   **emit 호출만 지워도 초록**이었다(MP1 SURVIVED). 하위 명령을 붙여 **emit 호출 자체**를 묻는다.
+        self.assertRegex(mac, EMIT_CALL_RE,
+                         "mac 레인에 봉인 생성기 **emit** 호출이 없다(verify 줄만으로는 배선이 아니다)")
         for p in WIN_WIRING:
             self.assertTrue(os.path.isfile(p), "Windows 배선 파일이 사라졌다: %s" % p)
             src = read(p)
@@ -128,10 +171,16 @@ class ManifestSchemaParityTests(unittest.TestCase):
     def test_mac_generates_from_the_app_tree_not_the_source_tree(self):
         """★생성 지점 회귀 핀. mac 에서 소스 트리(src-tauri/runtime)로 뜨면 해시가 낡는다 —
         재서명·심링크 역참조·dedup 이 그 뒤에 오기 때문이다(2026-09-04 실측으로 확정)."""
-        mac = read(MAC_WIRING)
-        i = mac.find(TOOL_REL)
-        self.assertGreater(i, 0)
-        window = mac[i:i + 400]
+        # 창(window)은 **호출이 실제로 적힌 파일 안에서** 뜬다 — 합친 글에서 뜨면 파일 경계를
+        # 넘어 남의 줄을 근거로 삼을 수 있다.
+        # 창(window)은 **emit 호출이 실제로 적힌 파일 안에서, 그 호출 자리에서** 뜬다 —
+        # 합친 글에서 뜨면 파일 경계를 넘고, TOOL_REL 첫 등장에서 뜨면 verify 줄을 근거로 삼는다
+        # (MP1 이 그 틈으로 살아남았다).
+        hit = [(path, text, m) for path, text in mac_lane_parts()
+               for m in [re.search(EMIT_CALL_RE, text)] if m]
+        self.assertTrue(hit, "mac 레인(진입+lib) 어디에도 봉인 생성기 emit 호출이 없다")
+        path, text, m = hit[0]
+        window = text[m.start():m.start() + 400]
         self.assertIn("Contents/Resources/runtime", window,
                       "mac emit 이 .app 트리를 대상으로 하지 않는다 — 낡은 해시가 배송된다")
         self.assertNotIn("--root src-tauri/runtime", window,
@@ -141,7 +190,7 @@ class ManifestSchemaParityTests(unittest.TestCase):
     def test_manifest_basename_is_identical_everywhere(self):
         name = rs.MANIFEST_BASENAME
         self.assertEqual("runtime-manifest.json", name)
-        self.assertIn(name, read(MAC_WIRING), "mac 산출 파일명이 다르다")
+        self.assertIn(name, mac_lane_text(), "mac 산출 파일명이 다르다")
         for p in WIN_WIRING:
             self.assertIn(name, read(p), "%s 산출 파일명이 다르다" % os.path.basename(p))
         self.assertTrue(os.path.isfile(APP_BUNDLE_RS), "app_bundle.rs 가 사라졌다")

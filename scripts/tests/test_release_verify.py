@@ -214,6 +214,20 @@ def build_fixture(root, mac=True):
     for key, asset_tpl in expected.items():
         asset = asset_tpl.format(v=V)
         platforms[key] = {"signature": sigs[asset + ".sig"], "url": BASE + asset}
+        # ★darwin 행은 **6칸**이다 — 구판 절반(url·signature) + 앱 절반(zip_* 4칸).
+        #   실물 v1.1.0 발행본과 같은 모양으로 짓는다(2026-09-20 · TICKET=v110-verify-platforms).
+        #   픽스처가 4칸짜리 옛 모양이면 앱 절반 검사가 **대상을 못 만나** 상시 초록이 된다.
+        if key in rv.MAC_ZIP_BY_PLATFORM:
+            zip_name = rv.MAC_ZIP_BY_PLATFORM[key].format(v=V)
+            zip_sha = rv.sha256_file(os.path.join(root, zip_name))
+            platforms[key].update({
+                "zip_url": BASE + zip_name,
+                "zip_sha256": zip_sha,
+                "zip_size": os.path.getsize(os.path.join(root, zip_name)),
+                # CDHash 는 실물에서 잴 수 없다(zip 을 풀어 codesign 을 돌려야 한다) —
+                # 검증기가 **형식만** 보므로 40 hex 를 sha 에서 잘라 쓴다.
+                "zip_cdhash": zip_sha[:40],
+            })
     w("latest.json", json.dumps({
         "version": V,
         "notes": "cys %s — 릴리스 안내" % V,
@@ -372,8 +386,7 @@ class ReleaseVerifyTests(unittest.TestCase):
     def test_15_sig_not_base64(self):
         open(self.p("cysr_x64.app.tar.gz.sig"), "wb").write(b"!!! not base64 !!!")
         latest = self.load_latest()
-        for key in ("darwin-x86_64", "darwin-x86_64-app"):
-            latest["platforms"][key]["signature"] = "!!! not base64 !!!"
+        latest["platforms"]["darwin-x86_64"]["signature"] = "!!! not base64 !!!"
         self.save_latest(latest)
         write_sums(self.root)
         self.assert_fail("base64 가 아니다")
@@ -439,13 +452,17 @@ class ReleaseVerifyTests(unittest.TestCase):
     def test_23_updater_rows_all_repointed_to_windows_exe(self):
         """★fail-open 반증 케이스 2 — 초판이 exit 0 으로 통과시켰던 입력.
 
-        6행 전부를 Windows 설치본으로 덮는다. = macOS 업데이터가 NSIS exe 를 받는 묶음.
+        전 행의 url·signature 를 Windows 설치본으로 덮는다. = macOS 업데이터가 NSIS exe 를 받는 묶음.
+        ★2026-09-20 재조준: 행을 통째로 **대체**하면 darwin 행의 앱 절반 4칸이 사라져 ② 다음의
+          행 필드 집합 검사가 먼저 죽인다 — 그러면 이 테스트가 겨누던 ③(url 결속)은 한 번도
+          안 재진다. 그래서 칸은 그대로 두고 **값만** 덮는다(원래 취지 보존 · 4행 전부).
         """
         latest = self.load_latest()
         exe = "cysr_%s_x64-setup.exe" % V
         sig = open(self.p(exe + ".sig"), encoding="utf-8").read().strip()
         for key in latest["platforms"]:
-            latest["platforms"][key] = {"signature": sig, "url": BASE + exe}
+            latest["platforms"][key]["signature"] = sig
+            latest["platforms"][key]["url"] = BASE + exe
         self.save_latest(latest)
         write_sums(self.root)
         self.assert_fail("url 결속 위반")
@@ -508,6 +525,94 @@ class ReleaseVerifyTests(unittest.TestCase):
         self.save_latest(latest)
         write_sums(self.root)
         self.assert_fail("notes 가 비어 있거나")
+
+    # ── 6-b. darwin 행의 앱 절반(zip_*) — ⑤ (2026-09-20 · TICKET=v110-verify-platforms) ──
+    #   같은 행을 두 소비자가 나눠 쓴다: 구판(1.0.2 플러그인)=url·signature · 1.1+ 앱=zip_* 4칸.
+    #   ③④는 구판 절반만 봤다 — 앱이 실제로 받는 zip 은 이 여섯 시험이 처음 재는 축이다.
+    def test_30a_app_alias_platform_key_is_refused_as_surplus(self):
+        """`-app` 별칭 행은 **잉여로 거부**된다.
+
+        ★이 시험이 있어야 「필수에서 뺐다」가 「아무거나 받는다」로 읽히지 않는다(폐쇄 집합).
+          `-app` 을 필수로 뒀던 옛 상수가 실물을 거부한 사고(release-publish dry_run
+          35515210598)의 반대편 벽이다.
+        """
+        latest = self.load_latest()
+        latest["platforms"]["darwin-aarch64-app"] = dict(latest["platforms"]["darwin-aarch64"])
+        self.save_latest(latest)
+        write_sums(self.root)
+        msg = self.assert_fail("platforms 키 집합 오류")
+        self.assertIn("잉여 ['darwin-aarch64-app']", msg)
+        self.assertIn("기대 4종", msg)
+
+    def test_30b_zip_url_repointed_to_the_other_chip(self):
+        """앱 절반이 **다른 칩의 zip** 을 가리킨다 = Intel 맥이 arm64 앱을 받는 묶음."""
+        latest = self.load_latest()
+        latest["platforms"]["darwin-aarch64"]["zip_url"] = BASE + "cysr-macos-x64-v%s.zip" % V
+        self.save_latest(latest)
+        write_sums(self.root)
+        self.assert_fail("zip_url 결속 위반")
+
+    def test_30c_zip_sha256_mismatch(self):
+        latest = self.load_latest()
+        latest["platforms"]["darwin-x86_64"]["zip_sha256"] = "0" * 64
+        self.save_latest(latest)
+        write_sums(self.root)
+        self.assert_fail("zip_sha256 불일치")
+
+    def test_30d_zip_size_mismatch(self):
+        latest = self.load_latest()
+        latest["platforms"]["darwin-x86_64"]["zip_size"] += 1
+        self.save_latest(latest)
+        write_sums(self.root)
+        self.assert_fail("zip_size 불일치")
+
+    def test_30e_zip_size_boolean_is_refused(self):
+        """`True` 는 int 의 서브클래스다 — `isinstance` 로 받으면 크기 1 인 자산에서 통과한다.
+
+        ★층을 내려서 잰다(2026-09-20 뮤턴트 M9 실측). 전 묶음 경로로 `zip_size=True` 를 넣으면
+          **값 비교**(`True != 207397105`)가 먼저 걸러 버려서, `type(...) is not int` 가드를
+          `isinstance` 로 완화한 뮤턴트가 **살아남았다**. 그 가드가 실제로 유일한 그물이 되는
+          경우는 자산 크기가 0·1 바이트일 때뿐이라, 그 상황을 여기서 직접 만든다.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            asset = rv.MAC_ZIP_BY_PLATFORM["darwin-aarch64"].format(v=V)
+            path = os.path.join(d, asset)
+            open(path, "wb").write(b"x")          # 크기 1 — True == 1 이 성립하는 유일한 지대
+            digest = rv.sha256_file(path)
+            row = {"zip_url": BASE + asset, "zip_sha256": digest,
+                   "zip_size": True, "zip_cdhash": "a" * 40}
+            with self.assertRaises(rv.VerifyError) as cm:
+                rv.check_mac_app_half("darwin-aarch64", row, V, {asset: path}, {asset: digest}, BASE)
+            self.assertIn("zip_size 불일치", str(cm.exception))
+            # 대조군 — 같은 입력에서 정수 1 은 통과한다(위 적색이 '크기'가 아니라 '형'의 문제였음).
+            rv.check_mac_app_half("darwin-aarch64", dict(row, zip_size=1), V,
+                                  {asset: path}, {asset: digest}, BASE)
+
+    def test_30f_zip_cdhash_malformed(self):
+        """CDHash 는 값을 못 재지만(사거리 밖) **빈 칸·쓰레기 칸**은 발행 전에 죽는다."""
+        latest = self.load_latest()
+        latest["platforms"]["darwin-aarch64"]["zip_cdhash"] = "deadbeef"
+        self.save_latest(latest)
+        write_sums(self.root)
+        self.assert_fail("zip_cdhash 형식 오류")
+
+    def test_30g_darwin_row_missing_app_half_is_refused(self):
+        """앱 절반이 통째로 빠진 행 = 1.1+ 맥이 갱신을 못 받는 묶음(`macupdate.rs` fail-closed)."""
+        latest = self.load_latest()
+        del latest["platforms"]["darwin-aarch64"]["zip_cdhash"]
+        self.save_latest(latest)
+        write_sums(self.root)
+        msg = self.assert_fail("업데이터 행 필드 집합 오류")
+        self.assertIn("누락 ['zip_cdhash']", msg)
+
+    def test_30h_windows_row_with_zip_fields_is_refused(self):
+        """행 모양은 키마다 다르다 — 윈도 행에 앱 절반이 붙으면 잉여다."""
+        latest = self.load_latest()
+        latest["platforms"]["windows-x86_64"]["zip_url"] = BASE + "cysr-macos-x64-v%s.zip" % V
+        self.save_latest(latest)
+        write_sums(self.root)
+        msg = self.assert_fail("업데이터 행 필드 집합 오류")
+        self.assertIn("잉여 ['zip_url']", msg)
 
     # ── 7. 껍데기 입력 ────────────────────────────────────────────────────
     def test_31_sums_absent(self):
@@ -1468,6 +1573,30 @@ class KeyBridgeVersionProgressCrossTests(unittest.TestCase):
                 rv.load_previous_latest(url)
         self.assertIn("직전 공개판 latest.json 조회 불가", str(cm.exception))
         self.assertIn(url, str(cm.exception))
+
+
+class MacZipBindingConstants(unittest.TestCase):
+    """키→zip 결속 표가 `MAC_ASSETS`·`MAC_PLATFORMS` 와 갈리지 않는다는 불변식.
+
+    `MAC_ZIP_BY_PLATFORM` 은 `MAC_ASSETS` 의 두 이름을 **다시 적는다**(집합만으로는 어느 칩이
+    어느 zip 인지 말할 수 없기 때문). 두 벌 적은 상수는 반드시 한쪽이 뒤처지므로, 그 드리프트를
+    여기서 기계로 막는다(`mac_lane_files` 가 유도로 푸는 것과 같은 교리의 다른 판본).
+    """
+
+    def test_binding_covers_exactly_the_mac_platform_keys(self):
+        self.assertEqual(sorted(rv.MAC_ZIP_BY_PLATFORM), sorted(rv.MAC_PLATFORMS))
+
+    def test_binding_values_are_exactly_the_mac_assets(self):
+        self.assertEqual(sorted(rv.MAC_ZIP_BY_PLATFORM.values()), sorted(rv.MAC_ASSETS))
+
+    def test_no_alias_platform_keys_survive(self):
+        """`-app` 별칭이 상수로 되살아나면 dry_run 35515210598 의 사고가 그대로 재발한다.
+
+        우리 생성기 2종은 그 행을 찍지 않는다 — 상수만 되살리면 검증기가 실물을 거부한다.
+        """
+        self.assertEqual([k for k in rv.UPDATER_PLATFORMS if k.endswith("-app")], [])
+        self.assertEqual(len(rv.UPDATER_PLATFORMS), 4)
+        self.assertEqual(len(rv.MAC_PLATFORMS), 2)
 
 
 if __name__ == "__main__":

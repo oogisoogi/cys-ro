@@ -218,20 +218,43 @@ MAC_ASSETS = (
 #   (2026-08-18): v0.14.0 … v0.14.19 **21개 묶음 · 126행 전부**가 이 6키·이 결속과 일치,
 #   불일치 0. (v0.13.23 은 3키 시절이라 대상 밖 — `-app`·`-nsis` 는 tauri v2 업데이터의
 #   별칭 키이고, 옛 판본이 3키로 못박았다가 깨진 지점이 바로 여기다.)
-#   ★2026-09-09 분할 — 자산 하한선과 같은 이유로 레인을 가른다. 기대 키 집합은 **고정 6키가
-#   아니라 묶음에 따라 정해진다**: 윈도우 단독이면 2키, 맥 포함이면 6키. 어느 쪽이든 `!=` 대조라
+#   ★2026-09-09 분할 — 자산 하한선과 같은 이유로 레인을 가른다. 기대 키 집합은 **고정이 아니라
+#   묶음에 따라 정해진다**: 윈도우 단독이면 2키, 맥 포함이면 4키. 어느 쪽이든 `!=` 대조라
 #   행이 하나라도 줄거나 늘면 죽는다(fail-open 이 열리지 않는다).
+#   ★2026-09-20 개정 — 맥 포함이 **6키에서 4키로** 줄었다(TICKET=v110-verify-platforms · master
+#   기술 판정). 위 2026-08-18 실측(126행 전부 6키)은 **벤더 시절 표면**의 기록이고 그대로 유효하다.
+#   달라진 것은 우리 포크의 실물이다 — 생성기 2종(`make-update-manifest.sh` ·
+#   `make-darwin-update-row.py`)은 `-app` 별칭 행을 **찍은 적이 없다**. 그래서 `-app` 을 필수로 둔
+#   이 칸이 우리 실물을 거부했다: release-publish dry_run 35515210598 verify 잡 FAIL
+#   「latest.json platforms 키 집합 오류(맥 포함 묶음) — 누락 ['darwin-aarch64-app',
+#   'darwin-x86_64-app'] · 잉여 없음 (기대 6종 …)」.
+#   소비자 쪽 실측: tauri-plugin-updater 는 `<target>-<bundle>` 을 못 찾으면 `<target>` 로 폴백한다
+#   (`src-tauri/src/main.rs` 회귀 핀 `updater_target_absent_folds_only_the_two_missing_target_variants`
+#   의 `TargetsNotFound(["darwin-aarch64-app", "darwin-aarch64"])` = 플러그인이 두 이름을 차례로
+#   시도했다는 뜻). 1.0.2→1.1 맥 갱신 실기(VM S2)도 plain 키만 있는 매니페스트로 합격했다.
+#   ⇒ `-app` 행은 **어떤 소비자도 읽지 않는 벤더 잔재**다.
+#   ⚠완화가 아니다 — `!=` 대조를 그대로 뒀으므로 `-app` 이 다시 섞여 들어오면 이제 **잉여로 거부**
+#   된다(폐쇄 집합 유지). 되살릴 일이 생기면 상수가 아니라 생성기부터 고쳐야 한다.
 REQUIRED_PLATFORMS = {
     "windows-x86_64":      "cysr_{v}_x64-setup.exe",
     "windows-x86_64-nsis": "cysr_{v}_x64-setup.exe",
 }
 MAC_PLATFORMS = {
-    "darwin-aarch64":      "cysr_aarch64.app.tar.gz",
-    "darwin-aarch64-app":  "cysr_aarch64.app.tar.gz",
+    "darwin-aarch64":      "cysr_aarch64.app.tar.gz",   # 구판(1.0.2 플러그인)이 받는 절반
     "darwin-x86_64":       "cysr_x64.app.tar.gz",
-    "darwin-x86_64-app":   "cysr_x64.app.tar.gz",
 }
-# 맥 포함 묶음의 기대 전집합(종전 상수와 같은 6키) — 외부 소비자·테스트가 이 이름을 쓴다.
+# ★darwin 행의 **앱 절반**(1.1+ `src-tauri/src/macupdate.rs` 가 받는 zip)의 키→자산 결속.
+#   `MAC_PLATFORMS` 가 구판 절반(url=tar.gz)을 못박는 그 자리에서 앱 절반을 못박는다.
+#   값은 `MAC_ASSETS` 의 두 이름과 같아야 한다 — 그 불변식은 시험이 대조한다
+#   (`test_release_verify.py` · MacZipBindingConstants). 굳이 둘로 적는 이유: `MAC_ASSETS` 는
+#   **집합**이라 "어느 칩이 어느 zip 인지"를 말하지 않는데, 결속은 그 대응이 있어야 성립한다.
+MAC_ZIP_BY_PLATFORM = {
+    "darwin-aarch64":      "cysr-macos-arm64-v{v}.zip",
+    "darwin-x86_64":       "cysr-macos-x64-v{v}.zip",
+}
+# darwin 행에만 있는 앱 절반 4칸(윈도 행에 있으면 잉여로 거부된다).
+MAC_ROW_ZIP_FIELDS = ("zip_url", "zip_sha256", "zip_size", "zip_cdhash")
+# 맥 포함 묶음의 기대 전집합(4키) — 외부 소비자·테스트가 이 이름을 쓴다.
 UPDATER_PLATFORMS = dict(REQUIRED_PLATFORMS, **MAC_PLATFORMS)
 # latest.json 최상위 필드 집합 — notes 삭제·임의 키 주입을 잡는다(0418f17 판본에서 계승).
 LATEST_JSON_FIELDS = {"version", "notes", "pub_date", "platforms", "build_id"}
@@ -239,6 +262,10 @@ LATEST_JSON_FIELDS = {"version", "notes", "pub_date", "platforms", "build_id"}
 #   구별하는 표식. release.yml `stamp-latest-build-id` 잡이 병기한다. 형식 = `<커밋 12자>.<커밋 시각
 #   UTC yyyymmddTHHMMZ>`. 발행물에 `-dirty` 는 허용하지 않는다(CI 는 깨끗한 체크아웃에서만 빌드한다).
 BUILD_ID_RE = re.compile(r"^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$")
+# ★CDHash 형식 — codesign 이 내는 SHA-1 축약본 40 hex. 대소문자는 둘 다 받는다(앱 쪽
+#   `macupdate.rs` 가 `to_lowercase()` 로 정규화해 비교한다 — 여기서 대문자를 거부하면
+#   런타임이 받아들이는 값을 발행에서 막는 셈이라 기준이 갈린다).
+CDHASH_RE = re.compile(r"[0-9a-fA-F]{40}")
 
 # ★독립 하한선 ③ — 확장자별 컨테이너 지문. 이름만 맞고 알맹이가 0바이트/쓰레기인 묶음을 잡는다.
 #   전부 로컬 백업 v0.14.19 실측으로 대조했다(2026-08-18 · 13종 전수):
@@ -467,6 +494,41 @@ def decide_mac_lane(version, listed):
     return True
 
 
+def check_mac_app_half(key, row, version, files, sums, base):
+    """darwin 행의 **앱 절반**(zip_* 4칸)을 실물 배포 zip 에 결속한다 — 1.1+ 맥 앱의 유일한 정박점.
+
+    같은 행을 두 소비자가 나눠 쓴다(`make-darwin-update-row.py` 머리말):
+      · 구판(1.0.2 플러그인) = `url`(.app.tar.gz) + `signature` → `check_latest_json` ③④가 본다.
+      · 1.1+ 앱(`src-tauri/src/macupdate.rs`) = `zip_url` + `zip_sha256`·`zip_size`·`zip_cdhash`.
+    앱 절반에 아무 검사가 없으면 darwin 행이 **엉뚱한 zip**(다른 칩·윈도 자산·지난 판)을 가리켜도,
+    sha256·크기를 아무 값으로 적어도 발행이 통과한다 — 받는 쪽에서야 죽는다. ③이 구판 절반에
+    하던 일을 앱 절반에 그대로 한 번 더 하는 것이 이 함수다.
+
+    ★사거리 — CDHash 는 **형식만** 본다. 실제 값을 재려면 zip 을 풀어 `codesign` 을 돌려야 하는데
+      이 검증기는 리눅스 러너에서도 돌아야 한다(머리말의 "오프라인·단독"). 값 자체의 대조는 받는
+      쪽(`macupdate.rs` `verify_cdhash`)이 설치 직전에 한다 — 여기서 막는 것은 "빈 칸·쓰레기 칸을
+      단 채 발행되는 것"이다.
+    """
+    asset = MAC_ZIP_BY_PLATFORM[key].format(v=version)
+    expected_url = base + asset
+    if row["zip_url"] != expected_url:
+        raise VerifyError("업데이터 zip_url 결속 위반: %s → %r (기대 %s)"
+                          % (key, row["zip_url"], expected_url))
+    if asset not in sums:
+        raise VerifyError("업데이터 zip 이 등재되지 않은 자산을 가리킨다: %s → %s" % (key, asset))
+    if row["zip_sha256"] != sums[asset]:
+        raise VerifyError("업데이터 zip_sha256 불일치: %s (%s) — 행 %r · SUMS %r"
+                          % (key, asset, row["zip_sha256"], sums[asset]))
+    actual_size = os.path.getsize(files[asset])
+    # type(...) is not int — bool 은 int 의 서브클래스라 isinstance 로는 True 가 통과한다.
+    if type(row["zip_size"]) is not int or row["zip_size"] != actual_size:
+        raise VerifyError("업데이터 zip_size 불일치: %s (%s) — 행 %r · 실물 %d B"
+                          % (key, asset, row["zip_size"], actual_size))
+    if not isinstance(row["zip_cdhash"], str) or not CDHASH_RE.fullmatch(row["zip_cdhash"]):
+        raise VerifyError("업데이터 zip_cdhash 형식 오류: %s → %r (기대 40 hex)"
+                          % (key, row["zip_cdhash"]))
+
+
 def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
     """업데이터 정본 대조 — 앱 내 Update 버튼이 실제로 무엇을 받게 되는지 본다.
 
@@ -475,11 +537,15 @@ def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
       ② platforms **키 집합** == 이 묶음의 기대 키 집합 — 행이 줄면 그 행에 걸린 검사도
          함께 사라진다(fail-open).
          ★기대 집합은 고정이 아니라 `mac_included`(디렉터리 실측 판정)로 정해진다:
-           윈도우 단독 = `REQUIRED_PLATFORMS` 2키 · 맥 포함 = `UPDATER_PLATFORMS` 6키.
+           윈도우 단독 = `REQUIRED_PLATFORMS` 2키 · 맥 포함 = `UPDATER_PLATFORMS` 4키
+           (2026-09-20 개정 전에는 6키였다 — `-app` 별칭 2행이 우리 생성기가 찍지 않는 벤더
+            잔재였다. `MAC_PLATFORMS` 주석 참조. 지금은 섞여 들어오면 **잉여로 거부**된다).
            **디렉터리 쪽 판정을 업데이터 표면에 그대로 들이대는 것이 이 배선의 핵심**이다 —
            DMG 는 올려놓고 darwin 행을 빠뜨린 묶음(그리고 그 반대)이 여기서 죽는다.
       ③ 키 → **자산 결속** — darwin 행이 Windows 설치본을 가리키는 묶음이 여기서 죽는다.
       ④ 가리킨 자산과 그 `.sig` 가 SUMS 에 등재돼 있고, signature 값 == `.sig` 파일 내용.
+      ⑤ darwin 행의 **앱 절반**(zip_* 4칸) 결속 — `check_mac_app_half`. ③④가 구판 절반만 보던
+         자리라, 1.1+ 앱이 실제로 받는 zip 은 2026-09-20 까지 아무도 안 봤다.
     ①②③ 은 실측으로 반증당해 뒤늦게 채운 구멍이다 — 없앨 때는 반증부터 다시 하라.
     """
     try:
@@ -535,8 +601,17 @@ def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
     base = "https://github.com/%s/releases/download/v%s/" % (repo, version)
     for key in sorted(platforms):
         row = platforms[key]
-        if not isinstance(row, dict) or set(row) != {"signature", "url"}:
-            raise VerifyError("업데이터 행 필드 집합 오류: %s" % key)
+        # ★행 모양은 키마다 다르다 — darwin 행만 앱 절반 4칸을 더 갖는다(2026-09-20).
+        #   윈도 행에 zip_* 가 붙어도, darwin 행에서 한 칸이 빠져도 여기서 죽는다(폐쇄 집합).
+        expected_fields = {"signature", "url"}
+        if key in MAC_ZIP_BY_PLATFORM:
+            expected_fields = expected_fields | set(MAC_ROW_ZIP_FIELDS)
+        if not isinstance(row, dict) or set(row) != expected_fields:
+            raise VerifyError("업데이터 행 필드 집합 오류: %s — 누락 %s · 잉여 %s (기대 %s)"
+                              % (key,
+                                 sorted(expected_fields - set(row)) if isinstance(row, dict) else "판정불가",
+                                 sorted(set(row) - expected_fields) if isinstance(row, dict) else "판정불가",
+                                 sorted(expected_fields)))
         # ── ③ 키 → 자산 결속 ── (darwin 행이 Windows 설치본을 가리키는 사고를 막는다)
         asset = expected_platforms[key].format(v=version)
         expected_url = base + asset
@@ -554,6 +629,9 @@ def check_latest_json(version, files, sums, mac_included, repo=RELEASE_REPO):
             raise VerifyError("서명 파일이 비어 있다: %s" % sig_name)
         if row["signature"] != expected:
             raise VerifyError("업데이터 서명 불일치: %s (%s)" % (key, sig_name))
+        # ── ⑤ 앱 절반(zip_*) 결속 ── (darwin 행에만 있다 — 윈도 행에는 없는 것이 정상)
+        if key in MAC_ZIP_BY_PLATFORM:
+            check_mac_app_half(key, row, version, files, sums, base)
     return sorted(platforms)
 
 

@@ -13219,11 +13219,35 @@ fn file_has_checkpoint_nonce(path: &std::path::Path, nonce: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 노드 canonical 체크포인트 파일 = <live_cwd>/_round/SESSION_STATE.md (단일 복원 진실).
+/// 【레거시】 공유 체크포인트 파일 = <live_cwd>/_round/SESSION_STATE.md.
+/// ★[V111-F3] 여기에 마커를 쓰는 것이 결함이었다 — 두 노드의 live_cwd 가 같으면(부서 cwd 수렴·팩 상주
+/// 노드) **같은 파일**을 가리키고, 지시문이 "옛 마커 라인을 지우고 한 줄만 남겨라"라 했으므로 **나중 노드가
+/// 먼저 노드의 마커를 지웠다**(2026-09-21 08:12 실기: worker 가 08:12:15 에 기입 완료했는데 cso 가 덮어
+/// 0/3 으로 보고 — 마커 끝자리 -34/-35). 이제 쓰기 대상은 `checkpoint_file_for`(노드 전용)이고 이 함수는
+/// **읽기 전용 호환 경로**로만 남는다(1.1.0 기기에서 올라온 옛 줄도 같은 nonce면 인정).
 fn canonical_checkpoint_file(live_cwd: &str) -> std::path::PathBuf {
     std::path::Path::new(live_cwd)
         .join("_round")
         .join("SESSION_STATE.md")
+}
+
+/// ★[V111-F3] 노드 **전용** 체크포인트 파일 = <live_cwd>/_round/checkpoint-<소켓구별자>-<surface_id>.md.
+/// 【왜 파일 분리인가 — 「SESSION_STATE 안 surface 별 줄」 대안을 버린 근거 1줄】 같은 파일에 줄만 나누면
+/// 두 노드(LLM)가 **같은 파일을 동시에 읽고-고쳐-쓴다** — 마지막 기록자가 상대 줄을 통째로 날리는
+/// last-writer-wins 가 그대로 남는다(공용 인박스에서 세 번 실증된 그 병이다). 파일을 가르면 그 경합
+/// 자체가 사라져 충돌 0 이다.
+/// 【왜 이름에 소켓 구별자까지】 surface_id 는 **데몬별 네임스페이스**라 소켓이 다르면 같은 번호가 난다
+/// ([F1] nonce 가 이미 같은 이유로 구별자를 쓴다) — 파일명만 sid 면 부서 cwd 수렴 시 다시 겹친다.
+fn checkpoint_file_for(
+    live_cwd: &str,
+    socket: &std::path::Path,
+    surface_id: u64,
+) -> std::path::PathBuf {
+    std::path::Path::new(live_cwd).join("_round").join(format!(
+        "checkpoint-{:x}-{}.md",
+        socket_discriminator(socket),
+        surface_id
+    ))
 }
 
 /// [F1] 소켓 경로별 안정 구별자(FNV-1a) — nonce에 섞어 크로스소켓(같은 sid) 충돌을 막는다. 결정론(런타임
@@ -13241,7 +13265,12 @@ fn socket_discriminator(socket: &std::path::Path) -> u64 {
 /// 화면에서 '현재 입력창 영역'만 잘라낸다 — 마지막 입력 앵커(입력 박스 상단 '╭' 또는 줄 시작 '> ' 프롬프트)
 /// 이후 끝까지. 제출된 텍스트는 이 영역 **위**(스크롤백)에 렌더되고, 미제출 입력은 이 영역 **안**에 잔류한다.
 /// 앵커가 없으면(구/미지 TUI) 전체 화면을 반환한다(보수적 — 놓친 wedge=저장 유실이 과검출보다 위험).
-fn input_region(screen: &str) -> &str {
+/// `input_region` 의 실측판 — (영역, **앵커를 실제로 찾았는가**). ★[V111-F2] 앵커가 없으면 전체 화면을
+/// 돌려주는데(보수적 폴백), 그때의 매치는 「입력창에 잔류한다」가 아니라 **「입력창이 어디인지 모른다」**다.
+/// 둘을 같은 bool 로 접으면 스크롤백 에코가 「입력 미제출」로 **단정**된다 — 09-21 실기에서 마커를 실제로
+/// 기입한 worker 가 `delivery_failed`(지시 전달 실패)로 표기된 자리다. 그래서 행동(Return 재전송)은
+/// 종전대로 보수적으로 두되 **판정 라벨은 앵커 실측일 때만** 붙인다.
+fn input_region_anchored(screen: &str) -> (&str, bool) {
     let box_top = screen.rfind('╭');
     let prompt = if screen.starts_with("> ") {
         Some(0)
@@ -13249,37 +13278,92 @@ fn input_region(screen: &str) -> &str {
         screen.rfind("\n> ").map(|i| i + 1)
     };
     match box_top.into_iter().chain(prompt).max() {
-        Some(i) => &screen[i..],
-        None => screen,
+        Some(i) => (&screen[i..], true),
+        None => (screen, false),
     }
 }
 
-/// 전달확정 게이트 판정 — 제출되면 주입 텍스트가 위로 스크롤되고 하단 입력창엔 스피너/빈 프롬프트만 남는다.
-/// Return 미발화(known bug)면 주입 텍스트가 입력창에 잔류하므로 sentinel이 입력창에 남는다.
-/// ★[F1] 실터미널은 긴 지시문을 물리적으로 줄바꿈(래핑)하고 입력창 하단에 테두리·단축키·토큰카운터 UI가
-///   따라붙어 sentinel이 최하단에서 밀리거나 물리 행 경계에서 쪼개진다 — 그래도 검출하려 공백·개행을
-///   제거하고 매치한다(구 tail-4행 스캔은 놓쳐 Return 재전송 미발화·저장 유실).
-/// ★[R2·R3 수리] 단 '화면 어디든'이 아니라 **입력창 영역(input_region)** 안에서만 매치한다 — 제출된
-///   스크롤백 에코(nonce 포함)를 wedge로 오검출하면 ①승인 프롬프트 대기 노드에 잉여 Return을 쏘아 의도외
-///   확정 위험(R2), ②delivery_failed↔timeout 라벨 변별 소실(R3). 미제출 입력은 입력창 영역에·제출 에코는
-///   그 위(스크롤백)에 있으므로 영역 한정 매치가 둘을 가른다. 앵커 부재 TUI는 전체 매치로 폴백(F1 보존).
-fn delivery_wedged(screen: &str, sentinel: &str) -> bool {
-    let region = input_region(screen);
-    let flat: String = region.chars().filter(|c| !c.is_whitespace()).collect();
-    let needle: String = sentinel.chars().filter(|c| !c.is_whitespace()).collect();
-    !needle.is_empty() && flat.contains(&needle)
+/// 제출 실측 3상태 — 「제출됐다」·「제출 안 됐다」·「못 쟀다」를 배타적으로 가른다(추정 금지).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SubmitProbe {
+    /// 입력창 앵커를 찾았고 그 안에 sentinel 이 없다 = 제출 실측.
+    Submitted,
+    /// 입력창 앵커를 찾았고 그 안에 sentinel 이 잔류한다 = 미제출 실측.
+    NotSubmitted,
+    /// 입력창 앵커를 못 찾았다 = 측정 실패. **미제출과 구별되는 별도 상태**다.
+    Unmeasured,
+}
+
+/// 화면에서 제출 여부를 실측한다 — 반환=(3상태, 의심 여부). `의심`=화면 어디든 sentinel 이 공백 제거
+/// 매치(구 [F1] 전체 매치와 동일 술어) → **행동**(Return 재전송)의 트리거로만 쓰고 **판정**에는 쓰지 않는다.
+fn submit_probe(screen: &str, sentinel: &str) -> (SubmitProbe, bool) {
+    let flat_of = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
+    let needle = flat_of(sentinel);
+    if needle.is_empty() {
+        return (SubmitProbe::Unmeasured, false);
+    }
+    let suspect = flat_of(screen).contains(&needle);
+    let (region, anchored) = input_region_anchored(screen);
+    if !anchored {
+        return (SubmitProbe::Unmeasured, suspect);
+    }
+    if flat_of(region).contains(&needle) {
+        (SubmitProbe::NotSubmitted, true)
+    } else {
+        (SubmitProbe::Submitted, false)
+    }
 }
 
 /// 저장 지시문 생성 — ★[R1] 마커 기입을 '정지' 지시보다 **앞**(단계 ①)에 둔다. 지시문을 순서대로
 /// 리터럴 실행하는 노드가 '정지'를 먼저 만나면 이후 마커 기입을 건너뛰어 '저장했으나 timeout' 오판정이
 /// 났다(직전 F1 수리가 마커를 끝으로 옮기며 역전됨). F1의 wedge 검출은 위치 무관 전체 매치라 마커가
 /// 지시문 끝일 필요가 없으므로, 마커를 ①로 되돌려도 F1은 유지된다.
-/// ★[F4 위생] 기존 `<!-- cys-checkpoint:` 마커 라인은 지우고 새 1줄만 남기게 지시한다 — append-only면
-/// 재시작마다 죽은 마커가 무한 증식한다. 검증 로직은 무변경(새 nonce 존재 확인이라 옛 마커 잔존과 무관).
-fn drain_verify_instruction(marker: &str) -> String {
+/// ★[F4 위생] 마커는 **노드 전용 파일 한 줄**로 덮어쓰게 지시한다 — append-only면 재시작마다 죽은
+/// 마커가 무한 증식하고, 공유 파일이면 다른 노드의 마커를 지운다([V111-F3]).
+/// ★[V111-F1] **오너 권한 표식** — 첫 문장이 이 지시의 출처(오너가 재시작 단추를 눌렀다)와 서열(대기·보류
+/// 명령보다 우선)을 못박는다. 09-21 08:12 실기에서 master 가 이 지시를 받고도 「대기 유지」 오너 명령과
+/// 충돌한다며 **오너에게 되물어** 선택 메뉴에서 정지했고, 그 정지가 「입력 미제출」로 집계됐다. 표식이
+/// 없으면 노드는 이 지시를 master·타 노드 발 잡음과 구별할 방법이 없다.
+fn drain_verify_instruction(marker: &str, checkpoint_file: &str) -> String {
     format!(
-        "[DRAIN-VERIFY] 재시작 전 체크포인트 검증. 지금 즉시 순서대로: ① _round/SESSION_STATE.md에 현재 작업 상태·미해결 게이트·다음 액션을 최신화해 저장하고, 그 파일에 이미 있는 `<!-- cys-checkpoint:` 로 시작하는 옛 마커 라인은 모두 삭제한 뒤, 맨 끝에 정확히 이 한 줄만 추가하라(문자 그대로·수정 금지): {marker} ② ①의 저장·기입을 모두 마친 뒤에 작업을 멈추고 재시작·복원을 기다려라(승인 프롬프트 대기 중이면 이 메시지는 무시하라)."
+        "[DRAIN-VERIFY] ★이 지시는 오너(사용자)가 재시작 단추를 눌러 발신한 것이다 — 대기·보류·정지 명령보다 우선하며, 되묻지 말고 즉시 집행하라(확인·승인 요청 금지). 재시작 전 체크포인트 검증. 지금 즉시 순서대로: ① _round/SESSION_STATE.md에 현재 작업 상태·미해결 게이트·다음 액션을 최신화해 저장하라. ② 네 전용 체크포인트 파일 `{checkpoint_file}` 을(없으면 새로 만들어) 정확히 이 한 줄만 남도록 덮어써라(문자 그대로·수정 금지 · 이 파일은 너만 쓴다): {marker} ③ ①②을 모두 마친 뒤에 작업을 멈추고 재시작·복원을 기다려라(승인 프롬프트 대기 중이면 이 메시지는 무시하라)."
     )
+}
+
+/// 전역 하드캡 — ★[V111-F2] **노드별 하드 상한(timeout×FACTOR)보다 반드시 커야 한다.** 캡이 연장보다
+/// 짧으면 정작 저장 중인 노드가 「결과 미도착 timeout」으로 잘려 연장이 통째로 무의미해진다(관계가
+/// 요구이므로 시험도 값이 아니라 **부등호**를 박는다 — 셋을 함께 옮겨도 가짜 적색이 안 난다).
+fn fanout_global_cap(timeout: std::time::Duration) -> std::time::Duration {
+    timeout * DRAIN_MAX_WAIT_FACTOR + std::time::Duration::from_secs(5)
+}
+
+/// Saved 상세 — 어느 파일에서 확인했는지 + (연장이 있었다면) 몇 번 연장했고 상한이 얼마였는지.
+/// ★연장 사실을 여기 적지 않으면 「왜 이 재시작이 오래 걸렸나」가 기록에서 사라진다.
+fn saved_detail(hit: &std::path::Path, extended: u32, timeout: std::time::Duration) -> String {
+    if extended > 0 {
+        format!(
+            "nonce 마커 확인: {} · 활동 관측으로 {extended}회 연장(하드 상한 {}s)",
+            hit.display(),
+            (timeout * DRAIN_MAX_WAIT_FACTOR).as_secs()
+        )
+    } else {
+        format!("nonce 마커 확인: {}", hit.display())
+    }
+}
+
+/// 노드별 대기 연장 상수 — ★[V111-F2] 「마지막 활동 기준 연장(상한 명시)」.
+/// 기본 상한(`timeout`) 안에 못 끝낸 노드라도 **화면이 계속 변하고 있으면**(= 지금 저장하는 중이면) 기다린다.
+/// 연장은 무제한이 아니라 `timeout × DRAIN_MAX_WAIT_FACTOR` 하드 상한에서 멈추고, 그 뒤엔 확인 창 없이
+/// 자동으로 재시작이 진행된다(오너 최상위 원칙: 중간에 묻는 단계 0).
+const DRAIN_MAX_WAIT_FACTOR: u32 = 2;
+/// 활동 관측 주기 상한 — 파일 폴링(400ms)보다 성기게 둔다(소켓 RPC 비용).
+const DRAIN_ACTIVITY_PROBE_MAX_MS: u64 = 2000;
+
+/// 활동 관측 주기 — ★상한(2s)을 그냥 쓰면 **기본 상한이 짧을 때 관측이 한 번도 안 일어나** 연장이
+/// 죽은 코드가 된다(주기 > 상한). 기본 상한의 1/3 로 잡되 파일 폴링 주기(400ms)보다 잦지 않게 한다.
+fn activity_probe_interval(timeout: std::time::Duration) -> std::time::Duration {
+    let ms = (timeout.as_millis() as u64 / 3).clamp(400, DRAIN_ACTIVITY_PROBE_MAX_MS);
+    std::time::Duration::from_millis(ms)
 }
 
 /// phoenix 복원이 이 소켓의 이 역할에 대해 진행 중인가 — 진행 중이면 Some(사유), 아니면 None.
@@ -13569,26 +13653,35 @@ fn verify_one_node(
             "live_cwd 미제공(구버전 데몬) — 검증불가(무음 폴백 금지)".into(),
         );
     };
-    let file = canonical_checkpoint_file(cwd);
-    // ★[F1 수리] 크로스소켓 nonce 충돌 방지: surface_id는 데몬별 네임스페이스라 서로 다른 소켓의 두 노드가
-    // 같은 sid + 같은 live_cwd(전 부서 cwd 수렴 실측 있음)면 nonce·파일이 동일해져, 주입 안 한 노드가 타
-    // 노드 마커를 자기 것으로 오인해 Saved 위양성(→재시작 체크포인트 유실)이 났다. results가 idx 키잉으로
-    // sid 충돌을 이미 회피했는데 nonce만 sid에 남아 불일치였다. 소켓 안정 구별자를 nonce에 추가해 정합화.
+    // ★[V111-F3] 쓰기 대상 = 노드 전용 파일. 읽기는 전용 파일 ∪ 레거시 공유 파일(1.1.0 호환).
+    let file = checkpoint_file_for(cwd, &t.socket, t.surface_id);
+    let legacy = canonical_checkpoint_file(cwd);
     let nonce = format!(
         "{nonce_prefix}-{:x}-{}",
         socket_discriminator(&t.socket),
         t.surface_id
     );
+    // nonce 는 run·소켓·surface 로 유일하므로 어느 파일에서 나오든 **내 마커**다 — 옛 자리(SESSION_STATE)에
+    // 쓴 노드도 인정한다(위양성 없음: 다른 노드는 다른 nonce 다).
+    let marked = |file: &std::path::Path, legacy: &std::path::Path| -> Option<std::path::PathBuf> {
+        if file_has_checkpoint_nonce(file, &nonce) {
+            Some(file.to_path_buf())
+        } else if file_has_checkpoint_nonce(legacy, &nonce) {
+            Some(legacy.to_path_buf())
+        } else {
+            None
+        }
+    };
     let marker = checkpoint_marker(&nonce, now);
     // 이미 이 nonce가 있으면 즉시 통과(프로세스 내 재호출 idempotent)
-    if file_has_checkpoint_nonce(&file, &nonce) {
+    if let Some(hit) = marked(&file, &legacy) {
         return (
             VerifyOutcome::Saved,
-            format!("nonce 마커 확인: {}", file.display()),
+            format!("nonce 마커 확인: {}", hit.display()),
         );
     }
     // 3) 저장 지시 주입 — nonce 마커 기입 + 작업 중단.
-    let instr = drain_verify_instruction(&marker);
+    let instr = drain_verify_instruction(&marker, &file.to_string_lossy());
     let io_to = std::cmp::min(timeout, Duration::from_secs(8));
     if let Err(e) = io.inject(&t.socket, t.surface_id, &instr, io_to) {
         // ★(U-14) 관문 보류는 소켓 hung 이 **아니다** — 소켓은 멀쩡했고 우리가 스스로 안 보냈다.
@@ -13607,46 +13700,90 @@ fn verify_one_node(
             "소켓 hung — 저장 지시 RPC 타임아웃(전역 캡 내)".into(),
         );
     }
-    // 4) 전달확정 게이트 — 빈 프롬프트+스피너 확인, wedge(하단 입력창 잔류)면 Return 재전송
+    // 4) 전달확정 게이트 — 입력창을 실측해 제출 여부를 가른다(Submitted/NotSubmitted/Unmeasured).
     std::thread::sleep(Duration::from_millis(600));
     // ★[F1] 24행 읽기 — 래핑된 지시문 전체 + 하단 입력창 UI 행을 포괄(구 6행은 래핑 시 sentinel 유실).
-    let mut wedged = io
-        .read_screen(&t.socket, t.surface_id, 24, io_to)
-        .map(|s| delivery_wedged(&s, &nonce))
-        .unwrap_or(false);
-    if wedged {
+    let mut screen = io.read_screen(&t.socket, t.surface_id, 24, io_to).ok();
+    let (mut probe, suspect) = screen
+        .as_deref()
+        .map(|s| submit_probe(s, &nonce))
+        .unwrap_or((SubmitProbe::Unmeasured, false));
+    if suspect {
+        // ★행동은 종전대로 보수적(의심이면 Return 재전송) — 판정만 실측으로 좁혔다([V111-F2]).
         let _ = io.send_return(&t.socket, t.surface_id, io_to);
         std::thread::sleep(Duration::from_millis(800));
-        wedged = io
-            .read_screen(&t.socket, t.surface_id, 24, io_to)
-            .map(|s| delivery_wedged(&s, &nonce))
-            .unwrap_or(wedged);
+        if let Ok(s2) = io.read_screen(&t.socket, t.surface_id, 24, io_to) {
+            let (p2, _s2sus) = submit_probe(&s2, &nonce);
+            probe = p2;
+            screen = Some(s2);
+        }
     }
     // 5) nonce 파일 폴링(로컬 FS — 소켓 hung과 무관하게 저장 검출)
-    let deadline = Instant::now() + timeout;
+    //    ★[V111-F2] 노드별 마지막 활동 기준 연장: 화면이 계속 바뀌는(= 일하는 중인) 노드는 기본 상한을
+    //    넘겨도 `timeout × DRAIN_MAX_WAIT_FACTOR` 하드 상한까지 기다린다. 활동이 멎으면 더 안 늘어난다.
+    let started = Instant::now();
+    let hard_stop = started + timeout * DRAIN_MAX_WAIT_FACTOR;
+    let mut deadline = started + timeout;
+    let mut last_screen = screen;
+    let probe_every = activity_probe_interval(timeout);
+    let mut next_probe = Instant::now() + probe_every;
+    let mut extended = 0u32;
     while Instant::now() < deadline {
-        if file_has_checkpoint_nonce(&file, &nonce) {
+        if let Some(hit) = marked(&file, &legacy) {
             return (
                 VerifyOutcome::Saved,
-                format!("nonce 마커 확인: {}", file.display()),
+                saved_detail(&hit, extended, timeout),
             );
+        }
+        if Instant::now() >= next_probe {
+            next_probe = Instant::now() + probe_every;
+            if let Ok(cur) = io.read_screen(&t.socket, t.surface_id, 24, io_to) {
+                let (p, _) = submit_probe(&cur, &nonce);
+                probe = p;
+                let changed = last_screen.as_deref() != Some(cur.as_str());
+                last_screen = Some(cur);
+                if changed && deadline < hard_stop {
+                    // 활동 관측 — 기본 상한만큼 더 주되 하드 상한을 넘지 않는다.
+                    let want = Instant::now() + timeout;
+                    deadline = if want < hard_stop { want } else { hard_stop };
+                    extended += 1;
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(400));
     }
-    if wedged {
-        (
-            VerifyOutcome::DeliveryFailed,
-            "입력 미제출(wedge) — Return 재전송에도 저장 미검출".into(),
-        )
+    // 마지막으로 한 번 더 — 마감과 폴링 사이(최대 400ms)에 기입됐을 수 있다.
+    if let Some(hit) = marked(&file, &legacy) {
+        return (VerifyOutcome::Saved, saved_detail(&hit, extended, timeout));
+    }
+    let waited = started.elapsed().as_secs();
+    let ext = if extended > 0 {
+        format!(" · 활동 관측으로 {extended}회 연장(하드 상한 {}s)", (timeout * DRAIN_MAX_WAIT_FACTOR).as_secs())
     } else {
-        (
+        String::new()
+    };
+    // ★[V111-F2] 「입력 미제출」은 **앵커 실측**일 때만 붙인다 — 못 잰 것을 미제출로 단정하지 않는다.
+    match probe {
+        SubmitProbe::NotSubmitted => (
+            VerifyOutcome::DeliveryFailed,
+            format!(
+                "근거: 입력창 실측 — 지시문이 입력창에 잔류(미제출) · Return 재전송에도 마커 미검출({waited}s){ext}"
+            ),
+        ),
+        SubmitProbe::Submitted => (
             VerifyOutcome::Timeout,
             format!(
-                "{}s 내 nonce 마커 미검출: {}",
-                timeout.as_secs(),
+                "근거: 입력창 실측 — 제출됨(입력창 비움) · {waited}s 내 nonce 마커 미검출: {}{ext}",
                 file.display()
             ),
-        )
+        ),
+        SubmitProbe::Unmeasured => (
+            VerifyOutcome::Timeout,
+            format!(
+                "근거: 제출 여부 판정불가(입력창 앵커 미검출 — 미제출로 단정하지 않음) · {waited}s 내 nonce 마커 미검출: {}{ext}",
+                file.display()
+            ),
+        ),
     }
 }
 
@@ -13660,7 +13797,7 @@ fn drain_verify_fanout(
 ) -> Value {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
-    let global_cap = timeout + Duration::from_secs(5);
+    let global_cap = fanout_global_cap(timeout);
     let nonce_prefix = format!("{now}-{}", std::process::id());
     let (tx, rx) = std::sync::mpsc::channel::<(usize, VerifyOutcome, String)>();
     let total = targets.len();
@@ -13727,7 +13864,7 @@ fn drain_verify_fanout(
             "surface": t.surface_ref,
             "socket": t.socket.to_string_lossy(),
             "live_cwd": t.live_cwd,
-            "checkpoint_file": t.live_cwd.as_deref().map(|c| canonical_checkpoint_file(c).to_string_lossy().into_owned()),
+            "checkpoint_file": t.live_cwd.as_deref().map(|c| checkpoint_file_for(c, &t.socket, t.surface_id).to_string_lossy().into_owned()),
             "outcome": outcome.as_str(),
             "detail": detail,
             "pending_undelivered": t.pending_undelivered,
@@ -13736,6 +13873,9 @@ fn drain_verify_fanout(
     json!({
         "mode": "drain-verify",
         "timeout_secs": timeout.as_secs(),
+        // ★[V111-F2] 상한 명시 — 활동 중인 노드에 허용되는 **최대** 대기(연장 포함). 이 값을 넘기면
+        // 확인 창 없이 자동으로 재시작이 진행된다(오너 최상위 원칙).
+        "max_wait_secs": (timeout * DRAIN_MAX_WAIT_FACTOR).as_secs(),
         "total": total,
         "nodes": nodes,
         "summary": {
@@ -13816,7 +13956,9 @@ fn drain_verify_targets() -> Vec<VerifyTarget> {
 fn run_drain_verify(timeout: u64) -> i32 {
     // 백스톱 하드 워치독 — 메인 로직이 어떤 이유로든 멈춰도 프로세스가 영구 정지하지 않게(plain drain 12s 패턴).
     // fan-out은 timeout+5s 안에 반환하므로 정상 경로에선 절대 발화하지 않는다.
-    let cap = timeout + 10;
+    // ★[V111-F2] fan-out 이 timeout×FACTOR+5s 안에 반환하므로 백스톱은 그보다 커야 한다(구 timeout+10 은
+    // 연장이 붙은 뒤로는 정상 경로에서도 발화해 프로세스를 exit 3 으로 끊는다 — UI 는 그것을 verify_failed 로 읽는다).
+    let cap = timeout * (DRAIN_MAX_WAIT_FACTOR as u64) + 10;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(cap));
         std::process::exit(3);
@@ -24192,6 +24334,13 @@ mod tests {
 
     // ============================ drain --verify (기능 1) 테스트 ============================
 
+    /// 구 `delivery_wedged` 와 같은 뜻의 시험 헬퍼 — **앵커 실측 미제출**만 wedge 로 센다.
+    /// (구 함수는 「앵커 없음 + 전체 화면 매치」도 true 였다. [V111-F2] 가 그 둘을 갈랐으므로 시험도
+    ///  살아 있는 술어를 직접 잰다 — 래퍼를 남기면 시험이 죽은 코드를 재게 된다.)
+    fn is_wedged(screen: &str, sentinel: &str) -> bool {
+        submit_probe(screen, sentinel).0 == SubmitProbe::NotSubmitted
+    }
+
     /// 노드 협조 상태를 모사하는 fake I/O. 협조 노드는 지시받은 마커를 파일에 기입하고, 미저장·wedge·
     /// hung은 각각 거동을 흉내낸다(producer≠evaluator — negative fixture 검증).
     #[derive(Clone, Copy, PartialEq)]
@@ -24205,6 +24354,13 @@ mod tests {
         Hung,
         /// (U-14) 관문 가드가 주입을 **보류**시킨 노드 — 소켓은 멀쩡하고 우리가 안 보낸 것이다.
         GateHeld,
+        /// ★[V111-F3] 지시문이 **이름을 대는 파일**에 마커를 「한 줄만 남도록 덮어쓰는」 노드.
+        /// 등록된 파일이 아니라 지시문의 경로를 쓰므로 `checkpoint_file_for` 를 실제로 지난다(비-tautology).
+        OverwriteNamedFile,
+        /// ★[V111-F2] 기본 상한을 넘겨 저장하는 노드 — 저장 전까지 화면이 **계속 바뀐다**(일하는 중).
+        LateSaverBusy,
+        /// 대조군: 똑같이 늦게 저장하지만 화면이 **멎어 있다**(활동 0) — 연장 근거가 없어야 한다.
+        LateSaverIdle,
     }
 
     struct FakeVerifyIo {
@@ -24212,6 +24368,8 @@ mod tests {
         last_inject: std::sync::Mutex<std::collections::HashMap<u64, String>>,
         // [R2] 노드별 send_return 호출 횟수 — 제출 완료 노드에 잉여 Return이 안 나가는지 검증.
         returns: std::sync::Mutex<std::collections::HashMap<u64, u32>>,
+        // ★[V111-F2] read_screen 호출 카운터 — LateSaverBusy 가 매 관측마다 다른 화면을 내게 한다.
+        probes: std::sync::Mutex<std::collections::HashMap<u64, u32>>,
     }
     impl FakeVerifyIo {
         fn new() -> Self {
@@ -24219,6 +24377,7 @@ mod tests {
                 nodes: std::sync::Mutex::new(std::collections::HashMap::new()),
                 last_inject: std::sync::Mutex::new(std::collections::HashMap::new()),
                 returns: std::sync::Mutex::new(std::collections::HashMap::new()),
+                probes: std::sync::Mutex::new(std::collections::HashMap::new()),
             }
         }
         fn add(&self, sid: u64, scen: FakeScenario, file: std::path::PathBuf) {
@@ -24258,6 +24417,36 @@ mod tests {
         }
         out
     }
+    /// 지시문이 이름을 댄 체크포인트 파일(백틱 1쌍) — 협조 노드가 읽는 그 경로다.
+    fn extract_target_file(text: &str) -> Option<std::path::PathBuf> {
+        let a = text.find('`')? + 1;
+        let rest = &text[a..];
+        let b = rest.find('`')?;
+        Some(std::path::PathBuf::from(&rest[..b]))
+    }
+    /// 지시문대로 **그 파일에 이 한 줄만 남도록 덮어쓴다**(append 아님 — 이것이 구 공유 파일에서 남의
+    /// 마커를 지우던 동작이고, 파일이 갈린 지금은 무해해야 한다).
+    fn fake_overwrite_named(text: &str) {
+        if let (Some(marker), Some(f)) = (extract_marker(text), extract_target_file(text)) {
+            if let Some(d) = f.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(&f, format!("{marker}\n"));
+        }
+    }
+    /// 늦게 저장하는 노드 — `after` 뒤에 지시문이 이름을 댄 파일에 마커를 덮어쓴다(별도 스레드).
+    fn fake_write_after(text: &str, after: std::time::Duration) {
+        let t = text.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            // 시험이 이미 정리한 디렉토리를 되살리지 않는다(임시 폴더 잔재 0).
+            if let Some(f) = extract_target_file(&t) {
+                if f.parent().map(|d| d.is_dir()).unwrap_or(false) {
+                    fake_overwrite_named(&t);
+                }
+            }
+        });
+    }
     fn fake_write_marker(text: &str, file: Option<std::path::PathBuf>) {
         if let (Some(marker), Some(f)) = (extract_marker(text), file) {
             let mut cur = std::fs::read_to_string(&f).unwrap_or_default();
@@ -24296,6 +24485,11 @@ mod tests {
                         fake_write_marker(text, file);
                     }
                 }
+                Some(FakeScenario::OverwriteNamedFile) => fake_overwrite_named(text),
+                // 기본 상한(1s)보다 뒤, 하드 상한(2s)보다 앞에 저장한다 — 연장이 있어야만 잡힌다.
+                Some(FakeScenario::LateSaverBusy) | Some(FakeScenario::LateSaverIdle) => {
+                    fake_write_after(text, std::time::Duration::from_millis(2200))
+                }
                 _ => {} // NonSaving·Wedge: 기입 안 함
             }
             Ok(())
@@ -24315,8 +24509,22 @@ mod tests {
                 .get(&sid)
                 .cloned()
                 .unwrap_or_default();
+            let n = {
+                let mut g = self.probes.lock().unwrap();
+                let e = g.entry(sid).or_insert(0);
+                *e += 1;
+                *e
+            };
             match scen {
                 Some(FakeScenario::Hung) => Err("hung socket".into()),
+                // ★[V111-F2] 일하는 중 — 관측마다 화면이 바뀐다(스피너 프레임·토큰 카운터).
+                Some(FakeScenario::LateSaverBusy) => Ok(format!(
+                    "...이전 대화...\n✛ Working… ({n} tokens)\n> "
+                )),
+                // 대조군 — 화면이 멎어 있다(활동 0).
+                Some(FakeScenario::LateSaverIdle) => {
+                    Ok("...이전 대화...\n✛ Working…\n> ".into())
+                }
                 Some(FakeScenario::Wedge) => {
                     // ★미제출 wedge 모사(비-tautology): 주입 텍스트가 입력 박스 안에 40자 래핑으로 잔류하고
                     // 하단에 박스 테두리·단축키·토큰카운터 UI가 붙는다(sentinel이 최하단에서 밀리고 경계에서
@@ -24398,18 +24606,199 @@ mod tests {
         }
     }
 
-    /// wedge 판정 — 하단 잔류 텍스트만 wedge, 스피너·빈 프롬프트는 전달됨.
+    /// wedge 판정 — 입력창 안 잔류만 wedge, 스피너·빈 프롬프트는 전달됨.
     #[test]
     fn drain_verify_delivery_wedged_detection() {
         let sentinel = "run1-9";
-        assert!(delivery_wedged(
-            "위쪽\n[DRAIN-VERIFY] ... run1-9 ... 마커 <!-- cys-checkpoint: run1-9 1 -->",
+        // 입력 박스 안에 잔류 — 앵커 실측 미제출.
+        assert!(is_wedged(
+            "위쪽\n╭────╮\n│ [DRAIN-VERIFY] ... run1-9 ... 마커 <!-- cys-checkpoint: run1-9 1 -->\n╰────╯",
             sentinel
         ));
-        assert!(!delivery_wedged(
-            "...이전 대화...\n✻ Working…\n> ",
-            sentinel
-        ));
+        assert!(!is_wedged("...이전 대화...\n✻ Working…\n> ", sentinel));
+    }
+
+    /// ★[V111-F2] 「입력 미제출」과 「못 쟀다」를 가른다 — 앵커가 없는 화면(구·미지 TUI · 24행 창 밖)에서
+    /// sentinel 이 보여도 **미제출로 단정하지 않는다**(구 `delivery_wedged` 는 true 였고, 그 단정이 09-21
+    /// 실기에서 마커를 실제로 기입한 worker 를 `delivery_failed` 로 표기한 자리다).
+    /// 동시에 **행동은 보수적으로 유지**된다 — suspect=true 라 Return 재전송은 종전대로 나간다.
+    #[test]
+    fn drain_verify_unanchored_screen_is_unmeasured_not_not_submitted() {
+        let sentinel = "run1-9";
+        let no_anchor = "위쪽\n[DRAIN-VERIFY] ... run1-9 ... 마커 <!-- cys-checkpoint: run1-9 1 -->";
+        let (probe, suspect) = submit_probe(no_anchor, sentinel);
+        assert_eq!(
+            probe,
+            SubmitProbe::Unmeasured,
+            "앵커 부재 = 측정 실패 · 미제출 단정 금지"
+        );
+        assert!(suspect, "행동(Return 재전송) 트리거는 종전대로 유지(F1 보존)");
+        assert!(!is_wedged(no_anchor, sentinel), "판정 라벨은 미제출이 아니다");
+
+        // 대조군: 같은 글이 입력 박스 안에 있으면 미제출 **실측**이다.
+        let anchored = format!("위쪽\n╭──╮\n│ {no_anchor}\n╰──╯");
+        assert_eq!(submit_probe(&anchored, sentinel).0, SubmitProbe::NotSubmitted);
+        // 대조군 2: 제출되어 입력창이 비었으면 제출 실측이다.
+        assert_eq!(
+            submit_probe("에코 run1-9 ...\n╭──╮\n│ > \n╰──╯", sentinel).0,
+            SubmitProbe::Submitted
+        );
+    }
+
+    /// ★[V111-F3] 노드별 파일 분리 — 같은 live_cwd 를 쓰는 두 노드가 「한 줄만 남도록 덮어써도」
+    /// 서로를 지우지 않는다. 09-21 08:12 실기의 결함(worker 가 08:12:15 에 기입했는데 cso 가 덮어
+    /// 0/3 보고)을 정확히 재현하는 축이다.
+    /// ★비-tautology: 구 스킴(canonical_checkpoint_file)은 두 노드에 **같은 경로 1개**뿐임을 함께 단언하고,
+    /// 같은 파일에 두 번 덮어쓰면 먼저 마커가 사라지는 것을 실제로 보여 준다.
+    #[test]
+    fn drain_verify_per_node_file_no_clobber() {
+        let td = std::env::temp_dir().join(format!("cys-dv-noclob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(td.join("_round")).unwrap();
+        let cwd = td.to_string_lossy().into_owned();
+        let sock_a = std::path::PathBuf::from("/x/cys-dept-a/cys.sock");
+        let sock_b = std::path::PathBuf::from("/x/cys-dept-b/cys.sock");
+
+        // 구 스킴: 두 노드가 가리키는 파일이 **같다** — 슬롯 1개에 기록자 2명(= 덮어쓰기 경합).
+        assert_eq!(
+            canonical_checkpoint_file(&cwd),
+            canonical_checkpoint_file(&cwd),
+            "구 스킴은 live_cwd 만 보므로 두 노드가 같은 파일을 쓴다"
+        );
+        // 신 스킴: 소켓이 달라도, sid 가 달라도 갈린다.
+        assert_ne!(
+            checkpoint_file_for(&cwd, &sock_a, 7),
+            checkpoint_file_for(&cwd, &sock_b, 7),
+            "같은 sid·다른 소켓(부서 데몬)에서 갈려야 한다"
+        );
+        assert_ne!(
+            checkpoint_file_for(&cwd, &sock_a, 7),
+            checkpoint_file_for(&cwd, &sock_a, 8),
+            "같은 소켓·다른 surface 에서 갈려야 한다"
+        );
+
+        // 구 스킴 재현: 같은 파일에 두 번 「한 줄만 남도록」 덮어쓰면 먼저 마커가 사라진다.
+        let shared = canonical_checkpoint_file(&cwd);
+        std::fs::write(&shared, "<!-- cys-checkpoint: A 1 -->\n").unwrap();
+        std::fs::write(&shared, "<!-- cys-checkpoint: B 1 -->\n").unwrap();
+        assert!(
+            !file_has_checkpoint_nonce(&shared, "A"),
+            "구 스킴: 나중 노드가 먼저 노드의 마커를 지운다(이것이 09-21 결함)"
+        );
+
+        // 신 로직 실동작: 두 노드(같은 cwd·같은 sid·다른 소켓)가 각자 덮어써도 둘 다 Saved.
+        let io = std::sync::Arc::new(FakeVerifyIo::new());
+        io.add(7, FakeScenario::OverwriteNamedFile, std::path::PathBuf::new());
+        let targets = vec![
+            mk_target(7, sock_a.clone(), Some(cwd.clone())),
+            mk_target(7, sock_b.clone(), Some(cwd.clone())),
+        ];
+        let rep = drain_verify_fanout(io, targets, std::time::Duration::from_secs(2), 100);
+        let saved = rep["summary"]["saved"].as_u64().unwrap();
+        let all = rep["all_saved"].as_bool().unwrap();
+        // 파일 두 개가 실제로 따로 생겼는가(경로도 JSON 에 서로 다르게 실린다).
+        let f0 = rep["nodes"][0]["checkpoint_file"].as_str().unwrap().to_string();
+        let f1 = rep["nodes"][1]["checkpoint_file"].as_str().unwrap().to_string();
+        let _ = std::fs::remove_dir_all(&td);
+        assert_eq!(saved, 2, "두 노드 모두 마커 확인되어야 한다: {rep}");
+        assert!(all);
+        assert_ne!(f0, f1, "리포트의 체크포인트 파일도 노드별로 갈려야 한다");
+    }
+
+    /// ★[V111-F1] 오너 권한 표식 — 지시문 **맨 앞**이 출처(오너가 재시작 단추를 눌렀다)와 서열
+    /// (대기·보류보다 우선)과 행동(되묻지 마라)을 못박는다. 각주로 내려가면 안 읽힌다(push 규율과 같은 이유).
+    #[test]
+    fn drain_verify_instruction_carries_owner_authority_up_front() {
+        let instr = drain_verify_instruction(
+            "<!-- cys-checkpoint: n-1 1 -->",
+            "/srv/work/_round/checkpoint-ab-7.md",
+        );
+        for tok in ["오너", "되묻지 말고", "우선"] {
+            assert!(instr.contains(tok), "오너 권한 표식에 '{tok}' 누락: {instr}");
+        }
+        let head: String = instr.chars().take(60).collect();
+        assert!(
+            head.contains("오너"),
+            "표식이 앞 60자 안에 있어야 한다(각주 금지): {head}"
+        );
+        // [R1] 단계 순서(마커 < 정지)는 그대로 유지돼야 한다 — 역전되면 저장 유실이다.
+        assert!(literal_reaches_marker(&instr));
+        // 노드가 「어느 파일인지」를 기계적으로 알 수 있어야 한다(백틱 1쌍 = 대상 경로).
+        assert_eq!(
+            extract_target_file(&instr),
+            Some(std::path::PathBuf::from("/srv/work/_round/checkpoint-ab-7.md"))
+        );
+    }
+
+    /// ★[V111-F2] 노드별 마지막 활동 기준 연장 — **일하는 중인** 노드는 기본 상한을 넘겨도 기다린다.
+    /// ★비-tautology 대조군: 똑같이 늦게 저장하지만 화면이 멎은 노드는 연장 근거가 없어 Timeout 이다
+    /// (연장을 지우면 busy 가 Timeout 으로 뒤집히고, 연장을 무조건 켜면 idle 이 Saved 로 뒤집힌다).
+    #[test]
+    fn drain_verify_activity_extends_deadline_but_idle_does_not() {
+        let base = std::time::Duration::from_secs(1); // 하드 상한 = 2s · 저장은 2.2s(주입 시점 기준)
+        let mk = |tag: &str, scen: FakeScenario| {
+            let td = std::env::temp_dir().join(format!("cys-dv-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&td);
+            std::fs::create_dir_all(td.join("_round")).unwrap();
+            let io = FakeVerifyIo::new();
+            io.add(5, scen, std::path::PathBuf::new());
+            let t = mk_target(5, td.join("cys.sock"), Some(td.to_string_lossy().into_owned()));
+            let (o, d) = verify_one_node(&io, &t, "runX", base, 100);
+            let _ = std::fs::remove_dir_all(&td);
+            (o, d)
+        };
+        let (busy, busy_d) = mk("busy", FakeScenario::LateSaverBusy);
+        let (idle, idle_d) = mk("idle", FakeScenario::LateSaverIdle);
+        assert_eq!(busy, VerifyOutcome::Saved, "활동 중 노드는 연장돼 저장을 잡는다: {busy_d}");
+        assert_eq!(idle, VerifyOutcome::Timeout, "활동 없는 노드는 연장 없음: {idle_d}");
+        assert!(
+            idle_d.contains("근거:"),
+            "판정 근거 1줄이 붙어야 한다(추정 금지): {idle_d}"
+        );
+        // 상한 명시 — 연장은 무제한이 아니다.
+        assert!(
+            busy_d.contains("하드 상한"),
+            "연장 사실과 상한이 근거에 적혀야 한다: {busy_d}"
+        );
+    }
+
+    /// ★[V111-F2] 관측 주기가 기본 상한보다 잦아야 연장이 살아 있다(주기 > 상한이면 관측 0회 = 죽은 코드).
+    #[test]
+    fn drain_verify_activity_probe_is_denser_than_timeout() {
+        for secs in [1u64, 5, 20, 120] {
+            let to = std::time::Duration::from_secs(secs);
+            let iv = activity_probe_interval(to);
+            assert!(iv < to, "주기({iv:?})가 상한({to:?})보다 잦아야 관측이 일어난다");
+            assert!(iv >= std::time::Duration::from_millis(400), "파일 폴링보다 잦으면 낭비");
+            assert!(iv <= std::time::Duration::from_millis(DRAIN_ACTIVITY_PROBE_MAX_MS));
+        }
+    }
+
+    /// ★[V111-F2] 전역 캡 > 노드별 하드 상한 — 관계를 부등호로 박는다(캡이 짧으면 연장이 죽는다).
+    #[test]
+    fn drain_verify_global_cap_outlives_node_extension() {
+        for secs in [1u64, 8, 20, 60] {
+            let to = std::time::Duration::from_secs(secs);
+            let node_hard = to * DRAIN_MAX_WAIT_FACTOR;
+            assert!(
+                fanout_global_cap(to) > node_hard,
+                "전역 캡({:?})이 노드 하드 상한({node_hard:?})보다 커야 연장이 산다",
+                fanout_global_cap(to)
+            );
+        }
+    }
+
+    /// ★[V111-F2] 리포트가 **상한을 명시**한다 — UI 가 「얼마까지 기다렸는지」를 사람 말로 적을 수 있어야 한다.
+    #[test]
+    fn drain_verify_report_declares_max_wait() {
+        let io = std::sync::Arc::new(FakeVerifyIo::new());
+        let rep = drain_verify_fanout(io, vec![], std::time::Duration::from_secs(20), 100);
+        assert_eq!(rep["timeout_secs"].as_u64(), Some(20));
+        assert_eq!(
+            rep["max_wait_secs"].as_u64(),
+            Some(20 * DRAIN_MAX_WAIT_FACTOR as u64),
+            "상한 = 기본 × 연장 계수"
+        );
     }
 
     /// ② 협조 노드 → saved (지시대로 마커 기입).
@@ -24533,10 +24922,10 @@ mod tests {
         let nonce = "run9-42";
         // ① 미제출: 박스 안에 잔류(래핑) → 검출
         let wedged = "...대화...\n╭────────╮\n│ (미제출)\n<!-- cys-check\npoint: run9-42 1 -->\n╰────────╯\n  ? shortcuts";
-        assert!(delivery_wedged(wedged, nonce), "입력 박스 내 미제출 텍스트는 wedge");
+        assert!(is_wedged(wedged, nonce), "입력 박스 내 미제출 텍스트는 wedge");
         // ② 제출 에코: nonce가 스크롤백(박스 위)에만, 하단 박스는 빔 → 비검출
         let echoed = "...대화...\n<!-- cys-checkpoint: run9-42 1 -->\n좋아, 확인.\n╭────────╮\n│ > \n╰────────╯\n  ? shortcuts";
-        assert!(!delivery_wedged(echoed, nonce), "제출된 스크롤백 에코는 wedge 아님");
+        assert!(!is_wedged(echoed, nonce), "제출된 스크롤백 에코는 wedge 아님");
     }
 
     /// [R1] 지시문 단계 순서 정확성 — 마커 기입이 '정지'보다 앞이라 리터럴 실행 노드가 저장한다.
@@ -24544,7 +24933,7 @@ mod tests {
     #[test]
     fn drain_verify_literal_ordered_node_saves_and_old_order_would_fail() {
         // 현 지시문: 마커가 '정지'보다 앞 → 리터럴 노드 도달(true)
-        let cur = drain_verify_instruction("<!-- cys-checkpoint: n-1 1 -->");
+        let cur = drain_verify_instruction("<!-- cys-checkpoint: n-1 1 -->", "/tmp/_round/checkpoint-1-1.md");
         assert!(literal_reaches_marker(&cur), "현 지시문은 마커가 정지보다 앞이어야 함(R1)");
         // 구 순서(①저장 ②정지 ③마커) 재구성 → 리터럴 노드가 정지를 먼저 만나 미도달(false)=저장 유실
         let old = "① 저장하라. ② 작업을 멈추고 기다려라. ③ 마지막으로 <!-- cys-checkpoint: n-1 1 --> 추가";
@@ -24729,7 +25118,7 @@ mod tests {
         let old_tail4 = screen.lines().rev().take(4).any(|l| l.contains(nonce));
         assert!(!old_tail4, "fixture가 구 tail-4 로직도 통과 — tautology");
         // 신 로직: 전체 행·공백제거 매치 → 래핑·경계쪼갬·trailing UI에도 wedge 검출.
-        assert!(delivery_wedged(screen, nonce), "신 로직이 래핑된 wedge를 검출해야 함");
+        assert!(is_wedged(screen, nonce), "신 로직이 래핑된 wedge를 검출해야 함");
     }
 
     /// ⑥ 0-노드 → 우아한 no-op(all_saved=true, exit 0 대응).

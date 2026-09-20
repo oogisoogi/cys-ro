@@ -61,11 +61,18 @@ describe("B3 호출부 — 입양 루프가 실제로 재배치를 부른다", (
     const body = main.slice(s, main.indexOf("\n}\n", s));
     const wrap = body.indexOf('{ type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }');
     const add = body.indexOf("adoptedWs.add(ws);");
-    const call = body.indexOf("ws.tree = adoptLayoutIfRowOnly(ws.tree, masterSids);");
+    // ★B16(2026-09-20)에서 이 줄이 삼항으로 갈렸다 — 본부 역할이 cys 좌석인 기기는 formationIfRowOnly,
+    //   전제가 없는 기기(우리 개발 기기)는 종전 adoptLayoutIfRowOnly. **이 스위트가 지키는 축은
+    //   「호출 문자열」이 아니라 「입양 뒤에 · 입양 ws 에만 재배치가 걸린다」이므로** 축은 그대로 두고
+    //   조준만 옮긴다(줄을 지우면 그 축이 통째로 사라진다).
+    const call = body.indexOf("adoptLayoutIfRowOnly(ws.tree, masterSids)");
     expect(wrap).toBeGreaterThan(-1);
     expect(add).toBeGreaterThan(wrap);
     expect(call).toBeGreaterThan(add);
     expect(body.slice(add, call)).toContain("for (const ws of adoptedWs)");
+    // 전제가 없는 기기의 폴백이 살아 있는가(무회귀 축) + 전제가 있는 기기의 분기가 같은 루프 안인가.
+    expect(body.slice(add, call)).toContain("hasHqSeats(roleBySid)");
+    expect(body.slice(add)).toContain("formationIfRowOnly(ws.tree, roleBySid)");
     expect(main).toContain('import { adoptLayoutIfRowOnly } from "./adoptlayout";');
   });
 });

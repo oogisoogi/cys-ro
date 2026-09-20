@@ -7,6 +7,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
 import { adoptLayoutIfRowOnly } from "./adoptlayout";
+import { formationIfRowOnly, formationLayout, hasHqSeats } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -2391,8 +2392,16 @@ async function refreshPaneTitles() {
       //   master 열 = 화면 1/3 이상(열 2개면 1/2) · 나머지 균등. ★좁힌 판(master 판정 B): 트리가 순수 row 열뿐일
       //   때만 다시 짠다 — 사용자가 세로(col) 분할·중첩을 만든 ws 는 무접촉(기존 0.5 감싸기 그대로).
       const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
+      // ★B16(오너 확정 2026-09-19 16:1x) — 본부 역할이 **cys 좌석으로 있는 기기**에서는 역할 배치를 쓴다:
+      //   좌열 master(위):cso(아래)=4:1 · 우열 worker. 참가자 기기(cysr)가 그 경우다.
+      //   전제가 없는 기기(우리 개발 기기 — master·cso 는 cmux 페인)는 종전 adoptLayout 그대로다(무회귀).
+      const roleBySid = new Map<number, string | null>(
+        r.surfaces.filter((x) => !x.exited).map((x) => [x.surface_id, x.role] as [number, string | null]),
+      );
+      const hq = hasHqSeats(roleBySid);
       for (const ws of adoptedWs) {
-        if (ws.tree && (ws.socket ?? undefined) === (sk ?? undefined)) ws.tree = adoptLayoutIfRowOnly(ws.tree, masterSids);
+        if (!ws.tree || (ws.socket ?? undefined) !== (sk ?? undefined)) continue;
+        ws.tree = hq ? formationIfRowOnly(ws.tree, roleBySid) : adoptLayoutIfRowOnly(ws.tree, masterSids);
       }
      } catch {
        // ★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다(codex [High] 수리).
@@ -3625,8 +3634,20 @@ async function actionEqualize() {
   if (!ws?.tree) return;
   const live = collectSids(ws.tree).filter((sid) => panes.has(paneKey(sid, ws.socket))); // 죽은/placeholder 노드 제외 (F4 복합키)
   if (live.length < 2) return; // 0~1개는 정렬할 대상이 없음
-  // 역할 조회(list_surfaces)는 제거됐다 — 배치가 역할을 보지 않으므로 결과를 버리는 데몬 왕복만 남는다.
-  ws.tree = roleLayout(live);
+  // ★B16 — 배치가 다시 역할을 본다(오너 확정 2026-09-19). 구 주석 「역할 조회는 결과를 버리는
+  //   왕복이라 제거했다」는 배치가 역할 무관이던 시절의 것이고, 그 전제가 바뀌었다.
+  //   조회가 실패하면 역할을 모르는 것이지 역할이 없는 것이 아니다 ⇒ 종전 가로 균등으로 폴백한다.
+  let roleBySid = new Map<number, string | null>();
+  try {
+    const r = (await invoke("list_surfaces", { socket: ws.socket })) as {
+      surfaces: { surface_id: number; role: string | null; exited: boolean }[];
+    };
+    roleBySid = new Map(r.surfaces.filter((x) => !x.exited).map((x) => [x.surface_id, x.role] as [number, string | null]));
+  } catch {
+    // 폴백 = roleLayout(가로 균등) — 아래 hasHqSeats 가 거짓이 된다.
+  }
+  const seats = live.map((sid) => ({ sid, role: roleBySid.get(sid) ?? null }));
+  ws.tree = (hasHqSeats(roleBySid) ? formationLayout(seats) : null) ?? roleLayout(live);
   render(); // 새 트리로 DOM 재구성 + fitPane→resize_surface + saveLayout
 }
 
@@ -7250,12 +7271,12 @@ async function start() {
   const sockets = [...new Set(workspaces.map((w) => w.socket))];
   const liveBySock = new Map<
     string | undefined,
-    { ids: Set<number>; ok: boolean; list: { surface_id: number; title: string }[] }
+    { ids: Set<number>; ok: boolean; list: { surface_id: number; title: string; role: string | null }[] }
   >();
   for (const sk of sockets) {
     try {
       const r = (await invoke("list_surfaces", { socket: sk })) as {
-        surfaces: { surface_id: number; title: string; exited: boolean }[];
+        surfaces: { surface_id: number; title: string; exited: boolean; role: string | null }[];
       };
       const liveList = r.surfaces.filter((s) => !s.exited);
       liveBySock.set(sk, { ids: new Set(liveList.map((s) => s.surface_id)), ok: true, list: liveList });
@@ -7314,6 +7335,10 @@ async function start() {
           : { type: "pane", sid: s.surface_id };
       }
     }
+    // ★B16 — 재시작(복원) 경로도 **같은 함수**를 지난다. 병합 루프는 매번 루트를 0.5 로 감싸므로
+    //   여기서 다시 짜지 않으면 재시작 화면만 배치가 다르다(첫 설치·정렬과 어긋난다).
+    const roleBySid = new Map<number, string | null>(lb.list.map((s) => [s.surface_id, s.role] as [number, string | null]));
+    if (ws?.tree && hasHqSeats(roleBySid)) ws.tree = formationIfRowOnly(ws.tree, roleBySid);
   }
   // master 자동기동 제거 후: 데몬은 살아있으나(ok===true) 입양할 surface가 0개인 부서 ws(비활성 부서가
   // 재-launch된 경우)는 위 병합 루프가 못 채운다 — plain 셸 1개로 충전해 빈 탭 소실/고아 placeholder 방지.

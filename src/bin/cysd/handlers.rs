@@ -3130,6 +3130,26 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 declared_agent,
             ) {
                 Ok(s) => {
+                    // ★B14(오너 관측 2026-09-19 · master 판정 2026-09-20) — 제목의 **번호 칸**.
+                    //   번호는 id 를 배정하는 이 자리에서만 알 수 있고(CLI 는 응답 전까지 모른다),
+                    //   생성 경로 전부(launch-agent·restore·GUI)가 이 한 곳을 지난다. 모델 칸은
+                    //   여기서 넣지 않는다 — 관측이 아직 없기 때문이다. 첫 statusline 턴에
+                    //   retitle_with_model 이 「번호 · 모델 · 특성」으로 완성한다.
+                    //   무접촉 4조건은 §panetitle::initial_title 이 진다.
+                    {
+                        let role_now = s.role.lock().unwrap().clone();
+                        let agent_now = s.agent_meta.lock().unwrap().as_ref().map(|a| a.0.clone());
+                        let mut title_now = s.title.lock().unwrap();
+                        if let Some(next) = crate::panetitle::initial_title(
+                            s.id,
+                            role_now.as_deref(),
+                            Some(s.cwd.as_str()),
+                            Some(title_now.as_str()),
+                            agent_now.as_deref(),
+                        ) {
+                            *title_now = next;
+                        }
+                    }
                     // ★(W2 · B6) 각성 래치 하이드레이션 — **restore 전용 채널**.
                     // topology 에 영속된 래치를 `cys restore` 가 이 파라미터로 되돌려 넣는다. 재개는
                     // `--resume`(원 .jsonl)이라 디렉티브가 이미 컨텍스트에 있으므로, 래치를 잃고

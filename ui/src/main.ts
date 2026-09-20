@@ -7,6 +7,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
 import { adoptLayoutIfRowOnly } from "./adoptlayout";
+import { formationIfRowOnly, formationLayout, hasHqSeats } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -15,7 +16,7 @@ import { reorderWorkspace, reorderGroup } from "./reorder";
 import { classifyDrainVerifyFallback, drainVerifyFallbackToast } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
-import { applyB16Placement, exitedSweepTargets } from "./exitedsweep";
+import { exitedSweepTargets } from "./exitedsweep";
 import {
   deptPlaceholderLabel,
   deptSlugOfSocket,
@@ -2446,7 +2447,10 @@ async function refreshPaneTitles() {
     if (await openNewlyRegisteredDepts()) layoutChanged = true;
     const sockets = [...new Set(workspaces.map((w) => w.socket))];
     let adopted = false;
-    const adoptedWs = new Set<Workspace>();
+    // ★이름이 relayout 인 이유(2026-09-20 · B17 결선): 이 집합에는 이제 **입양이 일어난 ws** 뿐
+    //   아니라 **옛 자리를 닫은 ws** 도 들어간다. 둘 다 "열 구성이 바뀌었으니 다시 짜야 하는" 같은
+    //   이유로 같은 배치 함수를 지나야 한다 — 두 벌로 나누면 한쪽만 배치되는 비대칭이 생긴다.
+    const relayoutWs = new Set<Workspace>();
     // 사이드바 사용량 패널용 수집 — 이미 도는 폴링에 얹는다(새 폴링을 만들지 않는다).
     // 이번 틱에 성공한 소켓만 담고, 실패한 소켓은 lastSurfacesBySocket의 직전 값으로 메운다.
     const socketRows = new Map<string, SurfaceLike[]>();
@@ -2499,7 +2503,13 @@ async function refreshPaneTitles() {
         layoutChanged = true;
       }
       // ★B17 — 복원 직후 1회: 데몬이 **종료됨으로 알고 있는** 옛 자리를 닫는다(유령 수렴과 다른 축).
+      //   닫은 ws 는 아래 배치 블록의 대상에 넣는다 — **닫기가 먼저, 배치가 나중**이어야 한다
+      //   (B16 계약 · panetitle HANDOFF §3: 닫힌 sid 가 roleBySid 에 섞이면 그 좌석이 열을 하나 차지한다).
       for (const sid of exitedSweepTargets(sweepArmed, sockSids, r.surfaces)) {
+        for (const w of workspaces) {
+          if ((w.socket ?? undefined) === (sk ?? undefined) && w.tree != null && collectSids(w.tree).includes(sid))
+            relayoutWs.add(w);
+        }
         detachPane(sid, sk);
         layoutChanged = true;
       }
@@ -2527,15 +2537,23 @@ async function refreshPaneTitles() {
           ? { type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }
           : { type: "pane", sid: s.surface_id };
         adopted = true;
-        adoptedWs.add(ws);
+        relayoutWs.add(ws);
       }
       // ★cysr 1.0.2 B3: 입양이 루트를 매번 0.5 로 감싸 [[[셸|master]|cso]|worker] = 1/8·1/8·1/4·1/2 가 됐다
       //   (깨끗한 VM run4 · 마스터 칸 ≈100px). 입양이 일어난 ws 만 기존 좌→우 순서 그대로 열을 다시 짠다 —
       //   master 열 = 화면 1/3 이상(열 2개면 1/2) · 나머지 균등. ★좁힌 판(master 판정 B): 트리가 순수 row 열뿐일
       //   때만 다시 짠다 — 사용자가 세로(col) 분할·중첩을 만든 ws 는 무접촉(기존 0.5 감싸기 그대로).
       const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
-      for (const ws of adoptedWs) {
-        if (ws.tree && (ws.socket ?? undefined) === (sk ?? undefined)) ws.tree = adoptLayoutIfRowOnly(ws.tree, masterSids);
+      // ★B16(오너 확정 2026-09-19 16:1x) — 본부 역할이 **cys 좌석으로 있는 기기**에서는 역할 배치를 쓴다:
+      //   좌열 master(위):cso(아래)=4:1 · 우열 worker. 참가자 기기(cysr)가 그 경우다.
+      //   전제가 없는 기기(우리 개발 기기 — master·cso 는 cmux 페인)는 종전 adoptLayout 그대로다(무회귀).
+      const roleBySid = new Map<number, string | null>(
+        r.surfaces.filter((x) => !x.exited).map((x) => [x.surface_id, x.role] as [number, string | null]),
+      );
+      const hq = hasHqSeats(roleBySid);
+      for (const ws of relayoutWs) {
+        if (!ws.tree || (ws.socket ?? undefined) !== (sk ?? undefined)) continue;
+        ws.tree = hq ? formationIfRowOnly(ws.tree, roleBySid) : adoptLayoutIfRowOnly(ws.tree, masterSids);
       }
      } catch {
        // ★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다(codex [High] 수리).
@@ -3869,8 +3887,20 @@ async function actionEqualize() {
   if (!ws?.tree) return;
   const live = collectSids(ws.tree).filter((sid) => panes.has(paneKey(sid, ws.socket))); // 죽은/placeholder 노드 제외 (F4 복합키)
   if (live.length < 2) return; // 0~1개는 정렬할 대상이 없음
-  // 역할 조회(list_surfaces)는 제거됐다 — 배치가 역할을 보지 않으므로 결과를 버리는 데몬 왕복만 남는다.
-  ws.tree = roleLayout(live);
+  // ★B16 — 배치가 다시 역할을 본다(오너 확정 2026-09-19). 구 주석 「역할 조회는 결과를 버리는
+  //   왕복이라 제거했다」는 배치가 역할 무관이던 시절의 것이고, 그 전제가 바뀌었다.
+  //   조회가 실패하면 역할을 모르는 것이지 역할이 없는 것이 아니다 ⇒ 종전 가로 균등으로 폴백한다.
+  let roleBySid = new Map<number, string | null>();
+  try {
+    const r = (await invoke("list_surfaces", { socket: ws.socket })) as {
+      surfaces: { surface_id: number; role: string | null; exited: boolean }[];
+    };
+    roleBySid = new Map(r.surfaces.filter((x) => !x.exited).map((x) => [x.surface_id, x.role] as [number, string | null]));
+  } catch {
+    // 폴백 = roleLayout(가로 균등) — 아래 hasHqSeats 가 거짓이 된다.
+  }
+  const seats = live.map((sid) => ({ sid, role: roleBySid.get(sid) ?? null }));
+  ws.tree = (hasHqSeats(roleBySid) ? formationLayout(seats) : null) ?? roleLayout(live);
   render(); // 새 트리로 DOM 재구성 + fitPane→resize_surface + saveLayout
 }
 
@@ -7548,9 +7578,9 @@ async function start() {
       // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
       //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
       exitedSweepArmed = true;
-      void refreshPaneTitles(); // 3초를 기다리지 않는다 — 사용자가 보는 것은 "복원됐다"는 말 직후의 화면이다
-      const placement = applyB16Placement();
-      if (!placement.applied) console.info("[cys-app] 새 자리 배치 미적용 —", placement.reason);
+      // 3초를 기다리지 않는다 — 사용자가 보는 것은 "복원됐다"는 말 직후의 화면이다.
+      // 이 틱 안에서 ①옛 자리 닫기 → ②새 roleBySid 생성 → ③formationIfRowOnly 배치가 그 순서로 돈다.
+      void refreshPaneTitles();
     } else if (p.phase === "error") {
       dismissToast("restore");
       toast("health", "복원 실패", p.detail ?? "노드 복원 실행에 실패했습니다.");
@@ -7868,7 +7898,7 @@ async function start() {
   const sockets = [...new Set(workspaces.map((w) => w.socket))];
   const liveBySock = new Map<
     string | undefined,
-    { ids: Set<number>; ok: boolean; list: { surface_id: number; title: string }[] }
+    { ids: Set<number>; ok: boolean; list: { surface_id: number; title: string; role: string | null }[] }
   >();
   // ★전 소켓을 먼저 '판정 보류(ok:false)'로 시드한다 — 예산 소진으로 루프를 중단해도 항목이
   // **없는** 소켓이 생기지 않는다. 항목이 없으면 keepWorkspaceOnRestore 가 그 빈 트리 ws 를
@@ -7878,8 +7908,10 @@ async function start() {
   for (const sk of sockets) {
     if (Date.now() > restoreDeadline) break; // 예산 소진 — 나머지는 보류 상태 그대로 두고 화면을 먼저 세운다
     try {
+      // 두 판을 **합성**한다: 이쪽의 상한(rpcT · 느린 소켓이 복원을 묶지 않게) + 저쪽의 role 칸
+      // (B16 배치가 역할을 필요로 한다). 하나를 고르면 다른 한쪽의 기능이 조용히 사라진다.
       const r = (await rpcT(invoke("list_surfaces", { socket: sk }), T_LIST)) as {
-        surfaces: { surface_id: number; title: string; exited: boolean }[];
+        surfaces: { surface_id: number; title: string; exited: boolean; role: string | null }[];
       };
       const liveList = r.surfaces.filter((s) => !s.exited);
       liveBySock.set(sk, { ids: new Set(liveList.map((s) => s.surface_id)), ok: true, list: liveList });
@@ -7951,6 +7983,10 @@ async function start() {
         ws.autoCreated = undefined; // pane 이 붙었다 = 이제 '쓰는 탭'(다음 기동 상한 면제)
       }
     }
+    // ★B16 — 재시작(복원) 경로도 **같은 함수**를 지난다. 병합 루프는 매번 루트를 0.5 로 감싸므로
+    //   여기서 다시 짜지 않으면 재시작 화면만 배치가 다르다(첫 설치·정렬과 어긋난다).
+    const roleBySid = new Map<number, string | null>(lb.list.map((s) => [s.surface_id, s.role] as [number, string | null]));
+    if (ws?.tree && hasHqSeats(roleBySid)) ws.tree = formationIfRowOnly(ws.tree, roleBySid);
   }
   // master 자동기동 제거 후: 데몬은 살아있으나(ok===true) 입양할 surface가 0개인 부서 ws(비활성 부서가
   // 재-launch된 경우)는 위 병합 루프가 못 채운다 — plain 셸 1개로 충전해 빈 탭 소실/고아 placeholder 방지.

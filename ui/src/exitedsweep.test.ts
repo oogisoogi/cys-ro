@@ -5,7 +5,8 @@
 // (knownIds 밖만 친다)에는 영원히 걸리지 않는다 — 그래서 축을 따로 세운다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { applyB16Placement, exitedSweepTargets } from "./exitedsweep";
+import { exitedSweepTargets } from "./exitedsweep";
+import { formationIfRowOnly, type LayoutNode } from "./formation";
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
@@ -58,15 +59,63 @@ describe("B17 배선", () => {
   });
 });
 
-describe("B16 이음매", () => {
-  it("적용하지 않았음을 값으로 돌려준다(조용한 미편입 금지)", () => {
-    const r = applyB16Placement();
-    expect(r.applied).toBe(false);
-    expect(r.reason).toContain("fix/v110-panetitle");
+describe("B16 결선 — 닫기가 먼저, 배치가 나중", () => {
+  const row = (sids: number[]): LayoutNode =>
+    sids.slice(1).reduce<LayoutNode>(
+      (acc, sid) => ({ type: "split", dir: "row", a: acc, b: { type: "pane", sid } }),
+      { type: "pane", sid: sids[0] },
+    );
+  const sidsOf = (n: LayoutNode, out: number[] = []): number[] => {
+    if (n.type === "pane") out.push(n.sid);
+    else {
+      sidsOf(n.a, out);
+      sidsOf(n.b, out);
+    }
+    return out;
+  };
+  const drop = (n: LayoutNode, gone: Set<number>): LayoutNode | null => {
+    if (n.type === "pane") return gone.has(n.sid) ? null : n;
+    const a = drop(n.a, gone);
+    const b = drop(n.b, gone);
+    return a && b ? { ...n, a, b } : (a ?? b);
+  };
+  const surfaces = [
+    { surface_id: 1, exited: false, role: "master" },
+    { surface_id: 2, exited: false, role: "cso" },
+    { surface_id: 3, exited: false, role: "worker" },
+    { surface_id: 9, exited: true, role: "worker" }, // 재시작이 남긴 옛 자리
+  ];
+
+  it("닫은 뒤 새로 만든 roleBySid 로 배치하면 닫힌 좌석이 열을 차지하지 않는다", () => {
+    const tree = row([1, 2, 3, 9]);
+    const targets = exitedSweepTargets(true, sidsOf(tree), surfaces);
+    expect(targets).toEqual([9]);
+    const closed = drop(tree, new Set(targets))!;
+    // ★roleBySid 는 **닫은 뒤** 만든다 — 살아 있는 좌석만으로.
+    const roleBySid = new Map(surfaces.filter((s) => !s.exited).map((s) => [s.surface_id, s.role] as const));
+    const laid = formationIfRowOnly(closed, roleBySid);
+    expect(sidsOf(laid).sort()).toEqual([1, 2, 3]);
   });
 
-  it("호출부가 그 사실을 로그로 남긴다", () => {
-    expect(main).toContain("const placement = applyB16Placement();");
-    expect(main).toContain("if (!placement.applied) console.info");
+  it("순서를 뒤집으면(배치 먼저) 닫힌 좌석이 그대로 열을 차지한다 — 그래서 순서가 계약이다", () => {
+    const tree = row([1, 2, 3, 9]);
+    const roleWithClosed = new Map(surfaces.map((s) => [s.surface_id, s.role] as const));
+    const laidFirst = formationIfRowOnly(tree, roleWithClosed);
+    expect(sidsOf(laidFirst)).toContain(9); // 닫히지 않은 채 배치됨 = 열 하나를 먹는다
+  });
+
+  it("배선이 그 순서다 — 스윕 루프가 배치 블록보다 앞에 있고, roleBySid 는 exited 를 뺀다", () => {
+    const body = main.slice(main.indexOf("async function refreshPaneTitles() {"));
+    const sweep = body.indexOf("exitedSweepTargets(sweepArmed");
+    const place = body.indexOf("formationIfRowOnly(ws.tree, roleBySid)");
+    expect(sweep).toBeGreaterThan(-1);
+    expect(place).toBeGreaterThan(-1);
+    expect(sweep).toBeLessThan(place); // 닫기 → 배치
+    // roleBySid 는 살아 있는 좌석만으로 만든다(닫은 sid 가 섞이면 열을 하나 차지한다).
+    const build = body.indexOf("const roleBySid = new Map<number, string | null>(");
+    expect(body.slice(build, build + 220)).toContain("filter((x) => !x.exited)");
+    // 스윕이 친 ws 도 배치 대상 집합에 들어간다(입양이 없던 틱에도 배치가 돈다).
+    expect(body.slice(sweep, place)).toContain("relayoutWs.add(w)");
   });
 });
+

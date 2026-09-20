@@ -31,17 +31,8 @@ export function exitedSweepTargets(
   return treeSids.filter((sid) => exited.has(sid));
 }
 
-/// B16(새 자리 배치 규칙 — 왼쪽 열 master 위·cso 아래 4:1 · 오른쪽 worker)의 **이음매**.
-///
-/// ⛔지금은 적용하지 않는다. B16 규칙 코드는 `fix/v110-panetitle` 에서 오기로 돼 있는데 그 브랜치가
-///   아직 없다(2026-09-20 실측: `git branch -a` 에 없음). 규칙을 여기서 즉흥으로 **지어내면** 나중에
-///   진짜 규칙이 왔을 때 두 벌이 생긴다 — 그래서 자리만 남기고 「적용 안 했다」를 값으로 돌려준다.
-///   (「안 했다」를 조용히 두지 않는 이유: 호출부가 그 값을 로그로 남겨야 다음 사람이 미편입을 본다.)
-export type PlacementOutcome = { applied: boolean; reason: string };
-
-export function applyB16Placement(): PlacementOutcome {
-  return {
-    applied: false,
-    reason: "B16 배치 규칙 미편입(fix/v110-panetitle 부재) — 자리만 비워 둠. HANDOFF 참조.",
-  };
-}
+// ★B16 배치는 여기 있지 않다(2026-09-20 결선): `ui/src/formation.ts` 의 `formationIfRowOnly` 가
+//   정본이고, 이 모듈의 스윕이 **먼저** 돌아 닫은 뒤 `refreshPaneTitles` 가 새 roleBySid 로 그 함수를
+//   부른다. 순서(닫기 → 배치)가 계약이다 — 닫힌 sid 가 roleBySid 에 섞이면 그 좌석이 열을 하나 차지한다.
+//   (초판에는 `applyB16Placement()` 이음매가 있었다. fix/v110-panetitle 516d39d8 가 오면서 그 자리에
+//    진짜 함수가 들어왔으므로 이음매는 지운다 — 「미편입」을 돌려주는 함수가 남아 있으면 거짓말이 된다.)

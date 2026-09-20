@@ -116,25 +116,29 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
         4px 차가 남아 「같은 크기로」에 못 미친다. 패딩까지 빼면 21px 이고, 그 21px 의 내역은
         테두리 4px + 글자 상자 17px 이다 — 즉 **글자 상자는 이미 A＋(19px)보다 2px 작고**, 남은
         초과분 2px 는 정확히 테두리다. 테두리는 알약의 정체성이라 남긴다(없애면 축소가 아니라 재설계).
-   ③ 특이도 — `#btn-master-start`(id 1개)는 위 `#wsbar-head button`(id 1 + 타입 1)에 **진다**.
-      그래서 헤더 id 를 앞에 붙여 id 2개로 이긴다. 이 줄을 짧게 고쳐 쓰면 조용히 무효가 된다.
+   ③ 특이도 — `#btn-master-start`(id 1개)는 `#wsbar-head button`(id 1 + 타입 1)에 **진다**.
+      그래서 칸 id 를 앞에 붙여 id 2개로 이긴다. 이 줄을 짧게 고쳐 쓰면 조용히 무효가 된다.
+      ★v110-sidebar: 셋이 머리줄을 떠나 #ws-expert 로 함께 옮겼으므로 앞의 id 도 그 칸으로 바뀌었다
+      (id 2개라는 계약은 그대로다 — wsbar.test.ts 의 특이도 케이스가 그 수를 센다).
    ④ 축은 그대로 --wsbar-font 하나다 — A−/A＋ 가 알약까지 함께 키우고 줄인다(메뉴 배율 비연동 불변). */
-#wsbar-head #btn-master-start, #wsbar-head #btn-dept-master, #ws-dept-expert #btn-ws-dept {
+#ws-expert #btn-master-start, #ws-expert #btn-dept-master, #ws-expert #btn-ws-dept {
   font-size: calc(14px * var(--wsbar-font, 1)); padding: 0 6px;
 }
-/* A1-3 M1 — ＋부서는 머리줄을 떠나 접힌 「전문가용」 칸으로 한 단 내려갔다(index.html 주석).
+/* A1-3 M1 + v110-sidebar ⓑ′ — 조직 단추 3종은 머리줄을 떠나 전문가 모드 칸으로 내려갔다(index.html 주석).
    ① 안내 한 줄은 왕초보가 제일 먼저 읽는 자리라 상단 버튼과 같은 사이드바 배율 축에 매되, 버튼이
       아니라 글이므로 한 단계 작게·흐리게 둔다. 좁은 사이드바에서 넘치면 줄바꿈한다(잘리면 안 된다).
-   ② ＋부서 알약 크기는 위 알약 규칙이 그대로 준다(선택자만 새 자리로 옮겼다 — id 2개 특이도 유지). */
+   ② 알약 3종 크기는 위 알약 규칙이 그대로 준다(선택자만 새 자리로 옮겼다 — id 2개 특이도 유지).
+   ③ ★`hidden` 과 `display:flex` 의 함정 — 둘은 **명시도가 같고**(속성 1 vs 클래스 0 + id 1… 실제로는
+      저자 규칙이 UA 의 `[hidden]{display:none}` 을 이긴다) 저자 규칙이 이기므로, display 를 주는 순간
+      `hidden` 속성이 조용히 무력해져 **기본 꺼짐이 기본 켜짐이 된다**. 그래서 [hidden] 재지정을 짝으로
+      둔다. 이 두 줄은 함께 있어야 의미가 있다 — 한쪽만 지우면 전문가 칸이 늘 보인다. */
 #ws-dept-row { flex: none; padding: 2px 8px 4px; }
 #ws-dept-hint {
   font-size: calc(14px * var(--wsbar-font, 1)); color: var(--muted, #8b949e); opacity: .85;
   line-height: 1.35; overflow-wrap: anywhere;
 }
-#ws-dept-expert summary {
-  font-size: calc(12px * var(--wsbar-font, 1)); opacity: .6; cursor: pointer; margin-top: 2px;
-}
-#ws-dept-expert[open] summary { margin-bottom: 4px; }
+#ws-expert { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+#ws-expert[hidden] { display: none; }
 #ws-tabs {
   flex: 1; display: flex; flex-direction: column; gap: 2px;
   overflow-y: auto; padding: 2px 8px 10px;
@@ -519,6 +523,11 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 .cc-card-name { font-size: 12px; color: #94a3b8; }
 .cc-section { padding: 14px 16px; }
 .cc-h { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #64748b; margin-bottom: 10px; }
+/* v110-sidebar ⓑ′ — Control Center 설정 행(전문가 모드 토글). 메뉴 배율 축(--ui-chrome-scale)은
+   쓰지 않는다: 이 칸은 사이드바가 아니라 CC 안이고, CC 는 자기 배율(ccscale)을 따로 갖는다. */
+.cc-setting-row { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.cc-setting-row input { cursor: pointer; }
+.cc-setting-note { margin-top: 6px; font-size: 12px; color: #64748b; line-height: 1.4; }
 .cc-fleet-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; margin-bottom: 4px;
   border-left: 3px solid var(--rc, #64748b); border-radius: 6px; background: rgba(255,255,255,.025); font-size: 13px; }
 .cc-fleet-name { font-weight: 600; color: #e2e8f0; min-width: 130px; }

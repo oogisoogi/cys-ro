@@ -88,10 +88,13 @@ describe("WSU_FONT_PX — CSS와 산식이 같은 수를 쓰는가", () => {
   //    「A−/A＋ 하나로 사이드바가 통째로 커지고 작아진다」를 이름이 아니라 **선언으로** 단언한다.
   //    ⚠이 목록은 손으로 관리한다 — 새 사이드바 요소를 추가하면서 여기 안 적으면 그 요소만
   //      옛 크기로 남는다. 그 누락을 잡는 것이 아래 「사이드바 전역 훑기」 케이스다.
+  // ★v110-sidebar: 알약 3종이 머리줄을 통째로 떠나 전문가 모드 칸(#ws-expert)으로 옮겨졌다.
+  //   축을 지운 것이 아니라 **다시 겨눈 것**이다 — 지키던 계약(셋이 상단 버튼보다 한 단계 작다 ·
+  //   id 2개로 특이도를 이긴다)은 그대로고, 앞의 id 만 새 자리로 바뀌었다.
   const PILL_SELECTOR =
-    "#wsbar-head #btn-master-start, #wsbar-head #btn-dept-master, #ws-dept-expert #btn-ws-dept";
+    "#ws-expert #btn-master-start, #ws-expert #btn-dept-master, #ws-expert #btn-ws-dept";
   const SIDEBAR_SELECTORS = [
-    "#wsbar-head button", // 상단 버튼 5종(A−·A＋·▶CEO·▶부서장·＋)을 한 자리에서 — ＋부서는 A1-3 M1 로 전문가용 칸에
+    "#wsbar-head button", // 상단 버튼 3종(A−·A＋·＋) — 조직 단추 3종은 v110-sidebar 로 전문가 모드 칸에
     PILL_SELECTOR, // 알약 3종의 **재지정**(14px) — 위 6종 규칙을 이기는 자리라 여기도 배율 축이어야 한다
     ".ws-tab .ws-name", // 워크스페이스 제목
     ".ws-tab .ws-sub", // 부제(페인 수·데몬)
@@ -103,8 +106,7 @@ describe("WSU_FONT_PX — CSS와 산식이 같은 수를 쓰는가", () => {
     ".ws-approve-badge", // 승인 대기 배지(제목 행)
     ".ws-group-count", // 그룹 멤버 수
     ".ws-group-add", // 그룹 ＋
-    "#ws-dept-hint", // A1-3 M1 안내 한 줄(＋부서가 떠난 자리)
-    "#ws-dept-expert summary", // A1-3 M1 「전문가용」 접힘 머리
+    "#ws-dept-hint", // A1-3 M1 안내 한 줄(조직 단추가 떠난 자리)
   ];
   it.each(SIDEBAR_SELECTORS)("%s 의 글자 크기가 사이드바 배율에 매여 있다", (sel: string) => {
     const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
@@ -133,8 +135,9 @@ describe("WSU_FONT_PX — CSS와 산식이 같은 수를 쓰는가", () => {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
     const head = html.match(/<div id="wsbar-head">([\s\S]*?)<\/div>/);
     expect(head).not.toBeNull();
-    // 6 → 5: ＋부서는 잃은 것이 아니라 A1-3 M1 로 전문가용 칸에 옮겼다(아래 M1 케이스가 그 실재를 잰다).
-    expect((head![1].match(/<button/g) ?? []).length).toBe(5);
+    // 6 → 5 → 3: ＋부서(A1-3 M1)에 이어 ▶CEO·▶부서장까지 전문가 모드 칸으로 옮겼다(v110-sidebar).
+    //   잃은 것이 아니라 자리를 옮긴 것이고, 아래 ⓑ′ 케이스가 세 요소의 **실재**를 따로 잰다.
+    expect((head![1].match(/<button/g) ?? []).length).toBe(3);
     expect(head![1]).not.toContain("<span"); // 라벨 자리(span)가 통째로 없어야 한다
     // ★「'워크스페이스'라는 글자가 없다」로 재면 안 된다 — ＋ 버튼의 title="새 워크스페이스"에
     //   그 낱말이 남아 있고 그것은 **툴팁이지 라벨이 아니다**(초판이 여기서 거짓 적색을 냈다).
@@ -360,17 +363,41 @@ describe("showsRowAge — 나이 칸을 낼 자리가 있는가", () => {
   });
 });
 
-// ─── A1-3 M1 — 부서 메뉴를 한 단 내리고 그 자리에 말로 부탁하는 안내 ───────────────────
-describe("A1-3 M1 — ＋부서는 전문가용 칸으로, 머리줄 아래엔 안내 한 줄", () => {
+// ─── A1-3 M1 + v110-sidebar ⓑ′ — 조직 단추는 전문가 모드 칸으로, 그 자리엔 말로 부탁하는 안내 ───
+describe("ⓑ′ — 조직 단추 3종은 전문가 모드 칸(기본 꺼짐)으로, 머리줄 아래엔 안내 한 줄", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const head = html.match(/<div id="wsbar-head">([\s\S]*?)<\/div>/)![1];
   const hint = html.match(/<div id="ws-dept-hint">([\s\S]*?)<\/div>/);
 
-  it("머리줄에는 ＋부서가 없고, 버튼 요소는 접힌 전문가용 칸 안에 그대로 있다", () => {
-    expect(head).not.toContain('id="btn-ws-dept"');
-    // 요소를 지우면 main.ts launchDept 의 연타 차단 가드(deptBtn.disabled)가 통째로 꺼진다.
-    expect(/<details id="ws-dept-expert">[\s\S]*?id="btn-ws-dept"[\s\S]*?<\/details>/.test(html)).toBe(true);
-    expect(html.match(/id="btn-ws-dept"/g)?.length).toBe(1);
+  it("★조직 단추 3종이 머리줄에 없고, 요소는 전문가 모드 칸 안에 그대로 있다 (v110-sidebar ⓑ′)", () => {
+    for (const id of ["btn-ws-dept", "btn-master-start", "btn-dept-master"]) {
+      expect(head).not.toContain(`id="${id}"`);
+      // 요소를 **지우면** 안 된다: launchDept 의 연타 차단 가드(deptBtn.disabled)가 #btn-ws-dept 에
+      // 매여 있고, ▶CEO 는 마스터가 죽은 기기에서 사람이 누를 수 있는 마지막 밸브다(854 §6).
+      // 그래서 「머리줄에 없다」만 재면 부족하다 — 새 자리에 **있다**를 함께 재야 제거와 구별된다.
+      expect(new RegExp(`<div id="ws-expert"[^>]*>[\\s\\S]*?id="${id}"[\\s\\S]*?</div>`).test(html)).toBe(true);
+      expect(html.match(new RegExp(`id="${id}"`, "g"))?.length).toBe(1); // 중복 생성 금지
+    }
+  });
+
+  it("★전문가 모드 칸이 **기본 꺼짐**이다 — HTML 에 hidden 이 박혀 있다 (박사님 판정 = 기본값 숨김)", () => {
+    const box = html.match(/<div id="ws-expert"([^>]*)>/);
+    expect(box).not.toBeNull(); // 칸 자체가 사라지면 이 대조는 「어긋남 0」이 아니라 재지 못한 것이다
+    expect(/\bhidden\b/.test(box![1])).toBe(true);
+  });
+
+  it("★hidden 과 display 의 짝 — display 를 주면서 [hidden] 재지정을 빠뜨리면 기본 꺼짐이 조용히 켜진다", () => {
+    // 저자 규칙 `#ws-expert{display:flex}` 는 UA 의 `[hidden]{display:none}` 을 이긴다. 그래서
+    // 두 줄은 **함께 있어야** 의미가 있다 — 한쪽만 지우면 전문가 칸이 늘 보이고, 화면 말고는
+    // 아무 데서도 그 사실이 드러나지 않는다(같은 함정의 선례가 장기기억에 있다).
+    const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+    const base = css.match(/(?:^|\n)#ws-expert\s*\{([\s\S]*?)\}/);
+    expect(base).not.toBeNull();
+    if (/display\s*:/.test(base![1])) {
+      const hid = css.match(/(?:^|\n)#ws-expert\[hidden\]\s*\{([\s\S]*?)\}/);
+      expect(hid).not.toBeNull();
+      expect(hid![1].replace(/\s/g, "")).toContain("display:none");
+    }
   });
 
   it("안내 한 줄이 머리줄 바로 다음(원래 자리)에 있다", () => {

@@ -104,6 +104,8 @@ import {
   winGateInputs,
 } from "./wheelgate";
 import { ceoPaletteEntries } from "./selfdiag";
+import { EXPERT_KEY, expertModeOn, expertModeRaw } from "./expertmode";
+import { deptCreateConfirm } from "./deptconfirm";
 import {
   isMacUserAgent,
   installResultToast,
@@ -6244,7 +6246,15 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
         title: "CEO 승격 진행 (대기 중)",
         subtitle: "부서가 존재·base 부트 완료 — 동의 게이트(feed)를 거쳐 승격합니다",
         keywords: "ceo promote 승격 pending 대기",
-        confirm: { title: "CEO 승격", body: "기본 데몬 master를 CEO로 승격합니다(동의 요청이 feed에 뜹니다 · .pre-ceo 백업으로 가역)." },
+        // ★v110-sidebar ⓒ — 「무엇이 바뀌는지」를 파일 이름으로 적는다. 종전 문안은 「승격합니다」로만
+        //   말해 실제로 바뀌는 것(본부 팩의 지침 파일 교체)이 안 적혀 있었다 — 854 §5 가 적은 대로
+        //   확인 창은 오조작만 막고 의미 오해는 문안이 막는다. 되돌아가는 조건도 함께 적는다.
+        confirm: {
+          title: "CEO 승격",
+          body:
+            "기본 데몬 master를 CEO로 승격합니다(동의 요청이 feed에 뜹니다).\n" +
+            "본부 마스터 지침 파일(MASTER_DIRECTIVE.md)이 CEO 규약으로 교체됩니다 — .pre-ceo 백업으로 되돌릴 수 있고, 부서를 모두 지우면 자동으로 되돌아갑니다.",
+        },
         action: async () => {
           try {
             const r = (await invoke("promote_pending_ceo")) as string;
@@ -6287,7 +6297,10 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
     { id: "act:equalize", title: "패널 균등화", keywords: "equalize 균등", action: () => actionEqualize() },
     { id: "act:cc", title: "Control Center 토글", keywords: "control center dashboard 대시보드", action: () => setCcOpen(!ccOpen) },
     { id: "act:feed-panel", title: "승인 Feed 탭 열기", keywords: "feed panel 피드 패널 승인 control center", action: () => openFeed() },
-    { id: "act:dept", title: "부서 워크스페이스 추가 (독립 부서장·전용 데몬)", keywords: "dept workspace 부서 부서장 master", action: () => { if (daemonActionBlocked()) return; void addDeptWorkspace(); } },
+    // ★v110-sidebar ⓒ: 팔레트도 **같은 문**으로 들어간다(launchDept). 종전엔 addDeptWorkspace 를
+    //   직접 불러 확인 창은 물론 연타 차단까지 통째로 비껴갔다 — 단추에만 가드를 달면 단추 없이
+    //   같은 일을 하는 이 경로가 조용히 남는다(B22 의 구조). daemonActionBlocked 도 launchDept 가 건다.
+    { id: "act:dept", title: "부서 워크스페이스 추가 (독립 부서장·전용 데몬)", keywords: "dept workspace 부서 부서장 master", action: () => { void launchDept(); } },
   );
   return items;
 }
@@ -6394,10 +6407,28 @@ function confirmModal(
     (ov.querySelector("p") as HTMLElement).textContent = body;
     (ov.querySelector(".modal-yes") as HTMLElement).textContent = yesLabel;
     (ov.querySelector(".modal-no") as HTMLElement).textContent = noLabel;
+    // ★Escape = 취소(v110-sidebar · 854 권고 4). 2026-09-20 05:02 실사건에서 사용자가 Escape 로
+    //   대화상자를 닫으려 했으나 닫히지 않았다 — 그때 이 창에는 키보드 취소 경로가 **없었다**
+    //   (클릭 예/아니오/배경만). 문맥 메뉴(showCtxMenu)는 이미 Escape 를 처리하므로 두 팝업의
+    //   계약이 갈려 있던 것이고, 이 줄이 그 계약을 맞춘다.
+    //   ⚠capture 로 듣는다 — 이 파일 말미의 전역 keydown 은 모달이 떠 있으면 통째로 빠져나가고
+    //     (`document.querySelector(".modal-overlay")` 조기 반환), 포커스가 모달 안 단추에 있어도
+    //     버블 단계에서 다른 핸들러가 먼저 먹을 수 있다. 닫을 때 반드시 떼어 낸다(누수 0).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      // ★stopPropagation 이 아니라 stopImmediatePropagation 이다(agy 1R ④ 수용). 앞엣것은 **같은
+      //   window 에 붙은 다른 리스너**를 못 막아서, 확인 창이 둘 겹쳐 있으면 Escape 한 번에 둘 다
+      //   닫힌다(맨 위 하나만 닫혀야 한다 — 뒤엣것은 아직 답하지 않은 질문이다).
+      e.stopImmediatePropagation();
+      done(false); // 취소 쪽으로 닫는다 — 승인은 언제나 명시적 클릭·Enter 로만
+    };
     const done = (v: boolean) => {
+      window.removeEventListener("keydown", onKey, true);
       ov.remove();
       resolve(v);
     };
+    window.addEventListener("keydown", onKey, true);
     ov.querySelector(".modal-yes")!.addEventListener("click", () => done(true));
     ov.querySelector(".modal-no")!.addEventListener("click", () => done(false));
     ov.addEventListener("click", (e) => {
@@ -8202,6 +8233,29 @@ function applyWsbarFontStep(dir: number) {
 document.getElementById("btn-ws-font-minus")?.addEventListener("click", () => applyWsbarFontStep(-1));
 document.getElementById("btn-ws-font-plus")?.addEventListener("click", () => applyWsbarFontStep(+1));
 
+// ---------- 전문가 모드(TICKET=v110-sidebar ⓑ′ · 박사님 판정 2026-09-20) ----------
+// 조직 단추 3종(▶CEO·▶부서장·＋부서)은 기본 화면에서 보이지 않는다. 기본 길은 사이드바 안내
+// 한 줄(「마스터에게 말로 부탁하세요」)이고, 직접 조작이 필요한 사람만 Control Center 의 토글로
+// #ws-expert 칸을 연다. 판정·저장 표기는 expertmode.ts 가 진다(여기서 localStorage 값을 직접
+// 비교하지 않는다 — 기본값이 코드 두 곳에 흩어지면 한쪽만 뒤집혀도 아무 시험이 빨개지지 않는다).
+//
+// ★요소를 숨기는 것이지 지우는 것이 아니다: launchDept 의 연타 차단이 #btn-ws-dept 요소에 매여
+//   있고(deptBtn), ▶CEO 는 마스터가 죽은 기기에서 사람이 누를 수 있는 마지막 밸브다(854 §6).
+const expertBox = document.getElementById("ws-expert");
+const expertToggle = document.getElementById("cc-expert-toggle") as HTMLInputElement | null;
+function applyExpertMode(on: boolean) {
+  // ⚠ CSS 가 #ws-expert 에 display:flex 를 주므로 [hidden] 만으로는 안 숨는다 —
+  //   style.css 의 `#ws-expert[hidden]{display:none}` 짝이 있어야 이 줄이 화면에 닿는다.
+  if (expertBox) expertBox.hidden = !on;
+  if (expertToggle) expertToggle.checked = on;
+}
+applyExpertMode(expertModeOn(localStorage.getItem(EXPERT_KEY))); // 마운트 시 복원(미설정=꺼짐)
+expertToggle?.addEventListener("change", () => {
+  const on = expertToggle.checked;
+  localStorage.setItem(EXPERT_KEY, expertModeRaw(on));
+  applyExpertMode(on);
+});
+
 // ---------- 피드백 창(TICKET=cys-feedback-menu 2026-09-15) ----------
 // 순수 로직 = feedback.ts · 전송·보관함·재시도·캡처 = Rust feedback.rs. 여기는 DOM 배선만 한다.
 let feedbackOpen = false;
@@ -8391,12 +8445,44 @@ const deptBtn = document.getElementById("btn-ws-dept") as HTMLButtonElement | nu
 // 부서 런칭 실행(공통) — placeholder 탭·in-flight 버튼 가드. catalogKey=undefined → 레거시 dept-N.
 // ⑤(gemini R2): invoke 실패 reject 를 try/catch 로 받아 토스트+버튼 disabled 해제(버튼 freeze 방지).
 // ①(gemini R2 ★BLOCKER): create exit code 별 분기 — exit5(account dir 미존재=계정누수)는 레거시 폴백 절대 금지.
-async function launchDept(catalogKey?: string) {
+// ★락은 DOM 요소가 아니라 **모듈 상태**다(agy 1R ③ 수용 · 2026-09-20).
+//   종전 가드는 `!deptBtn || deptBtn.disabled` 였고, 버튼을 숨기려고 `deptBtn?.disabled` 로 바꾸자
+//   **실패 방향이 뒤집혔다**: 버튼이 없으면 조기 반환도 안 되고 아래 잠금(`if (deptBtn)`)도 건너뛰어
+//   동시 실행이 통째로 허용된다(fail-closed → fail-open). 표지(버튼)에 매단 락은 그 표지가 사라지는
+//   순간 락이 아니게 된다 — 이 티켓이 확인 창에서 고친 것과 정확히 같은 형태의 결함이다.
+//   그래서 버튼 유무와 무관한 플래그를 두고, 버튼 disabled 는 **시각 피드백 전용**으로 강등한다.
+let deptLaunching = false;
+// ★우회 인자는 모듈 밖에서 만들 수 없는 값이어야 한다(agy 1R ② 수용). 구 `{ skipConfirm: true }` 는
+//   객체 리터럴이라 아무나 지어낼 수 있었다 — 시험이 등장 1회를 세고 있었지만, 그것은 「지금 코드에
+//   하나뿐」을 재는 것이지 「만들 수 없다」를 재는 것이 아니다. 심볼은 모듈 스코프 밖으로 안 나간다.
+const DEPT_LEGACY_RETRY: unique symbol = Symbol("dept-legacy-retry");
+async function launchDept(catalogKey?: string, retry?: typeof DEPT_LEGACY_RETRY) {
   if (daemonActionBlocked()) return; // ★A4: 리셋 진행/완료 중 부서 데몬 spawn 차단
-  if (!deptBtn || deptBtn.disabled) return; // 연타 차단 — in-flight launch 중 재실행 방지
-  const prevLabel = deptBtn.textContent;
-  deptBtn.disabled = true;
-  deptBtn.textContent = "…"; // 진행 표시 — launch await 동안(placeholder 탭은 즉시 보임)
+  // ★연타 차단 — 확인 창을 띄우기 **전에** 잠근다. 뒤에 잠그면 팔레트 연타로 확인 창이 겹쳐 쌓인다
+  //   (agy 1R ③ 두 번째 지적). 생성 중복은 단일 스레드 특성상 막혔지만 화면은 이미 망가진다.
+  if (deptLaunching) return;
+  // ★★ⓒ 확인 창(TICKET=v110-sidebar · B22 차단) — **여기가 부서 생성의 유일한 문이다.**
+  //   ⑴ 왜 addDeptWorkspace 가 아니라 여기인가: 그쪽은 화면 롤백·placeholder 탭을 다루는 자리라
+  //      취소를 「실패」로 표현할 수밖에 없다(throw → 호출부가 실패 토스트). 취소는 실패가 아니다.
+  //   ⑵ 왜 버튼 핸들러가 아닌가: 팔레트 act:dept 가 버튼을 거치지 않는다. 표지(버튼)에 가드를 달면
+  //      표지 없이 같은 일을 하는 경로가 반드시 남는다 — B22 직전의 구조가 정확히 그것이었다.
+  //   ⑶ 그래서 wswiring.test.ts 가 「addDeptWorkspace 의 호출자는 이 함수 하나뿐」을 센다.
+  //   ⚠ DEPT_LEGACY_RETRY 는 **레거시 폴백 재호출 전용**이다(아래 exit3 분기). 사용자는 이미
+  //     승인했고 같은 승인을 두 번 묻지 않는다. 그 심볼을 다른 자리에서 넘기면 그 경로가 통째로
+  //     무확인이 되므로, 시험이 이 심볼을 **인자로 넘기는 자리**가 1곳임을 못박는다.
+  deptLaunching = true; // ★확인 창을 읽는 동안에도 잠겨 있다 — 겹쳐 뜨는 확인 창 0
+  const prevLabel = deptBtn?.textContent ?? null;
+  if (retry !== DEPT_LEGACY_RETRY) {
+    const c = deptCreateConfirm();
+    if (!(await confirmModal(c.title, c.body, c.yes, c.no))) {
+      deptLaunching = false; // ★취소도 락을 푼다 — 안 풀면 한 번 취소에 문이 영구히 닫힌다
+      return; // 취소 = 아무 일도 일어나지 않는다
+    }
+  }
+  if (deptBtn) {
+    deptBtn.disabled = true; // 시각 피드백 — 락은 deptLaunching 이 진다
+    deptBtn.textContent = "…"; // 진행 표시 — launch await 동안(placeholder 탭은 즉시 보임)
+  }
   let fallbackLegacy = false;
   try {
     await addDeptWorkspace(catalogKey);
@@ -8419,11 +8505,15 @@ async function launchDept(catalogKey?: string) {
       toast("watchdog", "부서 런칭 실패", msg);
     }
   } finally {
-    deptBtn.disabled = false; // 버튼 freeze 방지 — 성공/실패 무관 항상 해제
-    deptBtn.textContent = prevLabel;
+    deptLaunching = false; // 락 해제 — 성공/실패 무관 항상(이 줄이 없으면 한 번 실패에 문이 영구히 닫힌다)
+    if (deptBtn) {
+      deptBtn.disabled = false; // 버튼 freeze 방지 — 성공/실패 무관 항상 해제
+      deptBtn.textContent = prevLabel;
+    }
   }
-  // exit3(카탈로그 부재)만 레거시 폴백 — 버튼 재활성 후 호출해 disabled 가드 통과(exit4/5 는 폴백 없음).
-  if (fallbackLegacy) await launchDept(undefined);
+  // exit3(카탈로그 부재)만 레거시 폴백 — 락 해제 후 호출해 연타 가드를 통과(exit4/5 는 폴백 없음).
+  // 확인 창은 다시 묻지 않는다 — 같은 한 번의 승인 안에서 일어나는 재시도다(위 심볼 주석).
+  if (fallbackLegacy) await launchDept(undefined, DEPT_LEGACY_RETRY);
 }
 // 클릭 → 부서 선택 팝업(카탈로그 미사용 부서 + 레거시 dept-N). 선택 후 부서 데몬 런칭.
 deptBtn?.addEventListener("click", async () => {

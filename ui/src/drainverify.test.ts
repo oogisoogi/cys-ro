@@ -3,6 +3,7 @@
 // [F5] drain_verify 폴백 사유 분기: 구버전 미지원과 크래시/하드캡을 구분해 UI가 정직한 문구를 고르게 한다.
 // 거동(plain drain 폴백)은 양쪽 동일하고 분류·문구만 다르다.
 import { describe, it, expect } from "bun:test";
+import { readFileSync } from "node:fs";
 import { classifyDrainVerifyFallback, drainVerifyFallbackToast, drainVerifyNotice } from "./drainverify";
 
 describe("classifyDrainVerifyFallback — drain_verify 폴백 사유 분기", () => {
@@ -72,9 +73,31 @@ describe("drainVerifyNotice — 확인 창 폐기 후의 사후 알림 1줄", ()
 // ★[V111-F4] 확인 창 폐기의 **소스 가드** — 순수 함수로는 「모달을 안 띄운다」를 못 잰다(모달은 main.ts
 // 흐름에 있다). 그래서 재시작 흐름 함수 본문에 확인 모달 호출이 없다는 것을 직접 단언한다.
 // (함수 본문으로 범위를 좁힌다 — 파일 전체 grep 이면 다른 흐름의 정당한 모달에 걸려 공허해진다.)
+// ★[V111-F5] 진입 확인 모달 폐기의 전용 축(master 판정 2026-09-21) — 「↻ 한 번 = 드레인 → 재시작」.
+// 위 describe 와 축을 나눠 둔다: 저장 미확인 창(뒤)과 진입 확인 창(앞)은 **다른 순간에 묻는** 다른 결함이라
+// 한 시험에 묶으면 하나가 되살아나도 다른 하나의 적색에 묻힌다.
+describe("manualRestartAllDaemons — 진입 확인 모달이 없다(1클릭 즉시 집행)", () => {
+  it("단추 진입부터 drain_verify 호출까지 사용자에게 묻는 단계가 0이다", async () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const i = src.indexOf("async function manualRestartAllDaemons()");
+    const j = src.indexOf('invoke("drain_verify"', i);
+    expect(i).toBeGreaterThan(-1);
+    expect(j).toBeGreaterThan(i);
+    const head = src
+      .slice(i, j)
+      .split("\n")
+      .filter((l: string) => !l.trim().startsWith("//"))
+      .join("\n");
+    expect(head).not.toContain("confirmModal");
+    expect(head).not.toContain("if (!ok) return");
+    // 대신 진행 상황을 알리는 sticky 토스트가 있어야 한다(묻지 않되 조용하지도 않다).
+    expect(head).toContain("stickyToast");
+  });
+});
+
 describe("manualRestartAllDaemons — 저장 미확인 확인 창이 없다", () => {
-  it("재시작 흐름 본문에 '일부 노드 저장 미확인' 모달 호출이 없다", async () => {
-    const src = await Bun.file(new URL("./main.ts", import.meta.url)).text();
+  it("재시작 흐름 본문에 확인 모달이 하나도 없다(1클릭 = 즉시 집행)", async () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const i = src.indexOf("async function manualRestartAllDaemons()");
     expect(i).toBeGreaterThan(-1);
     // ★주석을 걷어낸 **선언문만** 본다 — 이 가드가 자기 설명 주석(「"그래도 재시작"에 아니오를…」)에
@@ -82,13 +105,14 @@ describe("manualRestartAllDaemons — 저장 미확인 확인 창이 없다", ()
     const raw = src.slice(i, src.indexOf("\n}\n", i));
     const body = raw
       .split("\n")
-      .filter((l) => !l.trim().startsWith("//"))
+      .filter((l: string) => !l.trim().startsWith("//"))
       .join("\n");
     expect(body).not.toContain("일부 노드 저장 미확인");
     expect(body).not.toContain("그래도 재시작");
     // 대신 사후 알림을 부른다(빼면 사용자는 아무것도 못 듣는다).
     expect(body).toContain("drainVerifyNotice");
-    // 첫 진입 확인 모달(버튼 의도 확인)은 범위 밖이라 그대로 있다 — 이 시험이 그것까지 지우지 않는다.
-    expect(body.replace(/\s+/g, " ")).toContain('confirmModal( "데몬 재시작"');
+    // ★[V111-F5] 진입 확인 모달도 없앴다(master 판정 2026-09-21) — 이 흐름에는 **어떤 확인 모달도 없다**.
+    //   ↻ 한 번이 곧 드레인→재시작이고, 사용자는 중간에 아무것도 고르지 않는다.
+    expect(body).not.toContain("confirmModal");
   });
 });

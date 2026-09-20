@@ -5893,7 +5893,7 @@ function restartResultToast(failedDepts: string[], deptRestoreFailed: boolean) {
 }
 
 // ── 상시 "↻ 재시작" 버튼(초보자용) — "저장 검증 후 자동 재시작" 흐름 ──
-// 1) 확인 모달[저장 후 재시작/취소] → 2) drain --verify(feature-detect)로 노드별 체크포인트 저장 검증
+// 1) ★[V111-F5] 확인 모달 없음(1클릭 = 즉시 집행) → 2) drain --verify(feature-detect)로 노드별 체크포인트 저장 검증
 // → 3) 결과와 무관하게 자동 진행(skipDrain=true). ★[V111-F4] 부분 실패 확인 창은 폐기됐다 — 코어가
 //    상한 안에서 자동 재조회·연장하고, 미확인 자리는 **재시작 뒤 알림 1줄**로만 알린다(묻지 않는다).
 // cys 코어가 --verify를 미지원하면(구버전) plain drain 폴백(skipDrain=false)+경고. '무손실' 표현 금지 —
@@ -5902,13 +5902,9 @@ async function manualRestartAllDaemons() {
   // ★[F3]+A6: purge·완전 초기화 진행 중이거나 **초기화 완료 래치**가 걸렸으면 재시작을 막는다
   // (완료 후 재시작은 pack 없는 유령 데몬을 세워 "설치 직후" 계약을 무음 침식한다).
   if (daemonActionBlocked()) return;
-  const ok = await confirmModal(
-    "데몬 재시작",
-    "재시작 전에 각 노드의 체크포인트(SESSION_STATE·TODO) 저장을 먼저 검증합니다. 검증이 끝나면 데몬(메인+부서)을 " +
-      "다시 켜고 부서·노드의 대화 기억을 트랜스크립트로 복원합니다.\n\n지금 저장을 검증하고 재시작하시겠습니까?",
-    "저장 후 재시작",
-  );
-  if (!ok) return;
+  // ★[V111-F5] 진입 확인 모달도 없앴다(master 판정 2026-09-21) — 박사님 원칙 「중간에 묻는 단계를 모두
+  //   삭제」가 우선하고, 오발의 대가는 재시작 1회(대화는 트랜스크립트로 복원)로 작다. ↻ 한 번 = 드레인 →
+  //   재시작까지 한 번에. 진행 상황은 묻는 창이 아니라 아래 sticky 토스트로 알린다.
   rotatingDaemon = true;
   try {
     // 1) 저장 검증(drain --verify) — feature-detect. 미지원/실패 시 plain drain 폴백.

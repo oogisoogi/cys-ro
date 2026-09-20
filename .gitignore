@@ -15,6 +15,7 @@ dist-win/*.zip
 dist-win/zip/
 dist-mac/*.dmg
 dist-update/
+dist-local/          # scripts/build-macos-local.sh 기본 산출 폴더(배포 zip — 저장소에 담지 않는다)
 *.key
 *.key.pub
 

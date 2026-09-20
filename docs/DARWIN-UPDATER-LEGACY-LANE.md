@@ -75,11 +75,43 @@ python3 scripts/make-darwin-update-row.py --version 1.1.0 \
 - ⛔개발기(이 맥)에서 4~8 단계를 대신 재지 마라 — 이미 1.1 코드가 깔린 기계는 「구판이 먹는가」를
   원리적으로 못 잰다(측정 대상이 다르다).
 
-## 4. 잔여 — B 확정 시 함께 집행할 1건
+## 4. 잔여 — B 확정 시 함께 집행할 1건 → ✅**집행 완료**(2026-09-20 · TICKET=v110-zipurl)
 
-`platforms["darwin-aarch64"]` 한 행이 **두 소비자**(구판=tar.gz·1.1=zip)를 먹여야 하므로:
-- `url` = tar.gz(구판 필수) · `signature` = 그 tar.gz 의 .sig
-- zip 주소는 새 칸 `zip_url` 로 두고 `macupdate::pick_darwin_asset` 이 `zip_url` 우선·없으면 `url` 로 읽게 한다.
-- 시험: 두 소비자 칸이 서로를 덮지 않는다(구판 칸만 있는 매니페스트 = 1.1 이 zip 을 못 찾아 **거부**해야 한다 — 조용히 tar.gz 를 받지 않는다).
+master 판정 **B 확정**(VM S2 합격 20:23) 뒤 집행했다. `platforms["darwin-*"]` 한 행이
+**두 소비자**(구판=tar.gz·1.1=zip)를 먹여야 하므로 **칸을 갈랐다**:
 
-이 변경은 **VM 게이트 결과가 B 로 확정된 뒤**에 한다. C 로 가면 필요 없는 칸이기 때문이다.
+| 칸 | 주인 | 찍는 곳 |
+|---|---|---|
+| `url`(=.app.tar.gz) · `signature`(그 tar.gz 의 .sig) | 구판 1.0.2(tauri-plugin-updater) | `scripts/make-update-manifest.sh` |
+| `zip_url` · `zip_sha256` · `zip_size` · `zip_cdhash` | 1.1+ 앱(`src-tauri/src/macupdate.rs`) | `scripts/make-darwin-update-row.py --merge` |
+
+⚠**초판 설계문(이 절의 옛 문장)은 「`zip_url` 우선·없으면 `url` 로 읽게 한다」였고, 바로 다음 줄의
+시험 요건(「거부해야 한다」)과 **서로 모순**이었다.** 채택은 **거부**다(master 브리프 2026-09-20) —
+`url` 로 내려가는 폴백을 두면 1.2 발행 때 1.1 맥이 구판 tar.gz 를 zip 으로 받아 설치를 시도한다.
+지금 코드는 `zip_url` 부재를 `UpdateFail::ZipAbsent`(「이 판의 매니페스트에는 맥 zip 항목이
+없습니다」)로 **거부**한다. 내려가는 폴백이 남아 있는 칸은 해시 셋(`sha256`·`size`·`cdhash`)뿐이며,
+그건 **전환기 행**(1.1.0 발행본 = `url`=zip + 옛 이름 셋)을 위한 것이다.
+
+집행된 것:
+- `macupdate::pick_darwin_asset` — `zip_url` 필수(부재 = `ZipAbsent` 거부) · 해시 셋만 옛 이름 폴백.
+- `make-darwin-update-row.py` — **앱 절반만** 찍고 병합은 **덮어쓰기가 아니라 합치기**.
+  구판 절반이 없으면 fail-closed(`legacy_half_problem`) — `--tarball-url`/`--tarball-sig` 로 넘길 수 있다.
+- `make-update-manifest.sh` — 자산 이름을 **발행 레인 이름**(`cysr_<arch>.app.tar.gz` · arch=aarch64|x64)
+  으로 정렬하고, 앞서 얹힌 `zip_*` 넷을 재생성 때 **되살린다**(순서 의존 제거).
+- 시험: `scripts/tests/test_darwin_update_row.py`(13) ·
+  `scripts/tests/test_darwin_asset_name_alignment.py`(3 · 두 생성기를 **실제로 돌려** 대조) ·
+  뮤턴트 m11~m14.
+
+### 4-1. 자산 이름 — 왜 「판번 없는 이름」이 정본인가(집행 중 실측 · master 브리프와 갈린 지점)
+브리프는 통일 대상을 **판번 포함**(`cysr-<판>-macos-<arch>.app.tar.gz`)으로 지정했다. 실측 결과
+그 이름은 **어디에서도 발행되지 않는다** — 발행·검증 레인 셋이 전부 판번 없는 이름을 못박고 있다:
+`release-postprocess.py:114-116 MAC_LANE` · `release-verify.py:212-215 LANE` ·
+`verify-release-remote.py:80-81 VERSIONLESS_ASSETS`. 그리고 `release-verify.py:20-21` 은 그것이
+**실물 측정값**이라고 적고 있다(「옛 판본은 `cys_<V>_aarch64.app.tar.gz` 를 가정하나 실물은
+버전 토큰이 없는 `cysr_aarch64.app.tar.gz`」). 판번 쪽으로 통일하면 latest.json 의 `url` 이
+**발행되지 않는 자산**을 가리켜 구판 업데이트가 404 로 죽고, 이미 발행된 v1.0.2 를 검사하는
+`verify-release-remote.py` 도 함께 깨진다(릴리스 자산은 태그별이라 「판마다 덮인다」는 우려는
+성립하지 않는다 — 같은 태그 안에서만 이름이 충돌한다).
+⇒ 이름은 **`cysr_<arch>.app.tar.gz`** 로 통일했고, 브리프의 반대 선택으로 되돌리려면
+`MAC_LANE`·`LANE`·`VERSIONLESS_ASSETS` + 시험 3본 + 구판 tar 생성기의 `--version` 신설까지
+함께 가야 한다(그 판정은 master 몫 — 이 문서는 실측만 적는다).

@@ -95,7 +95,8 @@ cd ~/axdev/.wt/cys-v110-darwin-update
 sh scripts/bundle-prep.sh                     # 사이드카·UI (최초 1회 · rc 0)
 cargo test -p cys-app                         # 앱 크레이트 전건(맥 업데이트 판정 14건 포함)
 bun test ui/src                               # UI 전건
-python3 scripts/tests/test_darwin_update_row.py      # latest.json 맥 행 생성기
+python3 scripts/tests/test_darwin_update_row.py      # latest.json 맥 행 생성기(앱 절반 + 병합 보존)
+python3 scripts/tests/test_darwin_asset_name_alignment.py # 두 생성기·발행 레인 자산 이름 정렬
 python3 scripts/tests/test_darwin_updater_tarball.py # 구판 레인 tar.gz 생성기
 python3 scripts/tests/mutants-darwin-update.py    # 뮤턴트 배터리(새 축이 무는지)
 ```

@@ -9,6 +9,11 @@
 #
 # 산출(로컬 자체서명 zip 과 같은 폴더 = 기본 dist-mac):
 #   dist-mac/cysr_<arch>.app.tar.gz        ← release-verify.py MAC_LANE 이름과 같다
+#     ★이 이름이 **정본**이다(TICKET=v110-zipurl 실측): 발행·검증 레인 셋(release-postprocess.py
+#       MAC_LANE · release-verify.py LANE · verify-release-remote.py VERSIONLESS_ASSETS)이 전부
+#       이 이름을 못박는다. latest.json 에 이름을 적는 make-update-manifest.sh 도 여기에 맞췄고,
+#       그 정렬은 scripts/tests/test_darwin_asset_name_alignment.py 가 **두 생성기를 실제로 돌려**
+#       대조한다 — 갈리면 latest.json 의 url 이 발행되지 않는 자산을 가리킨다(구판 업데이트 404).
 #   dist-mac/cysr_<arch>.app.tar.gz.sig    ← 서명 키가 있을 때만
 #   dist-mac/cysr_<arch>.app.tar.gz.sig.MISSING ← 키가 없을 때의 자리표시(발행 금지 표식)
 #

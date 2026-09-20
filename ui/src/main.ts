@@ -14,7 +14,8 @@ import { DEFAULT_BG, readableForeground } from "./theme";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import { classifyDrainVerifyFallback, drainVerifyFallbackToast } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
-import { appVersionLabel, appVersionTitle, daemonInfoLabel } from "./headerlabels";
+import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
+import { applyB16Placement, exitedSweepTargets } from "./exitedsweep";
 import {
   deptPlaceholderLabel,
   deptSlugOfSocket,
@@ -2391,6 +2392,9 @@ let started = false; // start()의 세션 복원이 끝나기 전 인터벌 자�
 // 치우되, **단발 응답으로는 치우지 않는다** — 데몬이 한 틱만 부분/빈 목록을 돌려줘도 트리가 통째로
 // 증발하면 '터미널에 글자가 하나도 안 보이는' 최악이 된다. 2회 연속 같은 판정일 때만 집행한다.
 let ghostStrike = new Map<string, number>();
+// ★B17: 복원 완료(restore-progress done) 직후 **한 번만** 켜지는 스윕 무장. 켜진 채로 두면
+// 사용자가 직접 끝낸 세션의 마지막 화면까지 쓸어 가므로 한 패스 뒤 스스로 내린다.
+let exitedSweepArmed = false;
 // ★A1-3 M7①: 이번 세션에 '본 적 있는' 부서 소켓. 시작 대조가 레지스트리를 읽으면 그때 심고,
 // 못 읽었으면 null 로 두어 첫 틱이 심는다(newlyRegisteredDepts 설명). 한 번 본 부서는 탭을 닫아도
 // 틱이 되살리지 않는다 — 닫은 탭이 3초마다 돌아오는 자가치유 과잉을 막는 것이 이 집합의 일이다.
@@ -2420,6 +2424,8 @@ function releaseFlightWhenSettled(key: string, p: Promise<unknown>): void {
   void p.then(done, done); // then(onOk, onErr) — 파생 promise 의 미처리 거부를 만들지 않는다
 }
 async function refreshPaneTitles() {
+  // 이 패스 동안의 무장 상태를 **한 번** 읽는다(패스 중간에 켜지면 다음 패스가 친다 — 반쪽 스윕 금지).
+  const sweepArmed = exitedSweepArmed;
   if (!started || refreshing) return; // 겹친 호출의 이중 입양 방지
   refreshing = true;
   let layoutChanged = false; // 이번 틱에서 워크스페이스/트리를 고쳤는가(render 필요 판정)
@@ -2492,6 +2498,11 @@ async function refreshPaneTitles() {
         detachPane(sid, sk);
         layoutChanged = true;
       }
+      // ★B17 — 복원 직후 1회: 데몬이 **종료됨으로 알고 있는** 옛 자리를 닫는다(유령 수렴과 다른 축).
+      for (const sid of exitedSweepTargets(sweepArmed, sockSids, r.surfaces)) {
+        detachPane(sid, sk);
+        layoutChanged = true;
+      }
       for (const s of r.surfaces) {
         const rt = panes.get(paneKey(s.surface_id, sk));
         if (!rt) continue;
@@ -2548,6 +2559,9 @@ async function refreshPaneTitles() {
     /* 데몬 일시 미응답은 다음 틱에 */
   } finally {
     refreshing = false;
+    // ★B17 무장 해제는 **finally** 다 — 중간에 예외가 나도 무장이 남아 다음 틱에 또 쓸지 않는다
+    //   (「1회」라고 적어 놓고 실제로는 예외 때마다 반복되는 것이 이런 플래그의 전형적 사고다).
+    if (sweepArmed) exitedSweepArmed = false;
     // ★렌더는 finally에 둔다 — 위쪽 어디서 예외가 나도 패널은 매 틱 다시 그려진다.
     //   초판은 예외 시 렌더 자체를 건너뛰어 now가 재계산되지 않았고, 그래서 낡은 행이
     //   영원히 「fresh 모양」으로 굳었다(codex [High]). 나이는 그릴 때 다시 계산된다.
@@ -5558,11 +5572,18 @@ async function promptBinaryPatch() {
     return;
   }
   const v = updateAvailable.version;
+  // ★맥과 윈도의 마지막 한 걸음이 다르다 — 문구도 그 차이만큼만 다르다(B7·B15).
+  //   윈도: 설치 직후 앱이 스스로 재시작. 맥: 교체까지 하고 **재시작을 한 번 더 묻는다**.
+  //   여기서 한 문장으로 뭉뚱그리면 맥 사용자는 "재시작한다더니 안 한다"를 보게 된다.
+  const tail = IS_MACOS
+    ? `받아서 검증(크기·해시·서명·CDHash)한 뒤 설치본을 교체합니다. 교체가 끝나면 재시작 여부를 다시 여쭙고, ` +
+      `재시작하면 부서·노드가 자동 복원됩니다(대화 기억 포함).`
+    : `저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 재시작합니다. 부서·노드는 재시작 후 자동 ` +
+      `복원됩니다(대화 기억 포함). 마지막 미저장분은 손실될 수 있습니다.`;
   const ok = await confirmModal(
     `새 본체 버전 ${v} — 패치 설치`,
-    `새 본체(앱) ${v}을 패치 방식으로 설치합니다: 저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 ` +
-      `재시작합니다. 부서·노드는 재시작 후 자동 복원됩니다(대화 기억 포함). 마지막 미저장분은 손실될 수 ` +
-      `있습니다.\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr`,
+    `새 본체(앱) ${v}을 패치 방식으로 설치합니다: ${tail}` +
+      `\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr`,
     "설치",
   );
   if (!ok) return;
@@ -5572,6 +5593,34 @@ async function promptBinaryPatch() {
   } catch (e) {
     dismissToast("upd-bin");
     toast("health", "패치 설치 실패", String(e));
+  }
+}
+
+/// 맥 교체 완료 뒤 「재시작」(B15). 살아있는 세션이 있으면 백엔드가 거부하므로 한 번 확인받고 강행한다 —
+/// 확인 문구·순서는 manualRotateSkewed(수동 교대)와 같은 모양이다(같은 일을 두 문장으로 말하지 않는다).
+async function restartAfterUpdate(version: string) {
+  if (daemonActionBlocked()) return;
+  try {
+    await invoke("restart_after_update", { force: false });
+    return; // 성공하면 백엔드가 재시작까지 한다(여기로 돌아오지 않는다).
+  } catch (e) {
+    const msg = String(e);
+    if (!msg.includes("live_sessions:")) {
+      toast("health", "재시작 실패", msg);
+      return;
+    }
+    const ok = await confirmModal(
+      `재시작 (새 판 v${version})`,
+      `${holdReasonText(msg)}\n\n저장(drain) 신호를 보낸 뒤 재시작하고 노드를 복원합니다. 마지막 미저장분은 ` +
+        `손실될 수 있습니다.\n\n지금 재시작하시겠습니까?`,
+      "재시작",
+    );
+    if (!ok) return;
+    try {
+      await invoke("restart_after_update", { force: true });
+    } catch (e2) {
+      toast("health", "재시작 실패", String(e2));
+    }
   }
 }
 
@@ -5620,11 +5669,16 @@ interface SkewedDept {
 
 // rotate_daemon/rotate_dept_daemon 래퍼 — force=false면 백엔드가 세션>0 시 "live_sessions:N"로 거부(=보류).
 // skipDrain: verified 재시작 경로만 true(사전 drain --verify로 저장 확인됨) — 기본 false는 plain drain(회귀 0).
+// 마지막 교대 시도의 오류 원문(B15 사유 표기용). 래퍼의 반환형(ok|held|err)은 그대로 둔다 —
+// 호출부를 건드리지 않고 사유만 덧붙이기 위해서다(회귀 0).
+let lastRotateError = "";
 async function rotateMainDaemon(force: boolean, skipDrain = false): Promise<"ok" | "held" | "err"> {
   try {
     await invoke("rotate_daemon", { force, skipDrain });
+    lastRotateError = "";
     return "ok";
   } catch (e) {
+    lastRotateError = String(e);
     return String(e).includes("live_sessions:") ? "held" : "err";
   }
 }
@@ -5908,12 +5962,18 @@ async function checkVersionSkew() {
   // 스큐가 사용자에게 계속 보이게(구 배지 가시성 보존). 실패는 다음 tick 재검·재시도로 자가 교정된다.
   // 참고: F1로 카운트 실패는 "live_sessions:unknown"→래퍼가 "held" 분류, "err"는 그 외 교대 실패.
   let heldMain = false;
+  // B15: 「유휴 자동 교대는 세션 보존 가능할 때만」 — 보류됐으면 **사유를 적는다**(구판은 사유가 없어
+  // 사용자가 "왜 안 바뀌지"를 알 길이 없었다). 판정은 백엔드(force=false 게이트)가 그대로 한다.
+  let holdReason = "";
   const heldDepts: SkewedDept[] = [];
   rotatingDaemon = true;
   try {
     if (mainSkew) {
       const r = await rotateMainDaemon(false);
-      if (r === "held" || r === "err") heldMain = true;
+      if (r === "held" || r === "err") {
+        heldMain = true;
+        holdReason = holdReasonText(lastRotateError);
+      }
     }
     for (const d of skewedDepts) {
       const r = await rotateDeptDaemon(d.name, false);
@@ -5930,7 +5990,8 @@ async function checkVersionSkew() {
   if (!skewNoticeShown) {
     // C: 자동 교대가 보류/실패로 남을 때 1회 안내(sticky 아님 — 8초 auto-dismiss)
     skewNoticeShown = true;
-    toast("feed", "새 버전 준비", `새 버전 v${appVer} 준비 — 상태바 배지를 눌러 저장 후 교대하세요.`);
+    const why = holdReason ? ` ${holdReason}` : "";
+    toast("feed", "새 버전 준비", `새 버전 v${appVer} 준비 —${why} 상태바 배지를 눌러 저장 후 교대하세요.`);
   }
 }
 
@@ -6850,7 +6911,9 @@ function toast(category: string, name: string, detail: string, onClick?: () => v
 // TTL이 최후 방어선으로 화면을 정리한다(구 구현은 타이머가 없어 영구 잔존했다).
 const stickyToasts = new Map<string, { el: HTMLElement; timer: ReturnType<typeof setTimeout> }>();
 
-function stickyToast(id: string, category: string, name: string, detail: string) {
+// onClick: 누를 수 있는 지속형 토스트(B15 재시작 1클릭). 갱신마다 다시 매기 위해 핸들러를
+// 요소에 직접 둔다(addEventListener 누적 금지 — 같은 id 로 여러 번 갱신되면 중복 발화한다).
+function stickyToast(id: string, category: string, name: string, detail: string, onClick?: () => void) {
   recordAlarm(category, name, detail, id);
   const box = document.getElementById("toasts")!;
   const prev = stickyToasts.get(id);
@@ -6869,6 +6932,13 @@ function stickyToast(id: string, category: string, name: string, detail: string)
   el.className = toastClassName(category);
   (el.querySelector(".toast-name") as HTMLElement).textContent = name;
   (el.querySelector(".toast-detail") as HTMLElement).textContent = detail;
+  el.style.cursor = onClick ? "pointer" : "";
+  el.onclick = onClick
+    ? (ev: MouseEvent) => {
+        if ((ev.target as HTMLElement).closest(".toast-x")) return; // 닫기(×)는 제외 — toast() 와 같은 규칙
+        onClick();
+      }
+    : null;
   const timer = setTimeout(() => {
     dismissToast(id);
     // 고위험 실패(purge-fail-* 등)는 조용히 사라지지 않는다 — OS 배너로 1회 보강(D2b 계승).
@@ -7372,11 +7442,36 @@ async function start() {
       } else {
         stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", `다운로드 중 ${mb(updDownloaded)} MB`);
       }
+    } else if (p.phase === "verify") {
+      // 맥 경로(B7): 크기·sha256·codesign 봉인·CDHash 를 차례로 본다. 윈도는 플러그인이 minisign 으로 대신한다.
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "받은 파일 검증 중(크기·해시·서명)…");
+    } else if (p.phase === "swap") {
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "설치본 교체 중…");
+    } else if (p.phase === "dry-run") {
+      // 개발기 격리 실행 — 검증까지만 하고 교체하지 않았다는 사실을 화면에도 남긴다(무증상 성공 금지).
+      dismissToast("upd-bin");
+      toast("watchdog", "🧪 업데이트 드라이런", "검증 전건 통과 — 교체는 하지 않았습니다(CYS_UPDATE_DRY_RUN=1).");
     } else if (p.phase === "drain") {
       stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "세션 정리 중…");
     } else if (p.phase === "handoff") {
       stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "재시작 준비 중…");
     }
+  });
+
+  // 맥 업데이트 교체 완료 → 「재시작」 1클릭(B15 · TICKET=v110-darwin-update).
+  // ★왜 자동으로 재시작하지 않는가: 교체는 끝났지만 **세션은 아직 살아 있다**. 윈도(NSIS)는
+  //   인스톨러가 앱을 죽이므로 선택지가 없지만, 맥은 우리가 교체했으므로 시점을 사용자가 고를 수 있다.
+  //   토스트를 누르면 저장(drain) → 구 데몬 종료 → 재시작 → 자동 복원이 한 번에 돈다.
+  await listen("update-restart-required", (e) => {
+    const p = (e.payload ?? {}) as { version?: string };
+    dismissToast("upd-bin");
+    stickyToast(
+      "upd-restart",
+      "feed",
+      "✅ 새 판 교체 완료 — 눌러서 재시작",
+      `새 판 v${p.version ?? ""} 이 설치본에 들어갔습니다. 지금 누르면 저장 후 재시작하고 노드를 복원합니다(나중에 눌러도 됩니다).`,
+      () => void restartAfterUpdate(p.version ?? ""),
+    );
   });
 
   // 무중단 팩 업데이트 진행 피드백(install_pack_update가 emit). ★app.restart 없음 — 세션 유지된 채 적용.
@@ -7450,6 +7545,12 @@ async function start() {
       if (p.hq_ok === false) toast("health", "⚠ 본부 복원 실패 포함", `본부 노드 복원 실패 · 부서 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
       else if (fail > 0) toast("health", "⚠ 직원 복귀 일부 실패", `부서 복원 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
       else toast("watchdog", "✅ 직원 복귀 완료", `노드 세션 복원 완료 (부서 ${ok}).`);
+      // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
+      //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
+      exitedSweepArmed = true;
+      void refreshPaneTitles(); // 3초를 기다리지 않는다 — 사용자가 보는 것은 "복원됐다"는 말 직후의 화면이다
+      const placement = applyB16Placement();
+      if (!placement.applied) console.info("[cys-app] 새 자리 배치 미적용 —", placement.reason);
     } else if (p.phase === "error") {
       dismissToast("restore");
       toast("health", "복원 실패", p.detail ?? "노드 복원 실행에 실패했습니다.");

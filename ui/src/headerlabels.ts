@@ -12,6 +12,25 @@ export function appVersionTitle(ver: string, buildId: string): string {
   return `cysr 앱 판번 v${ver} · build ${buildId || "unknown"}`;
 }
 
-export function daemonInfoLabel(status: { daemon_pid?: unknown; socket_path?: unknown }): string {
-  return `daemon pid=${status.daemon_pid} sock=${status.socket_path}`;
+// ⓒ 데몬 판번 상시 표시(B15 · TICKET=v110-darwin-update): 종전엔 데몬 판번이 **앱과 다를 때만**
+//    스큐 배지에 나타났다 — 같을 때는 어디에도 없어 "지금 도는 데몬이 몇 판인가"를 물으면 답이 없었다.
+//    앱 판번(app-ver)이 늘 보이는 것과 짝을 맞춘다. 데몬이 판번을 주지 않는 구판이면 **종전 문구 그대로**
+//    (없는 값을 지어내지 않는다 — 빈 v 표기 금지).
+export function daemonInfoLabel(status: {
+  daemon_pid?: unknown;
+  socket_path?: unknown;
+  version?: unknown;
+}): string {
+  const ver = typeof status.version === "string" ? status.version.trim() : "";
+  const v = ver ? `v${ver} ` : "";
+  return `daemon ${v}pid=${status.daemon_pid} sock=${status.socket_path}`;
+}
+
+// 자동 교대가 보류된 사유를 사람 문장으로(B15 「불가하면 토스트만 + 사유 표기」).
+// 입력은 rotate_daemon 이 낸 오류 문자열 그대로 — 계약은 접두 `live_sessions:`(install_update 와 공유).
+export function holdReasonText(raw: string): string {
+  const m = /live_sessions:(\S+)/.exec(raw ?? "");
+  if (!m) return "데몬 교대에 실패했습니다(사유 미상) — 다음 점검에서 다시 시도합니다.";
+  if (m[1] === "unknown") return "세션 수를 확인하지 못해 교대를 보류했습니다(확인 실패 = 보류).";
+  return `작업 세션 ${m[1]}개가 살아 있어 교대를 보류했습니다(세션 보존 우선).`;
 }

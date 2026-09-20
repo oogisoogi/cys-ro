@@ -13,6 +13,10 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 
 // 사이드바 「피드백」(앱 층 · TICKET=cys-feedback-menu) — 접수·첨부 올리기·보관함 재시도·화면 캡처.
 mod feedback;
+// 맥 앱 내 업데이트(B7 · TICKET=v110-darwin-update) — 우리 릴리스 zip 의 검증·원자 교체 판정.
+// ★맥에서만 쓰이지만 **순수 판정은 어느 기판에서도 컴파일·시험된다**(cfg 로 통째 가리면 그 축이
+//   맥 러너에서만 재지는 축이 된다 — 시험이 안 도는 자리를 만들지 않는다).
+mod macupdate;
 
 type Stream = Box<dyn AsyncReadWrite>;
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -5701,6 +5705,17 @@ fn updater_target_absent(e: &tauri_plugin_updater::Error) -> bool {
 /// 업데이트 확인: 새 버전이 있으면 (version, notes)를 반환, 없으면 null.
 #[tauri::command]
 async fn check_update(app: AppHandle) -> Result<Option<Value>, String> {
+    // ★맥은 플러그인에게 묻지 않는다(B7 · TICKET=v110-darwin-update): 플러그인은 맥 행을 찾아도
+    //   **설치하지 못한다**(tar.gz 전용 · macupdate.rs 머리말). 확인과 설치가 서로 다른 것을 보면
+    //   배지는 뜨는데 설치는 반드시 실패하는 조합이 생긴다 — 두 경로를 한 판정에 묶는다.
+    if cfg!(target_os = "macos") {
+        return check_update_darwin(&app).await;
+    }
+    check_update_plugin(app).await
+}
+
+/// 윈도·리눅스 경로 — `tauri-plugin-updater` 의 판정을 그대로 쓴다(거동 불변).
+async fn check_update_plugin(app: AppHandle) -> Result<Option<Value>, String> {
     let updater = build_updater(&app)?;
     match updater.check().await {
         Ok(Some(update)) => Ok(Some(json!({
@@ -5728,6 +5743,356 @@ async fn check_update(app: AppHandle) -> Result<Option<Value>, String> {
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+// ── 맥 앱 내 업데이트(B7 · TICKET=v110-darwin-update) ────────────────────────────
+//
+// 윈도는 `tauri-plugin-updater`(minisign 서명 + NSIS)가 받고 깐다. 맥은 **우리가 직접** 받는다 —
+// 이유·실패 분류·순수 판정은 `macupdate.rs` 머리말에 있다. 여기 있는 것은 집행(네트워크·프로세스·
+// 파일)뿐이고, 어떤 단계에서도 판정은 저쪽 순수 함수를 호출한다.
+//
+// 표시·문구는 윈도 경로와 **동형**이다: 같은 `update-progress` 이벤트(phase 어휘를 둘이 공유),
+// 같은 "upd-bin" 스티키 토스트, 같은 확인 모달. 다른 것은 마지막 한 걸음뿐이다 —
+// 윈도는 설치 직후 앱이 스스로 재시작하고, 맥은 **교체까지만 하고 재시작을 사용자에게 묻는다**
+// (B15 · `update-restart-required`).
+
+/// 원격 latest.json 을 받아 온다. ★실패는 **Err** 다 — `same_version_rebuild_check` 의 조용한
+/// 건너뜀(None)과 의도적으로 다르다. 그쪽은 「판번이 같을 때의 2순위 보조 판정」이라 침묵이 맞고,
+/// 이쪽은 맥의 **1순위 경로**라 조용해지면 업데이트가 통째로 사라진다(침묵 실패 금지).
+async fn fetch_latest_json() -> Result<Value, String> {
+    let url = latest_json_url().ok_or("업데이트 주소(updater endpoint)를 읽지 못했다")?;
+    let out = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-fsSL", "--max-time", "20", &url]);
+        no_console(&mut cmd);
+        cmd.output()
+    })
+    .await
+    .map_err(|e| format!("조회 태스크 실패 — {e}"))?
+    .map_err(|e| format!("curl 실행 실패 — {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "latest.json 조회 실패(code {:?})",
+            out.status.code()
+        ));
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("latest.json 파싱 실패 — {e}"))
+}
+
+/// 맥 업데이트 확인 — 판정은 `macupdate::decide_darwin_update`.
+async fn check_update_darwin(app: &AppHandle) -> Result<Option<Value>, String> {
+    let manifest = fetch_latest_json().await?;
+    let current = app.package_info().version.to_string();
+    match macupdate::decide_darwin_update(
+        &manifest,
+        macupdate::darwin_target(),
+        &current,
+        cys::pack::build_id(),
+    ) {
+        macupdate::DarwinVerdict::Install { version, notes, .. } => Ok(Some(json!({
+            "version": version,
+            "current": current,
+            "notes": notes,
+        }))),
+        macupdate::DarwinVerdict::Skip(why) => {
+            eprintln!("[cys-app] 업데이트 확인(맥): 없음 — {why}");
+            Ok(None)
+        }
+        // ★「이 판에 맥 자산이 없다」는 고장이 아니다(윈도 단독 배포 태그가 실제로 있다 —
+        //   v1.0.2 latest.json 에 darwin 행 0건, 2026-09-20 실측). 사용자에겐 "없음"으로 보이되
+        //   로그에는 왜 없는지가 남는다(updater_target_absent 주석과 같은 규율).
+        macupdate::DarwinVerdict::Fail(macupdate::UpdateFail::NoRow(t)) => {
+            eprintln!(
+                "[cys-app] 업데이트 확인(맥): 이 플랫폼용 릴리스 없음 — latest.json platforms 에 {t} 행이 없다. \
+                 업데이트 없음으로 처리한다."
+            );
+            Ok(None)
+        }
+        // 행은 있는데 검증 칸이 빠진 것은 **고장**이다 — 조용히 넘기면 설치가 영영 안 되는 이유를 아무도 모른다.
+        macupdate::DarwinVerdict::Fail(e) => Err(e.to_string()),
+    }
+}
+
+/// 진행 표시용 — 받는 동안 파일이 자라는 것을 재서 윈도 경로와 같은 모양의 `update-progress` 를 낸다
+/// (UI 리스너는 `chunk`=이번 증가분·`total`=전체로 읽는다 — 그 계약을 그대로 만족시킨다).
+fn emit_download_growth(app: &AppHandle, path: &std::path::Path, total: u64, sent: &mut u64) {
+    let now = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if now > *sent {
+        let chunk = now - *sent;
+        *sent = now;
+        let _ = app.emit(
+            "update-progress",
+            json!({"phase": "download", "chunk": chunk, "total": total}),
+        );
+    }
+}
+
+/// zip 을 받아 검증하고 설치본을 원자 교체한다. **재시작은 하지 않는다**(B15 가 묻는다).
+///
+/// 실패 5종은 전부 여기서 갈린다: 크기 · sha256 · codesign 봉인 · CDHash · 다운로드 중단.
+/// 각각 `macupdate::UpdateFail` 의 코드 접두를 그대로 UI 로 올린다.
+async fn install_update_darwin(app: AppHandle, force: bool) -> Result<(), String> {
+    use macupdate::UpdateFail;
+    // 1) 세션 가드 — 윈도 경로와 같은 규율(없으면 자동·있으면 확인).
+    let sessions = live_session_count().await.unwrap_or(0);
+    if sessions > 0 && !force {
+        return Err(format!("live_sessions:{sessions}"));
+    }
+    // 2) 매니페스트 → 자산 확정(판정은 순수 함수).
+    let manifest = fetch_latest_json().await?;
+    let current = app.package_info().version.to_string();
+    let (version, asset) = match macupdate::decide_darwin_update(
+        &manifest,
+        macupdate::darwin_target(),
+        &current,
+        cys::pack::build_id(),
+    ) {
+        macupdate::DarwinVerdict::Install { version, asset, .. } => (version, asset),
+        macupdate::DarwinVerdict::Skip(why) => return Err(format!("no update available ({why})")),
+        macupdate::DarwinVerdict::Fail(e) => return Err(e.to_string()),
+    };
+    // 3) 작업 폴더 — 앱 번들과 **같은 볼륨**이어야 마지막 rename 이 원자적이다.
+    //    (/tmp 는 같은 볼륨이지만 보장은 아니므로, 교체 대상의 부모 아래 숨김 폴더를 쓴다.)
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let target = macupdate::target_bundle(&exe)
+        .ok_or("교체할 앱 번들 경로를 찾지 못했다(번들 밖에서 실행 중일 수 있다)")?;
+    let parent = target
+        .parent()
+        .ok_or("앱 번들의 상위 폴더를 찾지 못했다")?
+        .to_path_buf();
+    // 시각 도장 — 백업·작업 폴더 이름의 유일성만 책임진다(표시용 아님).
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .to_string();
+    let work = parent.join(format!(".cysr-update-{stamp}"));
+    std::fs::create_dir_all(&work)
+        .map_err(|e| UpdateFail::Swap(format!("작업 폴더를 만들지 못했다({}) — {e}", work.display())).to_string())?;
+    // 실패·성공 어느 쪽으로 끝나도 작업 폴더는 남기지 않는다.
+    let cleanup = |w: &std::path::Path| {
+        let _ = std::fs::remove_dir_all(w);
+    };
+    let zip = work.join("cysr-update.zip");
+
+    // 4) 다운로드 — curl 자식 + 파일 성장 폴링(진행률). 중단·비정상 종료는 Interrupted.
+    let _ = app.emit("update-progress", json!({"phase": "download"}));
+    let url = asset.url.clone();
+    let zip_for_child = zip.clone();
+    let mut child = {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args([
+            "-fL",
+            "--retry",
+            "2",
+            "--connect-timeout",
+            "20",
+            "--max-time",
+            "3600",
+            "-o",
+        ]);
+        cmd.arg(&zip_for_child);
+        cmd.arg(&url);
+        no_console(&mut cmd);
+        match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                cleanup(&work);
+                return Err(UpdateFail::Interrupted(format!("curl 실행 실패 — {e}")).to_string());
+            }
+        }
+    };
+    let mut sent: u64 = 0;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {
+                emit_download_growth(&app, &zip, asset.size, &mut sent);
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            }
+            Err(e) => {
+                cleanup(&work);
+                return Err(UpdateFail::Interrupted(format!("다운로드 상태를 읽지 못했다 — {e}")).to_string());
+            }
+        }
+    };
+    emit_download_growth(&app, &zip, asset.size, &mut sent);
+    if let Err(e) = macupdate::classify_download(status.code(), zip.exists()) {
+        cleanup(&work);
+        return Err(e.to_string());
+    }
+
+    // 5) 검증 — 크기 → sha256 (싼 것부터·실패 즉시 중단).
+    let _ = app.emit("update-progress", json!({"phase": "verify"}));
+    let got = std::fs::metadata(&zip).map(|m| m.len()).unwrap_or(0);
+    if let Err(e) = macupdate::verify_size(got, asset.size) {
+        cleanup(&work);
+        return Err(e.to_string());
+    }
+    let digest = match macupdate::sha256_file(&zip) {
+        Ok(d) => d,
+        Err(e) => {
+            cleanup(&work);
+            return Err(e.to_string());
+        }
+    };
+    if let Err(e) = macupdate::verify_sha256(&digest, &asset.sha256) {
+        cleanup(&work);
+        return Err(e.to_string());
+    }
+
+    // 6) 해제 — `ditto -x -k` (맥 기본 도구 · 확장속성·서명 보존).
+    let staged_dir = work.join("staged");
+    let unzip = {
+        let (z, d) = (zip.clone(), staged_dir.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("/usr/bin/ditto");
+            cmd.arg("-x").arg("-k").arg(&z).arg(&d);
+            no_console(&mut cmd);
+            cmd.output()
+        })
+        .await
+    };
+    match unzip {
+        Ok(Ok(out)) if out.status.success() => {}
+        other => {
+            cleanup(&work);
+            return Err(UpdateFail::Swap(format!("압축을 풀지 못했다 — {other:?}")).to_string());
+        }
+    }
+    let entries: Vec<std::path::PathBuf> = match std::fs::read_dir(&staged_dir) {
+        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(e) => {
+            cleanup(&work);
+            return Err(UpdateFail::Swap(format!("푼 폴더를 읽지 못했다 — {e}")).to_string());
+        }
+    };
+    let staged_app = match macupdate::sole_app_bundle(&entries) {
+        Ok(p) => p,
+        Err(e) => {
+            cleanup(&work);
+            return Err(e.to_string());
+        }
+    };
+
+    // 7) 봉인 검증 — codesign --verify (자체서명 cys-local 이라도 봉인은 성립해야 한다).
+    let verify = {
+        let p = staged_app.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("/usr/bin/codesign");
+            cmd.args(["--verify", "--deep", "--strict", "--verbose=2"]).arg(&p);
+            no_console(&mut cmd);
+            cmd.output()
+        })
+        .await
+    };
+    match verify {
+        Ok(Ok(out)) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            if let Err(e) = macupdate::classify_codesign(out.status.success(), &stderr) {
+                cleanup(&work);
+                return Err(e.to_string());
+            }
+        }
+        // 실행 자체가 안 된 경우도 통과가 아니다(측정 불능 ≠ 통과).
+        other => {
+            cleanup(&work);
+            return Err(UpdateFail::Signature(format!("codesign 실행 실패 — {other:?}")).to_string());
+        }
+    }
+
+    // 8) CDHash 대조 — 봉인이 성립하는 **다른 물건**을 걸러내는 유일한 축.
+    let show = {
+        let p = staged_app.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("/usr/bin/codesign");
+            cmd.args(["-dvvv"]).arg(&p);
+            no_console(&mut cmd);
+            cmd.output()
+        })
+        .await
+    };
+    let cdhash = match show {
+        // codesign 의 상세 출력은 stderr 로 나온다(stdout 으로 읽으면 언제나 빈 값 = 상시 실패).
+        Ok(Ok(out)) => macupdate::parse_cdhash(&String::from_utf8_lossy(&out.stderr)),
+        other => {
+            cleanup(&work);
+            return Err(UpdateFail::Signature(format!("codesign -dvvv 실행 실패 — {other:?}")).to_string());
+        }
+    };
+    if let Err(e) = macupdate::verify_cdhash(cdhash.as_deref(), &asset.cdhash) {
+        cleanup(&work);
+        return Err(e.to_string());
+    }
+
+    // 9) 교체 — 개발기(드라이런)에서는 여기서 멈춘다. 검증이 전부 돌았다는 사실만 남기고 끝낸다.
+    if macupdate::dry_run() {
+        let _ = app.emit(
+            "update-progress",
+            json!({"phase": "dry-run", "version": version, "staged": staged_app.to_string_lossy()}),
+        );
+        eprintln!(
+            "[cys-app] 맥 업데이트 드라이런 — 검증 전건 통과(크기·sha256·봉인·CDHash). 교체하지 않는다: {}",
+            staged_app.display()
+        );
+        cleanup(&work);
+        return Ok(());
+    }
+    let _ = app.emit("update-progress", json!({"phase": "swap"}));
+    let backup = match macupdate::atomic_swap(&target, &staged_app, &stamp) {
+        Ok(b) => b,
+        Err(e) => {
+            cleanup(&work);
+            return Err(e.to_string());
+        }
+    };
+    // 9-b) 교체 직후 완본 검증 — 깨진 번들이면 되돌린다(install_update 의 ⓒ 보강과 같은 자리).
+    if let Some(msg) = bundle_integrity_guidance_at(&target) {
+        let _ = std::fs::remove_dir_all(&target);
+        let restored = std::fs::rename(&backup, &target).is_ok();
+        cleanup(&work);
+        return Err(UpdateFail::Swap(format!(
+            "교체된 번들이 온전하지 않다 — {msg} · 되돌리기 {}",
+            if restored { "성공(옛 설치본 보존)" } else { "실패" }
+        ))
+        .to_string());
+    }
+    let _ = std::fs::remove_dir_all(&backup);
+    cleanup(&work);
+
+    // 10) 재시작 안내(B15) — 여기서 끝낸다. 재시작은 사용자가 누를 때 `restart_after_update` 가 한다.
+    let _ = app.emit(
+        "update-restart-required",
+        json!({"version": version, "reason": "app_replaced"}),
+    );
+    Ok(())
+}
+
+/// 특정 번들의 완본 검증(`bundle_integrity_guidance` 의 경로 지정판) — 교체 **직후**의 대상은
+/// 아직 실행 중인 나 자신이 아니라 방금 넣은 새 번들이라, current_exe 기준 판정으로는 못 잰다.
+fn bundle_integrity_guidance_at(bundle: &std::path::Path) -> Option<String> {
+    let defects = cys::app_bundle::verify(bundle, &cys::app_bundle::VerifySpec::installed());
+    if defects.is_empty() {
+        return None;
+    }
+    Some(cys::app_bundle::damaged_bundle_guidance(bundle, &defects))
+}
+
+/// 교체 뒤 「재시작」 1클릭(B15) — install_update 의 3~4단계와 **같은 순서**다:
+/// drain(저장 신호) → 복귀 마커 → 구 데몬 종료 → 앱 재시작. 다른 점은 다운로드·교체가 이미
+/// 끝나 있다는 것뿐이다. force=false 에서 살아있는 세션이 있으면 거부한다(UI 가 확인 후 재호출).
+#[tauri::command]
+async fn restart_after_update(app: AppHandle, force: bool) -> Result<(), String> {
+    let sessions = live_session_count().await.unwrap_or(0);
+    if sessions > 0 && !force {
+        return Err(format!("live_sessions:{sessions}"));
+    }
+    let _ = app.emit("update-progress", json!({"phase": "drain"}));
+    let _ = tokio::task::spawn_blocking(|| sealed_sidecar_cys(&["drain"]).status()).await;
+    let _ = app.emit("update-progress", json!({"phase": "handoff"}));
+    let _ = std::fs::write(pending_restore_path(), "");
+    stop_running_daemon().await;
+    app.restart();
 }
 
 /// 기본 원격 pack-manifest.json URL — tauri.conf updater endpoint(latest.json)와 같은
@@ -5835,6 +6200,15 @@ async fn live_session_count() -> Result<u64, String> {
 ///   (구 T5 홈페이지 전용 정책의 실험적 개정 · 실기기 검증 대상). 아래 app.restart() 레이스 경고 참조.
 #[tauri::command]
 async fn install_update(app: AppHandle, force: bool) -> Result<(), String> {
+    // ★기판 분기(B7): 맥은 우리 zip 경로, 그 밖은 플러그인 경로. **어느 쪽이 도는지는
+    //   check_update 의 결과가 아니라 이 cfg 가 정한다** — 확인과 설치가 갈릴 여지를 두지 않는다.
+    if cfg!(target_os = "macos") {
+        return install_update_darwin(app, force).await;
+    }
+    install_update_plugin(app, force).await
+}
+
+async fn install_update_plugin(app: AppHandle, force: bool) -> Result<(), String> {
     // 1) 세션 가드 (오너 정책: 없으면 자동·있으면 확인)
     let sessions = live_session_count().await.unwrap_or(0);
     if sessions > 0 && !force {
@@ -5872,12 +6246,8 @@ async fn install_update(app: AppHandle, force: bool) -> Result<(), String> {
     //   깨진 번들로 재시작하면 다음 기동은 Gatekeeper 가 막아 사용자는 원인 없는 "손상되었기 때문에
     //   열 수 없습니다"만 보게 된다(무증상 성공 금지). 구 프로세스는 계속 살아 있으므로 사용자는
     //   최소한 안내를 읽고 재설치할 수 있다.
-    #[cfg(target_os = "macos")]
-    if let Some(msg) = bundle_integrity_guidance() {
-        eprintln!("[cys-app] 업데이트 설치 후 검증 실패 — 재시작을 중단합니다\n{msg}");
-        let _ = app.emit("bundle-damaged", msg.clone());
-        return Err(msg);
-    }
+    // ★교체 후 완본 검증은 **맥 쪽으로 옮겼다**(install_update_darwin 9-b) — 이 함수는 더 이상
+    //   맥에서 컴파일되지 않으므로 여기 두면 영원히 안 도는 코드가 된다.
     // 3) 데몬 핸드오프: 구 데몬을 정상 종료(SIGTERM — scoped 정리·소켓 제거)해야
     //    재시작 후 새 번들의 cysd가 뜬다. 종료 안 하면 구 데몬이 계속 세션을 들고 돈다.
     // drain(best-effort): 재시작 전 살아있는 노드에 저장 신호 + 유예를 준다. 노드 LLM 협조 의존이라
@@ -6240,6 +6610,7 @@ fn main() {
             check_pack_update,
             live_session_count,
             install_update,
+            restart_after_update,
             autotest_patch_install,
             rotate_daemon,
             drain_verify,
@@ -8997,10 +9368,16 @@ echo {PROBE_BEGIN_MARK_D}; which -a cysd-no-such-binary-xyz; echo {PROBE_END_MAR
         let src = include_str!("main.rs");
         // 자기참조 회피: 이 파일 자신을 스캔하므로 니들은 조각 결합으로 만든다(census 핀 규약).
         let marker = concat!("sealed_sidecar", "_cys(");
+        // ★조준 이사(2026-09-20 · TICKET=v110-darwin-update): 「재시작 전 drain」 지점이 **둘로 갈렸다**.
+        //   install_update 는 기판 분기만 하는 얇은 함수가 됐고, 실제 drain 은
+        //   ⑴ install_update_plugin(윈도·리눅스 — 종전 본문 그대로) ⑵ restart_after_update(맥 — 교체 뒤
+        //   사용자가 누르는 재시작)에 있다. 지키려는 성질은 그대로다(그 지점이 raw Command 로 회귀하지
+        //   않는다). 옛 이름을 그대로 두면 **본문이 빈 dispatcher 를 재는 상시 초록**이 되므로 옮긴다.
         for head in [
             concat!("fn claude_missing", "_hint("),
             concat!("fn maybe_apply_pending", "_update("),
-            concat!("fn install", "_update("),
+            concat!("fn install_update", "_plugin("),
+            concat!("fn restart_after", "_update("),
         ] {
             let start = src.find(head).unwrap_or_else(|| {
                 panic!("{head} 정의를 못 찾았다 — 함수명이 바뀌었으면 이 핀도 함께 이사하라")

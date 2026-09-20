@@ -382,13 +382,19 @@ describe("M7② V-12 — 앱이 꺼진 채 생긴 부서는 시작 대조가 탭
 //   화면·DOM 없이 그 사고를 재현하는 방법은 **경로를 세는 것**이다: 생성 명령에 닿는 길이 몇 개이고,
 //   그 길들이 전부 확인 창 뒤에 있는가. 길이 둘이 되는 순간(표지 없는 경로) 확인 창은 장식이 된다.
 describe("ⓒ 부서 생성 확인 창 — 문이 하나이고 그 앞에 확인이 있다", () => {
-  /** launchDept 함수 본문만 잘라낸다 — 게이트 계약은 그 구간에만 적용된다. */
+  /**
+   * launchDept 함수 본문만 잘라낸다 — 게이트 계약은 그 구간에만 적용된다.
+   * ★반드시 `code`(주석 제거본)에서 뜬다(이종 검증 agy 1R ⑥ 지적 수용 · 2026-09-20).
+   *   초판은 `src` 를 썼고, 그러면 **확인 창 줄을 주석 처리해도 정규식이 그대로 매칭돼** 초록이
+   *   난다. 이 파일 머리가 이미 그 이유로 `code` 를 만들어 두었는데 새 케이스만 그것을 안 썼다 —
+   *   「설명문이 핀을 깨뜨린다」의 정확한 재발이다.
+   */
   function launchDeptSlice(): string {
-    const a = src.indexOf("async function launchDept(");
+    const a = code.indexOf("async function launchDept(");
     expect(a).toBeGreaterThan(0); // 함수가 사라졌으면 이 핀이 지키는 것이 없다
-    const b = src.indexOf("\n}", a);
+    const b = code.indexOf("\n}", a);
     expect(b).toBeGreaterThan(a);
-    return src.slice(a, b);
+    return code.slice(a, b);
   }
 
   it("★생성 명령(allocate_dept_daemon)을 부르는 자리가 정확히 하나다", () => {
@@ -411,16 +417,40 @@ describe("ⓒ 부서 생성 확인 창 — 문이 하나이고 그 앞에 확인
     expect(iCall).toBeGreaterThan(iConfirm);
     // ★순서만 재면 안 된다 — 확인 창을 띄워 놓고 결과를 버려도 순서 단언은 통과한다.
     //   실제로 안전을 만드는 것은 **취소에서 나가는 return** 이므로 그 문장을 직접 못박는다.
-    expect(/if \(!\(await confirmModal\(c\.title, c\.body, c\.yes, c\.no\)\)\) return;/.test(h)).toBe(true);
+    expect(
+      /if \(!\(await confirmModal\(c\.title, c\.body, c\.yes, c\.no\)\)\) \{\s*deptLaunching = false;\s*return;\s*\}/.test(h),
+    ).toBe(true);
     // 문안은 deptconfirm.ts 가 정본이다(화면 코드에 인라인 복제 금지 — 복제되면 세 축 검사가 헛돈다).
     expect(h.includes('"· 이 컴퓨터에')).toBe(false);
   });
 
-  it("★확인 우회 플래그(skipConfirm)가 켜지는 자리는 레거시 폴백 재호출 하나뿐이다", () => {
-    // 이 플래그는 「같은 승인 안의 재시도」를 위한 것이다. 다른 자리에 한 번만 더 붙으면
-    // 그 경로가 통째로 무확인이 되고, 그 사실은 코드를 읽어야만 보인다.
-    expect((code.match(/skipConfirm:\s*true/g) ?? []).length).toBe(1);
-    expect(code).toContain("if (fallbackLegacy) await launchDept(undefined, { skipConfirm: true });");
+  it("★확인 우회 값은 모듈 밖에서 만들 수 없는 심볼이고, 넘기는 자리는 레거시 폴백 하나뿐이다", () => {
+    // ★구 판본은 `{ skipConfirm: true }` 객체 리터럴이었다(agy 1R ② 지적 수용). 등장 1회를 세는
+    //   것은 「지금 코드에 하나뿐」을 재는 것이지 **「아무나 지어낼 수 없다」**를 재는 것이 아니다.
+    //   심볼은 모듈 스코프 밖으로 안 나가므로 외부에서 같은 값을 만들 방법이 없다.
+    expect(code).toContain('const DEPT_LEGACY_RETRY: unique symbol = Symbol("dept-legacy-retry");');
+    expect(code).not.toContain("skipConfirm"); // 옛 우회 인자가 되살아나면 적색
+    // 인자로 **넘기는** 자리 = 1곳(선언·시그니처의 등장은 빼고 센다).
+    // ⚠선언(시그니처)의 등장은 호출이 아니다 — `function launchDept(` 를 빼고 센다.
+    //   안 빼면 2가 나오고, 그 2를 기대값으로 적는 순간 진짜 우회 호출 1건이 추가돼도 초록이 된다.
+    const passes = (code.match(/(?<!function )launchDept\([^)]*DEPT_LEGACY_RETRY\)/g) ?? []).length;
+    expect(passes).toBe(1);
+    expect(code).toContain("if (fallbackLegacy) await launchDept(undefined, DEPT_LEGACY_RETRY);");
+  });
+
+  it("★연타 락이 DOM 요소가 아니라 모듈 상태에 있다 — 버튼이 없어도 잠긴다(agy 1R ③)", () => {
+    // 표지(버튼)에 매단 락은 그 표지가 사라지는 순간 락이 아니게 된다. 구 판본은 버튼이 null 이면
+    // 조기 반환도 잠금도 건너뛰어 **동시 실행이 허용**됐다(fail-closed → fail-open 역전).
+    const h = launchDeptSlice();
+    expect(code).toContain("let deptLaunching = false;");
+    expect(h).toContain("if (deptLaunching) return;");
+    // 확인 창 **앞에서** 잠근다 — 뒤에 잠그면 연타로 확인 창이 겹쳐 쌓인다.
+    const iLock = h.indexOf("deptLaunching = true;");
+    const iConfirm = h.indexOf("confirmModal(");
+    expect(iLock).toBeGreaterThan(0);
+    expect(iConfirm).toBeGreaterThan(iLock);
+    // 취소로 나가는 길·본 작업의 finally 둘 다 락을 푼다(안 풀면 문이 영구히 닫힌다).
+    expect((h.match(/deptLaunching = false;/g) ?? []).length).toBe(2);
   });
 
   it("★팔레트 act:dept 도 같은 문으로 들어간다 — 단추 없이 같은 일을 하는 경로를 남기지 않는다", () => {
@@ -436,7 +466,10 @@ describe("ⓒ 부서 생성 확인 창 — 문이 하나이고 그 앞에 확인
     expect(a).toBeGreaterThan(0);
     const modal = code.slice(a, code.indexOf("\n}", a));
     expect(modal).toContain('e.key !== "Escape"');
-    expect(/done\(false\);?\s*\/\/|done\(false\)/.test(modal)).toBe(true);
+    expect(modal).toContain("done(false)");
+    // ★stopPropagation 이 아니라 stopImmediatePropagation 이어야 한다(agy 1R ④): 앞엣것은 같은
+    //   window 에 붙은 **다른** 리스너를 못 막아, 확인 창이 겹쳐 있으면 Escape 한 번에 둘 다 닫힌다.
+    expect(modal).toContain("e.stopImmediatePropagation();");
     // 리스너를 떼는 줄이 없으면 확인 창을 여닫을 때마다 전역 핸들러가 쌓인다.
     expect(modal).toContain('window.removeEventListener("keydown", onKey, true);');
   });

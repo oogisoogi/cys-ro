@@ -6409,7 +6409,10 @@ function confirmModal(
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
-      e.stopPropagation();
+      // ★stopPropagation 이 아니라 stopImmediatePropagation 이다(agy 1R ④ 수용). 앞엣것은 **같은
+      //   window 에 붙은 다른 리스너**를 못 막아서, 확인 창이 둘 겹쳐 있으면 Escape 한 번에 둘 다
+      //   닫힌다(맨 위 하나만 닫혀야 한다 — 뒤엣것은 아직 답하지 않은 질문이다).
+      e.stopImmediatePropagation();
       done(false); // 취소 쪽으로 닫는다 — 승인은 언제나 명시적 클릭·Enter 로만
     };
     const done = (v: boolean) => {
@@ -8434,29 +8437,42 @@ const deptBtn = document.getElementById("btn-ws-dept") as HTMLButtonElement | nu
 // 부서 런칭 실행(공통) — placeholder 탭·in-flight 버튼 가드. catalogKey=undefined → 레거시 dept-N.
 // ⑤(gemini R2): invoke 실패 reject 를 try/catch 로 받아 토스트+버튼 disabled 해제(버튼 freeze 방지).
 // ①(gemini R2 ★BLOCKER): create exit code 별 분기 — exit5(account dir 미존재=계정누수)는 레거시 폴백 절대 금지.
-async function launchDept(catalogKey?: string, opts?: { skipConfirm?: boolean }) {
+// ★락은 DOM 요소가 아니라 **모듈 상태**다(agy 1R ③ 수용 · 2026-09-20).
+//   종전 가드는 `!deptBtn || deptBtn.disabled` 였고, 버튼을 숨기려고 `deptBtn?.disabled` 로 바꾸자
+//   **실패 방향이 뒤집혔다**: 버튼이 없으면 조기 반환도 안 되고 아래 잠금(`if (deptBtn)`)도 건너뛰어
+//   동시 실행이 통째로 허용된다(fail-closed → fail-open). 표지(버튼)에 매단 락은 그 표지가 사라지는
+//   순간 락이 아니게 된다 — 이 티켓이 확인 창에서 고친 것과 정확히 같은 형태의 결함이다.
+//   그래서 버튼 유무와 무관한 플래그를 두고, 버튼 disabled 는 **시각 피드백 전용**으로 강등한다.
+let deptLaunching = false;
+// ★우회 인자는 모듈 밖에서 만들 수 없는 값이어야 한다(agy 1R ② 수용). 구 `{ skipConfirm: true }` 는
+//   객체 리터럴이라 아무나 지어낼 수 있었다 — 시험이 등장 1회를 세고 있었지만, 그것은 「지금 코드에
+//   하나뿐」을 재는 것이지 「만들 수 없다」를 재는 것이 아니다. 심볼은 모듈 스코프 밖으로 안 나간다.
+const DEPT_LEGACY_RETRY: unique symbol = Symbol("dept-legacy-retry");
+async function launchDept(catalogKey?: string, retry?: typeof DEPT_LEGACY_RETRY) {
   if (daemonActionBlocked()) return; // ★A4: 리셋 진행/완료 중 부서 데몬 spawn 차단
-  // ★연타 차단 — 버튼이 **없어도** 이 경로는 살아 있어야 한다(전문가 모드가 꺼져 있어도 팔레트
-  //   act:dept 가 같은 문으로 들어온다). 종전 `!deptBtn` 조기 반환은 그 경우 아무 일도 안 일어나는
-  //   침묵 실패가 된다 — 가드는 버튼이 있을 때만 건다.
-  if (deptBtn?.disabled) return;
+  // ★연타 차단 — 확인 창을 띄우기 **전에** 잠근다. 뒤에 잠그면 팔레트 연타로 확인 창이 겹쳐 쌓인다
+  //   (agy 1R ③ 두 번째 지적). 생성 중복은 단일 스레드 특성상 막혔지만 화면은 이미 망가진다.
+  if (deptLaunching) return;
   // ★★ⓒ 확인 창(TICKET=v110-sidebar · B22 차단) — **여기가 부서 생성의 유일한 문이다.**
   //   ⑴ 왜 addDeptWorkspace 가 아니라 여기인가: 그쪽은 화면 롤백·placeholder 탭을 다루는 자리라
   //      취소를 「실패」로 표현할 수밖에 없다(throw → 호출부가 실패 토스트). 취소는 실패가 아니다.
   //   ⑵ 왜 버튼 핸들러가 아닌가: 팔레트 act:dept 가 버튼을 거치지 않는다. 표지(버튼)에 가드를 달면
   //      표지 없이 같은 일을 하는 경로가 반드시 남는다 — B22 직전의 구조가 정확히 그것이었다.
   //   ⑶ 그래서 wswiring.test.ts 가 「addDeptWorkspace 의 호출자는 이 함수 하나뿐」을 센다.
-  //   ⚠ skipConfirm 은 **레거시 폴백 재호출 전용**이다(아래 exit3 분기). 사용자는 이미 승인했고
-  //     같은 승인을 두 번 묻지 않는다. 그 외 자리에서 이 플래그를 쓰면 확인 창이 통째로 우회된다 —
-  //     시험이 `skipConfirm: true` 의 등장 횟수를 1 로 못박는다.
-  if (!opts?.skipConfirm) {
-    const c = deptCreateConfirm();
-    if (!(await confirmModal(c.title, c.body, c.yes, c.no))) return;
-  }
-  if (deptBtn?.disabled) return; // 확인 창을 읽는 동안 다른 경로가 먼저 시작했을 수 있다
+  //   ⚠ DEPT_LEGACY_RETRY 는 **레거시 폴백 재호출 전용**이다(아래 exit3 분기). 사용자는 이미
+  //     승인했고 같은 승인을 두 번 묻지 않는다. 그 심볼을 다른 자리에서 넘기면 그 경로가 통째로
+  //     무확인이 되므로, 시험이 이 심볼을 **인자로 넘기는 자리**가 1곳임을 못박는다.
+  deptLaunching = true; // ★확인 창을 읽는 동안에도 잠겨 있다 — 겹쳐 뜨는 확인 창 0
   const prevLabel = deptBtn?.textContent ?? null;
+  if (retry !== DEPT_LEGACY_RETRY) {
+    const c = deptCreateConfirm();
+    if (!(await confirmModal(c.title, c.body, c.yes, c.no))) {
+      deptLaunching = false; // ★취소도 락을 푼다 — 안 풀면 한 번 취소에 문이 영구히 닫힌다
+      return; // 취소 = 아무 일도 일어나지 않는다
+    }
+  }
   if (deptBtn) {
-    deptBtn.disabled = true;
+    deptBtn.disabled = true; // 시각 피드백 — 락은 deptLaunching 이 진다
     deptBtn.textContent = "…"; // 진행 표시 — launch await 동안(placeholder 탭은 즉시 보임)
   }
   let fallbackLegacy = false;
@@ -8481,14 +8497,15 @@ async function launchDept(catalogKey?: string, opts?: { skipConfirm?: boolean })
       toast("watchdog", "부서 런칭 실패", msg);
     }
   } finally {
+    deptLaunching = false; // 락 해제 — 성공/실패 무관 항상(이 줄이 없으면 한 번 실패에 문이 영구히 닫힌다)
     if (deptBtn) {
       deptBtn.disabled = false; // 버튼 freeze 방지 — 성공/실패 무관 항상 해제
       deptBtn.textContent = prevLabel;
     }
   }
-  // exit3(카탈로그 부재)만 레거시 폴백 — 버튼 재활성 후 호출해 disabled 가드 통과(exit4/5 는 폴백 없음).
-  // 확인 창은 다시 묻지 않는다 — 같은 한 번의 승인 안에서 일어나는 재시도다(위 skipConfirm 주석).
-  if (fallbackLegacy) await launchDept(undefined, { skipConfirm: true });
+  // exit3(카탈로그 부재)만 레거시 폴백 — 락 해제 후 호출해 연타 가드를 통과(exit4/5 는 폴백 없음).
+  // 확인 창은 다시 묻지 않는다 — 같은 한 번의 승인 안에서 일어나는 재시도다(위 심볼 주석).
+  if (fallbackLegacy) await launchDept(undefined, DEPT_LEGACY_RETRY);
 }
 // 클릭 → 부서 선택 팝업(카탈로그 미사용 부서 + 레거시 dept-N). 선택 후 부서 데몬 런칭.
 deptBtn?.addEventListener("click", async () => {

@@ -7222,10 +7222,11 @@ async function refreshDaemonInfo(info: HTMLElement) {
 // 복원 브리핑 카드 1단계(박사님 채택 2026-09-17 · A2-2 T8).
 // 앱이 다시 켜지면 **마스터 자리 1곳**에 「무엇이 다시 켜졌고, 멈춘 일이 무엇인가」를 보여 준다.
 //   · 재료 = 마스터 작업 폴더의 작업기억 파일(고정 3절) + 기본 데몬의 역할 자리 목록. 프로그램이 조립한다(토큰 0).
-//   · ★자동으로 아무것도 보내지 않는다. [이어서 진행할까요?]를 사용자가 누를 때만 마스터에 한 줄을 보낸다 —
-//     복원 정책 「재개 지시는 넣지 않으며, 일은 사용자의 한마디 뒤에 잇는다」(수정 3)와 같은 층이다.
-//   · 그 한 줄은 UI 가 조립한 문안이므로 machineOrigin 표식을 단다(R5) — 버튼 클릭이 자율 착수 권한을
-//     조용히 여는 경로가 되지 않게 한다. 마스터의 임무 게이트가 그 뒤를 판단한다.
+//   · ★이 카드는 **아무것도 보내지 않는다**(주입 0). 종전의 [이어서 진행할까요?] 버튼은 제거했다 —
+//     박사님 최상위 원칙(2026-09-21) 「중간에 사용자에게 묻는 단계를 모두 삭제하면 좋다」의 적용이고,
+//     동시에 09-21 실기에서 **임무 0 함대를 폭주시킨 방아쇠**를 끊는 수리다(클릭 1회가 자율 착수
+//     권한을 여는 경로였다). 이어서 할지는 마스터가 임무 게이트로 판정한다(복원 디렉티브가 지시).
+//   · 컨텍스트 60%+ 자리에는 권유 한 줄만 얹는다(자동 순환 집행 0 — 알림이지 질문이 아니다).
 //   · 한 번 켜질 때 1회만. 실패는 조용히 넘긴다(카드는 부가 기능 — 복원 자체를 막지 않는다).
 // ────────────────────────────────────────────────────────────────────────────
 let restoreBriefShown = false;
@@ -7234,7 +7235,14 @@ async function showRestoreBrief(): Promise<void> {
   restoreBriefShown = true;
   try {
     const r = (await rpcT(invoke("list_surfaces", { socket: undefined }), T_LIST)) as {
-      surfaces: { surface_id: number; role: string | null; live_cwd: string | null; exited: boolean }[];
+      surfaces: {
+        surface_id: number;
+        role: string | null;
+        live_cwd: string | null;
+        exited: boolean;
+        // surface.list 가 이미 싣고 있는 관측 사용률(추가 RPC 0) — 60%+ 순환 권유의 재료.
+        usage?: { ctx_pct?: number | null } | null;
+      }[];
     };
     const seats = r.surfaces.filter((s) => s.role);
     const master = seats.find((s) => s.role === "master" && !s.exited);
@@ -7254,6 +7262,9 @@ async function showRestoreBrief(): Promise<void> {
       recordedAt: text === null ? null : recordedAt(text),
       restoredRoles: seats.filter((s) => !s.exited).map((s) => s.role as string),
       waitingRoles: seats.filter((s) => s.exited).map((s) => s.role as string),
+      seatCtx: seats
+        .filter((s) => !s.exited)
+        .map((s) => ({ role: s.role as string, ctxPct: s.usage?.ctx_pct ?? null })),
     });
     document.getElementById("restore-brief")?.remove();
     const box = document.createElement("div");
@@ -7283,29 +7294,12 @@ async function showRestoreBrief(): Promise<void> {
     box.appendChild(foot);
     const row = document.createElement("div");
     row.className = "rb-row";
-    const go = document.createElement("button");
-    go.className = "dept-idle-btn";
-    go.textContent = card.continueLabel;
+    // ★버튼은 [닫기] 하나다 — 이 카드에서 나가는 주입 경로는 0 이다(send_input 호출 없음).
     const close = document.createElement("button");
     close.className = "rb-close";
     close.textContent = card.closeLabel;
     close.addEventListener("click", () => box.remove());
-    go.addEventListener("click", () => {
-      go.disabled = true;
-      void invoke("send_input", {
-        socket: undefined,
-        surfaceId: master.surface_id,
-        data: card.continueText,
-        clearFirst: true,
-        machineOrigin: true,
-      })
-        .then(() => box.remove())
-        .catch((e) => {
-          go.disabled = false;
-          toast("watchdog", "보내지 못했습니다", String(e));
-        });
-    });
-    row.append(go, close);
+    row.append(close);
     box.appendChild(row);
     document.body.appendChild(box);
   } catch {

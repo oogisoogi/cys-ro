@@ -10274,6 +10274,40 @@ fn print_gate_pending_prescription(sid: u64, role: &str, agent: &str, gate: &str
     );
 }
 
+/// 이 기동이 **절대지침 전문**을 필요로 하는가(순수).
+///
+/// 전문이 필요한 경우는 「컨텍스트가 비어 있다」 하나다 — resume 좌석은 직전 컨텍스트에 지침을
+/// 이미 갖고 있고, 거기에 전문을 다시 넣으면 토큰 2배 + 복원 직후 컨텍스트 임계다(구 주석의 근거).
+/// 복원 여부는 이 판정을 바꾸지 않는다 — 바꾸면 복원+resume 좌석이 전문을 또 받는다.
+fn compose_full_directive(_restore: bool, resume: bool) -> bool {
+    !resume
+}
+
+/// 좌석에 **한 번에** 보낼 깨움 글을 조립한다(순수 · TICKET=v111-restore ②).
+///
+/// # 불변식 — 복원 경로의 전송은 1회다
+/// 종전에는 이 층이 [RESUME] 을 보내고 `run_restore` 가 그 위에 [RESTORE] 를 또 보내, 좌석 하나가
+/// **같은 목적의 깨움 글 2건**을 받았다(거기에 겹치는 복원 경로가 하나 더 붙어 2026-09-21 실기 3건).
+/// 이제 복원 경로의 글은 여기서 **한 문자열로** 조립되고, 발신은 주입 1회다.
+///
+/// | restore | resume | 보내는 것 |
+/// |---|---|---|
+/// | true | true | 복원 글 1장 (절대지침은 이미 보유) |
+/// | true | false | 절대지침 전문 + 복원 글 — **한 전송** |
+/// | false | true | [RESUME] 짧은 복귀 가드 |
+/// | false | false | 절대지침 전문 |
+fn compose_boot_directive(role: &str, restore: bool, resume: bool, full: &str) -> String {
+    match (restore, resume) {
+        (true, true) => restore_directive(role).to_string(),
+        (true, false) => format!("{full}\n\n{}", restore_directive(role)),
+        (false, true) => format!(
+            "[RESUME] 직전 작업 컨텍스트가 복원됐다(역할={role}). 절대지침은 이미 보유 중이니 \
+             재숙지만 하고, _round/SESSION_STATE.md와 자기 TODO를 읽어 상태를 정합한 뒤 이어서 작업하라."
+        ),
+        (false, false) => full.to_string(),
+    }
+}
+
 /// launch-agent(새 surface)와 node-recover(기존 surface 재기동)가 공유한다.
 fn boot_agent_on_surface(
     sid: u64,
@@ -10305,13 +10339,19 @@ fn boot_agent_on_surface(
     // resume 복원 노드엔 전문 디렉티브를 재주입하지 않는다 — 직전 컨텍스트(.jsonl resume)에 이미
     // WORKER/REVIEWER_DIRECTIVE가 들어 있어, 전문 재주입은 토큰 2배·중복 지침 혼선 + 거대 주입으로
     // resume 직후 컨텍스트 임계(clear)를 유발한다(적대검증 serious). resume 시엔 짧은 복귀 가드만.
-    let directive = if resume {
-        format!(
-            "[RESUME] 직전 작업 컨텍스트가 복원됐다(역할={role}). 절대지침은 이미 보유 중이니 \
-             재숙지만 하고, _round/SESSION_STATE.md와 자기 TODO를 읽어 상태를 정합한 뒤 이어서 작업하라."
-        )
+    // ★(v111-restore ②) **복원 글의 발신자는 여기 하나다.**
+    //   종전에는 이 함수가 [RESUME] 을 넣고 `run_restore` 가 그 위에 [RESTORE] 를 또 넣어,
+    //   좌석 하나가 같은 목적의 깨움 글을 2건 받았다(거기에 겹치는 복원 경로가 하나 더 붙어 실기 3건).
+    //   이제 restore 경로에서는 [RESUME] 을 쓰지 않는다 — 복원 디렉티브가 그 내용을 이미 품고 있고
+    //   (작업기억·TODO 읽기), 그 위에 임무 게이트 조항까지 얹혀 있기 때문이다.
+    //   ★표식(claim)이 진 좌석에는 **아무 말도 넣지 않는다**(resume 경로) — 다른 복원 경로가
+    //   방금 같은 말을 넣었고, 두 번째 글은 정보가 0 이면서 컨텍스트만 먹는다.
+    // 절대지침 전문은 **필요할 때만** 조립한다(복원+resume 경로는 쓰지 않는다 — 그 좌석은
+    // 이미 갖고 있고, 다시 넣으면 토큰 2배 + 복원 직후 컨텍스트 임계다).
+    let directive = if compose_full_directive(restore, resume) {
+        compose_boot_directive(role, restore, resume, &compose_directive(role)?)
     } else {
-        compose_directive(role)?
+        compose_boot_directive(role, restore, resume, "")
     };
 
     // 1) 에이전트 기동 (authoritative: launch-agent의 모든 시스템 주입은 타이핑 가드 면제)
@@ -14595,9 +14635,52 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
 /// 인라인 중복이면 한쪽만 고쳐지는 드리프트가 난다(복원 계약은 경로와 무관하게 하나다).
 fn restore_directive(role: &str) -> &'static str {
     if role == "master" {
-        "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하고 대기하라. 재개는 사용자(또는 임무 게이트)의 지시 뒤에."
+        "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하라. \
+         ★이어서 진행할지는 **임무 게이트가 정한다 — 네 판단이 아니다**: `python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_mission.py\" status` 를 실행하고 그 **종료코드만** 근거로 삼아라(화면·기억·추정 금지). \
+         0=오너 임무 있음 → 그 임무를 이어서 진행한다. 1(임무 없음)·2(판독 불가=없음 취급) → 한 줄로 상태만 보고하고 **대기**하라. \
+         ⛔임무가 없을 때 스스로 티켓을 만들어 CSO·워커를 가동하는 것은 자율 착수이며 금지다(2026-09-21 실기: 임무 0 함대가 자기발의 티켓으로 세 자리를 60%+ 로 태웠다)."
     } else {
-        "[RESTORE] 조직 복원 절차다. _round/SESSION_STATE.md와 자기 TODO를 읽고 상태를 복원하라. ★작업 재개는 하지 말고 master의 지시를 기다려라."
+        "[RESTORE] 조직 복원 절차다. _round/SESSION_STATE.md와 자기 TODO를 읽고 상태를 복원하라. ★작업 재개는 하지 말고 master의 지시를 기다려라(임무 판정의 주체는 master의 임무 게이트다)."
+    }
+}
+
+/// 복원 글을 **이 좌석에 지금 넣어도 되는가** — 겹치는 복원 경로의 중복 주입을 막는 표식 claim.
+///
+/// 계약(보장 범위는 [`cys::restore_mark`] 모듈 doc 이 정본): 표식이 없거나 낡았으면 `true`(내가 넣는다),
+/// TTL 안의 표식이 이미 있으면 `false`(다른 복원 경로가 방금 넣었다 — 나는 침묵한다).
+/// 표식 폴더를 못 만들거나 못 쓰면 **`true`(주입)** 로 연다 — 복원의 실패 모드는 「말이 두 번」이
+/// 아니라 「말이 없음」이 더 비싸다(조용한 복원 = 좌석이 영영 깨어나지 않는다).
+fn restore_inject_claim(sid: u64) -> bool {
+    let Some(dir) = cys::socket_path().parent().map(|p| p.to_path_buf()) else {
+        return true;
+    };
+    let path = dir.join(cys::restore_mark::mark_rel_path(sid));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let existing_at = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    if cys::restore_mark::is_duplicate(existing_at, now, cys::restore_mark::RESTORE_MARK_TTL_SECS) {
+        return false;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // ★경합: 표식이 **없던** 경우는 `create_new` 의 커널 원자성이 승자를 하나로 정한다 —
+    //   두 복원 프로세스가 같은 순간에 와도 진 쪽은 AlreadyExists 를 받고 침묵한다.
+    //   낡은 표식을 갈아 끼우는 경우는 그 창이 TTL 만큼 넓어 경합이 사실상 없고, 설령 겹쳐도
+    //   귀결은 「말이 두 번」이라 위 fail-open 원칙과 같은 방향이다.
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // 낡은 표식 → 시각을 전진시키고 내가 넣는다(위 is_duplicate 가 이미 낡았다고 판정했다).
+            std::fs::write(&path, b"").is_ok() || true
+        }
+        Err(_) => true,
     }
 }
 
@@ -14710,6 +14793,19 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 safe.then_some(sid)
             });
             if let Some(sid) = in_seat {
+                // ★(v111-restore ②) **겹치는 복원 경로의 중복 주입 차단**. 복원 경로는 설계상
+                //   겹친다(콜드부트 auto-restore + 업데이트 후 사이드카 restore + 부서 순회 —
+                //   src-tauri 주석 「run_restore 멱등이라 콜드부트 복원과 겹쳐도 안전」). 그 멱등이
+                //   보장한 것은 **좌석 중복 스폰 0** 까지였고 **주입 중복 0** 까지가 아니었다.
+                //   좌석 번호가 있는 이 경로에서만 표식을 claim 한다 — fresh 기동은 좌석이 새로
+                //   태어나므로(번호가 다르다) 겹칠 대상이 애초에 없다.
+                if !restore_inject_claim(sid) {
+                    println!(
+                        "· {role}: 겹치는 복원 경로가 방금 이 좌석(surface:{sid})을 복원했다 \
+                         — 건너뜀(주입 0 · 좌석 보존 · 스폰 0)"
+                    );
+                    continue;
+                }
                 println!("· {role}: {agent} 좌석 내 재연결(surface:{sid})…");
                 let spec = match load_agent_spec(agent) {
                     Ok(s) => s,
@@ -14733,15 +14829,10 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 ) {
                     Ok(BootVerdict::Ready) => {
                         ok += 1;
-                        let directive = restore_directive(role);
-                        // ★(N7) 좌석 내 재연결은 성공했어도 복원 디렉티브가 유실될 수 있다 —
-                        //   종전엔 그 유실이 조용해서 '재기동 ok' 로만 집계됐다. 방향은 무변.
-                        if let Err(e) = inject_text(sid, directive) {
-                            eprintln!(
-                                "· {role}: 좌석 내 재연결은 됐으나 **복원 디렉티브 미주입** \
-                                 (좌석 보존 · 계속 진행) — {e}"
-                            );
-                        }
+                        // ★(v111-restore ②) 여기서 **다시 주입하지 않는다**. 복원 글은
+                        //   `boot_agent_on_surface` 가 `restore=true` 로 이미 1회 보냈다(단일 발신).
+                        //   종전에는 그 위에 [RESTORE] 를 덧붙여 좌석 하나가 같은 목적의 글을
+                        //   2건 받았다 — 사라진 것은 중복이지 내용이 아니다(문면은 restore_directive 그대로).
                         continue;
                     }
                     // ★(U-11) 이 호출부의 귀결은 앞의 둘과 또 다르다 — **fresh 폴백을 하지 않는다**.
@@ -14790,13 +14881,11 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                                 json!({"surface_id": sid, "pack_version": pv, "directive_hash": dh}),
                             );
                         }
-                        // ★(N7) 재기동 뒤 복원 디렉티브 유실도 조용하지 않다(방향 무변).
-                        if let Err(e) = inject_text(sid, restore_directive(role)) {
-                            eprintln!(
-                                "· {role}: 재기동은 됐으나 **복원 디렉티브 미주입** \
-                                 (좌석 보존 · 계속 진행) — {e}"
-                            );
-                        }
+                        // ★(v111-restore ②) 복원 글 재주입 제거 — 단일 발신자는
+                        //   `boot_agent_on_surface`(restore=true)다. 이 좌석은 방금 태어났으므로
+                        //   표식 claim 도 필요 없다(번호가 새것이라 겹칠 대상이 없다).
+                        //   새 좌석에도 표식을 남겨, 뒤이어 도착하는 겹침 경로가 침묵하게 한다.
+                        let _ = restore_inject_claim(sid);
                     }
                 }
             } else {
@@ -18146,11 +18235,65 @@ mod tests {
         let m = restore_directive("master");
         assert!(m.starts_with("[RESTORE] 조직 복원 절차다(master)."), "형식 유지: {m}");
         assert!(!m.contains("재개하라"), "master 복원 문구에 재개 지시 금지: {m}");
-        assert!(m.contains("상태를 복원하고 대기하라"), "대기 지시 누락: {m}");
-        assert!(m.contains("재개는 사용자(또는 임무 게이트)의 지시 뒤에"), "재개 조건 누락: {m}");
+        // ★계약 개정(TICKET=v111-restore · 브리프 2026-09-21): 종전 두 줄은
+        //   「상태를 복원하고 대기하라」 · 「재개는 사용자(또는 임무 게이트)의 지시 뒤에」를
+        //   문면으로 못박았다. 그 문면은 **사람에게 되묻는 것**과 **임무 게이트가 정하는 것**을
+        //   한 문장에 섞어 두어, 실기에서 master 가 '사용자의 지시'를 스스로 상정하고 자기발의
+        //   티켓으로 함대를 가동했다(임무 0 함대 폭주). 이제 판정 주체를 **도구 출력 하나**로
+        //   좁힌다 — 옛 문면은 여기 경위로 남기고, 불변식(재개 지시 금지)은 그대로 진다.
+        assert!(m.contains("javis_mission.py"), "임무 게이트 도구 미지목: {m}");
+        assert!(m.contains("status"), "임무 게이트 하위명령 미지목: {m}");
+        assert!(m.contains("종료코드"), "판정 근거가 도구 출력임을 안 밝힘: {m}");
+        assert!(m.contains("대기"), "임무 없음 분기의 대기 지시 누락: {m}");
+        assert!(
+            m.contains("0=오너 임무 있음") && m.contains("1(임무 없음)"),
+            "임무 있음/없음 두 분기가 모두 적혀야 한다: {m}"
+        );
+        assert!(m.contains("자율 착수이며 금지"), "자율 착수 금지 조항 누락: {m}");
         let w = restore_directive("worker");
         assert!(w.contains("master의 지시를 기다려라"), "비-master 문구 불변: {w}");
         assert!(!w.contains("재개하라"), "{w}");
+        // 워커에게는 임무 게이트를 시키지 않는다 — 판정 주체는 master 하나다(허브-스포크).
+        assert!(!w.contains("javis_mission.py"), "워커가 임무 판정 주체가 되면 안 된다: {w}");
+    }
+
+    /// (TICKET=v111-restore ②) **복원 경로의 깨움 글은 한 전송이다.**
+    ///
+    /// 고치는 결함: 종전엔 `boot_agent_on_surface` 가 [RESUME] 을 보내고 `run_restore` 가 그 위에
+    /// [RESTORE] 를 또 보내 좌석 하나가 같은 목적의 글 2건을 받았다. 그 중복은 **문자열을 봐서는
+    /// 안 보인다**(둘 다 멀쩡한 문장이다) — 그래서 조립 함수의 산출을 직접 센다.
+    #[test]
+    fn restore_boot_directive_is_one_message() {
+        const FULL: &str = "<절대지침 전문>";
+        // ① 복원 + resume: 복원 글 1장. 전문도, [RESUME] 도 실리지 않는다.
+        let a = compose_boot_directive("master", true, true, FULL);
+        assert_eq!(a, restore_directive("master"), "복원+resume 은 복원 글 그대로여야 한다: {a}");
+        assert!(!a.contains("[RESUME]"), "복원 경로에 [RESUME] 이 겹치면 안 된다: {a}");
+        assert!(!a.contains(FULL), "resume 좌석에 전문 재주입 금지: {a}");
+        assert_eq!(a.matches("[RESTORE]").count(), 1, "복원 글은 1건이다: {a}");
+
+        // ② 복원 + --no-resume: 전문 + 복원 글이되 **하나의 문자열**(전송 1회).
+        let b = compose_boot_directive("worker", true, false, FULL);
+        assert!(b.starts_with(FULL), "빈 컨텍스트에는 전문이 먼저 온다: {b}");
+        assert!(b.contains(restore_directive("worker")), "복원 글 누락: {b}");
+        assert!(!b.contains("[RESUME]"), "{b}");
+        assert_eq!(b.matches("[RESTORE]").count(), 1, "복원 글은 1건이다: {b}");
+
+        // ③ 복원이 아닌 경로는 종전 그대로다(이 티켓은 복원 축만 건드린다).
+        let c = compose_boot_directive("worker", false, true, FULL);
+        assert!(c.starts_with("[RESUME]"), "{c}");
+        assert!(!c.contains("[RESTORE]"), "{c}");
+        assert_eq!(compose_boot_directive("worker", false, false, FULL), FULL);
+    }
+
+    /// (TICKET=v111-restore ②) 전문 조립은 **컨텍스트가 빈 좌석에서만** 일어난다.
+    /// 이 술어가 restore 를 보기 시작하면 복원+resume 좌석이 전문을 또 받아 토큰 2배가 된다.
+    #[test]
+    fn full_directive_only_when_context_is_empty() {
+        assert!(!compose_full_directive(true, true), "복원+resume 좌석에 전문 재조립 금지");
+        assert!(!compose_full_directive(false, true), "resume 좌석에 전문 재조립 금지");
+        assert!(compose_full_directive(true, false), "빈 컨텍스트(복원)에는 전문이 필요하다");
+        assert!(compose_full_directive(false, false), "빈 컨텍스트(신규)에는 전문이 필요하다");
     }
 
     /// (cysr-alias · 2026-09-16) 명령 별칭 `cysr` 는 같은 바이너리를 다른 이름(맥 심링크 · 윈 사본)으로
@@ -22264,24 +22407,44 @@ mod tests {
              밖에서 보이지 않는다(그물이 없는 것과 눈을 감은 것이 구별되지 않는다)"
         );
         // ★'지우기' 로 통과하는 경로 차단 — 호출 자체를 없애도 위 0 은 만족되므로,
-        //   사유를 내는 형태의 **실측 개수를 동결**한다. 5 = 이번에 고친 셋 + 종전부터
-        //   옳게 처리하던 둘(부트 주입 직후 · 사이클 재주입).
+        //   사유를 내는 형태의 **실측 개수를 동결**한다.
+        //
+        // ★동결값 개정 5 → 3 (TICKET=v111-restore ② · 2026-09-21). **침묵이 되살아난 것이
+        //   아니라 주입 지점 자체가 둘 줄었다**: restore 의 좌석 내 재연결·fresh 재기동이 각각
+        //   따로 보내던 복원 디렉티브가 `compose_boot_directive` 의 **한 전송**으로 접혔다
+        //   (같은 좌석이 같은 목적의 글을 2건 받던 결함의 수리). 그 한 전송의 실패 사유는
+        //   `inject_directive_after_ready` 가 종전대로 크게 낸다 — 아래 마커가 그것을 못박는다.
+        //   ⚠줄어드는 방향의 개정이므로 근거 없이 다시 내리지 마라: 내리려면 「어느 주입이
+        //   어디로 접혔는가」를 여기 적어야 한다(적을 수 없으면 그것이 침묵이다).
         assert_eq!(
             prod.matches("if let Err(e) = inject_text(").count(),
-            5,
-            "주입 사유를 남기는 지점 수가 동결값(5)을 벗어났다 — 줄었다면 침묵이 되살아난 것이다"
+            3,
+            "주입 사유를 남기는 지점 수가 동결값(3)을 벗어났다 — 줄었다면 침묵이 되살아난 것이다"
         );
-        // 그리고 이번에 고친 **세 지점**이 각자 자기 사유를 낸다(개수만으로는 이사를 못 잡는다).
+        // 그리고 각 지점이 자기 사유를 낸다(개수만으로는 이사를 못 잡는다).
         for marker in [
             "저장 신호 미전달(계속 진행)",
-            "좌석 내 재연결은 됐으나 **복원 디렉티브 미주입**",
-            "재기동은 됐으나 **복원 디렉티브 미주입**",
+            "[pack-update] reinject 주입 실패",
         ] {
             assert!(
                 prod.contains(marker),
                 "Hold 사유 문안이 사라졌다: {marker:?}"
             );
         }
+        // ★복원 경로의 사유 가시성은 **접힌 뒤에도** 살아 있어야 한다 — 단일 발신자
+        //   (`inject_directive_after_ready`)가 Hold/실패를 크게 내는지 문면으로 못박는다.
+        //   이 단언이 없으면 「접었다」가 「조용해졌다」와 구별되지 않는다.
+        assert!(
+            prod.contains("is_hold_error(&e)"),
+            "단일 발신자의 Hold 분기가 사라졌다 — 복원 글 실패가 침묵으로 접힌다"
+        );
+        // 그리고 접힌 자리에 중복이 되살아나지 않았는지: 복원 글을 **따로** 보내는 지점 0.
+        assert_eq!(
+            prod.matches("inject_text(sid, restore_directive(").count()
+                + prod.matches("inject_text(sid, directive)").count(),
+            0,
+            "복원 글을 단일 발신자 밖에서 또 보내는 지점이 되살아났다(좌석당 2건 재발)"
+        );
     }
 
     /// ★소스 핀(결함 3·4) — 관문 코퍼스의 **단일 소스**와 관측 실패의 **가시성**.

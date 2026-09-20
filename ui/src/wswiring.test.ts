@@ -279,15 +279,30 @@ describe("복원 브리핑 카드 — 자동으로 아무것도 보내지 않는
     expect(b).toBeGreaterThan(a);
     return src.slice(a, b);
   }
-  it("★마스터에 보내는 호출은 [이어서] 클릭 처리기 안에 1곳뿐이다", () => {
+  // ★계약 개정(TICKET=v111-restore · 브리프 2026-09-21). 종전 두 단언은 「보내는 호출은
+  //   [이어서] 클릭 처리기 안에 **1곳**」 · 「그 한 줄은 machineOrigin 표식을 단다」였다 —
+  //   즉 **클릭 1회가 마스터에 글을 넣는 경로**를 정상으로 못박고, 그 위험을 표식으로 완화했다.
+  //   09-21 실기에서 그 클릭이 임무 0 함대를 폭주시킨 방아쇠였고(자기발의 티켓으로 세 자리
+  //   60%+), 박사님 최상위 원칙(「중간에 사용자에게 묻는 단계를 모두 삭제」)이 그 버튼 자체를
+  //   지웠다. 완화(표식)에서 **제거(경로 0)** 로 올라간 것이므로 단언은 강해졌다.
+  it("★마스터에 보내는 호출이 **0곳**이다(카드는 알림일 뿐 주입 경로가 없다)", () => {
     const s = cardSlice();
-    expect((s.match(/invoke\("send_input"/g) ?? []).length).toBe(1);
-    const click = s.indexOf('go.addEventListener("click", () => {');
-    expect(click).toBeGreaterThan(0);
-    expect(s.indexOf('invoke("send_input"')).toBeGreaterThan(click);
+    expect((s.match(/invoke\("send_input"/g) ?? []).length).toBe(0);
+    // 다른 이름의 주입 경로로 되살아나는 것도 막는다(send_text·send_key 계열 전부).
+    expect(/invoke\("send_(input|text|key)"/.test(s)).toBe(false);
   });
-  it("★그 한 줄은 UI 조립 문안 표식(machineOrigin)을 단다 — 클릭이 자율 착수 권한을 조용히 열지 않게", () => {
-    expect(/invoke\("send_input", \{[^}]*machineOrigin: true,[^}]*\}\)/.test(cardSlice())).toBe(true);
+  it("★[이어서 진행] 버튼 자체가 없다 — 사용자에게 묻지 않는다", () => {
+    const s = cardSlice();
+    expect(s.includes("continueLabel")).toBe(false);
+    expect(s.includes("continueText")).toBe(false);
+    expect(s.includes('go.addEventListener("click"')).toBe(false);
+  });
+  it("60%+ 순환 권유의 재료를 카드에 넘긴다(권유 1줄 · 자동 집행 0)", () => {
+    const s = cardSlice();
+    expect(s.includes("seatCtx:")).toBe(true);
+    expect(s.includes("ctx_pct")).toBe(true);
+    // 권유가 곧 집행이 되지 않게: 이 구간에 순환 집행 호출이 없어야 한다.
+    expect(/invoke\("[^"]*cycle[^"]*"/i.test(s)).toBe(false);
   });
   it("복원이 끝난 뒤(started = true 다음) 한 번 부른다", () => {
     const i = src.indexOf("started = true; // 복원 완료");

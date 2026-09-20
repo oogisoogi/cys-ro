@@ -237,12 +237,37 @@ fn builtin_jobs() -> Vec<serde_json::Value> {
             "_builtin": "promote",
             "_builtin_version": BUILTIN_JOBS_VERSION
         }),
+        // ── ★A1-2(dept-by-conversation) 대화로 부서 만들기 집행 틱 — 1분 · base_only · CSO 신원 고정 ──
+        // **신규 id 라 BUILTIN_JOBS_VERSION 범프 불요·금지**(위 formation·promote 와 같은 이유 — 범프는
+        // 기존 builtin 을 코드 정의로 통째 교체해 운영자 수기 편집을 무언 소실시킨다). 마커 "deptreq" 는
+        // apply_builtin_jobs 가 코드 정의(bj)의 마커로 직접 대조하므로 목록 수정 없이 동작한다.
+        // 집행 주체 계약(설계 DESIGN-v2.1 §3 대안 E): 마스터가 「네」를 받아 요청을 confirmed 로 기록하면
+        // 이 틱이 부서를 만든다 — 마스터는 lifecycle 가드(cys-dept exit 7 · javis_org require_cso)를
+        // 지나가지 않는다. `env CYS_ROLE=cso` 는 두 가드를 동시에 만족하는 유일한 값이며, 데몬이 상속한
+        // 역할을 결정론으로 덮어 집행자 신원을 고정한다(ceo-promote-pending-tick 의 env -u CYS_ROLE 과
+        // 방향만 반대 — 가드 완화가 아니라 지정 집행자의 신원 고정 · 가드 무접촉).
+        // ★표지(.pending) 셸 게이트를 두지 않는다(적대 2R ②): 만료·개인정보 수명·고아 편성 원장 청소는
+        //   **매 틱 무조건** 돌아야 한다 — 표지 뒤에 두면 진행 중 요청이 없는 날엔 한 번도 안 돈다.
+        //   할 일 판정·표지는 전부 도구(`tick` 동사) 안에 있다 — 명령 문자열을 최소로 둬서 이 잡을
+        //   고칠 일(=버전 범프)이 생기지 않게 하는 것이 목적이다. 정상 skip 도 exit 0 이고 비0 은
+        //   진짜 내부 오류뿐이다(cycle-autopilot-tick 계약과 같다).
+        // 한계: Windows 에서 동봉 bash 결손 시 이 잡도 함께 죽는다(formation-heartbeat 주석의 R3-WINTICK-5
+        //   와 같은 단일 장애점 · 설계 §13 W-7 합격 조건).
+        json!({
+            "id": "dept-request-tick",
+            "every_minutes": 1,
+            "action": "command",
+            "base_only": true,
+            "command": "pk=\"${CYS_PACK_DIR:-$HOME/.cys/pack}\"; [ -f \"$pk/bin/javis_dept_request.py\" ] || exit 0; env CYS_ROLE=cso python3 \"$pk/bin/javis_dept_request.py\" tick",
+            "_builtin": "deptreq",
+            "_builtin_version": BUILTIN_JOBS_VERSION
+        }),
     ]
 }
 
 /// built-in 잡을 jobs 배열에 idempotent upsert(순수 — 회귀 핀). id 로 대조:
 ///   · 부재 → append(생성)
-///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote") → 버전 상이 시 교체(갱신)·동버전 무접촉
+///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote"·"deptreq") → 버전 상이 시 교체(갱신)·동버전 무접촉
 ///   · 존재 + **마커 없음/불일치(사용자가 그 id 선점)** → ★codex W3: 교체 금지(사용자 잡 보존)·경고(conflicts 반환)
 /// 반환 (changed, conflicts) — conflicts=사용자가 reserved id 를 쓴 잡 id 목록(호출측 loud 경고).
 fn apply_builtin_jobs(jobs: &mut Vec<serde_json::Value>) -> (bool, Vec<String>) {
@@ -1409,7 +1434,7 @@ mod tests {
             "id": "user-custom-job", "every_minutes": 30, "action": "push", "to": "master"
         })];
 
-        // 1차: built-in 8개(phoenix2 + learn2 + cycle2 + formation1 + promote1) 생성 → changed=true.
+        // 1차: built-in 9개(phoenix2 + learn2 + cycle2 + formation1 + promote1 + deptreq1) 생성 → changed=true.
         let (c1, conf1) = apply_builtin_jobs(&mut jobs);
         assert!(c1, "1차 ensure 는 built-in 잡을 생성해야 한다");
         assert!(conf1.is_empty(), "conflict 없음(예약 id 미선점)");
@@ -1431,8 +1456,12 @@ mod tests {
             ids.contains(&"ceo-promote-pending-tick"),
             "T10 P3-2 대기형 승격 집행 틱 잡 생성"
         );
+        assert!(
+            ids.contains(&"dept-request-tick"),
+            "A1-2 대화로 부서 만들기 집행 틱 잡 생성"
+        );
         assert!(ids.contains(&"user-custom-job"), "사용자 잡은 보존돼야 한다");
-        assert_eq!(jobs.len(), 9, "사용자1 + built-in8");
+        assert_eq!(jobs.len(), 10, "사용자1 + built-in9");
         // 주기 정합(typed): snapshot=6h(360), drill=7일(10080), audit=일(1440), digest=7일(10080),
         // cycle tick=매분(1), verifier watchdog=10분(10), formation heartbeat=10분(10),
         // ceo promote tick=10분(10).
@@ -1449,6 +1478,33 @@ mod tests {
         assert_eq!(period("cycle-verifier-watchdog"), Some(10), "verifier watchdog 10분");
         assert_eq!(period("formation-heartbeat"), Some(10), "formation heartbeat 10분");
         assert_eq!(period("ceo-promote-pending-tick"), Some(10), "promote 집행 틱 10분");
+        assert_eq!(period("dept-request-tick"), Some(1), "부서 요청 집행 틱 매분");
+        // ★A1-2 집행 틱 계약 핀: command 레인(master stdin 무주입) · base_only(부서 데몬 복제 실행 =
+        //   이중 생성 차단 — fire 관문과 쌍) · CSO 신원 고정(env CYS_ROLE=cso — 두 가드 동시 충족) ·
+        //   tick 동사 · push 계열 필드 부재 · ★표지 셸 게이트 부재(적대 2R ② — 청소가 매 틱 돌아야 한다).
+        {
+            let dt = jobs
+                .iter()
+                .find(|j| j["id"].as_str() == Some("dept-request-tick"))
+                .unwrap();
+            assert_eq!(dt["action"].as_str(), Some("command"), "부서 요청 틱은 command 레인 핀");
+            assert_eq!(dt["base_only"].as_bool(), Some(true), "부서 요청 틱은 base_only 핀");
+            assert_eq!(dt["_builtin"].as_str(), Some("deptreq"), "마커 deptreq 핀");
+            assert!(
+                dt.get("to").is_none() && dt.get("text").is_none() && dt.get("text_command").is_none(),
+                "부서 요청 틱은 push 계열 필드를 갖지 않는다"
+            );
+            let cmd = dt["command"].as_str().unwrap();
+            assert!(
+                cmd.contains("javis_dept_request.py") && cmd.ends_with(" tick"),
+                "부서 요청 틱 command 에 tick 동사 부재"
+            );
+            assert!(cmd.contains("env CYS_ROLE=cso"), "집행자 신원 고정(env CYS_ROLE=cso) 핀");
+            assert!(
+                !cmd.contains(".pending"),
+                "표지 셸 게이트 금지 — 만료·수명·고아 청소는 매 틱 무조건(적대 2R ②)"
+            );
+        }
         // ★T9(P3-1 ⓑ) 상비편성 심박 계약 핀: command 레인(매 틱 master stdin 무주입) ·
         //   base_only(부서 데몬 복제 실행 차단 — fire 관문과 쌍) · --force-surface 금지
         //   (주기 잡 스팸 계약 javis_formation._surface) · ensure 호출 실재.
@@ -1521,7 +1577,7 @@ mod tests {
             .filter(|j| j["id"].as_str() == Some("phoenix-snapshot-6h"))
             .count();
         assert_eq!(snap_count, 1, "재실행에도 중복 생성 0");
-        assert_eq!(jobs.len(), 9, "중복 없이 9개 유지");
+        assert_eq!(jobs.len(), 10, "중복 없이 10개 유지");
 
         // 3차: 구버전(마커=0) 항목이 있으면 갱신(교체) → changed=true, 여전히 중복 0.
         for j in jobs.iter_mut() {
@@ -1581,6 +1637,26 @@ mod tests {
         // drill 은 마커 없는 선점이 없으므로 정상 생성(changed=true).
         assert!(changed, "drill 신규 생성으로 changed");
         assert!(jobs.iter().any(|j| j["id"].as_str() == Some("phoenix-drill-weekly")));
+    }
+
+    // ★A1-2: 사용자가 dept-request-tick id 를 마커 없이 먼저 쓰고 있으면 교체하지 않고 conflict 로
+    //   보고해야 한다 — 이 경우 집행 틱이 서지 않으므로 경고(schedule.warning)가 유일한 가시화다.
+    #[test]
+    fn builtin_dept_request_tick_conflict_when_id_preempted() {
+        let mut jobs: Vec<serde_json::Value> = vec![json!({
+            "id": "dept-request-tick", "every_minutes": 5, "action": "command", "command": "echo mine"
+        })];
+        let (_changed, conflicts) = apply_builtin_jobs(&mut jobs);
+        assert!(
+            conflicts.contains(&"dept-request-tick".to_string()),
+            "선점된 dept-request-tick 은 conflict 로 보고돼야 한다"
+        );
+        let j = jobs
+            .iter()
+            .find(|j| j["id"].as_str() == Some("dept-request-tick"))
+            .unwrap();
+        assert_eq!(j["command"].as_str(), Some("echo mine"), "사용자 잡 보존(교체 금지)");
+        assert!(j.get("_builtin").is_none(), "사용자 잡에 built-in 마커 미주입");
     }
 
     /// (learn gaps C12③) pack seed(cysjavis-pack/schedule.json)의 마커 잡 ↔ builtin_jobs()

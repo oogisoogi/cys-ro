@@ -374,3 +374,97 @@ describe("M7② V-12 — 앱이 꺼진 채 생긴 부서는 시작 대조가 탭
     expect(/for \(const spec of missingKnownWorkspaces\([\s\S]{0,1500}?workspaces\.push\(ws\);/.test(r)).toBe(true);
   });
 });
+
+// ─── v110-sidebar ⓒ — 부서 생성은 **단 하나의 문**을 지나고, 그 문에 확인 창이 서 있다 ─────────
+//
+// ★이 describe 가 곧 B22(2026-09-20 05:02)의 재현 축이다. 그날 ＋부서 한 번이 확인 창도 토스트도
+//   없이 곧장 부서를 만들었고, 그 꼬리에서 본부 MASTER_DIRECTIVE.md 가 CEO 템플릿으로 교체됐다.
+//   화면·DOM 없이 그 사고를 재현하는 방법은 **경로를 세는 것**이다: 생성 명령에 닿는 길이 몇 개이고,
+//   그 길들이 전부 확인 창 뒤에 있는가. 길이 둘이 되는 순간(표지 없는 경로) 확인 창은 장식이 된다.
+describe("ⓒ 부서 생성 확인 창 — 문이 하나이고 그 앞에 확인이 있다", () => {
+  /** launchDept 함수 본문만 잘라낸다 — 게이트 계약은 그 구간에만 적용된다. */
+  function launchDeptSlice(): string {
+    const a = src.indexOf("async function launchDept(");
+    expect(a).toBeGreaterThan(0); // 함수가 사라졌으면 이 핀이 지키는 것이 없다
+    const b = src.indexOf("\n}", a);
+    expect(b).toBeGreaterThan(a);
+    return src.slice(a, b);
+  }
+
+  it("★생성 명령(allocate_dept_daemon)을 부르는 자리가 정확히 하나다", () => {
+    // 여러 자리에서 부르면 확인 창을 한 곳에 세워도 나머지가 그대로 뚫린다.
+    expect((code.match(/invoke\("allocate_dept_daemon"/g) ?? []).length).toBe(1);
+  });
+
+  it("★addDeptWorkspace 의 호출자가 정확히 하나다 — 그 하나가 launchDept 여야 한다", () => {
+    // 정의(`async function addDeptWorkspace(`)는 호출이 아니므로 뺀 뒤 센다.
+    const calls = (code.match(/(?<!function )addDeptWorkspace\(/g) ?? []).length;
+    expect(calls).toBe(1);
+    expect(launchDeptSlice()).toContain("addDeptWorkspace(");
+  });
+
+  it("★확인 창이 생성 호출보다 앞에 있고, 취소면 **되돌아 나간다**", () => {
+    const h = launchDeptSlice();
+    const iConfirm = h.indexOf("deptCreateConfirm()");
+    const iCall = h.indexOf("addDeptWorkspace(");
+    expect(iConfirm).toBeGreaterThan(0);
+    expect(iCall).toBeGreaterThan(iConfirm);
+    // ★순서만 재면 안 된다 — 확인 창을 띄워 놓고 결과를 버려도 순서 단언은 통과한다.
+    //   실제로 안전을 만드는 것은 **취소에서 나가는 return** 이므로 그 문장을 직접 못박는다.
+    expect(/if \(!\(await confirmModal\(c\.title, c\.body, c\.yes, c\.no\)\)\) return;/.test(h)).toBe(true);
+    // 문안은 deptconfirm.ts 가 정본이다(화면 코드에 인라인 복제 금지 — 복제되면 세 축 검사가 헛돈다).
+    expect(h.includes('"· 이 컴퓨터에')).toBe(false);
+  });
+
+  it("★확인 우회 플래그(skipConfirm)가 켜지는 자리는 레거시 폴백 재호출 하나뿐이다", () => {
+    // 이 플래그는 「같은 승인 안의 재시도」를 위한 것이다. 다른 자리에 한 번만 더 붙으면
+    // 그 경로가 통째로 무확인이 되고, 그 사실은 코드를 읽어야만 보인다.
+    expect((code.match(/skipConfirm:\s*true/g) ?? []).length).toBe(1);
+    expect(code).toContain("if (fallbackLegacy) await launchDept(undefined, { skipConfirm: true });");
+  });
+
+  it("★팔레트 act:dept 도 같은 문으로 들어간다 — 단추 없이 같은 일을 하는 경로를 남기지 않는다", () => {
+    const i = code.indexOf('id: "act:dept"');
+    expect(i).toBeGreaterThan(0);
+    const item = code.slice(i, i + 400);
+    expect(item).toContain("launchDept(");
+    expect(item).not.toContain("addDeptWorkspace(");
+  });
+
+  it("★확인 창에 Escape = 취소가 배선돼 있다 (854 권고 4 · 05:02 실사건에서 안 닫혔다)", () => {
+    const a = code.indexOf("function confirmModal(");
+    expect(a).toBeGreaterThan(0);
+    const modal = code.slice(a, code.indexOf("\n}", a));
+    expect(modal).toContain('e.key !== "Escape"');
+    expect(/done\(false\);?\s*\/\/|done\(false\)/.test(modal)).toBe(true);
+    // 리스너를 떼는 줄이 없으면 확인 창을 여닫을 때마다 전역 핸들러가 쌓인다.
+    expect(modal).toContain('window.removeEventListener("keydown", onKey, true);');
+  });
+
+  it("★기본 포커스는 여전히 취소 쪽이다 — 무심코 친 Enter 가 승인이 되면 확인 창의 뜻이 사라진다", () => {
+    const a = code.indexOf("function confirmModal(");
+    const modal = code.slice(a, code.indexOf("\n}", a));
+    expect(modal).toContain('(ov.querySelector(".modal-no") as HTMLElement).focus();');
+  });
+});
+
+// ─── v110-sidebar ⓑ′ — 전문가 모드 배선 ────────────────────────────────────────────────
+describe("ⓑ′ 전문가 모드 — 기본 꺼짐 판정이 순수 모듈을 지난다", () => {
+  it("★기본값 판정이 expertModeOn 을 쓴다 — main.ts 안에서 저장값을 직접 비교하지 않는다", () => {
+    expect(code).toContain("applyExpertMode(expertModeOn(localStorage.getItem(EXPERT_KEY)))");
+    // 인라인 복제가 생기면 기본값이 두 곳에 흩어지고 한쪽만 뒤집혀도 시험이 조용하다.
+    expect(/localStorage\.getItem\(EXPERT_KEY\)\s*===/.test(code)).toBe(false);
+  });
+
+  it("저장도 같은 모듈의 표기를 쓴다(왕복 성립)", () => {
+    expect(code).toContain("localStorage.setItem(EXPERT_KEY, expertModeRaw(on));");
+  });
+
+  it("★토글이 실제로 칸을 여닫는다 — 저장만 하고 화면을 안 고치면 다음 실행까지 안 바뀐다", () => {
+    const a = code.indexOf("function applyExpertMode(");
+    expect(a).toBeGreaterThan(0);
+    const fn = code.slice(a, code.indexOf("\n}", a));
+    expect(fn).toContain("expertBox.hidden = !on");
+    expect(fn).toContain("expertToggle.checked = on");
+  });
+});

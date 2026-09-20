@@ -148,8 +148,13 @@ for role in ("worker-1", "worker"):
     lines = out.splitlines()
     hit = [any(l.startswith(want) for l in lines) for want in FIRST_TURN]
     check("7a %s 첫 턴 규율 5줄 실재" % role, all(hit), "누락 %s" % [i for i, h in enumerate(hit) if not h])
-    check("7b %s 규율은 디렉티브 뒤" % role,
-          all(hit) and out.index("DIRECTIVE-BODY-WORKER") < out.index(FIRST_TURN[0]))
+    # ★재조준(injection-slim T2a · DESIGN-v2.1 §4-8 · master D3): 옛 계약 = 「규율은 디렉티브 뒤」
+    #   (cysr-102 B1 편입 시 호스트 09-13 판의 자리를 그대로 옮긴 것). 그 자리는 출력이 10,000자를 넘을 때
+    #   저장 파일로 밀려 미리보기 2,000자 밖이었다 → T2a 가 블록을 워커 출력 맨 앞으로 옮겼다(문안 무변경).
+    #   새 계약 = 규율이 디렉티브 **앞** + 규율 5줄 끝이 출력 앞 2,000자 안.
+    check("7b %s 규율은 디렉티브 앞·앞 2,000자 안(T2a)" % role,
+          all(hit) and out.index(FIRST_TURN[0]) < out.index("DIRECTIVE-BODY-WORKER")
+          and out.index(FIRST_TURN[-1]) + len(FIRST_TURN[-1]) <= 2000)
     check("7c %s exit 0" % role, code == 0)
     check("7e %s 원장·표식 성립 조건 부재(팩판)" % role, "원장 대조" not in out and "표식 + " not in out)
 for role in ("master", "cso"):

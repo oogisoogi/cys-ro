@@ -373,6 +373,15 @@ SELFCORR_HOOKS = [
     # ★W-C1(커스텀 생존 2026-07-17): vendor(system·임베드) 팩 파일 수정 감지 → 치유 예고 +
     # 영속 경로 안내(additionalContext WARN — BLOCK 아님·자기발화 봉쇄 금지 경계 준수).
     ("pack-guard.sh", [("PostToolUse", "Write|Edit|MultiEdit")]),
+    # ★injection-slim T3(2026-09-18 · DESIGN-v2.1 §4-4·§4-5 · master 판정 5cdfbd54 ②A·6255b46b): 마스터 주입 축소
+    #   2행을 한 번에 등록한다 — ②' 배경층(soul·메모리 색인·오버레이 · 복원 source 의 §9·§11 원문)과
+    #   ⓓ 사건 적시 주입(PreToolUse Bash — 상황 절 원문 · §14 는 세션당 1회 거부). 둘 다 첫 줄 역할 가드
+    #   (master 외 즉시 exit 0)가 유일한 방어다: 이 표는 base 레인에서 ~/.claude/settings.json(cmux 페인)에도
+    #   등록된다(U7 · discover_claude_settings). 선언 timeout 5초 = HOOK_TIMEOUT_S(미선언이면 하네스 기본
+    #   600초를 물려받아 걸리는 순간 Bash 한 번이 최대 10분 멈춘다 — §4-5). 각성 티어가 아니다(없어도 부트는
+    #   발화) → Rust AWAKENING_HOOKS 에 넣지 않는다(H-SEED-1 ⓐ 이벤트 집합 계약 · 비각성 훅 = C28 단독 등록 선례).
+    ("inject-background.sh", [("SessionStart", None)]),
+    ("directive-event-inject.sh", [("PreToolUse", "Bash")]),
 ]
 
 # ★훅 **본체** — 실재 전용(등록 대상 아님 · 부트 v2 A2 분할 2026-09-04).
@@ -430,6 +439,10 @@ NPM_PREFIX_BUNDLE_WARNING = (
 HOOK_TIMEOUT_PLATFORM_DEFAULT_UPS_S = 30
 HOOK_TIMEOUT_S = {
     ("role-bootstrap.sh", "UserPromptSubmit"): 600,
+    # injection-slim T3: 새 훅 2행은 **짧게** 선언한다(하한 5초 — 두 훅 모두 내부 상한 cys_timeout_run 5 ·
+    #   fail-open). 사건 훅은 모든 Bash 앞에서 돈다 — 미선언(기본 600초)이면 걸리는 순간 Bash 한 번이 10분 멈춘다.
+    ("inject-background.sh", "SessionStart"): 5,
+    ("directive-event-inject.sh", "PreToolUse"): 5,
 }
 
 # ★U-21 롤백 스위치(축 1지점) — Rust `pack::hook_timeout_axis_legacy_from` 의 파이썬 미러.
@@ -832,6 +845,181 @@ def _utf8_env(extra=None):
     if extra:
         env.update(extra)
     return env
+
+
+# ── C82 판정 코어(injection-slim T5) — 체크 메서드와 시험이 같은 함수를 부른다(사본 금지) ──
+CORE_INJECT_HARD = 9000        # 훅 출력 상한(설계 여유 1,000자 — 공식 저장 문턱 10,000자 · T0-PROBES ⓓ)
+CORE_INJECT_SOURCES = ("startup", "compact")
+CORE_INJECT_HOOKS = ("session-start.sh", "inject-background.sh")
+
+
+def _core_ulen(s):
+    """하네스가 세는 쪽의 상한 = JS(UTF-16) 길이(BMP 밖 1자 = 2)."""
+    return len(s) + sum(1 for c in s if ord(c) > 0xFFFF)
+
+
+def _load_core_inject(hooks_dir):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_c82_core_inject", os.path.join(hooks_dir, "core_inject.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def core_injection_problems(pack, sh=None, timeout=20, home=None):
+    """(문제 목록, 관측 목록). 문제 0건 = PASS. 축: 이름 규칙 · 파일 실재 · CORE-MIN 동일성 · 절 해시 ·
+    드라이런(두 훅 × source 2종 · 크기 · 맨 앞 CORE-MIN · rc) · 격리 증명(가짜 cys 호출·해소).
+    home = 드라이런의 HOME(시험이 오버레이·색인 최악 조합을 심을 때만 준다 · 기본 = 실 HOME 을 읽기 전용으로)."""
+    probs, notes = [], []
+    hooks = os.path.join(pack, "hooks")
+    ddir = os.path.join(pack, "directives")
+    # ④ 이름 규칙 + 실재
+    for n in sorted(os.listdir(ddir)):
+        if "CORE" in n.upper() and n.endswith("_DIRECTIVE.md"):
+            probs.append("이름 규칙 위반 directives/%s(_DIRECTIVE.md 로 끝나면 헌법 파일로 분류 → User 소유·.new 병치)" % n)
+    for n in ("MASTER_CORE.md", "CEO_CORE.md", "CORE-MIN.md"):
+        if not os.path.isfile(os.path.join(ddir, n)):
+            probs.append("CORE 파일 부재 directives/%s(훅은 원문 직접 주입으로 강등)" % n)
+    ci = _load_core_inject(hooks)
+    d_p = os.path.join(ddir, "MASTER_DIRECTIVE.md")
+    dtext = ci.read(d_p)
+    kind = ci.detect_kind(dtext)
+    core_p = os.path.join(ddir, ci.CORE_FILE[kind])
+    min_p = os.path.join(ddir, ci.MIN_FILE)
+    core_min = ci.read(min_p) if os.path.isfile(min_p) else None
+    core_ok = False
+    # CORE-MIN 동일성 · ③ 절 해시
+    if os.path.isfile(core_p):
+        ctext = ci.read(core_p)
+        emb, _rest = ci.split_core(ctext)
+        if emb is None:
+            probs.append("%s: CORE-MIN BEGIN/END 표지 없음" % ci.CORE_FILE[kind])
+        elif core_min is not None and emb != core_min:
+            probs.append("%s: 안의 CORE-MIN 이 CORE-MIN.md 와 다르다" % ci.CORE_FILE[kind])
+        ok, mism, n = ci.verify(ctext, dtext, kind)
+        notes.append("좌석=%s · 절 해시 %d절 대조" % (kind, n))
+        if not ok:
+            probs.append("절 해시 불일치 %s(훅은 요지 대신 원문을 싣는다 — 요지 재작성·이종 검증 필요)"
+                         % " · ".join("%s:%s" % (s, k) for s, k, _x in mism))
+        core_ok = ok and emb is not None and (core_min is None or emb == core_min)
+    if core_min is not None and _core_ulen(core_min) > 1600:
+        probs.append("CORE-MIN.md %d자 > 1,600(미리보기 안 보장 폭 초과)" % _core_ulen(core_min))
+    # ⑤ 사건 주입 트리거 제목 실재(injection-slim T3 · DESIGN §4-6-5) — 사전의 절 키가 디렉티브(코드 울타리 밖)에
+    #   없으면 그 명령에서 원문 대신 「찾지 못했다」 고지만 나간다. 설치 디렉티브 + 팩의 CEO 템플릿 둘 다 잰다.
+    trig = getattr(ci, "EVENT_TRIGGERS", None)
+    if trig is None:
+        probs.append("core_inject.py 에 EVENT_TRIGGERS(사건 주입 사전) 없음 — 사건 훅이 아무것도 싣지 못한다")
+    else:
+        _texts = [("MASTER_DIRECTIVE.md", dtext)]
+        _ceo_p = os.path.join(ddir, "CEO_TEMPLATE.md")
+        if os.path.isfile(_ceo_p):
+            _texts.append(("CEO_TEMPLATE.md", ci.read(_ceo_p)))
+        _nkeys = 0
+        for _fn, _t in _texts:
+            _k = ci.detect_kind(_t)
+            _secs = ci.all_sections(_t, _k)
+            for _tk, _tn, _ts, _keys, _act, _seat, _b in trig:
+                if _seat == "ceo" and _k != "ceo":
+                    continue
+                for _key in _keys:
+                    _nkeys += 1
+                    if ci.find_section(_secs, _key) is None:
+                        probs.append("사건 주입 트리거 절 %s 가 %s 에 없다(제목 변경?) — 트리거 %s %s 에서 원문 대신 "
+                                     "「찾지 못했다」 고지만 나간다" % (_key, _fn, _tn, _ts or ""))
+        notes.append("사건 트리거 절 %d건 실재 대조" % _nkeys)
+        # ⑥ CORE-MIN 6번이 사전의 계기 이름을 전부 말하는가(문안 드리프트 — 사전에 행을 더하고 CORE-MIN 을 안 고친 경우)
+        if core_min is not None:
+            for _tk, _tn, _ts, _keys, _act, _seat, _b in trig:
+                if _seat != "all":
+                    continue
+                _needle = ("%s %s" % (_tn, _ts)) if _act == "deny" else (_ts or re.sub(r"\.py$", "", _tn))
+                if _needle not in core_min:
+                    probs.append("CORE-MIN.md 가 사건 주입 계기 「%s」 를 말하지 않는다(사전과 문안 드리프트)" % _needle)
+    # ①② 드라이런 — 격리 PATH 의 가짜 cys
+    sh = sh or shutil.which("sh") or shutil.which("bash")
+    if not sh:
+        probs.append("드라이런 미측정(sh 부재) — 크기·순서를 재지 못했다(통과 아님)")
+        return probs, notes
+    with tempfile.TemporaryDirectory(prefix="c82-") as tmp:
+        fb = os.path.join(tmp, "bin")
+        os.makedirs(fb)
+        log = os.path.join(tmp, "cys-calls.log")
+        fake = os.path.join(fb, "cys")
+        with open(fake, "w", encoding="utf-8", newline="\n") as f:
+            f.write("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> '%s'\nexit 0\n" % log.replace("'", "'\\''"))
+        os.chmod(fake, 0o755)
+        env = {k: v for k, v in _utf8_env().items()
+               if not (k.startswith("CYS_") or k.startswith("CMUX_") or k == "NODE_OPTIONS")}
+        env.update({"CYS_PACK_DIR": pack, "CYS_ROLE": "master", "CYS_SURFACE_ID": "c82-dryrun",
+                    "CYS_SOCKET": os.path.join(tmp, "absent.sock"),
+                    "PATH": fb + os.pathsep + env.get("PATH", "")})
+        if home:
+            env["HOME"] = home
+        which = shutil.which("cys", path=env["PATH"])
+        if not which or os.path.realpath(which) != os.path.realpath(fake):
+            probs.append("격리 실패: PATH 해소가 가짜 cys 가 아니다(%s) — 드라이런 중단" % which)
+            return probs, notes
+        sizes = []
+        for src in CORE_INJECT_SOURCES:
+            for h in CORE_INJECT_HOOKS:
+                hp = os.path.join(hooks, h)
+                if not os.path.isfile(hp):
+                    probs.append("훅 부재 hooks/%s" % h)
+                    continue
+                try:
+                    r = subprocess.run([sh, hp], input=json.dumps({"hook_event_name": "SessionStart",
+                                                                     "source": src}) + "\n",
+                                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                       env=env, timeout=timeout, **NOWIN)
+                except subprocess.TimeoutExpired:
+                    probs.append("%s(source=%s) %d초 초과" % (h, src, timeout))
+                    continue
+                n = _core_ulen(r.stdout)
+                sizes.append("%s/%s=%d" % (h.split(".")[0], src, n))
+                if r.returncode != 0:
+                    probs.append("%s(source=%s) rc=%d(훅은 언제나 0이어야 한다)" % (h, src, r.returncode))
+                if n > CORE_INJECT_HARD:
+                    probs.append("%s(source=%s) 출력 %d자 > %d(저장·미리보기로 떨어질 위험)" % (h, src, n, CORE_INJECT_HARD))
+                if h == "session-start.sh" and core_ok and core_min is not None and not r.stdout.startswith(core_min):
+                    probs.append("session-start(source=%s) 출력 맨 앞이 CORE-MIN 이 아니다" % src)
+        # ⑦ 사건 훅 드라이런(T3) — 트리거 1건은 원문 JSON(≤상한 · rc 0) · 비트리거는 무출력 · 원장은 격리 폴더
+        ev = os.path.join(hooks, "directive-event-inject.sh")
+        if not os.path.isfile(ev):
+            probs.append("훅 부재 hooks/directive-event-inject.sh(사건 주입 없음 — CORE-MIN 6번이 거짓이 된다)")
+        else:
+            env_ev = dict(env, CYS_STATE_DIR=os.path.join(tmp, "state"))
+            for _cmd, _want in (("cys launch-agent --role worker", "원문 §2"), ("ls -la", None)):
+                _in = json.dumps({"session_id": "c82-dryrun", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                  "tool_input": {"command": _cmd}}, ensure_ascii=False) + "\n"
+                try:
+                    r = subprocess.run([sh, ev], input=_in, capture_output=True, text=True, encoding="utf-8",
+                                       errors="replace", env=env_ev, timeout=timeout, **NOWIN)
+                except subprocess.TimeoutExpired:
+                    probs.append("directive-event-inject(%s) %d초 초과" % (_cmd, timeout))
+                    continue
+                if r.returncode != 0:
+                    probs.append("directive-event-inject(%s) rc=%d(훅은 언제나 0이어야 한다)" % (_cmd, r.returncode))
+                if _want is None:
+                    if r.stdout.strip():
+                        probs.append("directive-event-inject: 비트리거 명령(%s)에 출력이 있다" % _cmd)
+                    continue
+                try:
+                    _ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+                except (ValueError, KeyError, TypeError):
+                    probs.append("directive-event-inject(%s): 훅 JSON(additionalContext) 아님 — %r" % (_cmd, r.stdout[:120]))
+                    continue
+                sizes.append("event/launch-agent=%d" % _core_ulen(_ctx))
+                if _want not in _ctx:
+                    probs.append("directive-event-inject(%s): 절 원문(%s) 없음" % (_cmd, _want))
+                if _core_ulen(_ctx) > CORE_INJECT_HARD:
+                    probs.append("directive-event-inject 출력 %d자 > %d" % (_core_ulen(_ctx), CORE_INJECT_HARD))
+        notes.append("드라이런 " + " ".join(sizes))
+        calls = open(log, encoding="utf-8").read() if os.path.isfile(log) else ""
+        if "claim-role master" not in calls:
+            probs.append("격리 증명 실패: 가짜 cys 가 불리지 않았다(훅이 다른 cys 를 쓴 것일 수 있다)")
+        else:
+            notes.append("가짜 cys 호출 확인(실 데몬 무접촉)")
+    return probs, notes
 
 
 def heartbeat_verdict(mtime, now_ts, max_age):
@@ -4079,7 +4267,7 @@ class Preflight:
                         (fails if tier_fatal else warns).append(
                             "%s %s(%s) 미등록%s" % (os.path.basename(t), script_name, event,
                                                    "(--fix로 등록)" if tier_fatal else "(--fix)"))
-        detail = "자기교정·영속성 hook(inject·save·reflect-scan·commit-nudge·role-bootstrap·pack-guard) 6종 + reflect 엔진"
+        detail = "자기교정·영속성 hook(inject·save·reflect-scan·commit-nudge·role-bootstrap·pack-guard·inject-background·directive-event-inject) 8종 + reflect 엔진"
         if fixed:
             shown = "; ".join(fixed[:6]) + (" …+%d" % (len(fixed) - 6) if len(fixed) > 6 else "")
             detail += " · " + shown
@@ -5701,6 +5889,43 @@ class Preflight:
         else:
             self.add(cid, PASS, "npm_config_prefix 번들 오염 없음(데몬 판정)")
 
+    # ── C82 마스터 주입 요지(CORE) 드라이런 — injection-slim T5(DESIGN-v2.1 §4-6 · §7 T5) ──
+    # 무엇을 재나: Claude Code 는 훅 출력이 10,000자를 넘으면 본문 대신 파일 저장 + 약 2,000자 미리보기만
+    #   모델에 넣는다(T0-PROBES ⓓ 실측). master 각성 훅이 그 선을 넘으면 규범이 모델에 안 닿는다.
+    #   그래서 **파일 내용이 아니라 훅을 실제로 실행한 출력**을 잰다(A4 — 파일 검사는 조립 결함을 못 본다):
+    #   ① 훅 ①·②' 출력 ≤ 9,000자(source=startup·compact 두 판 · 글자 = JS UTF-16 길이 상한)
+    #   ② 훅 ① 출력의 맨 앞 = CORE-MIN(요지가 멀쩡할 때 — 결손이면 ③·④가 원인을 말한다)
+    #   ③ CORE 머리 주석의 원문 절 해시 = 디스크 디렉티브 절 해시(불일치면 훅은 요지 대신 원문을 싣는다
+    #      — 안전 강등은 이미 되지만 요지 재작성이 필요하다는 신호)
+    #   ④ CORE 파일 이름 규칙(_DIRECTIVE.md 로 끝나면 헌법 파일로 분류돼 User 소유·.new 병치로 떨어진다)
+    # 격리: 훅은 `cys claim-role`(쓰기)·`cys usage-register` 를 부른다 → 격리 PATH 맨 앞에 가짜 cys 를 두고,
+    #   가짜가 실제로 불렸는지(로그)와 PATH 해소가 가짜를 가리키는지를 **이 체크가 스스로 단언**한다
+    #   (실 데몬 무접촉 증명 — 메모리 harness-must-assert-it-did-not-touch-production).
+    # 티어: 전부 WARN(READY 미차단) — 해시 불일치는 훅이 원문으로 이미 강등하고, 크기 초과는 T2 이전
+    #   상태(저장·미리보기)보다 나빠지지 않는다. 부트를 막는 FAIL 은 4군 ④(전 pane 사망) 쪽 위험이다.
+    # 읽기 전용: 팩·settings·홈 쓰기 0(가짜 cys 로그·임시 폴더는 tempfile 안) — report 스레드풀 안전.
+    def c82_core_injection(self):
+        cid = "C82.core-injection"
+        if self.skipped(cid):
+            return
+        pack = pack_dir()
+        hooks = os.path.join(pack, "hooks")
+        ddir = os.path.join(pack, "directives")
+        d_p = os.path.join(ddir, "MASTER_DIRECTIVE.md")
+        ci_p = os.path.join(hooks, "core_inject.py")
+        if not os.path.isfile(d_p):
+            self.add(cid, SKIP, "directives/MASTER_DIRECTIVE.md 없음 — C02 소관(미측정)")
+            return
+        if not os.path.isfile(ci_p):
+            self.add(cid, WARN, "hooks/core_inject.py 없음 — master 각성이 셸 폴백(CORE-MIN·부트 브리지만)으로 간다. "
+                                "해소: cys init-pack(팩 System 파일 치유)")
+            return
+        probs, notes = core_injection_problems(pack)
+        if probs:
+            self.add(cid, WARN, " · ".join(probs) + (" | " + " · ".join(notes) if notes else ""))
+        else:
+            self.add(cid, PASS, " · ".join(notes))
+
     # ── C79 cycle-verifier heartbeat (R6 W0-5) — 전 등급 WARN 티어(READY 미차단) ──
     # ★FAIL 금지 근거: 검증자 pane 은 전자동 사이클 **live** 단계의 전제(autopilot 게이트6)
     #   일 뿐, S0 shadow 단계 전에는 미필수다 — 부트 비치명. 부재·노화·수리 실패 전부
@@ -6031,6 +6256,9 @@ class Preflight:
             # Windows 에는 코드서명 봉인(C76)이 없어 이 체크가 유일한 변조 탐지다.
             # 번호 규율: C63·C64 는 결번 재사용 금지라 다음 자유 번호는 C80(§5-4).
             self.c80_runtime_seal,
+            # C82(injection-slim T5) — master 주입 요지 드라이런(크기·CORE-MIN 맨 앞·절 해시·이름 규칙).
+            #   WARN-only(READY 미차단 — 훅이 이미 안전 강등한다). 마지막 고정 슬롯(C62·C68) 앞(§5-4).
+            self.c82_core_injection,
             # C62는 마지막 고정 — 같은 런의 --fix가 남긴 치유 원장까지 이 런에서 보이게.
             # C68은 C62 직후(원장 소비 강제 게이트 — 같은 런의 최신 원장 기준으로 기한 판정).
             self.c62_pack_heal_ledger,

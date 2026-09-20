@@ -7374,7 +7374,8 @@ def _fake_pack_with_hooks(pack):
     for _, script in (("", "session-start.sh"), ("", "role-bootstrap.sh"),
                       ("", "inject-context.sh"), ("", "save-state.sh"),
                       ("", "reflect-scan.sh"), ("", "commit-memory-nudge.sh"),
-                      ("", "pack-guard.sh")):
+                      ("", "pack-guard.sh"), ("", "inject-background.sh"),
+                      ("", "directive-event-inject.sh")):
         _w(os.path.join(pack, "hooks", script), "#!/bin/sh\nexit 0\n")
     _w(os.path.join(pack, "bin", "javis_reflect.py"), "import sys;sys.exit(0)\n", 0o644)
     # ★훅 **본체**(부트 v2 A2 분할 · 2026-09-04): C28 은 등록 집합과 별개로 `HOOK_BODY_FILES`

@@ -115,6 +115,15 @@ MAC_LANE = ("cysr_{v}_aarch64.dmg", "cysr_{v}_x64.dmg",
             "cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
             "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig")
 
+# ★맥 **배포 zip** 2종 (2026-09-20 · TICKET=v110-mac-x64) — 설치기가 실제로 받아 까는 자산이다.
+#   DMG 는 사람이 손으로 끌어 넣는 길이고, 설치 도우미(install-master/bootstrap.sh)는 이 zip 을 받아
+#   풀어 넣는다. 그래서 **설치기 핀(크기·지문·CDHash)의 출처가 바로 이 zip 과 SHA256SUMS.txt** 다.
+#   ⚠이 2종은 CI 가 만들지 않는다 — 유료 Apple 서명이 없어 macOS 레그가 macsign 게이트에서 비발행이고
+#     (아래 「CI 비발행」 주석), 우리는 로컬에서 자체서명(cys-local)으로 빌드해 손으로 올린다.
+#   ⇒ 후처리는 이 2종을 **알아야** 한다: SHA256SUMS.txt 에 줄이 실리고(자산 전수라 자동), 빠졌을 때
+#     누락으로 잡힌다(아래 want). 몰랐던 동안 인텔 자산이 없다는 사실을 아무 게이트도 말하지 않았다.
+MAC_DIST_ZIPS = ("cysr-macos-arm64-v{v}.zip", "cysr-macos-x64-v{v}.zip")
+
 
 def mac_lane_absent(outdir, version):
     """이 묶음이 **선언된 맥 미포함 묶음**인가? — 맞을 때만 True.
@@ -372,6 +381,11 @@ def main(argv):
     want = [exe, zipname]
     if not win_only:
         want = ["cysr_%s_aarch64.dmg" % version, "cysr_%s_x64.dmg" % version] + want
+        # ★맥 배포 zip 2종도 함께 요구한다(2026-09-20). 설치기가 받는 자산이 이것이고, 한쪽이 없으면
+        #   그 칩의 사람들은 설치가 통째로 막힌다 — 인텔 자산이 없던 1.0.2 가 정확히 그 상태였다.
+        #   ⚠1.0.2 이하 태그를 다시 후처리하면 x64 zip 이 없어 여기서 적색이다. 그것이 의도다
+        #     (그 태그는 인텔 맥을 덮지 않는다 — 통과시키면 그 사실이 다시 조용해진다).
+        want = [n.format(v=version) for n in MAC_DIST_ZIPS] + want
     missing = [w for w in want if w not in by_name]
     if missing:
         print("::error::배포 자산 누락: %s" % ", ".join(missing), file=sys.stderr)

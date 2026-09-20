@@ -119,6 +119,17 @@ jobs:
             target: aarch64-apple-darwin    # Apple Silicon
           - platform: macos-latest
             target: x86_64-apple-darwin     # Intel — arm64 러너에서 크로스 빌드(bundle-prep이 CYS_TARGET 사용)
+                                            # ⚠★이 레그는 **지금 아무것도 발행하지 않는다**(2026-09-20 실측·TICKET=v110-mac-x64):
+                                            #   아래 `macsign` 프리플라이트가 APPLE_* 7종을 요구하는데 우리는 유료 Apple 서명을
+                                            #   쓰지 않기로 했다(오너 절대 규칙) → enabled=false → 번들·업로드 스텝이 전부 if 로 꺼진다.
+                                            #   ⇒ **인텔 맥이 실제로 받는 자산(cysr-macos-x64-v<판>.zip)의 정본 경로는 CI 가 아니라
+                                            #     로컬 자체서명(cys-local) 빌드 + 손 업로드**다(arm64 도 같다 — 2026-09-18 실적).
+                                            #   로컬 경로 = prep-mac-runtime.sh <triple> → precompile-bundled-python.sh →
+                                            #     tauri build --target <triple> --bundles app → dedup-git-core.sh →
+                                            #     restore-runtime-symlinks.sh → codesign --force --deep --sign cys-local →
+                                            #     ditto -c -k --keepParent (scripts/build-macos-signed.sh 의 비-Apple 단계와 동형).
+                                            #   이 레그를 지우지 않는 까닭: 시크릿이 생기는 날 그대로 살아나는 자리이고,
+                                            #   **크로스 빌드가 깨지지 않는지를 CI 가 계속 재 주기 때문**이다(빌드까지는 돈다).
           - platform: windows-latest
             target: x86_64-pc-windows-msvc  # Windows x64 — NSIS 자기완결(PortableGit+Python 동봉).
                                             # createUpdaterArtifacts=true(tauri.windows.conf.json) + 서명키로

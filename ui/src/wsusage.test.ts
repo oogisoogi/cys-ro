@@ -328,11 +328,12 @@ const ACCT_CODEX: AccountLike = {
   rate: [{ label: "7d", used_pct: 52, resets_at: 1786431165 }],
   updated_at: 1786062874,
 };
-// 등록만 되고 아직 한 번도 관측되지 않은 계정 — 실물에서 antigravity가 이 모양이다.
+// 등록만 되고 아직 한 번도 관측되지 않은 계정 — accounts.json adapter:"cmd" 커스텀 계정이 이 모양이다
+// (usage-noagy: agy(antigravity)는 더 이상 계정 표에 없다 — 옛 픽스처는 이 provider 중립 형태로 교체).
 const ACCT_UNOBSERVED: AccountLike = {
-  provider: "antigravity",
+  provider: "grok",
   account_id: "default",
-  label: "Antigravity (agy)",
+  label: "Grok (custom)",
   rate: [],
   updated_at: null,
 };
@@ -397,22 +398,24 @@ describe("accountRates — 페인이 없어도 계정 사용량은 있다", () =
 });
 
 // ── 죽은 창(데몬 stale 판정) — TICKET=cys-usage-stale-rate
-// ★픽스처 = 실측 agy 행(2026-09-15 08:5x `cys usage-accounts --json` · 프로세스 0)에 새 필드를 얹은 형태.
-const ACCT_AGY_DEAD: AccountLike = {
-  provider: "antigravity",
+// ★픽스처 = 실측 agy(antigravity) 행(2026-09-15 08:5x `cys usage-accounts --json` · 프로세스 0)에
+// 새 필드를 얹은 형태 — 값은 실측 그대로 두되(초록불이 거짓이 되지 않게), agy는 usage-noagy로
+// 계정 표에서 빠졌으므로 provider/label만 중립 커스텀 계정으로 바꿔 재사용한다.
+const ACCT_DEAD_WINDOW: AccountLike = {
+  provider: "grok",
   account_id: "default",
-  label: "Antigravity (agy)",
+  label: "Grok (custom)",
   rate: [
     { label: "5h", used_pct: 6.138129999999997, resets_at: 1789182252, stale: true, stale_reason: "resets_at_passed" },
     { label: "7d", used_pct: 8.881649999999997, resets_at: 1789689571, stale: true, stale_reason: "no_observation_24h" },
   ],
   updated_at: 1789172019.271695,
 };
-const AGY_NOW = 1789429295;
+const DEAD_WINDOW_NOW = 1789429295;
 
 describe("죽은 창 — 데몬 stale 판정을 행에 싣는다", () => {
   test("★데몬이 stale:true를 주면 windowStale·사유가 실린다 — 숫자(usedPct)는 버리지 않는다", () => {
-    const rows = accountRates([ACCT_AGY_DEAD], AGY_NOW);
+    const rows = accountRates([ACCT_DEAD_WINDOW], DEAD_WINDOW_NOW);
     expect(rows.map((r) => `${r.label}/${r.windowStale}/${r.windowStaleReason}`)).toEqual([
       "5h/true/resets_at_passed",
       "7d/true/no_observation_24h",
@@ -457,8 +460,8 @@ describe("죽은 창 — 데몬 stale 판정을 행에 싣는다", () => {
   });
 
   test("사유 문구 — 리셋 지남이 나이보다 먼저, 그 밖은 관측 나이", () => {
-    expect(windowStaleText("resets_at_passed", 1789172019.271695, AGY_NOW)).toBe("리셋 지남");
-    expect(windowStaleText("no_observation_24h", 1789172019.271695, AGY_NOW)).toBe("관측 71시간 전");
+    expect(windowStaleText("resets_at_passed", 1789172019.271695, DEAD_WINDOW_NOW)).toBe("리셋 지남");
+    expect(windowStaleText("no_observation_24h", 1789172019.271695, DEAD_WINDOW_NOW)).toBe("관측 71시간 전");
   });
 });
 
@@ -552,7 +555,7 @@ describe("scopedRates — 「7d·Fable」 실게이지", () => {
       ],
     };
     expect(scopedRates([bad], ANOW)).toEqual([]);
-    // scoped 자체가 없는 계정(실물의 codex·agy)도 조용히 0행이다.
+    // scoped 자체가 없는 계정(실물의 codex·커스텀 adapter 계정)도 조용히 0행이다.
     expect(scopedRates([ACCT_CODEX, ACCT_UNOBSERVED], ANOW)).toEqual([]);
   });
 

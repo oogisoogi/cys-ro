@@ -31,7 +31,7 @@ const RATE_STALE_NO_OBS_SECS: f64 = 24.0 * 3600.0;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AccountKey {
-    pub provider: String,   // "claude" | "codex" | "antigravity" | (accounts.json 선언 provider)
+    pub provider: String,   // "claude" | "codex" | (accounts.json 선언 provider)
     pub account_id: String, // claude: accountUuid · 그 외 단일 홈: "default"
 }
 
@@ -59,12 +59,12 @@ pub struct ScopedGauge {
 #[derive(Clone, Debug)]
 pub struct AccountView {
     pub key: AccountKey,
-    pub label: String,        // claude: 이메일 · codex: "OpenAI Codex" · agy: "Antigravity (agy)"
+    pub label: String,        // claude: 이메일 · codex: "OpenAI Codex"
     pub plan: Option<String>, // oauthAccount rate limit tier — 값이 있을 때만 UI 표시
     pub profiles: BTreeSet<String>, // 이 계정으로 관측된 프로필 dir들(홈 상대 표기)
     pub rate: Vec<RateWindow>,
     pub updated_at: f64, // 0.0 = 관측 전(발견만)
-    pub source: String,  // "statusline" | "rollout" | "agy-rpc" | "adapter:<p>" | "oauth" | "snapshot"(부트 복원)
+    pub source: String,  // "statusline" | "rollout" | "adapter:<p>" | "oauth" | "snapshot"(부트 복원)
     pub adapter: bool,   // false = 관측 어댑터 없음(accounts.json adapter:"none" 선언 계정)
     /// 모델 스코프 주간 게이지(위 주석) — rate 슬롯과 독립. 빈 벡터 = 관측 없음(그리지 않는다).
     pub scoped: Vec<ScopedGauge>,
@@ -168,12 +168,9 @@ fn resolve(
             None,
             Some(".codex".into()),
         )),
-        "gemini" | "agy" | "antigravity" => Some((
-            AccountKey { provider: "antigravity".into(), account_id: "default".into() },
-            "Antigravity (agy)".into(),
-            None,
-            Some(".antigravity".into()),
-        )),
+        // usage-noagy(2026-09-19 박사님 결정): agy(gemini)는 계정 사용량 표에서 뺀다 — 의미 없음.
+        // note_rate가 이 분기로 오면 None → 호출부(usage.rs update_agy_usage)의 note_rate 호출은
+        // 그대로 남아 있어도 무조건 no-op이다(HANDOFF-usage-noagy.md 결정 기록).
         _ => None,
     }
 }
@@ -305,27 +302,7 @@ pub fn seed_known(daemon: &Arc<Daemon>) {
                         scoped: Vec::new(),
                     });
             }
-            if home.join(".antigravity").is_dir() {
-                st.views
-                    .entry(AccountKey {
-                        provider: "antigravity".into(),
-                        account_id: "default".into(),
-                    })
-                    .or_insert_with(|| AccountView {
-                        key: AccountKey {
-                            provider: "antigravity".into(),
-                            account_id: "default".into(),
-                        },
-                        label: "Antigravity (agy)".into(),
-                        plan: None,
-                        profiles: BTreeSet::from([".antigravity".to_string()]),
-                        rate: Vec::new(),
-                        updated_at: 0.0,
-                        source: String::new(),
-                        adapter: true,
-                        scoped: Vec::new(),
-                    });
-            }
+            // usage-noagy(2026-09-19): antigravity(agy) 자동 시딩 제거 — 박사님 결정("의미가 없다").
         }
         // 선언 계정(~/.cys/accounts.json — pack 밖: pack 스윕/치유 사정권 회피)
         let decl = home.join(".cys/accounts.json");
@@ -373,6 +350,11 @@ pub fn seed_known(daemon: &Arc<Daemon>) {
     if let Some(rows) = rows {
         let mut st = daemon.accounts.lock().unwrap();
         for (ts, provider, account, label, win, pct, resets) in rows {
+            // usage-noagy(2026-09-19): 옛 analytics.db에 antigravity 스냅샷 행이 남아 있어도
+            // 부트 복원에서 버린다 — 코드에서 시딩을 지워도 과거 기록으로 되살아나면 의미가 없다.
+            if provider == "antigravity" {
+                continue;
+            }
             let key = AccountKey { provider, account_id: account };
             let v = st.views.entry(key.clone()).or_insert_with(|| AccountView {
                 key,
@@ -604,9 +586,10 @@ fn note_oauth(
             scoped: Vec::new(),
         });
         // scoped는 rate 승패와 무관하게 갱신한다(위 주석) — statusline이 이겨도 살아남는 축.
-        if !scoped.is_empty() {
-            v.scoped = scoped.to_vec();
-        }
+        // ★(usage-two-accounts) 비어 있어도 **덮는다**: 이 함수는 응답을 받은 프로브에서만 불리므로
+        //   빈 scoped = 「이 계정의 서버 응답에 모델 스코프 창이 없다」는 관측이다. 옛 게이지를 남기면
+        //   없는 창이 나이만 먹으며 「죽은 창」으로 그려진다 — 없다를 죽었다로 보이게 하는 것이다.
+        v.scoped = scoped.to_vec();
         if !rate.is_empty() && now >= v.updated_at {
             v.rate = rate.to_vec();
             v.updated_at = now;
@@ -665,46 +648,159 @@ async fn run_capture(program: &str, args: &[&str], stdin_data: Option<&str>) -> 
     Ok(out.stdout)
 }
 
-/// 프로필 dir → 키체인 서비스명. **순수 판정**(IO 없음) — B4(TICKET=v110-misc)의 그물이다.
+/// 기본 설정 dir(`~/.claude`)의 키체인 서비스명 — 접미 없음.
+const KEYCHAIN_SERVICE_BASE: &str = "Claude Code-credentials";
+
+/// 프로필 dir → 그 dir의 자격증명이 사는 키체인 서비스명. (TICKET=usage-two-accounts)
 ///
-/// 기본 프로필(`~/.claude`)은 이미 실측으로 검증된 접미 없는 레거시 서비스명을 그대로 쓴다
-/// (2026-08-07 오너 승인 티켓⑤ 실측 — 건드리지 않는다). 그 외 프로필은
-/// `Claude Code-credentials-<sha256(절대경로)[..8]>`(pack.rs config_dir 문서화 실측
-/// 2026-08-23 — `~/.claude`=bdf68cc2·`~/.cys/claude`=c45eaec5·`~/.claude-3`=8e88d2ce 등
-/// 7항목 대조 확정). ⚠이 공식은 Claude Code CLI의 비공개 내부 규약을 관측으로 재구성한
-/// 것이다 — 서비스명이 틀려도 `keychain_token`이 `find-generic-password` 종료코드로
-/// 정직하게 실패할 뿐(공통모드로 안 묶인다·자격증명을 잘못 읽어 섞어 쓰는 경로 없음).
-fn keychain_service_for(dir: &Path, home: &Path) -> String {
-    if dir == home.join(".claude") {
-        return "Claude Code-credentials".to_string();
-    }
+/// ★산식(실측 2026-09-19 · 이 기계의 키체인 항목 4개 전부 일치):
+///   - `~/.claude`(`CLAUDE_CONFIG_DIR` 미설정의 기본 dir) → `Claude Code-credentials`(접미 없음)
+///   - 그 밖의 dir(`CLAUDE_CONFIG_DIR=<dir>`로 띄운 프로필) → `Claude Code-credentials-<h8>`,
+///     `h8` = **sha256(dir 절대경로 문자열)** 16진 앞 8자리. 끝 슬래시 없는 경로 그대로다
+///     (`/…/.cys/claude` → a5d624bb · `/…/.cys/claude/` 는 ce6f8805로 다른 이름 — 그래서 dir을
+///     열거 결과 그대로 쓰고 손으로 이어 붙이지 않는다).
+///   근거: `security dump-keychain`의 서비스명 접미 4종(0bb9bba4·42f72ae1·8e8febd2·a5d624bb)이
+///   `~/.cys/claude-default-dept-1`·`~/.cys/claude-axdev`·`~/.claude-acct2`·`~/.cys/claude`의
+///   sha256 앞 8자리와 하나씩 정확히 맞는다. 시험 `keychain_service_names_match_measured_formula`가
+///   산식을 고정한다(실물 네 쌍은 개인 경로라 HANDOFF 표에 둔다)(Claude Code가 산식을 바꾸면 그 시험이 아니라 운영에서 「원천 소실」로 드러난다
+///   — 산식은 우리 것이 아니므로 시험은 실측을 고정할 뿐이다).
+pub fn keychain_service_for(home: &Path, dir: &Path) -> String {
     use sha2::{Digest, Sha256};
-    let digest = format!("{:x}", Sha256::digest(dir.to_string_lossy().as_bytes()));
-    format!("Claude Code-credentials-{}", &digest[..8])
+    if dir == home.join(".claude") {
+        return KEYCHAIN_SERVICE_BASE.to_string();
+    }
+    let digest = Sha256::digest(dir.to_string_lossy().as_bytes());
+    let h8: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("{KEYCHAIN_SERVICE_BASE}-{h8}")
 }
 
-/// 신원 목록(프로필 dir·uuid·email) → 프로브 대상(대표 dir 1개·uuid·email·서비스명) 목록.
-/// **순수 판정**(IO 없음) — 같은 accountUuid로 귀속되는 프로필(`.claude`·`.cys/claude-*` 등
-/// 부서 프로필 다수가 흔히 같은 계정)은 먼저 만난 dir 하나로만 추려 불필요한 반복 키체인
-/// 조회를 피한다. ★B4 회귀 핀의 실제 그물: 두 번째 이후 계정이 통째로 빠지는 형태(종전
-/// oauth_probe_once가 `~/.claude` 하나만 보던 결함)를 이 함수의 출력 길이·uuid 집합으로 잡는다.
-fn plan_oauth_probe_targets(
-    idents: &[(PathBuf, String, String)],
+/// 프로브 대상 1건 = claude 계정 1개. 같은 계정을 쓰는 프로필이 여럿이면 후보가 여럿이다.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProbeTarget {
+    pub account_id: String,
+    pub label: String,
+    /// (프로필 홈 상대 표기, 키체인 서비스명) — 앞에서부터 시도한다. 기본 dir이 늘 맨 앞이다.
+    pub candidates: Vec<(String, String)>,
+}
+
+/// 프로필 dir들 → 계정별 프로브 대상. **토큰을 꺼낼 dir과 신원을 읽는 dir이 언제나 같다**(짝 유지):
+/// 후보는 `.claude.json`에 accountUuid가 있는 dir만이고, 그 dir의 키체인 항목을 쓴다.
+///
+/// ★왜 계정마다 후보를 여럿 두는가(실측): 프로필마다 키체인 항목이 따로 있고, 안 쓰는 프로필의
+/// 항목은 갱신되지 않아 토큰이 낡는다(`~/.cys/claude-axdev` 항목 = 07-06 이후 무갱신). 한 dir만
+/// 고르면 그 dir이 낡은 쪽일 때 계정 전체가 소실된다 — 앞에서부터 시도해 처음 성공한 값을 쓴다.
+pub fn probe_targets(
+    state: &mut AccountsState,
     home: &Path,
-) -> Vec<(PathBuf, String, String, String)> {
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut out = Vec::new();
-    for (dir, uuid, email) in idents {
-        if !seen.insert(uuid.clone()) {
-            continue; // 같은 계정 재등장 — 이미 대상에 있음
+    dirs: &[PathBuf],
+) -> Vec<ProbeTarget> {
+    let default_dir = home.join(".claude");
+    let mut ordered: Vec<&PathBuf> = dirs.iter().collect();
+    // 기본 dir 먼저, 나머지는 경로순(열거 순서는 read_dir 순서라 안정적이지 않다).
+    ordered.sort_by(|a, b| (**a != default_dir).cmp(&(**b != default_dir)).then(a.cmp(b)));
+    let mut out: Vec<ProbeTarget> = Vec::new();
+    for dir in ordered {
+        let Some((uuid, email, _plan)) = claude_identity(state, dir) else { continue };
+        // 표기는 넘겨받은 `home` 기준(profile_short는 실제 홈을 다시 묻는다 — 대상과 표기의 홈이 갈린다).
+        let short = dir.strip_prefix(home).map(|r| r.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| dir.to_string_lossy().into_owned());
+        let cand = (short, keychain_service_for(home, dir));
+        match out.iter_mut().find(|t| t.account_id == uuid) {
+            Some(t) => t.candidates.push(cand),
+            None => out.push(ProbeTarget { account_id: uuid, label: email, candidates: vec![cand] }),
         }
-        let service = keychain_service_for(dir, home);
-        out.push((dir.clone(), uuid.clone(), email.clone(), service));
     }
+    out.sort_by(|a, b| a.account_id.cmp(&b.account_id));
     out
 }
 
+/// 계정 1개 프로브 — 후보 프로필을 앞에서부터 시도해 처음 성공한 응답을 그 계정에 반영한다.
+///
+/// `fetch` = 키체인 서비스명 → 응답(JSON). 운영에서는 [`live_fetch`], 시험에서는 가짜를 넣는다
+/// (키체인·네트워크 없이 「어느 계정이 불렸는가」와 「실패가 번지는가」를 재기 위해서다).
+/// 실패 사유에는 프로필 표기만 싣는다(토큰·응답 본문은 싣지 않는다).
+async fn probe_account<F, Fut>(daemon: &Arc<Daemon>, t: &ProbeTarget, fetch: &F) -> Result<(), String>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    let mut errs: Vec<String> = Vec::new();
+    for (profile, service) in &t.candidates {
+        match fetch(service.clone()).await {
+            Ok(v) => {
+                let now = crate::state::now_epoch();
+                let (rate, scoped) = parse_oauth_usage(&v, now);
+                if rate.is_empty() && scoped.is_empty() {
+                    errs.push(format!("{profile}: 응답에 한도 정보가 없다(형태 변경?)"));
+                    continue;
+                }
+                note_oauth(daemon, &t.account_id, &t.label, &rate, &scoped, now);
+                return Ok(());
+            }
+            Err(e) => errs.push(format!("{profile}: {e}")),
+        }
+    }
+    Err(errs.join(" · "))
+}
+
+/// 계정별 백오프 상태 — (연속 실패 수, 다음 시도 가능 시각). 계정끼리 공유하지 않는다.
+type ProbeBackoff = HashMap<String, (u32, f64)>;
+
+/// 프로브 한 바퀴 — 대상 계정 각각을 **따로** 조회한다. 한 계정의 실패는 그 계정의 백오프만 늘린다.
+///
+/// ★로그는 계정의 상태가 **바뀔 때만** 찍는다(종전 규율 그대로) — 계정을 알아보는 꼬리표는 앞 8자
+/// uuid다(이메일은 로그에 남기지 않는다: 로그는 우리가 지우지 않는 곳이다).
+async fn probe_round<F, Fut>(
+    daemon: &Arc<Daemon>,
+    targets: &[ProbeTarget],
+    backoff: &mut ProbeBackoff,
+    now: f64,
+    fetch: &F,
+) where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    // 사라진 계정의 백오프는 버린다(현재 대상 집합 기준 — 다음에 돌아오면 새로 시작).
+    backoff.retain(|k, _| targets.iter().any(|t| &t.account_id == k));
+    for t in targets {
+        let (fails, due) = backoff.get(&t.account_id).copied().unwrap_or((0, 0.0));
+        if due > now {
+            continue;
+        }
+        let tag: String = t.account_id.chars().take(8).collect();
+        match probe_account(daemon, t, fetch).await {
+            Ok(()) => {
+                if fails > 0 {
+                    eprintln!("[cysd] oauth-usage: 원천 복구 [{tag}] (연속 실패 {fails}회 후)");
+                }
+                backoff.insert(t.account_id.clone(), (0, 0.0));
+            }
+            Err(e) => {
+                if fails == 0 {
+                    eprintln!("{}", oauth_lost_line(&format!("[{tag}] {e}")));
+                }
+                let fails = fails.saturating_add(1);
+                let shift = fails.min(OAUTH_PROBE_MAX_BACKOFF_SHIFT);
+                // 대기 = 주기 × 2^shift. 틱은 「주기 + 조회 소요」마다 오므로 반 주기를 빼 둔다 —
+                // 안 빼면 소요만큼 늦은 틱이 기한을 넘기지 못해 한 틱을 더 건너뛴다(2배가 3배가 된다).
+                let iv = OAUTH_PROBE_INTERVAL_SECS as f64;
+                let wait = iv * (1u64 << shift) as f64 - iv / 2.0;
+                backoff.insert(t.account_id.clone(), (fails, now + wait));
+            }
+        }
+    }
+}
+
+/// 운영 대상 — 지금 디스크의 프로필 열거(seed_known과 같은 정본 `enumerate_profile_dirs`).
+fn current_targets(daemon: &Arc<Daemon>) -> Result<Vec<ProbeTarget>, String> {
+    let home = dirs::home_dir().ok_or_else(|| "홈 dir 불명".to_string())?;
+    let dirs = cys::profile_gate::enumerate_profile_dirs(&home);
+    let mut st = daemon.accounts.lock().unwrap();
+    Ok(probe_targets(&mut st, &home, &dirs))
+}
+
 /// 키체인에서 Claude Code OAuth 액세스 토큰. **반환값을 로그에 찍지 마라.**
+/// 서비스명은 [`keychain_service_for`]가 정한다(프로필마다 항목이 따로 있다).
 async fn keychain_token(service: &str) -> Result<String, String> {
     let raw = run_capture("security", &["find-generic-password", "-s", service, "-w"], None).await?;
     let v: Value = serde_json::from_slice(&raw).map_err(|_| "키체인 항목이 JSON이 아니다".to_string())?;
@@ -713,6 +809,14 @@ async fn keychain_token(service: &str) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| "키체인 항목에 accessToken이 없다".to_string())
+}
+
+/// 운영 fetch — 키체인 항목 → 토큰 → usage API. 토큰은 이 함수 밖으로 나가지 않는다.
+async fn live_fetch(service: String) -> Result<Value, String> {
+    let token = keychain_token(&service).await?;
+    let v = fetch_oauth_usage(&token).await;
+    drop(token); // 필요 이상으로 들고 있지 않는다
+    v
 }
 
 /// usage API 1회 조회. 토큰은 argv가 아니라 **stdin(curl --config -)** 으로만 건넨다.
@@ -742,63 +846,6 @@ async fn fetch_oauth_usage(token: &str) -> Result<Value, String> {
     serde_json::from_str(body).map_err(|_| "응답이 JSON이 아니다".to_string())
 }
 
-/// 프로브 1회 — 프로필마다 토큰 → 조회 → 파싱 → 계정 반영(다중 계정 순회).
-///
-/// ★B4(TICKET=v110-misc) 수리: 종전엔 `~/.claude`(기본 프로필) 하나만 봤다 — seed_known·
-/// note_rate가 이미 쓰는 `cys::profile_gate::enumerate_profile_dirs`를 여기도 쓴다(정본
-/// 재사용 — 별도 열거 규칙 금지). 프로필/키체인 항목 부재는 fail-soft로 다음 프로필로
-/// 넘어간다 — **전부** 실패했을 때만 Err(기존 백오프 계약 유지 — 한 계정만 실패해도 전체를
-/// 재시도 지연시키지 않는다). 읽기만(자격증명 복사·쓰기 0) · 토큰은 로그·반환값에 없다.
-async fn oauth_probe_once(daemon: &Arc<Daemon>) -> Result<(), String> {
-    let home = dirs::home_dir().ok_or_else(|| "홈 dir 불명".to_string())?;
-    let now = crate::state::now_epoch();
-    let dirs_found = cys::profile_gate::enumerate_profile_dirs(&home);
-    let idents: Vec<(PathBuf, String, String)> = {
-        let mut st = daemon.accounts.lock().unwrap();
-        dirs_found
-            .into_iter()
-            .filter_map(|dir| {
-                claude_identity(&mut st, &dir).map(|(uuid, email, _plan)| (dir, uuid, email))
-            })
-            .collect()
-    };
-    let targets = plan_oauth_probe_targets(&idents, &home);
-    if targets.is_empty() {
-        return Err("프로필 신원 0건(.claude.json에 oauthAccount 없음)".into());
-    }
-    let mut any_ok = false;
-    let mut last_err = String::new();
-    for (_dir, uuid, email, service) in targets {
-        let token = match keychain_token(&service).await {
-            Ok(t) => t,
-            Err(e) => {
-                last_err = format!("{uuid}: {e}");
-                continue;
-            }
-        };
-        let v = match fetch_oauth_usage(&token).await {
-            Ok(v) => v,
-            Err(e) => {
-                last_err = format!("{uuid}: {e}");
-                continue;
-            }
-        };
-        drop(token); // 필요 이상으로 들고 있지 않는다
-        let (rate, scoped) = parse_oauth_usage(&v, now);
-        if rate.is_empty() && scoped.is_empty() {
-            last_err = format!("{uuid}: 응답에 한도 정보가 없다(형태 변경?)");
-            continue;
-        }
-        note_oauth(daemon, &uuid, &email, &rate, &scoped, now);
-        any_ok = true;
-    }
-    if any_ok {
-        Ok(())
-    } else {
-        Err(last_err)
-    }
-}
-
 /// 실패 1줄의 정본 문구 — 상주 프로브와 강제발화가 **같은 문장**을 쓴다.
 /// (두 곳이 따로 문장을 지으면, 강제발화로 확인한 실패 표현이 운영 로그의 표현과 달라져
 ///  「내가 본 것」과 「로그에 남는 것」이 어긋난다.)
@@ -811,94 +858,85 @@ fn oauth_lost_line(e: &str) -> String {
 /// ★왜 필요한가: 이 경로에서 깨질 수 있는 두 가지(키체인 접근·외부 HTTPS)는 **실행 컨텍스트에
 /// 좌우된다** — 사람이 로그인한 셸에서 된다는 것은 launchd 아래 cysd에서 된다는 증거가 아니다.
 /// 데몬 본체를 띄우지 않고 **같은 코드**로 그 컨텍스트를 찍어 볼 수 있어야 검증이 성립한다.
+/// (usage-two-accounts) 계정마다 한 덩어리로 찍는다 — 꼬리표 = uuid 앞 8자 + 성공한 프로필.
 /// ⛔출력에는 값(%·리셋 시각)만 싣는다. 토큰은 어떤 경로로도 나가지 않는다.
-/// 반환 = 프로세스 종료코드(0 정상 · 1 원천 소실).
-///
-/// ★B4(TICKET=v110-misc): oauth_probe_once와 같은 다중 프로필 순회로 갱신 — 기본 프로필만
-/// 찍으면 강제발화 진단이 계정2 소실을 재현하지 못해 이 진단 자체가 무의미해진다.
+/// 반환 = 프로세스 종료코드(0 = 모든 계정 정상 · 1 = 한 계정이라도 원천 소실 또는 대상 0).
 pub async fn oauth_probe_report() -> i32 {
     let now = crate::state::now_epoch();
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => {
-            eprintln!("{}", oauth_lost_line("홈 dir 불명"));
-            return 1;
+    let targets = match dirs::home_dir() {
+        Some(home) => {
+            let dirs = cys::profile_gate::enumerate_profile_dirs(&home);
+            probe_targets(&mut AccountsState::default(), &home, &dirs)
         }
+        None => Vec::new(),
     };
-    let dirs_found = cys::profile_gate::enumerate_profile_dirs(&home);
-    let mut idents: Vec<(PathBuf, String, String)> = Vec::new();
-    {
-        let mut st = AccountsState::default();
-        for dir in dirs_found {
-            if let Some((uuid, email, _plan)) = claude_identity(&mut st, &dir) {
-                idents.push((dir, uuid, email));
-            }
-        }
-    }
-    let targets = plan_oauth_probe_targets(&idents, &home);
     if targets.is_empty() {
-        eprintln!("{}", oauth_lost_line("프로필 신원 0건(.claude.json에 oauthAccount 없음)"));
+        eprintln!("{}", oauth_lost_line("신원 있는 claude 프로필이 없다"));
         return 1;
     }
-    let mut any_ok = false;
-    for (_dir, uuid, _email, service) in targets {
-        let r = async {
-            let token = keychain_token(&service).await?;
-            let v = fetch_oauth_usage(&token).await?;
-            Ok::<_, String>(parse_oauth_usage(&v, now))
+    let mut rc = 0;
+    for t in &targets {
+        let tag: String = t.account_id.chars().take(8).collect();
+        let mut errs: Vec<String> = Vec::new();
+        let mut done = false;
+        for (profile, service) in &t.candidates {
+            match live_fetch(service.clone()).await {
+                Ok(v) => {
+                    let (rate, scoped) = parse_oauth_usage(&v, now);
+                    if rate.is_empty() && scoped.is_empty() {
+                        errs.push(format!("{profile}: 응답에 한도 정보가 없다(형태 변경?)"));
+                        continue;
+                    }
+                    for w in &rate {
+                        println!(
+                            "[cysd] oauth-usage: [{tag} {profile}] {} {:.0}% resets_at={:?}",
+                            w.label, w.used_pct, w.resets_at
+                        );
+                    }
+                    for g in &scoped {
+                        println!(
+                            "[cysd] oauth-usage: [{tag} {profile}] 7d·{} {:.0}% resets_at={:?}",
+                            g.model, g.used_pct, g.resets_at
+                        );
+                    }
+                    done = true;
+                    break;
+                }
+                Err(e) => errs.push(format!("{profile}: {e}")),
+            }
         }
-        .await;
-        match r {
-            Err(e) => eprintln!("{}", oauth_lost_line(&format!("{uuid}: {e}"))),
-            Ok((rate, scoped)) if rate.is_empty() && scoped.is_empty() => {
-                eprintln!("{}", oauth_lost_line(&format!("{uuid}: 응답에 한도 정보가 없다(형태 변경?)")));
-            }
-            Ok((rate, scoped)) => {
-                for w in &rate {
-                    println!(
-                        "[cysd] oauth-usage: {uuid} {} {:.0}% resets_at={:?}",
-                        w.label, w.used_pct, w.resets_at
-                    );
-                }
-                for g in &scoped {
-                    println!(
-                        "[cysd] oauth-usage: {uuid} 7d·{} {:.0}% resets_at={:?}",
-                        g.model, g.used_pct, g.resets_at
-                    );
-                }
-                any_ok = true;
-            }
+        if !done {
+            eprintln!("{}", oauth_lost_line(&format!("[{tag}] {}", errs.join(" · "))));
+            rc = 1;
         }
     }
-    i32::from(!any_ok)
+    rc
 }
 
-/// claude 계정 OAuth usage 프로브 상주 — 주기 조회·실패 시 백오프.
+/// claude 계정 OAuth usage 프로브 상주 — 계정마다 주기 조회·계정마다 따로 백오프.
 ///
 /// 실패는 **경보가 아니라 「원천 소실」 1줄**이다(master 규율): 이 값이 없어도 statusline 원천이
 /// 그대로 살아 있고, 프로브 유래 행은 나이가 자라 자연히 stale로 강등된다. 시끄럽게 굴 이유가 없다.
-/// ★로그는 상태가 **바뀔 때만** 찍는다 — 매 주기 찍으면 24분마다 같은 줄이 쌓여 로그가 신호를 잃는다.
+/// ★대상은 매 바퀴 다시 연다 — 부트 뒤 새 프로필이 생기거나 로그인이 바뀌어도 따라간다.
 pub fn spawn_claude_oauth_probe(daemon: Arc<Daemon>) {
     tokio::spawn(async move {
-        let mut fails: u32 = 0;
+        let mut backoff: ProbeBackoff = HashMap::new();
+        let mut lost_targets = false;
         loop {
-            match oauth_probe_once(&daemon).await {
-                Ok(()) => {
-                    if fails > 0 {
-                        eprintln!("[cysd] oauth-usage: 원천 복구 (연속 실패 {fails}회 후)");
-                    }
-                    fails = 0;
+            match current_targets(&daemon) {
+                Ok(targets) if !targets.is_empty() => {
+                    lost_targets = false;
+                    let now = crate::state::now_epoch();
+                    probe_round(&daemon, &targets, &mut backoff, now, &live_fetch).await;
                 }
-                Err(e) => {
-                    if fails == 0 {
-                        eprintln!("{}", oauth_lost_line(&e));
+                Ok(_) | Err(_) => {
+                    if !lost_targets {
+                        eprintln!("{}", oauth_lost_line("신원 있는 claude 프로필이 없다"));
                     }
-                    fails = fails.saturating_add(1);
+                    lost_targets = true;
                 }
             }
-            let shift = fails.min(OAUTH_PROBE_MAX_BACKOFF_SHIFT);
-            let secs = OAUTH_PROBE_INTERVAL_SECS.saturating_mul(1u64 << shift);
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(OAUTH_PROBE_INTERVAL_SECS)).await;
         }
     });
 }
@@ -1109,59 +1147,6 @@ mod tests {
         );
     }
 
-    /// ★B4(TICKET=v110-misc) 회귀 핀 — 서비스명 판정. 기본 프로필(`~/.claude`)은 종전 검증된
-    /// 접미 없는 이름을 유지하고, 그 외 프로필은 서로 다른(결정론) 접미 해시를 받는다. 이게
-    /// 깨지면(예: 전부 같은 이름으로 되돌아가면) 여러 계정이 같은 키체인 항목을 가리켜 조용히
-    /// 뒤섞이거나 두 번째 계정의 조회가 아예 무의미해진다.
-    #[test]
-    fn keychain_service_for_default_vs_other_profile() {
-        let home = Path::new("/Users/fixture-home");
-        assert_eq!(
-            keychain_service_for(&home.join(".claude"), home),
-            "Claude Code-credentials",
-            "기본 프로필은 실측 검증된 레거시 이름을 유지해야 한다"
-        );
-        let acct2 = keychain_service_for(&home.join(".claude-acct2"), home);
-        assert_ne!(acct2, "Claude Code-credentials", "비기본 프로필이 기본 서비스명으로 회귀");
-        assert!(acct2.starts_with("Claude Code-credentials-"), "비기본 프로필은 해시 접미가 붙어야 함");
-        assert_eq!(
-            acct2.len(),
-            "Claude Code-credentials-".len() + 8,
-            "접미는 sha256 앞 8 hex여야 함"
-        );
-        // 결정론 — 같은 입력 → 같은 서비스명(재시도·로그가 안정적이어야 함).
-        assert_eq!(acct2, keychain_service_for(&home.join(".claude-acct2"), home));
-        // 서로 다른 프로필은 서로 다른 서비스명 — 계정 뒤섞임 방지의 핵심 불변식.
-        let dept = keychain_service_for(&home.join(".cys/claude"), home);
-        assert_ne!(acct2, dept);
-    }
-
-    /// ★B4(TICKET=v110-misc) 회귀 핀 — 대상 산출. 저장 픽스처 2계정(+같은 계정의 중복
-    /// 프로필 1개)으로 ⑴같은 계정은 1건으로 접히고 ⑵두 계정 모두 목록에 남으며 ⑶서로 다른
-    /// 서비스명을 받는지 확인한다. 종전 결함(기본 프로필 1개만 보던 oauth_probe_once)이면
-    /// 애초에 이 함수가 idents 2건을 못 받는다 — 이 시험은 그 앞단(다중 프로필 신원 수집)이
-    /// 아니라 뒷단(계정별 대표 선정)이 옳게 접히는지를 겨눈다.
-    #[test]
-    fn plan_oauth_probe_targets_dedupes_same_account_and_keeps_second_account() {
-        let home = Path::new("/Users/fixture-home");
-        let idents = vec![
-            (home.join(".claude"), "uuid-A".to_string(), "a@x.com".to_string()),
-            (home.join(".cys/claude-axdev"), "uuid-A".to_string(), "a@x.com".to_string()),
-            (home.join(".claude-acct2"), "uuid-B".to_string(), "b@x.com".to_string()),
-        ];
-        let targets = plan_oauth_probe_targets(&idents, home);
-        assert_eq!(targets.len(), 2, "같은 계정(uuid-A) 중복 프로필은 1건으로 접혀야 한다");
-        let uuids: Vec<&str> = targets.iter().map(|t| t.1.as_str()).collect();
-        assert_eq!(
-            uuids,
-            vec!["uuid-A", "uuid-B"],
-            "★B4 실사고 재현: 두 번째 계정이 통째로 빠지면 이 assert가 잡는다"
-        );
-        assert_ne!(targets[0].3, targets[1].3, "서로 다른 계정은 서로 다른 키체인 서비스명이어야 함");
-        assert_eq!(targets[0].3, "Claude Code-credentials");
-        assert!(targets[1].3.starts_with("Claude Code-credentials-"));
-    }
-
     #[test]
     fn identity_parse_and_junk_dir_skip() {
         let dir = tmp("ident");
@@ -1281,19 +1266,318 @@ mod tests {
         assert_eq!(r4[0].resets_at, None);
     }
 
+    // ── usage-two-accounts(TICKET=usage-two-accounts 2026-09-19): 계정별 OAuth 프로브 ──
+
+    /// 실물 응답 2계정(2026-09-19 07:1x · 자기 세션 자격증명으로 읽기만 · 바이트 그대로 저장).
+    /// ★식별 정보 없음을 확인하고 넣었다(uuid·메일·조직 0 — 한도 수치와 표시 문구뿐).
+    fn oauth_fixture_account(which: char) -> Value {
+        let raw = match which {
+            'a' => include_str!("testdata/oauth_usage_account_a.json"),
+            _ => include_str!("testdata/oauth_usage_account_b.json"),
+        };
+        serde_json::from_str(raw).unwrap()
+    }
+
+    #[test]
+    fn oauth_usage_parses_both_real_accounts() {
+        // 두 계정 모두 서버가 준 창은 5h·7d·7d·Fable 셋뿐이다(opus·sonnet 창은 null).
+        let (ra, sa) = parse_oauth_usage(&oauth_fixture_account('a'), 1000.0);
+        let (rb, sb) = parse_oauth_usage(&oauth_fixture_account('b'), 1000.0);
+        let labels = |r: &[RateWindow]| r.iter().map(|w| w.label.clone()).collect::<Vec<_>>();
+        assert_eq!(labels(&ra), ["5h", "7d"]);
+        assert_eq!(labels(&rb), ["5h", "7d"]);
+        assert_eq!((ra[0].used_pct, ra[1].used_pct), (2.0, 15.0));
+        assert_eq!((rb[0].used_pct, rb[1].used_pct), (3.0, 43.0));
+        assert_eq!(sa.len(), 1);
+        assert_eq!(sb.len(), 1);
+        assert_eq!((sa[0].model.as_str(), sa[0].used_pct), ("Fable", 21.0));
+        assert_eq!((sb[0].model.as_str(), sb[0].used_pct), ("Fable", 40.0));
+        // 2026-09-24T08:00:00.235872Z → 초 단위 절사
+        assert_eq!(sb[0].resets_at, Some(1790236800.0));
+    }
+
+    /// 키체인 서비스명 산식 고정. 기대값은 셸 `printf '%s' <경로> | shasum -a 256`으로 **독립 계산**했다
+    /// (같은 코드로 기대값을 만들면 산식이 틀려도 초록이다). 이 기계의 실물 항목 4개와의 대응은
+    /// docs/HANDOFF-usage-two-accounts.md 표가 기록한다(개인 경로라 시험에는 중립 경로를 쓴다).
+    #[test]
+    fn keychain_service_names_match_measured_formula() {
+        let home = Path::new("/srv/u");
+        let svc = |rel: &str| keychain_service_for(home, &home.join(rel));
+        assert_eq!(svc(".claude"), "Claude Code-credentials", "기본 dir = 접미 없음");
+        assert_eq!(svc(".cys/claude"), "Claude Code-credentials-8b5dd325");
+        assert_eq!(svc(".claude-acct2"), "Claude Code-credentials-ae069e2c");
+        // 끝 슬래시가 붙으면 다른 이름이다 — 경로를 손으로 이어 붙이면 이 함정에 빠진다.
+        assert_eq!(
+            keychain_service_for(home, Path::new("/srv/u/.cys/claude/")),
+            "Claude Code-credentials-af3852db"
+        );
+    }
+
+    fn write_ident(dir: &Path, uuid: &str, email: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(".claude.json"),
+            format!(r#"{{"oauthAccount":{{"accountUuid":"{uuid}","emailAddress":"{email}"}}}}"#),
+        )
+        .unwrap();
+    }
+
+    /// 계정 A(`~/.claude` + `~/.cys/claude-axdev`) · 계정 B(`~/.claude-acct2` + `~/.cys/claude`) —
+    /// 이 기계의 실제 배치와 같은 모양. 반환 = (임시 홈, 프로필 열거).
+    fn two_account_home(tag: &str) -> (PathBuf, Vec<PathBuf>) {
+        let home = tmp(tag);
+        write_ident(&home.join(".claude"), "uuid-a", "a@x.y");
+        write_ident(&home.join(".cys/claude-axdev"), "uuid-a", "a@x.y");
+        write_ident(&home.join(".claude-acct2"), "uuid-b", "b@x.y");
+        write_ident(&home.join(".cys/claude"), "uuid-b", "b@x.y");
+        std::fs::create_dir_all(home.join(".claude-worktrees")).unwrap(); // 신원 없는 잡동사니
+        let dirs = cys::profile_gate::enumerate_profile_dirs(&home);
+        (home, dirs)
+    }
+
+    #[test]
+    fn probe_targets_one_per_account_default_first() {
+        let (home, dirs) = two_account_home("probe-targets");
+        let t = probe_targets(&mut AccountsState::default(), &home, &dirs);
+        assert_eq!(t.len(), 2, "계정 둘 = 대상 둘(신원 없는 dir은 대상 아님)");
+        assert_eq!(t[0].account_id, "uuid-a");
+        assert_eq!(t[0].candidates[0], (".claude".to_string(), "Claude Code-credentials".to_string()));
+        assert_eq!(t[0].candidates[1].0, ".cys/claude-axdev");
+        assert_eq!(t[1].account_id, "uuid-b");
+        assert_eq!(t[1].label, "b@x.y");
+        let b: Vec<&str> = t[1].candidates.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(b, [".claude-acct2", ".cys/claude"]);
+        assert_eq!(t[1].candidates[1].1, keychain_service_for(&home, &home.join(".cys/claude")));
+    }
+
+    fn view_of(d: &Arc<Daemon>, uuid: &str) -> Option<AccountView> {
+        let st = d.accounts.lock().unwrap();
+        st.views.get(&AccountKey { provider: "claude".into(), account_id: uuid.into() }).cloned()
+    }
+
+    /// ★뮤턴트 가드: 비기본 계정(B)도 프로브된다 — 대상 열거를 기본 dir만으로 좁히면(종전 동작)
+    /// B의 rate·scoped가 비어 이 시험이 적색이 된다.
+    #[tokio::test]
+    async fn probe_round_fills_both_accounts() {
+        let (home, dirs) = two_account_home("probe-both");
+        let d = test_daemon();
+        let targets = probe_targets(&mut d.accounts.lock().unwrap(), &home, &dirs);
+        let svc_b = keychain_service_for(&home, &home.join(".claude-acct2"));
+        let fetch = |s: String| {
+            let v = if s == svc_b { oauth_fixture_account('b') } else { oauth_fixture_account('a') };
+            async move { Ok::<Value, String>(v) }
+        };
+        let mut bo = ProbeBackoff::new();
+        probe_round(&d, &targets, &mut bo, 1000.0, &fetch).await;
+        let a = view_of(&d, "uuid-a").expect("계정 A");
+        let b = view_of(&d, "uuid-b").expect("계정 B가 프로브돼야 한다");
+        assert_eq!(a.rate.iter().map(|w| w.used_pct).collect::<Vec<_>>(), [2.0, 15.0]);
+        assert_eq!(b.rate.iter().map(|w| w.used_pct).collect::<Vec<_>>(), [3.0, 43.0]);
+        assert_eq!(b.scoped.len(), 1, "계정 B의 7d·Fable 게이지");
+        assert_eq!(b.scoped[0].used_pct, 40.0);
+        assert_eq!(b.source, "oauth");
+    }
+
+    /// 한 계정의 실패는 다른 계정에 번지지 않는다 — 실패한 계정만 백오프하고 값은 건드리지 않는다.
+    /// 또 같은 계정 안에서 앞 후보가 낡았으면(401) 다음 후보로 넘어간다.
+    #[tokio::test]
+    async fn probe_round_isolates_account_failure() {
+        let (home, dirs) = two_account_home("probe-isolate");
+        let d = test_daemon();
+        let targets = probe_targets(&mut d.accounts.lock().unwrap(), &home, &dirs);
+        let svc_b1 = keychain_service_for(&home, &home.join(".claude-acct2"));
+        let svc_b2 = keychain_service_for(&home, &home.join(".cys/claude"));
+        let calls = std::sync::Mutex::new(Vec::<String>::new());
+        // A 계정 후보 전부 실패 · B는 첫 후보 401 → 둘째 후보 성공
+        let fetch = |s: String| {
+            calls.lock().unwrap().push(s.clone());
+            let r = if s == svc_b2 {
+                Ok(oauth_fixture_account('b'))
+            } else if s == svc_b1 {
+                Err("HTTP 401".to_string())
+            } else {
+                Err("security: 종료코드 Some(44)".to_string())
+            };
+            async move { r }
+        };
+        let mut bo = ProbeBackoff::new();
+        probe_round(&d, &targets, &mut bo, 1000.0, &fetch).await;
+        let b = view_of(&d, "uuid-b").expect("B는 A의 실패와 무관하게 채워진다");
+        assert_eq!(b.rate.len(), 2);
+        assert_eq!(b.scoped.len(), 1);
+        assert!(view_of(&d, "uuid-a").map_or(true, |a| a.rate.is_empty() && a.scoped.is_empty()));
+        assert_eq!(bo.get("uuid-a").map(|x| x.0), Some(1), "A만 실패 1회");
+        assert_eq!(bo.get("uuid-b").map(|x| x.0), Some(0), "B는 성공 — 백오프 없음");
+        assert_eq!(calls.lock().unwrap().iter().filter(|s| **s == svc_b1 || **s == svc_b2).count(), 2);
+        // 다음 틱(180s 뒤): A는 백오프 중이라 건너뛰고 B만 다시 부른다.
+        calls.lock().unwrap().clear();
+        probe_round(&d, &targets, &mut bo, 1000.0 + 180.0, &fetch).await;
+        let c = calls.lock().unwrap().clone();
+        assert!(!c.is_empty() && c.iter().all(|s| *s == svc_b1 || *s == svc_b2), "백오프 중인 A는 부르지 않는다: {c:?}");
+        // 그다음 틱(360s): A의 1회 실패 백오프(2배 주기)가 끝나 다시 부른다 — 영구 정지가 아니다.
+        calls.lock().unwrap().clear();
+        probe_round(&d, &targets, &mut bo, 1000.0 + 360.0, &fetch).await;
+        assert!(calls.lock().unwrap().iter().any(|s| s == "Claude Code-credentials"), "A 재시도");
+        assert_eq!(bo.get("uuid-a").map(|x| x.0), Some(2));
+    }
+
+    /// 429(또는 어떤 실패)는 값을 건드리지 않는다 — 직전 rate·scoped·관측 시각이 그대로 남고
+    /// (죽은 값 강등은 읽기 시점 판정 rate_window_stale_reason 몫), 그 계정만 백오프한다.
+    #[tokio::test]
+    async fn probe_failure_keeps_previous_values_and_backs_off() {
+        let (home, dirs) = two_account_home("probe-429");
+        let d = test_daemon();
+        let targets = probe_targets(&mut d.accounts.lock().unwrap(), &home, &dirs);
+        let (rate, scoped) = parse_oauth_usage(&oauth_fixture_account('a'), 1000.0);
+        note_oauth(&d, "uuid-a", "a@x.y", &rate, &scoped, 1000.0);
+        let before = view_of(&d, "uuid-a").unwrap();
+        let fetch = |_s: String| async move { Err::<Value, String>("HTTP 429".to_string()) };
+        let mut bo = ProbeBackoff::new();
+        probe_round(&d, &targets, &mut bo, 1180.0, &fetch).await;
+        let after = view_of(&d, "uuid-a").unwrap();
+        assert_eq!(after.updated_at, before.updated_at, "관측 시각 유지(신선한 척도, 지우기도 없음)");
+        assert_eq!(
+            after.rate.iter().map(|w| w.used_pct).collect::<Vec<_>>(),
+            before.rate.iter().map(|w| w.used_pct).collect::<Vec<_>>()
+        );
+        assert_eq!(after.scoped.len(), 1, "Fable 게이지도 유지");
+        assert_eq!(after.source, "oauth");
+        // 백오프: 1회 실패 → 180×2^1 − 90 = 270초 뒤까지 대기.
+        assert_eq!(bo.get("uuid-a"), Some(&(1, 1180.0 + 270.0)));
+    }
+
+    /// 응답에 모델 스코프 창이 없으면 옛 게이지를 지운다(없다 ≠ 죽었다 — 행을 그리지 않게).
+    #[test]
+    fn note_oauth_clears_scoped_when_server_has_none() {
+        let d = test_daemon();
+        let (rate, scoped) = parse_oauth_usage(&oauth_fixture_account('b'), 1000.0);
+        note_oauth(&d, "uuid-b", "b@x.y", &rate, &scoped, 1000.0);
+        assert_eq!(view_of(&d, "uuid-b").unwrap().scoped.len(), 1);
+        let mut v = oauth_fixture_account('b');
+        let lim = v["limits"].as_array_mut().unwrap();
+        lim.retain(|l| l["kind"] != "weekly_scoped");
+        let (rate2, scoped2) = parse_oauth_usage(&v, 1200.0);
+        assert!(scoped2.is_empty());
+        note_oauth(&d, "uuid-b", "b@x.y", &rate2, &scoped2, 1200.0);
+        assert!(view_of(&d, "uuid-b").unwrap().scoped.is_empty(), "없는 창의 옛 게이지가 남으면 안 된다");
+    }
+
     #[test]
     fn resolve_agents() {
         let mut st = AccountsState::default();
-        // codex/agy는 세션 파일 불요·단일 계정
+        // codex는 세션 파일 불요·단일 계정
         let (k, l, _, _) = resolve(&mut st, "codex", "").unwrap();
         assert_eq!((k.provider.as_str(), k.account_id.as_str()), ("codex", "default"));
         assert_eq!(l, "OpenAI Codex");
-        let (k, ..) = resolve(&mut st, "gemini", "").unwrap();
-        assert_eq!(k.provider, "antigravity");
+        // usage-noagy(2026-09-19): gemini/agy/antigravity는 더 이상 계정으로 귀속되지 않는다
+        // — 박사님 결정("토큰 사용량 표시 기능에서 agy는 삭제하자. 의미가 없다").
+        for agent in ["gemini", "agy", "antigravity"] {
+            assert!(
+                resolve(&mut st, agent, "").is_none(),
+                "{agent} 가 여전히 계정으로 귀속된다 — usage-noagy 회귀"
+            );
+        }
         // 미지 agent → None
         assert!(resolve(&mut st, "mystery", "").is_none());
         // claude인데 신원 해석 불가 → None(스킵 — 유령 계정 금지)
         assert!(resolve(&mut st, "claude", "/nonexist/projects/x/s.jsonl").is_none());
+    }
+
+    // ── usage-noagy(TICKET=usage-noagy 2026-09-19): agy(antigravity) 계정 표 제외 회귀 ──
+
+    /// 테스트 전용 격리 데몬 — schedule.rs test_daemon과 같은 패턴(고유 임시 소켓 dir).
+    fn test_daemon() -> Arc<Daemon> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "cys-acct-daemon-{}-{}-{}",
+            std::process::id(),
+            crate::state::now_epoch().to_bits(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&d);
+        Daemon::new(d.join("cysd.sock"))
+    }
+
+    /// HOME 환경변수를 건드리는 테스트끼리 직렬화 — handlers.rs ACL_ENV_LOCK과 같은 이유
+    /// (병렬 실행 시 서로 다른 테스트가 같은 프로세스 전역 HOME을 밟는다).
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// ★뮤턴트 1: `~/.antigravity` 디렉터리가 있어도 seed_known은 antigravity 계정을 만들지 않는다
+    /// — seed_known의 antigravity 시딩 블록을 되살리면 이 시험이 적색이 된다.
+    #[test]
+    fn seed_known_ignores_antigravity_dir() {
+        let _g = HOME_ENV_LOCK.lock().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let fake_home = tmp("seed-antigravity-dir");
+        std::fs::create_dir_all(fake_home.join(".antigravity")).unwrap();
+        std::env::set_var("HOME", &fake_home);
+
+        let daemon = test_daemon();
+        seed_known(&daemon);
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let st = daemon.accounts.lock().unwrap();
+        assert!(
+            !st.views.keys().any(|k| k.provider == "antigravity"),
+            "~/.antigravity 존재만으로 계정이 등록됐다 — usage-noagy 회귀: {:?}",
+            st.views.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// 옛 analytics.db(코드 개정 전에 기록된)에 antigravity 스냅샷 행이 남아 있어도,
+    /// 부트 복원(seed_known)이 그 행으로 계정을 되살리지 않는다 — 클로드 계정 등 다른 provider
+    /// 행은 그대로 복원돼야 한다(필터가 antigravity만 정확히 겨눈다는 것을 함께 확인).
+    #[test]
+    fn seed_known_drops_antigravity_snapshot_rows() {
+        let _g = HOME_ENV_LOCK.lock().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let fake_home = tmp("seed-antigravity-snapshot");
+        std::env::set_var("HOME", &fake_home);
+
+        let daemon = test_daemon();
+        let now = crate::state::now_epoch();
+        {
+            let guard = daemon.analytics.lock().unwrap();
+            let conn = guard.as_ref().expect("test_daemon 은 analytics.db 를 연다");
+            crate::analytics::record_rate_snapshot(
+                conn, now, "antigravity", "default", "Antigravity (agy)", "5h", 42.0, None,
+            );
+            crate::analytics::record_rate_snapshot(
+                conn, now, "claude", "snap-u1", "a@b.c", "5h", 10.0, None,
+            );
+        }
+        seed_known(&daemon);
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let st = daemon.accounts.lock().unwrap();
+        assert!(
+            !st.views.keys().any(|k| k.provider == "antigravity"),
+            "옛 analytics.db 의 antigravity 스냅샷 행이 부트 복원에서 되살아났다"
+        );
+        assert!(
+            st.views.keys().any(|k| k.provider == "claude" && k.account_id == "snap-u1"),
+            "필터가 antigravity 아닌 행까지 지웠다 — claude 스냅샷 복원 실패"
+        );
+    }
+
+    /// note_rate("gemini", …)는 resolve()가 None을 내므로 호출이 남아 있어도 계정 표에 반영 0이다
+    /// — usage.rs의 update_agy_usage 호출부는 그대로 두되 no-op임을 여기서 못박는다
+    /// (HANDOFF-usage-noagy.md "호출 유지·no-op" 결정의 회귀 시험).
+    #[test]
+    fn note_rate_gemini_is_noop() {
+        let daemon = test_daemon();
+        let rate = vec![RateWindow { label: "5h".into(), used_pct: 50.0, resets_at: None }];
+        note_rate(&daemon, "gemini", "", &rate, "agy-rpc", crate::state::now_epoch());
+        let st = daemon.accounts.lock().unwrap();
+        assert!(st.views.is_empty(), "gemini note_rate 가 계정을 만들었다 — usage-noagy 회귀");
     }
 
     // ── rate 창 stale 판정 (TICKET=cys-usage-stale-rate) ──

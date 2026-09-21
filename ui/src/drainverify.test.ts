@@ -4,7 +4,13 @@
 // 거동(plain drain 폴백)은 양쪽 동일하고 분류·문구만 다르다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { classifyDrainVerifyFallback, drainVerifyFallbackToast, drainVerifyNotice } from "./drainverify";
+import {
+  classifyDrainVerifyFallback,
+  drainVerifyFallbackToast,
+  drainVerifyNotice,
+  mergeRetry,
+  restoringRetryKeys,
+} from "./drainverify";
 
 describe("classifyDrainVerifyFallback — drain_verify 폴백 사유 분기", () => {
   it("구버전 미지원(unsupported 접두) → 'unsupported'", () => {
@@ -114,5 +120,32 @@ describe("manualRestartAllDaemons — 저장 미확인 확인 창이 없다", ()
     // ★[V111-F5] 진입 확인 모달도 없앴다(master 판정 2026-09-21) — 이 흐름에는 **어떤 확인 모달도 없다**.
     //   ↻ 한 번이 곧 드레인→재시작이고, 사용자는 중간에 아무것도 고르지 않는다.
     expect(body).not.toContain("confirmModal");
+  });
+});
+
+describe("v113-restore B3 — 복원 중 건너뛴 자리만 재저장", () => {
+  const n = (dept: string, surface: string, outcome: string) => ({ role: "worker", dept, surface, outcome });
+  it("건너뛴 자리만 키로 뽑는다 · dept 없는 구 코어 결과는 뺀다", () => {
+    const keys = restoringRetryKeys([
+      n("main", "surface:1", "saved"),
+      n("main", "surface:2", "skipped_restoring"),
+      { role: "cso", surface: "surface:3", outcome: "skipped_restoring" },
+    ]);
+    expect(keys).toEqual(["main/surface:2"]);
+  });
+  it("재시도 결과가 그 자리만 덮고 요약·all_saved 를 다시 센다", () => {
+    const first = {
+      all_saved: false,
+      total: 3,
+      summary: { saved: 1, timeout: 0, skipped_restoring: 2 },
+      nodes: [n("main", "surface:1", "saved"), n("main", "surface:2", "skipped_restoring"), n("hr", "surface:2", "skipped_restoring")],
+    };
+    const merged = mergeRetry(first, { nodes: [n("main", "surface:2", "saved"), n("hr", "surface:2", "saved")] });
+    expect(merged.summary.saved).toBe(3);
+    expect(merged.summary.skipped_restoring).toBe(0);
+    expect(merged.all_saved).toBe(true);
+    const partial = mergeRetry(first, { nodes: [n("main", "surface:2", "saved")] });
+    expect(partial.all_saved).toBe(false);
+    expect(partial.nodes[2].outcome).toBe("skipped_restoring"); // 다른 부서의 같은 번호는 섞이지 않는다
   });
 });

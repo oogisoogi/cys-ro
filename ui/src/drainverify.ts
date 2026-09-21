@@ -77,3 +77,28 @@ export function drainVerifyNotice(r: DrainVerifyReportLite): { title: string; bo
       `${waited}${seats}`,
   };
 }
+
+// ★v113-restore B3: 갱신 직후 ↻ 는 복원이 아직 도는 자리를 「복원 중 — 건너뜀」으로 돌려준다(893 VM · DRAIN 1/3).
+// 사용자가 다시 누르지 않아도 되게, 그 자리만 잠시 뒤 한 번 더 저장시킨다 — 이미 저장한 자리엔 지시를 또 넣지 않는다.
+// 키 = 코어 `cys drain --verify --only` 형식(`<dept>/<surface>`). dept 가 없으면(구 코어) 재시도 대상에서 뺀다.
+export type DrainRetryNode = DrainVerifyNodeLite & { dept?: string };
+
+export function restoringRetryKeys(nodes: DrainRetryNode[]): string[] {
+  return nodes
+    .filter((n) => n.outcome === "skipped_restoring" && n.dept)
+    .map((n) => `${n.dept}/${n.surface}`);
+}
+
+// 재시도 결과를 첫 결과에 겹친다 — 같은 자리(키 일치)는 재시도 쪽이 이기고, 요약·all_saved 는 합친 자리로 다시 센다.
+export function mergeRetry<R extends { all_saved: boolean; total: number; summary: Record<string, number>; nodes: DrainRetryNode[] }>(
+  first: R,
+  retry: { nodes: DrainRetryNode[] },
+): R {
+  const key = (n: DrainRetryNode) => `${n.dept ?? ""}/${n.surface}`;
+  const redo = new Map(retry.nodes.map((n) => [key(n), n]));
+  const nodes = first.nodes.map((n) => redo.get(key(n)) ?? n);
+  const summary: Record<string, number> = {};
+  for (const k of Object.keys(first.summary)) summary[k] = 0;
+  for (const n of nodes) summary[n.outcome] = (summary[n.outcome] ?? 0) + 1;
+  return { ...first, nodes, summary, all_saved: nodes.length > 0 && nodes.every((n) => n.outcome === "saved") };
+}

@@ -170,6 +170,11 @@ enum Command {
         /// verify 모드 노드별 검증 대기(초) — 전역 하드캡=timeout+마진. plain drain은 무영향.
         #[arg(long, default_value_t = 20)]
         timeout: u64,
+        /// verify 모드 대상을 이 자리들로만 좁힌다(반복 가능 · 형식 `<dept>/<surface:N>` = 결과 JSON 의
+        /// `dept`·`surface` 그대로). 앱 ↻ 가 「복원 중 — 건너뜀」 자리만 다시 저장시킬 때 쓴다(이미 저장한
+        /// 자리에 지시를 두 번 넣지 않게). 비우면 전 자리.
+        #[arg(long = "only")]
+        only: Vec<String>,
     },
     /// 재시작 한 번에 끝내기 — 앱 [재시작] 단추(rotate_daemon)와 같은 5단:
     /// 저장 검증(drain --verify) → 데몬 교체 → 복귀 표식 → 새 팩 반영(init-pack) → 조직 복원(restore).
@@ -3167,8 +3172,8 @@ fn run(command: Command) -> i32 {
         Command::Resume => request("system.resume", json!({}))
             .map(|_| println!("RESUMED — 동결된 큐·스케줄 재개")),
 
-        Command::Drain { verify, timeout } if verify => {
-            return run_drain_verify(timeout);
+        Command::Drain { verify, timeout, only } if verify => {
+            return run_drain_verify(timeout, &only);
         }
 
         Command::Rotate { timeout, skip_drain } => {
@@ -14428,7 +14433,18 @@ fn drain_verify_targets() -> Vec<VerifyTarget> {
 
 /// `cys drain --verify` 진입점 — 결정론 JSON을 stdout에, exit code로 전원 저장 여부를 반환한다
 /// (전원 saved=0, 아니면 1). 0-노드는 우아한 no-op(exit 0)[A3-F5].
-fn run_drain_verify(timeout: u64) -> i32 {
+/// `--only` 필터(순수) — 비었으면 전 자리. 키 = `<dept>/<surface_ref>`(결과 JSON 의 `dept`·`surface`).
+fn drain_targets_only(targets: Vec<VerifyTarget>, only: &[String]) -> Vec<VerifyTarget> {
+    if only.is_empty() {
+        return targets;
+    }
+    targets
+        .into_iter()
+        .filter(|t| only.iter().any(|k| *k == format!("{}/{}", t.dept, t.surface_ref)))
+        .collect()
+}
+
+fn run_drain_verify(timeout: u64, only: &[String]) -> i32 {
     // 백스톱 하드 워치독 — 메인 로직이 어떤 이유로든 멈춰도 프로세스가 영구 정지하지 않게(plain drain 12s 패턴).
     // fan-out은 timeout+5s 안에 반환하므로 정상 경로에선 절대 발화하지 않는다.
     // ★[V111-F2] fan-out 이 timeout×FACTOR+5s 안에 반환하므로 백스톱은 그보다 커야 한다(구 timeout+10 은
@@ -14442,7 +14458,7 @@ fn run_drain_verify(timeout: u64) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let targets = drain_verify_targets();
+    let targets = drain_targets_only(drain_verify_targets(), only);
     let io: std::sync::Arc<dyn VerifyIo + Send + Sync> = std::sync::Arc::new(RealVerifyIo);
     let report = drain_verify_fanout(io, targets, std::time::Duration::from_secs(timeout), now);
     let all_saved = report["all_saved"].as_bool() == Some(true);
@@ -25403,19 +25419,40 @@ mod tests {
     fn drain_flag_parsing_defaults_to_plain() {
         use clap::Parser;
         match Cli::parse_from(["cys", "drain"]).command {
-            Command::Drain { verify, timeout } => {
+            Command::Drain { verify, timeout, .. } => {
                 assert!(!verify, "무인자 drain은 plain(verify=false)이어야 함 — 회귀");
                 assert_eq!(timeout, 20);
             }
             _ => panic!("drain이 Drain으로 파싱되지 않음"),
         }
         match Cli::parse_from(["cys", "drain", "--verify", "--timeout", "7"]).command {
-            Command::Drain { verify, timeout } => {
+            Command::Drain { verify, timeout, .. } => {
                 assert!(verify);
                 assert_eq!(timeout, 7);
             }
             _ => panic!(),
         }
+    }
+
+    /// ★v113-restore B3: `--only <dept>/<surface:N>` 은 그 자리만 남긴다 — 부서가 달라 번호가 같은 자리는
+    /// 섞이지 않는다 · 비우면 전 자리(무회귀).
+    #[test]
+    fn v113_drain_only_filters_by_dept_and_surface() {
+        use clap::Parser;
+        match Cli::parse_from(["cys", "drain", "--verify", "--only", "main/surface:3", "--only", "sales/surface:3"]).command {
+            Command::Drain { only, .. } => assert_eq!(only, vec!["main/surface:3", "sales/surface:3"]),
+            _ => panic!(),
+        }
+        let p = std::path::PathBuf::from("/nonexistent");
+        let mut other = mk_target(3, p.clone(), None);
+        other.dept = "hr".into();
+        let all = vec![mk_target(3, p.clone(), None), mk_target(4, p.clone(), None), other];
+        let got: Vec<String> = drain_targets_only(all, &["main/surface:3".to_string()])
+            .into_iter()
+            .map(|t| format!("{}/{}", t.dept, t.surface_ref))
+            .collect();
+        assert_eq!(got, vec!["main/surface:3"]);
+        assert_eq!(drain_targets_only(vec![mk_target(9, p, None)], &[]).len(), 1, "빈 필터 = 전 자리");
     }
 
     /// 마커 포맷 — HTML 주석형·체크박스 문법 금지·denylist 토큰 회피.

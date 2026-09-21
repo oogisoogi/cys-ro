@@ -13,7 +13,13 @@ import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
 import { DEFAULT_BG, readableForeground } from "./theme";
 import { reorderWorkspace, reorderGroup } from "./reorder";
-import { classifyDrainVerifyFallback, drainVerifyFallbackToast, drainVerifyNotice } from "./drainverify";
+import {
+  classifyDrainVerifyFallback,
+  drainVerifyFallbackToast,
+  drainVerifyNotice,
+  mergeRetry,
+  restoringRetryKeys,
+} from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
 import { exitedSweepTargets } from "./exitedsweep";
@@ -5888,6 +5894,7 @@ async function manualRotateSkewed(appVer: string, heldMain: boolean, heldDepts: 
 // ── drain --verify 결과 타입(cys 코어 결정론 JSON) ──
 type DrainVerifyNode = {
   role: string;
+  dept?: string;
   department?: string;
   surface: string;
   outcome: string; // saved | timeout | delivery_failed | unverifiable | skipped_restoring
@@ -5947,6 +5954,9 @@ function restartResultToast(failedDepts: string[], deptRestoreFailed: boolean) {
 //    상한 안에서 자동 재조회·연장하고, 미확인 자리는 **재시작 뒤 알림 1줄**로만 알린다(묻지 않는다).
 // cys 코어가 --verify를 미지원하면(구버전) plain drain 폴백(skipDrain=false)+경고. '무손실' 표현 금지 —
 // 대화 원문은 트랜스크립트 복원, 이 기능은 증류 체크포인트(SESSION_STATE·TODO) 최신성만 보증한다.
+// 복원 중 자리 재저장 대기 — 복원 가드는 이번 회차 복원 기록(verify)이 찍히면 풀린다(갱신 직후 ≈40s 창).
+const DRAIN_RESTORING_RETRY_MS = 30_000;
+
 async function manualRestartAllDaemons() {
   // ★[F3]+A6: purge·완전 초기화 진행 중이거나 **초기화 완료 래치**가 걸렸으면 재시작을 막는다
   // (완료 후 재시작은 pack 없는 유령 데몬을 세워 "설치 직후" 계약을 무음 침식한다).
@@ -5977,6 +5987,20 @@ async function manualRestartAllDaemons() {
       dismissToast("restart-daemon");
       restartResultToast(failedDepts, deptRestoreFailed);
       return;
+    }
+    // 1-b) ★v113-restore B3: 갱신 직후엔 복원이 아직 도는 자리가 「복원 중 — 건너뜀」으로 온다. 사용자가 다시
+    //   누르지 않도록 **그 자리만** 잠시 뒤 한 번 더 저장시킨다(이미 저장한 자리엔 지시 0 · 묻는 단계 0).
+    //   재시도에서도 남으면 종전대로 재시작 뒤 알림 1줄이 정직하게 알린다.
+    const retryKeys = verify ? restoringRetryKeys(verify.nodes) : [];
+    if (verify && retryKeys.length) {
+      stickyToast("restart-daemon", "feed", "↻ 저장 검증", `복원이 아직 끝나지 않은 자리 ${retryKeys.length}곳 — 끝나길 잠깐 기다렸다가 저장합니다…`);
+      await new Promise((r) => setTimeout(r, DRAIN_RESTORING_RETRY_MS));
+      try {
+        const again = (await invoke("drain_verify", { timeout: 20, only: retryKeys })) as DrainVerifyReport;
+        verify = mergeRetry(verify, again);
+      } catch {
+        /* 재시도 실패 — 첫 결과 그대로(알림이 건너뜀을 정직하게 적는다) */
+      }
     }
     // 2) ★[V111-F4] 부분 실패여도 **묻지 않는다**. 코어가 상한(max_wait_secs) 안에서 자동으로 재조회·
     //    연장했고, 그 뒤엔 사람이 고를 것이 없다("그래도 재시작"에 아니오를 고르면 재시작만 안 될 뿐

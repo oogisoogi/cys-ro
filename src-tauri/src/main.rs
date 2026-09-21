@@ -6398,7 +6398,7 @@ fn classify_drain_verify_failure(exit_code: Option<i32>, stderr: &str) -> String
 /// 양쪽 모두 plain drain 폴백(거동 동일). ★재시작하지 않는다(저장 검증만) — 재시작은 UI가 결과를 보고
 /// rotate_daemon(skip_drain=true)로 진행.
 #[tauri::command]
-async fn drain_verify(timeout: u64) -> Result<Value, String> {
+async fn drain_verify(timeout: u64, only: Option<Vec<String>>) -> Result<Value, String> {
     let out = tokio::task::spawn_blocking(move || {
         let mut cmd =
             std::process::Command::new(resolve_sidecar(if cfg!(windows) { "cys.exe" } else { "cys" }));
@@ -6406,6 +6406,10 @@ async fn drain_verify(timeout: u64) -> Result<Value, String> {
             .arg("--verify")
             .arg("--timeout")
             .arg(timeout.to_string());
+        // ★v113-restore B3: 「복원 중 — 건너뜀」 자리만 다시 저장시킬 때(`<dept>/<surface>` 키).
+        for k in only.unwrap_or_default() {
+            cmd.arg("--only").arg(k);
+        }
         no_console(&mut cmd);
         cmd.output()
     })

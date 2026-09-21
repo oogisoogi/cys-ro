@@ -3422,6 +3422,17 @@ async fn run_sidecar_restore_report(
         let mut cmd = std::process::Command::new(resolve_sidecar(if cfg!(windows) { "cys.exe" } else { "cys" }));
         cmd.arg("restore").arg("--include-master");
         cmd.env("CYS_NO_AUTOSTART", "1"); // 죽은 소켓에 빈 데몬 autostart 금지(사이드카 CLI 가드)
+        // ★v114-dept-fd(할 일 15): 앱 자식 = pane 밖 = external — 부서 팩 ACL 이 워커 좌석 주입을 막는다
+        //   (↻ 토스트 「부서 복원 실패」). 그 데몬의 operator.token 을 넘겨 주입이 오너 등급으로 판정되게 한다
+        //   (cys inject_text 가 owner_token 으로 싣는다 · 데몬은 pane 무귀속일 때만 오너로 본다).
+        let target = socket.clone().unwrap_or_else(cys::socket_path);
+        if let Some(tok) = read_operator_token_for(&target) {
+            cmd.env("CYS_OWNER_TOKEN", tok);
+        }
+        // ★v114-dept-fd(할 일 16): 부서 좌석은 부서 폴더에서 — 저장 cwd 가 홈·미지정이면 restore 가 이 값으로 채운다.
+        if let Some(dc) = socket.as_deref().and_then(cys::dept_registry_cwd) {
+            cmd.arg("--cwd").arg(dc);
+        }
         if let Some(sock) = socket {
             cmd.env(cys::ENV_SOCKET, sock);
         }
@@ -6898,6 +6909,21 @@ mod tests {
         assert!(body.contains("if cfg!(target_os = \"macos\")"), "대행은 맥 한정(윈 = 본부 Job 귀속 금지)");
         assert!(rpc < direct, "직접 실행이 대행보다 먼저");
         assert!(prod.contains("cmd.env(\"CYS_DEPT_SPAWN_PATH\", format!(\"direct:{why}\"));"), "경로 표식 누락");
+    }
+
+    /// ★v114-dept-fd(할 일 15·16) 배선 핀: 사이드카 restore 가 그 데몬의 operator.token 을 넘기고(오너 등급)
+    /// 부서 소켓이면 레지스트리 부서 폴더를 --cwd 로 넘긴다.
+    #[test]
+    fn v114_sidecar_restore_passes_owner_token_and_dept_cwd() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("async fn run_sidecar_restore_report(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        let tok = body.find("cmd.env(\"CYS_OWNER_TOKEN\", tok);").expect("토큰 미전달 — 부서 워커 좌석 주입이 external 로 막힌다");
+        assert!(body.contains("read_operator_token_for(&target)"), "대상 데몬의 토큰이 아님");
+        let cwd = body.find("cys::dept_registry_cwd").expect("부서 폴더 미전달");
+        let out = body.find(".output()").unwrap();
+        assert!(tok < out && cwd < out, "실행 뒤에 설정");
     }
 
     // ── TICKET=v113-restore 복원 정직 알림 ──

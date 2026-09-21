@@ -652,6 +652,14 @@ print(e.get(f) or '')
 PY
 }
 
+# ★v114-dept-fd(할 일 16): 부서장 빈 셸 cwd = CYS_DEPT_CWD(명시) > 레지스트리 cwd(실재 폴더) > $HOME.
+#   종전 allocate 는 레지스트리에 부서 폴더가 있어도 $HOME 으로 띄웠다(09-22 VM 행정부 master 좌석 cwd = 홈 폴더).
+dept_seat_cwd(){
+  if [ -n "${CYS_DEPT_CWD:-}" ]; then printf '%s\n' "$CYS_DEPT_CWD"; return 0; fi
+  local rc; rc="$(reg_get_field "$1" cwd 2>/dev/null | tr -d '\r')"
+  if [ -n "$rc" ] && [ -d "$rc" ]; then printf '%s\n' "$rc"; else printf '%s\n' "$HOME"; fi
+}
+
 # 레지스트리 필드 1개 기록(flock RMW·원자 교체 — reg_set_meta 와 동일 규약, 임의 필드용).
 reg_set_field(){ reg_init; python3 - "$REG" "$1" "$2" "$3" <<'PY'
 import json,sys,os
@@ -1371,8 +1379,8 @@ PY
       echo "[cys-dept] $name CYS_DEPT_NO_MASTER=1 — 셸 미생성(빈 데몬)" >&2
     elif dept_has_master "$sock"; then
       echo "[cys-dept] $name 이미 master surface 존재 — 셸 생성 생략(멱등)" >&2
-    elif CYS_SOCKET="$sock" "$CYS" new-surface --socket "$sock" --role master --cwd "${CYS_DEPT_CWD:-$HOME}" >/dev/null 2>&1; then
-      echo "[cys-dept] $name role=master 빈 셸 생성 완료 — 사용자가 직접 claude 연결 (cwd=${CYS_DEPT_CWD:-$HOME})" >&2
+    elif _seatcwd="$(dept_seat_cwd "$name")" && CYS_SOCKET="$sock" "$CYS" new-surface --socket "$sock" --role master --cwd "$_seatcwd" >/dev/null 2>&1; then
+      echo "[cys-dept] $name role=master 빈 셸 생성 완료 — 사용자가 직접 claude 연결 (cwd=$_seatcwd)" >&2
     else
       echo "[cys-dept] WARN: $name 셸 생성 실패 — read-screen 점검(데몬·격리는 정상)" >&2
     fi

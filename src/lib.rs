@@ -2462,6 +2462,55 @@ pub fn dept_socket_path(name: &str) -> PathBuf {
     }
 }
 
+/// ★v114-dept-fd(할 일 16): 부서 소켓 → 레지스트리(depts.json)의 부서 작업 폴더(순수 판정부).
+/// 항목의 `socket` 이 같거나(없으면 이름 규약 `dept_socket_path(name)`) 그 항목의 `cwd` 가 **실재하는
+/// 폴더**일 때만 돌려준다. 좌석 cwd 를 지정하지 않으면 데몬이 홈으로 띄우던 자리(state.rs)에 쓰인다.
+pub fn dept_registry_cwd_in(reg: &serde_json::Value, sock: &Path, is_dir: &dyn Fn(&str) -> bool) -> Option<String> {
+    let depts = reg["depts"].as_object()?;
+    for (name, meta) in depts {
+        let s = meta["socket"].as_str().map(PathBuf::from).unwrap_or_else(|| dept_socket_path(name));
+        if s != sock {
+            continue;
+        }
+        let cwd = meta["cwd"].as_str()?.trim();
+        return (!cwd.is_empty() && is_dir(cwd)).then(|| cwd.to_string());
+    }
+    None
+}
+
+#[cfg(test)]
+mod dept_registry_cwd_tests {
+    use super::*;
+
+    /// ★v114-dept-fd(할 일 16): 소켓이 같은 항목의 cwd 만 · 실재 폴더만 · 소켓 칸이 없으면 이름 규약으로.
+    #[test]
+    fn v114_dept_registry_cwd_matches_socket_and_requires_dir() {
+        let exists = |p: &str| p.starts_with("/ok");
+        let reg = serde_json::json!({"depts": {
+            "dept-1": {"socket": "/s/one.sock", "cwd": "/ok/행정부"},
+            "dept-2": {"socket": "/s/two.sock", "cwd": "/gone/x"},
+            "dept-3": {"cwd": "/ok/by-name"},
+            "dept-4": {"socket": "/s/four.sock"}
+        }});
+        let f = |s: &str| dept_registry_cwd_in(&reg, Path::new(s), &exists);
+        assert_eq!(f("/s/one.sock").as_deref(), Some("/ok/행정부"), "부서 폴더를 못 찾음");
+        assert_eq!(f("/s/two.sock"), None, "없는 폴더를 좌석 cwd 로(스폰이 깨진다)");
+        assert_eq!(f("/s/four.sock"), None, "cwd 칸 없는데 값");
+        assert_eq!(f("/s/nope.sock"), None, "남의 부서 폴더를 줌");
+        let by_name = dept_socket_path("dept-3");
+        assert_eq!(dept_registry_cwd_in(&reg, &by_name, &exists).as_deref(), Some("/ok/by-name"), "소켓 칸 없는 항목의 이름 규약 미적용");
+    }
+}
+
+/// `dept_registry_cwd_in` 의 실파일판 — `CYS_DEPTS_JSON` ‖ `~/.cys/depts.json`.
+pub fn dept_registry_cwd(sock: &Path) -> Option<String> {
+    let reg = std::env::var("CYS_DEPTS_JSON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".cys/depts.json"));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(reg).ok()?).ok()?;
+    dept_registry_cwd_in(&v, sock, &|p| Path::new(p).is_dir())
+}
+
 /// 이 소켓/파이프 경로가 부서(dept) 데몬의 것인가 — 부서 규약 `cys-dept-<name>`(dept_socket_path와 정합).
 /// 채널은 메인 cysd 단독 소유(DESIGN §2.5)이므로 부서 데몬의 브리지 스폰을 구조적으로 거부하는 데 쓴다.
 /// 판별: 경로 컴포넌트(unix 부모 디렉토리 `cys-dept-<name>` / windows 파이프명 `cys-dept-<name>`) 중

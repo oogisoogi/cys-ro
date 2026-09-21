@@ -1894,6 +1894,25 @@ fn send_guard_wait_secs() -> u64 {
 /// ★W2 ack 검증과의 결합: 큐 전환은 '배달 예약'이므로 ack(awakened_at 래치)가 늦어질 수 있다.
 ///   호출부(launch-agent)는 미확인을 **치명으로 올리지 않고** `directive_verified=false` 로
 ///   상태화하므로(B14), 이 전환이 새 실패를 만들지 않는다. 중복 주입 0 은 위 '1회' 규칙이 보장.
+/// ★v114-dept-fd(할 일 15): 앱이 사이드카로 부른 `cys restore` 에 그 데몬의 operator.token 을
+/// `CYS_OWNER_TOKEN` 으로 넘긴다 — 주입 요청이 `owner_token` 을 실어 **오너 등급**(GUI 와 같은 등급)으로
+/// 판정받게. 종전엔 앱 자식이라 pane 밖 = `external` 로 판정돼 부서 팩 ACL
+/// `{"from":"external","to":"worker*","allow":false}` 에 막혔다(09-22 VM ↻ 토스트 「부서 복원 실패 1」).
+/// 데몬은 토큰 일치 ∧ pane 무귀속일 때만 오너로 본다(handlers caller_is_owner) — 좌석 안 프로세스는
+/// 이 env 를 가져도 오너가 되지 않는다.
+const ENV_OWNER_TOKEN: &str = "CYS_OWNER_TOKEN";
+
+fn with_owner_token_from(mut params: Value, token: Option<&str>) -> Value {
+    if let Some(t) = token.map(str::trim).filter(|t| !t.is_empty()) {
+        params["owner_token"] = json!(t);
+    }
+    params
+}
+
+fn with_owner_token(params: Value) -> Value {
+    with_owner_token_from(params, std::env::var(ENV_OWNER_TOKEN).ok().as_deref())
+}
+
 fn inject_text(sid: u64, text: &str) -> Result<(), String> {
     // ★U-14 관문 가드 ①(붙여넣기 직전). 이 한 줄이 `inject_text` 를 부르는 모든 경로를 덮는다.
     gate_guard_check(sid, "디렉티브 주입")?;
@@ -1903,7 +1922,7 @@ fn inject_text(sid: u64, text: &str) -> Result<(), String> {
     // 차단하던 경로(human is typing 무한)를 끊는다. ACL은 데몬에서 그대로 집행된다.
     match request(
         "surface.send_text",
-        json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true}),
+        with_owner_token(json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true})),
     ) {
         Ok(_) => {}
         Err(e) if is_typing_guard_err(&e) => {
@@ -1919,8 +1938,8 @@ fn inject_text(sid: u64, text: &str) -> Result<(), String> {
             //   보낸다(`cys send --queued` 가 원문을 보내는 것과 동일).
             request(
                 "surface.send_text",
-                json!({"surface_id": sid, "text": text, "queued": true,
-                       "from": "inject(typing_guard fallback)"}),
+                with_owner_token(json!({"surface_id": sid, "text": text, "queued": true,
+                       "from": "inject(typing_guard fallback)"})),
             )?;
             return Ok(()); // 큐 배달이 CR 을 포함한다 — 별도 Return 금지(이중 제출 방지)
         }
@@ -1936,7 +1955,7 @@ fn inject_text(sid: u64, text: &str) -> Result<(), String> {
     gate_guard_check(sid, "제출 Return")?;
     match request(
         "surface.send_key",
-        json!({"surface_id": sid, "key": "Return", "authoritative": true}),
+        with_owner_token(json!({"surface_id": sid, "key": "Return", "authoritative": true})),
     ) {
         Ok(_) => Ok(()),
         Err(e) if is_typing_guard_err(&e) => {
@@ -1948,7 +1967,7 @@ fn inject_text(sid: u64, text: &str) -> Result<(), String> {
             );
             request(
                 "surface.send_key",
-                json!({"surface_id": sid, "key": "Return", "queued": true}),
+                with_owner_token(json!({"surface_id": sid, "key": "Return", "queued": true})),
             )?;
             Ok(())
         }
@@ -14456,8 +14475,12 @@ fn rotate_depts(exe: &std::path::Path) -> (String, bool) {
         let rotated = status_via_file_capped(rot, cap);
         let restored = if rotated == Some(true) {
             let mut res = cys::hidden_command(exe);
-            res.args(["restore", "--include-master"])
-                .env(cys::ENV_SOCKET, sock)
+            res.args(["restore", "--include-master"]);
+            // ★v114-dept-fd(할 일 16): 부서 좌석은 부서 폴더에서(저장 cwd 가 홈·미지정일 때만 채움).
+            if let Some(dc) = cys::dept_registry_cwd(sock) {
+                res.arg("--cwd").arg(dc);
+            }
+            res.env(cys::ENV_SOCKET, sock)
                 .env(cys::ENV_NO_AUTOSTART, cys::NO_AUTOSTART_ON);
             status_via_file_capped(res, cap.saturating_sub(start.elapsed()).max(std::time::Duration::from_secs(1)))
         } else {
@@ -25827,6 +25850,26 @@ mod tests {
         let a = prod.find("fn run_drain_verify(").unwrap();
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
         assert!(body.contains("drain_targets_only(drain_verify_targets(), only)"), "--only 가 검증 경로에 미배선");
+    }
+
+    /// ★v114-dept-fd(할 일 15): 앱이 넘긴 CYS_OWNER_TOKEN 이 있으면 주입 요청 3종(send_text 직접·큐 폴백·
+    /// 제출 Return·큐 Return)이 owner_token 을 싣는다 — 없거나 빈 값이면 요청은 종전과 바이트 동일.
+    #[test]
+    fn v114_inject_carries_owner_token_only_when_given() {
+        let base = json!({"surface_id": 3, "text": "x"});
+        assert_eq!(with_owner_token_from(base.clone(), None), base, "토큰 없는데 요청이 바뀜");
+        assert_eq!(with_owner_token_from(base.clone(), Some("  ")), base, "빈 토큰을 실음");
+        let got = with_owner_token_from(base.clone(), Some("abc123"));
+        assert_eq!(got["owner_token"], json!("abc123"), "토큰을 싣지 않음 — 부서 워커 좌석 주입이 external 로 막힌다");
+        assert_eq!(got["surface_id"], json!(3));
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn inject_text(sid: u64, text: &str)").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert_eq!(body.matches("with_owner_token(json!(").count(), 4, "inject_text 의 주입 요청 4곳 중 토큰 누락");
+        let r = prod.find("fn rotate_depts(").unwrap();
+        let rb = &prod[r..r + prod[r..].find("\n}\n").unwrap()];
+        assert!(rb.contains("cys::dept_registry_cwd(sock)"), "rotate ⑥ 부서 복원에 부서 폴더 미전달");
     }
 
     /// ★v114-dept-fd 결함 2: `--hq-only` 는 본부 자리만 남기고, `rotate --skip-depts` 가 그것을 넘긴다

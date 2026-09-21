@@ -645,7 +645,9 @@ verify_lane_account_seed(){
 # owner-보고가 N배 중복 실행되는 자원 낭비·노이즈 차단.
 seed_schedule(){
   local pk="$1"; mkdir -p "$pk"
-  printf '{\n  "_doc": "부서 데몬 schedule — owner 진행보고는 최상위만. cys-dept가 빈 jobs로 시드(중복 실행 방지).",\n  "jobs": []\n}\n' > "$pk/schedule.json"
+  # ★v113 A3(ISSUES B9): 좌석 컨텍스트 정지선 중계 — 데몬 context.threshold 는 발행만 되고 소비자가 없었다.
+  #   2분마다 이 레인 좌석 CTX(데몬 관측값)를 읽어 임계를 넘은 좌석마다 1회 부서 CSO 에 [ctx-threshold] 큐 통지.
+  printf '{\n  "_doc": "부서 데몬 schedule — owner 진행보고는 최상위만(cys-dept 시드). ctx-relay = 좌석 컨텍스트 정지선 중계(v113 A3).",\n  "jobs": [\n    {"id": "ctx-relay-tick", "every_minutes": 2, "action": "command", "if_absent": "skip", "command": "pk=\\"${CYS_PACK_DIR:-$HOME/.cys/pack}\\"; [ -f \\"$pk/bin/javis_ctx_relay.py\\" ] || exit 0; python3 \\"$pk/bin/javis_ctx_relay.py\\" tick"}\n  ]\n}\n' > "$pk/schedule.json"
 }
 
 # 부서 데몬은 첫 기동 시 pack install(수백 파일)로 listening까지 지연될 수 있어 폴링 간격을 둔다(최대 ~12s).

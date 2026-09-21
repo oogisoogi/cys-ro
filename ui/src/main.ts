@@ -7646,7 +7646,14 @@ async function start() {
   });
 
   await listen("restore-progress", (e) => {
-    const p = (e.payload ?? {}) as { phase?: string; hq_ok?: boolean; ok?: number; fail?: number; detail?: string };
+    const p = (e.payload ?? {}) as {
+      phase?: string;
+      hq_ok?: boolean;
+      hq_note?: string | null;
+      ok?: number;
+      fail?: number;
+      detail?: string;
+    };
     // ★P1-3: 방금 조직을 지운 사용자에게 "직원 복귀 중"은 정반대 신호다. 리셋 진행/완료
     // 상태에서는 복원 토스트를 띄우지 않는다(복원 자체는 백엔드 판단이므로 표시만 억제).
     if (factoryResetting || resetCompleted) return;
@@ -7657,7 +7664,9 @@ async function start() {
       const ok = p.ok ?? 0;
       const fail = p.fail ?? 0;
       // 결함1: 부서가 있어도 본부(HQ) 복원 실패가 묻히지 않게 hq_ok===false를 health로 승격.
-      if (p.hq_ok === false) toast("health", "⚠ 본부 복원 실패 포함", `본부 노드 복원 실패 · 부서 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
+      // ★v113-restore: 본부 쪽은 실제 사정(실패·관문 대기·실행 불가)을 백엔드가 hq_note 로 준다.
+      if (p.hq_ok === false)
+        toast("health", "⚠ 본부 복원 확인 필요", `${p.hq_note ?? "본부 복원이 끝나지 않았습니다."} (부서 성공 ${ok} · 실패 ${fail})`);
       else if (fail > 0) toast("health", "⚠ 직원 복귀 일부 실패", `부서 복원 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
       else toast("watchdog", "✅ 직원 복귀 완료", `노드 세션 복원 완료 (부서 ${ok}).`);
       // ★(v112-restore ①) 카드는 앱 시작 직후 뜨고 복원 주입은 그 뒤 끝난다 — 미제출 실측 자리는
@@ -7686,7 +7695,7 @@ async function start() {
       void refreshPaneTitles();
     } else if (p.phase === "error") {
       dismissToast("restore");
-      toast("health", "복원 실패", p.detail ?? "노드 복원 실행에 실패했습니다.");
+      toast("health", "⚠ 본부 복원 확인 필요", p.detail || "노드 복원 실행에 실패했습니다.");
     }
   });
 

@@ -3410,6 +3410,14 @@ fn maybe_apply_pending_update(app: &AppHandle) {
 /// 대상(CYS_SOCKET), None이면 기본(본부) 소켓. CYS_NO_AUTOSTART=1로 죽은 소켓에 빈 cysd가
 /// autostart되는 것을 막는다(살아있는 대상에만 호출하므로 평시 무영향인 심층방어). 반환=성공 여부.
 async fn run_sidecar_restore(socket: Option<std::path::PathBuf>) -> bool {
+    run_sidecar_restore_report(socket).await.0
+}
+
+/// 사이드카 `cys restore` 의 성공 여부 + 요약 줄(`restore 완료: 재기동 N · 실패 N · 관문 보류 N`)의 수.
+/// 요약이 없으면(데몬 불통·실행 불가) `None`. TICKET=v113-restore 복원 정직 알림.
+async fn run_sidecar_restore_report(
+    socket: Option<std::path::PathBuf>,
+) -> (bool, Option<RestoreSummary>) {
     tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(resolve_sidecar(if cfg!(windows) { "cys.exe" } else { "cys" }));
         cmd.arg("restore").arg("--include-master");
@@ -3418,11 +3426,53 @@ async fn run_sidecar_restore(socket: Option<std::path::PathBuf>) -> bool {
             cmd.env(cys::ENV_SOCKET, sock);
         }
         no_console(&mut cmd);
-        cmd.status().map(|s| s.success()).unwrap_or(false)
+        match cmd.stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() {
+            Ok(o) => (o.status.success(), parse_restore_summary(&String::from_utf8_lossy(&o.stdout))),
+            Err(_) => (false, None),
+        }
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or((false, None))
 }
+
+/// `cys restore` 요약 줄의 수(순수). 형식의 정본 = `src/bin/cys.rs` `run_restore` 의 println.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RestoreSummary {
+    ok: u64,
+    fail: u64,
+    gated: u64,
+}
+
+fn parse_restore_summary(stdout: &str) -> Option<RestoreSummary> {
+    let line = stdout.lines().rev().find(|l| l.starts_with("restore 완료: 재기동 "))?;
+    let num = |key: &str| -> Option<u64> {
+        let i = line.find(key)? + key.len();
+        line[i..].trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    };
+    Some(RestoreSummary { ok: num("재기동")?, fail: num("실패")?, gated: num("관문 보류")? })
+}
+
+/// 본부 복원이 끝내 성공으로 끝나지 않았을 때 사용자에게 보일 **실제** 사정(순수).
+/// 종전 문구 「본부 노드 복원 실행 실패」는 자리가 다 섰는데도(다른 복원 경로가 먼저 세움) 떴고,
+/// 관문 대기(사람 한 번 조치)와 실패를 구별하지 않았다(893 VM 실기 §7ⓐ).
+fn hq_restore_note(summary: Option<RestoreSummary>) -> String {
+    match summary {
+        None => "본부 복원을 실행하지 못했습니다(데몬 응답 없음) — 잠시 뒤 ↻ 재시작으로 다시 시도하세요.".into(),
+        Some(s) if s.fail > 0 => format!(
+            "본부 자리 {}곳을 세우지 못했습니다 — 그 창을 확인하거나 ↻ 재시작으로 다시 시도하세요.",
+            s.fail
+        ),
+        Some(s) if s.gated > 0 => format!(
+            "본부 자리 {}곳이 첫 실행 확인을 기다립니다 — 그 창에서 확인을 한 번 눌러 주세요.",
+            s.gated
+        ),
+        Some(_) => "본부 복원이 끝났지만 확인되지 않은 자리가 있습니다 — 상태를 점검하세요.".into(),
+    }
+}
+
+/// 본부 사이드카 복원 재시도 대기 — 콜드부트 auto-restore 가 같은 자리를 세우는 중이면 첫 실행이
+/// 그 자리와 겹쳐 실패로 끝난다. 복원은 멱등(산 역할 건너뜀)이라 한 번 더 돌리면 「다 섰다」를 실측한다.
+const HQ_RESTORE_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// ★TCC 처방(오너 2026-07-15 — EPERM 실사고 구조 수리): 서명이 바뀌는 업그레이드마다 macOS가
 /// 폴더 접근 권한(TCC)을 리셋해 pane 자식(claude 등)이 작업 폴더 읽기에서 EPERM으로 죽는다.
@@ -3486,7 +3536,13 @@ fn spawn_org_restore(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _ = app.emit("restore-progress", json!({"phase": "start"}));
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
-        let hq_ok = run_sidecar_restore(None).await;
+        // ★v113-restore: 첫 실행이 실패면 대기 후 1회 재실행 — 실패 알림은 재실행까지 실패일 때만.
+        let (mut hq_ok, mut hq_summary) = run_sidecar_restore_report(None).await;
+        if !hq_ok {
+            tokio::time::sleep(HQ_RESTORE_RETRY_WAIT).await;
+            (hq_ok, hq_summary) = run_sidecar_restore_report(None).await;
+        }
+        let hq_note = (!hq_ok).then(|| hq_restore_note(hq_summary));
         // ★WP-3 리바이버 게이트: base 데몬 dept 묘비 — 삭제-의도 부서는 재기동에서 제외(+생존 시 reap).
         //
         // ★fail-closed 전환(2026-09-17 · v0.14.37 성찰 3회). 종전 주석은 "RPC 실패=빈 집합(보수적
@@ -3594,7 +3650,7 @@ fn spawn_org_restore(app: AppHandle) {
             // 본부 복원조차 못 돌고 부서도 없음 = 복원 경로 자체 실패 → 가시화(UI health 토스트).
             let _ = app.emit(
                 "restore-progress",
-                json!({"phase": "error", "detail": "본부 노드 복원 실행 실패"}),
+                json!({"phase": "error", "detail": hq_note.clone().unwrap_or_default()}),
             );
             return;
         }
@@ -3602,7 +3658,7 @@ fn spawn_org_restore(app: AppHandle) {
         // 이 작업의 목적). error 페이즈는 '본부 실패 + 부서 없음' 전면 실패만 담당(위).
         let _ = app.emit(
             "restore-progress",
-            json!({"phase": "done", "hq_ok": hq_ok, "ok": ok, "fail": fail}),
+            json!({"phase": "done", "hq_ok": hq_ok, "hq_note": hq_note, "ok": ok, "fail": fail}),
         );
     });
 }
@@ -6776,6 +6832,40 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    // ── TICKET=v113-restore 복원 정직 알림 ──
+    #[test]
+    fn v113_restore_summary_parses_own_cli_line() {
+        let out = "· master: claude 재기동…\nrestore 완료: 재기동 2 · 실패 1 · 관문 보류 3 · 현황 `cys status`\n";
+        assert_eq!(
+            super::parse_restore_summary(out),
+            Some(super::RestoreSummary { ok: 2, fail: 1, gated: 3 })
+        );
+        assert_eq!(super::parse_restore_summary("error: cannot connect"), None);
+        // 형식 정본(cys.rs) 드리프트 핀 — 요약 문장이 바뀌면 여기서 적색.
+        let cli = include_str!("../../src/bin/cys.rs");
+        assert!(cli.contains("\"restore 완료: 재기동 {ok} · 실패 {fail} · 관문 보류 {gated} · 현황"));
+    }
+
+    #[test]
+    fn v113_hq_restore_note_names_the_real_outcome() {
+        use super::{hq_restore_note, RestoreSummary as S};
+        assert!(hq_restore_note(None).contains("실행하지 못했습니다"));
+        assert!(hq_restore_note(Some(S { ok: 0, fail: 2, gated: 1 })).contains("2곳을 세우지 못했습니다"));
+        let g = hq_restore_note(Some(S { ok: 1, fail: 0, gated: 1 }));
+        assert!(g.contains("첫 실행 확인을 기다립니다") && !g.contains("못했습니다"), "관문 대기를 실패로 적었다: {g}");
+    }
+
+    /// 첫 실행 실패 → 대기 → 재실행이 알림보다 먼저 온다(겹친 복원 경로가 자리를 이미 세운 경우 실패 알림 0).
+    #[test]
+    fn v113_hq_restore_retries_before_reporting() {
+        let src = include_str!("main.rs");
+        let a = src.find("fn spawn_org_restore(").unwrap();
+        let body = &src[a..a + 1400];
+        let first = body.find("run_sidecar_restore_report(None)").expect("본부 복원 호출");
+        let retry = body[first + 10..].find("run_sidecar_restore_report(None)").expect("재실행 부재");
+        assert!(body[first..first + 10 + retry].contains("HQ_RESTORE_RETRY_WAIT"), "대기 없이 재실행한다");
+    }
+
     use super::*;
 
     /// ★팩 원격 매니페스트 URL 결속 핀 (2026-09-12 · TICKET=cys-v01436-pack-url)

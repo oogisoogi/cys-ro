@@ -530,8 +530,8 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
     r = subprocess.run(down_cmd, capture_output=True, text=True,
                        env={**os.environ, "CYS_TRASH_STAMP": ts, "CYS_DEPT_EXPECT_GEN": expect_gen or ""}, **NOWIN)
     actions.append(("down", r.returncode))
-    if r.returncode in (9, 10):
-        # ★B11: 울타리 거부(9 세대 불일치 · 10 다른 닫기 진행 중) = teardown 이 시작되지 않았다 —
+    if r.returncode in (9, 10, 11):
+        # ★B11: 울타리 거부(9 세대 불일치 · 10 다른 닫기 진행 중 · 11 잠금 실패) = teardown 이 시작되지 않았다 —
         #   pack·workdir 격리도 하지 않는다(그 번호의 지금 부서는 남의 것이다).
         sys.stderr.write("[destroy] %s: cys-dept down 울타리 거부(rc=%d) — 격리 없이 중단 · %s\n"
                          % (name, r.returncode, (r.stderr or "").strip()[:300]))

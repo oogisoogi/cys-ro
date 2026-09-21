@@ -106,6 +106,39 @@ class T(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn("무응답 정책", sent[0][4], "틱이 재통지 문구를 싣지 않았다")
 
+    def test_reminder_send_failure_keeps_first_notice_state(self):
+        # agy 1R: 재통지 전송 실패 → 상태를 지우지 않고 첫 통지(n=1)로 되돌린다(다음 틱에 재통지만 다시).
+        now = time.time()
+        st_path = os.path.join(self.env["CYS_STATE_DIR"], "ctx-relay-cys-dept-dept-1.json")
+        os.makedirs(os.path.dirname(st_path), exist_ok=True)
+        json.dump({"3": {"at": now - R.REMIND_SEC - 5, "n": 1}}, open(st_path, "w"))
+        status = json.dumps({"surfaces": [seat(2, "cso", 1), seat(3, "worker", 70)]})
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv[1])
+            if argv[1] == "status":
+                return subprocess.CompletedProcess(argv, 0, status, "")
+            raise OSError("send failed")
+        old_env, old_run = dict(os.environ), R.subprocess.run
+        os.environ.update(self.env)
+        R.subprocess.run = fake_run
+        try:
+            R.cmd_tick()
+        finally:
+            R.subprocess.run = old_run
+            os.environ.clear()
+            os.environ.update(old_env)
+        self.assertEqual(calls, ["status", "send"])
+        st = json.load(open(st_path))
+        self.assertEqual(st["3"]["n"], 1, st)
+        self.assertLess(st["3"]["at"], now - R.REMIND_SEC, "첫 통지 시각을 잃었다")
+
+    def test_worker_notice_names_cso_as_verifier(self):
+        t = R.notice_text("worker", "6", 66, 60)
+        self.assertIn("네가 검증자", t)
+        self.assertIn("오너 승인 대상 아님", t)
+
     def test_legacy_float_state_is_read(self):
         now = time.time()
         n, st = R.decide([seat(2, "cso", 1), seat(3, "worker", 70)], {"3": now - R.REMIND_SEC - 1}, now, 60)

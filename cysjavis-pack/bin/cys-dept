@@ -363,7 +363,7 @@ PY
 # (CYS_DEPT_EXPECT_GEN · 대화 닫기 카드가 확인받은 부서의 gen)가 지금 그 번호의 gen 과 같은지 대조하고
 # ⑵다른 산 프로세스가 이미 닫는 중이 아닌지 본 뒤 ⑶`closing` 표식(pid)을 남긴다. 표식이 선 뒤에는 다른
 # down 이 같은 번호를 치우고 새 부서가 그 번호를 받는 일이 없다(번호는 reg_remove 뒤에만 풀린다) — 대조와
-# teardown 사이 번호 재사용 창을 닫는다. exit 9 = 세대 불일치/대상 부재(기대 세대가 있을 때) · 10 = 닫는 중.
+# teardown 사이 번호 재사용 창을 닫는다. exit 9 = 세대 불일치/대상 부재(기대 세대가 있을 때) · 10 = 닫는 중 · 11 = 잠금 실패(윈).
 # 표식의 pid 가 죽었으면 무시한다(중도 실패한 down 이 번호를 영구히 잠그지 않게).
 reg_fence_close(){ reg_init; CYS_DEPT_EXPECT_GEN="${CYS_DEPT_EXPECT_GEN:-}" python3 - "$REG" "$1" "$2" <<'PY'
 import json,sys,os,time
@@ -371,11 +371,12 @@ try:
     import fcntl
     def _lk(f): fcntl.flock(f, fcntl.LOCK_EX)
     def _ulk(f): fcntl.flock(f, fcntl.LOCK_UN)
-except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락(파일 닫힘 시 해제·_ulk no-op 안전)
-    import msvcrt
+except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락. ★울타리는 잠금 실패를 삼키지 않는다(agy 1R ①) —
+    import msvcrt       #   10초 재시도 뒤에도 못 잡으면 exit 11(닫지 않음 · 다시 시도) · 무잠금 진행 = 울타리 무력
     def _lk(f):
         try: msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-        except OSError: pass
+        except OSError:
+            sys.stderr.write("[cys-dept] down: 레지스트리 잠금 획득 실패 — 닫지 않음(잠시 뒤 다시)\n"); sys.exit(11)
     def _ulk(f): pass
 def _alive(pid):
     try: os.kill(int(pid), 0); return True

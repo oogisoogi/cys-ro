@@ -54,6 +54,15 @@ class T(unittest.TestCase):
         self.assertEqual(len(ln), 1, ln)
         self.assertIn("cys-hook(Stop)", ln[0])
 
+    def test_cys_hook_rotates_over_cap(self):
+        with open(self.log, "w") as f:
+            f.write("x" * 300000)
+        env = dict(self.env, PATH="/usr/bin:/bin", CYS_LOCAL_DIR=self.st)
+        subprocess.run(["sh", os.path.join(HOOKS, "cys-hook.sh")], input='{"hook_event_name": "Stop"}',
+                       capture_output=True, text=True, env=env, timeout=30)
+        self.assertTrue(os.path.exists(self.log + ".1"), "cys-hook.sh 기록이 상한 회전을 안 탄다(agy 1R ④)")
+        self.assertEqual(len(self.lines()), 1)
+
     def test_stop_hooks_call_timer(self):
         for f in ("save-state.sh", "reflect-scan.sh", "grill-stop.sh"):
             self.assertIn("\ncys_hook_timing %s " % f[:-3], open(os.path.join(HOOKS, f), encoding="utf-8").read(), f)

@@ -123,7 +123,8 @@ def notice_text(role, sid, pct, thr, n=1):
                 "`cys cycle-agent --role master --verifier cso`. 되묻지 말 것.")
     else:
         step = ("할 일: 대상 좌석에 60%% 매듭(새 항목 금지·커밋·HANDOFF)을 알리고, 저장이 확인되면 70%% 이전에 "
-                "`cys cycle-agent --surface surface:%s` 집행. 되묻지 말 것." % sid)
+                "`cys cycle-agent --surface surface:%s` 집행. 그 과정에서 [CYCLE-VERIFY] 가 너에게 오면 네가 검증자다 — "
+                "대상 저장 파일 갱신을 확인하고 `cys feed reply <번호> allow`(오너 승인 대상 아님). 되묻지 말 것." % sid)
     if n >= 2:
         step = ("재통지(마지막 · 첫 통지 뒤 %d분 · 아직 임계 위): ack 가 없었다면 CSO 규약 §2 무응답 정책을 지금 적용하라 — "
                 "대상의 저장 상태를 독립 검증해 신선하면 cycle-agent 집행 · 낡았으면 clear 금지·오너 escalation. "
@@ -147,7 +148,10 @@ def cmd_tick():
                            timeout=20, **NOWIN)
         except Exception as e:
             sys.stderr.write("[ctx-relay] 통지 실패 %s\n" % type(e).__name__)
-            new.pop(sid, None)                           # 다음 틱에 다시 보낸다
+            if n >= 2:                                   # 재통지 실패 = 첫 통지 상태로 되돌려 다음 틱에 재통지만 다시(agy 1R)
+                new[sid] = {"at": (new.get(sid) or {}).get("at"), "n": 1}
+            else:
+                new.pop(sid, None)                       # 다음 틱에 다시 보낸다
     try:
         save_state(new)
     except OSError:

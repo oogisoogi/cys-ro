@@ -162,6 +162,45 @@ class TestRequestSide(TDR.Base):
         self.assertEqual(res.get("moved"), [], "잠금 안에서 방금 예약된 부서의 원장을 옮겼다")
         self.assertTrue(os.path.exists(p))
 
+    def test_r1c_live_dept_ledger_does_not_take_lock(self):
+        # agy 1R ②: 산 부서 원장은 잠금 없이 선거름 — GUI 예약이 잠금을 쥔 동안에도 청소가 막히지 않는다.
+        import javis_org
+        sock = "/a/cys-dept-dept-6/cys.sock"
+        with open(os.environ["CYS_DEPTS_JSON"], "w") as f:
+            json.dump({"depts": {"dept-6": {"socket": sock}}}, f)
+        p = self._ledger("dept-6", sock)
+        lf = open(os.environ["CYS_DEPTS_JSON"] + ".lock", "w")
+        javis_org._flock(lf)
+        try:
+            res = {}
+            th = threading.Thread(target=lambda: res.setdefault("moved", self.m.cleanup_orphan_ledgers()))
+            th.start()
+            th.join(3)
+            self.assertFalse(th.is_alive(), "산 부서 원장 때문에 레지스트리 잠금을 기다렸다(과차단)")
+            self.assertEqual(res.get("moved"), [])
+            self.assertTrue(os.path.exists(p))
+        finally:
+            lf.close()
+
+    def test_r1d_lock_failure_moves_nothing(self):
+        # agy 1R ①: 잠금을 못 잡으면(윈 msvcrt 10초 실패) 옮기지 않는다 — 무잠금 진행 금지.
+        p = self._ledger("dept-7", "/a/cys-dept-dept-7/cys.sock")
+
+        class NoLock(object):
+            def __enter__(self):
+                self.held = False
+                return self
+
+            def __exit__(self, *e):
+                return False
+        orig = self.m._registry_lock
+        self.m._registry_lock = NoLock
+        try:
+            self.assertEqual(self.m.cleanup_orphan_ledgers(), [])
+        finally:
+            self.m._registry_lock = orig
+        self.assertTrue(os.path.exists(p), "잠금 실패인데 원장을 옮겼다")
+
     def test_r1b_orphan_still_cleaned_when_absent(self):
         p = self._ledger("dept-5", "/a/cys-dept-dept-5/cys.sock")
         moved = self.m.cleanup_orphan_ledgers()

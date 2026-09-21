@@ -30,6 +30,7 @@ fi
 case "$EV" in
   Stop|SubagentStop)
     { _F="${CYS_STATE_DIR:-$HOME/.cys/state}/hook-timing.log"; mkdir -p "$(dirname "$_F")"
+      if [ -f "$_F" ] && [ "$(wc -c < "$_F")" -gt 262144 ]; then mv -f "$_F" "$_F.1"; fi
       printf '%s cys-hook(%s) role=%s surface=%s %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EV" "${CYS_ROLE:-?}" \
         "${CYS_SURFACE_ID:-?}" "$(( $(date +%s) - ${_T0:-0} ))" >> "$_F"; } >/dev/null 2>&1 ;;
 esac

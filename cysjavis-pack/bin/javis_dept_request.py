@@ -1223,10 +1223,14 @@ def cleanup_orphan_ledgers():
         if not m:
             continue
         name = m.group(1)
+        if name in registry():                 # 싼 선거름(잠금 없이) — 산 부서 원장은 잠금을 잡지 않는다(agy 1R ②)
+            continue
         # ★B11(codex 1R F13 · 2R F10): 「부재 확인 ↔ 원장 이동」을 레지스트리 쓰기 잠금(cys-dept 의 모든 예약·해제가
         #   쓰는 depts.json.lock) 안에서 — 그 사이 GUI·틱이 같은 번호를 예약하면 잠금이 풀린 뒤라 이 부서는 레지스트리에
         #   있고, 우리는 옮기지 않는다. 읽은 원장과 옮기는 원장의 동일성도 잠금 안에서 다시 본다.
-        with _registry_lock():
+        with _registry_lock() as lk:
+            if not lk.held:                     # 잠금을 못 잡았으면 옮기지 않는다(fail-closed · agy 1R ①)
+                continue
             if name in registry():
                 continue
             d2 = load_json(os.path.join(fd, fn), None)
@@ -1240,14 +1244,28 @@ def cleanup_orphan_ledgers():
 
 
 class _registry_lock(object):
-    """cys-dept reg_* 와 같은 잠금 파일(<depts.json>.lock · flock) — 레지스트리 쓰기 측 공통 잠금(B11)."""
+    """cys-dept reg_* 와 같은 잠금 파일(<depts.json>.lock · flock) — 레지스트리 쓰기 측 공통 잠금(B11).
+    `held` = 실제로 잡았는가. Windows msvcrt 는 10초 재시도 뒤 OSError — 그때 held=False(호출측이 옮기지 않는다 ·
+    agy 1R ①: 실패를 삼키고 무잠금으로 진행하면 울타리가 무력하다)."""
 
     def __enter__(self):
-        import javis_org
         p = depts_json() + ".lock"
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         self.f = open(p, "w")
-        javis_org._flock(self.f)
+        self.held = False
+        try:
+            import fcntl
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+            self.held = True
+        except ImportError:
+            import msvcrt
+            try:
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_LOCK, 1)
+                self.held = True
+            except OSError:
+                pass
+        except OSError:
+            pass
         return self
 
     def __exit__(self, *exc):

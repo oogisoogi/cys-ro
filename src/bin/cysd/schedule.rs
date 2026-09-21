@@ -351,6 +351,28 @@ fn apply_builtin_jobs(jobs: &mut Vec<serde_json::Value>) -> (bool, Vec<String>) 
 /// user-owned(사용자 `cys schedule add` 잡 보존)이라 팩 배달로는 built-in 잡을 갱신할 수 없다 — 코드가 upsert 한다.
 /// 파일 부재=빈 골격 생성 · 손상(파싱 실패)=무접촉(load_jobs 의 격리 경로가 별도 처리 — 여기서 덮어써 사용자 잡을
 /// 잃지 않는다) · 변경 있을 때만 원자적 재기록(핫 리로드 torn read 회피).
+/// 부서 레인 좌석 컨텍스트 정지선 중계 잡 — `cys-dept seed_schedule` 이 새 부서에 쓰는 것과 **같은 잡**(id·주기·명령).
+/// 마커(`_builtin`) 없는 부서 잡이다(ctx-relay-base 의 base_only 관문과 id 가 갈려 이중 통지 없음).
+const DEPT_CTX_RELAY_ID: &str = "ctx-relay-tick";
+const DEPT_CTX_RELAY_CMD: &str = "pk=\"${CYS_PACK_DIR:-$HOME/.cys/pack}\"; [ -f \"$pk/bin/javis_ctx_relay.py\" ] || exit 0; python3 \"$pk/bin/javis_ctx_relay.py\" tick";
+
+/// ★Fable 1.1.3 M6(소급 · 순수): 부서 데몬의 schedule 에 중계 잡이 **없을 때만** 추가한다(있으면 무접촉 — 사용자가
+/// 고친 잡도 보존). 1.1.2 이하에서 만든 부서는 seed_schedule 이 이 잡을 쓰기 전이라 업그레이드 뒤에도 좌석 CTX
+/// 정지선 소비자가 없었다(4군②). 새 바이너리의 부서 데몬이 켜질 때마다(기동·rotate·앱 복원의 재기동) 멱등 보장.
+fn apply_dept_lane_jobs(jobs: &mut Vec<serde_json::Value>, is_dept: bool) -> bool {
+    if !is_dept || jobs.iter().any(|j| j.get("id").and_then(|v| v.as_str()) == Some(DEPT_CTX_RELAY_ID)) {
+        return false;
+    }
+    jobs.push(json!({
+        "id": DEPT_CTX_RELAY_ID,
+        "every_minutes": 2,
+        "action": "command",
+        "if_absent": "skip",
+        "command": DEPT_CTX_RELAY_CMD
+    }));
+    true
+}
+
 pub fn ensure_builtin_jobs() {
     let path = schedule_path();
     let mut root: serde_json::Value = match std::fs::read_to_string(&path) {
@@ -379,7 +401,11 @@ pub fn ensure_builtin_jobs() {
             .insert("jobs".to_string(), json!([]));
     }
     let arr = root.get_mut("jobs").and_then(|j| j.as_array_mut()).unwrap();
-    let (changed, conflicts) = apply_builtin_jobs(arr);
+    let (mut changed, conflicts) = apply_builtin_jobs(arr);
+    if apply_dept_lane_jobs(arr, cys::is_dept_socket(&cys::socket_path())) {
+        eprintln!("[cysd] ensure_builtin_jobs: 부서 좌석 컨텍스트 정지선 중계(ctx-relay-tick) 소급 추가");
+        changed = true;
+    }
     for id in &conflicts {
         eprintln!(
             "[cysd] ensure_builtin_jobs: 사용자 잡이 예약 id '{id}' 를 선점 — built-in 갱신 skip(사용자 잡 보존). \
@@ -1445,6 +1471,33 @@ mod tests {
     }
 
     // ★B2-1(W3): built-in 잡 부트 ensure idempotency — 부재 생성·재실행 무접촉(중복 0)·구버전 갱신·사용자 잡 보존.
+    #[test]
+    fn v113_dept_lane_ctx_relay_backfill() {
+        // 부서 데몬 + 잡 없음 → 1개 추가 · 두 번째는 무접촉(멱등)
+        let mut jobs = vec![json!({"id": "other", "every_minutes": 5, "action": "command", "command": "true"})];
+        assert!(apply_dept_lane_jobs(&mut jobs, true), "옛 부서에 중계 잡을 소급하지 않았다");
+        assert!(!apply_dept_lane_jobs(&mut jobs, true), "멱등 아님");
+        assert_eq!(jobs.iter().filter(|j| j["id"] == DEPT_CTX_RELAY_ID).count(), 1);
+        // 본부 데몬 = 추가 안 함(본부는 ctx-relay-base 가 담당)
+        let mut base: Vec<serde_json::Value> = vec![];
+        assert!(!apply_dept_lane_jobs(&mut base, false));
+        // 사용자가 고친 같은 id 잡은 보존
+        let mut user = vec![json!({"id": DEPT_CTX_RELAY_ID, "every_minutes": 9, "action": "command", "command": "x"})];
+        assert!(!apply_dept_lane_jobs(&mut user, true));
+        assert_eq!(user[0]["every_minutes"], 9);
+        // cys-dept seed_schedule 과 같은 잡(명령 문자열 대조 — 두 벌이 갈라지면 적색)
+        let seed = include_str!("../../../cysjavis-pack/bin/cys-dept");
+        let i = seed.find("seed_schedule(){").expect("seed_schedule");
+        let body = &seed[i..i + seed[i..].find("\n}\n").unwrap()];
+        let want = DEPT_CTX_RELAY_CMD.replace('"', "\\\\\"");
+        assert!(body.contains(&want), "cys-dept seed 잡과 소급 잡의 명령이 다르다");
+        assert!(body.contains("\"every_minutes\": 2") && body.contains("\"id\": \"ctx-relay-tick\""));
+        // 배선: 부트 ensure 가 부서 판정으로 부른다
+        let src = include_str!("schedule.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(prod.contains("apply_dept_lane_jobs(arr, cys::is_dept_socket(&cys::socket_path()))"), "부트 미배선");
+    }
+
     #[test]
     fn builtin_jobs_ensure_idempotent_and_versioned() {
         // 사용자 잡 1개로 시작(cys schedule add 시뮬).

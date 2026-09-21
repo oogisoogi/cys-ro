@@ -186,6 +186,11 @@ enum Command {
         /// 저장 검증을 건너뛴다(살아 있는 자리가 없다고 확신할 때만).
         #[arg(long)]
         skip_drain: bool,
+        /// ⑥ 부서 순회를 건너뛴다(env `CYS_ROTATE_SKIP_DEPTS=1` 과 같다). 설치기가 넘긴다 — 설치기의 벽시계
+        /// 상한 안에서 부서를 교체하다 잘리면 반쯤 교체된 부서가 남는다(Fable 1.1.3 H1). 부서 복원은 설치 뒤
+        /// 앱이 켜질 때 콜드부트 복원(spawn_org_restore)이 이어서 한다.
+        #[arg(long)]
+        skip_depts: bool,
     },
     /// preflight 게이트: exit 0 = running, 4 = paused (자율주행 매 action 전 확인용)
     GateCheck,
@@ -3176,8 +3181,8 @@ fn run(command: Command) -> i32 {
             return run_drain_verify(timeout, &only);
         }
 
-        Command::Rotate { timeout, skip_drain } => {
-            return run_rotate(timeout, skip_drain);
+        Command::Rotate { timeout, skip_drain, skip_depts } => {
+            return run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env());
         }
 
         Command::Drain { .. } => {
@@ -14159,17 +14164,89 @@ fn output_via_file(mut cmd: std::process::Command) -> Option<std::process::Outpu
         .status();
     drop(cmd);
     let stdout = std::fs::read(&path).unwrap_or_default();
-    let _ = std::fs::remove_file(&path);
+    if let Err(e) = std::fs::remove_file(&path) {
+        // (Fable 1.1.3 L4) 윈도에서 손자 데몬이 핸들을 쥐면 지우지 못한다 — 다음 rotate 시작 청소가 걷는다.
+        eprintln!("[rotate] 임시 파일 삭제 실패(다음 재시작 때 정리): {} — {e}", path.display());
+    }
     Some(std::process::Output { status: status.ok()?, stdout, stderr: Vec::new() })
+}
+
+/// 상한 있는 파일 캡처(⑥ 부서 순회용). 상한 안에 끝나면 `Some(성공 여부)` · 넘기면 **기다리기만 멈추고** `None`.
+/// 자식을 죽이지 않는다 — `cys-dept rotate` 를 옛 데몬 kill 과 새 데몬 launch 사이에서 죽이면 반쯤 교체된 부서가
+/// 남는다(Fable 1.1.3 H1 의 반파괴). 넘긴 부서는 「확인 필요」로 알리고 다음 부서로 간다.
+fn status_via_file_capped(mut cmd: std::process::Command, cap: std::time::Duration) -> Option<bool> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("cys-rotate-{}-c{n}.out", std::process::id()));
+    let file = std::fs::File::create(&path).ok();
+    let mut child = match file {
+        Some(f) => cmd.stdin(std::process::Stdio::null()).stdout(f).stderr(std::process::Stdio::null()).spawn(),
+        None => return Some(false),
+    }
+    .ok();
+    drop(cmd);
+    let deadline = std::time::Instant::now() + cap;
+    let res = loop {
+        let Some(c) = child.as_mut() else { break Some(false) };
+        match c.try_wait() {
+            Ok(Some(st)) => break Some(st.success()),
+            Ok(None) if std::time::Instant::now() >= deadline => break None,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Err(_) => break Some(false),
+        }
+    };
+    if res.is_some() {
+        let _ = std::fs::remove_file(&path);
+    }
+    res
+}
+
+/// ⑥ 부서 순회 생략 env(`CYS_ROTATE_SKIP_DEPTS=1`) — `--skip-depts` 와 같다(설치기는 둘 중 아무거나 넘긴다).
+fn rotate_skip_depts_env() -> bool {
+    matches!(std::env::var("CYS_ROTATE_SKIP_DEPTS").as_deref(), Ok("1") | Ok("true") | Ok("yes"))
+}
+
+/// ⑥ 부서당 상한(초) — 교체+복원 합계. env `CYS_ROTATE_DEPT_CAP_SEC`(1~3600) · 기본 120.
+fn rotate_dept_cap() -> std::time::Duration {
+    let v = std::env::var("CYS_ROTATE_DEPT_CAP_SEC").ok().and_then(|s| s.trim().parse::<u64>().ok());
+    std::time::Duration::from_secs(v.filter(|n| (1..=3600).contains(n)).unwrap_or(120))
+}
+
+/// rotate 시작 청소 — 지난 rotate 가 지우지 못한 `cys-rotate-*.out`(윈 손자 데몬 핸들 · Fable 1.1.3 L4).
+/// 다른 rotate 가 지금 쓰는 파일을 지우지 않게 **1시간 넘은 것만** 걷는다. 지운 수를 돌려준다.
+fn sweep_rotate_leftovers(dir: &std::path::Path, now: std::time::SystemTime) -> usize {
+    let mut n = 0;
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !(name.starts_with("cys-rotate-") && name.ends_with(".out")) {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .map(|d| d >= std::time::Duration::from_secs(3600))
+            .unwrap_or(false);
+        if old && std::fs::remove_file(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
 }
 
 /// 앱 [재시작] 단추와 같은 5단을 CLI 한 번으로(TICKET=v112-restore ④ · master [master#990243f6]).
 /// 단계마다 **자기 자신의 하위명령**을 부른다 — 로직 사본 0(두 경로가 갈라지지 않게). 사후 알림 1줄.
-fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
+fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     let Ok(exe) = std::env::current_exe() else {
         eprintln!("rotate: 실행 파일 경로를 모름");
         return ROTATE_RC_DAEMON;
     };
+    let swept = sweep_rotate_leftovers(&std::env::temp_dir(), std::time::SystemTime::now());
+    if swept > 0 {
+        eprintln!("[rotate] 지난 재시작의 임시 파일 {swept}개 정리");
+    }
     let run = |args: &[&str]| -> Option<std::process::Output> {
         let mut cmd = cys::hidden_command(&exe);
         cmd.args(args);
@@ -14295,7 +14372,13 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
     let hq_restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
     // ⑥ 부서 순회 — 앱 [재시작](restartAllDaemons → rotate_dept_daemon)과 같은 순서·같은 도구.
     //   본부 rotate 에서만 돈다(부서 소켓으로 부른 rotate 가 다른 부서를 건드리지 않게).
-    let (dept_note, depts_ok) = if base { rotate_depts(&exe) } else { (String::new(), true) };
+    let (dept_note, depts_ok) = if !base {
+        (String::new(), true)
+    } else if skip_depts {
+        (" · 부서는 앱이 켜질 때 이어서 복원합니다".to_string(), true)
+    } else {
+        rotate_depts(&exe)
+    };
     let restore_ok = hq_restore_ok && depts_ok;
     let rc = rotate_rc(drain_ok, restore_ok);
     println!(
@@ -14314,6 +14397,11 @@ fn rotate_dept_targets(
     let mut out = Vec::new();
     if let Some(depts) = reg["depts"].as_object() {
         for (name, meta) in depts {
+            // (Fable 1.1.3 L3) 닫는 중(`closing` 표식 · cys-dept down 울타리)인 부서는 되살리지 않는다 — 교체가
+            //   닫기와 겹치면 down 의 reg_remove 뒤에 등재 없는 산 데몬이 남는다.
+            if meta.get("closing").map(|c| !c.is_null()).unwrap_or(false) {
+                continue;
+            }
             let sock = meta["socket"]
                 .as_str()
                 .map(std::path::PathBuf::from)
@@ -14344,25 +14432,37 @@ fn rotate_depts(exe: &std::path::Path) -> (String, bool) {
     let exe_dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     let tool = cys::pack::pack_dir().join("bin").join("cys-dept");
     let mut failed: Vec<String> = Vec::new();
+    let cap = rotate_dept_cap();
     for (name, sock) in &targets {
+        // ★(Fable 1.1.3 H1) 부서당 상한(교체+복원 합계) — 한 부서가 걸려도 전체가 영구 대기하지 않는다.
+        let start = std::time::Instant::now();
         let mut rot = cys::hidden_command("bash");
         // 앱 inject_runtime_path 와 같은 SOT — 윈도 동봉 bash·python 이 PATH 선두.
         for (k, v) in cys::spawn_env_pairs_from_process(&exe_dir) {
             rot.env(k, v);
         }
         rot.arg(&tool).arg("rotate").arg(name);
-        let rotated = output_via_file(rot).map(|o| o.status.success()).unwrap_or(false);
-        let mut res = cys::hidden_command(exe);
-        res.args(["restore", "--include-master"])
-            .env(cys::ENV_SOCKET, sock)
-            .env(cys::ENV_NO_AUTOSTART, cys::NO_AUTOSTART_ON);
-        let restored = rotated && output_via_file(res).map(|o| o.status.success()).unwrap_or(false);
+        let rotated = status_via_file_capped(rot, cap);
+        let restored = if rotated == Some(true) {
+            let mut res = cys::hidden_command(exe);
+            res.args(["restore", "--include-master"])
+                .env(cys::ENV_SOCKET, sock)
+                .env(cys::ENV_NO_AUTOSTART, cys::NO_AUTOSTART_ON);
+            status_via_file_capped(res, cap.saturating_sub(start.elapsed()).max(std::time::Duration::from_secs(1)))
+        } else {
+            Some(false)
+        };
+        let word = |r: Option<bool>, ok: &'static str, bad: &'static str| match r {
+            Some(true) => ok,
+            Some(false) => bad,
+            None => "시간 초과(계속 진행 중일 수 있음)",
+        };
         eprintln!(
             "[rotate] ⑥ 부서 {name}: 교체 {} · 복원 {}",
-            if rotated { "완료" } else { "실패" },
-            if restored { "완료" } else { "실패·보류" }
+            word(rotated, "완료", "실패"),
+            if rotated == Some(true) { word(restored, "완료", "실패·보류") } else { "건너뜀" }
         );
-        if !restored {
+        if restored != Some(true) {
             failed.push(name.clone());
         }
     }
@@ -19166,8 +19266,108 @@ mod tests {
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
         let a = prod.find("fn run_rotate(").unwrap();
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
-        assert!(body.contains("if base { rotate_depts(&exe) }"), "부서 순회가 본부 한정이 아니다");
+        let i = body.find("let (dept_note, depts_ok) = if !base {").expect("부서 순회가 본부 한정이 아니다");
+        let seg = &body[i..i + body[i..].find("};").unwrap()];
+        let skip = seg.find("} else if skip_depts {").expect("부서 순회 생략 스위치 분기 부재");
+        let run = seg.find("rotate_depts(&exe)").expect("부서 순회 호출 부재");
+        assert!(skip < run, "생략 판정이 순회보다 뒤다");
         assert!(body.contains("let restore_ok = hq_restore_ok && depts_ok;"), "부서 실패가 rc 에 안 오른다");
+    }
+
+    /// ★Fable 1.1.3 H1: 설치기가 넘기는 부서 순회 생략 — 플래그와 env 둘 다 받는다 · 안내 1줄.
+    #[test]
+    fn v113_rotate_skip_depts_flag_and_env() {
+        use clap::Parser;
+        let c = Cli::try_parse_from(["cys", "rotate", "--skip-depts"]).expect("--skip-depts 파싱");
+        assert!(matches!(c.command, Command::Rotate { skip_depts: true, .. }));
+        let c = Cli::try_parse_from(["cys", "rotate"]).unwrap();
+        assert!(matches!(c.command, Command::Rotate { skip_depts: false, .. }), "기본 = 순회 유지");
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        assert!(prod.contains("run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env())"), "env 미배선");
+        assert!(prod.contains("부서는 앱이 켜질 때 이어서 복원합니다"), "생략 안내 문구 부재");
+        // env 판정(한 함수 안에서 순차 — env 경합 방지)
+        let saved = std::env::var("CYS_ROTATE_SKIP_DEPTS").ok();
+        for (v, want) in [("1", true), ("true", true), ("0", false), ("", false)] {
+            std::env::set_var("CYS_ROTATE_SKIP_DEPTS", v);
+            assert_eq!(rotate_skip_depts_env(), want, "{v}");
+        }
+        std::env::remove_var("CYS_ROTATE_SKIP_DEPTS");
+        assert!(!rotate_skip_depts_env());
+        let cap_saved = std::env::var("CYS_ROTATE_DEPT_CAP_SEC").ok();
+        std::env::remove_var("CYS_ROTATE_DEPT_CAP_SEC");
+        assert_eq!(rotate_dept_cap(), std::time::Duration::from_secs(120));
+        std::env::set_var("CYS_ROTATE_DEPT_CAP_SEC", "0");
+        assert_eq!(rotate_dept_cap(), std::time::Duration::from_secs(120), "0 은 무효");
+        std::env::set_var("CYS_ROTATE_DEPT_CAP_SEC", "30");
+        assert_eq!(rotate_dept_cap(), std::time::Duration::from_secs(30));
+        match cap_saved { Some(v) => std::env::set_var("CYS_ROTATE_DEPT_CAP_SEC", v), None => std::env::remove_var("CYS_ROTATE_DEPT_CAP_SEC") }
+        if let Some(v) = saved { std::env::set_var("CYS_ROTATE_SKIP_DEPTS", v) }
+    }
+
+    /// ★Fable 1.1.3 H1: 부서당 상한 — 넘기면 기다리기를 멈추고(None) 자식은 죽이지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn v113_rotate_dept_step_is_capped_without_kill() {
+        let mark = std::env::temp_dir().join(format!("cys-cap-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&mark);
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", &format!("sleep 3; touch '{}'", mark.display())]);
+        let t = std::time::Instant::now();
+        let r = status_via_file_capped(cmd, std::time::Duration::from_secs(1));
+        assert_eq!(r, None, "상한을 넘겼는데 결과를 기다렸다");
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "상한 뒤에도 대기: {:?}", t.elapsed());
+        std::thread::sleep(std::time::Duration::from_millis(3500));
+        assert!(mark.exists(), "상한 초과 자식을 죽였다(반쯤 교체된 부서의 원인)");
+        let _ = std::fs::remove_file(&mark);
+        let mut ok = std::process::Command::new("sh");
+        ok.args(["-c", "exit 0"]);
+        assert_eq!(status_via_file_capped(ok, std::time::Duration::from_secs(5)), Some(true));
+        let mut bad = std::process::Command::new("sh");
+        bad.args(["-c", "exit 3"]);
+        assert_eq!(status_via_file_capped(bad, std::time::Duration::from_secs(5)), Some(false));
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn rotate_depts(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert_eq!(body.matches("status_via_file_capped(").count(), 2, "⑥ 두 단계가 상한 캡처를 안 쓴다");
+        assert!(!body.contains("output_via_file("), "⑥ 에 상한 없는 캡처가 남았다");
+    }
+
+    /// ★Fable 1.1.3 L3: 닫는 중(closing 표식) 부서는 ⑥ 대상이 아니다.
+    #[test]
+    fn v113_rotate_dept_targets_skip_closing() {
+        let reg = serde_json::json!({"depts": {
+            "a": {"socket": "/s/a.sock", "closing": {"pid": 12, "at": 1.0}},
+            "b": {"socket": "/s/b.sock", "closing": null},
+            "c": {"socket": "/s/c.sock"}
+        }});
+        let got = rotate_dept_targets(&reg, |_| true);
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["b", "c"], "닫는 중인 부서를 교체 대상에 넣었다");
+    }
+
+    /// ★Fable 1.1.3 L4: rotate 시작 청소 — 1시간 넘은 cys-rotate-*.out 만 걷는다(진행 중인 다른 rotate 보호).
+    #[test]
+    fn v113_rotate_sweeps_only_old_leftovers() {
+        let d = std::env::temp_dir().join(format!("cys-sweep-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for f in ["cys-rotate-1-0.out", "cys-rotate-2-c5.out", "other.out", "cys-rotate-x.txt"] {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        let now = std::time::SystemTime::now();
+        assert_eq!(sweep_rotate_leftovers(&d, now), 0, "막 생긴 파일을 지웠다(동시 rotate 파손)");
+        let later = now + std::time::Duration::from_secs(7200);
+        assert_eq!(sweep_rotate_leftovers(&d, later), 2);
+        assert!(d.join("other.out").exists() && d.join("cys-rotate-x.txt").exists(), "남의 파일을 지웠다");
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn run_rotate(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        let sw = body.find("sweep_rotate_leftovers(").expect("rotate 시작 청소 미배선");
+        assert!(sw < body.find("// ① 저장 검증").unwrap(), "청소가 시작에 없다");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -3470,6 +3470,14 @@ fn hq_restore_note(summary: Option<RestoreSummary>) -> String {
     }
 }
 
+/// 본부 복원을 한 번 더 돌릴 것인가(순수). ★Fable 1.1.3 M1: **관문 보류만** 남은 결과(실패 0 · 보류 ≥1)는
+/// 다시 돌리지 않는다 — 관문에 멈춘 자리는 좌석이 살아 있어 재실행이 「이미 가동 중 — 건너뜀」으로 접고
+/// rc 0 이 되어, 사람이 한 번 눌러야 풀리는 관문을 아무도 알리지 않았다(「확인을 한 번 눌러 주세요」 도달 불가).
+/// 재실행은 실패가 있거나 요약을 못 읽었을 때만(겹친 콜드부트 복원이 먼저 세운 자리를 실측하려는 본래 목적).
+fn hq_restore_should_retry(ok: bool, summary: Option<RestoreSummary>) -> bool {
+    !ok && !matches!(summary, Some(s) if s.fail == 0 && s.gated > 0)
+}
+
 /// 본부 사이드카 복원 재시도 대기 — 콜드부트 auto-restore 가 같은 자리를 세우는 중이면 첫 실행이
 /// 그 자리와 겹쳐 실패로 끝난다. 복원은 멱등(산 역할 건너뜀)이라 한 번 더 돌리면 「다 섰다」를 실측한다.
 const HQ_RESTORE_RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -3538,7 +3546,7 @@ fn spawn_org_restore(app: AppHandle) {
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
         // ★v113-restore: 첫 실행이 실패면 대기 후 1회 재실행 — 실패 알림은 재실행까지 실패일 때만.
         let (mut hq_ok, mut hq_summary) = run_sidecar_restore_report(None).await;
-        if !hq_ok {
+        if hq_restore_should_retry(hq_ok, hq_summary) {
             tokio::time::sleep(HQ_RESTORE_RETRY_WAIT).await;
             (hq_ok, hq_summary) = run_sidecar_restore_report(None).await;
         }
@@ -6868,6 +6876,22 @@ mod tests {
         let first = body.find("run_sidecar_restore_report(None)").expect("본부 복원 호출");
         let retry = body[first + 10..].find("run_sidecar_restore_report(None)").expect("재실행 부재");
         assert!(body[first..first + 10 + retry].contains("HQ_RESTORE_RETRY_WAIT"), "대기 없이 재실행한다");
+        assert!(
+            body[first..first + 10 + retry].contains("if hq_restore_should_retry(hq_ok, hq_summary) {"),
+            "재실행 판정이 관문 보류를 거르지 않는다(M1)"
+        );
+    }
+
+    /// ★Fable 1.1.3 M1: 관문 보류만 남으면 재실행하지 않는다(재실행이 보류를 「이미 가동 중」으로 접어 알림 0).
+    #[test]
+    fn v113_hq_restore_gated_only_is_reported_not_retried() {
+        let s = |ok, fail, gated| Some(RestoreSummary { ok, fail, gated });
+        assert!(!hq_restore_should_retry(true, s(3, 0, 0)), "성공은 재실행 없음");
+        assert!(!hq_restore_should_retry(false, s(2, 0, 1)), "관문 보류만 = 재실행 금지(바로 알린다)");
+        assert!(hq_restore_should_retry(false, s(2, 1, 1)), "실패가 섞이면 재실행");
+        assert!(hq_restore_should_retry(false, s(2, 1, 0)), "실패면 재실행");
+        assert!(hq_restore_should_retry(false, None), "요약 없음(실행 불가) = 재실행");
+        assert!(hq_restore_note(s(2, 0, 1)).contains("확인을 한 번 눌러 주세요"), "관문 문구");
     }
 
     use super::*;

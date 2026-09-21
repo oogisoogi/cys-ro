@@ -40,10 +40,23 @@ def cys_bin():
     return os.environ.get("CYS_BIN") or "cys"
 
 
+def lane_key(sock):
+    """상태 파일 레인 키. unix 는 소켓 폴더 이름(cys-dept-<n> · 종전 동일). ★윈 부서 소켓은 파이프
+    `\\\\.\\pipe\\cys-dept-<n>` 이라 폴더 이름이 모든 부서에서 같다 — 파이프 이름으로 가른다(Fable 1.1.3 [C]:
+    공유 파일을 부서들이 서로 덮어 재통지 폭주·통지 억제). 호스트 OS 와 무관하게 문자열로 판별한다."""
+    if not sock:
+        return "base"
+    s = sock.replace("/", "\\")
+    low = s.lower()
+    if low.startswith("\\\\.\\pipe\\") or low.startswith("\\\\?\\pipe\\"):
+        name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in s.split("\\")[-1])
+        return name or "base"
+    return os.path.basename(os.path.dirname(sock)) or "base"
+
+
 def state_path():
     sd = os.environ.get("CYS_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".cys", "state")
-    lane = os.path.basename(os.path.dirname(os.environ.get("CYS_SOCKET") or "")) or "base"
-    return os.path.join(sd, "ctx-relay-%s.json" % lane)
+    return os.path.join(sd, "ctx-relay-%s.json" % lane_key(os.environ.get("CYS_SOCKET") or ""))
 
 
 def load_state():

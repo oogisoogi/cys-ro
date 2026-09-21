@@ -141,6 +141,8 @@ ACCOUNT_MODE_DEFAULT = "shared"
 STATES = ("proposed", "superseded", "confirmed", "expired", "created", "reused",
           "create-timeout", "failed", "closed", "discarded")
 IN_FLIGHT = ("confirmed", "create-timeout")
+LOCK_BUSY_RC = 11       # cys-dept allocate/create: 레지스트리 예약 잠금 실패 = 아무것도 예약하지 않음(재시도 가능)
+MAX_LOCK_BUSY = 3
 DISCARDABLE = tuple(x for x in STATES if x not in ("confirmed", "discarded"))
 
 
@@ -355,6 +357,29 @@ def display_taken(disp, reg=None, cat=None):
             return True
     for n, e in reg.items():
         if norm_name((e or {}).get("display_name")) == disp:
+            return True
+    return False
+
+
+def display_taken_by_other(disp, key, reg=None, cat=None):
+    """display_taken 에서 자기 키(카탈로그 key · 레지스트리 mission_key)를 뺀 판정 — 생성 직전 재확인용
+    (틱이 catalog_upsert 뒤 죽어 자기 항목이 이미 있는 경우를 중복으로 읽지 않는다)."""
+    reg = registry() if reg is None else reg
+    cat = catalog() if cat is None else cat
+    for k, v in (cat.get("departments") or {}).items():
+        if k != key and norm_name(v.get("display")) == disp:
+            return True
+    for n, e in reg.items():
+        if (e or {}).get("mission_key") != key and norm_name((e or {}).get("display_name")) == disp:
+            return True
+    return False
+
+
+def display_in_flight(disp, reqs=None):
+    """확인은 됐으나 아직 등재 전인 생성 요청(IN_FLIGHT)이 같은 표시명을 쓰는가(Fable 1.1.3 [B] — 상한 제거로
+    같은 이름을 두 번 「네」 하면 두 틱에 걸쳐 같은 이름 부서 2개가 서던 경로)."""
+    for r in (all_reqs() if reqs is None else reqs):
+        if r.get("kind") == "create" and r.get("state") in IN_FLIGHT and norm_name(r.get("display")) == disp:
             return True
     return False
 
@@ -580,6 +605,9 @@ def cmd_propose(a):
     if display_taken(disp, reg, cat):
         return _refuse("이미 「%s」가 있습니다. 그 부서를 쓰시거나 다른 이름을 말씀해 주세요." % disp,
                        reason="duplicate")
+    if display_in_flight(disp):
+        return _refuse("같은 이름의 부서 「%s」를 지금 만들고 있습니다. 1~2분 뒤 다 만들어지면 알려 드리겠습니다." % disp,
+                       reason="duplicate_in_flight")
     gate = resource_check()
     if gate.get("verdict") == "hard_block":
         return _refuse(busy_say(len(live)), reason="resource")
@@ -679,7 +707,18 @@ def cmd_confirm(a):
                        code=6, reason="superseded")
     if r["state"] != "proposed":
         return _refuse("이 제안은 이미 처리됐습니다(%s)." % r["state"], code=7, reason="state")
-    if r.get("human_axis") and not human_ack_after(r):
+    ans = human_ack_after(r) if r.get("human_axis") else "yes"
+    if ans == "no":
+        # M2: 사람이 카드 뒤에 거절했다 — 확인하지 않고 제안을 걷는다(다시 원하면 새로 말씀하시면 된다).
+        def _decl(x):
+            x["state"] = "discarded"
+            x["discarded_at"] = now()
+            x["discard_reason"] = "human_declined"
+        transition(r["id"], ("proposed",), _decl)
+        return _refuse("「아니요」라고 하셔서 만들지 않았습니다. 필요하시면 언제든 다시 말씀해 주세요."
+                       if r.get("kind") == "create" else
+                       "「아니요」라고 하셔서 닫지 않았습니다.", code=7, reason="human_declined")
+    if ans != "yes":
         # ★v113 A1(사람 확인 축): 이 기계에서 훅(dept-chat-inject)이 돌고 있으면(제안 시점 기록), 카드 **뒤에**
         #   사람이 직접 친 입력(배달 원장 대조로 기계 유래 아님)이 있어야 확인한다 — 마스터(LLM)가 스스로 「네」를
         #   판정해 부르는 경로를 닫는다. 훅이 없는 기계(human_axis 거짓)는 종전 그대로(편의 우선 · fail-open).
@@ -829,6 +868,8 @@ FAIL_SAY = {
     "crash": "부서 일을 처리하던 중 내부 오류가 나서 멈췄습니다.",
     "target_changed": "확인하신 뒤 그 번호의 부서가 다른 부서로 바뀌어 있어서 닫지 않았습니다. 지금 부서 목록을 다시 보여 드릴까요?",
     "close_rc": "닫는 프로그램이 실패했습니다.",
+    "duplicate": "같은 이름의 부서가 이미 만들어져 있어서 하나 더 만들지 않았습니다.",
+    "lock_busy": "다른 부서 작업과 겹쳐 세 번 다시 시도했지만 만들지 못했습니다. 조금 뒤에 다시 말씀해 주세요.",
 }
 
 
@@ -1542,6 +1583,9 @@ def _create_step(r, st, reqs):
     if gate.get("verdict") == "hard_block":
         _fail(r, "resource")
         return
+    if not reentry and display_taken_by_other(norm_name(r.get("display")), r.get("key"), reg):
+        _fail(r, "duplicate")                            # Fable 1.1.3 [B]: 확인 뒤 같은 이름이 먼저 섰다
+        return
     if not reentry:
         # 효과 함수 순서: catalog_upsert → write_mission → ensure_dirs → CLAUDE.md → create → backfill
         seeded = _seed_account(catalog_json(), r["account"])
@@ -1591,8 +1635,14 @@ def _create_step(r, st, reqs):
     name = lines[-1] if lines else ""
     if p.returncode == 0 and re.match(r"^dept-\d+$", name):
         _finish_create(r, name, r["pre_reg"])
+    elif p.returncode == LOCK_BUSY_RC and (r.get("lock_busy") or 0) + 1 < MAX_LOCK_BUSY:
+        # Fable 1.1.3 [B]: 윈 예약 잠금을 못 잡아 cys-dept 가 아무것도 예약하지 않고 11 로 끝났다 — 이번 호출은
+        #   없던 일로 되돌리고(호출 수·간격 미소모) 다음 틱에 다시 부른다. 연속 MAX_LOCK_BUSY 회면 실패로 알린다.
+        r["lock_busy"] = (r.get("lock_busy") or 0) + 1
+        r["create_calls"] = max(0, (r.get("create_calls") or 1) - 1)
+        _event(r, "lock-busy %d (다음 틱 재시도)" % r["lock_busy"])
     else:
-        _fail(r, "create_rc:%s" % p.returncode, leftover="카탈로그 항목 1개(지우기로 걷을 수 있습니다)")
+        _fail(r, "lock_busy" if p.returncode == LOCK_BUSY_RC else "create_rc:%s" % p.returncode, leftover="카탈로그 항목 1개(지우기로 걷을 수 있습니다)")
 
 
 def _close_step(r):
@@ -1839,11 +1889,31 @@ def ack_path(rid):
 
 
 def human_ack_after(r):
+    """카드 뒤 사람 입력의 판정 — "yes"(긍정) · "no"(거절) · "other"(그 밖·수정 요청) · None(카드 뒤 입력 없음).
+    ★Fable 1.1.3 M2: 종전엔 「무언가 쳤다」만 봤다 — 「아니요」·「이름 바꿔」도 확인으로 통과했다."""
     a = load_json(ack_path(r["id"]), None) or {}
     try:
-        return float(a.get("at") or 0) >= float(r.get("created_at") or 0)
+        if float(a.get("at") or 0) < float(r.get("created_at") or 0):
+            return None
     except (TypeError, ValueError):
-        return False
+        return None
+    return a.get("verdict") if a.get("verdict") in ("yes", "no") else "other"
+
+
+# 카드 뒤 사람 답 판정. 거절·수정 낱말이 하나라도 있으면 긍정이 아니다(「네 근데 이름 바꿔」 = 수정).
+_ANS_NO = re.compile(r"(아니|아뇨|싫|취소|하지\s*마|그만|안\s*할|안\s*만들|필요\s*없|\bno\b|\bnope\b)", re.I)
+_ANS_EDIT = re.compile(r"(근데|그런데|하지만|다르|바꿔|바꾸|말고|수정|대신|잠깐|잠시만|다시|고쳐|변경|\?|？)")
+_ANS_YES = re.compile(r"^\s*(네|예|응|넵|넹|내|그래|그러|좋아|좋습니다|좋네|진행|만들어|닫아|해\s*줘|해\s*주세요|하세요|"
+                      r"ㅇㅇ|ㅇㅋ|오케이|ok|okay|yes|y|sure)", re.I)
+
+
+def classify_answer(prompt):
+    t = (prompt or "").strip()
+    if _ANS_NO.search(t):
+        return "no"
+    if _ANS_EDIT.search(t) or not _ANS_YES.match(t):
+        return "other"
+    return "yes"
 
 
 def _prompt_is_machine(prompt):
@@ -1859,6 +1929,38 @@ def _prompt_is_machine(prompt):
 
 def _hook_seen_path():
     return os.path.join(root_dir(), ".hook-seen.json")
+
+
+def _news_candidate(r):
+    """아직 전하지 않은 부서 소식이 될 수 있는 요청인가(세션별 억제 전 · 훅 ②와 선거름 표지가 같은 판정을 쓴다)."""
+    if r.get("state") in ("proposed", "superseded", "discarded"):
+        return False
+    if now() - (r.get("updated_at") or r.get("created_at") or 0) > 7 * DAY:
+        return False
+    said = load_json(said_path(r["id"]), None) or {}
+    return said.get("state") != r["state"]
+
+
+def hook_wake_path():
+    return os.path.join(root_dir(), ".hook-wake")
+
+
+def refresh_hook_wake(reqs=None):
+    """훅 셸 선거름 표지(Fable 1.1.3 [D]): 열린 제안(사람 확인 축) 또는 전할 소식 후보가 있을 때만 존재한다.
+    종전 선거름 = 「dr-* 폴더 존재」 — 생성·종결 폴더는 영구 보존이라 한 번이라도 말로 만든 기계는 매 프롬프트
+    파이썬이 돌았다. 표지는 요청 상태를 바꾸는 모든 명령과 틱(1분)이 다시 쓴다. 실패는 조용히 넘긴다."""
+    try:
+        reqs = all_reqs() if reqs is None else reqs
+        want = any(r.get("state") == "proposed" or _news_candidate(r) for r in reqs)
+        p = hook_wake_path()
+        if want and not os.path.exists(p):
+            os.makedirs(root_dir(), exist_ok=True)
+            with open(p, "a", encoding="utf-8"):
+                pass
+        elif not want and os.path.exists(p):
+            os.remove(p)
+    except OSError:
+        pass
 
 
 def cmd_hook_prompt(a):
@@ -1884,7 +1986,8 @@ def cmd_hook_prompt(a):
         if mach is not True:
             r = max(opened, key=lambda x: x.get("created_at") or 0)
             atomic_write_json(ack_path(r["id"]), {"at": now(), "session": sid, "origin": why,
-                                                  "prompt_sha256": sha256_text(prompt)})
+                                                  "prompt_sha256": sha256_text(prompt),
+                                                  "verdict": classify_answer(prompt)})
     seen_all = load_json(_hook_seen_path(), {}) or {}
     seen = seen_all.get(sid) or {"guide": 0, "news": []}
     lines = []
@@ -1909,12 +2012,7 @@ def cmd_hook_prompt(a):
             seen["guide"] = now()
         news = []
         for r in reqs:
-            if r.get("state") in ("proposed", "superseded", "discarded"):
-                continue
-            if now() - (r.get("updated_at") or r.get("created_at") or 0) > 7 * DAY:
-                continue
-            said = load_json(said_path(r["id"]), None) or {}
-            if said.get("state") == r["state"]:
+            if not _news_candidate(r):
                 continue
             k = "%s:%s" % (r["id"], r["state"])
             if k in seen["news"]:
@@ -1960,6 +2058,15 @@ def main(argv=None):
     sub.add_parser("self-test")
     sub.add_parser("hook-prompt")
     a = ap.parse_args(argv)
+    if a.cmd == "self-test":
+        return self_test()
+    try:
+        return _main_dispatch(a, ap)
+    finally:
+        refresh_hook_wake()                             # 선거름 표지 = 요청 상태의 파생(명령마다 다시 쓴다)
+
+
+def _main_dispatch(a, ap):
     if a.cmd == "propose":
         if a.close is None and not (a.name and a.mission and a.claude_md_file):
             sys.stderr.write("propose: --name · --mission · --claude-md-file 필수(또는 --close <이름>)\n")
@@ -1971,8 +2078,6 @@ def main(argv=None):
                            code=2, reason="registry_unreadable")
     fn = {"confirm": cmd_confirm, "tick": cmd_tick, "status": cmd_status, "kickoff": cmd_kickoff,
           "discard": cmd_discard}.get(a.cmd)
-    if a.cmd == "self-test":
-        return self_test()
     if a.cmd == "hook-prompt":
         try:
             return cmd_hook_prompt(a)

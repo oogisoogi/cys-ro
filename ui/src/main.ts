@@ -13,7 +13,7 @@ import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
 import { DEFAULT_BG, readableForeground } from "./theme";
 import { reorderWorkspace, reorderGroup } from "./reorder";
-import { classifyDrainVerifyFallback, drainVerifyFallbackToast } from "./drainverify";
+import { classifyDrainVerifyFallback, drainVerifyFallbackToast, drainVerifyNotice } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
 import { exitedSweepTargets } from "./exitedsweep";
@@ -5897,34 +5897,12 @@ type DrainVerifyNode = {
 type DrainVerifyReport = {
   all_saved: boolean;
   total: number;
+  // ★[V111-F2] 코어가 명시하는 **최대 대기**(기본 상한 + 활동 기반 연장). 사후 알림에 그대로 싣는다.
+  max_wait_secs?: number;
   summary: { saved: number; timeout: number; delivery_failed: number; unverifiable: number; skipped_restoring: number };
   nodes: DrainVerifyNode[];
   pending_loss_warning?: { role: string; surface: string; pending_undelivered: number }[];
 };
-
-// ★[F2] 검증은 nonce '마커 기입'만 확인한다 — 노드가 마커 앞에서 SESSION_STATE 내용을 실제로 최신화했는지는
-// 보증하지 못한다(형식적 순응 한계·내용 최신성은 노드 책임). 라벨을 "마커 확인"으로 완화해 과대주장 금지.
-const OUTCOME_LABEL: Record<string, string> = {
-  saved: "체크포인트 마커 확인",
-  timeout: "마커 미확인(시간초과)",
-  delivery_failed: "지시 전달 실패(입력 미제출)",
-  unverifiable: "검증 불가(구버전 데몬)",
-  skipped_restoring: "복원 중 — 건너뜀",
-};
-
-// 부분 실패 노드를 사람이 읽을 리포트로. 마커 확인된 노드는 생략, 미확인만 나열한다.
-function drainVerifyReportText(r: DrainVerifyReport): string {
-  const bad = r.nodes.filter((n) => n.outcome !== "saved");
-  const lines = bad.map(
-    (n) => `• ${n.department ? n.department + " / " : ""}${n.role} (${n.surface}): ${OUTCOME_LABEL[n.outcome] ?? n.outcome}`,
-  );
-  return (
-    `${r.total}개 노드 중 ${r.summary.saved}개만 체크포인트 마커가 확인됐습니다.\n\n` +
-    `${lines.join("\n")}\n\n` +
-    "대화 원문은 재시작 후 트랜스크립트로 복원됩니다. 이 확인은 마커 기입만 보증하며, 위 노드를 포함해 각 노드의 증류 체크포인트(SESSION_STATE·TODO) 내용 최신성은 노드 책임입니다.\n\n" +
-    "그래도 지금 재시작하시겠습니까?"
-  );
-}
 
 // 데몬 재시작 코어 — 메인 + 살아있는 부서를 force 순차 교대한다(종료 → 새 데몬 기동 → 피닉스·resume 복원).
 // skipDrain=true면 rotate가 이중 drain을 생략(verified 경로: 사전 drain --verify로 저장 확인됨),
@@ -5964,25 +5942,22 @@ function restartResultToast(failedDepts: string[], deptRestoreFailed: boolean) {
 }
 
 // ── 상시 "↻ 재시작" 버튼(초보자용) — "저장 검증 후 자동 재시작" 흐름 ──
-// 1) 확인 모달[저장 후 재시작/취소] → 2) drain --verify(feature-detect)로 노드별 체크포인트 저장 검증
-// → 3) green(all_saved)이면 자동 진행(skipDrain=true), 부분 실패면 노드별 리포트+[그래도 재시작/취소].
+// 1) ★[V111-F5] 확인 모달 없음(1클릭 = 즉시 집행) → 2) drain --verify(feature-detect)로 노드별 체크포인트 저장 검증
+// → 3) 결과와 무관하게 자동 진행(skipDrain=true). ★[V111-F4] 부분 실패 확인 창은 폐기됐다 — 코어가
+//    상한 안에서 자동 재조회·연장하고, 미확인 자리는 **재시작 뒤 알림 1줄**로만 알린다(묻지 않는다).
 // cys 코어가 --verify를 미지원하면(구버전) plain drain 폴백(skipDrain=false)+경고. '무손실' 표현 금지 —
 // 대화 원문은 트랜스크립트 복원, 이 기능은 증류 체크포인트(SESSION_STATE·TODO) 최신성만 보증한다.
 async function manualRestartAllDaemons() {
   // ★[F3]+A6: purge·완전 초기화 진행 중이거나 **초기화 완료 래치**가 걸렸으면 재시작을 막는다
   // (완료 후 재시작은 pack 없는 유령 데몬을 세워 "설치 직후" 계약을 무음 침식한다).
   if (daemonActionBlocked()) return;
-  const ok = await confirmModal(
-    "데몬 재시작",
-    "재시작 전에 각 노드의 체크포인트(SESSION_STATE·TODO) 저장을 먼저 검증합니다. 검증이 끝나면 데몬(메인+부서)을 " +
-      "다시 켜고 부서·노드의 대화 기억을 트랜스크립트로 복원합니다.\n\n지금 저장을 검증하고 재시작하시겠습니까?",
-    "저장 후 재시작",
-  );
-  if (!ok) return;
+  // ★[V111-F5] 진입 확인 모달도 없앴다(master 판정 2026-09-21) — 박사님 원칙 「중간에 묻는 단계를 모두
+  //   삭제」가 우선하고, 오발의 대가는 재시작 1회(대화는 트랜스크립트로 복원)로 작다. ↻ 한 번 = 드레인 →
+  //   재시작까지 한 번에. 진행 상황은 묻는 창이 아니라 아래 sticky 토스트로 알린다.
   rotatingDaemon = true;
   try {
     // 1) 저장 검증(drain --verify) — feature-detect. 미지원/실패 시 plain drain 폴백.
-    stickyToast("restart-daemon", "feed", "↻ 저장 검증", "재시작 전 노드 체크포인트(SESSION_STATE)를 검증하는 중…");
+    stickyToast("restart-daemon", "feed", "↻ 저장 검증", "재시작 전 노드 체크포인트를 검증하는 중… 저장이 늦는 자리는 자동으로 기다렸다가 그대로 재시작합니다.");
     let verify: DrainVerifyReport | null = null;
     // [F5] 폴백 사유 분기: "unsupported"(구버전 미지원) vs "verify_failed"(크래시/하드캡). 둘 다 plain
     // drain 폴백(skipDrain=false)이나 UI 문구는 정직하게 다르게 표기한다("무손실" 표현 없음).
@@ -6003,15 +5978,10 @@ async function manualRestartAllDaemons() {
       restartResultToast(failedDepts, deptRestoreFailed);
       return;
     }
-    // 2) 부분 실패면 노드별 리포트 + [그래도 재시작/취소]. green(all_saved)이면 자동 진행.
-    if (verify && !verify.all_saved) {
-      dismissToast("restart-daemon");
-      const proceed = await confirmModal("일부 노드 저장 미확인", drainVerifyReportText(verify), "그래도 재시작");
-      if (!proceed) {
-        rotatingDaemon = false;
-        return;
-      }
-    }
+    // 2) ★[V111-F4] 부분 실패여도 **묻지 않는다**. 코어가 상한(max_wait_secs) 안에서 자동으로 재조회·
+    //    연장했고, 그 뒤엔 사람이 고를 것이 없다("그래도 재시작"에 아니오를 고르면 재시작만 안 될 뿐
+    //    저장이 되는 것도 아니다). 결과는 재시작 **뒤** 알림 한 줄로만 알린다(오너 최상위 원칙 2026-09-21:
+    //    한 번 눌러 재시작까지 한 번에 · 중간에 묻는 단계 0).
     // 3) verified 재시작 — 사전 검증했으므로 rotate는 이중 drain 생략(skipDrain=true).
     stickyToast("restart-daemon", "feed", "↻ 데몬 재시작", "저장 검증 완료 — 데몬을 다시 시작하고 노드를 복원하는 중…");
     const { failedDepts, deptRestoreFailed } = await restartAllDaemons(true);
@@ -6021,6 +5991,9 @@ async function manualRestartAllDaemons() {
     if (pendingLost > 0)
       toast("health", "미배달 push 유실", `재시작으로 미배달 큐 ${pendingLost}건이 유실됩니다(대화 원문은 트랜스크립트로 복원).`);
     restartResultToast(failedDepts, deptRestoreFailed);
+    // ★[V111-F4] 저장 미확인 자리는 재시작 뒤 알림 1줄로만(확인 창 폐기 · 전원 확인이면 조용히 지나간다).
+    const notice = verify ? drainVerifyNotice(verify) : null;
+    if (notice) toast("health", notice.title, notice.body);
   } catch (e) {
     dismissToast("restart-daemon");
     toast("health", "데몬 재시작 실패", String(e));

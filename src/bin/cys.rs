@@ -1364,6 +1364,9 @@ fn main() {
     // (`cys run -- <임의명령>`·`launch-agent` 로 뜨는 pane·팩 python 헬퍼)이 상속으로 덮인다.
     // 층1(python_command)·층2(spawn_env_pairs)가 못 닿는 임의 명령 경로의 바닥(lib.rs SOT).
     cys::seal_python_bytecode_in_process();
+    // ★v113-restore B1: 윈도에서 이 CLI 의 표준 입출력 핸들을 **상속 불가**로 — 자동 기동된 cysd 가 부른 쪽
+    //   (설치기·rotate)의 파이프를 물려받아 그쪽이 EOF 를 영원히 못 받는 사고 차단(unix 무동작).
+    cys::seal_std_handles_from_inheritance();
     // 파이프(head 등)로 출력이 끊겨도 패닉하지 않도록 SIGPIPE 기본 동작 복원
     #[cfg(unix)]
     unsafe {
@@ -14096,6 +14099,31 @@ fn rotate_state_root(pack_dir: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| cys::home_dir().join(".cys"))
 }
 
+/// 자식 출력을 **파이프가 아니라 임시 파일**로 받는다(TICKET=v113-restore B1).
+///
+/// 결함(윈 실기 2026-09-21 18:58 · bootstrap.log `stage 2-daemon-up` 316s 상한): ②에서 옛 데몬을 내린 뒤
+/// `cys identify` 자식이 새 cysd 를 자동 기동한다. `.output()` 은 파이프 쓰기 끝이 **모두** 닫혀야 끝나는데,
+/// 윈도는 `CreateProcess(bInheritHandles=TRUE)` 로 부모의 상속 가능 핸들을 손자에게 물려준다 — 새 cysd 가
+/// rotate 의 출력 파이프를 쥔 채 살아 있으니 rotate 가 영원히 읽기 대기에 걸린다(데몬은 섰는데 rotate 는 모름).
+/// 맥은 표준 입출력이 null 로 덮이고 나머지 fd 가 CLOEXEC 라 같은 일이 안 난다(맥 85s 합격과의 차이).
+/// 파일은 EOF 를 기다리지 않는다 — 자식이 끝나면 읽는다. 손자가 핸들을 쥐고 있어도 무해하다.
+/// stderr 는 종전(캡처 후 버림)과 같게 버린다.
+fn output_via_file(mut cmd: std::process::Command) -> Option<std::process::Output> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("cys-rotate-{}-{n}.out", std::process::id()));
+    let file = std::fs::File::create(&path).ok()?;
+    let status = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(file)
+        .stderr(std::process::Stdio::null())
+        .status();
+    drop(cmd);
+    let stdout = std::fs::read(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    Some(std::process::Output { status: status.ok()?, stdout, stderr: Vec::new() })
+}
+
 /// 앱 [재시작] 단추와 같은 5단을 CLI 한 번으로(TICKET=v112-restore ④ · master [master#990243f6]).
 /// 단계마다 **자기 자신의 하위명령**을 부른다 — 로직 사본 0(두 경로가 갈라지지 않게). 사후 알림 1줄.
 fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
@@ -14104,11 +14132,9 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
         return ROTATE_RC_DAEMON;
     };
     let run = |args: &[&str]| -> Option<std::process::Output> {
-        cys::hidden_command(&exe)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .ok()
+        let mut cmd = cys::hidden_command(&exe);
+        cmd.args(args);
+        output_via_file(cmd)
     };
     // ① 저장 검증 — 살아 있는 데몬이 있을 때만(없으면 저장할 자리도 없다).
     let mut drain_ok: Option<bool> = None;
@@ -14172,11 +14198,19 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
                         }
                     }
                 }
-                let _ = cys::hidden_command("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+                let _ = output_via_file({
+                    let mut c = cys::hidden_command("taskkill");
+                    c.args(["/PID", &pid.to_string(), "/F"]);
+                    c
+                });
             }
             #[cfg(not(windows))]
             {
-                let _ = cys::hidden_command("kill").args(["-TERM", &pid.to_string()]).output();
+                let _ = output_via_file({
+                    let mut c = cys::hidden_command("kill");
+                    c.args(["-TERM", &pid.to_string()]);
+                    c
+                });
             }
             let mut down = false;
             for _ in 0..50 {
@@ -18957,6 +18991,33 @@ mod tests {
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
         let i = body.find("if pid.is_none() && connect_raw().is_ok() {").expect("멈춘 데몬 분기 부재");
         assert!(body[i..i + 600].contains("return ROTATE_RC_DAEMON;"), "멈춘 데몬 분기가 중단하지 않는다");
+    }
+
+    /// ★v113-restore B1: 자식이 출력 핸들을 쥔 채 오래 사는 손자를 남겨도 rotate 의 단계 호출은 자식이
+    /// 끝나는 즉시 돌아온다(파이프면 손자가 끝날 때까지 막힌다 — 윈 stage 2 316s 멈춤의 모양).
+    /// unix 에서는 손자를 셸 백그라운드로 만들면 같은 상속이 난다.
+    #[cfg(unix)]
+    #[test]
+    fn rotate_step_output_does_not_wait_for_grandchild() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo '{\"total\":0}'; (sleep 12 &)"]);
+        let t = std::time::Instant::now();
+        let out = output_via_file(cmd).expect("자식 실행");
+        let dt = t.elapsed();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "{\"total\":0}", "출력을 못 받았다");
+        assert!(dt < std::time::Duration::from_secs(6), "손자가 끝날 때까지 기다렸다: {dt:?}");
+    }
+
+    /// 배선 핀 — rotate 의 단계 호출이 파이프 캡처(`.output()`)로 되돌아가지 않는다.
+    #[test]
+    fn rotate_run_uses_file_capture() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let a = prod.find("fn run_rotate(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("output_via_file(cmd)"), "rotate 단계 호출이 파일 캡처를 안 쓴다");
+        assert!(!body.contains(".output()"), "rotate 안에 파이프 캡처가 남아 있다");
     }
 
     #[test]

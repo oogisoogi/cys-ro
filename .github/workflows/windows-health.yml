@@ -229,6 +229,18 @@ jobs:
           set -euo pipefail
           CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys d5_env_injection -- --test-threads=1
 
+      # ★v113-restore B1: 윈 `cys rotate` 가 stage 2(identify)에서 316s 멈춘 원인(자동 기동 cysd 가 부른 쪽의
+      #   출력 파이프를 상속 → EOF 영구 부재)의 **대조군 + 수리** 실측. 대조군(unsealed)이 적색이면 원인
+      #   명명이 기각된 것이다 — 그때는 수리 초록만으로 합격 판정하지 마라.
+      - name: cargo test --lib win_std_inherit (Windows 실기 · rotate 멈춤 원인 대조군)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(CYS_PACK_DIR="$(mktemp -d)" cargo test --lib win_std_inherit_tests:: -- --test-threads=1 2>&1)"
+          echo "$out"
+          # 필터 0매치도 초록이라 실행 계수를 단언한다(대조군·수리·가운데 = 3).
+          echo "$out" | grep -qE '^test result: ok\. 3 passed'
+
       # ── IG-31(★C4 선행 · master 배정 2026-09-05): cysd 검체가 **어느 CI 레인에서도 Windows 에서
       #   돌지 않았다**(W-B 실측). windows-build=cargo test 0건 · 이 파일=factory_reset::/d5 둘만 ·
       #   release.yml 의 --bin cysd 는 aarch64-apple-darwin 조건이라 macOS 전용. 그래서 R5 persist_epoch

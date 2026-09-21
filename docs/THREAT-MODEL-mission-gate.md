@@ -273,6 +273,9 @@ OUT OF SCOPE를 상대로 우리가 가진 것은 차단이 아니라 **흔적**
 
    합성 디렉티브 실물(master 699 제출단위) 기준으로는 push 1회 ≈ 208 KB → 회전까지 **40회** ·
    2세대 커버 **81회**다.
+   · **(1.1.3 재실측 · 2026-09-22 · TICKET=v113-review-fix)** 디렉티브급 push(MASTER + RSI = 779 제출단위)
+     1회 = **232,454 B**(조각 평균 298 B) → 회전까지 **36회**(`directive_grade_push_keeps_rotation_budget`
+     요구선 30회 이상 유지).
 
    **읽는 법(정직 고지)** — "572배"는 **멀티라인 push만 반복하는 최악 형상**의 수치다.
    `cys send`·큐 배달·schedule wake 같은 **1행 push는 조각을 0건 남기므로 R6이 아무 영향도 주지
@@ -339,6 +342,13 @@ OUT OF SCOPE를 상대로 우리가 가진 것은 차단이 아니라 **흔적**
        (초장문 push 한 번이 원장을 통째로 밀어내지 못한다). **거리는 테스트가 지킨다** —
        `delivery.rs::deployed_directive_payload_fits_part_cap_with_headroom`이 합성 문안의 실제
        제출단위를 재서 상한 대비 여유가 4배 미만이면 실패한다(문안이 커지면 잡힌다).
+     · **봉합 ①-2(R8 · 1.1.3 · 2026-09-22 · master#9c4fd158)** `MAX_PARTS` 4000 → **6000**. 근거 = 1.1.3 팩
+       증분(CEO_TEMPLATE·MASTER_DIRECTIVE 절 추가 · dept-by-chat 스킬 신규)으로 합성 문안이 **master 955 ·
+       CEO 1006 제출단위**가 되어 CEO 여유 핀이 4,024 > 4,000 으로 적색(v1.1.2 릴리스 CI 35572393564 초록 ·
+       v1.1.3 태그 릴리스 CI 35626073266 macOS arm64 적색). 6000 은 실측 최대(1006)의 5.96배(여유 4배선
+       = 1,500 단위)이고, 초과분 1건의 원장 비용은 6000 × 298 B(실측 조각 평균) ≈ 1.79 MB 로
+       `LEDGER_MAX_BYTES`(8 MiB)의 **21.3%**다 — 초장문 push 한 번이 원장을 통째로 밀어내지 못한다는 성질은
+       그대로다. `parts_capped` fail-closed 의미와 `LEDGER_MAX_BYTES` 는 바꾸지 않았다.
      · **봉합 ②(fail-closed + verdict 고지)** 초과가 나면 데몬이 **전문 레코드에 `parts_capped`
        필드**를 남긴다. 판독자는 그것을 보고 ⓐ`delivery_parts_capped` 이상징후를 발행해 임무
        verdict에 싣고, ⓑ그 배달로부터 `DELIVERY_CAPPED_FOLD_S`(600초) 안의 **미매치 프롬프트를

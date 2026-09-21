@@ -482,9 +482,18 @@ def _quarantine(src, trash_dir, label):
     shutil.move(src, dest)
     return (f"quarantine_{label}", dest)
 
-def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_state=False):
+def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_state=False, expect_gen=None):
     require_cso()  # 게이트를 효과 함수에 (R1 REVISE-1) — import 직접호출 우회 차단
     actions = []
+    # ★B11(codex 2R F6): 기대 세대가 주어지면 어떤 격리보다 먼저 대조한다 — 번호(dept-N)가 재사용된 뒤
+    #   옛 카드로 닫으면 새 부서의 pack·workdir 를 격리하게 된다. 최종 대조는 cys-dept down 의 잠금 안
+    #   울타리(reg_fence_close)가 한 번 더 한다(여기는 조기 거부 · 저기가 원자 판정).
+    if expect_gen:
+        cur = (load_json(DEPTS, {"depts": {}}).get("depts") or {}).get(name) or {}
+        if cur.get("gen") != expect_gen:
+            sys.stderr.write("[destroy] %s: 세대 불일치(기대 %s · 현재 %s) — 닫지 않음\n"
+                             % (name, expect_gen, cur.get("gen")))
+            return [("gen_mismatch", 9)]
     # ★기능2 단일 진입점(오케스트레이터): pack-dept·workdir는 여기서 격리, state 디렉토리는 하위
     # 프리미티브(cys-dept down --purge-state)에 위임한다 — 세 디렉토리 모두 동일 trash 하위(같은 ts).
     ts = os.environ.get("CYS_TRASH_STAMP", str(int(time.time())))
@@ -519,8 +528,14 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
         return actions  # down 실패로 cmd_destroy가 비0 판정
     down_cmd = [cys_dept, "down", name] + (["--purge-state"] if purge_state else [])
     r = subprocess.run(down_cmd, capture_output=True, text=True,
-                       env={**os.environ, "CYS_TRASH_STAMP": ts}, **NOWIN)
+                       env={**os.environ, "CYS_TRASH_STAMP": ts, "CYS_DEPT_EXPECT_GEN": expect_gen or ""}, **NOWIN)
     actions.append(("down", r.returncode))
+    if r.returncode in (9, 10):
+        # ★B11: 울타리 거부(9 세대 불일치 · 10 다른 닫기 진행 중) = teardown 이 시작되지 않았다 —
+        #   pack·workdir 격리도 하지 않는다(그 번호의 지금 부서는 남의 것이다).
+        sys.stderr.write("[destroy] %s: cys-dept down 울타리 거부(rc=%d) — 격리 없이 중단 · %s\n"
+                         % (name, r.returncode, (r.stderr or "").strip()[:300]))
+        return actions
     # ★F1(reviewer1): down 실패(특히 --purge-state의 state 격리 실패=exit 3)를 삼키지 않는다 —
     #   사유를 stderr로 정직 보고하고 최종 exit는 cmd_destroy가 비0으로 판정한다. 부분 실패라도
     #   pack/workdir 격리는 best-effort로 진행(사용자 회수 표면 최대화).
@@ -565,13 +580,14 @@ def cmd_destroy(args):
         for name in targets:
             mk = reg["depts"].get(name, {}).get("mission_key")
             res = destroy_dept(name, mk, purge=args.purge, purge_workdir=args.purge_workdir,
-                               purge_state=args.purge_state)
+                               purge_state=args.purge_state, expect_gen=args.expect_gen)
             allres[name] = res
             if any(a[0]=="abort_no_snapshot" for a in res):
                 sys.stderr.write(f"[destroy] {name}: 스냅샷 실패 → 작업물 삭제 중단(fail-closed)\n"); return 1
             # ★F1(reviewer1): down·사후검증 실패는 최종 exit 비0 — 부분 성공을 "done"·0으로 오보 금지
             #   (state 잔존→재발견→부활 차단 붕괴를 조용히 통과시키던 결함 봉인).
-            if any(a[0]=="down" and a[1]!=0 for a in res) or any(a[0]=="verify" and a[1]!=0 for a in res):
+            if (any(a[0]=="down" and a[1]!=0 for a in res) or any(a[0]=="verify" and a[1]!=0 for a in res)
+                    or any(a[0]=="gen_mismatch" for a in res)):
                 failed = True
         print(json.dumps({"destroy": "done" if not failed else "incomplete", "targets": allres,
                           "note": "forwarder는 소켓 소멸 후 ~30s self-reap(직접 회수 안 함)"}, ensure_ascii=False))
@@ -864,6 +880,8 @@ def main():
     d.add_argument("--purge-workdir", action="store_true")
     d.add_argument("--purge-state", action="store_true",
                    help="★기능2: 부서 state 디렉토리(대화기억)까지 격리(cys-dept down --purge-state 위임)")
+    d.add_argument("--expect-gen",
+                   help="★B11: 이 세대(gen)의 부서일 때만 닫는다(대화 닫기 카드 대조 · 번호 재사용 차단)")
     args = ap.parse_args()
     if args.self_test: return self_test()
     if not args.cmd: ap.print_help(); return 2

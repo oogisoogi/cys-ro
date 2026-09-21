@@ -645,7 +645,8 @@ def _propose_close(a, reg, ts, cat, live):
     rid = new_req_id()
     r = {"id": rid, "kind": "close", "state": "proposed", "created_at": now(), "target": target,
          "display": display_of(target, e, cat), "cwd": e.get("cwd"), "key": e.get("mission_key"),
-         "socket": e.get("socket"), "last_dept": len(live) == 1, "human_axis": hook_recently_active(),
+         "socket": e.get("socket"), "gen": e.get("gen"), "last_dept": len(live) == 1,
+         "human_axis": hook_recently_active(),
          "events": []}
     os.makedirs(req_dir(rid), exist_ok=True)
     card = render_close_card(r)
@@ -1222,13 +1223,36 @@ def cleanup_orphan_ledgers():
         if not m:
             continue
         name = m.group(1)
-        if name in registry():                 # 이동 직전 재독
-            continue
-        try:
-            moved.append(_move_to_trash(os.path.join(fd, fn), "formation"))
-        except OSError:
-            pass
+        # ★B11(codex 1R F13 · 2R F10): 「부재 확인 ↔ 원장 이동」을 레지스트리 쓰기 잠금(cys-dept 의 모든 예약·해제가
+        #   쓰는 depts.json.lock) 안에서 — 그 사이 GUI·틱이 같은 번호를 예약하면 잠금이 풀린 뒤라 이 부서는 레지스트리에
+        #   있고, 우리는 옮기지 않는다. 읽은 원장과 옮기는 원장의 동일성도 잠금 안에서 다시 본다.
+        with _registry_lock():
+            if name in registry():
+                continue
+            d2 = load_json(os.path.join(fd, fn), None)
+            if not isinstance(d2, dict) or d2.get("socket") != sock:
+                continue
+            try:
+                moved.append(_move_to_trash(os.path.join(fd, fn), "formation"))
+            except OSError:
+                pass
     return moved
+
+
+class _registry_lock(object):
+    """cys-dept reg_* 와 같은 잠금 파일(<depts.json>.lock · flock) — 레지스트리 쓰기 측 공통 잠금(B11)."""
+
+    def __enter__(self):
+        import javis_org
+        p = depts_json() + ".lock"
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        self.f = open(p, "w")
+        javis_org._flock(self.f)
+        return self
+
+    def __exit__(self, *exc):
+        self.f.close()                                  # 닫으면 flock 이 풀린다
+        return False
 
 
 def _rm(path):
@@ -1563,7 +1587,9 @@ def _close_step(r):
     # ★codex 1R F10: 번호(dept-N)는 재사용된다 — 카드에서 확인받은 부서와 지금 그 번호의 부서가 같은지
     #   (맡은 일 키·폴더·소켓 · 카드에 기록된 칸만) 대조하고, 하나라도 다르면 닫지 않는다(비가역 방향 차단).
     cur = reg[r["target"]]
-    for f_req, f_reg in (("key", "mission_key"), ("cwd", "cwd"), ("socket", "socket")):
+    #   ★B11: 세대 ID(gen · cys-dept 가 예약마다 새로 찍는다)도 대조한다 — 키 없는 메뉴 부서는 세 칸이 번호에서
+    #   파생돼 교체를 못 가렸다(2R F6). 최종 판정은 cys-dept down 의 잠금 안 울타리가 --expect-gen 으로 한다.
+    for f_req, f_reg in (("key", "mission_key"), ("cwd", "cwd"), ("socket", "socket"), ("gen", "gen")):
         if f_req in r and r.get(f_req) != cur.get(f_reg):
             _fail(r, "target_changed:%s" % f_req)
             return
@@ -1573,8 +1599,10 @@ def _close_step(r):
     env["CYS_ROLE"] = "cso"
     env["CYS_DEPT_BIN"] = cys_dept_bin()
     try:
-        p = subprocess.run([sys.executable, org, "destroy", "--dept", r["target"], "--purge", "--purge-state"],
-                           capture_output=True, text=True, timeout=CREATE_WAIT_SEC(), env=env, **NOWIN)
+        argv = [sys.executable, org, "destroy", "--dept", r["target"], "--purge", "--purge-state"]
+        if r.get("gen"):
+            argv += ["--expect-gen", r["gen"]]
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=CREATE_WAIT_SEC(), env=env, **NOWIN)
         rc = p.returncode
     except subprocess.TimeoutExpired:
         rc = 124

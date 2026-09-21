@@ -544,10 +544,12 @@ fn check_agent_death(
                 let candidates = known_agent_candidates();
                 // ★argv 승격(U-5): 에이전트 식별은 명령줄 토큰 매칭이다 — 이름 한 토큰
                 // (`node.exe` 래퍼)으로는 참/거짓을 낼 수 없다. 범위는 이 좌석의 자손만.
-                let cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
+                let mut cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
                     .into_iter()
                     .map(|(_, cmd)| cmd)
                     .collect();
+                // ★v113-restore: 에이전트가 페인의 직접 프로세스인 좌석도 관측한다(root_agent_cmd doc).
+                cmds.extend(root_agent_cmd(sys, s.pid, &candidates));
                 let current = select_observed_agent(&cmds, &candidates);
                 match confirm_pending_obs(&pending, current.as_ref(), now, PENDING_OBS_TTL_SECS) {
                     PendingVerdict::Commit => {
@@ -603,10 +605,17 @@ fn check_agent_death(
         // U-5 argv 승격 뒤 `tail -f ~/.cys/claude/x.log` 같은 비에이전트 자손을 생존 증거로
         // 승격시켜 고아 좌석을 만들었다. 좁힘은 '엄격 매처가 이 좌석의 에이전트를 본 적 있다'가
         // 증명된 좌석에서만 켜지므로 오살 경로를 새로 열지 않는다.
-        let cmdlines: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
+        let mut cmdlines: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
             .into_iter()
             .map(|(_, cmdline)| cmdline)
             .collect();
+        // ★v113-restore: 에이전트가 페인의 직접 프로세스인 좌석(설치기 master) — 뿌리도 증거에 넣는다.
+        //   후보는 이 좌석의 meta 하나로 좁힌다(다른 에이전트 뿌리를 이 좌석 증거로 세지 않는다).
+        if let Some(root) =
+            root_agent_cmd(sys, s.pid, &[(agent.clone(), bin_base.clone())])
+        {
+            cmdlines.push(root);
+        }
         let liveness = decide_agent_liveness(&cmdlines, &bin_base);
         let strict_proven = update_strict_proof(
             strict_proof.entry(s.id).or_default(),
@@ -3210,7 +3219,14 @@ pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
     // 무meta Occupied 좌석이 하나도 없는 틱은 IO 0).
     let mut candidates: Option<Vec<(String, String)>> = None;
     for s in surfaces {
-        let seat = seat_state(sys, &s);
+        let mut seat = seat_state(sys, &s);
+        // ★v113-restore: 자손이 없어도 뿌리 자신이 기지 에이전트면 좌석은 차 있다(설치기 master 자리).
+        if seat == SeatState::Empty && !s.exited.load(Ordering::Relaxed) {
+            let cands = candidates.get_or_insert_with(known_agent_candidates);
+            if root_agent_cmd(sys, s.pid, cands).is_some() {
+                seat = SeatState::Occupied;
+            }
+        }
         s.seat_cache.store(seat.as_u8(), Ordering::Relaxed);
         // ★G2(W3-A BLOCK 교정) 좌석 에이전트 엄격 관측: meta 부재 보조축(SeatVacantNoMeta)의
         // armed 경계는 '아무 자손'(원시 Occupied)이 아니라 **기지 에이전트 엄격 매칭**
@@ -3230,10 +3246,12 @@ pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
                     // "cmdline_matches_agent_exec 엄격 매칭"이다(위 주석) — 이름 한 토큰으로는
                     // 그 계약이 성립하지 않는다. 범위는 meta 부재·Occupied 좌석의 자손만이라
                     // 틱당 승격 대상이 구조적으로 소수다.
-                    let cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
+                    let mut cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
                         .into_iter()
                         .map(|(_, cmd)| cmd)
                         .collect();
+                    // ★v113-restore: 뿌리가 에이전트인 좌석(root_agent_cmd doc).
+                    cmds.extend(root_agent_cmd(sys, s.pid, cands));
                     seat_agent_observed(&cmds, cands)
                 }
             };
@@ -3603,6 +3621,21 @@ pub fn collect_descendants_with_cmd(sys: &System, root: u32) -> Vec<(u32, String
         .into_iter()
         .map(|(pid, cmd, _)| (pid, cmd))
         .collect()
+}
+
+/// 좌석의 **뿌리 프로세스 자신**이 기지 에이전트면 그 argv(엄격 매칭 · TICKET=v113-restore death:master).
+///
+/// 좌석 판정은 「셸의 자손」을 본다. 그런데 설치기가 세운 master 자리는 셸 없이 `claude …` 가 **페인의
+/// 직접 프로세스**다(893 VM 실기: surface pid 1754 = `/Users/admin/.local/bin/claude --dangerously-skip-permissions
+/// 너는 마스터다…` · STAT Ss+). 자손만 보면 그 좌석은 영원히 「빈 자리」라, 유예가 지나면
+/// `AgentNeverStarted` 로 **살아 있는 master 에 사망 경보**를 냈다(설치 약 10분 뒤 1회 · misses=63).
+/// 뿌리가 셸인 보통 좌석은 뿌리 argv 가 에이전트와 엄격 매칭되지 않아 `None` — 종전 거동 그대로다.
+pub fn root_agent_cmd(sys: &System, root: u32, candidates: &[(String, String)]) -> Option<String> {
+    if candidates.is_empty() || sys.process(Pid::from_u32(root)).is_none() {
+        return None;
+    }
+    let cmd = argv_snapshot(&[root]).remove(&root)?;
+    seat_agent_observed(std::slice::from_ref(&cmd), candidates).then_some(cmd)
 }
 
 /// 관측 문자열의 **출처** — "argv 를 실제로 읽었는가, `name()` 폴백인가".
@@ -6741,6 +6774,40 @@ mod tests {
                 CmdSource::NameFallback => {}
             }
         }
+    }
+
+    /// ★v113-restore death:master — 좌석 뿌리가 에이전트 자신이면(셸 없음) 그 argv 를 관측으로 센다.
+    /// 뿌리가 에이전트가 아니면(보통의 셸 좌석) None — 종전 거동. 실 프로세스로 잰다.
+    #[cfg(unix)]
+    #[test]
+    fn v113_root_agent_cmd_counts_pane_root_agent_only() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
+        let pid = child.id();
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let as_agent = [("fakeagent".to_string(), "sleep".to_string())];
+        let other = [("claude".to_string(), "claude".to_string())];
+        let got = super::root_agent_cmd(&sys, pid, &as_agent);
+        let miss = super::root_agent_cmd(&sys, pid, &other);
+        let none = super::root_agent_cmd(&sys, pid, &[]);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(got.as_deref().is_some_and(|c| c.contains("sleep")), "뿌리 에이전트를 못 봤다: {got:?}");
+        assert_eq!(miss, None, "다른 에이전트 이름으로 뿌리를 셌다");
+        assert_eq!(none, None, "후보가 없으면 관측 0(fail-closed)");
+    }
+
+    /// 배선 핀 — 좌석 캐시·생존 판정 두 자리 모두 뿌리 관측을 쓴다(한쪽만 고치면 경보가 남는다).
+    #[test]
+    fn v113_root_agent_wired_into_seat_cache_and_liveness() {
+        let src = include_str!("governance.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        let a = prod.find("pub fn refresh_seat_cache(").unwrap();
+        let seat_body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(seat_body.contains("root_agent_cmd(sys, s.pid, cands).is_some()"), "좌석 캐시 미배선");
+        let b = prod.find("fn check_agent_death(").unwrap();
+        let body = &prod[b..b + prod[b..].find("\n}\n").unwrap()];
+        assert!(body.contains("cmdlines.push(root)"), "생존 판정 미배선");
     }
 
     /// ★FLAKE-GOVERNANCE-1 ② — **래퍼 동형성은 구조로 못박는다**(in-crate 소스핀 · U-22 패턴).

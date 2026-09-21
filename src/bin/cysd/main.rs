@@ -31,6 +31,7 @@ mod skillrun;
 mod state;
 mod undo;
 mod usage;
+mod watch_wake;
 
 use cys::Request;
 use handlers::Reply;

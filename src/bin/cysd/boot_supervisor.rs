@@ -374,7 +374,7 @@ impl TerminalKind {
     #[allow(dead_code)] // ← B3 감독자 terminal 전이가 소비한다(위 ALL 주석의 시한과 같다)
     pub fn from_retire_reason(why: &str) -> TerminalKind {
         match why {
-            "expired" => TerminalKind::Expired,
+            "expired" | "expired_running" => TerminalKind::Expired,
             "attempts_exhausted" => TerminalKind::AttemptsExhausted,
             // schema_mismatch·unknown_action·unknown_decl_origin·claim_stale·no_surface 는
             // 전부 "전제가 무너져 실행하지 않는다" = aborted 다(사유는 reason 이 나른다).
@@ -627,6 +627,14 @@ pub fn decide(it: &BootIntent, attempts: u32, now: f64) -> Disposition {
         && it.decl_origin != DECL_ORIGIN_GUI_OPERATOR
     {
         return Disposition::Retire("unknown_decl_origin");
+    }
+    // ★v112-wake ③: 이미 스폰된(running) 인텐트가 수명을 넘기는 것은 「팀이 안 떴다」가 아니다 —
+    //   성공 디스패치가 인텐트를 running 으로 남기고, 그 해제 조건이 수명 상한 하나뿐이라(아래 B3 주석)
+    //   **정상 기동한 선언도 30분 뒤 반드시 이 갈래를 지난다**. 종전엔 그때 「팀이 이 선언으로 뜨지
+    //   않았다(why=expired)」를 선언 pane(= master 자리)에 넣어 왕초보에게 거절·부재로 보였다
+    //   (1.0.2 실기 09:24 설치 → 09:59 통보). 사유를 갈라 조용히 걷는다(무산 통보 대상 아님).
+    if it.state == IntentState::Running && now - it.created_at > INTENT_MAX_AGE_SECS {
+        return Disposition::Retire("expired_running");
     }
     if now - it.created_at > INTENT_MAX_AGE_SECS {
         return Disposition::Retire("expired");
@@ -2021,7 +2029,10 @@ fn notify_no_spawn(
     }
     st.no_spawn_notified.insert(it.id.clone());
     let text = format!(
-        "[cys-supervisor] 팀이 이 선언으로 뜨지 않았다(intent={} why={why}) — {}. 재선언이 재개 신호다. 근거: boot-supervisor.log · boot-last",
+        // ★v112-wake ③: 기계 표식 + 할 일 1줄 형식 — 이 줄은 master 자리(선언 pane)에 들어가고 오너도 본다.
+        //   왕초보가 읽어도 「내가 할 일 없음」이 먼저 읽히게, master 에게는 묻지 말고 확인·보고하라는 1줄.
+        //   (선두 64자에 안정 마커 「스폰 0회로 끝났다」 — 원장 preview 대조용)
+        "[cys-supervisor · 기계 통지 · 사용자 할 일 없음] 팀 자동 기동이 스폰 0회로 끝났다(intent={} why={why}) — {}. master 할 일 1줄: 오너에게 묻지 말고 cys list 로 좌석을 확인해 1줄 보고한다(재선언이 재개 신호). 근거: boot-supervisor.log · boot-last",
         it.id,
         no_spawn_reason(why)
     );
@@ -2579,7 +2590,10 @@ fn tick_in(
                 //   훅이 exit 0 한 경로에서는 그 침묵이 곧 '선언했는데 무반응'이다.
                 //   통보가 **삭제보다 앞**이다 — 순서가 뒤집히면 삭제 실패 게이트(음성 캐시)의
                 //   조용한 분기가 통보까지 삼킬 여지가 생긴다.
-                notify_no_spawn(daemon, st, it, why, &mut pane_notices);
+                // ★v112-wake ③: 스폰된 뒤 수명이 지난 인텐트(expired_running)는 무산이 아니다 — 통보 0.
+                if why != "expired_running" {
+                    notify_no_spawn(daemon, st, it, why, &mut pane_notices);
+                }
                 // 폐기는 통보 예산·삭제 실패와 무관하게 계속한다 — 스풀을 줄이는 방향이고,
                 // 쓰레기·적대 인텐트의 GC 를 통보 예산에 묶으면 스풀이 줄지 않는다.
                 if let Some(removed) =
@@ -3218,6 +3232,7 @@ mod tests {
         for why in [
             "schema_mismatch", "unknown_action", "unknown_decl_origin", "expired",
             "attempts_exhausted", "claim_stale", "no_surface", "already_terminal",
+            "expired_running",
         ] {
             let k = TerminalKind::from_retire_reason(why);
             assert!(TerminalKind::ALL.contains(&k), "{why} 가 표 밖으로 샜다");
@@ -5509,7 +5524,7 @@ mod tests {
         let ledger = std::fs::read_to_string(crate::delivery::ledger_path(&d.socket_path))
             .unwrap_or_default();
         assert!(
-            ledger.contains("팀이 이 선언으로 뜨지 않았다"),
+            ledger.contains("스폰 0회로 끝났다"),
             "무스폰 통보가 원장 선기록 없이 나갔다(기계 push 오너 임무 오인 창) — 원장: {ledger:?}"
         );
     }
@@ -5584,6 +5599,48 @@ mod tests {
         }
         tick_in(&d, &dir, &mut st, ok_runner, remove_spool_file, now + 1.0);
         assert_eq!(count_fails(&d), 3, "반복 틱이 통보를 늘렸다(래치 파손)");
+    }
+
+    /// ★v112-wake ③: 성공 디스패치(running) 뒤 수명이 지난 인텐트는 **통보 0**(feed·pane 둘 다)이고
+    /// 스풀에서는 걷힌다. 대조군 = 같은 틱의 pending 만료 인텐트는 종전대로 loud 다.
+    #[test]
+    fn running_intent_past_ttl_retires_quietly_but_pending_expiry_stays_loud() {
+        let d = tmp_daemon("exprun");
+        let s = d
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("test surface");
+        d.surfaces.lock().unwrap().insert(s.id, s.clone());
+        let dir = tmp_spool("exprun");
+        enqueue_in(&dir, &req("run", Some(s.id)), 0.0).unwrap();
+        enqueue_in(&dir, &req("pend", None), 0.0).unwrap();
+        // "run" 을 러너 소유(running) 상태로 만든다 — 성공 디스패치가 남기는 모양.
+        let p = intent_path(&dir, "run");
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        v["state"] = serde_json::json!("running");
+        std::fs::write(&p, v.to_string()).unwrap();
+        let mut run_it = intent("run");
+        run_it.state = IntentState::Running;
+        assert_eq!(
+            decide(&run_it, 0, 1000.0 + INTENT_MAX_AGE_SECS + 10.0),
+            Disposition::Retire("expired_running")
+        );
+        let mut st = SupState::default();
+        tick_in(&d, &dir, &mut st, ok_runner, remove_spool_file, INTENT_MAX_AGE_SECS + 10.0);
+        let fails: Vec<_> = d
+            .feed_items
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| i.kind == "bootstrap-fail")
+            .map(|i| i.body.clone())
+            .collect();
+        assert_eq!(fails.len(), 1, "pending 만료만 통보돼야 한다: {fails:?}");
+        assert!(fails.iter().all(|b| b.contains("intent=pend")), "{fails:?}");
+        assert!(!intent_path(&dir, "run").exists(), "running 만료 인텐트가 스풀에 남았다");
+        let ledger = std::fs::read_to_string(crate::delivery::ledger_path(&d.socket_path))
+            .unwrap_or_default();
+        assert!(!ledger.contains("intent=run"), "running 만료가 선언 pane 에 주입됐다: {ledger}");
     }
 
     /// 데몬 재시작 픽업(스풀에 남은 소진 인텐트)도 조용한 폐기가 아니라 loud 종착이다.

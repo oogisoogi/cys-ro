@@ -990,6 +990,11 @@ pub struct FeedItem {
     /// GUI operator token 경유 해소는 pid만 Some(surface는 None)일 수 있다.
     #[serde(default)]
     pub resolver_pid: Option<u32>,
+    /// ★v112-wake ⑥: 발행자가 `--wait` 로 결재를 **기다리며** 올린 요청인가. 참이면 발행자 pid 가
+    /// 죽는 순간 그 결재를 받을 주체가 사라진 것이다(→ 데몬이 `expired` 로 닫는다). 거짓(발사 후
+    /// 망각 · 구 영속 라인)은 발행 CLI 가 곧바로 끝나는 것이 정상이라 pid 축으로 닫지 않는다.
+    #[serde(default)]
+    pub wait: bool,
 }
 
 pub struct Config {
@@ -2791,6 +2796,7 @@ impl Daemon {
             auto_route: false,
             resolver_surface: None, // W4-A: 미해소 — 각인은 feed.reply 단일 경로에서만.
             resolver_pid: None,
+            wait: false,
         };
         self.feed_items.lock().unwrap().push(item.clone());
         self.persist_feed_item(&item);
@@ -6749,6 +6755,7 @@ mod tests {
             auto_route: false,
             resolver_surface: None,
             resolver_pid: None,
+            wait: false,
         }
     }
 

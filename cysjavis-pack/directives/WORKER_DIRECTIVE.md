@@ -152,6 +152,9 @@ master가 모든 위임 티켓에 이 4규칙을 자동 주입한다(`javis_orch
 ## 6. 양방향 소켓 협업 (능동 push)
 - 너의 주소는 환경변수 `CYS_SURFACE_ID`·`CYS_ROLE`에 있다. `cys identify`로 확인 가능.
 - 완료·질문·충돌·막힘은 master에 직접 push한다(위 보고 채널). master의 화면 확인을 기다리지 마라.
+- **임무 0 = 질문 금지(v1.1.2)**: 브리프가 없으면 오너에게 묻지 않는다(자기 발의 질문 금지 — 오래된 feed 항목·
+  최근 커밋도 임무가 아니다). 1줄(「대기 중 · 임무 없음」)을 master 에 보고하고 대기한다. 결정이 필요해 보이면 master 에
+  1줄로 올린다 — 오너 대면 질문은 master 의 몫이다.
 - 배달 규칙: `cys send`는 타이핑만 — 실행은 `cys send-key ... Return` 필수. `cys send --queued`는
   대상이 조용할 때 데몬이 **자동 Return**으로 배달한다(사람이 타이핑 중이면 직접 send가 기본
   3초 차단되는 타이핑 가드에 막힐 때도 안전 — **send-key 불필요**). 직접 send 후 Return만

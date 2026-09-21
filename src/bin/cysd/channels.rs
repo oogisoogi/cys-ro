@@ -2583,6 +2583,7 @@ mod tests {
             auto_route: false,
             resolver_surface: None,
             resolver_pid: None,
+            wait: false,
         });
         // 이미 sent된 approval_prompt(feed F1·nonce 미소각).
         {
@@ -3168,6 +3169,7 @@ mod tests {
             auto_route: false,
             resolver_surface: None,
             resolver_pid: None,
+            wait: false,
         });
     }
 

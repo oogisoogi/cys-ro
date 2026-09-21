@@ -71,12 +71,16 @@ pub fn spawn_watchdog(daemon: Arc<Daemon>) {
                 check_surfaces(&daemon, &sys, &mut last_dup_alert, &mut last_proc_alert);
                 check_idle(&daemon);
                 deliver_queued(&daemon, &mut queue_depth_alerted, &mut queue_starve_alerted);
+                // ★v112-wake: 배달된 감시 각성 줄의 제출 실측(미제출이면 Return 1회).
+                crate::watch_wake::tick_probes(&daemon);
                 reap_orphan_ledger(&daemon, &sys);
                 reap_exited_surfaces(&daemon);
                 reap_zombie_surfaces(&daemon, &sys, &mut zombie_miss);
                 check_agent_death(&daemon, &sys, &mut restart_counts, &mut agent_strict_proof);
                 check_surface_crash(&daemon);
                 check_feed_aging(&daemon, &mut feed_reminded);
+                // ★v112-wake ⑥: 결재 주체가 사라진 pending(요청자 사망 · 이전 데몬 세대)은 expired 로 닫는다.
+                expire_orphan_feed(&daemon);
                 check_feed_backlog(&daemon, &mut feed_backlog_alerted);
                 check_approval_stall(&daemon, &mut approval_stall_fired);
                 check_role_deadman(&daemon, &mut deadman);
@@ -660,6 +664,16 @@ fn check_agent_death(
                    "strict_proven": strict_proven,
                    "restart_count": restart_counts.get(&s.id).copied().unwrap_or(0)}),
         );
+        // ★v112-wake: role 좌석(master 외)의 에이전트 사망 = master 가 봐야 하는 사건 — 1줄 각성.
+        if let Some(r) = role.as_deref().filter(|r| *r != "master") {
+            let sref = cys::surface_ref(s.id);
+            crate::watch_wake::wake_master(
+                daemon,
+                &format!("agent.exited:{}:{}", s.id, dead_since as u64),
+                s.id,
+                &format!("[cys-감시] {sref}({r}) 에이전트 {agent} 종료 감지 — cys list 로 확인하고 처리하라"),
+            );
+        }
         if !auto_restart {
             continue;
         }
@@ -839,6 +853,47 @@ fn check_learn_stuck(
 }
 
 /// T3-12 승인 aging 재알림: pending feed가 무음 적체되지 않게 N분마다 재push.
+/// ★v112-wake ⑥: 승인 Feed pending 자동 만료 — **deny 가 아니라 `expired`**(아무도 결재하지 않았다).
+///
+/// 윈 실기: CSO 가 두 세대 전 master 가 올린 요청(req-10492)을 들고 오너에게 「push할까요?」를 물었다.
+/// 그 요청을 기다리던 프로세스는 이미 없고, 결재를 해도 받을 주체가 없다. 닫는 조건은 둘뿐이다:
+/// ⑴ **이전 데몬 세대**의 항목(created_at < 이번 데몬 기동 시각 — 재기동·재설치를 넘어 feed.jsonl 에서
+///    되살아난 것) ⑵ `--wait` 로 기다리던 요청인데 **발행자 pid 가 죽었다**.
+/// 발사 후 망각 요청(wait=false)은 발행 CLI 가 곧 끝나는 것이 정상이라 ⑵로 닫지 않는다(오만료 차단).
+/// 원장(feed.jsonl)은 last-wins 로 상태만 바뀐다 — 삭제 0.
+pub(crate) fn expire_orphan_feed(daemon: &Daemon) {
+    let now = now_epoch();
+    let started = daemon.started_at;
+    let expired: Vec<crate::state::FeedItem> = {
+        let mut items = daemon.feed_items.lock().unwrap();
+        items
+            .iter_mut()
+            .filter(|i| i.status == "pending")
+            .filter(|i| {
+                let old_generation = i.created_at < started;
+                let requester_gone =
+                    i.wait && i.publisher_pid.is_some_and(|p| !crate::state::pid_alive(p));
+                old_generation || requester_gone
+            })
+            .map(|i| {
+                i.status = "expired".into();
+                i.resolved_at = Some(now);
+                i.clone()
+            })
+            .collect()
+    };
+    for it in expired {
+        daemon.persist_feed_item(&it);
+        daemon.bus.publish(
+            "feed.item.expired",
+            "feed",
+            it.surface_id,
+            json!({"request_id": it.request_id, "kind": it.kind,
+                   "reason": if it.created_at < started { "previous_daemon_generation" } else { "requester_gone" }}),
+        );
+    }
+}
+
 fn check_feed_aging(daemon: &Arc<Daemon>, reminded: &mut HashMap<String, f64>) {
     let remind_secs = env_u64("CYS_FEED_REMIND_SECS", 300);
     if remind_secs == 0 {
@@ -4175,7 +4230,7 @@ fn check_surfaces(
 
 /// 완화책 ②: 출력이 멎은 지 idle_seconds 지난 surface를 push로 알린다.
 /// master가 이 이벤트로 작업 분할·점검 판단을 한다 (read-screen 폴링 불필요).
-fn check_idle(daemon: &Daemon) {
+pub(crate) fn check_idle(daemon: &Daemon) {
     let surfaces: Vec<Arc<crate::state::Surface>> =
         daemon.surfaces.lock().unwrap().values().cloned().collect();
     for s in surfaces {
@@ -4191,8 +4246,54 @@ fn check_idle(daemon: &Daemon) {
                 Some(s.id),
                 json!({"idle_seconds": idle_for, "surface_ref": cys::surface_ref(s.id)}),
             );
+            // ★v112-wake: role 좌석(master 외)의 입력줄에 미제출 지시가 남은 채 유휴면 master 를 깨운다.
+            //   빈 입력줄의 유휴는 정상 대기라 깨우지 않는다(이벤트만 — 종전 동작).
+            let role = s.role.lock().unwrap().clone();
+            if let Some(role) = role.filter(|r| r != "master") {
+                if seat_input_line(&s) == InputLine::Occupied {
+                    let sref = cys::surface_ref(s.id);
+                    let episode = (crate::state::now_epoch() - idle_for as f64) as u64 / 60;
+                    crate::watch_wake::wake_master(
+                        daemon,
+                        &format!("pane.idle:{}:{episode}", s.id),
+                        s.id,
+                        &format!(
+                            "[cys-감시] {sref}({role}) 입력줄에 미제출 지시가 {idle_for}초째 멈춰 있다 — cys read-screen --surface {sref} 로 확인하고 처리하라"
+                        ),
+                    );
+                }
+            }
         }
     }
+}
+
+/// ★v112-wake: 좌석 입력줄 점유 판정(큐 배달자와 **같은 재료·같은 판정자**) — 미제출 바이트 계수
+/// 1차, 어댑터 ready_marker 가 있으면 프롬프트 행 2차. 마커를 모르는 좌석은 Unknown.
+fn seat_input_line(s: &Arc<crate::state::Surface>) -> InputLine {
+    let pending = s.pending_input_bytes.load(Ordering::Relaxed);
+    let marker = s.agent_meta.lock().unwrap().clone().and_then(|(agent, _)| {
+        let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let embed = cys::pack::PACK_ALL
+            .iter()
+            .find(|(r, _)| *r == "agents.json")
+            .and_then(|(_, c)| serde_json::from_str(c).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        merged_ready_marker(&disk, &embed, &agent)
+    });
+    let Some(marker) = marker else {
+        return input_line_state(pending, None);
+    };
+    let (_seen, line) = observe_prompt(s, &marker);
+    input_line_state(
+        pending,
+        line.as_ref().map(|(b, a)| PromptLine {
+            before_cursor: b,
+            at_or_after_cursor: a,
+        }),
+    )
 }
 
 /// 완화책 ③ 생명주기 강제 종료: scoped 등록 프로세스의 소유 surface가 사라졌거나
@@ -5236,6 +5337,10 @@ pub(crate) fn deliver_head_locked(
         // ★G1(W2-A)+B1: pop 판정은 방금 인계한 항목의 **id 집합** — 동일 텍스트 중복 항목
         //   오삼킴을 차단하면서 병합분 전체를 한 번에 제거한다(단건이면 종전과 동일 동작).
         pop_delivered_ids(&mut q, &merged_ids);
+        // ★v112-wake: 감시 각성 줄의 PTY 인계 시점 — 제출 실측의 기준점.
+        if merged.iter().any(|e| e.origin == crate::watch_wake::ORIGIN) {
+            crate::watch_wake::note_delivered(&merged_ids);
+        }
         Delivered { entry, remaining: q.len(), merged_ids, body }
     };
     // T4-17 에코 제외 창 — 큐 배달도 원격 주입이다
@@ -9897,6 +10002,63 @@ mod tests {
         ));
         let _ = std::fs::create_dir_all(&dir);
         Daemon::new(dir.join("cysd.sock"))
+    }
+
+    /// ★v112-wake ⑥: 기다리던 요청자가 죽은 pending 과 이전 데몬 세대 pending 만 `expired` 로 닫힌다 —
+    /// 산 요청자·발사 후 망각(wait=false) 요청은 그대로 pending. 닫힌 항목은 deny 가 아니다.
+    #[test]
+    fn orphan_feed_pending_expires_only_when_requester_is_gone_or_generation_changed() {
+        let daemon = drill_daemon("feedexpire");
+        let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+        let dead_pid = child.id();
+        child.wait().expect("wait true");
+        let mk = |id: &str, pid: Option<u32>, wait: bool, created_at: f64| crate::state::FeedItem {
+            request_id: id.into(),
+            kind: "permission".into(),
+            title: "push할까요".into(),
+            body: String::new(),
+            surface_id: None,
+            status: "pending".into(),
+            decision: None,
+            created_at,
+            resolved_at: None,
+            tier: None,
+            publisher_pid: pid,
+            publisher_pgid: None,
+            publisher_surface: None,
+            risk_class: None,
+            auto_route: false,
+            resolver_surface: None,
+            resolver_pid: None,
+            wait,
+        };
+        let now = now_epoch().max(daemon.started_at);
+        {
+            let mut items = daemon.feed_items.lock().unwrap();
+            items.push(mk("dead", Some(dead_pid), true, now));
+            items.push(mk("alive", Some(std::process::id()), true, now));
+            items.push(mk("fire-and-forget", Some(dead_pid), false, now));
+            items.push(mk("old-gen", Some(std::process::id()), true, daemon.started_at - 100.0));
+        }
+        super::expire_orphan_feed(&daemon);
+        let st = |id: &str| {
+            daemon
+                .feed_items
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|i| i.request_id == id)
+                .map(|i| (i.status.clone(), i.decision.clone()))
+                .unwrap()
+        };
+        assert_eq!(st("dead"), ("expired".to_string(), None), "죽은 요청자의 pending 이 안 닫혔다");
+        assert_eq!(st("old-gen"), ("expired".to_string(), None), "이전 세대 pending 이 안 닫혔다");
+        assert_eq!(st("alive").0, "pending", "산 요청자의 pending 을 닫았다(오만료)");
+        assert_eq!(st("fire-and-forget").0, "pending", "발사 후 망각 요청을 pid 축으로 닫았다");
+        // 원장에도 상태 전이가 남는다(삭제 0).
+        let ledger = std::fs::read_to_string(crate::state::state_dir(&daemon.socket_path).join("feed.jsonl"))
+            .unwrap_or_default();
+        assert!(ledger.contains("\"dead\"") && ledger.contains("expired"), "원장 미기록: {ledger}");
     }
 
     /// 역할 보유 surface(live pid) 하나를 만들어 roles·surfaces에 등록하고 id 반환.

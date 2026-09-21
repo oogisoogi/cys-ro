@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import {
+  unsubmittedSurfaces,
   parseBriefSections,
   recordedAt,
   stateCandidates,
@@ -168,5 +169,28 @@ describe("cycleAdviceLines — 60%+ 자리에 권유 한 줄(집행 0)", () => {
   it("seatCtx 미지정(구 호출부)이면 권유 줄이 없다 — 추가는 순수 additive", () => {
     const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["master"], waitingRoles: [] });
     expect(JSON.stringify(c).includes("순환")).toBe(false);
+  });
+});
+
+describe("v112-restore ① 미제출 자리 정직 표기", () => {
+  const now = 10_000;
+  const rec = (ts: number, surface: number, state: string) => JSON.stringify({ ts, surface, state, resubmitted: true });
+  it("자리마다 가장 늦은 기록만 본다 — 뒤에 제출됐으면 미제출이 아니다", () => {
+    const log = [rec(now - 30, 47, "not_submitted"), rec(now - 10, 47, "submitted"), rec(now - 5, 46, "not_submitted")].join("\n");
+    expect(unsubmittedSurfaces(log, now)).toEqual([46]);
+  });
+  it("창 밖 기록·못 잰 기록·깨진 줄은 미제출로 말하지 않는다", () => {
+    const log = [rec(now - 5000, 47, "not_submitted"), rec(now - 5, 48, "unmeasured"), "{깨짐", ""].join("\n");
+    expect(unsubmittedSurfaces(log, now)).toEqual([]);
+  });
+  it("카드에 미제출 한 줄이 붙고 내부 용어는 0건", () => {
+    const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["worker"], waitingRoles: [], unsubmittedRoles: ["worker"] });
+    const all = JSON.stringify(c);
+    expect(all.includes("전송되지 않음")).toBe(true);
+    for (const t of INTERNAL_TERMS) expect(all.includes(t)).toBe(false);
+  });
+  it("미제출 자리가 없으면 그 줄도 없다", () => {
+    const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["worker"], waitingRoles: [], unsubmittedRoles: [] });
+    expect(JSON.stringify(c).includes("전송되지 않음")).toBe(false);
   });
 });

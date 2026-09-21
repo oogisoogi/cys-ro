@@ -497,6 +497,80 @@ pub fn socket_path() -> PathBuf {
     }
 }
 
+/// 데몬 영속 상태 폴더 — 클라이언트(cys CLI)가 **데몬과 같은 폴더**를 얻는 유일한 경로.
+///
+/// ★(TICKET=v112-restore) 종전 클라이언트는 `socket.parent()` 를 상태 폴더로 썼다. unix 에선
+///   맞지만 Windows 소켓은 named pipe(`\\.\pipe\cys`)라 그 부모는 **파이프 이름공간**이다 —
+///   파일을 만들 수 없다. 그래서 윈도에서 ⑴복원 1회 주입 표식(`restore-mark/<sid>`)은 쓰기가
+///   늘 실패해 fail-open(=매번 주입)으로 열렸고 ⑵드레인의 「복원 중」 가드는 phoenix 저널 폴더를
+///   못 찾아 늘 꺼져 있었다(2026-09-21 윈 실기: 워커 자리에 복원 글 2회 배달).
+///   데몬(`cysd/state.rs::state_dir`)은 처음부터 `%LOCALAPPDATA%\cys` + 파이프 슬러그로 매핑했다 —
+///   이 함수가 그 규칙의 클라이언트 판이다(phoenix `state_dir_for` 도 같은 규칙).
+pub fn daemon_state_dir(socket: &std::path::Path) -> PathBuf {
+    daemon_state_dir_for(
+        socket,
+        cfg!(windows),
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+    )
+}
+
+/// [`daemon_state_dir`] 의 순수 판(시험이 맥에서 윈 매핑을 직접 때린다).
+/// `windows=true` 면 `<LOCALAPPDATA>\cys` (기본 파이프 `cys`) 또는 `<…>\cys\<슬러그>`(부서 파이프).
+/// LOCALAPPDATA 가 없으면 데몬과 같게 `.` 기준이다(데몬: `unwrap_or_else(|_| ".")`).
+pub fn daemon_state_dir_for(
+    socket: &std::path::Path,
+    windows: bool,
+    localappdata: Option<PathBuf>,
+) -> PathBuf {
+    if windows {
+        let root = localappdata.unwrap_or_else(|| PathBuf::from(".")).join("cys");
+        let s = socket.to_string_lossy();
+        let slug: String = s
+            .rsplit(|c| c == '\\' || c == '/')
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if slug.is_empty() || slug == "cys" {
+            root
+        } else {
+            root.join(slug)
+        }
+    } else {
+        socket
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+#[cfg(test)]
+mod daemon_state_dir_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn windows_base_pipe_maps_to_localappdata_cys_not_pipe_namespace() {
+        let d = daemon_state_dir_for(Path::new(r"\\.\pipe\cys"), true, Some(PathBuf::from("LA")));
+        assert_eq!(d, PathBuf::from("LA").join("cys"));
+        // 종전 결함의 대조군: 소켓 부모는 파이프 이름공간이다(파일을 만들 수 없는 자리).
+        assert!(!d.to_string_lossy().contains("pipe"), "{d:?}");
+    }
+
+    #[test]
+    fn windows_dept_pipe_maps_to_slug_subdir() {
+        let d = daemon_state_dir_for(Path::new(r"\\.\pipe\cys-dept-3"), true, Some(PathBuf::from("LA")));
+        assert_eq!(d, PathBuf::from("LA").join("cys").join("cys-dept-3"));
+    }
+
+    #[test]
+    fn unix_is_socket_parent() {
+        let d = daemon_state_dir_for(Path::new("/s/state/cys/cys.sock"), false, None);
+        assert_eq!(d, PathBuf::from("/s/state/cys"));
+    }
+}
+
 /// Windows named pipe busy-retry 정책 — CLI(cys)·GUI(cys-app) 클라이언트 공용 **단일 진실**
 /// (이원 정의는 정책 변경 시 샷건 서저리). ERROR_PIPE_BUSY(os error 231, "모든 파이프
 /// 인스턴스가 사용 중")는 데몬 다운이 아니라 listening 인스턴스 순간 소진(정상 혼잡)이다 —

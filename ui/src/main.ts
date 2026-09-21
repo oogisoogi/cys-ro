@@ -139,7 +139,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard } from "./restorebrief";
+import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole } from "./restorebrief";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
 declare global {
@@ -7252,6 +7252,29 @@ async function refreshDaemonInfo(info: HTMLElement) {
 //   · 한 번 켜질 때 1회만. 실패는 조용히 넘긴다(카드는 부가 기능 — 복원 자체를 막지 않는다).
 // ────────────────────────────────────────────────────────────────────────────
 let restoreBriefShown = false;
+
+/**
+ * ★(v112-restore ①) 복원 안내가 입력창에 남은(미제출 실측) 자리의 역할 목록. 재료 = cys 가 부트 주입마다
+ * 남기는 `~/.cys/state/boot-submit-base.jsonl`(기본 레인). 못 읽으면 빈 목록(표기 없음 · 지어내지 않는다).
+ */
+async function readUnsubmittedRoles(
+  seats: { surface_id: number; role: string | null; exited: boolean }[],
+  home: string,
+): Promise<string[]> {
+  try {
+    const sep = home.includes("\\") && !home.includes("/") ? "\\" : "/";
+    const log = String(
+      await rpcT(
+        invoke("read_text_head", { path: `${home}${sep}.cys${sep}state${sep}boot-submit-base.jsonl`, maxBytes: 1048576 }),
+        T_LIST,
+      ),
+    );
+    const bad = new Set(unsubmittedSurfaces(log, Math.floor(Date.now() / 1000)));
+    return seats.filter((s) => s.role && !s.exited && bad.has(s.surface_id)).map((s) => s.role as string);
+  } catch {
+    return [];
+  }
+}
 async function showRestoreBrief(): Promise<void> {
   if (restoreBriefShown) return;
   restoreBriefShown = true;
@@ -7279,7 +7302,10 @@ async function showRestoreBrief(): Promise<void> {
         /* 다음 후보 */
       }
     }
+    // ★(v112-restore ①) 부트 주입 제출 기록 — 미제출 실측 자리를 정직 표기(기본 레인만 · 못 읽으면 생략).
+    const unsubmittedRoles = await readUnsubmittedRoles(seats, home);
     const card = buildBriefCard({
+      unsubmittedRoles,
       sections: text === null ? null : parseBriefSections(text),
       recordedAt: text === null ? null : recordedAt(text),
       restoredRoles: seats.filter((s) => !s.exited).map((s) => s.role as string),
@@ -7630,6 +7656,24 @@ async function start() {
       if (p.hq_ok === false) toast("health", "⚠ 본부 복원 실패 포함", `본부 노드 복원 실패 · 부서 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
       else if (fail > 0) toast("health", "⚠ 직원 복귀 일부 실패", `부서 복원 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
       else toast("watchdog", "✅ 직원 복귀 완료", `노드 세션 복원 완료 (부서 ${ok}).`);
+      // ★(v112-restore ①) 카드는 앱 시작 직후 뜨고 복원 주입은 그 뒤 끝난다 — 미제출 실측 자리는
+      //   복원이 끝난 이 시점에 알림 1줄로 정직하게 알린다(묻지 않는다 · 자동 조치는 이미 1회 했다).
+      void (async () => {
+        try {
+          const r = (await rpcT(invoke("list_surfaces", { socket: undefined }), T_LIST)) as {
+            surfaces: { surface_id: number; role: string | null; exited: boolean }[];
+          };
+          const roles = await readUnsubmittedRoles(r.surfaces, String(await invoke("home_dir_path")));
+          if (roles.length)
+            toast(
+              "health",
+              "⚠ 안내가 전달되지 않은 창",
+              `${[...new Set(roles.map(friendlyRole))].join(" · ")} 창의 입력칸에 복원 안내가 남아 있어요. 그 창을 눌러 Enter 를 한 번 눌러 주세요.`,
+            );
+        } catch {
+          /* 조회 실패 — 카드 쪽 표기가 남는다 */
+        }
+      })();
       // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
       //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
       exitedSweepArmed = true;

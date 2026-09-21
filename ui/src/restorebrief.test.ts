@@ -179,6 +179,9 @@ describe("v112-restore ① 미제출 자리 정직 표기", () => {
     const log = [rec(now - 30, 47, "not_submitted"), rec(now - 10, 47, "submitted"), rec(now - 5, 46, "not_submitted")].join("\n");
     expect(unsubmittedSurfaces(log, now)).toEqual([46]);
   });
+  it("입력창 미실측으로 보내지 않은 자리(held_input_not_ready)도 미전달로 센다", () => {
+    expect(unsubmittedSurfaces(rec(now - 3, 9, "held_input_not_ready"), now)).toEqual([9]);
+  });
   it("창 밖 기록·못 잰 기록·깨진 줄은 미제출로 말하지 않는다", () => {
     const log = [rec(now - 5000, 47, "not_submitted"), rec(now - 5, 48, "unmeasured"), "{깨짐", ""].join("\n");
     expect(unsubmittedSurfaces(log, now)).toEqual([]);

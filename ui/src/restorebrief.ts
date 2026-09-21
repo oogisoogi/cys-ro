@@ -133,7 +133,11 @@ export function unsubmittedSurfaces(jsonl: string, nowSec: number, windowSec = U
     const prev = latest.get(r.surface);
     if (!prev || r.ts >= prev.ts) latest.set(r.surface, { ts: r.ts, state: r.state });
   }
-  return [...latest.entries()].filter(([, v]) => v.state === "not_submitted").map(([sid]) => sid).sort((a, b) => a - b);
+  // held_input_not_ready = claude 입력창이 끝내 안 보여 **보내지 않은** 자리 — 사용자에겐 같은 사실(안내 미전달)이다.
+  return [...latest.entries()]
+    .filter(([, v]) => v.state === "not_submitted" || v.state === "held_input_not_ready")
+    .map(([sid]) => sid)
+    .sort((a, b) => a - b);
 }
 
 export interface BriefCard {

@@ -10743,6 +10743,37 @@ fn settle_submit(
 /// 파일 = `<lane state>/boot-submit-<lane>.jsonl` — 복원 카드(UI)가 최근 기록만 읽어
 /// 「창 N 지시 미제출」을 표기한다. 기록 실패는 부트를 막지 않는다(stderr 경고는 호출부가 이미 낸다).
 fn record_boot_submit(sid: u64, state: SubmitProbe, resubmitted: bool) {
+    record_boot_submit_state(sid, submit_state_str(state), resubmitted)
+}
+
+/// claude 입력창 대기 상한(초) — 근거는 호출부 주석(2-b).
+const BUDGET_INPUT_READY_SECS: u64 = 30;
+/// 입력창 미실측으로 주입을 보류한 좌석의 관문 id(표식·처방에 실린다).
+const GATE_ID_INPUT_NOT_READY: &str = "claude_input_not_ready";
+
+/// claude 빈 입력창이 실측될 때까지 기다린다(순수 제어 흐름 · 시험이 IO 를 갈아 끼운다).
+/// 참 = 입력창이 비어 입력을 받는다(`input_line_empty == Some(true)`) · 거짓 = 상한 안에 못 봤다.
+/// 「못 쟀다(None)」·「글이 있다(Some(false))」는 준비가 아니다 — 셸 에코·관문 선택지를 준비로 읽지 않는다.
+fn wait_input_ready(
+    sleep: impl Fn(std::time::Duration),
+    read: impl Fn() -> Option<String>,
+    cap: std::time::Duration,
+) -> bool {
+    let tick = std::time::Duration::from_millis(500);
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        if read().map(|s| input_line_empty(&s) == Some(true)).unwrap_or(false) {
+            return true;
+        }
+        if waited >= cap {
+            return false;
+        }
+        sleep(tick);
+        waited += tick;
+    }
+}
+
+fn record_boot_submit_state(sid: u64, state: &str, resubmitted: bool) {
     use std::io::Write;
     let dir = cys::lane::state_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -10757,7 +10788,7 @@ fn record_boot_submit(sid: u64, state: SubmitProbe, resubmitted: bool) {
     let rec = json!({
         "ts": ts,
         "surface": sid,
-        "state": submit_state_str(state),
+        "state": state,
         "resubmitted": resubmitted,
     });
     // 회전(256KB) — 소비자(UI 카드)는 파일 **머리**를 읽는다(read_text_head · 상한 1MB). 회전이 없으면
@@ -10824,6 +10855,36 @@ fn inject_directive_after_ready(
             None => None,
         }
     };
+
+    // 2-b) ★(v112-restore ①) **claude 입력창 실측 전 주입 금지**. 위 ready 판정의 안전 밸브(커널 생존 +
+    //   맨 셸 아님)는 claude 프로세스가 뜬 뒤 TUI 가 그려지기 **전**에도 발화한다 — 셸에 친 기동 명령 줄이
+    //   화면에 있으면 「맨 셸 아님」이 되기 때문이다. 그 창에 붙여넣으면 지시가 셸 입력 버퍼로 들어가고
+    //   claude 가 뜬 뒤 입력창에 **미제출로** 남는다(2026-09-21 윈 워커47 · 격리 재현: 기동 10초 지연 자리).
+    //   그래서 claude 계열은 **빈 입력창**(공용 판정기 input_line_empty)이 실측될 때까지 상한 안에서 기다리고,
+    //   끝내 안 보이면 주입하지 않고 좌석을 보존한다(관문 보류와 같은 귀결 · 추정 주입 0).
+    //   상한 근거: claude 첫 렌더는 맥 실측 1~3s · 느린 윈 노트북·npm 셸 경유는 그 몇 배 — 30s 면 여유 있고
+    //   부트 전체 상한(readiness 60s)을 두 배 넘기지 않는다.
+    if agent.starts_with("claude") {
+        let ready = wait_input_ready(
+            |d| std::thread::sleep(d),
+            || {
+                request("surface.read_text", json!({"surface_id": sid}))
+                    .ok()
+                    .and_then(|r| r["text"].as_str().map(String::from))
+            },
+            std::time::Duration::from_secs(BUDGET_INPUT_READY_SECS),
+        );
+        if !ready {
+            let tail = screen_tail_lines(&gate_guard_screen(sid).unwrap_or_default(), 5);
+            eprintln!(
+                "[launch-agent] ★claude 입력창 미실측({BUDGET_INPUT_READY_SECS}s) — 지시 {} 바이트 **미주입** · \
+                 Return 0발 · 좌석 보존(셸에 붙여넣지 않는다)",
+                directive.len()
+            );
+            record_boot_submit_state(sid, "held_input_not_ready", false);
+            return Ok(settle_gate_pending(sid, GATE_ID_INPUT_NOT_READY, tail, gate_close_override));
+        }
+    }
 
     // 3) 지침 주입 — bracketed paste로 감싸 단일 입력으로 전달
     let inject_cursor: u64 = fetch_surfaces()
@@ -18599,6 +18660,25 @@ mod tests {
                 "{f}: 소켓 부모(윈=파이프 이름공간)로 되돌아갔다"
             );
         }
+    }
+
+    /// ★(v112-restore ①) claude 빈 입력창이 보일 때까지 기다린다 — 셸 에코·기동 전 화면은 준비가 아니다.
+    #[test]
+    fn wait_input_ready_waits_for_empty_claude_box_and_caps() {
+        use std::cell::RefCell;
+        let shell = "user@mac w4 % CLAUDE_CONFIG_DIR=x sleep 10; claude --model m\n> 붙여넣은 지시 본문 줄".to_string();
+        // 셸(에코에 `> ` 줄이 있어도 글이 있음) → 셸 → claude 빈 입력창
+        let seq = RefCell::new(vec![claude_box(""), shell.clone(), shell.clone()]);
+        let slept = RefCell::new(0u32);
+        assert!(wait_input_ready(|_| *slept.borrow_mut() += 1, || seq.borrow_mut().pop(), std::time::Duration::from_secs(30)));
+        assert_eq!(*slept.borrow(), 2, "빈 입력창을 보기 전에 두 번 기다려야 한다");
+        // 끝내 셸 → 상한에서 거짓(주입 금지)
+        let n = RefCell::new(0u32);
+        assert!(!wait_input_ready(|_| *n.borrow_mut() += 1, || Some(shell.clone()), std::time::Duration::from_secs(2)));
+        assert_eq!(*n.borrow(), 4, "500ms 틱 × 2s 상한");
+        // 입력창에 글이 남아 있으면 준비가 아니다 / 못 읽으면 준비가 아니다
+        assert!(!wait_input_ready(|_| {}, || Some(claude_box("남은 글")), std::time::Duration::from_secs(1)));
+        assert!(!wait_input_ready(|_| {}, || None, std::time::Duration::from_secs(1)));
     }
 
     #[test]

@@ -365,6 +365,14 @@ PY
 # down 이 같은 번호를 치우고 새 부서가 그 번호를 받는 일이 없다(번호는 reg_remove 뒤에만 풀린다) — 대조와
 # teardown 사이 번호 재사용 창을 닫는다. exit 9 = 세대 불일치/대상 부재(기대 세대가 있을 때) · 10 = 닫는 중 · 11 = 잠금 실패(윈).
 # 표식의 pid 가 죽었으면 무시한다(중도 실패한 down 이 번호를 영구히 잠그지 않게).
+# self_os_pid: 울타리 표식에 적을 「OS 가 아는」 내 pid. MSYS/Git-Bash 의 $$ 는 MSYS pid 라 윈 OpenProcess 로 재면
+# 엉뚱한 프로세스를 가리킨다(Fable 1.1.3 [B]) — /proc/$$/winpid 가 있으면 그것 · 없으면 $$.
+self_os_pid(){
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) cat "/proc/$$/winpid" 2>/dev/null || echo "$$" ;;
+    *) echo "$$" ;;
+  esac
+}
 reg_fence_close(){ reg_init; CYS_DEPT_EXPECT_GEN="${CYS_DEPT_EXPECT_GEN:-}" python3 - "$REG" "$1" "$2" <<'PY'
 import json,sys,os,time
 try:
@@ -379,8 +387,26 @@ except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락. ★�
             sys.stderr.write("[cys-dept] down: 레지스트리 잠금 획득 실패 — 닫지 않음(잠시 뒤 다시)\n"); sys.exit(11)
     def _ulk(f): pass
 def _alive(pid):
-    try: os.kill(int(pid), 0); return True
-    except (OSError, ValueError, TypeError): return False
+    try: pid=int(pid)
+    except (ValueError, TypeError): return False
+    if pid<=0: return False
+    if os.name!="nt":
+        try: os.kill(pid, 0); return True
+        except PermissionError: return True
+        except OSError: return False
+    # ★윈(Fable 1.1.3 [B]): os.kill(pid,0) 금지 — 윈 CPython 은 시그널 0 도 TerminateProcess 로 접어 표식 pid 를
+    #   죽인다(javis_cycle_autopilot.py _pid_alive_windows 와 같은 규약). QUERY_LIMITED+GetExitCodeProcess 만 쓴다.
+    #   판정불가 = 생존(보수 · exit 10 = 닫지 않고 다음 틱에 다시) · 접근 거부(5) = 존재.
+    try:
+        import ctypes
+        k=ctypes.WinDLL("kernel32", use_last_error=True)
+        h=k.OpenProcess(0x1000, False, pid)
+        if not h: return ctypes.get_last_error()==5
+        try:
+            c=ctypes.c_ulong(0)
+            return bool(k.GetExitCodeProcess(h, ctypes.byref(c))) and c.value==259
+        finally: k.CloseHandle(h)
+    except Exception: return True
 p,n,me=sys.argv[1:4]; want=os.environ.get("CYS_DEPT_EXPECT_GEN","")
 lf=open(p+'.lock','w'); _lk(lf)
 try:
@@ -1233,11 +1259,12 @@ try:
     import fcntl
     def _lk(f): fcntl.flock(f, fcntl.LOCK_EX)
     def _ulk(f): fcntl.flock(f, fcntl.LOCK_UN)
-except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락(파일 닫힘 시 해제·_ulk no-op 안전)
-    import msvcrt
+except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락. ★예약은 잠금 실패를 삼키지 않는다(Fable 1.1.3 [B] ·
+    import msvcrt       #   울타리 B11 과 같은 규약) — 무잠금 진행 = 같은 dept-N 이중 예약. exit 11 = 예약 안 함 · 다시 시도
     def _lk(f):
         try: msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-        except OSError: pass
+        except OSError:
+            sys.stderr.write("[cys-dept] 다른 부서 작업이 끝나기를 기다리다 시간이 지났습니다 — 잠시 뒤 자동으로 다시 시도합니다\n"); sys.exit(11)
     def _ulk(f): pass
 p=sys.argv[1]
 lf=open(p+'.lock','w'); _lk(lf)
@@ -1395,11 +1422,12 @@ try:
     import fcntl
     def _lk(f): fcntl.flock(f, fcntl.LOCK_EX)
     def _ulk(f): fcntl.flock(f, fcntl.LOCK_UN)
-except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락(파일 닫힘 시 해제·_ulk no-op 안전)
-    import msvcrt
+except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락. ★예약은 잠금 실패를 삼키지 않는다(Fable 1.1.3 [B] ·
+    import msvcrt       #   울타리 B11 과 같은 규약) — 무잠금 진행 = 같은 dept-N 이중 예약. exit 11 = 예약 안 함 · 다시 시도
     def _lk(f):
         try: msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-        except OSError: pass
+        except OSError:
+            sys.stderr.write("[cys-dept] 다른 부서 작업이 끝나기를 기다리다 시간이 지났습니다 — 잠시 뒤 자동으로 다시 시도합니다\n"); sys.exit(11)
     def _ulk(f): pass
 p,mkey,cwd,acctdir=sys.argv[1:5]
 home=os.path.expanduser('~'); GRACE=float(os.environ.get("CYS_GRACE","25"))
@@ -1529,7 +1557,7 @@ PY
     done
     [ -n "$name" ] || { echo "usage: cys-dept down <name> [--purge-state]" >&2; exit 2; }
     # ★B11: 닫기 울타리(세대 대조 + 닫는 중 표식) — teardown 어느 것보다 먼저. 9/10 은 그대로 전파.
-    _frc=0; reg_fence_close "$name" "$$" || _frc=$?
+    _frc=0; reg_fence_close "$name" "$(self_os_pid)" || _frc=$?
     [ "$_frc" = 0 ] || exit "$_frc"
     sock="$(dept_sock "$name")"
     # ★NO_AUTOSTART(감사 2026-07-10): 죽은 부서 down 시 identify가 cysd를 되살려 그걸 kill하던 낭비 spawn 제거
@@ -1579,7 +1607,7 @@ PY
     fi
     # ★B11: down 과 같은 닫기 울타리(세대 대조 없음 — 소켓 기준 teardown) · 다른 산 닫기가 진행 중이면 10.
     if [ -n "$name" ]; then
-      _frc=0; CYS_DEPT_EXPECT_GEN="" reg_fence_close "$name" "$$" || _frc=$?
+      _frc=0; CYS_DEPT_EXPECT_GEN="" reg_fence_close "$name" "$(self_os_pid)" || _frc=$?
       [ "$_frc" = 0 ] || exit "$_frc"
     fi
     pid=$(CYS_NO_AUTOSTART=1 CYS_SOCKET="$sock" "$CYS" identify 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('daemon_pid',''))" 2>/dev/null || true)

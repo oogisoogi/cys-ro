@@ -11,7 +11,9 @@
 #   ② 매 턴 그물 = 「아직 말하지 않은 부서 소식」(status --pending 과 같은 판정 · 같은 소식은 세션당 1회)
 #   ③ 사람 확인 축 = 열린 제안 뒤에 사람이 직접 친 입력(배달 원장 대조 = javis_mission.machine_origin)을 기록 —
 #      confirm 이 그 기록을 요구한다(이 훅이 한 번이라도 돈 기계에서만 · 훅 없는 기계는 종전대로).
-# 비용: 부서 요청 폴더가 비어 있고 부서 낱말이 없으면 외부 프로세스 0 으로 끝난다(셸 내장뿐).
+# 비용: 선거름 표지(.hook-wake — 열린 제안·전할 소식이 있을 때만 존재 · javis_dept_request 가 명령·틱마다 다시 씀)가
+#   없고 부서 낱말도 없으면 외부 프로세스 0 으로 끝난다(셸 내장뿐). ★Fable 1.1.3 [D]: 종전 선거름 「dr-* 폴더 존재」는
+#   생성·종결 폴더가 영구 보존이라 한 번이라도 말로 만든 기계에서 매 프롬프트 파이썬이 돌았다(윈 냉시작 체감 지연).
 # 4군① 폭주 큐: 주입은 요지·소식 합쳐 상한(파이썬 쪽 MAX 줄)·세션 반복 억제 — 같은 턴을 늘리지 않는다.
 # 계약: 무슨 일이 있어도 exit 0 · stdout = 훅 JSON 한 개 또는 무출력.
 [ "${CYS_ROLE:-}" = "master" ] || exit 0
@@ -29,11 +31,12 @@ case "$HOOK_IN" in
 esac
 
 _RQ="${CYS_DEPT_REQUESTS:-$HOME/.cys/dept-requests}"
-_HAS_REQ=0
-for _d in "$_RQ"/dr-*; do
-  [ -d "$_d" ] && { _HAS_REQ=1; break; }
-done
-if [ "$_HAS_REQ" = "0" ]; then
+# ★Fable 1.1.3 M3: 「이 기계에 훅이 살아 있다」(propose 의 human_axis 근거)는 어휘와 무관하다 — 거름 앞에서 셸 내장
+#   리다이렉션으로 먼저 갱신한다(외부 프로세스 0 · 폴더가 없을 때만 mkdir 1회). 종전엔 부서·팀 낱말 없는 요청이면
+#   갱신이 안 돼 human_axis 가 거짓이 되고 마스터가 스스로 확인할 수 있었다.
+[ -d "$_RQ" ] || mkdir -p "$_RQ" 2>/dev/null
+: > "$_RQ/.hook-active" 2>/dev/null
+if [ ! -e "$_RQ/.hook-wake" ]; then
   case "$HOOK_IN" in
     *부서*|*팀*|*'[부서결과]'*|*'[부서가동]'*) ;;
     *) exit 0 ;;

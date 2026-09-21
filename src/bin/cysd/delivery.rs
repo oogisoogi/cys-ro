@@ -171,8 +171,10 @@ pub const PART_PREVIEW_CHARS: usize = 24;
 /// 스킬 색인 + 오버레이)이고, 실측하면 master 가 **699 고유 제출단위**다 — 즉 500 상한은
 /// **이미 초과 상태**였고 매 `launch-agent`·`reinject`·`cycle` 마다 약 200 행이 원장에서
 /// 조용히 빠지고 있었다(회귀 핀: `deployed_directive_payload_fits_part_cap_with_headroom`).
-/// 4000 은 실측 최대(699)의 5.7 배이며, 초과분 1건의 원장 비용은 4000 × ~297 B ≈ 1.2 MB 로
-/// 위 `LEDGER_MAX_BYTES` 의 14% 다(한 번의 초장문 push 가 원장을 통째로 밀어내지 못한다).
+/// ★R8 상향 4000 → 6000 (1.1.3 · 2026-09-22 · SOT §4-7 ⓑ 봉합 ①-2). 1.1.3 팩 증분으로 합성 문안이
+/// master 955 · CEO 1006 제출단위가 되어 CEO 여유 핀이 4,024 > 4,000 으로 적색이었다. 6000 은 실측 최대
+/// (1006)의 5.96 배이며, 초과분 1건의 원장 비용은 6000 × 298 B(실측 조각 평균) ≈ 1.79 MB 로 위
+/// `LEDGER_MAX_BYTES` 의 21.3% 다(한 번의 초장문 push 가 원장을 통째로 밀어내지 못한다).
 /// ★수치의 정의처는 SOT `docs/THREAT-MODEL-mission-gate.md` §4-6·§4-7 이다 — 여기 값이 그
 /// 문서와 갈리면 그 문서가 맞다(0.14.10 검증에서 702·318 B 가 stale 이어서 정정했다).
 ///
@@ -181,7 +183,7 @@ pub const PART_PREVIEW_CHARS: usize = 24;
 /// 게이트의 판독 경로가 아니어서, 종전에는 초과가 나도 임무 verdict 에 흔적이 0 이었다.
 /// 판독자는 `parts_capped` 를 보면 **그 배달에 대한 판정을 접는다**(fail-closed · 불변식 ③ ·
 /// `javis_mission.py::DELIVERY_CAPPED_FOLD_S`).
-pub const MAX_PARTS: usize = 4000;
+pub const MAX_PARTS: usize = 6000;
 
 /// 원장 append 1회 write 의 바이트 예산. O_APPEND 단일 write 는 이 크기 이하에서 사실상 원자라
 /// 여러 스레드가 붙어도 줄이 섞이지 않는다 — 조각 N 건을 **한 번에** 쓰되 이 크기로 끊는다
@@ -1533,7 +1535,7 @@ pub(crate) mod tests {
     ///
     /// 승격 후 CEO pane 에 실제로 들어가는 라이브 md 는 마스터 단독이 아니라 **CEO 합성본**
     /// = [CEO 머리글 fragment] + [합성 서문 ≈600자] + [구분선] + [MASTER 본문 바이트 무수정]
-    /// (스펙 §D2 — 기대 수치 ≈780 제출단위 · 4배 여유 3,120 ≤ 4,000). 핀 ① 이 master 합성만
+    /// (스펙 §D2 기대 ≈780 제출단위였으나 1.1.3 실측 1006 · 4배 여유 4,024 ≤ 6,000). 핀 ① 이 master 합성만
     /// 재면 승격 함대의 실배포 규모가 사각이 된다 — 여기서 그 규모를 직접 잰다.
     ///
     /// ★전방 호환(gen_ceo_template.py 재합성 이전/이후 자기조정): D2 재합성 후에는
@@ -1596,7 +1598,7 @@ pub(crate) mod tests {
         assert!(
             units * REQUIRED_HEADROOM <= MAX_PARTS,
             "CEO 합성 문안이 {units} 제출단위인데 조각 상한은 {MAX_PARTS} 다 \
-             (요구 여유 {REQUIRED_HEADROOM}배 = {} 단위 이하 · 스펙 기대 ≈780 단위·3,120≤4,000). \
+             (요구 여유 {REQUIRED_HEADROOM}배 = {} 단위 이하 · 1.1.3 실측 1006 단위·4,024≤6,000). \
              상한을 올리거나 서문/디렉티브를 줄여라 — 초과 행은 원장에 없고, 그 행이 단독 \
              제출되면 임무 게이트가 기계 push 를 오너 임무로 오인한다(SOT §4-7 ⓑ).",
             MAX_PARTS / REQUIRED_HEADROOM

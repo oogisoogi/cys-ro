@@ -1138,6 +1138,67 @@ class TestReviewA12c(Base):
         self.assertEqual(sends_before, sends_after, "같은 상태의 재알림은 재전송 0")
 
 
+class TestReviewV113Fable(Base):
+    """1.1.3 Fable 적대 검증 [B] 중간: 같은 표시명 이중 생성(IN_FLIGHT 미대조 · 상한 제거로 열림)."""
+
+    def _cat_put(self, key, display):
+        p = os.environ["CYS_DEPT_CATALOG"]
+        d = json.load(open(p)) if os.path.exists(p) else {}
+        d.setdefault("departments", {})[key] = {"display": display, "account": "shared"}
+        json.dump(d, open(p, "w"), ensure_ascii=False)
+
+    def test_propose_refuses_same_name_while_in_flight(self):
+        self.proposed_confirmed("가부서")
+        rc, o = self.propose("가부서")
+        self.assertEqual(rc, 5, o)
+        self.assertEqual(o.get("reason"), "duplicate_in_flight", o)
+        self.assertIn("같은 이름의 부서", o["say"])
+        self.assertIn("지금 만들고 있습니다", o["say"])
+        rc, o = self.propose("나부서")
+        self.assertEqual(rc, 0, "다른 이름은 막지 않는다: %s" % o)
+
+    def test_create_step_rechecks_display_before_creating(self):
+        rid = self.proposed_confirmed("가부서")
+        self._cat_put("cffffff", "가부서")           # 확인 뒤 같은 이름이 먼저 섰다(다른 요청·GUI)
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["state"], "failed", r.get("events"))
+        self.assertEqual(r["fail_reason"], "duplicate")
+        rows = os.path.join(self.home, "fake-cys-dept.log")
+        made = [json.loads(l) for l in open(rows)] if os.path.exists(rows) else []
+        self.assertFalse([x for x in made if x[0] == "create"], "같은 이름을 또 만들었다")
+        self.assertNotIn("(사유", self.m.FAIL_SAY["duplicate"])
+
+    def test_create_step_ignores_own_catalog_entry(self):
+        rid = self.proposed_confirmed("가부서")
+        self._cat_put(self.req(rid)["key"], "가부서")   # 틱이 catalog_upsert 뒤 죽은 경우 = 자기 항목
+        self.tick()
+        self.assertEqual(self.req(rid)["state"], "created", self.req(rid).get("events"))
+
+    def test_lock_busy_create_retries_next_tick(self):
+        """[B] 중간: 윈 예약 잠금 실패(cys-dept exit 11)는 실패가 아니라 다음 틱 재시도."""
+        rid = self.proposed_confirmed("가부서")
+        os.environ["FAKE_CREATE_RC"] = "11"
+        self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["state"], "confirmed", r.get("events"))
+        self.assertEqual(r.get("lock_busy"), 1)
+        self.assertEqual(r.get("create_calls") or 0, 0, "잠금 실패 호출이 호출 수를 소모했다")
+        os.environ.pop("FAKE_CREATE_RC")
+        self.tick()
+        self.assertEqual(self.req(rid)["state"], "created", self.req(rid).get("events"))
+
+    def test_lock_busy_gives_up_after_three(self):
+        rid = self.proposed_confirmed("가부서")
+        os.environ["FAKE_CREATE_RC"] = "11"
+        for _ in range(3):
+            self.tick()
+        r = self.req(rid)
+        self.assertEqual(r["state"], "failed", r.get("events"))
+        self.assertEqual(r["fail_reason"], "lock_busy")
+        self.assertIn("다시", self.m.FAIL_SAY["lock_busy"])
+
+
 class TestNoProduction(unittest.TestCase):
     """하네스가 실 자원을 건드리지 않았다는 것을 시험 스스로 단언한다."""
     def test_real_request_root_untouched(self):
@@ -1200,6 +1261,9 @@ class TestChatHook(Base):
         self.assertEqual((rc, o2.get("reason")), (7, "human_unverified"), o2)
         self.assertEqual(self.req(rid)["state"], "proposed")
         rc, _ = self.hook("[부서결과] dr-x")                # 기계 알림은 사람 확인이 아니다
+        # ★Fable 1.1.3 M2 뒤: 알림 문장은 긍정 어휘가 아니라 confirm 결과만으론 이 벨트가 안 보인다(층 방어) —
+        #   벨트의 성질 자체(기계 알림은 사람 답 기록을 남기지 않는다)를 직접 단언한다.
+        self.assertFalse(os.path.exists(self.m.ack_path(rid)), "기계 알림을 사람 답으로 기록했다")
         rc, o3 = self.run_cmd("confirm", rid)
         self.assertEqual(o3.get("reason"), "human_unverified", o3)
         # 알림 표지 벨트만 따로 잰다 — 배달 원장 판정기(두 번째 벨트)를 못 쓰는 기계에서도 알림은 확인이 아니다
@@ -1213,6 +1277,7 @@ class TestChatHook(Base):
                 _s.modules.pop("javis_mission", None)
             else:
                 _s.modules["javis_mission"] = saved
+        self.assertFalse(os.path.exists(self.m.ack_path(rid)), "원장 판정기 없이 알림을 사람 답으로 기록했다")
         rc, o3b = self.run_cmd("confirm", rid)
         self.assertEqual(o3b.get("reason"), "human_unverified", o3b)
         self.hook("네")                                    # 사람이 카드 뒤에 직접 답함
@@ -1229,7 +1294,7 @@ class TestChatHook(Base):
         """셸 거름: master 아니면 무출력 · 요청 폴더 비고 부서 낱말 없으면 파이썬을 띄우지 않는다."""
         sh = os.path.join(os.path.dirname(BIN), "hooks", "dept-chat-inject.sh")
         env = dict(os.environ, CYS_SURFACE_ID="7", CYS_PACK_DIR=os.path.dirname(BIN),
-                   CYS_DEPT_REQUESTS=os.path.join(self.home, "rq"))
+                   CYS_DEPT_REQUESTS=os.path.join(self.home, "rq"), CYS_PY=self._py_wrapper())
         # Claude Code 는 훅 입력을 UTF-8 원문으로 준다(Node JSON.stringify 는 비ASCII 를 이스케이프하지 않는다)
         inp = json.dumps({"prompt": "부서 만들어 줘", "session_id": "z"}, ensure_ascii=False)
         p = subprocess.run(["sh", sh], input=inp, capture_output=True, text=True, env=dict(env, CYS_ROLE="worker"))
@@ -1237,10 +1302,102 @@ class TestChatHook(Base):
         p = subprocess.run(["sh", sh], input=json.dumps({"prompt": "안녕", "session_id": "z"}), capture_output=True,
                            text=True, env=dict(env, CYS_ROLE="master"))
         self.assertEqual((p.returncode, p.stdout), (0, ""))
-        self.assertFalse(os.path.exists(os.path.join(self.home, "rq", ".hook-active")), "빠른 길에서 파이썬이 돌았다")
+        self.assertFalse(self._py_log(), "빠른 길에서 파이썬이 돌았다")
+        self.assertTrue(os.path.exists(os.path.join(self.home, "rq", ".hook-active")),
+                        "M3: 훅 생존 표지는 어휘와 무관하게 셸이 갱신한다")
         p = subprocess.run(["sh", sh], input=inp, capture_output=True, text=True, env=dict(env, CYS_ROLE="master"))
         self.assertEqual(p.returncode, 0)
         self.assertIn("dept-by-chat", p.stdout)
+
+    def _py_wrapper(self):
+        """파이썬 기동 계수기 — 훅이 CYS_PY 로 부르는 인터프리터를 한 번 부를 때마다 한 줄 남긴다."""
+        w = os.path.join(self.tmp, "py-counting")
+        _exe(w, "#!/bin/sh\necho x >> \"%s\"\nexec \"%s\" \"$@\"\n" % (os.path.join(self.tmp, "py.log"), sys.executable))
+        return w
+
+    def _py_log(self):
+        p = os.path.join(self.tmp, "py.log")
+        return open(p).read().split() if os.path.exists(p) else []
+
+    def _sh(self, prompt):
+        sh = os.path.join(os.path.dirname(BIN), "hooks", "dept-chat-inject.sh")
+        env = dict(os.environ, CYS_SURFACE_ID="7", CYS_PACK_DIR=os.path.dirname(BIN), CYS_ROLE="master",
+                   CYS_DEPT_REQUESTS=self.m.root_dir(), CYS_PY=self._py_wrapper())
+        return subprocess.run(["sh", sh], input=json.dumps({"prompt": prompt, "session_id": "w"}, ensure_ascii=False),
+                              capture_output=True, text=True, env=env)
+
+    def _python_ran(self, prompt):
+        before = len(self._py_log())
+        p = self._sh(prompt)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return len(self._py_log()) > before
+
+    def test_fable_d_settled_requests_do_not_wake_python(self):
+        """Fable 1.1.3 [D]: 종결·전달 끝난 요청 폴더가 남아 있어도 매 프롬프트 파이썬을 띄우지 않는다."""
+        wake = os.path.join(self.m.root_dir(), ".hook-wake")
+        rid = self.proposed_confirmed()
+        self.assertFalse(os.path.exists(wake), "확인 직후는 전할 것이 없다(confirm 이 said=confirmed 를 쓴다)")
+        self.tick()
+        self.assertTrue(os.path.exists(wake), "생성 소식을 아직 안 전했다")
+        self.assertTrue(self._python_ran("안녕"), "전할 소식이 있는데 선거름이 막았다")
+        self.run_cmd("status", "--say", rid)
+        self.assertTrue(os.path.isdir(self.m.req_dir(rid)), "요청 폴더는 남는다(종전 선거름이 매번 깨던 조건)")
+        self.assertFalse(os.path.exists(wake), "다 전했는데 표지가 남았다")
+        self.assertFalse(self._python_ran("오늘 날씨 어때"), "종결 요청만 남은 기계에서 매 프롬프트 파이썬이 돌았다")
+        self.assertTrue(self._python_ran("부서 하나 더 만들어 줘"), "부서 낱말은 여전히 깨운다")
+
+    def test_fable_m3_human_axis_without_dept_vocabulary(self):
+        """M3: 부서·팀 낱말 없는 요청 턴에도 훅 생존 표지가 서서 human_axis 가 참이다(마스터 자기 확인 봉쇄)."""
+        self.assertFalse(self._python_ran("교안 준비 맡길 조직 하나 새로 꾸려 줘"))
+        rc, o = self.propose("교안준비")
+        self.assertTrue(self.req(o["request"]).get("human_axis"), "어휘 없는 턴에서 사람 확인 축이 꺼졌다")
+        rc, o2 = self.run_cmd("confirm", o["request"])
+        self.assertEqual(o2.get("reason"), "human_unverified", o2)
+
+    def _card(self):
+        self.hook("부서 만들어 줘")
+        rc, o = self.propose()
+        self.assertTrue(self.req(o["request"]).get("human_axis"))
+        return o["request"]
+
+    def test_fable_m2_no_after_card_declines_and_discards(self):
+        rid = self._card()
+        self.hook("아니요 괜찮아요")
+        rc, o = self.run_cmd("confirm", rid)
+        self.assertEqual((rc, o.get("reason")), (7, "human_declined"), o)
+        self.assertIn("만들지 않았습니다", o["say"])
+        self.assertEqual(self.req(rid)["state"], "discarded")
+
+    def test_fable_m2_edit_or_unrelated_after_card_is_not_yes(self):
+        for said in ("잠깐, 이름 바꿔 줘", "오늘 날씨 어때", "네 근데 이름은 다르게"):
+            rid = self._card()
+            self.hook(said)
+            rc, o = self.run_cmd("confirm", rid)
+            self.assertEqual(o.get("reason"), "human_unverified", (said, o))
+            self.assertEqual(self.req(rid)["state"], "proposed")
+
+    def test_fable_m2_yes_after_card_confirms(self):
+        rid = self._card()
+        self.hook("네 만들어 주세요")
+        rc, o = self.run_cmd("confirm", rid)
+        self.assertEqual(rc, 0, o)
+
+    def test_fable_m2_latest_answer_wins(self):
+        rid = self._card()
+        self.hook("잠깐만요")
+        self.hook("네")
+        rc, o = self.run_cmd("confirm", rid)
+        self.assertEqual(rc, 0, o)
+
+    def test_fable_d_open_proposal_wakes_for_plain_yes(self):
+        """열린 제안 뒤 「네」(부서 낱말 없음)는 반드시 파이썬을 깨워 사람 확인을 기록해야 한다."""
+        self.hook("부서 만들어 줘")
+        rc, o = self.propose()
+        rid = o["request"]
+        self.assertTrue(os.path.exists(os.path.join(self.m.root_dir(), ".hook-wake")))
+        self.assertTrue(self._python_ran("네"))
+        rc, o2 = self.run_cmd("confirm", rid)
+        self.assertEqual(rc, 0, o2)
 
 
 if __name__ == "__main__":

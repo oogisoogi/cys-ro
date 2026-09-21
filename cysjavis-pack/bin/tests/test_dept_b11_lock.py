@@ -128,7 +128,7 @@ class TestGenStamp(unittest.TestCase):
         # 새 예약 두 곳(allocate · create NEW)이 예약마다 새 gen 을 찍는지.
         src = open(DEPT, encoding="utf-8").read()
         self.assertEqual(src.count("'gen':os.urandom(8).hex()"), 2, "예약 두 곳 중 gen 을 안 찍는 곳이 있다")
-        self.assertIn('reg_fence_close "$name" "$$"', src.split("\n  down)\n")[1].split("\n    ;;\n")[0],
+        self.assertIn('reg_fence_close "$name" "$(self_os_pid)"', src.split("\n  down)\n")[1].split("\n    ;;\n")[0],
                       "down 이 울타리를 거치지 않는다")
 
 

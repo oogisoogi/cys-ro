@@ -8,6 +8,8 @@ import {
   plainLine,
   INTERNAL_TERMS,
   BRIEF_MAX_ITEMS,
+  cycleAdviceLines,
+  CYCLE_ADVICE_PCT,
 } from "./restorebrief";
 
 const SAMPLE = `# SESSION_STATE
@@ -96,4 +98,75 @@ describe("buildBriefCard — 초보자 문구 · 내부 용어 0", () => {
     expect(c.foot.includes("알 수 없습니다")).toBe(true);
   });
   it("모르는 역할 코드명을 화면에 내지 않는다", () => expect(friendlyRole("ceo-x")).toBe("도우미"));
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// TICKET=v111-restore — ①묻지 않는다(질문·주입 경로 0) · ④60%+ 순환 권유(집행 0)
+// ────────────────────────────────────────────────────────────────────────────
+describe("카드는 묻지 않는다 — 질문 버튼·주입 문안이 존재하지 않는다", () => {
+  const card = buildBriefCard({
+    sections: parseBriefSections(SAMPLE),
+    recordedAt: "2026-09-18 10:42",
+    restoredRoles: ["master"],
+    waitingRoles: [],
+  });
+  it("★[이어서 진행] 라벨·주입 문안 칸이 카드에 없다(필드 부재)", () => {
+    // 필드가 '비어 있다'가 아니라 '없다'를 단언한다 — 빈 문자열로 남기면 소비부가 버튼을 다시 그린다.
+    expect(Object.keys(card)).not.toContain("continueLabel");
+    expect(Object.keys(card)).not.toContain("continueText");
+  });
+  it("버튼은 [닫기] 하나다", () => expect(card.closeLabel).toBe("닫기"));
+  it("★제목이 질문이 아니다(물음표 0)", () => expect(card.title.includes("?")).toBe(false));
+  it("★카드 전문에 '이어서 진행' 문구가 0건이다", () =>
+    expect(JSON.stringify(card).includes("이어서 진행")).toBe(false));
+});
+
+describe("cycleAdviceLines — 60%+ 자리에 권유 한 줄(집행 0)", () => {
+  it("문턱은 워커 규율과 같은 60이다", () => expect(CYCLE_ADVICE_PCT).toBe(60));
+  it("문턱 미만이면 한 줄도 얹지 않는다", () =>
+    expect(cycleAdviceLines([{ role: "master", ctxPct: 59 }])).toEqual([]));
+  it("★경계값(정확히 60)은 권유한다", () =>
+    expect(cycleAdviceLines([{ role: "master", ctxPct: 60 }]).length).toBe(1));
+  it("못 잰 자리(null)는 넘었다고 말하지 않는다", () =>
+    expect(cycleAdviceLines([{ role: "master", ctxPct: null }])).toEqual([]));
+  it("★숫자가 아닌 값이 오면(데몬 JSON 문자열) 넘었다고 말하지 않는다", () => {
+    // 이 줄이 없으면 `typeof === "number"` 가드를 지워도 스위트가 초록이다(등가 뮤턴트로 보인다)
+    // — null 만으로는 JS 의 `null >= 60 === false` 가 가드를 대신해 주기 때문이다.
+    // 실제 재료는 데몬 JSON(usage.ctx_pct)이라 타입이 문자열로 올 수 있고, 그때
+    // `"97" >= 60` 은 **참**이 되어 못 잰 값이 권유가 된다.
+    const dirty = [{ role: "master", ctxPct: "97" as unknown as number }];
+    expect(cycleAdviceLines(dirty)).toEqual([]);
+  });
+  it("넘은 자리만 쉬운 이름으로 모아 한 줄", () => {
+    const l = cycleAdviceLines([
+      { role: "master", ctxPct: 97 },
+      { role: "cso", ctxPct: 72 },
+      { role: "worker-2", ctxPct: 12 },
+    ]);
+    expect(l).toEqual(["총괄 · 운영 관리 창은 기억한 내용이 60%를 넘었어요. 한 번 정리(순환)를 권해요."]);
+  });
+  it("★권유일 뿐 집행이 아니다 — 문구에 명령·질문이 없다", () => {
+    const [line] = cycleAdviceLines([{ role: "master", ctxPct: 80 }]);
+    expect(line.includes("?")).toBe(false);
+    expect(line.includes("권해요")).toBe(true);
+  });
+  it("카드에 실리고 내부 용어는 0건이다", () => {
+    const c = buildBriefCard({
+      sections: null,
+      recordedAt: null,
+      restoredRoles: ["master", "worker-2"],
+      waitingRoles: [],
+      seatCtx: [
+        { role: "master", ctxPct: 97 },
+        { role: "worker-2", ctxPct: 3 },
+      ],
+    });
+    const all = JSON.stringify(c);
+    expect(all.includes("한 번 정리(순환)를 권해요")).toBe(true);
+    for (const t of INTERNAL_TERMS) expect(all.toLowerCase().includes(t.toLowerCase())).toBe(false);
+  });
+  it("seatCtx 미지정(구 호출부)이면 권유 줄이 없다 — 추가는 순수 additive", () => {
+    const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["master"], waitingRoles: [] });
+    expect(JSON.stringify(c).includes("순환")).toBe(false);
+  });
 });

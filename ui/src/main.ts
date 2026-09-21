@@ -140,6 +140,7 @@ import {
   type AlarmRecord,
 } from "./toastttl";
 import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard } from "./restorebrief";
+import { shouldClosePlaceholder } from "./placeholderclose";
 
 declare global {
   interface Window {
@@ -2399,6 +2400,17 @@ function setRoleDot(el: HTMLElement, role: string | null, working = false) {
 //   이게 없으면 노드가 데몬 안에서 헤드리스로만 돌고 화면에 보이지 않는다.
 let refreshing = false;
 let started = false; // start()의 세션 복원이 끝나기 전 인터벌 자동 입양 차단 (이중 생성 방지)
+
+// ── 빈 자리표 장부(TICKET=v111-restore ③ · master 판정 B) ────────────────────
+// ★이 두 집합이 「남의 페인 절대 불가침」의 **유일한** 근거다. 자리표는 화면으로는 박사님이
+//   직접 연 터미널과 구별되지 않는다(둘 다 역할 없는 맨 셸) — 구별자는 **우리가 만든 번호**뿐이다.
+//   그래서 여기에 없는 번호는 어떤 조건에서도 회수 대상이 아니다(placeholderclose.ts ⓐ).
+const placeholderSids = new Set<number>(); // UI 가 빈 탭을 채우려고 만든 맨 셸의 번호
+const touchedPlaceholders = new Set<number>(); // 그 중 사람이 키를 한 번이라도 보낸 번호
+/** pane 입력 단일 경로(sendRaw)가 부른다 — 이 자리는 이제 「손댄 자리」다(회수 영구 제외). */
+function notePlaceholderTouched(sid: number): void {
+  if (placeholderSids.has(sid)) touchedPlaceholders.add(sid);
+}
 // ★유령 pane 수렴의 2연속 관측 카운터(키 = paneKey). 데몬이 **기록 자체를 모르는** sid 를 트리에서
 // 치우되, **단발 응답으로는 치우지 않는다** — 데몬이 한 틱만 부분/빈 목록을 돌려줘도 트리가 통째로
 // 증발하면 '터미널에 글자가 하나도 안 보이는' 최악이 된다. 2회 연속 같은 판정일 때만 집행한다.
@@ -2480,6 +2492,8 @@ async function refreshPaneTitles() {
           live_cwd: string | null;
           exited: boolean;
           usage?: ObservedUsage | null;
+          // surface.list 가 이미 싣는 단조 줄 커서 — ③ 자리표 무접촉 판정의 「출력」 축.
+          line_count?: number | null;
         }[];
       };
       // ★패널 수집은 pane 입양 여부와 무관하게 한다 — 계정 사용량(rate)은 UI에 아직 안 붙은
@@ -2553,6 +2567,40 @@ async function refreshPaneTitles() {
       //   (깨끗한 VM run4 · 마스터 칸 ≈100px). 입양이 일어난 ws 만 기존 좌→우 순서 그대로 열을 다시 짠다 —
       //   master 열 = 화면 1/3 이상(열 2개면 1/2) · 나머지 균등. ★좁힌 판(master 판정 B): 트리가 순수 row 열뿐일
       //   때만 다시 짠다 — 사용자가 세로(col) 분할·중첩을 만든 ws 는 무접촉(기존 0.5 감싸기 그대로).
+      // ── ③ 빈 자리표 회수(TICKET=v111-restore · master 판정 B) ──────────────────
+      // 편성이 도착한 탭에서, **우리가 만든** 자리표가 아직 손타지 않았으면 닫는다.
+      // 판정은 전부 placeholderclose.ts 가 쥔다(여기서 조건을 다시 쓰지 않는다 — 두 벌이 되면
+      // 한쪽만 고쳐지고, 이 축의 실패 방향은 「사람의 작업창이 사라진다」다).
+      if (placeholderSids.size) {
+        for (const ws of workspaces) {
+          if (ws.pending || (ws.socket ?? undefined) !== (sk ?? undefined)) continue;
+          const sids = collectSids(ws.tree);
+          const formationArrived = r.surfaces.some(
+            (x) => !x.exited && x.role && sids.includes(x.surface_id),
+          );
+          for (const sid of sids) {
+            if (!placeholderSids.has(sid)) continue; // ⓐ 남의 페인은 여기서 이미 걸러진다
+            const su = r.surfaces.find((x) => x.surface_id === sid);
+            if (
+              !shouldClosePlaceholder({
+                isOwnPlaceholder: placeholderSids.has(sid),
+                touched: touchedPlaceholders.has(sid),
+                role: su?.role ?? null,
+                lineCount: su?.line_count ?? null,
+                formationArrived,
+                exited: su?.exited ?? true,
+              })
+            )
+              continue;
+            placeholderSids.delete(sid); // 한 번 판정한 자리는 장부에서 뺀다(반복 시도 0)
+            await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
+            destroyPaneRuntime(sid, ws.socket);
+            ws.tree = ws.tree ? replaceNode(ws.tree, sid, () => null) : null;
+            if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
+            layoutChanged = true;
+          }
+        }
+      }
       const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
       // ★B16(오너 확정 2026-09-19 16:1x) — 본부 역할이 **cys 좌석으로 있는 기기**에서는 역할 배치를 쓴다:
       //   좌열 master(위):cso(아래)=4:1 · 우열 worker. 참가자 기기(cysr)가 그 경우다.
@@ -2953,6 +3001,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
 
   const sendRaw = (data: string) => {
     follow = true; // 입력 = 프롬프트 사용 의사 — 바닥 고정 재개(xterm scrollOnUserInput과 정합)
+    notePlaceholderTouched(sid); // ③ 자리표에 사람이 손댔다 — 회수 대상에서 영구 제외
     sendChain = sendChain
       .then(() => invoke("send_input", { socket, surfaceId: sid, data }))
       .catch(noteSendFail); // 체인 유지(위 계약) + 실패를 사용자에게 보이게 한다
@@ -7222,10 +7271,11 @@ async function refreshDaemonInfo(info: HTMLElement) {
 // 복원 브리핑 카드 1단계(박사님 채택 2026-09-17 · A2-2 T8).
 // 앱이 다시 켜지면 **마스터 자리 1곳**에 「무엇이 다시 켜졌고, 멈춘 일이 무엇인가」를 보여 준다.
 //   · 재료 = 마스터 작업 폴더의 작업기억 파일(고정 3절) + 기본 데몬의 역할 자리 목록. 프로그램이 조립한다(토큰 0).
-//   · ★자동으로 아무것도 보내지 않는다. [이어서 진행할까요?]를 사용자가 누를 때만 마스터에 한 줄을 보낸다 —
-//     복원 정책 「재개 지시는 넣지 않으며, 일은 사용자의 한마디 뒤에 잇는다」(수정 3)와 같은 층이다.
-//   · 그 한 줄은 UI 가 조립한 문안이므로 machineOrigin 표식을 단다(R5) — 버튼 클릭이 자율 착수 권한을
-//     조용히 여는 경로가 되지 않게 한다. 마스터의 임무 게이트가 그 뒤를 판단한다.
+//   · ★이 카드는 **아무것도 보내지 않는다**(주입 0). 종전의 [이어서 진행할까요?] 버튼은 제거했다 —
+//     박사님 최상위 원칙(2026-09-21) 「중간에 사용자에게 묻는 단계를 모두 삭제하면 좋다」의 적용이고,
+//     동시에 09-21 실기에서 **임무 0 함대를 폭주시킨 방아쇠**를 끊는 수리다(클릭 1회가 자율 착수
+//     권한을 여는 경로였다). 이어서 할지는 마스터가 임무 게이트로 판정한다(복원 디렉티브가 지시).
+//   · 컨텍스트 60%+ 자리에는 권유 한 줄만 얹는다(자동 순환 집행 0 — 알림이지 질문이 아니다).
 //   · 한 번 켜질 때 1회만. 실패는 조용히 넘긴다(카드는 부가 기능 — 복원 자체를 막지 않는다).
 // ────────────────────────────────────────────────────────────────────────────
 let restoreBriefShown = false;
@@ -7234,7 +7284,14 @@ async function showRestoreBrief(): Promise<void> {
   restoreBriefShown = true;
   try {
     const r = (await rpcT(invoke("list_surfaces", { socket: undefined }), T_LIST)) as {
-      surfaces: { surface_id: number; role: string | null; live_cwd: string | null; exited: boolean }[];
+      surfaces: {
+        surface_id: number;
+        role: string | null;
+        live_cwd: string | null;
+        exited: boolean;
+        // surface.list 가 이미 싣고 있는 관측 사용률(추가 RPC 0) — 60%+ 순환 권유의 재료.
+        usage?: { ctx_pct?: number | null } | null;
+      }[];
     };
     const seats = r.surfaces.filter((s) => s.role);
     const master = seats.find((s) => s.role === "master" && !s.exited);
@@ -7254,6 +7311,9 @@ async function showRestoreBrief(): Promise<void> {
       recordedAt: text === null ? null : recordedAt(text),
       restoredRoles: seats.filter((s) => !s.exited).map((s) => s.role as string),
       waitingRoles: seats.filter((s) => s.exited).map((s) => s.role as string),
+      seatCtx: seats
+        .filter((s) => !s.exited)
+        .map((s) => ({ role: s.role as string, ctxPct: s.usage?.ctx_pct ?? null })),
     });
     document.getElementById("restore-brief")?.remove();
     const box = document.createElement("div");
@@ -7283,29 +7343,12 @@ async function showRestoreBrief(): Promise<void> {
     box.appendChild(foot);
     const row = document.createElement("div");
     row.className = "rb-row";
-    const go = document.createElement("button");
-    go.className = "dept-idle-btn";
-    go.textContent = card.continueLabel;
+    // ★버튼은 [닫기] 하나다 — 이 카드에서 나가는 주입 경로는 0 이다(send_input 호출 없음).
     const close = document.createElement("button");
     close.className = "rb-close";
     close.textContent = card.closeLabel;
     close.addEventListener("click", () => box.remove());
-    go.addEventListener("click", () => {
-      go.disabled = true;
-      void invoke("send_input", {
-        socket: undefined,
-        surfaceId: master.surface_id,
-        data: card.continueText,
-        clearFirst: true,
-        machineOrigin: true,
-      })
-        .then(() => box.remove())
-        .catch((e) => {
-          go.disabled = false;
-          toast("watchdog", "보내지 못했습니다", String(e));
-        });
-    });
-    row.append(go, close);
+    row.append(close);
     box.appendChild(row);
     document.body.appendChild(box);
   } catch {
@@ -8041,6 +8084,7 @@ async function start() {
     try {
       const sid = await newSurface(null, ws.socket, T_NEW);
       ws.tree = { type: "pane", sid };
+      placeholderSids.add(sid); // ③ 이 번호만 나중에 회수 대상이 된다(남의 페인 불가침)
     } catch {
       /* 다음 틱·다음 기동에서 재시도 */
     }

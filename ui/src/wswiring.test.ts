@@ -279,15 +279,30 @@ describe("복원 브리핑 카드 — 자동으로 아무것도 보내지 않는
     expect(b).toBeGreaterThan(a);
     return src.slice(a, b);
   }
-  it("★마스터에 보내는 호출은 [이어서] 클릭 처리기 안에 1곳뿐이다", () => {
+  // ★계약 개정(TICKET=v111-restore · 브리프 2026-09-21). 종전 두 단언은 「보내는 호출은
+  //   [이어서] 클릭 처리기 안에 **1곳**」 · 「그 한 줄은 machineOrigin 표식을 단다」였다 —
+  //   즉 **클릭 1회가 마스터에 글을 넣는 경로**를 정상으로 못박고, 그 위험을 표식으로 완화했다.
+  //   09-21 실기에서 그 클릭이 임무 0 함대를 폭주시킨 방아쇠였고(자기발의 티켓으로 세 자리
+  //   60%+), 박사님 최상위 원칙(「중간에 사용자에게 묻는 단계를 모두 삭제」)이 그 버튼 자체를
+  //   지웠다. 완화(표식)에서 **제거(경로 0)** 로 올라간 것이므로 단언은 강해졌다.
+  it("★마스터에 보내는 호출이 **0곳**이다(카드는 알림일 뿐 주입 경로가 없다)", () => {
     const s = cardSlice();
-    expect((s.match(/invoke\("send_input"/g) ?? []).length).toBe(1);
-    const click = s.indexOf('go.addEventListener("click", () => {');
-    expect(click).toBeGreaterThan(0);
-    expect(s.indexOf('invoke("send_input"')).toBeGreaterThan(click);
+    expect((s.match(/invoke\("send_input"/g) ?? []).length).toBe(0);
+    // 다른 이름의 주입 경로로 되살아나는 것도 막는다(send_text·send_key 계열 전부).
+    expect(/invoke\("send_(input|text|key)"/.test(s)).toBe(false);
   });
-  it("★그 한 줄은 UI 조립 문안 표식(machineOrigin)을 단다 — 클릭이 자율 착수 권한을 조용히 열지 않게", () => {
-    expect(/invoke\("send_input", \{[^}]*machineOrigin: true,[^}]*\}\)/.test(cardSlice())).toBe(true);
+  it("★[이어서 진행] 버튼 자체가 없다 — 사용자에게 묻지 않는다", () => {
+    const s = cardSlice();
+    expect(s.includes("continueLabel")).toBe(false);
+    expect(s.includes("continueText")).toBe(false);
+    expect(s.includes('go.addEventListener("click"')).toBe(false);
+  });
+  it("60%+ 순환 권유의 재료를 카드에 넘긴다(권유 1줄 · 자동 집행 0)", () => {
+    const s = cardSlice();
+    expect(s.includes("seatCtx:")).toBe(true);
+    expect(s.includes("ctx_pct")).toBe(true);
+    // 권유가 곧 집행이 되지 않게: 이 구간에 순환 집행 호출이 없어야 한다.
+    expect(/invoke\("[^"]*cycle[^"]*"/i.test(s)).toBe(false);
   });
   it("복원이 끝난 뒤(started = true 다음) 한 번 부른다", () => {
     const i = src.indexOf("started = true; // 복원 완료");
@@ -499,5 +514,41 @@ describe("ⓑ′ 전문가 모드 — 기본 꺼짐 판정이 순수 모듈을 �
     const fn = code.slice(a, code.indexOf("\n}", a));
     expect(fn).toContain("expertBox.hidden = !on");
     expect(fn).toContain("expertToggle.checked = on");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// TICKET=v111-restore ③ — 빈 자리표 회수 배선(master 판정 B · 조건 ⓐⓑⓒ)
+// 판정 자체는 placeholderclose.test.ts 가 쥔다. 여기서는 **배선**만 못박는다 —
+// 판정이 옳아도 배선이 어긋나면(남의 번호를 넣는다·손댐 표시를 안 한다) 그대로 사고다.
+// ────────────────────────────────────────────────────────────────────────────
+describe("빈 자리표 회수 — 배선", () => {
+  it("ⓐ 회수 대상 번호는 **UI 가 만든 충전 셸**에서만 장부에 들어간다", () => {
+    // 장부에 넣는 지점이 1곳이고, 그 지점이 newSurface 직후여야 한다.
+    expect((src.match(/placeholderSids\.add\(/g) ?? []).length).toBe(1);
+    expect(/const sid = await newSurface\(null, ws\.socket, T_NEW\);[\s\S]{0,200}?placeholderSids\.add\(sid\)/.test(src)).toBe(true);
+  });
+  it("★ⓐ 회수 루프는 장부에 없는 번호를 **먼저** 걸러낸다(남의 페인 불가침)", () => {
+    expect(src.includes("if (!placeholderSids.has(sid)) continue;")).toBe(true);
+  });
+  it("ⓑ pane 입력 단일 경로(sendRaw)가 손댐을 표시한다", () => {
+    expect(/const sendRaw = \(data: string\) => \{[\s\S]{0,300}?notePlaceholderTouched\(sid\)/.test(src)).toBe(true);
+    // 표시 함수는 장부에 있는 번호만 손댐으로 올린다(남의 번호가 장부에 들어오지 않게).
+    expect(src.includes("if (placeholderSids.has(sid)) touchedPlaceholders.add(sid);")).toBe(true);
+  });
+  it("★판정은 placeholderclose 가 단독으로 쥔다 — 조건을 배선부에 두 벌로 쓰지 않는다", () => {
+    expect(src.includes('import { shouldClosePlaceholder } from "./placeholderclose";')).toBe(true);
+    expect((src.match(/shouldClosePlaceholder\(/g) ?? []).length).toBe(1);
+  });
+  it("ⓒ 손댄 자리는 닫지 않고 알림도 없다 — 회수 구간에 토스트가 없다", () => {
+    const a = src.indexOf("// ── ③ 빈 자리표 회수");
+    const b = src.indexOf("const masterSids = new Set(", a);
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    const slice = src.slice(a, b);
+    expect(/toast\(/.test(slice)).toBe(false);
+    expect(/osBanner\(/.test(slice)).toBe(false);
+    // 그리고 한 번 판정한 번호는 장부에서 빠져 반복 시도가 없다.
+    expect(slice.includes("placeholderSids.delete(sid);")).toBe(true);
   });
 });

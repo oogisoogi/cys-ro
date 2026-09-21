@@ -66,6 +66,8 @@
   15:21:02 두 번째 미제출 → `watch_wakeup.suppressed reason=min_interval`(주입 0). 같은 이벤트 키 2회 → 주입 1회는 통합 시험(실 Daemon + check_idle)으로 증명.
   정리: 격리 cysd·claude 2·구독기 종료 · 잔존 0 확인 · /tmp 폴더 삭제.
 
+- 이종 검증 agy 1R(9937b657 detached 스냅샷 · diff 인라인): REVISE 2건 → H(락 순서 역전: 배달자가 pending_queue 락을 쥔 채 note_delivered→shared 락 · wake_master 는 역순) **채택·수리 fb2b5819**(락 밖 호출 + 회귀 시험 + 뮤턴트 M7 KILLED) · M(틱마다 agents.json 읽기) **기각** — 호출은 유휴 전이 에지(idle_notified swap)에서만 1회. 수리 뒤 cysd 995 통과.
+
 ## 미결 · 함정
 - ⚠ `src/bin/cys.rs` 의 SubmitProbe 사본은 891(v112-restore)이 lib 호출로 바꾼다 — 병합 순서 restore → wake.
 - 재현 중 관측: 격리 데몬의 내장 스케줄이 master 자리에 `[heartbeat] phoenix 세대 스냅샷 정기화` 를 넣었다 — 사람 대면 자리에 기계 산문이 들어가는 같은 계열(③과 같은 병) · 이번 범위 밖, 기록만.

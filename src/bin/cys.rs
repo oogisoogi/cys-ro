@@ -170,6 +170,11 @@ enum Command {
         /// verify 모드 노드별 검증 대기(초) — 전역 하드캡=timeout+마진. plain drain은 무영향.
         #[arg(long, default_value_t = 20)]
         timeout: u64,
+        /// verify 모드 대상을 이 자리들로만 좁힌다(반복 가능 · 형식 `<dept>/<surface:N>` = 결과 JSON 의
+        /// `dept`·`surface` 그대로). 앱 ↻ 가 「복원 중 — 건너뜀」 자리만 다시 저장시킬 때 쓴다(이미 저장한
+        /// 자리에 지시를 두 번 넣지 않게). 비우면 전 자리.
+        #[arg(long = "only")]
+        only: Vec<String>,
     },
     /// 재시작 한 번에 끝내기 — 앱 [재시작] 단추(rotate_daemon)와 같은 5단:
     /// 저장 검증(drain --verify) → 데몬 교체 → 복귀 표식 → 새 팩 반영(init-pack) → 조직 복원(restore).
@@ -1364,6 +1369,9 @@ fn main() {
     // (`cys run -- <임의명령>`·`launch-agent` 로 뜨는 pane·팩 python 헬퍼)이 상속으로 덮인다.
     // 층1(python_command)·층2(spawn_env_pairs)가 못 닿는 임의 명령 경로의 바닥(lib.rs SOT).
     cys::seal_python_bytecode_in_process();
+    // ★v113-restore B1: 윈도에서 이 CLI 의 표준 입출력 핸들을 **상속 불가**로 — 자동 기동된 cysd 가 부른 쪽
+    //   (설치기·rotate)의 파이프를 물려받아 그쪽이 EOF 를 영원히 못 받는 사고 차단(unix 무동작).
+    cys::seal_std_handles_from_inheritance();
     // 파이프(head 등)로 출력이 끊겨도 패닉하지 않도록 SIGPIPE 기본 동작 복원
     #[cfg(unix)]
     unsafe {
@@ -3164,8 +3172,8 @@ fn run(command: Command) -> i32 {
         Command::Resume => request("system.resume", json!({}))
             .map(|_| println!("RESUMED — 동결된 큐·스케줄 재개")),
 
-        Command::Drain { verify, timeout } if verify => {
-            return run_drain_verify(timeout);
+        Command::Drain { verify, timeout, only } if verify => {
+            return run_drain_verify(timeout, &only);
         }
 
         Command::Rotate { timeout, skip_drain } => {
@@ -14068,7 +14076,7 @@ fn verify_one_node(
 /// | 22 | 데몬 교체 실패(맥 launchd 등록/이관 · 윈 작업 등록·기존 데몬 정지) | ② |
 /// | 23 | 새 데몬이 상한 안에 응답하지 않음 | ② |
 /// | 24 | 새 팩 반영(init-pack) 실패 — 복귀 표식을 **남긴다**(앱 다음 기동이 재시도) | ④ |
-/// | 25 | 끝까지 진행 — 조직 복원이 실패·보류(관문)를 보고했다 | 없음 |
+/// | 25 | 끝까지 진행 — 조직 복원(본부 또는 ⑥ 살아 있던 부서의 교체·복원)이 실패·보류(관문)를 보고했다 | 없음 |
 ///
 /// 21 과 25 가 함께면 25(복원이 더 무겁다 — 사람이 볼 곳이 창 쪽이다).
 const ROTATE_RC_DRAIN_PARTIAL: i32 = 21;
@@ -14096,6 +14104,31 @@ fn rotate_state_root(pack_dir: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| cys::home_dir().join(".cys"))
 }
 
+/// 자식 출력을 **파이프가 아니라 임시 파일**로 받는다(TICKET=v113-restore B1).
+///
+/// 결함(윈 실기 2026-09-21 18:58 · bootstrap.log `stage 2-daemon-up` 316s 상한): ②에서 옛 데몬을 내린 뒤
+/// `cys identify` 자식이 새 cysd 를 자동 기동한다. `.output()` 은 파이프 쓰기 끝이 **모두** 닫혀야 끝나는데,
+/// 윈도는 `CreateProcess(bInheritHandles=TRUE)` 로 부모의 상속 가능 핸들을 손자에게 물려준다 — 새 cysd 가
+/// rotate 의 출력 파이프를 쥔 채 살아 있으니 rotate 가 영원히 읽기 대기에 걸린다(데몬은 섰는데 rotate 는 모름).
+/// 맥은 표준 입출력이 null 로 덮이고 나머지 fd 가 CLOEXEC 라 같은 일이 안 난다(맥 85s 합격과의 차이).
+/// 파일은 EOF 를 기다리지 않는다 — 자식이 끝나면 읽는다. 손자가 핸들을 쥐고 있어도 무해하다.
+/// stderr 는 종전(캡처 후 버림)과 같게 버린다.
+fn output_via_file(mut cmd: std::process::Command) -> Option<std::process::Output> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("cys-rotate-{}-{n}.out", std::process::id()));
+    let file = std::fs::File::create(&path).ok()?;
+    let status = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(file)
+        .stderr(std::process::Stdio::null())
+        .status();
+    drop(cmd);
+    let stdout = std::fs::read(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    Some(std::process::Output { status: status.ok()?, stdout, stderr: Vec::new() })
+}
+
 /// 앱 [재시작] 단추와 같은 5단을 CLI 한 번으로(TICKET=v112-restore ④ · master [master#990243f6]).
 /// 단계마다 **자기 자신의 하위명령**을 부른다 — 로직 사본 0(두 경로가 갈라지지 않게). 사후 알림 1줄.
 fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
@@ -14104,11 +14137,9 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
         return ROTATE_RC_DAEMON;
     };
     let run = |args: &[&str]| -> Option<std::process::Output> {
-        cys::hidden_command(&exe)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .ok()
+        let mut cmd = cys::hidden_command(&exe);
+        cmd.args(args);
+        output_via_file(cmd)
     };
     // ① 저장 검증 — 살아 있는 데몬이 있을 때만(없으면 저장할 자리도 없다).
     let mut drain_ok: Option<bool> = None;
@@ -14172,11 +14203,19 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
                         }
                     }
                 }
-                let _ = cys::hidden_command("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+                let _ = output_via_file({
+                    let mut c = cys::hidden_command("taskkill");
+                    c.args(["/PID", &pid.to_string(), "/F"]);
+                    c
+                });
             }
             #[cfg(not(windows))]
             {
-                let _ = cys::hidden_command("kill").args(["-TERM", &pid.to_string()]).output();
+                let _ = output_via_file({
+                    let mut c = cys::hidden_command("kill");
+                    c.args(["-TERM", &pid.to_string()]);
+                    c
+                });
             }
             let mut down = false;
             for _ in 0..50 {
@@ -14219,13 +14258,87 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(root.join(".last-app-version"), env!("CARGO_PKG_VERSION"));
     // ⑤ 조직 복원(겹치는 콜드부트 복원과는 복원 1회 표식이 한 번만 말하게 한다)
-    let restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
+    let hq_restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
+    // ⑥ 부서 순회 — 앱 [재시작](restartAllDaemons → rotate_dept_daemon)과 같은 순서·같은 도구.
+    //   본부 rotate 에서만 돈다(부서 소켓으로 부른 rotate 가 다른 부서를 건드리지 않게).
+    let (dept_note, depts_ok) = if base { rotate_depts(&exe) } else { (String::new(), true) };
+    let restore_ok = hq_restore_ok && depts_ok;
     let rc = rotate_rc(drain_ok, restore_ok);
     println!(
-        "재시작 완료 — {drain_note} · 데몬 교체 · 새 팩 반영 · 조직 복원 {} (rc={rc})",
-        if restore_ok { "성공" } else { "실패·보류 — 창을 확인하세요" }
+        "재시작 완료 — {drain_note} · 데몬 교체 · 새 팩 반영 · 조직 복원 {}{dept_note} (rc={rc})",
+        if hq_restore_ok { "성공" } else { "실패·보류 — 창을 확인하세요" }
     );
     rc
+}
+
+/// rotate ⑥ 대상 부서(순수) — 레지스트리(depts.json)에 있고 **지금 살아 있는** 부서만. 죽은 부서는 되살리지
+/// 않는다(앱 restartAllDaemons 와 같은 규칙 · 부서 부활은 CSO·피닉스 소유 · 묘비 부서는 이미 내려가 있다).
+fn rotate_dept_targets(
+    reg: &Value,
+    alive: impl Fn(&std::path::Path) -> bool,
+) -> Vec<(String, std::path::PathBuf)> {
+    let mut out = Vec::new();
+    if let Some(depts) = reg["depts"].as_object() {
+        for (name, meta) in depts {
+            let sock = meta["socket"]
+                .as_str()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| cys::dept_socket_path(name));
+            if alive(&sock) {
+                out.push((name.clone(), sock));
+            }
+        }
+    }
+    out
+}
+
+/// rotate ⑥ — 살아 있는 부서마다 `cys-dept rotate <이름>`(데몬만 새 바이너리로 · 레지스트리·묘비·CEO 불변)
+/// 뒤 그 부서 소켓으로 `cys restore --include-master`. 앱 rotate_dept_daemon 과 같은 두 단계다.
+/// 반환 = (요약 꼬리, 전부 성공했는가). 부서가 없으면 ("", true).
+fn rotate_depts(exe: &std::path::Path) -> (String, bool) {
+    let reg_path = std::env::var("CYS_DEPTS_JSON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| cys::home_dir().join(".cys/depts.json"));
+    let reg = std::fs::read_to_string(&reg_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(Value::Null);
+    let targets = rotate_dept_targets(&reg, |sock| request_on(sock, "system.identify", json!({})).is_ok());
+    if targets.is_empty() {
+        return (String::new(), true);
+    }
+    let exe_dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let tool = cys::pack::pack_dir().join("bin").join("cys-dept");
+    let mut failed: Vec<String> = Vec::new();
+    for (name, sock) in &targets {
+        let mut rot = cys::hidden_command("bash");
+        // 앱 inject_runtime_path 와 같은 SOT — 윈도 동봉 bash·python 이 PATH 선두.
+        for (k, v) in cys::spawn_env_pairs_from_process(&exe_dir) {
+            rot.env(k, v);
+        }
+        rot.arg(&tool).arg("rotate").arg(name);
+        let rotated = output_via_file(rot).map(|o| o.status.success()).unwrap_or(false);
+        let mut res = cys::hidden_command(exe);
+        res.args(["restore", "--include-master"])
+            .env(cys::ENV_SOCKET, sock)
+            .env(cys::ENV_NO_AUTOSTART, cys::NO_AUTOSTART_ON);
+        let restored = rotated && output_via_file(res).map(|o| o.status.success()).unwrap_or(false);
+        eprintln!(
+            "[rotate] ⑥ 부서 {name}: 교체 {} · 복원 {}",
+            if rotated { "완료" } else { "실패" },
+            if restored { "완료" } else { "실패·보류" }
+        );
+        if !restored {
+            failed.push(name.clone());
+        }
+    }
+    let ok = targets.len() - failed.len();
+    let note = if failed.is_empty() {
+        format!(" · 부서 {ok}곳 교체·복원")
+    } else {
+        format!(" · 부서 {ok}곳 교체·복원 · 확인 필요 {}", failed.join(", "))
+    };
+    (note, failed.is_empty())
 }
 
 /// 소켓별 병렬 fan-out — 총 소요 ≈ 1×timeout(직렬 누적 아님). 노드별 detached 스레드로 verify를 스폰하고
@@ -14394,7 +14507,18 @@ fn drain_verify_targets() -> Vec<VerifyTarget> {
 
 /// `cys drain --verify` 진입점 — 결정론 JSON을 stdout에, exit code로 전원 저장 여부를 반환한다
 /// (전원 saved=0, 아니면 1). 0-노드는 우아한 no-op(exit 0)[A3-F5].
-fn run_drain_verify(timeout: u64) -> i32 {
+/// `--only` 필터(순수) — 비었으면 전 자리. 키 = `<dept>/<surface_ref>`(결과 JSON 의 `dept`·`surface`).
+fn drain_targets_only(targets: Vec<VerifyTarget>, only: &[String]) -> Vec<VerifyTarget> {
+    if only.is_empty() {
+        return targets;
+    }
+    targets
+        .into_iter()
+        .filter(|t| only.iter().any(|k| *k == format!("{}/{}", t.dept, t.surface_ref)))
+        .collect()
+}
+
+fn run_drain_verify(timeout: u64, only: &[String]) -> i32 {
     // 백스톱 하드 워치독 — 메인 로직이 어떤 이유로든 멈춰도 프로세스가 영구 정지하지 않게(plain drain 12s 패턴).
     // fan-out은 timeout+5s 안에 반환하므로 정상 경로에선 절대 발화하지 않는다.
     // ★[V111-F2] fan-out 이 timeout×FACTOR+5s 안에 반환하므로 백스톱은 그보다 커야 한다(구 timeout+10 은
@@ -14408,7 +14532,7 @@ fn run_drain_verify(timeout: u64) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let targets = drain_verify_targets();
+    let targets = drain_targets_only(drain_verify_targets(), only);
     let io: std::sync::Arc<dyn VerifyIo + Send + Sync> = std::sync::Arc::new(RealVerifyIo);
     let report = drain_verify_fanout(io, targets, std::time::Duration::from_secs(timeout), now);
     let all_saved = report["all_saved"].as_bool() == Some(true);
@@ -18957,6 +19081,59 @@ mod tests {
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
         let i = body.find("if pid.is_none() && connect_raw().is_ok() {").expect("멈춘 데몬 분기 부재");
         assert!(body[i..i + 600].contains("return ROTATE_RC_DAEMON;"), "멈춘 데몬 분기가 중단하지 않는다");
+    }
+
+    /// ★v113-restore B1: 자식이 출력 핸들을 쥔 채 오래 사는 손자를 남겨도 rotate 의 단계 호출은 자식이
+    /// 끝나는 즉시 돌아온다(파이프면 손자가 끝날 때까지 막힌다 — 윈 stage 2 316s 멈춤의 모양).
+    /// unix 에서는 손자를 셸 백그라운드로 만들면 같은 상속이 난다.
+    #[cfg(unix)]
+    #[test]
+    fn rotate_step_output_does_not_wait_for_grandchild() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo '{\"total\":0}'; (sleep 12 &)"]);
+        let t = std::time::Instant::now();
+        let out = output_via_file(cmd).expect("자식 실행");
+        let dt = t.elapsed();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "{\"total\":0}", "출력을 못 받았다");
+        assert!(dt < std::time::Duration::from_secs(6), "손자가 끝날 때까지 기다렸다: {dt:?}");
+    }
+
+    /// 배선 핀 — rotate 의 단계 호출이 파이프 캡처(`.output()`)로 되돌아가지 않는다.
+    #[test]
+    fn rotate_run_uses_file_capture() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let a = prod.find("fn run_rotate(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("output_via_file(cmd)"), "rotate 단계 호출이 파일 캡처를 안 쓴다");
+        assert!(!body.contains(".output()"), "rotate 안에 파이프 캡처가 남아 있다");
+    }
+
+    /// ★v113-restore 항목2: rotate ⑥ 부서 순회 — 살아 있는 등재 부서만 · socket 칸 없으면 공용 규약 경로.
+    #[test]
+    fn v113_rotate_dept_targets_live_only() {
+        let reg = serde_json::json!({"depts": {
+            "sales": {"socket": "/s/sales.sock"},
+            "hr": {"socket": "/s/hr.sock"},
+            "ops": {}
+        }});
+        let alive_set = ["/s/sales.sock".to_string(), cys::dept_socket_path("ops").to_string_lossy().into_owned()];
+        let got = rotate_dept_targets(&reg, |p| alive_set.contains(&p.to_string_lossy().into_owned()));
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["ops", "sales"], "죽은 부서(hr)를 되살리거나 socket 없는 부서를 빠뜨렸다");
+        assert!(rotate_dept_targets(&serde_json::Value::Null, |_| true).is_empty());
+    }
+
+    /// 배선 핀 — ⑥ 은 본부 rotate 에서만 돌고, 부서 실패는 rc 로 올라간다(25).
+    #[test]
+    fn v113_rotate_depts_wired_base_only_and_into_rc() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn run_rotate(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("if base { rotate_depts(&exe) }"), "부서 순회가 본부 한정이 아니다");
+        assert!(body.contains("let restore_ok = hq_restore_ok && depts_ok;"), "부서 실패가 rc 에 안 오른다");
     }
 
     #[test]
@@ -25342,19 +25519,46 @@ mod tests {
     fn drain_flag_parsing_defaults_to_plain() {
         use clap::Parser;
         match Cli::parse_from(["cys", "drain"]).command {
-            Command::Drain { verify, timeout } => {
+            Command::Drain { verify, timeout, .. } => {
                 assert!(!verify, "무인자 drain은 plain(verify=false)이어야 함 — 회귀");
                 assert_eq!(timeout, 20);
             }
             _ => panic!("drain이 Drain으로 파싱되지 않음"),
         }
         match Cli::parse_from(["cys", "drain", "--verify", "--timeout", "7"]).command {
-            Command::Drain { verify, timeout } => {
+            Command::Drain { verify, timeout, .. } => {
                 assert!(verify);
                 assert_eq!(timeout, 7);
             }
             _ => panic!(),
         }
+    }
+
+    /// ★v113-restore B3: `--only <dept>/<surface:N>` 은 그 자리만 남긴다 — 부서가 달라 번호가 같은 자리는
+    /// 섞이지 않는다 · 비우면 전 자리(무회귀).
+    #[test]
+    fn v113_drain_only_filters_by_dept_and_surface() {
+        use clap::Parser;
+        match Cli::parse_from(["cys", "drain", "--verify", "--only", "main/surface:3", "--only", "sales/surface:3"]).command {
+            Command::Drain { only, .. } => assert_eq!(only, vec!["main/surface:3", "sales/surface:3"]),
+            _ => panic!(),
+        }
+        let p = std::path::PathBuf::from("/nonexistent");
+        let mut other = mk_target(3, p.clone(), None);
+        other.dept = "hr".into();
+        let all = vec![mk_target(3, p.clone(), None), mk_target(4, p.clone(), None), other];
+        let got: Vec<String> = drain_targets_only(all, &["main/surface:3".to_string()])
+            .into_iter()
+            .map(|t| format!("{}/{}", t.dept, t.surface_ref))
+            .collect();
+        assert_eq!(got, vec!["main/surface:3"]);
+        assert_eq!(drain_targets_only(vec![mk_target(9, p, None)], &[]).len(), 1, "빈 필터 = 전 자리");
+        // 배선 핀 — 실제 검증 경로가 필터를 거친다.
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn run_drain_verify(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("drain_targets_only(drain_verify_targets(), only)"), "--only 가 검증 경로에 미배선");
     }
 
     /// 마커 포맷 — HTML 주석형·체크박스 문법 금지·denylist 토큰 회피.

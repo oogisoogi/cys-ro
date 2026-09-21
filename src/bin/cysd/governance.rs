@@ -544,10 +544,12 @@ fn check_agent_death(
                 let candidates = known_agent_candidates();
                 // ★argv 승격(U-5): 에이전트 식별은 명령줄 토큰 매칭이다 — 이름 한 토큰
                 // (`node.exe` 래퍼)으로는 참/거짓을 낼 수 없다. 범위는 이 좌석의 자손만.
-                let cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
+                let mut cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
                     .into_iter()
                     .map(|(_, cmd)| cmd)
                     .collect();
+                // ★v113-restore: 에이전트가 페인의 직접 프로세스인 좌석도 관측한다(root_agent_cmd doc).
+                cmds.extend(root_agent_cmd(sys, s.pid, &candidates));
                 let current = select_observed_agent(&cmds, &candidates);
                 match confirm_pending_obs(&pending, current.as_ref(), now, PENDING_OBS_TTL_SECS) {
                     PendingVerdict::Commit => {
@@ -603,10 +605,17 @@ fn check_agent_death(
         // U-5 argv 승격 뒤 `tail -f ~/.cys/claude/x.log` 같은 비에이전트 자손을 생존 증거로
         // 승격시켜 고아 좌석을 만들었다. 좁힘은 '엄격 매처가 이 좌석의 에이전트를 본 적 있다'가
         // 증명된 좌석에서만 켜지므로 오살 경로를 새로 열지 않는다.
-        let cmdlines: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
+        let mut cmdlines: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
             .into_iter()
             .map(|(_, cmdline)| cmdline)
             .collect();
+        // ★v113-restore: 에이전트가 페인의 직접 프로세스인 좌석(설치기 master) — 뿌리도 증거에 넣는다.
+        //   후보는 이 좌석의 meta 하나로 좁힌다(다른 에이전트 뿌리를 이 좌석 증거로 세지 않는다).
+        if let Some(root) =
+            root_agent_cmd(sys, s.pid, &[(agent.clone(), bin_base.clone())])
+        {
+            cmdlines.push(root);
+        }
         let liveness = decide_agent_liveness(&cmdlines, &bin_base);
         let strict_proven = update_strict_proof(
             strict_proof.entry(s.id).or_default(),
@@ -3210,7 +3219,14 @@ pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
     // 무meta Occupied 좌석이 하나도 없는 틱은 IO 0).
     let mut candidates: Option<Vec<(String, String)>> = None;
     for s in surfaces {
-        let seat = seat_state(sys, &s);
+        let mut seat = seat_state(sys, &s);
+        // ★v113-restore: 자손이 없어도 뿌리 자신이 기지 에이전트면 좌석은 차 있다(설치기 master 자리).
+        if seat == SeatState::Empty && !s.exited.load(Ordering::Relaxed) {
+            let cands = candidates.get_or_insert_with(known_agent_candidates);
+            if root_agent_cmd(sys, s.pid, cands).is_some() {
+                seat = SeatState::Occupied;
+            }
+        }
         s.seat_cache.store(seat.as_u8(), Ordering::Relaxed);
         // ★G2(W3-A BLOCK 교정) 좌석 에이전트 엄격 관측: meta 부재 보조축(SeatVacantNoMeta)의
         // armed 경계는 '아무 자손'(원시 Occupied)이 아니라 **기지 에이전트 엄격 매칭**
@@ -3230,10 +3246,12 @@ pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
                     // "cmdline_matches_agent_exec 엄격 매칭"이다(위 주석) — 이름 한 토큰으로는
                     // 그 계약이 성립하지 않는다. 범위는 meta 부재·Occupied 좌석의 자손만이라
                     // 틱당 승격 대상이 구조적으로 소수다.
-                    let cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
+                    let mut cmds: Vec<String> = collect_descendants_with_cmd(sys, s.pid)
                         .into_iter()
                         .map(|(_, cmd)| cmd)
                         .collect();
+                    // ★v113-restore: 뿌리가 에이전트인 좌석(root_agent_cmd doc).
+                    cmds.extend(root_agent_cmd(sys, s.pid, cands));
                     seat_agent_observed(&cmds, cands)
                 }
             };
@@ -3603,6 +3621,21 @@ pub fn collect_descendants_with_cmd(sys: &System, root: u32) -> Vec<(u32, String
         .into_iter()
         .map(|(pid, cmd, _)| (pid, cmd))
         .collect()
+}
+
+/// 좌석의 **뿌리 프로세스 자신**이 기지 에이전트면 그 argv(엄격 매칭 · TICKET=v113-restore death:master).
+///
+/// 좌석 판정은 「셸의 자손」을 본다. 그런데 설치기가 세운 master 자리는 셸 없이 `claude …` 가 **페인의
+/// 직접 프로세스**다(893 VM 실기: surface pid 1754 = `~/.local/bin/claude --dangerously-skip-permissions
+/// 너는 마스터다…` · STAT Ss+). 자손만 보면 그 좌석은 영원히 「빈 자리」라, 유예가 지나면
+/// `AgentNeverStarted` 로 **살아 있는 master 에 사망 경보**를 냈다(설치 약 10분 뒤 1회 · misses=63).
+/// 뿌리가 셸인 보통 좌석은 뿌리 argv 가 에이전트와 엄격 매칭되지 않아 `None` — 종전 거동 그대로다.
+pub fn root_agent_cmd(sys: &System, root: u32, candidates: &[(String, String)]) -> Option<String> {
+    if candidates.is_empty() || sys.process(Pid::from_u32(root)).is_none() {
+        return None;
+    }
+    let cmd = argv_snapshot(&[root]).remove(&root)?;
+    seat_agent_observed(std::slice::from_ref(&cmd), candidates).then_some(cmd)
 }
 
 /// 관측 문자열의 **출처** — "argv 를 실제로 읽었는가, `name()` 폴백인가".
@@ -4286,7 +4319,7 @@ fn seat_input_line(s: &Arc<crate::state::Surface>) -> InputLine {
     let Some(marker) = marker else {
         return input_line_state(pending, None);
     };
-    let (_seen, line) = observe_prompt(s, &marker);
+    let (_seen, line, _framed) = observe_prompt(s, &marker);
     input_line_state(
         pending,
         line.as_ref().map(|(b, a)| PromptLine {
@@ -4934,15 +4967,29 @@ fn merged_ready_marker(
 fn observe_prompt(
     s: &Arc<crate::state::Surface>,
     marker: &str,
-) -> (bool, Option<(String, String)>) {
+) -> (bool, Option<(String, String)>, bool) {
     let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
     let screen = p.screen();
     let (rows, cols) = screen.size();
     let (cr, cc) = screen.cursor_position();
     let marker_seen = screen.contents().contains(marker);
     if cr >= rows {
-        return (marker_seen, None);
+        return (marker_seen, None, false);
     }
+    // ★v113-restore: 커서 행 바로 위·아래 행 — Claude Code 입력창 테두리(가로줄) 판독용.
+    //   ★(agy 2R C) 커서 행 자체도 마커 뒤가 **통째로 비어** 있어야 한다 — 선택 메뉴 행(`❯ 1. Yes`)은 커서가
+    //   `❯ ` 바로 뒤에 있으면 커서 앞이 비어 입력줄 판정을 통과하므로, 그 행이 우연히 가로줄 사이에 놓여도
+    //   입력창으로 읽지 않게 행 전체로 한 번 더 좁힌다(고스트 제안문이 뜬 대체화면 입력창은 보류 쪽 — 안전).
+    let row_blank_after_marker = |row: &str| {
+        row.find(marker)
+            .map(|i| row[i + marker.len()..].trim().is_empty())
+            .unwrap_or(false)
+    };
+    let framed = cr >= 1
+        && cr + 1 < rows
+        && row_blank_after_marker(&screen.contents_between(cr, 0, cr, cols))
+        && is_rule_row(&screen.contents_between(cr - 1, 0, cr - 1, cols))
+        && is_rule_row(&screen.contents_between(cr + 1, 0, cr + 1, cols));
     let before_all = screen.contents_between(cr, 0, cr, cc);
     let row_all = screen.contents_between(cr, 0, cr, cols);
     let line = before_all.rfind(marker).map(|i| {
@@ -4954,7 +5001,38 @@ fn observe_prompt(
             .to_string();
         (before_cursor, after)
     });
-    (marker_seen, line)
+    (marker_seen, line, framed)
+}
+
+/// 가로줄 행인가 — 공백을 걷은 내용이 전부 `─` 이고 8칸 이상(순수). TICKET=v113-restore.
+/// Claude Code 입력창은 가로줄(────) 사이의 「❯ 」 한 줄이다(`cys::submit_probe` 모듈 doc · 09-21 실기).
+/// 선택 메뉴(`❯ 1. Yes`)·승인 창은 이 모양이 아니다.
+pub(crate) fn is_rule_row(row: &str) -> bool {
+    let t = row.trim();
+    t.chars().count() >= 8 && t.chars().all(|c| c == '─')
+}
+
+/// 대체화면이 배달을 막는가(순수) — TICKET=v113-restore 배달 큐 재배달.
+///
+/// 대체화면 축은 「전체화면 대화상자·메뉴의 입력줄은 프롬프트가 아니다」를 막으려고 있다. 그런데 윈도의
+/// claude 좌석은 대체화면 끄기 env(D5)가 옵트인이라 **본 화면 자체가 대체화면**이다 — 그 좌석은 입력창이
+/// 비어 있어도 영원히 막혀 큐가 한 번도 배달되지 않았다(09-21 22:2x 윈 실기 CSO 미배달 2건 ·
+/// `prompt_not_ready`). 커서 행이 가로줄 두 개 사이(= Claude Code 입력창 모양)면 대체화면이어도
+/// 프롬프트다. 메뉴·대화상자는 그 모양이 아니므로 종전대로 막힌다. 승인 대기 축은 따로 그대로 막는다.
+pub(crate) fn alt_screen_blocks(alt_screen: bool, framed_input_row: bool) -> bool {
+    alt_screen && !framed_input_row
+}
+
+/// 입력줄이 빈데도 준비가 아닐 때의 **진짜** 사유(순수) — 종전엔 마커 부재·대체화면·승인 대기를 모두
+/// `prompt_not_ready` 한 말로 적어, 윈 실기에서 「프롬프트가 아직 안 떴다」로 오독됐다(실제는 대체화면).
+pub(crate) fn empty_line_block_reason(alt_blocks: bool, approval_pending: bool) -> &'static str {
+    if approval_pending {
+        "approval_pending(승인 대기 화면)"
+    } else if alt_blocks {
+        "alt_screen(대체화면 — 입력창 모양 아님)"
+    } else {
+        "prompt_not_ready(프롬프트 경계 미도달)"
+    }
 }
 
 /// ★B1(0.14.30): 마지막 보류 사유를 surface 에 남긴다(경보와 별개 축 — 경보는 쿨다운·임계에
@@ -5650,7 +5728,7 @@ fn deliver_queued(
         //   마커 없는 quiet 폴백 경로도 같은 값을 쓴다(그 경로도 같은 writer 로 들어간다).
         let pending_at_verdict = s.pending_input_bytes.load(Ordering::Relaxed);
         let overdue = if let Some(marker) = marker.as_deref() {
-            let (marker_seen, line) = observe_prompt(&s, marker);
+            let (marker_seen, line, framed) = observe_prompt(&s, marker);
             let pending = pending_at_verdict;
             let input = input_line_state(
                 pending,
@@ -5660,19 +5738,17 @@ fn deliver_queued(
                 }),
             );
             let approval_pending = !pending_gate_items(daemon, s.id).is_empty();
-            let verdict = prompt_boundary_verdict(
-                marker_seen,
-                input,
-                s.alt_screen.load(Ordering::Relaxed),
-                approval_pending,
-            );
+            let alt_blocks = alt_screen_blocks(s.alt_screen.load(Ordering::Relaxed), framed);
+            let verdict = prompt_boundary_verdict(marker_seen, input, alt_blocks, approval_pending);
             if verdict == PromptBoundary::NotReady {
                 // 사유를 갈라 기록한다 — 손잡이가 다르다(입력줄 점유는 사람이 비워야 풀리고,
                 // 경계 미도달은 화면이 바뀌면 저절로 풀린다).
                 let why = match input {
                     InputLine::Occupied => "input_pending(입력줄에 미제출 입력)",
                     InputLine::Unknown => "prompt_unknown(프롬프트 경계 관측 불능)",
-                    InputLine::Empty => "prompt_not_ready(프롬프트 경계 미도달)",
+                    InputLine::Empty => {
+                        empty_line_block_reason(alt_blocks, approval_pending)
+                    }
                 };
                 mark_queue_blocked(&s, why);
                 alert_queue_depth_if_high(daemon, &s, depth_alerted, why);
@@ -6707,6 +6783,40 @@ mod tests {
                 CmdSource::NameFallback => {}
             }
         }
+    }
+
+    /// ★v113-restore death:master — 좌석 뿌리가 에이전트 자신이면(셸 없음) 그 argv 를 관측으로 센다.
+    /// 뿌리가 에이전트가 아니면(보통의 셸 좌석) None — 종전 거동. 실 프로세스로 잰다.
+    #[cfg(unix)]
+    #[test]
+    fn v113_root_agent_cmd_counts_pane_root_agent_only() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
+        let pid = child.id();
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let as_agent = [("fakeagent".to_string(), "sleep".to_string())];
+        let other = [("claude".to_string(), "claude".to_string())];
+        let got = super::root_agent_cmd(&sys, pid, &as_agent);
+        let miss = super::root_agent_cmd(&sys, pid, &other);
+        let none = super::root_agent_cmd(&sys, pid, &[]);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(got.as_deref().is_some_and(|c| c.contains("sleep")), "뿌리 에이전트를 못 봤다: {got:?}");
+        assert_eq!(miss, None, "다른 에이전트 이름으로 뿌리를 셌다");
+        assert_eq!(none, None, "후보가 없으면 관측 0(fail-closed)");
+    }
+
+    /// 배선 핀 — 좌석 캐시·생존 판정 두 자리 모두 뿌리 관측을 쓴다(한쪽만 고치면 경보가 남는다).
+    #[test]
+    fn v113_root_agent_wired_into_seat_cache_and_liveness() {
+        let src = include_str!("governance.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        let a = prod.find("pub fn refresh_seat_cache(").unwrap();
+        let seat_body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(seat_body.contains("root_agent_cmd(sys, s.pid, cands).is_some()"), "좌석 캐시 미배선");
+        let b = prod.find("fn check_agent_death(").unwrap();
+        let body = &prod[b..b + prod[b..].find("\n}\n").unwrap()];
+        assert!(body.contains("cmdlines.push(root)"), "생존 판정 미배선");
     }
 
     /// ★FLAKE-GOVERNANCE-1 ② — **래퍼 동형성은 구조로 못박는다**(in-crate 소스핀 · U-22 패턴).
@@ -8612,9 +8722,10 @@ mod tests {
     // ─────────── ★B1(0.14.30): 프롬프트 경계 준비판정 — 순수 판정자 핀 ───────────
 
     use super::{
-        input_line_state, prompt_boundary_verdict, queue_starve_alert_secs, InputLine,
-        PromptBoundary, PromptLine,
+        alt_screen_blocks, empty_line_block_reason, input_line_state, is_rule_row,
+        prompt_boundary_verdict, queue_starve_alert_secs, InputLine, PromptBoundary, PromptLine,
     };
+    use std::sync::atomic::Ordering;
 
     /// 커서 **뒤** 텍스트는 Claude Code prompt suggestions(고스트)다 — 입력 버퍼가 아니다.
     /// 이 한 줄이 2026-09-03 13:27~15:37 의 2h10m 영구 보류(PREP '백로그 #1 보정')를 막는다.
@@ -8784,6 +8895,89 @@ mod tests {
             s.pending_queue.lock().unwrap().is_empty(),
             "프롬프트 박스가 열려 있으면 출력 중이라도 배달한다(기아 봉인의 본체)"
         );
+    }
+
+    /// ★v113-restore: 대체화면 claude 좌석 화면 — 1행 머리, 2·4행 가로줄(framed=true 일 때만), 3행 「❯ 」,
+    /// 커서는 3행 「❯ 」 뒤. 윈 claude 는 D5 가 옵트인이라 본 화면이 이것이다.
+    fn paint_alt_seat(s: &Arc<crate::state::Surface>, framed: bool, row3: &str) {
+        let rule = if framed { "────────────────────────────" } else { "" };
+        let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        p.process(format!("\x1b[?1049h\x1b[2J\x1b[1;1Hclaude\x1b[2;1H{rule}\x1b[4;1H{rule}\x1b[3;1H{row3}").as_bytes());
+        s.alt_screen.store(true, Ordering::Relaxed);
+    }
+
+    fn run_alt_seat(tag: &str, framed: bool, row3: &str) -> (usize, String) {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir(tag);
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = marker_seat(tag);
+        paint_alt_seat(&s, framed, row3);
+        *s.last_output.lock().unwrap() =
+            std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        let left = s.pending_queue.lock().unwrap().len();
+        let why = s.queue_blocked.lock().unwrap().clone().map(|(w, _)| w).unwrap_or_default();
+        (left, why)
+    }
+
+    /// ★v113-restore(09-21 22:2x 윈 실기 CSO 미배달 2건): 대체화면이어도 커서가 Claude Code 입력창
+    /// (가로줄 두 개 사이의 빈 「❯ 」)에 있으면 배달한다. 종전엔 영구 보류였다.
+    #[test]
+    fn v113_alt_screen_framed_claude_input_box_delivers() {
+        let (left, why) = run_alt_seat("v113-alt-framed", true, "❯ ");
+        assert_eq!(left, 0, "대체화면 claude 입력창인데 배달하지 않았다: {why}");
+    }
+
+    /// 대체화면의 테두리 없는 「❯」 행(선택 메뉴 `❯ 1. Yes` 류)은 종전대로 막고, 사유를 사실대로 적는다.
+    #[test]
+    fn v113_alt_screen_unframed_row_blocks_with_true_reason() {
+        let (left, why) = run_alt_seat("v113-alt-menu", false, "❯ ");
+        assert_eq!(left, 1, "테두리 없는 대체화면 행에 주입했다(메뉴 오선택 경로)");
+        assert!(why.starts_with("alt_screen"), "사유가 대체화면이 아니다: {why}");
+    }
+
+    /// ★(agy 2R C) 가로줄 사이에 놓인 선택 메뉴 행(`❯ 1. Yes` · 커서는 `❯ ` 바로 뒤)은 입력창이 아니다.
+    #[test]
+    fn v113_alt_screen_framed_menu_row_still_blocks() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("v113-alt-menu-framed");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = marker_seat("v113-alt-menu-framed");
+        {
+            let rule = "────────────────────────────";
+            let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            p.process(format!("\x1b[?1049h\x1b[2J\x1b[1;1Hclaude\x1b[2;1H{rule}\x1b[4;1H{rule}\x1b[3;1H❯ 1. Yes\x1b[3;3H").as_bytes());
+        }
+        s.alt_screen.store(true, Ordering::Relaxed);
+        *s.last_output.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "가로줄 사이 메뉴 행에 주입했다(메뉴 오선택)");
+    }
+
+    #[test]
+    fn v113_rule_row_and_alt_block_pure() {
+        assert!(is_rule_row("  ────────────  "));
+        assert!(!is_rule_row("───"), "짧은 줄은 테두리가 아니다");
+        assert!(!is_rule_row("──── 1. Yes ────"), "글이 섞이면 테두리가 아니다");
+        assert!(!is_rule_row(""));
+        assert!(alt_screen_blocks(true, false));
+        assert!(!alt_screen_blocks(true, true));
+        assert!(!alt_screen_blocks(false, false));
+        assert!(empty_line_block_reason(true, false).starts_with("alt_screen"));
+        assert!(empty_line_block_reason(true, true).starts_with("approval_pending"));
+        assert!(empty_line_block_reason(false, false).starts_with("prompt_not_ready"));
     }
 
     /// 입력줄에 사람이 친 미제출 텍스트가 있으면 배달 0 + 사유가 남는다(이어붙이기·오제출 차단).

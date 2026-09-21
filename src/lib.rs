@@ -206,6 +206,39 @@ pub fn seal_python_bytecode_in_process() {
     std::env::set_var(ENV_PY_NO_BYTECODE, PY_NO_BYTECODE_ON);
 }
 
+/// 이 프로세스의 표준 입출력 핸들을 **자손에게 상속되지 않게** 한다(Windows 전용 · unix 무동작).
+/// TICKET=v113-restore B1.
+///
+/// 윈도 `CreateProcess` 는 Rust 가 `bInheritHandles=TRUE` 로 부르므로, 자식의 표준 입출력을 null 로
+/// 덮어도(`ChildLifetime::Survivor`) **부모가 쥔 상속 가능 핸들 전부**가 따로 넘어간다. 부른 쪽의 파이프
+/// (설치기가 `cys rotate` 출력을 읽는 파이프 · rotate 가 `cys identify` 출력을 읽는 파이프)가 그렇게
+/// 자동 기동된 cysd 에 붙으면, cysd 가 살아 있는 동안 그 파이프는 EOF 가 오지 않는다 — 부른 쪽이 영원히
+/// 기다린다(09-21 윈 실기 316s 상한). 사슬(설치기 → rotate → identify → cysd)의 각 고리가 **자기** 표준
+/// 핸들을 봉인하면 손자는 명시로 넘겨받은 것 말고는 아무것도 못 받는다.
+///
+/// 부작용 없음의 근거: Rust `Stdio::inherit()` 는 원본 핸들의 상속 속성과 무관하게 **상속 가능한 사본**
+/// (`DuplicateHandle(.., bInheritHandle=TRUE, ..)`)을 만들어 넘긴다 — 명시로 물려주는 자식(`cys run`)은
+/// 그대로 받는다. 실패(콘솔 없음 · 무효 핸들)는 무시한다 — 봉인할 것이 없다는 뜻이다.
+pub fn seal_std_handles_from_inheritance() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        for h in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            if !h.is_null() {
+                // SAFETY: 표준 핸들 값을 넘길 뿐 소유권을 옮기지 않는다. 무효 핸들이면 0 을 돌려줄 뿐이다.
+                unsafe {
+                    SetHandleInformation(h as _, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // ★U-7 · 자식 스폰 분리 규약 단일 정의처 (detached spawn convention)
 // ════════════════════════════════════════════════════════════════════════════
@@ -5951,5 +5984,65 @@ mod spawn_policy_tests {
             "Survivor 자식이 stdout 을 물려받았다 — 부모 파이프를 쥐면 부모 종료가 지연된다: {:?}",
             String::from_utf8_lossy(&out.stdout)
         );
+    }
+}
+
+/// TICKET=v113-restore B1 — 윈도 표준 핸들 상속 봉인의 **원인 대조군 + 수리 증명**(Windows 러너 전용).
+///
+/// 사슬을 그대로 흉내 낸다: 이 시험(= 설치기·rotate 자리)이 파이프로 출력을 읽는 **가운데 프로세스**
+/// (= `cys identify` 자리)를 띄우고, 가운데가 표준 입출력을 null 로 덮은 **오래 사는 손자**(= 자동 기동
+/// cysd 자리)를 낳고 곧바로 끝난다. `.output()` 이 언제 끝나는지를 잰다.
+/// · `unsealed_grandchild_holds_parent_pipe` = 대조군 — 봉인 없이는 손자가 끝날 때까지(≈15s) 못 끝난다.
+///   이것이 초록이면 「손자가 부모 파이프를 상속해 EOF 가 안 온다」는 원인 명명이 이 OS 에서 실측된다.
+/// · `sealed_grandchild_does_not_hold_parent_pipe` = 수리 — 봉인하면 가운데가 끝나는 즉시 끝난다.
+#[cfg(all(test, windows))]
+mod win_std_inherit_tests {
+    use std::time::{Duration, Instant};
+
+    const ROLE: &str = "CYS_TEST_WIN_INHERIT_ROLE";
+    const MIDDLE: &str = "win_std_inherit_tests::middle_role";
+    const GRANDCHILD_SECS: &str = "16"; // ping -n 16 ≈ 15초
+
+    /// 가운데 역할 — env 가 없으면 아무것도 안 한다(일반 스위트에서는 즉시 통과).
+    #[test]
+    fn middle_role() {
+        let Ok(role) = std::env::var(ROLE) else { return };
+        if role == "sealed" {
+            super::seal_std_handles_from_inheritance();
+        }
+        let _ = super::hidden_command("ping")
+            .args(["-n", GRANDCHILD_SECS, "127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("손자 기동");
+        println!("middle-done");
+        std::process::exit(0);
+    }
+
+    fn run_middle(role: &str) -> (Duration, String) {
+        let exe = std::env::current_exe().expect("시험 실행 파일");
+        let t = Instant::now();
+        let out = super::hidden_command(exe)
+            .args([MIDDLE, "--exact", "--nocapture", "--test-threads=1"])
+            .env(ROLE, role)
+            .output()
+            .expect("가운데 기동");
+        (t.elapsed(), String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    #[test]
+    fn unsealed_grandchild_holds_parent_pipe() {
+        let (dt, out) = run_middle("unsealed");
+        assert!(out.contains("middle-done"), "가운데가 돌지 않았다(측정 무효): {out}");
+        assert!(dt >= Duration::from_secs(10), "대조군: 봉인 없이도 {dt:?} 에 끝났다 — 원인 가설 기각");
+    }
+
+    #[test]
+    fn sealed_grandchild_does_not_hold_parent_pipe() {
+        let (dt, out) = run_middle("sealed");
+        assert!(out.contains("middle-done"), "가운데가 돌지 않았다(측정 무효): {out}");
+        assert!(dt < Duration::from_secs(8), "봉인했는데 {dt:?} 걸렸다 — 손자가 부모 파이프를 쥐고 있다");
     }
 }

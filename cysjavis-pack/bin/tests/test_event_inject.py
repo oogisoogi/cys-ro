@@ -374,7 +374,7 @@ def s_C(pack, tmp):
     c = ctx(out)
     ok = check("C CEO: cys-dept → [부서 수명주기] 원문", "[부서 수명주기" in c and "■ 원문 [부서 수명주기]" in c, c[:200])
     rc, out, _e, _t = fire(pack, tmp, "cys launch-agent --role w", sid="s2")
-    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(369–411)", "■ 원문 §2 (줄 369–411)" in ctx(out), ctx(out)[:160])
+    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(392–434)", "■ 원문 §2 (줄 392–434)" in ctx(out), ctx(out)[:160])
     return ok
 
 

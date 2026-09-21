@@ -241,6 +241,19 @@ pub(crate) fn wake_master(daemon: &Daemon, key: &str, detected_sid: u64, text: &
     true
 }
 
+/// 이 경로가 추적 중인 큐 항목인가(배달자가 note_delivered 를 부를지 가르는 값싼 술어).
+///
+/// ★락 순서 계약: 이 모듈은 `shared()` → `pending_queue` 순서로만 잡는다. 호출자는 `pending_queue`
+/// 락을 쥔 채 이 함수·`note_delivered` 를 부르면 안 된다(역순 = 교착).
+pub(crate) fn is_tracked(entry_id: &str) -> bool {
+    shared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .probes
+        .iter()
+        .any(|p| p.entry_id == entry_id)
+}
+
 /// 배달 관측 — 큐 배달자가 이 경로의 항목을 실제로 PTY 에 인계한 순간 호출한다.
 pub(crate) fn note_delivered(entry_ids: &[String]) {
     let now = crate::state::now_epoch();
@@ -314,6 +327,17 @@ pub(crate) fn reset_for_test() {
     let mut sh = shared().lock().unwrap_or_else(|e| e.into_inner());
     sh.state = WakeState::default();
     sh.probes.clear();
+}
+
+#[cfg(test)]
+pub(crate) fn delivered_at_for_test(entry_id: &str) -> Option<f64> {
+    shared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .probes
+        .iter()
+        .find(|p| p.entry_id == entry_id)
+        .and_then(|p| p.delivered_at)
 }
 
 #[cfg(test)]
@@ -475,6 +499,24 @@ mod tests {
         assert!(!wake_master(&d, "b", w.id, "둘째 사건"));
         assert!(watch_lines(&master).is_empty());
         let _ = master;
+    }
+
+
+    /// 배달자가 PTY 에 인계한 감시 줄은 추적 기록에 「배달됨」으로 찍혀야 제출 실측이 돈다
+    /// (note_delivered 를 큐 락 밖으로 옮긴 뒤에도 — agy 1R H 수리의 회귀 그물).
+    #[test]
+    fn delivery_is_noted_so_the_submit_probe_runs() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        let d = drill_daemon("noted");
+        let master = seat(&d, "master");
+        let w = seat(&d, "worker");
+        assert!(wake_master(&d, "k", w.id, "배달 기록 시험"));
+        let id = master.pending_queue.lock().unwrap().front().unwrap().id.clone();
+        assert_eq!(delivered_at_for_test(&id), None);
+        let got = crate::governance::deliver_head_locked(&d, &master, true, false, None, None);
+        assert!(got.is_some(), "강제 배달이 인계하지 못했다");
+        assert!(delivered_at_for_test(&id).is_some(), "배달이 기록되지 않았다 — 제출 실측이 영영 안 돈다");
     }
 
 }

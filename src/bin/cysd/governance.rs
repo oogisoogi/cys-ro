@@ -5337,12 +5337,14 @@ pub(crate) fn deliver_head_locked(
         // ★G1(W2-A)+B1: pop 판정은 방금 인계한 항목의 **id 집합** — 동일 텍스트 중복 항목
         //   오삼킴을 차단하면서 병합분 전체를 한 번에 제거한다(단건이면 종전과 동일 동작).
         pop_delivered_ids(&mut q, &merged_ids);
-        // ★v112-wake: 감시 각성 줄의 PTY 인계 시점 — 제출 실측의 기준점.
-        if merged.iter().any(|e| e.origin == crate::watch_wake::ORIGIN) {
-            crate::watch_wake::note_delivered(&merged_ids);
-        }
         Delivered { entry, remaining: q.len(), merged_ids, body }
     };
+    // ★v112-wake: 감시 각성 줄의 PTY 인계 시점 — 제출 실측의 기준점. **pending_queue 락이 풀린 뒤**에
+    //   부른다(watch_wake 는 shared → pending_queue 순서로 잡는다 — 여기서 큐 락을 쥔 채 부르면 순서가
+    //   역전돼 배달 RPC 와 watchdog 틱이 교차할 때 교착한다 · agy 1R H 지적).
+    if delivered.merged_ids.iter().any(|id| crate::watch_wake::is_tracked(id)) {
+        crate::watch_wake::note_delivered(&delivered.merged_ids);
+    }
     // T4-17 에코 제외 창 — 큐 배달도 원격 주입이다
     *s.last_injected.lock().unwrap() = Some(std::time::Instant::now());
     // ★B1(0.14.30): Inject 는 본문+CR 을 원자로 보내 줄을 제출한다 → 미제출 계수 0.

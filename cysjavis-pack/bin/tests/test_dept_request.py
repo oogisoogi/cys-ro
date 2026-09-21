@@ -1261,6 +1261,9 @@ class TestChatHook(Base):
         self.assertEqual((rc, o2.get("reason")), (7, "human_unverified"), o2)
         self.assertEqual(self.req(rid)["state"], "proposed")
         rc, _ = self.hook("[부서결과] dr-x")                # 기계 알림은 사람 확인이 아니다
+        # ★Fable 1.1.3 M2 뒤: 알림 문장은 긍정 어휘가 아니라 confirm 결과만으론 이 벨트가 안 보인다(층 방어) —
+        #   벨트의 성질 자체(기계 알림은 사람 답 기록을 남기지 않는다)를 직접 단언한다.
+        self.assertFalse(os.path.exists(self.m.ack_path(rid)), "기계 알림을 사람 답으로 기록했다")
         rc, o3 = self.run_cmd("confirm", rid)
         self.assertEqual(o3.get("reason"), "human_unverified", o3)
         # 알림 표지 벨트만 따로 잰다 — 배달 원장 판정기(두 번째 벨트)를 못 쓰는 기계에서도 알림은 확인이 아니다
@@ -1274,6 +1277,7 @@ class TestChatHook(Base):
                 _s.modules.pop("javis_mission", None)
             else:
                 _s.modules["javis_mission"] = saved
+        self.assertFalse(os.path.exists(self.m.ack_path(rid)), "원장 판정기 없이 알림을 사람 답으로 기록했다")
         rc, o3b = self.run_cmd("confirm", rid)
         self.assertEqual(o3b.get("reason"), "human_unverified", o3b)
         self.hook("네")                                    # 사람이 카드 뒤에 직접 답함

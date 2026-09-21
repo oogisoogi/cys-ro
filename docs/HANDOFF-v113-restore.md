@@ -68,3 +68,12 @@
 - B4 재실행 15s·B3 재저장 30s 는 실측 계수 없음(893 「갱신 직후 40s」 관측에서 잡은 값).
 - rotate ⑥ 은 기본 소켓 rotate 에서만 돈다 — 이 기계에서 기본 소켓 rotate 는 라이브를 건드려 실측 불가(순수·배선 시험만).
 - 윈 rotate 임시 캡처 파일: 손자 cysd 가 상속 핸들을 쥐면 삭제 실패로 %TEMP% 에 0바이트 파일이 남을 수 있음(무해 · 봉인 뒤로는 상속 자체가 없어야 함).
+
+## 이종 검증(agy)
+- 1R(e2d01015 · diff 만 · 파일 도구 없음) = ACCEPT · findings [] — **불채택**(master 판정 [master#dae1e92f]): 연 파일 0 · 인용 줄번호 어긋남 · 핵심 논점 미검토.
+- 2R(같은 커밋 detached 사본 · `--add-dir --sandbox` · 4영역 반례 요구) = **REVISE**. 반례별 처분(코드 대조):
+  - A B1 봉인(lib.rs 표준 핸들만 봉인 · 부모가 넘긴 비표준 상속 핸들은 샌다) → **부분 인정 · 잔여 위험**. cys 안에서 부모가 넘긴 미지의 상속 핸들은 열거·봉인할 수단이 없다(std 의 PROC_THREAD_ATTRIBUTE_HANDLE_LIST 는 불안정 API). 관측된 설치기→rotate 파이프는 rotate 의 표준 핸들이라 봉인 대상이다.
+  - B ⑥(부서 소켓 rotate 도 base=true 라 다른 부서를 건드린다) → **기각**: base = `cys::lane::socket_is_base(socket_path)`(cys.rs run_rotate) · rotate_state_root 는 표식 폴더에만 쓰인다.
+  - C 큐(가로줄 사이 빈 「❯」 모양의 메뉴에 오주입) → **인정·봉합 f9e6f07e**: 커서 행 전체가 마커 뒤 공백일 때만 입력창(선택 메뉴 `❯ 1. Yes` 차단) · 시험 `v113_alt_screen_framed_menu_row_still_blocks` · 조건 제거 뮤턴트 KILLED.
+  - D B3(재시도 exit 1 이면 앱이 예외로 결과를 버린다) → **기각**: 앱 `drain_verify` 는 stdout 이 JSON 이면 종료코드와 무관하게 Ok(JSON) · `run_drain_verify` 는 보고를 찍은 뒤 1 을 돌려준다.
+- 2R 의 files_read = `src/bin/cys.rs:1367-14532` 뿐 — A·C·D 는 diff 기반 지적이었다. 스냅샷 git status 깨끗(무쓰기 실측).

@@ -64,7 +64,10 @@
 - 부서 데몬 에뮬레이션 한계: cys-dept 를 거치지 않았다(라이브 레지스트리 보호). 부서 master 좌석 없음 → 워커 보고가 master 로 못 감.
 
 ## 7. 미완
-1. **E2E(브리프 7)** — HOME 격리 시 로그인 안 따라옴(Keychain = $HOME/Library) → master 결정 대기(A Library 링크 / C VM 이관 권고).
+1. **E2E(브리프 7) → 1.1.3 맥 VM 실기로 이관(master#cf08125e C 채택)** — 격리 HOME 에선 로그인이 안 따라온다(Keychain = $HOME/Library).
+   **VM 실기 항목**: 실 설치본에서 본부 마스터에게 말로 부서 3개 생성 → 1개 닫기 · 손 횟수 · 카드 문구 · 상한 제거 확인 · 부서 좌석 정지선 발화.
+   (관측 포인트 참고: 생성마다 카드 → 사람 「네」 1회 · 3개째도 거부 없이 생성(자원 게이트 hard_block 아닐 때) · 닫기 카드만 dept-N 노출 ·
+   부서 좌석 CTX 60% 넘으면 2분 안 부서 CSO 에 `[ctx-threshold] 데몬 기계 통지` 도착 · 10분 뒤 재통지 1회)
 2. 기존 cys-dept reg_* 헬퍼 4곳의 윈 msvcrt 잠금 실패 삼킴(agy ①의 기존 부분) = 범위 밖 보고만.
 3. 기존 설치의 부서 schedule.json 에는 ctx-relay-tick 이 없다(새로 만드는 부서부터) — 소급 여부 미결.
 

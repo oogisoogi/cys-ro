@@ -55,6 +55,20 @@ class T(unittest.TestCase):
                          "CSO 자신·낡은 값에 통지했다")
         self.assertEqual(self.tick([seat(3, "worker", 70)]), [], "받을 CSO 가 없는데 보냈다")
 
+    def test_self_report_status_counts_when_fresh(self):
+        now = time.time()
+        s = {"surface_id": 4, "role": "master", "usage": {"ctx_pct": 20, "updated_at": now - 5},
+             "status": {"context_pct": 65, "age_secs": 30}}
+        n, _ = R.decide([seat(2, "cso", 1), s], {}, now, 60)
+        self.assertEqual(n, [("4", "master", 65)], "신선한 자기보고 65% 를 못 봤다")
+        s["status"]["age_secs"] = 3600
+        n, _ = R.decide([seat(2, "cso", 1), s], {}, now, 60)
+        self.assertEqual(n, [], "낡은 자기보고로 통지했다")
+        s.pop("usage")
+        s["status"]["age_secs"] = 10
+        n, _ = R.decide([seat(2, "cso", 1), s], {}, now, 60)
+        self.assertEqual([x[0] for x in n], ["4"], "관측값 없는 좌석의 자기보고를 버렸다")
+
     def test_decide_threshold_env(self):
         n, _ = R.decide([seat(2, "cso", 1), seat(3, "worker", 55)], {}, time.time(), 50)
         self.assertEqual([x[0] for x in n], ["3"])

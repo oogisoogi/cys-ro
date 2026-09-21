@@ -8,9 +8,10 @@ CSO 가 스스로 이벤트를 구독하고 있을 때만 성립한다. 부서 1
 (4군②)가 그대로 남는다. 이 도구는 이 레인의 좌석 CTX 를 `cys status --json`(데몬 관측값 · 두 번째 계수기 없음)
 에서 읽어, 임계를 넘은 좌석마다 **넘을 때 1회** CSO 에 `[ctx-threshold]` 통지를 큐 배달한다.
 
-  tick   스케줄 잡(부서 레인 = cys-dept seed_schedule 이 시드)이 2분마다 부른다. 언제나 exit 0(fail-open).
+  tick   스케줄 잡이 2분마다 부른다(부서 레인 = cys-dept seed_schedule 시드 · 본부 = cysd builtin ctx-relay-base). 언제나 exit 0(fail-open).
 
-판정: role 이 cso 가 아닌 좌석 · usage.ctx_pct ≥ 임계 · usage.updated_at 이 10분 안(낡은 값 무시).
+판정: role 이 cso 가 아닌 좌석 · CTX ≥ 임계(usage.ctx_pct 관측 · status.context_pct 자기보고 중 신선한 쪽의 큰 값 —
+10분 넘은 값은 무시).
 재무장: 그 좌석 CTX 가 임계 − 10 아래로 내려오면(순환·clear 뒤) 다음 넘김에 다시 통지한다.
 CSO 좌석이 없으면 보내지 않는다(받을 이가 없다 — 다음 틱에 다시 본다).
 """
@@ -61,6 +62,23 @@ def save_state(d):
     os.replace(tmp, p)
 
 
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def seat_pct(s, now):
+    """신선한 두 출처(데몬 관측 usage.ctx_pct · 자기보고 status.context_pct) 중 큰 값 — 데몬 임계 발화도
+    두 경로 어느 쪽이든 넘으면 발화한다(handlers.rs maybe_fire_context_threshold 3경로 공유). 낡은 값은 버린다."""
+    vals = []
+    u = s.get("usage") or {}
+    if _num(u.get("ctx_pct")) and _num(u.get("updated_at")) and now - u["updated_at"] <= FRESH_SEC:
+        vals.append(u["ctx_pct"])
+    st = s.get("status") or {}
+    if _num(st.get("context_pct")) and _num(st.get("age_secs")) and st["age_secs"] <= FRESH_SEC:
+        vals.append(st["context_pct"])
+    return max(vals) if vals else None
+
+
 def decide(surfaces, st, now, thr):
     """(보낼 통지 [(sid, role, pct)], 새 상태) — 순수 판정(시험 대상)."""
     notes = []
@@ -70,11 +88,8 @@ def decide(surfaces, st, now, thr):
         role = str(s.get("role") or "")
         if not role or role.startswith("cso") or s.get("exited"):
             continue
-        u = s.get("usage") or {}
-        pct, at = u.get("ctx_pct"), u.get("updated_at")
-        if not isinstance(pct, (int, float)) or isinstance(pct, bool):
-            continue
-        if not isinstance(at, (int, float)) or now - at > FRESH_SEC:
+        pct = seat_pct(s, now)
+        if pct is None:
             continue
         key = str(s.get("surface_id"))
         if pct >= thr:

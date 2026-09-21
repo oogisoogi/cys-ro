@@ -262,12 +262,28 @@ fn builtin_jobs() -> Vec<serde_json::Value> {
             "_builtin": "deptreq",
             "_builtin_version": BUILTIN_JOBS_VERSION
         }),
+        // ── ★v113 A3(ISSUES B9) 본부 좌석 컨텍스트 정지선 중계 — 2분 · base_only · command 레인 ──
+        // **신규 id 라 BUILTIN_JOBS_VERSION 범프 불요·금지**(위 formation·promote·deptreq 와 같은 이유).
+        // 데몬은 context.threshold 를 **발행만** 하고 소비자가 없었다 — javis_ctx_relay tick 이 좌석 CTX
+        // (관측·자기보고 중 신선한 큰 값)가 임계를 넘을 때 1회 CSO 에 `[ctx-threshold]` 를 큐 배달한다(없으면 보류).
+        // 부서 레인은 cys-dept seed_schedule 의 `ctx-relay-tick`(마커 없는 부서 잡)이 담당 — id 를 갈라 둔
+        // 이유는 부서 데몬 ensure 가 그 잡을 예약 id 선점 충돌로 경고하지 않게 하려는 것이고, base_only 는
+        // 부서 데몬에 복제 기록된 이 잡이 같은 레인을 이중 통지하지 않게 하는 관문이다.
+        json!({
+            "id": "ctx-relay-base",
+            "every_minutes": 2,
+            "action": "command",
+            "base_only": true,
+            "command": "pk=\"${CYS_PACK_DIR:-$HOME/.cys/pack}\"; [ -f \"$pk/bin/javis_ctx_relay.py\" ] || exit 0; python3 \"$pk/bin/javis_ctx_relay.py\" tick",
+            "_builtin": "ctxrelay",
+            "_builtin_version": BUILTIN_JOBS_VERSION
+        }),
     ]
 }
 
 /// built-in 잡을 jobs 배열에 idempotent upsert(순수 — 회귀 핀). id 로 대조:
 ///   · 부재 → append(생성)
-///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote"·"deptreq") → 버전 상이 시 교체(갱신)·동버전 무접촉
+///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote"·"deptreq"·"ctxrelay") → 버전 상이 시 교체(갱신)·동버전 무접촉
 ///   · 존재 + **마커 없음/불일치(사용자가 그 id 선점)** → ★codex W3: 교체 금지(사용자 잡 보존)·경고(conflicts 반환)
 /// 반환 (changed, conflicts) — conflicts=사용자가 reserved id 를 쓴 잡 id 목록(호출측 loud 경고).
 fn apply_builtin_jobs(jobs: &mut Vec<serde_json::Value>) -> (bool, Vec<String>) {
@@ -1434,7 +1450,7 @@ mod tests {
             "id": "user-custom-job", "every_minutes": 30, "action": "push", "to": "master"
         })];
 
-        // 1차: built-in 9개(phoenix2 + learn2 + cycle2 + formation1 + promote1 + deptreq1) 생성 → changed=true.
+        // 1차: built-in 10개(phoenix2 + learn2 + cycle2 + formation1 + promote1 + deptreq1 + ctxrelay1) 생성 → changed=true.
         let (c1, conf1) = apply_builtin_jobs(&mut jobs);
         assert!(c1, "1차 ensure 는 built-in 잡을 생성해야 한다");
         assert!(conf1.is_empty(), "conflict 없음(예약 id 미선점)");
@@ -1461,7 +1477,7 @@ mod tests {
             "A1-2 대화로 부서 만들기 집행 틱 잡 생성"
         );
         assert!(ids.contains(&"user-custom-job"), "사용자 잡은 보존돼야 한다");
-        assert_eq!(jobs.len(), 10, "사용자1 + built-in9");
+        assert_eq!(jobs.len(), 11, "사용자1 + built-in10");
         // 주기 정합(typed): snapshot=6h(360), drill=7일(10080), audit=일(1440), digest=7일(10080),
         // cycle tick=매분(1), verifier watchdog=10분(10), formation heartbeat=10분(10),
         // ceo promote tick=10분(10).
@@ -1479,6 +1495,21 @@ mod tests {
         assert_eq!(period("formation-heartbeat"), Some(10), "formation heartbeat 10분");
         assert_eq!(period("ceo-promote-pending-tick"), Some(10), "promote 집행 틱 10분");
         assert_eq!(period("dept-request-tick"), Some(1), "부서 요청 집행 틱 매분");
+        assert_eq!(period("ctx-relay-base"), Some(2), "본부 컨텍스트 정지선 중계 2분");
+        // ★v113 A3 중계 계약 핀: command 레인(master stdin 무주입) · base_only(부서 데몬 복제 = 같은 레인
+        //   이중 통지 차단 — 부서는 seed 잡 ctx-relay-tick 이 담당) · 마커 ctxrelay · tick 동사 · push 필드 부재.
+        {
+            let cr = jobs
+                .iter()
+                .find(|j| j["id"].as_str() == Some("ctx-relay-base"))
+                .unwrap();
+            assert_eq!(cr["action"].as_str(), Some("command"), "중계는 command 레인 핀");
+            assert_eq!(cr["base_only"].as_bool(), Some(true), "중계는 base_only 핀");
+            assert_eq!(cr["_builtin"].as_str(), Some("ctxrelay"), "마커 ctxrelay 핀");
+            assert!(cr.get("to").is_none() && cr.get("text_command").is_none(), "중계는 push 필드 없음");
+            let cmd = cr["command"].as_str().unwrap();
+            assert!(cmd.contains("javis_ctx_relay.py") && cmd.ends_with(" tick"), "중계 command 에 tick 동사 부재");
+        }
         // ★A1-2 집행 틱 계약 핀: command 레인(master stdin 무주입) · base_only(부서 데몬 복제 실행 =
         //   이중 생성 차단 — fire 관문과 쌍) · CSO 신원 고정(env CYS_ROLE=cso — 두 가드 동시 충족) ·
         //   tick 동사 · push 계열 필드 부재 · ★표지 셸 게이트 부재(적대 2R ② — 청소가 매 틱 돌아야 한다).
@@ -1577,7 +1608,7 @@ mod tests {
             .filter(|j| j["id"].as_str() == Some("phoenix-snapshot-6h"))
             .count();
         assert_eq!(snap_count, 1, "재실행에도 중복 생성 0");
-        assert_eq!(jobs.len(), 10, "중복 없이 10개 유지");
+        assert_eq!(jobs.len(), 11, "중복 없이 11개 유지");
 
         // 3차: 구버전(마커=0) 항목이 있으면 갱신(교체) → changed=true, 여전히 중복 0.
         for j in jobs.iter_mut() {

@@ -175,6 +175,10 @@ enum Command {
         /// 자리에 지시를 두 번 넣지 않게). 비우면 전 자리.
         #[arg(long = "only")]
         only: Vec<String>,
+        /// verify 모드 대상을 본부 자리로만 좁힌다(부서 소켓 무접촉). `cys rotate --skip-depts` 가 넘긴다 —
+        /// 부서를 교체하지 않는 재시작이 부서 좌석에 저장 지시를 보내 기다리지 않게(v114-dept-fd 결함 2).
+        #[arg(long)]
+        hq_only: bool,
     },
     /// 재시작 한 번에 끝내기 — 앱 [재시작] 단추(rotate_daemon)와 같은 5단:
     /// 저장 검증(drain --verify) → 데몬 교체 → 복귀 표식 → 새 팩 반영(init-pack) → 조직 복원(restore).
@@ -3177,8 +3181,8 @@ fn run(command: Command) -> i32 {
         Command::Resume => request("system.resume", json!({}))
             .map(|_| println!("RESUMED — 동결된 큐·스케줄 재개")),
 
-        Command::Drain { verify, timeout, only } if verify => {
-            return run_drain_verify(timeout, &only);
+        Command::Drain { verify, timeout, only, hq_only } if verify => {
+            return run_drain_verify(timeout, &only, hq_only);
         }
 
         Command::Rotate { timeout, skip_drain, skip_depts } => {
@@ -14257,7 +14261,14 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     let mut drain_note = "건너뜀".to_string();
     if !skip_drain && connect_raw().is_ok() {
         let t = timeout.to_string();
-        let out = run(&["drain", "--verify", "--timeout", &t]);
+        // ★v114-dept-fd 결함 2: 부서를 교체하지 않는 재시작(skip_depts)은 부서 좌석에 저장 지시를 보내지 않는다
+        //   (09-22 재설치 「저장 확인 3/8」 — 부서 좌석 5개에 DRAIN-VERIFY 를 보내 123초 대기). 부서를 순회하는
+        //   재시작은 ⑥(cys-dept rotate)에 드레인이 없으므로 ①에서 부서 좌석까지 저장시킨다(종전 유지).
+        let mut args = vec!["drain", "--verify", "--timeout", &t];
+        if skip_depts {
+            args.push("--hq-only");
+        }
+        let out = run(&args);
         let v = out
             .as_ref()
             .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
@@ -14652,7 +14663,15 @@ fn drain_targets_only(targets: Vec<VerifyTarget>, only: &[String]) -> Vec<Verify
         .collect()
 }
 
-fn run_drain_verify(timeout: u64, only: &[String]) -> i32 {
+/// `--hq-only` 필터(순수) — 본부(`dept == "main"`) 자리만 남긴다.
+fn drain_targets_hq_only(targets: Vec<VerifyTarget>, hq_only: bool) -> Vec<VerifyTarget> {
+    if !hq_only {
+        return targets;
+    }
+    targets.into_iter().filter(|t| t.dept == "main").collect()
+}
+
+fn run_drain_verify(timeout: u64, only: &[String], hq_only: bool) -> i32 {
     // 백스톱 하드 워치독 — 메인 로직이 어떤 이유로든 멈춰도 프로세스가 영구 정지하지 않게(plain drain 12s 패턴).
     // fan-out은 timeout+5s 안에 반환하므로 정상 경로에선 절대 발화하지 않는다.
     // ★[V111-F2] fan-out 이 timeout×FACTOR+5s 안에 반환하므로 백스톱은 그보다 커야 한다(구 timeout+10 은
@@ -14666,7 +14685,7 @@ fn run_drain_verify(timeout: u64, only: &[String]) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let targets = drain_targets_only(drain_verify_targets(), only);
+    let targets = drain_targets_hq_only(drain_targets_only(drain_verify_targets(), only), hq_only);
     let io: std::sync::Arc<dyn VerifyIo + Send + Sync> = std::sync::Arc::new(RealVerifyIo);
     let report = drain_verify_fanout(io, targets, std::time::Duration::from_secs(timeout), now);
     let all_saved = report["all_saved"].as_bool() == Some(true);
@@ -25808,6 +25827,43 @@ mod tests {
         let a = prod.find("fn run_drain_verify(").unwrap();
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
         assert!(body.contains("drain_targets_only(drain_verify_targets(), only)"), "--only 가 검증 경로에 미배선");
+    }
+
+    /// ★v114-dept-fd 결함 2: `--hq-only` 는 본부 자리만 남기고, `rotate --skip-depts` 가 그것을 넘긴다
+    /// (09-22 재설치 「저장 확인 3/8」 = 부서 좌석 5개에 DRAIN-VERIFY 오발송 · 123초 대기).
+    #[test]
+    fn v114_drain_hq_only_excludes_dept_seats_and_rotate_skip_depts_passes_it() {
+        use clap::Parser;
+        match Cli::parse_from(["cys", "drain", "--verify", "--hq-only"]).command {
+            Command::Drain { hq_only, .. } => assert!(hq_only),
+            _ => panic!(),
+        }
+        match Cli::parse_from(["cys", "drain", "--verify"]).command {
+            Command::Drain { hq_only, .. } => assert!(!hq_only, "기본 = 전 자리(무회귀)"),
+            _ => panic!(),
+        }
+        let p = std::path::PathBuf::from("/nonexistent");
+        let mk = |sid: u64, dept: &str| {
+            let mut t = mk_target(sid, p.clone(), None);
+            t.dept = dept.into();
+            t
+        };
+        let all = || vec![mk(1, "main"), mk(2, "main"), mk(3, "main"), mk(1, "dept-1"), mk(2, "dept-2")];
+        let got: Vec<String> = drain_targets_hq_only(all(), true)
+            .into_iter()
+            .map(|t| format!("{}/{}", t.dept, t.surface_ref))
+            .collect();
+        assert_eq!(got, vec!["main/surface:1", "main/surface:2", "main/surface:3"], "본부 3/3 만");
+        assert_eq!(drain_targets_hq_only(all(), false).len(), 5, "끔 = 전 자리");
+        // 배선 핀 — 검증 경로가 필터를 거치고, rotate 가 skip_depts 일 때 --hq-only 를 넘긴다.
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn run_drain_verify(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("drain_targets_hq_only(drain_targets_only(drain_verify_targets(), only), hq_only)"), "--hq-only 미배선");
+        let r = prod.find("fn run_rotate(").unwrap();
+        let rbody = &prod[r..r + prod[r..].find("\n}\n").unwrap()];
+        assert!(rbody.contains("if skip_depts {\n            args.push(\"--hq-only\");"), "rotate skip_depts → --hq-only 미배선");
     }
 
     /// 마커 포맷 — HTML 주석형·체크박스 문법 금지·denylist 토큰 회피.

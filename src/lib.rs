@@ -5410,7 +5410,7 @@ mod spawn_policy_tests {
     /// 숫자를 늘릴 때는 그 스폰이 ⓐ윈도에서 안 도는가 ⓑ등급을 체인에 달았는가를 먼저 적어라.
     const RAW_COMMAND_NEW_FROZEN: &[(&str, usize)] = &[
         ("src-tauri/src/feedback.rs", 2),
-        ("src-tauri/src/main.rs", 39),
+        ("src-tauri/src/main.rs", 37), // v114-dept-fd: cys-dept 직접 스폰 3곳 → run_dept_tool_direct 1곳(-2)
         ("src/app_bundle.rs", 4),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),

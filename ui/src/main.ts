@@ -7147,6 +7147,18 @@ function onDaemonEvent(event: Record<string, unknown>) {
     refreshSidebarStatus();
     return;
   }
+  if (name === "seat.folder_denied") {
+    // ★v114-dept-fd 수리 1‴: 좌석 폴더를 macOS 가 막아 claude 가 못 뜬다(좌석엔 빈 셸만 남는다).
+    //   claude 가 내는 「file descriptors」 오류 문구는 원인이 아니다 — 원인 문장으로 대신 알린다.
+    const f = payload.folder === "Documents" ? "문서" : payload.folder === "Downloads" ? "다운로드" : "데스크탑";
+    stickyToast(
+      `perm-seat-${String(payload.folder ?? "folder")}`,
+      "health",
+      `⚠ 부서 폴더 접근 권한이 꺼져 있습니다`,
+      `${payload.role ?? ""} 자리가 폴더(${payload.cwd ?? ""})를 열지 못해 AI 가 시작되지 않았습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더 → cysr 에서 「${f} 폴더」를 켠 뒤 앱을 재시작하세요.`,
+    );
+    return;
+  }
   if (name === "pane.idle") {
     toast("idle", "💤 노드 유휴", `surface:${sid} — ${payload.idle_seconds}s 무출력`);
     refreshSidebarStatus();

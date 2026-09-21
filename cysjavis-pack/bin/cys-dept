@@ -32,6 +32,13 @@ export CYS_BIN="$CYS"
 # agents.json·directives 읽기가 UnicodeDecodeError로 크래시(부서 seed 실패 등). PYTHONUTF8=1로 전 python
 # heredoc·자식 python을 UTF-8 기본으로 강제(unix 무영향). 개별 open(encoding=) 누락도 이걸로 방어.
 export PYTHONUTF8=1
+# ★v114-dept-fd: 부서 데몬이 어느 경로로 떴는지 원장 1줄(delegated = 본부 데몬 대행 · direct:<사유> = 앱 직접).
+#   macOS 폴더 권한(TCC)은 띄운 사슬의 책임 주체로 판정되므로, 좌석이 폴더를 못 읽을 때 이 줄이 갈림 축이다.
+if [ -n "${CYS_DEPT_SPAWN_PATH:-}" ]; then
+  { printf '%s\t%s\tpath=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" "$CYS_DEPT_SPAWN_PATH" \
+      >> "$HOME/.cys/dept-launch-path.log"; } 2>/dev/null || true
+  unset CYS_DEPT_SPAWN_PATH
+fi
 # ★SEAL-1(2026-08-01 실사고): 이 도구가 spawn 하는 자식들은 cys.app 번들 안의 python 을 물 수 있다
 # (PATH 선두 = Contents/Resources/runtime/python/bin). 그 python 이 stdlib import 중 번들 안에
 # `__pycache__/*.pyc` 를 쓰면 코드서명 봉인이 깨지고("file added: …cpython-312.pyc"), quarantine 이

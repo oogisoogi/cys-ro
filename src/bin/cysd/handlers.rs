@@ -3136,6 +3136,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     //   여기서 넣지 않는다 — 관측이 아직 없기 때문이다. 첫 statusline 턴에
                     //   retitle_with_model 이 「번호 · 모델 · 특성」으로 완성한다.
                     //   무접촉 4조건은 §panetitle::initial_title 이 진다.
+                    //   ★v1.1.1(2026-09-21): 특성은 **role 하나**에서 나온다 — 오너 원문
+                    //   「master, cso 하나면 충분하고, 워커도 맡은 역할 키워드 1나면 된다.
+                    //   없으면 worker1이고」. cwd 는 **알아보는 데만** 쓴다(CLI workflow_title 이
+                    //   지은 제목인지 정확 재구성으로 대조 — 특성을 짓는 데는 안 쓴다).
                     {
                         let role_now = s.role.lock().unwrap().clone();
                         let agent_now = s.agent_meta.lock().unwrap().as_ref().map(|a| a.0.clone());

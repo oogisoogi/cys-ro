@@ -171,6 +171,17 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         timeout: u64,
     },
+    /// 재시작 한 번에 끝내기 — 앱 [재시작] 단추(rotate_daemon)와 같은 5단:
+    /// 저장 검증(drain --verify) → 데몬 교체 → 복귀 표식 → 새 팩 반영(init-pack) → 조직 복원(restore).
+    /// 설치기가 재설치 끝에서 부른다(「[재시작] 눌러 주세요」 단계 삭제). 종료코드 표 = `rotate_rc` doc.
+    Rotate {
+        /// 저장 검증 노드별 대기(초) — drain --verify 의 --timeout 으로 넘긴다.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        /// 저장 검증을 건너뛴다(살아 있는 자리가 없다고 확신할 때만).
+        #[arg(long)]
+        skip_drain: bool,
+    },
     /// preflight 게이트: exit 0 = running, 4 = paused (자율주행 매 action 전 확인용)
     GateCheck,
     /// 미배달 큐 검사·철회 (kill-switch의 짝)
@@ -3155,6 +3166,10 @@ fn run(command: Command) -> i32 {
 
         Command::Drain { verify, timeout } if verify => {
             return run_drain_verify(timeout);
+        }
+
+        Command::Rotate { timeout, skip_drain } => {
+            return run_rotate(timeout, skip_drain);
         }
 
         Command::Drain { .. } => {
@@ -14041,6 +14056,168 @@ fn verify_one_node(
     }
 }
 
+/// `cys rotate` 종료코드 — 중단 코드는 그 단계에서 멈춘 것이고, 21·25 는 **끝까지 돌았으나** 확인이 덜 된 것이다.
+///
+/// | rc | 뜻 | 멈춘 곳 |
+/// |---|---|---|
+/// | 0 | 저장 확인 전부(또는 살아 있는 자리 0) · 교체 · 팩 반영 · 복원 성공 | — |
+/// | 21 | 끝까지 진행 — 단 저장 검증이 전부 확인되지 않았다(일부 미확인·검증 실행 실패) | 없음 |
+/// | 22 | 데몬 교체 실패(맥 launchd 등록/이관 · 윈 작업 등록·기존 데몬 정지) | ② |
+/// | 23 | 새 데몬이 상한 안에 응답하지 않음 | ② |
+/// | 24 | 새 팩 반영(init-pack) 실패 — 복귀 표식을 **남긴다**(앱 다음 기동이 재시도) | ④ |
+/// | 25 | 끝까지 진행 — 조직 복원이 실패·보류(관문)를 보고했다 | 없음 |
+///
+/// 21 과 25 가 함께면 25(복원이 더 무겁다 — 사람이 볼 곳이 창 쪽이다).
+const ROTATE_RC_DRAIN_PARTIAL: i32 = 21;
+const ROTATE_RC_DAEMON: i32 = 22;
+const ROTATE_RC_DAEMON_UP: i32 = 23;
+const ROTATE_RC_PACK: i32 = 24;
+const ROTATE_RC_RESTORE: i32 = 25;
+
+/// 끝까지 돈 rotate 의 종료코드(순수). `drain_ok` = None 이면 건너뛰었거나 살아 있는 자리가 없었다(확인할 것 없음).
+fn rotate_rc(drain_ok: Option<bool>, restore_ok: bool) -> i32 {
+    if !restore_ok {
+        ROTATE_RC_RESTORE
+    } else if drain_ok == Some(false) {
+        ROTATE_RC_DRAIN_PARTIAL
+    } else {
+        0
+    }
+}
+
+/// 복귀 표식·판본 스탬프 폴더 = 팩 폴더의 부모(순수). 기본 팩 `~/.cys/pack` → `~/.cys`(앱과 같은 자리).
+fn rotate_state_root(pack_dir: &std::path::Path) -> std::path::PathBuf {
+    pack_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| cys::home_dir().join(".cys"))
+}
+
+/// 앱 [재시작] 단추와 같은 5단을 CLI 한 번으로(TICKET=v112-restore ④ · master [master#990243f6]).
+/// 단계마다 **자기 자신의 하위명령**을 부른다 — 로직 사본 0(두 경로가 갈라지지 않게). 사후 알림 1줄.
+fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
+    let Ok(exe) = std::env::current_exe() else {
+        eprintln!("rotate: 실행 파일 경로를 모름");
+        return ROTATE_RC_DAEMON;
+    };
+    let run = |args: &[&str]| -> Option<std::process::Output> {
+        cys::hidden_command(&exe)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+    };
+    // ① 저장 검증 — 살아 있는 데몬이 있을 때만(없으면 저장할 자리도 없다).
+    let mut drain_ok: Option<bool> = None;
+    let mut drain_note = "건너뜀".to_string();
+    if !skip_drain && connect_raw().is_ok() {
+        let t = timeout.to_string();
+        let out = run(&["drain", "--verify", "--timeout", &t]);
+        let v = out
+            .as_ref()
+            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
+        match v {
+            Some(v) => {
+                let total = v["total"].as_u64().unwrap_or(0);
+                let saved = v["summary"]["saved"].as_u64().unwrap_or(0);
+                drain_ok = if total == 0 { None } else { Some(v["all_saved"].as_bool() == Some(true)) };
+                drain_note = format!("저장 확인 {saved}/{total}");
+            }
+            None => {
+                drain_ok = Some(false);
+                drain_note = "저장 검증 실행 실패(결과 없음)".into();
+            }
+        }
+        eprintln!("[rotate] ① {drain_note}");
+    }
+    // ② 데몬 교체 — OS 상시 가동 등록(launchd·작업 스케줄러)이 소유하는 것은 **기본 소켓 데몬뿐**이다.
+    //   부서·격리 데몬(비-기본 소켓)에 launchd 이관을 걸면 라이브 기본 데몬을 건드린다 → 정지+자동 기동 경로.
+    let base = cys::lane::socket_is_base(&cys::socket_path().to_string_lossy());
+    let mac_takeover = cfg!(target_os = "macos") && base;
+    if mac_takeover {
+        let ok = run(&["daemon", "install", "--takeover"]).map(|o| o.status.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("[rotate] ② 데몬 교체 실패(daemon install --takeover)");
+            return ROTATE_RC_DAEMON;
+        }
+    } else {
+        if cfg!(windows) && base {
+            let ok = run(&["daemon", "install"]).map(|o| o.status.success()).unwrap_or(false);
+            if !ok {
+                eprintln!("[rotate] ② 작업 등록 실패(daemon install)");
+                return ROTATE_RC_DAEMON;
+            }
+        }
+        // 돌고 있는 옛 데몬을 내린다(윈 daemon install 은 등록만 하고 교체하지 않는다) — 앱 stop_running_daemon 과 같은 순서.
+        if let Some(pid) = request("system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_u64()) {
+            #[cfg(windows)]
+            {
+                if let Ok(r) = request("ledger.list", json!({})) {
+                    // 앱 scoped_pids_from_ledger_list 와 같은 규칙 — scoped 항목만(데몬이 생명주기를 보장한 것).
+                    for e in r["entries"].as_array().cloned().unwrap_or_default() {
+                        if e["scoped"].as_bool().unwrap_or(false) {
+                            if let Some(spid) = e["pid"].as_u64() {
+                                let _ = request("ledger.kill", json!({"pid": spid}));
+                            }
+                        }
+                    }
+                }
+                let _ = cys::hidden_command("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = cys::hidden_command("kill").args(["-TERM", &pid.to_string()]).output();
+            }
+            let mut down = false;
+            for _ in 0..50 {
+                if connect_raw().is_err() {
+                    down = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if !down {
+                eprintln!("[rotate] ② 옛 데몬이 5초 안에 내려가지 않음");
+                return ROTATE_RC_DAEMON;
+            }
+        }
+    }
+    // 새 데몬 응답 확인 — 첫 요청이 형제 cysd 를 자동 기동한다(윈) · 맥은 launchd 가 이미 띄웠다.
+    let mut up = false;
+    for _ in 0..3 {
+        if run(&["identify"]).map(|o| o.status.success()).unwrap_or(false) {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    if !up {
+        eprintln!("[rotate] ② 새 데몬 응답 없음");
+        return ROTATE_RC_DAEMON_UP;
+    }
+    // ③ 복귀 표식 — ④가 실패하면 남아서 앱 다음 기동이 팩 반영·복원을 재시도한다(앱과 같은 계약).
+    //   자리 = 팩 폴더의 부모(기본 `~/.cys` = 앱 pending_restore_path 와 같은 곳). CYS_PACK_DIR 로 격리한
+    //   실행(시험·부서 리허설)은 라이브 표식을 건드리지 않는다.
+    let root = rotate_state_root(&cys::pack::pack_dir());
+    let marker = root.join(".pending-restore");
+    let _ = std::fs::write(&marker, "");
+    // ④ 새 팩 반영
+    if !run(&["init-pack", "--no-install-hook"]).map(|o| o.status.success()).unwrap_or(false) {
+        eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
+        return ROTATE_RC_PACK;
+    }
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::write(root.join(".last-app-version"), env!("CARGO_PKG_VERSION"));
+    // ⑤ 조직 복원(겹치는 콜드부트 복원과는 복원 1회 표식이 한 번만 말하게 한다)
+    let restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
+    let rc = rotate_rc(drain_ok, restore_ok);
+    println!(
+        "재시작 완료 — {drain_note} · 데몬 교체 · 새 팩 반영 · 조직 복원 {} (rc={rc})",
+        if restore_ok { "성공" } else { "실패·보류 — 창을 확인하세요" }
+    );
+    rc
+}
+
 /// 소켓별 병렬 fan-out — 총 소요 ≈ 1×timeout(직렬 누적 아님). 노드별 detached 스레드로 verify를 스폰하고
 /// 전역 하드캡(=timeout+마진) 내 결과를 수집한다. 미도착 노드는 timeout으로 분류(캡 초과=hung 방어).
 fn drain_verify_fanout(
@@ -18679,6 +18856,25 @@ mod tests {
         // 입력창에 글이 남아 있으면 준비가 아니다 / 못 읽으면 준비가 아니다
         assert!(!wait_input_ready(|_| {}, || Some(claude_box("남은 글")), std::time::Duration::from_secs(1)));
         assert!(!wait_input_ready(|_| {}, || None, std::time::Duration::from_secs(1)));
+    }
+
+    /// ④ rotate 종료코드 표 — 중단 코드가 아닌 둘(21 · 25)의 우선순위.
+    #[test]
+    fn rotate_rc_table() {
+        assert_eq!(rotate_rc(None, true), 0);
+        assert_eq!(rotate_rc(Some(true), true), 0);
+        assert_eq!(rotate_rc(Some(false), true), ROTATE_RC_DRAIN_PARTIAL);
+        assert_eq!(rotate_rc(Some(true), false), ROTATE_RC_RESTORE);
+        assert_eq!(rotate_rc(Some(false), false), ROTATE_RC_RESTORE, "복원 실패가 더 무겁다");
+        assert_eq!(rotate_rc(None, false), ROTATE_RC_RESTORE);
+    }
+
+    #[test]
+    fn rotate_state_root_is_pack_parent() {
+        assert_eq!(
+            rotate_state_root(std::path::Path::new("/h/.cys/pack")),
+            std::path::PathBuf::from("/h/.cys")
+        );
     }
 
     #[test]

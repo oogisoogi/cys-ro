@@ -4937,6 +4937,34 @@ fn discover_claude_settings() -> Vec<String> {
 /// 판정은 preflight C28 의 FAIL 티어와 **같은 매니페스트**(`AWAKENING_HOOKS`)를 소비한다 —
 /// 같은 표면·같은 술어여야 두 채널의 보고가 갈리지 않는다.
 /// 비치명: 경고만 하고 부트는 계속한다(위경고 모드·부트 봉쇄 회귀 금지 — 금지 방향 ③ 정신).
+/// ★v113 Q1: hook-missing 판정 근거(순수 — 시험 대상). 빠진 각성 훅마다 「기대 command · 같은 이벤트에 실제
+/// 등록된 같은 이름 스크립트의 command(없으면 없음)」 한 칸. 판정(바이트 동등)은 바꾸지 않는다.
+fn hook_missing_evidence(root: &Value, pack: &std::path::Path, missing: &[&str]) -> Vec<String> {
+    cys::pack::AWAKENING_HOOKS
+        .iter()
+        .filter(|h| missing.contains(&h.script))
+        .map(|h| {
+            let found: Vec<String> = root["hooks"][h.event]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|g| g["hooks"].as_array())
+                .flatten()
+                .filter_map(|x| x["command"].as_str())
+                .filter(|c| c.contains(h.script))
+                .map(|c| format!("`{c}`"))
+                .collect();
+            format!(
+                "{}[{}] 기대 `{}` · 등록됨 {}",
+                h.script,
+                h.event,
+                cys::pack::hook_command_for(pack, h.script),
+                if found.is_empty() { "없음".to_string() } else { found.join(" ") }
+            )
+        })
+        .collect()
+}
+
 fn warn_if_awakening_hooks_missing(config_dir: Option<&str>, role: &str, agent: &str) {
     // claude 계열만 대상(agy·codex 는 Claude-config 노드가 아니다 — preflight discover 와 동일 규약).
     if !agent.starts_with("claude") {
@@ -4989,12 +5017,18 @@ fn warn_if_awakening_hooks_missing(config_dir: Option<&str>, role: &str, agent: 
             "${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}"
         ),
     };
+    // ★v113 Q1(윈 실기 「hook-missing 피드 누적」): 판정 근거를 본문에 싣는다 — 등록 판정은 command 문자열
+    //   **바이트 동등**이라, 같은 스크립트가 다른 경로·따옴표·구분자로 등록돼 있어도 「없음」이 된다(윈 경로 형태
+    //   차이가 후보). 기대 문자열과 그 이벤트에 실제로 있는 같은 이름 스크립트의 문자열을 나란히 보여 사후에
+    //   진짜 부재인지 형태 불일치인지 가를 수 있게 한다(관측 전용 · 판정 로직 무변경).
+    let evidence = hook_missing_evidence(&root, &pack, &missing);
     let body = format!(
         "role={role} agent={agent} 의 config dir({})에 각성 훅이 없습니다: {}. \
          이 노드는 떠도 /clear 후 지침 재주입(SessionStart)·마스터 선언 부트 발화(UserPromptSubmit)가 \
-         발동하지 않습니다. {action}",
+         발동하지 않습니다. {action} (판정 근거: {})",
         settings.display(),
         missing.join(", "),
+        evidence.join(" | "),
     );
     eprintln!("[launch-agent] ⚠ 각성 훅 미등록 — {body}");
     // best-effort: 데몬 부재·거부여도 기동은 계속한다(경고 채널 실패가 부트를 죽이지 않는다).
@@ -24834,6 +24868,21 @@ mod tests {
             "doctor 는 번들 안 파일을 삭제하지 않는다"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ★v113 Q1: hook-missing 판정 근거 — 형태 불일치(다른 경로로 등록)는 두 문자열이 나란히, 진짜 부재는 「없음」.
+    #[test]
+    fn hook_missing_evidence_shows_expected_and_found() {
+        let pack = std::path::Path::new("/p/pack");
+        let root = json!({"hooks": {"SessionStart": [{"hooks": [
+            {"type": "command", "command": "bash C:\\\\x\\\\hooks\\\\session-start.sh"}]}]}});
+        let ev = hook_missing_evidence(&root, pack, &["session-start.sh", "role-bootstrap.sh"]);
+        assert_eq!(ev.len(), 2, "{ev:?}");
+        assert!(ev[0].starts_with("session-start.sh[SessionStart] 기대 `"), "{}", ev[0]);
+        assert!(ev[0].contains(&cys::pack::hook_command_for(pack, "session-start.sh")), "{}", ev[0]);
+        assert!(ev[0].contains("session-start.sh`") && !ev[0].ends_with("없음"), "등록된 다른 형태를 못 보였다: {}", ev[0]);
+        assert!(ev[1].starts_with("role-bootstrap.sh[UserPromptSubmit]") && ev[1].ends_with("등록됨 없음"), "{}", ev[1]);
+        assert!(hook_missing_evidence(&root, pack, &[]).is_empty());
     }
 
     #[test]

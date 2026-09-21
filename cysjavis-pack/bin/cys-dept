@@ -359,6 +359,50 @@ try:
 finally: _ulk(lf)
 PY
 }
+# ★B11(ISSUES · codex 2R F6) reg_fence_close: 닫기 착수 울타리 — 레지스트리 잠금 안에서 ⑴기대 세대
+# (CYS_DEPT_EXPECT_GEN · 대화 닫기 카드가 확인받은 부서의 gen)가 지금 그 번호의 gen 과 같은지 대조하고
+# ⑵다른 산 프로세스가 이미 닫는 중이 아닌지 본 뒤 ⑶`closing` 표식(pid)을 남긴다. 표식이 선 뒤에는 다른
+# down 이 같은 번호를 치우고 새 부서가 그 번호를 받는 일이 없다(번호는 reg_remove 뒤에만 풀린다) — 대조와
+# teardown 사이 번호 재사용 창을 닫는다. exit 9 = 세대 불일치/대상 부재(기대 세대가 있을 때) · 10 = 닫는 중 · 11 = 잠금 실패(윈).
+# 표식의 pid 가 죽었으면 무시한다(중도 실패한 down 이 번호를 영구히 잠그지 않게).
+reg_fence_close(){ reg_init; CYS_DEPT_EXPECT_GEN="${CYS_DEPT_EXPECT_GEN:-}" python3 - "$REG" "$1" "$2" <<'PY'
+import json,sys,os,time
+try:
+    import fcntl
+    def _lk(f): fcntl.flock(f, fcntl.LOCK_EX)
+    def _ulk(f): fcntl.flock(f, fcntl.LOCK_UN)
+except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락. ★울타리는 잠금 실패를 삼키지 않는다(agy 1R ①) —
+    import msvcrt       #   10초 재시도 뒤에도 못 잡으면 exit 11(닫지 않음 · 다시 시도) · 무잠금 진행 = 울타리 무력
+    def _lk(f):
+        try: msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        except OSError:
+            sys.stderr.write("[cys-dept] down: 레지스트리 잠금 획득 실패 — 닫지 않음(잠시 뒤 다시)\n"); sys.exit(11)
+    def _ulk(f): pass
+def _alive(pid):
+    try: os.kill(int(pid), 0); return True
+    except (OSError, ValueError, TypeError): return False
+p,n,me=sys.argv[1:4]; want=os.environ.get("CYS_DEPT_EXPECT_GEN","")
+lf=open(p+'.lock','w'); _lk(lf)
+try:
+    try: d=json.load(open(p))
+    except Exception: d={'depts':{}}
+    e=d.setdefault('depts',{}).get(n)
+    if e is None:
+        if want: sys.stderr.write("[cys-dept] down: %s 가 레지스트리에 없다 — 기대 세대 대조 불가(닫지 않음)\n"%n); sys.exit(9)
+        sys.exit(0)   # 종전 거동: 미등재 teardown 은 잔재 정리(멱등)
+    if want and e.get('gen')!=want:
+        sys.stderr.write("[cys-dept] down: %s 세대 불일치(기대 %s · 현재 %s) — 같은 번호의 다른 부서라 닫지 않음\n"%(n,want,e.get('gen')))
+        sys.exit(9)
+    c=e.get('closing') or {}
+    if c.get('pid') and str(c.get('pid'))!=me and _alive(c.get('pid')):
+        sys.stderr.write("[cys-dept] down: %s 는 이미 닫는 중(pid %s)\n"%(n,c.get('pid'))); sys.exit(10)
+    e['closing']={'pid':int(me),'at':time.time()}
+    tmp=p+'.tmp.%d'%os.getpid()
+    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp,p)
+finally: _ulk(lf)
+PY
+}
 # reg_set_meta: 기존 엔트리에 display_name·account·mission_key 를 merge(socket/pack_dir/role 보존).
 # reg_upsert 시그니처 불변(launch 회귀0) — ＋부서 자동화(cys-dept create)용 신설. flock RMW·원자교체.
 reg_set_meta(){ reg_init; python3 - "$REG" "$1" "$2" "$3" <<'PY'
@@ -645,7 +689,9 @@ verify_lane_account_seed(){
 # owner-보고가 N배 중복 실행되는 자원 낭비·노이즈 차단.
 seed_schedule(){
   local pk="$1"; mkdir -p "$pk"
-  printf '{\n  "_doc": "부서 데몬 schedule — owner 진행보고는 최상위만. cys-dept가 빈 jobs로 시드(중복 실행 방지).",\n  "jobs": []\n}\n' > "$pk/schedule.json"
+  # ★v113 A3(ISSUES B9): 좌석 컨텍스트 정지선 중계 — 데몬 context.threshold 는 발행만 되고 소비자가 없었다.
+  #   2분마다 이 레인 좌석 CTX(데몬 관측값)를 읽어 임계를 넘은 좌석마다 1회 부서 CSO 에 [ctx-threshold] 큐 통지.
+  printf '{\n  "_doc": "부서 데몬 schedule — owner 진행보고는 최상위만(cys-dept 시드). ctx-relay = 좌석 컨텍스트 정지선 중계(v113 A3).",\n  "jobs": [\n    {"id": "ctx-relay-tick", "every_minutes": 2, "action": "command", "if_absent": "skip", "command": "pk=\\"${CYS_PACK_DIR:-$HOME/.cys/pack}\\"; [ -f \\"$pk/bin/javis_ctx_relay.py\\" ] || exit 0; python3 \\"$pk/bin/javis_ctx_relay.py\\" tick"}\n  ]\n}\n' > "$pk/schedule.json"
 }
 
 # 부서 데몬은 첫 기동 시 pack install(수백 파일)로 listening까지 지연될 수 있어 폴링 간격을 둔다(최대 ~12s).
@@ -1208,10 +1254,9 @@ try:
         try: return subprocess.run([os.environ.get("CYS_BIN","cys"),"ping"], env={**os.environ,"CYS_SOCKET":sk},
                                    capture_output=True, timeout=3).returncode==0
         except Exception: return False
-    CAP=int(os.environ.get("CYS_DEPT_CAP","8"))
-    live=sum(1 for e in depts.values() if _alive_sk(e.get('socket','')))
-    if live>=CAP:
-        sys.stderr.write("[cys-dept] allocate 거부: live 부서 수 %d ≥ CYS_DEPT_CAP=%d (hard cap·죽은등록 제외)\n"%(live,CAP)); sys.exit(8)
+    # ★v113(2026-09-21 · 오너 결정 「안전망 8 제거 · 자원 게이트만」): live 부서 수 고정 상한(구 CYS_DEPT_CAP=8)
+    #   삭제. 부서를 더 켤 수 있는지는 실측 자원 게이트(javis_resource_gate hard_block)가 가른다 — 대화 경로는
+    #   javis_dept_request 가, 편성 완결은 javis_formation 이 그 게이트를 지난다. 옛 노브는 읽지 않는다.
     used={int(m.group(1)) for k in depts if (m:=re.match(r'^dept-(\d+)$',k))}
     def _dept_sk(n):  # RC-6: OS별 부서 소켓(dept_sock 규약 미러) — Windows named pipe·unix .sock
         return (r"\\.\pipe\cys-dept-dept-%d"%n) if os.name=="nt" else f"{home}/.local/state/cys-dept-dept-{n}/cys.sock"
@@ -1221,7 +1266,8 @@ try:
     while N in used or alive(N): N+=1
     name=f"dept-{N}"
     depts[name]={'socket':_dept_sk(N),  # RC-6: OS별 소켓 규약(Windows named pipe·unix .sock)
-                 'pack_dir':f"{home}/.cys/pack-dept-{name}",'role':'dept-master'}
+                 'pack_dir':f"{home}/.cys/pack-dept-{name}",'role':'dept-master',
+                 'gen':os.urandom(8).hex()}  # ★B11: 세대 ID — 번호가 재사용돼도 닫기 대조가 옛 부서와 새 부서를 가른다
     tmp=p+'.tmp.%d'%os.getpid()
     with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
@@ -1384,12 +1430,7 @@ try:
         with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
         os.replace(tmp,p)
         print("REUSE_DEAD "+n); sys.exit(0)
-    # ★[2] hard cap(NEW 분기만·reserve flock 안 — 동시성·원자성 유지): REUSE는 면제, 죽은(미reap) 등록은
-    #   빼고 ★살아있는 데몬만 카운트(상단 alive_sock 재사용) — 신규 예약 전 live 수 ≥ cap 거부(exit 8).
-    CAP=int(os.environ.get("CYS_DEPT_CAP","8"))
-    live=sum(1 for e in depts.values() if alive_sock(e.get('socket','')))
-    if live>=CAP:
-        sys.stderr.write("[cys-dept] create NEW 거부: live 부서 수 %d ≥ CYS_DEPT_CAP=%d (hard cap·죽은등록 제외)\n"%(live,CAP)); sys.exit(8)
+    # ★v113(2026-09-21 · 오너 결정): 구 live 부서 수 고정 상한(CYS_DEPT_CAP=8 · exit 8) 삭제 — 자원 게이트만 판정.
     # 신규 예약(lowest-unused·소켓 점유 번호 skip) — mission_key+reserved_at+메타 즉시 원자기록
     used={int(m.group(1)) for k in depts if (m:=re.match(r'^dept-(\d+)$',k))}
     N=1
@@ -1397,7 +1438,8 @@ try:
     name=f"dept-{N}"
     depts[name]={'socket':_sk_named(name),
                  'pack_dir':f"{home}/.cys/pack-dept-{name}",'role':'dept-master',
-                 'mission_key':mkey,'cwd':cwd,'account_dir':acctdir,'reserved_at':now}
+                 'mission_key':mkey,'cwd':cwd,'account_dir':acctdir,'reserved_at':now,
+                 'gen':os.urandom(8).hex()}  # ★B11: 세대 ID(allocate 와 같은 규약)
     tmp=p+'.tmp.%d'%os.getpid()
     with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
@@ -1486,6 +1528,9 @@ PY
       esac
     done
     [ -n "$name" ] || { echo "usage: cys-dept down <name> [--purge-state]" >&2; exit 2; }
+    # ★B11: 닫기 울타리(세대 대조 + 닫는 중 표식) — teardown 어느 것보다 먼저. 9/10 은 그대로 전파.
+    _frc=0; reg_fence_close "$name" "$$" || _frc=$?
+    [ "$_frc" = 0 ] || exit "$_frc"
     sock="$(dept_sock "$name")"
     # ★NO_AUTOSTART(감사 2026-07-10): 죽은 부서 down 시 identify가 cysd를 되살려 그걸 kill하던 낭비 spawn 제거
     # — 실패 시 pid 빈값이면 아래가 kill을 건너뛰고 rm+reg_remove로 진행(종국 상태 동일).
@@ -1531,6 +1576,11 @@ PY
       # 파생 실패(비표준 소켓)면 종전과 동일(skip — 보수적).
       name=$(printf '%s' "$sock" | tr '\\' '/' | grep -o 'cys-dept-[^/]*' | head -1 | sed 's/^cys-dept-//') || true
       [ -n "$name" ] && echo "[cys-dept] down-sock: 역인덱스 실패 — 소켓 슬러그에서 name 파생($name)" >&2
+    fi
+    # ★B11: down 과 같은 닫기 울타리(세대 대조 없음 — 소켓 기준 teardown) · 다른 산 닫기가 진행 중이면 10.
+    if [ -n "$name" ]; then
+      _frc=0; CYS_DEPT_EXPECT_GEN="" reg_fence_close "$name" "$$" || _frc=$?
+      [ "$_frc" = 0 ] || exit "$_frc"
     fi
     pid=$(CYS_NO_AUTOSTART=1 CYS_SOCKET="$sock" "$CYS" identify 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('daemon_pid',''))" 2>/dev/null || true)
     if [ -n "${pid:-}" ]; then

@@ -12,6 +12,7 @@
 . "$(dirname "$0")/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \
   || { echo "[cys-hook] _lib.sh 소실 — 훅 강등(grill-stop)" >&2; exit 0; }
+cys_hook_timing grill-stop   # v113 Q1 계측(경과 시간 1줄 · 관측만)
 if [ "${1:-}" = "--self-test" ]; then
   HOOK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)
   [ -n "${CYS_PY:-}" ] || exit 0

@@ -382,6 +382,11 @@ SELFCORR_HOOKS = [
     #   발화) → Rust AWAKENING_HOOKS 에 넣지 않는다(H-SEED-1 ⓐ 이벤트 집합 계약 · 비각성 훅 = C28 단독 등록 선례).
     ("inject-background.sh", [("SessionStart", None)]),
     ("directive-event-inject.sh", [("PreToolUse", "Bash")]),
+    # ★v113 A1(TICKET=v113-dept · master 판정 aa33c5cb Q3): 말로 부서 만들기 배선 — 본부 마스터가 「부서 만들어
+    #   줘」 턴에 절차 요지(≤5줄 · 세션 반복 억제)·아직 전하지 않은 부서 소식·사람 확인 축 기록을 받는다. 첫 줄
+    #   역할 가드(master 외 즉시 exit 0) · 요청 폴더 비고 부서 낱말 없으면 외부 프로세스 0 · fail-open. 각성 티어가
+    #   아니다(없으면 confirm 이 사람 축을 요구하지 않는 종전 동작) → Rust AWAKENING_HOOKS 에 넣지 않는다.
+    ("dept-chat-inject.sh", [("UserPromptSubmit", None)]),
 ]
 
 # ★훅 **본체** — 실재 전용(등록 대상 아님 · 부트 v2 A2 분할 2026-09-04).
@@ -443,6 +448,7 @@ HOOK_TIMEOUT_S = {
     #   fail-open). 사건 훅은 모든 Bash 앞에서 돈다 — 미선언(기본 600초)이면 걸리는 순간 Bash 한 번이 10분 멈춘다.
     ("inject-background.sh", "SessionStart"): 5,
     ("directive-event-inject.sh", "PreToolUse"): 5,
+    ("dept-chat-inject.sh", "UserPromptSubmit"): 5,
 }
 
 # ★U-21 롤백 스위치(축 1지점) — Rust `pack::hook_timeout_axis_legacy_from` 의 파이썬 미러.

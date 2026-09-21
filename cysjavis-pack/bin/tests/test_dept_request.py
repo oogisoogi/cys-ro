@@ -387,50 +387,61 @@ class TestCritical3Tombstone(Base):
 
 
 class TestChainCaps(Base):
-    def test_one_create_per_tick_and_gap(self):
+    def test_one_create_per_tick_and_no_first_gap(self):
+        """v113: 새 부서의 첫 생성에는 간격이 없다(기본 간격 600 그대로 · 재호출 물러서기에만 쓴다) —
+        한 틱에 1건, 다음 틱에 다음 1건."""
         a = self.proposed_confirmed("가부서")
         # 두 번째 제안은 첫 번째를 superseded 로 만들기 전에 확인된 뒤이므로 둘 다 confirmed
         b = self.proposed_confirmed("나부서")
-        os.environ["CYS_DEPT_CHAT_CAP"] = "5"
+        os.environ.pop("CYS_DEPT_CREATE_GAP_SEC", None)
         self.tick()
         states = sorted([self.req(a)["state"], self.req(b)["state"]])
         self.assertEqual(states, ["confirmed", "created"], "한 틱에 생성 1건")
+        waiting = [x for x in (self.req(a), self.req(b)) if x["state"] == "confirmed"][0]
+        self.assertFalse(waiting.get("waiting_gap"), "첫 생성이 간격에 걸렸다")
         self.tick()
         states = sorted([self.req(a)["state"], self.req(b)["state"]])
-        self.assertEqual(states, ["confirmed", "created"], "간격 10분 전에는 두 번째를 만들지 않는다")
-        waiting = [x for x in (self.req(a), self.req(b)) if x["state"] == "confirmed"][0]
-        rc, o = self.run_cmd("status", "--say", waiting["id"])
-        self.assertIn("10분", o["say"])
+        self.assertEqual(states, ["created", "created"], "다음 틱에 두 번째를 바로 만든다(첫 생성 간격 없음)")
 
     def test_one_per_tick_even_without_gap(self):
         a = self.proposed_confirmed("가부서")
         b = self.proposed_confirmed("나부서")
-        os.environ["CYS_DEPT_CHAT_CAP"] = "5"
         os.environ["CYS_DEPT_CREATE_GAP_SEC"] = "0"
         self.tick()
         states = sorted([self.req(a)["state"], self.req(b)["state"]])
         self.assertEqual(states, ["confirmed", "created"], "간격이 0 이어도 한 틱에 생성 1건")
 
-    def test_cap_reached_at_tick_fails(self):
+    def test_no_fixed_cap_at_tick(self):
+        """v113(오너 결정 「고정 상한 제거」): 부서가 여럿(메뉴 부서 포함 9개) 있어도 틱은 만든다."""
         rid = self.proposed_confirmed()
-        reg = {"depts": {"dept-1": {"socket": "/x/cys-dept-dept-1/cys.sock", "mission_key": "zz"},
-                         "dept-2": {"socket": "/x/cys-dept-dept-2/cys.sock", "mission_key": "yy"}}}
-        json.dump(reg, open(os.environ["CYS_DEPTS_JSON"], "w"))       # 메뉴로 2개가 생겼다
+        reg = {"depts": {"dept-%d" % i: {"socket": "/x/cys-dept-dept-%d/cys.sock" % i, "mission_key": "k%d" % i}
+                         for i in range(1, 10)}}
+        json.dump(reg, open(os.environ["CYS_DEPTS_JSON"], "w"))
+        os.environ["CYS_DEPT_CHAT_CAP"] = "2"          # 옛 노브가 남아 있어도 무시한다
         self.tick()
         r = self.req(rid)
-        self.assertEqual(r["state"], "failed")
-        self.assertTrue(r["fail_reason"].startswith("cap"))
-        self.assertFalse([x for x in open(os.path.join(self.home, "fake-cys-dept.log"))]
-                         if os.path.exists(os.path.join(self.home, "fake-cys-dept.log")) else [])
+        self.assertEqual(r["state"], "created", r.get("events"))
 
-    def test_propose_blocked_at_cap_and_lane(self):
-        reg = {"depts": {"dept-1": {"socket": "/x/cys-dept-dept-1/cys.sock"},
-                         "dept-2": {"socket": "/x/cys-dept-dept-2/cys.sock"}}}
+    def test_propose_no_fixed_cap_resource_only_and_lane(self):
+        reg = {"depts": {"dept-%d" % i: {"socket": "/x/cys-dept-dept-%d/cys.sock" % i} for i in range(1, 10)}}
         json.dump(reg, open(os.environ["CYS_DEPTS_JSON"], "w"))
+        os.environ["CYS_DEPT_CHAT_CAP"] = "2"
         rc, o = self.propose()
-        self.assertEqual(rc, 5)
-        self.assertIn("메뉴로 만드신 부서 포함", o["say"])
+        self.assertEqual(rc, 0, o)
+        self.assertNotIn("/2", o["card"])
+        self.assertIn("켜진 Claude 자리 지금 4개 → 만들면 7개", o["card"])
+        self.assertIn("사용량", o["card"])
+        # 거부는 실측 자원 hard_block 에서만 — 문장에 사유·대안(부서 하나 닫기)이 함께 있다
+        os.environ["CYS_DEPT_GATE_OVERRIDE"] = json.dumps({"verdict": "hard_block", "measured": {"nodes": 30}})
+        rc, o = self.propose("다부서")
+        self.assertEqual((rc, o.get("reason")), (5, "resource"), o)
+        self.assertIn("바빠서", o["say"])
+        self.assertIn("닫으시면", o["say"])
         json.dump({"depts": {}}, open(os.environ["CYS_DEPTS_JSON"], "w"))
+        rc, o = self.propose("라부서")
+        self.assertEqual(rc, 5)
+        self.assertNotIn("닫으시면", o["say"], "켜진 부서가 없는데 닫기를 대안으로 말했다")
+        os.environ["CYS_DEPT_GATE_OVERRIDE"] = json.dumps({"verdict": "allow", "measured": {"nodes": 4}})
         os.environ["CYS_SOCKET"] = os.path.join(self.home, ".local/state/cys-dept-dept-1/cys.sock")
         rc, o = self.propose()
         self.assertEqual(rc, 5)
@@ -544,6 +555,17 @@ class TestProposalRules(Base):
         self.assertIsNone(re.search(r"\bdept-\d", card), "카드에 시스템 이름(dept-N)")
         for term in ("mission_key", "catalog", "socket", "tick", "cso", "CYS_", "레지스트리", "묘비"):
             self.assertNotIn(term, card, "카드에 내부 용어: %s" % term)
+
+    def test_a5_status_say_has_no_system_name(self):
+        # v113 A5: 가동 뒤 상태 문장(오너에게 그대로 읽히는 say)에도 dept-N 이 새지 않는다(닫기 카드만 예외).
+        import re
+        rid = self.proposed_confirmed()
+        self.tick()
+        self.set_alive("dept-1")
+        self.set_formation("dept-1")
+        rc, o = self.run_cmd("status", "--say", rid)
+        self.assertIsNone(re.search(r"\bdept-\d", o.get("say") or ""), o)
+        self.assertIn("설교준비부", o.get("say") or "", o)
 
     def test_tick_requires_cso_identity(self):
         os.environ.pop("CYS_ROLE", None)
@@ -676,15 +698,15 @@ class TestReviewR1(Base):
         self.assertEqual(len(other), 1, "번호를 재사용한 부서가 표에서 빠졌다: %s" % o["rows"])
         self.assertTrue(other[0].get("tombstone_residue"))
 
-    def test_f4_tombstone_residue_counts_toward_cap(self):
-        json.dump({"depts": {"dept-1": {"socket": "/x/cys-dept-dept-1/cys.sock"},
-                             "dept-2": {"socket": "/x/cys-dept-dept-2/cys.sock"}}},
-                  open(os.environ["CYS_DEPTS_JSON"], "w"))
-        tp = os.path.join(os.environ["CYS_BASE_STATE_DIR"], "dept_tombstones.json")
-        json.dump({"dept_tombstones": ["dept-1"]}, open(tp, "w"))
-        rc, o = self.propose()
-        self.assertEqual(rc, 5, o)
-        self.assertEqual(o.get("reason"), "cap")
+    def test_old_cap_failure_record_says_no_cap_now(self):
+        """v113: 옛 판이 남긴 failed(cap:2) 기록을 읽어도 문장이 깨지지 않고 「지금은 상한 없음」을 말한다."""
+        rid = self.proposed_confirmed()
+        r = self.req(rid)
+        r["state"], r["fail_reason"] = "failed", "cap:2"
+        self.m.save_req(r)
+        rc, o = self.run_cmd("status", "--say", rid)
+        self.assertEqual(rc, 0, o)
+        self.assertIn("지금은 상한이 없습니다", o["say"])
 
     def _timeout_then_dead_unregistered(self, rid):
         os.environ["CYS_DEPT_CREATE_WAIT_SEC"] = "1"
@@ -1124,6 +1146,101 @@ class TestNoProduction(unittest.TestCase):
         unittest.TextTestRunner(stream=io.StringIO()).run(suite)
         after = os.path.exists(REAL_ROOT) and sorted(os.listdir(REAL_ROOT))
         self.assertEqual(before, after, "실 ~/.cys/dept-requests 가 시험으로 바뀌었다")
+
+
+class TestChatHook(Base):
+    """v113 A1 — UserPromptSubmit 훅 본체(hook-prompt) · 사람 확인 축."""
+
+    def hook(self, prompt, sid="s1"):
+        import sys as _s
+        old = _s.stdin
+        _s.stdin = io.StringIO(json.dumps({"prompt": prompt, "session_id": sid}))
+        try:
+            rc, o = self.run_cmd("hook-prompt")
+        finally:
+            _s.stdin = old
+        return rc, ((o.get("hookSpecificOutput") or {}).get("additionalContext") or "")
+
+    def test_guide_once_per_session_and_short(self):
+        rc, ctx = self.hook("교육 부서 하나 만들어 줘")
+        self.assertEqual(rc, 0)
+        self.assertIn("dept-by-chat", ctx)
+        self.assertIn("propose", ctx)
+        self.assertLessEqual(len(ctx.splitlines()), 5, "요지는 5줄 이내")
+        rc, ctx2 = self.hook("교육 부서 만들 때 이름은 교육부로 해 줘")   # 의도 낱말을 품은 두 번째 턴
+        self.assertEqual(ctx2, "", "같은 세션 반복 주입(4군① 폭주)")
+        rc, ctx3 = self.hook("오늘 날씨 어때", sid="s2")
+        self.assertEqual(ctx3, "", "부서 낱말 없는 입력에 주입했다")
+
+    def test_notice_always_guides_and_news_once(self):
+        rid = self.proposed_confirmed()
+        self.tick()
+        rc, ctx = self.hook("[부서결과] %s" % rid)
+        self.assertIn("status --say", ctx)
+        self.assertIn(rid, ctx, "아직 전하지 않은 소식이 그물에 안 걸렸다")
+        rc, ctx2 = self.hook("다음 일 해 줘")
+        self.assertNotIn(rid, ctx2, "같은 소식을 세션에 두 번 올렸다")
+        self.run_cmd("status", "--say", rid)
+        rc, ctx3 = self.hook("그리고", sid="s9")
+        self.assertNotIn(rid, ctx3, "이미 말한 소식을 다시 올렸다")
+
+    def test_dept_lane_guides_hq_only(self):
+        os.environ["CYS_SOCKET"] = os.path.join(self.home, ".local/state/cys-dept-dept-1/cys.sock")
+        rc, ctx = self.hook("부서 하나 만들어 줘")
+        self.assertIn("본부 마스터", ctx)
+        self.assertNotIn("propose --name", ctx)
+
+    def test_human_axis_required_when_hook_active(self):
+        self.hook("부서 만들어 줘")                       # 훅이 도는 기계(제안 직전 활동 표지)
+        rc, o = self.propose()
+        self.assertEqual(rc, 0, o)
+        rid = o["request"]
+        self.assertTrue(self.req(rid).get("human_axis"))
+        rc, o2 = self.run_cmd("confirm", rid)            # 사람 입력 없이 LLM 이 스스로 확인
+        self.assertEqual((rc, o2.get("reason")), (7, "human_unverified"), o2)
+        self.assertEqual(self.req(rid)["state"], "proposed")
+        rc, _ = self.hook("[부서결과] dr-x")                # 기계 알림은 사람 확인이 아니다
+        rc, o3 = self.run_cmd("confirm", rid)
+        self.assertEqual(o3.get("reason"), "human_unverified", o3)
+        # 알림 표지 벨트만 따로 잰다 — 배달 원장 판정기(두 번째 벨트)를 못 쓰는 기계에서도 알림은 확인이 아니다
+        import sys as _s
+        saved = _s.modules.get("javis_mission")
+        _s.modules["javis_mission"] = None
+        try:
+            self.hook("[부서가동] dr-y")
+        finally:
+            if saved is None:
+                _s.modules.pop("javis_mission", None)
+            else:
+                _s.modules["javis_mission"] = saved
+        rc, o3b = self.run_cmd("confirm", rid)
+        self.assertEqual(o3b.get("reason"), "human_unverified", o3b)
+        self.hook("네")                                    # 사람이 카드 뒤에 직접 답함
+        rc, o4 = self.run_cmd("confirm", rid)
+        self.assertEqual(rc, 0, o4)
+
+    def test_no_hook_machine_keeps_old_behavior(self):
+        rc, o = self.propose()
+        self.assertFalse(self.req(o["request"]).get("human_axis"))
+        rc, o2 = self.run_cmd("confirm", o["request"])
+        self.assertEqual(rc, 0, o2)
+
+    def test_hook_script_fast_path_and_role_guard(self):
+        """셸 거름: master 아니면 무출력 · 요청 폴더 비고 부서 낱말 없으면 파이썬을 띄우지 않는다."""
+        sh = os.path.join(os.path.dirname(BIN), "hooks", "dept-chat-inject.sh")
+        env = dict(os.environ, CYS_SURFACE_ID="7", CYS_PACK_DIR=os.path.dirname(BIN),
+                   CYS_DEPT_REQUESTS=os.path.join(self.home, "rq"))
+        # Claude Code 는 훅 입력을 UTF-8 원문으로 준다(Node JSON.stringify 는 비ASCII 를 이스케이프하지 않는다)
+        inp = json.dumps({"prompt": "부서 만들어 줘", "session_id": "z"}, ensure_ascii=False)
+        p = subprocess.run(["sh", sh], input=inp, capture_output=True, text=True, env=dict(env, CYS_ROLE="worker"))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        p = subprocess.run(["sh", sh], input=json.dumps({"prompt": "안녕", "session_id": "z"}), capture_output=True,
+                           text=True, env=dict(env, CYS_ROLE="master"))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "rq", ".hook-active")), "빠른 길에서 파이썬이 돌았다")
+        p = subprocess.run(["sh", sh], input=inp, capture_output=True, text=True, env=dict(env, CYS_ROLE="master"))
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("dept-by-chat", p.stdout)
 
 
 if __name__ == "__main__":

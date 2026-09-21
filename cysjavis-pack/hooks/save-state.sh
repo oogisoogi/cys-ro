@@ -11,6 +11,7 @@ set +e
 . "$(dirname "$0")/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \
   || { echo "[cys-hook] _lib.sh 소실 — 훅 강등(save-state)" >&2; exit 0; }
+cys_hook_timing save-state   # v113 Q1 계측(경과 시간 1줄 · 관측만)
 
 INPUT=$(cat 2>/dev/null)
 # 인터프리터 해소는 프리루드(python3→python→py) — 기존 계약(비어 있으면 안 됨)은 명시 폴백.

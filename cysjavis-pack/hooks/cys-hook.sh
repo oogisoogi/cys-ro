@@ -11,6 +11,7 @@
 #     (b) GATE(appbuild-gate.sh, role-capability-gate.sh) = 설계상 deny 가능(deny-by-default act tier).
 #   GATE hook의 차단은 이 불변 위반이 아니라 별개 클래스다(차단이 목적).
 IN=$(cat)
+_T0=$(date +%s 2>/dev/null)
 if [ -n "$IN" ] && command -v cys >/dev/null 2>&1; then
   printf '%s' "$IN" | cys usage-event-stdin >/dev/null 2>&1
 fi
@@ -25,4 +26,13 @@ if [ -n "$EV" ] && [ -d "$LHD" ]; then
     printf '%s' "$IN" | sh "$f" >/dev/null 2>&1 || true
   done
 fi
+# v113 Q1 계측: Stop 계열에서만 데몬 push 경과 1줄(매 툴 호출마다 쓰지 않는다 · 공용 프리루드 5-a 절과 같은 서식 ·
+# 이 훅은 자기완결 계약이라 프리루드를 source 하지 않고 인라인으로 쓴다).
+case "$EV" in
+  Stop|SubagentStop)
+    { _F="${CYS_STATE_DIR:-$HOME/.cys/state}/hook-timing.log"; mkdir -p "$(dirname "$_F")"
+      if [ -f "$_F" ] && [ "$(wc -c < "$_F")" -gt 262144 ]; then mv -f "$_F" "$_F.1"; fi
+      printf '%s cys-hook(%s) role=%s surface=%s %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EV" "${CYS_ROLE:-?}" \
+        "${CYS_SURFACE_ID:-?}" "$(( $(date +%s) - ${_T0:-0} ))" >> "$_F"; } >/dev/null 2>&1 ;;
+esac
 exit 0

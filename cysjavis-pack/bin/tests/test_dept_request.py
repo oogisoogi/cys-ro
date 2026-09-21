@@ -556,6 +556,17 @@ class TestProposalRules(Base):
         for term in ("mission_key", "catalog", "socket", "tick", "cso", "CYS_", "레지스트리", "묘비"):
             self.assertNotIn(term, card, "카드에 내부 용어: %s" % term)
 
+    def test_a5_status_say_has_no_system_name(self):
+        # v113 A5: 가동 뒤 상태 문장(오너에게 그대로 읽히는 say)에도 dept-N 이 새지 않는다(닫기 카드만 예외).
+        import re
+        rid = self.proposed_confirmed()
+        self.tick()
+        self.set_alive("dept-1")
+        self.set_formation("dept-1")
+        rc, o = self.run_cmd("status", "--say", rid)
+        self.assertIsNone(re.search(r"\bdept-\d", o.get("say") or ""), o)
+        self.assertIn("설교준비부", o.get("say") or "", o)
+
     def test_tick_requires_cso_identity(self):
         os.environ.pop("CYS_ROLE", None)
         self.assertEqual(self.run_cmd("tick")[0], 3)

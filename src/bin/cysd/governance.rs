@@ -4977,8 +4977,17 @@ fn observe_prompt(
         return (marker_seen, None, false);
     }
     // ★v113-restore: 커서 행 바로 위·아래 행 — Claude Code 입력창 테두리(가로줄) 판독용.
+    //   ★(agy 2R C) 커서 행 자체도 마커 뒤가 **통째로 비어** 있어야 한다 — 선택 메뉴 행(`❯ 1. Yes`)은 커서가
+    //   `❯ ` 바로 뒤에 있으면 커서 앞이 비어 입력줄 판정을 통과하므로, 그 행이 우연히 가로줄 사이에 놓여도
+    //   입력창으로 읽지 않게 행 전체로 한 번 더 좁힌다(고스트 제안문이 뜬 대체화면 입력창은 보류 쪽 — 안전).
+    let row_blank_after_marker = |row: &str| {
+        row.find(marker)
+            .map(|i| row[i + marker.len()..].trim().is_empty())
+            .unwrap_or(false)
+    };
     let framed = cr >= 1
         && cr + 1 < rows
+        && row_blank_after_marker(&screen.contents_between(cr, 0, cr, cols))
         && is_rule_row(&screen.contents_between(cr - 1, 0, cr - 1, cols))
         && is_rule_row(&screen.contents_between(cr + 1, 0, cr + 1, cols));
     let before_all = screen.contents_between(cr, 0, cr, cc);
@@ -8931,6 +8940,30 @@ mod tests {
         let (left, why) = run_alt_seat("v113-alt-menu", false, "❯ ");
         assert_eq!(left, 1, "테두리 없는 대체화면 행에 주입했다(메뉴 오선택 경로)");
         assert!(why.starts_with("alt_screen"), "사유가 대체화면이 아니다: {why}");
+    }
+
+    /// ★(agy 2R C) 가로줄 사이에 놓인 선택 메뉴 행(`❯ 1. Yes` · 커서는 `❯ ` 바로 뒤)은 입력창이 아니다.
+    #[test]
+    fn v113_alt_screen_framed_menu_row_still_blocks() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("v113-alt-menu-framed");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = marker_seat("v113-alt-menu-framed");
+        {
+            let rule = "────────────────────────────";
+            let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            p.process(format!("\x1b[?1049h\x1b[2J\x1b[1;1Hclaude\x1b[2;1H{rule}\x1b[4;1H{rule}\x1b[3;1H❯ 1. Yes\x1b[3;3H").as_bytes());
+        }
+        s.alt_screen.store(true, Ordering::Relaxed);
+        *s.last_output.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "가로줄 사이 메뉴 행에 주입했다(메뉴 오선택)");
     }
 
     #[test]

@@ -6010,7 +6010,7 @@ mod win_std_inherit_tests {
         if role == "sealed" {
             super::seal_std_handles_from_inheritance();
         }
-        let _ = std::process::Command::new("ping")
+        let _ = super::hidden_command("ping")
             .args(["-n", GRANDCHILD_SECS, "127.0.0.1"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -6024,7 +6024,7 @@ mod win_std_inherit_tests {
     fn run_middle(role: &str) -> (Duration, String) {
         let exe = std::env::current_exe().expect("시험 실행 파일");
         let t = Instant::now();
-        let out = std::process::Command::new(exe)
+        let out = super::hidden_command(exe)
             .args([MIDDLE, "--exact", "--nocapture", "--test-threads=1"])
             .env(ROLE, role)
             .output()

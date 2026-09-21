@@ -516,3 +516,39 @@ describe("ⓑ′ 전문가 모드 — 기본 꺼짐 판정이 순수 모듈을 �
     expect(fn).toContain("expertToggle.checked = on");
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// TICKET=v111-restore ③ — 빈 자리표 회수 배선(master 판정 B · 조건 ⓐⓑⓒ)
+// 판정 자체는 placeholderclose.test.ts 가 쥔다. 여기서는 **배선**만 못박는다 —
+// 판정이 옳아도 배선이 어긋나면(남의 번호를 넣는다·손댐 표시를 안 한다) 그대로 사고다.
+// ────────────────────────────────────────────────────────────────────────────
+describe("빈 자리표 회수 — 배선", () => {
+  it("ⓐ 회수 대상 번호는 **UI 가 만든 충전 셸**에서만 장부에 들어간다", () => {
+    // 장부에 넣는 지점이 1곳이고, 그 지점이 newSurface 직후여야 한다.
+    expect((src.match(/placeholderSids\.add\(/g) ?? []).length).toBe(1);
+    expect(/const sid = await newSurface\(null, ws\.socket, T_NEW\);[\s\S]{0,200}?placeholderSids\.add\(sid\)/.test(src)).toBe(true);
+  });
+  it("★ⓐ 회수 루프는 장부에 없는 번호를 **먼저** 걸러낸다(남의 페인 불가침)", () => {
+    expect(src.includes("if (!placeholderSids.has(sid)) continue;")).toBe(true);
+  });
+  it("ⓑ pane 입력 단일 경로(sendRaw)가 손댐을 표시한다", () => {
+    expect(/const sendRaw = \(data: string\) => \{[\s\S]{0,300}?notePlaceholderTouched\(sid\)/.test(src)).toBe(true);
+    // 표시 함수는 장부에 있는 번호만 손댐으로 올린다(남의 번호가 장부에 들어오지 않게).
+    expect(src.includes("if (placeholderSids.has(sid)) touchedPlaceholders.add(sid);")).toBe(true);
+  });
+  it("★판정은 placeholderclose 가 단독으로 쥔다 — 조건을 배선부에 두 벌로 쓰지 않는다", () => {
+    expect(src.includes('import { shouldClosePlaceholder } from "./placeholderclose";')).toBe(true);
+    expect((src.match(/shouldClosePlaceholder\(/g) ?? []).length).toBe(1);
+  });
+  it("ⓒ 손댄 자리는 닫지 않고 알림도 없다 — 회수 구간에 토스트가 없다", () => {
+    const a = src.indexOf("// ── ③ 빈 자리표 회수");
+    const b = src.indexOf("const masterSids = new Set(", a);
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    const slice = src.slice(a, b);
+    expect(/toast\(/.test(slice)).toBe(false);
+    expect(/osBanner\(/.test(slice)).toBe(false);
+    // 그리고 한 번 판정한 번호는 장부에서 빠져 반복 시도가 없다.
+    expect(slice.includes("placeholderSids.delete(sid);")).toBe(true);
+  });
+});

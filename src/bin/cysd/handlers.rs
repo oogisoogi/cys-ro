@@ -5225,6 +5225,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 auto_route,
                 resolver_surface: None, // W4-A: 각인은 feed.reply 단일 해소 경로에서만.
                 resolver_pid: None,
+                wait,
             };
             // waiter 등록을 항목 공개와 같은 임계영역에서 수행 — 항목이 다른 커넥션에
             // 보이는 순간 waiter가 이미 존재해, 빠른 feed.reply의 결정이 유실되지 않는다.
@@ -16197,6 +16198,7 @@ mod tests {
             // W4-A resolver 각인 필드도 wire round-trip에 포함(Some으로 채워 직렬화 검증).
             resolver_surface: Some(9),
             resolver_pid: Some(4242),
+            wait: false,
         };
         let resp = json!({"id": 1, "ok": true, "result": {"item": item}});
         let framed = cys::wire::frame_response(&resp);

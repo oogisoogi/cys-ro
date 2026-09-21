@@ -15478,6 +15478,40 @@ fn reinject_check_should_skip_bare_shell(entry: &Value) -> bool {
     !(agent_present && not_exited && agent_live)
 }
 
+fn epoch_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 좌석 reinject 기록 읽기 — 없거나 깨졌으면 빈 기록(= 첫 시도 허용 · 조용한 영구 정지 금지).
+fn reinject_guard_load(sid: u64) -> cys::reinject_guard::SeatRecord {
+    cys::socket_path()
+        .parent()
+        .map(|d| d.join(cys::reinject_guard::record_rel_path(sid)))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 좌석 reinject 기록 쓰기(임시파일 → rename 원자 교체). 실패는 조용히 — 기록 실패가 복원을 막지 않는다.
+fn reinject_guard_save(sid: u64, rec: &cys::reinject_guard::SeatRecord) {
+    let Some(dir) = cys::socket_path().parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    let path = dir.join(cys::reinject_guard::record_rel_path(sid));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    if let Ok(body) = serde_json::to_string(rec) {
+        if std::fs::write(&tmp, body).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
 fn run_reinject(
     role: Option<String>,
     surface: Option<String>,
@@ -15500,6 +15534,16 @@ fn run_reinject(
                 println!("빈 셸(라이브 에이전트 부재) — check reinject skip (surface:{sid})");
                 return Ok(());
             }
+            // ── ★v112-wake ②: 좌석별 폭주 차단(이미 깨어 있음 · 시간당 상한 · 지수 간격) — 부르는 쪽이
+            //   몇 번을 부르든 핑·전문 재주입은 여기서 제한된다. 기록은 상태 폴더라 데몬 재기동을 넘는다.
+            let now = epoch_secs_now();
+            let mut guard = reinject_guard_load(sid);
+            if let cys::reinject_guard::Decision::Skip(why) = cys::reinject_guard::decide(&guard, now) {
+                println!("reinject --check skip (surface:{sid}) — {why}");
+                return Ok(());
+            }
+            cys::reinject_guard::record_attempt(&mut guard, now);
+            reinject_guard_save(sid, &guard);
             // 마커를 핑 텍스트에 통째로 넣지 않는다 — 주입 텍스트의 터미널 에코가
             // wait_for에 매칭되는 false ACK(자기-에코 오탐)를 차단 (토큰 분리 조합 지시)
             let marker = format!("DIRECTIVE-ACK-{}", std::process::id());
@@ -15514,6 +15558,8 @@ fn run_reinject(
                        "timeout_secs": timeout, "since_line": cursor}),
             )?;
             if r["matched"].as_bool() == Some(true) {
+                cys::reinject_guard::record_ack(&mut guard, epoch_secs_now());
+                reinject_guard_save(sid, &guard);
                 println!("디렉티브 생존 확인 (ACK 수신) — 재주입 불필요");
                 return Ok(());
             }

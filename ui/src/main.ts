@@ -7758,8 +7758,22 @@ async function start() {
   }
 
   // 시작 시 + 6시간마다 백그라운드 업데이트 확인 (조용히 — 있으면 badge·toast)
+  // ★v112-wake ④: 「6시간」을 타이머 누적이 아니라 **벽시계**로 잰다. 1.0.1 은 시작 1회 + 6h
+  //   setInterval 뿐이라, 절전·WebView 백그라운드 타이머 스로틀로 그 타이머가 밀리면 시작 때의
+  //   「0」 배지가 몇 날이고 남았다(실패한 백그라운드 확인은 배지를 건드리지 않는다). 그래서 15분마다
+  //   「마지막 확인이 6시간을 넘었나」를 묻고, 창이 다시 보일 때(포커스·visibility)는 30분 문턱으로 묻는다.
+  let lastUpdateCheckAt = Date.now();
+  const updateCheckIfStale = (minGapMs: number) => {
+    if (Date.now() - lastUpdateCheckAt < minGapMs) return;
+    lastUpdateCheckAt = Date.now();
+    checkForUpdate(true);
+  };
   checkForUpdate(true);
-  setInterval(() => checkForUpdate(true), 6 * 3600 * 1000);
+  setInterval(() => updateCheckIfStale(6 * 3600 * 1000), 15 * 60 * 1000);
+  window.addEventListener("focus", () => updateCheckIfStale(30 * 60 * 1000));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") updateCheckIfStale(30 * 60 * 1000);
+  });
 
   // 테스트 전용(패치 채널 E2E — 오너 2026-07-15): CYS_AUTOTEST_PATCH_INSTALL=1 env 기동이면 기동
   // 직후 패치 설치를 무클릭 자동 발화(Finder 런칭엔 env 부재 → 프로덕션 무영향). install_update가

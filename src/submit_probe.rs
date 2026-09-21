@@ -20,6 +20,11 @@ pub enum SubmitProbe {
 /// 현행 Claude Code 입력줄 앵커(agents.json claude `ready_marker` 와 같은 글자).
 pub const CHEVRON_ANCHOR: char = '❯';
 
+/// Claude Code 가 긴 붙여넣기를 입력창에 접어 보여 줄 때의 표지(`[Pasted text #1 +N lines]`).
+/// 입력창 안에 이것이 보이면 본문(sentinel)이 화면에 없어도 **아직 보내지 않은 글**이다 —
+/// 복원 첫 기동(절대지침 전문 + [RESTORE] 한 전송)이 정확히 이 모양이다(891 지적 · 09-21).
+pub const PASTED_FOLD_MARK: &str = "[Pasted text";
+
 /// 화면에서 「현재 입력창 영역」을 잘라낸다 — 마지막 입력 앵커(입력 박스 상단 `╭` · 줄머리 `> `
 /// 프롬프트 · `❯`) 이후 끝까지. 반환 = (영역, **앵커를 실제로 찾았는가**). 앵커가 없으면 전체
 /// 화면을 돌려주지만 그때의 매치는 「입력창에 잔류한다」가 아니라 「입력창이 어디인지 모른다」다.
@@ -49,7 +54,8 @@ pub fn submit_probe(screen: &str, sentinel: &str) -> (SubmitProbe, bool) {
     if !anchored {
         return (SubmitProbe::Unmeasured, suspect);
     }
-    if flat(region).contains(&needle) {
+    // 접힌 붙여넣기 — sentinel 대조보다 앞이다(본문이 화면에 없으니 대조는 늘 「제출」로 틀린다).
+    if flat(region).contains(&needle) || region.contains(PASTED_FOLD_MARK) {
         (SubmitProbe::NotSubmitted, true)
     } else {
         (SubmitProbe::Submitted, false)
@@ -107,6 +113,17 @@ mod tests {
         assert_eq!(p, SubmitProbe::Unmeasured);
         assert!(suspect, "의심 신호는 행동용으로 살아 있어야 한다");
         assert_eq!(submit_probe("x", "   ").0, SubmitProbe::Unmeasured);
+    }
+
+    #[test]
+    fn folded_paste_in_the_input_box_is_not_submitted() {
+        // sentinel 본문은 화면 어디에도 없다 — 접힌 표지만 입력창에 있다.
+        let folded = claude_screen("[Pasted text #1 +214 lines]");
+        assert_eq!(submit_probe(&folded, LINE).0, SubmitProbe::NotSubmitted);
+        assert_eq!(input_line_empty(&folded), Some(false));
+        // 대조군: 같은 표지가 입력창 **위**(이미 보낸 대화)에만 있으면 제출이다.
+        let sent = format!("> [Pasted text #1 +214 lines]\n● 처리 중\n{}", claude_screen(""));
+        assert_eq!(submit_probe(&sent, LINE).0, SubmitProbe::Submitted);
     }
 
     #[test]

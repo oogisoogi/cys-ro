@@ -15213,7 +15213,16 @@ fn restore_inject_claim(sid: u64) -> bool {
             // 낡은 표식 → 시각을 전진시키고 내가 넣는다(위 is_duplicate 가 이미 낡았다고 판정했다).
             std::fs::write(&path, b"").is_ok() || true
         }
-        Err(_) => true,
+        Err(e) => {
+            // ★(v112-restore) fail-open 은 유지하되 **조용히 열지 않는다** — 윈에서 이 분기가 매번 열려
+            //   2회 배달을 낳았는데 아무 흔적이 없었다(표식 폴더가 파이프 이름공간이었다).
+            eprintln!(
+                "[restore] ⚠ 복원 1회 표식 쓰기 실패({}: {e}) — 주입은 진행(fail-open) · 겹친 복원 경로가 \
+                 같은 자리에 한 번 더 말할 수 있다",
+                path.display()
+            );
+            true
+        }
     }
 }
 

@@ -14076,7 +14076,7 @@ fn verify_one_node(
 /// | 22 | 데몬 교체 실패(맥 launchd 등록/이관 · 윈 작업 등록·기존 데몬 정지) | ② |
 /// | 23 | 새 데몬이 상한 안에 응답하지 않음 | ② |
 /// | 24 | 새 팩 반영(init-pack) 실패 — 복귀 표식을 **남긴다**(앱 다음 기동이 재시도) | ④ |
-/// | 25 | 끝까지 진행 — 조직 복원이 실패·보류(관문)를 보고했다 | 없음 |
+/// | 25 | 끝까지 진행 — 조직 복원(본부 또는 ⑥ 살아 있던 부서의 교체·복원)이 실패·보류(관문)를 보고했다 | 없음 |
 ///
 /// 21 과 25 가 함께면 25(복원이 더 무겁다 — 사람이 볼 곳이 창 쪽이다).
 const ROTATE_RC_DRAIN_PARTIAL: i32 = 21;
@@ -14258,13 +14258,87 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(root.join(".last-app-version"), env!("CARGO_PKG_VERSION"));
     // ⑤ 조직 복원(겹치는 콜드부트 복원과는 복원 1회 표식이 한 번만 말하게 한다)
-    let restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
+    let hq_restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
+    // ⑥ 부서 순회 — 앱 [재시작](restartAllDaemons → rotate_dept_daemon)과 같은 순서·같은 도구.
+    //   본부 rotate 에서만 돈다(부서 소켓으로 부른 rotate 가 다른 부서를 건드리지 않게).
+    let (dept_note, depts_ok) = if base { rotate_depts(&exe) } else { (String::new(), true) };
+    let restore_ok = hq_restore_ok && depts_ok;
     let rc = rotate_rc(drain_ok, restore_ok);
     println!(
-        "재시작 완료 — {drain_note} · 데몬 교체 · 새 팩 반영 · 조직 복원 {} (rc={rc})",
-        if restore_ok { "성공" } else { "실패·보류 — 창을 확인하세요" }
+        "재시작 완료 — {drain_note} · 데몬 교체 · 새 팩 반영 · 조직 복원 {}{dept_note} (rc={rc})",
+        if hq_restore_ok { "성공" } else { "실패·보류 — 창을 확인하세요" }
     );
     rc
+}
+
+/// rotate ⑥ 대상 부서(순수) — 레지스트리(depts.json)에 있고 **지금 살아 있는** 부서만. 죽은 부서는 되살리지
+/// 않는다(앱 restartAllDaemons 와 같은 규칙 · 부서 부활은 CSO·피닉스 소유 · 묘비 부서는 이미 내려가 있다).
+fn rotate_dept_targets(
+    reg: &Value,
+    alive: impl Fn(&std::path::Path) -> bool,
+) -> Vec<(String, std::path::PathBuf)> {
+    let mut out = Vec::new();
+    if let Some(depts) = reg["depts"].as_object() {
+        for (name, meta) in depts {
+            let sock = meta["socket"]
+                .as_str()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| cys::dept_socket_path(name));
+            if alive(&sock) {
+                out.push((name.clone(), sock));
+            }
+        }
+    }
+    out
+}
+
+/// rotate ⑥ — 살아 있는 부서마다 `cys-dept rotate <이름>`(데몬만 새 바이너리로 · 레지스트리·묘비·CEO 불변)
+/// 뒤 그 부서 소켓으로 `cys restore --include-master`. 앱 rotate_dept_daemon 과 같은 두 단계다.
+/// 반환 = (요약 꼬리, 전부 성공했는가). 부서가 없으면 ("", true).
+fn rotate_depts(exe: &std::path::Path) -> (String, bool) {
+    let reg_path = std::env::var("CYS_DEPTS_JSON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| cys::home_dir().join(".cys/depts.json"));
+    let reg = std::fs::read_to_string(&reg_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(Value::Null);
+    let targets = rotate_dept_targets(&reg, |sock| request_on(sock, "system.identify", json!({})).is_ok());
+    if targets.is_empty() {
+        return (String::new(), true);
+    }
+    let exe_dir = exe.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let tool = cys::pack::pack_dir().join("bin").join("cys-dept");
+    let mut failed: Vec<String> = Vec::new();
+    for (name, sock) in &targets {
+        let mut rot = cys::hidden_command("bash");
+        // 앱 inject_runtime_path 와 같은 SOT — 윈도 동봉 bash·python 이 PATH 선두.
+        for (k, v) in cys::spawn_env_pairs_from_process(&exe_dir) {
+            rot.env(k, v);
+        }
+        rot.arg(&tool).arg("rotate").arg(name);
+        let rotated = output_via_file(rot).map(|o| o.status.success()).unwrap_or(false);
+        let mut res = cys::hidden_command(exe);
+        res.args(["restore", "--include-master"])
+            .env(cys::ENV_SOCKET, sock)
+            .env(cys::ENV_NO_AUTOSTART, cys::NO_AUTOSTART_ON);
+        let restored = rotated && output_via_file(res).map(|o| o.status.success()).unwrap_or(false);
+        eprintln!(
+            "[rotate] ⑥ 부서 {name}: 교체 {} · 복원 {}",
+            if rotated { "완료" } else { "실패" },
+            if restored { "완료" } else { "실패·보류" }
+        );
+        if !restored {
+            failed.push(name.clone());
+        }
+    }
+    let ok = targets.len() - failed.len();
+    let note = if failed.is_empty() {
+        format!(" · 부서 {ok}곳 교체·복원")
+    } else {
+        format!(" · 부서 {ok}곳 교체·복원 · 확인 필요 {}", failed.join(", "))
+    };
+    (note, failed.is_empty())
 }
 
 /// 소켓별 병렬 fan-out — 총 소요 ≈ 1×timeout(직렬 누적 아님). 노드별 detached 스레드로 verify를 스폰하고
@@ -19034,6 +19108,32 @@ mod tests {
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
         assert!(body.contains("output_via_file(cmd)"), "rotate 단계 호출이 파일 캡처를 안 쓴다");
         assert!(!body.contains(".output()"), "rotate 안에 파이프 캡처가 남아 있다");
+    }
+
+    /// ★v113-restore 항목2: rotate ⑥ 부서 순회 — 살아 있는 등재 부서만 · socket 칸 없으면 공용 규약 경로.
+    #[test]
+    fn v113_rotate_dept_targets_live_only() {
+        let reg = serde_json::json!({"depts": {
+            "sales": {"socket": "/s/sales.sock"},
+            "hr": {"socket": "/s/hr.sock"},
+            "ops": {}
+        }});
+        let alive_set = ["/s/sales.sock".to_string(), cys::dept_socket_path("ops").to_string_lossy().into_owned()];
+        let got = rotate_dept_targets(&reg, |p| alive_set.contains(&p.to_string_lossy().into_owned()));
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["ops", "sales"], "죽은 부서(hr)를 되살리거나 socket 없는 부서를 빠뜨렸다");
+        assert!(rotate_dept_targets(&serde_json::Value::Null, |_| true).is_empty());
+    }
+
+    /// 배선 핀 — ⑥ 은 본부 rotate 에서만 돌고, 부서 실패는 rc 로 올라간다(25).
+    #[test]
+    fn v113_rotate_depts_wired_base_only_and_into_rc() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn run_rotate(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("if base { rotate_depts(&exe) }"), "부서 순회가 본부 한정이 아니다");
+        assert!(body.contains("let restore_ok = hq_restore_ok && depts_ok;"), "부서 실패가 rc 에 안 오른다");
     }
 
     #[test]

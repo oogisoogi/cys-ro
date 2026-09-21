@@ -337,6 +337,30 @@ cys_fix_locale() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5-a. 훅 경과 시간 기록 (v113 Q1 계측 — 윈 실기 「CSO stop hooks 1/3 1m34s+」 · 관측만)
+# ─────────────────────────────────────────────────────────────────────────────
+# 어느 Stop 훅이 느린지 사후에 가릴 수 있게 **한 줄**(UTC 시각 · 훅 이름 · 역할 · surface · 경과 초)을
+# `<상태 dir>/hook-timing.log` 에 남긴다. EXIT trap 으로 걸어 어떤 종료 경로에서도 기록되고, 쓰기 실패는
+# 전부 삼킨다(관측이 훅을 깨뜨리지 않는다 · stdout 무출력). 256KB 를 넘으면 `.1` 로 한 번 돌린다.
+# ⚠이 함수를 부르는 훅은 자기 EXIT trap 을 따로 걸지 않는다(덮어쓴다) — 현재 호출처 3곳 모두 trap 없음.
+cys_hook_timing() {
+  _cys_ht_name="${1:-?}"
+  _cys_ht_t0=$(date +%s 2>/dev/null) || return 0
+  trap '_cys_hook_timing_end' EXIT
+}
+_cys_hook_timing_end() {
+  _cys_ht_t1=$(date +%s 2>/dev/null) || return 0
+  _cys_ht_f="${CYS_STATE_DIR:-$HOME/.cys/state}/hook-timing.log"
+  {
+    mkdir -p "$(dirname "$_cys_ht_f")"
+    if [ -f "$_cys_ht_f" ] && [ "$(wc -c < "$_cys_ht_f")" -gt 262144 ]; then mv -f "$_cys_ht_f" "$_cys_ht_f.1"; fi
+    printf '%s %s role=%s surface=%s %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_cys_ht_name" \
+      "${CYS_ROLE:-?}" "${CYS_SURFACE_ID:-?}" "$((_cys_ht_t1 - _cys_ht_t0))" >> "$_cys_ht_f"
+  } >/dev/null 2>&1
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5-b. 데드라인 실행기 (A5 훅면 — 판정 호출의 hang 차단)
 # ─────────────────────────────────────────────────────────────────────────────
 # `cys surface-role` 같은 **판정 조회**가 데몬 미응답으로 행 걸면 훅이 사용자 프롬프트를

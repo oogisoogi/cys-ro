@@ -43,7 +43,9 @@ class T(unittest.TestCase):
         sent = self.tick(s)
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][:4], ["send", "--queued", "--to", "cso"])
-        self.assertIn("[ctx-threshold] worker@surface:3 컨텍스트 63%", sent[0][4])
+        self.assertIn("worker@surface:3 컨텍스트 63%", sent[0][4])
+        self.assertIn("오너 입력 아님", sent[0][4], "출처 고지가 없으면 CSO 가 오너 입력으로 오독해 보류한다(격리 실측)")
+        self.assertIn("cys cycle-agent --surface surface:3", sent[0][4])
         self.assertEqual(len(self.tick(s)), 1, "임계 위 체류 중 재통지")
         s[2] = seat(3, "worker", 12)                     # 순환 뒤 재무장
         self.tick(s)
@@ -60,7 +62,7 @@ class T(unittest.TestCase):
         s = {"surface_id": 4, "role": "master", "usage": {"ctx_pct": 20, "updated_at": now - 5},
              "status": {"context_pct": 65, "age_secs": 30}}
         n, _ = R.decide([seat(2, "cso", 1), s], {}, now, 60)
-        self.assertEqual(n, [("4", "master", 65)], "신선한 자기보고 65% 를 못 봤다")
+        self.assertEqual(n, [("4", "master", 65, 1)], "신선한 자기보고 65% 를 못 봤다")
         s["status"]["age_secs"] = 3600
         n, _ = R.decide([seat(2, "cso", 1), s], {}, now, 60)
         self.assertEqual(n, [], "낡은 자기보고로 통지했다")
@@ -69,9 +71,45 @@ class T(unittest.TestCase):
         n, _ = R.decide([seat(2, "cso", 1), s], {}, now, 60)
         self.assertEqual([x[0] for x in n], ["4"], "관측값 없는 좌석의 자기보고를 버렸다")
 
+    def test_master_notice_names_handshake(self):
+        t = R.notice_text("master", "2", 65, 60)
+        self.assertIn("오너 입력 아님", t)
+        self.assertIn("--role master --verifier cso", t, "master 는 self-clear 금지 — 검증자 핸드셰이크를 지시해야 한다")
+        self.assertNotIn("--surface surface:2", t)
+
     def test_decide_threshold_env(self):
         n, _ = R.decide([seat(2, "cso", 1), seat(3, "worker", 55)], {}, time.time(), 50)
         self.assertEqual([x[0] for x in n], ["3"])
+
+    def test_one_reminder_after_quiet_then_silent(self):
+        now = time.time()
+        seats = [seat(2, "cso", 1), seat(3, "worker", 70)]
+        n, st = R.decide(seats, {}, now, 60)
+        self.assertEqual([x[3] for x in n], [1])
+        n, st = R.decide(seats, st, now + R.REMIND_SEC - 5, 60)
+        self.assertEqual(n, [], "재통지 간격 전에 다시 보냈다")
+        for s in seats:
+            s["usage"]["updated_at"] = now + R.REMIND_SEC
+        n, st = R.decide(seats, st, now + R.REMIND_SEC, 60)
+        self.assertEqual([x[3] for x in n], [2], "무응답 재통지를 안 보냈다(CSO 가 영원히 기다린다)")
+        self.assertIn("무응답 정책", R.notice_text("worker", "3", 70, 60, 2))
+        for s in seats:
+            s["usage"]["updated_at"] = now + 5 * R.REMIND_SEC
+        n, st = R.decide(seats, st, now + 5 * R.REMIND_SEC, 60)
+        self.assertEqual(n, [], "넘김당 상한 2통을 넘겼다(폭주)")
+
+    def test_tick_sends_reminder_text(self):
+        st = os.path.join(self.env["CYS_STATE_DIR"], "ctx-relay-cys-dept-dept-1.json")
+        os.makedirs(os.path.dirname(st), exist_ok=True)
+        json.dump({"3": {"at": time.time() - R.REMIND_SEC - 5, "n": 1}}, open(st, "w"))
+        sent = self.tick([seat(2, "cso", 1), seat(3, "worker", 70)])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("무응답 정책", sent[0][4], "틱이 재통지 문구를 싣지 않았다")
+
+    def test_legacy_float_state_is_read(self):
+        now = time.time()
+        n, st = R.decide([seat(2, "cso", 1), seat(3, "worker", 70)], {"3": now - R.REMIND_SEC - 1}, now, 60)
+        self.assertEqual([x[3] for x in n], [2], "옛 상태(시각만)를 못 읽었다")
 
 
 if __name__ == "__main__":

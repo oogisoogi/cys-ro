@@ -3626,7 +3626,7 @@ pub fn collect_descendants_with_cmd(sys: &System, root: u32) -> Vec<(u32, String
 /// 좌석의 **뿌리 프로세스 자신**이 기지 에이전트면 그 argv(엄격 매칭 · TICKET=v113-restore death:master).
 ///
 /// 좌석 판정은 「셸의 자손」을 본다. 그런데 설치기가 세운 master 자리는 셸 없이 `claude …` 가 **페인의
-/// 직접 프로세스**다(893 VM 실기: surface pid 1754 = `/Users/admin/.local/bin/claude --dangerously-skip-permissions
+/// 직접 프로세스**다(893 VM 실기: surface pid 1754 = `~/.local/bin/claude --dangerously-skip-permissions
 /// 너는 마스터다…` · STAT Ss+). 자손만 보면 그 좌석은 영원히 「빈 자리」라, 유예가 지나면
 /// `AgentNeverStarted` 로 **살아 있는 master 에 사망 경보**를 냈다(설치 약 10분 뒤 1회 · misses=63).
 /// 뿌리가 셸인 보통 좌석은 뿌리 argv 가 에이전트와 엄격 매칭되지 않아 `None` — 종전 거동 그대로다.

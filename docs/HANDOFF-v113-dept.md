@@ -39,3 +39,43 @@
 - ② 무clear 100%+: 부서 좌석 증가 ↑ ↔ A3 중계로 CSO 깨움 경로 신설(부서 레인 · 실측 미완) — 본부 레인은 여전히 소비자 부재.
 - ③ 자가치유 전멸: 변화 없음(청소·묘비 규칙 무변경) · 새 훅은 fail-open.
 - ④ 전 pane 사망: 변화 없음(집행은 데몬 틱 · 훅·중계 모두 exit 0).
+
+---
+
+# 후임 2 (worker@surface:896 · 2026-09-21 23:3x ~ 09-22 00:2x · 브리프 master#12be5c62)
+
+## 5. 커밋(끝난 것 · 전부 미push)
+
+| 커밋 | 내용 | 증거 |
+|---|---|---|
+| `ef6d3ab5` | 본부 ctx-relay-base builtin(2분 · base_only · 마커 ctxrelay) + 중계가 자기보고 status.context_pct 도 판정 | cargo schedule:: 33/33 · relay 4/4 · 뮤턴트 3/3 |
+| `64669e21` | B11 공통 잠금 + 세대 검증(gen · down/down-sock 울타리 9/10 · destroy --expect-gen · 닫기 카드 gen · 고아 청소 잠금 안) | test_dept_b11_lock 11/11 · 뮤턴트 8/8 |
+| `bd0af1e3` | [heartbeat] phoenix 2종 push→command · BUILTIN_JOBS_VERSION 2→3(master#dc245743 — 트랙 P 단독 1회) · seed learn 버전 3 | cargo 33/33 · phoenix_e2 10/10 · 뮤턴트 2/2 |
+| `1500987f` | §0-C 회색 추천 문구 1줄 + 해시 + CEO_TEMPLATE + event_inject 줄 범위 339–381 / 421–463 | 3줄 게이트 초록 |
+| `14c649c0` | A3 격리 실측 결함 2 — 통지 출처 명시 · 무응답 재통지 1회(10분) | relay 9/9 · 뮤턴트 5/5 |
+| `895b626c` | A5 상태 say 에 dept-N 비노출 핀 | 뮤턴트 1/1 |
+| `415b7302` | Q1 Stop 훅 경과 시간 기록(hook-timing.log) | test_hook_timing 5/5 |
+| `adfd0ac7` | Q1 hook-missing 판정 근거(기대 vs 등록 command) | cargo cys hook_missing 2/2 |
+| `3d2db202` | agy 1R 수용 4(청소 선거름 · 윈 잠금 fail-closed · cys-hook 회전 · 재통지 실패 복원) + 검증자 역할 문구 | b11 14/14 · timing 6/6 · relay 11/11 · 뮤턴트 4/4 |
+
+## 6. A3 격리 실측(관측 결과)
+- 본부(격리 cysd · 실 claude haiku CSO+master): 모의 65% → 틱 → CSO 에 통지 도달. 옛 문구 = CSO 가 「오너 입력 중」 오독 보류 → 문구 수리 뒤 §2 ② 통보 개시 → master ack 불가(격리 폴더에 git·SESSION_STATE 없음) → 재통지로 깨어나 무응답 정책 → 검증 불가 → clear 금지·escalation(규약상 안전 분기).
+- 부서(부서 모양 소켓 격리 데몬 + 시드 ctx-relay-tick · 실 claude CSO+worker): 통지 → CSO 가 워커에 매듭 지시 → 워커 저장(CYCLE-SAVED) → 재통지 → CSO 가 `cys cycle-agent --surface` 실집행 → 저장 검증 통과 → [CYCLE-VERIFY] 가 CSO 에게 옴 → CSO 가 오너 승인 필요로 오독·대기(문구 수리 3d2db202). clear 완주는 미관측.
+- 부서 데몬 에뮬레이션 한계: cys-dept 를 거치지 않았다(라이브 레지스트리 보호). 부서 master 좌석 없음 → 워커 보고가 master 로 못 감.
+
+## 7. 미완
+1. **E2E(브리프 7)** — HOME 격리 시 로그인 안 따라옴(Keychain = $HOME/Library) → master 결정 대기(A Library 링크 / C VM 이관 권고).
+2. 기존 cys-dept reg_* 헬퍼 4곳의 윈 msvcrt 잠금 실패 삼킴(agy ①의 기존 부분) = 범위 밖 보고만.
+3. 기존 설치의 부서 schedule.json 에는 ctx-relay-tick 이 없다(새로 만드는 부서부터) — 소급 여부 미결.
+
+## 8. 함정(추가)
+- 격리 claude 좌석: 새 폴더는 신뢰 창 기본 = No → launch-agent 가 좌석을 닫는다. 이미 신뢰된 폴더를 쓰거나 창에서 Down+Return.
+- HOME 격리 = Bypass 면책 창 재등장 + 로그인 소실.
+- ctx-relay 모의: set-status 자기보고는 10분 지나면 낡음 → 재통지 관측하려면 다시 set-status.
+- 부서 격리 데몬은 팩 폴더 이름도 pack-dept-* 여야 레인 불일치 경고가 안 난다.
+
+## 9. 4군 점검(후임 2 변경분)
+- ① 폭주 큐: 재통지 넘김당 상한 2통 · 중계 2분 틱 · heartbeat push 제거로 master stdin 주입 감소 ↓.
+- ② 무clear 100%+: 본부 레인 소비자 신설 + 무응답 재통지로 CSO 깨움 경로 완성 ↓(clear 완주는 검증자 단계 문구 수리 뒤 미재관측).
+- ③ 자가치유 전멸: 울타리 exit 9/10/11 은 닫기만 거부(생성·복원 무관) · 죽은 표식 무시로 번호 영구 잠김 없음 — 변화 없음.
+- ④ 전 pane 사망: 새 코드는 전부 fail-open(중계·계측) 또는 닫기 거부(울타리) — 변화 없음.

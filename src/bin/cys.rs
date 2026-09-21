@@ -10769,22 +10769,23 @@ const GATE_ID_INPUT_NOT_READY: &str = "claude_input_not_ready";
 /// claude 빈 입력창이 실측될 때까지 기다린다(순수 제어 흐름 · 시험이 IO 를 갈아 끼운다).
 /// 참 = 입력창이 비어 입력을 받는다(`input_line_empty == Some(true)`) · 거짓 = 상한 안에 못 봤다.
 /// 「못 쟀다(None)」·「글이 있다(Some(false))」는 준비가 아니다 — 셸 에코·관문 선택지를 준비로 읽지 않는다.
+/// ★(agy R1 수용) 상한은 **실제 경과 시간**으로 잰다 — 틱 수를 세면 read()(RPC)가 느릴 때 실제 대기가
+/// 상한을 크게 넘는다. 시계는 주입(`elapsed`) — 운영 = `Instant` · 시험 = 가짜 시계.
 fn wait_input_ready(
     sleep: impl Fn(std::time::Duration),
     read: impl Fn() -> Option<String>,
+    elapsed: impl Fn() -> std::time::Duration,
     cap: std::time::Duration,
 ) -> bool {
     let tick = std::time::Duration::from_millis(500);
-    let mut waited = std::time::Duration::ZERO;
     loop {
         if read().map(|s| input_line_empty(&s) == Some(true)).unwrap_or(false) {
             return true;
         }
-        if waited >= cap {
+        if elapsed() >= cap {
             return false;
         }
         sleep(tick);
-        waited += tick;
     }
 }
 
@@ -10880,6 +10881,7 @@ fn inject_directive_after_ready(
     //   상한 근거: claude 첫 렌더는 맥 실측 1~3s · 느린 윈 노트북·npm 셸 경유는 그 몇 배 — 30s 면 여유 있고
     //   부트 전체 상한(readiness 60s)을 두 배 넘기지 않는다.
     if agent.starts_with("claude") {
+        let started = std::time::Instant::now();
         let ready = wait_input_ready(
             |d| std::thread::sleep(d),
             || {
@@ -10887,6 +10889,7 @@ fn inject_directive_after_ready(
                     .ok()
                     .and_then(|r| r["text"].as_str().map(String::from))
             },
+            || started.elapsed(),
             std::time::Duration::from_secs(BUDGET_INPUT_READY_SECS),
         );
         if !ready {
@@ -14149,7 +14152,14 @@ fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
             }
         }
         // 돌고 있는 옛 데몬을 내린다(윈 daemon install 은 등록만 하고 교체하지 않는다) — 앱 stop_running_daemon 과 같은 순서.
-        if let Some(pid) = request("system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_u64()) {
+        let pid = request("system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_u64());
+        if pid.is_none() && connect_raw().is_ok() {
+            // ★(agy R1 수용) 소켓은 받는데 응답이 없다 = 멈춘 옛 데몬. pid 를 몰라 정지할 수 없고, 이대로 가면
+            //   새 데몬이 소켓·잠금을 못 잡는다 — 추정 kill(이름 매칭)은 부서 데몬까지 죽일 수 있어 하지 않는다.
+            eprintln!("[rotate] ② 옛 데몬이 소켓은 열었으나 응답 없음 — pid 를 알 수 없어 정지 불가(수동 확인 필요)");
+            return ROTATE_RC_DAEMON;
+        }
+        if let Some(pid) = pid {
             #[cfg(windows)]
             {
                 if let Ok(r) = request("ledger.list", json!({})) {
@@ -18851,20 +18861,34 @@ mod tests {
     /// ★(v112-restore ①) claude 빈 입력창이 보일 때까지 기다린다 — 셸 에코·기동 전 화면은 준비가 아니다.
     #[test]
     fn wait_input_ready_waits_for_empty_claude_box_and_caps() {
-        use std::cell::RefCell;
+        use std::cell::{Cell, RefCell};
+        use std::time::Duration;
         let shell = "user@mac w4 % CLAUDE_CONFIG_DIR=x sleep 10; claude --model m\n> 붙여넣은 지시 본문 줄".to_string();
+        // 가짜 시계 — sleep 이 시간을 흘린다(틱 500ms).
+        let clock = Cell::new(Duration::ZERO);
+        let tick = |d: Duration| clock.set(clock.get() + d);
         // 셸(에코에 `> ` 줄이 있어도 글이 있음) → 셸 → claude 빈 입력창
         let seq = RefCell::new(vec![claude_box(""), shell.clone(), shell.clone()]);
-        let slept = RefCell::new(0u32);
-        assert!(wait_input_ready(|_| *slept.borrow_mut() += 1, || seq.borrow_mut().pop(), std::time::Duration::from_secs(30)));
-        assert_eq!(*slept.borrow(), 2, "빈 입력창을 보기 전에 두 번 기다려야 한다");
+        assert!(wait_input_ready(tick, || seq.borrow_mut().pop(), || clock.get(), Duration::from_secs(30)));
+        assert_eq!(clock.get(), Duration::from_millis(1000), "빈 입력창을 보기 전에 두 틱 기다려야 한다");
         // 끝내 셸 → 상한에서 거짓(주입 금지)
-        let n = RefCell::new(0u32);
-        assert!(!wait_input_ready(|_| *n.borrow_mut() += 1, || Some(shell.clone()), std::time::Duration::from_secs(2)));
-        assert_eq!(*n.borrow(), 4, "500ms 틱 × 2s 상한");
+        clock.set(Duration::ZERO);
+        assert!(!wait_input_ready(tick, || Some(shell.clone()), || clock.get(), Duration::from_secs(2)));
+        // ★(agy R1) 상한은 **실제 경과**로 잰다 — read() 가 한 번에 5초 걸리면 2초 상한은 첫 판독 뒤 곧바로 끝난다.
+        clock.set(Duration::ZERO);
+        let reads = Cell::new(0u32);
+        let slow_read = || {
+            reads.set(reads.get() + 1);
+            clock.set(clock.get() + Duration::from_secs(5));
+            Some(shell.clone())
+        };
+        assert!(!wait_input_ready(tick, slow_read, || clock.get(), Duration::from_secs(2)));
+        assert_eq!(reads.get(), 1, "느린 판독에서 틱을 세면 상한을 넘겨 계속 읽는다");
         // 입력창에 글이 남아 있으면 준비가 아니다 / 못 읽으면 준비가 아니다
-        assert!(!wait_input_ready(|_| {}, || Some(claude_box("남은 글")), std::time::Duration::from_secs(1)));
-        assert!(!wait_input_ready(|_| {}, || None, std::time::Duration::from_secs(1)));
+        clock.set(Duration::ZERO);
+        assert!(!wait_input_ready(tick, || Some(claude_box("남은 글")), || clock.get(), Duration::from_secs(1)));
+        clock.set(Duration::ZERO);
+        assert!(!wait_input_ready(tick, || None, || clock.get(), Duration::from_secs(1)));
     }
 
     /// ④ rotate 종료코드 표 — 중단 코드가 아닌 둘(21 · 25)의 우선순위.
@@ -18876,6 +18900,17 @@ mod tests {
         assert_eq!(rotate_rc(Some(true), false), ROTATE_RC_RESTORE);
         assert_eq!(rotate_rc(Some(false), false), ROTATE_RC_RESTORE, "복원 실패가 더 무겁다");
         assert_eq!(rotate_rc(None, false), ROTATE_RC_RESTORE);
+    }
+
+    /// ★(agy R1) 멈춘 옛 데몬(소켓은 열림·응답 없음)은 추정 kill 하지 않고 22 로 멈춘다 — 배선 핀.
+    #[test]
+    fn rotate_hung_daemon_pin() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let a = prod.find("fn run_rotate(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        let i = body.find("if pid.is_none() && connect_raw().is_ok() {").expect("멈춘 데몬 분기 부재");
+        assert!(body[i..i + 600].contains("return ROTATE_RC_DAEMON;"), "멈춘 데몬 분기가 중단하지 않는다");
     }
 
     #[test]

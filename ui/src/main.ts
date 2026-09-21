@@ -7263,12 +7263,16 @@ async function readUnsubmittedRoles(
 ): Promise<string[]> {
   try {
     const sep = home.includes("\\") && !home.includes("/") ? "\\" : "/";
-    const log = String(
-      await rpcT(
-        invoke("read_text_head", { path: `${home}${sep}.cys${sep}state${sep}boot-submit-base.jsonl`, maxBytes: 1048576 }),
-        T_LIST,
-      ),
-    );
+    // ★(agy R1 수용) 256KB 회전 직후에는 방금 기록이 `.jsonl.1` 에 있다 — 둘 다 읽어 합친다(자리별 최신만 쓰므로 순서 무관).
+    const base = `${home}${sep}.cys${sep}state${sep}boot-submit-base.jsonl`;
+    let log = "";
+    for (const p of [`${base}.1`, base]) {
+      try {
+        log += String(await rpcT(invoke("read_text_head", { path: p, maxBytes: 1048576 }), T_LIST)) + "\n";
+      } catch {
+        /* 없는 파일 = 기록 없음 */
+      }
+    }
     const bad = new Set(unsubmittedSurfaces(log, Math.floor(Date.now() / 1000)));
     return seats.filter((s) => s.role && !s.exited && bad.has(s.surface_id)).map((s) => s.role as string);
   } catch {

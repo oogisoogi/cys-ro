@@ -4286,7 +4286,7 @@ fn seat_input_line(s: &Arc<crate::state::Surface>) -> InputLine {
     let Some(marker) = marker else {
         return input_line_state(pending, None);
     };
-    let (_seen, line) = observe_prompt(s, &marker);
+    let (_seen, line, _framed) = observe_prompt(s, &marker);
     input_line_state(
         pending,
         line.as_ref().map(|(b, a)| PromptLine {
@@ -4934,15 +4934,20 @@ fn merged_ready_marker(
 fn observe_prompt(
     s: &Arc<crate::state::Surface>,
     marker: &str,
-) -> (bool, Option<(String, String)>) {
+) -> (bool, Option<(String, String)>, bool) {
     let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
     let screen = p.screen();
     let (rows, cols) = screen.size();
     let (cr, cc) = screen.cursor_position();
     let marker_seen = screen.contents().contains(marker);
     if cr >= rows {
-        return (marker_seen, None);
+        return (marker_seen, None, false);
     }
+    // ★v113-restore: 커서 행 바로 위·아래 행 — Claude Code 입력창 테두리(가로줄) 판독용.
+    let framed = cr >= 1
+        && cr + 1 < rows
+        && is_rule_row(&screen.contents_between(cr - 1, 0, cr - 1, cols))
+        && is_rule_row(&screen.contents_between(cr + 1, 0, cr + 1, cols));
     let before_all = screen.contents_between(cr, 0, cr, cc);
     let row_all = screen.contents_between(cr, 0, cr, cols);
     let line = before_all.rfind(marker).map(|i| {
@@ -4954,7 +4959,38 @@ fn observe_prompt(
             .to_string();
         (before_cursor, after)
     });
-    (marker_seen, line)
+    (marker_seen, line, framed)
+}
+
+/// 가로줄 행인가 — 공백을 걷은 내용이 전부 `─` 이고 8칸 이상(순수). TICKET=v113-restore.
+/// Claude Code 입력창은 가로줄(────) 사이의 「❯ 」 한 줄이다(`cys::submit_probe` 모듈 doc · 09-21 실기).
+/// 선택 메뉴(`❯ 1. Yes`)·승인 창은 이 모양이 아니다.
+pub(crate) fn is_rule_row(row: &str) -> bool {
+    let t = row.trim();
+    t.chars().count() >= 8 && t.chars().all(|c| c == '─')
+}
+
+/// 대체화면이 배달을 막는가(순수) — TICKET=v113-restore 배달 큐 재배달.
+///
+/// 대체화면 축은 「전체화면 대화상자·메뉴의 입력줄은 프롬프트가 아니다」를 막으려고 있다. 그런데 윈도의
+/// claude 좌석은 대체화면 끄기 env(D5)가 옵트인이라 **본 화면 자체가 대체화면**이다 — 그 좌석은 입력창이
+/// 비어 있어도 영원히 막혀 큐가 한 번도 배달되지 않았다(09-21 22:2x 윈 실기 CSO 미배달 2건 ·
+/// `prompt_not_ready`). 커서 행이 가로줄 두 개 사이(= Claude Code 입력창 모양)면 대체화면이어도
+/// 프롬프트다. 메뉴·대화상자는 그 모양이 아니므로 종전대로 막힌다. 승인 대기 축은 따로 그대로 막는다.
+pub(crate) fn alt_screen_blocks(alt_screen: bool, framed_input_row: bool) -> bool {
+    alt_screen && !framed_input_row
+}
+
+/// 입력줄이 빈데도 준비가 아닐 때의 **진짜** 사유(순수) — 종전엔 마커 부재·대체화면·승인 대기를 모두
+/// `prompt_not_ready` 한 말로 적어, 윈 실기에서 「프롬프트가 아직 안 떴다」로 오독됐다(실제는 대체화면).
+pub(crate) fn empty_line_block_reason(alt_blocks: bool, approval_pending: bool) -> &'static str {
+    if approval_pending {
+        "approval_pending(승인 대기 화면)"
+    } else if alt_blocks {
+        "alt_screen(대체화면 — 입력창 모양 아님)"
+    } else {
+        "prompt_not_ready(프롬프트 경계 미도달)"
+    }
 }
 
 /// ★B1(0.14.30): 마지막 보류 사유를 surface 에 남긴다(경보와 별개 축 — 경보는 쿨다운·임계에
@@ -5650,7 +5686,7 @@ fn deliver_queued(
         //   마커 없는 quiet 폴백 경로도 같은 값을 쓴다(그 경로도 같은 writer 로 들어간다).
         let pending_at_verdict = s.pending_input_bytes.load(Ordering::Relaxed);
         let overdue = if let Some(marker) = marker.as_deref() {
-            let (marker_seen, line) = observe_prompt(&s, marker);
+            let (marker_seen, line, framed) = observe_prompt(&s, marker);
             let pending = pending_at_verdict;
             let input = input_line_state(
                 pending,
@@ -5660,19 +5696,17 @@ fn deliver_queued(
                 }),
             );
             let approval_pending = !pending_gate_items(daemon, s.id).is_empty();
-            let verdict = prompt_boundary_verdict(
-                marker_seen,
-                input,
-                s.alt_screen.load(Ordering::Relaxed),
-                approval_pending,
-            );
+            let alt_blocks = alt_screen_blocks(s.alt_screen.load(Ordering::Relaxed), framed);
+            let verdict = prompt_boundary_verdict(marker_seen, input, alt_blocks, approval_pending);
             if verdict == PromptBoundary::NotReady {
                 // 사유를 갈라 기록한다 — 손잡이가 다르다(입력줄 점유는 사람이 비워야 풀리고,
                 // 경계 미도달은 화면이 바뀌면 저절로 풀린다).
                 let why = match input {
                     InputLine::Occupied => "input_pending(입력줄에 미제출 입력)",
                     InputLine::Unknown => "prompt_unknown(프롬프트 경계 관측 불능)",
-                    InputLine::Empty => "prompt_not_ready(프롬프트 경계 미도달)",
+                    InputLine::Empty => {
+                        empty_line_block_reason(alt_blocks, approval_pending)
+                    }
                 };
                 mark_queue_blocked(&s, why);
                 alert_queue_depth_if_high(daemon, &s, depth_alerted, why);
@@ -8612,9 +8646,10 @@ mod tests {
     // ─────────── ★B1(0.14.30): 프롬프트 경계 준비판정 — 순수 판정자 핀 ───────────
 
     use super::{
-        input_line_state, prompt_boundary_verdict, queue_starve_alert_secs, InputLine,
-        PromptBoundary, PromptLine,
+        alt_screen_blocks, empty_line_block_reason, input_line_state, is_rule_row,
+        prompt_boundary_verdict, queue_starve_alert_secs, InputLine, PromptBoundary, PromptLine,
     };
+    use std::sync::atomic::Ordering;
 
     /// 커서 **뒤** 텍스트는 Claude Code prompt suggestions(고스트)다 — 입력 버퍼가 아니다.
     /// 이 한 줄이 2026-09-03 13:27~15:37 의 2h10m 영구 보류(PREP '백로그 #1 보정')를 막는다.
@@ -8784,6 +8819,65 @@ mod tests {
             s.pending_queue.lock().unwrap().is_empty(),
             "프롬프트 박스가 열려 있으면 출력 중이라도 배달한다(기아 봉인의 본체)"
         );
+    }
+
+    /// ★v113-restore: 대체화면 claude 좌석 화면 — 1행 머리, 2·4행 가로줄(framed=true 일 때만), 3행 「❯ 」,
+    /// 커서는 3행 「❯ 」 뒤. 윈 claude 는 D5 가 옵트인이라 본 화면이 이것이다.
+    fn paint_alt_seat(s: &Arc<crate::state::Surface>, framed: bool, row3: &str) {
+        let rule = if framed { "────────────────────────────" } else { "" };
+        let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        p.process(format!("\x1b[?1049h\x1b[2J\x1b[1;1Hclaude\x1b[2;1H{rule}\x1b[4;1H{rule}\x1b[3;1H{row3}").as_bytes());
+        s.alt_screen.store(true, Ordering::Relaxed);
+    }
+
+    fn run_alt_seat(tag: &str, framed: bool, row3: &str) -> (usize, String) {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir(tag);
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = marker_seat(tag);
+        paint_alt_seat(&s, framed, row3);
+        *s.last_output.lock().unwrap() =
+            std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        let left = s.pending_queue.lock().unwrap().len();
+        let why = s.queue_blocked.lock().unwrap().clone().map(|(w, _)| w).unwrap_or_default();
+        (left, why)
+    }
+
+    /// ★v113-restore(09-21 22:2x 윈 실기 CSO 미배달 2건): 대체화면이어도 커서가 Claude Code 입력창
+    /// (가로줄 두 개 사이의 빈 「❯ 」)에 있으면 배달한다. 종전엔 영구 보류였다.
+    #[test]
+    fn v113_alt_screen_framed_claude_input_box_delivers() {
+        let (left, why) = run_alt_seat("v113-alt-framed", true, "❯ ");
+        assert_eq!(left, 0, "대체화면 claude 입력창인데 배달하지 않았다: {why}");
+    }
+
+    /// 대체화면의 테두리 없는 「❯」 행(선택 메뉴 `❯ 1. Yes` 류)은 종전대로 막고, 사유를 사실대로 적는다.
+    #[test]
+    fn v113_alt_screen_unframed_row_blocks_with_true_reason() {
+        let (left, why) = run_alt_seat("v113-alt-menu", false, "❯ ");
+        assert_eq!(left, 1, "테두리 없는 대체화면 행에 주입했다(메뉴 오선택 경로)");
+        assert!(why.starts_with("alt_screen"), "사유가 대체화면이 아니다: {why}");
+    }
+
+    #[test]
+    fn v113_rule_row_and_alt_block_pure() {
+        assert!(is_rule_row("  ────────────  "));
+        assert!(!is_rule_row("───"), "짧은 줄은 테두리가 아니다");
+        assert!(!is_rule_row("──── 1. Yes ────"), "글이 섞이면 테두리가 아니다");
+        assert!(!is_rule_row(""));
+        assert!(alt_screen_blocks(true, false));
+        assert!(!alt_screen_blocks(true, true));
+        assert!(!alt_screen_blocks(false, false));
+        assert!(empty_line_block_reason(true, false).starts_with("alt_screen"));
+        assert!(empty_line_block_reason(true, true).starts_with("approval_pending"));
+        assert!(empty_line_block_reason(false, false).starts_with("prompt_not_ready"));
     }
 
     /// 입력줄에 사람이 친 미제출 텍스트가 있으면 배달 0 + 사유가 남는다(이어붙이기·오제출 차단).

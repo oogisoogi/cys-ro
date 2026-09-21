@@ -149,3 +149,19 @@ describe("v113-restore B3 — 복원 중 건너뛴 자리만 재저장", () => {
     expect(partial.nodes[2].outcome).toBe("skipped_restoring"); // 다른 부서의 같은 번호는 섞이지 않는다
   });
 });
+
+describe("v113-restore B3 배선 — ↻ 흐름이 건너뛴 자리만 재저장한 뒤 재시작한다", () => {
+  it("재시도 호출이 재시작보다 앞이고 only 키를 싣는다", () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const f = src.indexOf("async function manualRestartAllDaemons(");
+    const body = src.slice(f, src.indexOf("\n}\n", f));
+    const keys = body.indexOf("restoringRetryKeys(verify.nodes)");
+    const again = body.indexOf('invoke("drain_verify", { timeout: 20, only: retryKeys })');
+    const merge = body.indexOf("verify = mergeRetry(verify, again)");
+    const restart = body.indexOf("await restartAllDaemons(true)");
+    expect(keys).toBeGreaterThan(-1);
+    expect(again).toBeGreaterThan(keys);
+    expect(merge).toBeGreaterThan(again);
+    expect(restart).toBeGreaterThan(merge);
+  });
+});

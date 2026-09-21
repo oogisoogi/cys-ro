@@ -25453,6 +25453,12 @@ mod tests {
             .collect();
         assert_eq!(got, vec!["main/surface:3"]);
         assert_eq!(drain_targets_only(vec![mk_target(9, p, None)], &[]).len(), 1, "빈 필터 = 전 자리");
+        // 배선 핀 — 실제 검증 경로가 필터를 거친다.
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("fn run_drain_verify(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("drain_targets_only(drain_verify_targets(), only)"), "--only 가 검증 경로에 미배선");
     }
 
     /// 마커 포맷 — HTML 주석형·체크박스 문법 금지·denylist 토큰 회피.

@@ -3422,6 +3422,17 @@ async fn run_sidecar_restore_report(
         let mut cmd = std::process::Command::new(resolve_sidecar(if cfg!(windows) { "cys.exe" } else { "cys" }));
         cmd.arg("restore").arg("--include-master");
         cmd.env("CYS_NO_AUTOSTART", "1"); // 죽은 소켓에 빈 데몬 autostart 금지(사이드카 CLI 가드)
+        // ★v114-dept-fd(할 일 15): 앱 자식 = pane 밖 = external — 부서 팩 ACL 이 워커 좌석 주입을 막는다
+        //   (↻ 토스트 「부서 복원 실패」). 그 데몬의 operator.token 을 넘겨 주입이 오너 등급으로 판정되게 한다
+        //   (cys inject_text 가 owner_token 으로 싣는다 · 데몬은 pane 무귀속일 때만 오너로 본다).
+        let target = socket.clone().unwrap_or_else(cys::socket_path);
+        if let Some(tok) = read_operator_token_for(&target) {
+            cmd.env("CYS_OWNER_TOKEN", tok);
+        }
+        // ★v114-dept-fd(할 일 16): 부서 좌석은 부서 폴더에서 — 저장 cwd 가 홈·미지정이면 restore 가 이 값으로 채운다.
+        if let Some(dc) = socket.as_deref().and_then(cys::dept_registry_cwd) {
+            cmd.arg("--cwd").arg(dc);
+        }
         if let Some(sock) = socket {
             cmd.env(cys::ENV_SOCKET, sock);
         }
@@ -4553,25 +4564,79 @@ fn dept_socket_path(name: &str) -> std::path::PathBuf {
     cys::dept_socket_path(name)
 }
 
-/// 새 부서 workspace 런칭 = 부서 데몬 spawn. 단일 진입점 cys-dept launch를 OS 호출해
-/// 레지스트리·ACL 시드·CEO 승격을 일임한다(직접 cysd spawn 금지, 검증 mustFix). 성공 시
-/// 그 데몬용 이벤트 forwarder를 추가 spawn하고 socket·slug·identify를 반환한다.
-#[tauri::command]
-async fn launch_dept_daemon(app: AppHandle, name: String) -> Result<Value, String> {
+/// cys-dept 실행 결과(앱 직접 스폰 · 본부 데몬 대행 공통).
+struct DeptToolOut {
+    ok: bool,
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+/// cys-dept 앱 측 직접 실행(종전 경로 · 윈도·대행 불가 시 폴백).
+async fn run_dept_tool_direct(verb: &'static str, args: Vec<String>, why: String) -> Result<DeptToolOut, String> {
     let tool = dept_tool();
-    let n = name.clone();
     let out = tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new("bash");
         inject_runtime_path(&mut cmd); // RC-5: 동봉 runtime(bash.exe) PATH 주입
-        cmd.arg(&tool).arg("launch").arg(&n);
+        // 경로 원장(cys-dept 가 1줄 기록) — 값 = cysd handlers DEPT_SPAWN_PATH_ENV 계약.
+        cmd.env("CYS_DEPT_SPAWN_PATH", format!("direct:{why}"));
+        cmd.arg(&tool).arg(verb).args(&args);
         no_console(&mut cmd);
         cmd.output()
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    Ok(DeptToolOut {
+        ok: out.status.success(),
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    })
+}
+
+/// ★v114-dept-fd 수리 1″: 맥에서는 부서 데몬을 **본부 데몬이 대신 띄운다**(`dept.run` RPC).
+/// 앱이 직접 띄우면 macOS 가 그 사슬(앱 → 부서 데몬 → 좌석 → claude)의 폴더 접근을 앱(cysr)의 권한으로
+/// 판정한다 — 사용자가 설치 직후 「데스크톱 폴더 접근」에 [허용 안 함] 을 누른 기기에서는 부서 폴더
+/// (~/Desktop/CYSjavis/<부서>)를 못 읽어 좌석 claude 가 전멸했다(09-22 VM). 말로 만든 부서(본부 데몬 자손)는
+/// 같은 폴더를 읽었으므로 같은 사슬로 맞춘다. 대행이 안 되면(옛 데몬·연결 실패) 종전 직접 실행으로 내려간다.
+/// 윈도는 대상이 아니다(폴더 권한 축 없음 · 부서 데몬이 본부 데몬의 수명 Job 에 묶이면 안 된다).
+async fn run_dept_tool(verb: &'static str, args: Vec<String>) -> Result<DeptToolOut, String> {
+    let mut why = "not_macos".to_string();
+    if cfg!(target_os = "macos") {
+        match rpc_oneshot(
+            &cys::socket_path(),
+            "dept.run",
+            json!({"verb": verb, "args": args, "timeout_secs": 180}),
+        )
+        .await
+        {
+            Ok(v) => {
+                let code = v["code"].as_i64().map(|c| c as i32);
+                return Ok(DeptToolOut {
+                    ok: code == Some(0),
+                    code,
+                    stdout: v["stdout"].as_str().unwrap_or("").to_string(),
+                    stderr: v["stderr"].as_str().unwrap_or("").to_string(),
+                });
+            }
+            Err(e) => {
+                eprintln!("[cys-app] 부서 데몬 대행(dept.run) 불가 — 앱 직접 실행으로 내려감: {e}");
+                why = format!("rpc_error:{}", e.chars().filter(|c| !c.is_control()).take(120).collect::<String>());
+            }
+        }
+    }
+    run_dept_tool_direct(verb, args, why).await
+}
+
+/// 새 부서 workspace 런칭 = 부서 데몬 spawn. 단일 진입점 cys-dept launch를 OS 호출해
+/// 레지스트리·ACL 시드·CEO 승격을 일임한다(직접 cysd spawn 금지, 검증 mustFix). 성공 시
+/// 그 데몬용 이벤트 forwarder를 추가 spawn하고 socket·slug·identify를 반환한다.
+#[tauri::command]
+async fn launch_dept_daemon(app: AppHandle, name: String) -> Result<Value, String> {
+    let out = run_dept_tool("launch", vec![name.clone()]).await?;
+    if !out.ok {
+        return Err(out.stderr);
     }
     let sock = dept_socket_path(&name);
     spawn_event_forwarder(app.clone(), sock.clone());
@@ -4589,38 +4654,24 @@ async fn launch_dept_daemon(app: AppHandle, name: String) -> Result<Value, Strin
 /// None → `cys-dept allocate`(레거시 무변경). create 경로는 레지스트리에서 display_name 을 조회해 반환한다.
 #[tauri::command]
 async fn allocate_dept_daemon(app: AppHandle, catalog_key: Option<String>) -> Result<Value, String> {
-    let tool = dept_tool();
-    let ck = catalog_key.clone();
-    let out = tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("bash");
-        inject_runtime_path(&mut cmd); // RC-5: 동봉 runtime(bash.exe) PATH 주입
-        cmd.arg(&tool);
-        match &ck {
-            Some(k) => {
-                cmd.arg("create").arg(k);
-            } // ＋부서 자동화: 카탈로그 키 기반 생성(stdout 마지막 줄=name)
-            None => {
-                cmd.arg("allocate");
-            } // 레거시: 번호만 발급(회귀 무변경)
-        }
-        no_console(&mut cmd);
-        cmd.output()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    // ＋부서 자동화: 카탈로그 키 기반 create(stdout 마지막 줄=name) · None = 레거시 allocate(번호만 발급).
+    let out = match &catalog_key {
+        Some(k) => run_dept_tool("create", vec![k.clone()]).await?,
+        None => run_dept_tool("allocate", Vec::new()).await?,
+    };
+    if !out.ok {
+        let stderr = out.stderr.clone();
         // ＋부서 자동화(gemini R2 ①): create 경로는 exit code 를 'dept-create:<code>:<stderr>' 로 GUI 에 전달해
         //   보안 분기를 가능케 한다 — exit5(account dir 미존재)=계정누수 → 레거시 폴백 절대 금지(하드 에러)·
         //   exit4(키 부재)=에러·exit3(카탈로그 부재)=레거시 허용. 레거시 allocate(None) 경로는 평문 stderr 유지.
         if catalog_key.is_some() {
-            let code = out.status.code().unwrap_or(-1);
+            let code = out.code.unwrap_or(-1);
             return Err(format!("dept-create:{code}:{stderr}"));
         }
         return Err(stderr);
     }
-    let name = String::from_utf8_lossy(&out.stdout)
+    let name = out
+        .stdout
         .lines()
         .filter(|l| !l.trim().is_empty())
         .last()
@@ -5538,20 +5589,9 @@ async fn rotate_dept_daemon(app: AppHandle, name: String, force: bool, skip_drai
     }
     // cys-dept rotate <name> — 프로세스 정지→새 바이너리 재기동(reg_upsert 메타보존·묘비 불변).
     // launch_dept_daemon의 bash+inject_runtime_path+no_console+spawn_blocking 패턴 동형.
-    let tool = dept_tool();
-    let n = name.clone();
-    let out = tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("bash");
-        inject_runtime_path(&mut cmd); // RC-5: 동봉 runtime(bash.exe) PATH 주입
-        cmd.arg(&tool).arg("rotate").arg(&n);
-        no_console(&mut cmd);
-        cmd.output()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    let out = run_dept_tool("rotate", vec![name.clone()]).await?;
+    if !out.ok {
+        return Err(out.stderr);
     }
     // 이벤트 포워더 재확립 + 새 데몬 identify(버전 확인·UI 스큐 해소 판정). launch_dept_daemon 반환 동형.
     spawn_event_forwarder(app.clone(), sock.clone());
@@ -5560,7 +5600,8 @@ async fn rotate_dept_daemon(app: AppHandle, name: String, force: bool, skip_drai
         obj.insert("socket".into(), json!(sock.to_string_lossy()));
         obj.insert("socket_slug".into(), json!(sock_slug(&sock)));
         // rotate verb의 "rotated <name>: vX→vY" 확정 줄(검증 게이트) 전달 — 사람 로그·성공 판정 보조.
-        if let Some(l) = String::from_utf8_lossy(&out.stdout)
+        if let Some(l) = out
+            .stdout
             .lines()
             .rev()
             .find(|l| l.starts_with("rotated "))
@@ -6844,6 +6885,47 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    /// ★v114-dept-fd 수리 1″ 배선 핀: 앱의 부서 데몬 기동 4경로(launch·rotate·create·allocate)가 전부
+    /// run_dept_tool 을 거치고, 맥에서는 본부 데몬 대행(dept.run)이 먼저 · 직접 실행은 그 폴백 1곳뿐이다.
+    #[test]
+    fn v114_dept_daemon_spawns_go_through_delegation() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        for call in [
+            "run_dept_tool(\"launch\", vec![name.clone()])",
+            "run_dept_tool(\"rotate\", vec![name.clone()])",
+            "run_dept_tool(\"create\", vec![k.clone()])",
+            "run_dept_tool(\"allocate\", Vec::new())",
+        ] {
+            assert_eq!(prod.matches(call).count(), 1, "부서 기동 경로 미위임: {call}");
+        }
+        assert_eq!(prod.matches(".arg(&tool).arg(\"launch\")").count(), 0, "앱 직접 launch 잔존");
+        assert_eq!(prod.matches(".arg(&tool).arg(\"rotate\")").count(), 0, "앱 직접 rotate 잔존");
+        assert_eq!(prod.matches("run_dept_tool_direct(").count(), 2, "직접 실행 = 정의 1 + 폴백 호출 1");
+        let a = prod.find("async fn run_dept_tool(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        let rpc = body.find("\"dept.run\"").expect("대행 RPC 부재");
+        let direct = body.find("run_dept_tool_direct(").unwrap();
+        assert!(body.contains("if cfg!(target_os = \"macos\")"), "대행은 맥 한정(윈 = 본부 Job 귀속 금지)");
+        assert!(rpc < direct, "직접 실행이 대행보다 먼저");
+        assert!(prod.contains("cmd.env(\"CYS_DEPT_SPAWN_PATH\", format!(\"direct:{why}\"));"), "경로 표식 누락");
+    }
+
+    /// ★v114-dept-fd(할 일 15·16) 배선 핀: 사이드카 restore 가 그 데몬의 operator.token 을 넘기고(오너 등급)
+    /// 부서 소켓이면 레지스트리 부서 폴더를 --cwd 로 넘긴다.
+    #[test]
+    fn v114_sidecar_restore_passes_owner_token_and_dept_cwd() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("async fn run_sidecar_restore_report(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        let tok = body.find("cmd.env(\"CYS_OWNER_TOKEN\", tok);").expect("토큰 미전달 — 부서 워커 좌석 주입이 external 로 막힌다");
+        assert!(body.contains("read_operator_token_for(&target)"), "대상 데몬의 토큰이 아님");
+        let cwd = body.find("cys::dept_registry_cwd").expect("부서 폴더 미전달");
+        let out = body.find(".output()").unwrap();
+        assert!(tok < out && cwd < out, "실행 뒤에 설정");
+    }
+
     // ── TICKET=v113-restore 복원 정직 알림 ──
     #[test]
     fn v113_restore_summary_parses_own_cli_line() {

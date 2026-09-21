@@ -123,6 +123,100 @@ static FEED_REQ_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// 없었고, 관측자는 그 침묵을 다른 원인(낡은 화면 판독)으로 오귀속했다.
 /// ⇒ 모든 거부는 **사유·대상·발신자와 함께** 버스 이벤트 + 데몬 로그 한 줄을 남긴다.
 /// 이 함수는 응답을 만들 뿐 정책을 바꾸지 않는다(거부 판정 자체는 호출부 그대로).
+/// ★v114-dept-fd 수리 3: 에이전트 좌석이 빈 셸이라 직접 주입을 보류했다(본문은 큐로).
+pub const ERR_NO_AGENT: &str = "no_agent";
+
+/// 부서 데몬이 어느 경로로 떴는지 cys-dept 에 알리는 env — `delegated`(본부 데몬 대행) | `direct:<사유>`(앱 직접).
+/// cys-dept 가 `~/.cys/dept-launch-path.log` 에 1줄 남긴다(VM 실기 표에서 읽는 자리).
+pub const DEPT_SPAWN_PATH_ENV: &str = "CYS_DEPT_SPAWN_PATH";
+
+/// `dept.run` 이 대행하는 cys-dept 동사 — 데몬을 띄우는 것만(생성·기동·교체). 삭제·정지는 대행하지 않는다.
+const DEPT_RUN_VERBS: [&str; 4] = ["launch", "rotate", "create", "allocate"];
+
+/// `dept.run` 인자 검증(순수). allocate = 인자 0 · 나머지 = 부서 이름/카탈로그 키 1개.
+/// 이름은 옵션·경로로 읽힐 수 없어야 한다(선두 `-` · 구분자 · 공백·제어문자 · `.`/`..` 거부).
+fn dept_run_args_ok(verb: &str, args: &[String]) -> Result<(), String> {
+    if !DEPT_RUN_VERBS.contains(&verb) {
+        return Err(format!("dept.run: verb '{verb}' not allowed"));
+    }
+    let want = if verb == "allocate" { 0 } else { 1 };
+    if args.len() != want {
+        return Err(format!("dept.run: {verb} takes {want} arg(s)"));
+    }
+    for a in args {
+        let bad = a.is_empty()
+            || a.len() > 128
+            || a.starts_with('-')
+            || a == "."
+            || a == ".."
+            || a.chars().any(|c| c == '/' || c == '\\' || c.is_whitespace() || c.is_control());
+        if bad {
+            return Err(format!("dept.run: bad name {a:?}"));
+        }
+    }
+    Ok(())
+}
+
+struct DeptRunResult {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+}
+
+/// cys-dept 를 **이 데몬의 자식**으로 실행하고 상한까지 기다린다(초과 시 그 프로세스 그룹을 내린다).
+/// 출력은 파일로 받는다 — 파이프는 cys-dept 가 nohup 으로 띄우는 부서 데몬이 물려받아 EOF 가 오지 않는다.
+fn run_dept_tool_capped(tool: &std::path::Path, verb: &str, args: &[String], timeout: u64) -> DeptRunResult {
+    let dir = std::env::temp_dir();
+    let tag = format!("cys-dept-run-{}-{}", std::process::id(), crate::state::now_epoch() as u64);
+    let (op, ep) = (dir.join(format!("{tag}.out")), dir.join(format!("{tag}.err")));
+    let fail = |m: String| DeptRunResult { code: None, stdout: String::new(), stderr: m, timed_out: false };
+    let (Ok(of), Ok(ef)) = (std::fs::File::create(&op), std::fs::File::create(&ep)) else {
+        return fail("dept.run: 출력 파일 생성 실패".into());
+    };
+    let mut cmd = cys::hidden_command("bash");
+    cmd.arg(tool).arg(verb).args(args);
+    cmd.env(DEPT_SPAWN_PATH_ENV, "delegated"); // cys-dept 가 경로 원장에 1줄 남긴다(앱 직접 실행 = direct:<사유>)
+    cmd.stdin(std::process::Stdio::null()).stdout(of).stderr(ef);
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
+        for (k, v) in cys::spawn_env_pairs_from_process(&dir) {
+            cmd.env(k, v);
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return fail(format!("dept.run: spawn 실패: {e}")),
+    };
+    let start = std::time::Instant::now();
+    let (code, timed_out) = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break (st.code(), false),
+            Ok(None) if start.elapsed().as_secs() >= timeout => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGTERM);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                break (None, true);
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(e) => return fail(format!("dept.run: wait 실패: {e}")),
+        }
+    };
+    let rd = |p: &std::path::Path| {
+        let s = std::fs::read(p).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        let _ = std::fs::remove_file(p);
+        s
+    };
+    DeptRunResult { code, stdout: rd(&op), stderr: rd(&ep), timed_out }
+}
+
 fn reject_send(
     daemon: &Daemon,
     sid: u64,
@@ -3483,6 +3577,59 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                            "queue_entry_id": entry.id}),
                 ));
             }
+            // ★v114-dept-fd 수리 3: 에이전트 좌석(meta 등록)이 **지금 빈 셸**이면 직접 주입하지 않는다 —
+            //   지시문(DRAIN-VERIFY·각성 등)이 셸 명령으로 타이핑된다(09-22 VM `zsh: event not found`).
+            //   본문은 큐로 돌린다(큐 배달은 프롬프트 경계 관측 전까지 prompt_unknown 으로 대기 · empty_seat
+            //   게이트가 강제 배달도 막는다) · 호출자에겐 명시 에러로 즉시 알린다(저장 검증이 상한까지 기다리지 않게).
+            //   사람 입력(human)은 대상이 아니다 — 빈 셸에 사람이 치는 것은 정상이다.
+            if !human && crate::governance::agent_seat_vacant_now(&surface) {
+                let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
+                    params.get("from").and_then(|v| v.as_str()).map(str::to_string)
+                });
+                let queued = {
+                    let mut q = surface.pending_queue.lock().unwrap();
+                    if q.len() >= 100 {
+                        None
+                    } else {
+                        let entry = daemon.next_queue_entry(text.clone(), entry_from, "send");
+                        q.push_back(entry.clone());
+                        Some((entry, q.len()))
+                    }
+                };
+                if let Some((entry, depth)) = &queued {
+                    daemon.bus.publish(
+                        "queue.enqueued",
+                        "queue",
+                        Some(sid),
+                        crate::state::queue_enqueued_payload(
+                            entry,
+                            *depth,
+                            params.get("from").cloned().unwrap_or(Value::Null),
+                            None,
+                        ),
+                    );
+                    daemon.persist_queue_state();
+                }
+                let qid = queued.as_ref().map(|(e, _)| e.id.clone());
+                daemon.bus.publish(
+                    "inject.skipped_no_agent",
+                    "surface",
+                    Some(sid),
+                    json!({"surface_ref": surface_ref(sid), "method": "surface.send_text",
+                           "bytes": text.len(), "caller_pid": caller_pid,
+                           "queued": qid.is_some(), "queue_entry_id": qid}),
+                );
+                eprintln!(
+                    "[cysd] {} 주입 보류 — 에이전트 좌석이 빈 셸(claude 부재) · 큐 {}",
+                    surface_ref(sid),
+                    if qid.is_some() { "적재" } else { "가득 참 — 폐기" }
+                );
+                return Reply::Single(err_response(
+                    &id,
+                    ERR_NO_AGENT,
+                    "agent seat has no live agent (bare shell) — not typed; queued (prompt_unknown)",
+                ));
+            }
             // T3-13 타이핑 가드: 사람이 방금(기본 3초) 입력 중인 pane에 원격 직접 주입 금지.
             // 무음 큐잉 대신 명시 에러 — 후속 send-key Return이 사람의 미완성 입력을
             // 실행해버리는 최악 경로를 차단한다 (--queued는 quiet 대기 배달이라 허용).
@@ -4311,6 +4458,59 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             Reply::Single(ok_response(
                 &id,
                 json!({"name": name, "removed": remove, "dept_tombstones": dv}),
+            ))
+        }
+        // ★v114-dept-fd 수리 1″: 부서 데몬 기동을 **본부 데몬의 자손**으로 대행한다(앱 → 이 RPC → cys-dept).
+        //   09-22 VM: macOS 가 cysr 앱의 데스크톱 접근을 [허용 안 함] 으로 기억하면, 앱이 직접 띄운 사슬
+        //   (앱 → 부서 데몬 → 좌석 셸 → claude)만 ~/Desktop/CYSjavis/<부서> 를 못 읽어 좌석 claude 가 전멸했다.
+        //   말로 만든 부서(본부 데몬 자손)는 같은 폴더를 읽었다 — TCC 책임 주체를 본부 데몬으로 맞춘다.
+        //   게이트: ①본부(기본 소켓) 데몬만 ②좌석(pane) 자손 호출자 거부 — cys-dept 는 master 좌석의 부서
+        //   lifecycle 을 exit 7 로 막는데, 이 RPC 가 데몬 자식으로 대신 돌리면 그 게이트를 우회하는 문이 된다
+        //   ③동사·인자 화이트리스트(dept_run_args_ok).
+        "dept.run" => {
+            let verb = param_str(&params, "verb").unwrap_or_default();
+            let args: Vec<String> = params
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            if let Err(e) = dept_run_args_ok(&verb, &args) {
+                return Reply::Single(err_response(&id, "invalid_params", &e));
+            }
+            if !cys::lane::socket_is_base(&cys::socket_path().to_string_lossy()) {
+                return Reply::Single(err_response(&id, "not_base_daemon", "dept.run is served by the base daemon only"));
+            }
+            match caller_pid {
+                None => {
+                    return Reply::Single(err_response(&id, "caller_unknown", "dept.run requires a known caller pid"))
+                }
+                Some(p) if resolve_caller_surface(daemon, p).is_some() => {
+                    return Reply::Single(err_response(
+                        &id,
+                        "pane_caller_denied",
+                        "dept.run is for the app only — seats use cys-dept directly (lifecycle gate)",
+                    ))
+                }
+                Some(_) => {}
+            }
+            let timeout = params
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(180)
+                .clamp(5, 600);
+            let tool = cys::pack::pack_dir().join("bin").join("cys-dept");
+            let res = tokio::task::block_in_place(|| run_dept_tool_capped(&tool, &verb, &args, timeout));
+            daemon.bus.publish(
+                "dept.launch.path",
+                "dept",
+                None,
+                json!({"path": "delegated", "verb": verb, "args": args, "code": res.code,
+                       "timed_out": res.timed_out}),
+            );
+            Reply::Single(ok_response(
+                &id,
+                json!({"code": res.code, "stdout": res.stdout, "stderr": res.stderr,
+                       "timed_out": res.timed_out}),
             ))
         }
         "dept_tombstone.list" => {
@@ -7486,6 +7686,59 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★v114-dept-fd 수리 1″: `dept.run` 은 데몬을 띄우는 동사만·이름 1개만·옵션/경로로 읽히는 이름 거부.
+    #[test]
+    fn v114_dept_run_args_whitelist() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(dept_run_args_ok("launch", &a(&["dept-1"])).is_ok());
+        assert!(dept_run_args_ok("rotate", &a(&["dept-12"])).is_ok());
+        assert!(dept_run_args_ok("create", &a(&["future-research"])).is_ok());
+        assert!(dept_run_args_ok("allocate", &a(&[])).is_ok());
+        for bad_verb in ["down", "destroy", "reap", "promote-ceo", "down-sock", ""] {
+            assert!(dept_run_args_ok(bad_verb, &a(&["dept-1"])).is_err(), "대행하면 안 되는 동사 {bad_verb}");
+        }
+        assert!(dept_run_args_ok("launch", &a(&[])).is_err(), "이름 없는 launch");
+        assert!(dept_run_args_ok("launch", &a(&["a", "b"])).is_err(), "인자 2개");
+        assert!(dept_run_args_ok("allocate", &a(&["x"])).is_err(), "allocate 에 인자");
+        for bad in ["-x", "--help", "../x", "a/b", "a\\b", "a b", ".", "..", "a\nb", ""] {
+            assert!(dept_run_args_ok("launch", &a(&[bad])).is_err(), "위험 이름 통과: {bad:?}");
+        }
+        assert!(dept_run_args_ok("launch", &a(&[&"x".repeat(129)])).is_err(), "과대 이름");
+    }
+
+    /// 배선 핀: 좌석(pane) 자손 호출자·호출자 미상은 거부 — cys-dept 의 master 좌석 exit 7 게이트 우회 차단.
+    #[test]
+    fn v114_dept_run_denies_pane_callers_and_non_base_daemon() {
+        let src = include_str!("handlers.rs");
+        let a = src.find("\"dept.run\" => {").expect("dept.run 분기");
+        let body = &src[a..a + src[a..].find("\"dept_tombstone.list\" =>").unwrap()];
+        let gate = body.find("Some(p) if resolve_caller_surface(daemon, p).is_some() =>").expect("좌석 호출자 거부 부재");
+        let base = body.find("socket_is_base(").expect("본부 데몬 한정 부재");
+        let none = body.find("\"caller_unknown\"").expect("호출자 미상 거부 부재");
+        let run = body.find("run_dept_tool_capped(").expect("실행");
+        assert!(gate < run && base < run && none < run, "게이트가 실행보다 뒤에 있다");
+        assert!(body.contains("\"dept.launch.path\""), "경로 이벤트 부재");
+    }
+
+    /// 실행 경로 실측: 이 데몬의 자식으로 돌고 · 출력은 파일로 모이며 · 상한을 넘으면 그룹째 내린다.
+    #[test]
+    fn v114_run_dept_tool_capped_runs_child_and_enforces_timeout() {
+        let dir = std::env::temp_dir().join(format!("v114-deptrun-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("fake-dept");
+        std::fs::write(&tool, "echo \"verb=$1 arg=$2 path=$CYS_DEPT_SPAWN_PATH\"; echo err >&2; [ \"$1\" = rotate ] && sleep 30; exit 3\n").unwrap();
+        let r = run_dept_tool_capped(&tool, "launch", &["dept-9".to_string()], 20);
+        assert_eq!(r.code, Some(3));
+        assert!(!r.timed_out);
+        assert_eq!(r.stdout.trim(), "verb=launch arg=dept-9 path=delegated");
+        assert_eq!(r.stderr.trim(), "err");
+        let t0 = std::time::Instant::now();
+        let r = run_dept_tool_capped(&tool, "rotate", &["dept-9".to_string()], 5);
+        assert!(r.timed_out && r.code.is_none(), "상한 초과가 표시되지 않았다");
+        assert!(t0.elapsed().as_secs() < 15, "상한이 지켜지지 않았다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// ★(U-22) `hook.decide` 판정 **진리표** — A3 반전 allowlist 를 완전 열거로 못박는다.
     ///

@@ -3228,6 +3228,7 @@ pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
             }
         }
         s.seat_cache.store(seat.as_u8(), Ordering::Relaxed);
+        notify_seat_folder_denied(daemon, &s, seat);
         // ★G2(W3-A BLOCK 교정) 좌석 에이전트 엄격 관측: meta 부재 보조축(SeatVacantNoMeta)의
         // armed 경계는 '아무 자손'(원시 Occupied)이 아니라 **기지 에이전트 엄격 매칭**
         // (cmdline_matches_agent_exec — R2 확정 strict 매처·select_observed_agent 재사용)이다.
@@ -3257,6 +3258,56 @@ pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
             };
         s.seat_agent_cache.store(observed, Ordering::Relaxed);
     }
+}
+
+/// ★v114-dept-fd 수리 1‴(순수): 빈 역할 좌석의 폴더 읽기 결과가 「macOS 폴더 권한 거부」인가.
+/// 좌석 셸은 이 데몬의 자식이라 폴더 권한(TCC)을 같은 책임 주체로 판정받는다 — 데몬이 못 읽으면
+/// 그 좌석의 claude 도 못 읽고 죽는다(09-22 VM: 오류 문구는 fd 한도를 탓했지만 원인은 이것).
+pub(crate) fn seat_folder_denied_verdict(has_role: bool, seat: SeatState, read: &std::io::Result<()>) -> bool {
+    has_role
+        && seat == SeatState::Empty
+        && matches!(read, Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+/// 좌석(pid)당 1회만 알린다 — 같은 좌석을 매 틱 다시 알리지 않는다(좌석이 바뀌면 pid 도 바뀐다).
+static FOLDER_DENIED_NOTIFIED: std::sync::Mutex<Option<std::collections::HashSet<u32>>> =
+    std::sync::Mutex::new(None);
+
+fn notify_seat_folder_denied(daemon: &Arc<Daemon>, s: &crate::state::Surface, seat: SeatState) {
+    let has_role = s.role.lock().unwrap().is_some();
+    if !has_role || seat != SeatState::Empty || s.exited.load(Ordering::Relaxed) {
+        return;
+    }
+    let cwd = s.cwd.clone();
+    if cwd.is_empty() {
+        return;
+    }
+    let read = std::fs::read_dir(&cwd).map(|_| ());
+    if !seat_folder_denied_verdict(has_role, seat, &read) {
+        return;
+    }
+    {
+        let mut g = FOLDER_DENIED_NOTIFIED.lock().unwrap();
+        if !g.get_or_insert_with(Default::default).insert(s.pid) {
+            return;
+        }
+    }
+    let home = cys::home_dir();
+    let folder = ["Desktop", "Documents", "Downloads"]
+        .into_iter()
+        .find(|f| std::path::Path::new(&cwd).starts_with(home.join(f)))
+        .unwrap_or("");
+    let role = s.role.lock().unwrap().clone();
+    daemon.bus.publish(
+        "seat.folder_denied",
+        "surface",
+        Some(s.id),
+        json!({"surface_ref": cys::surface_ref(s.id), "role": role, "cwd": cwd, "folder": folder}),
+    );
+    eprintln!(
+        "[cysd] {} 좌석 폴더 읽기 거부(macOS 폴더 권한) — {cwd} · 이 좌석의 claude 는 기동할 수 없다",
+        cys::surface_ref(s.id)
+    );
 }
 
 /// ★SEAT 승계 봉쇄 판정 — 이 좌석의 agent_meta 가 승계를 막아야 하는가.
@@ -3300,6 +3351,52 @@ pub fn seat_claimable_now(s: &crate::state::Surface) -> bool {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     seat_claimable(&sys, s)
+}
+
+/// ★v114-dept-fd 수리 3(순수 판정): 에이전트 좌석에 직접 주입하면 **셸 명령으로 타이핑되는가**.
+/// true = 등록 에이전트 좌석(meta) ∧ 자손 없음(Empty) ∧ 뿌리가 셸(Some(true)) ∧ 뿌리가 기지 에이전트 아님
+/// (Some(false)). 판정 불능(`None`)·Unknown·Occupied·뿌리가 셸 아닌 프로그램 = false = 종전 동작(주입).
+pub(crate) fn agent_seat_vacant_verdict(
+    has_meta: bool,
+    seat: SeatState,
+    root_is_shell: Option<bool>,
+    root_is_agent: Option<bool>,
+) -> bool {
+    has_meta && seat == SeatState::Empty && root_is_shell == Some(true) && root_is_agent == Some(false)
+}
+
+/// 뿌리 프로세스 이름이 대화형 셸인가(로그인 셸 접두 `-` 허용).
+pub(crate) fn is_shell_name(name: &str) -> bool {
+    let n = name.trim_start_matches('-');
+    let n = n.rsplit(['/', '\\']).next().unwrap_or(n);
+    let n = n.strip_suffix(".exe").unwrap_or(n);
+    matches!(n, "zsh" | "bash" | "sh" | "dash" | "fish" | "ksh" | "tcsh" | "csh" | "pwsh" | "powershell" | "cmd")
+}
+
+/// ★v114-dept-fd 수리 3: 권위 주입 직전 즉시 프로브(캐시는 watchdog 틱 주기라 stale 할 수 있다).
+/// 09-22 VM: 부서 좌석 claude 가 fd 한도로 기동에 실패해 빈 zsh 만 남았는데, 저장 검증 지시
+/// ([DRAIN-VERIFY])가 그 zsh 에 명령으로 타이핑됐다(`zsh: event not found`). 드문 경로(에이전트
+/// 좌석 직접 주입)라 전 프로세스 refresh 비용을 그 시점에 지불한다(seat_claimable_now 와 같은 선택).
+pub fn agent_seat_vacant_now(s: &crate::state::Surface) -> bool {
+    if s.agent_meta.lock().unwrap().is_none() {
+        return false;
+    }
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let seat = seat_state(&sys, s);
+    if seat != SeatState::Empty {
+        return false;
+    }
+    let root_is_shell = sys
+        .process(Pid::from_u32(s.pid))
+        .map(|p| is_shell_name(&p.name().to_string_lossy()));
+    let cands = known_agent_candidates();
+    let root_is_agent = if cands.is_empty() {
+        None
+    } else {
+        Some(root_agent_cmd(&sys, s.pid, &cands).is_some())
+    };
+    agent_seat_vacant_verdict(true, seat, root_is_shell, root_is_agent)
 }
 
 /// ★(T-0147-7 W2 · CS-5① / 비평2 C-4) **live-slot 계약** — latest-wins 의 agent_alive 한정 보호.
@@ -5880,6 +5977,64 @@ mod tests {
         is_node_owned, kill_pid, learn_stuck_candidates, merged_approval_patterns,
         plan_duplicate_alerts, plan_duplicate_kills, wakeup_entry_ids, ProcObs,
     };
+
+    /// ★v114-dept-fd 수리 3: 빈 셸 판정 — 등록 에이전트 좌석 ∧ 셸 단독 ∧ 뿌리도 에이전트 아님 셋 다일 때만.
+    /// 판정 불능(뿌리 None·Unknown)은 종전 동작(주입)으로 강등한다.
+    #[test]
+    fn v114_agent_seat_vacant_verdict_only_bare_shell_of_registered_seat() {
+        use super::{agent_seat_vacant_verdict as v, is_shell_name, SeatState::*};
+        let sh = Some(true);
+        assert!(v(true, Empty, sh, Some(false)), "09-22 VM: claude 기동 실패 → 빈 zsh 인데 주입 허용");
+        assert!(!v(true, Occupied, sh, Some(false)), "claude 자손이 있는데 보류");
+        assert!(!v(true, Unknown, sh, Some(false)), "관측 불능인데 보류(종전 동작 강등 위반)");
+        assert!(!v(true, Empty, sh, Some(true)), "뿌리가 에이전트(exec 좌석)인데 보류");
+        assert!(!v(true, Empty, sh, None), "후보 로드 실패인데 보류");
+        assert!(!v(false, Empty, sh, Some(false)), "미등록(사람) 셸 좌석까지 막음");
+        assert!(!v(true, Empty, Some(false), Some(false)), "뿌리가 셸 아닌 프로그램(exec)인데 보류");
+        assert!(!v(true, Empty, None, Some(false)), "뿌리 이름 관측 불능인데 보류");
+        for n in ["zsh", "-zsh", "/bin/zsh", "bash", "sh", "fish", "pwsh.exe", "cmd.exe"] {
+            assert!(is_shell_name(n), "셸 미인식: {n}");
+        }
+        for n in ["claude", "node", "sleep", "codex", "zshx", ""] {
+            assert!(!is_shell_name(n), "셸 아닌 것을 셸로: {n}");
+        }
+    }
+
+    /// ★v114-dept-fd 수리 1‴: 폴더 거부 판정 — 역할 좌석 ∧ 빈 좌석 ∧ 읽기 결과가 PermissionDenied 일 때만.
+    #[test]
+    fn v114_seat_folder_denied_verdict_only_permission_denied() {
+        use super::{seat_folder_denied_verdict as v, SeatState::*};
+        use std::io::{Error, ErrorKind};
+        let denied: std::io::Result<()> = Err(Error::from(ErrorKind::PermissionDenied));
+        assert!(v(true, Empty, &denied), "09-22 VM: 부서 폴더 거부인데 알리지 않음");
+        assert!(!v(true, Empty, &Ok(())), "읽히는데 알림");
+        assert!(!v(true, Empty, &Err(Error::from(ErrorKind::NotFound))), "없는 폴더를 권한 문제로");
+        assert!(!v(true, Occupied, &denied), "claude 가 살아 있는데 알림");
+        assert!(!v(false, Empty, &denied), "역할 없는 셸까지 알림");
+        // 배선: 좌석 캐시 갱신(단일 writer) 자리에서 부른다.
+        let src = include_str!("governance.rs");
+        let a = src.find("pub fn refresh_seat_cache(").unwrap();
+        let body = &src[a..a + src[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("notify_seat_folder_denied(daemon, &s, seat);"), "폴더 거부 감지 미배선");
+    }
+
+    /// 배선 핀: 직접 주입 경로(비-human)가 즉시 프로브를 거쳐 보류·큐 적재·이벤트를 낸다.
+    #[test]
+    fn v114_send_text_guards_vacant_agent_seat_before_typing() {
+        let src = include_str!("handlers.rs");
+        let a = src.find("\"surface.send_text\" => {").expect("send_text 분기");
+        let body = &src[a..];
+        let g = body
+            .find("if !human && crate::governance::agent_seat_vacant_now(&surface) {")
+            .expect("빈 셸 가드 미배선");
+        let t = body.find("// T3-13 타이핑 가드").expect("타이핑 가드 앵커");
+        let w = body.find("try_write(").expect("PTY 쓰기 앵커");
+        assert!(g < t && g < w, "가드가 PTY 쓰기보다 뒤에 있다");
+        let gb = &body[g..t];
+        assert!(gb.contains("\"inject.skipped_no_agent\""), "이벤트 미발행");
+        assert!(gb.contains("q.push_back(entry.clone())"), "큐 미적재");
+        assert!(gb.contains("return Reply::Single(err_response("), "보류 뒤 주입 경로로 흘러감");
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // ★U-5 · sysinfo 프로세스 정보 갱신 승격(argv) — 계측 타당성 + 비용

@@ -1182,7 +1182,7 @@ class _Log:
                                     "않았습니다 — 역할 등록이 '신원 미확정'으로 거부됐을 가능성이 "
                                     "큽니다(세션 배선). `cys list` 의 role 열을 확인하고, pane 안에서 "
                                     "재선언하세요. 새 부서가 목적이면 GUI ＋부서·`cys-dept allocate` 를 쓰세요.",
-                STEP.DEPT_FB_ALLOC: "부서 자동 생성 실패 — 부서 상한(CYS_DEPT_CAP 기본 8)·~/.cys/depts.json 을 확인하세요.",
+                STEP.DEPT_FB_ALLOC: "부서 자동 생성 실패 — ~/.cys/depts.json(레지스트리)·부서 번호 예약 오류를 확인하세요.",
                 STEP.DEPT_FB_MASTER: "부서는 생성됐지만 부서장 기동 실패 — 그 부서 pane에서 claude 실행 후 '너는 마스터다' 선언(훅 자동 부트) 또는 부서 pane 안에서 cys launch-agent --role master --agent claude 로 재시도하세요.",
                 STEP.BOOT: "팀(CSO·워커·리뷰어) 기동 실패 — claude CLI 설치를 확인하세요.",
                 STEP.CHECK: "팀 노드가 제 시간에 안 떴습니다 — cys list로 확인하고 필요시 재선언하세요.",
@@ -1603,7 +1603,7 @@ def _await_dept_ticket(dept, budget_s=None, interval_s=None, sleeper=None, clock
 # ★폭주 봉인(ABSOLUTE ANCHOR ①): 이 폴백에 도달하려면 이미 ⓐ훅 allowlist(master|미claim pane 만
 #   발화) ⓑmachine-origin 게이트(오너 타이핑 판정 — 기계 배달 선언은 스폰 자체가 없다) ⓒ레인
 #   싱글플라이트 락을 전부 통과한 상태다. 여기에 ⓓsurface별 멱등 맵(재선언=기존 부서 재사용)
-#   ⓔcys-dept allocate 의 live-count 상한(CYS_DEPT_CAP 기본 8) ⓕunix 한정(Windows 는 안내만 —
+#   ⓔ(구 live-count 상한 CYS_DEPT_CAP=8 은 v113 에서 삭제 — 자원 게이트만) ⓕunix 한정(Windows 는 안내만 —
 #   설치파일 신중 앵커)을 얹는다. 에이전트끼리 선언 문구를 주고받아 부서가 증식하는 경로는
 #   ⓑ가 원천 차단한다(배달 원장 해시·라벨 기반 — 원장 밖 동일 UID 위조는 기존 잔여위험과 동일).
 #
@@ -1815,8 +1815,8 @@ def _dept_fallback(log, claim_out):
             #   공유 boot-last 를 덮으면 다음 세션의 §0 이 '최신 완주 런 실패'로 읽고 재부트를
             #   churn 한다. 성공 경로의 ok=None 과 대칭으로 실패도 귀속 상태만 남긴다.
             return log.fail(STEP.DEPT_FB_ALLOC, code or 1,
-                            "부서 생성 실패(allocate exit %s · name=%r). 상한(CYS_DEPT_CAP 기본 8) 도달"
-                            " 여부·레지스트리(~/.cys/depts.json)를 확인하라.\n%s%s" % (code, name, out[-800:], err[-800:]),
+                            "부서 생성 실패(allocate exit %s · name=%r). "
+                            "레지스트리(~/.cys/depts.json)를 확인하라.\n%s%s" % (code, name, out[-800:], err[-800:]),
                             EXIT_BOOT, ok=None, state="dept_fallback_failed")
 
     # 부서 (소켓, 팩) 쌍 — cys-dept 가 SOT(`<name> -- <cmd>` env 주입 경로)다. 중복 유도 금지.

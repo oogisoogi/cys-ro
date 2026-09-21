@@ -265,7 +265,7 @@ def s_F(pack, tmp):
     c = ctx(out)
     ok = check("F 울타리: §1-A(844)는 들어가고 §2 는 「주입 상한 도달」+ 줄 범위",
                "■ 원문 §1-A" in c and "■ 원문 §2 " not in c and "주입 상한 도달 — §2 원문 생략" in c
-               and "줄 311–353" in c, c[-300:])
+               and "줄 324–366" in c, c[-300:])
     rows = [r for r in ledger_rows(tmp) if r.get("key") == "§2"]
     ok &= check("F 울타리 기록 1줄(fence)", [r["mode"] for r in rows] == ["fence"])
     rc, out, _e, _t = fire(pack, tmp, "cys launch-agent --role w")
@@ -374,7 +374,7 @@ def s_C(pack, tmp):
     c = ctx(out)
     ok = check("C CEO: cys-dept → [부서 수명주기] 원문", "[부서 수명주기" in c and "■ 원문 [부서 수명주기]" in c, c[:200])
     rc, out, _e, _t = fire(pack, tmp, "cys launch-agent --role w", sid="s2")
-    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(392–434)", "■ 원문 §2 (줄 392–434)" in ctx(out), ctx(out)[:160])
+    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(406–448)", "■ 원문 §2 (줄 406–448)" in ctx(out), ctx(out)[:160])
     return ok
 
 

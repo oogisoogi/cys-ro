@@ -47,6 +47,7 @@ done
 
 - **부서 생성·종료·회전·승격은 CEO가 직접 실행하지 않는다.** `cys-dept`의 lifecycle 동사(`launch`·`allocate`·`create`·`down`·`down-sock`·`rotate`·`reap`·`promote-ceo`)는 **CSO(`CYS_ROLE=cso`)와 GUI(오너 직접·role 없음) 전용**이며, CEO는 role=master 노드이므로 호출하면 단일소유 가드가 `exit 7`로 거부한다(다중주체 churn·빈 부서·중복·레이스 방지). 거부는 버그가 아니라 계약이다 — 우회(`CYS_ROLE` unset 등)는 금지.
 - 따라서 CEO의 정당한 경로는 둘뿐이다: ⓐ **GUI 부서 버튼**(오너가 직접 누르는 부서 생성·종료·정리) ⓑ **CSO 위임** — 필요를 판단해 CSO에게 요청한다.
+  ★**기본 길 = 오너가 말로 부탁한 부서 만들기·닫기**(2026-09-21 · ⓑ의 정식화): 오너가 「부서 만들어 줘/닫아 줘」라고 하면 스킬 `dept-by-chat` 대로 `javis_dept_request.py propose`→(오너가 직접 「네」)→`confirm` 을 부른다. 집행은 CSO 신원의 스케줄 틱(`dept-request-tick`)이 하므로 이것이 곧 CSO 위임이고, CEO는 도구 출력의 `say` 를 그대로 전한다. 아래 수기 `[부서요청]` push 는 도구가 없는 예외 경로다.
   ```bash
   # ⓑ CSO 위임 (CEO가 직접 cys-dept 를 실행하는 대신)
   cys send --to cso "[부서요청] 새 부서 '<name>' 생성 요청 — 목적: <미션>. 자원 게이트 확인 후 집행하고 결과 보고."

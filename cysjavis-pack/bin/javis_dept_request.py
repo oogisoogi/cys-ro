@@ -108,11 +108,9 @@ def workdir_for(display):
 
 
 # ── 상수 ──────────────────────────────────────────────────────────────────────
-def chat_cap():
-    try:
-        return int(_env("CYS_DEPT_CHAT_CAP", "2"))
-    except ValueError:
-        return 2
+# ★v113(2026-09-21 · 오너 결정 23:1x 「고정 2 제거 · 안전망 8 제거 · 자원 게이트만」): 부서 수 고정 상한은 없다.
+#   만들 수 있는지는 그 순간의 실측 자원(javis_resource_gate hard_block)만이 가른다 — 사용자 컴퓨터가 감당하는
+#   만큼 만든다. 옛 CYS_DEPT_CHAT_CAP 노브는 읽지 않는다(남아 있어도 무시).
 
 
 def _int_env(name, default):
@@ -123,7 +121,10 @@ def _int_env(name, default):
 
 
 CONFIRM_TTL_SEC = lambda: _int_env("CYS_DEPT_CONFIRM_TTL_SEC", 1800)       # 확인 뒤 30분 = 만료
-CREATE_GAP_SEC = lambda: _int_env("CYS_DEPT_CREATE_GAP_SEC", 600)          # 생성 간격 10분
+# ★v113: 간격은 **재호출(create 가 멈추거나 끝난 뒤 등재 없음)의 물러서기**에만 쓴다. 새 부서의 첫 생성은
+#   기다리지 않는다 — 폭주 방지는 「한 틱에 생성 1건」(create 를 끝까지 기다리는 직렬 집행)과 요청마다 필요한
+#   사람의 「네」가 진다. 사용자에게 「10분 뒤에」를 말하게 하는 고정 간격은 편의 원칙(09-21 23:0x)에 어긋난다.
+CREATE_GAP_SEC = lambda: _int_env("CYS_DEPT_CREATE_GAP_SEC", 600)          # 재호출 물러서기 10분
 CREATE_WAIT_SEC = lambda: _int_env("CYS_DEPT_CREATE_WAIT_SEC", 300)        # create 기다림 상한
 CREATE_HANG_SEC = lambda: _int_env("CYS_DEPT_CREATE_HANG_SEC", 3600)       # 첫 자식이 이보다 오래 살면 실패
 GONE_AFTER_SEC = 900                                                       # 판정 8행 경계 15분
@@ -466,6 +467,14 @@ def login_line(login_needed, trust):
     return s
 
 
+def busy_say(n_live):
+    """자원 hard_block 거부 문장 — 실측 사유 + 사용자 말 + 대안(09-21 23:0x 편의 원칙)."""
+    s = "지금 컴퓨터가 바빠서 부서를 새로 켜기 어렵습니다. 조금 뒤에 다시 말씀해 주세요."
+    if n_live:
+        s += " 지금 켜진 부서 중 하나를 닫으시면 바로 자리가 생길 수 있습니다 — 닫을 부서를 말씀해 주세요."
+    return s
+
+
 def render_create_card(r, gate, n_live):
     nodes = ((gate or {}).get("measured") or {}).get("nodes")
     if isinstance(nodes, int):
@@ -480,7 +489,7 @@ def render_create_card(r, gate, n_live):
         "  이름        %s" % r["display"],
         "  맡을 일     %s" % r["mission"],
         "  자리        Claude 3개가 새로 켜집니다(부서장·운영 담당·작업자) — 사용량이 그만큼 더 듭니다.",
-        "  지금 여유   부서 %d/%d · %s" % (n_live, chat_cap(), seats),
+        "  켜진 자리   %s · 사용량(5시간·7일 한도)은 화면 왼쪽 아래 사용량 칸에서 보실 수 있습니다." % seats,
         "  폴더        %s" % folder,
         "  로그인      %s" % login_line(r["login_needed"], r["trust"]),
         "  부서에 적어 둘 안내   %s  (전문: %s)" % (os.path.join(r["cwd"], "CLAUDE.md"),
@@ -571,13 +580,9 @@ def cmd_propose(a):
     if display_taken(disp, reg, cat):
         return _refuse("이미 「%s」가 있습니다. 그 부서를 쓰시거나 다른 이름을 말씀해 주세요." % disp,
                        reason="duplicate")
-    if len(live) >= chat_cap():
-        return _refuse("지금 부서가 %d개 있어서(메뉴로 만드신 부서 포함) 더 만들 수 없습니다. "
-                       "하나를 닫으시면 만들 수 있습니다." % len(live), reason="cap")
     gate = resource_check()
     if gate.get("verdict") == "hard_block":
-        return _refuse("지금 컴퓨터가 바빠서 부서를 새로 켜기 어렵습니다. 조금 뒤에 다시 말씀해 주세요.",
-                       reason="resource")
+        return _refuse(busy_say(len(live)), reason="resource")
     mission = norm_name(a.mission)
     if not mission:
         return _refuse("부서가 맡을 일을 한 줄로 말씀해 주세요.", reason="mission", code=2)
@@ -604,7 +609,7 @@ def cmd_propose(a):
          "account": acct_key, "account_mode": account_mode(), "login_needed": login_needed,
          "trust": trust_state(cwd), "first_task": first or None,
          "claude_md_sha256": sha256_text(text), "claude_md_marker_sha": sha,
-         "promotion_line": promotion_line_applies(), "events": []}
+         "promotion_line": promotion_line_applies(), "human_axis": hook_recently_active(), "events": []}
     os.makedirs(req_dir(rid), exist_ok=True)
     atomic_write_text(os.path.join(req_dir(rid), "claude_md.txt"), text)
     if utter:
@@ -640,7 +645,8 @@ def _propose_close(a, reg, ts, cat, live):
     rid = new_req_id()
     r = {"id": rid, "kind": "close", "state": "proposed", "created_at": now(), "target": target,
          "display": display_of(target, e, cat), "cwd": e.get("cwd"), "key": e.get("mission_key"),
-         "socket": e.get("socket"), "last_dept": len(live) == 1, "events": []}
+         "socket": e.get("socket"), "last_dept": len(live) == 1, "human_axis": hook_recently_active(),
+         "events": []}
     os.makedirs(req_dir(rid), exist_ok=True)
     card = render_close_card(r)
     atomic_write_text(os.path.join(req_dir(rid), "card.txt"), card)
@@ -672,6 +678,14 @@ def cmd_confirm(a):
                        code=6, reason="superseded")
     if r["state"] != "proposed":
         return _refuse("이 제안은 이미 처리됐습니다(%s)." % r["state"], code=7, reason="state")
+    if r.get("human_axis") and not human_ack_after(r):
+        # ★v113 A1(사람 확인 축): 이 기계에서 훅(dept-chat-inject)이 돌고 있으면(제안 시점 기록), 카드 **뒤에**
+        #   사람이 직접 친 입력(배달 원장 대조로 기계 유래 아님)이 있어야 확인한다 — 마스터(LLM)가 스스로 「네」를
+        #   판정해 부르는 경로를 닫는다. 훅이 없는 기계(human_axis 거짓)는 종전 그대로(편의 우선 · fail-open).
+        return _refuse("이 제안은 화면에서 직접 「네」라고 답해 주셔야 진행합니다. 이대로 만들까요? (네 / 아니요)"
+                       if r.get("kind") == "create" else
+                       "이 닫기는 화면에서 직접 「네」라고 답해 주셔야 진행합니다. 닫을까요? (네 / 아니요)",
+                       code=7, reason="human_unverified")
     if r["kind"] == "create":
         with open(os.path.join(req_dir(r["id"]), "claude_md.txt"), encoding="utf-8") as f:
             text = f.read()
@@ -691,6 +705,8 @@ def cmd_confirm(a):
                            code=6, reason="superseded")
         return _refuse("이 제안은 이미 처리됐습니다(%s)." % (cur or {}).get("state"), code=7, reason="state")
     touch_pending()
+    # 확인 문장은 지금 말하므로 「이 상태는 말했다」로 남긴다 — 훅의 매 턴 그물이 같은 소식을 다시 올리지 않게.
+    atomic_write_json(said_path(r["id"]), {"state": "confirmed", "at": now()})
     out({"ok": True, "request": r["id"], "say": "확인했습니다. 1분 안에 시작합니다 — 다 되면 알려 드리겠습니다."})
     return 0
 
@@ -803,7 +819,8 @@ FAIL_SAY = {
                           "다른 이름을 말씀해 주시거나 그 파일을 옮겨 주세요.",
     "claude_md_changed": "부서에 적어 둘 안내가 확인 뒤에 바뀌어서 만들지 않았습니다. 다시 말씀해 주세요.",
     "cysd_not_found": "부서 프로그램을 찾지 못해 만들지 못했습니다. 이 프로그램을 다시 설치해야 할 수 있습니다.",
-    "cap": "그 사이 부서가 %d개가 되어(메뉴로 만드신 부서 포함) 더 만들 수 없었습니다." ,
+    # 옛 판(v1.1.2 이하)의 상한 실패 기록을 읽을 때만 쓴다 — 지금은 부서 수 상한이 없다.
+    "cap": "그때는 부서 수 상한이 있어 만들지 못했습니다(지금은 상한이 없습니다). 다시 말씀해 주시면 만듭니다.",
     "resource": "컴퓨터가 너무 바빠서 만들지 못했습니다. 조금 뒤에 다시 말씀해 주세요.",
     "create_hang": "부서를 만드는 일이 너무 오래 걸려 멈췄습니다.",
     # A1-2b 2R(agy): 이 사유들이 날것(「(사유: …)」)으로 나가지 않게
@@ -836,16 +853,14 @@ def say_for(row, r, name, x, reg=None, cat=None):
     if row == 4:
         reason = (r or {}).get("fail_reason") or ""
         base = FAIL_SAY.get(reason.split(":")[0])
-        if reason.startswith("cap"):
-            base = FAIL_SAY["cap"] % chat_cap()
         left = " 남은 것: %s" % r.get("leftover") if (r or {}).get("leftover") else " 남은 것은 없습니다."
         return "「%s」을 만들지 못했습니다. %s%s" % (disp, base or "(사유: %s)" % reason, left)
     if row == 5:
         return "「%s」은 닫혀 있습니다." % disp
     if row == 6:
         if (r or {}).get("waiting_gap"):
-            return ("앞선 부서를 만든 지 10분이 지나야 다음 부서를 만들 수 있습니다 — 그때 자동으로 이어서 "
-                    "만듭니다.")
+            return ("「%s」을 만들던 앞선 시도가 끝나지 않아, 10분 뒤 자동으로 다시 만듭니다. "
+                    "그만두시려면 지우라고 말씀해 주세요." % disp)
         return "「%s」을 만들 차례를 기다리고 있습니다 — 1분 안에 시작합니다." % disp
     if row == 7:
         if (r or {}).get("state") == "create-timeout" and r.get("waiting_gap"):
@@ -1477,12 +1492,8 @@ def _create_step(r, st, reqs):
         if (r.get("create_calls") or 0) >= MAX_CREATE_CALLS:
             _fail(r, "create_timeout_exhausted")
             return
-    live = live_depts(reg, ts)
-    if len(live) >= chat_cap():
-        _fail(r, "cap:%d" % len(live))
-        return
     last = (st.get("last_create_at") or 0)
-    if t - last < CREATE_GAP_SEC():
+    if reentry and t - last < CREATE_GAP_SEC():
         r["waiting_gap"] = True
         return
     gate = resource_check()
@@ -1756,6 +1767,129 @@ def self_test():
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
+# ── 훅(dept-chat-inject.sh · UserPromptSubmit) ────────────────────────────────
+HOOK_ACTIVE_WINDOW_SEC = 900
+HOOK_MAX_NEWS = 3
+_INTENT = re.compile(r"(부서|팀)")
+_VERB = re.compile(r"(만들|꾸려|꾸리|새로|추가|생성|닫|없애|지워|지우|정리|해체|어떻게|상태|켜|시작)")
+_NOTICE = re.compile(r"^\s*\[(부서결과|부서가동)\]")
+
+
+def hook_active_path():
+    return os.path.join(root_dir(), ".hook-active")
+
+
+def hook_recently_active():
+    """이 기계에서 사람 확인 축(훅)이 살아 있는가 — 제안 직전 15분 안에 훅이 돌았는가(제안을 부른 그 발화가
+    훅을 거쳤는가). 거짓이면 confirm 은 사람 축을 요구하지 않는다(훅 없는 기계 = 종전 동작)."""
+    try:
+        return now() - os.path.getmtime(hook_active_path()) <= HOOK_ACTIVE_WINDOW_SEC
+    except OSError:
+        return False
+
+
+def ack_path(rid):
+    return os.path.join(req_dir(rid), "human_ack.json")
+
+
+def human_ack_after(r):
+    a = load_json(ack_path(r["id"]), None) or {}
+    try:
+        return float(a.get("at") or 0) >= float(r.get("created_at") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def _prompt_is_machine(prompt):
+    """(판정, 근거) — 배달 원장 대조(javis_mission.machine_origin 단일 소유 · 사본 금지). 판정 불가 = None."""
+    if _NOTICE.match(prompt or ""):
+        return True, "notice"
+    try:
+        import javis_mission
+        return bool(javis_mission.machine_origin(prompt)[0]), "ledger"
+    except Exception as e:
+        return None, "unknown:%s" % type(e).__name__
+
+
+def _hook_seen_path():
+    return os.path.join(root_dir(), ".hook-seen.json")
+
+
+def cmd_hook_prompt(a):
+    """UserPromptSubmit 훅 본체. 출력 = 훅 JSON 1줄 또는 무출력 · 언제나 exit 0(훅이 fail-open 으로 소비).
+    ① 사람 확인 축 기록 ② 부서 요청 요지(세션당 1회 · 알림 입력은 매번) ③ 아직 전하지 않은 부서 소식(세션당 (번호,상태) 1회)."""
+    try:
+        raw = sys.stdin.read()
+        d = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        d = {}
+    prompt = (d.get("prompt") or "") if isinstance(d, dict) else ""
+    sid = str((d.get("session_id") if isinstance(d, dict) else None) or "-")
+    os.makedirs(root_dir(), exist_ok=True)
+    with open(hook_active_path(), "a", encoding="utf-8"):
+        pass
+    os.utime(hook_active_path(), None)
+    base = lane_is_base()
+    reqs = all_reqs()
+    # ① 사람 확인 축 — 열린 제안(언제나 1장) 뒤의 사람 입력
+    opened = [r for r in reqs if r.get("state") == "proposed"]
+    if base and opened and prompt.strip():
+        mach, why = _prompt_is_machine(prompt)
+        if mach is not True:
+            r = max(opened, key=lambda x: x.get("created_at") or 0)
+            atomic_write_json(ack_path(r["id"]), {"at": now(), "session": sid, "origin": why,
+                                                  "prompt_sha256": sha256_text(prompt)})
+    seen_all = load_json(_hook_seen_path(), {}) or {}
+    seen = seen_all.get(sid) or {"guide": 0, "news": []}
+    lines = []
+    notice = bool(_NOTICE.match(prompt))
+    intent = bool(_INTENT.search(prompt) and _VERB.search(prompt))
+    tool = os.path.join(HERE, "javis_dept_request.py")
+    if not base:
+        if intent and not seen.get("guide"):
+            lines.append("■ 부서 요청: 이 화면은 부서 화면이다 — 부서 만들기·닫기는 맨 처음 화면의 본부 마스터에서만 된다. "
+                         "사용자에게 「본부 마스터에게 말씀해 주세요」라고 그대로 안내하라.")
+            seen["guide"] = now()
+    else:
+        if notice or (intent and not seen.get("guide")):
+            lines += [
+                "■ 부서 요청 — 스킬 dept-by-chat 절차(`cys skill show dept-by-chat`) · 도구 = python3 \"%s\"" % tool,
+                "  · 만들기: 안내 본문·발화 원문을 임시 파일로 → propose --name <이름> --mission <맡을 일> --claude-md-file <본문> "
+                "--utterance-file <발화> → card 전문 그대로 보여 준다",
+                "  · 사용자가 직접 「네」 → confirm <번호> · 닫기 = propose --close <이름> → 「네」 → confirm <번호>",
+                "  · [부서결과]/[부서가동] 알림·상태 질문 → status --say <번호>(전부는 status --pending) 의 say 를 그대로 전한다",
+                "  · JSON 의 say·card 를 한 글자도 바꾸지 않는다 · 부서 수명주기 명령을 직접 부르지 않는다(집행 = 틱)",
+            ]
+            seen["guide"] = now()
+        news = []
+        for r in reqs:
+            if r.get("state") in ("proposed", "superseded", "discarded"):
+                continue
+            if now() - (r.get("updated_at") or r.get("created_at") or 0) > 7 * DAY:
+                continue
+            said = load_json(said_path(r["id"]), None) or {}
+            if said.get("state") == r["state"]:
+                continue
+            k = "%s:%s" % (r["id"], r["state"])
+            if k in seen["news"]:
+                continue
+            news.append((r, k))
+        for r, k in news[:HOOK_MAX_NEWS]:
+            lines.append("■ 아직 전하지 않은 부서 소식: 「%s」(%s) — `python3 \"%s\" status --say %s` 의 say 를 그대로 전하라."
+                         % (r.get("display") or "?", r["id"], tool, r["id"]))
+            seen["news"].append(k)
+        seen["news"] = seen["news"][-50:]
+    if lines:
+        seen_all[sid] = seen
+        if len(seen_all) > 20:
+            for old in sorted(seen_all, key=lambda x: (seen_all[x] or {}).get("guide") or 0)[:-20]:
+                seen_all.pop(old, None)
+        atomic_write_json(_hook_seen_path(), seen_all)
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                                 "additionalContext": "\n".join(lines)}}, ensure_ascii=False))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="javis_dept_request.py")
     sub = ap.add_subparsers(dest="cmd")
@@ -1778,6 +1912,7 @@ def main(argv=None):
     d = sub.add_parser("discard")
     d.add_argument("request")
     sub.add_parser("self-test")
+    sub.add_parser("hook-prompt")
     a = ap.parse_args(argv)
     if a.cmd == "propose":
         if a.close is None and not (a.name and a.mission and a.claude_md_file):
@@ -1792,6 +1927,12 @@ def main(argv=None):
           "discard": cmd_discard}.get(a.cmd)
     if a.cmd == "self-test":
         return self_test()
+    if a.cmd == "hook-prompt":
+        try:
+            return cmd_hook_prompt(a)
+        except Exception as e:                          # 훅은 fail-open — 사람의 프롬프트를 깨지 않는다
+            sys.stderr.write("[dept-request] hook-prompt 실패 %s: %s\n" % (type(e).__name__, e))
+            return 0
     if not fn:
         ap.print_help()
         return 2

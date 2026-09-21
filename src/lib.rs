@@ -39,6 +39,7 @@ pub mod restore_mark;
 /// 좌석별 폴더(cso/·workers/wN/) — 폴더 생성·얇은 CLAUDE.md·폴더 신뢰 시드. python `javis_seat.py`
 /// 와 같은 규칙이며 두 구현이 골든 표 `cysjavis-pack/templates/seat-layout.json` 을 공유한다.
 pub mod seat;
+pub mod submit_probe;
 pub mod packsig;
 pub mod overrides;
 pub mod todo_decl;

@@ -110,6 +110,36 @@ export function cycleAdviceLines(seats: { role: string; ctxPct: number | null }[
   return [`${names} 창은 기억한 내용이 ${CYCLE_ADVICE_PCT}%를 넘었어요. 한 번 정리(순환)를 권해요.`];
 }
 
+/** 부트 주입 제출 기록(`~/.cys/state/boot-submit-<레인>.jsonl`)을 읽는 창(초) — 이번 복원분만 본다. */
+export const UNSUBMITTED_WINDOW_SECS = 900;
+
+/**
+ * ★(v112-restore ①) 복원 글이 입력창에 **남아 있는(미제출)** 자리 번호들. 자리마다 **가장 늦은 기록**만
+ * 본다 — 뒤에 제출이 확인됐으면 미제출이 아니다. 창 밖 기록·깨진 줄은 무시한다(지어내지 않는다).
+ * 「못 쟀다(unmeasured)」는 미제출로 말하지 않는다(모르는 것을 단정하지 않는다).
+ */
+export function unsubmittedSurfaces(jsonl: string, nowSec: number, windowSec = UNSUBMITTED_WINDOW_SECS): number[] {
+  const latest = new Map<number, { ts: number; state: string }>();
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let r: { ts?: unknown; surface?: unknown; state?: unknown };
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof r.ts !== "number" || typeof r.surface !== "number" || typeof r.state !== "string") continue;
+    if (nowSec - r.ts > windowSec || r.ts - nowSec > windowSec) continue;
+    const prev = latest.get(r.surface);
+    if (!prev || r.ts >= prev.ts) latest.set(r.surface, { ts: r.ts, state: r.state });
+  }
+  // held_input_not_ready = claude 입력창이 끝내 안 보여 **보내지 않은** 자리 — 사용자에겐 같은 사실(안내 미전달)이다.
+  return [...latest.entries()]
+    .filter(([, v]) => v.state === "not_submitted" || v.state === "held_input_not_ready")
+    .map(([sid]) => sid)
+    .sort((a, b) => a - b);
+}
+
 export interface BriefCard {
   title: string;
   lines: { head: string; items: string[] }[];
@@ -128,6 +158,8 @@ export function buildBriefCard(input: {
   waitingRoles: string[];
   /** 자리별 컨텍스트 사용률(모르면 null) — 60%+ 자리에 순환 권유 한 줄을 얹는다(집행 0). */
   seatCtx?: { role: string; ctxPct: number | null }[];
+  /** ★(v112-restore) 복원 안내가 입력창에 남은(미제출 실측) 자리의 역할 — 정직 표기 한 줄. */
+  unsubmittedRoles?: string[];
 }): BriefCard {
   const uniq = (xs: string[]) => [...new Set(xs.map(friendlyRole))];
   const back = uniq(input.restoredRoles);
@@ -139,6 +171,11 @@ export function buildBriefCard(input: {
       back.length ? `${back.join(" · ")} 창이 다시 켜졌습니다.` : "다시 켜진 창이 아직 없습니다.",
       ...(wait.length ? [`${wait.join(" · ")} 창은 아직 켜지는 중입니다. 잠시 뒤 저절로 붙습니다.`] : []),
       ...cycleAdviceLines(input.seatCtx ?? []),
+      ...(uniq(input.unsubmittedRoles ?? []).length
+        ? [
+            `${uniq(input.unsubmittedRoles ?? []).join(" · ")} 창에는 다시 켜진 뒤 보낸 안내가 아직 입력칸에 남아 있어요(전송되지 않음). 그 창을 눌러 Enter 를 한 번 눌러 주세요.`,
+          ]
+        : []),
     ],
   });
   if (input.sections) {

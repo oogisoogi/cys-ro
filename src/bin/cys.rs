@@ -171,6 +171,17 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         timeout: u64,
     },
+    /// 재시작 한 번에 끝내기 — 앱 [재시작] 단추(rotate_daemon)와 같은 5단:
+    /// 저장 검증(drain --verify) → 데몬 교체 → 복귀 표식 → 새 팩 반영(init-pack) → 조직 복원(restore).
+    /// 설치기가 재설치 끝에서 부른다(「[재시작] 눌러 주세요」 단계 삭제). 종료코드 표 = `rotate_rc` doc.
+    Rotate {
+        /// 저장 검증 노드별 대기(초) — drain --verify 의 --timeout 으로 넘긴다.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        /// 저장 검증을 건너뛴다(살아 있는 자리가 없다고 확신할 때만).
+        #[arg(long)]
+        skip_drain: bool,
+    },
     /// preflight 게이트: exit 0 = running, 4 = paused (자율주행 매 action 전 확인용)
     GateCheck,
     /// 미배달 큐 검사·철회 (kill-switch의 짝)
@@ -3155,6 +3166,10 @@ fn run(command: Command) -> i32 {
 
         Command::Drain { verify, timeout } if verify => {
             return run_drain_verify(timeout);
+        }
+
+        Command::Rotate { timeout, skip_drain } => {
+            return run_rotate(timeout, skip_drain);
         }
 
         Command::Drain { .. } => {
@@ -10702,6 +10717,116 @@ fn boot_agent_on_surface(
     )
 }
 
+/// 제출 실측용 sentinel — 지시문 **첫 줄 앞부분**(공백 제거 후 판정기가 대조). 입력창에 남으면
+/// 그 머리가 보인다(긴 글이 접혀 보이는 경우는 판정기의 몫).
+fn submit_sentinel(directive: &str) -> String {
+    directive
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(24)
+        .collect()
+}
+
+/// 주입 직후 제출 실측 → 미제출이면 Return **1회** → 재실측(순수 제어 흐름 · 시험이 IO 를 갈아 끼운다).
+/// 반환 = (최종 3상태, 재제출 여부). 화면을 못 읽으면 Unmeasured(미제출로 단정하지 않는다) —
+/// 그때는 Return 을 보내지 않는다(모르는 입력창에 키를 치지 않는다).
+fn settle_submit(
+    sleep: impl Fn(std::time::Duration),
+    read: impl Fn() -> Option<String>,
+    send_return: impl Fn() -> bool,
+    sentinel: &str,
+) -> (SubmitProbe, bool) {
+    let probe = |r: Option<String>| {
+        r.map(|s| submit_probe(&s, sentinel).0)
+            .unwrap_or(SubmitProbe::Unmeasured)
+    };
+    sleep(std::time::Duration::from_millis(900));
+    let first = probe(read());
+    if first != SubmitProbe::NotSubmitted {
+        return (first, false);
+    }
+    if !send_return() {
+        return (first, false);
+    }
+    sleep(std::time::Duration::from_millis(1200));
+    (probe(read()), true)
+}
+
+/// 부트 주입 제출 결과를 레인 상태 폴더의 append-only 기록에 남긴다(best-effort).
+/// 파일 = `<lane state>/boot-submit-<lane>.jsonl` — 복원 카드(UI)가 최근 기록만 읽어
+/// 「창 N 지시 미제출」을 표기한다. 기록 실패는 부트를 막지 않는다(stderr 경고는 호출부가 이미 낸다).
+fn record_boot_submit(sid: u64, state: SubmitProbe, resubmitted: bool) {
+    record_boot_submit_state(sid, submit_state_str(state), resubmitted)
+}
+
+/// claude 입력창 대기 상한(초) — 근거는 호출부 주석(2-b).
+const BUDGET_INPUT_READY_SECS: u64 = 30;
+/// 입력창 미실측으로 주입을 보류한 좌석의 관문 id(표식·처방에 실린다).
+const GATE_ID_INPUT_NOT_READY: &str = "claude_input_not_ready";
+
+/// claude 빈 입력창이 실측될 때까지 기다린다(순수 제어 흐름 · 시험이 IO 를 갈아 끼운다).
+/// 참 = 입력창이 비어 입력을 받는다(`input_line_empty == Some(true)`) · 거짓 = 상한 안에 못 봤다.
+/// 「못 쟀다(None)」·「글이 있다(Some(false))」는 준비가 아니다 — 셸 에코·관문 선택지를 준비로 읽지 않는다.
+/// ★(agy R1 수용) 상한은 **실제 경과 시간**으로 잰다 — 틱 수를 세면 read()(RPC)가 느릴 때 실제 대기가
+/// 상한을 크게 넘는다. 시계는 주입(`elapsed`) — 운영 = `Instant` · 시험 = 가짜 시계.
+fn wait_input_ready(
+    sleep: impl Fn(std::time::Duration),
+    read: impl Fn() -> Option<String>,
+    elapsed: impl Fn() -> std::time::Duration,
+    cap: std::time::Duration,
+) -> bool {
+    let tick = std::time::Duration::from_millis(500);
+    loop {
+        if read().map(|s| input_line_empty(&s) == Some(true)).unwrap_or(false) {
+            return true;
+        }
+        if elapsed() >= cap {
+            return false;
+        }
+        sleep(tick);
+    }
+}
+
+fn record_boot_submit_state(sid: u64, state: &str, resubmitted: bool) {
+    use std::io::Write;
+    let dir = cys::lane::state_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!(
+        "boot-submit-{}.jsonl",
+        cys::lane::lane_key(&cys::socket_path())
+    ));
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let rec = json!({
+        "ts": ts,
+        "surface": sid,
+        "state": state,
+        "resubmitted": resubmitted,
+    });
+    // 회전(256KB) — 소비자(UI 카드)는 파일 **머리**를 읽는다(read_text_head · 상한 1MB). 회전이 없으면
+    // 오래 쓴 기기에서 최근 기록이 상한 밖으로 밀려 카드가 조용히 아무것도 못 본다.
+    if std::fs::metadata(&path).map(|m| m.len() > BOOT_SUBMIT_ROTATE_BYTES).unwrap_or(false) {
+        let _ = std::fs::rename(&path, path.with_extension("jsonl.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{rec}");
+    }
+}
+
+const BOOT_SUBMIT_ROTATE_BYTES: u64 = 256 * 1024;
+
+fn submit_state_str(p: SubmitProbe) -> &'static str {
+    match p {
+        SubmitProbe::Submitted => "submitted",
+        SubmitProbe::NotSubmitted => "not_submitted",
+        SubmitProbe::Unmeasured => "unmeasured",
+    }
+}
+
 /// `boot_agent_on_surface` 의 **판정 이후 절반** — ready 가 확정된 좌석에 표식을 해제하고
 /// 디렉티브를 주입한 뒤 ack 를 검증한다. **스폰·기동 send 를 하지 않는다**(이 함수에 들어올
 /// 때 그 좌석의 에이전트는 이미 떠 있고 입력을 받을 수 있다).
@@ -10747,6 +10872,38 @@ fn inject_directive_after_ready(
         }
     };
 
+    // 2-b) ★(v112-restore ①) **claude 입력창 실측 전 주입 금지**. 위 ready 판정의 안전 밸브(커널 생존 +
+    //   맨 셸 아님)는 claude 프로세스가 뜬 뒤 TUI 가 그려지기 **전**에도 발화한다 — 셸에 친 기동 명령 줄이
+    //   화면에 있으면 「맨 셸 아님」이 되기 때문이다. 그 창에 붙여넣으면 지시가 셸 입력 버퍼로 들어가고
+    //   claude 가 뜬 뒤 입력창에 **미제출로** 남는다(2026-09-21 윈 워커47 · 격리 재현: 기동 10초 지연 자리).
+    //   그래서 claude 계열은 **빈 입력창**(공용 판정기 input_line_empty)이 실측될 때까지 상한 안에서 기다리고,
+    //   끝내 안 보이면 주입하지 않고 좌석을 보존한다(관문 보류와 같은 귀결 · 추정 주입 0).
+    //   상한 근거: claude 첫 렌더는 맥 실측 1~3s · 느린 윈 노트북·npm 셸 경유는 그 몇 배 — 30s 면 여유 있고
+    //   부트 전체 상한(readiness 60s)을 두 배 넘기지 않는다.
+    if agent.starts_with("claude") {
+        let started = std::time::Instant::now();
+        let ready = wait_input_ready(
+            |d| std::thread::sleep(d),
+            || {
+                request("surface.read_text", json!({"surface_id": sid}))
+                    .ok()
+                    .and_then(|r| r["text"].as_str().map(String::from))
+            },
+            || started.elapsed(),
+            std::time::Duration::from_secs(BUDGET_INPUT_READY_SECS),
+        );
+        if !ready {
+            let tail = screen_tail_lines(&gate_guard_screen(sid).unwrap_or_default(), 5);
+            eprintln!(
+                "[launch-agent] ★claude 입력창 미실측({BUDGET_INPUT_READY_SECS}s) — 지시 {} 바이트 **미주입** · \
+                 Return 0발 · 좌석 보존(셸에 붙여넣지 않는다)",
+                directive.len()
+            );
+            record_boot_submit_state(sid, "held_input_not_ready", false);
+            return Ok(settle_gate_pending(sid, GATE_ID_INPUT_NOT_READY, tail, gate_close_override));
+        }
+    }
+
     // 3) 지침 주입 — bracketed paste로 감싸 단일 입력으로 전달
     let inject_cursor: u64 = fetch_surfaces()
         .iter()
@@ -10791,6 +10948,35 @@ fn inject_directive_after_ready(
             tail,
             gate_close_override,
         ));
+    }
+
+    // ── 3-b) 제출 실측 — ★(v112-restore ①) 붙여넣기 + Return 을 보냈다는 것은 **제출됐다는 증거가
+    //   아니다**. 2026-09-21 윈 실기: 복원 글이 입력창에 붙기만 하고 5분간 미제출(watchdog pane.idle
+    //   뒤 사람이 Return 으로 풀었다). 입력창을 실측해 미제출이면 Return 을 **1회만** 더 보내고, 그래도
+    //   안 되면 그 사실을 기록해 복원 카드가 정직하게 말하게 한다(추정 금지 · 3상태).
+    let (submit_state, resubmitted) = settle_submit(
+        |d| std::thread::sleep(d),
+        || {
+            request("surface.read_text", json!({"surface_id": sid}))
+                .ok()
+                .and_then(|r| r["text"].as_str().map(String::from))
+        },
+        || {
+            request(
+                "surface.send_key",
+                json!({"surface_id": sid, "key": "Return", "authoritative": true}),
+            )
+            .is_ok()
+        },
+        &submit_sentinel(directive),
+    );
+    record_boot_submit(sid, submit_state, resubmitted);
+    if submit_state == SubmitProbe::NotSubmitted {
+        eprintln!(
+            "[launch-agent] ⚠ {} 지시문이 입력창에 남아 있다(미제출 실측 · Return 재제출 1회 후에도) — \
+             기록했다(복원 카드에 표기)",
+            surface_ref(sid)
+        );
     }
 
     // ── 4) 주입 확인 — ★(W2 · B14/CS-3⑤) **신호의 질을 화면 문자열 → ack 계약으로 교체** ──
@@ -12595,6 +12781,40 @@ fn workflow_title(role: &str, agent: &str, cwd: &Option<String>) -> String {
         .unwrap_or_else(|| format!("{role}-{agent}"))
 }
 
+/// launch 경로가 **기동 자체를 건너뛸** 사유(순수 · TICKET=v112-restore ①-b).
+///
+/// # 고치는 결함(2026-09-21 윈 실기 · image(71))
+/// 워커 자리 47 의 **살아 있는 claude 입력창**에 「[RESTORE] → `claude … --continue` → [RESTORE]」가
+/// 차례로 쌓였다. 경로: 복원이 설계상 겹친다(사이드카 restore + 콜드부트 auto-restore) → 두 번째
+/// `run_restore` 가 같은 역할을 `run_launch_agent_opts` 로 띄운다 → `surface.create` 가 **같은 멱등키**
+/// (`la-<role>-<agent>-<cwd>`)라 데몬이 create_idem 캐시(TTL 120s)에서 **같은 자리를 재반환**한다
+/// (`idempotent_reuse=true`) → 클라이언트는 그것을 새 자리로 알고 기동 명령 + 복원 글을 또 친다.
+/// 복원 1회 표식은 이 경로에서 주입 **뒤**에야 찍혀(구 run_restore) 두 번째를 막지 못했다.
+///
+/// | restore | 재반환 | 표식 claim | 에이전트 생존 | 귀결 |
+/// |---|---|---|---|---|
+/// | true | * | 짐 | * | 건너뜀 — 다른 복원 경로가 이 자리를 맡았다 |
+/// | * | true | (이김) | Some(true) | 건너뜀 — 살아 있는 에이전트 입력창에 기동 명령을 치지 않는다 |
+/// | 그 밖 | | | | 기동 |
+///
+/// 재반환 + 생존 미상(None)은 **기동**한다 — 멱등 재반환의 본래 용도(응답 유실 뒤 재시도: 첫 호출이
+/// 자리만 만들고 아무도 기동하지 않았다)를 막지 않기 위해서다. 그 경우의 이중 기동은 복원 경로라면
+/// 표식이 먼저 막는다.
+fn launch_boot_skip(
+    restore: bool,
+    reused: bool,
+    claim_won: bool,
+    agent_alive: Option<bool>,
+) -> Option<&'static str> {
+    if restore && !claim_won {
+        return Some("겹치는 복원 경로가 방금 이 자리를 맡았다(복원 1회 표식)");
+    }
+    if reused && agent_alive == Some(true) {
+        return Some("멱등 재반환된 자리에 에이전트가 이미 살아 있다");
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_launch_agent_opts(
     role: &str,
@@ -12685,6 +12905,18 @@ fn run_launch_agent_opts(
         let sid = r["surface_id"].as_u64().ok_or("create returned no id")?;
         created = Some(sid);
         eprintln!("[launch-agent] {} created (role={role})", surface_ref(sid));
+        // ★(v112-restore) 기동 **전** 겹침 차단 — 판정 표는 `launch_boot_skip` doc.
+        let reused = r["idempotent_reuse"].as_bool() == Some(true);
+        let claim_won = !restore || restore_inject_claim(sid);
+        let alive = if reused { surface_agent_alive(sid) } else { None };
+        if let Some(why) = launch_boot_skip(restore, reused, claim_won, alive) {
+            eprintln!(
+                "[launch-agent] {} — {why} · 기동 명령 0 · 복원 글 0 · 좌석 보존",
+                surface_ref(sid)
+            );
+            println!("{}", surface_ref(sid));
+            return Ok(BootVerdict::Ready);
+        }
         // (W1) 데몬이 기록·반환한 권위 config_dir을 resume 게이트·restore 인라인의 결정론 소스로 쓴다.
         let recorded_cfg = r["claude_config_dir"].as_str().map(String::from);
         // ★T-0147-5(W3): 그 config dir 의 settings.json 에 각성 훅이 없으면 **1분 내 원인 가시화**.
@@ -13302,56 +13534,16 @@ fn socket_discriminator(socket: &std::path::Path) -> u64 {
     h
 }
 
-/// 화면에서 '현재 입력창 영역'만 잘라낸다 — 마지막 입력 앵커(입력 박스 상단 '╭' 또는 줄 시작 '> ' 프롬프트)
-/// 이후 끝까지. 제출된 텍스트는 이 영역 **위**(스크롤백)에 렌더되고, 미제출 입력은 이 영역 **안**에 잔류한다.
-/// 앵커가 없으면(구/미지 TUI) 전체 화면을 반환한다(보수적 — 놓친 wedge=저장 유실이 과검출보다 위험).
-/// `input_region` 의 실측판 — (영역, **앵커를 실제로 찾았는가**). ★[V111-F2] 앵커가 없으면 전체 화면을
-/// 돌려주는데(보수적 폴백), 그때의 매치는 「입력창에 잔류한다」가 아니라 **「입력창이 어디인지 모른다」**다.
-/// 둘을 같은 bool 로 접으면 스크롤백 에코가 「입력 미제출」로 **단정**된다 — 09-21 실기에서 마커를 실제로
-/// 기입한 worker 가 `delivery_failed`(지시 전달 실패)로 표기된 자리다. 그래서 행동(Return 재전송)은
-/// 종전대로 보수적으로 두되 **판정 라벨은 앵커 실측일 때만** 붙인다.
-fn input_region_anchored(screen: &str) -> (&str, bool) {
-    let box_top = screen.rfind('╭');
-    let prompt = if screen.starts_with("> ") {
-        Some(0)
-    } else {
-        screen.rfind("\n> ").map(|i| i + 1)
-    };
-    match box_top.into_iter().chain(prompt).max() {
-        Some(i) => (&screen[i..], true),
-        None => (screen, false),
-    }
-}
+// ★(v112-restore · master 조정 [master#3e93facf]) 제출 판정기(3상태 · 입력창 앵커 ╭ / `> ` / ❯)는
+//   공용 lib `cys::submit_probe` 가 단일 정본이다(890 f850f6b2 · cys·cysd 가 같은 술어). 이 파일에
+//   있던 사본은 지웠다 — 두 구현이면 한쪽만 고쳐지는 날(오늘 ❯ 앵커가 그 예) 판정이 갈린다.
+//   [V111-F2] 의 계약(판정 라벨은 앵커 실측일 때만 · 행동은 보수적)은 lib 모듈 doc 이 잇는다.
+use cys::submit_probe::{input_line_empty, submit_probe, SubmitProbe};
 
-/// 제출 실측 3상태 — 「제출됐다」·「제출 안 됐다」·「못 쟀다」를 배타적으로 가른다(추정 금지).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SubmitProbe {
-    /// 입력창 앵커를 찾았고 그 안에 sentinel 이 없다 = 제출 실측.
-    Submitted,
-    /// 입력창 앵커를 찾았고 그 안에 sentinel 이 잔류한다 = 미제출 실측.
-    NotSubmitted,
-    /// 입력창 앵커를 못 찾았다 = 측정 실패. **미제출과 구별되는 별도 상태**다.
-    Unmeasured,
-}
-
-/// 화면에서 제출 여부를 실측한다 — 반환=(3상태, 의심 여부). `의심`=화면 어디든 sentinel 이 공백 제거
-/// 매치(구 [F1] 전체 매치와 동일 술어) → **행동**(Return 재전송)의 트리거로만 쓰고 **판정**에는 쓰지 않는다.
-fn submit_probe(screen: &str, sentinel: &str) -> (SubmitProbe, bool) {
-    let flat_of = |t: &str| -> String { t.chars().filter(|c| !c.is_whitespace()).collect() };
-    let needle = flat_of(sentinel);
-    if needle.is_empty() {
-        return (SubmitProbe::Unmeasured, false);
-    }
-    let suspect = flat_of(screen).contains(&needle);
-    let (region, anchored) = input_region_anchored(screen);
-    if !anchored {
-        return (SubmitProbe::Unmeasured, suspect);
-    }
-    if flat_of(region).contains(&needle) {
-        (SubmitProbe::NotSubmitted, true)
-    } else {
-        (SubmitProbe::Submitted, false)
-    }
+/// Claude 입력창이 **비어 있어 입력을 받는가** — lib `input_line_empty` 의 판정. 못 재면(None) false
+/// (모르는 것을 준비됐다고 하지 않는다 · 드레인 복원 가드의 예외는 이 참일 때만 연다).
+fn claude_input_empty(screen: &str) -> bool {
+    input_line_empty(screen) == Some(true)
 }
 
 /// 저장 지시문 생성 — ★[R1] 마커 기입을 '정지' 지시보다 **앞**(단계 ①)에 둔다. 지시문을 순서대로
@@ -13422,9 +13614,11 @@ fn activity_probe_interval(timeout: std::time::Duration) -> std::time::Duration 
 ///   흡수한다 — stale-epoch done은 이전 세대(재부팅 전) 저널이라 대개 창 밖(무시)이므로 실질 발산 없음.
 fn restore_guard_reason(socket: &std::path::Path, role: &str) -> Option<String> {
     const RESTORE_RECENCY_SECS: u64 = 300;
-    let dir = socket.parent()?;
+    // ★(v112-restore) 데몬 상태 폴더(윈도 = %LOCALAPPDATA%\cys · 파이프 부모 아님) — phoenix
+    //   state_dir_for 의 윈 매핑과 같은 규칙. 종전(소켓의 부모 폴더)은 윈에서 저널을 못 찾아 가드가 늘 꺼졌다.
+    let dir = cys::daemon_state_dir(socket);
     // [F4] phoenix state_dir_for와 정렬 — 심링크 소켓 디렉토리 대응(실패 시 원경로 폴백).
-    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let phoenix = dir.join("phoenix");
     let entries = std::fs::read_dir(&phoenix).ok()?; // 디렉토리 부재 = 저널 없음 = 복원 아님(None)
     for e in entries.flatten() {
@@ -13474,11 +13668,34 @@ fn restore_guard_reason(socket: &std::path::Path, role: &str) -> Option<String> 
         let started = ["spawn", "ready", "resume", "reinject"]
             .iter()
             .any(|s| done(s));
-        if started && !done("g2_ack") {
-            return Some(format!("phoenix 복원 진행 중(stage<g2_ack, {name})"));
+        if started && !restore_role_terminal(stages) {
+            return Some(format!("phoenix 복원 진행 중(verify 미기록, {name})"));
         }
     }
     None
+}
+
+/// 역할의 phoenix 복원이 **끝났는가** — 마지막 단계 `verify` 가 **이번 회차에** 기록됐으면 끝났다.
+///
+/// ★(v112-restore) 종전 판정은 「started ∧ ¬g2_ack.done」 이었다. 그런데 g2_ack 는 best-effort 라
+///   ACK 핑 관문(no-ping)·무응답(degraded)에서 **done=false 로 기록된 채 복원이 끝난다** — 라이브 저널
+///   실측(2026-09-21): 20개 역할 전부 g2_ack=false · verify 기록됨. 그래서 복원이 끝난 뒤에도 저널
+///   저장 시각부터 신선도 창(300s) 동안 모든 자리가 「복원 중」으로 읽혀, 갱신·복원 직후 ↻ 의 드레인이
+///   세 자리를 전부 건너뛰었다(맥 VM 실기 · 체크포인트 0개).
+///   종결의 표지는 성공 여부가 아니라 **마지막 단계가 기록됐다는 사실**이다(verify 는 done=true/false
+///   어느 쪽이든 복원 루프의 끝에서 쓴다).
+/// ★회차 대조: 저널 파일은 복원마다 재사용된다. 이전 회차의 verify 가 남은 채 새 회차가 spawn 을
+///   다시 쓰면 그것은 **진행 중**이다 — 그래서 verify 의 시각이 다른 단계의 가장 늦은 시각 이상일
+///   때만 종결로 본다(시각은 phoenix `_now()` = 정수 초 · 같은 초 기록은 종결).
+fn restore_role_terminal(stages: &Value) -> bool {
+    let Some(verify_ts) = stages["verify"]["ts"].as_f64() else {
+        return false;
+    };
+    let latest_other = ["spawn", "ready", "resume", "reinject", "g2_ack"]
+        .iter()
+        .filter_map(|k| stages[*k]["ts"].as_f64())
+        .fold(f64::MIN, f64::max);
+    verify_ts >= latest_other
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -13683,8 +13900,20 @@ fn verify_one_node(
 ) -> (VerifyOutcome, String) {
     use std::time::{Duration, Instant};
     // 1) 복원 중 가드 — 각성 파손 방지(디렉티브 재주입과 "작업 중단"의 교차 차단). 사유를 JSON에 전달.
+    //    ★(v112-restore) 단, 표지가 남아 있어도 **입력창이 비어 입력을 받는 자리**(❯ 실재)는 건너뛰지
+    //    않는다 — 가드가 막으려던 것은 「복원 글을 받는 중인 자리에 끼어들기」이고, 빈 입력창은 그
+    //    국면이 끝났다는 화면 사실이다. 못 재면(읽기 실패·앵커 없음) 종전대로 건너뛴다(fail-closed).
+    let mut guard_note = String::new();
     if let Some(reason) = restore_guard_reason(&t.socket, &t.role) {
-        return (VerifyOutcome::SkippedRestoring, reason);
+        let io_to = std::cmp::min(timeout, std::time::Duration::from_secs(8));
+        let live_prompt = io
+            .read_screen(&t.socket, t.surface_id, 24, io_to)
+            .map(|s| claude_input_empty(&s))
+            .unwrap_or(false);
+        if !live_prompt {
+            return (VerifyOutcome::SkippedRestoring, reason);
+        }
+        guard_note = format!(" · 복원 표지 잔존({reason})이나 입력창 비어 있음(❯ 실측) → 진행");
     }
     // 2) canonical 경로 — live_cwd 미제공(구버전 부서 데몬)이면 검증불가(무음 cwd 폴백 금지)[A1-F6]
     let Some(cwd) = t.live_cwd.as_deref() else {
@@ -13772,7 +14001,7 @@ fn verify_one_node(
         if let Some(hit) = marked(&file, &legacy) {
             return (
                 VerifyOutcome::Saved,
-                saved_detail(&hit, extended, timeout),
+                format!("{}{guard_note}", saved_detail(&hit, extended, timeout)),
             );
         }
         if Instant::now() >= next_probe {
@@ -13794,7 +14023,10 @@ fn verify_one_node(
     }
     // 마지막으로 한 번 더 — 마감과 폴링 사이(최대 400ms)에 기입됐을 수 있다.
     if let Some(hit) = marked(&file, &legacy) {
-        return (VerifyOutcome::Saved, saved_detail(&hit, extended, timeout));
+        return (
+            VerifyOutcome::Saved,
+            format!("{}{guard_note}", saved_detail(&hit, extended, timeout)),
+        );
     }
     let waited = started.elapsed().as_secs();
     let ext = if extended > 0 {
@@ -13825,6 +14057,175 @@ fn verify_one_node(
             ),
         ),
     }
+}
+
+/// `cys rotate` 종료코드 — 중단 코드는 그 단계에서 멈춘 것이고, 21·25 는 **끝까지 돌았으나** 확인이 덜 된 것이다.
+///
+/// | rc | 뜻 | 멈춘 곳 |
+/// |---|---|---|
+/// | 0 | 저장 확인 전부(또는 살아 있는 자리 0) · 교체 · 팩 반영 · 복원 성공 | — |
+/// | 21 | 끝까지 진행 — 단 저장 검증이 전부 확인되지 않았다(일부 미확인·검증 실행 실패) | 없음 |
+/// | 22 | 데몬 교체 실패(맥 launchd 등록/이관 · 윈 작업 등록·기존 데몬 정지) | ② |
+/// | 23 | 새 데몬이 상한 안에 응답하지 않음 | ② |
+/// | 24 | 새 팩 반영(init-pack) 실패 — 복귀 표식을 **남긴다**(앱 다음 기동이 재시도) | ④ |
+/// | 25 | 끝까지 진행 — 조직 복원이 실패·보류(관문)를 보고했다 | 없음 |
+///
+/// 21 과 25 가 함께면 25(복원이 더 무겁다 — 사람이 볼 곳이 창 쪽이다).
+const ROTATE_RC_DRAIN_PARTIAL: i32 = 21;
+const ROTATE_RC_DAEMON: i32 = 22;
+const ROTATE_RC_DAEMON_UP: i32 = 23;
+const ROTATE_RC_PACK: i32 = 24;
+const ROTATE_RC_RESTORE: i32 = 25;
+
+/// 끝까지 돈 rotate 의 종료코드(순수). `drain_ok` = None 이면 건너뛰었거나 살아 있는 자리가 없었다(확인할 것 없음).
+fn rotate_rc(drain_ok: Option<bool>, restore_ok: bool) -> i32 {
+    if !restore_ok {
+        ROTATE_RC_RESTORE
+    } else if drain_ok == Some(false) {
+        ROTATE_RC_DRAIN_PARTIAL
+    } else {
+        0
+    }
+}
+
+/// 복귀 표식·판본 스탬프 폴더 = 팩 폴더의 부모(순수). 기본 팩 `~/.cys/pack` → `~/.cys`(앱과 같은 자리).
+fn rotate_state_root(pack_dir: &std::path::Path) -> std::path::PathBuf {
+    pack_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| cys::home_dir().join(".cys"))
+}
+
+/// 앱 [재시작] 단추와 같은 5단을 CLI 한 번으로(TICKET=v112-restore ④ · master [master#990243f6]).
+/// 단계마다 **자기 자신의 하위명령**을 부른다 — 로직 사본 0(두 경로가 갈라지지 않게). 사후 알림 1줄.
+fn run_rotate(timeout: u64, skip_drain: bool) -> i32 {
+    let Ok(exe) = std::env::current_exe() else {
+        eprintln!("rotate: 실행 파일 경로를 모름");
+        return ROTATE_RC_DAEMON;
+    };
+    let run = |args: &[&str]| -> Option<std::process::Output> {
+        cys::hidden_command(&exe)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+    };
+    // ① 저장 검증 — 살아 있는 데몬이 있을 때만(없으면 저장할 자리도 없다).
+    let mut drain_ok: Option<bool> = None;
+    let mut drain_note = "건너뜀".to_string();
+    if !skip_drain && connect_raw().is_ok() {
+        let t = timeout.to_string();
+        let out = run(&["drain", "--verify", "--timeout", &t]);
+        let v = out
+            .as_ref()
+            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
+        match v {
+            Some(v) => {
+                let total = v["total"].as_u64().unwrap_or(0);
+                let saved = v["summary"]["saved"].as_u64().unwrap_or(0);
+                drain_ok = if total == 0 { None } else { Some(v["all_saved"].as_bool() == Some(true)) };
+                drain_note = format!("저장 확인 {saved}/{total}");
+            }
+            None => {
+                drain_ok = Some(false);
+                drain_note = "저장 검증 실행 실패(결과 없음)".into();
+            }
+        }
+        eprintln!("[rotate] ① {drain_note}");
+    }
+    // ② 데몬 교체 — OS 상시 가동 등록(launchd·작업 스케줄러)이 소유하는 것은 **기본 소켓 데몬뿐**이다.
+    //   부서·격리 데몬(비-기본 소켓)에 launchd 이관을 걸면 라이브 기본 데몬을 건드린다 → 정지+자동 기동 경로.
+    let base = cys::lane::socket_is_base(&cys::socket_path().to_string_lossy());
+    let mac_takeover = cfg!(target_os = "macos") && base;
+    if mac_takeover {
+        let ok = run(&["daemon", "install", "--takeover"]).map(|o| o.status.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("[rotate] ② 데몬 교체 실패(daemon install --takeover)");
+            return ROTATE_RC_DAEMON;
+        }
+    } else {
+        if cfg!(windows) && base {
+            let ok = run(&["daemon", "install"]).map(|o| o.status.success()).unwrap_or(false);
+            if !ok {
+                eprintln!("[rotate] ② 작업 등록 실패(daemon install)");
+                return ROTATE_RC_DAEMON;
+            }
+        }
+        // 돌고 있는 옛 데몬을 내린다(윈 daemon install 은 등록만 하고 교체하지 않는다) — 앱 stop_running_daemon 과 같은 순서.
+        let pid = request("system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_u64());
+        if pid.is_none() && connect_raw().is_ok() {
+            // ★(agy R1 수용) 소켓은 받는데 응답이 없다 = 멈춘 옛 데몬. pid 를 몰라 정지할 수 없고, 이대로 가면
+            //   새 데몬이 소켓·잠금을 못 잡는다 — 추정 kill(이름 매칭)은 부서 데몬까지 죽일 수 있어 하지 않는다.
+            eprintln!("[rotate] ② 옛 데몬이 소켓은 열었으나 응답 없음 — pid 를 알 수 없어 정지 불가(수동 확인 필요)");
+            return ROTATE_RC_DAEMON;
+        }
+        if let Some(pid) = pid {
+            #[cfg(windows)]
+            {
+                if let Ok(r) = request("ledger.list", json!({})) {
+                    // 앱 scoped_pids_from_ledger_list 와 같은 규칙 — scoped 항목만(데몬이 생명주기를 보장한 것).
+                    for e in r["entries"].as_array().cloned().unwrap_or_default() {
+                        if e["scoped"].as_bool().unwrap_or(false) {
+                            if let Some(spid) = e["pid"].as_u64() {
+                                let _ = request("ledger.kill", json!({"pid": spid}));
+                            }
+                        }
+                    }
+                }
+                let _ = cys::hidden_command("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = cys::hidden_command("kill").args(["-TERM", &pid.to_string()]).output();
+            }
+            let mut down = false;
+            for _ in 0..50 {
+                if connect_raw().is_err() {
+                    down = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if !down {
+                eprintln!("[rotate] ② 옛 데몬이 5초 안에 내려가지 않음");
+                return ROTATE_RC_DAEMON;
+            }
+        }
+    }
+    // 새 데몬 응답 확인 — 첫 요청이 형제 cysd 를 자동 기동한다(윈) · 맥은 launchd 가 이미 띄웠다.
+    let mut up = false;
+    for _ in 0..3 {
+        if run(&["identify"]).map(|o| o.status.success()).unwrap_or(false) {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    if !up {
+        eprintln!("[rotate] ② 새 데몬 응답 없음");
+        return ROTATE_RC_DAEMON_UP;
+    }
+    // ③ 복귀 표식 — ④가 실패하면 남아서 앱 다음 기동이 팩 반영·복원을 재시도한다(앱과 같은 계약).
+    //   자리 = 팩 폴더의 부모(기본 `~/.cys` = 앱 pending_restore_path 와 같은 곳). CYS_PACK_DIR 로 격리한
+    //   실행(시험·부서 리허설)은 라이브 표식을 건드리지 않는다.
+    let root = rotate_state_root(&cys::pack::pack_dir());
+    let marker = root.join(".pending-restore");
+    let _ = std::fs::write(&marker, "");
+    // ④ 새 팩 반영
+    if !run(&["init-pack", "--no-install-hook"]).map(|o| o.status.success()).unwrap_or(false) {
+        eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
+        return ROTATE_RC_PACK;
+    }
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::write(root.join(".last-app-version"), env!("CARGO_PKG_VERSION"));
+    // ⑤ 조직 복원(겹치는 콜드부트 복원과는 복원 1회 표식이 한 번만 말하게 한다)
+    let restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
+    let rc = rotate_rc(drain_ok, restore_ok);
+    println!(
+        "재시작 완료 — {drain_note} · 데몬 교체 · 새 팩 반영 · 조직 복원 {} (rc={rc})",
+        if restore_ok { "성공" } else { "실패·보류 — 창을 확인하세요" }
+    );
+    rc
 }
 
 /// 소켓별 병렬 fan-out — 총 소요 ≈ 1×timeout(직렬 누적 아님). 노드별 detached 스레드로 verify를 스폰하고
@@ -14793,9 +15194,9 @@ fn restore_directive(role: &str) -> &'static str {
 /// 표식 폴더를 못 만들거나 못 쓰면 **`true`(주입)** 로 연다 — 복원의 실패 모드는 「말이 두 번」이
 /// 아니라 「말이 없음」이 더 비싸다(조용한 복원 = 좌석이 영영 깨어나지 않는다).
 fn restore_inject_claim(sid: u64) -> bool {
-    let Some(dir) = cys::socket_path().parent().map(|p| p.to_path_buf()) else {
-        return true;
-    };
+    // ★(v112-restore) 소켓 부모가 아니라 **데몬 상태 폴더**다 — 윈도 소켓은 named pipe 라
+    //   부모가 파이프 이름공간이고, 거기엔 표식을 만들 수 없어 매번 fail-open(=주입)이었다.
+    let dir = cys::daemon_state_dir(&cys::socket_path());
     let path = dir.join(cys::restore_mark::mark_rel_path(sid));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -14822,7 +15223,16 @@ fn restore_inject_claim(sid: u64) -> bool {
             // 낡은 표식 → 시각을 전진시키고 내가 넣는다(위 is_duplicate 가 이미 낡았다고 판정했다).
             std::fs::write(&path, b"").is_ok() || true
         }
-        Err(_) => true,
+        Err(e) => {
+            // ★(v112-restore) fail-open 은 유지하되 **조용히 열지 않는다** — 윈에서 이 분기가 매번 열려
+            //   2회 배달을 낳았는데 아무 흔적이 없었다(표식 폴더가 파이프 이름공간이었다).
+            eprintln!(
+                "[restore] ⚠ 복원 1회 표식 쓰기 실패({}: {e}) — 주입은 진행(fail-open) · 겹친 복원 경로가 \
+                 같은 자리에 한 번 더 말할 수 있다",
+                path.display()
+            );
+            true
+        }
     }
 }
 
@@ -15025,9 +15435,8 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                         }
                         // ★(v111-restore ②) 복원 글 재주입 제거 — 단일 발신자는
                         //   `boot_agent_on_surface`(restore=true)다. 이 좌석은 방금 태어났으므로
-                        //   표식 claim 도 필요 없다(번호가 새것이라 겹칠 대상이 없다).
-                        //   새 좌석에도 표식을 남겨, 뒤이어 도착하는 겹침 경로가 침묵하게 한다.
-                        let _ = restore_inject_claim(sid);
+                        //   ★(v112-restore) 표식은 이제 `run_launch_agent_opts` 가 **기동 전**에 잡는다
+                        //   (종전 이 자리 = 주입 뒤라, 멱등 재반환으로 같은 자리를 받은 겹침 경로를 못 막았다).
                     }
                 }
             } else {
@@ -18369,6 +18778,153 @@ extern "C" fn scoped_cleanup_handler(sig: libc::c_int) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★(v112-restore ①-b) 겹친 복원의 두 번째 경로는 기동하지 않는다 — 윈 image(71) 사건의 표.
+    #[test]
+    fn launch_boot_skip_table() {
+        // 표식을 진 복원 경로 = 다른 경로가 맡았다 → 건너뜀(재반환 여부 무관).
+        assert!(launch_boot_skip(true, true, false, None).is_some());
+        assert!(launch_boot_skip(true, false, false, Some(false)).is_some());
+        // 재반환 + 에이전트 생존 = 살아 있는 입력창에 기동 명령을 치지 않는다(비복원 경로도).
+        assert!(launch_boot_skip(false, true, true, Some(true)).is_some());
+        // 재반환 + 생존 미상/사망 = 응답 유실 재시도일 수 있다 → 기동.
+        assert_eq!(launch_boot_skip(false, true, true, None), None);
+        assert_eq!(launch_boot_skip(false, true, true, Some(false)), None);
+        // 새 자리 + 표식 이김 = 정상 기동.
+        assert_eq!(launch_boot_skip(true, false, true, None), None);
+        // 비복원 경로는 표식을 보지 않는다(claim_won 은 호출부가 true 로 준다).
+        assert_eq!(launch_boot_skip(false, false, true, Some(true)), None);
+    }
+
+    fn claude_box(input: &str) -> String {
+        format!(
+            "대화 기록\n────────────────────\n❯ {input}\n────────────────────\n  ⏵⏵ bypass permissions on"
+        )
+    }
+
+    /// ★(v112-restore ①) 미제출이면 Return **1회** 재제출 후 재실측 · 제출이면 키 0 · 못 재면 키 0.
+    #[test]
+    fn settle_submit_resubmits_once_then_reports() {
+        use std::cell::{Cell, RefCell};
+        let directive = "[RESTORE] 조직 복원 절차다. 읽고 상태를 복원하라.";
+        let sentinel = submit_sentinel(directive);
+        // ① 첫 실측 미제출 → Return 1 → 두 번째 실측 제출 → (Submitted, true)
+        let screens = RefCell::new(vec![claude_box(""), claude_box(directive)]);
+        let sent = Cell::new(0);
+        let r = settle_submit(|_| {}, || screens.borrow_mut().pop(), || { sent.set(sent.get() + 1); true }, &sentinel);
+        assert_eq!(r, (SubmitProbe::Submitted, true));
+        assert_eq!(sent.get(), 1);
+        // ② 계속 미제출 → Return 은 딱 1회 · 결과 NotSubmitted(카드 표기 대상)
+        let sent = Cell::new(0);
+        let r = settle_submit(|_| {}, || Some(claude_box(directive)), || { sent.set(sent.get() + 1); true }, &sentinel);
+        assert_eq!(r, (SubmitProbe::NotSubmitted, true));
+        assert_eq!(sent.get(), 1, "재제출은 1회 상한");
+        // ③ 첫 실측 제출 → 키 0
+        let sent = Cell::new(0);
+        let r = settle_submit(|_| {}, || Some(claude_box("")), || { sent.set(sent.get() + 1); true }, &sentinel);
+        assert_eq!(r, (SubmitProbe::Submitted, false));
+        assert_eq!(sent.get(), 0);
+        // ⑤ 긴 복원 글이 입력창에 「[Pasted text」로 접혀 남음 → 미제출 → Return 1회(lib 3097c185 규칙)
+        let screens = RefCell::new(vec![claude_box(""), claude_box("[Pasted text #1 +40 lines]")]);
+        let sent = Cell::new(0);
+        let r = settle_submit(|_| {}, || screens.borrow_mut().pop(), || { sent.set(sent.get() + 1); true }, &sentinel);
+        assert_eq!(r, (SubmitProbe::Submitted, true), "접힌 붙여넣기를 제출됨으로 읽음");
+        assert_eq!(sent.get(), 1);
+        // ④ 화면 못 읽음 → Unmeasured · 키 0(모르는 입력창에 치지 않는다)
+        let sent = Cell::new(0);
+        let r = settle_submit(|_| {}, || None, || { sent.set(sent.get() + 1); true }, &sentinel);
+        assert_eq!(r, (SubmitProbe::Unmeasured, false));
+        assert_eq!(sent.get(), 0);
+    }
+
+    /// ★(v112-restore ①-b) 표식·복원 가드의 상태 폴더 배선 핀 — 맥에선 소켓 부모 = 상태 폴더라
+    ///   경로를 소켓 부모로 되돌리는 변이가 **등가**(시험 불가)다. 윈에서만 갈리므로 소스로 고정한다.
+    #[test]
+    fn restore_state_paths_use_daemon_state_dir_not_socket_parent() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let body = |name: &str| {
+            let a = prod.find(&format!("fn {name}(")).expect(name);
+            let b = prod[a..].find("\n}\n").map(|i| a + i).unwrap();
+            &prod[a..b]
+        };
+        for f in ["restore_inject_claim", "restore_guard_reason"] {
+            let b = body(f);
+            assert!(b.contains("cys::daemon_state_dir("), "{f}: 데몬 상태 폴더를 안 쓴다");
+            assert!(
+                !b.contains("socket_path().parent()") && !b.contains("socket.parent()"),
+                "{f}: 소켓 부모(윈=파이프 이름공간)로 되돌아갔다"
+            );
+        }
+    }
+
+    /// ★(v112-restore ①) claude 빈 입력창이 보일 때까지 기다린다 — 셸 에코·기동 전 화면은 준비가 아니다.
+    #[test]
+    fn wait_input_ready_waits_for_empty_claude_box_and_caps() {
+        use std::cell::{Cell, RefCell};
+        use std::time::Duration;
+        let shell = "user@mac w4 % CLAUDE_CONFIG_DIR=x sleep 10; claude --model m\n> 붙여넣은 지시 본문 줄".to_string();
+        // 가짜 시계 — sleep 이 시간을 흘린다(틱 500ms).
+        let clock = Cell::new(Duration::ZERO);
+        let tick = |d: Duration| clock.set(clock.get() + d);
+        // 셸(에코에 `> ` 줄이 있어도 글이 있음) → 셸 → claude 빈 입력창
+        let seq = RefCell::new(vec![claude_box(""), shell.clone(), shell.clone()]);
+        assert!(wait_input_ready(tick, || seq.borrow_mut().pop(), || clock.get(), Duration::from_secs(30)));
+        assert_eq!(clock.get(), Duration::from_millis(1000), "빈 입력창을 보기 전에 두 틱 기다려야 한다");
+        // 끝내 셸 → 상한에서 거짓(주입 금지)
+        clock.set(Duration::ZERO);
+        assert!(!wait_input_ready(tick, || Some(shell.clone()), || clock.get(), Duration::from_secs(2)));
+        // ★(agy R1) 상한은 **실제 경과**로 잰다 — read() 가 한 번에 5초 걸리면 2초 상한은 첫 판독 뒤 곧바로 끝난다.
+        clock.set(Duration::ZERO);
+        let reads = Cell::new(0u32);
+        let slow_read = || {
+            reads.set(reads.get() + 1);
+            clock.set(clock.get() + Duration::from_secs(5));
+            Some(shell.clone())
+        };
+        assert!(!wait_input_ready(tick, slow_read, || clock.get(), Duration::from_secs(2)));
+        assert_eq!(reads.get(), 1, "느린 판독에서 틱을 세면 상한을 넘겨 계속 읽는다");
+        // 입력창에 글이 남아 있으면 준비가 아니다 / 못 읽으면 준비가 아니다
+        clock.set(Duration::ZERO);
+        assert!(!wait_input_ready(tick, || Some(claude_box("남은 글")), || clock.get(), Duration::from_secs(1)));
+        clock.set(Duration::ZERO);
+        assert!(!wait_input_ready(tick, || None, || clock.get(), Duration::from_secs(1)));
+    }
+
+    /// ④ rotate 종료코드 표 — 중단 코드가 아닌 둘(21 · 25)의 우선순위.
+    #[test]
+    fn rotate_rc_table() {
+        assert_eq!(rotate_rc(None, true), 0);
+        assert_eq!(rotate_rc(Some(true), true), 0);
+        assert_eq!(rotate_rc(Some(false), true), ROTATE_RC_DRAIN_PARTIAL);
+        assert_eq!(rotate_rc(Some(true), false), ROTATE_RC_RESTORE);
+        assert_eq!(rotate_rc(Some(false), false), ROTATE_RC_RESTORE, "복원 실패가 더 무겁다");
+        assert_eq!(rotate_rc(None, false), ROTATE_RC_RESTORE);
+    }
+
+    /// ★(agy R1) 멈춘 옛 데몬(소켓은 열림·응답 없음)은 추정 kill 하지 않고 22 로 멈춘다 — 배선 핀.
+    #[test]
+    fn rotate_hung_daemon_pin() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let a = prod.find("fn run_rotate(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        let i = body.find("if pid.is_none() && connect_raw().is_ok() {").expect("멈춘 데몬 분기 부재");
+        assert!(body[i..i + 600].contains("return ROTATE_RC_DAEMON;"), "멈춘 데몬 분기가 중단하지 않는다");
+    }
+
+    #[test]
+    fn rotate_state_root_is_pack_parent() {
+        assert_eq!(
+            rotate_state_root(std::path::Path::new("/h/.cys/pack")),
+            std::path::PathBuf::from("/h/.cys")
+        );
+    }
+
+    #[test]
+    fn submit_sentinel_is_first_nonblank_line_head() {
+        assert_eq!(submit_sentinel("\n\n[RESTORE] 조직 복원 절차다(master). 뒤"), "[RESTORE] 조직 복원 절차다(mast");
+    }
 
     /// ★I-1(restore-impl-A2-2): master 복원 디렉티브는 복원 후 **대기**다 — 「재개하라」 지시가
     /// 들어가면 복원만으로 자율 착수가 일어나 임무 게이트(§0-C)를 우회한다. 비-master 는 종전 그대로.
@@ -25184,7 +25740,7 @@ mod tests {
         assert_eq!(o, VerifyOutcome::Unverifiable);
     }
 
-    /// ⑤ 복원 중(phoenix 저널 stage<g2_ack) → skipped_restoring.
+    /// ⑤ 복원 중(phoenix 저널 started ∧ 이번 회차 verify 미기록) → skipped_restoring.
     #[test]
     fn drain_verify_skipped_when_restoring() {
         let td = std::env::temp_dir().join(format!("cys-dv-restore-{}", std::process::id()));
@@ -25201,28 +25757,54 @@ mod tests {
         .unwrap();
         let socket = deptdir.join("cys.sock");
         assert!(restore_guard_reason(&socket, "worker").is_some());
-        // g2_ack 완료면 복원 끝 → None
-        let j2 = json!({"roles": {"worker": {"stages": {"reinject": {"done": true}, "g2_ack": {"done": true}}}}});
-        std::fs::write(
-            phoenix.join("journal-default.json"),
-            serde_json::to_string(&j2).unwrap(),
-        )
-        .unwrap();
+        let put = |v: &Value| {
+            std::fs::write(phoenix.join("journal-default.json"), serde_json::to_string(v).unwrap())
+                .unwrap()
+        };
+        // ★(v112-restore) 종결 = verify 기록. g2_ack 가 **done=false** 로 끝난 라이브 저널 모양
+        //   (2026-09-21 실측: 20역할 전부 g2_ack=false · verify 기록) → 끝난 복원이다 → None.
+        put(&json!({"roles": {"worker": {"stages": {
+            "reinject": {"done": true, "ts": 100}, "g2_ack": {"done": false, "ts": 106},
+            "verify": {"done": true, "ts": 106}}}}}));
+        assert!(restore_guard_reason(&socket, "worker").is_none(), "g2 실패로 끝난 복원을 진행 중으로 읽음");
+        // verify 가 done=false(검증 실패)여도 기록됐으면 복원 루프는 끝났다.
+        put(&json!({"roles": {"worker": {"stages": {
+            "reinject": {"done": true, "ts": 100}, "verify": {"done": false, "ts": 101}}}}}));
         assert!(restore_guard_reason(&socket, "worker").is_none());
+        // g2_ack 완료 · verify 미기록 = 아직 마지막 단계 전 → 진행 중.
+        put(&json!({"roles": {"worker": {"stages": {
+            "reinject": {"done": true, "ts": 100}, "g2_ack": {"done": true, "ts": 101}}}}}));
+        assert!(restore_guard_reason(&socket, "worker").is_some());
+        // 회차 대조: 이전 회차 verify(ts 50)가 남은 채 새 회차 spawn(ts 200) → 진행 중.
+        put(&json!({"roles": {"worker": {"stages": {
+            "spawn": {"done": true, "ts": 200}, "verify": {"done": true, "ts": 50}}}}}));
+        assert!(restore_guard_reason(&socket, "worker").is_some(), "옛 회차 verify 로 새 복원을 종결 처리함");
         // 다른 역할은 무관 → None(over-skip 금지)
         assert!(restore_guard_reason(&socket, "master").is_none());
 
-        // verify_one_node 통합: 복원 중이면 IO 이전에 skip
+        // verify_one_node 통합: 복원 중이고 입력창 미실측이면 주입 이전에 skip
         std::fs::write(
             phoenix.join("journal-default.json"),
             serde_json::to_string(&j).unwrap(),
         )
         .unwrap();
+        // 입력창을 못 잰 자리(읽기 실패) = 종전대로 건너뜀(fail-closed).
         let io = FakeVerifyIo::new();
-        let t = mk_target(2, socket, Some(deptdir.to_string_lossy().into_owned()));
+        io.add(2, FakeScenario::Hung, deptdir.join("_round").join("SESSION_STATE.md"));
+        let t = mk_target(2, socket.clone(), Some(deptdir.to_string_lossy().into_owned()));
         let (o, _d) = verify_one_node(&io, &t, "run1", std::time::Duration::from_secs(1), 100);
-        let _ = std::fs::remove_dir_all(&td);
         assert_eq!(o, VerifyOutcome::SkippedRestoring);
+        // ★(v112-restore ②) 표지가 남아 있어도 **입력창이 비어 있는 자리**(프롬프트 실측)는 건너뛰지
+        //   않는다 — 협조 노드는 마커를 기입하고, 상세에 「표지 잔존이나 진행」이 정직하게 남는다.
+        std::fs::create_dir_all(deptdir.join("_round")).unwrap();
+        std::fs::write(deptdir.join("_round").join("SESSION_STATE.md"), "# 상태\n").unwrap();
+        let io = FakeVerifyIo::new();
+        io.add(3, FakeScenario::Cooperative, deptdir.join("_round").join("SESSION_STATE.md"));
+        let t = mk_target(3, socket, Some(deptdir.to_string_lossy().into_owned()));
+        let (o, d) = verify_one_node(&io, &t, "run2", std::time::Duration::from_secs(2), 100);
+        let _ = std::fs::remove_dir_all(&td);
+        assert_eq!(o, VerifyOutcome::Saved, "{d}");
+        assert!(d.contains("복원 표지 잔존"), "진행 사유가 상세에 없다: {d}");
     }
 
     /// [F2] 신선한 저널이 파손 JSON이면 fail-CLOSED(복원 중 취급·skip) — 스키마 스큐/부분쓰기에 안전.

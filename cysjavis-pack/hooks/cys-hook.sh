@@ -26,7 +26,8 @@ if [ -n "$EV" ] && [ -d "$LHD" ]; then
     printf '%s' "$IN" | sh "$f" >/dev/null 2>&1 || true
   done
 fi
-# v113 Q1 계측: Stop 계열에서만 데몬 push 경과 1줄(매 툴 호출마다 쓰지 않는다 · _lib.sh 5-a 와 같은 서식).
+# v113 Q1 계측: Stop 계열에서만 데몬 push 경과 1줄(매 툴 호출마다 쓰지 않는다 · 공용 프리루드 5-a 절과 같은 서식 ·
+# 이 훅은 자기완결 계약이라 프리루드를 source 하지 않고 인라인으로 쓴다).
 case "$EV" in
   Stop|SubagentStop)
     { _F="${CYS_STATE_DIR:-$HOME/.cys/state}/hook-timing.log"; mkdir -p "$(dirname "$_F")"

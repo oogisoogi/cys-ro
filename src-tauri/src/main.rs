@@ -492,6 +492,25 @@ fn win_wheel_guard_disabled() -> bool {
         || cys::home_dir().join(".cys/win-wheel-guard-off").exists()
 }
 
+/// 대체 화면 휠 번역의 **전환 1키**(D5 · 2026-09-23). 기본 off = PgUp/PgDn 번역.
+/// 켜면 커서 키(CUU/CUD)로 번역한다(`ui/src/altscroll.ts` AltScrollMode).
+///
+/// ★왜 필요한가: Windows 전체화면 Claude Code 에서 휠이 무동작이던 결함(D5)을 '휠 → 키 번역'
+/// 으로 고쳤는데, 그 키를 **프롬프트 히스토리 탐색으로 소비하는 앱**이면 입력창이 오염될 수
+/// 있다(이 저장소가 2026-08 에 mac 에서 겪은 원 결함과 같은 형태). 그 관측이 나오면 코드를
+/// 고치는 대신 이 게이트로 키 종류를 바꾼다(기본 PgUp 이 아무것도 못 굴리면 이 키로 커서 키를
+/// 시험한다 — 그때 프롬프트가 히스토리를 오가면 즉시 되끄고 아래 가드로 내린다).
+/// 둘 다 곤란하면 `win_wheel_guard_disabled` 로
+/// 가드 전체를 내린다(= 종전 동작 복귀).
+/// 형제 게이트 셋과 **완전 동형**이다(술어형 이름 · env ∪ 파일 · 릴리스 빌드에 devtools 가
+/// 없어 localStorage 는 최종 사용자 손잡이가 못 되므로 파일이 실질 경로).
+/// PowerShell 정본: `New-Item -ItemType File -Force $HOME\.cys\alt-scroll-page`
+#[tauri::command]
+fn alt_scroll_cursor_mode() -> bool {
+    std::env::var("CYS_ALT_SCROLL_CURSOR").map(|v| v == "1").unwrap_or(false)
+        || cys::home_dir().join(".cys/alt-scroll-cursor").exists()
+}
+
 #[tauri::command]
 async fn send_input(
     socket: Option<String>,
@@ -6690,6 +6709,7 @@ fn main() {
             ime_debug_enabled,
             app_mouse_enabled,
             win_wheel_guard_disabled,
+            alt_scroll_cursor_mode,
             rename_surface,
             resize_surface,
             close_surface,

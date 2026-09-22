@@ -103,10 +103,17 @@ import {
   type SubmitResult,
 } from "./feedback";
 import { routeOnData } from "./mousefilter";
+import {
+  altWheelAction,
+  altHintNext,
+  shouldShowAltFoldHint,
+  ALT_HINT_INITIAL,
+  type AltScrollMode,
+  type AltHintState,
+} from "./altscroll";
 import { MouseTrackingFilter, MOUSE_ALL_OFF } from "./trackfilter";
 import {
   shouldSuppressWheel,
-  shouldSuppressWheelWin,
   wheelHandlerKind,
   macGateInputs,
   winGateInputs,
@@ -3115,6 +3122,13 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   //   더 태우면 pane attach가 그만큼 늦어지므로 조회 자체를 건너뛴다(mac에서는 항상 false이고,
   //   mac 경로는 이 값을 읽지 않는다 — 읽는 코드를 새로 만들지 말 것).
   const lsWinWheelGuardOff = localStorage.getItem("cysWinWheelGuardOff") === "1";
+  // ★D5 전환 1키(2026-09-23): 대체 화면 휠 번역을 **기본 PgUp/PgDn** 에서 커서 키로 바꾼다.
+  // 기본값을 PgUp 으로 둔 근거(로컬 pty 실측 — 커서 키는 Claude Code 프롬프트 히스토리를 오염시키고
+  // PgUp 은 최악이라도 무동작)는 altscroll.ts AltScrollMode 주석이 정본.
+  // 위 가드들과 같은 자리·같은 형태(localStorage ∪ env/파일 게이트)인 이유: Windows 릴리스 빌드엔
+  // devtools 가 없어 localStorage 는 최종 사용자의 손잡이가 못 된다(win_wheel_guard_disabled 주석의
+  // 함정과 동일) — 실제 손잡이는 CYS_ALT_SCROLL_CURSOR=1 / ~/.cys/alt-scroll-cursor 다.
+  const lsAltScrollCursor = localStorage.getItem("cysAltScrollCursor") === "1";
 
   // ★두 게이트 조회는 **병렬**이다(적대검증 2R note — 앵커 ④ 인접 결함 봉인). 직렬 await 두
   //   번이면 term.onData 등록 전 공백이 왕복 2회분으로 넓어지고, 그 창에 도착한 키 입력은
@@ -3125,12 +3139,16 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   //   (fail-closed). 커맨드가 미등록인 빌드에서는 invoke 가 reject 되는데, 그때 가드가
   //   꺼지면(=결함 복원) 안 되기 때문이다. ※ 이 커맨드는 UI 와 같은 바이너리에 묶여 나가므로
   //   (ui/dist 임베드) 실제로는 버전 스큐가 생기지 않는다 — 그래도 폴백 방향은 안전측으로 둔다.
-  const [beAllowAppMouse, beWinWheelGuardOff] = await Promise.all([
+  const [beAllowAppMouse, beWinWheelGuardOff, beAltScrollCursor] = await Promise.all([
     lsAllowAppMouse ? false : invoke("app_mouse_enabled").catch(() => false),
     IS_WINDOWS && !lsWinWheelGuardOff ? invoke("win_wheel_guard_disabled").catch(() => false) : false,
+    // ★이 조회의 catch 방향은 위 둘과 **다르게 읽어야 옳다**: 여기서 false 는 '가드를 켠 채'가
+    //   아니라 '기본 모드(PgUp/PgDn)'다 — 커맨드 미등록 빌드에서도 안전측 기본으로 떨어진다.
+    lsAltScrollCursor ? true : invoke("alt_scroll_cursor_mode").catch(() => false),
   ]);
   const allowAppMouse = lsAllowAppMouse || beAllowAppMouse === true;
   const winWheelGuardOff = IS_WINDOWS && (lsWinWheelGuardOff || beWinWheelGuardOff === true);
+  const altScrollMode: AltScrollMode = lsAltScrollCursor || beAltScrollCursor === true ? "cursor" : "page";
 
   term.onData((data) => {
     // ★마우스 보고 필터 (현장 결함 1호 Windows 유출 + 2026-08 macOS 스크롤백 접근 불가).
@@ -3243,10 +3261,14 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   //     기능 게이트가 한다 — 즉 화면 모드는 OS가 아니라 **계정·롤아웃**이 결정한다. 아무것도
   //     옵트인하지 않은 Windows 사용자에게도 fullscreen이 뜰 수 있으므로 방어가 필요하다.
   // (c) ★롤백: winWheelGuardOff(위 판독 — env/파일 게이트)면 등록하지 않는다 = 종전 동작 복귀.
-  // (d) ★정직 고지 — 억제는 그 휠 노치를 **버린다**: 억제가 걸린 창에서 휠은 스크롤도 방향키도
-  //     아닌 **무동작**이 된다(alt 화면엔 스크롤백이 없어 로컬 스크롤이라는 대안 자체가 없다).
-  //     그 대가로 막는 것은 프롬프트 히스토리 오염(원 결함)이고, 억제 대상은 1003 을 켠 앱으로
-  //     한정된다 — vim·less·man 은 술어 불충족이라 종전 동작 그대로다.
+  // (d) ★【정정 2026-09-23 · D5】 이 자리에는 "억제는 그 휠 노치를 **버린다** = 무동작"이라고
+  //     적혀 있었고, 그 무동작이 **Windows 실기에서 결함으로 신고됐다**(박사님 09-23 01:5x —
+  //     휠 무반응 · Ctrl+O 무변화 · alt_screen true). wheelgate (b) 가 예고한 '과잉 억제' 관측
+  //     형태 그대로다. 그래서 억제는 유지하되 **버리지 않고 번역한다**: 커서 키(기본) 또는
+  //     PgUp/PgDn(폴백 게이트)으로 바꿔 pty 에 쓴다(아래 win 분기 · 판정 = altscroll.ts).
+  //     막으려던 것(프롬프트 히스토리 오염)은 여전히 위험으로 남아 있고, 그것이 관측되면 코드가
+  //     아니라 게이트 1키로 PgUp/PgDn 또는 가드 off 로 내린다 — 억제 대상이 1003 을 켠 앱에
+  //     한정되는 것(vim·less·man 무회귀)은 종전 그대로다.
   //     ※ 종전 이 자리에 있던 deltaMode=DOM_DELTA_PAGE 절대 상한(pageMode 항)은 **제거했다**
   //       (2026-08-17). 근거 전문은 wheelgate.ts (c) — 요지는 그 항이 덮는 영역이 이중 가정의
   //       사각뿐인데 비용은 'PAGE 보고 환경에서 페이저 휠 전멸'이고 탈출구가 가드 전체 끄기
@@ -3263,15 +3285,41 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   //   판정에 먹이는 입력 조립(장부 접근자 선택·xterm 리터럴)도 같은 이유로 순수 함수다:
   //   ledgerWantsAnyMotion 자리에 인접 접근자 ledgerWantsMouse 를 쓰면 Windows vim 휠이 죽는데,
   //   인라인이던 시절엔 그 오배선을 잡는 단언이 저장소에 0건이었다.
+  // 대체 화면 안내(D5 ③)의 pane 지역 상태 — 「위로 연속 + 첫 행 무변화」 카운터.
+  let altHint: AltHintState = ALT_HINT_INITIAL;
   const wheelKind = wheelHandlerKind({ isWindows: IS_WINDOWS, reconcile, winWheelGuardOff });
   if (wheelKind === "mac") {
     term.attachCustomWheelEventHandler(
       () => !shouldSuppressWheel(macGateInputs(term, trackFilter, allowAppMouse, IS_WINDOWS)),
     );
   } else if (wheelKind === "win") {
-    term.attachCustomWheelEventHandler(
-      () => !shouldSuppressWheelWin(winGateInputs(term, trackFilter, allowAppMouse)),
-    );
+    // ★D5(2026-09-23 Windows 실기 「휠이 아무것도 안 한다」): 억제만 하던 자리에서 **번역까지** 한다.
+    // 종전 배선은 술어가 충족되면 false 만 돌려줬고, 그 false 가 xterm 의 대체 화면 방향키 합성까지
+    // 함께 죽여 휠이 무동작이 됐다(경로 실측 = altscroll.ts 머리 주석 ①~③). 이제 같은 자리에서
+    // 커서 키(기본) 또는 PgUp/PgDn(폴백 1키)을 우리가 만들어 pty 로 보낸다 — 줄 수는 우리 상한
+    // (MAX_LINES_PER_EVENT)이 쥐므로 deltaMode=PAGE 환경의 증폭(노치당 rows 개)이 구조적으로 없다.
+    // 판정은 전부 altscroll.altWheelAction(순수 함수·테스트 고정)에 있고 여기는 실행만 한다:
+    //   pass → true(=xterm 기본 처리: 일반 버퍼 로컬 스크롤·less/vim 의 합성 보존)
+    //   translate → sendRaw + false · consume → false(가로 휠·shift 휠 = 보낼 것 없음)
+    term.attachCustomWheelEventHandler((e: WheelEvent) => {
+      const act = altWheelAction(
+        winGateInputs(term, trackFilter, allowAppMouse),
+        { deltaY: e.deltaY, deltaMode: e.deltaMode, shiftKey: e.shiftKey },
+        { mode: altScrollMode, applicationCursorKeys: term.modes.applicationCursorKeysMode },
+      );
+      if (act.kind === "pass") return true;
+      if (act.kind === "translate") {
+        sendRaw(act.data);
+        // B1 ② 의 대체 화면판: 대체 화면엔 스크롤백이 없어 viewportY 로는 '맨 위'를 못 잰다 —
+        // 「위로 연속 + 첫 행 지문 무변화」로 근사한다(판정·근사의 한계는 altscroll.ts 하단 주석).
+        altHint = altHintNext(altHint, act.dir, term.buffer.active.getLine(0)?.translateToString(true) ?? "");
+        if (shouldShowAltFoldHint(foldHintShown, altHint)) {
+          foldHintShown = true;
+          toast("feed", FOLD_HINT_TITLE, FOLD_HINT_BODY);
+        }
+      }
+      return false;
+    });
   }
   const un1 = await listen(ev.output_event, (e) => {
     outStamp.t = Date.now();

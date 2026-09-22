@@ -12305,13 +12305,10 @@ mod tests {
         // ★v115-restore(게이트 정리): v114 빈 셸 가드(agent_seat_vacant_now)는 로그인 셸이 `sleep` 을 띄우기 전
         //   찰나를 빈 좌석으로 본다 — 이 시험이 재려는 것은 clear_first 게이트이므로 좌석이 점유될 때까지 기다린다
         //   (종전 = 타이밍 플레이크 · 여기서 난 패닉이 ACL_ENV_LOCK 을 오염시켜 18건 연쇄 적색).
-        for _ in 0..60 {
-            if !crate::governance::agent_seat_vacant_now(&s) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert!(!crate::governance::agent_seat_vacant_now(&s), "시험 좌석이 3초 안에 점유되지 않았다");
+        //   ★v115-ci-flake: 「점유」가 아니라 `sleep 30` 자체가 뜰 때까지 기다린다 — 셸 프로파일 단계의
+        //   찰나 자식을 점유로 보고 빠져나간 뒤 빈 좌석으로 거부되던 CI 적색(run 35689538512 재실행)의 수리.
+        crate::governance::test_wait_seat_runs(&s, "sleep", &["30"]);
+        assert!(!crate::governance::agent_seat_vacant_now(&s), "`sleep 30` 이 떠 있는데 빈 좌석 판정");
         let req = Request {
             id: json!(2),
             method: "surface.send_text".into(),
@@ -16296,6 +16293,9 @@ mod tests {
             .expect("ceo surface");
         *ceo.agent_meta.lock().unwrap() = Some(("claude".into(), "/bin/claude".into()));
         ceo.seat_cache.store(1, Ordering::Relaxed); // Occupied
+        // ★v115-ci-flake: CEO 경로는 주입 직전 즉시 프로브(agent_seat_vacant_now)를 탄다 — 셸 초기화 찰나면
+        //   빈 좌석으로 판정된다. 「점유 좌석」 전제가 참이 되도록 명령 자체가 뜰 때까지 기다린다.
+        crate::governance::test_wait_seat_runs(&ceo, "sleep", &["30"]);
         daemon.surfaces.lock().unwrap().insert(ceo.id, ceo.clone());
         daemon.roles.lock().unwrap().insert("ceo".into(), ceo.id);
 
@@ -16444,6 +16444,9 @@ mod tests {
             .expect("ceo surface");
         *ceo.agent_meta.lock().unwrap() = Some(("claude".into(), "/bin/claude".into()));
         ceo.seat_cache.store(1, Ordering::Relaxed); // Occupied
+        // ★v115-ci-flake: CEO 경로는 주입 직전 즉시 프로브(agent_seat_vacant_now)를 탄다 — 셸 초기화 찰나면
+        //   빈 좌석으로 판정된다. 「점유 좌석」 전제가 참이 되도록 명령 자체가 뜰 때까지 기다린다.
+        crate::governance::test_wait_seat_runs(&ceo, "sleep", &["30"]);
         daemon.surfaces.lock().unwrap().insert(ceo.id, ceo.clone());
         daemon.roles.lock().unwrap().insert("ceo".into(), ceo.id);
         // 발행자 pane 귀속 — 무명 제외 게이트(결함7-e)가 아니라 risk 판정이 차단자임을 증명.

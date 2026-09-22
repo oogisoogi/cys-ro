@@ -1791,7 +1791,21 @@ def master_seat_cwd(socket, entries=None):
         return live
     ent = (entries or {}).get("master") or {}
     cwd = (ent.get("cwd") or "").strip()
-    return cwd if cwd and not home_like(cwd) and _dir_ok(cwd) else None
+    if cwd and not home_like(cwd) and _dir_ok(cwd):
+        return cwd
+    # ★3순위(v115-dept A2 ⓑ) = **부서 레지스트리 폴더**: 부서 부서장 좌석이 홈 cwd 빈 셸로 굳으면
+    #   라이브·토폴로지 둘 다 홈이라(904 §5-② — 오판 회수가 topology 까지 홈으로 덮었다) 기준 폴더가
+    #   사라지고, 부서장·자식 전원이 홈에서 다시 떴다. 부서 소켓이면 레지스트리가 폴더를 안다.
+    #   판정 단일 구현 = javis_boot_node.dept_registry_cwd(Rust lib.rs 의 미러) — 사본 금지.
+    try:
+        _bn_bin = os.path.dirname(os.path.abspath(__file__))
+        if _bn_bin not in sys.path:
+            sys.path.insert(0, _bn_bin)
+        import javis_boot_node as _bn
+        dc = _bn.dept_registry_cwd(socket=socket or os.environ.get("CYS_SOCKET"))
+    except Exception:
+        dc = None
+    return dc if dc and not home_like(dc) and _dir_ok(dc) else None
 
 
 def spawn_fresh_production(socket, role, agent, cwd=None):

@@ -283,6 +283,26 @@ cys_have_git() {
   return 0
 }
 
+# ★v115-dept A5: 에이전트 세션 Bash 의 python3 를 번들 파이썬으로 — Claude Code 공식 SessionStart 기능
+# `CLAUDE_ENV_FILE`(hooks 문서 「Persist environment variables」: 그 파일의 export 가 이후 Bash 명령에 적용)
+# 에 export 2줄을 덧붙인다. 실사고(1.1.4 VM 904 §5-②): 개발자 도구 없는 맥에서 디렉티브의 `python3 …`
+# 가 /usr/bin 스텁에 걸려 부서 CSO 가 「PATH 파손」으로 읽고 `~/.local/bin/python3` 링크를 스스로 만들었다.
+# 발동 조건 = 맥 · 해소된 CYS_PY 가 번들(.../runtime/python/bin/python3) · **PATH 에 스텁 아닌 파이썬이
+# 없음**(개발 맥처럼 진짜 파이썬이 있으면 그 세션의 python3 는 건드리지 않는다). 사용자 dotfile·PATH 는
+# 무접촉(이 세션 env 파일만). 쓴 줄 수를 돌려준다(0 = 비발동).
+cys_export_bundle_py_env() {
+  _cys_ef="${CLAUDE_ENV_FILE:-}"
+  [ -n "$_cys_ef" ] || { printf '0'; return 0; }
+  _cys_is_darwin || { printf '0'; return 0; }
+  case "${CYS_PY:-}" in */runtime/python/bin/python3) ;; *) printf '0'; return 0 ;; esac
+  if _cys_path_py_darwin >/dev/null 2>&1; then printf '0'; return 0; fi
+  _cys_pd="${CYS_PY%/python3}"
+  { printf 'export PATH=%s:"$PATH"\n' "$(cys_shquote "$_cys_pd")"
+    printf 'export CYS_PY=%s\n' "$(cys_shquote "$CYS_PY")"; } >> "$_cys_ef" 2>/dev/null \
+    && { printf '2'; return 0; }
+  printf '0'
+}
+
 # 게이트 훅(guard·actprobe-kill-gate)용 절대경로 해소 — 두 훅이 각자 갖던 후보 루프의 공용판.
 # 순서 = 위 해소기 결과(절대경로화) → PATH 빈곤 환경(GUI 기동) 대비 고정 절대경로 꼬리.
 # 꼬리도 스텁은 건너뛴다. 결과는 CYS_PYBIN(없으면 빈 값 · rc 1 → 각 훅의 기존 부재 분기).

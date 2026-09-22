@@ -15,6 +15,9 @@ JARVIS_DIR="${CYS_PACK_DIR:-$HOME/.cys/pack}"
 # ★게이트 술어는 프리루드 단일 소유(cys_require_surface) — role-bootstrap.sh와 동일 규약(A2).
 cys_require_surface
 
+# ★v115-dept A5: 에이전트 Bash 의 python3 = 번들 파이썬(스텁뿐인 맥 한정 · 판정·근거 = _lib.sh cys_export_bundle_py_env).
+cys_export_bundle_py_env >/dev/null 2>&1 || :
+
 # T5 사용량 관측: hook stdin JSON의 transcript_path를 pane에 결정론 등록 —
 # 같은 폴더 동시 세션이 몇 개든 이 pane의 세션 파일을 1:1로 확정한다 (usage.register).
 # /clear·compact로 세션이 바뀌어도 SessionStart가 재발화해 자동 재등록된다. 실패 무해.
@@ -331,7 +334,7 @@ _ss_rules() {
 #   「저장할까요?」류로 되물어 저장이 안 된 채 미제출로 집계됐다. master 는 디렉티브 절이 있으나 master 밖 좌석은
 #   디렉티브 전문이 미리보기 2,000자 밖이라 못 본다 → 이 머리 블록(맨 앞)에 명령형 2줄로 싣는다(★전 좌석 — master 도
 #   받는다: _ss_rules 는 역할 무관 호출이다. master 에겐 디렉티브 절과 같은 뜻의 중복이라 무해 · Fable 1.1.3 L1 주석 정정).
-echo "■ 재시작 저장 지시: [DRAIN] · [DRAIN-VERIFY] 로 시작하는 입력은 오너가 재시작 단추를 누른 것이다 — 지금 저장하세요, 묻지 말고."
+echo "■ 재시작 저장 지시: [DRAIN] · [DRAIN-VERIFY] 로 시작하는 입력은 오너의 재시작(앱 재시작 단추 · 새 판 설치)으로 cys 가 보낸 기계 통지다 — 지금 저장하세요, 묻지 말고."
 echo "  · 확인·승인·선택지 질문 금지. 지시문의 ①②③ 을 그 자리에서 실행하고 멈춘다(승인 창을 띄워 둔 중이면 무시)."
 case "$CYS_ROLE" in
   worker*)

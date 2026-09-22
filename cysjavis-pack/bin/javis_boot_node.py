@@ -71,6 +71,7 @@ javis_boot_node.py — 결정론 단일 노드 부트 헬퍼 (부트스트랩 �
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -830,16 +831,152 @@ def inject(role, msg, attempts=4):
 
 
 # ─────────────────── 회수(F5) ───────────────────
-def _reclaim_verdict(fresh_st, role, pid, cur_pid):
+# ── ★v115-dept A2·B8: 부서 좌석 폴더 · 부팅 유예 · 빈 좌석 처분 ──
+# 실사고(1.1.4 VM 904 §5-②): 부서 CSO 가 부팅 3분차의 빈 부서장 좌석을 고장으로 읽고 `--reclaim` 한 뒤
+# `--cwd` 없이 다시 띄워 좌석이 홈 cwd 빈 셸로 굳었다. 그리고 편성(formation)은 빈 master 좌석을
+# 「입양」해 claude 없는 셸에 각성문만 넣었다(큐 7건 적체) — 부서장 좌석을 아무도 띄우지 않았다.
+# 설계 확정(master 2026-09-22): 부서장 좌석은 부서 편성이 띄운다.
+SEAT_BOOT_GRACE_ENV = "CYS_SEAT_BOOT_GRACE_S"
+SEAT_BOOT_GRACE_S_DEFAULT = 180.0
+# 빈 좌석 승계(surface.create takeover_empty_seat)를 데몬이 허용하는 역할 = privileged role 뿐
+# (handlers.rs surface.create `matches!(role, "master" | "cso")`). 그 밖의 역할은 승계가 없어
+# 새 좌석을 띄우면 옛 빈 좌석이 같은 role 로 남는다 — 먼저 회수(reap)하고 띄운다.
+SEAT_TAKEOVER_ROLES = ("master", "cso")
+
+
+def seat_boot_grace_s():
+    """부팅 유예(초) — env 로 조정 · 음수·비수치는 기본값(조용한 0 접힘 금지)."""
+    raw = os.environ.get(SEAT_BOOT_GRACE_ENV)
+    try:
+        v = float(raw) if raw not in (None, "") else SEAT_BOOT_GRACE_S_DEFAULT
+    except ValueError:
+        return SEAT_BOOT_GRACE_S_DEFAULT
+    return v if v >= 0 else SEAT_BOOT_GRACE_S_DEFAULT
+
+
+def seat_in_boot_grace(status, role, now=None, grace=None):
+    """빈 좌석이 아직 부팅 유예 안인가 — **순수함수**(self_test·시험 대상).
+
+    참 = 좌석 사실이 "empty" 이고 그 좌석이 만들어진 지 grace 초가 안 됐다. 이 동안은 회수(kill)도
+    재기동도 하지 않는다 — 편성이 막 띄우는 중이거나 사람이 연결하는 중일 수 있다.
+    좌석 차원이 없거나(구 데몬) created_at 이 없으면 **아무 말도 하지 않는다**(False) — 필드 부재를
+    판정으로 융합하지 않는다(seat_state·awakened_at 과 같은 단방향 규약)."""
+    if seat_state(status, role) != "empty":
+        return False
+    s = status_surface(status, role) or {}
+    ca = s.get("created_at")
+    if not isinstance(ca, (int, float)) or isinstance(ca, bool) or ca <= 0:
+        return False
+    now = time.time() if now is None else now
+    grace = seat_boot_grace_s() if grace is None else grace
+    return (now - ca) < grace
+
+
+def empty_seat_action(status, role, now=None, grace=None):
+    """좌석은 있으나 비어 있을 때(자손 0 · 커널 사실) 무엇을 하나 — **순수함수**.
+
+    반환: None(비해당 — 좌석이 없거나 비어 있지 않다 → 종전 흐름) ·
+          "hold-grace"(유예 안 · 아무것도 안 함) ·
+          "takeover"(privileged 역할 — launch-agent 가 빈 좌석을 승계해 새 좌석에 기동) ·
+          "reap-launch"(그 밖 역할 — 빈 좌석 회수 뒤 기동).
+    ★빈 셸에 각성문을 넣는 「입양」은 빈 좌석에서는 절대 고르지 않는다(claude 가 없어 큐만 쌓인다).
+    ★유예 예외: 에이전트가 한 번도 붙지 않은 좌석(agent=None — 부서 allocate 가 만든 부서장 빈 셸)을
+      privileged 역할로 승계하는 것은 **기동**이지 회수가 아니다 — 편성이 그 좌석을 채우는 정당한
+      주체이므로 유예를 기다리지 않는다. 에이전트가 붙었다 죽은 좌석(B8)과 회수 경로는 유예 뒤에만."""
+    if seat_state(status, role) != "empty":
+        return None
+    s = status_surface(status, role) or {}
+    fresh_shell = s.get("agent") is None
+    if role in SEAT_TAKEOVER_ROLES and fresh_shell:
+        return "takeover"
+    if seat_in_boot_grace(status, role, now=now, grace=grace):
+        return "hold-grace"
+    return "takeover" if role in SEAT_TAKEOVER_ROLES else "reap-launch"
+
+
+def _dept_name_of_socket(sock):
+    """소켓 경로 → 부서명(`cys-dept-<name>` 성분) 또는 None — javis_bootstrap 명명 계약의 미러."""
+    for part in re.split(r"[\\/]", sock or ""):
+        if part.startswith("cys-dept-") and len(part) > len("cys-dept-"):
+            return part[len("cys-dept-"):]
+    return None
+
+
+def dept_registry_cwd(socket=None, reg=None, is_dir=None):
+    """부서 소켓 → 레지스트리(depts.json)의 부서 작업 폴더 또는 None — Rust `cys::dept_registry_cwd`
+    (lib.rs · v114 수리 16)의 python 미러. 항목의 socket 이 같거나(칸이 없으면 이름 규약) 그 항목의
+    cwd 가 **실재하는 폴더**일 때만 돌려준다. 본부 소켓·미등록·읽기 실패 = None(종전 동작)."""
+    sock = socket if socket is not None else os.environ.get("CYS_SOCKET")
+    if not sock:
+        return None
+    is_dir = is_dir or os.path.isdir
+    if reg is None:
+        path = os.environ.get("CYS_DEPTS_JSON") or os.path.join(os.path.expanduser("~"), ".cys", "depts.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                reg = json.load(f)
+        except (OSError, ValueError):
+            return None
+    depts = (reg or {}).get("depts")
+    if not isinstance(depts, dict):
+        return None
+    for name, meta in depts.items():
+        meta = meta if isinstance(meta, dict) else {}
+        s = meta.get("socket")
+        if not (s == sock if isinstance(s, str) and s else _dept_name_of_socket(sock) == name):
+            continue
+        cwd = (meta.get("cwd") or "").strip() if isinstance(meta.get("cwd"), str) else ""
+        return cwd if cwd and is_dir(cwd) else None
+    return None
+
+
+def _seat_event(role, old_ref, action, cwd):
+    """빈 좌석 처분 1줄 이벤트(B8) — javis_event 버스 best-effort(부재·실패는 조용히 · 판정 무영향)."""
+    mod = os.path.join(_SELF_DIR, "javis_event.py")
+    if not os.path.isfile(mod):
+        return False
+    summary = "빈 좌석 %s(에이전트 없음) → %s · cwd=%s" % (
+        old_ref, {"takeover": "승계 기동", "reap-launch": "회수 뒤 재기동",
+                  "succession-reaped": "승계 뒤 옛 좌석 회수(seat.reaped_after_succession)",
+                  "succession-reap-failed": "승계 뒤 옛 좌석 회수 실패"}.get(
+                      action, "승계 뒤 옛 좌석 보존 " + action.split(":", 1)[-1]), cwd or "(데몬 기본)")
+    try:
+        r = subprocess.run([sys.executable or "python3", mod, "emit", "agent.error",
+                            "--field", "agent=%s" % role, "--field", "summary=%s" % summary],
+                           capture_output=True, timeout=8, **NOWIN)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _reap_after_succession(role, old_ref):
+    """승계 뒤 role 없는 옛 빈 셸 좌석 정리(v115-dept · master#0e579100) — 반환 = 기록 1줄.
+    큐가 **비었다고 잴 수 있을 때만** close-surface --reap(best-effort). 큐가 남았거나 못 쟀으면 보존 —
+    큐는 좌석 단위이고 데몬도 큐가 찬 좌석의 reap 을 거부한다(큐 이전 = 범위 밖 · 메시지 유실 금지)."""
+    rc, out, _ = run(["cys", "queue", "list", "--surface", old_ref], timeout=8)
+    queued = [ln for ln in (out or "").splitlines() if len(ln.split("\t")) >= 4]
+    if rc != 0 or queued:
+        why = "queue_unknown" if rc != 0 else "queue_nonempty(%d)" % len(queued)
+        _seat_event(role, old_ref, "succession-kept:" + why, None)
+        return "%s 옛 빈 좌석 보존(사유=%s)" % (old_ref, why)
+    rc_r, _, _ = run(["cys", "close-surface", old_ref, "--reap"], timeout=12)
+    _seat_event(role, old_ref, "succession-reaped" if rc_r == 0 else "succession-reap-failed", None)
+    return "%s 옛 빈 좌석 회수(reap rc=%d · 큐 0)" % (old_ref, rc_r)
+
+
+def _reclaim_verdict(fresh_st, role, pid, cur_pid, now=None, grace=None):
     """kill 직전 최종 허용 판정 — **순수함수**(cys 호출·부작용 0·self_test 결정론 대상).
     입력의 fresh_st·cur_pid 는 호출부가 *신선하게* 조회해 넘긴다(조회는 부작용이라 밖에 둔다).
-    반환: "kill" | "hold-alive" | "hold-pid" | "hold-status".
+    반환: "kill" | "hold-alive" | "hold-grace" | "hold-pid" | "hold-status".
     ★보류 우선 원칙: 조금이라도 불확실하면 살려둔다 — 죽은 노드를 못 죽이는 손해(재시도 가능)
-    보다 산 노드를 죽이는 손해(작업 소실·비가역)가 훨씬 크다."""
+    보다 산 노드를 죽이는 손해(작업 소실·비가역)가 훨씬 크다.
+    ★v115-dept A2: 부팅 유예 안의 빈 좌석은 회수 금지(hold-grace) — 부팅 3분차 빈 부서장 좌석 오판 회수 차단."""
     if fresh_st is None:
         return "hold-status"          # 상태 불명 → 판단 불가 → 보존
     if node_alive(fresh_st, role):
         return "hold-alive"           # 되살아났다 → 오살 직전 회피
+    if seat_in_boot_grace(fresh_st, role, now=now, grace=grace):
+        return "hold-grace"           # 막 만들어진 빈 좌석 → 편성·사람이 채우는 중일 수 있다
     if not pid or cur_pid != pid:
         return "hold-pid"             # pid 가 갈렸다 → 엉뚱한 프로세스 종료 방지
     return "kill"
@@ -881,6 +1018,8 @@ def reclaim(role, emit):
         emit("reclaim", {
             "hold-status": "%s kill 직전 status 재조회 실패 — 회수 보류(불확실할 땐 보존)" % ref,
             "hold-alive": "%s 가 kill 직전 재조회에서 생존 — 회수 중단(오살 창 축소)" % role,
+            "hold-grace": "%s 는 부팅 유예(%.0fs) 안의 빈 좌석 — 회수 금지(편성·사람이 채우는 중일 수 있다 · "
+                          "유예 뒤에도 비어 있으면 그때 근거 로그와 함께 판단)" % (ref, seat_boot_grace_s()),
             "hold-pid": "%s kill 직전 pid 재확인 불일치 — 회수 보류(엉뚱한 pid 종료 방지)" % ref,
         }[verdict])
         return 1
@@ -1255,9 +1394,34 @@ def main():
         emit("precheck", "이미 각성 — %s (%s). 재기동 생략." % (row["surface_ref"] if row else "?", why))
         return done("already_up", why, row["surface_ref"] if row else None)
 
+    # ★v115-dept A2 ⓑ: --cwd 미지정이면 부서 레지스트리 폴더가 기본(본부·미등록 = None = 종전 동작).
+    #   부서 데몬 기본 cwd 는 홈이라, 지정 없이 띄운 부서 좌석이 홈 cwd 로 굳었다(904 §5-②).
+    if not a.cwd:
+        a.cwd = dept_registry_cwd()
+        if a.cwd:
+            emit("cwd", "--cwd 미지정 → 부서 레지스트리 폴더 %s" % a.cwd)
+
     # 2) LAUNCH — role 보유 surface 가 없을 때만(F2: 허위 실패보고 무시·재조회)
     row = role_surface_row(a.role)
     launched_at = None
+    # ★v115-dept A2 ⓐ·B8: 좌석이 있으나 **비어 있으면**(자손 0) 입양-주입하지 않는다 — 빈 셸에
+    #   각성문을 넣으면 claude 가 없어 큐만 쌓인다(904 교육부 7건). 처분은 empty_seat_action 한 곳.
+    takeover, old_ref, act = False, None, None
+    if row is not None:
+        act = empty_seat_action(status, a.role)
+        if act == "hold-grace":
+            emit("seat", "%s 빈 좌석이 부팅 유예(%.0fs) 안 — 재기동·회수 보류" % (row["surface_ref"], seat_boot_grace_s()))
+            return done("seat_in_grace", "empty_seat_boot_grace", row["surface_ref"], code=1)
+        if act in ("takeover", "reap-launch"):
+            old_ref = row["surface_ref"]
+            if act == "reap-launch":
+                rc_r, _, _ = run(["cys", "close-surface", old_ref, "--reap"], timeout=12)
+                emit("seat", "%s 빈 좌석 회수(reap rc=%d) → 새 좌석 기동" % (old_ref, rc_r))
+            else:
+                emit("seat", "%s 빈 좌석 → launch-agent 승계 기동(takeover_empty_seat)" % old_ref)
+            _seat_event(a.role, old_ref, act, a.cwd)
+            row = None
+            takeover = True
     if row is None:
         launched_at = time.time()
         cmd = ["cys", "launch-agent", "--role", a.role, "--agent", a.agent]
@@ -1275,6 +1439,12 @@ def main():
         if row is None:
             emit("fail", "launch 후에도 %s surface 생성 안 됨" % a.role)
             return done("no_surface", "launch_failed", code=1)
+        if takeover and row["surface_ref"] == old_ref:
+            # 승계가 거절돼(claim_denied 등) role 이 여전히 옛 빈 좌석에 있다 — 빈 셸에 주입하지 않는다.
+            emit("fail", "%s 빈 좌석 승계 실패 — role 이 옛 좌석에 남음(빈 셸 주입 0)" % old_ref)
+            return done("takeover_failed", "empty_seat_takeover_denied", old_ref, code=1)
+        if takeover and act == "takeover":
+            emit("seat", _reap_after_succession(a.role, old_ref))
     else:
         emit("precheck", "%s 가 이미 role 보유(미각성) — 입양해 주입(재기동 안 함)" % row["surface_ref"])
     surface = row["surface_ref"]

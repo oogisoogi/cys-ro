@@ -502,13 +502,34 @@ def _run_capture(cmd, env, timeout):
     return r
 
 
-def cys(*args, socket=None, timeout=25):
+def _operator_token_for(socket):
+    """대상 데몬의 operator.token(없거나 읽기 실패 = None). 위치 = 상태 디렉터리(state_dir_for — unix 소켓 부모 ·
+    Windows 파이프 슬러그 매핑 · Rust state.rs write_operator_token 과 같은 자리)."""
+    try:
+        with open(os.path.join(state_dir_for(socket), "operator.token"), encoding="utf-8") as f:
+            tok = f.read().strip()
+    except OSError:
+        return None
+    return tok or None
+
+
+def cys(*args, socket=None, timeout=25, owner=False):
     cmd = [CYS]
     if socket:
         cmd += ["--socket", socket]
     cmd += [str(a) for a in args]
     env = dict(os.environ)
     env.pop("AITERM_SOCKET", None)
+    # ★v115-restore(A1): phoenix 는 데몬(cysd auto-restore)이 띄운 pane 무귀속 프로세스라 그 자식 `cys reinject`
+    #   는 `external` 로 판정된다 → 부서 팩 ACL `{"from":"external","to":"worker*","allow":false}` 에 워커 몫
+    #   각성 핑이 막혔다(904 VM ↻ 부서당 1건 · 4/4). 앱 사이드카 restore 에 넣은 수리 15 와 같은 수단으로 그
+    #   데몬의 operator.token 을 CYS_OWNER_TOKEN 으로 넘긴다(cys inject_text 가 owner_token 으로 싣는다 ·
+    #   데몬은 토큰 일치 ∧ pane 무귀속일 때만 오너로 본다 — 좌석 안에서 phoenix 를 돌리면 효과 없음).
+    #   주입 호출(owner=True)에만 싣는다 — 조회 동사에는 불필요하다.
+    if owner:
+        tok = _operator_token_for(socket)
+        if tok:
+            env["CYS_OWNER_TOKEN"] = tok
     # ★Windows: 임시파일 캡처(_run_capture)로 detached cysd 파이프 상속 hang 회피. mac 은 기존 경로 유지(무회귀).
     if IS_WINDOWS:
         return _run_capture(cmd, env, timeout)
@@ -1974,7 +1995,7 @@ def stage_reinject(socket, role, surface, stub):
     if _surface_agent_present(socket, surface) is False:
         return True, "reinject skip: agent 없음(빈 셸) — 각성 핑 미발사(WP-11 agent-gate)"
     r = cys("reinject", "--check", "--role", role, "--surface", surface, "--timeout", "6",
-            socket=socket, timeout=12)
+            socket=socket, timeout=12, owner=True)
     return r.returncode == 0, "reinject rc=%s %s" % (r.returncode, (r.stdout or r.stderr or "").strip()[:120])
 
 
@@ -1986,7 +2007,7 @@ def stage_g2_ack(socket, role, surface, stub):
     if _surface_agent_present(socket, surface) is False:
         return False, "g2 skip: agent 없음(빈 셸) — 각성 핑 미발사(WP-11 agent-gate)"
     r = cys("reinject", "--check", "--role", role, "--surface", surface, "--timeout", "4",
-            socket=socket, timeout=10)
+            socket=socket, timeout=10, owner=True)
     acked = (r.returncode == 0) and ("각성" in (r.stdout or "") or "awake" in (r.stdout or "").lower())
     return acked, "g2 ack=%s (%s)" % (acked, (r.stdout or r.stderr or "").strip()[:120])
 
@@ -2402,10 +2423,26 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
             jevent(j, "*", "spawn", "ok" if res["rc"] == 0 else "fail",
                    "attempt %d · %s" % (attempt, json.dumps(res, ensure_ascii=False)))
             time.sleep(SPAWN_SETTLE)  # surface 등장 정착 대기(readiness 경합 완화)
+            # ★v115-restore(A4 · 904 VM ↻-B1 본부 master 3분 공백): 종전엔 「그 역할 좌석이 exited 아님」만 보고
+            #   부활로 셌다 → 이번 회차 restore 가 `· master: 기동 실패` 를 적은 순간에도 **다른 복원 경로가 만든,
+            #   에이전트가 안 선 좌석**(surface:15)을 성공으로 기록해 fresh 강등이 빠졌다(INCOMPLETE → 60초 대기 →
+            #   2차 재시도). 이제 ⓐ이번 회차 출력에 그 역할의 기동 실패 줄이 없고 ⓑ agent_alive 가 True 이며
+            #   ⓒ 좌석이 빈 셸(seat=="empty")이 아닌 좌석만 센다(ⓒ = 905 A2 의 빈 좌석 제외 조건 흡수 · 이 줄 단독 소유 = 906).
+            #   agent_alive 는 데몬 관측 주기라 막 뜬 좌석이 잠깐 None 일 수 있다 — ⓐ를 통과한 역할만 짧게 재관측한다.
+            _failed_now = set(re.findall(r"· (\S+): 기동 실패", res.get("out") or ""))
+
+            def _revived_seat(s):
+                return (not s["exited"]) and s.get("agent_alive") is True and s.get("seat") != "empty"
             live2 = live_role_surfaces(socket)
+            for _w in range(4):
+                if all(any(_revived_seat(s) for s in live2.get(r, []))
+                       for r in need if r not in _failed_now):
+                    break
+                time.sleep(SPAWN_SETTLE)
+                live2 = live_role_surfaces(socket)
             still = []
             for role in need:
-                alive = [s for s in live2.get(role, []) if not s["exited"]]
+                alive = [] if role in _failed_now else [s for s in live2.get(role, []) if _revived_seat(s)]
                 if alive:
                     ref = alive[0]["surface"]
                     role_surface[role] = ref

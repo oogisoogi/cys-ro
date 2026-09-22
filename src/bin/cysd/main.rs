@@ -2062,10 +2062,37 @@ fn loop_auto_restore(
     let args = args.to_vec();
     let env = env.to_vec();
     let log_path = log_path.to_path_buf();
+    let delay = autorestore_retry_delay();
     loop_auto_restore_with(
-        |_attempt| run_auto_restore_once(&daemon, &program, &args, &env, &log_path),
-        autorestore_retry_delay(),
+        |attempt| {
+            let code = run_auto_restore_once(&daemon, &program, &args, &env, &log_path);
+            // ★v115-restore(A4): 재시도 대기(기본 60초) 동안 master 자리가 비어 있으면 사용자는 아무 말도 못
+            //   들었다(904 VM ↻-B1 · 본부 master 약 3분 공백 · 알림 0). 재시도 직전 1회만 알린다.
+            let master_present = daemon.roles.lock().unwrap().contains_key("master");
+            if let Some(payload) = restore_retry_notice(attempt, code, master_present, delay.as_secs()) {
+                daemon.bus.publish("restore.retrying", "system", None, payload);
+            }
+            code
+        },
+        delay,
     );
+}
+
+/// ★v115-restore(A4) 공백 알림 판정 — **순수**. 첫 실행이 재시도 대상 비0(5·6·0 제외)이고 master 좌석이
+/// 없을 때만 페이로드(그 밖 = None · 과잉 알림 금지). 재시도 소진(둘째 실행)은 알리지 않는다(phoenix 로그가 정본).
+fn restore_retry_notice(
+    attempt: u32,
+    code: Option<i32>,
+    master_present: bool,
+    retry_in_secs: u64,
+) -> Option<serde_json::Value> {
+    if attempt != 0 || master_present || matches!(code, Some(0) | Some(5) | Some(6)) {
+        return None;
+    }
+    Some(serde_json::json!({
+        "exit": code, "role": "master", "retry_in_secs": retry_in_secs,
+        "message": format!("자비스(master) 자리를 다시 세우는 중입니다 — 약 {retry_in_secs}초 뒤 자동으로 한 번 더 시도합니다. 그동안 창을 닫지 마세요."),
+    }))
 }
 
 /// ★재시도 결정 루프(test seam · 순수 로직 — 러너·지연 주입). 반환 = 실행 횟수(테스트 단언용).
@@ -3740,6 +3767,7 @@ mod auto_restore_tests {
     }
 
     use super::{
+        restore_retry_notice,
         bundled_python3, disk_fallback_verify, extract_phoenix_embed, phoenix_embed_files,
         phoenix_self_test,
     };
@@ -3975,6 +4003,25 @@ mod auto_restore_tests {
     }
 
     /// ★성공(0)은 재시도 없음 — 1회 실행.
+    /// ★v115-restore(A4): 복원 재시도 대기 중 master 공백 알림 — 첫 비0·master 부재일 때만 1회.
+    #[test]
+    fn v115_restore_retry_notice_only_when_master_missing_on_first_failure() {
+        let n = restore_retry_notice(0, Some(3), false, 60).expect("master 공백 + INCOMPLETE = 알림");
+        assert_eq!(n["role"], "master");
+        assert_eq!(n["retry_in_secs"], 60);
+        assert!(n["message"].as_str().unwrap().contains("60초 뒤"));
+        assert!(restore_retry_notice(0, None, false, 60).is_some(), "비정상 종료(None)도 알림");
+        assert!(restore_retry_notice(0, Some(3), true, 60).is_none(), "master 가 있으면 알림 0");
+        for c in [Some(0), Some(5), Some(6)] {
+            assert!(restore_retry_notice(0, c, false, 60).is_none(), "재시도 안 하는 종료 {c:?} = 알림 0");
+        }
+        assert!(restore_retry_notice(1, Some(3), false, 60).is_none(), "재시도 소진(둘째 실행) = 알림 0");
+        let src = include_str!("main.rs");
+        let a = src.find("fn loop_auto_restore(").unwrap();
+        let body = &src[a..a + src[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("\"restore.retrying\""), "알림 이벤트 미배선");
+    }
+
     #[test]
     fn success_runs_once() {
         let runs = loop_auto_restore_with(|_a| Some(0), Duration::from_millis(0));

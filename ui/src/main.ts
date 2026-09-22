@@ -145,7 +145,8 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole } from "./restorebrief";
+import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
 declare global {
@@ -185,6 +186,8 @@ const invoke = (cmd: string, args?: Record<string, unknown>) => window.__TAURI__
 // winScaled: 재부팅 직후 Windows 는 Defender 스캔·콜드 디스크·ConPTY 기동이 겹쳐 같은 일이 더 걸린다.
 // 맥 기준값을 그대로 쓰면 '살아 있는 데몬을 죽었다'고 오판하기 쉬우므로 그 축에서만 2배로 연다.
 const winScaled = (ms: number): number => scaleForPlatform(ms, IS_WINDOWS);
+// ★v115-restore(B1 ②): 접힌 출력 안내(scrollfollow.shouldShowFoldHint) = 앱 세션당 1회(pane 무관).
+let foldHintShown = false;
 const T_REG = winScaled(8_000); //  넘기면: 레지스트리 미조회 — 등재 부서 탭 보장이 이번 기동엔 안 걸린다(다음 기동 재시도)
 const T_LIST = winScaled(8_000); // 넘기면: 그 소켓은 ok:false — 탭은 보존되고 이번 회차 입양만 건너뛴다
 const T_STATUS = winScaled(10_000); // 넘기면: 생존 '판정 불가' — ★재기동하지 않고 보존한다(중복 launch 폭주 차단)
@@ -2838,9 +2841,16 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     (e: WheelEvent) => {
       // 위로 스크롤 = 즉시 해제 — rAF 판정까지 기다리면 스트리밍 중 write 스냅이 먼저 끌어내려
       // 사용자가 위로 못 올라가는 경주가 생긴다. 실제 위치 판정은 xterm이 휠을 처리한 뒤(rAF).
-      if (e.deltaY < 0) follow = false;
+      // ★v115-restore(B1 ①): 재고정은 아래로 휠(바닥 실측)·키 입력 뒤에만 — scrollfollow.nextFollow.
+      const dy = e.deltaY;
+      if (dy < 0) follow = false;
       requestAnimationFrame(() => {
-        follow = atBottom();
+        follow = nextFollow(follow, dy, atBottom(), false);
+        // B1 ②: 맨 위에 닿으면 접힌 출력 안내 1회(앱 세션당)
+        if (shouldShowFoldHint(foldHintShown, dy, term.buffer.active.viewportY)) {
+          foldHintShown = true;
+          toast("feed", FOLD_HINT_TITLE, FOLD_HINT_BODY);
+        }
       });
     },
     { passive: true },
@@ -7147,6 +7157,22 @@ function onDaemonEvent(event: Record<string, unknown>) {
     refreshSidebarStatus();
     return;
   }
+  if (name === "restore.retrying") {
+    // ★v115-restore(A4): ↻ 뒤 master 자리 공백(자동 재시도 대기) — 조용히 비어 있지 않게 알린다.
+    stickyToast(`restore-retrying:${event.socket_slug ?? ""}`, "health", "⏳ 자비스 자리를 다시 세우는 중", String(payload.message ?? ""));
+    return;
+  }
+  if (name === "role.takeover") {
+    // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
+    //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).
+    stickyToast(
+      `role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`,
+      "health",
+      `ℹ '${payload.role ?? ""}' 자리가 다른 칸으로 옮겨졌습니다`,
+      `surface:${payload.prev_surface ?? sid ?? ""} 이 비어 있어 부활 절차가 역할을 새 칸에 이어 붙였습니다. 옛 칸의 셸은 그대로 쓸 수 있습니다.`,
+    );
+    return;
+  }
   if (name === "seat.folder_denied") {
     // ★v114-dept-fd 수리 1‴: 좌석 폴더를 macOS 가 막아 claude 가 못 뜬다(좌석엔 빈 셸만 남는다).
     //   claude 가 내는 「file descriptors」 오류 문구는 원인이 아니다 — 원인 문장으로 대신 알린다.
@@ -7288,6 +7314,12 @@ async function refreshDaemonInfo(info: HTMLElement) {
 //   · 한 번 켜질 때 1회만. 실패는 조용히 넘긴다(카드는 부가 기능 — 복원 자체를 막지 않는다).
 // ────────────────────────────────────────────────────────────────────────────
 let restoreBriefShown = false;
+// ★v115-restore(B5): 카드 시점 = 조직 복원이 끝난 뒤(판정 = restorebrief.briefTiming). 복원 신호가 유예 안에
+//   안 오면 이번 켜짐엔 복원이 없다고 보고 띄운다.
+const briefGate = { restoreStarted: false, restoreFinished: false, graceElapsed: false };
+function maybeShowRestoreBrief(): void {
+  if (briefTiming(briefGate) === "show") void showRestoreBrief();
+}
 
 /**
  * ★(v112-restore ①) 복원 안내가 입력창에 남은(미제출 실측) 자리의 역할 목록. 재료 = cys 가 부트 주입마다
@@ -7693,6 +7725,11 @@ async function start() {
     // ★P1-3: 방금 조직을 지운 사용자에게 "직원 복귀 중"은 정반대 신호다. 리셋 진행/완료
     // 상태에서는 복원 토스트를 띄우지 않는다(복원 자체는 백엔드 판단이므로 표시만 억제).
     if (factoryResetting || resetCompleted) return;
+    if (p.phase === "start") briefGate.restoreStarted = true;
+    if (p.phase === "done" || p.phase === "error") {
+      briefGate.restoreFinished = true;
+      maybeShowRestoreBrief(); // ★v115-restore(B5): 드레인 저장·복원이 끝난 뒤의 작업기록으로 카드를 짓는다
+    }
     if (p.phase === "start") {
       stickyToast("restore", "feed", "👥 직원 복귀 중", "노드 세션 복원 중… (본부·부서)");
     } else if (p.phase === "done") {
@@ -8192,7 +8229,11 @@ async function start() {
   if (first != null) setFocus(first);
   refreshFeed();
   started = true; // 복원 완료 — 이 시점부터 인터벌 자동 입양 허용
-  void showRestoreBrief(); // 복원 브리핑 카드(1단계) — 표시만 · 모델 호출 0 · 재개 주입 0
+  // 복원 브리핑 카드(1단계) — 표시만 · 모델 호출 0 · 재개 주입 0 · ★v115-restore(B5): 복원 완료 뒤에 띄운다.
+  setTimeout(() => {
+    briefGate.graceElapsed = true;
+    maybeShowRestoreBrief();
+  }, BRIEF_RESTORE_GRACE_MS);
   // ★부서 push 구독 보장(멱등): 앱이 뜰 때 **이미 살아 있던** 부서 데몬은 종전에 이벤트 포워더가
   // 붙지 않았다(포워더는 launch_dept_daemon 경로와 Control Center '작업' 탭 진입에서만 걸렸다).
   // 그러면 그 부서의 surface 종료·reap 이벤트가 UI 에 오지 않아 죽은 pane 이 세션 내내 남는다.

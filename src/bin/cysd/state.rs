@@ -3748,6 +3748,25 @@ impl Daemon {
         Ok(surface)
     }
 
+    /// ★v115-restore(A3) 좌석 **화면**에 고지 1줄을 찍는다 — 입력(PTY stdin)이 아니라 출력 쪽이다.
+    ///
+    /// 종전 승계·npm 고지는 셸 주석(`# …`)을 **입력으로 주입**했다. zsh 대화형은 `interactive_comments`
+    /// 가 기본 꺼져 있어 `#` 줄이 주석이 아니고 `[cys]` 가 글롭으로 해석돼 `zsh: no matches found: [cys]`
+    /// 가 났다(904 VM §5-③) · 셸 히스토리에도 남는다. 출력 쪽으로 찍으면 셸은 이 글을 **모른다** —
+    /// 실행·히스토리·미제출 잔재가 원리적으로 없다. 경로는 PTY reader 와 같다: 파서 반영 + attach
+    /// 브로드캐스트를 같은 parser 락 아래에서(중복 배달 창 봉쇄 불변식) → scrollback·회상 적재.
+    /// 한계(정직): 셸의 줄 편집기는 이 줄을 모르므로 프롬프트가 고지 위에 남아 보인다(다음 입력에 영향 없음).
+    pub fn display_notice(&self, surface: &Surface, line: &str) {
+        let clean: String = line.chars().filter(|c| !c.is_control()).collect();
+        let bytes = format!("\r\n\x1b[2m{clean}\x1b[0m\r\n").into_bytes();
+        {
+            let mut parser = surface.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = process_chunk_isolated(&mut parser, &bytes, 0);
+            let _ = surface.out_tx.send(bytes.clone());
+        }
+        self.ingest_output(surface, &bytes);
+    }
+
     /// Append stripped output to the scrollback line buffer and run health rules.
     /// 청크 경계 안전: 미완성 ESC 시퀀스·UTF-8 멀티바이트 꼬리는 다음 청크와 합쳐 처리한다
     /// (경계에서 한글 파괴·escape 잔재 혼입 차단).

@@ -117,6 +117,9 @@ def scenario_axes(m, root, sink=None):
 
     # S2 — 다음 사이클: resume 재시도 없이 fresh 재기동 · 이번엔 에이전트가 떠 있다
     restore_before = calls["restore"]
+    # ★v115-restore(A4): 1사이클의 정착 판정이 agent_alive True 를 요구하므로(대역 = 항상 None) 1사이클 안에서
+    #   이미 fresh 1회가 난다 — S2 는 「이번 사이클의」 증분으로 잰다.
+    fresh_before = calls["fresh"]
     # 대상 산정은 이번 사이클도 죽은 좌석을 본다 — fresh 기동 순간에 표가 살아있음으로 바뀐다.
     state["table"] = T_DEAD
     _orig_fresh = m.spawn_fresh_production
@@ -127,7 +130,7 @@ def scenario_axes(m, root, sink=None):
     m.spawn_fresh_production = _fresh_then_alive
     r2 = m.run_restore(sock, ticket="a3", stub=False, no_breaker=True, print_result=False)
     check("S2a force_fresh → cys restore(resume) 재시도 0 · launch-agent fresh 1",
-          calls["restore"] == restore_before and calls["fresh"] == 1,
+          calls["restore"] == restore_before and calls["fresh"] - fresh_before == 1,
           (calls, restore_before), sink)
     check("S2b fresh 기동 뒤 ps 살아있음 → fresh 확정(VERIFIED_FRESH)",
           r2.get("phoenix_restore") == "VERIFIED_FRESH" and (r2.get("per_role_outcome") or {}).get("master") == "fresh",

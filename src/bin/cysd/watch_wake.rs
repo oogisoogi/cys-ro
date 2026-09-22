@@ -165,6 +165,15 @@ fn shared() -> &'static Mutex<Shared> {
 ///
 /// * `key` — 사건 멱등 키(같은 사건 = 같은 키).
 /// * `detected_sid` — 사건이 난 좌석. master 자신이면 적재하지 않는다(자기 입력줄에 자기 사건 금지).
+/// ★v115-restore(B4 · 09-22 윈 실기 06:4x 사진): 좌석의 `role` 칸은 **지금 그 역할을 쥐었다는 뜻이 아니다** —
+/// `create_surface` 의 latest-wins 는 새 자리에 역할을 주면서 옛 자리의 `role` 칸을 지우지 않는다(승계·claim
+/// 경로만 지운다). 그래서 옛 자리 surface:58 이 여전히 `cso` 로 읽혀 「surface:58(cso) 입력줄에 미제출 지시가
+/// 303초째」가 master 를 깨웠다(현 cso = 61). 감시 각성은 역할표(`daemon.roles`)가 그 좌석을 가리킬 때만 역할을 준다.
+pub(crate) fn role_held_now(daemon: &Daemon, s: &crate::state::Surface) -> Option<String> {
+    let role = s.role.lock().unwrap().clone()?;
+    (daemon.roles.lock().unwrap().get(&role).copied() == Some(s.id)).then_some(role)
+}
+
 pub(crate) fn wake_master(daemon: &Daemon, key: &str, detected_sid: u64, text: &str) -> bool {
     if !enabled() {
         return false;
@@ -470,6 +479,33 @@ mod tests {
         make_idle(&worker, 400);
         crate::governance::check_idle(&d);
         assert_eq!(watch_lines(&master).len(), 1, "같은 이벤트 2회 → 주입 1회");
+    }
+
+    /// ★v115-restore(B4): 같은 역할의 새 자리가 latest-wins 로 역할을 가져간 뒤 옛 자리에 미제출 지시가 남아도
+    /// master 를 깨우지 않는다(옛 자리 role 칸은 남아 있다 = 결함 조건 재현) · 대조군 = 새 자리는 깨운다.
+    #[test]
+    fn stale_role_label_on_old_seat_does_not_wake_master() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        let d = drill_daemon("stale");
+        let master = seat(&d, "master");
+        let old = seat(&d, "cso");
+        let new = seat(&d, "cso"); // 역할표 cso → new (latest-wins) · old.role 칸은 "cso" 그대로
+        assert_eq!(old.role.lock().unwrap().as_deref(), Some("cso"), "결함 조건(옛 자리 role 칸 잔존) 미재현");
+        assert_eq!(d.roles.lock().unwrap().get("cso").copied(), Some(new.id));
+        old.pending_input_bytes.store(42, Ordering::Relaxed);
+        make_idle(&old, 400);
+        crate::governance::check_idle(&d);
+        assert!(watch_lines(&master).is_empty(), "옛 자리로 master 를 깨웠다: {:?}", watch_lines(&master));
+        assert_eq!(role_held_now(&d, &old), None);
+        new.pending_input_bytes.store(42, Ordering::Relaxed);
+        make_idle(&new, 400);
+        crate::governance::check_idle(&d);
+        let lines = watch_lines(&master);
+        assert_eq!(lines.len(), 1, "현 역할 좌석은 깨워야 한다: {lines:?}");
+        assert!(lines[0].contains(&cys::surface_ref(new.id)));
+        let src = include_str!("governance.rs");
+        assert_eq!(src.matches("crate::watch_wake::role_held_now(daemon, &s)").count(), 2, "각성 2곳 배선");
     }
 
     #[test]

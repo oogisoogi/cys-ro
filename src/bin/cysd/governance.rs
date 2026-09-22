@@ -674,7 +674,9 @@ fn check_agent_death(
                    "restart_count": restart_counts.get(&s.id).copied().unwrap_or(0)}),
         );
         // ★v112-wake: role 좌석(master 외)의 에이전트 사망 = master 가 봐야 하는 사건 — 1줄 각성.
-        if let Some(r) = role.as_deref().filter(|r| *r != "master") {
+        // ★v115-restore(B4): 각성은 지금 그 역할을 쥔 좌석만(이벤트 agent.exited 는 종전대로 남긴다).
+        let held = crate::watch_wake::role_held_now(daemon, &s);
+        if let Some(r) = held.as_deref().filter(|r| *r != "master") {
             let sref = cys::surface_ref(s.id);
             crate::watch_wake::wake_master(
                 daemon,
@@ -3399,6 +3401,99 @@ pub fn agent_seat_vacant_now(s: &crate::state::Surface) -> bool {
     agent_seat_vacant_verdict(true, seat, root_is_shell, root_is_agent)
 }
 
+/// ★v115-restore(A3) — 빈 에이전트 좌석(`agent_seat_vacant_now`)에 온 기계 유래 본문을 **타이핑하지 않고
+/// 큐에 보류**하는 단일 정의처. `surface.send_text` 와 데몬 내부 직접 주입 생산자(채널 봉투·스케줄·
+/// 부트 감독 통보·CEO 자동 라우팅)가 전부 이 함수를 쓴다 — 보류 동작이 생산자마다 갈리면 어느 한
+/// 경로가 빈 zsh 에 지시문을 명령으로 치는 사고(09-22 VM `zsh: event not found` · `no matches found`)가
+/// 다른 문으로 재발한다. 큐 배달은 프롬프트 경계 관측 전까지 prompt_unknown 으로 대기하고 empty_seat
+/// 게이트가 강제 배달도 막는다. 반환 = 적재된 큐 항목 id(가득 참 = None · 폐기).
+pub fn hold_for_vacant_seat(
+    daemon: &Daemon,
+    s: &crate::state::Surface,
+    text: &str,
+    entry_from: Option<String>,
+    from_value: serde_json::Value,
+    method: &str,
+    caller_pid: Option<u32>,
+) -> Option<String> {
+    let sid = s.id;
+    let queued = {
+        let mut q = s.pending_queue.lock().unwrap();
+        if q.len() >= 100 {
+            None
+        } else {
+            let entry = daemon.next_queue_entry(text.to_string(), entry_from, "send");
+            q.push_back(entry.clone());
+            Some((entry, q.len()))
+        }
+    };
+    if let Some((entry, depth)) = &queued {
+        daemon.bus.publish(
+            "queue.enqueued",
+            "queue",
+            Some(sid),
+            crate::state::queue_enqueued_payload(entry, *depth, from_value, None),
+        );
+        daemon.persist_queue_state();
+    }
+    let qid = queued.as_ref().map(|(e, _)| e.id.clone());
+    daemon.bus.publish(
+        "inject.skipped_no_agent",
+        "surface",
+        Some(sid),
+        json!({"surface_ref": cys::surface_ref(sid), "method": method,
+               "bytes": text.len(), "caller_pid": caller_pid,
+               "queued": qid.is_some(), "queue_entry_id": qid}),
+    );
+    eprintln!(
+        "[cysd] {} 주입 보류 — 에이전트 좌석이 빈 셸(claude 부재) · method={method} · 큐 {}",
+        cys::surface_ref(sid),
+        if qid.is_some() { "적재" } else { "가득 참 — 폐기" }
+    );
+    qid
+}
+
+/// [`seat_inject_guarded`] 결과.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SeatInject {
+    /// 입력 채널에 원자 주입(Inject)을 넘겼다.
+    Injected,
+    /// 빈 에이전트 좌석 — 타이핑하지 않고 큐에 보류(`hold_for_vacant_seat`) · 큐 id(가득 참 = None).
+    HeldVacant(Option<String>),
+    /// 입력 채널 포화·닫힘 — 넘기지 못했다(원장 기록은 남음 · 종전 동작과 같다).
+    WriterUnavailable,
+}
+
+/// ★v115-restore(A3) — 데몬 **내부** 생산자가 좌석 입력에 기계 본문을 넣는 단일 입구.
+/// ①빈 에이전트 좌석이면 [`hold_for_vacant_seat`](타이핑 0) ②아니면 배달 원장 선기록(delivery.rs 불변식 ①)
+/// → `WriteReq::Inject`. `surface.send_text` 의 빈 셸 가드와 같은 술어·같은 보류 함수를 쓴다.
+/// 셸에 **보여 주기만** 할 고지(좌석 승계 · npm 오염)는 입력이 아니므로 여기가 아니라
+/// `Daemon::display_notice`(화면 출력 쪽)로 간다.
+pub fn seat_inject_guarded(
+    daemon: &Daemon,
+    s: &crate::state::Surface,
+    text: &str,
+    cr_delay_ms: u64,
+    origin: crate::delivery::Origin,
+    from_surface: Option<u64>,
+    method: &str,
+) -> SeatInject {
+    if agent_seat_vacant_now(s) {
+        let from = from_surface.map(cys::surface_ref);
+        let fv = from.clone().map(serde_json::Value::String).unwrap_or(serde_json::Value::Null);
+        return SeatInject::HeldVacant(hold_for_vacant_seat(daemon, s, text, from, fv, method, None));
+    }
+    crate::delivery::record_audited(daemon, s.id, text, origin, from_surface);
+    match s.write_tx.try_send(crate::state::WriteReq::Inject {
+        text: text.to_string(),
+        cr_delay_ms,
+        clear_first: false,
+    }) {
+        Ok(()) => SeatInject::Injected,
+        Err(_) => SeatInject::WriterUnavailable,
+    }
+}
+
 /// ★(T-0147-7 W2 · CS-5① / 비평2 C-4) **live-slot 계약** — latest-wins 의 agent_alive 한정 보호.
 ///
 /// 종전 계약: 비특권 역할(reviewer-* 등)은 `roles.insert` 의 **latest-wins**(최신 surface 승리 —
@@ -4378,7 +4473,8 @@ pub(crate) fn check_idle(daemon: &Daemon) {
             );
             // ★v112-wake: role 좌석(master 외)의 입력줄에 미제출 지시가 남은 채 유휴면 master 를 깨운다.
             //   빈 입력줄의 유휴는 정상 대기라 깨우지 않는다(이벤트만 — 종전 동작).
-            let role = s.role.lock().unwrap().clone();
+            // ★v115-restore(B4): 역할표가 이 좌석을 가리킬 때만 — 옛 자리의 남은 role 칸으로 깨우지 않는다.
+            let role = crate::watch_wake::role_held_now(daemon, &s);
             if let Some(role) = role.filter(|r| r != "master") {
                 if seat_input_line(&s) == InputLine::Occupied {
                     let sref = cys::surface_ref(s.id);
@@ -5973,6 +6069,7 @@ impl Drop for ReapEnvGuard {
 #[cfg(test)]
 mod tests {
     use super::{
+        seat_inject_guarded, SeatInject,
         approval_wakeup_suppressed, check_surfaces, collect_descendants, endpoint_key,
         is_node_owned, kill_pid, learn_stuck_candidates, merged_approval_patterns,
         plan_duplicate_alerts, plan_duplicate_kills, wakeup_entry_ids, ProcObs,
@@ -6018,6 +6115,70 @@ mod tests {
         assert!(body.contains("notify_seat_folder_denied(daemon, &s, seat);"), "폴더 거부 감지 미배선");
     }
 
+    /// ★v115-restore(A3): 데몬 내부 직접 주입 생산자의 단일 입구 — 빈 에이전트 좌석(zsh 단독)이면
+    /// 타이핑 0 · 큐 보류 · 입력 원장 기록 0 / 대조군(좌석이 셸 아님)은 종전대로 주입.
+    #[cfg(unix)]
+    #[test]
+    fn v115_seat_inject_guarded_holds_vacant_agent_seat() {
+        if !std::path::Path::new("/bin/zsh").exists() {
+            return;
+        }
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cys-v115-sig-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let mk = |cmd: &str| {
+            let s = daemon.create_surface(None, Some(cmd.into()), None, None, 24, 120).expect("surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+            s
+        };
+        let vacant = mk("exec /bin/zsh -f -i");
+        let busy = mk("exec sleep 30");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let body = "[schedule wake] [DRAIN-VERIFY] 다음 액션 착수 !! $(date) [x]";
+        let r = seat_inject_guarded(
+            &daemon, &vacant, body, 120, crate::delivery::Origin::Schedule, None, "schedule.push",
+        );
+        assert!(matches!(r, SeatInject::HeldVacant(Some(_))), "빈 좌석인데 보류 아님: {r:?}");
+        assert_eq!(vacant.pending_queue.lock().unwrap().len(), 1, "큐 미적재");
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let sb = vacant.scrollback.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
+        assert!(!sb.contains("DRAIN-VERIFY") && !sb.contains("zsh:"), "빈 셸에 타이핑됐다: {sb}");
+        let led = crate::delivery::ledger_path(&daemon.socket_path);
+        let raw = std::fs::read_to_string(&led).unwrap_or_default();
+        assert!(!raw.contains("\"schedule\""), "보류본이 주입 원장에 기록됐다: {raw}");
+
+        let r2 = seat_inject_guarded(
+            &daemon, &busy, "hello", 120, crate::delivery::Origin::Schedule, None, "schedule.push",
+        );
+        assert_eq!(r2, SeatInject::Injected, "대조군(셸 아닌 좌석)이 주입되지 않았다");
+        let raw = std::fs::read_to_string(&led).unwrap_or_default();
+        assert!(raw.contains("schedule"), "주입본이 원장에 선기록되지 않았다: {raw}");
+
+        // 배선 핀 — 데몬 내부 직접 주입 생산자 4곳이 입구를 쓴다(직접 write_tx Inject 0).
+        for (file, src, fname) in [
+            ("channels.rs", include_str!("channels.rs"), "fn inject_master("),
+            ("schedule.rs", include_str!("schedule.rs"), "fn inject("),
+            ("boot_supervisor.rs", include_str!("boot_supervisor.rs"), "fn notify_no_spawn("),
+        ] {
+            let a = src.find(fname).unwrap_or_else(|| panic!("{file} {fname} 소실"));
+            let body = &src[a..a + src[a..].find("\n}\n").unwrap()];
+            assert!(body.contains("seat_inject_guarded("), "{file} {fname} 입구 미경유");
+            assert!(!body.contains("write_tx"), "{file} {fname} 직접 write_tx 잔존");
+        }
+        let h = include_str!("handlers.rs");
+        let a = h.find(") -> CeoDelivery {").expect("CEO 배달 함수");
+        let body = &h[a..a + h[a..].find("\n}\n").unwrap()];
+        let g = body.find("agent_seat_vacant_now(&surface)").expect("CEO 경로 즉시 프로브 미배선");
+        let w = body.find("write_tx").expect("CEO 주입 지점");
+        assert!(g < w, "CEO 경로 프로브가 주입보다 뒤");
+    }
+
     /// 배선 핀: 직접 주입 경로(비-human)가 즉시 프로브를 거쳐 보류·큐 적재·이벤트를 낸다.
     #[test]
     fn v114_send_text_guards_vacant_agent_seat_before_typing() {
@@ -6031,9 +6192,14 @@ mod tests {
         let w = body.find("try_write(").expect("PTY 쓰기 앵커");
         assert!(g < t && g < w, "가드가 PTY 쓰기보다 뒤에 있다");
         let gb = &body[g..t];
-        assert!(gb.contains("\"inject.skipped_no_agent\""), "이벤트 미발행");
-        assert!(gb.contains("q.push_back(entry.clone())"), "큐 미적재");
+        // ★v115-restore(A3): 보류 본체는 단일 정의처 hold_for_vacant_seat 로 옮겼다 — 배선 + 본체 둘 다 본다.
+        assert!(gb.contains("crate::governance::hold_for_vacant_seat("), "보류 함수 미호출");
         assert!(gb.contains("return Reply::Single(err_response("), "보류 뒤 주입 경로로 흘러감");
+        let gsrc = include_str!("governance.rs");
+        let h = gsrc.find("pub fn hold_for_vacant_seat(").expect("보류 함수 소실");
+        let hb = &gsrc[h..h + gsrc[h..].find("\n}\n").unwrap()];
+        assert!(hb.contains("\"inject.skipped_no_agent\""), "이벤트 미발행");
+        assert!(hb.contains("q.push_back(entry.clone())"), "큐 미적재");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -10157,12 +10323,18 @@ mod tests {
     fn queue_delivery_single_helper_shared_by_tick_and_rpc() {
         let src = include_str!("governance.rs");
         let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
+        // ★v115-restore(A3 · 핀 재조준 — 약화 아님): 이 파일의 원장 기록 지점은 닫힌 집합 **2곳** =
+        //   ⓐ deliver_head_locked(큐 배달) ⓑ seat_inject_guarded(데몬 내부 직접 주입 단일 입구). 제3 지점은 적색.
         assert_eq!(
             prod.matches("crate::delivery::record_audited").count(),
-            1,
-            "큐 배달 원장 기록 지점은 deliver_head_locked 안 정확히 1곳이어야 한다 — \
+            2,
+            "원장 기록 지점은 deliver_head_locked·seat_inject_guarded 정확히 2곳이어야 한다 — \
              늘었다면 배달 구현이 갈라졌다(단일 헬퍼 관례 위반)"
         );
+        let g = prod.find("pub fn seat_inject_guarded(").expect("단일 입구 소실");
+        let gb = &prod[g..g + prod[g..].find("\n}\n").unwrap()];
+        let (r, w) = (gb.find("crate::delivery::record_audited").expect("입구 원장 기록"), gb.find("write_tx.try_send(").expect("입구 주입"));
+        assert!(r < w, "단일 입구의 원장 기록이 주입 뒤로 갔다");
         let tick_at = prod.find("fn deliver_queued").expect("watchdog 틱 배달자 소실");
         let rpc_at = prod.find("fn force_deliver_entry").expect("RPC 강제 배달 본체 소실");
         let tick_body = &prod[tick_at..];

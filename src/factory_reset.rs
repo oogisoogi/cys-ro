@@ -166,6 +166,13 @@ pub struct ResetRoots {
     /// Windows GUI WebView 데이터(%LOCALAPPDATA%\com.cysjavis.terminal — macOS WebKit 대응).
     /// unix = None.
     pub win_webview_data: Option<PathBuf>,
+    /// ★v115-restore(B6) 프로세스 env `CLAUDE_CONFIG_DIR`(등록기 최우선 대상 프로필) — `live()` 만 env 에서
+    /// 읽는다. 종전엔 `build_plan` 이 env 를 직접 읽어, 시험이 **실행한 사람의 실제 프로필**(예: ~/.cys/claude)을
+    /// 훅 제거 대상으로 집었다(기기 의존 적색 · 실 settings.json 접촉 위험).
+    pub claude_config_dir: Option<PathBuf>,
+    /// ★v115-restore(B6) macOS 앱 설정 도메인(`defaults delete` 대상). `live()` 만 Some — 시험 루트는 None 이라
+    /// **개발자 기기의 실제 cys 앱 설정을 지우지 않는다**(종전 시험 실행마다 `defaults delete com.cysjavis.terminal`).
+    pub defaults_domain: Option<&'static str>,
 }
 
 impl ResetRoots {
@@ -210,6 +217,8 @@ impl ResetRoots {
             workspace_root,
             win_local_state,
             win_webview_data,
+            claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+            defaults_domain: cfg!(target_os = "macos").then_some("com.cysjavis.terminal"),
             home,
         })
     }
@@ -608,9 +617,8 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
     // 해제 대상 열거는 `~/.claude*` 뿐이라, 그 프로필의 훅만 살아남아 깨진 채 남았다.
     // ~/.cys 안(=격리로 함께 사라지는 격리형 프로필)은 제외한다 — 파일째 없어지므로 무의미.
     let mut profile_dirs = crate::pack::personal_profile_dirs_under(&roots.home);
-    if let Ok(v) = std::env::var("CLAUDE_CONFIG_DIR") {
-        let p = PathBuf::from(&v);
-        if !v.is_empty() && p.is_dir() && !p.starts_with(&roots.cys_base) && !profile_dirs.contains(&p)
+    if let Some(p) = roots.claude_config_dir.clone() {
+        if !p.as_os_str().is_empty() && p.is_dir() && !p.starts_with(&roots.cys_base) && !profile_dirs.contains(&p)
         {
             profile_dirs.push(p);
         }
@@ -1600,12 +1608,10 @@ pub fn execute_quarantine(
             stripped.push(format!("{}: pack 스킬 심링크 {n}개 제거", dir.display()));
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        // defaults 도메인은 cfprefsd 캐시가 있어 파일 격리만으론 안 지워진다 — 병행 삭제.
-        let _ = std::process::Command::new("defaults")
-            .args(["delete", "com.cysjavis.terminal"])
-            .output();
+    // defaults 도메인은 cfprefsd 캐시가 있어 파일 격리만으론 안 지워진다 — 병행 삭제.
+    // ★v115-restore(B6): 대상은 루트가 지정한다(live = macOS 앱 도메인 · 시험 루트 = None = 실행 안 함).
+    if let Some(domain) = roots.defaults_domain {
+        let _ = std::process::Command::new("defaults").args(["delete", domain]).output();
     }
 
     // ── 임시 캐시 소거(rm — OS 관리 임시 영역 한정 예외) ──
@@ -2332,6 +2338,8 @@ mod tests {
             workspace_root: home.join("Desktop/CYSjavis"),
             win_local_state: None,
             win_webview_data: None,
+            claude_config_dir: None,
+            defaults_domain: None,
         }
     }
 
@@ -2516,6 +2524,37 @@ mod tests {
             .report_only
             .iter()
             .any(|s| s.contains("symlink-root")));
+    }
+
+    /// ★v115-restore(B6): 시험 루트는 실행한 사람의 기기를 건드리지 않는다(헤르메틱).
+    ///   ① 프로세스 env CLAUDE_CONFIG_DIR 이 무엇이든 시험 루트의 훅 제거 대상은 임시 홈 안뿐이다
+    ///      (이 세션처럼 env 가 실 프로필 ~/.cys/claude 를 가리키면 종전 코드는 그 settings.json 을 집었다)
+    ///   ② 루트가 프로필을 지정하면 그것은 대상에 든다(기능 보존 · 대조군)
+    ///   ③ `defaults delete` 대상은 루트 필드뿐 — live() 밖 소스에 앱 도메인 리터럴 0 · 시험 루트는 None
+    #[test]
+    fn v115_plan_is_hermetic_to_runner_env_and_os_prefs() {
+        let td = test_home("hermetic");
+        let r = seed_practice_tree(&td);
+        let opts = ResetOptions { purge_license: false, purge_local: false, purge_round: false };
+        let plan = build_plan(&r, &opts);
+        for p in plan.strip_settings.iter().chain(plan.strip_skill_dirs.iter()) {
+            assert!(p.starts_with(&td), "시험 루트가 임시 홈 밖을 집었다(러너 env 누출): {p:?}");
+        }
+        let prof = td.join("profile-x");
+        touch(&prof.join("settings.json"), "{}");
+        let mut r2 = seed_practice_tree(&td);
+        r2.claude_config_dir = Some(prof.clone());
+        let plan2 = build_plan(&r2, &opts);
+        assert!(
+            plan2.strip_settings.iter().any(|p| p == &prof.join("settings.json")),
+            "루트가 지정한 프로필이 훅 제거 대상에서 빠졌다"
+        );
+        assert!(fake_roots(&td).defaults_domain.is_none(), "시험 루트가 OS 앱 설정을 지정했다");
+        let src = include_str!("factory_reset.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert_eq!(prod.matches("Command::new(\"defaults\")").count(), 1, "defaults 호출 지점 수 변동");
+        assert!(prod.contains("if let Some(domain) = roots.defaults_domain {"), "defaults 삭제가 루트 필드 밖에서 돈다");
+        assert!(!prod.contains("[\"delete\", \"com.cysjavis.terminal\"]"), "앱 도메인 리터럴 삭제가 되살아났다");
     }
 
     #[test]

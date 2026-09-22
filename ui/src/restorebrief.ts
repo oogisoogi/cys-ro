@@ -204,3 +204,16 @@ export const INTERNAL_TERMS = [
   "SESSION_STATE", "surface", "phoenix", "master", "cso", "worker", "reviewer",
   "pane", "socket", "daemon", "데몬", "소켓", "세션", "jsonl", "_round",
 ];
+
+/**
+ * ★v115-restore(B5 · 09-22 윈 실기 사진): 카드를 **언제** 띄우나 — 순수 판정.
+ * 종전엔 앱 시작 직후 곧장 띄워, 조직 복원(restore-progress)과 드레인 저장이 아직 도는 중에
+ * 「정리된 작업 기록을 찾지 못했습니다」가 떴다(기록은 몇 초 뒤 저장됐다). 규칙:
+ *   · 복원이 시작됐으면(start 수신) 끝날 때(done/error)까지 기다린다.
+ *   · 시작 신호가 유예(기본 15초) 안에 안 오면 = 이번 켜짐엔 복원이 없다 → 띄운다.
+ */
+export const BRIEF_RESTORE_GRACE_MS = 15000;
+export function briefTiming(s: { restoreStarted: boolean; restoreFinished: boolean; graceElapsed: boolean }): "show" | "wait" {
+  if (s.restoreStarted) return s.restoreFinished ? "show" : "wait";
+  return s.graceElapsed ? "show" : "wait";
+}

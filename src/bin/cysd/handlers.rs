@@ -233,12 +233,68 @@ fn reject_send(
         json!({"surface_ref": surface_ref(sid), "method": method, "code": code,
                "message": msg, "caller_pid": caller_pid}),
     );
-    eprintln!(
-        "[cysd] {} 주입 거부 — method={method} code={code} caller_pid={} · {msg}",
+    // ★v115-restore(A1): 거부 줄에 발신자 명령줄·부모를 함께 남긴다 — 904 VM 에서 거부 발신자 4건이 전부
+    //   단명이라 5초 ps 표본에 한 번도 안 잡혔다(발신자 【추정·강】에 머문 까닭). 거부 응답을 기다리는 동안
+    //   발신자는 아직 살아 있으므로 **지금** 읽으면 잡힌다. `send.rejected`·`acl.denied` 페이로드는 바이트
+    //   동일로 둔다(회귀 핀 non_owner_acl_verdict_and_payload_are_byte_identical) — 로그 줄에만 붙인다.
+    let lineage = caller_pid.map(caller_lineage_desc).unwrap_or_default();
+    eprintln!("{}", reject_log_line(sid, method, code, caller_pid, msg, &lineage));
+    err_response(id, code, msg)
+}
+
+/// 거부 로그 한 줄(순수 · 시험 대상). `lineage` 는 [`caller_lineage_desc`] 의 산출(없으면 빈 글).
+fn reject_log_line(
+    sid: u64,
+    method: &str,
+    code: &str,
+    caller_pid: Option<u32>,
+    msg: &str,
+    lineage: &str,
+) -> String {
+    format!(
+        "[cysd] {} 주입 거부 — method={method} code={code} caller_pid={}{lineage} · {msg}",
         surface_ref(sid),
         caller_pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
-    );
-    err_response(id, code, msg)
+    )
+}
+
+/// 발신자 명령줄 + 부모 pid·명령줄(각 200자 상한 · 제어문자 제거). 조회 실패 칸은 `?`.
+/// 거부 경로에서만 부른다(드묾) — sysinfo 단일 pid 조회 2회.
+fn caller_lineage_desc(pid: u32) -> String {
+    fn argv_and_parent(pid: u32) -> (Option<String>, Option<u32>) {
+        let target = sysinfo::Pid::from_u32(pid);
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[target]),
+            false,
+            sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+        );
+        let Some(p) = sys.process(target) else { return (None, None) };
+        let cmd: Vec<String> = p.cmd().iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        let cmd = if cmd.is_empty() { None } else { Some(cmd.join(" ")) };
+        (cmd, p.parent().map(|pp| pp.as_u32()))
+    }
+    fn clip(s: Option<String>) -> String {
+        match s {
+            None => "?".into(),
+            Some(s) => {
+                let s: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                let mut out: String = s.chars().take(200).collect();
+                if s.chars().count() > 200 {
+                    out.push('…');
+                }
+                out
+            }
+        }
+    }
+    let (cmd, ppid) = argv_and_parent(pid);
+    let pcmd = ppid.and_then(|pp| argv_and_parent(pp).0);
+    format!(
+        " caller_cmd=\"{}\" parent_pid={} parent_cmd=\"{}\"",
+        clip(cmd),
+        ppid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+        clip(pcmd)
+    )
 }
 
 fn try_write(
@@ -543,36 +599,17 @@ fn announce_seat_takeover(daemon: &Arc<Daemon>, prev_sid: u64, role: &str, path:
     let Some(s) = daemon.get_surface(prev_sid) else {
         return;
     };
-    // 렌더 입력은 **그 좌석이 실제로 돌리는 셸**(`Surface::cmd`)이다 — `CYS_SHELL` 로 어느 OS
-    // 에서든 바뀌므로 `cfg!` 로 가르면 틀린다(npm 축과 같은 규율).
-    let text = seat_takeover_notice(role, &s.cmd);
-    // ★R1 배달 원장 — 주입보다 앞(delivery.rs 불변식 ①). 좌석 승계 고지도 기계 유래다.
-    // 원장에는 **주입할 그 문자열**을 남긴다(접두가 갈리면 층1 대조가 이 고지를 못 알아보고,
-    // 라벨도 없으므로 임무 게이트가 기계 고지를 오너 임무로 읽는다).
-    crate::delivery::record_audited(
-        daemon,
-        prev_sid,
-        &text,
-        crate::delivery::Origin::SeatTakeover,
-        None,
-    );
-    // try_send: 채널 포화면 조용히 포기 — 고지는 best-effort 이고, 실패가 승계(가용성 회복)를
-    // 막아선 안 된다. 이벤트 채널이 이미 사실을 남긴다.
-    let _ = s.write_tx.try_send(crate::state::WriteReq::Inject {
-        text,
-        cr_delay_ms: 120,
-        clear_first: false,
-    });
+    // ★v115-restore(A3): 입력 주입(write_tx Inject) 대신 **화면 출력**으로 찍는다 — 좌석은 셸이라 입력은 곧
+    //   명령이다(zsh `interactive_comments` 기본 꺼짐 → `# [cys] …` 가 `no matches found: [cys]`). 입력이 아니므로
+    //   배달 원장(stdin 기계 유래 기록)에도 남기지 않는다 — 임무 게이트가 읽을 입력이 애초에 없다.
+    daemon.display_notice(&s, &seat_takeover_notice(role));
 }
 
-/// 좌석 승계 고지 1줄 — **순수**(셸별 주석 접두 · 개행 없음).
-///
-/// 개행이 없어야 하는 이유는 접두와 같다: 좌석은 셸이고 **개행은 곧 Enter** 다.
-fn seat_takeover_notice(role: &str, shell: &str) -> String {
+/// 좌석 승계 고지 1줄 — **순수**(화면 출력용 · 셸 주석 접두 없음 · 개행 없음).
+fn seat_takeover_notice(role: &str) -> String {
     format!(
-        "{}[cys] 이 좌석이 쥐고 있던 '{role}' 역할을 부활 절차가 다른 pane 으로 재연결했습니다 \
-         (좌석이 비어 있었음). 이 셸은 그대로 사용할 수 있습니다.",
-        cys::shell_comment_prefix(shell)
+        "[cys] 이 좌석이 쥐고 있던 '{role}' 역할을 부활 절차가 다른 pane 으로 재연결했습니다 \
+         (좌석이 비어 있었음). 이 셸은 그대로 사용할 수 있습니다."
     )
 }
 
@@ -622,30 +659,13 @@ fn announce_npm_prefix_pollution_with(
     let Some(s) = daemon.get_surface(sid) else {
         return;
     };
-    // 실제 pane 셸(`Surface::cmd`)로 렌더한다 — 프로세스 env 나 `cfg!` 가 아니라 **이 좌석이
-    // 실제로 돌리는 셸**이 판정 입력이다(`CYS_SHELL` 로 어느 OS 에서든 바뀐다).
-    let Some(req) = npm_prefix_pane_notice_req(verdict, &s.cmd) else {
+    // ★v115-restore(A3): 입력 주입 대신 **화면 출력** — 승계 고지와 같은 결함 부류다(`# …` 가 zsh 에 명령으로
+    //   들어가 `interactive_comments` 꺼진 기본 설정에서 오류 줄·히스토리 잔재를 남긴다). 입력이 아니므로
+    //   배달 원장(stdin 기계 유래 기록)에도 남기지 않는다.
+    let Some(line) = npm_prefix_pane_notice_line(verdict) else {
         return;
     };
-    // ★배달 원장 — 주입보다 앞(delivery.rs 불변식 ①). 원장에는 **실제로 주입할 문자열**을
-    //   남긴다(정본 `#` 표기를 남기면 해시가 갈려 층1 대조가 이 고지를 못 알아본다).
-    // ★원장에 남기는 문자열은 **주입할 그 문자열이어야 한다**. 정본(`#`) 표기를 남기면
-    //   `cmd.exe` pane 에서 해시가 갈려 층1 대조가 이 고지를 못 알아보고, 라벨도 없으므로
-    //   임무 게이트가 **기계 고지를 오너 임무로 읽는다**(사고 재발 경로). 그래서 값을 따로
-    //   만들지 않고 **보낼 req 에서 그대로 꺼낸다** — 둘이 갈릴 자리를 없앤다.
-    let crate::state::WriteReq::Inject { text: injected, .. } = &req else {
-        unreachable!("npm_prefix_pane_notice_req 는 Inject 만 만든다");
-    };
-    crate::delivery::record_audited(
-        daemon,
-        sid,
-        injected,
-        crate::delivery::Origin::EnvAdvisory,
-        None,
-    );
-    // try_send: 채널 포화면 조용히 포기 — 고지는 best-effort 이고 실패가 pane 생성을
-    // 막아선 안 된다. 이벤트 채널과 status 축이 이미 사실을 남긴다.
-    let _ = s.write_tx.try_send(req);
+    daemon.display_notice(&s, &line);
 }
 
 /// `hook.machine_origin` 의 판정 본체 — 원장을 **읽고**(IO) 판정은 `mission_gate` 에 맡긴다.
@@ -725,17 +745,9 @@ fn hook_machine_origin_verdict(daemon: &Arc<Daemon>, sid: u64, norm: &str) -> se
     })
 }
 
-/// pane 에 넣을 고지 `WriteReq` — **순수**(채널도 데몬도 만지지 않는다).
-///
-/// 집행(`try_send`)에서 분리한 이유는 codex R2 #2 의 "Inject 수신 단언" 때문이다: 실제 채널로
-/// 보내는 경로를 검체가 재려면 그 앞 단계가 값으로 잡혀야 하고, 그래야 **양 OS 의 셸 분기를
-/// mac CI 에서 전수로** 밟을 수 있다(`npm_config_prefix_default_for(os, …)` 와 같은 규율).
-fn npm_prefix_pane_notice_req(
-    verdict: &cys::NpmPrefixVerdict,
-    shell: &str,
-) -> Option<crate::state::WriteReq> {
-    let text = cys::npm_prefix_pollution_notice_for(verdict, shell)?;
-    Some(crate::state::WriteReq::Inject { text, cr_delay_ms: 120, clear_first: false })
+/// pane **화면**에 찍을 고지 1줄 — **순수**(오염 아니면 None · 셸 주석 접두 없음 · 본문은 정본과 동일).
+fn npm_prefix_pane_notice_line(verdict: &cys::NpmPrefixVerdict) -> Option<String> {
+    cys::npm_prefix_pollution_notice(verdict).map(|l| l.trim_start_matches("# ").to_string())
 }
 
 /// `org.status` 의 `daemon.npm_prefix_polluted` 필드 — **판정 주입판**(codex R2 #8).
@@ -2007,6 +2019,11 @@ fn deliver_to_ceo(
     let is_agent = surface.agent_meta.lock().unwrap().is_some();
     let seat = crate::governance::SeatState::from_u8(surface.seat_cache.load(Ordering::Relaxed));
     if !is_agent || seat == crate::governance::SeatState::Empty {
+        return CeoDelivery::SeatEmpty;
+    }
+    // ★v115-restore(A3): 캐시(seat_cache)는 watchdog 틱 주기라 stale 할 수 있다 — 입력 주입 직전
+    //   send_text 가드와 **같은 술어**로 즉시 프로브한다(빈 셸이면 escalation · 타이핑 0).
+    if crate::governance::agent_seat_vacant_now(&surface) {
         return CeoDelivery::SeatEmpty;
     }
     // typing 가드: 사람이 방금 CEO 좌석에 입력 중이면 주입 보류 → escalation로 degrade.
@@ -3586,43 +3603,16 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
                     params.get("from").and_then(|v| v.as_str()).map(str::to_string)
                 });
-                let queued = {
-                    let mut q = surface.pending_queue.lock().unwrap();
-                    if q.len() >= 100 {
-                        None
-                    } else {
-                        let entry = daemon.next_queue_entry(text.clone(), entry_from, "send");
-                        q.push_back(entry.clone());
-                        Some((entry, q.len()))
-                    }
-                };
-                if let Some((entry, depth)) = &queued {
-                    daemon.bus.publish(
-                        "queue.enqueued",
-                        "queue",
-                        Some(sid),
-                        crate::state::queue_enqueued_payload(
-                            entry,
-                            *depth,
-                            params.get("from").cloned().unwrap_or(Value::Null),
-                            None,
-                        ),
-                    );
-                    daemon.persist_queue_state();
-                }
-                let qid = queued.as_ref().map(|(e, _)| e.id.clone());
-                daemon.bus.publish(
-                    "inject.skipped_no_agent",
-                    "surface",
-                    Some(sid),
-                    json!({"surface_ref": surface_ref(sid), "method": "surface.send_text",
-                           "bytes": text.len(), "caller_pid": caller_pid,
-                           "queued": qid.is_some(), "queue_entry_id": qid}),
-                );
-                eprintln!(
-                    "[cysd] {} 주입 보류 — 에이전트 좌석이 빈 셸(claude 부재) · 큐 {}",
-                    surface_ref(sid),
-                    if qid.is_some() { "적재" } else { "가득 참 — 폐기" }
+                // ★v115-restore(A3): 보류 본체(큐 적재 · queue.enqueued · inject.skipped_no_agent · 로그)는
+                //   데몬 내부 직접 주입 생산자들과 **한 함수**를 쓴다(governance::hold_for_vacant_seat).
+                crate::governance::hold_for_vacant_seat(
+                    daemon,
+                    &surface,
+                    &text,
+                    entry_from,
+                    params.get("from").cloned().unwrap_or(Value::Null),
+                    "surface.send_text",
+                    caller_pid,
                 );
                 return Reply::Single(err_response(
                     &id,
@@ -7687,6 +7677,29 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
 mod tests {
     use super::*;
 
+    /// ★v115-restore(A1): 거부 로그 줄이 발신자 명령줄·부모를 싣는다(단명 발신자 특정용).
+    #[cfg(unix)]
+    #[test]
+    fn v115_reject_log_line_carries_caller_lineage() {
+        let mut child = std::process::Command::new("sleep").arg("7.25").spawn().expect("sleep");
+        let lineage = caller_lineage_desc(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(lineage.contains("caller_cmd=\"sleep 7.25\""), "발신자 명령줄: {lineage}");
+        assert!(
+            lineage.contains(&format!("parent_pid={}", std::process::id())),
+            "부모 pid: {lineage}"
+        );
+        assert!(!lineage.contains("parent_cmd=\"?\""), "부모 명령줄 미관측: {lineage}");
+        let line = reject_log_line(10, "surface.send_text", "acl_denied", Some(child.id()), "acl denied: external → worker (pack/acl.json)", &lineage);
+        assert!(line.contains(&lineage), "로그 줄에 lineage 없음: {line}");
+        assert!(line.starts_with("[cysd] surface:10 주입 거부 — method=surface.send_text code=acl_denied caller_pid="));
+        assert!(line.ends_with(" · acl denied: external → worker (pack/acl.json)"));
+        // 없는 pid 는 ? 로 정직 표기
+        let none = caller_lineage_desc(u32::MAX - 7);
+        assert_eq!(none, " caller_cmd=\"?\" parent_pid=? parent_cmd=\"?\"");
+    }
+
     /// ★v114-dept-fd 수리 1″: `dept.run` 은 데몬을 띄우는 동사만·이름 1개만·옵션/경로로 읽히는 이름 거부.
     #[test]
     fn v114_dept_run_args_whitelist() {
@@ -11544,20 +11557,7 @@ mod tests {
             "env.advisory 이벤트에 경고가 없다 — T2-4 '경고만' 정책이 무음으로 방치된다"
         );
 
-        // ② 배달 원장 선기록(unix 주입 경로 한정 — 주입이 없는 곳엔 기록할 유래도 없다).
-        if cfg!(unix) {
-            let led = crate::delivery::ledger_path(&daemon.socket_path);
-            let raw = std::fs::read_to_string(&led).unwrap_or_default();
-            assert!(
-                raw.contains("env_advisory"),
-                "고지가 배달 원장에 없다({}) — 임무 게이트가 이 주석을 **오너 임무**로 읽는다",
-                led.display()
-            );
-            assert!(
-                raw.contains("npm_config_prefix"),
-                "원장 레코드가 이 고지의 것이 아니다: {raw}"
-            );
-        }
+        // ② ★v115-restore(A3): 고지는 화면 출력이라 입력 원장에 남지 않는다(검증 = v115_npm_prefix_notice_is_screen_output_not_shell_input).
 
         // ③ 음성 대조 — 오염이 아니면 이벤트도 원장도 늘지 않는다.
         let daemon2 = isolated_daemon();
@@ -11742,196 +11742,93 @@ mod tests {
         assert_eq!(v["ledger_status"], "unreadable", "{v}");
     }
 
-    /// ★H-NPM-7(codex R2 #2 · blocking): **고지가 Windows pane 에도 실제로 주입된다.**
-    ///
-    /// 종전 결함: 주입이 `cfg!(unix)` 안에 있어 Windows pane 은 한 줄도 못 받았다. 근거는
-    /// "cmd.exe 가 `#` 를 오류로 뱉는다" 였지만 Windows pane 의 기본 셸은 `powershell.exe`
-    /// (`state.rs` `default_shell`)이고 거기서 `#` 는 정상 주석이다 — 위험한 것은 OS 가 아니라
-    /// **cmd.exe 하나**였다. 그 하나 때문에 정작 봉인 사고가 잦은 플랫폼 전체가 무음이 됐다.
-    ///
-    /// 이 검체가 재는 것 넷:
-    ///   ① 셸별 주석 접두가 맞다(powershell·pwsh·zsh·bash → `# ` / cmd → `rem `)
-    ///   ② 경로·대소문자·확장자가 섞여도 같은 판정(`C:\WINDOWS\SYSTEM32\CMD.EXE`)
-    ///   ③ **실제 `write_tx` 로 `Inject` 가 도착한다** — 양 셸 모두. mac CI 가 Windows 분기를
-    ///      실제로 밟는다(`npm_config_prefix_default_for(os, …)` 와 같은 규율).
-    ///   ④ 문안은 한 글자도 안 버린다(접두만 다르고 본문은 정본과 동일)
-    #[test]
-    fn npm_prefix_notice_reaches_the_pane_on_windows_shells_too() {
-        use crate::state::WriteReq;
-
-        // ① 셸별 접두.
-        for (shell, want) in [
-            ("powershell.exe", "# "),
-            ("pwsh", "# "),
-            ("/bin/zsh", "# "),
-            ("/bin/bash", "# "),
-            ("cmd.exe", "rem "),
-            // ② 경로·대소문자·확장자 정규화.
-            ("C:\\WINDOWS\\SYSTEM32\\CMD.EXE", "rem "),
-            ("C:\\Program Files\\PowerShell\\7\\pwsh.exe", "# "),
-        ] {
-            assert_eq!(
-                cys::shell_comment_prefix(shell),
-                want,
-                "셸 {shell:?} 의 주석 접두가 틀렸다 — 고지가 곧 명령이 되거나 무음이 된다"
-            );
-        }
-
-        let verdict = cys::NpmPrefixVerdict::WarnBundlePolluted {
-            user_value: "C:\\Program Files\\cys\\runtime\\npm".to_string(),
-            scope_root: std::path::PathBuf::from("C:\\Program Files\\cys"),
-        };
-
-        // ③ 실제 채널 수신 — 양 셸 모두 `Inject` 가 도착한다.
-        for (shell, want_prefix) in [("powershell.exe", "# "), ("cmd.exe", "rem ")] {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<WriteReq>(4);
-            let req = npm_prefix_pane_notice_req(&verdict, shell)
-                .unwrap_or_else(|| panic!("셸 {shell:?} 에서 고지가 만들어지지 않았다"));
-            tx.try_send(req).expect("채널 전송 실패");
-            match rx.try_recv().expect("pane 이 고지를 못 받았다 — Windows 무음 회귀") {
-                WriteReq::Inject { text, cr_delay_ms, clear_first } => {
-                    assert!(
-                        text.starts_with(want_prefix),
-                        "셸 {shell:?} 에 안전하지 않은 접두로 주입됐다: {text:?}"
-                    );
-                    assert_eq!(cr_delay_ms, 120, "주입 규약(CR 지연)이 바뀌었다");
-                    assert!(!clear_first, "고지가 화면을 지웠다 — 사용자 작업 파괴");
-                    // ④ 본문은 정본과 동일(접두만 다르다 · 요약 금지).
-                    let canon = cys::npm_prefix_pollution_notice(&verdict).expect("정본 문안 부재");
-                    assert_eq!(
-                        text.trim_start_matches(want_prefix),
-                        canon.trim_start_matches("# "),
-                        "셸별 렌더가 문안을 바꿨다 — 사용자가 셸마다 다른 처방을 받는다"
-                    );
-                    assert!(!text.contains('\n'), "고지에 개행이 남았다 — 개행은 곧 Enter 다");
-                }
-                other => panic!("Inject 가 아니다 ({})", write_req_name(&other)),
-            }
-        }
-
-        // 음성 대조 — 오염이 아니면 어떤 셸에서도 아무것도 만들지 않는다.
-        for clean in [cys::NpmPrefixVerdict::KeepUser, cys::NpmPrefixVerdict::NoDefault] {
-            for shell in ["powershell.exe", "cmd.exe", "/bin/zsh"] {
-                assert!(
-                    npm_prefix_pane_notice_req(&clean, shell).is_none(),
-                    "오염이 아닌데 고지가 만들어졌다({shell}) — 과잉 경고는 진짜 경고를 묻는다"
-                );
-            }
-        }
-
-        // 배선 소실 방지 — 주입이 다시 `cfg!(unix)` 뒤로 숨으면 위 검체는 초록인 채로
-        // 실사용에서만 무음이 된다(H-NPM-6 와 같은 관례).
-        let src = include_str!("handlers.rs");
-        let start = src
-            .find("fn announce_npm_prefix_pollution_with(")
-            .expect("고지 함수 소실");
-        let end = start
-            + src[start..]
-                .find("\nfn npm_prefix_pane_notice_req(")
-                .expect("배선 변형 — 소스핀 앵커 갱신 필요");
-        // 주석은 걷어내고 **실제 코드**만 본다 — 이 결함의 내력을 설명하는 주석 자체가
-        // `cfg!(unix)` 를 인용하므로, 문자열만 찾으면 자기 설명에 걸려 영구 적색이 된다.
-        let code_only: String = src[start..end]
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !code_only.contains("cfg!(unix)"),
-            "고지 주입이 다시 unix 한정으로 접혔다 — Windows pane 이 또 무음이 된다"
-        );
+    /// (테스트 보조) 좌석 scrollback 전문.
+    fn scrollback_text(daemon: &Arc<Daemon>, sid: u64) -> String {
+        let s = daemon.get_surface(sid).expect("surface");
+        let sb = s.scrollback.lock().unwrap();
+        sb.iter().cloned().collect::<Vec<_>>().join("\n")
     }
 
-    /// ★H-SEAT-WIN-1(codex R2 #2 의 **형제 결함** · master 범위 판정 2026-09-04):
-    /// 좌석 승계 고지도 Windows pane 에 실제로 주입된다.
+    /// ★v115-restore(A3 · 904 VM §5-③): 좌석 승계 고지는 **화면 출력**이다 — 셸 입력이 아니다.
     ///
-    /// npm 축을 고치며 발견해 보고한 같은 결함이다 — 주입이 `cfg!(unix)` 안에 있어 Windows
-    /// pane 은 승계 고지를 한 줄도 못 받았다. 이 함수가 막으려던 것이 "내 pane 이 조용히
-    /// 강등됐다"는 온보딩 불신인데, **정작 Windows 사용자에게는 조용히 강등되고 있었다.**
-    ///
-    /// 재는 것 넷: ①셸별 접두 ②실제 `write_tx` **Inject 수신**(powershell·cmd 양 셸)
-    /// ③개행 부재(개행은 곧 Enter) ④`cfg!(unix)` 회귀 소스핀(주석 제외 후 검사).
+    /// 종전(H-SEAT-WIN-1)은 `# [cys] …` 를 write_tx Inject 로 **입력 주입**했고, zsh 대화형 기본
+    /// (`interactive_comments` 꺼짐)에서 `zsh: no matches found: [cys]` 오류 줄이 났다. 재는 것:
+    ///   ① 실제 zsh(-f · rc 없음 = 기본 옵션) 좌석에서 발동 → 화면에 고지 본문 있음 · 셸 오류 줄 0
+    ///   ② 배달 원장(stdin 기계 유래)에 승계 고지 기록 0 — 입력이 아니다
+    ///   ③ 문안: 셸 주석 접두 없음 · 개행 없음 · 역할명 포함(셸 무관 — Windows pane 도 같은 경로)
+    ///   ④ 소스 핀: 함수 본문(주석 제외)에 write_tx 0 · display_notice 1
+    #[cfg(unix)]
     #[test]
-    fn seat_takeover_notice_reaches_the_pane_on_windows_shells_too() {
-        use crate::state::WriteReq;
-
-        // ① 셸별 접두 — 문안 본문은 접두만 빼면 동일해야 한다(요약·분기 금지).
-        let ps = seat_takeover_notice("master", "powershell.exe");
-        let cmd = seat_takeover_notice("master", "cmd.exe");
-        assert!(ps.starts_with("# "), "powershell pane 에 잘못된 접두: {ps:?}");
-        assert!(cmd.starts_with("rem "), "cmd.exe pane 에 안전하지 않은 접두: {cmd:?}");
-        assert_eq!(
-            ps.trim_start_matches("# "),
-            cmd.trim_start_matches("rem "),
-            "셸별 렌더가 문안을 바꿨다 — 사용자가 셸마다 다른 고지를 받는다"
-        );
-        assert!(ps.contains("master"), "역할명이 고지에서 빠졌다: {ps:?}");
-
-        // ③ 개행 부재 — 좌석은 셸이고 개행은 곧 Enter 다.
-        for (shell, line) in [("powershell.exe", &ps), ("cmd.exe", &cmd)] {
-            assert!(!line.contains('\n'), "고지에 개행이 남았다({shell}) — 미제출 잔재가 실행된다");
+    fn v115_seat_takeover_notice_is_screen_output_not_shell_input() {
+        if !std::path::Path::new("/bin/zsh").exists() {
+            eprintln!("skip: /bin/zsh 부재");
+            return;
         }
-
-        // ② 실제 채널 수신 — 양 셸 모두.
-        for (shell, want) in [("powershell.exe", "# "), ("cmd.exe", "rem ")] {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<WriteReq>(4);
-            tx.try_send(WriteReq::Inject {
-                text: seat_takeover_notice("worker", shell),
-                cr_delay_ms: 120,
-                clear_first: false,
-            })
-            .expect("채널 전송 실패");
-            match rx.try_recv().expect("pane 이 승계 고지를 못 받았다 — Windows 무음 회귀") {
-                WriteReq::Inject { text, cr_delay_ms, clear_first } => {
-                    assert!(text.starts_with(want), "셸 {shell:?} 접두 오류: {text:?}");
-                    assert_eq!(cr_delay_ms, 120, "주입 규약(CR 지연)이 바뀌었다");
-                    assert!(!clear_first, "승계 고지가 화면을 지웠다 — 사용자 작업 파괴");
-                }
-                other => panic!("Inject 가 아니다 ({})", write_req_name(&other)),
-            }
-        }
-
-        // ④ 회귀 소스핀 — 주입이 다시 unix 뒤로 숨으면 위 검체는 초록인 채 실사용만 무음이 된다.
-        //    주석은 걷어내고 **실제 코드**만 본다(이 결함의 내력을 적은 주석이 cfg!(unix) 를 인용한다).
-        let src = include_str!("handlers.rs");
-        let start = src.find("fn announce_seat_takeover(").expect("승계 고지 함수 소실");
-        let end = start
-            + src[start..]
-                .find("\nfn seat_takeover_notice(")
-                .expect("배선 변형 — 소스핀 앵커 갱신 필요");
-        let code_only: String = src[start..end]
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !code_only.contains("cfg!(unix)"),
-            "승계 고지 주입이 다시 unix 한정으로 접혔다 — Windows pane 이 또 무음이 된다"
-        );
-
-        // ⑤ **종단 확인** — 순수 함수만 재면 `announce_seat_takeover` 가 그 산출을 주입 직전에
-        //    변형하는 결함(예: 접두 strip)을 못 잡는다. mutation S-M3 이 그 사각을 드러냈다.
-        //    실제 함수를 돌려 **배달 원장에 실제로 남은 문자열**을 본다(원장은 주입과 같은 값을
-        //    받으므로, 여기서 접두가 살아 있으면 pane 에 들어간 것도 안전하다).
         let daemon = isolated_daemon();
-        let sid = make_surface(&daemon, None);
-        announce_seat_takeover(&daemon, sid, "master", "/tmp/lane");
+        let s = daemon
+            .create_surface(None, Some("exec /bin/zsh -f -i".into()), None, None, 24, 120)
+            .expect("zsh surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        announce_seat_takeover(&daemon, s.id, "master", "/tmp/lane");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let sb = scrollback_text(&daemon, s.id);
+        assert!(sb.contains("[cys] 이 좌석이 쥐고 있던 'master' 역할"), "화면에 고지 없음: {sb}");
+        for bad in ["no matches found", "command not found", "zsh:"] {
+            assert!(!sb.contains(bad), "셸이 고지를 명령으로 읽었다({bad}): {sb}");
+        }
         let led = crate::delivery::ledger_path(&daemon.socket_path);
         let raw = std::fs::read_to_string(&led).unwrap_or_default();
-        assert!(
-            raw.contains("seat_takeover"),
-            "승계 고지가 배달 원장에 없다({}) — 임무 게이트가 이 주석을 **오너 임무**로 읽는다",
-            led.display()
-        );
-        // 원장 레코드의 preview 는 정규화된 본문이다. 접두가 살아 있어야 셸이 이 줄을 주석으로
-        // 읽는다 — strip 되면 그대로 **명령**이 된다.
-        let prefix = cys::shell_comment_prefix(
-            &daemon.get_surface(sid).expect("surface").cmd,
-        );
-        assert!(
-            raw.contains(prefix.trim_end()),
-            "원장에 남은 승계 고지에 주석 접두가 없다 — pane 에 들어간 줄도 명령이 된다: {raw}"
-        );
+        assert!(!raw.contains("seat_takeover"), "승계 고지가 입력 원장에 남았다 — 입력으로 주입된 것: {raw}");
+
+        let line = seat_takeover_notice("worker");
+        assert!(line.starts_with("[cys] "), "주석 접두가 남았다: {line:?}");
+        assert!(!line.contains('\n') && line.contains("'worker'"), "문안 규약: {line:?}");
+
+        let src = include_str!("handlers.rs");
+        let start = src.find("fn announce_seat_takeover(").expect("승계 고지 함수 소실");
+        let end = start + src[start..].find("\nfn seat_takeover_notice(").expect("앵커");
+        let code: String =
+            src[start..end].lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert!(!code.contains("write_tx"), "승계 고지가 다시 입력 주입으로 돌아갔다");
+        assert_eq!(code.matches("display_notice(").count(), 1, "화면 출력 배선 소실");
+    }
+
+    /// ★v115-restore(A3 · 형제 결함): npm 오염 고지도 **화면 출력**이다(종전 H-NPM-7 = `#` 입력 주입).
+    ///   ① 오염 판정 → 화면에 정본 본문(접두 제외 동일) · 입력 원장 기록 0
+    ///   ② 오염 아님 → 아무것도 안 찍힌다(음성 대조) ③ 소스 핀: write_tx 0
+    #[cfg(unix)]
+    #[test]
+    fn v115_npm_prefix_notice_is_screen_output_not_shell_input() {
+        let verdict = cys::NpmPrefixVerdict::WarnBundlePolluted {
+            user_value: "/Applications/cys.app/Contents/Resources/runtime/node".to_string(),
+            scope_root: std::path::PathBuf::from("/Applications/cys.app"),
+        };
+        let canon = cys::npm_prefix_pollution_notice(&verdict).expect("정본 문안");
+        let line = npm_prefix_pane_notice_line(&verdict).expect("오염 판정에 줄 없음");
+        assert_eq!(line, canon.trim_start_matches("# "), "화면 문안이 정본과 다르다(요약·분기 금지)");
+        assert!(!line.starts_with('#') && !line.contains('\n'), "문안 규약: {line:?}");
+        for clean in [cys::NpmPrefixVerdict::KeepUser, cys::NpmPrefixVerdict::NoDefault] {
+            assert!(npm_prefix_pane_notice_line(&clean).is_none(), "오염 아님인데 줄이 있다");
+        }
+
+        let daemon = isolated_daemon();
+        let sid = make_surface(&daemon, None);
+        announce_npm_prefix_pollution_with(&daemon, sid, &verdict);
+        let sb = scrollback_text(&daemon, sid);
+        let head: String = line.chars().take(24).collect();
+        assert!(sb.contains(&head), "화면에 고지 없음: {sb}");
+        let led = crate::delivery::ledger_path(&daemon.socket_path);
+        let raw = std::fs::read_to_string(&led).unwrap_or_default();
+        assert!(!raw.contains("env_advisory"), "npm 고지가 입력 원장에 남았다: {raw}");
+
+        let src = include_str!("handlers.rs");
+        let start = src.find("fn announce_npm_prefix_pollution_with(").expect("고지 함수 소실");
+        let end = start + src[start..].find("\nfn hook_machine_origin_verdict(").expect("앵커");
+        let code: String =
+            src[start..end].lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert!(!code.contains("write_tx"), "npm 고지가 다시 입력 주입으로 돌아갔다");
+        assert!(code.contains("display_notice("), "화면 출력 배선 소실");
     }
 
     /// (테스트 보조) WriteReq 변형 이름 — 실패 메시지에 "무엇이 나왔는지"를 남긴다.
@@ -12399,6 +12296,16 @@ mod tests {
             .agent_meta
             .lock()
             .unwrap() = Some(("claude".into(), "claude".into()));
+        // ★v115-restore(게이트 정리): v114 빈 셸 가드(agent_seat_vacant_now)는 로그인 셸이 `sleep` 을 띄우기 전
+        //   찰나를 빈 좌석으로 본다 — 이 시험이 재려는 것은 clear_first 게이트이므로 좌석이 점유될 때까지 기다린다
+        //   (종전 = 타이밍 플레이크 · 여기서 난 패닉이 ACL_ENV_LOCK 을 오염시켜 18건 연쇄 적색).
+        for _ in 0..60 {
+            if !crate::governance::agent_seat_vacant_now(&s) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!crate::governance::agent_seat_vacant_now(&s), "시험 좌석이 3초 안에 점유되지 않았다");
         let req = Request {
             id: json!(2),
             method: "surface.send_text".into(),

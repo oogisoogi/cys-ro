@@ -2047,21 +2047,19 @@ fn notify_no_spawn(
     if let Some(sid) = it.surface_id {
         if let Some(s) = daemon.get_surface(sid) {
             if !s.exited.load(Ordering::Relaxed) {
-                // ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — dispatch_one 과 같은 순서).
-                crate::delivery::record_audited(
+                // ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — seat_inject_guarded 안에서 지킨다).
+                // ★v115-restore(A3): 좌석 입력 주입 단일 입구(빈 에이전트 좌석 = 타이핑 대신 큐 보류).
+                // 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
+                // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
+                let _ = crate::governance::seat_inject_guarded(
                     daemon,
-                    sid,
+                    &s,
                     &text,
+                    120,
                     crate::delivery::Origin::Supervisor,
                     None,
+                    "boot_supervisor.no_spawn",
                 );
-                // try_send: 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
-                // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
-                let _ = s.write_tx.try_send(crate::state::WriteReq::Inject {
-                    text,
-                    cr_delay_ms: 120,
-                    clear_first: false,
-                });
             }
         }
     }
@@ -5727,12 +5725,12 @@ mod tests {
         // notify_no_spawn 쪽도 순서 불변식이 같다 — 원장 기록이 주입(try_send)보다 앞.
         let nat = prod.find("fn notify_no_spawn(").expect("notify_no_spawn 소실");
         let nbody = &prod[nat..];
-        let nrec = nbody.find("record_audited(").expect("소진 통보 원장 기록 지점 소실");
-        let ninj = nbody.find("write_tx.try_send(").expect("소진 통보 주입 지점 소실");
-        assert!(
-            nrec < ninj,
-            "소진 통보의 원장 기록이 주입 뒤로 갔다 — 기계 push 오너 임무 오인 창"
-        );
+        // ★v115-restore(A3 · 핀 재조준): 소진 통보는 단일 입구 seat_inject_guarded 로 간다 — 원장 선기록 순서는
+        //   그 입구가 지킨다(governance queue_delivery_single_helper_shared_by_tick_and_rpc 가 입구 몸통을 단언).
+        let nend = nbody.find("\n}\n").expect("notify_no_spawn 끝");
+        let nb = &nbody[..nend];
+        assert!(nb.contains("crate::governance::seat_inject_guarded("), "소진 통보가 단일 입구를 안 지난다");
+        assert!(!nb.contains("write_tx.try_send("), "소진 통보에 직접 주입이 되살아났다 — 기계 push 오너 임무 오인 창");
     }
 
     /// ★(R2) provenance 상속 절단이 **실재 배선**인가 — 소스 단언.

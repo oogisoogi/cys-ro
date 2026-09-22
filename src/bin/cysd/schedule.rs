@@ -1099,26 +1099,22 @@ fn inject(daemon: &Arc<Daemon>, sid: u64, text: &str) -> Result<(), String> {
     // ★R1 배달 원장 — 주입보다 앞(delivery.rs 불변식 ①). 자기 예약 wake
     //   (`cys schedule add --text "[wakeup] 다음 액션 착수" --to master`)가 시간이 지나
     //   stdin 으로 돌아오는 경로가 바로 여기다.
-    crate::delivery::record_audited(
+    // ★v115-restore(A3): 좌석 입력 주입 단일 입구 — 빈 에이전트 좌석이면 타이핑 대신 큐 보류(보류 = 배달
+    //   예약 · Ok). 원장 선기록은 입구 안에서 주입보다 앞이다(delivery.rs 불변식 ①).
+    match crate::governance::seat_inject_guarded(
         daemon,
-        sid,
+        &surface,
         text,
+        500, // 스케줄 발화는 현행 동작 보존(clear_first=false)
         crate::delivery::Origin::Schedule,
         None,
-    );
-    surface
-        .write_tx
-        .try_send(crate::state::WriteReq::Inject {
-            text: text.to_string(),
-            cr_delay_ms: 500,
-            clear_first: false, // 스케줄 발화는 현행 동작 보존
-        })
-        .map_err(|e| match e {
-            std::sync::mpsc::TrySendError::Full(_) => {
-                "surface write channel full (pane stalled)".to_string()
-            }
-            std::sync::mpsc::TrySendError::Disconnected(_) => "surface writer closed".to_string(),
-        })
+        "schedule.push",
+    ) {
+        crate::governance::SeatInject::WriterUnavailable => {
+            Err("surface write channel full or closed (pane stalled)".to_string())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// 부재 역할 자동 기동: 데몬이 형제 CLI의 launch-agent를 호출 (준비 폴링·지침 주입 재사용)

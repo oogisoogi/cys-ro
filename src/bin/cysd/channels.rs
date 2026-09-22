@@ -1452,21 +1452,20 @@ fn inject_master(daemon: &Arc<Daemon>, sid: u64, envelope: &str) -> bool {
         return false;
     };
     // ★R1 배달 원장 — 주입보다 앞(delivery.rs 불변식 ①). 외부 채널 봉투도 기계 유래다.
-    crate::delivery::record_audited(
-        daemon,
-        sid,
-        envelope,
-        crate::delivery::Origin::Channel,
-        None,
-    );
-    surface
-        .write_tx
-        .try_send(crate::state::WriteReq::Inject {
-            text: envelope.to_string(),
-            cr_delay_ms: 500,
-            clear_first: false,
-        })
-        .is_ok()
+    // ★v115-restore(A3): 좌석 입력 주입 단일 입구 — 빈 에이전트 좌석이면 타이핑 대신 큐 보류.
+    //   보류도 「넘겼다」로 센다(큐가 배달한다 — false 면 다음 틱이 같은 봉투를 또 적재해 중복된다).
+    !matches!(
+        crate::governance::seat_inject_guarded(
+            daemon,
+            &surface,
+            envelope,
+            500,
+            crate::delivery::Origin::Channel,
+            None,
+            "channel.inbox",
+        ),
+        crate::governance::SeatInject::WriterUnavailable
+    )
 }
 
 /// state=new inbox 항목을 단조 id 순서로 배달(master 가용+비-quiescing일 때만). 배달된 inbox_id들 반환.

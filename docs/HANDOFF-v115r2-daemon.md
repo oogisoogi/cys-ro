@@ -175,7 +175,12 @@ python3 scripts/d9_events_no_daemon_revival.py --wait 12   # D9 라이브 3축(�
 
 ## 5. 남은 규율 부기
 
-- ⛔판번 bump 하지 않았다 · ⛔`git push` 하지 않았다(master 재승인 대기).
+- ⛔판번 bump 하지 않았다.
+- ✅**push 완료** — master 재승인 `[master#aeb175ae]`(원장 대조 1건 성립) · `git push origin
+  fix/v115r2-daemon` · `git ls-remote origin fix/v115r2-daemon` = 로컬 HEAD 와 동일 실측.
+  ⚠정직 고지: master 가 승인 시점에 본 HEAD 는 `db7c8cf9` 였고, 실제로 밀린 HEAD 는 그보다 **1커밋
+  앞선** `56618412`(= agy r2 BLOCK 봉합)다. 그 시점 트리에 미커밋 봉합이 있었고, 그것을 두고 옛 HEAD 를
+  밀면 **리뷰어가 BLOCK 판정한 판본**이 원격에 남는다고 판단했다. 원격 브랜치 되감기는 master 권한이다.
 - 라이브 cysr·라이브 소켓 무접촉: D9 프로브는 `/tmp/d9-<pid>` + HOME 격리 + launchctl 껍데기.
   다른 워커의 격리 cysd(`/tmp/b1.sock` 등)와 라이브 앱 cysd 가 같은 기계에 산다 — 정리는 **정확
   소켓 일치**로만 했다(패턴 kill 금지).

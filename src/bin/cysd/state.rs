@@ -3285,6 +3285,18 @@ impl Daemon {
                 builder.env("CYS_ACCOUNT_DIR", acct);
             }
         }
+        // ★D4(1.1.5 6차 · 좌석 config dir 통일): claude 프로필을 **좌석 env 로** 못박는다.
+        // 종전에는 `cys launch-agent` 가 만드는 인라인 접두(`CLAUDE_CONFIG_DIR="..." claude …`)
+        // **하나뿐**이라, 그 접두를 타지 않고 뜬 claude(좌석 셸에서 사람이 직접 친 경우 등)는
+        // 개인 프로필 `~/.claude` 를 읽었다 — 그 프로필에는 우리 스킬·settings(recap off)가 없어
+        // 「Unknown skill: dept-by-chat」·recap 줄 미적용이 났다(2026-09-22 윈 실기 · 914 S1
+        // pid 1959 env 실측 = CLAUDE_CONFIG_DIR 부재). 이 함수는 5경로(create RPC·launch-agent·
+        // boot·restore·schedule)의 **단일 합류점**이라 여기 한 줄이면 경로별 누락이 원리적으로 없다.
+        // 값 = agents.json 템플릿(`${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}`)과 같은 해소기라
+        // 본부=~/.cys/claude · 부서=그 부서 계정 dir 로 자동으로 갈린다(위 CYS_ACCOUNT_DIR 전파와 짝).
+        // ⚠호출자 지정 env 오버레이(아래 for 루프)보다 **앞**이다 — restore 가 기록해 둔 원 계정
+        // dir 이나 Windows launch-agent 가 해소한 값이 이 기본값을 덮을 수 있어야 한다.
+        builder.env("CLAUDE_CONFIG_DIR", cys::resolve_claude_config_dir());
         builder.env(cys::ENV_SURFACE_ID, id.to_string());
         builder.env(cys::ENV_SURFACE_REF, cys::surface_ref(id));
         if let Some(r) = &role {
@@ -4645,6 +4657,39 @@ mod winjob_binding_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★D4(1.1.5 6차) 좌석 config dir 통일 — **스폰 합류점**이 `CLAUDE_CONFIG_DIR` 을 좌석 env
+    /// 로 박고, 그 자리가 **호출자 env 오버레이보다 앞**임을 고정한다.
+    ///
+    /// 무엇이 깨졌었나: 종전에는 이 값을 `cys launch-agent` 의 인라인 접두(`KEY="v" claude …`)
+    /// 하나만 실었다. 그 접두를 타지 않은 claude(좌석 셸에서 직접 뜬 경우)는 개인 프로필
+    /// `~/.claude` 를 읽어 우리 스킬·settings 가 통째로 안 보였다(2026-09-22 윈 실기 · 914 S1
+    /// pid 1959 env 실측). 이 함수는 5경로(create RPC·launch-agent·boot·restore·schedule)의
+    /// 단일 합류점이라 여기 한 줄이 경로별 누락을 원리적으로 없앤다.
+    ///
+    /// ⚠이 시험이 재는 것과 못 재는 것(정직 고지): 재는 것은 **소스 구조**(호출 존재 + 오버레이
+    /// 와의 선후)뿐이다 — 실제 pane 프로세스 env 는 살아 있는 데몬·PTY 가 있어야 잰다.
+    /// 그 실측은 격리 cysd 로 따로 수행했고(수리 전 0건 / 수리본 `<HOME>/.cys/claude` /
+    /// `CYS_ACCOUNT_DIR` 지정 시 그 부서 계정 dir) 절차·수치는 `docs/HANDOFF-v115r2-pack.md` §4 에 있다.
+    /// 값 축(부서/본부 갈림)은 `cys::resolve_claude_config_dir` 의 자체 시험(lib.rs)이 고정한다.
+    #[test]
+    fn d4_spawn_confluence_pins_claude_config_dir_before_caller_env() {
+        let src = include_str!("state.rs");
+        let set = src
+            .find(r#"builder.env("CLAUDE_CONFIG_DIR", cys::resolve_claude_config_dir());"#)
+            .expect("스폰 합류점이 CLAUDE_CONFIG_DIR 을 좌석 env 로 박지 않는다(D4 회귀)");
+        let overlay = src
+            .find("for (k, v) in env {")
+            .expect("호출자 env 오버레이 루프가 사라졌다 — 이 시험의 조준점이 없다");
+        assert!(
+            set < overlay,
+            "기본값 주입이 호출자 오버레이 뒤에 있다 — restore 가 기록한 원 계정 dir·Windows \
+             launch-agent 해소값을 기본값이 덮는다(set={set} overlay={overlay})"
+        );
+        // ★값 축은 여기서 단언하지 않는다 — `resolve_claude_config_dir` 는 프로세스 env
+        // (`CYS_ACCOUNT_DIR`)를 읽으므로, 여기서 모양을 단언하면 부서 레인·프로브 환경에서
+        // 코드와 무관한 적색이 난다(lib.rs 의 전용 시험이 그 축의 정본이다).
+    }
 
     // ── pid_alive: 생존 판정 단일 정의처(channels·deadman 위임 대상)의 unix 계약 핀 ──
     // windows arm(OpenProcess+WaitForSingleObject)은 이 호스트에서 컴파일 불가 — 정책 계약은

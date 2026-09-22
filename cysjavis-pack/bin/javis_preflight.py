@@ -144,6 +144,7 @@ CONTENT_PINS = {
         ("--evidence", "done 전이 증거 게이트 — 부재 시 거부"),
         ("잠근 합격 기준의 미달 항목 0", "라운드 통과·종료 기준 — 구 리터럴 대체"),
         ("top goal", "RSI 목표 4필드 수립·보고 의무(마스터 헌장 제10조)"),
+        ("사용자 환경 변경 금지", "사용자 PATH·홈 bin·dotfile·시스템 설정 변경 금지 — 보고만(v1.1.5 A5)"),
     ],
     "CSO_DIRECTIVE.md": [
         ("정지 경계", "다섯 정지의 상주 배치(CSO 헌장 제0조)"),
@@ -172,6 +173,9 @@ CONTENT_PINS = {
         # 정지 중 살아있는 타 노드 종료 금지가 문서에서 소리 없이 사라진다.
         ("일시정지 중 허용 범위 = 바로 위 생명 유지 목록", "pause 중 허용 범위 = 생명 유지 목록 그 자체(CSO 헌장 제0조 4항 · 계약 §9-4 · v0.4 집합 통일)"),
         ("exited=true", "산 노드/죽은 노드 구분의 결정론 판정 기준 — 판정 불능은 산 노드로 보류"),
+        # v115-dept A2·A5(2026-09-22) — 부팅 3분차 부서장 빈 좌석 오판 회수 · CSO 의 사용자 환경 변경 실사고.
+        ("부서장 좌석 회수 = 부팅 유예 뒤", "부서장 좌석은 편성이 띄운다 — 유예 안 빈 좌석 회수·재기동 금지·근거 로그(v1.1.5 A2)"),
+        ("사용자 환경 변경 금지", "사용자 PATH·홈 bin·dotfile·시스템 설정 변경 금지 — 보고만(v1.1.5 A5)"),
     ],
     "REVIEWER_DIRECTIVE.md": [
         ("정지 경계", "다섯 정지의 상주 배치(리뷰어 헌장 제0조)"),
@@ -2125,6 +2129,46 @@ class Preflight:
         else:
             self.add(cid, WARN, "statusLine 미등록 프로필: %s — --fix로 설치(claude 재시작 후 적용)"
                      % ", ".join(unregistered))
+
+    # ── C83 참가자 좌석 「※ recap」 줄 기본 off (v115-dept B2 · 박사님 2026-09-22 07:0x) ──
+    # Claude Code 는 자리를 비웠다 돌아오면 「※ recap: …」 요약 줄을 띄운다(설정 스키마 설명 원문:
+    # "When false, the session recap (shown when you return …)" · 키 = awaySummaryEnabled · 2.1.278
+    # 바이너리 실측). 참가자 좌석에서는 기본 끈다 — 첫실행 관문과 같은 「설정 키 사전 기입」 방식.
+    # ★사용자가 이미 값을 적어 둔 프로필(true 든 false 든)은 건드리지 않는다(setdefault). FAIL 없음.
+    RECAP_KEY = "awaySummaryEnabled"
+
+    def _recap_seeded(self, settings_path):
+        try:
+            with open(settings_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return False
+        return isinstance(data, dict) and self.RECAP_KEY in data
+
+    def c83_recap_default(self):
+        cid = "C83.recap-default"
+        if self.skipped(cid):
+            return
+        targets, forbidden = resolve_registration_targets()   # ★G1 sentinel — C32 와 같은 대상
+        if forbidden and not targets:
+            self.add(cid, SKIP, "기입 대상 없음 — %s" % forbidden)
+            return
+        pending = [t for t in targets if not self._recap_seeded(t)]
+        if not pending:
+            self.add(cid, PASS, "%d개 프로필 %s 기입됨(사용자 값 존중)" % (len(targets), self.RECAP_KEY))
+            return
+        if not self.fix:
+            self.add(cid, WARN, "%s 미기입 프로필: %s — --fix 로 false 기입(좌석 recap 줄 끔)"
+                     % (self.RECAP_KEY, ", ".join(pending)))
+            return
+        done, errs = [], []
+        for t in pending:
+            err = _settings_rmw(t, lambda d: (d.setdefault(self.RECAP_KEY, False), None)[1])
+            errs.append(err) if err else done.append(t)
+        if errs:
+            self.add(cid, WARN, "; ".join(errs) + (" | 기입 성공: %s" % ", ".join(done) if done else ""))
+        else:
+            self.add(cid, FIXED, "%s=false 기입: %s — ★claude 재시작 후 적용" % (self.RECAP_KEY, ", ".join(done)))
 
     # ── C33 툴 이벤트 hook (T7 E1-④ — events 테이블 적재) ──
     # PreToolUse/PostToolUse에 hooks/cys-hook.sh 등록 → 툴·스킬·에이전트 호출·exit_code를
@@ -6265,6 +6309,8 @@ class Preflight:
             # C82(injection-slim T5) — master 주입 요지 드라이런(크기·CORE-MIN 맨 앞·절 해시·이름 규칙).
             #   WARN-only(READY 미차단 — 훅이 이미 안전 강등한다). 마지막 고정 슬롯(C62·C68) 앞(§5-4).
             self.c82_core_injection,
+            # C83(v115-dept B2) — 참가자 좌석 recap 줄 기본 off(settings 키 사전 기입). FAIL 없음.
+            self.c83_recap_default,
             # C62는 마지막 고정 — 같은 런의 --fix가 남긴 치유 원장까지 이 런에서 보이게.
             # C68은 C62 직후(원장 소비 강제 게이트 — 같은 런의 최신 원장 기준으로 기한 판정).
             self.c62_pack_heal_ledger,

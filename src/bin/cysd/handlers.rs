@@ -15176,6 +15176,78 @@ mod tests {
         );
     }
 
+    /// ★D7⑵ 드리프트 가드 — **worker 좌석의 주차 키와 후임의 역할명이 맞는다.**
+    ///
+    /// 이 정합은 우연이 아니라 `state::dedup_worker_role` 의 **죽은 슬롯 재사용** 규칙에 의존한다:
+    /// 주차 키는 죽은 좌석의 실제 역할명(`worker`)이고, 후임 `create --role worker` 는 그 번호의
+    /// 점유자가 살아있지 않으면 **같은 이름**을 되돌려주므로 키가 맞아 상속이 성립한다.
+    /// ⇒ 그 규칙을 바꾸면 상속이 **조용히** 끊긴다(이벤트도 시험도 없이 큐만 TTL 만기로 사라진다).
+    /// 이 검체가 그 순간 빨개지도록 두 사실을 함께 단언한다: ①후임의 역할명이 같다 ②상속이 일어났다.
+    ///
+    /// (한때 「worker-N 이 어긋나 영원히 상속 안 됨」을 경계로 적으려 했으나 dedup 코드 실측이
+    ///  그것을 반증했다 — 추정으로 경계를 적는 대신 가드를 둔다.)
+    #[test]
+    fn d7_worker_parked_key_matches_successor_role_via_dead_slot_reuse() {
+        let daemon = claim_daemon();
+        let old = make_surface(&daemon, Some("worker"));
+        let old_role = daemon.surfaces.lock().unwrap()[&old]
+            .role
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("좌석이 역할을 갖고 태어나야 한다");
+        let e = daemon.next_queue_entry("워커 미배달 지시".into(), None, "test");
+        daemon.surfaces.lock().unwrap()[&old]
+            .pending_queue
+            .lock()
+            .unwrap()
+            .push_back(e);
+        mark_surface_dead(&daemon, old);
+        wait_surface_exited_event(&daemon, old);
+        assert!(
+            daemon.parked_queues.lock().unwrap().contains_key(&old_role),
+            "주차 키가 죽은 좌석의 실제 역할명({old_role})이 아니다"
+        );
+
+        // 후임을 **같은 요청 이름**(`worker`)으로 만든다 — dedup 이 죽은 슬롯을 재사용해야 키가 맞는다.
+        let Reply::Single(resp) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": "worker"}),
+            },
+            Some(995_805_u32),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(resp["ok"], json!(true), "후임 워커 좌석 생성 실패 ({resp})");
+        let next = resp["result"]["surface_id"].as_u64().expect("surface_id");
+        let next_role = daemon.surfaces.lock().unwrap()[&next]
+            .role
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("후임도 역할을 가져야 한다");
+
+        // ① 이름 정합(dedup 규칙 의존의 본체)
+        assert_eq!(
+            next_role, old_role,
+            "dedup 이 죽은 슬롯을 재사용하지 않는다 — 주차 키가 어긋나 상속이 조용히 끊긴다"
+        );
+        // ② 상속이 실제로 일어났다(이름만 맞고 배선이 끊긴 경우를 가른다)
+        assert_eq!(
+            daemon.surfaces.lock().unwrap()[&next].pending_queue.lock().unwrap().len(),
+            1,
+            "이름은 맞는데 상속이 안 됐다"
+        );
+        assert!(
+            daemon.bus.tail(200).iter().any(|ev| ev["name"] == json!("queue.inherited")
+                && ev["payload"]["to_surface"] == json!(next)),
+            "queue.inherited 가 후임 좌석을 가리키지 않는다"
+        );
+    }
+
     /// ★대조군 — **역할 없는 좌석은 종전대로 폐기된다.**
     /// 이것이 없으면 위 검체는 「이제 아무것도 폐기되지 않는다」와 구별되지 않는다(주차 분기가
     /// 역할로 게이트돼 있다는 것을 재는 축이고, 동시에 기존 거동 회귀 0 의 증명이다).

@@ -3756,6 +3756,8 @@ impl Daemon {
     /// 실행·히스토리·미제출 잔재가 원리적으로 없다. 경로는 PTY reader 와 같다: 파서 반영 + attach
     /// 브로드캐스트를 같은 parser 락 아래에서(중복 배달 창 봉쇄 불변식) → scrollback·회상 적재.
     /// 한계(정직): 셸의 줄 편집기는 이 줄을 모르므로 프롬프트가 고지 위에 남아 보인다(다음 입력에 영향 없음).
+    /// ★에이전트 없는 좌석 전용(v115-review 발견 8): 파서 커서만 2행 전진하고 PTY 쪽은 모른다 — 산 TUI(상대 커서
+    /// 이동) 좌석에 쓰면 프레임이 어긋난다. 호출부 = 승계 고지(빈 옛 좌석) · npm 고지(에이전트 기동 전) 2곳뿐.
     pub fn display_notice(&self, surface: &Surface, line: &str) {
         let clean: String = line.chars().filter(|c| !c.is_control()).collect();
         let bytes = format!("\r\n\x1b[2m{clean}\x1b[0m\r\n").into_bytes();

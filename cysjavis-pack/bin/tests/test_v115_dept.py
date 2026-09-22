@@ -427,6 +427,58 @@ class B2RecapDefault(unittest.TestCase):
         self.assertIs(json.load(open(iso))["awaySummaryEnabled"], False, "격리 프로필 기입 안 됨(대조군)")
 
 
+class D2SkillProfiles(unittest.TestCase):
+    """★D2(1.1.5 6차) dept-by-chat 스킬 등록 + 스킬 프로필 발견 SOT.
+
+    무엇이 깨졌었나: 스킬 심링크 검사(C26·C27·C29)가 제 손으로 `$HOME/.claude*` 만 훑었다.
+    좌석이 실제로 읽는 프로필은 `~/.cys/claude`(본부)·`~/.cys/claude-<부서>`(부서)라, 스킬
+    53종이 개인 프로필에만 걸리고 좌석에서는 한 종도 안 보였다 — 그 위에 dept-by-chat 은
+    어느 목록에도 없어 본부 master 가 「Unknown skill: dept-by-chat」으로 대화 폴백했다
+    (2026-09-22 윈 실기 · 914 축3 실측: `~/.cys/claude/skills` 폴더 자체가 없었다).
+    """
+
+    def test_dept_by_chat_is_in_a_linked_list(self):
+        import javis_preflight as pf
+        linked = set(pf.HARNESS_SKILLS) | set(pf.VIDEO_SKILLS) | set(pf.APPBUILD_SKILLS) | set(pf.WORK_SKILLS)
+        self.assertIn("dept-by-chat", linked,
+                      "dept-by-chat 이 어느 심링크 목록에도 없다 — 좌석에 Skill 로 등록되지 않는다")
+        self.assertTrue(os.path.isfile(os.path.join(PACK, "skills", "dept-by-chat", "SKILL.md")),
+                        "실체(pack/skills/dept-by-chat/SKILL.md)가 없다")
+
+    def test_profile_sot_covers_seat_profiles(self):
+        import javis_preflight as pf
+        tmp = tempfile.mkdtemp()
+        seat = os.path.join(tmp, ".cys", "claude")          # 좌석(본부)
+        dept = os.path.join(tmp, ".cys", "claude-default-dept-1")  # 좌석(부서)
+        personal = os.path.join(tmp, ".claude")             # 개인
+        for d in (seat, dept, personal):
+            os.makedirs(d)
+        saved = pf.discover_claude_settings
+        pf.discover_claude_settings = lambda: [os.path.join(d, "settings.json")
+                                               for d in (personal, seat, dept)]
+        try:
+            profs = pf.discover_skill_profiles()
+        finally:
+            pf.discover_claude_settings = saved
+        for d in (seat, dept, personal):
+            self.assertIn(d, profs, "스킬 프로필 SOT 가 %s 를 빠뜨린다" % d)
+
+    def test_link_checks_use_the_shared_sot(self):
+        # 좁은 자기 home-glob 이 되살아나면(같은 결함 계열) 여기서 적색이 된다.
+        src = open(os.path.join(BIN, "javis_preflight.py"), encoding="utf-8").read()
+        self.assertNotIn('if (d == ".claude" or d.startswith(".claude-"))', src,
+                         "스킬 링크 검사가 좁은 home-glob 으로 되돌아갔다(좌석 프로필 미도달)")
+        self.assertGreaterEqual(src.count("discover_skill_profiles()"), 4,
+                                "공용 SOT 소비처가 줄었다(C26·C27·C29·보드 카탈로그 4곳)")
+
+    def test_guidance_does_not_use_bare_python3(self):
+        # ★D3 와 같은 축: CLT 없는 맥에서 맨 `python3` 는 /usr/bin 스텁이라 안내대로 치면 설치 창만 뜬다.
+        src = open(os.path.join(BIN, "javis_dept_request.py"), encoding="utf-8").read()
+        hook = src[src.index("def _hook_lines") if "def _hook_lines" in src else 0:]
+        self.assertNotIn('python3 \\"%s\\"', hook, "부서 안내문이 맨 python3 를 되살렸다")
+        self.assertIn("sys.executable", src, "해석기 절대경로(sys.executable) 사용 부재")
+
+
 class B3DrainIssuer(unittest.TestCase):
     OLD = ("재시작 단추를 누른", "재시작 단추를 눌러 발신")
     NEW = "새 판 설치"

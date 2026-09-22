@@ -1994,6 +1994,10 @@ def cmd_hook_prompt(a):
     notice = bool(_NOTICE.match(prompt))
     intent = bool(_INTENT.search(prompt) and _VERB.search(prompt))
     tool = os.path.join(HERE, "javis_dept_request.py")
+    # ★D3/D2(1.1.5 6차): 맨 `python3` 를 안내에 쓰지 않는다 — 개발자 도구(CLT)가 없는 맥에서
+    # `python3` 는 /usr/bin 스텁이라 좌석 Bash 에서 설치 창만 띄우고 실행되지 않는다(2026-09-22
+    # 914 S1 실측). 지금 이 훅을 돌리고 있는 해석기(sys.executable)는 **실재가 증명된** 절대경로다.
+    runner = '"%s" "%s"' % (sys.executable, tool)
     if not base:
         if intent and not seen.get("guide"):
             lines.append("■ 부서 요청: 이 화면은 부서 화면이다 — 부서 만들기·닫기는 맨 처음 화면의 본부 마스터에서만 된다. "
@@ -2002,7 +2006,8 @@ def cmd_hook_prompt(a):
     else:
         if notice or (intent and not seen.get("guide")):
             lines += [
-                "■ 부서 요청 — 스킬 dept-by-chat 절차(`cys skill show dept-by-chat`) · 도구 = python3 \"%s\"" % tool,
+                "■ 부서 요청 — 절차 = 스킬 dept-by-chat(Skill 도구로 불러도 되고 "
+                "`cys skill show dept-by-chat` 로 읽어도 된다) · 도구 = %s" % runner,
                 "  · 만들기: 안내 본문·발화 원문을 임시 파일로 → propose --name <이름> --mission <맡을 일> --claude-md-file <본문> "
                 "--utterance-file <발화> → card 전문 그대로 보여 준다",
                 "  · 사용자가 직접 「네」 → confirm <번호> · 닫기 = propose --close <이름> → 「네」 → confirm <번호>",
@@ -2019,8 +2024,8 @@ def cmd_hook_prompt(a):
                 continue
             news.append((r, k))
         for r, k in news[:HOOK_MAX_NEWS]:
-            lines.append("■ 아직 전하지 않은 부서 소식: 「%s」(%s) — `python3 \"%s\" status --say %s` 의 say 를 그대로 전하라."
-                         % (r.get("display") or "?", r["id"], tool, r["id"]))
+            lines.append("■ 아직 전하지 않은 부서 소식: 「%s」(%s) — `%s status --say %s` 의 say 를 그대로 전하라."
+                         % (r.get("display") or "?", r["id"], runner, r["id"]))
             seen["news"].append(k)
         seen["news"] = seen["news"][-50:]
     if lines:

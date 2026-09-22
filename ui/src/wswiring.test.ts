@@ -304,10 +304,17 @@ describe("복원 브리핑 카드 — 자동으로 아무것도 보내지 않는
     // 권유가 곧 집행이 되지 않게: 이 구간에 순환 집행 호출이 없어야 한다.
     expect(/invoke\("[^"]*cycle[^"]*"/i.test(s)).toBe(false);
   });
-  it("복원이 끝난 뒤(started = true 다음) 한 번 부른다", () => {
+  // ★v115-restore(B5 · 핀 재조준): 종전 핀은 「started = true 직후 곧장 부른다」를 고정했다 — 그것이 곧 결함
+  //   (복원·드레인 저장 전에 카드가 떠 「기록 못 찾음」)이었다. 이제 = started 직후엔 유예 타이머만 걸고,
+  //   실제 호출은 maybeShowRestoreBrief(판정 briefTiming) 하나를 지난다.
+  it("복원이 끝난 뒤 한 번 부른다(started 직후 즉시 호출 0 · 판정 경유)", () => {
     const i = src.indexOf("started = true; // 복원 완료");
     expect(i).toBeGreaterThan(0);
-    expect(src.slice(i, i + 200).includes("void showRestoreBrief();")).toBe(true);
+    const near = src.slice(i, i + 400);
+    expect(near.includes("void showRestoreBrief();")).toBe(false);
+    expect(near.includes("briefGate.graceElapsed = true;")).toBe(true);
+    expect(src.match(/void showRestoreBrief\(\)/g)?.length).toBe(1);
+    expect(src.includes('if (briefTiming(briefGate) === "show") void showRestoreBrief();')).toBe(true);
   });
   it("파일 내용은 textContent 로만 넣는다(마크업 해석 금지)", () => {
     expect(cardSlice().includes("innerHTML")).toBe(false);

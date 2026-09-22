@@ -571,6 +571,49 @@ fn migrate_seat_queue(
     );
 }
 
+/// ★D7⑵(1.1.5 트랙 DAEMON) — 같은 역할로 **주차된** 미배달 큐를 새 좌석이 상속한다.
+///
+/// `migrate_seat_queue`(승계 경로)의 형제다. 다른 점은 **건너온 자리**뿐이다:
+///   · `migrate_seat_queue` = 구 좌석이 **살아 있고** 승계가 성립할 때 좌석→좌석 이관.
+///   · 이 함수      = 구 좌석이 승계 전에 **스스로 죽어** 역할 이름에 주차된 것을 좌석이 상속.
+/// 두 경로를 한 함수로 합치지 않는다 — 전자는 `prev` 라는 산 좌석을 갖고 후자는 갖지 않는다.
+///
+/// 만기(TTL 초과)분은 **버리되 조용히 버리지 않는다** — `queue.dropped(parked_expired)` 로 낸다.
+/// 상속할 것이 없으면 이벤트 0(발행은 사실의 파생이다).
+fn inherit_parked_queue(daemon: &Arc<Daemon>, next: &Arc<crate::state::Surface>, role: &str) {
+    let now = crate::state::now_epoch();
+    let taken = daemon.parked_queues.lock().unwrap().remove(role);
+    let Some(pq) = taken else {
+        return;
+    };
+    let waited = now - pq.parked_at;
+    if waited >= crate::state::PARKED_QUEUE_TTL_SECS {
+        daemon.bus.publish(
+            "queue.dropped",
+            "queue",
+            Some(next.id),
+            crate::state::queue_dropped_payload("parked_expired", &pq.entries, None),
+        );
+        return;
+    }
+    if pq.entries.is_empty() {
+        return;
+    }
+    {
+        let mut nq = next.pending_queue.lock().unwrap();
+        for entry in pq.entries.iter().cloned() {
+            nq.push_back(entry);
+        }
+    }
+    daemon.bus.publish(
+        "queue.inherited",
+        "queue",
+        Some(next.id),
+        crate::state::queue_inherited_payload(role, pq.from_surface, next.id, &pq.entries, waited),
+    );
+    daemon.persist_queue_state(); // 상속 결과를 WAL 에 확정(재기동 생존 — 이관 경로와 같은 규약)
+}
+
 /// ★SEAT 승계 고지 — **무음 승계 금지**.
 /// 빈 좌석의 특권 role 을 다른 surface 가 승계할 때, 구 좌석 사용자가 그 사실을 모르면 "내 pane 이
 /// 조용히 강등됐다"는 온보딩 불신을 낳는다(부트 체인이 사용자가 쓰려던 좌석을 가져가는 경우).
@@ -3296,6 +3339,13 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                             announce_seat_takeover(daemon, prev, &role_for_announce, "surface.create");
                         }
                     }
+                    // ★D7⑵: 역할을 갖고 태어난 좌석은 같은 역할로 주차된 큐를 상속한다.
+                    //   승계 이관(위)과 **배타가 아니다** — 둘 다 있으면 둘 다 들어간다.
+                    //   ⚠보장 범위(정직): 들어가는 순서는 「이관분 → 주차분」이며 이는 호출 순서의
+                    //   결과일 뿐 전역 시간순 병합이 아니다. 큐 규약은 좌석 단위 FIFO 만 약속한다.
+                    if !role_for_announce.is_empty() {
+                        inherit_parked_queue(daemon, &s, &role_for_announce);
+                    }
                     // ★번들 오염 고지(codex R1 #2) — 승계 여부와 무관하게 **모든** 새 pane 에.
                     //   이 pane 은 방금 오염된 env 를 상속받았으므로 고지 대상이 곧 이 좌석이다.
                     announce_npm_prefix_pollution(daemon, s.id);
@@ -5022,6 +5072,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                             Some((agent, bin, crate::state::now_epoch()));
                     }
                 }
+            }
+            // ★D7⑵: 같은 역할로 주차된 미배달 큐를 이 좌석이 상속한다(발행 순서 = 큐 먼저,
+            //   역할 확정 통보 나중 — 구독자가 role.claimed 를 보고 큐를 조회하면 이미 들어 있다).
+            if let Some(s) = daemon.get_surface(sid) {
+                inherit_parked_queue(daemon, &s, &claimed_role);
             }
             daemon.bus.publish(
                 "role.claimed",
@@ -14782,6 +14837,169 @@ mod tests {
     /// 2단계 시나리오(결함 6 봉인): ①큐 잔존 좌석 reap → queue_not_empty 거부(reap 은 큐를
     /// 자동 drop 하지 않는다 — 인멸을 명시 행위로 강제) ②cso 의 queue.clear 가 exited 예외
     /// (exited_reclaim)로 통과 — queue.dropped 에 cleared_by/via additive ③reap 재시도 통과.
+    // ───────── ★D7⑵(트랙 DAEMON): 역할 좌석의 미배달 큐는 폐기가 아니라 주차·상속된다 ─────────
+
+    /// 핵심 왕복 — **셸이 스스로 죽어도 각성문이 살아남아 후임 좌석에 들어간다.**
+    ///
+    /// 09-22 VM 교육부 실측의 재현: 부서장 좌석(role=master · /bin/zsh · agent=null)에 각성문
+    /// 505B·CSO 보고 488B 가 큐로 들어갔고 **한 번도 배달되지 않은 채** 274초 뒤 셸이 스스로 죽어
+    /// `queue.dropped(process_exited)` 로 사라졌다. 그 뒤 태어난 새 좌석에는 물려받을 것이 없었다.
+    /// 이 검체는 그 두 사건을 순서대로 만들어, 큐가 **주차**되고 **상속**되는지를 잰다.
+    #[test]
+    fn d7_role_seat_queue_is_parked_on_self_exit_and_inherited_by_successor() {
+        let daemon = claim_daemon();
+        let old = make_surface(&daemon, Some("master"));
+        // ★큐를 **죽기 전에** 넣는다 — 이 순서가 실사건의 순서다(각성문이 먼저, 종료가 나중).
+        let e1 = daemon.next_queue_entry("각성문(505B 자리)".into(), None, "test");
+        let e2 = daemon.next_queue_entry("CSO 보고(488B 자리)".into(), None, "test");
+        let (id1, id2) = (e1.id.clone(), e2.id.clone());
+        {
+            let surfaces = daemon.surfaces.lock().unwrap();
+            let q = &surfaces[&old].pending_queue;
+            q.lock().unwrap().push_back(e1);
+            q.lock().unwrap().push_back(e2);
+        }
+
+        // ① 셸 자력 종료 → reader 스레드의 EOF 경로가 큐를 처분한다.
+        mark_surface_dead(&daemon, old);
+        wait_surface_exited_event(&daemon, old);
+
+        let tail = daemon.bus.tail(200);
+        let parked = tail
+            .iter()
+            .find(|ev| ev["name"] == json!("queue.parked"))
+            .expect("queue.parked 미발행 — 역할 좌석의 큐가 폐기됐다(D7⑵ 재발)");
+        assert_eq!(parked["payload"]["role"], json!("master"));
+        assert_eq!(parked["payload"]["from_surface"], json!(old));
+        assert_eq!(parked["payload"]["count"], json!(2));
+        assert_eq!(parked["payload"]["queue_entry_ids"], json!([id1, id2]));
+        // ★대조: 같은 자리에서 process_exited 폐기가 **함께** 나가면 안 된다(이중 처분 금지).
+        assert!(
+            !tail.iter().any(|ev| ev["name"] == json!("queue.dropped")
+                && ev["payload"]["reason"] == json!("process_exited")),
+            "주차와 폐기가 동시에 발행됐다 — 발신자가 유실로 읽는다"
+        );
+
+        // ② 후임 좌석이 같은 역할을 받는다 → 상속.
+        let next = make_surface(&daemon, None);
+        let pid = 995_701_u32;
+        bind_caller(&daemon, pid, next);
+        let Reply::Single(resp) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "system.claim_role".into(),
+                params: json!({"role": "master", "surface_id": next}),
+            },
+            Some(pid),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(resp["ok"], json!(true), "claim_role 실패 ({resp})");
+
+        let q_len = daemon.surfaces.lock().unwrap()[&next]
+            .pending_queue
+            .lock()
+            .unwrap()
+            .len();
+        assert_eq!(q_len, 2, "후임 좌석이 주차분을 물려받지 못했다 — 각성문·보고가 유실된다");
+        let inherited = daemon
+            .bus
+            .tail(200)
+            .into_iter()
+            .find(|ev| ev["name"] == json!("queue.inherited"))
+            .expect("queue.inherited 미발행 — 무음 상속(관측 불가)");
+        assert_eq!(inherited["payload"]["role"], json!("master"));
+        assert_eq!(inherited["payload"]["from_surface"], json!(old));
+        assert_eq!(inherited["payload"]["to_surface"], json!(next));
+        assert_eq!(inherited["payload"]["count"], json!(2));
+        // 주차 원장은 상속으로 비워진다(같은 큐가 두 좌석에 들어가지 않게).
+        assert!(
+            daemon.parked_queues.lock().unwrap().get("master").is_none(),
+            "상속 후에도 주차분이 남았다 — 다음 좌석이 같은 지시를 또 받는다"
+        );
+    }
+
+    /// ★대조군 — **역할 없는 좌석은 종전대로 폐기된다.**
+    /// 이것이 없으면 위 검체는 「이제 아무것도 폐기되지 않는다」와 구별되지 않는다(주차 분기가
+    /// 역할로 게이트돼 있다는 것을 재는 축이고, 동시에 기존 거동 회귀 0 의 증명이다).
+    #[test]
+    fn d7_roleless_seat_queue_still_dropped_on_self_exit() {
+        let daemon = claim_daemon();
+        let scratch = make_surface(&daemon, None);
+        let e = daemon.next_queue_entry("스크래치 pane 미배달".into(), None, "test");
+        let eid = e.id.clone();
+        daemon.surfaces.lock().unwrap()[&scratch]
+            .pending_queue
+            .lock()
+            .unwrap()
+            .push_back(e);
+
+        mark_surface_dead(&daemon, scratch);
+        wait_surface_exited_event(&daemon, scratch);
+
+        let tail = daemon.bus.tail(200);
+        let dropped = tail
+            .iter()
+            .find(|ev| ev["name"] == json!("queue.dropped")
+                && ev["payload"]["reason"] == json!("process_exited"))
+            .expect("역할 없는 좌석의 폐기 통지가 사라졌다 — 무음 유실");
+        assert_eq!(dropped["payload"]["queue_entry_ids"], json!([eid]));
+        assert!(
+            !tail.iter().any(|ev| ev["name"] == json!("queue.parked")),
+            "역할 없는 좌석의 큐가 주차됐다 — 물려받을 주체가 정의되지 않는다"
+        );
+        assert!(
+            daemon.parked_queues.lock().unwrap().is_empty(),
+            "주차 원장이 오염됐다"
+        );
+    }
+
+    /// ★유계 — TTL 만기 주차분은 상속되지 않고 **사유를 달고** 폐기된다(조용히 사라지지 않는다).
+    #[test]
+    fn d7_expired_parked_queue_is_dropped_with_reason_not_inherited() {
+        let daemon = claim_daemon();
+        let e = daemon.next_queue_entry("만기 예정 지시".into(), None, "test");
+        let eid = e.id.clone();
+        daemon.parked_queues.lock().unwrap().insert(
+            "worker-ttl".into(),
+            crate::state::ParkedQueue {
+                entries: vec![e],
+                // TTL 을 확실히 넘긴 과거 시각 — 벽시계에 의존하지 않고 값으로 만든다.
+                parked_at: crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0,
+                from_surface: 1,
+            },
+        );
+        let next = make_surface(&daemon, None);
+        let pid = 995_702_u32;
+        bind_caller(&daemon, pid, next);
+        let Reply::Single(resp) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "system.claim_role".into(),
+                params: json!({"role": "worker-ttl", "surface_id": next}),
+            },
+            Some(pid),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(resp["ok"], json!(true), "claim_role 실패 ({resp})");
+        assert_eq!(
+            daemon.surfaces.lock().unwrap()[&next].pending_queue.lock().unwrap().len(),
+            0,
+            "만기 주차분이 상속됐다 — 10분 전 지시가 새 좌석에서 실행된다"
+        );
+        let dropped = daemon
+            .bus
+            .tail(200)
+            .into_iter()
+            .find(|ev| ev["name"] == json!("queue.dropped")
+                && ev["payload"]["reason"] == json!("parked_expired"))
+            .expect("만기 폐기가 무음이다 — 발신자가 유실을 모른다");
+        assert_eq!(dropped["payload"]["queue_entry_ids"], json!([eid]));
+    }
+
     /// 대조 핀: cso 라도 **살아있는** 타 surface 의 queue.clear 는 여전히 clear_denied.
     #[test]
     fn reap_denies_queue_nonempty_then_queue_clear_exited_reclaim() {

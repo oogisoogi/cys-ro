@@ -260,6 +260,122 @@ pub fn surface_exited_payload(sid: u64, role: Option<String>, agent: Option<Stri
     })
 }
 
+/// ★D7⑵(1.1.5 트랙 DAEMON) — **역할 좌석의 미배달 큐를 승계 대상으로 주차(park)한다.**
+///
+/// 왜 필요한가(09-22 VM 교육부 실측): 부서장 좌석 sid=1(role=master · `/bin/zsh` · agent=null)에
+/// 각성문 505B·CSO 보고 488B 가 큐로 들어갔고 **한 번도 배달되지 않은 채** 274초 뒤 셸이 스스로
+/// 죽어 `queue.dropped(reason=process_exited)` 로 폐기됐다. 그 뒤 새 좌석 sid=4 가 같은 역할을
+/// 받았지만 물려받을 것이 이미 없었다.
+///
+/// 승계(`takeover_empty_seat`) 경로에는 이관이 **이미 있다**(`handlers::migrate_seat_queue` →
+/// `queue.migrated`). 결손은 **승계보다 셸의 자력 종료가 먼저 온 경우**다 — 그때 큐는 이관될
+/// 자리를 잃는다. ⇒ 역할을 쥔 좌석이 죽으면 폐기하지 않고 **역할 이름으로 주차**하고, 같은 역할을
+/// 새로 받는 좌석이 상속한다(`handlers::inherit_parked_queue` → `queue.inherited`).
+///
+/// ★유계(무한 적체 금지 — 4군 ①): TTL + 항목 수 + 바이트 상한을 동시에 둔다. 초과·만기분은
+/// **조용히 사라지지 않고** `queue.dropped` 로 사유를 달고 발행된다(`parked_overflow`·
+/// `parked_expired`). 죽은 역할이 영원히 메모리를 물고 있지 못한다.
+pub const PARKED_QUEUE_TTL_SECS: f64 = 600.0;
+/// 역할당 주차 항목 수 상한(초과 시 **오래된 것부터** 버린다 — 최신 지시가 살아남는 쪽이 안전).
+pub const PARKED_QUEUE_MAX_ENTRIES: usize = 32;
+/// 역할당 주차 바이트 상한(같은 규칙 — 오래된 것부터).
+pub const PARKED_QUEUE_MAX_BYTES: usize = 256 * 1024;
+
+/// 주차된 큐 1건 — 역할 이름으로 키잉한다(좌석 id 가 아니다: 물려받을 좌석은 아직 없다).
+#[derive(Debug, Clone)]
+pub struct ParkedQueue {
+    pub entries: Vec<QueueEntry>,
+    /// 주차 시각(epoch) — TTL 판정 기준.
+    pub parked_at: f64,
+    /// 어느 좌석에서 왔는가(감사·이벤트 표기용).
+    pub from_surface: u64,
+}
+
+/// 주차 상한 적용(순수) — 반환 `(보존, 버림)`. 버림은 **오래된 것부터**다.
+///
+/// ⚠보장 범위(정직): 항목 수는 `max_entries` 이하가 보장되지만 바이트는 **`max_bytes` + 최대 1항목**
+/// 이다 — 마지막 한 항목은 크기로 버리지 않는다(아래 주석의 이유).
+///
+/// ★왜 오래된 것부터인가: 큐에 남은 것은 대개 「각성문(오래됨) + 그 뒤 쌓인 지시」다. 상한에
+/// 걸렸을 때 최신을 버리면 방금 사람이 보낸 지시가 사라지고, 오래된 것을 버리면 **이미 한 번
+/// 실패한 각성문**이 사라진다 — 후자가 덜 해롭다.
+pub fn parked_cap_split(
+    mut entries: Vec<QueueEntry>,
+    max_entries: usize,
+    max_bytes: usize,
+) -> (Vec<QueueEntry>, Vec<QueueEntry>) {
+    let mut evicted: Vec<QueueEntry> = Vec::new();
+    while entries.len() > max_entries {
+        evicted.push(entries.remove(0));
+    }
+    // ★마지막 한 항목은 바이트 상한으로 버리지 않는다(`len() > 1`). 버리면 상한보다 큰 지시가
+    //   **어떤 상한에서도 영구히 전달 불가**가 된다 — 그래서 이 축의 보장은 「max_bytes 이하」가
+    //   아니라 「max_bytes + 최대 1항목」이다. 항목 크기는 enqueue 경로가 이미 유계로 만든다.
+    while entries.iter().map(|e| e.text.len()).sum::<usize>() > max_bytes && entries.len() > 1 {
+        evicted.push(entries.remove(0));
+    }
+    (entries, evicted)
+}
+
+/// `queue.parked` payload — 폐기가 아니라 **보류**임을 소비부가 구별할 수 있어야 한다.
+/// 키 규약은 `queue_dropped_payload` 와 같은 모양을 쓴다(count·bytes·queue_entry_ids) — 같은
+/// 사실을 두 표면이 다른 모양으로 내면 소비부가 이벤트마다 다른 것을 본다.
+pub fn queue_parked_payload(role: &str, from_surface: u64, parked: &[QueueEntry]) -> Value {
+    json!({
+        "role": role,
+        "from_surface": from_surface,
+        "count": parked.len(),
+        "bytes": parked.iter().map(|e| e.text.len()).sum::<usize>(),
+        "queue_entry_ids": parked.iter().map(|e| e.id.clone()).collect::<Vec<String>>(),
+        "ttl_secs": PARKED_QUEUE_TTL_SECS,
+    })
+}
+
+/// 역할 이름으로 주차 — 같은 역할에 이미 주차분이 있으면 **뒤에 붙인다**(시간 순서 보존).
+/// 반환 `(주차된 것, 상한으로 버린 것)`. 만기분은 여기서 함께 걷어 낸다(게으른 GC).
+pub fn park_queue_for_role(
+    daemon: &Arc<Daemon>,
+    role: &str,
+    from_surface: u64,
+    entries: Vec<QueueEntry>,
+) -> (Vec<QueueEntry>, Vec<QueueEntry>) {
+    let now = now_epoch();
+    let mut map = daemon.parked_queues.lock().unwrap();
+    // 게으른 만기 회수 — 다른 역할의 묵은 주차가 영원히 남지 않게(발행은 호출부가 아니라 여기서
+    // 하지 않는다: 락을 쥔 채 publish 하지 않는 이 파일의 규약을 지킨다 · 만기 고지는 상속 시점).
+    map.retain(|_, pq| now - pq.parked_at < PARKED_QUEUE_TTL_SECS);
+    let mut merged = map.remove(role).map(|pq| pq.entries).unwrap_or_default();
+    merged.extend(entries);
+    let (keep, evicted) =
+        parked_cap_split(merged, PARKED_QUEUE_MAX_ENTRIES, PARKED_QUEUE_MAX_BYTES);
+    if !keep.is_empty() {
+        map.insert(
+            role.to_string(),
+            ParkedQueue { entries: keep.clone(), parked_at: now, from_surface },
+        );
+    }
+    (keep, evicted)
+}
+
+/// `queue.inherited` payload — 주차분이 새 좌석으로 들어갔다.
+pub fn queue_inherited_payload(
+    role: &str,
+    from_surface: u64,
+    to_surface: u64,
+    entries: &[QueueEntry],
+    waited_secs: f64,
+) -> Value {
+    json!({
+        "role": role,
+        "from_surface": from_surface,
+        "to_surface": to_surface,
+        "count": entries.len(),
+        "bytes": entries.iter().map(|e| e.text.len()).sum::<usize>(),
+        "queue_entry_ids": entries.iter().map(|e| e.id.clone()).collect::<Vec<String>>(),
+        "waited_secs": waited_secs.round(),
+    })
+}
+
 pub fn queue_dropped_payload(
     reason: &str,
     dropped: &[QueueEntry],
@@ -1829,6 +1945,10 @@ pub struct Daemon {
     /// (E-c) idempotencyKey → (surface_id, epoch초). 클라이언트 재시도가 같은 key면 기존 surface
     /// 재반환(추가 spawn 0). TTL(CREATE_IDEM_TTL_SECS) 만료 엔트리는 조회 시 lazy 제거.
     pub create_idem: Mutex<HashMap<String, (u64, f64)>>,
+    /// ★D7⑵ — 역할 이름 → 주차된 미배달 큐(`ParkedQueue`). 역할 좌석이 승계를 받기 전에 스스로
+    /// 죽으면 그 큐를 폐기하지 않고 여기 둔다. 같은 역할을 받는 다음 좌석이 상속한다
+    /// (`handlers::inherit_parked_queue`). 유계 = TTL·항목수·바이트 상한(`PARKED_QUEUE_*`).
+    pub parked_queues: Mutex<HashMap<String, ParkedQueue>>,
     /// ★T-0147-4: 생성자 원장 — 새 surface_id → (생성을 요청한 발신 surface_id, epoch초).
     /// `surface.create`가 pane 안에서 호출됐을 때(발신이 surface로 해석될 때)만 기록한다.
     ///
@@ -2703,6 +2823,7 @@ impl Daemon {
             caller_cache: Mutex::new(HashMap::new()),
             caller_gen: AtomicU64::new(0),
             create_idem: Mutex::new(HashMap::new()),
+            parked_queues: Mutex::new(HashMap::new()),
             create_owner: Mutex::new(HashMap::new()),
             create_caller: Mutex::new(HashMap::new()),
             ledger: Mutex::new(HashMap::new()),
@@ -3712,16 +3833,48 @@ impl Daemon {
                     let _ = child.try_wait();
                 }
             }
-            // 미배달 큐 폐기 통지 — queued:true 응답을 받은 발신자의 무음 메시지 유실 차단
+            // 미배달 큐 처분 — queued:true 응답을 받은 발신자의 무음 메시지 유실 차단
             // (★G1(W2-B): payload는 폐기 3발행처 공용 빌더 — 스키마 단일 소유).
+            //
+            // ★D7⑵(1.1.5): **역할을 쥔 좌석이면 폐기하지 않고 주차한다.** 09-22 VM 교육부에서
+            //   부서장 좌석의 각성문·CSO 보고 2건이 정확히 이 자리에서 사라졌다(process_exited).
+            //   승계 경로에는 이관이 이미 있었지만(`migrate_seat_queue`), 승계보다 셸의 자력
+            //   종료가 먼저 와서 이관될 자리가 없었다. 역할 이름으로 주차해 두면 같은 역할을
+            //   새로 받는 좌석이 상속한다(`handlers::inherit_parked_queue`).
+            //   역할 없는 스크래치 pane 은 종전대로 폐기다 — 물려받을 주체가 정의되지 않는다.
             let dropped: Vec<QueueEntry> = surf.pending_queue.lock().unwrap().drain(..).collect();
+            let exiting_role = surf.role.lock().unwrap().clone();
             if !dropped.is_empty() {
-                daemon.bus.publish(
-                    "queue.dropped",
-                    "queue",
-                    Some(surf.id),
-                    queue_dropped_payload("process_exited", &dropped, None),
-                );
+                match exiting_role.as_deref() {
+                    Some(role) if !role.is_empty() => {
+                        let (parked, evicted) = park_queue_for_role(&daemon, role, surf.id, dropped);
+                        if !evicted.is_empty() {
+                            // 상한 초과분은 **조용히 사라지지 않는다** — 사유를 달고 폐기 발행.
+                            daemon.bus.publish(
+                                "queue.dropped",
+                                "queue",
+                                Some(surf.id),
+                                queue_dropped_payload("parked_overflow", &evicted, None),
+                            );
+                        }
+                        if !parked.is_empty() {
+                            daemon.bus.publish(
+                                "queue.parked",
+                                "queue",
+                                Some(surf.id),
+                                queue_parked_payload(role, surf.id, &parked),
+                            );
+                        }
+                    }
+                    _ => {
+                        daemon.bus.publish(
+                            "queue.dropped",
+                            "queue",
+                            Some(surf.id),
+                            queue_dropped_payload("process_exited", &dropped, None),
+                        );
+                    }
+                }
             }
             // ★B3 #19: 자력 종료(셸 EOF)한 좌석이 **역할을 쥐고 있었다는 사실**을 이 시점에
             //   싣는다(additive — 기존 키 불변). 종전 페이로드에는 role 이 없어 "어느 역할
@@ -3730,7 +3883,9 @@ impl Daemon {
             //   영영 오지 않는다. 역할 반납 자체는 reap→close_surface 가 이미 하므로(grace 는
             //   크래시 포렌식·노드복구 창) 여기서 roles 맵을 건드리지 않는다 — 이 수정은
             //   **경고(관측)** 층이다.
-            let exited_role = surf.role.lock().unwrap().clone();
+            // ★위 D7⑵ 처분에서 이미 읽었다(같은 값을 두 번 읽지 않는다 — 그 사이 역할이
+            //   바뀌면 두 이벤트가 서로 다른 역할을 말하게 된다).
+            let exited_role = exiting_role;
             let exited_agent = surf
                 .agent_meta
                 .lock()
@@ -7492,6 +7647,39 @@ mod tests {
     /// 값 불변 + queue_entry_ids 순서 보존. `entry_ids` 키(W-id 에코 계약)는 절대 부재.
     /// ★G4(W4-C): reclaim=None(기존 경로 전부)이면 cleared_by/via 키 자체가 없어야 하고
     /// (payload 바이트 동일 = 하위호환의 기계 증명), Some 이면 두 키만 additive 로 실린다.
+    #[test]
+    fn d7_parked_cap_split_evicts_oldest_on_both_axes() {
+        let mk = |n: usize, bytes: usize| -> Vec<QueueEntry> {
+            (0..n)
+                .map(|i| QueueEntry {
+                    id: format!("q{i}"),
+                    seq: i as u64 + 1,
+                    text: "x".repeat(bytes),
+                    enqueued_at: 0.0,
+                    from: None,
+                    origin: "test".into(),
+                })
+                .collect()
+        };
+        // ① 항목 수 상한 — **오래된 것(앞)부터** 버린다. 최신 지시가 살아남는 쪽이 덜 해롭다.
+        let (keep, ev) = parked_cap_split(mk(5, 1), 3, usize::MAX);
+        assert_eq!(keep.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), vec!["q2", "q3", "q4"]);
+        assert_eq!(ev.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), vec!["q0", "q1"]);
+        // ② 바이트 상한 — 같은 방향.
+        let (keep, ev) = parked_cap_split(mk(4, 10), usize::MAX, 25);
+        assert_eq!(keep.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), vec!["q2", "q3"]);
+        assert_eq!(ev.len(), 2);
+        // ③ 상한 안이면 무손실·무변형(종전 거동 = 전량 보존).
+        let (keep, ev) = parked_cap_split(mk(3, 10), 8, 1000);
+        assert_eq!(keep.len(), 3);
+        assert!(ev.is_empty());
+        // ④ 단일 항목이 바이트 상한을 넘으면 **비우지 않는다** — 비우면 그 지시는 어떤 상한에서도
+        //    영구히 전달 불가가 된다(빈 목록에서 remove(0) 는 패닉이므로 그 경계도 함께 잰다).
+        let (keep, ev) = parked_cap_split(mk(1, 100), 8, 10);
+        assert_eq!(keep.len(), 1, "상한보다 큰 단일 항목을 버렸다");
+        assert!(ev.is_empty());
+    }
+
     #[test]
     fn queue_dropped_payload_pins_existing_keys_and_adds_queue_entry_ids() {
         let dropped = vec![w2b_entry("qa.1", 1, "첫", 10.0), w2b_entry("qa.2", 2, "둘째", 20.0)];

@@ -7147,6 +7147,17 @@ function onDaemonEvent(event: Record<string, unknown>) {
     refreshSidebarStatus();
     return;
   }
+  if (name === "role.takeover") {
+    // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
+    //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).
+    stickyToast(
+      `role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`,
+      "health",
+      `ℹ '${payload.role ?? ""}' 자리가 다른 칸으로 옮겨졌습니다`,
+      `surface:${payload.prev_surface ?? sid ?? ""} 이 비어 있어 부활 절차가 역할을 새 칸에 이어 붙였습니다. 옛 칸의 셸은 그대로 쓸 수 있습니다.`,
+    );
+    return;
+  }
   if (name === "seat.folder_denied") {
     // ★v114-dept-fd 수리 1‴: 좌석 폴더를 macOS 가 막아 claude 가 못 뜬다(좌석엔 빈 셸만 남는다).
     //   claude 가 내는 「file descriptors」 오류 문구는 원인이 아니다 — 원인 문장으로 대신 알린다.

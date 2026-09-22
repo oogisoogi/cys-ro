@@ -2047,21 +2047,19 @@ fn notify_no_spawn(
     if let Some(sid) = it.surface_id {
         if let Some(s) = daemon.get_surface(sid) {
             if !s.exited.load(Ordering::Relaxed) {
-                // ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — dispatch_one 과 같은 순서).
-                crate::delivery::record_audited(
+                // ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — seat_inject_guarded 안에서 지킨다).
+                // ★v115-restore(A3): 좌석 입력 주입 단일 입구(빈 에이전트 좌석 = 타이핑 대신 큐 보류).
+                // 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
+                // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
+                let _ = crate::governance::seat_inject_guarded(
                     daemon,
-                    sid,
+                    &s,
                     &text,
+                    120,
                     crate::delivery::Origin::Supervisor,
                     None,
+                    "boot_supervisor.no_spawn",
                 );
-                // try_send: 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
-                // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
-                let _ = s.write_tx.try_send(crate::state::WriteReq::Inject {
-                    text,
-                    cr_delay_ms: 120,
-                    clear_first: false,
-                });
             }
         }
     }

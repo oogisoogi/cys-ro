@@ -233,12 +233,68 @@ fn reject_send(
         json!({"surface_ref": surface_ref(sid), "method": method, "code": code,
                "message": msg, "caller_pid": caller_pid}),
     );
-    eprintln!(
-        "[cysd] {} 주입 거부 — method={method} code={code} caller_pid={} · {msg}",
+    // ★v115-restore(A1): 거부 줄에 발신자 명령줄·부모를 함께 남긴다 — 904 VM 에서 거부 발신자 4건이 전부
+    //   단명이라 5초 ps 표본에 한 번도 안 잡혔다(발신자 【추정·강】에 머문 까닭). 거부 응답을 기다리는 동안
+    //   발신자는 아직 살아 있으므로 **지금** 읽으면 잡힌다. `send.rejected`·`acl.denied` 페이로드는 바이트
+    //   동일로 둔다(회귀 핀 non_owner_acl_verdict_and_payload_are_byte_identical) — 로그 줄에만 붙인다.
+    let lineage = caller_pid.map(caller_lineage_desc).unwrap_or_default();
+    eprintln!("{}", reject_log_line(sid, method, code, caller_pid, msg, &lineage));
+    err_response(id, code, msg)
+}
+
+/// 거부 로그 한 줄(순수 · 시험 대상). `lineage` 는 [`caller_lineage_desc`] 의 산출(없으면 빈 글).
+fn reject_log_line(
+    sid: u64,
+    method: &str,
+    code: &str,
+    caller_pid: Option<u32>,
+    msg: &str,
+    lineage: &str,
+) -> String {
+    format!(
+        "[cysd] {} 주입 거부 — method={method} code={code} caller_pid={}{lineage} · {msg}",
         surface_ref(sid),
         caller_pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
-    );
-    err_response(id, code, msg)
+    )
+}
+
+/// 발신자 명령줄 + 부모 pid·명령줄(각 200자 상한 · 제어문자 제거). 조회 실패 칸은 `?`.
+/// 거부 경로에서만 부른다(드묾) — sysinfo 단일 pid 조회 2회.
+fn caller_lineage_desc(pid: u32) -> String {
+    fn argv_and_parent(pid: u32) -> (Option<String>, Option<u32>) {
+        let target = sysinfo::Pid::from_u32(pid);
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[target]),
+            false,
+            sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+        );
+        let Some(p) = sys.process(target) else { return (None, None) };
+        let cmd: Vec<String> = p.cmd().iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        let cmd = if cmd.is_empty() { None } else { Some(cmd.join(" ")) };
+        (cmd, p.parent().map(|pp| pp.as_u32()))
+    }
+    fn clip(s: Option<String>) -> String {
+        match s {
+            None => "?".into(),
+            Some(s) => {
+                let s: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                let mut out: String = s.chars().take(200).collect();
+                if s.chars().count() > 200 {
+                    out.push('…');
+                }
+                out
+            }
+        }
+    }
+    let (cmd, ppid) = argv_and_parent(pid);
+    let pcmd = ppid.and_then(|pp| argv_and_parent(pp).0);
+    format!(
+        " caller_cmd=\"{}\" parent_pid={} parent_cmd=\"{}\"",
+        clip(cmd),
+        ppid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+        clip(pcmd)
+    )
 }
 
 fn try_write(
@@ -7686,6 +7742,29 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★v115-restore(A1): 거부 로그 줄이 발신자 명령줄·부모를 싣는다(단명 발신자 특정용).
+    #[cfg(unix)]
+    #[test]
+    fn v115_reject_log_line_carries_caller_lineage() {
+        let mut child = std::process::Command::new("sleep").arg("7.25").spawn().expect("sleep");
+        let lineage = caller_lineage_desc(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(lineage.contains("caller_cmd=\"sleep 7.25\""), "발신자 명령줄: {lineage}");
+        assert!(
+            lineage.contains(&format!("parent_pid={}", std::process::id())),
+            "부모 pid: {lineage}"
+        );
+        assert!(!lineage.contains("parent_cmd=\"?\""), "부모 명령줄 미관측: {lineage}");
+        let line = reject_log_line(10, "surface.send_text", "acl_denied", Some(child.id()), "acl denied: external → worker (pack/acl.json)", &lineage);
+        assert!(line.contains(&lineage), "로그 줄에 lineage 없음: {line}");
+        assert!(line.starts_with("[cysd] surface:10 주입 거부 — method=surface.send_text code=acl_denied caller_pid="));
+        assert!(line.ends_with(" · acl denied: external → worker (pack/acl.json)"));
+        // 없는 pid 는 ? 로 정직 표기
+        let none = caller_lineage_desc(u32::MAX - 7);
+        assert_eq!(none, " caller_cmd=\"?\" parent_pid=? parent_cmd=\"?\"");
+    }
 
     /// ★v114-dept-fd 수리 1″: `dept.run` 은 데몬을 띄우는 동사만·이름 1개만·옵션/경로로 읽히는 이름 거부.
     #[test]

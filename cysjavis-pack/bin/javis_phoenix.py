@@ -502,13 +502,34 @@ def _run_capture(cmd, env, timeout):
     return r
 
 
-def cys(*args, socket=None, timeout=25):
+def _operator_token_for(socket):
+    """대상 데몬의 operator.token(없거나 읽기 실패 = None). 위치 = 상태 디렉터리(state_dir_for — unix 소켓 부모 ·
+    Windows 파이프 슬러그 매핑 · Rust state.rs write_operator_token 과 같은 자리)."""
+    try:
+        with open(os.path.join(state_dir_for(socket), "operator.token"), encoding="utf-8") as f:
+            tok = f.read().strip()
+    except OSError:
+        return None
+    return tok or None
+
+
+def cys(*args, socket=None, timeout=25, owner=False):
     cmd = [CYS]
     if socket:
         cmd += ["--socket", socket]
     cmd += [str(a) for a in args]
     env = dict(os.environ)
     env.pop("AITERM_SOCKET", None)
+    # ★v115-restore(A1): phoenix 는 데몬(cysd auto-restore)이 띄운 pane 무귀속 프로세스라 그 자식 `cys reinject`
+    #   는 `external` 로 판정된다 → 부서 팩 ACL `{"from":"external","to":"worker*","allow":false}` 에 워커 몫
+    #   각성 핑이 막혔다(904 VM ↻ 부서당 1건 · 4/4). 앱 사이드카 restore 에 넣은 수리 15 와 같은 수단으로 그
+    #   데몬의 operator.token 을 CYS_OWNER_TOKEN 으로 넘긴다(cys inject_text 가 owner_token 으로 싣는다 ·
+    #   데몬은 토큰 일치 ∧ pane 무귀속일 때만 오너로 본다 — 좌석 안에서 phoenix 를 돌리면 효과 없음).
+    #   주입 호출(owner=True)에만 싣는다 — 조회 동사에는 불필요하다.
+    if owner:
+        tok = _operator_token_for(socket)
+        if tok:
+            env["CYS_OWNER_TOKEN"] = tok
     # ★Windows: 임시파일 캡처(_run_capture)로 detached cysd 파이프 상속 hang 회피. mac 은 기존 경로 유지(무회귀).
     if IS_WINDOWS:
         return _run_capture(cmd, env, timeout)
@@ -1960,7 +1981,7 @@ def stage_reinject(socket, role, surface, stub):
     if _surface_agent_present(socket, surface) is False:
         return True, "reinject skip: agent 없음(빈 셸) — 각성 핑 미발사(WP-11 agent-gate)"
     r = cys("reinject", "--check", "--role", role, "--surface", surface, "--timeout", "6",
-            socket=socket, timeout=12)
+            socket=socket, timeout=12, owner=True)
     return r.returncode == 0, "reinject rc=%s %s" % (r.returncode, (r.stdout or r.stderr or "").strip()[:120])
 
 
@@ -1972,7 +1993,7 @@ def stage_g2_ack(socket, role, surface, stub):
     if _surface_agent_present(socket, surface) is False:
         return False, "g2 skip: agent 없음(빈 셸) — 각성 핑 미발사(WP-11 agent-gate)"
     r = cys("reinject", "--check", "--role", role, "--surface", surface, "--timeout", "4",
-            socket=socket, timeout=10)
+            socket=socket, timeout=10, owner=True)
     acked = (r.returncode == 0) and ("각성" in (r.stdout or "") or "awake" in (r.stdout or "").lower())
     return acked, "g2 ack=%s (%s)" % (acked, (r.stdout or r.stderr or "").strip()[:120])
 

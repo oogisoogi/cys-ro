@@ -24,7 +24,7 @@
 //      `deltaMode===DOM_DELTA_PAGE && (t *= rows)` 실재). 우리 번역은 rows 를 곱하지 않고 이벤트당
 //      상한(MAX_LINES_PER_EVENT)을 둔다 = 증폭이 구조적으로 불가능하다.
 //   ⓑ 무엇을 보낼지의 선택권: 방향키가 프롬프트 히스토리를 오염시키는 앱이 있으면 같은 자리에서
-//      PgUp/PgDn 으로 바꿀 수 있다(모드 1키 · 기본 cursor). 억제를 푸는 길에는 그 손잡이가 없다.
+//      키 종류를 바꿀 수 있다(모드 1키 · 기본 page). 억제를 푸는 길에는 그 손잡이가 없다.
 //
 // ★번역의 규약적 근거: xterm 의 위 동작은 xterm(1) 의 alternate scroll(`?1007`) 관례다 —
 // 대체 화면의 휠을 커서 키로 바꿔 페이저(less·man)가 굴러가게 하는 것. 우리는 그 관례를 그대로
@@ -38,8 +38,10 @@
 import { shouldSuppressWheelWin, type WinWheelGateState } from "./wheelgate";
 
 // 휠 한 번의 판정.
-//   pass      = 손대지 않는다 → 호출측은 true 를 돌려 xterm 기본 처리로 보낸다(종전 동작 전부:
-//               일반 버퍼 로컬 스크롤 · less/vim 등 비-1003 alt 앱의 방향키 합성).
+//   pass      = 손대지 않는다 → 호출측은 true 를 돌려 xterm 기본 처리로 보낸다.
+//               ★무회귀의 정확한 진술: 「**억제 술어가 false 인 모든 경로**에서 xterm 기본 처리가
+//               종전 그대로 보존된다」이다(일반 버퍼 로컬 스크롤 · 비-1003 alt 앱의 방향키 합성이
+//               그 경로의 예시일 뿐, 보장은 앱 이름이 아니라 술어에 걸려 있다 — 이종 검증 지적 수용).
 //   consume   = 억제하되 보낼 것이 없다(가로 휠·delta 0·shift 휠) → 호출측은 false 만 돌린다.
 //   translate = 억제하고 data 를 pty 에 쓴다 → 호출측은 sendRaw(data) 후 false.
 export type AltWheelAction =
@@ -56,7 +58,12 @@ export type AltWheelAction =
 //   ⇒ 번역이 실제로 가 닿는 앱군(= 1003 을 켜는 fullscreen 앱 = Claude Code 계열)에서 커서 키는
 //     **되돌릴 수 없는 방향의 손해**(조용한 오염)이고 PgUp 은 최악이라도 **지금과 같은 무동작**이다.
 //     ∴ 기본값은 「나빠질 수 없는 쪽」으로 둔다 — 브리프의 초안(기본 cursor)에서 바꾼 유일한 항목이고
-//     master 【결정필요】로 올린다. 뒤집기는 아래 게이트 1키(코드 무수정)다.
+//     master 가 2026-09-23 채택했다. 뒤집기는 아래 게이트 1키(코드 무수정)다.
+//   ⚠**이 안전성 주장의 사정거리(이종 검증 지적 수용 — 일반화하지 마라)**: 위 실측은 **Claude Code
+//     2.1.280 inline + 번들 판독**이다. 1003 을 켜는 앱이 곧 Claude Code 인 것은 아니므로, PgUp 을
+//     다른 기능에 할당한 앱에서는 page 기본이 무해하지 않을 수 있고 그런 앱에서는 cursor 가 나을 수
+//     있다. DECCKM 만으로는 그 의미 차이를 가릴 수 없다 — 그래서 판별을 넓히지 않고 **게이트 1키**로
+//     남겼다. 대상 앱·판본을 벗어난 「언제나 안전」 주장은 하지 않는다.
 // ★번들 판독으로 보강(2026-09-23 · Claude Code 2.1.280 단일 실행파일 내장 JS · 오프셋 병기):
 //   · 키바인딩 표에 `Chat: { up: "history:previous", down: "history:next" }` 가 있고
 //     **Scroll 컨텍스트에는 up/down 바인딩이 아예 없다**(@177,028,660) — 방향키로는 transcript 가
@@ -109,18 +116,41 @@ function clamp(n: number, lo: number, hi: number): number {
   return n < lo ? lo : n > hi ? hi : n;
 }
 
-/**
- * 이 휠 이벤트가 몇 줄인가(방향 제외 절댓값). 0 = 보낼 것 없음.
- * ★rows 를 곱하지 않는 것이 이 함수의 존재 이유다(위 ⓐ) — PAGE 모드도 노치 하나로 환산한다.
- */
-export function altWheelLines(w: WheelDeltaView): number {
+/** 이 이벤트가 요구하는 줄 수(부호 포함 실수). 0 = 보낼 것 없음. rows 는 곱하지 않는다(위 ⓐ). */
+export function altWheelRawLines(w: WheelDeltaView): number {
   if (!w.deltaY || w.shiftKey) return 0; // deltaY 0·NaN·shift = xterm 과 동형으로 스크롤 없음
-  const mag = Math.abs(w.deltaY);
-  let lines: number;
-  if (w.deltaMode === DOM_DELTA_LINE) lines = Math.round(mag);
-  else if (w.deltaMode === DOM_DELTA_PAGE) lines = Math.round(mag) * LINES_PER_NOTCH;
-  else lines = Math.round((mag / PIXELS_PER_NOTCH) * LINES_PER_NOTCH); // PIXEL(기본) 및 미지 모드
-  return clamp(lines, 1, MAX_LINES_PER_EVENT); // 소량 트랙패드 델타도 최소 1줄은 굴러간다
+  if (w.deltaMode === DOM_DELTA_LINE) return w.deltaY;
+  if (w.deltaMode === DOM_DELTA_PAGE) return w.deltaY * LINES_PER_NOTCH;
+  return (w.deltaY / PIXELS_PER_NOTCH) * LINES_PER_NOTCH; // PIXEL(기본) 및 미지 모드
+}
+
+// 이벤트 사이에 남는 소수 줄을 이고 가는 누산기 — **트랙패드 대응의 핵심**.
+// ★왜 필요한가(이종 검증 REVISE 2026-09-23 · 치명 등급 지적을 수용): 초판은 이벤트당
+// `clamp(lines, 1, …)` 로 **모든 미세 델타를 최소 1줄로 올림**했다. 트랙패드 한 번 튕김은 수십
+// 이벤트라, 기본 모드(PgUp = 반 페이지)에서 수십 번의 반 페이지 점프가 pty 로 나갔을 것이다.
+// 벤더 xterm 도 같은 자리에서 누산기(`_wheelPartialScroll`)를 쓴다 — 우리만 안 쓰면 트랙패드에서
+// 우리 경로가 벤더보다 거칠어진다. ∴ 한 줄을 채울 때까지 모으고 나머지는 이월한다.
+// 방향이 바뀌면 이월분은 버린다(반대 방향 잔여가 다음 스크롤을 앞당기면 손이 미끄러진 느낌이 난다).
+export interface WheelAccum {
+  carry: number; // 아직 방출하지 않은 줄(부호 포함)
+}
+export const WHEEL_ACCUM_INITIAL: WheelAccum = { carry: 0 };
+
+/** 누산 한 걸음. lines 는 방향을 뺀 절댓값이고 dir 은 방출이 있을 때만 유효하다. */
+export function altWheelStep(
+  prev: WheelAccum,
+  w: WheelDeltaView,
+): { next: WheelAccum; dir: -1 | 1; lines: number } {
+  const raw = altWheelRawLines(w);
+  if (!raw || !Number.isFinite(raw)) {
+    // 유한하지 않은 델타(Infinity·NaN)는 누산에 섞으면 누산기를 영구 오염시킨다 — 그 이벤트만 버린다.
+    return { next: prev, dir: 1, lines: 0 };
+  }
+  const sameDir = prev.carry === 0 || prev.carry > 0 === raw > 0;
+  const acc = (sameDir ? prev.carry : 0) + raw;
+  const dir: -1 | 1 = acc < 0 ? -1 : 1;
+  const whole = Math.min(Math.floor(Math.abs(acc)), MAX_LINES_PER_EVENT);
+  return { next: { carry: acc - dir * whole }, dir, lines: whole };
 }
 
 /**
@@ -151,16 +181,18 @@ export function altWheelSequence(
  */
 export function altWheelAction(
   s: WinWheelGateState,
+  accum: WheelAccum,
   w: WheelDeltaView,
   opts: { mode: AltScrollMode; applicationCursorKeys: boolean },
-): AltWheelAction {
-  if (!shouldSuppressWheelWin(s)) return { kind: "pass" };
-  const lines = altWheelLines(w);
-  if (lines <= 0) return { kind: "consume" };
-  const dir: -1 | 1 = w.deltaY < 0 ? -1 : 1;
+): { action: AltWheelAction; next: WheelAccum } {
+  // ★억제되지 않는 경로에서는 누산기를 **건드리지 않는다**: 그 휠은 xterm 이 제 누산기로 처리하므로
+  // 우리가 함께 세면 두 번 세는 셈이고, 나중에 억제 구간에 들어갔을 때 묵은 잔여가 튄다.
+  if (!shouldSuppressWheelWin(s)) return { action: { kind: "pass" }, next: accum };
+  const { next, dir, lines } = altWheelStep(accum, w);
+  if (lines <= 0) return { action: { kind: "consume" }, next };
   const data = altWheelSequence(dir, lines, opts.mode, opts.applicationCursorKeys);
-  if (!data) return { kind: "consume" };
-  return { kind: "translate", data, dir, lines };
+  if (!data) return { action: { kind: "consume" }, next };
+  return { action: { kind: "translate", data, dir, lines }, next };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,15 +209,21 @@ export function altWheelAction(
 export interface AltHintState {
   streak: number; // 「위로 + 첫 행 무변화」 연속 횟수
   fp: string; // 직전에 본 첫 행 지문
+  t: number; // 그 지문을 본 시각(ms)
 }
-export const ALT_HINT_INITIAL: AltHintState = { streak: 0, fp: "" };
+export const ALT_HINT_INITIAL: AltHintState = { streak: 0, fp: "", t: 0 };
 export const ALT_HINT_UP_STREAK = 3;
+// 연속으로 세기 전에 앱이 그릴 시간을 준다. ★이 간격이 없으면 트랙패드 한 번 튕김(수십 이벤트)에서
+// 세 이벤트가 전부 **갱신 전 같은 지문**을 보고 문턱을 넘어, 문서 한가운데서 안내가 뜬다
+// (이종 검증 2026-09-23 높음 등급 지적 — 수용). 간격보다 빨리 온 이벤트는 지문만 갱신하고 세지 않는다.
+export const ALT_HINT_MIN_GAP_MS = 250;
 
-/** 휠 한 번 뒤의 힌트 상태. dir/fp 는 이번 이벤트 시점 값. */
-export function altHintNext(prev: AltHintState, dir: -1 | 1, fp: string): AltHintState {
-  if (dir > 0) return { streak: 0, fp }; // 아래로 = 위 끝 탐색이 아니다 — 리셋
+/** 휠 한 번 뒤의 힌트 상태. dir/fp/now 는 이번 이벤트 시점 값. */
+export function altHintNext(prev: AltHintState, dir: -1 | 1, fp: string, now: number): AltHintState {
+  if (dir > 0) return { streak: 0, fp, t: now }; // 아래로 = 위 끝 탐색이 아니다 — 리셋
+  if (now - prev.t < ALT_HINT_MIN_GAP_MS) return { ...prev, fp }; // 너무 빠르다 = 아직 못 그렸다
   const same = prev.fp === fp && prev.streak > 0; // 첫 비교(streak 0)는 비교 대상이 없다
-  return { streak: same ? prev.streak + 1 : 1, fp };
+  return { streak: same ? prev.streak + 1 : 1, fp, t: now };
 }
 
 /** 지금 안내를 띄울까. 앱 세션당 1회는 호출측(foldHintShown)이 지킨다. */

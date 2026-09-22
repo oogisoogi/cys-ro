@@ -108,8 +108,10 @@ import {
   altHintNext,
   shouldShowAltFoldHint,
   ALT_HINT_INITIAL,
+  WHEEL_ACCUM_INITIAL,
   type AltScrollMode,
   type AltHintState,
+  type WheelAccum,
 } from "./altscroll";
 import { MouseTrackingFilter, MOUSE_ALL_OFF } from "./trackfilter";
 import {
@@ -3144,7 +3146,10 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     IS_WINDOWS && !lsWinWheelGuardOff ? invoke("win_wheel_guard_disabled").catch(() => false) : false,
     // ★이 조회의 catch 방향은 위 둘과 **다르게 읽어야 옳다**: 여기서 false 는 '가드를 켠 채'가
     //   아니라 '기본 모드(PgUp/PgDn)'다 — 커맨드 미등록 빌드에서도 안전측 기본으로 떨어진다.
-    lsAltScrollCursor ? true : invoke("alt_scroll_cursor_mode").catch(() => false),
+    // ★IS_WINDOWS 단락평가(형제 게이트와 동형 · 이종 검증 지적 수용): 이 값은 win 휠 분기에서만
+    //   소비된다. mac 에서 invoke 왕복을 더 태우면 그만큼 term.onData 등록이 늦어지고 그 창에
+    //   도착한 입력이 유실된다 — mac 은 조회 자체를 건너뛴다.
+    IS_WINDOWS && !lsAltScrollCursor ? invoke("alt_scroll_cursor_mode").catch(() => false) : lsAltScrollCursor,
   ]);
   const allowAppMouse = lsAllowAppMouse || beAllowAppMouse === true;
   const winWheelGuardOff = IS_WINDOWS && (lsWinWheelGuardOff || beWinWheelGuardOff === true);
@@ -3264,8 +3269,8 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   // (d) ★【정정 2026-09-23 · D5】 이 자리에는 "억제는 그 휠 노치를 **버린다** = 무동작"이라고
   //     적혀 있었고, 그 무동작이 **Windows 실기에서 결함으로 신고됐다**(박사님 09-23 01:5x —
   //     휠 무반응 · Ctrl+O 무변화 · alt_screen true). wheelgate (b) 가 예고한 '과잉 억제' 관측
-  //     형태 그대로다. 그래서 억제는 유지하되 **버리지 않고 번역한다**: 커서 키(기본) 또는
-  //     PgUp/PgDn(폴백 게이트)으로 바꿔 pty 에 쓴다(아래 win 분기 · 판정 = altscroll.ts).
+  //     형태 그대로다. 그래서 억제는 유지하되 **버리지 않고 번역한다**: PgUp/PgDn(기본) 또는
+  //     커서 키(게이트 1키)로 바꿔 pty 에 쓴다(아래 win 분기 · 판정 = altscroll.ts).
   //     막으려던 것(프롬프트 히스토리 오염)은 여전히 위험으로 남아 있고, 그것이 관측되면 코드가
   //     아니라 게이트 1키로 PgUp/PgDn 또는 가드 off 로 내린다 — 억제 대상이 1003 을 켠 앱에
   //     한정되는 것(vim·less·man 무회귀)은 종전 그대로다.
@@ -3285,7 +3290,8 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   //   판정에 먹이는 입력 조립(장부 접근자 선택·xterm 리터럴)도 같은 이유로 순수 함수다:
   //   ledgerWantsAnyMotion 자리에 인접 접근자 ledgerWantsMouse 를 쓰면 Windows vim 휠이 죽는데,
   //   인라인이던 시절엔 그 오배선을 잡는 단언이 저장소에 0건이었다.
-  // 대체 화면 안내(D5 ③)의 pane 지역 상태 — 「위로 연속 + 첫 행 무변화」 카운터.
+  // 대체 화면 휠의 pane 지역 상태 둘 — ①소수 줄 누산기(트랙패드 폭주 차단) ②안내 카운터.
+  let wheelAccum: WheelAccum = WHEEL_ACCUM_INITIAL;
   let altHint: AltHintState = ALT_HINT_INITIAL;
   const wheelKind = wheelHandlerKind({ isWindows: IS_WINDOWS, reconcile, winWheelGuardOff });
   if (wheelKind === "mac") {
@@ -3296,26 +3302,50 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     // ★D5(2026-09-23 Windows 실기 「휠이 아무것도 안 한다」): 억제만 하던 자리에서 **번역까지** 한다.
     // 종전 배선은 술어가 충족되면 false 만 돌려줬고, 그 false 가 xterm 의 대체 화면 방향키 합성까지
     // 함께 죽여 휠이 무동작이 됐다(경로 실측 = altscroll.ts 머리 주석 ①~③). 이제 같은 자리에서
-    // 커서 키(기본) 또는 PgUp/PgDn(폴백 1키)을 우리가 만들어 pty 로 보낸다 — 줄 수는 우리 상한
+    // PgUp/PgDn(기본) 또는 커서 키(게이트 1키)를 우리가 만들어 pty 로 보낸다 — 줄 수는 우리 상한
     // (MAX_LINES_PER_EVENT)이 쥐므로 deltaMode=PAGE 환경의 증폭(노치당 rows 개)이 구조적으로 없다.
     // 판정은 전부 altscroll.altWheelAction(순수 함수·테스트 고정)에 있고 여기는 실행만 한다:
     //   pass → true(=xterm 기본 처리: 일반 버퍼 로컬 스크롤·less/vim 의 합성 보존)
     //   translate → sendRaw + false · consume → false(가로 휠·shift 휠 = 보낼 것 없음)
     term.attachCustomWheelEventHandler((e: WheelEvent) => {
-      const act = altWheelAction(
+      const { action: act, next } = altWheelAction(
         winGateInputs(term, trackFilter, allowAppMouse),
+        wheelAccum,
         { deltaY: e.deltaY, deltaMode: e.deltaMode, shiftKey: e.shiftKey },
         { mode: altScrollMode, applicationCursorKeys: term.modes.applicationCursorKeysMode },
       );
-      if (act.kind === "pass") return true;
+      wheelAccum = next;
+      if (act.kind === "pass") {
+        // 억제 구간을 벗어났다(앱 종료·alt 이탈·킬스위치 등) — 안내 연속 카운터를 여기서 리셋한다.
+        // 안 그러면 옛 위-휠 2회와 한참 뒤의 1회가 이어 붙어 엉뚱한 자리에서 안내가 뜬다(이종 검증 지적).
+        altHint = ALT_HINT_INITIAL;
+        return true;
+      }
       if (act.kind === "translate") {
+        // sendRaw 의 두 부작용은 여기서 의도된 것이다(별도 저수준 경로를 새로 파지 않는 이유):
+        //  · follow = true — 휠은 사용자 활동이고, 대체 화면엔 스크롤백이 없어 지금 당장 효과가
+        //    없다. 앱이 대체 화면을 빠져나온 뒤 바닥 고정으로 복귀하는 것이 기본 기대값이다.
+        //  · notePlaceholderTouched — 이 경로는 **1003 을 켠 전체화면 앱이 돌고 있는 pane** 에서만
+        //    닿는다(억제 술어 조건). 자리표(빈 pane)는 그 상태가 될 수 없어 회수 정책에 무영향.
         sendRaw(act.data);
-        // B1 ② 의 대체 화면판: 대체 화면엔 스크롤백이 없어 viewportY 로는 '맨 위'를 못 잰다 —
-        // 「위로 연속 + 첫 행 지문 무변화」로 근사한다(판정·근사의 한계는 altscroll.ts 하단 주석).
-        altHint = altHintNext(altHint, act.dir, term.buffer.active.getLine(0)?.translateToString(true) ?? "");
-        if (shouldShowAltFoldHint(foldHintShown, altHint)) {
-          foldHintShown = true;
-          toast("feed", FOLD_HINT_TITLE, FOLD_HINT_BODY);
+        // ★여기부터는 **안내(보조 기능)** 다 — 전송과 억제 반환을 안내 실패에 걸지 않는다.
+        // 지문 판독·토스트가 동기 예외를 내면 `return false` 에 도달하지 못해 xterm 이 억제를
+        // 못 받는다(이종 검증 지적 수용 · 키는 이미 나간 뒤라 이중 스크롤이 된다).
+        try {
+          // B1 ② 의 대체 화면판: 대체 화면엔 스크롤백이 없어 viewportY 로는 '맨 위'를 못 잰다 —
+          // 「위로 연속 + 화면 지문 무변화」로 근사한다(한계는 altscroll.ts 하단 주석).
+          // 지문은 **세 줄**을 모은다 — 첫 줄만 보면 고정 헤더(제목·상태줄)를 둔 앱에서 본문이
+          // 정상적으로 굴러가는데도 무변화로 읽혀 안내가 오발한다(이종 검증 지적 수용).
+          const buf = term.buffer.active;
+          const row = (i: number) => buf.getLine(i)?.translateToString(true) ?? "";
+          const fp = `${row(buf.viewportY)}\n${row(buf.viewportY + (term.rows >> 1))}\n${row(buf.viewportY + term.rows - 1)}`;
+          altHint = altHintNext(altHint, act.dir, fp, Date.now());
+          if (shouldShowAltFoldHint(foldHintShown, altHint)) {
+            foldHintShown = true;
+            toast("feed", FOLD_HINT_TITLE, FOLD_HINT_BODY);
+          }
+        } catch {
+          /* 안내는 보조다 — 실패해도 휠 억제·전송은 그대로 성립한다 */
         }
       }
       return false;

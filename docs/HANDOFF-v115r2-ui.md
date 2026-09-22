@@ -78,20 +78,42 @@ transcript 를 굴리지 못하고 프롬프트만 오염시킨다.** PgUp 은 �
 - 【미측정】 Claude Code **fullscreen**: settings `tui` 키를 줘도 `?1049h` 미발화(롤아웃 게이트).
   박사님 윈도우 실기가 최종 판정이다.
 
+## 4-B. 이종 적대검증 1R (2026-09-23 · agy(gemini) + codex · 둘 다 REVISE → 수용·반박 기록)
+
+두 검증자가 **같은 P1 을 독립으로 짚었다**: 「이벤트당 최소 1줄 올림」이 트랙패드 미세 델타를
+키 폭주로 만든다(기본 모드에서는 PgUp = 반 페이지라 피해가 더 크다). 수용해 고쳤다.
+
+| # | 지적 | 판정 | 처분 |
+|---|---|---|---|
+| P1 | 이벤트당 `clamp(lines,1,…)` = 미세 델타도 최소 1줄 → 트랙패드 한 번에 수십 키 | **수용**(벤더 xterm 도 같은 자리에서 `_wheelPartialScroll` 누산기를 쓴다 — 우리만 없으면 우리 경로가 더 거칠다) | `altWheelStep` + `WheelAccum` 신설(소수 줄 이월 · 방향 전환 시 이월 폐기 · 유한성 검사) |
+| P2 | 안내 상태기가 렌더 비동기 때문에 **문서 한가운데서 오발** | **수용** | `ALT_HINT_MIN_GAP_MS=250` — 간격보다 빨리 온 이벤트는 지문만 갱신하고 세지 않는다 |
+| P2 | 첫 행이 **고정 헤더**면 본문이 굴러도 무변화로 읽혀 오발 | **수용** | 지문을 세 줄(뷰포트 상·중·하)로 확장 |
+| P2 | `pass`·억제 이탈에서 안내 카운터가 **리셋되지 않는다** | **수용** | pass 경로에서 `ALT_HINT_INITIAL` 로 리셋 |
+| P2 | 안내 경로의 동기 예외가 `return false`(억제) 도달을 막는다 | **수용** | 안내 블록 전체를 try/catch — 전송·억제는 안내 실패와 무관 |
+| P2 | 새 게이트 조회에 `IS_WINDOWS` 단락평가가 없어 mac 등록을 늦춘다 | **수용** | 형제 게이트와 동형으로 win 한정 |
+| P3 | 주석이 아직 「기본 cursor」라고 말한다(실제는 page) | **수용** | 주석 3곳 정정 |
+| P2 | 「PgUp 은 언제나 안전」은 과장 — 1003 은 앱 식별자가 아니다 | **수용(주장 축소)** | 안전성 주장을 Claude Code 2.1.x 로 한정하고 「다른 1003 앱에서는 cursor 가 나을 수 있다」를 명기 |
+| P2 | 무회귀 주장을 앱 이름(less/vim)이 아니라 **술어**로 진술하라 | **수용** | 「억제 술어가 false 인 모든 경로」로 문장 교체 |
+| P2 | `sendRaw` 의 부작용(follow·placeholder)을 휠에서 분리하라 | **반박(미채택)** | 별도 경로는 `sendChain` 순서 보장을 잃어 사용자 타이핑과 우리 키의 순서가 뒤섞인다. placeholder 축은 도달 불가(억제 조건이 1003+alt = 살아 있는 TUI). follow 축은 alt 이탈 후 기본값과 같다. 근거를 코드 주석에 남겼다 |
+| P2 | Windows fullscreen 양방향·입력 보존 확인 전에는 **수리 완료로 판정하지 마라** | **수용** | 이 HANDOFF 의 판정 절차(§6)가 그 게이트다 — 이번 티켓의 종결 상태는 「실기 판정 대기」다 |
+
 ## 5. 시험·게이트 실측
 
 | 항목 | 결과 |
 |---|---|
-| `bun test`(ui 전건) | **1098 pass · 0 fail · 39 files**(신규 `altscroll.test.ts` 26건 포함) |
-| 뮤테이션 6종 | **전건 KILLED**(아래) · 기준선 초록 · 복원 후 sha256 일치 |
+| `bun test`(ui 전건) | **1102 pass · 0 fail · 39 files**(신규 `altscroll.test.ts` 30건 포함 · 1R 봉합 후 재실행) |
+| 뮤테이션 10종 | **전건 KILLED**(아래) · 기준선 초록 · 복원 후 sha256 일치 |
 | `bunx tsc -p tsconfig.check.json` | 오류 7건 = **전부 선재**(headerlabels·restorebrief·updateplan 시험 파일 · 내 파일 0건) |
 | `sh ui/build.sh` | `main.js 0.51 MB` · dist 생성 |
 | `bash scripts/secret-scan.sh --all` | **clean · rc=0**(1073 파일) |
 | `cargo test --bin cys-app` | **162 passed · 0 failed · 1 ignored**(현 트리 재실행) |
 
-뮤턴트(전건 적용 확인 후 실행 · NOT-APPLIED 0):
-`M1 번역 제거(translate→consume)` · `M2 방향 뒤집기(A↔B)` · `M3 PAGE 증폭 재도입(×24)` ·
-`M4 배선 절단(sendRaw 제거)` · `M5 pass→false(less/vim 회귀)` · `M6 DECCKM 무시(항상 CSI)` — 6/6 KILLED.
+뮤턴트 10종(전건 적용 확인 후 실행 · NOT-APPLIED 0 · 복원 후 sha256 일치):
+`M1 번역 제거` · `M2 방향 뒤집기` · `M3 PAGE 증폭 재도입(×24)` · `M4 배선 절단(sendRaw 제거)` ·
+`M5 pass→false` · `M6 DECCKM 무시` · `M7 누산 제거(최소 1줄 올림 복귀)` · `M8 이월 폐기(carry=0)` ·
+`M9 안내 간격 제거` · `M10 pass 가 누산기를 오염` — **10/10 KILLED**.
+※ M6 은 첫 실행에서 NOT-APPLICABLE(하네스의 `\x1b` 이스케이프가 실제 ESC 바이트로 해석돼 대조 0건)
+   이었다 — 원시 문자열로 고쳐 재실행했다. 「미측정을 초록으로 세지 않는다」의 실례로 남긴다.
 
 ## 6. 남은 것 · 다음 사람에게
 

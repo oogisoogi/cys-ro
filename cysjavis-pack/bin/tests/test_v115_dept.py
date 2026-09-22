@@ -216,7 +216,8 @@ class A2B8BootNodeRun(unittest.TestCase):
         os.makedirs(self.dept)
         self.reg = os.path.join(self.tmp, "depts.json")
         json.dump({"depts": {"dept-1": {"socket": "/s/one.sock", "cwd": self.dept}}}, open(self.reg, "w"))
-        self.env = {"CYS_SOCKET": "/s/one.sock", "CYS_DEPTS_JSON": self.reg}
+        self.env = {"CYS_SOCKET": "/s/one.sock", "CYS_DEPTS_JSON": self.reg,
+                    "CYS_STATE_DIR": os.path.join(self.tmp, "state")}   # 보존 래치를 실 ~/.cys 에 쓰지 않는다
 
     def test_formation_fills_fresh_master_shell_with_dept_cwd(self):
         # allocate 가 만든 부서장 빈 셸(에이전트 한 번도 없음 · 방금 생성) → 입양-주입이 아니라 승계 기동
@@ -259,6 +260,23 @@ class A2B8BootNodeRun(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(out["result"], "seat_kept_queue_nonempty")
         self.assertTrue(any("seat.kept:queue_nonempty(7)" in (l.get("msg") or "") for l in out.get("log", [])), out)
+
+    def test_b8_kept_seat_two_heartbeats_one_event(self):
+        # master#58624550 추가 요구: 보존 좌석이 심박마다 같은 이벤트를 반복하지 않는다 — 2회 연속 → reap 0 · 이벤트 1
+        events = []
+        saved = bn._seat_event
+        bn._seat_event = lambda role, ref, action, cwd: events.append(action) or True
+        try:
+            for _ in range(2):
+                rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                         "created": time.time() - 900}]
+                rc, out, fake = self._run(rows, "worker", self.env, queues={"surface:3": 7})
+                self.assertEqual([c for c in fake.calls if c[1] in ("close-surface", "launch-agent")], [])
+        finally:
+            bn._seat_event = saved
+        self.assertEqual(events, ["seat.kept:queue_nonempty(7)"], events)
+        self.assertFalse(os.path.exists(os.path.join(os.path.expanduser("~"), ".cys", "state", "seat-kept",
+                                                     "_s_one.sock.json")), "래치가 실 상태 폴더에 샜다")
 
     def test_b8_worker_seat_queue_empty_reaped_once_launched_once(self):
         rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",

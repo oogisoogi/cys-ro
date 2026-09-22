@@ -512,6 +512,47 @@ def main():
     finally:
         b.close()
 
+    # ── 케이스 16(★D3 · 1.1.5 6차): A5 세션 env 게이트 — 판정 축은 "PATH 어딘가에 진짜 파이썬이
+    #    있는가"가 아니라 "**이 세션의 `python3` 첫 해석이 스텁인가**"다. 좌석 Bash 는 언제나 첫
+    #    일치를 실행하므로, 스텁이 앞에 있으면 뒤에 진짜가 있어도 개발자 도구 설치 창이 뜬다.
+    def run_a5(box, dirs):
+        for m in os.listdir(box.marks):
+            os.remove(os.path.join(box.marks, m))
+        ef = os.path.join(box.t, "session-env-%d" % len(os.listdir(box.t)))
+        open(ef, "w").close()
+        script = (". '%s'\ncys_resolve_py >/dev/null 2>&1\n"
+                  "n=$(cys_export_bundle_py_env); printf 'N=%%s\\n' \"$n\"\n" % LIB)
+        # toolbin 은 **맨 뒤**에만 붙인다(sed 등 외부 도구용 · 파이썬은 애초에 빠져 있어
+        # 「첫 python3」 판정에 영향 0 — 앞에 붙이면 그 판정이 오염된다).
+        r = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                           env=box.env(dirs + [box.toolbin()], {"CLAUDE_ENV_FILE": ef}), timeout=30)
+        wrote = open(ef, encoding="utf-8").read()
+        out = dict(l.split("=", 1) for l in r.stdout.splitlines() if l.startswith("N="))
+        return out.get("N", "<none>"), wrote, r
+
+    b = Box()
+    try:
+        bundle = b.bundle(os.path.join(b.root, "Applications", "cysr.app"), "BUNDLE")
+        usrbin = os.path.join(b.root, "usr", "bin")           # 스텁 python3 가 있는 자리
+        brew = b.fake_py(os.path.join(b.t, "brew2", "bin", "python3"), "BREW2")
+        # ①★수리 본체: 스텁이 **앞**, 진짜 파이썬이 뒤 → 좌석 python3 = 스텁 → 번들 export 발동.
+        #   종전 술어(_cys_path_py_darwin)는 뒤쪽 brew 를 찾아 rc0 → "진짜 있음"으로 읽고 비발동했다.
+        n, wrote, r = run_a5(b, [usrbin, os.path.dirname(brew)])
+        check("c16a 스텁이 첫 해석이면 번들 파이썬을 세션 env 로 export(D3 본체)",
+              n == "2" and os.path.dirname(bundle) in wrote,
+              "n=%r wrote=%r err=%r" % (n, wrote[-200:], r.stderr[-200:]))
+        # ② 대조군: 진짜 파이썬이 **앞** → 좌석 python3 가 이미 돈다 → 무접촉(과잉 발동 금지).
+        n2, wrote2, r2 = run_a5(b, [os.path.dirname(brew), usrbin])
+        check("c16b 진짜 파이썬이 첫 해석이면 세션 env 무접촉", n2 == "0" and wrote2 == "",
+              "n=%r wrote=%r" % (n2, wrote2[-200:]))
+        # ③ 파이썬이 아예 없어도 발동(종전 거동 보존 — '못 쓴다'는 결과가 같다).
+        n3, wrote3, r3 = run_a5(b, [])
+        check("c16c PATH 에 python3 자체가 없으면 발동", n3 == "2" and os.path.dirname(bundle) in wrote3,
+              "n=%r wrote=%r" % (n3, wrote3[-200:]))
+        check("c16 스텁은 한 번도 실행되지 않는다", "STUB" not in b.executed(), repr(b.executed()))
+    finally:
+        b.close()
+
     print("\n%s (%d FAIL)" % ("ALL PASS" if not fails else "FAILED", len(fails)))
     return 1 if fails else 0
 

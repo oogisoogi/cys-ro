@@ -19,6 +19,17 @@
 - **발견 9 · pane 안 boot_node 의 `close_denied`**(`javis_boot_node.py` reap-launch · `handlers.rs:4158-4180`): CSO 가 손으로 `javis_formation.py ensure` 를 돌리거나 master pane 의 `cys boot` 처럼 boot_node 가 pane 안에서 돌면 `surface.close` 소유 게이트가 거부해 reap rc≠0 으로 끝나고 기동은 진행된다 — 옛 빈 좌석이 role 없는 셸로 남는다(무해 · 로그 「reap rc=1」). 심박 경로(익명 caller)는 통과.
 - **워커 역할 큐 이관(승계 확장) = 1.1.6 후보**: 이번 수리는 큐가 남은 워커 빈 좌석을 보존(seat.kept · 기동 안 함)만 한다. 근거 = 데몬 좌석 승계·큐 이관(`migrate_seat_queue`)이 `surface.create` 의 `takeover_empty_seat` 게이트에서 `master|cso` 한정(`handlers.rs:3070` · 이관 `:3286-3291`). 보존 좌석은 큐가 비거나 사람이 다룰 때까지 그 역할이 결원으로 남는다(formation 시도 원장 역할당 3회/6h 로 유계).
 
+### CI flake 결정론화(v115-ci-flake · worker-2@surface:913 · 2026-09-22 15:1x · 커밋 abf67dfa · push 완료)
+- 계기: 태그 v1.1.5(0aee2cc5) release CI macos aarch64 잡이 두 번 다른 시험에서 적색 — 1차 run 35689538512 `drain_verify_activity_extends_deadline_but_idle_does_not`(기대 Timeout · 실제 Saved) · 2차 같은 run 재실행 job 106630491476 `send_text_clear_first_requires_agent_pane`(`no_agent … bare shell … queued`) + ACL_ENV_LOCK 오염 연쇄. 로컬은 초록.
+- 수리(시험 코드만 · 제품 코드 무변):
+  - cysd 시험 전용 헬퍼 `governance::test_wait_seat_runs(s, prog, args)` — 좌석 뿌리·자손에 명령 argv 완전 일치가 뜰 때까지 10s 유계 · 50ms 간격 · 초과 시 관측 목록 진단. ⚠`#[cfg(test)]` **첫 등장 뒤**에 둬야 한다(소스핀 `wrapper_delegates_to_the_promoted_collector_source_pin` · `queue_delivery_single_helper_shared_by_tick_and_rpc` 가 그 앵커 앞을 프로덕션으로 자른다 — 앞에 뒀다가 2건 적색 실측).
+  - 적용 4곳: `send_text_clear_first_requires_agent_pane`(구 「점유」 3s 대기 교체) · `w3_ceo_delivered_when_seat_occupied` · `w3_cycle_verify_not_auto_routed` · `v115_seat_inject_guarded_holds_vacant_agent_seat`(구 고정 1.5s 교체).
+  - cys `drain_verify…`: 가짜 늦은 저장을 벽시계(2.2s 스레드)에서 「마감 폴링 3번째 화면 관측」 기입으로. 관측 주기 400ms · 기본 상한 1s ⇒ 연장 없이 폴링 관측은 최대 2회라 3번째는 연장 시에만 발생. `fake_write_after` 제거.
+- 반복 계수: 대상 5시험 각 10회 연속 10/10 · 부하(cysd 전체 스위트 2개 동시 + `yes` 8개) 아래 cysd 3시험 3/3 · cys drain 3/3 · `cargo test --bin cysd` 1012/0/1ign · `--bin cys` 278/0 · secret-scan clean.
+- 뮤턴트: cys = 제품 연장 제거 → busy 적색 · 무조건 연장 → idle 적색(2/2 KILLED) · cysd = 헬퍼 즉시 return → clear_first 5/5 적색(KILLED) · 나머지 3시험 0/5(이 기계에선 대기 없이도 초록 — 이 축 그물 아님).
+- 【미측정】 원 CI 적색 재현: 구 「점유」 대기로 되돌려 부하 아래 10회 → 0/10 적색. 원인(로그인 셸 프로파일 단계 찰나 자식을 점유로 보고 조기 탈출)은 【추정】. 신 대기는 argv 완전 일치라 그 경로 유무와 무관하게 닫힌다.
+- 잔여: cys drain busy 는 연장 뒤 3번째 관측이 하드 상한 2s 안에 와야 함(명목 1.2s · 여유 0.8s — 구판과 같은 급) · 헬퍼 초과 panic 이 ACL_ENV_LOCK 오염 연쇄를 여는 기존 구조는 범위 밖(무변).
+
 ## §0 델타(후임 먼저 읽을 것 · 13:0x · CTX 61% 매듭)
 - 끝 = A1·A3·A4(조사+수리)·B4·B5·B6 + 게이트 정리 2커밋(d126b525·b326671c). **남은 것 = B1 수리 구현 1건뿐**(판별까지 끝).
 - 비가역: push 0(재승인 뒤 1건) · 판번 bump 0 · 라이브 cysr 무접촉(B1 = 코드 판독 + 로컬 pty 탐침만).

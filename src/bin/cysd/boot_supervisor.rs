@@ -5725,12 +5725,12 @@ mod tests {
         // notify_no_spawn 쪽도 순서 불변식이 같다 — 원장 기록이 주입(try_send)보다 앞.
         let nat = prod.find("fn notify_no_spawn(").expect("notify_no_spawn 소실");
         let nbody = &prod[nat..];
-        let nrec = nbody.find("record_audited(").expect("소진 통보 원장 기록 지점 소실");
-        let ninj = nbody.find("write_tx.try_send(").expect("소진 통보 주입 지점 소실");
-        assert!(
-            nrec < ninj,
-            "소진 통보의 원장 기록이 주입 뒤로 갔다 — 기계 push 오너 임무 오인 창"
-        );
+        // ★v115-restore(A3 · 핀 재조준): 소진 통보는 단일 입구 seat_inject_guarded 로 간다 — 원장 선기록 순서는
+        //   그 입구가 지킨다(governance queue_delivery_single_helper_shared_by_tick_and_rpc 가 입구 몸통을 단언).
+        let nend = nbody.find("\n}\n").expect("notify_no_spawn 끝");
+        let nb = &nbody[..nend];
+        assert!(nb.contains("crate::governance::seat_inject_guarded("), "소진 통보가 단일 입구를 안 지난다");
+        assert!(!nb.contains("write_tx.try_send("), "소진 통보에 직접 주입이 되살아났다 — 기계 push 오너 임무 오인 창");
     }
 
     /// ★(R2) provenance 상속 절단이 **실재 배선**인가 — 소스 단언.

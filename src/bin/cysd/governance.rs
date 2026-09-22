@@ -10323,12 +10323,18 @@ mod tests {
     fn queue_delivery_single_helper_shared_by_tick_and_rpc() {
         let src = include_str!("governance.rs");
         let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
+        // ★v115-restore(A3 · 핀 재조준 — 약화 아님): 이 파일의 원장 기록 지점은 닫힌 집합 **2곳** =
+        //   ⓐ deliver_head_locked(큐 배달) ⓑ seat_inject_guarded(데몬 내부 직접 주입 단일 입구). 제3 지점은 적색.
         assert_eq!(
             prod.matches("crate::delivery::record_audited").count(),
-            1,
-            "큐 배달 원장 기록 지점은 deliver_head_locked 안 정확히 1곳이어야 한다 — \
+            2,
+            "원장 기록 지점은 deliver_head_locked·seat_inject_guarded 정확히 2곳이어야 한다 — \
              늘었다면 배달 구현이 갈라졌다(단일 헬퍼 관례 위반)"
         );
+        let g = prod.find("pub fn seat_inject_guarded(").expect("단일 입구 소실");
+        let gb = &prod[g..g + prod[g..].find("\n}\n").unwrap()];
+        let (r, w) = (gb.find("crate::delivery::record_audited").expect("입구 원장 기록"), gb.find("write_tx.try_send(").expect("입구 주입"));
+        assert!(r < w, "단일 입구의 원장 기록이 주입 뒤로 갔다");
         let tick_at = prod.find("fn deliver_queued").expect("watchdog 틱 배달자 소실");
         let rpc_at = prod.find("fn force_deliver_entry").expect("RPC 강제 배달 본체 소실");
         let tick_body = &prod[tick_at..];

@@ -12296,6 +12296,16 @@ mod tests {
             .agent_meta
             .lock()
             .unwrap() = Some(("claude".into(), "claude".into()));
+        // ★v115-restore(게이트 정리): v114 빈 셸 가드(agent_seat_vacant_now)는 로그인 셸이 `sleep` 을 띄우기 전
+        //   찰나를 빈 좌석으로 본다 — 이 시험이 재려는 것은 clear_first 게이트이므로 좌석이 점유될 때까지 기다린다
+        //   (종전 = 타이밍 플레이크 · 여기서 난 패닉이 ACL_ENV_LOCK 을 오염시켜 18건 연쇄 적색).
+        for _ in 0..60 {
+            if !crate::governance::agent_seat_vacant_now(&s) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!crate::governance::agent_seat_vacant_now(&s), "시험 좌석이 3초 안에 점유되지 않았다");
         let req = Request {
             id: json!(2),
             method: "surface.send_text".into(),

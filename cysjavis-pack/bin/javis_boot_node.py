@@ -990,11 +990,8 @@ def _seat_kept_first(old_ref, kind, socket=None, clear=False):
     else:
         seen[old_ref] = kind
     try:
-        os.makedirs(root, exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(seen, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        import javis_lock   # 유일 tmp(mkstemp)+os.replace 공용 헬퍼 — 고정 .tmp 공유 스테이징 금지(H-CONC-3)
+        javis_lock.atomic_write_text(path, json.dumps(seen, ensure_ascii=False))
     except Exception:
         pass
     return True

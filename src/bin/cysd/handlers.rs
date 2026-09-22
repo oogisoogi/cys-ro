@@ -8397,6 +8397,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★D10(1.1.5 트랙 DAEMON) — **`cys drain --verify` 팬아웃의 payload 형상**이 부서 팩 ACL 을
+    /// 통과한다. 위 시험의 형제이지만 **재는 축이 다르다**.
+    ///
+    /// 왜 별도 축인가: 위 시험이 통과시킨 형상은 오너 GUI 실키(`human: true` + `operator_token`)다.
+    /// 드레인 팬아웃이 보내는 형상은 **다르다** — `{quiet, authoritative, owner_token}` 이고
+    /// `human` 도 `operator_token` 도 없다(`cys.rs::inject_text_on`). 두 형상이 같은 판정을 받는지는
+    /// 별개 사실이고, 실제로 09-22 VM 에서 이 형상이 `acl_denied: external → worker` 로 막혔다
+    /// (클라이언트가 `owner_token` 을 아예 안 실었기 때문 — 이 시험은 **실으면 통과함**을 못박아
+    /// 클라이언트 수리가 올바른 입구를 골랐음을 증명한다).
+    ///
+    /// ★대조군을 함께 둔다: 같은 형상에서 토큰만 빼면 deny 여야 한다. 그게 없으면 이 시험은
+    /// 「ACL 이 아예 안 걸린다」와 구별되지 않는다(공허한 초록).
+    #[test]
+    fn d10_drain_verify_payload_shape_passes_dept_acl_with_owner_token() {
+        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let dept_acl = r#"{
+            "default": "allow",
+            "rules": [
+                { "from": "owner", "to": "*", "allow": true },
+                { "from": "external", "to": "worker*", "allow": false },
+                { "from": "external", "to": "master", "allow": true }
+            ]
+        }"#;
+        let (daemon, dir) = daemon_with_acl("d10-drain-dept", dept_acl);
+        let tok = daemon.operator_token.clone().expect("operator.token 발급 전제");
+
+        let worker = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker-1".into()), 24, 80)
+            .expect("create worker surface");
+        daemon.surfaces.lock().unwrap().insert(worker.id, worker.clone());
+
+        // 발신 = cys-app 이 띄운 `cys drain --verify` 자식 = 어느 pane 에도 귀속되지 않음(external 등급).
+        let drain_pid = 999_310_u32;
+        daemon.caller_cache.lock().unwrap().insert(
+            drain_pid,
+            crate::state::CallerCacheEntry::new(
+                None,
+                crate::state::now_epoch(),
+                None,
+                daemon.caller_gen.load(Ordering::Relaxed),
+            ),
+        );
+
+        // ── ① 대조군: 드레인 형상 그대로, **토큰만 없음** → 09-22 VM 에서 실제로 난 거부.
+        let Reply::Single(denied) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "surface.send_text".into(),
+                params: json!({ "surface_id": worker.id, "text": "[DRAIN] …\n",
+                                "quiet": true, "authoritative": true }),
+            },
+            Some(drain_pid),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(
+            denied["error"]["code"],
+            json!("acl_denied"),
+            "토큰 없는 드레인 형상이 통과했다 — ACL 이 이 경로에 안 걸린다면 아래 ②는 아무것도 \
+             증명하지 않는다 ({denied})"
+        );
+
+        // ── ② 수리 후 형상: `owner_token` 첨부(`human`·`operator_token` 없음) → allow.
+        for (label, method, params) in [
+            (
+                "붙여넣기",
+                "surface.send_text",
+                json!({ "surface_id": worker.id, "text": "[DRAIN] …\n",
+                        "quiet": true, "authoritative": true, "owner_token": tok }),
+            ),
+            (
+                "제출 Return",
+                "surface.send_key",
+                json!({ "surface_id": worker.id, "key": "Return",
+                        "authoritative": true, "owner_token": tok }),
+            ),
+        ] {
+            let Reply::Single(ok) = dispatch(
+                &daemon,
+                Request { id: json!(2), method: method.into(), params },
+                Some(drain_pid),
+            ) else {
+                panic!("expected single reply");
+            };
+            assert_eq!(
+                ok["ok"],
+                json!(true),
+                "[{label}] 드레인 저장 지시가 부서 워커에 닿지 못한다 — 결과 토스트 \
+                 「일부 자리는 마지막 저장을 못 했어요」가 재발한다 ({ok})"
+            );
+        }
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ★결함#6-b — **owner 규칙이 없는 ACL 에서 오너는 허용된다**(마이그레이션 비의존).
     ///
     /// ★의도된 계약 변경(오너 승인 2026-08-22). 이 테스트는 원래

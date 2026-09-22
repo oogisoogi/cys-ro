@@ -1913,6 +1913,43 @@ fn with_owner_token(params: Value) -> Value {
     with_owner_token_from(params, std::env::var(ENV_OWNER_TOKEN).ok().as_deref())
 }
 
+/// ★D10(1.1.5 트랙 DAEMON) — **소켓별** 오너 토큰. `ENV_OWNER_TOKEN` 은 **한 소켓분**밖에 못 나른다.
+///
+/// A1(v114-dept-fd 할 일 15)은 앱이 사이드카로 부르는 `cys restore` 에 **그 대상 데몬의**
+/// `operator.token` 을 env 로 넘겨 해소했다 — 한 호출 = 한 소켓이라 env 하나로 충분했다.
+/// 그런데 `cys drain --verify` 는 **한 프로세스가 본부 + 전 부서 소켓으로 팬아웃**한다
+/// (`drain_verify_fanout`). env 는 프로세스 전역이라 여기서는 구조적으로 못 쓴다: 본부 토큰을
+/// 부서 소켓에 실으면 `daemon_token_matches` 가 불일치 → 승격 없음 → 종전 `external` 그대로다.
+/// ⇒ 그래서 **대상 소켓에서 읽는다**. 판정은 대상 데몬이 자기 토큰으로 하므로, 읽는 자리와
+///   비교하는 자리가 같은 데몬을 가리켜야 한다는 것이 이 함수의 존재 이유다.
+///
+/// 실측 근거(09-22 VM ↻-A): 부서 worker(surface:3)에 저장 지시를 넣다
+/// `acl_denied: external → worker`(교육부 1건) → 결과 토스트 「일부 자리는 마지막 저장을 못 했어요 ·
+/// 마커 미확인(시간초과)」. A1 은 phoenix/restore 경로만 덮었고 이 팬아웃은 같은 ACL 에 막혔다.
+///
+/// 자리 = `cys::daemon_state_dir`(RC-13 미러 · unix=소켓 부모 · windows=`%LOCALAPPDATA%\cys`
+/// [+파이프 슬러그]) + `operator.token`. **매 호출 신선 재독**(캐시 금지) — 데몬 재시작마다
+/// 토큰이 재발급된다(`state.rs::write_operator_token`).
+///
+/// ★정직한 경계(넓히지 않은 것): 이 등급은 보안 경계가 아니라 **거버넌스 구분**이다
+/// (`handlers.rs::caller_is_owner` doc 이 정본). 같은 UID 프로세스는 0600 토큰을 읽어 참칭할 수
+/// 있고, 그 사실은 A1 이 이미 받아들인 전제다 — 이 함수는 **새 비밀도, 새 배포 경로도 만들지
+/// 않고** A1 과 같은 입구(`owner_token` 키)를 쓴다. 좌석 안 프로세스는 자기 데몬에 대해
+/// `from_sid` 가 잡히므로 이 토큰을 들어도 오너가 되지 않는다(`caller_is_owner` = 토큰 일치 ∧
+/// pane 무귀속).
+/// 부재·빈 파일 = `None`(구 데몬 호환 — 첨부 없이 종전 바이트 그대로 보낸다).
+fn owner_token_for_socket(socket: &std::path::Path) -> Option<String> {
+    let tok = std::fs::read_to_string(cys::daemon_state_dir(socket).join("operator.token")).ok()?;
+    let tok = tok.trim().to_string();
+    (!tok.is_empty()).then_some(tok)
+}
+
+/// [`with_owner_token`] 의 **소켓 인지 판**(부서 소켓 대상 쓰기 전용). 토큰 해소만 다르고
+/// 실어 붙이는 규칙은 같은 함수(`with_owner_token_from`)를 지난다 — 사본 0.
+fn with_owner_token_on(params: Value, socket: &std::path::Path) -> Value {
+    with_owner_token_from(params, owner_token_for_socket(socket).as_deref())
+}
+
 fn inject_text(sid: u64, text: &str) -> Result<(), String> {
     // ★U-14 관문 가드 ①(붙여넣기 직전). 이 한 줄이 `inject_text` 를 부르는 모든 경로를 덮는다.
     gate_guard_check(sid, "디렉티브 주입")?;
@@ -13843,7 +13880,13 @@ fn inject_text_on(
     request_on_timeout(
         socket,
         "surface.send_text",
-        json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true}),
+        // ★D10: 부서 팩 ACL `{"from":"external","to":"worker*","allow":false}` 는 이 팬아웃을
+        //   겨냥한 규칙이 아니다(CEO·타 부서의 워커 직접 조향을 막는 규칙이다). 대상 데몬의
+        //   토큰을 실어 A1 과 **같은 입구**로 오너 등급을 받는다 — 토큰이 없으면 종전 바이트 동일.
+        with_owner_token_on(
+            json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true}),
+            socket,
+        ),
         timeout,
     )?;
     std::thread::sleep(std::time::Duration::from_millis(800));
@@ -13851,7 +13894,11 @@ fn inject_text_on(
     request_on_timeout(
         socket,
         "surface.send_key",
-        json!({"surface_id": sid, "key": "Return", "authoritative": true}),
+        // ★D10: 본문이 들어가고 **제출만** 막히면 저장은 일어나지 않는다 — 붙여넣기와 같은 등급으로.
+        with_owner_token_on(
+            json!({"surface_id": sid, "key": "Return", "authoritative": true}),
+            socket,
+        ),
         timeout,
     )?;
     Ok(())
@@ -13952,7 +13999,12 @@ impl VerifyIo for RealVerifyIo {
         request_on_timeout(
             socket,
             "surface.send_key",
-            json!({"surface_id": sid, "key": "Return", "authoritative": true}),
+            // ★D10: 전달확정 게이트의 재제출 Return 도 같은 등급으로(여기만 빠지면 wedge 판정이
+            //   ACL 거부와 구별되지 않는다 — delivery_failed 로 오분류된다).
+            with_owner_token_on(
+                json!({"surface_id": sid, "key": "Return", "authoritative": true}),
+                socket,
+            ),
             timeout,
         )
         .map(|_| ())
@@ -25870,6 +25922,118 @@ mod tests {
         let r = prod.find("fn rotate_depts(").unwrap();
         let rb = &prod[r..r + prod[r..].find("\n}\n").unwrap()];
         assert!(rb.contains("cys::dept_registry_cwd(sock)"), "rotate ⑥ 부서 복원에 부서 폴더 미전달");
+    }
+
+    /// ★D10(트랙 DAEMON) — `owner_token_for_socket` 은 **대상 소켓의** state 디렉토리에서 읽는다.
+    ///
+    /// 왜 이 축이 필요한가: env(`CYS_OWNER_TOKEN`)는 프로세스 전역이라 **한 소켓분**만 나른다.
+    /// `drain --verify` 는 한 프로세스가 본부+전 부서로 팬아웃하므로, 잘못된 데몬의 토큰을 실으면
+    /// `daemon_token_matches` 불일치 → 승격 없음 → `acl_denied: external → worker` 가 그대로 난다
+    /// (09-22 VM 실측). 그래서 **읽는 자리와 비교하는 자리가 같은 데몬**이어야 한다.
+    #[test]
+    fn d10_owner_token_for_socket_reads_target_daemon_state_dir() {
+        let base = std::env::temp_dir().join(format!("cys-d10-tok-{}", std::process::id()));
+        let hq = base.join("hq");
+        let dept = base.join("dept-7");
+        for d in [&hq, &dept] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // unix: state_dir = 소켓의 부모. 두 데몬이 **서로 다른** 토큰을 갖는 상황을 만든다.
+        std::fs::write(hq.join("operator.token"), "HQTOKEN\n").unwrap();
+        std::fs::write(dept.join("operator.token"), "  DEPTTOKEN  ").unwrap();
+        let hq_sock = hq.join("cys.sock");
+        let dept_sock = dept.join("cys-dept-7.sock");
+
+        assert_eq!(
+            owner_token_for_socket(&hq_sock).as_deref(),
+            Some("HQTOKEN"),
+            "본부 토큰을 못 읽었다 — 개행 트림 실패 또는 자리 오해"
+        );
+        assert_eq!(
+            owner_token_for_socket(&dept_sock).as_deref(),
+            Some("DEPTTOKEN"),
+            "★부서 소켓에서 **그 부서의** 토큰이 나오지 않는다 — 이게 틀리면 D10 은 안 고쳐진다"
+        );
+        // ★두 값이 갈라져 있음을 단언한다: 같은 값이면 위 두 단언이 「소켓 인지」를 증명하지 못한다.
+        assert_ne!(
+            owner_token_for_socket(&hq_sock),
+            owner_token_for_socket(&dept_sock),
+            "시험 픽스처가 두 데몬을 구별하지 않는다 — 이 시험은 소켓 인지 축에 대해 공허하다"
+        );
+
+        // 빈 파일·부재 = None → 요청은 종전 바이트 동일(구 데몬 호환).
+        std::fs::write(dept.join("operator.token"), "   \n").unwrap();
+        assert!(
+            owner_token_for_socket(&dept_sock).is_none(),
+            "빈 토큰을 실었다 — 구 데몬에 쓸모없는 키가 붙는다"
+        );
+        std::fs::remove_file(dept.join("operator.token")).unwrap();
+        assert!(owner_token_for_socket(&dept_sock).is_none(), "부재인데 Some");
+
+        // 조립 규칙은 기본 소켓 판과 같은 함수를 지난다(사본 0).
+        let got = with_owner_token_on(json!({"surface_id": 3, "text": "x"}), &hq_sock);
+        assert_eq!(got["owner_token"], json!("HQTOKEN"), "조립부가 토큰을 안 싣는다");
+        let plain = json!({"surface_id": 3, "text": "x"});
+        assert_eq!(
+            with_owner_token_on(plain.clone(), &dept_sock),
+            plain,
+            "토큰 부재인데 요청이 바뀌었다"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★D10 배선 핀 — **부서 소켓 대상 쓰기 3곳 전부**가 소켓 인지 토큰을 싣는다.
+    ///
+    /// 왜 계수로 고정하는가: 위 시험은 헬퍼가 **옳게 동작하는지**만 잰다. 헬퍼가 옳아도 호출부가
+    /// 안 쓰면 D10 은 그대로다(「수리 모듈은 동작 시험이 아니라 호출자 계수로 검증한다」).
+    /// 3곳 = `inject_text_on` 의 붙여넣기·제출 Return + `RealVerifyIo::send_return` 의 재제출 Return.
+    /// 읽기 RPC(`surface.list`·`read_text` — `gate_guard_check_on`)는 **대상이 아니다**:
+    /// ACL 은 쓰기(`surface.send_text`/`send_key`)에서 집행된다(`check_send_acl` 호출부).
+    #[test]
+    fn d10_dept_socket_writes_all_carry_socket_scoped_owner_token() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+
+        let a = prod
+            .find("fn inject_text_on(\n    socket: &std::path::Path,")
+            .expect("inject_text_on 정의를 못 찾음 — 시그니처가 바뀌었으면 이 핀을 재조준하라");
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert_eq!(
+            body.matches("with_owner_token_on(").count(),
+            2,
+            "inject_text_on 의 쓰기 2곳(붙여넣기·제출 Return) 중 토큰 누락 — 부서 좌석 저장 지시가 \
+             external 로 막힌다(09-22 VM 교육부 실측)"
+        );
+        // ★생 payload 경로가 남아 있지 않은지도 함께 본다(부분 수리 = D10 재발). 축은 「payload 리터럴이
+        //   존재하는가」가 아니라(그건 감싼 뒤에도 그대로 있다) **method 인자 바로 뒤가 `json!(` 인가** 다.
+        for m in ["surface.send_text", "surface.send_key"] {
+            assert!(
+                !body.contains(&format!("\"{m}\",\n        json!(")),
+                "{m} 이 아직 생 payload 를 params 로 넘긴다 — 토큰 미첨부 경로가 남았다"
+            );
+        }
+
+        let r = prod
+            .find("impl VerifyIo for RealVerifyIo {")
+            .expect("RealVerifyIo impl 을 못 찾음");
+        let rbody = &prod[r..r + prod[r..].find("\n}\n").unwrap()];
+        assert_eq!(
+            rbody.matches("with_owner_token_on(").count(),
+            1,
+            "RealVerifyIo::send_return(전달확정 재제출)이 토큰을 안 싣는다 — ACL 거부가 \
+             delivery_failed 로 오분류된다"
+        );
+
+        // ★env 판을 이 경로에 쓰지 않았음을 못박는다: `with_owner_token(` 은 프로세스 전역 env 를
+        //   읽으므로 팬아웃(본부+부서 동시)에서는 틀린 데몬의 토큰을 실을 수 있다.
+        assert!(
+            !body.contains("with_owner_token(json!(") && !rbody.contains("with_owner_token(json!("),
+            "부서 소켓 경로에 env 판(with_owner_token)이 쓰였다 — 한 소켓분만 나르는 키다"
+        );
+        assert!(
+            !rbody.contains("\"surface.send_key\",\n            json!("),
+            "RealVerifyIo::send_return 이 아직 생 payload 를 넘긴다"
+        );
     }
 
     /// ★v114-dept-fd 결함 2: `--hq-only` 는 본부 자리만 남기고, `rotate --skip-depts` 가 그것을 넘긴다

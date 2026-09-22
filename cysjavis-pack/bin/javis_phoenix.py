@@ -2409,10 +2409,26 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
             jevent(j, "*", "spawn", "ok" if res["rc"] == 0 else "fail",
                    "attempt %d · %s" % (attempt, json.dumps(res, ensure_ascii=False)))
             time.sleep(SPAWN_SETTLE)  # surface 등장 정착 대기(readiness 경합 완화)
+            # ★v115-restore(A4 · 904 VM ↻-B1 본부 master 3분 공백): 종전엔 「그 역할 좌석이 exited 아님」만 보고
+            #   부활로 셌다 → 이번 회차 restore 가 `· master: 기동 실패` 를 적은 순간에도 **다른 복원 경로가 만든,
+            #   에이전트가 안 선 좌석**(surface:15)을 성공으로 기록해 fresh 강등이 빠졌다(INCOMPLETE → 60초 대기 →
+            #   2차 재시도). 이제 ⓐ이번 회차 출력에 그 역할의 기동 실패 줄이 없고 ⓑ agent_alive 가 True 이며
+            #   ⓒ 좌석이 빈 셸(seat=="empty")이 아닌 좌석만 센다(ⓒ = 905 A2 의 빈 좌석 제외 조건 흡수 · 이 줄 단독 소유 = 906).
+            #   agent_alive 는 데몬 관측 주기라 막 뜬 좌석이 잠깐 None 일 수 있다 — ⓐ를 통과한 역할만 짧게 재관측한다.
+            _failed_now = set(re.findall(r"· (\S+): 기동 실패", res.get("out") or ""))
+
+            def _revived_seat(s):
+                return (not s["exited"]) and s.get("agent_alive") is True and s.get("seat") != "empty"
             live2 = live_role_surfaces(socket)
+            for _w in range(4):
+                if all(any(_revived_seat(s) for s in live2.get(r, []))
+                       for r in need if r not in _failed_now):
+                    break
+                time.sleep(SPAWN_SETTLE)
+                live2 = live_role_surfaces(socket)
             still = []
             for role in need:
-                alive = [s for s in live2.get(role, []) if not s["exited"]]
+                alive = [] if role in _failed_now else [s for s in live2.get(role, []) if _revived_seat(s)]
                 if alive:
                     ref = alive[0]["surface"]
                     role_surface[role] = ref

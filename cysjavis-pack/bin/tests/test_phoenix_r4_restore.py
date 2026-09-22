@@ -234,7 +234,7 @@ def axis_c(m, root, sink=None):
 
 # ── D. R4-3 ──
 def axis_d(m, root, sink=None):
-    # 1사이클: cys restore 가 빈 좌석에 못 앉힘 → 빈 좌석을 spawn 으로 집음 → verify(ps 죽음) → force_fresh
+    # 1사이클: cys restore 가 빈 좌석에 못 앉힘 → (v115 A4: 빈 좌석은 부활로 안 셈) → R4-3 in-seat 재사용 → fresh 완료
     st = {"epoch": "EPOCH-SEAT", "entries": copy.deepcopy(MASTER), "table": T_DEAD,
           "live": {"master": [seat("surface:7", "empty")]}}
 
@@ -243,7 +243,7 @@ def axis_d(m, root, sink=None):
         st["table"] = T_ALIVE
     st["on_inseat"] = inseat_ok
     sock, calls = harness(m, os.path.join(root, "d1"), st)
-    run(m, sock, include_master=True)
+    r1 = run(m, sock, include_master=True)
     r2 = run(m, sock, include_master=True)
     j = m.load_journal(sock, "r4")
     n_seats = sum(len(v) for v in st["live"].values())
@@ -252,7 +252,11 @@ def axis_d(m, root, sink=None):
     check("D2 새 좌석 0 · 그 좌석이 부활 좌석(surface:7)",
           n_seats == 1 and (j["roles"].get("master") or {}).get("surface") == "surface:7" and not calls["close"],
           (n_seats, (j["roles"].get("master") or {}).get("surface"), calls["close"]), sink)
-    check("D3 결과 fresh 부활 완료", r2.get("phoenix_restore") == "VERIFIED_FRESH", r2.get("phoenix_restore"), sink)
+    # ★v115-restore(A4): 정착 판정이 빈 좌석·에이전트 안 선 좌석을 부활로 세지 않으므로 1사이클 안에서 R4-3 이
+    #   끝난다(종전 = 1사이클은 빈 좌석을 spawn 으로 집어 unverified · 2사이클에서 fresh). 2사이클은 할 일 없음.
+    check("D3 결과 fresh 부활 완료(1사이클) · 2사이클 NOOP",
+          r1.get("phoenix_restore") == "VERIFIED_FRESH" and r2.get("phoenix_restore") == "NOOP",
+          (r1.get("phoenix_restore"), r2.get("phoenix_restore")), sink)
 
     # 재사용 불가 → 빈 좌석 Reap 후 fresh(좌석 수 불변 — 4→5 증식 없음)
     st2 = {"epoch": "EPOCH-SEAT2", "entries": copy.deepcopy(MASTER), "table": T_DEAD,

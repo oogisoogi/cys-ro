@@ -149,6 +149,12 @@ class _FakeCys:
         self.queues = {}      # ref → 큐 줄 수(cys queue list 4칸 행)
 
     def status(self):
+        self.status_calls = getattr(self, "status_calls", 0) + 1
+        flip = getattr(self, "flip_on_status", None)   # (n번째 조회, ref) — 그 조회부터 좌석이 산 것으로
+        if flip and self.status_calls >= flip[0]:
+            for r in self.rows:
+                if r["ref"] == flip[1]:
+                    r["seat"] = "occupied"
         return {"surfaces": [{"surface_ref": r["ref"], "role": r["role"], "pid": r["pid"], "exited": False,
                               "seat": r["seat"], "agent": r["agent"], "created_at": r["created"]}
                              for r in self.rows if r["role"]]}
@@ -181,9 +187,10 @@ class _FakeCys:
 
 
 class A2B8BootNodeRun(unittest.TestCase):
-    def _run(self, rows, role, extra_env=None, queues=None):
+    def _run(self, rows, role, extra_env=None, queues=None, flip_on_status=None):
         fake = _FakeCys(rows)
         fake.queues = queues or {}
+        fake.flip_on_status = flip_on_status
         saved = (bn.run, bn._awaken, time.sleep, sys.argv, dict(os.environ))
         bn.run, bn._awaken = fake, None
         time.sleep = lambda s: None
@@ -241,6 +248,36 @@ class A2B8BootNodeRun(unittest.TestCase):
         self.assertEqual(kinds, ["close-surface", "launch-agent"], fake.calls)
         reap = [c for c in fake.calls if c[1] == "close-surface"][0]
         self.assertEqual(reap[2:], ["surface:3", "--reap"])
+
+    def test_b8_worker_seat_with_queue_is_kept_not_reaped(self):
+        # v115-review 발견 1: close-surface --reap 은 데몬이 큐를 무조건 폐기 — 큐 7건 워커 좌석은 보존·기동 0
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+        rc, out, fake = self._run(rows, "worker", self.env, queues={"surface:3": 7})
+        acted = [c for c in fake.calls if c[1] in ("close-surface", "launch-agent", "send")]
+        self.assertEqual(acted, [], "큐가 찬 워커 좌석을 회수·재기동했다")
+        self.assertEqual(rc, 1)
+        self.assertEqual(out["result"], "seat_kept_queue_nonempty")
+        self.assertTrue(any("seat.kept:queue_nonempty(7)" in (l.get("msg") or "") for l in out.get("log", [])), out)
+
+    def test_b8_worker_seat_queue_empty_reaped_once_launched_once(self):
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+        rc, out, fake = self._run(rows, "worker", self.env, queues={"surface:3": 0})
+        self.assertEqual(len([c for c in fake.calls if c[1] == "close-surface"]), 1, fake.calls)
+        self.assertEqual(len([c for c in fake.calls if c[1] == "launch-agent"]), 1, fake.calls)
+        q = [i for i, c in enumerate(fake.calls) if c[1:3] == ["queue", "list"]]
+        r = [i for i, c in enumerate(fake.calls) if c[1] == "close-surface"]
+        self.assertTrue(q and q[0] < r[0], "큐 선검사 없이 회수했다")
+
+    def test_b8_worker_seat_revived_before_reap_is_left_alone(self):
+        # v115-review 발견 2: 첫 스냅샷 뒤 사람이 그 셸에서 claude 를 띄움 → 재조회에서 occupied → 회수 0
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+        rc, out, fake = self._run(rows, "worker", self.env, flip_on_status=(2, "surface:3"))
+        acted = [c for c in fake.calls if c[1] in ("close-surface", "launch-agent")]
+        self.assertEqual(acted, [], "재조회에서 산 좌석을 회수했다")
+        self.assertEqual(out["result"], "seat_kept_recheck")
 
     def test_succession_reaps_old_shell_when_queue_empty(self):
         rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,

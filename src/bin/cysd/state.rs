@@ -332,29 +332,75 @@ pub fn queue_parked_payload(role: &str, from_surface: u64, parked: &[QueueEntry]
 }
 
 /// 역할 이름으로 주차 — 같은 역할에 이미 주차분이 있으면 **뒤에 붙인다**(시간 순서 보존).
-/// 반환 `(주차된 것, 상한으로 버린 것)`. 만기분은 여기서 함께 걷어 낸다(게으른 GC).
+///
+/// 반환 `(주차된 것, 상한으로 버린 것, 만기로 걷어 낸 것)`.
+/// 만기분은 `(역할, 온 좌석, 항목들)` 로 **돌려준다** — 호출부가 `queue.dropped(parked_expired)` 를
+/// 발행해야 하기 때문이다(이 함수는 락을 쥐고 있어 publish 하지 않는 것이 이 파일의 규약).
+///
+/// ★agy 적대검증 r1 BLOCK 봉합(2026-09-23) — 두 결함이 실재했다:
+///   ⑴**무음 유실**: 종전 `map.retain(…)` 은 **다른 역할**의 만기 주차분을 아무 이벤트 없이 지웠다.
+///     주석은 「만기 고지는 상속 시점」이라 적었지만, retain 이 먼저 지우면 그 상속 시점이 영영
+///     오지 않는다(`remove` 가 None) — 완전한 무음 유실이다. ⇒ 걷어 낸 것을 **반환해** 고지한다.
+///   ⑵**TTL 무한 연장**: 병합 때 `parked_at` 을 `now` 로 덮어써, 같은 역할에 주차가 반복되면 오래된
+///     항목의 만기가 계속 뒤로 밀렸다(유계 주장이 거짓이 된다). ⇒ **살아있는 배치의 시각을 보존**하고,
+///     이미 만기인 배치는 병합하지 않고 만기로 내보낸다.
+///   ⇒ TTL 은 이제 「그 역할에 **처음 주차된 시각**」부터 잰다. 부수 효과를 정직하게 적는다: 늙어가는
+///     배치에 새로 병합된 항목은 TTL 을 온전히 못 받는다(무한 연장보다 이 편이 안전하다 — 유계가
+///     거짓이 되는 것보다 낫고, 사라질 때는 사유가 붙는다).
 pub fn park_queue_for_role(
     daemon: &Arc<Daemon>,
     role: &str,
     from_surface: u64,
     entries: Vec<QueueEntry>,
-) -> (Vec<QueueEntry>, Vec<QueueEntry>) {
+) -> (Vec<QueueEntry>, Vec<QueueEntry>, Vec<(String, u64, Vec<QueueEntry>)>) {
     let now = now_epoch();
     let mut map = daemon.parked_queues.lock().unwrap();
-    // 게으른 만기 회수 — 다른 역할의 묵은 주차가 영원히 남지 않게(발행은 호출부가 아니라 여기서
-    // 하지 않는다: 락을 쥔 채 publish 하지 않는 이 파일의 규약을 지킨다 · 만기 고지는 상속 시점).
-    map.retain(|_, pq| now - pq.parked_at < PARKED_QUEUE_TTL_SECS);
-    let mut merged = map.remove(role).map(|pq| pq.entries).unwrap_or_default();
+    let mut expired: Vec<(String, u64, Vec<QueueEntry>)> = Vec::new();
+    // ⑴ 게으른 만기 회수 — **지우지 말고 꺼낸다**(호출부가 사유를 달아 발행한다).
+    let stale: Vec<String> = map
+        .iter()
+        .filter(|(_, pq)| now - pq.parked_at >= PARKED_QUEUE_TTL_SECS)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in stale {
+        if let Some(pq) = map.remove(&k) {
+            if !pq.entries.is_empty() {
+                expired.push((k, pq.from_surface, pq.entries));
+            }
+        }
+    }
+    // ⑵ 이 역할의 기존 배치: 살아 있으면 **시각을 보존**하고 병합, 만기면 병합하지 않고 내보낸다.
+    //    (위 stale 걷이가 이미 가져갔으면 여기서는 None 이다 — 이중 계상 없음.)
+    let (mut merged, base_at) = match map.remove(role) {
+        Some(pq) if now - pq.parked_at < PARKED_QUEUE_TTL_SECS => (pq.entries, pq.parked_at),
+        Some(pq) => {
+            if !pq.entries.is_empty() {
+                expired.push((role.to_string(), pq.from_surface, pq.entries));
+            }
+            (Vec::new(), now)
+        }
+        None => (Vec::new(), now),
+    };
     merged.extend(entries);
     let (keep, evicted) =
         parked_cap_split(merged, PARKED_QUEUE_MAX_ENTRIES, PARKED_QUEUE_MAX_BYTES);
     if !keep.is_empty() {
         map.insert(
             role.to_string(),
-            ParkedQueue { entries: keep.clone(), parked_at: now, from_surface },
+            ParkedQueue { entries: keep.clone(), parked_at: base_at, from_surface },
         );
     }
-    (keep, evicted)
+    (keep, evicted, expired)
+}
+
+/// `queue.dropped(parked_expired)` payload — 공용 빌더(`queue_dropped_payload`)에 **역할·온 좌석**을
+/// additive 로 얹는다. 만기 폐기는 「어느 역할의 주차분이 사라졌나」를 말해야 쓸모가 있다(종전
+/// payload 에는 역할이 없어, 만기 통지만 보고는 누구의 지시가 사라졌는지 알 수 없었다).
+pub fn queue_parked_expired_payload(role: &str, from_surface: u64, entries: &[QueueEntry]) -> Value {
+    let mut p = queue_dropped_payload("parked_expired", entries, None);
+    p["role"] = json!(role);
+    p["from_surface"] = json!(from_surface);
+    p
 }
 
 /// `queue.inherited` payload — 주차분이 새 좌석으로 들어갔다.
@@ -3876,7 +3922,18 @@ impl Daemon {
             if !dropped.is_empty() {
                 match exiting_role.as_deref() {
                     Some(role) if !role.is_empty() => {
-                        let (parked, evicted) = park_queue_for_role(&daemon, role, surf.id, dropped);
+                        let (parked, evicted, expired) =
+                            park_queue_for_role(&daemon, role, surf.id, dropped);
+                        // ★agy r1 ⑴: 게으른 만기 회수분을 **사유를 달아** 발행한다(종전엔 retain 이
+                        //   조용히 지웠다 — 무음 유실). 락은 이미 해제된 뒤다.
+                        for (ex_role, ex_from, ex_entries) in &expired {
+                            daemon.bus.publish(
+                                "queue.dropped",
+                                "queue",
+                                Some(*ex_from),
+                                queue_parked_expired_payload(ex_role, *ex_from, ex_entries),
+                            );
+                        }
                         if !evicted.is_empty() {
                             // 상한 초과분은 **조용히 사라지지 않는다** — 사유를 달고 폐기 발행.
                             daemon.bus.publish(

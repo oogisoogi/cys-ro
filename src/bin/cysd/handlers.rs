@@ -592,7 +592,7 @@ fn inherit_parked_queue(daemon: &Arc<Daemon>, next: &Arc<crate::state::Surface>,
             "queue.dropped",
             "queue",
             Some(next.id),
-            crate::state::queue_dropped_payload("parked_expired", &pq.entries, None),
+            crate::state::queue_parked_expired_payload(role, pq.from_surface, &pq.entries),
         );
         return;
     }
@@ -15280,6 +15280,103 @@ mod tests {
         assert!(
             daemon.parked_queues.lock().unwrap().is_empty(),
             "주차 원장이 오염됐다"
+        );
+    }
+
+    /// ★agy 적대검증 r1 ⑴ 봉합 — **다른 역할의 만기 주차분도 사유를 달고 발행된다.**
+    ///
+    /// 종전 `park_queue_for_role` 은 `map.retain(…)` 으로 만기 배치를 **아무 이벤트 없이** 지웠다.
+    /// 내 주석은 「만기 고지는 상속 시점」이라 적었지만, retain 이 먼저 지우면 그 상속 시점이 영영
+    /// 오지 않는다(`remove` 가 None) — 「무음 유실 0」 주장이 거짓이었다. 이 검체가 그 자리를 잰다:
+    /// **A 역할의 만기분이, B 역할의 주차가 일어날 때 사유를 달고 나간다.**
+    #[test]
+    fn d7_other_roles_expired_parking_is_published_when_someone_else_parks() {
+        let daemon = claim_daemon();
+        // A: 이미 만기인 주차분(다른 역할) — 벽시계에 의존하지 않고 값으로 만든다.
+        let ea = daemon.next_queue_entry("A 역할 만기 지시".into(), None, "test");
+        let ea_id = ea.id.clone();
+        daemon.parked_queues.lock().unwrap().insert(
+            "cso".into(),
+            crate::state::ParkedQueue {
+                entries: vec![ea],
+                parked_at: crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0,
+                from_surface: 77,
+            },
+        );
+        // B: 전혀 다른 역할의 좌석이 죽으면서 주차한다 → 그 길에 A 의 만기분이 걷힌다.
+        let b = make_surface(&daemon, Some("master"));
+        let eb = daemon.next_queue_entry("B 역할 지시".into(), None, "test");
+        daemon.surfaces.lock().unwrap()[&b]
+            .pending_queue
+            .lock()
+            .unwrap()
+            .push_back(eb);
+        mark_surface_dead(&daemon, b);
+        wait_surface_exited_event(&daemon, b);
+
+        let tail = daemon.bus.tail(200);
+        let ev = tail
+            .iter()
+            .find(|e| e["name"] == json!("queue.dropped")
+                && e["payload"]["reason"] == json!("parked_expired"))
+            .expect("다른 역할의 만기 주차분이 **무음으로** 사라졌다(agy r1 ⑴ 재발)");
+        assert_eq!(ev["payload"]["role"], json!("cso"), "어느 역할의 주차분이 사라졌나");
+        assert_eq!(ev["payload"]["from_surface"], json!(77), "어느 좌석에서 온 것인가");
+        assert_eq!(ev["payload"]["queue_entry_ids"], json!([ea_id]));
+        assert!(
+            daemon.parked_queues.lock().unwrap().get("cso").is_none(),
+            "만기분이 원장에 남았다"
+        );
+        // B 의 주차는 정상적으로 섰다(만기 회수가 남의 주차를 방해하지 않는다).
+        assert!(
+            tail.iter().any(|e| e["name"] == json!("queue.parked")
+                && e["payload"]["role"] == json!("master")),
+            "만기 회수가 B 의 주차를 삼켰다"
+        );
+    }
+
+    /// ★agy 적대검증 r1 ⑵ 봉합 — **병합이 TTL 을 연장하지 않는다.**
+    ///
+    /// 종전엔 병합 때 `parked_at` 을 `now` 로 덮어써, 같은 역할에 주차가 반복되면 오래된 항목의
+    /// 만기가 계속 뒤로 밀렸다 — 「TTL 600s 유계」 주장이 거짓이 된다. 이제 TTL 은 **그 역할에
+    /// 처음 주차된 시각**부터 잰다.
+    #[test]
+    fn d7_merging_into_parked_queue_does_not_extend_its_ttl() {
+        let daemon = claim_daemon();
+        // 이미 절반쯤 늙은 배치(만기 전)
+        let aged_at = crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS / 2.0;
+        let e_old = daemon.next_queue_entry("먼저 주차된 지시".into(), None, "test");
+        daemon.parked_queues.lock().unwrap().insert(
+            "master".into(),
+            crate::state::ParkedQueue {
+                entries: vec![e_old],
+                parked_at: aged_at,
+                from_surface: 55,
+            },
+        );
+        // 같은 역할의 새 좌석이 죽으면서 병합 주차
+        let b = make_surface(&daemon, Some("master"));
+        let e_new = daemon.next_queue_entry("나중 지시".into(), None, "test");
+        daemon.surfaces.lock().unwrap()[&b]
+            .pending_queue
+            .lock()
+            .unwrap()
+            .push_back(e_new);
+        mark_surface_dead(&daemon, b);
+        wait_surface_exited_event(&daemon, b);
+
+        let pq = daemon.parked_queues.lock().unwrap().get("master").cloned()
+            .expect("병합 주차가 서지 않았다");
+        assert_eq!(pq.entries.len(), 2, "병합이 안 됐다(시간 순서 보존 실패)");
+        // ★핵심: 시각이 now 로 갱신되지 않았다 — 늙은 시각이 보존된다.
+        assert!(
+            (pq.parked_at - aged_at).abs() < 1.0,
+            "병합이 parked_at 을 갱신했다 — TTL 이 무한 연장된다(parked_at={} · 기대≈{aged_at})",
+            pq.parked_at
+        );
+        assert!(
+            crate::state::now_epoch() - pq.parked_at > crate::state::PARKED_QUEUE_TTL_SECS / 3.0,
+            "병합 후 나이가 리셋됐다"
         );
     }
 

@@ -6066,6 +6066,48 @@ impl Drop for ReapEnvGuard {
     }
 }
 
+/// ★v115-ci-flake(시험 전용): 실 PTY 좌석에서 **명령 자체**(`prog args…`)가 뿌리 또는 자손으로 떠 있을 때까지
+/// 유계 대기한다. 「좌석 점유(자손 ≥1)」로 기다리면 로그인 셸(`-lc`)이 프로파일 단계에서 잠깐 띄우는 자식을
+/// 점유로 보고 일찍 빠져나갈 수 있다(추정 원인 — 로컬 재현 못 함) — 그 자식이 끝나면 좌석은 다시 빈 셸이고,
+/// 곧이은 `agent_seat_vacant_now` 즉시 프로브가 빈 좌석으로 판정한다(느린 CI 러너 적색 · run 35689538512 재실행).
+/// `#[cfg(test)]` 첫 등장 뒤에 둔다 — 소스핀 시험들이 그 앵커 앞을 프로덕션 구간으로 자른다.
+/// 대기 조건을 명령의 argv 완전 일치로 좁히면 셸 초기화 찰나와 무관하다(`-lc` 의 인자 문자열은
+/// argv 가 달라 일치하지 않는다). 초과 시 관측한 프로세스 목록을 진단에 싣는다.
+#[cfg(test)]
+pub(crate) fn test_wait_seat_runs(s: &crate::state::Surface, prog: &str, args: &[&str]) {
+    let limit = std::time::Duration::from_secs(10);
+    let t0 = std::time::Instant::now();
+    loop {
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+        );
+        let mut seen = Vec::new();
+        for pid in std::iter::once(s.pid).chain(descendant_pids(&sys, s.pid)) {
+            let Some(p) = sys.process(Pid::from_u32(pid)) else { continue };
+            let argv: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            let hit = argv.first().is_some_and(|a0| {
+                let b = a0.trim_start_matches('-');
+                b.rsplit('/').next().unwrap_or(b) == prog
+            }) && argv.len() == args.len() + 1
+                && argv[1..].iter().zip(args).all(|(a, b)| a == b);
+            if hit {
+                return;
+            }
+            seen.push(format!("{pid}:{argv:?}"));
+        }
+        assert!(
+            t0.elapsed() < limit,
+            "시험 좌석(pid {})에 `{prog} {}` 가 {limit:?} 안에 뜨지 않았다 · 관측 = {seen:?}",
+            s.pid,
+            args.join(" ")
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -6139,7 +6181,9 @@ mod tests {
         };
         let vacant = mk("exec /bin/zsh -f -i");
         let busy = mk("exec sleep 30");
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        // ★v115-ci-flake: 고정 1.5s 대신 두 좌석의 명령이 실제로 뜰 때까지 유계 대기(로그인 셸 초기화 찰나 배제).
+        crate::governance::test_wait_seat_runs(&vacant, "zsh", &["-f", "-i"]);
+        crate::governance::test_wait_seat_runs(&busy, "sleep", &["30"]);
         let body = "[schedule wake] [DRAIN-VERIFY] 다음 액션 착수 !! $(date) [x]";
         let r = seat_inject_guarded(
             &daemon, &vacant, body, 120, crate::delivery::Origin::Schedule, None, "schedule.push",

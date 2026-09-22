@@ -25667,19 +25667,6 @@ mod tests {
             let _ = std::fs::write(&f, format!("{marker}\n"));
         }
     }
-    /// 늦게 저장하는 노드 — `after` 뒤에 지시문이 이름을 댄 파일에 마커를 덮어쓴다(별도 스레드).
-    fn fake_write_after(text: &str, after: std::time::Duration) {
-        let t = text.to_string();
-        std::thread::spawn(move || {
-            std::thread::sleep(after);
-            // 시험이 이미 정리한 디렉토리를 되살리지 않는다(임시 폴더 잔재 0).
-            if let Some(f) = extract_target_file(&t) {
-                if f.parent().map(|d| d.is_dir()).unwrap_or(false) {
-                    fake_overwrite_named(&t);
-                }
-            }
-        });
-    }
     fn fake_write_marker(text: &str, file: Option<std::path::PathBuf>) {
         if let (Some(marker), Some(f)) = (extract_marker(text), file) {
             let mut cur = std::fs::read_to_string(&f).unwrap_or_default();
@@ -25719,10 +25706,9 @@ mod tests {
                     }
                 }
                 Some(FakeScenario::OverwriteNamedFile) => fake_overwrite_named(text),
-                // 기본 상한(1s)보다 뒤, 하드 상한(2s)보다 앞에 저장한다 — 연장이 있어야만 잡힌다.
-                Some(FakeScenario::LateSaverBusy) | Some(FakeScenario::LateSaverIdle) => {
-                    fake_write_after(text, std::time::Duration::from_millis(2200))
-                }
+                // ★v115-ci-flake: 늦은 저장은 벽시계(구 2.2s 스레드)가 아니라 **관측 횟수**로 일어난다 — read_screen 참조.
+                //   (구: 마감 폴링 sleep 이 느린 러너에서 늘어나 idle 의 마지막 확인이 2.2s 를 넘기면 Saved · CI 적색)
+                Some(FakeScenario::LateSaverBusy) | Some(FakeScenario::LateSaverIdle) => {}
                 _ => {} // NonSaving·Wedge: 기입 안 함
             }
             Ok(())
@@ -25748,6 +25734,20 @@ mod tests {
                 *e += 1;
                 *e
             };
+            // ★v115-ci-flake: 늦은 저장 = 마감 폴링 구간의 **3번째 화면 관측**에서 기입한다(두 시나리오 동일).
+            //   관측 주기(activity_probe_interval(1s) = 400ms · 다음 관측 시각은 관측 뒤에 잡힌다)상 기본 상한 1s
+            //   안에는 폴링 관측이 최대 2회뿐이다 ⇒ 3번째 관측은 연장이 있을 때만 일어난다. 벽시계 여유에 기대지
+            //   않으므로 러너 속도와 무관하게 결정론이다. 폴링 이전 관측 = 주입 직후 1회 + 의심 Return 마다 1회.
+            if matches!(scen, Some(FakeScenario::LateSaverBusy) | Some(FakeScenario::LateSaverIdle)) {
+                let pre = 1 + self.return_count(sid);
+                if n == pre + 3 {
+                    if let Some(f) = extract_target_file(&raw) {
+                        if f.parent().map(|d| d.is_dir()).unwrap_or(false) {
+                            fake_overwrite_named(&raw);
+                        }
+                    }
+                }
+            }
             match scen {
                 Some(FakeScenario::Hung) => Err("hung socket".into()),
                 // ★[V111-F2] 일하는 중 — 관측마다 화면이 바뀐다(스피너 프레임·토큰 카운터).
@@ -26052,7 +26052,7 @@ mod tests {
     /// (연장을 지우면 busy 가 Timeout 으로 뒤집히고, 연장을 무조건 켜면 idle 이 Saved 로 뒤집힌다).
     #[test]
     fn drain_verify_activity_extends_deadline_but_idle_does_not() {
-        let base = std::time::Duration::from_secs(1); // 하드 상한 = 2s · 저장은 2.2s(주입 시점 기준)
+        let base = std::time::Duration::from_secs(1); // 하드 상한 = 2s · 저장은 폴링 3번째 관측(연장 없이는 도달 불가)
         let mk = |tag: &str, scen: FakeScenario| {
             let td = std::env::temp_dir().join(format!("cys-dv-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&td);

@@ -11706,7 +11706,26 @@ def _u23_tick_violations(sup, main_rs, gov):
     return v
 
 
-def _u23_bound_violations(sup, delivery):
+def _u23_guarded_entry_order(gov):
+    """(v1.1.5 A3 핀 이사) 단일 입구 `seat_inject_guarded` 몸통의 원장 선행 순서를 잰다.
+
+    반환: 위반 문자열 목록(빈 목록 = 원장 선기록 → 주입 순서 보존). 판독 불능은 위반이다(fail-closed)."""
+    if not (gov or "").strip():
+        return ["governance.rs 를 읽지 못해 단일 입구의 원장 순서를 잴 수 없다(계측 불능)"]
+    g = _rs_prod(gov)
+    gi = g.find("pub fn seat_inject_guarded(")
+    if gi < 0:
+        return ["단일 입구 seat_inject_guarded 가 governance.rs 에 없다"]
+    ge = g.find("\n}\n", gi)
+    gb = g[gi:ge if ge > 0 else len(g)]
+    rec = gb.find("crate::delivery::record_audited(daemon, s.id, text, origin,")
+    inj = gb.find("write_tx.try_send(")
+    if rec < 0 or inj < 0 or rec > inj or gb.count("write_tx.try_send(") != 1:
+        return ["단일 입구 seat_inject_guarded 의 원장 기록(받은 origin 그대로)이 주입보다 앞이 아니다"]
+    return []
+
+
+def _u23_bound_violations(sup, delivery, gov=None):
     """H-BOOT-SUP-1 판정기 — 유계성 3중 · enum 전용 인텐트 · 스풀 봉인 · 롤백 접힘 · 오살 0."""
     sup, delivery = sup or "", delivery or ""
     v = []
@@ -11816,9 +11835,26 @@ def _u23_bound_violations(sup, delivery):
         v.append("무스폰 loud 통보 지점(notify_no_spawn)이 없다 — 조용한 포기(청중 0) 회귀")
     else:
         nbody = c[ni:]
-        nrec, ninj = nbody.find("record_audited("), nbody.find("write_tx.try_send(")
-        if nrec < 0 or ninj < 0 or nrec > ninj:
-            v.append("무스폰 통보의 원장 기록이 주입보다 앞이 아니다 — 기계 push 오너 임무 오인 창")
+        # ★핀 이사(v1.1.5 A3 · f2fd9782 — 약화 아님, 판독 형상 확대): 무스폰 통보의 pane 주입이
+        #   직접 `write_tx.try_send` 에서 좌석 입력 단일 입구 `governance::seat_inject_guarded` 로
+        #   옮겨갔다. 원장 선기록은 이제 그 입구 몸통이 지킨다 — 그래서 두 형상을 각각 잰다:
+        #   ⓐ 직접 주입 형상 = 종전 그대로 이 함수 안 record_audited 가 try_send 보다 앞.
+        #   ⓑ 단일 입구 형상 = 이 함수에 직접 주입 0 · 입구에 Origin::Supervisor 를 넘김 ·
+        #      입구 몸통(governance.rs)에서 받은 origin 으로 원장 선기록 → 주입(1곳). 입구를 못
+        #      읽으면 위반(fail-closed). 어느 형상이든 '원장이 주입 뒤' 변조는 적색이다(합성 변조로 시험).
+        ne = nbody.find("\n}\n")
+        nfn = nbody[:ne if ne > 0 else len(nbody)]
+        gcall = nfn.find("crate::governance::seat_inject_guarded(")
+        if "write_tx.try_send(" in nfn or gcall < 0:
+            nrec, ninj = nbody.find("record_audited("), nbody.find("write_tx.try_send(")
+            if nrec < 0 or ninj < 0 or nrec > ninj:
+                v.append("무스폰 통보의 원장 기록이 주입보다 앞이 아니다 — 기계 push 오너 임무 오인 창")
+        else:
+            cend = nfn.find(");", gcall)
+            if "crate::delivery::Origin::Supervisor" not in nfn[gcall:cend if cend > 0 else len(nfn)]:
+                v.append("무스폰 통보가 단일 입구에 Origin::Supervisor 를 넘기지 않는다 — 원장 유래 오기")
+            for gv in _u23_guarded_entry_order(gov):
+                v.append("무스폰 통보의 원장 기록이 주입보다 앞이 아니다(단일 입구) — %s" % gv)
     # ★스폰 0회 종착의 **닫힌 집합이 전부 loud 인가**(R2 must_fix 회귀 핀): tick_in 안의 통보
     #   지점은 3곳(판정 폐기 · 실행자 폐기 · 마지막 시도 실패)이다. 갈래가 늘면서 통보를
     #   빠뜨리는 것이 정확히 이 결함의 재발 양식이므로 **갯수 자체**를 못 박는다.
@@ -11909,13 +11945,15 @@ def h_boot_sup_1():
     delivery = _read(os.path.join(REPO_DIR, _U23_RS_DEL))
     if not delivery:
         raise Skip("배포 팩(Rust 소스 부재) — 소스 배선 검체 적용 불가")
-    v = _u23_bound_violations(sup, delivery)
+    gov = _read(os.path.join(REPO_DIR, _U23_RS_GOV))
+    v = _u23_bound_violations(sup, delivery, gov)
     need(not v, "U-23 안전 계약 위반 %d건: %s" % (len(v), " / ".join(v)))
     # ★계측 타당성 ① 기준 커밋 대조(감독자 부재 = 위반).
     base_del = _git_show(_U23_RS_DEL, _U23_CALIB_REF)
     calib = "계측대조 생략(레포 아님)"
     if base_del:
-        ov = _u23_bound_violations(_git_show(_U23_RS_SUP, _U23_CALIB_REF), base_del)
+        ov = _u23_bound_violations(_git_show(_U23_RS_SUP, _U23_CALIB_REF), base_del,
+                                   _git_show(_U23_RS_GOV, _U23_CALIB_REF))
         need(ov, "계측 무효: 수리 전 트리(%s)에서 탐지기가 위반을 하나도 못 찾았다" % _U23_CALIB_REF)
         calib = "수리 전 %s 에서 %d건 FIRE" % (_U23_CALIB_REF, len(ov))
     # ★계측 타당성 ② 합성 변조본 — 안전장치를 하나씩 떼면 반드시 적색이어야 한다.
@@ -11953,8 +11991,20 @@ def h_boot_sup_1():
         ("포화 시 디스패치 중단 해제", sup.replace("if suspend_dispatch {", "if false {"), delivery),
         ("매 틱 retain 제거", sup.replace(".retain(|id, (_, last)|", ".drain_all(|id, (_, last)|"),
          delivery),
+        # ★핀 이사(v1.1.5 A3) 판별력 — 단일 입구 형상에서도 '원장이 주입 뒤'는 적색이어야 한다.
+        ("단일 입구 원장 후행(governance 순서 역전)", sup, delivery,
+         gov.replace("    crate::delivery::record_audited(daemon, s.id, text, origin, from_surface);\n", "")
+            .replace("        Ok(()) => SeatInject::Injected,",
+                     "        Ok(()) => { crate::delivery::record_audited(daemon, s.id, text, origin, "
+                     "from_surface); SeatInject::Injected }")),
+        ("무스폰 통보 직접 주입 복귀(원장 없음)",
+         sup.replace("let _ = crate::governance::seat_inject_guarded(",
+                     "let _ = s.write_tx.try_send(0); let _ = crate::governance::seat_inject_guarded("),
+         delivery),
+        ("단일 입구 판독 불능(governance 부재)", sup, delivery, ""),
     ]
-    blind = [lbl for lbl, s, d in mutants if not _u23_bound_violations(s, d)]
+    blind = [m[0] for m in mutants
+             if not _u23_bound_violations(m[1], m[2], m[3] if len(m) > 3 else gov)]
     need(not blind, "합성 변조본을 못 잡았다(탐지기 고장): %s" % ", ".join(blind))
     return "안전 계약 위반 0 · %s · 합성 변조 %d종 전건 적발" % (calib, len(mutants))
 

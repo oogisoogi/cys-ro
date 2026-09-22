@@ -894,6 +894,35 @@ def empty_seat_action(status, role, now=None, grace=None):
     return "takeover" if role in SEAT_TAKEOVER_ROLES else "reap-launch"
 
 
+def settle_unknown_seat(status, role, requery, tick_s=1.0, max_wait_s=None):
+    """★v115r3-d7(D7⑴): 좌석 사실이 "unknown" 이면 워치독이 채울 때까지 재조회한다(유계).
+
+    데몬의 seat_cache 는 좌석 생성 시 0(Unknown)이고 첫 워치독 틱(≤SEAT_WATCHDOG_TICK_S)이 처음
+    채운다. 부서 allocate 직후 편성이 바로 부르면 스냅샷은 늘 "unknown" 이라 empty_seat_action 이
+    None(비해당)을 돌려주고, 흐름이 입양-주입으로 떨어져 **claude 없는 빈 셸에 각성문을 넣었다**
+    (09-22 VM 교육부 505B · rc=1 → 「기동=cso,worker」 · 부서장 공백 최대 5분55초).
+    ★판정을 바꾸지 않는다 — 판정에 필요한 사실이 도착할 때까지 기다릴 뿐이다. 기다려도 unknown 이면
+      스냅샷을 그대로 돌려주고 종전 흐름에 맡긴다(프로브 실패의 처분은 이 함수 소관이 아니다).
+    requery() → status(dict|None) — 주입 가능(밀폐 시험). 반환: (status, reason|None)."""
+    if seat_state(status, role) != LIVENESS_UNKNOWN:
+        return status, None
+    # 대상 = 에이전트가 한 번도 붙지 않은 좌석(allocate 가 만든 빈 셸)뿐 — 에이전트 좌석의 unknown 은
+    #   종전 흐름 그대로(master 지시 c22f2860: seat=unknown ∧ agent None).
+    if (status_surface(status, role) or {}).get("agent") is not None:
+        return status, None
+    limit = 2.0 * SEAT_WATCHDOG_TICK_S if max_wait_s is None else float(max_wait_s)
+    waited, st = 0.0, status
+    while waited < limit:
+        time.sleep(tick_s)
+        waited += tick_s
+        st2 = requery()
+        if st2 is not None:
+            st = st2
+        if seat_state(st, role) != LIVENESS_UNKNOWN:
+            return st, "좌석 판정 unknown → %.0fs 뒤 %s(워치독 채움)" % (waited, seat_state(st, role))
+    return st, "좌석 판정 unknown → %.0fs 대기에도 미해소 — 종전 흐름" % waited
+
+
 def _dept_name_of_socket(sock):
     """소켓 경로 → 부서명(`cys-dept-<name>` 성분) 또는 None — javis_bootstrap 명명 계약의 미러."""
     for part in re.split(r"[\\/]", sock or ""):
@@ -1455,6 +1484,12 @@ def main():
     #   각성문을 넣으면 claude 가 없어 큐만 쌓인다(904 교육부 7건). 처분은 empty_seat_action 한 곳.
     takeover, old_ref, act = False, None, None
     if row is not None:
+        # ★v115r3-d7(D7⑴): 방금 생긴 좌석의 "unknown" 을 처분 판정에 넣지 않는다 — 워치독이 채운 뒤 판정.
+        status, why_s = settle_unknown_seat(
+            status, a.role, lambda: cys_status(),
+            max_wait_s=min(2.0 * SEAT_WATCHDOG_TICK_S, max(0.0, remaining())))
+        if why_s:
+            emit("seat", "%s %s" % (row["surface_ref"], why_s))
         act = empty_seat_action(status, a.role)
         if act == "hold-grace":
             emit("seat", "%s 빈 좌석이 부팅 유예(%.0fs) 안 — 재기동·회수 보류" % (row["surface_ref"], seat_boot_grace_s()))
@@ -1511,7 +1546,8 @@ def main():
         if takeover and act == "takeover":
             emit("seat", _reap_after_succession(a.role, old_ref))
     else:
-        emit("precheck", "%s 가 이미 role 보유(미각성) — 입양해 주입(재기동 안 함)" % row["surface_ref"])
+        emit("precheck", "%s 가 이미 role 보유(미각성) — 입양해 주입(재기동 안 함) · 판정 seat=%s"
+             % (row["surface_ref"], seat_state(status, a.role)))
     surface = row["surface_ref"]
 
     # 2-1) AWAKEN — launch-agent 의 지침 붙여넣기가 제출됐는지 세션 jsonl 로 재고, 안 됐으면 Return.

@@ -155,6 +155,10 @@ class _FakeCys:
             for r in self.rows:
                 if r["ref"] == flip[1]:
                     r["seat"] = "occupied"
+        for r in self.rows:   # (v115r3-d7) 조회마다 좌석 사실을 차례로 — 데몬 워치독이 unknown 을 채우는 흉내
+            seq = getattr(self, "seat_seq", {}).get(r["ref"])
+            if seq:
+                r["seat"] = seq.pop(0)
         return {"surfaces": [{"surface_ref": r["ref"], "role": r["role"], "pid": r["pid"], "exited": False,
                               "seat": r["seat"], "agent": r["agent"], "created_at": r["created"]}
                              for r in self.rows if r["role"]]}
@@ -186,11 +190,50 @@ class _FakeCys:
         return 0, "", ""
 
 
+class D7FormationRecordsBootReason(unittest.TestCase):
+    """v115r3-d7(D7⑴): 편성이 빠진 역할의 boot_node result/reason 을 detail(=formation.log)에 싣는다.
+    09-22 VM formation.log 는 「기동=cso,worker」 뿐이라 master 가 왜 빠졌는지 0자였다."""
+
+    def test_boot_verdict_text_reads_last_json_line(self):
+        import javis_formation as fm
+        out = 'noise\n{"role": "master", "result": "injected_unverified", "reason": "queue_pending", "log": []}\n'
+        self.assertEqual(fm._boot_verdict_text(out), "injected_unverified/queue_pending")
+        self.assertIsNone(fm._boot_verdict_text("not json"))
+        self.assertIsNone(fm._boot_verdict_text(""))
+
+    def test_failed_master_reason_lands_in_detail(self):
+        import javis_formation as fm
+        keys = ("gate_check", "_installed_clis", "_live_roles", "_resource_ok", "_boot_node",
+                "_ensure_master_seat", "_feed", "_emit_evt")
+        saved = {k: getattr(fm, k) for k in keys}
+        saved_env = dict(os.environ)
+        os.environ["CYS_STATE_DIR"] = tempfile.mkdtemp()
+        os.environ.pop("CYS_FORMATION_EXTERNAL_ROLES", None)
+        try:
+            fm.gate_check = lambda: True
+            fm._installed_clis = lambda: {"claude"}
+            fm._live_roles = lambda socket=None, require_live_agent=True: set()
+            fm._resource_ok = lambda socket=None: True
+            fm._boot_node = lambda role, socket, cwd=None, timeout=200: (True, "stub")
+            fm._ensure_master_seat = lambda socket, cwd: (False, "injected_unverified/queue_pending")
+            fm._feed = lambda *a, **k: None
+            fm._emit_evt = lambda *a, **k: None
+            _state, detail = fm.ensure(socket="/tmp/d7-reason.sock", cwd=os.environ["CYS_STATE_DIR"])
+        finally:
+            for k, v in saved.items():
+                setattr(fm, k, v)
+            os.environ.clear()
+            os.environ.update(saved_env)
+        self.assertIn("기동실패=master:injected_unverified/queue_pending", detail)
+        self.assertNotIn("cso:", detail.split("기동실패=", 1)[1].split(" · ", 1)[0], "성공 역할을 실패로 적었다")
+
+
 class A2B8BootNodeRun(unittest.TestCase):
-    def _run(self, rows, role, extra_env=None, queues=None, flip_on_status=None):
+    def _run(self, rows, role, extra_env=None, queues=None, flip_on_status=None, seat_seq=None):
         fake = _FakeCys(rows)
         fake.queues = queues or {}
         fake.flip_on_status = flip_on_status
+        fake.seat_seq = seat_seq or {}
         saved = (bn.run, bn._awaken, time.sleep, sys.argv, dict(os.environ))
         bn.run, bn._awaken = fake, None
         time.sleep = lambda s: None
@@ -231,6 +274,46 @@ class A2B8BootNodeRun(unittest.TestCase):
         sends_old = [c for c in fake.calls if c[1:2] == ["send"] and fake.calls.index(c) < fake.calls.index(launches[0])]
         self.assertEqual(sends_old, [], "승계 전에 빈 셸에 주입했다")
         self.assertNotEqual(out.get("surface"), "surface:1", "옛 빈 좌석을 결과 좌석으로 보고")
+
+    def test_d7_fresh_master_shell_unknown_seat_is_taken_over_not_adopted(self):
+        # v115r3-d7(D7⑴) 실물 모양: allocate 직후 좌석 사실은 "unknown"(데몬 seat_cache 초기값 · 워치독 틱 전).
+        #   종전: empty_seat_action=None → 입양-주입(빈 셸에 각성문 505B) → rc=1 「기동=cso,worker」.
+        #   수리: 워치독이 채울 때까지 재조회 → empty → 첫 시도 승계(launch-agent) · 빈 셸 주입 0.
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "unknown", "agent": None,
+                 "created": time.time() - 1}]
+        rc, out, fake = self._run(rows, "master", self.env, seat_seq={"surface:1": ["unknown", "empty"]})
+        launches = [i for i, c in enumerate(fake.calls) if c[1:2] == ["launch-agent"]]
+        self.assertEqual(len(launches), 1, fake.calls)
+        sends_old = [c for c in fake.calls[:launches[0]] if c[1:2] == ["send"]]
+        self.assertEqual(sends_old, [], "승계 전에 빈 셸에 주입했다(D7⑴ 재발)")
+        self.assertNotEqual(out.get("surface"), "surface:1", "옛 빈 좌석을 결과 좌석으로 보고")
+        self.assertTrue(any("unknown" in (l.get("msg") or "") and "empty" in (l.get("msg") or "")
+                            for l in out.get("log", [])), "좌석 판정 대기 근거 줄이 없다: %s" % out)
+
+    def test_d7_settle_unknown_seat_pure(self):
+        saved = time.sleep
+        time.sleep = lambda s: None
+        try:
+            seq = [_st(seat="unknown"), _st(seat="unknown"), _st(seat="empty")]
+            st, why = bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: seq.pop(0), tick_s=1.0,
+                                             max_wait_s=10)
+            self.assertEqual(bn.seat_state(st, "master"), "empty")
+            self.assertIn("3s", why)
+            # 이미 판정된 좌석은 재조회 0(값·사유 그대로)
+            calls = []
+            st2, why2 = bn.settle_unknown_seat(_st(seat="occupied"), "master", lambda: calls.append(1), max_wait_s=10)
+            self.assertEqual((bn.seat_state(st2, "master"), why2, calls), ("occupied", None, []))
+            # 상한 안에 안 풀리면 스냅샷 그대로 · 유계(재조회 수 = 상한/틱)
+            n = []
+            st3, why3 = bn.settle_unknown_seat(_st(seat="unknown"), "master",
+                                               lambda: n.append(1) or _st(seat="unknown"), tick_s=1.0, max_wait_s=4)
+            self.assertEqual((bn.seat_state(st3, "master"), len(n)), ("unknown", 4))
+            self.assertIn("미해소", why3)
+            # 재조회 실패(None)는 직전 스냅샷 유지
+            st4, _ = bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: None, tick_s=1.0, max_wait_s=2)
+            self.assertEqual(bn.seat_state(st4, "master"), "unknown")
+        finally:
+            time.sleep = saved
 
     def test_dead_agent_seat_in_grace_is_left_alone(self):
         rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": "claude",

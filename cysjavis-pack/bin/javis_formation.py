@@ -799,9 +799,23 @@ def _boot_node(role, socket, cwd=None, timeout=200):
         env["CYS_SOCKET"] = socket
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
-        return r.returncode == 0, (r.stdout or r.stderr or "").strip()[:200]
+        return r.returncode == 0, _boot_verdict_text(r.stdout) or (r.stdout or r.stderr or "").strip()[:200]
     except Exception as e:
         return False, "boot_node 예외: %s" % e
+
+
+def _boot_verdict_text(stdout):
+    """boot_node --json 마지막 줄의 result/reason — 없거나 깨졌으면 None(호출자가 원문 앞 200자로 폴백).
+    ★v115r3-d7: 종전엔 원문 앞 200자만 남겨 판정 칸이 잘렸고, 그마저 편성이 버려 formation.log 에
+    master 가 **왜** 빠졌는지 0자였다(09-22 VM 「기동=cso,worker」 — 원인 분기를 사후에 못 고른 이유)."""
+    for line in reversed((stdout or "").strip().splitlines()):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("result"):
+            return "%s/%s" % (obj.get("result"), obj.get("reason"))
+    return None
 
 
 def _ensure_master_seat(socket, cwd):
@@ -1074,6 +1088,7 @@ def ensure(socket=None, cwd=None, force_surface=False):
         booted = set()
         held = []
         seat_notes = []   # 좌석별 폴더 준비 결과(역할별 1줄 · 상태파일 detail 에 싣는다)
+        boot_fails = []   # 기동 실패 역할의 boot_node result/reason(역할별 1줄 · detail 에 싣는다)
         # ★ⓑ 자식 좌석 cwd 상속(P2 · 2026-09-10): 호출자가 cwd 를 주지 않으면 **master 좌석의
         #   cwd**(설치기가 신뢰를 심어 둔 JarvisHome)를 자식이 물려받는다. master 좌석이 없거나
         #   데몬이 답하지 않으면 None = 홈(종전 동작) — 상속은 개선이지 전제가 아니다.
@@ -1106,6 +1121,8 @@ def ensure(socket=None, cwd=None, force_surface=False):
                 ok, _d = _boot_node(role, socket, _role_seat_cwd(child_cwd, role, seat_notes))
             if ok:
                 booted.add(role)
+            else:
+                boot_fails.append("%s:%s" % (role, _d or "사유 없음"))   # v115r3-d7: 빠진 역할의 사유
 
         # ⑦ 상태 판정·기록·표면화(라이브 재관측 우선)
         live = _live_roles(socket)
@@ -1114,6 +1131,8 @@ def ensure(socket=None, cwd=None, force_surface=False):
         state = classify(installed=installed, live=live, resource_ok=True)
         detail = "편성 실행 — 기동=%s · 설치CLI=%s" % (
             ",".join(sorted(booted)) or "없음", ",".join(sorted(installed))) + _external_note()
+        if boot_fails:
+            detail += " · 기동실패=" + " / ".join(boot_fails)
         if seat_notes:
             detail += " · 좌석 폴더=" + " / ".join(seat_notes)
         if child_cwd and cwd is None:

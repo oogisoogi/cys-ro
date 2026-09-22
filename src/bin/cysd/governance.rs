@@ -3215,9 +3215,55 @@ pub(crate) fn seat_agent_observed(cmds: &[String], candidates: &[(String, String
     select_observed_agent(cmds, candidates).is_some()
 }
 
-/// ★SEAT 캐시 갱신 — **단일 writer**(watchdog 틱). 판정 재료(전 프로세스 표)를 이미 refresh 한
+/// 캐시에 싣는 좌석 판정 — 틱(`refresh_seat_cache`)과 생성 직후 1회(`prime_seat_cache_at_create`)가
+/// **같은 판정**을 쓰도록 한 곳에 둔다(두 자리가 갈라지면 생성 직후 값과 첫 틱 값이 어긋난다).
+fn cache_seat_verdict(
+    sys: &System,
+    s: &crate::state::Surface,
+    candidates: &mut Option<Vec<(String, String)>>,
+) -> SeatState {
+    let mut seat = seat_state(sys, s);
+    // ★v113-restore: 자손이 없어도 뿌리 자신이 기지 에이전트면 좌석은 차 있다(설치기 master 자리).
+    if seat == SeatState::Empty && !s.exited.load(Ordering::Relaxed) {
+        let cands = candidates.get_or_insert_with(known_agent_candidates);
+        if root_agent_cmd(sys, s.pid, cands).is_some() {
+            seat = SeatState::Occupied;
+        }
+    }
+    seat
+}
+
+/// ★v115r3-d7(D7⑴) 생성 직후 좌석 캐시 1회 채움 — 새 좌석의 `seat_cache` 는 0(Unknown)으로 태어나
+/// 첫 워치독 틱(≤`WATCHDOG_INTERVAL_SECS`)까지 status 에 `"unknown"` 으로 노출됐다. 부서 allocate 직후
+/// 편성의 boot_node 가 그 창에서 판정해 빈 부서장 셸을 **입양-주입**(claude 없는 셸에 각성문)으로
+/// 처분했다(09-22 VM 교육부 505B · 부서장 공백 최대 5분55초).
+/// ★의미 = 「생성 순간에 틱이 한 번 돌았다」 — 틱은 어느 위상에서든 돌 수 있으므로 이미 도달 가능한
+///   상태만 만든다. 틱이 먼저 값을 썼으면 덮지 않는다(Unknown 일 때만 CAS) · 판정 불능(Unknown)이면
+///   아무것도 쓰지 않는다. 보조축(seat_agent_cache)·폴더 거부 통보는 틱 소관 그대로다.
+/// 비용 = 전 프로세스 refresh 1회(수십 ms) — create 는 드문 경로라 그 시점에 지불한다
+/// (`seat_claimable_now` 와 같은 선택). 반환 = 이번에 실은 값(안 실었으면 None).
+pub fn prime_seat_cache_at_create(s: &crate::state::Surface) -> Option<SeatState> {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let seat = cache_seat_verdict(&sys, s, &mut None);
+    if seat == SeatState::Unknown {
+        return None;
+    }
+    s.seat_cache
+        .compare_exchange(
+            SeatState::Unknown.as_u8(),
+            seat.as_u8(),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        )
+        .ok()
+        .map(|_| seat)
+}
+
+/// ★SEAT 캐시 갱신 — **정기 writer**(watchdog 틱). 판정 재료(전 프로세스 표)를 이미 refresh 한
 /// 지점에서 한 번만 계산해 캐시에 싣는다. RPC 읽기 경로(surface.list·status·deliver_queued)는
-/// 재조회 없이 이 값을 소비한다(비용 중복 0).
+/// 재조회 없이 이 값을 소비한다(비용 중복 0). 예외 writer 는 `prime_seat_cache_at_create` 하나 —
+/// 생성 직후 Unknown 인 동안만 1회(CAS)이고, 그 뒤로는 이 틱만 쓴다.
 pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
     let surfaces: Vec<Arc<crate::state::Surface>> =
         daemon.surfaces.lock().unwrap().values().cloned().collect();
@@ -3225,14 +3271,7 @@ pub fn refresh_seat_cache(daemon: &Arc<Daemon>, sys: &System) {
     // 무meta Occupied 좌석이 하나도 없는 틱은 IO 0).
     let mut candidates: Option<Vec<(String, String)>> = None;
     for s in surfaces {
-        let mut seat = seat_state(sys, &s);
-        // ★v113-restore: 자손이 없어도 뿌리 자신이 기지 에이전트면 좌석은 차 있다(설치기 master 자리).
-        if seat == SeatState::Empty && !s.exited.load(Ordering::Relaxed) {
-            let cands = candidates.get_or_insert_with(known_agent_candidates);
-            if root_agent_cmd(sys, s.pid, cands).is_some() {
-                seat = SeatState::Occupied;
-            }
-        }
+        let seat = cache_seat_verdict(sys, &s, &mut candidates);
         s.seat_cache.store(seat.as_u8(), Ordering::Relaxed);
         notify_seat_folder_denied(daemon, &s, seat);
         // ★G2(W3-A BLOCK 교정) 좌석 에이전트 엄격 관측: meta 부재 보조축(SeatVacantNoMeta)의
@@ -5253,11 +5292,15 @@ pub(crate) fn empty_line_block_reason(alt_blocks: bool, approval_pending: bool) 
 /// ★B1(0.14.30): 마지막 보류 사유를 surface 에 남긴다(경보와 별개 축 — 경보는 쿨다운·임계에
 /// 걸려 매 틱 말하지 않지만, 이 값은 상시 사실이라 `queue.list` 가 바로 읽는다).
 /// 같은 사유가 이어지면 **최초 시각을 보존**한다(얼마나 오래 막혔나가 사유보다 중요하다).
-fn mark_queue_blocked(s: &Arc<crate::state::Surface>, reason: &str) {
+/// 반환 = 이번 호출로 막힘 사유가 **새로 섰는가**(같은 사유 연속이면 false) — 사유 전이 1회 통보용.
+fn mark_queue_blocked(s: &Arc<crate::state::Surface>, reason: &str) -> bool {
     let mut slot = s.queue_blocked.lock().unwrap();
     match slot.as_ref() {
-        Some((prev, _)) if prev == reason => {}
-        _ => *slot = Some((reason.to_string(), now_epoch())),
+        Some((prev, _)) if prev == reason => false,
+        _ => {
+            *slot = Some((reason.to_string(), now_epoch()));
+            true
+        }
     }
 }
 
@@ -6019,7 +6062,19 @@ fn deliver_queued(
         if s.role.lock().unwrap().is_some()
             && SeatState::from_u8(s.seat_cache.load(Ordering::Relaxed)) == SeatState::Empty
         {
-            mark_queue_blocked(&s, "empty_seat(좌석에 에이전트 미연결)");
+            // ★v115r3-d7(D7⑴ · master 판정 f0bb40a5): 빈 역할 좌석 보류를 **원장에 1건** 남긴다(보류가
+            //   새로 선 틱에만 — 같은 사유 연속 틱은 무발행). 09-22 VM 교육부 부서장 빈 셸의 각성문 505B
+            //   보류는 이벤트 0건이라 「이벤트가 없는 것」이 유일한 흔적이었다. 관측 보조 — 판정 무영향.
+            if mark_queue_blocked(&s, "empty_seat(좌석에 에이전트 미연결)") {
+                daemon.bus.publish(
+                    "queue.held",
+                    "queue",
+                    Some(s.id),
+                    json!({"surface_ref": cys::surface_ref(s.id),
+                           "role": s.role.lock().unwrap().clone(),
+                           "reason": "empty_seat", "seat": "empty", "depth": depth}),
+                );
+            }
             alert_queue_depth_if_high(
                 daemon,
                 &s,
@@ -7198,9 +7253,16 @@ mod tests {
     fn v113_root_agent_wired_into_seat_cache_and_liveness() {
         let src = include_str!("governance.rs");
         let prod = src.split("#[cfg(test)]").next().unwrap();
+        // ★v115r3-d7: 판정은 cache_seat_verdict 한 곳 — 틱·생성 직후 채움이 둘 다 그것을 불러야 한다.
+        let v = prod.find("fn cache_seat_verdict(").unwrap();
+        let verdict_body = &prod[v..v + prod[v..].find("\n}\n").unwrap()];
+        assert!(verdict_body.contains("root_agent_cmd(sys, s.pid, cands).is_some()"), "좌석 캐시 미배선");
         let a = prod.find("pub fn refresh_seat_cache(").unwrap();
         let seat_body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
-        assert!(seat_body.contains("root_agent_cmd(sys, s.pid, cands).is_some()"), "좌석 캐시 미배선");
+        assert!(seat_body.contains("cache_seat_verdict(sys, &s, &mut candidates)"), "틱이 판정을 우회");
+        let p = prod.find("pub fn prime_seat_cache_at_create(").unwrap();
+        let prime_body = &prod[p..p + prod[p..].find("\n}\n").unwrap()];
+        assert!(prime_body.contains("cache_seat_verdict(&sys, s, &mut None)"), "생성 직후 채움이 판정을 우회");
         let b = prod.find("fn check_agent_death(").unwrap();
         let body = &prod[b..b + prod[b..].find("\n}\n").unwrap()];
         assert!(body.contains("cmdlines.push(root)"), "생존 판정 미배선");
@@ -9282,6 +9344,35 @@ mod tests {
             s.pending_queue.lock().unwrap().is_empty(),
             "프롬프트 박스가 열려 있으면 출력 중이라도 배달한다(기아 봉인의 본체)"
         );
+    }
+
+    /// ★v115r3-d7(D7⑴): 빈 역할 좌석의 보류는 **보류가 선 틱에 1건** `queue.held` 로 원장에 남는다 —
+    /// 같은 사유가 이어지는 틱은 무발행(틱마다 쏟으면 폭주) · 배달은 여전히 보류(판정 무영향).
+    #[test]
+    fn d7_empty_role_seat_hold_emits_queue_held_once() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("d7-held");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = marker_seat("d7-held");
+        *s.role.lock().unwrap() = Some("master".into());
+        s.seat_cache.store(SeatState::Empty.as_u8(), Ordering::Relaxed);
+        paint_prompt(&s, "", "");
+        *s.last_output.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "빈 역할 좌석에 배달했다");
+        let held: Vec<_> = daemon.bus.tail(200).into_iter()
+            .filter(|e| e["name"] == serde_json::json!("queue.held")).collect();
+        assert_eq!(held.len(), 1, "보류 이벤트가 0건이거나 틱마다 반복: {held:?}");
+        assert_eq!(held[0]["payload"]["reason"], serde_json::json!("empty_seat"));
+        assert_eq!(held[0]["payload"]["role"], serde_json::json!("master"));
+        assert_eq!(held[0]["surface_id"], serde_json::json!(s.id));
     }
 
     /// ★v113-restore: 대체화면 claude 좌석 화면 — 1행 머리, 2·4행 가로줄(framed=true 일 때만), 3행 「❯ 」,

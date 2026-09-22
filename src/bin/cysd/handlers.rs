@@ -3151,13 +3151,26 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         }
                     }
                     if held_by_live {
+                        // ★D7⑶: **왜 승계가 일어나지 않았는지**를 라벨로 싣는다(additive).
+                        //   종전엔 `takeover_cancelled` 하나뿐이라, 그 값이 null 이면 「요청을 안
+                        //   했다」와 「좌석이 승계 가능 상태가 아니었다」가 구별되지 않았다 — 09-22
+                        //   VM 에서 부서장 승계 실패의 분기를 사후에 고를 수 없었던 이유가 이것이다.
+                        let seat_blocked = if !want_takeover {
+                            "not_requested"
+                        } else if takeover_cancelled.is_some() {
+                            "recheck_cancelled"
+                        } else {
+                            "seat_not_claimable"
+                        };
                         daemon.bus.publish(
                             "role.claim_denied",
                             "system",
                             None,
                             json!({"role": role, "reason": "privileged role held by live surface",
                                    "path": "surface.create", "caller_pid": caller_pid,
-                                   "takeover_cancelled": takeover_cancelled}),
+                                   "takeover_cancelled": takeover_cancelled,
+                                   "takeover_requested": want_takeover,
+                                   "seat_blocked": seat_blocked}),
                         );
                         return Reply::Single(err_response(
                             &id,
@@ -3354,9 +3367,37 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     // 익명 발신(데몬 내부·pane 밖 CLI)은 기록하지 않는다 — 이미 close 게이트를 통과하므로
                     // 원장이 필요 없고, 없는 소유권을 만들어 두면 안 된다. resolve_caller_surface는 캐시
                     // 미스 시 프로세스 표를 훑으므로 성공 아크(락 미보유)에서만 호출한다.
-                    if let Some(cs) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) {
+                    let creator_surface = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+                    if let Some(cs) = creator_surface {
                         record_create_owner(daemon, s.id, cs);
                     }
+                    // ★D7⑶(1.1.5 트랙 DAEMON) — **좌석을 만든 주체를 이벤트 스트림에 1줄 남긴다.**
+                    //
+                    // 09-22 VM 부서장 좌석 사고에서 이벤트 원장만으로는 「새 좌석 sid=4 를 누가
+                    // 만들었나」를 답할 수 없었다(원장 전량 조회 = 0건 → 결함 정본이 【미측정】으로
+                    // 남았고, 다음 라운드는 추정에서 시작한다). 사실은 이미 두 원장에 기록되고
+                    // 있었다(`record_create_owner`·`record_create_caller`) — 없던 것은 **관측 표면**
+                    // 뿐이다. 그래서 새 사실을 만들지 않고 이미 가진 것을 발행한다.
+                    //
+                    // pane 밖 발신(setsid·launchd 재부모화 = 부트 체인)은 `creator_surface` 가 null
+                    // 이고 `caller_pid` 만 남는다 — 그 조합 자체가 「고아 프로세스가 만들었다」는
+                    // 판독이다(null 과 「안 쟀다」를 섞지 않으려고 두 칸을 따로 싣는다).
+                    daemon.bus.publish(
+                        "surface.creator",
+                        "surface",
+                        Some(s.id),
+                        json!({
+                            "surface_ref": surface_ref(s.id),
+                            "role": if role_for_announce.is_empty() { Value::Null }
+                                    else { json!(role_for_announce) },
+                            "caller_pid": caller_pid,
+                            "creator_surface": creator_surface,
+                            "creator_role": creator_surface
+                                .and_then(|cs| daemon.get_surface(cs))
+                                .and_then(|cs| cs.role.lock().unwrap().clone()),
+                            "seat_takeover_from": seat_takeover_from,
+                        }),
+                    );
                     // ★결함8 창작자 기록 — pane 귀속과 **무관하게** caller_pid 가 있으면 항상.
                     // 위 create_owner 와 달리 pane 밖 고아 프로세스(setsid·launchd 재부모화)가
                     // 정확히 이 원장의 대상이다: 그 프로세스는 resolve_caller_surface 가 None 을
@@ -14837,6 +14878,149 @@ mod tests {
     /// 2단계 시나리오(결함 6 봉인): ①큐 잔존 좌석 reap → queue_not_empty 거부(reap 은 큐를
     /// 자동 drop 하지 않는다 — 인멸을 명시 행위로 강제) ②cso 의 queue.clear 가 exited 예외
     /// (exited_reclaim)로 통과 — queue.dropped 에 cleared_by/via additive ③reap 재시도 통과.
+    /// ★D7⑶(트랙 DAEMON) — **좌석을 만든 주체가 이벤트로 남는다.**
+    ///
+    /// 09-22 VM 부서장 좌석 사고의 결함 정본은 「승계 주체 프로세스 = 이벤트 원장에 없음
+    /// 【미측정】」으로 닫혔다. 사실은 두 원장(`create_owner`·`create_caller`)에 이미 있었고
+    /// 없던 것은 **관측 표면**뿐이었다. 이 검체는 그 표면이 실재하고, pane 귀속·비귀속 두 경우를
+    /// 구별해 싣는지를 잰다(둘을 한 칸에 접으면 「고아가 만들었다」가 「안 쟀다」로 읽힌다).
+    #[test]
+    fn d7_surface_creator_is_observable_for_pane_and_orphan_callers() {
+        let daemon = claim_daemon();
+        // ① pane 귀속 발신 — 창작자 좌석·역할이 함께 실린다.
+        let parent = make_surface(&daemon, Some("cso"));
+        let pid = 995_801_u32;
+        bind_caller(&daemon, pid, parent);
+        let Reply::Single(resp) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": "worker-creator-obs"}),
+            },
+            Some(pid),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(resp["ok"], json!(true), "surface.create 실패 ({resp})");
+        let child = resp["result"]["surface_id"].as_u64().expect("surface_id");
+        let ev = daemon
+            .bus
+            .tail(200)
+            .into_iter()
+            .find(|e| e["name"] == json!("surface.creator") && e["surface_id"] == json!(child))
+            .expect("surface.creator 미발행 — 승계 주체가 다시 【미측정】이 된다");
+        assert_eq!(ev["payload"]["caller_pid"], json!(pid));
+        assert_eq!(ev["payload"]["creator_surface"], json!(parent));
+        assert_eq!(ev["payload"]["creator_role"], json!("cso"), "창작자 역할이 비었다");
+
+        // ② pane 밖(고아) 발신 — caller_pid 는 있고 creator_surface 는 null.
+        //    부트 체인(setsid·launchd 재부모화)이 정확히 이 모양이다.
+        let orphan_pid = 995_802_u32;
+        daemon.caller_cache.lock().unwrap().insert(
+            orphan_pid,
+            crate::state::CallerCacheEntry::new(
+                None,
+                crate::state::now_epoch(),
+                None,
+                daemon.caller_gen.load(Ordering::Relaxed),
+            ),
+        );
+        let Reply::Single(resp2) = dispatch(
+            &daemon,
+            Request {
+                id: json!(2),
+                method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30"}),
+            },
+            Some(orphan_pid),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(resp2["ok"], json!(true), "surface.create 실패 ({resp2})");
+        let child2 = resp2["result"]["surface_id"].as_u64().expect("surface_id");
+        let ev2 = daemon
+            .bus
+            .tail(200)
+            .into_iter()
+            .find(|e| e["name"] == json!("surface.creator") && e["surface_id"] == json!(child2))
+            .expect("고아 발신의 surface.creator 미발행");
+        assert_eq!(ev2["payload"]["caller_pid"], json!(orphan_pid));
+        assert_eq!(
+            ev2["payload"]["creator_surface"],
+            Value::Null,
+            "pane 무귀속인데 창작자 좌석이 실렸다"
+        );
+        // ★두 칸이 **갈라져** 있음을 단언한다 — 한 칸으로 접으면 「고아」와 「안 쟀다」가 같아진다.
+        assert_ne!(
+            ev["payload"]["creator_surface"], ev2["payload"]["creator_surface"],
+            "pane 귀속·비귀속이 같은 값으로 접혔다 — 이 검체는 그 축에 대해 공허하다"
+        );
+        // 역할 없는 좌석은 role=null(역할 좌석과 스크래치를 소비부가 구분해야 한다).
+        assert_eq!(ev2["payload"]["role"], Value::Null);
+    }
+
+    /// ★D7⑶ — **승계가 왜 일어나지 않았는지**가 거절 이벤트에 라벨로 남는다.
+    ///
+    /// 종전엔 `takeover_cancelled` 하나뿐이라 그 값이 null 이면 「승계를 요청하지 않았다」와
+    /// 「좌석이 승계 가능 상태가 아니었다」가 구별되지 않았다 — 09-22 VM 부서장 승계 실패의
+    /// 분기를 사후에 고를 수 없었던 이유가 정확히 이것이다.
+    #[test]
+    fn d7_claim_denied_labels_why_takeover_did_not_happen() {
+        let daemon = claim_daemon();
+        let holder = make_surface(&daemon, Some("master"));
+        assert_eq!(
+            daemon.roles.lock().unwrap().get("master").copied(),
+            Some(holder),
+            "전제: master 를 산 좌석이 쥐고 있어야 한다"
+        );
+        let pid = 995_803_u32;
+        let mk = |want: bool| {
+            let mut params = json!({"cmd": "sleep 30", "role": "master"});
+            if want {
+                params["takeover_empty_seat"] = json!(true);
+            }
+            params
+        };
+        // ★두 번째 분기(승계를 **요청했는데** 좌석이 승계 가능 상태가 아님)를 결정론으로 만든다.
+        //   `seat_claimable` = 좌석 Empty ∧ meta 비차단 ∧ **최근 사람 입력 없음** 이므로, 사람 입력
+        //   시각을 지금으로 세우면 프로세스 표와 무관하게 거짓이 된다(벽시계·자손 수에 의존 0).
+        //   ⚠이 한 줄이 없으면 want=true 에서 승계가 **성공**해 이 축은 아예 재지지 않는다
+        //   (1차 판본이 그렇게 거짓 실패를 냈다 — 기대가 아니라 픽스처가 틀렸다).
+        for (want, expect) in [(false, "not_requested"), (true, "seat_not_claimable")] {
+            if want {
+                *daemon.surfaces.lock().unwrap()[&holder]
+                    .last_human_input
+                    .lock()
+                    .unwrap() = Some(std::time::Instant::now());
+            }
+            let Reply::Single(resp) = dispatch(
+                &daemon,
+                Request { id: json!(1), method: "surface.create".into(), params: mk(want) },
+                Some(pid),
+            ) else {
+                panic!("expected single reply");
+            };
+            assert_eq!(
+                resp["error"]["code"],
+                json!("claim_denied"),
+                "전제: 산 좌석이 쥔 특권 역할은 거절돼야 한다 ({resp})"
+            );
+            let ev = daemon
+                .bus
+                .tail(200)
+                .into_iter()
+                .filter(|e| e["name"] == json!("role.claim_denied"))
+                .next_back()
+                .expect("role.claim_denied 미발행");
+            assert_eq!(ev["payload"]["takeover_requested"], json!(want));
+            assert_eq!(
+                ev["payload"]["seat_blocked"], json!(expect),
+                "거절 사유 라벨이 분기를 구별하지 못한다 (want_takeover={want} · {ev})"
+            );
+        }
+    }
+
     // ───────── ★D7⑵(트랙 DAEMON): 역할 좌석의 미배달 큐는 폐기가 아니라 주차·상속된다 ─────────
 
     /// 핵심 왕복 — **셸이 스스로 죽어도 각성문이 살아남아 후임 좌석에 들어간다.**

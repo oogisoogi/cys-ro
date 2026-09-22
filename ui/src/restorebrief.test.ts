@@ -11,6 +11,7 @@ import {
   BRIEF_MAX_ITEMS,
   cycleAdviceLines,
   CYCLE_ADVICE_PCT,
+  briefTiming,
 } from "./restorebrief";
 
 const SAMPLE = `# SESSION_STATE
@@ -195,5 +196,26 @@ describe("v112-restore ① 미제출 자리 정직 표기", () => {
   it("미제출 자리가 없으면 그 줄도 없다", () => {
     const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["worker"], waitingRoles: [], unsubmittedRoles: [] });
     expect(JSON.stringify(c).includes("전송되지 않음")).toBe(false);
+  });
+});
+
+describe("v115 B5 — 복원 카드 시점 = 복원 완료 뒤", () => {
+  it("복원이 시작됐으면 끝날 때까지 기다린다(유예가 지나도)", () => {
+    expect(briefTiming({ restoreStarted: true, restoreFinished: false, graceElapsed: true })).toBe("wait");
+    expect(briefTiming({ restoreStarted: true, restoreFinished: false, graceElapsed: false })).toBe("wait");
+    expect(briefTiming({ restoreStarted: true, restoreFinished: true, graceElapsed: false })).toBe("show");
+  });
+  it("복원 신호가 없으면 유예 뒤에만 띄운다", () => {
+    expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: false })).toBe("wait");
+    expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: true })).toBe("show");
+  });
+  it("배선: start() 는 카드를 곧장 띄우지 않고, 복원 done/error 가 카드를 부른다", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "main.ts"), "utf8") as string;
+    expect(src.includes("void showRestoreBrief(); // 복원 브리핑 카드(1단계)")).toBe(false);
+    const listen = src.slice(src.indexOf('await listen("restore-progress"'));
+    const head = listen.slice(0, listen.indexOf('if (p.phase === "start") {'));
+    expect(head.includes("briefGate.restoreFinished = true;")).toBe(true);
+    expect(head.includes("maybeShowRestoreBrief();")).toBe(true);
+    expect(src.includes("briefGate.graceElapsed = true;")).toBe(true);
   });
 });

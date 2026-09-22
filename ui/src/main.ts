@@ -145,7 +145,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole } from "./restorebrief";
+import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
 declare global {
@@ -7304,6 +7304,12 @@ async function refreshDaemonInfo(info: HTMLElement) {
 //   · 한 번 켜질 때 1회만. 실패는 조용히 넘긴다(카드는 부가 기능 — 복원 자체를 막지 않는다).
 // ────────────────────────────────────────────────────────────────────────────
 let restoreBriefShown = false;
+// ★v115-restore(B5): 카드 시점 = 조직 복원이 끝난 뒤(판정 = restorebrief.briefTiming). 복원 신호가 유예 안에
+//   안 오면 이번 켜짐엔 복원이 없다고 보고 띄운다.
+const briefGate = { restoreStarted: false, restoreFinished: false, graceElapsed: false };
+function maybeShowRestoreBrief(): void {
+  if (briefTiming(briefGate) === "show") void showRestoreBrief();
+}
 
 /**
  * ★(v112-restore ①) 복원 안내가 입력창에 남은(미제출 실측) 자리의 역할 목록. 재료 = cys 가 부트 주입마다
@@ -7709,6 +7715,11 @@ async function start() {
     // ★P1-3: 방금 조직을 지운 사용자에게 "직원 복귀 중"은 정반대 신호다. 리셋 진행/완료
     // 상태에서는 복원 토스트를 띄우지 않는다(복원 자체는 백엔드 판단이므로 표시만 억제).
     if (factoryResetting || resetCompleted) return;
+    if (p.phase === "start") briefGate.restoreStarted = true;
+    if (p.phase === "done" || p.phase === "error") {
+      briefGate.restoreFinished = true;
+      maybeShowRestoreBrief(); // ★v115-restore(B5): 드레인 저장·복원이 끝난 뒤의 작업기록으로 카드를 짓는다
+    }
     if (p.phase === "start") {
       stickyToast("restore", "feed", "👥 직원 복귀 중", "노드 세션 복원 중… (본부·부서)");
     } else if (p.phase === "done") {
@@ -8208,7 +8219,11 @@ async function start() {
   if (first != null) setFocus(first);
   refreshFeed();
   started = true; // 복원 완료 — 이 시점부터 인터벌 자동 입양 허용
-  void showRestoreBrief(); // 복원 브리핑 카드(1단계) — 표시만 · 모델 호출 0 · 재개 주입 0
+  // 복원 브리핑 카드(1단계) — 표시만 · 모델 호출 0 · 재개 주입 0 · ★v115-restore(B5): 복원 완료 뒤에 띄운다.
+  setTimeout(() => {
+    briefGate.graceElapsed = true;
+    maybeShowRestoreBrief();
+  }, BRIEF_RESTORE_GRACE_MS);
   // ★부서 push 구독 보장(멱등): 앱이 뜰 때 **이미 살아 있던** 부서 데몬은 종전에 이벤트 포워더가
   // 붙지 않았다(포워더는 launch_dept_daemon 경로와 Control Center '작업' 탭 진입에서만 걸렸다).
   // 그러면 그 부서의 surface 종료·reap 이벤트가 UI 에 오지 않아 죽은 pane 이 세션 내내 남는다.

@@ -14949,6 +14949,23 @@ mod tests {
         s.seat_cache.store(SeatState::Unknown as u8, Ordering::Relaxed);
         assert_eq!(prime(&s), Some(SeatState::Empty), "Unknown 좌석을 채우지 않았다");
         assert_eq!(SeatState::from_u8(s.seat_cache.load(Ordering::Relaxed)), SeatState::Empty);
+        // 생성 순간의 점유(셸 초기화 자손 흉내 = 자손 1개)는 싣지 않는다 — 일시값을 굳히면 입양 분기로 샌다.
+        let busy = daemon
+            .create_surface(None, Some("sh -c 'sleep 30 & wait'".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(busy.id, busy.clone());
+        let kids = || {
+            let mut y = sysinfo::System::new();
+            y.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            !crate::governance::collect_descendants(&y, busy.pid).is_empty()
+        };
+        let t = std::time::Instant::now();
+        while !kids() && t.elapsed().as_secs() < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(kids(), "측정 전제 실패 — 자손을 못 만들었다(이 아래 판정은 무의미)");
+        assert_eq!(prime(&busy), None, "생성 순간의 점유를 좌석 사실로 굳혔다");
+        assert_eq!(SeatState::from_u8(busy.seat_cache.load(Ordering::Relaxed)), SeatState::Unknown);
     }
 
     /// 2단계 시나리오(결함 6 봉인): ①큐 잔존 좌석 reap → queue_not_empty 거부(reap 은 큐를

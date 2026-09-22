@@ -3238,15 +3238,19 @@ fn cache_seat_verdict(
 /// 편성의 boot_node 가 그 창에서 판정해 빈 부서장 셸을 **입양-주입**(claude 없는 셸에 각성문)으로
 /// 처분했다(09-22 VM 교육부 505B · 부서장 공백 최대 5분55초).
 /// ★의미 = 「생성 순간에 틱이 한 번 돌았다」 — 틱은 어느 위상에서든 돌 수 있으므로 이미 도달 가능한
-///   상태만 만든다. 틱이 먼저 값을 썼으면 덮지 않는다(Unknown 일 때만 CAS) · 판정 불능(Unknown)이면
-///   아무것도 쓰지 않는다. 보조축(seat_agent_cache)·폴더 거부 통보는 틱 소관 그대로다.
+///   상태만 만든다. 틱이 먼저 값을 썼으면 덮지 않는다(Unknown 일 때만 CAS) · Empty 가 아니면
+///   아무것도 쓰지 않는다(아래 본문 주석). 보조축(seat_agent_cache)·폴더 거부 통보는 틱 소관 그대로다.
 /// 비용 = 전 프로세스 refresh 1회(수십 ms) — create 는 드문 경로라 그 시점에 지불한다
 /// (`seat_claimable_now` 와 같은 선택). 반환 = 이번에 실은 값(안 실었으면 None).
 pub fn prime_seat_cache_at_create(s: &crate::state::Surface) -> Option<SeatState> {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let seat = cache_seat_verdict(&sys, s, &mut None);
-    if seat == SeatState::Unknown {
+    // ★Empty 만 싣는다 — 생성 순간의 Occupied 는 대개 **셸 초기화 자손**(`zsh -l` → /etc/zprofile 의
+    //   path_helper)이라 일시값이다. 그것을 실으면 boot_node 가 unknown 대기 없이 「점유」로 읽고 빈 부서장
+    //   셸을 입양-주입한다(격리 race 0 재현 f1 1/3 실측). Occupied·Unknown 은 싣지 않고 틱에 맡긴다
+    //   (Unknown 이 남으면 boot_node 의 settle_unknown_seat 이 틱을 기다린다 — 두 층이 서로를 덮는다).
+    if seat != SeatState::Empty {
         return None;
     }
     s.seat_cache

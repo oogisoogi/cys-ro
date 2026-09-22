@@ -17,7 +17,7 @@
 | B7 | 기존 부서 schedule 에 ctx-relay-tick 소급 | 이미 구현(Fable 1.1.3 M6) | 신규 코드 0 · 기존 시험 `schedule.rs v113_dept_lane_ctx_relay_backfill` + 부트 배선 `main.rs:1304 ensure_builtin_jobs` 실재 확인 |
 
 ## 재는 법
-- `python3 cysjavis-pack/bin/tests/test_v115_dept.py` (19건)
+- `python3 cysjavis-pack/bin/tests/test_v115_dept.py` (18건)
 - 뮤턴트: 스크래치 `mut.py` 형태 — 사본 트리에 변이·적용 선-assert·시험 rc. 결과 = 표는 【확인요청】 참조.
 - 게이트: `python3 scripts/gen_ceo_template.py --check` · `test_bootv2_doc_contract` · `test_event_inject` · `test_core_inject` · `test_content_pins_parity` · `bash scripts/secret-scan.sh --all`.
 

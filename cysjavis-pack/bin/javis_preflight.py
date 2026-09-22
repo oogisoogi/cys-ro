@@ -507,8 +507,11 @@ AWAKENING_SCRIPTS = {script for script, _ in AWAKENING_HOOKS}
 # work management 앵커(절대지침 5차) 4규칙 b·c의 전담 sub-skill — C22가 존재·본문을 검증한다.
 WORK_SKILLS = ["hallucination-guard", "grill-me"]
 
-# 하네스 엔지니어링 운영 스킬 — C29가 3프로필에 자동 심링크(VIDEO/APPBUILD와 동일 규약).
-HARNESS_SKILLS = ["harness-engineering"]
+# 하네스 엔지니어링·부서 운영 스킬 — C29가 발견된 전 프로필에 자동 심링크(VIDEO/APPBUILD와 동일 규약).
+# ★D2(1.1.5 6차): dept-by-chat 편입 — 「교육 부서 만들어 줘」의 절차 스킬인데 어느 프로필에도
+# Skill 로 등록돼 있지 않아 본부 master 가 `Unknown skill: dept-by-chat` 으로 대화 폴백했다
+# (2026-09-22 윈 실기 · 실체는 pack/skills/dept-by-chat 에 있었다 — 빠진 것은 등록뿐).
+HARNESS_SKILLS = ["harness-engineering", "dept-by-chat"]
 # 스킬 본문 핀 — frontmatter만 남기고 본문이 비워지면(전담 기능 소실) 결정론 검출한다.
 WORK_SKILL_PINS = {
     # "원출처까지 간다"는 본문 고유 문구 — "출처 진실성"은 frontmatter description과
@@ -1199,6 +1202,31 @@ def discover_claude_settings():
     except Exception:
         pass  # 부재/이상 dir → home-glob만 반환(preflight 부트 게이트라 crash 금지)
     return found
+
+
+def discover_skill_profiles():
+    """스킬 심링크 대상 **프로필 디렉터리** 전부(C26·C27·C29 공용 SOT).
+
+    ★D2(1.1.5 6차 수리): 종전에는 각 검사가 제 손으로 `$HOME/.claude*` 만 훑었다 — 그런데 cys
+    좌석이 실제로 읽는 프로필은 `~/.cys/claude`(본부)·`~/.cys/claude-<부서>`(부서)다. 그래서
+    스킬 53종이 `~/.claude/skills` 에만 걸려 있고 **좌석에서는 한 종도 보이지 않았다**(2026-09-22
+    실측: `~/.cys/claude/skills` 폴더 자체가 없음 → 윈 본부 master 「Unknown skill: dept-by-chat」).
+    훅 등록은 이미 `discover_claude_settings()` 가 CLAUDE_CONFIG_DIR·CYS_ACCOUNT_DIR 까지 보고
+    있었는데 스킬 배선만 좁은 자기 목록을 쓰고 있던 것 — SOT 를 하나로 합친다.
+    반환 = 프로필 디렉터리 경로 리스트(사전순·중복 제거 · settings.json 부모).
+    """
+    profs, seen = [], set()
+    for sp in discover_claude_settings():
+        d = os.path.dirname(sp)
+        try:
+            key = os.path.realpath(d)
+        except OSError:
+            key = d
+        if key in seen or not os.path.isdir(d):
+            continue
+        seen.add(key)
+        profs.append(d)
+    return sorted(profs)
 
 
 def resolve_registration_targets():
@@ -3963,10 +3991,8 @@ class Preflight:
             warns.append("pack 스킬 %d종 미설치(%s…) — init-pack 재실행 필요"
                          % (len(missing), missing[0]))
         # (b) 네이티브 Claude Code(/goal) 발견용 프로필 심링크 (기계 --fix)
-        _home = os.path.expanduser("~")
-        profiles = sorted(os.path.join(_home, d) for d in os.listdir(_home)
-                          if (d == ".claude" or d.startswith(".claude-"))
-                          and os.path.isdir(os.path.join(_home, d)))
+        # ★D2: 좌석이 읽는 프로필(~/.cys/claude·부서 프로필)까지 포함하는 공용 SOT.
+        profiles = discover_skill_profiles()
         linked_profiles = 0
         for prof in profiles:
             sdir = os.path.join(prof, "skills")
@@ -4138,10 +4164,8 @@ class Preflight:
             warns.append("pack 스킬 %d종 미설치(%s…) — init-pack 재실행"
                          % (len(missing), missing[0]))
         # (b) 프로필 심링크 (네이티브/goal 발견 — C26과 동일 규약)
-        _home = os.path.expanduser("~")
-        profiles = sorted(os.path.join(_home, d) for d in os.listdir(_home)
-                          if (d == ".claude" or d.startswith(".claude-"))
-                          and os.path.isdir(os.path.join(_home, d)))
+        # ★D2: 좌석이 읽는 프로필(~/.cys/claude·부서 프로필)까지 포함하는 공용 SOT.
+        profiles = discover_skill_profiles()
         linked = 0
         for prof in profiles:
             sdir = os.path.join(prof, "skills")
@@ -4355,10 +4379,8 @@ class Preflight:
         if missing:
             warns.append("pack 스킬 미설치(%s) — init-pack 재실행" % ", ".join(missing))
         # (b) 프로필 심링크 (네이티브 스킬 발견 — C26/C27과 동일 규약)
-        _home = os.path.expanduser("~")
-        profiles = sorted(os.path.join(_home, d) for d in os.listdir(_home)
-                          if (d == ".claude" or d.startswith(".claude-"))
-                          and os.path.isdir(os.path.join(_home, d)))
+        # ★D2: 좌석이 읽는 프로필(~/.cys/claude·부서 프로필)까지 포함하는 공용 SOT.
+        profiles = discover_skill_profiles()
         linked = 0
         for prof in profiles:
             sdir = os.path.join(prof, "skills")
@@ -5207,16 +5229,13 @@ class Preflight:
         names = list(dict.fromkeys(names))  # 중복 제거·순서 보존
         # 설치 루트 = pack/skills + ~/.claude*/skills — 보드 카탈로그 스킬은 claude 프로필
         # skills에 설치돼 있다(실측 2026-07-16: pack 단일 루트는 설치 스킬을 미설치로 오탐).
+        # ★D2: 좌석 프로필(~/.cys/claude*)도 설치 루트다 — 좁은 home-glob 은 좌석에 설치된
+        # 스킬을 '미설치'로 오탐한다(같은 결함 계열 · discover_skill_profiles 단일 SOT).
         roots = [os.path.join(pack_dir(), "skills")]
-        home = os.path.expanduser("~")
-        try:
-            for nm in sorted(os.listdir(home)):
-                if nm == ".claude" or nm.startswith(".claude-"):
-                    d = os.path.join(home, nm, "skills")
-                    if os.path.isdir(d):
-                        roots.append(d)
-        except OSError:
-            pass
+        for prof in discover_skill_profiles():
+            d = os.path.join(prof, "skills")
+            if os.path.isdir(d):
+                roots.append(d)
         missing = [n for n in names
                    if not any(os.path.isdir(os.path.join(r, n)) for r in roots)]
         if missing:

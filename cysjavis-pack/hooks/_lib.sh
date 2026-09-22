@@ -249,6 +249,19 @@ _cys_path_py_darwin() {
   return 1
 }
 
+# ★D3(1.1.5 6차) 세션 `python3` 의 **첫 해석**이 개발자 도구(CLT) 스텁인가 — rc0 = 스텁(또는 부재).
+# 이 술어가 따로 필요한 이유: `_cys_path_py_darwin` 은 스텁을 **건너뛰고** PATH 뒤쪽 진짜 파이썬을
+# 찾아 rc0 을 낸다. 그것은 "이 기계 어딘가에 파이썬이 있다"는 뜻이지 "좌석이 `python3` 를 치면
+# 그게 돈다"는 뜻이 아니다 — 셸은 언제나 **첫 일치**를 실행한다. 그 혼동이 A5 비발동의 실체다
+# (914 S1: 번들 파이썬이 PATH 뒤에 있어 게이트가 rc0 → 비발동 → 좌석 `python3` 는 스텁 →
+# 개발자 도구 설치 창 · session-env 폴더가 빈 것이 비발동의 기계 증거).
+_cys_shell_py3_is_stub() {
+  _cys_first="$(command -v python3 2>/dev/null || printf '%s' '')"
+  # 부재도 '좌석에서 python3 가 안 돈다'는 같은 결과 — 번들 export 대상이다(종전 거동 보존).
+  [ -n "$_cys_first" ] || return 0
+  cys_is_clt_stub "$_cys_first"
+}
+
 cys_resolve_py() {
   if [ -n "${CYS_PY:-}" ]; then
     if [ -x "${CYS_PY}" ] || command -v "${CYS_PY}" >/dev/null 2>&1; then
@@ -295,7 +308,8 @@ cys_export_bundle_py_env() {
   [ -n "$_cys_ef" ] || { printf '0'; return 0; }
   _cys_is_darwin || { printf '0'; return 0; }
   case "${CYS_PY:-}" in */runtime/python/bin/python3) ;; *) printf '0'; return 0 ;; esac
-  if _cys_path_py_darwin >/dev/null 2>&1; then printf '0'; return 0; fi
+  # ★D3: "PATH 어딘가에 진짜 파이썬이 있는가"가 아니라 "이 세션의 python3 가 스텁인가"로 판정한다.
+  if ! _cys_shell_py3_is_stub; then printf '0'; return 0; fi
   _cys_pd="${CYS_PY%/python3}"
   { printf 'export PATH=%s:"$PATH"\n' "$(cys_shquote "$_cys_pd")"
     printf 'export CYS_PY=%s\n' "$(cys_shquote "$CYS_PY")"; } >> "$_cys_ef" 2>/dev/null \

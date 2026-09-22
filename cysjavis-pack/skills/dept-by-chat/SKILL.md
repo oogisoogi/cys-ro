@@ -6,6 +6,10 @@ description: 사용자가 말로 부서(팀)를 만들거나 닫거나 상태를
 # dept-by-chat — 말로 부서 만들기·닫기 (본부 마스터 전용)
 
 도구: `D="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_dept_request.py"` · 계약 정본 = 팩 `docs/DESIGN-dept-by-conversation.md`.
+해석기는 **맨 `python3` 를 쓰지 않는다** — 개발자 도구(CLT)가 없는 맥에서 그것은 /usr/bin 스텁이라
+설치 창만 뜨고 실행되지 않는다. 팩의 해소기를 한 번 부르고 `$PY` 를 쓴다(실패해도 python3 로 폴백):
+`. "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null && cys_resolve_py 2>/dev/null; PY="${CYS_PY:-python3}"`
+(매 턴 훅이 붙여 주는 「도구 = …」 줄에도 같은 절대경로가 들어 있다 — 그게 보이면 그대로 쓰면 된다.)
 모든 명령은 stdout 에 JSON 한 줄을 낸다. **`say`(또는 `card`) 를 한 글자도 바꾸지 말고 그대로 사용자에게 말한다.**
 거부(`"ok": false`)도 같다 — 거부 문장에 사유와 대안이 이미 들어 있다.
 
@@ -17,20 +21,20 @@ description: 사용자가 말로 부서(팀)를 만들거나 닫거나 상태를
 ## 순서 — 만들기
 1. 부서 이름(표시명)·맡을 일 한 줄을 사용자 말에서 뽑는다. 모호하면 한 번만 묻는다(예: 「부서 이름을 뭐라고 할까요?」).
 2. 부서에 적어 둘 안내 본문을 임시 파일에 쓴다(Write) — `## 처음 할 일` · `## 이 부서의 규칙` 두 절, 사용자 말에 근거한 것만. 사용자 발화 원문도 임시 파일에 둔다.
-3. `python3 "$D" propose --name "<이름>" --mission "<맡을 일 한 줄>" --claude-md-file <본문 파일> --utterance-file <발화 파일> [--first-task "<처음 맡길 일>"]`
+3. `"$PY" "$D" propose --name "<이름>" --mission "<맡을 일 한 줄>" --claude-md-file <본문 파일> --utterance-file <발화 파일> [--first-task "<처음 맡길 일>"]`
 4. 성공이면 `card` 전문을 그대로 보여 준다(카드 마지막 줄이 「이대로 만들까요?」다). 거부면 `say` 그대로.
-5. 사용자가 **직접** 「네」라고 답하면 `python3 "$D" confirm <request>` → `say` 그대로. 「아니요」면 아무것도 부르지 않는다. 「고쳐 달라」면 1번부터 다시(새 제안이 옛 제안을 대신한다).
-6. 틱이 1분 안에 집행하고 `[부서결과]`·`[부서가동]` 을 보낸다 → `python3 "$D" status --say <request>` 의 `say` 를 그대로 전한다.
-7. 가동이고 처음 맡길 일이 있으면 `python3 "$D" kickoff <request>` → `say` 그대로.
+5. 사용자가 **직접** 「네」라고 답하면 `"$PY" "$D" confirm <request>` → `say` 그대로. 「아니요」면 아무것도 부르지 않는다. 「고쳐 달라」면 1번부터 다시(새 제안이 옛 제안을 대신한다).
+6. 틱이 1분 안에 집행하고 `[부서결과]`·`[부서가동]` 을 보낸다 → `"$PY" "$D" status --say <request>` 의 `say` 를 그대로 전한다.
+7. 가동이고 처음 맡길 일이 있으면 `"$PY" "$D" kickoff <request>` → `say` 그대로.
 
 ## 순서 — 닫기
-1. `python3 "$D" propose --close "<부서 이름>"` → `card`(닫기 카드만 시스템 이름이 보인다) 또는 거부 `say`(후보 여럿이면 번호를 묻는 문장).
+1. `"$PY" "$D" propose --close "<부서 이름>"` → `card`(닫기 카드만 시스템 이름이 보인다) 또는 거부 `say`(후보 여럿이면 번호를 묻는 문장).
 2. 사용자가 직접 「네」 → `confirm <request>` → 이후는 만들기 6번과 같다.
 
 ## 상태
-- 「부서 어떻게 됐어」 → `python3 "$D" status --pending`(아직 말하지 않은 것) · 전부는 `status --all`. 각 행의 `say` 를 그대로.
-- 전한 뒤 `python3 "$D" status --say <request>` 로 「말했다」를 기록한다(같은 소식을 두 번 전하지 않게).
-- 확인 전에 그만두면 `python3 "$D" discard <request>`.
+- 「부서 어떻게 됐어」 → `"$PY" "$D" status --pending`(아직 말하지 않은 것) · 전부는 `status --all`. 각 행의 `say` 를 그대로.
+- 전한 뒤 `"$PY" "$D" status --say <request>` 로 「말했다」를 기록한다(같은 소식을 두 번 전하지 않게).
+- 확인 전에 그만두면 `"$PY" "$D" discard <request>`.
 
 ## 주의
 - 부서를 직접 만들거나 지우는 명령(`cys-dept` 의 수명주기 동사 · `javis_org.py apply/destroy`)은 부르지 않는다 — 가드가 exit 7 로 막고, 집행은 운영 담당(CSO) 신원의 스케줄 틱이 한다.

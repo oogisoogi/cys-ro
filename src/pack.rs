@@ -2052,6 +2052,118 @@ pub fn local_dir() -> PathBuf {
     }
 }
 
+/// ★D1(1.1.5 6차) 혼합 설정 목록 — user 소유이면서 **항목 단위 병합**이 성립하는 파일.
+/// 디렉티브·soul·CLAUDE(산문)는 기계 병합 대상이 아니라 여기 없다(그쪽은 미수정이면 RefreshUser,
+/// 수정본이면 종전대로 `.new` 병치 + `cys pack-merge`).
+pub fn is_user_mergeable(rel: &str) -> bool {
+    rel == "schedule.json" || rel == "acl.json"
+}
+
+/// CEO 승격 사본의 정본 경로 2개 — 파생 규칙(ⓑ)의 SOT.
+pub const MASTER_DIRECTIVE_PACK_REL: &str = "directives/MASTER_DIRECTIVE.md";
+pub const CEO_TEMPLATE_PACK_REL: &str = "directives/CEO_TEMPLATE.md";
+
+/// ★D1-ⓑ(1.1.5 6차) **제품이 쓴 결정론 파생본** 판정 — CEO 승격 기계의 MASTER_DIRECTIVE.md.
+///
+/// 파생 규칙 실측: `cysjavis-pack/bin/cys-dept` 의 `ceo_promote` 가
+/// `[ -f "$md.pre-ceo" ] || cp "$md" "$md.pre-ceo"; cp "$ceo" "$md"` (bin/cys-dept:1005) —
+/// 즉 승격본은 **CEO_TEMPLATE.md 의 바이트 동일 사본**이다(가공 0 = 결정론).
+/// ⇒ 디스크가 '이 설치본이 마지막으로 쓴 CEO_TEMPLATE'(manifest[CEO_TEMPLATE]) 과 해시 동일이면
+///    사용자 수정 0건으로 판정할 수 있다.
+///
+/// 반환 = (적용할 임베드, 그 파일의 미수정 판정용 manifest 해시) 치환쌍. 적용 대상이 vendor MASTER
+/// 가 **아니라 신판 CEO_TEMPLATE** 인 이유: 승격 기계에 vendor MASTER 를 쓰면 그 자리에서 조용히
+/// 강등(CEO 지침 소멸)된다 — 갱신의 목적은 '신판 문안 적용'이지 '승격 취소'가 아니다.
+/// 비승격 기계·사용자 수정본·CEO_TEMPLATE 미설치에서는 None(치환 없음 = 종전 경로).
+pub(crate) fn ceo_derived_override<'a>(
+    rel: &str,
+    disk: Option<&str>,
+    manifest_ceo_hash: Option<&str>,
+    items: &[(&'a str, &'a str)],
+) -> Option<(&'a str, String)> {
+    if rel != MASTER_DIRECTIVE_PACK_REL {
+        return None;
+    }
+    let d = disk?;
+    let dh = content_hash(d);
+    if manifest_ceo_hash != Some(dh.as_str()) {
+        return None;
+    }
+    let new_ceo = items
+        .iter()
+        .find(|(r, _)| *r == CEO_TEMPLATE_PACK_REL)
+        .map(|(_, c)| *c)?;
+    Some((new_ceo, dh))
+}
+
+/// ★D1(1.1.5 6차) 혼합 설정 병합 — **더하기만 한다.**
+/// 디스크 값(사용자 잡·정책)은 한 칸도 바꾸지 않고, 디스크에 없는 vendor 항목만 배열 **말미에**
+/// 덧붙인다. 말미인 이유: acl.json 은 "위에서부터 첫 매칭 승리"라 앞에 끼우면 사용자가 확정한
+/// 정책을 vendor 기본값이 가로챈다(설치별 운영 정책 보존 > 벤더 기본 정렬).
+/// 동일성 판정 = schedule.json 은 `jobs[].id` · acl.json 은 규칙 객체 전체 일치(사용자가 vendor
+/// 규칙을 고쳐 뒀으면 그 vendor 원본은 '없는 항목'이 돼 말미에 붙고, 사용자 판이 먼저라 이긴다).
+/// ★`base`(= `.pristine/<rel>` — 이 설치본이 **마지막으로 적용한 vendor 원본**)가 있으면 3-way 로
+/// 좁힌다: **base 에 이미 있던 항목은 더하지 않는다.** 그래야 오너가 **일부러 지운** vendor 규칙·잡이
+/// 갱신 때마다 되살아나지 않는다(acl 은 첫 매칭 승리라 부활한 deny 규칙이 정책을 뒤집을 수 있다).
+/// base 부재(레거시 설치본·pristine 미백필)면 2-way 로 폴백한다 — 그때는 '삭제'와 '원래 없었음'을
+/// 구별할 재료가 없으므로 전달(추가) 쪽이 안전측이다.
+/// 파싱 실패·형태 불일치 = None → 호출자가 종전 `.new` 병치로 폴백(파괴 0).
+pub fn merge_user_json(rel: &str, disk: &str, embed: &str, base: Option<&str>) -> Option<String> {
+    let arr_key = match rel {
+        "schedule.json" => "jobs",
+        "acl.json" => "rules",
+        _ => return None,
+    };
+    let mut out = serde_json::from_str::<serde_json::Value>(disk)
+        .ok()?
+        .as_object()?
+        .clone();
+    let vend = serde_json::from_str::<serde_json::Value>(embed)
+        .ok()?
+        .as_object()?
+        .clone();
+    // ① 배열 항목 union(디스크 순서 보존 + vendor 신규만 말미 append).
+    let disk_arr = out.get(arr_key).and_then(|v| v.as_array()).cloned();
+    let vend_arr = vend.get(arr_key).and_then(|v| v.as_array()).cloned();
+    if let (Some(mut da), Some(va)) = (disk_arr, vend_arr) {
+        let ident = |v: &serde_json::Value| -> String {
+            match v.get("id").and_then(|i| i.as_str()) {
+                Some(id) if arr_key == "jobs" => format!("id:{id}"),
+                _ => format!("v:{v}"),
+            }
+        };
+        let have: std::collections::HashSet<String> = da.iter().map(ident).collect();
+        // base 에 있던 항목 = '이미 한 번 전달된 것' — 지금 디스크에 없다면 그것은 **오너가 지운 것**이다.
+        let base_had: Option<std::collections::HashSet<String>> = base
+            .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+            .and_then(|v| v.get(arr_key).and_then(|a| a.as_array()).cloned())
+            .map(|a| a.iter().map(&ident).collect());
+        for item in va {
+            let key = ident(&item);
+            if have.contains(&key) {
+                continue;
+            }
+            if base_had.as_ref().is_some_and(|b| b.contains(&key)) {
+                continue; // 오너 삭제 존중(3-way)
+            }
+            da.push(item);
+        }
+        out.insert(arr_key.to_string(), serde_json::Value::Array(da));
+    } else if let Some(va) = vend.get(arr_key) {
+        // 디스크에 배열 키 자체가 없다(손편집 파손·구판 형태) — vendor 배열을 그대로 세운다.
+        out.insert(arr_key.to_string(), va.clone());
+    }
+    // ② 디스크에 **없는** 최상위 키만 vendor 에서 가져온다(있는 키는 사용자 값 불가침 — _doc 포함).
+    for (k, v) in vend.iter() {
+        if k != arr_key && !out.contains_key(k) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(out)).ok()?;
+    text.push('\n');
+    Some(text)
+}
+
 /// 파일 1건의 설치 판정(순수·부수효과 0) — install_into 와 plan_install 공용.
 /// ★T4 CLI 동사 소비(pack-adopt 판정 시뮬 결과 타입) — 재구현 금지.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2069,6 +2181,14 @@ pub enum FileAction {
     /// ★NEW(v2 §3 L3): 벤더 전진 + 드리프트 + 검증된 base — 3-way 병합 시도(실행부 T3 · 실패 전부
     /// healed 폴백).
     Merge3,
+    /// ★D1(1.1.5 6차 · 갱신 레인 미적용 수리): user-owned 인데 **사용자 미수정**(디스크 해시 ==
+    /// 설치 manifest 해시)이고 임베드가 전진 — `<rel>.bak-<판번>` 백업을 남기고 신판을 적용한다.
+    /// 종전엔 이 케이스도 `Keep{new_pending}` 로 떨어져 신판 디렉티브가 `.new` 에 갇혔다(윈 1.1.3→1.1.5
+    /// `.new` 4건 · 맥 S2 1.0.2→1.1.5 동형 — 사용자 수정 0건인데도 미적용).
+    RefreshUser,
+    /// ★D1: user-owned **혼합 설정**(schedule.json·acl.json)의 사용자 수정본 — 항목 단위 병합.
+    /// 디스크 값은 한 칸도 바꾸지 않고 vendor 신규 항목만 더한다(실행부 merge_user_json).
+    MergeUser,
 }
 
 /// 순수 판정 SOT — User·SeedOnce 조기 분기 불변, system은 L0(locked 즉시 치유)/L1(판독불가 백업 후
@@ -2096,6 +2216,21 @@ pub fn decide_file_action(
     if exists && ownership_scoped(rel, scope) == Ownership::User {
         if let Some(d) = disk {
             if d != embed {
+                // ★D1(1.1.5 6차): **사용자가 손대지 않았으면** user-owned 여도 신판을 적용한다.
+                //   판정 = 디스크 해시 == 설치 manifest 해시(= 우리가 마지막으로 쓴 그 바이트 그대로).
+                //   근거: user-owned 의 취지는 "사용자 수정 보존"인데, 종전 가지는 수정 여부를 묻지
+                //   않고 무조건 보존해 **수정 0건인 기계에서도 신판 디렉티브가 영구 미적용**이 됐다
+                //   (윈 1.1.3→1.1.5 `.new` 4 · 맥 S2 1.0.2→1.1.5 동형 — 2026-09-22 실측).
+                //   system 등급의 비수정 자동갱신(아래 2124 arm)과 같은 술어이며, 그쪽과 달리
+                //   되돌릴 자리를 남긴다(`<rel>.bak-<판번>` 백업 — 실행부 install_into).
+                if manifest_hash == Some(content_hash(d).as_str()) {
+                    return FileAction::RefreshUser;
+                }
+                // ★D1: 혼합 설정(schedule.json·acl.json)은 사용자 수정본이어도 동결하지 않는다 —
+                //   데몬 builtin·vendor 신규 항목을 더하고 사용자 항목은 그대로 둔다(병합).
+                if is_user_mergeable(rel) {
+                    return FileAction::MergeUser;
+                }
                 // 임베드가 마지막 적용본(매니페스트 해시)에서 전진했으면 신버전 병치(병합 대기).
                 // 매니페스트 부재(구설치본)도 안전측으로 병치해 가시화한다(base 없는 2-way 병합).
                 let new_pending = manifest_hash != Some(content_hash(embed).as_str());
@@ -2395,7 +2530,17 @@ pub fn plan_install(
         let path = dir.join(rel);
         let exists = path.exists();
         let disk = if exists { std::fs::read_to_string(&path).ok() } else { None };
-        let mh = manifest.get(rel).map(String::as_str);
+        // ★D1-ⓑ: install_into 와 **같은 치환**을 먼저 건다 — 여기만 빠지면 CEO 승격 기계에서
+        // 드라이런과 실제 설치의 판정이 갈린다(이 저장소가 막아 온 '플랜≠실제 드리프트').
+        let ceo_ov = ceo_derived_override(
+            rel,
+            disk.as_deref(),
+            manifest.get(CEO_TEMPLATE_PACK_REL).map(String::as_str),
+            items,
+        );
+        let content: &str = ceo_ov.as_ref().map(|(c, _)| *c).unwrap_or(content);
+        let ceo_mh: Option<String> = ceo_ov.as_ref().map(|(_, h)| h.clone());
+        let mh = ceo_mh.as_deref().or_else(|| manifest.get(rel).map(String::as_str));
         // ★T3(D9) base lazy 로드 사전 필터 — 이 필터는 **과대포함만 허용**(과소포함=Merge3 침묵
         // 불발) · decide L3 가 최종 판정. 드리프트 파일에서만 pristine read 가 발생한다(전 파일
         // read+hash 2배화 회귀 방지 — 실측 통상 0~10건).
@@ -2434,6 +2579,9 @@ pub fn plan_install(
             }
             FileAction::KeepDrift => plan.kept_drift.push(rel.to_string()), // ★T3(D14): 전용 버킷 계상
             FileAction::Merge3 => plan.merge3.push(rel.to_string()),        // ★T3(D14): 전용 버킷 계상
+            // ★D1(1.1.5 6차): 둘 다 디스크를 바꾸는 갱신이다 — 드라이런은 update 버킷으로 보고한다
+            // (플랜≠실제 드리프트 차단: 실행부도 공통 write 로 합류해 written 로 계상된다).
+            FileAction::RefreshUser | FileAction::MergeUser => plan.update.push(rel.to_string())
         }
     }
     // prune 프리뷰(install_into prune 블록과 동일 판정).
@@ -3245,6 +3393,15 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     // (v2 §3) · 비수정 자동 갱신)에 위임하고, 여기는 부수효과만 수행한다.
     let mut pending = load_merge_pending(&dir);
     let mut pending_dirty = false;
+    // ★D1: 갱신 레인 가시화 — 사용자 미수정 user-owned 갱신 / 혼합 설정 병합(둘 다 백업 동반).
+    let mut refreshed_user: Vec<String> = Vec::new();
+    let mut merged_user: Vec<String> = Vec::new();
+    // ★D1-ⓑ 순서 함정: 아래 루프는 매 파일마다 `manifest` 를 **갱신하며** 돈다. 그런데
+    // PACK_ALL 의 순서는 사전순이라 `directives/CEO_TEMPLATE.md` 가 `MASTER_DIRECTIVE.md`
+    // **앞**에 처리된다 — 루프 안에서 manifest 를 읽으면 그때는 이미 '신판 CEO 해시'로 전진해 있어
+    // 디스크(구판 CEO 사본)와 영원히 불일치하고, 파생본 판정이 **한 번도 발화하지 않는다**.
+    // 그래서 판정 기준(= 이 설치본이 **마지막으로 썼던** CEO 템플릿 해시)을 루프 전에 떠 둔다.
+    let ceo_manifest_before: Option<String> = manifest.get(CEO_TEMPLATE_PACK_REL).cloned();
     let now_ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -3301,6 +3458,20 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             None
         };
         let content: &str = seed_override.as_deref().unwrap_or(content);
+        // ★D1-ⓑ(1.1.5 6차): CEO 승격 사본이면 **적용 임베드와 미수정 기준 해시를 치환**한다.
+        //   치환은 판정 앞 한 곳에서만 일어나고, 치환된 content 가 아래 판정·write·매니페스트
+        //   해시·pristine 까지 한 흐름으로 흘러 스큐가 없다(위 seed_override 전례 동형).
+        let vendor_embed: &str = content;
+        let ceo_ov = ceo_derived_override(
+            rel,
+            disk.as_deref(),
+            ceo_manifest_before.as_deref(),
+            &items,
+        );
+        let content: &str = ceo_ov.as_ref().map(|(c, _)| *c).unwrap_or(content);
+        let mhash: Option<String> = ceo_ov.as_ref().map(|(_, h)| h.clone()).or(mhash);
+        // 판정 뒤 실제로 디스크에 쓸 바이트가 임베드와 달라지는 유일 경로(MergeUser)의 우회로.
+        let mut write_override: Option<String> = None;
         // ★T3(D9) base lazy 로드 사전 필터 — 과대포함만 허용(과소포함=Merge3 침묵 불발) ·
         // decide L3 가 최종 판정. 드리프트 파일 한정 IO(전 파일 pristine read 회귀 방지).
         let verified_base: Option<String> = match (exists, disk.as_deref(), mhash.as_deref()) {
@@ -3563,6 +3734,63 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                     }
                 }
             }
+            FileAction::RefreshUser => {
+                // ★D1 실행부: 사용자 미수정 user-owned 갱신 — 되돌릴 자리(`<rel>.bak-<판번>`)를
+                // 먼저 남기고 아래 공통 write 로 합류한다. `.user` 슬롯을 쓰지 않는 이유: 그 칸은
+                // "내 수정본"의 자리이고 부트 요약이 그 개수를 사용자 커스텀 보존 건수로 센다 —
+                // 수정 0건인 파일을 거기 섞으면 그 수치가 거짓이 된다.
+                if let Some(d) = disk.as_deref() {
+                    let bak = dir.join(format!("{rel}.bak-{target_version}"));
+                    if std::fs::read_to_string(&bak).ok().as_deref() != Some(d) {
+                        if let Err(e) = write_atomic(&bak, d.as_bytes()) {
+                            // 백업 실패는 갱신을 막지 않는다 — 디스크 사본은 사용자 수정이 0건임이
+                            // 해시로 증명된 vendor 바이트라 재취득 가능하다(system 비수정 갱신 동형).
+                            eprintln!("[init-pack] ⚠ {rel}: 백업(.bak-{target_version}) 기록 실패({e}) — 갱신은 진행(디스크 사본 = 미수정 vendor 판).");
+                        }
+                    }
+                    refreshed_user.push(rel.to_string());
+                    // ★D1-ⓑ 동반 갱신: 승격 기계의 강등 백업(.pre-ceo)이 '우리가 쓴 그 vendor
+                    // MASTER' 그대로면 신판으로 함께 전진시킨다 — 안 하면 강등이 낡은 판으로
+                    // 되돌리고, cys-dept DCE-3 상위집합 검사가 stale .pre-ceo 로 승격을 보류한다.
+                    if ceo_ov.is_some() {
+                        let pre = dir.join(format!("{MASTER_DIRECTIVE_PACK_REL}.pre-ceo"));
+                        if let Ok(cur) = std::fs::read_to_string(&pre) {
+                            if Some(content_hash(&cur)) == manifest.get(MASTER_DIRECTIVE_PACK_REL).cloned()
+                            {
+                                let _ = write_atomic(&pre, vendor_embed.as_bytes());
+                            }
+                        }
+                    }
+                }
+            }
+            FileAction::MergeUser => {
+                match disk
+                    .as_deref()
+                    .and_then(|d| merge_user_json(rel, d, content, verified_base.as_deref()))
+                {
+                    Some(merged) => {
+                        if let Some(d) = disk.as_deref() {
+                            let bak = dir.join(format!("{rel}.bak-{target_version}"));
+                            if std::fs::read_to_string(&bak).ok().as_deref() != Some(d) {
+                                let _ = write_atomic(&bak, d.as_bytes());
+                            }
+                        }
+                        merged_user.push(rel.to_string());
+                        write_override = Some(merged);
+                    }
+                    None => {
+                        // 폴백 = 종전 거동(.new 병치 + 병합 대기 원장) — 파괴 0.
+                        eprintln!("[init-pack] ⚠ {rel}: 병합 불가(JSON 파싱·형태 불일치) — 종전대로 {rel}.new 병치.");
+                        let new_path = dir.join(format!("{rel}.new"));
+                        if std::fs::read_to_string(&new_path).ok().as_deref() != Some(content) {
+                            let _ = write_atomic(&new_path, content.as_bytes());
+                        }
+                        upsert_pending(&mut pending, &mut pending_dirty, rel, "new-pending", format!("{rel}.new"));
+                        kept += 1;
+                        continue;
+                    }
+                }
+            }
             FileAction::Write { heal_user_copy } => {
                 if heal_user_copy {
                     // system 강제 치유(P0-4)·force 갱신이 사용자 수정본을 덮기 **전에** 보존(파괴 0).
@@ -3630,10 +3858,21 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
         }
-        write_atomic(&path, content.as_bytes())
+        // ★D1: MergeUser 만 임베드와 다른 바이트를 쓴다. 매니페스트에는 **임베드 해시**를 그대로
+        // 넣는다 — 병합본은 정의상 '사용자 수정본'이라 다음 설치에서도 다시 병합 대상이어야 한다
+        // (병합본 해시를 넣으면 다음 판이 그것을 '미수정'으로 읽고 vendor 로 덮어 사용자 항목이 소실).
+        let out: &str = write_override.as_deref().unwrap_or(content);
+        write_atomic(&path, out.as_bytes())
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        manifest.insert(rel.to_string(), content_hash(content));
-        ensure_pristine(&dir, rel, content);
+        // ★D1-ⓑ: CEO 파생 치환분은 매니페스트·pristine 에 **vendor 원본(MASTER)** 해시를 남긴다.
+        //   이 두 칸의 뜻은 "이 설치본이 마지막으로 적용한 **vendor** 판"이고, 승격본이 무엇인지는
+        //   CEO_TEMPLATE 쪽 칸이 이미 말한다(파생 판정도 그 칸으로 한다). 치환본 해시를 넣으면
+        //   `.pre-ceo`(승격 시점의 vendor MASTER 백업)와 대조할 기준이 사라져 **첫 갱신 한 번만**
+        //   강등 백업이 전진하고 그 뒤로는 영원히 낡는다. seed_override(부서 soul) 의 '치환 content
+        //   일관 흐름' 규약은 그대로다 — 여기 예외는 파생 치환이 걸린 이 한 파일뿐이다.
+        let record: &str = if ceo_ov.is_some() { vendor_embed } else { content };
+        manifest.insert(rel.to_string(), content_hash(record));
+        ensure_pristine(&dir, rel, record);
         // 정상 갱신으로 합류(비수정 update·신규 생성) — 남은 new-pending 잔재는 무의미하므로 청소.
         if pending
             .get(rel)
@@ -3659,6 +3898,25 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
              \x20 조치: 해당 파일을 UTF-8 로 다시 저장하면 다음 설치부터 정상 비교·병합 대상이 됩니다.",
             unreadable_kept.len(),
             unreadable_kept.join(", ")
+        );
+    }
+    // ★D1(1.1.5 6차): 갱신 레인 가시화 — "내 파일이 바뀌었나"를 같은 실행의 출력으로 답한다.
+    if !refreshed_user.is_empty() {
+        println!(
+            "[init-pack] 내가 손대지 않은 설정·지침 {}건을 신판으로 갱신했습니다(직전 사본은 \
+             <파일>.bak-{} 로 보존): {}",
+            refreshed_user.len(),
+            target_version,
+            refreshed_user.join(", ")
+        );
+    }
+    if !merged_user.is_empty() {
+        println!(
+            "[init-pack] 내 설정에 신판 항목만 더했습니다 {}건(내 항목·순서 무변경 · 직전 사본 \
+             <파일>.bak-{}): {}",
+            merged_user.len(),
+            target_version,
+            merged_user.join(", ")
         );
     }
     if !pending.is_empty() {
@@ -4199,6 +4457,7 @@ where
                 format!("{rel}.new"),
                 format!("{rel}.user"),
                 format!("{rel}.base"), // ★T3(v2 §4 ⑤): 충돌 조상 사이드카 — rollback 원자성 편입
+                format!("{rel}.bak-{target_version}"), // ★D1: 갱신 직전 사본 — rollback 원자성 편입
             ]
         })
         .collect();
@@ -6131,7 +6390,13 @@ mod tests {
     }
 
     /// ★W-ACL(오너 승인 2026-08-01): acl.json 은 user-owned — **force 설치에도 오너가 확정한 송신
-    /// 정책이 그대로 남고**, vendor 신버전은 `<rel>.new` 로 주차된다(schedule.json·agents.json 동형).
+    /// 정책이 그대로 남는다**(schedule.json·agents.json 동형).
+    ///
+    /// ★개정(D1 · master 결정 2026-09-23 · 옛 판정을 지우지 않고 병기한다): 전달 경로가
+    /// **`<rel>.new` 주차 → 항목 병합**으로 바뀌었다. 옛 판정(2026-08-01)은 "보존 + .new 주차"였고
+    /// 그 전달 경로는 사람이 `cys pack-merge` 를 돌려야 닫혔다 — 실측 결과 아무도 돌리지 않아
+    /// vendor 신규 규칙이 무기한 미도달이었고(윈 1.1.3→1.1.5 `.new` 4건), 그래서 "보존하되 **더하기만**
+    /// 하는" 병합으로 전진시켰다. **보존 축은 그대로다** — 아래 ①이 그 축이고, 바뀐 것은 ② 뿐이다.
     ///
     /// 무엇이 깨졌었나 — acl.json 만 system 등급이라 매 설치 스윕(P0-4 강제 치유)이 vendor 기본
     /// 정책으로 덮어써, "external→worker 차단" 같은 **설치별 운영 정책이 매 설치마다 원복**됐다
@@ -6156,30 +6421,45 @@ mod tests {
         install(true, None).expect("install(force) 실패");
         let read = |rel: &str| std::fs::read_to_string(td.join(rel)).unwrap();
 
-        // ① 보존: 오너 확정 정책이 vendor 기본으로 원복되지 않는다.
-        assert_eq!(read("acl.json"), user_acl,
-                   "강제갱신이 오너 확정 ACL 정책을 vendor 기본으로 원복시켰다 — W-ACL 위반");
-        // ①-b Keep 은 '백업 후 교체'가 아니라 '무접촉' — 치유 사이드카(.user)가 생기면 안 된다.
-        assert!(!td.join("acl.json.user").exists(), "Keep 인데 .user 사이드카가 생겼다(치유 경로 오진입)");
+        // ① 보존(축 불변): 오너 확정 정책이 vendor 기본으로 원복되지 않는다 — 값도, **순서(우선권)**도.
+        let after: serde_json::Value = serde_json::from_str(&read("acl.json")).unwrap();
+        assert_eq!(after["default"], "deny",
+                   "강제갱신이 오너 확정 default 를 vendor 기본으로 원복시켰다 — W-ACL 위반");
+        let rules = after["rules"].as_array().unwrap();
+        assert_eq!(rules[0]["from"], "external",
+                   "오너 규칙이 첫 자리를 잃었다 — acl 은 첫 매칭 승리라 자리 상실 = 정책 무력화");
+        assert_eq!(rules[0]["allow"], false, "오너 규칙의 판정이 바뀌었다");
+        // ①-b 백업 후 교체다 — 치유 사이드카(.user)는 아니고(치유 경로 오진입), 되돌릴 자리는 있다.
+        assert!(!td.join("acl.json.user").exists(), "병합인데 .user 사이드카가 생겼다(치유 경로 오진입)");
+        assert_eq!(read(&format!("acl.json.bak-{}", env!("CARGO_PKG_VERSION"))), user_acl,
+                   "병합 직전 사본이 .bak-<판번> 으로 남아야 한다(되돌릴 자리)");
 
-        // ② 동결 아님: vendor 신버전은 .new 로 주차 + 병합 원장 등재(pack-merge 가 소비).
-        assert_eq!(read("acl.json.new"), embed, ".new = vendor 신버전 주차");
-        assert_eq!(load_merge_pending(&td).get("acl.json").and_then(|e| e["kind"].as_str()),
-                   Some("new-pending"), "병합 원장 미등재 — 신규 vendor 규칙 전달 경로 소실");
+        // ② 동결 아님(★개정 축): vendor 신규 규칙이 **그 자리에서 디스크에** 도달한다.
+        //    옛 계약의 `.new` 주차는 사람 손(pack-merge)을 기다리다 미도달로 끝났다 — 이제 .new 는 없다.
+        let vend: serde_json::Value = serde_json::from_str(embed).unwrap();
+        for vr in vend["rules"].as_array().unwrap() {
+            assert!(rules.iter().any(|r| r == vr),
+                    "vendor 규칙이 디스크에 도달하지 않았다(동결) — {vr}");
+        }
+        assert!(!td.join("acl.json.new").exists(), "병합했으면 .new 주차는 없다");
 
         // ③ 헌법 파일이 **아니다**: 정책 파일이므로 pack-merge 대화형 강제(--yes 무시·안전핵 검증)
         //    대상에 들어가면 안 된다(일반 user-owned 병합 경로).
         assert!(!is_constitution_file("acl.json"), "acl.json 이 헌법 특례에 들어갔다");
 
-        // ④ 멱등: 재실행이 보존·주차 상태를 흔들지 않는다(원장 중복 기록 없음).
+        // ④ 멱등: 재실행이 규칙을 **중복 적재하지 않는다**(병합은 수렴해야 한다).
+        let n_before = rules.len();
         install(true, None).expect("재실행 실패");
-        assert_eq!(read("acl.json"), user_acl, "④재실행 후에도 보존 불변");
-        assert_eq!(read("acl.json.new"), embed, "④재실행 후에도 .new 유지");
+        let again: serde_json::Value = serde_json::from_str(&read("acl.json")).unwrap();
+        assert_eq!(again["rules"].as_array().unwrap().len(), n_before,
+                   "④재실행이 같은 vendor 규칙을 다시 덧붙였다(비수렴)");
+        assert_eq!(again["default"], "deny", "④재실행 후에도 오너 정책 불변");
 
-        // ⑤ 해소: 오너가 vendor 본을 채택(디스크=임베드)하면 .new·원장이 자동 청소된다.
+        // ⑤ 해소: 오너가 vendor 본을 그대로 채택(디스크=임베드)하면 병합 원장이 비고 쓰기가 0 이 된다.
         std::fs::write(td.join("acl.json"), embed).unwrap();
         install(false, None).expect("3차 실행 실패");
-        assert!(!td.join("acl.json.new").exists(), "채택 후 .new 청소");
+        assert_eq!(read("acl.json"), embed, "채택 후 디스크 = vendor 본 유지");
+        assert!(!td.join("acl.json.new").exists(), "채택 후 .new 없음");
         assert!(load_merge_pending(&td).get("acl.json").is_none(), "채택 후 원장 소거");
 
         let _ = std::fs::remove_dir_all(&td);
@@ -7609,6 +7889,171 @@ mod tests {
     /// 부정②(W0-d): 인가 토큰 없이 **라이브 기본 경로** 대상 쓰기는 하드 거부(Err)된다.
     /// HOME을 가짜 temp로 override해 home_default_pack_dir()가 실 라이브를 가리키지 않게 한다
     /// (테스트가 실제 ~/.cys/pack을 만질 위험 0). CYS_PACK_DIR 샌드박스는 유지(W0-a panic 회피 —
+    /// ★D1(1.1.5 6차 · 갱신 레인 미적용 수리) 시나리오 4 통합 —
+    /// ①사용자 미수정 user-owned → 신판 적용 + `.bak-<판번>` (종전: `.new` 에 영구 동결)
+    /// ②사용자 수정본 → 종전대로 보존 + `.new` (수리가 사용자 수정을 덮지 않는다)
+    /// ③CEO 승격 파생본(MASTER=CEO_TEMPLATE 바이트 사본) → **신판 CEO_TEMPLATE** 적용(강등 0) + `.pre-ceo` 동반 전진
+    /// ④schedule.json 사용자 수정본 → 병합(사용자 잡 보존 + vendor 신규 잡 추가)
+    #[test]
+    fn d1_user_owned_refresh_merge_and_ceo_derivative() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let td = std::env::temp_dir()
+            .join(format!("cys-d1-refresh-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pd = td.join("pack");
+        std::fs::create_dir_all(&pd).unwrap();
+        let _env = set_pack_env(&pd, td.join("cfg"));
+        let read = |rel: &str| std::fs::read_to_string(pd.join(rel)).unwrap();
+        let sched_v1 = "{\n  \"_doc\": \"d\",\n  \"jobs\": [{\"id\": \"builtin-a\"}]\n}\n";
+        let acl_v1 = "{\n  \"default\": \"allow\",\n  \"rules\": [{\"from\": \"worker*\", \"to\": \"master\", \"allow\": true}]\n}\n";
+        let v1 = [
+            ("directives/WORKER_DIRECTIVE.md", "W-V1"),
+            // ★순서는 실제 PACK_ALL(사전순)과 같게 둔다 — CEO_TEMPLATE 이 MASTER 보다 **앞**이다.
+            //   이 순서가 아니면 파생본 판정의 순서 함정(루프 중 manifest 전진)이 시험에서 숨는다.
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V1\nMASTER-V1"),
+            ("directives/CSO_DIRECTIVE.md", "CSO-V1"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V1"),
+            ("schedule.json", sched_v1),
+            ("acl.json", acl_v1),
+        ];
+        let inst = |items: &[(&str, &str)], ver: &str| {
+            install_into(
+                pd.clone(), items.iter().copied(), false, ver, false, false,
+                pack_scope_of(&pd), None, None,
+            )
+            .unwrap()
+        };
+        inst(&v1, "1.0.0");
+
+        // 사용자 손질 2건(②④) + 제품 승격(③) 모의 — ①은 손대지 않는다.
+        std::fs::write(pd.join("directives/CSO_DIRECTIVE.md"), "CSO-MINE").unwrap();
+        let sched_mine = "{\n  \"_doc\": \"d\",\n  \"jobs\": [{\"id\": \"builtin-a\"}, {\"id\": \"my-job\", \"time\": \"07:00\"}]\n}\n";
+        std::fs::write(pd.join("schedule.json"), sched_mine).unwrap();
+        // ③ CEO 승격 = cys-dept ceo_promote 의 실제 형상(cp md .pre-ceo · cp ceo md).
+        std::fs::copy(
+            pd.join("directives/MASTER_DIRECTIVE.md"),
+            pd.join("directives/MASTER_DIRECTIVE.md.pre-ceo"),
+        )
+        .unwrap();
+        std::fs::copy(
+            pd.join("directives/CEO_TEMPLATE.md"),
+            pd.join("directives/MASTER_DIRECTIVE.md"),
+        )
+        .unwrap();
+
+        let sched_v2 = "{\n  \"_doc\": \"d2\",\n  \"jobs\": [{\"id\": \"builtin-a\"}, {\"id\": \"builtin-new\"}]\n}\n";
+        let acl_v2 = "{\n  \"default\": \"allow\",\n  \"rules\": [{\"from\": \"worker*\", \"to\": \"master\", \"allow\": true}, {\"from\": \"reviewer-*\", \"to\": \"worker*\", \"allow\": false}]\n}\n";
+        let v2: [(&str, &str); 6] = [
+            ("directives/WORKER_DIRECTIVE.md", "W-V2"),
+            // ★순서는 실제 PACK_ALL(사전순)과 같게 둔다 — CEO_TEMPLATE 이 MASTER 보다 **앞**이다.
+            //   이 순서가 아니면 파생본 판정의 순서 함정(루프 중 manifest 전진)이 시험에서 숨는다.
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V2\nMASTER-V2"),
+            ("directives/CSO_DIRECTIVE.md", "CSO-V2"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V2"),
+            ("schedule.json", sched_v2),
+            ("acl.json", acl_v2),
+        ];
+        inst(&v2, "1.0.1");
+
+        // ① 미수정 → 신판 적용 + 백업(되돌릴 자리) + .new 부재.
+        assert_eq!(read("directives/WORKER_DIRECTIVE.md"), "W-V2",
+                   "①사용자 수정 0건인 user-owned 는 신판이 디스크에 적용돼야 한다(D1 본체)");
+        assert_eq!(read("directives/WORKER_DIRECTIVE.md.bak-1.0.1"), "W-V1",
+                   "①갱신 직전 사본이 .bak-<판번> 로 남는다");
+        assert!(!pd.join("directives/WORKER_DIRECTIVE.md.new").exists(),
+                "①신판이 적용됐으면 .new 병치는 없어야 한다");
+        assert_eq!(read("acl.json.bak-1.0.1"), acl_v1, "①acl.json 미수정도 같은 레인");
+        assert_eq!(read("acl.json"), acl_v2, "①acl.json 미수정 → 신판 전량 적용");
+
+        // ② 사용자 수정본은 불가침 + .new 병치(종전 계약 불변).
+        assert_eq!(read("directives/CSO_DIRECTIVE.md"), "CSO-MINE",
+                   "②사용자 수정본은 갱신이 덮지 않는다");
+        assert_eq!(read("directives/CSO_DIRECTIVE.md.new"), "CSO-V2", "②신판은 .new 로 병치");
+        assert!(!pd.join("directives/CSO_DIRECTIVE.md.bak-1.0.1").exists(),
+                "②보존 경로는 백업을 만들지 않는다(쓰기 0)");
+
+        // ③ CEO 승격 파생본 → 신판 CEO_TEMPLATE 적용(강등 0) · .pre-ceo 동반 전진 · .new 부재.
+        assert_eq!(read("directives/MASTER_DIRECTIVE.md"), "CEO-HEAD-V2\nMASTER-V2",
+                   "③승격 기계는 신판 CEO 템플릿으로 전진한다(vendor MASTER 로 덮으면 조용한 강등)");
+        assert_eq!(read("directives/MASTER_DIRECTIVE.md.bak-1.0.1"), "CEO-HEAD-V1\nMASTER-V1",
+                   "③직전 승격본 백업");
+        assert_eq!(read("directives/MASTER_DIRECTIVE.md.pre-ceo"), "MASTER-V2",
+                   "③강등 백업도 신판 vendor MASTER 로 전진(stale .pre-ceo = DCE-3 승격 보류 원인)");
+        assert!(!pd.join("directives/MASTER_DIRECTIVE.md.new").exists(), "③.new 병치 없음");
+
+        // ④ 혼합 설정 병합 — 사용자 잡 보존 + vendor 신규 잡 추가 + 순서 보존.
+        let merged: serde_json::Value = serde_json::from_str(&read("schedule.json")).unwrap();
+        let ids: Vec<String> = merged["jobs"].as_array().unwrap().iter()
+            .map(|j| j["id"].as_str().unwrap().to_string()).collect();
+        assert_eq!(ids, vec!["builtin-a", "my-job", "builtin-new"],
+                   "④사용자 잡 보존 + vendor 신규만 말미 추가(디스크 순서 불변)");
+        assert_eq!(merged["_doc"], "d", "④디스크에 있는 키는 사용자 값 불가침");
+        assert_eq!(read("schedule.json.bak-1.0.1"), sched_mine, "④병합 직전 사본 백업");
+        assert!(!pd.join("schedule.json.new").exists(), "④병합했으면 .new 병치 없음");
+
+        // ④-b 오너 삭제 존중(3-way · base = .pristine) — 지운 vendor 잡은 되살아나지 않는다.
+        //     2-way 였다면 builtin-a 가 v2 임베드에 있으니 그대로 다시 붙는다.
+        //     오너가 builtin-a 만 지운 상태로 둔다(builtin-new 는 그대로 — 삭제가 아니다).
+        let sched_deleted = "{\n  \"_doc\": \"d\",\n  \"jobs\": [{\"id\": \"my-job\", \"time\": \"07:00\"}, {\"id\": \"builtin-new\"}]\n}\n";
+        std::fs::write(pd.join("schedule.json"), sched_deleted).unwrap();
+        let sched_v3 = "{\n  \"_doc\": \"d3\",\n  \"jobs\": [{\"id\": \"builtin-a\"}, {\"id\": \"builtin-new\"}, {\"id\": \"builtin-newer\"}]\n}\n";
+        let mut v2b = v2;
+        v2b[4] = ("schedule.json", sched_v3);
+        inst(&v2b, "1.0.2");
+        let after_del: serde_json::Value = serde_json::from_str(&read("schedule.json")).unwrap();
+        let ids2: Vec<String> = after_del["jobs"].as_array().unwrap().iter()
+            .map(|j| j["id"].as_str().unwrap().to_string()).collect();
+        assert!(!ids2.contains(&"builtin-a".to_string()),
+                "④-b 오너가 지운 vendor 잡이 되살아났다(3-way 실패): {ids2:?}");
+        assert!(ids2.contains(&"my-job".to_string()), "④-b 사용자 잡이 사라졌다: {ids2:?}");
+        // 되살리지 않는다 ≠ 새 것도 안 준다 — base 에 없던 vendor 신규(builtin-new)는 그대로 온다.
+        assert!(ids2.contains(&"builtin-newer".to_string()),
+                "④-b 삭제 존중이 vendor **신규** 전달까지 막았다: {ids2:?}");
+
+        // ⑤ 재설치 멱등 — 병합본이 다음 판에서 '미수정'으로 오판돼 vendor 로 덮이면 안 된다.
+        inst(&v2, "1.0.1");
+        let again: serde_json::Value = serde_json::from_str(&read("schedule.json")).unwrap();
+        assert_eq!(again["jobs"].as_array().unwrap().len(), 3, "⑤재설치가 사용자 잡을 지우지 않는다");
+        assert_eq!(read("directives/MASTER_DIRECTIVE.md"), "CEO-HEAD-V2\nMASTER-V2",
+                   "⑤승격본은 재설치에도 안정(수렴)");
+
+        // ⑥ 드라이런 = 실제(플랜≠실제 드리프트 차단) — CEO 파생 치환이 plan_install 에도 걸려야
+        //    `cys init-pack --dry-run` 이 승격 기계에서 거짓말을 하지 않는다.
+        let v3 = [
+            ("directives/WORKER_DIRECTIVE.md", "W-V3"),
+            // ★순서는 실제 PACK_ALL(사전순)과 같게 둔다 — CEO_TEMPLATE 이 MASTER 보다 **앞**이다.
+            //   이 순서가 아니면 파생본 판정의 순서 함정(루프 중 manifest 전진)이 시험에서 숨는다.
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V3\nMASTER-V3"),
+            ("directives/CSO_DIRECTIVE.md", "CSO-V3"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V3"),
+            ("schedule.json", sched_v2),
+            ("acl.json", acl_v2),
+        ];
+        // ⑤-b 승격 기계의 **두 번째** 갱신에서도 강등 백업이 전진한다(첫 판만 되고 마는 형상 차단).
+        inst(&v3, "1.0.3");
+        assert_eq!(read("directives/MASTER_DIRECTIVE.md"), "CEO-HEAD-V3\nMASTER-V3",
+                   "⑤-b 2회차 갱신도 신판 CEO 템플릿으로 전진");
+        assert_eq!(read("directives/MASTER_DIRECTIVE.md.pre-ceo"), "MASTER-V3",
+                   "⑤-b 강등 백업이 2회차에 멈췄다(매니페스트가 vendor 기준을 잃은 형상)");
+
+        let v4 = [
+            ("directives/WORKER_DIRECTIVE.md", "W-V4"),
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V4\nMASTER-V4"),
+            ("directives/CSO_DIRECTIVE.md", "CSO-V4"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V4"),
+            ("schedule.json", sched_v3),
+            ("acl.json", acl_v2),
+        ];
+        let plan = plan_install(&pd, &v4, false, "1.0.4");
+        assert!(plan.update.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
+                "⑥드라이런이 승격본 갱신을 update 로 보고하지 않는다: {plan:?}");
+        assert!(!plan.merge_new.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
+                "⑥드라이런이 아직 `.new` 병치로 보고한다(실제 설치와 불일치): {plan:?}");
+        assert!(plan.update.iter().any(|r| r == "directives/WORKER_DIRECTIVE.md"),
+                "⑥미수정 갱신도 update 버킷이어야 한다: {plan:?}");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
     /// 게이트는 target env가 아니라 dir 인자로 판정한다). 대조로 명시 인가 시 동일 쓰기가 성공한다.
     #[test]
     fn w0d_rejects_unauthorized_write_to_live_default_path() {

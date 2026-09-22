@@ -18135,7 +18135,12 @@ fn adopt_one(
                 cys::pack::FileAction::KeepDrift | cys::pack::FileAction::Keep { .. } => {
                     // vendor 미전진 — 복원본이 다음 스윕을 그대로 생존(kept-drift 정규화 예정).
                 }
-                cys::pack::FileAction::Merge3 | cys::pack::FileAction::Write { .. } => {
+                // ★D1(1.1.5 6차): RefreshUser·MergeUser 도 **디스크를 바꾸는** 판정이다 —
+                // vendor 전진 경고 쪽에 둔다(복원본이 다음 스윕을 그대로 생존하지 못한다).
+                cys::pack::FileAction::Merge3
+                | cys::pack::FileAction::RefreshUser
+                | cys::pack::FileAction::MergeUser
+                | cys::pack::FileAction::Write { .. } => {
                     if !merge_after {
                         return Err(
                             "vendor 전진 검출 — 복원 즉시 재병합/재치유 예상. 착수하려면 --merge-after(복원+즉시 전량 스윕=자동 병합) 옵트인"

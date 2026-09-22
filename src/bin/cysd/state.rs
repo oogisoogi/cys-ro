@@ -275,6 +275,12 @@ pub fn surface_exited_payload(sid: u64, role: Option<String>, agent: Option<Stri
 /// ★유계(무한 적체 금지 — 4군 ①): TTL + 항목 수 + 바이트 상한을 동시에 둔다. 초과·만기분은
 /// **조용히 사라지지 않고** `queue.dropped` 로 사유를 달고 발행된다(`parked_overflow`·
 /// `parked_expired`). 죽은 역할이 영원히 메모리를 물고 있지 못한다.
+/// ★r2 개정(2026-09-23) — 기준점이 **배치 주차 시각**에서 **항목의 `enqueued_at`**(= 그 지시가
+/// 미배달로 지낸 시간)으로 바뀌었다. 왜: 같은 자리가 두 라운드 연속 뚫렸다(r1 ⑵ 무한 연장 ·
+/// r2 #2 즉시 만기 · r2 #3 상한↔만기 충돌 = BLOCK). 세 지적 전부 **배치 단위 시각 장부**(`base_at`)를
+/// 유지하려다 생긴 것이다 — 술어를 정교하게 만드는 대신 **재는 계열을 바꿔** 그 장부를 없앤다.
+/// 부수 이득: 발신자에게 의미 있는 값은 애초에 「내 지시가 얼마나 오래 미배달인가」다.
+/// `enqueued_at` 은 이미 있고 WAL 로 영속되며 레거시 항목도 복원 시각으로 합성된다(0.0 금지 규약).
 pub const PARKED_QUEUE_TTL_SECS: f64 = 600.0;
 /// 역할당 주차 항목 수 상한(초과 시 **오래된 것부터** 버린다 — 최신 지시가 살아남는 쪽이 안전).
 pub const PARKED_QUEUE_MAX_ENTRIES: usize = 32;
@@ -285,9 +291,11 @@ pub const PARKED_QUEUE_MAX_BYTES: usize = 256 * 1024;
 #[derive(Debug, Clone)]
 pub struct ParkedQueue {
     pub entries: Vec<QueueEntry>,
-    /// 주차 시각(epoch) — TTL 판정 기준.
+    /// **처음** 주차된 시각(epoch) — ★관측 전용이다(`waited_secs` 표기). **만기 판정에 쓰지 마라** —
+    /// 판정은 항목별 `enqueued_at` 이다(r2 개정 사유는 `PARKED_QUEUE_TTL_SECS` doc 참조).
     pub parked_at: f64,
-    /// 어느 좌석에서 왔는가(감사·이벤트 표기용).
+    /// **처음** 주차한 좌석(감사·이벤트 표기용). 병합돼도 덮어쓰지 않는다 — 덮어쓰면 옛 항목이 새
+    /// 좌석에서 온 것처럼 보고된다(r2 #5 정보 왜곡).
     pub from_surface: u64,
 }
 
@@ -355,42 +363,64 @@ pub fn park_queue_for_role(
 ) -> (Vec<QueueEntry>, Vec<QueueEntry>, Vec<(String, u64, Vec<QueueEntry>)>) {
     let now = now_epoch();
     let mut map = daemon.parked_queues.lock().unwrap();
-    let mut expired: Vec<(String, u64, Vec<QueueEntry>)> = Vec::new();
     // ⑴ 게으른 만기 회수 — **지우지 말고 꺼낸다**(호출부가 사유를 달아 발행한다).
-    let stale: Vec<String> = map
-        .iter()
-        .filter(|(_, pq)| now - pq.parked_at >= PARKED_QUEUE_TTL_SECS)
-        .map(|(k, _)| k.clone())
-        .collect();
-    for k in stale {
-        if let Some(pq) = map.remove(&k) {
-            if !pq.entries.is_empty() {
-                expired.push((k, pq.from_surface, pq.entries));
-            }
-        }
-    }
-    // ⑵ 이 역할의 기존 배치: 살아 있으면 **시각을 보존**하고 병합, 만기면 병합하지 않고 내보낸다.
-    //    (위 stale 걷이가 이미 가져갔으면 여기서는 None 이다 — 이중 계상 없음.)
-    let (mut merged, base_at) = match map.remove(role) {
-        Some(pq) if now - pq.parked_at < PARKED_QUEUE_TTL_SECS => (pq.entries, pq.parked_at),
-        Some(pq) => {
-            if !pq.entries.is_empty() {
-                expired.push((role.to_string(), pq.from_surface, pq.entries));
-            }
-            (Vec::new(), now)
-        }
-        None => (Vec::new(), now),
-    };
+    //    걷이 규칙은 워치독 스윕(`governance::sweep_parked_queues`)과 **같은 함수**를 지난다(사본 0).
+    let mut expired = drain_expired_parked_locked(&mut map, now);
+    // ⑵ 이 역할의 기존 배치에 **뒤에 붙인다**(시간 순서 보존). 위 걷이가 만기 항목을 이미 빼 갔으므로
+    //    남은 것은 전부 살아 있다 — 만기 분기가 여기 없는 것이 정상이다(r2 #5 죽은 코드 제거).
+    //    ★시각 장부(base_at)가 사라졌다: 만기는 항목별 `enqueued_at` 으로 재므로 배치에 시각을 부여할
+    //    이유가 없다. `parked_at`·`from_surface` 는 **처음** 값을 보존한다(관측·감사 전용 · r2 #5 왜곡 차단).
+    let prev = map.remove(role);
+    let first_at = prev.as_ref().map(|pq| pq.parked_at).unwrap_or(now);
+    let first_from = prev.as_ref().map(|pq| pq.from_surface).unwrap_or(from_surface);
+    let mut merged = prev.map(|pq| pq.entries).unwrap_or_default();
     merged.extend(entries);
     let (keep, evicted) =
         parked_cap_split(merged, PARKED_QUEUE_MAX_ENTRIES, PARKED_QUEUE_MAX_BYTES);
     if !keep.is_empty() {
         map.insert(
             role.to_string(),
-            ParkedQueue { entries: keep.clone(), parked_at: base_at, from_surface },
+            ParkedQueue { entries: keep.clone(), parked_at: first_at, from_surface: first_from },
         );
     }
     (keep, evicted, expired)
+}
+
+/// 만기 주차분 걷이(락을 **이미 쥔** 호출부용 · 반환 `(역할, 온 좌석, 항목들)`).
+///
+/// ★두 소비자가 같은 규칙을 써야 한다: `park_queue_for_role`(주차할 때 편승 · 게으른 GC)과
+/// `governance::sweep_parked_queues`(워치독 틱 · **게으른 GC 의 정지 상태 봉합**). 걷이 조건이
+/// 두 곳에서 갈라지면 한쪽만 고쳐지는 결함이 재발한다.
+///
+/// ★왜 스윕이 따로 필요한가(agy r2 대비 자기검증에서 찾은 것): 게으른 GC 는 **누군가 주차하거나
+/// 상속할 때만** 발화한다. 함대가 조용하면 만기분은 메모리에 남고 `queue.dropped` 가 **영영 나가지
+/// 않는다** — 발신자 입장에서는 배달도 유실 통지도 없는 무한 침묵이다(적체 자체는 상한이 막지만,
+/// 「무음 유실 0」 주장은 그 침묵으로 다시 거짓이 된다).
+pub fn drain_expired_parked_locked(
+    map: &mut HashMap<String, ParkedQueue>,
+    now: f64,
+) -> Vec<(String, u64, Vec<QueueEntry>)> {
+    let mut out: Vec<(String, u64, Vec<QueueEntry>)> = Vec::new();
+    let mut emptied: Vec<String> = Vec::new();
+    for (role, pq) in map.iter_mut() {
+        // ★항목별 판정 — 배치가 함께 늙지 않는다. 그래서 「새 지시가 옛 배치 시각을 물려받아 억울하게
+        //   즉시 폐기」(r2 #2·#3)가 **성립할 수 없다**: 각 지시는 자기 미배달 시간만큼만 산다.
+        let (alive, gone): (Vec<QueueEntry>, Vec<QueueEntry>) = pq
+            .entries
+            .drain(..)
+            .partition(|e| now - e.enqueued_at < PARKED_QUEUE_TTL_SECS);
+        pq.entries = alive;
+        if !gone.is_empty() {
+            out.push((role.clone(), pq.from_surface, gone));
+        }
+        if pq.entries.is_empty() {
+            emptied.push(role.clone());
+        }
+    }
+    for k in emptied {
+        map.remove(&k);
+    }
+    out
 }
 
 /// `queue.dropped(parked_expired)` payload — 공용 빌더(`queue_dropped_payload`)에 **역할·온 좌석**을

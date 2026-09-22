@@ -583,19 +583,25 @@ fn migrate_seat_queue(
 fn inherit_parked_queue(daemon: &Arc<Daemon>, next: &Arc<crate::state::Surface>, role: &str) {
     let now = crate::state::now_epoch();
     let taken = daemon.parked_queues.lock().unwrap().remove(role);
-    let Some(pq) = taken else {
+    let Some(mut pq) = taken else {
         return;
     };
     let waited = now - pq.parked_at;
-    if waited >= crate::state::PARKED_QUEUE_TTL_SECS {
+    // ★r2 개정: 만기는 **항목별**(`enqueued_at`)로 가른다 — 배치 전체를 한 시각으로 재던 종전 판본은
+    //   「새 지시가 옛 배치 시각을 물려받아 즉시 폐기」(r2 #2·#3)를 만들었다. 이제 늙은 것만 나간다.
+    let (alive, gone): (Vec<crate::state::QueueEntry>, Vec<crate::state::QueueEntry>) = pq
+        .entries
+        .drain(..)
+        .partition(|e| now - e.enqueued_at < crate::state::PARKED_QUEUE_TTL_SECS);
+    if !gone.is_empty() {
         daemon.bus.publish(
             "queue.dropped",
             "queue",
             Some(next.id),
-            crate::state::queue_parked_expired_payload(role, pq.from_surface, &pq.entries),
+            crate::state::queue_parked_expired_payload(role, pq.from_surface, &gone),
         );
-        return;
     }
+    pq.entries = alive;
     if pq.entries.is_empty() {
         return;
     }
@@ -15293,13 +15299,15 @@ mod tests {
     fn d7_other_roles_expired_parking_is_published_when_someone_else_parks() {
         let daemon = claim_daemon();
         // A: 이미 만기인 주차분(다른 역할) — 벽시계에 의존하지 않고 값으로 만든다.
-        let ea = daemon.next_queue_entry("A 역할 만기 지시".into(), None, "test");
+        let mut ea = daemon.next_queue_entry("A 역할 만기 지시".into(), None, "test");
+        // ★만기 축 = 항목의 enqueued_at(미배달 경과) — 배치 시각이 아니다(r2 개정).
+        ea.enqueued_at = crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0;
         let ea_id = ea.id.clone();
         daemon.parked_queues.lock().unwrap().insert(
             "cso".into(),
             crate::state::ParkedQueue {
                 entries: vec![ea],
-                parked_at: crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0,
+                parked_at: crate::state::now_epoch() - 1.0,
                 from_surface: 77,
             },
         );
@@ -15335,48 +15343,94 @@ mod tests {
         );
     }
 
-    /// ★agy 적대검증 r1 ⑵ 봉합 — **병합이 TTL 을 연장하지 않는다.**
+    /// ★agy r1 ⑵ + r2 #2·#3 봉합 — **만기는 항목별이다: 늙은 것만 나가고 새 것은 산다.**
     ///
-    /// 종전엔 병합 때 `parked_at` 을 `now` 로 덮어써, 같은 역할에 주차가 반복되면 오래된 항목의
-    /// 만기가 계속 뒤로 밀렸다 — 「TTL 600s 유계」 주장이 거짓이 된다. 이제 TTL 은 **그 역할에
-    /// 처음 주차된 시각**부터 잰다.
+    /// 이 자리가 두 라운드 연속 뚫렸다. r1 ⑵ = 병합이 배치 시각을 now 로 덮어써 **무한 연장** ·
+    /// r2 #2 = 시각을 보존하니 늙은 배치에 병합된 **새 지시가 즉시 만기** · r2 #3(BLOCK) = 상한이 옛
+    /// 배치를 전량 evict 했는데 살아남은 새 항목이 **버려진 배치의 시각을 물려받아** 억울하게 폐기.
+    /// ⇒ 셋 다 **배치 단위 시각 장부**를 유지하려다 생겼다. 술어를 더 정교하게 만드는 대신 **재는
+    /// 계열을 바꿨다**: 만기는 항목의 `enqueued_at`(미배달 경과)으로만 재고, 배치에는 시각이 없다.
+    /// 그러면 세 지적이 **성립할 수 없는 형태**가 된다 — 이 검체가 그것을 잰다.
     #[test]
-    fn d7_merging_into_parked_queue_does_not_extend_its_ttl() {
+    fn d7_parked_expiry_is_per_entry_so_fresh_merges_survive_aging_batches() {
         let daemon = claim_daemon();
-        // 이미 절반쯤 늙은 배치(만기 전)
-        let aged_at = crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS / 2.0;
-        let e_old = daemon.next_queue_entry("먼저 주차된 지시".into(), None, "test");
+        let ttl = crate::state::PARKED_QUEUE_TTL_SECS;
+        // 거의 만기인 옛 항목 + 방금 들어온 새 항목이 **같은 역할**에 함께 있게 만든다.
+        let mut old_e = daemon.next_queue_entry("거의 만기인 옛 지시".into(), None, "test");
+        // ★여유 60초: 0.1초로 두면 PTY 기동·종료 대기 사이에 스스로 만기가 돼 간헐 적색이 된다
+        //   (제품이 아니라 픽스처의 결함 — 1차 판본이 그것으로 실패했다).
+        old_e.enqueued_at = crate::state::now_epoch() - ttl + 60.0; // 아직 살아 있다
+        let old_id = old_e.id.clone();
         daemon.parked_queues.lock().unwrap().insert(
             "master".into(),
             crate::state::ParkedQueue {
-                entries: vec![e_old],
-                parked_at: aged_at,
+                entries: vec![old_e],
+                parked_at: crate::state::now_epoch() - ttl + 60.0,
                 from_surface: 55,
             },
         );
-        // 같은 역할의 새 좌석이 죽으면서 병합 주차
         let b = make_surface(&daemon, Some("master"));
-        let e_new = daemon.next_queue_entry("나중 지시".into(), None, "test");
+        let fresh = daemon.next_queue_entry("방금 들어온 지시".into(), None, "test");
+        let fresh_id = fresh.id.clone();
         daemon.surfaces.lock().unwrap()[&b]
             .pending_queue
             .lock()
             .unwrap()
-            .push_back(e_new);
+            .push_back(fresh);
         mark_surface_dead(&daemon, b);
         wait_surface_exited_event(&daemon, b);
 
         let pq = daemon.parked_queues.lock().unwrap().get("master").cloned()
             .expect("병합 주차가 서지 않았다");
         assert_eq!(pq.entries.len(), 2, "병합이 안 됐다(시간 순서 보존 실패)");
-        // ★핵심: 시각이 now 로 갱신되지 않았다 — 늙은 시각이 보존된다.
-        assert!(
-            (pq.parked_at - aged_at).abs() < 1.0,
-            "병합이 parked_at 을 갱신했다 — TTL 이 무한 연장된다(parked_at={} · 기대≈{aged_at})",
-            pq.parked_at
+        // ★r2 #5: 처음 주차 시각·처음 좌석이 보존된다(새 좌석 id 로 덮어쓰면 옛 항목의 출처가 왜곡된다).
+        assert_eq!(pq.from_surface, 55, "from_surface 를 새 좌석으로 덮어썼다 — 출처 왜곡(r2 #5)");
+
+        // ★핵심: 시간을 옛 항목만 만기로 밀어 넣고 상속시킨다 → 옛 것만 나가고 새 것은 들어간다.
+        {
+            let mut map = daemon.parked_queues.lock().unwrap();
+            let e = map.get_mut("master").unwrap();
+            e.entries[0].enqueued_at = crate::state::now_epoch() - ttl - 1.0; // 옛 항목만 만기로
+        }
+        let next = make_surface(&daemon, None);
+        let pid = 995_806_u32;
+        bind_caller(&daemon, pid, next);
+        let Reply::Single(resp) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "system.claim_role".into(),
+                params: json!({"role": "master", "surface_id": next}),
+            },
+            Some(pid),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(resp["ok"], json!(true), "claim_role 실패 ({resp})");
+
+        let q: Vec<String> = daemon.surfaces.lock().unwrap()[&next]
+            .pending_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        assert_eq!(
+            q,
+            vec![fresh_id.clone()],
+            "항목별 만기가 아니다 — 새 지시가 옛 항목과 함께 죽거나(r2 #2) 옛 항목이 함께 살았다"
         );
+        let tail = daemon.bus.tail(200);
+        let gone = tail
+            .iter()
+            .find(|e| e["name"] == json!("queue.dropped")
+                && e["payload"]["reason"] == json!("parked_expired"))
+            .expect("만기 항목이 무음으로 사라졌다");
+        assert_eq!(gone["payload"]["queue_entry_ids"], json!([old_id]), "만기 목록이 옛 항목만이 아니다");
         assert!(
-            crate::state::now_epoch() - pq.parked_at > crate::state::PARKED_QUEUE_TTL_SECS / 3.0,
-            "병합 후 나이가 리셋됐다"
+            tail.iter().any(|e| e["name"] == json!("queue.inherited")
+                && e["payload"]["queue_entry_ids"] == json!([fresh_id])),
+            "새 지시의 상속이 보고되지 않았다"
         );
     }
 
@@ -15384,14 +15438,15 @@ mod tests {
     #[test]
     fn d7_expired_parked_queue_is_dropped_with_reason_not_inherited() {
         let daemon = claim_daemon();
-        let e = daemon.next_queue_entry("만기 예정 지시".into(), None, "test");
+        let mut e = daemon.next_queue_entry("만기 예정 지시".into(), None, "test");
+        // TTL 을 확실히 넘긴 미배달 경과 — 벽시계에 의존하지 않고 값으로 만든다(항목별 축).
+        e.enqueued_at = crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0;
         let eid = e.id.clone();
         daemon.parked_queues.lock().unwrap().insert(
             "worker-ttl".into(),
             crate::state::ParkedQueue {
                 entries: vec![e],
-                // TTL 을 확실히 넘긴 과거 시각 — 벽시계에 의존하지 않고 값으로 만든다.
-                parked_at: crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0,
+                parked_at: crate::state::now_epoch() - 1.0,
                 from_surface: 1,
             },
         );

@@ -149,6 +149,12 @@ class _FakeCys:
         self.queues = {}      # ref → 큐 줄 수(cys queue list 4칸 행)
 
     def status(self):
+        self.status_calls = getattr(self, "status_calls", 0) + 1
+        flip = getattr(self, "flip_on_status", None)   # (n번째 조회, ref) — 그 조회부터 좌석이 산 것으로
+        if flip and self.status_calls >= flip[0]:
+            for r in self.rows:
+                if r["ref"] == flip[1]:
+                    r["seat"] = "occupied"
         return {"surfaces": [{"surface_ref": r["ref"], "role": r["role"], "pid": r["pid"], "exited": False,
                               "seat": r["seat"], "agent": r["agent"], "created_at": r["created"]}
                              for r in self.rows if r["role"]]}
@@ -181,9 +187,10 @@ class _FakeCys:
 
 
 class A2B8BootNodeRun(unittest.TestCase):
-    def _run(self, rows, role, extra_env=None, queues=None):
+    def _run(self, rows, role, extra_env=None, queues=None, flip_on_status=None):
         fake = _FakeCys(rows)
         fake.queues = queues or {}
+        fake.flip_on_status = flip_on_status
         saved = (bn.run, bn._awaken, time.sleep, sys.argv, dict(os.environ))
         bn.run, bn._awaken = fake, None
         time.sleep = lambda s: None
@@ -209,7 +216,8 @@ class A2B8BootNodeRun(unittest.TestCase):
         os.makedirs(self.dept)
         self.reg = os.path.join(self.tmp, "depts.json")
         json.dump({"depts": {"dept-1": {"socket": "/s/one.sock", "cwd": self.dept}}}, open(self.reg, "w"))
-        self.env = {"CYS_SOCKET": "/s/one.sock", "CYS_DEPTS_JSON": self.reg}
+        self.env = {"CYS_SOCKET": "/s/one.sock", "CYS_DEPTS_JSON": self.reg,
+                    "CYS_STATE_DIR": os.path.join(self.tmp, "state")}   # 보존 래치를 실 ~/.cys 에 쓰지 않는다
 
     def test_formation_fills_fresh_master_shell_with_dept_cwd(self):
         # allocate 가 만든 부서장 빈 셸(에이전트 한 번도 없음 · 방금 생성) → 입양-주입이 아니라 승계 기동
@@ -241,6 +249,53 @@ class A2B8BootNodeRun(unittest.TestCase):
         self.assertEqual(kinds, ["close-surface", "launch-agent"], fake.calls)
         reap = [c for c in fake.calls if c[1] == "close-surface"][0]
         self.assertEqual(reap[2:], ["surface:3", "--reap"])
+
+    def test_b8_worker_seat_with_queue_is_kept_not_reaped(self):
+        # v115-review 발견 1: close-surface --reap 은 데몬이 큐를 무조건 폐기 — 큐 7건 워커 좌석은 보존·기동 0
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+        rc, out, fake = self._run(rows, "worker", self.env, queues={"surface:3": 7})
+        acted = [c for c in fake.calls if c[1] in ("close-surface", "launch-agent", "send")]
+        self.assertEqual(acted, [], "큐가 찬 워커 좌석을 회수·재기동했다")
+        self.assertEqual(rc, 1)
+        self.assertEqual(out["result"], "seat_kept_queue_nonempty")
+        self.assertTrue(any("seat.kept:queue_nonempty(7)" in (l.get("msg") or "") for l in out.get("log", [])), out)
+
+    def test_b8_kept_seat_two_heartbeats_one_event(self):
+        # master#58624550 추가 요구: 보존 좌석이 심박마다 같은 이벤트를 반복하지 않는다 — 2회 연속 → reap 0 · 이벤트 1
+        events = []
+        saved = bn._seat_event
+        bn._seat_event = lambda role, ref, action, cwd: events.append(action) or True
+        try:
+            for _ in range(2):
+                rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                         "created": time.time() - 900}]
+                rc, out, fake = self._run(rows, "worker", self.env, queues={"surface:3": 7})
+                self.assertEqual([c for c in fake.calls if c[1] in ("close-surface", "launch-agent")], [])
+        finally:
+            bn._seat_event = saved
+        self.assertEqual(events, ["seat.kept:queue_nonempty(7)"], events)
+        self.assertFalse(os.path.exists(os.path.join(os.path.expanduser("~"), ".cys", "state", "seat-kept",
+                                                     "_s_one.sock.json")), "래치가 실 상태 폴더에 샜다")
+
+    def test_b8_worker_seat_queue_empty_reaped_once_launched_once(self):
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+        rc, out, fake = self._run(rows, "worker", self.env, queues={"surface:3": 0})
+        self.assertEqual(len([c for c in fake.calls if c[1] == "close-surface"]), 1, fake.calls)
+        self.assertEqual(len([c for c in fake.calls if c[1] == "launch-agent"]), 1, fake.calls)
+        q = [i for i, c in enumerate(fake.calls) if c[1:3] == ["queue", "list"]]
+        r = [i for i, c in enumerate(fake.calls) if c[1] == "close-surface"]
+        self.assertTrue(q and q[0] < r[0], "큐 선검사 없이 회수했다")
+
+    def test_b8_worker_seat_revived_before_reap_is_left_alone(self):
+        # v115-review 발견 2: 첫 스냅샷 뒤 사람이 그 셸에서 claude 를 띄움 → 재조회에서 occupied → 회수 0
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+        rc, out, fake = self._run(rows, "worker", self.env, flip_on_status=(2, "surface:3"))
+        acted = [c for c in fake.calls if c[1] in ("close-surface", "launch-agent")]
+        self.assertEqual(acted, [], "재조회에서 산 좌석을 회수했다")
+        self.assertEqual(out["result"], "seat_kept_recheck")
 
     def test_succession_reaps_old_shell_when_queue_empty(self):
         rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
@@ -326,25 +381,30 @@ class A5A2DirectiveContract(unittest.TestCase):
 
 
 class B2RecapDefault(unittest.TestCase):
-    def _pf(self, targets):
+    def _pf(self, targets, home=None):
         import javis_preflight as pf
         p = pf.Preflight(True, set())
-        saved = pf.resolve_registration_targets
+        saved = pf.resolve_registration_targets, os.environ.get("HOME")
         pf.resolve_registration_targets = lambda: (targets, None)
+        if home:
+            os.environ["HOME"] = home          # 대상 술어가 ~ 를 가짜 홈으로 풀게(실 홈 무접촉)
         try:
             p.c83_recap_default()
         finally:
-            pf.resolve_registration_targets = saved
+            pf.resolve_registration_targets = saved[0]
+            if saved[1] is not None:
+                os.environ["HOME"] = saved[1]
         return [r for r in p.results if "C83" in json.dumps(r, ensure_ascii=False, default=str)]
 
     def test_seeds_false_and_respects_user_value(self):
         tmp = tempfile.mkdtemp()
-        a, b = os.path.join(tmp, "a", "settings.json"), os.path.join(tmp, "b", "settings.json")
+        a, b = (os.path.join(tmp, ".cys", "claude", "settings.json"),
+                os.path.join(tmp, ".cys", "claude-b", "settings.json"))
         os.makedirs(os.path.dirname(a))
         os.makedirs(os.path.dirname(b))
         json.dump({"hooks": {}}, open(a, "w"))
         json.dump({"awaySummaryEnabled": True}, open(b, "w"))
-        self._pf([a, b])
+        self._pf([a, b], home=tmp)
         self.assertIs(json.load(open(a))["awaySummaryEnabled"], False)
         self.assertIn("hooks", json.load(open(a)), "다른 키를 잃었다")
         self.assertIs(json.load(open(b))["awaySummaryEnabled"], True, "사용자 값을 덮었다")
@@ -352,6 +412,19 @@ class B2RecapDefault(unittest.TestCase):
     def test_registered_in_run_order(self):
         src = open(os.path.join(BIN, "javis_preflight.py"), encoding="utf-8").read()
         self.assertIn("self.c83_recap_default,", src)
+
+    def test_personal_profile_untouched(self):
+        # v115-review 발견 5: 개발 맥 개인 프로필(~/.claude*)엔 기입하지 않는다 — 격리 프로필만 기입(대조군)
+        tmp = tempfile.mkdtemp()
+        personal = [os.path.join(tmp, ".claude", "settings.json"), os.path.join(tmp, ".claude-work", "settings.json")]
+        iso = os.path.join(tmp, ".cys", "claude", "settings.json")
+        for f in personal + [iso]:
+            os.makedirs(os.path.dirname(f))
+            json.dump({"hooks": {}}, open(f, "w"))
+        self._pf(personal + [iso], home=tmp)
+        for f in personal:
+            self.assertNotIn("awaySummaryEnabled", json.load(open(f)), "개인 프로필에 기입했다: %s" % f)
+        self.assertIs(json.load(open(iso))["awaySummaryEnabled"], False, "격리 프로필 기입 안 됨(대조군)")
 
 
 class B3DrainIssuer(unittest.TestCase):

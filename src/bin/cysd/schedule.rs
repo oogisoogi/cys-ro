@@ -1113,6 +1113,12 @@ fn inject(daemon: &Arc<Daemon>, sid: u64, text: &str) -> Result<(), String> {
         crate::governance::SeatInject::WriterUnavailable => {
             Err("surface write channel full or closed (pane stalled)".to_string())
         }
+        crate::governance::SeatInject::HeldVacant(None) => {
+            // ★v115-review 발견 6: 좌석 보류 큐 포화(상한) = 이 발화는 폐기됐다 — 무음 유실 금지 1줄.
+            daemon.bus.publish("schedule.warning", "schedule", Some(sid),
+                json!({"kind": "vacant_seat_queue_full", "detail": "빈 좌석 보류 큐가 가득 차 이 발화를 버렸다"}));
+            Ok(())
+        }
         _ => Ok(()),
     }
 }

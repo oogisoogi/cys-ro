@@ -1454,18 +1454,25 @@ fn inject_master(daemon: &Arc<Daemon>, sid: u64, envelope: &str) -> bool {
     // ★R1 배달 원장 — 주입보다 앞(delivery.rs 불변식 ①). 외부 채널 봉투도 기계 유래다.
     // ★v115-restore(A3): 좌석 입력 주입 단일 입구 — 빈 에이전트 좌석이면 타이핑 대신 큐 보류.
     //   보류도 「넘겼다」로 센다(큐가 배달한다 — false 면 다음 틱이 같은 봉투를 또 적재해 중복된다).
-    !matches!(
-        crate::governance::seat_inject_guarded(
-            daemon,
-            &surface,
-            envelope,
-            500,
-            crate::delivery::Origin::Channel,
-            None,
-            "channel.inbox",
-        ),
-        crate::governance::SeatInject::WriterUnavailable
-    )
+    match crate::governance::seat_inject_guarded(
+        daemon,
+        &surface,
+        envelope,
+        500,
+        crate::delivery::Origin::Channel,
+        None,
+        "channel.inbox",
+    ) {
+        crate::governance::SeatInject::WriterUnavailable => false,
+        crate::governance::SeatInject::HeldVacant(None) => {
+            // ★v115-review 발견 6: 좌석 보류 큐 포화(상한) = 이 봉투는 폐기됐다 — 무음 유실 금지 1줄.
+            //   「넘겼다」 판정은 유지한다(false 면 다음 틱이 같은 봉투를 재적재해 폭주한다).
+            daemon.bus.publish("channel.dropped", "channel", Some(sid),
+                json!({"reason": "vacant_seat_queue_full", "method": "channel.inbox"}));
+            true
+        }
+        _ => true,
+    }
 }
 
 /// state=new inbox 항목을 단조 id 순서로 배달(master 가용+비-quiescing일 때만). 배달된 inbox_id들 반환.

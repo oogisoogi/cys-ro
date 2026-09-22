@@ -939,7 +939,8 @@ def _seat_event(role, old_ref, action, cwd):
         old_ref, {"takeover": "승계 기동", "reap-launch": "회수 뒤 재기동",
                   "succession-reaped": "승계 뒤 옛 좌석 회수(seat.reaped_after_succession)",
                   "succession-reap-failed": "승계 뒤 옛 좌석 회수 실패"}.get(
-                      action, "승계 뒤 옛 좌석 보존 " + action.split(":", 1)[-1]), cwd or "(데몬 기본)")
+                      action, ("좌석 보존(seat.kept) " if action.startswith("seat.kept:") else
+                               "승계 뒤 옛 좌석 보존 ") + action.split(":", 1)[-1]), cwd or "(데몬 기본)")
     try:
         r = subprocess.run([sys.executable or "python3", mod, "emit", "agent.error",
                             "--field", "agent=%s" % role, "--field", "summary=%s" % summary],
@@ -949,14 +950,63 @@ def _seat_event(role, old_ref, action, cwd):
         return False
 
 
-def _reap_after_succession(role, old_ref):
-    """승계 뒤 role 없는 옛 빈 셸 좌석 정리(v115-dept · master#0e579100) — 반환 = 기록 1줄.
-    큐가 **비었다고 잴 수 있을 때만** close-surface --reap(best-effort). 큐가 남았거나 못 쟀으면 보존 —
-    큐는 좌석 단위이고 데몬도 큐가 찬 좌석의 reap 을 거부한다(큐 이전 = 범위 밖 · 메시지 유실 금지)."""
+def _seat_queue_block(old_ref):
+    """회수 전 큐 선검사(승계·reap-launch 공용) — 반환 = None(큐 0 을 **잰** 경우만 회수 가능) 또는 보존 사유.
+    ★`surface.close{cause:reap}`(= close-surface --reap)는 데몬이 큐를 **무조건 폐기**한다(governance.rs
+    close_surface 의 pending_queue.drain) — 큐가 찬 좌석 reap 을 거부하는 것은 다른 RPC(`surface.reap`)뿐이다.
+    그래서 회수 판정은 여기서 먼저 잰다: 못 쟀으면 queue_unknown, 남았으면 queue_nonempty(N) = 보존."""
     rc, out, _ = run(["cys", "queue", "list", "--surface", old_ref], timeout=8)
     queued = [ln for ln in (out or "").splitlines() if len(ln.split("\t")) >= 4]
     if rc != 0 or queued:
-        why = "queue_unknown" if rc != 0 else "queue_nonempty(%d)" % len(queued)
+        return "queue_unknown" if rc != 0 else "queue_nonempty(%d)" % len(queued)
+    return None
+
+
+def _seat_kept_first(old_ref, kind, socket=None, clear=False):
+    """보존 좌석 이벤트 1회 래치(v115-review 추가 요구 · master#58624550) — True = 이번이 첫 보고(또는 사유 종류가
+    바뀜)라 이벤트를 쏜다 · False = 같은 좌석·같은 사유를 이미 알렸다(심박마다 같은 이벤트 반복 금지).
+    저장 = <CYS_STATE_DIR or ~/.cys/state>/seat-kept/<소켓 키>.json {좌석: 사유 종류} · clear=True 는 그 좌석 항목 삭제.
+    ★시도 반복의 유계는 formation 시도 원장(_attempt_gate · 역할당 3회/6h)이 이미 진다 — 여기는 알림만 막는다.
+    읽기·쓰기 실패 = True(알림을 잃는 쪽보다 한 번 더 알리는 쪽이 안전)."""
+    sock = socket if socket is not None else (os.environ.get("CYS_SOCKET") or "base")
+    root = os.path.join(os.environ.get("CYS_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".cys", "state"),
+                        "seat-kept")
+    path = os.path.join(root, re.sub(r"[^A-Za-z0-9._-]", "_", sock)[-120:] + ".json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            seen = json.load(f)
+        if not isinstance(seen, dict):
+            seen = {}
+    except FileNotFoundError:
+        seen = {}
+    except Exception:
+        return True
+    if clear:
+        if old_ref not in seen:
+            return False
+        seen.pop(old_ref, None)
+    elif seen.get(old_ref) == kind:
+        return False
+    else:
+        seen[old_ref] = kind
+    try:
+        os.makedirs(root, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(seen, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return True
+
+
+def _reap_after_succession(role, old_ref):
+    """승계 뒤 role 없는 옛 빈 셸 좌석 정리(v115-dept · master#0e579100) — 반환 = 기록 1줄.
+    큐가 **비었다고 잴 수 있을 때만** close-surface --reap(best-effort). 큐가 남았거나 못 쟀으면 보존 —
+    close-surface --reap 은 데몬이 큐를 무조건 폐기하므로 선검사가 유일한 방어다(_seat_queue_block ·
+    큐 이전 = 범위 밖 · 메시지 유실 금지)."""
+    why = _seat_queue_block(old_ref)
+    if why:
         _seat_event(role, old_ref, "succession-kept:" + why, None)
         return "%s 옛 빈 좌석 보존(사유=%s)" % (old_ref, why)
     rc_r, _, _ = run(["cys", "close-surface", old_ref, "--reap"], timeout=12)
@@ -1415,8 +1465,26 @@ def main():
         if act in ("takeover", "reap-launch"):
             old_ref = row["surface_ref"]
             if act == "reap-launch":
+                # ★v115-review 발견 1: 워커 등 비특권 역할은 데몬 승계(큐 이관)가 없다(surface.create 의
+                #   takeover_empty_seat 는 master|cso 한정) — 큐가 남았거나 못 쟀으면 회수·기동 모두 보류.
+                why_q = _seat_queue_block(old_ref)
+                if why_q:
+                    emit("seat", "%s 빈 좌석 보존(seat.kept:%s) — 회수하면 보류 지시가 사라진다 · 다음 심박 재판정"
+                         % (old_ref, why_q))
+                    if _seat_kept_first(old_ref, why_q.split("(", 1)[0]):   # 좌석·사유 종류당 이벤트 1회
+                        _seat_event(a.role, old_ref, "seat.kept:" + why_q, a.cwd)
+                    return done("seat_kept_" + why_q.split("(", 1)[0], why_q, old_ref, code=1)
+                # ★발견 2: 첫 스냅샷 뒤 수 초가 흘렀다 — reap 직전 신선 재조회로 다시 판정(사람이 그 셸에서
+                #   claude 를 띄웠으면 산 에이전트를 죽인다 · _reclaim_verdict 의 fresh_st 규율과 같다).
+                act2 = empty_seat_action(cys_status() or {}, a.role)
+                if act2 != "reap-launch":
+                    emit("seat", "%s 재조회 판정 %s — 회수 취소(seat.kept:recheck_%s)" % (old_ref, act2, act2))
+                    if _seat_kept_first(old_ref, "recheck_%s" % act2):
+                        _seat_event(a.role, old_ref, "seat.kept:recheck_%s" % act2, a.cwd)
+                    return done("seat_kept_recheck", "recheck_%s" % act2, old_ref, code=1)
                 rc_r, _, _ = run(["cys", "close-surface", old_ref, "--reap"], timeout=12)
-                emit("seat", "%s 빈 좌석 회수(reap rc=%d) → 새 좌석 기동" % (old_ref, rc_r))
+                _seat_kept_first(old_ref, None, clear=True)   # 보존 래치 해제(같은 번호 재사용 대비)
+                emit("seat", "%s 빈 좌석 회수(reap rc=%d · 큐 0) → 새 좌석 기동" % (old_ref, rc_r))
             else:
                 emit("seat", "%s 빈 좌석 → launch-agent 승계 기동(takeover_empty_seat)" % old_ref)
             _seat_event(a.role, old_ref, act, a.cwd)

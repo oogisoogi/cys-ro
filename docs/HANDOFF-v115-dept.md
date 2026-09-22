@@ -17,12 +17,12 @@
 | B7 | 기존 부서 schedule 에 ctx-relay-tick 소급 | 이미 구현(Fable 1.1.3 M6) | 신규 코드 0 · 기존 시험 `schedule.rs v113_dept_lane_ctx_relay_backfill` + 부트 배선 `main.rs:1304 ensure_builtin_jobs` 실재 확인 |
 
 ## 재는 법
-- `python3 cysjavis-pack/bin/tests/test_v115_dept.py` (20건)
+- `python3 cysjavis-pack/bin/tests/test_v115_dept.py` (23건 · v115-review 뒤)
 - 뮤턴트: 스크래치 `mut.py` 형태 — 사본 트리에 변이·적용 선-assert·시험 rc. 결과 = 표는 【확인요청】 참조.
 - 게이트: `python3 scripts/gen_ceo_template.py --check` · `test_bootv2_doc_contract` · `test_event_inject` · `test_core_inject` · `test_content_pins_parity` · `bash scripts/secret-scan.sh --all`.
 
 ## 함정 · 남은 것
-- 승계 뒤 옛 빈 셸 좌석(master#0e579100): `_reap_after_succession` — 옛 좌석 큐가 **비었다고 잴 수 있을 때만** `close-surface --reap`(best-effort) + 이벤트 1줄(승계 뒤 옛 좌석 회수 = seat.reaped_after_succession 뜻) · 큐가 남았거나(`queue_nonempty(N)`) 못 쟀으면(`queue_unknown`) 보존 + 이벤트 1줄. 큐는 좌석 단위이고 데몬도 큐가 찬 좌석 reap 을 거부한다(handlers.rs 시험 reap_denies_queue_nonempty…) — 큐 이전은 범위 밖(handlers.rs 무접촉). 옛 셸에 가는 승계 고지 문구의 zsh 오류(904 §5-③)는 트랙 D 소관.
+- 승계 뒤 옛 빈 셸 좌석(master#0e579100): `_reap_after_succession` — 옛 좌석 큐가 **비었다고 잴 수 있을 때만** `close-surface --reap`(best-effort) + 이벤트 1줄(승계 뒤 옛 좌석 회수 = seat.reaped_after_succession 뜻) · 큐가 남았거나(`queue_nonempty(N)`) 못 쟀으면(`queue_unknown`) 보존 + 이벤트 1줄. 큐는 좌석 단위다. [정정 · v115-review 발견 1] 「데몬도 큐가 찬 좌석 reap 을 거부한다」는 `surface.reap` RPC(handlers.rs 시험 reap_denies_queue_nonempty…)의 성질일 뿐이고, boot_node 가 쓰는 `close-surface --reap`(= `surface.close{cause:reap}`)는 데몬이 큐를 **무조건 폐기**한다(governance.rs close_surface 의 pending_queue.drain) — 그래서 큐 선검사(`_seat_queue_block`)가 유일한 방어이며, 승계 경로와 reap-launch 경로(워커 등 · 데몬 승계·큐 이관 없음 = surface.create 의 takeover_empty_seat 가 master|cso 한정)가 이를 공용한다. reap-launch 는 큐가 남았거나 못 쟀으면 회수·기동 모두 보류(seat.kept:queue_nonempty(N)|queue_unknown · 다음 심박 재판정)하고, reap 직전 `cys status` 재조회로 빈 좌석 판정을 다시 한다(seat.kept:recheck_*). 큐 이전은 범위 밖(handlers.rs 무접촉). 옛 셸에 가는 승계 고지 문구의 zsh 오류(904 §5-③)는 트랙 D 소관.
 - ctx-relay 잡(`python3 …javis_ctx_relay.py`)·본부 builtin 잡이 PATH `python3` 를 쓴다 — CLT 없는 맥에서는 스텁이다(데몬 스케줄 잡은 세션 env 파일 밖). Rust 잡 상수 = 트랙 D/후속 판단 대상으로 보고만.
 - M7(recap 덮어쓰기) 단일 변이는 앞단 필터가 막아 생존 = 층 방어 · 겹침 변이 M7c KILLED.
 - 906 인계: 2394행에 `seat != "empty"` 가 들어가면 `test_phoenix_r4_restore` D3 이 적색이 된다(실측 r1=VERIFIED_FRESH · r2=NOOP — 1사이클 안에 빈 좌석 재사용까지 끝나므로 2번째 실행은 NOOP). D3 기대를 「r1 = VERIFIED_FRESH」로 옮겨야 한다.

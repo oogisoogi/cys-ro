@@ -13,6 +13,12 @@
 ### 이월(1.1.5 제외 · master 판정 13:0x)
 - **B1 ③ fullscreen 계정 우회**: 대체 화면 + 트래킹 미요청일 때 휠을 PgUp/PgDn 대신 앱 보고로 보내는 안. 제외 사유 = ⑴ 그 모드의 클로드가 휠 보고를 실제로 받아 스크롤하는지 【미측정】 ⑵ `wheelgate.ts` 주석의 입력 히스토리 오염 위험(휠이 방향키로 합성되면 프롬프트 히스토리가 뒤섞인다) ⑶ 이 기기에서 관측된 사용자 모드는 inline(`alt_screen=false`)뿐. 재개 조건 = fullscreen 롤아웃 계정 1곳에서 휠 보고 수신 여부를 먼저 실측.
 
+### 이월(Fable 최종 검증 · v115-review-fix · worker-2@surface:909 · 2026-09-22 · master 판정 = 기록만)
+- **발견 4 · A4 정착 관측 창 약 29초 【추정】**(`javis_phoenix.py:2434-2445`): 정착 판정이 `agent_alive is True` 를 요구하는데 그 값은 워치독 틱(5초)의 `agent_seen` 뒤에 선다. 관측 창 1+4×1초 · 재시도 3회 합계 ≈29초를 넘기면(윈도 콜드 부팅 · Defender 스캔 · 부서 다수 동시 복원) Phase 11 fresh 폴백으로 가서 worker 는 `dedup_worker_role` 로 worker-N 이 하나 더 뜰 수 있다(RESPAWN_CAP=3 유계). 판단 조건 = 09-23 뒤 윈 실기에서 `phoenix_restore` 저널의 `respawn_count`(VM 축 5) 실측. 수리 후보 = 정착 술어를 「True 또는 (None ∧ seat=occupied ∧ 실패 줄 없음)」으로 완화하거나 창을 워치독 2틱(≥10초)으로.
+- **발견 7 · SessionStart 재발화 시 `CLAUDE_ENV_FILE` 중복 append**(`hooks/_lib.sh:291-304` · `session-start.sh:18-19`): `/clear`·compact 에도 SessionStart 가 다시 돌아 export 2줄이 반복된다(PATH 중복 접두 · 무해). 사용자 PATH 무접촉은 시험 `test_v115_dept.py` 가 잰다. 데몬 스케줄 잡은 여전히 PATH `python3`(인지된 잔여).
+- **발견 9 · pane 안 boot_node 의 `close_denied`**(`javis_boot_node.py` reap-launch · `handlers.rs:4158-4180`): CSO 가 손으로 `javis_formation.py ensure` 를 돌리거나 master pane 의 `cys boot` 처럼 boot_node 가 pane 안에서 돌면 `surface.close` 소유 게이트가 거부해 reap rc≠0 으로 끝나고 기동은 진행된다 — 옛 빈 좌석이 role 없는 셸로 남는다(무해 · 로그 「reap rc=1」). 심박 경로(익명 caller)는 통과.
+- **워커 역할 큐 이관(승계 확장) = 1.1.6 후보**: 이번 수리는 큐가 남은 워커 빈 좌석을 보존(seat.kept · 기동 안 함)만 한다. 근거 = 데몬 좌석 승계·큐 이관(`migrate_seat_queue`)이 `surface.create` 의 `takeover_empty_seat` 게이트에서 `master|cso` 한정(`handlers.rs:3070` · 이관 `:3286-3291`). 보존 좌석은 큐가 비거나 사람이 다룰 때까지 그 역할이 결원으로 남는다(formation 시도 원장 역할당 3회/6h 로 유계).
+
 ## §0 델타(후임 먼저 읽을 것 · 13:0x · CTX 61% 매듭)
 - 끝 = A1·A3·A4(조사+수리)·B4·B5·B6 + 게이트 정리 2커밋(d126b525·b326671c). **남은 것 = B1 수리 구현 1건뿐**(판별까지 끝).
 - 비가역: push 0(재승인 뒤 1건) · 판번 bump 0 · 라이브 cysr 무접촉(B1 = 코드 판독 + 로컬 pty 탐침만).

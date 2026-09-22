@@ -7147,6 +7147,11 @@ function onDaemonEvent(event: Record<string, unknown>) {
     refreshSidebarStatus();
     return;
   }
+  if (name === "restore.retrying") {
+    // ★v115-restore(A4): ↻ 뒤 master 자리 공백(자동 재시도 대기) — 조용히 비어 있지 않게 알린다.
+    stickyToast(`restore-retrying:${event.socket_slug ?? ""}`, "health", "⏳ 자비스 자리를 다시 세우는 중", String(payload.message ?? ""));
+    return;
+  }
   if (name === "role.takeover") {
     // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
     //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).

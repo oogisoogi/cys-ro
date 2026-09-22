@@ -86,6 +86,10 @@ pub fn spawn_watchdog(daemon: Arc<Daemon>) {
                 check_role_deadman(&daemon, &mut deadman);
                 // 저빈도 검사(15초): 파일 stat·화면 렌더 — 5초마다 돌릴 필요 없음
                 if tick_no.is_multiple_of(3) {
+                    // ★D7⑵: 주차 만기 스윕 — 게으른 GC 의 **정지 상태**를 메운다(아무도 주차·상속하지
+                    //   않는 역할의 만기분은 그 GC 로는 영영 걷히지 않는다). TTL 600s 라 15초 간격이면
+                    //   충분하고, 비어 있을 때는 맵 스캔 하나로 끝난다.
+                    sweep_parked_queues(&daemon);
                     check_todo(&daemon);
                     check_approvals(&daemon, &mut approval_debounce, &mut scan_caches);
                     check_launch_flags(
@@ -4591,6 +4595,24 @@ pub(crate) fn exited_surface_due(has_role: bool, elapsed_secs: u64) -> bool {
 /// 노드복구(surface.exited 구독자) 윈도우 — 역할 노드(worker/cso/reviewer/master)는 길게,
 /// 비역할(스크래치·one-shot)은 짧게. close_surface는 이미 reap된 자식에도 안전(kill/wait
 /// 에러 무시)하므로 신규 종료 로직 없이 '언제 부를지'만 추가한다.
+/// ★D7⑵ — 주차 만기 스윕(워치독 15초 틱). 걷이 규칙은 `state::drain_expired_parked_locked` 공유.
+/// **락을 쥔 채 publish 하지 않는다** — 걷어 낸 뒤 락을 놓고 발행한다(이 저장소 규약).
+fn sweep_parked_queues(daemon: &Arc<Daemon>) {
+    let now = crate::state::now_epoch();
+    let expired = {
+        let mut map = daemon.parked_queues.lock().unwrap();
+        crate::state::drain_expired_parked_locked(&mut map, now)
+    };
+    for (role, from, entries) in expired {
+        daemon.bus.publish(
+            "queue.dropped",
+            "queue",
+            Some(from),
+            crate::state::queue_parked_expired_payload(&role, from, &entries),
+        );
+    }
+}
+
 fn reap_exited_surfaces(daemon: &Arc<Daemon>) {
     if !reap_exited_enabled() {
         return;
@@ -12802,6 +12824,74 @@ mod todo_decl_tests {
     /// 종전에는 같은 함수 안에서 판정 캐시만 poison 내성이고 진행률 맵은 `.unwrap()`이라
     /// 다른 스레드의 패닉 한 번이 워치독 틱을 데몬 수명 내내 죽였다 — 주석은 그 위험을
     /// 정확히 적어 놓고 절반만 이행돼 있었다. 방어의 비대칭은 방어가 아니다.
+    #[test]
+    fn d7_sweep_publishes_expired_parking_without_any_parking_or_inheriting() {
+        // ★게으른 GC 의 **정지 상태** 봉합 검체: 아무도 주차하지 않고 아무도 상속하지 않는다.
+        //   종전 경로(park 편승·inherit 벨트)는 둘 다 발화하지 않으므로, 스윕이 없으면 이 만기분은
+        //   `queue.dropped` 없이 메모리에 영원히 남는다(발신자에게 무한 침묵).
+        let dir = std::env::temp_dir().join(format!(
+            "cys-parksweep-{}-{}",
+            std::process::id(),
+            crate::state::now_epoch() as u64
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let mut e = daemon.next_queue_entry("아무도 물려받지 않을 지시".into(), None, "test");
+        // 만기 축 = 항목의 enqueued_at(미배달 경과) — 배치 시각이 아니다(r2 개정).
+        e.enqueued_at = crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0;
+        let eid = e.id.clone();
+        daemon.parked_queues.lock().unwrap().insert(
+            "reviewer-gemini".into(),
+            crate::state::ParkedQueue {
+                entries: vec![e],
+                parked_at: crate::state::now_epoch() - 1.0,
+                from_surface: 91,
+            },
+        );
+        super::sweep_parked_queues(&daemon);
+        let ev = daemon
+            .bus
+            .tail(60)
+            .into_iter()
+            .find(|x| x["name"] == serde_json::json!("queue.dropped")
+                && x["payload"]["reason"] == serde_json::json!("parked_expired"))
+            .expect("스윕이 만기 주차분을 발행하지 않는다 — 무한 침묵이 남는다");
+        assert_eq!(ev["payload"]["role"], serde_json::json!("reviewer-gemini"));
+        assert_eq!(ev["payload"]["from_surface"], serde_json::json!(91));
+        assert_eq!(ev["payload"]["queue_entry_ids"], serde_json::json!([eid]));
+        assert!(
+            daemon.parked_queues.lock().unwrap().is_empty(),
+            "스윕 뒤에도 만기분이 남았다"
+        );
+
+        // ★음성 대조: 만기 전 주차분은 스윕이 건드리지 않는다(조급한 폐기 금지).
+        let fresh = daemon.next_queue_entry("아직 살아있는 지시".into(), None, "test");
+        daemon.parked_queues.lock().unwrap().insert(
+            "cso".into(),
+            crate::state::ParkedQueue {
+                entries: vec![fresh],
+                parked_at: crate::state::now_epoch(),
+                from_surface: 92,
+            },
+        );
+        super::sweep_parked_queues(&daemon);
+        assert!(
+            daemon.parked_queues.lock().unwrap().contains_key("cso"),
+            "스윕이 만기 전 주차분을 버렸다"
+        );
+    }
+
+    /// ★D7⑵ 배선 핀 — 스윕이 **워치독 틱에 실제로 실려 있다**(함수만 있고 안 불리면 정지 상태가 남는다).
+    #[test]
+    fn d7_sweep_is_wired_into_the_watchdog_tick() {
+        let src = include_str!("governance.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        assert!(
+            prod.contains("sweep_parked_queues(&daemon);\n                    check_todo(&daemon);"),
+            "스윕이 15초 저빈도 틱 분기에 없다 — 만기 고지가 게으른 GC 에만 의존한다"
+        );
+    }
+
     #[test]
     fn watchdog_tick_survives_both_poisoned_todo_locks() {
         let _g = TODO_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

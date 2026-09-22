@@ -309,6 +309,11 @@ class A2B8BootNodeRun(unittest.TestCase):
                                                lambda: n.append(1) or _st(seat="unknown"), tick_s=1.0, max_wait_s=4)
             self.assertEqual((bn.seat_state(st3, "master"), len(n)), ("unknown", 4))
             self.assertIn("미해소", why3)
+            # 에이전트 좌석의 unknown 은 대상 아님(master 지시: unknown ∧ agent None) — 재조회 0
+            calls2 = []
+            st5, why5 = bn.settle_unknown_seat(_st(seat="unknown", agent="claude"), "master",
+                                               lambda: calls2.append(1), max_wait_s=10)
+            self.assertEqual((bn.seat_state(st5, "master"), why5, calls2), ("unknown", None, []))
             # 재조회 실패(None)는 직전 스냅샷 유지
             st4, _ = bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: None, tick_s=1.0, max_wait_s=2)
             self.assertEqual(bn.seat_state(st4, "master"), "unknown")

@@ -146,6 +146,7 @@ class _FakeCys:
         self.rows = rows      # [{ref, role, pid, exited, seat, agent, created}]
         self.calls = []
         self.next_id = 50
+        self.queues = {}      # ref → 큐 줄 수(cys queue list 4칸 행)
 
     def status(self):
         return {"surfaces": [{"surface_ref": r["ref"], "role": r["role"], "pid": r["pid"], "exited": False,
@@ -170,6 +171,9 @@ class _FakeCys:
                               "seat": "occupied", "agent": "claude", "created": time.time()})
             self.next_id += 1
             return 0, "", ""
+        if a[:2] == ["queue", "list"]:
+            n = self.queues.get(a[a.index("--surface") + 1], 0)
+            return 0, "\n".join("q%d\tx\ty\tpreview" % i for i in range(n)), ""
         if a[:1] == ["close-surface"]:
             self.rows = [r for r in self.rows if r["ref"] != a[1]]
             return 0, "", ""
@@ -177,8 +181,9 @@ class _FakeCys:
 
 
 class A2B8BootNodeRun(unittest.TestCase):
-    def _run(self, rows, role, extra_env=None):
+    def _run(self, rows, role, extra_env=None, queues=None):
         fake = _FakeCys(rows)
+        fake.queues = queues or {}
         saved = (bn.run, bn._awaken, time.sleep, sys.argv, dict(os.environ))
         bn.run, bn._awaken = fake, None
         time.sleep = lambda s: None
@@ -236,6 +241,21 @@ class A2B8BootNodeRun(unittest.TestCase):
         self.assertEqual(kinds, ["close-surface", "launch-agent"], fake.calls)
         reap = [c for c in fake.calls if c[1] == "close-surface"][0]
         self.assertEqual(reap[2:], ["surface:3", "--reap"])
+
+    def test_succession_reaps_old_shell_when_queue_empty(self):
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+        rc, out, fake = self._run(rows, "master", self.env)
+        kinds = [c[1] for c in fake.calls if c[1] in ("launch-agent", "close-surface")]
+        self.assertEqual(kinds, ["launch-agent", "close-surface"], fake.calls)
+        self.assertEqual([c for c in fake.calls if c[1] == "close-surface"][0][2:], ["surface:1", "--reap"])
+
+    def test_succession_keeps_old_shell_when_queue_nonempty(self):
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+        rc, out, fake = self._run(rows, "master", self.env, queues={"surface:1": 7})
+        self.assertEqual([c for c in fake.calls if c[1] == "close-surface"], [], "큐가 찬 옛 좌석을 회수했다")
+        self.assertTrue(any("queue_nonempty(7)" in (l.get("msg") or "") for l in out.get("log", [])), out)
 
     def test_base_socket_keeps_old_default_cwd(self):
         rows = []

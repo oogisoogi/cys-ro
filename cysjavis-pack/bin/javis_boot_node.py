@@ -936,7 +936,10 @@ def _seat_event(role, old_ref, action, cwd):
     if not os.path.isfile(mod):
         return False
     summary = "빈 좌석 %s(에이전트 없음) → %s · cwd=%s" % (
-        old_ref, {"takeover": "승계 기동", "reap-launch": "회수 뒤 재기동"}.get(action, action), cwd or "(데몬 기본)")
+        old_ref, {"takeover": "승계 기동", "reap-launch": "회수 뒤 재기동",
+                  "succession-reaped": "승계 뒤 옛 좌석 회수(seat.reaped_after_succession)",
+                  "succession-reap-failed": "승계 뒤 옛 좌석 회수 실패"}.get(
+                      action, "승계 뒤 옛 좌석 보존 " + action.split(":", 1)[-1]), cwd or "(데몬 기본)")
     try:
         r = subprocess.run([sys.executable or "python3", mod, "emit", "agent.error",
                             "--field", "agent=%s" % role, "--field", "summary=%s" % summary],
@@ -944,6 +947,21 @@ def _seat_event(role, old_ref, action, cwd):
         return r.returncode == 0
     except Exception:
         return False
+
+
+def _reap_after_succession(role, old_ref):
+    """승계 뒤 role 없는 옛 빈 셸 좌석 정리(v115-dept · master#0e579100) — 반환 = 기록 1줄.
+    큐가 **비었다고 잴 수 있을 때만** close-surface --reap(best-effort). 큐가 남았거나 못 쟀으면 보존 —
+    큐는 좌석 단위이고 데몬도 큐가 찬 좌석의 reap 을 거부한다(큐 이전 = 범위 밖 · 메시지 유실 금지)."""
+    rc, out, _ = run(["cys", "queue", "list", "--surface", old_ref], timeout=8)
+    queued = [ln for ln in (out or "").splitlines() if len(ln.split("\t")) >= 4]
+    if rc != 0 or queued:
+        why = "queue_unknown" if rc != 0 else "queue_nonempty(%d)" % len(queued)
+        _seat_event(role, old_ref, "succession-kept:" + why, None)
+        return "%s 옛 빈 좌석 보존(사유=%s)" % (old_ref, why)
+    rc_r, _, _ = run(["cys", "close-surface", old_ref, "--reap"], timeout=12)
+    _seat_event(role, old_ref, "succession-reaped" if rc_r == 0 else "succession-reap-failed", None)
+    return "%s 옛 빈 좌석 회수(reap rc=%d · 큐 0)" % (old_ref, rc_r)
 
 
 def _reclaim_verdict(fresh_st, role, pid, cur_pid, now=None, grace=None):
@@ -1388,7 +1406,7 @@ def main():
     launched_at = None
     # ★v115-dept A2 ⓐ·B8: 좌석이 있으나 **비어 있으면**(자손 0) 입양-주입하지 않는다 — 빈 셸에
     #   각성문을 넣으면 claude 가 없어 큐만 쌓인다(904 교육부 7건). 처분은 empty_seat_action 한 곳.
-    takeover, old_ref = False, None
+    takeover, old_ref, act = False, None, None
     if row is not None:
         act = empty_seat_action(status, a.role)
         if act == "hold-grace":
@@ -1425,6 +1443,8 @@ def main():
             # 승계가 거절돼(claim_denied 등) role 이 여전히 옛 빈 좌석에 있다 — 빈 셸에 주입하지 않는다.
             emit("fail", "%s 빈 좌석 승계 실패 — role 이 옛 좌석에 남음(빈 셸 주입 0)" % old_ref)
             return done("takeover_failed", "empty_seat_takeover_denied", old_ref, code=1)
+        if takeover and act == "takeover":
+            emit("seat", _reap_after_succession(a.role, old_ref))
     else:
         emit("precheck", "%s 가 이미 role 보유(미각성) — 입양해 주입(재기동 안 함)" % row["surface_ref"])
     surface = row["surface_ref"]

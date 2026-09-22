@@ -3,7 +3,7 @@
 
   A2 부서장 좌석 회수 오판(1.1.4 VM 904 §5-②):
      ⓐ 편성·phoenix 가 빈 부서장 좌석을 채운다 — boot_node 는 빈 좌석을 「입양-주입」하지 않고 승계 기동,
-        phoenix 는 빈 셸 좌석을 스폰 성공으로 세지 않는다(→ fresh 폴백 도달)
+        (phoenix 스폰 판정의 빈 좌석 제외 = 트랙 D 906 소유 · master#6e260aed B안 — 이 파일 밖)
      ⓑ --cwd 미지정이면 부서 레지스트리 폴더(dept_registry_cwd — lib.rs 미러) · phoenix master_seat_cwd 3순위
      ⓒ 부팅 유예 안의 빈 좌석 = 회수 금지(_reclaim_verdict hold-grace)
   B8 빈 셸 좌석(에이전트가 붙었다 죽은 좌석) = 유예 뒤 회수-재기동(비승계 역할) · 이벤트 1줄
@@ -137,12 +137,6 @@ class A2DeptRegistryCwd(unittest.TestCase):
             else:
                 os.environ["CYS_DEPTS_JSON"] = saved[1]
 
-    def test_phoenix_spawn_check_excludes_empty_seat(self):
-        # 생산 스폰 판정(cys restore 뒤)이 빈 셸 좌석을 성공으로 세지 않는다 — 904: fresh_fallback_roles=[] 의 원인
-        src = open(os.path.join(BIN, "javis_phoenix.py"), encoding="utf-8").read()
-        i = src.index("res = spawn_production(socket, need")
-        block = src[i:src.index("still.append(role)", i)]
-        self.assertIn('s.get("seat") != "empty"', block)
 
 
 class _FakeCys:

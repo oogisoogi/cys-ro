@@ -2405,11 +2405,7 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
             live2 = live_role_surfaces(socket)
             still = []
             for role in need:
-                # ★v115-dept A2: 빈 좌석(seat=empty · 자손 0)은 스폰 성공이 아니다. 종전엔 비종료 좌석이면
-                #   무엇이든 성공으로 셌다 — 에이전트 없는 부서장 빈 셸이 「부활 완료」로 마킹돼 fresh 폴백
-                #   (빈 좌석 재사용·launch-agent)에 끝내 닿지 못하고 manual_seats 로 굳었다(904 §5-②:
-                #   fresh_fallback_roles=[] · master unverified). 좌석 사실이 empty 면 미스폰으로 재시도한다.
-                alive = [s for s in live2.get(role, []) if not s["exited"] and s.get("seat") != "empty"]
+                alive = [s for s in live2.get(role, []) if not s["exited"]]
                 if alive:
                     ref = alive[0]["surface"]
                     role_surface[role] = ref

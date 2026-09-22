@@ -2145,6 +2145,14 @@ class Preflight:
             return False
         return isinstance(data, dict) and self.RECAP_KEY in data
 
+    @staticmethod
+    def _recap_isolated(settings_path):
+        """C83 대상 술어(v115-review 발견 5) — 참가자 격리 프로필(`~/.cys/claude*`)만 참.
+        개발 맥의 개인 프로필(`~/.claude*`)·그 밖 경로는 거짓 — cys 밖 Claude 세션의 recap 을 끄지 않는다."""
+        base = os.path.join(os.path.realpath(os.path.expanduser("~")), ".cys")
+        rel = os.path.relpath(os.path.realpath(settings_path), base)
+        return not rel.startswith("..") and rel.split(os.sep, 1)[0].startswith("claude")
+
     def c83_recap_default(self):
         cid = "C83.recap-default"
         if self.skipped(cid):
@@ -2152,6 +2160,10 @@ class Preflight:
         targets, forbidden = resolve_registration_targets()   # ★G1 sentinel — C32 와 같은 대상
         if forbidden and not targets:
             self.add(cid, SKIP, "기입 대상 없음 — %s" % forbidden)
+            return
+        targets = [t for t in targets if self._recap_isolated(t)]   # 개인 프로필 무접촉(발견 5)
+        if not targets:
+            self.add(cid, SKIP, "격리 프로필(~/.cys/claude*) 없음 — 개인 프로필은 기입하지 않는다")
             return
         pending = [t for t in targets if not self._recap_seeded(t)]
         if not pending:

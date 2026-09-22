@@ -381,25 +381,30 @@ class A5A2DirectiveContract(unittest.TestCase):
 
 
 class B2RecapDefault(unittest.TestCase):
-    def _pf(self, targets):
+    def _pf(self, targets, home=None):
         import javis_preflight as pf
         p = pf.Preflight(True, set())
-        saved = pf.resolve_registration_targets
+        saved = pf.resolve_registration_targets, os.environ.get("HOME")
         pf.resolve_registration_targets = lambda: (targets, None)
+        if home:
+            os.environ["HOME"] = home          # 대상 술어가 ~ 를 가짜 홈으로 풀게(실 홈 무접촉)
         try:
             p.c83_recap_default()
         finally:
-            pf.resolve_registration_targets = saved
+            pf.resolve_registration_targets = saved[0]
+            if saved[1] is not None:
+                os.environ["HOME"] = saved[1]
         return [r for r in p.results if "C83" in json.dumps(r, ensure_ascii=False, default=str)]
 
     def test_seeds_false_and_respects_user_value(self):
         tmp = tempfile.mkdtemp()
-        a, b = os.path.join(tmp, "a", "settings.json"), os.path.join(tmp, "b", "settings.json")
+        a, b = (os.path.join(tmp, ".cys", "claude", "settings.json"),
+                os.path.join(tmp, ".cys", "claude-b", "settings.json"))
         os.makedirs(os.path.dirname(a))
         os.makedirs(os.path.dirname(b))
         json.dump({"hooks": {}}, open(a, "w"))
         json.dump({"awaySummaryEnabled": True}, open(b, "w"))
-        self._pf([a, b])
+        self._pf([a, b], home=tmp)
         self.assertIs(json.load(open(a))["awaySummaryEnabled"], False)
         self.assertIn("hooks", json.load(open(a)), "다른 키를 잃었다")
         self.assertIs(json.load(open(b))["awaySummaryEnabled"], True, "사용자 값을 덮었다")
@@ -407,6 +412,19 @@ class B2RecapDefault(unittest.TestCase):
     def test_registered_in_run_order(self):
         src = open(os.path.join(BIN, "javis_preflight.py"), encoding="utf-8").read()
         self.assertIn("self.c83_recap_default,", src)
+
+    def test_personal_profile_untouched(self):
+        # v115-review 발견 5: 개발 맥 개인 프로필(~/.claude*)엔 기입하지 않는다 — 격리 프로필만 기입(대조군)
+        tmp = tempfile.mkdtemp()
+        personal = [os.path.join(tmp, ".claude", "settings.json"), os.path.join(tmp, ".claude-work", "settings.json")]
+        iso = os.path.join(tmp, ".cys", "claude", "settings.json")
+        for f in personal + [iso]:
+            os.makedirs(os.path.dirname(f))
+            json.dump({"hooks": {}}, open(f, "w"))
+        self._pf(personal + [iso], home=tmp)
+        for f in personal:
+            self.assertNotIn("awaySummaryEnabled", json.load(open(f)), "개인 프로필에 기입했다: %s" % f)
+        self.assertIs(json.load(open(iso))["awaySummaryEnabled"], False, "격리 프로필 기입 안 됨(대조군)")
 
 
 class B3DrainIssuer(unittest.TestCase):

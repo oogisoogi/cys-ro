@@ -7169,7 +7169,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
       `role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`,
       "health",
       `ℹ '${payload.role ?? ""}' 자리가 다른 칸으로 옮겨졌습니다`,
-      `surface:${payload.prev_surface ?? sid ?? ""} 이 비어 있어 부활 절차가 역할을 새 칸에 이어 붙였습니다. 옛 칸의 셸은 그대로 쓸 수 있습니다.`,
+      `surface:${payload.prev_surface ?? sid ?? ""} 이 비어 있어 부활 절차가 역할을 새 칸에 이어 붙였습니다. 옛 칸은 비어 있어 곧 정리됩니다(전할 말이 남아 있으면 그대로 둡니다).`,
     );
     return;
   }

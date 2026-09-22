@@ -146,6 +146,7 @@ import {
   type AlarmRecord,
 } from "./toastttl";
 import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
 declare global {
@@ -185,6 +186,8 @@ const invoke = (cmd: string, args?: Record<string, unknown>) => window.__TAURI__
 // winScaled: 재부팅 직후 Windows 는 Defender 스캔·콜드 디스크·ConPTY 기동이 겹쳐 같은 일이 더 걸린다.
 // 맥 기준값을 그대로 쓰면 '살아 있는 데몬을 죽었다'고 오판하기 쉬우므로 그 축에서만 2배로 연다.
 const winScaled = (ms: number): number => scaleForPlatform(ms, IS_WINDOWS);
+// ★v115-restore(B1 ②): 접힌 출력 안내(scrollfollow.shouldShowFoldHint) = 앱 세션당 1회(pane 무관).
+let foldHintShown = false;
 const T_REG = winScaled(8_000); //  넘기면: 레지스트리 미조회 — 등재 부서 탭 보장이 이번 기동엔 안 걸린다(다음 기동 재시도)
 const T_LIST = winScaled(8_000); // 넘기면: 그 소켓은 ok:false — 탭은 보존되고 이번 회차 입양만 건너뛴다
 const T_STATUS = winScaled(10_000); // 넘기면: 생존 '판정 불가' — ★재기동하지 않고 보존한다(중복 launch 폭주 차단)
@@ -2838,9 +2841,16 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     (e: WheelEvent) => {
       // 위로 스크롤 = 즉시 해제 — rAF 판정까지 기다리면 스트리밍 중 write 스냅이 먼저 끌어내려
       // 사용자가 위로 못 올라가는 경주가 생긴다. 실제 위치 판정은 xterm이 휠을 처리한 뒤(rAF).
-      if (e.deltaY < 0) follow = false;
+      // ★v115-restore(B1 ①): 재고정은 아래로 휠(바닥 실측)·키 입력 뒤에만 — scrollfollow.nextFollow.
+      const dy = e.deltaY;
+      if (dy < 0) follow = false;
       requestAnimationFrame(() => {
-        follow = atBottom();
+        follow = nextFollow(follow, dy, atBottom(), false);
+        // B1 ②: 맨 위에 닿으면 접힌 출력 안내 1회(앱 세션당)
+        if (shouldShowFoldHint(foldHintShown, dy, term.buffer.active.viewportY)) {
+          foldHintShown = true;
+          toast("feed", FOLD_HINT_TITLE, FOLD_HINT_BODY);
+        }
       });
     },
     { passive: true },

@@ -2,6 +2,17 @@
 
 브랜치 `fix/v115-restore` ← 377657dc(v1.1.4 태그) · push 0 · 판번 bump 0.
 
+## §0-r2 델타(worker-2@surface:908 · 2026-09-22 13:2x) — B1 ①② 구현 완료
+- **B1 ①**: 바닥 고정 재판정을 순수 함수 `ui/src/scrollfollow.ts` `nextFollow(prevFollow, deltaY, atBottom, keyInput)` 로 뺐다. 위로 휠 뒤엔 「아래로 휠 후 바닥 실측(prevFollow ∨ atBottom) 또는 키 입력」 때만 재고정 — 옛 rAF `follow = atBottom()` 되돌림 제거(`main.ts` 휠 핸들러).
+- **B1 ②**: 휠 위로 + 뷰포트 맨 위(viewportY ≤ 0) 도달 시 토스트 「더 위의 내용은 클로드가 접어 두었습니다 — Ctrl+O 로 전체 보기」 · 앱 세션당 1회(모듈 전역 `foldHintShown` · pane 무관) · 판정 = `shouldShowFoldHint`.
+- 시험 = `ui/src/scrollfollow.test.ts` 7건(트랙패드 소량 델타 유지 · 아래로 휠 재고정 · 키/가로휠 · 안내 1회 · 안내 조건 · 문구 내부용어 0 · 배선 호출부 계수). 뮤턴트 2/2 KILLED(순수 함수 되돌림 복원 · main.ts 배선 되돌림 복원).
+- 게이트: ui `bun test` 1072/0 · tsc 신규 0(★이 워크트리는 ui/node_modules 부재로 **HEAD 기준선부터 15건 적색** — 기준선 사본 대조 diff 0으로 판정. 종전 「tsc 0」 표기는 이 축에선 성립 안 함) · secret-scan --all clean · cargo 무재실행(변경 = ui 만 · 전임 실측 승계).
+- 손 시험 【미측정】(이 세션 GUI 조작 수단 없음) → master cmux-cua 또는 박사님 윈/맥 실기: 클로드 스트리밍 중 트랙패드로 살짝 위로 → 끌려 내려가지 않는가 · 맨 위에서 안내 1회.
+- 알려진 한계: ② 안내는 pane 종류를 묻지 않는다 — 일반 셸 pane 에서 스크롤백 맨 위에 닿아도 같은 문구가 1회 뜬다(브리프 조건 그대로 · 좁히려면 pane→agent 판정 배선 필요).
+
+### 이월(1.1.5 제외 · master 판정 13:0x)
+- **B1 ③ fullscreen 계정 우회**: 대체 화면 + 트래킹 미요청일 때 휠을 PgUp/PgDn 대신 앱 보고로 보내는 안. 제외 사유 = ⑴ 그 모드의 클로드가 휠 보고를 실제로 받아 스크롤하는지 【미측정】 ⑵ `wheelgate.ts` 주석의 입력 히스토리 오염 위험(휠이 방향키로 합성되면 프롬프트 히스토리가 뒤섞인다) ⑶ 이 기기에서 관측된 사용자 모드는 inline(`alt_screen=false`)뿐. 재개 조건 = fullscreen 롤아웃 계정 1곳에서 휠 보고 수신 여부를 먼저 실측.
+
 ## §0 델타(후임 먼저 읽을 것 · 13:0x · CTX 61% 매듭)
 - 끝 = A1·A3·A4(조사+수리)·B4·B5·B6 + 게이트 정리 2커밋(d126b525·b326671c). **남은 것 = B1 수리 구현 1건뿐**(판별까지 끝).
 - 비가역: push 0(재승인 뒤 1건) · 판번 bump 0 · 라이브 cysr 무접촉(B1 = 코드 판독 + 로컬 pty 탐침만).
@@ -42,7 +53,7 @@
 A4 원인 정본 = `~/axdev/master/reports/cysr-115-2026-09-22/a4-vm-logs/A4-FINDINGS.md`.
 
 ## 미완
-- B1 수리 구현(§0 설계) — 판별 완료.
+- ~~B1 수리 구현~~ → §0-r2 에서 ①② 완료 · ③ 이월.
 - 게이트 실측(13:0x): lib 530/0 · cysd 1012/0(3연속) · cys 278/0 · ui 1065/0 · tsc 0 · secret-scan --all clean · cys-app 미측정(사이드카 부재).
 
 ## 함정

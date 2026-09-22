@@ -1971,6 +1971,12 @@ pub struct Daemon {
     /// ★D7⑵ — 역할 이름 → 주차된 미배달 큐(`ParkedQueue`). 역할 좌석이 승계를 받기 전에 스스로
     /// 죽으면 그 큐를 폐기하지 않고 여기 둔다. 같은 역할을 받는 다음 좌석이 상속한다
     /// (`handlers::inherit_parked_queue`). 유계 = TTL·항목수·바이트 상한(`PARKED_QUEUE_*`).
+    ///
+    /// ⚠**보장 범위(정직) — 이 원장은 WAL 영속이 아니다.** 데몬이 재기동하면 주차분은 사라진다
+    /// (`persist_queue_state` 는 좌석의 `pending_queue` 만 싣는다). **회귀는 아니다**: 종전에는
+    /// 같은 항목이 좌석 종료 시점에 이미 폐기됐으므로 재기동 생존이 애초에 0 이었다. 이 수리가
+    /// 넓힌 것은 「같은 데몬 안에서 좌석이 교체되는 창」이고, 그 창이 09-22 VM 사고의 창이다
+    /// (357.7초 · 데몬 재기동 0회). 재기동을 넘겨야 한다면 별 과제다 — 여기서 그렇다고 말하지 않는다.
     pub parked_queues: Mutex<HashMap<String, ParkedQueue>>,
     /// ★T-0147-4: 생성자 원장 — 새 surface_id → (생성을 요청한 발신 surface_id, epoch초).
     /// `surface.create`가 pane 안에서 호출됐을 때(발신이 surface로 해석될 때)만 기록한다.

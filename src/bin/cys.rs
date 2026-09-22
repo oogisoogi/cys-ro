@@ -1399,6 +1399,17 @@ fn main() {
             }
             // 완전 초기화는 데몬을 죽이는 명령 — 어떤 경로로도 자동 기동을 발화하면 안 된다.
             | Command::FactoryReset { .. }
+            // ★D9(1.1.5 트랙 DAEMON) — **관측 구독은 데몬을 절대 띄우지 않는다.**
+            //
+            // `events` 는 다른 관측 명령과 성질이 다르다: `--reconnect` 로 **오래 사는 고리**라,
+            // 소켓이 사라진 순간을 「일시 장애」로 읽고 재연결하다 autostart 를 발화한다. 그 결과가
+            // 09-22 VM 실측이다 — 행정부를 닫아 소켓을 지웠는데 부서 CSO 의 구독(pid 34937)이
+            // cysd 40288 을 **자기 자식으로** 되살렸다(depts.json 에서 제거된 부서 = 좌석 0 고아
+            // 데몬). ↻ 때 교육부 데몬 45534·53833 도 같은 부모를 가졌다.
+            // ⇒ 「자가치유」가 생명주기를 되돌려 고아를 만든다. 관측자는 관측만 한다.
+            //   소켓 부재 = 재시도 대기이고, 부서가 레지스트리에서 사라졌으면 구독을 끝낸다
+            //   (`stream_events` 의 `dept_registration` 게이트).
+            | Command::Events { .. }
     ) {
         AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
     }
@@ -4124,8 +4135,25 @@ fn stream_events(
         match attempt {
             // (2c) transient만 재연결 — 비-transient는 즉시 반환(무한루프 차단)
             Err(e) if reconnect && is_transient_event_error(&e) => {
-                eprintln!("[events] {e}; reconnecting in 1s...");
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // ★D9: 재연결 **전에** 「이 부서가 아직 있는가」를 묻는다. 닫힌 부서라면 재시도가
+                //   영원히 실패하는 것이 문제가 아니라, 그 재시도가 예전에 데몬을 되살렸다는 것이
+                //   문제였다(autostart 는 위 match 에서 껐다). 여기서는 **정직하게 끝낸다** —
+                //   끝내지 않으면 지워진 부서의 구독이 로그를 채우며 영원히 남는다.
+                //   종료 근거는 `Deregistered` **하나뿐**이다: `Unknown`(레지스트리 읽기 실패·파손)은
+                //   종료하지 않는다(오타 한 줄로 전 부서 구독이 죽지 않게) · `NotDept`(본부)도 아니다.
+                match cys::dept_registration(&socket_path()) {
+                    cys::DeptRegistration::Deregistered => {
+                        eprintln!(
+                            "[events] {e}; 이 부서는 레지스트리(depts.json)에 없습니다 — \
+                             닫힌 부서로 판단해 구독을 종료합니다(데몬을 띄우지 않습니다)."
+                        );
+                        return Ok(());
+                    }
+                    _ => {
+                        eprintln!("[events] {e}; reconnecting in 1s...");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
+                }
             }
             other => return other,
         }

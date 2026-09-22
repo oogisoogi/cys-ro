@@ -2502,6 +2502,171 @@ mod dept_registry_cwd_tests {
     }
 }
 
+/// ★D9(1.1.5 트랙 DAEMON) — 소켓 → 부서 이름(`dept_socket_path` 의 역함수 · 순수 판정부).
+/// unix = 소켓 **부모 폴더 이름**, windows = 파이프 **마지막 컴포넌트**에서 `cys-dept-` 접두를 벗긴다.
+/// 접두가 없으면(본부 `cys.sock`·`\\.\pipe\cys`) `None` = **부서 소켓이 아니다**.
+pub fn dept_name_from_socket_for(sock: &Path, windows: bool) -> Option<String> {
+    let last = if windows {
+        sock.to_string_lossy()
+            .rsplit(|c| c == '\\' || c == '/')
+            .next()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        sock.parent()?.file_name()?.to_string_lossy().into_owned()
+    };
+    last.strip_prefix("cys-dept-")
+        .filter(|n| !n.is_empty())
+        .map(|n| n.to_string())
+}
+
+/// [`dept_name_from_socket_for`] 의 실환경 판.
+pub fn dept_name_from_socket(sock: &Path) -> Option<String> {
+    dept_name_from_socket_for(sock, cfg!(windows))
+}
+
+/// ★D9 — 이 소켓이 가리키는 부서가 레지스트리(`depts.json`)에 **아직 있는가**.
+///
+/// 네 상태를 **배타적으로** 가른다. 「없다」와 「우리가 못 읽었다」를 한 칸에 두면 읽기 실패가
+/// 종료로 번져 살아 있는 구독을 끊는다(그 반대 오류가 D9 자신이다 — 사라진 부서를 되살렸다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeptRegistration {
+    /// 부서 소켓이 아니다(본부) — 등록 개념이 없다.
+    NotDept,
+    /// 레지스트리에 있다.
+    Registered,
+    /// 부서 소켓인데 레지스트리에 없다 = 닫힌 부서. **구독을 끝낼 유일한 근거다.**
+    Deregistered,
+    /// 레지스트리를 읽지 못했다·파손 = 판정 불가. 종료 근거가 **아니다**(재시도 유지).
+    Unknown,
+}
+
+/// [`DeptRegistration`] 의 순수 판정부. `reg` = 파싱된 `depts.json`(읽기 실패·파손이면 `None`).
+/// 항목 매칭은 `dept_registry_cwd_in` 과 같은 규약이다 — 키 이름 또는 항목의 `socket` 칸 일치.
+pub fn dept_registration_in(
+    reg: Option<&serde_json::Value>,
+    sock: &Path,
+    windows: bool,
+) -> DeptRegistration {
+    let Some(name) = dept_name_from_socket_for(sock, windows) else {
+        return DeptRegistration::NotDept;
+    };
+    let Some(reg) = reg else {
+        return DeptRegistration::Unknown;
+    };
+    let Some(depts) = reg["depts"].as_object() else {
+        // `depts` 칸이 아예 없는 것은 **파손이 아니라 「부서 0개」** 다(초기 상태) — 등록 없음.
+        return if reg.is_object() {
+            DeptRegistration::Deregistered
+        } else {
+            DeptRegistration::Unknown
+        };
+    };
+    let sock_s = sock.to_string_lossy();
+    for (k, meta) in depts {
+        if k == &name {
+            return DeptRegistration::Registered;
+        }
+        if meta["socket"].as_str() == Some(sock_s.as_ref()) {
+            return DeptRegistration::Registered;
+        }
+    }
+    DeptRegistration::Deregistered
+}
+
+/// [`dept_registration_in`] 의 실파일 판 — `CYS_DEPTS_JSON` ‖ `~/.cys/depts.json`.
+pub fn dept_registration(sock: &Path) -> DeptRegistration {
+    let path = std::env::var("CYS_DEPTS_JSON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".cys/depts.json"));
+    let parsed = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+    dept_registration_in(parsed.as_ref(), sock, cfg!(windows))
+}
+
+#[cfg(test)]
+mod dept_registration_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// ★D9 — 소켓에서 부서 이름을 되찾고, 본부 소켓은 **부서가 아니라고** 판정한다.
+    #[test]
+    fn d9_dept_name_from_socket_both_platforms() {
+        assert_eq!(
+            dept_name_from_socket_for(Path::new("/h/.local/state/cys-dept-3/cys.sock"), false)
+                .as_deref(),
+            Some("3")
+        );
+        assert_eq!(
+            dept_name_from_socket_for(Path::new("/h/.local/state/cys/cys.sock"), false),
+            None,
+            "본부 소켓이 부서로 읽혔다 — 본부 구독이 종료 대상이 된다"
+        );
+        assert_eq!(
+            dept_name_from_socket_for(Path::new(r"\\.\pipe\cys-dept-edu"), true).as_deref(),
+            Some("edu")
+        );
+        assert_eq!(
+            dept_name_from_socket_for(Path::new(r"\\.\pipe\cys"), true),
+            None,
+            "윈도 기본 파이프가 부서로 읽혔다"
+        );
+        // 접두만 있고 이름이 빈 경우도 부서가 아니다(빈 이름으로 레지스트리를 훑지 않게).
+        assert_eq!(
+            dept_name_from_socket_for(Path::new("/h/.local/state/cys-dept-/cys.sock"), false),
+            None
+        );
+    }
+
+    /// ★D9 — 네 상태가 **배타적으로** 갈린다. 특히 「읽기 실패」가 `Deregistered` 로 붕괴하지 않는다.
+    #[test]
+    fn d9_dept_registration_four_states_are_exclusive() {
+        let sock = Path::new("/h/.local/state/cys-dept-3/cys.sock");
+        let hq = Path::new("/h/.local/state/cys/cys.sock");
+
+        // ① 본부 = NotDept (레지스트리 내용과 무관)
+        assert_eq!(dept_registration_in(None, hq, false), DeptRegistration::NotDept);
+
+        // ② 읽기 실패·파손 = Unknown (종료 근거 아님)
+        assert_eq!(dept_registration_in(None, sock, false), DeptRegistration::Unknown);
+        let broken = serde_json::json!("not an object");
+        assert_eq!(
+            dept_registration_in(Some(&broken), sock, false),
+            DeptRegistration::Unknown,
+            "파손된 레지스트리가 종료를 유발한다 — 한 줄 오타로 전 부서 구독이 죽는다"
+        );
+
+        // ③ 이름 키로 등록 / 소켓 칸으로 등록 — 두 규약 모두
+        let by_name = serde_json::json!({"depts": {"3": {"cwd": "/w/3"}}});
+        assert_eq!(
+            dept_registration_in(Some(&by_name), sock, false),
+            DeptRegistration::Registered
+        );
+        let by_sock = serde_json::json!({
+            "depts": {"other": {"socket": "/h/.local/state/cys-dept-3/cys.sock"}}
+        });
+        assert_eq!(
+            dept_registration_in(Some(&by_sock), sock, false),
+            DeptRegistration::Registered,
+            "소켓 칸 일치 규약이 dept_registry_cwd_in 과 갈라졌다"
+        );
+
+        // ④ 닫힌 부서 = Deregistered (D9 의 유일한 종료 근거)
+        let without = serde_json::json!({"depts": {"9": {"cwd": "/w/9"}}});
+        assert_eq!(
+            dept_registration_in(Some(&without), sock, false),
+            DeptRegistration::Deregistered
+        );
+        // 부서 0개(초기 상태)도 등록 없음이다 — `depts` 칸 부재는 파손이 아니다.
+        let empty = serde_json::json!({});
+        assert_eq!(
+            dept_registration_in(Some(&empty), sock, false),
+            DeptRegistration::Deregistered
+        );
+    }
+}
+
 /// `dept_registry_cwd_in` 의 실파일판 — `CYS_DEPTS_JSON` ‖ `~/.cys/depts.json`.
 pub fn dept_registry_cwd(sock: &Path) -> Option<String> {
     let reg = std::env::var("CYS_DEPTS_JSON")

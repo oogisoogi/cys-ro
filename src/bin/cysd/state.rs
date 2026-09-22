@@ -376,6 +376,29 @@ pub fn queue_inherited_payload(
     })
 }
 
+/// `surface.create_failed` payload — ★D7⑶ 잔여. 종전엔 create 실패가 **어떤 이벤트도 남기지
+/// 않았다**(호출자 stderr 1줄뿐이고 09-22 VM 증거에 그 stderr 가 없다).
+///
+/// 이 파일의 규약대로 빌더로 분리한다 — json! 페이로드는 컴파일러 강제 밖이라 발행처에서 손으로
+/// 쓰면 나중 수정이 조용히 갈라진다(위 큐 빌더 3종과 같은 이유). 그리고 발행 자체는 `openpty`
+/// 실패를 시험에서 강제할 수 없어 **양성 축이 미측정**이므로, 적어도 스키마는 실측 가능해야 한다.
+///
+/// 세 칸이 함께 있어야 쓸모가 있다: `role`(어느 기동 시도인가) · `takeover_from`(승계 시도였나) ·
+/// `caller_pid`(누가 시켰나). 하나라도 빠지면 어느 시도가 실패했는지 고를 수 없다.
+pub fn surface_create_failed_payload(
+    reason: &str,
+    role: Option<&str>,
+    takeover_from: Option<u64>,
+    caller_pid: Option<u32>,
+) -> Value {
+    json!({
+        "reason": reason,
+        "role": role,
+        "takeover_from": takeover_from,
+        "caller_pid": caller_pid,
+    })
+}
+
 pub fn queue_dropped_payload(
     reason: &str,
     dropped: &[QueueEntry],
@@ -7647,6 +7670,21 @@ mod tests {
     /// 값 불변 + queue_entry_ids 순서 보존. `entry_ids` 키(W-id 에코 계약)는 절대 부재.
     /// ★G4(W4-C): reclaim=None(기존 경로 전부)이면 cleared_by/via 키 자체가 없어야 하고
     /// (payload 바이트 동일 = 하위호환의 기계 증명), Some 이면 두 키만 additive 로 실린다.
+    #[test]
+    fn d7_surface_create_failed_payload_carries_all_three_axes() {
+        let p = surface_create_failed_payload("openpty failed: x", Some("master"), Some(7), Some(42));
+        assert_eq!(p["reason"], json!("openpty failed: x"));
+        assert_eq!(p["role"], json!("master"), "어느 역할 기동이 실패했나");
+        assert_eq!(p["takeover_from"], json!(7), "승계 시도였나");
+        assert_eq!(p["caller_pid"], json!(42), "누가 시켰나");
+        // 부재는 null 로 남는다 — 「없다」와 「안 실었다」를 구별하려면 키가 있어야 한다.
+        let q = surface_create_failed_payload("e", None, None, None);
+        for k in ["role", "takeover_from", "caller_pid"] {
+            assert!(q.get(k).is_some(), "{k} 키가 사라졌다");
+            assert_eq!(q[k], Value::Null, "{k} 가 null 이 아니다");
+        }
+    }
+
     #[test]
     fn d7_parked_cap_split_evicts_oldest_on_both_axes() {
         let mk = |n: usize, bytes: usize| -> Vec<QueueEntry> {

@@ -3422,7 +3422,26 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                                "claude_config_dir": s.claude_config_dir.lock().unwrap().clone()}),
                     ))
                 }
-                Err(e) => Reply::Single(err_response(&id, "spawn_failed", &e)),
+                Err(e) => {
+                    // ★D7⑶ 잔여 구멍: 종전엔 create 실패가 **어떤 이벤트도 남기지 않았다** —
+                    //   호출자(launch-agent)의 stderr 1줄뿐이고 그것은 09-22 VM 증거에 보존되지
+                    //   않았다. 그래서 「부서장 좌석 승계가 왜 실패했나」의 후보 분기 중 하나
+                    //   (`no_surface` = create 자체 실패)를 사후에 배제할 수 없었다.
+                    //   ⇒ 데몬 쪽 원장에 1줄 남긴다(role·승계 요청·창작자 pid 동봉 — 그 셋이
+                    //   없으면 어느 기동 시도가 실패했는지 고를 수 없다).
+                    daemon.bus.publish(
+                        "surface.create_failed",
+                        "surface",
+                        None,
+                        crate::state::surface_create_failed_payload(
+                            &e,
+                            (!role_for_announce.is_empty()).then_some(role_for_announce.as_str()),
+                            seat_takeover_from,
+                            caller_pid,
+                        ),
+                    );
+                    Reply::Single(err_response(&id, "spawn_failed", &e))
+                }
             }
         }
 
@@ -14958,6 +14977,59 @@ mod tests {
         );
         // 역할 없는 좌석은 role=null(역할 좌석과 스크래치를 소비부가 구분해야 한다).
         assert_eq!(ev2["payload"]["role"], Value::Null);
+    }
+
+    /// ★D7⑶ 잔여 — **create 실패가 데몬 원장에 남는다**(배선 핀 + 음성 대조).
+    ///
+    /// 종전엔 `spawn_failed` 응답만 돌아가고 이벤트가 0건이었다. 호출자(launch-agent)는 그것을
+    /// stderr 1줄로 적고 끝내는데 09-22 VM 증거에 그 stderr 가 없다 — 그래서 부서장 승계 실패의
+    /// 후보 분기(「create 자체가 실패했다」)를 사후에 배제할 수 없었다.
+    ///
+    /// ⚠**양성 축은 미측정이다(정직 고지)**: `create_surface_with_env` 의 유일한 Err 는
+    /// `openpty failed` 이고, 그것을 시험에서 강제하려면 fd 를 고갈시켜야 한다 — 시험 바이너리
+    /// 전체를 불안정하게 만드는 값이라 하지 않았다. 없는 실행파일·없는 cwd 는 **실패가 아니다**
+    /// (PTY·셸은 떠서 좌석이 생기고 명령만 안에서 죽는다 — 1차·2차 픽스처가 그것으로 거짓 실패를
+    /// 냈다). ⇒ 여기서 재는 것은 ①발행 지점이 Err 아크에 실재한다 ②스키마 빌더를 쓴다
+    /// ③**성공 경로에서는 나오지 않는다**(음성 대조 = 실행되는 축) 셋이다.
+    /// payload 내용 자체는 `state::tests::d7_surface_create_failed_payload_carries_all_three_axes`
+    /// 가 실측한다.
+    #[test]
+    fn d7_surface_create_failure_publish_is_wired_and_silent_on_success() {
+        let src = include_str!("handlers.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let a = prod
+            .find("Err(e) => {\n                    // ★D7⑶ 잔여 구멍")
+            .expect("create 의 Err 아크에 발행 지점이 없다 — spawn_failed 가 다시 무음이 된다");
+        let arm = &prod[a..a + 1200];
+        assert!(
+            arm.contains("\"surface.create_failed\","),
+            "Err 아크가 surface.create_failed 를 발행하지 않는다"
+        );
+        assert!(
+            arm.contains("crate::state::surface_create_failed_payload("),
+            "payload 를 손으로 쓴다 — 빌더 규약 이탈(발행처마다 스키마가 갈라진다)"
+        );
+
+        // ★음성 대조(실행되는 축): 성공 경로는 이 이벤트를 내지 않는다.
+        let daemon = claim_daemon();
+        let Reply::Single(ok) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": "worker-fail-neg"}),
+            },
+            Some(995_804_u32),
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(ok["ok"], json!(true), "전제: 정상 create ({ok})");
+        assert_eq!(
+            daemon.bus.tail(200).iter()
+                .filter(|e| e["name"] == json!("surface.create_failed")).count(),
+            0,
+            "성공 경로가 실패 이벤트를 냈다 — 과잉 고지"
+        );
     }
 
     /// ★D7⑶ — **승계가 왜 일어나지 않았는지**가 거절 이벤트에 라벨로 남는다.

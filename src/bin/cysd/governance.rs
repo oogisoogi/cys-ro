@@ -674,7 +674,9 @@ fn check_agent_death(
                    "restart_count": restart_counts.get(&s.id).copied().unwrap_or(0)}),
         );
         // ★v112-wake: role 좌석(master 외)의 에이전트 사망 = master 가 봐야 하는 사건 — 1줄 각성.
-        if let Some(r) = role.as_deref().filter(|r| *r != "master") {
+        // ★v115-restore(B4): 각성은 지금 그 역할을 쥔 좌석만(이벤트 agent.exited 는 종전대로 남긴다).
+        let held = crate::watch_wake::role_held_now(daemon, &s);
+        if let Some(r) = held.as_deref().filter(|r| *r != "master") {
             let sref = cys::surface_ref(s.id);
             crate::watch_wake::wake_master(
                 daemon,
@@ -4471,7 +4473,8 @@ pub(crate) fn check_idle(daemon: &Daemon) {
             );
             // ★v112-wake: role 좌석(master 외)의 입력줄에 미제출 지시가 남은 채 유휴면 master 를 깨운다.
             //   빈 입력줄의 유휴는 정상 대기라 깨우지 않는다(이벤트만 — 종전 동작).
-            let role = s.role.lock().unwrap().clone();
+            // ★v115-restore(B4): 역할표가 이 좌석을 가리킬 때만 — 옛 자리의 남은 role 칸으로 깨우지 않는다.
+            let role = crate::watch_wake::role_held_now(daemon, &s);
             if let Some(role) = role.filter(|r| r != "master") {
                 if seat_input_line(&s) == InputLine::Occupied {
                     let sref = cys::surface_ref(s.id);

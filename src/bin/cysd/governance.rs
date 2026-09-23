@@ -5253,8 +5253,14 @@ pub(crate) enum PromptBoundary {
 ///   규칙으로 폴백한다(무회귀).
 /// * `input` — `input_line_state` 결과. `Unknown` 은 `Occupied` 와 같이 막는다.
 /// * `alt_screen` — vt100 대체화면(전체화면 TUI·대화상자). 그 화면의 입력줄은 프롬프트가 아니다.
-/// * `approval_pending` — 어댑터 `approval_patterns` 가 걸린 승인 대기 화면. 그 창에 본문을
-///   꽂으면 Return 이 승인 버튼을 누른다(readiness 모듈이 박제한 관문 사고와 같은 부류).
+/// * `approval_pending` — 승인 대기 화면. 그 창에 본문을 꽂으면 Return 이 승인 버튼을 누른다
+///   (readiness 모듈이 박제한 관문 사고와 같은 부류). 호출부(`deliver_queued`)가 두 재료의 OR 로
+///   만든다: ⑴ 이 좌석의 첫기동 관문 feed(`pending_gate_items`) ⑵ 어댑터 `approval_patterns` 가
+///   화면 **마지막 가로줄 아래 꼬리**에 보이는가(`approval_in_prompt_tail`).
+///   ★(dbg-queue-approval 2026-09-23) 종전 이 줄은 ⑵를 말했지만 호출부는 ⑴만 셌다 — 도구 허락 창
+///   (`Do you want to proceed? ❯ 1. Yes`)을 막은 것은 이 축이 아니라 입력줄 축이었다: claude 2.1.280
+///   선택 메뉴는 커서를 `❯` 글자 칸 **위**에 선언해 커서 앞에 마커가 없으므로 `Unknown` 이 됐다(실측
+///   classic (21,1)·fullscreen (20,1)). 그 칸이 한 칸만 옮겨져도 `Ready` 가 되던 우연을 ⑵가 대신한다.
 pub(crate) fn prompt_boundary_verdict(
     marker_seen: bool,
     input: InputLine,
@@ -5303,7 +5309,13 @@ fn observe_prompt(
     marker: &str,
 ) -> (bool, Option<(String, String)>, bool) {
     let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
-    let screen = p.screen();
+    observe_screen(p.screen(), marker)
+}
+
+/// `observe_prompt` 의 본체(락 밖 · 이미 잡은 화면에서 읽는다). TICKET=dbg-queue-approval — 큐 배달자가
+/// 같은 락 안에서 화면 행 스냅샷(`approval_in_prompt_tail` 재료)까지 뜨도록 갈랐다(두 번 잡으면 두
+/// 재료가 다른 순간의 화면일 수 있다 · agy R1 #3).
+fn observe_screen(screen: &vt100::Screen, marker: &str) -> (bool, Option<(String, String)>, bool) {
     let (rows, cols) = screen.size();
     let (cr, cc) = screen.cursor_position();
     let marker_seen = screen.contents().contains(marker);
@@ -5344,6 +5356,67 @@ fn observe_prompt(
 pub(crate) fn is_rule_row(row: &str) -> bool {
     let t = row.trim();
     t.chars().count() >= 8 && t.chars().all(|c| c == '─')
+}
+
+/// 승인 대기 화면 판독(순수) — 어댑터 `approval_patterns` 를 화면 **마지막 가로줄 아래 꼬리**에서만
+/// 찾는다. TICKET=dbg-queue-approval.
+///
+/// 왜 꼬리인가: 화면 전량을 읽으면 모델이 **답 본문**에 쓴 「Do you want to proceed …?」 가 입력창이
+/// 열린 좌석을 막아, 그 질문에 대한 master 의 답(큐)이 영영 못 들어간다(교착). claude 의 입력창은
+/// 가로줄 두 개 사이이고 그 아래는 상태줄뿐이며, 허락 창은 입력창을 대신해 **가로줄 한 개 아래**에
+/// 그려진다(2.1.280 classic·fullscreen 실측) — 그래서 마지막 가로줄 아래만 보면 둘이 갈린다.
+///
+/// 가로줄이 화면에 하나도 없을 때(허락 창이 창 높이보다 길어 윗 가로줄이 밀려난 화면 — 10행 창 실측
+/// · agy R1 #1): **커서 행이 번호 선택지**(`❯ 1. Yes` = 마커 뒤 `숫자.`)이면 화면 전량을 읽고, 아니면
+/// `false`(판단하지 않는다 — 마커·입력줄·대체화면 축이 남는다). 선택지 조건을 두는 이유: 가로줄이 없는
+/// 어댑터(codex·gemini 등)의 준비 화면에서 전량 판독이 본문 속 흔한 낱말(`Allow` 등)로 좌석을 막는
+/// 기아를 만들지 않게 한다.
+pub(crate) fn approval_in_prompt_tail(
+    rows: &[String],
+    cursor_row: usize,
+    marker: &str,
+    patterns: &[regex::Regex],
+) -> bool {
+    let region = match rows.iter().rposition(|r| is_rule_row(r)) {
+        Some(last_rule) => &rows[last_rule + 1..],
+        None if rows
+            .get(cursor_row)
+            .is_some_and(|r| is_numbered_choice_row(r, marker)) =>
+        {
+            rows
+        }
+        None => return false,
+    };
+    let text = region.join("\n");
+    patterns.iter().any(|re| re.is_match(&text))
+}
+
+/// approval 패턴 컴파일본 캐시(프로세스 수명 · 패턴 **문자열**이 키). 같은 문자열의 `Regex` 는 결정론이라
+/// 무효화가 필요 없다(`ScanCaches::approval_regex` 와 같은 규약) — agents.json 이 바뀌면 새 문자열이 새 키로
+/// 들어온다. 큐 보류가 몇 시간 이어져도 컴파일은 패턴당 1회다(agy R2 #2). 잘못된 패턴은 `None` 으로 기억한다.
+fn approval_regex_cached(pat: &str) -> Option<regex::Regex> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<regex::Regex>>>> =
+        std::sync::OnceLock::new();
+    let mut map = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(hit) = map.get(pat) {
+        return hit.clone(); // 적중 시 키 할당 없음(agy R3)
+    }
+    let compiled = regex::Regex::new(pat).ok();
+    map.insert(pat.to_string(), compiled.clone());
+    compiled
+}
+
+/// 선택 메뉴 행인가(순수) — 마커 뒤(공백 무시)가 `숫자.` 로 시작한다(`❯ 1. Yes` · `❯ 2. No`).
+fn is_numbered_choice_row(row: &str, marker: &str) -> bool {
+    let Some(i) = row.find(marker) else {
+        return false;
+    };
+    let rest = row[i + marker.len()..].trim_start();
+    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits > 0 && rest[digits..].starts_with('.')
 }
 
 /// 대체화면이 배달을 막는가(순수) — TICKET=v113-restore 배달 큐 재배달.
@@ -6071,7 +6144,17 @@ fn deliver_queued(
         //   마커 없는 quiet 폴백 경로도 같은 값을 쓴다(그 경로도 같은 writer 로 들어간다).
         let pending_at_verdict = s.pending_input_bytes.load(Ordering::Relaxed);
         let overdue = if let Some(marker) = marker.as_deref() {
-            let (marker_seen, line, framed) = observe_prompt(&s, marker);
+            // ★dbg-queue-approval: 경계 재료와 화면 행을 **한 락**에서 뜬다(agy R1 #3).
+            let ((marker_seen, line, framed), screen_rows, cursor_row) = {
+                let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+                let screen = p.screen();
+                let (_, cols) = screen.size();
+                (
+                    observe_screen(screen, marker),
+                    screen.rows(0, cols).collect::<Vec<String>>(),
+                    usize::from(screen.cursor_position().0),
+                )
+            };
             let pending = pending_at_verdict;
             let input = input_line_state(
                 pending,
@@ -6080,17 +6163,36 @@ fn deliver_queued(
                     at_or_after_cursor: a,
                 }),
             );
-            let approval_pending = !pending_gate_items(daemon, s.id).is_empty();
+            // ★dbg-queue-approval: 승인 축 = 관문 feed ∨ 도구 허락 창 화면(어댑터 approval_patterns ·
+            //   마지막 가로줄 아래 꼬리). 매 틱 화면에서 다시 읽는다 — 저장 상태가 없어 창이 닫히는
+            //   다음 틱에 저절로 풀린다(막힌 자리가 영영 안 풀리는 교착 없음).
+            let approval_screen = match (s.agent_meta.lock().unwrap().clone(), adapters.as_ref()) {
+                (Some((agent, _)), Some((disk, embed))) => {
+                    let res: Vec<regex::Regex> = merged_approval_patterns(disk, embed, &agent)
+                        .iter()
+                        .filter_map(|p| p["pattern"].as_str())
+                        .filter_map(approval_regex_cached)
+                        .collect();
+                    approval_in_prompt_tail(&screen_rows, cursor_row, marker, &res)
+                }
+                _ => false,
+            };
+            let approval_pending = approval_screen || !pending_gate_items(daemon, s.id).is_empty();
             let alt_blocks = alt_screen_blocks(s.alt_screen.load(Ordering::Relaxed), framed);
             let verdict = prompt_boundary_verdict(marker_seen, input, alt_blocks, approval_pending);
             if verdict == PromptBoundary::NotReady {
                 // 사유를 갈라 기록한다 — 손잡이가 다르다(입력줄 점유는 사람이 비워야 풀리고,
                 // 경계 미도달은 화면이 바뀌면 저절로 풀린다).
-                let why = match input {
-                    InputLine::Occupied => "input_pending(입력줄에 미제출 입력)",
-                    InputLine::Unknown => "prompt_unknown(프롬프트 경계 관측 불능)",
-                    InputLine::Empty => {
-                        empty_line_block_reason(alt_blocks, approval_pending)
+                // ★dbg-queue-approval: 허락 창이 보이면 입력줄 판독과 무관하게 **승인 대기**로 적는다 —
+                //   종전엔 prompt_unknown 으로 적혀 운영자에게 「관측 불능」 으로 보였고, 그 사유는 강제
+                //   배달(`cys queue deliver` — 이 판정을 거치지 않는다)을 부르는 모양이었다.
+                let why = if approval_screen {
+                    empty_line_block_reason(alt_blocks, true)
+                } else {
+                    match input {
+                        InputLine::Occupied => "input_pending(입력줄에 미제출 입력)",
+                        InputLine::Unknown => "prompt_unknown(프롬프트 경계 관측 불능)",
+                        InputLine::Empty => empty_line_block_reason(alt_blocks, approval_pending),
                     }
                 };
                 mark_queue_blocked(&s, why);
@@ -9265,8 +9367,9 @@ mod tests {
     // ─────────── ★B1(0.14.30): 프롬프트 경계 준비판정 — 순수 판정자 핀 ───────────
 
     use super::{
-        alt_screen_blocks, empty_line_block_reason, input_line_state, is_rule_row,
-        prompt_boundary_verdict, queue_starve_alert_secs, InputLine, PromptBoundary, PromptLine,
+        alt_screen_blocks, approval_in_prompt_tail, empty_line_block_reason, input_line_state,
+        is_numbered_choice_row, is_rule_row, prompt_boundary_verdict, queue_starve_alert_secs,
+        InputLine, PromptBoundary, PromptLine,
     };
     use std::sync::atomic::Ordering;
 
@@ -9677,6 +9780,306 @@ mod tests {
             s.pending_queue.lock().unwrap().len(),
             1,
             "판정 불능은 배달 방향으로 열리지 않는다(fail-closed)"
+        );
+    }
+
+    // ─────────── ★dbg-queue-approval(2026-09-23): 도구 허락 대기 화면 × 큐 배달 핀(qa_*) ───────────
+    //
+    // 픽스처 = claude 2.1.280 실화면 PTY 원바이트(격리 HOME · 40×120 · 경로의 계정명만 같은 길이 x 로 치환).
+    // 실측 사실: claude 의 선택 메뉴(허락 창·신뢰 창)는 커서를 `❯` **글자 칸 위**에 선언한다(classic (21,1) ·
+    // fullscreen (20,1)). 그래서 종전엔 입력줄 축이 `prompt_unknown` 으로 **우연히** 막았다 — 설계한 승인 축
+    // (approval_pending)은 첫기동 관문 feed 만 세어 이 화면을 몰랐다. 아래 핀이 그 두 사실을 갈라 잰다.
+
+    const QA_PERMISSION_CLASSIC: &[u8] =
+        include_bytes!("testdata/claude_2_1_280_permission_classic.raw");
+    const QA_PERMISSION_FULLSCREEN: &[u8] =
+        include_bytes!("testdata/claude_2_1_280_permission_fullscreen.raw");
+    const QA_READY_AFTER_ESC: &[u8] =
+        include_bytes!("testdata/claude_2_1_280_ready_after_esc_classic.raw");
+    const QA_PERMISSION_10ROWS: &[u8] =
+        include_bytes!("testdata/claude_2_1_280_permission_classic_10rows.raw");
+
+    /// 40×120 claude 좌석 + 큐 1건 · 파서에 실화면 바이트를 먹이고 대체화면 플래그를 파서에서 옮긴다
+    /// (리더 스레드가 하는 일과 같은 방향 — state.rs W4·D5 관측).
+    fn qa_fixture_seat(tag: &str, raw: &[u8]) -> (Arc<Daemon>, Arc<crate::state::Surface>) {
+        qa_fixture_seat_sized(tag, raw, 40)
+    }
+
+    fn screen_rows_have_rule(s: &Arc<crate::state::Surface>) -> bool {
+        let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let (_, cols) = p.screen().size();
+        let hit = p.screen().rows(0, cols).any(|r| is_rule_row(&r));
+        hit
+    }
+
+    fn qa_fixture_seat_sized(
+        tag: &str,
+        raw: &[u8],
+        rows: u16,
+    ) -> (Arc<Daemon>, Arc<crate::state::Surface>) {
+        let daemon = drill_daemon(tag);
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, rows, 120)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".to_string(), "worker".to_string()));
+        let e = daemon.next_queue_entry("[보고] 허락 창 배달 핀".into(), None, "test");
+        s.pending_queue.lock().unwrap().push_back(e);
+        let alt = {
+            let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            p.process(raw);
+            p.screen().alternate_screen()
+        };
+        s.alt_screen.store(alt, Ordering::Relaxed);
+        *s.last_output.lock().unwrap() =
+            std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        s.pending_input_bytes.store(0, Ordering::Relaxed);
+        (daemon, s)
+    }
+
+    /// 커서를 같은 행의 `❯ ` 뒤로 옮긴다 — 벤더가 선택 메뉴의 커서 선언 칸을 한 칸 옮기는 판을 흉내 낸다.
+    fn qa_move_cursor_after_marker(s: &Arc<crate::state::Surface>) {
+        let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let (row, col) = p.screen().cursor_position();
+        let at = p.screen().contents_between(row, col, row, col + 1);
+        assert_eq!(
+            at, "❯",
+            "픽스처 전제 붕괴: 커서가 ❯ 칸 위가 아니다(측정값이 바뀌었다)"
+        );
+        p.process(format!("\x1b[{};{}H", row + 1, col + 3).as_bytes());
+    }
+
+    fn qa_tick(daemon: &Arc<Daemon>) {
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(daemon, &mut depth, &mut starve);
+    }
+
+    fn qa_blocked_reason(s: &Arc<crate::state::Surface>) -> String {
+        s.queue_blocked
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|(w, _)| w)
+            .unwrap_or_default()
+    }
+
+    /// ⓪ 순수 판정자: 마지막 가로줄 **아래**만 본다 · 가로줄이 없으면 판단하지 않는다(false).
+    #[test]
+    fn qa_approval_in_prompt_tail_reads_only_below_last_rule() {
+        let re =
+            vec![regex::Regex::new("Do you want to (proceed|allow|make this edit|run)").unwrap()];
+        let rule = "─".repeat(40);
+        let rows = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 허락 창: 가로줄 한 개 아래에 질문(커서 = 4행 선택지).
+        assert!(approval_in_prompt_tail(
+            &rows(&[
+                "⏺ Bash(rm x)",
+                &rule,
+                " Bash command",
+                " Do you want to proceed?",
+                " ❯ 1. Yes"
+            ]),
+            4,
+            "❯",
+            &re
+        ));
+        // 입력창 위 본문의 같은 문장: 마지막 가로줄 아래는 상태줄뿐.
+        assert!(!approval_in_prompt_tail(
+            &rows(&[
+                "⏺ Do you want to proceed?",
+                &rule,
+                "❯ ",
+                &rule,
+                "  ? for shortcuts"
+            ]),
+            2,
+            "❯",
+            &re
+        ));
+        // 가로줄이 밀려난 긴 허락 창: 커서 행이 번호 선택지면 전량을 본다.
+        assert!(approval_in_prompt_tail(
+            &rows(&[
+                "   rm x",
+                " Do you want to proceed?",
+                " ❯ 1. Yes",
+                "   3. No"
+            ]),
+            2,
+            "❯",
+            &re
+        ));
+        // 가로줄이 없고 커서 행이 선택지가 아니면 판단하지 않는다(가로줄 없는 어댑터 기아 방지).
+        assert!(!approval_in_prompt_tail(
+            &rows(&["Do you want to proceed?", "? for shortcuts "]),
+            1,
+            "? for shortcuts",
+            &re
+        ));
+        // 패턴이 없으면 false.
+        assert!(!approval_in_prompt_tail(
+            &rows(&[&rule, "Do you want to proceed?"]),
+            1,
+            "❯",
+            &[]
+        ));
+        // 선택지 판별: 마커 뒤 숫자+점만.
+        assert!(is_numbered_choice_row(" ❯ 12. Yes", "❯"));
+        assert!(!is_numbered_choice_row("❯ 1 Yes", "❯"));
+        assert!(!is_numbered_choice_row("❯ ", "❯"));
+        assert!(!is_numbered_choice_row("  2. No", "❯"));
+    }
+
+    /// ① 실화면(classic · mac 좌석 기본 = D5 env) 허락 창: 배달 0 + 사유가 **승인 대기**로 적힌다.
+    ///    종전: 배달 0 이지만 사유 = prompt_unknown(운영자에게 「관측 불능」 으로 보여 강제 배달을 부른다).
+    #[test]
+    fn qa_permission_dialog_classic_blocks_as_approval_pending() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-classic");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-classic", QA_PERMISSION_CLASSIC);
+        assert!(
+            !s.alt_screen.load(Ordering::Relaxed),
+            "classic 픽스처가 대체화면이다"
+        );
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            1,
+            "허락 창에 배달했다(Return = 1. Yes)"
+        );
+        let why = qa_blocked_reason(&s);
+        assert!(
+            why.starts_with("approval_pending"),
+            "허락 창 보류 사유가 승인 대기가 아니다: {why}"
+        );
+    }
+
+    /// ② 실화면(fullscreen · 윈 옵트인 밖 기본 렌더러) 허락 창: 배달 0 + 사유 승인 대기.
+    #[test]
+    fn qa_permission_dialog_fullscreen_blocks_as_approval_pending() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-full");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-full", QA_PERMISSION_FULLSCREEN);
+        assert!(
+            s.alt_screen.load(Ordering::Relaxed),
+            "fullscreen 픽스처가 대체화면이 아니다"
+        );
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            1,
+            "허락 창에 배달했다(Return = 1. Yes)"
+        );
+        let why = qa_blocked_reason(&s);
+        assert!(
+            why.starts_with("approval_pending"),
+            "허락 창 보류 사유가 승인 대기가 아니다: {why}"
+        );
+    }
+
+    /// ③ ★핵심 — 벤더 드리프트: 허락 창 그대로 커서만 `❯ ` 뒤로 옮기면(선택 메뉴 커서 선언 칸 1칸 이동)
+    ///    종전 판정은 입력줄 Empty·마커 보임·대체화면 아님 → Ready → **본문+Return 이 1. Yes 를 누른다.**
+    ///    승인 축이 화면을 읽어야 이 판이 막힌다.
+    #[test]
+    fn qa_permission_dialog_cursor_drift_never_delivers() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-drift");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-drift", QA_PERMISSION_CLASSIC);
+        qa_move_cursor_after_marker(&s);
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            1,
+            "커서가 ❯ 뒤로 한 칸 옮겨진 허락 창에 배달했다 — Return 이 기본 선택(1. Yes)을 누른다"
+        );
+        assert!(qa_blocked_reason(&s).starts_with("approval_pending"));
+    }
+
+    /// ③-b 가로줄이 화면 밖으로 밀린 긴 허락 창(10행 창 실화면 · agy R1 #1) + 커서 1칸 드리프트:
+    ///    가로줄 꼬리가 없어도 커서 행이 번호 선택지이므로 전량 판독으로 막는다.
+    #[test]
+    fn qa_permission_dialog_scrolled_rule_with_drift_never_delivers() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-short");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat_sized("qa-short", QA_PERMISSION_10ROWS, 10);
+        assert!(
+            !screen_rows_have_rule(&s),
+            "픽스처 전제 붕괴: 10행 허락 창 화면에 가로줄이 남아 있다"
+        );
+        qa_move_cursor_after_marker(&s);
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            1,
+            "가로줄이 밀려난 허락 창에 배달했다 — Return 이 기본 선택(1. Yes)을 누른다"
+        );
+        assert!(qa_blocked_reason(&s).starts_with("approval_pending"));
+    }
+
+    /// ④ 교착 방지(자가치유 축): 허락 창을 Esc 로 닫고 입력창으로 돌아온 실화면은 **배달된다**.
+    #[test]
+    fn qa_ready_after_esc_delivers() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-ready");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-ready", QA_READY_AFTER_ESC);
+        qa_tick(&daemon);
+        assert!(
+            s.pending_queue.lock().unwrap().is_empty(),
+            "입력창으로 돌아온 좌석에 배달하지 않았다"
+        );
+        assert!(qa_blocked_reason(&s).is_empty());
+    }
+
+    /// ⑤ 교착 방지(본문 속 질문): 모델이 **답 본문**에 「Do you want to proceed …?」 를 쓰고 입력창에서
+    ///    기다리는 화면 — 승인 축이 화면 전량을 읽으면 master 의 답(큐)이 영영 못 들어간다(③자가치유 위반).
+    ///    승인 축은 입력창 아래 꼬리만 읽어야 한다.
+    ///    본문 위에 가로줄 하나를 더 둔다(마크다운 구분선 렌더 등) — 「첫」 가로줄 아래를 읽는 판도 잡힌다.
+    #[test]
+    fn qa_prose_question_above_prompt_box_still_delivers() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-prose");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-prose", b"");
+        {
+            let rule = "─".repeat(120);
+            let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            p.process(
+                format!(
+                    "\x1b[H\x1b[2J{rule}\r\n⏺ 리팩터 계획을 세웠습니다. Do you want to proceed with the refactor?\r\n\r\n\
+                     {rule}\r\n❯ \r\n{rule}\r\n  ⏸ manual mode on · ? for shortcuts\x1b[5;3H"
+                )
+                .as_bytes(),
+            );
+            assert_eq!(p.screen().cursor_position(), (4, 2), "픽스처 커서 위치");
+        }
+        qa_tick(&daemon);
+        assert!(
+            s.pending_queue.lock().unwrap().is_empty(),
+            "본문 속 질문 문장 때문에 입력창이 열린 좌석이 막혔다(교착): {}",
+            qa_blocked_reason(&s)
         );
     }
 

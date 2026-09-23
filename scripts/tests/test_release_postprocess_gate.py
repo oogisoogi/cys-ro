@@ -1283,6 +1283,61 @@ class MockReleaseMainTests(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("latest.json", self.downloads)
 
+    # ── Fable 1R 채택분 ──
+    def test_72_fresh_cut_without_zip_generates_and_uploads(self):
+        """#1: 매 절단의 정상 첫 경로(릴리스에 zip 없음)를 main 으로 끝까지 — dry-run 뒤 --apply."""
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.inner_sha(self.local(self.ZIP)), _sha(self.NEW_EXE))
+        rc, out, err = self.run_main("--apply")
+        self.assertEqual(rc, 0, err)
+        up = self.posts()
+        self.assertEqual(self.inner_sha(up[self.ZIP]), _sha(self.NEW_EXE))
+        self.assertFalse([c for c in self.calls if c[0] == "DELETE"], "없던 zip 을 지우려 했다")
+        self.assertEqual(self.sums(up[rp.SUMS_NAME].decode())[self.ZIP], _sha(up[self.ZIP]))
+
+    def test_73_kept_zip_apply_reuploads_same_bytes(self):
+        """#6: 유지(생략) 분기의 --apply — 같은 바이트를 DELETE 후 재업로드 · SUMS zip 행 = 업로드 바이트."""
+        zb = _zip_bytes(self.EXE, self.NEW_EXE)
+        self.assets[self.ZIP] = zb
+        rc, out, err = self.run_main("--apply")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("재생성 생략", out)
+        up = self.posts()
+        self.assertEqual(up[self.ZIP], zb)
+        self.assertEqual(self.sums(up[rp.SUMS_NAME].decode())[self.ZIP], _sha(zb))
+
+    def test_74_crosscheck_runs_before_gate_and_upload(self):
+        """#3: 모의 묶음은 윈도우 단독이라 게이트가 즉시 rc 0 — 순서는 실행으로 관측 불가 → 소스 순서 핀."""
+        with open(_RP_PATH, encoding="utf-8") as fh:
+            src = fh.read()
+        cross = src.index("if not win_zip_crosscheck(by_name[zipname], exe, lines):")
+        self.assertLess(cross, src.index("gate_rc = gatekeeper_gate("), "대조가 게이트 뒤다")
+        self.assertLess(cross, src.index("── 6. 업로드"), "대조가 업로드 뒤다")
+
+    def test_75_unreadable_zip_kinds_fold_to_none(self):
+        """#4: 암호화 플래그·없는 파일 → None(판독 불가). 종전 암호화 zip 은 RuntimeError 로 죽었다."""
+        # 암호화 플래그(내용은 평문) → 읽기 시 RuntimeError. zipfile 은 쓰기 때 이 비트를 지우므로
+        #   원시 바이트에서 세운다: 로컬 헤더(PK\x03\x04)+6 · 중앙 디렉터리(PK\x01\x02)+8.
+        raw = bytearray(_zip_bytes(self.EXE, self.NEW_EXE))
+        for sig, off in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+            i = raw.index(sig) + off
+            raw[i] |= 0x1
+        enc = os.path.join(self.root, "enc.zip")
+        with open(enc, "wb") as fh:
+            fh.write(bytes(raw))
+        with zipfile.ZipFile(enc) as z:           # 픽스처 자기 확인 — 실제로 암호화 거부가 나는가
+            self.assertRaises(RuntimeError, z.read, self.EXE)
+        self.assertIsNone(rp.zip_member_sha(enc, self.EXE))
+        self.assertIsNone(rp.zip_member_sha(os.path.join(self.root, "absent.zip"), self.EXE))
+        self.assertEqual(rp.zip_member_sha(self._plain_zip(), self.EXE), _sha(self.NEW_EXE))
+
+    def _plain_zip(self):
+        p = os.path.join(self.root, "plain.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr(self.EXE, self.NEW_EXE)
+        return p
+
     def test_71_digest_parser_rejects_malformed(self):
         h = "a" * 64
         self.assertEqual(rp.asset_digest({"digest": "sha256:" + h.upper()}), h)

@@ -198,9 +198,13 @@ if (ONLY.includes("c6")) {
 }
 
 if (ONLY.includes("c7")) {
-  await load("two");
-  const a = await ev(`(() => { const el = document.getElementById("daemon-info"); const first = el.firstChild?.textContent ?? ""; return { text: first, title: el.title }; })()`);
-  check("c7 상단바 라벨 = 판번만 · 툴팁 = 전문", a.text === "엔진 v1.1.6" && !/pid|sock|daemon|\/Users\//.test(a.text) && a.title.includes("pid=4242") && a.title.includes("sock="), JSON.stringify(a));
+  for (const w of [1280, 800]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 820, deviceScaleFactor: 1, mobile: false });
+    await load("two");
+    const a = await ev(`(() => { const el = document.getElementById("daemon-info"); const first = el.firstChild?.textContent ?? ""; return { text: first, title: el.title, fits: el.clientWidth >= el.scrollWidth }; })()`);
+    check(`c7 w${w} 상단바 라벨 = 판번만(찌그러짐 0) · 툴팁 = 전문`, a.text === "엔진 v1.1.6" && a.fits && !/pid|sock|daemon|\/Users\//.test(a.text) && a.title.includes("pid=4242") && a.title.includes("sock="), JSON.stringify(a));
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }
 
 if (ONLY.includes("c8")) {

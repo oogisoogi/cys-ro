@@ -14,6 +14,7 @@ PASS c5 정본 경로 기록 → 카드 표시 — {"card":true,"text":"다시 �
 PASS c5b 정본 = 설치 골격(3절 없음) → 짧은 카드 · 빈 문장 0 — {"card":true,"text":"다시 켜졌어요 / 다시 켜진 창 / 총괄 · 작업 창이 다시 켜졌습니다. / 닫기"}
 PASS c6 w1280 복원 카드가 떠 있어도 경보 3건이 보인다(맨 위 · 겹침 0 · 카드 화면 안 · 카드 닫기 눌림) — {"card":true,"toast":true,"toasts":3,"inView":3,"toastOnTop":true,"overlap":false,"closeReachable":true,"cardInView":true,"text":"❌ 에이전트 사망surface:2 master\n×"}
 PASS c6 w800 복원 카드가 떠 있어도 경보 3건이 보인다(맨 위 · 겹침 0 · 카드 화면 안 · 카드 닫기 눌림) — {"card":true,"toast":true,"toasts":3,"inView":3,"toastOnTop":true,"overlap":false,"closeReachable":true,"cardInView":true,"text":"❌ 에이전트 사망surface:2 master\n×"}
-PASS c7 상단바 라벨 = 판번만 · 툴팁 = 전문 — {"text":"엔진 v1.1.6","title":"daemon v1.1.6 pid=4242 sock=/Users/u/.local/state/cys/cys.sock"}
+PASS c7 w1280 상단바 라벨 = 판번만(찌그러짐 0) · 툴팁 = 전문 — {"text":"엔진 v1.1.6","title":"daemon v1.1.6 pid=4242 sock=/Users/u/.local/state/cys/cys.sock","fits":true}
+PASS c7 w800 상단바 라벨 = 판번만(찌그러짐 0) · 툴팁 = 전문 — {"text":"엔진 v1.1.6","title":"daemon v1.1.6 pid=4242 sock=/Users/u/.local/state/cys/cys.sock","fits":true}
 PASS c8 본부 탭 이름 = 본부 · non title 0 · 삭제 확인도 본부 — {"names":["본부"],"nonTitle":false,"modal":"워크스페이스 \"본부\" 완전 삭제"}
 ALL PASS

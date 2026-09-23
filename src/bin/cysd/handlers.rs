@@ -6851,6 +6851,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         json!({"since": since, "reason": reason})),
                     "daemon": {"version": env!("CARGO_PKG_VERSION"),
                                "started_at": daemon.started_at,
+                               // ★v116-pack(R-B1 P2-b): 자동 복원 단계 — 편성 대기 판정의 정본.
+                               "auto_restore": crate::auto_restore_phase_str(
+                                   daemon.auto_restore_phase.load(Ordering::Relaxed)),
                                "latest_seq": daemon.bus.latest_seq(),
                                // ★W1 identity(3중 대조): 폴백 cys 가 이 데몬과 같은 빌드인지 python 이 교차대조.
                                "build_id": cys::pack::build_id(),

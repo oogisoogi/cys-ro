@@ -2180,6 +2180,9 @@ pub struct Daemon {
     pub config: Config,
     pub socket_path: PathBuf,
     pub started_at: f64,
+    /// ★v116-pack(R-B1 P2-b): 이 데몬의 콜드부트 자동 복원 단계(`crate::AUTO_RESTORE_*` · writer = main.rs 단독).
+    /// org.status `daemon.auto_restore` 로 노출 — 편성이 복원과 같은 순간 좌석을 세우지 않게 기다리는 근거.
+    pub auto_restore_phase: AtomicU8,
     /// 세션 트랜스크립트 FTS 영속 채널 (전용 writer 스레드)
     pub recall_tx: Mutex<std::sync::mpsc::Sender<crate::recall::LineRecord>>,
     /// T6 Control Center 소비 트래커 (claude 메시지 누적 — 오늘·최근창·12h 스파크라인).
@@ -3045,6 +3048,7 @@ impl Daemon {
             recall_tx: Mutex::new(crate::recall::spawn_writer(socket_path.clone())),
             socket_path,
             started_at: now_epoch(),
+            auto_restore_phase: AtomicU8::new(crate::AUTO_RESTORE_OFF),
             consumption: Mutex::new(Consumption::default()),
             analytics: Mutex::new(analytics_conn),
             channels: Mutex::new(channels_conn),

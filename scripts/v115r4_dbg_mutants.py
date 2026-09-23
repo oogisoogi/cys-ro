@@ -100,6 +100,9 @@ MUTANTS = [
     ("F5-3-일반어-제외-제거", "cysjavis-pack/bin/javis_dept_request.py",
      "    return any(m.group(1) not in _UNIT_STOP for m in _UNIT_INTENT.finditer(p))\n",
      "    return any(True for m in _UNIT_INTENT.finditer(p))\n", PY_F5),
+    ("D4-1-진단-좌석-PATH-주입-제거", "src-tauri/src/main.rs",
+     "        inject_runtime_path(&mut cmd);\n        cmd.output()\n", "        cmd.output()\n",
+     [CARGO, "test", "-p", "cys-app", "--bin", "cys-app", "claude_missing_hint"]),
     # (제외 · 등가 뮤턴트) 「물음표 → other」 검사 제거: `?` 는 _ANS_SPLIT 분리 문자가 아니라 「네?」 낱말이
     #   사전과 전체 일치하지 않아 이미 other 다(실측: 네?·응?·네 ?·좋아요? 전부 other) — 겹방어 두 번째 층.
 ]

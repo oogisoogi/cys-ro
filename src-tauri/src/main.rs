@@ -7144,7 +7144,10 @@ fn main() {
                             FOLDER_ACCESS_STARTED.load(std::sync::atomic::Ordering::SeqCst),
                         ) {
                             eprintln!("[cys-app] 첫 실행 폴더 권한: UI 가 시작하지 않음 — 백엔드 폴백 nudge");
+                            // 폴백도 「시작·물었음」을 세운다 — 늦게 도달한 UI 가 안내를 다시 띄우지 않게(디버깅 P3-4).
+                            FOLDER_ACCESS_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
                             probe_folder_permissions(&h).await;
+                            FOLDER_ACCESS_ASKED.store(true, std::sync::atomic::Ordering::SeqCst);
                         }
                     });
                 }
@@ -7799,6 +7802,16 @@ mod tests {
         assert_eq!(setup_only.matches("nudge_folder_permissions(&handle);").count(), 1, "setup 의 nudge 는 가드 안 1곳뿐");
         let fb = setup.find("folder_access_fallback_due(").expect("첫 실행 폴백");
         assert!(fb > guard && setup[guard..fb].contains("} else {"), "폴백은 첫 실행 갈래(else) 안에 있어야 한다");
+        // ⑦ 폴백 형태(디버깅 P3-1 생존 뮤턴트): 대기 → UI 시작 여부(STARTED) 판정 → 시작·물었음 표시.
+        let fb_body = &setup[guard..setup[guard..].find("maybe_apply_pending_update").map(|i| guard + i).unwrap_or(setup_only.len())];
+        let wait = fb_body.find("tokio::time::sleep(FOLDER_ACCESS_FALLBACK_WAIT).await;").expect("폴백 대기");
+        let due = fb_body.find("folder_access_fallback_due(\n                            FOLDER_ACCESS_STARTED.load(").expect("폴백 판정은 STARTED 로");
+        let fb_probe = fb_body.find("probe_folder_permissions(&h).await;").expect("폴백 확인");
+        let fb_asked = fb_body.find("FOLDER_ACCESS_ASKED.store(true").expect("폴백도 물었음 표시");
+        assert!(wait < due && due < fb_probe && fb_probe < fb_asked, "폴백 순서 = 대기 → STARTED 판정 → 확인 → 물었음");
+        assert!(FOLDER_ACCESS_FALLBACK_WAIT >= std::time::Duration::from_secs(30), "폴백 대기는 안내가 먼저 뜰 틈보다 길어야 한다");
+        let canon = body_at("fn boot_path_is_canonical() -> bool {");
+        assert!(canon.contains("current_boot_verdict() == BootPathVerdict::Canonical"), "정규 위치 판정 = setup 안전모드 게이트와 같은 판정기");
     }
 
     // HUD-2: open_url 화이트리스트 — https·허용 도메인만 통과, 위장 host(userinfo/서브도메인 사칭) 차단.

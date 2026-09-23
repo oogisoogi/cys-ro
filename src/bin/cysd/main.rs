@@ -32,6 +32,8 @@ mod state;
 mod undo;
 mod usage;
 mod watch_wake;
+#[cfg(test)]
+mod d6_probe_tests; // D6 정밀 디버깅 검출 시험(TICKET=dbg-D6 · 시험 전용)
 
 use cys::Request;
 use handlers::Reply;

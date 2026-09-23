@@ -42,10 +42,10 @@ describe("D4 #13 상단바 단추 글자 = 한국어", () => {
   });
 });
 
-describe("D4 #13 끝난 창 제목 꼬리표 = 「(끝남)」", () => {
-  it("제목 배선이 상수를 쓰고, 영어 [exited] 를 화면에 싣지 않는다", () => {
-    expect(main).toContain('const EXITED_TITLE_SUFFIX = " (끝남)";');
-    expect(main).toContain("(s.exited ? EXITED_TITLE_SUFFIX : \"\")");
+describe("D4 #13 끝난 창 제목 표지 = 「(끝남)」(r2 · D4 #12 앞머리)", () => {
+  it("제목 배선이 판정 모듈을 쓰고, 영어 [exited] 를 화면에 싣지 않는다", () => {
+    expect(readFileSync(new URL("./panetitle.ts", import.meta.url), "utf8")).toContain('export const EXITED_TITLE_PREFIX = "(끝남) ";');
+    expect(main).toContain("paneTitleText(s.surface_id, s.title, s.live_cwd, !!s.exited)");
     expect(main.includes('" [exited]"')).toBe(false);
   });
 });

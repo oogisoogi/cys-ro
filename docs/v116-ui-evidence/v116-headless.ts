@@ -11,6 +11,8 @@
 //   c9 짧은 창(위 내용 없음)에서 첫 위 휠 → 「접어 두었습니다」 안내 0 · 긴 출력 맨 위 도달 → 안내 1(D4 #6)
 //   c10 사이드바 「7d·<모델>」 게이지가 프로브 주기 안(150초 전 관측)에서는 흐려지지 않는다 · 400초 전이면 흐려진다(D4 #11)
 //   c11 master 자리가 카드 유예(15초) 뒤에 선다 → 그때 카드 1회 · 닫은 뒤 같은 신호가 다시 와도 0(R1c)
+//   c12 좁은 창(800폭 · 2분할) 제목: 역할 없는 창 = 「번호 · 폴더 이름」(전체 경로는 툴팁) · 끝난 창 = 「(끝남)」이 맨 앞 ·
+//       역할 창 이름을 비워 확정 → 「번호 · 특성」 그대로(D4 #12)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -21,7 +23,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -262,6 +264,31 @@ if (ONLY.includes("c11")) {
   await Bun.sleep(800);
   const c = await ev(`!!document.getElementById("restore-brief")`);
   check("c11 master 늦게 섬 → 유예 시점 카드 0 · 선 뒤 카드 1회(기록 실림) · 닫은 뒤 재신호에 다시 안 뜸", !a && b.card && b.text.includes("늦게 선 마스터 시험 줄") && !c, JSON.stringify({ beforeMaster: a, afterMaster: b.card, reshown: c, text: b.text.replace(/\n+/g, " / ").slice(0, 160) }));
+}
+
+if (ONLY.includes("c12")) {
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 820, deviceScaleFactor: 1, mobile: false });
+  const LONG = "/Users/u/axdev/.wt/very-long-worktree-name/nested/project-alpha";
+  await load("two", "", `Object.assign(window.__shimSeats[1], { role: null, title: "", live_cwd: ${JSON.stringify(LONG)} })`);
+  await Bun.sleep(3500); // 제목 갱신 주기
+  const TT = (n: string) => `(() => { const t = ${PANE(n)}?.querySelector(".pane-title-text"); return t ? { text: t.textContent, tip: t.title } : null; })()`;
+  const a = await ev(`[...document.querySelectorAll("#root .pane .pane-title-text")].map(t => ({ text: t.textContent, tip: t.title }))`);
+  const shell = a.find((x: any) => x.text.startsWith("2"));
+  check("c12a 역할 없는 창 제목 = 「2 · project-alpha」(번호 먼저 · 폴더 이름) · 전체 경로는 툴팁", !!shell && shell.text === "2 · project-alpha" && shell.tip === LONG, JSON.stringify(a));
+  await ev(`window.__shimExit(2, false)`); await Bun.sleep(3500);
+  const b = await ev(TT("project-alpha"));
+  check("c12b 끝난 창 = 「(끝남)」이 제목 맨 앞(좁아도 먼저 잘리지 않는다)", !!b && b.text.startsWith("(끝남) ") && b.text.includes("2 · project-alpha"), JSON.stringify(b));
+  // 역할 창(master) 이름 변경 → 비워서 확정
+  await ev(`${PANE("master")}.querySelector(".pane-title").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 60 }))`);
+  await Bun.sleep(150);
+  await ev(`[...document.querySelectorAll("#ctx-menu .ctx-item")].find(x => x.textContent.trim() === "이름 변경")?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`);
+  await Bun.sleep(150);
+  const editing = await ev(`document.activeElement?.classList.contains("pane-title-text") ?? false`);
+  await ev(`(() => { const t = document.activeElement; t.textContent = ""; t.blur(); })()`);
+  await Bun.sleep(3500);
+  const c = await ev(`({ renames: window.__shimCalls.filter(c => c.cmd === "rename_surface").map(c => c.args.title), seat: window.__shimSeats[0].title, shown: [...document.querySelectorAll("#root .pane .pane-title-text")].map(t => t.textContent) })`);
+  check("c12c 역할 창 이름 비워 확정 → 「1 · master」 유지(번호·특성 소실 0)", editing && c.seat === "1 · master" && c.shown.includes("1 · master"), JSON.stringify({ editing, ...c }));
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

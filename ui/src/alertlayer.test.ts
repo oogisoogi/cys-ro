@@ -23,10 +23,11 @@ describe("D4 #21 경보 층위 — 알림 줄은 복원 카드보다 위", () =>
     expect(z("#toasts")).toBeLessThan(z("#cc-panel"));
   });
 
-  it("복원 카드는 알림 줄과 다른 모서리(왼쪽 아래)에 선다 — 오른쪽에 붙지 않는다", () => {
+  it("복원 카드는 알림 줄(아래)과 다른 모서리 — 오른쪽 **위**(상단바 아래)에 선다 · 아래·왼쪽에 붙지 않는다", () => {
     const b = block("#restore-brief");
-    expect(b).toContain("left: calc(var(--wsbar-w, 216px) + 16px)");
-    expect(/(^|[\s;{])right:/.test(b)).toBe(false);
-    expect(block("#toasts")).toContain("right: 12px");
+    expect(b).toContain("top: calc(var(--topbar-h, 38px) + 12px)");
+    expect(/(^|[\s;{])bottom:/.test(b)).toBe(false); // 아래에 붙으면 알림 줄과 다시 겹친다
+    expect(/(^|[\s;{])left:/.test(b)).toBe(false); // 왼쪽 아래 = 편성 CSO 창·파일 목록 가림(Fable F1·F3)
+    expect(block("#toasts")).toContain("bottom: 12px");
   });
 });

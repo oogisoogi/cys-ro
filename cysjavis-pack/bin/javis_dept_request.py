@@ -1878,6 +1878,24 @@ HOOK_MAX_NEWS = 3
 _INTENT = re.compile(r"(부서|팀)")
 _VERB = re.compile(r"(만들|꾸려|꾸리|새로|추가|생성|닫|없애|지워|지우|정리|해체|어떻게|상태|켜|시작)")
 _NOTICE = re.compile(r"^\s*\[(부서결과|부서가동)\]")
+# ★dbg-D3 F5(2026-09-23): 「부서」「팀」 낱말 없이 **부서 이름으로 말하는** 요청(설계 §1 예시 「설교준비부 만들어 줘」 ·
+#   「교육부 만들어 줘」 · 「홍보과 만들어 줘」)에 절차 안내가 붙지 않았다(_INTENT=(부서|팀) 만 봤다). 이름 꼴 =
+#   낱말 끝 부·팀·과 + (조사) + 강한 생성·닫기 동사. 흔한 일반어(전부·일부·결과·효과 …)는 제외한다 — 잘못 붙어도
+#   비용은 안내 몇 줄(세션당 1회)이지만, 코딩 대화의 「전부 지워」「결과 만들어」에 매번 붙이지 않게.
+_UNIT_INTENT = re.compile(
+    r"(?<![가-힣A-Za-z0-9])([가-힣A-Za-z0-9]{0,20}(?:부|팀|과))(?:를|을|는|은|이|가|도|로|으로)?\s*"
+    r"(?:(?:하나|좀|새로|다시|얼른|빨리)\s*)*(만들|꾸려|꾸리|생성|닫|없애|해체|지워)")
+_UNIT_STOP = frozenset((
+    "부", "팀", "과", "전부", "일부", "내부", "외부", "세부", "대부", "가부", "부부", "본부", "간부", "앞부", "뒷부",
+    "결과", "효과", "성과", "사과", "통과", "경과", "초과", "교과", "과과", "투과", "여과", "공과"))
+
+
+def dept_intent(prompt):
+    """부서 요청 의도인가 — 「부서/팀」 낱말 + 동사, 또는 부서 이름 꼴(…부·…팀·…과) + 생성·닫기 동사."""
+    p = prompt or ""
+    if _INTENT.search(p) and _VERB.search(p):
+        return True
+    return any(m.group(1) not in _UNIT_STOP for m in _UNIT_INTENT.finditer(p))
 
 
 def hook_active_path():
@@ -2028,7 +2046,7 @@ def cmd_hook_prompt(a):
     seen = seen_all.get(sid) or {"guide": 0, "news": []}
     lines = []
     notice = bool(_NOTICE.match(prompt))
-    intent = bool(_INTENT.search(prompt) and _VERB.search(prompt))
+    intent = dept_intent(prompt)
     tool = os.path.join(HERE, "javis_dept_request.py")
     # ★D3/D2(1.1.5 6차): 맨 `python3` 를 안내에 쓰지 않는다 — 개발자 도구(CLT)가 없는 맥에서
     # `python3` 는 /usr/bin 스텁이라 좌석 Bash 에서 설치 창만 띄우고 실행되지 않는다(2026-09-22

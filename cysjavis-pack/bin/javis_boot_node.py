@@ -1555,10 +1555,15 @@ def main():
     ap.add_argument("--reclaim", action="store_true", help="막힌(죽은) 미각성 surface 결정론 회수")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--reap-orphans", action="store_true",
+                    help="역할 없이 남은 빈 에이전트 좌석 회수(D1 #4 · CYS_SOCKET 부서 · 결과 JSON 1줄)")
     a = ap.parse_args()
 
     if getattr(a, "self_test", False):
         return self_test()
+    if getattr(a, "reap_orphans", False):
+        print(json.dumps(reap_orphan_seats(socket=os.environ.get("CYS_SOCKET")), ensure_ascii=False))
+        return 0
     if not a.role:
         print("error: --role 필수(또는 --self-test)")
         return 2

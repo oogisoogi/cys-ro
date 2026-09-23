@@ -30,13 +30,18 @@ html, body {
 #topbar {
   display: flex; align-items: center; gap: 8px;
   min-height: var(--topbar-h); padding: 0 10px;
+  /* ★D4 #2(dbg-D4 2026-09-23): 한 줄 고정. #body-row 가 var(--topbar-h) 를 빼므로 상단바가 부풀면
+     그만큼 모든 창 바닥(클로드 입력줄)이 화면 밖으로 잘렸다(1280=11px · 1024=68px 실측). 좁으면
+     접지 말고 가로로 밀어 본다(버튼은 끝까지 누를 수 있다). */
+  height: var(--topbar-h); flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
   background: var(--bar); border-bottom: 1px solid var(--border);
   -webkit-user-select: none; user-select: none;
 }
 #brand { font-weight: 700; color: var(--accent); }
 /* 앱 판번 상시 표시(TICKET=cysr-ui-polish-101 ⓐ) — 브랜드 옆 소형 · build_id 는 툴팁 */
 #app-ver { color: #8b949e; font-size: calc(10px * var(--ui-chrome-scale)); margin-left: -4px; }
-#daemon-info { color: #8b949e; font-size: calc(11px * var(--ui-chrome-scale)); }
+#daemon-info { color: #8b949e; font-size: calc(11px * var(--ui-chrome-scale));
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* P2 버전 스큐 배지 — lame-duck 데몬(세션 보존) 안내. 경고색이되 위협적이지 않게(불안 방지가 목적).
    클릭 = 데몬 교대(manualRotateSkewed — 메인+부서 순차). */
 .ver-skew-badge {
@@ -46,6 +51,7 @@ html, body {
 }
 .spacer { flex: 1; }
 #topbar button {
+  flex: none; white-space: nowrap; /* D4 #2: 「정/렬」「테/마」 세로 쪼개짐 금지 */
   background: #21262d; color: var(--text);
   border: 1px solid var(--border); border-radius: 6px;
   padding: 4px 12px; cursor: pointer; font-size: calc(12px * var(--ui-chrome-scale));
@@ -56,6 +62,8 @@ html, body {
   border-radius: 8px; background: var(--error); color: #fff;
   font-size: 10px; text-align: center;
 }
+/* ★D4 #3: .badge 의 display 가 UA [hidden] 을 이겨 「승인 대기 0」 빨간 배지가 늘 보였다 — 짝 규칙. */
+.badge[hidden] { display: none; }
 /* 업데이트 배지 "0"(최신 확인) — 경고색 대신 중립(확인 완료·대기 0건의 안심 신호) */
 .badge.ok { background: #21262d; color: #8b949e; border: 1px solid var(--border); }
 

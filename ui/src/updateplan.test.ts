@@ -8,9 +8,10 @@ describe("updatePlan — 옵션 2 분기 판정(문자열 핀 = 회귀 0 증명)
     const p = updatePlan({ ...base, binVersion: "0.12.57", packVersion: "0.12.58" });
     expect(p.kind).toBe("pack-and-binary");
     expect(p.badge).toBe("↻");
-    expect(p.title).toBe("팩 0.12.58 무중단 적용 가능 (새 본체 0.12.57은 패치 설치)");
-    expect(p.toastMsg).toContain("무중단 적용(재시작 없음)");
-    expect(p.toastMsg).toContain("패치 설치"); // T5 개정(오너 2026-07-15) — 본체 인앱 패치 안내
+    // (r2 · D4 #14) 팩 → 자비스 구성 · 본체 → 앱 · 패치 설치 → 설치 · 무중단 → 재시작 없이(뜻 동일 · 분기 불변)
+    expect(p.title).toBe("새 자비스 구성 0.12.58 은 재시작 없이 적용 · 새 앱 0.12.57 도 설치 가능");
+    expect(p.toastMsg).toContain("재시작 없이 적용됩니다");
+    expect(p.toastMsg).toContain("같은 단추로 설치"); // T5 개정(오너 2026-07-15) — 앱 인앱 설치 안내
   });
 
   test("본체+팩 동시 + 비호환 → 종전대로 본체 필요(가림이 정당한 케이스)", () => {
@@ -23,25 +24,25 @@ describe("updatePlan — 옵션 2 분기 판정(문자열 핀 = 회귀 0 증명)
     const p = updatePlan({ ...base, binVersion: "0.12.57", packVersion: null });
     expect(p.kind).toBe("binary");
     expect(p.badge).toBe("!");
-    expect(p.title).toBe("새 본체 버전 0.12.57 (「업데이트」 버튼으로 패치 설치)");
-    expect(p.toastMsg).toBe("새 본체 0.12.57 — 상단 「업데이트」 버튼으로 패치 설치(재시작·자동 복원)");
+    expect(p.title).toBe("새 앱 0.12.57 — 상단 「업데이트」로 설치");
+    expect(p.toastMsg).toBe("새 앱 0.12.57 이 나왔습니다. 상단 「업데이트」를 누르면 설치하고, 다시 켜지면 하던 창이 돌아옵니다.");
   });
 
   test("팩만 + 호환 → 종전 무중단 문구 그대로(회귀 0)", () => {
     const p = updatePlan({ ...base, binVersion: null, packVersion: "0.12.58" });
     expect(p.kind).toBe("pack");
     expect(p.badge).toBe("↻");
-    expect(p.title).toBe("팩 0.12.58 (무중단·세션 유지)");
-    expect(p.toastMsg).toBe("팩 0.12.58 — 상단 「업데이트」(재시작 없음)");
+    expect(p.title).toBe("새 자비스 구성 0.12.58 — 재시작 없이 적용");
+    expect(p.toastMsg).toBe("새 자비스 구성 0.12.58 이 있습니다. 상단 「업데이트」를 누르면 재시작 없이 적용됩니다.");
   });
 
   test("팩만 + 비호환 → 종전 본체 필요 문구 그대로(회귀 0)", () => {
     const p = updatePlan({ ...base, binVersion: null, packVersion: "0.12.58", binaryTooOld: true });
     expect(p.kind).toBe("binary-required");
     expect(p.badge).toBe("!");
-    expect(p.title).toBe("팩 0.12.58: 본체 업데이트 필요 (설치 사이트에서 다운로드)");
+    expect(p.title).toBe("새 자비스 구성 0.12.58 — 앱을 먼저 새 판으로 받아 주세요");
     expect(p.toastMsg).toBe(
-      "새 팩 0.12.58은 더 새로운 본체를 요구합니다 — 본체를 업데이트한 뒤 적용됩니다. 설치 사이트: https://jarvis-install.godmeyou.kr",
+      "새 자비스 구성 0.12.58 은 더 새로운 앱이 있어야 적용됩니다. 설치 사이트에서 앱을 먼저 받아 주세요: https://jarvis-install.godmeyou.kr",
     );
     // ★r3 S3 — URL 바로 뒤에 괄호·문자가 붙으면 링크 파서가 그것까지 주소로 먹는다. 뒤는 공백이나 끝이어야 한다.
     expect(p.toastMsg).toMatch(/https:\/\/jarvis-install\.godmeyou\.kr(\s|$)/);

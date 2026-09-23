@@ -33,13 +33,13 @@ describe("drainVerifyFallbackToast — 사유별 정직 문구", () => {
   it("미지원은 '미지원' 문구, '무손실' 표현 없음", () => {
     const t = drainVerifyFallbackToast("unsupported");
     expect(t.title).toContain("미지원");
-    expect(t.body).toContain("기존 방식");
+    expect(t.body).toContain("확인 없이 재시작"); // (r2 · D4 #14) 「기존 방식(best-effort)」 → 사람 말 · 뜻 동일
     expect(t.body).not.toContain("무손실");
   });
   it("검증 실패는 '실패·점검 권고' 문구, 미지원과 구별", () => {
     const t = drainVerifyFallbackToast("verify_failed");
     expect(t.title).toContain("실패");
-    expect(t.body).toContain("점검");
+    expect(t.body).toContain("살펴봐 주세요"); // (r2 · D4 #14) 「노드 상태를 점검」 → 사람 말 · 점검 권고 유지
     expect(t.body).not.toContain("무손실");
     // 두 문구가 실제로 다른지(정직성 교정의 핵심)
     expect(t.body).not.toBe(drainVerifyFallbackToast("unsupported").body);

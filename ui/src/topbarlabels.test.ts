@@ -38,7 +38,7 @@ describe("D4 #13 상단바 단추 글자 = 한국어", () => {
       const code = readFileSync(new URL(f, dir), "utf8").split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
       for (const bad of ["Update 버튼", "상단 Update", "Files 버튼", "Close 버튼"]) expect(`${f}: ${code.includes(bad)}`).toBe(`${f}: false`);
     }
-    expect(main).toContain("상단 「업데이트」 버튼");
+    expect(main).toContain("상단 「업데이트」로 설치"); // (r2 · D4 #14) 문구 개정 — 한국어 단추 이름 지칭은 유지
   });
 });
 

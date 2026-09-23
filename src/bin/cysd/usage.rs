@@ -2357,4 +2357,21 @@ mod tests {
         assert_eq!(g, 60.0, "유예 = statusline 신선도 창과 같은 60초(근거는 상수 주석)");
     }
 
+    /// agy 1R #2(채택): 유예 안에서 보류된 발화는 **새 줄이 없는 틱**에도 유예가 끝나면 다시 평가돼야 한다.
+    /// 종전 수리는 발화 지점이 「새 줄이 있는 틱」에만 있어, 부착 직후 한 번 크게 쓰고 조용해진 좌석은
+    /// 추정 임계가 영영 안 났다(빈 줄 분기 = 발화 없이 반환).
+    #[test]
+    fn t2_deferred_threshold_fires_on_idle_tick_after_grace() {
+        let (daemon, s, dir) = t2_seat("idle");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert!(t2_threshold_events(&daemon, s.id).is_empty(), "전제: 유예 안 보류");
+        tails.get_mut(&s.id).unwrap().attached_at -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        // 새 줄 없음 — 빈 줄 틱
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(fired.len(), 1, "유예가 끝났는데 새 줄이 없어 보류된 추정 임계가 영구 침묵");
+    }
 }

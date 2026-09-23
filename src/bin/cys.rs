@@ -23646,6 +23646,10 @@ At line:1 char:1\n+ claude\n+ ~~~~~~\n    + CategoryInfo          : ObjectNotFou
             "전제: 인식 문면이 꼬리 창 밖"
         );
         assert!(launch_failure_confirmed(ps, ps, None), "PowerShell 새 좌석 실패가 확증되지 않음");
+        // agy 1R #3-①(채택): 재사용 좌석 — 옛 TUI 잔상이 화면에 남은 채 PowerShell 긴 오류(꼬리 창 밖).
+        //   잔상은 기동 send **이전** 줄이라 신규 출현분에 없다 → TUI 증거는 신규 출현분에서 본다.
+        let reused_ps = format!("{T2_RESUME_SCREEN}\n{ps}");
+        assert!(launch_failure_confirmed(&reused_ps, ps, None), "재사용 좌석 PowerShell 실패가 확증되지 않음");
     }
 
     #[test]

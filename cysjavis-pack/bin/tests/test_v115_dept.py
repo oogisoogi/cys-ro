@@ -155,6 +155,9 @@ class _FakeCys:
             for r in self.rows:
                 if r["ref"] == flip[1]:
                     r["seat"] = "occupied"
+        rep = getattr(self, "replace_on_status", None)   # (n번째 조회, 옛 ref, 새 행) — 대기 중 좌석 교체 흉내
+        if rep and self.status_calls == rep[0]:
+            self.rows = [r for r in self.rows if r["ref"] != rep[1]] + [dict(rep[2])]
         for r in self.rows:   # (v115r3-d7) 조회마다 좌석 사실을 차례로 — 데몬 워치독이 unknown 을 채우는 흉내
             seq = getattr(self, "seat_seq", {}).get(r["ref"])
             if seq:
@@ -229,8 +232,10 @@ class D7FormationRecordsBootReason(unittest.TestCase):
 
 
 class A2B8BootNodeRun(unittest.TestCase):
-    def _run(self, rows, role, extra_env=None, queues=None, flip_on_status=None, seat_seq=None):
+    def _run(self, rows, role, extra_env=None, queues=None, flip_on_status=None, seat_seq=None,
+             replace_on_status=None):
         fake = _FakeCys(rows)
+        fake.replace_on_status = replace_on_status
         fake.queues = queues or {}
         fake.flip_on_status = flip_on_status
         fake.seat_seq = seat_seq or {}
@@ -292,13 +297,16 @@ class A2B8BootNodeRun(unittest.TestCase):
 
     def test_d7_settle_unknown_seat_pure(self):
         saved = time.sleep
-        time.sleep = lambda s: None
+        slept = []
+        time.sleep = slept.append      # agy 1R #4: 잔 횟수·길이를 센다(빠지면 재조회가 바쁜 고리가 된다)
         try:
             seq = [_st(seat="unknown"), _st(seat="unknown"), _st(seat="empty")]
             st, why = bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: seq.pop(0), tick_s=1.0,
                                              max_wait_s=10)
             self.assertEqual(bn.seat_state(st, "master"), "empty")
             self.assertIn("3s", why)
+            self.assertEqual(slept, [1.0, 1.0, 1.0], "재조회마다 한 틱을 자야 한다")
+            del slept[:]
             # 이미 판정된 좌석은 재조회 0(값·사유 그대로)
             calls = []
             st2, why2 = bn.settle_unknown_seat(_st(seat="occupied"), "master", lambda: calls.append(1), max_wait_s=10)
@@ -309,6 +317,17 @@ class A2B8BootNodeRun(unittest.TestCase):
                                                lambda: n.append(1) or _st(seat="unknown"), tick_s=1.0, max_wait_s=4)
             self.assertEqual((bn.seat_state(st3, "master"), len(n)), ("unknown", 4))
             self.assertIn("미해소", why3)
+            self.assertEqual(slept, [1.0] * 4)
+            # agy 1R #2: 상한이 틱보다 짧거나 틱의 배수가 아니면 마지막 조각은 남은 만큼만 잔다
+            del slept[:]
+            bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: _st(seat="unknown"), tick_s=1.0,
+                                   max_wait_s=2.5)
+            self.assertEqual(slept, [1.0, 1.0, 0.5])
+            del slept[:]
+            bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: _st(seat="unknown"), tick_s=1.0,
+                                   max_wait_s=0.5)
+            self.assertEqual(slept, [0.5])
+            self.assertLessEqual(sum(slept), 0.5)
             # 에이전트 좌석의 unknown 은 대상 아님(master 지시: unknown ∧ agent None) — 재조회 0
             calls2 = []
             st5, why5 = bn.settle_unknown_seat(_st(seat="unknown", agent="claude"), "master",
@@ -319,6 +338,38 @@ class A2B8BootNodeRun(unittest.TestCase):
             self.assertEqual(bn.seat_state(st4, "master"), "unknown")
         finally:
             time.sleep = saved
+
+    def test_d7_settle_never_sleeps_past_the_limit_wall_clock(self):
+        # agy 1R #2: 실제 경과 시간 — 남은 데드라인(0.15s)이 틱(1s)보다 짧아도 상한 안에서 끝난다.
+        t = time.monotonic()
+        bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: _st(seat="unknown"), tick_s=1.0,
+                               max_wait_s=0.15)
+        self.assertLess(time.monotonic() - t, 0.6, "틱을 통째로 자 데드라인을 넘었다")
+
+    def test_d7_seat_replaced_during_settle_targets_the_new_seat(self):
+        # agy 1R #1: 대기 중 좌석이 교체되면(surface:1 소멸 → surface:7 이 같은 역할) 처분 대상은 새 좌석이다.
+        #   종전: 옛 row(surface:1)로 회수 → 죽은 좌석을 겨누고 새 빈 좌석은 role 을 쥔 채 남아 워커가 둘이 된다.
+        rows = [{"ref": "surface:1", "role": "worker", "pid": 111, "seat": "unknown", "agent": None,
+                 "created": time.time() - 1}]
+        new = {"ref": "surface:7", "role": "worker", "pid": 777, "seat": "empty", "agent": None,
+               "created": time.time() - 500}   # 유예 밖 빈 워커 좌석 = reap-launch 대상
+        rc, out, fake = self._run(rows, "worker", self.env, replace_on_status=(2, "surface:1", new))
+        closes = [c for c in fake.calls if c[1:2] == ["close-surface"]]
+        self.assertEqual([c[2] for c in closes], ["surface:7"], fake.calls)
+        self.assertEqual(len([c for c in fake.calls if c[1:2] == ["launch-agent"]]), 1, fake.calls)
+
+    def test_d7_seat_gone_during_settle_launches_fresh(self):
+        # 대기 중 좌석이 사라지면(역할 좌석 0) 옛 row 로 처분하지 않고 새로 기동한다.
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "unknown", "agent": None,
+                 "created": time.time() - 1},
+                {"ref": "surface:2", "role": "cso", "pid": 222, "seat": "occupied", "agent": "claude",
+                 "created": time.time() - 100}]
+        gone = {"ref": "surface:2", "role": "cso", "pid": 222, "seat": "occupied", "agent": "claude",
+                "created": time.time() - 100}
+        rc, out, fake = self._run(rows, "master", self.env, replace_on_status=(2, "surface:1", gone))
+        self.assertEqual([c for c in fake.calls if c[1:2] == ["close-surface"]], [], fake.calls)
+        self.assertEqual(len([c for c in fake.calls if c[1:2] == ["launch-agent"]]), 1, fake.calls)
+        self.assertFalse(any("승계" in (l.get("msg") or "") for l in out.get("log", [])), out)
 
     def test_dead_agent_seat_in_grace_is_left_alone(self):
         rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": "claude",

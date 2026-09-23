@@ -913,8 +913,10 @@ def settle_unknown_seat(status, role, requery, tick_s=1.0, max_wait_s=None):
     limit = 2.0 * SEAT_WATCHDOG_TICK_S if max_wait_s is None else float(max_wait_s)
     waited, st = 0.0, status
     while waited < limit:
-        time.sleep(tick_s)
-        waited += tick_s
+        # agy 1R #2: 마지막 조각은 남은 상한만큼만 — 틱을 통째로 자면 호출자 데드라인을 넘는다.
+        step = min(tick_s, limit - waited)
+        time.sleep(step)
+        waited += step
         st2 = requery()
         if st2 is not None:
             st = st2
@@ -1490,7 +1492,10 @@ def main():
             max_wait_s=min(2.0 * SEAT_WATCHDOG_TICK_S, max(0.0, remaining())))
         if why_s:
             emit("seat", "%s %s" % (row["surface_ref"], why_s))
-        act = empty_seat_action(status, a.role)
+            # agy 1R #1: 기다리는 동안 좌석이 교체될 수 있다 — 처분(act)을 잰 스냅샷과 같은 좌석을
+            #   대상으로 삼는다(옛 row 로 회수·승계하면 죽은 좌석을 겨누고 새 빈 좌석은 남는다).
+            row = status_surface(status, a.role)
+        act = empty_seat_action(status, a.role) if row is not None else None
         if act == "hold-grace":
             emit("seat", "%s 빈 좌석이 부팅 유예(%.0fs) 안 — 재기동·회수 보류" % (row["surface_ref"], seat_boot_grace_s()))
             return done("seat_in_grace", "empty_seat_boot_grace", row["surface_ref"], code=1)

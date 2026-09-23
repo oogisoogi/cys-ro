@@ -160,6 +160,7 @@ import {
   type AlarmRecord,
 } from "./toastttl";
 import { paneTitleText, renameCommitTitle } from "./panetitle";
+import { seatNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
 import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
@@ -7352,13 +7353,16 @@ function onDaemonEvent(event: Record<string, unknown>) {
   const category = String(event.category ?? "");
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const sid = event.surface_id;
+  // ★(v116-ui-close-r2 · D4 #8) 경보 문구 = alertcopy.ts(「N번 <역할 이름> 창」 · 역할 코드·surface:N·내부 지침 문구 0 · 세기 그대로).
+  const no = seatNo(sid, payload.surface_ref);
 
   // ★(v116-ui-close-r2 · R1c) 마스터 자리가 늦게 섰으면 복원 카드 판정을 다시 돈다(판정·1회는 maybeShowRestoreBrief 가 진다).
   if (isMasterSeatSignal(name, payload)) maybeShowRestoreBrief();
   // --- name-우선 전용 처리(B1) : name 매칭이 category 폴백보다 우선 ---
   if (name === "approval.request") {
-    toast("approval", "⚠ 승인 대기", `${payload.role ?? ""} ${payload.surface_ref ?? ""} — ${String(payload.excerpt ?? "").slice(0, 100)}`);
-    osBanner("⚠ 승인 대기", `${payload.role ?? ""} ${payload.surface_ref ?? ""} — ${String(payload.excerpt ?? "").slice(0, 100)}`); // B4 OS 배너(고우선)
+    const c = approvalRequestCopy(no, payload);
+    toast("approval", c.title, c.body);
+    osBanner(c.title, c.body); // B4 OS 배너(고우선)
     // 자동 화면전환 없음 — 페인 승인 프롬프트는 master 즉각 자동승인 관할.
     // 토스트·OS 배너·사이드바 배지로만 알린다(feed.item.created의 유예 경로와 정합).
     refreshFeed();
@@ -7368,17 +7372,18 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "approval.stalled") {
     // master가 stall 임계(기본 5분) 내 처리하지 못한 승인 = 사람 개입 필요 신호 —
     // 이때만 화면을 전환한다(승인 UX 원칙: 알림과 포커스 강탈의 분리, escalation 짝).
-    toast("approval", "⚠ 승인 방치", `${payload.surface_ref ?? ""} ${String(payload.title ?? "").slice(0, 80)} — ${payload.age_secs}s 경과`);
-    osBanner("⚠ 승인 방치 — 사람 확인 필요", `${payload.surface_ref ?? ""} ${String(payload.title ?? "").slice(0, 80)}`);
+    const c = approvalStalledCopy(no, payload);
+    toast("approval", c.title, c.body);
+    osBanner(c.title, c.body);
     openFeed();
     refreshFeed();
     refreshSidebarStatus();
     return;
   }
   if (name === "context.threshold") {
-    toast("threshold", `🔋 컨텍스트 ${payload.context_pct}%`, `${payload.role ?? ""} ${payload.surface_ref ?? ""} ≥ ${payload.threshold}% — ${payload.action ?? ""}`);
-    if (Number(payload.context_pct ?? 0) >= 80)
-      osBanner(`🔋 컨텍스트 ${payload.context_pct}%`, `${payload.role ?? ""} ${payload.surface_ref ?? ""} ≥ ${payload.threshold}% — ${payload.action ?? ""}`); // B4 OS 배너(≥80만)
+    const c = contextThresholdCopy(no, payload); // 데몬 action 칸(내부 지침 문구)은 싣지 않는다
+    toast("threshold", c.title, c.body);
+    if (Number(payload.context_pct ?? 0) >= 80) osBanner(c.title, c.body); // B4 OS 배너(≥80만)
     refreshSidebarStatus();
     return;
   }
@@ -7390,28 +7395,21 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "role.takeover") {
     // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
     //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).
-    stickyToast(
-      `role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`,
-      "health",
-      `ℹ '${payload.role ?? ""}' 자리가 다른 칸으로 옮겨졌습니다`,
-      `surface:${payload.prev_surface ?? sid ?? ""} 이 비어 있어 부활 절차가 역할을 새 칸에 이어 붙였습니다. 옛 칸은 비어 있어 곧 정리됩니다(전할 말이 남아 있으면 그대로 둡니다).`,
-    );
+    const c = roleTakeoverCopy(seatNo(payload.prev_surface ?? sid, null), payload);
+    stickyToast(`role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`, "health", c.title, c.body);
     return;
   }
   if (name === "seat.folder_denied") {
     // ★v114-dept-fd 수리 1‴: 좌석 폴더를 macOS 가 막아 claude 가 못 뜬다(좌석엔 빈 셸만 남는다).
     //   claude 가 내는 「file descriptors」 오류 문구는 원인이 아니다 — 원인 문장으로 대신 알린다.
     const f = payload.folder === "Documents" ? "문서" : payload.folder === "Downloads" ? "다운로드" : "데스크탑";
-    stickyToast(
-      `perm-seat-${String(payload.folder ?? "folder")}`,
-      "health",
-      `⚠ 부서 폴더 접근 권한이 꺼져 있습니다`,
-      `${payload.role ?? ""} 자리가 폴더(${payload.cwd ?? ""})를 열지 못해 AI 가 시작되지 않았습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더 → cysr 에서 「${f} 폴더」를 켠 뒤 앱을 재시작하세요.`,
-    );
+    const c = seatFolderDeniedCopy(no, payload, f);
+    stickyToast(`perm-seat-${String(payload.folder ?? "folder")}`, "health", c.title, c.body);
     return;
   }
   if (name === "pane.idle") {
-    toast("idle", "💤 노드 유휴", `surface:${sid} — ${payload.idle_seconds}s 무출력`);
+    const c = paneIdleCopy(no, payload);
+    toast("idle", c.title, c.body);
     refreshSidebarStatus();
     return;
   }
@@ -7428,18 +7426,15 @@ function onDaemonEvent(event: Record<string, unknown>) {
     //   ③ 알람 이력: stickyToast→recordAlarm(id) — 같은 id는 최신 1건으로 합쳐져
     //      이력 링버퍼를 잠식하지 않는다(pushAlarm coalesce).
     const role = String(payload.role ?? "master");
-    stickyToast(
-      `master-idle:${event.socket_slug ?? ""}:${role}`,
-      "idle",
-      "💤 master 유휴",
-      `surface:${sid} ${role} — ${payload.idle_secs}s 무출력(임계 ${payload.threshold_secs}s)`,
-    );
+    const c = masterIdleCopy(no, role, payload);
+    stickyToast(`master-idle:${event.socket_slug ?? ""}:${role}`, "idle", c.title, c.body);
     refreshSidebarStatus();
     return;
   }
   if (name === "agent.exited") {
-    toast("alert", "❌ 에이전트 사망", `surface:${sid} ${payload.role ?? ""}`);
-    osBanner("❌ 에이전트 사망", `surface:${sid} ${payload.role ?? ""}`); // B4 OS 배너(고우선)
+    const c = agentExitedCopy(no, payload);
+    toast("alert", c.title, c.body);
+    osBanner(c.title, c.body); // B4 OS 배너(고우선)
     refreshSidebarStatus();
     // ★정합기 리셋 훅(스펙 D4 ②): 앱 즉사(SIGKILL — 복원 시퀀스 없음)로 유출·잔존한 트래킹을
     // 소등한다. 조준은 socket_slug **실해석 성공** pane 만(:5194 선례 — slug 부재·미해석 시
@@ -7467,8 +7462,9 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // v2(G2)는 role·axis 등 additive 필드를 싣고, v1 은 {reason,idle_secs}뿐 — payload.role
     // 폴백이 양 버전을 모두 흡수한다(governance.rs). reason 은 verbatim 표시라 신규값
     // ("shell process dead"/"agent process dead" 등)도 자연 수용 — 핸들러 무변경(W3-B).
-    toast("alert", "🚨 master 무응답(deadman)", `surface:${sid} ${payload.role ?? ""} ${payload.reason ?? ""}`);
-    osBanner("🚨 master 무응답(deadman)", `surface:${sid} ${payload.reason ?? ""}`); // B4 OS 배너(고우선)
+    const c = deadmanCopy(no, payload); // 축(axis) → 사람 말 · 모르는 축은 데몬 사유 원문
+    toast("alert", c.title, c.body);
+    osBanner(c.title, c.body); // B4 OS 배너(고우선)
     return;
   }
   if (name === "status.changed" || name === "task.changed") {

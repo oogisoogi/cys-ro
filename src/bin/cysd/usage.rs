@@ -2203,4 +2203,138 @@ mod tests {
         );
     }
 
+    // ─────────── (TICKET=v116-usage · T2) 창 크기 확정 전 추정치로 context.threshold 오발 ───────────
+    /// VM ↻ 실측(REPORT-v115-vm-verify-r3 §3-3 · 본부 surface:9 · 11:46:52): 옛 세션을 resume 한 새 좌석의
+    /// 첫 관측이 statusline 도착(1초 뒤 1,000,000 창 15%) **전에** 모델명 기본 추정(200k)으로 77% 를 계산해
+    /// context.threshold 를 냈다. 이 시험은 그 순서를 그대로 재현한다: 새 좌석 + 154,805 토큰 트랜스크립트
+    /// (모델 claude-fable-5-1 = `[1m]` 표기 없음) + statusline 아직 없음 → 관측 틱 1회.
+    fn t2_seat(tag: &str) -> (Arc<crate::state::Daemon>, Arc<crate::state::Surface>, std::path::PathBuf) {
+        use std::sync::atomic::AtomicU64;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-t2-{tag}-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("cso".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let t = dir.join("b8bb4651-2614-447b-9db2-4ce8ab3123bd.jsonl");
+        std::fs::write(
+            &t,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":150000,"cache_creation_input_tokens":4800,"output_tokens":10}}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        *s.registered_transcript.lock().unwrap() = Some(t.to_string_lossy().into_owned());
+        (daemon, s, dir)
+    }
+
+    fn t2_threshold_events(daemon: &Arc<crate::state::Daemon>, sid: u64) -> Vec<Value> {
+        daemon
+            .bus
+            .replay_after(0)
+            .into_iter()
+            .filter(|e| e["name"].as_str() == Some("context.threshold") && e["surface_id"].as_u64() == Some(sid))
+            .collect()
+    }
+
+    #[test]
+    fn t2_estimated_window_does_not_fire_threshold_on_fresh_seat() {
+        let (daemon, s, dir) = t2_seat("fresh");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let obs = s.observed_usage.lock().unwrap().clone().expect("관측 스냅샷");
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        // 선-assert: 재현 전제(추정 창 200k · 77%)가 서야 판정이 대상을 건드린 것이다.
+        assert_eq!((obs.ctx_window, obs.ctx_pct), (Some(200_000), Some(77)), "전제: 200k 추정 77%");
+        assert!(
+            fired.is_empty(),
+            "창 크기 미확정(statusline 전) 추정치 77% 로 context.threshold 발행 — VM ↻ T2 오산 재현: {fired:?}"
+        );
+    }
+
+    /// 안전망(4군 ② 무clear 100%+): statusline 이 끝내 오지 않는 좌석은 유예가 지나면 **추정치로 발화**한다.
+    /// 보류가 영구 침묵으로 번지면 이 좌석의 CTX 경보는 영영 없다 — 그 수리를 잡는다.
+    #[test]
+    fn t2_estimate_still_fires_after_grace_without_statusline() {
+        let (daemon, s, dir) = t2_seat("grace");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert!(t2_threshold_events(&daemon, s.id).is_empty(), "전제: 유예 안 보류");
+        // 유예 경과(부착 시각을 과거로) + 새 assistant 줄(여전히 statusline 없음)
+        tails.get_mut(&s.id).unwrap().attached_at -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        let t = s.registered_transcript.lock().unwrap().clone().unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        std::io::Write::write_all(
+            &mut f,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":156000,"cache_creation_input_tokens":0,"output_tokens":10}}}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        drop(f);
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(fired.len(), 1, "유예 뒤에도 추정치 발화 0 — statusline 없는 좌석의 CTX 경보 영구 침묵");
+        assert_eq!(fired[0]["payload"]["source"], "observed");
+    }
+
+    /// 보류는 **창 미확정**에만 건다: statusline 이 창(1M)을 이미 준 좌석은 부착 직후라도 진짜 임계를 즉시 낸다.
+    #[test]
+    fn t2_known_window_fires_immediately_on_fresh_seat() {
+        let (daemon, s, dir) = t2_seat("known");
+        // statusline 이 한 번 창을 줬다(신선도 창 밖 = 트랜스크립트 폴백이 도는 상태)
+        *s.observed_usage.lock().unwrap() = Some(ObservedUsage {
+            agent: "claude".into(),
+            ctx_tokens: Some(100_000),
+            ctx_window: Some(1_000_000),
+            ctx_pct: Some(10),
+            rate: vec![],
+            source: "statusline".into(),
+            session_file: String::new(),
+            updated_at: now_epoch() - STATUSLINE_FRESH_SECS - 5.0,
+        });
+        let t = s.registered_transcript.lock().unwrap().clone().unwrap();
+        std::fs::write(
+            &t,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":700000,"cache_creation_input_tokens":0,"output_tokens":10}}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let obs = s.observed_usage.lock().unwrap().clone().unwrap();
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!((obs.ctx_window, obs.ctx_pct), (Some(1_000_000), Some(70)), "전제: 서버 진실 창 70%");
+        assert_eq!(fired.len(), 1, "창이 확정된 좌석의 진짜 70% 가 보류됐다 — 참 CTX 경보 지연");
+    }
+
+    #[test]
+    fn t2_defer_truth_table() {
+        let g = super::ESTIMATED_WINDOW_GRACE_SECS;
+        assert!(super::defer_estimated_threshold(true, 0.0));
+        assert!(super::defer_estimated_threshold(true, g - 0.001));
+        assert!(!super::defer_estimated_threshold(true, g), "경계 = 유예 끝 → 발화");
+        assert!(!super::defer_estimated_threshold(false, 0.0), "창 확정이면 부착 직후라도 발화");
+        assert!(!super::defer_estimated_threshold(false, g + 1.0));
+        assert_eq!(g, 60.0, "유예 = statusline 신선도 창과 같은 60초(근거는 상수 주석)");
+    }
 }

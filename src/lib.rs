@@ -2614,6 +2614,11 @@ mod dept_registration_tests {
             None,
             "윈도 기본 파이프가 부서로 읽혔다"
         );
+        // r4(agy 3R #1 강화): 후행 구분자가 붙어도 마지막 성분으로 판별한다.
+        assert_eq!(
+            dept_name_from_socket_for(Path::new(r"\\.\pipe\cys-dept-edu\"), true).as_deref(),
+            Some("edu")
+        );
         // 접두만 있고 이름이 빈 경우도 부서가 아니다(빈 이름으로 레지스트리를 훑지 않게).
         assert_eq!(
             dept_name_from_socket_for(Path::new("/h/.local/state/cys-dept-/cys.sock"), false),

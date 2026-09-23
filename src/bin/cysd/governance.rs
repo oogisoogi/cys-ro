@@ -10559,6 +10559,20 @@ mod tests {
         assert_eq!(s.pending_queue.lock().unwrap().len(), 0, "에이전트가 관측된 부서 좌석에도 배달 안 됨");
     }
 
+    /// ★v115r3-d7 r4(agy 3R #2) 빈 큐에 남은 막힘 사유는 틱 1회로 걷힌다(queue.clear 경쟁 잔여 포함).
+    #[test]
+    fn d7_empty_queue_tick_clears_stale_blocked_reason() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("d7-empty-blocked");
+        let _env = QueueEnvGuard::set(&[("CYS_PACK_DIR", pack.to_str().unwrap())]);
+        let (daemon, s) = marker_seat("d7-empty-blocked");
+        s.pending_queue.lock().unwrap().clear();
+        *s.queue_blocked.lock().unwrap() = Some(("seat_no_agent(부서 좌석 에이전트 미관측 · 부팅 유예 안)".into(), 1.0));
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert!(s.queue_blocked.lock().unwrap().is_none(), "빈 큐인데 막힘 사유가 남아 queue.list 가 거짓 blocked 를 보고");
+    }
+
     /// ★v115r3-d7 r3(agy 2R #4) 좌석 보류가 풀리면 좌석 사유만 걷힌다 — 배달이 다른 이유로 실패해도 낡은
     /// seat_no_agent 가 남지 않는다. 다른 게이트 사유·보류 지속 중인 사유는 그대로. + 호출 위치 핀:
     /// deliver_queued 가 보류 판정 직후·배달 시도 **전**에 부른다(배달 실패는 단일 스레드 시험에서

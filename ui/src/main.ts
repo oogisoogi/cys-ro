@@ -2583,7 +2583,8 @@ async function refreshPaneTitles() {
         setRoleDot(rt.roleEl, s.exited ? null : s.role, !s.exited && surfaceWorking(s.surface_id, sk)); // 역할 점 + 작동중일 때만 깜빡, 동일 주기 갱신
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
         if (rt.titleEl.isContentEditable) continue; // 이름 편집 중에는 덮어쓰지 않음
-        rt.titleEl.textContent = paneTitle(s.title, s.live_cwd) + (s.exited ? " [exited]" : "");
+        // (v116-ui-close · D4 #13) 끝난 창 표시 = 「(끝남)」 — 종전 영어 「[exited]」.
+        rt.titleEl.textContent = paneTitle(s.title, s.live_cwd) + (s.exited ? EXITED_TITLE_SUFFIX : "");
       }
       // 자동 입양: 그 소켓의 role surface 중 UI에 없는 것 → '같은 소켓을 가진 ws'에만 표출.
       // ★소켓 일치 가드 — 부서A 노드가 부서B 탭에 잘못 입양되는 격리 누수 차단(검증 mustFix).
@@ -4554,6 +4555,8 @@ async function confirmDeleteGroup(g: GroupMeta) {
 
 // ws는 번호가 아니라 이름으로 구분 — 이름이 정해지지 않으면 "non title" 표시.
 const UNTITLED = "non title";
+/** 끝난 창 제목 꼬리표(D4 #13 · 종전 영어 exited 꼬리표). 시험·헤드리스가 이 상수 하나를 본다. */
+const EXITED_TITLE_SUFFIX = " (끝남)";
 
 // 커스텀 컨텍스트 메뉴 (WKWebView 기본 메뉴 대체) — 싱글톤, 바깥 클릭·Esc로 닫힘.
 function showCtxMenu(
@@ -5791,7 +5794,7 @@ async function checkForUpdate(silent: boolean) {
       // silent 경로에만 해당·비silent도 모달 1개 상한), 본체는 토스트로 병행 안내(T5 경로 유지).
       if (!silent) {
         promptPackInstall();
-        toast("feed", "🔄 새 본체도 있음", `새 본체 ${updateAvailable!.version} — 상단 Update 버튼으로 패치 설치(재시작·자동 복원)`);
+        toast("feed", "🔄 새 본체도 있음", `새 본체 ${updateAvailable!.version} — 상단 「업데이트」 버튼으로 패치 설치(재시작·자동 복원)`);
       } else toast("feed", "↻ 무중단 팩 + 새 본체", plan.toastMsg);
       break;
     case "binary":

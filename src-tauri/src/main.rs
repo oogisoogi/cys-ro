@@ -1201,7 +1201,15 @@ async fn claude_missing_hint() -> Option<String> {
         // ★W3(2026-08-29): 진단 프로브는 관측이다 — 봉인 조립점(sealed_sidecar_cys) 경유로,
         //   소켓이 죽은 창(설치기가 $INSTDIR 을 갈아끼우는 동안 포함)에 라이벌 cysd 를
         //   autostart 하지 않는다. 데몬이 없으면 카드 무음(None)이 정답이다(계약 ③과 정합).
-        sealed_sidecar_cys(&["agent-detect", "--json"]).output()
+        // ★D4 #1(dbg-D4 2026-09-23): 좌석과 **같은 PATH** 로 묻는다. GUI(Finder·launchd) 앱 PATH 는
+        //   /usr/bin:/bin:/usr/sbin:/sbin 뿐이라 공식 설치기가 놓는 ~/.local/bin/claude 를 못 찾아,
+        //   claude 가 설치돼 좌석이 정상 가동 중인데도 매 기동 「Claude Code CLI가 없습니다」 오경보가
+        //   떴다. 좌석 스폰은 inject_runtime_path 와 같은 규약(lib runtime_prefixed_path → unix
+        //   compose_unix_pane_path · windows compose_pane_path)으로 그 자리를 붙인다 — 진단도 그 규약을
+        //   소비한다(사본 0). 봉인(no_autostart)은 위 조립점이 그대로 진다.
+        let mut cmd = sealed_sidecar_cys(&["agent-detect", "--json"]);
+        inject_runtime_path(&mut cmd);
+        cmd.output()
     })
     .await
     .ok()?

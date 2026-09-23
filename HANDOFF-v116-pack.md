@@ -92,3 +92,41 @@
 | 7 언어 원칙 | 비적용 | 이 저장소의 팩 코드·주석 관례가 한국어다(`javis_formation.py`·`javis_boot_node.py` 전부) — 외과적 변경 원칙(기존 스타일)이 우선 |
 | 8 개선 필요성 최종 점검 | 적용 | P5(기존 깨진 상태 치유)는 필요하지만 역할 재지정 수단이 없어 1.1.6 에서 억지로 넣으면 산 좌석을 닫는 쪽으로 기울 위험 → 1.1.7 로 미룸이 맞다 |
 | 9 저장 후 구현 | 대기 | 이 문서가 저장본 · 구현은 master 판정 뒤 |
+
+---
+
+## 4. 판정·구현 기록
+
+- master#5c9ceb39(08:00): ⑴ R-B1 = **A 채택**(데몬 변경 최소·별도 커밋 · BUILTIN_JOBS_VERSION 코드 판정 · handlers.rs 다른 함수만) ⑵ D1 #4 규칙 확정 ⑶ B8 에도 뿌리 방어선 ⑷ 1-b 운영 처방은 master.
+
+| 커밋 | 종류 | 내용 |
+|---|---|---|
+| efda1e7e | 팩 | D1 #4 `reap_orphan_seats`·`orphan_seat_verdict`·`root_is_bare_shell`·`seat_root_block` + B8 승계·회수 전 뿌리 확인(`javis_boot_node.py`) |
+| bebab866 | 시험 | `test_d1_4_orphan_reap.py` 17 · `test_v115_dept.py` 뿌리 claude 픽스처 3 + 가짜 ps/pgrep |
+| eb5f9e34 | 데몬 | `daemon.auto_restore` — main.rs(accept 전 running · 재시도 대기 retry_wait · 복원 스레드 끝 done) · state.rs 필드 1 · handlers.rs org.status daemon 블록 키 1 |
+| 9258095e | 시험 | cargo `v116_auto_restore_phase_names_and_retry_rule_match_the_loop` · 격리 cysd `test_v116_auto_restore_status.py`(옵트아웃 = off · 관측 running→done) |
+| 6f7ce28b | 팩 | 편성 P1 봉인 · P1′(=D1 #5) 되살림 · P2 복원 대기 · P3 cwd · D1 #4 매 틱 배선 · boot_node `--reap-orphans` |
+| 2f7d045b | 시험 | `test_v116_rb1_formation.py` 22 · `test_formation.py` 하니스 새 접점 스텁(트립와이어 9z 가 실 cys 호출을 잡음 → 스텁) |
+| c701c0bd | CI | 새 시험 3종 3레인 4목록 등재 |
+
+- **BUILTIN_JOBS_VERSION 판정(코드)**: 범프 **불요**. 심박 잡(`schedule.rs:211-219`) 문자열을 바꾸지 않았다 — 부서명은 편성이 레지스트리(`~/.cys/depts.json`)에서 소켓으로 역산한다. 근거 = `schedule.rs:299-326`: 저장된 builtin 의 `_builtin_version` 이 코드 값보다 작을 때만 코드 정의로 갱신하고, 범프하면 builtin 전부가 교체돼 운영자 수기 편집이 소실된다(`:99-103` 주석).
+- **handlers.rs 겹침**: 내 변경 = `org.status` 팔의 daemon 블록 1키(≈6853) · T-USAGE(D6-1-2 patch) = `usage.report` 팔(≈6527). 둘 다 거대 `dispatch` 함수 안의 **서로 다른 match 팔**이고 300줄 이상 떨어져 줄 단위 병합 충돌은 없다 — 다만 「같은 함수」라는 점은 정직 고지.
+- schedule.rs 무변경 · state.rs = 필드 1 + 생성자 1줄.
+
+## 5. 1.1.7 백로그(master 판정 ⑴)
+
+- **P4** 데몬 특권 역할(master·cso) 등록 원자화 — 생성 관문(PTY 전)과 `roles.insert`(latest-wins · `state.rs:3827-3840`) 사이 창을 닫는다. 이미 띄운 PTY 롤백 설계 필요(M~L). 이번 판은 편성이 복원을 기다려 알려진 경합 주체만 줄 세웠다 — 다른 두 생성자(예: 사용자 `launch-agent` 와 복원)가 겹치면 여전히 latest-wins.
+- **P5** 이미 깨진 상태 치유 — 업데이트 전 재부팅으로 topology 에 들어간 「홈 빈 셸 master」·「worker-2(홈)」 항목이 다음 재부팅 복원 때 다시 설 수 있다. 빈 보유자를 닫아도 진짜 좌석의 역할은 그 창 안에서 다시 claim 해야 붙어 외부 재지정 RPC 가 필요.
+- (곁) 데몬 `seat_state`(`governance.rs:3184-3195`)가 뿌리 pid 를 안 본다 — 이번 판은 팩 방어선으로 막았고, 데몬 판정 자체(및 `seat_claimable_now` 를 쓰는 데몬 승계)는 그대로다.
+
+## 6. VM 확인 체크리스트(다음 VM 좌석용 · R-B1 이 닫혔다고 말하려면)
+
+1. 새 clone 설치 → 부서 3개(말로) → **부하가 낮은 상태에서** 재부팅 1회 · **부하가 높은 상태(부서 3 동시)** 재부팅 1회(자원 게이트로 미뤄진 부서가 생기게).
+2. 각 부서 소켓 `cys status --json`(CYS_NO_AUTOSTART=1 · 부서 소켓 조회는 master 게이트) → 부서마다 master·cso·worker **역할별 1자리** · `role=worker-2` 0 · cwd 가 홈(`/Users/<u>`)인 좌석 0 · 전체 claude 수 = 12.
+3. 부서 이벤트(evrec)에서 데몬 기동 뒤 `surface.created` 가 **복원 caller 하나에서만**(편성 caller 의 master·worker 생성 0) · `role.claim_denied` 중 `requested_surface` 가 claude 좌석인 것 0.
+4. `daemon.auto_restore` 가 기동 직후 running → done 으로 바뀌는지 · 편성 상태파일(`~/.cys/state/formation/<소켓키>.json`)에 `partial:restoring` 이 한때 보여도 다음 틱 complete.
+5. 미뤄진 부서(행정부 같은)가 켜진 경로: `dept-launch-path.log` 에 줄이 없고 부서 `cysd.log` 첫 줄 전에 `[cys-dept] … 가동 완료` 가 본부 편성 쪽 로그/알림(「부서 다시 켜기」 · 「다시 켰습니다」)으로 남는지 — 즉 **CLI 자동기동이 아니라 cys-dept launch 로** 켜졌는지.
+6. 부서장 앞 `cys send --to master --queued`(ping) → 즉시 진짜 부서장 대화에 도착 · `queue.held empty_seat` 0.
+7. 알림: 행정부를 되살렸다는 사람 말 1줄 · 이중 보유 0 이므로 이상 알림 0.
+8. D1 #4: 부서 워커 claude `kill -9` → +61s 데드맨 역할 회수 → 다음 편성 심박(최대 10분)에 새 워커 → 그 다음 심박에 옛 빈 셸 회수 + 「빈 창 정리」 알림 1 · **다른 좌석 닫힘 0**.
+9. 재부팅 2회째에도 2·3·6 동일(여분 누적 0).

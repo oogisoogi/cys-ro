@@ -205,3 +205,13 @@
 3. X-7: 진짜 패닉 뒤 잔류 경로를 QueueEnvGuard 가 복원할 수 있다(진짜 실패 뒤에만) · 앞으로 한 락을 헬퍼에서 재획득하면 멈춘다(조용한 통과가 아닌 드러나는 멈춤).
 4. X-7 과 무관한 다른 flake 2종 1회 관측(PTY 스폰 ENOENT · 락 fd 상속) — 범위 밖.
 5. 실 GitHub `--apply` 는 이 티켓에서 0회. 실물 확인은 백업 바이트 읽기 전용 대조뿐.
+
+## §11 master 재검 조사 — R12 시험 3건의 스냅샷 적색(master#d003436c → 판정 master#d01081eb ACCEPT)
+- 현상: master 가 깨끗한 스냅샷(/private/tmp/claude-501/… 아래)에서 돌리면 `dbg_r12_seat_profile_wired_before_agent_exec` · `dbg_r12_update_lane_restore_seat_gets_link_before_exec`(state.rs:8183) · `dbg_r12_init_pack_wires_profile_skill_links`(cys.rs:29210) 3건 적색 · 이 worktree 에선 초록 · 대조군 v1.1.5(526325bf)도 같은 3건.
+- 재현(변수 하나 = 스냅샷 위치 · 같은 커밋 30e201f8 · 같은 명령 · 같은 셸):
+  - A) 기본 $TMPDIR(/private/var/folders/…/T/msv-…) → 같은 3건 FAILED.
+  - B) MSV_BASE=~/msv-v116rel(비임시) → 3건 ok. ⇒ PATH·python3·상속 env·빌드 순서 후보 배제.
+- 원인 사슬: 세 시험의 격리 팩 = `<체크아웃>/target/dbg-r12-*/pack` → 배선 = `javis_preflight.py --wire-seat`(state.rs:2729~ · cys.rs:4937~) → `_discover_isolation_block()` 의 `_path_under_tempdir(pack_dir())`(javis_preflight.py:1075·1163)가 /tmp·/private/tmp·/var/folders·$TMPDIR 아래 팩을 「임시 팩 — 실 config 등록 금지」로 막음(07-02 temp-pack 누수 예방 · 의도된 동작) → 링크 미생성 → 적색. 가드 직접 평가: ~/axdev/.wt/…/pack False · /var/folders/…/pack True · /private/tmp/claude-501/…/pack True · ~/.cys/pack False.
+- 제품 영향 = 없음(실 팩 ~/.cys/pack · %USERPROFILE%\.cys\pack 는 가드 False). 전제는 시험 주석(state.rs:8093)에만 있고 단언으로 강제되지 않았다.
+- CI 근거: v1.1.5 release run 35875187678 macOS 레그(체크아웃 /Users/runner/work/… 비임시) — 3건 모두 ok(14:38:31Z · 14:40:00Z) · cysd 1042/0 · cys 285/0.
+- master 판정: 권고 A 채택(master 스냅샷 = 비임시 위치 · 도구 기본값 변경은 1045 티켓) · 권고 B = 1.1.6 백로그(시험 첫머리에 「스크래치 팩이 임시 경로」면 **이유를 적은 실패** · 건너뜀 금지). master 비임시 재실행 = R12 3건 전부 ok.

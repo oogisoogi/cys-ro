@@ -89,7 +89,7 @@ MUTANTS = [
     ("D10-4-기동뒤-대기-기본상한-12초", DEPT,
      'max="${CYS_DEPT_BOOT_MAX_S:-120}"', 'max="${CYS_DEPT_BOOT_MAX_S:-12}"', PY_D10),
     ("D11-1-공유-본부-프로필-등록금지-제거", PF,
-     "    if _pack_is_dept and not _acct_is_dept:\n", "    if False:\n", PY_D11),
+     "    if _pack_is_dept and _acct_is_hq:\n", "    if False:\n", PY_D11),
     ("F4-1-긍정-핵심어-필수-제거", "cysjavis-pack/bin/javis_dept_request.py",
      "            any(_ANS_YES_CORE.fullmatch(w) for w in toks):\n", "            True:\n", PY_F4),
     ("F5-1-셸-선거름-부-이름꼴-제거", "cysjavis-pack/hooks/dept-chat-inject.sh",

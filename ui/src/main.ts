@@ -7391,12 +7391,15 @@ function onDaemonEvent(event: Record<string, unknown>) {
   const sid = event.surface_id;
   // ★(v116-ui-close-r2 · D4 #8) 경보 문구 = alertcopy.ts(「N번 <역할 이름> 창」 · 역할 코드·surface:N·내부 지침 문구 0 · 세기 그대로).
   const no = seatNo(sid, payload.surface_ref);
+  // (Fable MINOR-3) 부서 데몬 이벤트면 부서 이름을 싣는다(본부·부서 창 번호 겹침) — 기본 데몬은 「본부」를 붙이지 않는다.
+  const evSock = event.socket_slug ? socketForSlug.get(String(event.socket_slug)) : undefined;
+  const ap: Record<string, unknown> = evSock && deptNameFromSocket(evSock) ? { ...payload, dept: ctxGroupLabel(evSock) } : payload; // 원 payload 는 건드리지 않는다
 
   // ★(v116-ui-close-r2 · R1c) 마스터 자리가 늦게 섰으면 복원 카드 판정을 다시 돈다(판정·1회는 maybeShowRestoreBrief 가 진다).
   if (isMasterSeatSignal(name, payload)) maybeShowRestoreBrief();
   // --- name-우선 전용 처리(B1) : name 매칭이 category 폴백보다 우선 ---
   if (name === "approval.request") {
-    const c = approvalRequestCopy(no, payload);
+    const c = approvalRequestCopy(no, ap);
     toast("approval", c.title, c.body);
     osBanner(c.title, c.body); // B4 OS 배너(고우선)
     // 자동 화면전환 없음 — 페인 승인 프롬프트는 master 즉각 자동승인 관할.
@@ -7408,7 +7411,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "approval.stalled") {
     // master가 stall 임계(기본 5분) 내 처리하지 못한 승인 = 사람 개입 필요 신호 —
     // 이때만 화면을 전환한다(승인 UX 원칙: 알림과 포커스 강탈의 분리, escalation 짝).
-    const c = approvalStalledCopy(no, payload);
+    // (Fable MINOR-2) 이 이벤트의 surface_id 는 발행자 자기신고일 수 있다 — 종전처럼 관측값(surface_ref)을 쓴다.
+    const c = approvalStalledCopy(seatNo(null, payload.surface_ref), ap);
     toast("approval", c.title, c.body);
     osBanner(c.title, c.body);
     openFeed();
@@ -7417,7 +7421,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
     return;
   }
   if (name === "context.threshold") {
-    const c = contextThresholdCopy(no, payload); // 데몬 action 칸(내부 지침 문구)은 싣지 않는다
+    const c = contextThresholdCopy(no, ap); // 데몬 action 칸(내부 지침 문구)은 싣지 않는다
     toast("threshold", c.title, c.body);
     if (Number(payload.context_pct ?? 0) >= 80) osBanner(c.title, c.body); // B4 OS 배너(≥80만)
     refreshSidebarStatus();
@@ -7431,7 +7435,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "role.takeover") {
     // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
     //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).
-    const c = roleTakeoverCopy(seatNo(payload.prev_surface ?? sid, null), payload);
+    const c = roleTakeoverCopy(seatNo(payload.prev_surface ?? sid, null), ap);
     stickyToast(`role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`, "health", c.title, c.body);
     return;
   }
@@ -7439,12 +7443,12 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // ★v114-dept-fd 수리 1‴: 좌석 폴더를 macOS 가 막아 claude 가 못 뜬다(좌석엔 빈 셸만 남는다).
     //   claude 가 내는 「file descriptors」 오류 문구는 원인이 아니다 — 원인 문장으로 대신 알린다.
     const f = payload.folder === "Documents" ? "문서" : payload.folder === "Downloads" ? "다운로드" : "데스크탑";
-    const c = seatFolderDeniedCopy(no, payload, f);
+    const c = seatFolderDeniedCopy(no, ap, f);
     stickyToast(`perm-seat-${String(payload.folder ?? "folder")}`, "health", c.title, c.body);
     return;
   }
   if (name === "pane.idle") {
-    const c = paneIdleCopy(no, payload);
+    const c = paneIdleCopy(no, ap);
     toast("idle", c.title, c.body);
     refreshSidebarStatus();
     return;
@@ -7462,13 +7466,13 @@ function onDaemonEvent(event: Record<string, unknown>) {
     //   ③ 알람 이력: stickyToast→recordAlarm(id) — 같은 id는 최신 1건으로 합쳐져
     //      이력 링버퍼를 잠식하지 않는다(pushAlarm coalesce).
     const role = String(payload.role ?? "master");
-    const c = masterIdleCopy(no, role, payload);
+    const c = masterIdleCopy(no, role, ap);
     stickyToast(`master-idle:${event.socket_slug ?? ""}:${role}`, "idle", c.title, c.body);
     refreshSidebarStatus();
     return;
   }
   if (name === "agent.exited") {
-    const c = agentExitedCopy(no, payload);
+    const c = agentExitedCopy(no, ap);
     toast("alert", c.title, c.body);
     osBanner(c.title, c.body); // B4 OS 배너(고우선)
     refreshSidebarStatus();
@@ -7498,8 +7502,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // v2(G2)는 role·axis 등 additive 필드를 싣고, v1 은 {reason,idle_secs}뿐 — payload.role
     // 폴백이 양 버전을 모두 흡수한다(governance.rs). reason 은 verbatim 표시라 신규값
     // ("shell process dead"/"agent process dead" 등)도 자연 수용 — 핸들러 무변경(W3-B).
-    const c = deadmanCopy(no, payload); // 축(axis) → 사람 말 · 모르는 축은 데몬 사유 원문
-    toast("alert", c.title, c.body);
+    const c = deadmanCopy(no, ap); // 축(axis) → 사람 말 · 데몬 사유 원문은 「자세히」 안쪽
+    toast("alert", c.title, c.body, undefined, c.raw);
     osBanner(c.title, c.body); // B4 OS 배너(고우선)
     return;
   }

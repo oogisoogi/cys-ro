@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 // ★픽스처는 **실제 소켓 경로 형태**여야 한다(codex 2R 지적).
 // 실물: 기본 데몬 `~/.local/state/cys/cys.sock` · 부서 `~/.local/state/cys-dept-<name>/cys.sock`
@@ -29,6 +30,7 @@ import {
   shortSocketTag,
   sourceGrade,
   USAGE_STALE_SECS,
+  SCOPED_STALE_SECS,
   windowStaleText,
   type AccountLike,
   type NamedReporterLike,
@@ -536,13 +538,17 @@ describe("scopedRates — 「7d·Fable」 실게이지", () => {
     expect(accountRates([drifted], ANOW)[0].stale).toBe(false);
   });
 
-  test("stale 문턱은 rate 행과 같은 값을 쓴다 — 한 표에서 판정이 갈리면 같은 색이 두 뜻을 갖는다", () => {
+  // ★계약 개정(v116-ui-close · D4 #11): 종전 「스코프 게이지도 rate 행과 같은 120초」는 생산 주기(프로브 180초)보다 짧아
+  //   정상 가동 중 3분마다 흐려졌다. 흐림의 **뜻**은 한 표 안에서 하나로 유지한다 = 「그 값의 생산자가 기대 주기를
+  //   한 번 넘겼다」. 숫자는 생산자마다 다르다(statusline 계열 120초 · 프로브 240초 = 주기 180 + 여유).
+  test("stale 의 뜻 = 생산자 주기를 넘김 — 스코프 게이지는 프로브 주기 문턱(SCOPED_STALE_SECS)을 쓴다", () => {
     const at = (age: number): AccountLike => ({
       ...ACCT_CLAUDE,
       scoped: [{ model: "Fable", used_pct: 6, resets_at: null, updated_at: ANOW - age, source: "oauth" }],
     });
-    expect(scopedRates([at(USAGE_STALE_SECS)], ANOW)[0].stale).toBe(false); // 경계는 아직 아니다
-    expect(scopedRates([at(USAGE_STALE_SECS + 1)], ANOW)[0].stale).toBe(true);
+    expect(scopedRates([at(USAGE_STALE_SECS + 1)], ANOW)[0].stale).toBe(false); // 120초를 넘어도 프로브 주기 안
+    expect(scopedRates([at(SCOPED_STALE_SECS)], ANOW)[0].stale).toBe(false); // 경계는 아직 아니다
+    expect(scopedRates([at(SCOPED_STALE_SECS + 1)], ANOW)[0].stale).toBe(true);
   });
 
   test("이름 없는 모델·관측 시각 없는 게이지는 그리지 않는다 — 없는 사실을 만들지 않는다", () => {
@@ -817,5 +823,28 @@ describe("sourceGrade", () => {
     expect(sourceGrade("transcript").mark).toBe("○");
     expect(sourceGrade("transcript:heuristic").title).toContain("휴리스틱");
     expect(sourceGrade("").mark).toBe("?");
+  });
+});
+
+// D4 #11(TICKET=v116-ui-close): 스코프 게이지는 프로브 주기(180초)에 맞춘 문턱 — 정상 가동 중 3분마다 흐려지지 않는다.
+describe("D4 #11 스코프 게이지 낡음 문턱 = 프로브 주기 짝", () => {
+  const rs = readFileSync(new URL("../../src/bin/cysd/accounts.rs", import.meta.url), "utf8");
+  const probe = Number(/const OAUTH_PROBE_INTERVAL_SECS: u64 = (\d+);/.exec(rs)?.[1] ?? NaN);
+  const mk = (age: number) =>
+    scopedRates([{ ...ACCT_CLAUDE, scoped: [{ model: "Fable", used_pct: 6, resets_at: null, updated_at: ANOW - age, source: "oauth" }] }], ANOW)[0];
+  test("문턱은 프로브 주기보다 길고, 한 번 거른 주기(백오프 2배)보다 짧다", () => {
+    expect(probe).toBe(180);
+    expect(SCOPED_STALE_SECS).toBeGreaterThan(probe);
+    expect(SCOPED_STALE_SECS).toBeLessThan(probe * 2);
+  });
+  test("정상 주기 안(150초 · 180초 · 문턱)은 흐리지 않고, 한 번 거른 뒤(문턱+1 · 360초)는 흐린다", () => {
+    expect(mk(150).stale).toBe(false);
+    expect(mk(180).stale).toBe(false);
+    expect(mk(SCOPED_STALE_SECS).stale).toBe(false);
+    expect(mk(SCOPED_STALE_SECS + 1).stale).toBe(true);
+    expect(mk(360).stale).toBe(true);
+  });
+  test("다른 표(계정 rate·페인 CTX)의 120초 문턱은 그대로", () => {
+    expect(USAGE_STALE_SECS).toBe(120);
   });
 });

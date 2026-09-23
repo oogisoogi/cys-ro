@@ -32,8 +32,8 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       ok: false,
       title: `팩 ${i.packVersion} 무중단 적용 가능 (새 본체 ${i.binVersion}은 패치 설치)`,
       toastMsg:
-        `팩 ${i.packVersion}은 상단 Update로 무중단 적용(재시작 없음) · ` +
-        `새 본체 ${i.binVersion}은 Update 버튼으로 패치 설치(재시작·자동 복원)`,
+        `팩 ${i.packVersion}은 상단 「업데이트」로 무중단 적용(재시작 없음) · ` +
+        `새 본체 ${i.binVersion}은 「업데이트」 버튼으로 패치 설치(재시작·자동 복원)`,
     };
   }
   if (i.binVersion) {
@@ -42,8 +42,8 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       kind: "binary",
       badge: "!",
       ok: false,
-      title: `새 본체 버전 ${i.binVersion} (Update 버튼으로 패치 설치)`,
-      toastMsg: `새 본체 ${i.binVersion} — 상단 Update 버튼으로 패치 설치(재시작·자동 복원)`,
+      title: `새 본체 버전 ${i.binVersion} (「업데이트」 버튼으로 패치 설치)`,
+      toastMsg: `새 본체 ${i.binVersion} — 상단 「업데이트」 버튼으로 패치 설치(재시작·자동 복원)`,
     };
   }
   if (i.packVersion && !i.binaryTooOld) {
@@ -52,7 +52,7 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       badge: "↻",
       ok: false,
       title: `팩 ${i.packVersion} (무중단·세션 유지)`,
-      toastMsg: `팩 ${i.packVersion} — 상단 Update(재시작 없음)`,
+      toastMsg: `팩 ${i.packVersion} — 상단 「업데이트」(재시작 없음)`,
     };
   }
   if (i.packVersion && i.binaryTooOld) {

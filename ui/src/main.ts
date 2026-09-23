@@ -2268,7 +2268,7 @@ const deptPendingRows = (): DeptPending[] => {
     const ws =
       workspaces.find((w) => !w.pending && (w.socket ?? DEFAULT_SOCKET_KEY) === sock) ??
       workspaces.find((w) => (w.socket ?? DEFAULT_SOCKET_KEY) === sock);
-    rows.push({ socket: sock, label: ws?.name ?? deptSlugOfSocket(sock), count: cnt });
+    rows.push({ socket: sock, label: ws ? wsLabel(ws) : deptSlugOfSocket(sock), count: cnt }); // (D4 #4) 표시 이름
   }
   return rows.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
 };
@@ -2645,9 +2645,13 @@ async function refreshPaneTitles() {
       const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
       // (D4 #4) 기본 소켓이면 「본부」 판정 재료를 갱신 — 판정이 바뀌면 탭만 다시 그린다(창 배치는 무접촉).
       if ((sk ?? undefined) === undefined) {
-        const before = hqMasterSids ? [...hqMasterSids].sort().join(",") : null;
-        hqMasterSids = masterSids;
-        if ([...masterSids].sort().join(",") !== before) renderWsTabs();
+        // (Fable 2R) 마스터 좌석이 잠깐 끝났을(exited) 때 빈 집합으로 덮으면 「본부」가 첫째 탭으로 튀었다 돌아온다 —
+        //   마지막으로 본 마스터 좌석을 유지하고, 새로 보일 때만 바꾼다.
+        if (masterSids.size) {
+          const before = hqMasterSids ? [...hqMasterSids].sort().join(",") : null;
+          hqMasterSids = masterSids;
+          if ([...masterSids].sort().join(",") !== before) renderWsTabs();
+        }
       }
       // ★B16(오너 확정 2026-09-19 16:1x) — 본부 역할이 **cys 좌석으로 있는 기기**에서는 역할 배치를 쓴다:
       //   좌열 master(위):cso(아래)=4:1 · 우열 worker. 참가자 기기(cysr)가 그 경우다.
@@ -4168,6 +4172,10 @@ const WS_COLORS = ["#2f81f7", "#3fb950", "#d29922", "#f85149", "#a371f7", "#db61
 
 function renderWsTabs() {
   const bar = document.getElementById("ws-tabs")!;
+  // (v116-ui-close · Fable 적대 2R) 탭 이름을 고치는 중이면 다시 그리지 않는다 — innerHTML 을 비우면 편집 중인
+  //   글자가 확정(blur) 없이 사라진다. 10초 주기 사이드바 갱신·본부 판정 갱신이 모두 이 함수를 부른다(창 제목 쪽
+  //   isContentEditable 가드와 같은 계약). 편집이 끝나면 확정 처리기가 render() 로 다시 그린다.
+  if (bar.querySelector('.ws-name[contenteditable="true"]')) return;
   bar.innerHTML = "";
   // 06: 2계층 tier 정렬 — pinned 그룹 → unpinned 그룹 → ungrouped ws(배열 순서). 시각 순서≠배열 순서이므로
   // 탭 핸들러는 캡처 idx 대신 workspaces.indexOf(ws)로 활성 비교/전환(stale idx 회피, close 핸들러 패턴 일치).
@@ -4425,7 +4433,8 @@ function wsGroupCtxItems(ws: Workspace): { label: string; action: () => void }[]
     items.push({
       label: "새 그룹으로 묶기",
       action: () => {
-        const g: GroupMeta = { id: groupCounter++, name: wsLabel(ws) || "그룹", collapsed: false, pinned: false }; // (D4 #4) 「non title」 그룹 이름 방지
+        // (D4 #4 · Fable 2R NIT) 이름 없는 탭이면 그룹 이름은 「그룹」 — 표시 전용 라벨(본부·새 화면)을 저장 이름으로 굳히지 않는다.
+        const g: GroupMeta = { id: groupCounter++, name: ws.name && ws.name !== UNTITLED ? ws.name : "그룹", collapsed: false, pinned: false };
         groups.push(g);
         ws.groupId = g.id;
         render();

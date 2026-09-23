@@ -746,7 +746,9 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
 #toasts {
   position: fixed; right: 12px; bottom: 12px;
   display: flex; flex-direction: column; gap: 8px; z-index: 950;
-  max-height: 60vh; overflow-y: auto; overflow-x: hidden;
+  /* (v116-ui-close · Fable 2R) 60vh → 40vh: 복원 카드(오른쪽 위)와 세로 높이를 나눠 가진다 — 둘 다 길어져도 만나지
+     않게(카드 max-height 가 이 40vh 를 빼고 잡는다 · 두 값은 짝이다). 넘친 알림은 이 칸 안에서 스크롤된다. */
+  max-height: 40vh; overflow-y: auto; overflow-x: hidden;
   padding: 2px; scrollbar-width: thin;
 }
 .toast {
@@ -1033,7 +1035,8 @@ body.cc-office #cc-view-office { flex: 1; min-height: 0; }
 #restore-brief {
   position: fixed; top: calc(var(--topbar-h, 38px) + 12px); right: 16px; z-index: 900;
   max-width: min(440px, calc(100vw - 32px));
-  max-height: 70vh; overflow: auto; padding: 14px 16px; border-radius: 8px;
+  /* 알림 줄(#toasts max-height 40vh · bottom 12px)과 겹치지 않는 높이까지만 — 넘치면 카드 안에서 스크롤. */
+  max-height: calc(100vh - var(--topbar-h, 38px) - 12px - 40vh - 12px - 12px); overflow: auto; padding: 14px 16px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--canvas-text);
   box-shadow: 0 6px 24px rgba(0, 0, 0, .35); font-size: 13px;
 }

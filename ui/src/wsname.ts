@@ -19,7 +19,7 @@ export interface WsBrief {
 
 /**
  * 「본부」로 부를 탭의 id. ① 기본 데몬 탭 중 마스터 좌석(masterSids)을 가진 첫 탭 ② 마스터 정보를 모르거나
- * (null) 어느 탭에도 없으면 첫째 기본 데몬 탭 ③ 기본 데몬 탭이 없으면 null.
+ * (null) 어느 탭에도 없으면 가장 먼저 만든(id 최소) 기본 데몬 탭 ③ 기본 데몬 탭이 없으면 null.
  * ★둘째 기본 탭이 「본부」를 빼앗지 않게 ①이 ②보다 먼저다(master 보강 1).
  */
 export function hqWorkspaceId(wss: readonly WsBrief[], masterSids: ReadonlySet<number> | null): number | null {
@@ -28,7 +28,8 @@ export function hqWorkspaceId(wss: readonly WsBrief[], masterSids: ReadonlySet<n
     const withMaster = base.find((w) => w.sids.some((sid) => masterSids.has(sid)));
     if (withMaster) return withMaster.id;
   }
-  return base.length ? base[0].id : null;
+  // (Fable 2R) 폴백은 배열 순서가 아니라 **가장 먼저 만든 탭(id 최소)** — 탭을 끌어 순서를 바꿔도 본부가 옮겨 가지 않게.
+  return base.length ? base.reduce((a, b) => (b.id < a.id ? b : a)).id : null;
 }
 
 /** 보여 줄 이름. 사람이 붙인 이름(저장값 ≠ untitled · 비지 않음)은 그대로 — 이름 없는 탭만 「본부」/「새 화면」. */

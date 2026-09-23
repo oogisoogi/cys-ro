@@ -14917,32 +14917,48 @@ mod tests {
     /// "unknown" 이면 안 된다(워치독 틱 전 창). 09-22 VM: 부서 allocate 직후 편성의 boot_node 가
     /// 그 창에서 판정해 빈 부서장 셸을 입양-주입으로 처분했다(505B · 부서장 공백 최대 5분55초).
     /// 이 테스트 데몬에는 워치독 틱이 없다 — 값이 채워졌다면 생성 경로가 채운 것이다.
+    /// ★r5(CI 맥 aarch64 적색 · run 35808969481): 픽스처는 `exec sleep 30` 이어야 한다. 좌석은
+    ///   `$SHELL -lc "<PATH 선두주입>; <cmd>"` 로 뜨는데 zsh 는 마지막 명령을 exec 하고 bash 3.2(러너 SHELL)는
+    ///   **fork 한다** — `sleep 30` 이 뿌리의 영구 자손이 돼 판정 = Occupied → prime 은 Empty 만 싣는 설계라
+    ///   무기록 → "unknown"(로컬 실측 bash 15/15 unknown · zsh 15/15 empty · `exec` 는 두 셸 모두 15/15 empty).
+    ///   생성 순간이 셸 초기화 자손(path_helper)과 겹치면 prime 이 Unknown 을 남기는 것도 제품 설계다(HANDOFF §6 ⓐ
+    ///   창 보류가 덮는다) — 그래서 3회 중 1회 이상 empty 를 요구하고, 어느 회차도 occupied 를 싣지 않았음을 함께
+    ///   단언한다(생성 경로 prime 호출을 지우면 3/3 unknown = 적색).
     #[test]
     fn d7_new_seat_is_judged_at_create_not_left_unknown() {
         let daemon = claim_daemon();
-        let Reply::Single(resp) = dispatch(
-            &daemon,
-            Request {
-                id: json!(1),
-                method: "surface.create".into(),
-                params: json!({"cmd": "sleep 30", "role": "master"}),
-            },
-            None,
-        ) else {
-            panic!("expected single reply");
-        };
-        assert_eq!(resp["ok"], json!(true), "surface.create 실패 ({resp})");
-        let sid = resp["result"]["surface_id"].as_u64().expect("surface_id");
-        let Reply::Single(st) = dispatch(
-            &daemon,
-            Request { id: json!(2), method: "org.status".into(), params: json!({}) },
-            None,
-        ) else {
-            panic!("expected single reply");
-        };
-        let row = surface_entry(&st, "surfaces", sid);
-        assert_eq!(row["seat"], json!("empty"),
-                   "생성 직후 좌석이 판정되지 않았다(unknown 창) — 편성이 빈 부서장 셸을 입양-주입한다: {row}");
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let Reply::Single(resp) = dispatch(
+                &daemon,
+                Request {
+                    id: json!(1),
+                    method: "surface.create".into(),
+                    params: json!({"cmd": "exec sleep 30", "role": "master"}),
+                },
+                None,
+            ) else {
+                panic!("expected single reply");
+            };
+            assert_eq!(resp["ok"], json!(true), "surface.create 실패 ({resp})");
+            let sid = resp["result"]["surface_id"].as_u64().expect("surface_id");
+            let Reply::Single(st) = dispatch(
+                &daemon,
+                Request { id: json!(2), method: "org.status".into(), params: json!({}) },
+                None,
+            ) else {
+                panic!("expected single reply");
+            };
+            let row = surface_entry(&st, "surfaces", sid);
+            assert_ne!(row["seat"], json!("occupied"),
+                       "생성 직후 채움이 Occupied 를 실었다(Empty 한정 위반 · 입양 분기로 샌다): {row}");
+            let empty = row["seat"] == json!("empty");
+            seen.push(row["seat"].clone());
+            if empty {
+                return;
+            }
+        }
+        panic!("생성 직후 좌석이 판정되지 않았다(unknown 창 · 3회 {seen:?}) — 편성이 빈 부서장 셸을 입양-주입한다");
     }
 
     /// ★v115r3-d7(D7⑴) 생성 직후 채움은 **Unknown 일 때만** 쓴다 — 틱이 먼저 쓴 값을 덮지 않는다.
@@ -14950,12 +14966,28 @@ mod tests {
     fn d7_prime_seat_cache_never_overwrites_a_tick_value() {
         use crate::governance::{prime_seat_cache_at_create as prime, SeatState};
         let daemon = claim_daemon();
-        let sid = make_surface(&daemon, Some("worker-d7-prime"));
-        let s = daemon.surfaces.lock().unwrap()[&sid].clone();
+        // ★r5: `exec` — bash 3.2(CI 러너 SHELL)는 `-lc "…; sleep 30"` 의 마지막 명령을 fork 해 sleep 이 영구
+        //   자손이 된다(판정 Occupied → 대조군이 None). exec 는 두 셸 모두 뿌리 = sleep · 자손 0.
+        let s = daemon
+            .create_surface(None, Some("exec sleep 30".into()), None, Some("worker-d7-prime".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         s.seat_cache.store(SeatState::Occupied as u8, Ordering::Relaxed);
         assert_eq!(prime(&s), None, "틱이 쓴 값을 덮었다");
         assert_eq!(SeatState::from_u8(s.seat_cache.load(Ordering::Relaxed)), SeatState::Occupied);
-        // 대조군: Unknown 이면 채운다(sleep 단독 뿌리 = 자손 0 = Empty).
+        // 대조군: Unknown 이면 채운다(exec sleep 뿌리 = 자손 0 = Empty). 로그인 셸 초기화 자손(path_helper)이
+        //   끝날 때까지 상태로 기다린다(아래 busy 쪽 대기와 대칭) — 전제가 서지 않으면 판정 전에 적색.
+        let quiet = || {
+            let mut y = sysinfo::System::new();
+            y.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            y.process(sysinfo::Pid::from_u32(s.pid)).is_some()
+                && crate::governance::collect_descendants(&y, s.pid).is_empty()
+        };
+        let t0 = std::time::Instant::now();
+        while !quiet() && t0.elapsed().as_secs() < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(quiet(), "측정 전제 실패 — 대조군 좌석이 자손 0 으로 가라앉지 않았다(이 아래 판정은 무의미)");
         s.seat_cache.store(SeatState::Unknown as u8, Ordering::Relaxed);
         assert_eq!(prime(&s), Some(SeatState::Empty), "Unknown 좌석을 채우지 않았다");
         assert_eq!(SeatState::from_u8(s.seat_cache.load(Ordering::Relaxed)), SeatState::Empty);

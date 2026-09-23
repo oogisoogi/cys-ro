@@ -2008,4 +2008,114 @@ mod tests {
         assert!((c.today_cost_usd - 0.2).abs() < 1e-9, "비용도 리셋");
         assert_eq!(c.model_tokens.len(), 1, "모델믹스도 리셋");
     }
+
+    // ─────────── ★dbg-D2(2026-09-23 · 1.1.5 정밀 디버깅 D2 · 검출 시험): 순환 뒤 세션 핀 ───────────
+    /// **결함 재현(R2)**: SessionStart 훅이 `/clear`(순환) 뒤 **새 트랜스크립트**를 등록해도
+    /// resume 핀(`agent_session_id`)은 처음 잡힌 옛 세션에 머문다(`collect_for` 의 is_none 게이트).
+    /// 그 핀이 topology `session_id` 로 영속되고(`governance.rs persist_topology`) 재시작 복원이
+    /// `--resume <옛 id>` 로 **순환 전 대화**를 되살린다. 기대 = 등록(소유자 명시) 경로가 바뀌면
+    /// 핀도 그 세션으로 전진한다. 휴리스틱 발견은 종전 1회 핀 그대로(동일 cwd 오핀 방어 유지).
+    #[test]
+    fn dbg_d2_registered_transcript_change_moves_resume_pin() {
+        use std::sync::atomic::AtomicU64;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-dbgd2-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let a = dir.join("aaaaaaaa-0000-4000-8000-000000000001.jsonl");
+        let b = dir.join("bbbbbbbb-0000-4000-8000-000000000002.jsonl");
+        std::fs::write(&a, "").unwrap();
+        std::fs::write(&b, "").unwrap();
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        *s.registered_transcript.lock().unwrap() = Some(a.to_string_lossy().into_owned());
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        // 선-assert: 첫 등록은 핀을 잡는다(이게 안 서면 아래 판정은 대상 미접촉).
+        assert_eq!(
+            s.agent_session_id.lock().unwrap().as_deref(),
+            Some("aaaaaaaa-0000-4000-8000-000000000001"),
+            "첫 등록 핀이 안 잡혔다 — 측정 실패"
+        );
+        // /clear 순환 = 훅이 새 트랜스크립트 등록
+        *s.registered_transcript.lock().unwrap() = Some(b.to_string_lossy().into_owned());
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let pin = s.agent_session_id.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            pin.as_deref(),
+            Some("bbbbbbbb-0000-4000-8000-000000000002"),
+            "순환(새 트랜스크립트 등록) 뒤에도 resume 핀이 옛 세션에 고정 — 재시작이 순환 전 대화를 되살린다"
+        );
+    }
+
+    /// ★dbg-D2 R2 ③(master 요구 3경우): **/clear 2회 연속**(cycle-agent 도 agents.json `clear_cmd="/clear"`
+    /// 를 좌석에 넣어 같은 훅 재등록 경로를 탄다) · **재부팅 뒤 첫 resume**(새 데몬 좌석은 핀 None ·
+    /// 훅 source=resume 이 resume 된 transcript 를 등록) — 모두 **가장 최근 등록 세션**이 핀이어야 한다.
+    #[test]
+    fn dbg_d2_two_clears_and_first_resume_follow_latest_registration() {
+        use std::sync::atomic::AtomicU64;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-dbgd2b-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let mk = |daemon: &std::sync::Arc<crate::state::Daemon>| {
+            let s = daemon
+                .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
+                .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+            s
+        };
+        let f = |id: &str| {
+            let p = dir.join(format!("{id}.jsonl"));
+            std::fs::write(&p, "").unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let (a, b, c) = (
+            f("aaaaaaaa-0000-4000-8000-00000000000a"),
+            f("bbbbbbbb-0000-4000-8000-00000000000b"),
+            f("cccccccc-0000-4000-8000-00000000000c"),
+        );
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        // (1) /clear 2회 연속: A → B → C
+        let s = mk(&daemon);
+        let mut seen = Vec::new();
+        for reg in [&a, &b, &c] {
+            *s.registered_transcript.lock().unwrap() = Some(reg.clone());
+            super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+            seen.push(s.agent_session_id.lock().unwrap().clone().unwrap_or_default());
+        }
+        // (2) 재부팅 뒤 첫 resume: 새 좌석(핀 None) · 훅이 resume 된 C 를 등록
+        let r = mk(&daemon);
+        assert!(r.agent_session_id.lock().unwrap().is_none(), "새 좌석 핀은 None 이어야 한다 — 측정 전제");
+        *r.registered_transcript.lock().unwrap() = Some(c.clone());
+        super::collect_for(&daemon, &r, "claude", "claude", &mut tails, &mut attempts);
+        let first_resume = r.agent_session_id.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(seen[0], "aaaaaaaa-0000-4000-8000-00000000000a", "첫 등록 핀 미성립 — 측정 실패");
+        assert_eq!(
+            first_resume.as_deref(),
+            Some("cccccccc-0000-4000-8000-00000000000c"),
+            "재부팅 뒤 첫 resume 등록이 핀이 되지 않았다"
+        );
+        assert_eq!(
+            seen,
+            vec![
+                "aaaaaaaa-0000-4000-8000-00000000000a".to_string(),
+                "bbbbbbbb-0000-4000-8000-00000000000b".to_string(),
+                "cccccccc-0000-4000-8000-00000000000c".to_string()
+            ],
+            "/clear 2회 연속 뒤 핀이 최신 등록 세션(C)을 따라가지 않았다"
+        );
+    }
 }

@@ -926,6 +926,147 @@ def settle_unknown_seat(status, role, requery, tick_s=1.0, *, max_wait_s):
     return st, "좌석 판정 unknown → %.0fs 대기에도 미해소 — 종전 흐름" % waited
 
 
+# ── ★v116-pack D1 #4: 역할 없이 남은 빈 에이전트 좌석(claude 가 죽고 남은 셸) 회수 ──
+# 실측(D1-daemon.md:44): 워커 claude kill -9 → +61s 데드맨이 역할만 걷고 셸은 남김 → 편성 심박이 새 좌석을
+# 세운 뒤에도 옛 빈 셸이 영구 누적. B8(reap-launch)은 「그 역할을 쥔 좌석」만 보므로 역할이 걷힌 좌석은 못 본다.
+# 유예 = master 판정 A-2(2분 · 편성 심박 10분보다 짧게). 실제 회수는 「사망 +2분 이후 첫 심박」.
+# ★4군 ④(산 좌석 닫힘 0) 방어선: ①seat=="empty" ②역할 없음(역할 가진 좌석은 절대 대상 아님 — 부서 만들기의
+#   빈 셸 master 도 제외) ③에이전트 메타 필수(사용자가 연 평범한 창 제외) ④닫기 직전 같은 pid 재조회
+#   ⑤뿌리 프로세스가 셸이고 자식 0(ps) — 데몬 seat 는 뿌리 pid 의 자손만 세서, 뿌리가 claude 자신인 좌석
+#   (`new-surface --cmd claude`)은 산 채로 empty 로 보인다(governance.rs seat_state). agent_alive 는 쓰지 않는다
+#   (설치본 1.0.2 에서 산 claude 가 None/False 로 보이는 퇴행 = 오판 경로 · HANDOFF-v116-pack §2).
+SEAT_ORPHAN_GRACE_ENV = "CYS_SEAT_ORPHAN_GRACE_S"
+SEAT_ORPHAN_GRACE_S_DEFAULT = 120.0
+_ORPHAN_SHELLS = ("zsh", "bash", "sh", "dash", "fish", "ksh", "tcsh", "csh")
+
+
+def seat_orphan_grace_s():
+    """빈 에이전트 좌석 회수 유예(초) — env 로 조정 · 음수·비수치는 기본값(seat_boot_grace_s 와 같은 규약)."""
+    raw = os.environ.get(SEAT_ORPHAN_GRACE_ENV)
+    try:
+        v = float(raw) if raw not in (None, "") else SEAT_ORPHAN_GRACE_S_DEFAULT
+    except ValueError:
+        return SEAT_ORPHAN_GRACE_S_DEFAULT
+    return v if v >= 0 else SEAT_ORPHAN_GRACE_S_DEFAULT
+
+
+def _path_under(path, base):
+    """path 가 base 자신이거나 그 아래인가(접두만 같은 형제 폴더 제외)."""
+    p = os.path.normpath(path)
+    b = os.path.normpath(base)
+    return p == b or p.startswith(b.rstrip(os.sep) + os.sep)
+
+
+def orphan_seat_verdict(s, dept_cwd, grace):
+    """이 좌석이 회수 대상인가 — **순수함수**(status 한 행 · 부서 폴더 · 유예). 반환 (bool, 사유)."""
+    if s.get("exited") is not False:
+        return False, "exited"
+    if s.get("role"):
+        return False, "has_role"
+    if not s.get("agent"):
+        return False, "no_agent_meta"
+    if s.get("seat") != "empty":
+        return False, "seat_%s" % s.get("seat")
+    idle = s.get("idle_secs")
+    if not isinstance(idle, (int, float)) or isinstance(idle, bool) or idle < grace:
+        return False, "in_grace"
+    if s.get("queue_depth") != 0:
+        return False, "queue"
+    cwd = s.get("cwd")
+    if not dept_cwd or not isinstance(cwd, str) or not cwd or not _path_under(cwd, dept_cwd):
+        return False, "outside_dept"
+    return True, None
+
+
+def root_is_bare_shell(pid, runner=None):
+    """커널에 직접 묻는다: 뿌리 프로세스 이름이 셸이고 자식이 0 인가. True/False · None = 판정 불가."""
+    runner = runner or run
+    rc, out, _ = runner(["ps", "-o", "comm=", "-p", str(pid)], timeout=5)
+    if rc != 0 or not (out or "").strip():
+        return None
+    name = os.path.basename(out.strip().splitlines()[0].strip()).lstrip("-")
+    if name not in _ORPHAN_SHELLS:
+        return False
+    rc2, _, _ = runner(["pgrep", "-P", str(pid)], timeout=5)
+    if rc2 == 1:     # pgrep: 일치 없음 = 자식 0
+        return True
+    if rc2 == 0:
+        return False
+    return None
+
+
+def seat_root_block(pid, runner=None, os_name=None):
+    """B8(승계·reap-launch) 전 뿌리 확인 — None = 진행 가능 · 문자열 = 보존 사유.
+    윈도(ps 없음)는 종전 동작 유지(None) — 윈도 좌석 뿌리는 launch-agent 셸이다(HANDOFF-v116-pack §3-3 결함 ⑶)."""
+    if (os_name or os.name) == "nt":
+        return None
+    if not isinstance(pid, int):
+        return "root_unknown"
+    bare = root_is_bare_shell(pid, runner)
+    if bare is True:
+        return None
+    return "root_not_bare_shell" if bare is False else "root_unknown"
+
+
+def reap_orphan_seats(socket=None, now=None, grace=None, dept_cwd=None, status_fn=None, list_fn=None,
+                      runner=None, os_name=None, registry_cwd_fn=None):
+    """부서 소켓의 빈 에이전트 좌석을 회수한다. 반환 {"reaped": [ref], "kept": [[ref, 사유]], "skipped"?: 사유}.
+    모든 외부 접촉은 주입 가능(밀폐 시험). 판정 불가·조회 실패 = 아무것도 안 닫는다(오폭보다 미집행)."""
+    out = {"reaped": [], "kept": []}
+    if (os_name or os.name) == "nt":
+        out["skipped"] = "windows"   # ps·pgrep 없음 = ⑤를 못 잰다 → 회수 안 함
+        return out
+    runner = runner or run
+    status_fn = status_fn or cys_status
+    list_fn = list_fn or cys_list_probe
+    grace = seat_orphan_grace_s() if grace is None else grace
+    dept_cwd = dept_cwd or (registry_cwd_fn or dept_registry_cwd)(socket)
+    if not dept_cwd:
+        out["skipped"] = "no_dept_cwd"
+        return out
+    st = status_fn()
+    if not isinstance(st, dict):
+        out["skipped"] = "status_unavailable"
+        return out
+    ok, rows = list_fn()
+    if not ok:
+        out["skipped"] = "list_unavailable"
+        return out
+    pids = {r.get("surface_ref"): r.get("pid") for r in rows}
+    for s in st.get("surfaces") or []:
+        hit, _ = orphan_seat_verdict(s, dept_cwd, grace)
+        if not hit:
+            continue
+        ref = s.get("surface_ref")
+        pid = pids.get(ref)
+        if not isinstance(pid, int):
+            out["kept"].append([ref, "pid_unknown"])
+            continue
+        bare = root_is_bare_shell(pid, runner)
+        if bare is not True:
+            out["kept"].append([ref, "root_not_bare_shell" if bare is False else "root_unknown"])
+            continue
+        # 닫기 직전 신선 재조회 — 같은 pid 에 대해 모든 조건을 다시(사람이 그 사이 claude 를 띄웠으면 멈춘다).
+        st2 = status_fn()
+        ok2, rows2 = list_fn()
+        s2 = next((x for x in ((st2 or {}).get("surfaces") or []) if x.get("surface_ref") == ref), None)
+        pid2 = next((r.get("pid") for r in rows2 if r.get("surface_ref") == ref), None) if ok2 else None
+        if (s2 is None or pid2 != pid or not orphan_seat_verdict(s2, dept_cwd, grace)[0]
+                or root_is_bare_shell(pid, runner) is not True):
+            out["kept"].append([ref, "recheck"])
+            continue
+        why_q = _seat_queue_block(ref, runner=runner)
+        if why_q:
+            out["kept"].append([ref, why_q])
+            continue
+        rc, _, _ = runner(["cys", "close-surface", ref, "--reap"], timeout=12)
+        if rc == 0:
+            out["reaped"].append(ref)
+        else:
+            out["kept"].append([ref, "close_rc=%d" % rc])
+    return out
+
+
 def _dept_name_of_socket(sock):
     """소켓 경로 → 부서명(`cys-dept-<name>` 성분) 또는 None — javis_bootstrap 명명 계약의 미러."""
     for part in re.split(r"[\\/]", sock or ""):
@@ -982,12 +1123,12 @@ def _seat_event(role, old_ref, action, cwd):
         return False
 
 
-def _seat_queue_block(old_ref):
-    """회수 전 큐 선검사(승계·reap-launch 공용) — 반환 = None(큐 0 을 **잰** 경우만 회수 가능) 또는 보존 사유.
+def _seat_queue_block(old_ref, runner=None):
+    """회수 전 큐 선검사(승계·reap-launch·빈 에이전트 좌석 회수 공용) — 반환 = None(큐 0 을 **잰** 경우만 회수 가능) 또는 보존 사유.
     ★`surface.close{cause:reap}`(= close-surface --reap)는 데몬이 큐를 **무조건 폐기**한다(governance.rs
     close_surface 의 pending_queue.drain) — 큐가 찬 좌석 reap 을 거부하는 것은 다른 RPC(`surface.reap`)뿐이다.
     그래서 회수 판정은 여기서 먼저 잰다: 못 쟀으면 queue_unknown, 남았으면 queue_nonempty(N) = 보존."""
-    rc, out, _ = run(["cys", "queue", "list", "--surface", old_ref], timeout=8)
+    rc, out, _ = (runner or run)(["cys", "queue", "list", "--surface", old_ref], timeout=8)
     queued = [ln for ln in (out or "").splitlines() if len(ln.split("\t")) >= 4]
     if rc != 0 or queued:
         return "queue_unknown" if rc != 0 else "queue_nonempty(%d)" % len(queued)
@@ -1502,6 +1643,16 @@ def main():
             return done("seat_in_grace", "empty_seat_boot_grace", row["surface_ref"], code=1)
         if act in ("takeover", "reap-launch"):
             old_ref = row["surface_ref"]
+            # ★v116-pack(master#5c9ceb39 ⑶): 데몬 seat 는 뿌리 pid 의 자손만 센다 — 뿌리가 claude 자신인 좌석
+            #   (`new-surface --cmd claude`)은 산 채로 "empty" 로 보인다. 승계(뒤이어 옛 좌석 회수)·회수 전에
+            #   커널에 직접 묻는다: 뿌리 = 셸 ∧ 자식 0 이 아니면(판정 불가 포함 · 윈도 제외) 좌석 보존.
+            why_root = seat_root_block(_pid_for_surface_ref(old_ref))
+            if why_root:
+                emit("seat", "%s 빈 좌석 판정 보류(seat.kept:%s) — 뿌리 프로세스가 빈 셸이 아니다 · 승계·회수 0"
+                     % (old_ref, why_root))
+                if _seat_kept_first(old_ref, why_root):
+                    _seat_event(a.role, old_ref, "seat.kept:" + why_root, a.cwd)
+                return done("seat_kept_" + why_root, why_root, old_ref, code=1)
             if act == "reap-launch":
                 # ★v115-review 발견 1: 워커 등 비특권 역할은 데몬 승계(큐 이관)가 없다(surface.create 의
                 #   takeover_empty_seat 는 master|cso 한정) — 큐가 남았거나 못 쟀으면 회수·기동 모두 보류.

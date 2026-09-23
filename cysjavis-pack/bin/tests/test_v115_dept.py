@@ -168,6 +168,15 @@ class _FakeCys:
 
     def __call__(self, args, timeout=15):
         self.calls.append(list(args))
+        # (v116-pack ⑶) B8 뿌리 확인 대역 — 행의 "root"(뿌리 프로세스 comm · 기본 로그인 셸) · "children"(자식 유무).
+        if args[:1] == ["ps"]:
+            pid = int(args[-1])
+            r = next((x for x in self.rows if x["pid"] == pid), None)
+            return (0, r.get("root", "-zsh") + "\n", "") if r else (1, "", "")
+        if args[:1] == ["pgrep"]:
+            pid = int(args[-1])
+            r = next((x for x in self.rows if x["pid"] == pid), None)
+            return (0, "999\n", "") if (r and r.get("children")) else (1, "", "")
         a = args[1:]
         if a[:2] == ["status", "--json"]:
             return 0, json.dumps(self.status()), ""
@@ -441,6 +450,33 @@ class A2B8BootNodeRun(unittest.TestCase):
         acted = [c for c in fake.calls if c[1] in ("close-surface", "launch-agent")]
         self.assertEqual(acted, [], "재조회에서 산 좌석을 회수했다")
         self.assertEqual(out["result"], "seat_kept_recheck")
+
+    def test_v116_b8_live_root_claude_worker_seat_is_not_reaped(self):
+        # master#5c9ceb39 ⑶: 뿌리 = claude 자신(`new-surface --cmd claude`) · 자식 0 순간 → 데몬 seat=empty 오판
+        #   → 종전 B8 은 이 산 좌석을 회수(close-surface --reap)했다. 뿌리 확인이 막아야 한다(4군 ④).
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900, "root": "/Users/u/.local/bin/claude"}]
+        rc, out, fake = self._run(rows, "worker", self.env)
+        acted = [c for c in fake.calls if c[1:2] in (["close-surface"], ["launch-agent"], ["send"])]
+        self.assertEqual(acted, [], "뿌리 claude 좌석을 빈 좌석으로 회수·재기동했다")
+        self.assertEqual(out["result"], "seat_kept_root_not_bare_shell")
+        self.assertEqual(rc, 1)
+
+    def test_v116_b8_live_root_claude_master_seat_is_not_taken_over(self):
+        # 승계(takeover) 는 뒤이어 옛 좌석을 회수한다(_reap_after_succession) — 뿌리 claude 부서장이면 승계 0
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900, "root": "claude"}]
+        rc, out, fake = self._run(rows, "master", self.env)
+        acted = [c for c in fake.calls if c[1:2] in (["close-surface"], ["launch-agent"], ["send"])]
+        self.assertEqual(acted, [], "뿌리 claude 부서장 좌석을 승계·회수했다")
+        self.assertEqual(out["result"], "seat_kept_root_not_bare_shell")
+
+    def test_v116_b8_shell_root_with_child_is_not_reaped(self):
+        rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900, "children": True}]
+        rc, out, fake = self._run(rows, "worker", self.env)
+        self.assertEqual([c for c in fake.calls if c[1:2] in (["close-surface"], ["launch-agent"])], [])
+        self.assertEqual(out["result"], "seat_kept_root_not_bare_shell")
 
     def test_succession_reaps_old_shell_when_queue_empty(self):
         rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,

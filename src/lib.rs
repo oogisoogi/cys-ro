@@ -2429,6 +2429,139 @@ pub fn inject_claude_alt_screen_default_for(
     env_pairs.push((ENV_CLAUDE_NO_ALT_SCREEN.to_string(), "1".to_string()));
 }
 
+/// v116-ui-effort ② — Claude 좌석 기동 명령에 **명시**하는 effort 값(박사님 정책 2026-09-23 「effort 는
+/// high 로 고정」). 설정 파일(settings.json·환경 변수)에 기대지 않는 이유 = Opus 5.5 의 기본값이
+/// medium 이고, 같은 날 09:14 설정이 뒤집혀 좌석이 조용히 medium 으로 뜬 실증이 있다. 명령줄 인자는
+/// 좌석마다 기동 순간에 박히므로 설정 파일이 무엇이든 이긴다.
+pub const CLAUDE_SEAT_EFFORT: &str = "high";
+
+/// 이 기동이 **Claude Code 좌석**인가(순수 판정).
+///
+/// 판정 근거는 둘 중 하나다:
+/// ① 어댑터 키가 `claude` 이거나 `claude-` 로 시작한다 — 사용자 팩에 `claude-fable`·`claude-sonnet`
+///    처럼 모델별 키가 실재한다(2026-09-23 라이브 agents.json 실측 · 읽기만 했다).
+/// ② 실행 파일 토큰의 이름(경로·확장자 제거)이 `claude` 다 — 키 이름을 바꿔도(어댑터 키 개명 내성)
+///    `~/.local/bin/claude`·`claude.exe` 같은 경로형 명령을 놓치지 않는다.
+/// `claude-2.cmd`(윈도 npm 래퍼) 처럼 이름이 claude 가 아닌 래퍼는 ② 로는 안 잡히고 ① 이 잡는다.
+pub fn is_claude_seat(agent: &str, bin: &str) -> bool {
+    if agent == "claude" || agent.starts_with("claude-") {
+        return true;
+    }
+    let name = bin.rsplit(['/', '\\']).next().unwrap_or(bin);
+    let stem = name.rsplit_once('.').map_or(name, |(a, _)| a);
+    stem.eq_ignore_ascii_case("claude")
+}
+
+/// Claude 좌석 기동 명령 끝에 `--effort high` 를 붙인다(v116-ui-effort ②).
+///
+/// 불가침 2계약:
+/// · Claude 좌석이 아니면(`is_claude_seat` 거짓) **한 글자도** 바꾸지 않는다 — codex·agy 는 이 인자를
+///   모른다(모르는 인자로 기동이 죽는다).
+/// · 명령에 이미 `--effort` 가 있으면(`--effort x` · `--effort=x`) 덧붙이지 않는다 — 같은 인자를
+///   두 번 주면 어느 값이 이기는지가 CLI 구현에 달린다. 사람이 적은 값은 명시적 선택이다.
+/// 붙이는 자리가 **끝**인 이유: 재개 인자(`--resume <id>`)까지 조립된 뒤에 붙여야 기동 경로가 무엇이든
+/// (새 좌석·복원·node-recover) 같은 한 줄이 된다. 인자 순서는 CLI 해석에 영향이 없다.
+pub fn append_claude_effort(cmd: &mut String, agent: &str, bin: &str) {
+    if !is_claude_seat(agent, bin) {
+        return;
+    }
+    if cmd
+        .split_whitespace()
+        .any(|t| t == "--effort" || t.starts_with("--effort="))
+    {
+        return;
+    }
+    cmd.push_str(" --effort ");
+    cmd.push_str(CLAUDE_SEAT_EFFORT);
+}
+
+#[cfg(test)]
+mod claude_effort_tests {
+    use super::*;
+
+    fn app(cmd: &str, agent: &str, bin: &str) -> String {
+        let mut c = cmd.to_string();
+        append_claude_effort(&mut c, agent, bin);
+        c
+    }
+
+    #[test]
+    fn claude_seat_gets_effort_high_at_end() {
+        assert_eq!(CLAUDE_SEAT_EFFORT, "high"); // 정책 값이 조용히 바뀌면 여기서 적색
+        assert_eq!(
+            app("claude --dangerously-skip-permissions", "claude", "claude"),
+            "claude --dangerously-skip-permissions --effort high"
+        );
+        // 라이브 사용자 팩 형태(--model 을 이미 가진 키 · 모델별 키) — 옆에 그대로 붙는다
+        assert_eq!(
+            app(
+                "claude --model claude-opus-5-5 --dangerously-skip-permissions",
+                "claude",
+                "claude"
+            ),
+            "claude --model claude-opus-5-5 --dangerously-skip-permissions --effort high"
+        );
+        assert!(app(
+            "claude --model claude-fable-5-1 --x",
+            "claude-fable",
+            "claude"
+        )
+        .ends_with(" --effort high"));
+    }
+
+    #[test]
+    fn claude_detected_by_key_or_binary_name() {
+        assert!(is_claude_seat("claude", "claude"));
+        assert!(is_claude_seat("claude-sonnet", "claude"));
+        // 윈도 cmd.exe /c …claude-2.cmd — 키가 잡는다
+        assert!(is_claude_seat("claude", "cmd.exe"));
+        // 모델별 키 + 이름이 claude 가 아닌 래퍼 — 키 접두 판정 **단독**으로만 잡힌다
+        // (실행파일 이름 판정과 겹치지 않게 골랐다: 두 판정이 겹치면 한쪽을 지워도 초록이다 · 뮤턴트 M3)
+        assert!(is_claude_seat("claude-fable", "cmd.exe"));
+        assert!(is_claude_seat(
+            "claude-sonnet",
+            "C:\\Users\\x\\AppData\\Roaming\\npm\\claude-2.cmd"
+        ));
+        assert!(is_claude_seat("my-seat", "/Users/x/.local/bin/claude"));
+        assert!(is_claude_seat(
+            "my-seat",
+            "C:\\Users\\x\\.local\\bin\\claude.exe"
+        ));
+        assert!(!is_claude_seat("codex", "codex"));
+        assert!(!is_claude_seat("gemini", "~/.local/bin/agy"));
+        assert!(!is_claude_seat("grok", "grok"));
+        assert!(!is_claude_seat("claudette", "claudette")); // 접두 일치가 아니라 키/이름 정확 판정
+    }
+
+    #[test]
+    fn non_claude_cmd_is_untouched_byte_for_byte() {
+        for (cmd, agent, bin) in [
+            (
+                "codex --dangerously-bypass-approvals-and-sandbox",
+                "codex",
+                "codex",
+            ),
+            (
+                "~/.local/bin/agy --dangerously-skip-permissions",
+                "gemini",
+                "~/.local/bin/agy",
+            ),
+            ("grok", "grok", "grok"),
+        ] {
+            assert_eq!(app(cmd, agent, bin), cmd);
+        }
+    }
+
+    #[test]
+    fn explicit_effort_is_not_doubled() {
+        for cmd in ["claude --effort max", "claude --effort=low --x"] {
+            assert_eq!(app(cmd, "claude", "claude"), cmd);
+        }
+        // 비슷한 이름의 다른 인자는 명시로 치지 않는다
+        assert!(app("claude --efforts x", "claude", "claude").ends_with(" --effort high"));
+    }
+}
+
 /// Claude Code projects/ 디렉터리명 munge — 실측: '/'와 특수문자가 '-'로 치환된다.
 /// ASCII 영숫자·'-'만 보존하는 보수 구현. resume 사전검증 게이트(cys.rs)와 usage 휴리스틱이 공유한다.
 pub fn claude_project_component(cwd: &str) -> String {

@@ -155,3 +155,30 @@ CI 러너엔 `cys` 가 없어 이 경로가 안 돌고(=CI 초록), 로컬에서
 `tests/test_formation.py` `_ensure_harness` 가 `_master_seat_cwd` 도 모킹(저장·복원 목록 포함) + 트립와이어 검체 **9z**(ensure 절 동안 `subprocess.run` 의 실 `cys` 호출을
 가로채 기록·실행 0 → 0건 단언). 실측: 설치본 cys 가 PATH 에 있는 비격리 env 로 돌려도 43/43 · 트리 무변경 · `/usr/local/bin/cysd` 0 → 0.
 뮤턴트 TM1(하네스 모킹 삭제) = KILLED(9z 적색 · `cys status --json` 2건 가로챔 · 데몬 기동 0).
+
+## 9. r3(master#bb06acb1 · agy 2R REJECT — 1R 4건 전부 수정 확인 · 신규 4건)
+
+| # | 판정 | 수리 자리 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| 2R#1 P2 settle 기본 분기(None → 2틱) 호출처 0 | 수리 | javis_boot_node.py `settle_unknown_seat(..., *, max_wait_s)` 필수 키워드 · `limit = float(max_wait_s)` | `test_d7_settle_requires_explicit_limit`(누락 원인 문구까지 단언) · PR1(기본값만 복원)·PR2(원본 전체 복원) KILLED |
+| 2R#2 P2 부서 판별이 경로 전체 any() | 수리 | governance.rs `dept_seat_agent_grace_secs` 가 `cys::dept_name_from_socket`(직계 부모 폴더·윈 파이프 끝 성분) | 표 시험에 `/Users/x/cys-dept-project/w/.local/state/cys/cys.sock = 본부` 반례 · R1(any() 복귀) KILLED |
+| 2R#3 P3 queue.clear 뒤 낡은 blocked | 수리 | handlers.rs queue.clear drain 직후 `queue_blocked = None` | `queue_clear_allows_self` 단언 · R4 KILLED |
+| 2R#4 P3 유예 만료 경계 배달 실패 시 낡은 좌석 사유 | 수리 | governance.rs `release_stale_seat_hold_reason` — 좌석 보류가 풀린 틱에 좌석 사유만 배달 시도 **전**에 걷음(타 게이트 사유 불변) | `d7_released_seat_hold_clears_only_seat_reason_before_delivery`(행위 + 호출 위치 핀) · R2(헬퍼 무력화)·R3(호출 삭제) KILLED |
+
+- 한계(정직): 2R#4 의 「배달 실패」 자체는 단일 스레드 시험에서 결정론으로 만들 수 없다(`write_tx` 는 교체 불가 필드 · 입력줄 대조는 동시성 필요) → 헬퍼 행위 + 호출 위치(배달 시도 앞) 소스 핀으로 잰다.
+- 곁(미수리 · 범위 밖): `src/lib.rs` `is_dept_socket`(경로 전체 any())은 다른 소비자(채널 브리지 스폰 거부 등)가 그대로 쓴다 — 같은 반례 부류. 1.1.6 후보.
+- 곁(선재 간헐 · r3 무관): `handlers::tests::reap_denies_queue_nonempty_then_queue_clear_exited_reclaim` 는 필터 묶음(`d7_ force_deliver queue_clear`) 직렬 실행에서 간헐 적색 — r3 이전 94b280c7 에서도 5회 중 3회 · 단독 3/3 초록. 뮤턴트 킬러 목록에 섞여 나오므로 귀속은 각 뮤턴트의 고유 킬러로 판정했다. 전체 cysd 스위트 직렬에선 r2·r3 모두 초록.
+- agy 2R 부기 「javis_formation.py isinstance(obj, dict) 삭제 뮤턴트 생존」 = 이번 티켓 수리 범위 밖(선재 코드) · 미수리 · 1.1.6 후보.
+
+### 9-1. 통합 검증(r3 · HEAD eda4f205 · 격리 env · 10:17:41~10:43:31 · 단계마다 dirty=0)
+| 단계 | rc | 초 | 건수 |
+|---|---|---|---|
+| cargo test --lib(직렬) | 0 | 392 | 533 pass · 0 fail |
+| cargo test --bin cysd(직렬) | 0 | 129 | 1034 pass · 0 fail |
+| cargo test --bin cys | 0 | 113 | 280 pass · 0 fail |
+| ui bun test | 0 | 0 | 1102 pass · 0 fail |
+| 팩 CI 루프 45검체 | 0 | 369 | PACK-FAILS=0 |
+| secret-scan --all | 0 | 10 | clean · 1082 파일 |
+| gen --check | 0 | 1 | GREEN |
+| 전체 건강 검체(직렬) | 0 | 536 | pass 149 · skip 1 |
+(10:12 에 02ffad23 로 시작한 1차 실행은 도중 시험 파일 수정·커밋으로 트리가 바뀌어 중단·폐기 — 위 표는 eda4f205 단일 트리 값.)

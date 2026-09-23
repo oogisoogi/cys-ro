@@ -23602,6 +23602,25 @@ mod tests {
         assert!(agent_env_pairs(&no_env).is_empty());
     }
 
+    /// ★chat-ui r4 D(master 판정 · 제품 채택은 박사님 결정): 클로드 좌석은 제안 글(고스트)을 끈 채로 뜬다.
+    /// VM 실측 — 2.1.280 은 답 뒤 입력창에 제안 글을 띄우고, 그 동안 대화 화면 입력 관문과 큐 배달이 입력줄을
+    /// 「비어 있지 않음」으로 읽어 보류한다. 본체 판독: env `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` 이 설정보다 먼저
+    /// 읽히고 0/false/no/off 면 끈다. 되돌리기 = 이 env 1줄. 임베드 팩 → launch-agent·restore·recover 공통 조립.
+    #[test]
+    fn claude_adapter_env_disables_prompt_suggestion() {
+        let agents: Value = cys::pack::PACK_ALL
+            .iter()
+            .find(|(r, _)| *r == "agents.json")
+            .map(|(_, c)| serde_json::from_str(c).expect("agents.json"))
+            .expect("임베드 팩에 agents.json 이 없다");
+        let pairs = agent_env_pairs(&agents["claude"]);
+        assert!(
+            pairs.contains(&("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION".into(), "false".into())),
+            "클로드 어댑터가 제안 글을 끄지 않는다: {pairs:?}"
+        );
+        assert!(pairs.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"), "기존 격리 config env 가 사라졌다");
+    }
+
     /// ★G34(W3) — 소켓에서 **레인 팩을 결정론 유도**한다(cys-dept 명명 규약 미러).
     /// 부서 소켓+본부 팩 데몬이 생기면 부서 부트가 exit 8 로 영구 차단되고 팩이 교차 서빙된다.
     #[test]

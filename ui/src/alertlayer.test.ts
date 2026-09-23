@@ -1,0 +1,32 @@
+// alertlayer.test.ts — 경보(알림 줄)가 복원 카드에 가려지지 않는다(D4 #21) · TICKET=v116-ui-close.
+//
+// 실기 맥락(D4-ui.md #21 · VM v5 · D2 s6): 복원 카드가 오른쪽 아래 알림 줄을 덮어, 그 뒤에 뜬 「Claude Code CLI가
+// 없습니다」·「❌ 에이전트 사망」 알림이 카드 뒤에 깔려 안 보였다. 화면 실측은 docs/v116-ui-evidence/v116-headless.ts c6.
+import { describe, it, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+
+const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+const block = (sel: string): string => {
+  const i = css.indexOf(`\n${sel} {`);
+  expect(i).toBeGreaterThan(-1);
+  return css.slice(i, css.indexOf("}", i));
+};
+const z = (sel: string): number => Number(/z-index:\s*(\d+)/.exec(block(sel))?.[1] ?? NaN);
+
+describe("D4 #21 경보 층위 — 알림 줄은 복원 카드보다 위", () => {
+  it("#toasts z-index > #restore-brief z-index", () => {
+    expect(z("#toasts")).toBeGreaterThan(z("#restore-brief"));
+  });
+
+  it("그래도 확인 창(.modal-overlay)·Control Center·팔레트보다는 아래(층 계약 무변경)", () => {
+    expect(z("#toasts")).toBeLessThan(z(".modal-overlay"));
+    expect(z("#toasts")).toBeLessThan(z("#cc-panel"));
+  });
+
+  it("복원 카드는 알림 줄과 다른 모서리(왼쪽 아래)에 선다 — 오른쪽에 붙지 않는다", () => {
+    const b = block("#restore-brief");
+    expect(b).toContain("left: calc(var(--wsbar-w, 216px) + 16px)");
+    expect(/(^|[\s;{])right:/.test(b)).toBe(false);
+    expect(block("#toasts")).toContain("right: 12px");
+  });
+});

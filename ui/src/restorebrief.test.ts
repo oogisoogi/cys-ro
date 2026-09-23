@@ -5,6 +5,9 @@ import {
   parseBriefSections,
   recordedAt,
   stateCandidates,
+  canonicalStatePath,
+  briefStatePaths,
+  pickBriefText,
   buildBriefCard,
   friendlyRole,
   plainLine,
@@ -273,5 +276,44 @@ describe("v115r5 T4 — 첫 기동·갱신·기록 없음·기록 늦음 진리�
     expect(snap).toBeLessThan(src.indexOf("layoutLoaded = true;", snap - 2000));
     expect(src.includes("firstLaunch: false };")).toBe(true); // 기본값 = 첫 기동 아님(모름 → 띄운다)
     expect(src.includes('if (briefTiming(briefGate) === "show") void showRestoreBrief();')).toBe(true);
+  });
+});
+
+describe("v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다", () => {
+  it("정본 경로 = <홈>/.cys/pack/round/SESSION_STATE.md (맥·윈 구분자)", () => {
+    expect(canonicalStatePath("/Users/u")).toBe("/Users/u/.cys/pack/round/SESSION_STATE.md");
+    expect(canonicalStatePath("/Users/u/")).toBe("/Users/u/.cys/pack/round/SESSION_STATE.md");
+    expect(canonicalStatePath("C:\\Users\\u")).toBe("C:\\Users\\u\\.cys\\pack\\round\\SESSION_STATE.md");
+  });
+  it("후보 = 정본 먼저 + 종전 cwd _round 사슬 그대로 · 작업 폴더를 몰라도 정본은 본다", () => {
+    expect(briefStatePaths("/Users/u/jarvis", "/Users/u")).toEqual([
+      "/Users/u/.cys/pack/round/SESSION_STATE.md",
+      ...stateCandidates("/Users/u/jarvis", "/Users/u"),
+    ]);
+    expect(briefStatePaths(null, "/Users/u")).toEqual(["/Users/u/.cys/pack/round/SESSION_STATE.md"]);
+  });
+  it("정본만 있으면 정본 · cwd 쪽이 더 늦게 기록됐으면 cwd 쪽 · 같으면 정본 · 없으면 null", () => {
+    const canon = { path: "c", text: "## 완료\n- 정본\n2026-09-23 22:10" };
+    const drainNewer = { path: "d", text: "## 완료\n- 드레인\n2026-09-23 23:05" };
+    const drainOlder = { path: "d", text: "## 완료\n- 드레인\n2026-09-22 08:00" };
+    const drainSame = { path: "d", text: "## 완료\n- 드레인\n2026-09-23 22:10" };
+    expect(pickBriefText([canon])).toBe(canon.text);
+    expect(pickBriefText([canon, drainNewer])).toBe(drainNewer.text);
+    expect(pickBriefText([canon, drainOlder])).toBe(canon.text);
+    expect(pickBriefText([canon, drainSame])).toBe(canon.text);
+    expect(pickBriefText([{ path: "c", text: "시각 없음" }, { path: "d", text: "시각 없음 2" }])).toBe("시각 없음");
+    expect(pickBriefText([])).toBeNull();
+  });
+  it("배선: 카드가 정본 포함 후보 전부를 읽고 pickBriefText 로 고른다(첫 적중에서 멈추지 않는다)", () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
+    const f = src.slice(src.indexOf("async function showRestoreBrief()"));
+    const body = f.slice(0, f.indexOf("const card = buildBriefCard("));
+    expect(body).toContain("for (const p of briefStatePaths(master.live_cwd, home))");
+    expect(body).toContain("const text = pickBriefText(found);");
+    expect(body).not.toContain("break;");
+    expect(body).not.toContain("stateCandidates(");
+  });
+  it("첫 기동 행은 그대로 — 정본 기록이 있어도 첫 기동이면 카드 skip(T4 무회귀)", () => {
+    expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: true, firstLaunch: true })).toBe("skip");
   });
 });

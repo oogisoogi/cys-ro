@@ -8682,7 +8682,7 @@ fn install_hint_for(agent: &str, os: &str) -> &'static str {
             if os == "windows" {
                 "PowerShell: `irm https://claude.ai/install.ps1 | iex` 후 자비스 재시작"
             } else {
-                "`curl -fsSL https://claude.ai/install.sh | bash` 후 새 탭"
+                "`curl -fsSL https://claude.ai/install.sh | bash` 후 자비스 재시작"
             }
         }
         "codex" => concat!(

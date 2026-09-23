@@ -9581,6 +9581,45 @@ echo {PROBE_BEGIN_MARK_D}; which -a cysd-no-such-binary-xyz; echo {PROBE_END_MAR
         assert_eq!(args, ["agent-detect", "--json"]);
     }
 
+    /// ★D4 #1 회귀 핀(dbg-D4 2026-09-23): claude 설치 진단은 **좌석과 같은 PATH** 로 물어야 한다.
+    /// ⑴ 배선: `claude_missing_hint` 본문이 agent-detect 명령에 `inject_runtime_path` 를 적용한다.
+    /// ⑵ 의미: 그 규약이 GUI 맨 PATH 위에 `$HOME/.local/bin`(공식 설치기 자리)을 실제로 얹는다.
+    /// 뮤턴트 = 본문의 주입 한 줄 삭제 → ⑴ 적색 · 실행 증거 = 보고서 D4 #1 재현(격리 HOME).
+    #[test]
+    fn claude_missing_hint_probes_with_seat_path() {
+        let src = include_str!("main.rs");
+        let head = concat!("fn claude_missing", "_hint(");
+        let start = src.find(head).expect("claude_missing_hint 정의");
+        let end = src[start..].find("\n}\n").map(|e| start + e).unwrap_or(src.len());
+        let body = &src[start..end];
+        // 주석을 걷어낸 코드 줄만 본다(설명 주석에 같은 낱말이 있어도 거짓 초록이 안 나게).
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains(concat!("inject_runtime", "_path(&mut cmd)")),
+            "claude_missing_hint 가 agent-detect 에 좌석 PATH 를 주입하지 않는다 — GUI PATH 로는 ~/.local/bin/claude 를 못 찾아 설치된 사용자에게 「CLI 없음」 오경보"
+        );
+        #[cfg(not(windows))]
+        {
+            let mut cmd = sealed_sidecar_cys(&["agent-detect", "--json"]);
+            inject_runtime_path(&mut cmd);
+            let path = cmd
+                .get_envs()
+                .find(|(k, _)| *k == std::ffi::OsStr::new("PATH"))
+                .and_then(|(_, v)| v)
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let local_bin = cys::home_dir().join(".local").join("bin").to_string_lossy().into_owned();
+            assert!(
+                path.split(':').any(|e| e == local_bin),
+                "주입된 PATH 에 {local_bin} 이 없다: {path}"
+            );
+        }
+    }
+
     /// ★W3 지점 핀: 스펙 W3 가 지목한 세 GUI 스폰(진단 `claude_missing_hint` · 업데이트 팩
     /// 반영 `maybe_apply_pending_update` · 재시작 전 drain `install_update`)이 실제로 봉인
     /// 조립점을 소비하는지 함수 본문 단위로 박제한다 — 빌더만 남고 호출부가 raw Command 로

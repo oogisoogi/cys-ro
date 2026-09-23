@@ -3264,6 +3264,27 @@ pub fn prime_seat_cache_at_create(s: &crate::state::Surface) -> Option<SeatState
         .map(|_| seat)
 }
 
+/// ★v115r3-d7(agy 1R #3 · P1) 생성 직후 Unknown 보류 창 — 첫 워치독 틱 + 1초. 이 안의 역할 좌석 Unknown 은
+/// 「판정 전」이지 「프로브 실패」가 아니다. 창 밖 Unknown(프로브 실패)은 종전대로 통과(전 큐 정지 금지).
+const SEAT_UNKNOWN_HOLD_SECS: f64 = (WATCHDOG_INTERVAL_SECS + 1) as f64;
+
+/// ★v115r3-d7 역할 좌석 배달 보류 판정 — 틱 배달(`deliver_queued`)·강제 배달(`force_deliver_entry`)의
+/// **단일 정의**(두 게이트가 갈라지면 한쪽 문으로 사고가 재발한다). 반환: `Some("empty_seat")` 빈 좌석 ·
+/// `Some("seat_unknown")` 생성 직후 첫 틱 전 역할 좌석 · `None` 통과.
+/// 격리 관측(09-23): 수리 전 빌드에서 생성 +1.3s `queue deliver` 가 seat=unknown 인 빈 부서장 zsh 에
+/// 본문을 타이핑했다(표식 파일 생성 2/2). 생성 직후 채움(prime)이 셸 초기화 자손 때문에 Unknown 을 남기면
+/// 같은 문이 열려 있었다.
+pub(crate) fn role_seat_hold(s: &crate::state::Surface, now: f64) -> Option<&'static str> {
+    if s.role.lock().unwrap().is_none() {
+        return None;
+    }
+    match SeatState::from_u8(s.seat_cache.load(Ordering::Relaxed)) {
+        SeatState::Empty => Some("empty_seat"),
+        SeatState::Unknown if now - s.created_at < SEAT_UNKNOWN_HOLD_SECS => Some("seat_unknown"),
+        _ => None,
+    }
+}
+
 /// ★SEAT 캐시 갱신 — **정기 writer**(watchdog 틱). 판정 재료(전 프로세스 표)를 이미 refresh 한
 /// 지점에서 한 번만 계산해 캐시에 싣는다. RPC 읽기 경로(surface.list·status·deliver_queued)는
 /// 재조회 없이 이 값을 소비한다(비용 중복 0). 예외 writer 는 `prime_seat_cache_at_create` 하나 —
@@ -5770,7 +5791,7 @@ impl ForceDeliverDenied {
                 "human typed recently — 사람 입력 보호(R1 MED-2)는 강제 배달로도 면제 불가".into()
             }
             ForceDeliverDenied::EmptySeat => {
-                "role seat has no agent — 좌석을 채우면 보류분이 순서대로 배달된다(유실 아님)".into()
+                "role seat has no agent (or not yet judged right after creation) — 좌석을 채우면 보류분이 순서대로 배달된다(유실 아님)".into()
             }
             ForceDeliverDenied::OutputBusy { quiet_for, need } => format!(
                 "output streaming (quiet {quiet_for}s < {need}s) — 강제 배달도 출력 중 주입은 \
@@ -5816,10 +5837,9 @@ pub(crate) fn force_deliver_entry(
     entry_id: Option<&str>,
     allow_reorder: bool,
 ) -> Result<Delivered, ForceDeliverDenied> {
-    // 게이트 ③ empty_seat — watchdog 틱과 동일 판정(Unknown 은 통과 = 현행 동작 강등).
-    if s.role.lock().unwrap().is_some()
-        && SeatState::from_u8(s.seat_cache.load(Ordering::Relaxed)) == SeatState::Empty
-    {
+    // 게이트 ③ empty_seat — watchdog 틱과 동일 판정(role_seat_hold 단일 정의 · 생성 직후 첫 틱 전
+    // Unknown 도 보류 — v115r3-d7 · 창 밖 Unknown 은 통과 = 현행 동작 강등). 거부 코드는 종전 그대로.
+    if role_seat_hold(s, now_epoch()).is_some() {
         return Err(ForceDeliverDenied::EmptySeat);
     }
     // 게이트 ④ human typing — 어떤 경로(overdue·forced)에서도 면제 금지(절대 불변).
@@ -6063,33 +6083,38 @@ fn deliver_queued(
         // Unknown(프로브 미도달)은 **배달**한다 — 현행 동작 유지(판정 실패가 전 큐를 멈추는
         // 새 장애를 만들지 않는다). 보류는 유실이 아니라 지연이며, 좌석에 에이전트가 앉으면
         // 순서대로 배달된다. 적체는 아래 기존 알림이 사유와 함께 가시화한다(침묵 적체 금지).
-        if s.role.lock().unwrap().is_some()
-            && SeatState::from_u8(s.seat_cache.load(Ordering::Relaxed)) == SeatState::Empty
-        {
+        if let Some(hold) = role_seat_hold(&s, now_epoch()) {
+            let label = if hold == "empty_seat" {
+                "empty_seat(좌석에 에이전트 미연결)"
+            } else {
+                "seat_unknown(생성 직후 좌석 판정 전)"
+            };
             // ★v115r3-d7(D7⑴ · master 판정 f0bb40a5): 빈 역할 좌석 보류를 **원장에 1건** 남긴다(보류가
             //   새로 선 틱에만 — 같은 사유 연속 틱은 무발행). 09-22 VM 교육부 부서장 빈 셸의 각성문 505B
             //   보류는 이벤트 0건이라 「이벤트가 없는 것」이 유일한 흔적이었다. 관측 보조 — 판정 무영향.
-            if mark_queue_blocked(&s, "empty_seat(좌석에 에이전트 미연결)") {
+            if mark_queue_blocked(&s, label) {
                 daemon.bus.publish(
                     "queue.held",
                     "queue",
                     Some(s.id),
                     json!({"surface_ref": cys::surface_ref(s.id),
                            "role": s.role.lock().unwrap().clone(),
-                           "reason": "empty_seat", "seat": "empty", "depth": depth}),
+                           "reason": hold,
+                           "seat": if hold == "empty_seat" { "empty" } else { "unknown" },
+                           "depth": depth}),
                 );
             }
             alert_queue_depth_if_high(
                 daemon,
                 &s,
                 depth_alerted,
-                "empty_seat(좌석에 에이전트 미연결)",
+                label,
             );
             alert_queue_starved_if_stalled(
                 daemon,
                 &s,
                 starve_alerted,
-                "empty_seat(좌석에 에이전트 미연결)",
+                label,
                 &head,
                 head_wait,
                 depth,
@@ -10241,7 +10266,7 @@ mod tests {
 
     // ─────────── ★G1(W2-E): queue.deliver(운영자 강제 배달) — 게이트·경합·공유 핀 ───────────
 
-    use super::{force_deliver_entry, ForceDeliverDenied, SeatState};
+    use super::{force_deliver_entry, role_seat_hold, ForceDeliverDenied, SeatState, SEAT_UNKNOWN_HOLD_SECS};
 
     /// W2-E 테스트 공용 준비물: 격리 데몬 + surface 1개(+원장 스레드 격리) — 초기 셸 출력이
     /// 판정 재료(last_output)를 덮지 않게 안정화한 뒤 돌려준다.
@@ -10361,11 +10386,75 @@ mod tests {
         assert_eq!(denied, ForceDeliverDenied::EmptySeat);
         assert_eq!(denied.code(), "empty_seat");
         assert_eq!(s.pending_queue.lock().unwrap().len(), 1);
-        // 대조군: Unknown(프로브 미도달) = 통과 — 판정 실패가 강제 경로를 막는 새 장애 금지.
+        // ★v115r3-d7(agy 1R #3) 생성 직후(첫 틱+1s 창 안) Unknown = 「판정 전」 — 강제 배달도 보류(거부 코드 불변).
         s.seat_cache.store(SeatState::Unknown.as_u8(), AtomicOrdering::Relaxed);
         *s.last_output.lock().unwrap() =
             std::time::Instant::now() - std::time::Duration::from_secs(5);
-        assert!(force_deliver_entry(&daemon, &s, None, false).is_ok());
+        let denied = force_deliver_entry(&daemon, &s, None, false).unwrap_err();
+        assert_eq!(denied.code(), "empty_seat", "생성 직후 Unknown 역할 좌석에 강제 배달했다");
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1);
+        // 대조군(재조준): 창 밖 Unknown(프로브 미도달) = 통과 — 판정 실패가 강제 경로를 막는 새 장애 금지.
+        assert_eq!(role_seat_hold(&s, s.created_at + SEAT_UNKNOWN_HOLD_SECS + 0.5), None);
+        assert_eq!(role_seat_hold(&s, s.created_at + 0.5), Some("seat_unknown"));
+    }
+
+    /// ★v115r3-d7(agy 1R #3 · P1) 생성 직후 Unknown 창 모사 — prime 이 셸 초기화 자손 때문에 무기록(None)이면
+    /// 좌석은 첫 틱까지 Unknown 이다. 격리 관측(09-23 · .zshenv sleep 1.5): 수리 전 HEAD 는 +1.15s 에
+    /// `queue deliver` 가 seat=unknown 빈 부서장 셸에 배달(forced=true). 단일 술어의 표 — 역할·좌석·나이.
+    #[test]
+    fn d7_role_seat_hold_table_unknown_only_inside_creation_window() {
+        let (_daemon, s) = force_deliver_rig("d7-hold-tbl", Some("master"));
+        let c = s.created_at;
+        let inside = c + 1.0;
+        let outside = c + SEAT_UNKNOWN_HOLD_SECS + 0.5;
+        s.seat_cache.store(SeatState::Unknown.as_u8(), AtomicOrdering::Relaxed);
+        assert_eq!(role_seat_hold(&s, inside), Some("seat_unknown"));
+        assert_eq!(role_seat_hold(&s, outside), None, "창 밖 Unknown(프로브 실패)까지 막으면 전 큐 정지");
+        s.seat_cache.store(SeatState::Empty.as_u8(), AtomicOrdering::Relaxed);
+        assert_eq!(role_seat_hold(&s, inside), Some("empty_seat"));
+        assert_eq!(role_seat_hold(&s, outside), Some("empty_seat"));
+        s.seat_cache.store(SeatState::Occupied.as_u8(), AtomicOrdering::Relaxed);
+        assert_eq!(role_seat_hold(&s, inside), None);
+        // 역할 없는 맨 셸의 --queued 자동화는 종전 그대로(무회귀)
+        *s.role.lock().unwrap() = None;
+        s.seat_cache.store(SeatState::Unknown.as_u8(), AtomicOrdering::Relaxed);
+        assert_eq!(role_seat_hold(&s, inside), None);
+        s.seat_cache.store(SeatState::Empty.as_u8(), AtomicOrdering::Relaxed);
+        assert_eq!(role_seat_hold(&s, inside), None);
+        // 창 = 첫 워치독 틱 + 1초(틱 주기와 함께 움직인다)
+        assert_eq!(SEAT_UNKNOWN_HOLD_SECS, (crate::governance::WATCHDOG_INTERVAL_SECS + 1) as f64);
+    }
+
+    /// ★v115r3-d7(agy 1R #3) 틱 배달 경로도 같은 술어 — 생성 직후 Unknown 역할 좌석은 보류 + `queue.held`
+    /// (reason=seat_unknown · seat=unknown) 1건. 두 게이트가 갈라지면 한쪽 문으로 사고가 재발한다.
+    #[test]
+    fn d7_fresh_unknown_role_seat_tick_holds_with_reason() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("d7-unk-tick");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = marker_seat("d7-unk-tick");
+        *s.role.lock().unwrap() = Some("master".into());
+        s.seat_cache.store(SeatState::Unknown.as_u8(), Ordering::Relaxed);
+        paint_prompt(&s, "", "");
+        *s.last_output.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "생성 직후 Unknown 역할 좌석에 틱 배달했다");
+        let held: Vec<_> = daemon.bus.tail(200).into_iter()
+            .filter(|e| e["name"] == serde_json::json!("queue.held")).collect();
+        assert_eq!(held.len(), 1, "보류 이벤트가 0건이거나 틱마다 반복: {held:?}");
+        assert_eq!(held[0]["payload"]["reason"], serde_json::json!("seat_unknown"));
+        assert_eq!(held[0]["payload"]["seat"], serde_json::json!("unknown"));
+        // 대조군: 같은 좌석이 Occupied 로 판정되면 배달된다(보류가 배달 자체를 죽이지 않는다)
+        s.seat_cache.store(SeatState::Occupied.as_u8(), Ordering::Relaxed);
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 0, "판정이 선 좌석에도 배달 안 됨");
     }
 
     /// [★성찰 BLOCKER 핀 ⑥] forced 에도 overdue_quiet(기본 1s) 하한 — 출력 한복판 주입

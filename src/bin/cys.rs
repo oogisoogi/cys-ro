@@ -23621,6 +23621,16 @@ mod tests {
         // Windows cmd.exe · 새 좌석
         let cmd = "C:\\Users\\admin> claude\n'claude' is not recognized as an internal or external command,\noperable program or batch file.\n\nC:\\Users\\admin>";
         assert!(launch_failure_confirmed(cmd, None));
+        // Windows PowerShell · 새 좌석: 오류 블록이 길어 인식 문면이 꼬리 5줄 **밖**이다 — TUI 없음이 확증한다
+        let ps = "PS C:\\Users\\admin> claude\n\
+claude : The term 'claude' is not recognized as the name of a cmdlet, function, script file, or operable program.\n\
+At line:1 char:1\n+ claude\n+ ~~~~~~\n    + CategoryInfo          : ObjectNotFound: (claude:String) [], CommandNotFoundException\n\
+    + FullyQualifiedErrorId : CommandNotFoundException\n\nPS C:\\Users\\admin>";
+        assert!(
+            !screen_shows_launch_failure(&cys::first_run_gates::flatten(&screen_tail_lines(ps, BARE_SHELL_DEATH_TAIL_LINES))),
+            "전제: 인식 문면이 꼬리 창 밖"
+        );
+        assert!(launch_failure_confirmed(ps, None), "PowerShell 새 좌석 실패가 확증되지 않음");
     }
 
     #[test]

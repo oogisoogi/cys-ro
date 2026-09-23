@@ -21562,6 +21562,18 @@ mod tests {
     /// 카드 본문이 네이티브 설치 명령 대신 agents.json 경로수정 안내가 됐다(브리프 P4-4
     /// '문구 SOT=install_hint' 위반). 순수형(os 인자) 핀이라 비 Windows CI 에서도 Windows
     /// 분기를 실제로 밟는다(lib.rs `bundled_git_bash_path_for` 와 동일 규약).
+    /// ★v116-seat D4 #15: 맥·리눅스 claude 미설치 안내 = 설치 명령 + 「자비스 재시작」(무엇의 탭인지 모를 「새 탭」 0) ·
+    /// Windows 와 같은 다음 행동.
+    #[test]
+    fn v116_claude_install_hint_says_restart_not_new_tab() {
+        for os in ["macos", "linux", "windows"] {
+            let h = install_hint_for("claude", os);
+            assert!(h.contains("자비스 재시작"), "{os}: {h}");
+            assert!(!h.contains("새 탭"), "{os}: {h}");
+        }
+        assert!(install_hint_for("claude", "macos").contains("curl -fsSL https://claude.ai/install.sh | bash"));
+    }
+
     #[test]
     fn full_miss_hint_keeps_claude_installer_on_windows() {
         // ⓐ 의무 CLI claude: 치환 금지 — install_hint 그대로(네이티브 설치 명령 포함).

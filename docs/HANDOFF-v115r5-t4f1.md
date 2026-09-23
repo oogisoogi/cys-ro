@@ -98,3 +98,6 @@
 ## 6. 곁(1.1.6 후보 · 1013 영역)
 - src-tauri/src/main.rs:3361-3375 decide_pending_update 가 새 설치(설치기가 팩을 먼저 깐 경우)를 「갱신 Apply」로 판정해 spawn_org_restore 를 도는 것 【추정】 — 이 티켓은 UI 판정으로 카드만 막았고 백엔드 복원 실행은 그대로다. master 가 1013 과 대조.
 - 부수 발견(닫힘): 수리 전에는 틀을 씌운 한 줄짜리 기계 배달이 층1 에서 통째로 안 보였다(전문도 조각도 틀 포함 해시) — 무라벨이면 층2 도 통과할 수 있던 자리. 이번 기록 수리로 같이 닫혔다(시험 ⒞ 기준선 적색이 그 증거).
+
+## 7. 종결
+- agy 1R = ACCEPT(판정문 원문 ~/axdev/master/reports/cysr-115-2026-09-22/hetero-agy-v115r5-t4f1.md 1행 「VERDICT: ACCEPT」 · master#e5b2bbaa) · 통합 = 11차 통합 좌석 v115r5-cut 이 이 브랜치를 병합.

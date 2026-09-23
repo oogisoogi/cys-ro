@@ -23,7 +23,7 @@ import {
   restoringRetryKeys,
 } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
-import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
+import { appVersionLabel, appVersionTitle, daemonInfoLabel, daemonInfoTitle, holdReasonText } from "./headerlabels";
 import { exitedSweepTargets, armSweep, sweepScopeFor, settleSweep, type SweepArm } from "./exitedsweep";
 import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
 import {
@@ -7478,6 +7478,7 @@ async function refreshDaemonInfo(info: HTMLElement) {
   try {
     const st = (await invoke("daemon_status")) as Record<string, unknown>;
     const text = daemonInfoLabel(st);
+    info.title = daemonInfoTitle(st); // (D4 #5) 전문(pid·소켓 경로)은 툴팁으로
     const first = info.firstChild;
     if (first && first.nodeType === Node.TEXT_NODE) first.textContent = text;
     else info.insertBefore(document.createTextNode(text), first);
@@ -7771,8 +7772,9 @@ async function start() {
   try {
     const status = (await rpcT(invoke("daemon_status"), T_STATUS)) as Record<string, unknown>;
     info.textContent = daemonInfoLabel(status);
+    info.title = daemonInfoTitle(status); // (D4 #5) 전문(pid·소켓 경로)은 툴팁으로
   } catch {
-    info.textContent = "데몬 응답 없음 — 화면은 계속 사용할 수 있습니다(연결되면 자동으로 붙습니다)";
+    info.textContent = "엔진 응답 없음 — 화면은 계속 사용할 수 있습니다(연결되면 자동으로 붙습니다)";
   }
 
   // 버전 스큐 세대교체(메인 + 부서 데몬) — 시작 1회 + 5분 주기 재검(B). 무중단 rename-swap의 짝으로

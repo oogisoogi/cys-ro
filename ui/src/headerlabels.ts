@@ -16,11 +16,19 @@ export function appVersionTitle(ver: string, buildId: string): string {
 //    스큐 배지에 나타났다 — 같을 때는 어디에도 없어 "지금 도는 데몬이 몇 판인가"를 물으면 답이 없었다.
 //    앱 판번(app-ver)이 늘 보이는 것과 짝을 맞춘다. 데몬이 판번을 주지 않는 구판이면 **종전 문구 그대로**
 //    (없는 값을 지어내지 않는다 — 빈 v 표기 금지).
-export function daemonInfoLabel(status: {
-  daemon_pid?: unknown;
-  socket_path?: unknown;
-  version?: unknown;
-}): string {
+// ⓓ(v116-ui-close · D4 #5) 상단바에는 **판번만** 싣는다. 종전 라벨 `daemon v… pid=… sock=/Users/<이름>/…` 은
+//    내부 용어(daemon·pid·sock)와 사용자 폴더 경로가 모든 캡처·피드백에 상시 노출됐다(VM s0). 지원에 필요한 전문은
+//    툴팁(daemonInfoTitle)으로 옮긴다 — 정보를 지우지 않고 자리만 바꾼다(마우스를 올리면 그대로 보인다).
+type DaemonStatus = { daemon_pid?: unknown; socket_path?: unknown; version?: unknown };
+
+/** 상단바 라벨 — 「엔진 v1.1.6」. 판번을 주지 않는 구판 데몬이면 「엔진 연결됨」(없는 값을 지어내지 않는다 · 빈 v 금지). */
+export function daemonInfoLabel(status: DaemonStatus): string {
+  const ver = typeof status.version === "string" ? status.version.trim() : "";
+  return ver ? `엔진 v${ver}` : "엔진 연결됨";
+}
+
+/** 라벨 툴팁 — 종전 라벨 전문(지원용: 판번·pid·소켓 경로). */
+export function daemonInfoTitle(status: DaemonStatus): string {
   const ver = typeof status.version === "string" ? status.version.trim() : "";
   const v = ver ? `v${ver} ` : "";
   return `daemon ${v}pid=${status.daemon_pid} sock=${status.socket_path}`;

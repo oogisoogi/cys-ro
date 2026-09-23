@@ -555,6 +555,35 @@ pub fn record_full(
     record_full_with(socket_path, surface_id, text, origin, from_surface, &Value::Null)
 }
 
+/// 괄호 붙여넣기(bracketed paste) 시작·끝 표지. 받는 TUI 가 입력 틀로 소비하므로 프롬프트에 남지 않는다.
+const PASTE_OPEN: &str = "\x1b[200~";
+const PASTE_CLOSE: &str = "\x1b[201~";
+
+/// ★v115r5-F1(VM r3 §2 곁 ⑴ — 부서장 첫 응답 「★이상징후(delivery_substring) … 연속 구간 583자」):
+/// 발신자가 씌운 괄호 붙여넣기 **바깥 틀 한 쌍**만 벗겨 「받는 쪽이 실제로 받는 글」로 기록한다.
+///
+/// 사고 기제: `cys launch-agent` 의 지시문 주입(`cys.rs::inject_text`·`inject_text_on`)은 본문을
+/// 클라이언트에서 `ESC[200~ … ESC[201~` 로 감싸 보내는데, 원장은 그 원문(틀 포함)을 해시했다.
+/// 받는 claude 에게 틀은 입력이 아니라 프롬프트엔 없다 → 전문 해시 불일치 · 첫 줄·끝 줄 조각 불일치 →
+/// 나머지 줄 조각만 맞아 가장 긴 한 줄이 「연속 구간」이 되고 `delivery_substring` 이상징후가 났다
+/// (판정 자체는 기계로 옳게 접혔고 거짓 경보만 났다). 데몬이 스스로 감싸는 큐 경로
+/// (`state.rs` Inject arm)는 이미 틀 없는 원문으로 기록하므로, 이 함수는 직접 경로를 **그 모양에 맞춘다**.
+///
+/// ★벗기는 조건(보수 · master#6094b7bd 조건 ①): 맨 앞 `ESC[200~` 1개와 맨 끝 `ESC[201~` 1개가
+/// **정확히 짝**이고 그 **안쪽에 두 표지 어느 것도 없을 때만**. 안쪽에 섞인 표지(붙여넣기 탈출 시도
+/// 모양)가 있으면 **아무것도 벗기지 않고 원문 그대로** 기록한다 — 받는 쪽이 실제로 무엇을 받을지
+/// 단정할 수 없는 모양이므로 불일치 → 이상징후가 나게 둔다. 판정 규칙(`mission_gate`·`javis_mission`)은
+/// 무변경이다(기록 정확도 수리이지 게이트 정책 변경이 아니다).
+fn strip_outer_paste_frame(text: &str) -> &str {
+    match text
+        .strip_prefix(PASTE_OPEN)
+        .and_then(|t| t.strip_suffix(PASTE_CLOSE))
+    {
+        Some(inner) if !inner.contains(PASTE_OPEN) && !inner.contains(PASTE_CLOSE) => inner,
+        _ => text,
+    }
+}
+
 /// `record_full` + 추가 사실 병합(계약은 `record_audited_with` doc 참조).
 pub fn record_full_with(
     socket_path: &Path,
@@ -570,6 +599,8 @@ pub fn record_full_with(
         parts_dropped: 0,
         parts_failed: None,
     };
+    // ★v115r5-F1: 틀 한 쌍만 벗긴 「받는 쪽이 받는 글」 — 전문·조각·preview·chars 가 모두 이것에서 나온다.
+    let text = strip_outer_paste_frame(text);
     let norm = normalize(text);
     if norm.is_empty() {
         // 공백뿐 — 프롬프트가 될 수 없다(훅도 빈 프롬프트를 판정하지 않는다)
@@ -1785,6 +1816,132 @@ pub(crate) mod tests {
             assert!(v["daemon_epoch"].as_f64().unwrap() > 0.0);
             assert_eq!(v["v"], LEDGER_SCHEMA);
             assert!(!epoch_path(sock).with_extension("json.tmp").exists(), "tmp 잔재 없음");
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ★v115r5-F1(TICKET=v115r5-t4f1 · VM r3 §2 곁 ⑴) — 괄호 붙여넣기 바깥 틀 한 쌍만 벗겨 기록한다.
+    // 판정은 실 판정기(`cys::mission_gate` read_delivery → machine_origin — 데몬 hook.machine_origin 과
+    // 같은 경로)로 잰다. 조건 ①②는 master#6094b7bd.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// 실 부서장 지시문의 기반 문서(85K 합성 지시문 안의 583자 행이 여기서 온다 — VM 실측 숫자 재현).
+    const F1_DIRECTIVE: &str = include_str!("../../../cysjavis-pack/directives/CEO_TEMPLATE.md");
+
+    fn f1_frame(t: &str) -> String {
+        format!("{PASTE_OPEN}{t}{PASTE_CLOSE}")
+    }
+
+    /// 기록 → 원장 판독 → 판정(데몬 `hook_machine_origin_verdict` 와 같은 조립).
+    fn f1_verdict(sock: &Path, sid: u64, prompt: &str) -> (bool, String, Vec<String>) {
+        use cys::mission_gate as mg;
+        let main = match std::fs::read_to_string(ledger_path(sock)) {
+            Ok(c) => mg::LedgerFile::Content(c),
+            Err(_) => mg::LedgerFile::Missing,
+        };
+        let me = sid.to_string();
+        let inp = mg::LedgerInput {
+            main: &main,
+            rotated: &mg::LedgerFile::Missing,
+            daemon_epoch: None,
+            me: &me,
+            now: crate::state::now_epoch(),
+            window_s: mg::delivery_window_s(),
+            path_label: "f1-test",
+        };
+        let read = mg::read_delivery(&inp);
+        let v = mg::machine_origin(prompt, &read.map, read.status);
+        let mut codes: Vec<String> = read.anomalies.iter().map(|(c, _)| c.clone()).collect();
+        codes.extend(v.anomalies.iter().map(|(c, _)| c.clone()));
+        (v.machine, v.reason, codes)
+    }
+
+    #[test]
+    fn f1_strip_outer_paste_frame_only_an_exact_pair() {
+        assert_eq!(strip_outer_paste_frame(&f1_frame("가\n나")), "가\n나", "틀 한 쌍은 벗긴다");
+        assert_eq!(strip_outer_paste_frame("가\n나"), "가\n나", "틀 없는 글은 그대로");
+        // 한쪽만 있는 모양은 짝이 아니다 — 그대로.
+        let open_only = format!("{PASTE_OPEN}가");
+        assert_eq!(strip_outer_paste_frame(&open_only), open_only);
+        let close_only = format!("가{PASTE_CLOSE}");
+        assert_eq!(strip_outer_paste_frame(&close_only), close_only);
+        // ★조건 ①: 안쪽에 표지가 섞이면(붙여넣기 탈출 시도 모양) **아무것도 벗기지 않는다**.
+        for inner in [
+            format!("가{PASTE_CLOSE}나"),
+            format!("가{PASTE_OPEN}나"),
+            format!("가{PASTE_CLOSE}{PASTE_OPEN}나"),
+        ] {
+            let raw = f1_frame(&inner);
+            assert_eq!(strip_outer_paste_frame(&raw), raw, "안쪽 표지가 있는데 벗겼다: {inner:?}");
+        }
+    }
+
+    /// ⒜ 틀만 있는 정상 배달(launch-agent 지시문 주입 모양) = 전문 해시 일치 · 이상징후 0.
+    #[test]
+    fn f1_framed_directive_matches_whole_and_raises_no_anomaly() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.cys/cys-dept-dept-1/cys.sock");
+            let r = record_full(sock, 2, &f1_frame(F1_DIRECTIVE), Origin::Send, None);
+            assert!(matches!(r.outcome, Outcome::Recorded));
+            let body = std::fs::read_to_string(ledger_path(sock)).unwrap();
+            assert!(!body.contains('\u{1b}'), "원장에 붙여넣기 제어열이 남았다");
+            assert!(body.contains(&digest(F1_DIRECTIVE)), "전문 레코드 = 받는 쪽이 받는 글의 해시여야 한다");
+            // 프롬프트 = claude 가 받은 글(틀 없음).
+            let (machine, reason, codes) = f1_verdict(sock, 2, F1_DIRECTIVE);
+            assert!(machine, "기계 배달인데 접히지 않았다: {reason}");
+            assert!(reason.contains("배달 원장 일치"), "전문 해시 일치가 아니다: {reason}");
+            assert!(codes.is_empty(), "정상 편성 배달에 이상징후가 났다: {codes:?}");
+        });
+    }
+
+    /// ⒝ 안쪽에 ESC[201~ 가 섞인 배달 = 틀을 벗기지 않고 원문 그대로 기록 → 여전히 불일치.
+    #[test]
+    fn f1_inner_paste_marker_is_recorded_raw_and_never_matches_whole() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.cys/cys-dept-dept-1/cys.sock");
+            let a = "부서장은 오늘 교안 초안을 검토하고 결과를 본부에 보고한다 — 첫 번째 붙여넣기 구간이다.";
+            let b = "이 문장은 붙여넣기 틀 밖으로 빠져나와 타이핑처럼 들어가는 두 번째 구간이다.";
+            let raw = format!("{PASTE_OPEN}{a}\n{PASTE_CLOSE}{b}\n{PASTE_CLOSE}");
+            let r = record_full(sock, 2, &raw, Origin::Send, None);
+            assert!(matches!(r.outcome, Outcome::Recorded));
+            let body = std::fs::read_to_string(ledger_path(sock)).unwrap();
+            assert!(body.contains(&digest(&raw)), "안쪽 표지가 섞인 배달은 원문 그대로 기록돼야 한다");
+            let prompt = format!("{a}\n{b}");
+            assert!(!body.contains(&digest(&prompt)), "제어열을 걷어 낸 모양이 원장에 있다(전역 치환 정황)");
+            let (_machine, reason, _codes) = f1_verdict(sock, 2, &prompt);
+            assert!(
+                !reason.contains("배달 원장 일치"),
+                "안쪽 표지가 섞인 배달이 전문 일치로 인정됐다: {reason}"
+            );
+        });
+    }
+
+    /// ⒞ 탐지력 유지 — 원장이 설명하지 못하는 긴 글 안에 기계 배달 583자가 통째로 들어 있으면
+    /// 여전히 `delivery_substring`, 원장에 없는 583자는 기계로 접히지 않는다(층1 기준).
+    #[test]
+    fn f1_unregistered_text_keeps_substring_detection() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.cys/cys-dept-dept-1/cys.sock");
+            let line = F1_DIRECTIVE
+                .lines()
+                .map(normalize)
+                .max_by_key(|l| l.chars().count())
+                .unwrap();
+            assert_eq!(line.chars().count(), 583, "기준 행 길이가 VM 실측(583자)과 다르다");
+            // 기계 배달 583자(틀 포함 · 이번 수리로 틀만 벗겨 기록된다).
+            record_full(sock, 2, &f1_frame(&line), Origin::Send, None);
+            let owner = "이건 원장에 없는 사람이 쓴 문단이다. 교안 목차를 세 절로 나누고 각 절에 예시를 붙여라.";
+            let prompt = format!("{owner}\n{line}\n{owner}");
+            let (machine, reason, codes) = f1_verdict(sock, 2, &prompt);
+            assert!(machine, "기계 배달 583자가 섞였는데 접히지 않았다: {reason}");
+            assert!(
+                codes.iter().any(|c| c == "delivery_substring"),
+                "탐지력 상실 — delivery_substring 미발행: {codes:?} / {reason}"
+            );
+            // 원장에 없는 583자(한 글자 바꾼 사본)는 층1 이 기계로 접지 않는다.
+            let forged: String = line.chars().rev().collect();
+            let (m2, r2, c2) = f1_verdict(sock, 2, &forged);
+            assert!(!r2.contains("배달 원장"), "원장에 없는 글이 층1 로 접혔다: {r2} {c2:?} {m2}");
         });
     }
 }

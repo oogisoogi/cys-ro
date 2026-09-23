@@ -156,7 +156,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
@@ -7426,7 +7426,8 @@ async function refreshDaemonInfo(info: HTMLElement) {
 let restoreBriefShown = false;
 // ★v115-restore(B5): 카드 시점 = 조직 복원이 끝난 뒤(판정 = restorebrief.briefTiming). 복원 신호가 유예 안에
 //   안 오면 이번 켜짐엔 복원이 없다고 보고 띄운다.
-const briefGate = { restoreStarted: false, restoreFinished: false, graceElapsed: false };
+// ★v115r5-T4: firstLaunch = 설치 뒤 첫 기동(화면 배치 저장본 부재 · 적재 시점 스냅숏) → 카드 생략(restorebrief.isFirstLaunch).
+const briefGate = { restoreStarted: false, restoreFinished: false, graceElapsed: false, firstLaunch: false };
 function maybeShowRestoreBrief(): void {
   if (briefTiming(briefGate) === "show") void showRestoreBrief();
 }
@@ -7518,10 +7519,13 @@ async function showRestoreBrief(): Promise<void> {
       }
       box.appendChild(ul);
     }
-    const foot = document.createElement("div");
-    foot.className = "rb-foot";
-    foot.textContent = card.foot;
-    box.appendChild(foot);
+    // ★v115r5-T4: 꼬리말이 빈 카드(작업 기록 없음)는 빈 줄을 그리지 않는다.
+    if (card.foot) {
+      const foot = document.createElement("div");
+      foot.className = "rb-foot";
+      foot.textContent = card.foot;
+      box.appendChild(foot);
+    }
     const row = document.createElement("div");
     row.className = "rb-row";
     // ★버튼은 [닫기] 하나다 — 이 카드에서 나가는 주입 경로는 0 이다(send_input 호출 없음).
@@ -7985,7 +7989,10 @@ async function start() {
   // Session restore (멀티마스터 F4): 저장본 먼저 로드(ws.socket 포함) → 부서 데몬 확보를 list 대조보다
   // 선행 → 소켓별 대조. 데몬 일시 미가동 ws는 보존(영구 삭제 방지, 검증 mustFix).
   try {
-    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null");
+    const savedRaw = localStorage.getItem(LAYOUT_KEY);
+    // ★v115r5-T4: 첫 기동 판정은 **여기서** 떠 둔다 — 아래 render() 가 곧바로 저장본을 써서 뒤에선 못 가른다.
+    briefGate.firstLaunch = isFirstLaunch(savedRaw);
+    const saved = JSON.parse(savedRaw ?? "null");
     if (saved && Array.isArray(saved.workspaces)) {
       workspaces = saved.workspaces;
       groups = Array.isArray(saved.groups) ? saved.groups : []; // 06: 하위호환 — 옛 저장본엔 groups 없음

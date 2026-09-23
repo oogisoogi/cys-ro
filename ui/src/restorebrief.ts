@@ -178,21 +178,24 @@ export function buildBriefCard(input: {
         : []),
     ],
   });
+  // ★v115r5-T4(VM r3 §1·§4): 작업 기록이 없으면 **아는 것만** 말한다 — 「찾지 못했습니다」·「시각을 알 수
+  //   없습니다」 같은 빈 문장을 싣지 않고, 기록이 없으니 「하던 일을 복원했어요」라고도 하지 않는다.
+  //   (종전 계약 「작업 기록이 없으면 없다고 말한다」를 대체 — 사람이 할 일이 없는 문장은 혼란만 준다.)
   if (input.sections) {
     const s = input.sections;
     const none = "적힌 것이 없습니다.";
     lines.push({ head: "끝난 일", items: s.done.length ? s.done : [none] });
     lines.push({ head: "하던 일", items: s.doing.length ? s.doing : [none] });
     lines.push({ head: "정하셔야 할 일", items: s.decide.length ? s.decide : [none] });
-  } else {
-    lines.push({ head: "지난 작업 기록", items: ["정리된 작업 기록을 찾지 못했습니다."] });
   }
-  const foot = input.recordedAt
-    ? `이 기록은 ${input.recordedAt} 기준입니다. 그 뒤에 한 일은 빠져 있을 수 있습니다.`
-    : "기록한 시각을 알 수 없습니다. 최근 일이 빠져 있을 수 있습니다.";
+  const foot = !input.sections
+    ? ""
+    : input.recordedAt
+      ? `이 기록은 ${input.recordedAt} 기준입니다. 그 뒤에 한 일은 빠져 있을 수 있습니다.`
+      : "기록한 시각을 알 수 없습니다. 최근 일이 빠져 있을 수 있습니다.";
   return {
     // ★질문이 아니라 알림이다 — 물음표를 쓰지 않는다(묻는 단계 삭제 원칙).
-    title: "다시 켜졌어요 — 하던 일을 복원했어요",
+    title: input.sections ? "다시 켜졌어요 — 하던 일을 복원했어요" : "다시 켜졌어요",
     lines,
     foot,
     closeLabel: "닫기",
@@ -213,7 +216,28 @@ export const INTERNAL_TERMS = [
  *   · 시작 신호가 유예(기본 15초) 안에 안 오면 = 이번 켜짐엔 복원이 없다 → 띄운다.
  */
 export const BRIEF_RESTORE_GRACE_MS = 15000;
-export function briefTiming(s: { restoreStarted: boolean; restoreFinished: boolean; graceElapsed: boolean }): "show" | "wait" {
+/**
+ * ★v115r5-T4(VM r3 §4 곁 ⑴): 설치 뒤 **첫 기동**에는 카드를 띄우지 않는다 — 다시 켜진 것이 아니라
+ * 처음 켜진 것이다(「다시 켜졌어요」가 거짓이 된다). 새 설치도 백엔드는 팩이 먼저 깔려 있으면
+ * 「갱신」으로 보고 복원을 돌리므로(src-tauri main.rs decide_pending_update) 복원 신호로는 못 가른다.
+ * 그래서 판정 재료는 **화면 배치 저장본**(localStorage `cys-layout-v2`)의 적재 시점 원문이다 —
+ * 앱은 첫 화면을 그리는 즉시 저장하므로(render→saveLayout) 한 번이라도 켜진 기기에는 반드시 있고,
+ * 키 이름이 v1.0.0 부터 같아 앱 안 갱신 뒤에도 남는다.
+ *   · null(없음) = 첫 기동 → 카드 생략
+ *   · 문자열(내용 무관 · 손상 포함) = 전에 켜진 적 있음 → 종전대로
+ *   · undefined(읽기 실패) = 모름 → 첫 기동으로 단정하지 않는다(카드는 아는 것만 말하므로 띄워도 거짓이 없다)
+ * ⚠적재 **시점**의 값이어야 한다 — 렌더가 곧바로 저장본을 쓰므로 나중에 읽으면 언제나 「있음」이다.
+ */
+export function isFirstLaunch(savedLayoutRaw: string | null | undefined): boolean {
+  return savedLayoutRaw === null;
+}
+export function briefTiming(s: {
+  restoreStarted: boolean;
+  restoreFinished: boolean;
+  graceElapsed: boolean;
+  firstLaunch?: boolean;
+}): "show" | "wait" | "skip" {
+  if (s.firstLaunch) return "skip";
   if (s.restoreStarted) return s.restoreFinished ? "show" : "wait";
   return s.graceElapsed ? "show" : "wait";
 }

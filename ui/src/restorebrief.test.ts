@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   unsubmittedSurfaces,
   parseBriefSections,
@@ -12,6 +13,7 @@ import {
   cycleAdviceLines,
   CYCLE_ADVICE_PCT,
   briefTiming,
+  isFirstLaunch,
 } from "./restorebrief";
 
 const SAMPLE = `# SESSION_STATE
@@ -94,11 +96,8 @@ describe("buildBriefCard — 초보자 문구 · 내부 용어 0", () => {
   it("기록 시각을 밝히고, 그 뒤 일이 빠질 수 있다고 말한다", () => {
     expect(card.foot.includes("2026-09-18 10:42")).toBe(true);
   });
-  it("작업 기록이 없으면 없다고 말한다", () => {
-    const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: [], waitingRoles: [] });
-    expect(JSON.stringify(c).includes("찾지 못했습니다")).toBe(true);
-    expect(c.foot.includes("알 수 없습니다")).toBe(true);
-  });
+  // ★v115r5-T4: 종전 계약 「작업 기록이 없으면 없다고 말한다」(찾지 못했습니다 · 시각 모름)는 VM r3 에서
+  //   새 사용자 전원에게 빈 문장으로 읽혀 **대체됐다** — 아래 「v115r5 T4」 절이 새 계약을 고정한다.
   it("모르는 역할 코드명을 화면에 내지 않는다", () => expect(friendlyRole("ceo-x")).toBe("도우미"));
 });
 
@@ -217,5 +216,62 @@ describe("v115 B5 — 복원 카드 시점 = 복원 완료 뒤", () => {
     expect(head.includes("briefGate.restoreFinished = true;")).toBe(true);
     expect(head.includes("maybeShowRestoreBrief();")).toBe(true);
     expect(src.includes("briefGate.graceElapsed = true;")).toBe(true);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// TICKET=v115r5-t4f1 T4 — 첫 기동엔 카드 0 · 기록이 없으면 아는 것만(VM r3 §1·§4 곁 ⑴)
+// ────────────────────────────────────────────────────────────────────────────
+describe("v115r5 T4 — 첫 기동·갱신·기록 없음·기록 늦음 진리표", () => {
+  it("첫 기동 판정 = 적재 시점 배치 저장본 부재(null)일 때만", () => {
+    expect(isFirstLaunch(null)).toBe(true);
+    expect(isFirstLaunch("")).toBe(false); // 빈 값이라도 저장된 적이 있다 = 전에 켜졌다
+    expect(isFirstLaunch('{"workspaces":[]}')).toBe(false);
+    expect(isFirstLaunch("손상된 저장본")).toBe(false);
+    expect(isFirstLaunch(undefined)).toBe(false); // 읽기 실패 = 모름 → 첫 기동으로 단정하지 않는다
+  });
+  it("★첫 기동이면 복원 신호·유예와 무관하게 카드를 띄우지 않는다(skip)", () => {
+    for (const restoreStarted of [false, true])
+      for (const restoreFinished of [false, true])
+        for (const graceElapsed of [false, true])
+          expect(briefTiming({ restoreStarted, restoreFinished, graceElapsed, firstLaunch: true })).toBe("skip");
+  });
+  it("갱신·재시작 뒤(첫 기동 아님)는 종전 시점 규칙 그대로 — 기록이 몇 초 늦게 저장되는 경우도 복원 끝까지 기다린다", () => {
+    expect(briefTiming({ restoreStarted: true, restoreFinished: false, graceElapsed: true, firstLaunch: false })).toBe("wait");
+    expect(briefTiming({ restoreStarted: true, restoreFinished: true, graceElapsed: false, firstLaunch: false })).toBe("show");
+    expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: false, firstLaunch: false })).toBe("wait");
+    expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: true, firstLaunch: false })).toBe("show");
+  });
+  const noRecord = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["master", "cso", "worker"], waitingRoles: [] });
+  const noRecordAll = JSON.stringify(noRecord);
+  it("★기록이 없으면 빈 문장 0 — 「찾지 못했습니다」·「알 수 없습니다」·「하던 일을 복원했어요」를 싣지 않는다", () => {
+    expect(noRecordAll.includes("찾지 못했")).toBe(false);
+    expect(noRecordAll.includes("알 수 없")).toBe(false);
+    expect(noRecordAll.includes("하던 일을 복원")).toBe(false);
+    expect(noRecord.foot).toBe("");
+  });
+  it("기록이 없어도 아는 것(다시 켜진 창)은 말한다 · 닫기 손은 1개 그대로", () => {
+    expect(noRecord.title).toBe("다시 켜졌어요");
+    expect(noRecord.lines.length).toBe(1);
+    expect(noRecord.lines[0].items[0]).toBe("총괄 · 운영 관리 · 작업 창이 다시 켜졌습니다.");
+    expect(noRecord.closeLabel).toBe("닫기");
+    for (const t of INTERNAL_TERMS) expect(noRecordAll.toLowerCase().includes(t.toLowerCase())).toBe(false);
+  });
+  it("기록이 있으면 종전 카드 그대로(제목·3절·기준 시각)", () => {
+    const c = buildBriefCard({ sections: parseBriefSections(SAMPLE), recordedAt: "2026-09-18 10:42", restoredRoles: ["master"], waitingRoles: [] });
+    expect(c.title).toBe("다시 켜졌어요 — 하던 일을 복원했어요");
+    expect(c.lines.map((l) => l.head)).toEqual(["다시 켜진 창", "끝난 일", "하던 일", "정하셔야 할 일"]);
+    expect(c.foot.includes("2026-09-18 10:42")).toBe(true);
+  });
+  it("배선: 첫 기동 판정은 저장본 적재 시점에 떠 두고(render 가 저장본을 쓰기 전), 카드 판정이 그 값을 쓴다", () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
+    const snap = src.indexOf("briefGate.firstLaunch = isFirstLaunch(savedRaw);");
+    expect(snap).toBeGreaterThan(0);
+    expect(src.includes("const savedRaw = localStorage.getItem(LAYOUT_KEY);")).toBe(true);
+    expect(src.indexOf("const savedRaw = localStorage.getItem(LAYOUT_KEY);")).toBeLessThan(snap);
+    // 적재 직후 `layoutLoaded = true` 보다 앞 — 그 뒤 render()→saveLayout() 이 저장본을 쓴다.
+    expect(snap).toBeLessThan(src.indexOf("layoutLoaded = true;", snap - 2000));
+    expect(src.includes("firstLaunch: false };")).toBe(true); // 기본값 = 첫 기동 아님(모름 → 띄운다)
+    expect(src.includes('if (briefTiming(briefGate) === "show") void showRestoreBrief();')).toBe(true);
   });
 });

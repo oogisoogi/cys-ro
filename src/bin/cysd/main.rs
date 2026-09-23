@@ -1589,6 +1589,21 @@ pub fn auto_restore_phase_str(v: u8) -> &'static str {
     }
 }
 
+/// 복원 1회 실행과 단계 기록 — 실행 전 running · 재시도 대기로 들어가면 retry_wait(기본 60초 동안도 「복원 중」이다 —
+/// lease 가 비는 이 틈에 편성이 끼면 두 번째 실행과 같은 자리를 또 세운다). 루프(`loop_auto_restore_with`)와 분리해 시험이 직접 구동한다.
+fn auto_restore_attempt<F: FnOnce() -> Option<i32>>(
+    phase: &std::sync::atomic::AtomicU8,
+    attempt: u32,
+    run_once: F,
+) -> Option<i32> {
+    phase.store(AUTO_RESTORE_RUNNING, std::sync::atomic::Ordering::Relaxed);
+    let code = run_once();
+    if auto_restore_will_retry(attempt, code) {
+        phase.store(AUTO_RESTORE_RETRY_WAIT, std::sync::atomic::Ordering::Relaxed);
+    }
+    code
+}
+
 /// 재시도 대기에 들어가는 결과인가 — `loop_auto_restore_with` 의 재시도 규칙(첫 실행 · 0·5·6 아님)과 같은 판정.
 fn auto_restore_will_retry(attempt: u32, code: Option<i32>) -> bool {
     attempt == 0 && !matches!(code, Some(0) | Some(5) | Some(6))
@@ -2098,17 +2113,9 @@ fn loop_auto_restore(
     let delay = autorestore_retry_delay();
     loop_auto_restore_with(
         |attempt| {
-            daemon
-                .auto_restore_phase
-                .store(AUTO_RESTORE_RUNNING, std::sync::atomic::Ordering::Relaxed);
-            let code = run_auto_restore_once(&daemon, &program, &args, &env, &log_path);
-            // ★v116-pack(P2-b): 재시도 대기(기본 60초) 동안도 「복원 중」이다 — lease 가 비는 이 틈에 편성이 끼면
-            //   두 번째 실행과 같은 자리를 또 세운다.
-            if auto_restore_will_retry(attempt, code) {
-                daemon
-                    .auto_restore_phase
-                    .store(AUTO_RESTORE_RETRY_WAIT, std::sync::atomic::Ordering::Relaxed);
-            }
+            let code = auto_restore_attempt(&daemon.auto_restore_phase, attempt, || {
+                run_auto_restore_once(&daemon, &program, &args, &env, &log_path)
+            });
             // ★v115-restore(A4): 재시도 대기(기본 60초) 동안 master 자리가 비어 있으면 사용자는 아무 말도 못
             //   들었다(904 VM ↻-B1 · 본부 master 약 3분 공백 · 알림 0). 재시도 직전 1회만 알린다.
             let master_present = daemon.roles.lock().unwrap().contains_key("master");

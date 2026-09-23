@@ -57,3 +57,27 @@
 - 【추정】 잔여 창: prime 이 Unknown 을 남긴 좌석에 첫 틱이 셸 초기화 순간(수백 ms)에 떨어지면 Occupied 로 읽혀 입양 분기
   가능. race 0 5/5 에선 0회. 입양이 나면 `queue.held` 가 원장에 찍힌다(관측 가능).
 - 916 곁 3건(should_delegate_autostart 등) = 1.1.6 · 무접촉.
+
+## 6. agy 1R(REJECT · 4건) — **미착수 · 후임 r2 소관**(master 정지 지시 d2a61a8a · effort high 후임)
+원문 = `~/axdev/master/reports/cysr-115-2026-09-22/hetero-agy-d7-1.md`. 934 는 판정 관측만 하고 수리는 커밋하지 않았다.
+- #1 P2 settle 뒤 `row` 재조회 없음 · #2 P2 `time.sleep(tick_s)` 가 상한 초과 가능(`min(tick_s, limit-waited)`) · #4 P2 sleep 호출 계수 무단언 — 미착수.
+- #3 P1(빈 셸 배달) 판정 【관측】(격리 · stub · `probe3.sh`): **틱 배달 경로 = 재현 0**(틱은 refresh_seat_cache 직후
+  deliver_queued — 배달 시점 캐시는 생성 직후 Unknown 이 아니다 · 수리 전/후 모두 INJECTED=no 5/5).
+  **강제 배달(`cys queue deliver`) 경로 = 실재**: 수리 전 빌드에서 생성 +1.3s seat=unknown 빈 zsh 에 `touch` 가 실행됨(2/2) ·
+  수리 후엔 거부(3/3)였으나 queued 3회 중 2회 enqueue 시점 seat=unknown(prime 이 셸 초기화 자손 때문에 무기록) → 같은 창이 남는다.
+- #3 수리안 판단 메모(934 · 미확정): ⓐ `role_seat_hold()` 단일 술어 — 역할 좌석이 Empty 이거나 **생성 후 첫 틱+1s 안의 Unknown** 이면
+  틱·강제 두 게이트가 보류(창 밖 Unknown = 프로브 실패 = 종전 통과 유지 · 거부 코드 empty_seat 그대로 → CLI exit 7 불변).
+  ⓑ prime 재시도 2×500ms 는 모든 create 응답을 최대 1s 늦추고 느린 셸 초기화면 여전히 창이 남아 열위로 봤다.
+  ⓐ 초안(시험 미작성 · 미빌드) = `docs/r2-wip-934.patch`(governance.rs 만). ⚠기존 핀 `force_deliver_empty_seat_refused_unknown_passes`
+  의 Unknown 대조군은 생성 직후 좌석이라 ⓐ 적용 시 적색이 난다 — 대조군을 「창 밖 Unknown」(created_at 을 과거로)으로 재겨눠야 한다.
+- 하네스 경로(스크래치 · 세션 소멸성 — 재현 절차는 여기 3줄이 정본):
+  1. race0/probe: 스크래치 `race/{bin,pack,stub/claude,run.sh,probe3.sh}` — pack 사본 `agents.json` 의 `claude.cmd` = 절대경로 stub · env -i + `BROWSER=/usr/bin/false` · 데몬 종료 = 소켓 소유 pid.
+  2. probe3 = new-surface --role master → 즉시 `cys send --queued --surface surface:1 "touch <표식>"` → (forced 모드) 0.3s 간격 `cys queue deliver` → 7s 뒤 표식 파일 존재 = 빈 셸 타이핑.
+  3. 대조군 바이너리 = `~/axdev/.wt/cys-v115-integ6/target/release/{cys,cysd}`(27e4627e).
+
+## 7. ⚠통합 검증 중 저장소 팩 오염(09:05 · 원인 미확정)
+통합 검증(작업트리 f65be129) 도중 09:05:00~07 에 **옛 1.0.2 임베드 팩이 저장소 `cysjavis-pack/` 에 설치**됐다(추적 92파일 변경 · 모드
+100644→100755 · `.user` 16 + `.new` 4 + `.pristine/`·`.merge-pending.json`·`.pack-version`(1.0.2) · 루트 `claude/`). `.user` 16건 = HEAD 와 동일(내 커밋본이 병치로 밀림).
+그 뒤에 돈 `gen --check`(rc=1)·건강 검체 `H-PACK-TRACK-1`(fail · 누락 = 그 `.user` 들)은 **오염된 트리를 잰 값**이다. 복구 = `git checkout -- .` + 미추적 24 삭제.
+원인 후보 【추정】: 같은 시각대 팩 CI 루프 말미 검체 또는 병행한 격리 프로브 — 어느 쪽이 CYS_PACK_DIR 를 저장소 팩으로 잡고 1.0.2 `cys`(PATH 의 /usr/local/bin/cys)로 설치했는지 미확정.
+라이브 `~/.cys/pack` 은 무접촉(마지막 쓰기 09-22 12:33). 재검증 = 별도 worktree(`vwt`)에서 gen→health→팩 루프(검체마다 `git status` 오염 가드) 순.

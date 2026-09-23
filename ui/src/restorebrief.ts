@@ -107,13 +107,25 @@ export function briefStatePaths(cwd: string | null | undefined, home: string): s
 }
 
 /**
- * 읽힌 후보들 중 카드에 쓸 하나. **기록 시각(recordedAt)이 가장 늦은 것** — 드레인 저장이 방금 cwd 쪽에
- * 썼으면 그쪽이 더 새 기록이다. 시각이 같거나 둘 다 없으면 **앞선 후보**(= 정본)를 고른다.
- * 하나도 없으면 null(카드는 「기록을 찾지 못했습니다」로 정직하게 말한다).
+ * 이 파일에 카드가 읽는 고정 3절 제목(완료 / 진행 중 / 결정 필요) 중 **하나라도** 있는가.
+ * ★(v116-ui-close · R1a 곁) 정본 파일은 설치 골격(cysjavis-pack/round/SESSION_STATE.md)부터 절 이름이 다르다
+ *   (현재 위치 · 오너 지시 대장 · 미해결 게이트 · 다음 액션 큐). 제목이 하나도 없는 파일을 「기록 있음」으로
+ *   다루면 카드가 「하던 일을 복원했어요」 + 「적힌 것이 없습니다」×3 을 싣는다 — T4 가 없앤 빈 문장이 정본
+ *   경로를 타고 되돌아온다. 그래서 제목이 하나도 없으면 **기록 없음**으로 접는다(아는 것만 말한다).
+ */
+export function hasBriefSections(text: string): boolean {
+  return text.split(/\r?\n/).some((l) => /^#{1,6}\s/.test(l) && HEADS.some(([, re]) => re.test(l)));
+}
+
+/**
+ * 읽힌 후보들 중 카드에 쓸 하나. ① 고정 3절 제목이 있는 파일을 먼저(없는 파일은 카드에 실을 것이 없다)
+ * ② 그중 **기록 시각(recordedAt)이 가장 늦은 것** — 드레인 저장이 방금 cwd 쪽에 썼으면 그쪽이 더 새 기록이다
+ * ③ 같으면 **앞선 후보**(= 정본). 3절 제목이 있는 파일이 하나도 없으면 null(카드는 아는 것만 말한다).
  */
 export function pickBriefText(found: { path: string; text: string }[]): string | null {
   let best: { text: string; at: string } | null = null;
   for (const f of found) {
+    if (!hasBriefSections(f.text)) continue;
     const at = recordedAt(f.text) ?? "";
     if (best === null || at > best.at) best = { text: f.text, at };
   }

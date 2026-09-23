@@ -9777,6 +9777,7 @@ fn load_agent_spec(agent: &str) -> Result<Value, String> {
         let mut spec = spec.clone();
         // 대칭 유지(경로별 특례 금지) — 같은 소스라 실제로 채울 것은 없다(no-op).
         fill_missing_fields(&mut spec, embedded_agents.as_ref().and_then(|v| v.get(agent)));
+        inherit_claude_gate_envelope(&mut spec, &agents, embedded_agents.as_ref(), agent);
         return Ok(spec);
     }
     Err(format!("unknown agent '{agent}' (agents.json에 정의 필요)"))

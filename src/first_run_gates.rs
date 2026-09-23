@@ -186,6 +186,12 @@ fn split_shell_words(s: &str) -> Vec<String> {
                     cur.push(d);
                 }
             }
+            // 역슬래시 + 공백 = 이스케이프된 공백(`/opt/my\\ tools/claude` · agy R16 #2). 그 밖의 역슬래시는
+            // 문자 그대로(윈도 경로).
+            '\\' if cs.clone().next().is_some_and(char::is_whitespace) => {
+                has = true;
+                cur.extend(cs.next());
+            }
             c if c.is_whitespace() => {
                 if has {
                     out.push(std::mem::take(&mut cur));
@@ -214,10 +220,11 @@ pub fn envelope_for<'a>(disk: &'a Value, embed: &'a Value, agent: &str) -> Optio
     if let Some(v) = embed.get(agent).and_then(|a| a.get(ADAPTER_KEY)) {
         return Some(v);
     }
+    // 필드 단위 폴백 — 디스크 항목이 있어도 `cmd` 가 없으면 임베드 같은 이름의 `cmd`(agy R16 #3).
     let cmd = disk
         .get(agent)
-        .or_else(|| embed.get(agent))
         .and_then(|a| a.get("cmd"))
+        .or_else(|| embed.get(agent).and_then(|a| a.get("cmd")))
         .and_then(|c| c.as_str())?;
     if cmd_launches_claude(cmd) {
         embed.get(CLAUDE_ADAPTER).and_then(|a| a.get(ADAPTER_KEY))
@@ -3045,6 +3052,7 @@ mod tests {
             "~/.local/bin/claude",
             "C:\\Users\\a\\AppData\\claude.exe --model m",
             "'/opt/my tools/claude' -p",
+            "/opt/my\\ tools/claude -p",
         ] {
             assert!(cmd_launches_claude(yes), "{yes}");
         }
@@ -3090,6 +3098,16 @@ mod tests {
         );
         assert_eq!(tag("claude-own"), Some(json!("disk-own")));
         assert_eq!(tag("claude"), Some(json!("embed-claude")));
+        // 디스크 항목에 cmd 가 없으면 임베드 같은 이름의 cmd 로 판정(필드 단위 폴백).
+        let embed2 = json!({
+            "claude": {"cmd": "claude", ADAPTER_KEY: {"tag": "embed-claude"}},
+            "vendor-claude-x": {"cmd": "claude --model x"}
+        });
+        let disk2 = json!({"vendor-claude-x": {"notes": "사용자 메모만"}});
+        assert_eq!(
+            envelope_for(&disk2, &embed2, "vendor-claude-x").map(|v| v["tag"].clone()),
+            Some(json!("embed-claude"))
+        );
     }
 
     /// ★(1.1.6 dbg-queue-approval) 폴더신뢰 이동 계획 — 기본 포커스 가정이 아니라 화면 라벨로 고른다.

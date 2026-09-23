@@ -279,6 +279,14 @@ if (ONLY.includes("c12")) {
   const a = await ev(`[...document.querySelectorAll("#root .pane .pane-title-text")].map(t => ({ text: t.textContent, tip: t.title }))`);
   const shell = a.find((x: any) => x.text.startsWith("2"));
   check("c12a 역할 없는 창 제목 = 「2 · project-alpha」(번호 먼저 · 폴더 이름) · 전체 경로는 툴팁", !!shell && shell.text === "2 · project-alpha" && shell.tip === LONG, JSON.stringify(a));
+  // (opus 결함 1) 역할 없는 창에서 이름 변경을 열었다가 바꾸지 않고 확정 → 데몬에 쓰지 않는다(자동 제목이 고정 제목으로 굳지 않게)
+  await ev(`${PANE("project-alpha")}.querySelector(".pane-title").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 500, clientY: 60 }))`);
+  await Bun.sleep(150);
+  await ev(`[...document.querySelectorAll("#ctx-menu .ctx-item")].find(x => x.textContent.trim() === "이름 변경")?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`);
+  await Bun.sleep(150);
+  await ev(`document.activeElement?.blur()`); await Bun.sleep(300);
+  const d = await ev(`({ renames: window.__shimCalls.filter(c => c.cmd === "rename_surface").length, seat2: window.__shimSeats[1].title })`);
+  check("c12d 역할 없는 창 이름 변경 → 바꾸지 않고 확정 = 쓰기 0(자동 제목 유지)", d.renames === 0 && d.seat2 === "", JSON.stringify(d));
   await ev(`window.__shimExit(2, false)`); await Bun.sleep(3500);
   const b = await ev(TT("project-alpha"));
   check("c12b 끝난 창 = 「(끝남)」이 제목 맨 앞(좁아도 먼저 잘리지 않는다)", !!b && b.text.startsWith("(끝남) ") && b.text.includes("2 · project-alpha"), JSON.stringify(b));

@@ -44,6 +44,8 @@ test("usedPctOf: null·undefined·빈 값 = NaN(미관측) · 수·수 문자열
   expect(usedPctOf(0)).toBe(0);
   expect(usedPctOf(42)).toBe(42);
   expect(usedPctOf("7")).toBe(7);
+  expect(Number.isNaN(usedPctOf(" "))).toBe(true); // (opus NIT) 공백·불리언도 미관측
+  expect(Number.isNaN(usedPctOf(false))).toBe(true);
 });
 test("창 머리 배지(renderUsage): 미관측 창을 걸러 낸 목록으로 배지·툴팁을 모두 그린다", () => {
   const f = fnBody("function renderUsage(");
@@ -59,5 +61,6 @@ test("Control Center 최고 사용 계정(ccAcctMax): usedPctOf 로 읽는다", 
   expect(f.includes("Number(r.used_pct)")).toBe(false);
 });
 test("Control Center 계정 게이지(renderAccounts gauge): 미관측 = 창 없음(「—」)", () => {
-  expect(fnBody("function renderAccounts(").includes("if (r && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined;")).toBe(true);
+  // (opus 결함 5) 데몬이 죽었다고 판정한 창(stale)은 사유 표시가 우선 — null 판정보다 먼저 거른다
+  expect(fnBody("function renderAccounts(").includes("if (r && r.stale !== true && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined;")).toBe(true);
 });

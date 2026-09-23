@@ -379,6 +379,6 @@ describe("v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 �
   it("데몬 이벤트 배선: 마스터 신호 → maybeShowRestoreBrief(판정·1회는 거기서)", () => {
     const ev = src.slice(src.indexOf("function onDaemonEvent("));
     const head = ev.slice(0, ev.indexOf('if (name === "approval.request")'));
-    expect(head.includes("if (isMasterSeatSignal(name, payload)) maybeShowRestoreBrief();")).toBe(true);
+    expect(head.includes("if (isMasterSeatSignal(name, payload) && !factoryResetting && !resetCompleted) maybeShowRestoreBrief();")).toBe(true);
   });
 });

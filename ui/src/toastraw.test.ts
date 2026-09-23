@@ -9,7 +9,8 @@ const callLines = main.split("\n").filter((l) => /\b(toast|stickyToast)\(/.test(
 describe("D4 #14 도우미", () => {
   it("setToastRaw — 접힌 details · 「자세히」 · textContent 로만 · 갱신 때 옛 원문 제거", () => {
     const f = main.slice(main.indexOf("function setToastRaw("), main.indexOf("// 우상단 ×"));
-    expect(f.includes('el.querySelector(".toast-raw")?.remove();')).toBe(true);
+    expect(f.includes("prev?.remove();")).toBe(true);
+    expect(f.includes("d.open = wasOpen;")).toBe(true); // (opus NIT) 갱신 때 펼침 유지
     expect(f.includes("  if (!raw) return;\n  const d = ")).toBe(true);
     expect(f.includes('document.createElement("details")')).toBe(true);
     expect(f.includes("pre.textContent = raw;")).toBe(true);

@@ -34,5 +34,6 @@ describe("D4 #10 배선", () => {
     const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
     expect(css).toContain(".wsu-ctx-group {");
     expect(/\.wsu-ctx-group \{[^}]*width:/.test(css)).toBe(false);
+    expect(/\.wsu-ctx-group \{[^}]*font-size: \.9em/.test(css)).toBe(true); // (opus 결함 4) 패널 배율을 따른다
   });
 });

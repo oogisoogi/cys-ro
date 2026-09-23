@@ -235,3 +235,42 @@ fn d6_2_prefix_is_dash_delimited() {
     assert!(rows.iter().any(|r| r["label"] == "s@x" && r["rate"][0]["used_pct"] == 10.0), "claude-sonnet 귀속");
     assert!(!rows.iter().any(|r| r["label"] == "n@x"), "claudex 는 claude 파생이 아니다 — 유령 계정 0");
 }
+
+/// opus 적대 1R(low · D6-1 이 새로 연 부작용): idle 좌석의 statusline 이 리셋 지난 캐시 창 묶음을 다시 보고해도
+/// 살아 있는 OAuth 묶음을 덮지 않는다 — 덮으면 경보 키가 사라졌다 다음 프로브에 돌아오며 매번 재발화한다.
+#[test]
+fn d6_1_dead_statusline_vector_does_not_evict_live_oauth() {
+    let d = daemon("d61e");
+    let now = crate::state::now_epoch();
+    let sf = profile_session("d61e", "uuid-evict", "evict@x");
+    crate::accounts::note_rate(&d, "claude", &sf, &[w("5h", 88.0, now + 3600.0)], "oauth", now - 10.0);
+    assert_eq!(account_alert_keys(&d, now), vec!["account_rate:evict@x:5h".to_string()], "전제: 살아 있는 경보");
+    // 더 새 시각의 statusline 보고 — 그러나 창은 리셋이 이미 지난 캐시
+    crate::accounts::note_rate(&d, "claude", &sf, &[w("5h", 93.0, now - 60.0)], "statusline", now);
+    assert_eq!(
+        account_alert_keys(&d, now),
+        vec!["account_rate:evict@x:5h".to_string()],
+        "죽은 캐시 묶음이 살아 있는 묶음을 덮어 경보 키가 사라졌다(깜빡임 재발화)"
+    );
+    let j = crate::accounts::local_json(&d, now);
+    let row = j.as_array().unwrap().iter().find(|r| r["label"] == "evict@x").unwrap().clone();
+    assert_eq!(row["rate"][0]["used_pct"], 88.0, "계기도 살아 있는 값을 보여야 한다");
+    // 대조: 살아 있는 창이 없던 계정은 종전대로 최신 승자(죽은 묶음도 받아 계기가 stale 로 표시)
+    let sf2 = profile_session("d61e2", "uuid-evict2", "evict2@x");
+    crate::accounts::note_rate(&d, "claude", &sf2, &[w("5h", 70.0, now - 7200.0)], "oauth", now - 10.0);
+    crate::accounts::note_rate(&d, "claude", &sf2, &[w("5h", 93.0, now - 60.0)], "statusline", now);
+    let j = crate::accounts::local_json(&d, now);
+    let row2 = j.as_array().unwrap().iter().find(|r| r["label"] == "evict2@x").unwrap().clone();
+    assert_eq!(row2["rate"][0]["used_pct"], 93.0, "살아 있는 창이 없으면 최신 승자 유지");
+}
+
+#[test]
+fn d6_1_rate_vector_all_reset_table() {
+    let now = 1000.0;
+    assert!(!crate::accounts::rate_vector_all_reset(&[], now), "빈 묶음은 죽었다고 하지 않는다");
+    assert!(crate::accounts::rate_vector_all_reset(&[w("5h", 1.0, 999.0), w("7d", 1.0, 10.0)], now));
+    assert!(!crate::accounts::rate_vector_all_reset(&[w("5h", 1.0, 999.0), w("7d", 1.0, 1001.0)], now));
+    let unknown = RateWindow { label: "5h".into(), used_pct: 1.0, resets_at: None };
+    assert!(!crate::accounts::rate_vector_all_reset(&[w("7d", 1.0, 10.0), unknown], now), "미상 창 = 죽었다고 하지 않음");
+    assert!(!crate::accounts::rate_vector_all_reset(&[w("5h", 1.0, 1000.0)], now), "경계 = 리셋 시각 그 순간은 신선");
+}

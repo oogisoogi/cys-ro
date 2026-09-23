@@ -89,6 +89,7 @@ import {
   shortSocketTag,
   sourceGrade,
   USAGE_STALE_SECS,
+  usedPctOf,
   windowStaleText,
   type AccountLike,
   type NamedReporterLike,
@@ -327,7 +328,9 @@ function renderUsage(el: HTMLElement, u: ObservedUsage | null | undefined) {
   const parts: { text: string; cls: string }[] = [];
   if (u.ctx_pct !== null && u.ctx_pct !== undefined)
     parts.push({ text: `CTX ${u.ctx_pct}%`, cls: sevClass(u.ctx_pct, 60, 80) });
-  for (const w of u.rate ?? [])
+  // (D4 #18 나머지 절반) used_pct null(미관측)은 0% 로 그리지 않는다 — 사이드바(wsusage.ts)와 같은 usedPctOf.
+  const rates = (u.rate ?? []).filter((w) => Number.isFinite(usedPctOf(w.used_pct)));
+  for (const w of rates)
     parts.push({ text: `${w.label} ${Math.round(w.used_pct)}%`, cls: sevClass(w.used_pct, 70, 90) });
   if (!parts.length) {
     el.title = "";
@@ -342,7 +345,7 @@ function renderUsage(el: HTMLElement, u: ObservedUsage | null | undefined) {
   const tip: string[] = [`${u.agent} 사용량 (관측: ${u.source})`];
   if (u.ctx_tokens != null && u.ctx_window != null)
     tip.push(`context ${u.ctx_tokens.toLocaleString()} / ${u.ctx_window.toLocaleString()} tokens`);
-  for (const w of u.rate ?? []) {
+  for (const w of rates) {
     const reset = w.resets_at ? ` — reset ${new Date(w.resets_at * 1000).toLocaleString()}` : "";
     tip.push(`rate ${w.label}: ${w.used_pct}%${reset}`);
   }
@@ -719,6 +722,7 @@ function ccAggRate(fleet: any[]): Record<string, { used: number; reset: number |
   const agg: Record<string, { used: number; reset: number | null }> = {};
   for (const f of fleet) {
     for (const w of f.usage?.rate ?? []) {
+      if (!Number.isFinite(usedPctOf(w.used_pct))) continue; // (D4 #18) 미관측 창은 0% 후보가 아니다
       const cur = agg[w.label] ?? { used: 0, reset: null };
       if (w.used_pct > cur.used) cur.used = w.used_pct;
       if (w.resets_at != null && (cur.reset == null || w.resets_at < cur.reset)) cur.reset = w.resets_at;
@@ -756,7 +760,7 @@ function ccAcctMax(label: string): { used: number; reset: number | null; acct: s
   for (const a of ccAccounts) {
     for (const r of a.rate ?? []) {
       if (r.label !== label) continue;
-      const used = Number(r.used_pct);
+      const used = usedPctOf(r.used_pct); // (D4 #18) Number(null)=0 이 「최고 사용 계정 0%」 후보가 되던 것
       if (!Number.isFinite(used)) continue;
       if (r.stale === true) continue; // 데몬이 죽었다고 판정한 창은 KPI 「최고 사용 계정」 후보가 아니다
       if (!best || used > best.used)
@@ -783,6 +787,7 @@ function renderAccounts() {
       // ★데몬이 죽었다고 판정한 창(stale:true)은 채움·숫자를 그리지 않고 「—」+사유(회색) — 사이드바와 같은 규율.
       // r = 창 1개(없으면 undefined) · observedAt = 그 창의 관측 시각(stale 사유 문구용).
       const gauge = (lab: string, r: any, observedAt: number) => {
+        if (r && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined; // (D4 #18) 미관측 = 창 없음(「—」) · 0% 게이지 아님
         const dead = !!r && r.stale === true;
         const used = r ? Math.round(Number(r.used_pct)) : 0;
         const reset = dead

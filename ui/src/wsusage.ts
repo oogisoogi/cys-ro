@@ -108,7 +108,7 @@ const scopeKey = (socket: string, agent: string) => JSON.stringify([socket, agen
  * (D4 #18) 사용률 값 읽기 — null·빈 값(미관측)은 NaN 이다. `Number(null)` 은 0 이라 그대로 두면 「0% 사용」 게이지로
  * 그려진다(미관측 ≠ 0%). 지금 데몬은 null 을 내지 않지만(잠복) 한 줄만 어긋나도 「넉넉하다」는 거짓 신호가 된다.
  */
-function usedPctOf(v: unknown): number {
+export function usedPctOf(v: unknown): number {
   return v == null || v === "" ? NaN : Number(v);
 }
 

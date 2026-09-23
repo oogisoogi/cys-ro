@@ -8084,4 +8084,93 @@ mod tests {
         assert_eq!(p2["role"], json!(null));
     }
 
+    // ─────────── ★dbg-D2 R12(2026-09-23 · 1.1.5 정밀 디버깅 · 차단 확정): 좌석 exec 전 배선 ───────────
+    /// **결함 재현**: 신규 설치 첫 master 좌석은 스킬 심링크가 생기기 전에 떠, claude 가 세션 시작 때
+    /// 고정한 스킬 목록에 `dept-by-chat` 이 없었다(`Unknown skill` · VM 06:45:36 좌석 < 06:46:09 링크).
+    /// 기대 = 좌석 프로세스가 **시작하는 순간** 이미 프로필에 링크가 있다(존재 + 링크 시각 ≤ 시작 시각).
+    /// 격리: HOME·CLAUDE_CONFIG_DIR·CYS_ACCOUNT_DIR·CYS_PACK_DIR 전부 target/ 아래 스크래치(임시 경로
+    /// 밖이어야 preflight 의 임시 팩 격리 가드가 배선 자체를 막지 않는다) · 라이브 `~/.cys` 무접촉.
+    /// 좌석 = 가짜 claude(시작 순간 링크 유무·epoch 초를 적는 셸) — 실 claude·토큰 0.
+    #[cfg(unix)]
+    #[test]
+    fn dbg_r12_seat_profile_wired_before_agent_exec() {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let dir = root.join("target").join(format!(
+            "dbg-r12-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("pack");
+        std::fs::create_dir_all(pack.join("skills").join("dept-by-chat")).unwrap();
+        std::fs::write(
+            pack.join("skills").join("dept-by-chat").join("SKILL.md"),
+            "---\nname: dept-by-chat\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(root.join("cysjavis-pack").join("bin"), pack.join("bin")).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // 신규 설치 상태: 좌석 config dir 은 아직 없다(발견 규약이 「디렉터리 존재」라 이것도 재야 한다).
+        let ccd = home.join(".cys").join("claude");
+        let link = ccd.join("skills").join("dept-by-chat");
+        let seen = dir.join("seen");
+        let fake = format!(
+            "if [ -L \"$CLAUDE_CONFIG_DIR/skills/dept-by-chat\" ]; then r=yes; else r=no; fi; \
+             echo \"$r $(date +%s)\" > '{}'; sleep 2",
+            seen.display()
+        );
+        let p = |x: &PathBuf| x.to_string_lossy().into_owned();
+        let env: Vec<(String, String)> = vec![
+            ("HOME".into(), p(&home)),
+            ("CYS_PACK_DIR".into(), p(&pack)),
+            ("CLAUDE_CONFIG_DIR".into(), p(&ccd)),
+            ("CYS_ACCOUNT_DIR".into(), p(&ccd)),
+            ("CYS_TEST_SEAT_WIRE".into(), "1".into()),
+        ];
+        let daemon = Daemon::new(isolated_sock("dbg-r12"));
+        daemon
+            .create_surface_with_env(
+                Some(p(&dir)),
+                Some(fake),
+                None,
+                Some("worker".into()),
+                24,
+                80,
+                &env,
+                None,
+                None,
+            )
+            .expect("create surface");
+        let t0 = Instant::now();
+        let body = loop {
+            if let Ok(b) = std::fs::read_to_string(&seen) {
+                if b.ends_with('\n') {
+                    break b;
+                }
+            }
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(30),
+                "측정 실패: 가짜 좌석이 30초 안에 시작 기록을 남기지 않았다(대상 미접촉)"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let link_mtime = std::fs::symlink_metadata(&link).ok().and_then(|m| m.modified().ok());
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut it = body.split_whitespace();
+        let (verdict, start) = (it.next().unwrap_or(""), it.next().unwrap_or("0"));
+        assert_eq!(
+            verdict, "yes",
+            "좌석 프로세스 시작 순간 프로필에 skills/dept-by-chat 링크가 없었다 — claude 는 세션 시작 때 \
+             스킬 목록을 고정하므로 첫 세션이 `Unknown skill: dept-by-chat` 이 된다(R12)"
+        );
+        let start: u64 = start.parse().expect("시작 시각 파싱");
+        let lm = link_mtime
+            .expect("링크 lstat 실패")
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(lm <= start, "링크 생성 시각({lm}) 이 좌석 시작 시각({start}) 보다 늦다");
+    }
 }

@@ -14913,52 +14913,78 @@ mod tests {
         assert_eq!(count_bus(&daemon, "surface.reap_denied"), 0, "허용인데 거부 감사 발행");
     }
 
-    /// ★v115r3-d7(D7⑴) 생성 직후 좌석 사실 — surface.create 응답을 받은 **바로 다음** status 가
-    /// "unknown" 이면 안 된다(워치독 틱 전 창). 09-22 VM: 부서 allocate 직후 편성의 boot_node 가
-    /// 그 창에서 판정해 빈 부서장 셸을 입양-주입으로 처분했다(505B · 부서장 공백 최대 5분55초).
-    /// 이 테스트 데몬에는 워치독 틱이 없다 — 값이 채워졌다면 생성 경로가 채운 것이다.
-    /// ★r5(CI 맥 aarch64 적색 · run 35808969481): 픽스처는 `exec sleep 30` 이어야 한다. 좌석은
-    ///   `$SHELL -lc "<PATH 선두주입>; <cmd>"` 로 뜨는데 zsh 는 마지막 명령을 exec 하고 bash 3.2(러너 SHELL)는
-    ///   **fork 한다** — `sleep 30` 이 뿌리의 영구 자손이 돼 판정 = Occupied → prime 은 Empty 만 싣는 설계라
-    ///   무기록 → "unknown"(로컬 실측 bash 15/15 unknown · zsh 15/15 empty · `exec` 는 두 셸 모두 15/15 empty).
-    ///   생성 순간이 셸 초기화 자손(path_helper)과 겹치면 prime 이 Unknown 을 남기는 것도 제품 설계다(HANDOFF §6 ⓐ
-    ///   창 보류가 덮는다) — 그래서 3회 중 1회 이상 empty 를 요구하고, 어느 회차도 occupied 를 싣지 않았음을 함께
-    ///   단언한다(생성 경로 prime 호출을 지우면 3/3 unknown = 적색).
+    /// ★v115r3-d7(D7⑴) 생성 직후 좌석 채움의 **배선** — surface.create 성공 아크가 응답을 만들기 **전에**,
+    /// 조건 없이 `prime_seat_cache_at_create(&s)` 를 한 번 부른다. 09-22 VM: 부서 allocate 직후 편성의
+    /// boot_node 가 워치독 틱 전 "unknown" 창에서 판정해 빈 부서장 셸을 입양-주입으로 처분했다(505B).
+    /// ★r6(CI 8차 맥 aarch64 적색 · run 35814642386): 종전 형태(실 스폰 → 다음 status 가 "empty" 이길 기대 ·
+    ///   3회 재시도)는 제품 계약이 아니라 **호스트 사실**(생성 순간 로그인 셸 초기화 자손이 0 인가)을 쟀다.
+    ///   로그인 프로파일이 자식을 띄우는 호스트에선 생성 순간 판정 = Occupied → prime 은 설계대로 싣지 않는다
+    ///   → "unknown"(그 창은 §6 ⓐ 보류가 덮는다). 재시도는 특권 역할 master 를 두 번 잡아 claim_denied 로
+    ///   죽었다. 로컬 재현 = SHELL=/bin/bash + HOME 의 .bash_profile 이 `sleep 0.3` → 3/3 같은 줄·같은 거절.
+    ///   그래서 계약을 두 층으로 나눈다 — (i) 의미 = `d7_prime_seat_cache_never_overwrites_a_tick_value`
+    ///   (자손 0 → Empty 를 싣는다 · 자손 ≥1 → 안 싣는다 · 틱 값을 안 덮는다 — 상태 대기로 전제를 세운 뒤 판정)
+    ///   (ii) 배선 = 이 시험(실 스폰의 생성 순간 판정에 기대지 않는다). (i)∧(ii) ⇒ 생성 순간 자손 0 인 좌석은
+    ///   응답 전에 "empty" 로 실린다.
     #[test]
-    fn d7_new_seat_is_judged_at_create_not_left_unknown() {
+    fn d7_create_arc_primes_seat_cache_before_reply() {
+        let src = include_str!("handlers.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        // 선언문만 본다 — 줄 주석을 걷어낸다(같은 이름이 설명 주석에만 남아도 초록이 되는 자리를 막는다).
+        //   줄 수는 보존한다(빈 줄로 바꿀 뿐) — 위치 판정이 원문 순서 그대로다.
+        let code: String = prod
+            .lines()
+            .map(|l| if l.trim_start().starts_with("//") { "" } else { l })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            code.matches("prime_seat_cache_at_create(").count(),
+            1,
+            "생산 코드의 prime 호출 자리가 정확히 하나가 아니다(0 = 배선 소실 · 2+ = 이 시험이 한 자리만 잰다)"
+        );
+        let arm_at = code
+            .find("\n        \"surface.create\" => {\n")
+            .expect("surface.create 아크");
+        let arm_end = arm_at + 1 + code[arm_at + 1..].find("\n        \"").expect("다음 아크 경계");
+        let arm = &code[arm_at..arm_end];
+        let ok_at = arm.find("\n                Ok(s) => {\n").expect("생성 성공 아크 Ok(s)");
+        let err_at = arm.find("\n                Err(e) => {\n").expect("생성 실패 아크 Err(e)");
+        assert!(ok_at < err_at, "아크 순서 전제(Ok → Err)가 깨졌다 — 이 아래 판정은 무의미");
+        let ok_arm = &arm[ok_at..err_at];
+        // ★들여쓰기 20칸 = Ok 아크 본문 최상위(무조건 실행). if·클로저 안으로 들어가면 24칸+ 라 안 잡힌다.
+        let call = ok_arm
+            .find("\n                    let _ = crate::governance::prime_seat_cache_at_create(&s);\n")
+            .expect("성공 아크 최상위(무조건)에 prime(&s) 호출이 없다 — 새 좌석이 첫 틱까지 unknown 으로 노출된다");
+        let reply = ok_arm
+            .find("\n                    Reply::Single(ok_response(")
+            .expect("성공 아크의 응답");
+        assert!(call < reply, "prime 이 응답 뒤에 있다 — 호출자의 다음 status 가 unknown 을 본다");
+
+        // ★실행 축(환경 무관 불변식): 이 시험 데몬엔 워치독 틱이 없다 — 생성 직후 status 의 좌석 값을 쓰는
+        //   주체는 prime 하나이고, prime 은 Occupied 를 싣지 않는다. 비특권 역할로 1회만 만든다(재시도 없음).
         let daemon = claim_daemon();
-        let mut seen = Vec::new();
-        for _ in 0..3 {
-            let Reply::Single(resp) = dispatch(
-                &daemon,
-                Request {
-                    id: json!(1),
-                    method: "surface.create".into(),
-                    params: json!({"cmd": "exec sleep 30", "role": "master"}),
-                },
-                None,
-            ) else {
-                panic!("expected single reply");
-            };
-            assert_eq!(resp["ok"], json!(true), "surface.create 실패 ({resp})");
-            let sid = resp["result"]["surface_id"].as_u64().expect("surface_id");
-            let Reply::Single(st) = dispatch(
-                &daemon,
-                Request { id: json!(2), method: "org.status".into(), params: json!({}) },
-                None,
-            ) else {
-                panic!("expected single reply");
-            };
-            let row = surface_entry(&st, "surfaces", sid);
-            assert_ne!(row["seat"], json!("occupied"),
-                       "생성 직후 채움이 Occupied 를 실었다(Empty 한정 위반 · 입양 분기로 샌다): {row}");
-            let empty = row["seat"] == json!("empty");
-            seen.push(row["seat"].clone());
-            if empty {
-                return;
-            }
-        }
-        panic!("생성 직후 좌석이 판정되지 않았다(unknown 창 · 3회 {seen:?}) — 편성이 빈 부서장 셸을 입양-주입한다");
+        let Reply::Single(resp) = dispatch(
+            &daemon,
+            Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: json!({"cmd": "exec sleep 30", "role": "worker-d7-arc"}),
+            },
+            None,
+        ) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(resp["ok"], json!(true), "surface.create 실패 ({resp})");
+        let sid = resp["result"]["surface_id"].as_u64().expect("surface_id");
+        let Reply::Single(st) = dispatch(
+            &daemon,
+            Request { id: json!(2), method: "org.status".into(), params: json!({}) },
+            None,
+        ) else {
+            panic!("expected single reply");
+        };
+        let row = surface_entry(&st, "surfaces", sid);
+        assert_ne!(row["seat"], json!("occupied"),
+                   "생성 직후 채움이 Occupied 를 실었다(Empty 한정 위반 · 입양 분기로 샌다): {row}");
     }
 
     /// ★v115r3-d7(D7⑴) 생성 직후 채움은 **Unknown 일 때만** 쓴다 — 틱이 먼저 쓴 값을 덮지 않는다.

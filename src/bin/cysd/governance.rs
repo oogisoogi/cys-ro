@@ -1666,17 +1666,16 @@ fn gate_scan_observe_open(w: &GateScanWindow) -> bool {
 /// CLI 의 `load_agent_spec` 을 지나지 않으므로 계층을 여기서 한 번 더 성립시켜야 한다.
 ///   · 디스크에 키가 **있으면**(명시 `null` 포함) 디스크가 이긴다 — 사용자 주권 불변.
 ///   · 키가 **아예 없을 때만** 임베드 봉투를 쓴다 — 기존 설치 기계 도달 경로(K-1).
-/// 어느 쪽에도 없으면 `None` = 코드 정본만 쓴다(그것이 코퍼스의 SOT 다).
+/// 어느 쪽에도 없으면 `None` = 코드 정본만 쓴다(그것이 코퍼스의 SOT 다). ★(R16) 단, 임베드에 같은 이름이 없는
+/// 사용자 신설 어댑터라도 `cmd` 가 claude 를 띄우면 claude 임베드 봉투를 물려받는다(`envelope_for`).
 fn gate_envelope<'a>(
     disk: &'a serde_json::Value,
     embed: &'a serde_json::Value,
     agent: &str,
 ) -> Option<&'a serde_json::Value> {
-    let key = cys::first_run_gates::ADAPTER_KEY;
-    if let Some(v) = disk.get(agent).and_then(|a| a.get(key)) {
-        return Some(v);
-    }
-    embed.get(agent).and_then(|a| a.get(key))
+    // ★(R16) 사용자 신설 claude 계열 어댑터(임베드에 같은 이름 없음)는 cmd 가 claude 를 띄우면 claude 임베드
+    //   봉투를 물려받는다 — 판정·우선순위의 단일 정본은 lib `first_run_gates::envelope_for`(CLI 와 공유).
+    cys::first_run_gates::envelope_for(disk, embed, agent)
 }
 
 /// 화면에서 본 관문의 요약. **키 재료가 하나도 없다** — `select_index`·`literal`·`down` 이
@@ -10261,6 +10260,49 @@ mod tests {
             s.pending_queue.lock().unwrap().len(),
             1,
             "면책 창에 큐 배달했다"
+        );
+        assert!(
+            qa_blocked_reason(&s).starts_with("approval_pending"),
+            "{}",
+            qa_blocked_reason(&s)
+        );
+        let r = super::force_deliver_entry(&daemon, &s, None, false);
+        assert!(matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)));
+    }
+
+    /// ★(1.1.6 R16) 사용자 신설 claude 계열 어댑터 좌석(실제 디스크 선언형 `claude-fable`)도 관문 코퍼스를 물려받는다 —
+    ///    ⑴ 관문 스캐너의 `declared`(= `gate_envelope` 가 Some) ⑵ 차단 축(큐 보류·강제 거부). 비-claude 어댑터는 무상속.
+    #[test]
+    fn qa_claude_family_user_adapter_inherits_gate_corpus() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-fable");
+        let disk_text = r#"{"claude-fable":{"cmd":"claude --model claude-fable-5-1 --dangerously-skip-permissions","ready_marker":"❯","approval_patterns":[]},"codex":{"cmd":"~/.npm-global/bin/codex --dangerously-bypass-approvals-and-sandbox"}}"#;
+        std::fs::write(pack.join("agents.json"), disk_text).unwrap();
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let disk: serde_json::Value = serde_json::from_str(disk_text).unwrap();
+        let embed: serde_json::Value = cys::pack::PACK_ALL
+            .iter()
+            .find(|(r, _)| *r == "agents.json")
+            .and_then(|(_, c)| serde_json::from_str(c).ok())
+            .unwrap();
+        // ⑴ 관문 스캐너: `declared` 가 켜진다(종전 None → 스캐너가 이 좌석을 보지 않았다).
+        assert_eq!(
+            gate_envelope(&disk, &embed, "claude-fable"),
+            embed["claude"].get(cys::first_run_gates::ADAPTER_KEY)
+        );
+        assert!(gate_envelope(&disk, &embed, "codex").is_none());
+        // ⑵ 차단 축: 2.1.280 신뢰 창을 띄운 claude-fable 좌석 — 큐 보류 · 강제 거부.
+        let (daemon, s) = qa_fixture_seat("qa-fable", QA_FOLDER_TRUST);
+        *s.agent_meta.lock().unwrap() = Some(("claude-fable".to_string(), "worker".to_string()));
+        qa_move_cursor_after_marker(&s);
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            1,
+            "claude-fable 좌석 신뢰 창에 큐 배달했다"
         );
         assert!(
             qa_blocked_reason(&s).starts_with("approval_pending"),

@@ -98,6 +98,134 @@ pub const ADAPTER_KEY: &str = "first_run_gates";
 /// ★롤백 스위치(env 1지점). `0`/`off`/`false`/`no` → override 파싱 비활성(코드 정본만).
 pub const OVERRIDE_ENV: &str = "CYS_FIRST_RUN_GATES_OVERRIDE";
 
+/// 관문 봉투를 물려줄 임베드 어댑터 이름(claude 계열의 코퍼스 주인).
+pub const CLAUDE_ADAPTER: &str = "claude";
+
+/// ★(1.1.6 R16 · master#7b1ea7d9) 어댑터 `cmd` 가 **claude 를 띄우는가** — 사용자 신설 claude 계열 어댑터
+/// (`claude-fable`·`claude-sonnet` 등 임베드에 같은 이름이 없는 것)가 claude 임베드 관문 봉투를 물려받는
+/// 판정. 종전엔 봉투를 임베드의 **같은 이름**에서만 가져와 그런 좌석은 관문 스캐너·차단 축에서 코퍼스가 없었다.
+///
+/// 셸 토큰으로 나눠(따옴표·역슬래시 처리) `env`(경로 포함) · env 의 `-u NAME`·`--unset NAME`·그 밖의 `-옵션` ·
+/// `NAME=값` 접두를 건너뛴 **첫 실행 파일의 basename** 이 `claude`(대소문자 무시 · 윈도 `.exe`·`.cmd` 허용)
+/// 인가. 순진한 「첫 낱말」 은 우리 스폰형 `env -u NODE_OPTIONS CLAUDE_CONFIG_DIR=… claude …` 를 놓친다.
+/// 오판 비용은 막는 쪽이다 — 봉투를 물려받아도 관문 식별은 claude 문면 needle ∧ 위젯 AND 라 claude 가
+/// 아닌 화면에서는 서지 않는다.
+pub fn cmd_launches_claude(cmd: &str) -> bool {
+    let toks = split_shell_words(cmd);
+    let mut it = toks.iter().map(String::as_str);
+    let mut in_env = false;
+    while let Some(t) = it.next() {
+        if exe_basename(t) == "env" && !in_env {
+            in_env = true;
+            continue;
+        }
+        if in_env && (t == "-u" || t == "--unset") {
+            it.next();
+            continue;
+        }
+        if in_env && t.starts_with('-') {
+            continue;
+        }
+        if is_env_assignment(t) {
+            continue;
+        }
+        return exe_basename(t) == "claude";
+    }
+    false
+}
+
+/// 실행 파일 토큰의 basename(소문자 · 윈도 `.exe`·`.cmd` 제거).
+fn exe_basename(tok: &str) -> String {
+    let base = tok
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(tok)
+        .to_ascii_lowercase();
+    match base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".cmd"))
+    {
+        Some(stem) => stem.to_string(),
+        None => base,
+    }
+}
+
+/// `NAME=값` 모양인가(NAME = `[A-Za-z_][A-Za-z0-9_]*`).
+fn is_env_assignment(tok: &str) -> bool {
+    let Some((name, _)) = tok.split_once('=') else {
+        return false;
+    };
+    let mut cs = name.chars();
+    cs.next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 최소 셸 단어 분리 — 공백 구분 · `'…'`·`"…"` 묶음. 역슬래시는 **문자 그대로**다 — 윈도 경로
+/// (`C:\\Users\\a\\claude.exe`)를 이스케이프로 먹으면 basename 이 깨진다(판정에 필요한 것은 첫 실행 파일뿐).
+fn split_shell_words(s: &str) -> Vec<String> {
+    let (mut out, mut cur, mut has) = (Vec::new(), String::new(), false);
+    let mut cs = s.chars();
+    while let Some(c) = cs.next() {
+        match c {
+            '\'' => {
+                has = true;
+                for d in cs.by_ref() {
+                    if d == '\'' {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            '"' => {
+                has = true;
+                for d in cs.by_ref() {
+                    if d == '"' {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            c if c.is_whitespace() => {
+                if has {
+                    out.push(std::mem::take(&mut cur));
+                    has = false;
+                }
+            }
+            c => {
+                has = true;
+                cur.push(c);
+            }
+        }
+    }
+    if has {
+        out.push(cur);
+    }
+    out
+}
+
+/// 이 어댑터의 관문 봉투를 고른다 — **디스크 우선 · 없으면 임베드 같은 이름 · 그것도 없고 `cmd` 가 claude 를
+/// 띄우면 claude 임베드 봉투**(R16). 디스크에 키가 있으면(명시 `null` 포함) 디스크가 이긴다(사용자 주권 불변).
+/// 데몬(`gate_envelope`)과 CLI(`load_agent_spec` 계층)가 이 한 함수를 쓴다 — 두 경로가 갈리지 않게.
+pub fn envelope_for<'a>(disk: &'a Value, embed: &'a Value, agent: &str) -> Option<&'a Value> {
+    if let Some(v) = disk.get(agent).and_then(|a| a.get(ADAPTER_KEY)) {
+        return Some(v);
+    }
+    if let Some(v) = embed.get(agent).and_then(|a| a.get(ADAPTER_KEY)) {
+        return Some(v);
+    }
+    let cmd = disk
+        .get(agent)
+        .or_else(|| embed.get(agent))
+        .and_then(|a| a.get("cmd"))
+        .and_then(|c| c.as_str())?;
+    if cmd_launches_claude(cmd) {
+        embed.get(CLAUDE_ADAPTER).and_then(|a| a.get(ADAPTER_KEY))
+    } else {
+        None
+    }
+}
+
 /// 기계가 이 관문을 통과시킬 수 있는가.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Passability {
@@ -2898,6 +3026,70 @@ mod tests {
         let r = resolve_with(Some(env), true);
         assert_eq!(r.gates, builtin());
         assert_eq!(r.source, Source::Builtin);
+    }
+
+    /// ★(1.1.6 R16) claude 를 띄우는 cmd 판정 — 실제 디스크 선언형 · env 접두 3형 · 래퍼 경로 · 윈도 · 무상속 대조군.
+    #[test]
+    fn cmd_launches_claude_reads_first_executable_after_env_prefixes() {
+        for yes in [
+            // 이 기계 디스크 agents.json 실제 선언(claude · claude-fable · claude-sonnet)
+            "claude --model claude-opus-5-5 --dangerously-skip-permissions",
+            "claude --model claude-fable-5-1 --dangerously-skip-permissions",
+            "claude --model claude-sonnet-5 --dangerously-skip-permissions",
+            // env 접두 3형(우리 스폰형 포함)
+            "env -u NODE_OPTIONS CLAUDE_CONFIG_DIR=/Users/a/.cys/claude claude --model m",
+            "CLAUDE_CONFIG_DIR=\"/a b/c\" FOO=1 claude",
+            "/usr/bin/env --unset NODE_OPTIONS -i X=1 claude",
+            // 래퍼 경로 · 틸드 · 윈도
+            "/x/y/claude --dangerously-skip-permissions",
+            "~/.local/bin/claude",
+            "C:\\Users\\a\\AppData\\claude.exe --model m",
+            "'/opt/my tools/claude' -p",
+        ] {
+            assert!(cmd_launches_claude(yes), "{yes}");
+        }
+        for no in [
+            "~/.npm-global/bin/codex --dangerously-bypass-approvals-and-sandbox",
+            "~/.local/bin/agy --dangerously-skip-permissions",
+            "grok",
+            "claude-wrapper --x",
+            "echo claude",
+            "env -u claude codex",
+            "",
+            "CLAUDE_CONFIG_DIR=/x",
+        ] {
+            assert!(!cmd_launches_claude(no), "{no:?}");
+        }
+    }
+
+    /// ★(1.1.6 R16) 봉투 선택 — 디스크 우선(null 포함) · 같은 이름 임베드 · claude 상속 · 비-claude 무상속.
+    #[test]
+    fn envelope_for_inherits_claude_envelope_only_for_claude_launching_adapters() {
+        let embed = json!({
+            "claude": {"cmd": "claude", ADAPTER_KEY: {"source": "builtin", "gates": [], "tag": "embed-claude"}},
+            "codex": {"cmd": "codex"}
+        });
+        let disk = json!({
+            "claude-fable": {"cmd": "claude --model claude-fable-5-1 --dangerously-skip-permissions"},
+            "claude-sonnet": {"cmd": "env -u NODE_OPTIONS X=1 claude --model claude-sonnet-5"},
+            "codex": {"cmd": "~/.npm-global/bin/codex"},
+            "my-tool": {"cmd": "mytool --x"},
+            "claude-off": {"cmd": "claude", ADAPTER_KEY: null},
+            "claude-own": {"cmd": "claude", ADAPTER_KEY: {"tag": "disk-own"}}
+        });
+        let tag = |a: &str| envelope_for(&disk, &embed, a).map(|v| v["tag"].clone());
+        assert_eq!(tag("claude-fable"), Some(json!("embed-claude")));
+        assert_eq!(tag("claude-sonnet"), Some(json!("embed-claude")));
+        assert_eq!(envelope_for(&disk, &embed, "codex"), None);
+        assert_eq!(envelope_for(&disk, &embed, "my-tool"), None);
+        assert_eq!(envelope_for(&disk, &embed, "no-such"), None);
+        // 디스크 명시 null = 의도적으로 비움 → 상속하지 않는다(사용자 주권).
+        assert_eq!(
+            envelope_for(&disk, &embed, "claude-off"),
+            Some(&Value::Null)
+        );
+        assert_eq!(tag("claude-own"), Some(json!("disk-own")));
+        assert_eq!(tag("claude"), Some(json!("embed-claude")));
     }
 
     /// ★(1.1.6 dbg-queue-approval) 폴더신뢰 이동 계획 — 기본 포커스 가정이 아니라 화면 라벨로 고른다.

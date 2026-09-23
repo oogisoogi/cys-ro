@@ -9717,6 +9717,26 @@ fn trust_focus_confirm_with(
     }
 }
 
+/// ★(1.1.6 R16 · master#7b1ea7d9) 사용자 신설 claude 계열 어댑터(`claude-fable`·`claude-sonnet` — 임베드에 같은 이름이
+/// 없어 `fill_missing_fields` 가 봉투를 못 채운다)는 `cmd` 가 claude 를 띄우면 claude 임베드 관문 봉투를 물려받는다.
+/// 봉투 선택(디스크 우선 · 같은 이름 임베드 · claude 상속)의 단일 정본은 lib `first_run_gates::envelope_for` 이고
+/// 데몬(`gate_envelope`)도 같은 함수를 쓴다. 스펙에 키가 이미 있으면(명시 `null` 포함) 손대지 않는다.
+fn inherit_claude_gate_envelope(
+    spec: &mut Value,
+    disk: &Value,
+    embedded: Option<&Value>,
+    agent: &str,
+) {
+    let key = cys::first_run_gates::ADAPTER_KEY;
+    if !spec.is_object() || spec.get(key).is_some() {
+        return;
+    }
+    let Some(emb) = embedded else { return };
+    if let Some(v) = cys::first_run_gates::envelope_for(disk, emb, agent) {
+        spec[key] = v.clone();
+    }
+}
+
 /// agents.json에서 어댑터 스펙 로드
 fn load_agent_spec(agent: &str) -> Result<Value, String> {
     let agents_path = cys::pack::pack_dir().join("agents.json");
@@ -9740,6 +9760,7 @@ fn load_agent_spec(agent: &str) -> Result<Value, String> {
     if let Some(spec) = agents.get(agent) {
         let mut spec = spec.clone();
         fill_missing_fields(&mut spec, embedded_agents.as_ref().and_then(|v| v.get(agent)));
+        inherit_claude_gate_envelope(&mut spec, &agents, embedded_agents.as_ref(), agent);
         return Ok(spec);
     }
     // ★W-B 보완(성찰 2 적대검증 산물): user 승격의 대가 = 동결 — 사용자가 agents.json 을 수정해
@@ -21101,6 +21122,46 @@ mod tests {
     /// ★(W4 · 재감사 CS-1③/비평2 C-1) **필드 단위 계층** 핀 — whole-object 폴백의 사각을 메운다:
     /// 유저가 커스터마이즈해 둔 어댑터는 vendor 가 새로 출하한 `ready_marker`·`approval_patterns`
     /// 를 못 받아 동결됐다(readiness 시간폴백 퇴화 · 폴더신뢰 자동확인 불발).
+    /// ★(1.1.6 R16) launch-agent 경로 — 사용자 신설 claude 계열 어댑터(실제 디스크 선언형)가 `load_agent_spec` 에서
+    /// claude 임베드 관문 봉투를 물려받는다 · 비-claude 는 무상속 · 명시 null 은 무접촉.
+    #[test]
+    fn load_agent_spec_inherits_claude_gate_envelope_for_claude_family() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let td = std::env::temp_dir().join(format!("cys-r16-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&td);
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &td);
+        let key = cys::first_run_gates::ADAPTER_KEY;
+        let embed = embedded_agents_json().expect("임베드");
+        std::fs::write(
+            td.join("agents.json"),
+            serde_json::to_string(&json!({
+                "claude-fable": {"cmd": "claude --model claude-fable-5-1 --dangerously-skip-permissions"},
+                "claude-sonnet": {"cmd": "env -u NODE_OPTIONS CLAUDE_CONFIG_DIR=/x claude --model claude-sonnet-5"},
+                "my-codex": {"cmd": "~/.npm-global/bin/codex"},
+                "claude-off": {"cmd": "claude", key: null}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let fable = load_agent_spec("claude-fable");
+        let sonnet = load_agent_spec("claude-sonnet");
+        let other = load_agent_spec("my-codex");
+        let off = load_agent_spec("claude-off");
+        match saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+        assert_eq!(fable.unwrap()[key], embed["claude"][key]);
+        assert_eq!(sonnet.unwrap()[key], embed["claude"][key]);
+        assert!(
+            other.unwrap().get(key).is_none(),
+            "비-claude 어댑터가 봉투를 물려받았다"
+        );
+        assert_eq!(off.unwrap()[key], Value::Null, "명시 null 을 덮었다");
+    }
+
     /// ①키 결손 → 임베드 값 보강 ②디스크 선언 존재 → 무접촉(위 테스트의 '디스크가 이긴다' 불변식
     /// 을 필드 층에서도 유지) ③명시 `null` = 의도적 없음 → 보강 안 함 ④계층 대상 아닌 키 무접촉.
     #[test]

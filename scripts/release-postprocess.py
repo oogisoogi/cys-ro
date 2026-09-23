@@ -10,9 +10,11 @@
 
 하는 일 (기본은 dry-run — `--apply` 를 줘야 실제로 업로드한다)
   1. GitHub 릴리스에서 전 자산 다운로드 → `~/cys-release-backup/<tag>-assets/`
-  2. `make-win-zip.py` 로 zip 변형 생성(기존 발행본 바이트 재현 확인됨)
+     (백업 폴더 캐시는 **로컬 sha256 = 자산 digest** 일 때만 쓴다 — 크기 대조 폐기 · X-6 곁)
+  2. `make-win-zip.py` 로 zip 변형 생성(기존 발행본 바이트 재현 확인됨) — 릴리스에 zip 이 이미
+     있어도 **zip 속 exe sha = 현 exe sha** 일 때만 생략한다(X-6 · 옛 exe zip 재업로드 사고)
   3. `SHA256SUMS.txt` 생성 — **자기 자신을 뺀 전 자산**(과거 관례: 13자산)
-  4. 자기 검증: zip 왕복 · SUMS 전 줄 재계산 대조 · 누락 0
+  4. 자기 검증: zip 왕복 · SUMS 전 줄 재계산 대조 · **zip 내부 exe 대조 1줄**(zip 속 exe = SUMS exe 행) · 누락 0
   5. ★Gatekeeper 게이트(F2 · 2026-08-20 신설 · 2026-09-20 조준 전환): 백업 **배포 zip 2종 속
      .app** = 발행될 실물 바이트에 `release-gate-gatekeeper.sh --lane self-signed` 를 돌린다.
      (구판은 DMG 2종을 조준했다 — 우리 포크가 만든 적 없는 자산이라 영원히 rc=2 였다.
@@ -58,6 +60,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import zipfile
 
 # ★배포 원본 레포 (2026-09-09 정정 · TICKET=cys-release-first-publish)
 #   종전 값은 벤더 `idoforgod/cys-terminal` 이었다. 개발자 업데이트 중단으로 우리 포크가
@@ -99,6 +102,70 @@ def sha256_file(p):
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def asset_digest(asset):
+    """GitHub 자산 JSON 의 `digest`(sha256:<hex>) → 소문자 hex. 없거나 형식이 다르면 None."""
+    dg = asset.get("digest")
+    if isinstance(dg, str) and dg.startswith("sha256:"):
+        hexpart = dg[len("sha256:"):].lower()
+        if re.fullmatch(r"[0-9a-f]{64}", hexpart):
+            return hexpart
+    return None
+
+
+def cache_hit(dest, asset):
+    """백업 폴더의 파일을 재다운로드 없이 써도 되는가 — **로컬 sha256 = 자산 digest 일 때만** True.
+
+    ★X-6 곁(2026-09-24 · TICKET=v116-rel · master 판정 A): 종전 판정은 「파일 있음 + 크기 같음」이었다.
+      같은 백업 폴더에서 새 절단을 후처리하면 크기가 같은 옛 바이트가 그대로 쓰였다 — 실측:
+      `.exe.sig` 는 9·10·11차 전부 412 바이트인데 내용은 전부 다르다(= 항상 옛 서명이 SUMS 에 박힘).
+      exe 도 크기가 우연히 같으면 같은 일이 난다. 그러면 아래 「zip 속 exe = SUMS exe 행」 대조가
+      **둘 다 옛 것인 채로 일치**한다 — 그 대조가 참이 되는 전제(로컬 exe = 발행 자산)를 여기서 닫는다.
+    digest 없음·형식 불명·불일치 = 캐시 불신(재다운로드 · fail-closed).
+    """
+    want = asset_digest(asset)
+    if want is None or not os.path.exists(dest):
+        return False
+    return sha256_file(dest) == want
+
+
+def zip_member_sha(zippath, member):
+    """zip 속 `member` 엔트리의 sha256. 엔트리 구성이 정확히 [member] 가 아니거나 읽지 못하면 None.
+
+    None 은 「판정 불가」다 — 호출자는 그것을 일치로 접지 않는다(재생성 또는 차단).
+    """
+    try:
+        with zipfile.ZipFile(zippath) as z:
+            if z.namelist() != [member]:
+                return None
+            h = hashlib.sha256()
+            with z.open(member) as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+    except (zipfile.BadZipFile, OSError, KeyError):
+        return None
+
+
+def win_zip_crosscheck(zippath, exe_name, sums_lines):
+    """SUMS 생성 뒤 **zip 내부 exe 대조 1줄** — zip 속 exe sha = SUMS 의 exe 행일 때만 True.
+
+    ★X-6(2026-09-23 19:46 · 987 적발): SUMS 자기검증은 각 파일의 sha 를 **그 파일 자신과** 대조할 뿐이라
+      「zip 이 옛 exe 를 담고 있다」는 내용 불일치를 못 봤다(9차 백업 실물: exe ce995703… · zip 속
+      exe ae8bec15… · SUMS 는 자기 일관). 그 사이를 이 한 줄이 잇는다.
+    """
+    rows = {}
+    for line in sums_lines:
+        sha, name = line.rstrip("\n").split("  ", 1)
+        rows[name] = sha
+    inner = zip_member_sha(zippath, exe_name)
+    row = rows.get(exe_name)
+    ok = inner is not None and row is not None and inner == row
+    print("  %s zip 내부 대조: zip 속 %s sha=%s · SUMS %s 행=%s → %s"
+          % ("✓" if ok else "✗", exe_name, inner or "판독 불가", exe_name, row or "없음",
+             "일치" if ok else "불일치"))
+    return ok
 
 
 def download(url, dest, tok):
@@ -389,14 +456,19 @@ def main(argv):
     for a in rel.get("assets", []):
         dest = os.path.join(outdir, a["name"])
         # latest.json 은 stamp 잡이 빌드 뒤에 다시 올리는 파일이라 캐시를 믿지 않는다(크기가 우연히 같은 옛 파일 방지).
-        if a["name"] != "latest.json" and os.path.exists(dest) and os.path.getsize(dest) == a["size"]:
-            print("  (캐시) %-34s %12d" % (a["name"], a["size"]))
+        # ★캐시 적중 = 로컬 sha256 = 자산 digest 일 때만(cache_hit · 2026-09-24 X-6 곁). 크기 대조는 폐기.
+        if a["name"] != "latest.json" and cache_hit(dest, a):
+            print("  (캐시 · digest 일치) %-34s %12d" % (a["name"], a["size"]))
         else:
             print("  받는 중 %-34s %12d …" % (a["name"], a["size"]), flush=True)
             download(a["url"], dest, tok)
             got = os.path.getsize(dest)
             if got != a["size"]:
                 print("::error::크기 불일치 %s: %d != %d" % (a["name"], got, a["size"]), file=sys.stderr)
+                return 1
+            want = asset_digest(a)
+            if want is not None and sha256_file(dest) != want:
+                print("::error::digest 불일치 %s — 받은 바이트가 릴리스 자산이 아니다" % a["name"], file=sys.stderr)
                 return 1
         by_name[a["name"]] = dest
 
@@ -406,16 +478,25 @@ def main(argv):
         print("::error::%s" % problem, file=sys.stderr)
         return 1
 
-    # ── 2. zip 변형 (없으면 생성) ──
+    # ── 2. zip 변형 (없거나 옛 exe 를 담았으면 생성) ──
     exe = "cysr_%s_x64-setup.exe" % version
     zipname = "cysr_%s_x64-setup.zip" % version
     if exe not in by_name:
         print("::error::%s 가 릴리스에 없다 — CI 완주를 먼저 확인하라" % exe, file=sys.stderr)
         return 1
     zippath = os.path.join(outdir, zipname)
-    if zipname in by_name:
-        print("  zip 이미 릴리스에 있음 — 재생성 생략")
+    # ★X-6(2026-09-24 · TICKET=v116-rel): 종전 「zip 이 릴리스에 있으면 재생성 생략」은 **옛 exe 를 담은
+    #   zip** 을 그대로 재업로드했다(9차 드래프트 실물: zip 속 exe = 5차 ae8bec15…). 이제 생략은
+    #   **zip 속 exe sha = 지금 exe sha** 일 때만이다. 판독 불가(None)는 불일치로 센다 → 재생성.
+    #   재생성된 zip 은 6단계(--apply)에서 기존 자산을 DELETE 한 뒤 올린다 = 옛 자산 교체.
+    exe_sha = sha256_file(by_name[exe])
+    inner = zip_member_sha(by_name[zipname], exe) if zipname in by_name else None
+    if zipname in by_name and inner == exe_sha:
+        print("  zip 이미 릴리스에 있음 · zip 속 exe sha = 현 exe sha(%s…) — 재생성 생략" % exe_sha[:16])
     else:
+        if zipname in by_name:
+            print("  zip 이 릴리스에 있으나 zip 속 exe(%s) ≠ 현 exe(%s…) — 재생성(--apply 시 옛 자산 교체)"
+                  % ((inner[:16] + "…") if inner else "판독 불가", exe_sha[:16]))
         r = subprocess.run([sys.executable, os.path.join(HERE, "make-win-zip.py"),
                             by_name[exe], zippath])
         if r.returncode != 0:
@@ -439,6 +520,11 @@ def main(argv):
             print("::error::SUMS 불일치: %s" % name, file=sys.stderr)
             bad += 1
     if bad:
+        return 1
+    # ★zip 내부 exe 대조 1줄(X-6) — 자기검증은 파일마다 「자기 자신」만 본다. zip 속 내용 ↔ exe 행을 잇는다.
+    if not win_zip_crosscheck(by_name[zipname], exe, lines):
+        print("::error::zip 속 exe 가 SUMS 의 exe 행과 다르다 — 옛 판을 담은 zip(X-6) · 발행 금지",
+              file=sys.stderr)
         return 1
     # 홈페이지 다운로드 버튼이 전부 들어 있는가(누락 0 — 오너 지시 ⓑ)
     #   ★2026-09-09: 맥 다운로드 자산은 **맥 레인이 포함된 묶음에서만** 요구한다. 맥이 통째로 빠진

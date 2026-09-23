@@ -14,8 +14,10 @@
     <span class="spacer"></span>
     <button id="btn-equalize" title="모든 pane 을 좌우로 나란히 같은 폭으로 정렬 — 개수 무관 1행 가로 균등 · 수동 크기 조절엔 영향 없음">정렬</button>
     <button id="btn-new" title="새 surface (⌘T)">+ New</button>
-    <button id="btn-split-h" title="오른쪽 분할 (⌘D)">Split →</button>
-    <button id="btn-split-v" title="아래 분할 (⌘⇧D)">Split ↓</button>
+    <!-- v116-ui-effort(박사님 판정 2026-09-23 = C): 상단 분할 두 단추(→·↓)는 여기를 떠나
+         사이드바 전문가 칸의 「창 만들기 · 가로 / 세로」로 옮겼다(아래 #ws-win). 창은 마스터가
+         만들기 때문에 초보 화면에는 필요 없다. ⌘D·⌘⇧D 단축키는 그대로 산다. 지우지 않고 옮긴
+         이유 = 마스터 좌석이 죽은 기기에서 사람이 손으로 창을 여는 비상 탈출구다. -->
     <button id="btn-close" title="pane 닫기 — 자식 트리 강제 종료 (⌘W)">Close</button>
     <button id="btn-files" title="파일 트리 (선택한 surface의 폴더)">Files</button>
     <button id="btn-cc" title="Control Center — 실시간 플릿·사용량·시스템 모니터링 · 승인 Feed">Control Center <span id="cc-pending-badge" class="badge" hidden>0</span></button>
@@ -39,7 +41,7 @@
              않고 기본값에서만 치운다」). 그래서 제거가 아니라 hidden 이다.
            · #ws-expert 는 CSS 에서 display:flex 라 **[hidden] 무효화 함정**이 있다 — style.css 에
              #ws-expert[hidden]{display:none} 를 반드시 함께 둔다(wsbar.test.ts 가 그 짝을 잰다). -->
-      <div id="ws-dept-row"><div id="ws-dept-hint">새 부서가 필요하면 마스터에게 말로 부탁하세요</div><div id="ws-expert" hidden><button id="btn-master-start" title="CEO 시작 — 본부(base)에 마스터 오브 마스터 노드를 기동합니다. 부서가 있으면 승인 후 CEO 규약으로 승격됩니다. 마스터는 조직(본부/부서) 단위 1명·부서장은 부서 탭의 ▶부서장으로.  대체 경로: pane 마스터 선언·cys launch-agent 로도 기동할 수 있습니다.">▶CEO</button><button id="btn-dept-master" title="부서장 시작 — 지금 보고 있는 부서 탭의 데몬에 마스터(부서장) 노드를 기동합니다(부서마다 독립 1명).  대체 경로: pane 마스터 선언·cys launch-agent 로도 기동할 수 있습니다.">▶부서장</button><button id="btn-ws-dept" title="새 부서 — 클릭하면 부서 선택(미사용 부서 + 레거시 dept-N)">＋부서</button></div></div>
+      <div id="ws-dept-row"><div id="ws-dept-hint">새 부서가 필요하면 마스터에게 말로 부탁하세요</div><div id="ws-expert" hidden><button id="btn-master-start" title="CEO 시작 — 본부(base)에 마스터 오브 마스터 노드를 기동합니다. 부서가 있으면 승인 후 CEO 규약으로 승격됩니다. 마스터는 조직(본부/부서) 단위 1명·부서장은 부서 탭의 ▶부서장으로.  대체 경로: pane 마스터 선언·cys launch-agent 로도 기동할 수 있습니다.">▶CEO</button><button id="btn-dept-master" title="부서장 시작 — 지금 보고 있는 부서 탭의 데몬에 마스터(부서장) 노드를 기동합니다(부서마다 독립 1명).  대체 경로: pane 마스터 선언·cys launch-agent 로도 기동할 수 있습니다.">▶부서장</button><button id="btn-ws-dept" title="새 부서 — 클릭하면 부서 선택(미사용 부서 + 레거시 dept-N)">＋부서</button><span id="ws-win"><span id="ws-win-label">창 만들기</span><button id="btn-split-h" title="창 만들기 · 가로 — 지금 창 오른쪽에 새 창을 엽니다 · 단축키 ⌘D">가로</button><button id="btn-split-v" title="창 만들기 · 세로 — 지금 창 아래에 새 창을 엽니다 · 단축키 ⌘⇧D">세로</button></span></div></div>
       <div id="ws-tabs"></div>
       <!-- 사용량 패널(오너 요청 2026-08-07): 주간 토큰 사용량 + 페인별 CTX를 한 곳에 모아 표시.
            워크스페이스 목록 아래 빈 공간에 상주한다. 데이터가 없으면 통째로 숨는다(hidden). -->

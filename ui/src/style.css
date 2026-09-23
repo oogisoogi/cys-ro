@@ -139,6 +139,15 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 }
 #ws-expert { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 #ws-expert[hidden] { display: none; }
+/* v116-ui-effort — 「창 만들기 · 가로 / 세로」(상단 Split 두 단추가 옮겨 온 자리 · index.html 주석).
+   ① 한 줄을 통째로 쓴다(flex-basis 100%) — 알약 3종 사이에 끼면 무엇이 무엇의 부속인지 흐려진다.
+   ② 크기 축은 알약과 같다: --wsbar-font 에 매인 14px · 세로 패딩 0(알약 규칙 ①② 의 근거 그대로).
+   ③ 특이도 — 단추 두 개는 칸 id 를 앞에 붙여 id 2개로 둔다(알약 규칙 ③ 과 같은 계약). */
+#ws-win { display: flex; align-items: center; gap: 4px; flex-basis: 100%; }
+#ws-win-label { font-size: calc(14px * var(--wsbar-font, 1)); color: var(--muted, #8b949e); }
+#ws-expert #btn-split-h, #ws-expert #btn-split-v {
+  font-size: calc(14px * var(--wsbar-font, 1)); padding: 0 6px;
+}
 #ws-tabs {
   flex: 1; display: flex; flex-direction: column; gap: 2px;
   overflow-y: auto; padding: 2px 8px 10px;

@@ -61,12 +61,25 @@ export function parseBriefSections(text: string): BriefSections {
   return out;
 }
 
-/** 기록 시각 — 파일 안에 적힌 가장 늦은 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null). */
-export function recordedAt(text: string): string | null {
-  const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`);
+/**
+ * 기록 시각 — 파일 안에 적힌 가장 늦은 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null).
+ * ★(v116-ui-close · opus 디버깅 결함 1) `notAfter`(지금 시각 「YYYY-MM-DD HH:MM」)를 주면 그보다 늦은 시각은
+ *   버린다 — 본문에 적힌 **예정** 시각(「다음 점검 2026-10-01 09:00 예정」)이 기록 시각으로 뽑혀 카드가 「이 기록은
+ *   10-01 기준」이라고 거짓말하고, 두 파일 중 옛 파일을 고르던 결함. 주지 않으면 종전 그대로.
+ */
+export function recordedAt(text: string, notAfter?: string): string | null {
+  const okFull = (t: string) => notAfter === undefined || t <= notAfter;
+  const okDay = (d: string) => notAfter === undefined || d <= notAfter.slice(0, 10);
+  const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`).filter(okFull);
   if (full.length) return full.sort().at(-1) ?? null;
-  const d = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})/g)].map((m) => m[1]);
+  const d = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})/g)].map((m) => m[1]).filter(okDay);
   return d.length ? (d.sort().at(-1) ?? null) : null;
+}
+
+/** 지금 시각을 파일 기록과 같은 모양(로컬 「YYYY-MM-DD HH:MM」)으로 — recordedAt 의 notAfter 재료. */
+export function localStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** 작업기억 파일 후보 경로 — 마스터 작업 폴더에서 위로 올라가되 홈 폴더를 넘지 않는다. */
@@ -122,11 +135,11 @@ export function hasBriefSections(text: string): boolean {
  * ② 그중 **기록 시각(recordedAt)이 가장 늦은 것** — 드레인 저장이 방금 cwd 쪽에 썼으면 그쪽이 더 새 기록이다
  * ③ 같으면 **앞선 후보**(= 정본). 3절 제목이 있는 파일이 하나도 없으면 null(카드는 아는 것만 말한다).
  */
-export function pickBriefText(found: { path: string; text: string }[]): string | null {
+export function pickBriefText(found: { path: string; text: string }[], notAfter?: string): string | null {
   let best: { text: string; at: string } | null = null;
   for (const f of found) {
     if (!hasBriefSections(f.text)) continue;
-    const at = recordedAt(f.text) ?? "";
+    const at = recordedAt(f.text, notAfter) ?? "";
     if (best === null || at > best.at) best = { text: f.text, at };
   }
   return best ? best.text : null;

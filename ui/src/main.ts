@@ -24,7 +24,7 @@ import {
 } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
-import { exitedSweepTargets, armSweep, sweepArmedFor, settleSweep, type SweepArm } from "./exitedsweep";
+import { exitedSweepTargets, armSweep, sweepScopeFor, settleSweep, type SweepArm } from "./exitedsweep";
 import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
 import {
   deptPlaceholderLabel,
@@ -157,7 +157,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
@@ -2221,8 +2221,8 @@ let groups: GroupMeta[] = []; // 06: 그룹 메타 배열(진실원=localStorage
 let groupCounter = 1; // 06: 그룹 id 발급(ws의 wsCounter와 분리)
 let focusedSid: number | null = null;
 const panes = new Map<string, PaneRuntime>(); // 키 = paneKey(sid, socket)
-// ★(v116-ui-close · 닫기 보호) 셸이 끝났다고 **데몬이 확정한** 창(키 = paneKey). 재료 = 데몬 목록의 exited=true
-// **하나뿐**이다. 데몬의 exited 는 참으로만 바뀌고 번호는 재사용되지 않으므로 넣기만 한다(런타임 파괴 때 뺀다).
+// ★(v116-ui-close · 닫기 보호) 셸이 끝났다고 **데몬이 확정한** 창(키 = paneKey). 재료 = 데몬 목록의 exited
+// **하나뿐**이고, 목록이 올 때마다 그 말을 거울처럼 따른다(exited=true 면 넣고 아니면 뺀다 · 런타임 파괴 때 뺀다).
 // ⚠pane 스트림 종료 이벤트(exited_event)는 재료가 아니다 — src-tauri 는 연결 실패·EOF(데몬 재시작 포함)에도
 //   그 이벤트를 쏜다(main.rs start_surface_stream). 그걸 믿으면 데몬 재시작 뒤 **산 창을 묻지 않고** 닫는다.
 // 여기 없는 창 = 「산 창 또는 모름」 → 닫기 전에 묻는다(closeguard.ts). 종료 직후 ~3초(다음 목록)는 묻는 쪽으로 틀린다.
@@ -2559,8 +2559,11 @@ async function refreshPaneTitles() {
       // ★B17 — 복원 직후 1회: 데몬이 **종료됨으로 알고 있는** 옛 자리를 닫는다(유령 수렴과 다른 축).
       //   닫은 ws 는 아래 배치 블록의 대상에 넣는다 — **닫기가 먼저, 배치가 나중**이어야 한다
       //   (B16 계약 · panetitle HANDOFF §3: 닫힌 sid 가 roleBySid 에 섞이면 그 좌석이 열을 하나 차지한다).
-      const sweepHere = sweepArmedFor(sweepArm, sk ?? "", Date.now());
-      for (const sid of exitedSweepTargets(sweepHere, sockSids, r.surfaces)) {
+      // 무장 시점 스냅숏 안의 창만 옛 자리다(복원 뒤 새로 끝난 창은 대상 밖 — exitedsweep.ts SweepArm 설명).
+      const sweepScope = sweepScopeFor(sweepArm, sk ?? "", Date.now());
+      const sweepHere = sweepScope !== null;
+      const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];
+      for (const sid of exitedSweepTargets(sweepHere, sweepSids, r.surfaces)) {
         for (const w of workspaces) {
           if ((w.socket ?? undefined) === (sk ?? undefined) && w.tree != null && collectSids(w.tree).includes(sid))
             relayoutWs.add(w);
@@ -2572,7 +2575,10 @@ async function refreshPaneTitles() {
       for (const s of r.surfaces) {
         const rt = panes.get(paneKey(s.surface_id, sk));
         if (!rt) continue;
-        if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk)); // 닫기 보호 판정 재료 — 화면에 있는 창만(누적 0)
+        // 닫기 보호 판정 재료 — 화면에 있는 창만(누적 0). (Fable MINOR-4) 데몬의 지금 말을 거울처럼 따른다 —
+        //   「참으로만 바뀐다·번호 비재사용」 가정에 기대지 않는다(기록 저장소가 지워진 채 데몬만 재시작되면 번호가 되돌 수 있다).
+        if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk));
+        else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
         setRoleDot(rt.roleEl, s.exited ? null : s.role, !s.exited && surfaceWorking(s.surface_id, sk)); // 역할 점 + 작동중일 때만 깜빡, 동일 주기 갱신
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
@@ -4849,6 +4855,9 @@ async function actionSplit(dir: "row" | "col") {
 // ★(v116-ui-close · 닫기 보호) 확인 창이 떠 있는 동안의 재진입 차단. 전역 단축키는 모달이 떠 있으면 이미
 //   빠져나가지만(키 처리기 첫머리), 팔레트·단추 등 다른 입구가 같은 함수를 부르므로 함수 자신도 막는다.
 let closeConfirmOpen = false;
+// ★(agy 1R ②) 닫기 요청이 데몬에 가 있는 동안의 창(키 = paneKey). close_surface 응답을 기다리는 사이 같은 창에
+//   ⌘W 를 또 누르면 확인 창이 다시 뜨고 같은 창에 닫기가 두 번 나갔다 — 닫는 중인 창은 다시 묻지도 닫지도 않는다.
+const closingPaneKeys = new Set<string>();
 
 // 상단 「Close」·⌘W·팔레트 「패널 닫기」 세 입구가 모두 이 함수다(창 머리 × 는 따로 · 두 번 눌러 닫기 · 무변경).
 async function actionClose() {
@@ -4858,8 +4867,12 @@ async function actionClose() {
   // 포커스가 이 탭의 창이 아니면(낡은 포커스) 아무것도 닫지 않는다 — 보이지 않는 창을 닫는 경로 0.
   if (!collectSids(ws.tree).includes(sid)) return;
   const key = paneKey(sid, ws.socket);
+  if (closingPaneKeys.has(key)) return;
   if (needsCloseConfirm(CLOSE_CONFIRM_POLICY, exitedPaneKeys.has(key) ? true : null)) {
     if (closeConfirmOpen) return;
+    // ★(Fable 적대 MAJOR-1) Control Center(z 1500)가 열려 있으면 확인 창(z 1000)이 그 **뒤에** 숨는다 — 보이지
+    //   않는 확인 창의 「닫기」가 Tab·Enter 로 눌려 산 창이 닫힐 수 있었다. 팔레트 run 과 같은 「먼저 닫기」 계약.
+    if (ccOpen) setCcOpen(false);
     closeConfirmOpen = true;
     let ok = false;
     try {
@@ -4868,13 +4881,27 @@ async function actionClose() {
     } finally {
       closeConfirmOpen = false;
     }
-    if (!ok) return;
+    if (!ok) {
+      // (Fable MINOR-2) 취소 뒤 키보드 포커스를 그 창으로 돌려준다(확인 창 단추가 사라지며 포커스가 body 로 빠진다).
+      if (ws === current() && ws.tree && collectSids(ws.tree).includes(sid)) setFocus(sid);
+      return;
+    }
     // 묻는 사이 그 창이 이미 사라졌으면(데몬 종료 이벤트 등) 할 일이 없다 — 다른 창으로 옮겨 닫지 않는다.
     if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;
   }
-  await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
+  closingPaneKeys.add(key);
+  try {
+    await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
+  } finally {
+    closingPaneKeys.delete(key);
+  }
   destroyPaneRuntime(sid, ws.socket);
   if (ws.tree) ws.tree = replaceNode(ws.tree, sid, () => null);
+  // (Fable MINOR-3) 그사이 다른 탭으로 옮겨 갔으면 포커스는 지금 보이는 탭의 것을 건드리지 않는다.
+  if (ws !== current()) {
+    render();
+    return;
+  }
   focusedSid = collectSids(ws.tree)[0] ?? null;
   render();
   if (focusedSid != null) setFocus(focusedSid);
@@ -7525,21 +7552,34 @@ async function showRestoreBrief(): Promise<void> {
     const home = String(await invoke("home_dir_path"));
     // ★(v116-ui-close · R1a) 정본(~/.cys/pack/round) + 종전 cwd `_round` 사슬을 모두 읽고, 기록 시각이 가장 늦은
     //   것을 쓴다(같으면 정본). 종전엔 cwd 사슬만 보고 첫 적중에서 멈춰 정본 기록을 한 번도 못 읽었다(D2 R1a).
-    const found: { path: string; text: string }[] = [];
-    for (const p of briefStatePaths(master.live_cwd, home)) {
+    //   (opus 디버깅 결함 2) cwd 사슬은 종전처럼 **가장 가까운 한 파일**만 — 상위 폴더(다른 마스터일 수 있다)의
+    //   더 늦은 기록이 끼어들지 않게. 비교는 「정본 vs 가장 가까운 cwd 기록」 둘뿐이다(설계 D5).
+    const readHead = async (p: string): Promise<string | null> => {
       try {
-        found.push({ path: p, text: String(await rpcT(invoke("read_text_head", { path: p, maxBytes: 65536 }), T_LIST)) });
+        return String(await rpcT(invoke("read_text_head", { path: p, maxBytes: 65536 }), T_LIST));
       } catch {
-        /* 없는 후보 — 다음 */
+        return null; // 없는 후보
+      }
+    };
+    const [canonPath, ...chain] = briefStatePaths(master.live_cwd, home);
+    const found: { path: string; text: string }[] = [];
+    const canonText = await readHead(canonPath);
+    if (canonText !== null) found.push({ path: canonPath, text: canonText });
+    for (const p of chain) {
+      const t = await readHead(p);
+      if (t !== null) {
+        found.push({ path: p, text: t });
+        break;
       }
     }
-    const text = pickBriefText(found);
+    const now = localStamp(new Date()); // 본문의 「예정」 시각을 기록 시각으로 오인하지 않게(recordedAt notAfter)
+    const text = pickBriefText(found, now);
     // ★(v112-restore ①) 부트 주입 제출 기록 — 미제출 실측 자리를 정직 표기(기본 레인만 · 못 읽으면 생략).
     const unsubmittedRoles = await readUnsubmittedRoles(seats, home);
     const card = buildBriefCard({
       unsubmittedRoles,
       sections: text === null ? null : parseBriefSections(text),
-      recordedAt: text === null ? null : recordedAt(text),
+      recordedAt: text === null ? null : recordedAt(text, now),
       restoredRoles: seats.filter((s) => !s.exited).map((s) => s.role as string),
       waitingRoles: seats.filter((s) => s.exited).map((s) => s.role as string),
       seatCtx: seats
@@ -7925,7 +7965,10 @@ async function start() {
       })();
       // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
       //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
-      exitedSweepArm = armSweep(workspaces.map((w) => w.socket ?? ""), Date.now());
+      exitedSweepArm = armSweep(
+        workspaces.map((w) => [w.socket ?? "", collectSids(w.tree)] as const),
+        Date.now(),
+      );
       // 3초를 기다리지 않는다 — 사용자가 보는 것은 "복원됐다"는 말 직후의 화면이다.
       // 이 틱 안에서 ①옛 자리 닫기 → ②새 roleBySid 생성 → ③formationIfRowOnly 배치가 그 순서로 돈다.
       void refreshPaneTitles();

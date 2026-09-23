@@ -10542,6 +10542,39 @@ fn compose_boot_directive(role: &str, restore: bool, resume: bool, full: &str) -
     }
 }
 
+/// 좌석 기동 명령 **한 줄**을 조립한다 — 어댑터 cmd + (재개면) 재개 인자 + (Claude 좌석이면) effort.
+/// boot_agent_on_surface 에서 떼어 낸 순수 단계다(파일시스템은 resume 사전검증만 읽는다): 새 좌석과
+/// 재개 경로가 **같은 한 줄 규칙**을 받는지를 데몬 없이 시험하려고 분리했다(v116-ui-effort ②).
+fn compose_agent_cmd(
+    spec: &Value,
+    agent: &str,
+    resume: bool,
+    session_id: Option<&str>,
+    config_dir: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<String, String> {
+    let mut cmd = spec["cmd"].as_str().ok_or("agent cmd missing")?.to_string();
+    if resume {
+        if let Some(arg) = spec["resume_arg"].as_str() {
+            // T2-6 resume 어댑터: 대화 기억 복원 플래그 (예: claude --continue).
+            let fallback = spec["resume_arg_fallback"].as_str().unwrap_or("--continue");
+            if let Some(resolved) =
+                resolve_resume_suffix(agent, arg, session_id, config_dir, cwd, fallback)
+            {
+                cmd.push(' ');
+                cmd.push_str(&resolved);
+            }
+        }
+    }
+    // ★v116-ui-effort ②: Claude 좌석은 `--effort high` 를 명령줄에 **명시**한다(박사님 정책 2026-09-23).
+    //   여기가 좌석 기동의 단일 합류점이다 — launch-agent(새 좌석) · restore · node-recover 가 이 함수를
+    //   부르고, 편성 boot·승계(javis_boot_node)·부서 좌석·schedule·GUI ▶CEO 는 모두 `cys launch-agent` 를
+    //   거친다. 재개 인자까지 조립한 **뒤**에 붙여야 resume 경로도 같은 한 줄을 받는다.
+    let bin = extract_bin(&cmd, agent).to_string();
+    cys::append_claude_effort(&mut cmd, agent, &bin);
+    Ok(cmd)
+}
+
 /// launch-agent(새 surface)와 node-recover(기존 surface 재기동)가 공유한다.
 fn boot_agent_on_surface(
     sid: u64,
@@ -10556,19 +10589,7 @@ fn boot_agent_on_surface(
     cwd: Option<&str>,
     config_dir: Option<&str>,
 ) -> Result<BootVerdict, String> {
-    let mut cmd = spec["cmd"].as_str().ok_or("agent cmd missing")?.to_string();
-    if resume {
-        if let Some(arg) = spec["resume_arg"].as_str() {
-            // T2-6 resume 어댑터: 대화 기억 복원 플래그 (예: claude --continue).
-            let fallback = spec["resume_arg_fallback"].as_str().unwrap_or("--continue");
-            if let Some(resolved) =
-                resolve_resume_suffix(agent, arg, session_id, config_dir, cwd, fallback)
-            {
-                cmd.push(' ');
-                cmd.push_str(&resolved);
-            }
-        }
-    }
+    let cmd = compose_agent_cmd(spec, agent, resume, session_id, config_dir, cwd)?;
     let delay = spec["inject_delay_secs"].as_u64().unwrap_or(12);
     // resume 복원 노드엔 전문 디렉티브를 재주입하지 않는다 — 직전 컨텍스트(.jsonl resume)에 이미
     // WORKER/REVIEWER_DIRECTIVE가 들어 있어, 전문 재주입은 토큰 2배·중복 지침 혼선 + 거대 주입으로
@@ -29245,5 +29266,60 @@ mod tests {
         let call = code.find("init_pack_wire_profile_skills(&dir").expect("run_init_pack 안에 배선 호출이 없다");
         let early = code.find("if no_install_hook {").expect("no_install_hook 분기 부재");
         assert!(call < early, "배선 호출이 --no-install-hook 조기 반환 뒤에 있다 — 앱 갱신 경로가 배선을 못 탄다");
+    }
+
+    // ─── v116-ui-effort ② — 좌석 기동 명령 한 줄: 새 좌석·재개 두 경로 모두 `--effort high` ───
+    #[test]
+    fn v116_compose_agent_cmd_effort_on_new_and_resume_paths() {
+        let claude = json!({
+            "cmd": "claude --model claude-opus-5-5 --dangerously-skip-permissions",
+            "resume_arg": "--resume {session_id}",
+            "resume_arg_fallback": "--continue"
+        });
+        // 새 좌석(launch-agent)
+        let fresh = compose_agent_cmd(&claude, "claude", false, None, None, None).unwrap();
+        assert_eq!(
+            fresh,
+            "claude --model claude-opus-5-5 --dangerously-skip-permissions --effort high"
+        );
+        // 재개(restore·node-recover) — 세션 id 없음 → fallback 뒤에 effort
+        let resumed = compose_agent_cmd(&claude, "claude", true, None, None, None).unwrap();
+        assert_eq!(
+            resumed,
+            "claude --model claude-opus-5-5 --dangerously-skip-permissions --continue --effort high"
+        );
+        // 모델별 키(라이브 사용자 팩의 claude-fable 형태)도 같은 규칙
+        let fable =
+            json!({"cmd": "claude --model claude-fable-5-1 --dangerously-skip-permissions"});
+        assert!(
+            compose_agent_cmd(&fable, "claude-fable", false, None, None, None)
+                .unwrap()
+                .ends_with(" --effort high")
+        );
+        // env 대입으로 시작하는 옛 형태 — 실행 파일 토큰 판정이 env 를 건너뛴다
+        let legacy = json!({"cmd": "CLAUDE_CONFIG_DIR=\"$HOME/.cys/claude\" claude --dangerously-skip-permissions"});
+        assert!(
+            compose_agent_cmd(&legacy, "claude", false, None, None, None)
+                .unwrap()
+                .ends_with(" --effort high")
+        );
+    }
+
+    #[test]
+    fn v116_compose_agent_cmd_leaves_other_agents_untouched() {
+        let codex = json!({"cmd": "codex --dangerously-bypass-approvals-and-sandbox", "resume_arg": "resume {session_id}"});
+        assert_eq!(
+            compose_agent_cmd(&codex, "codex", false, None, None, None).unwrap(),
+            "codex --dangerously-bypass-approvals-and-sandbox"
+        );
+        assert_eq!(
+            compose_agent_cmd(&codex, "codex", true, Some("abc"), None, None).unwrap(),
+            "codex --dangerously-bypass-approvals-and-sandbox resume abc"
+        );
+        let agy = json!({"cmd": "~/.local/bin/agy --dangerously-skip-permissions", "resume_arg": "--continue"});
+        assert!(!compose_agent_cmd(&agy, "gemini", true, None, None, None)
+            .unwrap()
+            .contains("--effort"));
+        assert!(compose_agent_cmd(&json!({}), "claude", false, None, None, None).is_err());
     }
 }

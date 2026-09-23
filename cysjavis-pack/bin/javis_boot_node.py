@@ -1195,7 +1195,9 @@ def _reap_after_succession(role, old_ref, old_pid=None):
     # ★v116-pack(Fable 1R M-2): 승계 앞 뿌리 확인과 여기 사이엔 launch-agent(최대 80s)+폴링 창이 있다 — 그 사이
     #   사람이 옛 셸에서 claude 를 띄웠으면 역할은 이미 넘어가 있어도 산 좌석이다. 같은 pid · 뿌리 = 빈 셸을 다시 본다.
     if not why and old_pid is not None and os.name != "nt":
-        if _pid_for_surface_ref(old_ref) != old_pid or root_is_bare_shell(old_pid) is not True:
+        row = next((r for r in cys_list_rows() if r["surface_ref"] == old_ref), None)
+        exited = bool(row and row.get("exited"))   # Fable R2 m-6: 그 사이 죽은(exited) 옛 좌석은 산 좌석이 아니다 → 회수
+        if not exited and (_pid_for_surface_ref(old_ref) != old_pid or root_is_bare_shell(old_pid) is not True):
             why = "root_recheck"
     if why:
         _seat_event(role, old_ref, "succession-kept:" + why, None)

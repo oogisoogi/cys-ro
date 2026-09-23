@@ -10153,6 +10153,87 @@ mod tests {
         );
     }
 
+    /// ①(master#00b93d1e #1) **실화면** — claude 2.1.280 첫 기동(격리 `CLAUDE_CONFIG_DIR` · `BROWSER=/usr/bin/false`
+    ///    · 로그인 완료 0 · 2026-09-24 PTY 원바이트 · OAuth `state`·`code_challenge` 값은 `x` 로 가림)의 테마·로그인
+    ///    방법·OAuth 코드 입력 창. 세 창 모두 창 안에 `─` 가로줄이 없다(테마 미리보기의 점선은 `╌` — 가로줄 아님)
+    ///    → ⑵ 가 화면 전량을 읽어 잡는다. 40행·14행 페인 모두. 단 14행 테마 창은 질문 행(needle)이 위로 밀려나
+    ///    식별 불가다(잔여 R13 실측 · 테마 부재 비용 = Recoverable — Return 은 기본 포커스 `Dark mode` 통과).
+    #[test]
+    fn qa_real_first_run_windows_2_1_280_block_queue_and_force() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-first-run");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let cases: [(&str, &[u8], u16); 5] = [
+            (
+                "theme-40",
+                include_bytes!("testdata/claude_2_1_280_first_run_theme_40rows.raw"),
+                40,
+            ),
+            (
+                "login-40",
+                include_bytes!("testdata/claude_2_1_280_first_run_login_40rows.raw"),
+                40,
+            ),
+            (
+                "oauth-40",
+                include_bytes!("testdata/claude_2_1_280_first_run_oauth_40rows.raw"),
+                40,
+            ),
+            (
+                "login-14",
+                include_bytes!("testdata/claude_2_1_280_first_run_login_14rows.raw"),
+                14,
+            ),
+            (
+                "oauth-14",
+                include_bytes!("testdata/claude_2_1_280_first_run_oauth_14rows.raw"),
+                14,
+            ),
+        ];
+        for (tag, raw, rows) in cases {
+            let (daemon, s) = qa_fixture_seat_sized(&format!("qa-fr-{tag}"), raw, rows);
+            assert!(
+                !screen_rows_have_rule(&s),
+                "{tag}: 실측 전제 붕괴 — 창 안에 가로줄이 있다"
+            );
+            qa_tick(&daemon);
+            assert_eq!(
+                s.pending_queue.lock().unwrap().len(),
+                1,
+                "{tag}: 첫기동 관문 창에 큐 배달했다"
+            );
+            assert!(
+                qa_blocked_reason(&s).starts_with("approval_pending"),
+                "{tag}: {}",
+                qa_blocked_reason(&s)
+            );
+            let r = super::force_deliver_entry(&daemon, &s, None, false);
+            assert!(
+                matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)),
+                "{tag}: 강제 배달이 관문 창에 들어갔다"
+            );
+        }
+        // 14행 테마 창: 질문 행이 밀려나 식별되지 않는다는 **실측 사실**만 고정한다(잔여 R13 — 개선되면 이 줄을 뒤집어라).
+        let (_d, s) = qa_fixture_seat_sized(
+            "qa-fr-theme-14",
+            include_bytes!("testdata/claude_2_1_280_first_run_theme_14rows.raw"),
+            14,
+        );
+        let text = s
+            .parser
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .screen()
+            .contents();
+        assert!(
+            !text.contains("Choose the text style"),
+            "실측 전제: 14행에서 질문 행이 밀려났다"
+        );
+    }
+
     /// ①(master#1ac43f0c) 전 관문: 면책 창(기본 포커스 `No, exit` → Return = rc 1)에도 큐 배달은 보류되고
     ///    강제 배달은 거부된다 — 관문 feed 없이(`qa_tick` 은 배달자만) 화면 축 ⑵(코퍼스 `identify`)만으로.
     #[test]

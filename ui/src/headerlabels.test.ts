@@ -127,6 +127,14 @@ describe("ⓓ 상단바 데몬 라벨 — 판번만(D4 #5)", () => {
     expect(fnBody(main, "async function refreshDaemonInfo(")).toContain("info.title = daemonInfoTitle(st);");
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
     expect(html).toContain('<span id="daemon-info">엔진 연결 중…</span>');
-    expect(main).toContain('info.textContent = "엔진 응답 없음');
+    expect(main).toContain('info.textContent = "엔진 응답 없음"; // (D-1) 라벨은 짧게 — 설명은 툴팁');
+    expect(main).toContain('info.title = "엔진이 아직 응답하지 않습니다');
+  });
+  it("(opus 디버깅 D-1) 라벨은 줄어들지 않는다 — 좁은 창에서 판번이 찌그러지지 않게(상단바가 가로로 밀린다)", () => {
+    const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+    const i = css.indexOf("\n#daemon-info {");
+    const b = css.slice(i, css.indexOf("}", i));
+    expect(b).toContain("flex: none;");
+    expect(b.includes("text-overflow: ellipsis")).toBe(false);
   });
 });

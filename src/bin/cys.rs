@@ -27728,9 +27728,49 @@ mod tests {
     /// 실사고(`.new`·구판 MASTER_DIRECTIVE.md 병치)가 바로 이 무음 경로다. 이 시험은 실 프로세스
     /// stdin이 이미 EOF인 이 실행 환경(비대화형 하네스)에서 그 경로를 결정론 재현한다 — 별도
     /// 서브프로세스·시뮬레이션 불요(stdin_probe 로 사전 확인: read_line 즉시 n=0).
+    /// ★r5(TICKET=v115r3-d7-r5): 프로세스 stdin 을 이 가드가 사는 동안 /dev/null(=EOF)로 바꾼다.
+    /// 확인 거부 시험은 「stdin 이 이미 EOF 인 하네스」를 전제했는데, 그 전제는 호출자 환경이다 —
+    /// GitHub Actions(EOF)에선 0.03s 초록, 닫히지 않는 스트림(에이전트 셸의 소켓 stdin · `sleep N |`)에선
+    /// `confirm_stdin` 의 read_line 이 무한 대기한다(로컬 CI 명령 재현: 27분 정지 · 열린 파이프 재현 84s =
+    /// 파이프가 닫힐 때까지). 전제를 시험 안에서 세워 환경 독립으로 만든다. 윈도우는 종전 그대로(무동작).
+    struct StdinEofGuard {
+        #[cfg(unix)]
+        saved: i32,
+    }
+    impl StdinEofGuard {
+        fn new() -> Self {
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let null = std::fs::File::open("/dev/null").expect("/dev/null 열기");
+                // SAFETY: fd 0 을 복제·교체만 한다 — ENV_LOCK 아래라 같은 파일의 시험끼리 겹치지 않는다.
+                let saved = unsafe { libc::dup(0) };
+                assert!(saved >= 0, "stdin dup 실패 — 이 아래 판정은 무의미");
+                let r = unsafe { libc::dup2(null.as_raw_fd(), 0) };
+                assert_eq!(r, 0, "stdin 을 EOF 로 바꾸지 못했다 — 이 아래 판정은 무의미");
+                Self { saved }
+            }
+            #[cfg(not(unix))]
+            {
+                Self {}
+            }
+        }
+    }
+    impl Drop for StdinEofGuard {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            // SAFETY: new() 가 dup 한 원래 stdin 을 되돌리고 복제본을 닫는다.
+            unsafe {
+                libc::dup2(self.saved, 0);
+                libc::close(self.saved);
+            }
+        }
+    }
+
     #[test]
     fn take_new_on_constitution_file_declines_noninteractive_without_promoting() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _stdin_eof = StdinEofGuard::new();
         let (td, rel, embed, _env) = t_const_new_pending_fixture("decline");
         assert!(cys::pack::is_constitution_file(&rel), "픽스처는 헌법 파일이어야 함");
         let rc = run_pack_merge(

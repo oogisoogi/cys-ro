@@ -180,6 +180,10 @@ def _ensure_harness(m, live, installed, resource_ok):
     #   가 나가, PATH 의 설치본 cys 가 없는 소켓(/tmp/bN.sock)에 옛 판 cysd 를 자동 기동하고 그 데몬이
     #   CYS_PACK_DIR(= 저장소 팩)에 옛 임베드를 설치했다(09-23 로컬 통합 검증 오염 · CI 는 cys 부재라 초록).
     m._master_seat_cwd = lambda socket: None
+    # ★v116-pack: 데몬 무응답 판정(cys ping) · 복원 대기(cys status) · 빈 좌석 회수(boot_node) 도 외부 접촉이다.
+    m._daemon_down = lambda socket: False
+    m._wait_restore_settled = lambda socket, **kw: (True, None)
+    m._reap_orphans = lambda socket: None
     return feeds
 
 
@@ -191,7 +195,8 @@ def ensure_order_gate(m):
         return
     saved = {k: getattr(m, k) for k in
              ("gate_check", "_installed_clis", "_live_roles", "_resource_ok",
-              "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt", "_master_seat_cwd")}
+              "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt", "_master_seat_cwd",
+              "_daemon_down", "_wait_restore_settled", "_reap_orphans")}
     saved_state = os.environ.get("CYS_STATE_DIR")
     # ★v115r3-d7-r2 트립와이어: 이 절의 ensure 는 실 `cys` 를 한 번도 부르면 안 된다(부르면 데몬 자동 기동 →
     #   팩 설치 = 저장소 오염). 가로채 기록만 하고 실패로 돌려준다 — 실행 0.

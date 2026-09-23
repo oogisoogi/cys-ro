@@ -9,6 +9,16 @@
 // 두 표면이 다른 문턱을 쓰면 같은 페인이 한쪽에선 stale, 한쪽에선 정상으로 보인다.
 export const USAGE_STALE_SECS = 120;
 
+/**
+ * ★(v116-ui-close · D4 #11) 모델 스코프 주간 게이지(`7d·<모델>`)의 낡음 문턱 — USAGE_STALE_SECS 와 **다른 값이어야 한다**.
+ * 이 게이지의 생산자는 데몬 OAuth 프로브 하나이고 주기가 180초다(src/bin/cysd/accounts.rs OAUTH_PROBE_INTERVAL_SECS).
+ * 120초 문턱을 물려 쓰면 정상 가동 중에도 매 3분마다 약 1분씩 흐려지고 「stale」 툴팁이 떴다(D4 #11 · 나이 150초 → stale).
+ * 240초 = 주기 180 + 여유 60(프로브 1회 시간 상한 10초 · 사이드바 갱신 주기 · 시계 오차). 프로브가 한 번이라도 거르면
+ * (실패 시 주기 2배 = 360초 · accounts.rs 백오프) 그때는 흐려진다 — 「한 번 놓쳤다」를 참으로 알린다.
+ * ⚠주기를 바꾸면 이 값을 함께 바꿔라(두 값은 짝 · wsusage.test 가 180 < 문턱 < 360 을 잰다).
+ */
+export const SCOPED_STALE_SECS = 240;
+
 export interface RateWindowLike {
   label: string;
   used_pct: number;
@@ -260,7 +270,7 @@ export function scopedRates(accounts: AccountLike[] | null | undefined, nowSecs:
         resetsAt: g.resets_at ?? null,
         ageSecs: age,
         updatedAt,
-        stale: age > USAGE_STALE_SECS,
+        stale: age > SCOPED_STALE_SECS, // (D4 #11) 프로브 주기 180초에 맞춘 문턱 — USAGE_STALE_SECS 아님
         // accountRates와 같은 규율 — 게이지 자기 관측 시각으로 데몬이 판정한 값.
         windowStale: g.stale === true,
         windowStaleReason: g.stale === true ? (g.stale_reason ?? null) : null,

@@ -174,7 +174,7 @@ if (ONLY.includes("c6")) {
     await load("two", "", `window.__shimFiles["/Users/u/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
     await Bun.sleep(16000); // 카드 유예
     // 경보 3건을 겹쳐 쌓는다(Fable F2 — 짧은 1건만으로는 알림 줄이 카드의 [닫기]까지 자라는 경우를 못 잰다)
-    for (const role of ["worker", "cso", "master"])
+    for (const role of process.env.MANY ? ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10"] : ["worker", "cso", "master"])
       await ev(`window.__shimEmit("daemon-event", { name: "agent.exited", category: "agent", surface_id: 2, payload: { role: "${role}" } })`);
     await Bun.sleep(400);
     const a = await ev(`(() => {
@@ -182,15 +182,17 @@ if (ONLY.includes("c6")) {
       if (!card || !t) return { card: !!card, toast: !!t };
       const r = document.getElementById("toasts").getBoundingClientRect(), c = card.getBoundingClientRect();
       const all = [...document.querySelectorAll("#toasts .toast")];
-      const eachOnTop = all.every((x) => { const q = x.getBoundingClientRect(); const e = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); return !!e && x.contains(e); });
+      // 알림 칸(40vh) 안에서 스크롤로 밀려난 알림은 원래 안 보인다 — 칸 안에 중심이 있는 알림만 「맨 위」를 잰다
+      const inView = all.filter((x) => { const q = x.getBoundingClientRect(); const cy = q.top + q.height / 2; return cy >= r.top && cy <= r.bottom; });
+      const eachOnTop = inView.length > 0 && inView.every((x) => { const q = x.getBoundingClientRect(); const e = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); return !!e && x.contains(e); });
       const overlap = !(r.right <= c.left || r.left >= c.right || r.bottom <= c.top || r.top >= c.bottom);
       const cb = card.querySelector(".rb-close")?.getBoundingClientRect();
       const cbTop = cb ? document.elementFromPoint(cb.left + cb.width / 2, cb.top + cb.height / 2) : null;
-      return { card: true, toast: true, toasts: all.length, toastOnTop: eachOnTop, overlap, closeReachable: !!cbTop && cbTop.classList.contains("rb-close"), cardInView: c.left >= 0 && c.right <= innerWidth + 1, text: t.innerText.slice(0, 40) };
+      return { card: true, toast: true, toasts: all.length, inView: inView.length, toastOnTop: eachOnTop, overlap, closeReachable: !!cbTop && cbTop.classList.contains("rb-close"), cardInView: c.left >= 0 && c.right <= innerWidth + 1, text: t.innerText.slice(0, 40) };
     })()`);
     if (w === 1280) await shot("c6-alert-over-card.png");
     const ok = a.card && a.toast && a.toastOnTop && a.cardInView && a.closeReachable && !a.overlap;
-    check(`c6 w${w} 복원 카드가 떠 있어도 경보 3건이 보인다(맨 위 · 겹침 0 · 카드 화면 안 · 카드 닫기 눌림)`, ok, JSON.stringify(a));
+    check(`c6 w${w} 복원 카드가 떠 있어도 경보 ${process.env.MANY ? "10" : "3"}건이 보인다(맨 위 · 겹침 0 · 카드 화면 안 · 카드 닫기 눌림)`, ok, JSON.stringify(a));
   }
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }

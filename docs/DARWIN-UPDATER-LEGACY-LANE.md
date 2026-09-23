@@ -64,7 +64,7 @@ python3 scripts/make-darwin-update-row.py --version 1.1.0 \
 | 2 | 1.0.2 를 한 번 띄워 `~/.cys` 초기화 완료 | 데몬 pid 표시 · 좌석 1개 이상 |
 | 3 | 시험용 latest.json 을 VM 이 보게 한다 — `CYS_UPDATE_MANIFEST_URL` 로 1.1 매니페스트 지정 | 앱 로그에 그 주소 조회 기록 |
 | 4 | 앱 내 **Update** 클릭 | 다운로드 → 설치 → 재시작. 오류 토스트 0 |
-| 5 | 재기동 후 **헤더 판번 = 1.1.0** | 좌상단 `v1.1.0` · `daemon v1.1.0` |
+| 5 | 재기동 후 **헤더 판번 = 1.1.0** | 좌상단 `v1.1.0` · `daemon v1.1.0`(1.1.6부터 상단바 표시는 `엔진 v1.1.0` · `daemon v…` 전문은 그 라벨의 툴팁) |
 | 6 | Gatekeeper — `spctl -a -vv /Applications/cys.app` · 첫 실행 경고 유무 | 자체서명(cys-local)이라 `rejected` 가 **정상**(`cysr-mac-asset-two-expected-non-defects`). 앱이 **열리는지**가 판정이고 `spctl` 값은 판정 아님 |
 | 7 | 격리 속성 — `xattr -p com.apple.quarantine /Applications/cys.app` | 없음(`No such xattr`) 또는 있어도 앱이 열리면 통과 |
 | 8 | 세션 복원 — 재시작 전 좌석이 돌아오는가 | 좌석 수·역할 일치 |

@@ -2,7 +2,16 @@
 
 브랜치 `fix/v116-ui` ← 526325bf · 착수 23:31 · 상한 01:11 · 브리프 `~/axdev/master/briefs/2026-09-23-v116-ui-close.md`.
 
-## §0 델타(후임·재개용 — 최신이 위 · 2026-09-24 00:5x)
+## §0 델타(후임·재개용 — 최신이 위)
+### 2026-09-24 01:0x 매듭(master#622d03c0 · 좌석 종료 · 후임 = master 결정)
+- **끝낸 것(전부 master 수용)**: 필수 = D4 #7 닫기 확인 · D4 #17 exited 잔재 · X-1 남은 창 폭 · N-3 new split(권고 C) / R1a = 읽기 경로 배선만(**완료 아님** · 생산자 0 = 사용자 효과 0) / 「가능」 = D4 #21 경보 가림 · #5 상단 엔진 라벨 · #13 영어 단추 · #4 본부/새 화면 · #6 Ctrl+O 안내 오발화 · #11 스코프 게이지 흐림.
+- **남은 「가능」 7(가치 순 · master 확인 순서)**: #8(알림·시스템 배너의 `surface:N`·역할 코드 원문 → friendlyRole 재사용·문구 완화 · main.ts 알림 경로 — Fable 적대 권장: 경보 경로) → #14(업데이트 문구 내부 용어·백엔드 오류 원문 약 15곳 · updateplan.ts·main.ts) → #10(사이드바 CTX 부서 줄 「dept-」 잘림 → 부서 표시명) → R1c(restoreBriefShown 을 master 확인 전에 켬 · main.ts showRestoreBrief 첫 줄) → #20(확인창 단추 말 「확인/아니오」 vs 「취소」 통일) → #18(used_pct null → 0% 게이지 · 잠복) → #12(좁은 창 제목 끝 잘림·이름 비우기 시 번호 소실).
+- **별건 결정(이 티켓 밖 · 손대지 말 것)**: ① 사용자 화면 용어 = 「엔진」 통일(master 결정 master#e997f947 · 1.1.6 문구 전수 별건 — ↻ 재시작 툴팁·설명서·부서 데몬 문구 포함) ② R1a 생산자(마스터 지침·설치 골격에 사용자용 3절) = 박사님 결정 ③ X-1 VM stty 실측 = 1.1.6 VM 티켓(1026 T-APP §7 묶음) ④ 1026 perm-warning 구역 = 1026 몫.
+- **기록만(미반영)**: Control Center 영어 유지(기능 이름) · startup/recovery failed 영어(기존) · 「새 화면」 탭에 손으로 「본부」 입력 시 본부 2개 · 프로브만 갱신되는 계정 rate 행 흐림 가능성【추정】.
+- **함정**: bun = ~/.bun/bin(PATH 밖 · rc 127) · 헤드리스 = docs/v116-ui-evidence(v116-headless.ts c1~c10 · shim.js · mutate.py) — chrome-headless-shell 은 세션 scratchpad 사본이라 새 세션은 재확보(`find / -name chrome-headless-shell`) · 새 시험에 `toMatch` 금지(tsc TS2339 → `re.test`) · `readdirSync` 는 `{ withFileTypes: true }` 형 · 뮤턴트가 try 블록 변수를 finally 에서 참조하면 무효 · 헤드리스 실패 주입은 횟수 말고 시간 창 · 커밋 수는 `git rev-list --count` 출력으로.
+- **수치(e92277f1)**: 526325bf 위 33 커밋 · bun test 1112 → 1175/0 · tsc 신규 0 · 헤드리스 20/20 · 뮤턴트 42/42.
+
+### 2026-09-24 00:5x
 - 상태: 필수 4 + R1a 경로(완료 아님) + 「가능」 #21·#5·#13·#4·#6 = master 수용 · #11 = 확인요청 중. 브랜치 fix/v116-ui · push·태그·판번 0.
 - 2026-09-24 01:00 갱신: D4 #11 완료(§13 · 확인요청). 남은 「가능」 목록(가치 순 · worker-9 판단 · master 확정 아님): ① D4 #8 알림·시스템 배너의 `surface:N`·역할 코드 원문(friendlyRole 재사용 · 문구) ③ D4 #14 업데이트 문구 내부 용어·백엔드 오류 원문 약 15곳 ④ D4 #10 사이드바 CTX 부서 줄 「dept-」 잘림 ⑤ D2 R1c 카드 표시 판정 순서(restoreBriefShown 을 master 확인 전 켬) ⑥ D4 #20 확인창 단추 말 통일 ⑦ D4 #18 used_pct null 가드(잠복) ⑧ D4 #12 좁은 창 제목 잘림.
 - 결정된 별건(이 티켓 밖): 「엔진」 용어 통일 = 1.1.6 문구 전수(master#e997f947) · R1a 생산자(3절 기록) = 박사님 결정 · X-1 VM stty = 1.1.6 VM 티켓.

@@ -499,6 +499,27 @@ class A2B8BootNodeRun(unittest.TestCase):
         self.assertEqual([c for c in fake.calls if c[1] == "close-surface"], [], "승계 중 되살아난 옛 좌석을 회수했다")
         self.assertTrue(any("root_recheck" in (l.get("msg") or "") for l in out.get("log", [])), out)
 
+    def test_v116_succession_old_seat_exited_during_launch_is_still_reaped(self):
+        # Fable R2 m-6: 승계 중 옛 좌석이 exited → 재확인 보존이 아니라 회수(죽은 pane 잔존 0)
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+
+        class _Die(_FakeCys):
+            def __call__(s, args, timeout=15):
+                if args[1:2] == ["list"] and any(c[1:2] == ["launch-agent"] for c in s.calls):
+                    s.calls.append(list(args))
+                    return 0, "\n".join("%s\trole=%s\tpid=%s\texited=%s" % (
+                        r["ref"], r["role"] or "-", r["pid"], "true" if r["ref"] == "surface:1" else "false")
+                        for r in s.rows), ""
+                return super().__call__(args, timeout)
+        saved = globals()["_FakeCys"]
+        globals()["_FakeCys"] = _Die
+        try:
+            rc, out, fake = self._run(rows, "master", self.env)
+        finally:
+            globals()["_FakeCys"] = saved
+        self.assertEqual([c[2] for c in fake.calls if c[1] == "close-surface"], ["surface:1"], fake.calls)
+
     def test_succession_reaps_old_shell_when_queue_empty(self):
         rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
                  "created": time.time() - 5}]

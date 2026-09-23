@@ -152,7 +152,8 @@ fn resolve(
     session_file: &str,
 ) -> Option<(AccountKey, String, Option<String>, Option<String>)> {
     match agent {
-        "claude" => {
+        // D6-2: agents.json 의 claude 파생 에이전트(claude-fable·claude-sonnet 등 · 같은 claude 바이너리)도 계정 귀속.
+        a if a == "claude" || a.starts_with("claude-") => {
             let dir = profile_dir_from_session(session_file)?;
             let (uuid, email, plan) = claude_identity(state, &dir)?;
             Some((
@@ -1084,7 +1085,10 @@ pub fn predict_exhaust(series: &[(f64, f64)], now: f64, resets_at: Option<f64>) 
 }
 
 /// alerts용 스냅샷: (라벨, 창, pct) — 관측된 계정만.
+/// D6-1: 계기(local_json)가 죽었다고 표시하는 창(resets_at_passed · no_observation_24h)은 경보에서 뺀다 —
+/// 같은 판정 함수를 써서 계기와 경보가 갈리지 않게 한다.
 pub fn alert_rates(daemon: &Arc<Daemon>) -> Vec<(String, String, f64)> {
+    let now = crate::state::now_epoch();
     let st = daemon.accounts.lock().unwrap();
     let mut out = Vec::new();
     for v in st.views.values() {
@@ -1092,6 +1096,9 @@ pub fn alert_rates(daemon: &Arc<Daemon>) -> Vec<(String, String, f64)> {
             continue;
         }
         for w in &v.rate {
+            if rate_window_stale_reason(w.resets_at, v.updated_at, now).is_some() {
+                continue;
+            }
             out.push((v.label.clone(), w.label.clone(), w.used_pct));
         }
     }

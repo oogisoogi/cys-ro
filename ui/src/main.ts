@@ -7842,6 +7842,8 @@ async function start() {
     await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 1500)));
     try {
       await invoke("request_folder_access");
+    } catch {
+      // 확인 실패 — 거절 원인 문장은 백엔드 perm-warning 몫 · 다음 기동은 setup 이 다시 부른다
     } finally {
       dismissToast("perm-guide");
     }

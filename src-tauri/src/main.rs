@@ -3353,7 +3353,13 @@ fn needs_gui_onboard(marker: Option<&str>, current_version: &str) -> bool {
 static GUI_ONBOARDED_BEFORE_BOOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 fn gui_onboarded_before_boot() -> bool {
-    *GUI_ONBOARDED_BEFORE_BOOT.get_or_init(|| gui_onboarded_path().exists())
+    first_measure_wins(&GUI_ONBOARDED_BEFORE_BOOT, || gui_onboarded_path().exists())
+}
+
+/// 한 번 잰 값을 프로세스 끝까지 돌려준다 — 뒤에 파일이 생겨도(온보딩이 마커를 씀) 첫 값이 이긴다.
+/// 이 불변식이 깨지면(매번 다시 재면) setup 이 마커를 쓴 뒤의 복원 판정이 새 설치를 갱신으로 본다.
+fn first_measure_wins(cell: &std::sync::OnceLock<bool>, measure: impl FnOnce() -> bool) -> bool {
+    *cell.get_or_init(measure)
 }
 
 /// (v116-app-firstrun) 복원 판정의 「기존 설치 증거」(순수) — 이 기기에 복원할 조직이 있었을 수 있는가.
@@ -3377,8 +3383,25 @@ fn prior_install_evidence(gui_onboarded_before_boot: bool, depts: &Result<Value,
 /// (v116-app-firstrun · A-3) 폴더 권한 창을 UI 가 이끄는가(순수) — 맥의 새 설치 첫 실행만.
 /// 그때는 UI 가 사람 말 안내를 먼저 그린 뒤 `request_folder_access` 로 권한 창을 부른다(순서 보장).
 /// 그 밖(갱신·재실행)은 종전대로 setup 이 nudge_folder_permissions 를 부른다(서명 교체 뒤 재허용 유도).
-fn ui_drives_folder_access(is_macos: bool, gui_onboarded_before_boot: bool) -> bool {
-    is_macos && !gui_onboarded_before_boot
+/// `already_asked` = 이 앱 프로세스에서 UI 주도 권한 확인이 이미 끝났는가 — 웹뷰 새로고침·재생성 때
+/// 스냅숏은 여전히 「첫 실행」이라 안내가 다시 뜨는 것을 막는다(agy 1R ①). setup 가드는 false 로 부른다.
+fn ui_drives_folder_access(is_macos: bool, gui_onboarded_before_boot: bool, already_asked: bool) -> bool {
+    is_macos && !gui_onboarded_before_boot && !already_asked
+}
+
+/// (A-3) 이 앱 프로세스에서 request_folder_access 가 한 번 끝났는가(웹뷰 새로고침 재안내 방지).
+static FOLDER_ACCESS_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// (A-3) UI 가 request_folder_access 를 **시작**했는가 — 첫 실행 백엔드 폴백의 판정 근거.
+static FOLDER_ACCESS_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// (A-3) 첫 실행 폴백 대기 — UI 가 이 시간 안에 권한 확인을 시작하지 않으면(화면 초기화가 중간에 끊김 등)
+/// 백엔드가 종전 nudge 로 권한 창을 띄운다. 안내 없이 뜨는 창이 창이 아예 안 뜨는 것(좌석 폴더 거부를
+/// 모른 채 첫 세션을 보냄)보다 낫다(opus 1R B-2).
+const FOLDER_ACCESS_FALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 폴백 판정(순수) — UI 가 시작하지 않았을 때만 백엔드가 부른다.
+fn folder_access_fallback_due(ui_started: bool) -> bool {
+    !ui_started
 }
 
 /// (T1) 재시작 후 팩반영·복원을 돌릴지 판정 — 부작용(파일·프로세스) 없는 순수 함수(단위테스트 대상).
@@ -3611,16 +3634,36 @@ async fn probe_folder_permissions(app: &AppHandle) -> Vec<&'static str> {
 }
 
 /// (A-3) UI 가 폴더 권한 창을 이끌어야 하는가 — 맥의 새 설치 첫 실행이면 true(안내 먼저 → request_folder_access).
+/// 안전모드(비정규 실행 위치)면 false — setup 이 부수효과 전에 조기 반환하는 레인과 같은 방향(Fable 1R ②).
 #[tauri::command]
 fn folder_access_guide_needed() -> bool {
-    ui_drives_folder_access(cfg!(target_os = "macos"), gui_onboarded_before_boot())
+    ui_drives_folder_access(
+        cfg!(target_os = "macos") && boot_path_is_canonical(),
+        gui_onboarded_before_boot(),
+        FOLDER_ACCESS_ASKED.load(std::sync::atomic::Ordering::SeqCst),
+    )
+}
+
+/// 정규 설치 위치에서 떴는가 — 맥 밖은 판정 축이 없어 true. setup 안전모드 게이트와 같은 판정기.
+fn boot_path_is_canonical() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        current_boot_verdict() == BootPathVerdict::Canonical
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
 }
 
 /// (A-3) UI 가 안내를 그린 **뒤** 부르는 권한 확인 — 권한 창이 뜨면 사용자가 고를 때까지 기다렸다가
 /// 거부된 폴더 목록을 돌려준다(거부 폴더마다 perm-warning 은 백엔드가 이미 냈다). 맥 밖은 빈 목록.
 #[tauri::command]
 async fn request_folder_access(app: AppHandle) -> Vec<&'static str> {
-    probe_folder_permissions(&app).await
+    FOLDER_ACCESS_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let denied = probe_folder_permissions(&app).await;
+    FOLDER_ACCESS_ASKED.store(true, std::sync::atomic::Ordering::SeqCst);
+    denied
 }
 
 /// (T2) 업데이트 후 조직 전체 복원 — setup 완료를 막지 않도록 백그라운드 태스크로 순차 실행하며
@@ -7088,8 +7131,20 @@ fn main() {
                 // ★v116-app-firstrun(A-3): 새 설치 첫 실행이면 여기서 부르지 않는다 — UI 가 안내를 먼저 그린 뒤
                 // request_folder_access 로 부른다(설명 없는 권한 창 제거 · ui_drives_folder_access).
                 #[cfg(target_os = "macos")]
-                if !ui_drives_folder_access(true, gui_onboarded_before) {
+                if !ui_drives_folder_access(true, gui_onboarded_before, false) {
                     nudge_folder_permissions(&handle);
+                } else {
+                    // 첫 실행 폴백 — UI 가 제시간에 시작하지 않으면 종전 nudge(안내 없는 창이라도 띄운다).
+                    let h = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(FOLDER_ACCESS_FALLBACK_WAIT).await;
+                        if folder_access_fallback_due(
+                            FOLDER_ACCESS_STARTED.load(std::sync::atomic::Ordering::SeqCst),
+                        ) {
+                            eprintln!("[cys-app] 첫 실행 폴더 권한: UI 가 시작하지 않음 — 백엔드 폴백 nudge");
+                            probe_folder_permissions(&h).await;
+                        }
+                    });
                 }
             });
             Ok(())
@@ -7601,6 +7656,10 @@ mod tests {
             // 복원 0 · 「직원 복귀」 알림 0. UI 카드(isFirstLaunch=false) = 기록 없는 「다시 켜졌어요」 1장(restorebrief).
             // 어긋나는 방향이 「거짓 복원 알림」이 아니라 「복원 없이 켜졌다는 카드」 쪽이다.
             FirstRunRow { name: "~/.cys 만 지워진 기기(UI 배치 저장본은 남음)", marker: false, stamp: None, pack: true, gui_before: false, depts: none(), want: RecordStampOnly },
+            // agy 1R ④ 수용 한계 행: 스탬프(0.12.51~)도 온보딩 마커(0.12.53~)도 없던 판에서 부서 0 으로 곧바로 올라온
+            // 기기 = 새 설치와 디스크 사실이 같다 → RecordStampOnly. 팩은 같은 기동의 GUI 온보딩(마커 없음 → init-pack)과
+            // cysd 부팅 스윕이 반영하고, 빠지는 것은 앱 주도 복원(본부 좌석)뿐이다. 판정 불가(구분할 사실 없음) · 수용.
+            FirstRunRow { name: "마커·스탬프 이전 판 + 부서 0 (수용 한계)", marker: false, stamp: None, pack: true, gui_before: false, depts: none(), want: RecordStampOnly },
             FirstRunRow { name: "동일판 재실행", marker: false, stamp: Some("1.1.6"), pack: true, gui_before: true, depts: none(), want: Skip },
         ]
     }
@@ -7631,13 +7690,52 @@ mod tests {
         assert!(prior_install_evidence(false, &Err("x".into())), "레지스트리 해석 불가 = 모름 = 증거 있음");
     }
 
+    /// B-1(opus 1R): 스냅숏은 첫 값이 이긴다 — 뒤에 마커가 생겨도(온보딩) 다시 재지 않는다.
+    #[test]
+    fn v116_snapshot_first_measure_wins() {
+        let cell = std::sync::OnceLock::new();
+        assert!(!first_measure_wins(&cell, || false), "첫 측정 = 마커 없음");
+        assert!(!first_measure_wins(&cell, || true), "온보딩이 마커를 쓴 뒤에도 첫 값(없음)이어야 한다");
+        let mut calls = 0;
+        let cell2 = std::sync::OnceLock::new();
+        first_measure_wins(&cell2, || { calls += 1; true });
+        assert_eq!(calls, 1);
+    }
+
+    /// B-5(opus 1R): 기준선 재현 — 같은 진리표를 종전 증거(팩 열)로 판정하면 정확히 이 행들만 어긋난다.
+    #[test]
+    fn v116_baseline_pack_evidence_differs_exactly() {
+        let mut differ: Vec<&str> = v116_rows()
+            .iter()
+            .filter(|r| decide_pending_update(r.marker, r.stamp, "1.1.6", r.pack) != r.want)
+            .map(|r| r.name)
+            .collect();
+        differ.sort();
+        let mut want = vec![
+            "새 설치(설치기·데몬·온보딩이 팩을 먼저 깜)",
+            "팩만 없음 + 스탬프 없음(온보딩 이력 있음)",
+            "~/.cys 만 지워진 기기(UI 배치 저장본은 남음)",
+            "마커·스탬프 이전 판 + 부서 0 (수용 한계)",
+        ];
+        want.sort();
+        assert_eq!(differ, want, "종전 증거로 판정했을 때 어긋나는 행 집합");
+    }
+
+    /// B-2(opus 1R): 첫 실행 폴백은 UI 가 시작하지 않았을 때만.
+    #[test]
+    fn v116_folder_access_fallback_only_when_ui_silent() {
+        assert!(folder_access_fallback_due(false));
+        assert!(!folder_access_fallback_due(true));
+    }
+
     /// A-3: 권한 창을 UI 가 이끄는 것은 맥의 새 설치 첫 실행뿐 — 그 밖은 setup 의 종전 자동 호출.
     #[test]
     fn v116_ui_drives_folder_access_only_on_mac_first_run() {
-        assert!(ui_drives_folder_access(true, false), "맥 새 설치 = UI 가 안내 먼저");
-        assert!(!ui_drives_folder_access(true, true), "맥 재실행·갱신 = setup 자동 호출(종전)");
-        assert!(!ui_drives_folder_access(false, false), "맥 밖 = 폴더 권한 축 없음");
-        assert!(!ui_drives_folder_access(false, true), "맥 밖 = 폴더 권한 축 없음");
+        assert!(ui_drives_folder_access(true, false, false), "맥 새 설치 = UI 가 안내 먼저");
+        assert!(!ui_drives_folder_access(true, true, false), "맥 재실행·갱신 = setup 자동 호출(종전)");
+        assert!(!ui_drives_folder_access(false, false, false), "맥 밖 = 폴더 권한 축 없음");
+        assert!(!ui_drives_folder_access(false, true, false), "맥 밖 = 폴더 권한 축 없음");
+        assert!(!ui_drives_folder_access(true, false, true), "같은 프로세스에서 이미 물었다 = 웹뷰 새로고침에 재안내 없음");
     }
 
     /// 배선 핀: ①복원 판정이 `.pack-version` 대신 새 증거를 읽는다 ②setup 첫머리 스냅숏이 온보딩 마커 쓰기·
@@ -7671,12 +7769,34 @@ mod tests {
         assert!(snap < marker_write && snap < apply_call, "스냅숏은 온보딩 마커 쓰기·복원 판정보다 먼저여야 한다");
         let nudge_call = setup.find("nudge_folder_permissions(&handle);").expect("nudge 호출");
         let guard = setup
-            .find("if !ui_drives_folder_access(true, gui_onboarded_before) {")
+            .find("if !ui_drives_folder_access(true, gui_onboarded_before, false) {")
             .expect("첫 실행이면 setup 이 권한 창을 부르지 않는 가드");
         assert!(guard < nudge_call && nudge_call - guard < 120, "nudge 호출은 첫 실행 가드 바로 안에 있어야 한다");
         let handlers = &src[src.find("tauri::generate_handler![").expect("handler")..setup_at];
         assert!(handlers.contains("folder_access_guide_needed,") && handlers.contains("request_folder_access,"),
             "UI 가 부를 두 명령이 등록돼 있어야 한다");
+        // ⑤ 명령 본체 핀(agy 1R ③): 안내 여부 = 같은 스냅숏 + 이미 물었는가 · 권한 확인이 끝나면 표시.
+        let guide = body_at("fn folder_access_guide_needed() -> bool {");
+        let inner = guide[guide.find('{').expect("본체") + 1..].trim_start();
+        assert!(
+            inner.starts_with("ui_drives_folder_access(\n        cfg!(target_os = \"macos\") && boot_path_is_canonical(),\n        gui_onboarded_before_boot(),\n        FOLDER_ACCESS_ASKED.load("),
+            "안내 여부는 순수 판정 하나의 값 그대로(맥·정규 위치 · 이 기동 전 온보딩 스냅숏 · 이미 물었는가): {inner:.200}"
+        );
+        let req = body_at("async fn request_folder_access(app: AppHandle) -> Vec<&'static str> {");
+        let started = req.find("FOLDER_ACCESS_STARTED.store(true").expect("시작 표시");
+        let probe = req.find("probe_folder_permissions(&app).await").expect("권한 확인 호출");
+        assert!(started < probe, "시작 표시는 권한 확인 전(폴백이 겹쳐 두 번 묻지 않게)");
+        let mark = req.find("FOLDER_ACCESS_ASKED.store(true").expect("물었음 표시");
+        assert!(probe < mark, "물었음 표시는 권한 확인이 끝난 뒤여야 한다");
+        // ⑥ 스냅숏 = 첫 값 고정 셀 경유(B-1) · 확인 본체 = 맥에서만 · setup 의 nudge 는 가드 안 1곳뿐.
+        let snap_fn = body_at("fn gui_onboarded_before_boot() -> bool {");
+        assert!(snap_fn.contains("first_measure_wins(&GUI_ONBOARDED_BEFORE_BOOT,"), "스냅숏은 첫 값 고정 셀을 거쳐야 한다");
+        let probe_fn = body_at("async fn probe_folder_permissions(app: &AppHandle) -> Vec<&'static str> {");
+        assert!(probe_fn.contains("if cfg!(target_os = \"macos\") {"), "권한 확인은 맥에서만");
+        let setup_only = &setup[..setup.find(".run(tauri::generate_context!())").expect("setup 끝")];
+        assert_eq!(setup_only.matches("nudge_folder_permissions(&handle);").count(), 1, "setup 의 nudge 는 가드 안 1곳뿐");
+        let fb = setup.find("folder_access_fallback_due(").expect("첫 실행 폴백");
+        assert!(fb > guard && setup[guard..fb].contains("} else {"), "폴백은 첫 실행 갈래(else) 안에 있어야 한다");
     }
 
     // HUD-2: open_url 화이트리스트 — https·허용 도메인만 통과, 위장 host(userinfo/서브도메인 사칭) 차단.

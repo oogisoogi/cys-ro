@@ -68,6 +68,12 @@ describe("첫 실행 폴더 권한 안내(A-3)", () => {
     expect(block).toMatch(/finally \{\s*dismissToast\("perm-guide"\);/);
   });
 
+  it("판정·대기의 정확한 형태(opus 1R 생존 후보: === true 반전 · await 삭제 · 지연 0)", () => {
+    expect(main.slice(start - 40, start + 60)).toContain('guide = (await invoke("folder_access_guide_needed")) === true;');
+    expect(block).toContain("await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 1500)));");
+    expect(block).toContain('await invoke("request_folder_access");');
+  });
+
   it("perm-warning 리스너가 먼저 등록된 뒤에 요청한다(거절 원인 문장이 유실되지 않게)", () => {
     expect(main.indexOf('listen("perm-warning"')).toBeLessThan(start);
   });

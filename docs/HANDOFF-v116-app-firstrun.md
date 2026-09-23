@@ -113,7 +113,7 @@ A-3 판정(`v116_ui_drives_folder_access_only_on_mac_first_run`): 맥 + 새 설�
 
 전체 회귀(최종 HEAD · CYS_NO_AUTOSTART=1): `cargo test -p cys-app --bins` 172 통과 · 0 실패 · 1 ignored(신규 적색 0) · `cargo build -p cys-app` 경고 0 · `bun test`(ui) 1121 통과 · 0 실패.
 
-시험 환경 준비(작업트리 한정 · 저장소 무변경 · .gitignore 대상): `cargo build -p cys-terminal --bins` 실바이너리를 `src-tauri/binaries/{cys,cysd}-aarch64-apple-darwin` 로 복사(빈 자리표가 target 을 덮은 v115r4 사고 회피) · `src-tauri/resources/pack.tar.gz`(빈 파일)·`pack-manifest.json`(`{}`)·`src-tauri/runtime/.keep` · `ui/dist` = `bun run build`.
+시험 환경 준비(작업트리 한정 · 저장소 무변경 · .gitignore 대상 · `cargo test -p cys-app` 을 다시 돌릴 때 필요): `cargo build -p cys-terminal --bins` 실바이너리를 `src-tauri/binaries/{cys,cysd}-aarch64-apple-darwin` 로 복사(빈 자리표가 target 을 덮은 v115r4 사고 회피) · `src-tauri/resources/pack.tar.gz`(빈 파일)·`pack-manifest.json`(`{}`)·`src-tauri/runtime/.keep` · `ui/dist` = `bun run build`. ⚠닫을 때 `resources/`·`runtime/` 자리표는 지웠다(VM 빌드 혼입 방지) — 다시 시험하려면 위대로 다시 둔다.
 
 격리 재현【모의】: 가짜 HOME(scratchpad) 에서 설치기와 같은 `cys init-pack` 1회 → `.cys/pack/.pack-version`=1.1.5 **있음** · `.cys/.gui-onboarded`·`.cys/depts.json`·`.cys/.last-app-version` **없음** ⇒ 종전 증거 = Apply · 새 증거 = RecordStampOnly. 라이브 무접촉.
 
@@ -132,15 +132,37 @@ A-3 판정(`v116_ui_drives_folder_access_only_on_mac_first_run`): 맥 + 새 설�
 - ③ **자가치유 전멸(핵심 대조군)**: 진짜 갱신 레인(스탬프 ≠ 현재판 · 인앱/rotate 마커)은 `decide_pending_update` 무변경이라 종전대로 Apply → init-pack + spawn_org_restore(진리표 3·4 · 기준선과 동일 판정). 판정이 바뀐 입력은 「스탬프 없음 + 이 기동 전 온보딩 마커 없음 + 부서 0」 하나뿐 — 새 설치 · `~/.cys` 만 지워진 기기 · 마커 이전 판(≤0.12.50) 기기. 마지막 경우도 본부 좌석은 cysd 콜드부트 auto-restore 가, 구 데몬 생존 갱신은 rotate 마커가 덮는다(Fable 1R 확인 · 코드 경로 대조 · 실행 대조는 VM). 종전 누락 1건(팩·스탬프 없음 + 온보딩 이력)은 이번에 복원이 돌도록 고쳐졌다.
 - ④ 전 pane 사망: 해당 없음(좌석 생성·종료 경로 무접촉 · 권한 거절 시 부서 좌석 사망 경로는 1.1.5 대행 + seat.folder_denied 그대로).
 
-## 7. 재현 절차 · VM 체크리스트(master 배정 뒤 1회)
-- 단위: `cargo test -p cys-app v116_` · `cd ui && bun test src/permtoast.test.ts`(시험 환경 준비 = §4 끝).
-- VM(새 clone · 이 브랜치 빌드 설치):
-  1. 설치 직후 첫 실행 — 앱 stderr/로그에 `init-pack` 이 온보딩 1회만(업데이트 반영 `--no-install-hook` 호출 0) · `~/.cys/.last-app-version` = 현재판 · `~/.cys/.pending-restore` 없음 · 「직원 복귀 중/완료」 토스트 0 · 복원 카드 0(T4).
-  2. 첫 화면에 안내 토스트 「📁 곧 macOS 가 폴더 접근을 여쭙니다」 → 약 1.5초 뒤 데스크탑 권한 창 → 이어서 문서 권한 창 — **창 안에 Info.plist 문장**이 보이는지 캡처 2장 · 답한 뒤 안내 토스트가 사라지는지.
-  3. [허용 안 함] 을 누른 VM 에서 — perm-warning 원인 토스트 · 부서 하나 만들어 좌석이 fd 오도 오류로 죽지 않는지(1.1.5 대행 · seat.folder_denied 문장).
-  4. 앱 종료 → 재실행 — 안내 토스트 0 · 권한 창 0(이미 결정) · 복원 0(Skip).
-  5. 대조군(자가치유): 스탬프를 옛 판으로 바꾸고(`echo 1.1.4 > ~/.cys/.last-app-version`) 재실행 → 「직원 복귀」 진행·완료 알림 · 좌석 복원 실행(종전 동작 유지).
-  6. (선택) 웹뷰 새로고침(Cmd+R) — 안내 재등장 0.
+## 7. 재현 절차 · VM 체크리스트(master 배정 뒤 1회 · VM 전담 좌석이 이 절만 읽고 돌릴 수 있게)
+
+### 7-0. 단위(VM 없이)
+`cargo test -p cys-app v116_` · `cd ui && ~/.bun/bin/bun test src/permtoast.test.ts`(시험 환경 준비 = §4 끝 · bun 은 절대경로).
+
+### 7-1. 빌드(이 브랜치 · 판번 1.1.5 그대로 · 업로드 0)
+```bash
+cd ~/axdev/.wt/cys-v116-app && git rev-parse HEAD        # 이 HANDOFF 커밋 이후 = 수리 전부 포함
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/cys-updater-A2.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+scripts/build-macos-local.sh aarch64 ~/axdev/.wt/out-mac-v116-app/   # Tart = arm64 · x64 는 VM 실기 불가(빈칸 표기)
+```
+- 산출 = `~/axdev/.wt/out-mac-v116-app/cysr-macos-arm64-v1.1.5.zip` · 스크립트 끝 표가 **크기 · sha256 · CDHash** 를 찍는다(설치기 핀 4값의 출처 · 손으로 재지 않는다).
+- 번들 자원은 빌드가 다시 만든다: `scripts/bundle-prep.sh`(beforeBuildCommand)가 사이드카 `src-tauri/binaries/*`·`resources/pack.tar.gz`·`pack-manifest.json` 을, `scripts/lib/mac-bundle-common.sh:63` 이 `runtime/`(python3 부재 · `.prep-target` 불일치면 재준비)을 채운다. 1026 이 시험용으로 둔 빈 `resources/`·`runtime/` 자리표는 닫을 때 지웠다(`binaries/` 는 실바이너리 사본 · 빌드가 덮어씀). 확인 = 빌드 로그의 「== 동봉 런타임 준비(aarch64-apple-darwin) ==」 줄 + `unzip -l <zip> | grep pack.tar.gz` 크기 > 0.
+
+### 7-2. VM 설치(전례 = master briefs `2026-09-20-v110-vm-verify.md` S1 과 같은 방식)
+1. Tart `jarvis-clean-vanilla` 를 **clone** 해서 쓴다(원본 직접 사용 금지 · Tart 한도 2 = master 조정).
+2. 호스트에서 산출 폴더를 로컬 http 로 서빙(`cys run -- python3 -m http.server <포트> --directory ~/axdev/.wt/out-mac-v116-app` · 끝나면 종료).
+3. 설치기 = 최신 설치기 사본(현재 `~/axdev/.wt/habitat-0335/install-master/bootstrap.sh` · 0.3.36 이 있으면 master 지정본). 사본에서 핀 5칸만 치환: `CYS_FORK_VERSION="1.1.5"`(그대로) · `CYS_FORK_DIR="http://<호스트>:<포트>/"` · `CYS_FORK_BYTES`·`CYS_FORK_SHA256`·`CYS_FORK_CDHASH` = 7-1 표 값(`CYS_FORK_FILE` 은 판번에서 파생 = 그대로).
+4. VM 에서 그 사본으로 설치 한 줄 실행 → 설치기가 마지막에 앱을 연다(`open -a`). ⚠권한 창 실험 중에는 앱을 **Finder 또는 `open -a`** 로만 연다 — 터미널에서 바이너리를 직접 실행하면 권한 창의 주인이 터미널로 잡혀 무효【추정】.
+
+### 7-3. 합격 기준(항목마다 캡처 또는 명령 출력 1개)
+| # | 단계 | 합격 | 증거 |
+|---|---|---|---|
+| S1 | 설치 직후 첫 실행 | 「직원 복귀 중/완료」 토스트 **0** · 복원 카드 **0**(T4) · `ps` 에 `cys restore --include-master` **0** · 업데이트 반영 `cys init-pack --no-install-hook` **0**(온보딩 `init-pack` 1회만) | 첫 화면 캡처 · `ls -la ~/.cys/.last-app-version ~/.cys/.gui-onboarded ~/.cys/.pending-restore` = 앞 둘 내용 `1.1.5` · 셋째 없음 |
+| S2 | 같은 첫 실행의 권한 창 | 안내 토스트 「📁 곧 macOS 가 폴더 접근을 여쭙니다」가 **먼저** → 약 1.5초 뒤 데스크탑 권한 창 → 문서 권한 창 · **창 안에** 「AI 직원들이 데스크탑의 CYSjavis 폴더에서 일할 수 있도록 허용을 눌러 주세요.」 / 「…문서 폴더에 있는 작업도 도울 수 있도록 허용을 눌러 주세요.」 · 답하면 안내 토스트가 사라짐 · 앱 로그에 「백엔드 폴백 nudge」 **없음** | 캡처 3장(안내 · 데스크탑 창 · 문서 창) |
+| S3 | [허용 안 함] 을 누른 clone | perm-warning 원인 토스트(데스크탑·문서) · 부서 하나 만든 뒤 그 좌석 claude 가 「low max file descriptors」로 죽지 않음(1.1.5 대행) 또는 죽었다면 seat.folder_denied 원인 문장 토스트 | 캡처 · `cys list` |
+| S4 | 앱 종료 → 재실행 | 안내 토스트 0 · 권한 창 0(이미 결정) · 복원 0 | 캡처 |
+| S5 | **대조군(자가치유)** — 앱 종료 → `echo 1.1.4 > ~/.cys/.last-app-version` → 재실행 | 「직원 복귀 중 → 완료」 알림이 **뜬다** · 좌석 복원 실행 · 스탬프가 `1.1.5` 로 전진 | 캡처 · `cat ~/.cys/.last-app-version` |
+| S6 | (선택) S2 가 끝난 뒤 웹뷰 새로고침 Cmd+R | 안내 재등장 0 | 캡처 |
+- 불합격 시: 어느 행인지 + 캡처 + 앱 로그(설치기가 연 앱이면 `log show --last 10m --predicate 'process == "cysr"'` 등 · 수단은 전담 좌석 판단) → master. 이 좌석(1026)은 닫혀 있으므로 수리는 master 가 재발주.
+- 빈칸 정직 표기: x64 = VM 실기 불가 · 윈 = 이 티켓 VM 범위 밖(윈 빌드는 CI 로 · §9).
 - 윈 실기 체크리스트 1줄(X-3 이월 · 이 티켓 범위 밖): phoenix 원장 위치 실측.
 
 ## 8. 성찰(착수 전 · 완료 전)

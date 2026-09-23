@@ -894,7 +894,7 @@ def empty_seat_action(status, role, now=None, grace=None):
     return "takeover" if role in SEAT_TAKEOVER_ROLES else "reap-launch"
 
 
-def settle_unknown_seat(status, role, requery, tick_s=1.0, max_wait_s=None):
+def settle_unknown_seat(status, role, requery, tick_s=1.0, *, max_wait_s):
     """★v115r3-d7(D7⑴): 좌석 사실이 "unknown" 이면 워치독이 채울 때까지 재조회한다(유계).
 
     데몬의 seat_cache 는 좌석 생성 시 0(Unknown)이고 첫 워치독 틱(≤SEAT_WATCHDOG_TICK_S)이 처음
@@ -910,7 +910,8 @@ def settle_unknown_seat(status, role, requery, tick_s=1.0, max_wait_s=None):
     #   종전 흐름 그대로(master 지시 c22f2860: seat=unknown ∧ agent None).
     if (status_surface(status, role) or {}).get("agent") is not None:
         return status, None
-    limit = 2.0 * SEAT_WATCHDOG_TICK_S if max_wait_s is None else float(max_wait_s)
+    # agy 2R #1: 상한은 호출자가 늘 준다(남은 데드라인 · 필수 키워드) — 호출처 0 인 기본 분기는 두지 않는다.
+    limit = float(max_wait_s)
     waited, st = 0.0, status
     while waited < limit:
         # agy 1R #2: 마지막 조각은 남은 상한만큼만 — 틱을 통째로 자면 호출자 데드라인을 넘는다.

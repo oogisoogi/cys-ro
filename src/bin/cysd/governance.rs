@@ -3272,7 +3272,9 @@ const SEAT_UNKNOWN_HOLD_SECS: f64 = (WATCHDOG_INTERVAL_SECS + 1) as f64;
 /// (`CYS_SEAT_BOOT_GRACE_S` · 기본 180 · 음수·비수치 = 기본값)의 미러. 유예를 넘기면 종전 판정으로 복귀 —
 /// 무한 정지 부류를 만들지 않는다. **부서 소켓에서만** 값이 있다(본부 좌석 정책 무접촉).
 pub(crate) fn dept_seat_agent_grace_secs(daemon_socket: &std::path::Path) -> Option<f64> {
-    if !cys::is_dept_socket(daemon_socket) {
+    // agy 2R #2: 판별은 소켓의 **직계 부모 폴더**(윈 = 파이프 마지막 성분) 이름만 본다 — 경로 어딘가에
+    //   `cys-dept-` 가 있다는 것(예: /Users/x/cys-dept-project/…/cys/cys.sock)은 부서의 증거가 아니다.
+    if cys::dept_name_from_socket(daemon_socket).is_none() {
         return None;
     }
     let v = std::env::var("CYS_SEAT_BOOT_GRACE_S")
@@ -3281,6 +3283,26 @@ pub(crate) fn dept_seat_agent_grace_secs(daemon_socket: &std::path::Path) -> Opt
         .filter(|v| v.is_finite() && *v >= 0.0)
         .unwrap_or(180.0);
     Some(v)
+}
+
+/// ★v115r3-d7 r3: 좌석 보류가 `queue_blocked` 에 남기는 사유 라벨인가(틱 게이트의 세 라벨 접두).
+pub(crate) fn is_seat_hold_reason(r: &str) -> bool {
+    r.starts_with("empty_seat") || r.starts_with("seat_unknown") || r.starts_with("seat_no_agent")
+}
+
+/// ★v115r3-d7 r3(agy 2R #4) 좌석 보류가 풀렸으면(`seat_hold == None`) 남아 있는 **좌석 사유만** 걷는다 —
+/// 다른 게이트 사유(human_typing·busy 등)는 그 게이트 소관이라 건드리지 않는다.
+pub(crate) fn release_stale_seat_hold_reason(
+    s: &crate::state::Surface,
+    seat_hold: Option<&'static str>,
+) {
+    if seat_hold.is_some() {
+        return;
+    }
+    let mut slot = s.queue_blocked.lock().unwrap();
+    if slot.as_ref().is_some_and(|(r, _)| is_seat_hold_reason(r)) {
+        *slot = None;
+    }
 }
 
 /// ★v115r3-d7 역할 좌석 배달 보류 판정 — 틱 배달(`deliver_queued`)·강제 배달(`force_deliver_entry`)의
@@ -6118,7 +6140,11 @@ fn deliver_queued(
         // Unknown(프로브 미도달)은 **배달**한다 — 현행 동작 유지(판정 실패가 전 큐를 멈추는
         // 새 장애를 만들지 않는다). 보류는 유실이 아니라 지연이며, 좌석에 에이전트가 앉으면
         // 순서대로 배달된다. 적체는 아래 기존 알림이 사유와 함께 가시화한다(침묵 적체 금지).
-        if let Some(hold) = role_seat_hold(&s, now_epoch(), dept_grace) {
+        let seat_hold = role_seat_hold(&s, now_epoch(), dept_grace);
+        // agy 2R #4: 좌석 보류가 풀린 순간 좌석 사유를 먼저 걷는다 — 아래 배달이 다른 이유로 실패해도
+        //   유예가 끝난 좌석을 낡은 좌석 사유(seat_no_agent 등)로 계속 보고하지 않는다.
+        release_stale_seat_hold_reason(&s, seat_hold);
+        if let Some(hold) = seat_hold {
             let label = match hold {
                 "empty_seat" => "empty_seat(좌석에 에이전트 미연결)",
                 "seat_unknown" => "seat_unknown(생성 직후 좌석 판정 전)",
@@ -10301,8 +10327,8 @@ mod tests {
 
     // ─────────── ★G1(W2-E): queue.deliver(운영자 강제 배달) — 게이트·경합·공유 핀 ───────────
 
-    use super::{dept_seat_agent_grace_secs, force_deliver_entry, role_seat_hold, ForceDeliverDenied, SeatState,
-                SEAT_UNKNOWN_HOLD_SECS};
+    use super::{dept_seat_agent_grace_secs, force_deliver_entry, release_stale_seat_hold_reason, role_seat_hold,
+                ForceDeliverDenied, SeatState, SEAT_UNKNOWN_HOLD_SECS};
 
     /// W2-E 테스트 공용 준비물: 격리 데몬 + surface 1개(+원장 스레드 격리) — 초기 셸 출력이
     /// 판정 재료(last_output)를 덮지 않게 안정화한 뒤 돌려준다.
@@ -10474,8 +10500,14 @@ mod tests {
         *s.agent_meta.lock().unwrap() = Some(("claude".into(), "master".into()));
         assert_eq!(role_seat_hold(&s, inside, g), None, "메타 좌석은 agent_seen 소관(종전)");
         *s.agent_meta.lock().unwrap() = None;
-        // 부서 판별 = 소켓 경로의 cys-dept- 성분 · 본부 = None
+        // 부서 판별 = 소켓 **직계 부모** 폴더 이름 · 본부 = None
         assert_eq!(dept_seat_agent_grace_secs(std::path::Path::new("/h/.local/state/cys/cys.sock")), None);
+        // agy 2R #2 반례: 조상 폴더 이름에 cys-dept- 가 있어도 본부 소켓은 본부다
+        assert_eq!(
+            dept_seat_agent_grace_secs(std::path::Path::new("/Users/x/cys-dept-project/w/.local/state/cys/cys.sock")),
+            None,
+            "조상 경로의 cys-dept- 로 본부를 부서로 오분류"
+        );
         assert!(dept_seat_agent_grace_secs(std::path::Path::new("/h/.local/state/cys-dept-dept-1/cys.sock")).is_some());
         // 창 = 첫 워치독 틱 + 1초(틱 주기와 함께 움직인다)
         assert_eq!(SEAT_UNKNOWN_HOLD_SECS, (crate::governance::WATCHDOG_INTERVAL_SECS + 1) as f64);
@@ -10521,6 +10553,34 @@ mod tests {
         s.seat_agent_cache.store(true, Ordering::Relaxed);
         deliver_queued(&daemon, &mut depth, &mut starve);
         assert_eq!(s.pending_queue.lock().unwrap().len(), 0, "에이전트가 관측된 부서 좌석에도 배달 안 됨");
+    }
+
+    /// ★v115r3-d7 r3(agy 2R #4) 좌석 보류가 풀리면 좌석 사유만 걷힌다 — 배달이 다른 이유로 실패해도 낡은
+    /// seat_no_agent 가 남지 않는다. 다른 게이트 사유·보류 지속 중인 사유는 그대로. + 호출 위치 핀:
+    /// deliver_queued 가 보류 판정 직후·배달 시도 **전**에 부른다(배달 실패는 단일 스레드 시험에서
+    /// 결정론으로 만들 수 없어 — write_tx 교체 불가 — 위치를 소스로 고정한다).
+    #[test]
+    fn d7_released_seat_hold_clears_only_seat_reason_before_delivery() {
+        let (_daemon, s) = force_deliver_rig("d7-release", Some("master"));
+        for r in ["seat_no_agent(부서 좌석 에이전트 미관측 · 부팅 유예 안)", "empty_seat(좌석에 에이전트 미연결)",
+                  "seat_unknown(생성 직후 좌석 판정 전)"] {
+            *s.queue_blocked.lock().unwrap() = Some((r.into(), 1.0));
+            release_stale_seat_hold_reason(&s, Some("seat_no_agent"));
+            assert!(s.queue_blocked.lock().unwrap().is_some(), "보류 지속 중인데 사유를 지웠다: {r}");
+            release_stale_seat_hold_reason(&s, None);
+            assert!(s.queue_blocked.lock().unwrap().is_none(), "보류가 풀렸는데 낡은 좌석 사유 잔존: {r}");
+        }
+        *s.queue_blocked.lock().unwrap() = Some(("human_typing(사람 입력 직후)".into(), 1.0));
+        release_stale_seat_hold_reason(&s, None);
+        assert!(s.queue_blocked.lock().unwrap().is_some(), "남의 게이트 사유를 지웠다");
+        let src = include_str!("governance.rs");
+        let body = &src[src.find("\nfn deliver_queued(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let (rel, del) = (
+            body.find("release_stale_seat_hold_reason(&s, seat_hold);").expect("틱 경로가 사유 걷기를 잃었다"),
+            body.find("if deliver_head_locked(").expect("배달 지점"),
+        );
+        assert!(rel < del, "사유 걷기가 배달 시도 뒤로 밀렸다(배달 실패 시 낡은 사유 잔존)");
     }
 
     /// ★v115r3-d7(agy 1R #3) 틱 배달 경로도 같은 술어 — 생성 직후 Unknown 역할 좌석은 보류 + `queue.held`

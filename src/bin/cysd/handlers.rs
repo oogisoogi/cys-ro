@@ -7448,6 +7448,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //  '누가 죽은 좌석의 큐를 비웠는지'가 남아 포렌식 가치 소실을 명시 행위로 기록한다.)
             let dropped: Vec<crate::state::QueueEntry> =
                 surface.pending_queue.lock().unwrap().drain(..).collect();
+            // agy 2R #3(r3): 큐를 비웠으면 막힘 사유도 사실이 아니다 — 빈 큐는 틱이 건너뛰어(continue)
+            //   영원히 안 지워지므로 여기서 지운다(queue.list 의 blocked 오보 방지).
+            *surface.queue_blocked.lock().unwrap() = None;
             if !dropped.is_empty() {
                 daemon.bus.publish(
                     "queue.dropped",
@@ -14533,9 +14536,16 @@ mod tests {
             .pending_queue.lock().unwrap()
             .push_back(mine);
 
+        // agy 2R #3(r3): 보류 사유가 남은 채 비우면 사유도 걷혀야 한다(빈 큐는 틱이 건너뛰어 영영 안 지워진다).
+        *daemon.surfaces.lock().unwrap()[&own].queue_blocked.lock().unwrap() =
+            Some(("seat_no_agent(부서 좌석 에이전트 미관측 · 부팅 유예 안)".into(), 1.0));
         let resp = queue_clear_rpc(&daemon, own, Some(own_pid));
         assert_eq!(resp["ok"], json!(true), "자기 큐 비우기가 막혔다 (응답: {resp})");
         assert_eq!(resp["result"]["cleared"].as_u64(), Some(1));
+        assert!(
+            daemon.surfaces.lock().unwrap()[&own].queue_blocked.lock().unwrap().is_none(),
+            "큐를 비웠는데 막힘 사유가 남아 queue.list 가 거짓 blocked 를 보고한다"
+        );
         assert!(
             daemon.surfaces.lock().unwrap()[&own].pending_queue.lock().unwrap().is_empty(),
             "자기 clear가 통과했는데 큐가 남아 있다"

@@ -339,6 +339,11 @@ class A2B8BootNodeRun(unittest.TestCase):
         finally:
             time.sleep = saved
 
+    def test_d7_settle_requires_explicit_limit(self):
+        # agy 2R #1: 상한은 호출자가 반드시 준다 — 호출처 0 인 기본 분기(None → 2틱)를 두지 않는다.
+        with self.assertRaises(TypeError):
+            bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: _st(seat="empty"))
+
     def test_d7_settle_never_sleeps_past_the_limit_wall_clock(self):
         # agy 1R #2: 실제 경과 시간 — 남은 데드라인(0.15s)이 틱(1s)보다 짧아도 상한 안에서 끝난다.
         t = time.monotonic()

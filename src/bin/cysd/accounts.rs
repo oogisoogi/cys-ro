@@ -216,17 +216,23 @@ pub fn note_rate(
             view.profiles.insert(p);
         }
         // 최신 승자 — note는 신선 생산분만 받으므로 timestamp 비교로 충분.
-        // ★(v116-usage · opus 적대 1R) 단 **창이 전부 리셋 지난 묶음**(idle 좌석 statusline 이 마지막 API 응답의
-        //   캐시 창을 다시 보고)은 살아 있는 창이 있는 묶음(OAuth 프로브 등)을 덮지 못한다 — 덮으면 D6-1 경보
-        //   필터가 그 창을 빼 경보 키가 사라졌다가 다음 신선 관측에 돌아오며 매번 재발화한다(경보 깜빡임).
-        let dead_over_live = rate_vector_all_reset(rate, now)
-            && view.rate.iter().any(|w| rate_window_stale_reason(w.resets_at, view.updated_at, now).is_none());
-        if now >= view.updated_at && !dead_over_live {
-            view.rate = rate.to_vec();
-            view.updated_at = now;
-            view.source = source.into();
-        }
-        for w in rate {
+        // ★(v116-usage · opus 적대 1R·2R) 단 **창 라벨 단위**로: 리셋이 지난 창(idle 좌석 statusline 이 마지막 API
+        //   응답의 캐시 창을 다시 보고 — 보통 [5h 리셋 지남, 7d 살아 있음])은 같은 라벨의 살아 있는 창(OAuth 프로브 등)을
+        //   대체하지 못한다(merge_rate_windows). 대체하면 D6-1 경보 필터가 그 창을 빼 경보 키가 사라졌다가 다음 신선
+        //   관측에 돌아오며 매번 재발화한다(경보 깜빡임). 받아들인 창이 하나도 없으면 갱신 자체를 하지 않는다.
+        //   기각된 창은 스냅샷에도 영속하지 않는다 — 영속하면 재부팅 예열이 죽은 행을 올린다.
+        let accepted: Vec<bool> = if now >= view.updated_at {
+            let (merged, accepted) = merge_rate_windows(&view.rate, view.updated_at, rate, now);
+            if accepted.iter().any(|a| *a) {
+                view.rate = merged;
+                view.updated_at = now;
+                view.source = source.into();
+            }
+            accepted
+        } else {
+            vec![true; rate.len()]
+        };
+        for (w, _) in rate.iter().zip(&accepted).filter(|(_, a)| **a) {
             let pk = (key.clone(), w.label.clone());
             let prev = st.last_persisted.get(&pk).copied();
             if prev.map_or(true, |p| (w.used_pct - p).abs() >= SNAPSHOT_MIN_DELTA_PCT) {
@@ -1089,10 +1095,36 @@ pub fn predict_exhaust(series: &[(f64, f64)], now: f64, resets_at: Option<f64>) 
     }
 }
 
-/// (v116-usage) 창 묶음이 비어 있지 않고 **모든** 창의 리셋이 지났는가(순수). resets_at 미상 창이 하나라도 있으면
-/// 아니다 — 모르는 것을 죽었다고 하지 않는다(rate_window_stale_reason 과 같은 규약).
-pub fn rate_vector_all_reset(rate: &[RateWindow], now: f64) -> bool {
-    !rate.is_empty() && rate.iter().all(|w| matches!(w.resets_at, Some(r) if r < now))
+/// (v116-usage) 새 관측 묶음을 기존 묶음에 **창 라벨 단위**로 합친다(순수 — 진리표 핀). 반환 = (합친 묶음, 새 창별 채택 여부).
+/// 새 창이 리셋 지남(resets_at < now)이고 같은 라벨의 기존 창이 살아 있으면(rate_window_stale_reason == None) 기존 창을
+/// 유지하고 그 새 창은 기각한다. 그 밖은 새 창 채택(종전 최신 승자). resets_at 미상 창은 리셋 지남으로 보지 않는다.
+/// 새 묶음에 없는 라벨의 기존 창은 종전처럼 사라진다(묶음 통째 교체 규약 유지 — 생산자가 창 목록의 정본).
+pub fn merge_rate_windows(
+    old: &[RateWindow],
+    old_observed_at: f64,
+    incoming: &[RateWindow],
+    now: f64,
+) -> (Vec<RateWindow>, Vec<bool>) {
+    let mut merged = Vec::with_capacity(incoming.len());
+    let mut accepted = Vec::with_capacity(incoming.len());
+    for w in incoming {
+        let passed = matches!(w.resets_at, Some(r) if r < now);
+        let live_old = old
+            .iter()
+            .filter(|_| passed)
+            .find(|o| o.label == w.label && rate_window_stale_reason(o.resets_at, old_observed_at, now).is_none());
+        match live_old {
+            Some(o) => {
+                merged.push(o.clone());
+                accepted.push(false);
+            }
+            None => {
+                merged.push(w.clone());
+                accepted.push(true);
+            }
+        }
+    }
+    (merged, accepted)
 }
 
 /// alerts용 스냅샷: (라벨, 창, pct) — 관측된 계정만.
@@ -1667,4 +1699,5 @@ mod tests {
         // 관측 전(0.0) — 나이를 셀 수 없으면 신선이라 주장하지 않는다
         assert_eq!(rate_window_stale_reason(Some(now + 60.0), 0.0, now), Some("no_observation_24h"));
     }
+
 }

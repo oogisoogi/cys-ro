@@ -10060,7 +10060,9 @@ fn screen_shows_launch_failure(flat: &str) -> bool {
 ///      · 그리드 전체가 아니라 에코 아래를 보는 이유(agy 1R #3-①): 재사용 좌석의 **옛 TUI 잔상**은 에코 위에 있다 —
 ///        그것을 증거로 세면 PowerShell 처럼 오류 블록이 길어 꼬리 창 밖으로 밀린 진짜 실패가 확증되지 않는다.
 /// 새 좌석·재사용 좌석의 진짜 실패(생존 없음 · 에코 아래 TUI 없음 · 또는 꼬리에 오류)는 종전과 같이 참이다.
-/// ★남는 틈(정직): 옛 대화를 다시 그리는 도중(TUI 테두리 전) 꼬리에 오류 줄이 걸린 틱은 ①만이 막는다.
+/// ★남는 틈(정직 · agy 3R #1 정정): 옛 대화를 다시 그리는 **도중**(하단 영역을 그리기 전) 틱은 오류가 꼬리에
+///   있든 없든 이 함수가 참이다(에코 아래에 TUI 가 아직 없다) — 이 함수 혼자서는 ①만이 막는다. 그래서 호출부가
+///   **연속 두 틱** 확증을 요구한다([`LAUNCH_FAILURE_CONFIRM_TICKS`] · 재출력 도중 틱은 다음 틱에 풀린다).
 /// ★①이 절대 거부권인 이유: 생존 관측 좌석을 화면 글자로 닫지 않는다 — `readiness_timeout_verdict` 표의
 ///   `Some(true) → 보류(좌석 보존)`와 같은 비대칭(오살이 방치보다 비싸다). 래퍼만 잠깐 사는 틱은 신규 출현분이
 ///   누적이라 다음 틱에 다시 판정된다.
@@ -10078,16 +10080,35 @@ fn launch_failure_confirmed(screen: &str, launch_line: &str, alive: Option<bool>
 /// 대화의 마지막 줄(옛 도구 오류일 수 있다)이 창에 들어오지 않는다(opus 적대 1R #2 — 5줄이면 들어온다).
 const LAUNCH_FAILURE_TAIL_LINES: usize = 3;
 
+/// (T2) 기동 실패 확증에 필요한 **연속** 틱 수(틱 = `BUDGET_TICK_MS`). 2 = 진짜 실패 닫힘이 한 틱(2.5초) 늦어지는 값.
+const LAUNCH_FAILURE_CONFIRM_TICKS: u32 = 2;
+
+/// (T2) 연속 확증 계수(순수) — 이번 틱이 확증이면 +1, 아니면 0 으로 되돌린다.
+fn launch_failure_streak(prev: u32, confirmed_now: bool) -> u32 {
+    if confirmed_now {
+        prev.saturating_add(1)
+    } else {
+        0
+    }
+}
+
 /// (T2) 화면에서 기동 명령 에코(보낸 줄의 앞 16자)가 **마지막으로** 나온 줄의 다음 줄부터 — 없으면 화면 전체.
 /// 에코 위 = 기동 이전 화면(재사용 좌석의 옛 TUI 잔상). 에코가 화면 밖으로 밀렸으면 잔상도 함께 밀렸다.
+/// 탐색은 **줄바꿈을 무시**한다(agy 3R #2): 긴 프롬프트 뒤 에코가 그리드 폭에서 접히면 16자가 두 행에 걸친다.
 fn grid_after_launch_echo<'a>(screen: &'a str, launch_line: &str) -> &'a str {
-    let probe: String = launch_line.trim().chars().take(16).collect();
+    let probe: Vec<char> = launch_line.trim().chars().take(16).collect();
     if probe.is_empty() {
         return screen;
     }
-    match screen.rfind(probe.as_str()) {
-        Some(i) => match screen[i..].find('\n') {
-            Some(j) => &screen[i + j + 1..],
+    // 줄바꿈을 뺀 글자열 + 각 글자의 원래 바이트 위치
+    let joined: Vec<(usize, char)> = screen.char_indices().filter(|&(_, c)| c != '\n').collect();
+    let hit_end = (0..joined.len().saturating_sub(probe.len() - 1))
+        .rev()
+        .find(|&k| probe.iter().enumerate().all(|(m, &pc)| joined.get(k + m).map(|&(_, c)| c) == Some(pc)))
+        .map(|k| joined[k + probe.len() - 1].0);
+    match hit_end {
+        Some(e) => match screen[e..].find('\n') {
+            Some(j) => &screen[e + j + 1..],
             None => "",
         },
         None => screen,
@@ -10767,6 +10788,8 @@ fn boot_agent_on_surface(
     // ★(W4 · B19) 폴더신뢰 프롬프트 패턴을 **어댑터 선언에서** 읽는다(하드코딩 제거).
     //   상세 근거는 trust_prompt_regex·trust_prompt_hit 정의부 주석.
     let trust_re: Option<regex::Regex> = trust_prompt_regex(&spec);
+    // (T2 · agy 3R #1) 기동 실패 확증이 연속으로 선 틱 수 — `LAUNCH_FAILURE_CONFIRM_TICKS` 에 닿아야 닫는다.
+    let mut failure_streak: u32 = 0;
     while std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(BUDGET_TICK_MS));
         // 화면(vt100 그리드) — 사람이 보는 현재 상태. 잔존 프롬프트도 여기 남는다.
@@ -10786,9 +10809,13 @@ fn boot_agent_on_surface(
         //   출력의 `No such file or directory` 한 줄이 살아 있는 claude 를 닫았다(VM ↻ 본부 cso surface:9 ·
         //   생성 5.3초 뒤 descendants_killed 1). 문면만으로 확증하지 않고 생존 증거와 모순되지 않을 때만
         //   확증한다(`launch_failure_confirmed` — 문면이 보인 틱에만 데몬을 한 번 더 조회한다).
-        if screen_shows_launch_failure(&delta_flat)
-            && launch_failure_confirmed(text, &send, surface_agent_alive(sid))
-        {
+        //   ★(T2 · agy 3R #1) 확증은 **연속 두 틱**이어야 한다 — 진짜 실패 화면(오류 + 프롬프트)은 멈춰 있어
+        //   다음 틱에도 그대로지만, `--resume` 재출력 **도중**(하단 영역을 그리기 전) 틱은 다음 틱에 TUI 가 그려져
+        //   확증이 풀린다. 확증 후보 틱은 아래 준비 판정·신뢰 창 전송으로 넘어가지 않는다(맨 셸 주입 방지).
+        let confirmed_now = screen_shows_launch_failure(&delta_flat)
+            && launch_failure_confirmed(text, &send, surface_agent_alive(sid));
+        failure_streak = launch_failure_streak(failure_streak, confirmed_now);
+        if failure_streak >= LAUNCH_FAILURE_CONFIRM_TICKS {
             // ★(U-11) 화면이 기동 실패를 **확증**한 유일한 지점 — 종전 귀결(close)을 그대로
             //   유지한다. 보류로 흐르면 안 된다: 여기서 보류하면 진짜 실패 좌석이 역할을 쥔 채
             //   쌓이고, 그 다음 기동이 전부 claim_denied 가 된다(2026-08-16 실사고 계열).
@@ -10797,6 +10824,9 @@ fn boot_agent_on_surface(
                     "agent '{agent}' failed to start (command error in new output) — check cmd in agents.json"
                 ),
             });
+        }
+        if confirmed_now {
+            continue;
         }
         // ② 폴더신뢰 프롬프트 — 멱등 래치·화면 재확인·1발. `continue` 하지 않는다(ready 검사 계속).
         //
@@ -23706,9 +23736,15 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let body = &src[src.find("fn boot_agent_on_surface(").expect("fn")..];
         let body = &body[..body.find("\n}\n").expect("fn end")];
         assert!(
-            body.contains("if screen_shows_launch_failure(&delta_flat)\n            && launch_failure_confirmed(text, &send, surface_agent_alive(sid))"),
+            body.contains("let confirmed_now = screen_shows_launch_failure(&delta_flat)\n            && launch_failure_confirmed(text, &send, surface_agent_alive(sid));"),
             "준비 폴링의 기동 실패 분기가 확증 술어를 거치지 않는다 — resume 재출력이 다시 좌석을 닫는다"
         );
+        // agy 3R #1: 연속 두 틱 확증 · 확증 후보 틱은 준비 판정으로 넘어가지 않는다
+        let i_streak = body.find("failure_streak = launch_failure_streak(failure_streak, confirmed_now);").expect("연속 계수 배선");
+        let i_close = body.find("if failure_streak >= LAUNCH_FAILURE_CONFIRM_TICKS {").expect("연속 확증 게이트");
+        let i_skip = body.find("if confirmed_now {\n            continue;\n        }").expect("후보 틱 건너뜀");
+        let i_judge = body.find("cys::readiness::judge(&obs)").expect("준비 판정");
+        assert!(i_streak < i_close && i_close < i_skip && i_skip < i_judge, "배선 순서: 계수 → 닫기 게이트 → 후보 틱 건너뜀 → 준비 판정");
     }
 
     /// U-9 · `screen_tail_is_shell_prompt` 진리표 (T-D4 / F4-cys-boot-launch-06)

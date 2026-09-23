@@ -91,12 +91,13 @@ struct TailState {
     server_ctx_window: Option<u64>,
     /// codex rollout의 turn_context가 준 모델명 — token_count 소비 귀속용(전수조사 A-2)
     codex_model: Option<String>,
-    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각 = **좌석 생성 시각**(T2).
-    /// tail 부착 시각이 아닌 이유(opus 적대 1R): 세션 파일 전환·휴리스틱 재발견으로 tail 이 다시 붙을 때마다
-    /// 유예가 새로 시작되면 추정 창 좌석의 관측 경로 발화가 영영 안 날 수 있다.
+    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각(T2) — [`reattach_grace_from`] 이 정한다:
+    /// 등록 경로(훅이 세션을 명시 = 새 세션) 부착은 부착 시각 · 휴리스틱 재발견 재부착은 직전 기준 승계.
     grace_from: f64,
     /// 직전 관측의 임계 발화를 유예로 보류했는가 — 새 줄이 없는 틱에서도 유예가 끝나면 재평가한다(T2 · agy 1R #2).
     threshold_deferred: bool,
+    /// 보류한 추정 % — 재평가 때 현재 관측에 %가 없으면(창 없는 statusline 이 덮음) 이 값으로 발화한다(agy 3R #4).
+    deferred_pct: Option<u8>,
 }
 
 impl TailState {
@@ -124,6 +125,7 @@ impl TailState {
             codex_model: None,
             grace_from,
             threshold_deferred: false,
+            deferred_pct: None,
         }
     }
 }
@@ -270,7 +272,16 @@ fn collect_for(
     // tail 상태 초기화/전환: 경로가 바뀌었으면 영속 오프셋(없으면 파일 끝 창)에서 새로 시작
     let need_reset = tails.get(&s.id).map(|t| t.path != path).unwrap_or(true);
     if need_reset {
-        tails.insert(s.id, TailState::attach(daemon, path.clone(), heuristic, now, s.created_at));
+        let prev = tails.get(&s.id).map(|t| (t.grace_from, t.threshold_deferred, t.deferred_pct));
+        let grace_from = reattach_grace_from(prev.map(|p| p.0), heuristic, now);
+        let mut t = TailState::attach(daemon, path.clone(), heuristic, now, grace_from);
+        if heuristic {
+            if let Some((_, deferred, pct)) = prev {
+                t.threshold_deferred = deferred;
+                t.deferred_pct = pct;
+            }
+        }
+        tails.insert(s.id, t);
         // 새 세션 파일 = 새 세션 — 에지 게이트 재무장. 직전 세션이 임계 위에서 끝났어도
         // 새 세션이 곧장 임계 이상으로 시작하면(거대 지침 재주입) 발화해야 한다.
         s.ctx_threshold_armed.store(true, Ordering::Relaxed);
@@ -326,7 +337,7 @@ fn collect_for(
             } else if !statusline_fresh && !defer_estimated_threshold(true, now - state.grace_from) {
                 state.threshold_deferred = false;
                 let cur = s.observed_usage.lock().unwrap().clone();
-                if let Some(p) = cur.as_ref().and_then(|u| u.ctx_pct) {
+                if let Some(p) = cur.as_ref().and_then(|u| u.ctx_pct).or(state.deferred_pct) {
                     crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(agent));
                 }
             }
@@ -515,8 +526,21 @@ fn collect_for(
     //   (유예 뒤 첫 관측·statusline 발화가 같은 에지로 정상 판정한다).
     let defer = defer_estimated_threshold(window_estimated, now - state.grace_from);
     state.threshold_deferred = defer && new.ctx_pct.is_some();
+    state.deferred_pct = if defer { new.ctx_pct } else { None };
     if let Some(p) = new.ctx_pct.filter(|_| !defer) {
         crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(&new.agent));
+    }
+}
+
+/// (T2 · agy 3R #3) 유예 기준 시각(순수 — 진리표 핀). 등록 경로 부착(`heuristic=false` — SessionStart 훅이 세션을
+/// 명시 = 이 좌석에 새로 뜬 에이전트)은 **부착 시각**에서 새로 시작한다: 오래된 좌석에 새로 띄운 claude 도 유예를
+/// 받는다(좌석 생성 시각 기준이면 즉시 만료돼 T2 오발이 재발). 휴리스틱 재발견 재부착(`heuristic=true`)은 직전
+/// 기준을 **승계**한다: 같은 cwd 동시 세션 사이를 오가며 재부착될 때마다 유예가 새로 시작되면 발화가 영영 안 난다
+/// (opus 적대 1R). 직전 tail 이 없으면 부착 시각.
+fn reattach_grace_from(prev_grace: Option<f64>, heuristic: bool, now: f64) -> f64 {
+    match prev_grace {
+        Some(g) if heuristic => g,
+        _ => now,
     }
 }
 
@@ -1972,6 +1996,7 @@ mod tests {
             codex_model: None,
             grace_from: 0.0,
             threshold_deferred: false,
+            deferred_pct: None,
         };
         let lines = read_new_lines(&mut st);
         assert_eq!(lines, vec!["line1".to_string(), "line2".to_string()]);
@@ -2385,13 +2410,14 @@ mod tests {
         assert_eq!(fired.len(), 1, "유예가 끝났는데 새 줄이 없어 보류된 추정 임계가 영구 침묵");
     }
 
-    /// opus 적대 1R(low): 유예 기준은 좌석 생성 시각이다 — 세션 파일 전환(재부착)으로 유예가 새로 시작되지 않는다.
+    /// opus 1R(low)·agy 3R #3: 등록 경로 재부착(새 세션)은 유예를 새로 시작하고, 휴리스틱 재부착은 승계한다.
     #[test]
-    fn t2_grace_is_seat_age_not_reattach_time() {
+    fn t2_grace_registered_reattach_restarts_heuristic_carries() {
         let (daemon, s, dir) = t2_seat("reattach");
         let mut tails = std::collections::HashMap::new();
         let mut attempts = std::collections::HashMap::new();
         super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        tails.get_mut(&s.id).unwrap().grace_from = 1.0; // 옛 기준을 표지값으로
         let b = dir.join("cccccccc-0000-4000-8000-0000000000cc.jsonl");
         std::fs::write(&b, "").unwrap();
         *s.registered_transcript.lock().unwrap() = Some(b.to_string_lossy().into_owned());
@@ -2400,7 +2426,12 @@ mod tests {
         let (path, grace_from) = (t.path.clone(), t.grace_from);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(path, b, "전제: 재부착됨");
-        assert_eq!(grace_from, s.created_at, "재부착이 유예를 새로 시작했다 — 추정 창 좌석 발화 영구 지연 경로");
+        assert!(grace_from > 1.0, "등록 경로 재부착(새 세션)이 옛 유예 기준을 이어받았다 — 새 claude 가 유예 없이 오발");
+        // 휴리스틱 재부착은 승계 · 등록 경로·첫 부착은 부착 시각(순수 진리표)
+        assert_eq!(super::reattach_grace_from(Some(1.0), true, 500.0), 1.0);
+        assert_eq!(super::reattach_grace_from(Some(1.0), false, 500.0), 500.0);
+        assert_eq!(super::reattach_grace_from(None, true, 500.0), 500.0);
+        assert_eq!(super::reattach_grace_from(None, false, 500.0), 500.0);
     }
 
     /// opus 적대 1R(low): 창 크기(ctx %)가 없는 statusline 보고는 보류를 지우지 못한다.
@@ -2443,4 +2474,5 @@ mod tests {
         assert!(still_idle, "ctx 없는 statusline 이 보류를 지웠다(빈 줄 틱) — statusline 이 낡은 뒤 idle 좌석 추정 임계 영구 침묵");
         assert!(still_main, "ctx 없는 statusline 이 보류를 지웠다(새 줄 틱)");
     }
+
 }

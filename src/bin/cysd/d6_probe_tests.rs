@@ -255,6 +255,7 @@ fn d6_1_dead_statusline_vector_does_not_evict_live_oauth() {
     let j = crate::accounts::local_json(&d, now);
     let row = j.as_array().unwrap().iter().find(|r| r["label"] == "evict@x").unwrap().clone();
     assert_eq!(row["rate"][0]["used_pct"], 88.0, "계기도 살아 있는 값을 보여야 한다");
+    assert_eq!(row["source"], "oauth", "전부 기각된 보고가 출처·관측 시각을 바꿨다(죽은 값이 신선한 척)");
     // 대조: 살아 있는 창이 없던 계정은 종전대로 최신 승자(죽은 묶음도 받아 계기가 stale 로 표시)
     let sf2 = profile_session("d61e2", "uuid-evict2", "evict2@x");
     crate::accounts::note_rate(&d, "claude", &sf2, &[w("5h", 70.0, now - 7200.0)], "oauth", now - 10.0);
@@ -264,13 +265,3 @@ fn d6_1_dead_statusline_vector_does_not_evict_live_oauth() {
     assert_eq!(row2["rate"][0]["used_pct"], 93.0, "살아 있는 창이 없으면 최신 승자 유지");
 }
 
-#[test]
-fn d6_1_rate_vector_all_reset_table() {
-    let now = 1000.0;
-    assert!(!crate::accounts::rate_vector_all_reset(&[], now), "빈 묶음은 죽었다고 하지 않는다");
-    assert!(crate::accounts::rate_vector_all_reset(&[w("5h", 1.0, 999.0), w("7d", 1.0, 10.0)], now));
-    assert!(!crate::accounts::rate_vector_all_reset(&[w("5h", 1.0, 999.0), w("7d", 1.0, 1001.0)], now));
-    let unknown = RateWindow { label: "5h".into(), used_pct: 1.0, resets_at: None };
-    assert!(!crate::accounts::rate_vector_all_reset(&[w("7d", 1.0, 10.0), unknown], now), "미상 창 = 죽었다고 하지 않음");
-    assert!(!crate::accounts::rate_vector_all_reset(&[w("5h", 1.0, 1000.0)], now), "경계 = 리셋 시각 그 순간은 신선");
-}

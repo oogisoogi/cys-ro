@@ -440,6 +440,25 @@ export function namedCtxRows(named: NamedReporterLike[] | null | undefined, nowS
 }
 
 // 두 원천을 합쳐 한 표로 — 이름 행이 위, 번호 행이 아래.
+/**
+ * (v116-ui-close-r2 · D4 #10) 페인 CTX 표의 줄 배치 — 소켓(본부·부서)이 여럿이면 부서마다 머리줄 1개를 두고
+ * 행 라벨은 번호만 쓴다. 종전엔 행마다 「dept-3:12」를 좁은 라벨 열에 넣어 「dept-」로 잘렸다 — 부서 이름은
+ * 머리줄(패널 전체 폭)에 싣는다. 이름 보고자(master·cso) 행은 소켓 축 밖이라 머리줄을 두지 않는다.
+ */
+export type CtxLine = { kind: "group"; label: string; socket: string } | { kind: "row"; row: CtxRow };
+export function ctxLines(rows: CtxRow[], showSocket: boolean, groupLabel: (socket: string) => string): CtxLine[] {
+  const out: CtxLine[] = [];
+  let last: string | null = null;
+  for (const r of rows) {
+    if (showSocket && !r.name && r.socket !== last) {
+      out.push({ kind: "group", label: groupLabel(r.socket), socket: r.socket });
+      last = r.socket;
+    }
+    out.push({ kind: "row", row: r });
+  }
+  return out;
+}
+
 export function mergeCtxRows(namedRows: CtxRow[], paneRows: CtxRow[]): CtxRow[] {
   return sortCtxRows([...namedRows, ...paneRows]);
 }

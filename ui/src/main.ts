@@ -83,6 +83,7 @@ import {
   namedCtxRows,
   oldestFootText,
   paneCtxRows,
+  ctxLines,
   renderSignature,
   scopedRates,
   sevClassFor,
@@ -579,7 +580,17 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
     head.className = "wsu-head";
     head.textContent = "페인 CTX";
     frag.appendChild(head);
-    for (const c of ctxRows) {
+    for (const line of ctxLines(ctxRows, showSocket, ctxGroupLabel)) {
+      if (line.kind === "group") {
+        // (D4 #10) 부서 머리줄 — 부서 이름 전체(패널 폭). 행 라벨 열에는 번호만.
+        const gh = document.createElement("div");
+        gh.className = "wsu-ctx-group";
+        gh.textContent = line.label;
+        gh.title = line.socket || "본부";
+        frag.appendChild(gh);
+        continue;
+      }
+      const c = line.row;
       const row = document.createElement("div");
       row.className = `wsu-ctx${c.stale ? " stale" : ""}${c.ctxPct == null ? " unobserved" : ""}`;
       const sid = document.createElement("span");
@@ -587,7 +598,7 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
       const tag = showSocket ? shortSocketTag(c.socket) : "";
       // ★이름 있는 보고자는 번호 대신 이름(오너 지시: 「master」·「cso」).
       //   이들에겐 surface_id가 없으므로 번호를 적으면 화면의 어떤 페인과도 대조되지 않는다.
-      sid.textContent = c.name ? c.name : tag ? `${tag}:${c.surfaceId}` : String(c.surfaceId);
+      sid.textContent = c.name ? c.name : String(c.surfaceId); // (D4 #10) 부서 이름은 머리줄로 — 「dept-3:12」 잘림 제거
       const track = document.createElement("span");
       track.className = "cc-tbar-track";
       if (c.ctxPct != null) {
@@ -4586,6 +4597,12 @@ const UNTITLED = "non title";
 // ★(v116-ui-close · D4 #4 · master 판정 A) 기본 데몬의 마스터 좌석 번호 — 「본부」 탭 판정 재료. refreshPaneTitles 가
 //   기본 소켓 목록을 받을 때마다 갱신한다. null = 아직 모름(→ 첫째 기본 데몬 탭으로 폴백).
 let hqMasterSids: Set<number> | null = null;
+/** (D4 #10) 페인 CTX 부서 머리줄 이름 — 기본 소켓 = 「본부」 · 부서 = 그 부서 탭 이름(없으면 소켓의 부서 이름). */
+function ctxGroupLabel(socket: string): string {
+  if (!socket) return "본부";
+  const ws = workspaces.find((w) => !w.pending && (w.socket ?? "") === socket);
+  return ws ? wsLabel(ws) : (deptNameFromSocket(socket) ?? shortSocketTag(socket)) || socket;
+}
 /** 탭을 **보여 줄** 이름 — 저장값(ws.name)은 건드리지 않는다. 판정 = wsname.ts. */
 function wsLabel(ws: Workspace): string {
   const hq = hqWorkspaceId(

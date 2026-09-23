@@ -120,7 +120,8 @@ export function deadmanCopy(no: number | null, p: Record<string, unknown>): Aler
 
 export function roleTakeoverCopy(prevNo: number | null, p: Record<string, unknown>): AlertCopy {
   const name = typeof p.role === "string" && p.role ? friendlyRole(p.role) : "도우미";
-  const prev = prevNo != null ? `${prevNo}번 창` : "옛 창";
+  // (agy 4R MINOR 수용) 부서 이벤트면 부서 이름 접두 — 다른 경보와 같은 seatName.
+  const prev = prevNo != null ? seatName(prevNo, null, p.dept) : "옛 창";
   return {
     title: `ℹ ${name} 자리가 다른 창으로 옮겨졌습니다`,
     body: `${prev}이 비어 있어 이 역할을 새 창으로 옮겨 붙였습니다. 옛 창에 전할 말이 남아 있으면 그대로 둡니다.`,

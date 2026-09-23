@@ -47,6 +47,8 @@ M=[
  ('M13d','src/main.ts','const name = renameCommitTitle(titleEl.textContent || "", before, sid);','const name = (titleEl.textContent || "").trim();','src/panetitle.test.ts'),
  ('M13e','src/main.ts','        rt.titleEl.dataset.daemonTitle = s.title ?? ""; // 이름 변경에서','        // 이름 변경에서','src/panetitle.test.ts'),
  ('M13f','src/main.ts','        rt.titleEl.title = s.live_cwd ?? "";\n','','src/panetitle.test.ts'),
+ ('M14a','src/wsusage.ts','  return v == null || v === "" ? NaN : Number(v);','  return Number(v);','src/wsusage-null.test.ts'),
+ ('M14b','src/wsusage.ts','      const used = usedPctOf(g.used_pct);','      const used = Number(g.used_pct);','src/wsusage-null.test.ts'),
  ('M3a','src/main.ts','    top.style.flex = "";\n','','src/closeguard.test.ts'),
  ('M3b','src/main.ts','    top.style.flex = "";\n','    if (tree.type !== "pane") top.style.flex = "";\n','src/closeguard.test.ts'),
  ('M4a','index.html','    <button id="btn-close"','    <button id="btn-new" title="새 surface (⌘T)">+ New</button>\n    <button id="btn-close"','src/closeguard.test.ts'),

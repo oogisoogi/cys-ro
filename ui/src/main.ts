@@ -7819,6 +7819,33 @@ async function start() {
       `pane 안의 claude 등이 EPERM으로 꺼질 수 있습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더(또는 전체 디스크 접근 권한)에서 cysr을 허용한 뒤 앱을 재시작하세요.`,
     );
   });
+  // ★v116-app-firstrun(A-3): 새 설치 첫 실행의 폴더 권한 창 — 설명 없이 뜨지 않게 **안내를 먼저** 그리고,
+  // 그 뒤에 백엔드가 권한 창을 부른다(request_folder_access). 첫 실행 판정은 백엔드 단일 사실(이 기동 전
+  // GUI 온보딩 마커 · 복원 판정과 같은 값)이다. 첫 실행이 아니면 백엔드 setup 이 종전대로 부른다.
+  // 거절한 폴더는 백엔드가 perm-warning(바로 위 리스너)으로 원인 문장을 남긴다. await 하지 않는다 —
+  // 권한 창은 사용자가 고를 때까지 기다리므로 아래 리스너 등록을 막으면 안 된다.
+  void (async () => {
+    let guide = false;
+    try {
+      guide = (await invoke("folder_access_guide_needed")) === true;
+    } catch {
+      return; // 옛 백엔드(명령 없음) — setup 이 종전대로 부른다
+    }
+    if (!guide) return;
+    stickyToast(
+      "perm-guide",
+      "system",
+      "📁 곧 macOS 가 폴더 접근을 여쭙니다",
+      "cysr 의 AI 직원들은 데스크탑의 CYSjavis 폴더(부서 작업 폴더)에서 일하고, 문서 폴더의 작업도 맡을 수 있습니다. 이어서 뜨는 창(데스크탑 · 문서)에서 [허용]을 눌러 주세요. 거절해도 앱은 계속 켜져 있고, 나중에 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더에서 바꿀 수 있습니다.",
+    );
+    // 안내가 화면에 그려지고 읽힐 틈을 준 뒤 권한 창을 부른다(순서 보장).
+    await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 1500)));
+    try {
+      await invoke("request_folder_access");
+    } finally {
+      dismissToast("perm-guide");
+    }
+  })();
   // 완전 초기화 진행 이벤트 — sticky toast 본문을 단계 상세로 갱신(결과는 invoke 반환이 정본).
   await listen("reset-progress", (e) => {
     const p = (e.payload ?? {}) as { phase?: string; detail?: string };

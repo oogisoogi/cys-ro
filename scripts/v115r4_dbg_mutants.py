@@ -3,7 +3,7 @@
 
 대상: D1 #1(부서 사전확인 alive) · D1 #2(편성 서브셸 fd 절단) · D2 R2(등록 경로 resume 핀 추종) ·
       R12(좌석 exec 전 프로필 배선 · init-pack 배선) · D10(부서 첫 부팅 대기·실패 원자 정리) ·
-      F1(부서 데몬 = 호출자 판) · D11(공유 본부 프로필 훅 보존) · F4(「네」 분류기).
+      F1(부서 데몬 = 호출자 판) · D11(공유 본부 프로필 훅 보존) · F4(「네」 분류기) · F5(부서 이름 꼴 의도).
 각 뮤턴트: 정확히 1곳 치환(건수 assert) → 그 결함의 시험 명령 → **종료코드**로 판정 → finally 원복.
 어휘: KILLED=적색(잡음 · 실패한 시험 이름 병기) · SURVIVED=공허 · NOT-APPLIED=변이 미적용 ·
       CRASH=컴파일·문법 실패(측정 무효 — 실패와 같은 급).
@@ -30,6 +30,7 @@ PY_D10 = PY_D1 + ["DeptFirstBootWait"]
 PY_F1 = [sys.executable, "cysjavis-pack/bin/tests/test_dbg_d3_dept_path_precedence.py"]
 PY_D11 = [sys.executable, "cysjavis-pack/bin/tests/test_dbg_d3_d11_shared_profile_hooks.py"]
 PY_F4 = [sys.executable, "cysjavis-pack/bin/tests/test_dbg_d3_f4_answer_classifier.py"]
+PY_F5 = [sys.executable, "cysjavis-pack/bin/tests/test_dbg_d3_f5_dept_intent.py"]
 LIB = "src/lib.rs"
 CYSRS = "src/bin/cys.rs"
 DREQ = "cysjavis-pack/bin/javis_dept_request.py"
@@ -91,6 +92,14 @@ MUTANTS = [
      "    if _pack_is_dept and not _acct_is_dept:\n", "    if False:\n", PY_D11),
     ("F4-1-긍정-핵심어-필수-제거", "cysjavis-pack/bin/javis_dept_request.py",
      "            any(_ANS_YES_CORE.fullmatch(w) for w in toks):\n", "            True:\n", PY_F4),
+    ("F5-1-셸-선거름-부-이름꼴-제거", "cysjavis-pack/hooks/dept-chat-inject.sh",
+     "    *부*만들*|*부*꾸려*|*부*꾸리*|*부*생성*|*부*닫*|*부*없애*|*부*해체*|*부*지워*) ;;\n", "", PY_F5),
+    ("F5-2-파이썬-이름꼴-판정-제거", "cysjavis-pack/bin/javis_dept_request.py",
+     "    return any(m.group(1) not in _UNIT_STOP for m in _UNIT_INTENT.finditer(p))\n",
+     "    return False\n", PY_F5),
+    ("F5-3-일반어-제외-제거", "cysjavis-pack/bin/javis_dept_request.py",
+     "    return any(m.group(1) not in _UNIT_STOP for m in _UNIT_INTENT.finditer(p))\n",
+     "    return any(True for m in _UNIT_INTENT.finditer(p))\n", PY_F5),
     # (제외 · 등가 뮤턴트) 「물음표 → other」 검사 제거: `?` 는 _ANS_SPLIT 분리 문자가 아니라 「네?」 낱말이
     #   사전과 전체 일치하지 않아 이미 other 다(실측: 네?·응?·네 ?·좋아요? 전부 other) — 겹방어 두 번째 층.
 ]

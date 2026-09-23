@@ -2696,6 +2696,89 @@ fn write_operator_token(path: &std::path::Path, token: &str) -> std::io::Result<
     }
 }
 
+/// ★dbg-D2 R12(2026-09-23 · 1.1.5 정밀 디버깅 · 차단 확정): 좌석 **exec 전** 프로필 배선.
+///
+/// 결함: claude 는 세션 시작 순간 스킬 목록을 고정한다. 그런데 스킬 심링크(C26·C27·C29)와
+/// appbuild 게이트 훅 등록(C27)은 각성 절차의 사후 `javis_preflight --fix` 만 만들었다 — 신규 설치
+/// 첫 master 좌석(06:45:36)이 링크(06:46:09)보다 33초 먼저 떠 「교육 부서 만들어 줘」가
+/// `Unknown skill: dept-by-chat` 으로 끝났다(VM 실측 · reports/cysr-115-debug-2026-09-23/D2-restore/R12).
+/// 처방: 좌석을 띄우기 직전에 **좌석과 같은 env**(HOME·CYS_PACK_DIR·CLAUDE_CONFIG_DIR·CYS_ACCOUNT_DIR)
+/// 로 `javis_preflight.py --wire-seat` 를 동기 1회 돌린다 — 링크 규약·사용자 실디렉 불가침·부서/임시
+/// 팩 격리 가드가 사후 `--fix` 와 **같은 코드**다(대조군 = 각성 절차의 사후 --fix 는 그대로 둔다).
+/// · 멱등: 이미 배선된 프로필은 파일을 쓰지 않는다(`_symlink_ok` · 훅 등록 존재 확인).
+/// · 맥/윈 공통: 설치기에 기대지 않고 데몬 스폰 경로 하나에서 돈다.
+/// · 실패(스폰 불가·비0 종료·상한 초과) = 기동은 계속 + 이벤트 `seat.wire_failed` 1건.
+/// · 팩에 preflight 가 없으면(비동봉 개발 트리·샌드박스 팩) 조용히 건너뛴다.
+/// · ★시험 빌드는 호출자 env 에 `CYS_TEST_SEAT_WIRE=1` 이 있을 때만 돈다 — cargo 시험 샌드박스 팩은
+///   임시 경로 밖(target/)이라 격리 가드가 안 걸리고, 실 HOME 의 `~/.cys/claude` 를 샌드박스
+///   팩으로 다시 가리키는 라이브 오염이 난다. 제품 빌드에는 이 분기가 없다.
+const SEAT_WIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn wire_seat_profile_before_exec(
+    daemon: &Daemon,
+    builder: &CommandBuilder,
+    surface_id: u64,
+    env: &[(String, String)],
+) {
+    #[cfg(test)]
+    if !env.iter().any(|(k, v)| k == "CYS_TEST_SEAT_WIRE" && v == "1") {
+        return;
+    }
+    #[cfg(not(test))]
+    let _ = env;
+    let Some(pack) = builder.get_env(cys::pack::ENV_PACK_DIR) else {
+        return;
+    };
+    let script = std::path::Path::new(pack).join("bin").join("javis_preflight.py");
+    if !script.is_file() {
+        return;
+    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let python = crate::bundled_python3(&exe_dir).unwrap_or_else(|| "python3".to_string());
+    let mut cmd = cys::python_command(&python);
+    cmd.arg(&script).arg("--wire-seat");
+    for (k, v) in builder.iter_full_env_as_str() {
+        cmd.env(k, v);
+    }
+    // 배선 자식의 `cys` 호출이 라이벌 데몬을 낳지 않게(boot_supervisor·auto-restore 와 같은 계약).
+    cmd.env("CYS_NO_AUTOSTART", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .hide_console();
+    let failure: Option<String> = match cmd.spawn() {
+        Err(e) => Some(format!("spawn 실패: {e}")),
+        Ok(mut child) => {
+            let t0 = Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(st)) if st.success() => break None,
+                    Ok(Some(st)) => break Some(format!("비0 종료: {st}")),
+                    Ok(None) if t0.elapsed() >= SEAT_WIRE_TIMEOUT => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Some(format!("상한 {}s 초과 — 중단", SEAT_WIRE_TIMEOUT.as_secs()));
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                    Err(e) => break Some(format!("대기 실패: {e}")),
+                }
+            }
+        }
+    };
+    if let Some(reason) = failure {
+        eprintln!("[cysd] ⚠ 좌석 surface:{surface_id} exec 전 배선 실패(기동은 계속): {reason}");
+        daemon.bus.publish(
+            "seat.wire_failed",
+            "seat",
+            Some(surface_id),
+            json!({ "reason": reason, "script": script.to_string_lossy() }),
+        );
+    }
+}
+
 /// 데몬과 같은 디렉터리에 놓인 형제 `cys` CLI 경로.
 /// Windows에서는 실행파일명이 `cys.exe`이므로 플랫폼별 확장자를 붙인다
 /// Windows: 데몬(cysd)이 스폰하는 콘솔 자식(CLI·셸·taskkill 등)이 콘솔 창을 띄우지 않게
@@ -3533,6 +3616,11 @@ impl Daemon {
         for (k, v) in env {
             builder.env(k, v);
         }
+        // ★dbg-D2 R12: 좌석 프로세스 exec **전** 프로필 배선(스킬 심링크·appbuild 게이트 훅) — 이
+        //   함수가 5경로(create RPC·launch-agent·boot·restore·schedule)의 단일 합류점이라 여기 한 번이면
+        //   master 좌석(부모 = cysd 직접 · VM 실측)까지 전부 덮는다. 좌석 토큰 주입 **앞**이다(배선
+        //   자식에 비밀을 넘기지 않는다). 실패해도 기동은 계속된다(이벤트 1줄).
+        wire_seat_profile_before_exec(self, &builder, id, env);
         // ★(P1) 좌석 토큰 주입 — 데몬 발급 비밀을 pane PTY env 로만 배달한다(§Surface.seat_token).
         // · 주입 위치 계약: **호출자 지정 env 오버레이 이후**(바로 위 루프 다음) — surface.create
         //   arm 이 호출자 env 의 CYS_SEAT_TOKEN 키를 제거하지만(이중 방어 1층 — handlers.rs),
@@ -7995,4 +8083,5 @@ mod tests {
         let p2 = queue_starved_payload("surface:8", None, &head, 700, 1, "queue_paused(헬스 조치)");
         assert_eq!(p2["role"], json!(null));
     }
+
 }

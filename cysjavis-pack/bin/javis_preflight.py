@@ -1341,7 +1341,7 @@ def _settings_rmw(settings_path, mutate, indent=2):
 
 
 class Preflight:
-    def __init__(self, fix, skips, mode="report", allow_irreversible=False):
+    def __init__(self, fix, skips, mode="report", allow_irreversible=False, wire_only=False):
         # OPP-17: mode ∈ report(관찰만)|fix(집행)|dry(미리보기)|safe(무변경+갭만).
         # self.fix 는 *집행 모드일 때만* True — dry/safe 에선 False 라 기존 50+ `if self.fix and …`
         # 가역 부작용 분기(c04 soul·c07 hook·c08 settings·c10 todo·c32 statusline·c33 event_hooks
@@ -1353,6 +1353,8 @@ class Preflight:
         self.mode = mode
         self.fix = (mode == "fix")
         self.allow_irreversible = allow_irreversible
+        # ★dbg-D2 R12: 좌석 exec 전 배선 모드(--wire-seat) — C26 의 도구·키 탐침(node -v 등)을 건너뛴다.
+        self.wire_only = wire_only
         # planned: may_mutate() 가 기록하는 *비가역 외부설치* 계획 버퍼. 가역 로컬 변경(soul/hook/
         # settings/todo 등)은 self.fix=False 로 일괄 비집행되므로 이 버퍼에 기록되지 않는다(정직 범위).
         self.planned = []
@@ -4020,21 +4022,24 @@ class Preflight:
                     warns.append("%s 심링크 실패: %s" % (os.path.basename(prof), e))
             else:
                 warns.append("%s/skills 영상 스킬 미배선(--fix로 심링크)" % os.path.basename(prof))
-        # (c) 도구 — Node 22+·FFmpeg (WARN만, 영상 제작 시 필요)
-        node_major = self._node_major()
-        if node_major is None or node_major < 22:
-            warns.append("Node 22+ 필요(HyperFrames 렌더) — 현재 %s"
-                         % (node_major or "미설치"))
-        if not shutil.which("ffmpeg"):
-            warns.append("FFmpeg 미설치(HyperFrames·합성 필요)")
-        # (d) 공식 벤더 스킬 — `npx skills add`는 cwd의 .agents/skills/에 프로젝트-로컬 설치라
-        # 자동 실행하지 않는다(엉뚱한 cwd 오염 방지). 영상 작업 폴더에서 1회 실행 안내.
-        warns.append("벤더 스킬은 영상 작업 폴더에서 1회: " + " · ".join(VIDEO_VENDOR_COMMANDS))
-        # (e) 런타임 키 — 사람 단계(WARN 비차단)
-        miss_keys = [k for k in VIDEO_RUNTIME_KEYS if not os.environ.get(k)]
-        if miss_keys:
-            warns.append("API 키 미설정: %s — 사람 단계(`export <KEY>=...`), 영상 제작 시 필요"
-                         % ", ".join(miss_keys))
+        # (c)~(e) 도구·벤더·키 안내 — 배선 모드(--wire-seat · 좌석 exec 전)에서는 건너뛴다
+        #   (좌석마다 node -v 를 띄울 이유가 없다 · 배선 (b) 만이 그 자리의 목적).
+        if not self.wire_only:
+            # (c) 도구 — Node 22+·FFmpeg (WARN만, 영상 제작 시 필요)
+            node_major = self._node_major()
+            if node_major is None or node_major < 22:
+                warns.append("Node 22+ 필요(HyperFrames 렌더) — 현재 %s"
+                             % (node_major or "미설치"))
+            if not shutil.which("ffmpeg"):
+                warns.append("FFmpeg 미설치(HyperFrames·합성 필요)")
+            # (d) 공식 벤더 스킬 — `npx skills add`는 cwd의 .agents/skills/에 프로젝트-로컬 설치라
+            # 자동 실행하지 않는다(엉뚱한 cwd 오염 방지). 영상 작업 폴더에서 1회 실행 안내.
+            warns.append("벤더 스킬은 영상 작업 폴더에서 1회: " + " · ".join(VIDEO_VENDOR_COMMANDS))
+            # (e) 런타임 키 — 사람 단계(WARN 비차단)
+            miss_keys = [k for k in VIDEO_RUNTIME_KEYS if not os.environ.get(k)]
+            if miss_keys:
+                warns.append("API 키 미설정: %s — 사람 단계(`export <KEY>=...`), 영상 제작 시 필요"
+                             % ", ".join(miss_keys))
         # 판정: WARN 있으면 WARN(비차단), 없으면 PASS/FIXED
         detail = "영상 스킬 %d종 · 프로필 %d/%d 배선" % (
             len(VIDEO_SKILLS) - len(missing), linked_profiles, len(profiles) or 0)
@@ -6421,10 +6426,47 @@ def _self_test():
     return 1 if fails else 0
 
 
+def wire_seat():
+    """★dbg-D2 R12(2026-09-23): 좌석 claude **exec 전** 프로필 배선 — cysd 좌석 스폰 합류점
+    (state.rs create_surface_with_env)이 부른다.
+
+    결함: claude 는 세션 시작 순간 스킬 목록을 고정한다. 그런데 스킬 심링크(C26·C27·C29)·appbuild
+    게이트 훅 등록(C27)은 각성 절차의 사후 `--fix` 가 만들었다 — 신규 설치 첫 master 좌석은 그보다
+    33초 먼저 떠 `Unknown skill: dept-by-chat`(1.1.5 VM 실측 · reports/…/D2-restore/R12).
+    처방: 같은 세 검사(C26·C27·C29)를 **그대로** 부르되 도구 탐침만 끈다(wire_only) — 링크 규약·
+    사용자 실디렉 불가침·격리 가드가 사후 --fix 와 한 코드다(대조군 = 각성 절차의 사후 --fix 유지).
+    · 좌석 config dir(CLAUDE_CONFIG_DIR)이 아직 없으면 만든다 — 발견 규약은 「디렉터리 존재」
+      기준이라 첫 기동 전 프로필은 영영 안 잡힌다. 격리(부서·임시 팩) 컨텍스트에서는 만들지 않는다.
+    · 출력 = JSON 1줄 · 종료코드 0(배선 실패도 좌석 기동을 막지 않는다 — 판정은 출력의 status).
+    """
+    ccd = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    made = False
+    if ccd and not os.path.isdir(ccd) and _discover_isolation_block()[0] is None:
+        try:
+            os.makedirs(ccd, exist_ok=True)
+            made = True
+        except OSError:
+            pass
+    pf = Preflight(fix=True, skips=[], mode="fix", wire_only=True)
+    for fn in (pf.c26_video_creator, pf.c27_appbuild, pf.c29_harness_engineering):
+        try:
+            fn()
+        except Exception as e:  # 배선 실패는 기동을 막지 않는다 — 결과에만 남긴다
+            pf.add(fn.__name__, WARN, "배선 예외: %s" % e)
+    print(json.dumps({"wire_seat": True, "config_dir": ccd, "config_dir_created": made,
+                      "profiles": discover_skill_profiles(),
+                      "checks": [{"id": r["id"], "status": r["status"]} for r in pf.results]},
+                     ensure_ascii=False))
+    return 0
+
+
 def main():
     # --self-test 가로채기 — argparse 앞(팩 bin 도구 관례: 인자 스키마와 독립인 자기검증 채널).
     if "--self-test" in sys.argv[1:]:
         return _self_test()
+    # --wire-seat 가로채기(좌석 exec 전 배선 전용 채널 — 다른 인자와 섞지 않는다).
+    if sys.argv[1:] == ["--wire-seat"]:
+        return wire_seat()
     ap = argparse.ArgumentParser(description="CYSJavis 결정론 부트 프리플라이트")
     ap.add_argument("--fix", action="store_true", help="수리 가능한 항목 자동 수리")
     # OPP-17: --fix 의 시스템 변경을 단일 Mutation 게이트로 수렴.

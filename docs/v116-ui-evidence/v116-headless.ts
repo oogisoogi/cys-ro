@@ -10,6 +10,7 @@
 //   c8 이름 없는 본부 탭 = 「본부」 · 화면 어디에도 「non title」 0 · 탭 삭제 확인도 같은 이름(D4 #4)
 //   c9 짧은 창(위 내용 없음)에서 첫 위 휠 → 「접어 두었습니다」 안내 0 · 긴 출력 맨 위 도달 → 안내 1(D4 #6)
 //   c10 사이드바 「7d·<모델>」 게이지가 프로브 주기 안(150초 전 관측)에서는 흐려지지 않는다 · 400초 전이면 흐려진다(D4 #11)
+//   c11 master 자리가 카드 유예(15초) 뒤에 선다 → 그때 카드 1회 · 닫은 뒤 같은 신호가 다시 와도 0(R1c)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -20,7 +21,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -244,6 +245,23 @@ if (ONLY.includes("c10")) {
     res[age] = await ev(read);
   }
   check("c10 7d·Fable 게이지: 150초 전 관측 = 흐림 0 · 400초 전 = 흐림", res[150].found && !res[150].stale && res[400].found && res[400].stale, JSON.stringify(res));
+}
+
+if (ONLY.includes("c11")) {
+  // (R1c) 복원 신호 없음 · master 없이 시작 → 15초 유예가 지나도 카드 0(마스터 자리 전용) → master 가 선다(role.claimed)
+  //   → 카드 1회. 종전엔 유예 시점에 「한 번 띄움」 표지를 먼저 켜 버려 그 켜짐엔 카드가 영영 안 떴다.
+  const body = "## 완료\\n- 늦게 선 마스터 시험 줄\\n## 진행 중\\n- 진행 줄\\n## 결정 필요\\n- 없음\\n2026-09-23 22:10";
+  await load("late", "", `window.__shimFiles["/Users/u/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
+  await Bun.sleep(16000);
+  const a = await ev(`!!document.getElementById("restore-brief")`);
+  await ev(`window.__shimAddSeat(1, "master", "/Users/u/jarvis"); window.__shimEmit("daemon-event", { name: "role.claimed", category: "system", surface_id: 1, payload: { role: "master", surface_ref: "surface:1" } })`);
+  await Bun.sleep(800);
+  const b = await ev(`({ card: !!document.getElementById("restore-brief"), text: document.getElementById("restore-brief")?.innerText ?? "" })`);
+  await ev(`document.querySelector("#restore-brief .rb-close")?.click()`); await Bun.sleep(100);
+  await ev(`window.__shimEmit("daemon-event", { name: "role.claimed", category: "system", surface_id: 1, payload: { role: "master", surface_ref: "surface:1" } }); window.__shimEmit("daemon-event", { name: "surface.created", category: "surface", surface_id: 1, payload: { role: "master" } })`);
+  await Bun.sleep(800);
+  const c = await ev(`!!document.getElementById("restore-brief")`);
+  check("c11 master 늦게 섬 → 유예 시점 카드 0 · 선 뒤 카드 1회(기록 실림) · 닫은 뒤 재신호에 다시 안 뜸", !a && b.card && b.text.includes("늦게 선 마스터 시험 줄") && !c, JSON.stringify({ beforeMaster: a, afterMaster: b.card, reshown: c, text: b.text.replace(/\n+/g, " / ").slice(0, 160) }));
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

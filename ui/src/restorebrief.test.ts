@@ -18,6 +18,7 @@ import {
   cycleAdviceLines,
   CYCLE_ADVICE_PCT,
   briefTiming,
+  isMasterSeatSignal,
   isFirstLaunch,
 } from "./restorebrief";
 
@@ -347,5 +348,37 @@ describe("v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는�
   });
   it("첫 기동 행은 그대로 — 정본 기록이 있어도 첫 기동이면 카드 skip(T4 무회귀)", () => {
     expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: true, firstLaunch: true })).toBe("skip");
+  });
+});
+
+describe("v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다", () => {
+  const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function showRestoreBrief()"), src.indexOf("async function start()"));
+  it("마스터가 서는 두 신호만 다시 부른다(역할 등록 · 역할 실은 창 만들기)", () => {
+    expect(isMasterSeatSignal("role.claimed", { role: "master" })).toBe(true);
+    expect(isMasterSeatSignal("surface.created", { role: "master" })).toBe(true);
+    expect(isMasterSeatSignal("role.claimed", { role: "worker" })).toBe(false);
+    expect(isMasterSeatSignal("surface.created", { role: null })).toBe(false);
+    expect(isMasterSeatSignal("surface.created", {})).toBe(false);
+    expect(isMasterSeatSignal("role.released", { role: "master" })).toBe(false);
+    expect(isMasterSeatSignal("agent.exited", { role: "master" })).toBe(false);
+  });
+  it("「한 번 띄움」 표지는 마스터 자리를 찾은 뒤에 켠다(첫 줄에서 켜지 않는다)", () => {
+    const iMaster = fn.indexOf("if (!master) return;");
+    const iShown = fn.indexOf("restoreBriefShown = true;");
+    expect(iMaster).toBeGreaterThan(0);
+    expect(iShown).toBeGreaterThan(iMaster);
+    expect(fn.split("restoreBriefShown = true;").length - 1).toBe(1);
+  });
+  it("조회 중에 온 부름은 버리지 않는다 — 끝난 뒤 판정 경유로 1회 재조회", () => {
+    expect(fn.includes("restoreBriefAgain = true;")).toBe(true);
+    const fin = fn.slice(fn.lastIndexOf("} finally {"));
+    expect(fin.includes("restoreBriefBusy = false;")).toBe(true);
+    expect(fin.includes("if (again && !restoreBriefShown) maybeShowRestoreBrief();")).toBe(true);
+  });
+  it("데몬 이벤트 배선: 마스터 신호 → maybeShowRestoreBrief(판정·1회는 거기서)", () => {
+    const ev = src.slice(src.indexOf("function onDaemonEvent("));
+    const head = ev.slice(0, ev.indexOf('if (name === "approval.request")'));
+    expect(head.includes("if (isMasterSeatSignal(name, payload)) maybeShowRestoreBrief();")).toBe(true);
   });
 });

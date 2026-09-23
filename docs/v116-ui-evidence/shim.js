@@ -2,6 +2,7 @@
 // 원형 = master/reports/cysr-115-debug-2026-09-23/D4-evidence/shim.js(D4 · 996). 이 판의 추가:
 //   · 호출 인자 기록(__shimCalls = [{cmd,args}]) · 좌석 종료 흉내(__shimExit) · 목록 조회 실패 주입(__shimFailList)
 //   · 파일 흉내(__shimFiles: 경로 → 본문 · read_text_head 가 읽는다)
+//   · (R1c) 좌석 추가(__shimAddSeat) · sc=late = master 없이 시작
 (() => {
   const q = new URLSearchParams(location.search);
   const SC = q.get("sc") || "two";
@@ -16,9 +17,11 @@
   const SEATS = {
     two: [mk(1, "master", "/Users/u/jarvis"), mk(2, "worker", "/Users/u/jarvis/w1")],
     three: [mk(1, "master", "/Users/u/jarvis"), mk(2, "cso", "/Users/u/jarvis/cso"), mk(3, "worker", "/Users/u/jarvis/w1")],
+    late: [mk(2, "worker", "/Users/u/jarvis/w1")], // (R1c) master 자리가 늦게 선다 — __shimAddSeat 로 나중에 세운다
   };
   const seats = SEATS[SC] || SEATS.two;
   window.__shimSeats = seats;
+  window.__shimAddSeat = (id, role, cwd) => { seats.push(mk(id, role, cwd)); };
   window.__shimFiles = {};
   window.__shimFailList = 0;
   // 좌석 종료 흉내 — 데몬 기록을 exited 로 바꾸고 pane 스트림 종료를 보낸다.

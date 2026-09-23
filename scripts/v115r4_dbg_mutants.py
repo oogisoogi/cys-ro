@@ -3,7 +3,7 @@
 
 대상: D1 #1(부서 사전확인 alive) · D1 #2(편성 서브셸 fd 절단) · D2 R2(등록 경로 resume 핀 추종) ·
       R12(좌석 exec 전 프로필 배선 · init-pack 배선) · D10(부서 첫 부팅 대기·실패 원자 정리) ·
-      F1(부서 데몬 = 호출자 판).
+      F1(부서 데몬 = 호출자 판) · D11(공유 본부 프로필 훅 보존) · F4(「네」 분류기).
 각 뮤턴트: 정확히 1곳 치환(건수 assert) → 그 결함의 시험 명령 → **종료코드**로 판정 → finally 원복.
 어휘: KILLED=적색(잡음 · 실패한 시험 이름 병기) · SURVIVED=공허 · NOT-APPLIED=변이 미적용 ·
       CRASH=컴파일·문법 실패(측정 무효 — 실패와 같은 급).
@@ -28,6 +28,8 @@ CG_R12_IP = [CARGO, "test", "--bin", "cys", "dbg_r12"]
 CG_F1_LIB = [CARGO, "test", "--lib", "dbg_f1"]
 PY_D10 = PY_D1 + ["DeptFirstBootWait"]
 PY_F1 = [sys.executable, "cysjavis-pack/bin/tests/test_dbg_d3_dept_path_precedence.py"]
+PY_D11 = [sys.executable, "cysjavis-pack/bin/tests/test_dbg_d3_d11_shared_profile_hooks.py"]
+PY_F4 = [sys.executable, "cysjavis-pack/bin/tests/test_dbg_d3_f4_answer_classifier.py"]
 LIB = "src/lib.rs"
 CYSRS = "src/bin/cys.rs"
 DREQ = "cysjavis-pack/bin/javis_dept_request.py"
@@ -83,6 +85,14 @@ MUTANTS = [
     ("F1-5-CYS_CYS_BIN-1순위-제거", DEPT,
      'if [ -n "${CYS_CYS_BIN:-}" ] && [ -x "${CYS_CYS_BIN}" ]; then CYS="$CYS_CYS_BIN"; fi\n', ':\n',
      PY_D1 + ["DeptSelfBinPrecedence"]),
+    ("D10-4-기동뒤-대기-기본상한-12초", DEPT,
+     'max="${CYS_DEPT_BOOT_MAX_S:-120}"', 'max="${CYS_DEPT_BOOT_MAX_S:-12}"', PY_D10),
+    ("D11-1-공유-본부-프로필-등록금지-제거", PF,
+     "    if _pack_is_dept and not _acct_is_dept:\n", "    if False:\n", PY_D11),
+    ("F4-1-긍정-핵심어-필수-제거", "cysjavis-pack/bin/javis_dept_request.py",
+     "            any(_ANS_YES_CORE.fullmatch(w) for w in toks):\n", "            True:\n", PY_F4),
+    ("F4-2-물음표-other-제거", "cysjavis-pack/bin/javis_dept_request.py",
+     '    if not t or "?" in t or "？" in t:\n', "    if not t:\n", PY_F4),
 ]
 
 

@@ -949,7 +949,9 @@ def _orphan_shell_names():
         if v:
             b = os.path.basename(v.split()[0]).lstrip("-")
             names.add(b[:-4] if b.lower().endswith(".exe") else b)
-    return names
+    # 에이전트 바이너리는 어떤 경로로도 셸로 인정하지 않는다(SHELL=claude 같은 설정이 산 좌석을 빈 셸로 만들지 않게).
+    agents = {c for v in AGENT_COMM.values() for c in v} | {"node"}
+    return names - agents
 
 
 def seat_orphan_grace_s():

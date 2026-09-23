@@ -10181,6 +10181,17 @@ mod tests {
             &[],
             Some(trust)
         ));
+        // 선택지 라벨은 **완전 일치**만 — 라벨을 품은 다른 줄(셸 명령·답 본문)로는 전량 판독이 열리지 않는다
+        // (가로줄 없는 화면의 기아 방지 · N22 킬). 창 문면을 인용한 본문 + `❯ grep 'No, exit' …` 줄 → false.
+        let mut quoting: Vec<String> = no_focus.clone();
+        quoting.push("❯ grep -n 'No, exit' session.log".to_string());
+        assert!(!approval_in_prompt_tail(
+            &quoting,
+            usize::MAX,
+            "❯",
+            &[],
+            Some(trust)
+        ));
         // 좁은 폭에서 질문문이 어절 단위로 접혀도 ⑵는 잡는다(`Gate::matches` = 공백 정규화·제거본 — r2 성찰 D).
         let wrapped = rows(&FOLDER_TRUST_2_1_280.replace(
             "Is this a project you created or one you trust?",

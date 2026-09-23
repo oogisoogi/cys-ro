@@ -88,3 +88,7 @@ cargo `--lib` 534/0(1 ignored) · `--bin cys` 285/0 · `--bin cysd -- --test-thr
 - 부서 번호 재사용 + 같은 폴더 이름으로 부서를 다시 만들면 옛 topology 핀이 남아 있을 수 있다 — 이것은 phoenix 콜드부트 복원도 똑같이 읽는 원천이라 이번 변경이 새로 연 문은 아니다(묘비가 있으면 둘 다 거부).
 - 시험용 번들 자리표(src-tauri/binaries·resources·runtime · ui/dist — gitignore)를 두고 cys-app 시험을 돌리면 target/debug/cysd·cys 가 0바이트로 덮인다 — 이후 `cargo build --bin cysd --bin cys` 필수(이 티켓에서도 발생 · 재빌드함).
 - T2(본부 cso 3초 닫힘)·T4(새 설치 「복원」 카드)·F-1 = 1.1.6(무접촉).
+
+## 9. 판정
+
+- 이종 agy 1R = ACCEPT(diff 만 · 원문 `~/axdev/master/reports/cysr-115-2026-09-22/hetero-agy-v115r5-t1.md`) · 통합 = v115r5-cut 좌석(master 배정).

@@ -163,3 +163,13 @@ cys-app 시험을 위해 src-tauri/binaries 에 **빈 자리표 사이드카**(c
 - 캐시 위치: postprocess 캐시 `~/cys-release-backup/v1.1.5-assets` → 9차 판은 `v1.1.5-assets.9th-1915` 로 치움(크기 같으면 옛 파일 재사용하는 분기 차단).
 - CI run: release 35845346422 · windows-health(태그) 35845346336 · ci-branch 35845333000(success) · windows-health(브랜치) 35845332949 · windows-build 35845332915.
 - 맥 빌드 산출 경로: `~/axdev/.wt/out-mac-v115-r8/`(zip 2 · staging-arm64/x64 · tarball 2+sig · build.log 핀 표 · publish-draft-assets.sh r8 판 = O/SRC 2줄 치환).
+
+### 8-1. 10차 절단 마감(20:1x)
+
+- ⑥ publish-draft-assets.sh --apply rc0(맥 6종 · latest.json darwin 2행 · Gatekeeper PASS 5·SKIP 2 ×2) → ⚠드래프트 x64-setup.zip 이
+  **5차 exe(ae8bec15…)를 담은 옛 zip** 이었음(postprocess 「zip 있음 → 생략」) → 【경고】 → 재승인 c59a0f2c(원장) → zip 삭제 +
+  postprocess --apply 재실행 rc0 → zip 140680750 B · digest 8057804e… · **zip 속 exe sha = 4aadb952…(10차 새 exe)** 실측.
+- SUMS 최종 = 909730bb87c61298262c7e94202523c43c4e0476900d285e3c5fb5cb556a9ea8(13행 · API digest 13/13 · 드래프트=캐시 바이트 일치).
+- 드래프트 v1.1.5 = draft=true · 자산 14 · 발행·골라이브 안 함.
+- wintest-v1.1.5-20260923 = exe+sig 교체(digest 4aadb952… · sig 왕복 일치 · URL 200) · bootstrap.ps1 = 994 핀 커밋 뒤 치환본(미교체).
+- 1.1.6 백로그(master 등재): postprocess 「zip 있음 → 생략」 → 「zip 속 exe sha = 현 exe sha 일 때만 생략」.

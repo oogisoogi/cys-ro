@@ -22686,7 +22686,8 @@ mod tests {
         // worker compose는 이제 RSI 5번째 directive를 fail-closed로 요구 → fixture 동반.
         std::fs::write(td.join("directives/RSI_LEARNING_DIRECTIVE.md"), "# RSI 학습 절대지침\n").unwrap();
         std::fs::write(td.join("soul.md"), "soul-marker\n").unwrap();
-        std::fs::write(td.join("memory/MEMORY.md"), "memory-index-marker\n").unwrap();
+        // ★v116-seat F2: 색인은 `- [` 항목 줄만 싣는다(머리말 제외) — 픽스처를 실제 항목 형식으로.
+        std::fs::write(td.join("memory/MEMORY.md"), "# 머리말\n- [memory-index-marker](m.md) — x\n").unwrap();
         std::fs::write(
             td.join("skills/demo/SKILL.md"),
             "name: demo\ndescription: d\n",
@@ -22713,6 +22714,93 @@ mod tests {
             "메모리 절대경로 미표기 — 노드가 위치를 추론하게 된다"
         );
         assert!(d < s && s < m && m < k, "조립 순서 위반: 디렉티브<soul<메모리<스킬");
+    }
+
+    /// ★v116-seat F2: 메모리 색인 상한 — 큰 색인(5,000항 ≈ 50만 자)에서도 실은 부분 ≤ 상한 ·
+    /// 최신 항목(끝)이 남고 가장 오래된 항목은 빠지며 · 전문 Read 포인터(경로 + 실은/전체 항목 수)가 있다.
+    #[test]
+    fn v116_capped_memory_index_bounds_large_index_and_keeps_newest() {
+        let mut idx = String::from("# 머리말\n> 작성법 …\n");
+        for i in 0..5000 {
+            idx.push_str(&format!("- [m{i:04}](feedback_m{i:04}.md) — {}\n", "가".repeat(90)));
+        }
+        let path = std::path::Path::new("/p/memory/MEMORY.md");
+        let out = capped_memory_index(&idx, path, MEMORY_INDEX_CAP_CHARS);
+        let (head, body) = out.split_once('\n').unwrap();
+        assert!(body.chars().count() <= MEMORY_INDEX_CAP_CHARS, "상한 초과: {}", body.chars().count());
+        assert!(idx.chars().count() > 100 * MEMORY_INDEX_CAP_CHARS, "전제: 픽스처가 상한보다 충분히 크다");
+        assert!(body.contains("- [m4999]"), "최신 항목 누락");
+        assert!(!body.contains("- [m0000]"), "가장 오래된 항목이 실렸다(최신 우선 위반)");
+        assert!(!body.contains("머리말"), "머리말은 싣지 않는다");
+        assert!(body.lines().all(|l| l.starts_with("- [")), "줄 중간 절단");
+        let n = body.lines().count();
+        assert!(n >= 1 && head.contains(&format!("최신 {n}항 / 전체 5000항")), "항목 수 고지: {head}");
+        assert!(head.contains("/p/memory/MEMORY.md") && head.contains("Read"), "전문 포인터 누락: {head}");
+        // 작은 색인은 전부 실린다(상한이 작은 팩을 깎지 않음)
+        let small = "- [a](a.md) — 1\n- [b](b.md) — 2\n";
+        let o = capped_memory_index(small, path, MEMORY_INDEX_CAP_CHARS);
+        assert!(o.contains("최신 2항 / 전체 2항") && o.contains("- [a]") && o.contains("- [b]"));
+    }
+
+    /// ★v116-seat F2: 스킬 색인 = 이름만(설명 0) · 상한 · 「외 N개」 · local 오버레이 표지.
+    #[test]
+    fn v116_capped_skill_index_names_only_with_cap() {
+        let mut m: std::collections::BTreeMap<String, (String, bool)> = Default::default();
+        for i in 0..2000 {
+            m.insert(format!("skill-{i:04}"), ("아주 긴 설명 ".repeat(20), i == 3));
+        }
+        let out = capped_skill_index(&m, SKILL_INDEX_CAP_CHARS);
+        let body = out.trim_start_matches('\n').split_once('\n').unwrap().1;
+        assert!(!out.contains("아주 긴 설명"), "설명이 실렸다");
+        assert!(body.chars().count() <= SKILL_INDEX_CAP_CHARS + 40, "상한 초과: {}", body.chars().count());
+        assert!(out.contains("2000개") && out.contains("외 ") && out.contains("cys skill show"), "{out}");
+        assert!(out.contains("skill-0003*"), "local 오버레이 표지");
+        let few: std::collections::BTreeMap<String, (String, bool)> =
+            [("a".to_string(), ("d".to_string(), false)), ("b".to_string(), ("d".to_string(), false))].into();
+        let o = capped_skill_index(&few, SKILL_INDEX_CAP_CHARS);
+        assert!(o.contains("a, b") && !o.contains("외 "), "{o}");
+    }
+
+    /// ★v116-seat F2: compose_directive 종단 — 큰 메모리 색인·많은 스킬이 있어도 조립 결과는
+    /// 「지침 전문 + 상한」 안이다(색인 전문이 새지 않음).
+    #[test]
+    fn v116_compose_directive_total_is_directives_plus_caps() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let td = std::env::temp_dir().join(format!("cys-compose-f2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(td.join("directives")).unwrap();
+        std::fs::create_dir_all(td.join("memory")).unwrap();
+        let wd = "# WORKER 절대지침\n".to_string() + &"본문 ".repeat(2000);
+        let rsi = "# RSI\n".to_string() + &"학습 ".repeat(1000);
+        std::fs::write(td.join("directives/WORKER_DIRECTIVE.md"), &wd).unwrap();
+        std::fs::write(td.join("directives/RSI_LEARNING_DIRECTIVE.md"), &rsi).unwrap();
+        std::fs::write(td.join("soul.md"), "soul\n").unwrap();
+        let mut idx = String::new();
+        for i in 0..3000 {
+            idx.push_str(&format!("- [m{i}](m{i}.md) — {}\n", "나".repeat(150)));
+        }
+        std::fs::write(td.join("memory/MEMORY.md"), &idx).unwrap();
+        for i in 0..300 {
+            let d = td.join(format!("skills/s{i:03}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), format!("name: s{i:03}\ndescription: {}\n", "설명".repeat(100))).unwrap();
+        }
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &td);
+        let out = compose_directive("worker").expect("compose 실패");
+        match saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+        let fixed = wd.chars().count() + rsi.chars().count() + 5;
+        let total = out.chars().count();
+        // 머리줄·포인터·안전핵 재선언 등 고정 문구 여유 = 3,000자
+        let bound = fixed + MEMORY_INDEX_CAP_CHARS + SKILL_INDEX_CAP_CHARS + 3_000;
+        assert!(idx.chars().count() > 400_000, "전제: 색인이 크다");
+        assert!(total <= bound, "조립 {total}자 > 지침 전문 {fixed} + 상한 → 색인 전문이 샜다");
+        assert!(!out.contains("설명설명"), "스킬 설명이 실렸다");
+        assert!(out.contains("- [m2999]") && !out.contains("- [m0]("), "최신 우선 위반");
     }
 
     /// ★불변식 박제(Phase 2 배선): RSI_LEARNING_DIRECTIVE는 master·worker 주입물에만 포함되고

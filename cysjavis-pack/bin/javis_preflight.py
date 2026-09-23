@@ -1137,7 +1137,16 @@ def _discover_isolation_block():
     #   좌석을 섬기고, 부서 레인 각성 훅(session-start·role-bootstrap)은 Rust 병합(src/pack.rs
     #   merge_desired_hooks)이 레인 가드와 함께 **가산**한다 — 부서 preflight 는 여기 쓰지 않는다.
     #   부서 전용 계정(포크 모드 · basename 'dept-')은 종전대로 자기 프로필에만 등록한다.
-    if _pack_is_dept and not _acct_is_dept:
+    #   ★(v115r4-dbg 통합 교정) 「공유」 판정 = 계정 dir 가 **본부 계정 dir(팩 부모/claude)와 같을 때만**.
+    #   995 원안은 「basename 에 'dept-' 가 없으면 공유」였는데, cys-dept create 의 기본(primary) 계정 포크 dir
+    #   (`~/.cys/claude-<키>` — 'dept-' 접두 없음 · allocate 만 `-dept-N`)까지 공유로 보고 부서 자기 프로필 등록을
+    #   0 으로 만들었다(H-EXIT-8 ⓒ 적색 · 실측). 계정 dir 미상(None)은 아래 기존 분기가 그대로 금지한다.
+    _hq_acct = os.path.join(os.path.dirname(os.path.normpath(pack_dir())), "claude")
+    try:
+        _acct_is_hq = bool(_acct) and os.path.realpath(_acct) == os.path.realpath(_hq_acct)
+    except OSError:
+        _acct_is_hq = False
+    if _pack_is_dept and _acct_is_hq:
         return ("부서 팩 · 공유 계정(본부 프로필) — 본부 훅 보존을 위해 등록 금지"
                 "(부서 각성 훅은 cysd 병합이 가산)", [])
     if _acct_is_dept or _pack_is_dept:

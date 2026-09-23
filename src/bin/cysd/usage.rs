@@ -229,9 +229,17 @@ fn collect_for(
 
     // (4a) resume 핀: 발견한 transcript에서 session_id를 1회 stash (is_none 가드).
     // 한번 잡으면 고정 — mtime 흔들림·동일 cwd 동시세션의 오핀을 방어한다.
-    if s.agent_session_id.lock().unwrap().is_none() {
-        if let Some(sid) = extract_session_id(agent, &path) {
-            *s.agent_session_id.lock().unwrap() = Some(sid);
+    // ★dbg-D2 R2(제안): **등록 경로**(SessionStart 훅이 명시 — `/clear`·순환 뒤 재발화)는 세션
+    //   교체를 따라간다. 1회 핀은 휴리스틱 발견에만 남긴다(동일 cwd 동시세션 오핀 방어의 원 취지).
+    //   종전엔 등록 경로도 1회 핀이라 순환 뒤 topology 에 옛 세션이 영속 → 재시작이 순환 전 대화를 resume.
+    {
+        let mut pin = s.agent_session_id.lock().unwrap();
+        if pin.is_none() || !heuristic {
+            if let Some(sid) = extract_session_id(agent, &path) {
+                if pin.as_deref() != Some(sid.as_str()) {
+                    *pin = Some(sid);
+                }
+            }
         }
     }
 

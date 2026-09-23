@@ -122,7 +122,10 @@ formation_ensure_async(){
   #   심박이 후속 수렴하므로 로그 소실은 저위험).
   logdir="$(dept_logdir "$name")"; log="$logdir/formation.log"
   mkdir -p "$logdir" 2>/dev/null || log=/dev/null
-  ( python3 "$fm" ensure --socket "$sock" --json >>"$log" 2>&1 || true ) &
+  # ★dbg-D1 #2: 서브셸 **자신**의 표준 입출력도 끊는다 — 안쪽 리다이렉트는 python 만 돌린다. 끊지 않으면 서브셸이
+  #   호출자 stdout/stderr 를 편성이 끝날 때까지(역할당 최대 200s) 쥐어, 파이프로 읽는 호출자(앱 직접 실행
+  #   `cmd.output()` — 윈도 전부 · 맥 대행 실패 폴백)의 EOF 가 그만큼 늦는다(= 위 '생성 불파괴' UX 계약 위반).
+  ( python3 "$fm" ensure --socket "$sock" --json >>"$log" 2>&1 || true ) </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
   echo "[cys-dept] $name 상비편성 ensure 착수(백그라운드·fail-open) — 로그: $log" >&2
 }
@@ -737,6 +740,9 @@ seed_schedule(){
 
 # 부서 데몬은 첫 기동 시 pack install(수백 파일)로 listening까지 지연될 수 있어 폴링 간격을 둔다(최대 ~12s).
 ready(){ local s="$1" i; for i in $(seq 1 120); do CYS_SOCKET="$s" "$CYS" ping >/dev/null 2>&1 && return 0; sleep 0.1; done; return 1; }
+# ★dbg-D1 #1: 「지금 떠 있나」 사전 확인은 핑 1회다 — ready()(120회 대기)를 기동 **전**에 쓰면 새 부서마다
+#   소켓 없는 자리를 120회 두드린 뒤에야 cysd 를 띄운다(릴리스 실측 34.2초 헛대기). ready 는 기동 **뒤** 대기 전용.
+alive(){ CYS_SOCKET="$1" "$CYS" ping >/dev/null 2>&1; }
 
 # allocate 계정격리(Fix1'): 기본계정 base config dir 해석. 카탈로그 accounts 맵 우선(있으면), 없으면
 # ~/.cys/claude-<account> 규약 fallback. 항상 경로를 산출(빈 문자열이면 호출부가 fail-closed).
@@ -1233,7 +1239,7 @@ case "$cmd" in
       fi
     fi
     _spawned=1   # ★⑦: 이번 호출에서 데몬을 실제로 스폰했는가(0=재사용) — 티켓 발급 로그 문면 구분용
-    if ready "$sock"; then
+    if alive "$sock"; then
       echo "[cys-dept] $name 이미 가동 중 — 재사용"
       _spawned=0
     else
@@ -1345,7 +1351,7 @@ PY
     mkdir -p "$(dept_logdir "$name")" "$pack/directives"
     seed_acl "$pack"
     _spawned=1   # ★⑦: 신규 스폰 여부(0=재사용) — 티켓 발급 로그 문면 구분용
-    if ready "$sock"; then echo "[cys-dept] $name 이미 가동 중 — 재사용" >&2; _spawned=0
+    if alive "$sock"; then echo "[cys-dept] $name 이미 가동 중 — 재사용" >&2; _spawned=0
     else
       # ★계정 격리: 데몬을 CYS_ACCOUNT_DIR(fork dir)와 함께 spawn (create와 동형).
       CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" nohup "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &
@@ -1514,7 +1520,7 @@ PY
     mkdir -p "$(dept_logdir "$name")" "$pack/directives"
     seed_acl "$pack"
     _spawned=1   # ★⑦: 신규 스폰 여부(0=재사용·REUSE_DEAD 재기동 포함) — 티켓 발급 로그 문면 구분용
-    if ready "$sock"; then echo "[cys-dept] $name 이미 가동 — 재사용" >&2; _spawned=0
+    if alive "$sock"; then echo "[cys-dept] $name 이미 가동 — 재사용" >&2; _spawned=0
     else
       # ★계정 격리: 데몬을 CYS_ACCOUNT_DIR 와 함께 spawn(patch2 있으면 자식 전파·없으면 F1 시드가 보장)
       CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" nohup "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &

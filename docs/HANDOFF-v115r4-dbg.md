@@ -155,3 +155,11 @@ cys-app 시험을 위해 src-tauri/binaries 에 **빈 자리표 사이드카**(c
 ## 7. 커밋(fd356c06..HEAD)
 
 `git log --oneline fd356c06..HEAD` 참조 — 제품(fix) · 시험(test) · CI(ci) · 문서(docs) 분리. ⛔판번 bump·push·태그 없음.
+
+## 8. 10차 절단 진행(보험 · 2026-09-23 19:3x · 재승인 master#061a5209)
+
+- 끝난 단계: ①rebase/v1.1 FF fd356c06→9d695ec8 + fix/v115r4-dbg push ②태그 v1.1.5 = annotated 574b1a87 → 9d695ec8(force) ④맥 로컬 빌드 rc0(zip arm64 207788534 · x64 215410388) ⑤staging 추출(1.1.5 ×2) + tarball 2+sig(aarch64 197666066/412 · x64 205276751/408) · ci-branch 35845333000 success.
+- 남은 단계: release success 실측 → `~/axdev/.wt/out-mac-v115-r8/publish-draft-assets.sh --apply` → SUMS 13행 API digest 대조 → 핀 8값 출력(994 중계) → wintest-v1.1.5-20260923 exe+sig 교체(bootstrap.ps1 = 994 핀 커밋 뒤). ⛔라이브 발행·골라이브.
+- 캐시 위치: postprocess 캐시 `~/cys-release-backup/v1.1.5-assets` → 9차 판은 `v1.1.5-assets.9th-1915` 로 치움(크기 같으면 옛 파일 재사용하는 분기 차단).
+- CI run: release 35845346422 · windows-health(태그) 35845346336 · ci-branch 35845333000(success) · windows-health(브랜치) 35845332949 · windows-build 35845332915.
+- 맥 빌드 산출 경로: `~/axdev/.wt/out-mac-v115-r8/`(zip 2 · staging-arm64/x64 · tarball 2+sig · build.log 핀 표 · publish-draft-assets.sh r8 판 = O/SRC 2줄 치환).

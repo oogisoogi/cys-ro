@@ -1700,4 +1700,31 @@ mod tests {
         assert_eq!(rate_window_stale_reason(Some(now + 60.0), 0.0, now), Some("no_observation_24h"));
     }
 
+    /// (v116-usage · opus 적대 2R) 기각된 창(살아 있는 같은 라벨 창을 대체하지 못한 리셋 지난 창)은 스냅샷에 영속하지 않는다 —
+    /// 영속하면 재부팅 예열(last_rate_snapshots 창별 최신 행)이 죽은 값을 올려 경보 키가 첫 신선 관측 전까지 빠진다.
+    #[test]
+    fn v116_rejected_window_is_not_persisted() {
+        let d = test_daemon();
+        let now = crate::state::now_epoch();
+        let root = std::env::temp_dir().join(format!("cys-v116-persist-{}-{}", std::process::id(), now.to_bits()));
+        let prof = root.join("prof");
+        std::fs::create_dir_all(prof.join("projects/p")).unwrap();
+        std::fs::write(
+            prof.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-persist","emailAddress":"persist@x"}}"#,
+        )
+        .unwrap();
+        let sf = prof.join("projects/p/s.jsonl").to_string_lossy().into_owned();
+        let w = |l: &str, p: f64, r: f64| RateWindow { label: l.into(), used_pct: p, resets_at: Some(r) };
+        note_rate(&d, "claude", &sf, &[w("5h", 88.0, now + 3600.0), w("7d", 35.0, now + 86400.0)], "oauth", now - 10.0);
+        note_rate(&d, "claude", &sf, &[w("5h", 93.0, now - 60.0), w("7d", 40.0, now + 86400.0)], "statusline", now);
+        let st = d.accounts.lock().unwrap();
+        let key = AccountKey { provider: "claude".into(), account_id: "uuid-persist".into() };
+        let p5 = st.last_persisted.get(&(key.clone(), "5h".to_string())).copied();
+        let p7 = st.last_persisted.get(&(key, "7d".to_string())).copied();
+        drop(st);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(p5, Some(88.0), "기각된 리셋 지난 5h(93)가 영속됐다");
+        assert_eq!(p7, Some(40.0), "채택된 7d 는 영속");
+    }
 }

@@ -23728,6 +23728,9 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let twice = "% claude --dangerously-skip-permissions\nA\n% claude --dangerously-skip-permissions\nB";
         assert_eq!(grid_after_launch_echo(twice, "claude --dangerously-skip-permissions"), "B");
         assert_eq!(grid_after_launch_echo("% claude --dangerously-skip-permissions", "claude --dangerously-skip-permissions"), "");
+        // agy 3R #2: 긴 프롬프트 뒤 에코가 그리드 폭에서 접혀 앞 16자가 두 행에 걸친다
+        let wrapped = "old ╭────────╮\nPS C:\\Users\\admin\\a\\very\\long\\path> claude --mo\ndel claude-opus-5-5\nerr\nPS>";
+        assert_eq!(grid_after_launch_echo(wrapped, "claude --model claude-opus-5-5"), "del claude-opus-5-5\nerr\nPS>".split_once('\n').map(|(_, r)| r).unwrap());
     }
 
     #[test]
@@ -23745,6 +23748,18 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let i_skip = body.find("if confirmed_now {\n            continue;\n        }").expect("후보 틱 건너뜀");
         let i_judge = body.find("cys::readiness::judge(&obs)").expect("준비 판정");
         assert!(i_streak < i_close && i_close < i_skip && i_skip < i_judge, "배선 순서: 계수 → 닫기 게이트 → 후보 틱 건너뜀 → 준비 판정");
+    }
+
+    #[test]
+    fn t2_launch_failure_needs_consecutive_ticks() {
+        assert_eq!(LAUNCH_FAILURE_CONFIRM_TICKS, 2);
+        // 재출력 도중 한 틱만 확증 → 다음 틱 TUI 가 그려져 풀림 → 닫지 않음
+        let s1 = launch_failure_streak(0, true);
+        assert!(s1 < LAUNCH_FAILURE_CONFIRM_TICKS);
+        assert_eq!(launch_failure_streak(s1, false), 0, "확증이 풀리면 0 으로");
+        // 진짜 실패 = 두 틱 연속 → 닫음
+        assert!(launch_failure_streak(launch_failure_streak(0, true), true) >= LAUNCH_FAILURE_CONFIRM_TICKS);
+        assert_eq!(launch_failure_streak(u32::MAX, true), u32::MAX, "넘침 없음");
     }
 
     /// U-9 · `screen_tail_is_shell_prompt` 진리표 (T-D4 / F4-cys-boot-launch-06)

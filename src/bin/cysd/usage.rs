@@ -2475,4 +2475,30 @@ mod tests {
         assert!(still_main, "ctx 없는 statusline 이 보류를 지웠다(새 줄 틱)");
     }
 
+    /// agy 3R #4: 보류 뒤 창 없는 statusline 이 관측을 덮고(%) 없음) 그것이 낡은 다음, 새 줄 없이 유예가 끝나면
+    /// 보류했던 추정 %로 발화한다 — 현재 관측에 %가 없다는 이유로 영구 침묵하지 않는다.
+    #[test]
+    fn t2_idle_reeval_uses_deferred_pct_when_current_has_none() {
+        let (daemon, s, dir) = t2_seat("dpct");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert_eq!(tails.get(&s.id).unwrap().deferred_pct, Some(77), "전제: 추정 77% 보류");
+        *s.observed_usage.lock().unwrap() = Some(ObservedUsage {
+            agent: "claude".into(),
+            ctx_tokens: None,
+            ctx_window: None,
+            ctx_pct: None,
+            rate: vec![],
+            source: "statusline".into(),
+            session_file: String::new(),
+            updated_at: now_epoch() - STATUSLINE_FRESH_SECS - 5.0,
+        });
+        tails.get_mut(&s.id).unwrap().grace_from -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(fired.len(), 1, "현재 관측에 %가 없어 보류된 추정 임계가 영구 침묵");
+        assert_eq!(fired[0]["payload"]["context_pct"], 77);
+    }
 }

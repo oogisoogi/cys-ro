@@ -265,3 +265,55 @@ fn d6_1_dead_statusline_vector_does_not_evict_live_oauth() {
     assert_eq!(row2["rate"][0]["used_pct"], 93.0, "살아 있는 창이 없으면 최신 승자 유지");
 }
 
+/// opus 적대 2R: 실제 statusline 은 5h·7d 를 함께 보낸다 — [5h 리셋 지남, 7d 살아 있음] 묶음도 살아 있는 OAuth 5h 를
+/// 대체하지 못해야 경보 깜빡임이 흔한 경우에 닫힌다(7d 는 새 값 채택).
+#[test]
+fn d6_1_mixed_statusline_vector_keeps_live_5h_takes_fresh_7d() {
+    let d = daemon("d61m");
+    let now = crate::state::now_epoch();
+    let sf = profile_session("d61m", "uuid-mixed", "mixed@x");
+    crate::accounts::note_rate(
+        &d,
+        "claude",
+        &sf,
+        &[w("5h", 88.0, now + 3600.0), w("7d", 35.0, now + 86400.0)],
+        "oauth",
+        now - 10.0,
+    );
+    crate::accounts::note_rate(
+        &d,
+        "claude",
+        &sf,
+        &[w("5h", 93.0, now - 60.0), w("7d", 40.0, now + 86400.0)],
+        "statusline",
+        now,
+    );
+    assert_eq!(account_alert_keys(&d, now), vec!["account_rate:mixed@x:5h".to_string()], "5h 경보 키 유지");
+    let j = crate::accounts::local_json(&d, now);
+    let row = j.as_array().unwrap().iter().find(|r| r["label"] == "mixed@x").unwrap().clone();
+    let pct = |lbl: &str| row["rate"].as_array().unwrap().iter().find(|x| x["label"] == lbl).unwrap()["used_pct"].clone();
+    assert_eq!(pct("5h"), 88.0, "살아 있는 5h 유지");
+    assert_eq!(pct("7d"), 40.0, "신선한 7d 채택");
+}
+
+#[test]
+fn d6_1_merge_rate_windows_table() {
+    let now = 1000.0;
+    let live = [w("5h", 88.0, 2000.0), w("7d", 35.0, 5000.0)];
+    // 리셋 지난 5h 는 기각 · 7d 채택
+    let (m, a) = crate::accounts::merge_rate_windows(&live, 990.0, &[w("5h", 93.0, 999.0), w("7d", 40.0, 5000.0)], now);
+    assert_eq!(a, vec![false, true]);
+    assert_eq!((m[0].used_pct, m[1].used_pct), (88.0, 40.0));
+    // 기존 창도 죽었으면(리셋 지남) 새 창 채택 — 종전 최신 승자
+    let dead = [w("5h", 70.0, 500.0)];
+    assert_eq!(crate::accounts::merge_rate_windows(&dead, 990.0, &[w("5h", 93.0, 999.0)], now).1, vec![true]);
+    // 기존 창이 24h 무관측이면 살아 있지 않다 → 채택
+    assert_eq!(crate::accounts::merge_rate_windows(&live, now - 25.0 * 3600.0, &[w("5h", 93.0, 999.0)], now).1, vec![true]);
+    // resets_at 미상 새 창 = 리셋 지남으로 보지 않음 → 채택
+    let unknown = RateWindow { label: "5h".into(), used_pct: 1.0, resets_at: None };
+    assert_eq!(crate::accounts::merge_rate_windows(&live, 990.0, &[unknown], now).1, vec![true]);
+    // 경계: 리셋 시각 그 순간(r == now)은 지남 아님 → 채택
+    assert_eq!(crate::accounts::merge_rate_windows(&live, 990.0, &[w("5h", 93.0, 1000.0)], now).1, vec![true]);
+    // 기존에 같은 라벨이 없으면 채택
+    assert_eq!(crate::accounts::merge_rate_windows(&[], 0.0, &[w("5h", 93.0, 999.0)], now).1, vec![true]);
+}

@@ -91,8 +91,8 @@ MUTANTS = [
      "    if _pack_is_dept and not _acct_is_dept:\n", "    if False:\n", PY_D11),
     ("F4-1-긍정-핵심어-필수-제거", "cysjavis-pack/bin/javis_dept_request.py",
      "            any(_ANS_YES_CORE.fullmatch(w) for w in toks):\n", "            True:\n", PY_F4),
-    ("F4-2-물음표-other-제거", "cysjavis-pack/bin/javis_dept_request.py",
-     '    if not t or "?" in t or "？" in t:\n', "    if not t:\n", PY_F4),
+    # (제외 · 등가 뮤턴트) 「물음표 → other」 검사 제거: `?` 는 _ANS_SPLIT 분리 문자가 아니라 「네?」 낱말이
+    #   사전과 전체 일치하지 않아 이미 other 다(실측: 네?·응?·네 ?·좋아요? 전부 other) — 겹방어 두 번째 층.
 ]
 
 

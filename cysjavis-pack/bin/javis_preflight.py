@@ -1129,6 +1129,17 @@ def _discover_isolation_block():
     # R2 강화(2026-06-30): CYS_ACCOUNT_DIR 누락 엣지에서도 pack_dir이 pack-dept-* 면 부서로 판별 →
     # home-glob 진입을 차단해 CEO·타부서 settings 재누수를 env 비의존으로 원천 봉쇄.
     _pack_is_dept = "pack-dept-" in os.path.basename(os.path.normpath(pack_dir()))
+    # ★dbg-D3 D11(2026-09-23 971 VM 실측): 부서 팩인데 계정 dir 이 부서 전용이 아니면(= 공유 계정 모드 ·
+    #   기본값 · CYS_ACCOUNT_DIR = 본부 ~/.cys/claude) 그 settings.json 은 **본부 프로필**이다. 여기에 부서
+    #   preflight 가 등록하면 `_prune_stale_hook_entries` 가 레거시 루트 `/.cys/` 규칙으로 본부
+    #   `~/.cys/pack/hooks/*` 를 「우리 팩의 옛 항목」으로 보고 지운 뒤 부서 경로로 갈아 끼운다 → 본부
+    #   dept-chat-inject 소실 → 두 번째 부서부터 「네」 확인 정지. 공유 프로필은 본부 팩 훅 한 벌이 모든
+    #   좌석을 섬기고, 부서 레인 각성 훅(session-start·role-bootstrap)은 Rust 병합(src/pack.rs
+    #   merge_desired_hooks)이 레인 가드와 함께 **가산**한다 — 부서 preflight 는 여기 쓰지 않는다.
+    #   부서 전용 계정(포크 모드 · basename 'dept-')은 종전대로 자기 프로필에만 등록한다.
+    if _pack_is_dept and not _acct_is_dept:
+        return ("부서 팩 · 공유 계정(본부 프로필) — 본부 훅 보존을 위해 등록 금지"
+                "(부서 각성 훅은 cysd 병합이 가산)", [])
     if _acct_is_dept or _pack_is_dept:
         if _acct and os.path.isdir(_acct):
             # 좁힌 대상(자기 account dir)만 허용 — 글로벌은 금지 상태 그대로다.

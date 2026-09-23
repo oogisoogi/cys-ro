@@ -1220,6 +1220,8 @@ class MockReleaseMainTests(unittest.TestCase):
             ("zip 속 옛 exe", {self.EXE: self.OLD_EXE}, good, False),
             ("엔트리 2개", {self.EXE: self.NEW_EXE, "x.txt": b"x"}, good, False),
             ("SUMS exe 행 없음", {self.EXE: self.NEW_EXE}, ["%s  other\n" % ("0" * 64)], False),
+            # agy 1R #4: 판독 불가(None) × 행 없음(None) — None == None 을 일치로 접으면 fail-open.
+            ("판독 불가 × 행 없음", {"x.txt": b"x"}, ["%s  other\n" % ("0" * 64)], False),
         ]
         for label, members, lines, want in cases:
             with self.subTest(label):

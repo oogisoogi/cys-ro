@@ -5451,7 +5451,17 @@ fn gate_corpus_cached(
             return Some(gates.clone());
         }
     }
-    let gates = Arc::new(cys::first_run_gates::resolve_with(Some(envelope), override_on).gates);
+    // ★(agy ①② 2R #2) 위젯 서명(AND 가드)이 없거나 보편 토큰 단독인 관문은 이 **차단 축**에서 뺀다 — 사용자 신설
+    //   관문은 `repair_gate` 가 사용자 주권 때문에 그대로 두지만(고칠 정본이 없다), 그런 관문은 needle 하나로 성립해
+    //   가로줄 없는 화면의 전량 판독에서 흔한 낱말로 큐를 영구 보류시킨다. 빌트인은 자기규칙 검체가 이 조건을
+    //   집행하므로 빠지는 것은 사용자 신설 관문뿐이고, 빠진 관문은 이 변경 이전과 같다(무회귀).
+    let gates: Vec<cys::first_run_gates::Gate> =
+        cys::first_run_gates::resolve_with(Some(envelope), override_on)
+            .gates
+            .into_iter()
+            .filter(|g| cys::first_run_gates::widget_rule_violations(g).is_empty())
+            .collect();
+    let gates = Arc::new(gates);
     *slot = Some((override_on, envelope.clone(), gates.clone()));
     Some(gates)
 }
@@ -10396,6 +10406,19 @@ mod tests {
             "봉투가 바뀌었는데 옛 해소본"
         );
         assert!(gate_corpus_cached(&serde_json::json!({"codex": {}}), &embed, "codex").is_none());
+        // 위젯 서명 없는 사용자 신설 관문은 차단 축에서 빠진다(agy ①② 2R #2) — 흔한 낱말 needle 로 가로줄 없는
+        // 화면(전량 판독)의 큐를 영구 보류시키지 않는다. 빌트인 관문은 그대로 전부 남는다.
+        let sloppy = serde_json::json!({"claude": {"first_run_gates": {"gates": [
+            {"id": "sloppy-user-gate", "needles": ["Welcome back"], "widget": []}
+        ]}}});
+        let c = gate_corpus_cached(&sloppy, &embed, "claude").unwrap();
+        assert!(
+            c.iter().all(|g| g.id != "sloppy-user-gate"),
+            "위젯 없는 관문이 차단 축에 들어왔다"
+        );
+        assert_eq!(c.len(), cys::first_run_gates::builtin().len());
+        let rows = vec!["Welcome back".to_string(), "  done".to_string()];
+        assert!(!approval_in_prompt_tail(&rows, usize::MAX, "❯", &[], &c));
     }
 
     /// ⓪ 순수 판정자: 마지막 가로줄 **아래**만 본다 · 가로줄이 없으면 판단하지 않는다(false).

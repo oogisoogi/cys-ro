@@ -211,6 +211,19 @@ class OrphanReap(unittest.TestCase):
             else:
                 os.environ["SHELL"] = old
 
+    def test_M1_shell_env_set_to_agent_never_counts(self):
+        old = os.environ.get("SHELL")
+        os.environ["SHELL"] = "/usr/local/bin/claude"
+        try:
+            w = FakeWorld([seat()], {"surface:4": 4001}, comm={4001: "claude"})
+            reap(w)
+            self.assertEqual(w.closed, [], "SHELL=claude 로 산 claude 뿌리를 셸로 봤다")
+        finally:
+            if old is None:
+                os.environ.pop("SHELL", None)
+            else:
+                os.environ["SHELL"] = old
+
     def test_m2_nfd_korean_folder_and_symlink_match(self):
         import tempfile
         import unicodedata

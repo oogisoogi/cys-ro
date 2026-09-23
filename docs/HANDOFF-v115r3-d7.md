@@ -215,3 +215,57 @@ CI 3명령은 release.yml 356·357·361 글자 그대로 + `SHELL=/bin/bash`(러
 | cargo test --bin cys -- --test-threads=1 | 0 | 124 | 280 pass · 0 fail |
 | 전체 건강 검체(직렬 · 격리 env) | 0 | 421 | pass 149 · fail 0 · skip 1 · GREEN |
 뮤턴트 6/6 KILLED(M1~M4 · SM1~SM2 · 변이 적용 assert · 복원 해시 대조). 추가: 열린 파이프 stdin 으로 cys 전체 280 pass(94s).
+
+## 12. r6(master · CI 8차 맥 aarch64 레인 적색 · run 35814642386 · job 107033449900)
+r5 의 ⑴ 진단(bash 가 마지막 명령을 fork)은 맞았지만 **그것만으로는 러너 적색이 설명되지 않았다**. r5 수리 뒤에도 러너에서는 생성
+순간 판정이 empty 가 아니었고, 3회 재시도 루프가 2회차에서 특권 역할 `master` 를 다시 잡으려다 claim_denied 로 죽었다
+(패닉 = handlers.rs:14943 「surface.create 실패 … privileged role 'master' is held by a live surface」). 두 번째 시험은 러너에서 통과.
+
+### 12-1. 원인 【관측 · 로컬 재현】
+- 좌석은 `$SHELL -lc "<PATH 선두주입>; exec sleep 30"` 로 뜬다(state.rs create_surface_with_env). 로그인 셸은 cmd 를 돌리기 전에
+  로그인 프로파일(bash = /etc/profile → `~/.bash_profile`)을 읽고, 거기서 띄운 자식이 **생성 순간** 뿌리의 자손으로 잡힌다 →
+  판정 Occupied → prime 은 설계대로(Empty 한정) 싣지 않는다 → 다음 status = "unknown".
+- 로컬 재현: `SHELL=/bin/bash` + 가짜 HOME 의 `.bash_profile` = `sleep 0.3` 로 종전 시험을 3회 → **3/3 적색 · 같은 줄(14943) · 같은
+  claim_denied 문장**. 같은 조건에서 실 HOME(프로파일 없음) = 3/3 초록.
+- 탐침(임시 · 미커밋): 실 HOME·bash/zsh 에서 생성 직후 40회 표집 → 매 표집 Empty · 뿌리 이름은 3ms 째 이미 `sleep`. 즉 이 기계에서는
+  생성 순간 자손이 0 이라 종전 시험이 초록이었다 — 초록은 제품이 아니라 **이 기계의 로그인 프로파일이 가벼움**을 잰 값이었다.
+- 러너 쪽 프로파일 내용 자체는 이번에 보지 않았다 【추정: GitHub macOS 이미지의 로그인 프로파일이 자식을 띄움】 — 기전은 위 재현으로 확정.
+
+### 12-2. 재설계(시험만 · 제품 무접촉) — 계약을 두 층으로
+| 층 | 시험 | 무엇을 재나 | 환경 의존 |
+|---|---|---|---|
+| (i) 의미 | `d7_prime_seat_cache_never_overwrites_a_tick_value`(기존 · 무변경) | 자손 0 → Empty 를 싣는다 · 자손 ≥1 → 안 싣는다 · 틱 값을 안 덮는다. 자손 0 은 **상태 대기**(5s 상한 · 미성립 시 전제 실패 적색)로 세운 뒤 판정 | 없음(대기가 프로파일 시간을 흡수) |
+| (ii) 배선 | `d7_create_arc_primes_seat_cache_before_reply`(신규 · 종전 `d7_new_seat_is_judged_at_create_not_left_unknown` 대체) | 소스(테스트 모듈 앞 · 줄 주석 제거 · 줄 수 보존)에서 ⑴ 생산 코드의 prime 호출 = 정확히 1자리 ⑵ `"surface.create"` 아크의 `Ok(s)` 본문 **최상위(들여쓰기 20칸 = 무조건)** 에 `let _ = crate::governance::prime_seat_cache_at_create(&s);` ⑶ 그 자리가 같은 아크의 `Reply::Single(ok_response(` 보다 앞 | 없음 |
+| (ii) 실행 축 | 같은 시험 후반 | 실 dispatch 로 비특권 역할(`worker-d7-arc`) 1회 생성 → status 좌석 ≠ "occupied"(시험 데몬엔 틱이 없으므로 prime 이 유일 writer · Empty 한정) — 재시도 없음 | 없음(불변식) |
+(i)∧(ii) ⇒ 생성 순간 자손 0 인 좌석은 응답 전에 "empty" 로 실린다. 버린 단언 = 「이 호스트에서 생성 순간 판정이 empty 다」 — 제품 계약이
+아니라 호스트 사실이라 게이트에 둘 수 없다(`#[ignore]`·조건 스킵 0 · occupied 불적재 단언은 그대로 유지).
+
+### 12-3. 뮤턴트(CI 유사 조건 = SHELL=/bin/bash + 가짜 HOME 프로파일 · 변이 적용 assert · 매회 백업 복원)
+| # | 변이 | 결과 · 잡은 단언 |
+|---|---|---|
+| M1 | 생성 아크의 prime 호출 삭제 | KILLED — (ii) 「prime 호출 자리가 정확히 하나가 아니다 · left 0」 |
+| M2 | 호출을 `if role_for_announce.is_empty() { … }` 안으로 | KILLED — (ii) 「성공 아크 최상위(무조건)에 prime(&s) 호출이 없다」 |
+| M3 | prime 이 Unknown 외 모든 판정을 적재 | KILLED — (i) 「생성 순간의 점유를 좌석 사실로 굳혔다」 + (ii) 실행 축 occupied |
+| M4 | prime 이 Occupied 만 적재(Empty 미적재) | KILLED — (i) Unknown→Empty 대조군 + (ii) 실행 축 |
+(ii) 실행 축의 M3·M4 적색은 생성 순간 자손이 있는 조건에서만 난다(환경 의존 킬) — 그 축의 역할은 불변식 고정이고, 배선 킬은 M1·M2 가 진다.
+
+### 12-4. 통합 검증(r6 · HEAD 1e9cbbb5)
+CI 3명령은 release.yml 356·357·361 글자 그대로를 bash 로 · 빈 CYS_PACK_DIR · 직렬 · **CI 유사 로그인 조건**(`SHELL=/bin/bash` + 가짜 HOME
+`.bash_profile`=`sleep 0.3` — 종전 시험이 3/3 적색이던 조건). 건강 검체는 §8-5 격리 env 한 줄. 12:48:38~13:03:59 · 단계마다 dirty=0.
+| 단계 | rc | 초 | 건수 |
+|---|---|---|---|
+| cargo test --bin cysd -- --test-threads=1 --skip hwmon:: | 0 | 139 | 1033 pass · 0 fail · 1 ignored |
+| cargo test --lib -- --test-threads=1 | 0 | 242 | 533 pass · 0 fail · 1 ignored |
+| cargo test --bin cys -- --test-threads=1 | 0 | 104 | 280 pass · 0 fail |
+| 전체 건강 검체(직렬 · 격리 env) | 0 | 436 | pass 149 · fail 0 · skip 1 · GREEN |
+대상 2시험 반복: 실 HOME 3회 + 가짜 HOME 프로파일 3회 = 6/6 초록.
+
+- 4군 축(좌석 판정 층): ③자가치유 — 제품 무변경(`git diff 5f8ea61c --stat` = handlers.rs 1파일 +70/−44 · 헝크 2개 모두 `mod tests {`(7804행) 아래 14916·14930행) · 좌석 캐시·틱·prime 거동 불변.
+  ④전 pane 사망 — 좌석 생성·판정 경로 무변경 · 시험이 만드는 좌석은 비특권 1개(종전 master 최대 3개 → 승계 경로 미경유).
+- 판단 1건(지시 밖 · master 확인 대상): 의미 층을 제품 seam(판정 주입) 신설 없이 기존 실 프로세스 단위 시험으로 두었다 — 그 시험은
+  상태 대기로 전제를 세우므로 결정론이고 러너에서 이미 초록(8차)이며, seam 신설은 「제품 무접촉」과 충돌한다.
+- 곁 관측 【미측정 · 제품 결함 아님】: D7⑴ prime 의 효과는 호스트 의존이다 — 로그인 프로파일이 생성 순간 자식을 띄우는 사용자 기계
+  (예: `.zprofile` 의 명령 치환)에서는 prime 이 Unknown 을 남기고 §6 ⓐ 창 보류 + boot_node settle 이 덮는다(설계대로). 실사용자
+  프로파일에서의 빈도는 재지 않았다.
+- 재현 함정: 가짜 HOME 을 줄 때 `CARGO_HOME`·`RUSTUP_HOME` 을 실경로로 고정하지 않으면 cargo 가 툴체인을 못 찾아 **무출력으로** 끝난다
+  (첫 시도 0줄 — 「안 쟀다」).

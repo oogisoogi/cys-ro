@@ -2507,7 +2507,9 @@ mod dept_registry_cwd_tests {
 /// 접두가 없으면(본부 `cys.sock`·`\\.\pipe\cys`) `None` = **부서 소켓이 아니다**.
 pub fn dept_name_from_socket_for(sock: &Path, windows: bool) -> Option<String> {
     let last = if windows {
+        // 윈은 명명 파이프(`\\.\pipe\cys-dept-<name>`)만 — AF_UNIX 파일 경로는 없다. 후행 구분자만 관용(r4).
         sock.to_string_lossy()
+            .trim_end_matches(|c| c == '\\' || c == '/')
             .rsplit(|c| c == '\\' || c == '/')
             .next()
             .unwrap_or("")

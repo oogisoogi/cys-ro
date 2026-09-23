@@ -6012,12 +6012,16 @@ fn deliver_queued(
         // depth≥임계≥1, 기아 경보는 머리 존재가 전제 — 관측 동등·무회귀). 락은 순간 보유.
         // 스냅샷과 실제 배달(deliver_head_locked) 사이 머리가 바뀌는 창은 clear(drain·
         // 배달 0건으로 안전)뿐이고, 배달 자체는 헬퍼 임계영역이 그 시점 머리로 원자 수행한다.
-        let (head, depth) = {
+        let snap = {
             let q = s.pending_queue.lock().unwrap();
-            match q.front().cloned() {
-                Some(h) => (h, q.len()),
-                None => continue,
-            }
+            q.front().cloned().map(|h| (h, q.len()))
+        };
+        let Some((head, depth)) = snap else {
+            // ★v115r3-d7 r4(agy 3R #2): 빈 큐의 막힘 사유는 사실이 아니다 — queue.clear 와의 경쟁(clear 가 사유를
+            //   지운 직후 이 틱이 옛 머리로 mark_queue_blocked)으로 남은 사유도 **틱 자신이** 다음 틱에 닫는다.
+            //   두 락(pending_queue·queue_blocked)을 묶지 않는다 — 위 큐 락은 이미 풀렸다(락 순서 위험 회피).
+            *s.queue_blocked.lock().unwrap() = None;
+            continue;
         };
         // ★G1(W2-D BLOCKER): overdue·기아 자격의 대기 = uptime 클램프 측정(부트 직후
         // typing 가드 공백 창 봉인 — queue_head_wait_secs doc 참조).

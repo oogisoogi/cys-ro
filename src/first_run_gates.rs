@@ -1002,6 +1002,27 @@ fn enforce_self_rules(gates: Vec<Gate>, notes: &mut Vec<String>) -> Vec<Gate> {
 ///   그 화면에서 뒤집히는 귀결은 `보류 → 주입` 이지만 **그 화면에서는 주입이 애초에 옳다**
 ///   (정상 화면이다). 실측 관문 화면 위에서의 귀결은 한 톨도 바뀌지 않는다(검체가 전수 대조).
 fn repair_gate(mut g: Gate, canon: &[Gate], notes: &mut Vec<String>) -> Gate {
+    // ★(1.1.6 r2 · Fable 2R · master 결정) 빌트인 관문의 **통과 액션 라벨은 치환하지 않는다.** 폴더신뢰
+    //   자동확인(`Gate::focus_plan`)은 이 라벨이 걸린 행에 `❯` 가 있을 때만 Return 을 보낸다 — 라벨이 곧
+    //   조준점이다. 봉투 한 줄(`"action": {"label": "No, exit"}`)이 2.1.280 에서 그 Return 을 `No, exit` 에
+    //   겨누게 두면 좌석이 rc 1 로 죽는다. 부재의 비용(`absence_cost`)과 같은 비대칭: 액션 자체를 끄는
+    //   선언(null · human_only)은 막는 쪽이라 허용하고, 조준점을 옮기는 선언만 되돌린다. 사유는 notes.
+    //   merge(`apply_patch`)·replace(`parse_new_gate`) 두 경로가 모두 여기를 지난다(`enforce_self_rules`).
+    let canon_label = canon
+        .iter()
+        .find(|b| b.id == g.id)
+        .and_then(|b| b.action.as_ref())
+        .map(|a| a.label.clone());
+    if let (Some(a), Some(want)) = (g.action.as_mut(), canon_label) {
+        if a.label != want {
+            notes.push(format!(
+                "{}: 통과 액션 라벨 치환 선언({:?}) 거부 — 라벨은 자동확인의 조준점이라 코드 정본 \
+                 라벨({want:?})로 되돌린다(액션을 끄는 선언은 허용)",
+                g.id, a.label
+            ));
+            a.label = want;
+        }
+    }
     if gate_rule_violations(&g).is_empty() {
         return g;
     }
@@ -2583,6 +2604,46 @@ mod tests {
         assert_eq!(g.passability, Passability::HumanOnly, "측정 결과가 선언으로 뒤집혔다");
         assert!(g.action.is_none());
         assert!(r.notes.iter().any(|n| n.contains("거부")), "거부가 조용하다");
+    }
+
+    /// ★(1.1.6 r2) 빌트인 관문의 통과 액션 라벨(= 자동확인 조준점)은 봉투로 치환되지 않는다 —
+    /// merge·replace 두 경로 모두. 액션을 끄는 선언(null)은 막는 쪽이라 그대로 허용한다.
+    #[test]
+    fn override_cannot_retarget_a_builtin_action_label() {
+        let aim = json!({"select_index": 1, "label": "No, exit"});
+        for env in [
+            json!({"gates": [{"id": "folder-trust", "action": aim}]}),
+            json!({"source": "replace", "gates": [{"id": "folder-trust",
+                "needles": ["Is this a project you created or one you trust"],
+                "widget": ["Enter to confirm", "Esc to cancel"],
+                "options": ["Yes, I trust this folder", "No, exit"], "action": aim}]}),
+        ] {
+            let r = resolve_with(Some(&env), true);
+            let g = r.gates.iter().find(|g| g.id == "folder-trust").unwrap();
+            assert_eq!(
+                g.action.as_ref().map(|a| a.label.as_str()),
+                Some("Yes, I trust this folder"),
+                "조준점이 봉투로 옮겨졌다: {env}"
+            );
+            // 2.1.280 기본 포커스(No, exit) 화면에서 Return 이 아니라 아래키 계획이어야 한다.
+            assert_eq!(
+                g.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+                FocusPlan::Down(1)
+            );
+            assert!(
+                r.notes.iter().any(|n| n.contains("라벨 치환")),
+                "거부가 조용하다: {env}"
+            );
+        }
+        // 액션을 끄는 선언은 허용(보류 쪽) — 라벨 거부가 액션을 되살리지 않는다.
+        let off = json!({"gates": [{"id": "folder-trust", "action": null}]});
+        let r = resolve_with(Some(&off), true);
+        let g = r.gates.iter().find(|g| g.id == "folder-trust").unwrap();
+        assert!(g.action.is_none());
+        assert_eq!(
+            g.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+            FocusPlan::Hold
+        );
     }
 
     #[test]

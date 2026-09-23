@@ -40,8 +40,11 @@ html, body {
 #brand { font-weight: 700; color: var(--accent); }
 /* 앱 판번 상시 표시(TICKET=cysr-ui-polish-101 ⓐ) — 브랜드 옆 소형 · build_id 는 툴팁 */
 #app-ver { color: #8b949e; font-size: calc(10px * var(--ui-chrome-scale)); margin-left: -4px; }
+/* (v116-ui-close · D4 #5 · opus 디버깅 D-1) 줄어들지 않는다(flex: none). 종전 flex 0 1 auto·말줄임은 긴 옛 라벨
+   (pid·소켓 경로)용이었다 — 짧아진 「엔진 v1.1.6」이 800폭에서 「엔.」까지 찌그러져 판번이 사라졌다. 좁으면 상단바가
+   가로로 밀린다(#topbar overflow-x: auto). 긴 설명은 전부 툴팁(title)으로 간다. */
 #daemon-info { color: #8b949e; font-size: calc(11px * var(--ui-chrome-scale));
-  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  flex: none; white-space: nowrap; }
 /* P2 버전 스큐 배지 — lame-duck 데몬(세션 보존) 안내. 경고색이되 위협적이지 않게(불안 방지가 목적).
    클릭 = 데몬 교대(manualRotateSkewed — 메인+부서 순차). */
 .ver-skew-badge {

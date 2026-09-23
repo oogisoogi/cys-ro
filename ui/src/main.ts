@@ -7807,7 +7807,8 @@ async function start() {
     info.textContent = daemonInfoLabel(status);
     info.title = daemonInfoTitle(status); // (D4 #5) 전문(pid·소켓 경로)은 툴팁으로
   } catch {
-    info.textContent = "엔진 응답 없음 — 화면은 계속 사용할 수 있습니다(연결되면 자동으로 붙습니다)";
+    info.textContent = "엔진 응답 없음"; // (D-1) 라벨은 짧게 — 설명은 툴팁
+    info.title = "엔진이 아직 응답하지 않습니다 — 화면은 계속 사용할 수 있습니다(연결되면 자동으로 붙습니다)";
   }
 
   // 버전 스큐 세대교체(메인 + 부서 데몬) — 시작 1회 + 5분 주기 재검(B). 무중단 rename-swap의 짝으로

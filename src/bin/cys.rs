@@ -23689,6 +23689,18 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     }
 
     #[test]
+    fn t2_grid_after_launch_echo_table() {
+        let g = "old ╭────────╮\n% claude --dangerously-skip-permissions --resume x\nerr\n% ";
+        assert_eq!(grid_after_launch_echo(g, "claude --dangerously-skip-permissions --resume x"), "err\n% ");
+        assert_eq!(grid_after_launch_echo(g, "codex --full-auto"), g, "에코 없음 → 화면 전체");
+        assert_eq!(grid_after_launch_echo(g, "   "), g, "빈 기동 줄 → 화면 전체");
+        // 마지막 에코 기준(같은 명령이 위에 또 있어도 가장 아래부터)
+        let twice = "% claude --dangerously-skip-permissions\nA\n% claude --dangerously-skip-permissions\nB";
+        assert_eq!(grid_after_launch_echo(twice, "claude --dangerously-skip-permissions"), "B");
+        assert_eq!(grid_after_launch_echo("% claude --dangerously-skip-permissions", "claude --dangerously-skip-permissions"), "");
+    }
+
+    #[test]
     fn t2_launch_failure_branch_is_wired_through_confirmation() {
         let src = include_str!("cys.rs");
         let body = &src[src.find("fn boot_agent_on_surface(").expect("fn")..];

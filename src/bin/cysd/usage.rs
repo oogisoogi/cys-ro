@@ -2385,4 +2385,62 @@ mod tests {
         assert_eq!(fired.len(), 1, "유예가 끝났는데 새 줄이 없어 보류된 추정 임계가 영구 침묵");
     }
 
+    /// opus 적대 1R(low): 유예 기준은 좌석 생성 시각이다 — 세션 파일 전환(재부착)으로 유예가 새로 시작되지 않는다.
+    #[test]
+    fn t2_grace_is_seat_age_not_reattach_time() {
+        let (daemon, s, dir) = t2_seat("reattach");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let b = dir.join("cccccccc-0000-4000-8000-0000000000cc.jsonl");
+        std::fs::write(&b, "").unwrap();
+        *s.registered_transcript.lock().unwrap() = Some(b.to_string_lossy().into_owned());
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let t = tails.get(&s.id).expect("재부착 tail");
+        let (path, grace_from) = (t.path.clone(), t.grace_from);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(path, b, "전제: 재부착됨");
+        assert_eq!(grace_from, s.created_at, "재부착이 유예를 새로 시작했다 — 추정 창 좌석 발화 영구 지연 경로");
+    }
+
+    /// opus 적대 1R(low): 창 크기(ctx %)가 없는 statusline 보고는 보류를 지우지 못한다.
+    #[test]
+    fn t2_statusline_without_ctx_keeps_deferral() {
+        let (daemon, s, dir) = t2_seat("noctx");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert!(tails.get(&s.id).unwrap().threshold_deferred, "전제: 보류됨");
+        *s.observed_usage.lock().unwrap() = Some(ObservedUsage {
+            agent: "claude".into(),
+            ctx_tokens: None,
+            ctx_window: None,
+            ctx_pct: None,
+            rate: vec![],
+            source: "statusline".into(),
+            session_file: String::new(),
+            updated_at: now_epoch(),
+        });
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let still_idle = tails.get(&s.id).unwrap().threshold_deferred;
+        // 새 줄이 있는 틱(본류의 statusline 신선 조기 반환 경로)도 같다
+        let t = s.registered_transcript.lock().unwrap().clone().unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        std::io::Write::write_all(
+            &mut f,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":156000,"cache_creation_input_tokens":0,"output_tokens":10}}}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        drop(f);
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let still_main = tails.get(&s.id).unwrap().threshold_deferred;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(still_idle, "ctx 없는 statusline 이 보류를 지웠다(빈 줄 틱) — statusline 이 낡은 뒤 idle 좌석 추정 임계 영구 침묵");
+        assert!(still_main, "ctx 없는 statusline 이 보류를 지웠다(새 줄 틱)");
+    }
 }

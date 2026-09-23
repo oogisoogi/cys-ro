@@ -64,8 +64,10 @@ class P2RestoreVerdict(unittest.TestCase):
     def test_table(self):
         now = 1000.0
         cases = [
-            ({"daemon": {"auto_restore": "running", "started_at": 1}}, "wait"),
-            ({"daemon": {"auto_restore": "retry_wait", "started_at": 1}}, "wait"),
+            ({"daemon": {"auto_restore": "running", "started_at": 900}}, "wait"),
+            ({"daemon": {"auto_restore": "retry_wait", "started_at": 900}}, "wait"),
+            ({"daemon": {"auto_restore": "running"}}, "wait"),                  # 나이 모름 = 기다림(상한은 대기 루프)
+            ({"daemon": {"auto_restore": "running", "started_at": 1}}, "go"),   # Fable M-3: 999s = 걸린 복원 → 진행
             ({"daemon": {"auto_restore": "done", "started_at": 999}}, "go"),
             ({"daemon": {"auto_restore": "off", "started_at": 999}}, "go"),
             ({"daemon": {"started_at": 995}}, "wait"),          # 옛 데몬 · 5초
@@ -273,6 +275,24 @@ class P3Cwd(_Base):
         ok, cwd = fm._ensure_master_seat("/s/dept-3.sock", None)
         self.assertEqual(ran[0][-2:], ["--cwd", "/Users/u/Desktop/CYSjavis/행정부"], ran)
         self.assertEqual(cwd, "/Users/u/Desktop/CYSjavis/행정부")
+
+
+class M4WindowsTombstones(unittest.TestCase):
+    def test_nt_reads_localappdata(self):
+        tmp = tempfile.mkdtemp()
+        saved = (fm.os.name, dict(os.environ))
+        try:
+            os.makedirs(os.path.join(tmp, "cys"))
+            json.dump({"dept_tombstones": ["교육부"]}, open(os.path.join(tmp, "cys", "dept_tombstones.json"), "w"))
+            os.environ["LOCALAPPDATA"] = tmp
+            fm.os.name = "nt"
+            self.assertEqual(fm._dept_tombstones(), {"교육부"})
+            os.environ.pop("LOCALAPPDATA")
+            self.assertIsNone(fm._dept_tombstones())
+        finally:
+            fm.os.name = saved[0]
+            os.environ.clear(); os.environ.update(saved[1])
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class DeptName(unittest.TestCase):

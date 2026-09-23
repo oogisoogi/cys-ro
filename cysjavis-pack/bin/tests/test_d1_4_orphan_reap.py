@@ -198,6 +198,36 @@ class OrphanReap(unittest.TestCase):
         self.assertEqual(w.closed, [])
         self.assertEqual(out.get("skipped"), "no_dept_cwd")
 
+    def test_M1_user_shell_from_env_is_a_shell(self):
+        old = os.environ.get("SHELL")
+        os.environ["SHELL"] = "/opt/homebrew/bin/nu"
+        try:
+            w = FakeWorld([seat()], {"surface:4": 4001}, comm={4001: "/opt/homebrew/bin/nu"})
+            reap(w)
+            self.assertEqual(w.closed, ["surface:4"], "사용자 셸(nu) 뿌리를 셸로 못 봤다")
+        finally:
+            if old is None:
+                os.environ.pop("SHELL", None)
+            else:
+                os.environ["SHELL"] = old
+
+    def test_m2_nfd_korean_folder_and_symlink_match(self):
+        import tempfile
+        import unicodedata
+        base = tempfile.mkdtemp()
+        dept = os.path.join(base, unicodedata.normalize("NFC", "행정부"))
+        os.makedirs(os.path.join(dept, "workers", "w1"))
+        nfd = os.path.join(base, unicodedata.normalize("NFD", "행정부"), "workers", "w1")
+        ok, why = bn.orphan_seat_verdict(seat(cwd=nfd), dept, GRACE)
+        self.assertTrue(ok, why)
+        link = base + "-link"
+        os.symlink(base, link)
+        try:
+            ok, why = bn.orphan_seat_verdict(seat(cwd=os.path.join(link, "행정부", "workers", "w1")), dept, GRACE)
+            self.assertTrue(ok, why)
+        finally:
+            os.unlink(link)
+
     def test_grace_env_default(self):
         old = os.environ.pop(bn.SEAT_ORPHAN_GRACE_ENV, None)
         try:

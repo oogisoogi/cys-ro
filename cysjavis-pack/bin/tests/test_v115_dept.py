@@ -478,6 +478,27 @@ class A2B8BootNodeRun(unittest.TestCase):
         self.assertEqual([c for c in fake.calls if c[1:2] in (["close-surface"], ["launch-agent"])], [])
         self.assertEqual(out["result"], "seat_kept_root_not_bare_shell")
 
+    def test_v116_succession_old_seat_revived_during_launch_is_not_reaped(self):
+        # Fable 1R M-2: 승계 앞 뿌리 확인 뒤 launch-agent 창 동안 사람이 옛 셸에서 claude 를 띄움 → 회수 0
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+
+        class _Revive(_FakeCys):
+            def __call__(s, args, timeout=15):
+                if args[1:2] == ["launch-agent"]:
+                    for r in s.rows:
+                        if r["ref"] == "surface:1":
+                            r["children"] = True
+                return super().__call__(args, timeout)
+        saved = globals()["_FakeCys"]
+        globals()["_FakeCys"] = _Revive
+        try:
+            rc, out, fake = self._run(rows, "master", self.env)
+        finally:
+            globals()["_FakeCys"] = saved
+        self.assertEqual([c for c in fake.calls if c[1] == "close-surface"], [], "승계 중 되살아난 옛 좌석을 회수했다")
+        self.assertTrue(any("root_recheck" in (l.get("msg") or "") for l in out.get("log", [])), out)
+
     def test_succession_reaps_old_shell_when_queue_empty(self):
         rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
                  "created": time.time() - 5}]

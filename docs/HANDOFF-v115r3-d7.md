@@ -191,3 +191,27 @@ CI 러너엔 `cys` 가 없어 이 경로가 안 돌고(=CI 초록), 로컬에서
 | 3R#3·#4 | SAFE | 조치 0 | — |
 시험 커밋 = d246aa3d(제품·시험 분리). 전체 건강 검체(HEAD d246aa3d · 격리 env) = rc 0 · 451s · pass 149 · skip 1 · GREEN · dirty 0.
 표적 cysd 묶음 32건 중 적색 1 = 선재 간헐 reap 시험(§9 곁 · 기준선 동일).
+
+## 11. r5(master · CI 7차 맥 aarch64 레인 적색 · run 35808969481 · job 107015966746)
+원인 두 갈래 — 둘 다 **시험이 호출자 환경을 전제**한 결함이고 제품은 무접촉이다. 앞 라운드의 로컬 초록(§8-8·§9-1 cysd 1033/1034 pass)은
+로컬 SHELL=zsh·stdin EOF 에서만 잰 값이라 CI 러너 조건을 한 번도 만나지 않았다(초록불이 대상을 안 만남).
+
+| # | 증상 | 원인 【관측】 | 수리(커밋) | 시험 · 뮤턴트 |
+|---|---|---|---|---|
+| ⑴ | `d7_new_seat_is_judged_at_create_not_left_unknown`(unknown) · `d7_prime_seat_cache_never_overwrites_a_tick_value`(None) | 좌석은 `$SHELL -lc "<PATH 선두주입>; <cmd>"` 로 뜬다(state.rs create_surface_with_env). 러너 SHELL=bash 3.2 는 목록의 마지막 `sleep 30` 을 **fork** → 뿌리의 영구 자손 → 판정 Occupied → prime(Empty 한정 설계) 무기록. zsh 는 exec. 탐침 15회: bash `sleep 30` 15/15 unknown · zsh 15/15 empty · `exec sleep 30` 두 셸 15/15 empty. 빈 CYS_PACK_DIR·직렬 순서는 무관 | 95944e9f — 픽스처 `exec sleep 30` · ⑴은 3회 중 1회 이상 empty(생성 순간이 셸 초기화 자손과 겹치면 Unknown 을 남기는 것도 제품 설계 · §6 ⓐ 창 보류가 덮음) + 어느 회차도 occupied 아님 단언 추가 · ⑵ 대조군은 자손 0 을 상태로 대기(5s 상한 · 전제 실패 시 적색) | M1 생성 경로 prime 호출 삭제 · M2 prime 무기록 · M3 CAS 기대값=현재값(틱 값 덮음) · M4 Empty 한정 해제 — 4/4 KILLED(SHELL=/bin/bash) |
+| ⑵ | `cargo test --bin cys -- --test-threads=1` 27분 정지(로컬 · CI 명령 release.yml:361 그대로) | `tests::take_new_on_constitution_file_declines_noninteractive_without_promoting` 이 프로세스 stdin EOF 를 전제 — 닫히지 않는 stdin(에이전트 셸 소켓·열린 파이프)에선 `confirm_stdin` read_line 무한 대기. `--exact` 재현: stdin=/dev/null 0.03s · 열린 파이프 = 파이프 닫힐 때까지(84s). CI 는 stdin EOF 라 6차 aarch64(run 35791525423)에서 ok · cys 280 pass 53.6s → CI 재발 아님 | e4687d0e — 시험 전용 `StdinEofGuard`(unix: fd0 을 /dev/null 로 dup2 · Drop 복원 · 윈도우 무동작) | SM1 가드 삭제 → 60s 타임아웃 · SM2 fd 오조준 → 적색 — 2/2 KILLED · 열린 파이프 stdin 으로 cys 전체 280 pass(같은 전제 시험 0건 추가) |
+
+- 4군 축(시험·좌석 판정 층): ③자가치유 — 제품 코드 무변경이라 좌석 캐시·틱·prime 거동 불변. ④전 pane 사망 — 좌석 생성·판정 경로 무변경 · 시험 픽스처만 exec 로 바뀜.
+  시험 쪽 부수 효과: ⑴ 시험이 master 역할 좌석을 3회까지 만든다(승계 경로를 탄다 · 시험 데몬 한정). StdinEofGuard 는 ENV_LOCK 아래 한 시험에서만 fd0 을 바꾼다.
+- 판단 1건(지시 밖 · master 확인 대상): ⑴의 「3회 중 1회」는 단일 발 단언을 완화한 것이 아니라 제품 설계(Empty 한정 · 셸 초기화 겹침 시 Unknown)를 시험에 옮긴 것으로 판단했다. prime 호출 삭제 뮤턴트는 3/3 unknown 으로 적색.
+- 재현 함정(재발 방지): zsh 에서 `cargo test $a` 는 인자를 쪼개지 않는다(1회 게이트 무효 · bash 스크립트로 재실행). 백그라운드 Bash 도구의 stdin 은 닫히지 않는 소켓이라 ⑵ 가 이 조건에서 드러났다.
+
+### 11-1. 통합 검증(r5 · HEAD e4687d0e · 12:05:32~12:21:58 · 단계마다 dirty=0)
+CI 3명령은 release.yml 356·357·361 글자 그대로 + `SHELL=/bin/bash`(러너 조건). 건강 검체는 §8-5 격리 env 한 줄.
+| 단계 | rc | 초 | 건수 |
+|---|---|---|---|
+| cargo test --bin cysd -- --test-threads=1 --skip hwmon:: | 0 | 122 | 1033 pass · 0 fail · 1 ignored |
+| cargo test --lib -- --test-threads=1 | 0 | 319 | 533 pass · 0 fail · 1 ignored |
+| cargo test --bin cys -- --test-threads=1 | 0 | 124 | 280 pass · 0 fail |
+| 전체 건강 검체(직렬 · 격리 env) | 0 | 421 | pass 149 · fail 0 · skip 1 · GREEN |
+뮤턴트 6/6 KILLED(M1~M4 · SM1~SM2 · 변이 적용 assert · 복원 해시 대조). 추가: 열린 파이프 stdin 으로 cys 전체 280 pass(94s).

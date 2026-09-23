@@ -2,7 +2,7 @@
 // 원형 = master/reports/cysr-115-debug-2026-09-23/D4-evidence/shim.js(D4 · 996). 이 판의 추가:
 //   · 호출 인자 기록(__shimCalls = [{cmd,args}]) · 좌석 종료 흉내(__shimExit) · 목록 조회 실패 주입(__shimFailList)
 //   · 파일 흉내(__shimFiles: 경로 → 본문 · read_text_head 가 읽는다)
-//   · (R1c) 좌석 추가(__shimAddSeat) · sc=late = master 없이 시작 · (D4 #12) 이름 바꾸기(rename_surface → 좌석 제목) · (D4 #18) control_dashboard(__shimDash) · (D4 #14) check_update 실패 주입(__shimFailUpdate)
+//   · (R1c) 좌석 추가(__shimAddSeat) · sc=late = master 없이 시작 · (D4 #12) 이름 바꾸기(rename_surface → 좌석 제목) · (D4 #18) control_dashboard(__shimDash) · (D4 #14) check_update 실패 주입(__shimFailUpdate) · 새 판 흉내(__shimUpdate)
 (() => {
   const q = new URLSearchParams(location.search);
   const SC = q.get("sc") || "two";
@@ -52,7 +52,7 @@
     create_surface: () => { const id = 100 + seats.length; const s = mk(id, null, "/Users/u"); s.title = ""; seats.push(s); return { surface_id: id }; },
     rename_surface: (a) => { const s = seats.find((x) => x.surface_id === a.surfaceId); if (s) s.title = a.title; return null; },
     close_surface: (a) => { const i = seats.findIndex((x) => x.surface_id === a.surfaceId); if (i >= 0) seats.splice(i, 1); return null; },
-    check_update: () => { if (window.__shimFailUpdate) throw "error sending request for url (https://example.invalid/latest.json): dns error"; return null; },
+    check_update: () => { if (window.__shimFailUpdate) throw "error sending request for url (https://example.invalid/latest.json): dns error"; return window.__shimUpdate || null; },
     control_dashboard: () => window.__shimDash || { fleet: [], uptime_secs: 60, version: "1.1.6" },
     usage_accounts_all: () => ({ accounts: window.__shimAccounts || [] }),
     usage_named_reporters: () => ({ reporters: [] }),

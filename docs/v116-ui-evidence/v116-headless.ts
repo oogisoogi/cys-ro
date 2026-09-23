@@ -16,6 +16,7 @@
 //   c13 used_pct null(미관측) → 창 머리 배지에 그 창 0 · Control Center 계정 게이지 「—」(0% 아님)(D4 #18 나머지 절반)
 //   c14 경보 알림(승인 대기 · 방치 · 대화 기억 · 유휴 · 사망 · 응답 없음) 화면 글에 surface:N·역할 코드·내부 지침 문구 0 · 사망 알림에 안심 문장(D4 #8)
 //   c15 업데이트 확인 실패 → 알림 본문 = 사람 말 · 백엔드 원문은 접힌 「자세히」 안쪽(삭제 0)(D4 #14)
+//   c16 새 앱 설치 확인창 = 「설치」/「취소」(아니오 0 · D4 #20) · 본문에 drain·CDHash·본체·패치 0 · 저장 안심 문장(D4 #14)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -26,7 +27,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -335,6 +336,15 @@ if (ONLY.includes("c15")) {
   await ev(`document.getElementById("btn-update").click()`); await Bun.sleep(800);
   const a = await ev(`(() => { const t = [...document.querySelectorAll("#toasts .toast")].find(x => x.querySelector(".toast-name")?.textContent === "업데이트 확인 실패"); if (!t) return { found: false }; const d = t.querySelector("details.toast-raw"); return { found: true, detail: t.querySelector(".toast-detail").textContent, details: !!d, open: d?.open ?? null, summary: d?.querySelector("summary")?.textContent ?? "", raw: d?.querySelector(".toast-raw-text")?.textContent ?? "", visible: t.innerText.replace(/\\n+/g, " / ") }; })()`);
   check("c15 업데이트 확인 실패 → 본문 사람 말 · 원문은 접힌 「자세히」 안(보이는 글에 원문 0 · 원문 보존)", a.found && !a.detail.includes("error sending") && a.details && a.open === false && a.summary === "자세히" && a.raw.includes("error sending request") && !a.visible.includes("error sending"), JSON.stringify(a));
+}
+
+if (ONLY.includes("c16")) {
+  await load("two", "", `window.__shimUpdate = { version: "1.1.7", notes: "" }`);
+  await ev(`document.getElementById("btn-update").click()`); await Bun.sleep(800);
+  const a = await ev(`(() => { const m = document.querySelector(".modal-overlay .modal"); if (!m) return { modal: false }; return { modal: true, yes: m.querySelector(".modal-yes")?.textContent, no: m.querySelector(".modal-no")?.textContent, text: m.innerText.replace(/\\n+/g, " / ") }; })()`);
+  const bad = /drain|CDHash|본체|패치|미저장분/.exec(a.text ?? "");
+  check("c16 새 앱 설치 확인창 = 설치/취소 · 내부 용어 0 · 저장 안심 문장", a.modal && a.yes === "설치" && a.no === "취소" && !bad && /대화가 돌아옵니다/.test(a.text), JSON.stringify({ ...a, bad: bad?.[0] ?? null }));
+  await ev(`document.querySelector(".modal-no")?.click()`);
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

@@ -1495,7 +1495,7 @@ def main():
             # agy 1R #1: 기다리는 동안 좌석이 교체될 수 있다 — 처분(act)을 잰 스냅샷과 같은 좌석을
             #   대상으로 삼는다(옛 row 로 회수·승계하면 죽은 좌석을 겨누고 새 빈 좌석은 남는다).
             row = status_surface(status, a.role)
-        act = empty_seat_action(status, a.role) if row is not None else None
+        act = empty_seat_action(status, a.role)
         if act == "hold-grace":
             emit("seat", "%s 빈 좌석이 부팅 유예(%.0fs) 안 — 재기동·회수 보류" % (row["surface_ref"], seat_boot_grace_s()))
             return done("seat_in_grace", "empty_seat_boot_grace", row["surface_ref"], code=1)

@@ -104,6 +104,14 @@ const scopeKey = (socket: string, agent: string) => JSON.stringify([socket, agen
 // 신선도 규율(같은 검증 [High]): updated_at을 안 보면 낡은 95%가 최신 10%를 영원히 이긴다.
 // ⇒ **신선한 관측이 하나라도 있으면 신선한 것들 중에서만** 최댓값을 고른다. 전부 낡았을 때만
 // 낡은 값을 쓰고 stale로 표시한다(데이터를 버리지 않되 거짓 최신으로 보이지도 않게).
+/**
+ * (D4 #18) 사용률 값 읽기 — null·빈 값(미관측)은 NaN 이다. `Number(null)` 은 0 이라 그대로 두면 「0% 사용」 게이지로
+ * 그려진다(미관측 ≠ 0%). 지금 데몬은 null 을 내지 않지만(잠복) 한 줄만 어긋나도 「넉넉하다」는 거짓 신호가 된다.
+ */
+function usedPctOf(v: unknown): number {
+  return v == null || v === "" ? NaN : Number(v);
+}
+
 export function aggregateRates(surfaces: SurfaceLike[], nowSecs: number): RateRow[] {
   // key → { fresh: 후보, stale: 후보 }
   const best = new Map<string, { fresh: RateRow | null; stale: RateRow | null }>();
@@ -114,7 +122,7 @@ export function aggregateRates(surfaces: SurfaceLike[], nowSecs: number): RateRo
     const isStale = age > USAGE_STALE_SECS;
     const agent = u.agent || "?";
     for (const w of u.rate ?? []) {
-      const used = Number(w.used_pct);
+      const used = usedPctOf(w.used_pct);
       if (!Number.isFinite(used)) continue;
       const k = JSON.stringify([scopeKey(s.socket, agent), w.label]);
       const cand: RateRow = {
@@ -213,7 +221,7 @@ export function accountRates(accounts: AccountLike[] | null | undefined, nowSecs
     const age = Math.max(0, Math.round(nowSecs - updatedAt));
     const agent = a.provider || "?";
     for (const w of a.rate ?? []) {
-      const used = Number(w?.used_pct);
+      const used = usedPctOf(w?.used_pct);
       if (!Number.isFinite(used)) continue;
       rows.push({
         // 계정 저장소는 부서 데몬까지 병합한 뷰라 특정 소켓에 속하지 않는다.
@@ -254,7 +262,7 @@ export function scopedRates(accounts: AccountLike[] | null | undefined, nowSecs:
     if (!a) continue;
     for (const g of a.scoped ?? []) {
       if (!g || typeof g.model !== "string" || !g.model) continue; // 이름 없는 게이지는 만들지 않는다
-      const used = Number(g.used_pct);
+      const used = usedPctOf(g.used_pct);
       const updatedAt = Number(g.updated_at);
       if (!Number.isFinite(used)) continue;
       // accountRates와 **같은 규율**: 관측 시각이 없으면 그리지 않는다(나이 0 = 거짓 신선).

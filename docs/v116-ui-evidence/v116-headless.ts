@@ -5,6 +5,9 @@
 //   c2 복원 직후 목록 조회 실패(이벤트 유실 잔재) → 다음 틱에 [exited] 옛 창 0
 //   c3 창 2개 중 1개 exited(이벤트) → 남은 창 폭 = 전체 · PTY cols 재조정
 //   c4 기본 화면 상단에 창 만들기 단추(+ New·Split) 0 · 전문가 모드 칸에 「창 만들기」 → 오른쪽/아래 메뉴
+//   c6 복원 카드가 떠 있을 때 뒤에 뜬 경보(에이전트 사망 알림)가 카드에 가려지지 않는다(D4 #21 · 1280·800 폭)
+//   c7 상단바 데몬 라벨 = 판번만(pid·소켓 경로·daemon 0) · 전문은 툴팁(D4 #5)
+//   c8 이름 없는 본부 탭 = 「본부」 · 화면 어디에도 「non title」 0 · 탭 삭제 확인도 같은 이름(D4 #4)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -15,7 +18,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -118,7 +121,7 @@ if (ONLY.includes("c2")) {
   //   (종전 판) 완료 처리기의 미제출 안내 조회나 무장 전에 시작된 틱이 실패를 먹어 재현이 시각에 따라 갈렸다.
   await ev(`window.__shimFailUntil = Date.now() + 5000; window.__shimEmit("restore-progress", { phase: "done", hq_ok: true, ok: 0, fail: 0 })`);
   await Bun.sleep(10000); // 실패 창 5초 + 성공 틱 1회 이상
-  const a = await ev(`({ failWindowOver: Date.now() > window.__shimFailUntil, panes: document.querySelectorAll("#root .pane").length, exitedTitles: [...document.querySelectorAll(".pane-title-text")].filter(t => t.textContent.includes("[exited]")).length })`);
+  const a = await ev(`({ failWindowOver: Date.now() > window.__shimFailUntil, panes: document.querySelectorAll("#root .pane").length, exitedTitles: [...document.querySelectorAll(".pane-title-text")].filter(t => t.textContent.includes("[exited]") || t.textContent.includes("(끝남)")).length })`);
   check("c2 조회 실패 뒤 다음 틱 → [exited] 옛 창 0", before === 2 && a.panes === 1 && a.exitedTitles === 0, JSON.stringify({ before, ...a }));
 }
 
@@ -162,6 +165,50 @@ if (ONLY.includes("c5")) {
   await Bun.sleep(16000);
   const a = await ev(`({ card: !!document.getElementById("restore-brief"), text: document.getElementById("restore-brief")?.innerText ?? "" })`);
   check("c5b 정본 = 설치 골격(3절 없음) → 짧은 카드 · 빈 문장 0", a.card && !a.text.includes("하던 일을 복원") && !a.text.includes("적힌 것이 없습니다"), JSON.stringify({ card: a.card, text: a.text.replace(/\n+/g, " / ").slice(0, 200) }));
+}
+
+if (ONLY.includes("c6")) {
+  for (const w of [1280, 800]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 820, deviceScaleFactor: 1, mobile: false });
+    const body = "## 완료\\n- 끝난 일 1\\n- 끝난 일 2\\n## 진행 중\\n- 하던 일 1\\n- 하던 일 2\\n## 결정 필요\\n- 정할 일\\n2026-09-23 22:10";
+    await load("two", "", `window.__shimFiles["/Users/u/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
+    await Bun.sleep(16000); // 카드 유예
+    // 경보 3건을 겹쳐 쌓는다(Fable F2 — 짧은 1건만으로는 알림 줄이 카드의 [닫기]까지 자라는 경우를 못 잰다)
+    for (const role of ["worker", "cso", "master"])
+      await ev(`window.__shimEmit("daemon-event", { name: "agent.exited", category: "agent", surface_id: 2, payload: { role: "${role}" } })`);
+    await Bun.sleep(400);
+    const a = await ev(`(() => {
+      const card = document.getElementById("restore-brief"); const t = [...document.querySelectorAll("#toasts .toast")].at(-1);
+      if (!card || !t) return { card: !!card, toast: !!t };
+      const r = document.getElementById("toasts").getBoundingClientRect(), c = card.getBoundingClientRect();
+      const all = [...document.querySelectorAll("#toasts .toast")];
+      const eachOnTop = all.every((x) => { const q = x.getBoundingClientRect(); const e = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); return !!e && x.contains(e); });
+      const overlap = !(r.right <= c.left || r.left >= c.right || r.bottom <= c.top || r.top >= c.bottom);
+      const cb = card.querySelector(".rb-close")?.getBoundingClientRect();
+      const cbTop = cb ? document.elementFromPoint(cb.left + cb.width / 2, cb.top + cb.height / 2) : null;
+      return { card: true, toast: true, toasts: all.length, toastOnTop: eachOnTop, overlap, closeReachable: !!cbTop && cbTop.classList.contains("rb-close"), cardInView: c.left >= 0 && c.right <= innerWidth + 1, text: t.innerText.slice(0, 40) };
+    })()`);
+    if (w === 1280) await shot("c6-alert-over-card.png");
+    const ok = a.card && a.toast && a.toastOnTop && a.cardInView && a.closeReachable && !a.overlap;
+    check(`c6 w${w} 복원 카드가 떠 있어도 경보 3건이 보인다(맨 위 · 겹침 0 · 카드 화면 안 · 카드 닫기 눌림)`, ok, JSON.stringify(a));
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+}
+
+if (ONLY.includes("c7")) {
+  await load("two");
+  const a = await ev(`(() => { const el = document.getElementById("daemon-info"); const first = el.firstChild?.textContent ?? ""; return { text: first, title: el.title }; })()`);
+  check("c7 상단바 라벨 = 판번만 · 툴팁 = 전문", a.text === "엔진 v1.1.6" && !/pid|sock|daemon|\/Users\//.test(a.text) && a.title.includes("pid=4242") && a.title.includes("sock="), JSON.stringify(a));
+}
+
+if (ONLY.includes("c8")) {
+  await load("two", `localStorage.removeItem("cys-layout-v2")`);
+  const a = await ev(`(() => { const names = [...document.querySelectorAll(".ws-tab .ws-name")].map(x => x.textContent); return { names, nonTitle: document.body.innerText.includes("non title") }; })()`);
+  await ev(`document.querySelector(".ws-tab .ws-close")?.click()`); await Bun.sleep(300);
+  const b = await ev(`({ modal: document.querySelector(".modal-overlay h3")?.textContent ?? "" })`);
+  await ev(`document.querySelector(".modal-no")?.click()`);
+  await shot("c8-hq-tab.png");
+  check("c8 본부 탭 이름 = 본부 · non title 0 · 삭제 확인도 본부", a.names[0] === "본부" && !a.nonTitle && b.modal.includes("본부") && !b.modal.includes("non title"), JSON.stringify({ ...a, ...b }));
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

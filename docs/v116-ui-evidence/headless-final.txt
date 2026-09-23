@@ -8,8 +8,12 @@ PASS c1g 취소(Escape) 뒤 키보드 포커스가 그 창으로 돌아온다 �
 PASS c1e exited 창 Close → 확인 0 · 바로 닫힘 — {"ov":0,"closed":[2],"panes":1}
 PASS c2 조회 실패 뒤 다음 틱 → [exited] 옛 창 0 — {"before":2,"failWindowOver":true,"panes":1,"exitedTitles":0}
 PASS c3 남은 창 폭 = 전체 · PTY cols 재조정 — before {"root":1061,"pane":530,"cols":66} → after {"root":1061,"pane":1061,"cols":134,"panes":1,"flex":""}
-PASS c4a 초보 화면 창 만들기·Split·New 단추 0 — {"tb":["정렬","Close","Files","Control Center 0","Update 0","↻ 재시작","완전 초기화","테마"],"hits":[]}
+PASS c4a 초보 화면 창 만들기·Split·New 단추 0 — {"tb":["정렬","창 닫기","파일","Control Center 0","업데이트 0","↻ 재시작","완전 초기화","테마"],"hits":[]}
 PASS c4b 전문가 칸 「창 만들기」 → 오른쪽/아래 메뉴 · 아래 누르면 세로 분할 — {"btn":true,"items":["오른쪽에 새 창 (⌘D)","아래에 새 창 (⌘⇧D)"],"n0":2,"panes":3,"col":1}
 PASS c5 정본 경로 기록 → 카드 표시 — {"card":true,"text":"다시 켜졌어요 — 하던 일을 복원했어요 / 다시 켜진 창 / 총괄 · 작업 창이 다시 켜졌습니다. / 끝난 일 / 정본 경로 기록 표시 시험 줄 / 하던 일 / 진행 줄 / 정하셔야 할 일 / 없음 / 이 기록은 2026-09-23 22:10 기준입니다. 그 뒤에 한 일은 빠져 있을 수 있습니다. / 닫기"}
 PASS c5b 정본 = 설치 골격(3절 없음) → 짧은 카드 · 빈 문장 0 — {"card":true,"text":"다시 켜졌어요 / 다시 켜진 창 / 총괄 · 작업 창이 다시 켜졌습니다. / 닫기"}
+PASS c6 w1280 복원 카드가 떠 있어도 경보 3건이 보인다(맨 위 · 겹침 0 · 카드 화면 안 · 카드 닫기 눌림) — {"card":true,"toast":true,"toasts":3,"toastOnTop":true,"overlap":false,"closeReachable":true,"cardInView":true,"text":"❌ 에이전트 사망surface:2 master\n×"}
+PASS c6 w800 복원 카드가 떠 있어도 경보 3건이 보인다(맨 위 · 겹침 0 · 카드 화면 안 · 카드 닫기 눌림) — {"card":true,"toast":true,"toasts":3,"toastOnTop":true,"overlap":false,"closeReachable":true,"cardInView":true,"text":"❌ 에이전트 사망surface:2 master\n×"}
+PASS c7 상단바 라벨 = 판번만 · 툴팁 = 전문 — {"text":"엔진 v1.1.6","title":"daemon v1.1.6 pid=4242 sock=/Users/u/.local/state/cys/cys.sock"}
+PASS c8 본부 탭 이름 = 본부 · non title 0 · 삭제 확인도 본부 — {"names":["본부"],"nonTitle":false,"modal":"워크스페이스 \"본부\" 완전 삭제"}
 ALL PASS

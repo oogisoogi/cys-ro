@@ -740,9 +740,12 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
 
 /* ★T-0147-3: 높이 상한 없던 구 구현은 알람이 몰리면 화면 전체를 덮었다(무한 스택).
    상한 + 스크롤로 캔버스를 지키고, 넘친 이력은 Control Center 알람 탭에서 본다. */
+/* ★(v116-ui-close · D4 #21) z-index 99 → 950: 복원 카드(900)보다 **위**. 종전엔 카드가 같은 오른쪽 아래를 덮어
+   그 뒤에 뜬 경보(「Claude Code CLI가 없습니다」·「❌ 에이전트 사망」)가 카드 뒤에 깔려 안 보였다(VM 실물 2회).
+   경보는 어떤 알림 카드에도 가려지면 안 된다. 확인 창(1000)·Control Center(1500)·팔레트(1600)보다는 아래 그대로. */
 #toasts {
   position: fixed; right: 12px; bottom: 12px;
-  display: flex; flex-direction: column; gap: 8px; z-index: 99;
+  display: flex; flex-direction: column; gap: 8px; z-index: 950;
   max-height: 60vh; overflow-y: auto; overflow-x: hidden;
   padding: 2px; scrollbar-width: thin;
 }
@@ -1022,8 +1025,11 @@ body.cc-office #cc-view-office { flex: 1; min-height: 0; }
 /* F6: 전출 대상 ws 탭 하이라이트 */
 .ws-tab.transfer-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* 복원 브리핑 카드(A2-2 T8) — 마스터 자리 1곳 · 앱이 다시 켜졌을 때 1회 */
+/* ★(v116-ui-close · D4 #21) 오른쪽 아래(알림 줄 자리) → 왼쪽 아래(사이드바 바로 옆 = 마스터 창 위). 알림 줄과 자리를
+   나눠 서로 덮지 않게 한다. 좁은 창에서 그래도 겹치면 위 #toasts z-index 가 경보를 위로 올린다(이중 방어). */
 #restore-brief {
-  position: fixed; right: 16px; bottom: 16px; z-index: 900; max-width: min(440px, calc(100vw - 32px));
+  position: fixed; left: calc(var(--wsbar-w, 216px) + 16px); bottom: 16px; z-index: 900;
+  max-width: min(440px, calc(100vw - var(--wsbar-w, 216px) - 32px));
   max-height: 70vh; overflow: auto; padding: 14px 16px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--canvas-text);
   box-shadow: 0 6px 24px rgba(0, 0, 0, .35); font-size: 13px;

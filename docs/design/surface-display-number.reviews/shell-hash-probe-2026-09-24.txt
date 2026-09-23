@@ -1,0 +1,38 @@
+# 셸 # 절단 실측 — 2026-09-24T08:12:29+0900 · cys=/usr/local/bin/cys · CYS_SOCKET=존재하지 않는 경로 · CYS_NO_AUTOSTART=1 · CYS_SURFACE_ID=999999(폴백 탐지용)
+
+$ bash -c 'cys send hello --surface #17'
+error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+rc=2
+
+$ bash -c 'cys send-key Return --surface #17'
+error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+rc=2
+
+$ bash -c 'cys send --surface #17 hello'
+error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+rc=2
+
+$ bash -c 'cys close-surface #17'
+error: the following required arguments were not provided:
+  <SURFACE>
+
+Usage: cys close-surface <SURFACE>
+
+For more information, try '--help'.
+rc=2
+
+$ bash -c 'cys send hello --surface=#17'
+error: invalid surface ref: #17
+rc=1
+$ bash -c 'cys claim-role master --surface #17 --takeover-empty-seat'
+error: a value is required for '--surface <SURFACE>' but none was supplied
+$ bash -c 'cys quiesce --surface #17 --off'
+error: a value is required for '--surface <SURFACE>' but none was supplied
+$ bash -c 'cys set-status --surface #17 --state done'
+error: a value is required for '--surface <SURFACE>' but none was supplied

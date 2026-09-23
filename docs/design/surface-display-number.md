@@ -58,7 +58,8 @@
   - 증명【추론】: `id ≤ 999` 인 좌석을 만드는 순간, 이미 있는 행들은 모두 내부 번호가 `id` 보다 작다(I0). 귀납 가정으로 그 행들의 보이는 번호는 제 내부 번호이거나 없음이다 → 보이는 번호 `id` 를 가진 행이 없다 → 후보 `c = id` 는 막히지 않는다. I0 이 깨진 경우는 §2-1 ④ 보호 규칙이 「없음」을 줘서 I1 을 지킨다. ∎
 - **I2 (산 좌석끼리 보이는 번호가 겹치지 않음)**: 쓰는 중 번호는 막힘이다(§2-1 ②⑴).
 - **I3 (한 보이는 번호의 수명 구간이 겹치지 않음)**: 번호 `n` 의 새 주인은 옛 주인이 닫히고 W 가 지난 뒤에만 생긴다 → 구간 `[created_at, closed_at + W)` 가 서로 겹치지 않는다 → 옛 기록의 「(보이는 번호 n, 시각 t)」는 대응표에서 **하나의** 내부 번호로 풀린다(PLAN §4-4 ⑥).
-- **따름정리 S (보이는 번호를 내부 번호 자리에 넣어도 다른 산 좌석에 안 닿음)**: 누군가 보이는 번호 `n` 을 내부 번호로 쓰면 → 내부 `n` 이 죽었으면 「없음」, 살았으면 I1 에 따라 그 좌석의 보이는 번호도 `n` 이고 I2 에 따라 보이는 번호 `n` 의 주인은 그 좌석 하나뿐 → **의도한 그 좌석**. ∎
+- **따름정리 S (보이는 번호를 내부 번호 자리에 넣어도 다른 산 좌석에 안 닿음)**: 누군가 보이는 번호 `n` 을 내부 번호로 쓰면 → 내부 `n` 이 죽었으면 「없음」, 살았으면 I1 에 따라 그 좌석의 보이는 번호도 `n` 이고 I2 에 따라 보이는 번호 `n` 의 주인은 그 좌석 하나뿐 → **의도한 그 좌석**. ∎ **전제**(Fable 2R LOW 반영): 「보이는 번호가 없음(「—」)인 id ≤ 999 산 좌석이 없다」. 이 전제가 깨질 수 있는 유일한 길은 §2-1 ④ 보호 규칙 발동(= I0 파괴)인데, 그때는 아래 **번호 정지**로 전제를 다시 세운다.
+- **번호 정지(numbers_suspended)**: §2-1 ④ 보호 규칙이 한 번이라도 발동하면 그 데몬 실행이 끝날 때까지 **새 좌석은 전부 「—」** 이고 `#N` 해석도 거부한다(경보 문구 「보이는 번호 정지 — 재기동까지」). 이유: 「—」 인 좌석 n(id ≤ 999)이 살아 있는 동안 다른 좌석 Y 가 보이는 번호 n 을 받으면, 사람이 Y 의 「n」 을 맨숫자로 쳐서 좌석 n 을 건드릴 수 있다(따름정리 S 의 반례 · 발생 조건 = I0 파괴 + 같은 실행에서 999개 넘게 생성 · 매우 드묾). 정지하면 Y 가 n 을 받을 수 없다. 재기동하면 부팅 처리로 풀린다.
 - ⚠**I0~I3 · S 는 모두 「데몬(소켓) 하나 안에서」의 성질이다**(Fable 1R MED-3 반영). 본부 `#17` 을 말했는데 명령이 부서 소켓(`CYS_SOCKET`)으로 가면 부서의 17 이 대상이 된다 — 이것은 S 가 막지 못한다. 대처 = §5 해석 결과에 소켓 이름을 싣고 CLI 가 파괴 명령 전에 「#17 → surface:1016 @본부」 를 stderr 로 한 줄 찍는다 · 사람 말로는 부서 이름을 함께 부른다(§8 · R-7).
 - **I1 보호 규칙(§2-1 ④)이 실제로 발동하는 경우**: I0 이 온전하면 도달할 수 없다(Fable 1R 확인 — 999개가 막히려면 id 보다 작은 주인 999개가 필요한데 id ≤ 999 이다). I0 이 깨졌을 때(대응표 쓰기 실패 뒤 재기동 · DB 를 못 읽어 시드가 0 이 됨 — §3-2 ⑤·§6)만의 방어선이다.
 
@@ -92,20 +93,20 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | 좌석 만들기 | 내부 번호 받기 → 보이는 번호 정하기 → **행 INSERT** → 그 다음 PTY 열기 | state.rs:3483 `create_surface_with_env` · :3502 `fetch_add` 바로 뒤 · PTY 는 :3503~ | **동기 쓰기**(전용 연결 · `busy_timeout`). recall 쓰기 스레드(1초 묶음 · recall.rs:86~)를 거치지 않는다 — 묶음 사이에 데몬이 죽으면 그 내부 번호가 기록 없이 사라져 X-10 이 다시 열린다 |
 | PTY 열기 실패 | `closed_at = now` · `close_kind='spawn_failed'` | 같은 함수의 `?` 반환 경로들 | 동기 UPDATE |
 | 좌석 닫기 | `closed_at = now` · `close_kind='close'` | governance.rs:4885 `close_surface` — 좌석이 목록에서 빠지는 **유일한 자리**(주석 governance.rs 같은 함수 「surface가 맵에서 사라지는 유일 지점」 【관측】) | surfaces 락을 푼 **뒤** 동기 UPDATE |
-| 데몬 부팅 | `closed_at IS NULL` 인 행 전부 `closed_at = 부팅 시각` · `close_kind='boot_orphan'` | state.rs:3000 `next_id` 시드 옆(Daemon 생성) | 새 좌석을 만들기 **전에** 1회 |
+| 데몬 부팅 | ⑴**표 만들기**(동기 · 전용 연결로 `CREATE TABLE IF NOT EXISTS` — 시드보다 먼저) ⑵시드(§6 · 표별로 따로 질의) ⑶`closed_at IS NULL` 인 행 전부 `closed_at = 부팅 시각` · `close_kind='boot_orphan'` ⑷경보는 이벤트 버스가 생긴 **뒤** 발행 | state.rs:3000 `next_id` 시드 자리(Daemon 생성 · 같은 구조체 리터럴의 다음 칸이 :3001 `EventBus::new` 라 :3000 에서는 발행 불가 — Fable 2R 【관측: 검증자】) | 새 좌석을 만들기 **전에** 1회 · ⚠지금 스키마는 쓰기 스레드 안 `open_db`(recall.rs:95 · 스레드 생성 state.rs:3045)에서만 만들어져 시드(:3000)보다 **늦다** — 그대로 두면 1.1.6 첫 기동에 새 표가 없어 시드 질의 전체가 실패한다(Fable 2R HIGH · §6) |
 
 - ①**왜 PTY 전에 쓰나**: 자식 프로세스는 생성 순간 환경변수로 내부 번호를 받는다. PTY 를 연 뒤에 쓰면 「내부 번호는 밖으로 나갔는데 기록은 없다」 틈이 생긴다(PLAN §4-2 CLI 행: pane 이 죽은 뒤 살아남은 백그라운드 프로세스).
-- ②**락 순서**: 할당기 상태는 **잎(leaf) 락** `display_alloc` 하나에 둔다. 좌석을 만들 때 `display_alloc` 을 잡고 `fetch_add` → 후보 계산 → INSERT → 놓기. surfaces·roles 락을 쥔 채로 잡지 않는다(닫기에서는 surfaces 락을 푼 뒤 잡는다). DB 쓰기가 이 락 안에서 일어나 좌석 생성이 직렬화되지만 생성 빈도(하루 최대 106 · 동시 버스트 수 개)에서 무시할 수준이다 【추정 · 실측 없음 — 구현 티켓 ②에서 생성 지연 1줄 실측】.
+- ②**락 순서**(Fable 2R LOW 반영): 할당기 상태는 **잎(leaf) 락** `display_alloc` 하나에 둔다. 좌석을 만들 때 `display_alloc` 을 잡고 `fetch_add` → 후보 계산 → **INSERT(동기 · 락 안에서 하는 DB 쓰기는 이것 하나뿐)** → 놓기 → 그 다음 PTY 열기(락 밖 · state.rs:3511 openpty ~ :3654 spawn ~ :3822 surfaces 락 · 그 사이 다른 락 없음 【관측: 검증자】). surfaces·roles 락을 쥔 채로 잡지 않는다. `busy_timeout` = **2초**【추정 값 — recall 쓰기 스레드의 1초 묶음 트랜잭션보다 길게 · ②에서 생성 지연 실측 1줄로 확정】. INSERT 가 락 안에 있어 좌석 생성이 직렬화되지만 생성 빈도(하루 최대 106 · 동시 버스트 수 개)에서 무시할 수준이다【추정】. 닫기·PTY 실패의 **DB UPDATE 는 락 밖**에서 한다(메모리가 원본이라 UPDATE 를 잃어도 다음 부팅에 `boot_orphan` 으로 보수적으로 막힌다 — 락 안에서 DB 를 기다리며 좌석 생성을 세울 이유가 없다).
 - ③**메모리 상태**(agy 1R 지적 1·2 반영): `holders[1..=999]` = 번호마다 마지막 주인 `Option<Holder>` · `Holder { surface_id, state: Live | Closed(closed_at) }`. 부팅 때 표에서 번호마다 내부 번호가 가장 큰 행으로 채운다(`spawn_failed` 행 제외 · `boot_orphan` 은 `Closed(부팅 시각)`). **메모리 갱신은 DB 쓰기와 같은 단계에서 명시적으로 한다**:
   | 사건 | 메모리(`display_alloc` 락 안) | DB |
   |---|---|---|
   | 만들기 | `prev = holders[n]` 을 보관 → `holders[n] = Live(id)` | INSERT |
-  | PTY 실패 | `holders[n] = prev`(되돌림) | UPDATE `spawn_failed` |
-  | 닫기 | `holders[n] = Closed(now)`(단 `holders[n].surface_id == id` 일 때만 — 번호 없는 좌석·이미 넘어간 번호는 무접촉) | UPDATE `close` |
+  | PTY 실패 | **락 재획득** → `holders[n]` 이 아직 `Live(id)` 이면 `prev` 로 되돌림 → 놓기(되돌림 경합 안전 — `Live(id)` 가 다른 할당의 탐색을 막고, 좌석이 surfaces 에 들어가기 전(:3823)이라 닫기가 끼어들 수 없다 【검증자 확인】) | 락 밖 UPDATE `spawn_failed` |
+  | 닫기 | `holders[n] = Closed(now)`(단 `holders[n].surface_id == id` 일 때만 — 번호 없는 좌석·이미 넘어간 번호는 무접촉) | 락 밖 UPDATE `close` |
   | 부팅 | 표에서 재구성 | 고아 UPDATE |
   메모리가 판정의 원본이고 DB 는 재기동용 사본이다 — DB 쓰기가 실패해도 이번 실행 안에서는 메모리가 막힘을 지킨다(I2).
 - ④**보이는 번호를 좌석에 붙이는 곳**: `Surface` 에 `display_no: Option<u16>` 필드(state.rs:787 구조체) — 한 번 정하면 바뀌지 않는다.
-- ⑤**DB 쓰기가 실패하면**(디스크 가득 · 잠김 시간 초과): 좌석은 **만든다**(4군 ③) · 메모리 할당기로 번호를 정한다 · 경보 1줄(`surface.numbers_write_failed`). 그 좌석은 I0 보호가 빠진 상태(재기동 뒤 내부 번호 재사용 가능)라는 것을 경보 문구에 적는다. 이때도 I1 은 §2-1 ④ 보호 규칙이 지킨다.
+- ⑤**DB 쓰기가 실패하면**(디스크 가득 · 잠김 시간 초과): 좌석은 **만든다**(4군 ③) · 메모리 할당기로 번호를 정한다 · 경보 1줄(`surface.numbers_write_failed`). 그 좌석은 I0 보호가 빠진 상태(재기동 뒤 내부 번호 재사용 가능)라는 것을 경보 문구에 적는다. 이때도 I1 은 §2-1 ④ 보호 규칙이, S 의 전제는 §2-3 번호 정지가 지킨다.
   - 경보는 원인을 **둘로 가른다**(Fable 1R LOW-4 반영): `kind: "io"`(디스크·잠김) / `kind: "pk_conflict"`(같은 내부 번호 행이 이미 있음 = **I0 위반** · 시드가 틀렸다는 뜻). 뒤의 것은 「디스크 가득」 문구로 뭉개지 않는다.
 - ⑦**`fetch_add` 와 INSERT 사이에서 데몬이 죽는 경우**(Fable 1R LOW-5): 그 내부 번호는 아직 아무 곳에도 나가지 않았다(PTY·환경변수·응답·이벤트 전부 INSERT 뒤). 다음 부팅에서 같은 번호가 다시 나와도 해가 없으므로 **받아들이는 창**이다. 시험 M11(「INSERT 를 PTY 뒤로」)은 이 창이 아니라 **PTY 를 연 뒤 기록 전 죽음**(번호가 이미 자식에게 나감)을 겨눈다.
 - ⑥**보이는 번호를 환경변수로 내보내지 않는다**(`CYS_SURFACE_ID` 는 지금처럼 내부 번호). 자동화가 보이는 번호를 열쇠로 쓰기 시작하는 입구를 처음부터 만들지 않는다.
@@ -134,7 +135,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | 안 받는 곳 | 기계가 읽는 표준출력 마지막 줄 — `launch-agent` · `new-surface` 가 찍는 `surface:N` | 내부 번호만(바꾸지 않음) | schedule.rs:1185-1192 `aiterm_parse` 가 이 줄을 `parse_surface_ref`(맨숫자도 받음)로 읽는다 — 여기에 보이는 번호가 찍히면 내부 번호로 오인된다(Fable 1R LOW-7) · 시험 T3c |
 | 안 받는 곳(운영 도구 · 제품 밖) | `master-send.sh`(`^surface:[0-9]+$` 만) · 사용자본 `javis_panetitle.py --surface`(정수 = 내부 번호 대조) | 내부 번호만 — 보이는 번호를 넣으면 **아무 일도 안 함**(파괴 없음 · 조용한 무동작) | Fable 1R LOW-6 【관측: 검증자】 · master 규칙의 `apply --surface <번호>` 는 내부 번호라는 것을 운영 문서에 적어야 한다(master 소관) |
 
-※ **`cys list` 칸 자리 근거**【관측: 이번 grep】: 이 출력을 탭으로 쪼개 읽는 팩 도구 9곳(javis_awaken.py:214 · javis_bootstrap.py:2157·2198 · javis_boot_node.py:274 · javis_cycle_autopilot.py:658 · javis_formation.py:444 · javis_orchestra.py:2848 · javis_wakeup.py:195 · cys-dept(검증자 보고 :884-895))는 모두 **0~3번 칸**(surface_ref·role·pid·exited)과 **마지막 칸**(cwd)만 쓴다. 맨 앞이나 맨 뒤에 칸을 넣으면 `cols[0].startswith("surface:")` 가 깨져 좌석이 「없음」으로 읽히고(boot_node → 중복 기동 = 4군 ③ 인접) 마지막 칸 cwd 가 틀어진다. **4번 자리(exited 뒤·제목 앞)에 `key=value` 모양으로** 넣으면 이 9곳이 그대로 동작한다. 칸 수 하한 검사(`len(parts) < 6` 등)는 늘어나는 쪽이라 안전하다. 시험 T14.
+※ **`cys list` 칸 자리 근거**【관측: 이번 grep】: 이 출력을 탭으로 쪼개 읽는 팩 도구(저장소 9곳 + **사용자본 `~/.cys/pack/bin` 의 갈라진 사본** — 2R 검증자가 boot_node·formation·cys-dept 사용자본과 채널 스크립트 cys-who.sh·spawn-worker.sh·master-live-tree-verify-guard.sh·scan-verify-backstop.sh·cso-active-monitor.sh·javis_idle_audit.py·javis_phoenix_harness.py 를 추가 확인 · 【관측: 검증자】)(javis_awaken.py:214 · javis_bootstrap.py:2157·2198 · javis_boot_node.py:274 · javis_cycle_autopilot.py:658 · javis_formation.py:444 · javis_orchestra.py:2848 · javis_wakeup.py:195 · cys-dept(검증자 보고 :884-895))는 모두 **0~3번 칸**(surface_ref·role·pid·exited)과 **마지막 칸**(cwd)만 쓴다. 맨 앞이나 맨 뒤에 칸을 넣으면 `cols[0].startswith("surface:")` 가 깨져 좌석이 「없음」으로 읽히고(boot_node → 중복 기동 = 4군 ③ 인접) 마지막 칸 cwd 가 틀어진다. **4번 자리(exited 뒤·제목 앞)에 `key=value` 모양으로** 넣으면 이 파서들이 그대로 동작한다. **예외 1곳**(Fable 2R LOW): 사용자본 `~/.cys/pack/bin/javis_reconstruct_state.py:78-96` 는 「알려진 키가 아닌 첫 칸」 을 라벨로 잡아 `no=50` 을 제목 대신 라벨로 읽는다(파괴 없음 · 라벨 오기) → ③(0) 단계에서 이 스크립트가 `^[a-z_]+=` 모양 칸을 건너뛰게 고친다(사용자본 · javis_panetitle.py 와 같은 선행 배포). 칸 수 하한 검사(`len(parts) < 6` 등)는 늘어나는 쪽이라 안전하다. 시험 T14.
 | 안 받는 곳 | recall(lines·chains) · 배달 원장 · feed | 내부 번호만 | recall.rs:28-52 |
 
 **데몬 쪽 입구는 하나다**: RPC 가 좌석을 문자열로 받을 때는 handlers.rs:318 `resolve_surface_id` → lib.rs:2723 `parse_surface_ref` 를 지난다. `parse_surface_ref` 는 **바꾸지 않는다** — `#17` 은 `strip_prefix("surface:")` 뒤 `u64` 파싱에 실패해 `None` 이 되고, RPC 는 좌석을 못 찾아 거부한다(시험 T3 이 이것을 못 박는다).
@@ -152,11 +153,11 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
   | 번호 없음(「—」) 좌석을 가리키고 싶음 | `#` 로는 불가 · 내부 번호 `surface:N` 으로 | — |
 - **해석과 명령 사이(TOCTOU)**: 해석이 돌려준 것은 **내부 번호**다. 그 사이 좌석이 닫혀도 내부 번호는 다시 쓰이지 않으므로(I0) 명령은 「없음」으로 끝난다 — 다른 좌석에 닿지 않는다.
 - **맨숫자**(`17`)는 지금처럼 **내부 번호**다(스크립트·기존 관행 보존). 사람이 보이는 번호를 맨숫자로 잘못 쳐도 따름정리 S 에 따라 같은 좌석이거나 「없음」이다.
-- **셸의 `#`**(초안의 결론을 **정정**한다 — Fable 1R MED-1 · cys.rs:84-103 직접 확인): bash 와 PowerShell 은 단어 첫머리 `#` 부터 **줄 끝까지** 주석으로 먹는다(Claude Code 의 Bash 도구 = 비대화형 bash 라 늘 주석이다 · zsh 는 설정에 따라 다름).
-  - 안전한 경우: 좌석 인자가 **맨 끝**일 때 — `cys close-surface #17`(위치 인자 필수 · cys.rs:317-331 → clap 오류) · `cys read-screen --surface #17`(값 없는 `--surface` → clap 오류).
-  - ⚠**위험한 경우**: 좌석 플래그가 **위치 인자 뒤**에 올 때 — `cys send hello --surface #17` → 셸이 넘기는 것은 `cys send hello` 뿐 → `target_surface`(cys.rs:1424-1440)가 **환경변수 `CYS_SURFACE_ID` 폴백**으로 **자기 좌석**에 「hello」 를 넣는다. `cys send-key Return --surface #17` 도 같다(`text`·`keys` 가 위치 인자 · cys.rs:84-103). 다른 산 좌석이 아니라 **자기 좌석**이지만, 「의도하지 않은 산 좌석에 입력」 이다. cmux master 페인에는 `CYS_SURFACE_ID` 가 없어 오류로 끝나지만, cys 가 띄운 워커·CSO 페인에는 있다.
-  - 초안의 「환경변수 폴백으로 새지 않는다」는 **거짓이었다** — 반례 R-12 를 고쳐 적는다.
-  - 설계의 처방: ⑴문서·지침·도움말에 적는 정본 표기 = **`--surface=#17`**(등호 붙임 — `#` 가 단어 첫머리가 아니라 셸이 그대로 넘긴다) 또는 따옴표 `'#17'`. 띄어 쓴 `--surface #17` 은 어디에도 예시로 쓰지 않는다. ⑵시험 T9 에 「등호 표기 통과」 와 「위치 인자 뒤 띄어 쓴 표기 = 폴백」 을 **관측된 동작 그대로** 적어 둔다(바뀌면 알게). ⑶근본 처방은 셸이 먹지 않는 별칭이다 — 📌 결정 D-1(§16).
+- **셸의 `#`**(1R 에서 한 「정정」을 **되돌린다** — 실측으로 판정): bash·PowerShell 은 단어 첫머리 `#` 부터 **줄 끝까지** 주석으로 먹는다(Claude Code 의 Bash 도구 = 비대화형 bash · 비대화형 zsh 스크립트도 주석 · 대화형 zsh 만 `INTERACTIVE_COMMENTS` 설정에 따름).
+  - 핵심: 좌석 인자 `#17` 은 언제나 `--surface` **뒤**에 오므로, 셸이 잘라도 `--surface` 는 **값 없이 남는다** → clap 이 「값 필요」 오류로 멈춘다. 플래그가 사라져 `CYS_SURFACE_ID` 폴백으로 가는 순서는 없다. 위치 인자(`close-surface`·`reap-surface`·`attach`·`queue deliver` — 필수)는 사라지면 「필수 인자 없음」 오류다.
+  - 【관측 · 실측 2026-09-24 08:2x】 실제 `cys` 바이너리를 **존재하지 않는 소켓**(`CYS_SOCKET`)·`CYS_NO_AUTOSTART=1`·`CYS_SURFACE_ID=999999`(폴백 탐지용)로 `bash -c` 실행 — 데몬 접촉 0: `cys send hello --surface #17` · `cys send-key Return --surface #17` · `cys send --surface #17 hello` · `cys claim-role master --surface #17 --takeover-empty-seat` · `cys quiesce --surface #17 --off` · `cys set-status --surface #17 --state done` → 전부 `error: a value is required for '--surface <SURFACE>'` rc=2 · `cys close-surface #17` → `required arguments were not provided` rc=2 · `cys send hello --surface=#17` → `invalid surface ref: #17` rc=1(해석기 도입 전 현행 거부). 원문 = `docs/design/surface-display-number.reviews/shell-hash-probe-2026-09-24.txt`.
+  - 1R 의 Fable MED-1 과 2R 의 Fable MED 는 「셸이 `--surface` 까지 지운다」는 같은 추론 오류였다(잘리는 것은 `#17` **부터 뒤**다). agy 2R 이 이를 짚었고 실측이 agy 쪽을 확인했다. 초안의 원래 결론(「폴백으로 새지 않는다 · 결과는 오류」)이 맞았다.
+  - 편의 처방(안전 문제가 아님): 문서·도움말 예시는 `--surface=#17`(등호 붙임 — 셸이 그대로 넘김) 또는 `'#17'` 로 쓴다. 띄어 쓴 `--surface #17` 은 오류로 끝나므로 위험하지 않지만 헛걸음이다. T9 에 위 7개 실측 명령을 **관측된 동작 그대로** 고정한다(clap 설정이 바뀌어 값이 선택형이 되면 적색 — 그때 폴백 위험이 실제로 생기므로).
 
 ## 5. ⑷ RPC·이벤트 필드 이름
 
@@ -180,8 +181,8 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 
 - 현행 【관측】: 시드 = `recall::max_surface_id`(recall.rs:387-408) = `MAX(lines.surface_id)`·`MAX(chains.surface_id)` 의 큰 값 + 1(state.rs:3000). 줄을 하나도 남기지 않은 좌석은 두 표 어디에도 없어서, 재기동 직전 마지막 좌석이 그런 좌석이면 그 번호가 다시 나온다(PLAN §4-8 · 실측 흔적 없는 번호 52개).
 - 처방: 시드 질의에 `SELECT COALESCE(MAX(surface_id),0) FROM surface_numbers` 를 **하나 더** 넣는다(UNION ALL 3갈래). 대응표 행은 PTY 를 열기 **전에** 동기로 쓰므로(§3-2) 밖으로 나간 모든 내부 번호가 표에 있다 → I0.
-- ⚠**DB 를 못 읽으면 시드가 조용히 0 이 된다**(Fable 1R LOW-4 · recall.rs:387-408 `.ok()…unwrap_or(0)` 【관측】) → 내부 번호가 1 부터 다시 나와 I0 이 깨진다. 처방: 「DB 파일은 있는데 열기·질의가 실패」 를 「DB 파일 없음(새 설치 = 0 이 맞음)」 과 갈라 **경보 1줄**(`surface.numbers_seed_failed`)을 낸다. 그 실행에서는 §2-1 ④ I1 보호 규칙이 맨숫자 안전(S)을 지키고, INSERT 가 PK 충돌로 실패하면 §3-2 ⑤ `pk_conflict` 경보가 난다. (시드를 대신 채울 다른 원천 — 예: 별도 카운터 파일 — 은 범위 밖 · 경보로 드러내는 데서 멈춘다.)
-- 1.1.5 → 1.1.6 첫 기동: 표가 비어 있으므로 시드는 지금과 같다(lines·chains). 그 뒤부터 닫힌다. 1.1.6 → 1.1.5 되돌림: 1.1.5 는 새 표를 모르고 무시한다(추가만 했으므로 깨지지 않음) · X-10 만 예전으로 돌아간다.
+- ⚠**DB 를 못 읽으면 시드가 조용히 0 이 된다**(Fable 1R LOW-4 · recall.rs:387-408 `.ok()…unwrap_or(0)` 【관측】) → 내부 번호가 1 부터 다시 나와 I0 이 깨진다. 처방: 「DB 파일은 있는데 열기·질의가 실패」 를 「DB 파일 없음(새 설치 = 0 이 맞음)」 과 갈라 **경보 1줄**(`surface.numbers_seed_failed`)을 낸다. 그 실행에서는 §2-1 ④ I1 보호 규칙과 §2-3 번호 정지가 맨숫자 안전(S)의 전제를 지키고, INSERT 가 PK 충돌로 실패하면 §3-2 ⑤ `pk_conflict` 경보가 난다. (시드를 대신 채울 다른 원천 — 예: 별도 카운터 파일 — 은 범위 밖 · 경보로 드러내는 데서 멈춘다.)
+- **표 만들기 → 시드 순서**(Fable 2R HIGH 반영 · 초안의 「첫 기동 시드는 지금과 같다」는 **그대로 두면 거짓**이었다): 지금 `max_surface_id`(recall.rs:387-408)는 스키마 없이 `Connection::open` 한 뒤 한 번의 `UNION ALL` 질의를 하고 실패하면 0 을 돌려준다. 새 표가 없는 DB(1.1.5 에서 올라온 첫 기동)에서 3갈래 질의를 그대로 하면 SQLite 가 「no such table」 로 **질의 전체**를 거부 → 시드 0 → 내부 번호가 1 부터 다시 나온다(I0 파괴 · 업그레이드 때마다). 처방: ⑴Daemon 생성에서 시드 **전에** 전용 동기 연결로 `CREATE TABLE IF NOT EXISTS surface_numbers …` 를 실행한다 ⑵시드는 표마다 따로 질의하고 결과를 `Missing(파일 없음 → 0 이 맞음) / Ok(max) / Failed(err)` 로 돌려준다 — 표 하나의 실패가 나머지를 0 으로 만들지 않는다 ⑶`Failed` 만 경보(`surface.numbers_seed_failed`) · 「파일 없음(새 설치)」·「표가 방금 만들어짐(업그레이드)」은 경보 없음. 그러면 1.1.5 → 1.1.6 첫 기동의 시드는 지금과 같고(lines·chains), 그 뒤부터 X-10 이 닫힌다. 1.1.6 → 1.1.5 되돌림: 1.1.5 는 새 표를 모르고 무시한다(추가만 했으므로 깨지지 않음) · X-10 만 예전으로 돌아간다.
 - recall.rs:381-386 의 주석(「두 테이블의 MAX」)과 회귀 시험 :1371 `max_surface_id_survives_full_surface_prune_via_chains` 에 세 번째 표를 더한다.
 
 ## 7. ⑹ 윈도 차이
@@ -206,18 +207,18 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | # | 시험 | 층 | 확인하는 것 | 적색이 되어야 할 뮤턴트 |
 |---|---|---|---|---|
 | T1 | 할당기 진리표 | 단위(state.rs) | ⑴id≤999 → id ⑵1000→1 · 1049→50 · 1998→999 · 1999→1 ⑶후보가 산 좌석 → 다음 빈 번호 ⑷후보가 W 안 닫힘 → 다음 ⑸닫힌 지 정확히 W → 후보 그대로(재사용) ⑹W−ε → 건너뜀 ⑺999 에서 탐색이 1로 돌아감 ⑻전부 막힘 → None ⑼id≤999 인데 후보 막힘 → None(I1 보호) ⑽spawn_failed 행은 막힘 아님 ⑾closed_at 이 미래 → 막힘 | M1 산 좌석 검사 제거 · M2 W 검사 제거 · M3 `<` → `<=`(경계) · M4 후보 = 직전+1 · M5 999 뒤 1로 안 돌기 · M6 I1 보호 제거(대신 탐색) · M7 spawn_failed 도 막힘으로 침 · M8 음수 경과를 「오래됨」으로 침 |
-| T2 | 재기동 복원 | 통합(같은 state_dir 에 Daemon 두 번) | ⑴W 안 닫힌 번호가 재기동 뒤에도 막힘 ⑵닫힘 기록 없이 죽은 행 = 부팅 시각으로 닫힘 → 24시간 막힘 → 그 뒤 풀림 ⑶**줄을 하나도 안 남긴 좌석**의 내부 번호가 재기동 뒤 다시 안 나옴(X-10) | M9 시드에서 surface_numbers 제거(X-10 재발) · M10 부팅 고아 처리 제거(영구 막힘 → ⑵후반 적색) · M11 INSERT 를 PTY 뒤로(쓰기 전 죽음 모의에서 적색) · M11b 시드 실패를 경보 없이 0 으로(읽을 수 없는 DB 픽스처에서 `surface.numbers_seed_failed` 부재 → 적색) |
+| T2 | 재기동 복원 | 통합(같은 state_dir 에 Daemon 두 번) | ⑴W 안 닫힌 번호가 재기동 뒤에도 막힘 ⑵닫힘 기록 없이 죽은 행 = 부팅 시각으로 닫힘 → 24시간 막힘 → 그 뒤 풀림 ⑶**줄을 하나도 안 남긴 좌석**의 내부 번호가 재기동 뒤 다시 안 나옴(X-10) ⑷**업그레이드 첫 기동**: surface_numbers 표가 없는 1.1.5 형 DB 픽스처 → 시드 = MAX(lines, chains) + 1 · 경보 0 · 표가 생김 | M9 시드에서 surface_numbers 제거(X-10 재발) · M10 부팅 고아 처리 제거(영구 막힘 → ⑵후반 적색) · M11 INSERT 를 PTY 뒤로(쓰기 전 죽음 모의에서 적색) · M11b 시드 실패를 경보 없이 0 으로(읽을 수 없는 DB 픽스처에서 `surface.numbers_seed_failed` 부재 → 적색) · M11c 표를 만들기 전에 3갈래 UNION 시드(⑷ 에서 시드 1 → 적색) |
 | T3 | 내부 번호 불변 — 파괴 RPC 는 `#` 를 모른다 | 통합(RPC) | `surface.close`·`send_text`·`send_key`·`queue.clear`·`queue.deliver`·`surface.reap`·`surface.attach` 에 `{"surface_id":"#17"}` → 전부 거부 · 산 좌석 수 불변 | M12 `parse_surface_ref` 가 `#` 를 벗겨 줌 → 적색 |
 | T3b | 소스 고정 핀 | 단위(소스 검사) | handlers.rs 에서 `display_no` 를 **읽는**(params.get) 곳이 `surface.resolve_display` 한 곳뿐 · 파괴 RPC 본문에 `display_no` 0회 | M13 `surface.close` 가 `display_no` 인자를 받게 → 적색 (state.rs:5119 의 「pane 스폰 함수 소실」 소스 핀과 같은 방식) |
-| T4 | 불변식 속성 시험(I1·I2·I3·S) | 단위(무작위 연쇄 · 고정 씨앗) | 만들기/닫기/시계 전진 5,000단계 동안 매 단계: 산 좌석 id≤999 ⇒ 번호=id 또는 없음 · 산 좌석끼리 번호 안 겹침 · resolve(번호)=그 좌석 · 「번호를 내부 번호로 넣기」 = 같은 좌석 또는 없음 | M4 · M6 · M1 이 여기서도 적색 |
+| T4 | 불변식 속성 시험(I1·I2·I3·S) | 단위(무작위 연쇄 · 고정 씨앗) | 만들기/닫기/시계 전진 5,000단계 동안(내부 번호 재사용을 억지로 주입한 변형 연쇄 포함) 매 단계: 번호 정지 전이면 산 좌석 id≤999 ⇒ 번호=id 또는 없음 · 보호 규칙 발동 뒤에는 새 좌석 전부 「—」·`#N` 거부 · 산 좌석끼리 번호 안 겹침 · resolve(번호)=그 좌석 · 「번호를 내부 번호로 넣기」 = 같은 좌석 또는 없음 | M4 · M6 · M1 이 여기서도 적색 · M26 번호 정지 제거(재사용 주입 연쇄에서 S 반례 → 적색) |
 | T5 | 격리 cysd 1,000+ 좌석 모의 | E2E(격리 데몬 · 짧은 소켓 경로 · 장기기억 isolated-cysd-fake-agent-seat-recipe) | 좌석 1,050개 만들고 닫기(기본 W=24시간 · 제품 바이너리 그대로): ⑴1~999 는 제 번호 ⑵1,000번째부터 「—」 + `surface.display_exhausted` 1건 ⑶**좌석 생성이 한 번도 막히지 않음**(4군 ③) ⑷내부 번호 단조 ⑸이 과정에서 **산 좌석 닫힘 0**(대조군 좌석 1개를 처음부터 끝까지 살려 두고 생존 확인 · 4군 ④) | M14 다 찼을 때 생성 거부 → ⑶적색 · M1 → ⑵적색 |
 | T6 | 제목(데몬) | 단위(panetitle.rs) | 기존 시험(panetitle.rs:317-654 시험 모듈 · v111_* 계열 포함)을 보이는 번호 기준으로 옮김 · 새로: 번호 없음 = 「— · 특성」 · `retitle_with_model` · `stale_number_tail`(:234) 이 「—」 머리를 번호 칸으로 다룸(안 그러면 복원된 제목 「— · worker1」 이 사람 이름으로 오인돼 「50 · — · worker1」 이 된다) · 낡은 번호 교체가 보이는 번호로 | M15 `initial_title` 에 내부 번호를 넘김 → 적색 · M15b 「—」 를 번호 칸으로 안 봄 → 적색 |
 | T7 | 사용자본 javis_panetitle.py | 단위(파이썬) | `display_no` 있으면 그 번호로 판정 · `null` 이면 SKIP · 필드 없음(옛 데몬) = 내부 번호 · **싸움 없음**: 데몬 제목 「50 · x」를 RENAME 하지 않음 | M16 항상 내부 번호 → 싸움 시험 적색 |
 | T8 | 제목(앱) | 단위(bun · ui/src/panetitle.ts — T-UI 병합 뒤) | `paneTitleText` · `ruleTitleOf` 가 보이는 번호 사용 · 번호 없음 = 「—」 | M17 sid 그대로 |
 | T3c | 기계 출력 줄 고정 핀 | 단위(소스 검사) | `launch-agent` · `new-surface`(cys.rs:13207 · :13231 · :3015 — 검증자 인용 · ②에서 재확인) 의 마지막 표준출력 줄이 `surface:N`(내부 번호) 그대로 | M22 마지막 줄에 보이는 번호를 찍음 → 적색 |
-| T9 | CLI `#N` 해석기 | 단위 + 통합 | 문법 진리표(`#1`·`#999` 통과 / `#0`·`#1000`·`#017`·`# 17`·`#17a`·`surface:#17` 거부) · 산 좌석 `#N` → 내부 번호 · 없는 `#N` → 오류이며 **뒤따르는 명령 RPC 0회**(데몬 쪽 요청 로그로 확인) · 환경변수 폴백은 해석기를 안 거침 · 파괴 명령 전 stderr `#N → surface:M @소켓` 한 줄 · **셸 통과 시험**(실제 `bash -c`): `--surface=#17` 은 해석기까지 도달 · `cys send hello --surface #17` 은 셸이 잘라 폴백이 된다는 **관측 동작을 그대로 고정**(바뀌면 적색 — 설계자가 다시 보게) | M18 없는 번호를 「가장 최근 주인」으로 풀어 줌 → 적색 · M19 `#017` 허용 · M23 stderr 소켓 줄 제거 |
+| T9 | CLI `#N` 해석기 | 단위 + 통합 | 문법 진리표(`#1`·`#999` 통과 / `#0`·`#1000`·`#017`·`# 17`·`#17a`·`surface:#17` 거부) · 산 좌석 `#N` → 내부 번호 · 없는 `#N` → 오류이며 **뒤따르는 명령 RPC 0회**(데몬 쪽 요청 로그로 확인) · 환경변수 폴백은 해석기를 안 거침 · 파괴 명령 전 stderr `#N → surface:M @소켓` 한 줄 · **셸 통과 시험**(실제 `bash -c` · 격리 소켓): `--surface=#17` 은 해석기까지 도달 · §4-2 의 띄어 쓴 7개 명령은 **clap 오류 rc=2(폴백 없음)** 라는 관측 동작을 그대로 고정(clap 이 값을 선택형으로 바꾸면 적색 — 그때 폴백 위험이 실제로 생긴다) | M18 없는 번호를 「가장 최근 주인」으로 풀어 줌 → 적색 · M19 `#017` 허용 · M23 stderr 소켓 줄 제거 |
 | T13 | DB 쓰기 실패 생존(agy 1R 지적 3) | 통합(격리 state_dir) | 대응표 쓰기를 실패시킨 채(읽기 전용 DB 파일 또는 쓰기 실패 주입 지점) 좌석 생성 → 좌석은 **정상 반환** · `surface.numbers_write_failed{kind:"io"}` 1건 · 보이는 번호는 메모리 규칙대로 · 같은 실행 안에서 I2 유지 | M24 쓰기 실패를 생성 실패로 전파 → 적색(4군 ③) |
-| T14 | `cys list` 소비자 호환 | 단위(팩 · 파이썬) | 새 칸(`no=50` / `no=-`)이 든 `cys list` 픽스처로 §4-1 ※ 의 팩 파서 9곳이 **바뀌기 전과 같은 행**을 돌려줌(특히 boot_node `surface_occupied` 참 · awaken cwd 정확) | M25 새 칸을 맨 앞/맨 뒤에 둠 → 적색 |
+| T14 | `cys list` 소비자 호환 | 단위(팩 · 파이썬) | 새 칸(`no=50` / `no=-`)이 든 `cys list` 픽스처로 §4-1 ※ 의 팩 파서(저장소 9곳 + 사용자본 javis_reconstruct_state.py)가 **바뀌기 전과 같은 행**을 돌려줌(특히 boot_node `surface_occupied` 참 · awaken cwd 정확) | M25 새 칸을 맨 앞/맨 뒤에 둠 → 적색 |
 | T10 | 정리(prune)가 대응표를 안 건드림 | 단위(recall.rs) | `maybe_prune` 실행 뒤 surface_numbers 행 수 불변 | M20 prune 에 surface_numbers 삭제 추가 |
 | T11 | 두 소켓 | E2E(격리 본부 + 격리 부서 소켓) | 두 데몬이 각자 1~999 · 같은 `#N` 이 소켓별로 다른 좌석으로 풀림 · 한쪽 닫기가 다른 쪽에 영향 0 | M21 대응표를 공용 경로에 둠 |
 | T12 | 윈도 | CI(windows) | 표 생성·시드·해석기 문법(같은 시험 묶음이 윈도 CI 에서 초록) | — |
@@ -242,6 +243,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 
 | 파일 | 바꿀 곳 | 내용 |
 |---|---|---|
+| **~/.cys/pack/bin/javis_reconstruct_state.py**(저장소 밖 · 가장 먼저) | :78-96 `parse_cys_list` | `^[a-z_]+=` 모양 칸을 라벨 후보에서 뺌(옛 데몬에서도 무해) |
 | **~/.cys/pack/bin/javis_panetitle.py**(저장소 밖 · **가장 먼저**) | :115 `expected_title` · :119-123 `is_conforming` · :129-135 `decide` | `display_no` 우선 · `null` = SKIP · 필드 없음 = 내부 번호(옛 데몬 호환) — ②③보다 먼저 내보내도 안전 |
 | src/bin/cysd/panetitle.rs | :182 `starts_with_number` · :213 `is_machine_title`(「surface {sid}」 기본 제목은 내부 번호 유지 — 데몬 기본값 문자열이 그렇다) · :249-290 `initial_title` · :57 `retitle_with_model` · :310-313 `join_title` — 인자를 「제목 번호」(보이는 번호 또는 「—」)로 · 시험 모듈 :317-654 | T6 |
 | src/bin/cysd/handlers.rs | :3320 `initial_title` 호출 — 보이는 번호를 넘김 | — |
@@ -249,7 +251,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | ui/src/main.ts | :2396-2398(base — T-UI 가 panetitle.ts 로 옮김) · 알림 문안 :7245-7264 · :2962·:3432·:5147 「surface N」 대체 문구 | 앱 표시 |
 | ui/src/panetitle.ts(**T-UI 가 새로 만든 파일** · fix/v116-ui) | `paneTitleText` · `ruleTitleOf`(지금 `${sid} · ` 접두 판정) | T8 |
 
-시험 = T3c·T6·T7·T8·T9·T14. 크기 【추정】: 6 파일(저장소 5 + 사용자본 1) · 250~450줄.
+시험 = T3c·T6·T7·T8·T9·T14. 크기 【추정】: 7 파일(저장소 5 + 사용자본 2) · 250~450줄.
 
 ### 10-3. 1.1.6 1파 묶음과 겹치는 파일 【관측: 2026-09-24 07:5x 각 브랜치 `git diff --name-only 526325bf...<branch>` 와 작업 트리 `git status` — 움직이는 값】
 
@@ -265,7 +267,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | src/bin/cysd/state.rs · recall.rs | ② | 없음 |
 
 - PLAN·브리프는 ②를 「T-USAGE(handlers.rs) 병합 뒤」로 적었지만, 【관측】 fix/v116-usage 는 지금 `d6_probe_tests.rs`·`main.rs` 만 바꾼다(handlers.rs 0). ②의 실제 선행 조건은 **handlers.rs·governance.rs 를 만지는 T-GATE · T-REL · T-SEAT** 과 **lib.rs 를 만지는 ui-effort** 다.
-- **권고 순서**: (0) 사용자본 javis_panetitle.py(옛 데몬 호환 · 언제든) → (1) 1파 병합(T-GATE · T-REL · T-SEAT · ui-effort · T-UI) → (2) ② 데몬 층(단독 슬롯) → (3) ③ 표시 층. ②와 ③은 cys.rs·handlers.rs 가 겹치므로 **순차**.
+- **권고 순서**: (0) 사용자본 javis_panetitle.py · javis_reconstruct_state.py(옛 데몬 호환 · 언제든) → (1) 1파 병합(T-GATE · T-REL · T-SEAT · ui-effort · T-UI) → (2) ② 데몬 층(단독 슬롯) → (3) ③ 표시 층. ②와 ③은 cys.rs·handlers.rs 가 겹치므로 **순차**.
 
 ## 11. 반례 사냥 표 (「디버깅」 = 설계의 반례)
 
@@ -273,7 +275,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 |---|---|---|---|
 | R-1 | 데몬 재기동 직후, 죽기 전 좌석들의 번호가 곧바로 다시 나오나 | 부팅 때 닫힘 기록 없는 행 = 부팅 시각으로 닫힘 → 24시간 막힘(§3-2) | 막힘 ✓ |
 | R-2 | 줄을 안 남긴 좌석 뒤 재기동(X-10) | 행을 PTY 전에 동기로 씀 + 시드 3갈래(§6) | 닫힘 ✓ |
-| R-3 | 대응표 쓰기 실패 중 재기동 → 내부 번호 재사용 | 좌석은 만듦 · 경보 · I1 보호 규칙이 「—」 를 줘서 맨숫자 안전(S)은 유지 | 잔여: 그 좌석만 X-10 노출 · 경보로 드러남 |
+| R-3 | 대응표 쓰기 실패 중 재기동 → 내부 번호 재사용 | 좌석은 만듦 · 경보 · I1 보호 규칙이 「—」 를 주고 **번호 정지**(§2-3)로 그 실행 동안 S 의 전제를 지킴 | 잔여: 그 좌석만 X-10 노출 · 경보로 드러남 |
 | R-4 | 999개 다 참 | 「—」 + 경보 1회 · 생성은 계속(§2-1 ⑤) · 현 속도로는 도달 불가(가장 바쁜 날 106/일 → 막히려면 창 ≈9.4일 필요 · PLAN §4-4 ③) | ✓ |
 | R-5 | 24시간 경계 · 시계 뒤로/앞으로 | 엄격한 미만 · 뒤로 = 보수적 · 앞으로 = 일찍 풀림(사람 기억 혼동만 · 명령은 내부 번호라 무영향) | 잔여(사람 혼동) |
 | R-6 | 윈도 | state_dir 만 다름 · PowerShell `#` 주석 → clap 오류 | ✓ |
@@ -282,7 +284,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | R-9 | 「직전+1」 방식이었다면: 부서 데몬(내부 31 = 보이는 1)에서 사람이 보이는 31 을 맨숫자로 침 → 내부 31(다른 산 좌석) 닫힘 | 후보 = 내부 번호에서 계산(§2-1 ①) → I1 → S | 설계로 제거 ✓ |
 | R-10 | 스크립트가 `display_no` 를 `surface_id` 로 넘김 | S: 같은 좌석 또는 없음 | ✓ |
 | R-11 | `#17` 해석 뒤 좌석이 닫히고 명령 도착(TOCTOU) | 해석 결과는 내부 번호 · I0 → 「없음」 | ✓ |
-| R-12 | bash 에서 따옴표 없이 `#17` (초안 판정 **정정**) | 좌석 인자가 맨 끝이면 clap 오류(✓) · **좌석 플래그가 위치 인자 뒤**(`cys send hello --surface #17`)면 셸이 잘라 `CYS_SURFACE_ID` 폴백 → **자기 좌석에 입력**(cys.rs:84-103 · :1424-1440 【관측】) · 처방 = 정본 표기 `--surface=#17` · T9 고정 · 📌 D-1 별칭 | 잔여(자기 좌석 한정 · 다른 좌석 아님) |
+| R-12 | bash·PowerShell 에서 따옴표 없이 `#17` | 셸은 `#17` **부터 뒤**를 자른다 → `--surface` 가 값 없이 남아 clap 오류 rc=2 · 위치 인자는 필수라 clap 오류 rc=2 · 폴백 없음(7개 명령 실측 · §4-2 【관측】) · 1R·2R 의 Fable 「폴백」 주장은 추론 오류로 기각 | ✓(오류 · 자기 좌석도 안 건드림) |
 | R-13 | 사용자본 javis_panetitle.py 가 옛 규칙으로 제목을 되돌림 | ③보다 먼저 호환판 배포(§8 · §10-2) | 순서로 해결 · 순서가 어긋나면 제목 싸움(무해하나 눈에 거슬림) |
 | R-14 | 끝났지만(exited) 회수 안 된 좌석 | 목록에 있으므로 「쓰는 중」 = 번호 유지 · 회수(close) 순간부터 24시간 | ✓ |
 | R-15 | 같은 역할이 phoenix 로 다시 태어남 | 새 내부 번호 · 새 보이는 번호(24시간 안엔 옛 번호 못 씀) — 오늘도 번호가 바뀌는 것과 같음 | 회귀 없음 |
@@ -292,14 +294,14 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | R-19 | 사람이 제목을 「17 · 내 이름」으로 손수 바꿈(보이는 번호는 50) | 해석기는 제목이 아니라 대응표로 푼다 → `#17` 은 제목과 무관 | ✓(제목 글자는 사람 몫) |
 | R-20 | 1.1.5 에서 올라온 본부(내부 1020대) | 첫 보이는 번호 = 1021 → 22 … · 옛 좌석은 재기동으로 이미 없음(데몬과 함께 죽음 · 검증자 확인: 좌석을 넘겨 사는 재기동 경로 없음 · state.rs:20-21 setsid+killpg) | ✓ |
 | R-21 | `cys list` 에 칸을 더해 팩 파서가 좌석을 못 찾음 → 중복 기동 | 4번 자리 `no=` 로 고정(§4-1 ※) · T14 | ✓ |
-| R-22 | transcripts.db 를 못 읽어 시드 0 → 내부 번호 1 부터 재발급 | 경보 `surface.numbers_seed_failed` · I1 보호 · `pk_conflict` 경보(§6 · §3-2 ⑤) | 잔여(드러냄까지 · 자동 복구 없음) |
+| R-22 | transcripts.db 를 못 읽어 시드 0 → 내부 번호 1 부터 재발급 | 경보 `surface.numbers_seed_failed` · I1 보호 + 번호 정지 · `pk_conflict` 경보(§6 · §3-2 ⑤) | 잔여(드러냄까지 · 자동 복구 없음) |
 
 ## 12. 4군 점검
 
 1. **① 폭주 큐** — 보이는 번호는 큐 열쇠에 들어가지 않는다(큐는 내부 번호·role 로 움직임 · PLAN §4-7 【관측】). 새로 쓰는 DB 는 좌석 만들기·닫기·부팅에만 쓰고 배달 경로에는 없다. **해당 없음.**
 2. **② 무clear 100%+** — 컨텍스트·순환 경로를 건드리지 않는다. **해당 없음.**
 3. **③ 자가치유 전멸** — 다 찼을 때(「—」) · DB 쓰기 실패 때 · I1 보호 때 모두 **좌석을 만든다**. 할당기 락은 잎 락이고 surfaces 락을 쥔 채로 I/O 하지 않는다. T5 ⑶ · T13 이 「생성이 한 번도 안 막힘」을 확인한다. `cys list` 칸 추가가 팩 파서를 깨 중복 기동을 부르지 않게 자리를 고정했다(R-21 · T14). **새 막힘 경로 0.**
-4. **④ 전 pane 사망(핵심)** — 보이는 번호가 닫기·입력 RPC 로 들어가는 길이 **설계에 0**이다: ⑴데몬 RPC 입구(`resolve_surface_id` → `parse_surface_ref`)는 무변경이라 `#N` 을 거부(T3) ⑵파괴 RPC 는 `display_no` 인자를 읽지 않음(T3b 소스 핀) ⑶사람의 `#N` 은 CLI 에서 **산 좌석만** 내부 번호로 풀고 못 풀면 거부(T9) ⑷보이는 번호를 내부 번호 자리에 잘못 넣어도 I1·I2 로 같은 좌석 또는 없음(따름정리 S · T4) ⑸해석과 명령 사이 경합도 I0 로 없음 ⑹X-10 을 닫아 D4 의 「번호 재사용 없음」 전제(D4-ui.md:80)가 **더 강하게** 참이 된다. 남는 것 둘: 「사람이 번호를 잘못 고름」 · **셸이 띄어 쓴 `--surface #17` 을 잘라 자기 좌석으로 폴백**(R-12 · 다른 좌석은 아님 · 정본 표기 `--surface=#17` 과 📌 D-1 로 줄인다). **다른 산 좌석에 닿는 경로는 두 검증자 모두 찾지 못했다**(§15).
+4. **④ 전 pane 사망(핵심)** — 보이는 번호가 닫기·입력 RPC 로 들어가는 길이 **설계에 0**이다: ⑴데몬 RPC 입구(`resolve_surface_id` → `parse_surface_ref`)는 무변경이라 `#N` 을 거부(T3) ⑵파괴 RPC 는 `display_no` 인자를 읽지 않음(T3b 소스 핀) ⑶사람의 `#N` 은 CLI 에서 **산 좌석만** 내부 번호로 풀고 못 풀면 거부(T9) ⑷보이는 번호를 내부 번호 자리에 잘못 넣어도 I1·I2 로 같은 좌석 또는 없음(따름정리 S · T4) ⑸해석과 명령 사이 경합도 I0 로 없음 ⑹X-10 을 닫아 D4 의 「번호 재사용 없음」 전제(D4-ui.md:80)가 **더 강하게** 참이 된다. 셸이 `#17` 을 잘라도 clap 오류로 끝난다(R-12 · 실측). 남는 것은 「사람이 번호를 잘못 고름」과 「두 소켓에서 같은 숫자」(R-7 · 운영 호칭 + stderr 소켓 줄)뿐이다. **다른 산 좌석에 닿는 경로는 두 검증자 모두 두 라운드에서 찾지 못했다**(§15).
 
 ## 13. 정직 고지 · 남은 것
 
@@ -349,4 +351,20 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 
 | # | 물음 | 선택지 | 권고 | 권고의 단점 | 미결 시 |
 |---|---|---|---|---|---|
-| D-1 | 셸이 `#` 를 주석으로 먹는 문제(R-12)를 어디까지 막나 | A `#N` 하나만 · 모든 문서·지침·도움말의 표기를 `--surface=#17` 로 통일 + T9 고정 · B A 에 더해 셸이 먹지 않는 별칭(예: `n17`)도 해석기가 받게 | **A** — 위험이 「자기 좌석 입력」에 한정되고(다른 좌석 아님 · cmux master 페인은 오류로 끝남), 표기가 둘이면 가르칠 것도 둘이 된다 | 에이전트가 띄어 쓴 `--surface #17` 을 옮겨 적으면 여전히 자기 좌석에 입력된다 — 문서 통일에 기대는 방어다 | 구현 ③ 의 해석기 문법(T9 진리표)이 확정 안 됨 — ②는 영향 없음 |
+| D-1 | ~~셸이 `#` 를 주석으로 먹는 문제를 어디까지 막나~~ | — | **결정 불요 — 실측으로 해소**(08:2x · R-12 · §4-2): 잘려도 clap 오류로 끝나 폴백이 없다. 별칭(`n17`)을 둘 안전상 이유가 사라졌다. 표기 통일(`--surface=#17`)은 편의로만 남긴다 | — | — |
+
+### 15-2. 2R (개정판 d1cc6878 대상)
+
+- 원문: `surface-display-number.reviews/agy-2R-2026-09-24.md` · `surface-display-number.reviews/fable-adversarial-2R-2026-09-24.md` · 셸 실측 `surface-display-number.reviews/shell-hash-probe-2026-09-24.txt`.
+- 판정: **agy = ACCEPT**(발견 LOW 1 — 「셸이 잘라도 `--surface` 가 남아 clap 오류」 · 실측으로 **옳음** 확인 → 1R 의 잘못된 「정정」을 되돌림) · **Fable = REVISE**(HIGH 1 · MED 1 · LOW 3).
+
+| 출처 | 발견 | 처리 | 근거·반영 |
+|---|---|---|---|
+| agy 2R LOW | 셸 절단 분석 모순 — 폴백 없이 clap 오류 | **수용** — 1R 정정을 되돌림 · D-1 결정 불요 | 실측 7건 전부 clap 오류 rc=2 · §4-2 · R-12 · §16 |
+| Fable 2R HIGH | 새 표가 시드보다 늦게 만들어져 업그레이드 첫 기동에 시드 0(I0 파괴) | **수용** | state.rs:3000(시드) ↔ :3045(쓰기 스레드 · 스키마) 순서 직접 확인 · §3-2 부팅 행 · §6 · T2 ⑷ · M11c |
+| Fable 2R MED | `claim-role … --surface #17 --takeover-empty-seat` 등 「뒤 플래그까지 사라져 폴백」 | **기각** — 셸은 `#17` 부터 뒤를 자르므로 `--surface` 가 남는다 | 실측: claim-role · quiesce · set-status 모두 `a value is required for '--surface'` rc=2 · zsh 비대화형 지적(부수)은 수용 |
+| Fable 2R LOW | 사용자본 javis_reconstruct_state.py 가 `no=` 칸을 라벨로 오독 | **수용** | :78-96 직접 확인 · §4-1 ※ · §10-2 · T14 |
+| Fable 2R LOW | S 의 증명이 「—」 인 id≤999 산 좌석을 빠뜨림 | **수용** — 전제 명시 + 번호 정지 | §2-3 · T4 · M26 |
+| Fable 2R LOW | 닫기 UPDATE 를 락 안에서 기다리면 생성이 멈춤 · PTY 실패 되돌림은 락 재획득 | **수용** | §3-2 ② · 표 |
+
+- 수렴: agy 는 2R 에서 dry(ACCEPT · 남은 발견이 오히려 원래 결론을 확인). Fable 은 2R 에서 dry 가 아님(HIGH 1). → 개정 부분만 겨눈 **Fable 3R** 로 dry 여부를 확인한다(§15-3).

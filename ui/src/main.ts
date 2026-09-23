@@ -160,7 +160,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { paneTitleText, renameCommitTitle } from "./panetitle";
+import { paneTitleText, renameCommitTitle, ruleTitleOf } from "./panetitle";
 import { seatNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
 import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
@@ -799,7 +799,8 @@ function renderAccounts() {
       // ★데몬이 죽었다고 판정한 창(stale:true)은 채움·숫자를 그리지 않고 「—」+사유(회색) — 사이드바와 같은 규율.
       // r = 창 1개(없으면 undefined) · observedAt = 그 창의 관측 시각(stale 사유 문구용).
       const gauge = (lab: string, r: any, observedAt: number) => {
-        if (r && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined; // (D4 #18) 미관측 = 창 없음(「—」) · 0% 게이지 아님
+        // (D4 #18) 미관측 = 창 없음(「—」) · 0% 게이지 아님. (opus 결함 5) 데몬이 죽었다고 판정한 창은 그대로 둔다 — 사유 표시가 우선.
+        if (r && r.stale !== true && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined;
         const dead = !!r && r.stale === true;
         const used = r ? Math.round(Number(r.used_pct)) : 0;
         const reset = dead
@@ -2602,7 +2603,9 @@ async function refreshPaneTitles() {
         // (v116-ui-close · D4 #13) 끝난 창 표시 = 「(끝남)」 — 종전 영어 「[exited]」. (r2 · D4 #12) 앞머리 · 전체 경로는 툴팁.
         rt.titleEl.textContent = paneTitleText(s.surface_id, s.title, s.live_cwd, !!s.exited);
         rt.titleEl.title = s.live_cwd ?? "";
-        rt.titleEl.dataset.daemonTitle = s.title ?? ""; // 이름 변경에서 빈 이름 확정 시 되돌릴 규칙 제목의 재료
+        // 이름 변경에서 빈 이름 확정 시 되돌릴 규칙 제목 — 역할 창의 「번호 · 특성」을 볼 때마다 기억(사람 이름으로 바뀌어도 유지).
+        const rule = ruleTitleOf(s.surface_id, s.role, s.title);
+        if (rule) rt.titleEl.dataset.ruleTitle = rule;
       }
       // 자동 입양: 그 소켓의 role surface 중 UI에 없는 것 → '같은 소켓을 가진 ws'에만 표출.
       // ★소켓 일치 가드 — 부서A 노드가 부서B 탭에 잘못 입양되는 격리 누수 차단(검증 mustFix).
@@ -2794,7 +2797,6 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   const titleEl = document.createElement("span");
   titleEl.className = "pane-title-text";
   titleEl.textContent = paneTitleText(sid, title, null, false);
-  titleEl.dataset.daemonTitle = title;
   const usageEl = document.createElement("span");
   usageEl.className = "pane-usage";
   // 배지 위 mousedown이 pane 드래그로 번지지 않게 — tooltip(hover) 확인 중 오발 방지
@@ -2832,7 +2834,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
       {
         label: "이름 변경",
         action: () => {
-          const before = titleEl.dataset.daemonTitle ?? ""; // 편집 전 데몬 제목(「번호 · 특성」이면 빈 이름 확정 시 되돌린다)
+          const shownBefore = titleEl.textContent || ""; // 편집 전 보이던 제목 — 바뀐 것이 없으면 보내지 않는다
           titleEl.contentEditable = "true";
           titleEl.focus();
           window.getSelection()?.selectAllChildren(titleEl);
@@ -2846,7 +2848,11 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
             titleEl.removeEventListener("keydown", onKey); // rename마다 리스너 누적 방지
             titleEl.contentEditable = "false";
             // 빈 이름 = 기본으로 복귀 — 역할 창은 「번호 · 특성」, 역할 없는 창은 ""(자동 제목) (D4 #12 · panetitle.ts)
-            const name = renameCommitTitle(titleEl.textContent || "", before, sid);
+            const name = renameCommitTitle(titleEl.textContent || "", shownBefore, titleEl.dataset.ruleTitle ?? null);
+            if (name === null) {
+              void refreshPaneTitles(); // 바뀐 것 없음 — 데몬에 쓰지 않고 표시만 되돌린다
+              return;
+            }
             invoke("rename_surface", { socket, surfaceId: sid, title: name })
               .catch(() => {})
               .then(() => refreshPaneTitles());
@@ -6088,7 +6094,7 @@ async function manualRotateSkewed(appVer: string, heldMain: boolean, heldDepts: 
   );
   if (!ok) return;
   rotatingDaemon = true;
-  stickyToast("rotate-daemon", "feed", "↻ 데몬 교대", `새 버전 v${appVer}로 교대 중… 저장 후 세션을 복원합니다.`);
+  stickyToast("rotate-daemon", "feed", "↻ 엔진 교대", `새 판 v${appVer} 엔진으로 바꾸는 중… 하던 대화를 저장한 뒤 창과 대화를 되돌립니다.`);
   try {
     if (heldMain) await invoke("rotate_daemon", { force: true, skipDrain: false });
     // 경미2: rotate_dept_daemon이 반환하는 restore_ok=false(교대 후 부서 노드 복원 실패)를 삼키지 않고 승격.
@@ -6101,7 +6107,7 @@ async function manualRotateSkewed(appVer: string, heldMain: boolean, heldDepts: 
     clearSkewBadge();
     if (deptRestoreFailed)
       toast("health", "⚠ 교대 후 부서 복원 실패", `데몬은 v${appVer}로 교대됐으나 일부 부서 노드 복원이 실패했습니다 — 상태를 점검하세요.`);
-    else toast("watchdog", "✅ 데몬 교대 완료", `데몬이 v${appVer}로 교대됐습니다. 노드 복원이 진행됩니다.`);
+    else toast("watchdog", "✅ 엔진 교대 완료", `엔진이 새 판 v${appVer} 로 바뀌었습니다. 창과 대화를 되돌리는 중입니다.`);
   } catch (e) {
     dismissToast("rotate-daemon");
     toast("health", "엔진 교대 실패", "엔진을 새 판으로 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
@@ -7240,9 +7246,12 @@ function recordAlarm(category: string, name: string, detail: string, id?: string
 //   본문은 사람 말 한두 문장. 원문은 지우지 않는다(지원·진단에 필요). raw 가 없으면 「자세히」도 없다(갱신 시 제거).
 const RAW_DETAIL_LABEL = "자세히";
 function setToastRaw(el: HTMLElement, raw?: string) {
-  el.querySelector(".toast-raw")?.remove();
+  const prev = el.querySelector(".toast-raw") as HTMLDetailsElement | null;
+  const wasOpen = prev?.open === true; // (opus NIT) 같은 알림 갱신 때 펼쳐 둔 「자세히」를 접지 않는다
+  prev?.remove();
   if (!raw) return;
   const d = document.createElement("details");
+  d.open = wasOpen;
   d.className = "toast-raw";
   const sm = document.createElement("summary");
   sm.textContent = RAW_DETAIL_LABEL;
@@ -7398,7 +7407,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
   const ap: Record<string, unknown> = evSock && deptNameFromSocket(evSock) ? { ...payload, dept: ctxGroupLabel(evSock) } : payload; // 원 payload 는 건드리지 않는다
 
   // ★(v116-ui-close-r2 · R1c) 마스터 자리가 늦게 섰으면 복원 카드 판정을 다시 돈다(판정·1회는 maybeShowRestoreBrief 가 진다).
-  if (isMasterSeatSignal(name, payload)) maybeShowRestoreBrief();
+  // (opus NIT) 완전 초기화 중·뒤에는 「다시 켜졌어요」 카드를 띄우지 않는다(P1-3 — 복원 토스트 억제와 같은 원칙).
+  if (isMasterSeatSignal(name, payload) && !factoryResetting && !resetCompleted) maybeShowRestoreBrief();
   // --- name-우선 전용 처리(B1) : name 매칭이 category 폴백보다 우선 ---
   if (name === "approval.request") {
     const c = approvalRequestCopy(no, ap);

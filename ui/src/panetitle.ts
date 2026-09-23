@@ -33,14 +33,29 @@ export function paneTitleText(
   return exited ? EXITED_TITLE_PREFIX + t : t;
 }
 
+/** 앞머리 「(끝남) 」를 뗀 제목 — 이름 변경 입력칸에는 표시용 앞머리가 섞여 있다(opus 결함 2). */
+export function stripExited(t: string): string {
+  return t.startsWith(EXITED_TITLE_PREFIX) ? t.slice(EXITED_TITLE_PREFIX.length) : t;
+}
+
 /**
- * 이름 변경 확정 때 데몬에 보낼 제목. 빈 이름 = 기본으로 되돌리기다.
- *   · 편집 전 데몬 제목이 이 번호로 시작하면(역할 창의 「번호 · 특성」) 그것을 되돌려 보낸다 —
- *     ""를 저장하면 데몬은 다시 짓지 않아(initial_title 은 만들 때 1회) 번호·특성이 영구히 사라졌다.
- *   · 그 밖(역할 없는 창·이미 사람 이름)은 ""(자동 제목 = 「번호 · 폴더 이름」).
+ * 역할 창의 규칙 제목(데몬 initial_title 「번호 · 특성」)인가 — 되돌리기 재료로 기억할 값. 역할 없는 창은 null
+ * (그 창의 기본은 경로를 따라가는 자동 제목이라 고정 제목으로 되돌리면 안 된다 — opus 결함 1).
  */
-export function renameCommitTitle(typed: string, before: string | null | undefined, sid: number): string {
-  const t = typed.trim();
+export function ruleTitleOf(sid: number, role: string | null | undefined, title: string | null | undefined): string | null {
+  return role && title && title.startsWith(`${sid}${SEP}`) ? title : null;
+}
+
+/**
+ * 이름 변경 확정 때 데몬에 보낼 제목. null = 보내지 않는다.
+ *   · 바뀐 것이 없으면 보내지 않는다 — 그냥 눌렀다 떼기만 해도 보이던 자동 제목이 고정 제목으로 굳던 것(opus 결함 1).
+ *   · 빈 이름 = 기본으로 되돌리기: 역할 창은 기억해 둔 규칙 제목(「번호 · 특성」 · 데몬은 다시 짓지 않는다),
+ *     역할 없는 창은 ""(자동 제목 = 「번호 · 폴더 이름」). 사람 이름을 거쳐 비워도 규칙 제목으로 돌아온다(opus 결함 3).
+ *   · 「(끝남) 」 앞머리는 떼고 비교·저장한다(opus 결함 2).
+ */
+export function renameCommitTitle(typed: string, shownBefore: string, ruleTitle: string | null): string | null {
+  const t = stripExited(typed).trim();
+  if (t === stripExited(shownBefore).trim()) return null;
   if (t) return t;
-  return before && before.startsWith(`${sid}${SEP}`) ? before : "";
+  return ruleTitle ?? "";
 }

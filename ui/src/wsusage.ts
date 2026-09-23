@@ -109,7 +109,10 @@ const scopeKey = (socket: string, agent: string) => JSON.stringify([socket, agen
  * 그려진다(미관측 ≠ 0%). 지금 데몬은 null 을 내지 않지만(잠복) 한 줄만 어긋나도 「넉넉하다」는 거짓 신호가 된다.
  */
 export function usedPctOf(v: unknown): number {
-  return v == null || v === "" ? NaN : Number(v);
+  // (opus NIT) 공백 문자열·불리언도 미관측 — Number(" ")=0 · Number(false)=0 이 0% 로 새지 않게.
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && v.trim() !== "") return Number(v);
+  return NaN;
 }
 
 export function aggregateRates(surfaces: SurfaceLike[], nowSecs: number): RateRow[] {

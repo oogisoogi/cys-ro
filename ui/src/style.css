@@ -224,7 +224,7 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 }
 .wsu-head:first-child { margin-top: 0; }
 /* (D4 #10) 페인 CTX 부서 머리줄 — 부서 이름 전체를 패널 폭에 싣는다(행 라벨 열은 번호만) */
-.wsu-ctx-group { margin-top: 4px; font-size: 10px; color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wsu-ctx-group { margin-top: 4px; font-size: .9em; /* 패널 글자 배율(A−/A＋)을 따른다 — opus 결함 4 */ color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wsu-rate, .wsu-ctx { display: flex; align-items: center; gap: 6px; padding: 1px 0; min-width: 0; }
 /* ★고정 칸들은 「자기 폭을 원하되, 정 안 되면 줄어든다」로 바꿨다(오너 지시 2026-08-11의 귀결).
    ① 왜 필요해졌나 — 패널 글자가 배율을 타면서 **행의 고정 칸이 통째로 배율을 탄다**.

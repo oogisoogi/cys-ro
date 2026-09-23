@@ -3136,6 +3136,27 @@ pub mod mousereport {
 
 #[cfg(test)]
 mod tests {
+    /// ★dbg-D3 #F1: 스폰 env 가 **자기 판** cysd·cys 를 명시로 싣는다(형제 실재 시에만 · 부재 = 무변화).
+    /// 이 쌍이 빠지면 cys-dept 는 PATH 로 cysd 를 찾고, 옛 CLI 링크가 있는 기계에서 부서가 옛 판으로 뜬다.
+    #[test]
+    fn dbg_f1_spawn_env_carries_self_bins_only_when_siblings_exist() {
+        let dir = std::env::temp_dir().join(format!("cys-dbgf1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(super::self_bin_pairs(&dir).is_empty(), "형제 부재인데 쌍을 냈다(시험 바이너리 무변화 계약)");
+        let ext = if cfg!(windows) { ".exe" } else { "" };
+        for n in ["cysd", "cys"] {
+            std::fs::write(dir.join(format!("{n}{ext}")), "x").unwrap();
+        }
+        let got = super::spawn_env_pairs_from_process(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let find = |k: &str| got.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
+        let d = find(super::ENV_CYSD_BIN).expect("spawn env 에 CYS_CYSD_BIN 이 없다");
+        let c = find(super::ENV_CYS_BIN_SELF).expect("spawn env 에 CYS_CYS_BIN 이 없다");
+        assert!(d.ends_with(&format!("cysd{ext}")) && !d.contains('\\'), "cysd 경로 형식: {d}");
+        assert!(c.ends_with(&format!("cys{ext}")) && !c.contains('\\'), "cys 경로 형식: {c}");
+    }
+
 
     // ── ★(U-10) 좌석 제4 등급 `gate_pending` 축: 롤백 킬스위치 + wire 술어 순수 코어 ──
     //   env 를 만지는 래퍼가 아니라 **순수 코어**를 잰다(cargo test 는 스레드 병렬이라

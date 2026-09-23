@@ -32,6 +32,7 @@ CYS_DEPT = os.path.join(BIN, "cys-dept")
 FAKE_CYS = r"""#!/bin/bash
 T="$D1_T"
 if [ "$1" = "ping" ]; then
+  echo "$0" >> "$T/cys_by"
   echo x >> "$T/pings"
   [ -f "$T/up" ] && exit 0
   exit 1
@@ -42,6 +43,8 @@ exit 0
 FAKE_CYSD = r"""#!/bin/bash
 T="$D1_T"
 echo $$ > "$T/cysd.pid"
+echo "$0" >> "$T/cysd_by"
+[ -n "${CYS_PACK_DIR:-}" ] && [ -d "$CYS_PACK_DIR" ] && echo "$0" > "$CYS_PACK_DIR/.pack-version"
 n=0; [ -f "$T/pings" ] && n=$(wc -l < "$T/pings" | tr -d ' ')
 echo "$n" > "$T/spawned"
 # ★dbg-D10 첫 부팅 흉내(D10_MODE 가 있을 때만): cys.lock → 팩 파일이 1초마다 늘어남(D10_BOOT_S 초) →
@@ -208,6 +211,60 @@ class DeptFirstBootWait(_Base):
 
     def test_daemon_death_during_boot_fails_fast_and_unregisters(self):
         self._assert_failed_and_cleaned("die", 10)
+
+
+class DeptSelfBinPrecedence(_Base):
+    """★dbg-D3 #F1 — 옛 CLI 링크(가짜 옛 cys/cysd)가 PATH 에 있어도 부서 데몬은 **부른 쪽의 판**으로 뜬다.
+    종전 cys-dept 는 $HOME/.local/bin·/opt/homebrew/bin·/usr/local/bin 을 호출자 PATH **앞**에 끼워
+    옛 링크가 자기 판(호출자 PATH 선두 = 데몬 exe_dir)을 이겼다(995 격리 실측 · .pack-version 1.0.2).
+    옛 판 = $HOME/.local/bin(cys-dept 가 앞세우던 자리) · 새 판 = 따로 둔 폴더."""
+
+    def setUp(self):
+        super().setUp()
+        self.new = os.path.join(self.t, "newbin")
+        os.makedirs(self.new)
+        for name, body in (("cys", FAKE_CYS), ("cysd", FAKE_CYSD)):
+            q = os.path.join(self.new, name)
+            with open(q, "w") as f:
+                f.write(body)
+            os.chmod(q, 0o755)
+
+    def _launch_and_assert_new(self, lane):
+        subprocess.run(["/bin/bash", CYS_DEPT, "launch", "probe"], env=self.env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+        by = os.path.join(self.t, "cysd_by")
+        self.assertTrue(os.path.exists(by), "전제: 부서 데몬 기동 지점에 닿지 않았다(%s)" % lane)
+        with open(by) as f:
+            spawned = f.read().split()
+        with open(os.path.join(self.t, "cys_by")) as f:
+            pinged = sorted(set(f.read().split()))
+        want_d, want_c = os.path.join(self.new, "cysd"), os.path.join(self.new, "cys")
+        self.assertEqual(spawned[:1], [want_d],
+                         "%s: 부서 데몬이 옛 판(%s)으로 떴다 — 자기 판 %s 가 아니다(F1)" % (lane, spawned[:1], want_d))
+        self.assertEqual(pinged, [want_c], "%s: cys-dept 가 옛 cys 를 불렀다: %s" % (lane, pinged))
+        pv = os.path.join(self.home, ".cys", "pack-dept-probe", ".pack-version")
+        cands = [pv] + [os.path.join(r, ".pack-version") for r, _d, fs in os.walk(self.home)
+                        if ".pack-version" in fs]
+        got = None
+        for c in cands:
+            if os.path.isfile(c):
+                with open(c) as f:
+                    got = f.read().strip()
+                break
+        self.assertEqual(got, want_d, "%s: 부서 팩 .pack-version 을 쓴 판이 자기 판이 아니다: %r" % (lane, got))
+
+    def test_caller_path_head_is_not_overridden(self):
+        # 명시 env 없이 호출자 PATH 선두만으로 — 보강 경로가 말미 append 여야 새 판이 이긴다.
+        self.env["PATH"] = self.new + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        self._launch_and_assert_new("PATH 선두")
+
+    def test_explicit_self_bin_beats_old_link_first_on_path(self):
+        # 옛 판을 PATH 맨 앞에 둬도 CYS_CYSD_BIN·CYS_CYS_BIN 명시가 1순위다.
+        old = os.path.join(self.home, ".local", "bin")
+        self.env["PATH"] = old + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        self.env["CYS_CYSD_BIN"] = os.path.join(self.new, "cysd")
+        self.env["CYS_CYS_BIN"] = os.path.join(self.new, "cys")
+        self._launch_and_assert_new("명시 env")
 
 
 if __name__ == "__main__":

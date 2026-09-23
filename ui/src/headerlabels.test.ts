@@ -5,7 +5,7 @@
 //    라벨은 시작 1회만 쓰였고, 이벤트 스트림 재수립이 UI 에 아무 신호도 주지 않았다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
+import { appVersionLabel, appVersionTitle, daemonInfoLabel, daemonInfoTitle, holdReasonText } from "./headerlabels";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -50,8 +50,9 @@ describe("ⓐ 앱 판번 상시 표시", () => {
 
 describe("ⓑ 데몬 재기동 뒤 라벨 갱신", () => {
   it("라벨 문구", () => {
-    // 판번을 주지 않는 구판 데몬 — 종전 문구 그대로(없는 값을 지어내지 않는다).
-    expect(daemonInfoLabel({ daemon_pid: 10132, socket_path: "/s" })).toBe("daemon pid=10132 sock=/s");
+    // 판번을 주지 않는 구판 데몬 — 판번을 지어내지 않는다(라벨 「엔진 연결됨」 · 전문은 툴팁 종전 문구 그대로).
+    expect(daemonInfoLabel({ daemon_pid: 10132, socket_path: "/s" })).toBe("엔진 연결됨");
+    expect(daemonInfoTitle({ daemon_pid: 10132, socket_path: "/s" })).toBe("daemon pid=10132 sock=/s");
   });
 
   it("forwarder 가 재수립에서만 daemon-reconnected 를 낸다(첫 연결 제외)", () => {
@@ -85,11 +86,11 @@ describe("ⓑ 데몬 재기동 뒤 라벨 갱신", () => {
 // ⓒ 데몬 판번 상시 표시 · 교대 보류 사유(B15 · TICKET=v110-darwin-update).
 describe("ⓒ 데몬 판번 상시 표시", () => {
   it("판번이 오면 라벨에 늘 싣는다(스큐가 아닐 때도)", () => {
-    expect(daemonInfoLabel({ daemon_pid: 42, socket_path: "/s", version: "1.1.0" })).toBe(
-      "daemon v1.1.0 pid=42 sock=/s",
-    );
-    // 빈 문자열·공백은 「없음」과 같게 다룬다 — `daemon v pid=` 같은 반쪽 표기 금지.
-    expect(daemonInfoLabel({ daemon_pid: 42, socket_path: "/s", version: "  " })).toBe("daemon pid=42 sock=/s");
+    expect(daemonInfoLabel({ daemon_pid: 42, socket_path: "/s", version: "1.1.0" })).toBe("엔진 v1.1.0");
+    expect(daemonInfoTitle({ daemon_pid: 42, socket_path: "/s", version: "1.1.0" })).toBe("daemon v1.1.0 pid=42 sock=/s");
+    // 빈 문자열·공백은 「없음」과 같게 다룬다 — `엔진 v` 같은 반쪽 표기 금지.
+    expect(daemonInfoLabel({ daemon_pid: 42, socket_path: "/s", version: "  " })).toBe("엔진 연결됨");
+    expect(daemonInfoTitle({ daemon_pid: 42, socket_path: "/s", version: "  " })).toBe("daemon pid=42 sock=/s");
   });
 
   it("데몬 판번 원천은 daemon_status 응답 그대로다(호출부가 version 을 버리지 않는다)", () => {
@@ -110,5 +111,22 @@ describe("ⓒ 자동 교대 보류 사유", () => {
     const body = fnBody(main, "async function checkVersionSkew() {");
     expect(body).toContain("holdReason = holdReasonText(lastRotateError)");
     expect(body).toContain("const why = holdReason ?");
+  });
+});
+
+// ⓓ(v116-ui-close · D4 #5) 상단바 라벨 = 판번만 · 내부 용어·사용자 폴더 경로는 툴팁으로.
+describe("ⓓ 상단바 데몬 라벨 — 판번만(D4 #5)", () => {
+  it("라벨에 pid·소켓 경로·영어 내부 용어가 없다", () => {
+    const st = { daemon_pid: 4242, socket_path: "/Users/someone/.local/state/cys/cys.sock", version: "1.1.6" };
+    const label = daemonInfoLabel(st);
+    for (const bad of ["pid", "sock", "daemon", "/Users/", "someone"]) expect(label.includes(bad)).toBe(false);
+    expect(label).toBe("엔진 v1.1.6");
+  });
+  it("두 자리(시작 · 재연결) 모두 툴팁에 전문을 싣는다 · 초기 문구·무응답 문구도 내부 용어 0", () => {
+    expect(main).toContain("info.title = daemonInfoTitle(status);");
+    expect(fnBody(main, "async function refreshDaemonInfo(")).toContain("info.title = daemonInfoTitle(st);");
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+    expect(html).toContain('<span id="daemon-info">엔진 연결 중…</span>');
+    expect(main).toContain('info.textContent = "엔진 응답 없음');
   });
 });

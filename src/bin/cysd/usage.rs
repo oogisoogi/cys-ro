@@ -91,8 +91,10 @@ struct TailState {
     server_ctx_window: Option<u64>,
     /// codex rollout의 turn_context가 준 모델명 — token_count 소비 귀속용(전수조사 A-2)
     codex_model: Option<String>,
-    /// 이 tail 이 부착된 시각 — 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준(T2).
-    attached_at: f64,
+    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각 = **좌석 생성 시각**(T2).
+    /// tail 부착 시각이 아닌 이유(opus 적대 1R): 세션 파일 전환·휴리스틱 재발견으로 tail 이 다시 붙을 때마다
+    /// 유예가 새로 시작되면 추정 창 좌석의 관측 경로 발화가 영영 안 날 수 있다.
+    grace_from: f64,
     /// 직전 관측의 임계 발화를 유예로 보류했는가 — 새 줄이 없는 틱에서도 유예가 끝나면 재평가한다(T2 · agy 1R #2).
     threshold_deferred: bool,
 }
@@ -100,7 +102,7 @@ struct TailState {
 impl TailState {
     /// 새 tail — 영속 오프셋(analytics tail_offsets)이 있으면 거기서 정확 재개해
     /// 재시작 시 마지막 256KB 재파싱→DB 중복 INSERT(전수조사 A-4)를 근절한다.
-    fn attach(daemon: &Arc<Daemon>, path: PathBuf, heuristic: bool, now: f64) -> Self {
+    fn attach(daemon: &Arc<Daemon>, path: PathBuf, heuristic: bool, now: f64, grace_from: f64) -> Self {
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let stored = daemon
             .analytics
@@ -120,7 +122,7 @@ impl TailState {
             last_discovery: now,
             server_ctx_window: None,
             codex_model: None,
-            attached_at: now,
+            grace_from,
             threshold_deferred: false,
         }
     }
@@ -268,7 +270,7 @@ fn collect_for(
     // tail 상태 초기화/전환: 경로가 바뀌었으면 영속 오프셋(없으면 파일 끝 창)에서 새로 시작
     let need_reset = tails.get(&s.id).map(|t| t.path != path).unwrap_or(true);
     if need_reset {
-        tails.insert(s.id, TailState::attach(daemon, path.clone(), heuristic, now));
+        tails.insert(s.id, TailState::attach(daemon, path.clone(), heuristic, now, s.created_at));
         // 새 세션 파일 = 새 세션 — 에지 게이트 재무장. 직전 세션이 임계 위에서 끝났어도
         // 새 세션이 곧장 임계 이상으로 시작하면(거대 지침 재주입) 발화해야 한다.
         s.ctx_threshold_armed.store(true, Ordering::Relaxed);
@@ -319,9 +321,9 @@ fn collect_for(
         // (T2 · agy 1R #2) 보류됐던 추정 임계의 재평가 — 새 줄이 없는 틱이 유예 뒤 발화할 유일한 자리다.
         //   statusline 이 신선하면 그 경로가 진실원이라 보류를 버린다. 발화는 공유 에지 게이트라 중복 0.
         if state.threshold_deferred {
-            if statusline_fresh {
+            if statusline_fresh && statusline_has_ctx(s) {
                 state.threshold_deferred = false;
-            } else if !defer_estimated_threshold(true, now - state.attached_at) {
+            } else if !statusline_fresh && !defer_estimated_threshold(true, now - state.grace_from) {
                 state.threshold_deferred = false;
                 let cur = s.observed_usage.lock().unwrap().clone();
                 if let Some(p) = cur.as_ref().and_then(|u| u.ctx_pct) {
@@ -462,7 +464,9 @@ fn collect_for(
     // statusline이 신선하면 관측 스냅샷·이벤트·임계발화는 statusline 경로가 진실원 — 여기서 종료
     // (소비 적재는 위에서 이미 완료). 끊기면(60s+) 아래 트랜스크립트 관측으로 graceful 폴백.
     if statusline_fresh {
-        state.threshold_deferred = false;
+        if statusline_has_ctx(s) {
+            state.threshold_deferred = false;
+        }
         return;
     }
 
@@ -509,11 +513,17 @@ fn collect_for(
     // cycle-agent를 이중 집행한다. payload source:"observed"로 자기보고 발화와 구분.
     // (T2) 창 크기 미확정 유예 안의 추정치는 발화하지 않는다 — 에지 무장 상태도 건드리지 않는다
     //   (유예 뒤 첫 관측·statusline 발화가 같은 에지로 정상 판정한다).
-    let defer = defer_estimated_threshold(window_estimated, now - state.attached_at);
+    let defer = defer_estimated_threshold(window_estimated, now - state.grace_from);
     state.threshold_deferred = defer && new.ctx_pct.is_some();
     if let Some(p) = new.ctx_pct.filter(|_| !defer) {
         crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(&new.agent));
     }
+}
+
+/// (T2) 신선한 statusline 이 CTX %를 실제로 줬는가 — 창 크기 없는 보고(구판 등)는 보류를 대신하지 못한다
+/// (opus 적대 1R: 그런 보고가 보류를 지우면 statusline 이 낡은 뒤 idle 좌석의 추정 임계가 영영 안 난다).
+fn statusline_has_ctx(s: &Surface) -> bool {
+    s.observed_usage.lock().unwrap().as_ref().is_some_and(|u| u.source == "statusline" && u.ctx_pct.is_some())
 }
 
 /// (T2) claude 창이 추정인가 — statusline 이 서버 진실 창을 준 적 없고 운영자 강제값(CYS_CLAUDE_CTX_WINDOW)도
@@ -627,7 +637,7 @@ fn collect_external(
                     if !external_eligible(now, mt, &comp, &guards) {
                         continue;
                     }
-                    ext.tails.insert(p.clone(), TailState::attach(daemon, p, false, now));
+                    ext.tails.insert(p.clone(), TailState::attach(daemon, p, false, now, now));
                 }
             }
         }
@@ -1960,7 +1970,7 @@ mod tests {
             last_discovery: 0.0,
             server_ctx_window: None,
             codex_model: None,
-            attached_at: 0.0,
+            grace_from: 0.0,
             threshold_deferred: false,
         };
         let lines = read_new_lines(&mut st);
@@ -2290,7 +2300,7 @@ mod tests {
         super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
         assert!(t2_threshold_events(&daemon, s.id).is_empty(), "전제: 유예 안 보류");
         // 유예 경과(부착 시각을 과거로) + 새 assistant 줄(여전히 statusline 없음)
-        tails.get_mut(&s.id).unwrap().attached_at -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        tails.get_mut(&s.id).unwrap().grace_from -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
         let t = s.registered_transcript.lock().unwrap().clone().unwrap();
         let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
         std::io::Write::write_all(
@@ -2367,11 +2377,12 @@ mod tests {
         let mut attempts = std::collections::HashMap::new();
         super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
         assert!(t2_threshold_events(&daemon, s.id).is_empty(), "전제: 유예 안 보류");
-        tails.get_mut(&s.id).unwrap().attached_at -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        tails.get_mut(&s.id).unwrap().grace_from -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
         // 새 줄 없음 — 빈 줄 틱
         super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
         let fired = t2_threshold_events(&daemon, s.id);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(fired.len(), 1, "유예가 끝났는데 새 줄이 없어 보류된 추정 임계가 영구 침묵");
     }
+
 }

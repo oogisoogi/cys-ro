@@ -23574,6 +23574,77 @@ mod tests {
         assert!(!screen_shows_launch_failure(&flatten_ws("")));
     }
 
+    /// (T2 · TICKET=v116-usage) `--resume` 재출력이 기동 실패로 오판돼 살아 있는 claude 를 닫던 결함.
+    /// VM ↻ 실측: 본부 cso surface:9 가 옛 세션 resume 5.3초 만에 닫힘(descendants_killed 1 · 닫은 주체 =
+    /// 앱 사이드카 `cys restore` 의 launch 롤백 · stderr 폐기로 흔적 0).
+    const T2_RESUME_SCREEN: &str = "\
+╭───────────────────────────────────────────╮
+│ ✻ Welcome to Claude Code!                 │
+╰───────────────────────────────────────────╯
+
+> 설치 폴더 점검해 줘
+● Bash(ls /Users/admin/install-jarvis/old)
+  ⎿  ls: /Users/admin/install-jarvis/old: No such file or directory
+● 해당 폴더는 없습니다. 이어서 진행합니다.
+
+╭───────────────────────────────────────────╮
+│ >                                         │
+╰───────────────────────────────────────────╯
+  ctx 15% · 5h 22% · 7d 49%
+  ? for shortcuts
+";
+
+    #[test]
+    fn t2_resume_replay_is_not_a_launch_failure() {
+        // 전제(결함 본체): 옛 판정은 신규 출현분 문면만 봤다 — 이 화면 전체가 신규 출현분이면 「기동 실패」였다.
+        assert!(
+            screen_shows_launch_failure(&flatten_ws(T2_RESUME_SCREEN)),
+            "전제: 재출력 화면이 문면 술어에 걸린다(수리 전 = LaunchFailed → close)"
+        );
+        assert!(!launch_failure_confirmed(T2_RESUME_SCREEN, None), "생존 미관측이어도 TUI 중간 문면은 확증 아님");
+        assert!(!launch_failure_confirmed(T2_RESUME_SCREEN, Some(true)));
+        assert!(!launch_failure_confirmed(T2_RESUME_SCREEN, Some(false)), "TUI 가 그려져 있고 꼬리에 오류 없음");
+    }
+
+    #[test]
+    fn t2_real_launch_failures_still_confirmed() {
+        // 새 좌석 · zsh · 생존 미관측(명령이 없으니 프로세스도 없다)
+        let zsh = "admin@vm cso % claude --dangerously-skip-permissions --resume b8bb4651\nzsh: command not found: claude\nadmin@vm cso % ";
+        assert!(launch_failure_confirmed(zsh, None));
+        assert!(launch_failure_confirmed(zsh, Some(false)));
+        // p10k 2줄 프롬프트(박스 문자 장식 · 프레임 자 길이 미달)
+        let p10k = "╭─ ~/install-jarvis/cso\n╰─❯ claude --resume x\nzsh: no such file or directory: /opt/claude/bin/claude\n╭─ ~/install-jarvis/cso\n╰─❯ ";
+        assert!(launch_failure_confirmed(p10k, None), "p10k 장식은 TUI 증거가 아니다");
+        // 재사용 좌석: 옛 TUI 잔상이 위에 남아 있어도 꼬리에 오류 + 프롬프트면 확증
+        let reused = format!("{T2_RESUME_SCREEN}\nadmin@vm cso % claude --resume x\nbash: claude: command not found\nadmin@vm cso % ");
+        assert!(launch_failure_confirmed(&reused, None));
+        // Windows cmd.exe · 새 좌석
+        let cmd = "C:\\Users\\admin> claude\n'claude' is not recognized as an internal or external command,\noperable program or batch file.\n\nC:\\Users\\admin>";
+        assert!(launch_failure_confirmed(cmd, None));
+    }
+
+    #[test]
+    fn t2_live_agent_is_never_closed_by_screen_text() {
+        // 데몬이 에이전트 프로세스를 관측했으면 화면이 무엇이든 「명령을 못 찾았다」는 확증이 아니다.
+        let zsh = "% claude\nzsh: command not found: claude\n% ";
+        assert!(!launch_failure_confirmed(zsh, Some(true)));
+        // ★남는 틈 박제(정직): 재출력 도중(TUI 테두리 전) 꼬리에 오류 줄이 걸린 틱은 생존 관측만이 막는다.
+        let mid_draw = "> 설치 폴더 점검해 줘\n● Bash(ls /x)\n  ⎿  ls: /x: No such file or directory";
+        assert!(launch_failure_confirmed(mid_draw, None), "틈: 생존 미관측이면 여전히 확증 — 문서화된 잔여");
+        assert!(!launch_failure_confirmed(mid_draw, Some(true)));
+    }
+
+    #[test]
+    fn t2_launch_failure_branch_is_wired_through_confirmation() {
+        let src = include_str!("cys.rs");
+        let body = &src[src.find("fn boot_agent_on_surface(").expect("fn")..];
+        let body = &body[..body.find("\n}\n").expect("fn end")];
+        assert!(
+            body.contains("screen_shows_launch_failure(&delta_flat) && launch_failure_confirmed(text, surface_agent_alive(sid))"),
+            "준비 폴링의 기동 실패 분기가 확증 술어를 거치지 않는다 — resume 재출력이 다시 좌석을 닫는다"
+        );
+    }
+
     /// U-9 · `screen_tail_is_shell_prompt` 진리표 (T-D4 / F4-cys-boot-launch-06)
     ///
     /// 이 술어는 "화면 꼬리가 셸 프롬프트인가"를 판정해, 에이전트 TUI가 안 떴는데

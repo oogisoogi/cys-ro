@@ -1034,7 +1034,8 @@ def _surface(socket, prev_state, state, force=False, detail=None):
 NO_AUTOSTART_ENV = "CYS_NO_AUTOSTART"
 RESTORE_WAIT_S = 120.0            # 복원 끝 대기 상한(넘으면 partial:restoring · 다음 틱 재판정)
 RESTORE_POLL_S = 3.0
-RESTORE_OLD_DAEMON_SETTLE_S = 90.0  # auto_restore 칸이 없는 옛 데몬 = 데몬 나이로 갈음(팩·데몬 판 어긋남 폴백)
+RESTORE_OLD_DAEMON_SETTLE_S = 90.0
+RESTORE_STALE_S = 900.0             # running·retry_wait 가 데몬 기동 뒤 이만큼 넘으면 복원이 걸린 것으로 보고 진행(Fable 1R M-3)  # auto_restore 칸이 없는 옛 데몬 = 데몬 나이로 갈음(팩·데몬 판 어긋남 폴백)
 REVIVE_GAP_S = 540.0              # 되살림 = 전 부서 합쳐 심박(10분) 1틱에 1부서
 REVIVE_MAX = 3                    # 부서당 연속 되살림 시도 상한(FORMATION_ATTEMPT_RESET_S 뒤 리셋)
 REVIVE_TIMEOUT_S = 180
@@ -1089,9 +1090,15 @@ def _dept_name_for_socket(socket, depts=None):
 
 def _dept_tombstones():
     """본부 데몬 묘비 집합(`<본부 상태 폴더>/dept_tombstones.json`) — 파일 없음 = 빈 집합 · 판독 불가·윈도 = None."""
+    # 본부 상태 폴더 = Rust state_dir(기본 소켓) — 윈도 = %LOCALAPPDATA%\cys(기본 파이프 호환 예외 · state.rs state_dir)
+    #   · unix = 기본 소켓 부모 ~/.local/state/cys(Fable 1R M-4: 윈도를 None 으로 두면 봉인 뒤 되살림이 영영 없다).
     if os.name == "nt":
-        return None   # 본부 상태 폴더 = 파이프 슬러그 매핑(여기서 재현 안 함) → 모름 = 되살리지 않음
-    p = os.path.join(os.path.expanduser("~"), ".local", "state", "cys", "dept_tombstones.json")
+        la = os.environ.get("LOCALAPPDATA")
+        if not la:
+            return None
+        p = os.path.join(la, "cys", "dept_tombstones.json")
+    else:
+        p = os.path.join(os.path.expanduser("~"), ".local", "state", "cys", "dept_tombstones.json")
     try:
         with open(p, encoding="utf-8") as f:
             v = json.load(f)
@@ -1179,13 +1186,18 @@ def restore_settle_verdict(obj, now):
     if not isinstance(d, dict):
         return "go", "데몬 상태 판독 불가 — 종전 흐름"
     phase = d.get("auto_restore")
+    sa = d.get("started_at")
+    age = (now - sa) if isinstance(sa, (int, float)) and not isinstance(sa, bool) else None
     if phase in ("running", "retry_wait"):
+        # ★Fable 1R M-3: phoenix 자식 대기에 데드라인이 없어 걸리면 running 이 영구히 남는다 — 종전(좌석을 세움)보다
+        #   나빠지지 않게, 데몬 기동 뒤 RESTORE_STALE_S 가 지나면 걸린 것으로 보고 진행한다.
+        if age is not None and age > RESTORE_STALE_S:
+            return "go", None
         return "wait", "데몬 자동 복원 %s" % phase
     if phase is not None:
         return "go", None
-    sa = d.get("started_at")
-    if isinstance(sa, (int, float)) and not isinstance(sa, bool) and now - sa < RESTORE_OLD_DAEMON_SETTLE_S:
-        return "wait", "옛 데몬(auto_restore 칸 없음) · 기동 %.0fs — 복원 정착 대기" % (now - sa)
+    if age is not None and age < RESTORE_OLD_DAEMON_SETTLE_S:
+        return "wait", "옛 데몬(auto_restore 칸 없음) · 기동 %.0fs — 복원 정착 대기" % age
     return "go", None
 
 

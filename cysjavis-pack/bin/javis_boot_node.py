@@ -937,7 +937,19 @@ def settle_unknown_seat(status, role, requery, tick_s=1.0, *, max_wait_s):
 #   (설치본 1.0.2 에서 산 claude 가 None/False 로 보이는 퇴행 = 오판 경로 · HANDOFF-v116-pack §2).
 SEAT_ORPHAN_GRACE_ENV = "CYS_SEAT_ORPHAN_GRACE_S"
 SEAT_ORPHAN_GRACE_S_DEFAULT = 120.0
-_ORPHAN_SHELLS = ("zsh", "bash", "sh", "dash", "fish", "ksh", "tcsh", "csh")
+_ORPHAN_SHELLS = ("zsh", "bash", "sh", "dash", "fish", "ksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh")
+
+
+def _orphan_shell_names():
+    """좌석 뿌리로 인정할 셸 이름 — 고정 목록 + 사용자 셸(`CYS_SHELL`·`SHELL` basename · 데몬 default_shell 과 같은 원천).
+    ★Fable 1R M-1: 목록 밖 셸(nushell 등) 사용자는 뿌리 확인이 늘 거짓 → B8 승계·회수가 영구 보류됐다."""
+    names = set(_ORPHAN_SHELLS)
+    for k in ("CYS_SHELL", "SHELL"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            b = os.path.basename(v.split()[0]).lstrip("-")
+            names.add(b[:-4] if b.lower().endswith(".exe") else b)
+    return names
 
 
 def seat_orphan_grace_s():
@@ -952,8 +964,10 @@ def seat_orphan_grace_s():
 
 def _path_under(path, base):
     """path 가 base 자신이거나 그 아래인가(접두만 같은 형제 폴더 제외)."""
-    p = os.path.normpath(path)
-    b = os.path.normpath(base)
+    import unicodedata
+    # Fable 1R m-2: 심링크(/var↔/private/var)·한글 NFD(Finder)·NFC 가 섞여도 같은 폴더로 본다.
+    p = unicodedata.normalize("NFC", os.path.realpath(path))
+    b = unicodedata.normalize("NFC", os.path.realpath(base))
     return p == b or p.startswith(b.rstrip(os.sep) + os.sep)
 
 
@@ -985,7 +999,7 @@ def root_is_bare_shell(pid, runner=None):
     if rc != 0 or not (out or "").strip():
         return None
     name = os.path.basename(out.strip().splitlines()[0].strip()).lstrip("-")
-    if name not in _ORPHAN_SHELLS:
+    if name not in _orphan_shell_names():
         return False
     rc2, _, _ = runner(["pgrep", "-P", str(pid)], timeout=5)
     if rc2 == 1:     # pgrep: 일치 없음 = 자식 0
@@ -1170,12 +1184,17 @@ def _seat_kept_first(old_ref, kind, socket=None, clear=False):
     return True
 
 
-def _reap_after_succession(role, old_ref):
+def _reap_after_succession(role, old_ref, old_pid=None):
     """승계 뒤 role 없는 옛 빈 셸 좌석 정리(v115-dept · master#0e579100) — 반환 = 기록 1줄.
     큐가 **비었다고 잴 수 있을 때만** close-surface --reap(best-effort). 큐가 남았거나 못 쟀으면 보존 —
     close-surface --reap 은 데몬이 큐를 무조건 폐기하므로 선검사가 유일한 방어다(_seat_queue_block ·
     큐 이전 = 범위 밖 · 메시지 유실 금지)."""
     why = _seat_queue_block(old_ref)
+    # ★v116-pack(Fable 1R M-2): 승계 앞 뿌리 확인과 여기 사이엔 launch-agent(최대 80s)+폴링 창이 있다 — 그 사이
+    #   사람이 옛 셸에서 claude 를 띄웠으면 역할은 이미 넘어가 있어도 산 좌석이다. 같은 pid · 뿌리 = 빈 셸을 다시 본다.
+    if not why and old_pid is not None and os.name != "nt":
+        if _pid_for_surface_ref(old_ref) != old_pid or root_is_bare_shell(old_pid) is not True:
+            why = "root_recheck"
     if why:
         _seat_event(role, old_ref, "succession-kept:" + why, None)
         return "%s 옛 빈 좌석 보존(사유=%s)" % (old_ref, why)
@@ -1651,7 +1670,8 @@ def main():
             # ★v116-pack(master#5c9ceb39 ⑶): 데몬 seat 는 뿌리 pid 의 자손만 센다 — 뿌리가 claude 자신인 좌석
             #   (`new-surface --cmd claude`)은 산 채로 "empty" 로 보인다. 승계(뒤이어 옛 좌석 회수)·회수 전에
             #   커널에 직접 묻는다: 뿌리 = 셸 ∧ 자식 0 이 아니면(판정 불가 포함 · 윈도 제외) 좌석 보존.
-            why_root = seat_root_block(_pid_for_surface_ref(old_ref))
+            old_pid = _pid_for_surface_ref(old_ref)
+            why_root = seat_root_block(old_pid)
             if why_root:
                 emit("seat", "%s 빈 좌석 판정 보류(seat.kept:%s) — 뿌리 프로세스가 빈 셸이 아니다 · 승계·회수 0"
                      % (old_ref, why_root))
@@ -1712,7 +1732,7 @@ def main():
             emit("fail", "%s 빈 좌석 승계 실패 — role 이 옛 좌석에 남음(빈 셸 주입 0)" % old_ref)
             return done("takeover_failed", "empty_seat_takeover_denied", old_ref, code=1)
         if takeover and act == "takeover":
-            emit("seat", _reap_after_succession(a.role, old_ref))
+            emit("seat", _reap_after_succession(a.role, old_ref, old_pid))
     else:
         emit("precheck", "%s 가 이미 role 보유(미각성) — 입양해 주입(재기동 안 함) · 판정 seat=%s"
              % (row["surface_ref"], seat_state(status, a.role)))

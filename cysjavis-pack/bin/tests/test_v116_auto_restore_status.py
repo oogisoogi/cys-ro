@@ -60,7 +60,7 @@ def status(env):
         return None
 
 
-def first_status(env, limit=20.0):
+def first_status(env, limit=60.0):   # 부하 중 9회 중 2회 20초 초과 관측(회귀 에이전트) → 60초
     t0 = time.time()
     while time.time() - t0 < limit:
         st = status(env)

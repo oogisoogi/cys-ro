@@ -3818,7 +3818,7 @@ mod auto_restore_tests {
 
     use super::{
         restore_retry_notice,
-        auto_restore_phase_str, auto_restore_will_retry, AUTO_RESTORE_DONE, AUTO_RESTORE_OFF,
+        auto_restore_attempt, auto_restore_phase_str, auto_restore_will_retry, AUTO_RESTORE_DONE, AUTO_RESTORE_OFF,
         AUTO_RESTORE_RETRY_WAIT, AUTO_RESTORE_RUNNING,
         bundled_python3, disk_fallback_verify, extract_phoenix_embed, phoenix_embed_files,
         phoenix_self_test,
@@ -4070,6 +4070,32 @@ mod auto_restore_tests {
             assert_eq!(attempts == 2, auto_restore_will_retry(0, code), "code={code:?}");
         }
         assert!(!auto_restore_will_retry(1, Some(3)), "두 번째 실행 뒤엔 재시도 없음");
+    }
+
+    #[test]
+    fn v116_auto_restore_phase_is_retry_wait_during_the_retry_gap() {
+        // 회귀 핀(뮤턴트 M12 생존 대응): 1차 실패 → 재시도 대기 동안 단계 = retry_wait · 실행 중 = running.
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let phase = AtomicU8::new(AUTO_RESTORE_OFF);
+        let mut at_entry = Vec::new();
+        let mut during = Vec::new();
+        let attempts = loop_auto_restore_with(
+            |a| {
+                at_entry.push(phase.load(Ordering::Relaxed));
+                auto_restore_attempt(&phase, a, || {
+                    during.push(phase.load(Ordering::Relaxed));
+                    Some(3)
+                })
+            },
+            std::time::Duration::from_millis(0),
+        );
+        assert_eq!(attempts, 2);
+        assert_eq!(at_entry, vec![AUTO_RESTORE_OFF, AUTO_RESTORE_RETRY_WAIT], "재시도 대기 틈에 retry_wait 가 아니다");
+        assert_eq!(during, vec![AUTO_RESTORE_RUNNING, AUTO_RESTORE_RUNNING]);
+        // 성공(0) 은 재시도 대기 없음 — 스레드 끝의 done 은 spawn_auto_restore 소관.
+        let p2 = AtomicU8::new(AUTO_RESTORE_OFF);
+        assert_eq!(auto_restore_attempt(&p2, 0, || Some(0)), Some(0));
+        assert_eq!(p2.load(Ordering::Relaxed), AUTO_RESTORE_RUNNING);
     }
 
     /// ★v115-restore(A4): 복원 재시도 대기 중 master 공백 알림 — 첫 비0·master 부재일 때만 1회.

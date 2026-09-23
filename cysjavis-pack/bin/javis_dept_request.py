@@ -1909,20 +1909,47 @@ def human_ack_after(r):
     return a.get("verdict") if a.get("verdict") in ("yes", "no") else "other"
 
 
-# 카드 뒤 사람 답 판정. 거절·수정 낱말이 하나라도 있으면 긍정이 아니다(「네 근데 이름 바꿔」 = 수정).
-_ANS_NO = re.compile(r"(아니|아뇨|싫|취소|하지\s*마|그만|안\s*할|안\s*만들|필요\s*없|\bno\b|\bnope\b)", re.I)
-_ANS_EDIT = re.compile(r"(근데|그런데|하지만|다르|바꿔|바꾸|말고|수정|대신|잠깐|잠시만|다시|고쳐|변경|\?|？)")
-_ANS_YES = re.compile(r"^\s*(네|예|응|넵|넹|내|그래|그러|좋아|좋습니다|좋네|진행|만들어|닫아|해\s*줘|해\s*주세요|하세요|"
-                      r"ㅇㅇ|ㅇㅋ|오케이|ok|okay|yes|y|sure)", re.I)
+# 카드 뒤 사람 답 판정 — ★dbg-D3 F4(2026-09-23): 종전은 「거절 낱말 부분일치 우선 · 긍정 낱말 접두 일치」였다.
+#   그래서 「취소하지 말고 진행해」·「안 할 이유 없죠, 만들어요」(동의)가 `취소`·`안 할` 부분일치로 **거절**이 되어
+#   제안이 버려지고 「「아니요」라고 하셔서 만들지 않았습니다」가 나갔고, 「진행 상황 알려줘」·「예산은 얼마나 들어」
+#   (질문)가 `진행`·`예` 접두로 **긍정**이 됐다. 이제는 **낱말 전부가 사전 안에 있을 때만** 판정한다:
+#   · 긍정 = 모든 낱말이 긍정 핵심어 또는 긍정 보조어이고 핵심어가 1개 이상
+#   · 거절 = 모든 낱말이 거절 핵심어 또는 거절 보조어이고, 핵심어 1개 이상 또는 거절 구(句)와 전체 일치
+#   · 그 밖(모르는 낱말 섞임 · 긍정·거절 섞임 · 물음표 · 이중부정 · 「괜찮아요」 같은 양쪽 뜻) = "other" → confirm 이
+#     「직접 「네」라고 답해 주셔야 진행합니다」로 **되묻는다**. 틀리게 판정하는 것보다 한 번 더 묻는 것이 싸다.
+_ANS_SPLIT = re.compile(r"[\s,.!~…·'\"]+")
+_ANS_YES_CORE = re.compile(
+    r"(네|예|응|웅|넵|넹|내|네네|예예|ㅇㅇ|ㅇㅋ|오케이|오키|ok|okay|yes|yep|y|sure|좋아|좋아요|좋습니다|좋네요|좋죠|"
+    r"그래|그래요|그러세요|그럽시다|그러죠|알겠어|알겠어요|알겠습니다|알았어|알았어요|당연하죠|당연히|물론|물론이죠|"
+    r"맞아|맞아요|맞습니다|부탁해|부탁해요|부탁합니다|부탁드려요|부탁드립니다|진행|진행해|진행해요|진행하세요|진행합시다|"
+    r"진행하죠|만들어|만들어요|만드세요|만듭시다|만들자|닫아|닫아요|닫으세요|닫읍시다|닫자|해|해요|하세요|합시다|하자|하죠|"
+    r"가자|갑시다)")
+_ANS_YES_FILL = re.compile(r"(줘|주세요|줄래|줄래요|주라|주십시오|좀|바로|이대로|그대로|그렇게|그럼|어서|빨리|요|이제|지금)")
+_ANS_NO_CORE = re.compile(
+    r"(아니|아니요|아니오|아뇨|아닙니다|아니야|싫어|싫어요|싫습니다|싫다|노|no|nope|취소|취소해|취소해요|취소할게|"
+    r"취소할게요|취소합니다|그만|그만해|그만해요|그만둬|그만둘게요|됐어|됐어요|됐습니다|됐다|필요없어|필요없어요|필요없습니다)")
+_ANS_NO_FILL = re.compile(
+    r"(요|주세요|줘|안|할래|할래요|해요|만들래|만들래요|만들지|닫지|하지|마|마요|마세요|말아|말아요|필요|없어|없어요|"
+    r"없습니다|괜찮아|괜찮아요|괜찮습니다|그냥|이번엔|이번에는|지금은|일단|됐고)")
+_ANS_NO_PHRASE = re.compile(
+    r"(그냥\s*)?(안\s*(할래요?|만들래요?|해요?)|(하지|만들지|닫지)\s*(마|마요|마세요|말아요?|말아\s*(줘|주세요))|"
+    r"필요\s*(없어요?|없습니다))")
 
 
 def classify_answer(prompt):
-    t = (prompt or "").strip()
-    if _ANS_NO.search(t):
-        return "no"
-    if _ANS_EDIT.search(t) or not _ANS_YES.match(t):
+    t = (prompt or "").strip().lower()
+    if not t or "?" in t or "？" in t:
         return "other"
-    return "yes"
+    toks = [w for w in _ANS_SPLIT.split(t) if w]
+    if not toks:
+        return "other"
+    if all(_ANS_YES_CORE.fullmatch(w) or _ANS_YES_FILL.fullmatch(w) for w in toks) and \
+            any(_ANS_YES_CORE.fullmatch(w) for w in toks):
+        return "yes"
+    if all(_ANS_NO_CORE.fullmatch(w) or _ANS_NO_FILL.fullmatch(w) for w in toks) and \
+            (any(_ANS_NO_CORE.fullmatch(w) for w in toks) or _ANS_NO_PHRASE.fullmatch(" ".join(toks))):
+        return "no"
+    return "other"
 
 
 def _prompt_is_machine(prompt):

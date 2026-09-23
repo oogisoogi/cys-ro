@@ -269,3 +269,28 @@ CI 3명령은 release.yml 356·357·361 글자 그대로를 bash 로 · 빈 CYS_
   프로파일에서의 빈도는 재지 않았다.
 - 재현 함정: 가짜 HOME 을 줄 때 `CARGO_HOME`·`RUSTUP_HOME` 을 실경로로 고정하지 않으면 cargo 가 툴체인을 못 찾아 **무출력으로** 끝난다
   (첫 시도 0줄 — 「안 쟀다」).
+
+## 13. r7(master#715eb7ec · agy 6R REJECT = hetero-agy-d7-6.md) — 배선 구조 단언 강화
+master 판정: P2 채택·강화(3점) · P3(a) 현행 유지 + 두 층 관계 주석 · P3(b) 시험 좌석 close 추가. 시험만 · 제품 무접촉.
+
+| agy 6R | 조치(940ad8c7 · `d7_create_arc_primes_seat_cache_before_reply`) | 뮤턴트 |
+|---|---|---|
+| P2a 블록 주석 우회 | 줄 주석 제거 뒤 `/* … */` 구간을 줄바꿈만 남기고 제거(중첩 불요 — 생산부 `/*` 0건을 grep 으로 확인 · 닫히지 않은 `/*` 는 적색) | M5 호출을 `/*`·`*/` 두 줄로 감쌈 → KILLED(「prime 호출 자리가 정확히 하나가 아니다 · 0」) |
+| P2b 조기 반환 우회 | `Ok(s) => {` 줄과 호출 줄 사이에 `return`·`Reply::` 를 담은 줄이 있으면 적색(줄 번호·원문 출력) | M6 호출 직전에 `if … { return Reply::Single(err_response(…)); }` → KILLED(「Ok(s) 와 prime 호출 사이에 조기 반환 후보가 있다(+66줄)」) |
+| P2c 20칸 리터럴 취약 | 판정을 **trim 한 줄 == 호출문 전체** + **줄 인덱스**로 바꿈. 「무조건」은 상대 들여쓰기(호출 줄 = Ok 아크 꼬리 응답 줄과 같은 깊이) · 아크 경계도 상대 들여쓰기 | 대조군 C1 Ok 아크 본문 전체 +4칸 재들여쓰기 → 초록(포맷 둔감 확인) |
+| P3a 실행 축 공허 통과 | 현행 유지 · 「실행 축은 prime 이 빠져도 unknown 이라 통과 — 배선은 구조 단언, Empty 적재는 의미 층이 진다」 주석 1줄 | — |
+| P3b `exec sleep 30` 누수 | 시험 끝에 `close_surface_rpc(&daemon, sid, None, None)` + ok 단언(자식 트리 kill) | — |
+기존 M1~M4 재실행: M1 호출 삭제 · M2 조건부 · M3 모든 판정 적재 · M4 Empty 미적재 → 전부 KILLED(귀속 패닉문 동일). 합계 **6/6 KILLED + 대조군 1 초록**.
+측정 조건 = CI 유사 로그인 조건(`SHELL=/bin/bash` + 가짜 HOME `.bash_profile`=`sleep 0.3`) · 변이 적용 assert · 매회 백업 복원(cmp 확인) ·
+**두 대상 시험이 실제로 돌았는지(2건) 계수 확인** — 첫 배터리는 zsh 에서 `$T` 가 쪼개지지 않아 0건 실행(전부 「ok · 0 passed」)이었고
+그 결과는 버리고 bash 스크립트로 다시 쟀다(계수 가드 추가).
+
+### 13-1. 통합 검증(r7 · HEAD 940ad8c7)
+CI 유사 로그인 조건(`SHELL=/bin/bash` + 가짜 HOME 프로파일) · bash · 빈 CYS_PACK_DIR · 직렬 · 13:15:45~13:24:57 · 단계마다 dirty=0.
+| 단계 | rc | 초 | 건수 |
+|---|---|---|---|
+| cargo test --bin cysd -- --test-threads=1 --skip hwmon:: | 0 | 130 | 1033 pass · 0 fail · 1 ignored |
+| 전체 건강 검체(직렬 · 격리 env) | 0 | 422 | pass 149 · fail 0 · skip 1 · GREEN |
+(lib·cys 는 r7 이 cysd 시험 모듈만 바꿔 master 지시 게이트에서 빠짐 — r6 §12-4 값이 이 트리의 해당 부분과 동일)
+- 4군 축: ③④ — 제품 무변경(헝크는 전부 `mod tests` 안) · 좌석 판정 층 거동 불변. 시험이 만든 비특권 좌석 1개는 끝에 닫는다(종전: 30초 잔류).
+- 판단(지시 밖) 1건: 조기 반환 검사의 대상 문자열을 `return`·`Reply::` 두 개로 한정했다(master 지시 그대로). `?` 는 이 아크를 품은 `dispatch` 가 `Reply` 를 돌려주므로(handlers.rs:2626) 컴파일되지 않는다. `break`·`continue` 우회는 검사하지 않았다(잔여).

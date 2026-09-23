@@ -1009,17 +1009,17 @@ fn repair_gate(mut g: Gate, canon: &[Gate], notes: &mut Vec<String>) -> Gate {
     //   선언(null · human_only)은 막는 쪽이라 허용하고, 조준점을 옮기는 선언만 되돌린다. 사유는 notes.
     //   merge(`apply_patch`)·replace(`parse_new_gate`) 두 경로가 모두 여기를 지난다(`enforce_self_rules`).
     //   라벨만 되돌리면 `select_index`·`literal` 이 다른 항목을 가리키는 자기모순 액션이 남는다(Fable ①② 1R) —
-    //   라벨이 다르면 액션 **전체**를 정본으로 되돌린다.
+    //   액션이 정본과 **조금이라도** 다르면(라벨 같고 번호만 달라도 · Fable ①② 2R) 액션 전체를 정본으로 되돌린다.
     let canon_action = canon
         .iter()
         .find(|b| b.id == g.id)
         .and_then(|b| b.action.clone());
     if let (Some(a), Some(want)) = (g.action.as_mut(), canon_action) {
-        if a.label != want.label {
+        if *a != want {
             notes.push(format!(
-                "{}: 통과 액션 라벨 치환 선언({:?}) 거부 — 라벨은 자동확인의 조준점이라 액션 전체를 코드 \
-                 정본({:?} · {}번째)으로 되돌린다(액션을 끄는 선언은 허용)",
-                g.id, a.label, want.label, want.select_index
+                "{}: 통과 액션 치환 선언({:?} · {}번째) 거부 — 라벨은 자동확인의 조준점이라 액션 전체를 \
+                 코드 정본({:?} · {}번째)으로 되돌린다(액션을 끄는 선언은 허용)",
+                g.id, a.label, a.select_index, want.label, want.select_index
             ));
             *a = want;
         }
@@ -2612,6 +2612,22 @@ mod tests {
     #[test]
     fn override_cannot_retarget_a_builtin_action_label() {
         let aim = json!({"select_index": 2, "label": "No, exit"});
+        // 라벨은 같고 번호만 다른 선언도 정본으로(자기모순 액션을 남기지 않는다 · Fable ①② 2R).
+        let same_label = json!({"gates": [{"id": "folder-trust",
+            "action": {"select_index": 2, "label": "Yes, I trust this folder"}}]});
+        let r = resolve_with(Some(&same_label), true);
+        assert_eq!(
+            r.gates
+                .iter()
+                .find(|g| g.id == "folder-trust")
+                .unwrap()
+                .action,
+            builtin()
+                .into_iter()
+                .find(|b| b.id == "folder-trust")
+                .unwrap()
+                .action
+        );
         for env in [
             json!({"gates": [{"id": "folder-trust", "action": aim}]}),
             json!({"source": "replace", "gates": [{"id": "folder-trust",
@@ -2641,7 +2657,7 @@ mod tests {
                 FocusPlan::Down(1)
             );
             assert!(
-                r.notes.iter().any(|n| n.contains("라벨 치환")),
+                r.notes.iter().any(|n| n.contains("액션 치환")),
                 "거부가 조용하다: {env}"
             );
         }

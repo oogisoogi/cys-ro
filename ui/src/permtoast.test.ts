@@ -42,9 +42,26 @@ describe("첫 실행 폴더 권한 안내(A-3)", () => {
   });
 
   it("안내는 사람 말로 [허용]을 부탁하고, 거절해도 앱이 켜져 있음과 바꾸는 곳을 말한다", () => {
-    expect(block).toContain("[허용]을 눌러 주세요");
+    expect(block).toContain("허용을 눌러 주세요");
     expect(block).toContain("거절해도 앱은 계속 켜져 있고");
     expect(block).toContain("파일 및 폴더");
+  });
+
+  it("공개 안내 말투 — 안내 본문에 괄호·대괄호가 없다", () => {
+    const from = block.indexOf('"📁');
+    const body = block.slice(from, block.indexOf("\n    );", from));
+    expect(body).toContain("허용을 눌러 주세요");
+    expect(body).not.toMatch(/[()\[\]（）]/);
+  });
+
+  it("권한 창 자체의 설명(Info.plist)이 같은 말을 한다 — 두 폴더 키 · 「~해 주세요」 · 괄호 없음", () => {
+    const plist = readFileSync(new URL("../../src-tauri/Info.plist", import.meta.url), "utf8");
+    for (const key of ["NSDesktopFolderUsageDescription", "NSDocumentsFolderUsageDescription"]) {
+      const m = plist.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`));
+      expect(m).not.toBeNull();
+      expect(m![1]).toContain("허용을 눌러 주세요");
+      expect(m![1]).not.toMatch(/[()\[\]]/);
+    }
   });
 
   it("권한 창이 끝나면(성공·실패 무관) 안내를 내린다", () => {

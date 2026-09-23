@@ -247,6 +247,14 @@ emit_boot_bridge() {
   echo "  ★측정 불능이면 재실행 금지: result.retry_eligible_unknown·result.persist_failed·log_write_failures가 있거나 boot-last 판독이 이번 런과 다른 run_id/surface를 가리키면 retry_eligible을 근거로 쓰지 말고 stdout의 boot-last-mirror 1줄과 boot_last 경로를 인용해 오너에 보고하고 정지하라(측정 불능은 어떤 게이트에서도 통과가 아니다)."
 }
 
+# ★v116-seat F7: 재시작 저장 지시(DRAIN) 두 줄의 단일 정의처 — 비-master 좌석은 _ss_rules 가, master·CEO 좌석은
+#   요지 조립기의 「역할 재대조 고지」 칸(조립기 상한 안 · 앞쪽)으로 받는다. 종전 master 분기는 _ss_rules 앞에서
+#   exit 해 master·CEO 좌석이 이 줄을 훅으로 못 받았다(D3-pack.md F7 · CORE-MIN 은 1,599/1,600자 포화라 거기엔 못 넣음).
+_ss_drain_rules() {
+echo "■ 재시작 저장 지시: [DRAIN] · [DRAIN-VERIFY] 로 시작하는 입력은 오너의 재시작(앱 재시작 단추 · 새 판 설치)으로 cys 가 보낸 기계 통지다 — 지금 저장하세요, 묻지 말고."
+echo "  · 확인·승인·선택지 질문 금지. 지시문의 ①②③ 을 그 자리에서 실행하고 멈춘다(승인 창을 띄워 둔 중이면 무시)."
+}
+
 # ── ★injection-slim T2(DESIGN-v2.1 §4-1·§4-3·§4-6 · master 판정 5cdfbd54): master·CEO 좌석 = 요지 주입 ──
 # 왜: Claude Code 는 훅 출력이 10,000자를 넘으면 본문 대신 파일 저장 + 앞 약 2,000자 미리보기만 모델에
 #   넣는다(T0-PROBES ⓓ: 10,000/10,001자 경계 실측). 종전 master 출력(디렉티브 전문 + soul + 색인 ≈81KB)은
@@ -262,7 +270,10 @@ if [ "$CYS_ROLE" = "master" ]; then
   [ -f "$CI" ] || CI="$JARVIS_DIR/hooks/core_inject.py"
   CI_OUT=""; CI_RC=127
   if [ -n "$CYS_PY" ] && [ -f "$CI" ]; then
-    CI_OUT=$(export CYS_CI_ROLE_NOTICE="$ROLE_NOTICE" CYS_CI_BRIDGE="$BRIDGE"
+    # ★v116-seat F7: DRAIN 두 줄을 역할 재대조 고지 칸 앞에 싣는다(조립기 상한이 예산을 집행 · 실측 master 7,916→8,178자 탈락 0).
+    CI_NOTICE="$(_ss_drain_rules)${ROLE_NOTICE:+
+$ROLE_NOTICE}"
+    CI_OUT=$(export CYS_CI_ROLE_NOTICE="$CI_NOTICE" CYS_CI_BRIDGE="$BRIDGE"
              cys_timeout_run 5 "$CYS_PY" "$(cys_native_path "$CI")" session \
                --directive "$(cys_native_path "$D")" --role "$CYS_ROLE" </dev/null 2>/dev/null)
     CI_RC=$?
@@ -284,6 +295,7 @@ if [ "$CYS_ROLE" = "master" ]; then
   fi
   echo
   printf '■ 고지: 요지 조립기(hooks/core_inject.py)가 실패해 CORE-MIN·부트 브리지만 싣는다(rc=%s). 정본: %s\n' "$CI_RC" "$D"
+  _ss_drain_rules
   [ -n "$ROLE_NOTICE" ] && printf '%s\n' "$ROLE_NOTICE"
   echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE · 폴백)"
   [ -n "$BRIDGE" ] && { echo; printf '%s\n' "$BRIDGE"; }
@@ -314,7 +326,11 @@ _ss_chars() {
   printf '%s' "$1" | wc -c | tr -d ' '
 }
 _ss_toc() {
-  echo "■ 복원(resume) 목차 — 원문은 아래 경로에서 필요할 때 Read 하라(이 세션의 대화 기록은 그대로 복원됐다)"
+  if [ "${1:-resume}" = "resume" ]; then
+    echo "■ 복원(resume) 목차 — 원문은 아래 경로에서 필요할 때 Read 하라(이 세션의 대화 기록은 그대로 복원됐다)"
+  else
+    echo "■ 원문 목차 — 원문은 아래 경로에서 필요할 때 Read 하라(cys launch-agent 로 뜬 좌석은 첫 입력으로 지침 전문이 따로 도착한다)"
+  fi
   printf '  · 역할 디렉티브: %s\n' "$D"
   [ -f "$LD" ] && printf '  · 사용자 로컬 지침(오버레이): %s\n' "$LD"
   [ -f "$JARVIS_DIR/soul.md" ] && printf '  · soul.md: %s\n' "$JARVIS_DIR/soul.md"
@@ -334,8 +350,7 @@ _ss_rules() {
 #   「저장할까요?」류로 되물어 저장이 안 된 채 미제출로 집계됐다. master 는 디렉티브 절이 있으나 master 밖 좌석은
 #   디렉티브 전문이 미리보기 2,000자 밖이라 못 본다 → 이 머리 블록(맨 앞)에 명령형 2줄로 싣는다(★전 좌석 — master 도
 #   받는다: _ss_rules 는 역할 무관 호출이다. master 에겐 디렉티브 절과 같은 뜻의 중복이라 무해 · Fable 1.1.3 L1 주석 정정).
-echo "■ 재시작 저장 지시: [DRAIN] · [DRAIN-VERIFY] 로 시작하는 입력은 오너의 재시작(앱 재시작 단추 · 새 판 설치)으로 cys 가 보낸 기계 통지다 — 지금 저장하세요, 묻지 말고."
-echo "  · 확인·승인·선택지 질문 금지. 지시문의 ①②③ 을 그 자리에서 실행하고 멈춘다(승인 창을 띄워 둔 중이면 무시)."
+_ss_drain_rules
 case "$CYS_ROLE" in
   worker*)
     echo
@@ -434,21 +449,26 @@ if [ -f "$M" ]; then
   fi
 fi
 }
+# ★v116-seat D3-o: 비복원(startup·clear·source 미상)도 같은 상한을 쓴다. 종전 startup 은 전문(워커·CSO 16~17K자 ·
+#   실물 68,516B)을 내 10,000자를 넘었고 → Claude Code 가 파일 저장 + 앞 2,000자 미리보기로 바꿔 전문은 어차피
+#   모델에 닿지 않았다(장기기억 hook-output-over-10k-chars-becomes-2k-preview). 이제 머리(첫 턴 규율·각성 헤더)는
+#   언제나 · 원문 블록은 합계가 상한 미만일 때만 · 넘으면 목차(원문 경로)와 생략 고지. launch-agent 좌석의 지침
+#   전문은 compose_directive 붙여넣기(사용자 프롬프트 = 저장 안 됨)가 따로 싣는다.
 if [ "$HOOK_SRC" = "resume" ]; then
-  _SS_HEAD=$(_ss_rules; echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE) — 복원(resume)"; _ss_toc)
-  _SS_BULK=$(echo; cat "$D"; _ss_bulk)
-  printf '%s\n' "$_SS_HEAD"
-  _SS_N=$(( $(_ss_chars "$_SS_HEAD") + $(_ss_chars "$_SS_BULK") ))
-  if [ "$_SS_N" -lt "$RESUME_INJECT_CAP" ]; then
-    printf '%s\n' "$_SS_BULK"
-  else
-    echo
-    echo "■ 원문 생략(복원 주입 ${_SS_N}자 ≥ 상한 ${RESUME_INJECT_CAP}자) — 디렉티브·로컬 지침·soul·메모리 색인은 위 목차 경로에서 Read 하라."
-  fi
+  _SS_HEAD=$(_ss_rules; echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE) — 복원(resume)"; _ss_toc resume)
+  _SS_WHAT="복원 주입"
 else
-  _ss_rules
-  echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE)"
-  cat "$D"
-  _ss_bulk
+  _SS_HEAD=$(_ss_rules; echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE)")
+  _SS_WHAT="각성 주입"
+fi
+_SS_BULK=$(echo; cat "$D"; _ss_bulk)
+printf '%s\n' "$_SS_HEAD"
+_SS_N=$(( $(_ss_chars "$_SS_HEAD") + $(_ss_chars "$_SS_BULK") ))
+if [ "$_SS_N" -lt "$RESUME_INJECT_CAP" ]; then
+  printf '%s\n' "$_SS_BULK"
+else
+  [ "$HOOK_SRC" = "resume" ] || _ss_toc startup
+  echo
+  echo "■ 원문 생략(${_SS_WHAT} ${_SS_N}자 ≥ 상한 ${RESUME_INJECT_CAP}자) — 디렉티브·로컬 지침·soul·메모리 색인은 위 목차 경로에서 Read 하라."
 fi
 exit 0

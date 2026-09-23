@@ -41,8 +41,19 @@ exit 0
 
 FAKE_CYSD = r"""#!/bin/bash
 T="$D1_T"
+echo $$ > "$T/cysd.pid"
 n=0; [ -f "$T/pings" ] && n=$(wc -l < "$T/pings" | tr -d ' ')
 echo "$n" > "$T/spawned"
+# ★dbg-D10 첫 부팅 흉내(D10_MODE 가 있을 때만): cys.lock → 팩 파일이 1초마다 늘어남(D10_BOOT_S 초) →
+#   .pack-version → 응답. stall = 잠금만 잡고 멈춤 · die = 잠금 뒤 즉사.
+if [ -n "${D10_MODE:-}" ]; then
+  : > "${CYS_SOCKET%.sock}.lock"
+  [ "$D10_MODE" = die ] && exit 3
+  [ "$D10_MODE" = stall ] && exec sleep 600
+  end=$(( $(date +%s) + ${D10_BOOT_S:-0} )); i=0
+  while [ "$(date +%s)" -lt "$end" ]; do i=$((i+1)); : > "$CYS_PACK_DIR/.d10-$i"; sleep 1; done
+  : > "$CYS_PACK_DIR/.pack-version"
+fi
 touch "$T/up"
 sleep 3
 """
@@ -138,6 +149,65 @@ class DeptFormationDoesNotHoldCallerPipe(_Base):
             took, 50,
             "create 를 파이프로 읽은 호출이 %.1f초 걸렸다 — 백그라운드 편성 서브셸이 호출자 stdout/stderr 를 "
             "쥐고 있어 EOF 가 편성 종료(가짜 60초)까지 안 온다(앱 cmd.output() 경로가 그만큼 묶인다)" % took)
+
+
+class DeptFirstBootWait(_Base):
+    """★dbg-D10 — 부서 첫 부팅(팩 첫 설치 · VM 실측 22초)을 기동 뒤 대기가 덮는다 · 멈춤/사망은 조기 실패 +
+    고아 데몬 회수 + 등록 원복(한 묶음). 종전 ready()(≈12초)는 22초 첫 부팅을 「데몬 기동 실패」로 끊고
+    살아 있는 데몬을 등록 없이 남겼다(VM 07:00:15 · 부서 cysd 고아 생존)."""
+
+    def _launch(self, mode, **env):
+        self.env["D10_MODE"] = mode
+        self.env.update({k: str(v) for k, v in env.items()})
+        t0 = time.time()
+        r = subprocess.run(["/bin/bash", CYS_DEPT, "launch", "probe"], env=self.env,
+                           capture_output=True, text=True, timeout=180)
+        return r, time.time() - t0
+
+    def _reg_has_probe(self):
+        try:
+            with open(self.env["CYS_DEPTS_JSON"]) as f:
+                return "probe" in (json.load(f).get("depts") or {})
+        except (OSError, ValueError):
+            return False
+
+    def _assert_boot_waited(self, secs):
+        r, took = self._launch("progress", D10_BOOT_S=secs)
+        out = r.stdout + r.stderr
+        self.assertTrue(os.path.exists(os.path.join(self.t, "up")),
+                        "전제: 가짜 cysd 가 첫 부팅을 끝내지 못했다(대상 미접촉) · took=%.1f" % took)
+        self.assertGreaterEqual(took, secs - 1, "전제: 첫 부팅 흉내가 %d초를 채우지 않았다(%.1f)" % (secs, took))
+        self.assertNotIn("데몬 기동 실패", out,
+                         "첫 부팅 %d초를 기동 뒤 대기가 못 덮었다 — 살아 있는 데몬을 실패로 끊음(D10)\n%s"
+                         % (secs, out[-600:]))
+
+    def test_first_boot_22s_is_waited_out(self):
+        self._assert_boot_waited(22)
+
+    def test_first_boot_40s_is_waited_out(self):
+        self._assert_boot_waited(40)
+
+    def _assert_failed_and_cleaned(self, mode, max_took, **env):
+        r, took = self._launch(mode, **env)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, "실패해야 할 기동이 성공으로 끝났다\n%s" % out[-600:])
+        self.assertIn("데몬 기동 실패", out, "전제: 기동 실패 분기에 닿지 않았다\n%s" % out[-600:])
+        self.assertLess(took, max_took, "조기 실패가 아니다(%.1f초) — 상한까지 헛대기" % took)
+        with open(os.path.join(self.t, "cysd.pid")) as f:
+            pid = int(f.read().strip())
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        self.assertFalse(alive, "기동 실패 뒤 부서 데몬(pid %d)이 고아로 살아 있다(D10 · D9 축)" % pid)
+        self.assertFalse(self._reg_has_probe(), "기동 실패 뒤 등록이 남았다 — 원복 미이행")
+
+    def test_stalled_boot_fails_early_and_reaps_daemon_and_unregisters(self):
+        self._assert_failed_and_cleaned("stall", 25, CYS_DEPT_BOOT_STALL_S=3)
+
+    def test_daemon_death_during_boot_fails_fast_and_unregisters(self):
+        self._assert_failed_and_cleaned("die", 10)
 
 
 if __name__ == "__main__":

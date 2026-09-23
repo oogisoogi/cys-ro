@@ -2118,4 +2118,49 @@ mod tests {
             "/clear 2회 연속 뒤 핀이 최신 등록 세션(C)을 따라가지 않았다"
         );
     }
+
+    /// ★dbg-D2 R2 곁(master#7517197f · 981 실측): 1차 복원 직후 새 좌석은 핀이 None 이라 topology
+    /// `session_id` 가 **빈 값으로 영속**되고(본부 cso None 3분+), 그 상태로 2차 재시작하면 restore 가
+    /// `--continue` 로 폴백한다. 이 단언의 범위: 훅 재등록(source=resume)이 **도착하면** 그 세션이 핀이
+    /// 되어 다음 영속에서 빈 값이 채워진다(등록 경로 추종의 하한). 등록 자체가 안 오는 경우는 이 시험 밖이다.
+    #[test]
+    fn dbg_d2_empty_persisted_session_id_is_filled_by_registration() {
+        use std::sync::atomic::AtomicU64;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-dbgd2c-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("cso".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let sid_of = |d: &std::sync::Arc<crate::state::Daemon>| {
+            crate::governance::load_topology(d)
+                .as_array()
+                .and_then(|a| a.iter().find(|e| e["role"].as_str() == Some("cso")).cloned())
+                .map(|e| e["session_id"].as_str().unwrap_or("").to_string())
+        };
+        // 1차 복원 직후: 핀 None → 빈 값 영속(결함 관측 전제)
+        crate::governance::persist_topology(&daemon);
+        let before = sid_of(&daemon);
+        // 훅 재등록(resume 된 transcript) → 수집 1틱 → 재영속
+        let c = dir.join("cccccccc-0000-4000-8000-0000000000cc.jsonl");
+        std::fs::write(&c, "").unwrap();
+        *s.registered_transcript.lock().unwrap() = Some(c.to_string_lossy().into_owned());
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        crate::governance::persist_topology(&daemon);
+        let after = sid_of(&daemon);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(before.as_deref(), Some(""), "전제: 복원 직후 session_id 가 빈 값으로 영속되지 않았다(측정 전제 불성립)");
+        assert_eq!(
+            after.as_deref(),
+            Some("cccccccc-0000-4000-8000-0000000000cc"),
+            "등록이 도착했는데 topology session_id 가 빈 값으로 남았다 — 2차 재시작이 --continue 로 폴백"
+        );
+    }
 }

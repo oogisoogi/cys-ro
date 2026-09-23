@@ -29035,4 +29035,52 @@ mod tests {
         );
     }
 
+    // ─────────── ★dbg-D2 R12 ②(2026-09-23): init-pack 이 프로필 스킬 링크를 만든다 ───────────
+    /// 갱신 레인 재현: 프로필(settings.json 있음)은 있는데 스킬 링크가 없다(1.0.2→1.1.5 갱신 사용자 ·
+    /// 선언 없이 resume). 앱 갱신이 부르는 `init-pack --no-install-hook` 경로의 배선 함수가 링크를
+    /// 만들어야 한다. 격리 = HOME·CLAUDE_CONFIG_DIR·CYS_ACCOUNT_DIR 전부 target/ 스크래치.
+    #[cfg(unix)]
+    #[test]
+    fn dbg_r12_init_pack_wires_profile_skill_links() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let dir = root.join("target").join(format!("dbg-r12-ip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("pack");
+        std::fs::create_dir_all(pack.join("skills").join("dept-by-chat")).unwrap();
+        std::fs::write(pack.join("skills").join("dept-by-chat").join("SKILL.md"), "x\n").unwrap();
+        std::os::unix::fs::symlink(root.join("cysjavis-pack").join("bin"), pack.join("bin")).unwrap();
+        let home = dir.join("home");
+        let ccd = home.join(".cys").join("claude");
+        std::fs::create_dir_all(ccd.join("skills")).unwrap();
+        std::fs::write(ccd.join("settings.json"), "{}\n").unwrap();
+        let link = ccd.join("skills").join("dept-by-chat");
+        assert!(std::fs::symlink_metadata(&link).is_err(), "전제: 링크 없음(갱신 레인)");
+        let p = |x: &std::path::PathBuf| x.to_string_lossy().into_owned();
+        let rc = super::init_pack_wire_profile_skills(
+            &pack,
+            &[("HOME", p(&home)), ("CLAUDE_CONFIG_DIR", p(&ccd)), ("CYS_ACCOUNT_DIR", p(&ccd))],
+        );
+        let is_link = std::fs::symlink_metadata(&link).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(rc, Some(true), "배선 자식이 성공으로 끝나지 않았다(preflight 부재=None · 실패=false)");
+        assert!(is_link, "init-pack 배선 뒤에도 skills/dept-by-chat 링크가 없다 — 갱신 사용자 Unknown skill 영구");
+    }
+
+    /// 배선 호출이 `run_init_pack` 의 **`no_install_hook` 조기 반환 앞**에 있다(앱 갱신 경로
+    /// `init-pack --no-install-hook` 도 배선을 탄다) — 주석 줄을 걷어낸 본문에서 순서를 잰다.
+    #[test]
+    fn dbg_r12_init_pack_wiring_runs_before_no_install_hook_return() {
+        let src = include_str!("cys.rs");
+        let body_start = src.find("fn run_init_pack(").expect("run_init_pack 부재");
+        let body = &src[body_start..];
+        let body = &body[..body.find("\n}\n").expect("run_init_pack 끝")];
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let call = code.find("init_pack_wire_profile_skills(&dir").expect("run_init_pack 안에 배선 호출이 없다");
+        let early = code.find("if no_install_hook {").expect("no_install_hook 분기 부재");
+        assert!(call < early, "배선 호출이 --no-install-hook 조기 반환 뒤에 있다 — 앱 갱신 경로가 배선을 못 탄다");
+    }
 }

@@ -8094,6 +8094,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn dbg_r12_seat_profile_wired_before_agent_exec() {
+        r12_seat_start_sees_link(false);
+    }
+
+    /// ★R12 보강(master#7517197f · 981 판정): **갱신 레인 → 재부팅 → 복원 좌석**. 프로필은 이미 있고
+    /// (settings.json · 빈 skills) 링크만 없다(1.0.2→1.1.5 갱신 사용자 · 선언 없이 resume). 복원은
+    /// topology 가 기록한 원 config dir 을 override 로 넘겨 같은 합류점을 탄다 — 좌석 시작 순간 링크가 있어야 한다.
+    #[cfg(unix)]
+    #[test]
+    fn dbg_r12_update_lane_restore_seat_gets_link_before_exec() {
+        r12_seat_start_sees_link(true);
+    }
+
+    #[cfg(unix)]
+    fn r12_seat_start_sees_link(update_lane_restore: bool) {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let dir = root.join("target").join(format!(
@@ -8113,7 +8127,12 @@ mod tests {
         let home = dir.join("home");
         std::fs::create_dir_all(&home).unwrap();
         // 신규 설치 상태: 좌석 config dir 은 아직 없다(발견 규약이 「디렉터리 존재」라 이것도 재야 한다).
+        // 갱신 레인: 프로필·settings.json·빈 skills 는 있고 링크만 없다.
         let ccd = home.join(".cys").join("claude");
+        if update_lane_restore {
+            std::fs::create_dir_all(ccd.join("skills")).unwrap();
+            std::fs::write(ccd.join("settings.json"), "{}\n").unwrap();
+        }
         let link = ccd.join("skills").join("dept-by-chat");
         let seen = dir.join("seen");
         let fake = format!(
@@ -8139,8 +8158,9 @@ mod tests {
                 24,
                 80,
                 &env,
-                None,
-                None,
+                // 복원 = topology 가 기록한 원 config dir 을 override 로 넘긴다(restore 경로 모사).
+                if update_lane_restore { Some(p(&ccd)) } else { None },
+                if update_lane_restore { Some("claude".to_string()) } else { None },
             )
             .expect("create surface");
         let t0 = Instant::now();

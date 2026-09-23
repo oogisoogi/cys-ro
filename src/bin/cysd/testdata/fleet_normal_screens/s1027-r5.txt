@@ -1,0 +1,68 @@
+          +", x
+          +x: x
+          +x(0)
+          + }),
+          + x({
+          + xxx
+          +xxxx
+          +: "x
+          +xxx"
+          +, xx
+          +xxxx
+          +x: "
+          +xxxx
+          +x", 
+          +xxxx
+          +: "x
+          +", x
+          +x: x
+          +x(0,
+          + 0) 
+          +})];
+     … 0 xxxx 
+     xxxxx 
+  
+⏺ xxxxxxxxx xxx xxxxxx
+  — xxxxxxxx xxxxxxx
+  xxx xxx xx xxxx
+  xxxxx (xx
+  xxx-xxxxxxxx
+  xxxxxxxxx) xxx
+  xxxxxxxxx xx xxx
+  xxx-xxxxxx xxxxxxxx.
+
+⏺ xxxxxxxxx xxxxxxxxx
+  xxxxxx xx xxxxxxxx
+  ⎿  $ xx /xxxxx/xxxxx
+     xxxx/xxxxx/.xx/xx
+     x-xxxx-xx/xx; 
+     xxxxxx 
+     xxxx="$xxxx/.xxx/
+     xxx:$xxxx"; xxx 
+     xxx xxxxxxxxx 
+     0>&0 | xxxx -x 
+     'xxxxx xx' | xxx 
+     'x/(.*//' | xxxx 
+     | xxxx -x; xxx 
+     xxx xxxxxxxxx 
+     0>&0 | xxxx -x 
+     'xxxx|xxxx\.xx' |
+     xxxx; xxx xxxxx 
+     xxxx -x -x 
+     x0-xx-xxxxxxxx --
+     xxx/xxxxxxxxx.xx
+     xxx/xxxx.xx 
+     xxx/xxxxx.xx…
+
+✳ xxxxxxxxxx… 
+  ⎿  xxx: xxx /xxxxx 
+     xx xxxxx xxxxx 
+     xxxx xxxxxxxxx 
+     xxxxxx xxx xxxx 
+     xx xxxxxxx
+
+──────────────────────
+❯ 
+──────────────────────
+
+  ⏵⏵ xxxxxx       · 

@@ -5374,8 +5374,11 @@ pub(crate) fn is_rule_row(row: &str) -> bool {
 ///
 /// ★판독 재료는 **두 출처**이고, 둘을 묶는 곳은 이 함수 하나다(1.1.6 ⓑ · master 결정 2026-09-23):
 ///   ⑴ 어댑터 `approval_patterns`(`merged_approval_patterns` — 디스크 우선 · 임베드는 새 이름만 보강).
-///   ⑵ 첫기동 관문 코퍼스의 **폴더 신뢰** 관문(`trust_gate` — `trust_gate_cached` 가 해소 · 매칭은 코퍼스가
-///      소유한 `Gate::matches` = needle OR ∧ 위젯 서명 AND).
+///   ⑵ 첫기동 관문 코퍼스 **전 관문**(`gates` — `gate_corpus_cached` 가 해소 · 식별은 코퍼스가 소유한
+///      `first_run_gates::identify` = 관문별 needle OR ∧ 위젯 서명 AND). 처음엔 폴더 신뢰 하나였고
+///      (1.1.6 ⓑ), master#1ac43f0c ① 로 전 관문이 됐다 — 면책 창(기본 포커스 `No, exit` → Return = rc 1)·
+///      테마·신기능 안내 창에 큐·강제 배달이 들어가지 않게. 관문 스캐너 feed 와 달리 화면 무상태라 관측 창이
+///      닫힌 뒤에도 막는다. 오탐 실측 = 실제 좌석 정상 화면 표본 `testdata/fleet_normal_screens/` 적중 0.
 ///   ⑵가 있는 이유: ⑴의 `trust-prompt`(구 문면 `Do you trust the files in this folder`)는 claude
 ///   2.1.236~280 실측 신뢰 창 문면과 맞지 않는다. 그 문면을 ⑴에 더하는 길은 두 번 막혀 있다 —
 ///   ⒜ agents.json 은 사용자 소유라(H-DELIVER-1) 새 문면이 **새 설치에만** 닿는다(기존 기계는 디스크의 옛
@@ -5390,7 +5393,7 @@ pub(crate) fn approval_in_prompt_tail(
     cursor_row: usize,
     marker: &str,
     patterns: &[regex::Regex],
-    trust_gate: Option<&cys::first_run_gates::Gate>,
+    gates: &[cys::first_run_gates::Gate],
 ) -> bool {
     let region = match rows.iter().rposition(|r| is_rule_row(r)) {
         Some(last_rule) => &rows[last_rule + 1..],
@@ -5401,53 +5404,51 @@ pub(crate) fn approval_in_prompt_tail(
             rows
         }
         // ★(r2 · Fable 2R B) 2.1.280 신뢰 창 선택지는 **번호가 없다**(`❯ No, exit`) — 윗 가로줄이 밀려난
-        //   화면(창보다 낮은 페인)에서 위 폴백이 안 서서 ⑵가 눈이 멀었다. 폴더 신뢰 선택지 라벨에 `❯` 가
-        //   걸린 행이 있으면 전량을 읽는다(판정은 여전히 `Gate::matches` = needle ∧ 위젯 AND).
-        None if trust_gate
-            .is_some_and(|g| rows.iter().any(|r| is_gate_option_row(r, marker, g))) =>
+        //   화면(창보다 낮은 페인)에서 위 폴백이 안 서서 ⑵가 눈이 멀었다. 관문 선택지 라벨(`options`)에 `❯` 가
+        //   걸린 행이 있으면 전량을 읽는다(판정은 여전히 `identify` = needle ∧ 위젯 AND).
+        None if gates
+            .iter()
+            .any(|g| rows.iter().any(|r| is_gate_option_row(r, marker, g))) =>
         {
             rows
         }
         None => return false,
     };
     let text = region.join("\n");
-    patterns.iter().any(|re| re.is_match(&text)) || trust_gate.is_some_and(|g| g.matches(&text))
+    patterns.iter().any(|re| re.is_match(&text))
+        || cys::first_run_gates::identify(gates, &text).is_some()
 }
 
-/// 승인 축 ⑵ 재료 — 이 어댑터의 관문 코퍼스 해소본에서 **폴더 신뢰** 관문 하나(`approval_in_prompt_tail`
-/// doc 의 두 출처 참조). 관문 스캐너와 같은 봉투 규칙(`gate_envelope` — 디스크에 키가 있으면 디스크 ·
+/// 승인 축 ⑵ 재료 — 이 어댑터의 관문 코퍼스 해소본 **전 관문**(`approval_in_prompt_tail` doc 의 두 출처
+/// 참조). 관문 스캐너와 같은 봉투 규칙(`gate_envelope` — 디스크에 키가 있으면 디스크 ·
 /// 없으면 임베드)·같은 해소(`resolve_with` · override 스위치)를 쓴다. 봉투를 선언하지 않은 어댑터
 /// (codex·gemini·grok)는 `None` — 스캐너의 `declared` 조건과 같다(코퍼스 문면은 claude 실측이다).
 ///
 /// 해소본은 한 칸 캐시에 둔다(키 = override 스위치 + 봉투 전문 = `resolve_with` 입력 전량 · 적중 시 할당
 /// 없음). 봉투를 선언하는 어댑터는 claude 하나라 칸은 사실상 늘 적중한다. 해소 사유(notes)는 여기서
 /// 발행하지 않는다 — 같은 입력의 사유는 관문 스캐너(`ScanCaches::corpus`)가 1회 발행한다.
-fn trust_gate_cached(
+fn gate_corpus_cached(
     disk: &serde_json::Value,
     embed: &serde_json::Value,
     agent: &str,
-) -> Option<Arc<cys::first_run_gates::Gate>> {
+) -> Option<Arc<Vec<cys::first_run_gates::Gate>>> {
     type Slot = Option<(
         bool,
         serde_json::Value,
-        Option<Arc<cys::first_run_gates::Gate>>,
+        Arc<Vec<cys::first_run_gates::Gate>>,
     )>;
     static SLOT: std::sync::Mutex<Slot> = std::sync::Mutex::new(None);
     let envelope = gate_envelope(disk, embed, agent)?;
     let override_on = cys::first_run_gates::override_enabled();
     let mut slot = SLOT.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((o, env, gate)) = slot.as_ref() {
+    if let Some((o, env, gates)) = slot.as_ref() {
         if *o == override_on && env == envelope {
-            return gate.clone();
+            return Some(gates.clone());
         }
     }
-    let gate = cys::first_run_gates::resolve_with(Some(envelope), override_on)
-        .gates
-        .into_iter()
-        .find(|g| g.id == cys::inject_guard::GATE_FOLDER_TRUST)
-        .map(Arc::new);
-    *slot = Some((override_on, envelope.clone(), gate.clone()));
-    gate
+    let gates = Arc::new(cys::first_run_gates::resolve_with(Some(envelope), override_on).gates);
+    *slot = Some((override_on, envelope.clone(), gates.clone()));
+    Some(gates)
 }
 
 /// approval 패턴 컴파일본 캐시(프로세스 수명 · 패턴 **문자열**이 키). 같은 문자열의 `Regex` 는 결정론이라
@@ -5491,7 +5492,8 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
         .filter_map(approval_regex_cached)
         .collect();
     let marker = merged_ready_marker(&disk, &embed, &agent);
-    let trust = trust_gate_cached(&disk, &embed, &agent);
+    let corpus = gate_corpus_cached(&disk, &embed, &agent);
+    let gates = corpus.as_deref().map_or(&[][..], Vec::as_slice);
     let (rows, cursor_row) = {
         let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
         let screen = p.screen();
@@ -5500,8 +5502,8 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
         (rows, usize::from(screen.cursor_position().0))
     };
     match marker {
-        Some(m) => approval_in_prompt_tail(&rows, cursor_row, &m, &res, trust.as_deref()),
-        None => approval_in_prompt_tail(&rows, usize::MAX, "", &res, trust.as_deref()),
+        Some(m) => approval_in_prompt_tail(&rows, cursor_row, &m, &res, gates),
+        None => approval_in_prompt_tail(&rows, usize::MAX, "", &res, gates),
     }
 }
 
@@ -6293,7 +6295,8 @@ fn deliver_queued(
                 }),
             );
             // ★dbg-queue-approval: 승인 축 = 관문 feed ∨ 도구 허락 창 화면(어댑터 approval_patterns ∨
-            //   관문 코퍼스 폴더 신뢰 · 마지막 가로줄 아래 꼬리 — 두 출처는 approval_in_prompt_tail doc). 매 틱 화면에서 다시 읽는다 — 저장 상태가 없어 창이 닫히는
+            //   관문 코퍼스 전 관문 · 마지막 가로줄 아래 꼬리 — 두 출처는 approval_in_prompt_tail doc).
+            //   매 틱 화면에서 다시 읽는다 — 저장 상태가 없어 창이 닫히는
             //   다음 틱에 저절로 풀린다(막힌 자리가 영영 안 풀리는 교착 없음).
             let approval_screen = match (s.agent_meta.lock().unwrap().clone(), adapters.as_ref()) {
                 (Some((agent, _)), Some((disk, embed))) => {
@@ -6302,14 +6305,9 @@ fn deliver_queued(
                         .filter_map(|p| p["pattern"].as_str())
                         .filter_map(approval_regex_cached)
                         .collect();
-                    let trust = trust_gate_cached(disk, embed, &agent);
-                    approval_in_prompt_tail(
-                        &screen_rows,
-                        cursor_row,
-                        marker,
-                        &res,
-                        trust.as_deref(),
-                    )
+                    let corpus = gate_corpus_cached(disk, embed, &agent);
+                    let gates = corpus.as_deref().map_or(&[][..], Vec::as_slice);
+                    approval_in_prompt_tail(&screen_rows, cursor_row, marker, &res, gates)
                 }
                 _ => false,
             };
@@ -9503,9 +9501,9 @@ mod tests {
     // ─────────── ★B1(0.14.30): 프롬프트 경계 준비판정 — 순수 판정자 핀 ───────────
 
     use super::{
-        alt_screen_blocks, approval_in_prompt_tail, empty_line_block_reason, input_line_state,
-        is_numbered_choice_row, is_rule_row, prompt_boundary_verdict, queue_starve_alert_secs,
-        trust_gate_cached, InputLine, PromptBoundary, PromptLine,
+        alt_screen_blocks, approval_in_prompt_tail, empty_line_block_reason, gate_corpus_cached,
+        input_line_state, is_numbered_choice_row, is_rule_row, prompt_boundary_verdict,
+        queue_starve_alert_secs, InputLine, PromptBoundary, PromptLine,
     };
     use std::sync::atomic::Ordering;
 
@@ -10082,7 +10080,7 @@ mod tests {
 
     /// ⓑ(1.1.6 · master 결정) 기존 기계 재현: 사용자 소유 agents.json 의 `trust-prompt` 가 **옛 문면뿐**이다
     ///    (디스크가 동명 임베드를 이긴다 — H-DELIVER-1). 그래도 2.1.280 신뢰 창에서 큐 배달은 보류되고
-    ///    강제 배달은 거부된다 — 승인 축 ⑵(관문 코퍼스 폴더 신뢰)가 닿기 때문이다. 관문 feed 는 이 틱에
+    ///    강제 배달은 거부된다 — 승인 축 ⑵(관문 코퍼스 — 여기선 폴더 신뢰 관문)가 닿기 때문이다. 관문 feed 는 이 틱에
     ///    없다(`qa_tick` 은 배달자만 돈다) — 막는 것은 화면 축뿐이다.
     #[test]
     fn qa_folder_trust_blocks_even_with_user_owned_old_trust_pattern() {
@@ -10114,12 +10112,84 @@ mod tests {
         assert!(matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)));
     }
 
-    /// ⓑ 두 출처 묶음(순수): ⑴ 어댑터 approval_patterns ⑵ 관문 코퍼스 폴더 신뢰 — 출처별 책임과 공통 판독 범위.
+    /// ①(master#1ac43f0c) **오탐 실측 고정** — 실제 함대 좌석의 정상 화면 표본(`testdata/fleet_normal_screens/`
+    ///    · 2026-09-24 `cys read-screen` 채집 · 7좌석 × 6회 · 유휴 입력창·작업 중 스피너·긴 출력·제안 글 등)에서
+    ///    승인 축 ⑵(코퍼스 전 관문 `identify`)가 한 번도 서지 않는다. 다른 좌석의 작업 글은 저장소에 싣지 않으려
+    ///    글자를 가렸다(`x`·숫자 `0` · 관문 문면·가로줄·마커는 보존 — 도구 `tools/fleet-mask.py`). 가림 전 원본에도
+    ///    같은 시험을 `CYS_FLEET_SCREENS_DIR=<원본 폴더>` 로 돌려 같은 결과(적중 0)를 확인했다(보고서 §12).
+    ///    커서 행은 「없음 + 모든 행」으로 돌려 번호 선택지 폴백까지 최악을 잰다.
+    #[test]
+    fn qa_fleet_normal_screens_never_read_as_gate() {
+        let dir = std::env::var("CYS_FLEET_SCREENS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("src/bin/cysd/testdata/fleet_normal_screens")
+            });
+        let gates = cys::first_run_gates::builtin();
+        let mut n = 0;
+        let mut whole_screen_hits = Vec::new();
+        for e in std::fs::read_dir(&dir).expect("표본 폴더") {
+            let p = e.unwrap().path();
+            if p.extension().and_then(|x| x.to_str()) != Some("txt") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap();
+            let rows: Vec<String> = text.lines().map(String::from).collect();
+            n += 1;
+            for cur in std::iter::once(usize::MAX).chain(0..rows.len()) {
+                assert!(
+                    !approval_in_prompt_tail(&rows, cur, "❯", &[], &gates),
+                    "{}: 정상 화면이 관문으로 읽혔다(커서 행 {cur})",
+                    p.display()
+                );
+            }
+            // 참고 계측(판정 아님): 판독 범위 없이 화면 **전량**에 identify 를 걸면 몇 장이 서는가 — 범위가
+            // 왜 필요한지의 증거. `--nocapture` 로 본다.
+            if let Some(g) = cys::first_run_gates::identify(&gates, &text) {
+                whole_screen_hits.push(format!("{} → {}", p.display(), g.id));
+            }
+        }
+        eprintln!(
+            "[fleet] 표본 {n}장 · 전량 identify 적중 {} {:?}",
+            whole_screen_hits.len(),
+            whole_screen_hits
+        );
+        assert!(n >= 30, "표본 {n}장 < 30(master 조건)");
+    }
+
+    /// ①(master#1ac43f0c) 전 관문: 면책 창(기본 포커스 `No, exit` → Return = rc 1)에도 큐 배달은 보류되고
+    ///    강제 배달은 거부된다 — 관문 feed 없이(`qa_tick` 은 배달자만) 화면 축 ⑵(코퍼스 `identify`)만으로.
+    #[test]
+    fn qa_bypass_disclaimer_window_blocks_queue_and_force() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-disclaimer");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let raw = cys::first_run_gates::fixtures::TRUST_ECHO_THEN_DISCLAIMER.replace('\n', "\r\n");
+        let (daemon, s) = qa_fixture_seat("qa-disclaimer", raw.as_bytes());
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            1,
+            "면책 창에 큐 배달했다"
+        );
+        assert!(
+            qa_blocked_reason(&s).starts_with("approval_pending"),
+            "{}",
+            qa_blocked_reason(&s)
+        );
+        let r = super::force_deliver_entry(&daemon, &s, None, false);
+        assert!(matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)));
+    }
+
+    /// ⓑ 두 출처 묶음(순수): ⑴ 어댑터 approval_patterns ⑵ 관문 코퍼스(전 관문) — 출처별 책임과 공통 판독 범위.
     #[test]
     fn qa_approval_tail_binds_adapter_patterns_and_trust_corpus() {
         use cys::first_run_gates::fixtures::FOLDER_TRUST_2_1_280;
         let gates = cys::first_run_gates::builtin();
-        let trust = gates.iter().find(|g| g.id == "folder-trust").unwrap();
         let old = vec![regex::Regex::new("Do you trust the files in this folder").unwrap()];
         let rows = |t: &str| t.lines().map(String::from).collect::<Vec<_>>();
         let cursor =
@@ -10127,29 +10197,17 @@ mod tests {
         let trust_rows = rows(FOLDER_TRUST_2_1_280);
         let c = cursor(&trust_rows, "❯ No, exit");
         // 대조군: 옛 문면(⑴)만으로는 2.1.280 신뢰 창을 못 본다 — 기존 기계의 결손 그 자체.
-        assert!(!approval_in_prompt_tail(&trust_rows, c, "❯", &old, None));
+        assert!(!approval_in_prompt_tail(&trust_rows, c, "❯", &old, &[]));
         // ⑵가 그 결손을 메운다.
-        assert!(approval_in_prompt_tail(
-            &trust_rows,
-            c,
-            "❯",
-            &old,
-            Some(trust)
-        ));
-        assert!(approval_in_prompt_tail(
-            &trust_rows,
-            c,
-            "❯",
-            &[],
-            Some(trust)
-        ));
+        assert!(approval_in_prompt_tail(&trust_rows, c, "❯", &old, &gates));
+        assert!(approval_in_prompt_tail(&trust_rows, c, "❯", &[], &gates));
         // 판독 범위는 ⑵에도 똑같다: 입력창 위 본문에 같은 창 문면이 있어도 마지막 가로줄 아래가 상태줄뿐이면 false.
         let rule = "─".repeat(40);
         let body = rows(&format!(
             "{FOLDER_TRUST_2_1_280}{rule}\n❯ \n{rule}\n  ? for shortcuts"
         ));
         let c = body.iter().rposition(|l| l.trim() == "❯").unwrap();
-        assert!(!approval_in_prompt_tail(&body, c, "❯", &[], Some(trust)));
+        assert!(!approval_in_prompt_tail(&body, c, "❯", &[], &gates));
         // 윗 가로줄이 밀려난 2.1.280 신뢰 창(번호 없는 선택지): 선택지 라벨 포커스 행으로 전량을 읽는다
         // (Fable 2R B). 커서 행은 무관(번호 선택지 폴백과 다른 조건) · ⑵ 없으면 종전대로 판단하지 않는다.
         let no_rule: Vec<String> = trust_rows
@@ -10163,14 +10221,14 @@ mod tests {
             usize::MAX,
             "❯",
             &[],
-            Some(trust)
+            &gates
         ));
         assert!(!approval_in_prompt_tail(
             &no_rule,
             usize::MAX,
             "❯",
             &old,
-            None
+            &[]
         ));
         // 선택지 행이 없으면(가로줄도 없음) ⑵가 있어도 판단하지 않는다 — 답 본문 인용 기아 방지.
         let no_focus: Vec<String> = no_rule.iter().map(|r| r.replace('❯', " ")).collect();
@@ -10179,7 +10237,7 @@ mod tests {
             usize::MAX,
             "❯",
             &[],
-            Some(trust)
+            &gates
         ));
         // 선택지 라벨은 **완전 일치**만 — 라벨을 품은 다른 줄(셸 명령·답 본문)로는 전량 판독이 열리지 않는다
         // (가로줄 없는 화면의 기아 방지 · N22 킬). 창 문면을 인용한 본문 + `❯ grep 'No, exit' …` 줄 → false.
@@ -10190,7 +10248,7 @@ mod tests {
             usize::MAX,
             "❯",
             &[],
-            Some(trust)
+            &gates
         ));
         // 좁은 폭에서 질문문이 어절 단위로 접혀도 ⑵는 잡는다(`Gate::matches` = 공백 정규화·제거본 — r2 성찰 D).
         let wrapped = rows(&FOLDER_TRUST_2_1_280.replace(
@@ -10202,33 +10260,56 @@ mod tests {
             "픽스처 전제: 접힌 판이 만들어지지 않았다"
         );
         let c = cursor(&wrapped, "❯ No, exit");
-        assert!(approval_in_prompt_tail(&wrapped, c, "❯", &[], Some(trust)));
+        assert!(approval_in_prompt_tail(&wrapped, c, "❯", &[], &gates));
+        // ① 전 관문: 면책 창(확인 에코 잔상 뒤 가로줄 아래) · 테마 창도 ⑵가 잡는다 — 폴더 신뢰만이 아니다.
+        use cys::first_run_gates::fixtures::{THEME, TRUST_ECHO_THEN_DISCLAIMER};
+        let disc = rows(TRUST_ECHO_THEN_DISCLAIMER);
+        assert!(approval_in_prompt_tail(&disc, usize::MAX, "❯", &[], &gates));
+        let only_trust: Vec<_> = gates
+            .iter()
+            .filter(|g| g.id == "folder-trust")
+            .cloned()
+            .collect();
+        assert!(
+            !approval_in_prompt_tail(&disc, usize::MAX, "❯", &[], &only_trust),
+            "대조군: 폴더 신뢰 하나로는 면책 창을 못 본다(① 이전의 결손)"
+        );
+        let theme = rows(&format!("{rule}\n{THEME}"));
+        assert!(approval_in_prompt_tail(
+            &theme,
+            usize::MAX,
+            "❯",
+            &[],
+            &gates
+        ));
         // ⑵는 도구 허락 창을 대신 잡지 않는다(그것은 ⑴의 몫) — 위젯 문면(`Esc to cancel`)이 겹쳐도 needle 이 없다.
         let perm = rows(&format!(
             "{rule}\n Bash command\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel"
         ));
-        assert!(!approval_in_prompt_tail(&perm, 3, "❯", &[], Some(trust)));
+        assert!(!approval_in_prompt_tail(&perm, 3, "❯", &[], &gates));
     }
 
     /// ⓑ 코퍼스 캐시는 봉투가 바뀌면 다시 해소한다(한 칸 캐시의 키 = override 스위치 + 봉투 전문) ·
     ///    봉투를 선언하지 않은 어댑터는 ⑵가 없다(관문 스캐너의 `declared` 조건과 같다).
     #[test]
-    fn trust_gate_cached_rekeys_on_envelope_change_and_skips_undeclared() {
+    fn gate_corpus_cached_rekeys_on_envelope_change_and_skips_undeclared() {
         let embed = serde_json::json!({});
         let env_of = |needle: &str| {
             serde_json::json!({"claude": {"first_run_gates": {"gates": [
                 {"id": "folder-trust", "needles": [needle]}
             ]}}})
         };
-        let a = trust_gate_cached(&env_of("Alpha trust question?"), &embed, "claude").unwrap();
+        let a = gate_corpus_cached(&env_of("Alpha trust question?"), &embed, "claude").unwrap();
+        let a = a.iter().find(|g| g.id == "folder-trust").unwrap();
         assert_eq!(a.needles, vec!["Alpha trust question?".to_string()]);
-        let b = trust_gate_cached(&env_of("Beta trust question?"), &embed, "claude").unwrap();
+        let b = gate_corpus_cached(&env_of("Beta trust question?"), &embed, "claude").unwrap();
+        let b = b.iter().find(|g| g.id == "folder-trust").unwrap();
         assert_eq!(
             b.needles,
             vec!["Beta trust question?".to_string()],
             "봉투가 바뀌었는데 옛 해소본"
         );
-        assert!(trust_gate_cached(&serde_json::json!({"codex": {}}), &embed, "codex").is_none());
+        assert!(gate_corpus_cached(&serde_json::json!({"codex": {}}), &embed, "codex").is_none());
     }
 
     /// ⓪ 순수 판정자: 마지막 가로줄 **아래**만 본다 · 가로줄이 없으면 판단하지 않는다(false).
@@ -10250,7 +10331,7 @@ mod tests {
             4,
             "❯",
             &re,
-            None
+            &[]
         ));
         // 입력창 위 본문의 같은 문장: 마지막 가로줄 아래는 상태줄뿐.
         assert!(!approval_in_prompt_tail(
@@ -10264,7 +10345,7 @@ mod tests {
             2,
             "❯",
             &re,
-            None
+            &[]
         ));
         // 가로줄이 밀려난 긴 허락 창: 커서 행이 번호 선택지면 전량을 본다.
         assert!(approval_in_prompt_tail(
@@ -10277,7 +10358,7 @@ mod tests {
             2,
             "❯",
             &re,
-            None
+            &[]
         ));
         // 가로줄이 없고 커서 행이 선택지가 아니면 판단하지 않는다(가로줄 없는 어댑터 기아 방지).
         assert!(!approval_in_prompt_tail(
@@ -10285,7 +10366,7 @@ mod tests {
             1,
             "? for shortcuts",
             &re,
-            None
+            &[]
         ));
         // 패턴이 없으면 false.
         assert!(!approval_in_prompt_tail(
@@ -10293,7 +10374,7 @@ mod tests {
             1,
             "❯",
             &[],
-            None
+            &[]
         ));
         // 선택지 판별: 마커 뒤 숫자+점만.
         assert!(is_numbered_choice_row(" ❯ 12. Yes", "❯"));

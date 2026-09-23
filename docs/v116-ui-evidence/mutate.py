@@ -76,6 +76,7 @@ M=[
  ('M17c','src/wsusage.ts','    if (showSocket && !r.name && r.socket !== last) {','    if (showSocket && r.socket !== last) {','src/ctxgroup.test.ts'),
  ('M17d','src/main.ts','  return ws ? wsLabel(ws) : (deptNameFromSocket(socket)','  return ws ? String(ws.name) : (deptNameFromSocket(socket)','src/ctxgroup.test.ts'),
  ('M18a','src/main.ts','  noLabel = "취소",\n): Promise<boolean> {','  noLabel = "아니오",\n): Promise<boolean> {','src/confirmlabel.test.ts'),
+ ('M15k','src/alertcopy.ts','  const prev = prevNo != null ? seatName(prevNo, null, p.dept) : "옛 창";','  const prev = prevNo != null ? `${prevNo}번 창` : "옛 창";','src/alertcopy.test.ts'),
  ('M3a','src/main.ts','    top.style.flex = "";\n','','src/closeguard.test.ts'),
  ('M3b','src/main.ts','    top.style.flex = "";\n','    if (tree.type !== "pane") top.style.flex = "";\n','src/closeguard.test.ts'),
  ('M4a','index.html','    <button id="btn-close"','    <button id="btn-new" title="새 surface (⌘T)">+ New</button>\n    <button id="btn-close"','src/closeguard.test.ts'),

@@ -96,6 +96,7 @@ describe("D4 #8 도우미", () => {
   });
   it("(Fable MINOR-3) 부서 이벤트 = 부서 이름을 앞에 · (MINOR-2) 방치 승인은 관측 번호(surface_ref)", () => {
     expect(seatName(3, "worker", "영업부")).toBe("영업부 3번 작업 창");
+    expect(roleTakeoverCopy(7, { role: "master", dept: "영업부" }).body.startsWith("영업부 7번 창이 비어")).toBe(true); // agy 4R MINOR
     expect(agentExitedCopy(3, { role: "worker", dept: "영업부" }).body.startsWith("영업부 3번 작업 창의")).toBe(true);
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     expect(main).toContain("approvalStalledCopy(seatNo(null, payload.surface_ref), ap)");

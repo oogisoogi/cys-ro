@@ -860,13 +860,15 @@ const EXIT_QUEUE_GATE_REFUSED: i32 = 7;
 /// 목록 밖(대상/항목 없음·경합·통신 오류)은 전부 일반 오류(1)다(fail-closed 아님: 거부는
 /// 데몬이 이미 확정했고 여기는 표기 층 분류만 한다).
 fn queue_deliver_exit_code(err: &str) -> i32 {
-    const GATE_CODES: [&str; 6] = [
+    const GATE_CODES: [&str; 7] = [
         "paused",
         "acl_denied",
         "empty_seat",
         "typing_guard",
         "queue_paused",
         "output_busy",
+        // 1.1.6 dbg-queue-approval: 좌석이 도구 허락 창을 띄운 중(강제 배달의 Return = 승인).
+        "approval_pending",
     ];
     if GATE_CODES.iter().any(|c| err.starts_with(&format!("{c}:"))) {
         EXIT_QUEUE_GATE_REFUSED
@@ -9598,8 +9600,9 @@ fn trust_prompt_regex(spec: &Value) -> Option<regex::Regex> {
 ///   `confirm_echo` 로 분리돼 "needle 이 어떤 에코에도 포함되지 않는다"는 불변식 검체가
 ///   그 형태를 구조적으로 금지한다. 그래서 사본을 새로 만들지 않고 그 정본을 읽는다(S-1 차단).
 ///   ★구 하드코딩 needle 은 **삭제가 아니라 롤백 분기로 격하**된다(`CYS_TRUST_RETURN_V1=1`):
-///     실측상 선언 패턴(`Do you trust the files in this folder`)은 claude 2.1.236~241 어디에도
-///     없으므로, 감지 폭이 예상 밖으로 좁아졌을 때 되돌릴 손잡이를 남겨 둔다. 되돌려도 킬체인은
+///     실측상 선언 패턴의 구 문면(`Do you trust the files in this folder`)은 claude 2.1.236~280
+///     어디에도 없으므로(1.1.6 에 실측 문면 `Is this a project you created or one you trust` 를
+///     선언에 더했다), 감지 폭이 예상 밖으로 좁아졌을 때 되돌릴 손잡이를 남겨 둔다. 되돌려도 킬체인은
 ///     열리지 않는다 — 전송은 1발 래치와 화면 재확인(U-14 축)이 따로 막는다.
 fn trust_prompt_hit(
     re: Option<&regex::Regex>,
@@ -9618,6 +9621,96 @@ fn trust_prompt_hit(
         return true;
     }
     legacy_v1 && (delta_flat.contains("trustthisfolder") || delta_flat.contains("Doyoutrust"))
+}
+
+/// 폴더신뢰 선택지 이동 아래키 총상한(한 기동당). 계획은 매번 **지금 화면**에서 다시 세우므로 정상은
+/// 1번(2.1.280)이면 끝나고, 렌더 지연·되감김으로 계획이 헛돌 때 무한 아래키를 끊는 천장이다.
+/// (BUDGET_ 파리티 블록 밖 — 시간 예산이 아니라 키 개수 상한이다.)
+const TRUST_NAV_MAX_PRESSES: u32 = 4;
+/// 아래키 뒤 화면 재독 전 대기(ms) — 선택 메뉴 재그리기 여유.
+const TRUST_NAV_SETTLE_MS: u64 = 400;
+/// 아래키 1회 묶음 뒤 재독 상한 — 화면이 **바뀌고 2회 연속 같아질**(안정) 때까지 다시 누르지 않고 읽기만 한다.
+const TRUST_NAV_REREAD_MAX: u32 = 6;
+
+/// ★(1.1.6 dbg-queue-approval) 폴더신뢰 창에서 **목표 라벨(`Yes, I trust this folder`)에 포커스가
+/// 있음을 화면으로 확인**한다 — 필요하면 아래키로 옮기고 다시 읽는다. `true` 일 때만 호출부가 Return 을
+/// 보낸다. 종전엔 기본 포커스를 가정하고 Return 1발을 보냈는데, claude 2.1.280 은 기본 포커스가
+/// `No, exit` 라 그 Return 이 좌석을 죽인다(실측 2026-09-23 · `Gate::focus_plan` doc).
+/// 판정 불가·상한 초과는 `false`(아무것도 누르지 않음 · fail-closed — 좌석 폴더 신뢰 시드가 주 경로).
+fn trust_focus_confirm(
+    sid: u64,
+    gates: &[cys::first_run_gates::Gate],
+    screen_now: &str,
+    nav_presses: &mut u32,
+) -> Result<bool, String> {
+    trust_focus_confirm_with(
+        gates,
+        screen_now,
+        nav_presses,
+        || {
+            request(
+                "surface.send_key",
+                json!({"surface_id": sid, "key": "Down", "authoritative": true}),
+            )
+            .map(|_| ())
+        },
+        || {
+            std::thread::sleep(std::time::Duration::from_millis(TRUST_NAV_SETTLE_MS));
+            let fresh = request("surface.read_text", json!({"surface_id": sid}))?;
+            Ok(fresh["text"].as_str().unwrap_or("").to_string())
+        },
+    )
+}
+
+/// `trust_focus_confirm` 의 본체(소켓 무관 · 키 전송·화면 재독을 주입받는다 — 시험이 이 경로를 돈다).
+fn trust_focus_confirm_with(
+    gates: &[cys::first_run_gates::Gate],
+    screen_now: &str,
+    nav_presses: &mut u32,
+    mut press_down: impl FnMut() -> Result<(), String>,
+    mut reread: impl FnMut() -> Result<String, String>,
+) -> Result<bool, String> {
+    use cys::first_run_gates::FocusPlan;
+    let Some(g) = gates
+        .iter()
+        .find(|g| g.id == cys::inject_guard::GATE_FOLDER_TRUST)
+    else {
+        return Ok(false);
+    };
+    let mut screen = screen_now.to_string();
+    loop {
+        match g.focus_plan(&screen) {
+            FocusPlan::AtTarget => return Ok(true),
+            FocusPlan::Hold => return Ok(false),
+            FocusPlan::Down(n) => {
+                if *nav_presses + u32::from(n) > TRUST_NAV_MAX_PRESSES {
+                    return Ok(false);
+                }
+                for _ in 0..n {
+                    press_down()?;
+                    *nav_presses += 1;
+                }
+                // ★(Fable 1R) 누른 뒤에는 **더 누르지 않고** 화면이 바뀌어 2회 연속 같아질 때까지 읽기만
+                //   한다. 옛 프레임을 읽고 다시 누르면(렌더 지연) 순환 메뉴에서 포커스가 되감긴 채 그 다음
+                //   프레임(목표)을 읽어 Return 이 엉뚱한 항목에 갈 수 있다. 안정되지 않으면 보류.
+                let before = std::mem::take(&mut screen);
+                let mut last = reread()?;
+                let mut reads = 1;
+                loop {
+                    if reads >= TRUST_NAV_REREAD_MAX {
+                        return Ok(false);
+                    }
+                    let next = reread()?;
+                    reads += 1;
+                    if last != before && next == last {
+                        break;
+                    }
+                    last = next;
+                }
+                screen = last;
+            }
+        }
+    }
 }
 
 /// agents.json에서 어댑터 스펙 로드
@@ -10696,13 +10789,17 @@ fn boot_agent_on_surface(
     //   롤백 스위치(`CYS_TRUST_RETURN_V1=1`) 분기의 실사용 입력으로 남긴다 — 그 사유는
     //   `trust_send` 의 doc('죽은 코드를 남길지 지울지' 명시 결정)에 적혀 있다.
     let mut trust_sends: u32 = 0;
+    // 폴더신뢰 선택지 이동 아래키 누적(1.1.6 dbg-queue-approval · 상한 TRUST_NAV_MAX_PRESSES).
+    let mut trust_nav_presses: u32 = 0;
+    let mut trust_hold_logged = false; // 포커스 미확인 보류 로그는 1회(매 틱 반복 금지 · Fable 1R)
     let mut trust_seen_at: Option<u64> = None; // 프롬프트를 관측한 시점의 델타 커서
     // 롤백 스위치는 루프 밖에서 1회만 읽는다(env 1지점 규약 — 판정 중 값이 바뀌지 않는다).
     let trust_v1 = cys::inject_guard::trust_v1();
     if trust_v1 {
         eprintln!(
             "[launch-agent] ⚠ {}=1 — 폴더신뢰 Return 을 종전 정책(하드코딩 needle 감지 + 재전송 \
-             상한 {BUDGET_TRUST_MAX_SENDS}발)으로 되돌렸다",
+             상한 {BUDGET_TRUST_MAX_SENDS}발)으로 되돌렸다 · 화면 포커스 확인(1.1.6)과 다른 관문 차단은 \
+             되돌리지 않는다(스위치 1개 = 축 1개)",
             cys::inject_guard::ENV_TRUST_V1
         );
     }
@@ -10769,7 +10866,18 @@ fn boot_agent_on_surface(
                 other_gate,
                 legacy_v1: trust_v1,
             });
-            if send {
+            // ★(1.1.6 dbg-queue-approval) 기본 포커스를 가정하지 않는다 — 목표 라벨 포커스를 화면으로
+            //   확인한 뒤에만 Return(못 고르면 보류 · 다음 틱 재계획 · 아래키 총상한).
+            let focused =
+                send && trust_focus_confirm(sid, &gate_corpus.gates, text, &mut trust_nav_presses)?;
+            if send && !focused && !trust_hold_logged {
+                trust_hold_logged = true;
+                eprintln!(
+                    "[launch-agent] folder-trust 목표 라벨(Yes, I trust this folder) 포커스를 화면에서 \
+                     확인하지 못했다 — Return 보류(fail-closed · 아래키 {trust_nav_presses}/{TRUST_NAV_MAX_PRESSES})"
+                );
+            }
+            if focused {
                 eprintln!(
                     "[launch-agent] folder-trust prompt {} → confirm ({}발째 · 상한 {})",
                     if first { "detected(new output)" } else { "persisted" },
@@ -19748,7 +19856,7 @@ mod tests {
     }
 
     /// ★G1(W2-E) queue.deliver 게이트 exit 계약 핀 — [성찰 BLOCKER: 설계 원문의 exit 2 는
-    /// clap 사용오류(2)와 충돌 → 7 계열로 확정] 게이트 거부 6코드 = exit 7(예약 {0,1,2,64}
+    /// clap 사용오류(2)와 충돌 → 7 계열로 확정] 게이트 거부 7코드 = exit 7(예약 {0,1,2,64}
     /// 비충돌 · claim-role rc=7 선례 계열), 조준 실패·경합·통신 오류 = 일반 오류 1.
     /// 판정은 request() 에러 문면("code: message")의 code **접두** — 데몬
     /// ForceDeliverDenied::code() + handlers 게이트 ①②와 1:1 계약이다.
@@ -19761,7 +19869,7 @@ mod tests {
             );
         }
         assert_eq!(EXIT_QUEUE_GATE_REFUSED, 7, "claim-role 정당거부(7) 선례 계열 고정");
-        // 안전 게이트 거부 6종 → 7 (kill-switch·ACL·좌석·사람·헬스 pause·출력 quiet 하한).
+        // 안전 게이트 거부 7종 → 7 (kill-switch·ACL·좌석·사람·헬스 pause·출력 quiet 하한·허락 창).
         for gate in [
             "paused: daemon paused (kill-switch)",
             "acl_denied: reviewer-* → worker*",
@@ -19769,6 +19877,7 @@ mod tests {
             "typing_guard: human typed recently",
             "queue_paused: health action",
             "output_busy: output streaming",
+            "approval_pending: seat shows a tool-approval prompt",
         ] {
             assert_eq!(queue_deliver_exit_code(gate), EXIT_QUEUE_GATE_REFUSED, "{gate}");
         }
@@ -21386,6 +21495,166 @@ mod tests {
         }
     }
 
+    /// ★(1.1.6 dbg-queue-approval) 포커스 확인 본체 — 2.1.280 신뢰 창은 아래키 1번 → 재독에서 목표 확인 → 참.
+    /// 화면이 안 바뀌면(렌더 지연·키 유실) 재계획을 반복하되 아래키 총상한에서 멈추고 거짓(Return 보류).
+    /// 판정 불가 화면은 키 0번·거짓.
+    #[test]
+    fn trust_focus_confirm_moves_then_verifies_and_is_bounded() {
+        use cys::first_run_gates::fixtures::{FOLDER_TRUST, FOLDER_TRUST_2_1_280, READY_SHELL};
+        use std::cell::Cell;
+        let gs = cys::first_run_gates::builtin();
+        let moved = FOLDER_TRUST_2_1_280
+            .replace(" ❯ No, exit", "   No, exit")
+            .replace("   Yes, I trust this folder", " ❯ Yes, I trust this folder");
+        // 재독 대역: 호출 순서대로 화면을 돌려준다(끝나면 마지막을 반복).
+        let seq = |v: Vec<String>| {
+            let i = Cell::new(0usize);
+            move || {
+                let k = i.get().min(v.len() - 1);
+                i.set(i.get() + 1);
+                Ok::<String, String>(v[k].clone())
+            }
+        };
+        let old = FOLDER_TRUST_2_1_280.to_string();
+        // ① 2.1.280: 아래키 1 → 재독이 바뀌고 안정(2회 같음) → 참.
+        let downs = Cell::new(0u32);
+        let mut nav = 0u32;
+        let ok = trust_focus_confirm_with(
+            &gs,
+            FOLDER_TRUST_2_1_280,
+            &mut nav,
+            || {
+                downs.set(downs.get() + 1);
+                Ok(())
+            },
+            seq(vec![moved.clone(), moved.clone()]),
+        )
+        .unwrap();
+        assert!(
+            ok && downs.get() == 1 && nav == 1,
+            "ok={ok} downs={} nav={nav}",
+            downs.get()
+        );
+        // ② ★렌더 지연: 처음 두 번은 옛 프레임 — 다시 누르지 않고 기다린다(아래키 1번만) → 참.
+        let downs = Cell::new(0u32);
+        let mut nav = 0u32;
+        let ok = trust_focus_confirm_with(
+            &gs,
+            FOLDER_TRUST_2_1_280,
+            &mut nav,
+            || {
+                downs.set(downs.get() + 1);
+                Ok(())
+            },
+            seq(vec![old.clone(), old.clone(), moved.clone(), moved.clone()]),
+        )
+        .unwrap();
+        assert!(ok, "지연 뒤 안정된 목표 화면을 확인하지 못했다");
+        assert_eq!(
+            downs.get(),
+            1,
+            "옛 프레임을 보고 아래키를 또 눌렀다(순환 메뉴 되감김 위험)"
+        );
+        // ③ 화면이 끝내 안 바뀐다 — 한 번만 누르고 재독 상한에서 보류(거짓).
+        let downs = Cell::new(0u32);
+        let mut nav = 0u32;
+        let ok = trust_focus_confirm_with(
+            &gs,
+            FOLDER_TRUST_2_1_280,
+            &mut nav,
+            || {
+                downs.set(downs.get() + 1);
+                assert!(downs.get() <= 10, "아래키 폭주 — 상한이 없다");
+                Ok(())
+            },
+            seq(vec![old.clone()]),
+        )
+        .unwrap();
+        assert!(!ok, "화면이 안 바뀌는데 확인으로 넘어갔다");
+        assert_eq!(downs.get(), 1);
+        // ④ 바뀌어 안정되지만 매번 여전히 목표 아님(Down(1)) — 아래키 총상한에서 멈추고 거짓.
+        let alt = FOLDER_TRUST_2_1_280.replace("Security guide", "Security guide ");
+        let flip: Vec<String> = (0..40)
+            .map(|k| {
+                if (k / 2) % 2 == 0 {
+                    alt.clone()
+                } else {
+                    old.clone()
+                }
+            })
+            .collect();
+        let downs = Cell::new(0u32);
+        let mut nav = 0u32;
+        let ok = trust_focus_confirm_with(
+            &gs,
+            FOLDER_TRUST_2_1_280,
+            &mut nav,
+            || {
+                downs.set(downs.get() + 1);
+                assert!(downs.get() <= 10, "아래키 폭주 — 상한이 없다");
+                Ok(())
+            },
+            seq(flip),
+        )
+        .unwrap();
+        assert!(!ok);
+        assert_eq!(
+            downs.get(),
+            TRUST_NAV_MAX_PRESSES,
+            "아래키 상한이 지켜지지 않았다"
+        );
+        // ⑤ 2.1.241: 이미 목표 — 키 0 · 참.  ⑥ 판정 불가 화면 — 키 0 · 거짓.
+        for (screen, want) in [(FOLDER_TRUST, true), (READY_SHELL, false)] {
+            let downs = Cell::new(0u32);
+            let mut nav = 0u32;
+            let got = trust_focus_confirm_with(
+                &gs,
+                screen,
+                &mut nav,
+                || {
+                    downs.set(downs.get() + 1);
+                    Ok(())
+                },
+                seq(vec![String::new()]),
+            )
+            .unwrap();
+            assert_eq!((got, downs.get()), (want, 0));
+        }
+    }
+
+    /// ★(1.1.6 dbg-queue-approval) 배선 핀 — 폴더신뢰 자동확인의 Return 은 **화면 포커스 확인**
+    /// (`trust_focus_confirm` → `Gate::focus_plan`) 뒤에만 나간다. 이 루프는 소켓을 부르므로 단위 시험이
+    /// 돌 수 없다 — 그래서 소스 순서를 못박는다(판정 자체는 first_run_gates 의 focus_plan 진리표가 잰다).
+    #[test]
+    fn trust_return_is_gated_by_screen_focus_confirm_source_pin() {
+        let src = include_str!("cys.rs");
+        let head = "\nfn boot_agent_on_surface(";
+        let i = src
+            .find(head)
+            .expect("boot_agent_on_surface 가 사라졌다(열 0 정의부 부재)");
+        let rest = &src[i + 1..];
+        let body = &rest[..rest.find("\n}\n").expect("함수 끝을 못 찾았다")];
+        let at = body
+            .find("let focused =")
+            .expect("폴더신뢰 포커스 판정(let focused) 이 사라졌다");
+        let ret = body[at..]
+            .find("\"key\": \"Return\"")
+            .expect("폴더신뢰 Return 전송이 사라졌다");
+        let gate = &body[at..at + ret];
+        assert!(
+            gate.contains("send && trust_focus_confirm("),
+            "Return 앞에 화면 포커스 확인이 없다 — 기본 포커스 가정으로 되돌아갔다(2.1.280 = No, exit)"
+        );
+        assert!(
+            gate.contains("if focused {"),
+            "Return 이 포커스 확인 결과로 조건 걸려 있지 않다"
+        );
+        assert!(
+            src.contains("fn trust_focus_confirm("),
+            "trust_focus_confirm 정의 부재"
+        );
+    }
+
     /// ★(W4 · B19) 폴더신뢰 판정이 **어댑터 선언을 실제로 소비**하고, 내장 needle 폴백을
     /// 잃지 않았음을 핀한다(무회귀 = 종전 감지의 상위집합).
     #[test]
@@ -21410,16 +21679,19 @@ mod tests {
         let t = "Do you trust this folder?";
         assert!(trust_prompt_hit(Some(&re), &gs, t, &flat(t), false), "선언+코퍼스 병존");
         assert!(trust_prompt_hit(None, &gs, t, &flat(t), false), "패턴 부재 시 코퍼스 단독 폴백");
-        // ③′ ★2.1.241 실측 문면 — 선언 패턴에는 **없고**(claude 2.1.236~241 어디에도 없다)
-        //     코퍼스 폴백만이 잡는다. 이 축이 없으면 현행 claude 에서 자동확인이 통째로 죽는다.
+        // ③′ ★2.1.241~2.1.280 실측 문면. (1.1.6 dbg-queue-approval 개정) 종전엔 선언 패턴이 이
+        //     문면을 **못 잡아야** 한다고 박았다(구 패턴 실재 0 = 코퍼스 폴백이 유일 감지축이라는 증명).
+        //     선언 패턴에 실측 문면을 더한 뒤로는 두 축이 모두 잡고, 코퍼스 폴백 **단독** 감지는
+        //     `re = None` 으로 따로 증명한다 — 자동확인이 코퍼스만으로도 살아 있다는 원래 의도는 그대로다.
+        //     (문면 추가의 목적: 데몬 승인 축·큐 배달 승인 축이 같은 어댑터 선언을 읽는다.)
         let t = "Quick safety check: Is this a project you created or one you trust?";
         assert!(
-            !trust_prompt_hit(Some(&re), none, t, &flat(t), false),
-            "선언 패턴이 실측 문면을 잡으면 U-15 의 전제(구 패턴은 실재하지 않는다)가 틀린 것"
+            trust_prompt_hit(Some(&re), none, t, &flat(t), false),
+            "선언 패턴이 2.1.241~280 실측 문면을 못 잡는다(어댑터 문면 불일치 재발)"
         );
         assert!(
-            trust_prompt_hit(Some(&re), &gs, t, &flat(t), false),
-            "실측 문면을 코퍼스 폴백이 놓친다 — 현행 claude 에서 폴더신뢰 자동확인 불발"
+            trust_prompt_hit(None, &gs, t, &flat(t), false),
+            "실측 문면을 코퍼스 폴백 단독으로 못 잡는다 — 선언을 지운 기계에서 자동확인 불발"
         );
         // ③″ ★확인 에코는 감지 근거가 아니다(킬체인의 형태 — 2026-07-29 실사고).
         let echo = "Yes, I trust this folder ✔";

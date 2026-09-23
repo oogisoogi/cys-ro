@@ -172,6 +172,71 @@ impl Gate {
         self.absence_cost == AbsenceCost::Fatal
     }
 
+    /// ★(1.1.6 dbg-queue-approval) **화면에서** 목표 항목까지의 이동 계획 — 기본 포커스를 가정하지
+    /// 않고 지금 `❯` 가 걸린 행의 라벨을 읽는다.
+    ///
+    /// 왜: 폴더신뢰 창의 기본 포커스가 판마다 바뀐다 — 2.1.241 `❯ 1. Yes, I trust this folder`
+    /// (Yes 먼저) · 2.1.280 `❯ No, exit` 다음 `Yes, I trust this folder`(순서 뒤집힘·번호 없음 ·
+    /// 실측 2026-09-23). `default_index` 를 믿고 Return 을 보내면 새 판에서 `No, exit` 가 눌려
+    /// 좌석이 죽는다(07-29 킬체인과 같은 결과).
+    ///
+    /// 선택지 행 = 앞 공백·`❯`·`숫자.` 를 걷어낸 본문이 **알려진 라벨**(`action.label` ∪
+    /// `confirm_echo`)로 시작하는 행. 다음 중 하나라도 어긋나면 `Hold`(아무 키도 보내지 않음):
+    /// 선택지 행이 화면에서 **연속**하지 않음(확인 에코 잔상·다른 창 섞임) · `❯` 행이 정확히 1개가
+    /// 아님 · 목표 라벨 행이 정확히 1개가 아님 · 목표가 포커스보다 위(아래키만 쓴다).
+    pub fn focus_plan(&self, screen: &str) -> FocusPlan {
+        const POINTER: &str = "❯";
+        let Some(action) = self.action.as_ref() else {
+            return FocusPlan::Hold;
+        };
+        let mut labels: Vec<&str> = self.confirm_echo.iter().map(String::as_str).collect();
+        labels.push(action.label.as_str());
+        // 판독 범위 = 화면 **마지막 가로줄 아래**(창의 윗 테두리 아래 · 없으면 화면 전량). 창 위에 남은
+        // 셸 프롬프트(`❯ claude …` — starship·p10k)가 「낯선 포커스 행」 으로 읽혀 영구 보류되지 않게
+        // (Fable 1R). 확인 에코 잔상 → 면책 창은 사이에 가로줄이 있어 면책 창만 남는다(목표 0개 → 보류).
+        let lines: Vec<&str> = screen.lines().collect();
+        let from = lines
+            .iter()
+            .rposition(|l| {
+                let t = l.trim();
+                t.chars().count() >= 8 && t.chars().all(|c| c == '─')
+            })
+            .map_or(0, |r| r + 1);
+        // (행 번호, 포커스 여부, 목표 여부)
+        let mut opts: Vec<(usize, bool, bool)> = Vec::new();
+        for (i, line) in lines.iter().enumerate().skip(from) {
+            let mut rest = line.trim_start();
+            let focused = rest.starts_with(POINTER);
+            if focused {
+                rest = rest[POINTER.len()..].trim_start();
+            }
+            let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits > 0 && rest[digits..].starts_with('.') {
+                rest = rest[digits + 1..].trim_start();
+            }
+            // 선택지 행 인식은 접두 일치(확인 에코 `… ✔` 도 선택지 모양으로 잡아 연속성 검사에 넣는다),
+            // 목표 판정은 **완전 일치**(목표 라벨로 시작하는 다른 선택지를 목표로 오인하지 않는다 · agy B-1R ①).
+            if labels.iter().any(|l| rest.starts_with(l)) {
+                opts.push((i, focused, rest.trim_end() == action.label.as_str()));
+            } else if focused {
+                return FocusPlan::Hold; // 포커스가 알려진 선택지가 아닌 행에 있다
+            }
+        }
+        if opts.windows(2).any(|w| w[1].0 != w[0].0 + 1) {
+            return FocusPlan::Hold;
+        }
+        let focus: Vec<usize> = (0..opts.len()).filter(|&k| opts[k].1).collect();
+        let target: Vec<usize> = (0..opts.len()).filter(|&k| opts[k].2).collect();
+        let (&[f], &[t]) = (focus.as_slice(), target.as_slice()) else {
+            return FocusPlan::Hold;
+        };
+        match t.checked_sub(f).and_then(|d| u8::try_from(d).ok()) {
+            Some(0) => FocusPlan::AtTarget,
+            Some(n) => FocusPlan::Down(n),
+            None => FocusPlan::Hold,
+        }
+    }
+
     /// 기본 포커스에서 목표 항목까지 필요한 **아래키 횟수**.
     /// 위로 올라가야 하거나(음수) 기본 포커스가 미측정이면 `None` = **보류**(fail-closed).
     pub fn down_presses(&self) -> Option<u8> {
@@ -195,6 +260,17 @@ impl Gate {
         }
         self.widget.iter().all(hit)
     }
+}
+
+/// `Gate::focus_plan` 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPlan {
+    /// `❯` 가 이미 목표 라벨에 있다 — Return 이 목표를 누른다.
+    AtTarget,
+    /// 아래키 n 번 뒤 목표 — 누른 뒤 화면을 **다시 읽어** `AtTarget` 일 때만 Return.
+    Down(u8),
+    /// 판정 불가 — 아무 키도 보내지 않는다(fail-closed).
+    Hold,
 }
 
 /// 공백을 1칸으로 접는다(줄바꿈·들여쓰기 흡수).
@@ -1350,6 +1426,25 @@ pub mod fixtures {
         Enter to confirm · Esc to cancel\n";
 
     /// ★킬체인 화면: 폴더신뢰를 통과한 **직후**. 확인 에코가 남아 있고 면책 창이 떠 있다.
+    /// ★claude 2.1.280 실측(2026-09-23 · 격리 HOME · vt100 재생 · 경로만 치환) — 기본 포커스가
+    /// `No, exit` 이고 순서가 뒤집혔으며 번호가 없다.
+    pub const FOLDER_TRUST_2_1_280: &str = "────────────────────────────────────────\n\
+        \x20Accessing workspace:\n\
+        \n\
+        \x20<cwd>\n\
+        \n\
+        \x20Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n\
+        \x20project, or work from your team). If not, take a moment to review what's in this folder first.\n\
+        \n\
+        \x20Claude Code'll be able to read, edit, and execute files here.\n\
+        \n\
+        \x20Security guide\n\
+        \n\
+        \x20❯ No, exit\n\
+        \x20  Yes, I trust this folder\n\
+        \n\
+        \x20Enter to confirm · Esc to cancel\n";
+
     pub const TRUST_ECHO_THEN_DISCLAIMER: &str = "Yes, I trust this folder ✔\n\
         ─────────────────────────────────────────\n\
         WARNING: Claude Code running in Bypass Permissions mode\n\
@@ -2660,10 +2755,14 @@ mod tests {
             .expect("trust-prompt 선언");
         let gs = builtin();
         let trust = gs.iter().find(|g| g.id == "folder-trust").unwrap();
-        assert!(
-            trust.needles.iter().any(|n| n == pat),
-            "agents.json trust-prompt 문면 {pat:?} 이 코퍼스에 없다 — 사본이 갈렸다"
-        );
+        // (1.1.6 dbg-queue-approval) 선언은 구 문면 | 실측 문면의 대안이다 — **각 대안**이 코퍼스
+        // needle 과 같아야 한다(사본이 갈리면 어느 한 대안이 needle 목록에서 빠진다).
+        for alt in pat.split('|') {
+            assert!(
+                trust.needles.iter().any(|n| n == alt),
+                "agents.json trust-prompt 문면 {alt:?}(전체 {pat:?}) 이 코퍼스에 없다 — 사본이 갈렸다"
+            );
+        }
     }
 
     /// 봉투가 임베드 `agents.json` 에 실재하고, 코퍼스를 **복사해 두지 않았음**을 못박는다.
@@ -2688,5 +2787,77 @@ mod tests {
         let r = resolve_with(Some(env), true);
         assert_eq!(r.gates, builtin());
         assert_eq!(r.source, Source::Builtin);
+    }
+
+    /// ★(1.1.6 dbg-queue-approval) 폴더신뢰 이동 계획 — 기본 포커스 가정이 아니라 화면 라벨로 고른다.
+    /// 2.1.241(Yes 먼저)·2.1.280(No, exit 먼저 · 번호 없음) 두 판 모두에서 목표에만 Return 이 간다.
+    #[test]
+    fn folder_trust_focus_plan_reads_the_screen_not_the_default_index() {
+        let gates = builtin();
+        let g = gates
+            .iter()
+            .find(|g| g.id == "folder-trust")
+            .expect("folder-trust");
+        // 두 판 모두 폴더신뢰 관문으로 식별된다(감지 축은 그대로).
+        assert!(g.matches(fixtures::FOLDER_TRUST));
+        assert!(
+            g.matches(fixtures::FOLDER_TRUST_2_1_280),
+            "2.1.280 신뢰 창을 못 알아본다"
+        );
+        // 2.1.241: 기본 포커스가 목표.
+        assert_eq!(g.focus_plan(fixtures::FOLDER_TRUST), FocusPlan::AtTarget);
+        // 2.1.280: 기본 포커스가 No, exit — 아래키 1번 뒤 목표. (종전 가정 = Return 즉시 → No, exit)
+        assert_eq!(
+            g.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+            FocusPlan::Down(1)
+        );
+        // 아래키 뒤 화면(포커스가 Yes 로 옮겨짐) → 목표.
+        let moved = fixtures::FOLDER_TRUST_2_1_280
+            .replace(" ❯ No, exit", "   No, exit")
+            .replace("   Yes, I trust this folder", " ❯ Yes, I trust this folder");
+        assert_eq!(g.focus_plan(&moved), FocusPlan::AtTarget);
+        // 킬체인 화면(확인 에코 잔상 + 면책 창): 선택지 행이 연속하지 않아 보류.
+        assert_eq!(
+            g.focus_plan(fixtures::TRUST_ECHO_THEN_DISCLAIMER),
+            FocusPlan::Hold
+        );
+        // 관문이 아닌 화면·포커스 없음·포커스 2개·목표가 위 → 보류.
+        assert_eq!(g.focus_plan(fixtures::READY_SHELL), FocusPlan::Hold);
+        assert_eq!(
+            g.focus_plan("   No, exit\n   Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        assert_eq!(
+            g.focus_plan(" ❯ No, exit\n ❯ Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        assert_eq!(
+            g.focus_plan("   Yes, I trust this folder\n ❯ No, exit\n"),
+            FocusPlan::Hold
+        );
+        // 선택지 행이 연속하지 않으면 보류 — 포커스 **아래**에 떨어진 에코·본문 속 라벨을 목표로 삼지 않는다.
+        assert_eq!(
+            g.focus_plan(" ❯ No, exit\n\n  some text\n Yes, I trust this folder ✔\n"),
+            FocusPlan::Hold
+        );
+        // 창 위에 `❯` 셸 프롬프트 줄이 남아 있어도(인라인 렌더) 판독 범위(가로줄 아래) 밖이다 → Down(1).
+        let with_shell = format!("❯ claude --model opus\n{}", fixtures::FOLDER_TRUST_2_1_280);
+        assert_eq!(g.focus_plan(&with_shell), FocusPlan::Down(1));
+        // 목표 라벨로 **시작만** 하는 다른 선택지는 목표가 아니다(완전 일치) → 목표 0개 → 보류.
+        assert_eq!(
+            g.focus_plan(" ❯ No, exit\n   Yes, I trust this folder and all parent folders\n"),
+            FocusPlan::Hold
+        );
+        // 포커스가 모르는 행에 있으면 보류(다른 선택창).
+        assert_eq!(
+            g.focus_plan(" ❯ 1. Yes\n   Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        // 액션 없는 관문은 언제나 보류.
+        let login = gates
+            .iter()
+            .find(|g| g.action.is_none())
+            .expect("액션 없는 관문");
+        assert_eq!(login.focus_plan(fixtures::FOLDER_TRUST), FocusPlan::Hold);
     }
 }

@@ -5409,6 +5409,42 @@ fn approval_regex_cached(pat: &str) -> Option<regex::Regex> {
     compiled
 }
 
+/// 좌석이 지금 도구 허락 창을 띄우고 있는가 — 강제 배달(게이트 ⑦)용. 큐 배달자(`deliver_queued`)와
+/// 같은 판정자(`approval_in_prompt_tail`)·같은 재료(어댑터 정의 디스크 우선 → 임베드)를 쓴다.
+/// 어댑터를 모르면(agent_meta 없음) `false` — 판정 재료가 없다(종전 동작). 준비 마커를 모르는 어댑터는
+/// 가로줄 꼬리만 본다(커서 행 = 없는 행으로 넘겨 번호 선택지 폴백을 끈다).
+fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
+    let Some((agent, _)) = s.agent_meta.lock().unwrap().clone() else {
+        return false;
+    };
+    let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let embed = cys::pack::PACK_ALL
+        .iter()
+        .find(|(r, _)| *r == "agents.json")
+        .and_then(|(_, c)| serde_json::from_str(c).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let res: Vec<regex::Regex> = merged_approval_patterns(&disk, &embed, &agent)
+        .iter()
+        .filter_map(|p| p["pattern"].as_str())
+        .filter_map(approval_regex_cached)
+        .collect();
+    let marker = merged_ready_marker(&disk, &embed, &agent);
+    let (rows, cursor_row) = {
+        let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let screen = p.screen();
+        let (_, cols) = screen.size();
+        let rows: Vec<String> = screen.rows(0, cols).collect();
+        (rows, usize::from(screen.cursor_position().0))
+    };
+    match marker {
+        Some(m) => approval_in_prompt_tail(&rows, cursor_row, &m, &res),
+        None => approval_in_prompt_tail(&rows, usize::MAX, "", &res),
+    }
+}
+
 /// 선택 메뉴 행인가(순수) — 마커 뒤(공백 무시)가 `숫자.` 로 시작한다(`❯ 1. Yes` · `❯ 2. No`).
 fn is_numbered_choice_row(row: &str, marker: &str) -> bool {
     let Some(i) = row.find(marker) else {
@@ -5893,6 +5929,9 @@ pub(crate) enum ForceDeliverDenied {
     NotFound,
     /// 게이트·조준 통과 후 실배달 직전 경합(틱이 먼저 배달·clear drain·writer busy) — 재시도 대상.
     Raced,
+    /// ★dbg-queue-approval(1.1.6 A): 좌석이 도구 허락 창(어댑터 approval_patterns)을 띄우고 있다 —
+    /// 본문 + Return 이 기본 선택(`1. Yes`)을 누른다. 사람 몫의 허락은 강제 배달로도 대신 누를 수 없다.
+    ApprovalPending,
 }
 
 impl ForceDeliverDenied {
@@ -5907,6 +5946,7 @@ impl ForceDeliverDenied {
             ForceDeliverDenied::NotHead { .. } => "not_head_requires_allow_reorder",
             ForceDeliverDenied::NotFound => "not_found",
             ForceDeliverDenied::Raced => "delivery_failed",
+            ForceDeliverDenied::ApprovalPending => "approval_pending",
         }
     }
 
@@ -5937,6 +5977,11 @@ impl ForceDeliverDenied {
             ForceDeliverDenied::Raced => {
                 "delivery raced (watchdog delivered first, queue cleared, or writer busy) — \
                  queue list 재확인 후 재시도"
+                    .into()
+            }
+            ForceDeliverDenied::ApprovalPending => {
+                "seat shows a tool-approval prompt — 강제 배달의 Return 이 기본 선택(승인)을 누른다. \
+                 사람이 허락 창을 처리한 뒤 재시도(cys read-screen 으로 확인)"
                     .into()
             }
         }
@@ -5995,6 +6040,12 @@ pub(crate) fn force_deliver_entry(
     let quiet_for = s.last_output.lock().unwrap().elapsed().as_secs();
     if quiet_for < need {
         return Err(ForceDeliverDenied::OutputBusy { quiet_for, need });
+    }
+    // 게이트 ⑦ ★dbg-queue-approval(1.1.6 A): 도구 허락 창 — 큐 배달자와 **같은 화면 축**
+    //   (approval_in_prompt_tail). 종전엔 이 경로가 프롬프트 경계 판정을 아예 거치지 않아 허락 창
+    //   실화면에 배달됐다(본문 + Return = `1. Yes`). 운영자 강제로도 사람 몫의 허락은 누를 수 없다.
+    if approval_screen_now(s) {
+        return Err(ForceDeliverDenied::ApprovalPending);
     }
     // 조준 해석(+ 필요 시 머리 끌어올림) — pending_queue 락 한 임계영역에서 원자 수행.
     let (target, reordered_from) = {
@@ -9798,6 +9849,7 @@ mod tests {
         include_bytes!("testdata/claude_2_1_280_ready_after_esc_classic.raw");
     const QA_PERMISSION_10ROWS: &[u8] =
         include_bytes!("testdata/claude_2_1_280_permission_classic_10rows.raw");
+    const QA_FOLDER_TRUST: &[u8] = include_bytes!("testdata/claude_2_1_280_folder_trust.raw");
 
     /// 40×120 claude 좌석 + 큐 1건 · 파서에 실화면 바이트를 먹이고 대체화면 플래그를 파서에서 옮긴다
     /// (리더 스레드가 하는 일과 같은 방향 — state.rs W4·D5 관측).
@@ -9862,6 +9914,85 @@ mod tests {
             .clone()
             .map(|(w, _)| w)
             .unwrap_or_default()
+    }
+
+    /// ⑥ 강제 배달(1.1.6 A · 게이트 ⑦): 허락 창 실화면(classic · 10행 가로줄 밀림)은 거부하고 큐를 보존한다.
+    ///    종전(f29bb0a5·ff24c898): 이 경로는 프롬프트 경계 판정이 없어 `Ok` — 본문 + Return 이 `1. Yes` 를 눌렀다.
+    #[test]
+    fn qa_force_deliver_refuses_permission_dialog() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-force");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        for (tag, raw, rows) in [
+            ("qa-force-classic", QA_PERMISSION_CLASSIC, 40),
+            ("qa-force-10rows", QA_PERMISSION_10ROWS, 10),
+        ] {
+            let (daemon, s) = qa_fixture_seat_sized(tag, raw, rows);
+            let r = super::force_deliver_entry(&daemon, &s, None, false);
+            assert!(
+                matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)),
+                "{tag}: 허락 창에 강제 배달이 거부되지 않았다(ok={})",
+                r.is_ok()
+            );
+            assert_eq!(
+                s.pending_queue.lock().unwrap().len(),
+                1,
+                "{tag}: 거부했는데 큐가 줄었다"
+            );
+        }
+        assert_eq!(
+            super::ForceDeliverDenied::ApprovalPending.code(),
+            "approval_pending"
+        );
+    }
+
+    /// ⑦ 강제 배달 게이트 ⑦ 의 과잉 차단 방지: 허락 창을 닫고 입력창으로 돌아온 실화면에는 강제 배달이 된다.
+    #[test]
+    fn qa_force_deliver_ready_after_esc_still_delivers() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-force-ready");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-force-ready", QA_READY_AFTER_ESC);
+        let r = super::force_deliver_entry(&daemon, &s, None, false);
+        assert!(
+            r.is_ok(),
+            "입력창 좌석에 강제 배달이 거부됐다: {:?}",
+            r.err().map(|e| e.code())
+        );
+        assert!(s.pending_queue.lock().unwrap().is_empty());
+    }
+
+    /// ⑧ 폴더 신뢰 창(2.1.280 실화면 · 기본 포커스 `No, exit`): 어댑터 trust-prompt 문면을 실측 문면으로
+    ///    맞춘 뒤(1.1.6) 큐 배달·강제 배달 모두 승인 대기로 막힌다 — 본문 + Return 이 `No, exit` 를 누르지 않게.
+    #[test]
+    fn qa_folder_trust_window_blocks_queue_and_force() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-trust");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-trust", QA_FOLDER_TRUST);
+        qa_move_cursor_after_marker(&s); // 커서 우연(❯ 칸 위)을 빼고 승인 축만 잰다
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            1,
+            "신뢰 창에 큐 배달했다"
+        );
+        assert!(
+            qa_blocked_reason(&s).starts_with("approval_pending"),
+            "{}",
+            qa_blocked_reason(&s)
+        );
+        let r = super::force_deliver_entry(&daemon, &s, None, false);
+        assert!(matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)));
     }
 
     /// ⓪ 순수 판정자: 마지막 가로줄 **아래**만 본다 · 가로줄이 없으면 판단하지 않는다(false).

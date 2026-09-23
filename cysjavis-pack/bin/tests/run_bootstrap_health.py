@@ -6251,9 +6251,13 @@ def h_gate_sot_1():
             for p in ((aj.get("claude") or {}).get("approval_patterns") or [])}
     trust_pat = pats.get("trust-prompt")
     need(trust_pat, "agents.json 에 trust-prompt 선언이 없다(자동확인 소스 소실)")
-    need('"%s"' % trust_pat in sot,
-         "agents.json trust-prompt 문면 %r 이 정본에 없다 — 사본이 갈렸다" % trust_pat)
-    notes.append("agents.json 문면 정본 포함")
+    # (1.1.6 dbg-queue-approval) 선언은 구 문면 | 실측 문면(2.1.241~280)의 대안 — **각 대안**이
+    #   정본 needle 에 실재해야 한다(Rust 짝 = first_run_gates agents_json_trust_pattern_is_covered_by_the_corpus).
+    for alt in (trust_pat or "").split("|"):
+        need('"%s"' % alt in sot,
+             "agents.json trust-prompt 문면 %r(전체 %r) 이 정본에 없다 — 사본이 갈렸다"
+             % (alt, trust_pat))
+    notes.append("agents.json 문면 정본 포함(대안 %d)" % len((trust_pat or "").split("|")))
 
     # ── 사본 ② cys.rs 내장 폴백 needle → 정본에 **담지 않는다**(면제표에 사유 필수)
     hseg = cli[cli.index("fn trust_prompt_hit("):]

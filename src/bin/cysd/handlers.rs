@@ -7471,7 +7471,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
         // 강제 = 'quiet 대기(기본 3s·틱 스케줄) 생략'만. 안전 게이트는 전부 유지 — 게이트
         // 순서(설계 확정): ①daemon.paused(kill-switch fail-closed) ②check_send_acl(발신 =
         // send 와 동일 권한 모델 — 신규 권한 0, 이미 send 가능한 대상만) ③empty_seat
-        // ④typing_guard ⑤queue_paused ⑥output quiet 하한[성찰 BLOCKER] — ③~⑥과 조준·
+        // ④typing_guard ⑤queue_paused ⑥output quiet 하한[성찰 BLOCKER] ⑦approval_pending(도구 허락
+        // 창 · 1.1.6 dbg-queue-approval) — ③~⑦과 조준·
         // 배달은 governance::force_deliver_entry(단일 헬퍼 deliver_head_locked 공유)가 집행.
         "queue.deliver" => {
             // 게이트 ① T4-15 kill-switch: pause 중 강제 배달도 동결(fail-closed — 자율주행

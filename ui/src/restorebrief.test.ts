@@ -9,6 +9,7 @@ import {
   briefStatePaths,
   pickBriefText,
   hasBriefSections,
+  localStamp,
   buildBriefCard,
   friendlyRole,
   plainLine,
@@ -324,10 +325,25 @@ describe("v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는�
     const src = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
     const f = src.slice(src.indexOf("async function showRestoreBrief()"));
     const body = f.slice(0, f.indexOf("const card = buildBriefCard("));
-    expect(body).toContain("for (const p of briefStatePaths(master.live_cwd, home))");
-    expect(body).toContain("const text = pickBriefText(found);");
-    expect(body).not.toContain("break;");
+    expect(body).toContain("const [canonPath, ...chain] = briefStatePaths(master.live_cwd, home);");
+    expect(body).toContain("const text = pickBriefText(found, now);");
     expect(body).not.toContain("stateCandidates(");
+    // 정본은 늘 읽고, cwd 사슬은 가장 가까운 한 파일에서 멈춘다(opus 디버깅 결함 2)
+    const loop = body.indexOf("for (const p of chain) {");
+    expect(loop).toBeGreaterThan(body.indexOf("const canonText = await readHead(canonPath);"));
+    expect(body.slice(loop, body.indexOf("const now =", loop))).toContain("break;");
+    // 카드에 적는 기록 시각도 지금 이후(예정) 시각을 버린다
+    expect(f).toContain("recordedAt: text === null ? null : recordedAt(text, now),");
+  });
+  it("(opus 디버깅 결함 1) 본문의 「예정」 미래 시각은 기록 시각이 아니다 — 새 기록을 이기지 못하고 카드에도 안 뜬다", () => {
+    const now = "2026-09-24 00:10";
+    const canon = { path: "c", text: "## 완료\n- a\n2026-09-23 23:40 저장\n다음 점검 2026-10-01 09:00 예정" };
+    const drain = { path: "d", text: "## 완료\n- b\n2026-09-23 23:50 저장" };
+    expect(recordedAt(canon.text, now)).toBe("2026-09-23 23:40");
+    expect(pickBriefText([canon, drain], now)).toBe(drain.text);
+    expect(recordedAt("2026-10-01 · 2026-09-20", now)).toBe("2026-09-20"); // 날짜만 있는 경우도
+    expect(recordedAt(canon.text)).toBe("2026-10-01 09:00"); // notAfter 없으면 종전 그대로(다른 호출자 무변경)
+    expect(localStamp(new Date(2026, 8, 4, 7, 5))).toBe("2026-09-04 07:05");
   });
   it("첫 기동 행은 그대로 — 정본 기록이 있어도 첫 기동이면 카드 skip(T4 무회귀)", () => {
     expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: true, firstLaunch: true })).toBe("skip");

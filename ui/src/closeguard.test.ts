@@ -70,21 +70,50 @@ describe("닫기 배선 — 세 입구가 모두 판정을 지난다", () => {
   });
 
   it("취소면 닫지 않고, 묻는 사이 그 창이 사라졌으면 다른 창을 닫지 않는다", () => {
-    expect(body).toContain("if (!ok) return;");
+    const cancel = body.indexOf("if (!ok) {");
+    expect(cancel).toBeGreaterThan(-1);
+    expect(body.slice(cancel, body.indexOf("}", cancel) + 1)).toContain("return;"); // 취소 가지는 return 으로 끝난다
     const recheck = body.indexOf("if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;");
-    expect(recheck).toBeGreaterThan(body.indexOf("if (!ok) return;"));
+    expect(recheck).toBeGreaterThan(cancel);
     // 낡은 포커스(이 탭에 없는 창)는 처음부터 닫지 않는다
     expect(body.indexOf("if (!collectSids(ws.tree).includes(sid)) return;")).toBeLessThan(body.indexOf("needsCloseConfirm("));
   });
 
+  it("(Fable MAJOR-1) Control Center 가 열려 있으면 확인 창을 띄우기 **전에** 닫는다(확인 창이 그 뒤에 숨지 않게)", () => {
+    const cc = body.indexOf("if (ccOpen) setCcOpen(false);");
+    expect(cc).toBeGreaterThan(-1);
+    expect(cc).toBeLessThan(body.indexOf("await confirmModal("));
+  });
+
+  it("(agy 1R ②) 닫는 중인 창은 다시 묻지도 닫지도 않는다 — 요청이 끝나면 표시를 푼다", () => {
+    const guard = body.indexOf("if (closingPaneKeys.has(key)) return;");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(body.indexOf("needsCloseConfirm("));
+    expect(body.indexOf("closingPaneKeys.add(key);")).toBeLessThan(body.indexOf('invoke("close_surface"'));
+    expect(/finally \{\s*closingPaneKeys\.delete\(key\);/.test(body)).toBe(true);
+  });
+
+  it("(Fable MINOR-2·3) 취소하면 그 창에 포커스를 돌려주고, 닫은 뒤 탭이 바뀌었으면 보이는 탭 포커스를 건드리지 않는다", () => {
+    expect(/if \(!ok\) \{[\s\S]*?setFocus\(sid\);\s*return;/.test(body)).toBe(true);
+    const moved = body.indexOf("if (ws !== current()) {");
+    expect(moved).toBeGreaterThan(body.indexOf('invoke("close_surface"'));
+    expect(moved).toBeLessThan(body.indexOf("focusedSid = collectSids(ws.tree)[0] ?? null;"));
+  });
+
+  it("(opus 뮤턴트 X1) 낡은 포커스 가드는 판정보다 앞 · close_surface 경로에 우회 0", () => {
+    const stale = body.indexOf("if (!collectSids(ws.tree).includes(sid)) return;");
+    expect(stale).toBeGreaterThan(-1);
+    expect(stale).toBeLessThan(body.indexOf("const key = paneKey(sid, ws.socket);"));
+  });
+
   it("확인 창 겹침 0 — 진행 중 플래그", () => {
     expect(body).toContain("if (closeConfirmOpen) return;");
-    expect(body).toMatch(/finally \{\s*closeConfirmOpen = false;/);
+    expect(/finally \{\s*closeConfirmOpen = false;/.test(body)).toBe(true);
   });
 
   it("상단 Close · ⌘W · 팔레트 「패널 닫기」가 모두 actionClose 다", () => {
     expect(main).toContain('document.getElementById("btn-close")!.addEventListener("click", actionClose);');
-    expect(main).toMatch(/e\.key === "w"\) \{\s*e\.preventDefault\(\);\s*actionClose\(\);/);
+    expect(/e\.key === "w"\) \{\s*e\.preventDefault\(\);\s*actionClose\(\);/.test(main)).toBe(true);
     expect(main).toContain('{ id: "act:close", title: "패널 닫기", keywords: "close 닫기", action: () => actionClose() }');
   });
 
@@ -92,6 +121,8 @@ describe("닫기 배선 — 세 입구가 모두 판정을 지난다", () => {
     const adds = main.split("exitedPaneKeys.add(").length - 1;
     expect(adds).toBe(1);
     expect(main).toContain("if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk));");
+    // (Fable MINOR-4) 데몬 말을 거울처럼 — exited 가 아니면 뺀다(번호 재사용 가정에 기대지 않는다)
+    expect(main).toContain("else exitedPaneKeys.delete(paneKey(s.surface_id, sk));");
     // 스트림 종료 처리기(= 연결 끊김에도 발화) 안에는 없다
     const ex = main.indexOf("const un2 = await listen(ev.exited_event");
     expect(main.slice(ex, main.indexOf("});", ex))).not.toContain("exitedPaneKeys");
@@ -117,7 +148,7 @@ describe("X-1 남은 창 폭 — 루트 직계의 인라인 flex 를 지운다",
 
   it("스타일시트가 루트 직계 폭을 정한다는 전제(#root > * {flex:1})가 살아 있다", () => {
     const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
-    expect(css).toMatch(/#root > \* \{ flex: 1;/);
+    expect(/#root > \* \{ flex: 1;/.test(css)).toBe(true);
   });
 });
 
@@ -125,12 +156,12 @@ describe("권고 C — 창 만들기는 상단에서 빠지고 전문가 칸에"
   it("상단바에 + New · Split → · Split ↓ 단추가 없다", () => {
     const top = html.slice(html.indexOf('<header id="topbar">'), html.indexOf("</header>"));
     for (const id of ["btn-new", "btn-split-h", "btn-split-v"]) expect(top).not.toContain(`id="${id}"`);
-    expect(top).not.toMatch(/>\s*(\+ New|Split →|Split ↓)\s*</);
+    expect(/>\s*(\+ New|Split →|Split ↓)\s*</.test(top)).toBe(false);
     expect(top).toContain('id="btn-close"'); // 닫기는 남는다(확인 1회를 거친다)
   });
 
   it("전문가 칸(기본 숨김) 안에 「창 만들기」 단추 1개", () => {
-    expect(html).toMatch(/<div id="ws-expert" hidden>[\s\S]*?id="btn-pane-create"[^>]*>창 만들기<\/button>[\s\S]*?<\/div>/);
+    expect(/<div id="ws-expert" hidden>[\s\S]*?id="btn-pane-create"[^>]*>창 만들기<\/button>[\s\S]*?<\/div>/.test(html)).toBe(true);
   });
 
   it("누르면 오른쪽/아래 두 갈래 — 종전 Split 과 같은 함수 · 단축키 유지", () => {
@@ -138,8 +169,8 @@ describe("권고 C — 창 만들기는 상단에서 빠지고 전문가 칸에"
     const wBody = main.slice(w, main.indexOf("});", w));
     expect(wBody).toContain('label: "오른쪽에 새 창 (⌘D)", action: () => void actionSplit("row")');
     expect(wBody).toContain('label: "아래에 새 창 (⌘⇧D)", action: () => void actionSplit("col")');
-    expect(main).toMatch(/e\.key === "t"\) \{\s*e\.preventDefault\(\);\s*actionNew\(\);/);
-    expect(main).toMatch(/e\.key === "d" && !e\.shiftKey\) \{\s*e\.preventDefault\(\);\s*actionSplit\("row"\);/);
+    expect(/e\.key === "t"\) \{\s*e\.preventDefault\(\);\s*actionNew\(\);/.test(main)).toBe(true);
+    expect(/e\.key === "d" && !e\.shiftKey\) \{\s*e\.preventDefault\(\);\s*actionSplit\("row"\);/.test(main)).toBe(true);
     expect(main).toContain('actionSplit("col");');
     // 지운 단추를 여전히 붙잡는 배선이 남으면 앱 시작에서 널 역참조로 죽는다
     for (const id of ["btn-new", "btn-split-h", "btn-split-v"]) expect(main).not.toContain(`getElementById("${id}")`);

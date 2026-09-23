@@ -158,6 +158,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
+import { paneTitleText, renameCommitTitle } from "./panetitle";
 import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
@@ -2400,10 +2401,7 @@ const imageExtFromMime = (mime: string): string => {
   return "png"; // image/png 및 기타
 };
 
-// surface도 번호 대신 이름 — 기본 자동 제목("surface N"·빈 문자열)이면 현재 디렉토리 경로 표시.
-const isAutoTitle = (t: string | null | undefined) => !t || /^surface \d+$/.test(t);
-const paneTitle = (title: string | null | undefined, liveCwd?: string | null) =>
-  isAutoTitle(title) ? liveCwd || "…" : (title as string);
+// surface 제목 — 기본 자동 제목("surface N"·빈 문자열)이면 「번호 · 폴더 이름」(판정 = panetitle.ts · D4 #12).
 
 // pane 헤더 역할 점 — CC 깜박이 점(cc-blink)을 역할색으로 제목 앞에 표시(무역할 셸·종료 pane은 숨김).
 // 작동 여부는 nodeSig(org.status 폴링 10s + status.changed 이벤트 즉시 갱신)에서 읽는다 —
@@ -2584,8 +2582,10 @@ async function refreshPaneTitles() {
         setRoleDot(rt.roleEl, s.exited ? null : s.role, !s.exited && surfaceWorking(s.surface_id, sk)); // 역할 점 + 작동중일 때만 깜빡, 동일 주기 갱신
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
         if (rt.titleEl.isContentEditable) continue; // 이름 편집 중에는 덮어쓰지 않음
-        // (v116-ui-close · D4 #13) 끝난 창 표시 = 「(끝남)」 — 종전 영어 「[exited]」.
-        rt.titleEl.textContent = paneTitle(s.title, s.live_cwd) + (s.exited ? EXITED_TITLE_SUFFIX : "");
+        // (v116-ui-close · D4 #13) 끝난 창 표시 = 「(끝남)」 — 종전 영어 「[exited]」. (r2 · D4 #12) 앞머리 · 전체 경로는 툴팁.
+        rt.titleEl.textContent = paneTitleText(s.surface_id, s.title, s.live_cwd, !!s.exited);
+        rt.titleEl.title = s.live_cwd ?? "";
+        rt.titleEl.dataset.daemonTitle = s.title ?? ""; // 이름 변경에서 빈 이름 확정 시 되돌릴 규칙 제목의 재료
       }
       // 자동 입양: 그 소켓의 role surface 중 UI에 없는 것 → '같은 소켓을 가진 ws'에만 표출.
       // ★소켓 일치 가드 — 부서A 노드가 부서B 탭에 잘못 입양되는 격리 누수 차단(검증 mustFix).
@@ -2776,7 +2776,8 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   roleEl.style.display = "none";
   const titleEl = document.createElement("span");
   titleEl.className = "pane-title-text";
-  titleEl.textContent = paneTitle(title);
+  titleEl.textContent = paneTitleText(sid, title, null, false);
+  titleEl.dataset.daemonTitle = title;
   const usageEl = document.createElement("span");
   usageEl.className = "pane-usage";
   // 배지 위 mousedown이 pane 드래그로 번지지 않게 — tooltip(hover) 확인 중 오발 방지
@@ -2814,6 +2815,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
       {
         label: "이름 변경",
         action: () => {
+          const before = titleEl.dataset.daemonTitle ?? ""; // 편집 전 데몬 제목(「번호 · 특성」이면 빈 이름 확정 시 되돌린다)
           titleEl.contentEditable = "true";
           titleEl.focus();
           window.getSelection()?.selectAllChildren(titleEl);
@@ -2826,8 +2828,8 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
           const commit = () => {
             titleEl.removeEventListener("keydown", onKey); // rename마다 리스너 누적 방지
             titleEl.contentEditable = "false";
-            const name = (titleEl.textContent || "").trim();
-            // 빈 이름 = 자동 제목(경로)으로 복귀 — 데몬에 ""를 저장하면 isAutoTitle이 잡는다
+            // 빈 이름 = 기본으로 복귀 — 역할 창은 「번호 · 특성」, 역할 없는 창은 ""(자동 제목) (D4 #12 · panetitle.ts)
+            const name = renameCommitTitle(titleEl.textContent || "", before, sid);
             invoke("rename_surface", { socket, surfaceId: sid, title: name })
               .catch(() => {})
               .then(() => refreshPaneTitles());
@@ -4575,8 +4577,6 @@ async function confirmDeleteGroup(g: GroupMeta) {
 
 // ws는 번호가 아니라 이름으로 구분 — 이름이 정해지지 않으면 "non title" 표시.
 const UNTITLED = "non title";
-/** 끝난 창 제목 꼬리표(D4 #13 · 종전 영어 exited 꼬리표). 시험·헤드리스가 이 상수 하나를 본다. */
-const EXITED_TITLE_SUFFIX = " (끝남)";
 // ★(v116-ui-close · D4 #4 · master 판정 A) 기본 데몬의 마스터 좌석 번호 — 「본부」 탭 판정 재료. refreshPaneTitles 가
 //   기본 소켓 목록을 받을 때마다 갱신한다. null = 아직 모름(→ 첫째 기본 데몬 탭으로 폴백).
 let hqMasterSids: Set<number> | null = null;

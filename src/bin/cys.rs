@@ -10051,17 +10051,23 @@ fn screen_shows_launch_failure(flat: &str) -> bool {
 /// 거부권 둘 — 둘 다 「살아 있는 에이전트를 화면 글자로 닫지 않는다」 한 방향으로만 판정을 좁힌다:
 ///   ① `alive == Some(true)`: 데몬이 커널 프로세스 표에서 이 좌석의 에이전트를 관측했다. 「명령을 못 찾았다」와
 ///      정면으로 모순되는 사실이다(못 찾은 명령은 프로세스가 없다).
-///   ② 화면에 TUI 렌더 증거가 있는데 실패 문면이 **꼬리**([`BARE_SHELL_DEATH_TAIL_LINES`])에 없다: 셸의 실패는
-///      오류 줄 바로 뒤에 프롬프트가 와서 꼬리에 남는다. TUI 가 그려진 화면의 중간에만 있는 문면은
-///      `--resume` 이 다시 그린 옛 대화(또는 훅 출력)다.
-/// 새 좌석의 진짜 실패(생존 없음 · TUI 없음)와 재사용 좌석의 진짜 실패(옛 TUI 잔상 + 꼬리에 오류)는 종전과 같이 참이다.
+///   ② **신규 출현분**(`delta` — 기동 send 이후 줄)에 TUI 렌더 증거가 있는데 실패 문면이 화면 **꼬리**
+///      ([`BARE_SHELL_DEATH_TAIL_LINES`])에 없다: 셸의 실패는 오류 줄 바로 뒤에 프롬프트가 와서 꼬리에 남는다.
+///      기동 뒤 TUI 가 그려진 화면의 중간에만 있는 문면은 `--resume` 이 다시 그린 옛 대화(또는 훅 출력)다.
+///      TUI 증거를 화면 전체가 아니라 신규 출현분에서 보는 이유(agy 1R #3-①): 재사용 좌석의 **옛 TUI 잔상**은
+///      기동 이전 줄이라 증거에서 빠져야 한다 — 그렇지 않으면 PowerShell 처럼 오류 블록이 길어 꼬리 창 밖으로
+///      밀린 진짜 실패가 확증되지 않는다.
+/// 새 좌석·재사용 좌석의 진짜 실패(생존 없음 · 신규 출현분에 TUI 없음 · 또는 꼬리에 오류)는 종전과 같이 참이다.
 /// ★남는 틈(정직): 옛 대화를 다시 그리는 도중(TUI 테두리 전) 꼬리에 오류 줄이 걸린 틱은 ①만이 막는다.
-fn launch_failure_confirmed(screen: &str, alive: Option<bool>) -> bool {
+/// ★①이 절대 거부권인 이유: 생존 관측 좌석을 화면 글자로 닫지 않는다 — `readiness_timeout_verdict` 표의
+///   `Some(true) → 보류(좌석 보존)`와 같은 비대칭(오살이 방치보다 비싸다). 래퍼만 잠깐 사는 틱은 신규 출현분이
+///   누적이라 다음 틱에 다시 판정된다.
+fn launch_failure_confirmed(screen: &str, delta: &str, alive: Option<bool>) -> bool {
     if alive == Some(true) {
         return false;
     }
     let tail = screen_tail_lines(screen, BARE_SHELL_DEATH_TAIL_LINES);
-    screen_shows_launch_failure(&cys::first_run_gates::flatten(&tail)) || !screen_has_tui_render_evidence(screen)
+    screen_shows_launch_failure(&cys::first_run_gates::flatten(&tail)) || !screen_has_tui_render_evidence(delta)
 }
 
 /// 살아있는 surface 위에서: 에이전트 기동 → 준비 폴링 → 지침 주입 → 메타 등록.
@@ -10756,7 +10762,9 @@ fn boot_agent_on_surface(
         //   출력의 `No such file or directory` 한 줄이 살아 있는 claude 를 닫았다(VM ↻ 본부 cso surface:9 ·
         //   생성 5.3초 뒤 descendants_killed 1). 문면만으로 확증하지 않고 생존 증거와 모순되지 않을 때만
         //   확증한다(`launch_failure_confirmed` — 문면이 보인 틱에만 데몬을 한 번 더 조회한다).
-        if screen_shows_launch_failure(&delta_flat) && launch_failure_confirmed(text, surface_agent_alive(sid)) {
+        if screen_shows_launch_failure(&delta_flat)
+            && launch_failure_confirmed(text, &delta_text, surface_agent_alive(sid))
+        {
             // ★(U-11) 화면이 기동 실패를 **확증**한 유일한 지점 — 종전 귀결(close)을 그대로
             //   유지한다. 보류로 흐르면 안 된다: 여기서 보류하면 진짜 실패 좌석이 역할을 쥔 채
             //   쌓이고, 그 다음 기동이 전부 claim_denied 가 된다(2026-08-16 실사고 계열).
@@ -23601,26 +23609,33 @@ mod tests {
             screen_shows_launch_failure(&flatten_ws(T2_RESUME_SCREEN)),
             "전제: 재출력 화면이 문면 술어에 걸린다(수리 전 = LaunchFailed → close)"
         );
-        assert!(!launch_failure_confirmed(T2_RESUME_SCREEN, None), "생존 미관측이어도 TUI 중간 문면은 확증 아님");
-        assert!(!launch_failure_confirmed(T2_RESUME_SCREEN, Some(true)));
-        assert!(!launch_failure_confirmed(T2_RESUME_SCREEN, Some(false)), "TUI 가 그려져 있고 꼬리에 오류 없음");
+        assert!(
+            !launch_failure_confirmed(T2_RESUME_SCREEN, T2_RESUME_SCREEN, None),
+            "생존 미관측이어도 TUI 중간 문면은 확증 아님"
+        );
+        assert!(!launch_failure_confirmed(T2_RESUME_SCREEN, T2_RESUME_SCREEN, Some(true)));
+        assert!(
+            !launch_failure_confirmed(T2_RESUME_SCREEN, T2_RESUME_SCREEN, Some(false)),
+            "TUI 가 그려져 있고 꼬리에 오류 없음"
+        );
     }
 
     #[test]
     fn t2_real_launch_failures_still_confirmed() {
         // 새 좌석 · zsh · 생존 미관측(명령이 없으니 프로세스도 없다)
         let zsh = "admin@vm cso % claude --dangerously-skip-permissions --resume b8bb4651\nzsh: command not found: claude\nadmin@vm cso % ";
-        assert!(launch_failure_confirmed(zsh, None));
-        assert!(launch_failure_confirmed(zsh, Some(false)));
+        assert!(launch_failure_confirmed(zsh, zsh, None));
+        assert!(launch_failure_confirmed(zsh, zsh, Some(false)));
         // p10k 2줄 프롬프트(박스 문자 장식 · 프레임 자 길이 미달)
         let p10k = "╭─ ~/install-jarvis/cso\n╰─❯ claude --resume x\nzsh: no such file or directory: /opt/claude/bin/claude\n╭─ ~/install-jarvis/cso\n╰─❯ ";
-        assert!(launch_failure_confirmed(p10k, None), "p10k 장식은 TUI 증거가 아니다");
+        assert!(launch_failure_confirmed(p10k, p10k, None), "p10k 장식은 TUI 증거가 아니다");
         // 재사용 좌석: 옛 TUI 잔상이 위에 남아 있어도 꼬리에 오류 + 프롬프트면 확증
-        let reused = format!("{T2_RESUME_SCREEN}\nadmin@vm cso % claude --resume x\nbash: claude: command not found\nadmin@vm cso % ");
-        assert!(launch_failure_confirmed(&reused, None));
+        let fail = "admin@vm cso % claude --resume x\nbash: claude: command not found\nadmin@vm cso % ";
+        let reused = format!("{T2_RESUME_SCREEN}\n{fail}");
+        assert!(launch_failure_confirmed(&reused, fail, None));
         // Windows cmd.exe · 새 좌석
         let cmd = "C:\\Users\\admin> claude\n'claude' is not recognized as an internal or external command,\noperable program or batch file.\n\nC:\\Users\\admin>";
-        assert!(launch_failure_confirmed(cmd, None));
+        assert!(launch_failure_confirmed(cmd, cmd, None));
         // Windows PowerShell · 새 좌석: 오류 블록이 길어 인식 문면이 꼬리 5줄 **밖**이다 — TUI 없음이 확증한다
         let ps = "PS C:\\Users\\admin> claude\n\
 claude : The term 'claude' is not recognized as the name of a cmdlet, function, script file, or operable program.\n\
@@ -23630,18 +23645,18 @@ At line:1 char:1\n+ claude\n+ ~~~~~~\n    + CategoryInfo          : ObjectNotFou
             !screen_shows_launch_failure(&cys::first_run_gates::flatten(&screen_tail_lines(ps, BARE_SHELL_DEATH_TAIL_LINES))),
             "전제: 인식 문면이 꼬리 창 밖"
         );
-        assert!(launch_failure_confirmed(ps, None), "PowerShell 새 좌석 실패가 확증되지 않음");
+        assert!(launch_failure_confirmed(ps, ps, None), "PowerShell 새 좌석 실패가 확증되지 않음");
     }
 
     #[test]
     fn t2_live_agent_is_never_closed_by_screen_text() {
         // 데몬이 에이전트 프로세스를 관측했으면 화면이 무엇이든 「명령을 못 찾았다」는 확증이 아니다.
         let zsh = "% claude\nzsh: command not found: claude\n% ";
-        assert!(!launch_failure_confirmed(zsh, Some(true)));
+        assert!(!launch_failure_confirmed(zsh, zsh, Some(true)));
         // ★남는 틈 박제(정직): 재출력 도중(TUI 테두리 전) 꼬리에 오류 줄이 걸린 틱은 생존 관측만이 막는다.
         let mid_draw = "> 설치 폴더 점검해 줘\n● Bash(ls /x)\n  ⎿  ls: /x: No such file or directory";
-        assert!(launch_failure_confirmed(mid_draw, None), "틈: 생존 미관측이면 여전히 확증 — 문서화된 잔여");
-        assert!(!launch_failure_confirmed(mid_draw, Some(true)));
+        assert!(launch_failure_confirmed(mid_draw, mid_draw, None), "틈: 생존 미관측이면 여전히 확증 — 문서화된 잔여");
+        assert!(!launch_failure_confirmed(mid_draw, mid_draw, Some(true)));
     }
 
     #[test]
@@ -23650,7 +23665,8 @@ At line:1 char:1\n+ claude\n+ ~~~~~~\n    + CategoryInfo          : ObjectNotFou
         let body = &src[src.find("fn boot_agent_on_surface(").expect("fn")..];
         let body = &body[..body.find("\n}\n").expect("fn end")];
         assert!(
-            body.contains("screen_shows_launch_failure(&delta_flat) && launch_failure_confirmed(text, surface_agent_alive(sid))"),
+            body.contains("launch_failure_confirmed(text, &delta_text, surface_agent_alive(sid))")
+                && body.contains("if screen_shows_launch_failure(&delta_flat)\n            && launch_failure_confirmed("),
             "준비 폴링의 기동 실패 분기가 확증 술어를 거치지 않는다 — resume 재출력이 다시 좌석을 닫는다"
         );
     }

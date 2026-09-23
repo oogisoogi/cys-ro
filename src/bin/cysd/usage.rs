@@ -93,6 +93,8 @@ struct TailState {
     codex_model: Option<String>,
     /// 이 tail 이 부착된 시각 — 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준(T2).
     attached_at: f64,
+    /// 직전 관측의 임계 발화를 유예로 보류했는가 — 새 줄이 없는 틱에서도 유예가 끝나면 재평가한다(T2 · agy 1R #2).
+    threshold_deferred: bool,
 }
 
 impl TailState {
@@ -119,6 +121,7 @@ impl TailState {
             server_ctx_window: None,
             codex_model: None,
             attached_at: now,
+            threshold_deferred: false,
         }
     }
 }
@@ -313,6 +316,19 @@ fn collect_for(
                 }
             }
         }
+        // (T2 · agy 1R #2) 보류됐던 추정 임계의 재평가 — 새 줄이 없는 틱이 유예 뒤 발화할 유일한 자리다.
+        //   statusline 이 신선하면 그 경로가 진실원이라 보류를 버린다. 발화는 공유 에지 게이트라 중복 0.
+        if state.threshold_deferred {
+            if statusline_fresh {
+                state.threshold_deferred = false;
+            } else if !defer_estimated_threshold(true, now - state.attached_at) {
+                state.threshold_deferred = false;
+                let cur = s.observed_usage.lock().unwrap().clone();
+                if let Some(p) = cur.as_ref().and_then(|u| u.ctx_pct) {
+                    crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(agent));
+                }
+            }
+        }
         return;
     }
     let prev = s.observed_usage.lock().unwrap().clone();
@@ -446,6 +462,7 @@ fn collect_for(
     // statusline이 신선하면 관측 스냅샷·이벤트·임계발화는 statusline 경로가 진실원 — 여기서 종료
     // (소비 적재는 위에서 이미 완료). 끊기면(60s+) 아래 트랜스크립트 관측으로 graceful 폴백.
     if statusline_fresh {
+        state.threshold_deferred = false;
         return;
     }
 
@@ -493,6 +510,7 @@ fn collect_for(
     // (T2) 창 크기 미확정 유예 안의 추정치는 발화하지 않는다 — 에지 무장 상태도 건드리지 않는다
     //   (유예 뒤 첫 관측·statusline 발화가 같은 에지로 정상 판정한다).
     let defer = defer_estimated_threshold(window_estimated, now - state.attached_at);
+    state.threshold_deferred = defer && new.ctx_pct.is_some();
     if let Some(p) = new.ctx_pct.filter(|_| !defer) {
         crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(&new.agent));
     }
@@ -1943,6 +1961,7 @@ mod tests {
             server_ctx_window: None,
             codex_model: None,
             attached_at: 0.0,
+            threshold_deferred: false,
         };
         let lines = read_new_lines(&mut st);
         assert_eq!(lines, vec!["line1".to_string(), "line2".to_string()]);
@@ -2337,4 +2356,5 @@ mod tests {
         assert!(!super::defer_estimated_threshold(false, g + 1.0));
         assert_eq!(g, 60.0, "유예 = statusline 신선도 창과 같은 60초(근거는 상수 주석)");
     }
+
 }

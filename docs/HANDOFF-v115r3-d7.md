@@ -150,3 +150,8 @@ CI 러너엔 `cys` 가 없어 이 경로가 안 돌고(=CI 초록), 로컬에서
 | gen --check | 0 | 0 | GREEN · 87739B |
 | 전체 건강 검체(직렬) | 0 | 371 | pass 149 · skip 1 · GREEN |
 2-0 재현(버리는 worktree · 비격리 env): `test_formation` 단독 1/1 오염(새 cysd 2 · 추적 116파일 · `.pack-version` 기록) — 재현분 고아 2개도 3축 확인 뒤 TERM, worktree 폐기.
+
+### 8-9. 오염 경로 봉합(master#a8ad3256 · 검증 위생 · 제품 동작 무접촉)
+`tests/test_formation.py` `_ensure_harness` 가 `_master_seat_cwd` 도 모킹(저장·복원 목록 포함) + 트립와이어 검체 **9z**(ensure 절 동안 `subprocess.run` 의 실 `cys` 호출을
+가로채 기록·실행 0 → 0건 단언). 실측: 설치본 cys 가 PATH 에 있는 비격리 env 로 돌려도 43/43 · 트리 무변경 · `/usr/local/bin/cysd` 0 → 0.
+뮤턴트 TM1(하네스 모킹 삭제) = KILLED(9z 적색 · `cys status --json` 2건 가로챔 · 데몬 기동 0).

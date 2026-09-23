@@ -176,6 +176,10 @@ def _ensure_harness(m, live, installed, resource_ok):
     m._ensure_master_seat = lambda socket, cwd: (True, "stub")
     m._feed = lambda title, body, kind="formation": feeds.append((kind, title, body))
     m._emit_evt = lambda evt, fields: None
+    # ★v115r3-d7-r2: 자식 cwd 상속 조회(_master_seat_cwd)도 외부 접촉이다 — 모킹 밖에 두면 실 `cys status`
+    #   가 나가, PATH 의 설치본 cys 가 없는 소켓(/tmp/bN.sock)에 옛 판 cysd 를 자동 기동하고 그 데몬이
+    #   CYS_PACK_DIR(= 저장소 팩)에 옛 임베드를 설치했다(09-23 로컬 통합 검증 오염 · CI 는 cys 부재라 초록).
+    m._master_seat_cwd = lambda socket: None
     return feeds
 
 
@@ -187,8 +191,20 @@ def ensure_order_gate(m):
         return
     saved = {k: getattr(m, k) for k in
              ("gate_check", "_installed_clis", "_live_roles", "_resource_ok",
-              "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt")}
+              "_boot_node", "_ensure_master_seat", "_feed", "_emit_evt", "_master_seat_cwd")}
     saved_state = os.environ.get("CYS_STATE_DIR")
+    # ★v115r3-d7-r2 트립와이어: 이 절의 ensure 는 실 `cys` 를 한 번도 부르면 안 된다(부르면 데몬 자동 기동 →
+    #   팩 설치 = 저장소 오염). 가로채 기록만 하고 실패로 돌려준다 — 실행 0.
+    import subprocess as _sp
+    _real_run = _sp.run
+    real_cys = []
+
+    def _guard_run(cmd, *a, **kw):
+        if isinstance(cmd, (list, tuple)) and cmd and os.path.basename(str(cmd[0])) == "cys":
+            real_cys.append(list(cmd))
+            return _sp.CompletedProcess(cmd, 1, "", "tripwire: real cys blocked")
+        return _real_run(cmd, *a, **kw)
+    _sp.run = _guard_run
     td = tempfile.mkdtemp(prefix="fmens-")
     os.environ["CYS_STATE_DIR"] = td
     all_clis = {"claude", "agy", "codex"}
@@ -434,7 +450,10 @@ def ensure_order_gate(m):
               boots2.count("worker") == 1,
               "boots=%r" % {r: boots2.count(r) for r in set(boots2)})
         _ = feeds
+        check("9z 편성 ensure 시험은 실 cys 를 부르지 않는다(저장소 팩 오염 경로 봉합)",
+              real_cys == [], "real_cys=%r" % (real_cys,))
     finally:
+        _sp.run = _real_run
         for k, v in saved.items():
             setattr(m, k, v)
         if saved_state is None:

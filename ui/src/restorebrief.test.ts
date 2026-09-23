@@ -8,6 +8,7 @@ import {
   canonicalStatePath,
   briefStatePaths,
   pickBriefText,
+  hasBriefSections,
   buildBriefCard,
   friendlyRole,
   plainLine,
@@ -301,8 +302,23 @@ describe("v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는�
     expect(pickBriefText([canon, drainNewer])).toBe(drainNewer.text);
     expect(pickBriefText([canon, drainOlder])).toBe(canon.text);
     expect(pickBriefText([canon, drainSame])).toBe(canon.text);
-    expect(pickBriefText([{ path: "c", text: "시각 없음" }, { path: "d", text: "시각 없음 2" }])).toBe("시각 없음");
+    expect(pickBriefText([{ path: "c", text: "## 완료\n- 시각 없음" }, { path: "d", text: "## 완료\n- 시각 없음 2" }])).toBe("## 완료\n- 시각 없음");
     expect(pickBriefText([])).toBeNull();
+  });
+  // 설치 골격(cysjavis-pack/round/SESSION_STATE.md)의 절 이름 그대로 — 고정 3절 제목이 하나도 없다.
+  const SKELETON = readFileSync(new URL("../../cysjavis-pack/round/SESSION_STATE.md", import.meta.url), "utf-8");
+  it("★정본 설치 골격(3절 제목 없음)은 「기록 없음」 — 빈 문장 카드가 정본 경로로 되돌아오지 않는다(T4 무회귀)", () => {
+    expect(hasBriefSections(SKELETON)).toBe(false);
+    expect(pickBriefText([{ path: "c", text: SKELETON }])).toBeNull();
+    const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["master"], waitingRoles: [] });
+    expect(JSON.stringify(c).includes("하던 일을 복원")).toBe(false);
+  });
+  it("3절 제목이 있는 파일이 시각과 무관하게 먼저 — 제목 없는 더 새 파일이 기록 있는 파일을 가리지 않는다", () => {
+    const newerNoHeads = { path: "c", text: SKELETON + "\n2026-09-23 23:59" };
+    const olderWithHeads = { path: "d", text: "## 진행 중\n- 드레인 저장분\n2026-09-23 20:00" };
+    expect(pickBriefText([newerNoHeads, olderWithHeads])).toBe(olderWithHeads.text);
+    expect(hasBriefSections("### ✅ 완료\n- a")).toBe(true);
+    expect(hasBriefSections("- 진행 중 작업: (없음)")).toBe(false); // 목록 줄 안의 낱말은 제목이 아니다
   });
   it("배선: 카드가 정본 포함 후보 전부를 읽고 pickBriefText 로 고른다(첫 적중에서 멈추지 않는다)", () => {
     const src = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");

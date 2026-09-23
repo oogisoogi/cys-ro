@@ -132,7 +132,7 @@
 |---|---|---|---|
 | agy 1R(외부 · diff 전문만 · 파일 권한 0 · 원문 docs/v116-ui-evidence/agy-1r.md) | 526325bf..ca4cbdf4 제품 diff | **BLOCK** | ② 닫기 요청 대기 중 같은 창 ⌘W → 확인 창 재발화·이중 닫기 = **반영**(closingPaneKeys · 905bdee7) / ⑤ 정본의 다른 절 제목을 카드가 읽어야 한다 = **기각** — master 판정(master#37fad5d9 · A 채택 · B 기각: 정본 절은 마스터 개발 용어라 초보 카드 문구 규율 위반) · 「첫 기동 판정을 깬다」는 사실 아님(isFirstLaunch·briefTiming 무접촉 · 기록 없으면 T4 짧은 카드) |
 | Fable 적대 서브에이전트(고위험: 닫기·청소) | c926328f | BLOCK 0 · MAJOR 1 · MINOR 4 · NIT 4 | MAJOR-1 CC 열림 중 확인 창 은닉(Tab+Enter 무확인 닫기) = 반영 · MINOR-2 취소 뒤 포커스 = 반영 · MINOR-3 탭 바뀜 포커스 = 반영 · MINOR-4 exited 래치 → 거울 = 반영 · MINOR-5 무장 5분 동안 복원 뒤 끝난 창까지 청소 = 반영(스냅숏) · NIT-6 대기 탭 키 "" = 기록(대기 탭은 트리 null 이라 옛 창 0 · 실해 경로 미확인) · NIT-7 TTL 윈 배율 = 주석 정정 · NIT-8 예정 날짜 = opus 결함 1 과 같은 건으로 반영 · NIT-9 배선 시험이 문자열뿐 = 헤드리스 c1f·c1g 추가로 보강 |
-| agy 2R | 47812928..905bdee7 제품 diff | (§7-1 에 원문) | |
+| agy 2R(원문 docs/v116-ui-evidence/agy-2r.md) | 47812928..905bdee7 제품 diff | **ACCEPT** | ② 닫힘 확인 · ⑤ 기각 사유 수용 · 새 diff 결함 0(스냅숏·notAfter 비교·포커스 복원) |
 
 ## 8. 완료 뒤 정밀 디버깅(opus 서브에이전트 · 원문 요지)
 - 범위(「어디까지 뒤졌나」): 헤드리스 기존 10 + 닫기 경계 6(창 1개·포커스 없음·팔레트·확인 창 중 ⌘W/Close/⌘K·Escape) + 실제 키 Enter·Space·Tab→닫기 3 + 팔레트 Enter 누수 1 + 확인 창 중 종료 3 + 3창 가운데 종료 2 + 세로 분할 2 + 전문가 모드 토글 3 + 카드 후보 6 + TTL 추론 + 새 뮤턴트 12 + 제거 단추 잔여 참조 grep + tsc 대조 = **산 창이 잘못 닫히는 경로 0**.

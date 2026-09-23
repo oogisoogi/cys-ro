@@ -453,7 +453,8 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
   const rootCss = getComputedStyle(document.documentElement);
   const wsbarPx = parseFloat(rootCss.getPropertyValue("--wsbar-w")) || WSBAR_W_DEFAULT;
   const wsbarFontScale = parseFloat(rootCss.getPropertyValue("--wsbar-font")) || 1;
-  host.classList.toggle("no-row-age", !showsRowAge(wsbarPx, wsbarFontScale));
+  // 스코프 게이지가 있으면 rate 행의 이름 칸이 6em — 그 행이 가장 넓으므로 판정에 넣는다(wsbar 주석).
+  host.classList.toggle("no-row-age", !showsRowAge(wsbarPx, wsbarFontScale, rates.some((r) => r.label.length > 3)));
   // 계정 경계(소켓×에이전트×계정)가 둘 이상일 때만 범위 라벨을 붙인다 — 하나뿐이면 잡음이다.
   const scopes = new Set(rates.map((r) => JSON.stringify([r.socket, r.agent, r.accountId])));
   const showScope = scopes.size > 1;
@@ -528,6 +529,17 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
         pct.textContent = `${Math.round(r.usedPct)}%`;
         row.append(name, track, pct);
       }
+      // (TICKET=cysr-usage-two-accounts) 출처 마크·행별 나이 — ctx 행과 **같은 칸·같은 클래스**다.
+      //   두 계정이 서로 다른 원천(statusline / 사용량 API 직접 조회)에서 오므로, 어느 값이 어디서
+      //   왔고 얼마나 됐는지를 행에서 바로 읽게 한다. 흐림 문턱은 데몬이 원천별로 준 값(r.stale).
+      const g = sourceGrade(r.source);
+      const mark = document.createElement("span");
+      mark.className = "wsu-src";
+      mark.textContent = g.mark;
+      const age = document.createElement("span");
+      age.className = "wsu-ctx-age";
+      age.textContent = ageShort(ageAt(r.updatedAt, nowSecs));
+      row.append(mark, age);
       const mkRateTitle = (nowSecs2: number) => {
         const tag2 = shortSocketTag(r.socket);
         const who2 = r.accountLabel ? `${r.agent} · ${r.accountLabel}` : r.agent;
@@ -550,11 +562,12 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
               : `리셋 ${p2(d.getHours())}:${p2(d.getMinutes())}`,
           );
         }
+        tip.push(g.title);
         tip.push(`관측 ${ageText(ageAt(r.updatedAt, nowSecs2))}${r.stale ? " ⚠ stale — 이 계정에 최근 관측이 없다" : ""}`);
         return tip.join("\n");
       };
       row.title = mkRateTitle(nowSecs);
-      usageAgeUpdaters.push((n) => { row.title = mkRateTitle(n); });
+      usageAgeUpdaters.push((n) => { row.title = mkRateTitle(n); age.textContent = ageShort(ageAt(r.updatedAt, n)); });
       frag.appendChild(row);
     }
   }

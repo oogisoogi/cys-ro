@@ -423,3 +423,22 @@ describe("ⓑ′ — 조직 단추 3종은 전문가 모드 칸(기본 꺼짐)�
     expect(/[()（）\[\]「」『』<>]/.test(text)).toBe(false);
   });
 });
+
+// (TICKET=cysr-usage-two-accounts) rate 행도 출처 마크·나이 칸을 갖게 됐다. 스코프 게이지가 있으면
+// 이름 칸이 6em(has-scoped)이라 rate 행이 가장 넓다 — 판정은 그 행으로 한다.
+// 임계(손 계산 · 상수에서 유도하지 않는다): (6 + 2.6 + 0.85 + 2.465 + 2.4)em × 16px + 41px
+//   = 14.315 × 16 + 41 = 270.04px → 271px부터 참(배율 1.0).
+describe("showsRowAge — 스코프 게이지가 있으면 rate 행 폭으로 잰다", () => {
+  it("스코프 없음 = 종전 임계(242) 그대로", () => {
+    expect(showsRowAge(241, 1, false)).toBe(false);
+    expect(showsRowAge(242, 1, false)).toBe(true);
+  });
+  it("★스코프 있음 = 270은 거짓 · 271부터 참(rate 행의 트랙이 0이 되지 않게)", () => {
+    expect(showsRowAge(270, 1, true)).toBe(false);
+    expect(showsRowAge(271, 1, true)).toBe(true);
+  });
+  it("셋째 인자는 기본값 — 함수 길이 2 유지(인자 떼기 가드가 산다)", () => {
+    expect(showsRowAge.length).toBe(2);
+    expect(showsRowAge(242, 1)).toBe(showsRowAge(242, 1, false));
+  });
+});

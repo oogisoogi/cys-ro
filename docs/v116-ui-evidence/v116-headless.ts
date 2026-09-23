@@ -14,6 +14,7 @@
 //   c12 좁은 창(800폭 · 2분할) 제목: 역할 없는 창 = 「번호 · 폴더 이름」(전체 경로는 툴팁) · 끝난 창 = 「(끝남)」이 맨 앞 ·
 //       역할 창 이름을 비워 확정 → 「번호 · 특성」 그대로(D4 #12)
 //   c13 used_pct null(미관측) → 창 머리 배지에 그 창 0 · Control Center 계정 게이지 「—」(0% 아님)(D4 #18 나머지 절반)
+//   c14 경보 알림(승인 대기 · 방치 · 대화 기억 · 유휴 · 사망 · 응답 없음) 화면 글에 surface:N·역할 코드·내부 지침 문구 0 · 사망 알림에 안심 문장(D4 #8)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -24,7 +25,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -306,6 +307,26 @@ if (ONLY.includes("c13")) {
   const b = await ev(`[...document.querySelectorAll("#cc-accounts .cc-tbar")].map(t => (t.querySelector(".cc-tbar-lab")?.textContent ?? "") + "=" + (t.querySelector(".cc-tbar-pct")?.textContent ?? "") + (t.querySelector(".cc-tbar-fill") ? "+fill" : ""))`);
   check("c13b Control Center 계정 게이지: 미관측 5h = 「—」(채움 0) · 7d = 30%", Array.isArray(b) && b.includes("5h=—") && b.includes("7d=30%+fill"), JSON.stringify(b));
   await ev(`document.getElementById("btn-cc").click()`); await Bun.sleep(200);
+}
+
+if (ONLY.includes("c14")) {
+  await load("two");
+  const E = (n: string, sid: number | null, cat: string, p: any) => `window.__shimEmit("daemon-event", ${JSON.stringify({ name: n, category: cat, surface_id: sid, socket_slug: "", payload: p })})`;
+  await ev([
+    E("approval.request", 2, "feed", { role: "worker", surface_ref: "surface:2", excerpt: "Do you want to proceed?" }),
+    E("approval.stalled", 2, "watchdog", { title: "배포 승인", age_secs: 400, surface_ref: "surface:2" }),
+    E("context.threshold", 2, "watchdog", { role: "worker", context_pct: 83, threshold: 60, surface_ref: "surface:2", action: "cycle-agent(저장→검증→clear→복원) 집행 대상 — MASTER_DIRECTIVE §컨텍스트 사이클" }),
+    E("pane.idle", 2, "watchdog", { idle_seconds: 900, surface_ref: "surface:2" }),
+    E("master.idle", 1, "info", { role: "master", idle_secs: 320, threshold_secs: 300 }),
+    E("agent.exited", 2, "surface", { role: "worker", agent: "claude", surface_ref: "surface:2" }),
+    E("master.deadman", 1, "alert", { role: "master", axis: "agent_dead", reason: "agent process dead", surface_ref: "surface:1" }),
+  ].join(";"));
+  await Bun.sleep(600);
+  const a = await ev(`[...document.querySelectorAll("#toasts .toast")].map(t => t.innerText.replace(/\\n+/g, " / "))`);
+  const txt = (a as string[]).join(" | ");
+  const bad = /surface:\d|\bmaster\b|\bworker\b|MASTER_DIRECTIVE|cycle-agent|deadman|에이전트 사망|\d+s\b/.exec(txt);
+  const death = (a as string[]).find((t) => t.includes("❌"));
+  check("c14 경보 7종 화면 글: 코드 원문 0 · ❌ 사망 알림에 「창과 작업 폴더는 그대로」 + 확인 행동", (a as string[]).length >= 7 && !bad && !!death && death.includes("그대로 남아 있습니다") && death.includes("2번 작업 창"), JSON.stringify({ n: (a as string[]).length, bad: bad?.[0] ?? null, death: death ?? null, sample: txt.slice(0, 300) }));
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

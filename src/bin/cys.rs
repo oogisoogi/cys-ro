@@ -10046,6 +10046,24 @@ fn screen_shows_launch_failure(flat: &str) -> bool {
         || flat.contains("isnotrecognizedasaninternalorexternalcommand")
 }
 
+/// (T2 · TICKET=v116-usage) 신규 출현분에 기동 실패 문면이 뜬 뒤, 그것을 **기동 실패 확증**으로 볼지(순수 — 진리표 핀).
+///
+/// 거부권 둘 — 둘 다 「살아 있는 에이전트를 화면 글자로 닫지 않는다」 한 방향으로만 판정을 좁힌다:
+///   ① `alive == Some(true)`: 데몬이 커널 프로세스 표에서 이 좌석의 에이전트를 관측했다. 「명령을 못 찾았다」와
+///      정면으로 모순되는 사실이다(못 찾은 명령은 프로세스가 없다).
+///   ② 화면에 TUI 렌더 증거가 있는데 실패 문면이 **꼬리**([`BARE_SHELL_DEATH_TAIL_LINES`])에 없다: 셸의 실패는
+///      오류 줄 바로 뒤에 프롬프트가 와서 꼬리에 남는다. TUI 가 그려진 화면의 중간에만 있는 문면은
+///      `--resume` 이 다시 그린 옛 대화(또는 훅 출력)다.
+/// 새 좌석의 진짜 실패(생존 없음 · TUI 없음)와 재사용 좌석의 진짜 실패(옛 TUI 잔상 + 꼬리에 오류)는 종전과 같이 참이다.
+/// ★남는 틈(정직): 옛 대화를 다시 그리는 도중(TUI 테두리 전) 꼬리에 오류 줄이 걸린 틱은 ①만이 막는다.
+fn launch_failure_confirmed(screen: &str, alive: Option<bool>) -> bool {
+    if alive == Some(true) {
+        return false;
+    }
+    let tail = screen_tail_lines(screen, BARE_SHELL_DEATH_TAIL_LINES);
+    screen_shows_launch_failure(&cys::first_run_gates::flatten(&tail)) || !screen_has_tui_render_evidence(screen)
+}
+
 /// 살아있는 surface 위에서: 에이전트 기동 → 준비 폴링 → 지침 주입 → 메타 등록.
 /// RC-3(B′): agents.json env 값의 셸 확장을 Rust에서 해소한다(Windows용 — unix는 셸이 직접 전개).
 /// 지원 패턴: `${VAR:-default}`(현 agents.json 패턴)·`$HOME`·선두 `~`. HOME은 Windows에서
@@ -10734,7 +10752,11 @@ fn boot_agent_on_surface(
         let delta_cursor = delta["next_cursor"].as_u64().unwrap_or(since_line);
         let delta_flat: String = delta_text.chars().filter(|c| !c.is_whitespace()).collect();
         // ① 기동 실패 — **신규 출현분에서만** 판정한다(잔존 에러 텍스트로 새 기동을 죽이지 않는다).
-        if screen_shows_launch_failure(&delta_flat) {
+        //   ★(T2 · TICKET=v116-usage) 신규 출현분은 `--resume` 이 다시 그린 **옛 대화**도 담는다 — 옛 도구
+        //   출력의 `No such file or directory` 한 줄이 살아 있는 claude 를 닫았다(VM ↻ 본부 cso surface:9 ·
+        //   생성 5.3초 뒤 descendants_killed 1). 문면만으로 확증하지 않고 생존 증거와 모순되지 않을 때만
+        //   확증한다(`launch_failure_confirmed` — 문면이 보인 틱에만 데몬을 한 번 더 조회한다).
+        if screen_shows_launch_failure(&delta_flat) && launch_failure_confirmed(text, surface_agent_alive(sid)) {
             // ★(U-11) 화면이 기동 실패를 **확증**한 유일한 지점 — 종전 귀결(close)을 그대로
             //   유지한다. 보류로 흐르면 안 된다: 여기서 보류하면 진짜 실패 좌석이 역할을 쥔 채
             //   쌓이고, 그 다음 기동이 전부 claim_denied 가 된다(2026-08-16 실사고 계열).

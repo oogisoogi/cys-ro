@@ -5387,7 +5387,9 @@ pub(crate) fn is_rule_row(row: &str) -> bool {
 ///   죽인다(1.1.6 r2 성찰 A · cys.rs U-15 핀 ③′ 가 ⑴에 이 문면이 **없음**을 집행). 코퍼스는 코드 정본이라 전
 ///   기계에 닿고, 이 판정은 **막기만** 한다(응답 0 · 호출부 = 큐 배달 보류·강제 배달 거부).
 ///   ⑵를 ⑴의 키에 **합치지 않는** 것도 같은 이유다(U-16 분리 · `approval_patterns_union_excludes_first_run_gate_corpus`)
-///   — 코퍼스를 **읽는** 것은 그 분리를 넘지 않는다. 판독 범위(마지막 가로줄 아래)는 두 출처에 똑같이 걸린다.
+///   — 코퍼스를 **읽는** 것은 그 분리를 넘지 않는다. 판독 범위는 두 출처 모두 마지막 가로줄 아래이고, 가로줄이
+///   없을 때만 갈린다: ⑴은 커서 행이 번호 선택지일 때만 전량 · ⑵는 언제나 전량(첫기동 관문 창은 입력창 테두리가
+///   없다 · 본문 아래 주석).
 pub(crate) fn approval_in_prompt_tail(
     rows: &[String],
     cursor_row: usize,
@@ -5395,6 +5397,19 @@ pub(crate) fn approval_in_prompt_tail(
     patterns: &[regex::Regex],
     gates: &[cys::first_run_gates::Gate],
 ) -> bool {
+    // ⑵ 관문 코퍼스 — 판독 범위 = 마지막 가로줄 아래, **가로줄이 없으면 화면 전량**. 첫기동 관문 창(테마·로그인·
+    //   OAuth 코드 입력·신기능 안내 · 윗 가로줄이 밀려난 신뢰 창)은 입력창 테두리가 없는 화면이고, 선택지가
+    //   번호가 없거나(2.1.280) 텍스트 입력(OAuth)이라 커서 행 조건을 세울 수 없다(Fable ①② 1R). 정상 claude
+    //   화면은 입력창 가로줄이 늘 있어 이 전량 판독에 들어가지 않고, 들어가도 판정은 관문별 needle ∧ 위젯 AND 다
+    //   (함대 표본 42장 · 가로줄을 지운 판까지 적중 0 — `qa_fleet_normal_screens_never_read_as_gate`).
+    let gate_text = match rows.iter().rposition(|r| is_rule_row(r)) {
+        Some(last_rule) => rows[last_rule + 1..].join("\n"),
+        None => rows.join("\n"),
+    };
+    if cys::first_run_gates::identify(gates, &gate_text).is_some() {
+        return true;
+    }
+    // ⑴ 어댑터 패턴 — 가로줄이 없으면 커서 행이 번호 선택지일 때만 전량(흔한 낱말 기아 방지 · 위 doc).
     let region = match rows.iter().rposition(|r| is_rule_row(r)) {
         Some(last_rule) => &rows[last_rule + 1..],
         None if rows
@@ -5403,20 +5418,10 @@ pub(crate) fn approval_in_prompt_tail(
         {
             rows
         }
-        // ★(r2 · Fable 2R B) 2.1.280 신뢰 창 선택지는 **번호가 없다**(`❯ No, exit`) — 윗 가로줄이 밀려난
-        //   화면(창보다 낮은 페인)에서 위 폴백이 안 서서 ⑵가 눈이 멀었다. 관문 선택지 라벨(`options`)에 `❯` 가
-        //   걸린 행이 있으면 전량을 읽는다(판정은 여전히 `identify` = needle ∧ 위젯 AND).
-        None if gates
-            .iter()
-            .any(|g| rows.iter().any(|r| is_gate_option_row(r, marker, g))) =>
-        {
-            rows
-        }
         None => return false,
     };
     let text = region.join("\n");
     patterns.iter().any(|re| re.is_match(&text))
-        || cys::first_run_gates::identify(gates, &text).is_some()
 }
 
 /// 승인 축 ⑵ 재료 — 이 어댑터의 관문 코퍼스 해소본 **전 관문**(`approval_in_prompt_tail` doc 의 두 출처
@@ -5505,24 +5510,6 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
         Some(m) => approval_in_prompt_tail(&rows, cursor_row, &m, &res, gates),
         None => approval_in_prompt_tail(&rows, usize::MAX, "", &res, gates),
     }
-}
-
-/// 관문 선택지에 마커가 걸린 행인가(순수) — 마커 뒤(공백·`숫자.` 무시) 본문이 관문 `options` 라벨과
-/// **완전 일치**(`❯ No, exit` · `❯ 1. Yes, I trust this folder`). 빈 마커는 판단하지 않는다.
-fn is_gate_option_row(row: &str, marker: &str, gate: &cys::first_run_gates::Gate) -> bool {
-    if marker.is_empty() {
-        return false;
-    }
-    let Some(i) = row.find(marker) else {
-        return false;
-    };
-    let rest = row[i + marker.len()..].trim_start();
-    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-    let rest = match rest[digits..].strip_prefix('.') {
-        Some(r) if digits > 0 => r.trim_start(),
-        _ => rest,
-    };
-    gate.options.iter().any(|o| rest.trim_end() == o)
 }
 
 /// 선택 메뉴 행인가(순수) — 마커 뒤(공백 무시)가 `숫자.` 로 시작한다(`❯ 1. Yes` · `❯ 2. No`).
@@ -10115,9 +10102,10 @@ mod tests {
     /// ①(master#1ac43f0c) **오탐 실측 고정** — 실제 함대 좌석의 정상 화면 표본(`testdata/fleet_normal_screens/`
     ///    · 2026-09-24 `cys read-screen` 채집 · 7좌석 × 6회 · 유휴 입력창·작업 중 스피너·긴 출력·제안 글 등)에서
     ///    승인 축 ⑵(코퍼스 전 관문 `identify`)가 한 번도 서지 않는다. 다른 좌석의 작업 글은 저장소에 싣지 않으려
-    ///    글자를 가렸다(`x`·숫자 `0` · 관문 문면·가로줄·마커는 보존 — 도구 `tools/fleet-mask.py`). 가림 전 원본에도
+    ///    글자를 가렸다(`x`·숫자 `0` · 관문 문면·가로줄·마커는 보존 — 도구 `fleet-mask.py`). 가림 전 원본에도
     ///    같은 시험을 `CYS_FLEET_SCREENS_DIR=<원본 폴더>` 로 돌려 같은 결과(적중 0)를 확인했다(보고서 §12).
-    ///    커서 행은 「없음 + 모든 행」으로 돌려 번호 선택지 폴백까지 최악을 잰다.
+    ///    커서 행은 「없음 + 모든 행」으로 돌리고, 가로줄을 지운 판(⑵ 전량 판독 경로)과 화면 전량 `identify` 까지
+    ///    적중 0 을 단언한다. 가림 도구 = 보고서 폴더 `master/reports/cysr-115-debug-2026-09-23/queue-approval/tools/`.
     #[test]
     fn qa_fleet_normal_screens_never_read_as_gate() {
         let dir = std::env::var("CYS_FLEET_SCREENS_DIR")
@@ -10137,15 +10125,18 @@ mod tests {
             let text = std::fs::read_to_string(&p).unwrap();
             let rows: Vec<String> = text.lines().map(String::from).collect();
             n += 1;
-            for cur in std::iter::once(usize::MAX).chain(0..rows.len()) {
-                assert!(
-                    !approval_in_prompt_tail(&rows, cur, "❯", &[], &gates),
-                    "{}: 정상 화면이 관문으로 읽혔다(커서 행 {cur})",
-                    p.display()
-                );
+            // 가로줄을 지운 판 = 판정이 화면 **전량**을 읽는 경로(가로줄 없음 폴백 · Fable ①② 1R 표본 편향 지적).
+            let no_rule: Vec<String> = rows.iter().filter(|r| !is_rule_row(r)).cloned().collect();
+            for screen in [&rows, &no_rule] {
+                for cur in std::iter::once(usize::MAX).chain(0..screen.len()) {
+                    assert!(
+                        !approval_in_prompt_tail(screen, cur, "❯", &[], &gates),
+                        "{}: 정상 화면이 관문으로 읽혔다(커서 행 {cur} · 가로줄 {})",
+                        p.display(),
+                        screen.len() == rows.len()
+                    );
+                }
             }
-            // 참고 계측(판정 아님): 판독 범위 없이 화면 **전량**에 identify 를 걸면 몇 장이 서는가 — 범위가
-            // 왜 필요한지의 증거. `--nocapture` 로 본다.
             if let Some(g) = cys::first_run_gates::identify(&gates, &text) {
                 whole_screen_hits.push(format!("{} → {}", p.display(), g.id));
             }
@@ -10156,6 +10147,10 @@ mod tests {
             whole_screen_hits
         );
         assert!(n >= 30, "표본 {n}장 < 30(master 조건)");
+        assert!(
+            whole_screen_hits.is_empty(),
+            "화면 전량 identify 적중: {whole_screen_hits:?}"
+        );
     }
 
     /// ①(master#1ac43f0c) 전 관문: 면책 창(기본 포커스 `No, exit` → Return = rc 1)에도 큐 배달은 보류되고
@@ -10208,8 +10203,8 @@ mod tests {
         ));
         let c = body.iter().rposition(|l| l.trim() == "❯").unwrap();
         assert!(!approval_in_prompt_tail(&body, c, "❯", &[], &gates));
-        // 윗 가로줄이 밀려난 2.1.280 신뢰 창(번호 없는 선택지): 선택지 라벨 포커스 행으로 전량을 읽는다
-        // (Fable 2R B). 커서 행은 무관(번호 선택지 폴백과 다른 조건) · ⑵ 없으면 종전대로 판단하지 않는다.
+        // 가로줄이 **없는** 화면에서 ⑵는 전량을 읽는다(Fable ①② 1R) — 윗 가로줄이 밀려난 2.1.280 신뢰 창은
+        // 선택지 번호가 없어 ⑴의 번호 선택지 폴백이 서지 않는다. 커서 행과 무관하게 잡는다. ⑴(옛 문면)만으로는 못 본다.
         let no_rule: Vec<String> = trust_rows
             .iter()
             .filter(|r| !is_rule_row(r))
@@ -10230,26 +10225,36 @@ mod tests {
             &old,
             &[]
         ));
-        // 선택지 행이 없으면(가로줄도 없음) ⑵가 있어도 판단하지 않는다 — 답 본문 인용 기아 방지.
-        let no_focus: Vec<String> = no_rule.iter().map(|r| r.replace('❯', " ")).collect();
-        assert!(!approval_in_prompt_tail(
-            &no_focus,
-            usize::MAX,
-            "❯",
-            &[],
-            &gates
-        ));
-        // 선택지 라벨은 **완전 일치**만 — 라벨을 품은 다른 줄(셸 명령·답 본문)로는 전량 판독이 열리지 않는다
-        // (가로줄 없는 화면의 기아 방지 · N22 킬). 창 문면을 인용한 본문 + `❯ grep 'No, exit' …` 줄 → false.
-        let mut quoting: Vec<String> = no_focus.clone();
-        quoting.push("❯ grep -n 'No, exit' session.log".to_string());
-        assert!(!approval_in_prompt_tail(
-            &quoting,
-            usize::MAX,
-            "❯",
-            &[],
-            &gates
-        ));
+        // 첫기동 관문 창은 입력창 테두리(가로줄)가 없는 온보딩 화면이다 — 커서가 마지막 행(ink 통상 위치)에 있어도
+        // 전 관문이 잡힌다: 테마(번호 선택지) · 로그인 · OAuth 코드 입력(텍스트 입력 · 선택지 없음) · 신기능 안내 ·
+        // 2.1.241 신뢰 창 · 면책 창. (종전 커서 행 조건으로는 OAuth 가 구조적으로 안 잡혔다 — Fable ①② 1R MAJOR.)
+        {
+            use cys::first_run_gates::fixtures::{
+                FEATURE_FULLSCREEN, FOLDER_TRUST, LOGIN_METHOD, OAUTH_CODE, THEME,
+                TRUST_ECHO_THEN_DISCLAIMER,
+            };
+            for (name, screen) in [
+                ("theme", THEME),
+                ("login", LOGIN_METHOD),
+                ("oauth", OAUTH_CODE),
+                ("feature", FEATURE_FULLSCREEN),
+                ("trust-241", FOLDER_TRUST),
+                (
+                    "disclaimer",
+                    TRUST_ECHO_THEN_DISCLAIMER.split_once('\n').unwrap().1,
+                ),
+            ] {
+                let r: Vec<String> = rows(screen)
+                    .into_iter()
+                    .filter(|l| !is_rule_row(l))
+                    .collect();
+                let last = r.len().saturating_sub(1);
+                assert!(
+                    approval_in_prompt_tail(&r, last, "❯", &[], &gates),
+                    "{name}: 가로줄 없는 첫기동 관문 창을 못 본다"
+                );
+            }
+        }
         // 좁은 폭에서 질문문이 어절 단위로 접혀도 ⑵는 잡는다(`Gate::matches` = 공백 정규화·제거본 — r2 성찰 D).
         let wrapped = rows(&FOLDER_TRUST_2_1_280.replace(
             "Is this a project you created or one you trust?",

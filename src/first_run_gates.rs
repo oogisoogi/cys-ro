@@ -1008,19 +1008,20 @@ fn repair_gate(mut g: Gate, canon: &[Gate], notes: &mut Vec<String>) -> Gate {
     //   겨누게 두면 좌석이 rc 1 로 죽는다. 부재의 비용(`absence_cost`)과 같은 비대칭: 액션 자체를 끄는
     //   선언(null · human_only)은 막는 쪽이라 허용하고, 조준점을 옮기는 선언만 되돌린다. 사유는 notes.
     //   merge(`apply_patch`)·replace(`parse_new_gate`) 두 경로가 모두 여기를 지난다(`enforce_self_rules`).
-    let canon_label = canon
+    //   라벨만 되돌리면 `select_index`·`literal` 이 다른 항목을 가리키는 자기모순 액션이 남는다(Fable ①② 1R) —
+    //   라벨이 다르면 액션 **전체**를 정본으로 되돌린다.
+    let canon_action = canon
         .iter()
         .find(|b| b.id == g.id)
-        .and_then(|b| b.action.as_ref())
-        .map(|a| a.label.clone());
-    if let (Some(a), Some(want)) = (g.action.as_mut(), canon_label) {
-        if a.label != want {
+        .and_then(|b| b.action.clone());
+    if let (Some(a), Some(want)) = (g.action.as_mut(), canon_action) {
+        if a.label != want.label {
             notes.push(format!(
-                "{}: 통과 액션 라벨 치환 선언({:?}) 거부 — 라벨은 자동확인의 조준점이라 코드 정본 \
-                 라벨({want:?})로 되돌린다(액션을 끄는 선언은 허용)",
-                g.id, a.label
+                "{}: 통과 액션 라벨 치환 선언({:?}) 거부 — 라벨은 자동확인의 조준점이라 액션 전체를 코드 \
+                 정본({:?} · {}번째)으로 되돌린다(액션을 끄는 선언은 허용)",
+                g.id, a.label, want.label, want.select_index
             ));
-            a.label = want;
+            *a = want;
         }
     }
     if gate_rule_violations(&g).is_empty() {
@@ -2610,7 +2611,7 @@ mod tests {
     /// merge·replace 두 경로 모두. 액션을 끄는 선언(null)은 막는 쪽이라 그대로 허용한다.
     #[test]
     fn override_cannot_retarget_a_builtin_action_label() {
-        let aim = json!({"select_index": 1, "label": "No, exit"});
+        let aim = json!({"select_index": 2, "label": "No, exit"});
         for env in [
             json!({"gates": [{"id": "folder-trust", "action": aim}]}),
             json!({"source": "replace", "gates": [{"id": "folder-trust",
@@ -2624,6 +2625,15 @@ mod tests {
                 g.action.as_ref().map(|a| a.label.as_str()),
                 Some("Yes, I trust this folder"),
                 "조준점이 봉투로 옮겨졌다: {env}"
+            );
+            // 라벨만이 아니라 액션 전체(select_index 포함)가 정본 — 자기모순 액션을 남기지 않는다.
+            assert_eq!(
+                g.action,
+                builtin()
+                    .into_iter()
+                    .find(|b| b.id == "folder-trust")
+                    .unwrap()
+                    .action
             );
             // 2.1.280 기본 포커스(No, exit) 화면에서 Return 이 아니라 아래키 계획이어야 한다.
             assert_eq!(

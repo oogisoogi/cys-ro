@@ -81,3 +81,72 @@
 그 뒤에 돈 `gen --check`(rc=1)·건강 검체 `H-PACK-TRACK-1`(fail · 누락 = 그 `.user` 들)은 **오염된 트리를 잰 값**이다. 복구 = `git checkout -- .` + 미추적 24 삭제.
 원인 후보 【추정】: 같은 시각대 팩 CI 루프 말미 검체 또는 병행한 격리 프로브 — 어느 쪽이 CYS_PACK_DIR 를 저장소 팩으로 잡고 1.0.2 `cys`(PATH 의 /usr/local/bin/cys)로 설치했는지 미확정.
 라이브 `~/.cys/pack` 은 무접촉(마지막 쓰기 09-22 12:33). 재검증 = 별도 worktree(`vwt`)에서 gen→health→팩 루프(검체마다 `git status` 오염 가드) 순.
+
+## 8. r2(TICKET=v115r3-d7-r2 · surface:943) — agy 1R 4건 대응 + master D안 + 팩 오염 규명
+
+> 상태를 복제하지 않는다 — `git log --oneline 0de7a4b4..HEAD` · 시험은 아래 명령으로 다시 잰다.
+
+### 8-1. agy 1R 대응표
+| # | 판정 | 수리 자리 | 시험(뮤턴트 킬러) |
+|---|---|---|---|
+| #3 P1 생성 직후 Unknown 창 | **실재**(강제 배달 경로) — 수리 ⓐ | governance.rs `SEAT_UNKNOWN_HOLD_SECS`(첫 틱+1s) · `role_seat_hold`(단일 술어) · 강제 게이트 · 틱 게이트 | `d7_role_seat_hold_table_unknown_only_inside_creation_window` · `d7_fresh_unknown_role_seat_tick_holds_with_reason` · `force_deliver_empty_seat_refused_unknown_passes`(대조군 재조준 = 창 밖 Unknown 통과) |
+| #1 P2 settle 뒤 stale row | 수리 | javis_boot_node.py settle 직후 `row = status_surface(status, a.role)` | `test_d7_seat_replaced_during_settle_targets_the_new_seat` · `test_d7_seat_gone_during_settle_launches_fresh` |
+| #2 P2 sleep 상한 초과 | 수리 | `step = min(tick_s, limit - waited)` | `test_d7_settle_unknown_seat_pure`(조각 목록 [1,1,0.5]·[0.5]) · `test_d7_settle_never_sleeps_past_the_limit_wall_clock`(실경과 <0.6s) |
+| #4 P2 M1(sleep 삭제) 생존 | 수리 | settle 시험이 잔 횟수·길이 단언 | PM1 KILLED |
+
+### 8-2. #3 격리 재현(스크래치 `race/probe4.sh` · stub · `.zshenv` 의 `/bin/sleep N` 으로 셸 초기화를 늘려 창을 결정론으로 세움)
+| 빌드 | 경로 | 초기화 | 결과 |
+|---|---|---|---|
+| 기준선 27e4627e | 강제(queue deliver) | 1.5s | 1/1 seat=unknown 인 채 +1.16s 배달 → 빈 셸 실행 |
+| HEAD 0de7a4b4 | 강제 | 1.5s | 2/3 같은 모양(+1.15·+1.21s) · 1/3 은 prime 이 Empty 를 실어 보류 |
+| ⓐ | 강제 | 1.5s | 4/4 거부(0.13~4.19s 전 구간 empty_seat 코드) · 실행 0 |
+| 기준선·HEAD·ⓐ | 틱 | 7s | **4/4 빈 셸 실행**(+4.16~4.25s queue.delivered forced=false) — 틱이 초기화 자손을 보고 Occupied 로 적고, 초기화 중엔 출력이 없어 quiet 3s 를 채운다(ⓐ 로 안 닫히는 창 · 기준선부터 있던 창) |
+| D(94b280c7) · 부서 소켓 | 틱 | 7s | 2/2 보류(+4.2s queue.held reason=seat_no_agent seat=occupied → 이후 empty_seat) · 실행 0 |
+| D · 부서 | 강제 | 1.5s | 거부 · 실행 0 |
+| D · 부서 · 에이전트 좌석(뿌리=stub) | 틱 | 0 | +4.21s 배달(엄격 관측이 풀어 줌 — 무한 정지 없음) |
+| D · 부서 · `CYS_SEAT_BOOT_GRACE_S=3` | 틱 | 7s | 배달(유예 뒤 종전 판정 복귀 = 설계대로의 폴백) |
+| D · 본부 소켓 | 틱 | 7s | 배달 = **종전 그대로**(본부 좌석 정책 무접촉 — 남은 창 · 1.1.6) |
+
+ⓑ(prime 재시도 2×500ms)는 1.5s 초기화에서 1s 뒤에도 Occupied 라 창이 남아 열위.
+
+### 8-3. D안(master#3b5500f0) — `role_seat_hold` 셋째 팔
+부서 소켓(`cys::is_dept_socket` — 경로에 `cys-dept-` 성분)의 역할 좌석 ∧ 메타 없음 ∧ `seat_agent_cache`(뿌리 포함 엄격 매칭) 미관측 ∧ 생성 후
+유예(`CYS_SEAT_BOOT_GRACE_S` · 기본 180 · boot_node 미러) 안 → 보류(reason=seat_no_agent). 유예 뒤 종전 판정 · 본부 = `dept_grace=None`.
+시험 = 표(유예 초과 폴백·본부 무접촉·관측 해제·메타 좌석 비대상) + `d7_dept_role_seat_without_observed_agent_tick_holds`(`cys-dept-*` 폴더 소켓 데몬).
+
+### 8-4. 뮤턴트(스크래치 `mut2.py`·`dmut.py` · 별도 worktree · 판정 = 종료코드 · CRASH 분리)
+데몬 9/9 KILLED: DA1 Unknown 팔 삭제 · DA2 창 조건 삭제 · DA3 강제 게이트 Empty 전용 복귀 · DA4 틱 게이트 Empty 전용 복귀 ·
+DD1 유예 한정 해제(폴백 제거) · DD2 부서 한정 해제 · DD3 엄격 관측 조건 삭제 · DD4 부서 팔 무력화 · DD5 틱 경로 부서 배선 끊기.
+팩 3/3 KILLED: PM1 sleep 삭제 · PM2 조각=틱 통째 · PM3 settle 뒤 row 재결정 삭제. (PM4 row None 가드 삭제 = 등가 뮤턴트 → 가드를 코드에서 걷음)
+
+### 8-5. 팩 오염(§7) 규명 【관측】
+사슬: `tests/test_formation.py:27`(CYS_PACK_DIR=저장소 팩) → `:206`·`:249` `m.ensure(socket="/tmp/b1.sock"|"/tmp/b5.sock")`(결원 로스터 2건) →
+`javis_formation.py:1119` `_master_seat_cwd(socket)` — `_ensure_harness` 모킹 목록 밖 → `:514` 실 `cys status --json`(PATH 의 /usr/local/bin/cys 1.0.2) →
+그 소켓에 데몬 없음 → CLI 자동 기동 → `/usr/local/bin/cysd`(1.0.2)가 상속 env(CYS_PACK_DIR=저장소 팩)로 부팅 팩 설치 → 1.0.2 임베드가 저장소 팩에.
+증거: 09-23 09:41 `ps` 에 고아 `/usr/local/bin/cysd` 2개(시작 09:04:59·09:05:11 · ppid 1 · env CYS_SOCKET=/tmp/b1.sock·/tmp/b5.sock · CYS_STATE_DIR=…/fmens-*(= test_formation.py:192 접두) ·
+CYS_PACK_DIR=이 worktree 팩 · cwd=이 worktree). 두 데몬은 실행파일·소켓·cwd 3축 확인 뒤 TERM(라이브 pid 62178 무접촉).
+CI 러너엔 `cys` 가 없어 이 경로가 안 돌고(=CI 초록), 로컬에서만 설치본 cys 가 붙어 오염된다.
+재발 차단(통합 검증 정본 한 줄): `env -u CYS_SURFACE_ID -u CYS_SURFACE_REF -u CYS_SEAT_TOKEN -u CYS_ROLE -u CYS_PACK_DIR PATH="$HOME/.cargo/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" CYS_SOCKET="$(mktemp -d)/none/cys.sock" CYS_NO_AUTOSTART=1 <단계>`
++ 단계마다 `git status --short` 가드. (근본 수리 = test_formation 이 `_master_seat_cwd` 도 모킹 — 1.1.6 후보 · 범위 밖이라 미수리)
+부수 관측: 934 팩 루프(`for … done`)의 종료코드는 마지막 검체 것뿐이라 중간 적색을 삼킨다 — r2 루프는 적색 수를 누적해 종료코드로 낸다.
+
+### 8-6. gen --check(2-1) 【관측】
+기준선 27e4627e worktree rc=0 · HEAD rc=0(둘 다 GREEN 87739B). 934 의 rc=1(커밋본 81001B)은 오염으로 CEO_TEMPLATE 가 1.0.2 판으로 덮인 트리를 잰 값 → 수리 불요.
+
+### 8-7. 남은 것
+- 본부 소켓 역할 좌석의 「초기화 > 첫 틱」 창(8-2 마지막 줄) = 1.1.6(본부 좌석 정책 변경 = 오너 결정 사안).
+- 【추정 · 미실측】 부서에서 느린 셸이면 boot_node settle 이 occupied 를 받아 입양 분기로 가지만, 이제 그 큐는 seat_no_agent 로 보류돼 빈 셸 타이핑은 없다 — boot_node 결과는 injected_unverified(rc=1) 로 남고 다음 편성 심박이 empty 를 보고 승계한다.
+- 곁 「_seat_event stdout 만」 = 1.1.6(수리 금지 · 이월 그대로).
+
+### 8-8. 통합 검증(r2 · HEAD 94b280c7 · 격리 env 8-5 · 09:42:54~10:01:19 · 단계마다 dirty=0)
+| 단계 | rc | 초 | 건수 |
+|---|---|---|---|
+| cargo test --lib(--test-threads=1) | 0 | 228 | 533 pass · 0 fail |
+| cargo test --bin cysd(직렬) | 0 | 105 | 1033 pass · 0 fail |
+| cargo test --bin cys | 0 | 103 | 280 pass · 0 fail |
+| ui bun test | 0 | 1 | 1102 pass · 0 fail |
+| 팩 CI 루프 45검체(적색 누적 판정) | 0 | 293 | PACK-FAILS=0 |
+| secret-scan --all | 0 | 4 | clean · 1082 파일 |
+| gen --check | 0 | 0 | GREEN · 87739B |
+| 전체 건강 검체(직렬) | 0 | 371 | pass 149 · skip 1 · GREEN |
+2-0 재현(버리는 worktree · 비격리 env): `test_formation` 단독 1/1 오염(새 cysd 2 · 추적 116파일 · `.pack-version` 기록) — 재현분 고아 2개도 3축 확인 뒤 TERM, worktree 폐기.

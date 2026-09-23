@@ -3,6 +3,14 @@
 브랜치 `fix/v116-ui` ← 526325bf · 착수 23:31 · 상한 01:11 · 브리프 `~/axdev/master/briefs/2026-09-23-v116-ui-close.md`.
 
 ## §0 델타(후임·재개용 — 최신이 위)
+### 2026-09-24 01:4x r2(worker-13 @ surface:1031 · TICKET=v116-ui-close-r2 · 브리프 2026-09-24-v116-ui-close-r2)
+- **끝낸 것(1ad9cf80 위 20 커밋 · push·태그·판번 0)**: R1c(f282b8a8·eaa3a03d) · D4 #12(6c76c748·b63fbb96 · 신규 panetitle.ts) · D4 #18(4e1922de·87ae4a0a + 나머지 절반 main.ts 4경로 38e276ce·8e199ac0 = master#f55cc917 A) · D4 #8(3914eaa6·126478c6 · agy 3R MAJOR 90e1c2b3 · Fable 반영 6a42e41f·64c41c74 · 신규 alertcopy.ts) · D4 #14(9f1584f3·31982b22 · 오류 알림 26곳 + 업데이트 문구 = master#a50791f8 A) · D4 #10(d292eab5·15ccffaf) · D4 #20(d20788c7·1a7643e3).
+- **검증 반영**: #8 agy 3R BLOCK(MAJOR 총괄 유휴 기준 시간 손실) = 수용 90e1c2b3 · Fable BLOCK(MAJOR 3·MINOR 6·NIT 3) = MAJOR 전부·MINOR 2·3·5·6·NIT 1·3 수용 6a42e41f·64c41c74 / MINOR-4(범위 밖 알림 3종) 기록만 · agy 4R BLOCK(MINOR 자리 이동 부서 접두) = 수용 0978d7bd·6290fec1 · agy 5R BLOCK(TS2345 주장) = **기각**(seatName dept 인자 = unknown · tsc 신규 0 실측 · agy-5r.md 말미) → agy 수렴. opus 정밀 디버깅(MAJOR 1·MINOR 4·NIT 5 · BLOCK 0) = MAJOR·MINOR 전부 + NIT 4 수용 f695ff14·83e45f03 / NIT 「머리줄 이름 늦은 갱신」 기록만.
+- **남은 「가능」(T-UI)**: 0.
+- **기록만(미반영 · 범위 밖)**: 같은 onDaemonEvent 의 osc.notify·health·watchdog 폴백 알림에 surface:N·rule=·영문 이벤트 이름 잔존(Fable MINOR-4) · 알람 이력 탭 메타 줄의 카테고리·id 원문 · drainVerifyNotice 의 역할 코드 원문(drainverify.ts:75) · restore.retrying 본문 = 데몬 문자열(「자비스(master)」) · 피드백 창 오류(main.ts confirmModal 「피드백 창을 열지 못했습니다: ${String(e)}」) · update-error 리스너 payload 원문 · ↻ 재시작 툴팁·차이 배지 「데몬 v…」 = 「엔진」 용어 전수 별건(master#e997f947) · 부서 탭 이름을 바꿔도 CTX 머리줄은 다음 서명 변화 때 갱신 · Control Center KPI 는 관측 0 일 때 종전처럼 0%(null 과 무관한 기존 동작).
+- **함정(추가)**: 헤드리스 새 칸 c11(sc=late · 16초)·c12(800폭)·c13(CC Live 탭 클릭 필요 — ccTab 기본값이 live 아님)·c14·c15·c16 · 셸 `timeout` 없음(agy 는 `--print-timeout 900s`) · 헤드리스 페이지 쪽 정규식은 템플릿 안이라 `\\n` 이중 이스케이프 · 뮤턴트 M3b 는 단위 시험 생존이 정상(헤드리스 c3 가 죽인다 — 01:4x 재확인) · 기준선 적색 비교 = scratchpad 에 `git archive HEAD ui` + node_modules 복사 후 빌드.
+- **수치(83e45f03)**: bun 1175 → 1237/0 · tsc 신규 0(기존 7건) · 헤드리스 c1~c16 30/30(headless-final.txt) · 뮤턴트 42 → 91/91(단위 90 KILLED + M3b 헤드리스 c3 KILLED — 01:4x 재확인).
+
 ### 2026-09-24 01:0x 매듭(master#622d03c0 · 좌석 종료 · 후임 = master 결정)
 - **끝낸 것(전부 master 수용)**: 필수 = D4 #7 닫기 확인 · D4 #17 exited 잔재 · X-1 남은 창 폭 · N-3 new split(권고 C) / R1a = 읽기 경로 배선만(**완료 아님** · 생산자 0 = 사용자 효과 0) / 「가능」 = D4 #21 경보 가림 · #5 상단 엔진 라벨 · #13 영어 단추 · #4 본부/새 화면 · #6 Ctrl+O 안내 오발화 · #11 스코프 게이지 흐림.
 - **남은 「가능」 7(가치 순 · master 확인 순서)**: #8(알림·시스템 배너의 `surface:N`·역할 코드 원문 → friendlyRole 재사용·문구 완화 · main.ts 알림 경로 — Fable 적대 권장: 경보 경로) → #14(업데이트 문구 내부 용어·백엔드 오류 원문 약 15곳 · updateplan.ts·main.ts) → #10(사이드바 CTX 부서 줄 「dept-」 잘림 → 부서 표시명) → R1c(restoreBriefShown 을 master 확인 전에 켬 · main.ts showRestoreBrief 첫 줄) → #20(확인창 단추 말 「확인/아니오」 vs 「취소」 통일) → #18(used_pct null → 0% 게이지 · 잠복) → #12(좁은 창 제목 끝 잘림·이름 비우기 시 번호 소실).

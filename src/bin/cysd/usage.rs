@@ -42,6 +42,14 @@ const REDISCOVER_SECS: f64 = 30.0;
 /// statusline 보고(usage.report) 신선도 창 초 — claude는 이 안에 statusline 보고가 있으면
 /// 트랜스크립트 tail이 ctx를 덮어써 rate limit을 유실시키지 않게 수집을 건너뛴다(우선순위 병합).
 const STATUSLINE_FRESH_SECS: f64 = 60.0;
+/// (TICKET=v116-usage · T2) 창 크기 미확정 유예 초 — tail 부착 뒤 statusline 이 서버 진실 창을 한 번도
+/// 주지 않은 동안은 트랜스크립트 추정 창(모델명 기본 200k)으로 context.threshold 를 내지 않는다.
+/// ★왜: 1M 창 모델(claude-fable-5-1·claude-opus-5-5 — 모델명에 `[1m]` 이 없다)을 resume 한 새 좌석의 첫
+///   관측이 5배 과대 %(VM ↻ 실측 77% · 1초 뒤 statusline 15%)로 임계를 넘겨 거짓 발화했다.
+/// ★왜 영구 보류가 아닌가: statusline 이 없는 좌석(훅 결손·체인 위임 실패)은 이 추정치가 **유일한** CTX
+///   근거다 — 유예가 지나면 종전대로 추정치로 발화해 무clear 100%+ 안전망을 지킨다. 60초 = 같은 파일의
+///   statusline 신선도 창(STATUSLINE_FRESH_SECS)과 같은 크기(첫 statusline 은 TUI 첫 렌더에 온다 — VM 1.3초).
+const ESTIMATED_WINDOW_GRACE_SECS: f64 = 60.0;
 /// 외부(비-pane) 세션 스윕 주기 초 기본값 — CYS_USAGE_EXTERNAL_SECS로 조정(0=끔)
 const EXTERNAL_SWEEP_SECS_DEFAULT: u64 = 15;
 /// 외부 세션 추적 시작 조건: 이 창 안에 mtime이 있는 활동 파일만 (과거 세션 소급 적재 금지)
@@ -83,6 +91,8 @@ struct TailState {
     server_ctx_window: Option<u64>,
     /// codex rollout의 turn_context가 준 모델명 — token_count 소비 귀속용(전수조사 A-2)
     codex_model: Option<String>,
+    /// 이 tail 이 부착된 시각 — 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준(T2).
+    attached_at: f64,
 }
 
 impl TailState {
@@ -100,7 +110,16 @@ impl TailState {
             Some(o) if o <= len => o,
             _ => len.saturating_sub(FIRST_ATTACH_TAIL),
         };
-        TailState { path, offset, carry: String::new(), heuristic, last_discovery: now, server_ctx_window: None, codex_model: None }
+        TailState {
+            path,
+            offset,
+            carry: String::new(),
+            heuristic,
+            last_discovery: now,
+            server_ctx_window: None,
+            codex_model: None,
+            attached_at: now,
+        }
     }
 }
 
@@ -308,11 +327,14 @@ fn collect_for(
     // CC v2 WS-A: 이 틱에 **신선 생산된** rate만 계정 귀속(claude transcript의 rate 이월분은
     // 제외 — 이월은 stale을 최신으로 둔갑시킨다. accounts.rs 모듈 헤더 계약).
     let mut codex_fresh_rate: Option<Vec<RateWindow>> = None;
+    // (T2) 이 틱의 claude ctx% 가 서버 진실 창이 아니라 모델명 추정 창으로 계산됐는가.
+    let mut window_estimated = false;
     for line in &lines {
         match agent {
             "claude" => {
                 if let Some((ctx_tokens, model)) = parse_claude_line(line) {
                     let window = state.server_ctx_window.unwrap_or_else(|| claude_ctx_window(&model));
+                    window_estimated = claude_window_is_estimate(state.server_ctx_window);
                     next = Some(ObservedUsage {
                         agent: agent.into(),
                         ctx_tokens: Some(ctx_tokens),
@@ -468,9 +490,25 @@ fn collect_for(
     // 결정론 컨텍스트 임계 — 자기보고(status.set)와 **공유 에지 게이트**(ctx_threshold_armed)
     // 로 발화한다. 분리된 에지 상태를 쓰면 같은 교차에 두 경로가 각각 발화해 master/CSO가
     // cycle-agent를 이중 집행한다. payload source:"observed"로 자기보고 발화와 구분.
-    if let Some(p) = new.ctx_pct {
+    // (T2) 창 크기 미확정 유예 안의 추정치는 발화하지 않는다 — 에지 무장 상태도 건드리지 않는다
+    //   (유예 뒤 첫 관측·statusline 발화가 같은 에지로 정상 판정한다).
+    let defer = defer_estimated_threshold(window_estimated, now - state.attached_at);
+    if let Some(p) = new.ctx_pct.filter(|_| !defer) {
         crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(&new.agent));
     }
+}
+
+/// (T2) claude 창이 추정인가 — statusline 이 서버 진실 창을 준 적 없고 운영자 강제값(CYS_CLAUDE_CTX_WINDOW)도
+/// 없으면 `claude_ctx_window` 의 모델명 추정이다(순수 판정은 아래 `defer_estimated_threshold`).
+fn claude_window_is_estimate(server_ctx_window: Option<u64>) -> bool {
+    server_ctx_window.is_none()
+        && cys::env_compat("CYS_CLAUDE_CTX_WINDOW").and_then(|v| v.parse::<u64>().ok()).is_none()
+}
+
+/// (T2) 관측 경로 context.threshold 보류 판정(순수 — 진리표 핀). 추정 창 **이면서** 부착 뒤 유예 안일 때만 보류.
+/// 경계는 엄격 부등호: 정확히 유예 초가 지난 순간부터는 추정치로 발화한다(안전망 복귀).
+pub(crate) fn defer_estimated_threshold(window_estimated: bool, attached_age_secs: f64) -> bool {
+    window_estimated && attached_age_secs < ESTIMATED_WINDOW_GRACE_SECS
 }
 
 // ───────────────────────── 외부(비-pane) 세션 소비 수집 ─────────────────────────
@@ -1904,6 +1942,7 @@ mod tests {
             last_discovery: 0.0,
             server_ctx_window: None,
             codex_model: None,
+            attached_at: 0.0,
         };
         let lines = read_new_lines(&mut st);
         assert_eq!(lines, vec!["line1".to_string(), "line2".to_string()]);
@@ -2163,4 +2202,5 @@ mod tests {
             "등록이 도착했는데 topology session_id 가 빈 값으로 남았다 — 2차 재시작이 --continue 로 폴백"
         );
     }
+
 }

@@ -12590,6 +12590,10 @@ mod tests {
         *s.agent_meta.lock().unwrap() = Some(("claude".into(), "true".into()));
         let caller = 990_300_u32;
         bind_caller(&daemon, caller, s.id);
+        // 로그인 셸(zsh -lc)이 exec 하기 전 찰나(자식 0)를 빈 좌석으로 보고 빠져나가면, 뒤이어 프로파일이 띄우는
+        // 자식(path_helper 등) 때문에 좌석이 점유로 바뀌어 가드가 안 타는 경합이 난다(10회 중 4회 실측) —
+        // 뿌리가 `sh -i` 로 바뀐 것을 먼저 기다린 뒤 빈 좌석을 확인한다.
+        crate::governance::test_wait_seat_runs(&s, "sh", &["-i"]);
         let t0 = std::time::Instant::now();
         while !crate::governance::agent_seat_vacant_now(&s) {
             assert!(t0.elapsed().as_secs() < 10, "전제: 10초 안에 빈 셸 좌석이 되지 않았다");

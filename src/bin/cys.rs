@@ -9689,8 +9689,17 @@ const SKILL_INDEX_CAP_CHARS: usize = 3_000;
 /// 것을 좌석이 구분할 수 있게 실은 항목 수 / 전체 항목 수를 함께 적는다.
 fn capped_memory_index(index: &str, path: &std::path::Path, cap: usize) -> String {
     let entries: Vec<&str> = index.lines().filter(|l| l.starts_with("- [")).collect();
+    let header = |kept: usize| {
+        format!(
+            "(최신 {kept}항 / 전체 {}항 — 전문은 {} 를 Read · 본문은 각 항목 파일)\n",
+            entries.len(),
+            path.display()
+        )
+    };
+    // 머리 줄(포인터)도 상한 안에 넣는다(agy 1R ⑤ · master 판정 「색인 합 ≤ 상한」) — 실은 항목 수 자릿수는
+    // 전체 항목 수 자릿수를 넘지 않으므로 전체 수로 만든 머리 줄 길이가 상계다.
     let mut kept: Vec<&str> = Vec::new();
-    let mut used = 0usize;
+    let mut used = header(entries.len()).chars().count();
     for line in entries.iter().rev() {
         let n = line.chars().count() + 1;
         if used + n > cap {
@@ -9700,12 +9709,7 @@ fn capped_memory_index(index: &str, path: &std::path::Path, cap: usize) -> Strin
         kept.push(line);
     }
     kept.reverse();
-    let mut out = format!(
-        "(최신 {}항 / 전체 {}항 — 전문은 {} 를 Read · 본문은 각 항목 파일)\n",
-        kept.len(),
-        entries.len(),
-        path.display()
-    );
+    let mut out = header(kept.len());
     for line in kept {
         out.push_str(line);
         out.push('\n');
@@ -9719,22 +9723,26 @@ fn capped_skill_index(
     index: &std::collections::BTreeMap<String, (String, bool)>,
     cap: usize,
 ) -> String {
+    let head = format!(
+        "\n\n■ 보유 스킬 색인 ({}개 · 이름만 — 설명: `cys skill list` · 본문: `cys skill show <name>` · * = local 오버레이)\n",
+        index.len()
+    );
+    let tail = |rest: usize| {
+        if rest > 0 { format!(" … 외 {rest}개(`cys skill list`)\n") } else { "\n".to_string() }
+    };
+    // 머리·꼬리까지 상한 안(agy 1R ⑤) — 꼬리 예약은 가장 긴 꼬리(전체 수 자릿수)로 잡는다.
+    let budget = cap.saturating_sub(head.chars().count() + tail(index.len()).chars().count());
     let mut names = String::new();
     let mut shown = 0usize;
     for (name, (_, local)) in index {
         let item = format!("{}{name}{}", if shown == 0 { "" } else { ", " }, if *local { "*" } else { "" });
-        if names.chars().count() + item.chars().count() > cap {
+        if names.chars().count() + item.chars().count() > budget {
             break;
         }
         names.push_str(&item);
         shown += 1;
     }
-    let rest = index.len() - shown;
-    format!(
-        "\n\n■ 보유 스킬 색인 ({}개 · 이름만 — 설명: `cys skill list` · 본문: `cys skill show <name>` · * = local 오버레이)\n{names}{}\n",
-        index.len(),
-        if rest > 0 { format!(" … 외 {rest}개(`cys skill list`)") } else { String::new() }
-    )
+    format!("{head}{names}{}", tail(index.len() - shown))
 }
 
 fn compose_directive(role: &str) -> Result<String, String> {
@@ -22744,8 +22752,8 @@ mod tests {
         }
         let path = std::path::Path::new("/p/memory/MEMORY.md");
         let out = capped_memory_index(&idx, path, MEMORY_INDEX_CAP_CHARS);
+        assert!(out.chars().count() <= MEMORY_INDEX_CAP_CHARS, "머리 줄 포함 상한 초과: {}", out.chars().count());
         let (head, body) = out.split_once('\n').unwrap();
-        assert!(body.chars().count() <= MEMORY_INDEX_CAP_CHARS, "상한 초과: {}", body.chars().count());
         assert!(idx.chars().count() > 100 * MEMORY_INDEX_CAP_CHARS, "전제: 픽스처가 상한보다 충분히 크다");
         assert!(body.contains("- [m4999]"), "최신 항목 누락");
         assert!(!body.contains("- [m0000]"), "가장 오래된 항목이 실렸다(최신 우선 위반)");
@@ -22768,9 +22776,8 @@ mod tests {
             m.insert(format!("skill-{i:04}"), ("아주 긴 설명 ".repeat(20), i == 3));
         }
         let out = capped_skill_index(&m, SKILL_INDEX_CAP_CHARS);
-        let body = out.trim_start_matches('\n').split_once('\n').unwrap().1;
         assert!(!out.contains("아주 긴 설명"), "설명이 실렸다");
-        assert!(body.chars().count() <= SKILL_INDEX_CAP_CHARS + 40, "상한 초과: {}", body.chars().count());
+        assert!(out.chars().count() <= SKILL_INDEX_CAP_CHARS, "머리·꼬리 포함 상한 초과: {}", out.chars().count());
         assert!(out.contains("2000개") && out.contains("외 ") && out.contains("cys skill show"), "{out}");
         assert!(out.contains("skill-0003*"), "local 오버레이 표지");
         let few: std::collections::BTreeMap<String, (String, bool)> =

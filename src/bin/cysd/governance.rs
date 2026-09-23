@@ -3502,8 +3502,8 @@ pub(crate) fn is_shell_name(name: &str) -> bool {
 /// 빈 셸 가드는 지시문이 셸 명령으로 타이핑되는 것을 막는다 — 그런데 `cys node-recover`·in-seat 복원이
 /// 같은 좌석에 에이전트를 다시 띄우는 기동 줄은 **셸에 쳐야 하는 명령 자체**라 가드에 막히면 좌석이
 /// 복구되지 않는다(09-23 격리 cysd 실측: rc=1 · 기동 줄이 큐로 · 좌석 복구 0).
-/// 통과 조건 = 한 줄(개행 없음) ∧ 환경 대입(`KEY="값"` · 값에 공백 허용)을 건너뛴 첫 낱말의 파일 이름이
-/// 좌석 메타의 실행 파일(agent_bin) 이름과 같다. 기동 줄이 아닌 본문(각성문·DRAIN 지시 등)은 첫 낱말이
+/// 통과 조건 = 한 줄(개행 없음) ∧ 명령 치환·따옴표 밖 연결/리다이렉트 문자 없음 ∧ 환경 대입(`KEY="값"` ·
+/// 값에 공백 허용)을 건너뛴 첫 낱말의 파일 이름이 좌석 메타의 실행 파일(agent_bin) 이름과 같다. 기동 줄이 아닌 본문(각성문·DRAIN 지시 등)은 첫 낱말이
 /// 에이전트 이름이 아니므로 종전대로 보류된다.
 pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bool {
     fn file_name(p: &str) -> &str {
@@ -3523,6 +3523,10 @@ pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bo
         return false;
     };
     if text.contains(['\n', '\r']) {
+        return false;
+    }
+    // 명령 치환(백틱 · `$(`)은 따옴표 안에서도 셸이 실행한다 — 기동 줄엔 없다(대입 값은 `${…}` 전개뿐).
+    if text.contains('`') || text.contains("$(") {
         return false;
     }
     // 셸 낱말 나누기(따옴표 안 공백은 낱말을 끊지 않는다) — 따옴표 문자는 낱말에 남긴다(판정엔 무관).
@@ -3545,6 +3549,9 @@ pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bo
                     words.push(std::mem::take(&mut cur));
                 }
             }
+            // 따옴표 밖 명령 연결·리다이렉트(`;` `&` `|` `<` `>`)가 있으면 기동 줄 한 개가 아니다 — 두 번째
+            // 명령이 빈 셸에서 실행될 수 있다(agy 1R ④ 수용 · 방어 심층).
+            None if matches!(c, ';' | '&' | '|' | '<' | '>') => return false,
             None => cur.push(c),
         }
     }
@@ -6393,6 +6400,13 @@ mod tests {
         assert!(!m(r#"FOO="a b claude"#, Some("claude")), "닫히지 않은 따옴표");
         assert!(!m("FOO=1 BAR=2", Some("claude")), "대입만");
         assert!(!m("", Some("claude")));
+        // agy 1R ④: 명령 연결·리다이렉트·치환 = 기동 줄 아님(따옴표 안의 `;` 등은 값이라 통과)
+        for bad in ["claude ; rm -rf ~", "claude && x", "claude --x | tee y", "claude > out", "claude < in",
+                    "claude & ", "claude --x `id`", "claude --x $(id)", r#"A="$(id)" claude"#] {
+            assert!(!m(bad, Some("claude")), "통과하면 안 됨: {bad}");
+        }
+        assert!(m(r#"A="x;y|z" claude --x"#, Some("claude")), "따옴표 안 문자는 값");
+        assert!(m(r#"CLAUDE_CONFIG_DIR="${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}" claude --continue"#, Some("claude")), "실 기동 줄의 ${{…}} 전개");
         assert!(!m("claude --x", None), "메타 없음");
         assert!(!m("claude --x", Some("")), "빈 메타");
     }

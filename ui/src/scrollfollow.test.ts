@@ -29,13 +29,22 @@ describe("바닥 고정 재판정(B1 ①)", () => {
 });
 
 describe("맨 위 도달 안내(B1 ②)", () => {
-  it("위로 휠 + 맨 위 = 1회만", () => {
-    expect(shouldShowFoldHint(false, -40, 0)).toBe(true);
-    expect(shouldShowFoldHint(true, -40, 0)).toBe(false);
+  it("위로 휠 + 맨 위 + 위 내용이 있었다 = 1회만", () => {
+    expect(shouldShowFoldHint(false, -40, 0, 120, "normal")).toBe(true);
+    expect(shouldShowFoldHint(true, -40, 0, 120, "normal")).toBe(false);
   });
   it("맨 위가 아니거나 아래로 휠이면 안 띄운다", () => {
-    expect(shouldShowFoldHint(false, -40, 12)).toBe(false);
-    expect(shouldShowFoldHint(false, 40, 0)).toBe(false);
+    expect(shouldShowFoldHint(false, -40, 12, 120, "normal")).toBe(false);
+    expect(shouldShowFoldHint(false, 40, 0, 120, "normal")).toBe(false);
+  });
+  it("(D4 #6) 스크롤백이 없는 짧은 창(baseY 0)·대체 화면(vim·less)에서는 첫 위 휠에 띄우지 않는다", () => {
+    expect(shouldShowFoldHint(false, -40, 0, 0, "normal")).toBe(false);
+    expect(shouldShowFoldHint(false, -40, 0, 120, "alternate")).toBe(false);
+    expect(shouldShowFoldHint(false, -40, 0, 0, "alternate")).toBe(false);
+  });
+  it("(D4 #6) 배선이 스크롤백 줄 수·버퍼 종류를 넘긴다", () => {
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    expect(main).toContain("shouldShowFoldHint(foldHintShown, dy, ab.viewportY, ab.baseY, ab.type)");
   });
   it("문구 = 내부 용어 0(surface·xterm·스크롤백 등)", () => {
     expect(FOLD_HINT_BODY).toContain("Ctrl+O");

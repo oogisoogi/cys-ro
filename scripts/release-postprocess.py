@@ -144,7 +144,9 @@ def zip_member_sha(zippath, member):
                 for chunk in iter(lambda: fh.read(1 << 20), b""):
                     h.update(chunk)
             return h.hexdigest()
-    except (zipfile.BadZipFile, OSError, KeyError):
+    except (zipfile.BadZipFile, OSError, KeyError, RuntimeError, NotImplementedError):
+        # RuntimeError = 암호화 플래그 엔트리 · NotImplementedError = 미지원 압축 방식(Fable 1R #4 실측) —
+        # 종전엔 traceback 으로 죽었다. 판독 불가(None)로 접어 2단계는 재생성 · 대조는 불일치로 간다.
         return None
 
 
@@ -153,7 +155,10 @@ def win_zip_crosscheck(zippath, exe_name, sums_lines):
 
     ★X-6(2026-09-23 19:46 · 987 적발): SUMS 자기검증은 각 파일의 sha 를 **그 파일 자신과** 대조할 뿐이라
       「zip 이 옛 exe 를 담고 있다」는 내용 불일치를 못 봤다(9차 백업 실물: exe ce995703… · zip 속
-      exe ae8bec15… · SUMS 는 자기 일관). 그 사이를 이 한 줄이 잇는다.
+      exe ae8bec15… · SUMS 는 자기 일관).
+    ★정직 고지(Fable 1R #7): 그 불일치를 **실제로 닫은 것은** 2단계 생략 조건(zip 속 exe = 현 exe)과
+      1단계 digest 캐시다. 2단계가 성공한 뒤에는 이 줄이 논리적으로 항상 참이다 — 이 줄은 심층 방어
+      (2단계의 미래 수정·재생성기 포장 사고)와 **운영자가 로그로 확인하는 증거 1줄**이다.
     """
     rows = {}
     for line in sums_lines:

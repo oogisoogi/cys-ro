@@ -8,7 +8,7 @@ import {
   masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy, type AlertCopy,
 } from "./alertcopy";
 
-const CODE = /surface:\d|\bmaster\b|\bworker(-\d+)?\b|\bcso\b|\breviewer\b|MASTER_DIRECTIVE|cycle-agent|deadman|\d+s\b/;
+const CODE = /surface:\d|\bmaster\b|\bworker(-\d+)?\b|\bcso\b|\breviewer\b|MASTER_DIRECTIVE|cycle-agent|deadman|\d+s\b|rule=|[a-z]+_[a-z_]+/;
 const all: [string, AlertCopy][] = [
   ["req", approvalRequestCopy(3, { role: "worker-13", surface_ref: "surface:3", excerpt: "Do you want to proceed?" })],
   ["stall", approvalStalledCopy(3, { title: "배포 승인", age_secs: 400, surface_ref: "surface:3" })],
@@ -26,7 +26,8 @@ describe("D4 #8 ① 코드 원문 0 · ④ 행동 한 문장", () => {
   for (const [k, c] of all)
     it(k, () => {
       expect(CODE.test(c.title + " " + c.body)).toBe(false);
-      expect(/주세요\.$|있습니다\.$|맡습니다\.$|재시작하세요\.$|둡니다\.$/.test(c.body)).toBe(true);
+      // (Fable NIT-1) 행동 문장 = 사용자가 할 일로 끝난다. 대화 기억(ctx)은 예외 — 정리는 사용자 몫이 아니라 운영 쪽 일이다(사실만 알림).
+      if (k !== "ctx") expect(/주세요\.$|확인할 수 있습니다\.$|재시작하세요\.$|둡니다\.$|다시 세웁니다\.$/.test(c.body)).toBe(true);
     });
 });
 
@@ -46,6 +47,7 @@ describe("D4 #8 ② 세기 머리 · ③ 사실 유지", () => {
   it("대화 기억 = 몇 % · 기준 몇 %(내부 action 문구는 버림)", () => {
     expect(all[3][1].title).toBe("🔋 대화 기억 83%");
     expect(all[3][1].body.includes("2번 운영 관리 창의 대화 기억이 기준 60%를")).toBe(true);
+    expect(all[3][1].body.includes("총괄이 맡")).toBe(false); // (Fable MAJOR-2) 검증 불가한 집행 주체 약속 0
   });
   it("유휴 = 💤 · 시간", () => {
     expect(all[4][1].body.startsWith("5번 창에서 15분 동안")).toBe(true);
@@ -56,14 +58,25 @@ describe("D4 #8 ② 세기 머리 · ③ 사실 유지", () => {
   });
   it("⑤ 사망 = ❌ 유지 · 무엇이 멈췄나 + 안심 문장(창·폴더 그대로) + 행동", () => {
     const c = all[6][1];
-    expect(c.title.startsWith("❌")).toBe(true);
+    expect(c.title).toBe("❌ AI가 꺼졌습니다"); // (Fable MAJOR-3) 유휴의 「멈춤」과 갈라 둔다
     expect(c.body.includes("4번 작업 창의 AI가 종료됐습니다")).toBe(true);
     expect(c.body.includes("창과 작업 폴더는 그대로 남아 있습니다")).toBe(true);
   });
   it("deadman = 🚨 · 축별 사람 말 · 모르는 축은 데몬 사유 원문(사실 보존)", () => {
     expect(all[7][1].title).toBe("🚨 총괄 창 응답 없음");
     expect(all[7][1].body.includes("창의 AI가 꺼졌습니다")).toBe(true);
-    expect(deadmanCopy(1, { role: "master", axis: "new_axis", reason: "brand new reason" }).body.includes("brand new reason")).toBe(true);
+    // (Fable MINOR-5) 모르는 축 = 사람 말로 닫고 원문은 raw(「자세히」) — 본문 재유출 0 · 진단 보존
+    const u = deadmanCopy(1, { role: "master", axis: "new_axis", reason: "master surface gone" });
+    expect(u.body.includes("응답이 없습니다")).toBe(true);
+    expect(u.body.includes("master")).toBe(false);
+    expect(u.raw).toBe("master surface gone");
+    // (Fable MAJOR-1) 창이 없어진 축엔 「그 창을 눌러」 대신 ↻ 재시작
+    for (const ax of ["surface_gone", "surface_exited"]) {
+      const g = deadmanCopy(1, { axis: ax });
+      expect(g.body.includes("그 창을 눌러")).toBe(false);
+      expect(g.body.endsWith("상단 「↻ 재시작」을 누르면 창을 다시 세웁니다.")).toBe(true);
+    }
+    expect(deadmanCopy(1, { axis: "agent_dead" }).body.includes("그 창을 눌러")).toBe(true);
     for (const ax of ["surface_gone", "surface_exited", "shell_proc_dead", "agent_dead", "seat_vacant_no_meta", "agent_never_started"])
       expect(deadmanCopy(1, { axis: ax, reason: "RAW" }).body.includes("RAW")).toBe(false);
   });
@@ -80,6 +93,14 @@ describe("D4 #8 도우미", () => {
     expect(seatNo(3, "surface:9")).toBe(3);
     expect(seatNo(undefined, "surface:9")).toBe(9);
     expect(seatNo(null, null)).toBe(null);
+  });
+  it("(Fable MINOR-3) 부서 이벤트 = 부서 이름을 앞에 · (MINOR-2) 방치 승인은 관측 번호(surface_ref)", () => {
+    expect(seatName(3, "worker", "영업부")).toBe("영업부 3번 작업 창");
+    expect(agentExitedCopy(3, { role: "worker", dept: "영업부" }).body.startsWith("영업부 3번 작업 창의")).toBe(true);
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    expect(main).toContain("approvalStalledCopy(seatNo(null, payload.surface_ref), ap)");
+    expect(main).toContain("{ ...payload, dept: ctxGroupLabel(evSock) } : payload;");
+    expect(main).toContain("toast(\"alert\", c.title, c.body, undefined, c.raw);");
   });
   it("seatName · durText", () => {
     expect(seatName(3, "reviewer-codex")).toBe("3번 검토 창");

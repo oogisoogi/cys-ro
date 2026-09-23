@@ -10632,9 +10632,14 @@ fn boot_agent_on_surface(
         .find(|s| s["surface_id"].as_u64() == Some(sid))
         .and_then(|s| s["line_count"].as_u64())
         .unwrap_or(0);
+    // ★v116-seat X-4: `agent_launch` = 「이 본문은 좌석 에이전트의 기동 줄이다」 표지. node-recover·in-seat
+    //   복원은 에이전트 메타가 남은 빈 셸에 이 줄을 친다 — 표지가 없으면 데몬 빈 셸 가드가 지시문으로 보고
+    //   큐에 보류해(rc=1 · 좌석 복구 0) run_boot 이 reclaim(kill)으로 번진다. 데몬은 표지 + 첫 낱말 =
+    //   좌석 agent_bin 일 때만 통과시킨다(handlers.rs surface.send_text 빈 셸 가드).
     request(
         "surface.send_text",
-        json!({"surface_id": sid, "text": send, "quiet": true, "authoritative": true}),
+        json!({"surface_id": sid, "text": send, "quiet": true, "authoritative": true,
+               "agent_launch": true}),
     )?;
     request(
         "surface.send_key",

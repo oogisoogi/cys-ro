@@ -3719,25 +3719,49 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   게이트가 강제 배달도 막는다) · 호출자에겐 명시 에러로 즉시 알린다(저장 검증이 상한까지 기다리지 않게).
             //   사람 입력(human)은 대상이 아니다 — 빈 셸에 사람이 치는 것은 정상이다.
             if !human && crate::governance::agent_seat_vacant_now(&surface) {
-                let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
-                    params.get("from").and_then(|v| v.as_str()).map(str::to_string)
-                });
-                // ★v115-restore(A3): 보류 본체(큐 적재 · queue.enqueued · inject.skipped_no_agent · 로그)는
-                //   데몬 내부 직접 주입 생산자들과 **한 함수**를 쓴다(governance::hold_for_vacant_seat).
-                crate::governance::hold_for_vacant_seat(
-                    daemon,
-                    &surface,
-                    &text,
-                    entry_from,
-                    params.get("from").cloned().unwrap_or(Value::Null),
-                    "surface.send_text",
-                    caller_pid,
-                );
-                return Reply::Single(err_response(
-                    &id,
-                    ERR_NO_AGENT,
-                    "agent seat has no live agent (bare shell) — not typed; queued (prompt_unknown)",
-                ));
+                // ★v116-seat X-4: 좌석 재기동 줄(`agent_launch` · cys 의 boot_agent_on_surface 가 붙인다)은
+                //   빈 셸에 쳐야 하는 명령 자체다 — 그 좌석에 등록된 에이전트의 한 줄 기동 명령이면 가드를
+                //   지나 아래 타이핑 경로로 간다. 표지가 있는데 기동 줄이 아니면 **큐에도 넣지 않고** 거부한다
+                //   (셸 명령 줄이 큐에 남으면 뒤에 뜬 에이전트에게 사용자 입력으로 배달된다 — 4군 ① 폭주 큐).
+                let agent_launch = params
+                    .get("agent_launch")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let seat_bin = surface.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
+                if agent_launch {
+                    if !crate::governance::launch_line_matches_seat(&text, seat_bin.as_deref()) {
+                        return Reply::Single(err_response(
+                            &id,
+                            ERR_NO_AGENT,
+                            "agent seat has no live agent (bare shell) — agent_launch text is not this seat's agent launch line; not typed; not queued",
+                        ));
+                    }
+                    eprintln!(
+                        "[cysd] {} 빈 좌석 재기동 줄 타이핑 — agent_launch · bin={}",
+                        cys::surface_ref(sid),
+                        seat_bin.as_deref().unwrap_or("?")
+                    );
+                } else {
+                    let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
+                        params.get("from").and_then(|v| v.as_str()).map(str::to_string)
+                    });
+                    // ★v115-restore(A3): 보류 본체(큐 적재 · queue.enqueued · inject.skipped_no_agent · 로그)는
+                    //   데몬 내부 직접 주입 생산자들과 **한 함수**를 쓴다(governance::hold_for_vacant_seat).
+                    crate::governance::hold_for_vacant_seat(
+                        daemon,
+                        &surface,
+                        &text,
+                        entry_from,
+                        params.get("from").cloned().unwrap_or(Value::Null),
+                        "surface.send_text",
+                        caller_pid,
+                    );
+                    return Reply::Single(err_response(
+                        &id,
+                        ERR_NO_AGENT,
+                        "agent seat has no live agent (bare shell) — not typed; queued (prompt_unknown)",
+                    ));
+                }
             }
             // T3-13 타이핑 가드: 사람이 방금(기본 3초) 입력 중인 pane에 원격 직접 주입 금지.
             // 무음 큐잉 대신 명시 에러 — 후속 send-key Return이 사람의 미완성 입력을

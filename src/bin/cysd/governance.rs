@@ -3498,6 +3498,68 @@ pub(crate) fn is_shell_name(name: &str) -> bool {
     matches!(n, "zsh" | "bash" | "sh" | "dash" | "fish" | "ksh" | "tcsh" | "csh" | "pwsh" | "powershell" | "cmd")
 }
 
+/// ★v116-seat X-4(순수 판정): 빈 에이전트 좌석에 온 본문이 **그 좌석에 등록된 에이전트의 기동 줄**인가.
+/// 빈 셸 가드는 지시문이 셸 명령으로 타이핑되는 것을 막는다 — 그런데 `cys node-recover`·in-seat 복원이
+/// 같은 좌석에 에이전트를 다시 띄우는 기동 줄은 **셸에 쳐야 하는 명령 자체**라 가드에 막히면 좌석이
+/// 복구되지 않는다(09-23 격리 cysd 실측: rc=1 · 기동 줄이 큐로 · 좌석 복구 0).
+/// 통과 조건 = 한 줄(개행 없음) ∧ 환경 대입(`KEY="값"` · 값에 공백 허용)을 건너뛴 첫 낱말의 파일 이름이
+/// 좌석 메타의 실행 파일(agent_bin) 이름과 같다. 기동 줄이 아닌 본문(각성문·DRAIN 지시 등)은 첫 낱말이
+/// 에이전트 이름이 아니므로 종전대로 보류된다.
+pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bool {
+    fn file_name(p: &str) -> &str {
+        let n = p.rsplit(['/', '\\']).next().unwrap_or(p);
+        n.strip_suffix(".exe").unwrap_or(n)
+    }
+    fn is_assignment(word: &str) -> bool {
+        match word.split_once('=') {
+            Some((name, _)) => {
+                name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            None => false,
+        }
+    }
+    let Some(seat_bin) = seat_bin.map(file_name).filter(|b| !b.is_empty()) else {
+        return false;
+    };
+    if text.contains(['\n', '\r']) {
+        return false;
+    }
+    // 셸 낱말 나누기(따옴표 안 공백은 낱말을 끊지 않는다) — 따옴표 문자는 낱말에 남긴다(판정엔 무관).
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => {
+                quote = None;
+                cur.push(c);
+            }
+            Some(_) => cur.push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            None if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+            }
+            None => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return false;
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+        .iter()
+        .find(|w| !is_assignment(w))
+        .is_some_and(|w| file_name(w) == seat_bin)
+}
+
 /// ★v114-dept-fd 수리 3: 권위 주입 직전 즉시 프로브(캐시는 watchdog 틱 주기라 stale 할 수 있다).
 /// 09-22 VM: 부서 좌석 claude 가 fd 한도로 기동에 실패해 빈 zsh 만 남았는데, 저장 검증 지시
 /// ([DRAIN-VERIFY])가 그 zsh 에 명령으로 타이핑됐다(`zsh: event not found`). 드문 경로(에이전트

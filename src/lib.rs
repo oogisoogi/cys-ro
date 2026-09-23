@@ -2502,6 +2502,68 @@ pub fn inject_claude_effort_env(env_pairs: &mut Vec<(String, String)>, agent: &s
     env_pairs.push((ENV_CLAUDE_EFFORT_LEVEL.to_string(), CLAUDE_SEAT_EFFORT.to_string()));
 }
 
+#[cfg(test)]
+mod claude_effort_tests {
+    use super::*;
+
+    fn inj(pairs: &[(&str, &str)], agent: &str, bin: &str) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        inject_claude_effort_env(&mut v, agent, bin);
+        v
+    }
+
+    #[test]
+    fn claude_seat_gets_effort_env_high_appended() {
+        assert_eq!(CLAUDE_SEAT_EFFORT, "high"); // 정책 값이 조용히 바뀌면 여기서 적색
+        assert_eq!(ENV_CLAUDE_EFFORT_LEVEL, "CLAUDE_CODE_EFFORT_LEVEL");
+        let got = inj(&[("CLAUDE_CONFIG_DIR", "/c")], "claude", "claude");
+        assert_eq!(
+            got,
+            vec![
+                ("CLAUDE_CONFIG_DIR".to_string(), "/c".to_string()),
+                ("CLAUDE_CODE_EFFORT_LEVEL".to_string(), "high".to_string())
+            ],
+            "끝에 append · 기존 순서 불변"
+        );
+        assert!(inj(&[], "claude-fable", "claude").iter().any(|(k, v)| k == ENV_CLAUDE_EFFORT_LEVEL && v == "high"));
+    }
+
+    #[test]
+    fn claude_detected_by_key_or_binary_name() {
+        assert!(is_claude_seat("claude", "claude"));
+        assert!(is_claude_seat("claude-sonnet", "claude"));
+        // 윈도 cmd.exe /c …claude-2.cmd — 키가 잡는다
+        assert!(is_claude_seat("claude", "cmd.exe"));
+        // 모델별 키 + 이름이 claude 가 아닌 래퍼 — 키 접두 판정 **단독**으로만 잡힌다
+        // (실행파일 이름 판정과 겹치지 않게 골랐다: 두 판정이 겹치면 한쪽을 지워도 초록이다)
+        assert!(is_claude_seat("claude-fable", "cmd.exe"));
+        assert!(is_claude_seat(
+            "claude-sonnet",
+            "C:\\Users\\x\\AppData\\Roaming\\npm\\claude-2.cmd"
+        ));
+        assert!(is_claude_seat("my-seat", "/Users/x/.local/bin/claude"));
+        assert!(is_claude_seat("my-seat", "C:\\Users\\x\\.local\\bin\\claude.exe"));
+        assert!(!is_claude_seat("codex", "codex"));
+        assert!(!is_claude_seat("gemini", "~/.local/bin/agy"));
+        assert!(!is_claude_seat("grok", "grok"));
+        assert!(!is_claude_seat("claudette", "claudette")); // 접두 일치가 아니라 키/이름 정확 판정
+    }
+
+    #[test]
+    fn non_claude_env_is_untouched() {
+        for (agent, bin) in [("codex", "codex"), ("gemini", "~/.local/bin/agy"), ("grok", "grok")] {
+            assert_eq!(inj(&[("A", "1")], agent, bin), vec![("A".to_string(), "1".to_string())]);
+        }
+    }
+
+    #[test]
+    fn user_effort_value_wins() {
+        let got = inj(&[("CLAUDE_CODE_EFFORT_LEVEL", "max")], "claude", "claude");
+        assert_eq!(got, vec![("CLAUDE_CODE_EFFORT_LEVEL".to_string(), "max".to_string())]);
+    }
+}
+
 /// Claude Code projects/ 디렉터리명 munge — 실측: '/'와 특수문자가 '-'로 치환된다.
 /// ASCII 영숫자·'-'만 보존하는 보수 구현. resume 사전검증 게이트(cys.rs)와 usage 휴리스틱이 공유한다.
 pub fn claude_project_component(cwd: &str) -> String {

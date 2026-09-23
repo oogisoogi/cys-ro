@@ -29422,4 +29422,70 @@ mod tests {
         let early = code.find("if no_install_hook {").expect("no_install_hook 분기 부재");
         assert!(call < early, "배선 호출이 --no-install-hook 조기 반환 뒤에 있다 — 앱 갱신 경로가 배선을 못 탄다");
     }
+
+    // ─── v116-seat N-4 — 좌석 effort 는 env 로(인자 0) · 새 좌석·재개·윈 surface.create 세 경로 ───
+    #[test]
+    fn v116_compose_agent_cmd_carries_no_effort_argument() {
+        let claude = json!({
+            "cmd": "claude --model claude-opus-5-5 --dangerously-skip-permissions",
+            "resume_arg": "--resume {session_id}",
+            "resume_arg_fallback": "--continue"
+        });
+        // 구판 claude(2.1.37)는 모르는 인자에 rc 1 로 죽는다 — 명령 한 줄에 effort 인자가 있으면 안 된다
+        let fresh = compose_agent_cmd(&claude, "claude", false, None, None, None).unwrap();
+        assert_eq!(fresh, "claude --model claude-opus-5-5 --dangerously-skip-permissions");
+        let resumed = compose_agent_cmd(&claude, "claude", true, None, None, None).unwrap();
+        assert_eq!(resumed, "claude --model claude-opus-5-5 --dangerously-skip-permissions --continue");
+        let codex = json!({"cmd": "codex --dangerously-bypass-approvals-and-sandbox", "resume_arg": "resume {session_id}"});
+        assert_eq!(
+            compose_agent_cmd(&codex, "codex", true, Some("abc"), None, None).unwrap(),
+            "codex --dangerously-bypass-approvals-and-sandbox resume abc"
+        );
+        assert!(compose_agent_cmd(&json!({}), "claude", false, None, None, None).is_err());
+        for c in [&fresh, &resumed] {
+            assert!(!c.contains("effort"), "effort 인자가 명령에 남았다: {c}");
+        }
+    }
+
+    /// 좌석 기동 줄(unix 인라인)과 윈 surface.create env 맵 두 소비처가 effort env 를 싣는다.
+    #[test]
+    fn v116_effort_env_reaches_launch_line_and_windows_create_env() {
+        // ① 윈도 경로: surface.create env 맵(= pane builder.env) — 이 조립 함수가 호출부의 유일한 원천이다
+        let claude = json!({"cmd": "claude --dangerously-skip-permissions",
+                            "env": {"CLAUDE_CONFIG_DIR": "${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}"}});
+        let pairs = launch_create_env_pairs(&claude, "claude");
+        assert!(pairs.iter().any(|(k, v)| k == "CLAUDE_CODE_EFFORT_LEVEL" && v == "high"), "{pairs:?}");
+        assert_eq!(pairs[0].0, "CLAUDE_CONFIG_DIR", "어댑터 env 순서 불변");
+        let codex = json!({"cmd": "codex --x"});
+        assert!(!launch_create_env_pairs(&codex, "codex").iter().any(|(k, _)| k == "CLAUDE_CODE_EFFORT_LEVEL"));
+        // 사용자가 어댑터 env 에 적은 값(max)이 이긴다
+        let custom = json!({"cmd": "claude --x", "env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}});
+        let cp = launch_create_env_pairs(&custom, "claude");
+        assert_eq!(cp.iter().filter(|(k, _)| k == "CLAUDE_CODE_EFFORT_LEVEL").count(), 1);
+        assert!(cp.iter().any(|(k, v)| k == "CLAUDE_CODE_EFFORT_LEVEL" && v == "max"));
+        // Windows 렌더: 순수 cmd + env 는 주입 맵으로 · unix 렌더: 인라인 KEY="val"
+        let (send, inject) = render_launch("claude --x", &pairs);
+        #[cfg(windows)]
+        {
+            assert_eq!(send, "claude --x");
+            assert!(inject.iter().any(|(k, v)| k == "CLAUDE_CODE_EFFORT_LEVEL" && v == "high"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(send.contains("CLAUDE_CODE_EFFORT_LEVEL=\"high\" ") && send.ends_with("claude --x"), "{send}");
+            assert!(inject.is_empty());
+        }
+        // ② 호출부 배선 핀 — surface.create 는 이 조립 함수를, 기동 줄은 lib 헬퍼를 거친다
+        let src = include_str!("cys.rs");
+        let la = src.find("fn run_launch_agent_opts(").expect("run_launch_agent_opts");
+        let la_body = &src[la..la + src[la..].find("\n}\n").unwrap()];
+        let c = la_body.find("launch_create_env_pairs(&spec, agent)").expect("surface.create env 가 조립 함수를 안 거친다");
+        let r = la_body.find("\"surface.create\"").expect("surface.create");
+        assert!(c < r, "env 조립이 surface.create 뒤");
+        let b = src.find("fn boot_agent_on_surface(").unwrap();
+        let b_body = &src[b..b + src[b..].find("\n}\n").unwrap()];
+        let e = b_body.find("cys::inject_claude_effort_env(&mut env_pairs, agent,").expect("기동 줄 env 주입 없음");
+        let rl = b_body.find("render_launch(&cmd, &env_pairs)").unwrap();
+        assert!(e < rl, "effort env 주입이 기동 줄 렌더 뒤");
+    }
 }

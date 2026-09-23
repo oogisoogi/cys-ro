@@ -91,7 +91,9 @@ def _marker_pins():
 
 def _git_show_old_template():
     """구판 CEO_TEMPLATE 바이트(계측 대조용) — 비-repo/실패면 None(skip)."""
-    if not os.path.isdir(os.path.join(REPO_DIR, ".git")):
+    # ★S3(2026-09-24 · TICKET=v116-rel): worktree·submodule 에서는 `.git` 이 **파일**(gitdir 포인터)이다.
+    #   종전 isdir 은 그 경우를 비-repo 로 오판해 구판 핀 축을 조용히 건너뛰었다 → exists 로 판정.
+    if not os.path.exists(os.path.join(REPO_DIR, ".git")):
         return None
     r = subprocess.run(
         ["git", "-C", REPO_DIR, "show",

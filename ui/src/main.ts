@@ -24,7 +24,8 @@ import {
 } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
-import { exitedSweepTargets } from "./exitedsweep";
+import { exitedSweepTargets, armSweep, sweepArmedFor, settleSweep, type SweepArm } from "./exitedsweep";
+import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
 import {
   deptPlaceholderLabel,
   deptSlugOfSocket,
@@ -156,7 +157,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { parseBriefSections, recordedAt, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
@@ -2220,6 +2221,12 @@ let groups: GroupMeta[] = []; // 06: 그룹 메타 배열(진실원=localStorage
 let groupCounter = 1; // 06: 그룹 id 발급(ws의 wsCounter와 분리)
 let focusedSid: number | null = null;
 const panes = new Map<string, PaneRuntime>(); // 키 = paneKey(sid, socket)
+// ★(v116-ui-close · 닫기 보호) 셸이 끝났다고 **데몬이 확정한** 창(키 = paneKey). 재료 = 데몬 목록의 exited=true
+// **하나뿐**이다. 데몬의 exited 는 참으로만 바뀌고 번호는 재사용되지 않으므로 넣기만 한다(런타임 파괴 때 뺀다).
+// ⚠pane 스트림 종료 이벤트(exited_event)는 재료가 아니다 — src-tauri 는 연결 실패·EOF(데몬 재시작 포함)에도
+//   그 이벤트를 쏜다(main.rs start_surface_stream). 그걸 믿으면 데몬 재시작 뒤 **산 창을 묻지 않고** 닫는다.
+// 여기 없는 창 = 「산 창 또는 모름」 → 닫기 전에 묻는다(closeguard.ts). 종료 직후 ~3초(다음 목록)는 묻는 쪽으로 틀린다.
+const exitedPaneKeys = new Set<string>();
 // 부서 데몬 socket_slug(F3 백엔드 단일진실) → socket 경로. launch_dept_daemon 반환·daemon-event로 채운다.
 const socketForSlug = new Map<string, string>();
 // 사이드바 노드 신호 캐시(B3) — org.status 응답을 워크스페이스 행 집계용으로 보관.
@@ -2435,9 +2442,11 @@ function notePlaceholderTouched(sid: number): void {
 // 치우되, **단발 응답으로는 치우지 않는다** — 데몬이 한 틱만 부분/빈 목록을 돌려줘도 트리가 통째로
 // 증발하면 '터미널에 글자가 하나도 안 보이는' 최악이 된다. 2회 연속 같은 판정일 때만 집행한다.
 let ghostStrike = new Map<string, number>();
-// ★B17: 복원 완료(restore-progress done) 직후 **한 번만** 켜지는 스윕 무장. 켜진 채로 두면
-// 사용자가 직접 끝낸 세션의 마지막 화면까지 쓸어 가므로 한 패스 뒤 스스로 내린다.
-let exitedSweepArmed = false;
+// ★B17: 복원 완료(restore-progress done) 직후 켜지는 스윕 무장. 켜진 채로 두면
+// 사용자가 직접 끝낸 세션의 마지막 화면까지 쓸어 가므로 쓸고 나면 스스로 내린다.
+// ★(v116-ui-close · D4 #17) 무장 = 「아직 쓸리지 않은 소켓 키 집합」 — 조회가 건너뛰어지거나 실패한 소켓은
+//   다음 틱이 다시 쓴다(판정·상한 = exitedsweep.ts armSweep/sweepArmedFor/settleSweep).
+let exitedSweepArm: SweepArm = null;
 // ★A1-3 M7①: 이번 세션에 '본 적 있는' 부서 소켓. 시작 대조가 레지스트리를 읽으면 그때 심고,
 // 못 읽었으면 null 로 두어 첫 틱이 심는다(newlyRegisteredDepts 설명). 한 번 본 부서는 탭을 닫아도
 // 틱이 되살리지 않는다 — 닫은 탭이 3초마다 돌아오는 자가치유 과잉을 막는 것이 이 집합의 일이다.
@@ -2468,7 +2477,8 @@ function releaseFlightWhenSettled(key: string, p: Promise<unknown>): void {
 }
 async function refreshPaneTitles() {
   // 이 패스 동안의 무장 상태를 **한 번** 읽는다(패스 중간에 켜지면 다음 패스가 친다 — 반쪽 스윕 금지).
-  const sweepArmed = exitedSweepArmed;
+  const sweepArm = exitedSweepArm;
+  const sweptSockets: string[] = []; // 이번 패스에서 청소 줄까지 도달한 소켓(= 무장에서 뺄 것)
   if (!started || refreshing) return; // 겹친 호출의 이중 입양 방지
   refreshing = true;
   let layoutChanged = false; // 이번 틱에서 워크스페이스/트리를 고쳤는가(render 필요 판정)
@@ -2549,7 +2559,8 @@ async function refreshPaneTitles() {
       // ★B17 — 복원 직후 1회: 데몬이 **종료됨으로 알고 있는** 옛 자리를 닫는다(유령 수렴과 다른 축).
       //   닫은 ws 는 아래 배치 블록의 대상에 넣는다 — **닫기가 먼저, 배치가 나중**이어야 한다
       //   (B16 계약 · panetitle HANDOFF §3: 닫힌 sid 가 roleBySid 에 섞이면 그 좌석이 열을 하나 차지한다).
-      for (const sid of exitedSweepTargets(sweepArmed, sockSids, r.surfaces)) {
+      const sweepHere = sweepArmedFor(sweepArm, sk ?? "", Date.now());
+      for (const sid of exitedSweepTargets(sweepHere, sockSids, r.surfaces)) {
         for (const w of workspaces) {
           if ((w.socket ?? undefined) === (sk ?? undefined) && w.tree != null && collectSids(w.tree).includes(sid))
             relayoutWs.add(w);
@@ -2557,9 +2568,11 @@ async function refreshPaneTitles() {
         detachPane(sid, sk);
         layoutChanged = true;
       }
+      if (sweepHere) sweptSockets.push(sk ?? ""); // 이 소켓은 이번에 쓸렸다 — 실패·건너뜀 소켓은 여기 안 온다
       for (const s of r.surfaces) {
         const rt = panes.get(paneKey(s.surface_id, sk));
         if (!rt) continue;
+        if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk)); // 닫기 보호 판정 재료 — 화면에 있는 창만(누적 0)
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
         setRoleDot(rt.roleEl, s.exited ? null : s.role, !s.exited && surfaceWorking(s.surface_id, sk)); // 역할 점 + 작동중일 때만 깜빡, 동일 주기 갱신
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
@@ -2655,9 +2668,11 @@ async function refreshPaneTitles() {
     /* 데몬 일시 미응답은 다음 틱에 */
   } finally {
     refreshing = false;
-    // ★B17 무장 해제는 **finally** 다 — 중간에 예외가 나도 무장이 남아 다음 틱에 또 쓸지 않는다
-    //   (「1회」라고 적어 놓고 실제로는 예외 때마다 반복되는 것이 이런 플래그의 전형적 사고다).
-    if (sweepArmed) exitedSweepArmed = false;
+    // ★B17 무장 정리는 **finally** 다 — 중간에 예외가 나도 쓸린 소켓은 빠지고, 안 쓸린 소켓만 남는다.
+    //   (v116-ui-close · D4 #17) 종전엔 여기서 무조건 내려, 조회가 실패한 부서의 옛 창이 다음 복원까지 남았다.
+    //   ⚠패스 도중 새로 무장됐으면(exitedSweepArm !== sweepArm) 새 무장은 건드리지 않는다 — 그 복원분은
+    //   이 패스가 쓴 목록보다 뒤의 일이다.
+    if (sweepArm && exitedSweepArm === sweepArm) exitedSweepArm = settleSweep(sweepArm, sweptSockets, Date.now());
     // ★렌더는 finally에 둔다 — 위쪽 어디서 예외가 나도 패널은 매 틱 다시 그려진다.
     //   초판은 예외 시 렌더 자체를 건너뛰어 now가 재계산되지 않았고, 그래서 낡은 행이
     //   영원히 「fresh 모양」으로 굳었다(codex [High]). 나이는 그릴 때 다시 계산된다.
@@ -3404,6 +3419,7 @@ function destroyPaneRuntime(sid: number, socket?: string) {
   rt.term.dispose();
   rt.el.remove();
   panes.delete(paneKey(sid, socket));
+  exitedPaneKeys.delete(paneKey(sid, socket));
 }
 
 // ---------- pane drag 이동 (탭을 끌어 자유 배치) ----------
@@ -3725,7 +3741,16 @@ function render() {
   root.innerHTML = "";
   const ws = current();
   const tree = ws?.tree;
-  if (tree) root.appendChild(renderNode(tree));
+  if (tree) {
+    const top = renderNode(tree);
+    // ★(v116-ui-close · X-1) 루트 직계는 스타일시트(#root > * {flex:1})가 폭을 정한다. 그런데 pane 요소는
+    //   런타임과 함께 **재사용**되고, split 안에 있던 때 renderNode 가 박은 인라인 flex("0.5 1 0%")가 남아
+    //   있으면 인라인이 스타일시트를 이긴다 → 창이 1개로 줄어도 flex-grow 0.5 = 폭 절반 · fitPane 이 그 절반을
+    //   재서 PTY 도 절반 열로 맞춘다(VM 65열 · 헤드리스 66열 실측). split 안의 요소는 renderNode 가 매번 다시
+    //   박으므로 지울 곳은 여기 한 곳이다.
+    top.style.flex = "";
+    root.appendChild(top);
+  }
   else if (ws?.pending) root.appendChild(renderDeptPending()); // WP-10: 부서 준비 중 빈 pane 스피너·안내
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
   renderWsTabs();
@@ -4821,13 +4846,35 @@ async function actionSplit(dir: "row" | "col") {
   setFocus(sid);
 }
 
+// ★(v116-ui-close · 닫기 보호) 확인 창이 떠 있는 동안의 재진입 차단. 전역 단축키는 모달이 떠 있으면 이미
+//   빠져나가지만(키 처리기 첫머리), 팔레트·단추 등 다른 입구가 같은 함수를 부르므로 함수 자신도 막는다.
+let closeConfirmOpen = false;
+
+// 상단 「Close」·⌘W·팔레트 「패널 닫기」 세 입구가 모두 이 함수다(창 머리 × 는 따로 · 두 번 눌러 닫기 · 무변경).
 async function actionClose() {
   const ws = current();
   if (focusedSid == null || !ws.tree) return;
   const sid = focusedSid;
+  // 포커스가 이 탭의 창이 아니면(낡은 포커스) 아무것도 닫지 않는다 — 보이지 않는 창을 닫는 경로 0.
+  if (!collectSids(ws.tree).includes(sid)) return;
+  const key = paneKey(sid, ws.socket);
+  if (needsCloseConfirm(CLOSE_CONFIRM_POLICY, exitedPaneKeys.has(key) ? true : null)) {
+    if (closeConfirmOpen) return;
+    closeConfirmOpen = true;
+    let ok = false;
+    try {
+      const name = panes.get(key)?.titleEl.textContent ?? "";
+      ok = await confirmModal(CLOSE_CONFIRM_TEXT.title, closeConfirmBody(name), CLOSE_CONFIRM_TEXT.yes, CLOSE_CONFIRM_TEXT.no);
+    } finally {
+      closeConfirmOpen = false;
+    }
+    if (!ok) return;
+    // 묻는 사이 그 창이 이미 사라졌으면(데몬 종료 이벤트 등) 할 일이 없다 — 다른 창으로 옮겨 닫지 않는다.
+    if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;
+  }
   await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
   destroyPaneRuntime(sid, ws.socket);
-  ws.tree = replaceNode(ws.tree, sid, () => null);
+  if (ws.tree) ws.tree = replaceNode(ws.tree, sid, () => null);
   focusedSid = collectSids(ws.tree)[0] ?? null;
   render();
   if (focusedSid != null) setFocus(focusedSid);
@@ -7476,15 +7523,17 @@ async function showRestoreBrief(): Promise<void> {
     const master = seats.find((s) => s.role === "master" && !s.exited);
     if (!master) return; // 마스터 자리가 없으면 띄우지 않는다(카드는 마스터 자리 1곳 전용)
     const home = String(await invoke("home_dir_path"));
-    let text: string | null = null;
-    for (const p of stateCandidates(master.live_cwd, home)) {
+    // ★(v116-ui-close · R1a) 정본(~/.cys/pack/round) + 종전 cwd `_round` 사슬을 모두 읽고, 기록 시각이 가장 늦은
+    //   것을 쓴다(같으면 정본). 종전엔 cwd 사슬만 보고 첫 적중에서 멈춰 정본 기록을 한 번도 못 읽었다(D2 R1a).
+    const found: { path: string; text: string }[] = [];
+    for (const p of briefStatePaths(master.live_cwd, home)) {
       try {
-        text = String(await rpcT(invoke("read_text_head", { path: p, maxBytes: 65536 }), T_LIST));
-        break;
+        found.push({ path: p, text: String(await rpcT(invoke("read_text_head", { path: p, maxBytes: 65536 }), T_LIST)) });
       } catch {
-        /* 다음 후보 */
+        /* 없는 후보 — 다음 */
       }
     }
+    const text = pickBriefText(found);
     // ★(v112-restore ①) 부트 주입 제출 기록 — 미제출 실측 자리를 정직 표기(기본 레인만 · 못 읽으면 생략).
     const unsubmittedRoles = await readUnsubmittedRoles(seats, home);
     const card = buildBriefCard({
@@ -7876,7 +7925,7 @@ async function start() {
       })();
       // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
       //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
-      exitedSweepArmed = true;
+      exitedSweepArm = armSweep(workspaces.map((w) => w.socket ?? ""), Date.now());
       // 3초를 기다리지 않는다 — 사용자가 보는 것은 "복원됐다"는 말 직후의 화면이다.
       // 이 틱 안에서 ①옛 자리 닫기 → ②새 roleBySid 생성 → ③formationIfRowOnly 배치가 그 순서로 돈다.
       void refreshPaneTitles();
@@ -8364,9 +8413,15 @@ async function start() {
 
 // ---------- ui wiring ----------
 
-document.getElementById("btn-new")!.addEventListener("click", actionNew);
-document.getElementById("btn-split-h")!.addEventListener("click", () => actionSplit("row"));
-document.getElementById("btn-split-v")!.addEventListener("click", () => actionSplit("col"));
+// ★(v116-ui-close · 권고 C) 창 만들기는 상단에서 빠져 전문가 칸의 단추 1개가 됐다 — 누르면 방향 2개를 고른다.
+//   동작은 종전 Split →/↓ 와 같은 함수다(포커스 창이 없으면 actionSplit 이 actionNew 로 넘긴다 = 종전 + New).
+document.getElementById("btn-pane-create")!.addEventListener("click", (e) => {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  showCtxMenu(r.left, r.bottom, [
+    { label: "오른쪽에 새 창 (⌘D)", action: () => void actionSplit("row") },
+    { label: "아래에 새 창 (⌘⇧D)", action: () => void actionSplit("col") },
+  ]);
+});
 document.getElementById("btn-equalize")!.addEventListener("click", actionEqualize);
 document.getElementById("btn-close")!.addEventListener("click", actionClose);
 document.getElementById("btn-files")!.addEventListener("click", () => setFtOpen(!ftOpen));

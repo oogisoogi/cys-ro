@@ -132,6 +132,10 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 #ws-expert #btn-master-start, #ws-expert #btn-dept-master, #ws-expert #btn-ws-dept {
   font-size: calc(14px * var(--wsbar-font, 1)); padding: 0 6px;
 }
+/* v116-ui-close(권고 C): 상단에서 내려온 「창 만들기」도 같은 칸의 알약이다 — 크기·배율 축·id 2개 특이도 동일. */
+#ws-expert #btn-pane-create {
+  font-size: calc(14px * var(--wsbar-font, 1)); padding: 0 6px;
+}
 /* A1-3 M1 + v110-sidebar ⓑ′ — 조직 단추 3종은 머리줄을 떠나 전문가 모드 칸으로 내려갔다(index.html 주석).
    ① 안내 한 줄은 왕초보가 제일 먼저 읽는 자리라 상단 버튼과 같은 사이드바 배율 축에 매되, 버튼이
       아니라 글이므로 한 단계 작게·흐리게 둔다. 좁은 사이드바에서 넘치면 줄바꿈한다(잘리면 안 된다).

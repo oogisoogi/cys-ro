@@ -87,6 +87,39 @@ export function stateCandidates(cwd: string | null | undefined, home: string): s
   return out;
 }
 
+/**
+ * ★(v116-ui-close · R1a) 작업기억의 **정본** 경로 — 마스터 지침(MASTER_DIRECTIVE §0 ③·주요 이벤트 기록)이
+ * 쓰는 곳은 `${CYS_PACK_DIR:-~/.cys/pack}/round/SESSION_STATE.md` 다. 종전 카드는 `<마스터 cwd>/_round/…`
+ * 계열만 찾아서, 드레인 저장이 없던 켜짐에선 늘 「기록을 찾지 못했습니다」가 떴다(D2 R1a).
+ * ⚠CYS_PACK_DIR 을 따로 지정한 기기는 이 기본 경로와 다를 수 있다 — UI 는 그 값을 읽을 통로가 없어
+ *   기본 경로(= 설치 기본값)만 본다(없으면 종전 후보로 넘어간다 · 지어내지 않는다).
+ */
+export function canonicalStatePath(home: string): string {
+  const h = home.replace(/[\\/]+$/, "");
+  const sep = h.includes("\\") && !h.includes("/") ? "\\" : "/";
+  return [h, ".cys", "pack", "round", "SESSION_STATE.md"].join(sep);
+}
+
+/** 카드가 읽어 볼 경로 전부 — 정본 먼저, 그다음 종전 cwd `_round` 사슬(드레인 저장이 쓰는 곳 · cys.rs DRAIN 지시). */
+export function briefStatePaths(cwd: string | null | undefined, home: string): string[] {
+  const canon = canonicalStatePath(home);
+  return [canon, ...stateCandidates(cwd, home).filter((p) => p !== canon)];
+}
+
+/**
+ * 읽힌 후보들 중 카드에 쓸 하나. **기록 시각(recordedAt)이 가장 늦은 것** — 드레인 저장이 방금 cwd 쪽에
+ * 썼으면 그쪽이 더 새 기록이다. 시각이 같거나 둘 다 없으면 **앞선 후보**(= 정본)를 고른다.
+ * 하나도 없으면 null(카드는 「기록을 찾지 못했습니다」로 정직하게 말한다).
+ */
+export function pickBriefText(found: { path: string; text: string }[]): string | null {
+  let best: { text: string; at: string } | null = null;
+  for (const f of found) {
+    const at = recordedAt(f.text) ?? "";
+    if (best === null || at > best.at) best = { text: f.text, at };
+  }
+  return best ? best.text : null;
+}
+
 /** 역할 코드명 → 처음 쓰는 사람이 읽는 이름. 모르는 역할은 「도우미」로 뭉친다(코드명을 내지 않는다). */
 export function friendlyRole(role: string): string {
   if (role === "master") return "총괄";

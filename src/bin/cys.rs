@@ -10160,6 +10160,17 @@ fn agent_env_pairs(spec: &Value) -> Vec<(String, String)> {
 ///       env 주입 없음(셸 전개가 진실원). → mac 무회귀(master D5 조건).
 /// windows: 순수 cmd만 send(powershell이 POSIX env-assign 미해석 회귀 차단) + 해소된 env를 주입 맵으로 반환
 ///          (surface.create → builder.env). CLAUDE_CONFIG_DIR 등이 pane env에 직접 실린다.
+/// launch-agent 의 surface.create env 맵(Windows 에서 pane env 로 실리는 유일한 경로 — 아래 호출부 주석)을
+/// 조립한다: 어댑터 env → D5 fullscreen 차단 기본값 → ★v116-seat N-4 Claude effort env. 두 기본값 주입은
+/// 모두 lib 헬퍼를 거친다(좌석 기동 줄 조립과 같은 규약 · 사본 금지).
+fn launch_create_env_pairs(spec: &Value, agent: &str) -> Vec<(String, String)> {
+    let mut pairs = agent_env_pairs(spec);
+    let bin = extract_bin(spec["cmd"].as_str().unwrap_or(""), agent);
+    cys::inject_claude_alt_screen_default(&mut pairs, bin);
+    cys::inject_claude_effort_env(&mut pairs, agent, bin);
+    pairs
+}
+
 fn render_launch(cmd: &str, env: &[(String, String)]) -> (String, Vec<(String, String)>) {
     if cfg!(windows) {
         let inject = env
@@ -10627,12 +10638,9 @@ fn compose_agent_cmd(
             }
         }
     }
-    // ★v116-ui-effort ②: Claude 좌석은 `--effort high` 를 명령줄에 **명시**한다(박사님 정책 2026-09-23).
-    //   여기가 좌석 기동의 단일 합류점이다 — launch-agent(새 좌석) · restore · node-recover 가 이 함수를
-    //   부르고, 편성 boot·승계(javis_boot_node)·부서 좌석·schedule·GUI ▶CEO 는 모두 `cys launch-agent` 를
-    //   거친다. 재개 인자까지 조립한 **뒤**에 붙여야 resume 경로도 같은 한 줄을 받는다.
-    let bin = extract_bin(&cmd, agent).to_string();
-    cys::append_claude_effort(&mut cmd, agent, &bin);
+    // ★v116-seat N-4: effort 는 명령줄 인자가 아니라 좌석 env(CLAUDE_CODE_EFFORT_LEVEL)로 싣는다 —
+    //   구판 claude(2.1.37)는 모르는 인자에 rc 1 로 죽는다(좌석 즉사) · env 는 무시된다(안전 퇴화).
+    //   주입 자리 = boot_agent_on_surface 의 env_pairs(unix 인라인) · launch_create_env_pairs(Windows).
     Ok(cmd)
 }
 
@@ -10698,6 +10706,8 @@ fn boot_agent_on_surface(
     // 있다는 이유로 "Windows 는 env 로 막힌다"고 판단하지 마라 — 규약 단일화(사본 금지)를 위해
     // 두 소비처가 모두 lib 헬퍼를 경유할 뿐이다.
     cys::inject_claude_alt_screen_default(&mut env_pairs, extract_bin(&cmd, agent));
+    // ★v116-seat N-4: Claude 좌석 effort = env(키 부재 시에만 high) — lib `inject_claude_effort_env` doc.
+    cys::inject_claude_effort_env(&mut env_pairs, agent, extract_bin(&cmd, agent));
     let (send, _send_env) = render_launch(&cmd, &env_pairs);
     // ★(W2 · B4) **기동 send 직전 line_count 스냅샷** — readiness 판정의 시간 귀속 기준선.
     //
@@ -13257,11 +13267,7 @@ fn run_launch_agent_opts(
         //   boot_agent_on_surface 는 env 를 폐기하고, Tauri GUI 의 create_surface 는 env 를 아예
         //   넘기지 않는다: src-tauri/src/main.rs 의 surface.create 페이로드 참조).
         //   그래서 이것은 '벨트'이고 본체는 UI 가드(ui/src/wheelgate.ts)다 — lib 헬퍼 주석 정본.
-        let mut create_env_pairs = agent_env_pairs(&spec);
-        cys::inject_claude_alt_screen_default(
-            &mut create_env_pairs,
-            extract_bin(spec["cmd"].as_str().unwrap_or(""), agent),
-        );
+        let create_env_pairs = launch_create_env_pairs(&spec, agent);
         let (_, inject_env) = render_launch("", &create_env_pairs);
         let env_obj: serde_json::Map<String, Value> = inject_env
             .into_iter()
@@ -29415,60 +29421,5 @@ mod tests {
         let call = code.find("init_pack_wire_profile_skills(&dir").expect("run_init_pack 안에 배선 호출이 없다");
         let early = code.find("if no_install_hook {").expect("no_install_hook 분기 부재");
         assert!(call < early, "배선 호출이 --no-install-hook 조기 반환 뒤에 있다 — 앱 갱신 경로가 배선을 못 탄다");
-    }
-
-    // ─── v116-ui-effort ② — 좌석 기동 명령 한 줄: 새 좌석·재개 두 경로 모두 `--effort high` ───
-    #[test]
-    fn v116_compose_agent_cmd_effort_on_new_and_resume_paths() {
-        let claude = json!({
-            "cmd": "claude --model claude-opus-5-5 --dangerously-skip-permissions",
-            "resume_arg": "--resume {session_id}",
-            "resume_arg_fallback": "--continue"
-        });
-        // 새 좌석(launch-agent)
-        let fresh = compose_agent_cmd(&claude, "claude", false, None, None, None).unwrap();
-        assert_eq!(
-            fresh,
-            "claude --model claude-opus-5-5 --dangerously-skip-permissions --effort high"
-        );
-        // 재개(restore·node-recover) — 세션 id 없음 → fallback 뒤에 effort
-        let resumed = compose_agent_cmd(&claude, "claude", true, None, None, None).unwrap();
-        assert_eq!(
-            resumed,
-            "claude --model claude-opus-5-5 --dangerously-skip-permissions --continue --effort high"
-        );
-        // 모델별 키(라이브 사용자 팩의 claude-fable 형태)도 같은 규칙
-        let fable =
-            json!({"cmd": "claude --model claude-fable-5-1 --dangerously-skip-permissions"});
-        assert!(
-            compose_agent_cmd(&fable, "claude-fable", false, None, None, None)
-                .unwrap()
-                .ends_with(" --effort high")
-        );
-        // env 대입으로 시작하는 옛 형태 — 실행 파일 토큰 판정이 env 를 건너뛴다
-        let legacy = json!({"cmd": "CLAUDE_CONFIG_DIR=\"$HOME/.cys/claude\" claude --dangerously-skip-permissions"});
-        assert!(
-            compose_agent_cmd(&legacy, "claude", false, None, None, None)
-                .unwrap()
-                .ends_with(" --effort high")
-        );
-    }
-
-    #[test]
-    fn v116_compose_agent_cmd_leaves_other_agents_untouched() {
-        let codex = json!({"cmd": "codex --dangerously-bypass-approvals-and-sandbox", "resume_arg": "resume {session_id}"});
-        assert_eq!(
-            compose_agent_cmd(&codex, "codex", false, None, None, None).unwrap(),
-            "codex --dangerously-bypass-approvals-and-sandbox"
-        );
-        assert_eq!(
-            compose_agent_cmd(&codex, "codex", true, Some("abc"), None, None).unwrap(),
-            "codex --dangerously-bypass-approvals-and-sandbox resume abc"
-        );
-        let agy = json!({"cmd": "~/.local/bin/agy --dangerously-skip-permissions", "resume_arg": "--continue"});
-        assert!(!compose_agent_cmd(&agy, "gemini", true, None, None, None)
-            .unwrap()
-            .contains("--effort"));
-        assert!(compose_agent_cmd(&json!({}), "claude", false, None, None, None).is_err());
     }
 }

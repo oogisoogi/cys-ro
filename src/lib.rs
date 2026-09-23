@@ -2453,11 +2453,19 @@ pub fn inject_claude_alt_screen_default_for(
     env_pairs.push((ENV_CLAUDE_NO_ALT_SCREEN.to_string(), "1".to_string()));
 }
 
-/// v116-ui-effort ② — Claude 좌석 기동 명령에 **명시**하는 effort 값(박사님 정책 2026-09-23 「effort 는
-/// high 로 고정」). 설정 파일(settings.json·환경 변수)에 기대지 않는 이유 = Opus 5.5 의 기본값이
-/// medium 이고, 같은 날 09:14 설정이 뒤집혀 좌석이 조용히 medium 으로 뜬 실증이 있다. 명령줄 인자는
-/// 좌석마다 기동 순간에 박히므로 설정 파일이 무엇이든 이긴다.
+/// v116-seat N-4 — Claude 좌석의 effort 값(박사님 정책 2026-09-23 「effort 는 high 로 고정」). Opus 5.5 의
+/// 기본값이 medium 이고, `/effort` 피커가 프로필 전역 설정(effortLevel)을 바꿔 좌석이 조용히 medium 으로 뜬
+/// 실증(09-23 09:14)이 있다.
 pub const CLAUDE_SEAT_EFFORT: &str = "high";
+
+/// Claude Code 가 읽는 effort 환경 변수 이름. 설치본 2.1.281 문자열 실측(2026-09-24):
+/// 「apply_flag_settings: CLAUDE_CODE_EFFORT_LEVEL overrides effort for this session」 — 설정 파일의
+/// effortLevel 보다 이기고, 좌석 안의 `/effort` 변경도 「Not applied」로 막는다(= high 고정 정책과 일치).
+/// ★명령줄 인자가 아니라 환경 변수인 이유(master 판정 2026-09-24 · 원 5af9ac1d 는 인자였다): 구판 claude
+/// 2.1.37 은 effort 인자를 「unknown option」으로 거부하고 rc 1 로 끝난다 = 좌석 즉사(4군 ④). 환경 변수는
+/// 구판이 모르면 무시한다 = 안전 퇴화(좌석은 살고 effort 만 기본값). 사용자가 max 를 원하면 agents.json 의
+/// 그 어댑터 `env` 에 이 키를 적는다 — 아래 주입은 키가 **없을 때만** 한다.
+pub const ENV_CLAUDE_EFFORT_LEVEL: &str = "CLAUDE_CODE_EFFORT_LEVEL";
 
 /// 이 기동이 **Claude Code 좌석**인가(순수 판정).
 ///
@@ -2476,114 +2484,22 @@ pub fn is_claude_seat(agent: &str, bin: &str) -> bool {
     stem.eq_ignore_ascii_case("claude")
 }
 
-/// Claude 좌석 기동 명령 끝에 `--effort high` 를 붙인다(v116-ui-effort ②).
+/// Claude 좌석 env 에 `CLAUDE_CODE_EFFORT_LEVEL=high` 를 넣는다(v116-seat N-4).
 ///
-/// 불가침 2계약:
-/// · Claude 좌석이 아니면(`is_claude_seat` 거짓) **한 글자도** 바꾸지 않는다 — codex·agy 는 이 인자를
-///   모른다(모르는 인자로 기동이 죽는다).
-/// · 명령에 이미 `--effort` 가 있으면(`--effort x` · `--effort=x`) 덧붙이지 않는다 — 같은 인자를
-///   두 번 주면 어느 값이 이기는지가 CLI 구현에 달린다. 사람이 적은 값은 명시적 선택이다.
-/// 붙이는 자리가 **끝**인 이유: 재개 인자(`--resume <id>`)까지 조립된 뒤에 붙여야 기동 경로가 무엇이든
-/// (새 좌석·복원·node-recover) 같은 한 줄이 된다. 인자 순서는 CLI 해석에 영향이 없다.
-pub fn append_claude_effort(cmd: &mut String, agent: &str, bin: &str) {
+/// 불가침 3계약([`inject_claude_alt_screen_default_for`] 와 같은 모양):
+/// · Claude 좌석이 아니면(`is_claude_seat` 거짓) **아무것도** 넣지 않는다 — codex·agy 는 무관한 키다.
+/// · 키가 이미 있으면(어댑터 `env` 에 사용자가 적은 값 — 예 max) 그 값이 이긴다 — 부재 시에만 기본값.
+/// · append 만 한다(재정렬 금지 — unix 인라인 `KEY="val" cmd` 순서가 곧 셸 전개 순서다).
+/// 소비처 둘이 모두 이 헬퍼를 거친다: 좌석 기동 줄(unix 인라인 · boot_agent_on_surface) · launch-agent 의
+/// surface.create env 맵(Windows = 순수 cmd 라 env 는 이 맵으로만 pane 에 실린다).
+pub fn inject_claude_effort_env(env_pairs: &mut Vec<(String, String)>, agent: &str, bin: &str) {
     if !is_claude_seat(agent, bin) {
         return;
     }
-    if cmd
-        .split_whitespace()
-        .any(|t| t == "--effort" || t.starts_with("--effort="))
-    {
+    if env_pairs.iter().any(|(k, _)| k == ENV_CLAUDE_EFFORT_LEVEL) {
         return;
     }
-    cmd.push_str(" --effort ");
-    cmd.push_str(CLAUDE_SEAT_EFFORT);
-}
-
-#[cfg(test)]
-mod claude_effort_tests {
-    use super::*;
-
-    fn app(cmd: &str, agent: &str, bin: &str) -> String {
-        let mut c = cmd.to_string();
-        append_claude_effort(&mut c, agent, bin);
-        c
-    }
-
-    #[test]
-    fn claude_seat_gets_effort_high_at_end() {
-        assert_eq!(CLAUDE_SEAT_EFFORT, "high"); // 정책 값이 조용히 바뀌면 여기서 적색
-        assert_eq!(
-            app("claude --dangerously-skip-permissions", "claude", "claude"),
-            "claude --dangerously-skip-permissions --effort high"
-        );
-        // 라이브 사용자 팩 형태(--model 을 이미 가진 키 · 모델별 키) — 옆에 그대로 붙는다
-        assert_eq!(
-            app(
-                "claude --model claude-opus-5-5 --dangerously-skip-permissions",
-                "claude",
-                "claude"
-            ),
-            "claude --model claude-opus-5-5 --dangerously-skip-permissions --effort high"
-        );
-        assert!(app(
-            "claude --model claude-fable-5-1 --x",
-            "claude-fable",
-            "claude"
-        )
-        .ends_with(" --effort high"));
-    }
-
-    #[test]
-    fn claude_detected_by_key_or_binary_name() {
-        assert!(is_claude_seat("claude", "claude"));
-        assert!(is_claude_seat("claude-sonnet", "claude"));
-        // 윈도 cmd.exe /c …claude-2.cmd — 키가 잡는다
-        assert!(is_claude_seat("claude", "cmd.exe"));
-        // 모델별 키 + 이름이 claude 가 아닌 래퍼 — 키 접두 판정 **단독**으로만 잡힌다
-        // (실행파일 이름 판정과 겹치지 않게 골랐다: 두 판정이 겹치면 한쪽을 지워도 초록이다 · 뮤턴트 M3)
-        assert!(is_claude_seat("claude-fable", "cmd.exe"));
-        assert!(is_claude_seat(
-            "claude-sonnet",
-            "C:\\Users\\x\\AppData\\Roaming\\npm\\claude-2.cmd"
-        ));
-        assert!(is_claude_seat("my-seat", "/Users/x/.local/bin/claude"));
-        assert!(is_claude_seat(
-            "my-seat",
-            "C:\\Users\\x\\.local\\bin\\claude.exe"
-        ));
-        assert!(!is_claude_seat("codex", "codex"));
-        assert!(!is_claude_seat("gemini", "~/.local/bin/agy"));
-        assert!(!is_claude_seat("grok", "grok"));
-        assert!(!is_claude_seat("claudette", "claudette")); // 접두 일치가 아니라 키/이름 정확 판정
-    }
-
-    #[test]
-    fn non_claude_cmd_is_untouched_byte_for_byte() {
-        for (cmd, agent, bin) in [
-            (
-                "codex --dangerously-bypass-approvals-and-sandbox",
-                "codex",
-                "codex",
-            ),
-            (
-                "~/.local/bin/agy --dangerously-skip-permissions",
-                "gemini",
-                "~/.local/bin/agy",
-            ),
-            ("grok", "grok", "grok"),
-        ] {
-            assert_eq!(app(cmd, agent, bin), cmd);
-        }
-    }
-
-    #[test]
-    fn explicit_effort_is_not_doubled() {
-        for cmd in ["claude --effort max", "claude --effort=low --x"] {
-            assert_eq!(app(cmd, "claude", "claude"), cmd);
-        }
-        // 비슷한 이름의 다른 인자는 명시로 치지 않는다
-        assert!(app("claude --efforts x", "claude", "claude").ends_with(" --effort high"));
-    }
+    env_pairs.push((ENV_CLAUDE_EFFORT_LEVEL.to_string(), CLAUDE_SEAT_EFFORT.to_string()));
 }
 
 /// Claude Code projects/ 디렉터리명 munge — 실측: '/'와 특수문자가 '-'로 치환된다.

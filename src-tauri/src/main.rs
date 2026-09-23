@@ -3397,9 +3397,11 @@ static FOLDER_ACCESS_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic:
 /// (A-3) 첫 실행 폴백 대기 — UI 가 이 시간 안에 권한 확인을 시작하지 않으면(화면 초기화가 중간에 끊김 등)
 /// 백엔드가 종전 nudge 로 권한 창을 띄운다. 안내 없이 뜨는 창이 창이 아예 안 뜨는 것(좌석 폴더 거부를
 /// 모른 채 첫 세션을 보냄)보다 낫다(opus 1R B-2).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // 쓰는 곳 = setup 의 맥 전용 첫 실행 갈래
 const FOLDER_ACCESS_FALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 폴백 판정(순수) — UI 가 시작하지 않았을 때만 백엔드가 부른다.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // 쓰는 곳 = setup 의 맥 전용 첫 실행 갈래
 fn folder_access_fallback_due(ui_started: bool) -> bool {
     !ui_started
 }

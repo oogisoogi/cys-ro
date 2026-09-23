@@ -21,6 +21,9 @@ describe("본부 판정 — 마스터 좌석 우선 · 모르면 첫째 기본 �
     expect(hqWorkspaceId(wss, new Set())).toBe(1);
     expect(hqWorkspaceId(wss, new Set([99]))).toBe(1);
   });
+  it("(Fable 2R) 폴백은 id 최소 — 탭을 끌어 순서가 바뀌어도 본부가 옮겨 가지 않는다", () => {
+    expect(hqWorkspaceId([wss[1], wss[0]], null)).toBe(1);
+  });
   it("부서 탭·준비 중 탭은 본부가 아니다 · 기본 탭이 없으면 null", () => {
     expect(hqWorkspaceId([wss[2], wss[3]], new Set([5]))).toBeNull();
   });
@@ -62,7 +65,8 @@ describe("배선 — 저장값은 무변경 · 보여 주는 자리는 전부 ws
     expect(main).toContain("`→ ${wsLabel(destWs)}`");
     expect(main).toContain("`→ ${wsLabel(destWs)} (surface:${newSid})`");
     expect(main).toContain("const nm = info.name || wsLabel(ws);");
-    expect(main).toContain("name: wsLabel(ws) || \"그룹\"");
+    expect(main).toContain('name: ws.name && ws.name !== UNTITLED ? ws.name : "그룹"');
+    expect(main).toContain("label: ws ? wsLabel(ws) : deptSlugOfSocket(sock)");
     expect(main.includes("destWs.name || UNTITLED")).toBe(false);
     expect(main.includes("const wsName = ws.name || UNTITLED")).toBe(false);
   });
@@ -70,6 +74,9 @@ describe("배선 — 저장값은 무변경 · 보여 주는 자리는 전부 ws
     expect(main).toContain("ws.name = renamedName(name, shownBeforeRename, ws.name, UNTITLED);");
     const at = main.indexOf("hqMasterSids = masterSids;");
     expect(at).toBeGreaterThan(-1);
-    expect(main.slice(at - 200, at)).toContain("if ((sk ?? undefined) === undefined) {");
+    expect(main.slice(at - 400, at)).toContain("if ((sk ?? undefined) === undefined) {");
+    expect(main.slice(at - 200, at)).toContain("if (masterSids.size) {"); // 마스터가 잠깐 끝나도 본부가 튀지 않게
+    // 탭 이름 편집 중엔 탭 막대를 다시 그리지 않는다
+    expect(main).toContain(`if (bar.querySelector('.ws-name[contenteditable="true"]')) return;`);
   });
 });

@@ -23,8 +23,8 @@ describe("updatePlan — 옵션 2 분기 판정(문자열 핀 = 회귀 0 증명)
     const p = updatePlan({ ...base, binVersion: "0.12.57", packVersion: null });
     expect(p.kind).toBe("binary");
     expect(p.badge).toBe("!");
-    expect(p.title).toBe("새 본체 버전 0.12.57 (Update 버튼으로 패치 설치)");
-    expect(p.toastMsg).toBe("새 본체 0.12.57 — 상단 Update 버튼으로 패치 설치(재시작·자동 복원)");
+    expect(p.title).toBe("새 본체 버전 0.12.57 (「업데이트」 버튼으로 패치 설치)");
+    expect(p.toastMsg).toBe("새 본체 0.12.57 — 상단 「업데이트」 버튼으로 패치 설치(재시작·자동 복원)");
   });
 
   test("팩만 + 호환 → 종전 무중단 문구 그대로(회귀 0)", () => {
@@ -32,7 +32,7 @@ describe("updatePlan — 옵션 2 분기 판정(문자열 핀 = 회귀 0 증명)
     expect(p.kind).toBe("pack");
     expect(p.badge).toBe("↻");
     expect(p.title).toBe("팩 0.12.58 (무중단·세션 유지)");
-    expect(p.toastMsg).toBe("팩 0.12.58 — 상단 Update(재시작 없음)");
+    expect(p.toastMsg).toBe("팩 0.12.58 — 상단 「업데이트」(재시작 없음)");
   });
 
   test("팩만 + 비호환 → 종전 본체 필요 문구 그대로(회귀 0)", () => {

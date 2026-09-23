@@ -13,6 +13,13 @@ const block = (sel: string): string => {
 };
 const z = (sel: string): number => Number(/z-index:\s*(\d+)/.exec(block(sel))?.[1] ?? NaN);
 
+describe("D4 #21 세로 배분 — 카드(위)와 알림 줄(아래)이 둘 다 길어져도 만나지 않는다(Fable 2R)", () => {
+  it("알림 줄 상한 40vh · 카드 상한이 그 40vh 를 빼고 잡힌다(두 값은 짝)", () => {
+    expect(block("#toasts")).toContain("max-height: 40vh;");
+    expect(block("#restore-brief")).toContain("max-height: calc(100vh - var(--topbar-h, 38px) - 12px - 40vh - 12px - 12px);");
+  });
+});
+
 describe("D4 #21 경보 층위 — 알림 줄은 복원 카드보다 위", () => {
   it("#toasts z-index > #restore-brief z-index", () => {
     expect(z("#toasts")).toBeGreaterThan(z("#restore-brief"));

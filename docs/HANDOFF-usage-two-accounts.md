@@ -128,3 +128,21 @@ Claude Code가 산식을 바꾸면 시험은 초록으로 남고 운영에서 �
 - 시험 `probe_failure_keeps_previous_values_and_backs_off`: 값이 있는 계정A에 429 → 값·관측 시각·Fable 유지 + 백오프 (1회, +270s).
   뮤턴트(실패 가지에서 rate를 비움) → 이 시험 적색 → 원복 뒤 20/20 초록.
 - 시험 수: cysd 970 passed · 1 ignored(969 + 1).
+
+## 후속 — TICKET=cysr-usage-two-accounts (2026-09-23 · worker surface:941)
+### 원인 실측 (「계정2 = statusline · 약 30시간 stale」)
+- 브리프 추정 「cmux 임시 settings(`--settings …cmux-claude-settings.*`)가 statusLine 을 덮는다」는 **반증**됐다.
+  임시 파일의 최상위 키는 `hooks`·`preferredNotifChannel` 뿐이고, 라이브 데몬 `usage.named_reporters` 에 master 의 statusline 보고가 10초 전에 와 있었다.
+- 진짜 원인 ①: cmux 페인(CYS_SURFACE_ID 없음)의 statusline 은 `usage.report_named` 로 간다. 이 핸들러는 ctx 만 저장하고 rate 는 버린다.
+  계정 귀속(`note_rate`)은 `usage.report`(cys 페인)에서만 한다. 계정2를 쓰는 세션은 master·CSO(cmux) 뿐이라 statusline 공급원이 0이다.
+- 원인 ②: 계정2의 마지막 statusline(09-22 02:54)은 `~/.cys/claude` 가 계정2였던 때의 것이다. 지금 그 프로필은 계정1로 다시 로그인돼 있다.
+- 원인 ③: 라이브 cysd 1.0.2(09-18 빌드)에는 계정별 OAuth 프로브(d7b890f3 · v1.1.0 이후 태그)가 없다.
+- HEAD(1.1.5) 강제발화(`cysd --oauth-usage-probe`) = 두 계정 모두 rc0(계정2는 `.claude-acct2` 항목). ⇒ 판올림만으로 계정2 숫자는 채워진다.
+- R3(named 경로에도 rate 귀속)은 **기각**(master 09:00): named 는 소유 게이트가 없고 cwd 를 자기 신고한다. 계정 rate 는 토큰 리미트 게이트의 계기라 위조 입구를 여는 비용이 더 크다.
+
+### 바꾼 것 (A안 = 패널 R1·R2)
+- `accounts.rs`: `fresh_limit_secs(source)` — statusline 120초 · oauth 240초(주기 180 + 여유 60). 계정 행과 스코프 게이지가 **각자 자기 원천의 한도**를 싣는다.
+  근거는 시험 `fresh_limit_values_follow_source_cadence` 에 있다: 한도는 주기보다 커야 하고, 첫 백오프 대기(270초)보다 작아야 한다.
+- `wsusage.ts`: 흐림 판정은 데몬 한도를 따른다. 필드가 없으면(옛 판본 부서 데몬) 종전 120초다. 행에 `source` 를 싣고, `sourceGrade` 에 oauth(◆)·snapshot 을 더했다.
+- `main.ts`: rate 행에도 ctx 행과 같은 출처 마크·나이 칸을 붙였다. `wsbar.showsRowAge` 는 스코프 게이지가 있으면 rate 행 폭(6em 이름 칸)으로 잰다.
+- 왜 한도가 원천별이어야 하나: 120초 하나로 재면 oauth 로만 채워지는 행이 매 주기 약 60초씩 흐려지고, 툴팁이 「최근 관측 없음」을 거짓으로 말한다. 헤드리스 대조 캡처로 확인했다.

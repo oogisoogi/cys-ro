@@ -972,6 +972,9 @@ pub fn local_json(daemon: &Arc<Daemon>, now: f64) -> Value {
                     "updated_at": if v.updated_at > 0.0 { json!(v.updated_at) } else { Value::Null },
                     "stale_secs": if v.updated_at > 0.0 { json!((now - v.updated_at).max(0.0)) } else { Value::Null },
                     "source": v.source,
+                    // ★rate 슬롯의 원천과 **짝으로** 나간다 — 앱의 데몬 병합(usage_accounts_all)이 행을
+                    //   통째로 옮기므로 한도가 다른 원천의 시각과 섞이지 않는다.
+                    "fresh_limit_secs": fresh_limit_secs(&v.source),
                     "adapter": v.adapter,
                     // 모델 스코프 게이지 — ★자기 updated_at을 들고 나간다. 계정의 updated_at(rate 슬롯)을
                     // 물려 쓰면 statusline이 rate를 갱신할 때마다 이 게이지가 「방금 관측」으로 둔갑한다.
@@ -981,6 +984,9 @@ pub fn local_json(daemon: &Arc<Daemon>, now: f64) -> Value {
                         "resets_at": g.resets_at,
                         "updated_at": g.updated_at,
                         "source": g.source,
+                        // 게이지 자기 원천의 한도 — 계정 source(rate 슬롯)를 물려 쓰면 statusline 계정의
+                        // oauth 게이지가 120초 문턱에 걸려 주기마다 흐려진다.
+                        "fresh_limit_secs": fresh_limit_secs(&g.source),
                         // 스코프 게이지는 자기 관측 시각(g.updated_at)으로 잰다 — 위 주석과 같은 이유.
                         "stale": rate_window_stale_reason(g.resets_at, g.updated_at, now).is_some(),
                         "stale_reason": rate_window_stale_reason(g.resets_at, g.updated_at, now),
@@ -1033,6 +1039,27 @@ pub fn rate_window_stale_reason(resets_at: Option<f64>, observed_at: f64, now: f
         return Some("no_observation_24h");
     }
     None
+}
+
+/// statusline 원천의 관측 신선 한도(초). 패널 `wsusage.ts USAGE_STALE_SECS`·페인 배지와 **같은 값**이다
+/// (한 표 안에서 원천만 같으면 같은 문턱 — 그 값을 옮기지 않는다).
+pub const FRESH_LIMIT_STATUSLINE_SECS: f64 = 120.0;
+/// oauth 원천의 관측 신선 한도(초) = 프로브 주기 + 여유 60초. (TICKET=cysr-usage-two-accounts · master 09:00 지정)
+///
+/// ★왜 120이 아닌가: 프로브는 180초마다 한 번 온다. statusline 문턱(120)을 그대로 쓰면 oauth로만
+///   채워지는 행(statusline을 못 받는 계정의 5h·7d · 모든 계정의 7d·모델 게이지)이 **매 주기 약 60초씩**
+///   「최근 관측 없음」으로 흐려진다 — 원천은 정상인데 화면이 거짓 stale을 말한다.
+/// ★여유 60초의 근거: 틱은 「주기 + 한 바퀴 조회 소요」마다 온다(정상 소요 = 수 초 · 명령 타임아웃 10초).
+///   한 바퀴를 **통째로 놓치면**(실패·백오프 270초) 한도를 넘어 흐려진다 — 그것은 진짜 낡음이다.
+pub const FRESH_LIMIT_OAUTH_SECS: f64 = OAUTH_PROBE_INTERVAL_SECS as f64 + 60.0;
+
+/// 원천 → 관측 신선 한도(초). **판정은 데몬이 정한다** — 패널은 이 값과 자기 시계로 흐림만 그린다.
+/// 모르는 원천은 statusline 한도로 둔다(종전 동작 = 한도 필드가 없던 때의 120초와 같다).
+pub fn fresh_limit_secs(source: &str) -> f64 {
+    match source {
+        "oauth" => FRESH_LIMIT_OAUTH_SECS,
+        _ => FRESH_LIMIT_STATUSLINE_SECS,
+    }
 }
 
 /// rate 창 1개 → JSON. 종전 직렬화(`label`·`used_pct`·`resets_at`)를 그대로 두고 두 필드만 더한다.
@@ -1648,5 +1675,63 @@ mod tests {
         );
         // 관측 전(0.0) — 나이를 셀 수 없으면 신선이라 주장하지 않는다
         assert_eq!(rate_window_stale_reason(Some(now + 60.0), 0.0, now), Some("no_observation_24h"));
+    }
+
+    /// (TICKET=cysr-usage-two-accounts) 원천별 신선 한도의 **값과 그 근거**를 고정한다.
+    ///
+    /// 근거(master 09:00 지정 · 브리프 「값 근거를 시험에 남겨라」):
+    ///  ① statusline = 120초 — 패널 `USAGE_STALE_SECS`·페인 배지와 같은 값(UI 시험이 이 상수를 소스에서 읽어 대조한다).
+    ///  ② oauth = 주기 180초 + 여유 60초 = 240초 — 한도가 주기보다 **커야** 정상 주기의 행이 흐려지지 않는다
+    ///     (120초였던 때: 매 주기 약 60초 거짓 stale). 한도가 **백오프 첫 대기(270초)보다 작아야** 한 바퀴를
+    ///     놓친(실패한) 원천이 흐려진다 — 진짜 낡음은 여전히 보여야 한다.
+    #[test]
+    fn fresh_limit_values_follow_source_cadence() {
+        assert_eq!(FRESH_LIMIT_STATUSLINE_SECS, 120.0);
+        assert_eq!(FRESH_LIMIT_OAUTH_SECS, 240.0);
+        let iv = OAUTH_PROBE_INTERVAL_SECS as f64;
+        assert!(FRESH_LIMIT_OAUTH_SECS > iv, "정상 주기 행은 흐려지면 안 된다");
+        let first_backoff_wait = iv * 2.0 - iv / 2.0; // probe_round 실패 1회 대기(270초)
+        assert!(FRESH_LIMIT_OAUTH_SECS < first_backoff_wait, "한 바퀴 놓친 원천은 흐려져야 한다");
+        assert_eq!(fresh_limit_secs("oauth"), 240.0);
+        assert_eq!(fresh_limit_secs("statusline"), 120.0);
+        // 모르는 원천·스냅샷 예열·빈 원천 = 종전 동작(한도 필드가 없던 때의 120초)
+        assert_eq!(fresh_limit_secs("snapshot"), 120.0);
+        assert_eq!(fresh_limit_secs(""), 120.0);
+    }
+
+    /// 계정 JSON의 한도는 **자기 원천과 짝**이다 — rate 슬롯은 계정 source, 게이지는 게이지 source.
+    /// statusline 이 이긴 계정(A)의 oauth 게이지가 120초로 판정되면 주기마다 흐려진다(그 회귀를 잡는다).
+    #[tokio::test]
+    async fn local_json_pairs_fresh_limit_with_its_own_source() {
+        let (home, dirs) = two_account_home("fresh-limit");
+        let d = test_daemon();
+        let targets = probe_targets(&mut d.accounts.lock().unwrap(), &home, &dirs);
+        let svc_b = keychain_service_for(&home, &home.join(".claude-acct2"));
+        let fetch = |s: String| {
+            let v = if s == svc_b { oauth_fixture_account('b') } else { oauth_fixture_account('a') };
+            async move { Ok::<Value, String>(v) }
+        };
+        let mut bo = ProbeBackoff::new();
+        probe_round(&d, &targets, &mut bo, 1000.0, &fetch).await;
+        // 계정 A 는 그 뒤 statusline 이 rate 슬롯을 이겼다(게이지는 oauth 그대로).
+        {
+            let mut st = d.accounts.lock().unwrap();
+            let key = AccountKey { provider: "claude".into(), account_id: "uuid-a".into() };
+            let v = st.views.get_mut(&key).expect("계정 A");
+            v.source = "statusline".into();
+        }
+        let rows = local_json(&d, crate::state::now_epoch());
+        let row = |id: &str| {
+            rows.as_array().unwrap().iter().find(|r| r["account_id"] == id).cloned().expect(id)
+        };
+        let a = row("uuid-a");
+        let b = row("uuid-b");
+        assert_eq!(a["source"], "statusline");
+        assert_eq!(a["fresh_limit_secs"].as_f64(), Some(120.0));
+        assert_eq!(a["scoped"][0]["source"], "oauth");
+        assert_eq!(a["scoped"][0]["fresh_limit_secs"].as_f64(), Some(240.0), "게이지는 자기 원천(oauth) 한도");
+        assert_eq!(b["source"], "oauth");
+        assert_eq!(b["fresh_limit_secs"].as_f64(), Some(240.0), "statusline 을 못 받는 계정 = oauth 한도");
+        assert_eq!(b["scoped"][0]["fresh_limit_secs"].as_f64(), Some(240.0));
     }
 }

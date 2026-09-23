@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 // ★픽스처는 **실제 소켓 경로 형태**여야 한다(codex 2R 지적).
 // 실물: 기본 데몬 `~/.local/state/cys/cys.sock` · 부서 `~/.local/state/cys-dept-<name>/cys.sock`
@@ -10,6 +11,7 @@ const DEPT_B = "/Users/x/.local/state/cys-dept-b/cys.sock";
 const MAIN_SOCK = "/Users/x/.local/state/cys/cys.sock";
 import {
   accountRates,
+  obsFreshLimit,
   ageShort,
   ageText,
   ageAt,
@@ -817,5 +819,86 @@ describe("sourceGrade", () => {
     expect(sourceGrade("transcript").mark).toBe("○");
     expect(sourceGrade("transcript:heuristic").title).toContain("휴리스틱");
     expect(sourceGrade("").mark).toBe("?");
+  });
+});
+
+// ── (TICKET=cysr-usage-two-accounts) 원천별 신선 한도 — 판정은 데몬, 패널은 표시만 ──
+// 결함: 신선도 문턱이 120초 하나였다. oauth 프로브는 180초마다 오므로, statusline 을 못 받는 계정
+// (cmux 페인만 쓰는 계정2)의 5h·7d 와 모든 계정의 7d·모델 게이지가 매 주기 약 60초씩 흐려지고
+// 툴팁에 「최근 관측이 없다」가 거짓으로 떴다. 데몬이 원천별 한도(statusline 120 · oauth 240)를 싣는다.
+describe("원천별 신선 한도 — 데몬 fresh_limit_secs 를 따른다", () => {
+  const T0 = 1790000000;
+  const mk = (o: Partial<AccountLike>): AccountLike => ({
+    provider: "claude",
+    account_id: "d1599af5-0000",
+    label: "acct2@example.com",
+    rate: [{ label: "5h", used_pct: 26, resets_at: T0 + 3600 }],
+    updated_at: T0,
+    ...o,
+  });
+
+  test("★oauth 계정은 주기(180초)를 넘긴 200초에도 흐리지 않는다 · 240초를 넘기면 흐린다", () => {
+    const a = mk({ source: "oauth", fresh_limit_secs: 240 });
+    expect(accountRates([a], T0 + 200)[0].stale).toBe(false);
+    expect(accountRates([a], T0 + 240)[0].stale).toBe(false); // 경계 = 엄격 부등호(데몬과 같은 규율)
+    expect(accountRates([a], T0 + 241)[0].stale).toBe(true);
+  });
+
+  test("statusline 계정은 종전 그대로 120초", () => {
+    const a = mk({ source: "statusline", fresh_limit_secs: 120 });
+    expect(accountRates([a], T0 + 120)[0].stale).toBe(false);
+    expect(accountRates([a], T0 + 121)[0].stale).toBe(true);
+  });
+
+  test("★옛 판본 데몬(필드 부재)·비정상 값 = 종전 동작 120초 — 패널이 한도를 추정으로 늘리지 않는다", () => {
+    expect(accountRates([mk({ source: "oauth" })], T0 + 121)[0].stale).toBe(true);
+    for (const bad of [null, 0, -5, NaN, "240", Infinity]) {
+      expect(obsFreshLimit(bad)).toBe(bad === "240" ? 240 : USAGE_STALE_SECS);
+    }
+    expect(obsFreshLimit(undefined)).toBe(USAGE_STALE_SECS);
+  });
+
+  test("★게이지는 자기 한도 — statusline 계정(120)의 oauth 게이지(240)는 200초에 흐리지 않는다", () => {
+    const a = mk({
+      source: "statusline",
+      fresh_limit_secs: 120,
+      updated_at: T0 + 190, // rate 슬롯은 방금(statusline)
+      scoped: [{ model: "Fable", used_pct: 14, resets_at: T0 + 86400, updated_at: T0, source: "oauth", fresh_limit_secs: 240 }],
+    });
+    const g = scopedRates([a], T0 + 200)[0];
+    expect(g.stale).toBe(false);
+    expect(g.source).toBe("oauth");
+    expect(scopedRates([a], T0 + 241)[0].stale).toBe(true);
+  });
+
+  test("행은 원천을 싣는다 — 출처 마크가 계정마다 다르게 그려질 수 있어야 한다", () => {
+    const a1 = mk({ account_id: "a", source: "statusline", fresh_limit_secs: 120 });
+    const a2 = mk({ account_id: "b", source: "oauth", fresh_limit_secs: 240 });
+    const rows = accountRates([a1, a2], T0 + 5);
+    expect(rows.map((r) => `${r.accountId}:${r.source}`)).toEqual(["a:statusline", "b:oauth"]);
+    // surface 유래 행도 원천을 싣는다(페인 usage.source)
+    expect(aggregateRates([], T0).length).toBe(0);
+  });
+
+  test("★sourceGrade — oauth 는 서버 진실(◆), 추정(○ 트랜스크립트)으로 오분류하지 않는다", () => {
+    const g = sourceGrade("oauth");
+    expect(g.mark).toBe("◆");
+    expect(g.title).toContain("서버 진실");
+    expect(g.title).not.toContain("추정");
+    expect(sourceGrade("statusline").mark).toBe("●");
+    expect(sourceGrade("snapshot").title).not.toContain("트랜스크립트");
+  });
+
+  test("★원천이 바뀌면 렌더 서명이 바뀐다 — 출처 마크가 옛 원천으로 남지 않게", () => {
+    const r1 = accountRates([mk({ source: "statusline", fresh_limit_secs: 120 })], T0 + 5);
+    const r2 = accountRates([mk({ source: "oauth", fresh_limit_secs: 240 })], T0 + 5);
+    expect(renderSignature(r1, [], false, false)).not.toBe(renderSignature(r2, [], false, false));
+  });
+
+  test("★드리프트 가드 — 데몬 statusline 한도 = 패널 USAGE_STALE_SECS (한 표 안에서 같은 원천 = 같은 문턱)", () => {
+    const src = readFileSync(new URL("../../src/bin/cysd/accounts.rs", import.meta.url), "utf8");
+    const m = src.match(/pub const FRESH_LIMIT_STATUSLINE_SECS: f64 = ([0-9.]+);/);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBe(USAGE_STALE_SECS);
   });
 });

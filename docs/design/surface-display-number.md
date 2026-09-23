@@ -61,7 +61,7 @@
 - **따름정리 S (보이는 번호를 내부 번호 자리에 넣어도 다른 산 좌석에 안 닿음)**: 누군가 보이는 번호 `n` 을 내부 번호로 쓰면 → 내부 `n` 이 죽었으면 「없음」, 살았으면 I1 에 따라 그 좌석의 보이는 번호도 `n` 이고 I2 에 따라 보이는 번호 `n` 의 주인은 그 좌석 하나뿐 → **의도한 그 좌석**. ∎ **전제**(Fable 2R LOW 반영): 「보이는 번호가 없음(「—」)인 id ≤ 999 산 좌석이 없다」. 이 전제가 깨질 수 있는 유일한 길은 §2-1 ④ 보호 규칙 발동(= I0 파괴)인데, 그때는 아래 **번호 정지**로 전제를 다시 세운다.
 - **번호 정지(numbers_suspended)**: §2-1 ④ 보호 규칙이 한 번이라도 발동하면 그 데몬 실행이 끝날 때까지 **새 좌석은 전부 「—」** 이다. 경보는 정지에 들어가는 순간 **한 번만** 낸다(`surface.numbers_alarm{kind:"suspended"}` · 문구 「보이는 번호 정지 — 재기동까지」). 정지 전에 번호를 받은 산 좌석의 `#N` 해석은 **계속 허용**한다 — 해석은 산 좌석 안에서 보이는 번호로 찾으므로 I2 로 하나뿐이다(Fable 3R LOW · 거부할 이유가 없다). 이유: 「—」 인 좌석 n(id ≤ 999)이 살아 있는 동안 다른 좌석 Y 가 보이는 번호 n 을 받으면, 사람이 Y 의 「n」 을 맨숫자로 쳐서 좌석 n 을 건드릴 수 있다(따름정리 S 의 반례 · 발생 조건 = I0 파괴 + 같은 실행에서 999개 넘게 생성 · 매우 드묾). 정지하면 Y 가 n 을 받을 수 없다. 재기동하면 부팅 처리로 풀린다.
 - ⚠**I0~I3 · S 는 모두 「데몬(소켓) 하나 안에서」의 성질이다**(Fable 1R MED-3 반영). 본부 `#17` 을 말했는데 명령이 부서 소켓(`CYS_SOCKET`)으로 가면 부서의 17 이 대상이 된다 — 이것은 S 가 막지 못한다. 대처 = §5 해석 결과에 소켓 이름을 싣고 CLI 가 파괴 명령 전에 「#17 → surface:1016 @본부」 를 stderr 로 한 줄 찍는다 · 사람 말로는 부서 이름을 함께 부른다(§8 · R-7).
-- **I1 보호 규칙(§2-1 ④)이 실제로 발동하는 경우**: I0 이 온전하면 도달할 수 없다(Fable 1R 확인 — 999개가 막히려면 id 보다 작은 주인 999개가 필요한데 id ≤ 999 이다). I0 이 깨졌을 때(대응표 쓰기 실패 뒤 재기동 · DB 를 못 읽어 시드가 0 이 됨 — §3-2 ⑤·§6)만의 방어선이다.
+- **I1 보호 규칙(§2-1 ④)과 번호 정지가 실제로 발동하는 경우**(agy 4R MED-1 · Fable 3R 분석): 이 설계 **자신의 쓰기 경로만으로는 도달할 수 없다** — 표를 읽을 수 있으면 시드 ≥ 표의 최대 내부 번호+1 이라 새 id(≤ 999)보다 큰 행이 없고, id ≤ 999 인 행은 모두 제 번호를 가진다 · 표를 못 읽으면 holders 가 비어 막힐 것이 없다(§3-2 부팅 행 ⑵). 도달 경로는 **바깥에서 생긴 표 손상**(파일 손상·손으로 고친 행·옛 백업과 섞인 파일)뿐이다. agy 4R 은 둘 다 지우라고 권했으나 **남긴다** — 이유: 값이 싸고(분기 1개 + 실행당 깃발 1개), 막는 것이 4군 ④(맨숫자가 다른 산 좌석에 닿음)이며, 영속 파일은 코드 밖에서 바뀔 수 있다. 시험은 손상 픽스처를 주입해서만 적색이 된다(M6 · M26). 단순성을 더 원하면 지워도 정상 경로의 안전(I0~I3·S)은 그대로다 — master 판단 사항(박사님 결정 아님).
 
 ## 3. ⑵ 대응표 스키마
 
@@ -90,17 +90,17 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 
 | 사건 | 무엇을 | 어디서(526325bf) | 방법 |
 |---|---|---|---|
-| 좌석 만들기 | 내부 번호 받기 → 보이는 번호 정하기 → **행 INSERT** → 그 다음 PTY 열기 | state.rs:3483 `create_surface_with_env` · :3502 `fetch_add` 바로 뒤 · PTY 는 :3503~ | **동기 쓰기**(전용 연결 · `busy_timeout`). recall 쓰기 스레드(1초 묶음 · recall.rs:86~)를 거치지 않는다 — 묶음 사이에 데몬이 죽으면 그 내부 번호가 기록 없이 사라져 X-10 이 다시 열린다 |
+| 좌석 만들기 | 내부 번호 받기 → 보이는 번호 정하기(메모리) → **행 INSERT** → 그 다음 PTY 열기 | state.rs:3483 `create_surface_with_env` · :3502 `fetch_add` 바로 뒤 · PTY 는 :3503~ | **동기 쓰기**(전용 연결 · `busy_timeout` · 할당기 락 밖). recall 쓰기 스레드(1초 묶음 · recall.rs:86~)를 거치지 않는다 — 묶음 사이에 데몬이 죽으면 그 내부 번호가 기록 없이 사라져 X-10 이 다시 열린다 |
 | PTY 열기 실패 | `closed_at = now` · `close_kind='spawn_failed'` | 같은 함수의 `?` 반환 경로들 | 동기 UPDATE |
 | 좌석 닫기 | `closed_at = now` · `close_kind='close'` | governance.rs:4885 `close_surface` — 좌석이 목록에서 빠지는 **유일한 자리**(주석 governance.rs 같은 함수 「surface가 맵에서 사라지는 유일 지점」 【관측】) | surfaces 락을 푼 **뒤** 동기 UPDATE |
-| 데몬 부팅 | ⓪「DB 파일이 **이 단계 전에** 있었나」를 먼저 기록(열면 파일이 생기므로 — Fable 3R) ⑴**전체 스키마 만들기** = 기존 `open_db`(recall.rs:24-55 — lines·lines_fts·트리거·chains + 새 surface_numbers · WAL 설정 포함)를 전용 동기 연결로 호출(시드보다 먼저) ⑵시드(§6 · 표별로 따로 질의) ⑶`closed_at IS NULL` 인 행 전부 `closed_at = 부팅 시각` · `close_kind='boot_orphan'` ⑷holders 재구성 — ⑵의 surface_numbers 갈래·⑶·⑷ 는 **한 트랜잭션**(부분 읽기로 시드와 holders 가 어긋나지 않게 · surface_numbers 갈래가 `Failed` 면 holders 는 비운다 — Fable 3R) ⑸경보는 이벤트 버스가 생긴 **뒤** 발행 | state.rs:3000 `next_id` 시드 자리(Daemon 생성 · 같은 구조체 리터럴의 다음 칸이 :3001 `EventBus::new` 라 :3000 에서는 발행 불가 — Fable 2R 【관측: 검증자】) | 새 좌석을 만들기 **전에** 1회 · ⚠지금 스키마는 쓰기 스레드 안 `open_db`(recall.rs:95 · 스레드 생성 state.rs:3045)에서만 만들어져 시드(:3000)보다 **늦다** — 그대로 두면 1.1.6 첫 기동에 새 표가 없어 시드 질의 전체가 실패한다(Fable 2R HIGH · §6) |
+| 데몬 부팅 | ⓪「DB 파일이 이 단계 **전에** 있었나」 기록 ⑴**전체 스키마** = 기존 `open_db`(recall.rs:24-55 · WAL 설정 포함 · 새 표 추가)를 전용 동기 연결로 호출 ⑵**읽기 스냅샷 하나**(지연 읽기 트랜잭션 1개): 시드 3갈래(표마다 따로 `Ok/Failed`) + surface_numbers 에서 holders 재구성 — `closed_at IS NULL` 행은 **메모리에서 곧바로 `Closed(부팅 시각)`** 으로 둔다 ⑶고아 행 UPDATE(`boot_orphan`)는 스냅샷 **뒤 · 별도 · 최선 노력** — 실패해도 ⑵의 시드·holders 를 버리지 않는다(메모리가 원본 · 못 쓴 고아는 다음 부팅에 다시 고아로 잡혀 24시간 더 막힐 뿐) ⑷경보는 이벤트 버스가 생긴 **뒤** 발행 · 부팅당 종류별 1회 | state.rs:3000 `next_id` 시드 자리(Daemon 생성 · 같은 구조체 리터럴의 다음 칸이 :3001 `EventBus::new` 라 :3000 에서는 발행 불가 — Fable 2R 【관측: 검증자】) · 두 번째 데몬은 시작 잠금(main.rs:1157 `acquire_startup_lock` → :1277 `Daemon::new`)에서 먼저 걸러져 ⑶이 산 데몬의 행을 건드리지 않는다(Fable 3R·4R 【관측: 검증자】) | 새 좌석을 만들기 **전에** 1회 · 실패 처리(Fable 4R 반영): ⑴ 실패 → 파일이 ⓪에서 **없었으면** 로그 1줄만(새 설치 · 시드 0 이 맞음 · 이후 좌석 쓰기가 실패하면 그때 `write_io` 가 따로 남) / **있었으면** `seed_failed` 1회 · holders 비움 · 시드 0+1 ⑵의 surface_numbers 갈래 `Failed` → holders 비움 + `seed_failed` 1회 ⑶ 실패 → `write_io` 1회(`surface_id` 없음) — `seed_failed` 아님 |
 
 - ①**왜 PTY 전에 쓰나**: 자식 프로세스는 생성 순간 환경변수로 내부 번호를 받는다. PTY 를 연 뒤에 쓰면 「내부 번호는 밖으로 나갔는데 기록은 없다」 틈이 생긴다(PLAN §4-2 CLI 행: pane 이 죽은 뒤 살아남은 백그라운드 프로세스).
-- ②**락 순서**(Fable 2R LOW 반영): 할당기 상태는 **잎(leaf) 락** `display_alloc` 하나에 둔다. 좌석을 만들 때 `display_alloc` 을 잡고 `fetch_add` → 후보 계산 → **INSERT(동기 · 락 안에서 하는 DB 쓰기는 이것 하나뿐)** → 놓기 → 그 다음 PTY 열기(락 밖 · state.rs:3511 openpty ~ :3654 spawn ~ :3822 surfaces 락 · 그 사이 다른 락 없음 【관측: 검증자】). surfaces·roles 락을 쥔 채로 잡지 않는다. `busy_timeout` = rusqlite 기본값 **5초 그대로**(rusqlite-0.32.1 inner_connection.rs:119 · Fable 3R 【관측: 검증자】) — 쓰기 잠금을 오래 쥐는 쪽은 1초 묶음(묶음을 모은 **뒤** BEGIN · recall.rs:126-141)이 아니라 `maybe_prune` 이다. 최악의 경우 prune 중 좌석 생성이 최대 5초 기다린다【추정 · ②에서 prune 중 생성 지연 1줄 실측】. INSERT 가 락 안에 있어 좌석 생성이 직렬화되지만 생성 빈도(하루 최대 106 · 동시 버스트 수 개)에서 무시할 수준이다【추정】. 닫기·PTY 실패의 **DB UPDATE 는 락 밖**에서 한다(메모리가 원본이라 UPDATE 를 잃어도 다음 부팅에 `boot_orphan` 으로 보수적으로 막힌다 — 락 안에서 DB 를 기다리며 좌석 생성을 세울 이유가 없다).
+- ②**락 순서**(Fable 2R LOW · agy 4R MED-2 반영 — **락 안에서는 DB 를 쓰지 않는다**): 할당기 상태는 **잎(leaf) 락** `display_alloc` 하나에 둔다. 좌석을 만들 때 `display_alloc` 을 잡고 `fetch_add` → 후보 계산 → 메모리 `holders[n] = Live(id)` → **놓기** → 그 다음 **INSERT(락 밖 · 동기 · PTY 전)** → PTY 열기(state.rs:3511 openpty ~ :3654 spawn ~ :3822 surfaces 락 · 그 사이 다른 락 없음 【관측: 검증자】). 이렇게 하면 DB 가 잠깐 막혀도(prune 중 최대 5초) 다른 좌석의 만들기·닫기가 할당기 락에서 기다리지 않는다. 동시 생성 두 개의 INSERT 순서가 뒤바뀌어도 열쇠(내부 번호)가 달라 문제없다. INSERT 실패 → 메모리는 그대로 두고 `write_io`/`pk_conflict` 경보(§3-2 ⑤). surfaces·roles 락을 쥔 채로 할당기 락을 잡지 않는다. `busy_timeout` = rusqlite 기본값 **5초 그대로**(rusqlite-0.32.1 inner_connection.rs:119 · Fable 3R 【관측: 검증자】) — 쓰기 잠금을 오래 쥐는 쪽은 1초 묶음(묶음을 모은 **뒤** BEGIN · recall.rs:126-141)이 아니라 `maybe_prune` 이다. 최악의 경우 prune 중 좌석 생성 **한 건**이 최대 5초 기다린다【추정 · ②에서 prune 중 생성 지연 1줄 실측】. 닫기·PTY 실패의 DB UPDATE 도 락 밖이다(메모리가 원본이라 UPDATE 를 잃어도 다음 부팅에 `boot_orphan` 으로 보수적으로 막힌다).
 - ③**메모리 상태**(agy 1R 지적 1·2 반영): `holders[1..=999]` = 번호마다 마지막 주인 `Option<Holder>` · `Holder { surface_id, state: Live | Closed(closed_at) }`. 부팅 때 표에서 번호마다 내부 번호가 가장 큰 행으로 채운다(`spawn_failed` 행 제외 · `boot_orphan` 은 `Closed(부팅 시각)`). **메모리 갱신은 DB 쓰기와 같은 단계에서 명시적으로 한다**:
   | 사건 | 메모리(`display_alloc` 락 안) | DB |
   |---|---|---|
-  | 만들기 | `prev = holders[n]` 을 보관 → `holders[n] = Live(id)` | INSERT |
+  | 만들기 | (락 안) `prev = holders[n]` 을 보관 → `holders[n] = Live(id)` → 놓기 | (락 밖 · PTY 전) INSERT |
   | PTY 실패 | **락 재획득** → `holders[n]` 이 아직 `Live(id)` 이면 `prev` 로 되돌림 → 놓기(되돌림 경합 안전 — `Live(id)` 가 다른 할당의 탐색을 막고, 좌석이 surfaces 에 들어가기 전(:3823)이라 닫기가 끼어들 수 없다 【검증자 확인】) | 락 밖 UPDATE `spawn_failed` |
   | 닫기 | `holders[n] = Closed(now)`(단 `holders[n].surface_id == id` 일 때만 — 번호 없는 좌석·이미 넘어간 번호는 무접촉) | 락 밖 UPDATE `close` |
   | 부팅 | 표에서 재구성 | 고아 UPDATE |
@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | `system.identify`(handlers.rs:3048) | `caller_display_no` | 호출 좌석이 목록에 있으면 그 번호 · 없거나 번호 없음이면 `null` |
 | `org.status` 좌석 항목(있으면) | `display_no` | 같음 — 앱 사이드바·CSO 가 같은 사실을 보게(선택 · 구현 티켓 ②가 필드 위치 확인) |
 | 이벤트 `surface.created`(state.rs:3865 payload) | `display_no` | 같음 |
-| 새 이벤트 **`surface.numbers_alarm`** 하나(9단계 성찰 2회차 단순화 — 경보 4종을 이름 하나 + `kind` 로) | — | `{kind, surface_id?, error?}` · `kind` ∈ `exhausted`(다 찬 상태 진입 · 1회 · §2-1 ⑤) · `write_io` / `pk_conflict`(§3-2 ⑤) · `seed_failed`(§6) · `suspended`(§2-3 · 1회) |
+| 새 이벤트 **`surface.numbers_alarm`** 하나(9단계 성찰 2회차 단순화 — 경보를 이름 하나 + `kind` 5종으로) | — | `{kind, surface_id?, error?}` · `kind` ∈ `exhausted`(다 찬 상태 진입 · 1회 · §2-1 ⑤) · `write_io` / `pk_conflict`(§3-2 ⑤) · `seed_failed`(§6) · `suspended`(§2-3 · 1회) |
 | **새 RPC `surface.resolve_display`**(읽기 전용) | 요청 `{display_no}` | 성공 `{surface_id, surface_ref, display_no, socket}` · 실패 코드 `display_out_of_range` / `display_not_live`(+ `last: {surface_id, closed_at}` 가 있으면) |
 
 - CLI 는 `#N` 을 풀어 **파괴 명령**(close · reap · send · send-key · queue · cycle 계열)으로 보내기 전에 stderr 로 `#17 → surface:1016 @<소켓 이름>` 한 줄을 찍는다(Fable 1R MED-3 — 사람이 어느 데몬의 좌석을 건드리는지 보게).
@@ -206,7 +206,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | # | 시험 | 층 | 확인하는 것 | 적색이 되어야 할 뮤턴트 |
 |---|---|---|---|---|
 | T1 | 할당기 진리표 | 단위(state.rs) | ⑴id≤999 → id ⑵1000→1 · 1049→50 · 1998→999 · 1999→1 ⑶후보가 산 좌석 → 다음 빈 번호 ⑷후보가 W 안 닫힘 → 다음 ⑸닫힌 지 정확히 W → 후보 그대로(재사용) ⑹W−ε → 건너뜀 ⑺999 에서 탐색이 1로 돌아감 ⑻전부 막힘 → None ⑼id≤999 인데 후보 막힘 → None(I1 보호) ⑽spawn_failed 행은 막힘 아님 ⑾closed_at 이 미래 → 막힘 | M1 산 좌석 검사 제거 · M2 W 검사 제거 · M3 `<` → `<=`(경계) · M4 후보 = 직전+1 · M5 999 뒤 1로 안 돌기 · M6 I1 보호 제거(대신 탐색) · M7 spawn_failed 도 막힘으로 침 · M8 음수 경과를 「오래됨」으로 침 |
-| T2 | 재기동 복원 | 통합(같은 state_dir 에 Daemon 두 번) | ⑴W 안 닫힌 번호가 재기동 뒤에도 막힘 ⑵닫힘 기록 없이 죽은 행 = 부팅 시각으로 닫힘 → 24시간 막힘 → 그 뒤 풀림 ⑶**줄을 하나도 안 남긴 좌석**의 내부 번호가 재기동 뒤 다시 안 나옴(X-10) ⑷**업그레이드 첫 기동**: surface_numbers 표가 없는 1.1.5 형 DB 픽스처 → 시드 = MAX(lines, chains) + 1 · 경보 0 · 표가 생김 ⑸**새 설치**: 빈 state_dir → 시드 1 · 경보 0 | M9 시드에서 surface_numbers 제거(X-10 재발) · M10 부팅 고아 처리 제거(영구 막힘 → ⑵후반 적색) · M11 INSERT 를 PTY 뒤로(쓰기 전 죽음 모의에서 적색) · M11b 시드 실패를 경보 없이 0 으로(읽을 수 없는 DB 픽스처에서 `surface.numbers_alarm{kind:"seed_failed"}` 부재 → 적색) · M11c 표를 만들기 전에 3갈래 UNION 시드(⑷ 에서 시드 1 → 적색) · M11d ⑴에서 새 표만 만듦(⑸ 에서 `seed_failed` 경보 → 적색) |
+| T2 | 재기동 복원 | 통합(같은 state_dir 에 Daemon 두 번) | ⑴W 안 닫힌 번호가 재기동 뒤에도 막힘 ⑵닫힘 기록 없이 죽은 행 = 부팅 시각으로 닫힘 → 24시간 막힘 → 그 뒤 풀림 ⑶**줄을 하나도 안 남긴 좌석**의 내부 번호가 재기동 뒤 다시 안 나옴(X-10) ⑷**업그레이드 첫 기동**: surface_numbers 표가 없는 1.1.5 형 DB 픽스처 → 시드 = MAX(lines, chains) + 1 · 경보 0 · 표가 생김 ⑸**새 설치**: 빈 state_dir → 시드 1 · 경보 0 ⑹**읽기 전용 DB**(전체 스키마 + surface_numbers 행 있음): 시드 = surface_numbers 최대값+1 · 그 번호들 막힘 · 경보 = `write_io` 1회(고아 UPDATE 실패) · `seed_failed` 아님 | M9 시드에서 surface_numbers 제거(X-10 재발) · M10 부팅 고아 처리 제거(영구 막힘 → ⑵후반 적색) · M11 INSERT 를 PTY 뒤로(쓰기 전 죽음 모의에서 적색) · M11b 시드 실패를 경보 없이 0 으로(읽을 수 없는 DB 픽스처에서 `surface.numbers_alarm{kind:"seed_failed"}` 부재 → 적색) · M11c 표를 만들기 전에 3갈래 UNION 시드(⑷ 에서 시드 1 → 적색) · M11d ⑴에서 새 표만 만듦(⑸ 에서 `seed_failed` 경보 → 적색) · M11e 고아 UPDATE 실패 때 스냅샷 읽기를 버림(⑹ 에서 시드가 lines·chains 로 떨어짐 → 적색) |
 | T3 | 내부 번호 불변 — 파괴 RPC 는 `#` 를 모른다 | 통합(RPC) | `surface.close`·`send_text`·`send_key`·`queue.clear`·`queue.deliver`·`surface.reap`·`surface.attach` 에 `{"surface_id":"#17"}` → 전부 거부 · 산 좌석 수 불변 | M12 `parse_surface_ref` 가 `#` 를 벗겨 줌 → 적색 |
 | T3b | 소스 고정 핀 | 단위(소스 검사) | handlers.rs 에서 `display_no` 를 **읽는**(params.get) 곳이 `surface.resolve_display` 한 곳뿐 · 파괴 RPC 본문에 `display_no` 0회 | M13 `surface.close` 가 `display_no` 인자를 받게 → 적색 (state.rs:5119 의 「pane 스폰 함수 소실」 소스 핀과 같은 방식) |
 | T4 | 불변식 속성 시험(I1·I2·I3·S) | 단위(무작위 연쇄 · 고정 씨앗) | 만들기/닫기/시계 전진 5,000단계 동안(내부 번호 재사용을 억지로 주입한 변형 연쇄 포함) 매 단계: 번호 정지 전이면 산 좌석 id≤999 ⇒ 번호=id 또는 없음 · 보호 규칙 발동 뒤에는 새 좌석 전부 「—」 · 정지 경보 1회 · 정지 전 좌석의 `#N` 은 여전히 그 좌석으로 풀림 · 산 좌석끼리 번호 안 겹침 · resolve(번호)=그 좌석 · 「번호를 내부 번호로 넣기」 = 같은 좌석 또는 없음 | M4 · M6 · M1 이 여기서도 적색 · M26 번호 정지 제거(재사용 주입 연쇄에서 S 반례 → 적색) |
@@ -216,7 +216,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | T8 | 제목(앱) | 단위(bun · ui/src/panetitle.ts — T-UI 병합 뒤) | `paneTitleText` · `ruleTitleOf` 가 보이는 번호 사용 · 번호 없음 = 「—」 | M17 sid 그대로 |
 | T3c | 기계 출력 줄 고정 핀 | 단위(소스 검사) | `launch-agent` · `new-surface`(cys.rs:13207 · :13231 · :3015 — 검증자 인용 · ②에서 재확인) 의 마지막 표준출력 줄이 `surface:N`(내부 번호) 그대로 | M22 마지막 줄에 보이는 번호를 찍음 → 적색 |
 | T9 | CLI `#N` 해석기 | 단위 + 통합 | 문법 진리표(`#1`·`#999` 통과 / `#0`·`#1000`·`#017`·`# 17`·`#17a`·`surface:#17` 거부) · 산 좌석 `#N` → 내부 번호 · 없는 `#N` → 오류이며 **뒤따르는 명령 RPC 0회**(데몬 쪽 요청 로그로 확인) · 환경변수 폴백은 해석기를 안 거침 · 파괴 명령 전 stderr `#N → surface:M @소켓` 한 줄 · **셸 통과 시험**(실제 `bash -c` · 격리 소켓): `--surface=#17` 은 해석기까지 도달 · §4-2 의 띄어 쓴 7개 명령은 **clap 오류 rc=2(폴백 없음)** 라는 관측 동작을 그대로 고정(clap 이 값을 선택형으로 바꾸면 적색 — 그때 폴백 위험이 실제로 생긴다) | M18 없는 번호를 「가장 최근 주인」으로 풀어 줌 → 적색 · M19 `#017` 허용 · M23 stderr 소켓 줄 제거 |
-| T13 | DB 쓰기 실패 생존(agy 1R 지적 3) | 통합(격리 state_dir) | 대응표 쓰기를 실패시킨 채(읽기 전용 DB 파일 또는 쓰기 실패 주입 지점) 좌석 생성 → 좌석은 **정상 반환** · `surface.numbers_alarm{kind:"write_io"}` 1건 · 보이는 번호는 메모리 규칙대로 · 같은 실행 안에서 I2 유지 | M24 쓰기 실패를 생성 실패로 전파 → 적색(4군 ③) |
+| T13 | DB 쓰기 실패 생존(agy 1R 지적 3) | 통합(격리 state_dir) | 대응표 쓰기를 실패시킨 채(**전체 스키마를 먼저 만든 뒤** 읽기 전용으로 바꾼 DB 파일 — 스키마 없이 읽기 전용이면 ⑴이 실패해 `seed_failed` 가 함께 뜬다 · Fable 4R · 또는 쓰기 실패 주입 지점) 좌석 생성 → 좌석은 **정상 반환** · 좌석 쓰기마다 `surface.numbers_alarm{kind:"write_io"}` · 보이는 번호는 메모리 규칙대로 · 같은 실행 안에서 I2 유지 | M24 쓰기 실패를 생성 실패로 전파 → 적색(4군 ③) |
 | T14 | `cys list` 소비자 호환 | 단위(팩 · 파이썬) | 새 칸(`no=50` / `no=-`)이 든 `cys list` 픽스처로 §4-1 ※ 의 팩 파서(저장소 9곳 + 사용자본 javis_reconstruct_state.py — 저장소에 사본이 없으므로 그 파서 함수의 **고정 사본을 시험 픽스처로** 두거나 시험을 사용자본 옆에 둔다 · Fable 3R)가 **바뀌기 전과 같은 행**을 돌려줌(특히 boot_node `surface_occupied` 참 · awaken cwd 정확) | M25 새 칸을 맨 앞/맨 뒤에 둠 → 적색 |
 | T10 | 정리(prune)가 대응표를 안 건드림 | 단위(recall.rs) | `maybe_prune` 실행 뒤 surface_numbers 행 수 불변 | M20 prune 에 surface_numbers 삭제 추가 |
 | T11 | 두 소켓 | E2E(격리 본부 + 격리 부서 소켓) | 두 데몬이 각자 1~999 · 같은 `#N` 이 소켓별로 다른 좌석으로 풀림 · 한쪽 닫기가 다른 쪽에 영향 0 | M21 대응표를 공용 경로에 둠 |
@@ -380,3 +380,15 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | LOW 번호 정지 중 `#N` 거부는 과함 · 거부 코드도 없음 | 수용 — 정지 전 좌석의 `#N` 허용 · 경보 1회 | §2-3 · T4 |
 | LOW busy_timeout 근거 틀림(잠금을 쥐는 쪽은 prune · rusqlite 기본 5초) | 수용 — 기본 5초 유지 · 근거 정정 | §3-2 ② |
 | LOW reconstruct_state.py 는 저장소 사본 없음 → T14 기계 의존 | 수용 — 고정 사본 픽스처 또는 사용자본 옆 시험 | §9 T14 |
+
+### 15-4. 4R (3a47d219 대상 · agy = 문서 전문 · Fable = 3R 개정분)
+
+- 원문: `surface-display-number.reviews/agy-4R-2026-09-24.md` · `surface-display-number.reviews/fable-adversarial-4R-2026-09-24.md`. 판정: **agy = REVISE**(MED 2) · **Fable = REVISE**(MED 1 · LOW 2). Fable 은 경보 이름 통합(§5)·번호 정지 중 `#N` 허용과 S 의 양립·busy_timeout 근거를 **확인**했다.
+
+| 출처 | 발견 | 처리 | 반영 |
+|---|---|---|---|
+| agy MED-1 | I1 보호·번호 정지는 도달 불가 → 삭제 권고 | **부분 수용** — 「이 설계의 쓰기 경로로는 도달 불가」 를 명시 · 바깥 표 손상 방어로 **유지**(값 싸고 4군 ④ 방어) · 지울지는 master 판단 | §2-3 |
+| agy MED-2 | 할당기 락 안의 INSERT 가 prune 중 최대 5초 락을 쥠 → 닫기 대기 | 수용 — 메모리만 락 안 · INSERT 는 락 밖(PTY 전) | §3-2 ② · 표 |
+| Fable MED | 고아 UPDATE 를 스냅샷 읽기와 한 트랜잭션에 묶으면 읽기 전용·가득 찬 디스크에서 읽기까지 버려져 시드가 조용히 낮아짐 | 수용 — 읽기 스냅샷과 UPDATE 분리 · UPDATE 는 최선 노력 · 고아는 메모리에서 곧바로 닫힘 처리 · 실패 = `write_io` | §3-2 부팅 행 · T2 ⑹ · M11e · T13 픽스처 조건 |
+| Fable LOW | ⑴ 실패 처리 미정 · ⓪ 쓰임새 없음 | 수용 — ⓪ = ⑴ 실패 때 새 설치/기존 파일 가르는 기준 · 종류별 부팅당 1회 | §3-2 부팅 행 |
+| Fable LOW | 「경보 4종」 ↔ kind 5개 | 수용 — 문구 | §5 |

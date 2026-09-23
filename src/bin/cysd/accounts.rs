@@ -215,8 +215,13 @@ pub fn note_rate(
         if let Some(p) = profile {
             view.profiles.insert(p);
         }
-        // 최신 승자 — note는 신선 생산분만 받으므로 timestamp 비교로 충분
-        if now >= view.updated_at {
+        // 최신 승자 — note는 신선 생산분만 받으므로 timestamp 비교로 충분.
+        // ★(v116-usage · opus 적대 1R) 단 **창이 전부 리셋 지난 묶음**(idle 좌석 statusline 이 마지막 API 응답의
+        //   캐시 창을 다시 보고)은 살아 있는 창이 있는 묶음(OAuth 프로브 등)을 덮지 못한다 — 덮으면 D6-1 경보
+        //   필터가 그 창을 빼 경보 키가 사라졌다가 다음 신선 관측에 돌아오며 매번 재발화한다(경보 깜빡임).
+        let dead_over_live = rate_vector_all_reset(rate, now)
+            && view.rate.iter().any(|w| rate_window_stale_reason(w.resets_at, view.updated_at, now).is_none());
+        if now >= view.updated_at && !dead_over_live {
             view.rate = rate.to_vec();
             view.updated_at = now;
             view.source = source.into();
@@ -1082,6 +1087,12 @@ pub fn predict_exhaust(series: &[(f64, f64)], now: f64, resets_at: Option<f64>) 
         Some(r) if t >= r => None, // 리셋이 먼저 — 소진 경고 무의미
         _ => Some(t),
     }
+}
+
+/// (v116-usage) 창 묶음이 비어 있지 않고 **모든** 창의 리셋이 지났는가(순수). resets_at 미상 창이 하나라도 있으면
+/// 아니다 — 모르는 것을 죽었다고 하지 않는다(rate_window_stale_reason 과 같은 규약).
+pub fn rate_vector_all_reset(rate: &[RateWindow], now: f64) -> bool {
+    !rate.is_empty() && rate.iter().all(|w| matches!(w.resets_at, Some(r) if r < now))
 }
 
 /// alerts용 스냅샷: (라벨, 창, pct) — 관측된 계정만.

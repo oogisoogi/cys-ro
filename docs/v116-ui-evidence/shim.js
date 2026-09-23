@@ -48,7 +48,7 @@
     },
     create_surface: () => { const id = 100 + seats.length; const s = mk(id, null, "/Users/u"); s.title = ""; seats.push(s); return { surface_id: id }; },
     close_surface: (a) => { const i = seats.findIndex((x) => x.surface_id === a.surfaceId); if (i >= 0) seats.splice(i, 1); return null; },
-    usage_accounts_all: () => ({ accounts: [] }),
+    usage_accounts_all: () => ({ accounts: window.__shimAccounts || [] }),
     usage_named_reporters: () => ({ reporters: [] }),
     list_depts: () => ({ depts: {} }),
     dept_tombstones: () => ({ tombstones: [] }),

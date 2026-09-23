@@ -3,8 +3,8 @@
 브랜치 `fix/v116-ui` ← 526325bf · 착수 23:31 · 상한 01:11 · 브리프 `~/axdev/master/briefs/2026-09-23-v116-ui-close.md`.
 
 ## §0 델타(후임·재개용 — 최신이 위 · 2026-09-24 00:5x)
-- 상태: 필수 4 + R1a 경로(완료 아님) + 「가능」 #21·#5·#13·#4·#6 = master 수용(#6 은 확인요청 중). 브랜치 fix/v116-ui · push·태그·판번 0.
-- 남은 「가능」 목록(가치 순 · 이 판단은 worker-9 · master 확정 아님): ① D4 #11 사용량 게이지 3분마다 흐려짐(문턱 120초 < 생산 180초 · wsusage.ts:10·259 · 작고 매일 보임) ② D4 #8 알림·시스템 배너의 `surface:N`·역할 코드 원문(friendlyRole 재사용 · 문구) ③ D4 #14 업데이트 문구 내부 용어·백엔드 오류 원문 약 15곳 ④ D4 #10 사이드바 CTX 부서 줄 「dept-」 잘림 ⑤ D2 R1c 카드 표시 판정 순서(restoreBriefShown 을 master 확인 전 켬) ⑥ D4 #20 확인창 단추 말 통일 ⑦ D4 #18 used_pct null 가드(잠복) ⑧ D4 #12 좁은 창 제목 잘림.
+- 상태: 필수 4 + R1a 경로(완료 아님) + 「가능」 #21·#5·#13·#4·#6 = master 수용 · #11 = 확인요청 중. 브랜치 fix/v116-ui · push·태그·판번 0.
+- 2026-09-24 01:00 갱신: D4 #11 완료(§13 · 확인요청). 남은 「가능」 목록(가치 순 · worker-9 판단 · master 확정 아님): ① D4 #8 알림·시스템 배너의 `surface:N`·역할 코드 원문(friendlyRole 재사용 · 문구) ③ D4 #14 업데이트 문구 내부 용어·백엔드 오류 원문 약 15곳 ④ D4 #10 사이드바 CTX 부서 줄 「dept-」 잘림 ⑤ D2 R1c 카드 표시 판정 순서(restoreBriefShown 을 master 확인 전 켬) ⑥ D4 #20 확인창 단추 말 통일 ⑦ D4 #18 used_pct null 가드(잠복) ⑧ D4 #12 좁은 창 제목 잘림.
 - 결정된 별건(이 티켓 밖): 「엔진」 용어 통일 = 1.1.6 문구 전수(master#e997f947) · R1a 생산자(3절 기록) = 박사님 결정 · X-1 VM stty = 1.1.6 VM 티켓.
 - 함정: bun = ~/.bun/bin(PATH 밖) · 헤드리스 = docs/v116-ui-evidence(v116-headless.ts · shim.js · CHS 는 scratchpad 사본 — 새 세션이면 재복사 필요: find / -name chrome-headless-shell) · 새 시험에 toMatch 금지(tsc TS2339) · readdirSync 는 withFileTypes 형.
 
@@ -181,3 +181,9 @@
 - 수리: scrollfollow.shouldShowFoldHint 에 `baseY > 0`(위 내용 있음) · `bufferType === "normal"` 조건(D4 하위조사 B 처방) — 커밋 제품 / 시험 = git log 참조.
 - 시험: bun test 1172/0 · tsc 신규 0 · 헤드리스 c9 기준선 적색(짧은 창 안내 1) → 초록(짧은 창 0 · 긴 출력 맨 위 1) · 뮤턴트 M10a·M10b KILLED.
 - Fable 적대(#21 첫 판): F1 MAJOR(카드 왼쪽 아래 = 편성 CSO 창·마스터 입력줄 가림) = 반영(위치 철회 → 오른쪽 위) · F2 MINOR(좁은 창에서 카드 [닫기]가 알림 밑) = 반영(세로 분리 + c6 경보 3건·800폭 겹침 0 판정) · F3 MINOR(파일 목록 가림) = F1 과 함께 해소 · F4 NIT(협폭 max-width 음수) = 식에서 사이드바 항 제거로 해소 · F5 NIT(하네스 미커밋) = 이 문서 커밋에 포함.
+
+## 13. 4차 — D4 #11(master#f210e90f · §0 순서 ①)
+- 필요성: 사이드바 「7d·<모델>」(모델 스코프 주간) 게이지가 **정상 가동 중에도** 3분마다 약 1분 흐려지고 「stale」 툴팁 — 생산자(데몬 OAuth 프로브) 주기 180초(src/bin/cysd/accounts.rs OAUTH_PROBE_INTERVAL_SECS) > UI 문턱 120초(wsusage.ts USAGE_STALE_SECS). 사용량 확인은 매일 보는 칸이고, 늘 반쯤 흐린 게이지는 「고장 났나」로 읽힌다.
+- 수리: SCOPED_STALE_SECS = 240(주기 180 + 여유 60) · scopedRates 만 사용. 계정 rate·페인 CTX 의 120초는 그대로. 흐림의 뜻 = 「그 값의 생산자가 기대 주기를 한 번 넘겼다」로 한 표 안에서 하나 — 종전 계약 시험(「rate 행과 같은 문턱」)을 이 뜻으로 개정.
+- 시험: bun test 1175/0 · tsc 신규 0 · 헤드리스 c10 기준선 적색(150초 전 관측 = 흐림) → 초록(150초 = 흐림 0 · 400초 = 흐림) · 뮤턴트 M11a(120초로 되돌림)·M11b(문턱 400 = 한 번 거른 주기보다 김) KILLED · 전체 헤드리스 20/20 · 뮤턴트 42/42(단위 41 + M3b 헤드리스).
+- 【추정】 곁: 프로브만으로 갱신되는 **계정 rate 행**(statusline 이 없는 둘째 계정 등)도 같은 이유로 3분마다 흐려질 수 있다 — 계정 행은 생산자가 섞여(statusline·프로브) 행별 출처를 UI 가 모른다(AccountLike 에 source 없음) · 이 티켓에선 확장하지 않음(실측 없음).

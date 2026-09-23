@@ -9,6 +9,7 @@
 //   c7 상단바 데몬 라벨 = 판번만(pid·소켓 경로·daemon 0) · 전문은 툴팁(D4 #5)
 //   c8 이름 없는 본부 탭 = 「본부」 · 화면 어디에도 「non title」 0 · 탭 삭제 확인도 같은 이름(D4 #4)
 //   c9 짧은 창(위 내용 없음)에서 첫 위 휠 → 「접어 두었습니다」 안내 0 · 긴 출력 맨 위 도달 → 안내 1(D4 #6)
+//   c10 사이드바 「7d·<모델>」 게이지가 프로브 주기 안(150초 전 관측)에서는 흐려지지 않는다 · 400초 전이면 흐려진다(D4 #11)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -19,7 +20,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -229,6 +230,20 @@ if (ONLY.includes("c9")) {
   await ev(wheelUp("worker", 400)); await Bun.sleep(600);
   const b = await ev(hintCount);
   check("c9 짧은 창 첫 위 휠 → 안내 0 · 긴 출력 맨 위 → 안내 1", a === 0 && b === 1, JSON.stringify({ shortPane: a, afterLongTop: b }));
+}
+
+if (ONLY.includes("c10")) {
+  const acct = (scopedAge: number) => `(() => { const now = Date.now() / 1000; window.__shimAccounts = [{ account_id: "a1", provider: "claude", label: "u@example.com", plan: null, adapter: true, profiles: [".claude"], source: "statusline", updated_at: now - 5, stale_secs: 5,
+    rate: [{ label: "5h", used_pct: 20, resets_at: now + 3600 }, { label: "7d", used_pct: 30, resets_at: now + 86400 }],
+    scoped: [{ model: "Fable", used_pct: 6, resets_at: now + 86400, updated_at: now - ${scopedAge}, source: "oauth" }] }]; })()`;
+  const read = `(() => { const r = [...document.querySelectorAll(".wsu-rate")].find(x => x.textContent.includes("Fable")); return r ? { found: true, stale: r.classList.contains("stale"), text: r.textContent.trim().slice(0, 40) } : { found: false }; })()`;
+  const res: any = {};
+  for (const age of [150, 400]) {
+    await load("two", "", acct(age));
+    await Bun.sleep(4000);
+    res[age] = await ev(read);
+  }
+  check("c10 7d·Fable 게이지: 150초 전 관측 = 흐림 0 · 400초 전 = 흐림", res[150].found && !res[150].stale && res[400].found && res[400].stale, JSON.stringify(res));
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

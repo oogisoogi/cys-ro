@@ -34,6 +34,8 @@ M=[
  ('M7c','src/style.css','  flex: none; white-space: nowrap; }','  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }','src/headerlabels.test.ts'),
  ('M10a','src/scrollfollow.ts','viewportY <= 0 && baseY > 0 && bufferType === "normal"','viewportY <= 0 && bufferType === "normal"','src/scrollfollow.test.ts'),
  ('M10b','src/scrollfollow.ts','viewportY <= 0 && baseY > 0 && bufferType === "normal"','viewportY <= 0 && baseY > 0','src/scrollfollow.test.ts'),
+ ('M11a','src/wsusage.ts','stale: age > SCOPED_STALE_SECS, // (D4 #11)','stale: age > USAGE_STALE_SECS, // (D4 #11)','src/wsusage.test.ts'),
+ ('M11b','src/wsusage.ts','export const SCOPED_STALE_SECS = 240;','export const SCOPED_STALE_SECS = 400;','src/wsusage.test.ts'),
  ('M3a','src/main.ts','    top.style.flex = "";\n','','src/closeguard.test.ts'),
  ('M3b','src/main.ts','    top.style.flex = "";\n','    if (tree.type !== "pane") top.style.flex = "";\n','src/closeguard.test.ts'),
  ('M4a','index.html','    <button id="btn-close"','    <button id="btn-new" title="새 surface (⌘T)">+ New</button>\n    <button id="btn-close"','src/closeguard.test.ts'),

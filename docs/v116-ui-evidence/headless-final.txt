@@ -18,4 +18,5 @@ PASS c7 w1280 상단바 라벨 = 판번만(찌그러짐 0) · 툴팁 = 전문 �
 PASS c7 w800 상단바 라벨 = 판번만(찌그러짐 0) · 툴팁 = 전문 — {"text":"엔진 v1.1.6","title":"daemon v1.1.6 pid=4242 sock=/Users/u/.local/state/cys/cys.sock","fits":true}
 PASS c8 본부 탭 이름 = 본부 · non title 0 · 삭제 확인도 본부 — {"names":["본부"],"nonTitle":false,"modal":"워크스페이스 \"본부\" 완전 삭제"}
 PASS c9 짧은 창 첫 위 휠 → 안내 0 · 긴 출력 맨 위 → 안내 1 — {"shortPane":0,"afterLongTop":1}
+PASS c10 7d·Fable 게이지: 150초 전 관측 = 흐림 0 · 400초 전 = 흐림 — {"150":{"found":true,"stale":false,"text":"7d·Fable6%"},"400":{"found":true,"stale":true,"text":"7d·Fable6%"}}
 ALL PASS

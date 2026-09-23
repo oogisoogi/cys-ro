@@ -9622,10 +9622,15 @@ fn trust_prompt_hit(
     legacy_v1 && (delta_flat.contains("trustthisfolder") || delta_flat.contains("Doyoutrust"))
 }
 
-/// 폴더신뢰 선택지 이동 아래키 총상한(한 기동당). 계획은 매번 **지금 화면**에서 다시 세우므로 정상은
-/// 1번(2.1.280)이면 끝나고, 렌더 지연·되감김으로 계획이 헛돌 때 무한 아래키를 끊는 천장이다.
+/// 폴더신뢰 선택지 이동 아래키 총상한(한 기동당 · 틱을 넘어 누적). 폴더신뢰 창은 실측 두 판 모두
+/// **2항목**(`No, exit` · `Yes, I trust this folder`)이라 목표까지 아래키는 많아야 1번이다.
+/// ★(r2 · Fable 2R A) 상한 = 1 인 이유: 두 번째 누름이 **존재하지 않으면** 순환 메뉴 되감김(`Yes` → `No`)이
+/// 타이밍과 무관하게 생기지 않는다. 종전 상한 4 에서는 안정화가 화면 **전체**를 비교해, 포커스는 그대로인데
+/// 다른 행만 다시 그려진 프레임을 「바뀌고 안정됐다」로 읽고 또 누를 수 있었다(틱 경계를 넘어서도 같다) —
+/// 늦게 도착한 첫 누름의 프레임(`❯ Yes`)을 목표로 확인한 순간 실제 포커스는 `No, exit` 일 수 있다.
+/// 잃는 것: 첫 누름이 유실되면 보류(fail-closed · 주 경로는 좌석 폴더 신뢰 시드).
 /// (BUDGET_ 파리티 블록 밖 — 시간 예산이 아니라 키 개수 상한이다.)
-const TRUST_NAV_MAX_PRESSES: u32 = 4;
+const TRUST_NAV_MAX_PRESSES: u32 = 1;
 /// 아래키 뒤 화면 재독 전 대기(ms) — 선택 메뉴 재그리기 여유.
 const TRUST_NAV_SETTLE_MS: u64 = 400;
 /// 아래키 1회 묶음 뒤 재독 상한 — 화면이 **바뀌고 2회 연속 같아질**(안정) 때까지 다시 누르지 않고 읽기만 한다.
@@ -21602,6 +21607,26 @@ mod tests {
             TRUST_NAV_MAX_PRESSES,
             "아래키 상한이 지켜지지 않았다"
         );
+        // ④′ ★(Fable 2R A) 상한은 **1** 이다 — 2항목 창에서 두 번째 누름이 곧 되감김 경로다.
+        assert_eq!(TRUST_NAV_MAX_PRESSES, 1);
+        // ④″ 틱 경계: 앞 틱이 누르고 보류했으면(화면 미확인) 다음 틱은 옛 프레임을 봐도 다시 누르지 않는다.
+        let downs = Cell::new(0u32);
+        let mut nav = 0u32;
+        for _tick in 0..3 {
+            let ok = trust_focus_confirm_with(
+                &gs,
+                FOLDER_TRUST_2_1_280,
+                &mut nav,
+                || {
+                    downs.set(downs.get() + 1);
+                    Ok(())
+                },
+                seq(vec![old.clone()]),
+            )
+            .unwrap();
+            assert!(!ok);
+        }
+        assert_eq!(downs.get(), 1, "틱을 넘어 아래키를 또 눌렀다(되감김 위험)");
         // ⑤ 2.1.241: 이미 목표 — 키 0 · 참.  ⑥ 판정 불가 화면 — 키 0 · 거짓.
         for (screen, want) in [(FOLDER_TRUST, true), (READY_SHELL, false)] {
             let downs = Cell::new(0u32);

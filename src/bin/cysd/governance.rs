@@ -5400,6 +5400,14 @@ pub(crate) fn approval_in_prompt_tail(
         {
             rows
         }
+        // ★(r2 · Fable 2R B) 2.1.280 신뢰 창 선택지는 **번호가 없다**(`❯ No, exit`) — 윗 가로줄이 밀려난
+        //   화면(창보다 낮은 페인)에서 위 폴백이 안 서서 ⑵가 눈이 멀었다. 폴더 신뢰 선택지 라벨에 `❯` 가
+        //   걸린 행이 있으면 전량을 읽는다(판정은 여전히 `Gate::matches` = needle ∧ 위젯 AND).
+        None if trust_gate
+            .is_some_and(|g| rows.iter().any(|r| is_gate_option_row(r, marker, g))) =>
+        {
+            rows
+        }
         None => return false,
     };
     let text = region.join("\n");
@@ -5495,6 +5503,24 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
         Some(m) => approval_in_prompt_tail(&rows, cursor_row, &m, &res, trust.as_deref()),
         None => approval_in_prompt_tail(&rows, usize::MAX, "", &res, trust.as_deref()),
     }
+}
+
+/// 관문 선택지에 마커가 걸린 행인가(순수) — 마커 뒤(공백·`숫자.` 무시) 본문이 관문 `options` 라벨과
+/// **완전 일치**(`❯ No, exit` · `❯ 1. Yes, I trust this folder`). 빈 마커는 판단하지 않는다.
+fn is_gate_option_row(row: &str, marker: &str, gate: &cys::first_run_gates::Gate) -> bool {
+    if marker.is_empty() {
+        return false;
+    }
+    let Some(i) = row.find(marker) else {
+        return false;
+    };
+    let rest = row[i + marker.len()..].trim_start();
+    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    let rest = match rest[digits..].strip_prefix('.') {
+        Some(r) if digits > 0 => r.trim_start(),
+        _ => rest,
+    };
+    gate.options.iter().any(|o| rest.trim_end() == o)
 }
 
 /// 선택 메뉴 행인가(순수) — 마커 뒤(공백 무시)가 `숫자.` 로 시작한다(`❯ 1. Yes` · `❯ 2. No`).
@@ -10124,6 +10150,37 @@ mod tests {
         ));
         let c = body.iter().rposition(|l| l.trim() == "❯").unwrap();
         assert!(!approval_in_prompt_tail(&body, c, "❯", &[], Some(trust)));
+        // 윗 가로줄이 밀려난 2.1.280 신뢰 창(번호 없는 선택지): 선택지 라벨 포커스 행으로 전량을 읽는다
+        // (Fable 2R B). 커서 행은 무관(번호 선택지 폴백과 다른 조건) · ⑵ 없으면 종전대로 판단하지 않는다.
+        let no_rule: Vec<String> = trust_rows
+            .iter()
+            .filter(|r| !is_rule_row(r))
+            .cloned()
+            .collect();
+        assert!(!no_rule.iter().any(|r| is_rule_row(r)));
+        assert!(approval_in_prompt_tail(
+            &no_rule,
+            usize::MAX,
+            "❯",
+            &[],
+            Some(trust)
+        ));
+        assert!(!approval_in_prompt_tail(
+            &no_rule,
+            usize::MAX,
+            "❯",
+            &old,
+            None
+        ));
+        // 선택지 행이 없으면(가로줄도 없음) ⑵가 있어도 판단하지 않는다 — 답 본문 인용 기아 방지.
+        let no_focus: Vec<String> = no_rule.iter().map(|r| r.replace('❯', " ")).collect();
+        assert!(!approval_in_prompt_tail(
+            &no_focus,
+            usize::MAX,
+            "❯",
+            &[],
+            Some(trust)
+        ));
         // 좁은 폭에서 질문문이 어절 단위로 접혀도 ⑵는 잡는다(`Gate::matches` = 공백 정규화·제거본 — r2 성찰 D).
         let wrapped = rows(&FOLDER_TRUST_2_1_280.replace(
             "Is this a project you created or one you trust?",

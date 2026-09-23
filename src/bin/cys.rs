@@ -9675,6 +9675,68 @@ fn load_agent_spec(agent: &str) -> Result<Value, String> {
 }
 
 /// 역할 디렉티브 + soul.md + 장기메모리 색인 + 스킬 색인 조립 (launch/reinject/cycle 공용)
+/// ★v116-seat F2: 좌석 첫 프롬프트에 싣는 장기메모리 색인 항목의 상한(문자). 근거: 저장소 새 팩 워커의
+/// 고정분(WORKER 14,268 + RSI 9,036 + soul 1,559 = 24,863자) + 스킬 이름 색인 ≈ 2.4K 에 더해 첫 프롬프트를
+/// 30K자 미만으로 두는 값 · 색인 항목 평균 ≈ 200자(박사님 팩 941항 실측) → 최신 약 10항.
+const MEMORY_INDEX_CAP_CHARS: usize = 2_000;
+/// ★v116-seat F2: 스킬 색인(이름만)의 상한(문자) — 새 팩 119개 이름 ≈ 2.4K 가 들어가고, 사용자가 스킬을
+/// 수백 개로 늘려도 좌석 출생 크기가 따라 자라지 않게 막는 벽.
+const SKILL_INDEX_CAP_CHARS: usize = 3_000;
+
+/// ★v116-seat F2(순수): 메모리 색인 본문을 상한 안으로 줄인다. 새 항목은 색인 **끝**에 붙으므로
+/// (javis_memory.py add) 최신 항목(`- [` 줄)부터 거꾸로 **줄 단위**로 담고, 원래 순서로 되돌려 낸다.
+/// 머리말(작성법 등)은 싣지 않는다. 항상 첫 줄에 「전문 = 경로 Read」 포인터를 둔다 — 줄인 것과 안 줄인
+/// 것을 좌석이 구분할 수 있게 실은 항목 수 / 전체 항목 수를 함께 적는다.
+fn capped_memory_index(index: &str, path: &std::path::Path, cap: usize) -> String {
+    let entries: Vec<&str> = index.lines().filter(|l| l.starts_with("- [")).collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut used = 0usize;
+    for line in entries.iter().rev() {
+        let n = line.chars().count() + 1;
+        if used + n > cap {
+            break;
+        }
+        used += n;
+        kept.push(line);
+    }
+    kept.reverse();
+    let mut out = format!(
+        "(최신 {}항 / 전체 {}항 — 전문은 {} 를 Read · 본문은 각 항목 파일)\n",
+        kept.len(),
+        entries.len(),
+        path.display()
+    );
+    for line in kept {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// ★v116-seat F2(순수): 스킬 색인을 **이름만** 쉼표로 잇는다(로컬 오버레이 = 이름 뒤 `*`). 상한을 넘기면
+/// 거기서 멈추고 「외 N개」를 적는다. 설명·본문은 `cys skill list` · `cys skill show <name>` 가 원문이다.
+fn capped_skill_index(
+    index: &std::collections::BTreeMap<String, (String, bool)>,
+    cap: usize,
+) -> String {
+    let mut names = String::new();
+    let mut shown = 0usize;
+    for (name, (_, local)) in index {
+        let item = format!("{}{name}{}", if shown == 0 { "" } else { ", " }, if *local { "*" } else { "" });
+        if names.chars().count() + item.chars().count() > cap {
+            break;
+        }
+        names.push_str(&item);
+        shown += 1;
+    }
+    let rest = index.len() - shown;
+    format!(
+        "\n\n■ 보유 스킬 색인 ({}개 · 이름만 — 설명: `cys skill list` · 본문: `cys skill show <name>` · * = local 오버레이)\n{names}{}\n",
+        index.len(),
+        if rest > 0 { format!(" … 외 {rest}개(`cys skill list`)") } else { String::new() }
+    )
+}
+
 fn compose_directive(role: &str) -> Result<String, String> {
     let dir = cys::pack::pack_dir();
     // 표준 4역할 외(임시 역할 — fresh heartbeat의 scan-bot 등)는 WORKER 지침으로 폴백
@@ -9702,13 +9764,16 @@ fn compose_directive(role: &str) -> Result<String, String> {
     }
     // 장기메모리 색인 동봉 — 본문(1파일 1사실)은 필요 시 해당 파일을 읽어 점진 로드.
     // 헤더에 절대경로를 박는다: 노드가 본문 읽기·증류 쓰기 위치를 추론하지 않게(결정론).
+    // ★v116-seat F2: 색인 **전문**을 붙이면 좌석 출생 CTX 가 색인 크기에 비례해 자란다(09-23 실측:
+    //   박사님 팩 색인 177K자 → 첫 프롬프트 239K자 · 1M 창의 23.8%). 최신 항목부터 상한까지만 싣고
+    //   전문은 경로 포인터로 남긴다(capped_memory_index).
     let memory_path = dir.join("memory/MEMORY.md");
     if let Ok(memory) = std::fs::read_to_string(&memory_path) {
         directive.push_str(&format!(
             "\n\n■ 장기메모리 색인 ({} — 노드 공유 의미 기억 · 증류는 bin/javis_memory.py add)\n",
             memory_path.display()
         ));
-        directive.push_str(&memory);
+        directive.push_str(&capped_memory_index(&memory, &memory_path, MEMORY_INDEX_CAP_CHARS));
     }
     // 스킬 색인(표지) 동봉 — 본문은 필요 시 `cys skill show <name>`으로 점진 로드.
     // ① 오버레이: ~/.cys/local/skills 가 동명 팩 스킬을 shadowing(업데이트 불가침 사용자 커스텀).
@@ -9741,13 +9806,9 @@ fn compose_directive(role: &str) -> Result<String, String> {
         skill_index.insert(name, (desc, true)); // 동명 → local 이 이긴다(shadowing)
     }
     if !skill_index.is_empty() {
-        directive.push_str("\n\n■ 보유 스킬 색인 (본문: `cys skill show <name>`)\n");
-        for (name, (desc, local)) in &skill_index {
-            directive.push_str(&format!(
-                "- {name}: {desc}{}\n",
-                if *local { " [local 오버레이]" } else { "" }
-            ));
-        }
+        // ★v116-seat F2: 설명까지 싣던 색인(새 팩 119개 ≈ 26K자)을 **이름만**으로 줄인다 — 설명은
+        //   `cys skill list`·`cys skill show <name>` 가 원문이다(capped_skill_index).
+        directive.push_str(&capped_skill_index(&skill_index, SKILL_INDEX_CAP_CHARS));
     }
     // ① 사용자 로컬 디렉티브 오버레이(~/.cys/local/directives/<ROLE>_DIRECTIVE.local.md) —
     // 업데이트·치유가 절대 건드리지 않는 사용자 영역. 안전핵 키워드 줄은 strip(오버라이드 동일

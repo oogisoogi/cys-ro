@@ -177,12 +177,28 @@ class DeptFirstBootWait(_Base):
     def _assert_boot_waited(self, secs):
         r, took = self._launch("progress", D10_BOOT_S=secs)
         out = r.stdout + r.stderr
-        self.assertTrue(os.path.exists(os.path.join(self.t, "up")),
-                        "전제: 가짜 cysd 가 첫 부팅을 끝내지 못했다(대상 미접촉) · took=%.1f" % took)
-        self.assertGreaterEqual(took, secs - 1, "전제: 첫 부팅 흉내가 %d초를 채우지 않았다(%.1f)" % (secs, took))
+        # 판정 단언이 먼저다 — 되돌림 뮤턴트의 적색이 전제 단언으로 귀속되지 않게.
         self.assertNotIn("데몬 기동 실패", out,
                          "첫 부팅 %d초를 기동 뒤 대기가 못 덮었다 — 살아 있는 데몬을 실패로 끊음(D10)\n%s"
                          % (secs, out[-600:]))
+        self.assertTrue(os.path.exists(os.path.join(self.t, "up")),
+                        "전제: 가짜 cysd 가 첫 부팅을 끝내지 못했다(대상 미접촉) · took=%.1f" % took)
+        self.assertGreaterEqual(took, secs - 1, "전제: 첫 부팅 흉내가 %d초를 채우지 않았다(%.1f)" % (secs, took))
+
+    def test_post_spawn_wait_budget_contract(self):
+        """시간 무관 계약: 기동 **뒤** 대기 3자리(launch·allocate·create)가 전부 boot_wait 이고 기본 상한 ≥ 90초.
+        ⚠시간 모의만으로는 옛 ready() 되돌림을 못 가르는 창이 있다 — 옛 예산 = 120 × (핑 + 0.1초)라 핑 비용에
+        따라 길어진다(이 하네스의 가짜 핑 ≈0.29초/회 → 옛 예산 ≈35초 ⇒ 22초 모의는 되돌림에도 초록 · 실측
+        2026-09-23). VM 실측 첫 부팅 22초·옛 예산 ≈20초(06:59:55 기동 → 07:00:15 포기)는 여기서 재현되지 않는다."""
+        import re
+        with open(CYS_DEPT, encoding="utf-8") as f:
+            src = f.read()
+        waits = re.findall(r'^\s*(boot_wait|ready) "\$sock"', src, re.M)
+        self.assertEqual(waits, ["boot_wait"] * 3,
+                         "기동 뒤 대기 3자리가 전부 boot_wait 가 아니다(옛 ready() ≈12~35초 예산 복귀?): %s" % waits)
+        m = re.search(r'CYS_DEPT_BOOT_MAX_S:-(\d+)', src)
+        self.assertTrue(m and int(m.group(1)) >= 90,
+                        "boot_wait 기본 상한이 90초 미만 — 첫 부팅(팩 첫 설치)을 못 덮는다: %s" % (m and m.group(1)))
 
     def test_first_boot_22s_is_waited_out(self):
         self._assert_boot_waited(22)

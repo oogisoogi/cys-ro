@@ -1,9 +1,10 @@
 //! D6 정밀 디버깅(TICKET=dbg-D6 · 2026-09-23) — 계기·경보 결함 **검출 시험**.
 //!
 //! ★제품 코드는 건드리지 않는다. 공개 API(note_rate·alert_rates·alerts::evaluate·local_json)만 쓴다.
-//! 결함 검출 시험은 `#[ignore]` 로 둔다 — 현 코드(fd356c06)에서 **적색**이 정상이고, 보고서의
-//! 제안 patch 를 적용하면 초록이 된다. 대조군(control)은 ignore 없이 두 코드 모두에서 초록이다.
-//!   실행: `cysd-<hash> d6_probe_tests --include-ignored`
+//! (TICKET=v116-usage) D6-1·D6-2 수리가 들어간 판이라 검출 시험 4건의 `#[ignore]` 를 뗐다 — 이제 회귀
+//! 가드다(수리 전 base 526325bf 에서 4건 적색 실측). `d6_1_true_alarm_*` 는 수리의 반대쪽 경계다:
+//! 죽은 창을 경보에서 빼다가 **살아 있는 창의 참 경보까지 끄지 않는가**를 잡는다.
+//!   실행: `cysd-<hash> d6_probe_tests`
 //!   보고서: ~/axdev/master/reports/cysr-115-debug-2026-09-23/D6-telemetry.md
 use crate::state::Daemon;
 use crate::usage::RateWindow;
@@ -71,7 +72,6 @@ fn d6_1_control_fresh_window_alerts() {
 /// 검출: 리셋이 이미 지난 창(값이 죽은 창)은 경보를 내면 안 된다 — usage.accounts JSON 은 같은
 /// 창을 `stale:true · resets_at_passed` 로 표시하는데, 경보 경로는 그 판정을 안 본다.
 #[test]
-#[ignore = "D6-1 결함 검출 — 현 코드 적색 · 제안 patch 적용 시 초록"]
 fn d6_1_reset_passed_window_must_not_alert() {
     let d = daemon("d61a");
     let now = crate::state::now_epoch();
@@ -91,7 +91,6 @@ fn d6_1_reset_passed_window_must_not_alert() {
 /// 검출: 24시간 넘게 관측이 없는 창(no_observation_24h)도 경보에서 빠져야 한다
 /// (라이브 실증 09-23 16:57: 계정2 7d 78% = 38h 무관측 · 서버 진실 17%).
 #[test]
-#[ignore = "D6-1 결함 검출 — 현 코드 적색 · 제안 patch 적용 시 초록"]
 fn d6_1_unobserved_24h_window_must_not_alert() {
     let d = daemon("d61b");
     let now = crate::state::now_epoch();
@@ -123,7 +122,6 @@ fn d6_2_control_claude_agent_attributed() {
 /// rate 도 계정 뷰에 귀속돼야 한다 — 현 코드는 resolve() 가 문자열 "claude" 만 받아 조용히 버린다
 /// (살아 있는 증거: ~/.claude/channels/cso-acct2-budget.py 가 계정 뷰를 포기하고 노드 rate 를 읽는다).
 #[test]
-#[ignore = "D6-2 결함 검출 — 현 코드 적색 · 제안 patch 적용 시 초록"]
 fn d6_2_claude_variant_agent_must_be_attributed() {
     let d = daemon("d62a");
     let now = crate::state::now_epoch();
@@ -140,7 +138,6 @@ fn d6_2_claude_variant_agent_must_be_attributed() {
 /// note_rate 만 고치고 핸들러 조건(`agent == "claude"`)을 남기면 실경로는 여전히 눈멀다 —
 /// 두 자리 중 하나만 고친 수리를 잡는 배선 단언(주석 제거 후 대조).
 #[test]
-#[ignore = "D6-2 결함 검출(배선) — 현 코드 적색 · 제안 patch 적용 시 초록"]
 fn d6_2_usage_report_gate_accepts_claude_variants() {
     let src = include_str!("handlers.rs");
     let start = src.find("\"usage.report\" => {").expect("usage.report 분기");
@@ -154,4 +151,87 @@ fn d6_2_usage_report_gate_accepts_claude_variants() {
         !code.contains("if agent == \"claude\" && !rate.is_empty()"),
         "usage.report 계정 귀속 조건이 여전히 문자열 \"claude\" 완전일치 — claude-fable/sonnet 노드 rate 유실"
     );
+}
+
+// ── D6-1 반대쪽 경계: 참 경보는 살아 있어야 한다 (TICKET=v116-usage · 적대 조준 = 「참 경보 침묵」) ──
+// alert_rates 는 자기 시계(now_epoch)로 판정하므로 경계 시험은 수 초 여유를 둔다(시계 경합 회피).
+
+/// 같은 계정에서 5h 창만 리셋이 지났고 7d 창은 살아 있으면 — 7d 경보는 그대로 나야 한다
+/// (계정 단위 updated_at 을 공유하므로 「계정째로 끄는」 수리를 잡는다).
+#[test]
+fn d6_1_true_alarm_fresh_sibling_window_still_alerts() {
+    let d = daemon("d61t1");
+    let now = crate::state::now_epoch();
+    let sf = profile_session("d61t1", "uuid-sib", "sib@x");
+    crate::accounts::note_rate(
+        &d,
+        "claude",
+        &sf,
+        &[w("5h", 92.0, now - 60.0), w("7d", 97.0, now + 86400.0)],
+        "statusline",
+        now,
+    );
+    assert_eq!(account_alert_keys(&d, now), vec!["account_rate:sib@x:7d".to_string()]);
+}
+
+/// 죽은 계정이 있어도 다른 계정의 살아 있는 경보는 영향이 없다.
+#[test]
+fn d6_1_true_alarm_other_account_unaffected() {
+    let d = daemon("d61t2");
+    let now = crate::state::now_epoch();
+    let dead = profile_session("d61t2a", "uuid-dead", "dead@x");
+    let live = profile_session("d61t2b", "uuid-live", "live@x");
+    crate::accounts::note_rate(&d, "claude", &dead, &[w("7d", 96.0, now + 86400.0)], "statusline", now - 30.0 * 3600.0);
+    crate::accounts::note_rate(&d, "claude", &live, &[w("5h", 88.0, now + 3600.0)], "statusline", now);
+    assert_eq!(account_alert_keys(&d, now), vec!["account_rate:live@x:5h".to_string()]);
+}
+
+/// 무관측으로 빠졌던 창도 새 관측이 오면 **바로** 경보가 돌아온다 — 수리는 「못 쟀다」를 뺄 뿐
+/// 「쟀는데 높다」를 끄지 않는다(계정을 실제로 쓰는 순간 statusline·oauth 가 창을 되살린다).
+#[test]
+fn d6_1_true_alarm_rearms_on_fresh_observation() {
+    let d = daemon("d61t3");
+    let now = crate::state::now_epoch();
+    let sf = profile_session("d61t3", "uuid-re", "re@x");
+    crate::accounts::note_rate(&d, "claude", &sf, &[w("7d", 96.0, now + 86400.0)], "statusline", now - 30.0 * 3600.0);
+    assert!(account_alert_keys(&d, now).is_empty(), "전제: 30h 무관측 창은 빠진다");
+    crate::accounts::note_rate(&d, "claude", &sf, &[w("7d", 96.0, now + 86400.0)], "oauth", now);
+    assert_eq!(account_alert_keys(&d, now), vec!["account_rate:re@x:7d".to_string()]);
+}
+
+/// 경계 안쪽(관측 23시간 전 · 리셋 2분 뒤)은 아직 살아 있는 창이다 — 경보가 나야 한다.
+#[test]
+fn d6_1_true_alarm_inside_boundaries_still_alerts() {
+    let d = daemon("d61t4");
+    let now = crate::state::now_epoch();
+    let sf = profile_session("d61t4", "uuid-edge", "edge@x");
+    crate::accounts::note_rate(&d, "claude", &sf, &[w("5h", 99.0, now + 120.0)], "statusline", now - 23.0 * 3600.0);
+    assert_eq!(account_alert_keys(&d, now), vec!["account_rate:edge@x:5h".to_string()]);
+}
+
+/// 리셋 시각을 모르는 창(resets_at 없음)은 리셋이 지났다고 **가정하지 않는다** — 관측이 신선하면 경보.
+#[test]
+fn d6_1_true_alarm_unknown_resets_at_still_alerts() {
+    let d = daemon("d61t5");
+    let now = crate::state::now_epoch();
+    let sf = profile_session("d61t5", "uuid-nor", "nor@x");
+    let win = crate::usage::RateWindow { label: "5h".into(), used_pct: 91.0, resets_at: None };
+    crate::accounts::note_rate(&d, "claude", &sf, &[win], "statusline", now);
+    assert_eq!(account_alert_keys(&d, now), vec!["account_rate:nor@x:5h".to_string()]);
+}
+
+/// D6-2 반대쪽 경계: 파생 에이전트 두 번째 이름(claude-sonnet)도 귀속되고, claude 가 아닌 이름은
+/// 접두만 비슷해도(claudex) claude 신원 해석으로 들어가지 않는다.
+#[test]
+fn d6_2_prefix_is_dash_delimited() {
+    let d = daemon("d62p");
+    let now = crate::state::now_epoch();
+    let s1 = profile_session("d62p1", "uuid-s", "s@x");
+    let s2 = profile_session("d62p2", "uuid-n", "n@x");
+    crate::accounts::note_rate(&d, "claude-sonnet", &s1, &[w("5h", 10.0, now + 3600.0)], "statusline", now);
+    crate::accounts::note_rate(&d, "claudex", &s2, &[w("5h", 20.0, now + 3600.0)], "statusline", now);
+    let j = crate::accounts::local_json(&d, now);
+    let rows = j.as_array().unwrap();
+    assert!(rows.iter().any(|r| r["label"] == "s@x" && r["rate"][0]["used_pct"] == 10.0), "claude-sonnet 귀속");
+    assert!(!rows.iter().any(|r| r["label"] == "n@x"), "claudex 는 claude 파생이 아니다 — 유령 계정 0");
 }

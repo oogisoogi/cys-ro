@@ -19,11 +19,11 @@
       },
       {
         "name": "trust-prompt",
-        "pattern": "Do you trust the files in this folder|Is this a project you created or one you trust"
+        "pattern": "Do you trust the files in this folder"
       }
     ],
     "first_run_gates": {
-      "_doc": "첫기동 관문(테마·로그인·OAuth·폴더신뢰·면책·신기능안내) 코퍼스의 **override 봉투**다. 코퍼스 정본은 코드에 임베드돼 있고(src/first_run_gates.rs) 이 파일에는 사본을 두지 않는다 — 사본이 늘면 문면이 갈린다. 여기서 할 수 있는 것: source=\"builtin\"(기본, 정본에 gates[]를 id로 병합) 또는 \"replace\"(gates[]만 사용), measured_on=이 선언을 실측한 claude 버전(정본과 다르면 그 관문의 통과 액션은 보류되고 감지만 한다), gates[]=관문 선언(id·title·needles·widget·confirm_echo·default_index·action{select_index,label,literal}·passability·human_reason). ★로그인·OAuth는 기계가 통과시킬 수 없어(자격증명이 config dir 경로해시로 봉인되고 OAuth 재시도는 무한 루프) human_only로 고정돼 있고 선언으로 승격되지 않는다. ★needles에는 질문형 문면만 넣는다 — 확인 에코·버튼 라벨(예: \"Yes, I trust this folder ✔\")을 넣으면 통과 직후 화면이 다시 관문으로 읽혀 다음 Return이 면책창의 \"No, exit\"를 누른다(2026-07-29 실사고 형태). ★이 봉투를 디스크로 병합(pack-merge)하지 마라: 병합하는 순간 사용자 소유 파일이 되어 이후 벤더 갱신이 도달하지 않는다 — 비워 두면 코드 정본이 자동으로 따라온다. 관문 감지는 감지·격상 전용이며 자동응답 계약은 approval_patterns의 trust-prompt 1건 그대로다.",
+      "_doc": "첫기동 관문(테마·로그인·OAuth·폴더신뢰·면책·신기능안내) 코퍼스의 **override 봉투**다. 코퍼스 정본은 코드에 임베드돼 있고(src/first_run_gates.rs) 이 파일에는 사본을 두지 않는다 — 사본이 늘면 문면이 갈린다. 여기서 할 수 있는 것: source=\"builtin\"(기본, 정본에 gates[]를 id로 병합) 또는 \"replace\"(gates[]만 사용), measured_on=이 선언을 실측한 claude 버전(정본과 다르면 그 관문의 통과 액션은 보류되고 감지만 한다), gates[]=관문 선언(id·title·needles·widget·confirm_echo·options(선택지 라벨 — 폴더신뢰 포커스 확인의 재료)·default_index·action{select_index,label,literal}·passability·human_reason). ★로그인·OAuth는 기계가 통과시킬 수 없어(자격증명이 config dir 경로해시로 봉인되고 OAuth 재시도는 무한 루프) human_only로 고정돼 있고 선언으로 승격되지 않는다. ★needles에는 질문형 문면만 넣는다 — 확인 에코·버튼 라벨(예: \"Yes, I trust this folder ✔\")을 넣으면 통과 직후 화면이 다시 관문으로 읽혀 다음 Return이 면책창의 \"No, exit\"를 누른다(2026-07-29 실사고 형태). ★이 봉투를 디스크로 병합(pack-merge)하지 마라: 병합하는 순간 사용자 소유 파일이 되어 이후 벤더 갱신이 도달하지 않는다 — 비워 두면 코드 정본이 자동으로 따라온다. 관문 감지는 감지·격상 전용이며 자동응답 계약은 approval_patterns의 trust-prompt 1건 그대로다.",
       "source": "builtin",
       "measured_on": "2.1.241",
       "gates": []

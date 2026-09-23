@@ -9600,9 +9600,8 @@ fn trust_prompt_regex(spec: &Value) -> Option<regex::Regex> {
 ///   `confirm_echo` 로 분리돼 "needle 이 어떤 에코에도 포함되지 않는다"는 불변식 검체가
 ///   그 형태를 구조적으로 금지한다. 그래서 사본을 새로 만들지 않고 그 정본을 읽는다(S-1 차단).
 ///   ★구 하드코딩 needle 은 **삭제가 아니라 롤백 분기로 격하**된다(`CYS_TRUST_RETURN_V1=1`):
-///     실측상 선언 패턴의 구 문면(`Do you trust the files in this folder`)은 claude 2.1.236~280
-///     어디에도 없으므로(1.1.6 에 실측 문면 `Is this a project you created or one you trust` 를
-///     선언에 더했다), 감지 폭이 예상 밖으로 좁아졌을 때 되돌릴 손잡이를 남겨 둔다. 되돌려도 킬체인은
+///     실측상 선언 패턴(`Do you trust the files in this folder`)은 claude 2.1.236~280 어디에도
+///     없으므로, 감지 폭이 예상 밖으로 좁아졌을 때 되돌릴 손잡이를 남겨 둔다. 되돌려도 킬체인은
 ///     열리지 않는다 — 전송은 1발 래치와 화면 재확인(U-14 축)이 따로 막는다.
 fn trust_prompt_hit(
     re: Option<&regex::Regex>,
@@ -21679,15 +21678,20 @@ mod tests {
         let t = "Do you trust this folder?";
         assert!(trust_prompt_hit(Some(&re), &gs, t, &flat(t), false), "선언+코퍼스 병존");
         assert!(trust_prompt_hit(None, &gs, t, &flat(t), false), "패턴 부재 시 코퍼스 단독 폴백");
-        // ③′ ★2.1.241~2.1.280 실측 문면. (1.1.6 dbg-queue-approval 개정) 종전엔 선언 패턴이 이
-        //     문면을 **못 잡아야** 한다고 박았다(구 패턴 실재 0 = 코퍼스 폴백이 유일 감지축이라는 증명).
-        //     선언 패턴에 실측 문면을 더한 뒤로는 두 축이 모두 잡고, 코퍼스 폴백 **단독** 감지는
-        //     `re = None` 으로 따로 증명한다 — 자동확인이 코퍼스만으로도 살아 있다는 원래 의도는 그대로다.
-        //     (문면 추가의 목적: 데몬 승인 축·큐 배달 승인 축이 같은 어댑터 선언을 읽는다.)
+        // ③′ ★2.1.241~2.1.280 실측 문면 — 선언 패턴에는 **없고**(claude 2.1.236~280 어디에도 없다)
+        //     코퍼스 폴백만이 잡는다. 이 축이 없으면 현행 claude 에서 자동확인이 통째로 죽는다.
+        //     ★(1.1.6 r2) 이 문면을 `approval_patterns` 에 **넣지 않는** 것도 계약이다: 그 키는 데몬
+        //     승인 스캔(`check_approvals`)도 읽어, 넣는 순간 신뢰 창마다 master 에게 「즉시 처리하라」 각성이
+        //     나간다 — 2.1.280 기본 포커스가 `No, exit` 라 그 지시의 Return 이 좌석을 죽인다. 데몬의 큐·강제
+        //     배달 승인 축은 관문 코퍼스를 직접 읽는다(governance `approval_in_prompt_tail` 두 출처).
         let t = "Quick safety check: Is this a project you created or one you trust?";
         assert!(
-            trust_prompt_hit(Some(&re), none, t, &flat(t), false),
-            "선언 패턴이 2.1.241~280 실측 문면을 못 잡는다(어댑터 문면 불일치 재발)"
+            !trust_prompt_hit(Some(&re), none, t, &flat(t), false),
+            "선언 패턴이 실측 문면을 잡는다 — U-15 전제 붕괴 · 데몬 승인 스캔이 신뢰 창에 「즉시 처리」 각성을 낸다"
+        );
+        assert!(
+            trust_prompt_hit(Some(&re), &gs, t, &flat(t), false),
+            "실측 문면을 코퍼스 폴백이 놓친다 — 현행 claude 에서 폴더신뢰 자동확인 불발"
         );
         assert!(
             trust_prompt_hit(None, &gs, t, &flat(t), false),

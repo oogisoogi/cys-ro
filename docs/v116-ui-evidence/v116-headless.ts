@@ -13,6 +13,7 @@
 //   c11 master 자리가 카드 유예(15초) 뒤에 선다 → 그때 카드 1회 · 닫은 뒤 같은 신호가 다시 와도 0(R1c)
 //   c12 좁은 창(800폭 · 2분할) 제목: 역할 없는 창 = 「번호 · 폴더 이름」(전체 경로는 툴팁) · 끝난 창 = 「(끝남)」이 맨 앞 ·
 //       역할 창 이름을 비워 확정 → 「번호 · 특성」 그대로(D4 #12)
+//   c13 used_pct null(미관측) → 창 머리 배지에 그 창 0 · Control Center 계정 게이지 「—」(0% 아님)(D4 #18 나머지 절반)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -23,7 +24,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -289,6 +290,22 @@ if (ONLY.includes("c12")) {
   const c = await ev(`({ renames: window.__shimCalls.filter(c => c.cmd === "rename_surface").map(c => c.args.title), seat: window.__shimSeats[0].title, shown: [...document.querySelectorAll("#root .pane .pane-title-text")].map(t => t.textContent) })`);
   check("c12c 역할 창 이름 비워 확정 → 「1 · master」 유지(번호·특성 소실 0)", editing && c.seat === "1 · master" && c.shown.includes("1 · master"), JSON.stringify({ editing, ...c }));
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+}
+
+if (ONLY.includes("c13")) {
+  const inj = `(() => { const now = Date.now() / 1000;
+    window.__shimSeats[0].usage = { agent: "claude", ctx_pct: 10, source: "statusline", updated_at: now, rate: [{ label: "5h", used_pct: null, resets_at: null }, { label: "7d", used_pct: 42, resets_at: null }] };
+    window.__shimAccounts = [{ account_id: "a1", provider: "claude", label: "u@example.com", plan: null, source: "statusline", updated_at: now - 5, stale_secs: 5,
+      rate: [{ label: "5h", used_pct: null, resets_at: null }, { label: "7d", used_pct: 30, resets_at: now + 86400 }], scoped: [] }]; })()`;
+  await load("two", "", inj);
+  await Bun.sleep(3500);
+  const a = await ev(`(() => { const u = ${PANE("master")}?.querySelector(".pane-usage"); return { text: u?.textContent ?? "", tip: u?.title ?? "" }; })()`);
+  check("c13a 창 머리 배지: 미관측 5h = 표시 0 · 7d 42% 는 그대로 · 툴팁에도 5h 0", a.text.includes("7d 42%") && !a.text.includes("5h") && !a.tip.includes("rate 5h"), JSON.stringify(a));
+  await ev(`document.getElementById("btn-cc").click()`); await Bun.sleep(300);
+  await ev(`[...document.querySelectorAll(".cc-tab")].find(x => x.textContent.trim() === "Live")?.click()`); await Bun.sleep(1500);
+  const b = await ev(`[...document.querySelectorAll("#cc-accounts .cc-tbar")].map(t => (t.querySelector(".cc-tbar-lab")?.textContent ?? "") + "=" + (t.querySelector(".cc-tbar-pct")?.textContent ?? "") + (t.querySelector(".cc-tbar-fill") ? "+fill" : ""))`);
+  check("c13b Control Center 계정 게이지: 미관측 5h = 「—」(채움 0) · 7d = 30%", Array.isArray(b) && b.includes("5h=—") && b.includes("7d=30%+fill"), JSON.stringify(b));
+  await ev(`document.getElementById("btn-cc").click()`); await Bun.sleep(200);
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

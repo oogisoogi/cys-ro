@@ -14929,35 +14929,77 @@ mod tests {
     fn d7_create_arc_primes_seat_cache_before_reply() {
         let src = include_str!("handlers.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
-        // 선언문만 본다 — 줄 주석을 걷어낸다(같은 이름이 설명 주석에만 남아도 초록이 되는 자리를 막는다).
-        //   줄 수는 보존한다(빈 줄로 바꿀 뿐) — 위치 판정이 원문 순서 그대로다.
-        let code: String = prod
+        // 선언문만 본다 — 주석을 걷어낸다(같은 이름이 주석에만 남아도 초록이 되는 자리를 막는다).
+        //   ① 줄 주석: trim 뒤 `//` 로 시작하는 줄 전체. 줄 끝 꼬리 주석은 남겨도 된다 — 아래 판정은
+        //      「trim 한 줄 == 호출문 전체」라 꼬리 주석 안에 숨긴 호출은 일치하지 않는다.
+        //   ② 블록 주석(r7 · agy 6R P2a): `/* … */` 구간을 줄바꿈만 남기고 지운다(중첩 불요 — 생산부에
+        //      `/*` 0건 · 문자열 리터럴 안 `/*` 0건을 2026-09-23 grep 으로 확인). 닫히지 않은 `/*` 는 적색.
+        //   줄 수는 보존한다 — 위치 판정이 원문 줄 순서 그대로다.
+        let no_line: String = prod
             .lines()
             .map(|l| if l.trim_start().starts_with("//") { "" } else { l })
             .collect::<Vec<_>>()
             .join("\n");
+        let mut code = String::with_capacity(no_line.len());
+        let mut rest = no_line.as_str();
+        while let Some(open) = rest.find("/*") {
+            code.push_str(&rest[..open]);
+            let close = rest[open + 2..].find("*/").expect("닫히지 않은 블록 주석 — 이 아래 판정은 무의미");
+            code.extend(rest[open..open + 2 + close + 2].chars().filter(|c| *c == '\n'));
+            rest = &rest[open + 2 + close + 2..];
+        }
+        code.push_str(rest);
         assert_eq!(
             code.matches("prime_seat_cache_at_create(").count(),
             1,
             "생산 코드의 prime 호출 자리가 정확히 하나가 아니다(0 = 배선 소실 · 2+ = 이 시험이 한 자리만 잰다)"
         );
-        let arm_at = code
-            .find("\n        \"surface.create\" => {\n")
+        // ★r7(agy 6R P2c): 절대 들여쓰기 리터럴 대신 **trim 한 줄**과 **줄 인덱스**로 판정한다(rustfmt·
+        //   바깥 블록 추출에 둔감). 「무조건」은 상대 들여쓰기로 잰다 — 호출 줄과 성공 응답 줄(Ok 아크의 꼬리 식)이
+        //   같은 깊이여야 한다(if·클로저 안으로 들어가면 더 깊다).
+        let lines: Vec<&str> = code.lines().collect();
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let arm = lines
+            .iter()
+            .position(|l| l.trim() == "\"surface.create\" => {")
             .expect("surface.create 아크");
-        let arm_end = arm_at + 1 + code[arm_at + 1..].find("\n        \"").expect("다음 아크 경계");
-        let arm = &code[arm_at..arm_end];
-        let ok_at = arm.find("\n                Ok(s) => {\n").expect("생성 성공 아크 Ok(s)");
-        let err_at = arm.find("\n                Err(e) => {\n").expect("생성 실패 아크 Err(e)");
-        assert!(ok_at < err_at, "아크 순서 전제(Ok → Err)가 깨졌다 — 이 아래 판정은 무의미");
-        let ok_arm = &arm[ok_at..err_at];
-        // ★들여쓰기 20칸 = Ok 아크 본문 최상위(무조건 실행). if·클로저 안으로 들어가면 24칸+ 라 안 잡힌다.
-        let call = ok_arm
-            .find("\n                    let _ = crate::governance::prime_seat_cache_at_create(&s);\n")
-            .expect("성공 아크 최상위(무조건)에 prime(&s) 호출이 없다 — 새 좌석이 첫 틱까지 unknown 으로 노출된다");
-        let reply = ok_arm
-            .find("\n                    Reply::Single(ok_response(")
-            .expect("성공 아크의 응답");
+        let arm_end = arm
+            + 1
+            + lines[arm + 1..]
+                .iter()
+                .position(|l| indent(l) == indent(lines[arm]) && l.trim_start().starts_with('"'))
+                .expect("다음 아크 경계");
+        let ok = arm
+            + lines[arm..arm_end].iter().position(|l| l.trim() == "Ok(s) => {").expect("생성 성공 아크 Ok(s)");
+        let err = ok
+            + lines[ok..arm_end].iter().position(|l| l.trim() == "Err(e) => {").expect("생성 실패 아크 Err(e)");
+        let call = ok
+            + lines[ok..err]
+                .iter()
+                .position(|l| l.trim() == "let _ = crate::governance::prime_seat_cache_at_create(&s);")
+                .expect("성공 아크에 prime(&s) 호출문이 없다 — 새 좌석이 첫 틱까지 unknown 으로 노출된다");
+        let reply = ok
+            + lines[ok..err]
+                .iter()
+                .rposition(|l| l.trim() == "Reply::Single(ok_response(")
+                .expect("성공 아크의 응답");
         assert!(call < reply, "prime 이 응답 뒤에 있다 — 호출자의 다음 status 가 unknown 을 본다");
+        assert_eq!(
+            indent(lines[call]),
+            indent(lines[reply]),
+            "prime 호출이 성공 아크 최상위가 아니다(조건·클로저 안) — 어떤 생성은 채움 없이 응답한다"
+        );
+        // ★r7(agy 6R P2b): Ok(s) 와 호출 사이 조기 반환 우회 — 그 구간에 `return`·`Reply::` 가 있으면 어떤
+        //   경로는 prime 에 닿기 전에 응답한다(응답 위치 비교만으로는 못 잡는다).
+        if let Some((i, l)) = lines[ok + 1..call]
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains("return") || l.contains("Reply::"))
+        {
+            panic!("Ok(s) 와 prime 호출 사이에 조기 반환 후보가 있다(+{}줄): {}", i + 1, l.trim());
+        }
+        // ★두 층의 관계(agy 6R P3a): 아래 실행 축은 prime 이 **빠져도** "unknown" 이라 통과한다 — 배선은 위
+        //   구조 단언이, Empty 적재는 의미 층(`d7_prime_seat_cache_never_overwrites_a_tick_value`)이 진다.
 
         // ★실행 축(환경 무관 불변식): 이 시험 데몬엔 워치독 틱이 없다 — 생성 직후 status 의 좌석 값을 쓰는
         //   주체는 prime 하나이고, prime 은 Occupied 를 싣지 않는다. 비특권 역할로 1회만 만든다(재시도 없음).
@@ -14985,6 +15027,9 @@ mod tests {
         let row = surface_entry(&st, "surfaces", sid);
         assert_ne!(row["seat"], json!("occupied"),
                    "생성 직후 채움이 Occupied 를 실었다(Empty 한정 위반 · 입양 분기로 샌다): {row}");
+        // ★r7(agy 6R P3b): 만든 좌석을 닫는다(자식 트리 kill) — `exec sleep 30` 을 호스트에 남기지 않는다.
+        let closed = close_surface_rpc(&daemon, sid, None, None);
+        assert_eq!(closed["ok"], json!(true), "시험 좌석 닫기 실패 ({closed})");
     }
 
     /// ★v115r3-d7(D7⑴) 생성 직후 채움은 **Unknown 일 때만** 쓴다 — 틱이 먼저 쓴 값을 덮지 않는다.

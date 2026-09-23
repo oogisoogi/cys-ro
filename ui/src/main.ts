@@ -17,6 +17,8 @@ import {
   classifyDrainVerifyFallback,
   drainVerifyFallbackToast,
   drainVerifyNotice,
+  continuityNotice,
+  type ContinuityReport,
   mergeRetry,
   restoringRetryKeys,
 } from "./drainverify";
@@ -6003,7 +6005,9 @@ type DrainVerifyReport = {
 // skipDrain=true면 rotate가 이중 drain을 생략(verified 경로: 사전 drain --verify로 저장 확인됨),
 // false면 rotate가 plain drain(기존 거동·폴백). 앱 재시작 없음 — GUI는 새 데몬에 자동 재연결.
 // 죽은 부서 소켓은 skip(detectSkew 동형 — 부서 부활은 CSO·피닉스 소유).
-async function restartAllDaemons(skipDrain: boolean): Promise<{ failedDepts: string[]; deptRestoreFailed: boolean }> {
+async function restartAllDaemons(
+  skipDrain: boolean,
+): Promise<{ failedDepts: string[]; deptRestoreFailed: boolean; restoreNotes: string[] }> {
   await invoke("rotate_daemon", { force: true, skipDrain });
   // 부서 열거=list_depts(레지스트리 SOT) + daemon_status 생존 확인 — detectSkew 동형(죽은 등재 skip).
   const reg = (await invoke("list_depts").catch(() => ({ depts: {} }))) as {
@@ -6011,6 +6015,7 @@ async function restartAllDaemons(skipDrain: boolean): Promise<{ failedDepts: str
   };
   let deptRestoreFailed = false;
   const failedDepts: string[] = [];
+  const restoreNotes: string[] = [];
   for (const [name, meta] of Object.entries(reg.depts ?? {})) {
     if (!meta.socket) continue;
     try {
@@ -6019,21 +6024,44 @@ async function restartAllDaemons(skipDrain: boolean): Promise<{ failedDepts: str
       continue; // 죽은/전이 중 부서 소켓 skip(무해)
     }
     try {
-      const info = (await invoke("rotate_dept_daemon", { name, force: true, skipDrain })) as { restore_ok?: boolean };
-      if (info?.restore_ok === false) deptRestoreFailed = true;
+      // ★v115r5-t1 T1①: restore_ok 는 이제 판정 층(요약 판독·재실측 1회)을 거친 값이다 — 끝내 실패면 사정 문안(restore_note).
+      const info = (await invoke("rotate_dept_daemon", { name, force: true, skipDrain })) as {
+        restore_ok?: boolean;
+        restore_note?: string;
+      };
+      if (info?.restore_ok === false) {
+        deptRestoreFailed = true;
+        if (info.restore_note) restoreNotes.push(info.restore_note);
+      }
     } catch {
       failedDepts.push(name);
     }
   }
-  return { failedDepts, deptRestoreFailed };
+  return { failedDepts, deptRestoreFailed, restoreNotes };
 }
 
-function restartResultToast(failedDepts: string[], deptRestoreFailed: boolean) {
+function restartResultToast(failedDepts: string[], deptRestoreFailed: boolean, restoreNotes: string[] = []) {
   if (failedDepts.length)
     toast("health", "⚠ 일부 부서 재시작 실패", `메인 데몬은 재시작됐으나 부서 교대가 실패했습니다: ${failedDepts.join(", ")} — 상태를 점검하세요.`);
   else if (deptRestoreFailed)
-    toast("health", "⚠ 재시작 후 부서 복원 실패", "데몬은 재시작됐으나 일부 부서 노드 복원이 실패했습니다 — 상태를 점검하세요.");
+    toast(
+      "health",
+      "⚠ 재시작 후 부서 복원 실패",
+      restoreNotes.length ? restoreNotes.join(" ") : "데몬은 재시작됐으나 일부 부서 노드 복원이 실패했습니다 — 상태를 점검하세요.",
+    );
   else toast("watchdog", "✅ 데몬 재시작 완료", "데몬이 다시 시작됐습니다. 부서·노드 복원이 진행됩니다.");
+}
+
+// ★v115r5-t1 T1③: 재시작 뒤 대화 이어짐을 **실측**(phoenix 이번 회차 대조)해 새 대화로 시작한 자리만 알린다.
+// 기다리는 동안 흐름을 막지 않는다(await 하지 않고 띄운다) · 측정 불가면 말하지 않는다.
+async function restartContinuityToast(since: number) {
+  try {
+    const r = (await invoke("restart_continuity", { since, waitSecs: 120 })) as ContinuityReport;
+    const n = continuityNotice(r);
+    if (n) toast("watchdog", n.title, n.body);
+  } catch {
+    /* 측정 불가 — 이어짐·새 대화 어느 쪽도 말하지 않는다 */
+  }
 }
 
 // ── 상시 "↻ 재시작" 버튼(초보자용) — "저장 검증 후 자동 재시작" 흐름 ──
@@ -6053,6 +6081,8 @@ async function manualRestartAllDaemons() {
   //   삭제」가 우선하고, 오발의 대가는 재시작 1회(대화는 트랜스크립트로 복원)로 작다. ↻ 한 번 = 드레인 →
   //   재시작까지 한 번에. 진행 상황은 묻는 창이 아니라 아래 sticky 토스트로 알린다.
   rotatingDaemon = true;
+  // ★v115r5-t1 T1③: 이번 회차 대조만 읽기 위한 기준 시각(phoenix 원장 verify 단계 ts 와 같은 초 단위).
+  const restartStartedAt = Date.now() / 1000;
   try {
     // 1) 저장 검증(drain --verify) — feature-detect. 미지원/실패 시 plain drain 폴백.
     stickyToast("restart-daemon", "feed", "↻ 저장 검증", "재시작 전 노드 체크포인트를 검증하는 중… 저장이 늦는 자리는 자동으로 기다렸다가 그대로 재시작합니다.");
@@ -6071,9 +6101,10 @@ async function manualRestartAllDaemons() {
       const t = drainVerifyFallbackToast(fallback);
       toast("health", t.title, t.body);
       stickyToast("restart-daemon", "feed", "↻ 데몬 재시작", "저장 후 데몬을 다시 시작하는 중… 부서·노드를 자동 복원합니다.");
-      const { failedDepts, deptRestoreFailed } = await restartAllDaemons(false);
+      const { failedDepts, deptRestoreFailed, restoreNotes } = await restartAllDaemons(false);
       dismissToast("restart-daemon");
-      restartResultToast(failedDepts, deptRestoreFailed);
+      restartResultToast(failedDepts, deptRestoreFailed, restoreNotes);
+      void restartContinuityToast(restartStartedAt);
       return;
     }
     // 1-b) ★v113-restore B3: 갱신 직후엔 복원이 아직 도는 자리가 「복원 중 — 건너뜀」으로 온다. 사용자가 다시
@@ -6096,16 +6127,17 @@ async function manualRestartAllDaemons() {
     //    한 번 눌러 재시작까지 한 번에 · 중간에 묻는 단계 0).
     // 3) verified 재시작 — 사전 검증했으므로 rotate는 이중 drain 생략(skipDrain=true).
     stickyToast("restart-daemon", "feed", "↻ 데몬 재시작", "저장 검증 완료 — 데몬을 다시 시작하고 노드를 복원하는 중…");
-    const { failedDepts, deptRestoreFailed } = await restartAllDaemons(true);
+    const { failedDepts, deptRestoreFailed, restoreNotes } = await restartAllDaemons(true);
     dismissToast("restart-daemon");
     // 재시작 창 큐 보존[A3-F3]: 인메모리 미배달 push는 재시작에 유실된다 — 정직하게 고지(무음 유실 금지).
     const pendingLost = (verify?.pending_loss_warning ?? []).reduce((a, p) => a + (p.pending_undelivered || 0), 0);
     if (pendingLost > 0)
       toast("health", "미배달 push 유실", `재시작으로 미배달 큐 ${pendingLost}건이 유실됩니다(대화 원문은 트랜스크립트로 복원).`);
-    restartResultToast(failedDepts, deptRestoreFailed);
+    restartResultToast(failedDepts, deptRestoreFailed, restoreNotes);
     // ★[V111-F4] 저장 미확인 자리는 재시작 뒤 알림 1줄로만(확인 창 폐기 · 전원 확인이면 조용히 지나간다).
     const notice = verify ? drainVerifyNotice(verify) : null;
     if (notice) toast("health", notice.title, notice.body);
+    void restartContinuityToast(restartStartedAt);
   } catch (e) {
     dismissToast("restart-daemon");
     toast("health", "데몬 재시작 실패", String(e));

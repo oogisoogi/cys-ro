@@ -52,24 +52,37 @@ describe("drainVerifyNotice — 확인 창 폐기 후의 사후 알림 1줄", ()
       drainVerifyNotice({ all_saved: true, total: 3, summary: { saved: 3 }, nodes: [node("master", "saved")] }),
     ).toBeNull();
   });
-  it("미확인 자리가 있으면 '대화는 복원했다'를 함께 말한다(묻지 않는다)", () => {
+  // ★v115r5-t1 T1②: 옛 판은 이 자리에서 「대화는 트랜스크립트로 복원했어요」를 측정 없이 약속했고, 확인 못 함을
+  //   「저장을 못 했어요」로 단정했다(VM r3 행정부 부서장 = 실제로는 새 대화로 시작한 자리). 이 알림은 재시작 **전**
+  //   저장 확인 사실만 말한다 — 복원 결과는 재시작 뒤 실측 알림(continuityNotice)의 몫.
+  it("미확인 자리가 있으면 '확인하지 못했다'는 사실만 말한다(복원 약속·단정·묻기 0)", () => {
     const n = drainVerifyNotice({
       all_saved: false,
       total: 3,
       summary: { saved: 1 },
-      nodes: [node("master", "saved"), node("worker", "timeout"), node("cso", "delivery_failed")],
+      nodes: [
+        node("master", "saved"),
+        { ...node("master", "timeout"), department: "행정부" },
+        node("cso", "delivery_failed"),
+      ],
       max_wait_secs: 40,
     });
     expect(n).not.toBeNull();
     expect(n!.body).toContain("자리 2개");
-    expect(n!.body).toContain("복원");
+    expect(n!.body).toContain("확인하지 못했어요");
     expect(n!.body).toContain("최대 40초");
+    expect(n!.body).not.toContain("복원");
+    expect(n!.body).not.toContain("트랜스크립트");
+    expect(n!.title).not.toContain("못 했어요");
+    expect(n!.title).not.toContain("완료");
     // ★확인 창을 없앴으므로 질문 문구가 남아 있으면 안 된다(회귀 가드).
     expect(n!.body).not.toContain("하시겠습니까");
     expect(n!.title).not.toContain("하시겠습니까");
-    // 자리별 사유가 사람 말로 붙는다.
-    expect(n!.body).toContain("마커 미확인(시간초과)");
-    expect(n!.body).toContain("입력 미제출 실측");
+    // 자리별 사유가 사람 말로 붙는다(괄호 부기·재시작 전 자리 번호 없음).
+    expect(n!.body).toContain("행정부 master — 제시간에 저장을 확인하지 못함");
+    expect(n!.body).toContain("저장 지시가 전달되지 않음");
+    expect(/[()]/.test(n!.body)).toBe(false);
+    expect(n!.body).not.toContain("surface:");
   });
   it("all_saved=false 인데 나열할 노드가 없으면(0노드) 알리지 않는다", () => {
     expect(drainVerifyNotice({ all_saved: false, total: 0, summary: { saved: 0 }, nodes: [] })).toBeNull();

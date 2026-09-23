@@ -1530,12 +1530,18 @@ def main():
             takeover = True
     if row is None:
         launched_at = time.time()
-        cmd = ["cys", "launch-agent", "--role", a.role, "--agent", a.agent]
+        # ★v115r5-t1 T3: 저장된 대화가 있으면 이어서 기동(--resume-saved · 없거나 못 이으면 cys 가 새 대화).
+        #   종전엔 핀 없이 새 대화로 떠서 ↻ 뒤 승계 좌석(부서장)의 대화가 끊겼다(VM r3 · phoenix fork).
+        cmd = ["cys", "launch-agent", "--role", a.role, "--agent", a.agent, "--resume-saved"]
         if a.cwd:
             cmd += ["--cwd", a.cwd]
         launch_cap = deadline_capped(budget("BOOT_NODE_LAUNCH_SUBPROC_S", 80))
         heartbeat("launch", "launch-agent 기동(상한 %.0fs)" % launch_cap)
-        rc, _, _ = run(cmd, timeout=launch_cap)
+        rc, _, err = run(cmd, timeout=launch_cap)
+        if rc == 2 and "--resume-saved" in (err or ""):
+            # 플래그를 모르는 옛 cys(인자 해석 거부 · 좌석 생성 전) — 종전 기동 그대로 1회.
+            emit("launch", "cys 가 --resume-saved 를 모름 — 종전 기동으로 재시도")
+            rc, _, _ = run([c for c in cmd if c != "--resume-saved"], timeout=launch_cap)
         emit("launch", "launch-agent rc=%d (실패 텍스트 무시·cys list 재조회)" % rc)
         for _ in range(3):
             time.sleep(2)

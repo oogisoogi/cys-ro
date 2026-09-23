@@ -705,6 +705,10 @@ enum Command {
         agent: String,
         #[arg(long)]
         cwd: Option<String>,
+        /// 저장 topology 에 이 역할의 대화 핀(session_id)이 있고 그 세션 파일이 실재하면 그 대화를
+        /// 이어서(restore 와 같은 resume 경로) 기동한다. 핀이 없거나 이을 수 없으면 종전과 같은 새 기동.
+        #[arg(long = "resume-saved")]
+        resume_saved: bool,
     },
     /// Boot the standard node set — 설치된 CLI만 자동 감지·기동·지침 주입. **기본 함대 = CSO + worker(claude)**. 리뷰어는 온디맨드(javis_orchestra.py boot-reviewers --spawn)
     Boot {
@@ -3715,7 +3719,13 @@ fn run(command: Command) -> i32 {
             return run_claim_role(&role, surface, takeover_empty_seat, ClaimOpts::cli())
         }
 
-        Command::LaunchAgent { role, agent, cwd } => return run_launch_agent(&role, &agent, cwd),
+        Command::LaunchAgent { role, agent, cwd, resume_saved } => {
+            return if resume_saved {
+                run_launch_agent_resume_saved(&role, &agent, cwd)
+            } else {
+                run_launch_agent(&role, &agent, cwd)
+            };
+        }
         Command::Boot { cwd, json } => return run_boot(cwd, json),
         Command::AgentDetect { json } => return run_agent_detect(json),
         Command::TodoPath { role, emit_decl } => return run_todo_path(role, emit_decl),
@@ -12974,6 +12984,77 @@ fn run_launch_agent(role: &str, agent: &str, cwd: Option<String>) -> i32 {
     run_launch_agent_opts(role, agent, cwd, false, None, false, None)
 }
 
+/// ★v115r5-t1 T3: 저장 topology 에서 이 역할의 대화 핀을 고른다(순수) — `(session_id, config_dir)`.
+/// 원천은 `run_restore` 와 같은 `saved` 이므로 순환(/clear) 뒤 핀 추종(등록 경로 교체 · D2 R2)도 같다.
+/// 핀을 주지 않는 경우: 묘비 역할(의도 삭제 — 옛 대화 부활 금지) · 저장 agent 가 다름(다른 CLI 의
+/// 세션을 이 CLI 로 열지 않는다) · session_id 부재·빈 값.
+fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Option<String>)> {
+    let tombstoned = topo["tombstones"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|t| t.as_str() == Some(role)));
+    if tombstoned {
+        return None;
+    }
+    let entry = topo["saved"]
+        .as_array()?
+        .iter()
+        .find(|e| e["role"].as_str() == Some(role))?;
+    if entry["agent"].as_str() != Some(agent) {
+        return None;
+    }
+    let sid = entry["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty())?;
+    let cfg = entry["claude_config_dir"].as_str().map(String::from);
+    Some((sid.to_string(), cfg))
+}
+
+/// ★v115r5-t1 T3: `launch-agent --resume-saved` — 승계·편성 기동(javis_boot_node)이 저장된 대화를 잇는다.
+/// 종전엔 이 경로가 핀 없이 새 대화로 떠서, ↻ 뒤 콜드부트 복원(--resume)보다 먼저 앉으면 그 역할의
+/// 대화가 끊겼다(VM r3 · 부서장 2자리 · phoenix unverified(fork)). 이을 수 있을 때만 restore 와 같은
+/// 인자(resume·핀·계정 dir·restore 글)로 기동하고, 못 잇으면 **종전과 바이트 같은** 새 기동이다 —
+/// resume 을 켠 채 세션 파일이 없으면 짧은 복귀 글만 받은 새 대화가 되므로(절대지침 누락) 미리 잰다.
+fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -> i32 {
+    let cwd = cwd
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .map(sanitize_launch_cwd);
+    let pin = request("system.topology", json!({}))
+        .ok()
+        .and_then(|t| saved_resume_pin(&t, role, agent));
+    let Some((sid, cfg)) = pin else {
+        eprintln!("[launch-agent] --resume-saved: {role} 저장 대화 없음 — 새 대화로 기동");
+        return run_launch_agent(role, agent, cwd);
+    };
+    let resumable = load_agent_spec(agent)
+        .ok()
+        .and_then(|spec| spec["resume_arg"].as_str().map(String::from))
+        .and_then(|arg| {
+            resolve_resume_suffix(agent, &arg, Some(&sid), cfg.as_deref(), cwd.as_deref(), "--continue")
+        })
+        .is_some_and(|s| s.contains(sid.as_str()));
+    if !resumable {
+        eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({sid})를 이을 수 없음 — 새 대화로 기동");
+        return run_launch_agent(role, agent, cwd);
+    }
+    eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({sid})를 이어서 기동");
+    run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg)
+}
+
+/// ★v115r5-t1 T1①: 이 역할이 지금 **실제로 앉은 좌석**(occupied)에 있는가(순수).
+/// `run_restore` 는 시작 때 한 번 찍은 live 로 판단하는데, 복원 경로는 설계상 겹친다(콜드부트
+/// phoenix · 사이드카 · 편성). 그 사이 다른 경로가 역할을 세우면 이 경로의 기동은 claim_denied
+/// (held by live surface)로 끝나 종전엔 「실패」로 세졌다 → 앱 「부서 복원 실패」 거짓 경보.
+/// 복원의 목적(역할이 앉았다)은 이뤄졌으므로 건너뜀으로 센다. unknown·empty 는 앉았다고 보지 않는다.
+fn role_held_by_live_seat(topo: &Value, role: &str) -> bool {
+    topo["live"].as_array().is_some_and(|a| {
+        a.iter()
+            .any(|e| e["role"].as_str() == Some(role) && e["seat"].as_str() == Some("occupied"))
+    })
+}
+
 /// 절대지침(앵커1-b): 탭(타이틀) = 워크플로우 폴더명 — "{role}-{agent} · {폴더}".
 /// 폴더를 알 수 없으면(루트 등) 역할-에이전트만. 순수 함수 — 회귀 핀.
 /// `/`·`\`를 모두 구분자로 취급해 플랫폼과 무관하게 마지막 컴포넌트를 폴더명으로 쓴다
@@ -15893,6 +15974,10 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                         //   (종전 이 자리 = 주입 뒤라, 멱등 재반환으로 같은 자리를 받은 겹침 경로를 못 막았다).
                     }
                 }
+            } else if request("system.topology", json!({}))
+                .is_ok_and(|t| role_held_by_live_seat(&t, role))
+            {
+                println!("· {role}: 다른 복원 경로가 먼저 세움 — 건너뜀");
             } else {
                 fail += 1;
                 println!("· {role}: 기동 실패 — 나머지 역할 계속 진행");

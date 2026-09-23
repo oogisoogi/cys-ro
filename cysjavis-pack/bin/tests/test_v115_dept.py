@@ -640,5 +640,45 @@ class B3DrainIssuer(unittest.TestCase):
             self.assertIn(self.NEW, t, "%s 에 새 문구 없음" % f)
 
 
+class _OldCysNoResumeSaved(_FakeCys):
+    """플래그를 모르는 옛 cys 흉내 — --resume-saved 가 붙으면 인자 해석 거부(rc 2 · 좌석 생성 0)."""
+
+    def __call__(self, args, timeout=15):
+        if args[1:2] == ["launch-agent"] and "--resume-saved" in args:
+            self.calls.append(list(args))
+            return 2, "", "error: unexpected argument '--resume-saved' found\n"
+        return super().__call__(args, timeout)
+
+
+class V115r5T3BootNodeResumesSaved(A2B8BootNodeRun):
+    """v115r5-t1 T3: ↻ 뒤 승계 좌석(부서장)이 저장된 대화를 잇도록 boot_node 가 --resume-saved 로 기동한다.
+    VM r3: 편성 → boot_node → launch-agent 가 핀 없이 먼저 앉아 dept-1·dept-3 부서장이 새 대화(phoenix fork)."""
+
+    def test_takeover_launch_asks_for_saved_conversation(self):
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+        rc, out, fake = self._run(rows, "master", self.env)
+        launches = [c for c in fake.calls if c[1:2] == ["launch-agent"]]
+        self.assertEqual(len(launches), 1, fake.calls)
+        self.assertIn("--resume-saved", launches[0], "승계 기동이 저장 대화를 묻지 않는다(T3 재발)")
+
+    def test_old_cys_without_flag_falls_back_to_plain_launch_once(self):
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+        fake = _OldCysNoResumeSaved(rows)
+        saved = _FakeCys
+        globals()["_FakeCys"] = lambda r: fake   # _run 이 이 이름으로 대역을 만든다
+        try:
+            rc, out, fake2 = self._run(rows, "master", self.env)
+        finally:
+            globals()["_FakeCys"] = saved
+        launches = [c for c in fake.calls if c[1:2] == ["launch-agent"]]
+        self.assertEqual(len(launches), 2, fake.calls)
+        self.assertIn("--resume-saved", launches[0])
+        self.assertNotIn("--resume-saved", launches[1], "재시도에 모르는 플래그를 또 붙였다")
+        self.assertEqual([r["role"] for r in fake.rows if r["role"] == "master"], ["master"],
+                         "재시도 뒤에도 부서장 좌석이 서지 않았다")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

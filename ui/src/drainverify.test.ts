@@ -8,6 +8,7 @@ import {
   classifyDrainVerifyFallback,
   drainVerifyFallbackToast,
   drainVerifyNotice,
+  continuityNotice,
   mergeRetry,
   restoringRetryKeys,
 } from "./drainverify";
@@ -86,6 +87,48 @@ describe("drainVerifyNotice — 확인 창 폐기 후의 사후 알림 1줄", ()
   });
   it("all_saved=false 인데 나열할 노드가 없으면(0노드) 알리지 않는다", () => {
     expect(drainVerifyNotice({ all_saved: false, total: 0, summary: { saved: 0 }, nodes: [] })).toBeNull();
+  });
+});
+
+// ★v115r5-t1 T1③: 「대화를 이어서 열었다」는 측정한 자리에만 — 새 대화 자리가 있을 때만 알린다.
+describe("continuityNotice — 재시작 뒤 대화 이어짐(실측 파생)", () => {
+  it("전원 이어짐이면 조용하다", () => {
+    expect(continuityNotice({ fresh: [], unsettled: [], continued: 12 })).toBeNull();
+  });
+  it("판정 전(unsettled) 자리는 어느 쪽으로도 말하지 않는다", () => {
+    expect(continuityNotice({ fresh: [], unsettled: [{ place: "행정부", role: "master" }], continued: 11 })).toBeNull();
+    expect(continuityNotice(null)).toBeNull();
+  });
+  it("새 대화로 시작한 자리를 쉬운 말로 알리고 할 일은 만들지 않는다", () => {
+    const n = continuityNotice({
+      fresh: [
+        { place: "행정부", role: "master" },
+        { place: "", role: "cso" },
+      ],
+      unsettled: [{ place: "교육부", role: "worker" }],
+      continued: 9,
+    });
+    expect(n).not.toBeNull();
+    expect(n!.body).toContain("행정부 master · cso 자리는 이전 대화를 잇지 못해 새 대화로 시작했어요");
+    expect(n!.body).not.toContain("교육부");
+    expect(/[()]/.test(n!.body)).toBe(false);
+    expect(n!.body).not.toContain("주세요");
+    expect(n!.title).not.toContain("실패");
+  });
+});
+
+// ★v115r5-t1 배선: ↻ 흐름이 부서 복원 사정 문안을 싣고, 끝난 뒤 대화 이어짐 실측 알림을 띄운다.
+describe("manualRestartAllDaemons — 결과 알림은 실측에서 파생", () => {
+  it("부서 실패 경보에 판정 층 문안(restore_note)을 싣고 이어짐 실측을 부른다", () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const r = src.slice(src.indexOf("async function restartAllDaemons("), src.indexOf("function restartResultToast("));
+    expect(r).toContain("restoreNotes.push(info.restore_note)");
+    const i = src.indexOf("async function manualRestartAllDaemons()");
+    const body = src.slice(i, src.indexOf("\n}\n", i));
+    expect(body.match(/void restartContinuityToast\(restartStartedAt\)/g)?.length).toBe(2);
+    expect(body.indexOf("const restartStartedAt")).toBeLessThan(body.indexOf('invoke("drain_verify"'));
+    const t = src.slice(src.indexOf("async function restartContinuityToast("));
+    expect(t.slice(0, t.indexOf("\n}\n"))).toContain('invoke("restart_continuity"');
   });
 });
 

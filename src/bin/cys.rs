@@ -20939,6 +20939,65 @@ mod tests {
         assert!(!is_home_like_cwd("/base/homex", home));
     }
 
+    // ★v115r5-t1 T3: 승계·편성 기동이 저장 대화를 잇는 핀 선택(VM r3 부서장 fork 재발 방지).
+    #[test]
+    fn v115r5_saved_resume_pin_table() {
+        let topo = json!({
+            "saved": [
+                {"role": "master", "agent": "claude", "session_id": "s-m", "claude_config_dir": "/cfg"},
+                {"role": "cso", "agent": "claude", "session_id": "  "},
+                {"role": "worker", "agent": "codex", "session_id": "s-w"},
+                {"role": "reviewer", "agent": "claude"}
+            ],
+            "tombstones": ["gone"],
+            "live": []
+        });
+        assert_eq!(
+            saved_resume_pin(&topo, "master", "claude"),
+            Some(("s-m".to_string(), Some("/cfg".to_string()))),
+            "저장 핀이 있으면 그 대화를 잇는다"
+        );
+        assert_eq!(saved_resume_pin(&topo, "cso", "claude"), None, "빈 핀은 잇지 않는다");
+        assert_eq!(saved_resume_pin(&topo, "worker", "claude"), None, "다른 CLI 의 세션을 열지 않는다");
+        assert_eq!(saved_resume_pin(&topo, "reviewer", "claude"), None, "핀 없음 = 새 대화");
+        assert_eq!(saved_resume_pin(&topo, "nobody", "claude"), None);
+        let tomb = json!({"saved": [{"role": "gone", "agent": "claude", "session_id": "s-g"}],
+                          "tombstones": ["gone"]});
+        assert_eq!(saved_resume_pin(&tomb, "gone", "claude"), None, "묘비 역할의 옛 대화를 되살렸다");
+    }
+
+    // ★v115r5-t1 T1①: 겹친 복원 경로가 먼저 세운 역할은 실패가 아니다(앉은 좌석만 인정).
+    #[test]
+    fn v115r5_role_held_by_live_seat_table() {
+        let topo = json!({"live": [
+            {"role": "master", "seat": "occupied"},
+            {"role": "cso", "seat": "empty"},
+            {"role": "worker", "seat": "unknown"}
+        ]});
+        assert!(role_held_by_live_seat(&topo, "master"));
+        assert!(!role_held_by_live_seat(&topo, "cso"), "빈 셸을 앉은 좌석으로 셌다");
+        assert!(!role_held_by_live_seat(&topo, "worker"), "판정 미도달을 앉은 좌석으로 셌다");
+        assert!(!role_held_by_live_seat(&topo, "reviewer"));
+        assert!(!role_held_by_live_seat(&json!({}), "master"));
+    }
+
+    // ★v115r5-t1 T1①·T3 배선: run_restore 의 기동 실패 분기가 재실측을 거치고, --resume-saved 가
+    //   이을 수 있을 때만 restore 와 같은 resume 인자로 기동한다.
+    #[test]
+    fn v115r5_restore_and_resume_saved_wiring() {
+        let src = include_str!("cys.rs");
+        let body = &src[src.find("fn run_restore(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let fail_at = body.find("println!(\"· {role}: 기동 실패 — 나머지 역할 계속 진행\");").unwrap();
+        let held_at = body.find("role_held_by_live_seat(&t, role)").expect("재실측 분기 없음");
+        assert!(held_at < fail_at, "재실측이 실패 계수보다 뒤에 있다");
+        let rs = &src[src.find("fn run_launch_agent_resume_saved(").unwrap()..];
+        let rs = &rs[..rs.find("\n}\n").unwrap()];
+        assert!(rs.contains("run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg)"));
+        assert!(rs.contains(".is_some_and(|s| s.contains(sid.as_str()))"), "이을 수 있는지 미리 재지 않는다");
+        assert_eq!(rs.matches("return run_launch_agent(role, agent, cwd);").count(), 2, "못 이을 때 종전 기동이 아니다");
+    }
+
     // ★항목별 restore override 진리표(2R codex #2) — 지켜야 할 값과 고쳐야 할 값.
     #[test]
     fn restore_target_cwd_truth_table() {

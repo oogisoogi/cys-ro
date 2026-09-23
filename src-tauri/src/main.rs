@@ -7118,6 +7118,44 @@ mod tests {
         assert!(restore_note("본부", s(2, 0, 1)).contains("확인을 한 번 눌러 주세요"), "관문 문구");
     }
 
+    // ── TICKET=v115r5-t1 ↻ 결과 알림 참말화 ──
+    /// T1①: 부서 교대 경로가 본부와 **같은** 판정 층을 거친다(사이드카 종료 코드 단독 판정 금지 · 복제 금지).
+    #[test]
+    fn v115r5_dept_rotate_uses_shared_restore_judgment() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("async fn rotate_dept_daemon(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.contains("run_sidecar_restore_judged(Some(sock.clone())).await"), "부서 교대가 판정 층을 안 거친다");
+        assert!(body.contains("restore_note(&place, summary)"), "부서 실패 사정 문안이 없다");
+        assert!(!prod.contains("async fn run_sidecar_restore(socket"), "종료 코드 단독 판정 함수가 남았다");
+        assert_eq!(prod.matches("tokio::time::sleep(RESTORE_RETRY_WAIT)").count(), 1, "재실측 규칙이 두 벌이다");
+        assert!(restore_note("행정부", Some(RestoreSummary { ok: 0, fail: 1, gated: 0 }))
+            .starts_with("행정부 자리 1곳을 세우지 못했습니다"));
+    }
+
+    /// T1③: 대화 이어짐은 phoenix 이번 회차 대조로만 — 이어짐/새 대화/모름 진리표.
+    #[test]
+    fn v115r5_phoenix_continuity_table() {
+        let since = 1000.0;
+        let role = |outcome: &str, reason: &str, ts: f64| {
+            json!({"outcome": outcome, "verify_reason": reason, "stages": {"verify": {"ts": ts}}})
+        };
+        let j = json!({"roles": {
+            "a_cont": role("verified", "세션 일치", 1001.0),
+            "b_fork": role("unverified", "fork(관측 세션≠핀 — 진짜 오복원 의심)", 1002.0),
+            "c_fresh": role("fresh", "★독약 세션 fresh 강등", 1003.0),
+            "d_trans": role("unverified", "transient(세션 재핀 전 — grace 소진·미관측)", 1004.0),
+            "e_old": role("verified", "세션 일치", 999.0),
+            "f_nopin": role("unverified", "핀 부재(expected 미기록)", 1005.0),
+            "g_nots": {"outcome": "verified", "verify_reason": "세션 일치"}
+        }});
+        let c = phoenix_continuity(&j, since);
+        assert_eq!(c.continued, vec!["a_cont"]);
+        assert_eq!(c.fresh, vec!["b_fork", "c_fresh"], "새 대화를 이어짐·모름으로 셌다");
+        assert_eq!(c.unsettled, vec!["d_trans", "e_old", "f_nopin", "g_nots"], "측정 안 된 자리를 판정했다");
+        assert_eq!(phoenix_continuity(&Value::Null, since), Continuity::default());
+    }
 
     use super::*;
 

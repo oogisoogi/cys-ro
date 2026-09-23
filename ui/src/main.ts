@@ -26,6 +26,7 @@ import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } fr
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, daemonInfoTitle, holdReasonText } from "./headerlabels";
 import { exitedSweepTargets, armSweep, sweepScopeFor, settleSweep, type SweepArm } from "./exitedsweep";
 import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
+import { hqWorkspaceId, wsDisplayName, renamedName } from "./wsname";
 import {
   deptPlaceholderLabel,
   deptSlugOfSocket,
@@ -2642,6 +2643,12 @@ async function refreshPaneTitles() {
         }
       }
       const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
+      // (D4 #4) 기본 소켓이면 「본부」 판정 재료를 갱신 — 판정이 바뀌면 탭만 다시 그린다(창 배치는 무접촉).
+      if ((sk ?? undefined) === undefined) {
+        const before = hqMasterSids ? [...hqMasterSids].sort().join(",") : null;
+        hqMasterSids = masterSids;
+        if ([...masterSids].sort().join(",") !== before) renderWsTabs();
+      }
       // ★B16(오너 확정 2026-09-19 16:1x) — 본부 역할이 **cys 좌석으로 있는 기기**에서는 역할 배치를 쓴다:
       //   좌열 master(위):cso(아래)=4:1 · 우열 worker. 참가자 기기(cysr)가 그 경우다.
       //   전제가 없는 기기(우리 개발 기기 — master·cso 는 cmux 페인)는 종전 adoptLayout 그대로다(무회귀).
@@ -3541,7 +3548,7 @@ async function transferPaneToWs(sid: number, destWsId: number) {
   if (focusedSid === sid) focusedSid = collectSids(srcWs.tree)[0] ?? null;
   render();
   if (focusedSid != null) setFocus(focusedSid);
-  toast("feed", "pane 전출 완료", `→ ${destWs.name || UNTITLED}`);
+  toast("feed", "pane 전출 완료", `→ ${wsLabel(destWs)}`);
 }
 
 // F6-2: 크로스 부서 전출 — 라이브 프로세스는 데몬 간 이주가 물리적으로 불가하므로,
@@ -3688,7 +3695,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
     if (srcWs.tree) srcWs.tree = replaceNode(srcWs.tree, sid, () => null);
     if (focusedSid === sid) focusedSid = collectSids(current()?.tree ?? null)[0] ?? null;
     render();
-    toast("feed", "부서 전출 완료", `→ ${destWs.name || UNTITLED} (surface:${newSid})`);
+    toast("feed", "부서 전출 완료", `→ ${wsLabel(destWs)} (surface:${newSid})`);
   } catch (e) {
     toast("watchdog", "전출 실패", `${e} — 원본 pane은 보존됩니다`);
   } finally {
@@ -4183,7 +4190,7 @@ function buildTab(ws: Workspace): HTMLElement {
   titleRow.className = "ws-title-row";
   const label = document.createElement("span");
   label.className = "ws-name";
-  label.textContent = deptPlaceholderLabel(ws); // WP-10: pending이면 "부서 제작 중…" (멈춘 줄 오해 방지)
+  label.textContent = deptPlaceholderLabel({ pending: ws.pending, name: wsLabel(ws) }); // (D4 #4) 보여 주는 이름 · WP-10: pending이면 "부서 제작 중…" (멈춘 줄 오해 방지)
   const close = document.createElement("span");
   close.className = "ws-close";
   close.textContent = "×";
@@ -4249,8 +4256,10 @@ function buildTab(ws: Workspace): HTMLElement {
     }
     startWsDrag(e, ws.id); // 4px 임계 초과 시에만 재정렬 드래그(단순 클릭은 위 전환만)
   });
+  let shownBeforeRename = "";
   const startRename = () => {
     // WKWebView에서 prompt()는 무동작 — 인라인 편집
+    shownBeforeRename = (label.textContent || "").trim();
     label.contentEditable = "true";
     label.focus();
     const sel = window.getSelection();
@@ -4265,7 +4274,8 @@ function buildTab(ws: Workspace): HTMLElement {
       label.removeEventListener("keydown", onKey); // rename마다 리스너 누적 방지
       label.contentEditable = "false";
       const name = (label.textContent || "").trim();
-      ws.name = name || UNTITLED; // 이름을 지우면 미정 표시로 복귀
+      // 이름을 지우면 미정 표시로 복귀 · (D4 #4) 자동 이름(본부·새 화면)을 그대로 두면 저장값도 미정 그대로
+      ws.name = renamedName(name, shownBeforeRename, ws.name, UNTITLED);
       render();
     };
     label.addEventListener("blur", commit, { once: true });
@@ -4285,7 +4295,7 @@ function buildTab(ws: Workspace): HTMLElement {
     // ★완전 삭제 확인(오너 2026-07-15 — 발견 불가 UX 수리): 숨은 2-click 무장 패턴을 설명형
     // 확인 다이얼로그로 교체(WKWebView confirm() 무동작 → 기존 confirmModal 재사용). 초보자가
     // "무엇이 어떻게 삭제되는지" 읽고 결정한다. pane 개별 ×(저위험)는 종전 2-click 유지.
-    const wsName = ws.name || UNTITLED;
+    const wsName = wsLabel(ws); // (D4 #4) 보여 주는 이름과 같은 말로 묻는다
     const ok = await confirmModal(
       ws.socket ? `부서 "${wsName}" 완전 삭제` : `워크스페이스 "${wsName}" 완전 삭제`,
       (ws.socket
@@ -4415,7 +4425,7 @@ function wsGroupCtxItems(ws: Workspace): { label: string; action: () => void }[]
     items.push({
       label: "새 그룹으로 묶기",
       action: () => {
-        const g: GroupMeta = { id: groupCounter++, name: ws.name || "그룹", collapsed: false, pinned: false };
+        const g: GroupMeta = { id: groupCounter++, name: wsLabel(ws) || "그룹", collapsed: false, pinned: false }; // (D4 #4) 「non title」 그룹 이름 방지
         groups.push(g);
         ws.groupId = g.id;
         render();
@@ -4557,6 +4567,17 @@ async function confirmDeleteGroup(g: GroupMeta) {
 const UNTITLED = "non title";
 /** 끝난 창 제목 꼬리표(D4 #13 · 종전 영어 exited 꼬리표). 시험·헤드리스가 이 상수 하나를 본다. */
 const EXITED_TITLE_SUFFIX = " (끝남)";
+// ★(v116-ui-close · D4 #4 · master 판정 A) 기본 데몬의 마스터 좌석 번호 — 「본부」 탭 판정 재료. refreshPaneTitles 가
+//   기본 소켓 목록을 받을 때마다 갱신한다. null = 아직 모름(→ 첫째 기본 데몬 탭으로 폴백).
+let hqMasterSids: Set<number> | null = null;
+/** 탭을 **보여 줄** 이름 — 저장값(ws.name)은 건드리지 않는다. 판정 = wsname.ts. */
+function wsLabel(ws: Workspace): string {
+  const hq = hqWorkspaceId(
+    workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: w.pending, sids: collectSids(w.tree) })),
+    hqMasterSids,
+  );
+  return wsDisplayName(ws.name, UNTITLED, ws.id === hq);
+}
 
 // 커스텀 컨텍스트 메뉴 (WKWebView 기본 메뉴 대체) — 싱글톤, 바깥 클릭·Esc로 닫힘.
 function showCtxMenu(
@@ -6952,7 +6973,7 @@ async function purgeDept(ws: Workspace) {
     toast("watchdog", "삭제 프리뷰 실패", `${e} — 삭제를 중단합니다. 다시 시도해 주세요.`);
     return;
   }
-  const nm = info.name || ws.name || UNTITLED;
+  const nm = info.name || wsLabel(ws);
   const bytes = Number(info.size_bytes || 0);
   const sizeHuman =
     bytes >= 1e9
@@ -8679,9 +8700,9 @@ document.getElementById("btn-dept-master")?.addEventListener("click", async () =
   }
   try {
     await invoke("start_dept_master", { socket: ws.socket });
-    toast("feed", "▶ 부서장 시작", `${ws.name ?? "부서"}에 마스터(부서장) 노드를 기동했습니다 — 잠시 후 pane이 자동으로 나타납니다.`);
+    toast("feed", "▶ 부서장 시작", `${wsLabel(ws)}에 마스터(부서장) 노드를 기동했습니다 — 잠시 후 pane이 자동으로 나타납니다.`);
   } catch (e) {
-    toast("health", "부서장 시작 실패", masterDeniedMsg(e, `이 부서(${ws.name ?? ws.socket})`));
+    toast("health", "부서장 시작 실패", masterDeniedMsg(e, `이 부서(${wsLabel(ws)})`));
   }
 });
 

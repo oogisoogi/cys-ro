@@ -25,10 +25,22 @@ export const FOLD_HINT_BODY = "더 위의 내용은 클로드가 접어 두었�
 
 /**
  * 「맨 위 도달」 안내를 지금 띄울까. 앱 세션당 1회.
+ * ★(v116-ui-close · D4 #6) 올라갈 **위 내용이 실제로 있었을 때만** — `baseY > 0`(스크롤된 줄이 있다) · 일반 화면(normal)
+ *   버퍼. 종전엔 `viewportY <= 0` 만 봐서, 스크롤백이 없는 짧은 셸·vim·less 창에서 **첫 위 휠 한 번**에 곧바로
+ *   「클로드가 접어 두었습니다」가 떴다(클로드와 무관한 창에서도) — 그리고 세션당 1회 몫을 써 버려, 정작 필요한
+ *   때(긴 클로드 출력의 맨 위)엔 안 떴고 대체 화면 전용 안내(altscroll)의 자리도 먼저 차지했다.
  * @param alreadyShown 이 세션에서 이미 띄웠는가
  * @param deltaY 이 휠의 deltaY
  * @param viewportY xterm 이 휠을 처리한 뒤의 뷰포트 첫 줄(0 = 스크롤백 맨 위)
+ * @param baseY 스크롤백 줄 수(0 = 위로 올라갈 내용 없음)
+ * @param bufferType 활성 버퍼("normal" | "alternate") — 대체 화면은 altscroll 안내 소관
  */
-export function shouldShowFoldHint(alreadyShown: boolean, deltaY: number, viewportY: number): boolean {
-  return !alreadyShown && deltaY < 0 && viewportY <= 0;
+export function shouldShowFoldHint(
+  alreadyShown: boolean,
+  deltaY: number,
+  viewportY: number,
+  baseY: number,
+  bufferType: string,
+): boolean {
+  return !alreadyShown && deltaY < 0 && viewportY <= 0 && baseY > 0 && bufferType === "normal";
 }

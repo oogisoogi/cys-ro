@@ -2891,7 +2891,8 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
       requestAnimationFrame(() => {
         follow = nextFollow(follow, dy, atBottom(), false);
         // B1 ②: 맨 위에 닿으면 접힌 출력 안내 1회(앱 세션당)
-        if (shouldShowFoldHint(foldHintShown, dy, term.buffer.active.viewportY)) {
+        const ab = term.buffer.active;
+        if (shouldShowFoldHint(foldHintShown, dy, ab.viewportY, ab.baseY, ab.type)) {
           foldHintShown = true;
           toast("feed", FOLD_HINT_TITLE, FOLD_HINT_BODY);
         }

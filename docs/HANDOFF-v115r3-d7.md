@@ -182,3 +182,12 @@ CI 러너엔 `cys` 가 없어 이 경로가 안 돌고(=CI 초록), 로컬에서
 | gen --check | 0 | 1 | GREEN |
 | 전체 건강 검체(직렬) | 0 | 536 | pass 149 · skip 1 |
 (10:12 에 02ffad23 로 시작한 1차 실행은 도중 시험 파일 수정·커밋으로 트리가 바뀌어 중단·폐기 — 위 표는 eda4f205 단일 트리 값.)
+
+## 10. r4(master#5008bf71 · agy 3R REJECT — 2R 4건 CLOSED · 신규 2건)
+| # | master 판정 | 조치 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| 3R#2 P3 queue.clear ↔ deliver_queued 경쟁(clear 가 지운 직후 옛 머리로 mark) | 채택 | 47437b1c — deliver_queued 가 빈 큐면 continue 전에 queue_blocked=None(큐 락을 놓은 뒤 · 두 락 미결합) · clear 측 지움 존치 | `d7_empty_queue_tick_clears_stale_blocked_reason` · M1(틱 측 지움 삭제) KILLED |
+| 3R#1 P3 dept_name_from_socket 윈 rsplit | 기각 + 1줄 강화 | 47437b1c — 후행 `\`·`/` trim 뒤 마지막 성분 · 주석 「윈은 명명 파이프만」 | `d9_dept_name_from_socket_both_platforms` 에 후행 구분자 → Some("edu") · M2(trim 삭제) KILLED |
+| 3R#3·#4 | SAFE | 조치 0 | — |
+시험 커밋 = d246aa3d(제품·시험 분리). 전체 건강 검체(HEAD d246aa3d · 격리 env) = rc 0 · 451s · pass 149 · skip 1 · GREEN · dirty 0.
+표적 cysd 묶음 32건 중 적색 1 = 선재 간헐 reap 시험(§9 곁 · 기준선 동일).

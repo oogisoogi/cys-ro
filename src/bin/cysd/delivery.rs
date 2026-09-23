@@ -555,6 +555,35 @@ pub fn record_full(
     record_full_with(socket_path, surface_id, text, origin, from_surface, &Value::Null)
 }
 
+/// 괄호 붙여넣기(bracketed paste) 시작·끝 표지. 받는 TUI 가 입력 틀로 소비하므로 프롬프트에 남지 않는다.
+const PASTE_OPEN: &str = "\x1b[200~";
+const PASTE_CLOSE: &str = "\x1b[201~";
+
+/// ★v115r5-F1(VM r3 §2 곁 ⑴ — 부서장 첫 응답 「★이상징후(delivery_substring) … 연속 구간 583자」):
+/// 발신자가 씌운 괄호 붙여넣기 **바깥 틀 한 쌍**만 벗겨 「받는 쪽이 실제로 받는 글」로 기록한다.
+///
+/// 사고 기제: `cys launch-agent` 의 지시문 주입(`cys.rs::inject_text`·`inject_text_on`)은 본문을
+/// 클라이언트에서 `ESC[200~ … ESC[201~` 로 감싸 보내는데, 원장은 그 원문(틀 포함)을 해시했다.
+/// 받는 claude 에게 틀은 입력이 아니라 프롬프트엔 없다 → 전문 해시 불일치 · 첫 줄·끝 줄 조각 불일치 →
+/// 나머지 줄 조각만 맞아 가장 긴 한 줄이 「연속 구간」이 되고 `delivery_substring` 이상징후가 났다
+/// (판정 자체는 기계로 옳게 접혔고 거짓 경보만 났다). 데몬이 스스로 감싸는 큐 경로
+/// (`state.rs` Inject arm)는 이미 틀 없는 원문으로 기록하므로, 이 함수는 직접 경로를 **그 모양에 맞춘다**.
+///
+/// ★벗기는 조건(보수 · master#6094b7bd 조건 ①): 맨 앞 `ESC[200~` 1개와 맨 끝 `ESC[201~` 1개가
+/// **정확히 짝**이고 그 **안쪽에 두 표지 어느 것도 없을 때만**. 안쪽에 섞인 표지(붙여넣기 탈출 시도
+/// 모양)가 있으면 **아무것도 벗기지 않고 원문 그대로** 기록한다 — 받는 쪽이 실제로 무엇을 받을지
+/// 단정할 수 없는 모양이므로 불일치 → 이상징후가 나게 둔다. 판정 규칙(`mission_gate`·`javis_mission`)은
+/// 무변경이다(기록 정확도 수리이지 게이트 정책 변경이 아니다).
+fn strip_outer_paste_frame(text: &str) -> &str {
+    match text
+        .strip_prefix(PASTE_OPEN)
+        .and_then(|t| t.strip_suffix(PASTE_CLOSE))
+    {
+        Some(inner) if !inner.contains(PASTE_OPEN) && !inner.contains(PASTE_CLOSE) => inner,
+        _ => text,
+    }
+}
+
 /// `record_full` + 추가 사실 병합(계약은 `record_audited_with` doc 참조).
 pub fn record_full_with(
     socket_path: &Path,
@@ -570,6 +599,8 @@ pub fn record_full_with(
         parts_dropped: 0,
         parts_failed: None,
     };
+    // ★v115r5-F1: 틀 한 쌍만 벗긴 「받는 쪽이 받는 글」 — 전문·조각·preview·chars 가 모두 이것에서 나온다.
+    let text = strip_outer_paste_frame(text);
     let norm = normalize(text);
     if norm.is_empty() {
         // 공백뿐 — 프롬프트가 될 수 없다(훅도 빈 프롬프트를 판정하지 않는다)

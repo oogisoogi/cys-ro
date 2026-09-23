@@ -6774,13 +6774,15 @@ async function openPalette() {
 
 // ★확인 버튼 라벨 매개변수화(오너 2026-07-15 실보고): 업데이트 창용 "설치" 하드코딩이 모든
 // 확인 창에 노출(완전 삭제 창의 확인 버튼이 "설치"로 표시). 호출부가 동작 동사를 지정한다.
-/// `noLabel` — 거절 버튼 라벨(기본 "아니오"). 완료 보고형 모달에서 "아니오"는 의미가 어긋나
+/// `noLabel` — 거절 버튼 라벨(기본 "취소"). 완료 보고형 모달에서 "취소"는 의미가 어긋나
 /// "나중에" 처럼 상황에 맞는 말이 필요하다(P0-4 시뮬레이션 지적). 본문은 길어질 수 있어 스크롤한다.
+/// ★(v116-ui-close-r2 · D4 #20) 기본을 「아니오」→「취소」로 — 확인 버튼이 동작 동사(설치·교대·열기)라 짝은 「취소」이고,
+///   창 닫기(closeguard)·부서 만들기(deptconfirm)·경로 확인(clipath) 창이 이미 「취소」다. 한 앱 안에서 같은 뜻을 두 말로 쓰지 않는다.
 function confirmModal(
   title: string,
   body: string,
   yesLabel = "확인",
-  noLabel = "아니오",
+  noLabel = "취소",
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const ov = document.createElement("div");

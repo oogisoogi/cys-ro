@@ -3811,6 +3811,8 @@ mod auto_restore_tests {
 
     use super::{
         restore_retry_notice,
+        auto_restore_phase_str, auto_restore_will_retry, AUTO_RESTORE_DONE, AUTO_RESTORE_OFF,
+        AUTO_RESTORE_RETRY_WAIT, AUTO_RESTORE_RUNNING,
         bundled_python3, disk_fallback_verify, extract_phoenix_embed, phoenix_embed_files,
         phoenix_self_test,
     };
@@ -4046,6 +4048,23 @@ mod auto_restore_tests {
     }
 
     /// ★성공(0)은 재시도 없음 — 1회 실행.
+    #[test]
+    fn v116_auto_restore_phase_names_and_retry_rule_match_the_loop() {
+        // ★v116-pack(R-B1 P2-b): 편성(javis_formation.restore_settle_verdict)이 읽는 wire 값 — 이름이 바뀌면 편성이
+        //   「옛 데몬」 폴백으로 떨어진다(대기 90초). 이름을 여기서 고정한다.
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_OFF), "off");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RUNNING), "running");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RETRY_WAIT), "retry_wait");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_DONE), "done");
+        assert_eq!(auto_restore_phase_str(99), "off");
+        // retry_wait 를 찍는 판정 = 실제 재시도 규칙(loop_auto_restore_with)과 같은가 — 어긋나면 재시도 틈이 열린다.
+        for code in [Some(0), Some(5), Some(6), Some(1), Some(3), None] {
+            let attempts = loop_auto_restore_with(|_| code, std::time::Duration::from_millis(0));
+            assert_eq!(attempts == 2, auto_restore_will_retry(0, code), "code={code:?}");
+        }
+        assert!(!auto_restore_will_retry(1, Some(3)), "두 번째 실행 뒤엔 재시도 없음");
+    }
+
     /// ★v115-restore(A4): 복원 재시도 대기 중 master 공백 알림 — 첫 비0·master 부재일 때만 1회.
     #[test]
     fn v115_restore_retry_notice_only_when_master_missing_on_first_failure() {

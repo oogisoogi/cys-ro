@@ -4917,6 +4917,74 @@ fn run_schedule(action: ScheduleAction) -> i32 {
     }
 }
 
+/// ★dbg-D2 R12 ②(2026-09-23): 팩의 `javis_preflight.py --wire-seat` 를 1회 돌려 프로필 스킬 링크·
+/// appbuild 게이트 훅을 배선한다(cysd 좌석 exec 전 배선과 **같은 코드** — state.rs
+/// `wire_seat_profile_before_exec`). 대상 프로필 = 이 프로세스의 CLAUDE_CONFIG_DIR(없으면
+/// `resolve_claude_config_dir`) + preflight 발견 규약. 실패는 경고 1줄(팩 설치 결과를 뒤집지 않는다).
+/// `env` = 시험용 덮어쓰기(HOME 등) — 제품 호출은 빈 슬라이스.
+/// 반환 = 배선 자식의 종료 성공 여부(preflight 부재 = None).
+fn init_pack_wire_profile_skills(dir: &std::path::Path, env: &[(&str, String)]) -> Option<bool> {
+    let script = dir.join("bin").join("javis_preflight.py");
+    if !script.is_file() {
+        return None;
+    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let names: &[&str] = if cfg!(windows) { &["python3.exe", "python.exe"] } else { &["python3"] };
+    let python = cys::runtime_bin_dirs(&exe_dir)
+        .into_iter()
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "python3".to_string());
+    let ccd = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(cys::resolve_claude_config_dir);
+    let mut cmd = cys::python_command(&python);
+    cmd.arg(&script)
+        .arg("--wire-seat")
+        .env(cys::pack::ENV_PACK_DIR, dir)
+        .env("CLAUDE_CONFIG_DIR", ccd)
+        .env("CYS_NO_AUTOSTART", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cys::SpawnPolicy::spawn_policy(&mut cmd, cys::ChildLifetime::Attached);
+    let ok = match cmd.spawn() {
+        Err(e) => {
+            eprintln!("⚠ 프로필 스킬 링크 배선 실행 실패(팩 설치는 완료): {e}");
+            false
+        }
+        Ok(mut child) => {
+            let t0 = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(st)) => break st.success(),
+                    Ok(None) if t0.elapsed() >= std::time::Duration::from_secs(20) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break false;
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                    Err(_) => break false,
+                }
+            }
+        }
+    };
+    if ok {
+        println!("프로필 스킬 링크 배선: 완료(javis_preflight --wire-seat)");
+    } else {
+        eprintln!("⚠ 프로필 스킬 링크 배선 실패(팩 설치는 완료) — `javis_preflight.py --fix` 로 재시도");
+    }
+    Some(ok)
+}
+
 /// CYSJavis Pack 설치: 임베드된 템플릿을 ~/.cys/pack 에 기록 (기존 파일 보존이 기본).
 /// SessionStart hook 등록도 기본 동작이다(절대지침 — 터미널 작동 순간부터 활성화).
 /// --no-install-hook으로만 끌 수 있다.
@@ -4946,6 +5014,12 @@ fn run_init_pack(force: bool, no_install_hook: bool, claude_settings: Option<Str
         if force { ", forced" } else { "" }
     );
     println!("다음: cys launch-agent --role master --agent claude  (역할 지침 자동 주입)");
+    // ★dbg-D2 R12 ②: 팩 반영 직후 프로필 스킬 링크 배선(멱등) — 앱 갱신이 부르는
+    //   `init-pack --no-install-hook` 도 포함(훅이 아니라 스킬 링크라 억제 대상이 아니다). 종전엔 링크를
+    //   만드는 주체가 마스터 선언 체인의 preflight --fix 뿐이라, 선언 없이 resume 되는 갱신 사용자는
+    //   `Unknown skill` 이 영구히 남았다(981 VM 모의 · 링크 삭제 뒤 재부팅 4분 재생성 0).
+    #[cfg(not(test))]
+    init_pack_wire_profile_skills(&dir, &[]);
 
     if no_install_hook {
         return 0;
@@ -28960,4 +29034,5 @@ mod tests {
             "raw wins"
         );
     }
+
 }

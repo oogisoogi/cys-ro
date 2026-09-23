@@ -51,6 +51,8 @@ describe("D4 #8 ② 세기 머리 · ③ 사실 유지", () => {
     expect(all[4][1].body.startsWith("5번 창에서 15분 동안")).toBe(true);
     expect(all[5][1].title).toBe("💤 총괄 창이 조용합니다");
     expect(all[5][1].body.includes("5분 동안")).toBe(true);
+    expect(all[5][1].body.includes("알림 기준은 5분입니다")).toBe(true); // agy 3R MAJOR — 기준 시간 보존
+    expect(masterIdleCopy(1, "master", { idle_secs: 320 }).body.includes("알림 기준")).toBe(false);
   });
   it("⑤ 사망 = ❌ 유지 · 무엇이 멈췄나 + 안심 문장(창·폴더 그대로) + 행동", () => {
     const c = all[6][1];

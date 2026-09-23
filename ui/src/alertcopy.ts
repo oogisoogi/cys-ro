@@ -73,7 +73,11 @@ export function paneIdleCopy(no: number | null, p: Record<string, unknown>): Ale
 export function masterIdleCopy(no: number | null, role: string, p: Record<string, unknown>): AlertCopy {
   return {
     title: `💤 ${friendlyRole(role)} 창이 조용합니다`,
-    body: `${seatName(no, role)}에서 ${durText(p.idle_secs)} 동안 새 출력이 없습니다. 기다리는 중일 수 있으니 오래 이어지면 ${CHECK}`,
+    body:
+      `${seatName(no, role)}에서 ${durText(p.idle_secs)} 동안 새 출력이 없습니다` +
+      // (agy 3R MAJOR 수용) 종전 문구의 기준 시간(threshold_secs)을 잃지 않는다 — 사실 보존.
+      (p.threshold_secs != null ? `. 알림 기준은 ${durText(p.threshold_secs)}입니다` : "") +
+      `. 기다리는 중일 수 있으니 오래 이어지면 ${CHECK}`,
   };
 }
 

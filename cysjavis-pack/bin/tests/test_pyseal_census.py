@@ -232,6 +232,13 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   의존 산물이 남아 SEAL-1(.pyc 번들 오염) 과 같은 계급의 오염이 된다.
     "cysjavis-pack/bin/javis_phoenix_encoding_smoke.py",
     "cysjavis-pack/bin/tests/run_bootstrap_health.py",
+    # ★2026-09-23 등재(TICKET=v115r4-dbg · 유입 = 995 검출 시험 D11·F5). **봉인 점검 결과(등재 = 이 선언)**:
+    #   둘 다 **새 python 진입점이자 강제점이 맞다** — 자식(D11 = `sys.executable -c` 로 preflight C28 러너 ·
+    #   F5 = 셸 훅 `dept-chat-inject.sh` → 그 안의 python)을 띄우며 자식 env 에 `PYTHONDONTWRITEBYTECODE="1"`
+    #   을 직접 건다(D11 :58 · F5 :55). 자식이 팩 트리(D11 = 체크아웃 안 사본 팩 · F5 = 격리 팩)의 모듈을
+    #   import 하므로 봉인이 없으면 그 트리에 __pycache__ 가 남는다(SEAL-1 계급) — 니들 보유는 정상.
+    "cysjavis-pack/bin/tests/test_dbg_d3_d11_shared_profile_hooks.py",
+    "cysjavis-pack/bin/tests/test_dbg_d3_f5_dept_intent.py",
     # ★2026-09-04 W-A A2 등재 — 훅 런처/본체 분할 검체. **봉인 점검 결과(등재 = 이 선언)**:
     #   python 서브프로세스를 하나도 띄우지 않는다(스폰 대상은 전부 `sh`/`dash`/`bash` 런처다) —
     #   따라서 새 python 진입점도 강제점도 아니다. 니들을 보유하는 이유는 단 하나, 프리루드의

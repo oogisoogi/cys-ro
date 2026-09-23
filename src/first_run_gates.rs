@@ -162,7 +162,7 @@ fn is_env_assignment(tok: &str) -> bool {
 }
 
 /// 최소 셸 단어 분리 — 공백 구분 · `'…'`·`"…"` 묶음. 역슬래시는 **문자 그대로**다 — 윈도 경로
-/// (`C:\\Users\\a\\claude.exe`)를 이스케이프로 먹으면 basename 이 깨진다(판정에 필요한 것은 첫 실행 파일뿐).
+/// (`C:\\tools\\claude.exe`)를 이스케이프로 먹으면 basename 이 깨진다(판정에 필요한 것은 첫 실행 파일뿐).
 fn split_shell_words(s: &str) -> Vec<String> {
     let (mut out, mut cur, mut has) = (Vec::new(), String::new(), false);
     let mut cs = s.chars();
@@ -3044,13 +3044,13 @@ mod tests {
             "claude --model claude-fable-5-1 --dangerously-skip-permissions",
             "claude --model claude-sonnet-5 --dangerously-skip-permissions",
             // env 접두 3형(우리 스폰형 포함)
-            "env -u NODE_OPTIONS CLAUDE_CONFIG_DIR=/Users/a/.cys/claude claude --model m",
+            "env -u NODE_OPTIONS CLAUDE_CONFIG_DIR=/opt/cys/claude-cfg claude --model m",
             "CLAUDE_CONFIG_DIR=\"/a b/c\" FOO=1 claude",
             "/usr/bin/env --unset NODE_OPTIONS -i X=1 claude",
             // 래퍼 경로 · 틸드 · 윈도
             "/x/y/claude --dangerously-skip-permissions",
             "~/.local/bin/claude",
-            "C:\\Users\\a\\AppData\\claude.exe --model m",
+            "C:\\tools\\cli\\claude.exe --model m",
             "'/opt/my tools/claude' -p",
             "/opt/my\\ tools/claude -p",
         ] {

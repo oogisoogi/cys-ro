@@ -1933,7 +1933,31 @@ pub fn spawn_env_pairs_from_process(exe_dir: &Path) -> Vec<(String, String)> {
     let path = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").ok();
     let userprofile = std::env::var("USERPROFILE").ok();
-    spawn_env_pairs(exe_dir, &path, home.as_deref(), userprofile.as_deref())
+    let mut env = spawn_env_pairs(exe_dir, &path, home.as_deref(), userprofile.as_deref());
+    env.extend(self_bin_pairs(exe_dir));
+    env
+}
+
+/// `cys-dept` 가 1순위로 쓰는 「자기 판」 실행 파일 env 이름(★dbg-D3 #F1).
+pub const ENV_CYSD_BIN: &str = "CYS_CYSD_BIN";
+pub const ENV_CYS_BIN_SELF: &str = "CYS_CYS_BIN";
+
+/// ★dbg-D3 #F1(2026-09-23 · 995 격리 실측): 스폰 자식에게 **자기 판** cysd·cys 절대경로를 명시로 준다.
+/// `cys-dept` 는 PATH 로 cysd 를 찾았는데, 옛 CLI 링크(/usr/local/bin/cysd → 옛 cys.app 1.0.2)가 있는
+/// 기계에서는 부서 데몬·팩이 **옛 판으로** 떴다(.pack-version 1.0.2 · 디렉티브 해시 불일치 · acl.json.new
+/// 재발). PATH 순서에 기대지 않도록 값 자체를 넘긴다 — cys-dept 는 이것을 1순위로 쓴다.
+/// exe_dir 에 형제가 **실재할 때만** 쌍을 낸다(번들 밖 시험 바이너리·없는 경로 = 무변화).
+pub fn self_bin_pairs(exe_dir: &Path) -> Vec<(String, String)> {
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    let mut out = Vec::new();
+    for (key, name) in [(ENV_CYSD_BIN, "cysd"), (ENV_CYS_BIN_SELF, "cys")] {
+        let p = exe_dir.join(format!("{name}{ext}"));
+        if p.is_file() {
+            // 윈도 cys-dept 는 bash 로 돈다 — 정슬래시로 넘긴다(C:/…/cysd.exe).
+            out.push((key.to_string(), p.to_string_lossy().replace('\\', "/")));
+        }
+    }
+    out
 }
 
 /// unix pane PATH 합성(순수·테스트 가능 · **unix 전용 의미론** · OS 무관 컴파일). 순서:

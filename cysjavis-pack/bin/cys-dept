@@ -17,14 +17,22 @@ set -euo pipefail
 # 상속해 cys(/opt/homebrew/bin)·claude(~/.local/bin)를 못 찾는다 → 빈 셸의 `cys status`·사용자의 claude
 # 수동 실행 실패·dept cysd 의 claude spawn 실패 = 0 pane. 이 도구가 spawn 하는 모든 자식(cysd·빈 셸·
 # 그 아래 사용자가 실행하는 claude)이 상속하도록 단일 지점에서 로그인 셸 표준 경로를 prepend.
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}"
+# ★dbg-D3 #F1: 보강 경로는 **말미 append** — 호출자 PATH 선두(데몬·틱이 준 자기 판 exe_dir)는 불가침.
+#   종전 prepend 는 /usr/local/bin 의 옛 CLI 링크(→ 옛 cys.app 1.0.2)를 자기 판보다 앞세워 부서 데몬·팩이
+#   옛 판으로 떴다(995 격리 실측 · 박사님 맥 실측).
+export PATH="${PATH:+$PATH:}$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
 
 REG="${CYS_DEPTS_JSON:-$HOME/.cys/depts.json}"
 PACK_DEFAULT="$HOME/.cys/pack"
 # RC-6: 폴백 경로 가드 — command -v 우선(Windows는 RC-5 runtime PATH로 cysd.exe/cys.exe 해소).
 # /opt/homebrew는 macOS 전용이라 존재할 때만 폴백(Windows서 유령 경로 방지), 최종 폴백=bare 이름.
+# ★dbg-D3 #F1: 1순위 = 부른 쪽이 명시한 자기 판(CYS_CYSD_BIN·CYS_CYS_BIN — 데몬·앱 spawn env
+#   (lib.rs self_bin_pairs) · 틱 _spawn_create). 실행 가능할 때만 쓰고, 없을 때만 command -v 로 찾는다.
+if [ -n "${CYS_CYSD_BIN:-}" ] && [ -x "${CYS_CYSD_BIN}" ]; then CYSD="$CYS_CYSD_BIN"; else
 CYSD="$(command -v cysd || { [ -x /opt/homebrew/bin/cysd ] && echo /opt/homebrew/bin/cysd; } || echo cysd)"
+fi
 CYS="$(command -v cys || { [ -x /opt/homebrew/bin/cys ] && echo /opt/homebrew/bin/cys; } || echo cys)"
+if [ -n "${CYS_CYS_BIN:-}" ] && [ -x "${CYS_CYS_BIN}" ]; then CYS="$CYS_CYS_BIN"; fi
 # RC-6(codex R3.1 nit): 인라인 python heredoc이 cys를 literal이 아니라 **해소된 경로**로 실행하도록
 # CYS_BIN을 env로 전파(heredoc은 프로세스 env 상속). dept_classify_idle·alive_sock 등 subprocess가 사용.
 export CYS_BIN="$CYS"

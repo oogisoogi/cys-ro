@@ -1392,6 +1392,10 @@ def find_cysd():
     """V-PATH: ⑴PATH ⑵이 팩을 부르는 cys 와 같은 폴더 ⑶맥 앱 번들 후보 ⑷/opt/homebrew/bin.
     (데몬은 스케줄 자식에 자기 exe_dir 을 PATH 선두로 준다 — schedule.rs apply_spawn_env · 2R 부기)"""
     exe = "cysd.exe" if os.name == "nt" else "cysd"
+    # ★dbg-D3 #F1: 부른 쪽(데몬 spawn env)이 명시한 자기 판이 1순위 — PATH 순서에 기대지 않는다.
+    c = os.environ.get("CYS_CYSD_BIN") or ""
+    if c and os.path.isfile(c) and os.access(c, os.X_OK):
+        return c
     c = shutil.which("cysd")
     if c:
         return c
@@ -1421,6 +1425,11 @@ def _spawn_create(key, cysd, call):
     env = dict(os.environ)
     env["CYS_ROLE"] = "cso"
     env["PATH"] = os.path.dirname(cysd) + os.pathsep + env.get("PATH", "")
+    # ★dbg-D3 #F1: cys-dept 가 PATH 순서와 무관하게 이 판을 쓰도록 명시 전달(같은 폴더의 cys 도).
+    env["CYS_CYSD_BIN"] = cysd
+    sib = os.path.join(os.path.dirname(cysd), "cys.exe" if os.name == "nt" else "cys")
+    if os.path.isfile(sib) and os.access(sib, os.X_OK):
+        env["CYS_CYS_BIN"] = sib
     logp = os.path.join(root_dir(), ".create-%s.log" % key)
     lf = open(logp, "ab")
     # ★codex 1R F16: stdout 도 파일로 — 틱이 기다림 상한에서 먼저 끝나도 떼어 낸 자식이 이후 쓰는 결과

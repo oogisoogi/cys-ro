@@ -1493,7 +1493,7 @@ async function runSkillButton(s: any) {
     setCcOpen(false);
     toast("system", "skill.launched", `${s.label ?? s.name} — 일회용 워커 pane이 열렸습니다`);
   } catch (e) {
-    toast("watchdog", "skill.failed", `${s.label ?? s.name} 실행 실패: ${e}`);
+    toast("watchdog", "스킬 실행 실패", `「${s.label ?? s.name}」 스킬을 실행하지 못했습니다. 잠시 뒤 다시 시도해 주세요.`, undefined, String(e));
   }
 }
 
@@ -3112,7 +3112,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
           const isWin = /Windows/i.test(navigator.userAgent);
           term.paste(shellQuote(path as string, isWin) + " ");
         })
-        .catch((err) => toast("health", "이미지 붙여넣기 실패", String(err)));
+        .catch((err) => toast("health", "이미지 붙여넣기 실패", "이미지를 붙이지 못했습니다. 다시 붙여 넣어 주세요.", undefined, String(err)));
     },
     true,
   );
@@ -3701,7 +3701,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
       destroyPaneRuntime(newSid, destWs.socket);
       if (destWs.tree) destWs.tree = replaceNode(destWs.tree, newSid, () => null);
       render();
-      toast("watchdog", "전출 실패", `${e} — 원본 pane은 보존되고 새 pane은 회수했습니다`);
+      toast("watchdog", "전출 실패", "옮기지 못했습니다. 원래 창은 그대로 있고, 새로 만들던 창은 거두었습니다.", undefined, String(e));
       return;
     }
     destroyPaneRuntime(sid, srcSock);
@@ -3710,7 +3710,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
     render();
     toast("feed", "부서 전출 완료", `→ ${wsLabel(destWs)} (surface:${newSid})`);
   } catch (e) {
-    toast("watchdog", "전출 실패", `${e} — 원본 pane은 보존됩니다`);
+    toast("watchdog", "전출 실패", "옮기지 못했습니다. 원래 창은 그대로 있습니다.", undefined, String(e));
   } finally {
     dismissToast("transfer");
   }
@@ -3855,7 +3855,7 @@ function renderIdleWorkspace(ws: Workspace): HTMLElement {
     } catch (e) {
       btn.disabled = false;
       btn.textContent = "다시 시도";
-      toast("watchdog", isDept ? "부서를 켜지 못했습니다" : "셸을 열지 못했습니다", String(e));
+      toast("watchdog", isDept ? "부서를 켜지 못했습니다" : "새 창을 열지 못했습니다", isDept ? "부서를 켜는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요." : "새 창을 여는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
     }
   });
   box.append(msg, btn);
@@ -4329,7 +4329,7 @@ function buildTab(ws: Workspace): HTMLElement {
       try {
         await invoke("dept_tombstone_by_socket", { socket: ws.socket });
       } catch (e) {
-        toast("watchdog", "부서 삭제 의도 기록 실패", `${e} — 삭제는 계속 진행되나 재시작 시 부활할 수 있습니다. 같은 탭을 다시 삭제하면 재시도됩니다.`);
+        toast("watchdog", "부서 삭제 의도 기록 실패", "삭제는 계속 진행되지만 앱을 다시 켜면 이 부서가 되살아날 수 있습니다. 같은 탭을 다시 삭제하면 재시도됩니다.", undefined, String(e));
       }
     }
     for (const sid of collectSids(ws.tree)) {
@@ -4347,7 +4347,7 @@ function buildTab(ws: Workspace): HTMLElement {
     // 차회 부팅 reaper가 수렴하지만, 사용자에게는 알린다.
     if (ws.socket && !stillUsed)
       await invoke("stop_dept_daemon_by_socket", { socket: ws.socket }).catch((e) =>
-        toast("watchdog", "부서 데몬 종료 실패", `${e} — 부활은 차단됨(삭제 의도 기록됨)·다음 앱 시작 시 자동 정리를 재시도합니다.`),
+        toast("watchdog", "부서 엔진 종료 실패", "부서 엔진을 끄지 못했습니다. 되살아나지는 않으며, 다음에 앱을 켤 때 자동으로 다시 정리합니다.", undefined, String(e)),
       );
     if (workspaces.length === 0) {
       await addWorkspace(); // addWorkspace가 activeWs를 설정
@@ -5214,10 +5214,10 @@ async function openPathChecked(full: string) {
       );
       if (!ok) return;
       await invoke("open_path", { path: full, force: true }).catch((e2) =>
-        toast("watchdog", "파일 열기 실패", String(e2)),
+        toast("watchdog", "파일 열기 실패", "파일을 열지 못했습니다. 파일이 옮겨졌거나 지워지지 않았는지 확인해 주세요.", undefined, String(e2)),
       );
     } else {
-      toast("watchdog", "파일 열기 실패", String(e));
+      toast("watchdog", "파일 열기 실패", "파일을 열지 못했습니다. 파일이 옮겨졌거나 지워지지 않았는지 확인해 주세요.", undefined, String(e));
     }
   }
 }
@@ -5252,7 +5252,7 @@ function ftContextMenu(e: MouseEvent, full: string, isDir: boolean) {
     label: "Finder에서 보기",
     action: () =>
       void invoke("reveal_path", { path: full }).catch((err) =>
-        toast("watchdog", "Finder 표시 실패", String(err)),
+        toast("watchdog", "Finder 표시 실패", "Finder 에서 위치를 보여 주지 못했습니다. 다시 시도해 주세요.", undefined, String(err)),
       ),
   });
   for (const sid of collectSids(current()?.tree ?? null).slice(0, 6)) {
@@ -5322,7 +5322,7 @@ async function injectRawToPane(rt: PaneRuntime, data: string) {
     setTimeout(() => rt.el.classList.remove("inject-flash"), 700);
     toast("feed", "경로 삽입됨", `${rt.titleEl.textContent || rt.sid} — Enter를 눌러야 전송됩니다`);
   } catch (e) {
-    toast("watchdog", "삽입 실패", String(e));
+    toast("watchdog", "삽입 실패", "경로를 창의 입력칸에 넣지 못했습니다. 창을 한 번 누른 뒤 다시 시도해 주세요.", undefined, String(e));
   }
 }
 
@@ -5726,7 +5726,7 @@ async function refreshFeed() {
                 }
               } catch (e) {
                 // 승격 실패 — feed_reply 하지 않음(항목 pending 유지·재시도 가능). 실패 사유 표시.
-                toast("health", "CEO 승격 실패", String(e));
+                toast("health", "CEO 승격 실패", "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
               }
             } else {
               try {
@@ -5781,7 +5781,7 @@ async function checkForUpdate(silent: boolean) {
   } catch (e) {
     // ★early-return 안 함(팩 체크는 계속) — 단, 바이너리 상태 불명을 기억해 아래 '최신' 단정을 억제한다.
     binCheckFailed = true;
-    if (!silent) toast("health", "업데이트 확인 실패", String(e));
+    if (!silent) toast("health", "업데이트 확인 실패", "업데이트 정보를 받아 오지 못했습니다. 인터넷 연결을 확인한 뒤 다시 눌러 주세요.", undefined, String(e));
   }
   // 2) 무중단 팩 업데이트(pack-manifest.json) — 세션·데몬 유지 경로. 실패는 조용히(폴링).
   let pack: PackUpdateInfo | null = null;
@@ -5831,22 +5831,22 @@ async function checkForUpdate(silent: boolean) {
       // silent 경로에만 해당·비silent도 모달 1개 상한), 본체는 토스트로 병행 안내(T5 경로 유지).
       if (!silent) {
         promptPackInstall();
-        toast("feed", "🔄 새 본체도 있음", `새 본체 ${updateAvailable!.version} — 상단 「업데이트」 버튼으로 패치 설치(재시작·자동 복원)`);
-      } else toast("feed", "↻ 무중단 팩 + 새 본체", plan.toastMsg);
+        toast("feed", "🔄 새 앱도 있음", `새 앱 ${updateAvailable!.version} 도 나왔습니다. 상단 「업데이트」로 설치하고, 다시 켜지면 하던 창이 돌아옵니다.`);
+      } else toast("feed", "↻ 새 자비스 구성 + 새 앱", plan.toastMsg);
       break;
     case "binary":
       // 본체(바이너리) 패치 설치 — 오너 지시(2026-07-15) 재배선(구 T5 홈페이지 전용의 실험적 개정).
       if (!silent) promptBinaryPatch();
-      else toast("feed", "🔄 새 본체 버전", plan.toastMsg);
+      else toast("feed", "🔄 새 앱", plan.toastMsg);
       break;
     case "pack":
       // 팩만 변경 + 바이너리 호환 → 무중단 가능(세션·데몬 생존).
       if (!silent) promptPackInstall();
-      else toast("feed", "↻ 무중단 팩 업데이트", plan.toastMsg);
+      else toast("feed", "↻ 새 자비스 구성", plan.toastMsg);
       break;
     case "binary-required":
       // 팩은 있으나 min_binary_version > 설치 바이너리 → 무중단 불가, 본체 업데이트(홈페이지) 필요(T5 정책).
-      if (!silent) toast("health", "본체 업데이트 필요", plan.toastMsg);
+      if (!silent) toast("health", "앱 업데이트 필요", plan.toastMsg);
       else toast("feed", "⚠ 업데이트 있음", plan.toastMsg);
       break;
     case "none":
@@ -5875,13 +5875,12 @@ async function promptBinaryPatch() {
   //   윈도: 설치 직후 앱이 스스로 재시작. 맥: 교체까지 하고 **재시작을 한 번 더 묻는다**.
   //   여기서 한 문장으로 뭉뚱그리면 맥 사용자는 "재시작한다더니 안 한다"를 보게 된다.
   const tail = IS_MACOS
-    ? `받아서 검증(크기·해시·서명·CDHash)한 뒤 설치본을 교체합니다. 교체가 끝나면 재시작 여부를 다시 여쭙고, ` +
-      `재시작하면 부서·노드가 자동 복원됩니다(대화 기억 포함).`
-    : `저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 재시작합니다. 부서·노드는 재시작 후 자동 ` +
-      `복원됩니다(대화 기억 포함). 마지막 미저장분은 손실될 수 있습니다.`;
+    ? `받은 파일이 진짜인지 확인한 뒤 앱을 바꿉니다. 바꾸기가 끝나면 다시 켤지 한 번 더 여쭙고, ` +
+      `다시 켜면 부서와 창, 대화가 돌아옵니다.`
+    : `받은 파일이 진짜인지 확인한 뒤 앱을 바꾸고 다시 켭니다. 재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.`;
   const ok = await confirmModal(
-    `새 본체 버전 ${v} — 패치 설치`,
-    `새 본체(앱) ${v}을 패치 방식으로 설치합니다: ${tail}` +
+    `새 앱 ${v} 설치`,
+    `새 앱 ${v} 을 설치합니다. ${tail}` +
       `\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr`,
     "설치",
   );
@@ -5891,7 +5890,7 @@ async function promptBinaryPatch() {
     // 성공 시 백엔드가 app.restart()까지 수행 — 후속 UI 처리 없음(진행은 update-progress 리스너).
   } catch (e) {
     dismissToast("upd-bin");
-    toast("health", "패치 설치 실패", String(e));
+    toast("health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, String(e));
   }
 }
 
@@ -5905,20 +5904,19 @@ async function restartAfterUpdate(version: string) {
   } catch (e) {
     const msg = String(e);
     if (!msg.includes("live_sessions:")) {
-      toast("health", "재시작 실패", msg);
+      toast("health", "재시작 실패", "앱을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, msg);
       return;
     }
     const ok = await confirmModal(
       `재시작 (새 판 v${version})`,
-      `${holdReasonText(msg)}\n\n저장(drain) 신호를 보낸 뒤 재시작하고 노드를 복원합니다. 마지막 미저장분은 ` +
-        `손실될 수 있습니다.\n\n지금 재시작하시겠습니까?`,
+      `${holdReasonText(msg)}\n\n재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.\n\n지금 재시작하시겠습니까?`,
       "재시작",
     );
     if (!ok) return;
     try {
       await invoke("restart_after_update", { force: true });
     } catch (e2) {
-      toast("health", "재시작 실패", String(e2));
+      toast("health", "재시작 실패", "앱을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e2));
     }
   }
 }
@@ -6050,8 +6048,8 @@ function showSkewBadge(
     ? `데몬 v${daemonVer} · 앱 v${appVer}${suffix} — 세션 보존 중`
     : `앱 v${appVer} · 부서 ${heldDepts.length}개 구버전 — 세션 보존 중`;
   verSkewBadge.title =
-    "업데이트가 적용됐지만 실행 중인 세션(마스터·워커·부서)을 보존하기 위해 기존 데몬이 계속 봉사합니다.\n" +
-    "클릭하면 저장(drain) 후 새 버전으로 순차 교대(메인→부서)하고 세션을 복원합니다.";
+    "업데이트는 받았지만 작업 중인 창을 지키려고 옛 엔진이 계속 돌고 있습니다.\n" +
+    "누르면 하던 대화를 저장하고 본부부터 부서 순으로 새 판 엔진으로 바꾼 뒤 창과 대화를 되돌립니다.";
   verSkewBadge.onclick = () => void manualRotateSkewed(appVer, heldMain, heldDepts);
 }
 
@@ -6066,9 +6064,9 @@ async function manualRotateSkewed(appVer: string, heldMain: boolean, heldDepts: 
   }
   const nodes = (heldMain ? 1 : 0) + heldDepts.length;
   const ok = await confirmModal(
-    `데몬 교대 (새 버전 v${appVer})`,
-    `작업 세션이 물려 있는 데몬 ${nodes}개를 새 버전으로 순차 교대(메인→부서)합니다. 저장(drain) 신호 후 ` +
-      `교대하고 세션을 복원합니다. 마지막 미저장분은 손실될 수 있습니다.\n\n지금 교대하시겠습니까?`,
+    `엔진 교대 (새 판 v${appVer})`,
+    `작업 중인 창이 붙어 있는 엔진 ${nodes}개를 본부부터 부서 순으로 새 판으로 바꿉니다. ` +
+      `바꾸기 직전에 하던 대화를 저장하고, 바꾼 뒤 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.\n\n지금 교대하시겠습니까?`,
     "교대",
   );
   if (!ok) return;
@@ -6089,7 +6087,7 @@ async function manualRotateSkewed(appVer: string, heldMain: boolean, heldDepts: 
     else toast("watchdog", "✅ 데몬 교대 완료", `데몬이 v${appVer}로 교대됐습니다. 노드 복원이 진행됩니다.`);
   } catch (e) {
     dismissToast("rotate-daemon");
-    toast("health", "데몬 교대 실패", String(e));
+    toast("health", "엔진 교대 실패", "엔진을 새 판으로 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
   } finally {
     rotatingDaemon = false;
   }
@@ -6254,7 +6252,7 @@ async function manualRestartAllDaemons() {
     void restartContinuityToast(restartStartedAt);
   } catch (e) {
     dismissToast("restart-daemon");
-    toast("health", "데몬 재시작 실패", String(e));
+    toast("health", "엔진 재시작 실패", "엔진을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
   } finally {
     rotatingDaemon = false;
   }
@@ -6327,14 +6325,14 @@ async function promptPackInstall() {
   }
   const pv = packUpdateAvailable.pack_version;
   // 지속형 토스트: pack-progress 리스너가 갱신하고 pack-updated/update-warning이 dismiss한다.
-  stickyToast("upd-pack", "feed", "↻ 무중단 팩 업데이트", `팩 ${pv} 적용 중… 세션·데몬 유지(재시작 없음).`);
+  stickyToast("upd-pack", "feed", "↻ 자비스 구성 업데이트", `새 자비스 구성 ${pv} 적용 중… 하던 창은 그대로이고 재시작하지 않습니다.`);
   try {
     await invoke("install_pack_update", { manifestUrl: packUpdateAvailable.manifest_url });
     // 성공(또는 degraded)은 pack-updated/update-warning 리스너가 후속 처리(sticky도 거기서 dismiss).
   } catch (e) {
     dismissToast("upd-pack"); // 완료 이벤트 없이 reject된 경로 — 진행 토스트를 내린다.
     // 백엔드가 update-error도 emit하지만, join/실행 단계 실패는 emit 없이 reject되므로 여기서 표시.
-    toast("health", "팩 업데이트 실패", String(e));
+    toast("health", "자비스 구성 업데이트 실패", "새 자비스 구성을 적용하지 못했습니다. 지금 쓰던 창은 그대로 두고 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
   }
 }
 
@@ -6631,7 +6629,7 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
             const r = (await invoke("promote_pending_ceo")) as string;
             toast("feed", "CEO 승격 처리", r || "완료");
           } catch (e) {
-            toast("health", "CEO 승격 실패", String(e));
+            toast("health", "CEO 승격 실패", "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
           }
         },
       });
@@ -6652,7 +6650,7 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
             const r = (await invoke("approve_ceo_promotion")) as string;
             toast("watchdog", "✅ CEO 승격 재실행 완료", r || "새 템플릿을 적용했습니다.");
           } catch (e) {
-            toast("health", "CEO 승격 재실행 실패", String(e));
+            toast("health", "CEO 승격 재실행 실패", "새 설정으로 CEO 자리를 다시 세우지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
           }
         },
       });
@@ -6986,7 +6984,7 @@ async function purgeDept(ws: Workspace) {
   try {
     info = (await invoke("dept_purge_preview_by_socket", { socket: ws.socket })) as typeof info;
   } catch (e) {
-    toast("watchdog", "삭제 프리뷰 실패", `${e} — 삭제를 중단합니다. 다시 시도해 주세요.`);
+    toast("watchdog", "삭제 미리보기 실패", "지울 내용을 확인하지 못해 삭제를 멈췄습니다. 다시 시도해 주세요.", undefined, String(e));
     return;
   }
   const nm = info.name || wsLabel(ws);
@@ -7022,7 +7020,7 @@ async function purgeDept(ws: Workspace) {
     try {
       await invoke("purge_dept_daemon_by_socket", { socket: ws.socket });
     } catch (e) {
-      stickyToast(failId, "watchdog", "부서 완전 삭제 실패", `${nm}: ${e} — 삭제되지 않았습니다.`);
+      stickyToast(failId, "watchdog", "부서 완전 삭제 실패", `${nm} 부서는 삭제되지 않았습니다. 다시 시도해 주세요.`, undefined, String(e));
       return;
     }
     dismissToast(failId);
@@ -7117,7 +7115,7 @@ async function factoryResetFlow() {
     info = (await invoke("factory_reset_preview", {})) as typeof info;
   } catch (e) {
     dismissToast("reset-preview");
-    toast("watchdog", "초기화 프리뷰 실패", `${e} — 초기화를 중단합니다. 다시 시도해 주세요.`);
+    toast("watchdog", "초기화 미리보기 실패", "지울 내용을 확인하지 못해 초기화를 멈췄습니다. 다시 시도해 주세요.", undefined, String(e));
     return;
   }
   dismissToast("reset-preview");
@@ -7160,7 +7158,7 @@ async function factoryResetFlow() {
       rep = (await invoke("factory_reset_execute", { purgeLicense: false, purgeLocal: false })) as typeof rep;
     } catch (e) {
       dismissToast("factory-reset");
-      stickyToast(failId, "watchdog", "완전 초기화 실패", `${e} — 아무것도(또는 일부만) 변경되지 않았을 수 있습니다. 재시도하거나 cys factory-reset --plan 으로 상태를 확인하세요.`);
+      stickyToast(failId, "watchdog", "완전 초기화 실패", "초기화가 끝나지 않았습니다. 아무것도 바뀌지 않았거나 일부만 바뀌었을 수 있으니 다시 시도해 주세요. 상태 확인 명령은 「자세히」 안에 있습니다.", undefined, `${String(e)}\n상태 확인: cys factory-reset --plan`);
       return;
     }
     dismissToast("factory-reset");
@@ -7213,9 +7211,28 @@ async function factoryResetFlow() {
 // main.ts:4878 주석의 실사고("실패를 인지 못함")는 이력 + 수동 × + 만료 배너로 대체 방어한다.
 let alarmHistory: AlarmRecord[] = [];
 
-function recordAlarm(category: string, name: string, detail: string, id?: string) {
-  alarmHistory = pushAlarm(alarmHistory, { ts: Date.now(), category, name, detail, id });
+function recordAlarm(category: string, name: string, detail: string, id?: string, raw?: string) {
+  // (D4 #14) 오류 원문은 알람 이력에 그대로 남긴다 — 진단 재료(화면에서는 「자세히」 안쪽).
+  alarmHistory = pushAlarm(alarmHistory, { ts: Date.now(), category, name, detail: raw ? `${detail}\n${RAW_DETAIL_LABEL}: ${raw}` : detail, id });
   if (ccOpen && ccTab === "alarms") renderAlarmHistory();
+}
+
+// ★(v116-ui-close-r2 · D4 #14) 오류 원문(백엔드 문자열 String(e))은 본문에 싣지 않고 접힌 「자세히」 안쪽에 둔다 —
+//   본문은 사람 말 한두 문장. 원문은 지우지 않는다(지원·진단에 필요). raw 가 없으면 「자세히」도 없다(갱신 시 제거).
+const RAW_DETAIL_LABEL = "자세히";
+function setToastRaw(el: HTMLElement, raw?: string) {
+  el.querySelector(".toast-raw")?.remove();
+  if (!raw) return;
+  const d = document.createElement("details");
+  d.className = "toast-raw";
+  const sm = document.createElement("summary");
+  sm.textContent = RAW_DETAIL_LABEL;
+  const pre = document.createElement("div");
+  pre.className = "toast-raw-text";
+  pre.textContent = raw; // textContent — 원문이 마크업으로 해석되지 않게
+  d.append(sm, pre);
+  d.addEventListener("click", (e) => e.stopPropagation()); // 펼치기가 토스트 클릭 동작으로 번지지 않게
+  el.querySelector(".toast-detail")?.after(d);
 }
 
 // 우상단 × — 자동 소멸을 기다리지 않고 즉시 치울 수 있는 수동 경로(sticky는 id로 정리).
@@ -7235,14 +7252,15 @@ function addToastCloseButton(el: HTMLElement, id?: string) {
 
 /// `onClick` — 토스트 본문을 눌렀을 때의 동작(선택). 완전 초기화 완료 후 격리 폴더를 여는
 /// 것처럼 **행동으로 이어지는 안내**에만 쓴다(P1-2). 닫기 버튼 클릭과는 분리한다.
-function toast(category: string, name: string, detail: string, onClick?: () => void) {
-  recordAlarm(category, name, detail);
+function toast(category: string, name: string, detail: string, onClick?: () => void, raw?: string) {
+  recordAlarm(category, name, detail, undefined, raw);
   const box = document.getElementById("toasts")!;
   const el = document.createElement("div");
   el.className = toastClassName(category); // 등급색 서식의 단일 진실(sticky 와 같은 함수)
   el.innerHTML = `<span class="toast-name"></span><span class="toast-detail"></span>`;
   (el.querySelector(".toast-name") as HTMLElement).textContent = name;
   (el.querySelector(".toast-detail") as HTMLElement).textContent = detail;
+  setToastRaw(el, raw);
   if (onClick) {
     el.style.cursor = "pointer";
     el.addEventListener("click", (e) => {
@@ -7262,8 +7280,8 @@ const stickyToasts = new Map<string, { el: HTMLElement; timer: ReturnType<typeof
 
 // onClick: 누를 수 있는 지속형 토스트(B15 재시작 1클릭). 갱신마다 다시 매기 위해 핸들러를
 // 요소에 직접 둔다(addEventListener 누적 금지 — 같은 id 로 여러 번 갱신되면 중복 발화한다).
-function stickyToast(id: string, category: string, name: string, detail: string, onClick?: () => void) {
-  recordAlarm(category, name, detail, id);
+function stickyToast(id: string, category: string, name: string, detail: string, onClick?: () => void, raw?: string) {
+  recordAlarm(category, name, detail, id, raw);
   const box = document.getElementById("toasts")!;
   const prev = stickyToasts.get(id);
   const plan = toastTimerPlan("sticky", id, !!prev);
@@ -7281,6 +7299,7 @@ function stickyToast(id: string, category: string, name: string, detail: string,
   el.className = toastClassName(category);
   (el.querySelector(".toast-name") as HTMLElement).textContent = name;
   (el.querySelector(".toast-detail") as HTMLElement).textContent = detail;
+  setToastRaw(el, raw);
   el.style.cursor = onClick ? "pointer" : "";
   el.onclick = onClick
     ? (ev: MouseEvent) => {
@@ -7884,15 +7903,15 @@ async function start() {
       }
     } else if (p.phase === "verify") {
       // 맥 경로(B7): 크기·sha256·codesign 봉인·CDHash 를 차례로 본다. 윈도는 플러그인이 minisign 으로 대신한다.
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "받은 파일 검증 중(크기·해시·서명)…");
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "받은 파일이 진짜인지 확인하는 중…");
     } else if (p.phase === "swap") {
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "설치본 교체 중…");
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "앱을 새 판으로 바꾸는 중…");
     } else if (p.phase === "dry-run") {
       // 개발기 격리 실행 — 검증까지만 하고 교체하지 않았다는 사실을 화면에도 남긴다(무증상 성공 금지).
       dismissToast("upd-bin");
       toast("watchdog", "🧪 업데이트 드라이런", "검증 전건 통과 — 교체는 하지 않았습니다(CYS_UPDATE_DRY_RUN=1).");
     } else if (p.phase === "drain") {
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "세션 정리 중…");
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "하던 대화를 저장하는 중…");
     } else if (p.phase === "handoff") {
       stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "재시작 준비 중…");
     }
@@ -7909,7 +7928,7 @@ async function start() {
       "upd-restart",
       "feed",
       "✅ 새 판 교체 완료 — 눌러서 재시작",
-      `새 판 v${p.version ?? ""} 이 설치본에 들어갔습니다. 지금 누르면 저장 후 재시작하고 노드를 복원합니다(나중에 눌러도 됩니다).`,
+      `새 판 v${p.version ?? ""} 이 설치됐습니다. 지금 누르면 하던 대화를 저장하고 다시 켜서 창과 대화를 되돌립니다. 나중에 눌러도 됩니다.`,
       () => void restartAfterUpdate(p.version ?? ""),
     );
   });
@@ -7918,7 +7937,7 @@ async function start() {
   await listen("pack-progress", (e) => {
     const p = (e.payload ?? {}) as { phase?: string };
     if (p.phase === "start")
-      stickyToast("upd-pack", "feed", "🔄 무중단 적용 중", "서명검증 → 다운로드 → 원자적 팩 교체 → 노드 reinject…");
+      stickyToast("upd-pack", "feed", "🔄 자비스 구성 적용 중", "받은 파일을 확인하고 새 구성으로 바꾼 뒤 각 창에 알리는 중…");
   });
   await listen("pack-updated", (e) => {
     const p = (e.payload ?? {}) as { pack_version?: string; reinject_failed?: number; reinject_deferred?: number };
@@ -7932,21 +7951,21 @@ async function start() {
     if (failed > 0 || deferred > 0) {
       toast(
         "watchdog",
-        "✅ 팩 디스크 반영 완료",
-        `팩 ${p.pack_version ?? ""} 적용 — 세션 유지(재시작 없음). 일부 노드 reinject 보류/실패는 다음 폴링에서 재시도.`,
+        "✅ 자비스 구성 적용 · 일부 창 대기",
+        `새 자비스 구성 ${p.pack_version ?? ""} 을 적용했습니다. 몇몇 창에는 아직 알리지 못해 잠시 뒤 자동으로 다시 알립니다.`,
       );
     } else {
       toast(
         "watchdog",
-        "✅ 팩 업데이트 완료",
-        `팩 ${p.pack_version ?? ""} 적용 — 세션 유지·노드 reinject 완료(재시작 없음).`,
+        "✅ 자비스 구성 업데이트 완료",
+        `새 자비스 구성 ${p.pack_version ?? ""} 을 적용했고 모든 창에 알렸습니다. 재시작은 없었습니다.`,
       );
     }
   });
   await listen("update-warning", (e) => {
     const p = (e.payload ?? {}) as { message?: string };
     dismissToast("upd-pack"); // 진행 토스트를 내리고 아래 경고 토스트로 교대.
-    toast("health", "⚠ 팩 일부 미각성", p.message ?? "디스크 팩은 갱신됐으나 일부 노드 reinject 보류/실패(라이브 유지).");
+    toast("health", "⚠ 일부 창이 새 구성을 아직 모릅니다", "새 자비스 구성은 저장됐지만 몇몇 창에 알리지 못했습니다. 그 창들은 하던 대로 계속 돌아갑니다.", undefined, p.message);
   });
 
   // (T4) 업데이트 후 조직 복원 진행(restore-progress·spawn_org_restore emit) — '직원 복귀 중' 가시화.
@@ -8128,7 +8147,7 @@ async function start() {
       }
     } catch (e) {
       dismissToast("upd-bin");
-      toast("health", "자동 테스트 패치 실패", String(e));
+      toast("health", "자동 테스트 패치 실패", "시험용 자동 설치를 마치지 못했습니다.", undefined, String(e));
     }
   })();
 

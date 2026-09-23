@@ -158,7 +158,7 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
@@ -7348,6 +7348,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const sid = event.surface_id;
 
+  // ★(v116-ui-close-r2 · R1c) 마스터 자리가 늦게 섰으면 복원 카드 판정을 다시 돈다(판정·1회는 maybeShowRestoreBrief 가 진다).
+  if (isMasterSeatSignal(name, payload)) maybeShowRestoreBrief();
   // --- name-우선 전용 처리(B1) : name 매칭이 category 폴백보다 우선 ---
   if (name === "approval.request") {
     toast("approval", "⚠ 승인 대기", `${payload.role ?? ""} ${payload.surface_ref ?? ""} — ${String(payload.excerpt ?? "").slice(0, 100)}`);
@@ -7533,6 +7535,10 @@ async function refreshDaemonInfo(info: HTMLElement) {
 //   · 한 번 켜질 때 1회만. 실패는 조용히 넘긴다(카드는 부가 기능 — 복원 자체를 막지 않는다).
 // ────────────────────────────────────────────────────────────────────────────
 let restoreBriefShown = false;
+// ★(v116-ui-close-r2 · R1c) 「한 번 띄움」 표지는 마스터 자리를 찾은 뒤에만 켠다(종전엔 첫 줄에서 켜, 유예 시점에
+//   마스터가 없으면 그 켜짐엔 카드가 영영 안 떴다). 조회가 도는 동안 온 두 번째 부름은 버리지 않고 1회 재조회로 접는다.
+let restoreBriefBusy = false;
+let restoreBriefAgain = false;
 // ★v115-restore(B5): 카드 시점 = 조직 복원이 끝난 뒤(판정 = restorebrief.briefTiming). 복원 신호가 유예 안에
 //   안 오면 이번 켜짐엔 복원이 없다고 보고 띄운다.
 // ★v115r5-T4: firstLaunch = 설치 뒤 첫 기동(화면 배치 저장본 부재 · 적재 시점 스냅숏) → 카드 생략(restorebrief.isFirstLaunch).
@@ -7569,7 +7575,11 @@ async function readUnsubmittedRoles(
 }
 async function showRestoreBrief(): Promise<void> {
   if (restoreBriefShown) return;
-  restoreBriefShown = true;
+  if (restoreBriefBusy) {
+    restoreBriefAgain = true;
+    return;
+  }
+  restoreBriefBusy = true;
   try {
     const r = (await rpcT(invoke("list_surfaces", { socket: undefined }), T_LIST)) as {
       surfaces: {
@@ -7583,7 +7593,8 @@ async function showRestoreBrief(): Promise<void> {
     };
     const seats = r.surfaces.filter((s) => s.role);
     const master = seats.find((s) => s.role === "master" && !s.exited);
-    if (!master) return; // 마스터 자리가 없으면 띄우지 않는다(카드는 마스터 자리 1곳 전용)
+    if (!master) return; // 마스터 자리가 없으면 띄우지 않는다(카드는 마스터 자리 1곳 전용) — 서면 isMasterSeatSignal 이 다시 부른다
+    restoreBriefShown = true;
     const home = String(await invoke("home_dir_path"));
     // ★(v116-ui-close · R1a) 정본(~/.cys/pack/round) + 종전 cwd `_round` 사슬을 모두 읽고, 기록 시각이 가장 늦은
     //   것을 쓴다(같으면 정본). 종전엔 cwd 사슬만 보고 첫 적중에서 멈춰 정본 기록을 한 번도 못 읽었다(D2 R1a).
@@ -7662,6 +7673,11 @@ async function showRestoreBrief(): Promise<void> {
     document.body.appendChild(box);
   } catch {
     /* 카드는 부가 기능 — 실패해도 복원·화면에는 영향이 없다 */
+  } finally {
+    restoreBriefBusy = false;
+    const again = restoreBriefAgain;
+    restoreBriefAgain = false;
+    if (again && !restoreBriefShown) maybeShowRestoreBrief(); // 판정 경유(직접 부름은 maybeShowRestoreBrief 한 곳)
   }
 }
 

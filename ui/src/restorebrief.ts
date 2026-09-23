@@ -289,6 +289,16 @@ export const BRIEF_RESTORE_GRACE_MS = 15000;
 export function isFirstLaunch(savedLayoutRaw: string | null | undefined): boolean {
   return savedLayoutRaw === null;
 }
+/**
+ * ★(v116-ui-close-r2 · R1c) 「마스터 자리가 방금 섰다」 신호인가 — 순수 판정.
+ * 카드는 마스터 자리 1곳 전용이라, 유예(15초) 시점에 마스터가 아직 없으면(↻ 재시도 대기 · 느린 기동)
+ * 그때는 띄우지 않고 기다린다. 마스터가 서는 두 경로의 데몬 신호가 그 기다림을 푼다 —
+ * 역할 등록(role.claimed · claim-role)과 역할을 싣고 만든 창(surface.created · launch-agent·복원).
+ */
+export function isMasterSeatSignal(name: string, payload: { role?: unknown }): boolean {
+  return (name === "role.claimed" || name === "surface.created") && payload.role === "master";
+}
+
 export function briefTiming(s: {
   restoreStarted: boolean;
   restoreFinished: boolean;

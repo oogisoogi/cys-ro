@@ -8,6 +8,7 @@
 //   c6 복원 카드가 떠 있을 때 뒤에 뜬 경보(에이전트 사망 알림)가 카드에 가려지지 않는다(D4 #21 · 1280·800 폭)
 //   c7 상단바 데몬 라벨 = 판번만(pid·소켓 경로·daemon 0) · 전문은 툴팁(D4 #5)
 //   c8 이름 없는 본부 탭 = 「본부」 · 화면 어디에도 「non title」 0 · 탭 삭제 확인도 같은 이름(D4 #4)
+//   c9 짧은 창(위 내용 없음)에서 첫 위 휠 → 「접어 두었습니다」 안내 0 · 긴 출력 맨 위 도달 → 안내 1(D4 #6)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -18,7 +19,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -215,6 +216,19 @@ if (ONLY.includes("c8")) {
   await ev(`document.querySelector(".modal-no")?.click()`);
   await shot("c8-hq-tab.png");
   check("c8 본부 탭 이름 = 본부 · non title 0 · 삭제 확인도 본부", a.names[0] === "본부" && !a.nonTitle && b.modal.includes("본부") && !b.modal.includes("non title"), JSON.stringify({ ...a, ...b }));
+}
+
+if (ONLY.includes("c9")) {
+  const hintCount = `[...document.querySelectorAll("#toasts .toast")].filter(t => t.innerText.includes("접어 두었습니다")).length`;
+  const wheelUp = (who: string, n: number) => `(() => { const h = ${PANE(who)}.querySelector(".xterm"); for (let i = 0; i < ${n}; i++) h.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true })); })()`;
+  await load("two");
+  await ev(wheelUp("master", 1)); await Bun.sleep(400);
+  const a = await ev(hintCount);
+  // 긴 출력(스크롤백 생김) 뒤 맨 위까지 올린다
+  await ev(`window.__shimEmit("out-2", btoa(Array.from({ length: 300 }, (_, i) => "line " + i).join("\\r\\n")))`); await Bun.sleep(400);
+  await ev(wheelUp("worker", 400)); await Bun.sleep(600);
+  const b = await ev(hintCount);
+  check("c9 짧은 창 첫 위 휠 → 안내 0 · 긴 출력 맨 위 → 안내 1", a === 0 && b === 1, JSON.stringify({ shortPane: a, afterLongTop: b }));
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

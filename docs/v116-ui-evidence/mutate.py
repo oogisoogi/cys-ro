@@ -32,6 +32,8 @@ M=[
  ('M9e','src/main.ts','        if (masterSids.size) {\n          const before','        if (true) {\n          const before','src/wsname.test.ts'),
  ('M9f','src/wsname.ts','base.reduce((a, b) => (b.id < a.id ? b : a)).id','base[0].id','src/wsname.test.ts'),
  ('M7c','src/style.css','  flex: none; white-space: nowrap; }','  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }','src/headerlabels.test.ts'),
+ ('M10a','src/scrollfollow.ts','viewportY <= 0 && baseY > 0 && bufferType === "normal"','viewportY <= 0 && bufferType === "normal"','src/scrollfollow.test.ts'),
+ ('M10b','src/scrollfollow.ts','viewportY <= 0 && baseY > 0 && bufferType === "normal"','viewportY <= 0 && baseY > 0','src/scrollfollow.test.ts'),
  ('M3a','src/main.ts','    top.style.flex = "";\n','','src/closeguard.test.ts'),
  ('M3b','src/main.ts','    top.style.flex = "";\n','    if (tree.type !== "pane") top.style.flex = "";\n','src/closeguard.test.ts'),
  ('M4a','index.html','    <button id="btn-close"','    <button id="btn-new" title="새 surface (⌘T)">+ New</button>\n    <button id="btn-close"','src/closeguard.test.ts'),

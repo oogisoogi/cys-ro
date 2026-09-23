@@ -341,7 +341,8 @@ class A2B8BootNodeRun(unittest.TestCase):
 
     def test_d7_settle_requires_explicit_limit(self):
         # agy 2R #1: 상한은 호출자가 반드시 준다 — 호출처 0 인 기본 분기(None → 2틱)를 두지 않는다.
-        with self.assertRaises(TypeError):
+        #   원인까지 단언한다 — 기본값만 되살리면 float(None) 도 TypeError 라 원인 없는 단언은 공허했다(r3 PR1 생존).
+        with self.assertRaisesRegex(TypeError, "required keyword-only argument: 'max_wait_s'"):
             bn.settle_unknown_seat(_st(seat="unknown"), "master", lambda: _st(seat="empty"))
 
     def test_d7_settle_never_sleeps_past_the_limit_wall_clock(self):

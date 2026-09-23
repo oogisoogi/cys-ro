@@ -6372,6 +6372,31 @@ mod tests {
         }
     }
 
+    /// ★v116-seat X-4: 빈 좌석 재기동 줄 판정 — 좌석 agent_bin 의 한 줄 기동 명령만 참.
+    #[test]
+    fn v116_launch_line_matches_seat_only_registered_agent_one_liner() {
+        use super::launch_line_matches_seat as m;
+        // 실제 unix 기동 줄 형태(render_launch: `KEY="값" cmd`) — 값에 공백이 있어도 첫 낱말은 claude
+        let line = r#"CLAUDE_CONFIG_DIR="/Users/a b/.cys/claude" CLAUDE_CODE_NO_FLICKER="1" claude --model claude-opus-5-5 --dangerously-skip-permissions --continue"#;
+        assert!(m(line, Some("claude")));
+        assert!(m("claude --continue", Some("claude")));
+        assert!(m("/opt/homebrew/bin/claude --x", Some("claude")), "경로형 실행 파일");
+        assert!(m("~/.local/bin/agy --dangerously-skip-permissions", Some("~/.local/bin/agy")), "메타가 경로형");
+        assert!(m("codex.exe --x", Some("codex")), "윈 .exe");
+        // 기동 줄이 아닌 본문 = 거짓(종전대로 보류)
+        assert!(!m("[DRAIN-VERIFY] 저장하라", Some("claude")));
+        assert!(!m("WORKER_DIRECTIVE 각성: claude 는 …", Some("claude")));
+        assert!(!m("claude --x\n[DRAIN] 저장", Some("claude")), "여러 줄은 기동 줄이 아니다");
+        assert!(!m("claude --x\r", Some("claude")));
+        assert!(!m("codex --x", Some("claude")), "다른 에이전트");
+        assert!(!m("claudex --x", Some("claude")), "이름 접두 일치는 불일치");
+        assert!(!m(r#"FOO="a b claude"#, Some("claude")), "닫히지 않은 따옴표");
+        assert!(!m("FOO=1 BAR=2", Some("claude")), "대입만");
+        assert!(!m("", Some("claude")));
+        assert!(!m("claude --x", None), "메타 없음");
+        assert!(!m("claude --x", Some("")), "빈 메타");
+    }
+
     /// ★v114-dept-fd 수리 1‴: 폴더 거부 판정 — 역할 좌석 ∧ 빈 좌석 ∧ 읽기 결과가 PermissionDenied 일 때만.
     #[test]
     fn v114_seat_folder_denied_verdict_only_permission_denied() {

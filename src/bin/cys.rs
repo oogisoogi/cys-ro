@@ -23076,6 +23076,20 @@ mod tests {
     }
 
     #[test]
+    fn v116_boot_agent_launch_send_carries_agent_launch_marker() {
+        // ★v116-seat X-4 배선 핀: 좌석 기동 줄 send 에 `agent_launch` 표지가 있어야 데몬 빈 셸 가드가
+        //   node-recover·in-seat 복원의 재기동 줄을 통과시킨다(없으면 rc=1 · 큐 보류 · reclaim 으로 번짐).
+        //   판정 = boot_agent_on_surface 본문에서 기동 줄(`"text": send`) send_text 호출 한 덩어리에 표지.
+        let src = include_str!("cys.rs");
+        let a = src.find("fn boot_agent_on_surface(").expect("boot_agent_on_surface 부재");
+        let body = &src[a..a + src[a..].find("\n}\n").expect("함수 끝")];
+        let t = body.find(r#""text": send,"#).expect("기동 줄 send_text 호출 부재");
+        let call = &body[body[..t].rfind("request(").expect("request(")..];
+        let call = &call[..call.find(")?;").expect("호출 끝")];
+        assert!(call.contains(r#""agent_launch": true"#), "기동 줄 send 에 agent_launch 표지 없음:\n{call}");
+    }
+
+    #[test]
     fn render_launch_os_aware_unix_byte_identical() {
         // RC-3(B′) 회귀 핀(master D5 조건): unix 렌더는 기존 agents.json 단일문자열과 byte-identical.
         let cmd = "claude --dangerously-skip-permissions";

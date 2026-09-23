@@ -12574,6 +12574,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★v116-seat X-4: 에이전트 메타가 남은 **빈 셸 좌석**(node-recover 대상)에서 ①`agent_launch` + 좌석
+    /// agent_bin 기동 줄 = 타이핑(큐 0) ②`agent_launch` + 기동 줄 아님 = 거부 · 큐 0(폭주 큐 방지)
+    /// ③표지 없음 = 종전대로 보류(no_agent · 큐 1). 좌석 = `exec /bin/sh -i`(자식 0 · 뿌리 = sh) ·
+    /// 기동 줄의 실행 파일 = `true`(타이핑만 하고 Return 은 보내지 않는다 — 실행 0).
+    #[cfg(unix)]
+    #[test]
+    fn v116_send_text_agent_launch_passes_vacant_seat_guard_only_for_seat_bin() {
+        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let (daemon, dir) = daemon_with_acl("v116-launch", r#"{"default":"allow","rules":[]}"#);
+        let s = daemon
+            .create_surface(None, Some("exec /bin/sh -i".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "true".into()));
+        let caller = 990_300_u32;
+        bind_caller(&daemon, caller, s.id);
+        let t0 = std::time::Instant::now();
+        while !crate::governance::agent_seat_vacant_now(&s) {
+            assert!(t0.elapsed().as_secs() < 10, "전제: 10초 안에 빈 셸 좌석이 되지 않았다");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let send = |n: u64, p: Value| {
+            let req = Request { id: json!(n), method: "surface.send_text".into(), params: p };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(caller)) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+        let qlen = || s.pending_queue.lock().unwrap().len();
+
+        // ② 표지 + 기동 줄 아님 → 거부 · 큐 0
+        let r = send(1, json!({"surface_id": s.id, "text": "[DRAIN-VERIFY] 저장하라", "agent_launch": true}));
+        assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "기동 줄 아닌 본문이 통과: {r}");
+        assert_eq!(qlen(), 0, "표지 달린 거부 본문이 큐에 들어갔다(폭주 큐)");
+
+        // ① 표지 + 좌석 agent_bin 기동 줄 → 타이핑
+        let r = send(2, json!({"surface_id": s.id, "text": r#"FOO="a b" true --x"#, "agent_launch": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "재기동 줄이 빈 셸 가드에 막혔다(X-4): {r}");
+        assert_eq!(qlen(), 0, "타이핑된 재기동 줄이 큐에도 들어갔다");
+
+        // ③ 표지 없음 → 종전 보류(no_agent · 큐 1)
+        let r = send(3, json!({"surface_id": s.id, "text": "true --x"}));
+        assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "표지 없는 본문이 빈 셸에 타이핑됐다: {r}");
+        assert_eq!(qlen(), 1, "표지 없는 본문은 종전대로 큐 보류");
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 결합 거부 박제: 원자 clear+paste+submit은 직접 전송 전용 — quiet 대기 큐 배달과
     /// 결합 불가(clear_first + queued는 invalid_params).
     #[test]

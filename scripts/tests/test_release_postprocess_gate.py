@@ -1020,7 +1020,274 @@ class BuildIdStampedTests(unittest.TestCase):
     def test_49_latest_json_is_never_taken_from_cache(self):
         with open(_RP_PATH, encoding="utf-8") as fh:
             src = fh.read()
-        self.assertIn('a["name"] != "latest.json" and os.path.exists(dest)', src)
+        # ★2026-09-24(X-6 곁): 캐시 판정이 크기 대조 → cache_hit(digest 대조)로 바뀌었다. latest.json 예외는
+        #   그대로다 — 이 핀은 **예외가 판정식 앞에 남아 있는가**를 본다(실행 증명은 test_70).
+        self.assertIn('a["name"] != "latest.json" and cache_hit(dest, a)', src)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# X-6 (2026-09-24 · TICKET=v116-rel) — 옛 exe 를 담은 zip 재사용 · 크기-같음 캐시
+# ─────────────────────────────────────────────────────────────────────────────
+def _sha(b):
+    import hashlib
+    return hashlib.sha256(b).hexdigest()
+
+
+def _zip_bytes(member, payload):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(member, payload)
+    return buf.getvalue()
+
+
+class _Resp:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def read(self): return b"{}"
+
+
+class MockReleaseMainTests(unittest.TestCase):
+    """main() 을 **가짜 릴리스**로 끝까지 돌린다 — GitHub 호출 0(token·api·download·업로드 urlopen 전부 주입).
+
+    ★왜 소스 핀이 아니라 실행인가: X-6 사고는 「있음 → 생략」이라는 **분기의 결과**가 틀린 것이었다.
+      문자열이 있는지로는 분기 결과를 못 잰다 — 옛 exe zip 이 있는 드래프트를 모의로 세우고 main 이
+      실제로 무엇을 만들고 무엇을 올리는지를 본다. make-win-zip.py 는 **진짜**를 돌린다(재생성 실물).
+    묶음 = 윈도우 단독(맥 레인 0 · latest.json darwin 행 0) — 게이트는 「대상 없음」 경로라 플랫폼 무관.
+    """
+
+    V = "1.1.6"
+    TAG = "v1.1.6"
+    C12 = "0123456789ab"
+    EXE = "cysr_1.1.6_x64-setup.exe"
+    ZIP = "cysr_1.1.6_x64-setup.zip"
+    SIG = "cysr_1.1.6_x64-setup.exe.sig"
+    NEW_EXE = b"MZ-new-exe-" + b"\x01" * 4096
+    OLD_EXE = b"MZ-old-exe-" + b"\x02" * 4096          # 같은 크기 · 다른 바이트(5차 ae8bec15 재현)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self.backup = os.path.join(self.root, "backup")
+        self.outdir = os.path.join(self.backup, self.TAG + "-assets")
+        self.calls = []                 # (종류, 상세) — 네트워크 모의 기록
+        self.downloads = []
+        latest = json.dumps({"version": self.V, "build_id": self.C12 + ".20260924T0000Z",
+                             "platforms": {"windows-x86_64": {"url": "u", "signature": "s"}}}).encode()
+        self.assets = {self.EXE: self.NEW_EXE, self.SIG: b"sig-new-" + b"A" * 404, "latest.json": latest}
+        self.digests = True             # False = 자산 JSON 에 digest 칸 없음
+        self.served = {}                # 이름 → 다운로드가 실제로 돌려줄 바이트(기본 = assets)
+        self.saved = {}
+        for name in ("token", "api", "download", "tag_commit12", "BACKUP_ROOT", "HERE"):
+            self.saved[name] = getattr(rp, name)
+        self.saved_urlopen = rp.urllib.request.urlopen
+        rp.token = lambda: "mock-token"
+        rp.api = self._api
+        rp.download = self._download
+        rp.tag_commit12 = lambda tag, run=None: self.C12
+        rp.BACKUP_ROOT = self.backup
+        rp.urllib.request.urlopen = self._urlopen
+
+    def tearDown(self):
+        for name, v in self.saved.items():
+            setattr(rp, name, v)
+        rp.urllib.request.urlopen = self.saved_urlopen
+        self._tmp.cleanup()
+
+    # ── 모의 네트워크 ──
+    def _rel(self):
+        assets = []
+        for i, (name, data) in enumerate(sorted(self.assets.items())):
+            a = {"name": name, "size": len(data), "url": "mock://asset/%s" % name, "id": 100 + i}
+            if self.digests:
+                a["digest"] = "sha256:" + _sha(data)
+            assets.append(a)
+        return {"draft": True, "assets": assets,
+                "upload_url": "https://uploads.invalid/repos/x/releases/1/assets{?name,label}"}
+
+    def _api(self, path, tok, method="GET", data=None, ctype="application/json"):
+        self.calls.append((method, path))
+        if method == "GET" and path.endswith("/releases/tags/%s" % self.TAG):
+            return self._rel()
+        if method == "DELETE" and "/releases/assets/" in path:
+            return {}
+        raise AssertionError("모의 밖 API 호출: %s %s" % (method, path))
+
+    def _download(self, url, dest, tok):
+        name = url.rsplit("/", 1)[1]
+        self.downloads.append(name)
+        with open(dest, "wb") as fh:
+            fh.write(self.served.get(name, self.assets[name]))
+
+    def _urlopen(self, req, *a, **k):
+        url = req.full_url
+        if not url.startswith("https://uploads.invalid/"):
+            raise AssertionError("모의 밖 네트워크 호출: %s" % url)
+        self.calls.append(("POST", url.split("?name=", 1)[1], req.data))
+        return _Resp()
+
+    # ── 도우미 ──
+    def run_main(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = rp.main(["release-postprocess.py", self.TAG] + list(args))
+        return rc, out.getvalue(), err.getvalue()
+
+    def local(self, name):
+        with open(os.path.join(self.outdir, name), "rb") as fh:
+            return fh.read()
+
+    def inner_sha(self, zbytes):
+        with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+            self.assertEqual(z.namelist(), [self.EXE])
+            return _sha(z.read(self.EXE))
+
+    def sums(self, text):
+        return {ln.split("  ", 1)[1]: ln.split("  ", 1)[0] for ln in text.splitlines() if ln}
+
+    def posts(self):
+        return {c[1]: c[2] for c in self.calls if c[0] == "POST"}
+
+    # ── ⑴ 옛 exe 를 담은 zip 이 드래프트에 있다 → 재생성 + 대조 1줄 일치 ──
+    def test_60_stale_zip_is_regenerated_and_crosscheck_matches(self):
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.OLD_EXE)
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("≠ 현 exe", out)
+        self.assertIn("재생성", out)
+        self.assertNotIn("재생성 생략", out)
+        self.assertEqual(self.inner_sha(self.local(self.ZIP)), _sha(self.NEW_EXE))
+        self.assertIn("✓ zip 내부 대조: zip 속 %s sha=%s · SUMS %s 행=%s → 일치"
+                      % (self.EXE, _sha(self.NEW_EXE), self.EXE, _sha(self.NEW_EXE)), out)
+        self.assertFalse([c for c in self.calls if c[0] in ("POST", "DELETE")], "dry-run 이 올렸다")
+
+    def test_61_apply_replaces_old_zip_asset_with_regenerated_one(self):
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.OLD_EXE)
+        zip_id = [a["id"] for a in self._rel()["assets"] if a["name"] == self.ZIP][0]
+        rc, out, err = self.run_main("--apply")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(("DELETE", "/repos/%s/releases/assets/%d" % (rp.REPO, zip_id)), self.calls)
+        up = self.posts()
+        self.assertEqual(self.inner_sha(up[self.ZIP]), _sha(self.NEW_EXE), "옛 exe zip 을 다시 올렸다")
+        sums = self.sums(up[rp.SUMS_NAME].decode())
+        self.assertEqual(sums[self.EXE], _sha(self.NEW_EXE))
+        self.assertEqual(sums[self.ZIP], _sha(up[self.ZIP]), "SUMS 의 zip 행이 올린 zip 과 다르다")
+        # 순서: 옛 자산 삭제가 새 zip 업로드보다 앞
+        kinds = [(c[0], c[1]) for c in self.calls if c[0] in ("DELETE", "POST")]
+        self.assertLess(kinds.index(("DELETE", "/repos/%s/releases/assets/%d" % (rp.REPO, zip_id))),
+                        kinds.index(("POST", self.ZIP)))
+
+    # ── ⑵ 같은 exe 를 담은 zip → 생략 ──
+    def test_62_matching_zip_is_kept_byte_for_byte(self):
+        zb = _zip_bytes(self.EXE, self.NEW_EXE)
+        self.assets[self.ZIP] = zb
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("zip 속 exe sha = 현 exe sha(%s…) — 재생성 생략" % _sha(self.NEW_EXE)[:16], out)
+        self.assertEqual(self.local(self.ZIP), zb, "생략 분기인데 zip 바이트가 바뀌었다")
+        self.assertIn("✓ zip 내부 대조", out)
+
+    def test_63_unreadable_zip_is_regenerated_not_trusted(self):
+        self.assets[self.ZIP] = b"PK-not-really-a-zip"
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("판독 불가", out)
+        self.assertEqual(self.inner_sha(self.local(self.ZIP)), _sha(self.NEW_EXE))
+
+    # ── ⑶ 대조 불일치 → rc≠0 · 업로드 0 ──
+    def test_64_crosscheck_mismatch_blocks_apply(self):
+        """재생성기가 틀린 zip 을 만들어도(포장 사고 모의) 대조 줄이 --apply 전에 막는다."""
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.OLD_EXE)
+        fake = os.path.join(self.root, "fakebin")
+        os.makedirs(fake)
+        with open(os.path.join(fake, "make-win-zip.py"), "w") as fh:
+            fh.write("import sys, zipfile\n"
+                     "with zipfile.ZipFile(sys.argv[2], 'w') as z:\n"
+                     "    z.writestr(%r, b'wrong-bytes')\n" % self.EXE)
+        rp.HERE = fake
+        rc, out, err = self.run_main("--apply")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("✗ zip 내부 대조", out)
+        self.assertIn("불일치", out)
+        self.assertIn("X-6", err)
+        self.assertFalse(self.posts(), "대조 불일치인데 업로드했다")
+        self.assertFalse([c for c in self.calls if c[0] == "DELETE"], "대조 불일치인데 자산을 지웠다")
+
+    def test_65_crosscheck_unit_contract(self):
+        z = os.path.join(self.root, "w.zip")
+        good = ["%s  %s\n" % (_sha(self.NEW_EXE), self.EXE)]
+        cases = [
+            ("일치", {self.EXE: self.NEW_EXE}, good, True),
+            ("zip 속 옛 exe", {self.EXE: self.OLD_EXE}, good, False),
+            ("엔트리 2개", {self.EXE: self.NEW_EXE, "x.txt": b"x"}, good, False),
+            ("SUMS exe 행 없음", {self.EXE: self.NEW_EXE}, ["%s  other\n" % ("0" * 64)], False),
+        ]
+        for label, members, lines, want in cases:
+            with self.subTest(label):
+                with zipfile.ZipFile(z, "w") as zf:
+                    for n, b in members.items():
+                        zf.writestr(n, b)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertIs(rp.win_zip_crosscheck(z, self.EXE, lines), want)
+
+    # ── 1단계 캐시: 적중 = 로컬 sha256 = 자산 digest 일 때만 ──
+    def prefill(self, name, data):
+        os.makedirs(self.outdir, exist_ok=True)
+        with open(os.path.join(self.outdir, name), "wb") as fh:
+            fh.write(data)
+
+    def test_66_same_size_stale_cache_is_redownloaded(self):
+        """.sig 는 9·10·11차 전부 412 바이트였다 — 크기-같음 캐시는 항상 옛 서명을 SUMS 에 박았다."""
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.NEW_EXE)
+        stale_sig = b"sig-old-" + b"B" * 404
+        self.assertEqual(len(stale_sig), len(self.assets[self.SIG]))
+        self.prefill(self.SIG, stale_sig)
+        self.prefill(self.EXE, self.OLD_EXE)                 # exe 도 같은 크기의 옛 바이트
+        rc, out, err = self.run_main("--apply")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(self.SIG, self.downloads)
+        self.assertIn(self.EXE, self.downloads)
+        sums = self.sums(self.posts()[rp.SUMS_NAME].decode())
+        self.assertEqual(sums[self.SIG], _sha(self.assets[self.SIG]))
+        self.assertEqual(sums[self.EXE], _sha(self.NEW_EXE))
+
+    def test_67_no_digest_means_no_cache(self):
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.NEW_EXE)
+        self.digests = False
+        self.prefill(self.SIG, self.assets[self.SIG])        # 바이트까지 같아도 근거 없으면 불신
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertIn(self.SIG, self.downloads)
+
+    def test_68_digest_match_uses_cache(self):
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.NEW_EXE)
+        self.prefill(self.SIG, self.assets[self.SIG])
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn(self.SIG, self.downloads)
+        self.assertIn("(캐시 · digest 일치) %s" % self.SIG, out)
+
+    def test_69_downloaded_bytes_not_matching_digest_block(self):
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.NEW_EXE)
+        self.served[self.SIG] = b"sig-tampered" + b"C" * 400     # 크기는 같다 — 크기 검사는 통과
+        rc, out, err = self.run_main("--apply")
+        self.assertEqual(rc, 1)
+        self.assertIn("digest 불일치 %s" % self.SIG, err)
+        self.assertFalse(self.posts())
+
+    def test_70_latest_json_is_redownloaded_even_on_digest_match(self):
+        self.assets[self.ZIP] = _zip_bytes(self.EXE, self.NEW_EXE)
+        self.prefill("latest.json", self.assets["latest.json"])
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("latest.json", self.downloads)
+
+    def test_71_digest_parser_rejects_malformed(self):
+        h = "a" * 64
+        self.assertEqual(rp.asset_digest({"digest": "sha256:" + h.upper()}), h)
+        for bad in (None, "", "sha256:", "sha1:" + h, "sha256:" + h[:-1], "sha256:" + "g" * 64, 12):
+            with self.subTest(bad=bad):
+                self.assertIsNone(rp.asset_digest({"digest": bad}))
+        self.assertIsNone(rp.asset_digest({}))
 
 
 if __name__ == "__main__":

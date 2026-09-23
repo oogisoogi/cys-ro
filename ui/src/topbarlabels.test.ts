@@ -1,0 +1,41 @@
+// topbarlabels.test.ts — 상단 단추·끝난 창 표시의 영어 제거(D4 #13) · TICKET=v116-ui-close.
+// ★예외 1개 = 「Control Center」 — 기능 이름으로 사용 설명서·화면 안내 문구 여러 곳이 그 이름으로 가리킨다(이름을 바꾸면
+//   안내가 서로 어긋난다). 이 목록을 늘리려면 이유를 여기 함께 적어라.
+import { describe, it, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+const ALLOW = ["Control Center"];
+
+describe("D4 #13 상단바 단추 글자 = 한국어", () => {
+  const top = html.slice(html.indexOf('<header id="topbar">'), html.indexOf("</header>"));
+  const labels = [...top.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((m) =>
+    m[1].replace(/<span[\s\S]*?<\/span>/g, "").trim(),
+  );
+
+  it("단추 글자에 영어가 없다(허용 목록 제외)", () => {
+    expect(labels.length).toBeGreaterThan(5);
+    for (const l of labels) {
+      const rest = ALLOW.reduce((acc, a) => acc.replace(a, ""), l);
+      expect(/[A-Za-z]/.test(rest)).toBe(false);
+    }
+  });
+
+  it("창 닫기 · 파일 · 업데이트", () => {
+    for (const l of ["창 닫기", "파일", "업데이트"]) expect(labels).toContain(l);
+  });
+
+  it("안내 문구가 옛 영어 단추 이름을 가리키지 않는다", () => {
+    expect(main.includes("상단 Update 버튼")).toBe(false);
+    expect(main).toContain("상단 「업데이트」 버튼");
+  });
+});
+
+describe("D4 #13 끝난 창 제목 꼬리표 = 「(끝남)」", () => {
+  it("제목 배선이 상수를 쓰고, 영어 [exited] 를 화면에 싣지 않는다", () => {
+    expect(main).toContain('const EXITED_TITLE_SUFFIX = " (끝남)";');
+    expect(main).toContain("(s.exited ? EXITED_TITLE_SUFFIX : \"\")");
+    expect(main.includes('" [exited]"')).toBe(false);
+  });
+});

@@ -63,8 +63,11 @@ TICKET=v116-restart-toast · worker-43(surface:1091) · 브랜치 `fix/v116-rest
 - 표적 뮤테이션 18/18.
 - 계수: 읽은 파일 17(main.ts · restartpending.ts/test · updateplan.ts · toastttl.ts · clipath.ts · index.html · style.css · updatebutton/topbarlabels/brandbadge.test.ts · src-tauri main.rs · macupdate.rs · pack.rs · tauri.conf.json · shim.js · v116-headless.ts) · 경로 = 대기 설정 1 · 해제 0 · 확인 입구 4(시작·6시간·포커스·단추) · 설치 입구 2(promptBinaryPatch · autotest) · 재시작 입구 2(알림·단추) · 셸 명령 약 70회.
 
-## 게이트
-(진행 중 — 결과 채움)
+## 게이트(정본 전체 직렬 1회 · 워크플로 run 블록 원문 · gate_runner.py · 분리 스냅샷 · 격리 HOME/TMPDIR · CYS_* 제거 · CYS_NO_AUTOSTART=1)
+- 대상 = **9c41830d**(제품 마지막 커밋 26eeb1a0 포함 · 그 뒤 커밋 001645fb·문서는 CI 가 돌리지 않는 증거 하네스·문서뿐) · 14:51:04 → 15:37:01 · **스텝 98 · rc≠0 0** · 스냅샷 추적 파일 변경 0 · 요약표 = `docs/v116-restart-toast-evidence/gate-9c41830d-summary.tsv`.
+- 기준 = adf50d44(master 13:08 결과 재사용 · 같은 러너) · `compare_runs.py` = **대상 실패 0 · 기준 실패 3 · 신규 0 · 해소 3**. 해소 3 = D07b test_phoenix_c6_reap(기준에서만 실패) — 이 수리는 Rust·데몬 0줄이라 **이 수리의 효과가 아니다**(기준 쪽 일시 실패 · 원인 미규명 · v116-flake-pty 관할 후보).
+- 주요 값: D02 secret-scan --all **clean 1191 파일**(스냅샷) · 작업본 60013101 에서도 clean 1202 파일 · B01 boot-health-full GREEN 149/150(skip 1) · A12 cargo test --bin cys 288/0 · A13 --lib 538/0 · A14 -p cys-app --bins 172/0(restart_after_update 봉인 호출 핀 포함) · D07c cysd --test-threads=1 1059/0 · D07d 538/0 · D07e 288/0 · X01 hwmon 2/0 · D06 bun test 1270/0.
+- tsc: 워크플로 run 블록에 없음(러너 스텝 0) → 로컬 `bunx tsc -p tsconfig.check.json` = 오류 7 = 기존 7 · 신규 0.
 
 ## 곁 항목(범위 밖 · master 판단)
 1. 【기존 결함】 다운로드 진행 중(upd-bin) 헤더 재클릭 → 옛 앱이 같은 판을 새것으로 판정 → 두 번째 install_update(재다운로드). 첫 확인 응답 전 두 번 누르면 설치 확인 창 2개. 수리 전부터 있던 결함(클로드 적대 1R #3) · 수리안 = `installingUpdate` 플래그(첫 await 전 · finally) 1개 + 헤드리스 1칸.

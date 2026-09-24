@@ -4,6 +4,20 @@
 - 표기: 【관측】 = 파일·로그·도구 출력으로 확인 · 【추정】 = 관측에서 끌어낸 해석 · 【미측정】 = 닿지 못함
 - 재료: VM r4 = `~/axdev/master/reports/cysr-115-2026-09-22/vm-verify-r4/`(이하 `R4/`) · 시각 UTC
 
+## 0-F. 최종(2026-09-24 13:1x · master#50e24753 ACCEPT)
+
+- **판정**: ACCEPT — 코드 최종 = `5c8890d1`(526325bf 이후 28커밋 · 이 문서 갱신 커밋은 그 뒤 1개 · 로컬 · push 0). master 보고서 = `~/axdev/master/reports/cysr-116-plan/v116-pack/MASTER-REVERIFY-5c8890d1.md`(부모 `…-8f5b0878.md`).
+- **재개 뒤 추가분**: ① phoenix 진행 중 묘비 존중 `fbdd3941` ③ 빈 좌석 회수 유예 600초 `3e8e683a` · 시험 cysd 누수 수리 `8f439373`(test_dept_name_guard CYS_* 격리·정리·잔존 0 단언) · 시크릿 스캔 걸림 수리 `5c8890d1`(픽스처 `/Users/u`→`/Users/x` · 문서 사용자 경로 → `$HOME`).
+- **D07c 정직 기록**: 5c8890d1 정본 게이트 1회차(master 러너 · 12:32~13:06 · 102스텝)에서 D07c(`cargo test --bin cysd -- --test-threads=1 --skip hwmon::`) rc=101 · 1042/2 — 두 실패(`surface_create_never_blocks_on_config_only_evidence` · `surface_create_privileged_gate_keeps_lock_order_no_deadlock`) 모두 `openpty failed … Device not configured`(ENXIO). 델타에 Rust 0 · 단독 재실행 ok · 전체 재실행 1044/0 · master 판단 = 호스트 PTY 고갈 환경 원인(같은 시각 다른 좌석 X-7 도 ENXIO). **1회차 원결과는 적색이었다**.
+- **편입 때 주의점(병합은 1086 · master 지시 뒤 · 이 좌석은 병합 안 함)**:
+  - 겹치는 파일(실측 `git diff --name-only`): T-USAGE 와 `src/bin/cysd/handlers.rs`·`main.rs` · T-NUM 과 `handlers.rs`·`state.rs`. 순서대로 `git merge-tree` 모의(usage+pack → +num) = 텍스트 충돌 0(13:1x · usage d24228db · num 17cc0a68 기준 — 그 뒤 브랜치가 움직이면 재확인).
+  - handlers.rs: 내 변경 = `org.status` 팔 daemon 블록 `auto_restore` 1키 · T-USAGE = `usage.report` 팔 — 같은 `dispatch` 함수의 다른 match 팔(의미 충돌 없음 판단).
+  - state.rs: 내 변경 = Daemon 필드 1 + 생성자 1줄(auto_restore 단계) — T-NUM ② 가 state.rs 를 크게 건드리므로 병합 뒤 cysd 빌드·`v116_auto_restore_*` 2시험 재확인.
+  - CI 3파일(ci-branch·pack-release·release)의 스위트 목록 긴 줄에 새 4종을 덧붙였다 — 다른 티켓도 같은 줄에 덧붙이면 줄 단위 충돌이 난다(이번 모의에선 0). 해소 시 4종(`test_d1_4_orphan_reap` · `test_v116_rb1_formation` · `test_v116_auto_restore_status` · `test_v116_phoenix_midrun_tomb`)이 3레인 모두 남는지 확인.
+  - `BUILTIN_JOBS_VERSION` 범프 없음(심박 잡 문자열 무변경 — §4).
+  - `test_v116_auto_restore_status` 는 release.yml build 잡에서만 실제로 돈다(그 밖 레인 SKIP 초록).
+  - 1.1.7 백로그 = §5(P4 · P5 · B 데몬 등록 시 묘비 해제 억제 · seat_state 뿌리 pid) · 목록 밖 시험 25개의 CYS_* 미격리 후보(grep 기반 · 미측정)는 master 판단 대기.
+
 ## 0. 파킹 델타(2026-09-24 08:5x · master#eee74a97 · 본부 cysr 1.0.2→1.1.5 업데이트 대기)
 
 - **끝난 것**: R-B1 원인(§1) · agent_alive 판정(§2) · 설계·판정 A(§3·§4) · D1 #4 + B8 뿌리 방어선 · R-B1 P1·P1′(=D1 #5)·P2-b·P3 구현 · 이종 검증 **수렴**(Fable 2R ACCEPT · agy 2R dry — §7-1) · 디버깅 패스(회귀·cargo 직렬 1045/0·뮤턴트 13 중 12 + M12 재처리 KILLED — §7-2) · 성찰 2회차(§7-3) · VM 체크리스트(§6) · 1.1.7 백로그(§5) · 기억 증류 1건(project_cysd-seat-state-root-pid-blind).

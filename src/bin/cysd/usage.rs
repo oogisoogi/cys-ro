@@ -2475,19 +2475,28 @@ mod tests {
         let revisit = st(&tails);
         super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), false, 1200.0);
         let registered = st(&tails);
-        // 상한: 기억 파일 수는 GRACE_MEMO_CAP 을 넘지 않는다
-        for i in 0..super::GRACE_MEMO_CAP + 4 {
+        // 상태가 바뀐 뒤 재방문 = 최신 상태를 되찾는다(옛 항목이 남아 낡은 상태를 복원하지 않는다)
+        super::reattach_tail(&daemon, &mut tails, s.id, f2.clone(), true, 1210.0);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1220.0);
+        let latest = st(&tails);
+        // 상한: 기억 파일 수는 GRACE_MEMO_CAP 을 넘지 않고, 넘치면 **가장 오래전에 떠난** 것부터 잊는다
+        let n = super::GRACE_MEMO_CAP + 4;
+        for i in 0..n {
             super::reattach_tail(&daemon, &mut tails, s.id, dir.join(format!("x{i}.jsonl")), true, 1300.0 + i as f64);
         }
-        let memo_len = tails[&s.id].grace_memo.len();
+        let memo: Vec<_> = tails[&s.id].grace_memo.iter().map(|(p, _)| p.clone()).collect();
+        let memo_len = memo.len();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(first, (s1.clone(), 1000.0, false, None), "처음 보는 파일 = 부착 시각");
         assert_eq!(new1, (f1.clone(), 1100.0, false, None), "새 세션이 옛 세션의 끝난 유예·보류 77%를 물려받았다 — 유예 없이 오발");
         assert_eq!(back1, (s1.clone(), 1000.0, true, Some(77)), "원 세션으로 돌아왔는데 원 세션 상태를 잃었다");
         assert_eq!(back2, (s1.clone(), 1000.0, true, Some(77)), "새 파일이 잇달아 생기자 원 세션 유예가 재시작 — 참 경보 영영 보류");
         assert_eq!(revisit.1, 1100.0, "전에 본 파일로 돌아오면 그 파일의 기준 — 오가기마다 재시작하면 영영 침묵(opus 1R)");
-        assert_eq!(registered, (s1, 1200.0, false, None), "등록 경로는 언제나 새로 시작");
-        assert!(memo_len <= super::GRACE_MEMO_CAP, "기억 파일 수 무제한 증가({memo_len})");
+        assert_eq!(registered, (s1.clone(), 1200.0, false, None), "등록 경로는 언제나 새로 시작");
+        assert_eq!(latest, (s1.clone(), 1200.0, false, None), "재방문이 최신 상태가 아니라 낡은 기억(1000·77%)을 복원했다");
+        assert_eq!(memo_len, super::GRACE_MEMO_CAP, "기억 파일 수가 상한과 다르다 — 무제한 증가 또는 기억 소실");
+        assert!(memo.contains(&dir.join(format!("x{}.jsonl", n - 2))), "방금 떠난 파일을 잊었다 — 최신 쪽을 버림");
+        assert!(!memo.contains(&s1), "가장 오래전에 떠난 파일이 남았다 — 오래된 것부터 잊지 않음");
         // 배선: 관측 루프의 경로 전환이 이 함수를 거친다(휴리스틱 발견은 실제 프로필 폴더를 읽어 단위 시험으로 몰 수 없다)
         let src = include_str!("usage.rs");
         let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];

@@ -9,7 +9,23 @@ master 판정(원장 대조 성립): `master#9a304fb3`(08:09:33 · F2·F3 = A + 
 
 ---
 
-## ★ §0 델타 — 파킹(2026-09-24 08:5x · master#85b77a21 「park-for-cysr115-0924」 · 우리 맥 1.0.2→1.1.5 업데이트 대비)
+## ★ §0 델타(최신) — 재개 1회차 매듭(2026-09-24 10:1x · master#b29b9d60 재개 → master#d2e852f0·561dbb60 계정 이관 매듭)
+
+**어디까지 했나(재개 뒤 · 커밋 d5b1bab6..HEAD)**:
+- Fable 2-2 = 격리 재현 성립(master 역할 페인 안 node-recover → 스텁은 `--continue` 로 떴는데 set_meta `meta_denied` → rc 1 · run_boot 이면 reclaim=kill) → 수리 12157cce(CLI: meta_denied ∧ 좌석 행 agent·agent_bin 정확 일치일 때만 무해 · 데몬 게이트 불변 · surface.list 에 agent_bin 키) → 격리 재실측 rc 0 · 1초 뒤 alive True · 역할 유지 · 시험 6176dd7e·12128d7c · 뮤턴트 6/6.
+- Fable 3-1 = master#4d8f12ec 판정 A → ba4e1cfb(기동 줄 통과 지점 1곳 · 그 좌석 큐의 launch_line_matches_seat 일치분만 폐기 · queue.dropped reason stale_launch_line · count · surface_ref · line_sha8 · WAL 영속) · 시험 3592234d(양방향 · 5회 반복 초록) · 뮤턴트 7/7.
+- Fable 4 = 9bcd842e(lib AGENT_LAUNCH_KEY) · b8f8fa85(접미 시험) · 뮤턴트 2/2.
+- D3-o·F7·agy 1R 반영분 뮤턴트 8개 — 7 KILLED · 「조립기 실패 폴백의 DRAIN 제거」 생존 → e7bd7df8 시험(F7f) 추가 뒤 KILLED.
+- 검증: agy 2R = **ACCEPT**(`~/axdev/master/reports/cysr-116-seat/hetero-agy-seat-2.md` · 1R 6건 전부 CLOSED · 새 P2 1 = 이스케이프 따옴표 · P3 1 = env/sudo 래퍼 cmd — 둘 다 기동 줄을 거부하는 방향(오통과 아님) · 미판정). Fable 2R = **ACCEPT**(`…/fable-adv-seat-2.md` · P2 1 = 3-1 은 node-recover 경로만 덮고 업그레이드 뒤 restore/rehome 경로의 1.1.5 잔재는 미봉합 · P3 = 2-2 무해 경로의 role 회수 창(60s 경계 ±1틱) · 산 좌석 pane-caller rc 0 허위 recovered(근본 = 선재 2-1) · 첫 낱말이 에이전트 이름인 보류 산문 폐기 · 생존 뮤턴트(bin 인자 오전달 · now_empty 분기)). 두 검증자 모두 ACCEPT = 수렴 조건 충족 · 지적 판정은 미완.
+- 전체 회귀 1벌(HEAD 3592234d · 격리 HOME · 직렬 · 10:02~10:12): lib 539 passed / 0 failed(1 ignored) · cys 294 passed / 0 failed · cysd(--test-threads=1) 1047 passed / 0 failed(1 ignored) · 빌드 rc 0 【관측】. 팩 훅 시험 8종 rc 0(뮤턴트 기준선 · e7bd7df8 뒤 test_t6 재실행 OK).
+
+**다음 할 일(순서)**:
+1. 2R 지적 판정: Fable P2(3-1 범위 — restore/rehome 경로의 옛 기동 줄) = 범위 확대라 **master 판정 요청**부터 · Fable P3 role 회수 창 · 생존 뮤턴트 2 · agy P2/P3 는 반박/수용 근거 정리.
+2. 9단계 성찰 2회차(코드) · 정밀 디버깅 패스 · HANDOFF 본문(§3 시험 · §4 4군 · §6 검증) 갱신 · 【확인요청】.
+
+**함정(추가)**: agy headless 는 `--mode plan` 만으로는 명령 권한이 자동 거부돼 출력 0(err 에 jetski 문구) — 1R 선례대로 `--dangerously-skip-permissions` + 의뢰문 읽기 전용 명시. zsh 에서 `for b in "--lib x"` 식 인자 묶음은 한 낱말로 넘어간다(시험 스크립트는 bash 파일로).
+
+## §0 델타(이력) — 파킹(2026-09-24 08:5x · master#85b77a21 「park-for-cysr115-0924」 · 우리 맥 1.0.2→1.1.5 업데이트 대비)
 
 **어디까지 했나**: 필수 3(X-4 · N-4 env · F2) + 가능 3(D3-o · F7 · D4 #15) 구현·커밋 · 격리 실측(X-4 대조 · N-4 구판/신판 스텁 · F2 12칸 표) · 뮤턴트 25/25 KILLED(X-4 7 · F2 6 · N-4 6 · 교체 뮤턴트 1 포함 — D3-o·F7 뮤턴트는 미실행) · 팩 훅 시험 8종 rc 0 · agy 1R(REJECT 6 → 수용 2 커밋 9482ea23 · 반박 4) · Fable 적대 1R(X-4 · ACCEPT · 선재 P2 3건). 최종 커밋 = 이 문서 커밋.
 

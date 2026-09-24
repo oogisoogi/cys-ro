@@ -7,11 +7,11 @@
 // ★왜 대체 화면을 풀지 않는가(1049l 미포함 — trackfilter reset 과 같은 편): 풀면 죽은 TUI 의 마지막
 //   화면(오류 문구일 수 있다)이 사라지고 옛 주 화면이 나온다. 배너는 지금 보이는 화면의 내용 뒤에 붙인다.
 
-export const EXITED_BANNER = "\r\n\x1b[31m[surface exited]\x1b[0m\r\n";
-// 대체 화면이 마지막 행까지 찼을 때의 판 — 뒤 줄바꿈을 뺀다. 대체 화면엔 스크롤백이 없어 줄바꿈 1번마다 맨 윗줄이
-// 영구히 사라진다(opus 적대 1R MINOR-1: 종전 판은 2줄 손실). 배너 자리를 만드는 앞 줄바꿈 1번(1줄)이 최소 손실이다.
-// 주 화면은 밀려난 줄이 스크롤백으로 가므로 종전 판 그대로 둔다.
-export const EXITED_BANNER_ALT_LAST = "\r\n\x1b[31m[surface exited]\x1b[0m";
+const BANNER_TEXT = "\x1b[31m[surface exited]\x1b[0m";
+export const EXITED_BANNER = `\r\n${BANNER_TEXT}\r\n`;
+// 대체 화면이 가득(마지막 행에 내용)일 때의 판 — 배너 자리를 만드는 앞 줄바꿈 1번만. 대체 화면엔 스크롤백이 없어
+// 마지막 행에서의 줄바꿈 1번마다 맨 윗줄이 영구히 사라진다 — 가득일 때 1줄이 최소 손실이다(opus 적대 1R MINOR-1: 종전 2줄).
+export const EXITED_BANNER_ALT_LAST = `\r\n${BANNER_TEXT}`;
 
 // 배너 앞에 푸는 상태 — 죽은 앱이 남긴 스크롤 영역(DECSTBM)이 있으면 절대 좌표 이동이 영역 안에 갇히거나
 // (원점 모드 DECOM 이 켜진 경우) 영역 밖 마지막 줄의 줄바꿈이 스크롤되지 않아 배너가 그 줄을 덮어쓴다.
@@ -22,18 +22,31 @@ const RESET_MARGINS = "\x1b[r";
 
 export type ScreenView = { rows: number; cursorY: number; line: (y: number) => string; alt?: boolean };
 
-/// 배너 바로 앞 줄(0-기준 화면 행) — 커서 줄과 「그 아래 마지막 내용 줄」 중 더 아래.
-/// 커서 아래에 내용이 없으면 커서 줄 그대로(종전과 같은 자리 — 멀쩡한 화면은 바뀌지 않는다).
-export function bannerRow(v: ScreenView): number {
-  for (let y = v.rows - 1; y > v.cursorY; y--) {
+// y > above 인 행 중 마지막 내용 줄 — 없으면 above.
+function lastContentRow(v: ScreenView, above: number): number {
+  for (let y = v.rows - 1; y > above; y--) {
     if (v.line(y).trim() !== "") return y;
   }
-  return v.cursorY;
+  return above;
 }
 
+/// (주 화면) 배너 바로 앞 줄(0-기준 화면 행) — 커서 줄과 「그 아래 마지막 내용 줄」 중 더 아래.
+/// 커서 아래에 내용이 없으면 커서 줄 그대로(종전과 같은 자리 — 멀쩡한 화면은 바뀌지 않는다).
+export function bannerRow(v: ScreenView): number {
+  return lastContentRow(v, v.cursorY);
+}
+
+/// 주 화면 = 종전 배너(앞뒤 줄바꿈)를 bannerRow 뒤에 — 밀려난 줄은 스크롤백으로 간다.
+/// 대체 화면 = 커서와 무관하게 「마지막 내용 줄 바로 다음 행」에 줄바꿈 없이 쓴다 — 스크롤백이 없어 줄바꿈이 곧
+/// 윗줄 영구 손실이기 때문이다(opus 2R MINOR-3 · agy 2R: 마지막 행이 비었는데 뒤 줄바꿈·커서 줄 줄바꿈으로 1줄을 잃던 경우).
+/// 가득일 때만 앞 줄바꿈 1번(최소 손실 1줄). 죽은 창이라 배너 뒤 커서 자리는 쓸모가 없다.
 export function exitedBannerSeq(v: ScreenView): string {
-  const row = bannerRow(v);
-  return `${RESET_MARGINS}\x1b[${row + 1};1H${v.alt && row === v.rows - 1 ? EXITED_BANNER_ALT_LAST : EXITED_BANNER}`;
+  if (v.alt) {
+    const last = lastContentRow(v, -1);
+    if (last === v.rows - 1) return `${RESET_MARGINS}\x1b[${v.rows};1H${EXITED_BANNER_ALT_LAST}`;
+    return `${RESET_MARGINS}\x1b[${last + 2};1H${BANNER_TEXT}`;
+  }
+  return `${RESET_MARGINS}\x1b[${bannerRow(v) + 1};1H${EXITED_BANNER}`;
 }
 
 type Line = { translateToString(trimRight?: boolean): string };

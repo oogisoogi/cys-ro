@@ -227,8 +227,14 @@ with open(pend, "w", encoding="utf-8") as f:
 code, out = run(env, "promote-if-pending")
 check("8a 교차버전 승격 통과(OR-포함: ceo ⊇ md)", code == 0 and md(home) == CEO_V2,
       "exit=%d md=%r %s" % (code, md(home)[:40], out[-200:]))
-check("8b 낡은 .pre-ceo 무접촉(백업 덮어쓰기 금지)",
-      open(pre, encoding="utf-8").read() == MASTER_BODY)
+# ★v116-ceo-directive-hold(master 판정 ⑶ 2026-09-24): 옛 기대 「낡은 .pre-ceo 무접촉」은 결함을 의도로
+#   박은 것이었다(md 가 현행 표준 원본인데 옛 백업이 남으면 강등이 옛 판을 되살림 — 1098 실측). 새 기대 =
+#   md(현행 표준 v2)가 새 백업이 되고 옛 백업(v1)은 지우지 않고 .stale- 로 보존.
+_st8 = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo.stale-")]
+check("8b 낡은 .pre-ceo → 현행 표준(md)이 새 백업 · 옛 백업은 .stale- 로 보존",
+      open(pre, encoding="utf-8").read() == V2_BODY and len(_st8) == 1
+      and open(os.path.join(_dirs, _st8[0]), encoding="utf-8").read() == MASTER_BODY,
+      "pre=%r stale=%r" % (open(pre, encoding="utf-8").read()[:30], _st8))
 check("8c PENDING 해소", not os.path.exists(pend))
 # 차단 강도 불변: 같은 교차버전 형상에서 스텁은 md·.pre-ceo 둘 다 미포함 = 여전히 보류.
 with open(mdp, "w", encoding="utf-8") as f:

@@ -1,0 +1,17 @@
+cysd run 1: test result: ok. 1072 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 166.55s
+cysd run 2: test result: ok. 1072 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 166.49s
+cysd run 3: test result: ok. 1072 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 99.19s
+cys: test result: ok. 289 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 136.10s
+lib: test result: ok. 535 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 286.97s
+cross 1: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 30.66s
+cross 2: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 30.25s
+cross 3: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 27.17s
+cross 4: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 27.28s
+cross 5: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 31.00s
+cross 6: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 31.74s
+cross 7: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 42.08s
+cross 8: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 32.46s
+cross 9: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 31.37s
+cross 10: test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1047 filtered out; finished in 30.77s
+
+[exited with code 0]

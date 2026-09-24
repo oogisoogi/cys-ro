@@ -1,0 +1,30 @@
+CONTROL cysd v116_num_tests rc=0 → GREEN
+CONTROL cysd recall::tests::max_surface_id rc=0 → GREEN
+CONTROL cysd v116_num_rpc_tests rc=0 → GREEN
+CONTROL cysd recall::tests::t10 rc=0 → GREEN
+CONTROL --lib display_ref_grammar rc=0 → GREEN
+M1-산좌석검사제거: rc=101 KILLED · t1_pick_display_truth_table , t4_invariants_hold_on_normal_chains , t4_invariants_hold_on_corrupted_table_chains 
+M2-W검사제거: rc=101 KILLED · t1_holders_from_rows_rules , m26_suspension_blocks_the_s_counterexample , t4_invariants_hold_on_corrupted_table_chains , t1_pick_display_truth_table 
+M3-경계<를<=로: rc=101 KILLED · t1_holders_from_rows_rules , t1_pick_display_truth_table 
+M4-후보=직전+1(빈자리첫번호): rc=101 KILLED · t1_holders_from_rows_rules , t1_pick_display_truth_table , m26_suspension_blocks_the_s_counterexample , t4_invariants_hold_on_normal_chains 
+M5-999뒤1로안돎: rc=101 KILLED · t1_pick_display_truth_table 
+M6-I1보호제거(탐색): rc=101 KILLED · t1_pick_display_truth_table , m26_suspension_blocks_the_s_counterexample , t4_invariants_hold_on_corrupted_table_chains , t2_external_damage_triggers_suspension_once 
+M7-spawn_failed도막힘: rc=101 KILLED · t1_holders_from_rows_rules 
+M8-음수경과를오래됨으로: rc=101 KILLED · t1_pick_display_truth_table 
+M9-시드에서surface_numbers제거: rc=101 KILLED · t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , t2_external_damage_triggers_suspension_once , t2_seed_includes_surface_numbers_x10 , t2_restart_keeps_blocks_and_closes_orphans 
+M9b-시드에서surface_numbers제거(recall회귀): rc=101 KILLED · max_surface_id_survives_full_surface_prune_via_chains 
+M10-부팅고아처리제거(영구막힘): rc=101 KILLED · t1_holders_from_rows_rules , t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , t2_restart_keeps_blocks_and_closes_orphans 
+M11-INSERT를PTY뒤로: rc=101 KILLED · m11_numbers_insert_precedes_openpty_in_source , pk_conflict_alarms_and_never_overwrites_foreign_row , t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , t13_write_failure_still_creates_seats 
+M11b-시드실패를경보없이0으로: rc=101 KILLED · t2_unreadable_db_alarms_seed_failed 
+M11c-표만들기전에3갈래UNION시드: rc=101 KILLED · t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , t2_seed_includes_surface_numbers_x10 , t2_external_damage_triggers_suspension_once , t2_fresh_install_seed_one_no_alarm 
+M11d-⑴에서새표만만듦: rc=101 KILLED · t2_fresh_install_seed_one_no_alarm , t13_write_failure_still_creates_seats , t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , t11_two_sockets_are_independent 
+M11e-고아UPDATE실패때스냅샷버림: rc=101 KILLED · t2_readonly_db_keeps_snapshot_and_alarms_write_io_once 
+M12-parse_surface_ref가#를벗김: rc=101 KILLED · t3_destructive_rpcs_do_not_know_hash 
+M12b-parse_surface_ref가#를벗김(lib): rc=101 KILLED · display_ref_grammar_truth_table 
+M13-surface.close가display_no를받음: rc=101 KILLED · t3b_only_resolve_display_reads_display_no 
+M14-다찼을때생성거부: rc=101 KILLED · t2_external_damage_triggers_suspension_once 
+M20-prune이대응표삭제: rc=101 KILLED · t10_prune_never_touches_surface_numbers 
+M21-대응표공용경로: rc=101 KILLED · t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , t2_external_damage_triggers_suspension_once , t2_fresh_install_seed_one_no_alarm , t2_unreadable_db_alarms_seed_failed 
+M24-쓰기실패를생성실패로: rc=101 KILLED · t2_unreadable_db_alarms_seed_failed , t13_write_failure_still_creates_seats , t2_readonly_db_keeps_snapshot_and_alarms_write_io_once 
+M26-번호정지제거: rc=101 KILLED · m26_suspension_blocks_the_s_counterexample , t4_invariants_hold_on_corrupted_table_chains , t2_external_damage_triggers_suspension_once 
+원복 확인: 대상 파일 바이트 동일

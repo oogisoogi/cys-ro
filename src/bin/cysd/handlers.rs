@@ -324,6 +324,17 @@ fn resolve_surface_id(params: &Value) -> Option<u64> {
     }
 }
 
+/// ★v116-num: 「3시간 전」 류 안내 문구(surface.resolve_display 거부 메시지 전용). 음수(시계 뒤로)는 0초.
+fn ago_label(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    match s {
+        0..=59 => format!("{s}초"),
+        60..=3599 => format!("{}분", s / 60),
+        3600..=86_399 => format!("{}시간", s / 3600),
+        _ => format!("{}일", s / 86_400),
+    }
+}
+
 /// ★W2/P0-6: surface.close 의 cause 파라미터 파싱 — "reap"=Reap(묘비 미생성·부활 대상), 그 외/부재=OwnerClose
 /// (묘비 생성·좀비 부활 차단). 미지 값은 안전측 OwnerClose(오타로 부활 폭주 방지). 순수 함수(테스트 가능).
 fn close_cause_from_params(params: &Value) -> governance::CloseCause {
@@ -3047,6 +3058,12 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
 
         "system.identify" => {
             let caller = params.get("caller").cloned().unwrap_or(Value::Null);
+            // ★v116-num: 호출 좌석이 목록에 있으면 그 보이는 번호 · 없거나 번호 없음이면 null.
+            let caller_display_no = caller
+                .get("surface_id")
+                .and_then(|v| v.as_u64())
+                .and_then(|sid| daemon.get_surface(sid))
+                .and_then(|s| s.display_no);
             Reply::Single(ok_response(
                 &id,
                 json!({
@@ -3057,8 +3074,51 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     "latest_seq": daemon.bus.latest_seq(),
                     "surface_count": daemon.surfaces.lock().unwrap().len(),
                     "caller": caller,
+                    "caller_display_no": caller_display_no,
                 }),
             ))
+        }
+
+        // ★v116-num(T-NUM): 보이는 번호 → 내부 번호(읽기 전용 · 설계 §5). 사람의 `#N` 을 CLI 가 여기서
+        //   푼 뒤 **내부 번호로** 명령을 보낸다. 푸는 범위 = 이 데몬의 · 지금 목록에 있는 좌석만 —
+        //   닫힌 번호·옛 번호는 풀지 않는다(마지막 주인은 안내 문구에만 싣는다 · M18). 목록과 같은
+        //   정보라 권한 검사를 더하지 않는다. ⚠`display_no` 인자를 읽는 곳은 이 RPC 하나뿐이다(T3b 핀).
+        "surface.resolve_display" => {
+            let n = params
+                .get("display_no")
+                .and_then(|v| v.as_u64())
+                .filter(|n| (1..=u64::from(cys::DISPLAY_NO_MAX)).contains(n));
+            let Some(n) = n else {
+                return Reply::Single(err_response(
+                    &id,
+                    "display_out_of_range",
+                    "보이는 번호는 #1~#999 입니다",
+                ));
+            };
+            let n = n as u16;
+            match daemon.resolve_display(n) {
+                Ok(s) => Reply::Single(ok_response(
+                    &id,
+                    json!({"surface_id": s.id, "surface_ref": surface_ref(s.id),
+                           "display_no": n,
+                           "socket": daemon.socket_path.to_string_lossy()}),
+                )),
+                Err(last) => {
+                    let msg = match last {
+                        Some((sid, Some(closed_at))) => format!(
+                            "#{n} 인 좌석이 지금 없습니다(마지막 주인 {} · {} 전 닫힘). 다른 좌석으로 보내지 않습니다.",
+                            surface_ref(sid),
+                            ago_label(crate::state::now_epoch() - closed_at)
+                        ),
+                        _ => format!("#{n} 인 좌석이 지금 없습니다. 다른 좌석으로 보내지 않습니다."),
+                    };
+                    let mut resp = err_response(&id, "display_not_live", &msg);
+                    if let Some((sid, closed_at)) = last {
+                        resp["error"]["last"] = json!({"surface_id": sid, "closed_at": closed_at});
+                    }
+                    Reply::Single(resp)
+                }
+            }
         }
 
         "surface.create" => {
@@ -3224,7 +3284,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         return Reply::Single(ok_response(
                             &id,
                             json!({"surface_id": sid, "surface_ref": surface_ref(sid),
-                                   "pid": pid, "idempotent_reuse": true}),
+                                   "pid": pid, "idempotent_reuse": true,
+                                   "display_no": daemon.get_surface(sid).and_then(|s| s.display_no)}),
                         ));
                     }
                 }
@@ -3319,6 +3380,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         let mut title_now = s.title.lock().unwrap();
                         if let Some(next) = crate::panetitle::initial_title(
                             s.id,
+                            s.display_no, // ★v116-num: 제목 번호 = 보이는 번호(내부 번호 아님)
                             role_now.as_deref(),
                             Some(s.cwd.as_str()),
                             Some(title_now.as_str()),
@@ -3426,6 +3488,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     Reply::Single(ok_response(
                         &id,
                         json!({"surface_id": s.id, "surface_ref": surface_ref(s.id), "pid": s.pid,
+                               "display_no": s.display_no, // ★v116-num
                                // (W1) 데몬이 기록한 권위 config_dir 반환 — 호출자(launch/restore)가
                                // resume 사전검증 게이트·restore 인라인 오버라이드의 결정론 소스로 쓴다.
                                "claude_config_dir": s.claude_config_dir.lock().unwrap().clone()}),
@@ -3498,6 +3561,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     json!({
                         "surface_id": s.id,
                         "surface_ref": surface_ref(s.id),
+                        // ★v116-num: 사람 눈의 보이는 번호(1..=999 · null=「—」) — 표시 전용.
+                        "display_no": s.display_no,
                         "title": s.title.lock().unwrap().clone(),
                         "role": s.role.lock().unwrap().clone(),
                         "cmd": s.cmd,
@@ -6735,6 +6800,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     json!({
                         "surface_id": s.id,
                         "surface_ref": surface_ref(s.id),
+                        // ★v116-num: surface.list 와 같은 키·같은 의미(앱 사이드바·CSO 가 같은 사실을 보게).
+                        "display_no": s.display_no,
                         "role": s.role.lock().unwrap().clone(),
                         "title": s.title.lock().unwrap().clone(),
                         "cwd": s.cwd.clone(),
@@ -18722,5 +18789,166 @@ mod tests {
         // TTL 을 넘기면 재관측 — 이제 부재다.
         assert_eq!(config_json_mtime_memo(&d, now + 60.0), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// ★v116-num(T-NUM) RPC 시험 — 설계 §9 T3(파괴 RPC 는 `#` 를 모른다) · T3b(소스 고정 핀) ·
+/// §5 필드(`display_no` · `caller_display_no` · `surface.resolve_display`).
+#[cfg(test)]
+mod v116_num_rpc_tests {
+    use super::*;
+
+    fn iso() -> Arc<Daemon> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-v116rpc-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        // 소켓 파일 이름 고유 — 윈도 state_dir 는 파일 이름 슬러그만 본다(Fable code-1R MED-2).
+        Daemon::new(dir.join(format!("v116rpc-{}-{seq}.sock", std::process::id())))
+    }
+
+    fn call(d: &Arc<Daemon>, method: &str, params: Value) -> Value {
+        match dispatch(d, Request { id: json!(1), method: method.into(), params }, None) {
+            Reply::Single(v) => v,
+            _ => json!({"ok": true, "non_single": true}),
+        }
+    }
+
+    fn seat(d: &Arc<Daemon>) -> Arc<crate::state::Surface> {
+        d.create_surface(None, Some("sleep 30".into()), None, None, 24, 80).expect("create")
+    }
+
+    /// T3 — 파괴 RPC 에 `{"surface_id":"#17"}` → 전부 거부 · 산 좌석 수 불변(M12: `#` 를 벗겨 주면 적색).
+    /// 내부 17 = 보이는 17 인 산 좌석을 세워 두어, 벗겨 주는 뮤턴트가 실제로 그 좌석에 닿게 한다.
+    #[test]
+    fn t3_destructive_rpcs_do_not_know_hash() {
+        let d = iso();
+        d.next_id.store(17, Ordering::SeqCst);
+        let s = seat(&d);
+        assert_eq!((s.id, s.display_no), (17, Some(17)));
+        for r in ["#17", "surface:#17", " #17 "] {
+            for (method, extra) in [
+                ("surface.close", json!({})),
+                ("surface.send_text", json!({"text": "echo x"})),
+                ("surface.send_key", json!({"key": "Return"})),
+                ("queue.clear", json!({})),
+                ("queue.deliver", json!({})),
+                ("surface.reap", json!({})),
+                ("surface.attach", json!({})),
+            ] {
+                let mut p = extra.clone();
+                p["surface_id"] = json!(r);
+                let resp = call(&d, method, p);
+                assert_eq!(resp["ok"], json!(false), "{method}({r:?}) 가 거부되지 않았다: {resp}");
+                assert!(d.get_surface(17).is_some(), "{method}({r:?}) 뒤 좌석 17 이 사라졌다");
+            }
+        }
+        assert_eq!(d.surfaces.lock().unwrap().len(), 1);
+        let _ = crate::governance::close_surface(&d, 17, crate::governance::CloseCause::OwnerClose);
+    }
+
+    /// T3b 소스 고정 핀 — handlers.rs 제품부에서 `display_no` 를 **요청에서 읽는** 곳은
+    /// `surface.resolve_display` 한 곳뿐 · 파괴 RPC 본문에는 `display_no` 0회(M13 적색).
+    #[test]
+    fn t3b_only_resolve_display_reads_display_no() {
+        let src = include_str!("handlers.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let arm = |name: &str| -> &str {
+            let head = format!("\n        \"{name}\" => {{");
+            let a = prod.find(&head).unwrap_or_else(|| panic!("{name} 팔 없음"));
+            let rest = &prod[a + head.len()..];
+            let end = rest.find("\n        \"").unwrap_or(rest.len());
+            &rest[..end]
+        };
+        let reads: Vec<&str> = prod
+            .lines()
+            .filter(|l| l.contains("\"display_no\"") && !l.trim_start().starts_with("//"))
+            .filter(|l| !l.contains("\"display_no\":"))
+            .collect();
+        assert_eq!(reads.len(), 1, "display_no 를 읽는 줄은 하나여야 한다: {reads:?}");
+        assert!(reads[0].contains(".get(\"display_no\")"), "읽는 줄은 요청 조회여야 한다: {}", reads[0]);
+        assert!(arm("surface.resolve_display").contains("params\n                .get(\"display_no\")"));
+        for m in [
+            "surface.close",
+            "surface.send_text",
+            "surface.send_key",
+            "queue.clear",
+            "queue.deliver",
+            "surface.reap",
+            "surface.attach",
+        ] {
+            assert!(!arm(m).contains("display_no"), "파괴 RPC {m} 본문에 display_no");
+        }
+    }
+
+    /// §5 필드 + resolve_display — 산 좌석만 푼다 · 닫힌 번호는 마지막 주인을 안내만(M18 적색) ·
+    /// 범위 밖·문자열은 display_out_of_range.
+    #[test]
+    fn rpc_fields_and_resolve_display() {
+        let d = iso();
+        d.next_id.store(1049, Ordering::SeqCst);
+        let s = seat(&d);
+        assert_eq!(s.display_no, Some(50));
+        let list = call(&d, "surface.list", json!({}));
+        assert_eq!(list["result"]["surfaces"][0]["display_no"], json!(50));
+        let org = call(&d, "org.status", json!({}));
+        let row = org["result"]["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["surface_id"] == json!(1049))
+            .cloned()
+            .unwrap();
+        assert_eq!(row["display_no"], json!(50));
+        let idn = call(&d, "system.identify", json!({"caller": {"surface_id": 1049}}));
+        assert_eq!(idn["result"]["caller_display_no"], json!(50));
+        let idn = call(&d, "system.identify", json!({"caller": {"surface_id": 5}}));
+        assert_eq!(idn["result"]["caller_display_no"], Value::Null);
+
+        let ok = call(&d, "surface.resolve_display", json!({"display_no": 50}));
+        assert_eq!(ok["ok"], json!(true), "{ok}");
+        assert_eq!(ok["result"]["surface_id"], json!(1049));
+        assert_eq!(ok["result"]["surface_ref"], json!("surface:1049"));
+        assert!(ok["result"]["socket"].as_str().unwrap().ends_with(".sock"));
+        for bad in [json!(0), json!(1000), json!("50"), json!("#50"), json!(-1), Value::Null] {
+            let r = call(&d, "surface.resolve_display", json!({"display_no": bad}));
+            assert_eq!(r["error"]["code"], json!("display_out_of_range"), "{bad}: {r}");
+        }
+        let none = call(&d, "surface.resolve_display", json!({"display_no": 51}));
+        assert_eq!(none["error"]["code"], json!("display_not_live"));
+        assert!(none["error"].get("last").is_none());
+
+        crate::governance::close_surface(&d, 1049, crate::governance::CloseCause::OwnerClose).unwrap();
+        let gone = call(&d, "surface.resolve_display", json!({"display_no": 50}));
+        assert_eq!(gone["ok"], json!(false), "닫힌 번호를 마지막 주인으로 풀어 주면 안 된다: {gone}");
+        assert_eq!(gone["error"]["code"], json!("display_not_live"));
+        assert_eq!(gone["error"]["last"]["surface_id"], json!(1049));
+        let msg = gone["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("surface:1049") && msg.contains("다른 좌석으로 보내지 않습니다"), "{msg}");
+    }
+
+    /// ③ T6(데몬 호출부) — surface.create 가 짓는 역할 좌석 제목의 번호 = 보이는 번호(M15: 내부 번호를
+    /// 넘기면 「1049 · worker1」 이 되어 적색).
+    #[test]
+    fn create_titles_role_seat_with_display_number() {
+        let d = iso();
+        d.next_id.store(1049, Ordering::SeqCst);
+        let r = call(&d, "surface.create", json!({"cmd": "sleep 30", "role": "worker"}));
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert_eq!(r["result"]["display_no"], json!(50));
+        let sid = r["result"]["surface_id"].as_u64().unwrap();
+        let title = d.get_surface(sid).unwrap().title.lock().unwrap().clone();
+        assert!(title.starts_with("50 · "), "제목 번호가 보이는 번호가 아니다: {title}");
+        let _ = crate::governance::close_surface(&d, sid, crate::governance::CloseCause::OwnerClose);
+    }
+
+    #[test]
+    fn ago_label_units() {
+        assert_eq!(ago_label(-5.0), "0초");
+        assert_eq!(ago_label(59.0), "59초");
+        assert_eq!(ago_label(60.0), "1분");
+        assert_eq!(ago_label(3.0 * 3600.0 + 5.0), "3시간");
+        assert_eq!(ago_label(2.0 * 86_400.0), "2일");
     }
 }

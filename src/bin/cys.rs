@@ -899,9 +899,12 @@ fn reap_surface_exit_code(err: &str) -> i32 {
 /// 7=게이트 거부(사유 코드 stderr) · 1=오류. close-surface 의미(자기/생성자 한정)는
 /// 불변 유지 — 소비자 계약 보존(별도 동사·별도 RPC).
 fn run_reap_surface(surface: &str) -> i32 {
-    let Some(sid) = parse_surface_ref(surface) else {
-        eprintln!("error: invalid surface ref: {surface}");
-        return 1;
+    let sid = match resolve_surface_arg(surface) {
+        Ok(sid) => sid,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
     match request("surface.reap", json!({"surface_id": sid})) {
         Ok(r) => {
@@ -1431,7 +1434,7 @@ fn target_surface(explicit: &Option<String>, to_role: &Option<String>) -> Result
             .ok_or_else(|| format!("role '{role}' resolved to invalid surface"));
     }
     if let Some(s) = explicit {
-        return parse_surface_ref(s).ok_or_else(|| format!("invalid surface ref: {s}"));
+        return resolve_surface_arg(s);
     }
     if let Ok(env) = cys::env_compat(ENV_SURFACE_ID).ok_or(std::env::VarError::NotPresent) {
         if let Some(id) = parse_surface_ref(&env) {
@@ -1445,11 +1448,43 @@ fn target_surface(explicit: &Option<String>, to_role: &Option<String>) -> Result
 /// 호출처가 의미를 정한다 (env 폴백 또는 전체 검색).
 fn parse_explicit_surface(surface: &Option<String>) -> Result<Option<u64>, String> {
     match surface {
-        Some(s) => parse_surface_ref(s)
-            .map(Some)
-            .ok_or_else(|| format!("invalid surface ref: {s}")),
+        Some(s) => resolve_surface_arg(s).map(Some),
         None => Ok(None),
     }
+}
+
+/// ★v116-num(T-NUM): 사람이 치는 좌석 인자 → **내부 번호**. 좌석 인자를 받는 모든 명령이 이 한 곳을 지난다
+/// (환경변수 `CYS_SURFACE_ID` 폴백은 원래 내부 번호라 지나지 않는다).
+/// · `#N`(보이는 번호 1~999) → 데몬 `surface.resolve_display` 로 **지금 목록에 있는 좌석**만 푼다. 못 찾으면
+///   거부한다 — 닫힌 번호·옛 주인으로 추측해 보내지 않는다(설계 §4-2). 푼 뒤에는 stderr 에
+///   `#N → surface:M @<소켓>` 한 줄을 남긴다(사람이 어느 데몬의 좌석을 건드리는지 보게 · 설계 §5).
+/// · `#` 로 시작하지만 문법 밖(`#0`·`#1000`·`#017`) → RPC 0회 거부.
+/// · 그 밖(`surface:31`·맨숫자 `31`) → 종전 그대로 내부 번호(맨숫자는 보이는 번호가 아니다).
+fn resolve_surface_arg(s: &str) -> Result<u64, String> {
+    if let Some(n) = cys::parse_display_ref(s) {
+        let r = request("surface.resolve_display", json!({"display_no": n}))?;
+        let sid = r["surface_id"]
+            .as_u64()
+            .ok_or_else(|| format!("#{n}: 데몬 응답에 surface_id 없음"))?;
+        eprintln!("#{n} → surface:{sid} @{}", socket_label(r["socket"].as_str().unwrap_or("?")));
+        return Ok(sid);
+    }
+    if s.trim_start().starts_with('#') {
+        return Err(format!("invalid surface ref: {s} — 보이는 번호는 #1~#999 입니다"));
+    }
+    parse_surface_ref(s).ok_or_else(|| format!("invalid surface ref: {s}"))
+}
+
+/// ★v116-num: 소켓 경로 → 사람이 알아볼 짧은 이름(본부 `cys` · 부서 `cys-dept-<이름>` · 윈도 파이프 이름).
+fn socket_label(path: &str) -> String {
+    if let Some(pipe) = path.strip_prefix(r"\\.\pipe\") {
+        return pipe.to_string();
+    }
+    std::path::Path::new(path)
+        .parent()
+        .and_then(|d| d.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
 }
 
 /// T3-11 역할 글롭: '*'만 와일드카드 (reviewer-* 등)
@@ -3019,12 +3054,15 @@ fn run(command: Command) -> i32 {
 
         Command::List => request("surface.list", json!({})).map(|r| {
             for s in r["surfaces"].as_array().cloned().unwrap_or_default() {
+                // ★v116-num: 보이는 번호 칸 `no=50`(없으면 `no=-`)은 **4번 자리**(exited 뒤·제목 앞) 고정 —
+                //   팩 파서들이 0~3번 칸과 마지막 칸(cwd)만 쓰므로 맨 앞·맨 뒤에 넣으면 좌석을 못 찾는다(설계 §4-1 ※).
                 println!(
-                    "{}\trole={}\tpid={}\texited={}\t{}\t{}",
+                    "{}\trole={}\tpid={}\texited={}\tno={}\t{}\t{}",
                     s["surface_ref"].as_str().unwrap_or("?"),
                     s["role"].as_str().unwrap_or("-"),
                     s["pid"],
                     s["exited"],
+                    s["display_no"].as_u64().map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
                     s["title"].as_str().unwrap_or(""),
                     s["cwd"].as_str().unwrap_or(""),
                 );
@@ -3355,8 +3393,7 @@ fn run(command: Command) -> i32 {
                         eprintln!("error: {e}");
                         1
                     }),
-                QueueAction::Clear { surface } => parse_surface_ref(&surface)
-                    .ok_or_else(|| format!("invalid surface ref: {surface}"))
+                QueueAction::Clear { surface } => resolve_surface_arg(&surface)
                     .and_then(|sid| request("queue.clear", json!({"surface_id": sid})))
                     .map(|r| {
                         println!("cleared {} queued message(s)", r["cleared"]);
@@ -3369,8 +3406,7 @@ fn run(command: Command) -> i32 {
                 // ★G1(W2-E): 단건 강제 배달 — 게이트 거부는 exit 7(사유 stderr), 오류는 1.
                 // 드레인 루프는 CLI 에도 없다(단건만 — 반복 강제로 페이싱을 뚫지 않는다).
                 QueueAction::Deliver { surface, id: entry_id, allow_reorder } => {
-                    parse_surface_ref(&surface)
-                        .ok_or_else(|| format!("invalid surface ref: {surface}"))
+                    resolve_surface_arg(&surface)
                         .and_then(|sid| {
                             let mut p = json!({"surface_id": sid});
                             if let Some(eid) = entry_id {
@@ -3742,8 +3778,7 @@ fn run(command: Command) -> i32 {
                 .map(|_| println!("OK"))
         }),
 
-        Command::CloseSurface { surface, reap } => parse_surface_ref(&surface)
-            .ok_or_else(|| format!("invalid surface ref: {surface}"))
+        Command::CloseSurface { surface, reap } => resolve_surface_arg(&surface)
             .and_then(|sid| {
                 // ★W2/C6: --reap → cause="reap"(묘비 미생성). 기본=OwnerClose(묘비).
                 let params = if reap {
@@ -3787,9 +3822,7 @@ fn run(command: Command) -> i32 {
             stream_events(after_seq, names, categories, filter, reconnect, cursor_file)
         }
 
-        Command::Attach { surface } => parse_surface_ref(&surface)
-            .ok_or_else(|| format!("invalid surface ref: {surface}"))
-            .and_then(attach),
+        Command::Attach { surface } => resolve_surface_arg(&surface).and_then(attach),
 
         Command::Run { surface, command } => {
             // 자식의 종료 코드를 그대로 프로세스 exit code로 전달
@@ -30864,5 +30897,75 @@ mod acceptance_v116 {
         assert!(!closes(&[true, false, true, false, true]), "확증이 연속되지 않으면 몇 번이든 닫지 않음");
         assert!(closes(&[true, true]), "확증·확증 = 닫음");
         assert!(closes(&[false, true, false, true, true]), "마지막에 연속 2틱이면 닫음");
+    }
+}
+
+/// ★v116-num(T-NUM) CLI 시험 — 설계 §9 T3c(기계 출력 줄 고정 핀) · T9 중 데몬이 필요 없는 부분
+/// (문법 밖 `#` 거부 · 소켓 이름). 산 좌석 해석·셸 통과는 격리 데몬 E2E(`scripts/v116_num_e2e.py`)가 진다.
+#[cfg(test)]
+mod v116_num_cli_tests {
+    use super::*;
+
+    const SRC: &str = include_str!("cys.rs");
+
+    fn prod() -> &'static str {
+        &SRC[..SRC.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")]
+    }
+
+    /// T3c — launch-agent·new-surface 가 표준출력에 찍는 좌석 줄은 **내부 번호** `surface:N` 그대로다.
+    /// schedule.rs `aiterm_parse` 가 이 줄을 맨숫자도 받는 parse_surface_ref 로 읽기 때문에, 보이는 번호가
+    /// 찍히면 내부 번호로 오인된다(M22: 이 줄에 보이는 번호를 찍으면 적색).
+    #[test]
+    fn t3c_machine_output_lines_stay_internal_surface_ref() {
+        let p = prod();
+        let f = p.find("\nfn run_launch_agent_opts(").expect("launch-agent 본체");
+        let body = &p[f..f + p[f + 1..].find("\nfn ").expect("다음 fn")];
+        assert!(
+            body.matches("println!(\"{}\", surface_ref(sid));").count() >= 2,
+            "launch-agent 의 좌석 출력 줄이 surface_ref(sid) 가 아니다"
+        );
+        assert!(!body.contains("display_no"), "launch-agent 본체가 보이는 번호를 다룬다");
+        let ns = p.find("Command::NewSurface {").expect("new-surface 팔");
+        let arm = &p[ns..ns + p[ns..].find("Command::List").expect("다음 팔")];
+        assert!(arm.contains("println!(\"{}\", r[\"surface_ref\"]"), "new-surface 출력 줄: {arm}");
+        assert!(!arm.contains("display_no"), "new-surface 출력에 보이는 번호");
+    }
+
+    /// T9(데몬 불요) — 문법 밖 `#` 는 RPC 없이 거부(데몬 요청 전에 반환되므로 소켓 무접촉) ·
+    /// 맨숫자·`surface:N` 은 종전 그대로 내부 번호(M19 는 lib.rs 진리표가 잡는다).
+    #[test]
+    fn t9_resolve_surface_arg_rejects_bad_hash_without_rpc() {
+        for bad in ["#0", "#1000", "#017", "# 17", "#17a", "#", "#-1"] {
+            let e = resolve_surface_arg(bad).expect_err(bad);
+            assert!(e.contains("#1~#999"), "{bad}: {e}");
+        }
+        assert_eq!(resolve_surface_arg("31"), Ok(31));
+        assert_eq!(resolve_surface_arg("surface:1049"), Ok(1049));
+        assert!(resolve_surface_arg("surface:#17").is_err());
+        assert!(resolve_surface_arg("abc").is_err());
+    }
+
+    #[test]
+    fn socket_label_short_names() {
+        assert_eq!(socket_label("/Users/x/.local/state/cys/cys.sock"), "cys");
+        assert_eq!(socket_label("/Users/x/.local/state/cys-dept-dept-1/cys.sock"), "cys-dept-dept-1");
+        assert_eq!(socket_label(r"\\.\pipe\cys-dept-dept-1"), "cys-dept-dept-1");
+        assert_eq!(socket_label("cys.sock"), "cys.sock");
+    }
+
+    /// 좌석 인자를 받는 CLI 입구가 전부 해석기를 지난다 — 직접 parse_surface_ref 로 사람 입력을 받는 자리가
+    /// 새로 생기면 `#N` 이 「invalid surface ref」 로만 끝나 헛걸음이 된다(안전 문제는 아님 · 일관성 핀).
+    #[test]
+    fn human_surface_args_go_through_resolver() {
+        let p = prod();
+        let direct: Vec<&str> = p
+            .lines()
+            .filter(|l| l.contains("parse_surface_ref(") && !l.trim_start().starts_with("//"))
+            // 환경변수(원래 내부 번호) 폴백 자리: ENV_SURFACE_ID 줄 · 그 클로저(`|s| …(&s)`) · &sref · &env
+            .filter(|l| !l.contains("ENV_SURFACE_ID") && !l.contains("|s| parse_surface_ref(&s)"))
+            .filter(|l| !l.contains("&sref") && !l.contains("&env"))
+            .filter(|l| !l.contains("fn resolve_surface_arg") && !l.contains("parse_surface_ref(s).ok_or_else"))
+            .collect();
+        assert!(direct.is_empty(), "해석기를 거치지 않는 사람 입력 자리: {direct:?}");
     }
 }

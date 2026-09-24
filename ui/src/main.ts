@@ -6832,7 +6832,8 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
   items.push(
     { id: "act:new-tab", title: "새 탭", keywords: "new tab 탭", action: () => actionNew() },
     { id: "act:split-row", title: "가로 분할", keywords: "split row 분할", action: () => actionSplit("row") },
-    { id: "act:split-col", title: "세로 분할", keywords: "split col 분할", action: () => actionSplit("col") },
+    // (v116-auto-equalize · master 판정 ⓒ 09-25) 「세로 분할」 항목 제거 — 창은 언제나 좌우 균등으로 다시 서므로 세로 분할을 더는
+    //   만들 수 없다(이름이 거짓 표시가 된다). ⌘⇧D 는 이름이 없고 손버릇 보호로 남긴다(오른쪽 분할과 같게 동작).
     { id: "act:close", title: "패널 닫기", keywords: "close 닫기", action: () => actionClose() },
     { id: "act:equalize", title: "패널 균등화", keywords: "equalize 균등", action: () => actionEqualize() },
     { id: "act:cc", title: "Control Center 토글", keywords: "control center dashboard 대시보드", action: () => setCcOpen(!ccOpen) },
@@ -9381,7 +9382,7 @@ window.addEventListener("keydown", (e) => {
     actionSplit("row");
   } else if ((e.key === "D" || e.key === "d") && e.shiftKey) {
     e.preventDefault();
-    actionSplit("col");
+    actionSplit("col"); // (v116-auto-equalize) 손버릇 보호 — 배치는 자동 좌우 균등이라 오른쪽 분할과 같다
   } else if (e.key === "w") {
     e.preventDefault();
     actionClose();

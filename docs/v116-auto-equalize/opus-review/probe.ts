@@ -1,4 +1,4 @@
-import { autoArrange, formationLayout, leftColumnShare, type LayoutNode } from "/Users/oogisoogi/axdev/.wt/v116-auto-equalize/ui/src/formation";
+import { autoArrange, formationLayout, leftColumnShare, type LayoutNode } from "../../../ui/src/formation";
 const P = (sid: number): LayoutNode => ({ type: "pane", sid });
 const S = (a: LayoutNode, b: LayoutNode, dir: "row"|"col"="row", ratio?: number): LayoutNode => ({ type: "split", dir, ratio, a, b } as any);
 function shares(n: LayoutNode, w = 1, out = new Map<number, number>()) { if (n.type==="pane"){out.set(n.sid,w);return out;} const r=n.ratio??0.5; if(n.dir==="row"){shares(n.a,w*r,out);shares(n.b,w*(1-r),out);} else {shares(n.a,w,out);shares(n.b,w,out);} return out; }

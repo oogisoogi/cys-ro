@@ -28,7 +28,8 @@
 //        r (master 편입 ①) 다운로드 진행 중 헤더 재클릭 · 확인 창 2개 쌓인 채 둘 다 「설치」 → install_update 1
 //   c18 (v116-auto-equalize · 오너 지시 2026-09-25) 창을 열고 닫을 때마다 자동 좌우 균등 — master·cso 좌열 몫·위아래 비율 유지:
 //       a 본부+워커1 → 워커 입양(R1 재현 자리) · b 외부 닫힘(가운데) · c ⌘W 닫기 · d 창 머리 × · e 새 창(창 만들기) ·
-//       f 사람이 끈 좌열 0.40·위아래 0.65 보존 · g 워커만(본부 없는 기기) 열기·닫기 · h 1280·1920·800 폭
+//       f 사람이 끈 좌열 0.40·위아래 0.65 보존 · g 워커만(본부 없는 기기) 열기·닫기 · h 1280·1920·800 폭 ·
+//       i 팔레트 「세로 분할」 0 · ⌘⇧D = 오른쪽 분할과 같음(master 판정 ⓒ)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -661,6 +662,21 @@ if (ONLY.includes("c18")) {
   check("c18g 워커만 3 → 입양 4칸 1/4 → 가운데 닫기 3칸 1/3 · 세로 분할 0",
     even(g0.o, [3, 4, 5]) && near(g0.o[3].w, 1 / 3) && even(g1.o, [3, 4, 5, 6]) && near(g1.o[3].w, 1 / 4) && even(g2.o, [3, 5, 6]) && near(g2.o[3].w, 1 / 3) && g0.col + g1.col + g2.col === 0,
     `${view(g0)} → ${view(g1)} → ${view(g2)}`);
+
+  // i — (master 판정 ⓒ) 팔레트 「분할」 검색 → 가로 분할만 · 세로 분할 0 · ⌘⇧D = 창 +1 · 세로 분할 0 · 워커 균등
+  await load("hq5");
+  await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`); await Bun.sleep(400);
+  await ev(`(() => { const i = document.querySelector(".palette-input"); i.value = "분할"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await Bun.sleep(300);
+  const pal = await ev(`[...document.querySelectorAll(".palette-item .pi-title")].map(x => x.textContent)`);
+  await shot("c18i-palette.png");
+  await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))`); await Bun.sleep(200);
+  await ev(`document.querySelector('#root .pane[data-sid="4"]').dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))`);
+  await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "D", metaKey: true, shiftKey: true, bubbles: true, cancelable: true }))`); await Bun.sleep(700);
+  const i1 = await ev(G);
+  const iNew = ids(i1.o).filter((x) => x >= 100);
+  check("c18i 팔레트 「분할」 → 가로 분할만(세로 분할 0) · ⌘⇧D → 창 +1 · 세로 분할은 좌열뿐 · 워커 균등",
+    Array.isArray(pal) && pal.includes("가로 분할") && !pal.some((t: string) => t.includes("세로 분할")) && iNew.length === 1 && i1.col === 1 && even(i1.o, [3, 4, iNew[0], 5]),
+    `palette=${JSON.stringify(pal)} ${view(i1)} col=${i1.col}`);
 
   // h — 창 폭(1920 · 800)에서도 같은 몫
   for (const width of [1920, 800]) {

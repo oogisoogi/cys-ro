@@ -1,4 +1,4 @@
-import { autoArrange, formationLayout, type LayoutNode } from "/Users/oogisoogi/axdev/.wt/v116-auto-equalize/ui/src/formation";
+import { autoArrange, formationLayout, type LayoutNode } from "../../../ui/src/formation";
 const P = (sid: number): LayoutNode => ({ type: "pane", sid });
 const S = (a: LayoutNode, b: LayoutNode, dir: "row"|"col"="row", ratio?: number): LayoutNode => ({ type: "split", dir, ratio, a, b } as any);
 function rng(seed: number) { return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }

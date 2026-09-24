@@ -476,3 +476,16 @@ describe("호출부 — 입양은 런타임이 선 그 자리에서 트리에 �
     expect(b).toContain("collectSids(w.tree).includes(sid)) ?? current();");
   });
 });
+
+describe("master 판정 ⓒ(09-25) — 팔레트 「세로 분할」 제거 · ⌘⇧D 는 이름 없이 유지", () => {
+  it("팔레트 빌트인 액션에 세로 분할 0 · 가로 분할·패널 균등화 유지", () => {
+    const b = code(fnBody("// ── (5) 빌트인 webview 액션(정적) ──", "\n  );\n"));
+    expect(b).not.toContain("act:split-col");
+    expect(b).not.toContain("세로 분할");
+    expect(b).toContain('{ id: "act:split-row", title: "가로 분할"');
+    expect(b).toContain('{ id: "act:equalize", title: "패널 균등화"');
+  });
+  it("⌘⇧D 단축키는 남는다(actionSplit — 배치는 자동 균등)", () => {
+    expect(/e\.shiftKey\) \{\s*e\.preventDefault\(\);\s*actionSplit\("col"\);/.test(main)).toBe(true);
+  });
+});

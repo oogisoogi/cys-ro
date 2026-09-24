@@ -12630,6 +12630,46 @@ mod tests {
         assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "표지 없는 본문이 빈 셸에 타이핑됐다: {r}");
         assert_eq!(qlen(), 1, "표지 없는 본문은 종전대로 큐 보류");
 
+        // ④ ★Fable 3-1(master#4d8f12ec): ③ 이 남긴 큐 항목 = 1.1.5 식 옛 기동 줄(표지 없이 보류됨). 다른 보류 글과
+        //   「기동 줄과 비슷하지만 다른 줄」을 섞어 두고 기동 줄을 통과시키면 → 옛 기동 줄만 폐기(이벤트 · sha8) ·
+        //   나머지는 순서 그대로 남는다.
+        let keep = ["[DRAIN] 지금 저장하라", "[master#abc123] 지시 본문", "truex --continue",
+                    "true --x ; rm -rf ~", "true --a\ntrue --b"];
+        {
+            let mut q = s.pending_queue.lock().unwrap();
+            for t in keep {
+                let e = daemon.next_queue_entry(t.to_string(), None, "send");
+                q.push_back(e);
+            }
+        }
+        let mut rx = daemon.bus.subscribe();
+        let r = send(4, json!({"surface_id": s.id, "text": "true --continue", "agent_launch": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "기동 줄 통과 실패: {r}");
+        let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
+        assert_eq!(left, keep.map(String::from).to_vec(), "옛 기동 줄만 폐기 · 나머지 순서 보존이 아니다");
+        let mut ev = None;
+        while let Ok(e) = rx.try_recv() {
+            if e["name"].as_str() == Some("queue.dropped") {
+                ev = Some(e);
+            }
+        }
+        let ev = ev.expect("옛 기동 줄을 조용히 지웠다 — queue.dropped 미발행");
+        let p = &ev["payload"];
+        use sha2::{Digest, Sha256};
+        let want: String = Sha256::digest(b"true --x").iter().take(4).map(|b| format!("{b:02x}")).collect();
+        assert_eq!(p["reason"], json!("stale_launch_line"), "{p}");
+        assert_eq!(p["count"], json!(1), "{p}");
+        assert_eq!(p["line_sha8"], json!([want]), "{p}");
+        assert_eq!(p["surface_ref"], json!(cys::surface_ref(s.id)), "{p}");
+        // 영속: 큐 WAL 에도 옛 기동 줄이 없고(③ 적재 때 기록됐던 것) 보존분은 남는다 — 재기동 뒤 되살아나지 않는다.
+        let wal = std::fs::read_to_string(crate::state::state_dir(&daemon.socket_path).join("queue-state.json"))
+            .expect("queue-state.json");
+        let wal: Value = serde_json::from_str(&wal).expect("WAL json");
+        let texts: Vec<&str> = wal.as_array().or_else(|| wal["entries"].as_array()).expect("WAL 항목 배열")
+            .iter().filter_map(|e| e["text"].as_str()).collect();
+        assert!(!texts.contains(&"true --x"), "옛 기동 줄이 WAL 에 남았다(영속 누락): {texts:?}");
+        assert!(keep.iter().all(|k| texts.contains(k)), "보존분이 WAL 에 없다: {texts:?}");
+
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);
     }

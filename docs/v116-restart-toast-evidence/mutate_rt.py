@@ -23,9 +23,16 @@ M = [
     ("M6 설치 직전 가드 제거", "src/main.ts", "  if (restartPendingVersion !== null) return restartAfterUpdate(restartPendingVersion);\n", "", "c17x"),
     ("M7 판번 짝 무효화 제거(decode)", "src/restartpending.ts", "  if (appVersion !== currentAppVersion) return null;\n", "", "c17"),
     ("M8 새 판 == 지금 판 무효화 제거(decode)", "src/restartpending.ts", "  if (version === currentAppVersion) return null;\n", "", "c17"),
-    ("M9 ⌘R 사본 저장 안 함", "src/main.ts", "      if (appVer) sessionStorage.setItem(RESTART_PENDING_KEY, encodeRestartPending(version, appVer));\n", "", "c17"),
+    ("M9 ⌘R 사본 저장 안 함", "src/main.ts", "      if (appVer) sessionStorage.setItem(RESTART_PENDING_KEY, encodeRestartPending(version, appVer, buildId));\n", "", "c17"),
     ("M10 복원이 메모리 값을 덮음", "src/main.ts", "    if (restartPendingVersion === null) restartPendingVersion = v;", "    restartPendingVersion = v;", "c17x"),
-    ("M11 판번 조회 실패에도 기억 삭제(agy 1R #2 되돌림)", "src/main.ts", "    if (!appVer) return;\n    const v = decodeRestartPending", "    const v = decodeRestartPending", "c17x"),
+    ("M12 build_id 짝 무시(같은 판 재빌드 = 옛 판번 규칙으로 무효)", "src/restartpending.ts", "  if (knownBuild(buildId) && knownBuild(currentBuildId)) return buildId.trim() === currentBuildId.trim() ? version : null;\n", "", "c17x"),
+    ("M13 build_id 달라도 유효(새 앱에서 거짓 대기)", "src/restartpending.ts", "buildId.trim() === currentBuildId.trim() ? version : null;", "version;", "c17x"),
+    ("M14 확인 응답 뒤 재확인 제거", "src/main.ts", "  // 확인을 기다리는 사이 교체가 끝났으면(이벤트) 설치 안내·설치 확인 창으로 덮지 않는다(클로드 적대 1R #2).\n  if (restartPendingVersion !== null) {\n    paintRestartPending();\n    return;\n  }\n", "", "c17x"),
+    ("M15 단추가 복원을 안 기다림", "src/main.ts", "  await restoreRestartPending();\n  if (updateButtonAction", "  if (updateButtonAction", "c17x"),
+    ("M16 팩 적용 완료 뒤 다시 칠하기 제거", "src/main.ts", "    paintRestartPending(); // 맥 교체 뒤 다시 켜기 대기면", "    // 맥 교체 뒤 다시 켜기 대기면", "c17x"),
+    ("M17 배지 칠하기 제거", "src/main.ts", "  badge.hidden = false;\n  badge.textContent = \"!\";\n  badge.classList.remove(\"ok\");\n", "", "c17"),
+    ("M18 무효 기억 칸 삭제 안 함", "src/main.ts", "        sessionStorage.removeItem(RESTART_PENDING_KEY);\n", "", "c17"),
+    ("M11 판번 조회 실패에도 기억 삭제(agy 1R #2 되돌림)", "src/main.ts", "    if (!appVer) return;\n    const buildId", "    const buildId", "c17x"),
 ]
 
 

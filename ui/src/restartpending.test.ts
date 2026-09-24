@@ -37,8 +37,19 @@ describe("대기 판정 — 판번 짝으로 저절로 풀린다", () => {
   test("새 판으로 켜졌으면(지금 판번 == 대기 판번) 무효", () => {
     expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.6"), "1.1.7")).toBeNull();
   });
-  test("(agy 1R #4) 같은 프로세스인데 대기 판번 == 지금 판번 — 같은 판을 다시 설치한 경우 = 무효", () => {
+  test("build_id 를 모르면 판번 규칙 — 대기 판번 == 지금 판번 = 무효(모르는 build_id 로는 맥이 같은 판을 설치하지 않는다)", () => {
     expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.7"), "1.1.7")).toBeNull();
+    expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.7", "unknown"), "1.1.7", "unknown")).toBeNull();
+    expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.7", "b-A"), "1.1.7", "")).toBeNull(); // 한쪽만 알아도 모름 취급
+    expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.6", "unknown"), "1.1.6", "unknown")).toBe("1.1.7");
+  });
+  test("(클로드 적대 1R MAJOR) 같은 판 재빌드 — 같은 build_id(같은 옛 앱) 면 대기 판번 == 지금 판번이어도 유효", () => {
+    expect(decodeRestartPending(encodeRestartPending("1.1.6", "1.1.6", "b-A"), "1.1.6", "b-A")).toBe("1.1.6");
+    expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.6", " b-A "), "1.1.6", "b-A")).toBe("1.1.7");
+  });
+  test("build_id 가 바뀌면(새 앱으로 켜짐 · 같은 판 재빌드 포함) 무효", () => {
+    expect(decodeRestartPending(encodeRestartPending("1.1.6", "1.1.6", "b-A"), "1.1.6", "b-B")).toBeNull();
+    expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.6", "b-A"), "1.1.6", "b-B")).toBeNull();
   });
   test("저장 때 판번과 지금 판번이 다르면(다른 프로세스) 무효 — 대기 판번과 무관하게", () => {
     expect(decodeRestartPending(encodeRestartPending("1.1.8", "1.1.6"), "1.1.7")).toBeNull();
@@ -82,6 +93,26 @@ describe("헤더 단추 — 대기면 다시 켜기, 아니면 새로 확인", (
     expect(guard).toBeLessThan(body.indexOf('invoke("check_update")'));
     expect(body.slice(guard, body.indexOf("}", guard))).toContain("return;");
   });
+  test("(클로드 적대 1R #2) 확인을 기다리는 사이 교체가 끝났으면 상태를 쓰기 전에 다시 끝난다", () => {
+    const body = fnBody(MAIN, "async function checkForUpdate(silent: boolean)");
+    const pack = body.indexOf('invoke("check_pack_update")');
+    const second = body.indexOf("if (restartPendingVersion !== null) {", pack);
+    expect(pack).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(pack);
+    expect(second).toBeLessThan(body.indexOf("updateAvailable = bin"));
+    expect(body.slice(second, body.indexOf("}", second))).toContain("return;");
+  });
+  test("(클로드 적대 1R #4) onUpdateButton 은 복원을 먼저 기다린 뒤 동작을 고른다", () => {
+    const body = fnBody(MAIN, "async function onUpdateButton()");
+    const w = body.indexOf("await restoreRestartPending();");
+    expect(w).toBeGreaterThan(-1);
+    expect(w).toBeLessThan(body.indexOf("updateButtonAction("));
+  });
+  test("(클로드 적대 1R #6) 팩 적용 완료가 배지를 내려도 대기면 다시 칠한다", () => {
+    const at = MAIN.indexOf('await listen("pack-updated"');
+    const seg = MAIN.slice(at, MAIN.indexOf("});", at));
+    expect(seg.indexOf("paintRestartPending();")).toBeGreaterThan(seg.indexOf("badge.hidden = true"));
+  });
   test("설치 확인 창을 누른 사이 교체가 끝났으면 install_update 대신 다시 켜기", () => {
     const body = fnBody(MAIN, "async function promptBinaryPatch()");
     const g = body.indexOf("if (restartPendingVersion !== null) return restartAfterUpdate(restartPendingVersion);");
@@ -99,7 +130,7 @@ describe("헤더 단추 — 대기면 다시 켜기, 아니면 새로 확인", (
 
 describe("대기 상태의 출처 — 맥 교체 완료 이벤트 하나뿐(윈에선 생기지 않는다)", () => {
   test("restartPendingVersion 에 값을 넣는 곳 = markRestartPending · 복원 두 곳뿐 · markRestartPending 호출 = 교체 완료 리스너 하나", () => {
-    const assigns = MAIN.split("\n").filter((l) => /restartPendingVersion\s*=[^=]/.test(l) && !/^\s*(\/\/|\*)/.test(l));
+    const assigns = MAIN.split("\n").filter((l) => /restartPendingVersion\s*(\?\?|\|\||&&)?=(?!=)/.test(l) && !/^\s*(\/\/|\*)/.test(l));
     expect(MAIN).toContain("let restartPendingVersion: string | null = null;"); // 선언(초기값 = 대기 없음)
     expect(assigns.map((l) => l.trim())).toEqual([
       "restartPendingVersion = version;",
@@ -158,6 +189,9 @@ describe("문구 — 공개 문구 규칙(새로 생기거나 바뀐 문자열�
     expect(t.detail).toContain("새 앱 1.1.7 설치가 끝났습니다.");
     expect(t.detail.split(". ").length).toBe(3);
     expect(restartReadyToast("").detail.startsWith("새 앱 설치가 끝났습니다.")).toBe(true); // 판번 없는 이벤트
+  });
+  test("재진입 안내 문구(main.ts) — 규칙 준수 · 「재시작」 낱말 0", () => {
+    expect(MAIN).toContain('toast("feed", "다시 켜기 준비 중", "다시 켜기를 준비하고 있습니다. 잠시만 기다려 주세요.");');
   });
   test("알림은 사라진다 — 수명 규칙(오너 정책) 무변경 · upd-restart 는 지속형 기본 60초", () => {
     const ttl = readFileSync(new URL("./toastttl.ts", import.meta.url), "utf8");

@@ -877,6 +877,11 @@ pub const ENV_GATE_PENDING: &str = "CYS_GATE_PENDING";
 /// · python 미러가 **같은 키·같은 의미**로 쓴다(동형성 핀이 기계 대조).
 pub const GATE_PENDING_KEY: &str = "gate_pending";
 
+/// ★v116-seat X-4: `surface.send_text` 의 「이 본문은 좌석 에이전트의 기동 줄이다」 표지 — **wire 키 이름 정본**.
+/// 생산 = cys `boot_agent_on_surface` · 소비 = cysd 빈 셸 가드(handlers.rs surface.send_text).
+/// 한쪽만 바뀌면 표지가 조용히 사라져 node-recover 가 다시 rc 1(큐 보류)로 돌아간다.
+pub const AGENT_LAUNCH_KEY: &str = "agent_launch";
+
 /// 축이 **실제로 노출되는가** — 데몬 직렬화 지점(`state.rs::gate_pending_wire`)과 전 Rust
 /// 소비처의 단일 술어(**부작용 있음** — env 3회 판독). 규약은 순수 코어
 /// [`gate_pending_axis_effective_from`].
@@ -2464,7 +2469,7 @@ pub const ENV_CLAUDE_PROMPT_SUGGESTION: &str = "CLAUDE_CODE_ENABLE_PROMPT_SUGGES
 /// ⑵ 사용자 값 불가침("true"·빈 값 포함 — 무엇이든 있으면 손대지 않는다) ⑶ 재정렬 금지(끝에 붙이고
 /// 기존 순서 보존). 대상 = `bin == "claude"` 만 · **OS 게이트 없음** — 기본 팩(D)이 이미 전 OS 에 같은
 /// 값을 싣고, 이 env 는 기능 끄기뿐이라 D5 의 Windows 강등 사유(전 pane 사망 위험)가 없다. Windows 에서
-/// 실제로 pane 에 닿는 자리는 D5 와 같다(run_launch_agent_opts 의 surface.create env 맵).
+/// 실제로 pane 에 닿는 자리는 D5 와 같다(run_launch_agent_opts → cys.rs `launch_create_env_pairs` 의 surface.create env 맵).
 pub fn inject_claude_prompt_suggestion_default(env_pairs: &mut Vec<(String, String)>, bin: &str) {
     if bin != "claude" {
         return;
@@ -2481,6 +2486,117 @@ pub fn inject_claude_prompt_suggestion_default(env_pairs: &mut Vec<(String, Stri
 /// 접두 리터럴을 두면 폴더 열거 규칙 재구현 핀이 둘을 구별하지 못하므로 여기 한 곳에만 둔다.
 pub fn is_claude_agent(agent: &str) -> bool {
     agent == "claude" || agent.starts_with("claude-")
+}
+
+/// v116-seat N-4 — Claude 좌석의 effort 값(박사님 정책 2026-09-23 「effort 는 high 로 고정」). Opus 5.5 의
+/// 기본값이 medium 이고, `/effort` 피커가 프로필 전역 설정(effortLevel)을 바꿔 좌석이 조용히 medium 으로 뜬
+/// 실증(09-23 09:14)이 있다.
+pub const CLAUDE_SEAT_EFFORT: &str = "high";
+
+/// Claude Code 가 읽는 effort 환경 변수 이름. 설치본 2.1.281 문자열 실측(2026-09-24):
+/// 「apply_flag_settings: CLAUDE_CODE_EFFORT_LEVEL overrides effort for this session」 — 설정 파일의
+/// effortLevel 보다 이기고, 좌석 안의 `/effort` 변경도 「Not applied」로 막는다(= high 고정 정책과 일치).
+/// ★명령줄 인자가 아니라 환경 변수인 이유(master 판정 2026-09-24 · 원 5af9ac1d 는 인자였다): 구판 claude
+/// 2.1.37 은 effort 인자를 「unknown option」으로 거부하고 rc 1 로 끝난다 = 좌석 즉사(4군 ④). 환경 변수는
+/// 구판이 모르면 무시한다 = 안전 퇴화(좌석은 살고 effort 만 기본값). 사용자가 max 를 원하면 agents.json 의
+/// 그 어댑터 `env` 에 이 키를 적는다 — 아래 주입은 키가 **없을 때만** 한다.
+pub const ENV_CLAUDE_EFFORT_LEVEL: &str = "CLAUDE_CODE_EFFORT_LEVEL";
+
+/// 이 기동이 **Claude Code 좌석**인가(순수 판정).
+///
+/// 판정 근거는 둘 중 하나다:
+/// ① 어댑터 키가 `claude` 이거나 `claude-` 로 시작한다 — 사용자 팩에 `claude-fable`·`claude-sonnet`
+///    처럼 모델별 키가 실재한다(2026-09-23 라이브 agents.json 실측 · 읽기만 했다).
+/// ② 실행 파일 토큰의 이름(경로·확장자 제거)이 `claude` 다 — 키 이름을 바꿔도(어댑터 키 개명 내성)
+///    `~/.local/bin/claude`·`claude.exe` 같은 경로형 명령을 놓치지 않는다.
+/// `claude-2.cmd`(윈도 npm 래퍼) 처럼 이름이 claude 가 아닌 래퍼는 ② 로는 안 잡히고 ① 이 잡는다.
+pub fn is_claude_seat(agent: &str, bin: &str) -> bool {
+    if agent == "claude" || agent.starts_with("claude-") {
+        return true;
+    }
+    let name = bin.rsplit(['/', '\\']).next().unwrap_or(bin);
+    let stem = name.rsplit_once('.').map_or(name, |(a, _)| a);
+    stem.eq_ignore_ascii_case("claude")
+}
+
+/// Claude 좌석 env 에 `CLAUDE_CODE_EFFORT_LEVEL=high` 를 넣는다(v116-seat N-4).
+///
+/// 불가침 3계약([`inject_claude_alt_screen_default_for`] 와 같은 모양):
+/// · Claude 좌석이 아니면(`is_claude_seat` 거짓) **아무것도** 넣지 않는다 — codex·agy 는 무관한 키다.
+/// · 키가 이미 있으면(어댑터 `env` 에 사용자가 적은 값 — 예 max) 그 값이 이긴다 — 부재 시에만 기본값.
+/// · append 만 한다(재정렬 금지 — unix 인라인 `KEY="val" cmd` 순서가 곧 셸 전개 순서다).
+/// 소비처 둘이 모두 이 헬퍼를 거친다: 좌석 기동 줄(unix 인라인 · boot_agent_on_surface) · launch-agent 의
+/// surface.create env 맵(Windows = 순수 cmd 라 env 는 이 맵으로만 pane 에 실린다).
+pub fn inject_claude_effort_env(env_pairs: &mut Vec<(String, String)>, agent: &str, bin: &str) {
+    if !is_claude_seat(agent, bin) {
+        return;
+    }
+    if env_pairs.iter().any(|(k, _)| k == ENV_CLAUDE_EFFORT_LEVEL) {
+        return;
+    }
+    env_pairs.push((ENV_CLAUDE_EFFORT_LEVEL.to_string(), CLAUDE_SEAT_EFFORT.to_string()));
+}
+
+#[cfg(test)]
+mod claude_effort_tests {
+    use super::*;
+
+    fn inj(pairs: &[(&str, &str)], agent: &str, bin: &str) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        inject_claude_effort_env(&mut v, agent, bin);
+        v
+    }
+
+    #[test]
+    fn claude_seat_gets_effort_env_high_appended() {
+        assert_eq!(CLAUDE_SEAT_EFFORT, "high"); // 정책 값이 조용히 바뀌면 여기서 적색
+        assert_eq!(ENV_CLAUDE_EFFORT_LEVEL, "CLAUDE_CODE_EFFORT_LEVEL");
+        let got = inj(&[("CLAUDE_CONFIG_DIR", "/c")], "claude", "claude");
+        assert_eq!(
+            got,
+            vec![
+                ("CLAUDE_CONFIG_DIR".to_string(), "/c".to_string()),
+                ("CLAUDE_CODE_EFFORT_LEVEL".to_string(), "high".to_string())
+            ],
+            "끝에 append · 기존 순서 불변"
+        );
+        assert!(inj(&[], "claude-fable", "claude").iter().any(|(k, v)| k == ENV_CLAUDE_EFFORT_LEVEL && v == "high"));
+    }
+
+    #[test]
+    fn claude_detected_by_key_or_binary_name() {
+        assert!(is_claude_seat("claude", "claude"));
+        assert!(is_claude_seat("claude-sonnet", "claude"));
+        // 윈도 cmd.exe /c …claude-2.cmd — 키가 잡는다
+        assert!(is_claude_seat("claude", "cmd.exe"));
+        // 모델별 키 + 이름이 claude 가 아닌 래퍼 — 키 접두 판정 **단독**으로만 잡힌다
+        // (실행파일 이름 판정과 겹치지 않게 골랐다: 두 판정이 겹치면 한쪽을 지워도 초록이다)
+        assert!(is_claude_seat("claude-fable", "cmd.exe"));
+        assert!(is_claude_seat(
+            "claude-sonnet",
+            "C:\\Users\\x\\AppData\\Roaming\\npm\\claude-2.cmd"
+        ));
+        assert!(is_claude_seat("my-seat", "/Users/x/.local/bin/claude"));
+        assert!(is_claude_seat("my-seat", "C:\\Users\\x\\.local\\bin\\claude.exe"));
+        assert!(!is_claude_seat("codex", "codex"));
+        assert!(!is_claude_seat("gemini", "~/.local/bin/agy"));
+        assert!(!is_claude_seat("grok", "grok"));
+        assert!(!is_claude_seat("claudette", "claudette")); // 접두 일치가 아니라 키/이름 정확 판정
+    }
+
+    #[test]
+    fn non_claude_env_is_untouched() {
+        for (agent, bin) in [("codex", "codex"), ("gemini", "~/.local/bin/agy"), ("grok", "grok")] {
+            assert_eq!(inj(&[("A", "1")], agent, bin), vec![("A".to_string(), "1".to_string())]);
+        }
+    }
+
+    #[test]
+    fn user_effort_value_wins() {
+        let got = inj(&[("CLAUDE_CODE_EFFORT_LEVEL", "max")], "claude", "claude");
+        assert_eq!(got, vec![("CLAUDE_CODE_EFFORT_LEVEL".to_string(), "max".to_string())]);
+    }
 }
 
 /// Claude Code projects/ 디렉터리명 munge — 실측: '/'와 특수문자가 '-'로 치환된다.
@@ -3239,6 +3355,12 @@ mod tests {
         // 데몬 2메서드·topology·python 미러가 공유하는 키 이름. 바뀌면 축이 조용히 사라진다.
         assert_eq!(super::GATE_PENDING_KEY, "gate_pending");
         assert_eq!(super::ENV_GATE_PENDING, "CYS_GATE_PENDING");
+    }
+
+    #[test]
+    fn v116_agent_launch_wire_key_is_the_single_name() {
+        // cys(생산)·cysd(소비)가 공유하는 표지 키 — 구 데몬은 모르는 키를 무시한다(신 CLI × 구 데몬 = 종전 동작).
+        assert_eq!(super::AGENT_LAUNCH_KEY, "agent_launch");
     }
 
     // ── ★(U-11) 보류 귀결: 만료 규약 · 롤백 킬스위치 · 종료코드 ──

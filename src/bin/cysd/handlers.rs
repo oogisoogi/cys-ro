@@ -3483,10 +3483,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     // agent 이름과 agent_alive(presence)를 단일 락 1회로 함께 읽어 torn read 제거.
                     // ★M1: 산출은 3값 순수 술어 `agent_alive_tri` 하나가 소유한다(사본 금지 —
                     //   surface.list 와 org.status 가 갈리면 소비부가 좌석마다 다른 사실을 본다).
-                    let (agent, agent_alive) = {
+                    let (agent, agent_bin, agent_alive) = {
                         let meta = s.agent_meta.lock().unwrap();
                         (
                             meta.as_ref().map(|(name, _)| name.clone()),
+                            meta.as_ref().map(|(_, bin)| bin.clone()),
                             agent_alive_tri(
                                 meta.is_some(),
                                 s.agent_seen.load(Ordering::Relaxed),
@@ -3515,6 +3516,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         "env_injected": s.env_injected, // RC-3 잔여(T2.1): node-recover 안전판정용
                         "claude_config_dir": s.claude_config_dir.lock().unwrap().clone(), // (W1) node-recover resume 게이트용
                         "agent": agent,
+                        // ★v116-seat Fable 2-2: node-recover 가 set_meta meta_denied 를 「같은 메타 = 무해」로
+                        //   받을 때의 대조 재료(키 추가만 · 소비 = cys.rs set_meta_denied_is_same_meta).
+                        "agent_bin": agent_bin,
                         "agent_alive": agent_alive,
                         // ★(W2 · B6) 각성 래치 — **단방향** 신호다. null 은 NOT-awake 가 아니라
                         // '이 차원에 대해 말할 것이 없음'(legacy-presumed)이다. 소비자는 null 을
@@ -3719,25 +3723,56 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   게이트가 강제 배달도 막는다) · 호출자에겐 명시 에러로 즉시 알린다(저장 검증이 상한까지 기다리지 않게).
             //   사람 입력(human)은 대상이 아니다 — 빈 셸에 사람이 치는 것은 정상이다.
             if !human && crate::governance::agent_seat_vacant_now(&surface) {
-                let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
-                    params.get("from").and_then(|v| v.as_str()).map(str::to_string)
-                });
-                // ★v115-restore(A3): 보류 본체(큐 적재 · queue.enqueued · inject.skipped_no_agent · 로그)는
-                //   데몬 내부 직접 주입 생산자들과 **한 함수**를 쓴다(governance::hold_for_vacant_seat).
-                crate::governance::hold_for_vacant_seat(
-                    daemon,
-                    &surface,
-                    &text,
-                    entry_from,
-                    params.get("from").cloned().unwrap_or(Value::Null),
-                    "surface.send_text",
-                    caller_pid,
-                );
-                return Reply::Single(err_response(
-                    &id,
-                    ERR_NO_AGENT,
-                    "agent seat has no live agent (bare shell) — not typed; queued (prompt_unknown)",
-                ));
+                // ★v116-seat X-4: 좌석 재기동 줄(`agent_launch` · cys 의 boot_agent_on_surface 가 붙인다)은
+                //   빈 셸에 쳐야 하는 명령 자체다 — 그 좌석에 등록된 에이전트의 한 줄 기동 명령이면 가드를
+                //   지나 아래 타이핑 경로로 간다. 표지가 있는데 기동 줄이 아니면 **큐에도 넣지 않고** 거부한다
+                //   (셸 명령 줄이 큐에 남으면 뒤에 뜬 에이전트에게 사용자 입력으로 배달된다 — 4군 ① 폭주 큐).
+                let agent_launch = params
+                    .get(cys::AGENT_LAUNCH_KEY)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let seat_bin = surface.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
+                if agent_launch {
+                    if !crate::governance::launch_line_matches_seat(&text, seat_bin.as_deref()) {
+                        return Reply::Single(err_response(
+                            &id,
+                            ERR_NO_AGENT,
+                            "agent seat has no live agent (bare shell) — agent_launch text is not this seat's agent launch line; not typed; not queued",
+                        ));
+                    }
+                    eprintln!(
+                        "[cysd] {} 빈 좌석 재기동 줄 타이핑 — agent_launch · bin={}",
+                        cys::surface_ref(sid),
+                        seat_bin.as_deref().unwrap_or("?")
+                    );
+                    // (옛 기동 줄 폐기는 판정 C 로 큐 배달 직전 1곳 — governance::deliver_head_locked — 으로 옮겼다.)
+                    // ★v116-seat Fable 2R P3: 다른 페인이 부른 node-recover 는 set_meta 가 meta_denied(같은 메타 = 무해)라
+                    //   set_meta 성공 경로의 agent_seen 리셋을 못 받는다 → 죽음 최초 관측 시각(agent_dead_since)이 그대로
+                    //   남아, 재기동 직후 새 프로세스가 표에 오르기 전 틱에 역할 회수 유예(60초)가 만료될 수 있었다.
+                    //   기동 줄이 실제로 쳐지는 여기서 사망 타이머를 풀어 유예를 기동 시점부터 다시 센다(래치 해제만 ·
+                    //   생존 판정·통지 래치는 그대로 — 되살아나면 check_agent_death 가 agent.recovered 로 재무장).
+                    *surface.agent_dead_since.lock().unwrap() = None;
+                } else {
+                    let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
+                        params.get("from").and_then(|v| v.as_str()).map(str::to_string)
+                    });
+                    // ★v115-restore(A3): 보류 본체(큐 적재 · queue.enqueued · inject.skipped_no_agent · 로그)는
+                    //   데몬 내부 직접 주입 생산자들과 **한 함수**를 쓴다(governance::hold_for_vacant_seat).
+                    crate::governance::hold_for_vacant_seat(
+                        daemon,
+                        &surface,
+                        &text,
+                        entry_from,
+                        params.get("from").cloned().unwrap_or(Value::Null),
+                        "surface.send_text",
+                        caller_pid,
+                    );
+                    return Reply::Single(err_response(
+                        &id,
+                        ERR_NO_AGENT,
+                        "agent seat has no live agent (bare shell) — not typed; queued (prompt_unknown)",
+                    ));
+                }
             }
             // T3-13 타이핑 가드: 사람이 방금(기본 3초) 입력 중인 pane에 원격 직접 주입 금지.
             // 무음 큐잉 대신 명시 에러 — 후속 send-key Return이 사람의 미완성 입력을
@@ -12566,6 +12601,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★v116-seat X-4: 에이전트 메타가 남은 **빈 셸 좌석**(node-recover 대상)에서 ①`agent_launch` + 좌석
+    /// agent_bin 기동 줄 = 타이핑(큐 0) ②`agent_launch` + 기동 줄 아님 = 거부 · 큐 0(폭주 큐 방지)
+    /// ③표지 없음 = 종전대로 보류(no_agent · 큐 1). 좌석 = `exec /bin/sh -i`(자식 0 · 뿌리 = sh) ·
+    /// 기동 줄의 실행 파일 = `true`(타이핑만 하고 Return 은 보내지 않는다 — 실행 0).
+    #[cfg(unix)]
+    #[test]
+    fn v116_send_text_agent_launch_passes_vacant_seat_guard_only_for_seat_bin() {
+        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let (daemon, dir) = daemon_with_acl("v116-launch", r#"{"default":"allow","rules":[]}"#);
+        let s = daemon
+            .create_surface(None, Some("exec /bin/sh -i".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "true".into()));
+        let caller = 990_300_u32;
+        bind_caller(&daemon, caller, s.id);
+        // 로그인 셸(zsh -lc)이 exec 하기 전 찰나(자식 0)를 빈 좌석으로 보고 빠져나가면, 뒤이어 프로파일이 띄우는
+        // 자식(path_helper 등) 때문에 좌석이 점유로 바뀌어 가드가 안 타는 경합이 난다(10회 중 4회 실측) —
+        // 뿌리가 `sh -i` 로 바뀐 것을 먼저 기다린 뒤 빈 좌석을 확인한다.
+        crate::governance::test_wait_seat_runs(&s, "sh", &["-i"]);
+        let t0 = std::time::Instant::now();
+        while !crate::governance::agent_seat_vacant_now(&s) {
+            assert!(t0.elapsed().as_secs() < 10, "전제: 10초 안에 빈 셸 좌석이 되지 않았다");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let send = |n: u64, p: Value| {
+            let req = Request { id: json!(n), method: "surface.send_text".into(), params: p };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(caller)) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+        let qlen = || s.pending_queue.lock().unwrap().len();
+
+        // ② 표지 + 기동 줄 아님 → 거부 · 큐 0
+        let r = send(1, json!({"surface_id": s.id, "text": "[DRAIN-VERIFY] 저장하라", "agent_launch": true}));
+        assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "기동 줄 아닌 본문이 통과: {r}");
+        assert_eq!(qlen(), 0, "표지 달린 거부 본문이 큐에 들어갔다(폭주 큐)");
+
+        // ① 표지 + 좌석 agent_bin 기동 줄 → 타이핑
+        let r = send(2, json!({"surface_id": s.id, "text": r#"FOO="a b" true --x"#, "agent_launch": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "재기동 줄이 빈 셸 가드에 막혔다(X-4): {r}");
+        assert_eq!(qlen(), 0, "타이핑된 재기동 줄이 큐에도 들어갔다");
+
+        // ③ 표지 없음 → 종전 보류(no_agent · 큐 1)
+        let r = send(3, json!({"surface_id": s.id, "text": "true --x"}));
+        assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "표지 없는 본문이 빈 셸에 타이핑됐다: {r}");
+        assert_eq!(qlen(), 1, "표지 없는 본문은 종전대로 큐 보류");
+
+        // ④ ★판정 C(master#623fa6b9) 단일 지점: 기동 줄 통과는 큐를 건드리지 않는다(옛 기동 줄 폐기는 배달 직전 1곳 —
+        //   governance v116_deliver_drops_stale_launch_line_instead_of_delivering). ③ 이 남긴 옛 기동 줄 그대로 남는다.
+        // Fable 2R P3: 오래 죽어 있던 좌석(사망 타이머 래치 = 먼 과거) — 기동 줄 통과 시 풀려야 한다.
+        *s.agent_dead_since.lock().unwrap() = Some(1.0);
+        let r = send(4, json!({"surface_id": s.id, "text": "true --continue", "agent_launch": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "기동 줄 통과 실패: {r}");
+        assert_eq!(*s.agent_dead_since.lock().unwrap(), None,
+                   "기동 줄을 쳤는데 사망 타이머가 남았다 — 재기동 직후 역할 회수 유예가 만료될 수 있다");
+        let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
+        assert_eq!(left, vec!["true --x".to_string()], "기동 줄 통과 지점이 큐를 건드렸다(폐기 지점 이원화)");
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 결합 거부 박제: 원자 clear+paste+submit은 직접 전송 전용 — quiet 대기 큐 배달과
     /// 결합 불가(clear_first + queued는 invalid_params).
     #[test]
@@ -16176,6 +16275,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ★v116-seat Fable 2-2: surface.list 가 좌석 메타의 agent_bin 을 싣는다(CLI 가 set_meta meta_denied 를
+    /// 「같은 메타 = 무해」로 받을 때의 대조 재료) · 메타 없는 좌석은 null.
+    #[test]
+    fn v116_surface_list_exposes_agent_bin_from_meta() {
+        let daemon = claim_daemon();
+        let live = make_surface(&daemon, Some("worker-1"));
+        let bare = make_surface(&daemon, Some("worker-2"));
+        *daemon.surfaces.lock().unwrap()[&live].agent_meta.lock().unwrap() =
+            Some(("claude".into(), "/x/stub/claude".into()));
+        let req = Request { id: json!(1), method: "surface.list".into(), params: json!({}) };
+        let Reply::Single(resp) = dispatch(&daemon, req, None) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(surface_entry(&resp, "surfaces", live)["agent_bin"], json!("/x/stub/claude"));
+        assert!(surface_entry(&resp, "surfaces", bare)["agent_bin"].is_null());
     }
 
     /// ★★M1 검체(2026-08-24) — **"아직 못 봤다" 가 "없다" 로 나가지 않는다.**

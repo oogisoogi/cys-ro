@@ -8684,7 +8684,7 @@ fn install_hint_for(agent: &str, os: &str) -> &'static str {
             if os == "windows" {
                 "PowerShell: `irm https://claude.ai/install.ps1 | iex` 후 자비스 재시작"
             } else {
-                "`curl -fsSL https://claude.ai/install.sh | bash` 후 새 탭"
+                "`curl -fsSL https://claude.ai/install.sh | bash` 후 자비스 재시작"
             }
         }
         "codex" => concat!(
@@ -9794,6 +9794,76 @@ fn load_agent_spec(agent: &str) -> Result<Value, String> {
 }
 
 /// 역할 디렉티브 + soul.md + 장기메모리 색인 + 스킬 색인 조립 (launch/reinject/cycle 공용)
+/// ★v116-seat F2: 좌석 첫 프롬프트에 싣는 장기메모리 색인 항목의 상한(문자). 근거: 저장소 새 팩 워커의
+/// 고정분(WORKER 14,268 + RSI 9,036 + soul 1,559 = 24,863자) + 스킬 이름 색인 ≈ 2.4K 에 더해 첫 프롬프트를
+/// 30K자 미만으로 두는 값 · 색인 항목 평균 ≈ 200자(박사님 팩 941항 실측) → 최신 약 10항.
+const MEMORY_INDEX_CAP_CHARS: usize = 2_000;
+/// ★v116-seat F2: 스킬 색인(이름만)의 상한(문자) — 새 팩 119개 이름 ≈ 2.4K 가 들어가고, 사용자가 스킬을
+/// 수백 개로 늘려도 좌석 출생 크기가 따라 자라지 않게 막는 벽.
+const SKILL_INDEX_CAP_CHARS: usize = 3_000;
+
+/// ★v116-seat F2(순수): 메모리 색인 본문을 상한 안으로 줄인다. 새 항목은 색인 **끝**에 붙으므로
+/// (javis_memory.py add) 최신 항목(`- [` 줄)부터 거꾸로 **줄 단위**로 담고, 원래 순서로 되돌려 낸다.
+/// 머리말(작성법 등)은 싣지 않는다. 항상 첫 줄에 「전문 = 경로 Read」 포인터를 둔다 — 줄인 것과 안 줄인
+/// 것을 좌석이 구분할 수 있게 실은 항목 수 / 전체 항목 수를 함께 적는다.
+fn capped_memory_index(index: &str, path: &std::path::Path, cap: usize) -> String {
+    let entries: Vec<&str> = index.lines().filter(|l| l.starts_with("- [")).collect();
+    let header = |kept: usize| {
+        format!(
+            "(최신 {kept}항 / 전체 {}항 — 전문은 {} 를 Read · 본문은 각 항목 파일)\n",
+            entries.len(),
+            path.display()
+        )
+    };
+    // 머리 줄(포인터)도 상한 안에 넣는다(agy 1R ⑤ · master 판정 「색인 합 ≤ 상한」) — 실은 항목 수 자릿수는
+    // 전체 항목 수 자릿수를 넘지 않으므로 전체 수로 만든 머리 줄 길이가 상계다.
+    let mut kept: Vec<&str> = Vec::new();
+    let mut used = header(entries.len()).chars().count();
+    for line in entries.iter().rev() {
+        let n = line.chars().count() + 1;
+        if used + n > cap {
+            break;
+        }
+        used += n;
+        kept.push(line);
+    }
+    kept.reverse();
+    let mut out = header(kept.len());
+    for line in kept {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// ★v116-seat F2(순수): 스킬 색인을 **이름만** 쉼표로 잇는다(로컬 오버레이 = 이름 뒤 `*`). 상한을 넘기면
+/// 거기서 멈추고 「외 N개」를 적는다. 설명·본문은 `cys skill list` · `cys skill show <name>` 가 원문이다.
+fn capped_skill_index(
+    index: &std::collections::BTreeMap<String, (String, bool)>,
+    cap: usize,
+) -> String {
+    let head = format!(
+        "\n\n■ 보유 스킬 색인 ({}개 · 이름만 — 설명: `cys skill list` · 본문: `cys skill show <name>` · * = local 오버레이)\n",
+        index.len()
+    );
+    let tail = |rest: usize| {
+        if rest > 0 { format!(" … 외 {rest}개(`cys skill list`)\n") } else { "\n".to_string() }
+    };
+    // 머리·꼬리까지 상한 안(agy 1R ⑤) — 꼬리 예약은 가장 긴 꼬리(전체 수 자릿수)로 잡는다.
+    let budget = cap.saturating_sub(head.chars().count() + tail(index.len()).chars().count());
+    let mut names = String::new();
+    let mut shown = 0usize;
+    for (name, (_, local)) in index {
+        let item = format!("{}{name}{}", if shown == 0 { "" } else { ", " }, if *local { "*" } else { "" });
+        if names.chars().count() + item.chars().count() > budget {
+            break;
+        }
+        names.push_str(&item);
+        shown += 1;
+    }
+    format!("{head}{names}{}", tail(index.len() - shown))
+}
+
 fn compose_directive(role: &str) -> Result<String, String> {
     let dir = cys::pack::pack_dir();
     // 표준 4역할 외(임시 역할 — fresh heartbeat의 scan-bot 등)는 WORKER 지침으로 폴백
@@ -9821,13 +9891,16 @@ fn compose_directive(role: &str) -> Result<String, String> {
     }
     // 장기메모리 색인 동봉 — 본문(1파일 1사실)은 필요 시 해당 파일을 읽어 점진 로드.
     // 헤더에 절대경로를 박는다: 노드가 본문 읽기·증류 쓰기 위치를 추론하지 않게(결정론).
+    // ★v116-seat F2: 색인 **전문**을 붙이면 좌석 출생 CTX 가 색인 크기에 비례해 자란다(09-23 실측:
+    //   박사님 팩 색인 177K자 → 첫 프롬프트 239K자 · 1M 창의 23.8%). 최신 항목부터 상한까지만 싣고
+    //   전문은 경로 포인터로 남긴다(capped_memory_index).
     let memory_path = dir.join("memory/MEMORY.md");
     if let Ok(memory) = std::fs::read_to_string(&memory_path) {
         directive.push_str(&format!(
             "\n\n■ 장기메모리 색인 ({} — 노드 공유 의미 기억 · 증류는 bin/javis_memory.py add)\n",
             memory_path.display()
         ));
-        directive.push_str(&memory);
+        directive.push_str(&capped_memory_index(&memory, &memory_path, MEMORY_INDEX_CAP_CHARS));
     }
     // 스킬 색인(표지) 동봉 — 본문은 필요 시 `cys skill show <name>`으로 점진 로드.
     // ① 오버레이: ~/.cys/local/skills 가 동명 팩 스킬을 shadowing(업데이트 불가침 사용자 커스텀).
@@ -9860,13 +9933,9 @@ fn compose_directive(role: &str) -> Result<String, String> {
         skill_index.insert(name, (desc, true)); // 동명 → local 이 이긴다(shadowing)
     }
     if !skill_index.is_empty() {
-        directive.push_str("\n\n■ 보유 스킬 색인 (본문: `cys skill show <name>`)\n");
-        for (name, (desc, local)) in &skill_index {
-            directive.push_str(&format!(
-                "- {name}: {desc}{}\n",
-                if *local { " [local 오버레이]" } else { "" }
-            ));
-        }
+        // ★v116-seat F2: 설명까지 싣던 색인(새 팩 119개 ≈ 26K자)을 **이름만**으로 줄인다 — 설명은
+        //   `cys skill list`·`cys skill show <name>` 가 원문이다(capped_skill_index).
+        directive.push_str(&capped_skill_index(&skill_index, SKILL_INDEX_CAP_CHARS));
     }
     // ① 사용자 로컬 디렉티브 오버레이(~/.cys/local/directives/<ROLE>_DIRECTIVE.local.md) —
     // 업데이트·치유가 절대 건드리지 않는 사용자 영역. 안전핵 키워드 줄은 strip(오버라이드 동일
@@ -10287,6 +10356,19 @@ fn agent_env_pairs(spec: &Value) -> Vec<(String, String)> {
 ///       env 주입 없음(셸 전개가 진실원). → mac 무회귀(master D5 조건).
 /// windows: 순수 cmd만 send(powershell이 POSIX env-assign 미해석 회귀 차단) + 해소된 env를 주입 맵으로 반환
 ///          (surface.create → builder.env). CLAUDE_CONFIG_DIR 등이 pane env에 직접 실린다.
+/// launch-agent 의 surface.create env 맵(Windows 에서 pane env 로 실리는 유일한 경로 — 아래 호출부 주석)을
+/// 조립한다: 어댑터 env → D5 fullscreen 차단 기본값 → ★v116-integ B 제안 글 끄기 → ★v116-seat N-4 Claude effort env.
+/// 기본값 주입은 모두 lib 헬퍼를 거친다(좌석 기동 줄 조립과 같은 규약·같은 순서 · 사본 금지).
+fn launch_create_env_pairs(spec: &Value, agent: &str) -> Vec<(String, String)> {
+    let mut pairs = agent_env_pairs(spec);
+    let bin = extract_bin(spec["cmd"].as_str().unwrap_or(""), agent);
+    cys::inject_claude_alt_screen_default(&mut pairs, bin);
+    // ★v116-integ B: 제안 글 끄기 env — D5 와 같은 자리 · 같은 규약(Windows 에서 pane 에 닿는 유일한 경로).
+    cys::inject_claude_prompt_suggestion_default(&mut pairs, bin);
+    cys::inject_claude_effort_env(&mut pairs, agent, bin);
+    pairs
+}
+
 fn render_launch(cmd: &str, env: &[(String, String)]) -> (String, Vec<(String, String)>) {
     if cfg!(windows) {
         let inject = env
@@ -10730,6 +10812,45 @@ fn compose_boot_directive(role: &str, restore: bool, resume: bool, full: &str) -
     }
 }
 
+/// 좌석 기동 명령 **한 줄**을 조립한다 — 어댑터 cmd + (재개면) 재개 인자 + (Claude 좌석이면) effort.
+/// boot_agent_on_surface 에서 떼어 낸 순수 단계다(파일시스템은 resume 사전검증만 읽는다): 새 좌석과
+/// 재개 경로가 **같은 한 줄 규칙**을 받는지를 데몬 없이 시험하려고 분리했다(v116-ui-effort ②).
+fn compose_agent_cmd(
+    spec: &Value,
+    agent: &str,
+    resume: bool,
+    session_id: Option<&str>,
+    config_dir: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<String, String> {
+    let mut cmd = spec["cmd"].as_str().ok_or("agent cmd missing")?.to_string();
+    if resume {
+        if let Some(arg) = spec["resume_arg"].as_str() {
+            // T2-6 resume 어댑터: 대화 기억 복원 플래그 (예: claude --continue).
+            let fallback = spec["resume_arg_fallback"].as_str().unwrap_or("--continue");
+            if let Some(resolved) =
+                resolve_resume_suffix(agent, arg, session_id, config_dir, cwd, fallback)
+            {
+                cmd.push(' ');
+                cmd.push_str(&resolved);
+            }
+        }
+    }
+    // ★v116-seat N-4: effort 는 명령줄 인자가 아니라 좌석 env(CLAUDE_CODE_EFFORT_LEVEL)로 싣는다 —
+    //   구판 claude(2.1.37)는 모르는 인자에 rc 1 로 죽는다(좌석 즉사) · env 는 무시된다(안전 퇴화).
+    //   주입 자리 = boot_agent_on_surface 의 env_pairs(unix 인라인) · launch_create_env_pairs(Windows).
+    Ok(cmd)
+}
+
+/// ★v116-seat Fable 2-2: set_meta 오류가 「같은 메타의 재등록을 소유 게이트가 막은 것」인가(순수).
+/// 참 = 오류 코드가 meta_denied ∧ 좌석 행(surface.list)의 agent·agent_bin 이 요청과 **정확히** 같다.
+/// agent_bin 키가 없는 데몬(구판)이나 다른 에이전트·다른 바이너리면 거짓 — 종전대로 오류다.
+fn set_meta_denied_is_same_meta(err: &str, entry: &Value, agent: &str, bin: &str) -> bool {
+    err.starts_with("meta_denied:")
+        && entry["agent"].as_str() == Some(agent)
+        && entry["agent_bin"].as_str() == Some(bin)
+}
+
 /// launch-agent(새 surface)와 node-recover(기존 surface 재기동)가 공유한다.
 fn boot_agent_on_surface(
     sid: u64,
@@ -10744,19 +10865,7 @@ fn boot_agent_on_surface(
     cwd: Option<&str>,
     config_dir: Option<&str>,
 ) -> Result<BootVerdict, String> {
-    let mut cmd = spec["cmd"].as_str().ok_or("agent cmd missing")?.to_string();
-    if resume {
-        if let Some(arg) = spec["resume_arg"].as_str() {
-            // T2-6 resume 어댑터: 대화 기억 복원 플래그 (예: claude --continue).
-            let fallback = spec["resume_arg_fallback"].as_str().unwrap_or("--continue");
-            if let Some(resolved) =
-                resolve_resume_suffix(agent, arg, session_id, config_dir, cwd, fallback)
-            {
-                cmd.push(' ');
-                cmd.push_str(&resolved);
-            }
-        }
-    }
+    let cmd = compose_agent_cmd(spec, agent, resume, session_id, config_dir, cwd)?;
     let delay = spec["inject_delay_secs"].as_u64().unwrap_or(12);
     // resume 복원 노드엔 전문 디렉티브를 재주입하지 않는다 — 직전 컨텍스트(.jsonl resume)에 이미
     // WORKER/REVIEWER_DIRECTIVE가 들어 있어, 전문 재주입은 토큰 2배·중복 지침 혼선 + 거대 주입으로
@@ -10806,6 +10915,8 @@ fn boot_agent_on_surface(
     cys::inject_claude_alt_screen_default(&mut env_pairs, extract_bin(&cmd, agent));
     // ★v116-integ B: 제안 글 끄기 env — 키 부재 시에만(사용자 agents.json 을 고친 기계 포함 · lib 헬퍼 doc).
     cys::inject_claude_prompt_suggestion_default(&mut env_pairs, extract_bin(&cmd, agent));
+    // ★v116-seat N-4: Claude 좌석 effort = env(키 부재 시에만 high) — lib `inject_claude_effort_env` doc.
+    cys::inject_claude_effort_env(&mut env_pairs, agent, extract_bin(&cmd, agent));
     let (send, _send_env) = render_launch(&cmd, &env_pairs);
     // ★(W2 · B4) **기동 send 직전 line_count 스냅샷** — readiness 판정의 시간 귀속 기준선.
     //
@@ -10822,9 +10933,14 @@ fn boot_agent_on_surface(
         .find(|s| s["surface_id"].as_u64() == Some(sid))
         .and_then(|s| s["line_count"].as_u64())
         .unwrap_or(0);
+    // ★v116-seat X-4: `agent_launch` = 「이 본문은 좌석 에이전트의 기동 줄이다」 표지. node-recover·in-seat
+    //   복원은 에이전트 메타가 남은 빈 셸에 이 줄을 친다 — 표지가 없으면 데몬 빈 셸 가드가 지시문으로 보고
+    //   큐에 보류해(rc=1 · 좌석 복구 0) run_boot 이 reclaim(kill)으로 번진다. 데몬은 표지 + 첫 낱말 =
+    //   좌석 agent_bin 일 때만 통과시킨다(handlers.rs surface.send_text 빈 셸 가드).
     request(
         "surface.send_text",
-        json!({"surface_id": sid, "text": send, "quiet": true, "authoritative": true}),
+        json!({"surface_id": sid, "text": send, "quiet": true, "authoritative": true,
+               (cys::AGENT_LAUNCH_KEY): true}),
     )?;
     request(
         "surface.send_key",
@@ -10835,10 +10951,25 @@ fn boot_agent_on_surface(
     // → agent_seen 영원히 false → status 허위 DEAD → task-prompt 생존게이트가 '미기동' 오판(DRILL_LIVE_1).
     // 스폰 시점에 의도가 확정되므로 여기서 등록하는 것이 정직하다(§3-1 진단의 수리).
     let bin = extract_bin(&cmd, agent).to_string();
-    request(
+    // ★v116-seat Fable 2-2: 메타가 남은 좌석(node-recover · in-seat 복원)을 **다른 페인에서** 되살리면
+    //   (master 페인의 `cys boot` 가 부르는 node-recover 가 전형) 데몬 소유 게이트가 set_meta 를
+    //   meta_denied 로 막는다 — 기동 줄은 이미 쳐져 에이전트는 떴는데 여기서 rc 1 이 나면 run_boot 이
+    //   reclaim(kill)으로 번진다(격리 실측 · HANDOFF-v116-seat §6-3). 좌석 메타가 요청과 **똑같으면**
+    //   재등록은 할 일이 없으므로 무해로 받는다. 데몬 권한은 넓히지 않는다(게이트는 그대로) ·
+    //   사망 감지는 생존 관측 시 스스로 재무장한다(governance.rs check_agent_death 의 agent.recovered).
+    if let Err(e) = request(
         "surface.set_meta",
         json!({"surface_id": sid, "agent": agent, "agent_bin": bin}),
-    )?;
+    ) {
+        let entry = surface_entry(sid).unwrap_or(Value::Null);
+        if !set_meta_denied_is_same_meta(&e, &entry, agent, &bin) {
+            return Err(e);
+        }
+        eprintln!(
+            "[launch-agent] {} set_meta 거부(meta_denied)이나 좌석 메타가 이미 같다({agent} · {bin}) — 재등록 생략하고 진행",
+            surface_ref(sid)
+        );
+    }
     eprintln!(
         "[launch-agent] {agent} starting… (polling readiness, max {}s)",
         delay.max(30) * 2
@@ -13390,16 +13521,7 @@ fn run_launch_agent_opts(
         //   boot_agent_on_surface 는 env 를 폐기하고, Tauri GUI 의 create_surface 는 env 를 아예
         //   넘기지 않는다: src-tauri/src/main.rs 의 surface.create 페이로드 참조).
         //   그래서 이것은 '벨트'이고 본체는 UI 가드(ui/src/wheelgate.ts)다 — lib 헬퍼 주석 정본.
-        let mut create_env_pairs = agent_env_pairs(&spec);
-        cys::inject_claude_alt_screen_default(
-            &mut create_env_pairs,
-            extract_bin(spec["cmd"].as_str().unwrap_or(""), agent),
-        );
-        // ★v116-integ B: 제안 글 끄기 env — 같은 자리 · 같은 규약(Windows 에서 pane 에 닿는 유일한 경로).
-        cys::inject_claude_prompt_suggestion_default(
-            &mut create_env_pairs,
-            extract_bin(spec["cmd"].as_str().unwrap_or(""), agent),
-        );
+        let create_env_pairs = launch_create_env_pairs(&spec, agent);
         let (_, inject_env) = render_launch("", &create_env_pairs);
         let env_obj: serde_json::Map<String, Value> = inject_env
             .into_iter()
@@ -21735,6 +21857,18 @@ mod tests {
     /// 카드 본문이 네이티브 설치 명령 대신 agents.json 경로수정 안내가 됐다(브리프 P4-4
     /// '문구 SOT=install_hint' 위반). 순수형(os 인자) 핀이라 비 Windows CI 에서도 Windows
     /// 분기를 실제로 밟는다(lib.rs `bundled_git_bash_path_for` 와 동일 규약).
+    /// ★v116-seat D4 #15: 맥·리눅스 claude 미설치 안내 = 설치 명령 + 「자비스 재시작」(무엇의 탭인지 모를 「새 탭」 0) ·
+    /// Windows 와 같은 다음 행동.
+    #[test]
+    fn v116_claude_install_hint_says_restart_not_new_tab() {
+        for os in ["macos", "linux", "windows"] {
+            let h = install_hint_for("claude", os);
+            assert!(h.contains("자비스 재시작"), "{os}: {h}");
+            assert!(!h.contains("새 탭"), "{os}: {h}");
+        }
+        assert!(install_hint_for("claude", "macos").contains("curl -fsSL https://claude.ai/install.sh | bash"));
+    }
+
     #[test]
     fn full_miss_hint_keeps_claude_installer_on_windows() {
         // ⓐ 의무 CLI claude: 치환 금지 — install_hint 그대로(네이티브 설치 명령 포함).
@@ -23053,7 +23187,8 @@ mod tests {
         // worker compose는 이제 RSI 5번째 directive를 fail-closed로 요구 → fixture 동반.
         std::fs::write(td.join("directives/RSI_LEARNING_DIRECTIVE.md"), "# RSI 학습 절대지침\n").unwrap();
         std::fs::write(td.join("soul.md"), "soul-marker\n").unwrap();
-        std::fs::write(td.join("memory/MEMORY.md"), "memory-index-marker\n").unwrap();
+        // ★v116-seat F2: 색인은 `- [` 항목 줄만 싣는다(머리말 제외) — 픽스처를 실제 항목 형식으로.
+        std::fs::write(td.join("memory/MEMORY.md"), "# 머리말\n- [memory-index-marker](m.md) — x\n").unwrap();
         std::fs::write(
             td.join("skills/demo/SKILL.md"),
             "name: demo\ndescription: d\n",
@@ -23080,6 +23215,92 @@ mod tests {
             "메모리 절대경로 미표기 — 노드가 위치를 추론하게 된다"
         );
         assert!(d < s && s < m && m < k, "조립 순서 위반: 디렉티브<soul<메모리<스킬");
+    }
+
+    /// ★v116-seat F2: 메모리 색인 상한 — 큰 색인(5,000항 ≈ 50만 자)에서도 실은 부분 ≤ 상한 ·
+    /// 최신 항목(끝)이 남고 가장 오래된 항목은 빠지며 · 전문 Read 포인터(경로 + 실은/전체 항목 수)가 있다.
+    #[test]
+    fn v116_capped_memory_index_bounds_large_index_and_keeps_newest() {
+        let mut idx = String::from("# 머리말\n> 작성법 …\n");
+        for i in 0..5000 {
+            idx.push_str(&format!("- [m{i:04}](feedback_m{i:04}.md) — {}\n", "가".repeat(90)));
+        }
+        let path = std::path::Path::new("/p/memory/MEMORY.md");
+        let out = capped_memory_index(&idx, path, MEMORY_INDEX_CAP_CHARS);
+        assert!(out.chars().count() <= MEMORY_INDEX_CAP_CHARS, "머리 줄 포함 상한 초과: {}", out.chars().count());
+        let (head, body) = out.split_once('\n').unwrap();
+        assert!(idx.chars().count() > 100 * MEMORY_INDEX_CAP_CHARS, "전제: 픽스처가 상한보다 충분히 크다");
+        assert!(body.contains("- [m4999]"), "최신 항목 누락");
+        assert!(!body.contains("- [m0000]"), "가장 오래된 항목이 실렸다(최신 우선 위반)");
+        assert!(!body.contains("머리말"), "머리말은 싣지 않는다");
+        assert!(body.lines().all(|l| l.starts_with("- [")), "줄 중간 절단");
+        let n = body.lines().count();
+        assert!(n >= 1 && head.contains(&format!("최신 {n}항 / 전체 5000항")), "항목 수 고지: {head}");
+        assert!(head.contains("/p/memory/MEMORY.md") && head.contains("Read"), "전문 포인터 누락: {head}");
+        // 작은 색인은 전부 실린다(상한이 작은 팩을 깎지 않음)
+        let small = "- [a](a.md) — 1\n- [b](b.md) — 2\n";
+        let o = capped_memory_index(small, path, MEMORY_INDEX_CAP_CHARS);
+        assert!(o.contains("최신 2항 / 전체 2항") && o.contains("- [a]") && o.contains("- [b]"));
+    }
+
+    /// ★v116-seat F2: 스킬 색인 = 이름만(설명 0) · 상한 · 「외 N개」 · local 오버레이 표지.
+    #[test]
+    fn v116_capped_skill_index_names_only_with_cap() {
+        let mut m: std::collections::BTreeMap<String, (String, bool)> = Default::default();
+        for i in 0..2000 {
+            m.insert(format!("skill-{i:04}"), ("아주 긴 설명 ".repeat(20), i == 3));
+        }
+        let out = capped_skill_index(&m, SKILL_INDEX_CAP_CHARS);
+        assert!(!out.contains("아주 긴 설명"), "설명이 실렸다");
+        assert!(out.chars().count() <= SKILL_INDEX_CAP_CHARS, "머리·꼬리 포함 상한 초과: {}", out.chars().count());
+        assert!(out.contains("2000개") && out.contains("외 ") && out.contains("cys skill show"), "{out}");
+        assert!(out.contains("skill-0003*"), "local 오버레이 표지");
+        let few: std::collections::BTreeMap<String, (String, bool)> =
+            [("a".to_string(), ("d".to_string(), false)), ("b".to_string(), ("d".to_string(), false))].into();
+        let o = capped_skill_index(&few, SKILL_INDEX_CAP_CHARS);
+        assert!(o.contains("a, b") && !o.contains("외 "), "{o}");
+    }
+
+    /// ★v116-seat F2: compose_directive 종단 — 큰 메모리 색인·많은 스킬이 있어도 조립 결과는
+    /// 「지침 전문 + 상한」 안이다(색인 전문이 새지 않음).
+    #[test]
+    fn v116_compose_directive_total_is_directives_plus_caps() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let td = std::env::temp_dir().join(format!("cys-compose-f2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(td.join("directives")).unwrap();
+        std::fs::create_dir_all(td.join("memory")).unwrap();
+        let wd = "# WORKER 절대지침\n".to_string() + &"본문 ".repeat(2000);
+        let rsi = "# RSI\n".to_string() + &"학습 ".repeat(1000);
+        std::fs::write(td.join("directives/WORKER_DIRECTIVE.md"), &wd).unwrap();
+        std::fs::write(td.join("directives/RSI_LEARNING_DIRECTIVE.md"), &rsi).unwrap();
+        std::fs::write(td.join("soul.md"), "soul\n").unwrap();
+        let mut idx = String::new();
+        for i in 0..3000 {
+            idx.push_str(&format!("- [m{i}](m{i}.md) — {}\n", "나".repeat(150)));
+        }
+        std::fs::write(td.join("memory/MEMORY.md"), &idx).unwrap();
+        for i in 0..300 {
+            let d = td.join(format!("skills/s{i:03}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), format!("name: s{i:03}\ndescription: {}\n", "설명".repeat(100))).unwrap();
+        }
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &td);
+        let out = compose_directive("worker").expect("compose 실패");
+        match saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+        let fixed = wd.chars().count() + rsi.chars().count() + 5;
+        let total = out.chars().count();
+        // 머리줄·포인터·안전핵 재선언 등 고정 문구 여유 = 3,000자
+        let bound = fixed + MEMORY_INDEX_CAP_CHARS + SKILL_INDEX_CAP_CHARS + 3_000;
+        assert!(idx.chars().count() > 400_000, "전제: 색인이 크다");
+        assert!(total <= bound, "조립 {total}자 > 지침 전문 {fixed} + 상한 → 색인 전문이 샜다");
+        assert!(!out.contains("설명설명"), "스킬 설명이 실렸다");
+        assert!(out.contains("- [m2999]") && !out.contains("- [m0]("), "최신 우선 위반");
     }
 
     /// ★불변식 박제(Phase 2 배선): RSI_LEARNING_DIRECTIVE는 master·worker 주입물에만 포함되고
@@ -23525,6 +23746,62 @@ mod tests {
     }
 
     #[test]
+    fn v116_boot_agent_launch_send_carries_agent_launch_marker() {
+        // ★v116-seat X-4 배선 핀: 좌석 기동 줄 send 에 `agent_launch` 표지가 있어야 데몬 빈 셸 가드가
+        //   node-recover·in-seat 복원의 재기동 줄을 통과시킨다(없으면 rc=1 · 큐 보류 · reclaim 으로 번짐).
+        //   판정 = boot_agent_on_surface 본문에서 기동 줄(`"text": send`) send_text 호출 한 덩어리에 표지.
+        let src = include_str!("cys.rs");
+        let a = src.find("fn boot_agent_on_surface(").expect("boot_agent_on_surface 부재");
+        let body = &src[a..a + src[a..].find("\n}\n").expect("함수 끝")];
+        let t = body.find(r#""text": send,"#).expect("기동 줄 send_text 호출 부재");
+        let call = &body[body[..t].rfind("request(").expect("request(")..];
+        let call = &call[..call.find(")?;").expect("호출 끝")];
+        assert!(call.contains("(cys::AGENT_LAUNCH_KEY): true"), "기동 줄 send 에 agent_launch 표지 없음:\n{call}");
+    }
+
+    #[test]
+    fn v116_set_meta_denied_same_meta_is_benign_only_when_exact() {
+        // ★v116-seat Fable 2-2: 「같은 메타의 재등록 거부」만 무해 · 그 밖은 전부 오류로 남는다.
+        let denied = "meta_denied: set_meta denied: caller (surface 1) may not overwrite the live agent meta of another surface 2";
+        let row = json!({"agent": "claude", "agent_bin": "/x/claude"});
+        assert!(set_meta_denied_is_same_meta(denied, &row, "claude", "/x/claude"));
+        // 다른 에이전트 · 다른 바이너리 · 구판 데몬(agent_bin 키 없음) · 행 없음 = 무해 아님
+        assert!(!set_meta_denied_is_same_meta(denied, &row, "codex", "/x/claude"));
+        assert!(!set_meta_denied_is_same_meta(denied, &row, "claude", "/y/claude"));
+        assert!(!set_meta_denied_is_same_meta(denied, &json!({"agent": "claude"}), "claude", "/x/claude"));
+        assert!(!set_meta_denied_is_same_meta(denied, &Value::Null, "claude", "/x/claude"));
+        // 다른 오류 코드는 메타가 같아도 오류(연결 실패·not_found 를 삼키지 않는다)
+        assert!(!set_meta_denied_is_same_meta("not_found: surface 2 not found", &row, "claude", "/x/claude"));
+        assert!(!set_meta_denied_is_same_meta("surface.set_meta: broken pipe", &row, "claude", "/x/claude"));
+        // 코드는 오류 문자열 **머리**여야 한다(본문 중간의 같은 낱말은 다른 오류)
+        assert!(!set_meta_denied_is_same_meta("not_found: meta_denied: x", &row, "claude", "/x/claude"));
+    }
+
+    #[test]
+    fn v116_boot_agent_set_meta_error_goes_through_same_meta_check() {
+        // ★v116-seat Fable 2-2 배선 핀: set_meta 호출이 `?` 로 곧장 전파되면 pane 호출 node-recover 가
+        //   기동 뒤 rc 1 → run_boot reclaim(kill)으로 번진다. 오류는 반드시 무해 판정을 거친다.
+        let src = include_str!("cys.rs");
+        let a = src.find("fn boot_agent_on_surface(").expect("boot_agent_on_surface 부재");
+        let body = &src[a..a + src[a..].find("\n}\n").expect("함수 끝")];
+        let m = body.find(r#""surface.set_meta","#).expect("set_meta 호출 부재");
+        let r = body[..m].rfind("request(").expect("request(");
+        assert!(
+            body[..r].trim_end().ends_with("if let Err(e) ="),
+            "set_meta 호출이 오류 분기(if let Err(e) = request(…))로 감싸여 있지 않다"
+        );
+        let after = &body[m..];
+        let close = after.find(") {").expect("호출 끝");
+        assert!(!after[..close].contains(")?"), "set_meta 오류가 `?` 로 바로 전파된다");
+        let chk = after.find("if !set_meta_denied_is_same_meta(&e, &entry, agent, &bin)")
+            .expect("「무해 아님이면」 분기 부재 또는 인자 오전달(요청 bin 이 아닌 값으로 대조)");
+        assert!(after[close..chk].contains("let entry = surface_entry(sid)"), "대조 행이 이 좌석(sid)의 행이 아니다");
+        assert!(chk > close, "무해 판정이 오류 분기 안에 없다");
+        let branch = &after[chk..chk + after[chk..].find('}').expect("분기 끝")];
+        assert!(branch.contains("return Err(e)"), "무해 아님이면 오류를 돌려야 한다:\n{branch}");
+    }
+
+    #[test]
     fn render_launch_os_aware_unix_byte_identical() {
         // RC-3(B′) 회귀 핀(master D5 조건): unix 렌더는 기존 agents.json 단일문자열과 byte-identical.
         let cmd = "claude --dangerously-skip-permissions";
@@ -23797,16 +24074,22 @@ mod tests {
 
     /// ★v116-integ B 배선 핀: 운영 조립 지점 두 곳이 D5 호출 **뒤** · 그 env 를 쓰는 render_launch **앞**에서
     /// B 헬퍼를 부른다(위 도달 시험의 조립 순서가 운영과 같다는 근거 · 호출 삭제·이동 뮤턴트 차단).
+    /// (v116-integ-2 · 1083 seat 합류) launch-agent 의 surface.create env 조립이 `launch_create_env_pairs` 로
+    /// 옮겨졌다 — 그 경로는 ⑴ 조립 함수 안 D5 뒤 B ⑵ run_launch_agent_opts 가 그 함수를 render_launch 앞에서
+    /// 부른다 ⑶ 조립 결과에 false 정확히 1쌍(실행) 으로 잰다.
     #[test]
     fn prompt_suggestion_injection_wired_in_both_consumers() {
         let src = include_str!("cys.rs");
-        for (head, name) in [
-            ("\nfn boot_agent_on_surface(", "boot_agent_on_surface"),
-            ("\nfn run_launch_agent_opts(", "run_launch_agent_opts"),
-        ] {
+        let body_of = |head: &str, name: &str| -> &str {
             let s = src.find(head).unwrap_or_else(|| panic!("{name} 소실"));
             let e = s + 1 + src[s + 1..].find("\nfn ").expect("다음 fn");
-            let body = &src[s..e];
+            &src[s..e]
+        };
+        for (head, name, needs_render) in [
+            ("\nfn boot_agent_on_surface(", "boot_agent_on_surface", true),
+            ("\nfn launch_create_env_pairs(", "launch_create_env_pairs", false),
+        ] {
+            let body = body_of(head, name);
             let d5 = body
                 .find("cys::inject_claude_alt_screen_default(")
                 .unwrap_or_else(|| panic!("{name}: D5 호출 소실"));
@@ -23814,8 +24097,21 @@ mod tests {
                 .find("cys::inject_claude_prompt_suggestion_default(")
                 .unwrap_or_else(|| panic!("{name}: 제안 글 끄기 주입 호출 부재"));
             assert!(d5 < b, "{name}: B 주입은 D5 뒤");
-            assert!(body[b..].contains("render_launch("), "{name}: B 주입 뒤에 render_launch 가 와야 한다");
+            if needs_render {
+                assert!(body[b..].contains("render_launch("), "{name}: B 주입 뒤에 render_launch 가 와야 한다");
+            }
         }
+        let la = body_of("\nfn run_launch_agent_opts(", "run_launch_agent_opts");
+        let c = la
+            .find("launch_create_env_pairs(&spec, agent)")
+            .expect("run_launch_agent_opts: surface.create env 가 조립 함수를 안 거친다");
+        assert!(la[c..].contains("render_launch("), "run_launch_agent_opts: 조립 뒤에 render_launch 가 와야 한다");
+        let k = cys::ENV_CLAUDE_PROMPT_SUGGESTION;
+        let pairs = launch_create_env_pairs(&json!({"cmd": "claude --x"}), "claude");
+        assert_eq!(pairs.iter().filter(|(kk, v)| kk == k && v == "false").count(), 1, "{pairs:?}");
+        let mine = launch_create_env_pairs(&json!({"cmd": "claude --x", "env": {k: "true"}}), "claude");
+        assert_eq!(mine.iter().filter(|(kk, _)| kk == k).count(), 1, "사용자 값 불가침: {mine:?}");
+        assert!(!launch_create_env_pairs(&json!({"cmd": "codex --x"}), "codex").iter().any(|(kk, _)| kk == k));
     }
 
     /// ★G34(W3) — 소켓에서 **레인 팩을 결정론 유도**한다(cys-dept 명명 규약 미러).
@@ -29931,6 +30227,109 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let call = code.find("init_pack_wire_profile_skills(&dir").expect("run_init_pack 안에 배선 호출이 없다");
         let early = code.find("if no_install_hook {").expect("no_install_hook 분기 부재");
         assert!(call < early, "배선 호출이 --no-install-hook 조기 반환 뒤에 있다 — 앱 갱신 경로가 배선을 못 탄다");
+    }
+
+    // ─── v116-seat N-4 — 좌석 effort 는 env 로(인자 0) · 새 좌석·재개·윈 surface.create 세 경로 ───
+    #[test]
+    fn v116_compose_agent_cmd_carries_no_effort_argument() {
+        let claude = json!({
+            "cmd": "claude --model claude-opus-5-5 --dangerously-skip-permissions",
+            "resume_arg": "--resume {session_id}",
+            "resume_arg_fallback": "--continue"
+        });
+        // 구판 claude(2.1.37)는 모르는 인자에 rc 1 로 죽는다 — 명령 한 줄에 effort 인자가 있으면 안 된다
+        let fresh = compose_agent_cmd(&claude, "claude", false, None, None, None).unwrap();
+        assert_eq!(fresh, "claude --model claude-opus-5-5 --dangerously-skip-permissions");
+        let resumed = compose_agent_cmd(&claude, "claude", true, None, None, None).unwrap();
+        assert_eq!(resumed, "claude --model claude-opus-5-5 --dangerously-skip-permissions --continue");
+        let codex = json!({"cmd": "codex --dangerously-bypass-approvals-and-sandbox", "resume_arg": "resume {session_id}"});
+        assert_eq!(
+            compose_agent_cmd(&codex, "codex", true, Some("abc"), None, None).unwrap(),
+            "codex --dangerously-bypass-approvals-and-sandbox resume abc"
+        );
+        assert!(compose_agent_cmd(&json!({}), "claude", false, None, None, None).is_err());
+        for c in [&fresh, &resumed] {
+            assert!(!c.contains("effort"), "effort 인자가 명령에 남았다: {c}");
+        }
+    }
+
+    /// 좌석 기동 줄(unix 인라인)과 윈 surface.create env 맵 두 소비처가 effort env 를 싣는다.
+    #[test]
+    fn v116_effort_env_reaches_launch_line_and_windows_create_env() {
+        // ① 윈도 경로: surface.create env 맵(= pane builder.env) — 이 조립 함수가 호출부의 유일한 원천이다
+        let claude = json!({"cmd": "claude --dangerously-skip-permissions",
+                            "env": {"CLAUDE_CONFIG_DIR": "${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}"}});
+        let pairs = launch_create_env_pairs(&claude, "claude");
+        assert!(pairs.iter().any(|(k, v)| k == "CLAUDE_CODE_EFFORT_LEVEL" && v == "high"), "{pairs:?}");
+        assert_eq!(pairs[0].0, "CLAUDE_CONFIG_DIR", "어댑터 env 순서 불변");
+        let codex = json!({"cmd": "codex --x"});
+        assert!(!launch_create_env_pairs(&codex, "codex").iter().any(|(k, _)| k == "CLAUDE_CODE_EFFORT_LEVEL"));
+        // 사용자가 어댑터 env 에 적은 값(max)이 이긴다
+        let custom = json!({"cmd": "claude --x", "env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}});
+        let cp = launch_create_env_pairs(&custom, "claude");
+        assert_eq!(cp.iter().filter(|(k, _)| k == "CLAUDE_CODE_EFFORT_LEVEL").count(), 1);
+        assert!(cp.iter().any(|(k, v)| k == "CLAUDE_CODE_EFFORT_LEVEL" && v == "max"));
+        // Windows 렌더: 순수 cmd + env 는 주입 맵으로 · unix 렌더: 인라인 KEY="val"
+        let (send, inject) = render_launch("claude --x", &pairs);
+        #[cfg(windows)]
+        {
+            assert_eq!(send, "claude --x");
+            assert!(inject.iter().any(|(k, v)| k == "CLAUDE_CODE_EFFORT_LEVEL" && v == "high"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(send.contains("CLAUDE_CODE_EFFORT_LEVEL=\"high\" ") && send.ends_with("claude --x"), "{send}");
+            assert!(inject.is_empty());
+        }
+        // ② 호출부 배선 핀 — surface.create 는 이 조립 함수를, 기동 줄은 lib 헬퍼를 거친다
+        let src = include_str!("cys.rs");
+        let la = src.find("fn run_launch_agent_opts(").expect("run_launch_agent_opts");
+        let la_body = &src[la..la + src[la..].find("\n}\n").unwrap()];
+        let c = la_body.find("launch_create_env_pairs(&spec, agent)").expect("surface.create env 가 조립 함수를 안 거친다");
+        let r = la_body.find("\"surface.create\"").expect("surface.create");
+        assert!(c < r, "env 조립이 surface.create 뒤");
+        let b = src.find("fn boot_agent_on_surface(").unwrap();
+        let b_body = &src[b..b + src[b..].find("\n}\n").unwrap()];
+        let e = b_body.find("cys::inject_claude_effort_env(&mut env_pairs, agent,").expect("기동 줄 env 주입 없음");
+        let rl = b_body.find("render_launch(&cmd, &env_pairs)").unwrap();
+        assert!(e < rl, "effort env 주입이 기동 줄 렌더 뒤");
+    }
+}
+
+#[cfg(test)]
+mod accept_v116 {
+    //! v116-seat 수용 시험 S5(구현 비열람).
+    use super::set_meta_denied_is_same_meta as f;
+    use serde_json::json;
+
+    #[test]
+    fn accept_v116_s5_true_only_on_exact_same_meta() {
+        let row = json!({"agent": "claude", "agent_bin": "/x/claude", "ref": "surface:3"});
+        assert!(f("meta_denied: owned by surface:1", &row, "claude", "/x/claude"));
+        assert!(f("meta_denied:", &row, "claude", "/x/claude"), "코드만");
+    }
+
+    #[test]
+    fn accept_v116_s5_false_cases() {
+        let row = json!({"agent": "claude", "agent_bin": "/x/claude"});
+        let no_bin = json!({"agent": "claude"});
+        let null_bin = json!({"agent": "claude", "agent_bin": null});
+        assert!(!f("meta_denied: x", &no_bin, "claude", "/x/claude"), "agent_bin 키 없음");
+        assert!(!f("meta_denied: x", &null_bin, "claude", "/x/claude"), "agent_bin null");
+        assert!(!f("meta_denied: x", &row, "codex", "/x/claude"), "다른 에이전트");
+        assert!(!f("meta_denied: x", &row, "claude", "claude"), "다른 bin(상대)");
+        assert!(!f("meta_denied: x", &row, "claude", "/x/claude "), "bin 끝 공백");
+        assert!(!f("meta_denied: x", &row, "Claude", "/x/claude"), "대소문자");
+        assert!(!f("not_found: meta_denied: x", &row, "claude", "/x/claude"), "코드가 뒤에 등장");
+        assert!(!f("error meta_denied: x", &row, "claude", "/x/claude"));
+        assert!(!f(" meta_denied: x", &row, "claude", "/x/claude"), "앞 공백");
+        assert!(!f("meta_denied x", &row, "claude", "/x/claude"), "콜론 없음");
+        assert!(!f("Meta_denied: x", &row, "claude", "/x/claude"));
+        assert!(!f("seat_denied: x", &row, "claude", "/x/claude"), "다른 코드");
+        assert!(!f("", &row, "claude", "/x/claude"));
+        assert!(!f("meta_denied: x", &json!(null), "claude", "/x/claude"), "행 없음");
+        assert!(!f("meta_denied: x", &json!({"agent_bin": "/x/claude"}), "claude", "/x/claude"), "agent 키 없음");
+        assert!(!f("meta_denied: x", &json!({"agent": "claude", "agent_bin": 7}), "claude", "7"), "숫자 bin");
     }
 }
 

@@ -163,12 +163,52 @@ try:
         shutil.rmtree(tmp2, ignore_errors=True)
     # 비복원(startup) 대조
     hin_startup = json.dumps({"transcript_path": tp, "source": "startup"}) + "\n"
-    code, out, err = ss_run(env, "worker-1", hin_startup)
-    check("F7 대조: startup 비-master 좌석은 종전대로 전문 주입(T6 상한 미적용)",
-          "DIRECTIVE-BODY-WORKER" in out and "원문 생략" not in out and len(out) > 10000, len(out))
+    # ★v116-seat D3-o 재조준 — 옛 F7(「startup 비-master = 전문 주입 · len > 10,000」)은 지운다. 그 전문은 10,000자를
+    #   넘어 Claude Code 가 저장 파일 + 앞 2,000자 미리보기로 바꿨으므로 모델에 닿지 않았다(D3-pack.md D3-o · 실물 68,516B).
+    #   새 계약 = startup 도 resume 과 같은 상한: 출력 < 10,000자 · 첫 턴 규율·각성 헤더가 앞 · 원문은 목차(경로) + 생략 고지.
+    for src_name, hin in (("startup", hin_startup), ("source 미상", "")):
+        code, out, err = ss_run(env, "worker-1", hin)
+        cut = out.find("원문 생략")
+        wpath = os.path.join(pack, "directives", "WORKER_DIRECTIVE.md")
+        check("F7 %s 비-master 대형 원문 → 출력 < 10,000자 · 본문 미주입(D3-o)" % src_name,
+              code == 0 and len(out) < 10000 and "DIRECTIVE-BODY-WORKER" not in out
+              and out.count("가나다라마바사") == 0, len(out))
+        check("F7c %s 첫 턴 규율·DRAIN·각성 헤더 → 원문 목차(경로) → 생략 고지 순" % src_name,
+              0 <= out.find("첫 턴 규율") < out.find("■ CYSJavis 역할 각성") < out.find("■ 원문 목차") < cut
+              and "[DRAIN]" in out[:2000] and wpath in out,
+              (out.find("첫 턴 규율"), out.find("■ 원문 목차"), cut))
+    tmp3 = tempfile.mkdtemp(prefix="t6-f7-")
+    try:
+        env3, _p3 = ss_setup(tmp3, "짧은 본문")
+        code, out, err = ss_run(env3, "worker-1", hin_startup)
+        check("F7d startup 소형 원문은 종전대로 본문·soul 포함 · 목차·생략 표지 없음",
+              "DIRECTIVE-BODY-WORKER" in out and "SOUL-BODY" in out and "원문 생략" not in out
+              and "■ 원문 목차" not in out, len(out))
+    finally:
+        shutil.rmtree(tmp3, ignore_errors=True)
     code, out, err = ss_run(env, "master", hin_startup)
     check("F7b master 는 startup 도 조립기 상한 안(T2 는 source 무관 — 옛 계약의 「전문 주입」을 대체)",
           code == 0 and len(out) <= 9000 and out.count("가나다라마바사") == 0, len(out))
+    # ★v116-seat F7(D3-pack.md): master·CEO 좌석도 훅으로 DRAIN 규칙 줄을 받는다(조립기 상한 안 · 부트 브리지 유지).
+    check("F7e master 훅 출력에 DRAIN 규칙 줄 · 조립기 상한 안 · 부트 브리지 유지",
+          "■ 재시작 저장 지시: [DRAIN]" in out and len(out) <= 9000 and "부트 브리지" in out, len(out))
+    # ★v116-seat F7: 조립기가 실패해도(부재 · rc 127) master 폴백 출력에 DRAIN 규칙 줄이 실린다.
+    #   hooks 사본에서 core_inject.py 만 뺀다(격리 팩에도 없다 → 셸 폴백 분기).
+    tmp4 = tempfile.mkdtemp(prefix="t6-f7f-")
+    try:
+        hk = os.path.join(tmp4, "hooks")
+        shutil.copytree(HOOKS, hk)
+        os.remove(os.path.join(hk, "core_inject.py"))
+        e4 = dict(env, CYS_ROLE="master")
+        r4 = subprocess.run(["sh", os.path.join(hk, "session-start.sh")], input=hin_startup, capture_output=True,
+                            text=True, encoding="utf-8", env=e4, timeout=60)
+        out4 = r4.stdout
+        check("F7f master 조립기 실패 폴백에도 DRAIN 규칙 줄(고지 뒤 · 각성 헤더 앞)",
+              r4.returncode == 0 and "요지 조립기(hooks/core_inject.py)가 실패" in out4
+              and 0 <= out4.find("■ 고지: 요지 조립기") < out4.find("■ 재시작 저장 지시: [DRAIN]")
+              < out4.find("■ CYSJavis 역할 각성"), out4[-600:])
+    finally:
+        shutil.rmtree(tmp4, ignore_errors=True)
     code, out, err = ss_run(env, "master", "")
     check("F8 대조: stdin 없음(source 미상) = 조립기 경로 · 원문 절 주입", "DIRECTIVE-BODY-MASTER" in out and code == 0)
 finally:

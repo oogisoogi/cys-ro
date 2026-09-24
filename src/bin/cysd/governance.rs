@@ -3497,6 +3497,86 @@ pub(crate) fn is_shell_name(name: &str) -> bool {
     matches!(n, "zsh" | "bash" | "sh" | "dash" | "fish" | "ksh" | "tcsh" | "csh" | "pwsh" | "powershell" | "cmd")
 }
 
+/// ★v116-seat X-4(순수 판정): 빈 에이전트 좌석에 온 본문이 **그 좌석에 등록된 에이전트의 기동 줄**인가.
+/// 빈 셸 가드는 지시문이 셸 명령으로 타이핑되는 것을 막는다 — 그런데 `cys node-recover`·in-seat 복원이
+/// 같은 좌석에 에이전트를 다시 띄우는 기동 줄은 **셸에 쳐야 하는 명령 자체**라 가드에 막히면 좌석이
+/// 복구되지 않는다(09-23 격리 cysd 실측: rc=1 · 기동 줄이 큐로 · 좌석 복구 0).
+/// 통과 조건 = 한 줄(개행 없음) ∧ 명령 치환·따옴표 밖 연결/리다이렉트 문자 없음 ∧ 환경 대입(`KEY="값"` ·
+/// 값에 공백 허용)을 건너뛴 첫 낱말의 파일 이름이 좌석 메타의 실행 파일(agent_bin) 이름과 같다. 기동 줄이 아닌 본문(각성문·DRAIN 지시 등)은 첫 낱말이
+/// 에이전트 이름이 아니므로 종전대로 보류된다.
+fn launch_line_after_bin(text: &str, seat_bin: Option<&str>) -> Option<Option<String>> {
+    fn file_name(p: &str) -> &str {
+        let n = p.rsplit(['/', '\\']).next().unwrap_or(p);
+        n.strip_suffix(".exe").unwrap_or(n)
+    }
+    fn is_assignment(word: &str) -> bool {
+        match word.split_once('=') {
+            Some((name, _)) => {
+                name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            None => false,
+        }
+    }
+    let seat_bin = seat_bin.map(file_name).filter(|b| !b.is_empty())?;
+    if text.contains(['\n', '\r']) {
+        return None;
+    }
+    // 명령 치환(백틱 · `$(`)은 따옴표 안에서도 셸이 실행한다 — 기동 줄엔 없다(대입 값은 `${…}` 전개뿐).
+    if text.contains('`') || text.contains("$(") {
+        return None;
+    }
+    // 셸 낱말 나누기(따옴표 안 공백은 낱말을 끊지 않는다) — 따옴표 문자는 낱말에 남긴다(판정엔 무관).
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => {
+                quote = None;
+                cur.push(c);
+            }
+            Some(_) => cur.push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            None if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+            }
+            // 따옴표 밖 명령 연결·리다이렉트(`;` `&` `|` `<` `>`)가 있으면 기동 줄 한 개가 아니다 — 두 번째
+            // 명령이 빈 셸에서 실행될 수 있다(agy 1R ④ 수용 · 방어 심층).
+            None if matches!(c, ';' | '&' | '|' | '<' | '>') => return None,
+            None => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    let i = words.iter().position(|w| !is_assignment(w))?;
+    (file_name(&words[i]) == seat_bin).then(|| words.get(i + 1).cloned())
+}
+
+pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bool {
+    launch_line_after_bin(text, seat_bin).is_some()
+}
+
+/// ★v116-seat agy 3R 반례 ①: 큐 폐기용 좁은 판정 — 기동 줄 판정 ∧ 실행 파일 뒤가 **플래그(`-…`)이거나 끝**.
+/// cys 가 만드는 기동 줄은 언제나 `<bin> --…`(compose_agent_cmd = 어댑터 cmd + resume 인자)이고, 「claude is an AI」
+/// 같은 한 줄 산문은 실행 파일 뒤가 낱말이다 — 그런 글은 폐기하지 않는다(빈 셸 가드 통과 판정은 종전 그대로).
+pub(crate) fn is_stale_launch_line(text: &str, seat_bin: Option<&str>) -> bool {
+    match launch_line_after_bin(text, seat_bin) {
+        Some(None) => true,
+        Some(Some(next)) => next.starts_with('-'),
+        None => false,
+    }
+}
+
 /// ★v114-dept-fd 수리 3: 권위 주입 직전 즉시 프로브(캐시는 watchdog 틱 주기라 stale 할 수 있다).
 /// 09-22 VM: 부서 좌석 claude 가 fd 한도로 기동에 실패해 빈 zsh 만 남았는데, 저장 검증 지시
 /// ([DRAIN-VERIFY])가 그 zsh 에 명령으로 타이핑됐다(`zsh: event not found`). 드문 경로(에이전트
@@ -3573,6 +3653,62 @@ pub fn hold_for_vacant_seat(
         if qid.is_some() { "적재" } else { "가득 참 — 폐기" }
     );
     qid
+}
+
+/// ★v116-seat Fable 3-1(master#4d8f12ec 판정 A → master#623fa6b9 판정 C): **큐 배달 직전 1곳**(`deliver_head_locked`
+/// 머리)에서 그 좌석 큐에 남은 **옛 기동 줄**만 폐기한다. 1.1.5 의 node-recover 는 기동 줄이 가드에 막혀 큐로 갔고
+/// (WAL 영속), 1.1.6 에서 그 줄이 에이전트에게 사용자 입력으로 배달된다(4군 ① 폭주 큐 계열) — 가장 흔한 경로는
+/// 업그레이드 = 데몬 재기동 → restored_queue → rehome → 새 좌석(기동 줄을 메타 등록 전에 보내 빈 셸 가드를 안 탄다).
+/// 판정 A 의 폐기 지점(agent_launch 가드 통과)은 그 경로를 못 덮어 여기로 옮겼다(단일 지점). 메타 없는 좌석 = 폐기 0.
+/// 폐기 대상 = `launch_line_matches_seat` 일치분뿐 — 다른 보류 글(DRAIN·master 지시 등)은 순서 그대로 남는다.
+/// 조용히 지우지 않는다: `queue.dropped`(reason `stale_launch_line` · 좌석 · 개수 · 줄 sha256 앞 8자) + 영속.
+/// 반환 = 폐기 개수.
+pub(crate) fn drop_stale_launch_lines(
+    daemon: &Daemon,
+    s: &crate::state::Surface,
+    seat_bin: Option<&str>,
+) -> usize {
+    use sha2::{Digest, Sha256};
+    let (dropped, now_empty) = {
+        let mut q = s.pending_queue.lock().unwrap();
+        // 평시(옛 줄 없음)는 할당 없이 곧장 돌아간다 — 배달마다 부르므로(큐 상한 100 · agy 3R ③).
+        if !q.iter().any(|e| is_stale_launch_line(&e.text, seat_bin)) {
+            return 0;
+        }
+        let (drop, keep): (Vec<_>, Vec<_>) =
+            q.drain(..).partition(|e| is_stale_launch_line(&e.text, seat_bin));
+        q.extend(keep);
+        (drop, q.is_empty())
+    };
+    if dropped.is_empty() {
+        return 0;
+    }
+    // 큐를 비웠으면 막힘 사유도 사실이 아니다(queue.clear 와 같은 이유 — 빈 큐는 틱이 건너뛴다).
+    if now_empty {
+        *s.queue_blocked.lock().unwrap() = None;
+    }
+    let sha8: Vec<String> = dropped
+        .iter()
+        .map(|e| {
+            Sha256::digest(e.text.as_bytes())
+                .iter()
+                .take(4)
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
+        .collect();
+    let mut payload = crate::state::queue_dropped_payload("stale_launch_line", &dropped, None);
+    payload["surface_ref"] = json!(cys::surface_ref(s.id));
+    payload["line_sha8"] = json!(sha8);
+    daemon.bus.publish("queue.dropped", "queue", Some(s.id), payload);
+    daemon.persist_queue_state();
+    eprintln!(
+        "[cysd] {} 옛 기동 줄 {}건 큐에서 폐기 — 배달 직전(sha8 {})",
+        cys::surface_ref(s.id),
+        dropped.len(),
+        sha8.join(",")
+    );
+    dropped.len()
 }
 
 /// [`seat_inject_guarded`] 결과.
@@ -5853,6 +5989,20 @@ pub(crate) fn deliver_head_locked(
     expect_head_id: Option<&str>,
     expect_pending: Option<u64>,
 ) -> Option<Delivered> {
+    // ★v116-seat 판정 C: 배달 직전 1곳 — 이 좌석 에이전트의 옛 기동 줄은 배달하지 않고 폐기(이벤트 + 영속).
+    //   임계영역 **밖**에서 부른다(persist_queue_state 가 surfaces → pending_queue 를 잡는다 — 큐 락을 쥔 채
+    //   부르면 교착). 두 호출자(watchdog 틱 · queue.deliver RPC)는 여기 올 때 락을 쥐고 있지 않다.
+    let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
+    let head_id = |s: &Arc<crate::state::Surface>| s.pending_queue.lock().unwrap().front().map(|e| e.id.clone());
+    let head_before = head_id(s);
+    let dropped = drop_stale_launch_lines(daemon, s, seat_bin.as_deref());
+    // ★agy 3R 반례 ② → agy 4R B1: 틱 경로(조준 id 없음)는 폐기로 **머리가 바뀌었을 때만** 이번 배달을 거른다 —
+    //   준비 판정(quiet·overdue·expect_pending)은 폐기 전 머리로 내려졌으므로 새 머리에 그대로 쓰면 안 된다(다음 틱이
+    //   다시 판정). 머리가 그대로면(꼬리 쪽 옛 줄만 폐기) 판정도 그대로 유효하니 배달한다 — 무조건 거르면 꼬리에 옛 줄이
+    //   계속 들어올 때 머리를 영영 못 보낸다(기아). 강제 배달은 조준 항목을 아래 머리 대조가 지킨다.
+    if dropped > 0 && expect_head_id.is_none() && head_id(s) != head_before {
+        return None;
+    }
     let delivered = {
         let mut q = s.pending_queue.lock().unwrap();
         // 락 순서 계약: pending_queue → input_gate (state.rs Surface::input_gate doc).
@@ -6552,6 +6702,57 @@ mod tests {
         for n in ["claude", "node", "sleep", "codex", "zshx", ""] {
             assert!(!is_shell_name(n), "셸 아닌 것을 셸로: {n}");
         }
+    }
+
+    /// ★v116-seat X-4: 빈 좌석 재기동 줄 판정 — 좌석 agent_bin 의 한 줄 기동 명령만 참.
+    #[test]
+    fn v116_launch_line_matches_seat_only_registered_agent_one_liner() {
+        use super::launch_line_matches_seat as m;
+        // 실제 unix 기동 줄 형태(render_launch: `KEY="값" cmd`) — 값에 공백이 있어도 첫 낱말은 claude
+        let line = r#"CLAUDE_CONFIG_DIR="/Users/x/My Files/.cys/claude" CLAUDE_CODE_NO_FLICKER="1" claude --model claude-opus-5-5 --dangerously-skip-permissions --continue"#;
+        assert!(m(line, Some("claude")));
+        assert!(m("claude --continue", Some("claude")));
+        assert!(m("/opt/homebrew/bin/claude --x", Some("claude")), "경로형 실행 파일");
+        assert!(m("~/.local/bin/agy --dangerously-skip-permissions", Some("~/.local/bin/agy")), "메타가 경로형");
+        assert!(m("codex.exe --x", Some("codex")), "윈 .exe");
+        // 기동 줄이 아닌 본문 = 거짓(종전대로 보류)
+        assert!(!m("[DRAIN-VERIFY] 저장하라", Some("claude")));
+        assert!(!m("WORKER_DIRECTIVE 각성: claude 는 …", Some("claude")));
+        assert!(!m("claude --x\n[DRAIN] 저장", Some("claude")), "여러 줄은 기동 줄이 아니다");
+        assert!(!m("claude --x\r", Some("claude")));
+        assert!(!m("codex --x", Some("claude")), "다른 에이전트");
+        assert!(!m("claudex --x", Some("claude")), "이름 접두 일치는 불일치");
+        assert!(!m("myclaude --x", Some("claude")), "이름 접미 일치는 불일치(ends_with 뮤턴트)");
+        assert!(!m("/opt/bin/myclaude --x", Some("/usr/bin/claude")), "경로형도 파일 이름 전체 일치");
+        assert!(!m(r#"FOO="a b claude"#, Some("claude")), "닫히지 않은 따옴표");
+        assert!(!m("FOO=1 BAR=2", Some("claude")), "대입만");
+        assert!(!m("", Some("claude")));
+        // agy 1R ④: 명령 연결·리다이렉트·치환 = 기동 줄 아님(따옴표 안의 `;` 등은 값이라 통과)
+        for bad in ["claude ; rm -rf ~", "claude && x", "claude --x | tee y", "claude > out", "claude < in",
+                    "claude & ", "claude --x `id`", "claude --x $(id)", r#"A="$(id)" claude"#] {
+            assert!(!m(bad, Some("claude")), "통과하면 안 됨: {bad}");
+        }
+        assert!(m(r#"A="x;y|z" claude --x"#, Some("claude")), "따옴표 안 문자는 값");
+        assert!(m(r#"CLAUDE_CONFIG_DIR="${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}" claude --continue"#, Some("claude")), "실 기동 줄의 ${{…}} 전개");
+        // agy 2R 판정 박제 — P2: 짝이 맞는 이스케이프 따옴표 예시는 통과(따옴표 토글이 짝수로 닫힌다).
+        //   값 안의 `\"` 처럼 짝이 깨지는 줄은 거부 = 안전 쪽(종전 1.1.5 와 같은 결과 · render_launch 는
+        //   값을 이스케이프하지 않으므로 cys 가 만드는 기동 줄엔 없다).
+        assert!(m(r#"claude --prompt "say \"hi\"""#, Some("claude")), "agy P2 예시");
+        assert!(!m(r#"K="a\"b" claude"#, Some("claude")), "짝 깨진 따옴표 = 거부(안전 쪽)");
+        // P3: 래퍼 cmd 는 좌석 메타 agent_bin 도 래퍼(cys extract_bin = 대입 뒤 첫 낱말)라 서로 맞는다.
+        assert!(m("env FOO=1 claude --x", Some("env")), "agy P3 — env 래퍼(메타 = env)");
+        assert!(m("sudo -u bot codex", Some("sudo")), "agy P3 — sudo 래퍼(메타 = sudo)");
+        assert!(!m("claude --x", None), "메타 없음");
+        // agy 3R ①: 큐 폐기용 좁은 판정 — 실행 파일 뒤가 플래그이거나 끝일 때만(산문 보존). 가드 판정 m 은 불변.
+        use super::is_stale_launch_line as st;
+        assert!(st(line, Some("claude")), "실 기동 줄(env 접두 · 플래그)");
+        assert!(st("claude", Some("claude")), "실행 파일만");
+        assert!(st("/x/stub/claude --continue", Some("/x/stub/claude")));
+        assert!(!st("claude is an AI 라는 문장", Some("claude")), "산문(실행 파일 뒤 낱말)");
+        assert!(m("claude is an AI", Some("claude")), "가드 판정은 종전 그대로(산문도 기동 줄 모양)");
+        assert!(!st("claude --x ; rm -rf ~", Some("claude")), "가드 판정 거짓이면 폐기 판정도 거짓");
+        assert!(!st("claude --x", None), "메타 없음");
+        assert!(!m("claude --x", Some("")), "빈 메타");
     }
 
     /// ★v114-dept-fd 수리 1‴: 폴더 거부 판정 — 역할 좌석 ∧ 빈 좌석 ∧ 읽기 결과가 PermissionDenied 일 때만.
@@ -11303,6 +11504,143 @@ mod tests {
         );
     }
 
+    /// ★v116-seat 판정 C(master#623fa6b9): 배달 직전 1곳에서 그 좌석 메타 agent_bin 의 옛 기동 줄을 배달 대신
+    /// 폐기한다. 실증(격리 cysd · 스텁 좌석): 1.1.5 식 WAL 의 옛 기동 줄이 restored_queue → rehome → 새 좌석에
+    /// 사용자 입력으로 배달됐다(queue.delivered 2 · 스텁 stdin 에 `--continue` 줄 1). 대조 = 메타 없는 좌석은
+    /// 폐기 0(판정 재료 없음 — 그런 좌석의 배달은 빈 좌석 게이트 몫).
+    #[test]
+    fn v116_deliver_drops_stale_launch_line_instead_of_delivering() {
+        let daemon = drill_daemon("v116-deliver-stale");
+        let old = r#"CLAUDE_CONFIG_DIR="${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}" /x/stub/claude --dangerously-skip-permissions --continue"#;
+        let seat = |meta: Option<(&str, &str)>| {
+            let s = daemon
+                .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+                .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            *s.agent_meta.lock().unwrap() = meta.map(|(a, b)| (a.to_string(), b.to_string()));
+            {
+                let mut q = s.pending_queue.lock().unwrap();
+                q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+                q.push_back(daemon.next_queue_entry("KEEP 보류 글".to_string(), Some("surface:9".into()), "send"));
+            }
+            s
+        };
+        // ① 에이전트 좌석: 옛 기동 줄은 배달되지 않고 폐기 · 다음 글이 배달된다.
+        let s = seat(Some(("claude", "/x/stub/claude")));
+        // 폐기한 틱은 배달 0(agy 3R ② · check-then-act) → 다음 틱이 보류 글을 배달한다.
+        assert!(deliver_head_locked(&daemon, &s, false, false, None, None).is_none(), "폐기한 틱이 배달했다");
+        let d = deliver_head_locked(&daemon, &s, false, false, None, None).expect("보류 글 배달");
+        assert!(!d.body.contains("--continue"), "옛 기동 줄이 에이전트에게 배달됐다: {}", d.body);
+        assert_eq!(d.entry.text, "KEEP 보류 글");
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 0);
+        let dropped: Vec<serde_json::Value> = daemon
+            .bus
+            .tail(50)
+            .into_iter()
+            .filter(|ev| ev["name"] == "queue.dropped" && ev["payload"]["reason"] == "stale_launch_line")
+            .collect();
+        assert_eq!(dropped.len(), 1, "폐기 이벤트 1건이어야 한다");
+        assert_eq!(dropped[0]["payload"]["count"], serde_json::json!(1));
+        assert_eq!(dropped[0]["payload"]["line_sha8"].as_array().map(|a| a.len()), Some(1));
+        // ①-b 섞인 큐: 옛 기동 줄만 폐기 · 다른 보류 글과 「비슷하지만 다른 줄」은 순서 그대로 · sha8 · WAL 반영.
+        let keep = ["[DRAIN] 지금 저장하라", "[master#abc123] 지시 본문", "/x/stub/claudex --continue",
+                    "/x/stub/claude --x ; rm -rf ~", "/x/stub/claude --a\n/x/stub/claude --b"];
+        let s2 = seat(Some(("claude", "/x/stub/claude")));
+        {
+            let mut q = s2.pending_queue.lock().unwrap();
+            q.clear();
+            q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+            for (i, t) in keep.iter().enumerate() {
+                q.push_back(daemon.next_queue_entry(t.to_string(), Some(format!("surface:{}", 50 + i)), "send"));
+            }
+            q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+        }
+        assert!(deliver_head_locked(&daemon, &s2, false, false, None, None).is_none(), "폐기한 틱이 배달했다");
+        let d = deliver_head_locked(&daemon, &s2, false, false, None, None).expect("첫 보류 글 배달");
+        assert_eq!(d.entry.text, keep[0]);
+        let left: Vec<String> = s2.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
+        assert_eq!(left, keep[1..].iter().map(|t| t.to_string()).collect::<Vec<_>>(), "옛 기동 줄만 폐기 · 순서 보존이 아니다");
+        use sha2::{Digest, Sha256};
+        let want: String = Sha256::digest(old.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect();
+        let ev = daemon.bus.tail(80).into_iter()
+            .filter(|ev| ev["name"] == "queue.dropped" && ev["payload"]["reason"] == "stale_launch_line")
+            .last().expect("queue.dropped");
+        assert_eq!(ev["payload"]["count"], serde_json::json!(2));
+        assert_eq!(ev["payload"]["line_sha8"], serde_json::json!([want.clone(), want]));
+        assert_eq!(ev["payload"]["surface_ref"], serde_json::json!(cys::surface_ref(s2.id)));
+        let wal = std::fs::read_to_string(crate::state::state_dir(&daemon.socket_path).join("queue-state.json"))
+            .expect("queue-state.json");
+        let wal: serde_json::Value = serde_json::from_str(&wal).expect("WAL json");
+        let texts: Vec<&str> = wal.as_array().expect("WAL 배열").iter()
+            .filter(|e| e["surface_id"].as_u64() == Some(s2.id)).filter_map(|e| e["text"].as_str()).collect();
+        assert!(!texts.contains(&old), "옛 기동 줄이 WAL 에 남았다(영속 누락): {texts:?}");
+        assert!(keep[1..].iter().all(|k| texts.contains(k)), "보존분이 WAL 에 없다: {texts:?}");
+        // ①-c 옛 기동 줄만 있던 큐가 폐기로 비면 막힘 사유도 지운다 · 배달 0(None).
+        let s3 = seat(Some(("claude", "/x/stub/claude")));
+        {
+            let mut q = s3.pending_queue.lock().unwrap();
+            q.clear();
+            q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+        }
+        *s3.queue_blocked.lock().unwrap() = Some(("prompt_unknown".to_string(), 1.0));
+        daemon.persist_queue_state(); // 옛 기동 줄이 WAL 에 실린 상태(재기동 뒤 되살아날 재료)에서 시작
+        assert!(deliver_head_locked(&daemon, &s3, false, false, None, None).is_none(), "빈 큐인데 배달이 났다");
+        assert!(s3.queue_blocked.lock().unwrap().is_none(), "빈 큐인데 막힘 사유가 남았다");
+        // 배달이 없으니 배달 쪽 영속도 없다 — 폐기 자신이 영속해야 WAL 에서 옛 줄이 빠진다.
+        let wal = std::fs::read_to_string(crate::state::state_dir(&daemon.socket_path).join("queue-state.json"))
+            .expect("queue-state.json");
+        let wal: serde_json::Value = serde_json::from_str(&wal).expect("WAL json");
+        assert!(!wal.as_array().expect("WAL 배열").iter()
+                    .any(|e| e["surface_id"].as_u64() == Some(s3.id) && e["text"].as_str() == Some(old)),
+                "폐기가 영속되지 않았다 — 데몬 재기동 뒤 옛 기동 줄이 되살아난다");
+        // ② 대조: 메타 없는 좌석은 판정 재료가 없어 폐기 0 — 머리 그대로(배달 가부는 빈 좌석 게이트 몫).
+        let bare = seat(None);
+        let d = deliver_head_locked(&daemon, &bare, true, false, None, None).expect("머리 배달");
+        assert_eq!(d.entry.text, old, "메타 없는 좌석에서 폐기가 일어났다");
+        // ③ 대조: 다른 에이전트 좌석(bin 불일치)은 폐기 0.
+        let other = seat(Some(("codex", "codex")));
+        let d = deliver_head_locked(&daemon, &other, true, false, None, None).expect("머리 배달");
+        assert_eq!(d.entry.text, old, "다른 에이전트 좌석에서 폐기가 일어났다");
+    }
+
+    /// ★v116-seat agy 3R 반례 2건(구체 입력): ①「claude is an AI」처럼 에이전트 이름으로 시작하는 한 줄 산문은
+    /// 옛 기동 줄이 아니다 — 폐기되면 안 된다(기동 줄은 실행 파일 뒤가 언제나 플래그). ②틱 경로에서 폐기가 일어나면
+    /// 그 틱은 배달하지 않는다 — 준비 판정은 폐기 전 머리(옛 줄 · 오래 기다림 = overdue 완화)로 내려졌으므로, 새 머리를
+    /// 같은 판정으로 내보내면 check-then-act 가 깨진다. 강제 배달(조준 id 있음)은 조준 항목이 남아 있으면 그대로 배달.
+    #[test]
+    fn v116_deliver_stale_drop_keeps_prose_and_skips_tick_delivery() {
+        let daemon = drill_daemon("v116-deliver-agy3");
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let prose = "claude is an AI 라는 문장을 설명하라";
+        {
+            let mut q = s.pending_queue.lock().unwrap();
+            q.push_back(daemon.next_queue_entry("claude --dangerously-skip-permissions --continue".into(), None, "wal-legacy"));
+            q.push_back(daemon.next_queue_entry(prose.into(), Some("surface:7".into()), "send"));
+            q.push_back(daemon.next_queue_entry("새 글".into(), Some("surface:8".into()), "send"));
+        }
+        // ② 틱 경로: 폐기가 일어난 호출은 배달 0(다음 틱이 새 머리로 다시 판정).
+        assert!(deliver_head_locked(&daemon, &s, false, false, None, None).is_none(),
+                "폐기한 틱이 새 머리를 옛 판정으로 배달했다(check-then-act)");
+        let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
+        // ① 산문은 남는다(옛 기동 줄만 폐기).
+        assert_eq!(left, vec![prose.to_string(), "새 글".to_string()], "산문이 폐기됐거나 순서가 바뀌었다");
+        let d = deliver_head_locked(&daemon, &s, false, false, None, None).expect("다음 틱 = 산문 배달");
+        assert_eq!(d.entry.text, prose);
+        // 강제 배달: 조준 항목이 남아 있으면 폐기가 있어도 그 호출에서 배달(거짓 Raced 금지).
+        let target = {
+            let mut q = s.pending_queue.lock().unwrap();
+            q.push_front(daemon.next_queue_entry("claude --continue".into(), None, "wal-legacy"));
+            q.get(1).expect("새 글").clone()
+        };
+        let d = deliver_head_locked(&daemon, &s, true, false, Some(&target.id), None)
+            .expect("조준 항목은 폐기와 무관하게 배달");
+        assert_eq!(d.entry.id, target.id);
+    }
+
     /// deliver_head_locked 단독 계약: 머리를 id 로 pop 하고 remaining 을 보고하며,
     /// 빈 큐는 None(부작용 0 — queue.delivered 미발행). watchdog 틱·queue.deliver RPC
     /// (W2-E)가 이 단일 헬퍼를 공유한다는 전제의 기초 핀.
@@ -14453,5 +14791,412 @@ mod todo_decl_tests {
         assert_eq!(f.owner("PLAIN_TODO.md"), None, "미선언은 주인을 모른다");
         // ADR-4 C-3 센티널 `"?"`는 저장하지 않는다 — 소비자가 `"?"` 노드를 그리면 안 된다.
         assert_eq!(f.owner("LEGACY_TODO.md"), None, "센티널이 owner로 새어나갔다");
+    }
+}
+
+#[cfg(test)]
+mod accept_v116 {
+    //! v116-seat 수용 시험(구현 비열람 · 명세 S1~S4 기준).
+    use super::{deliver_head_locked, is_stale_launch_line, launch_line_matches_seat};
+    use crate::state::{Daemon, QueueEntry, Surface};
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering as AO};
+    use std::sync::Arc;
+
+    const EX: &str = r#"CLAUDE_CONFIG_DIR="${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}" /x/claude --dangerously-skip-permissions --continue"#;
+
+    fn st(t: &str, b: &str) -> bool {
+        is_stale_launch_line(t, Some(b))
+    }
+    fn gd(t: &str, b: &str) -> bool {
+        launch_line_matches_seat(t, Some(b))
+    }
+    fn sha8(t: &str) -> String {
+        let h = Sha256::digest(t.as_bytes());
+        h.iter().map(|b| format!("{:02x}", b)).collect::<String>()[..8].to_string()
+    }
+
+    fn rig(tag: &str, meta: Option<(&str, &str)>) -> (Arc<Daemon>, Arc<Surface>) {
+        crate::delivery::tests::isolate_state_dir_for_thread(tag);
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, AO::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cys-accept116-{}-{}-{}-{}",
+            tag,
+            std::process::id(),
+            crate::state::now_epoch() as u64,
+            n
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = meta.map(|(a, b)| (a.to_string(), b.to_string()));
+        (daemon, s)
+    }
+
+    fn push(d: &Arc<Daemon>, s: &Arc<Surface>, text: &str, from: &str) -> QueueEntry {
+        let e = d.next_queue_entry(text.into(), Some(from.into()), "send");
+        s.pending_queue.lock().unwrap().push_back(e.clone());
+        e
+    }
+    fn queue_texts(s: &Arc<Surface>) -> Vec<String> {
+        s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect()
+    }
+    fn events(d: &Arc<Daemon>, name: &str) -> Vec<serde_json::Value> {
+        d.bus.tail(500).into_iter().filter(|e| e["name"] == name).collect()
+    }
+    fn wal_texts(d: &Arc<Daemon>) -> Vec<String> {
+        let p = crate::state::state_dir(&d.socket_path).join("queue-state.json");
+        let raw = std::fs::read_to_string(&p).unwrap_or_else(|_| "[]".into());
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::json!([]));
+        v.as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e["text"].as_str().map(|s| s.to_string()))
+            .collect()
+    }
+
+    // ───────── S1 순수 판정 ─────────
+
+    #[test]
+    fn accept_v116_s1_positive_basic_forms() {
+        assert!(st("claude", "claude"), "실행 파일만(인자 없음) = 옛 기동 줄");
+        assert!(st("claude --continue", "claude"));
+        assert!(st("claude -c", "claude"), "단일 대시 플래그");
+        assert!(st("/x/claude --dangerously-skip-permissions --continue", "/x/claude"));
+        assert!(st(EX, "/x/claude"), "명세 예시 · 절대 bin");
+        assert!(st(EX, "claude"), "명세 예시 · 상대 bin");
+    }
+
+    #[test]
+    fn accept_v116_s1_basename_relative_vs_absolute() {
+        assert!(st("claude --x", "/opt/x/claude"), "줄=상대 · bin=절대");
+        assert!(st("/usr/local/bin/claude --x", "claude"), "줄=절대 · bin=상대");
+        assert!(st("/a/b/claude --x", "/c/d/claude"), "서로 다른 디렉터리 같은 파일명");
+        assert!(st("./claude --x", "claude"), "./ 상대 경로");
+    }
+
+    #[test]
+    fn accept_v116_s1_windows_exe_stripped() {
+        assert!(st("claude --x", "/c/tools/claude.exe"), "bin 쪽 .exe 제거");
+        assert!(st("claude.exe --x", "claude"), "줄 쪽 .exe 제거");
+        assert!(st("claude.exe --x", "claude.exe"), "양쪽 .exe");
+    }
+
+    #[test]
+    fn accept_v116_s1_windows_backslash_path() {
+        // 경계 사례(명세 = basename): Windows 경로 구분자.
+        assert!(st(r"C:\tools\claude.exe --x", "claude"), "백슬래시 경로의 파일명");
+        assert!(st("claude --x", r"C:\tools\claude.exe"), "bin 이 백슬래시 경로");
+    }
+
+    #[test]
+    fn accept_v116_s1_env_assignments() {
+        assert!(st(r#"FOO="a b c" claude --x"#, "claude"), "값에 공백");
+        assert!(st(r#"A="1" B="two words" claude -c"#, "claude"), "복수 env");
+        assert!(st(r#"A="" claude --x"#, "claude"), "빈 값");
+        assert!(st(r#"A="x;y|z&w<v>u" claude --x"#, "claude"), "따옴표 안의 ; | & < > 는 비인용 아님");
+        assert!(st(r#"A="1" claude"#, "claude"), "env + 실행 파일만");
+        assert!(!st(r#"A="1""#, "claude"), "env 만 있고 실행 파일 없음");
+    }
+
+    #[test]
+    fn accept_v116_s1_excluded_shell_forms() {
+        assert!(!st("claude --x\nmore", "claude"), "개행");
+        assert!(!st("claude --x\n", "claude"), "끝 개행");
+        assert!(!st("claude\n--x", "claude"));
+        assert!(!st("claude --x `id`", "claude"), "백틱");
+        assert!(!st("claude --x $(id)", "claude"), "$(");
+        assert!(!st(r#"A="$(id)" claude --x"#, "claude"), "따옴표 안이어도 $( 는 제외");
+        assert!(!st("claude --x; rm -rf /tmp/z", "claude"), "비인용 ;");
+        assert!(!st("claude --x & echo", "claude"), "비인용 &");
+        assert!(!st("claude --x && echo", "claude"), "비인용 &&");
+        assert!(!st("claude --x | tee y", "claude"), "비인용 |");
+        assert!(!st("claude --x < in", "claude"), "비인용 <");
+        assert!(!st("claude --x > out", "claude"), "비인용 >");
+    }
+
+    #[test]
+    fn accept_v116_s1_prose_other_agent_and_affixes_not_stale() {
+        assert!(!st("claude is an AI", "claude"), "산문");
+        assert!(!st("claude please continue --x", "claude"), "첫 인자가 단어");
+        assert!(!st("codex --x", "claude"), "다른 에이전트");
+        assert!(!st("codex --x", "/x/claude"));
+        assert!(!st("claudex --x", "claude"), "접미 공유");
+        assert!(!st("myclaude --x", "claude"), "접두 공유");
+        assert!(!st("/x/myclaude --x", "/x/claude"));
+        assert!(!st("claude-code --x", "claude"));
+        assert!(!st("echo claude --x", "claude"), "실행 파일이 echo");
+        assert!(!st("sudo claude --x", "claude"));
+    }
+
+    #[test]
+    fn accept_v116_s1_empty_and_no_meta() {
+        assert!(!st("", "claude"), "빈 본문");
+        assert!(!st("   ", "claude"), "공백만");
+        assert!(!is_stale_launch_line("claude --x", None), "메타 없는 좌석");
+        assert!(!is_stale_launch_line(EX, None));
+        assert!(!launch_line_matches_seat("claude --x", None), "가드도 메타 없음 = 거짓");
+    }
+
+    #[test]
+    fn accept_v116_s1_guard_is_broader_superset() {
+        assert!(gd("claude is an AI", "claude"), "가드 = 플래그 조건 없음");
+        assert!(gd("claude --x", "claude"));
+        assert!(gd(EX, "claude"));
+        assert!(!gd("codex --x", "claude"));
+        assert!(!gd("claudex foo", "claude"));
+        assert!(!gd("claude --x; rm z", "claude"), "가드도 셸 조합 제외");
+        // 함의: stale ⇒ guard.
+        let cases = [
+            "claude", "claude --x", EX, "claude is an AI", "codex --x", r#"A="a b" claude -c"#,
+            "claude --x\n", "claude.exe --x", "/usr/bin/claude -p",
+        ];
+        for c in cases {
+            if st(c, "claude") {
+                assert!(gd(c, "claude"), "stale 인데 가드 거짓: {c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn accept_v116_s1_quoting_edges() {
+        assert!(st(r#"claude --x "a; b | c""#, "claude"), "인자 속 큰따옴표 안 ; | = 비인용 아님");
+        assert!(!st(r#"A="abc claude --x"#, "claude"), "닫히지 않은 따옴표 = env 아님");
+        assert!(st("claude -- foo", "claude"), "첫 인자 -- 는 대시로 시작");
+        assert!(!st("claude\r\n--x", "claude"), "CRLF");
+    }
+
+    // ───────── S2~S4 배달 헬퍼 ─────────
+
+    #[test]
+    fn accept_v116_s4_no_stale_delivers_head_unchanged() {
+        let (d, s) = rig("s4plain", Some(("claude", "/x/claude")));
+        let a = push(&d, &s, "hello there", "surface:9");
+        push(&d, &s, "second", "surface:8");
+        let got = deliver_head_locked(&d, &s, false, false, None, None).expect("머리 배달");
+        assert_eq!(got.entry.id, a.id);
+        assert_eq!(got.body, "hello there");
+        assert_eq!(got.remaining, 1);
+        assert!(events(&d, "queue.dropped").is_empty(), "stale 없음 = queue.dropped 0");
+        assert_eq!(queue_texts(&s), vec!["second".to_string()]);
+    }
+
+    #[test]
+    fn accept_v116_s2_s3_tick_drops_interleaved_then_delivers_next() {
+        let (d, s) = rig("s2mix", Some(("claude", "/x/claude")));
+        let s1 = EX.to_string();
+        let s2 = "claude --continue".to_string();
+        push(&d, &s, &s1, "surface:1");
+        let a = push(&d, &s, "keep A", "surface:2");
+        push(&d, &s, &s2, "surface:3");
+        push(&d, &s, "keep B", "surface:4");
+        push(&d, &s, "claude is an AI", "surface:5");
+        let r = deliver_head_locked(&d, &s, false, false, None, None);
+        assert!(r.is_none(), "폐기한 틱은 배달 0 · None");
+        assert!(events(&d, "queue.delivered").is_empty(), "배달 이벤트 없어야");
+        assert_eq!(
+            queue_texts(&s),
+            vec!["keep A".to_string(), "keep B".to_string(), "claude is an AI".to_string()],
+            "나머지 상대 순서 보존"
+        );
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1, "이벤트 정확히 1건");
+        let p = &ev[0]["payload"];
+        assert_eq!(p["reason"], "stale_launch_line");
+        assert_eq!(p["count"], 2);
+        assert_eq!(p["surface_ref"], serde_json::json!(cys::surface_ref(s.id)));
+        assert_eq!(p["line_sha8"], serde_json::json!([sha8(&s1), sha8(&s2)]), "큐 순서 sha8");
+        let wal = wal_texts(&d);
+        assert!(!wal.contains(&s1) && !wal.contains(&s2), "WAL 에 폐기 본문 잔존: {wal:?}");
+        assert!(wal.contains(&"keep A".to_string()), "WAL 에 보존 항목 없음: {wal:?}");
+        // 다음 틱 = 새 머리 정상 배달.
+        let n = deliver_head_locked(&d, &s, false, false, None, None).expect("다음 틱 배달");
+        assert_eq!(n.entry.id, a.id);
+        assert_eq!(n.body, "keep A");
+        assert_eq!(events(&d, "queue.dropped").len(), 1, "두 번째 틱엔 추가 폐기 없음");
+    }
+
+    #[test]
+    fn accept_v116_s2_only_stale_empties_queue_and_clears_block() {
+        let (d, s) = rig("s2only", Some(("claude", "claude")));
+        let l1 = "claude --dangerously-skip-permissions";
+        let l2 = r#"X="a b" /opt/bin/claude -c"#;
+        push(&d, &s, l1, "surface:1");
+        push(&d, &s, l2, "surface:1");
+        push(&d, &s, l1, "surface:1");
+        *s.queue_blocked.lock().unwrap() = Some(("empty_seat".into(), crate::state::now_epoch()));
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none());
+        assert!(s.pending_queue.lock().unwrap().is_empty());
+        assert!(s.queue_blocked.lock().unwrap().is_none(), "빈 큐 = 막힘 사유 해제");
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["payload"]["count"], 3);
+        assert_eq!(ev[0]["payload"]["line_sha8"], serde_json::json!([sha8(l1), sha8(l2), sha8(l1)]));
+        let wal = wal_texts(&d);
+        assert!(!wal.iter().any(|t| t == l1 || t == l2), "WAL 잔존: {wal:?}");
+        assert!(events(&d, "queue.delivered").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s2_wal_persisted_even_if_preexisting() {
+        // 폐기 전에 WAL 에 이미 기록돼 있던 stale 본문도 폐기 후엔 사라져야 한다.
+        let (d, s) = rig("s2wal", Some(("claude", "/x/claude")));
+        push(&d, &s, "claude -r", "surface:1");
+        push(&d, &s, "payload", "surface:2");
+        d.persist_queue_state();
+        assert!(wal_texts(&d).contains(&"claude -r".to_string()), "사전 조건: WAL 에 기록");
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none());
+        let wal = wal_texts(&d);
+        assert!(!wal.contains(&"claude -r".to_string()), "WAL 에 폐기 본문 잔존: {wal:?}");
+        assert!(wal.contains(&"payload".to_string()));
+    }
+
+    #[test]
+    fn accept_v116_s1_no_meta_seat_delivers_launch_line() {
+        let (d, s) = rig("nometa", None);
+        push(&d, &s, "claude --continue", "surface:1");
+        let got = deliver_head_locked(&d, &s, false, false, None, None).expect("메타 없음 = 폐기 0 · 배달");
+        assert_eq!(got.body, "claude --continue");
+        assert!(events(&d, "queue.dropped").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s1_prose_and_other_agent_delivered_on_claude_seat() {
+        let (d, s) = rig("prose", Some(("claude", "/x/claude")));
+        push(&d, &s, "claude is an AI", "surface:1");
+        push(&d, &s, "codex --x", "surface:2");
+        push(&d, &s, "claudex --x", "surface:3");
+        let g1 = deliver_head_locked(&d, &s, false, false, None, None).expect("산문 배달");
+        assert_eq!(g1.body, "claude is an AI");
+        let g2 = deliver_head_locked(&d, &s, false, false, None, None).expect("다른 에이전트 줄 배달");
+        assert_eq!(g2.body, "codex --x");
+        let g3 = deliver_head_locked(&d, &s, false, false, None, None).expect("접미 공유 배달");
+        assert_eq!(g3.body, "claudex --x");
+        assert!(events(&d, "queue.dropped").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s1_codex_seat_keeps_claude_line_drops_own() {
+        let (d, s) = rig("codexseat", Some(("codex", "/usr/local/bin/codex")));
+        push(&d, &s, "claude --x", "surface:1");
+        push(&d, &s, "codex --yolo", "surface:2");
+        // 명세 S3 개정(agy 4R B1): 폐기된 codex 줄이 비머리라 머리가 그대로 → 같은 틱에 claude 줄 배달.
+        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("claude 줄은 codex 좌석에서 배달");
+        assert_eq!(g.body, "claude --x");
+        assert!(queue_texts(&s).is_empty(), "codex 자기 줄은 폐기");
+    }
+
+    #[test]
+    fn accept_v116_s2_empty_text_entry_not_dropped() {
+        let (d, s) = rig("emptytext", Some(("claude", "claude")));
+        let e = d.next_queue_entry(String::new(), Some("surface:1".into()), "send-key");
+        let id = e.id.clone();
+        s.pending_queue.lock().unwrap().push_back(e);
+        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("빈 본문 항목 배달");
+        assert_eq!(g.entry.id, id);
+        assert!(events(&d, "queue.dropped").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_target_head_after_drop_delivered_same_call() {
+        let (d, s) = rig("forced1", Some(("claude", "/x/claude")));
+        push(&d, &s, EX, "surface:1");
+        let a = push(&d, &s, "target A", "surface:2");
+        let g = deliver_head_locked(&d, &s, true, false, Some(&a.id), None).expect("조준 항목 같은 호출에 배달");
+        assert_eq!(g.entry.id, a.id);
+        assert_eq!(g.body, "target A");
+        assert!(s.pending_queue.lock().unwrap().is_empty());
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["payload"]["count"], 1);
+        assert!(!wal_texts(&d).contains(&EX.to_string()));
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_target_is_stale_itself() {
+        let (d, s) = rig("forced2", Some(("claude", "claude")));
+        let st_e = push(&d, &s, "claude --continue", "surface:1");
+        push(&d, &s, "next", "surface:2");
+        let r = deliver_head_locked(&d, &s, true, false, Some(&st_e.id), None);
+        assert!(r.is_none(), "조준이 stale 자체 = 폐기 · 배달 0: {:?}", r.map(|x| x.body));
+        assert_eq!(queue_texts(&s), vec!["next".to_string()], "다른 항목 오배달 금지");
+        assert_eq!(events(&d, "queue.dropped").len(), 1);
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_target_not_head_after_drop() {
+        let (d, s) = rig("forced3", Some(("claude", "claude")));
+        push(&d, &s, "A", "surface:1");
+        push(&d, &s, "claude -c", "surface:2");
+        let b = push(&d, &s, "B", "surface:3");
+        let r = deliver_head_locked(&d, &s, true, false, Some(&b.id), None);
+        assert!(r.is_none(), "조준이 머리 아님 = 배달 0");
+        assert_eq!(queue_texts(&s), vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(events(&d, "queue.dropped").len(), 1, "폐기 자체는 일어남");
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_merge_excludes_dropped_middle() {
+        // 같은 발신자 연속 항목 사이에 끼인 stale 줄 — 강제 배달 병합 본문에 섞이면 안 된다.
+        let (d, s) = rig("forcedmerge", Some(("claude", "/x/claude")));
+        let a = push(&d, &s, "part one", "surface:7");
+        let mid = push(&d, &s, "/x/claude --continue", "surface:7");
+        push(&d, &s, "part two", "surface:7");
+        let g = deliver_head_locked(&d, &s, true, false, Some(&a.id), None).expect("조준 머리 배달");
+        assert_eq!(g.entry.id, a.id);
+        assert!(!g.body.contains("/x/claude --continue"), "병합 본문에 stale 줄: {:?}", g.body);
+        assert!(!g.merged_ids.contains(&mid.id), "merged_ids 에 폐기 id");
+        assert!(!queue_texts(&s).contains(&"/x/claude --continue".to_string()));
+        assert_eq!(events(&d, "queue.dropped").len(), 1);
+    }
+
+    #[test]
+    fn accept_v116_s3_tick_merge_after_drop() {
+        let (d, s) = rig("tickmerge", Some(("claude", "claude")));
+        let a = push(&d, &s, "m1", "surface:7");
+        let mid = push(&d, &s, "claude --resume", "surface:7");
+        push(&d, &s, "m2", "surface:7");
+        // ★명세 S3 개정(agy 4R B1 · 기아 반례): 머리가 그대로면(비머리 stale 만 폐기) 준비 판정도 그대로 유효하다 →
+        //   그 틱에 머리를 배달한다. 「폐기 틱 = 무조건 배달 0」은 꼬리에 옛 줄이 계속 들어오면 머리를 영영 못 보낸다.
+        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("머리 그대로 = 같은 틱 배달");
+        assert_eq!(queue_texts(&s).iter().filter(|t| t.contains("claude --resume")).count(), 0, "비머리 stale 도 폐기");
+        assert_eq!(g.entry.id, a.id);
+        assert!(!g.body.contains("claude --resume"));
+        assert!(!g.merged_ids.contains(&mid.id));
+    }
+
+    #[test]
+    fn accept_v116_s2_duplicate_stale_lines_counted_in_order() {
+        let (d, s) = rig("dups", Some(("claude", "/x/claude.exe")));
+        let l = "claude.exe --x";
+        push(&d, &s, l, "surface:1");
+        push(&d, &s, "keep", "surface:2");
+        push(&d, &s, l, "surface:3");
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none());
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["payload"]["count"], 2);
+        assert_eq!(ev[0]["payload"]["line_sha8"], serde_json::json!([sha8(l), sha8(l)]));
+        assert_eq!(queue_texts(&s), vec!["keep".to_string()]);
+    }
+
+    #[test]
+    fn accept_v116_s2_sha8_is_lowercase_hex_8() {
+        let (d, s) = rig("sha8", Some(("claude", "claude")));
+        push(&d, &s, "claude", "surface:1");
+        push(&d, &s, "x", "surface:2");
+        let _ = deliver_head_locked(&d, &s, false, false, None, None);
+        let ev = events(&d, "queue.dropped");
+        let arr = ev[0]["payload"]["line_sha8"].as_array().expect("배열").clone();
+        assert_eq!(arr.len(), 1);
+        let h = arr[0].as_str().unwrap();
+        assert_eq!(h.len(), 8);
+        assert!(h.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)), "소문자 hex: {h}");
+        assert_eq!(h, sha8("claude"));
     }
 }

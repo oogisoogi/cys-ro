@@ -118,3 +118,9 @@ python3 $S/mutants.py                                          # 뮤턴트(작�
 - ★**멈춤 규칙**: 다음 검토 라운드에서 내용 휴리스틱 경계 반례가 또 나오면(6번째) 휴리스틱 수선을 멈추고 **B(정확 일치)** 로 전환 — 그때 master 에 올린다.
 - **1.1.7 후보(기록만)**: 승격 시점에 바꾼 MASTER·쓴 CEO 의 sha256 을 옆 파일로 남기고 강등 때 그 해시로 「손대지 않음」을 판정(역대 발행 해시 목록은 옛 승격분에만) — 휴리스틱 계보를 끝내는 구조 수리.
 - 실행 주체 = 후임(순환 뒤) · 이 워커는 수집(agy C4 재실행 · 정본 게이트 b87bbf07)만 마치고 【매듭】 · 새 Claude 서브에이전트 금지.
+
+### 11-2. 수집 결과(17:3x · 코드 b87bbf07)
+- **정본 게이트 전체**(gate_runner · 워크플로 run 블록 원문 · 격리 HOME/TMPDIR `~/msv-scratch/v116rv/{home,tmp}-ceo-170537` · 결과 `~/msv-scratch/v116rv/results/ceo-b87bbf07-170537`): 98 단계 · compare_runs(기준 adf50d44) = **대상 실패 3 · 기준 실패 3 · 신규 0 · 해소 0** · rc≠0 스텝 = D07b.test_phoenix_c6_reap(기준과 동일) · D02 Secret/PII scan 0 · D11 팩 내용 스캔 0 · B01 boot-health-full 0 · A12/A13/A14 · D07c/d/e · X01 cargo 0 · D06 bun 0. 비교표 = `scratch/gate-compare.md`.
+- **뮤턴트** 22/22 KILLED(b87bbf07 · 가짜 KILLED 0 — 러너가 directives 미복사로 끝에서 죽던 결함은 b010a1c5 무렵 발견·수정).
+- **agy C4**(b87bbf07): 1차 rc 137(SIGKILL · 원인 미상 · 내가 죽인 것 아님) · 2차 429 사용량 한도 · 3차 = **BLOCK 1** — 잔존 mkdir 락(무락 강행 · `_locked=0`)이면 ⓕ 가 생략돼 낡은 .pre-ceo 가 남고 강등이 옛 판 복원. ⇒ 설계상 절충(agy B1 ③: 무락 창에서 .pre-ceo 를 옮기면 동시 승격이 백업을 서로 덮음)과 종전 결함 ⓧ3(무락 강행 · master 1.1.7 후보)의 교차점 · 내용 휴리스틱 경계가 아니므로 멈춤 규칙 대상 아님 · 현재 방어 = 그 경로에서도 ⓧ1 이 현행 md 를 `.pre-ceo-<시각>` 로 보존(데이터는 남음) · **master 판정 필요**(선택지: ⓧ3 를 1.1.6 으로 당겨 잔존 락 감지 · 또는 1.1.7 유지).
+- 판정 JSON = `scratch/reviews/agy-{B-r1,B-r2,C-r1,C-r2,C-r3,C-r4}.json` · Opus = `scratch/adv-opus/verdict{,-r2,-r3,-r4}.json` · 블라인드 = `scratch/blind/rerun-*.out`.

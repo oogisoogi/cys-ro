@@ -5844,12 +5844,14 @@ function restoreRestartPending(): Promise<void> {
       return;
     }
     if (raw === null) return;
-    let appVer: string | null = null;
+    let appVer = "";
     try {
       appVer = (await invoke("app_version")) as string;
     } catch {
-      /* 판번을 모르면 검증 불가 → 무효 */
+      /* 아래에서 처리 */
     }
+    // 판번을 모르면 검증 불가 → 복원하지 않되 칸은 남긴다(일시 오류로 맞는 기억을 지우지 않게 · 다음 새로고침에 다시 잰다).
+    if (!appVer) return;
     const v = decodeRestartPending(raw, appVer);
     if (v === null) {
       try {

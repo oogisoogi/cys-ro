@@ -25,8 +25,10 @@ pub(crate) const PTY_RETRY_BACKOFF: [Duration; 4] = [
 
 /// `openpty` 가 ENXIO(os error 6 · Device not configured)로 실패했는가. 다른 errno 는 아니다.
 pub(crate) fn is_pty_exhaustion(err: &str) -> bool {
+    // 정확 일치만: `os error 6` 부분 문자열은 `os error 60`(ETIMEDOUT)에도 걸리므로 괄호까지 본다.
+    //   실제 모양 = `openpty failed: failed to openpty: Os { code: 6, … }`(state.rs ∘ portable-pty `{:?}`).
     err.contains("openpty failed")
-        && (err.contains("code: 6,") || err.contains("os error 6") || err.contains("Device not configured"))
+        && (err.contains("Os { code: 6,") || err.contains("(os error 6)"))
 }
 
 /// 지금 열린 PTY 수 / 상한(최선 노력 — 못 재면 `?`).
@@ -126,17 +128,42 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    const ENXIO: &str = "openpty failed: failed to openpty: Os { code: 6, kind: Uncategorized, message: \"Device not configured\" }";
-    const EMFILE: &str = "openpty failed: failed to openpty: Os { code: 24, kind: Uncategorized, message: \"Too many open files\" }";
+    /// ★실제 오류 모양으로 주입(master 결정 ① · 문자열 흉내 금지): 제품 경로는
+    /// `state.rs` `format!("openpty failed: {e}")` ∘ 벤더 portable-pty `bail!("failed to openpty: {:?}",
+    /// io::Error::last_os_error())` 이다 — 같은 두 단을 실제 `io::Error`(raw errno)로 거친다.
+    fn openpty_err(errno: i32) -> String {
+        // 메시지 전용 anyhow 오류의 Display 는 그 메시지 자체다(이 크레이트는 anyhow 비의존 — 신규 의존 없이 재현).
+        let bail_msg = format!("failed to openpty: {:?}", std::io::Error::from_raw_os_error(errno));
+        format!("openpty failed: {bail_msg}")
+    }
+
+    #[test]
+    fn real_shape_matches_the_observed_failure_text() {
+        // 09-24 X-7·D07c 로그 원문과 한 글자도 다르지 않아야 주입이 실물이다.
+        assert_eq!(
+            openpty_err(libc::ENXIO),
+            "openpty failed: failed to openpty: Os { code: 6, kind: Uncategorized, message: \"Device not configured\" }"
+        );
+    }
 
     #[test]
     fn classifier_accepts_only_openpty_enxio() {
-        assert!(is_pty_exhaustion(ENXIO));
-        assert!(is_pty_exhaustion("openpty failed: os error 6"));
-        // 다른 errno·다른 실패는 고갈이 아니다(재시도·환경 문구 대상 아님).
-        assert!(!is_pty_exhaustion(EMFILE), "fd 고갈(24)을 PTY 고갈로 오분류");
-        assert!(!is_pty_exhaustion("spawn failed: No such file or directory (os error 2)"));
-        assert!(!is_pty_exhaustion("Device not configured"), "openpty 가 아닌 ENXIO 까지 넓혔다");
+        assert!(is_pty_exhaustion(&openpty_err(libc::ENXIO)));
+        // Display 모양(`… (os error 6)`)도 같은 errno 다.
+        assert!(is_pty_exhaustion(&format!(
+            "openpty failed: {}",
+            std::io::Error::from_raw_os_error(libc::ENXIO)
+        )));
+        // 다른 errno 는 고갈이 아니다 — 60(ETIMEDOUT)은 `os error 6` 부분 문자열 함정의 검체.
+        for errno in [libc::EACCES, libc::EMFILE, libc::ENFILE, libc::ENOENT, libc::EAGAIN, libc::ETIMEDOUT] {
+            assert!(!is_pty_exhaustion(&openpty_err(errno)), "errno {errno} 를 PTY 고갈로 오분류");
+            assert!(!is_pty_exhaustion(&format!(
+                "openpty failed: {}",
+                std::io::Error::from_raw_os_error(errno)
+            )), "errno {errno}(Display) 오분류");
+        }
+        // openpty 가 아닌 곳의 ENXIO 는 이 모듈 관할이 아니다.
+        assert!(!is_pty_exhaustion(&format!("spawn failed: {:?}", std::io::Error::from_raw_os_error(libc::ENXIO))));
         assert!(!is_pty_exhaustion(""));
     }
 
@@ -147,38 +174,46 @@ mod tests {
         let slept = std::cell::RefCell::new(Vec::new());
         let (r, attempts) = retry_with("t", &PTY_RETRY_BACKOFF, |d| slept.borrow_mut().push(d), || {
             n.set(n.get() + 1);
-            if n.get() <= 2 { Err(ENXIO.to_string()) } else { Ok(7) }
+            if n.get() <= 2 { Err(openpty_err(libc::ENXIO)) } else { Ok(7) }
         });
         assert_eq!(r, Ok(7));
         assert_eq!(attempts, 3);
         assert_eq!(*slept.borrow(), vec![Duration::from_secs(1), Duration::from_secs(2)]);
     }
 
-    /// ★은폐 방지 ①: ENXIO 가 아닌 실패는 **한 번도** 재시도하지 않고 원문 그대로 돌려준다.
+    /// ★은폐 방지(master 결정 ②): ENXIO 가 아닌 오류(EACCES·EMFILE 등)는 **재시도 없이 즉시** 원문 그대로
+    /// 실패한다. 「모든 오류 재시도」 뮤턴트는 attempts==1 · 대기 0 에서 죽는다.
     #[test]
     fn non_exhaustion_error_is_never_retried_and_passes_through_verbatim() {
-        for e in [EMFILE, "spawn failed: boom", "role conflict"] {
+        let mut cases: Vec<String> = [libc::EACCES, libc::EMFILE, libc::ENFILE, libc::ETIMEDOUT]
+            .iter()
+            .map(|&e| openpty_err(e))
+            .collect();
+        cases.push("role conflict".into());
+        for e in cases {
             let n = Cell::new(0);
-            let (r, attempts) = retry_with("t", &PTY_RETRY_BACKOFF, |_| panic!("대기하면 안 된다"), || {
+            let (r, attempts) = retry_with("t", &PTY_RETRY_BACKOFF, |_| panic!("대기하면 안 된다: {e}"), || {
                 n.set(n.get() + 1);
-                Err::<(), _>(e.to_string())
+                Err::<(), _>(e.clone())
             });
             assert_eq!(attempts, 1, "결함 에러를 재시도했다: {e}");
-            assert_eq!(r, Err(e.to_string()), "결함 에러 문구가 바뀌었다");
-            assert!(!r.unwrap_err().contains("PTY 고갈(환경)"));
+            assert_eq!(r, Err(e.clone()), "결함 에러 문구가 바뀌었다");
         }
     }
 
-    /// ★은폐 방지 ②: 고갈이 끝나지 않으면 **상한에서 멈추고** 환경 문구로 실패한다(무한 재시도 0).
+    /// ★상한(master 결정 ③): 재시도 총량(1+2+4+8초)이 끝나면 반드시 실패로 끝난다. 대기는 주입(실제로
+    /// 자지 않음)이라 「무한 재시도」 뮤턴트는 50회째 호출에서 즉시 죽는다(시험 제한시간 무관).
     #[test]
     fn persistent_exhaustion_stops_at_cap_with_environment_wording() {
         let n = Cell::new(0);
-        let (r, attempts) = retry_with("seat(master)", &PTY_RETRY_BACKOFF, |_| {}, || {
+        let total = Cell::new(Duration::ZERO);
+        let (r, attempts) = retry_with("seat(master)", &PTY_RETRY_BACKOFF, |d| total.set(total.get() + d), || {
             n.set(n.get() + 1);
             assert!(n.get() <= 50, "재시도 상한이 없다(50회 초과)");
-            Err::<(), _>(ENXIO.to_string())
+            Err::<(), _>(openpty_err(libc::ENXIO))
         });
         assert_eq!(attempts, PTY_RETRY_BACKOFF.len() + 1);
+        assert_eq!(total.get(), Duration::from_secs(15), "재시도 총량이 1+2+4+8초가 아니다");
         let e = r.unwrap_err();
         assert!(e.starts_with("PTY 고갈(환경) — 제품 결함 아님 · seat(master) · 시도 5회 · 열린 PTY "), "{e}");
         assert!(e.contains("Device not configured"), "원문이 사라졌다: {e}");
@@ -186,14 +221,16 @@ mod tests {
 
     #[test]
     fn rpc_wrapper_passes_non_exhaustion_responses_through() {
-        let rejected = serde_json::json!({"ok": false, "error": {"code": "auth_gate", "message": "not logged in"}});
-        let n = Cell::new(0);
-        let out = rpc_retry_on_pty_exhaustion("rpc", || {
-            n.set(n.get() + 1);
-            rejected.clone()
-        });
-        assert_eq!(out, rejected);
-        assert_eq!(n.get(), 1);
+        for msg in ["not logged in".to_string(), openpty_err(libc::EMFILE)] {
+            let resp = serde_json::json!({"ok": false, "error": {"code": "spawn_failed", "message": msg}});
+            let n = Cell::new(0);
+            let out = rpc_retry_on_pty_exhaustion("rpc", || {
+                n.set(n.get() + 1);
+                resp.clone()
+            });
+            assert_eq!(out, resp);
+            assert_eq!(n.get(), 1, "ENXIO 아닌 응답을 재시도했다");
+        }
     }
 
     #[test]

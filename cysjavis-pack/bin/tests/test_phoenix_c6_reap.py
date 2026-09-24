@@ -55,22 +55,39 @@ def main():
     for f in ("topology.json", "desired_roster.json"):
         try: os.remove(os.path.join(h.HARN_DIR, f))
         except OSError: pass
-    h.start_daemon(wait=12.0)
+    # ★v116-flake-pty ⑴: 하네스 start_daemon 이 멱등이 되어 이 호출은 _fresh_harness 가 띄운 데몬의 준비를
+    #   기다릴 뿐 두 번째 cysd 를 띄우지 않는다. 데몬이 응답하지 않으면 그 사실을 첫 판정으로 드러낸다
+    #   (종전엔 반환값을 버려 `list=` 빈 출력만 남았다 — 원인이 안 보였다).
+    pid = h.start_daemon(wait=12.0)
+    check("셋업: 격리 데몬 응답", bool(pid) and h.harness_ping(), "pid=%s daemon.log=%s" % (pid, h.DAEMON_LOG))
     try:
         # 라이브 surface 1개(회수 비대상) + exited 잔재 1개 생성.
-        live = h.cys("new-surface").stdout or ""
+        def _new_surface():
+            r = h.cys("new-surface")
+            return (r.stdout or ""), "rc=%s err=%s" % (r.returncode, (r.stderr or "").strip()[:160])
+        live, live_diag = _new_surface()
         live_ref = (re.search(r"(surface:\d+)", live) or [None])[0] if re.search(r"(surface:\d+)", live) else None
         if live_ref:
             h.cys("send", "--surface", live_ref, "sleep 3600"); h.cys("send-key", "--surface", live_ref, "Return")
-        stale = h.cys("new-surface").stdout or ""
+        stale, stale_diag = _new_surface()
         stale_ref = re.search(r"(surface:\d+)", stale)
         stale_ref = stale_ref.group(1) if stale_ref else None
+        lst_before = ""
         if stale_ref:
             h.cys("send", "--surface", stale_ref, "exit"); h.cys("send-key", "--surface", stale_ref, "Return")
-            time.sleep(2.0)
-        lst_before = h.cys("list").stdout or ""
+            # 고정 2초 대기 → exited=true 폴링(상한 20초). 부하에서 셸 종료 관측이 2초를 넘어도 붉지 않되,
+            # 잔재가 끝내 안 생기면 종전과 똑같이 붉다(상한 있음).
+            t0 = time.time()
+            while time.time() - t0 < 20.0:
+                lst_before = h.cys("list").stdout or ""
+                if any(l.split("\t", 1)[0] == stale_ref and "exited=true" in l for l in lst_before.splitlines()):
+                    break
+                time.sleep(0.25)
+        else:
+            lst_before = h.cys("list").stdout or ""
         exited_present = "exited=true" in lst_before
-        check("셋업: exited 잔재 생성됨", exited_present, "list=%s" % lst_before.replace("\n", " ")[:120])
+        check("셋업: exited 잔재 생성됨", exited_present, "list=%s | new-surface live[%s] stale[%s]"
+              % (lst_before.replace("\n", " ")[:120], live_diag, stale_diag))
 
         # 묘비 스냅샷(회수 전)
         def tombs(path, key="tombstones"):

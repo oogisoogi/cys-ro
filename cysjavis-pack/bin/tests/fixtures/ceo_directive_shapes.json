@@ -13,7 +13,8 @@
   "dept 선택 칸: boot_marker(기본 true) · expect_after_down · expect_stale_after_down(강등 뒤 .pre-ceo.stale-* 내용 목록 · Opus 적대 F2).",
   "installer 선택 칸: pending_new = true 면 병합 대기 원장(.merge-pending.json)에 MASTER 의 new-pending 항목을 심는다(옛 사이드카가 남긴 원장 형상).",
   "dept 선택 칸: skip_promote(승격 없이 바로 부서 닫기 — 승격 중 손본 사본의 강등) · md_encoding(md 를 그 인코딩 바이트로 심음 · 예 cp949) · expect_edit_backup_after_down.",
-  "표준본(M*) 픽스처는 실제 원문 첫 줄 「# MASTER ABSOLUTE DIRECTIVE」 로 시작한다 — cys-dept 강등이 「표준본이라는 긍정 증거」(이 머리말 ∧ master of master 없음)가 있을 때만 복원을 건너뛰기 때문이다(Opus 적대 R3 M1). expect_edit_backup_after_down = null 이면 보존본 0개를 기대."
+  "표준본(M*) 픽스처는 실제 원문 첫 줄 「# MASTER ABSOLUTE DIRECTIVE」 로 시작한다 — cys-dept 강등이 「표준본이라는 긍정 증거」(이 머리말 ∧ master of master 없음)가 있을 때만 복원을 건너뛰기 때문이다(Opus 적대 R3 M1). expect_edit_backup_after_down = null 이면 보존본 0개를 기대.",
+  "Opus 적대 R4 P1 · P2(master 판정 A): 표준본 긍정 증거에 「잘리지 않음」(LF 정규화 md 가 .pre-ceo · CEO 구분선 뒤 본문 · .new 의 진접두가 아님) ∧ 「UTF-8 디코드 가능」을 더한다 — M2_TRUNC_HDR = 머리말은 온전하고 뒤가 잘린 표준본(M2 만의 진접두) · C2_HEADLESS = CEO 사본에서 머리글만 지움(구분선부터 · CP949 로 심으면 한글 표지 grep 불발). dept 칸 expect_edit_backup 도 \"__MD_BYTES__\"(심은 바이트 그대로) 를 받는다."
  ],
  "texts": {
   "M_OLD": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-OLD\n",
@@ -30,7 +31,9 @@
   "M2_EDIT": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\nMY-EDIT\n",
   "M2_NEWEDIT": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\nMY-MERGE-NOTE\n",
   "C2_TITLE": "# CEO (master of master) — 내가 고친 제목 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n",
-  "EMPTY": ""
+  "EMPTY": "",
+  "M2_TRUNC_HDR": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2",
+  "C2_HEADLESS": "---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n"
  },
  "shapes": [
   {
@@ -496,6 +499,93 @@
     "expect_stale_after_down": [
      "M_OLD"
     ]
+   }
+  },
+  {
+   "id": "truncated-standard-hdr-promote-then-close",
+   "source": "Opus 적대 R4 P1 R2b — 강등 복사가 끊겨 머리말은 온전한 표준본 앞부분만 남음(.pre-ceo·영수증 잔존) → 다음 부서 생성 → 부서 닫음",
+   "md": "M2_TRUNC_HDR",
+   "pre_ceo": "M2",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "expect_md": "C2",
+    "expect_pre_ceo": "M2",
+    "expect_stale": null,
+    "expect_edit_backup": "M2_TRUNC_HDR",
+    "expect_after_down": "M2",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M2_TRUNC_HDR"
+   }
+  },
+  {
+   "id": "truncated-standard-hdr-close",
+   "source": "Opus 적대 R4 P1 R2c — 같은 잘린 표준본에서 승격 없이 바로 부서 닫음(강등이 복원을 건너뛰면 부서 0개에 잘린 지침)",
+   "md": "M2_TRUNC_HDR",
+   "pre_ceo": "M2",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M2_TRUNC_HDR",
+    "expect_pre_ceo": "M2",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M2",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M2_TRUNC_HDR"
+   }
+  },
+  {
+   "id": "truncated-ceo-body-close",
+   "source": "Opus 적대 R4 P1 변형 — md 가 CEO 구분선 뒤 본문(현행 표준)의 진접두 · .pre-ceo 는 다른 판(M1) → 바로 부서 닫음(복원 = 보존 뒤 .pre-ceo)",
+   "md": "M2_TRUNC_HDR",
+   "pre_ceo": "M1",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M2_TRUNC_HDR",
+    "expect_pre_ceo": "M1",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M1",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M2_TRUNC_HDR"
+   }
+  },
+  {
+   "id": "headless-ceo-cp949-promote-then-close",
+   "source": "Opus 적대 R4 P2 R8b — 승격 중 CEO 사본에서 머리글만 지우고 CP949 로 저장(한글 표지 grep 불발) → 다음 부서 생성 → 부서 닫음",
+   "md": "C2_HEADLESS",
+   "md_encoding": "cp949",
+   "pre_ceo": "M2",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "expect_md": "C2",
+    "expect_pre_ceo": "M2",
+    "expect_stale": null,
+    "expect_edit_backup": "__MD_BYTES__",
+    "expect_after_down": "M2",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "__MD_BYTES__"
    }
   }
  ]

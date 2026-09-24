@@ -523,9 +523,10 @@ for s in SHAPES["shapes"]:
         want_stale = [] if exp["expect_stale"] is None else [_T[exp["expect_stale"]]]
         check("12 [%s · %s] .pre-ceo.stale-*" % (sid, rnd),
               [_rd(os.path.join(_dirs, n)) for n in stale] == want_stale, repr(stale))
-        want_edit = [] if exp["expect_edit_backup"] is None else [_T[exp["expect_edit_backup"]]]
+        _we = exp["expect_edit_backup"]   # "__MD_BYTES__" = 심은 md 바이트 그대로(CP949 등 · Opus 적대 R4 P2)
+        want_edit = [] if _we is None else [_md_bytes if _we == "__MD_BYTES__" else _T[_we].encode("utf-8")]
         check("12 [%s · %s] 덮기 전 보존(.pre-ceo-<시각>)" % (sid, rnd),
-              [_rd(os.path.join(_dirs, n)) for n in edit] == want_edit, repr(edit))
+              [open(os.path.join(_dirs, n), "rb").read() for n in edit] == want_edit, repr(edit))
     if exp.get("expect_after_down"):
         code, out = run(env, "down", "d0")
         check("12 [%s] 부서 0개 강등 뒤 md" % sid, _rd(mdp) == _T[exp["expect_after_down"]],
@@ -540,7 +541,7 @@ for s in SHAPES["shapes"]:
             check("12 [%s] 강등 뒤 .pre-ceo.stale-*" % sid, _sd == [_T[k] for k in exp["expect_stale_after_down"]], repr(_sd))
     shutil.rmtree(tmp)
     _ran12 += 1
-check("12 형상 표 dept 칸 17개 이상 실행", _ran12 >= 17, "ran=%d" % _ran12)
+check("12 형상 표 dept 칸 21개 이상 실행", _ran12 >= 21, "ran=%d" % _ran12)
 
 # ── 13. 구분선 계약: cys-dept 가 판정에 쓰는 구분선 = 합성기(gen_ceo_template.SEPARATOR) 바이트.
 #   합성기 구분선이 바뀌면 cys-dept ⓕ·강등의 「구분선 뒤 본문 == md」 판정이 조용히 전부 거짓이 된다.

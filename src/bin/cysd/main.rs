@@ -32,8 +32,6 @@ mod state;
 mod undo;
 mod usage;
 mod watch_wake;
-#[cfg(test)]
-mod d6_probe_tests; // D6 정밀 디버깅 검출 시험(TICKET=dbg-D6 · 시험 전용)
 
 use cys::Request;
 use handlers::Reply;
@@ -5750,3 +5748,7 @@ mod update_leftover_sweep_tests {
         out
     }
 }
+
+// ⚠시험 모듈 선언은 파일 끝에 둔다 — 소스 핀(H-TICK-ALIVE 등)이 첫 `#[cfg(test)]` 뒤를 잘라 프로덕션을 본다.
+#[cfg(test)]
+mod d6_probe_tests; // D6 정밀 디버깅 검출 시험(TICKET=dbg-D6 · 시험 전용)

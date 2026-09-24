@@ -657,8 +657,8 @@ fn announce_seat_takeover(daemon: &Arc<Daemon>, prev_sid: u64, role: &str, path:
 /// 좌석 승계 고지 1줄 — **순수**(화면 출력용 · 셸 주석 접두 없음 · 개행 없음).
 fn seat_takeover_notice(role: &str) -> String {
     format!(
-        "[cys] 이 좌석이 쥐고 있던 '{role}' 역할을 부활 절차가 다른 pane 으로 재연결했습니다 \
-         (좌석이 비어 있었음). 옛 칸은 비어 있어 곧 정리됩니다(전할 말이 남아 있으면 그대로 둡니다)."
+        "[cys] 이 좌석이 쥐고 있던 '{role}' 역할 안내: 옛 창이 비어 있어 이 역할을 새 창으로 옮겨 붙였습니다. \
+         옛 창은 곧 정리됩니다. 전할 말이 남아 있으면 그대로 둡니다."
     )
 }
 
@@ -12015,9 +12015,12 @@ mod tests {
         assert!(!line.contains('\n') && line.contains("'worker'"), "문안 규약: {line:?}");
         // v115-review 발견 3: 승계 뒤 옛 좌석은 큐가 비면 곧 회수된다 — 「그대로 사용」 문안은 거짓이었다.
         //   화면 고지와 GUI 토스트가 **같은 문장**을 말해야 한다(트랙 간 문안 모순 재발 방지).
-        const V115_OLD_SEAT: &str = "옛 칸은 비어 있어 곧 정리됩니다(전할 말이 남아 있으면 그대로 둡니다).";
+        // ★(v116-integ · master#24673176) GUI 문안의 원본이 main.ts → ui/src/alertcopy.ts(roleTakeoverCopy)로 옮겨졌다
+        //   (T-UI). 공통 꼬리 = 주어(GUI 는 창 이름 · 데몬은 「옛 창」) 뒤의 문장 묶음 · 괄호 0.
+        const V115_OLD_SEAT: &str = "이 역할을 새 창으로 옮겨 붙였습니다. 옛 창은 곧 정리됩니다. 전할 말이 남아 있으면 그대로 둡니다.";
         assert!(line.contains(V115_OLD_SEAT), "화면 고지 문안: {line:?}");
-        assert!(include_str!("../../../ui/src/main.ts").contains(V115_OLD_SEAT), "GUI 토스트 문안이 갈렸다");
+        assert!(include_str!("../../../ui/src/alertcopy.ts").contains(V115_OLD_SEAT), "GUI 토스트 문안이 갈렸다");
+        assert!(!line.contains('(') && !line.contains(')'), "괄호 부기 0: {line:?}");
         assert!(!line.contains("그대로 사용할 수"), "옛 문안 잔존: {line:?}");
 
         let src = include_str!("handlers.rs");

@@ -124,7 +124,9 @@ export function roleTakeoverCopy(prevNo: number | null, p: Record<string, unknow
   const prev = prevNo != null ? seatName(prevNo, null, p.dept) : "옛 창";
   return {
     title: `ℹ ${name} 자리가 다른 창으로 옮겨졌습니다`,
-    body: `${prev}이 비어 있어 이 역할을 새 창으로 옮겨 붙였습니다. 옛 창에 전할 말이 남아 있으면 그대로 둡니다.`,
+    // ★(v116-integ · master#24673176) 꼬리 문장 묶음은 데몬 화면 고지(cysd handlers.rs seat_takeover_notice)와
+    //   **같은 말**이어야 한다 — cysd 시험 v115_seat_takeover_notice_is_screen_output_not_shell_input 이 이 파일을 핀한다.
+    body: `${prev}이 비어 있어 이 역할을 새 창으로 옮겨 붙였습니다. 옛 창은 곧 정리됩니다. 전할 말이 남아 있으면 그대로 둡니다.`,
   };
 }
 

@@ -117,9 +117,9 @@ describe("ⓒ 자동 교대 보류 사유", () => {
 // ⓓ(v116-ui-close · D4 #5) 상단바 라벨 = 판번만 · 내부 용어·사용자 폴더 경로는 툴팁으로.
 describe("ⓓ 상단바 데몬 라벨 — 판번만(D4 #5)", () => {
   it("라벨에 pid·소켓 경로·영어 내부 용어가 없다", () => {
-    const st = { daemon_pid: 4242, socket_path: "/Users/x/.local/state/cys/cys.sock", version: "1.1.6" };
+    const st = { daemon_pid: 4242, socket_path: "/Users/youruser/.local/state/cys/cys.sock", version: "1.1.6" };
     const label = daemonInfoLabel(st);
-    for (const bad of ["pid", "sock", "daemon", "/Users/", "someone"]) expect(label.includes(bad)).toBe(false);
+    for (const bad of ["pid", "sock", "daemon", "/Users/", "youruser"]) expect(label.includes(bad)).toBe(false);
     expect(label).toBe("엔진 v1.1.6");
   });
   it("두 자리(시작 · 재연결) 모두 툴팁에 전문을 싣는다 · 초기 문구·무응답 문구도 내부 용어 0", () => {

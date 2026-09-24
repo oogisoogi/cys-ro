@@ -12019,7 +12019,12 @@ mod tests {
         //   (T-UI). 공통 꼬리 = 주어(GUI 는 창 이름 · 데몬은 「옛 창」) 뒤의 문장 묶음 · 괄호 0.
         const V115_OLD_SEAT: &str = "이 역할을 새 창으로 옮겨 붙였습니다. 옛 창은 곧 정리됩니다. 전할 말이 남아 있으면 그대로 둡니다.";
         assert!(line.contains(V115_OLD_SEAT), "화면 고지 문안: {line:?}");
-        assert!(include_str!("../../../ui/src/alertcopy.ts").contains(V115_OLD_SEAT), "GUI 토스트 문안이 갈렸다");
+        // (agy 3R #3) 파일 전체가 아니라 roleTakeoverCopy 함수 본문의 body 줄을 본다 — 주석·미사용 문자열로 통과 불가.
+        let ac = include_str!("../../../ui/src/alertcopy.ts");
+        let f0 = ac.find("export function roleTakeoverCopy(").expect("roleTakeoverCopy 소실");
+        let f1 = f0 + ac[f0..].find("\n}\n").expect("roleTakeoverCopy 끝");
+        let want = format!("    body: `${{prev}}이 비어 있어 {V115_OLD_SEAT}`,");
+        assert!(ac[f0..f1].lines().any(|l| l == want), "GUI 토스트 문안이 갈렸다: {want}");
         assert!(!line.contains('(') && !line.contains(')'), "괄호 부기 0: {line:?}");
         assert!(!line.contains("그대로 사용할 수"), "옛 문안 잔존: {line:?}");
 

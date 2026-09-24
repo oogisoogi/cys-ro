@@ -97,6 +97,9 @@ describe("D4 #8 도우미", () => {
   it("(Fable MINOR-3) 부서 이벤트 = 부서 이름을 앞에 · (MINOR-2) 방치 승인은 관측 번호(surface_ref)", () => {
     expect(seatName(3, "worker", "영업부")).toBe("영업부 3번 작업 창");
     expect(roleTakeoverCopy(7, { role: "master", dept: "영업부" }).body.startsWith("영업부 7번 창이 비어")).toBe(true); // agy 4R MINOR
+    // (v116-integ) 꼬리 문장 묶음 = 데몬 화면 고지와 같은 말(cysd v115_seat_takeover_notice… 가 같은 상수를 핀) — 양쪽 대칭.
+    expect(roleTakeoverCopy(7, { role: "master" }).body.endsWith("이 역할을 새 창으로 옮겨 붙였습니다. 옛 창은 곧 정리됩니다. 전할 말이 남아 있으면 그대로 둡니다.")).toBe(true);
+    expect(roleTakeoverCopy(null, { role: "master" }).body).toBe("옛 창이 비어 있어 이 역할을 새 창으로 옮겨 붙였습니다. 옛 창은 곧 정리됩니다. 전할 말이 남아 있으면 그대로 둡니다.");
     expect(agentExitedCopy(3, { role: "worker", dept: "영업부" }).body.startsWith("영업부 3번 작업 창의")).toBe(true);
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     expect(main).toContain("approvalStalledCopy(seatNo(null, payload.surface_ref), ap)");

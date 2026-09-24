@@ -362,3 +362,15 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - ③자가치유 전멸: phoenix 게이트 D07b 전건 초록(c6 해소 · e2e_replacement 6/6 · w2_untomb 8/8) · 1091 = 대기 중 install_update 재호출 0(헤드리스 c17b·c17c·c17h·c17n) · 1089 = 복원 카드 읽기/쓰기(헤드리스 c5·c11 초록).
 - ④전 pane 사망: 헤드리스 c1~c17 ALL PASS(닫기 확인·exited 청소 술어 불변) · B·effort env 는 키 부재 시 추가만(사용자 값 불가침 · 재정렬 0 · 단언 실행) · Windows 에서 pane env 로 닿는 경로 = launch_create_env_pairs 하나(구조 불변). 윈 설치파일 = push 뒤 CI.
 - 프로세스 정리: 내가 띄운 것 잔존 0(헤드리스 크롬 · 게이트 스냅샷 · cargo) 실측 · 이름 패턴 kill 0.
+
+---
+
+## 18. 3차 통합(TICKET=v116-integ-3 · master#b7e65821 · 정정 #f73e8693)
+- 규칙: 이번 단계는 **빠른 확인까지만** — 정본 게이트 전체는 1090·v116-auto-equalize 합류 뒤 한 번에(master 큐 CPU 경합 회피). push/태그 = master 게이트. 1.1.6 발행 = 늦어도 09-28(월) · 정렬 기능 편입(박사님 결정).
+
+### 18-1. ① 1088 exited-banner @5ec32038(기점 T-UI 3bc73856 · 통합에 이미 있음) → 병합 **af8cf0df**
+- 충돌 1 = `docs/v116-ui-evidence/v116-headless.ts`(헤드리스 하네스 · 제품 코드 아님): 1091 과 1088 이 **같은 블록 열쇠 「c17」 을 따로** 썼다(1091 = 재시작 대기 c17a…c17r · c17x · c17w / 1088 = 종료 배너 c17a@1280 처럼 폭 붙은 판정 · c18).
+  - 해결: 판정 이름이 겹치지 않으므로 열쇠 「c17」 을 공유하고 블록 둘 다 유지. 순서 = **1088 c17 → 1091 c17·c17x·c17w → 1088 c18**(1088 은 자기 가지처럼 c16 바로 뒤·기본 UA에서 · 1091 c17 은 맥 UA 를 세우고 되돌리지 않으므로 뒤로 · 1091 은 자기 load 로 새로 시작). 기본 ONLY = 두 목록 합집합(c17,c17x,c17w,c18).
+  - 영향: 1088 `mutate-exited.py`(ONLY=c17 · `FAIL c17` 접두)는 그대로 동작하나 1091 의 c17 판정도 함께 돈다(exitbanner 뮤턴트와 무관 · 시간만 늘어남).
+- 증거 파일 치환: master 정정(#f73e8693) 그대로 — `exited-banner/headless-final-c1-c18.txt` 의 `/Users/u` = **0줄**(1088 139ca0d1 에서 이미 `/Users/user/`) · 치환 커밋 없음.
+- 빠른 확인(af8cf0df): `bun test` **1332/0** · `exitbanner.test.ts` 19/0 · tsc 7(기준 목록 동일) · `secret-scan --all` **clean 1277 파일** · 헤드리스(worktree 밖 사본 실번들 · chrome-headless-shell 154) 전체 = **ALL PASS 79줄**(c1~c16 + 1088 c17 + 1091 c17/c17x/c17w + c18) · ONLY=c17(1088 뮤턴트 스크립트 경로) = **ALL PASS 29줄** · 내 크롬 잔존 0.

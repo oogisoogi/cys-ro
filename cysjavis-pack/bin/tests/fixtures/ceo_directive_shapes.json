@@ -57,6 +57,13 @@
       "dept": {"expect_md": "C2", "expect_pre_ceo": "M2", "expect_stale": "M_OLD", "expect_edit_backup": null, "expect_after_down": "M2"}
     },
     {
+      "id": "promoted-old-release-pre-ceo",
+      "source": "승격 중인데 강등 백업(.pre-ceo)이 옛 발행 표준본 · manifest[MASTER] 와 다름(ⓔ 로 .pre-ceo 동반 전진 · 뮤턴트 R7 생존 보강)",
+      "md": "C1", "pre_ceo": "M_OLD", "new": "M2", "receipt": "C1", "released_ceo": [], "released_master": ["M_OLD"], "manifest_master": "M1",
+      "installer": {"expect_md": "C2", "expect_pre_ceo": "M2", "expect_new": null, "expect_receipt": "C2"},
+      "dept": {"expect_md": "C2", "expect_pre_ceo": "M_OLD", "expect_stale": null, "expect_edit_backup": null}
+    },
+    {
       "id": "demoted-to-old-release",
       "source": "강등이 옛 판(발행본)을 되살린 뒤 다음 판 도착(ⓔ)",
       "md": "M_OLD", "pre_ceo": null, "new": null, "receipt": null, "released_ceo": [], "released_master": ["M_OLD"], "manifest_master": "M1",

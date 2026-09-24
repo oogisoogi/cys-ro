@@ -360,6 +360,26 @@ check("11d 부서 0개 → 강등 = 현행 표준 복귀(옛 판 부활 금지)"
       md(home) == MASTER_BODY, "exit=%d md=%r %s" % (code, md(home)[:40], out[-200:]))
 shutil.rmtree(tmp)
 
+# ── 11g. ★자동 승격 알림 복구(뮤턴트 B5 생존 보강): 낡은 백업 형상에서 대기형 자동 승격(promote-if-pending
+#   = 부서 생성·10분 틱 경로)은 「CEO 승격 완료(자동)」 알림을 내야 한다 — 종전엔 `.pre-ceo` 존재만으로
+#   _auto=0 이라 사용자가 역할 교체를 통지받지 못했다(1098 R3).
+tmp = tempfile.mkdtemp(prefix="ceo-t11g-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+os.makedirs(os.path.dirname(pend), exist_ok=True)
+with open(pend, "w", encoding="utf-8") as f:
+    f.write("pending\n")
+code, out = run(env, "promote-if-pending")
+_calls = open(os.path.join(tmp, "calls.log"), encoding="utf-8").read() if os.path.exists(os.path.join(tmp, "calls.log")) else ""
+check("11g 낡은 백업 형상의 자동 승격 = 「CEO 승격 완료(자동)」 알림",
+      code == 0 and md(home) == CEO_BODY and "CEO 승격 완료(자동)" in _calls,
+      "exit=%d calls=%r" % (code, _calls[-200:]))
+shutil.rmtree(tmp)
+
 # ── 11e. ★가드(agy B R1 반례 ①): **승격 중** 사용자가 CEO 사본을 손봐 표지 핀까지 지움 → 두 번째
 #   부서(재승격). md 가 「현행 표준 원본」이라는 긍정 증거(CEO ⊇ md)가 없으므로 .pre-ceo(진짜 표준
 #   백업)는 무접촉이어야 한다 — 낡은 백업으로 오판해 밀어내면 강등이 손수정 사본을 복원한다.

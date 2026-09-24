@@ -10652,6 +10652,15 @@ fn compose_agent_cmd(
     Ok(cmd)
 }
 
+/// ★v116-seat Fable 2-2: set_meta 오류가 「같은 메타의 재등록을 소유 게이트가 막은 것」인가(순수).
+/// 참 = 오류 코드가 meta_denied ∧ 좌석 행(surface.list)의 agent·agent_bin 이 요청과 **정확히** 같다.
+/// agent_bin 키가 없는 데몬(구판)이나 다른 에이전트·다른 바이너리면 거짓 — 종전대로 오류다.
+fn set_meta_denied_is_same_meta(err: &str, entry: &Value, agent: &str, bin: &str) -> bool {
+    err.starts_with("meta_denied:")
+        && entry["agent"].as_str() == Some(agent)
+        && entry["agent_bin"].as_str() == Some(bin)
+}
+
 /// launch-agent(새 surface)와 node-recover(기존 surface 재기동)가 공유한다.
 fn boot_agent_on_surface(
     sid: u64,
@@ -10750,10 +10759,25 @@ fn boot_agent_on_surface(
     // → agent_seen 영원히 false → status 허위 DEAD → task-prompt 생존게이트가 '미기동' 오판(DRILL_LIVE_1).
     // 스폰 시점에 의도가 확정되므로 여기서 등록하는 것이 정직하다(§3-1 진단의 수리).
     let bin = extract_bin(&cmd, agent).to_string();
-    request(
+    // ★v116-seat Fable 2-2: 메타가 남은 좌석(node-recover · in-seat 복원)을 **다른 페인에서** 되살리면
+    //   (master 페인의 `cys boot` 가 부르는 node-recover 가 전형) 데몬 소유 게이트가 set_meta 를
+    //   meta_denied 로 막는다 — 기동 줄은 이미 쳐져 에이전트는 떴는데 여기서 rc 1 이 나면 run_boot 이
+    //   reclaim(kill)으로 번진다(격리 실측 · HANDOFF-v116-seat §6-3). 좌석 메타가 요청과 **똑같으면**
+    //   재등록은 할 일이 없으므로 무해로 받는다. 데몬 권한은 넓히지 않는다(게이트는 그대로) ·
+    //   사망 감지는 생존 관측 시 스스로 재무장한다(governance.rs check_agent_death 의 agent.recovered).
+    if let Err(e) = request(
         "surface.set_meta",
         json!({"surface_id": sid, "agent": agent, "agent_bin": bin}),
-    )?;
+    ) {
+        let entry = surface_entry(sid).unwrap_or(Value::Null);
+        if !set_meta_denied_is_same_meta(&e, &entry, agent, &bin) {
+            return Err(e);
+        }
+        eprintln!(
+            "[launch-agent] {} set_meta 거부(meta_denied)이나 좌석 메타가 이미 같다({agent} · {bin}) — 재등록 생략하고 진행",
+            surface_ref(sid)
+        );
+    }
     eprintln!(
         "[launch-agent] {agent} starting… (polling readiness, max {}s)",
         delay.max(30) * 2

@@ -3483,10 +3483,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     // agent 이름과 agent_alive(presence)를 단일 락 1회로 함께 읽어 torn read 제거.
                     // ★M1: 산출은 3값 순수 술어 `agent_alive_tri` 하나가 소유한다(사본 금지 —
                     //   surface.list 와 org.status 가 갈리면 소비부가 좌석마다 다른 사실을 본다).
-                    let (agent, agent_alive) = {
+                    let (agent, agent_bin, agent_alive) = {
                         let meta = s.agent_meta.lock().unwrap();
                         (
                             meta.as_ref().map(|(name, _)| name.clone()),
+                            meta.as_ref().map(|(_, bin)| bin.clone()),
                             agent_alive_tri(
                                 meta.is_some(),
                                 s.agent_seen.load(Ordering::Relaxed),
@@ -3515,6 +3516,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         "env_injected": s.env_injected, // RC-3 잔여(T2.1): node-recover 안전판정용
                         "claude_config_dir": s.claude_config_dir.lock().unwrap().clone(), // (W1) node-recover resume 게이트용
                         "agent": agent,
+                        // ★v116-seat Fable 2-2: node-recover 가 set_meta meta_denied 를 「같은 메타 = 무해」로
+                        //   받을 때의 대조 재료(키 추가만 · 소비 = cys.rs set_meta_denied_is_same_meta).
+                        "agent_bin": agent_bin,
                         "agent_alive": agent_alive,
                         // ★(W2 · B6) 각성 래치 — **단방향** 신호다. null 은 NOT-awake 가 아니라
                         // '이 차원에 대해 말할 것이 없음'(legacy-presumed)이다. 소비자는 null 을

@@ -350,5 +350,51 @@ check("11d 부서 0개 → 강등 = 현행 표준 복귀(옛 판 부활 금지)"
       md(home) == MASTER_BODY, "exit=%d md=%r %s" % (code, md(home)[:40], out[-200:]))
 shutil.rmtree(tmp)
 
+# ── 11e. ★가드(agy B R1 반례 ①): **승격 중** 사용자가 CEO 사본을 손봐 표지 핀까지 지움 → 두 번째
+#   부서(재승격). md 가 「현행 표준 원본」이라는 긍정 증거(CEO ⊇ md)가 없으므로 .pre-ceo(진짜 표준
+#   백업)는 무접촉이어야 한다 — 낡은 백업으로 오판해 밀어내면 강등이 손수정 사본을 복원한다.
+tmp = tempfile.mkdtemp(prefix="ceo-t11e-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY)                            # 승격 때 만든 진짜 표준 백업
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write("CEO-HEADER-EDITED-BY-OWNER\n---\n" + MASTER_BODY + "MY-NOTE\n")  # 손수정 CEO 사본(핀 없음)
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+code, out = run(env, "promote-ceo")
+_dirs = os.path.join(home, ".cys", "pack", "directives")
+check("11e 손수정 CEO 사본 재승격 — 진짜 표준 백업 무접촉 · .stale- 0개",
+      open(pre, encoding="utf-8").read() == MASTER_BODY
+      and not [n for n in os.listdir(_dirs) if ".pre-ceo.stale-" in n],
+      "exit=%d pre=%r %s" % (code, open(pre, encoding="utf-8").read()[:30], out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 11f. ★가드(agy B R1 반례 ③): 락을 못 잡은 경로(윈 PortableGit = flock 없음 + mkdir 락 선점)는
+#   무락으로 _swap 을 강행한다(종전 결함). 그 창에서 .pre-ceo 를 옮기면 동시 승격이 백업을 서로
+#   덮으므로 낡은 백업 처리(새 동작)는 **락 보유 시에만** — 무락이면 종전 동작(백업 무접촉).
+tmp = tempfile.mkdtemp(prefix="ceo-t11f-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(OLD_STD)
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+os.makedirs(mdp + ".promote.lock.d")                 # 다른 승격이 락을 쥔 상태
+env_nf = dict(env)
+env_nf["PATH"] = os.path.join(home, ".local", "bin") + os.pathsep + "/usr/bin:/bin"  # flock 없는 PATH
+_has_flock = subprocess.run(["bash", "-c", "command -v flock"], env=env_nf,
+                            capture_output=True).returncode == 0
+if _has_flock:
+    check("11f (건너뜀: 이 기계 /usr/bin·/bin 에 flock 이 있어 mkdir 락 경로 재현 불가)", True)
+else:
+    code, out = run(env_nf, "promote-ceo")
+    _dirs = os.path.join(home, ".cys", "pack", "directives")
+    check("11f 무락 강행 경로 — 낡은 백업 처리 생략(백업 무접촉 · .stale- 0개)",
+          open(pre, encoding="utf-8").read() == OLD_STD
+          and not [n for n in os.listdir(_dirs) if ".pre-ceo.stale-" in n],
+          "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
+
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

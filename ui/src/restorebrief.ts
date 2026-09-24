@@ -62,18 +62,38 @@ export function parseBriefSections(text: string): BriefSections {
 }
 
 /**
- * 기록 시각 — 파일 안에 적힌 가장 늦은 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null).
+ * 기록 시각 — 3절 안의 `기록 YYYY-MM-DD HH:MM` 줄이 먼저(지금보다 늦으면 버린다). 없으면 파일 안에 적힌 가장 늦은
+ * 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null).
  * ★(v116-ui-close · opus 디버깅 결함 1) `notAfter`(지금 시각 「YYYY-MM-DD HH:MM」)를 주면 그보다 늦은 시각은
  *   버린다 — 본문에 적힌 **예정** 시각(「다음 점검 2026-10-01 09:00 예정」)이 기록 시각으로 뽑혀 카드가 「이 기록은
  *   10-01 기준」이라고 거짓말하고, 두 파일 중 옛 파일을 고르던 결함. 주지 않으면 종전 그대로.
  */
 export function recordedAt(text: string, notAfter?: string): string | null {
   const okFull = (t: string) => notAfter === undefined || t <= notAfter;
+  // ★(판정 B · master#88e8cb7b) 3절 안의 `기록 YYYY-MM-DD HH:MM` 줄(지침 §9 예시)이 있으면 그것이 기록 시각이다 —
+  //   파일 전체 최댓값은 기계용 절에만 새 시각이 적혀도(오너 지시 대장 등) 낡은 3절에 새 시각을 붙였다(거짓 신선도).
+  const rec = briefRecordLine(text);
+  if (rec !== null && okFull(rec)) return rec;
   const okDay = (d: string) => notAfter === undefined || d <= notAfter.slice(0, 10);
   const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`).filter(okFull);
   if (full.length) return full.sort().at(-1) ?? null;
   const d = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})/g)].map((m) => m[1]).filter(okDay);
   return d.length ? (d.sort().at(-1) ?? null) : null;
+}
+
+/** 3절(완료 / 진행 중 / 결정 필요) 안에 있는 첫 `기록 YYYY-MM-DD HH:MM` 줄의 시각(「기록:」·T 구분자 허용). 3절 밖이면 치지 않는다. */
+function briefRecordLine(text: string): string | null {
+  let inBrief = false;
+  for (const raw of text.split(/\r?\n/)) {
+    if (/^#{1,6}\s/.test(raw)) {
+      inBrief = HEADS.some(([, re]) => re.test(raw));
+      continue;
+    }
+    if (!inBrief) continue;
+    const m = raw.match(/^기록\s*[:：]?\s*(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+    if (m) return `${m[1]} ${m[2]}`;
+  }
+  return null;
 }
 
 /** 지금 시각을 파일 기록과 같은 모양(로컬 「YYYY-MM-DD HH:MM」)으로 — recordedAt 의 notAfter 재료. */

@@ -77,13 +77,13 @@ describe("v116 R1a 생산자 — 지침 §9 의 3절 예시 블록이 카드를 
     expect(s.doing.length).toBeGreaterThan(0);
     expect(s.decide.length).toBeGreaterThan(0);
     for (const k of ["done", "doing", "decide"] as const) {
-      expect(s[k].length).toBeLessThanOrEqual(BRIEF_MAX_ITEMS);
+      expect(s[k].length <= BRIEF_MAX_ITEMS).toBe(true);
       for (const l of s[k]) {
-        expect([...l].length).toBeLessThanOrEqual(BRIEF_MAX_CHARS);
+        expect([...l].length <= BRIEF_MAX_CHARS).toBe(true);
         expect(l.endsWith("…")).toBe(false); // 예시가 잘리면 마스터도 잘리는 줄을 쓴다
       }
     }
-    expect(recordedAt(example)).toMatch(/^20\d{2}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(/^20\d{2}-\d{2}-\d{2} \d{2}:\d{2}$/.test(recordedAt(example) ?? "")).toBe(true);
   });
   it("지침대로 쓴 파일(골격 제목 아래 + 기계용 절 그대로) → 카드가 고르고, 예시의 줄만 싣는다", () => {
     const file = writtenPerDirective(example);
@@ -102,7 +102,56 @@ describe("v116 R1a 생산자 — 지침 §9 의 3절 예시 블록이 카드를 
   it("★S2 불변식: 설치 골격은 3절 제목 줄 0 · 서식 안내는 주석으로만 — 새 설치 첫 카드는 「다시 켜졌어요」", () => {
     expect(hasBriefSections(SKELETON)).toBe(false);
     const guide = [...SKELETON.matchAll(/<!--([\s\S]*?)-->/g)].map((m) => m[1]).find((c) => /결정\s*필요/.test(c));
-    expect(guide).toBeDefined();
+    expect(guide === undefined).toBe(false);
     expect(/완료/.test(guide ?? "") && /진행\s*중/.test(guide ?? "")).toBe(true);
+  });
+});
+
+// ★(판정 B · master#88e8cb7b) 카드 기록 시각 = 3절을 쓴 시각. 종전 규칙(파일 전체 최댓값)은 마스터가 기계용 절에만
+//   새 시각을 적으면(오너 지시 대장 한 줄 등) 낡은 3절에 새 시각을 붙였다 — 거짓 신선도.
+describe("판정 B — 기록 시각은 3절 안의 `기록 YYYY-MM-DD HH:MM` 줄이 먼저", () => {
+  const STALE = [
+    "# SESSION_STATE.md",
+    "## 완료",
+    "- 로그인 화면 오류를 고쳤습니다",
+    "## 진행 중",
+    "- 결제 화면을 만들고 있습니다",
+    "## 결정 필요",
+    "- 새 버전을 오늘 내보낼지 정해 주세요",
+    "기록 2026-09-24 10:00",
+    "",
+    "## 오너 지시 대장",
+    "| 시각 | 지시 | 상태 |",
+    "|---|---|---|",
+    "| 2026-09-24 15:00 | 배포 준비 | 진행 |",
+  ].join("\n");
+  it("★재현: 기계용 절에만 더 늦은 시각이 있어도 카드 시각은 3절의 기록 줄(10:00)", () => {
+    expect(recordedAt(STALE)).toBe("2026-09-24 10:00");
+    expect(recordedAt(STALE, "2026-09-24 16:00")).toBe("2026-09-24 10:00");
+  });
+  it("기록 줄이 없으면 종전 규칙(파일 전체 최댓값) 그대로", () => {
+    const noRec = STALE.replace("기록 2026-09-24 10:00", "");
+    expect(recordedAt(noRec)).toBe("2026-09-24 15:00");
+  });
+  it("3절 밖(기계용 절 아래)의 「기록 …」 줄은 기록 줄로 치지 않는다", () => {
+    const outside = STALE.replace("기록 2026-09-24 10:00", "") + "\n## 커밋 체인\n기록 2026-09-24 09:00";
+    expect(recordedAt(outside)).toBe("2026-09-24 15:00");
+  });
+  it("기록 줄이 지금보다 늦으면(예정·오기) 믿지 않고 종전 규칙으로", () => {
+    const future = STALE.replace("기록 2026-09-24 10:00", "기록 2026-10-01 09:00");
+    expect(recordedAt(future, "2026-09-24 16:00")).toBe("2026-09-24 15:00");
+  });
+  it("「기록:」·T 구분자도 기록 줄이다(지침 예시와 같은 뜻의 흔한 변형)", () => {
+    expect(recordedAt(STALE.replace("기록 2026-09-24 10:00", "기록: 2026-09-24T10:00"))).toBe("2026-09-24 10:00");
+  });
+  it("카드 고르기도 같은 시각으로 — 낡은 정본(기록 10:00 · 대장 15:00)보다 12:00 에 3절을 쓴 쪽이 이긴다", () => {
+    const cwd = "## 진행 중\n- 드레인 저장분\n기록 2026-09-24 12:00";
+    expect(pickBriefText([{ path: "c", text: STALE }, { path: "d", text: cwd }], "2026-09-24 16:00")).toBe(cwd);
+  });
+  it("지침 예시 블록의 기록 줄이 이 규칙으로 읽힌다(생산자↔소비자 계약)", () => {
+    const ex = fencedBlocks(section9(MASTER)).find((b) => hasBriefSections(b)) ?? "";
+    const m = ex.match(/^기록 (20\d{2}-\d{2}-\d{2} \d{2}:\d{2})$/m);
+    expect(m).not.toBeNull();
+    expect(recordedAt(writtenPerDirective(ex) + "\n| 2099-01-01 00:00 | x | y |", "2098-12-31 00:00")).toBe(m?.[1] ?? "");
   });
 });

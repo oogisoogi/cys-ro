@@ -3728,7 +3728,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 //   지나 아래 타이핑 경로로 간다. 표지가 있는데 기동 줄이 아니면 **큐에도 넣지 않고** 거부한다
                 //   (셸 명령 줄이 큐에 남으면 뒤에 뜬 에이전트에게 사용자 입력으로 배달된다 — 4군 ① 폭주 큐).
                 let agent_launch = params
-                    .get("agent_launch")
+                    .get(cys::AGENT_LAUNCH_KEY)
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let seat_bin = surface.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());

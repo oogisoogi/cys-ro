@@ -877,6 +877,11 @@ pub const ENV_GATE_PENDING: &str = "CYS_GATE_PENDING";
 /// · python 미러가 **같은 키·같은 의미**로 쓴다(동형성 핀이 기계 대조).
 pub const GATE_PENDING_KEY: &str = "gate_pending";
 
+/// ★v116-seat X-4: `surface.send_text` 의 「이 본문은 좌석 에이전트의 기동 줄이다」 표지 — **wire 키 이름 정본**.
+/// 생산 = cys `boot_agent_on_surface` · 소비 = cysd 빈 셸 가드(handlers.rs surface.send_text).
+/// 한쪽만 바뀌면 표지가 조용히 사라져 node-recover 가 다시 rc 1(큐 보류)로 돌아간다.
+pub const AGENT_LAUNCH_KEY: &str = "agent_launch";
+
 /// 축이 **실제로 노출되는가** — 데몬 직렬화 지점(`state.rs::gate_pending_wire`)과 전 Rust
 /// 소비처의 단일 술어(**부작용 있음** — env 3회 판독). 규약은 순수 코어
 /// [`gate_pending_axis_effective_from`].

@@ -10748,7 +10748,7 @@ fn boot_agent_on_surface(
     request(
         "surface.send_text",
         json!({"surface_id": sid, "text": send, "quiet": true, "authoritative": true,
-               "agent_launch": true}),
+               (cys::AGENT_LAUNCH_KEY): true}),
     )?;
     request(
         "surface.send_key",
@@ -23305,7 +23305,7 @@ mod tests {
         let t = body.find(r#""text": send,"#).expect("기동 줄 send_text 호출 부재");
         let call = &body[body[..t].rfind("request(").expect("request(")..];
         let call = &call[..call.find(")?;").expect("호출 끝")];
-        assert!(call.contains(r#""agent_launch": true"#), "기동 줄 send 에 agent_launch 표지 없음:\n{call}");
+        assert!(call.contains("(cys::AGENT_LAUNCH_KEY): true"), "기동 줄 send 에 agent_launch 표지 없음:\n{call}");
     }
 
     #[test]

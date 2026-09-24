@@ -91,15 +91,22 @@ struct TailState {
     server_ctx_window: Option<u64>,
     /// codex rollout의 turn_context가 준 모델명 — token_count 소비 귀속용(전수조사 A-2)
     codex_model: Option<String>,
-    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각(T2) — [`reattach_carries`] 가 정한다:
-    /// 등록 경로(훅이 세션을 명시 = 새 세션) 부착은 부착 시각 · 휴리스틱 재발견 재부착은 직전 기준 승계
-    /// (직전 유예 시작 뒤에 태어난 파일 = 새 세션이면 부착 시각).
+    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각(T2) — [`reattach_tail`] 이 정한다:
+    /// 등록 경로(훅이 세션을 명시 = 새 세션) 부착·처음 보는 파일은 부착 시각 · 휴리스틱이 전에 본 파일로 돌아오면
+    /// 그 파일의 기준을 되찾는다.
     grace_from: f64,
     /// 직전 관측의 임계 발화를 유예로 보류했는가 — 새 줄이 없는 틱에서도 유예가 끝나면 재평가한다(T2 · agy 1R #2).
     threshold_deferred: bool,
     /// 보류한 추정 % — 재평가 때 현재 관측에 %가 없으면(창 없는 statusline 이 덮음) 이 값으로 발화한다(agy 3R #4).
     deferred_pct: Option<u8>,
+    /// 이 좌석이 전에 붙었던 **다른** 파일들의 유예 상태(오래된 것부터 · [`reattach_tail`] 이 관리).
+    grace_memo: Vec<(PathBuf, GraceMemo)>,
 }
+
+/// 파일별로 기억한 유예 상태 — (기준 시각, 보류, 보류 %).
+type GraceMemo = (f64, bool, Option<u8>);
+/// 좌석당 기억하는 파일 수 상한 — 넘치면 오래된 것부터 잊는다(잊힌 파일로 돌아오면 유예를 한 번 새로 받는다).
+const GRACE_MEMO_CAP: usize = 16;
 
 impl TailState {
     /// 새 tail — 영속 오프셋(analytics tail_offsets)이 있으면 거기서 정확 재개해
@@ -127,6 +134,7 @@ impl TailState {
             grace_from,
             threshold_deferred: false,
             deferred_pct: None,
+            grace_memo: Vec::new(),
         }
     }
 }
@@ -273,17 +281,7 @@ fn collect_for(
     // tail 상태 초기화/전환: 경로가 바뀌었으면 영속 오프셋(없으면 파일 끝 창)에서 새로 시작
     let need_reset = tails.get(&s.id).map(|t| t.path != path).unwrap_or(true);
     if need_reset {
-        let prev = tails
-            .get(&s.id)
-            .map(|t| (t.grace_from, t.threshold_deferred, t.deferred_pct))
-            .filter(|p| reattach_carries(p.0, heuristic, file_born_at(&path)));
-        let grace_from = prev.map_or(now, |p| p.0);
-        let mut t = TailState::attach(daemon, path.clone(), heuristic, now, grace_from);
-        if let Some((_, deferred, pct)) = prev {
-            t.threshold_deferred = deferred;
-            t.deferred_pct = pct;
-        }
-        tails.insert(s.id, t);
+        reattach_tail(daemon, tails, s.id, path.clone(), heuristic, now);
         // 새 세션 파일 = 새 세션 — 에지 게이트 재무장. 직전 세션이 임계 위에서 끝났어도
         // 새 세션이 곧장 임계 이상으로 시작하면(거대 지침 재주입) 발화해야 한다.
         s.ctx_threshold_armed.store(true, Ordering::Relaxed);
@@ -534,22 +532,31 @@ fn collect_for(
     }
 }
 
-/// (T2 · agy 3R #3 · agy 4R ⓐ) 재부착 때 직전 tail 의 유예 상태(기준 시각·보류·보류 %)를 이어받는가(순수 — 진리표 핀).
-/// 등록 경로 부착(`heuristic=false` — SessionStart 훅이 세션을 명시 = 이 좌석에 새로 뜬 에이전트)은 이어받지 않고
-/// **부착 시각**에서 새로 시작한다: 오래된 좌석에 새로 띄운 claude 도 유예를 받는다(좌석 생성 시각 기준이면 즉시
-/// 만료돼 T2 오발이 재발). 휴리스틱 재발견 재부착(`heuristic=true`)은 **승계**한다: 같은 cwd 동시 세션 사이를 오가며
-/// 재부착될 때마다 유예가 새로 시작되면 발화가 영영 안 난다(opus 적대 1R). 단 새 파일이 직전 유예 시작 **뒤에**
-/// 태어났으면 = 그 뒤에 뜬 새 세션 — 이어받지 않는다(agy 4R ⓐ · opus 3R low: 끝난 유예·옛 세션의 보류 %를 새 세션이
-/// 물려받아 유예 없이 오발). 유예 재시작은 새로 태어난 파일 하나당 한 번뿐이라 오가기 무한 재시작은 다시 열리지 않는다.
-/// 생성 시각을 못 읽으면(파일시스템 미지원) 종전대로 승계한다.
-fn reattach_carries(prev_grace: f64, heuristic: bool, born_at: Option<f64>) -> bool {
-    heuristic && born_at.map_or(true, |b| b <= prev_grace)
-}
-
-/// 파일 생성 시각(epoch 초) — 읽지 못하면 None.
-fn file_born_at(path: &Path) -> Option<f64> {
-    let t = std::fs::metadata(path).ok()?.created().ok()?;
-    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
+/// (T2 · agy 3R #3 · agy 4R ⓐ · opus 적대 4R) 세션 파일이 바뀌면 새 tail 을 붙인다 — 유예 상태(기준 시각·보류·
+/// 보류 %)는 **파일별로** 기억한다. 등록 경로 부착(`heuristic=false` — SessionStart 훅이 세션을 명시 = 이 좌석에 새로
+/// 뜬 에이전트)은 언제나 **부착 시각**에서 새로 시작한다(오래된 좌석에 새로 띄운 claude 도 유예를 받는다). 휴리스틱
+/// 재발견 재부착은 그 파일을 전에 봤으면 **그 파일의** 상태를 되찾고, 처음 보는 파일이면 부착 시각에서 시작한다:
+/// * 같은 cwd 동시 세션 사이를 오가도 재시작은 파일 하나당 첫 방문 1회뿐(opus 1R — 매번 새로 시작하면 영영 침묵).
+/// * 새 세션이 옛 세션의 끝난 유예·보류 %를 물려받아 유예 없이 오발하지 않는다(agy 4R ⓐ · opus 3R low).
+/// * 같은 cwd 에 새 파일(`claude -p` 등)이 잇달아 생겨도 원 세션으로 돌아오면 원 세션의 끝난 유예를 되찾아 참 경보가
+///   침묵하지 않는다(opus 4R — 좌석 단일 기준 시각이면 새 파일마다 유예가 재시작돼 영영 침묵).
+fn reattach_tail(daemon: &Arc<Daemon>, tails: &mut HashMap<u64, TailState>, sid: u64, path: PathBuf, heuristic: bool, now: f64) {
+    let mut memo = Vec::new();
+    if let Some(old) = tails.remove(&sid) {
+        memo = old.grace_memo;
+        memo.push((old.path, (old.grace_from, old.threshold_deferred, old.deferred_pct)));
+    }
+    let prior = memo.iter().position(|(p, _)| *p == path).map(|i| memo.remove(i).1).filter(|_| heuristic);
+    if memo.len() > GRACE_MEMO_CAP {
+        memo.drain(..memo.len() - GRACE_MEMO_CAP);
+    }
+    let mut t = TailState::attach(daemon, path, heuristic, now, prior.map_or(now, |m| m.0));
+    if let Some((_, deferred, pct)) = prior {
+        t.threshold_deferred = deferred;
+        t.deferred_pct = pct;
+    }
+    t.grace_memo = memo;
+    tails.insert(sid, t);
 }
 
 /// (T2) 신선한 statusline 이 CTX %를 실제로 줬는가 — 창 크기 없는 보고(구판 등)는 보류를 대신하지 못한다
@@ -2005,6 +2012,7 @@ mod tests {
             grace_from: 0.0,
             threshold_deferred: false,
             deferred_pct: None,
+            grace_memo: Vec::new(),
         };
         let lines = read_new_lines(&mut st);
         assert_eq!(lines, vec!["line1".to_string(), "line2".to_string()]);
@@ -2418,7 +2426,7 @@ mod tests {
         assert_eq!(fired.len(), 1, "유예가 끝났는데 새 줄이 없어 보류된 추정 임계가 영구 침묵");
     }
 
-    /// opus 1R(low)·agy 3R #3: 등록 경로 재부착(새 세션)은 유예를 새로 시작하고, 휴리스틱 재부착은 승계한다.
+    /// opus 1R(low)·agy 3R #3: 등록 경로 재부착(새 세션)은 유예를 새로 시작한다(휴리스틱 재부착 = `t2_grace_memo_per_file`).
     #[test]
     fn t2_grace_registered_reattach_restarts_heuristic_carries() {
         let (daemon, s, dir) = t2_seat("reattach");
@@ -2435,37 +2443,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(path, b, "전제: 재부착됨");
         assert!(grace_from > 1.0, "등록 경로 재부착(새 세션)이 옛 유예 기준을 이어받았다 — 새 claude 가 유예 없이 오발");
-        // 휴리스틱 재부착은 승계 · 등록 경로는 부착 시각(순수 진리표 · 첫 부착은 직전 tail 이 없어 부착 시각)
-        assert!(super::reattach_carries(1.0, true, None));
-        assert!(!super::reattach_carries(1.0, false, None));
-    }
-
-    /// agy 4R ⓐ · opus 3R low: 휴리스틱 재부착이라도 새 파일이 직전 유예 시작 **뒤에** 태어났으면(= 그 뒤에 뜬 새 세션)
-    /// 끝난 유예·옛 세션의 보류 %를 이어받지 않는다. 그 전부터 있던 파일(같은 cwd 동시 세션 오가기)은 종전대로 승계.
-    #[test]
-    fn t2_heuristic_reattach_new_session_does_not_carry() {
-        assert!(super::reattach_carries(100.0, true, Some(50.0)), "유예 전부터 있던 동시 세션 파일 — 승계해야(opus 1R 무한 재시작 차단)");
-        assert!(super::reattach_carries(100.0, true, Some(100.0)));
-        assert!(
-            !super::reattach_carries(100.0, true, Some(150.0)),
-            "유예 시작 뒤 태어난 새 세션이 끝난 유예·옛 보류 %를 승계 — 새 세션이 유예 없이 오발"
-        );
-        assert!(super::reattach_carries(100.0, true, None), "생성 시각 미상 — 종전대로 승계");
-        assert!(!super::reattach_carries(100.0, false, Some(50.0)), "등록 경로는 언제나 새로 시작");
-        // 실제 파일의 생성 시각을 읽는다(판별의 입력 — 못 읽으면 판별이 죽어 종전 승계로 돌아간다)
-        let dir = std::env::temp_dir().join(format!("cys-t2-born-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let before = now_epoch();
-        let f = dir.join("dddddddd-0000-4000-8000-0000000000dd.jsonl");
-        std::fs::write(&f, "").unwrap();
-        let after = now_epoch();
-        let born = super::file_born_at(&f);
-        let _ = std::fs::remove_dir_all(&dir);
-        if cfg!(target_os = "macos") {
-            let b = born.expect("macOS(APFS) 에서 생성 시각을 못 읽음 — 새 세션 판별 불능");
-            assert!(b >= before - 1.0 && b <= after + 1.0, "생성 시각 {b} 가 생성 구간 [{before}, {after}] 밖");
-        }
     }
 
     /// opus 적대 1R(low): 창 크기(ctx %)가 없는 statusline 보고는 보류를 지우지 못한다.

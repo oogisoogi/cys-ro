@@ -50,8 +50,10 @@ def collect(rel):
         r = git("show", "%s:%s" % (t, rel))
         if r.returncode == 0 and r.stdout:
             hashes.add(hashlib.sha256(r.stdout).hexdigest())
+    # 작업 트리는 LF 로 맞춘다 — .gitattributes 가 LF 로 봉인하지만, 봉인 밖 체크아웃(autocrlf)에서 돌려도
+    # CRLF 해시가 표에 섞이지 않게(agy C2 · 윈 개발자 ↔ 리눅스 CI 핑퐁 차단).
     with open(os.path.join(ROOT, rel), "rb") as f:
-        hashes.add(hashlib.sha256(f.read()).hexdigest())
+        hashes.add(hashlib.sha256(f.read().replace(b"\r\n", b"\n")).hexdigest())
     return sorted(hashes)
 
 
@@ -73,6 +75,13 @@ def render():
 
 
 def main():
+    # ★agy C2: 태그가 없는 체크아웃(얕은 클론 · fetch-depth 1)에서 돌리면 표가 「현재 판 1줄」로 덮여 역대 발행
+    #   이력이 통째로 사라진다(다음 판 설치기가 옛 기계를 못 알아봄). 생성·검사 모두 거부하고 이유를 말한다.
+    #   cargo 시험(released_tables_cover_current_embed)은 태그와 무관하게 커밋된 표만 읽으므로 CI 는 영향 없다.
+    if not tags():
+        sys.stderr.write("[gen_released_directive_hashes] 태그 0개(얕은 클론?) — 표를 만들면 역대 이력이 사라진다. "
+                         "`git fetch --tags` 뒤 다시 실행하라(생성·검사 거부 · exit 3)\n")
+        return 3
     text = render()
     if "--check" in sys.argv[1:]:
         cur = open(OUT, encoding="utf-8").read() if os.path.exists(OUT) else ""

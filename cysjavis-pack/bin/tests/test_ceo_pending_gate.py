@@ -382,6 +382,33 @@ check("11g 낡은 백업 형상의 자동 승격 = 「CEO 승격 완료(자동)�
       "exit=%d calls=%r" % (code, _calls[-200:]))
 shutil.rmtree(tmp)
 
+# ── 11h. ★보존본 중복 금지·임시 파일 정리(Opus 적대 F3·F7 · 뮤턴트 B7 보강): md 교체(rename)가 계속 실패하는
+#   기계(윈 파일 잠금 등 — 맥은 chflags uchg 로 재현)에서 10분 틱이 돌 때마다 「덮기 전 보존본」이 하나씩
+#   쌓이거나 md.tmp.* 가 남으면 안 된다. 맥 전용(chflags) — 다른 OS 는 건너뜀.
+if sys.platform == "darwin":
+    tmp = tempfile.mkdtemp(prefix="ceo-t11h-")
+    env, home = setup(tmp)
+    mdp, pre, pend, marker = paths(home)
+    _dirs = os.path.dirname(mdp)
+    with open(pre, "w", encoding="utf-8") as f:
+        f.write(MASTER_BODY)
+    with open(mdp, "w", encoding="utf-8") as f:
+        f.write(CEO_BODY + "MY-NOTE\n")            # 손본 CEO 사본(영수증 없음 → 덮기 전 보존 대상)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("{}")
+    subprocess.run(["chflags", "uchg", mdp], check=True)
+    try:
+        for _ in range(3):
+            run(env, "promote-ceo")
+        _eb = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo-")]
+        _tm = [n for n in os.listdir(_dirs) if ".tmp" in n]
+        check("11h 교체 실패 3회 — 보존본 1개 · 임시 파일 0", len(_eb) == 1 and not _tm, "backups=%r tmp=%r" % (_eb, _tm))
+    finally:
+        subprocess.run(["chflags", "nouchg", mdp], check=False)
+    shutil.rmtree(tmp)
+else:
+    check("11h (건너뜀: chflags 없는 OS)", True)
+
 # ── 11e. ★가드(agy B R1 반례 ①): **승격 중** 사용자가 CEO 사본을 손봐 표지 핀까지 지움 → 두 번째
 #   부서(재승격). md 가 「현행 표준 원본」이라는 긍정 증거(CEO ⊇ md)가 없으므로 .pre-ceo(진짜 표준
 #   백업)는 무접촉이어야 한다 — 낡은 백업으로 오판해 밀어내면 강등이 손수정 사본을 복원한다.

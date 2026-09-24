@@ -8303,6 +8303,15 @@ mod tests {
             m.insert(ceo_rel.to_string(), serde_json::json!(content_hash(c2)));
             m.insert(md.to_string(), serde_json::json!(content_hash(&t(&s["manifest_master"]).unwrap())));
             std::fs::write(&mp, serde_json::to_string(&m).unwrap()).unwrap();
+            let _ = std::fs::remove_file(pd.join(MERGE_PENDING_FILE));
+            if s["pending_new"].as_bool().unwrap_or(false) {
+                std::fs::write(
+                    pd.join(MERGE_PENDING_FILE),
+                    serde_json::json!({ md: {"kind": "new-pending", "side": format!("{md}.new"),
+                                             "version": "1.0.1", "ts": 0} }).to_string(),
+                )
+                .unwrap();
+            }
             let inject = |key: &str| -> Vec<String> {
                 s[key].as_array().unwrap().iter().map(|k| content_hash(&t(k).unwrap())).collect()
             };
@@ -8324,7 +8333,7 @@ mod tests {
         }
         TEST_RELEASED_CEO_EXTRA.with(|v| v.borrow_mut().clear());
         TEST_RELEASED_MASTER_EXTRA.with(|v| v.borrow_mut().clear());
-        assert!(ran >= 7, "형상 표 installer 칸이 줄었다({ran}) — 표를 줄이려면 이 하한도 함께 고친다");
+        assert!(ran >= 11, "형상 표 installer 칸이 줄었다({ran}) — 표를 줄이려면 이 하한도 함께 고친다");
         let _ = std::fs::remove_dir_all(&td);
     }
 

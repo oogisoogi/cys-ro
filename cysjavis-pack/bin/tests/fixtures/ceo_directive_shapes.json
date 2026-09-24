@@ -10,7 +10,8 @@
   "installer: 설치본 판 v1(C1/M1) 뒤 manifest[MASTER]=manifest_master · manifest[CEO]=C2(옛 사이드카가 전진시킨 형상) · 디스크 CEO_TEMPLATE=C2 에서 v2(C2/M2) init-pack. expect 의 null = 파일 부재.",
   "dept: 디스크 CEO_TEMPLATE=C2 · 부트 마커 있음 · 부서 1개에서 promote-ceo. expect_stale / expect_edit_backup = 새로 생긴 .pre-ceo.stale-* / .pre-ceo-<시각> 의 내용(null = 생기지 않음). expect_after_down = 부서 0개 강등 뒤 md(없으면 생략).",
   "texts 의 CEO 사본(C*)은 실제 합성 계약(scripts/gen_ceo_template.py SEPARATOR)과 같은 구분선을 쓴다 — cys-dept ⓕ·강등 판정이 「구분선 뒤 본문 == md」 동등 비교라서다(Opus 적대 F1).",
-  "dept 선택 칸: boot_marker(기본 true) · expect_after_down · expect_stale_after_down(강등 뒤 .pre-ceo.stale-* 내용 목록 · Opus 적대 F2)."
+  "dept 선택 칸: boot_marker(기본 true) · expect_after_down · expect_stale_after_down(강등 뒤 .pre-ceo.stale-* 내용 목록 · Opus 적대 F2).",
+  "installer 선택 칸: pending_new = true 면 병합 대기 원장(.merge-pending.json)에 MASTER 의 new-pending 항목을 심는다(옛 사이드카가 남긴 원장 형상)."
  ],
  "texts": {
   "M_OLD": "STANDARD-MASTER-OLD\n",
@@ -24,7 +25,8 @@
   "C2_NOEOL": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\nSTANDARD-MASTER-V2",
   "C2_CRLF": "# CEO (master of master) — 단일소유 강제 · exit 7\r\n---\r\n\r\n# [본문 — 표준 MASTER 운영 계약 전문]\r\n\r\nSTANDARD-MASTER-V2\r\n",
   "M2_TRUNC": "STANDARD-MASTER-V",
-  "M2_EDIT": "STANDARD-MASTER-V2\nMY-EDIT\n"
+  "M2_EDIT": "STANDARD-MASTER-V2\nMY-EDIT\n",
+  "M2_NEWEDIT": "STANDARD-MASTER-V2\nMY-MERGE-NOTE\n"
  },
  "shapes": [
   {
@@ -336,6 +338,25 @@
      "M_OLD"
     ]
    }
+  },
+  {
+   "id": "vmb-user-edited-new",
+   "source": "VM-B 형상 + 사용자가 병합하려고 .new 를 손봄 + 원장 new-pending(Opus 적대 F6 · 뮤턴트 R8 보강)",
+   "md": "C1",
+   "pre_ceo": "M1",
+   "new": "M2_NEWEDIT",
+   "receipt": "C1",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M1",
+   "pending_new": true,
+   "installer": {
+    "expect_md": "C2",
+    "expect_pre_ceo": "M2",
+    "expect_new": "M2_NEWEDIT",
+    "expect_receipt": "C2"
+   },
+   "dept": null
   }
  ]
 }

@@ -59,8 +59,8 @@ TICKET=v116-restart-toast · worker-43(surface:1091) · 브랜치 `fix/v116-rest
 - ④전 pane 사망: `app.restart()` 실패 창 = 기존 동작 그대로(Rust diff 0줄 · 이 수리는 그 경로를 부르는 입구만 늘림) · 윈 = 대기 상태 미발생(방출 1곳 핀 · c17w 설치 경로 불변) · 윈 실기 【미측정】.
 
 ## 완료 뒤 정밀 디버깅 — 어디까지 뒤졌나
-- 경계 17칸: 교체 직후 ⌘R(c17c) · 대기 중 조용한 확인(c17c 시작 확인 · 6시간·포커스 확인은 같은 함수 머리 가드 = 구조 핀 · 벽시계 발화 자체는 헤드리스 미발화) · 더 새 판(c17i) · 재시작 실패 뒤 재시도(c17g) · 세션 확인 창 취소(c17f) · 알림 ×(c17j) · 좁은 창(c17q) · 설치 확인 창 경합(c17h) · 판번 조회 실패(c17k) · 복원 경합(c17l) · 같은 판 재빌드(c17m) · 진행 중 확인 경합(c17n) · 복원 전 첫 클릭(c17o) · 팩 적용 완료(c17p) · 연타(c17e) · 새 판으로 켜짐(c17d) · 윈(c17w).
-- 표적 뮤테이션 18/18.
+- 경계 18칸(⑵ c17r 설치 진행 중 이중 설치 포함): 교체 직후 ⌘R(c17c) · 대기 중 조용한 확인(c17c 시작 확인 · 6시간·포커스 확인은 같은 함수 머리 가드 = 구조 핀 · 벽시계 발화 자체는 헤드리스 미발화) · 더 새 판(c17i) · 재시작 실패 뒤 재시도(c17g) · 세션 확인 창 취소(c17f) · 알림 ×(c17j) · 좁은 창(c17q) · 설치 확인 창 경합(c17h) · 판번 조회 실패(c17k) · 복원 경합(c17l) · 같은 판 재빌드(c17m) · 진행 중 확인 경합(c17n) · 복원 전 첫 클릭(c17o) · 팩 적용 완료(c17p) · 연타(c17e) · 새 판으로 켜짐(c17d) · 윈(c17w).
+- 표적 뮤테이션 19/19(⑵ M19 포함).
 - 계수: 읽은 파일 17(main.ts · restartpending.ts/test · updateplan.ts · toastttl.ts · clipath.ts · index.html · style.css · updatebutton/topbarlabels/brandbadge.test.ts · src-tauri main.rs · macupdate.rs · pack.rs · tauri.conf.json · shim.js · v116-headless.ts) · 경로 = 대기 설정 1 · 해제 0 · 확인 입구 4(시작·6시간·포커스·단추) · 설치 입구 2(promptBinaryPatch · autotest) · 재시작 입구 2(알림·단추) · 셸 명령 약 70회.
 
 ## 게이트(정본 전체 직렬 1회 · 워크플로 run 블록 원문 · gate_runner.py · 분리 스냅샷 · 격리 HOME/TMPDIR · CYS_* 제거 · CYS_NO_AUTOSTART=1)
@@ -69,9 +69,17 @@ TICKET=v116-restart-toast · worker-43(surface:1091) · 브랜치 `fix/v116-rest
 - 주요 값: D02 secret-scan --all **clean 1191 파일**(스냅샷) · 작업본 60013101 에서도 clean 1202 파일 · B01 boot-health-full GREEN 149/150(skip 1) · A12 cargo test --bin cys 288/0 · A13 --lib 538/0 · A14 -p cys-app --bins 172/0(restart_after_update 봉인 호출 핀 포함) · D07c cysd --test-threads=1 1059/0 · D07d 538/0 · D07e 288/0 · X01 hwmon 2/0 · D06 bun test 1270/0.
 - tsc: 워크플로 run 블록에 없음(러너 스텝 0) → 로컬 `bunx tsc -p tsconfig.check.json` = 오류 7 = 기존 7 · 신규 0.
 
+## master 판정(15:39 · 9a367a52) 반영
+- ⑴ ACCEPT 는 최종 해시 결속 → master 독립 재실행은 **최종 해시**로(17:0x). 워커 게이트 대상 9c41830d 뒤 변경 = 001645fb(c17q 판정 교정 · 증거 하네스) · f5ee9415(⑵ 제품 + 시험) · 문서.
+- ⑵ **편입·완료 = f5ee9415(커밋 1개)**: 설치(다운로드·교체) 진행 중 이중 install_update 차단 — `installingUpdate`(promptBinaryPatch · await 전 설정 · finally 해제) · 진행 중 헤더 재클릭 = 확인 창 없이 안내 「새 앱 받는 중 / 새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요.」 · 첫 확인 전 두 번 눌러 쌓인 확인 창 둘 다 「설치」 = install_update 1. 순서 = 헤드리스 c17r 기준선 fd5bf305 **적색**(install_update 2 · 두 번째 확인 창 · `c17r-baseline-fd5bf305.txt`) → 수리 → **초록** · 뮤턴트 M19(플래그 안 세움) KILLED(c17r) · 연타 경계 c17e·c17f 재실행 PASS(`headless-c17r-fix.txt`) · bun 1270/1270 · tsc 7(=기존).
+  - 같은 재실행에서 c17l 이 1회 적색 — 원인 = 부하(load 28)로 400ms 고정 대기 이벤트가 리스너 등록 전에 유실(알림 0 · 제품 무관). 하네스 교정: 리스너 등록을 기다려 쏘고 「복원이 아직 기다리는 중에 쐈다(emittedAt < 5000)」를 단언(공허 통과 방지) → c17x ALL PASS(emittedAt 488ms · `headless-c17x-r.txt`) · M10 재확인 KILLED(c17l). 뮤턴트 최종 **19/19**.
+- ⑶ 기존 문구 「재시작 (새 판 v…)」·「재시작 실패」 = 이번엔 안 바꿈(1.1.7 문구 일괄 정리 후보 · master).
+- ⑷ 800폭 +4px 가로 넘침 · 교체 순간 build_id 조회 실패 한계 = **알려진 한계로 수용**(위 「한계」 절·아래 3 그대로).
+- 원장 이상 1건(정직 보고): 판정 메시지 9a367a52 는 원장에 있으나 `submitted = not_attempted_입력줄빔관측 · return = skipped_box_read_empty · landed_seen = false` 로 기록됐다(실제로는 이 세션에 도착 — 세션 jsonl 에 논스 4회). 원장 첫 줄 본문 일치·원장은 고스트가 쓸 수 없음·가역 로컬 작업이라 master 발신으로 보고 이행 — 래퍼의 제출 판정 오기록 가능성은 master·CSO 확인 사안.
+
 ## 곁 항목(범위 밖 · master 판단)
-1. 【기존 결함】 다운로드 진행 중(upd-bin) 헤더 재클릭 → 옛 앱이 같은 판을 새것으로 판정 → 두 번째 install_update(재다운로드). 첫 확인 응답 전 두 번 누르면 설치 확인 창 2개. 수리 전부터 있던 결함(클로드 적대 1R #3) · 수리안 = `installingUpdate` 플래그(첫 await 전 · finally) 1개 + 헤드리스 1칸.
-2. 【기존 문구】 「다시 켜기」 뒤 이어지는 확인 창 제목 「재시작 (새 판 v1.1.7)」 · 단추 「재시작」 · 실패 알림 「재시작 실패」 — 괄호·「새 판」·「v」·「재시작」(데몬 「↻ 재시작」과 같은 낱말). 이 수리로 바뀌지 않은 문자열이라 손대지 않음(대원칙 2). 수리안 = 제목 「새 앱 1.1.7 로 다시 켜기」 · 단추 「다시 켜기」 · 실패 알림 「다시 켜기 실패」.
+1. ~~【기존 결함】 다운로드 진행 중 재클릭 이중 설치~~ → master 판정 ⑵ 로 편입·완료(f5ee9415).
+2. 【기존 문구 · ⑶ 보류】 「다시 켜기」 뒤 이어지는 확인 창 제목 「재시작 (새 판 v1.1.7)」 · 단추 「재시작」 · 실패 알림 「재시작 실패」 — 괄호·「새 판」·「v」·「재시작」(데몬 「↻ 재시작」과 같은 낱말). 이 수리로 바뀌지 않은 문자열이라 손대지 않음(대원칙 2). 수리안 = 제목 「새 앱 1.1.7 로 다시 켜기」 · 단추 「다시 켜기」 · 실패 알림 「다시 켜기 실패」.
 3. 【절충】 대기 중엔 팩 확인(check_pack_update)도 건너뜀 → 다시 켜기를 며칠 미루면 무중단 팩 적용도 그동안 미룸. 다시 켜면 풀림.
 4. 【시험 전용 경로】 `CYS_AUTOTEST_PATCH_INSTALL=1` 자동 설치(main.ts autotest)는 대기 가드 밖 — 제품 영향 0.
 5. 【같은 계열】 HANDOFF-v116-integ §11 ⑵ perm-guide 도 같은 60초 소멸 계열(이 티켓 범위 밖).

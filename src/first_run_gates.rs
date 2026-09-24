@@ -22,6 +22,8 @@
 //!   → 신규 프로필에서 마커 기반 readiness 는 **필연 오탐**이다(그래서 U-13 이 필요하다).
 //! - 면책 창 기본 포커스 = `No, exit` · Return → **rc 1 종료**. 통과 = 아래 1회 + Return.
 //! - 폴더신뢰 창 기본 포커스 = `Yes, I trust this folder` → Return **안전**.
+//!   ★(2026-09-23 · claude 2.1.280 재실측) 기본 포커스가 `No, exit` 로 바뀌었다(순서 뒤집힘 · 번호 없음) —
+//!   Return 은 더 이상 안전하지 않다. 자동확인은 화면 포커스를 읽는다(`Gate::focus_plan` · `options`).
 //! - 2026-07-29 실사고("기계 Return 이 폴더신뢰창을 종료시킨다")의 진범은 폴더신뢰 창이 아니라
 //!   **그 직후의 면책 창**이었다 — 확인 에코 `Yes, I trust this folder ✔` 가 구 needle
 //!   `trustthisfolder` 에 재매칭돼 2발째 Return 이 면책 창의 `No, exit` 를 눌렀다.
@@ -96,6 +98,141 @@ pub const ADAPTER_KEY: &str = "first_run_gates";
 /// ★롤백 스위치(env 1지점). `0`/`off`/`false`/`no` → override 파싱 비활성(코드 정본만).
 pub const OVERRIDE_ENV: &str = "CYS_FIRST_RUN_GATES_OVERRIDE";
 
+/// 관문 봉투를 물려줄 임베드 어댑터 이름(claude 계열의 코퍼스 주인).
+pub const CLAUDE_ADAPTER: &str = "claude";
+
+/// ★(1.1.6 R16 · master#7b1ea7d9) 어댑터 `cmd` 가 **claude 를 띄우는가** — 사용자 신설 claude 계열 어댑터
+/// (`claude-fable`·`claude-sonnet` 등 임베드에 같은 이름이 없는 것)가 claude 임베드 관문 봉투를 물려받는
+/// 판정. 종전엔 봉투를 임베드의 **같은 이름**에서만 가져와 그런 좌석은 관문 스캐너·차단 축에서 코퍼스가 없었다.
+///
+/// 셸 토큰으로 나눠(따옴표·역슬래시 처리) `env`(경로 포함) · env 의 `-u NAME`·`--unset NAME`·그 밖의 `-옵션` ·
+/// `NAME=값` 접두를 건너뛴 **첫 실행 파일의 basename** 이 `claude`(대소문자 무시 · 윈도 `.exe`·`.cmd` 허용)
+/// 인가. 순진한 「첫 낱말」 은 우리 스폰형 `env -u NODE_OPTIONS CLAUDE_CONFIG_DIR=… claude …` 를 놓친다.
+/// 오판 비용은 막는 쪽이다 — 봉투를 물려받아도 관문 식별은 claude 문면 needle ∧ 위젯 AND 라 claude 가
+/// 아닌 화면에서는 서지 않는다.
+pub fn cmd_launches_claude(cmd: &str) -> bool {
+    let toks = split_shell_words(cmd);
+    let mut it = toks.iter().map(String::as_str);
+    let mut in_env = false;
+    while let Some(t) = it.next() {
+        if exe_basename(t) == "env" && !in_env {
+            in_env = true;
+            continue;
+        }
+        if in_env && (t == "-u" || t == "--unset") {
+            it.next();
+            continue;
+        }
+        if in_env && t.starts_with('-') {
+            continue;
+        }
+        if is_env_assignment(t) {
+            continue;
+        }
+        return exe_basename(t) == "claude";
+    }
+    false
+}
+
+/// 실행 파일 토큰의 basename(소문자 · 윈도 `.exe`·`.cmd` 제거).
+fn exe_basename(tok: &str) -> String {
+    let base = tok
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(tok)
+        .to_ascii_lowercase();
+    match base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".cmd"))
+    {
+        Some(stem) => stem.to_string(),
+        None => base,
+    }
+}
+
+/// `NAME=값` 모양인가(NAME = `[A-Za-z_][A-Za-z0-9_]*`).
+fn is_env_assignment(tok: &str) -> bool {
+    let Some((name, _)) = tok.split_once('=') else {
+        return false;
+    };
+    let mut cs = name.chars();
+    cs.next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 최소 셸 단어 분리 — 공백 구분 · `'…'`·`"…"` 묶음. 역슬래시는 **문자 그대로**다 — 윈도 경로
+/// (`C:\\tools\\claude.exe`)를 이스케이프로 먹으면 basename 이 깨진다(판정에 필요한 것은 첫 실행 파일뿐).
+fn split_shell_words(s: &str) -> Vec<String> {
+    let (mut out, mut cur, mut has) = (Vec::new(), String::new(), false);
+    let mut cs = s.chars();
+    while let Some(c) = cs.next() {
+        match c {
+            '\'' => {
+                has = true;
+                for d in cs.by_ref() {
+                    if d == '\'' {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            '"' => {
+                has = true;
+                for d in cs.by_ref() {
+                    if d == '"' {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            // 역슬래시 + 공백 = 이스케이프된 공백(`/opt/my\\ tools/claude` · agy R16 #2). 그 밖의 역슬래시는
+            // 문자 그대로(윈도 경로).
+            '\\' if cs.clone().next().is_some_and(char::is_whitespace) => {
+                has = true;
+                cur.extend(cs.next());
+            }
+            c if c.is_whitespace() => {
+                if has {
+                    out.push(std::mem::take(&mut cur));
+                    has = false;
+                }
+            }
+            c => {
+                has = true;
+                cur.push(c);
+            }
+        }
+    }
+    if has {
+        out.push(cur);
+    }
+    out
+}
+
+/// 이 어댑터의 관문 봉투를 고른다 — **디스크 우선 · 없으면 임베드 같은 이름 · 그것도 없고 `cmd` 가 claude 를
+/// 띄우면 claude 임베드 봉투**(R16). 디스크에 키가 있으면(명시 `null` 포함) 디스크가 이긴다(사용자 주권 불변).
+/// 데몬(`gate_envelope`)과 CLI(`load_agent_spec` 계층)가 이 한 함수를 쓴다 — 두 경로가 갈리지 않게.
+pub fn envelope_for<'a>(disk: &'a Value, embed: &'a Value, agent: &str) -> Option<&'a Value> {
+    if let Some(v) = disk.get(agent).and_then(|a| a.get(ADAPTER_KEY)) {
+        return Some(v);
+    }
+    if let Some(v) = embed.get(agent).and_then(|a| a.get(ADAPTER_KEY)) {
+        return Some(v);
+    }
+    // 필드 단위 폴백 — 디스크 항목이 있어도 `cmd` 가 없으면 임베드 같은 이름의 `cmd`(agy R16 #3).
+    let cmd = disk
+        .get(agent)
+        .and_then(|a| a.get("cmd"))
+        .or_else(|| embed.get(agent).and_then(|a| a.get("cmd")))
+        .and_then(|c| c.as_str())?;
+    if cmd_launches_claude(cmd) {
+        embed.get(CLAUDE_ADAPTER).and_then(|a| a.get(ADAPTER_KEY))
+    } else {
+        None
+    }
+}
+
 /// 기계가 이 관문을 통과시킬 수 있는가.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Passability {
@@ -153,6 +290,10 @@ pub struct Gate {
     /// 확인 에코·버튼 라벨. **관문 존재의 근거가 아니다.** 어떤 needle 도 여기에 부분일치하면
     /// 안 된다(불변식 검체가 집행 — 2026-07-29 킬체인의 형태).
     pub confirm_echo: Vec<String>,
+    /// 화면에 보이는 **선택지 라벨**(`focus_plan` 이 선택지 행을 알아보는 재료 · 1.1.6). 관문 존재의 근거가
+    /// 아니다 — needle 이 여기에 부분일치하면 안 된다(`no_needle_is_contained_in_any_confirm_echo` 가 함께 잰다).
+    /// 비어 있으면 `action.label` 만 안다(포커스가 다른 행이면 `Hold` — fail-closed).
+    pub options: Vec<String>,
     pub passability: Passability,
     /// 실측 기본 포커스(1-based). Return 만 눌렀을 때 선택되는 항목.
     /// ★면책 창은 이 값이 `1`(=`No, exit`)이라서 Return 한 발이 좌석을 죽인다.
@@ -170,6 +311,72 @@ impl Gate {
     /// 이 관문의 **부재**가 비가역인가(킬체인 관문인가).
     pub fn absence_is_fatal(&self) -> bool {
         self.absence_cost == AbsenceCost::Fatal
+    }
+
+    /// ★(1.1.6 dbg-queue-approval) **화면에서** 목표 항목까지의 이동 계획 — 기본 포커스를 가정하지
+    /// 않고 지금 `❯` 가 걸린 행의 라벨을 읽는다.
+    ///
+    /// 왜: 폴더신뢰 창의 기본 포커스가 판마다 바뀐다 — 2.1.241 `❯ 1. Yes, I trust this folder`
+    /// (Yes 먼저) · 2.1.280 `❯ No, exit` 다음 `Yes, I trust this folder`(순서 뒤집힘·번호 없음 ·
+    /// 실측 2026-09-23). `default_index` 를 믿고 Return 을 보내면 새 판에서 `No, exit` 가 눌려
+    /// 좌석이 죽는다(07-29 킬체인과 같은 결과).
+    ///
+    /// 선택지 행 = 앞 공백·`❯`·`숫자.` 를 걷어낸 본문이 **알려진 라벨**(`action.label` ∪
+    /// `options`)로 시작하는 행. (종전 라벨 출처였던 `confirm_echo` 는 「통과 직후 남는 에코」 선언이라 의미가
+    /// 다르다 — 필드를 갈랐다 · Fable 1R 권고.) 다음 중 하나라도 어긋나면 `Hold`(아무 키도 보내지 않음):
+    /// 선택지 행이 화면에서 **연속**하지 않음(확인 에코 잔상·다른 창 섞임) · `❯` 행이 정확히 1개가
+    /// 아님 · 목표 라벨 행이 정확히 1개가 아님 · 목표가 포커스보다 위(아래키만 쓴다).
+    pub fn focus_plan(&self, screen: &str) -> FocusPlan {
+        const POINTER: &str = "❯";
+        let Some(action) = self.action.as_ref() else {
+            return FocusPlan::Hold;
+        };
+        let mut labels: Vec<&str> = self.options.iter().map(String::as_str).collect();
+        labels.push(action.label.as_str());
+        // 판독 범위 = 화면 **마지막 가로줄 아래**(창의 윗 테두리 아래 · 없으면 화면 전량). 창 위에 남은
+        // 셸 프롬프트(`❯ claude …` — starship·p10k)가 「낯선 포커스 행」 으로 읽혀 영구 보류되지 않게
+        // (Fable 1R). 확인 에코 잔상 → 면책 창은 사이에 가로줄이 있어 면책 창만 남는다(목표 0개 → 보류).
+        let lines: Vec<&str> = screen.lines().collect();
+        let from = lines
+            .iter()
+            .rposition(|l| {
+                let t = l.trim();
+                t.chars().count() >= 8 && t.chars().all(|c| c == '─')
+            })
+            .map_or(0, |r| r + 1);
+        // (행 번호, 포커스 여부, 목표 여부)
+        let mut opts: Vec<(usize, bool, bool)> = Vec::new();
+        for (i, line) in lines.iter().enumerate().skip(from) {
+            let mut rest = line.trim_start();
+            let focused = rest.starts_with(POINTER);
+            if focused {
+                rest = rest[POINTER.len()..].trim_start();
+            }
+            let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits > 0 && rest[digits..].starts_with('.') {
+                rest = rest[digits + 1..].trim_start();
+            }
+            // 선택지 행 인식은 접두 일치(확인 에코 `… ✔` 도 선택지 모양으로 잡아 연속성 검사에 넣는다),
+            // 목표 판정은 **완전 일치**(목표 라벨로 시작하는 다른 선택지를 목표로 오인하지 않는다 · agy B-1R ①).
+            if labels.iter().any(|l| rest.starts_with(l)) {
+                opts.push((i, focused, rest.trim_end() == action.label.as_str()));
+            } else if focused {
+                return FocusPlan::Hold; // 포커스가 알려진 선택지가 아닌 행에 있다
+            }
+        }
+        if opts.windows(2).any(|w| w[1].0 != w[0].0 + 1) {
+            return FocusPlan::Hold;
+        }
+        let focus: Vec<usize> = (0..opts.len()).filter(|&k| opts[k].1).collect();
+        let target: Vec<usize> = (0..opts.len()).filter(|&k| opts[k].2).collect();
+        let (&[f], &[t]) = (focus.as_slice(), target.as_slice()) else {
+            return FocusPlan::Hold;
+        };
+        match t.checked_sub(f).and_then(|d| u8::try_from(d).ok()) {
+            Some(0) => FocusPlan::AtTarget,
+            Some(n) => FocusPlan::Down(n),
+            None => FocusPlan::Hold,
+        }
     }
 
     /// 기본 포커스에서 목표 항목까지 필요한 **아래키 횟수**.
@@ -197,6 +404,17 @@ impl Gate {
     }
 }
 
+/// `Gate::focus_plan` 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPlan {
+    /// `❯` 가 이미 목표 라벨에 있다 — Return 이 목표를 누른다.
+    AtTarget,
+    /// 아래키 n 번 뒤 목표 — 누른 뒤 화면을 **다시 읽어** `AtTarget` 일 때만 Return.
+    Down(u8),
+    /// 판정 불가 — 아무 키도 보내지 않는다(fail-closed).
+    Hold,
+}
+
 /// 공백을 1칸으로 접는다(줄바꿈·들여쓰기 흡수).
 pub fn normalize(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -217,6 +435,8 @@ struct Def {
     needles: &'static [&'static str],
     widget: &'static [&'static str],
     confirm_echo: &'static [&'static str],
+    /// 선택지 라벨(`Gate::options`). 소비자(`focus_plan`)가 있는 관문만 선언한다.
+    options: &'static [&'static str],
     passability: Passability,
     default_index: Option<u8>,
     /// (select_index, label, literal)
@@ -254,6 +474,7 @@ const DEFS: &[Def] = &[
         widget: &["Auto (match terminal)", "Dark mode"],
         // 선택 직후 화면에 남는 체크 에코. 관문 근거가 아니다.
         confirm_echo: &["Dark mode ✔", "Light mode ✔", "Auto (match terminal) ✔"],
+        options: &[],
         passability: Passability::Machine,
         // 실측: `❯ 2. Dark mode ✔` 가 기본 포커스.
         default_index: Some(2),
@@ -275,6 +496,7 @@ const DEFS: &[Def] = &[
         needles: &["Select login method"],
         widget: &["Claude account with subscription", "Anthropic Console account"],
         confirm_echo: &[],
+        options: &[],
         // ★기계 통과 불가. Return 은 브라우저를 열고 ③으로 갈 뿐이다.
         passability: Passability::HumanOnly,
         default_index: Some(1),
@@ -306,6 +528,7 @@ const DEFS: &[Def] = &[
         ],
         widget: &["claude.com/cai/oauth/authorize"],
         confirm_echo: &[],
+        options: &[],
         passability: Passability::HumanOnly,
         default_index: None,
         action: None,
@@ -333,8 +556,12 @@ const DEFS: &[Def] = &[
         widget: &["Enter to confirm", "Esc to cancel"],
         // ★2026-07-29 킬체인의 실체: 이 에코가 구 needle `trustthisfolder` 에 재매칭됐다.
         confirm_echo: &["Yes, I trust this folder", "No, exit"],
+        // 실측 두 판: 2.1.241 `❯ 1. Yes, I trust this folder` / `2. No, exit` · 2.1.280 `❯ No, exit` /
+        // `Yes, I trust this folder`(순서 뒤집힘 · 번호 없음 · SCREENS.md 「신뢰 창」).
+        options: &["Yes, I trust this folder", "No, exit"],
         passability: Passability::Machine,
-        // 실측: 기본 포커스가 `Yes, I trust this folder` → Return 이 안전하다.
+        // 실측(2.1.241): 기본 포커스가 `Yes, I trust this folder`. ★2.1.280 은 `No, exit` 가 기본 포커스라
+        //   이 값은 판마다 다르다 — 자동확인은 이 값을 믿지 않고 화면 포커스를 읽는다(`Gate::focus_plan`).
         default_index: Some(1),
         action: Some((1, "Yes, I trust this folder", None)),
         human_reason: None,
@@ -353,6 +580,7 @@ const DEFS: &[Def] = &[
         ],
         widget: &["Enter to confirm", "Esc to cancel"],
         confirm_echo: &["Yes, I accept", "No, exit"],
+        options: &[],
         passability: Passability::Machine,
         // ★★실측: 기본 포커스가 `1. No, exit` 다 — **Return 한 발이 rc 1 로 좌석을 죽인다.**
         //   그래서 이 관문만은 "Return 이 안전한가"를 절대 추정하면 안 된다.
@@ -371,6 +599,7 @@ const DEFS: &[Def] = &[
         needles: &["Try the new fullscreen renderer?"],
         widget: &["Enter to confirm", "Esc to cancel"],
         confirm_echo: &["Yes, try it", "Not now"],
+        options: &[],
         passability: Passability::Machine,
         // 실측(Windows 실기): 기본 포커스가 `1. Yes, try it`.
         default_index: Some(1),
@@ -609,6 +838,7 @@ pub fn builtin() -> Vec<Gate> {
             needles: d.needles.iter().map(|s| s.to_string()).collect(),
             widget: d.widget.iter().map(|s| s.to_string()).collect(),
             confirm_echo: d.confirm_echo.iter().map(|s| s.to_string()).collect(),
+            options: d.options.iter().map(|s| s.to_string()).collect(),
             passability: d.passability,
             default_index: d.default_index,
             action: d.action.map(|(i, l, lit)| GateAction {
@@ -907,6 +1137,28 @@ fn enforce_self_rules(gates: Vec<Gate>, notes: &mut Vec<String>) -> Vec<Gate> {
 ///   그 화면에서 뒤집히는 귀결은 `보류 → 주입` 이지만 **그 화면에서는 주입이 애초에 옳다**
 ///   (정상 화면이다). 실측 관문 화면 위에서의 귀결은 한 톨도 바뀌지 않는다(검체가 전수 대조).
 fn repair_gate(mut g: Gate, canon: &[Gate], notes: &mut Vec<String>) -> Gate {
+    // ★(1.1.6 r2 · Fable 2R · master 결정) 빌트인 관문의 **통과 액션 라벨은 치환하지 않는다.** 폴더신뢰
+    //   자동확인(`Gate::focus_plan`)은 이 라벨이 걸린 행에 `❯` 가 있을 때만 Return 을 보낸다 — 라벨이 곧
+    //   조준점이다. 봉투 한 줄(`"action": {"label": "No, exit"}`)이 2.1.280 에서 그 Return 을 `No, exit` 에
+    //   겨누게 두면 좌석이 rc 1 로 죽는다. 부재의 비용(`absence_cost`)과 같은 비대칭: 액션 자체를 끄는
+    //   선언(null · human_only)은 막는 쪽이라 허용하고, 조준점을 옮기는 선언만 되돌린다. 사유는 notes.
+    //   merge(`apply_patch`)·replace(`parse_new_gate`) 두 경로가 모두 여기를 지난다(`enforce_self_rules`).
+    //   라벨만 되돌리면 `select_index`·`literal` 이 다른 항목을 가리키는 자기모순 액션이 남는다(Fable ①② 1R) —
+    //   액션이 정본과 **조금이라도** 다르면(라벨 같고 번호만 달라도 · Fable ①② 2R) 액션 전체를 정본으로 되돌린다.
+    let canon_action = canon
+        .iter()
+        .find(|b| b.id == g.id)
+        .and_then(|b| b.action.clone());
+    if let (Some(a), Some(want)) = (g.action.as_mut(), canon_action) {
+        if *a != want {
+            notes.push(format!(
+                "{}: 통과 액션 치환 선언({:?} · {}번째) 거부 — 라벨은 자동확인의 조준점이라 액션 전체를 \
+                 코드 정본({:?} · {}번째)으로 되돌린다(액션을 끄는 선언은 허용)",
+                g.id, a.label, a.select_index, want.label, want.select_index
+            ));
+            *a = want;
+        }
+    }
     if gate_rule_violations(&g).is_empty() {
         return g;
     }
@@ -1199,6 +1451,7 @@ fn parse_new_gate(v: &Value, default_measured: &str) -> Result<Gate, String> {
         needles,
         widget: str_vec(o.get("widget")).unwrap_or_default(),
         confirm_echo: str_vec(o.get("confirm_echo")).unwrap_or_default(),
+        options: str_vec(o.get("options")).unwrap_or_default(),
         passability,
         default_index: o
             .get("default_index")
@@ -1246,6 +1499,9 @@ fn apply_patch(
     }
     if let Some(e) = str_vec(d.get("confirm_echo")) {
         g.confirm_echo = e;
+    }
+    if let Some(o) = str_vec(d.get("options")) {
+        g.options = o;
     }
     if let Some(i) = d
         .get("default_index")
@@ -1350,6 +1606,25 @@ pub mod fixtures {
         Enter to confirm · Esc to cancel\n";
 
     /// ★킬체인 화면: 폴더신뢰를 통과한 **직후**. 확인 에코가 남아 있고 면책 창이 떠 있다.
+    /// ★claude 2.1.280 실측(2026-09-23 · 격리 HOME · vt100 재생 · 경로만 치환) — 기본 포커스가
+    /// `No, exit` 이고 순서가 뒤집혔으며 번호가 없다.
+    pub const FOLDER_TRUST_2_1_280: &str = "────────────────────────────────────────\n\
+        \x20Accessing workspace:\n\
+        \n\
+        \x20<cwd>\n\
+        \n\
+        \x20Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n\
+        \x20project, or work from your team). If not, take a moment to review what's in this folder first.\n\
+        \n\
+        \x20Claude Code'll be able to read, edit, and execute files here.\n\
+        \n\
+        \x20Security guide\n\
+        \n\
+        \x20❯ No, exit\n\
+        \x20  Yes, I trust this folder\n\
+        \n\
+        \x20Enter to confirm · Esc to cancel\n";
+
     pub const TRUST_ECHO_THEN_DISCLAIMER: &str = "Yes, I trust this folder ✔\n\
         ─────────────────────────────────────────\n\
         WARNING: Claude Code running in Bypass Permissions mode\n\
@@ -1602,7 +1877,10 @@ mod tests {
     #[test]
     fn no_needle_is_contained_in_any_confirm_echo() {
         let gs = builtin();
-        let echoes: Vec<String> = gs.iter().flat_map(|g| g.confirm_echo.clone()).collect();
+        let echoes: Vec<String> = gs
+            .iter()
+            .flat_map(|g| g.confirm_echo.iter().chain(&g.options).cloned())
+            .collect();
         for g in &gs {
             for n in &g.needles {
                 for e in &echoes {
@@ -1720,6 +1998,7 @@ mod tests {
             needles: needles.iter().map(|s| s.to_string()).collect(),
             widget: widget.iter().map(|s| s.to_string()).collect(),
             confirm_echo: vec![],
+            options: vec![],
             passability: Passability::Machine,
             default_index: Some(1),
             action: None,
@@ -2120,6 +2399,7 @@ mod tests {
             needles: vec!["Do you want to proceed?".to_string()],
             widget: vec!["Enter to confirm".to_string()],
             confirm_echo: vec![],
+            options: vec![],
             passability: Passability::Machine,
             default_index: Some(1),
             action: None,
@@ -2462,6 +2742,71 @@ mod tests {
         assert!(r.notes.iter().any(|n| n.contains("거부")), "거부가 조용하다");
     }
 
+    /// ★(1.1.6 r2) 빌트인 관문의 통과 액션 라벨(= 자동확인 조준점)은 봉투로 치환되지 않는다 —
+    /// merge·replace 두 경로 모두. 액션을 끄는 선언(null)은 막는 쪽이라 그대로 허용한다.
+    #[test]
+    fn override_cannot_retarget_a_builtin_action_label() {
+        let aim = json!({"select_index": 2, "label": "No, exit"});
+        // 라벨은 같고 번호만 다른 선언도 정본으로(자기모순 액션을 남기지 않는다 · Fable ①② 2R).
+        let same_label = json!({"gates": [{"id": "folder-trust",
+            "action": {"select_index": 2, "label": "Yes, I trust this folder"}}]});
+        let r = resolve_with(Some(&same_label), true);
+        assert_eq!(
+            r.gates
+                .iter()
+                .find(|g| g.id == "folder-trust")
+                .unwrap()
+                .action,
+            builtin()
+                .into_iter()
+                .find(|b| b.id == "folder-trust")
+                .unwrap()
+                .action
+        );
+        for env in [
+            json!({"gates": [{"id": "folder-trust", "action": aim}]}),
+            json!({"source": "replace", "gates": [{"id": "folder-trust",
+                "needles": ["Is this a project you created or one you trust"],
+                "widget": ["Enter to confirm", "Esc to cancel"],
+                "options": ["Yes, I trust this folder", "No, exit"], "action": aim}]}),
+        ] {
+            let r = resolve_with(Some(&env), true);
+            let g = r.gates.iter().find(|g| g.id == "folder-trust").unwrap();
+            assert_eq!(
+                g.action.as_ref().map(|a| a.label.as_str()),
+                Some("Yes, I trust this folder"),
+                "조준점이 봉투로 옮겨졌다: {env}"
+            );
+            // 라벨만이 아니라 액션 전체(select_index 포함)가 정본 — 자기모순 액션을 남기지 않는다.
+            assert_eq!(
+                g.action,
+                builtin()
+                    .into_iter()
+                    .find(|b| b.id == "folder-trust")
+                    .unwrap()
+                    .action
+            );
+            // 2.1.280 기본 포커스(No, exit) 화면에서 Return 이 아니라 아래키 계획이어야 한다.
+            assert_eq!(
+                g.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+                FocusPlan::Down(1)
+            );
+            assert!(
+                r.notes.iter().any(|n| n.contains("액션 치환")),
+                "거부가 조용하다: {env}"
+            );
+        }
+        // 액션을 끄는 선언은 허용(보류 쪽) — 라벨 거부가 액션을 되살리지 않는다.
+        let off = json!({"gates": [{"id": "folder-trust", "action": null}]});
+        let r = resolve_with(Some(&off), true);
+        let g = r.gates.iter().find(|g| g.id == "folder-trust").unwrap();
+        assert!(g.action.is_none());
+        assert_eq!(
+            g.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+            FocusPlan::Hold
+        );
+    }
+
     #[test]
     fn override_may_tighten_a_machine_gate_to_human_only() {
         let env = json!({"gates": [{"id": "theme", "passability": "human_only",
@@ -2688,5 +3033,199 @@ mod tests {
         let r = resolve_with(Some(env), true);
         assert_eq!(r.gates, builtin());
         assert_eq!(r.source, Source::Builtin);
+    }
+
+    /// ★(1.1.6 R16) claude 를 띄우는 cmd 판정 — 실제 디스크 선언형 · env 접두 3형 · 래퍼 경로 · 윈도 · 무상속 대조군.
+    #[test]
+    fn cmd_launches_claude_reads_first_executable_after_env_prefixes() {
+        for yes in [
+            // 이 기계 디스크 agents.json 실제 선언(claude · claude-fable · claude-sonnet)
+            "claude --model claude-opus-5-5 --dangerously-skip-permissions",
+            "claude --model claude-fable-5-1 --dangerously-skip-permissions",
+            "claude --model claude-sonnet-5 --dangerously-skip-permissions",
+            // env 접두 3형(우리 스폰형 포함)
+            "env -u NODE_OPTIONS CLAUDE_CONFIG_DIR=/opt/cys/claude-cfg claude --model m",
+            "CLAUDE_CONFIG_DIR=\"/a b/c\" FOO=1 claude",
+            "/usr/bin/env --unset NODE_OPTIONS -i X=1 claude",
+            // 래퍼 경로 · 틸드 · 윈도
+            "/x/y/claude --dangerously-skip-permissions",
+            "~/.local/bin/claude",
+            "C:\\tools\\cli\\claude.exe --model m",
+            "'/opt/my tools/claude' -p",
+            "/opt/my\\ tools/claude -p",
+        ] {
+            assert!(cmd_launches_claude(yes), "{yes}");
+        }
+        for no in [
+            "~/.npm-global/bin/codex --dangerously-bypass-approvals-and-sandbox",
+            "~/.local/bin/agy --dangerously-skip-permissions",
+            "grok",
+            "claude-wrapper --x",
+            "echo claude",
+            "env -u claude codex",
+            "",
+            "CLAUDE_CONFIG_DIR=/x",
+        ] {
+            assert!(!cmd_launches_claude(no), "{no:?}");
+        }
+    }
+
+    /// ★(1.1.6 R16) 봉투 선택 — 디스크 우선(null 포함) · 같은 이름 임베드 · claude 상속 · 비-claude 무상속.
+    #[test]
+    fn envelope_for_inherits_claude_envelope_only_for_claude_launching_adapters() {
+        let embed = json!({
+            "claude": {"cmd": "claude", ADAPTER_KEY: {"source": "builtin", "gates": [], "tag": "embed-claude"}},
+            "codex": {"cmd": "codex"}
+        });
+        let disk = json!({
+            "claude-fable": {"cmd": "claude --model claude-fable-5-1 --dangerously-skip-permissions"},
+            "claude-sonnet": {"cmd": "env -u NODE_OPTIONS X=1 claude --model claude-sonnet-5"},
+            "codex": {"cmd": "~/.npm-global/bin/codex"},
+            "my-tool": {"cmd": "mytool --x"},
+            "claude-off": {"cmd": "claude", ADAPTER_KEY: null},
+            "claude-own": {"cmd": "claude", ADAPTER_KEY: {"tag": "disk-own"}}
+        });
+        let tag = |a: &str| envelope_for(&disk, &embed, a).map(|v| v["tag"].clone());
+        assert_eq!(tag("claude-fable"), Some(json!("embed-claude")));
+        assert_eq!(tag("claude-sonnet"), Some(json!("embed-claude")));
+        assert_eq!(envelope_for(&disk, &embed, "codex"), None);
+        assert_eq!(envelope_for(&disk, &embed, "my-tool"), None);
+        assert_eq!(envelope_for(&disk, &embed, "no-such"), None);
+        // 디스크 명시 null = 의도적으로 비움 → 상속하지 않는다(사용자 주권).
+        assert_eq!(
+            envelope_for(&disk, &embed, "claude-off"),
+            Some(&Value::Null)
+        );
+        assert_eq!(tag("claude-own"), Some(json!("disk-own")));
+        assert_eq!(tag("claude"), Some(json!("embed-claude")));
+        // 디스크 항목에 cmd 가 없으면 임베드 같은 이름의 cmd 로 판정(필드 단위 폴백).
+        let embed2 = json!({
+            "claude": {"cmd": "claude", ADAPTER_KEY: {"tag": "embed-claude"}},
+            "vendor-claude-x": {"cmd": "claude --model x"}
+        });
+        let disk2 = json!({"vendor-claude-x": {"notes": "사용자 메모만"}});
+        assert_eq!(
+            envelope_for(&disk2, &embed2, "vendor-claude-x").map(|v| v["tag"].clone()),
+            Some(json!("embed-claude"))
+        );
+    }
+
+    /// ★(1.1.6 dbg-queue-approval) 폴더신뢰 이동 계획 — 기본 포커스 가정이 아니라 화면 라벨로 고른다.
+    /// 2.1.241(Yes 먼저)·2.1.280(No, exit 먼저 · 번호 없음) 두 판 모두에서 목표에만 Return 이 간다.
+    #[test]
+    fn folder_trust_focus_plan_reads_the_screen_not_the_default_index() {
+        let gates = builtin();
+        let g = gates
+            .iter()
+            .find(|g| g.id == "folder-trust")
+            .expect("folder-trust");
+        // 두 판 모두 폴더신뢰 관문으로 식별된다(감지 축은 그대로).
+        assert!(g.matches(fixtures::FOLDER_TRUST));
+        assert!(
+            g.matches(fixtures::FOLDER_TRUST_2_1_280),
+            "2.1.280 신뢰 창을 못 알아본다"
+        );
+        // 2.1.241: 기본 포커스가 목표.
+        assert_eq!(g.focus_plan(fixtures::FOLDER_TRUST), FocusPlan::AtTarget);
+        // 2.1.280: 기본 포커스가 No, exit — 아래키 1번 뒤 목표. (종전 가정 = Return 즉시 → No, exit)
+        assert_eq!(
+            g.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+            FocusPlan::Down(1)
+        );
+        // 아래키 뒤 화면(포커스가 Yes 로 옮겨짐) → 목표.
+        let moved = fixtures::FOLDER_TRUST_2_1_280
+            .replace(" ❯ No, exit", "   No, exit")
+            .replace("   Yes, I trust this folder", " ❯ Yes, I trust this folder");
+        assert_eq!(g.focus_plan(&moved), FocusPlan::AtTarget);
+        // 킬체인 화면(확인 에코 잔상 + 면책 창): 에코는 판독 범위(가로줄 아래) 밖이고 면책 창에는 목표
+        // 라벨이 없다(목표 0개) → 보류.
+        assert_eq!(
+            g.focus_plan(fixtures::TRUST_ECHO_THEN_DISCLAIMER),
+            FocusPlan::Hold
+        );
+        // 관문이 아닌 화면·포커스 없음·포커스 2개·목표가 위 → 보류.
+        assert_eq!(g.focus_plan(fixtures::READY_SHELL), FocusPlan::Hold);
+        assert_eq!(
+            g.focus_plan("   No, exit\n   Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        assert_eq!(
+            g.focus_plan(" ❯ No, exit\n ❯ Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        assert_eq!(
+            g.focus_plan("   Yes, I trust this folder\n ❯ No, exit\n"),
+            FocusPlan::Hold
+        );
+        // 선택지 행이 연속하지 않으면 보류 — 포커스 **아래**에 떨어진 에코·본문 속 라벨을 목표로 삼지 않는다.
+        assert_eq!(
+            g.focus_plan(" ❯ No, exit\n\n  some text\n Yes, I trust this folder ✔\n"),
+            FocusPlan::Hold
+        );
+        // 선택지 행 사이에 빈 줄이 끼면(연속성 붕괴) 목표·포커스가 각 1개여도 보류(r2 성찰 B — N3 킬).
+        assert_eq!(
+            g.focus_plan(" ❯ No, exit\n\n   Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        // 알려진 선택지 포커스가 1개여도 **모르는 행**에 `❯` 가 또 있으면 즉시 보류(r2 성찰 B).
+        assert_eq!(
+            g.focus_plan(" ❯ Other\n ❯ No, exit\n   Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        // 판독 범위는 **마지막** 가로줄 아래다 — 첫 가로줄이 아니다(r2 성찰 B: 그 사이 셸 줄은 범위 밖).
+        let two_rules = format!(
+            "{}\n❯ claude --model opus\n{}",
+            "─".repeat(40),
+            fixtures::FOLDER_TRUST_2_1_280
+        );
+        assert_eq!(g.focus_plan(&two_rules), FocusPlan::Down(1));
+        // 창 위에 `❯` 셸 프롬프트 줄이 남아 있어도(인라인 렌더) 판독 범위(가로줄 아래) 밖이다 → Down(1).
+        let with_shell = format!("❯ claude --model opus\n{}", fixtures::FOLDER_TRUST_2_1_280);
+        assert_eq!(g.focus_plan(&with_shell), FocusPlan::Down(1));
+        // 목표 라벨로 **시작만** 하는 다른 선택지는 목표가 아니다(완전 일치) → 목표 0개 → 보류.
+        assert_eq!(
+            g.focus_plan(" ❯ No, exit\n   Yes, I trust this folder and all parent folders\n"),
+            FocusPlan::Hold
+        );
+        // 포커스가 모르는 행에 있으면 보류(다른 선택창).
+        assert_eq!(
+            g.focus_plan(" ❯ 1. Yes\n   Yes, I trust this folder\n"),
+            FocusPlan::Hold
+        );
+        // ★라벨 출처는 `options` 다(에코 필드가 아니다): 에코를 비워도 계획은 같고, 선택지 라벨을 비우면
+        //   포커스가 모르는 행(`No, exit`)에 있게 되어 보류한다(아래키 0 · Return 0).
+        let mut no_echo = g.clone();
+        no_echo.confirm_echo.clear();
+        assert_eq!(
+            no_echo.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+            FocusPlan::Down(1)
+        );
+        let mut no_opts = g.clone();
+        no_opts.options.clear();
+        assert_eq!(
+            no_opts.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+            FocusPlan::Hold
+        );
+        // 봉투가 선택지 라벨을 덮으면 그 선언을 쓴다(선언 경로 = 새 관문 · 덮어쓰기 둘 다).
+        let env = serde_json::json!({"gates": [{"id": "folder-trust", "options": ["Nope"]}]});
+        let r = resolve_with(Some(&env), true);
+        let patched = r.gates.iter().find(|g| g.id == "folder-trust").unwrap();
+        assert_eq!(patched.options, vec!["Nope".to_string()]);
+        assert_eq!(
+            patched.focus_plan(fixtures::FOLDER_TRUST_2_1_280),
+            FocusPlan::Hold
+        );
+        let added = parse_new_gate(
+            &serde_json::json!({"id": "x", "needles": ["Pick one?"], "options": ["A", "B"]}),
+            MEASURED_ON,
+        )
+        .unwrap();
+        assert_eq!(added.options, vec!["A".to_string(), "B".to_string()]);
+        // 액션 없는 관문은 언제나 보류.
+        let login = gates
+            .iter()
+            .find(|g| g.action.is_none())
+            .expect("액션 없는 관문");
+        assert_eq!(login.focus_plan(fixtures::FOLDER_TRUST), FocusPlan::Hold);
     }
 }

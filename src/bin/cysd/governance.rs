@@ -6205,6 +6205,18 @@ fn deliver_queued(
 #[cfg(test)]
 pub(crate) static REAP_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// `CYS_PACK_DIR`(프로세스 전역 env)를 set/사용하는 **모든** cysd 테스트의 단일 락.
+/// ★X-7(2026-09-24 · TICKET=v116-rel · REAP_ENV_LOCK 격상과 같은 교리): 종전 이 변수를
+/// handlers::tests 는 `ACL_ENV_LOCK` 으로, governance::tests 큐 게이트 15건은 `QUEUE_ENV_LOCK`
+/// 으로 지켰다 — **같은 변수에 락이 두 개**라 서로를 직렬화하지 못했다. 병렬 러너에서 큐 테스트가
+/// ACL 테스트 도중 CYS_PACK_DIR 을 빈 팩(`cys-b1-pack-*`)으로 바꿔 acl.json 이 안 보이면
+/// 「거부돼야 할 전송이 허용」→ 그 패닉이 ACL_ENV_LOCK 을 독살 → PoisonError 연쇄 38~44건
+/// (탐침 실측: 실패한 ACL 테스트가 읽은 경로 = `…/cys-b1-pack-v113-alt-framed-…/acl.json`).
+/// 두 모듈은 이 한 락을 **별칭**으로 쓴다(사용처 무변경). 두 락을 함께 쥐는 테스트는 0건이라
+/// 병합으로 생기는 획득 순서(교착) 문제는 없다.
+#[cfg(test)]
+pub(crate) static PACK_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// env를 테스트 종료 시(패닉 포함) 이전 값으로 원복하는 가드 —
 /// 없던 값은 remove, 있던 값은 원복. 프로세스 전역 env 누수 차단.
 #[cfg(test)]
@@ -10078,7 +10090,9 @@ mod tests {
     }
 
     /// 큐 게이트 통합 테스트는 CYS_QUEUE_* env 를 만지므로 직렬화(REAP_ENV_LOCK 관례 동형).
-    static QUEUE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// ★X-7: 이 테스트들은 CYS_PACK_DIR 도 set 한다 → handlers ACL 테스트와 **같은 락**이어야 한다
+    /// (`PACK_DIR_ENV_LOCK` 머리 주석). 사설 static 을 별칭으로 바꿨다.
+    use super::PACK_DIR_ENV_LOCK as QUEUE_ENV_LOCK;
 
     /// CYS_QUEUE_* env 를 테스트 종료 시(패닉 포함) 이전 값으로 원복하는 가드 —
     /// 없던 값은 remove, 있던 값은 원복(ReapEnvGuard 관례 동형 · 프로세스 전역 env 누수 차단).

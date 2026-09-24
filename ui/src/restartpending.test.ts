@@ -37,6 +37,9 @@ describe("대기 판정 — 판번 짝으로 저절로 풀린다", () => {
   test("새 판으로 켜졌으면(지금 판번 == 대기 판번) 무효", () => {
     expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.6"), "1.1.7")).toBeNull();
   });
+  test("(agy 1R #4) 같은 프로세스인데 대기 판번 == 지금 판번 — 같은 판을 다시 설치한 경우 = 무효", () => {
+    expect(decodeRestartPending(encodeRestartPending("1.1.7", "1.1.7"), "1.1.7")).toBeNull();
+  });
   test("저장 때 판번과 지금 판번이 다르면(다른 프로세스) 무효 — 대기 판번과 무관하게", () => {
     expect(decodeRestartPending(encodeRestartPending("1.1.8", "1.1.6"), "1.1.7")).toBeNull();
   });

@@ -294,6 +294,10 @@ mod tests {
     #[test]
     #[ignore = "retry_line_survives_libtest_output_capture 가 재실행으로만 부른다"]
     fn probe_real_logger_retries_twice() {
+        // 부모 시험이 부를 때만 오류를 주입한다 — 사람이 `--ignored` 로 돌려도 가짜 재시도 줄 0(agy 3R #2).
+        if std::env::var("CYS_PTY_PROBE").as_deref() != Ok("1") {
+            return;
+        }
         let n = Cell::new(0);
         let (r, _) = retry_with("probe", &PTY_RETRY_BACKOFF, |_| {}, log_uncaptured, pty_census, || {
             n.set(n.get() + 1);
@@ -312,6 +316,7 @@ mod tests {
         let out = std::process::Command::new(exe)
             .args(["--exact", "pty_test_support::tests::probe_real_logger_retries_twice", "--ignored"])
             .env_remove("RUST_TEST_NOCAPTURE")
+            .env("CYS_PTY_PROBE", "1")
             .output()
             .expect("시험 바이너리 재실행");
         let err = String::from_utf8_lossy(&out.stderr);

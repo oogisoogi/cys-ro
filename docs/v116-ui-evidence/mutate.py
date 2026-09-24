@@ -1,5 +1,5 @@
 import subprocess, sys, os, json
-UI=os.environ.get('UI','/Users/oogisoogi/axdev/.wt/cys-v116-ui/ui')  # (v116-exited-banner) 다른 worktree 에서도 돌게 UI 재지정 허용
+UI='/Users/oogisoogi/axdev/.wt/cys-v116-ui/ui'
 env=dict(os.environ, PATH=os.path.expanduser('~/.bun/bin')+':'+os.environ['PATH'])
 M=[
  ('M1a','src/closeguard.ts','return exited !== true;','return exited === false;','src/closeguard.test.ts'),

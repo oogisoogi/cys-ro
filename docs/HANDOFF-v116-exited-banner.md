@@ -85,7 +85,7 @@
 - `bun test`(ui) = **1256 pass / 0 fail**(기점 1237 + 신규 19) · `tsc -p tsconfig.check.json` = error 7건(기존 7건 그대로 · 신규 파일 0).
 - 헤드리스 c1~c18 = **60/60 PASS**(c1~c16 기존 30건 이름·개수 `headless-final.txt` 와 같음 + c17 22(11상태 × 2폭) + c18 8) · `exited-banner/headless-final-c1-c18.txt`.
 - 기준선 대조: c17 적색 14(⒜⒝ b2 b3 b4 ⒠ ⒡ × 2폭 · 대조군 ⒞⒟ a0 b0 초록) · c18 적색 7/8(l 줄넘김 대기만 기준선도 초록) — `c17-baseline-3bc73856.txt` · `c18-boundary-base-3bc73856.txt`.
-- 뮤턴트 `mutate-exited.py --headless` = **16/16 KILLED**(단위 16/16 · 그중 11개는 헤드리스로도 적색) · 기존 T-UI 뮤턴트 `mutate.py`(UI=이 worktree) = 90 KILLED + M3b 생존(종전과 같음 — 헤드리스 c3 몫 · c3 초록).
+- 뮤턴트 `mutate-exited.py --headless` = **16/16 KILLED**(단위 16/16 · 그중 11개는 헤드리스로도 적색) · 기존 T-UI 뮤턴트 `mutate.py`(UI 경로를 이 worktree 로 임시 재지정해 실행 — 그 재지정 줄은 secret-scan 정리 때 원문으로 되돌림 · 1086 통합 치환과 겹치지 않게) = 90 KILLED + M3b 생존(종전과 같음 — 헤드리스 c3 몫 · c3 초록).
 - 헤드리스 크롬 잔존 0(매 회 `ps` 실측).
 
 ## §6 정밀 디버깅(경계 c18 · 수리본 8/8 · 기준선 1/8)
@@ -109,7 +109,7 @@
 - **agy 3R**(afba077c 차분만): **ACCEPT**(무결함 · 한 단어 답). 원문 `exited-banner/agy-3r.md`.
 - **opus 3R**(afba077c 차분만): **ACCEPT**(MAJOR·MINOR 0 · 새 NIT-5 + NIT-1 확장 = 미결 기록). 원문 `exited-banner/opus-adv-3r.md`.
 - **수렴**: 3R 에서 서로 다른 검증자 둘(agy · opus)이 모두 ACCEPT · MAJOR/MINOR 0 → 수렴(dry). 남은 것은 NIT 뿐 → §8 미결.
-- master 지시(master#c8b847af): 4R 없음 · 3R 새 지적은 고치지 않고 미결로 올림 · 검증자 순차 실행.
+- master 지시(09-24 12:26 원장 c8b847af): 4R 없음 · 3R 새 지적은 고치지 않고 미결로 올림 · 검증자 순차 실행.
 
 ## §8 기록만(고치지 않은 것 · 사유)
 - NIT-1 배경색만 칠한 빈 줄은 빈 줄로 본다 — 배너가 그 위에 앉으면 배경색이 남을 수 있음. 관측 사례 없음 · 판정에 속성까지 넣으면 복잡도가 커짐.
@@ -146,3 +146,6 @@
 7. 언어 원칙: 비적용 — ui/src 주석 관례 한국어.
 8. 개선 필요성 최종: 적용 — 브리프 밖에서 내가 덧붙인 판단 = 스크롤 영역 해제(`ESC[r`) 1건(헤드리스 ⒠ 로 실재 결함 확인 · 뮤턴트 E4·E5 로 필요성 측정). 3R NIT 는 고치지 않음(master 지시).
 9. 저장 후 구현: 적용 — 설계를 §3·§4 에 먼저 저장했고, 바뀐 것은 §5 규칙(최종)에 반영.
+
+## §13 정본 게이트(master 지시 09-24 12:56)
+- secret-scan `--all`: 기준 3bc73856 = 35건 · 이 브랜치 첫 측정 = 39건(새 4건 = 내 증거 `headless-final-c1-c18.txt` 의 흉내층 더미 홈 이름 「u」) → 허용 더미 「user」 로 치환(파일 첫 줄에 치환 사실 기재) · `mutate.py` 2행(기존 발견 줄)은 내가 고쳤던 것을 원문으로 되돌림 → **35건 · 기준과 줄 단위 동일**(diff 0). 기존 35건은 1086 통합 몫이라 무접촉.

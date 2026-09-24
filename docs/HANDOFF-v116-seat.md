@@ -9,7 +9,20 @@ master 판정(원장 대조 성립): `master#9a304fb3`(08:09:33 · F2·F3 = A + 
 
 ---
 
-## ★ §0 델타(최신) — 재개 2회차 매듭(2026-09-24 14:2x · master#bb37344b 예산 정지 · 15:20 뒤 재개)
+## ★ §0 델타(최신) — 재개 3회차(2026-09-24 16:3x · master#88e07f2d 판정 C 재개 · 검증 규칙 ①~⑦ 적용)
+
+**어디까지 했나(af0c9dcb..HEAD)**:
+- 판정 C(master#623fa6b9) — 【관측】 빨강 = 격리 cysd·스텁 좌석·1.1.5 식 WAL(옛 기동 줄 + 대조 보류 글): queue.rehomed → queue.delivered 2 · 스텁 stdin 에 `--continue` 옛 기동 줄 1(수정 전 6d5c9610). 앞선 prompt_unknown 은 내 스텁의 커서 위치 오류(ESC[4A → 3A)였다 · 제품 결함 아님. 단위 시험 적색 커밋 b050bf34 → 수리 ec724d2e(폐기 = deliver_head_locked 머리 1곳 · 임계영역 밖 · agent_launch 통과 지점 폐기 제거 · 사망 타이머 해제 유지) → 시험 aebf74fe·b062a16a. 【관측】 초록 = 같은 하네스에서 옛 줄 배달 0 · 대조 글 1 · queue.dropped(stale_launch_line · sha8).
+- agy 3R(hetero-agy-seat-3.md · REJECT 5): ①「claude is an AI」 산문 폐기 = **수용**(폐기 판정을 좁힘 = 실행 파일 뒤가 플래그이거나 끝 · is_stale_launch_line · 가드 판정 불변) ②폐기 뒤 새 머리를 옛 판정으로 배달(check-then-act) = **수용**(틱 경로는 폐기한 호출에서 배달 0 · 강제 배달은 조준 항목이 남아 있으면 배달) — 둘 다 적색 커밋 4886da90 → 수리 fa581645 → 진리표 ac20e9e3 ③O(N²) = 반박(큐 상한 100 · 모든 적재 경로) · 옛 줄 없으면 할당 없이 반환은 반영 ④메타 설정 전 배달 = 반박(set_meta 는 send_key 직후 <1초 · 배달은 출력 quiet ≥1초 + 프롬프트 경계 · 실패 시험 없음 = 기록) ⑤강제 배달 Raced 문구 = 기록(P3).
+- ⚠ agy 3R 이 읽기 전용 지시를 어기고 worktree 에 test_match.rs·test_part.rs(15:49·15:51)를 만들었다 → 스크래치로 옮김(삭제 안 함).
+- 규칙 ⑤: 구현 미열람 새 Opus 서브에이전트(jsonl model claude-opus-5-5 22건)가 명세 S1~S5 로 합격 시험 27건 → 27/27 · 반례 0 → a4a521ab 편입(자기 고지: 서명 확인 중 구현 3줄이 딸려 보임).
+- secret-scan --all 1건(내가 앞서 쓴 시험의 `/Users/a b/` 더미) → 50af34c3 에서 허용 더미로 · rc 0.
+- 뮤턴트: 판정 C 8/8(C6 영속 제거는 처음 생존 → 배달 0 경우 WAL 대조 추가 뒤 KILLED) · agy 3R 수리 6/6(K1~K6). 격리 재실측(최종 코드): 판정 C 초록 · 2-2 pane-caller node-recover rc 0 · alive True · 역할 유지.
+- 선재 곁 관측: cysd `deliver` 필터 **병렬** 실행 시 ACL 시험 3건 간헐 실패(수정 전 커밋에서도 3회 중 1회) · 직렬 초록.
+- ⑦ 반영: 하네스 pkill(이름 패턴) 제거 → 스텁이 기록한 자기 pid · 내가 띄운 데몬 pid 만.
+**다음 할 일**: 이 커밋 해시로 정본 게이트(gate_runner.py · 스냅샷 · 기준 526325bf 대비 compare_runs) + agy 4R → 9단계 성찰 2회차(reports/cysr-116-seat/reflection-9-code-2.md §5 채움) → 【확인요청】(범위 안 ①②③ 동봉).
+
+## ★ §0 델타(이력) — 재개 2회차 매듭(2026-09-24 14:2x · master#bb37344b 예산 정지 · 15:20 뒤 재개)
 
 **이 회차에 한 것(커밋 eac5ef5a..HEAD)**: 47ad0e80(기동 줄 통과 시 사망 타이머 해제 — Fable 2R P3 역할 회수 창) · d98d5c4b(시험 · 생존 뮤턴트 대비) · 6d5c9610(agy 2R P2/P3 판정 박제 = 둘 다 반박 · 거부 방향/래퍼는 메타도 래퍼) · 뮤턴트 J1~J4 4/4 KILLED.
 **진행 중이던 것 = master#623fa6b9 판정 C**(폐기 지점을 배달 직전 1곳 = governance.rs `deliver_head_locked` 머리로 옮기고 handlers.rs agent_launch 통과 지점 폐기 제거 · 사망 타이머 해제는 그 자리에 유지). 조건 ⑴재현 먼저 ⑵정상 배달 회귀 + 메타 없는 좌석 대조 + 뮤턴트(지점 제거 · 조건 반전) ⑶정본 게이트 전체 직렬(gate_runner.py · secret-scan · boot-health · cysd 직렬 · ENXIO 는 단독 재실행) ⑷범위 안 ①②③ 결과 함께 【확인요청】.

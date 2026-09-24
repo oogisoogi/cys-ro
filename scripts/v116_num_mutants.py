@@ -24,14 +24,20 @@ T_RPC = [CARGO, "test", "--bin", "cysd", "v116_num_rpc_tests"]
 T_RECALL = [CARGO, "test", "--bin", "cysd", "recall::tests::t10"]
 T_RECALL_SEED = [CARGO, "test", "--bin", "cysd", "recall::tests::max_surface_id"]
 T_LIB = [CARGO, "test", "--lib", "display_ref_grammar"]
+T_TITLE = [CARGO, "test", "--bin", "cysd", "panetitle::"]
+T_CLI = [CARGO, "test", "--bin", "cys", "v116_num_cli_tests"]
+PANETITLE = "src/bin/cysd/panetitle.rs"
+CYSRS = "src/bin/cys.rs"
+# M23 은 단위 시험으로 잴 수 없다(stderr 는 산 데몬이 있어야 나온다) — 뮤턴트 바이너리를 빌드해 E2E CLI 단계로 잰다.
+E2E_CLI = ["sh", "-c", CARGO + " build --bin cys --bin cysd -q && python3 scripts/v116_num_e2e.py --cli-only"]
 
 INS_OLD = """        match crate::recall::surface_numbers_insert(
             &self.socket_path,
             id,
-            grant.display_no,
+            spawn_guard.grant.display_no,
             now_epoch(),
         ) {"""
-INS_NEW = """        let ins_late = (id, grant.display_no, now_epoch());
+INS_NEW = """        let ins_late = (id, spawn_guard.grant.display_no, now_epoch());
         match Ok::<(), crate::recall::NumbersWriteErr>(()) {"""
 PTY_OLD = """            .map_err(|e| format!("openpty failed: {e}"))?;
 """
@@ -106,7 +112,7 @@ MUTANTS = [
     ("M13-surface.close가display_no를받음", HANDLERS,
      [('        "surface.close" => {', '        "surface.close" => {\n            let _dn = params.get("display_no");')], T_RPC),
     ("M14-다찼을때생성거부", STATE,
-     [("        let id = grant.id;\n", "        let id = grant.id;\n        if grant.display_no.is_none() {\n            return Err(\"display exhausted\".into());\n        }\n")],
+     [("        let id = spawn_guard.grant.id;\n", "        let id = spawn_guard.grant.id;\n        if spawn_guard.grant.display_no.is_none() {\n            return Err(\"display exhausted\".into());\n        }\n")],
      T_STATE),
     ("M20-prune이대응표삭제", RECALL,
      [("    *last_prune = Some(std::time::Instant::now());",
@@ -127,6 +133,26 @@ MUTANTS = [
                 self.numbers_alarm("write_io", Some(id), Some(&e));
                 return Err(e);
             }""")], T_STATE),
+    ("M11f-⑴실패때평문읽기포기(MED-1)", RECALL,
+     [("        Err(e) if existed => match Connection::open(&path) {",
+       "        Err(e) if existed && false => match Connection::open(&path) {")], T_STATE),
+    ("M15-제목에내부번호", HANDLERS,
+     [("                            s.display_no, // ★v116-num: 제목 번호 = 보이는 번호(내부 번호 아님)",
+       "                            Some(s.id as u16), // 뮤턴트")], T_RPC),
+    ("M15b-「—」를번호칸으로안봄", PANETITLE,
+     [("    seg == NO_NUMBER || (!seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))",
+       "    !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit())")], T_TITLE),
+    ("M18-없는번호를마지막주인으로풀어줌", HANDLERS,
+     [("                Err(last) => {\n                    let msg = match last {",
+       "                Err(Some((sid, _))) => Reply::Single(ok_response(&id, json!({\"surface_id\": sid}))),\n                Err(last) => {\n                    let msg = match last {")], T_RPC),
+    ("M19-#017허용", LIB,
+     [("        || digits.starts_with('0')\n", "")], T_LIB),
+    ("M22-기계출력줄에보이는번호", CYSRS,
+     [('            .map(|r| println!("{}", r["surface_ref"].as_str().unwrap_or("?")))',
+       '            .map(|r| println!("{}", r["display_no"]))')], T_CLI),
+    ("M23-stderr소켓줄제거", CYSRS,
+     [('        eprintln!("#{n} → surface:{sid} @{}", socket_label(r["socket"].as_str().unwrap_or("?")));',
+       '        let _ = socket_label(r["socket"].as_str().unwrap_or("?"));')], E2E_CLI),
     ("M26-번호정지제거", STATE,
      [("        if self.suspended {\n            return (None, None, None);\n        }",
        "        if self.suspended && false {\n            return (None, None, None);\n        }")], T_STATE),

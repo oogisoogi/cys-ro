@@ -1,0 +1,13 @@
+좌석 1051개 생성·1050개 닫기 738.1초
+PASS ⑴ 내부 1~999 좌석은 보이는 번호 = 내부 번호 — 좌석 999개 · 어긋남 []
+PASS ⑵ 1,000번째부터 「—」 — 좌석 52개 · 번호 있음 []
+PASS ⑵ exhausted 경보 정확히 1건 — exhausted 1 · 전체 경보 ['exhausted']
+PASS ⑶ 좌석 생성이 한 번도 막히지 않음 — 실패 0 · 성공 1050/1050
+PASS ⑷ 내부 번호 단조 증가 — 첫 [1, 2, 3] · 끝 [1049, 1050, 1051]
+PASS ⑸ 대조군 좌석 생존(산 좌석 닫힘 0) — 목록 1개 · 대조군 [{'ack_nonce_ok': False, 'ack_source': None, 'agent': None, 'agent_alive': None, 'alt_screen': False, 'awakened_at': None, 'boot_nonce_generation': None, 'claude_config_dir': '/tmp/v116hq.lfgo0i32/home/.cys/claude', 'cmd': 'sleep 3600', 'created_at': 1790213900.662825, 'cwd': '/tmp/v116hq.lfgo0i32/home', 'directive_verified': None, 'display_no': 1, 'env_injected': False, 'exited': False, 'gate_pending': None, 'line_count': 0, 'live_cwd': '/private/tmp/v116hq.lfgo0i32/home', 'pid': 50968, 'role': None, 'seat': 'occupied', 'surface_id': 1, 'surface_ref': 'surface:1', 'title': 'surface 1', 'usage': None}]
+PASS ⑸ #1 → 대조군 — {'_flen': 98, '_pv': 1, 'id': 1, 'ok': True, 'result': {'display_no': 1, 'socket': '/tmp/v116hq.lfgo0i32/cys.sock', 'surface_id': 1, 'surface_ref': 'surface:1'}}
+PASS ⑹ 부서 #1 → 부서 좌석(본부와 다른 좌석) — {'_flen': 100, '_pv': 1, 'id': 1, 'ok': True, 'result': {'display_no': 1, 'socket': '/tmp/v116dept.e2ppanml/cys.sock', 'surface_id': 1, 'surface_ref': 'surface:1'}}
+PASS ⑹ 부서는 본부 경보·다 참의 영향 0 — 부서 경보 []
+PASS ⑵ 데몬 로그 exhausted 1줄 — 1줄
+
+[exited with code 0]

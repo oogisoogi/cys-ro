@@ -1116,7 +1116,9 @@ pub struct DisplayAlloc {
 }
 
 impl DisplayAlloc {
-    pub fn new(holders: Vec<Option<Holder>>) -> Self {
+    pub fn new(mut holders: Vec<Option<Holder>>) -> Self {
+        // 길이 = 1000(0번 미사용) 고정 — 짧은 표가 락 안 인덱스 panic(→ poison)이 되지 않게(Fable code-1R LOW-4).
+        holders.resize(usize::from(cys::DISPLAY_NO_MAX) + 1, None);
         DisplayAlloc { holders, suspended: false, exhausted_alarmed: false }
     }
 
@@ -3307,10 +3309,11 @@ impl Daemon {
         let note = match kind {
             "exhausted" => "보이는 번호 1~999 가 모두 막힘 — 새 좌석은 「—」",
             "suspended" => "보이는 번호 정지 — 재기동까지(대응표 바깥 손상 의심)",
-            "write_io" | "pk_conflict" if surface_id.is_some() => {
+            // pk_conflict 는 「디스크 가득」 류 문구로 뭉개지 않는다(설계 §3-2 ⑤ · Fable code-1R LOW-1).
+            "pk_conflict" => "대응표 PK 충돌 — I0 위반(시드가 틀림) · 이 좌석은 남의 행을 덮지 않으려 닫힘 기록을 생략",
+            "write_io" if surface_id.is_some() => {
                 "대응표 쓰기 실패 — 이 좌석은 재기동 뒤 내부 번호 재사용 보호(I0)가 빠짐"
             }
-            "pk_conflict" => "대응표 PK 충돌 — I0 위반(시드가 틀림)",
             "seed_failed" => "대응표·트랜스크립트 시드 읽기 실패 — 내부 번호 재사용 위험(I0)",
             _ => "대응표 쓰기 실패",
         };
@@ -3332,7 +3335,7 @@ impl Daemon {
     /// ★v116-num: 내부 번호 받기 + 보이는 번호 정하기 — `display_alloc` 락 안에서 **메모리만**(설계 §3-2 ②).
     fn allocate_display(&self) -> DisplayGrant {
         let (id, display_no, prev, alarm) = {
-            let mut a = self.display_alloc.lock().unwrap();
+            let mut a = self.display_alloc.lock().unwrap_or_else(|p| p.into_inner());
             let id = self.next_id.fetch_add(1, Ordering::SeqCst);
             let (n, prev, alarm) = a.assign(id, now_epoch(), DISPLAY_REUSE_WINDOW_SECS);
             (id, n, prev, alarm)
@@ -3346,7 +3349,10 @@ impl Daemon {
     /// ★v116-num: 좌석 닫힘을 할당기·대응표에 반영(설계 §3-2 ③ 닫기 행) — surfaces 락을 푼 **뒤** 호출.
     pub fn note_surface_closed(&self, surface: &Surface) {
         let now = now_epoch();
-        self.display_alloc.lock().unwrap().release(surface.id, surface.display_no, now);
+        self.display_alloc
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .release(surface.id, surface.display_no, now);
         if surface.numbers_row_owned {
             if let Err(e) =
                 crate::recall::surface_numbers_close(&self.socket_path, surface.id, now, "close")
@@ -3368,7 +3374,7 @@ impl Daemon {
         {
             return Ok(Arc::clone(s));
         }
-        let a = self.display_alloc.lock().unwrap();
+        let a = self.display_alloc.lock().unwrap_or_else(|p| p.into_inner());
         Err(a.holders.get(n as usize).copied().flatten().map(|h| {
             (
                 h.surface_id,
@@ -3812,25 +3818,25 @@ impl Daemon {
         // ★v116-num: 내부 번호 + 보이는 번호(할당기 락 안 · 메모리만) → 대응표 행 INSERT(락 밖 · 동기 ·
         //   **PTY 를 열기 전** — 자식이 env 로 내부 번호를 받기 전에 기록이 있어야 X-10 이 닫힌다 · 설계 §3-2 ①②).
         //   쓰기가 실패해도 좌석은 만든다(4군 ③) — 경보만.
-        let mut grant = self.allocate_display();
-        let id = grant.id;
+        // 아래 `?` 반환(PTY 열기·spawn 실패)·panic 이면 번호를 이전 주인으로 되돌리고 행을 spawn_failed 로
+        // 닫는다 — guard 는 INSERT **전에** 세운다(INSERT 안의 panic 도 덮게 · Fable code-1R LOW-3).
+        let mut spawn_guard = DisplaySpawnGuard { daemon: self, grant: self.allocate_display() };
+        let id = spawn_guard.grant.id;
         match crate::recall::surface_numbers_insert(
             &self.socket_path,
             id,
-            grant.display_no,
+            spawn_guard.grant.display_no,
             now_epoch(),
         ) {
             Ok(()) => {}
             Err(crate::recall::NumbersWriteErr::PkConflict(e)) => {
-                grant.row_owned = false;
+                spawn_guard.grant.row_owned = false;
                 self.numbers_alarm("pk_conflict", Some(id), Some(&e));
             }
             Err(crate::recall::NumbersWriteErr::Io(e)) => {
                 self.numbers_alarm("write_io", Some(id), Some(&e));
             }
         }
-        // 아래 `?` 반환(PTY 열기·spawn 실패)이면 번호를 이전 주인으로 되돌리고 행을 spawn_failed 로 닫는다.
-        let mut spawn_guard = DisplaySpawnGuard { daemon: self, grant };
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -4154,6 +4160,9 @@ impl Daemon {
             // 락 순서는 surfaces→roles→surface.role (close_surface와 동일 — AB-BA 데드락 차단).
             let mut surfaces = self.surfaces.lock().unwrap();
             surfaces.insert(id, surface.clone());
+            // ★v116-num: 좌석이 맵에 들어갔다 — 이제부터 번호의 종료는 close_surface 가 맡는다(여기서 바로
+            //   해제해야 아래 roles 락 poison panic 이 「맵에는 있는데 번호는 되돌림」 구멍을 만들지 않는다).
+            spawn_guard.grant.armed = false;
             if let Some(r) = &role {
                 let mut roles = self.roles.lock().unwrap();
                 // worker면 충돌 없는 고유 역할명 배정(worker-N) — 복수 워커 todo 충돌 방지.
@@ -4174,8 +4183,6 @@ impl Daemon {
                 registered_role = Some(final_role);
             }
         }
-        // ★v116-num: 좌석이 맵에 들어갔다 — 이제부터 번호의 종료는 close_surface 가 맡는다.
-        spawn_guard.grant.armed = false;
         // (P0-2 · 세대 증가 ⓐ) surface 등록이 pid→sid 매핑을 바꿨다 — 이 순간 이전에 각인된
         // 발신자 캐시의 '음성' 판정은 낡았을 수 있으므로 세대를 올려 다음 히트에서 재해석을
         // 강제한다. surfaces/roles 임계 블록 **종료 직후의 무락 지점**(아래 tombstones 리프
@@ -8560,14 +8567,13 @@ mod v116_num_tests {
 
     fn iso_sock(tag: &str) -> PathBuf {
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "cys-v116num-{tag}-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-v116num-{tag}-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.join("cysd.sock")
+        // 소켓 **파일 이름**도 고유하게 — 윈도 state_dir 는 디렉터리가 아니라 파일 이름 슬러그만 본다
+        // (Fable code-1R MED-2: 모든 시험이 %LOCALAPPDATA%\cys\cysdsock 하나를 공유하던 결함).
+        dir.join(format!("v116num-{tag}-{}-{seq}.sock", std::process::id()))
     }
 
     fn db_of(sock: &std::path::Path) -> PathBuf {
@@ -9066,6 +9072,84 @@ mod v116_num_tests {
         close_all(&d);
     }
 
+    /// T2 ⑻ MED-1 — 1.1.5 형 DB(대응표 없음)가 **읽기 전용**인 업그레이드 첫 기동: ⑴(스키마)이 실패해도
+    /// 시드 = MAX(lines, chains)+1 을 지킨다(1.1.5 와 같음) · 경보 = write_io 1회(부팅 · surface_id 없음) ·
+    /// seed_failed 아님(없는 표는 빠진 번호가 아니다).
+    #[test]
+    fn t2_readonly_v115_db_keeps_seed_via_plain_read() {
+        let sock = iso_sock("t2rov115");
+        let path = db_of(&sock);
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE lines(id INTEGER PRIMARY KEY, ts REAL NOT NULL, surface_id INTEGER NOT NULL,
+                                    role TEXT, title TEXT, line TEXT NOT NULL);
+                 CREATE TABLE chains(surface_id INTEGER PRIMARY KEY, line_count INTEGER NOT NULL,
+                                     hash TEXT NOT NULL, anchor_count INTEGER NOT NULL DEFAULT 0,
+                                     anchor_hash TEXT NOT NULL DEFAULT '');
+                 INSERT INTO lines(ts, surface_id, line) VALUES (1.0, 70, 'x');
+                 INSERT INTO chains(surface_id, line_count, hash) VALUES (120, 1, 'h');",
+            )
+            .unwrap();
+        }
+        let mut perm = std::fs::metadata(&path).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&path, perm).unwrap();
+        if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+            eprintln!("[v116-num] 읽기 전용이 먹지 않는 환경 — 생략");
+            return;
+        }
+        let d = Daemon::new(sock);
+        assert_eq!(d.next_id.load(Ordering::SeqCst), 121, "읽기 전용 1.1.5 DB 의 시드를 버렸다");
+        let al = alarms(&d);
+        assert_eq!(count_kind(&al, "write_io", false), 1, "{al:?}");
+        assert_eq!(count_kind(&al, "seed_failed", false), 0, "{al:?}");
+        close_all(&d);
+    }
+
+    /// T2 ⑼ MED-1 — 대응표가 있는 **비-WAL** DB 가 읽기 전용(⑴ 의 PRAGMA journal_mode=WAL 이 실패):
+    /// 시드·holders 유지 · 부팅 write_io 는 종류별 1회로 합쳐진다(스키마 실패 + 고아 UPDATE 실패).
+    #[test]
+    fn t2_readonly_non_wal_db_keeps_snapshot() {
+        let sock = iso_sock("t2ronowal");
+        let _ = crate::recall::surface_numbers_boot(&sock, NOW);
+        {
+            let c = rusqlite::Connection::open(db_of(&sock)).unwrap();
+            c.execute(
+                "INSERT INTO surface_numbers VALUES (1500, 501, ?1, NULL, NULL, 'fixture')",
+                [NOW - 100.0],
+            )
+            .unwrap();
+            c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();
+        }
+        let path = db_of(&sock);
+        let mut perm = std::fs::metadata(&path).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&path, perm).unwrap();
+        if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+            eprintln!("[v116-num] 읽기 전용이 먹지 않는 환경 — 생략");
+            return;
+        }
+        let d = Daemon::new(sock);
+        assert_eq!(d.next_id.load(Ordering::SeqCst), 1501);
+        assert!(matches!(
+            d.display_alloc.lock().unwrap().holders[501],
+            Some(Holder { surface_id: 1500, state: HolderState::Closed(_) })
+        ));
+        let al = alarms(&d);
+        assert_eq!(count_kind(&al, "write_io", false), 1, "종류별 1회: {al:?}");
+        assert_eq!(count_kind(&al, "seed_failed", false), 0, "{al:?}");
+        close_all(&d);
+    }
+
+    /// LOW-4 — 짧은 holders 로 만들어도 길이 1000 으로 보정(락 안 인덱스 panic 차단).
+    #[test]
+    fn display_alloc_new_pads_holders() {
+        let mut a = DisplayAlloc::new(vec![None; 3]);
+        assert_eq!(a.holders.len(), 1000);
+        assert_eq!(a.assign(1998, NOW, W).0, Some(999));
+    }
+
     /// T2 ⑺ 바깥 손상(손으로 고친 행: 내부 3 이 보이는 7 을 듦 · 시드 3) — 좌석 7 에서 I1 보호 → 번호 정지 ·
     /// 경보 suspended 1회 · 이후 새 좌석 전부 「—」(M6 · M26 의 데몬 층).
     #[test]
@@ -9138,7 +9222,7 @@ mod v116_num_tests {
         let al = alarms(&d);
         assert_eq!(count_kind(&al, "write_io", true), 2, "{al:?}");
         assert_eq!(count_kind(&al, "seed_failed", false), 0);
-        assert!(!s1.numbers_row_owned || s1.numbers_row_owned, "row_owned 는 pk_conflict 만 false");
+        assert!(s1.numbers_row_owned, "write_io 는 row_owned 를 유지한다(pk_conflict 만 false)");
         close_surface(&d, s1.id, CloseCause::OwnerClose).unwrap();
         // 닫힘도 메모리에서는 반영된다(DB 는 못 씀)
         assert!(matches!(d.display_alloc.lock().unwrap().holders[1], Some(Holder { state: HolderState::Closed(_), .. })));

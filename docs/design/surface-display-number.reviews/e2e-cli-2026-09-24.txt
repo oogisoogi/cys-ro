@@ -1,0 +1,39 @@
+PASS T9 --surface=#1 → 해석 · stderr 소켓 줄 — rc=0 err=#1 → surface:1 @v116dept.6rokn6_r
+PASS T9 없는 #999 → 거부(다른 좌석으로 안 보냄) — rc=1 err=error: display_not_live: #999 인 좌석이 지금 없습니다. 다른 좌석으로 보내지 않습니다.
+PASS T9 문법 밖 #0 → 거부 — rc=1 err=error: invalid surface ref: #0 — 보이는 번호는 #1~#999 입니다
+PASS T9 셸 절단 `cys send hello --surface #17` → clap rc=2 — rc=2 err=error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+PASS T9 셸 절단 `cys send-key Return --surface #17` → clap rc=2 — rc=2 err=error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+PASS T9 셸 절단 `cys send --surface #17 hello` → clap rc=2 — rc=2 err=error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+PASS T9 셸 절단 `cys quiesce --surface #17 --off` → clap rc=2 — rc=2 err=error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+PASS T9 셸 절단 `cys set-status --surface #17 --state done` → clap rc=2 — rc=2 err=error: a value is required for '--surface <SURFACE>' but none was supplied
+
+For more information, try '--help'.
+PASS T9 셸 절단 close-surface #17 → 필수 인자 rc=2 — rc=2 err=error: the following required arguments were not provided:
+  <SURFACE>
+
+Usage: cys close-surface <SURFACE>
+
+For more inf
+PASS T9 셸 통과 --surface=#1 → 해석기 도달·전송 — rc=0 err=#1 → surface:1 @v116dept.6rokn6_r
+PASS T9 close-surface '#2' → 그 좌석만 닫힘 — rc=0 err=#2 → surface:2 @v116dept.6rokn6_r
+PASS T9 닫힌 #2 재지정 → 거부 · 산 좌석 수 불변 — rc=1 err=error: display_not_live: #2 인 좌석이 지금 없습니다(마지막 주인 surface:2 · 0초 전 닫힘). 다른 좌석으로 보내지 않습니다.
+PASS T14 cys list 4번 칸 = no=1 · 0~3·마지막 칸 불변 — [['surface:1', 'role=-', 'pid=22719', 'exited=false', 'no=1', 'surface 1', '/tmp/v116dept.6rokn6_r/home']]
+PASS identify caller_display_no = 1 — {
+  "caller": {
+    "surface_id": 1,
+    "surface_ref": "surface:1"
+  },
+  "caller_display_no": 1,
+  "daemon_pid": 19874,
+  "latest_seq": 8,
+  "socket_path": "/tmp/v116dept.6rokn6_r/cys.sock",
+  "star
+PASS T3c new-surface 마지막 줄 = surface:<내부 번호> — surface:3

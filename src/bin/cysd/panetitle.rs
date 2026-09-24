@@ -26,6 +26,21 @@ const MODEL_FAMILIES: [&str; 4] = ["Opus", "Sonnet", "Haiku", "Fable"];
 /// 구분자 — javis_panetitle.py가 쓰는 것과 같아야 한다(제목은 두 주인이 공유하는 문자열이다).
 const SEP: &str = " · ";
 
+/// ★v116-num: 보이는 번호가 없는 좌석(「—」 · 1~999 가 다 찼거나 번호 정지)의 번호 칸 글자.
+/// 앱(ui/src/panetitle.ts NO_DISPLAY_NO)과 같은 글자여야 한다.
+pub const NO_NUMBER: &str = "—";
+
+/// 번호 칸인가 — 숫자만이거나 「—」(v116-num · 번호 없음도 번호 칸이다: 안 그러면 「— · worker1」 이
+/// 사람 이름으로 오인돼 「50 · — · worker1」 처럼 번호가 쌓인다 — 설계 §9 T6 M15b).
+fn is_number_slot(seg: &str) -> bool {
+    seg == NO_NUMBER || (!seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// ★v116-num: 제목 번호 = **보이는 번호**(1~999 순환) · 없으면 「—」. 내부 번호(surface_id)는 제목에 쓰지 않는다.
+pub fn title_number(display_no: Option<u16>) -> String {
+    display_no.map(|n| n.to_string()).unwrap_or_else(|| NO_NUMBER.to_string())
+}
+
 /// statusline의 `model.display_name` → 제목 조각.
 ///
 /// 아는 계열이 없으면 None이다. ★모르는 모델에 이름을 붙여 주지 않는다 —
@@ -57,8 +72,8 @@ fn is_model_segment(seg: &str) -> bool {
 pub fn retitle_with_model(title: &str, model: Option<&str>) -> Option<String> {
     let parts: Vec<&str> = title.split(SEP).collect();
     let num = parts.first()?;
-    // 번호 규칙 안인지 — 첫 조각이 숫자만이어야 한다. 빈 제목·자동 제목은 여기서 걸러진다.
-    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+    // 번호 규칙 안인지 — 첫 조각이 번호 칸(숫자만 · v116-num 「—」)이어야 한다. 빈 제목·자동 제목은 여기서 걸러진다.
+    if !is_number_slot(num) {
         return None;
     }
     // 기존 모델 조각(있으면) 제거 — 두 번째 칸만 후보다. 뒤쪽 칸은 특성의 일부일 수 있다.
@@ -176,13 +191,12 @@ fn characteristic_inner(role: &str) -> String {
     tail.to_string() // worker-eduscan → eduscan · reviewer-gemini → gemini
 }
 
-/// 이미 「이 surface 의 번호」로 시작하는가 = 규칙 충족 = 무동작 대상.
+/// 이미 「이 좌석의 제목 번호」(v116-num: 보이는 번호 또는 「—」)로 시작하는가 = 규칙 충족 = 무동작 대상.
 /// (javis_panetitle.py is_conforming 과 같은 판정 — 번호 뒤는 공백이거나 끝이어야 한다.
 ///  숫자만 대조하면 87 이 874 를 통과시킨다.)
-fn starts_with_number(sid: u64, title: &str) -> bool {
+fn starts_with_number(num: &str, title: &str) -> bool {
     let t = title.trim_start();
-    let n = sid.to_string();
-    t.strip_prefix(n.as_str())
+    t.strip_prefix(num)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
 }
 
@@ -229,15 +243,13 @@ fn is_machine_title(title: &str, sid: u64, role: &str, agent: Option<&str>, cwd:
     })
 }
 
-/// 첫 조각이 **숫자만**인가 — 그렇다면 뒤따르는 나머지를 돌려준다(낡은 번호 판정).
+/// 첫 조각이 **번호 칸**(숫자만 · v116-num 「—」)인가 — 그렇다면 뒤따르는 나머지를 돌려준다(낡은 번호 판정).
 /// `None` = 번호로 시작하지 않는다. `Some("")` = 번호만 있고 뒤가 없다.
 fn stale_number_tail(title: &str) -> Option<&str> {
     let t = title.trim_start();
     match t.split_once(SEP) {
-        Some((head, tail)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => {
-            Some(tail)
-        }
-        None if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) => Some(""),
+        Some((head, tail)) if is_number_slot(head) => Some(tail),
+        None if is_number_slot(t) => Some(""),
         _ => None,
     }
 }
@@ -246,8 +258,12 @@ fn stale_number_tail(title: &str) -> Option<&str> {
 ///
 /// 모델 칸은 여기서 넣지 않는다 — create 시점에는 관측이 없기 때문이다(없는 값을 지어내지 않는다).
 /// 첫 statusline 턴에 `retitle_with_model` 이 「번호 · 모델 · 특성」으로 완성한다.
+///
+/// ★v116-num: 제목 번호 = `display_no`(보이는 번호 · None=「—」). `sid`(내부 번호)는 데몬 기본 제목
+/// 「surface {sid}」 를 알아보는 데만 쓴다(그 문자열은 내부 번호로 지어진다 — state.rs 좌석 생성).
 pub fn initial_title(
     sid: u64,
+    display_no: Option<u16>,
     role: Option<&str>,
     cwd: Option<&str>,
     requested: Option<&str>,
@@ -259,16 +275,17 @@ pub fn initial_title(
         // 지을 이름이 없으면 짓지 않는다(없는 값을 지어내지 않는다 — 모델 칸과 같은 원칙).
         return None;
     }
-    let canonical = format!("{sid}{SEP}{want}");
+    let num = title_number(display_no);
+    let canonical = format!("{num}{SEP}{want}");
     let machine = |t: &str| is_machine_title(t, sid, role, agent, cwd);
     match requested.map(str::trim).filter(|t| !t.is_empty()) {
         // ②이미 이 번호로 시작 = 멱등. 단 **번호 뒤가 기계 제목이면 단축**한다 — 1.1.0 이 지은
         // 「38 · Opus · master-claude · install-jarvis」가 번호를 갖고 있다는 이유로 영구히
         // 방치되면 이 티켓의 목적이 그 기기에서 달성되지 않는다(agy R1 문제점 3 수용).
         // 모델 칸은 있는 그대로 옮긴다(그 칸의 주인은 retitle_with_model 이다).
-        Some(t) if starts_with_number(sid, t) => match split_number_and_model(t) {
+        Some(t) if starts_with_number(&num, t) => match split_number_and_model(t) {
             Some((model, body)) if machine(body) => {
-                let next = join_title(sid, model, &want);
+                let next = join_title(&num, model, &want);
                 (next != t).then_some(next)
             }
             _ => None,
@@ -280,13 +297,13 @@ pub fn initial_title(
         // 뒤가 기계 제목이면 그때도 규칙대로 다시 짓는다(위 ②와 같은 이유).
         Some(t) if stale_number_tail(t).is_some() => match stale_number_tail(t) {
             Some(tail) if !tail.is_empty() => Some(match split_model_head(tail) {
-                (model, body) if machine(body) => join_title(sid, model, &want),
-                _ => format!("{sid}{SEP}{tail}"),
+                (model, body) if machine(body) => join_title(&num, model, &want),
+                _ => format!("{num}{SEP}{tail}"),
             }),
             _ => Some(canonical),
         },
         // ④사람이 지은 이름 = 지우지 않는다. 번호만 앞에 붙인다.
-        Some(t) => Some(format!("{sid}{SEP}{t}")),
+        Some(t) => Some(format!("{num}{SEP}{t}")),
         // 제목 미지정 = 규칙대로
         None => Some(canonical),
     }
@@ -306,11 +323,11 @@ fn split_model_head(rest: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// 「번호 · [모델 ·] 특성」 조립.
-fn join_title(sid: u64, model: Option<&str>, characteristic: &str) -> String {
+/// 「번호 · [모델 ·] 특성」 조립(번호 = 제목 번호 · v116-num).
+fn join_title(num: &str, model: Option<&str>, characteristic: &str) -> String {
     match model {
-        Some(m) => format!("{sid}{SEP}{m}{SEP}{characteristic}"),
-        None => format!("{sid}{SEP}{characteristic}"),
+        Some(m) => format!("{num}{SEP}{m}{SEP}{characteristic}"),
+        None => format!("{num}{SEP}{characteristic}"),
     }
 }
 
@@ -441,7 +458,7 @@ mod tests {
         assert_eq!(characteristic("worker-eduscan"), "eduscan");
         // 지을 이름이 하나도 안 남으면 빈 문자열 — initial_title 이 그때 무접촉으로 간다.
         assert_eq!(characteristic("·"), "");
-        assert_eq!(initial_title(5, Some("·"), Some("/Users/x/y"), Some("surface 5"), None), None);
+        assert_eq!(initial_title(5, Some(5), Some("·"), Some("/Users/x/y"), Some("surface 5"), None), None);
     }
 
     const CLAUDE: Option<&str> = Some("claude");
@@ -455,35 +472,35 @@ mod tests {
         // ★오너가 참가자 기기에서 실제로 본 제목(2026-09-21 08:15 윈 캡처) = 이 입력이다.
         //   agent 가 None 인 것이 그 기기의 실상이다(launch-agent 페이로드에 agent 키 없음).
         assert_eq!(
-            initial_title(38, Some("master"), JARVIS, Some("master-claude · install-jarvis"), None)
+            initial_title(38, Some(38), Some("master"), JARVIS, Some("master-claude · install-jarvis"), None)
                 .as_deref(),
             Some("38 · master")
         );
         assert_eq!(
-            initial_title(36, Some("cso"), JARVIS, Some("cso-claude · install-jarvis"), None)
+            initial_title(36, Some(36), Some("cso"), JARVIS, Some("cso-claude · install-jarvis"), None)
                 .as_deref(),
             Some("36 · cso")
         );
         assert_eq!(
-            initial_title(37, Some("worker"), JARVIS, Some("worker-claude · install-jarvis"), None)
+            initial_title(37, Some(37), Some("worker"), JARVIS, Some("worker-claude · install-jarvis"), None)
                 .as_deref(),
             Some("37 · worker1")
         );
         // agent 를 아는 경로(정확 대조)도 같은 답을 낸다.
         assert_eq!(
-            initial_title(41, Some("worker-eduscan"), Some("/Users/x/axdev/eduscan"),
+            initial_title(41, Some(41), Some("worker-eduscan"), Some("/Users/x/axdev/eduscan"),
                           Some("worker-eduscan-claude · eduscan"), CLAUDE).as_deref(),
             Some("41 · eduscan")
         );
         // ★1.1.0 결함의 직접 강제발화 — cwd 로 **특성을 짓는** 구현이었다면 폴더명이 여기 남는다.
         assert_eq!(
-            initial_title(73, Some("worker"), Some("/Users/x/cys-terminal-src"),
+            initial_title(73, Some(73), Some("worker"), Some("/Users/x/cys-terminal-src"),
                           Some("worker-claude · cys-terminal-src"), CLAUDE).as_deref(),
             Some("73 · worker1")
         );
         // 폴더를 알 수 없어 role-agent 만 있는 판본(workflow_title 의 폴백)
         assert_eq!(
-            initial_title(12, Some("worker-2"), Some("/"), Some("worker-2-claude"), CLAUDE).as_deref(),
+            initial_title(12, Some(12), Some("worker-2"), Some("/"), Some("worker-2-claude"), CLAUDE).as_deref(),
             Some("12 · worker2")
         );
     }
@@ -493,19 +510,19 @@ mod tests {
         // ★1.1.0 이 지은 네 칸 제목은 **번호를 갖고 있다** — 그 이유로 영구 방치되면 이 티켓의
         //   목적이 그 기기에서 달성되지 않는다(agy R1 문제점 3 수용). 모델 칸은 그대로 옮긴다.
         assert_eq!(
-            initial_title(38, Some("master"), JARVIS,
+            initial_title(38, Some(38), Some("master"), JARVIS,
                           Some("38 · Opus · master-claude · install-jarvis"), None).as_deref(),
             Some("38 · Opus · master")
         );
         // 모델 칸이 없던 판본도 같은 자리에서 단축된다.
         assert_eq!(
-            initial_title(37, Some("worker"), JARVIS,
+            initial_title(37, Some(37), Some("worker"), JARVIS,
                           Some("37 · worker-claude · install-jarvis"), None).as_deref(),
             Some("37 · worker1")
         );
         // 낡은 번호 + 기계 꼬리도 규칙대로 다시 짓는다(번호는 내 것으로).
         assert_eq!(
-            initial_title(60, Some("worker"), JARVIS,
+            initial_title(60, Some(60), Some("worker"), JARVIS,
                           Some("285 · Opus · worker-claude · install-jarvis"), None).as_deref(),
             Some("60 · Opus · worker1")
         );
@@ -515,7 +532,7 @@ mod tests {
     fn v111_must_change_daemon_default_title() {
         // 데몬 기본값 `surface {id}` — GUI·수동 생성 좌석이 여기 해당한다.
         assert_eq!(
-            initial_title(874, Some("worker-5"), Some("/Users/x/axdev/.wt/cys-seat-folders"),
+            initial_title(874, Some(874), Some("worker-5"), Some("/Users/x/axdev/.wt/cys-seat-folders"),
                           Some("surface 874"), CLAUDE).as_deref(),
             Some("874 · worker5")
         );
@@ -524,11 +541,11 @@ mod tests {
     #[test]
     fn v111_must_change_no_title_requested() {
         assert_eq!(
-            initial_title(44, Some("master"), JARVIS, None, None).as_deref(),
+            initial_title(44, Some(44), Some("master"), JARVIS, None, None).as_deref(),
             Some("44 · master")
         );
         assert_eq!(
-            initial_title(45, Some("reviewer-codex"), JARVIS, None, Some("codex")).as_deref(),
+            initial_title(45, Some(45), Some("reviewer-codex"), JARVIS, None, Some("codex")).as_deref(),
             Some("45 · codex")
         );
     }
@@ -537,19 +554,19 @@ mod tests {
     fn v111_must_change_stale_number_is_swapped_not_stacked() {
         // 다른 좌석의 번호를 물고 온 제목 — 번호 칸만 갈린다(번호가 쌓이면 안 된다).
         assert_eq!(
-            initial_title(60, Some("worker-2"), Some("/Users/x/research"), Some("285 · research"),
+            initial_title(60, Some(60), Some("worker-2"), Some("/Users/x/research"), Some("285 · research"),
                           CLAUDE).as_deref(),
             Some("60 · research")
         );
         // 모델 칸이 이미 붙어 있던 제목도 조각 구조가 보존된다.
         assert_eq!(
-            initial_title(61, Some("worker"), Some("/Users/x/research"),
+            initial_title(61, Some(61), Some("worker"), Some("/Users/x/research"),
                           Some("285 · Opus · research"), CLAUDE).as_deref(),
             Some("61 · Opus · research")
         );
         // 번호만 있고 뒤가 없으면 규칙대로 다시 짓는다.
         assert_eq!(
-            initial_title(62, Some("worker"), Some("/Users/x/research"), Some("285"), CLAUDE)
+            initial_title(62, Some(62), Some("worker"), Some("/Users/x/research"), Some("285"), CLAUDE)
                 .as_deref(),
             Some("62 · worker1")
         );
@@ -558,26 +575,26 @@ mod tests {
     #[test]
     fn v111_must_not_change_roleless_surface() {
         // ①역할 없는 GUI 셸 — UI 가 live_cwd 를 실시간 표시한다. 제목을 박으면 그 추적이 죽는다.
-        assert_eq!(initial_title(7, None, Some("/Users/x/anywhere"), Some("surface 7"), None), None);
-        assert_eq!(initial_title(8, Some(""), Some("/Users/x/anywhere"), Some("surface 8"), None), None);
-        assert_eq!(initial_title(9, Some("   "), Some("/Users/x/anywhere"), None, None), None);
+        assert_eq!(initial_title(7, Some(7), None, Some("/Users/x/anywhere"), Some("surface 7"), None), None);
+        assert_eq!(initial_title(8, Some(8), Some(""), Some("/Users/x/anywhere"), Some("surface 8"), None), None);
+        assert_eq!(initial_title(9, Some(9), Some("   "), Some("/Users/x/anywhere"), None, None), None);
     }
 
     #[test]
     fn v111_must_not_change_already_numbered() {
         // ②멱등 — 우리 기기 javis_panetitle.py 가 먼저 붙인 제목(cwd 규칙)과 충돌 0.
         assert_eq!(
-            initial_title(874, Some("worker-5"), Some("/Users/x/axdev/.wt/cys-seat-folders"),
+            initial_title(874, Some(874), Some("worker-5"), Some("/Users/x/axdev/.wt/cys-seat-folders"),
                           Some("874 · Opus · cys-seat-folders"), CLAUDE),
             None
         );
         assert_eq!(
-            initial_title(11, Some("worker"), Some("/Users/x/y"), Some("11"), CLAUDE),
+            initial_title(11, Some(11), Some("worker"), Some("/Users/x/y"), Some("11"), CLAUDE),
             None
         );
         // 규칙이 이미 완성된 제목도 그대로다(두 주인이 서로를 지우지 않는다).
         assert_eq!(
-            initial_title(38, Some("master"), JARVIS, Some("38 · Opus · master"), CLAUDE),
+            initial_title(38, Some(38), Some("master"), JARVIS, Some("38 · Opus · master"), CLAUDE),
             None
         );
     }
@@ -586,29 +603,29 @@ mod tests {
     fn v111_must_not_change_user_named_title_keeps_its_words() {
         // ④사람이 지은 이름 — 이미 번호가 있으면 통째로 보존.
         assert_eq!(
-            initial_title(297, Some("worker"), Some("/Users/x/cys-terminal-src"),
+            initial_title(297, Some(297), Some("worker"), Some("/Users/x/cys-terminal-src"),
                           Some("297 박사님 지시 대기창"), CLAUDE),
             None
         );
         // 번호가 없으면 **지우지 않고 번호만 앞에 붙인다**(지우는 구현이었다면 여기서 빨개진다).
         assert_eq!(
-            initial_title(60, Some("worker"), Some("/Users/x/research"), Some("내 작업창"), CLAUDE)
+            initial_title(60, Some(60), Some("worker"), Some("/Users/x/research"), Some("내 작업창"), CLAUDE)
                 .as_deref(),
             Some("60 · 내 작업창")
         );
         // ★생산자 출력 **정확 재구성**의 존재 이유(agy R1 문제점 1) — 접두 휴리스틱이었다면
         //   이 사람 이름이 「60 · worker1」로 지워지고 「회의록」이 사라진다.
         assert_eq!(
-            initial_title(60, Some("worker"), JARVIS, Some("worker-claude · 회의록"), None).as_deref(),
+            initial_title(60, Some(60), Some("worker"), JARVIS, Some("worker-claude · 회의록"), None).as_deref(),
             Some("60 · worker-claude · 회의록")
         );
         assert_eq!(
-            initial_title(60, Some("worker"), JARVIS, Some("worker-메모"), None).as_deref(),
+            initial_title(60, Some(60), Some("worker"), JARVIS, Some("worker-메모"), None).as_deref(),
             Some("60 · worker-메모")
         );
         // 번호가 이미 있는 사람 이름도 단축 대상이 아니다(번호 뒤가 기계 제목이 아니다).
         assert_eq!(
-            initial_title(60, Some("worker"), JARVIS, Some("60 · worker-claude · 회의록"), None),
+            initial_title(60, Some(60), Some("worker"), JARVIS, Some("60 · worker-claude · 회의록"), None),
             None
         );
     }
@@ -618,18 +635,18 @@ mod tests {
         // ★비대칭을 둘 다 잰다. 접두 일치로 완화한 구현은 **이 방향에서만** 빨개진다:
         //   sid=87 이 「874 · …」를 「이미 내 번호로 시작한다」고 읽어 남의 번호를 그대로 둔다.
         assert_eq!(
-            initial_title(87, Some("worker"), Some("/Users/x/research"), Some("874 · research"),
+            initial_title(87, Some(87), Some("worker"), Some("/Users/x/research"), Some("874 · research"),
                           CLAUDE).as_deref(),
             Some("87 · research")
         );
         assert_eq!(
-            initial_title(874, Some("worker"), Some("/Users/x/research"), Some("87 · research"),
+            initial_title(874, Some(874), Some("worker"), Some("/Users/x/research"), Some("87 · research"),
                           CLAUDE).as_deref(),
             Some("874 · research")
         );
         // 경계가 공백이면 내 번호다 — 무접촉.
         assert_eq!(
-            initial_title(87, Some("worker"), Some("/Users/x/research"), Some("87 · research"), CLAUDE),
+            initial_title(87, Some(87), Some("worker"), Some("/Users/x/research"), Some("87 · research"), CLAUDE),
             None
         );
     }
@@ -638,7 +655,7 @@ mod tests {
     fn v111_hands_off_to_the_model_owner() {
         // create 시점에는 모델 관측이 없다 — 번호·특성만 세우고, 첫 statusline 턴에 모델 칸이 붙는다.
         let created =
-            initial_title(38, Some("master"), JARVIS, Some("master-claude · install-jarvis"), None)
+            initial_title(38, Some(38), Some("master"), JARVIS, Some("master-claude · install-jarvis"), None)
                 .unwrap();
         assert_eq!(created, "38 · master");
         assert_eq!(
@@ -647,8 +664,60 @@ mod tests {
         );
         // 그리고 그 결과는 다시 무접촉이다(두 주인이 서로를 지우지 않는다).
         assert_eq!(
-            initial_title(38, Some("master"), JARVIS, Some("38 · Opus · master"), CLAUDE),
+            initial_title(38, Some(38), Some("master"), JARVIS, Some("38 · Opus · master"), CLAUDE),
             None
         );
+    }
+
+    // ── ★v116-num T6 — 제목 번호 = 보이는 번호(display_no) · 없으면 「—」 ──
+    // M15(initial_title 에 내부 번호를 넘김) · M15b(「—」 를 번호 칸으로 안 봄)가 여기서 적색.
+
+    #[test]
+    fn v116_title_uses_display_number_not_internal() {
+        assert_eq!(
+            initial_title(1049, Some(50), Some("worker"), JARVIS, None, None).as_deref(),
+            Some("50 · worker1")
+        );
+        // 데몬 기본 제목 「surface {sid}」 는 내부 번호로 지어진다 — 그래도 기계 제목으로 알아본다
+        assert_eq!(
+            initial_title(1049, Some(50), Some("master"), JARVIS, Some("surface 1049"), None).as_deref(),
+            Some("50 · master")
+        );
+        // 이미 보이는 번호로 시작 = 멱등
+        assert_eq!(initial_title(1049, Some(50), Some("worker"), JARVIS, Some("50 · worker1"), None), None);
+        // 내부 번호로 시작하는 옛 제목 = 낡은 번호 → 보이는 번호로 교체
+        assert_eq!(
+            initial_title(1049, Some(50), Some("worker"), JARVIS, Some("1049 · research"), None).as_deref(),
+            Some("50 · research")
+        );
+    }
+
+    #[test]
+    fn v116_no_display_number_is_dash_slot() {
+        assert_eq!(title_number(None), "—");
+        assert_eq!(title_number(Some(7)), "7");
+        assert_eq!(
+            initial_title(1500, None, Some("worker-2"), JARVIS, None, None).as_deref(),
+            Some("— · worker2")
+        );
+        // 「—」 로 시작하는 제목은 번호 칸이 있는 제목이다 — 번호가 쌓이지 않는다(M15b)
+        assert_eq!(initial_title(1500, None, Some("worker-2"), JARVIS, Some("— · worker2"), None), None);
+        assert_eq!(
+            initial_title(1049, Some(50), Some("worker"), JARVIS, Some("— · worker1"), None).as_deref(),
+            Some("50 · worker1")
+        );
+        assert_eq!(
+            initial_title(1500, None, Some("worker"), JARVIS, Some("50 · 내 창"), None).as_deref(),
+            Some("— · 내 창")
+        );
+        assert_eq!(stale_number_tail("— · x"), Some("x"));
+        assert_eq!(stale_number_tail("—"), Some(""));
+        assert_eq!(stale_number_tail("-- · x"), None);
+        // 모델 칸도 「—」 제목에 들어간다
+        assert_eq!(
+            retitle_with_model("— · worker2", Some("Claude Opus 5.5")).as_deref(),
+            Some("— · Opus · worker2")
+        );
+        assert_eq!(retitle_with_model("— · Opus · worker2", Some("claude-opus")), None);
     }
 }

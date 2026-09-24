@@ -419,22 +419,28 @@ pub struct NumbersBoot {
 /// 새 설치 때 lines·chains 갈래가 「no such table」 로 실패해 거짓 경보) → ⑵ 읽기 스냅샷 하나에서
 /// 표마다 따로 Ok/Failed(한 갈래 실패가 나머지를 0 으로 만들지 않는다) → ⑶ 고아 행 UPDATE 는
 /// 스냅샷 **뒤 · 별도 · 최선 노력**(실패해도 ⑵의 시드·holders 를 버리지 않는다 = 메모리가 원본).
+/// ★⑴ 이 실패해도 파일이 있었으면 **평문 연결로 ⑵ 를 그대로 읽는다**(Fable code-1R MED-1 — 설계 문장
+/// 「⑴ 실패 → 시드 0」 의 결함): 읽기는 되고 쓰기만 막힌 DB(읽기 전용·가득 참·비-WAL)에서 1.1.5 의
+/// max_surface_id 는 시드를 지켰다 — 스키마를 못 세웠다는 이유로 그 시드까지 버리면 I0 퇴행이다.
+/// 경보는 종류별 1회로 합친다(같은 종류가 두 번 나면 사유를 한 줄에 잇는다).
 pub fn surface_numbers_boot(socket_path: &std::path::Path, boot_now: f64) -> NumbersBoot {
     let path = state_dir(socket_path).join("transcripts.db");
     let mut alarms: Vec<(&'static str, String)> = Vec::new();
     // ⓪
     let existed = path.exists();
     // ⑴
-    let conn = match open_db(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            if existed {
-                // 있던 DB 를 못 연다 = 시드가 조용히 0 이 되는 길(I0 파괴) — 드러낸다.
-                alarms.push(("seed_failed", format!("open {}: {e}", path.display())));
-            } else {
-                // 새 설치 — 시드 0 이 맞다. 이후 좌석 쓰기가 실패하면 그때 write_io 가 따로 남는다.
-                eprintln!("[cysd] surface_numbers: 새 DB 생성 실패 {}: {e}", path.display());
+    let (conn, schema_err) = match open_db(&path) {
+        Ok(c) => (c, None),
+        Err(e) if existed => match Connection::open(&path) {
+            Ok(c) => (c, Some(e.to_string())),
+            Err(e2) => {
+                push_alarm(&mut alarms, "seed_failed", format!("open {}: {e}; {e2}", path.display()));
+                return NumbersBoot { seed: 0, rows: Vec::new(), alarms };
             }
+        },
+        Err(e) => {
+            // 새 설치 — 시드 0 이 맞다. 이후 좌석 쓰기가 실패하면 그때 write_io 가 따로 남는다.
+            eprintln!("[cysd] surface_numbers: 새 DB 생성 실패 {}: {e}", path.display());
             return NumbersBoot { seed: 0, rows: Vec::new(), alarms };
         }
     };
@@ -450,6 +456,14 @@ pub fn surface_numbers_boot(socket_path: &std::path::Path, boot_now: f64) -> Num
     ] {
         match conn.query_row(sql, [], |r| r.get::<_, i64>(0)) {
             Ok(v) => seed = seed.max(v.max(0) as u64),
+            // 스키마를 못 세운 업그레이드 첫 기동(1.1.5 DB · 쓰기 불가) — 새 표가 **없는 것이 사실**이라
+            // 빠진 번호가 없다(시드는 lines·chains 가 1.1.5 와 같이 지킨다). 신호는 아래 write_io.
+            Err(e) if table == "surface_numbers"
+                && schema_err.is_some()
+                && e.to_string().contains("no such table") =>
+            {
+                numbers_ok = false;
+            }
             Err(e) => {
                 failed.push(format!("{table}: {e}"));
                 if table == "surface_numbers" {
@@ -471,7 +485,14 @@ pub fn surface_numbers_boot(socket_path: &std::path::Path, boot_now: f64) -> Num
     };
     let _ = conn.execute_batch("COMMIT");
     if !failed.is_empty() {
-        alarms.push(("seed_failed", failed.join("; ")));
+        let why = match &schema_err {
+            Some(se) => format!("schema: {se}; {}", failed.join("; ")),
+            None => failed.join("; "),
+        };
+        push_alarm(&mut alarms, "seed_failed", why);
+    } else if let Some(se) = &schema_err {
+        // 읽기는 됐다(시드·holders 유지) — 쓰기가 막힌 것이다: 이후 좌석 행 INSERT 도 실패한다.
+        push_alarm(&mut alarms, "write_io", format!("schema: {se}"));
     }
     // ⑶ 닫힘 기록 없이 죽은 행(데몬과 함께 죽은 좌석) — 메모리에서는 이미 Closed(boot_now) 로 다룬다.
     //    고아가 있을 때만 쓴다(읽기 전용 DB 에서 헛 UPDATE 가 거짓 write_io 를 내지 않게).
@@ -481,10 +502,21 @@ pub fn surface_numbers_boot(socket_path: &std::path::Path, boot_now: f64) -> Num
              WHERE closed_at IS NULL",
             [boot_now],
         ) {
-            alarms.push(("write_io", format!("boot_orphan update: {e}")));
+            push_alarm(&mut alarms, "write_io", format!("boot_orphan update: {e}"));
         }
     }
     NumbersBoot { seed, rows, alarms }
+}
+
+/// 부팅 경보는 종류별 1회 — 같은 종류가 또 나면 사유만 잇는다(설계 §3-2 부팅 행 「부팅당 종류별 1회」).
+fn push_alarm(alarms: &mut Vec<(&'static str, String)>, kind: &'static str, why: String) {
+    match alarms.iter_mut().find(|(k, _)| *k == kind) {
+        Some((_, prev)) => {
+            prev.push_str("; ");
+            prev.push_str(&why);
+        }
+        None => alarms.push((kind, why)),
+    }
 }
 
 fn read_numbers_rows(conn: &Connection) -> rusqlite::Result<Vec<NumbersRow>> {

@@ -3380,6 +3380,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         let mut title_now = s.title.lock().unwrap();
                         if let Some(next) = crate::panetitle::initial_title(
                             s.id,
+                            s.display_no, // ★v116-num: 제목 번호 = 보이는 번호(내부 번호 아님)
                             role_now.as_deref(),
                             Some(s.cwd.as_str()),
                             Some(title_now.as_str()),
@@ -18658,14 +18659,12 @@ mod v116_num_rpc_tests {
 
     fn iso() -> Arc<Daemon> {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "cys-v116rpc-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-v116rpc-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
-        Daemon::new(dir.join("cysd.sock"))
+        // 소켓 파일 이름 고유 — 윈도 state_dir 는 파일 이름 슬러그만 본다(Fable code-1R MED-2).
+        Daemon::new(dir.join(format!("v116rpc-{}-{seq}.sock", std::process::id())))
     }
 
     fn call(d: &Arc<Daemon>, method: &str, params: Value) -> Value {
@@ -18770,7 +18769,7 @@ mod v116_num_rpc_tests {
         assert_eq!(ok["ok"], json!(true), "{ok}");
         assert_eq!(ok["result"]["surface_id"], json!(1049));
         assert_eq!(ok["result"]["surface_ref"], json!("surface:1049"));
-        assert!(ok["result"]["socket"].as_str().unwrap().ends_with("cysd.sock"));
+        assert!(ok["result"]["socket"].as_str().unwrap().ends_with(".sock"));
         for bad in [json!(0), json!(1000), json!("50"), json!("#50"), json!(-1), Value::Null] {
             let r = call(&d, "surface.resolve_display", json!({"display_no": bad}));
             assert_eq!(r["error"]["code"], json!("display_out_of_range"), "{bad}: {r}");
@@ -18786,6 +18785,21 @@ mod v116_num_rpc_tests {
         assert_eq!(gone["error"]["last"]["surface_id"], json!(1049));
         let msg = gone["error"]["message"].as_str().unwrap();
         assert!(msg.contains("surface:1049") && msg.contains("다른 좌석으로 보내지 않습니다"), "{msg}");
+    }
+
+    /// ③ T6(데몬 호출부) — surface.create 가 짓는 역할 좌석 제목의 번호 = 보이는 번호(M15: 내부 번호를
+    /// 넘기면 「1049 · worker1」 이 되어 적색).
+    #[test]
+    fn create_titles_role_seat_with_display_number() {
+        let d = iso();
+        d.next_id.store(1049, Ordering::SeqCst);
+        let r = call(&d, "surface.create", json!({"cmd": "sleep 30", "role": "worker"}));
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert_eq!(r["result"]["display_no"], json!(50));
+        let sid = r["result"]["surface_id"].as_u64().unwrap();
+        let title = d.get_surface(sid).unwrap().title.lock().unwrap().clone();
+        assert!(title.starts_with("50 · "), "제목 번호가 보이는 번호가 아니다: {title}");
+        let _ = crate::governance::close_surface(&d, sid, crate::governance::CloseCause::OwnerClose);
     }
 
     #[test]

@@ -17,7 +17,8 @@ W 는 기본 24시간 그대로다(제품 바이너리에 시험 손잡이 없�
   · CYS_NO_AUTORESTORE=1 · SHELL=/bin/sh(좌석마다 로그인 셸 프로필을 태우지 않게)
   · 데몬은 start_new_session 으로 띄우고 PGID 째 내린다(고아 0) · 끝나면 /tmp 폴더 삭제(--keep 이면 보존)
 
-실행: python3 scripts/v116_num_e2e.py [--keep] [--n 1050]
+실행: python3 scripts/v116_num_e2e.py [--keep] [--n 1050] [--cli-only]
+  --cli-only = 부서 데몬 + CLI 단계(T9·T3c·T14 칸·identify)만(1,050개 생략 · 뮤턴트 M23 판정용)
 exit: 0=전 항목 PASS · 1=FAIL(출력이 판정) · 2=하네스 자체 실패(관측 불가 — 결론 금지)
 """
 
@@ -34,6 +35,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CYSD = os.path.join(ROOT, "target", "debug", "cysd")
+CYS = os.path.join(ROOT, "target", "debug", "cys")
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -138,6 +140,69 @@ class Daemon:
             shutil.rmtree(self.tmp, ignore_errors=True)
 
 
+def cli(d, args, shell=None, extra_env=None):
+    """격리 데몬에 실제 cys 바이너리를 붙여 실행. shell 이 주어지면 `bash -c` 로(셸의 # 주석 처리 실측)."""
+    env = d.env()
+    env.update(extra_env or {})
+    if shell:
+        r = subprocess.run(["bash", "-c", shell], env={**env, "PATH": os.path.dirname(CYS) + ":" + env.get("PATH", "")},
+                           capture_output=True, text=True, timeout=60)
+    else:
+        r = subprocess.run([CYS] + args, env=env, capture_output=True, text=True, timeout=60)
+    return r.returncode, r.stdout, r.stderr
+
+
+def cli_checks(d, check):
+    """T9 · T3c · T14(칸 자리) · identify — 보이는 1번 좌석(내부 1)이 산 상태의 데몬에서."""
+    label = os.path.basename(d.tmp)
+    rc, out, err = cli(d, ["read-screen", "--surface=#1"])
+    check("T9 --surface=#1 → 해석 · stderr 소켓 줄", rc == 0 and f"#1 → surface:1 @{label}" in err, f"rc={rc} err={err.strip()[:160]}")
+    rc, out, err = cli(d, ["read-screen", "--surface=#999"])
+    check("T9 없는 #999 → 거부(다른 좌석으로 안 보냄)", rc != 0 and "지금 없습니다" in err, f"rc={rc} err={err.strip()[:160]}")
+    rc, out, err = cli(d, ["read-screen", "--surface=#0"])
+    check("T9 문법 밖 #0 → 거부", rc != 0 and "#1~#999" in err, f"rc={rc} err={err.strip()[:160]}")
+    # 셸 통과 — 띄어 쓴 #17 은 셸이 주석으로 잘라 clap 오류 rc=2(폴백 없음 · 설계 §4-2 관측 고정)
+    for cmdline in ["cys send hello --surface #17", "cys send-key Return --surface #17",
+                    "cys send --surface #17 hello", "cys quiesce --surface #17 --off",
+                    "cys set-status --surface #17 --state done"]:
+        rc, out, err = cli(d, None, shell=cmdline, extra_env={"CYS_SURFACE_ID": "1"})
+        check(f"T9 셸 절단 `{cmdline}` → clap rc=2", rc == 2 and "a value is required for '--surface" in err,
+              f"rc={rc} err={err.strip()[:120]}")
+    rc, out, err = cli(d, None, shell="cys close-surface #17", extra_env={"CYS_SURFACE_ID": "1"})
+    check("T9 셸 절단 close-surface #17 → 필수 인자 rc=2", rc == 2 and "required" in err, f"rc={rc} err={err.strip()[:120]}")
+    rc, out, err = cli(d, None, shell="cys send hello --surface=#1")
+    check("T9 셸 통과 --surface=#1 → 해석기 도달·전송", rc == 0 and "#1 → surface:1" in err, f"rc={rc} err={err.strip()[:160]}")
+    # 파괴 명령: 임시 좌석을 #N 으로 닫고, 같은 #N 을 다시 닫으면 「없음」 · 대조군 생존
+    tmp = create(d)
+    n = tmp["display_no"]
+    rc, out, err = cli(d, ["close-surface", f"#{n}"])
+    lst = d.rpc("surface.list", {})["result"]["surfaces"]
+    check(f"T9 close-surface '#{n}' → 그 좌석만 닫힘", rc == 0 and all(x["surface_id"] != tmp["surface_id"] for x in lst)
+          and any(x["surface_id"] == 1 for x in lst), f"rc={rc} err={err.strip()[:160]}")
+    rc, out, err = cli(d, ["close-surface", f"#{n}"])
+    lst2 = d.rpc("surface.list", {})["result"]["surfaces"]
+    check(f"T9 닫힌 #{n} 재지정 → 거부 · 산 좌석 수 불변", rc != 0 and "지금 없습니다" in err and len(lst2) == len(lst),
+          f"rc={rc} err={err.strip()[:160]}")
+    # cys list 칸 자리(4번 = no=) · identify
+    rc, out, err = cli(d, ["list"])
+    row = [l.split("\t") for l in out.splitlines() if l.startswith("surface:1\t")]
+    check("T14 cys list 4번 칸 = no=1 · 0~3·마지막 칸 불변",
+          rc == 0 and row and row[0][4] == "no=1" and row[0][0] == "surface:1" and row[0][3].startswith("exited=")
+          and len(row[0]) == 7, f"{row[:1]}")
+    rc, out, err = cli(d, ["identify"], extra_env={"CYS_SURFACE_ID": "1"})
+    try:
+        ok = json.loads(out).get("caller_display_no") == 1
+    except ValueError:
+        ok = False
+    check("identify caller_display_no = 1", rc == 0 and ok, out.strip()[:200])
+    # T3c 기계 출력 줄: new-surface 마지막 줄 = surface:N(내부 번호)
+    rc, out, err = cli(d, ["new-surface", "--cmd", "sleep 3600"])
+    last = out.strip().splitlines()[-1] if out.strip() else ""
+    check("T3c new-surface 마지막 줄 = surface:<내부 번호>", rc == 0 and last.startswith("surface:") and last[8:].isdigit(), last)
+    if last.startswith("surface:"):
+        d.rpc("surface.close", {"surface_id": int(last[8:])})
+
+
 def create(d, cmd="sleep 3600"):
     r = d.rpc("surface.create", {"cmd": cmd, "rows": 24, "cols": 80})
     if not r.get("ok"):
@@ -147,6 +212,7 @@ def create(d, cmd="sleep 3600"):
 
 def main():
     keep = "--keep" in sys.argv
+    cli_only = "--cli-only" in sys.argv
     n = 1050
     if "--n" in sys.argv:
         n = int(sys.argv[sys.argv.index("--n") + 1])
@@ -168,6 +234,13 @@ def main():
         t0 = time.time()
         control = create(hq)
         dept_seat = create(dept)
+        if os.path.exists(CYS):
+            # 부서 데몬에 붙인다 — 본부의 번호를 소모하면 아래 1,050개 계수가 틀어진다(보이는 1 = dept_seat).
+            cli_checks(dept, check)
+        else:
+            check("CLI 단계", False, f"{CYS} 없음 — cargo build --bin cys")
+        if cli_only:
+            n = 0
         seats = []  # (surface_id, display_no)
         create_fail = 0
         for i in range(n):
@@ -184,6 +257,12 @@ def main():
         elapsed = time.time() - t0
         time.sleep(0.5)  # 마지막 경보가 구독자에 닿을 시간
 
+        if cli_only:
+            for name, ok, detail in results:
+                print(f"{'PASS' if ok else 'FAIL'} {name} — {detail}")
+            hq.stop(keep)
+            dept.stop(keep)
+            return 1 if fails else 0
         ids = [control["surface_id"]] + [s for s, _ in seats]
         disp = {control["surface_id"]: control["display_no"], **dict(seats)}
         small = [(s, disp[s]) for s in ids if s <= 999]
@@ -220,7 +299,7 @@ def main():
               str(dres)[:200])
         check("⑹ 부서는 본부 경보·다 참의 영향 0",
               dept.alarms == [] and dept_seat["display_no"] == 1
-              and create(dept)["display_no"] == 2, f"부서 경보 {dept.alarms}")
+              and create(dept)["display_no"] is not None, f"부서 경보 {dept.alarms}")
         # 본부 데몬 로그에도 경보 1줄
         with open(hq.log, encoding="utf-8", errors="replace") as f:
             log_lines = [l for l in f if "surface.numbers_alarm kind=exhausted" in l]

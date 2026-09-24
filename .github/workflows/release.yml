@@ -340,6 +340,12 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin'
         run: |
           set -euo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           cargo build --bin cys --bin cysd
           export PHOENIX_HARNESS_CYSD="$PWD/target/debug/cysd"
           export PATH="$PWD/target/debug:$PATH"
@@ -348,17 +354,17 @@ jobs:
           #   누락시키는 위험이 있어 tests/ 디렉터리를 스캔한다(정직성: 게이트가 실제 커밋 테스트 전부를 돈다).
           for t in cysjavis-pack/bin/tests/test_phoenix_*.py; do
             echo "== phoenix test: $(basename "$t") =="
-            CYS_PACK_DIR="$(mktemp -d)" python3 "$t"
+            CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$t"
           done
           # Rust auto-restore 단위(재시도 seam·env 주입·B1·B3) + pack 소유권(B2).
           # ★--skip hwmon:: — hwmon 테스트는 실 GPU 전제(gpu.cores>0 단언)라 가상 러너에서 환경 FAIL
           #   (v0.12.21 release run 28792111282 실증 — phoenix 게이트와 무관한 host 하드웨어 의존).
-          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cysd -- --test-threads=1 --skip hwmon::
-          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib -- --test-threads=1
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --bin cysd -- --test-threads=1 --skip hwmon::
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --lib -- --test-threads=1
           # ★A10 승격(2026-08-16): ci-branch 리허설 1사이클 green 실증(feat/v4-repair 18dc9a6 run
           #   success — 115 passed/0 failed) 후 릴리스 레인 편입. 환경 의존 실패 발견 시 위
           #   --skip hwmon:: 선례 패턴으로 격리하라(테스트 삭제 금지).
-          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys -- --test-threads=1
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --bin cys -- --test-threads=1
 
       # ── ★todo 선언·유령집계 게이트(C-1 교정 · 2026-07-26) ──
       # **왜 여기 있어야 하는가**: 이 게이트 3종은 `ci-branch.yml` 에만 있었고 그 워크플로는
@@ -376,6 +382,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           echo "== todo 선언 파서 2언어 파리티(골든 + 조합 1024건) =="
           d="cysjavis-pack/bin/tests/fixtures/todo-decl"
           h="cysjavis-pack/bin/tests/parity_todo_decl.py"
@@ -464,7 +476,7 @@ jobs:
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== declared-state test: $t =="
-            if ! CYS_PACK_DIR="$(mktemp -d)" python3 "$f"; then
+            if ! CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f"; then
               echo "::error::선언·유령집계 게이트 실패($t) — 진행률 집계 회귀. 릴리스 차단." >&2
               exit 1
             fi
@@ -1107,6 +1119,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           d="cysjavis-pack/bin/tests/fixtures/todo-decl"
           h="cysjavis-pack/bin/tests/parity_todo_decl.py"
           [ -d "$d" ] || { echo "골든 픽스처 디렉터리 누락: $d (계약 SOT 부재 = 실패)" >&2; exit 1; }
@@ -1181,7 +1199,7 @@ jobs:
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack] declared-state test: $t =="
-            if ! CYS_PACK_DIR="$(mktemp -d)" python3 "$f"; then
+            if ! CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f"; then
               echo "::error::[pack] 선언·유령집계 게이트 실패($t) — 배송 팩 회귀. 서명 전 차단." >&2
               exit 1
             fi
@@ -1197,7 +1215,7 @@ jobs:
           echo "== [pack] javis_detect 4축 감지기 self-test(corpus 단일 원본) =="
           g="cysjavis-pack/bin/javis_detect.py"
           [ -f "$g" ] || { echo "감지기 누락: $g (git add 누락 의심)" >&2; exit 1; }
-          if ! CYS_PACK_DIR="$(mktemp -d)" python3 "$g" --self-test; then
+          if ! CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$g" --self-test; then
             echo "::error::[pack] javis_detect self-test 실패 — 감지기 4축 억제 회귀. 서명 전 차단." >&2
             exit 1
           fi

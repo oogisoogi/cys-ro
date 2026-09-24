@@ -14137,8 +14137,10 @@ mod accept_v116 {
         let a = push(&d, &s, "m1", "surface:7");
         let mid = push(&d, &s, "claude --resume", "surface:7");
         push(&d, &s, "m2", "surface:7");
-        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none(), "비머리 stale 이어도 폐기 틱 = 배달 0");
-        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("다음 틱 배달");
+        // ★명세 S3 개정(agy 4R B1 · 기아 반례): 머리가 그대로면(비머리 stale 만 폐기) 준비 판정도 그대로 유효하다 →
+        //   그 틱에 머리를 배달한다. 「폐기 틱 = 무조건 배달 0」은 꼬리에 옛 줄이 계속 들어오면 머리를 영영 못 보낸다.
+        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("머리 그대로 = 같은 틱 배달");
+        assert_eq!(queue_texts(&s).iter().filter(|t| t.contains("claude --resume")).count(), 0, "비머리 stale 도 폐기");
         assert_eq!(g.entry.id, a.id);
         assert!(!g.body.contains("claude --resume"));
         assert!(!g.merged_ids.contains(&mid.id));

@@ -148,6 +148,7 @@ python3 $S/mutants.py                                          # 뮤턴트(작�
 | 손본 표준본 + 옛 승격의 낡은 .pre-ceo (형상 edited-standard-held · edited-standard-with-new-stale-pre-ceo · R5 T1/T1d) | 강등이 **.pre-ceo(옛 판) 복원** · 편집본은 `.pre-ceo-<시각>` 보존 | 옛 판 복원 · 편집본 **실종** | 옛 판이 발행본이면 다음 init-pack 의 ⓔ 가 현행 표준으로 올린다(편집은 보존본에만) |
 | 끝 개행만 지운 현행본 · UTF-8 BOM 저장본(형상 current-standard-eol-stripped-stale-pre-ceo-close · R5 T2 · B1) | 같음 | 같음(실종) | 편집기 저장 습관 — 정확 일치 밖 |
 | 위 형상 + **미부트 기계**(R5 T1n) | 낡은 .pre-ceo 가 유효 백업으로 보여 **승격 보류 게이트도 건너뜀**(자동 승격 알림도 꺼짐) | 같음 | 원래 1098 결함의 이 하위 형상은 B 에서 남는다 · 1.1.7 구조안(아래)이 끝낸다 |
+- agy C4 BLOCK(잔존 mkdir 락 = 무락 강행 경로에서 ⓕ 생략 → 강등이 옛 판 복원 · 현행 md 는 `.pre-ceo-<시각>` 보존) = **1.1.7 ⓧ3 티켓이 해소 · master 20:2x 판정 [master#9ccc9fdb]**(발행 차단 4종 아님 · 선재 결함 ⓧ3 과 드문 교차).
 - 1.1.7 후보(기록만 · master): 승격 시점에 바꾼 MASTER·쓴 CEO 의 sha256 을 옆 파일로 남기고 강등 때 그 해시로 「손대지 않음」을 판정 — 위 한계 전부를 「승격 때 실제로 백업한 바이트」 기준으로 푼다.
 - CRLF 로만 바꾼 현행 표준(문면 동일)은 LF 정규화로 표준본(형상 current-standard-crlf-stale-pre-ceo-close · 뮤턴트 X4).
 

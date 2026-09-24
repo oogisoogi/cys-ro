@@ -473,6 +473,30 @@
     "expect_stale_after_down": [],
     "expect_edit_backup_after_down": "__MD_BYTES__"
    }
+  },
+  {
+   "id": "edited-standard-with-new-stale-pre-ceo",
+   "source": "agy C3 반례 ③ — 사용자가 손본 표준본 + 갱신이 남긴 .new + 옛 승격의 낡은 .pre-ceo → 부서 생성(DCE-3 가 .new 로 통과) → 부서 닫음",
+   "md": "M2_EDIT",
+   "pre_ceo": "M_OLD",
+   "new": "M2",
+   "receipt": null,
+   "released_ceo": [],
+   "released_master": [
+    "M_OLD"
+   ],
+   "manifest_master": "M1",
+   "installer": null,
+   "dept": {
+    "expect_md": "C2",
+    "expect_pre_ceo": "M2_EDIT",
+    "expect_stale": "M_OLD",
+    "expect_edit_backup": null,
+    "expect_after_down": "M2_EDIT",
+    "expect_stale_after_down": [
+     "M_OLD"
+    ]
+   }
   }
  ]
 }

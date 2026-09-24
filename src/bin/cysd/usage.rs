@@ -91,8 +91,9 @@ struct TailState {
     server_ctx_window: Option<u64>,
     /// codex rollout의 turn_context가 준 모델명 — token_count 소비 귀속용(전수조사 A-2)
     codex_model: Option<String>,
-    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각(T2) — [`reattach_grace_from`] 이 정한다:
-    /// 등록 경로(훅이 세션을 명시 = 새 세션) 부착은 부착 시각 · 휴리스틱 재발견 재부착은 직전 기준 승계.
+    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각(T2) — [`reattach_carries`] 가 정한다:
+    /// 등록 경로(훅이 세션을 명시 = 새 세션) 부착은 부착 시각 · 휴리스틱 재발견 재부착은 직전 기준 승계
+    /// (직전 유예 시작 뒤에 태어난 파일 = 새 세션이면 부착 시각).
     grace_from: f64,
     /// 직전 관측의 임계 발화를 유예로 보류했는가 — 새 줄이 없는 틱에서도 유예가 끝나면 재평가한다(T2 · agy 1R #2).
     threshold_deferred: bool,
@@ -272,14 +273,15 @@ fn collect_for(
     // tail 상태 초기화/전환: 경로가 바뀌었으면 영속 오프셋(없으면 파일 끝 창)에서 새로 시작
     let need_reset = tails.get(&s.id).map(|t| t.path != path).unwrap_or(true);
     if need_reset {
-        let prev = tails.get(&s.id).map(|t| (t.grace_from, t.threshold_deferred, t.deferred_pct));
-        let grace_from = reattach_grace_from(prev.map(|p| p.0), heuristic, now);
+        let prev = tails
+            .get(&s.id)
+            .map(|t| (t.grace_from, t.threshold_deferred, t.deferred_pct))
+            .filter(|p| reattach_carries(p.0, heuristic, file_born_at(&path)));
+        let grace_from = prev.map_or(now, |p| p.0);
         let mut t = TailState::attach(daemon, path.clone(), heuristic, now, grace_from);
-        if heuristic {
-            if let Some((_, deferred, pct)) = prev {
-                t.threshold_deferred = deferred;
-                t.deferred_pct = pct;
-            }
+        if let Some((_, deferred, pct)) = prev {
+            t.threshold_deferred = deferred;
+            t.deferred_pct = pct;
         }
         tails.insert(s.id, t);
         // 새 세션 파일 = 새 세션 — 에지 게이트 재무장. 직전 세션이 임계 위에서 끝났어도
@@ -532,16 +534,22 @@ fn collect_for(
     }
 }
 
-/// (T2 · agy 3R #3) 유예 기준 시각(순수 — 진리표 핀). 등록 경로 부착(`heuristic=false` — SessionStart 훅이 세션을
-/// 명시 = 이 좌석에 새로 뜬 에이전트)은 **부착 시각**에서 새로 시작한다: 오래된 좌석에 새로 띄운 claude 도 유예를
-/// 받는다(좌석 생성 시각 기준이면 즉시 만료돼 T2 오발이 재발). 휴리스틱 재발견 재부착(`heuristic=true`)은 직전
-/// 기준을 **승계**한다: 같은 cwd 동시 세션 사이를 오가며 재부착될 때마다 유예가 새로 시작되면 발화가 영영 안 난다
-/// (opus 적대 1R). 직전 tail 이 없으면 부착 시각.
-fn reattach_grace_from(prev_grace: Option<f64>, heuristic: bool, now: f64) -> f64 {
-    match prev_grace {
-        Some(g) if heuristic => g,
-        _ => now,
-    }
+/// (T2 · agy 3R #3 · agy 4R ⓐ) 재부착 때 직전 tail 의 유예 상태(기준 시각·보류·보류 %)를 이어받는가(순수 — 진리표 핀).
+/// 등록 경로 부착(`heuristic=false` — SessionStart 훅이 세션을 명시 = 이 좌석에 새로 뜬 에이전트)은 이어받지 않고
+/// **부착 시각**에서 새로 시작한다: 오래된 좌석에 새로 띄운 claude 도 유예를 받는다(좌석 생성 시각 기준이면 즉시
+/// 만료돼 T2 오발이 재발). 휴리스틱 재발견 재부착(`heuristic=true`)은 **승계**한다: 같은 cwd 동시 세션 사이를 오가며
+/// 재부착될 때마다 유예가 새로 시작되면 발화가 영영 안 난다(opus 적대 1R). 단 새 파일이 직전 유예 시작 **뒤에**
+/// 태어났으면 = 그 뒤에 뜬 새 세션 — 이어받지 않는다(agy 4R ⓐ · opus 3R low: 끝난 유예·옛 세션의 보류 %를 새 세션이
+/// 물려받아 유예 없이 오발). 유예 재시작은 새로 태어난 파일 하나당 한 번뿐이라 오가기 무한 재시작은 다시 열리지 않는다.
+/// 생성 시각을 못 읽으면(파일시스템 미지원) 종전대로 승계한다.
+fn reattach_carries(prev_grace: f64, heuristic: bool, born_at: Option<f64>) -> bool {
+    heuristic && born_at.map_or(true, |b| b <= prev_grace)
+}
+
+/// 파일 생성 시각(epoch 초) — 읽지 못하면 None.
+fn file_born_at(path: &Path) -> Option<f64> {
+    let t = std::fs::metadata(path).ok()?.created().ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
 }
 
 /// (T2) 신선한 statusline 이 CTX %를 실제로 줬는가 — 창 크기 없는 보고(구판 등)는 보류를 대신하지 못한다
@@ -2427,11 +2435,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(path, b, "전제: 재부착됨");
         assert!(grace_from > 1.0, "등록 경로 재부착(새 세션)이 옛 유예 기준을 이어받았다 — 새 claude 가 유예 없이 오발");
-        // 휴리스틱 재부착은 승계 · 등록 경로·첫 부착은 부착 시각(순수 진리표)
-        assert_eq!(super::reattach_grace_from(Some(1.0), true, 500.0), 1.0);
-        assert_eq!(super::reattach_grace_from(Some(1.0), false, 500.0), 500.0);
-        assert_eq!(super::reattach_grace_from(None, true, 500.0), 500.0);
-        assert_eq!(super::reattach_grace_from(None, false, 500.0), 500.0);
+        // 휴리스틱 재부착은 승계 · 등록 경로는 부착 시각(순수 진리표 · 첫 부착은 직전 tail 이 없어 부착 시각)
+        assert!(super::reattach_carries(1.0, true, None));
+        assert!(!super::reattach_carries(1.0, false, None));
     }
 
     /// opus 적대 1R(low): 창 크기(ctx %)가 없는 statusline 보고는 보류를 지우지 못한다.

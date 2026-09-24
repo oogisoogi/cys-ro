@@ -6496,6 +6496,15 @@ mod tests {
         assert!(m("env FOO=1 claude --x", Some("env")), "agy P3 — env 래퍼(메타 = env)");
         assert!(m("sudo -u bot codex", Some("sudo")), "agy P3 — sudo 래퍼(메타 = sudo)");
         assert!(!m("claude --x", None), "메타 없음");
+        // agy 3R ①: 큐 폐기용 좁은 판정 — 실행 파일 뒤가 플래그이거나 끝일 때만(산문 보존). 가드 판정 m 은 불변.
+        use super::is_stale_launch_line as st;
+        assert!(st(line, Some("claude")), "실 기동 줄(env 접두 · 플래그)");
+        assert!(st("claude", Some("claude")), "실행 파일만");
+        assert!(st("/x/stub/claude --continue", Some("/x/stub/claude")));
+        assert!(!st("claude is an AI 라는 문장", Some("claude")), "산문(실행 파일 뒤 낱말)");
+        assert!(m("claude is an AI", Some("claude")), "가드 판정은 종전 그대로(산문도 기동 줄 모양)");
+        assert!(!st("claude --x ; rm -rf ~", Some("claude")), "가드 판정 거짓이면 폐기 판정도 거짓");
+        assert!(!st("claude --x", None), "메타 없음");
         assert!(!m("claude --x", Some("")), "빈 메타");
     }
 

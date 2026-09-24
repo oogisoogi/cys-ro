@@ -5374,10 +5374,18 @@ async fn approve_ceo_promotion() -> Result<String, String> {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    if out.status.success() {
-        Ok(txt.trim().to_string())
-    } else {
-        Err(txt.trim().to_string())
+    ceo_promote_result(out.status.code(), &txt)
+}
+
+/// ★A-Z14(v116-ceo-hold-az14): `cys-dept promote-ceo` exit 5 = **승격 보류**(사후 검증 = md 가 CEO 템플릿이 아님 ·
+/// 지침 무교체). 실패(그 밖 non-zero)와 같은 Err 로만 넘기면 GUI 가 보류를 「실패」로 알리므로, 보류에는 태그를 단다
+/// (UI `selfdiag.ceoPromoteFailToast` 가 이 태그로 가른다 — rotate 의 `live_sessions:` 관례와 같은 모양).
+const CEO_PROMOTE_HELD_TAG: &str = "ceo_promote_held:";
+fn ceo_promote_result(code: Option<i32>, txt: &str) -> Result<String, String> {
+    match code {
+        Some(0) => Ok(txt.trim().to_string()),
+        Some(5) => Err(format!("{CEO_PROMOTE_HELD_TAG}{}", txt.trim())),
+        _ => Err(txt.trim().to_string()),
     }
 }
 
@@ -7541,6 +7549,23 @@ mod tests {
         assert!(!ceo_drift_verdict(true, None, new));
         assert!(!ceo_drift_verdict(true, old, None));
         assert!(!ceo_drift_verdict(true, None, None));
+    }
+
+    /// ★A-Z14: promote-ceo 종료 코드 → GUI 결과. 0 = 완료(Ok) · 5 = 보류(태그 달린 Err — UI 가 「보류」로 알림) ·
+    /// 그 밖(4 = 부서 0개 · 7 = 가드 · 신호 종료 None) = 태그 없는 Err(「실패」).
+    #[test]
+    fn ceo_promote_result_tags_held_only_for_exit5() {
+        assert_eq!(ceo_promote_result(Some(0), " done \n"), Ok("done".to_string()));
+        let held = ceo_promote_result(Some(5), "[cys-dept] CEO 승격 보류\n").unwrap_err();
+        assert!(held.starts_with(CEO_PROMOTE_HELD_TAG), "{held}");
+        assert!(held.ends_with("CEO 승격 보류"), "{held}");
+        for code in [Some(1), Some(4), Some(7), None] {
+            let e = ceo_promote_result(code, "x").unwrap_err();
+            assert!(!e.contains(CEO_PROMOTE_HELD_TAG), "{code:?} → {e}");
+        }
+        // UI 와 같은 태그(선언 한 곳씩 · 문자열 대조로 묶는다).
+        let ui = include_str!("../../ui/src/selfdiag.ts");
+        assert!(ui.contains(&format!("\"{CEO_PROMOTE_HELD_TAG}\"")), "UI 보류 태그 불일치");
     }
 
     /// [F1] open_path 실행형 게이트 — 실행비트 파일은 force 없이 executable_confirm으로 거절(fail-closed),

@@ -169,6 +169,19 @@ python3 $S/mutants.py                                          # 뮤턴트(작�
 ### 12-5. 최종(코드 = 0f5b899f)
 - **결정론(최종 빌드 0f5b899f · 동시 실행 없음 · scratch/final-verify.sh)**: 블라인드 S1~S6 20/20 · 블라인드 B 234/0(내 재실행) · 블라인드 P1/P2 142/0 · dept 형상 30 ALL PASS · Rust pack:: 117/117(185fa5b9 · 이후 Rust 무변경) · 생성기 --check OK · doc-contract OK · bash 뮤턴트 전부 KILLED(등가 Y3·Y4 제외).
 - **타사**: agy C6 ACCEPT(185fa5b9) · **agy C7 ACCEPT(0f5b899f 결박 · NOTE 2 = C6 와 같음)**. Opus R6 REVISE(시험 구멍) = 0f5b899f 에서 해소(같은 모델 ACCEPT 는 독립 증거로 세지 않음 · 규칙 ②).
-- **정본 게이트**(gate_runner · `/Users/oogisoogi/msv-scratch/v116rv/results/ceo-0f5b899f-192808` · 98 단계): compare_runs 기준 adf50d44 = 대상 실패 5 · 기준 3 · **신규 2 = 둘 다 D07b.test_phoenix_w2_untomb_fullcycle**(본 줄 + 하위 항목) · D02 Secret/PII 0 · D11 팩 스캔 0 · B01 0 · X01 cargo 0 · D06 0.
+- **정본 게이트**(gate_runner · `~/msv-scratch/v116rv/results/ceo-0f5b899f-192808` · 98 단계): compare_runs 기준 adf50d44 = 대상 실패 5 · 기준 3 · **신규 2 = 둘 다 D07b.test_phoenix_w2_untomb_fullcycle**(본 줄 + 하위 항목) · D02 Secret/PII 0 · D11 팩 스캔 0 · B01 0 · X01 cargo 0 · D06 0.
   - w2_untomb 판정 = **기존 간헐 실패(이 티켓 무관)**: 증상 `FAIL ① live 역할 desired 엔트리 등재 | roster=[]` → ref None TypeError. 격리 재실행 HEAD 3회 중 2회 실패 · **교차 A/B**(`scratch/w2ab.sh` · 같은 부하) HEAD 1/3 실패 · b87bbf07(이번 라운드 이전) 1/3 실패 · 기존 결과 이력에서 526325bf(기점의 조상 · 이 티켓 변경 없음) 3회 중 1회·2efaf0a7 3회 중 2회 실패. 이 티켓 변경(cys-dept · 시험 · 팩 파일 1 · 생성기)은 phoenix 경로 무접촉.
 - 프로세스 위생: 내가 띄운 게이트 2회 중단(7e08378f · 185fa5b9 — 대상 커밋 변경) = 부모 사슬(내 claude 67113) 확인한 pid 만 TERM · agy C5 가 띄운 고아 cysd 2개 = 소켓 경로(scratch/demo_env)·agy 전사로 귀속 확인 뒤 TERM · 현재 내 소유 잔여 0.
+
+## 13. A-Z14 수리 — `promote-ceo` 사후 검증 거짓 「승격 완료」(TICKET=v116-ceo-hold-az14 · 후임 worker surface:1104 · 2026-09-25)
+
+- 원 지적 = 동일 모델 검증 실험 A-Z14(Fable 5.1) · 1100 재현 `~/axdev/master/reports/same-model-verification-2026-09-24/scoring/followup/az14.sh`(판정 표 = 같은 보고서 폴더 `04-experiment-report.md` §10).
+- 원인(재확인): 게이트(`ceo_promote` 부트 게이트)는 `pre_ceo_valid`(낡은 백업 제외)인데 사후 검증(`promote-ceo`)은 「`cmp md ceo` 또는 `.pre-ceo` 존재」 → 낡은 `.pre-ceo` + 미부트에서 보류(pending · md 무교체)를 exit 0 으로 보고 → GUI 「✅ CEO 승격 완료」.
+- ★브리프 처방(「게이트와 같은 판정」)만으로는 부족했다: 부트 완료 + 손본 표준본 + 낡은 `.pre-ceo`(형상 `edited-standard-held`)는 유효 백업처럼 보여 게이트를 지나고 `_swap` 에서 상위집합 검사로 보류되는데, 사후 검증을 `pre_ceo_valid` 로 바꿔도 여전히 exit 0(뮤턴트 M2 · 시험 14e 로 실측). → **확정 = md == CEO 템플릿 실측**, 게이트 술어는 보류 사유 문구에만.
+- 상태 표(종료 코드 · cys-dept 문구 · GUI 알림) = DESIGN §9.
+- 곁 수리: `ceo_receipt_matches` 가 영수증 부재 때 `No such file` 셸 오류 줄을 stderr 로 흘렸다(`<` 리다이렉트 실패는 뒤 `2>/dev/null` 로 안 묻힘) — GUI 알림 원문에 그대로 실렸다 → 존재 먼저 확인(시험 14d · 판정 뜻 불변).
+- 기준선 적색 ba8b0d1f(114be35b 제품 코드 · 7 FAIL: 형상 2 × 2회 · 14a · 14d · 14e).
+- 뮤턴트(사본 · 작업트리 무접촉 · `scratch/mut_az14.py`): M1 존재 판정 되돌림 · M2 게이트 술어만 · M3/M4 보류 exit 5→0 · M5 영수증 존재 검사 제거 = **5/5 KILLED**. Rust `ceo_promote_result` · UI `ceoPromoteFailToast` 는 단위 시험으로 고정.
+- 범위 밖(기록만 · DESIGN §9 말미): `promote-if-pending` 은 보류여도 exit 0(알림 = 「CEO 승격 처리」+원문) · 팔레트 「재실행」 노출 게이트 `ceo_promotion_drift` 도 `.pre-ceo` 존재 판정. 거짓 「완료」는 아님.
+- 이월 범위 밖(브리프): A-Z31(rollback 저널에 `.pre-ceo`·영수증 없음) = 1.1.7 · agy C4(잔존 mkdir 락) = 1.1.7 ⓧ3.
+- master 기준선 114be35b-m 신규 적색 2(B01 H-SECRET-1 · D02 PATH) = §12-5 의 실계정 절대경로 1줄 → `~/…` 로 뜻 보존 치환(원문 보관 문서 아님 · 치환 전 파일 sha256 `49996f795c7f640678af19c2d83d37b98e1199f72f830af1f0f29e82c77eb553`).

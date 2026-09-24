@@ -22,3 +22,36 @@ export function ceoPaletteEntries(g: CeoGateSignals): CeoPaletteEntry[] {
   if (g.drift) return ["repromote"];
   return [];
 }
+
+// ★A-Z14(v116-ceo-hold-az14): 승격 명령(approve_ceo_promotion = cys-dept promote-ceo)의 실패 알림 문구.
+// cys-dept 는 지침이 CEO 로 바뀌지 않았으면 exit 5(보류)를 내고, 백엔드는 그 Err 앞에 이 태그를 단다
+// (src-tauri ceo_promote_result — 같은 문자열을 시험이 대조한다). 보류는 「실패」가 아니라 「아직 안 바꿈」이라
+// 문구를 가른다 — 종전에는 보류가 exit 0 으로 새어 「✅ 승격 완료」로 오보됐다(1098 형상 · 낡은 백업 + 미부트).
+export const CEO_PROMOTE_HELD_TAG = "ceo_promote_held:";
+
+export interface CeoPromoteFailToast {
+  held: boolean;
+  title: string;
+  body: string;
+}
+
+/// 승격 실패/보류 알림(제목·본문). repromote = 팔레트 '재실행'(이미 승격된 기계에 새 템플릿 적용) 경로.
+export function ceoPromoteFailToast(err: unknown, repromote: boolean): CeoPromoteFailToast {
+  const held = String(err).includes(CEO_PROMOTE_HELD_TAG);
+  if (held) {
+    return repromote
+      ? {
+          held,
+          title: "CEO 승격 재실행 보류",
+          body: "새 설정을 아직 적용하지 않았어요. 지금 쓰던 설정은 그대로예요. 이유는 알림의 「자세히」를 눌러 확인해 주세요.",
+        }
+      : {
+          held,
+          title: "CEO 승격 보류",
+          body: "아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 본부 마스터를 아직 시작하지 않았다면 먼저 시작해 주세요. 그래도 같으면 알림의 「자세히」를 눌러 이유를 확인해 주세요.",
+        };
+  }
+  return repromote
+    ? { held, title: "CEO 승격 재실행 실패", body: "새 설정으로 CEO 자리를 다시 세우지 못했습니다. 잠시 뒤 다시 시도해 주세요." }
+    : { held, title: "CEO 승격 실패", body: "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요." };
+}

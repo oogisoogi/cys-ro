@@ -149,3 +149,9 @@
 
 ## §13 정본 게이트(master 지시 09-24 12:56)
 - secret-scan `--all`: 기준 3bc73856 = 35건 · 이 브랜치 첫 측정 = 39건(새 4건 = 내 증거 `headless-final-c1-c18.txt` 의 흉내층 더미 홈 이름 「u」) → 허용 더미 「user」 로 치환(파일 첫 줄에 치환 사실 기재) · `mutate.py` 2행(기존 발견 줄)은 내가 고쳤던 것을 원문으로 되돌림 → **35건 · 기준과 줄 단위 동일**(diff 0). 기존 35건은 1086 통합 몫이라 무접촉.
+- 정본 게이트 전체(master 러너 `gate_runner.py` · 분리 스냅샷 139ca0d1 · 직렬 98스텝 · 12:59:17~13:31:49 · 추적 파일 변경 0 · 스냅샷 자동 제거): **rc≠0 3 · 전부 기준 3bc73856 에 이미 있음**.
+  - B01 부트스트랩 건강성 전량 = RED 148/150(fail 1 = H-SECRET-1 = 위 secret-scan 35건 · skip 1).
+  - D02 secret-scan 사전 게이트 = 35건(기준과 줄 단위 동일).
+  - D07c phoenix ③ `cargo test --bin cysd` = 1041 pass / 1 fail = `v115_seat_takeover_notice_is_screen_output_not_shell_input`(`src/bin/cysd/handlers.rs:12015` 「GUI 토스트 문안이 갈렸다」 — `include_str!("../../../ui/src/main.ts")` 에서 옛 칸 문장을 찾는데 T-UI 3914eaa6 이 그 문장을 main.ts 밖(alertcopy.ts)으로 옮김). 기준 3bc73856 스냅샷에서 같은 시험 단독 실행 = 같은 줄·같은 문구로 FAILED(rc 101) → T-UI 기존 결함 · 이 브랜치 무관(내 main.ts 변경은 exited 리스너뿐).
+  - `cargo test --lib`: A13 534/0 · D07d(phoenix ④) 534/0. D11 팩 콘텐츠 스캔 rc 0. 그 밖 95스텝 rc 0.
+  - 원문 = `docs/v116-ui-evidence/exited-banner/gate/`(summary · B01 판정 줄 · 기준 D07c 단독 실행) · 전체 로그 = `~/msv-scratch/w40-exited/results/139ca0d1/`.

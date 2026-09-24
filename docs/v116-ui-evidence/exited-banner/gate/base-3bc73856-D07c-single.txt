@@ -1,0 +1,12 @@
+[msv] 저장소=$HOME/cys-terminal-src 커밋=3bc7385676c9529ba354eca6d7cdbcd218f480a1
+[msv] 스냅샷=$HOME/msv-scratch/msv-cys-terminal-src-3bc7385676c9-64239-012966
+[msv] 명령: env -u CYS_SOCKET -u CYS_ROLE -u NODE_OPTIONS CYS_NO_AUTOSTART=1 TMPDIR=$HOME/msv-scratch/w40-exited/tmp-base-d07c/ PATH=$HOME/.cargo/bin:/usr/bin:/bin bash -c CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cysd v115_seat_takeover_notice_is_screen_output_not_shell_input -- --test-threads=1
+[msv] 시작 2026-09-24T13:32:39+0900
+test handlers::tests::v115_seat_takeover_notice_is_screen_output_not_shell_input ... FAILED
+thread 'handlers::tests::v115_seat_takeover_notice_is_screen_output_not_shell_input' (64639368) panicked at src/bin/cysd/handlers.rs:12015:9:
+GUI 토스트 문안이 갈렸다
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1044 filtered out; finished in 3.27s
+error: test failed, to rerun pass `--bin cysd`
+[msv] 끝 2026-09-24T13:33:20+0900 · rc=101
+[msv] 추적 파일 변경 수=0
+[msv] 스냅샷 제거: $HOME/msv-scratch/msv-cys-terminal-src-3bc7385676c9-64239-012966

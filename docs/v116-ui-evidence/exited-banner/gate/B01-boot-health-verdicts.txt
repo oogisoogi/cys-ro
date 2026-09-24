@@ -1,0 +1,301 @@
+verdict=BASELINE delivered=none reasons=-
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=QUIET delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=wake reasons=idle_5min:cso
+verdict=WARN delivered=wake reasons=idle_5min:cso
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,label_unjoined:reviewer
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,label_unjoined:reviewer
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,label_unjoined:reviewer
+verdict=BASELINE delivered=none reasons=-
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=BASELINE delivered=none reasons=-
+verdict=BASELINE delivered=none reasons=-
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=SKIPPED_FOREIGN_DAEMON delivered=none reasons=dept pack(pack-dept-9)엔 CYS_SOCKET에 'cys-dept-9' 필요 — 실제=None
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=wake_pending reasons=deadlock_no:no_unassigned_ticket,push_target_fallback:cso_absent,idle_5min:worker,stall:worker(2주기·idle·confirm=True)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=collect_fail:javis_report exit=1
+verdict=WARN delivered=none reasons=collect_fail:javis_report exit=1
+verdict=WARN delivered=none reasons=collect_fail:javis_report exit=1
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker,stall:worker(2주기·idle·confirm=None),stall_unmeasurable:worker(set_status_age)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker,stall:worker(2주기·idle·confirm=False)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=wake reasons=deadlock_no:no_unassigned_ticket,push_target_fallback:cso_absent,idle_5min:worker,stall:worker(2주기·idle·confirm=True)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=wake reasons=deadlock_no:no_unassigned_ticket,push_target_fallback:cso_absent,death:worker
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=BASELINE delivered=none reasons=-
+verdict=NOCHG delivered=none reasons=death_skip:v1_silent_mislabel(master),deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=wake reasons=deadlock_no:no_unassigned_ticket,push_target_fallback:cso_absent,death:worker
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=wake reasons=deadlock_yes,deadlock:미배정 1건·티켓 무활동 20598분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20603분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20608분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20613분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20618분·전 노드 자기보고 30분+
+verdict=BASELINE delivered=none reasons=-
+verdict=NOCHG delivered=none reasons=deadlock_no:some_node_reported_recently
+verdict=NOCHG delivered=none reasons=deadlock_no:some_node_reported_recently
+verdict=NOCHG delivered=none reasons=deadlock_no:some_node_reported_recently
+verdict=NOCHG delivered=none reasons=deadlock_no:some_node_reported_recently
+verdict=NOCHG delivered=none reasons=deadlock_no:some_node_reported_recently
+verdict=BASELINE delivered=none reasons=-
+verdict=BASELINE delivered=none reasons=-
+verdict=NOCHG delivered=none reasons=master_idle:cso(idle=5000s/thr=unmeasured),master_idle:master(idle=912s/thr=900s),deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=wake reasons=deadlock_no:no_unassigned_ticket,master_idle_stuck:master(idle=2700s>=3x900s)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,push_suppressed_seen:master_idle(inflight),master_idle_stuck:master(idle=3000s>=3x900s)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,push_suppressed_seen:master_idle(inflight),master_idle_stuck:master(idle=3300s>=3x900s)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,push_suppressed_seen:master_idle(inflight),master_idle_stuck:master(idle=3600s>=3x900s)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,push_suppressed_seen:master_idle(inflight),master_idle_stuck:master(idle=3900s>=3x900s)
+verdict=BASELINE delivered=none reasons=-
+verdict=NOCHG delivered=none reasons=master_idle:master(idle=2699s/thr=900s),deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=NOCHG delivered=none reasons=deadlock_no:no_unassigned_ticket
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=wake reasons=deadlock_no:no_unassigned_ticket,push_target_fallback:cso_absent,idle_5min:worker,stall:worker(2주기·idle·confirm=True)
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=WARN delivered=none reasons=deadlock_no:no_unassigned_ticket,idle_5min:worker
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=wake reasons=deadlock_yes,deadlock:미배정 1건·티켓 무활동 20598분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20603분·전 노드 자기보고 30분+
+verdict=GAP delivered=none reasons=interval>3cycles
+verdict=WARN delivered=wake reasons=deadlock_yes,deadlock:미배정 1건·티켓 무활동 20625분·전 노드 자기보고 30분+
+verdict=GAP delivered=none reasons=interval>3cycles
+verdict=BASELINE delivered=none reasons=-
+verdict=WARN delivered=wake_pending reasons=deadlock_yes,deadlock:미배정 1건·티켓 무활동 20598분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20603분·전 노드 자기보고 30분+
+verdict=WARN delivered=wake_pending reasons=deadlock_yes,deadlock:미배정 1건·티켓 무활동 20613분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20618분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_seen:deadlock(inflight),deadlock:미배정 1건·티켓 무활동 20623분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_edge:deadlock,deadlock:미배정 1건·티켓 무활동 20624분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_edge:deadlock,deadlock:미배정 1건·티켓 무활동 20629분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_edge:deadlock,deadlock:미배정 1건·티켓 무활동 20634분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_edge:deadlock,deadlock:미배정 1건·티켓 무활동 20639분·전 노드 자기보고 30분+
+verdict=WARN delivered=none reasons=deadlock_yes,push_suppressed_edge:deadlock,deadlock:미배정 1건·티켓 무활동 20644분·전 노드 자기보고 30분+
+  FAIL  H-SECRET-1     W0   산 트리에 시크릿·개인정보가 남아 있다(발행 차단) — exit=1
+  PASS  B-1            W0   PASS: 함수 corpus(원본 fixtures) 53발화/49무시(+filler·창 경계·CLI exit 계약) + 훅 12발화/8무시 + A3 allowlist 10skip/2fire + A2 1skip + A5 판정불가 1skip + G9 파리티 3 + G25 
+  PASS  B-2            W0   ALL PASS
+  PASS  B-3            W0   === 138/138 PASS ===
+  PASS  B-4            W0   javis_bootstrap self-test OK (★부트v2 A4: 러너 exit 파리티 6축(값 고정 3·공간 비침범·명세 §4 정의역·공유 값 의미 일치 5·12 비충돌·부서 전사표 4) + 레인 락 원시 계약 6축(경로 stem·ext·항상접미·바이트범위·생성
+  PASS  B-5            W0   self-test OK — 102 케이스 통과(상태계약 분리·basename매칭·확장자정규화·회수판정4분기·claim-role·엄격ack·F4·무구독폴백슬롯 + W2: 래치 단방향·liveness 3등급+판정불가·Unknown 이원·role_family·배달 3분기 +
+  PASS  B-6            W0   
+  PASS  B-7            W1a  javis_lock self-test OK — 8 케이스(원자쓰기·멱등·busy·재획득·스테일 회수·생존 보유자 보호·컨텍스트 3상·unavailable 분리) · backend=fcntl
+  PASS  B-8            W1b  
+  PASS  B-9            W1b  javis_detect self-test OK (corpus=fixture $HOME/msv-scratch/msv-cys-terminal-src-139ca0d19cf0-95742-fbd6c3/cysjavis-pack/bin/tests/fixtures
+  PASS  G-SYNTAX       W1a  36 파일 × sh/bash 문법 OK
+  PASS  G-PRELUDE      W1a  함수 11종 · stdout 무출력 · loud-skip · 규약 소비 훅 32개 전수 source(의존 0 훅 3개 제외)
+  PASS  G-DISPATCH     W1a  pre-dispatch 하네스 56/56 PASS(guard·cys-hook·appbuild·grill 배선 무회귀)
+  PASS  G-SMOKE        W1a  inject-context OK · save-state OK · guard OK
+  PASS  H-DETECT-1     W1b  혼합의도 5 FIRE / 억제 4 SKIP + 훅 교차 · 계측검증=구 코드 fired=False 재현
+  PASS  H-DETECT-2     W1b  주어 5 FIRE / 인접의문 3 SKIP / 단독 과확장 2 SKIP · 계측검증=구 코드 fired=False 재현
+  PASS  H-DETECT-3     W1b  15=FIRE·16=SKIP(함수·훅) · 구 grep 파리티: 구 코드 fired=True 재현 / 구 코드 fired=False 재현
+  PASS  H-DETECT-4     W1b  LC_ALL=C 에서 3 FIRE / 억제 1 SKIP / CLI 파리티 · 계측검증=구 코드 fired=False 재현
+  PASS  H-DETECT-5     W1b  문자 200 경계 FIRE/창밖 SKIP(함수·훅) · 셸 슬라이스 제거 확인 · 계측검증=구 코드 fired=False 재현
+  PASS  H-DETECT-6     W1a  무발화·cys왕복0·상태무접촉 + 대조군 발화 · 계측검증=구 코드 게이트 부재 확인
+  PASS  H-DETECT-7     W1b  차단 11 role(미지 role 포함)·허용 2 · 계측검증=구 코드 worker-2 오발화 재현
+  PASS  H-DETECT-8     W1b  rc≠0 무발화+로그 · hang 2.7s 내 종료·무발화 · 빈값 미claim 통과 · 계측검증=구 코드 무-데드라인·빈값 오통과 확인
+  PASS  H-DETECT-9     W1b  cannot-judge 정적 loud+알림 · judged-no 침묵 · 계측검증=구 코드 인터프리터 기본값 채움 확인
+  PASS  H-DETECT-10    W1a  발화 실패 보고·로그 경로 동봉 · 계측검증=구 코드 허위 '발화됨' 재현 확인
+  PASS  H-DETECT-11    W1a  런별 2파일 분리·마커 2종 보존·latest 포인터·상한 10 준수
+  PASS  H-MISSION-1    W5   임무 미지정: spawn 1 · 발화 로그 1 · 착수금지 문안 · 게이트 닫힘 · 임무 지정: 종전 발화 경로 보존 · 모듈 부재: 판정 불가여도 spawn(억제 폐지) · 판정 불가 stderr 흔적 · 우회로 2종 원문 재투입: 대장 미기록·게이트 닫힘 · 기계 
+  PASS  H-EXIT-1       W1b  완주=stdout JSON+귀속+종결 · 거부=exit 7·ok:null(오염 0) · 마커 없는 실패=exit 10·ok:null · 인프라 실패=ok:false 유지 · running 선기록(SIGKILL 생존) · 계측검증=구 코드 run_id·종결 기록 부재 확
+  PASS  H-EXIT-2       W2   busy=outcome 구분 + bare exit 75(3자 파리티) · 티켓 소비는 boot --json 판정 후 + busy 배제(실스폰 확인) · 소비부 busy≠Fatal 실측 · 계측검증=구 코드 Busy=산문+exit0(타입 구분 0) 확인
+  PASS  H-EXIT-3       W2   소스 구조: 0/7/3/2 분기 + claim_denied 코드 판정 · bootstrap 소비: exit 1차 근거 + 3/2 처방 분기(문자열=구 바이너리 폴백) · 실측 생략(구조 단언만) — 사유: 바이너리 미빌드 · 계측검증=구 코드=성공 0/그 밖 1(1비트
+  PASS  H-IDENT-1      W6   L1 데몬/CLI: 신원 실패 전용 코드 + rc 6 분기 · L1-P1 seat 토큰: 데몬 1차 대조+신선 재해석 순서 · CLI/훅 첨부 배선 · BOOT_GATES=0 토큰 생략 · rc 계약 불변 · 경계 회귀 핀 존치 · L2 훅 선행 claim(spawn 
+  PASS  H-EXIT-4       W2   outcome 6종·mandatory·플랫폼 install_hint · 의무 미설치=fatal 계상 · PLAN 정책열 rust↔python 파리티 2행 · 계측검증=구 코드 PLAN=(role,agent) 2열·힌트 인라인 산문 확인
+  PASS  H-EXIT-5       W2   게이트 실측: 사용오류 3케이스=64 · hard=2 유지 · 게이트 self-test(내부예외=70·계약채널) PASS · 소비부: usage-error/unknown-exit 분리 + loud + 채널 분리 · 계측검증=구 게이트=argparse 기본 exit 2(
+  PASS  H-EXIT-6       W2   분류 6케이스(2·127=영구+처방 / 124·1·255=transient) · 헬퍼 부재 실경로 127 · boot-reviewers 영구 분기 · 계측검증=구 코드=bool 반환(전 비0 동일 취급) 확인
+  PASS  H-EXIT-7       W2   t1 데몬소실=재확인1·재시도0·즉시이탈·데몬처방 · t2a ping생존=유계 3회·팩결손가능성 진단 · t2b 팩결손 실물=rc2 실측·확정 진단(데몬 오진 소멸) · t3 미기동=재시도 3회 소진·재확인 0(불변) · 계측검증=W0=분기 자체 부재 · W2=재확인·
+  PASS  H-EXIT-8       W3   미발견=폴백 1건 · 부서 팩=등록 0 · 부서+account=좁힌 1건 · 임시 팩=등록 0 · `or [기본]` 관용구 0 · 계측검증=구 코드 폴백 관용구 3+·sentinel 부재 확인
+  PASS  H-EXIT-9       W1b  exit 11 · stdout 무접촉 · 비-master 명시 · waited=false · 별도 기록 · 계측검증=구 코드 침묵 skip(exit 0) 확인
+  PASS  H-EXIT-11      W6   4단 파리티(lib 78 ↔ CLI ↔ python ↔ GUI) · 헤더 exit 표 비침범(H-DOC-4 무충돌) · 소비 실측: 보류≠Fatal·≠busy · 진짜 실패=Fatal 불변 · 계측검증=구 트리=상수·타입 양쪽 부재 확인
+  PASS  H-EXIT-10      W1a  exit 3 · 알림 채널=feed · boot-last notify 기록 · 계측검증=구 코드 카브아웃 존재 확인
+  PASS  H-CONC-1       W1a  race: 1 acquired / 4 busy (backend=fcntl) · bootstrap: 2번째 호출 no-op 확인
+  PASS  H-CONC-2       W2   iteration 마다 재조회 · A8rs: pidfile 락(O_EXCL)+스테일 회수 · LAUNCH 경로 락 참여+재진입 방어+유계 대기 · ④-b 가 싱글플라이트 임계영역 내부 · 계측검증=구 코드 non-unix=무락 Acquired(상호배제 0) 확인
+  PASS  H-CONC-3       W3   고정 tmp census 10파일·19건 이내(신규 0 · 검출기 음성 대조 2축 통과) · 등록기 4종 단일 RMW 경유·고정 .tmp 0(preflight+dept_migrate+guard_register+bootstrap) · Rust 시드 원자 쓰기 · 유일 t
+  PASS  H-SAFE-1       W2   3중 AND(명시 empty·agent_alive=false·나이>예산)+미상 보류 · 미확정=파괴 0·스폰 0(typed skipped_unconfirmed) · 2선 방어: reclaim Unknown=hold
+  PASS  H-SAFE-2       W2   안전 밸브: agent_alive 커널 사실 + 맨 셸 판별 AND(P3-0) · 마커 항 선행 · 배선 귀결 보존 · 밸브 근거=화면 무의존(B4 오탐 방향 불변) · bare exit=신계약(0/1/75 · boot_exit_code 단일 소유) · 스큐 폴백: 미
+  PASS  H-SAFE-W       W2   RAII: 핸들 닫고 pidfile 삭제 · 나이 backstop 선행 + 자기 잔재 회수 · fail-open: 판정불가·삭제실패 → 직렬화 포기(진행) · 임계 파리티 + 정상 부트 최악치 초과 단언 · 파괴 경로 Windows 확장 금지 + loud no-op
+  PASS  H-SAFE-3       W2   재주입: pending 금지·멱등 1회·지점 1개 · clear 트리거 비선점(래치 영속은 발화 뒤) · wakeup: 파서 드리프트=unknown(배달 계속) · 동족 대표=최선 등급·의무 좌석 전원 충족·8회 반복 결정론
+  PASS  H-CONC-4       W2   재검증 4반증·프로세스 표 재조회 0 · claim_role·create 양 경로 소비 · announce=전이 확정 후·락 해제 후 · live-slot 보호=agent_alive 한정(죽은/행 좌석 latest-wins 유지) · 가족 전이=경고+감사(거부 아님) 
+  PASS  H-CONC-5       W1b  훅 분기=nohup(setsid=False) · pgid 분리=False · group-kill 생존=False → boot_killed_by_group_kill · 대조군 생존 확인
+  PASS  H-CONC-6       W1a  pidfile 스테일 회수 OK · 생존 보유자 보호 OK · 부트스트랩 스테일 락 회수 OK
+  PASS  H-WIN-1        W1a  차단 4 / 통과 1 (Write+Bash 양 경로) · 계측검증=구 코드 무음 우회 재현 확인
+  PASS  H-WIN-2        W1a  정적: 4훅 전수 cys_is_abs · 기능: 4훅 × 2표기(C:/·C:\) 해소 확인
+  PASS  H-WIN-3        W1a  명명 부서·named pipe 인식 + 셸↔python 술어 일치 · 계측검증=구 코드 dept-N 한정 글롭 확인
+  PASS  H-WIN-4        W1a  taskkill 차단·rc2/rc3 형상 분리·POSIX 회귀 0 · 계측검증=구 코드 taskkill 부재 확인
+  PASS  H-WIN-5        W1a  훅 35개 경성 참조 0 · 계측검증=구 인벤토리 28훅 중 17훅 FIRE · python-only PATH 3훅 정상
+  PASS  H-WIN-6        W1a  백슬래시 팩 접두 매칭 + 팩 밖 무동작
+  PASS  H-WIN-7        W1a  cygpath 변환·인용 왕복 검증 · unix 무변경
+  PASS  H-WIN-8        W1a  lib 단일 정의·사본 0·pane/schedule 소비 · 계측검증=구 코드 사본·pane 미소비 확인
+  PASS  H-WIN-9        W4   후보 확장자 4·npm prefix 2·실행권 판정 · 힌트 교체 · python 소비 · 계측검증=구 코드 후보 순회 부재 확인
+  PASS  H-WIN-10       W4   nt=무효선언+/F직행 · posix=TERM→KILL 보존 · 사유 명시 · 분기 배선 · 계측검증=구 코드 무조건 1차 그레이스풀 확인
+  SKIP  H-WIN-11       W4   Windows 실기는 CI 잡(.github/workflows/windows-health.yml)에서 수행한다 — 이 기계(darwin)에서는 잡 계약만 검증했다(windows-latest·python 셋업·러너 H-WIN+H-CONC-1/3+H-DETECT-10 실기
+  PASS  H-WIN-12       W5   System32 스텁(timeout·gtimeout) 하 save-state exit 0 + BOOT_SNAPSHOT.md 실재
+  PASS  H-WIN-BASH     W6   배선 위반 0 · 합성 표본 5종 전부 검출 · 계측검증=기준 a96d8b1 적색 확인 · Rust 회귀 핀 3종 실재 · 빌드 레인 동봉 단언 실재
+  PASS  H-CYCLE-1      W6   분기표(posix pgrep 불변·nt PS fail-closed)+비파괴 pid_alive+fork SKIP 가드 — 전 플랫폼 주입식 판정
+  PASS  H-PYSEAL-1     W6   sh source 만으로 값=1 + export(자식 상속) 확인 · 계측검증 구 _lib.sh(6d1871f) rc=5 재현
+  PASS  H-PRED-1       W2   공유 fixture 7종 × 로스터 2형상(설치·깨끗) 차분 0(unknown 잔존=의도된 차분) · G26 좌석 양쪽 결손>0 · 정상 팀 결손 0 · W-B3 2형상: ⑤불변+잔존 unknown 결손+시한부 복귀 · 위임 배선+구팩 폴백(스큐 시뮬·stderr 고지
+  PASS  H-SEAT-4AXIS   W6   축① Rust: 등급 실재·순서(관문<agent_alive)·already_alive 제외·파괴체인 이전 이탈·3중 AND 동결 · 축②③④ 차분 0(관문=미충족∧결손>0 · 대조군 2종=충족∧결손0) · 두 축 분리: 미충족 ∧ 생존(파괴 금지) · 롤백 3스위치(마
+  PASS  H-AUTH-PARSE   W6   auth_class 8값 · 통과 5값 · unknown/미인증/관문 fail-closed · 위조 신원 금지: 쓰기 API 0 · 생성 리터럴 0(합성 표본 선시험) · E-2: oauthAccount 주장 = 진단 전용(판정 분기 0) · 열거 규칙 정본 1벌 · 
+  PASS  H-AUTH-SELFLOOP W6   자리: 예약<특권<멱등<한도<인증<스폰 · 스폰 합류 1지점(state.rs 정의 + handlers.rs 호출 1건) · 자기 발화 루프 0: 처방 문안 + 안정 문자열 28종 × 생산 룰 5종 · 거부=명시 오류(close 어휘 0) · 오살 통과 6사유 · 서브프
+  PASS  H-PRED-2       W2   Rust 3등급 미러(래치·agent_alive·좌석·판정불가) · Unknown 이원: 파괴=hold / 스폰=시한부 해소 · G27: exited 행 배제 + 공유 술어 해소 · reclaim: 좌석 empty 만 kill · 계측검증=구 코드=cys list 전문
+  PASS  H-PRED-3       W2   재시작·업그레이드 fixture(로스터 2형상): absent 오판 0 · check 적색 0 · 균형 술어 폴백 검체 보존(반전 아님·보강) · 영속+양쪽 노출+1회성 래치+restore 하이드레이션 가드 · 계측검증=구 코드=agent_alive→awake 박제 확
+  PASS  H-PRED-4       W2   슬롯 5케이스+이중충전 · check 재해소·실충전자 라벨 · 결손 0 정합 · 고지 문구 · B12 감지 3축 · 계측검증=구 코드=required 정확일치만(대체 좌석 미인정) 확인
+  PASS  H-PRED-5       W2   발권 role 11종 × 가족 판정 · 미지/변형 4종 wildcard 0 · Rust 정본 미러 · python 소비처 전수 해소 · 셸 case(G2/A3) 구조
+  PASS  H-PRED-6       W2   env 4키 목록·순서 파리티 · python3 참조 훅 전수 CYS_PY 해소 · 부서 판정(셸↔python) 정합 · BUDGET 상수 15종 rust↔python 파리티(cys.rs 9 · cysd 감독자 6 · 유도식 핀 2) · PEND 0종
+  PASS  H-PRED-7       W2   Fatal 집합=cso·worker · Fatal⊆유효의무(감지 2케이스) · 고아 요건 0 · Degrade 부재 처방 · PLAN 파리티 2행 · exit4=Fatal 한정
+  PASS  H-PRED-8       W2   send 직전 커서 스냅샷 · 3소비자(마커·실패·주입검증) 델타 결박 · 마커 분기 셸 프롬프트 가드 · 개수 비교 구현 0(배선·판정부) · line_count 커서 노출 · 계측검증=구 코드=화면 전체 매칭 + 카운트 회계 확인
+  PASS  H-PRED-9       W4   필드 계층 3키·디스크 존중 · trust-prompt 한정 소비 · _schema=3 · 계약 문구 · 계측검증=구 코드 하드코딩·whole-object 폴백·신규 키 부재 확인
+  PASS  H-DELIVER-1    W6   정본 6관문(사람전용 2) · 버전 핀 · 계층 3키 배달 · 봉투=override 전용(사본 0) · 행동검체 배선 · 계측검증=기준 트리에 정본·신규 키 부재 확인
+  PASS  H-GATE-SOT-1   W6   자기규칙: 위젯 AND 6/6 실재·보편토큰 단독 0 · 검체 5종 실재 · 대조군 커버리지 10행/관문 6종 전수 커버 · 집행 검체 실재 · 합성 변조 7종 전건 적발 · agents.json 문면 정본 포함 · 코드 내장 needle 2건 면제표 일치 · MODA
+  PASS  H-PRED-10      W4   cwd+PACK 실측 파생(2대상) · Desktop 리터럴 0 · 계측검증=구 코드 Desktop 하드코딩 확인
+  PASS  H-TIME-1       W2   파리티 3쌍 역전 0 · 하한 fixture 5종 clamp · 외부 상한 파생 확인 · 소비처 하드코딩 timeout 제거 · 데드라인 전파(감액 0·유계화) · 하트비트 3지점(stderr) · cysd 감독자 상수 6종 등재 + 유도식 핀 2종 · budget s
+  PASS  H-TIME-2       W2   훅 안내=파생 주입 · 하드코딩 0 · 안내 창=120s(CHECK 상수 파생) · ④·④-b 진행 문구 파생 · 계측검증=구 훅=하드코딩 '최대 120s' 확인
+  PASS  H-TIME-3       W2   카운트 회계 0(실코드·판정부) · 판정부 시계 무접촉 · Instant 데드라인 + 폴백 시점 벽시계 · 신뢰 분기 ready 봉쇄 해제 · 상한·틱 BUDGET 파생 · 계측검증=구 코드=waited+=2 카운트 회계(trust sleep 무집계) 확인
+  PASS  H-DOC-1        W1b  §0-A 조건부 계약 · 훅 note 신호·잔여의무 정합 · T1 임무 게이트 핀 · template 2벌 동일·폴백 보존 · 계측검증=구 template 산문 부트 지시 확인
+  PASS  H-DOC-6        W1b  하드코딩 0줄 · §9 SESSION_STATE·RECOVERY·TODO 레인 파생 · 계측검증=구 문서 하드코딩 3줄 확인
+  PASS  H-DOC-2        W4   파생=master·cso·worker (필수 역할 전원+master — 총 3노드 · 리뷰어 · required 에 master 부재 · 훅 리터럴 0 · 계측검증=구 훅 '(5노드)' 리터럴 확인
+  PASS  H-DOC-3        W4   문서 동사 ['list', 'sock'] ⊆ 허용(가드 차단 8종) · 대안 2경로 명시 · 계측검증=구 문서 위반 동사 ['down', 'launch'] 확인
+  PASS  H-DOC-4        W4   exit 상수 11종 ↔ 헤더 표 13종 대조 · 유령 0·결손 0 · busy 파리티 · 계측검증=W0 이전 헤더 '2=preflight' 유령 계약 확인
+  PASS  H-DOC-5        W4   안내 2곳 generic 0 · 로스터 4종 정합 · 위험 고지 · 계측검증=W0 이전 안내 generic reviewer 확인
+  PASS  H-DOC-9        W5   기동 계약·착수 규율 마커 2종 핀 · 계측검증=D4-a 안내=마커 2종 부재 확인
+  PASS  H-DOC-10       W6   인자↔인용 3자 정합(존재) · state.rs 근거 강건성(재부모화·검체 포인터) · 팩→Rust 동시개정 의무 명문 · 합성 표본 4종(반쪽 3·동시부재 1) 판별
+  PASS  H-DOC-11       W6   훅 2벌 자기완결(상한·측정불능·배달 고지) · §0-A 정본 병존 · preflight 배달 축 WARN 고정 · 합성 표본 판별
+  PASS  H-DOC-7        W4   C71 실재·의미표 4키·WARN=resume_arg 단독·스키마(1,2,3) 파리티 · 계측검증=구 preflight C71 부재 확인
+  PASS  H-DOC-8        W4   1차=체인·폴백=--json·강등 typed · mandatory 한정 경고 · 진입점 4곳 정합 · 계측검증=구 GUI 산문 매칭·체인 미사용 확인
+  PASS  H-SEED-1       W3   집합 2항 2언어 일치(timeout 포함 4-튜플) · UserPromptSubmit timeout 600s 선언(하네스 기본 30s 초과) · 파이썬 내부 스큐 0 · C28 등록 주체 확인 · Rust 집행자 2 소비 · 개인 프로필 병합 동일 집합 · 설치 후 
+  PASS  H-SEED-U21     W6   필드 순서 계약(matcher→timeout) · 파서 합성 표본 3종 시험 통과 · Rust 2축 판정 + 교체 경로 + ⊇ 게이트 동축 · 롤백 마스터 접기 + 엄격 비교(2언어) · 교체 경로 실거동: 중복 0 · 사용자 훅 보존 · 값 600s · 멱등 · 고값
+  PASS  H-SEED-2       W3   CLAUDE_CONFIG_DIR 최우선 · role-bootstrap 미등록=FAIL · 등록 시 FAIL 해소 · 계측검증=구 C28 FAIL 부재 + 구 discover CLAUDE_CONFIG_DIR 미참조 확인
+  PASS  H-SEED-3       W3   빈 프로필 후보화 · 등록기 생성 확인 · Rust 파리티(디렉터리 기준) · 계측검증=구 코드 isfile 게이트 확인
+  PASS  H-SEED-4       W3   launch 주입+검증+fail-closed · rotate=launch 재귀(복원 상속) · allocate=account_dir 기록 · 유도 3순위·자기치유 실측 · 계측검증=구 launch=CYS_ACCOUNT_DIR 미주입 확인
+  PASS  H-SEED-5       W3   사용자 2보존 / 구·파손 2회수 / 정상 1보존 · 구 술어 FIRE 확인(부분문자열) · 계측검증=구 술어 원문(부분문자열 2개) 확인
+  PASS  H-SEED-6       W6   Rust 술어=pack-dept- 접두 · Python·셸 술어 파리티 · 파이썬 게이트 기능 실측 · 폴백 0·시드 생략 WARN · 제거 엔진 단일+teardown 배선 · C56 탐지 존치
+  PASS  H-LIFE-1       W3   경로 규약(base 불변·부서 분리) · base 완주 기록 · 부서 파일 신설·base 무오염 · base 마커=CEO 게이트 유지 · 부서 fast path 발동 · run 귀속 교차 단언 · 계측검증=구 코드=공유 boot-last + base 전용 fast pa
+  PASS  H-LANE-1       W6   정본 self-test 통과 · 재수출 4종 동일객체 · 폴백 전수 동치 154쌍 · 합성 표본 2종 FIRE · 롤백 env 1지점·기본=정본 · lane-path all 경로 동일·출처 관측 분별(base·dept) · 어휘 보존(exit 7/10/11 · skip
+  PASS  H-PACK-TRACK-1 W6   build.rs 전제(ls-files·제외규칙) 확인 · 추적 674건 · 누락 0 · 합성 표본 4종(미탐·과탐 양방향) 판별
+  PASS  H-LIFE-2       W3   라벨 37개 유일 · 호출부 리터럴 0 · 서수=실행순서 · 실측 9단계 단조 · 계측검증=구 코드=동명이의 2회 + 시도별 라벨 조립 확인
+  PASS  H-OBS-1        W2   배달 4케이스 분기 + 마커 결박 · 재주입=delivered_no_ack 한정·멱등 1회 · 큐 조회 경로 · 래치 ack 경계 · 계측검증=구 코드=단일 no_ack(미배달↔배달-무ack 구분 0) 확인
+  PASS  H-OBS-2        W2   상태 필드+전용 RPC+양쪽 노출 · 자칭 검증 차단(신원 게이트) · 신호=ack 래치 · 화면=보조 증거 · 치명 격상 0 · 전문 재주입 0(재주입은 boot_node 몫) · directive.unverified 이벤트 · 계측검증=구 코드=화면 문자열 검증 +
+  PASS  H-OBS-3        W1a  목 ps/lsof 로 claude 3형태만 계수(정답 3) · 계측검증=구 훅 과대계수 6 재현
+  PASS  H-SOUL-LANE-1  W1a  레인 soul 우선 · 부재 시 레거시 폴백 보존 · 계측검증=구 훅 본부 soul 주입 재현
+  PASS  H-LANE-GUARD-1 W1a  양성 1(조기 종료·stdout 0) · 음성 4(같은 팩·비-팩·opt-out·오버레이 형상)
+  PASS  H-W5-N1        W5   24주기 push 0 · badge=quiet · 대장 24건 · 계측검증=구 코드 5bec3ab 에서 master push 2건 재현
+  PASS  H-W5-N2        W5   접두 해소 2건 · 미조인=미발화+ledger+badge('스키마 결함')
+  PASS  H-W5-N3        W5   154s<300s 무발화 · 대장 기록만 · badge=quiet
+  PASS  H-W5-N4        W5   2레인 대장·counters 격리 · 가드 SKIP/정합 양방향 · 카운터 무접촉
+  PASS  H-W5-N5        W5   10주기 반복 배달실패 → master push 1건 고정 · wake_pending 기록 · 배지 노출
+  PASS  H-W5-N6A       W5   collect 실패=ledger+badge · 직송 0 · push 0 · 계측검증=구 코드 fail-open 직송 2경로 존재 확인
+  PASS  H-W5-N6B       W5   exit 0 · 직송 0 · push 0 · gate_signal 토큰 · 데몬 allowlist 이음매 확인
+  PASS  H-W5-P1        W5   확증=1 · 미측정=0(+배지) · 반증=0 · severity=critical · 8주기 반복에도 1건 고정
+  PASS  H-W5-P2        W5   deadman 1건 → push 1 · 이후 5주기 재발화 0 · 독자 판정 경로 부재
+  PASS  H-W5-P2b       W5   silent 오라벨 1건 → push 0 · badge 0 · 대장 death_skip 기록만
+  PASS  H-W5-P2c       W5   surface-gone 1건 → push 1(critical) · skip 0 — 가드는 silent 정확 일치 한정
+  PASS  H-W5-P3        W5   성립=CSO 1건 · 자기보고 신선=0 · 원장 미측정=0 · 술어에 idle 미사용
+  PASS  H-W5-P4        W5   정보층: push 0 · WARN 0 · 대장 master_idle 기록 · info 배지 · idle 도메인 무혼입
+  PASS  H-W5-P4b       W5   3×임계: push 1(cso·critical) · 지속 5주기 재발화 0 · 경계 2699s 미발화 · death 무혼입
+  PASS  H-W5-C1        W5   crash(claimed 잔존) 후 재실행 — 총 1..2 · duplicate ≤1 · seen 근거 잔존
+  PASS  H-W5-C2        W5   단위 경계(±1s)·severity 우회·시계역행 · e2e 만료 전 0/후 1 · GC 동작
+  PASS  H-W5-C3        W5   미영수증=inflight 유지 · TTL당 재시도 1 · 영수증 수신=delivered 확정 후 쿨다운 발효
+  PASS  H-PACK-CRLF    W6   임베드 대상 479개 스캔(바이너리 0 제외) · CRLF 0 · .gitattributes 4규칙 실재 · check-attr 해소 확인 · build.rs 가드③ 블록(2235자) 안에 검출·우회분기·panic 3축 실재
+  PASS  H-READY-13     W6   판정 단일 소유 · 숨은 입력 0 · 관문 축=SOT 소비 · 문면 사본 0(11종 대조) · 소비처 2종 경유(부트·재주입) · 롤백 1지점·엄격 비교 · 보류 귀결 선행 확인(close 0) · 진리표: 관문 6화면 × 밸브 × 델타 + 오탐 대조군 · 계측검증=기
+  PASS  H-KILLCHAIN-1  W6   판정 단일 소유 · 숨은 입력 0 · 문면 SOT 소비 · 사본 0(11종 대조) · 그물 1지점(주입 헬퍼 2종 × 전송 2지점) · 생애 창 상한(키 부재=판정 불가) · 부트 창 상수 · 한 왕복 스냅샷 공유 · 보류 귀결(close 0 · kill 0) · 보류
+  PASS  H-SEED-U19     W6   별도 단계 + 순수 계획기 실재 · 도달성 정상(시드 호출 offset 1986 < 조기 return offset 2200) · 합성 표본 3종 탐지기 시험 통과 · 개인 프로필 무접촉(시드부에 병합기·홈 탐색 0) · 롤백 마스터 접기 + 엄격 비교 + env 1지점
+  PASS  H-TIMEOUT-U29  W6   얇은 집행기 실재 + U-21 교체 경로 재사용(append 경로 0) · 도달성 정상(재조정 호출 offset 2833 ≤ 조기 return offset 3447) · 합성 표본 3종 통과 · 억제 분기에 병합기·프로필 0 · GUI 업데이트 경로 --no-insta
+  PASS  H-VOICE-U29    W6   cys 부재: stdout 556바이트 통보 · exit 0 · 무발화 · 문안: 사유+조치+복구 순서(제외→복원)+무허위보고 규율 · 유계성: 연속 4회 중 통보 1회 · 래치 ['cys-hook-notice-surface-role-unjudged'] · judged
+  PASS  H-META-PIN     W6   레지스트리 4이름/5경로 · 등재 경로 5건 실재·상한 미만(최대 1266023자) · 소비 검체 13종 경유 확인 · 우회 직접 독자 14종 동결 일치
+  PASS  H-META-READ    W6   _read 절단=Fail 가드 실재 · 대상 18경로 수확(리터럴 65·변수 2) · 최대 src/bin/cys.rs=1266023자 · 상한 8000000자(여유 6.3배) · 관측 최대 1266023자(cys.rs · 237경로) · 계측대조 구상한400000 절단
+  PASS  H-META-OFF     W6   등재 off 1 · pin 8 · 모듈 env 수확 8 == 등재 8 · 배선 핀: Disabled 우선·GREEN 박탈·exit 2·fd 분리 · 행동 실증: off→UNMEASURED/exit2 · pin→UNMEASURED/exit2 · 대조군→GREEN/exit
+  PASS  H-HOOK-DECIDE-1 W6   위반 0 · 계측대조 a96d8b1 에서 37건 FIRE · 합성 변조 8종 전건 적발
+  PASS  H-HOOK-DECIDE-2 W6   contract_version=1 · event=user-prompt-submit · 토큰접두='[cys-hook] hook-decide: ' · exit표(보조) {0: 'proceed', 1: 'daemon-error', 3: 'suppress', 4: 'undec
+  PASS  H-HOOK-DECIDE-3 W6   합성표본 양성 3/3 · 음성대조 6/6 통과
+  PASS  H-HOOK-DECIDE-4 W6   라우팅 6경로 전건 일치(토큰 부재·proceed·suppress·구 데몬 스큐·미지 토큰·롤백)
+  PASS  H-BOOT-INTENT-1 W6   frontdoor: 스폰 0·정직 note·규율 보존 · supervisor_off: 조용한 폴백 spawn 1 · 구 CLI 모사: 조용한 스큐 폴백 spawn 1 · rc 불일치: 폴백 spawn 1 + loud · 복수 토큰: 폴백 spawn 1 + loud · 
+  PASS  H-TICK-ALIVE   W6   틱 계약 위반 0 · 수리 전 985093d 에서 1건 FIRE · 합성 변조 5종 전건 적발
+  PASS  H-BOOT-SUP-1   W6   안전 계약 위반 0 · 수리 전 985093d 에서 1건 FIRE · 합성 변조 20종 전건 적발
+  PASS  H-CI-TAG-1     W6   트리거 = feat/** + tags:v* · pull_request 없음 · 전브랜치 확장 없음 · 잡 무조건 실행 · 합성 변조 3종 전건 적발
+  PASS  H-EVID-1       W6   증거 1건 · 관측 6건 · 대장 1:1 · 합성 표본 16건 전건 적발
+  PASS  H-FAKE-1       W6   시나리오 14종(실측 9 · 코퍼스 3 · 합성 2) · 코퍼스 파리티 위반 0 · 합성 변조 7종 전건 적발
+  PASS  H-FAKE-2       W6   실기 PTY · 사례 19건 전건 일치 · 시나리오 14종 전수 구동 · 면책 Return/Left+Return = rc 1 · Down+Return·`2` = 생존
+  PASS  H-FAKE-3       W6   변조 4종 전건 적발 · left-moves-focus→bypass-left-return · return-accepts→bypass-return,bypass-left-return · no-exit→bypass-return,bypass-left-return · digit
+  PASS  H-CI-COVER-1   W6   등재 150종 · CI 레인 5개(전량 ci-branch.yml · 부분 pack-release.yml:1종,release.yml:1종,release.yml:1종,windows-health.yml:19종) · 미실행 0 · 합성 변조 3종 전건 적발
+  PASS  H-DOC-KEYCHAIN-1 W6   4벌 정합(agents.json · pack.rs · cys-dept · RELEASE_NOTES_0.2.2.md) · 위반 0 · 합성 변조 4종 전건 적발
+  PASS  H-BOOT-GATE-78 W6   exit 78 파리티(rust lib ↔ python boot/launch) · 행위 8축 실측(Fatal 비오판·busy 비오판·반드시 적발·처방 4문·두 축 OR·과잉 발화 0) · 계측검증=구 소비부=제3 분기 부재(보류가 Degrade 로 흐름) 확인
+  PASS  H-RESET-SENT-1 W6   경로 주입·절대경로 강제·기본 경로 보존 · 테스트 격리 · 계측검증=구 트리=고정 홈 경로 + 라이브 백업·복원 확인
+[boot-health] verdict=RED pass=148 fail=1 skip=1 disabled=0 pending=0 total=150 376.9s

@@ -2453,6 +2453,28 @@ pub fn inject_claude_alt_screen_default_for(
     env_pairs.push((ENV_CLAUDE_NO_ALT_SCREEN.to_string(), "1".to_string()));
 }
 
+/// ★v116-integ B(master#70442818): claude 의 **제안 글(prompt suggestion)** 을 끄는 env 이름(1지점).
+/// 제안 글은 답 뒤 입력칸에 회색 예문을 띄우며 추가 요청을 쓴다. 기본 팩 agents.json 은 이 키를 "false" 로
+/// 싣지만(D · d7ec7b9b), 사용자가 agents.json 을 고친 기계는 그 판이 디스크에 들어오지 않는다
+/// (사용자 소유 파일 · `.new` 병치만 — pack.rs decide_file_action). 그래서 조립 지점에서 **키 부재 시에만**
+/// 채운다(cysd governance.rs input_line_state 머리 주석이 「1차 방어」로 적어 둔 자리).
+pub const ENV_CLAUDE_PROMPT_SUGGESTION: &str = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION";
+
+/// B 헬퍼 — [`inject_claude_alt_screen_default_for`] 와 같은 **불가침 3계약**: ⑴ 키 부재 시에만 append
+/// ⑵ 사용자 값 불가침("true"·빈 값 포함 — 무엇이든 있으면 손대지 않는다) ⑶ 재정렬 금지(끝에 붙이고
+/// 기존 순서 보존). 대상 = `bin == "claude"` 만 · **OS 게이트 없음** — 기본 팩(D)이 이미 전 OS 에 같은
+/// 값을 싣고, 이 env 는 기능 끄기뿐이라 D5 의 Windows 강등 사유(전 pane 사망 위험)가 없다. Windows 에서
+/// 실제로 pane 에 닿는 자리는 D5 와 같다(run_launch_agent_opts 의 surface.create env 맵).
+pub fn inject_claude_prompt_suggestion_default(env_pairs: &mut Vec<(String, String)>, bin: &str) {
+    if bin != "claude" {
+        return;
+    }
+    if env_pairs.iter().any(|(k, _)| k == ENV_CLAUDE_PROMPT_SUGGESTION) {
+        return; // 사용자 값 절대 불가침 — 부재 시에만 기본값.
+    }
+    env_pairs.push((ENV_CLAUDE_PROMPT_SUGGESTION.to_string(), "false".to_string()));
+}
+
 /// Claude Code projects/ 디렉터리명 munge — 실측: '/'와 특수문자가 '-'로 치환된다.
 /// ASCII 영숫자·'-'만 보존하는 보수 구현. resume 사전검증 게이트(cys.rs)와 usage 휴리스틱이 공유한다.
 pub fn claude_project_component(cwd: &str) -> String {
@@ -5359,6 +5381,35 @@ mod tests {
             "d5_win_opt_in 은 (env {D5_WIN_OPT_IN_ENV}, ~/{D5_WIN_OPT_IN_FILE} 존재)를 \
              d5_win_opt_in_from 에 먹이는 얇은 래퍼여야 한다"
         );
+    }
+
+    /// ★v116-integ B: 제안 글 끄기 env 주입의 불가침 3계약 + 대상 한정.
+    #[test]
+    fn claude_prompt_suggestion_env_injection_contracts() {
+        let k = ENV_CLAUDE_PROMPT_SUGGESTION;
+        let cfg = ("CLAUDE_CONFIG_DIR".to_string(), "${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}".to_string());
+        // ⑴ 키 부재 → 끝에 "false" 1쌍 · 기존 순서 보존(⑶)
+        let mut absent = vec![cfg.clone()];
+        inject_claude_prompt_suggestion_default(&mut absent, "claude");
+        assert_eq!(absent, vec![cfg.clone(), (k.to_string(), "false".to_string())], "키 부재면 끝에 false 1쌍");
+        // ⑵ 사용자 값 불가침 — "true" 도, 빈 값도 그대로 · 추가 0
+        for user_val in ["true", "", "0", "false"] {
+            let mut mine = vec![(k.to_string(), user_val.to_string()), cfg.clone()];
+            let before = mine.clone();
+            inject_claude_prompt_suggestion_default(&mut mine, "claude");
+            assert_eq!(mine, before, "사용자 값 {user_val:?} 이 있으면 손대지 않는다");
+        }
+        // 멱등 — 두 번 불러도 1쌍
+        let mut twice = vec![cfg.clone()];
+        inject_claude_prompt_suggestion_default(&mut twice, "claude");
+        inject_claude_prompt_suggestion_default(&mut twice, "claude");
+        assert_eq!(twice.iter().filter(|(kk, _)| kk == k).count(), 1, "중복 주입 0");
+        // 대상 한정 — claude 밖(codex·빈 이름)은 주입 0
+        for bin in ["codex", "gemini", "", "claude-code"] {
+            let mut other = vec![cfg.clone()];
+            inject_claude_prompt_suggestion_default(&mut other, bin);
+            assert_eq!(other, vec![cfg.clone()], "bin {bin:?} 은 비대상");
+        }
     }
 }
 

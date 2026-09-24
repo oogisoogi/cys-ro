@@ -10735,6 +10735,8 @@ fn boot_agent_on_surface(
     // 있다는 이유로 "Windows 는 env 로 막힌다"고 판단하지 마라 — 규약 단일화(사본 금지)를 위해
     // 두 소비처가 모두 lib 헬퍼를 경유할 뿐이다.
     cys::inject_claude_alt_screen_default(&mut env_pairs, extract_bin(&cmd, agent));
+    // ★v116-integ B: 제안 글 끄기 env — 키 부재 시에만(사용자 agents.json 을 고친 기계 포함 · lib 헬퍼 doc).
+    cys::inject_claude_prompt_suggestion_default(&mut env_pairs, extract_bin(&cmd, agent));
     let (send, _send_env) = render_launch(&cmd, &env_pairs);
     // ★(W2 · B4) **기동 send 직전 line_count 스냅샷** — readiness 판정의 시간 귀속 기준선.
     //
@@ -13306,6 +13308,11 @@ fn run_launch_agent_opts(
         //   그래서 이것은 '벨트'이고 본체는 UI 가드(ui/src/wheelgate.ts)다 — lib 헬퍼 주석 정본.
         let mut create_env_pairs = agent_env_pairs(&spec);
         cys::inject_claude_alt_screen_default(
+            &mut create_env_pairs,
+            extract_bin(spec["cmd"].as_str().unwrap_or(""), agent),
+        );
+        // ★v116-integ B: 제안 글 끄기 env — 같은 자리 · 같은 규약(Windows 에서 pane 에 닿는 유일한 경로).
+        cys::inject_claude_prompt_suggestion_default(
             &mut create_env_pairs,
             extract_bin(spec["cmd"].as_str().unwrap_or(""), agent),
         );
@@ -23619,6 +23626,112 @@ mod tests {
             "클로드 어댑터가 제안 글을 끄지 않는다: {pairs:?}"
         );
         assert!(pairs.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"), "기존 격리 config env 가 사라졌다");
+    }
+
+    /// ★v116-integ B(master#70442818): 제안 글 끄기 env 는 **설치 경로 3개 전부**에서 조립 결과에 실린다.
+    /// P1 새 설치(디스크 = 임베드) · P2 미수정 업데이트(판정 RefreshUser → 디스크 = 새 임베드) ·
+    /// P3 수정본(판정 = 보존 · 디스크 env 에 키 없음 → 런타임 주입이 채운다) · P3′ 사용자 명시 값 불가침.
+    /// 조립 순서 = 운영 두 지점(boot_agent_on_surface · run_launch_agent_opts)과 같다(아래 배선 핀이 소스로 고정).
+    #[test]
+    fn prompt_suggestion_reaches_all_three_install_paths() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let td = std::env::temp_dir().join(format!("cys-b-suggest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &td);
+        let k = cys::ENV_CLAUDE_PROMPT_SUGGESTION;
+        let embed_raw: &str = cys::pack::PACK_ALL
+            .iter()
+            .find(|(r, _)| *r == "agents.json")
+            .map(|(_, c)| *c)
+            .expect("임베드 agents.json");
+        let embed: Value = serde_json::from_str(embed_raw).unwrap();
+        // 옛 판(1.1.5 모양) = 임베드에서 이 키만 뺀 것
+        let mut old = embed.clone();
+        old["claude"]["env"].as_object_mut().expect("env 맵").remove(k);
+        let old_raw = serde_json::to_string_pretty(&old).unwrap();
+        let compose = |spec: &Value| -> Vec<(String, String)> {
+            let cmd = spec["cmd"].as_str().unwrap_or("");
+            let mut p = agent_env_pairs(spec);
+            cys::inject_claude_alt_screen_default(&mut p, extract_bin(cmd, "claude"));
+            cys::inject_claude_prompt_suggestion_default(&mut p, extract_bin(cmd, "claude"));
+            p
+        };
+        let n_key = |p: &[(String, String)]| p.iter().filter(|(kk, _)| kk == k).count();
+        let n_false = |p: &[(String, String)]| p.iter().filter(|(kk, v)| kk == k && v == "false").count();
+        let write = |raw: &str| std::fs::write(td.join("agents.json"), raw).unwrap();
+
+        // P1 새 설치
+        write(embed_raw);
+        let p1 = compose(&load_agent_spec("claude").expect("P1 spec"));
+        assert!(n_key(&p1) == 1 && n_false(&p1) == 1, "P1 새 설치: false 정확히 1쌍: {p1:?}");
+
+        // P2 미수정 업데이트 — 옛 판 바이트 = 설치 manifest 해시 → 새 판 적용 판정
+        let a2 = cys::pack::decide_file_action(
+            "agents.json", embed_raw, true, Some(&old_raw),
+            Some(&cys::pack::content_hash_pub(&old_raw)), false, cys::pack::PackScope::Base, None,
+        );
+        assert_eq!(a2, cys::pack::FileAction::RefreshUser, "P2 전제: 미수정 옛 판은 새 판으로 갱신");
+        write(embed_raw);
+        let p2 = compose(&load_agent_spec("claude").expect("P2 spec"));
+        assert!(n_key(&p2) == 1 && n_false(&p2) == 1, "P2 미수정 업데이트: false 1쌍: {p2:?}");
+
+        // P3 수정본 — 옛 판 + 사용자 수정 흔적 → 디스크 보존 판정 · env 에 키 없음
+        let mut mine = old.clone();
+        mine["claude"]["notes"] = Value::String("MY-EDIT".into());
+        let mine_raw = serde_json::to_string_pretty(&mine).unwrap();
+        let a3 = cys::pack::decide_file_action(
+            "agents.json", embed_raw, true, Some(&mine_raw),
+            Some(&cys::pack::content_hash_pub(&old_raw)), false, cys::pack::PackScope::Base, None,
+        );
+        assert!(
+            !matches!(a3, cys::pack::FileAction::RefreshUser | cys::pack::FileAction::Write { .. }),
+            "P3 전제: 사용자 수정본은 덮이지 않는다: {a3:?}"
+        );
+        write(&mine_raw);
+        let spec3 = load_agent_spec("claude").expect("P3 spec");
+        assert!(
+            spec3["env"].get(k).is_none(),
+            "P3 전제: 디스크 정의가 이겨 env 에 키가 없다(필드 계층 밖)"
+        );
+        let p3 = compose(&spec3);
+        assert!(n_key(&p3) == 1 && n_false(&p3) == 1, "P3 수정본: 런타임 주입이 false 1쌍을 채워야 한다: {p3:?}");
+
+        // P3′ 사용자 명시 "true" — 불가침
+        mine["claude"]["env"][k] = Value::String("true".into());
+        write(&serde_json::to_string_pretty(&mine).unwrap());
+        let p4 = compose(&load_agent_spec("claude").expect("P3' spec"));
+        assert!(n_key(&p4) == 1 && n_false(&p4) == 0, "P3′ 사용자 true 는 그대로: {p4:?}");
+
+        match saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★v116-integ B 배선 핀: 운영 조립 지점 두 곳이 D5 호출 **뒤** · 그 env 를 쓰는 render_launch **앞**에서
+    /// B 헬퍼를 부른다(위 도달 시험의 조립 순서가 운영과 같다는 근거 · 호출 삭제·이동 뮤턴트 차단).
+    #[test]
+    fn prompt_suggestion_injection_wired_in_both_consumers() {
+        let src = include_str!("cys.rs");
+        for (head, name) in [
+            ("\nfn boot_agent_on_surface(", "boot_agent_on_surface"),
+            ("\nfn run_launch_agent_opts(", "run_launch_agent_opts"),
+        ] {
+            let s = src.find(head).unwrap_or_else(|| panic!("{name} 소실"));
+            let e = s + 1 + src[s + 1..].find("\nfn ").expect("다음 fn");
+            let body = &src[s..e];
+            let d5 = body
+                .find("cys::inject_claude_alt_screen_default(")
+                .unwrap_or_else(|| panic!("{name}: D5 호출 소실"));
+            let b = body
+                .find("cys::inject_claude_prompt_suggestion_default(")
+                .unwrap_or_else(|| panic!("{name}: 제안 글 끄기 주입 호출 부재"));
+            assert!(d5 < b, "{name}: B 주입은 D5 뒤");
+            assert!(body[b..].contains("render_launch("), "{name}: B 주입 뒤에 render_launch 가 와야 한다");
+        }
     }
 
     /// ★G34(W3) — 소켓에서 **레인 팩을 결정론 유도**한다(cys-dept 명명 규약 미러).

@@ -23309,6 +23309,43 @@ mod tests {
     }
 
     #[test]
+    fn v116_set_meta_denied_same_meta_is_benign_only_when_exact() {
+        // ★v116-seat Fable 2-2: 「같은 메타의 재등록 거부」만 무해 · 그 밖은 전부 오류로 남는다.
+        let denied = "meta_denied: set_meta denied: caller (surface 1) may not overwrite the live agent meta of another surface 2";
+        let row = json!({"agent": "claude", "agent_bin": "/x/claude"});
+        assert!(set_meta_denied_is_same_meta(denied, &row, "claude", "/x/claude"));
+        // 다른 에이전트 · 다른 바이너리 · 구판 데몬(agent_bin 키 없음) · 행 없음 = 무해 아님
+        assert!(!set_meta_denied_is_same_meta(denied, &row, "codex", "/x/claude"));
+        assert!(!set_meta_denied_is_same_meta(denied, &row, "claude", "/y/claude"));
+        assert!(!set_meta_denied_is_same_meta(denied, &json!({"agent": "claude"}), "claude", "/x/claude"));
+        assert!(!set_meta_denied_is_same_meta(denied, &Value::Null, "claude", "/x/claude"));
+        // 다른 오류 코드는 메타가 같아도 오류(연결 실패·not_found 를 삼키지 않는다)
+        assert!(!set_meta_denied_is_same_meta("not_found: surface 2 not found", &row, "claude", "/x/claude"));
+        assert!(!set_meta_denied_is_same_meta("surface.set_meta: broken pipe", &row, "claude", "/x/claude"));
+    }
+
+    #[test]
+    fn v116_boot_agent_set_meta_error_goes_through_same_meta_check() {
+        // ★v116-seat Fable 2-2 배선 핀: set_meta 호출이 `?` 로 곧장 전파되면 pane 호출 node-recover 가
+        //   기동 뒤 rc 1 → run_boot reclaim(kill)으로 번진다. 오류는 반드시 무해 판정을 거친다.
+        let src = include_str!("cys.rs");
+        let a = src.find("fn boot_agent_on_surface(").expect("boot_agent_on_surface 부재");
+        let body = &src[a..a + src[a..].find("\n}\n").expect("함수 끝")];
+        let m = body.find(r#""surface.set_meta","#).expect("set_meta 호출 부재");
+        let r = body[..m].rfind("request(").expect("request(");
+        assert!(
+            body[..r].trim_end().ends_with("if let Err(e) ="),
+            "set_meta 호출이 오류 분기(if let Err(e) = request(…))로 감싸여 있지 않다"
+        );
+        let after = &body[m..];
+        let close = after.find(") {").expect("호출 끝");
+        assert!(!after[..close].contains(")?"), "set_meta 오류가 `?` 로 바로 전파된다");
+        let chk = after.find("set_meta_denied_is_same_meta(").expect("무해 판정 호출 부재");
+        assert!(chk > close, "무해 판정이 오류 분기 안에 없다");
+        assert!(after[chk..].contains("return Err(e)"), "무해 아님이면 오류를 돌려야 한다");
+    }
+
+    #[test]
     fn render_launch_os_aware_unix_byte_identical() {
         // RC-3(B′) 회귀 핀(master D5 조건): unix 렌더는 기존 agents.json 단일문자열과 byte-identical.
         let cmd = "claude --dangerously-skip-permissions";

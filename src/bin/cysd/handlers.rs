@@ -16237,6 +16237,23 @@ mod tests {
         }
     }
 
+    /// ★v116-seat Fable 2-2: surface.list 가 좌석 메타의 agent_bin 을 싣는다(CLI 가 set_meta meta_denied 를
+    /// 「같은 메타 = 무해」로 받을 때의 대조 재료) · 메타 없는 좌석은 null.
+    #[test]
+    fn v116_surface_list_exposes_agent_bin_from_meta() {
+        let daemon = claim_daemon();
+        let live = make_surface(&daemon, Some("worker-1"));
+        let bare = make_surface(&daemon, Some("worker-2"));
+        *daemon.surfaces.lock().unwrap()[&live].agent_meta.lock().unwrap() =
+            Some(("claude".into(), "/x/stub/claude".into()));
+        let req = Request { id: json!(1), method: "surface.list".into(), params: json!({}) };
+        let Reply::Single(resp) = dispatch(&daemon, req, None) else {
+            panic!("expected single reply");
+        };
+        assert_eq!(surface_entry(&resp, "surfaces", live)["agent_bin"], json!("/x/stub/claude"));
+        assert!(surface_entry(&resp, "surfaces", bare)["agent_bin"].is_null());
+    }
+
     /// ★★M1 검체(2026-08-24) — **"아직 못 봤다" 가 "없다" 로 나가지 않는다.**
     ///
     /// 【고치는 결함】 종전 산출 `agent_meta.map(|_| agent_seen && !exit_notified)` 는 meta 가

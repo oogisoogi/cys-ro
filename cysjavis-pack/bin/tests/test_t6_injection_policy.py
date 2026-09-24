@@ -192,6 +192,23 @@ try:
     # ★v116-seat F7(D3-pack.md): master·CEO 좌석도 훅으로 DRAIN 규칙 줄을 받는다(조립기 상한 안 · 부트 브리지 유지).
     check("F7e master 훅 출력에 DRAIN 규칙 줄 · 조립기 상한 안 · 부트 브리지 유지",
           "■ 재시작 저장 지시: [DRAIN]" in out and len(out) <= 9000 and "부트 브리지" in out, len(out))
+    # ★v116-seat F7: 조립기가 실패해도(부재 · rc 127) master 폴백 출력에 DRAIN 규칙 줄이 실린다.
+    #   hooks 사본에서 core_inject.py 만 뺀다(격리 팩에도 없다 → 셸 폴백 분기).
+    tmp4 = tempfile.mkdtemp(prefix="t6-f7f-")
+    try:
+        hk = os.path.join(tmp4, "hooks")
+        shutil.copytree(HOOKS, hk)
+        os.remove(os.path.join(hk, "core_inject.py"))
+        e4 = dict(env, CYS_ROLE="master")
+        r4 = subprocess.run(["sh", os.path.join(hk, "session-start.sh")], input=hin_startup, capture_output=True,
+                            text=True, encoding="utf-8", env=e4, timeout=60)
+        out4 = r4.stdout
+        check("F7f master 조립기 실패 폴백에도 DRAIN 규칙 줄(고지 뒤 · 각성 헤더 앞)",
+              r4.returncode == 0 and "요지 조립기(hooks/core_inject.py)가 실패" in out4
+              and 0 <= out4.find("■ 고지: 요지 조립기") < out4.find("■ 재시작 저장 지시: [DRAIN]")
+              < out4.find("■ CYSJavis 역할 각성"), out4[-600:])
+    finally:
+        shutil.rmtree(tmp4, ignore_errors=True)
     code, out, err = ss_run(env, "master", "")
     check("F8 대조: stdin 없음(source 미상) = 조립기 경로 · 원문 절 주입", "DIRECTIVE-BODY-MASTER" in out and code == 0)
 finally:

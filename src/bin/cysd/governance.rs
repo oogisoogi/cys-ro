@@ -10486,6 +10486,48 @@ mod tests {
         assert_eq!(dropped.len(), 1, "폐기 이벤트 1건이어야 한다");
         assert_eq!(dropped[0]["payload"]["count"], serde_json::json!(1));
         assert_eq!(dropped[0]["payload"]["line_sha8"].as_array().map(|a| a.len()), Some(1));
+        // ①-b 섞인 큐: 옛 기동 줄만 폐기 · 다른 보류 글과 「비슷하지만 다른 줄」은 순서 그대로 · sha8 · WAL 반영.
+        let keep = ["[DRAIN] 지금 저장하라", "[master#abc123] 지시 본문", "/x/stub/claudex --continue",
+                    "/x/stub/claude --x ; rm -rf ~", "/x/stub/claude --a\n/x/stub/claude --b"];
+        let s2 = seat(Some(("claude", "/x/stub/claude")));
+        {
+            let mut q = s2.pending_queue.lock().unwrap();
+            q.clear();
+            q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+            for (i, t) in keep.iter().enumerate() {
+                q.push_back(daemon.next_queue_entry(t.to_string(), Some(format!("surface:{}", 50 + i)), "send"));
+            }
+            q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+        }
+        let d = deliver_head_locked(&daemon, &s2, false, false, None, None).expect("첫 보류 글 배달");
+        assert_eq!(d.entry.text, keep[0]);
+        let left: Vec<String> = s2.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
+        assert_eq!(left, keep[1..].iter().map(|t| t.to_string()).collect::<Vec<_>>(), "옛 기동 줄만 폐기 · 순서 보존이 아니다");
+        use sha2::{Digest, Sha256};
+        let want: String = Sha256::digest(old.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect();
+        let ev = daemon.bus.tail(80).into_iter()
+            .filter(|ev| ev["name"] == "queue.dropped" && ev["payload"]["reason"] == "stale_launch_line")
+            .last().expect("queue.dropped");
+        assert_eq!(ev["payload"]["count"], serde_json::json!(2));
+        assert_eq!(ev["payload"]["line_sha8"], serde_json::json!([want.clone(), want]));
+        assert_eq!(ev["payload"]["surface_ref"], serde_json::json!(cys::surface_ref(s2.id)));
+        let wal = std::fs::read_to_string(crate::state::state_dir(&daemon.socket_path).join("queue-state.json"))
+            .expect("queue-state.json");
+        let wal: serde_json::Value = serde_json::from_str(&wal).expect("WAL json");
+        let texts: Vec<&str> = wal.as_array().expect("WAL 배열").iter()
+            .filter(|e| e["surface_id"].as_u64() == Some(s2.id)).filter_map(|e| e["text"].as_str()).collect();
+        assert!(!texts.contains(&old), "옛 기동 줄이 WAL 에 남았다(영속 누락): {texts:?}");
+        assert!(keep[1..].iter().all(|k| texts.contains(k)), "보존분이 WAL 에 없다: {texts:?}");
+        // ①-c 옛 기동 줄만 있던 큐가 폐기로 비면 막힘 사유도 지운다 · 배달 0(None).
+        let s3 = seat(Some(("claude", "/x/stub/claude")));
+        {
+            let mut q = s3.pending_queue.lock().unwrap();
+            q.clear();
+            q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+        }
+        *s3.queue_blocked.lock().unwrap() = Some(("prompt_unknown".to_string(), 1.0));
+        assert!(deliver_head_locked(&daemon, &s3, false, false, None, None).is_none(), "빈 큐인데 배달이 났다");
+        assert!(s3.queue_blocked.lock().unwrap().is_none(), "빈 큐인데 막힘 사유가 남았다");
         // ② 대조: 메타 없는 좌석은 판정 재료가 없어 폐기 0 — 머리 그대로(배달 가부는 빈 좌석 게이트 몫).
         let bare = seat(None);
         let d = deliver_head_locked(&daemon, &bare, true, false, None, None).expect("머리 배달");

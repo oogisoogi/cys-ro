@@ -8,6 +8,10 @@
 //   화면(오류 문구일 수 있다)이 사라지고 옛 주 화면이 나온다. 배너는 지금 보이는 화면의 내용 뒤에 붙인다.
 
 export const EXITED_BANNER = "\r\n\x1b[31m[surface exited]\x1b[0m\r\n";
+// 대체 화면이 마지막 행까지 찼을 때의 판 — 뒤 줄바꿈을 뺀다. 대체 화면엔 스크롤백이 없어 줄바꿈 1번마다 맨 윗줄이
+// 영구히 사라진다(opus 적대 1R MINOR-1: 종전 판은 2줄 손실). 배너 자리를 만드는 앞 줄바꿈 1번(1줄)이 최소 손실이다.
+// 주 화면은 밀려난 줄이 스크롤백으로 가므로 종전 판 그대로 둔다.
+export const EXITED_BANNER_ALT_LAST = "\r\n\x1b[31m[surface exited]\x1b[0m";
 
 // 배너 앞에 푸는 상태 — 죽은 앱이 남긴 스크롤 영역(DECSTBM)이 있으면 절대 좌표 이동이 영역 안에 갇히거나
 // (원점 모드 DECOM 이 켜진 경우) 영역 밖 마지막 줄의 줄바꿈이 스크롤되지 않아 배너가 그 줄을 덮어쓴다.
@@ -16,7 +20,7 @@ export const EXITED_BANNER = "\r\n\x1b[31m[surface exited]\x1b[0m\r\n";
 // 스트림은 makePane 에서만 시작) — 그래서 이 해제가 산 앱의 그리기를 깨지 않는다. 커서를 원점으로 보내므로 이동은 늘 쓴다.
 const RESET_MARGINS = "\x1b[r";
 
-export type ScreenView = { rows: number; cursorY: number; line: (y: number) => string };
+export type ScreenView = { rows: number; cursorY: number; line: (y: number) => string; alt?: boolean };
 
 /// 배너 바로 앞 줄(0-기준 화면 행) — 커서 줄과 「그 아래 마지막 내용 줄」 중 더 아래.
 /// 커서 아래에 내용이 없으면 커서 줄 그대로(종전과 같은 자리 — 멀쩡한 화면은 바뀌지 않는다).
@@ -28,13 +32,14 @@ export function bannerRow(v: ScreenView): number {
 }
 
 export function exitedBannerSeq(v: ScreenView): string {
-  return `${RESET_MARGINS}\x1b[${bannerRow(v) + 1};1H${EXITED_BANNER}`;
+  const row = bannerRow(v);
+  return `${RESET_MARGINS}\x1b[${row + 1};1H${v.alt && row === v.rows - 1 ? EXITED_BANNER_ALT_LAST : EXITED_BANNER}`;
 }
 
 type Line = { translateToString(trimRight?: boolean): string };
 export type ExitTerm = {
   rows: number;
-  buffer: { active: { baseY: number; cursorY: number; getLine(y: number): Line | undefined } };
+  buffer: { active: { type?: string; baseY: number; cursorY: number; getLine(y: number): Line | undefined } };
   write(data: string | Uint8Array, callback?: () => void): void;
 };
 export type ExitFilter = { flush(): Uint8Array; reset(): string };
@@ -49,7 +54,7 @@ export function writeExitedBanner(term: ExitTerm, filter: ExitFilter, done?: () 
     let seq = EXITED_BANNER;
     try {
       const buf = term.buffer.active;
-      seq = exitedBannerSeq({ rows: term.rows, cursorY: buf.cursorY, line: (y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? "" });
+      seq = exitedBannerSeq({ rows: term.rows, cursorY: buf.cursorY, line: (y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? "", alt: buf.type === "alternate" });
     } catch {
       /* 판독 실패 — 종전 자리(커서 다음 줄)로 강등 */
     }

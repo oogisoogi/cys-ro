@@ -316,4 +316,9 @@ fn d6_1_merge_rate_windows_table() {
     assert_eq!(crate::accounts::merge_rate_windows(&live, 990.0, &[w("5h", 93.0, 1000.0)], now).1, vec![true]);
     // 기존에 같은 라벨이 없으면 채택
     assert_eq!(crate::accounts::merge_rate_windows(&[], 0.0, &[w("5h", 93.0, 999.0)], now).1, vec![true]);
+    // (agy 4R ⓑ 기각) 기존 창 resets_at 미상 = 살아 있음 → 리셋 지난 새 창은 기각. 실측: 미상 창은 OAuth 의
+    // 「창 미개시」(analytics rate_snapshots resets_at NULL 42행 전부 0.0% · 09-24)라 죽은 창 %로 덮을 이유가 없다.
+    let not_started = [RateWindow { label: "5h".into(), used_pct: 0.0, resets_at: None }];
+    let (m, a) = crate::accounts::merge_rate_windows(&not_started, 990.0, &[w("5h", 93.0, 999.0)], now);
+    assert_eq!((a, m[0].used_pct), (vec![false], 0.0));
 }

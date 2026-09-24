@@ -2440,6 +2440,34 @@ mod tests {
         assert!(!super::reattach_carries(1.0, false, None));
     }
 
+    /// agy 4R ⓐ · opus 3R low: 휴리스틱 재부착이라도 새 파일이 직전 유예 시작 **뒤에** 태어났으면(= 그 뒤에 뜬 새 세션)
+    /// 끝난 유예·옛 세션의 보류 %를 이어받지 않는다. 그 전부터 있던 파일(같은 cwd 동시 세션 오가기)은 종전대로 승계.
+    #[test]
+    fn t2_heuristic_reattach_new_session_does_not_carry() {
+        assert!(super::reattach_carries(100.0, true, Some(50.0)), "유예 전부터 있던 동시 세션 파일 — 승계해야(opus 1R 무한 재시작 차단)");
+        assert!(super::reattach_carries(100.0, true, Some(100.0)));
+        assert!(
+            !super::reattach_carries(100.0, true, Some(150.0)),
+            "유예 시작 뒤 태어난 새 세션이 끝난 유예·옛 보류 %를 승계 — 새 세션이 유예 없이 오발"
+        );
+        assert!(super::reattach_carries(100.0, true, None), "생성 시각 미상 — 종전대로 승계");
+        assert!(!super::reattach_carries(100.0, false, Some(50.0)), "등록 경로는 언제나 새로 시작");
+        // 실제 파일의 생성 시각을 읽는다(판별의 입력 — 못 읽으면 판별이 죽어 종전 승계로 돌아간다)
+        let dir = std::env::temp_dir().join(format!("cys-t2-born-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let before = now_epoch();
+        let f = dir.join("dddddddd-0000-4000-8000-0000000000dd.jsonl");
+        std::fs::write(&f, "").unwrap();
+        let after = now_epoch();
+        let born = super::file_born_at(&f);
+        let _ = std::fs::remove_dir_all(&dir);
+        if cfg!(target_os = "macos") {
+            let b = born.expect("macOS(APFS) 에서 생성 시각을 못 읽음 — 새 세션 판별 불능");
+            assert!(b >= before - 1.0 && b <= after + 1.0, "생성 시각 {b} 가 생성 구간 [{before}, {after}] 밖");
+        }
+    }
+
     /// opus 적대 1R(low): 창 크기(ctx %)가 없는 statusline 보고는 보류를 지우지 못한다.
     #[test]
     fn t2_statusline_without_ctx_keeps_deferral() {

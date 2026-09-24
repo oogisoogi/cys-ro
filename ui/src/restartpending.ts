@@ -14,7 +14,8 @@
 //   「새 앱으로 켜졌다」를 가를 수 없다 — 가르는 것은 build_id 다. build_id 를 모를 때(unknown)는 그 판정이
 //   같은 판 설치를 하지 않으므로 「대기 판번 == 지금 판번 = 무효」 규칙으로 물러난다.
 
-/** sessionStorage 칸 이름. 모양이 바뀌면 끝 번호를 올린다(옛 값은 decode 가 무효로 본다). */
+/** sessionStorage 칸 이름. 뜻이 바뀌면 끝 번호를 올린다 — 하위 호환인 필드 추가는 번호를 유지한다
+ *  (예: buildId 추가 · 없는 옛 값은 「build_id 모름」 규칙으로 판정된다). */
 export const RESTART_PENDING_KEY = "cys-restart-pending-v1";
 
 /** 헤더 단추 글자 — 평소 / 다시 켜기 대기. 대기 이름은 데몬만 다시 켜는 「↻ 재시작」과 겹치지 않는다. */

@@ -2417,7 +2417,15 @@ function replaceNode(node: Node, target: number, make: (old: Node) => Node | nul
 //   빠지는 좌석은 역할이 아니라 change.remove 가 정한다.
 const arrangeRolesBySocket = new Map<string, Map<number, string | null>>();
 function rememberRoles(socket: string | undefined, surfaces: { surface_id: number; role: string | null }[]): void {
-  arrangeRolesBySocket.set(socket ?? "", new Map(surfaces.map((x) => [x.surface_id, x.role] as [number, string | null])));
+  const key = socket ?? "";
+  const next = new Map(surfaces.map((x) => [x.surface_id, x.role] as [number, string | null]));
+  // 목록에서 사라졌지만 아직 화면(트리)에 있는 좌석의 역할은 이어서 기억한다 — 유령 수렴으로 떼어질 옛 master 의
+  //   역할을 모르면 좌열을 못 알아봐 사람이 바꾼 위아래 비율이 4:1 로 돌아간다(Opus 2R 잔여). 화면에 없는 좌석은 버린다(누적 0).
+  const onScreen = new Set(
+    workspaces.filter((w) => (w.socket ?? "") === key).flatMap((w) => collectSids(w.tree)),
+  );
+  for (const [sid, role] of arrangeRolesBySocket.get(key) ?? []) if (!next.has(sid) && onScreen.has(sid)) next.set(sid, role);
+  arrangeRolesBySocket.set(key, next);
 }
 function arrangeWs(ws: Workspace, change: ArrangeChange, mode?: LeftShareMode): void {
   // 실제로 열리거나 닫히는 좌석이 없으면(이미 닫힌 창을 또 닫기 · 이미 붙은 창을 또 붙이기) 배치를 건드리지 않는다 —

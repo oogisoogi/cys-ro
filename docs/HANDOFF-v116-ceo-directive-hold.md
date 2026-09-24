@@ -11,7 +11,7 @@ master 판정 = [master#260dc93d] ⑴ⓑ⁺+ⓕ ⑵ⓔ 추가 ⑶8b 교체(별�
 | 경로 | 증상 | 원인(대조군 통과) | 고친 곳 |
 |---|---|---|---|
 | 1 (1085 VM-B) | 1.1.4 이하에서 부서를 만든 기계를 단추로 갱신하면 master 지침이 `.new` 로 보류 → 새 지침 영구 미적용 | 단추 갱신은 **옛 앱 안의 `cys pack-update`** 가 새 팩을 먼저 판정(1.1.5 `src-tauri/src/main.rs` `install_pack_update` → `resolve_sidecar`). 옛 코드엔 D1-ⓑ 가 없어 MASTER 를 `.new` 로 두고 CEO_TEMPLATE(System)만 갱신 → manifest[CEO] 전진 → 재시작 뒤 새 판 init-pack 의 D1-ⓑ(manifest[CEO]==디스크) 영구 불성립 | **ⓑ⁺** `src/pack.rs` `ceo_derived_override`: 근거 = manifest[CEO] ∨ 승격 영수증 해시 ∨ 역대 발행 CEO 해시 표 · 구제 시 영수증 전진 · vendor 바이트 그대로인 `.new` 정리 |
-| 2 (1098 교회 부서 시범) | 부서 없는 기계에 옛 승격의 `.pre-ceo` 가 남으면, 승격 때 현행 판 미백업 · 알림 꺼짐 · 부서를 다 닫으면 **옛 판 부활**(같은 판번 init-pack 은 0 written · 무신호) | cys-dept 가 「`.pre-ceo` 존재」를 「유효 백업 존재」로 간주(`[ -f .pre-ceo ] \|\| cp` · `_auto` · 부트 게이트) | **ⓕ** `cysjavis-pack/bin/cys-dept` `pre_ceo_is_stale`(긍정 증거: md≠CEO ∧ CEO ⊇ md ∧ 영수증≠sha(md)) → 락 보유 시 `.pre-ceo.stale-<시각>` 로 보존 후 새 백업 · `_auto`·부트 게이트도 같은 판정 |
+| 2 (1098 교회 부서 시범) | 부서 없는 기계에 옛 승격의 `.pre-ceo` 가 남으면, 승격 때 현행 판 미백업 · 알림 꺼짐 · 부서를 다 닫으면 **옛 판 부활**(같은 판번 init-pack 은 0 written · 무신호) | cys-dept 가 「`.pre-ceo` 존재」를 「유효 백업 존재」로 간주(`[ -f .pre-ceo ] \|\| cp` · `_auto` · 부트 게이트) | **ⓕ** `cysjavis-pack/bin/cys-dept` `pre_ceo_is_stale`(긍정 증거: md≠CEO ∧ 영수증≠sha(md) ∧ **md 가 손대지 않은 표준본 = 정확 일치**(§12 · B)) → 락 보유 시 `.pre-ceo.stale-<시각>` 로 보존 후 새 백업 · `_auto`·부트 게이트도 같은 판정 |
 | 2 사후 | 이미 강등돼 옛 판이 된 기계 | manifest[MASTER] ≠ 디스크라 D1 미수정 판정 불성립 | **ⓔ** `decide_file_action`: MASTER 한 파일 한정 — 디스크가 **손대지 않은 옛 발행 표준본**(역대 발행 MASTER 해시 표)이면 RefreshUser · `.pre-ceo` 동반 전진도 같은 표로 |
 | ⓧ1 | 두 번째 부서 생성 때 손본 CEO 사본을 백업 없이 덮음 | `_swap` 의 `cp ceo md` | **ⓧ1** `_swap`: 유효 백업이 이미 있고 md≠영수증이면 덮기 전 `MASTER_DIRECTIVE.md.pre-ceo-<시각>` 보존 · MASTER 교체 = tmp+mv 원자화 |
 
@@ -124,3 +124,50 @@ python3 $S/mutants.py                                          # 뮤턴트(작�
 - **뮤턴트** 22/22 KILLED(b87bbf07 · 가짜 KILLED 0 — 러너가 directives 미복사로 끝에서 죽던 결함은 b010a1c5 무렵 발견·수정).
 - **agy C4**(b87bbf07): 1차 rc 137(SIGKILL · 원인 미상 · 내가 죽인 것 아님) · 2차 429 사용량 한도 · 3차 = **BLOCK 1** — 잔존 mkdir 락(무락 강행 · `_locked=0`)이면 ⓕ 가 생략돼 낡은 .pre-ceo 가 남고 강등이 옛 판 복원. ⇒ 설계상 절충(agy B1 ③: 무락 창에서 .pre-ceo 를 옮기면 동시 승격이 백업을 서로 덮음)과 종전 결함 ⓧ3(무락 강행 · master 1.1.7 후보)의 교차점 · 내용 휴리스틱 경계가 아니므로 멈춤 규칙 대상 아님 · 현재 방어 = 그 경로에서도 ⓧ1 이 현행 md 를 `.pre-ceo-<시각>` 로 보존(데이터는 남음) · **master 판정 필요**(선택지: ⓧ3 를 1.1.6 으로 당겨 잔존 락 감지 · 또는 1.1.7 유지).
 - 판정 JSON = `scratch/reviews/agy-{B-r1,B-r2,C-r1,C-r2,C-r3,C-r4}.json` · Opus = `scratch/adv-opus/verdict{,-r2,-r3,-r4}.json` · 블라인드 = `scratch/blind/rerun-*.out`.
+
+## 12. B 전환(정확 일치) — 멈춤 규칙 발동 뒤 · 후임 라운드 [master#6fce3767] → [master#2da27fe2]
+
+### 12-1. 경과
+| 커밋 | 내용 |
+|---|---|
+| f50e97e1 | P1·P2 기준선 적색(b87bbf07 에서 24 FAIL) |
+| 23510540 · 7e08378f | master 판정 A(진접두 + UTF-8) 수리 · ref 단독 형상 · B8 보강 — 결정론 초록(형상 24 · 뮤턴트 20/20 · 블라인드 20/20 · 블라인드 P1/P2 142/0) |
+| — | ★agy C5 = 6번째 휴리스틱 경계(진접두는 「잘린 파일」과 「더 긴 판의 앞부분인 온전한 파일」을 못 가름 · 결정론 재현 `scratch/c5/repro_c5.py` A·B) → 멈춤 규칙 → master 판정 B · Opus R5(7e08378f · 참고)도 같은 계열 Q1·Q2(CRLF 가 `\r` 에서 끊김)·Q3 |
+| 536b5d29 | B 기준선 적색(7e08378f 에서 bash 18 FAIL · Rust 1 FAIL) |
+| 185fa5b9 | B 구현 |
+| 0f5b899f | Opus R6 S1·S2 시험 구멍 보강(발행 목록 가운데 줄 형상 LF·CRLF · 뮤턴트 Y6·Y2 KILLED) · 제품 코드 무변경 |
+
+### 12-2. B 명세(cys-dept `ceo_md_is_standard`)
+- 「md 가 손대지 않은 표준 MASTER」 증거 = 줄끝만 LF 로 맞춘 md 바이트가 **①CEO_TEMPLATE 구분선 뒤 본문 ②역대 발행 MASTER 해시 목록** 중 하나와 정확히 같을 때만. 빈 파일·판독 불능 = 증거 없음. 내용 휴리스틱(머리말·표지 grep·진접두·UTF-8) 전부 제거(시험 13b 가 표지 grep 부재를 고정).
+- 발행 해시 목록 = **새 팩 파일 `cysjavis-pack/directives/RELEASED_MASTER_DIRECTIVE.sha256`**(System 등급 · 매 설치 강제 갱신). 생성기 `scripts/gen_released_directive_hashes.py` 가 Rust 표(`src/released_directive_hashes.rs`)와 **함께** 쓰고 `--check` 가 둘 다 본다. cargo 시험 `released_master_hash_pack_file_matches_table` = 임베드(pack-manifest 원천 PACK+PACK_SKILLS)에 있음 · Rust 표와 같은 집합 · System · `install_into` 가 디스크에 떨굼. ★지침 원문을 고치면 생성기 재실행(안 하면 cargo·--check 적색).
+- `.new` 는 근거가 아니다(브리프 대비 변경 · master 보고 18:44): 손대지 않은 `.new` 는 현행 발행 바이트라 ①② 가 덮고(뮤턴트 X2 생존 = 중복), 사용자가 병합하려고 손본 `.new`(F6)와 같다는 것은 증거가 아니다.
+
+### 12-3. 알려진 한계(master 승인 · 형상 표 `known_limitation` 으로 고정)
+| 형상 | B 결과 | 기점 adf50d44 | 비고 |
+|---|---|---|---|
+| 손본 표준본 + 옛 승격의 낡은 .pre-ceo (형상 edited-standard-held · edited-standard-with-new-stale-pre-ceo · R5 T1/T1d) | 강등이 **.pre-ceo(옛 판) 복원** · 편집본은 `.pre-ceo-<시각>` 보존 | 옛 판 복원 · 편집본 **실종** | 옛 판이 발행본이면 다음 init-pack 의 ⓔ 가 현행 표준으로 올린다(편집은 보존본에만) |
+| 끝 개행만 지운 현행본 · UTF-8 BOM 저장본(형상 current-standard-eol-stripped-stale-pre-ceo-close · R5 T2 · B1) | 같음 | 같음(실종) | 편집기 저장 습관 — 정확 일치 밖 |
+| 위 형상 + **미부트 기계**(R5 T1n) | 낡은 .pre-ceo 가 유효 백업으로 보여 **승격 보류 게이트도 건너뜀**(자동 승격 알림도 꺼짐) | 같음 | 원래 1098 결함의 이 하위 형상은 B 에서 남는다 · 1.1.7 구조안(아래)이 끝낸다 |
+- 1.1.7 후보(기록만 · master): 승격 시점에 바꾼 MASTER·쓴 CEO 의 sha256 을 옆 파일로 남기고 강등 때 그 해시로 「손대지 않음」을 판정 — 위 한계 전부를 「승격 때 실제로 백업한 바이트」 기준으로 푼다.
+- CRLF 로만 바꾼 현행 표준(문면 동일)은 LF 정규화로 표준본(형상 current-standard-crlf-stale-pre-ceo-close · 뮤턴트 X4).
+
+### 12-4. 검증 기록(B)
+| 단계 | 검증자(모델) | 대상 | 판정 | 처리 |
+|---|---|---|---|---|
+| A 수리 결정론 | 시험·뮤턴트 | 7e08378f | 형상 24 · 뮤턴트 20/20 · 블라인드 20/20 · 블라인드 P1/P2(구현 미열람 Opus · jsonl model = claude-opus-5-5 ×20) 142/0 · b87bbf07 105/37 | B 로 대체 |
+| C5 | agy(타사) | 7e08378f | **REVISE**(heuristic_boundary · 진접두가 추가형 신판·끝 개행 삭제본을 손상본으로 오판) | 결정론 재현 `scratch/c5/repro_c5.py` → 멈춤 규칙 → B |
+| R5 | Opus 5.5 적대(jsonl model = claude-opus-5-5 ×42) | 7e08378f | REVISE(Q1 손본 표준본 경계 · Q2 CRLF `\r` 끊김 · Q3 추가형 신판 · Q4 뮤턴트 생존 3) | 참고(대상 커밋 바뀜) · Q2·Q3 = B 형상으로 흡수 · Q1 = 알려진 한계 |
+| B 기준선 | 시험 | 7e08378f | bash 18 FAIL · Rust 1 FAIL | 536b5d29 |
+| C6 | agy | 185fa5b9 | **ACCEPT**(NOTE 2: 목록 판독 실패 = fail-closed 무손실 · Rust 시험은 cys-dept 로직 비보호 = bash 형상·13b 가 보호) | 기록 |
+| R6 | Opus 5.5 적대(jsonl model = claude-opus-5-5 ×103) | 185fa5b9 | REVISE(S1 시험 구멍 = 뮤턴트 Y6 목록 첫 줄만 읽기 생존 · 구체 입력 v1.1.4 가운데 줄) · NOTE S2~S5 · 데이터 손실 경로 0 | 0f5b899f(형상 2 · Y6·Y2 KILLED · Y3·Y4 등가) |
+| 블라인드 B(규칙 ⑤) | 구현 미열람 Opus 5.5(jsonl model = claude-opus-5-5 ×34) | 185fa5b9 빌드 | **234/0** · 대조 7e08378f 23 FAIL(옛 발행본+추가형 .new · CRLF `\r` 잘림 · 알려진 한계 3 · 목록 없는 팩) | 모호점 4(승격 보류 게이트 명세 누락 · 목록 부재 시 fail-closed 의도 · 복원 이동/복사 · 시각 형식) |
+| 뮤턴트(bash) | scratch/mutants.py | 0f5b899f | B1 B2 B10 B6 B6b X1 X3 X4 X5 X6 Y1 Y2 Y5 Y6 Y7 B9 B7a B7b B3 B4 B5 = KILLED · Y3·Y4 = 등가(주석 줄·빈 md 는 어떤 해시와도 불일치) · X2 = 규칙 제거(.new 근거) | Rust 코드 무변경(pack.rs 는 시험 1개 추가뿐) → b87bbf07 Rust 뮤턴트 8/8 유효 |
+| S3 배포 창(Opus R6 NOTE) | — | — | pack-update 는 사전순 제자리 쓰기라 `bin/cys-dept` 가 `directives/RELEASED_MASTER_DIRECTIVE.sha256` 보다 먼저 바뀌는 창 존재 → 그 창의 판정 = 증거 없음(보존 뒤 복원 · fail-closed) · init-pack 은 staging 뒤 교체라 창 없음 | 기록만 |
+| S4 생성기 태그(Opus R6 NOTE) | — | — | 브랜치에서 workflow_dispatch 한 사전 릴리스 3개는 태그 패턴 밖이나 모두 팩 이전 판 → 현재 누락 0 · v1.0.0~v1.1.5 · rel115 pack · 오너 설치본 MASTER·.bak-1.1.5 목록 포함 확인 | 기록만 |
+
+### 12-5. 최종(코드 = 0f5b899f)
+- **결정론(최종 빌드 0f5b899f · 동시 실행 없음 · scratch/final-verify.sh)**: 블라인드 S1~S6 20/20 · 블라인드 B 234/0(내 재실행) · 블라인드 P1/P2 142/0 · dept 형상 30 ALL PASS · Rust pack:: 117/117(185fa5b9 · 이후 Rust 무변경) · 생성기 --check OK · doc-contract OK · bash 뮤턴트 전부 KILLED(등가 Y3·Y4 제외).
+- **타사**: agy C6 ACCEPT(185fa5b9) · **agy C7 ACCEPT(0f5b899f 결박 · NOTE 2 = C6 와 같음)**. Opus R6 REVISE(시험 구멍) = 0f5b899f 에서 해소(같은 모델 ACCEPT 는 독립 증거로 세지 않음 · 규칙 ②).
+- **정본 게이트**(gate_runner · `/Users/oogisoogi/msv-scratch/v116rv/results/ceo-0f5b899f-192808` · 98 단계): compare_runs 기준 adf50d44 = 대상 실패 5 · 기준 3 · **신규 2 = 둘 다 D07b.test_phoenix_w2_untomb_fullcycle**(본 줄 + 하위 항목) · D02 Secret/PII 0 · D11 팩 스캔 0 · B01 0 · X01 cargo 0 · D06 0.
+  - w2_untomb 판정 = **기존 간헐 실패(이 티켓 무관)**: 증상 `FAIL ① live 역할 desired 엔트리 등재 | roster=[]` → ref None TypeError. 격리 재실행 HEAD 3회 중 2회 실패 · **교차 A/B**(`scratch/w2ab.sh` · 같은 부하) HEAD 1/3 실패 · b87bbf07(이번 라운드 이전) 1/3 실패 · 기존 결과 이력에서 526325bf(기점의 조상 · 이 티켓 변경 없음) 3회 중 1회·2efaf0a7 3회 중 2회 실패. 이 티켓 변경(cys-dept · 시험 · 팩 파일 1 · 생성기)은 phoenix 경로 무접촉.
+- 프로세스 위생: 내가 띄운 게이트 2회 중단(7e08378f · 185fa5b9 — 대상 커밋 변경) = 부모 사슬(내 claude 67113) 확인한 pid 만 TERM · agy C5 가 띄운 고아 cysd 2개 = 소켓 경로(scratch/demo_env)·agy 전사로 귀속 확인 뒤 TERM · 현재 내 소유 잔여 0.

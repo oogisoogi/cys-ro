@@ -5751,7 +5751,7 @@ async function refreshFeed() {
                 // 승격 실패·보류 — feed_reply 하지 않음(항목 pending 유지·재시도 가능). 사유 표시.
                 //  ★A-Z14: 보류(exit 5 · 지침 무교체)는 「실패」가 아니라 「보류」로 알린다(selfdiag.ceoPromoteFailToast).
                 const t = ceoPromoteFailToast(e, false);
-                toast(t.held ? "feed" : "health", t.title, t.body, undefined, String(e));
+                toast(t.category, t.title, t.body, undefined, t.raw);
               }
             } else {
               try {
@@ -6676,7 +6676,7 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
             toast("watchdog", "✅ CEO 승격 재실행 완료", r || "새 템플릿을 적용했습니다.");
           } catch (e) {
             const t = ceoPromoteFailToast(e, true); // ★A-Z14: 보류(exit 5)는 「보류」 문구
-            toast(t.held ? "feed" : "health", t.title, t.body, undefined, String(e));
+            toast(t.category, t.title, t.body, undefined, t.raw);
           }
         },
       });

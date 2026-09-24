@@ -179,9 +179,28 @@ python3 $S/mutants.py                                          # 뮤턴트(작�
 - 원인(재확인): 게이트(`ceo_promote` 부트 게이트)는 `pre_ceo_valid`(낡은 백업 제외)인데 사후 검증(`promote-ceo`)은 「`cmp md ceo` 또는 `.pre-ceo` 존재」 → 낡은 `.pre-ceo` + 미부트에서 보류(pending · md 무교체)를 exit 0 으로 보고 → GUI 「✅ CEO 승격 완료」.
 - ★브리프 처방(「게이트와 같은 판정」)만으로는 부족했다: 부트 완료 + 손본 표준본 + 낡은 `.pre-ceo`(형상 `edited-standard-held`)는 유효 백업처럼 보여 게이트를 지나고 `_swap` 에서 상위집합 검사로 보류되는데, 사후 검증을 `pre_ceo_valid` 로 바꿔도 여전히 exit 0(뮤턴트 M2 · 시험 14e 로 실측). → **확정 = md == CEO 템플릿 실측**, 게이트 술어는 보류 사유 문구에만.
 - 상태 표(종료 코드 · cys-dept 문구 · GUI 알림) = DESIGN §9.
-- 곁 수리: `ceo_receipt_matches` 가 영수증 부재 때 `No such file` 셸 오류 줄을 stderr 로 흘렸다(`<` 리다이렉트 실패는 뒤 `2>/dev/null` 로 안 묻힘) — GUI 알림 원문에 그대로 실렸다 → 존재 먼저 확인(시험 14d · 판정 뜻 불변).
+- 곁 수리: `ceo_receipt_matches` 가 영수증 부재·판독 불가 때 `No such file`·`Permission denied` 셸 오류 줄을 stderr 로 흘렸다(`<` 리다이렉트 실패는 뒤 `2>/dev/null` 로 안 묻힘) — GUI 알림 원문에 그대로 실렸다 → 존재·판독 먼저 확인(시험 14d·14i · 판정 뜻 불변).
 - 기준선 적색 ba8b0d1f(114be35b 제품 코드 · 7 FAIL: 형상 2 × 2회 · 14a · 14d · 14e).
-- 뮤턴트(사본 · 작업트리 무접촉 · `scratch/mut_az14.py`): M1 존재 판정 되돌림 · M2 게이트 술어만 · M3/M4 보류 exit 5→0 · M5 영수증 존재 검사 제거 = **5/5 KILLED**. Rust `ceo_promote_result` · UI `ceoPromoteFailToast` 는 단위 시험으로 고정.
+- 뮤턴트(사본 · 작업트리 무접촉 · `scratch/mut_az14.py`): 1차(26a19acb) 5/5 KILLED → Opus R1 이 사유 분기 생존 4(A·F·G·H) 적발 → 보강 뒤 bash **10/10 KILLED**(M1 존재 판정 되돌림 · M2 게이트 술어만 · M3/M4 보류 exit 5→0 · M5/M6 영수증 검사 제거 · A 부트 분기 삭제 · F 템플릿 존재 검사 제거 · G 부트 마커만 · H 그 밖 문구를 부트 표지로) · UI 5/5(U1 부트 안내 삭제 · U2 등급 고정 · U3 원문 태그 노출 · U4 사유 무시 · U5 보류 등급 health) · Rust 1/1(사유 항상 other).
 - 범위 밖(기록만 · DESIGN §9 말미): `promote-if-pending` 은 보류여도 exit 0(알림 = 「CEO 승격 처리」+원문) · 팔레트 「재실행」 노출 게이트 `ceo_promotion_drift` 도 `.pre-ceo` 존재 판정. 거짓 「완료」는 아님.
 - 이월 범위 밖(브리프): A-Z31(rollback 저널에 `.pre-ceo`·영수증 없음) = 1.1.7 · agy C4(잔존 mkdir 락) = 1.1.7 ⓧ3.
 - master 기준선 114be35b-m 신규 적색 2(B01 H-SECRET-1 · D02 PATH) = §12-5 의 실계정 절대경로 1줄 → `~/…` 로 뜻 보존 치환(원문 보관 문서 아님 · 치환 전 파일 sha256 `49996f795c7f640678af19c2d83d37b98e1199f72f830af1f0f29e82c77eb553`).
+
+### 13-1. 9단계 성찰(A-Z14 · 1회)
+| 단계 | 적용 | 한 일 / 바뀐 것 |
+|---|---|---|
+| 1 의도 | 적용 | 「promote-ceo 가 한 일을 그대로 보고한다(보류를 완료로 말하지 않는다)」 — 승격·강등·게이트 동작 자체는 무변경(ceo_promote 본문 무접촉 · 영수증 판독 함수는 판정 뜻 불변). |
+| 2 설계 대조 | 적용 | 브리프 처방 = 「사후 검증이 게이트와 같은 판정」. 실측 반례(14e · 뮤턴트 M2)로 그것만으로는 거짓 0 이 남아 **md 실측 확정 + 게이트 술어는 사유 문구에만**으로 바꿨다(【판단】으로 보고). |
+| 3 파급(30년차) | 적용 | promote-ceo 호출자 = GUI approve_ceo_promotion(Allow·팔레트 재실행) · 시험 · 문서 안내. 부서 생성(launch/create/allocate)·틱(promote-if-pending)은 ceo_promote 를 직접 불러 사후 검증 비경유 → 무접촉. exit 0→5 로 바뀌는 형상 = 종전에 거짓 0 이던 형상뿐(템플릿 부재 + .pre-ceo 포함). |
+| 4 결함 재조사 | 적용 | 곁 결함 1 발견·수리(영수증 부재 `No such file` 줄이 GUI 원문에 실림 · 14d). 범위 밖 2 기록(promote-if-pending 무사후검증 · ceo_promotion_drift 존재 판정). |
+| 5 결정론 | 적용 | 판정 = cmp 바이트 비교 · 태그 = 문자열 상수(Rust 시험이 UI 소스와 대조). |
+| 6 적대 A/B/C | 적용 | agy R1 · Opus R1(§13-2). |
+| 7 언어 | 부분 | 저장소 관례(한국어 주석) 유지. |
+| 8 필요성 | 적용 | 뺀 것: promote-if-pending 사후 검증 추가 · drift 게이트 술어 교체(거짓 「완료」 아님 · 브리프 범위 밖). |
+| 9 저장 | 적용 | DESIGN §9 · 이 절. |
+
+### 13-2. 적대 검토 기록(A-Z14)
+| 라운드 | 검토자(모델) | 대상 | 판정 | 처리 |
+|---|---|---|---|---|
+| R1 | agy(타사) · `scratch/az14-review/agy-r1.json` | 26a19acb | ACCEPT(NOTE 5 · 결함 0) | — |
+| R1 | Opus 5.5 적대 서브에이전트 · `scratch/az14-review/opus-r1.json` | 26a19acb | **REVISE 2** — ①사유 분기 무고정(변이 A·F·G·H 생존 · 14c 단언이 게이트의 「미부트」 줄로 채워짐) ②UI 보류 문구 부트 안내·등급 무고정 · NOTE: 경합 exit 5 · 템플릿 부재 승격 기계 0→5 · 영수증 권한 000 셸 오류 줄 · 「자세히」 원문 태그 노출 · 재실행 보류 문구가 부트 사유에 「새 설정」 · Allow 보류가 상위집합 사유에도 부트 권유 · DESIGN 재실행 칸 누락 | 전부 수용(경합 · 템플릿 부재 0→5 = 알려진 한계로 DESIGN §9 기록): 사후 검증 사유 표지 · Rust 사유 하위 태그(boot/other) · UI 도우미가 등급·원문까지 결정 · 영수증 `-r` · 시험 14c/14e 표지 단언 · 14f(템플릿 부재 · 발행 표준본) · 14h(유효 백업처럼 보이는 옛 판 + 미부트 = 그 밖) · 14i(권한 000) → 뮤턴트 bash 10/10 · UI 5/5 · Rust 1/1 |

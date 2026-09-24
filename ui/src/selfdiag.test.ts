@@ -23,38 +23,56 @@ describe("CEO 팔레트 항목 결정 — 상호 배타 매트릭스", () => {
 
 
 describe("A-Z14 — 승격 보류는 「보류」로, 실패는 「실패」로 알린다", () => {
-  it("보류 태그(exit 5) → 보류 문구 · 지침이 그대로라고 말한다", () => {
-    const t = ceoPromoteFailToast(`${CEO_PROMOTE_HELD_TAG}[cys-dept] CEO 승격 보류`, false);
-    expect(t.held).toBe(true);
-    expect(t.title).toBe("CEO 승격 보류");
-    expect(t.body).toContain("그대로");
+  const T = CEO_PROMOTE_HELD_TAG;
+  it("보류 · 부트 필요(Allow) → 보류 제목 · 안내 등급 · 부트 안내 · 지침 그대로 · 「완료」 없음", () => {
+    const t = ceoPromoteFailToast(`${T}boot:[cys-dept] CEO 승격 보류(부트 필요) — x`, false);
+    expect([t.held, t.boot, t.category, t.title]).toEqual([true, true, "feed", "CEO 승격 보류"]);
+    expect(t.body).toBe("아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 본부 마스터를 먼저 한 번 시작한 뒤 다시 눌러 주세요.");
     expect(t.title + t.body).not.toContain("완료");
   });
-  it("재실행 경로의 보류 → 재실행 보류 문구", () => {
-    const t = ceoPromoteFailToast(`${CEO_PROMOTE_HELD_TAG}x`, true);
-    expect(t.held).toBe(true);
-    expect(t.title).toBe("CEO 승격 재실행 보류");
+  it("보류 · 부트 필요(재실행 경로) → 같은 부트 안내(「새 설정」이라 말하지 않음)", () => {
+    const t = ceoPromoteFailToast(`${T}boot:y`, true);
+    expect([t.title, t.category]).toEqual(["CEO 승격 재실행 보류", "feed"]);
+    expect(t.body).toContain("본부 마스터를 먼저 한 번 시작한 뒤");
+    expect(t.body).not.toContain("새 설정");
   });
-  it("태그 없는 오류(부서 0개·가드·실행 실패) → 종전 실패 문구 그대로", () => {
-    expect(ceoPromoteFailToast("[cys-dept] 부서 0개", false)).toEqual({
-      held: false,
-      title: "CEO 승격 실패",
-      body: "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요.",
-    });
-    expect(ceoPromoteFailToast(new Error("boom"), true).title).toBe("CEO 승격 재실행 실패");
-  });
-  it("보류 문구는 왕초보 말투(「~해 주세요」) · 파일 이름·영문 기술어 0", () => {
-    for (const t of [ceoPromoteFailToast(CEO_PROMOTE_HELD_TAG, false), ceoPromoteFailToast(CEO_PROMOTE_HELD_TAG, true)]) {
-      expect(/주세요\.$/.test(t.body)).toBe(true);
-      expect(/\.md|pre-ceo|DCE|exit|[A-Za-z_]{4,}/.test(t.body)).toBe(false);
+  it("보류 · 그 밖(상위집합 검사 등) → 부트를 권하지 않고 「자세히」로 이유 안내", () => {
+    for (const rep of [false, true]) {
+      const t = ceoPromoteFailToast(`${T}other:[cys-dept] CEO 승격 보류(지침 미교체) — z`, rep);
+      expect([t.held, t.boot, t.category]).toEqual([true, false, "feed"]);
+      expect(t.body).not.toContain("시작");
+      expect(t.body).toContain("「자세히」를 눌러 확인해 주세요.");
+      expect(t.body).toContain("그대로예요");
     }
   });
-  it("approve_ceo_promotion(promote-ceo) 호출 두 곳(Allow · 재실행)이 모두 이 함수로 실패·보류 문구를 만든다", () => {
+  it("「자세히」 원문에는 기계 태그·사유가 안 보인다", () => {
+    expect(ceoPromoteFailToast(`${T}boot:원문 줄`, false).raw).toBe("원문 줄");
+    expect(ceoPromoteFailToast(`Error: ${T}other:원문`, true).raw).toBe("원문");
+    expect(ceoPromoteFailToast("그냥 오류", false).raw).toBe("그냥 오류");
+  });
+  it("태그 없는 오류(부서 0개·가드·실행 실패) → 종전 실패 문구 · 경보 등급", () => {
+    const t = ceoPromoteFailToast("[cys-dept] 부서 0개", false);
+    expect([t.held, t.category, t.title]).toEqual([false, "health", "CEO 승격 실패"]);
+    expect(t.body).toBe("CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요.");
+    const r = ceoPromoteFailToast(new Error("boom"), true);
+    expect([r.title, r.category]).toEqual(["CEO 승격 재실행 실패", "health"]);
+  });
+  it("보류 문구는 왕초보 말투(「~해 주세요」) · 파일 이름·영문 기술어 0", () => {
+    for (const e of [`${T}boot:`, `${T}other:`]) {
+      for (const rep of [false, true]) {
+        const t = ceoPromoteFailToast(e, rep);
+        expect(/주세요\.$/.test(t.body)).toBe(true);
+        expect(/\.md|pre-ceo|DCE|exit|[A-Za-z_]{4,}/.test(t.body)).toBe(false);
+      }
+    }
+  });
+  it("approve_ceo_promotion(promote-ceo) 호출 두 곳이 도우미의 등급·제목·본문·원문을 그대로 쓴다", () => {
     // promote-if-pending(팔레트 '승격 진행' = promote_pending_ceo)은 exit 5 를 내지 않아 이 태그와 무관하다.
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     expect(main.match(/invoke\("approve_ceo_promotion"\)/g)?.length).toBe(2);
     expect(main.match(/ceoPromoteFailToast\(e, false\)/g)?.length).toBe(1);
     expect(main.match(/ceoPromoteFailToast\(e, true\)/g)?.length).toBe(1);
+    expect(main.match(/toast\(t\.category, t\.title, t\.body, undefined, t\.raw\);/g)?.length).toBe(2);
     expect(main).not.toContain('toast("health", "CEO 승격 재실행 실패"');
   });
 });

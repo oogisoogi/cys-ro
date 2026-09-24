@@ -585,8 +585,13 @@ with open(pre, "w", encoding="utf-8") as f:
 code, out = run(env, "promote-ceo")
 check("14a 낡은 .pre-ceo + 미부트 지명 = exit 5(보류를 완료로 보고하지 않음)", code == 5, "exit=%d %s" % (code, out[-200:]))
 check("14b md 무교체 · pending 생성", md(home) == MASTER_BODY and os.path.exists(pend))
-check("14c 출력 = 보류 사유(부트 필요) · 승격 교체 문구 없음",
-      "보류" in out and "부트" in out and "기본 데몬 CEO 승격(directives 교체" not in out, out[-240:])
+# 사유 문구는 **사후 검증 표지**로 묻는다 — 게이트가 먼저 찍는 「CEO 승격 보류(PENDING) — base master 미부트」 줄로는
+#   단언이 채워지지 않게(Opus 적대 R1: 종전 단언은 그 줄로 채워져 사유 분기를 지워도 초록이었다 · 변이 A·F·G·H).
+#   표지 문자열은 GUI 백엔드(src-tauri ceo_promote_result)가 사유를 가르는 데 쓴다.
+BOOT_MARK = "[cys-dept] CEO 승격 보류(부트 필요) — "
+OTHER_MARK = "[cys-dept] CEO 승격 보류(지침 미교체) — "
+check("14c 출력 = 사후 검증 부트 보류 표지 · 「그 밖」 표지 없음 · 승격 교체 문구 없음",
+      BOOT_MARK in out and OTHER_MARK not in out and "기본 데몬 CEO 승격(directives 교체" not in out, out[-240:])
 check("14d 영수증 파일이 없어도 출력에 셸 오류 줄이 섞이지 않음(GUI 상세에 그대로 실린다)",
       "No such file" not in out, out[-240:])
 shutil.rmtree(tmp)
@@ -603,9 +608,64 @@ with open(mdp, "w", encoding="utf-8") as f:
 with open(marker, "w", encoding="utf-8") as f:
     f.write("{}")
 code, out = run(env, "promote-ceo")
-check("14e 상위집합 보류(부트 완료 · 유효 백업처럼 보임) = exit 5 · md 무교체",
-      code == 5 and md(home) == MASTER_BODY + "MY-EDIT\n" and "보류" in out, "exit=%d %s" % (code, out[-200:]))
+check("14e 상위집합 보류(부트 완료 · 유효 백업처럼 보임) = exit 5 · md 무교체 · 「그 밖」 표지(부트 안내 아님)",
+      code == 5 and md(home) == MASTER_BODY + "MY-EDIT\n" and OTHER_MARK in out and BOOT_MARK not in out,
+      "exit=%d %s" % (code, out[-200:]))
 shutil.rmtree(tmp)
+
+# ── 14f. CEO 템플릿이 없는 기계(부서 1 · 미부트 · 낡은 .pre-ceo): ceo_promote 는 「템플릿 없음 — 승격 생략」으로 돌아온다.
+#   부트 안내가 아니라 「그 밖」 보류여야 한다(원인 = 템플릿 부재 · 사후 검증 elif 의 템플릿 존재 검사 = 변이 F).
+tmp = tempfile.mkdtemp(prefix="ceo-t14f-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+os.remove(os.path.join(os.path.dirname(mdp), "CEO_TEMPLATE.md"))
+# md = 발행 표준본(발행 해시 목록에 있음) → .pre-ceo 는 낡은 백업 판정 = ¬pre_ceo_valid 이고 마커도 없다. 그래도 이번 실행이
+#   멈춘 까닭은 템플릿 부재(ceo_promote 가 부트 게이트보다 먼저 본다)라 부트 안내를 내면 거짓이다(목록이 없으면 변이 F 등가).
+with open(os.path.join(os.path.dirname(mdp), "RELEASED_MASTER_DIRECTIVE.sha256"), "w", encoding="utf-8") as f:
+    f.write(hashlib.sha256(MASTER_BODY.encode("utf-8")).hexdigest() + "\n")
+code, out = run(env, "promote-ceo")
+check("14f 템플릿 부재 = exit 5 · 「그 밖」 표지 · 부트 안내 아님 · md 무교체",
+      code == 5 and OTHER_MARK in out and BOOT_MARK not in out and md(home) == MASTER_BODY,
+      "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 14h. 「유효 백업」으로 보이는 .pre-ceo(md 가 손본 표준본이라 낡은 백업 판정이 안 됨 · 옛 판 백업) + **미부트**: 게이트는
+#   pre_ceo_valid 라 통과해 _swap 이 상위집합 검사로 보류한다 → 사유는 「그 밖」이어야 한다(부트 마커 없음만 보고
+#   부트 안내를 내면 거짓 — 변이 G).
+tmp = tempfile.mkdtemp(prefix="ceo-t14h-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY + "MY-EDIT\n")
+code, out = run(env, "promote-ceo")
+check("14h 유효 백업 + 미부트 + 상위집합 보류 = exit 5 · 「그 밖」 표지 · 부트 안내 아님",
+      code == 5 and OTHER_MARK in out and BOOT_MARK not in out, "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 14i. 영수증이 있지만 읽을 수 없음(권한 000) — 셸 오류 줄(Permission denied)이 출력에 새지 않는다(14d 와 같은 부류).
+if hasattr(os, "geteuid") and os.geteuid() != 0:
+    tmp = tempfile.mkdtemp(prefix="ceo-t14i-")
+    env, home = setup(tmp)
+    mdp, pre, pend, marker = paths(home)
+    with open(pre, "w", encoding="utf-8") as f:
+        f.write("STANDARD-MASTER-OLD\n")
+    _rc = os.path.join(os.path.dirname(mdp), ".ceo-template-applied")
+    with open(_rc, "w", encoding="utf-8") as f:
+        f.write("0" * 64 + "\n")
+    os.chmod(_rc, 0)
+    try:
+        code, out = run(env, "promote-ceo")
+    finally:
+        os.chmod(_rc, 0o600)
+    check("14i 영수증 판독 불가 — 셸 오류 줄 없음 · 여전히 exit 5(부트 보류)",
+          "Permission denied" not in out and code == 5 and BOOT_MARK in out, "exit=%d %s" % (code, out[-200:]))
+    shutil.rmtree(tmp)
+else:
+    check("14i (건너뜀: root 또는 geteuid 없는 OS — 권한 000 을 재현 못 함)", True)
 
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

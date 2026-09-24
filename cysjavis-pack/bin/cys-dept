@@ -1014,9 +1014,9 @@ PY
 #   손수정 사본을 오판해 진짜 백업을 밀어내는 반례로 폐기(agy B R1 · 시험 11e).
 ceo_receipt_matches(){  # $1=파일 — 승격 영수증(.ceo-template-applied) 해시 == sha256($1) 이면 0
   local r h
-  # 영수증 부재 = 불일치. 존재부터 본다 — `<` 리다이렉트 실패는 뒤의 2>/dev/null 로 안 묻혀 「No such file」 줄이
-  #   stderr 로 새고, 그 stderr 가 GUI 승격 실패/보류 알림의 상세에 그대로 실렸다(A-Z14 재현 · 시험 14d).
-  [ -f "$PACK_DEFAULT/directives/.ceo-template-applied" ] || return 1
+  # 영수증 부재·판독 불가 = 불일치. 먼저 본다 — `<` 리다이렉트 실패는 뒤의 2>/dev/null 로 안 묻혀 「No such file」·
+  #   「Permission denied」 줄이 stderr 로 새고, 그 stderr 가 GUI 승격 실패/보류 알림의 상세에 그대로 실렸다(A-Z14 · 시험 14d).
+  [ -f "$PACK_DEFAULT/directives/.ceo-template-applied" ] && [ -r "$PACK_DEFAULT/directives/.ceo-template-applied" ] || return 1
   r="$(tr -d '\r\n\t ' < "$PACK_DEFAULT/directives/.ceo-template-applied" 2>/dev/null)" || return 1
   [ -n "$r" ] || return 1
   h="$(shasum -a 256 "$1" 2>/dev/null)" || return 1
@@ -1960,15 +1960,17 @@ EOF
     #   (1098 형상)의 보류를 「승격 완료」로 보고했다. 게이트와 같은 술어(pre_ceo_valid)로 바꾸는 것만으로도 부족하다 —
     #   유효 백업이 있는 기계는 게이트를 지나 _swap 에서 보류(상위집합 검사 rc 3 · 교체 실패 rc 4)될 수 있고, 그때도
     #   md 는 안 바뀐다(시험 14e · 형상 edited-standard-held). _swap 이 끝나면 md == CEO 이므로 md 실측이 곧 결과다.
-    #   게이트 술어는 **보류 사유를 가르는 데만** 쓴다(ceo_promote 의 부트 게이트와 같은 식).
+    #   게이트 술어는 **보류 사유를 가르는 데만** 쓴다(ceo_promote 의 부트 게이트와 같은 식). 사유 머리말
+    #   「CEO 승격 보류(부트 필요)」·「CEO 승격 보류(지침 미교체)」는 GUI 백엔드(src-tauri ceo_promote_result)가
+    #   사유를 가르는 표지다 — 바꾸면 그쪽 시험(ceo_promote_result_tags_held_only_for_exit5)이 적색.
     _md="$PACK_DEFAULT/directives/MASTER_DIRECTIVE.md"; _ceo="$PACK_DEFAULT/directives/CEO_TEMPLATE.md"
     if cmp -s "$_md" "$_ceo" 2>/dev/null; then
       :   # 승격 확정(directive == CEO 템플릿)
     elif [ -f "$_ceo" ] && ! pre_ceo_valid "$_md" "$_ceo" && [ ! -f "$BOOT_MARKER" ]; then
-      echo "[cys-dept] CEO 승격 보류 — 본부 master 가 아직 한 번도 부트되지 않았다(.master-bootstrapped 부재). master 지침은 그대로다. 본부 master 를 시작해 부트를 마친 뒤 다시 승격하라." >&2
+      echo "[cys-dept] CEO 승격 보류(부트 필요) — 본부 master 가 아직 한 번도 부트되지 않았다(.master-bootstrapped 부재). master 지침은 그대로다. 본부 master 를 시작해 부트를 마친 뒤 다시 승격하라." >&2
       exit 5
     else
-      echo "[cys-dept] CEO 승격 보류 — master 지침이 CEO 템플릿으로 바뀌지 않았다(템플릿 없음 · 상위집합 검사 실패 DCE-3 · 교체 실패 — 위 stderr 확인). master 지침은 그대로다. 원인 해소 후 재시도." >&2
+      echo "[cys-dept] CEO 승격 보류(지침 미교체) — master 지침이 CEO 템플릿으로 바뀌지 않았다(템플릿 없음 · 상위집합 검사 실패 DCE-3 · 교체 실패 — 위 stderr 확인). master 지침은 그대로다. 원인 해소 후 재시도." >&2
       exit 5
     fi
     ;;

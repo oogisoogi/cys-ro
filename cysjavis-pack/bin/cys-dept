@@ -1036,15 +1036,43 @@ i = c.find(SEP)
 sys.exit(0 if i >= 0 and m and c[i + len(SEP):] == m else 1)
 PY
 }
-ceo_md_is_standard(){  # $1=md — 0 = md 가 **표준 MASTER 라는 긍정 증거**(원문 머리말 'MASTER ABSOLUTE DIRECTIVE' ∧ CEO
+ceo_md_is_standard(){  # $1=md $2=CEO 템플릿 — 0 = md 가 **표준 MASTER 라는 긍정 증거**(원문 머리말 'MASTER ABSOLUTE DIRECTIVE' ∧ CEO
   # 표지 'master of master' 없음 · 둘 다 ASCII 라 CP949·CRLF 저장에도 판정 불변 · 시험 13b 가 현행 원문으로 대조).
   # ★Opus 적대 R3 M1: 강등의 기본값은 「복원」이다. 「승격 사본이라는 증거가 없으면 복원 안 함」으로 두면 빈 파일
   #   (1.1.5 이하 비원자 cp 중단)·파일 없음·UTF-16 저장본처럼 **내용으로 판정할 수 없는 md** 가 부서를 다 닫아도
   #   영구히 빈/깨진 지침으로 남았다. 복원을 건너뛰는 것은 표준본이라는 증거가 있을 때(승격 보류 · 손본 표준본)뿐.
   #   CEO 합성 구분선의 표지(「운영 계약 전문]」 · CEO 에만 있음)도 없어야 한다 — 머리글만 지운 CEO 사본은 표준 본문을
   #   통째로 담고 있어 머리말만으로는 표준본처럼 보인다(agy B R1 반례 ① 재발 방지 · 형상 pinless-edit).
+  # ★Opus 적대 R4 P1 · P2(master 판정 A): 머리말은 1행이라 **뒤가 잘린 표준본**(1.1.5 이하 비원자 강등 cp 중단)도
+  #   표준본으로 보였다 → 진짜 백업이 .stale- 로 밀리고(ⓕ) 강등이 복원을 건너뛰어 부서 0개에 잘린 지침이 남았다.
+  #   그래서 ①온전함: LF 정규화한 md 가 .pre-ceo · CEO 구분선 뒤 본문 · .new 중 하나의 **진접두**면 손상본이다
+  #   ②UTF-8: 디코드가 안 되면(CP949 저장 등) 한글 표지 grep 이 불발하므로 증거로 치지 않는다. 둘 중 하나라도
+  #   아니면 표준본 증거 없음 = ⓕ 는 낡은 백업으로 보지 않고 · 강등은 기본값(보존 뒤 복원)대로 간다.
   grep -qF 'MASTER ABSOLUTE DIRECTIVE' "$1" 2>/dev/null && ! grep -qF 'master of master' "$1" 2>/dev/null \
-    && ! grep -qF '운영 계약 전문]' "$1" 2>/dev/null
+    && ! grep -qF '운영 계약 전문]' "$1" 2>/dev/null && ceo_md_intact_utf8 "$1" "$2"
+}
+ceo_md_intact_utf8(){  # $1=md $2=CEO 템플릿 — 0 = md 가 UTF-8 이고 .pre-ceo · CEO 구분선 뒤 본문 · .new 어느 것의 진접두도 아님
+  python3 - "$1" "$2" <<'PY'
+import sys
+SEP = "\n---\n\n# [\ubcf8\ubb38 \u2014 \ud45c\uc900 MASTER \uc6b4\uc601 \uacc4\uc57d \uc804\ubb38]\n\n".encode("utf-8")
+md_p, ceo_p = sys.argv[1], sys.argv[2]
+try:
+    m = open(md_p, "rb").read()
+    m.decode("utf-8")
+except (OSError, UnicodeDecodeError):
+    sys.exit(1)
+m = m.replace(b"\r\n", b"\n")
+def rd(p):
+    try:
+        return open(p, "rb").read().replace(b"\r\n", b"\n")
+    except OSError:
+        return None
+refs = [rd(md_p + ".pre-ceo"), rd(md_p + ".new")]
+c = rd(ceo_p)
+if c is not None and c.find(SEP) >= 0:
+    refs.append(c[c.find(SEP) + len(SEP):])
+sys.exit(1 if any(r is not None and len(r) > len(m) and r.startswith(m) for r in refs) else 0)
+PY
 }
 pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md = 현행 표준 원본 그 자체라는 긍정 증거)
   [ -f "$1.pre-ceo" ] || return 1
@@ -1053,7 +1081,7 @@ pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업
   ceo_receipt_matches "$1" && return 1
   # ★agy C3 반례 ③: 사용자가 손본 표준본은 「구분선 뒤 본문 == md」 가 거짓이라 낡은 백업을 못 알아봤다(갱신이 남긴
   #   .new 로 DCE-3 가 통과하면 승격이 일어나고, 강등이 옛 판을 복원) → 표준본이라는 ASCII 긍정 증거도 인정한다.
-  ceo_body_equals "$2" "$1" 2>/dev/null || ceo_md_is_standard "$1"
+  ceo_body_equals "$2" "$1" 2>/dev/null || ceo_md_is_standard "$1" "$2"
 }
 pre_ceo_valid(){ [ -f "$1.pre-ceo" ] && ! pre_ceo_is_stale "$1" "$2"; }  # 유효한 승격 백업이 있으면 0
 ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자동 승격 알림 생략
@@ -1234,7 +1262,7 @@ ceo_demote(){
   #   증거가 없으면(승격이 보류된 채 부서를 닫음 · 사용자가 손본 표준본) 복원은 곧 「옛 판 부활」 또는
   #   「사용자 수정 덮기」다 — md 는 그대로 두고 .pre-ceo 는 지우지 않고 .stale-<시각> 로 옮긴다.
   local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)-$$"
-  if [ -f "$md" ] && ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md" && ceo_md_is_standard "$md"; then
+  if [ -f "$md" ] && ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md" && ceo_md_is_standard "$md" "$ceo"; then
     mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" 2>/dev/null || true
     rm -f "$receipt" 2>/dev/null || true
     echo "[cys-dept] CEO 강등 생략 — master 지침이 이미 표준본이다(승격 보류·손본 표준본). 백업은 $md.pre-ceo.stale-$_ts 로 보존" >&2

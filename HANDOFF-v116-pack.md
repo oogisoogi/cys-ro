@@ -119,6 +119,7 @@
 | c701c0bd | CI | 새 시험 3종 3레인 4목록 등재 |
 | fbdd3941 | 팩·시험·CI | ★재개 ①(master#f5ba25d5): phoenix `current_tombstones` + 스폰 직전 재조회 3곳(resume 회차 · 빈 좌석 재사용 · fresh 강등) · 저널 `tombstoned_mid_run` · 결과 `tombstoned_mid_run_roles` · 완결성·판정 집계 제외 · `test_v116_phoenix_midrun_tomb`(C0+T1~T3 · 뮤턴트 4 KILLED · 수정 전 코드 T1~T3 적색 = 실사고 재현) · CI 3레인 등재 |
 | 3e8e683a | 팩·시험 | ★재개 ③(m-1): 회수 유예 120→600초 · 알림 「10분」 · 경계 시험 599/600 · 뮤턴트 3 KILLED(상수 120 · 경계 `<=` · 문구 2분) |
+| 8f439373 | 시험 | ★CSO 누수 실측(master#42e6b050): `test_dept_name_guard` 가 좌석 env 의 `CYS_CYSD_BIN`·`CYS_CYS_BIN`(1.1.5 데몬 주입 · cys-dept 1순위)을 지우지 않아 진짜 cysd 를 격리 HOME 에 띄우고 방치(09-24 18기) + 적색 8건 → 상속 CYS_* 전부 제거 · 케이스 정리(폴더를 쥔 프로세스 TERM→KILL + rmtree · addCleanup) · `DaemonLeakGuard` + `tearDownModule` 잔존 0 단언(lsof 전수 · 지워진 경로 포함) · 뮤턴트 3 KILLED |
 
 - **BUILTIN_JOBS_VERSION 판정(코드)**: 범프 **불요**. 심박 잡(`schedule.rs:211-219`) 문자열을 바꾸지 않았다 — 부서명은 편성이 레지스트리(`~/.cys/depts.json`)에서 소켓으로 역산한다. 근거 = `schedule.rs:299-326`: 저장된 builtin 의 `_builtin_version` 이 코드 값보다 작을 때만 코드 정의로 갱신하고, 범프하면 builtin 전부가 교체돼 운영자 수기 편집이 소실된다(`:99-103` 주석).
 - **handlers.rs 겹침**: 내 변경 = `org.status` 팔의 daemon 블록 1키(≈6853) · T-USAGE(D6-1-2 patch) = `usage.report` 팔(≈6527). 둘 다 거대 `dispatch` 함수 안의 **서로 다른 match 팔**이고 300줄 이상 떨어져 줄 단위 병합 충돌은 없다 — 다만 「같은 함수」라는 점은 정직 고지.

@@ -5808,11 +5808,14 @@ pub(crate) fn deliver_head_locked(
     //   임계영역 **밖**에서 부른다(persist_queue_state 가 surfaces → pending_queue 를 잡는다 — 큐 락을 쥔 채
     //   부르면 교착). 두 호출자(watchdog 틱 · queue.deliver RPC)는 여기 올 때 락을 쥐고 있지 않다.
     let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
+    let head_id = |s: &Arc<crate::state::Surface>| s.pending_queue.lock().unwrap().front().map(|e| e.id.clone());
+    let head_before = head_id(s);
     let dropped = drop_stale_launch_lines(daemon, s, seat_bin.as_deref());
-    // ★agy 3R 반례 ②: 틱 경로(조준 id 없음)는 폐기가 있었으면 이번엔 배달하지 않는다 — 준비 판정(quiet·overdue ·
-    //   expect_pending)은 폐기 전 머리로 내려졌다. 다음 틱이 새 머리로 다시 판정한다. 강제 배달은 조준 항목을
-    //   아래 머리 대조가 지킨다(조준 항목이 남았으면 배달 · 폐기됐으면 None).
-    if dropped > 0 && expect_head_id.is_none() {
+    // ★agy 3R 반례 ② → agy 4R B1: 틱 경로(조준 id 없음)는 폐기로 **머리가 바뀌었을 때만** 이번 배달을 거른다 —
+    //   준비 판정(quiet·overdue·expect_pending)은 폐기 전 머리로 내려졌으므로 새 머리에 그대로 쓰면 안 된다(다음 틱이
+    //   다시 판정). 머리가 그대로면(꼬리 쪽 옛 줄만 폐기) 판정도 그대로 유효하니 배달한다 — 무조건 거르면 꼬리에 옛 줄이
+    //   계속 들어올 때 머리를 영영 못 보낸다(기아). 강제 배달은 조준 항목을 아래 머리 대조가 지킨다.
+    if dropped > 0 && expect_head_id.is_none() && head_id(s) != head_before {
         return None;
     }
     let delivered = {
@@ -14061,10 +14064,10 @@ mod accept_v116 {
         let (d, s) = rig("codexseat", Some(("codex", "/usr/local/bin/codex")));
         push(&d, &s, "claude --x", "surface:1");
         push(&d, &s, "codex --yolo", "surface:2");
-        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none(), "codex 줄 폐기 → 배달 0");
-        assert_eq!(queue_texts(&s), vec!["claude --x".to_string()]);
+        // 명세 S3 개정(agy 4R B1): 폐기된 codex 줄이 비머리라 머리가 그대로 → 같은 틱에 claude 줄 배달.
         let g = deliver_head_locked(&d, &s, false, false, None, None).expect("claude 줄은 codex 좌석에서 배달");
         assert_eq!(g.body, "claude --x");
+        assert!(queue_texts(&s).is_empty(), "codex 자기 줄은 폐기");
     }
 
     #[test]

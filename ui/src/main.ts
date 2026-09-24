@@ -11,6 +11,7 @@ import { formationIfRowOnly, formationLayout, hasHqSeats } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
+import { RESTART_PENDING_KEY, RESTART_BUTTON_LABEL, encodeRestartPending, decodeRestartPending, updateButtonAction, restartReadyToast, restartPendingTitle } from "./restartpending";
 import { DEFAULT_BG, readableForeground } from "./theme";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import {
@@ -5793,9 +5794,87 @@ let updateAvailable: { version: string; notes?: string } | null = null;
 // 무중단 팩 업데이트(check_pack_update) 결과 — 팩만 변경 시 세션·데몬 유지 경로(install_pack_update).
 let packUpdateAvailable: PackUpdateInfo | null = null;
 
+// ── 맥 교체 완료 뒤 「다시 켜기」 대기(TICKET=v116-restart-toast · 판정 = restartpending.ts) ──
+// 교체 완료 알림은 60초 뒤 사라진다(오너 정책). 그 뒤에도 누를 곳이 남도록 헤더 「업데이트」 단추가
+// 「다시 켜기」가 된다. 설정 지점 = update-restart-required 리스너 하나(맥 install_update_darwin 만 낸다 —
+// 윈은 곧장 재시작하므로 이 상태가 생기지 않는다). 해제 = 재시작으로 프로세스가 끝나는 것뿐.
+let restartPendingVersion: string | null = null;
+// restartAfterUpdate 진행 중 재진입 차단 — 연타·알림+단추 동시 누름이 저장 지시를 겹쳐 주입하지 않게(4군 ①).
+let restartingAfterUpdate = false;
+let restartPendingRestore: Promise<void> | null = null;
+
+/// 헤더 단추·배지를 「다시 켜기」로 칠한다. 마크업은 그대로 두고 첫 글자 노드만 바꾼다
+/// (index.html 의 단추 글자 「업데이트」는 topbarlabels 시험이 읽는다 — span 으로 감싸면 그 핀이 비게 된다).
+function paintRestartPending() {
+  if (restartPendingVersion === null) return;
+  const btn = document.getElementById("btn-update");
+  const badge = document.getElementById("update-badge");
+  if (!btn || !badge) return;
+  const title = restartPendingTitle(restartPendingVersion);
+  if (btn.firstChild?.nodeType === Node.TEXT_NODE) btn.firstChild.nodeValue = `${RESTART_BUTTON_LABEL} `;
+  btn.title = title;
+  badge.hidden = false;
+  badge.textContent = "!";
+  badge.classList.remove("ok");
+  badge.title = title;
+}
+
+/// 교체 완료 이벤트 → 대기 기억(메모리 = 화면의 진실 · sessionStorage = ⌘R 을 넘기는 사본).
+function markRestartPending(version: string) {
+  restartPendingVersion = version;
+  paintRestartPending();
+  void (async () => {
+    try {
+      const appVer = (await invoke("app_version")) as string;
+      if (appVer) sessionStorage.setItem(RESTART_PENDING_KEY, encodeRestartPending(version, appVer));
+    } catch {
+      /* 판번 조회·저장 실패 = 새로고침을 넘기지 못할 뿐(메모리 대기는 그대로) */
+    }
+  })();
+}
+
+/// ⌘R 뒤 복원(1회). 판정은 decodeRestartPending — 새 판으로 켜졌거나 검증 못 하면 무효·칸 삭제.
+/// 이벤트가 복원보다 먼저 왔으면 메모리 값을 덮지 않는다.
+function restoreRestartPending(): Promise<void> {
+  restartPendingRestore ??= (async () => {
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem(RESTART_PENDING_KEY);
+    } catch {
+      return;
+    }
+    if (raw === null) return;
+    let appVer: string | null = null;
+    try {
+      appVer = (await invoke("app_version")) as string;
+    } catch {
+      /* 판번을 모르면 검증 불가 → 무효 */
+    }
+    const v = decodeRestartPending(raw, appVer);
+    if (v === null) {
+      try {
+        sessionStorage.removeItem(RESTART_PENDING_KEY);
+      } catch {
+        /* 무시 */
+      }
+      return;
+    }
+    if (restartPendingVersion === null) restartPendingVersion = v;
+  })();
+  return restartPendingRestore;
+}
+
 /// 업데이트 확인. silent=true면 시작 시 백그라운드 체크(결과 없으면 조용히).
 /// 바이너리(check_update·재시작)와 무중단 팩(check_pack_update·세션 유지)을 둘 다 확인해 분기한다.
 async function checkForUpdate(silent: boolean) {
+  // 0) 맥 교체가 이미 끝나 다시 켜기만 남았으면 확인하지 않는다 — 도는 옛 앱은 같은 판을 또 「새 판」이라
+  //    판정하므로, 확인하면 「누르면 설치」 안내·설치 확인 창(= 재다운로드)으로 되돌아간다(v116-restart-toast).
+  //    시작 확인(⌘R 뒤)·6시간 주기·포커스 확인이 모두 이 줄을 지난다.
+  await restoreRestartPending();
+  if (restartPendingVersion !== null) {
+    paintRestartPending();
+    return;
+  }
   // 1) 바이너리 업데이트(Tauri updater latest.json) — 재시작 경로.
   let bin: BinUpdateInfo | null = null;
   let binCheckFailed = false;
@@ -5908,6 +5987,8 @@ async function promptBinaryPatch() {
     "설치",
   );
   if (!ok) return;
+  // 확인 창이 떠 있는 사이 다른 설치의 교체가 끝났으면 또 받지 않고 다시 켜기로 넘긴다(v116-restart-toast).
+  if (restartPendingVersion !== null) return restartAfterUpdate(restartPendingVersion);
   try {
     await invoke("install_update", { force: true });
     // 성공 시 백엔드가 app.restart()까지 수행 — 후속 UI 처리 없음(진행은 update-progress 리스너).
@@ -5921,6 +6002,21 @@ async function promptBinaryPatch() {
 /// 확인 문구·순서는 manualRotateSkewed(수동 교대)와 같은 모양이다(같은 일을 두 문장으로 말하지 않는다).
 async function restartAfterUpdate(version: string) {
   if (daemonActionBlocked()) return;
+  // 재진입 차단(v116-restart-toast · 4군 ①) — 첫 await 전에 세운다(같은 틱 연타도 1회). 실패·취소 뒤엔 풀려
+  // 다시 누를 수 있다. 성공이면 백엔드가 앱을 재시작하므로 풀릴 일이 없다.
+  if (restartingAfterUpdate) {
+    toast("feed", "다시 켜기 진행 중", "이미 다시 켜기를 시작했습니다. 잠시만 기다려 주세요.");
+    return;
+  }
+  restartingAfterUpdate = true;
+  try {
+    await restartAfterUpdateOnce(version);
+  } finally {
+    restartingAfterUpdate = false;
+  }
+}
+
+async function restartAfterUpdateOnce(version: string) {
   try {
     await invoke("restart_after_update", { force: false });
     return; // 성공하면 백엔드가 재시작까지 한다(여기로 돌아오지 않는다).
@@ -6367,7 +6463,10 @@ async function promptPackInstall() {
 ///   updatePlan 이 배지 텍스트와 비silent 동작(본체 패치·팩 무중단·본체 필요 안내·최신 안내)을
 ///   같은 입력에서 정하고, 「없음」이면 그 자리에서 배지를 "0" 으로 갱신한다.
 ///   (본체+팩 동시·호환이면 팩 무중단 + 본체 토스트 — updateplan.ts 옵션 2 설계 그대로.)
+///   (v116-restart-toast) 예외 하나 — 맥 교체가 이미 끝나 다시 켜기만 남았으면 확인 대신 다시 켠다.
+///   대기 판번은 「지난 확인의 캐시」가 아니라 **끝난 교체의 사실**이다(설정 = update-restart-required 뿐).
 async function onUpdateButton() {
+  if (updateButtonAction(restartPendingVersion) === "restart") return restartAfterUpdate(restartPendingVersion!);
   return checkForUpdate(false);
 }
 
@@ -7954,16 +8053,15 @@ async function start() {
   // ★왜 자동으로 재시작하지 않는가: 교체는 끝났지만 **세션은 아직 살아 있다**. 윈도(NSIS)는
   //   인스톨러가 앱을 죽이므로 선택지가 없지만, 맥은 우리가 교체했으므로 시점을 사용자가 고를 수 있다.
   //   토스트를 누르면 저장(drain) → 구 데몬 종료 → 재시작 → 자동 복원이 한 번에 돈다.
+  //   (v116-restart-toast) 알림은 60초 뒤 사라지므로(오너 정책) 헤더 단추도 「다시 켜기」가 된다 — 알림을
+  //   놓쳐도 누를 곳이 남는다. 알림 문구가 그 단추를 가리킨다.
   await listen("update-restart-required", (e) => {
     const p = (e.payload ?? {}) as { version?: string };
+    const version = p.version ?? "";
     dismissToast("upd-bin");
-    stickyToast(
-      "upd-restart",
-      "feed",
-      "✅ 새 판 교체 완료 — 눌러서 재시작",
-      `새 판 v${p.version ?? ""} 이 설치됐습니다. 지금 누르면 하던 대화를 저장하고 다시 켜서 창과 대화를 되돌립니다. 나중에 눌러도 됩니다.`,
-      () => void restartAfterUpdate(p.version ?? ""),
-    );
+    markRestartPending(version);
+    const t = restartReadyToast(version);
+    stickyToast("upd-restart", "feed", t.name, t.detail, () => void restartAfterUpdate(version));
   });
 
   // 무중단 팩 업데이트 진행 피드백(install_pack_update가 emit). ★app.restart 없음 — 세션 유지된 채 적용.

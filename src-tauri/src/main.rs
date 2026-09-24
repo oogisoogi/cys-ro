@@ -5374,10 +5374,24 @@ async fn approve_ceo_promotion() -> Result<String, String> {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    if out.status.success() {
-        Ok(txt.trim().to_string())
-    } else {
-        Err(txt.trim().to_string())
+    ceo_promote_result(out.status.code(), &txt)
+}
+
+/// ★A-Z14(v116-ceo-hold-az14): `cys-dept promote-ceo` exit 5 = **승격 보류**(사후 검증 = md 가 CEO 템플릿이 아님 ·
+/// 지침 무교체). 실패(그 밖 non-zero)와 같은 Err 로만 넘기면 GUI 가 보류를 「실패」로 알리므로, 보류에는 태그를 단다
+/// (UI `selfdiag.ceoPromoteFailToast` 가 이 태그로 가른다 — rotate 의 `live_sessions:` 관례와 같은 모양).
+/// 태그 뒤에 사유(`boot:` = 본부 master 미부트 · `other:` = 그 밖)를 붙인다 — 사유는 cys-dept 사후 검증이 찍는
+/// 머리말 `CEO_PROMOTE_HELD_BOOT_MARK` 로 가른다(게이트가 먼저 찍는 「보류(PENDING)」 줄과는 다른 문자열).
+const CEO_PROMOTE_HELD_TAG: &str = "ceo_promote_held:";
+const CEO_PROMOTE_HELD_BOOT_MARK: &str = "[cys-dept] CEO 승격 보류(부트 필요)";
+fn ceo_promote_result(code: Option<i32>, txt: &str) -> Result<String, String> {
+    match code {
+        Some(0) => Ok(txt.trim().to_string()),
+        Some(5) => {
+            let why = if txt.contains(CEO_PROMOTE_HELD_BOOT_MARK) { "boot" } else { "other" };
+            Err(format!("{CEO_PROMOTE_HELD_TAG}{why}:{}", txt.trim()))
+        }
+        _ => Err(txt.trim().to_string()),
     }
 }
 
@@ -7541,6 +7555,30 @@ mod tests {
         assert!(!ceo_drift_verdict(true, None, new));
         assert!(!ceo_drift_verdict(true, old, None));
         assert!(!ceo_drift_verdict(true, None, None));
+    }
+
+    /// ★A-Z14: promote-ceo 종료 코드 → GUI 결과. 0 = 완료(Ok) · 5 = 보류(태그 달린 Err — UI 가 「보류」로 알림) ·
+    /// 그 밖(4 = 부서 0개 · 7 = 가드 · 신호 종료 None) = 태그 없는 Err(「실패」).
+    #[test]
+    fn ceo_promote_result_tags_held_only_for_exit5() {
+        assert_eq!(ceo_promote_result(Some(0), " done \n"), Ok("done".to_string()));
+        let boot = ceo_promote_result(Some(5), "…게이트 줄\n[cys-dept] CEO 승격 보류(부트 필요) — x\n").unwrap_err();
+        assert!(boot.starts_with(&format!("{CEO_PROMOTE_HELD_TAG}boot:")), "{boot}");
+        assert!(boot.ends_with("CEO 승격 보류(부트 필요) — x"), "{boot}");
+        // 게이트가 먼저 찍는 「보류(PENDING) — base master 미부트」 줄만으로는 boot 가 아니다(사후 검증 표지만 본다).
+        let other = ceo_promote_result(Some(5), "[cys-dept] CEO 승격 보류(PENDING) — base master 미부트\n[cys-dept] CEO 승격 보류(지침 미교체) — y").unwrap_err();
+        assert!(other.starts_with(&format!("{CEO_PROMOTE_HELD_TAG}other:")), "{other}");
+        // 표지 = cys-dept 사후 검증이 실제로 찍는 문자열(바꾸면 적색 · 두 사유 모두 실재).
+        let dept = include_str!("../../cysjavis-pack/bin/cys-dept");
+        assert!(dept.contains(&format!("echo \"{CEO_PROMOTE_HELD_BOOT_MARK} — ")), "cys-dept 부트 보류 표지 불일치");
+        assert!(dept.contains("echo \"[cys-dept] CEO 승격 보류(지침 미교체) — "), "cys-dept 그 밖 보류 표지 불일치");
+        for code in [Some(1), Some(4), Some(7), None] {
+            let e = ceo_promote_result(code, "x").unwrap_err();
+            assert!(!e.contains(CEO_PROMOTE_HELD_TAG), "{code:?} → {e}");
+        }
+        // UI 와 같은 태그(선언 한 곳씩 · 문자열 대조로 묶는다).
+        let ui = include_str!("../../ui/src/selfdiag.ts");
+        assert!(ui.contains(&format!("\"{CEO_PROMOTE_HELD_TAG}\"")), "UI 보류 태그 불일치");
     }
 
     /// [F1] open_path 실행형 게이트 — 실행비트 파일은 force 없이 executable_confirm으로 거절(fail-closed),

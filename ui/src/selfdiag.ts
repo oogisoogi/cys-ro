@@ -22,3 +22,53 @@ export function ceoPaletteEntries(g: CeoGateSignals): CeoPaletteEntry[] {
   if (g.drift) return ["repromote"];
   return [];
 }
+
+// ★A-Z14(v116-ceo-hold-az14): 승격 명령(approve_ceo_promotion = cys-dept promote-ceo)의 실패·보류 알림.
+// cys-dept 는 지침이 CEO 로 바뀌지 않았으면 exit 5(보류)를 내고, 백엔드는 그 Err 앞에 `이 태그 + 사유:` 를 단다
+// (src-tauri ceo_promote_result — 사유 boot = 본부 master 미부트 · other = 그 밖 · 같은 문자열을 Rust 시험이 대조한다).
+// 보류는 「실패」가 아니라 「아직 안 바꿈」이라 문구·등급을 가른다 — 종전에는 보류가 exit 0 으로 새어
+// 「✅ 승격 완료」로 오보됐다(1098 형상 · 낡은 백업 + 미부트).
+export const CEO_PROMOTE_HELD_TAG = "ceo_promote_held:";
+
+export interface CeoPromoteFailToast {
+  held: boolean;
+  /// 보류 사유가 「본부 마스터 미부트」인가(백엔드 사유 태그 boot).
+  boot: boolean;
+  /// 알림 등급 — 보류 = feed(안내) · 실패 = health(경보).
+  category: "feed" | "health";
+  title: string;
+  body: string;
+  /// 「자세히」에 넣을 원문 — 기계 태그·사유는 떼어 낸다.
+  raw: string;
+}
+
+const HELD_BOOT_BODY =
+  "아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 본부 마스터를 먼저 한 번 시작한 뒤 다시 눌러 주세요.";
+// 재실행 경로의 부트 보류: 보류가 대기 표시(ceo-pending)를 남기면 팔레트 항목이 「CEO 승격 진행」으로 바뀐다
+//   (ceoPaletteEntries 의 pending 우선) — 「다시 눌러」 대상이 사라지므로 바뀐 항목 이름을 안내한다(Opus R2 NOTE).
+const HELD_BOOT_BODY_REPROMOTE =
+  "아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 본부 마스터를 먼저 한 번 시작한 뒤, 명령 팔레트의 「CEO 승격 진행」을 눌러 주세요.";
+
+/// 승격 실패/보류 알림. repromote = 팔레트 '재실행'(새 템플릿을 다시 적용) 경로.
+export function ceoPromoteFailToast(err: unknown, repromote: boolean): CeoPromoteFailToast {
+  const s = String(err);
+  const at = s.indexOf(CEO_PROMOTE_HELD_TAG);
+  if (at < 0) {
+    return repromote
+      ? { held: false, boot: false, category: "health", title: "CEO 승격 재실행 실패", raw: s,
+          body: "새 설정으로 CEO 자리를 다시 세우지 못했습니다. 잠시 뒤 다시 시도해 주세요." }
+      : { held: false, boot: false, category: "health", title: "CEO 승격 실패", raw: s,
+          body: "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요." };
+  }
+  const rest = s.slice(at + CEO_PROMOTE_HELD_TAG.length);
+  const boot = rest.startsWith("boot:");
+  const raw = rest.replace(/^(boot|other):/, "");
+  const title = repromote ? "CEO 승격 재실행 보류" : "CEO 승격 보류";
+  if (boot) return { held: true, boot, category: "feed", title, raw, body: repromote ? HELD_BOOT_BODY_REPROMOTE : HELD_BOOT_BODY };
+  return {
+    held: true, boot, category: "feed", title, raw,
+    body: repromote
+      ? "새 설정을 아직 적용하지 않았어요. 지금 쓰던 설정은 그대로예요. 이유는 알림의 「자세히」를 눌러 확인해 주세요."
+      : "아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 이유는 알림의 「자세히」를 눌러 확인해 주세요.",
+  };
+}

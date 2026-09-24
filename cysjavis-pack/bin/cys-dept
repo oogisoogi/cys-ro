@@ -1004,12 +1004,73 @@ if not ref:
 sys.exit(0 if ref.replace(b"\r\n", b"\n") in ceo.replace(b"\r\n", b"\n") else 1)
 PY
 }
+# ★v116-ceo-directive-hold(ⓕ · 1098 교회 부서 시범 실측): 「.pre-ceo 가 있다」 ≠ 「유효한 승격 백업이 있다」.
+#   부서가 없는 기계에 옛 승격 때의 .pre-ceo 가 남아 있으면(수동 되돌림 잔재 등) 종전 코드는 ①승격 때
+#   현행 master 지침을 백업하지 않고(`[ -f .pre-ceo ] || cp`) ②자동 승격 알림을 끄고(_auto) ③부트 게이트를
+#   우회했으며, 부서를 다 닫으면 강등이 **옛 판을 되살렸다**(격리 재현 scratch/repro2.sh).
+#   판정은 **긍정 증거**로만 한다: md 가 손대지 않은 표준본(ceo_md_is_standard = 바이트 정확 일치 · B)이고
+#   승격 영수증과 다를 때만 .pre-ceo 를 낡은 백업으로 본다. 증거가 없으면(손본 CEO 사본 · 핀을
+#   지운 사본 · 옛 CEO 사본 · 손본 표준본) 종전 동작 그대로다 — 부정 증거(「CEO 표지가 없으면 미승격」) 초안은 핀을 지운
+#   손수정 사본을 오판해 진짜 백업을 밀어내는 반례로 폐기(agy B R1 · 시험 11e).
+ceo_receipt_matches(){  # $1=파일 — 승격 영수증(.ceo-template-applied) 해시 == sha256($1) 이면 0
+  local r h
+  # 영수증 부재·판독 불가 = 불일치. 먼저 본다 — `<` 리다이렉트 실패는 뒤의 2>/dev/null 로 안 묻혀 「No such file」·
+  #   「Permission denied」 줄이 stderr 로 새고, 그 stderr 가 GUI 승격 실패/보류 알림의 상세에 그대로 실렸다(A-Z14 · 시험 14d).
+  [ -f "$PACK_DEFAULT/directives/.ceo-template-applied" ] && [ -r "$PACK_DEFAULT/directives/.ceo-template-applied" ] || return 1
+  r="$(tr -d '\r\n\t ' < "$PACK_DEFAULT/directives/.ceo-template-applied" 2>/dev/null)" || return 1
+  [ -n "$r" ] || return 1
+  h="$(shasum -a 256 "$1" 2>/dev/null)" || return 1
+  [ "$r" = "${h%% *}" ]
+}
+ceo_md_is_standard(){  # $1=md $2=CEO 템플릿 — 0 = md 가 **손대지 않은 표준 MASTER** 라는 증거(바이트 정확 일치만)
+  # ★v116 B(master 판정 [master#2da27fe2] · 멈춤 규칙): 판정은 **정확 일치**뿐이다 — 줄끝만 LF 로 맞춘 md 바이트가
+  #   ①CEO 템플릿의 구분선 뒤 본문(= 합성에 쓴 현행 표준 MASTER · 구분선 = scripts/gen_ceo_template.py SEPARATOR · 시험 13)
+  #   ②역대 발행 MASTER 해시 목록(directives/RELEASED_MASTER_DIRECTIVE.sha256 · 생성기가 Rust 표와 함께 쓰고 cargo 시험이
+  #   동기 강제 · 현행 판 포함) 중 하나와 **같을 때만** 0. 빈 md·판독 불능은 증거 없음. vendor 신본 .new 는 근거로 쓰지
+  #   않는다 — 손대지 않은 .new 는 현행 발행 바이트라 ①② 가 이미 덮고, 사용자가 병합하려 손본 .new(F6)와 같다는 것은
+  #   「손대지 않은 표준본」의 증거가 아니다(뮤턴트 X2 생존 = 중복 근거 · 제거).
+  #   종전의 내용 휴리스틱(머리말·CEO 표지 grep → 진접두 → UTF-8)은 라운드마다 새 경계를 만났다(Opus F1 부분 포함 ·
+  #   N1 한글 핀 · M1 빈 파일 · agy C3 ③ 손본 표준본 · R4 P1 잘림 · agy C5/Opus R5 「더 긴 판의 앞부분인 온전한 파일」
+  #   = 잘린 파일과 바이트로 못 가름) → 제거. 알려진 한계: 손본 표준본·끝 개행만 지운 현행본은 증거 없음 쪽이라 강등이
+  #   .pre-ceo 를 복원한다(md 는 .pre-ceo-<시각> 로 보존 · 형상 표 known_limitation). 소스는 ASCII 이스케이프(윈 python 무관).
+  python3 - "$1" "$2" <<'PY'
+import hashlib, os, sys
+SEP = "\n---\n\n# [\ubcf8\ubb38 \u2014 \ud45c\uc900 MASTER \uc6b4\uc601 \uacc4\uc57d \uc804\ubb38]\n\n".encode("utf-8")
+md_p, ceo_p = sys.argv[1], sys.argv[2]
+def rd(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read().replace(b"\r\n", b"\n")
+    except OSError:
+        return None
+m = rd(md_p)
+if not m:
+    sys.exit(1)
+c = rd(ceo_p)
+if c is not None and c.find(SEP) >= 0 and c[c.find(SEP) + len(SEP):] == m:
+    sys.exit(0)
+try:
+    with open(os.path.join(os.path.dirname(md_p), "RELEASED_MASTER_DIRECTIVE.sha256"), "rb") as f:
+        listed = {l.strip().decode("ascii", "replace") for l in f if l.strip() and not l.startswith(b"#")}
+except OSError:
+    listed = set()
+sys.exit(0 if hashlib.sha256(m).hexdigest() in listed else 1)
+PY
+}
+pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md 가 손대지 않은 표준본 그 자체 = 정확 일치 증거)
+  [ -f "$1.pre-ceo" ] || return 1
+  cmp -s "$1" "$2" 2>/dev/null && return 1
+  cmp -s "$1" "$1.pre-ceo" 2>/dev/null && return 1
+  ceo_receipt_matches "$1" && return 1
+  ceo_md_is_standard "$1" "$2"
+}
+pre_ceo_valid(){ [ -f "$1.pre-ceo" ] && ! pre_ceo_is_stale "$1" "$2"; }  # 유효한 승격 백업이 있으면 0
 ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자동 승격 알림 생략
   local md="$PACK_DEFAULT/directives/MASTER_DIRECTIVE.md"
   local ceo="$PACK_DEFAULT/directives/CEO_TEMPLATE.md"
   [ -f "$ceo" ] || { echo "[cys-dept] CEO 템플릿 없음 — 승격 생략(cys init-pack 필요)"; return 0; }
   cmp -s "$md" "$ceo" 2>/dev/null && { rm -f "$CEO_PENDING" 2>/dev/null || true; return 0; }
-  if [ ! -f "$md.pre-ceo" ] && [ ! -f "$BOOT_MARKER" ]; then
+  if ! pre_ceo_valid "$md" "$ceo" && [ ! -f "$BOOT_MARKER" ]; then
     # PENDING: 부서 생성 자체는 성공 유지(return 0). 침묵 금지 — feed(비대기·보조)+stderr 고지,
     # GUI 상시 배지는 ceo-pending 파일 존재로 렌더(WP-2/T6). 해소=부트 ⑦ one-shot 또는 차기 lifecycle.
     mkdir -p "$(dirname "$CEO_PENDING")"
@@ -1023,7 +1084,7 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
   #   간주해 자동 승격한다(GUI 승인 버튼이 §3.2 자기승인 차단·토큰 불일치로 침묵 실패해 승격이 걸리던 문제 해소).
   #   위 ③ 부트 마커 PENDING 게이트는 불변(미부트 머신 승격 금지). consented(오너 지명)는 원래 자동 아님 — 알림 생략 판별용.
   local _auto=0
-  if [ ! -f "$md.pre-ceo" ] && [ "${1:-}" != "consented" ]; then _auto=1; fi
+  if ! pre_ceo_valid "$md" "$ceo" && [ "${1:-}" != "consented" ]; then _auto=1; fi
   # ★동시 승격 직렬화(2026-07-15 적대검증 D-5): 두 promote가 겹치면 두 번째가 "pre-ceo 없음"을
   # 읽은 뒤 첫 번째의 cp(ceo→md) 이후 실행돼 CEO 템플릿을 .pre-ceo로 복사→ceo_demote 원복 불능.
   # flock으로 백업+교체를 원자화(flock 미설치 환경은 그대로 진행 — 인간 페이스 더블클릭은 저위험).
@@ -1032,7 +1093,8 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
   #   등가 > 표지 3핀 폴백' 우선순위로 승격 표지를 결정론 판정한다. 위치를 ~/.cys/state가 아닌
   #   pack 트리에 두는 근거=Tier1 백업 원자성(.pre-ceo와 같은 축·복원 시 세대 불일치 방지).
   #   기록 실패는 승격 불차단(fail-open — 판정은 표지 핀 폴백). shasum=mac/win PortableGit 공통 가용.
-  _swap(){
+  _swap(){  # $1: 1 = 승격 락 보유(flock·mkdir 성공) · 0 = 무락 강행 경로
+    local _locked="${1:-0}"
     # ★DCE-3(T10) 1단계 — 스왑 '직전' 상위집합 런타임 검사(락 안 = 검사·스왑 원자). 실패 rc 3
     #   = 스왑 미실행(md·.pre-ceo·영수증 전부 무접촉) — 보류 처리(PENDING 유지+loud)는 호출부.
     # ★MF-1(P3 수정 라운드): OR-포함 판정 — ceo ⊇ md 또는 ceo ⊇ .pre-ceo 중 하나면 통과.
@@ -1066,7 +1128,34 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
       ceo_template_superset_ok "$ceo" "$md.pre-ceo" && _sup_ok=0
     fi
     [ "$_sup_ok" -eq 0 ] || return 3
-    [ -f "$md.pre-ceo" ] || cp "$md" "$md.pre-ceo"; cp "$ceo" "$md"
+    # ★v116-ceo-directive-hold(ⓕ): 낡은 백업은 지우지 않고 .stale-<시각> 로 옮긴 뒤 현행 md 를 새로 백업한다.
+    #   락 안에서 다시 판정(검사·교체 원자) · **락을 못 잡은 무락 강행 경로에서는 하지 않는다** — 그 창에서
+    #   .pre-ceo 를 옮기면 동시 승격이 백업을 서로 덮는다(agy B R1 ③ · 시험 11f · 무락 강행 자체는 종전 결함).
+    local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)-$$"  # 같은 초 충돌 방지(Opus N4)
+    if [ "$_locked" = 1 ] && pre_ceo_is_stale "$md" "$ceo"; then
+      mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" || return 4
+      echo "[cys-dept] 낡은 승격 백업을 $md.pre-ceo.stale-$_ts 로 보존하고 현행 master 지침을 새로 백업" >&2
+    fi
+    if [ ! -f "$md.pre-ceo" ]; then
+      cp "$md" "$md.pre-ceo.tmp.$$" && mv "$md.pre-ceo.tmp.$$" "$md.pre-ceo" \
+        || { rm -f "$md.pre-ceo.tmp.$$"; return 4; }
+    elif ! ceo_receipt_matches "$md"; then
+      # ★v116-ceo-directive-hold(ⓧ1): 이미 승격 백업이 있는데 md 가 영수증과 다르다 = 제품이 쓴 사본이
+      #   아닐 수 있다(손본 CEO 사본 등). 종전엔 아래 교체가 그 사본을 백업 없이 덮었다 — 덮기 전 보존.
+      #   같은 바이트의 보존본이 이미 있으면 다시 만들지 않는다(교체가 계속 실패하는 기계에서 10분 틱마다
+      #   보존본이 쌓이던 형상 차단 · Opus 적대 F3).
+      local _have=0 _b
+      for _b in "$md".pre-ceo-*; do
+        [ -f "$_b" ] && cmp -s "$md" "$_b" 2>/dev/null && { _have=1; break; }
+      done
+      if [ "$_have" = 0 ]; then
+        cp "$md" "$md.pre-ceo-$_ts" || return 4
+        echo "[cys-dept] 덮기 전 현재 master 지침을 $md.pre-ceo-$_ts 로 보존(손본 사본일 수 있음)" >&2
+      fi
+    fi
+    # 원자 교체(같은 디렉터리 고유 임시 파일 + rename) — 반쯤 쓴 지침으로 master 가 기동하는 창 0 ·
+    #   실패 시 임시 파일을 남기지 않는다(Opus 적대 F3·F7 · 임시 이름 고정 금지 = H-CONC-3).
+    cp "$ceo" "$md.tmp.$$" && mv "$md.tmp.$$" "$md" || { rm -f "$md.tmp.$$"; return 4; }
     local h
     if h="$(shasum -a 256 "$md" 2>/dev/null)" && [ -n "$h" ]; then
       printf '%s\n' "${h%% *}" > "$PACK_DEFAULT/directives/.ceo-template-applied"
@@ -1076,17 +1165,17 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
   }
   local _swap_rc=0
   if command -v flock >/dev/null 2>&1; then
-    ( flock 9; _swap ) 9>"$md.promote.lock" || _swap_rc=$?
+    ( if flock 9; then _swap 1; else _swap 0; fi ) 9>"$md.promote.lock" || _swap_rc=$?  # flock 실패 = 무락(Opus F9)
   else
     # ★A13(win): PortableGit엔 flock CLI가 없어 종전엔 무락(D-5 동시 승격 레이스 방어 부재) —
     #   mkdir 원자 락 폴백(원자적 mkdir 성공=락 획득). 획득 실패=경고 후 진행(현행 무락보다 강화·
     #   인간 페이스 더블클릭은 저위험이라 차단하지 않는다 — 잔존 락은 수동 rmdir 안내).
     if mkdir "$md.promote.lock.d" 2>/dev/null; then
-      _swap || _swap_rc=$?
+      _swap 1 || _swap_rc=$?
       rmdir "$md.promote.lock.d" 2>/dev/null || true
     else
       echo "[cys-dept] WARN: 승격 락($md.promote.lock.d) 획득 실패 — 동시 승격 의심, 무락 진행(잔존 락은 rmdir로 정리)" >&2
-      _swap || _swap_rc=$?
+      _swap 0 || _swap_rc=$?
     fi
   fi
   if [ "$_swap_rc" -ne 0 ]; then
@@ -1150,7 +1239,35 @@ ceo_demote(){
     fi
     return 0
   fi
-  cp "$md.pre-ceo" "$md"; rm -f "$md.pre-ceo"
+  # ★v116-ceo-directive-hold(Opus 적대 F2 → R3 M1 → B): 강등의 기본값은 복원이다. 건너뛰는 것은 md 가 **손대지 않은
+  #   표준본**(ceo_md_is_standard = 정확 일치)일 때뿐 — 그때 복원은 곧 「옛 판 부활」이라 md 는 그대로 두고 .pre-ceo 는
+  #   지우지 않고 .stale-<시각> 로 옮긴다. 손본 표준본은 증거 없음 쪽(알려진 한계 · 아래 보존 뒤 복원).
+  local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)-$$"
+  if [ -f "$md" ] && ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md" && ceo_md_is_standard "$md" "$ceo"; then
+    mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" 2>/dev/null || true
+    rm -f "$receipt" 2>/dev/null || true
+    echo "[cys-dept] CEO 강등 생략 — master 지침이 이미 표준본이다(승격 보류·손본 표준본). 백업은 $md.pre-ceo.stale-$_ts 로 보존" >&2
+    return 0
+  fi
+  # ★Opus 적대 R2 N2: 승격 사본이어도 영수증과 다르면(사용자가 손본 CEO 사본) 복원 전에 보존한다 — 승격 쪽
+  #   ⓧ1 과 같은 규칙 · 같은 바이트 보존본이 이미 있으면 다시 만들지 않는다.
+  if [ -s "$md" ] && ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md"; then
+    local _have=0 _b
+    for _b in "$md".pre-ceo-*; do
+      [ -f "$_b" ] && cmp -s "$md" "$_b" 2>/dev/null && { _have=1; break; }
+    done
+    if [ "$_have" = 0 ]; then
+      cp "$md" "$md.pre-ceo-$_ts" || { echo "[cys-dept] WARN: 강등 전 보존 실패 — 강등 보류(md·.pre-ceo 무접촉)" >&2; return 0; }
+      echo "[cys-dept] 강등 전 현재 master 지침을 $md.pre-ceo-$_ts 로 보존(손본 CEO 사본일 수 있음)" >&2
+    fi
+  fi
+  # 원자 복원(고유 임시 파일 + rename · Opus 적대 F8) — 실패 시 md·.pre-ceo 무접촉.
+  if ! { cp "$md.pre-ceo" "$md.tmp.$$" && mv "$md.tmp.$$" "$md"; }; then
+    rm -f "$md.tmp.$$"
+    echo "[cys-dept] WARN: CEO 강등 복원 실패 — md·.pre-ceo 무접촉(다음 부서 정리 때 재시도)" >&2
+    return 0
+  fi
+  rm -f "$md.pre-ceo"
   rm -f "$receipt" 2>/dev/null || true   # ★승격 영수증 삭제(G0 D3) — 강등=승격 사실 소멸(stale 영수증 방지)
   echo "[cys-dept] CEO 강등(표준 master 원복)"
   ceo_reinject_master "표준 master 복귀"
@@ -1836,13 +1953,24 @@ EOF
     ceo_promote consented
     # ★진짜 승격 검증(2026-07-15 적대검증 D-2): consented(오너 지명)든 자동 승격이든 boot-marker
     # PENDING 게이트(부트 미완)는 못 뚫어 ceo_promote가 미승격인데 return 0 할 수 있다. GUI가 그 exit 0을
-    # "✅ 승격 완료"로 오보하지 않게, 실제 승격 여부(md==CEO 템플릿 또는 .pre-ceo 백업 존재)를 post-verify해
-    # 미승격이면 exit 5로 truthful 실패를 반환한다(approve_ceo_promotion→Err→GUI 실패 표시).
+    # "✅ 승격 완료"로 오보하지 않게, 실제 승격 여부를 post-verify해 미승격이면 exit 5로 truthful 보류를
+    # 반환한다(approve_ceo_promotion→Err(보류 태그)→GUI 「보류」 표시).
+    # ★A-Z14(v116-ceo-hold-az14): 확정 = **md 가 지금 CEO 템플릿과 바이트가 같을 때만**이다. 종전의 「또는 .pre-ceo
+    #   백업 존재」는 ⓕ 가 게이트를 pre_ceo_valid(낡은 백업 제외)로 바꾼 뒤 게이트와 어긋나, 낡은 .pre-ceo + 미부트
+    #   (1098 형상)의 보류를 「승격 완료」로 보고했다. 게이트와 같은 술어(pre_ceo_valid)로 바꾸는 것만으로도 부족하다 —
+    #   유효 백업이 있는 기계는 게이트를 지나 _swap 에서 보류(상위집합 검사 rc 3 · 교체 실패 rc 4)될 수 있고, 그때도
+    #   md 는 안 바뀐다(시험 14e · 형상 edited-standard-held). _swap 이 끝나면 md == CEO 이므로 md 실측이 곧 결과다.
+    #   게이트 술어는 **보류 사유를 가르는 데만** 쓴다(ceo_promote 의 부트 게이트와 같은 식). 사유 머리말
+    #   「CEO 승격 보류(부트 필요)」·「CEO 승격 보류(지침 미교체)」는 GUI 백엔드(src-tauri ceo_promote_result)가
+    #   사유를 가르는 표지다 — 바꾸면 그쪽 시험(ceo_promote_result_tags_held_only_for_exit5)이 적색.
     _md="$PACK_DEFAULT/directives/MASTER_DIRECTIVE.md"; _ceo="$PACK_DEFAULT/directives/CEO_TEMPLATE.md"
-    if cmp -s "$_md" "$_ceo" 2>/dev/null || [ -f "$_md.pre-ceo" ]; then
-      :   # 승격 확정(directive=CEO 또는 백업 존재)
+    if cmp -s "$_md" "$_ceo" 2>/dev/null; then
+      :   # 승격 확정(directive == CEO 템플릿)
+    elif [ -f "$_ceo" ] && ! pre_ceo_valid "$_md" "$_ceo" && [ ! -f "$BOOT_MARKER" ]; then
+      echo "[cys-dept] CEO 승격 보류(부트 필요) — 본부 master 가 아직 한 번도 부트되지 않았다(.master-bootstrapped 부재). master 지침은 그대로다. 본부 master 를 시작해 부트를 마친 뒤 다시 승격하라." >&2
+      exit 5
     else
-      echo "[cys-dept] CEO 승격 미완(보류) — base master 미부트(.master-bootstrapped 부재) 또는 템플릿 상위집합 검사 실패(DCE-3 — 위 stderr 확인) 등. 원인 해소 후 재시도." >&2
+      echo "[cys-dept] CEO 승격 보류(지침 미교체) — master 지침이 CEO 템플릿으로 바뀌지 않았다(템플릿 없음 · 상위집합 검사 실패 DCE-3 · 교체 실패 — 위 stderr 확인). master 지침은 그대로다. 원인 해소 후 재시도." >&2
       exit 5
     fi
     ;;

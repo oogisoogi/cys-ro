@@ -127,7 +127,7 @@ import {
   macGateInputs,
   winGateInputs,
 } from "./wheelgate";
-import { ceoPaletteEntries } from "./selfdiag";
+import { ceoPaletteEntries, ceoPromoteFailToast } from "./selfdiag";
 import { EXPERT_KEY, expertModeOn, expertModeRaw } from "./expertmode";
 import { deptCreateConfirm } from "./deptconfirm";
 import {
@@ -5768,8 +5768,10 @@ async function refreshFeed() {
                     `승격: ${r || "완료"} / feed: ${feedReplyErrorText(e)}`);
                 }
               } catch (e) {
-                // 승격 실패 — feed_reply 하지 않음(항목 pending 유지·재시도 가능). 실패 사유 표시.
-                toast("health", "CEO 승격 실패", "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
+                // 승격 실패·보류 — feed_reply 하지 않음(항목 pending 유지·재시도 가능). 사유 표시.
+                //  ★A-Z14: 보류(exit 5 · 지침 무교체)는 「실패」가 아니라 「보류」로 알린다(selfdiag.ceoPromoteFailToast).
+                const t = ceoPromoteFailToast(e, false);
+                toast(t.category, t.title, t.body, undefined, t.raw);
               }
             } else {
               try {
@@ -6820,7 +6822,8 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
             const r = (await invoke("approve_ceo_promotion")) as string;
             toast("watchdog", "✅ CEO 승격 재실행 완료", r || "새 템플릿을 적용했습니다.");
           } catch (e) {
-            toast("health", "CEO 승격 재실행 실패", "새 설정으로 CEO 자리를 다시 세우지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
+            const t = ceoPromoteFailToast(e, true); // ★A-Z14: 보류(exit 5)는 「보류」 문구
+            toast(t.category, t.title, t.body, undefined, t.raw);
           }
         },
       });

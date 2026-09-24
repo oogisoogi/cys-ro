@@ -2062,6 +2062,58 @@ pub fn is_user_mergeable(rel: &str) -> bool {
 /// CEO 승격 사본의 정본 경로 2개 — 파생 규칙(ⓑ)의 SOT.
 pub const MASTER_DIRECTIVE_PACK_REL: &str = "directives/MASTER_DIRECTIVE.md";
 pub const CEO_TEMPLATE_PACK_REL: &str = "directives/CEO_TEMPLATE.md";
+/// 승격 영수증(cys-dept `_swap` 이 기록 · 내용 = 교체 직후 MASTER_DIRECTIVE.md 의 sha256 hex 1줄).
+pub const CEO_RECEIPT_PACK_REL: &str = "directives/.ceo-template-applied";
+
+// ★v116-ceo-directive-hold: 역대 발행 지침 해시 표(생성기 = scripts/gen_released_directive_hashes.py).
+include!("released_directive_hashes.rs");
+
+#[cfg(test)]
+thread_local! {
+    /// 시험 전용 발행 해시 주입(스레드 국소 — 병렬 시험 간 누출 0). 실물 표에는 시험 문자열이 없으므로
+    /// 「발행 이력에 있는 옛 판」 형상을 픽스처 문자열로 재현할 때만 쓴다.
+    static TEST_RELEASED_CEO_EXTRA: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TEST_RELEASED_MASTER_EXTRA: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 디스크 텍스트가 표의 발행 바이트와 같은가 — 원 바이트 해시 또는 CRLF→LF 정규화 해시.
+/// 정규화 이유: 2026-08-23 LF 봉인 이전 윈도 빌드는 CRLF 로 임베드됐을 수 있다(.gitattributes 머리말).
+/// 줄끝만 다른 사본은 문면이 발행본과 같으므로 「손대지 않은 제품 사본」으로 본다.
+#[cfg(test)]
+fn test_released_extra_contains(ceo: bool, h: &str) -> bool {
+    let f = |v: &std::cell::RefCell<Vec<String>>| v.borrow().iter().any(|x| x == h);
+    if ceo { TEST_RELEASED_CEO_EXTRA.with(f) } else { TEST_RELEASED_MASTER_EXTRA.with(f) }
+}
+#[cfg(not(test))]
+fn test_released_extra_contains(_ceo: bool, _h: &str) -> bool {
+    false
+}
+
+fn released_contains(ceo: bool, text: &str) -> bool {
+    let table = if ceo { RELEASED_CEO_TEMPLATE_SHA256 } else { RELEASED_MASTER_DIRECTIVE_SHA256 };
+    let hit = |h: &str| table.contains(&h) || test_released_extra_contains(ceo, h);
+    if hit(&content_hash(text)) {
+        return true;
+    }
+    text.contains("\r\n") && hit(&content_hash(&text.replace("\r\n", "\n")))
+}
+
+/// ⓑ⁺: 디스크 MASTER 가 **어느 발행 판의 CEO_TEMPLATE 바이트 사본**인가(= 제품이 쓴 승격 사본).
+pub(crate) fn is_released_ceo_template(text: &str) -> bool {
+    released_contains(true, text)
+}
+
+/// ⓔ: 디스크 MASTER(또는 .pre-ceo)가 **손대지 않은 옛 발행 표준 MASTER** 인가.
+pub(crate) fn is_released_master_directive(text: &str) -> bool {
+    released_contains(false, text)
+}
+
+/// 승격 영수증 해시 — 64자리 hex 가 아니면 None(손상·빈 파일은 근거로 쓰지 않는다).
+pub(crate) fn read_ceo_receipt(dir: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(dir.join(CEO_RECEIPT_PACK_REL)).ok()?;
+    let h = s.trim().to_ascii_lowercase();
+    (h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())).then_some(h)
+}
 
 /// ★D1-ⓑ(1.1.5 6차) **제품이 쓴 결정론 파생본** 판정 — CEO 승격 기계의 MASTER_DIRECTIVE.md.
 ///
@@ -2075,10 +2127,20 @@ pub const CEO_TEMPLATE_PACK_REL: &str = "directives/CEO_TEMPLATE.md";
 /// 가 **아니라 신판 CEO_TEMPLATE** 인 이유: 승격 기계에 vendor MASTER 를 쓰면 그 자리에서 조용히
 /// 강등(CEO 지침 소멸)된다 — 갱신의 목적은 '신판 문안 적용'이지 '승격 취소'가 아니다.
 /// 비승격 기계·사용자 수정본·CEO_TEMPLATE 미설치에서는 None(치환 없음 = 종전 경로).
+///
+/// ★v116-ceo-directive-hold(ⓑ⁺): 「제품이 쓴 CEO 사본」의 증거를 manifest[CEO] 하나에서 셋으로 넓힌다 —
+///   ①manifest[CEO](종전) ②승격 영수증(`.ceo-template-applied` = cys-dept `_swap` 이 교체 직후 기록한
+///   디스크 MASTER 의 sha256 · v1.0.0 부터) ③역대 발행 CEO_TEMPLATE 해시 표.
+///   ①만으로는 **옛 판 사이드카가 먼저 판정한** 기계를 못 구한다: 단추 갱신은 옛 앱의 `cys pack-update`
+///   가 새 팩을 먼저 적용하는데(D1-ⓑ 없는 1.1.4 이하), 그 판정이 System 등급 CEO_TEMPLATE 을 갱신하며
+///   manifest[CEO] 를 신판으로 전진시키고 MASTER 는 `.new` 로 보류한다 → 재시작 뒤 새 판 init-pack 에서
+///   ①이 영원히 불성립(1085 VM-B · 격리 재현 대조군으로 확정). ②③은 바이트 sha256 등가라 사용자
+///   수정본을 제품 사본으로 오인하지 않는다(한 글자라도 고치면 셋 다 불일치 → 종전 Keep+`.new`).
 pub(crate) fn ceo_derived_override<'a>(
     rel: &str,
     disk: Option<&str>,
     manifest_ceo_hash: Option<&str>,
+    receipt_hash: Option<&str>,
     items: &[(&'a str, &'a str)],
 ) -> Option<(&'a str, String)> {
     if rel != MASTER_DIRECTIVE_PACK_REL {
@@ -2086,7 +2148,10 @@ pub(crate) fn ceo_derived_override<'a>(
     }
     let d = disk?;
     let dh = content_hash(d);
-    if manifest_ceo_hash != Some(dh.as_str()) {
+    let product_written = manifest_ceo_hash == Some(dh.as_str())
+        || receipt_hash == Some(dh.as_str())
+        || is_released_ceo_template(d);
+    if !product_written {
         return None;
     }
     let new_ceo = items
@@ -2224,6 +2289,15 @@ pub fn decide_file_action(
                 //   system 등급의 비수정 자동갱신(아래 2124 arm)과 같은 술어이며, 그쪽과 달리
                 //   되돌릴 자리를 남긴다(`<rel>.bak-<판번>` 백업 — 실행부 install_into).
                 if manifest_hash == Some(content_hash(d).as_str()) {
+                    return FileAction::RefreshUser;
+                }
+                // ★v116-ceo-directive-hold(ⓔ · MASTER_DIRECTIVE.md 한 파일 한정): manifest 가 기록을
+                //   잃었어도 디스크가 **손대지 않은 옛 발행 표준 MASTER** 바이트 그대로면 미수정이다.
+                //   발화 형상: CEO 강등(cys-dept ceo_demote)이 낡은 .pre-ceo(옛 판)를 되살린 기계 —
+                //   manifest[MASTER] 는 현행 판이라 위 술어가 불성립하고, 같은 판번에선 `.new` 도 없이
+                //   옛 master 지침이 조용히 남는다(1098 교회 부서 시범 실측 · scratch/repro2.sh).
+                //   발행 해시 표는 바이트 sha256 등가라 사용자 수정본(표에 없음)은 종전대로 Keep+`.new`.
+                if rel == MASTER_DIRECTIVE_PACK_REL && is_released_master_directive(d) {
                     return FileAction::RefreshUser;
                 }
                 // ★D1: 혼합 설정(schedule.json·acl.json)은 사용자 수정본이어도 동결하지 않는다 —
@@ -2526,6 +2600,7 @@ pub fn plan_install(
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+    let ceo_receipt: Option<String> = read_ceo_receipt(dir);
     for (rel, content) in items.iter().copied() {
         let path = dir.join(rel);
         let exists = path.exists();
@@ -2536,6 +2611,7 @@ pub fn plan_install(
             rel,
             disk.as_deref(),
             manifest.get(CEO_TEMPLATE_PACK_REL).map(String::as_str),
+            ceo_receipt.as_deref(),
             items,
         );
         let content: &str = ceo_ov.as_ref().map(|(c, _)| *c).unwrap_or(content);
@@ -3402,6 +3478,9 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     // 디스크(구판 CEO 사본)와 영원히 불일치하고, 파생본 판정이 **한 번도 발화하지 않는다**.
     // 그래서 판정 기준(= 이 설치본이 **마지막으로 썼던** CEO 템플릿 해시)을 루프 전에 떠 둔다.
     let ceo_manifest_before: Option<String> = manifest.get(CEO_TEMPLATE_PACK_REL).cloned();
+    // ★v116-ceo-directive-hold(ⓑ⁺): 승격 영수증도 루프 전에 한 번 뜬다(같은 순서 함정 — 루프가 구제 시
+    // 영수증을 새 CEO 해시로 전진시키므로, 루프 안에서 읽으면 판정 기준이 흔들린다).
+    let ceo_receipt: Option<String> = read_ceo_receipt(&dir);
     let now_ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -3466,6 +3545,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             rel,
             disk.as_deref(),
             ceo_manifest_before.as_deref(),
+            ceo_receipt.as_deref(),
             &items,
         );
         let content: &str = ceo_ov.as_ref().map(|(c, _)| *c).unwrap_or(content);
@@ -3755,7 +3835,11 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                     if ceo_ov.is_some() {
                         let pre = dir.join(format!("{MASTER_DIRECTIVE_PACK_REL}.pre-ceo"));
                         if let Ok(cur) = std::fs::read_to_string(&pre) {
+                            // ★v116-ceo-directive-hold(ⓔ): manifest[MASTER] 와 같거나 **손대지 않은 옛
+                            // 발행 표준본**이면 전진 — 옛 사이드카를 거친 기계·1098 형상의 낡은 백업도
+                            // 사용자 수정이 아니므로 신판으로 올린다(수정본 = 표에 없음 = 무접촉).
                             if Some(content_hash(&cur)) == manifest.get(MASTER_DIRECTIVE_PACK_REL).cloned()
+                                || is_released_master_directive(&cur)
                             {
                                 let _ = write_atomic(&pre, vendor_embed.as_bytes());
                             }
@@ -3873,7 +3957,24 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
         let record: &str = if ceo_ov.is_some() { vendor_embed } else { content };
         manifest.insert(rel.to_string(), content_hash(record));
         ensure_pristine(&dir, rel, record);
+        // ★v116-ceo-directive-hold(ⓑ⁺): 승격 사본을 신판 CEO 로 바꿨으면 ①영수증을 새 사본 해시로 전진
+        //   (옛 해시로 남으면 C03 영수증 판정·다음 구제 근거가 흔들린다 — 대조군 실측: 영수증 4d29 · MASTER
+        //   9f4e) ②옛 사이드카가 남긴 `.new`(= 이번 vendor MASTER 바이트 그대로)를 정리한다 — 원장에
+        //   new-pending 항목이 없어도(1.1.2 등 옛 판 원장) 바이트가 vendor 그대로면 사용자 손길이 없는
+        //   잔재다. 내용이 다르면(사용자가 .new 를 손봄) 무접촉.
+        if ceo_ov.is_some() {
+            let _ = write_atomic(
+                &dir.join(CEO_RECEIPT_PACK_REL),
+                format!("{}\n", content_hash(out)).as_bytes(),
+            );
+            let newp = dir.join(format!("{rel}.new"));
+            if std::fs::read_to_string(&newp).ok().as_deref() == Some(vendor_embed) {
+                let _ = std::fs::remove_file(&newp);
+            }
+        }
         // 정상 갱신으로 합류(비수정 update·신규 생성) — 남은 new-pending 잔재는 무의미하므로 청소.
+        // ★v116-ceo-directive-hold(Opus 적대 F6): CEO 파생 구제 경로에서는 `.new` 가 vendor 바이트와 다르면
+        //   (사용자가 병합하려고 손본 사본) 파일은 남기고 원장 항목만 정리한다 — 위 정리와 같은 약속.
         if pending
             .get(rel)
             .and_then(|e| e.get("kind"))
@@ -3882,7 +3983,12 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
         {
             pending.remove(rel);
             pending_dirty = true;
-            let _ = std::fs::remove_file(dir.join(format!("{rel}.new")));
+            let newp = dir.join(format!("{rel}.new"));
+            let user_touched = ceo_ov.is_some()
+                && std::fs::read_to_string(&newp).ok().is_some_and(|n| n != vendor_embed);
+            if !user_touched {
+                let _ = std::fs::remove_file(newp);
+            }
         }
         written += 1;
     }
@@ -8051,6 +8157,228 @@ mod tests {
                 "⑥드라이런이 아직 `.new` 병치로 보고한다(실제 설치와 불일치): {plan:?}");
         assert!(plan.update.iter().any(|r| r == "directives/WORKER_DIRECTIVE.md"),
                 "⑥미수정 갱신도 update 버킷이어야 한다: {plan:?}");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★v116-ceo-directive-hold 경로 1(1085 VM-B 실측 형상) — **옛 판 사이드카가 먼저 판정한** 승격 기계.
+    /// 단추 갱신은 옛 앱의 `cys pack-update` 가 새 팩을 먼저 적용한다(D1-ⓑ 없는 1.1.4 이하 코드).
+    /// 그 판정은 ⑴MASTER(=옛 CEO 사본)를 사용자 수정본으로 보고 `.new` 병치 ⑵System 인 CEO_TEMPLATE 은
+    /// 강제 갱신해 manifest[CEO] 를 신판으로 전진시킨다. 재시작 뒤 새 판 init-pack 의 D1-ⓑ 는
+    /// manifest[CEO] == 디스크 MASTER 를 보므로 영영 불발 — 격리 재현(scratch/repro.sh base-v112)과
+    /// VM-B 수집본이 바이트 동일로 이 형상이다. 승격 영수증(`.ceo-template-applied` = cys-dept 가
+    /// 교체 직후 기록한 디스크 MASTER 의 sha256)이 「제품이 쓴 사본」의 증거로 남아 있다.
+    #[test]
+    fn d1b_rescues_ceo_copy_after_old_sidecar_advanced_manifest() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let td = std::env::temp_dir()
+            .join(format!("cys-d1b-sidecar-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pd = td.join("pack");
+        std::fs::create_dir_all(&pd).unwrap();
+        let _env = set_pack_env(&pd, td.join("cfg"));
+        let read = |rel: &str| std::fs::read_to_string(pd.join(rel)).unwrap();
+        let inst = |items: &[(&str, &str)], ver: &str| {
+            install_into(
+                pd.clone(), items.iter().copied(), false, ver, false, false,
+                pack_scope_of(&pd), None, None,
+            )
+            .unwrap()
+        };
+        let v1 = [
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V1\nMASTER-V1"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V1"),
+        ];
+        let v2 = [
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V2\nMASTER-V2"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V2"),
+        ];
+        let md = "directives/MASTER_DIRECTIVE.md";
+        let ceo_rel = "directives/CEO_TEMPLATE.md";
+        // 시나리오 한 벌: v1 설치 → 승격(cys-dept _swap 실측 형상 + 영수증) → 옛 사이드카 v2 적용 모의.
+        let stage = |master_after_promote: &str| {
+            let _ = std::fs::remove_dir_all(&pd);
+            std::fs::create_dir_all(&pd).unwrap();
+            inst(&v1, "1.0.0");
+            std::fs::copy(pd.join(md), pd.join(format!("{md}.pre-ceo"))).unwrap();
+            std::fs::copy(pd.join(ceo_rel), pd.join(md)).unwrap();
+            let receipt = content_hash(&read(md));
+            std::fs::write(pd.join("directives/.ceo-template-applied"), format!("{receipt}\n")).unwrap();
+            if master_after_promote != read(md) {
+                std::fs::write(pd.join(md), master_after_promote).unwrap(); // 사용자 손질
+            }
+            // 옛 사이드카(D1-ⓑ 없음)의 v2 적용 결과를 그대로 만든다(scratch/repro.sh 기준선 실측):
+            // CEO_TEMPLATE = v2 · manifest[CEO] = hash(v2) · MASTER 불변 · manifest[MASTER] 불변 · .new = v2.
+            std::fs::write(pd.join(ceo_rel), v2[0].1).unwrap();
+            std::fs::write(pd.join(format!("{md}.new")), v2[1].1).unwrap();
+            let mp = pd.join(INSTALL_MANIFEST);
+            let mut m: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+            m.insert(ceo_rel.to_string(), serde_json::json!(content_hash(v2[0].1)));
+            std::fs::write(&mp, serde_json::to_string(&m).unwrap()).unwrap();
+            std::fs::write(pd.join(".pack-version"), "1.0.1\n").unwrap();
+        };
+
+        // ① 제품이 쓴 사본(영수증 일치) → 재시작 뒤 새 판 init-pack 이 신판 CEO 를 적용한다.
+        stage("CEO-HEAD-V1\nMASTER-V1");
+        inst(&v2, "1.0.1");
+        assert_eq!(read(md), "CEO-HEAD-V2\nMASTER-V2",
+                   "①옛 사이드카가 manifest[CEO] 를 전진시킨 승격 기계가 신판 CEO 를 못 받았다(VM-B 결함)");
+        assert!(!pd.join(format!("{md}.new")).exists(), "①구제됐으면 .new 보류가 정리돼야 한다");
+        assert_eq!(read(&format!("{md}.pre-ceo")), "MASTER-V2",
+                   "①강등 백업도 신판 vendor MASTER 로 전진해야 한다(강등 시 옛 판 부활 차단)");
+        assert_eq!(read(&format!("{md}.bak-1.0.1")), "CEO-HEAD-V1\nMASTER-V1", "①직전 승격본 백업");
+        assert_eq!(read("directives/.ceo-template-applied").trim(), content_hash("CEO-HEAD-V2\nMASTER-V2"),
+                   "①영수증이 옛 해시로 남으면 다음 갱신의 근거가 흔들린다 — 새 CEO 해시로 전진");
+        // ①-b 멱등: 같은 판 재설치 = 변화 0.
+        inst(&v2, "1.0.1");
+        assert_eq!(read(md), "CEO-HEAD-V2\nMASTER-V2", "①-b 재설치 멱등");
+        assert!(!pd.join(format!("{md}.new")).exists(), "①-b 재설치가 .new 를 되살렸다");
+
+        // ② 사용자가 CEO 사본을 손으로 고침(영수증 불일치) → 덮지 않는다 · .new 보류 유지.
+        stage("CEO-HEAD-V1\nMASTER-V1\nMY-EDIT");
+        inst(&v2, "1.0.1");
+        assert_eq!(read(md), "CEO-HEAD-V1\nMASTER-V1\nMY-EDIT", "②사용자 수정본을 덮었다(데이터 손실)");
+        assert_eq!(read(&format!("{md}.new")), "MASTER-V2", "②신판은 여전히 .new 로 병치");
+        assert_eq!(read(&format!("{md}.pre-ceo")), "MASTER-V1", "②수정본 기계의 강등 백업 무접촉");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★v116-ceo-directive-hold(master 판정 ⑴): 형상 표 한 파일을 bash 시험(test_ceo_pending_gate.py 12)과
+    /// **같이 읽는다** — 설치기 판정과 cys-dept 판정이 서로 다른 뜻으로 표류하면 한쪽이 적색이 된다.
+    #[test]
+    fn ceo_directive_shapes_installer() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let table: serde_json::Value = serde_json::from_str(include_str!(
+            "../cysjavis-pack/bin/tests/fixtures/ceo_directive_shapes.json"
+        ))
+        .unwrap();
+        let texts = table["texts"].as_object().unwrap();
+        let t = |k: &serde_json::Value| -> Option<String> {
+            k.as_str().map(|k| texts[k].as_str().unwrap_or_else(|| panic!("texts 에 {k} 없음")).to_string())
+        };
+        let td = std::env::temp_dir()
+            .join(format!("cys-ceo-shapes-{}-{}", std::process::id(), line!()));
+        let pd = td.join("pack");
+        let _env = set_pack_env(&pd, td.join("cfg"));
+        let md = MASTER_DIRECTIVE_PACK_REL;
+        let ceo_rel = CEO_TEMPLATE_PACK_REL;
+        let inst = |items: &[(&str, &str)], ver: &str| {
+            install_into(
+                pd.clone(), items.iter().copied(), false, ver, false, false,
+                pack_scope_of(&pd), None, None,
+            )
+            .unwrap()
+        };
+        let put = |rel: &str, v: Option<String>| {
+            let p = pd.join(rel);
+            match v {
+                Some(s) => std::fs::write(&p, s).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        };
+        let got = |rel: &str| std::fs::read_to_string(pd.join(rel)).ok();
+        let (c1, c2) = (texts["C1"].as_str().unwrap(), texts["C2"].as_str().unwrap());
+        let (m1, m2) = (texts["M1"].as_str().unwrap(), texts["M2"].as_str().unwrap());
+        let mut ran = 0;
+        for s in table["shapes"].as_array().unwrap() {
+            let id = s["id"].as_str().unwrap();
+            let exp = &s["installer"];
+            if exp.is_null() {
+                continue;
+            }
+            let _ = std::fs::remove_dir_all(&td);
+            std::fs::create_dir_all(&pd).unwrap();
+            inst(&[(ceo_rel, c1), (md, m1)], "1.0.0");
+            // 형상 심기 — 옛 사이드카가 지나간 뒤의 디스크·매니페스트(표 머리말 installer 설명).
+            put(md, t(&s["md"]));
+            put(&format!("{md}.pre-ceo"), t(&s["pre_ceo"]));
+            put(&format!("{md}.new"), t(&s["new"]));
+            put(CEO_RECEIPT_PACK_REL, t(&s["receipt"]).map(|x| format!("{}\n", content_hash(&x))));
+            put(ceo_rel, Some(c2.to_string()));
+            let mp = pd.join(INSTALL_MANIFEST);
+            let mut m: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+            m.insert(ceo_rel.to_string(), serde_json::json!(content_hash(c2)));
+            m.insert(md.to_string(), serde_json::json!(content_hash(&t(&s["manifest_master"]).unwrap())));
+            std::fs::write(&mp, serde_json::to_string(&m).unwrap()).unwrap();
+            let _ = std::fs::remove_file(pd.join(MERGE_PENDING_FILE));
+            if s["pending_new"].as_bool().unwrap_or(false) {
+                std::fs::write(
+                    pd.join(MERGE_PENDING_FILE),
+                    serde_json::json!({ md: {"kind": "new-pending", "side": format!("{md}.new"),
+                                             "version": "1.0.1", "ts": 0} }).to_string(),
+                )
+                .unwrap();
+            }
+            let inject = |key: &str| -> Vec<String> {
+                s[key].as_array().unwrap().iter().map(|k| content_hash(&t(k).unwrap())).collect()
+            };
+            TEST_RELEASED_CEO_EXTRA.with(|v| *v.borrow_mut() = inject("released_ceo"));
+            TEST_RELEASED_MASTER_EXTRA.with(|v| *v.borrow_mut() = inject("released_master"));
+            let v2 = [(ceo_rel, c2), (md, m2)];
+            for round in ["1회", "2회(멱등)"] {
+                inst(&v2, "1.0.1");
+                assert_eq!(got(md), t(&exp["expect_md"]), "[{id} · {round}] MASTER_DIRECTIVE.md");
+                assert_eq!(got(&format!("{md}.pre-ceo")), t(&exp["expect_pre_ceo"]), "[{id} · {round}] .pre-ceo");
+                assert_eq!(got(&format!("{md}.new")), t(&exp["expect_new"]), "[{id} · {round}] .new");
+                assert_eq!(
+                    got(CEO_RECEIPT_PACK_REL).map(|x| x.trim().to_string()),
+                    t(&exp["expect_receipt"]).map(|x| content_hash(&x)),
+                    "[{id} · {round}] 승격 영수증"
+                );
+            }
+            ran += 1;
+        }
+        TEST_RELEASED_CEO_EXTRA.with(|v| v.borrow_mut().clear());
+        TEST_RELEASED_MASTER_EXTRA.with(|v| v.borrow_mut().clear());
+        assert!(ran >= 11, "형상 표 installer 칸이 줄었다({ran}) — 표를 줄이려면 이 하한도 함께 고친다");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★v116-ceo-directive-hold(master 판정 ⑵ 조건): 역대 발행 해시 표에 **현 임베드 판**이 들어 있어야 한다.
+    /// 빠지면 이 판이 발행된 뒤 다음 판 설치기가 이 판의 CEO 사본·표준본을 「제품이 쓴 것」으로 못 알아본다.
+    /// 적색이면: `python3 scripts/gen_released_directive_hashes.py` 로 재생성.
+    #[test]
+    fn released_tables_cover_current_embed() {
+        let embed = |rel: &str| PACK_ALL.iter().find(|(r, _)| *r == rel).map(|(_, c)| *c).unwrap();
+        assert!(is_released_ceo_template(embed(CEO_TEMPLATE_PACK_REL)),
+                "현 임베드 CEO_TEMPLATE 해시가 RELEASED_CEO_TEMPLATE_SHA256 에 없다 — 생성기 재실행");
+        assert!(is_released_master_directive(embed(MASTER_DIRECTIVE_PACK_REL)),
+                "현 임베드 MASTER_DIRECTIVE 해시가 RELEASED_MASTER_DIRECTIVE_SHA256 에 없다 — 생성기 재실행");
+        // 실측 앵커(발행 이력): 1085 VM-B 의 1.1.2 CEO 사본 · 1098 의 v0.14.27 표준본.
+        assert!(RELEASED_CEO_TEMPLATE_SHA256.iter().any(|h| h.starts_with("4d29c4c0876c")), "v1.1.2 CEO");
+        assert!(RELEASED_MASTER_DIRECTIVE_SHA256.iter().any(|h| h.starts_with("83bcae5e2826")), "v0.14.27 MASTER");
+        // CEO 표와 MASTER 표가 겹치면 ⓑ⁺(CEO 사본)와 ⓔ(표준본) 판정이 한 파일에 동시에 참이 된다.
+        assert!(RELEASED_CEO_TEMPLATE_SHA256.iter().all(|h| !RELEASED_MASTER_DIRECTIVE_SHA256.contains(h)),
+                "CEO 표와 MASTER 표가 겹친다");
+    }
+
+    /// ★v116 B(master 판정 [master#2da27fe2]): 역대 발행 MASTER 해시 목록을 **팩 파일**로도 싣는다 — cys-dept(bash)가
+    /// 「md 가 손대지 않은 발행 표준본인가」를 정확 일치로 판정할 유일한 근거. ①임베드·pack-manifest 원천(PACK+
+    /// PACK_SKILLS)에 있고 ②내용 = Rust 표(RELEASED_MASTER_DIRECTIVE_SHA256)와 같은 집합 ③System 등급(매 설치 강제
+    /// 갱신 = 옛 목록 잔존 0) ④실제 설치 경로(install_into)가 디스크에 떨군다 — 하나라도 어긋나면 적색.
+    #[test]
+    fn released_master_hash_pack_file_matches_table() {
+        let rel = "directives/RELEASED_MASTER_DIRECTIVE.sha256";
+        let embed = PACK.iter().chain(PACK_SKILLS.iter()).find(|(r, _)| *r == rel).map(|(_, c)| *c)
+            .unwrap_or_else(|| panic!("{rel} 가 임베드 팩(pack-manifest 원천)에 없다 — 생성기 실행·git add"));
+        let mut listed: Vec<&str> = embed.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+        listed.sort_unstable();
+        let mut table: Vec<&str> = RELEASED_MASTER_DIRECTIVE_SHA256.to_vec();
+        table.sort_unstable();
+        assert_eq!(listed, table, "{rel} 와 RELEASED_MASTER_DIRECTIVE_SHA256 이 다르다 — 생성기 재실행");
+        assert!(ownership(rel) == Ownership::System, "{rel} 는 System 등급이어야 한다(옛 목록 잔존 금지)");
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let td = std::env::temp_dir().join(format!("cys-relhash-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pd = td.join("pack");
+        std::fs::create_dir_all(&pd).unwrap();
+        let _env = set_pack_env(&pd, td.join("cfg"));
+        install_into(pd.clone(), PACK_ALL.iter().copied(), false, "9.9.9", false, false, pack_scope_of(&pd), None, None)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(pd.join(rel)).ok().as_deref(), Some(embed), "설치 경로가 {rel} 를 안 떨궜다");
         let _ = std::fs::remove_dir_all(&td);
     }
 

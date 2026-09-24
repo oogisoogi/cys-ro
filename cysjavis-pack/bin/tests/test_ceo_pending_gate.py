@@ -38,7 +38,9 @@ import tempfile
 SELF = os.path.dirname(os.path.abspath(__file__))
 DEPT = os.path.join(SELF, "..", "cys-dept")
 MASTER_BODY = "STANDARD-MASTER\n"
-CEO_BODY = "CEO-HEADER\n---\n" + MASTER_BODY   # 상위집합(합성 계약 동형: 머리글+구분선+전문)
+# 합성 계약 구분선(scripts/gen_ceo_template.py SEPARATOR 와 같은 바이트 · 시험 13 이 cys-dept 사본과 대조)
+SEP = "\n---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n"
+CEO_BODY = "CEO-HEADER" + SEP + MASTER_BODY   # 상위집합(합성 계약 동형: 머리글+구분선+전문)
 fails = []
 
 
@@ -70,8 +72,12 @@ def setup(tmp, ndepts=1):
     env = dict(os.environ)
     env.update({"HOME": home, "CYS_DEPTS_JSON": reg,
                 "PATH": bindir + os.pathsep + env.get("PATH", "")})
-    for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR"):
+    # ★좌석 env 누출 차단(v116-ceo-directive-hold 실측 2026-09-24): 좌석 셸에서 돌리면 CYS_CYS_BIN 이
+    #   남아 cys-dept 가 스텁 대신 **설치본 cys** 를 부르고(cys-dept:35 1순위), 그 cys 가 가짜 HOME 에
+    #   데몬을 띄워 고아 cysd 가 남았다. CYS_* 전부 제거 + 자동 기동 금지.
+    for k in [k for k in env if k.startswith("CYS_")]:
         env.pop(k, None)
+    env["CYS_NO_AUTOSTART"] = "1"
     return env, home
 
 
@@ -207,7 +213,7 @@ tmp = tempfile.mkdtemp(prefix="ceo-t8-")
 env, home = setup(tmp)
 mdp, pre, pend, marker = paths(home)
 V2_BODY = "STANDARD-MASTER-V2\n"
-CEO_V2 = "CEO-HEADER\n---\n" + V2_BODY
+CEO_V2 = "CEO-HEADER" + SEP + V2_BODY
 _dirs = os.path.join(home, ".cys", "pack", "directives")
 with open(mdp, "w", encoding="utf-8") as f:
     f.write(V2_BODY)                                # 팩 업데이트: md=새 표준 v2
@@ -223,8 +229,14 @@ with open(pend, "w", encoding="utf-8") as f:
 code, out = run(env, "promote-if-pending")
 check("8a 교차버전 승격 통과(OR-포함: ceo ⊇ md)", code == 0 and md(home) == CEO_V2,
       "exit=%d md=%r %s" % (code, md(home)[:40], out[-200:]))
-check("8b 낡은 .pre-ceo 무접촉(백업 덮어쓰기 금지)",
-      open(pre, encoding="utf-8").read() == MASTER_BODY)
+# ★v116-ceo-directive-hold(master 판정 ⑶ 2026-09-24): 옛 기대 「낡은 .pre-ceo 무접촉」은 결함을 의도로
+#   박은 것이었다(md 가 현행 표준 원본인데 옛 백업이 남으면 강등이 옛 판을 되살림 — 1098 실측). 새 기대 =
+#   md(현행 표준 v2)가 새 백업이 되고 옛 백업(v1)은 지우지 않고 .stale- 로 보존.
+_st8 = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo.stale-")]
+check("8b 낡은 .pre-ceo → 현행 표준(md)이 새 백업 · 옛 백업은 .stale- 로 보존",
+      open(pre, encoding="utf-8").read() == V2_BODY and len(_st8) == 1
+      and open(os.path.join(_dirs, _st8[0]), encoding="utf-8").read() == MASTER_BODY,
+      "pre=%r stale=%r" % (open(pre, encoding="utf-8").read()[:30], _st8))
 check("8c PENDING 해소", not os.path.exists(pend))
 # 차단 강도 불변: 같은 교차버전 형상에서 스텁은 md·.pre-ceo 둘 다 미포함 = 여전히 보류.
 with open(mdp, "w", encoding="utf-8") as f:
@@ -249,8 +261,8 @@ tmp = tempfile.mkdtemp(prefix="ceo-t8b-")
 env, home = setup(tmp)
 mdp, pre, pend, marker = paths(home)
 V2_BODY = "STANDARD-MASTER-V2\n"
-CEO_V1 = "CEO-HEADER\n---\n" + MASTER_BODY          # 승격 당시 적용된 구 CEO 템플릿
-CEO_V2 = "CEO-HEADER\n---\n" + V2_BODY              # 팩 갱신이 치유한 신 CEO 템플릿(System 등급)
+CEO_V1 = "CEO-HEADER" + SEP + MASTER_BODY          # 승격 당시 적용된 구 CEO 템플릿
+CEO_V2 = "CEO-HEADER" + SEP + V2_BODY              # 팩 갱신이 치유한 신 CEO 템플릿(System 등급)
 _dirs = os.path.join(home, ".cys", "pack", "directives")
 with open(mdp, "w", encoding="utf-8") as f:
     f.write(CEO_V1)                                 # md = 구 CEO 사본(User 소유 — 갱신 불가)
@@ -284,6 +296,10 @@ check("8′d 3-ref 전부 미포함 스텁은 여전히 보류(차단 강도 불
 check("8′e 보류 문안이 교차버전 갈래를 안내(.new 언급)", ".new" in out, out[-300:])
 shutil.rmtree(tmp)
 
+# ★A-Z14 사유 표지(cys-dept promote-ceo 사후 검증 머리말 · GUI 백엔드 src-tauri ceo_promote_result 가 사유를 가른다).
+BOOT_MARK = "[cys-dept] CEO 승격 보류(부트 필요) — "
+OTHER_MARK = "[cys-dept] CEO 승격 보류(지침 미교체) — "
+
 # ── 9. ★SF-1: 지명(consented) 경로의 superset 보류 = PENDING 신규 생성 금지 ──
 # 계약 문면은 'PENDING 유지'다 — 오너 지명 1회성 경로의 보류가 상시 자동승격 예약(집행 틱이
 # 템플릿 수리 후 무제스처 승격)을 '신설'하면 확폭이다. 기존 PENDING 유지는 7c 가 핀.
@@ -299,6 +315,9 @@ code, out = run(env, "promote-ceo")                 # PENDING 부재 상태에�
 check("9a 지명 보류 truthful exit 5", code == 5, "exit=%d" % code)
 check("9b PENDING 신규 생성 금지(자동승격 예약 확폭 차단)", not os.path.exists(pend))
 check("9c 무교체", md(home) == MASTER_BODY)
+# ★A-Z14(Opus R2 · 변이 J): **부트를 마친** 기계의 상위집합 보류 = 사유 「그 밖」. 사후 검증이 부트 마커 항을 빼면
+#   여기서 「부트 필요」 표지 → GUI boot 태그 → 「본부 마스터를 먼저 시작해 주세요」 거짓 안내가 된다.
+check("9d 부트 완료 + 상위집합 보류 = 「그 밖」 표지 · 부트 표지 없음", OTHER_MARK in out and BOOT_MARK not in out, out[-200:])
 shutil.rmtree(tmp)
 
 # ── 10. ★SF-2: CRLF 개행 드리프트 = false hold 아님(정규화 후 포함 판정) ──
@@ -321,6 +340,337 @@ check("10a CRLF 드리프트 통과(정규화 후 ⊇ = 승격)",
       "exit=%d md=%r %s" % (code, _md_raw[:40], out[-200:]))
 check("10b PENDING 해소", not os.path.exists(pend))
 shutil.rmtree(tmp)
+
+# ── 11. ★v116-ceo-directive-hold 경로 2(1098 교회 부서 시범 실측): **미승격** 기계에 옛 승격의
+#   낡은 .pre-ceo 가 남음(md = 현행 표준 · 영수증 없음). 종전: 승격이 현행 md 를 백업하지 않고
+#   (`[ -f .pre-ceo ] || cp`) 자동 승격 알림도 끈 채(`_auto` = .pre-ceo 부재 조건) 교체 → 부서를 다
+#   닫으면 강등이 **옛 판을 되살린다**(격리 재현 scratch/repro2.sh). 기대: 승격 직전 현행 md 가 새
+#   백업이 되고 옛 백업은 지우지 않고 `.pre-ceo.stale-*` 로 보존 · 강등 뒤 md = 현행 표준.
+#   (8b 는 같은 형상의 종전 동작 「.pre-ceo 무접촉」을 고정한다 — 이 시험과 동시에 초록일 수 없다.)
+tmp = tempfile.mkdtemp(prefix="ceo-t11-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+OLD_STD = "STANDARD-MASTER-OLD\n"                   # 옛 판 표준(1098 = v0.14.27 발행본)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(OLD_STD)
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+code, out = run(env, "promote-ceo")
+_dirs = os.path.join(home, ".cys", "pack", "directives")
+_stale = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo.stale-")]
+check("11a 승격 통과", code == 0 and md(home) == CEO_BODY, "exit=%d %s" % (code, out[-200:]))
+check("11b 승격 직전 현행 md 가 새 백업(.pre-ceo)이 된다",
+      open(pre, encoding="utf-8").read() == MASTER_BODY, repr(open(pre, encoding="utf-8").read()[:40]))
+check("11c 옛 백업은 지우지 않고 .stale- 로 보존",
+      len(_stale) == 1 and open(os.path.join(_dirs, _stale[0]), encoding="utf-8").read() == OLD_STD,
+      repr(_stale))
+code, out = run(env, "down", "d0")
+check("11d 부서 0개 → 강등 = 현행 표준 복귀(옛 판 부활 금지)",
+      md(home) == MASTER_BODY, "exit=%d md=%r %s" % (code, md(home)[:40], out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 11g. ★자동 승격 알림 복구(뮤턴트 B5 생존 보강): 낡은 백업 형상에서 대기형 자동 승격(promote-if-pending
+#   = 부서 생성·10분 틱 경로)은 「CEO 승격 완료(자동)」 알림을 내야 한다 — 종전엔 `.pre-ceo` 존재만으로
+#   _auto=0 이라 사용자가 역할 교체를 통지받지 못했다(1098 R3).
+tmp = tempfile.mkdtemp(prefix="ceo-t11g-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+os.makedirs(os.path.dirname(pend), exist_ok=True)
+with open(pend, "w", encoding="utf-8") as f:
+    f.write("pending\n")
+code, out = run(env, "promote-if-pending")
+_calls = open(os.path.join(tmp, "calls.log"), encoding="utf-8").read() if os.path.exists(os.path.join(tmp, "calls.log")) else ""
+check("11g 낡은 백업 형상의 자동 승격 = 「CEO 승격 완료(자동)」 알림",
+      code == 0 and md(home) == CEO_BODY and "CEO 승격 완료(자동)" in _calls,
+      "exit=%d calls=%r" % (code, _calls[-200:]))
+shutil.rmtree(tmp)
+
+# ── 11h. ★보존본 중복 금지·임시 파일 정리(Opus 적대 F3·F7 · 뮤턴트 B7 보강): md 교체(rename)가 계속 실패하는
+#   기계(윈 파일 잠금 등 — 맥은 chflags uchg 로 재현)에서 10분 틱이 돌 때마다 「덮기 전 보존본」이 하나씩
+#   쌓이거나 md.tmp.* 가 남으면 안 된다. 맥 전용(chflags) — 다른 OS 는 건너뜀.
+if sys.platform == "darwin":
+    tmp = tempfile.mkdtemp(prefix="ceo-t11h-")
+    env, home = setup(tmp)
+    mdp, pre, pend, marker = paths(home)
+    _dirs = os.path.dirname(mdp)
+    with open(pre, "w", encoding="utf-8") as f:
+        f.write(MASTER_BODY)
+    with open(mdp, "w", encoding="utf-8") as f:
+        f.write(CEO_BODY + "MY-NOTE\n")            # 손본 CEO 사본(영수증 없음 → 덮기 전 보존 대상)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("{}")
+    subprocess.run(["chflags", "uchg", mdp], check=True)
+    try:
+        for _ in range(3):
+            run(env, "promote-ceo")
+        _eb = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo-")]
+        _tm = [n for n in os.listdir(_dirs) if ".tmp" in n]
+        check("11h 교체 실패 3회 — 보존본 1개 · 임시 파일 0", len(_eb) == 1 and not _tm, "backups=%r tmp=%r" % (_eb, _tm))
+    finally:
+        subprocess.run(["chflags", "nouchg", mdp], check=False)
+    shutil.rmtree(tmp)
+else:
+    check("11h (건너뜀: chflags 없는 OS)", True)
+
+# ── 11i. ★강등 쪽 보존본 중복 금지(뮤턴트 B7b 보강): 승격 중 손본 CEO 사본을 강등할 때, 같은 바이트의 보존본이
+#   이미 있으면(앞선 강등 시도가 복원 실패로 끝난 기계 등) 또 만들지 않는다.
+tmp = tempfile.mkdtemp(prefix="ceo-t11i-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+_dirs = os.path.dirname(mdp)
+_edited = CEO_BODY + "MY-NOTE\n"
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY)
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write(_edited)
+with open(os.path.join(_dirs, "MASTER_DIRECTIVE.md.pre-ceo-20000101T000000-1"), "w", encoding="utf-8") as f:
+    f.write(_edited)                                # 앞선 시도가 남긴 같은 바이트 보존본
+code, out = run(env, "down", "d0")
+_eb = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo-")]
+check("11i 강등 — 같은 바이트 보존본이 있으면 새로 만들지 않음 · 복원은 수행",
+      len(_eb) == 1 and md(home) == MASTER_BODY, "backups=%r md=%r %s" % (_eb, md(home)[:30], out[-160:]))
+shutil.rmtree(tmp)
+
+# ── 11e. ★가드(agy B R1 반례 ①): **승격 중** 사용자가 CEO 사본을 손봐 표지 핀까지 지움 → 두 번째
+#   부서(재승격). md 가 「현행 표준 원본」이라는 긍정 증거(CEO ⊇ md)가 없으므로 .pre-ceo(진짜 표준
+#   백업)는 무접촉이어야 한다 — 낡은 백업으로 오판해 밀어내면 강등이 손수정 사본을 복원한다.
+tmp = tempfile.mkdtemp(prefix="ceo-t11e-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY)                            # 승격 때 만든 진짜 표준 백업
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write("CEO-HEADER-EDITED-BY-OWNER\n---\n" + MASTER_BODY + "MY-NOTE\n")  # 손수정 CEO 사본(핀 없음)
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+code, out = run(env, "promote-ceo")
+_dirs = os.path.join(home, ".cys", "pack", "directives")
+check("11e 손수정 CEO 사본 재승격 — 진짜 표준 백업 무접촉 · .stale- 0개",
+      open(pre, encoding="utf-8").read() == MASTER_BODY
+      and not [n for n in os.listdir(_dirs) if ".pre-ceo.stale-" in n],
+      "exit=%d pre=%r %s" % (code, open(pre, encoding="utf-8").read()[:30], out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 11f. ★가드(agy B R1 반례 ③): 락을 못 잡은 경로(윈 PortableGit = flock 없음 + mkdir 락 선점)는
+#   무락으로 _swap 을 강행한다(종전 결함). 그 창에서 .pre-ceo 를 옮기면 동시 승격이 백업을 서로
+#   덮으므로 낡은 백업 처리(새 동작)는 **락 보유 시에만** — 무락이면 종전 동작(백업 무접촉).
+tmp = tempfile.mkdtemp(prefix="ceo-t11f-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(OLD_STD)
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+os.makedirs(mdp + ".promote.lock.d")                 # 다른 승격이 락을 쥔 상태
+env_nf = dict(env)
+env_nf["PATH"] = os.path.join(home, ".local", "bin") + os.pathsep + "/usr/bin:/bin"  # flock 없는 PATH
+_has_flock = subprocess.run(["bash", "-c", "command -v flock"], env=env_nf,
+                            capture_output=True).returncode == 0
+if _has_flock:
+    check("11f (건너뜀: 이 기계 /usr/bin·/bin 에 flock 이 있어 mkdir 락 경로 재현 불가)", True)
+else:
+    code, out = run(env_nf, "promote-ceo")
+    _dirs = os.path.join(home, ".cys", "pack", "directives")
+    check("11f 무락 강행 경로 — 낡은 백업 처리 생략(백업 무접촉 · .stale- 0개)",
+          open(pre, encoding="utf-8").read() == OLD_STD
+          and not [n for n in os.listdir(_dirs) if ".pre-ceo.stale-" in n],
+          "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 12. ★v116-ceo-directive-hold(master 판정 ⑴): 형상 표 한 파일(fixtures/ceo_directive_shapes.json)을
+#   Rust 설치기 시험(src/pack.rs ceo_directive_shapes_installer)과 **같이 읽는다** — 「제품이 쓴 파일인가」
+#   판정이 두 곳(설치기 = 해시 집합 · cys-dept = 표준 원본 긍정 증거)에 있으므로, 한쪽만 고치면 다른 쪽이 적색.
+import hashlib
+with open(os.path.join(SELF, "fixtures", "ceo_directive_shapes.json"), encoding="utf-8") as f:
+    SHAPES = json.load(f)
+_T = SHAPES["texts"]
+_tx = lambda k: None if k is None else _T[k]
+_ran12 = 0
+for s in SHAPES["shapes"]:
+    exp = s.get("dept")
+    if not exp:
+        continue
+    sid = s["id"]
+    tmp = tempfile.mkdtemp(prefix="ceo-t12-")
+    env, home = setup(tmp)
+    mdp, pre, pend, marker = paths(home)
+    _dirs = os.path.dirname(mdp)
+    for pth, val in ((mdp, _tx(s["md"])), (pre, _tx(s["pre_ceo"])), (mdp + ".new", _tx(s["new"]))):
+        if val is not None:
+            with open(pth, "w", encoding="utf-8", newline="") as f:
+                f.write(val)
+    if s["md"] is None and os.path.exists(mdp):
+        os.remove(mdp)                              # md 부재 형상(setup 기본 md 제거)
+    _md_bytes = None
+    if s.get("md_encoding"):
+        _md_bytes = _T[s["md"]].encode(s["md_encoding"], errors="replace")
+        with open(mdp, "wb") as f:
+            f.write(_md_bytes)
+    if s["receipt"] is not None:
+        with open(os.path.join(_dirs, ".ceo-template-applied"), "w", encoding="utf-8") as f:
+            f.write(hashlib.sha256(_T[s["receipt"]].encode("utf-8")).hexdigest() + "\n")
+    with open(os.path.join(_dirs, "CEO_TEMPLATE.md"), "w", encoding="utf-8", newline="") as f:
+        f.write(_T["C2"])
+    # ★B(정확 일치): 역대 발행 MASTER 해시 목록 = 팩 파일 directives/RELEASED_MASTER_DIRECTIVE.sha256 — 형상의
+    #   released_master 를 그 파일로 심는다(실물 목록에는 픽스처 문자열이 없다 · Rust 는 TEST_RELEASED_MASTER_EXTRA).
+    with open(os.path.join(_dirs, "RELEASED_MASTER_DIRECTIVE.sha256"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("# test fixture\n" + "".join(hashlib.sha256(_T[k].encode("utf-8")).hexdigest() + "\n"
+                                            for k in s["released_master"]))
+    if exp.get("boot_marker", True):
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("{}")
+    _rd = lambda p: open(p, encoding="utf-8", errors="replace", newline="").read() if os.path.exists(p) else None  # 줄끝 무변환(CRLF) · 비UTF-8(CP949) 도 판정 가능
+    _bak = lambda kind: sorted(n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md" + kind))
+    for rnd in (() if exp.get("skip_promote") else ("1회", "2회(멱등)")):
+        code, out = run(env, "promote-ceo")
+        stale, edit = _bak(".pre-ceo.stale-"), _bak(".pre-ceo-")
+        check("12 [%s · %s] md" % (sid, rnd), _rd(mdp) == _tx(exp["expect_md"]),
+              "exit=%d md=%r %s" % (code, (_rd(mdp) or "")[:40], out[-160:]))
+        # ★A-Z14(v116-ceo-hold-az14): 보고 = 실제. exit 0 은 md 가 지금 CEO 템플릿일 때만 · 그 밖(부트 보류 ·
+        #   상위집합 보류 · 교체 실패)은 exit 5. 종전 사후 검증은 「.pre-ceo 가 있기만 하면 확정」이라 보류를
+        #   「승격 완료」로 보고했다(형상 pilot-1098-no-boot-marker · edited-standard-held).
+        _now_ceo = _rd(mdp) == _T["C2"]
+        check("12 [%s · %s] 보고 = 실제(exit 0 ⇔ md == CEO · 그 밖 exit 5)" % (sid, rnd),
+              code in (0, 5) and (code == 0) == _now_ceo, "exit=%d md==CEO=%s" % (code, _now_ceo))
+        check("12 [%s · %s] .pre-ceo" % (sid, rnd), _rd(pre) == _tx(exp["expect_pre_ceo"]),
+              repr((_rd(pre) or "")[:40]))
+        want_stale = [] if exp["expect_stale"] is None else [_T[exp["expect_stale"]]]
+        check("12 [%s · %s] .pre-ceo.stale-*" % (sid, rnd),
+              [_rd(os.path.join(_dirs, n)) for n in stale] == want_stale, repr(stale))
+        _we = exp["expect_edit_backup"]   # "__MD_BYTES__" = 심은 md 바이트 그대로(CP949 등 · Opus 적대 R4 P2)
+        want_edit = [] if _we is None else [_md_bytes if _we == "__MD_BYTES__" else _T[_we].encode("utf-8")]
+        check("12 [%s · %s] 덮기 전 보존(.pre-ceo-<시각>)" % (sid, rnd),
+              [open(os.path.join(_dirs, n), "rb").read() for n in edit] == want_edit, repr(edit))
+    if exp.get("expect_after_down"):
+        code, out = run(env, "down", "d0")
+        check("12 [%s] 부서 0개 강등 뒤 md" % sid, _rd(mdp) == _T[exp["expect_after_down"]],
+              "exit=%d md=%r %s" % (code, (_rd(mdp) or "")[:40], out[-160:]))
+        if "expect_edit_backup_after_down" in exp:
+            _eb = [open(os.path.join(_dirs, n), "rb").read() for n in _bak(".pre-ceo-")]
+            _want = exp["expect_edit_backup_after_down"]
+            _wl = [] if _want is None else [_md_bytes if _want == "__MD_BYTES__" else _T[_want].encode("utf-8")]
+            check("12 [%s] 강등 덮기 전 보존(.pre-ceo-<시각>)" % sid, _eb == _wl, "n=%d" % len(_eb))
+        if "expect_stale_after_down" in exp:
+            _sd = [_rd(os.path.join(_dirs, n)) for n in _bak(".pre-ceo.stale-")]
+            check("12 [%s] 강등 뒤 .pre-ceo.stale-*" % sid, _sd == [_T[k] for k in exp["expect_stale_after_down"]], repr(_sd))
+    shutil.rmtree(tmp)
+    _ran12 += 1
+check("12 형상 표 dept 칸 30개 이상 실행", _ran12 >= 30, "ran=%d" % _ran12)
+
+# ── 13. 구분선 계약: cys-dept 가 판정에 쓰는 구분선 = 합성기(gen_ceo_template.SEPARATOR) 바이트.
+#   합성기 구분선이 바뀌면 cys-dept ⓕ·강등의 「구분선 뒤 본문 == md」 판정이 조용히 전부 거짓이 된다.
+sys.path.insert(0, os.path.join(SELF, "..", "..", "..", "scripts"))
+try:
+    import gen_ceo_template as _g
+    _sep_src = _g.SEPARATOR.decode("utf-8")
+    _dept_src = open(DEPT, encoding="utf-8").read()
+    _esc = _sep_src.encode("unicode_escape").decode("ascii")
+    check("13 cys-dept 구분선 = gen_ceo_template.SEPARATOR", SEP == _sep_src and _esc in _dept_src,
+          "esc=%r" % _esc)
+except ImportError:
+    check("13 (건너뜀: 팩 설치본에서 실행 — scripts/ 없음)", True)
+
+# ── 13b. ★v116 B(master 판정 [master#2da27fe2]): 종전 13b~13d(강등 표지 'master of master' · 머리말 'MASTER ABSOLUTE
+#   DIRECTIVE' · 구분선 표지 '운영 계약 전문]' 문서 계약)는 cys-dept 가 내용 휴리스틱을 버리면서(정확 일치만) 판정 근거가
+#   아니게 되어 뺐다. 대신 판정이 다시 휴리스틱 표지로 돌아가지 않게 소스에 그 표지 grep 이 없는지 본다.
+_dept_src = open(DEPT, encoding="utf-8").read()
+check("13b cys-dept 표준본 판정에 내용 휴리스틱 표지 grep 없음(B = 정확 일치)",
+      not any(("grep -qF '%s'" % k) in _dept_src for k in ("MASTER ABSOLUTE DIRECTIVE", "master of master", "운영 계약 전문]")))
+
+# ── 14. ★A-Z14(v116-ceo-hold-az14 · 1100 재현 az14.sh): 낡은 .pre-ceo + 미부트에서 오너 지명(promote-ceo).
+#   ceo_promote 는 게이트(pre_ceo_valid · 부트 마커)로 보류(pending 생성 · md 무교체)하는데, 사후 검증이
+#   「.pre-ceo 존재 = 확정」이라 exit 0 → GUI 「✅ CEO 승격 완료」 오보. 기대: exit 5 · 보류 문구 · 부트 안내.
+tmp = tempfile.mkdtemp(prefix="ceo-t14-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")                # 옛 승격 잔재(1098 형상) · 부트 마커 없음
+code, out = run(env, "promote-ceo")
+check("14a 낡은 .pre-ceo + 미부트 지명 = exit 5(보류를 완료로 보고하지 않음)", code == 5, "exit=%d %s" % (code, out[-200:]))
+check("14b md 무교체 · pending 생성", md(home) == MASTER_BODY and os.path.exists(pend))
+# 사유 문구는 **사후 검증 표지**로 묻는다(BOOT_MARK · OTHER_MARK = 시험 9 앞에서 정의) — 게이트가 먼저 찍는 「CEO 승격 보류(PENDING) — base master 미부트」 줄로는
+#   단언이 채워지지 않게(Opus 적대 R1: 종전 단언은 그 줄로 채워져 사유 분기를 지워도 초록이었다 · 변이 A·F·G·H).
+#   표지 문자열은 GUI 백엔드(src-tauri ceo_promote_result)가 사유를 가르는 데 쓴다.
+check("14c 출력 = 사후 검증 부트 보류 표지 · 「그 밖」 표지 없음 · 승격 교체 문구 없음",
+      BOOT_MARK in out and OTHER_MARK not in out and "기본 데몬 CEO 승격(directives 교체" not in out, out[-240:])
+check("14d 영수증 파일이 없어도 출력에 셸 오류 줄이 섞이지 않음(GUI 상세에 그대로 실린다)",
+      "No such file" not in out, out[-240:])
+shutil.rmtree(tmp)
+
+# ── 14e. 부트는 됐지만 손본 표준본 + 낡은 .pre-ceo → 상위집합 검사 보류(rc 3). 유효 백업처럼 보여 게이트를
+#   통과하므로 「pre_ceo_valid 면 확정」 으로 고쳐도 여전히 거짓 exit 0 이 된다 — 판정은 md 실측이어야 한다.
+tmp = tempfile.mkdtemp(prefix="ceo-t14e-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY + "MY-EDIT\n")
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+code, out = run(env, "promote-ceo")
+check("14e 상위집합 보류(부트 완료 · 유효 백업처럼 보임) = exit 5 · md 무교체 · 「그 밖」 표지(부트 안내 아님)",
+      code == 5 and md(home) == MASTER_BODY + "MY-EDIT\n" and OTHER_MARK in out and BOOT_MARK not in out,
+      "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 14f. CEO 템플릿이 없는 기계(부서 1 · 미부트 · 낡은 .pre-ceo): ceo_promote 는 「템플릿 없음 — 승격 생략」으로 돌아온다.
+#   부트 안내가 아니라 「그 밖」 보류여야 한다(원인 = 템플릿 부재 · 사후 검증 elif 의 템플릿 존재 검사 = 변이 F).
+tmp = tempfile.mkdtemp(prefix="ceo-t14f-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+os.remove(os.path.join(os.path.dirname(mdp), "CEO_TEMPLATE.md"))
+# md = 발행 표준본(발행 해시 목록에 있음) → .pre-ceo 는 낡은 백업 판정 = ¬pre_ceo_valid 이고 마커도 없다. 그래도 이번 실행이
+#   멈춘 까닭은 템플릿 부재(ceo_promote 가 부트 게이트보다 먼저 본다)라 부트 안내를 내면 거짓이다(목록이 없으면 변이 F 등가).
+with open(os.path.join(os.path.dirname(mdp), "RELEASED_MASTER_DIRECTIVE.sha256"), "w", encoding="utf-8") as f:
+    f.write(hashlib.sha256(MASTER_BODY.encode("utf-8")).hexdigest() + "\n")
+code, out = run(env, "promote-ceo")
+check("14f 템플릿 부재 = exit 5 · 「그 밖」 표지 · 부트 안내 아님 · md 무교체",
+      code == 5 and OTHER_MARK in out and BOOT_MARK not in out and md(home) == MASTER_BODY,
+      "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 14h. 「유효 백업」으로 보이는 .pre-ceo(md 가 손본 표준본이라 낡은 백업 판정이 안 됨 · 옛 판 백업) + **미부트**: 게이트는
+#   pre_ceo_valid 라 통과해 _swap 이 상위집합 검사로 보류한다 → 사유는 「그 밖」이어야 한다(부트 마커 없음만 보고
+#   부트 안내를 내면 거짓 — 변이 G).
+tmp = tempfile.mkdtemp(prefix="ceo-t14h-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY + "MY-EDIT\n")
+code, out = run(env, "promote-ceo")
+check("14h 유효 백업 + 미부트 + 상위집합 보류 = exit 5 · 「그 밖」 표지 · 부트 안내 아님",
+      code == 5 and OTHER_MARK in out and BOOT_MARK not in out, "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
+
+# ── 14i. 영수증이 있지만 읽을 수 없음(권한 000) — 셸 오류 줄(Permission denied)이 출력에 새지 않는다(14d 와 같은 부류).
+if hasattr(os, "geteuid") and os.geteuid() != 0:
+    tmp = tempfile.mkdtemp(prefix="ceo-t14i-")
+    env, home = setup(tmp)
+    mdp, pre, pend, marker = paths(home)
+    with open(pre, "w", encoding="utf-8") as f:
+        f.write("STANDARD-MASTER-OLD\n")
+    _rc = os.path.join(os.path.dirname(mdp), ".ceo-template-applied")
+    with open(_rc, "w", encoding="utf-8") as f:
+        f.write("0" * 64 + "\n")
+    os.chmod(_rc, 0)
+    try:
+        code, out = run(env, "promote-ceo")
+    finally:
+        os.chmod(_rc, 0o600)
+    check("14i 영수증 판독 불가 — 셸 오류 줄 없음 · 여전히 exit 5(부트 보류)",
+          "Permission denied" not in out and code == 5 and BOOT_MARK in out, "exit=%d %s" % (code, out[-200:]))
+    shutil.rmtree(tmp)
+else:
+    check("14i (건너뜀: root 또는 geteuid 없는 OS — 권한 000 을 재현 못 함)", True)
 
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

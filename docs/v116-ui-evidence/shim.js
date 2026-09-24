@@ -4,7 +4,7 @@
 //   · 파일 흉내(__shimFiles: 경로 → 본문 · read_text_head 가 읽는다)
 //   · (v116-restart-toast) 재시작 흉내(restart_after_update · __shimRestartLive = 살아 있는 세션 거부 · __shimRestartFail = 실패)
 //     · 앱 판번 흉내(app_version ← __shimAppVersion · 지연 __shimAppVersionDelayMs · 실패 __shimFailAppVersion) · build_id(app_build_id ← __shimBuildId · 기본 build-A)
-//     · 확인 응답 지연(__shimCheckDelayMs) · 새로고침(⌘R)을 넘어 남는 흉내 값 = sessionStorage "__shimUpdate"·"__shimAppVersion"
+//     · 확인 응답 지연(__shimCheckDelayMs) · 설치 진행 흉내(install_update 가 __shimInstallDelayMs 동안 안 끝남) · 새로고침(⌘R)을 넘어 남는 흉내 값 = sessionStorage "__shimUpdate"·"__shimAppVersion"
 //   · (R1c) 좌석 추가(__shimAddSeat) · sc=late = master 없이 시작 · (D4 #12) 이름 바꾸기(rename_surface → 좌석 제목) · (D4 #18) control_dashboard(__shimDash) · (D4 #14) check_update 실패 주입(__shimFailUpdate) · 새 판 흉내(__shimUpdate)
 (() => {
   const q = new URLSearchParams(location.search);
@@ -14,6 +14,7 @@
   const handlers = {};
   const emit = (name, payload) => (handlers[name] || []).forEach((h) => { try { h({ event: name, payload }); } catch (e) { console.error("handler", name, e); } });
   window.__shimEmit = emit;
+  window.__shimHasListener = (name) => !!(handlers[name] && handlers[name].length); // 부하 높을 때 이벤트를 리스너 등록 전에 쏘지 않게
   const b64 = (s) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
   const now = Date.now() / 1000;
   const mk = (id, role, cwd) => ({ surface_id: id, role, title: `${id} · ${role}`, live_cwd: cwd, exited: false, agent: "claude", usage: { ctx_pct: 10 } });
@@ -96,6 +97,8 @@
   };
   const invoke = (cmd, args) => {
     calls.push({ cmd, args: args || {} });
+    if (cmd === "install_update" && window.__shimInstallDelayMs) // 다운로드·교체가 도는 중(설치 진행 중 재클릭 경계)
+      return new Promise((res) => setTimeout(() => res(null), window.__shimInstallDelayMs));
     if (cmd === "check_update" && window.__shimCheckDelayMs) // 확인 응답 지연(진행 중 확인과 교체 완료 경합)
       return new Promise((res) => setTimeout(() => res(R.check_update()), window.__shimCheckDelayMs));
     if (cmd === "app_version" && (window.__shimAppVersionDelayMs || window.__shimFailAppVersion))

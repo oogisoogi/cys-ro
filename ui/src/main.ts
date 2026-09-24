@@ -5801,6 +5801,11 @@ let packUpdateAvailable: PackUpdateInfo | null = null;
 let restartPendingVersion: string | null = null;
 // restartAfterUpdate 진행 중 재진입 차단 — 연타·알림+단추 동시 누름이 저장 지시를 겹쳐 주입하지 않게(4군 ①).
 let restartingAfterUpdate = false;
+// install_update(다운로드·교체) 진행 중 이중 설치 차단(master 판정 ⑵ · 곁 ①) — 진행 중 헤더 재클릭 · 첫 확인 전 두 번 눌러
+// 쌓인 확인 창 둘 다 「설치」가 두 번째 전량 다운로드를 내지 않게.
+let installingUpdate = false;
+const INSTALL_BUSY_NAME = "새 앱 받는 중";
+const INSTALL_BUSY_DETAIL = "새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요.";
 let restartPendingRestore: Promise<void> | null = null;
 
 /// 헤더 단추·배지를 「다시 켜기」로 칠한다. 마크업은 그대로 두고 첫 글자 노드만 바꾼다
@@ -5977,6 +5982,10 @@ async function promptBinaryPatch() {
   // ★A7(성찰 확정): install_update 는 앱을 교체·재시작한다 — 리셋 실행 중이면 격리 스레드가
   // 중도 사멸해 manifest(복구 지도) 없는 반쪽 격리가 남는다. 완료 래치 상태에서도 무의미하다.
   if (daemonActionBlocked()) return;
+  if (installingUpdate) {
+    toast("feed", INSTALL_BUSY_NAME, INSTALL_BUSY_DETAIL);
+    return;
+  }
   if (!updateAvailable) {
     await checkForUpdate(false);
     return;
@@ -5998,12 +6007,20 @@ async function promptBinaryPatch() {
   if (!ok) return;
   // 확인 창이 떠 있는 사이 다른 설치의 교체가 끝났으면 또 받지 않고 다시 켜기로 넘긴다(v116-restart-toast).
   if (restartPendingVersion !== null) return restartAfterUpdate(restartPendingVersion);
+  // 쌓인 두 번째 확인 창 승낙 = 이미 설치 중 → 또 받지 않는다. 플래그는 await 전에 세우고 finally 에서 푼다.
+  if (installingUpdate) {
+    toast("feed", INSTALL_BUSY_NAME, INSTALL_BUSY_DETAIL);
+    return;
+  }
+  installingUpdate = true;
   try {
     await invoke("install_update", { force: true });
     // 성공 시 백엔드가 app.restart()까지 수행 — 후속 UI 처리 없음(진행은 update-progress 리스너).
   } catch (e) {
     dismissToast("upd-bin");
     toast("health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, String(e));
+  } finally {
+    installingUpdate = false;
   }
 }
 

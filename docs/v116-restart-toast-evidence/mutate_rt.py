@@ -32,6 +32,7 @@ M = [
     ("M16 팩 적용 완료 뒤 다시 칠하기 제거", "src/main.ts", "    paintRestartPending(); // 맥 교체 뒤 다시 켜기 대기면", "    // 맥 교체 뒤 다시 켜기 대기면", "c17x"),
     ("M17 배지 칠하기 제거", "src/main.ts", "  badge.hidden = false;\n  badge.textContent = \"!\";\n  badge.classList.remove(\"ok\");\n", "", "c17"),
     ("M18 무효 기억 칸 삭제 안 함", "src/main.ts", "        sessionStorage.removeItem(RESTART_PENDING_KEY);\n", "", "c17"),
+    ("M19 설치 진행 중 플래그 안 세움(master 판정 ⑵)", "src/main.ts", "  installingUpdate = true;\n  try {\n    await invoke(\"install_update\"", "  try {\n    await invoke(\"install_update\"", "c17x"),
     ("M11 판번 조회 실패에도 기억 삭제(agy 1R #2 되돌림)", "src/main.ts", "    if (!appVer) return;\n    const buildId", "    const buildId", "c17x"),
 ]
 

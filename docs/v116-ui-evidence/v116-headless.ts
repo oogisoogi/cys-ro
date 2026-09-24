@@ -24,7 +24,8 @@
 //        새 앱으로 켜진 뒤 확인이 1.1.8 을 설치로 안내 · 알림 × 로 닫아도 단추 유지 · (agy 1R) ⌘R 뒤 판번 조회 실패 = 복원 0 · 기억 보존 ·
 //        복원이 판번을 기다리는 사이 새 교체 완료(1.1.8) → 복원(1.1.7)이 덮지 않음 · (클로드 적대 1R) m 같은 판 재빌드 ⌘R 유지·새 build 로 풀림 ·
 //        n 진행 중 확인 뒤 교체 완료 → 설치 안내 0 · o ⌘R 직후 복원 전 첫 클릭 = 다시 켜기 · p 팩 적용 완료 뒤 배지 유지 ·
-//        q 좁은 창(800폭) — 「다시 켜기」가 상단바를 넘치거나 두 줄로 꺾이지 않음
+//        q 좁은 창(800폭) — 「다시 켜기」가 상단바를 넘치거나 두 줄로 꺾이지 않음 ·
+//        r (master 편입 ①) 다운로드 진행 중 헤더 재클릭 · 확인 창 2개 쌓인 채 둘 다 「설치」 → install_update 1
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -480,13 +481,18 @@ if (ONLY.includes("c17x")) {
   // l. (agy 1R #3) ⌘R 복원이 판번 조회를 기다리는 사이 새 교체(1.1.8)가 끝남 → 복원한 1.1.7 이 메모리의 1.1.8 을 덮지 않는다
   await load("two", "", `window.__shimUpdate = { version: "1.1.7", notes: "" }; sessionStorage.setItem("__shimUpdate", JSON.stringify(window.__shimUpdate))`);
   await ev(`window.__shimEmit("update-restart-required", { version: "1.1.7", reason: "app_replaced" })`); await Bun.sleep(300);
-  await ev(`sessionStorage.setItem("__shimAppVersionDelayMs", "2000")`);
-  await cdp("Page.reload", {}); await Bun.sleep(400);
+  // (15:4x 부하 load 28 에서 400ms 고정 대기로 쏜 이벤트가 리스너 등록 전에 유실 → 거짓 적색 1회) — 리스너 등록을 기다려 쏘고,
+  //   그때 복원이 아직 판번을 기다리는 중이었는지(지연 6초 안)를 함께 단언해 공허 통과를 막는다.
+  await ev(`sessionStorage.setItem("__shimAppVersionDelayMs", "6000")`);
+  const t0 = Date.now();
+  await cdp("Page.reload", {});
+  for (let i = 0; i < 100 && !(await ev(`!!window.__shimHasListener && window.__shimHasListener("update-restart-required")`)); i++) await Bun.sleep(50);
+  const emittedAt = Date.now() - t0;
   await ev(`window.__shimEmit("update-restart-required", { version: "1.1.8", reason: "app_replaced" })`);
-  await Bun.sleep(3500);
+  await Bun.sleep(Math.max(0, 6000 - emittedAt) + 1500);
   const l1 = await ev(`({ tip: document.getElementById("btn-update").title, ...${X} })`);
   await ev(`sessionStorage.removeItem("__shimAppVersionDelayMs")`);
-  check("c17l 복원 대기 중 새 교체 완료(1.1.8) → 대기 판번 = 1.1.8 유지(복원 1.1.7 이 덮지 않음)", l1.label === "다시 켜기" && /1\.1\.8/.test(l1.tip) && !/1\.1\.7/.test(l1.tip), JSON.stringify(l1));
+  check("c17l 복원 대기 중 새 교체 완료(1.1.8) → 대기 판번 = 1.1.8 유지(복원 1.1.7 이 덮지 않음)", emittedAt < 5000 && l1.label === "다시 켜기" && /1\.1\.8/.test(l1.tip) && !/1\.1\.7/.test(l1.tip), JSON.stringify({ emittedAt, ...l1 }));
   // m. (클로드 적대 1R MAJOR) 같은 판 재빌드(1.1.6 build-A → 1.1.6 build-B) — ⌘R 뒤에도 대기 유지 · build-B 로 켜지면 풀림
   await load("two", "", `window.__shimUpdate = { version: "1.1.6", notes: "" }; sessionStorage.setItem("__shimUpdate", JSON.stringify(window.__shimUpdate))`);
   await ev(`window.__shimEmit("update-restart-required", { version: "1.1.6", reason: "app_replaced" })`); await Bun.sleep(300);
@@ -520,6 +526,23 @@ if (ONLY.includes("c17x")) {
   await ev(`window.__shimEmit("pack-updated", { pack_version: "9.9.9" })`); await Bun.sleep(300);
   const p1 = await ev(`({ badgeHidden: document.getElementById("update-badge").hidden, badge: document.getElementById("update-badge").textContent, ...${X} })`);
   check("c17p 대기 중 팩 적용 완료 → 배지 「!」 유지 · 단추 「다시 켜기」", !p1.badgeHidden && p1.badge === "!" && p1.label === "다시 켜기", JSON.stringify(p1));
+  // r. (master 판정 ⑵ · 곁 ①) 설치(다운로드·교체) 진행 중 이중 설치 — ⑴ 진행 중 헤더 재클릭 ⑵ 첫 확인 전 두 번 눌러 쌓인 확인 창 둘 다 「설치」
+  await load("two", "", `window.__shimUpdate = { version: "1.1.7", notes: "" }`);
+  await ev(`window.__shimInstallDelayMs = 4000; document.getElementById("btn-update").click()`); await Bun.sleep(600);
+  await ev(`document.querySelector(".modal-yes")?.click()`); await Bun.sleep(300);
+  await ev(`document.getElementById("btn-update").click()`); await Bun.sleep(600);
+  const r1 = await ev(`({ busyToast: [...document.querySelectorAll("#toasts .toast .toast-name")].some(t => t.textContent === "새 앱 받는 중"), ...${X} })`);
+  if (r1.modal) { await ev(`document.querySelector(".modal-yes")?.click()`); await Bun.sleep(300); } // 기준선: 두 번째 설치 확인 창 → 승낙
+  const r2 = await ev(X);
+  await Bun.sleep(4000);
+  await load("two", "", `window.__shimUpdate = { version: "1.1.7", notes: "" }`);
+  await ev(`window.__shimInstallDelayMs = 4000; window.__shimCheckDelayMs = 400; const b = document.getElementById("btn-update"); b.click(); b.click();`); await Bun.sleep(1000);
+  const r3n = await ev(`document.querySelectorAll(".modal-overlay").length`);
+  await ev(`(() => { for (let i = 0; i < 3; i++) document.querySelector(".modal-overlay .modal-yes")?.click(); })()`); await Bun.sleep(300);
+  await ev(`document.querySelector(".modal-overlay .modal-yes")?.click()`); await Bun.sleep(300);
+  const r3 = await ev(X);
+  check("c17r 설치 진행 중 이중 설치 0 — 진행 중 재클릭 = 확인 창 0·안내 1 · 쌓인 확인 창 둘 다 「설치」 = install_update 1", r1.modal === null && r1.busyToast && r2.installs === 1 && r3.installs === 1, JSON.stringify({ r1, r2, modalsBefore: r3n, r3 }));
+  await Bun.sleep(4000);
   // q. 좁은 창 — 단추 글자가 「업데이트」(4자)보다 긴 「다시 켜기」(5자)가 돼도 상단바 넘침·줄바꿈 0 · 단추가 화면 안
   await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 820, deviceScaleFactor: 1, mobile: false });
   await load("two", "");

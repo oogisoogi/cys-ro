@@ -64,8 +64,7 @@ def main():
     if not ready:
         # 데몬 없이 진행하면 `cys new-surface` 가 추적 밖 cysd 를 autostart 할 수 있다(CYS_STATE_DIR 격리 없음 —
         # 09-04 라이브 오염 경로 · 적대 1R #4). 여기서 멈춘다(적색 유지 · teardown 은 호출부 finally).
-        print("
-=== %d/%d PASS ===" % (sum(1 for c in results if c), len(results)))
+        print("\n=== %d/%d PASS ===" % (sum(1 for c in results if c), len(results)))
         return 1
     try:
         # 라이브 surface 1개(회수 비대상) + exited 잔재 1개 생성.

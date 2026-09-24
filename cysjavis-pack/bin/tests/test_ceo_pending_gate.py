@@ -546,7 +546,7 @@ for s in SHAPES["shapes"]:
             check("12 [%s] 강등 뒤 .pre-ceo.stale-*" % sid, _sd == [_T[k] for k in exp["expect_stale_after_down"]], repr(_sd))
     shutil.rmtree(tmp)
     _ran12 += 1
-check("12 형상 표 dept 칸 27개 이상 실행", _ran12 >= 27, "ran=%d" % _ran12)
+check("12 형상 표 dept 칸 28개 이상 실행", _ran12 >= 28, "ran=%d" % _ran12)
 
 # ── 13. 구분선 계약: cys-dept 가 판정에 쓰는 구분선 = 합성기(gen_ceo_template.SEPARATOR) 바이트.
 #   합성기 구분선이 바뀌면 cys-dept ⓕ·강등의 「구분선 뒤 본문 == md」 판정이 조용히 전부 거짓이 된다.
@@ -561,18 +561,12 @@ try:
 except ImportError:
     check("13 (건너뜀: 팩 설치본에서 실행 — scripts/ 없음)", True)
 
-# ── 13b. 강등 표지 계약(Opus 적대 R2 N1): cys-dept 강등 판정의 ASCII 표지 'master of master' 는 CEO_TEMPLATE 에는
-#   있고 표준 MASTER_DIRECTIVE 에는 없어야 한다 — 표준본에 들어가면 미승격 기계를 승격 사본으로 오인해 강등이
-#   옛 백업을 덮어쓴다.
-_dd = os.path.join(SELF, "..", "..", "directives")
-_mt = open(os.path.join(_dd, "MASTER_DIRECTIVE.md"), encoding="utf-8").read()
-_ct = open(os.path.join(_dd, "CEO_TEMPLATE.md"), encoding="utf-8").read()
-check("13b 강등 표지 'master of master' = CEO 에만(표준 MASTER 0회)",
-      "master of master" not in _mt and "master of master" in _ct)
-check("13c 표준본 증거 'MASTER ABSOLUTE DIRECTIVE' = 현행 표준 MASTER 에 있음",
-      "MASTER ABSOLUTE DIRECTIVE" in _mt)
-check("13d CEO 구분선 표지 '운영 계약 전문]' = CEO 에만(표준 MASTER 0회)",
-      "운영 계약 전문]" not in _mt and "운영 계약 전문]" in _ct)
+# ── 13b. ★v116 B(master 판정 [master#2da27fe2]): 종전 13b~13d(강등 표지 'master of master' · 머리말 'MASTER ABSOLUTE
+#   DIRECTIVE' · 구분선 표지 '운영 계약 전문]' 문서 계약)는 cys-dept 가 내용 휴리스틱을 버리면서(정확 일치만) 판정 근거가
+#   아니게 되어 뺐다. 대신 판정이 다시 휴리스틱 표지로 돌아가지 않게 소스에 그 표지 grep 이 없는지 본다.
+_dept_src = open(DEPT, encoding="utf-8").read()
+check("13b cys-dept 표준본 판정에 내용 휴리스틱 표지 grep 없음(B = 정확 일치)",
+      not any(("grep -qF '%s'" % k) in _dept_src for k in ("MASTER ABSOLUTE DIRECTIVE", "master of master", "운영 계약 전문]")))
 
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

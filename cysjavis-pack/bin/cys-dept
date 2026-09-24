@@ -1008,9 +1008,9 @@ PY
 #   부서가 없는 기계에 옛 승격 때의 .pre-ceo 가 남아 있으면(수동 되돌림 잔재 등) 종전 코드는 ①승격 때
 #   현행 master 지침을 백업하지 않고(`[ -f .pre-ceo ] || cp`) ②자동 승격 알림을 끄고(_auto) ③부트 게이트를
 #   우회했으며, 부서를 다 닫으면 강등이 **옛 판을 되살렸다**(격리 재현 scratch/repro2.sh).
-#   판정은 **긍정 증거**로만 한다: md 가 현행 CEO 템플릿이 감싼 표준 원본 그 자체(CEO ⊇ md · 기존 DCE-3
-#   함수)이고 승격 영수증과 다를 때만 .pre-ceo 를 낡은 백업으로 본다. 증거가 없으면(손본 CEO 사본 · 핀을
-#   지운 사본 · 옛 CEO 사본) 종전 동작 그대로다 — 부정 증거(「CEO 표지가 없으면 미승격」) 초안은 핀을 지운
+#   판정은 **긍정 증거**로만 한다: md 가 손대지 않은 표준본(ceo_md_is_standard = 바이트 정확 일치 · B)이고
+#   승격 영수증과 다를 때만 .pre-ceo 를 낡은 백업으로 본다. 증거가 없으면(손본 CEO 사본 · 핀을
+#   지운 사본 · 옛 CEO 사본 · 손본 표준본) 종전 동작 그대로다 — 부정 증거(「CEO 표지가 없으면 미승격」) 초안은 핀을 지운
 #   손수정 사본을 오판해 진짜 백업을 밀어내는 반례로 폐기(agy B R1 · 시험 11e).
 ceo_receipt_matches(){  # $1=파일 — 승격 영수증(.ceo-template-applied) 해시 == sha256($1) 이면 0
   local r h
@@ -1019,69 +1019,47 @@ ceo_receipt_matches(){  # $1=파일 — 승격 영수증(.ceo-template-applied) 
   h="$(shasum -a 256 "$1" 2>/dev/null)" || return 1
   [ "$r" = "${h%% *}" ]
 }
-ceo_body_equals(){  # $1=CEO 템플릿 $2=md — 0 = md 가 CEO 템플릿의 「구분선 뒤 본문」(= 합성에 쓴 표준 MASTER)과 **같다**
-  # ★Opus 적대 F1: 부분 포함(ceo ⊇ md)은 증거가 아니다 — 개행 하나 빠진 CEO 사본·CRLF 로 다시 저장한 CEO
-  #   사본·잘린 표준본도 포함 판정을 통과해 「표준 원본」으로 오판됐다(진짜 백업이 밀리고 강등이 CEO 를 복원).
-  #   구분선 = scripts/gen_ceo_template.py SEPARATOR 와 같은 바이트(시험 13 이 대조) · 줄끝만 LF 로 맞춘다.
-  #   소스는 ASCII 이스케이프로 둔다(윈 PortableGit python 의 stdin 인코딩 무관).
+ceo_md_is_standard(){  # $1=md $2=CEO 템플릿 — 0 = md 가 **손대지 않은 표준 MASTER** 라는 증거(바이트 정확 일치만)
+  # ★v116 B(master 판정 [master#2da27fe2] · 멈춤 규칙): 판정은 **정확 일치**뿐이다 — 줄끝만 LF 로 맞춘 md 바이트가
+  #   ①CEO 템플릿의 구분선 뒤 본문(= 합성에 쓴 현행 표준 MASTER · 구분선 = scripts/gen_ceo_template.py SEPARATOR · 시험 13)
+  #   ②역대 발행 MASTER 해시 목록(directives/RELEASED_MASTER_DIRECTIVE.sha256 · 생성기가 Rust 표와 함께 쓰고 cargo 시험이
+  #   동기 강제 · 현행 판 포함) 중 하나와 **같을 때만** 0. 빈 md·판독 불능은 증거 없음. vendor 신본 .new 는 근거로 쓰지
+  #   않는다 — 손대지 않은 .new 는 현행 발행 바이트라 ①② 가 이미 덮고, 사용자가 병합하려 손본 .new(F6)와 같다는 것은
+  #   「손대지 않은 표준본」의 증거가 아니다(뮤턴트 X2 생존 = 중복 근거 · 제거).
+  #   종전의 내용 휴리스틱(머리말·CEO 표지 grep → 진접두 → UTF-8)은 라운드마다 새 경계를 만났다(Opus F1 부분 포함 ·
+  #   N1 한글 핀 · M1 빈 파일 · agy C3 ③ 손본 표준본 · R4 P1 잘림 · agy C5/Opus R5 「더 긴 판의 앞부분인 온전한 파일」
+  #   = 잘린 파일과 바이트로 못 가름) → 제거. 알려진 한계: 손본 표준본·끝 개행만 지운 현행본은 증거 없음 쪽이라 강등이
+  #   .pre-ceo 를 복원한다(md 는 .pre-ceo-<시각> 로 보존 · 형상 표 known_limitation). 소스는 ASCII 이스케이프(윈 python 무관).
   python3 - "$1" "$2" <<'PY'
-import sys
-SEP = "\n---\n\n# [\ubcf8\ubb38 \u2014 \ud45c\uc900 MASTER \uc6b4\uc601 \uacc4\uc57d \uc804\ubb38]\n\n".encode("utf-8")
-try:
-    c = open(sys.argv[1], "rb").read().replace(b"\r\n", b"\n")
-    m = open(sys.argv[2], "rb").read().replace(b"\r\n", b"\n")
-except OSError:
-    sys.exit(2)
-i = c.find(SEP)
-sys.exit(0 if i >= 0 and m and c[i + len(SEP):] == m else 1)
-PY
-}
-ceo_md_is_standard(){  # $1=md $2=CEO 템플릿 — 0 = md 가 **표준 MASTER 라는 긍정 증거**(원문 머리말 'MASTER ABSOLUTE DIRECTIVE' ∧ CEO
-  # 표지 'master of master' 없음 · 둘 다 ASCII 라 CP949·CRLF 저장에도 판정 불변 · 시험 13b 가 현행 원문으로 대조).
-  # ★Opus 적대 R3 M1: 강등의 기본값은 「복원」이다. 「승격 사본이라는 증거가 없으면 복원 안 함」으로 두면 빈 파일
-  #   (1.1.5 이하 비원자 cp 중단)·파일 없음·UTF-16 저장본처럼 **내용으로 판정할 수 없는 md** 가 부서를 다 닫아도
-  #   영구히 빈/깨진 지침으로 남았다. 복원을 건너뛰는 것은 표준본이라는 증거가 있을 때(승격 보류 · 손본 표준본)뿐.
-  #   CEO 합성 구분선의 표지(「운영 계약 전문]」 · CEO 에만 있음)도 없어야 한다 — 머리글만 지운 CEO 사본은 표준 본문을
-  #   통째로 담고 있어 머리말만으로는 표준본처럼 보인다(agy B R1 반례 ① 재발 방지 · 형상 pinless-edit).
-  # ★Opus 적대 R4 P1 · P2(master 판정 A): 머리말은 1행이라 **뒤가 잘린 표준본**(1.1.5 이하 비원자 강등 cp 중단)도
-  #   표준본으로 보였다 → 진짜 백업이 .stale- 로 밀리고(ⓕ) 강등이 복원을 건너뛰어 부서 0개에 잘린 지침이 남았다.
-  #   그래서 ①온전함: LF 정규화한 md 가 .pre-ceo · CEO 구분선 뒤 본문 · .new 중 하나의 **진접두**면 손상본이다
-  #   ②UTF-8: 디코드가 안 되면(CP949 저장 등) 한글 표지 grep 이 불발하므로 증거로 치지 않는다. 둘 중 하나라도
-  #   아니면 표준본 증거 없음 = ⓕ 는 낡은 백업으로 보지 않고 · 강등은 기본값(보존 뒤 복원)대로 간다.
-  grep -qF 'MASTER ABSOLUTE DIRECTIVE' "$1" 2>/dev/null && ! grep -qF 'master of master' "$1" 2>/dev/null \
-    && ! grep -qF '운영 계약 전문]' "$1" 2>/dev/null && ceo_md_intact_utf8 "$1" "$2"
-}
-ceo_md_intact_utf8(){  # $1=md $2=CEO 템플릿 — 0 = md 가 UTF-8 이고 .pre-ceo · CEO 구분선 뒤 본문 · .new 어느 것의 진접두도 아님
-  python3 - "$1" "$2" <<'PY'
-import sys
+import hashlib, os, sys
 SEP = "\n---\n\n# [\ubcf8\ubb38 \u2014 \ud45c\uc900 MASTER \uc6b4\uc601 \uacc4\uc57d \uc804\ubb38]\n\n".encode("utf-8")
 md_p, ceo_p = sys.argv[1], sys.argv[2]
-try:
-    m = open(md_p, "rb").read()
-    m.decode("utf-8")
-except (OSError, UnicodeDecodeError):
-    sys.exit(1)
-m = m.replace(b"\r\n", b"\n")
 def rd(p):
     try:
-        return open(p, "rb").read().replace(b"\r\n", b"\n")
+        with open(p, "rb") as f:
+            return f.read().replace(b"\r\n", b"\n")
     except OSError:
         return None
-refs = [rd(md_p + ".pre-ceo"), rd(md_p + ".new")]
+m = rd(md_p)
+if not m:
+    sys.exit(1)
 c = rd(ceo_p)
-if c is not None and c.find(SEP) >= 0:
-    refs.append(c[c.find(SEP) + len(SEP):])
-sys.exit(1 if any(r is not None and len(r) > len(m) and r.startswith(m) for r in refs) else 0)
+if c is not None and c.find(SEP) >= 0 and c[c.find(SEP) + len(SEP):] == m:
+    sys.exit(0)
+try:
+    with open(os.path.join(os.path.dirname(md_p), "RELEASED_MASTER_DIRECTIVE.sha256"), "rb") as f:
+        listed = {l.strip().decode("ascii", "replace") for l in f if l.strip() and not l.startswith(b"#")}
+except OSError:
+    listed = set()
+sys.exit(0 if hashlib.sha256(m).hexdigest() in listed else 1)
 PY
 }
-pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md = 현행 표준 원본 그 자체라는 긍정 증거)
+pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md 가 손대지 않은 표준본 그 자체 = 정확 일치 증거)
   [ -f "$1.pre-ceo" ] || return 1
   cmp -s "$1" "$2" 2>/dev/null && return 1
   cmp -s "$1" "$1.pre-ceo" 2>/dev/null && return 1
   ceo_receipt_matches "$1" && return 1
-  # ★agy C3 반례 ③: 사용자가 손본 표준본은 「구분선 뒤 본문 == md」 가 거짓이라 낡은 백업을 못 알아봤다(갱신이 남긴
-  #   .new 로 DCE-3 가 통과하면 승격이 일어나고, 강등이 옛 판을 복원) → 표준본이라는 ASCII 긍정 증거도 인정한다.
-  ceo_body_equals "$2" "$1" 2>/dev/null || ceo_md_is_standard "$1" "$2"
+  ceo_md_is_standard "$1" "$2"
 }
 pre_ceo_valid(){ [ -f "$1.pre-ceo" ] && ! pre_ceo_is_stale "$1" "$2"; }  # 유효한 승격 백업이 있으면 0
 ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자동 승격 알림 생략
@@ -1258,9 +1236,9 @@ ceo_demote(){
     fi
     return 0
   fi
-  # ★v116-ceo-directive-hold(Opus 적대 F2): md 가 **승격 사본이라는 긍정 증거**가 있을 때만 복원한다.
-  #   증거가 없으면(승격이 보류된 채 부서를 닫음 · 사용자가 손본 표준본) 복원은 곧 「옛 판 부활」 또는
-  #   「사용자 수정 덮기」다 — md 는 그대로 두고 .pre-ceo 는 지우지 않고 .stale-<시각> 로 옮긴다.
+  # ★v116-ceo-directive-hold(Opus 적대 F2 → R3 M1 → B): 강등의 기본값은 복원이다. 건너뛰는 것은 md 가 **손대지 않은
+  #   표준본**(ceo_md_is_standard = 정확 일치)일 때뿐 — 그때 복원은 곧 「옛 판 부활」이라 md 는 그대로 두고 .pre-ceo 는
+  #   지우지 않고 .stale-<시각> 로 옮긴다. 손본 표준본은 증거 없음 쪽(알려진 한계 · 아래 보존 뒤 복원).
   local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)-$$"
   if [ -f "$md" ] && ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md" && ceo_md_is_standard "$md" "$ceo"; then
     mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" 2>/dev/null || true

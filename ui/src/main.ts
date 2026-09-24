@@ -6,8 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
-import { adoptLayoutIfRowOnly } from "./adoptlayout";
-import { formationIfRowOnly, formationLayout, hasHqSeats } from "./formation";
+import { autoArrange, type ArrangeChange, type LeftShareMode } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -2407,6 +2406,23 @@ function replaceNode(node: Node, target: number, make: (old: Node) => Node | nul
   return a ?? b; // one side removed → collapse to sibling
 }
 
+// ---------- 창 열기·닫기 자동 좌우 균등(TICKET=v116-auto-equalize · 오너 지시 2026-09-25 05:2x) ----------
+// 오너 원문: 「마스터 cso는 지금 비율 그대로 둔다 · 마스터가 창을 열고 닫을 때, 그리고 사용자가 열고 닫을 때
+//   존재하는 페인들 모두 자동으로 좌우 균등 정렬한다.」
+// ★창이 **열리고 닫히는 모든 경로**(자동 입양 · 새 창 · 분할 · 닫기 · 머리 × · 외부 닫힘 · 자리표 회수 · 복원 입양 ·
+//   복원 때 죽은 좌석 정리)와 정렬 단추가 **이 함수 한 곳**을 지난다. 경로마다 따로 짜면 한쪽만 고쳐지는
+//   비대칭이 생긴다(B17 relayoutWs 주석과 같은 이유). 트리를 먼저 감싸거나 잘라낸 뒤 부르지 마라 —
+//   좌열 몫을 그 순간 잃는다(autoArrange 머리말). 창 옮기기(movePane·transferCrossDept)는 열기·닫기가 아니라 대상 밖.
+// 역할 표 = 소켓별 마지막 목록(끝난 좌석의 역할도 남긴다 — 끝난 master 칸이 좌열에서 튀어나가지 않게).
+//   빠지는 좌석은 역할이 아니라 change.remove 가 정한다.
+const arrangeRolesBySocket = new Map<string, Map<number, string | null>>();
+function rememberRoles(socket: string | undefined, surfaces: { surface_id: number; role: string | null }[]): void {
+  arrangeRolesBySocket.set(socket ?? "", new Map(surfaces.map((x) => [x.surface_id, x.role] as [number, string | null])));
+}
+function arrangeWs(ws: Workspace, change: ArrangeChange, mode?: LeftShareMode): void {
+  ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode);
+}
+
 // ---------- pane lifecycle ----------
 
 const b64ToBytes = (b64: string): Uint8Array => {
@@ -2536,6 +2552,8 @@ async function refreshPaneTitles() {
     //   아니라 **옛 자리를 닫은 ws** 도 들어간다. 둘 다 "열 구성이 바뀌었으니 다시 짜야 하는" 같은
     //   이유로 같은 배치 함수를 지나야 한다 — 두 벌로 나누면 한쪽만 배치되는 비대칭이 생긴다.
     const relayoutWs = new Set<Workspace>();
+    // (v116-auto-equalize) 이번 틱에 붙는 좌석 — 트리를 먼저 0.5 로 감싸지 않고 배치 함수에 넘긴다.
+    const adoptAdds = new Map<Workspace, { sid: number }[]>();
     // 사이드바 사용량 패널용 수집 — 이미 도는 폴링에 얹는다(새 폴링을 만들지 않는다).
     // 이번 틱에 성공한 소켓만 담고, 실패한 소켓은 lastSurfacesBySocket의 직전 값으로 메운다.
     const socketRows = new Map<string, SurfaceLike[]>();
@@ -2561,6 +2579,7 @@ async function refreshPaneTitles() {
           line_count?: number | null;
         }[];
       };
+      rememberRoles(sk, r.surfaces); // 자동 정렬 역할 표 — 이 틱의 닫기·입양 배치가 전부 이 값을 쓴다
       // ★패널 수집은 pane 입양 여부와 무관하게 한다 — 계정 사용량(rate)은 UI에 아직 안 붙은
       //   노드까지 봐야 참이 된다. 다만 「어느 pane이 화면에 있는가」(adopted)를 함께 실어
       //   보내, CTX 목록은 화면에 있는 pane으로만 좁힌다(범위 둘을 일부러 다르게 둔다).
@@ -2638,9 +2657,9 @@ async function refreshPaneTitles() {
         const ws = workspaces.find((w) => !w.pending && (w.socket ?? undefined) === (sk ?? undefined));
         if (!ws || collectSids(ws.tree).includes(s.surface_id)) continue;
         setRoleDot((await makePane(s.surface_id, s.title, sk)).roleEl, s.role, surfaceWorking(s.surface_id, sk)); // 입양 즉시 역할 점 채색 + 작동중 판정
-        ws.tree = ws.tree
-          ? { type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }
-          : { type: "pane", sid: s.surface_id };
+        if (!adoptAdds.has(ws)) adoptAdds.set(ws, []);
+        if (adoptAdds.get(ws)!.some((x) => x.sid === s.surface_id)) continue;
+        adoptAdds.get(ws)!.push({ sid: s.surface_id });
         adopted = true;
         relayoutWs.add(ws);
       }
@@ -2676,7 +2695,7 @@ async function refreshPaneTitles() {
             placeholderSids.delete(sid); // 한 번 판정한 자리는 장부에서 뺀다(반복 시도 0)
             await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
             destroyPaneRuntime(sid, ws.socket);
-            ws.tree = ws.tree ? replaceNode(ws.tree, sid, () => null) : null;
+            arrangeWs(ws, { remove: [sid] });
             if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
             layoutChanged = true;
           }
@@ -2695,14 +2714,13 @@ async function refreshPaneTitles() {
       }
       // ★B16(오너 확정 2026-09-19 16:1x) — 본부 역할이 **cys 좌석으로 있는 기기**에서는 역할 배치를 쓴다:
       //   좌열 master(위):cso(아래)=4:1 · 우열 worker. 참가자 기기(cysr)가 그 경우다.
-      //   전제가 없는 기기(우리 개발 기기 — master·cso 는 cmux 페인)는 종전 adoptLayout 그대로다(무회귀).
-      const roleBySid = new Map<number, string | null>(
-        r.surfaces.filter((x) => !x.exited).map((x) => [x.surface_id, x.role] as [number, string | null]),
-      );
-      const hq = hasHqSeats(roleBySid);
+      //   전제가 없는 기기(우리 개발 기기 — master·cso 는 cmux 페인)는 전부 한 줄 좌우 균등이다(07-27 오너 확정).
+      // ★v116-auto-equalize(오너 지시 2026-09-25): 종전 「순수 row 트리일 때만」 좁힘을 걷었다 — HQ 기기에서는 첫 배치가
+      //   좌열을 세로로 나누는 순간부터 입양이 다시 짜이지 않았다(재현 R1: 새 워커 0.50 · master 0.20).
+      //   닫기 쪽 배치는 detachPane 이 이미 했다(스윕 → 배치 순서는 그 함수 안에서 성립한다).
       for (const ws of relayoutWs) {
-        if (!ws.tree || (ws.socket ?? undefined) !== (sk ?? undefined)) continue;
-        ws.tree = hq ? formationIfRowOnly(ws.tree, roleBySid) : adoptLayoutIfRowOnly(ws.tree, masterSids);
+        if ((ws.socket ?? undefined) !== (sk ?? undefined)) continue;
+        arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });
       }
      } catch {
        // ★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다(codex [High] 수리).
@@ -2843,7 +2861,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     await invoke("close_surface", { socket, surfaceId: sid }).catch(() => {});
     destroyPaneRuntime(sid, socket);
     const ws = current();
-    if (ws.tree) ws.tree = replaceNode(ws.tree, sid, () => null);
+    if (ws.tree) arrangeWs(ws, { remove: [sid] });
     if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
     render();
   });
@@ -4113,38 +4131,27 @@ function startGroupDrag(e0: MouseEvent, srcId: number) {
 // 트리 위상만 새로 짜고 attachDividerDrag는 건드리지 않으므로 수동 크기 조절은 그대로 보존된다
 // (정렬 후에도 divider를 다시 끌 수 있다 — 현재 크기만 표준 배치로 리셋될 뿐이다).
 // divider 1px·pane 헤더 등으로 컬럼 폭엔 셀 1칸 이내 잔차가 있을 수 있다.
-function evenComb(nodes: Node[], dir: "row" | "col"): Node {
-  let acc = nodes[nodes.length - 1];
-  for (let i = nodes.length - 2; i >= 0; i--) {
-    acc = { type: "split", dir, ratio: 1 / (nodes.length - i), a: nodes[i], b: acc };
-  }
-  return acc;
-}
-
-// 좌→우 순서는 기존 트리 순회 순서를 그대로 보존한다(collectSids 결과 순).
-function roleLayout(sids: number[]): Node {
-  return evenComb(sids.map((sid): Node => ({ type: "pane", sid })), "row");
-}
+// (v116-auto-equalize) 가로 균등 comb 은 formation.ts evenRow 한 곳으로 모였다(autoArrange 가 쓴다) —
+//   위 붕괴 기전 ⑵ 대응(노드 1개면 래퍼 없음)도 그쪽 머리말이 쥔다. 좌→우 순서 = 트리 순회 순서 보존.
 
 async function actionEqualize() {
   const ws = current();
   if (!ws?.tree) return;
-  const live = collectSids(ws.tree).filter((sid) => panes.has(paneKey(sid, ws.socket))); // 죽은/placeholder 노드 제외 (F4 복합키)
+  const all = collectSids(ws.tree);
+  const live = all.filter((sid) => panes.has(paneKey(sid, ws.socket))); // 죽은/placeholder 노드 제외 (F4 복합키)
   if (live.length < 2) return; // 0~1개는 정렬할 대상이 없음
-  // ★B16 — 배치가 다시 역할을 본다(오너 확정 2026-09-19). 구 주석 「역할 조회는 결과를 버리는
-  //   왕복이라 제거했다」는 배치가 역할 무관이던 시절의 것이고, 그 전제가 바뀌었다.
-  //   조회가 실패하면 역할을 모르는 것이지 역할이 없는 것이 아니다 ⇒ 종전 가로 균등으로 폴백한다.
-  let roleBySid = new Map<number, string | null>();
+  // ★B16 — 배치가 역할을 본다(오너 확정 2026-09-19). 조회가 실패하면 역할을 모르는 것이지 역할이 없는 것이 아니다 —
+  //   (v116-auto-equalize) 종전엔 가로 균등으로 폴백했고, 이제는 마지막으로 본 역할 표(3초 틱이 채운다)를 쓴다.
   try {
     const r = (await invoke("list_surfaces", { socket: ws.socket })) as {
       surfaces: { surface_id: number; role: string | null; exited: boolean }[];
     };
-    roleBySid = new Map(r.surfaces.filter((x) => !x.exited).map((x) => [x.surface_id, x.role] as [number, string | null]));
+    rememberRoles(ws.socket, r.surfaces);
   } catch {
-    // 폴백 = roleLayout(가로 균등) — 아래 hasHqSeats 가 거짓이 된다.
+    /* 마지막 역할 표 그대로 */
   }
-  const seats = live.map((sid) => ({ sid, role: roleBySid.get(sid) ?? null }));
-  ws.tree = (hasHqSeats(roleBySid) ? formationLayout(seats) : null) ?? roleLayout(live);
+  // 정렬 단추 = 같은 함수 · "standard" = 좌열까지 표준(4:1 · leftColumnShare)으로 새로 — 종전 단추 결과와 같다(기존 기능 보존).
+  arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");
   render(); // 새 트리로 DOM 재구성 + fitPane→resize_surface + saveLayout
 }
 
@@ -4901,13 +4908,13 @@ async function actionNew() {
   if (current()?.pending) return; // 부서 데몬 준비 중(빈 socket placeholder) — surface 생성 금지(기본 데몬 고아 차단)
   const sid = await newSurface(null, current().socket);
   const ws = current();
-  ws.tree = ws.tree
-    ? { type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid } }
-    : { type: "pane", sid };
+  arrangeWs(ws, { add: [{ sid }] }); // 새 창도 다른 창과 같은 폭(종전 = 화면 절반)
   render();
   setFocus(sid);
 }
 
+// (v116-auto-equalize · master 판정 D2 = A) 방향 인자는 남기되 배치는 언제나 자동 좌우 균등이다 —
+//   분할한 새 창은 대상 창 바로 다음 순서에 선다. 「아래에 새 창」 메뉴는 실제 동작과 어긋나 뺐다.
 async function actionSplit(dir: "row" | "col") {
   if (daemonActionBlocked()) return; // ★P1-3: 리셋 진행/완료 중 분할 차단(무반응 금지)
   const ws = current();
@@ -4918,19 +4925,9 @@ async function actionSplit(dir: "row" | "col") {
   }
   const target = focusedSid;
   const sid = await newSurface(null, ws.socket);
-  if (!ws.tree || !collectSids(ws.tree).includes(target)) {
-    // await 사이에 대상이 닫힌 경우 — 루트에 덧붙여 고아를 만들지 않는다
-    ws.tree = ws.tree
-      ? { type: "split", dir, a: ws.tree, b: { type: "pane", sid } }
-      : { type: "pane", sid };
-  } else {
-    ws.tree = replaceNode(ws.tree, target, (old) => ({
-      type: "split",
-      dir,
-      a: old,
-      b: { type: "pane", sid },
-    }));
-  }
+  void dir;
+  // await 사이에 대상이 닫혔으면 after 가 트리에 없으므로 맨 끝에 선다 — 루트에 덧붙여 고아를 만들지 않는다(종전과 같은 보장).
+  arrangeWs(ws, { add: [{ sid, after: target }] });
   render();
   setFocus(sid);
 }
@@ -4979,7 +4976,7 @@ async function actionClose() {
     closingPaneKeys.delete(key);
   }
   destroyPaneRuntime(sid, ws.socket);
-  if (ws.tree) ws.tree = replaceNode(ws.tree, sid, () => null);
+  if (ws.tree) arrangeWs(ws, { remove: [sid] });
   // (Fable MINOR-3) 그사이 다른 탭으로 옮겨 갔으면 포커스는 지금 보이는 탭의 것을 건드리지 않는다.
   if (ws !== current()) {
     render();
@@ -5005,7 +5002,7 @@ function detachPane(sid: number, socket?: string): void {
   destroyPaneRuntime(sid, socket);
   for (const ws of workspaces) {
     if (sameSock(ws) && ws.tree != null && collectSids(ws.tree).includes(sid)) {
-      ws.tree = replaceNode(ws.tree, sid, () => null);
+      arrangeWs(ws, { remove: [sid] }); // 외부 닫힘(master 의 close-surface 등)도 남은 창을 균등하게
     }
   }
   nodeSig.delete(`${socket}#${sid}`); // 사이드바 신호 캐시도 같이 — 10초 폴링을 기다리지 않는다
@@ -8606,6 +8603,7 @@ async function start() {
         surfaces: { surface_id: number; title: string; exited: boolean; role: string | null }[];
       };
       const liveList = r.surfaces.filter((s) => !s.exited);
+      rememberRoles(sk, r.surfaces); // 자동 정렬 역할 표(복원 배치가 쓴다)
       liveBySock.set(sk, { ids: new Set(liveList.map((s) => s.surface_id)), ok: true, list: liveList });
     } catch {
       liveBySock.set(sk, { ids: new Set(), ok: false, list: [] });
@@ -8621,9 +8619,9 @@ async function start() {
     // 쓰는 `ghostSids`(= 데몬이 기록조차 모르는 것)와 **의도적으로 다르다** — 왜 달라야 하는지는 wsreconcile.ts
     // 의 두 함수 머리말에 있다(복원 시점엔 종료 pane 을 보여 줄 런타임이 없다). 술어 자체는
     // 두 경우 모두 그 모듈 한 곳에만 있다.
-    for (const sid of deadLiveSids(collectSids(ws.tree), lb.ids)) {
-      ws.tree = ws.tree ? replaceNode(ws.tree, sid, () => null) : null;
-    }
+    // (v116-auto-equalize) 죽은 좌석 정리도 닫기다 — 남은 창을 같은 함수로 다시 짠다(없으면 트리 무접촉 = 저장된 배치 존중).
+    const dead = deadLiveSids(collectSids(ws.tree), lb.ids);
+    if (dead.length) arrangeWs(ws, { remove: dead });
   }
   // 안 A: 부서 ws는 tree:null(빈 셸 미생성)로 저장될 수 있다 — 데몬이 살아있고 입양할 live surface가
   // 있으면(master 등) 드롭하지 말고 보존한다. 아래 입양 루프(병합)가 그 surface로 tree를 채운다.
@@ -8666,19 +8664,18 @@ async function start() {
     // 화면 밖 고아 런타임(xterm·리스너)이 남았고, 그 런타임이 `panes.has` 게이트로 **같은 세션의
     // 재입양을 영구 차단**했다(실측 34개). 위 '존재 진실원 보강'으로 ws 는 늘 있지만, 이중 방어다.
     if (!ws) continue;
+    const restoreAdds: { sid: number }[] = [];
     for (const s of lb.list) {
       await makePane(s.surface_id, s.title, sk);
       if (ws && !collectSids(ws.tree).includes(s.surface_id)) {
-        ws.tree = ws.tree
-          ? { type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }
-          : { type: "pane", sid: s.surface_id };
+        restoreAdds.push({ sid: s.surface_id });
         ws.autoCreated = undefined; // pane 이 붙었다 = 이제 '쓰는 탭'(다음 기동 상한 면제)
       }
     }
-    // ★B16 — 재시작(복원) 경로도 **같은 함수**를 지난다. 병합 루프는 매번 루트를 0.5 로 감싸므로
-    //   여기서 다시 짜지 않으면 재시작 화면만 배치가 다르다(첫 설치·정렬과 어긋난다).
-    const roleBySid = new Map<number, string | null>(lb.list.map((s) => [s.surface_id, s.role] as [number, string | null]));
-    if (ws?.tree && hasHqSeats(roleBySid)) ws.tree = formationIfRowOnly(ws.tree, roleBySid);
+    // ★B16 — 재시작(복원) 경로도 **같은 함수**를 지난다. (v116-auto-equalize) 종전 병합 루프는 매번 루트를 0.5 로
+    //   감싸고 HQ 기기에서만 다시 짰다 — 이제 붙는 좌석이 있으면 기기와 무관하게 같은 함수로 짠다.
+    //   붙는 좌석이 없으면 저장된 배치를 건드리지 않는다(열기·닫기가 아니다).
+    if (restoreAdds.length) arrangeWs(ws, { add: restoreAdds });
   }
   // master 자동기동 제거 후: 데몬은 살아있으나(ok===true) 입양할 surface가 0개인 부서 ws(비활성 부서가
   // 재-launch된 경우)는 위 병합 루프가 못 채운다 — plain 셸 1개로 충전해 빈 탭 소실/고아 placeholder 방지.
@@ -8746,7 +8743,8 @@ document.getElementById("btn-pane-create")!.addEventListener("click", (e) => {
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
   showCtxMenu(r.left, r.bottom, [
     { label: "오른쪽에 새 창 (⌘D)", action: () => void actionSplit("row") },
-    { label: "아래에 새 창 (⌘⇧D)", action: () => void actionSplit("col") },
+    // (v116-auto-equalize · master 판정 D2 · 오너 지시 09-25) 「아래에 새 창」 항목 제거 — 창은 언제나 좌우 균등으로
+    //   다시 서므로 「아래」를 고를 수 있게 두면 메뉴가 실제 동작과 어긋난다.
   ]);
 });
 document.getElementById("btn-equalize")!.addEventListener("click", actionEqualize);

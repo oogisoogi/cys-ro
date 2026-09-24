@@ -184,20 +184,23 @@ describe("B16 결선 — 닫기가 먼저, 배치가 나중", () => {
     expect(sidsOf(laidFirst)).toContain(9); // 닫히지 않은 채 배치됨 = 열 하나를 먹는다
   });
 
-  it("배선이 그 순서다 — 스윕 루프가 배치 블록보다 앞에 있고, roleBySid 는 exited 를 뺀다", () => {
+  // ★오너 지시 09-25 로 변경(TICKET=v116-auto-equalize): 닫기가 배치를 **직접** 부른다(detachPane → arrangeWs remove).
+  //   닫은 좌석은 역할 표가 아니라 change.remove 로 빠진다 — 그래서 역할 표는 끝난 좌석을 일부러 남긴다(끝난 master 칸이
+  //   좌열에서 튀어나가지 않게). 축(닫힌 좌석이 열을 차지하지 않는다 · 닫기 → 배치 순서)은 그대로다.
+  it("배선이 그 순서다 — 스윕이 detachPane(닫기+배치)을 부르고 입양 배치는 그 뒤", () => {
     const body = main.slice(main.indexOf("async function refreshPaneTitles() {"));
     const sweep = body.indexOf("exitedSweepTargets(sweepHere");
-    // 스냅숏 밖 창은 대상에서 뺀 목록(sweepSids)으로만 친다
     expect(body).toContain("const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];");
-    const place = body.indexOf("formationIfRowOnly(ws.tree, roleBySid)");
+    const place = body.indexOf("arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });");
     expect(sweep).toBeGreaterThan(-1);
     expect(place).toBeGreaterThan(-1);
-    expect(sweep).toBeLessThan(place); // 닫기 → 배치
-    // roleBySid 는 살아 있는 좌석만으로 만든다(닫은 sid 가 섞이면 열을 하나 차지한다).
-    const build = body.indexOf("const roleBySid = new Map<number, string | null>(");
-    expect(body.slice(build, build + 220)).toContain("filter((x) => !x.exited)");
-    // 스윕이 친 ws 도 배치 대상 집합에 들어간다(입양이 없던 틱에도 배치가 돈다).
+    expect(sweep).toBeLessThan(place);
+    expect(body.slice(sweep, sweep + 400)).toContain("detachPane(sid, sk);");
+    const dp = main.slice(main.indexOf("function detachPane("), main.indexOf("function removeDeadPane("));
+    expect(dp).toContain("arrangeWs(ws, { remove: [sid] });");
+    expect(dp).not.toContain("replaceNode(");
     expect(body.slice(sweep, place)).toContain("relayoutWs.add(w)");
   });
+
 });
 

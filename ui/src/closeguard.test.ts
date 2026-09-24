@@ -164,11 +164,16 @@ describe("권고 C — 창 만들기는 상단에서 빠지고 전문가 칸에"
     expect(/<div id="ws-expert" hidden>[\s\S]*?id="btn-pane-create"[^>]*>창 만들기<\/button>[\s\S]*?<\/div>/.test(html)).toBe(true);
   });
 
-  it("누르면 오른쪽/아래 두 갈래 — 종전 Split 과 같은 함수 · 단축키 유지", () => {
+  // ★오너 지시 09-25 로 변경(TICKET=v116-auto-equalize · master 판정 D2): 창은 언제나 좌우 균등으로 다시 서므로
+  //   「아래에 새 창」 항목을 뺐다(메뉴가 실제 동작과 어긋나면 안 된다). 오른쪽 한 갈래 · 같은 함수 · 단축키 유지 축은 그대로.
+  it("누르면 오른쪽 한 갈래(「아래」 항목 0) — 종전 Split 과 같은 함수 · 단축키 유지", () => {
     const w = main.indexOf('document.getElementById("btn-pane-create")!');
     const wBody = main.slice(w, main.indexOf("});", w));
     expect(wBody).toContain('label: "오른쪽에 새 창 (⌘D)", action: () => void actionSplit("row")');
-    expect(wBody).toContain('label: "아래에 새 창 (⌘⇧D)", action: () => void actionSplit("col")');
+    // 주석(항목을 뺀 까닭)은 그 낱말을 품으므로 선언(label:)만 본다.
+    expect(/label:\s*"아래/.test(wBody)).toBe(false);
+    expect(/actionSplit\("col"\)/.test(wBody)).toBe(false);
+    expect((wBody.match(/label:/g) || []).length).toBe(1);
     expect(/e\.key === "t"\) \{\s*e\.preventDefault\(\);\s*actionNew\(\);/.test(main)).toBe(true);
     expect(/e\.key === "d" && !e\.shiftKey\) \{\s*e\.preventDefault\(\);\s*actionSplit\("row"\);/.test(main)).toBe(true);
     expect(main).toContain('actionSplit("col");');

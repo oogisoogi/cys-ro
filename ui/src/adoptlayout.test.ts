@@ -55,28 +55,21 @@ describe("B3 좁힌 판 — col 분할 포함 트리 무접촉", () => {
 });
 
 describe("B3 호출부 — 입양 루프가 실제로 재배치를 부른다", () => {
-  it("refreshPaneTitles 의 입양 블록 뒤에서 adoptLayoutIfRowOnly 를 입양 ws 에만 적용", () => {
+  // ★오너 지시 09-25 로 변경(TICKET=v116-auto-equalize): 입양은 이제 트리를 0.5 로 감싸지 않고 붙는 좌석을 모아
+  //   배치 함수(arrangeWs → autoArrange)에 넘긴다. 이 모듈(adoptLayout)은 main 에서 더는 불리지 않는다(순수 함수 시험은 남긴다).
+  //   축은 그대로 — 「입양 뒤에 · 입양 ws 에만 재배치가 걸린다」.
+  it("refreshPaneTitles 의 입양 블록 뒤에서 arrangeWs 를 입양 ws 에만 적용 · 0.5 감싸기 0", () => {
     const s = main.indexOf("async function refreshPaneTitles() {");
     expect(s).toBeGreaterThan(-1);
     const body = main.slice(s, main.indexOf("\n}\n", s));
-    const wrap = body.indexOf('{ type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }');
-    // ★조준 이사 2(2026-09-20 · B17 결선 · TICKET=v110-darwin-update): 집합 이름이 adoptedWs →
-    //   relayoutWs 로 넓어졌다. 이번 틱에 **열 구성이 바뀐** ws 가 들어간다 — 입양분(종전) +
-    //   재시작 잔재를 닫은 분(신규). 축은 그대로다: 「그 ws 에만·그 뒤에」 재배치가 걸린다.
-    //   (이름만 바뀌고 성질이 그대로라 조준만 옮긴다 — 줄을 지우면 축이 통째로 사라진다.)
-    const add = body.indexOf("relayoutWs.add(ws);");
-    // ★B16(2026-09-20)에서 이 줄이 삼항으로 갈렸다 — 본부 역할이 cys 좌석인 기기는 formationIfRowOnly,
-    //   전제가 없는 기기(우리 개발 기기)는 종전 adoptLayoutIfRowOnly. **이 스위트가 지키는 축은
-    //   「호출 문자열」이 아니라 「입양 뒤에 · 입양 ws 에만 재배치가 걸린다」이므로** 축은 그대로 두고
-    //   조준만 옮긴다(줄을 지우면 그 축이 통째로 사라진다).
-    const call = body.indexOf("adoptLayoutIfRowOnly(ws.tree, masterSids)");
-    expect(wrap).toBeGreaterThan(-1);
-    expect(add).toBeGreaterThan(wrap);
+    expect(body).not.toContain('{ type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }');
+    const push = body.indexOf("adoptAdds.get(ws)!.push({ sid: s.surface_id });");
+    const add = body.indexOf("relayoutWs.add(ws);", push);
+    const call = body.indexOf("arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });");
+    expect(push).toBeGreaterThan(-1);
+    expect(add).toBeGreaterThan(push);
     expect(call).toBeGreaterThan(add);
     expect(body.slice(add, call)).toContain("for (const ws of relayoutWs)");
-    // 전제가 없는 기기의 폴백이 살아 있는가(무회귀 축) + 전제가 있는 기기의 분기가 같은 루프 안인가.
-    expect(body.slice(add, call)).toContain("hasHqSeats(roleBySid)");
-    expect(body.slice(add)).toContain("formationIfRowOnly(ws.tree, roleBySid)");
-    expect(main).toContain('import { adoptLayoutIfRowOnly } from "./adoptlayout";');
+    expect(main).not.toContain('from "./adoptlayout"');
   });
 });

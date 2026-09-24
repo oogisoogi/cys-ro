@@ -8054,6 +8054,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&td);
     }
 
+    /// ★v116-ceo-directive-hold 경로 1(1085 VM-B 실측 형상) — **옛 판 사이드카가 먼저 판정한** 승격 기계.
+    /// 단추 갱신은 옛 앱의 `cys pack-update` 가 새 팩을 먼저 적용한다(D1-ⓑ 없는 1.1.4 이하 코드).
+    /// 그 판정은 ⑴MASTER(=옛 CEO 사본)를 사용자 수정본으로 보고 `.new` 병치 ⑵System 인 CEO_TEMPLATE 은
+    /// 강제 갱신해 manifest[CEO] 를 신판으로 전진시킨다. 재시작 뒤 새 판 init-pack 의 D1-ⓑ 는
+    /// manifest[CEO] == 디스크 MASTER 를 보므로 영영 불발 — 격리 재현(scratch/repro.sh base-v112)과
+    /// VM-B 수집본이 바이트 동일로 이 형상이다. 승격 영수증(`.ceo-template-applied` = cys-dept 가
+    /// 교체 직후 기록한 디스크 MASTER 의 sha256)이 「제품이 쓴 사본」의 증거로 남아 있다.
+    #[test]
+    fn d1b_rescues_ceo_copy_after_old_sidecar_advanced_manifest() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let td = std::env::temp_dir()
+            .join(format!("cys-d1b-sidecar-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pd = td.join("pack");
+        std::fs::create_dir_all(&pd).unwrap();
+        let _env = set_pack_env(&pd, td.join("cfg"));
+        let read = |rel: &str| std::fs::read_to_string(pd.join(rel)).unwrap();
+        let inst = |items: &[(&str, &str)], ver: &str| {
+            install_into(
+                pd.clone(), items.iter().copied(), false, ver, false, false,
+                pack_scope_of(&pd), None, None,
+            )
+            .unwrap()
+        };
+        let v1 = [
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V1\nMASTER-V1"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V1"),
+        ];
+        let v2 = [
+            ("directives/CEO_TEMPLATE.md", "CEO-HEAD-V2\nMASTER-V2"),
+            ("directives/MASTER_DIRECTIVE.md", "MASTER-V2"),
+        ];
+        let md = "directives/MASTER_DIRECTIVE.md";
+        let ceo_rel = "directives/CEO_TEMPLATE.md";
+        // 시나리오 한 벌: v1 설치 → 승격(cys-dept _swap 실측 형상 + 영수증) → 옛 사이드카 v2 적용 모의.
+        let stage = |master_after_promote: &str| {
+            let _ = std::fs::remove_dir_all(&pd);
+            std::fs::create_dir_all(&pd).unwrap();
+            inst(&v1, "1.0.0");
+            std::fs::copy(pd.join(md), pd.join(format!("{md}.pre-ceo"))).unwrap();
+            std::fs::copy(pd.join(ceo_rel), pd.join(md)).unwrap();
+            let receipt = content_hash(&read(md));
+            std::fs::write(pd.join("directives/.ceo-template-applied"), format!("{receipt}\n")).unwrap();
+            if master_after_promote != read(md) {
+                std::fs::write(pd.join(md), master_after_promote).unwrap(); // 사용자 손질
+            }
+            // 옛 사이드카(D1-ⓑ 없음)의 v2 적용 결과를 그대로 만든다(scratch/repro.sh 기준선 실측):
+            // CEO_TEMPLATE = v2 · manifest[CEO] = hash(v2) · MASTER 불변 · manifest[MASTER] 불변 · .new = v2.
+            std::fs::write(pd.join(ceo_rel), v2[0].1).unwrap();
+            std::fs::write(pd.join(format!("{md}.new")), v2[1].1).unwrap();
+            let mp = pd.join(INSTALL_MANIFEST);
+            let mut m: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+            m.insert(ceo_rel.to_string(), serde_json::json!(content_hash(v2[0].1)));
+            std::fs::write(&mp, serde_json::to_string(&m).unwrap()).unwrap();
+            std::fs::write(pd.join(".pack-version"), "1.0.1\n").unwrap();
+        };
+
+        // ① 제품이 쓴 사본(영수증 일치) → 재시작 뒤 새 판 init-pack 이 신판 CEO 를 적용한다.
+        stage("CEO-HEAD-V1\nMASTER-V1");
+        inst(&v2, "1.0.1");
+        assert_eq!(read(md), "CEO-HEAD-V2\nMASTER-V2",
+                   "①옛 사이드카가 manifest[CEO] 를 전진시킨 승격 기계가 신판 CEO 를 못 받았다(VM-B 결함)");
+        assert!(!pd.join(format!("{md}.new")).exists(), "①구제됐으면 .new 보류가 정리돼야 한다");
+        assert_eq!(read(&format!("{md}.pre-ceo")), "MASTER-V2",
+                   "①강등 백업도 신판 vendor MASTER 로 전진해야 한다(강등 시 옛 판 부활 차단)");
+        assert_eq!(read(&format!("{md}.bak-1.0.1")), "CEO-HEAD-V1\nMASTER-V1", "①직전 승격본 백업");
+        assert_eq!(read("directives/.ceo-template-applied").trim(), content_hash("CEO-HEAD-V2\nMASTER-V2"),
+                   "①영수증이 옛 해시로 남으면 다음 갱신의 근거가 흔들린다 — 새 CEO 해시로 전진");
+        // ①-b 멱등: 같은 판 재설치 = 변화 0.
+        inst(&v2, "1.0.1");
+        assert_eq!(read(md), "CEO-HEAD-V2\nMASTER-V2", "①-b 재설치 멱등");
+        assert!(!pd.join(format!("{md}.new")).exists(), "①-b 재설치가 .new 를 되살렸다");
+
+        // ② 사용자가 CEO 사본을 손으로 고침(영수증 불일치) → 덮지 않는다 · .new 보류 유지.
+        stage("CEO-HEAD-V1\nMASTER-V1\nMY-EDIT");
+        inst(&v2, "1.0.1");
+        assert_eq!(read(md), "CEO-HEAD-V1\nMASTER-V1\nMY-EDIT", "②사용자 수정본을 덮었다(데이터 손실)");
+        assert_eq!(read(&format!("{md}.new")), "MASTER-V2", "②신판은 여전히 .new 로 병치");
+        assert_eq!(read(&format!("{md}.pre-ceo")), "MASTER-V1", "②수정본 기계의 강등 백업 무접촉");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
     /// 게이트는 target env가 아니라 dir 인자로 판정한다). 대조로 명시 인가 시 동일 쓰기가 성공한다.
     #[test]
     fn w0d_rejects_unauthorized_write_to_live_default_path() {

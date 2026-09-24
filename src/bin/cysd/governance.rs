@@ -6459,6 +6459,14 @@ mod tests {
         }
         assert!(m(r#"A="x;y|z" claude --x"#, Some("claude")), "따옴표 안 문자는 값");
         assert!(m(r#"CLAUDE_CONFIG_DIR="${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}" claude --continue"#, Some("claude")), "실 기동 줄의 ${{…}} 전개");
+        // agy 2R 판정 박제 — P2: 짝이 맞는 이스케이프 따옴표 예시는 통과(따옴표 토글이 짝수로 닫힌다).
+        //   값 안의 `\"` 처럼 짝이 깨지는 줄은 거부 = 안전 쪽(종전 1.1.5 와 같은 결과 · render_launch 는
+        //   값을 이스케이프하지 않으므로 cys 가 만드는 기동 줄엔 없다).
+        assert!(m(r#"claude --prompt "say \"hi\"""#, Some("claude")), "agy P2 예시");
+        assert!(!m(r#"K="a\"b" claude"#, Some("claude")), "짝 깨진 따옴표 = 거부(안전 쪽)");
+        // P3: 래퍼 cmd 는 좌석 메타 agent_bin 도 래퍼(cys extract_bin = 대입 뒤 첫 낱말)라 서로 맞는다.
+        assert!(m("env FOO=1 claude --x", Some("env")), "agy P3 — env 래퍼(메타 = env)");
+        assert!(m("sudo -u bot codex", Some("sudo")), "agy P3 — sudo 래퍼(메타 = sudo)");
         assert!(!m("claude --x", None), "메타 없음");
         assert!(!m("claude --x", Some("")), "빈 메타");
     }

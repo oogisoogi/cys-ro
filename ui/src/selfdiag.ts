@@ -44,6 +44,10 @@ export interface CeoPromoteFailToast {
 
 const HELD_BOOT_BODY =
   "아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 본부 마스터를 먼저 한 번 시작한 뒤 다시 눌러 주세요.";
+// 재실행 경로의 부트 보류: 보류가 대기 표시(ceo-pending)를 남기면 팔레트 항목이 「CEO 승격 진행」으로 바뀐다
+//   (ceoPaletteEntries 의 pending 우선) — 「다시 눌러」 대상이 사라지므로 바뀐 항목 이름을 안내한다(Opus R2 NOTE).
+const HELD_BOOT_BODY_REPROMOTE =
+  "아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 본부 마스터를 먼저 한 번 시작한 뒤, 명령 팔레트의 「CEO 승격 진행」을 눌러 주세요.";
 
 /// 승격 실패/보류 알림. repromote = 팔레트 '재실행'(새 템플릿을 다시 적용) 경로.
 export function ceoPromoteFailToast(err: unknown, repromote: boolean): CeoPromoteFailToast {
@@ -60,7 +64,7 @@ export function ceoPromoteFailToast(err: unknown, repromote: boolean): CeoPromot
   const boot = rest.startsWith("boot:");
   const raw = rest.replace(/^(boot|other):/, "");
   const title = repromote ? "CEO 승격 재실행 보류" : "CEO 승격 보류";
-  if (boot) return { held: true, boot, category: "feed", title, raw, body: HELD_BOOT_BODY };
+  if (boot) return { held: true, boot, category: "feed", title, raw, body: repromote ? HELD_BOOT_BODY_REPROMOTE : HELD_BOOT_BODY };
   return {
     held: true, boot, category: "feed", title, raw,
     body: repromote

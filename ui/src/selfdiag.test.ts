@@ -34,11 +34,13 @@ describe("A-Z14 — 승격 보류는 「보류」로, 실패는 「실패」로 
     const t = ceoPromoteFailToast(`${T}boot:y`, true);
     expect([t.title, t.category]).toEqual(["CEO 승격 재실행 보류", "feed"]);
     expect(t.body).toContain("본부 마스터를 먼저 한 번 시작한 뒤");
+    expect(t.body).toContain("「CEO 승격 진행」을 눌러 주세요.");   // 보류 뒤 팔레트 항목이 바뀐다(pending 우선)
     expect(t.body).not.toContain("새 설정");
   });
   it("보류 · 그 밖(상위집합 검사 등) → 부트를 권하지 않고 「자세히」로 이유 안내", () => {
     for (const rep of [false, true]) {
-      const t = ceoPromoteFailToast(`${T}other:[cys-dept] CEO 승격 보류(지침 미교체) — z`, rep);
+      // 원문에 「boot」 낱말이 섞여도(게이트 줄의 .master-bootstrapped) 사유는 태그 바로 뒤로만 가른다(Opus R2).
+      const t = ceoPromoteFailToast(`${T}other:[cys-dept] CEO 승격 보류(PENDING) — base master 미부트(.master-bootstrapped 부재)\n[cys-dept] CEO 승격 보류(지침 미교체) — z`, rep);
       expect([t.held, t.boot, t.category]).toEqual([true, false, "feed"]);
       expect(t.body).not.toContain("시작");
       expect(t.body).toContain("「자세히」를 눌러 확인해 주세요.");

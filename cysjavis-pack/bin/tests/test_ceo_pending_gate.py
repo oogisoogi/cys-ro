@@ -296,6 +296,10 @@ check("8′d 3-ref 전부 미포함 스텁은 여전히 보류(차단 강도 불
 check("8′e 보류 문안이 교차버전 갈래를 안내(.new 언급)", ".new" in out, out[-300:])
 shutil.rmtree(tmp)
 
+# ★A-Z14 사유 표지(cys-dept promote-ceo 사후 검증 머리말 · GUI 백엔드 src-tauri ceo_promote_result 가 사유를 가른다).
+BOOT_MARK = "[cys-dept] CEO 승격 보류(부트 필요) — "
+OTHER_MARK = "[cys-dept] CEO 승격 보류(지침 미교체) — "
+
 # ── 9. ★SF-1: 지명(consented) 경로의 superset 보류 = PENDING 신규 생성 금지 ──
 # 계약 문면은 'PENDING 유지'다 — 오너 지명 1회성 경로의 보류가 상시 자동승격 예약(집행 틱이
 # 템플릿 수리 후 무제스처 승격)을 '신설'하면 확폭이다. 기존 PENDING 유지는 7c 가 핀.
@@ -311,6 +315,9 @@ code, out = run(env, "promote-ceo")                 # PENDING 부재 상태에�
 check("9a 지명 보류 truthful exit 5", code == 5, "exit=%d" % code)
 check("9b PENDING 신규 생성 금지(자동승격 예약 확폭 차단)", not os.path.exists(pend))
 check("9c 무교체", md(home) == MASTER_BODY)
+# ★A-Z14(Opus R2 · 변이 J): **부트를 마친** 기계의 상위집합 보류 = 사유 「그 밖」. 사후 검증이 부트 마커 항을 빼면
+#   여기서 「부트 필요」 표지 → GUI boot 태그 → 「본부 마스터를 먼저 시작해 주세요」 거짓 안내가 된다.
+check("9d 부트 완료 + 상위집합 보류 = 「그 밖」 표지 · 부트 표지 없음", OTHER_MARK in out and BOOT_MARK not in out, out[-200:])
 shutil.rmtree(tmp)
 
 # ── 10. ★SF-2: CRLF 개행 드리프트 = false hold 아님(정규화 후 포함 판정) ──
@@ -585,11 +592,9 @@ with open(pre, "w", encoding="utf-8") as f:
 code, out = run(env, "promote-ceo")
 check("14a 낡은 .pre-ceo + 미부트 지명 = exit 5(보류를 완료로 보고하지 않음)", code == 5, "exit=%d %s" % (code, out[-200:]))
 check("14b md 무교체 · pending 생성", md(home) == MASTER_BODY and os.path.exists(pend))
-# 사유 문구는 **사후 검증 표지**로 묻는다 — 게이트가 먼저 찍는 「CEO 승격 보류(PENDING) — base master 미부트」 줄로는
+# 사유 문구는 **사후 검증 표지**로 묻는다(BOOT_MARK · OTHER_MARK = 시험 9 앞에서 정의) — 게이트가 먼저 찍는 「CEO 승격 보류(PENDING) — base master 미부트」 줄로는
 #   단언이 채워지지 않게(Opus 적대 R1: 종전 단언은 그 줄로 채워져 사유 분기를 지워도 초록이었다 · 변이 A·F·G·H).
 #   표지 문자열은 GUI 백엔드(src-tauri ceo_promote_result)가 사유를 가르는 데 쓴다.
-BOOT_MARK = "[cys-dept] CEO 승격 보류(부트 필요) — "
-OTHER_MARK = "[cys-dept] CEO 승격 보류(지침 미교체) — "
 check("14c 출력 = 사후 검증 부트 보류 표지 · 「그 밖」 표지 없음 · 승격 교체 문구 없음",
       BOOT_MARK in out and OTHER_MARK not in out and "기본 데몬 CEO 승격(directives 교체" not in out, out[-240:])
 check("14d 영수증 파일이 없어도 출력에 셸 오류 줄이 섞이지 않음(GUI 상세에 그대로 실린다)",

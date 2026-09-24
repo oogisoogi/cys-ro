@@ -5,6 +5,7 @@
 //   · (v116-restart-toast) 재시작 흉내(restart_after_update · __shimRestartLive = 살아 있는 세션 거부 · __shimRestartFail = 실패)
 //     · 앱 판번 흉내(app_version ← __shimAppVersion · 지연 __shimAppVersionDelayMs · 실패 __shimFailAppVersion) · build_id(app_build_id ← __shimBuildId · 기본 build-A)
 //     · 확인 응답 지연(__shimCheckDelayMs) · 설치 진행 흉내(install_update 가 __shimInstallDelayMs 동안 안 끝남) · 새로고침(⌘R)을 넘어 남는 흉내 값 = sessionStorage "__shimUpdate"·"__shimAppVersion"
+//   · (v116-auto-equalize) sc=hq5 · sc=w3
 //   · (R1c) 좌석 추가(__shimAddSeat) · sc=late = master 없이 시작 · (D4 #12) 이름 바꾸기(rename_surface → 좌석 제목) · (D4 #18) control_dashboard(__shimDash) · (D4 #14) check_update 실패 주입(__shimFailUpdate) · 새 판 흉내(__shimUpdate)
 (() => {
   const q = new URLSearchParams(location.search);
@@ -22,6 +23,9 @@
     two: [mk(1, "master", "/Users/user/jarvis"), mk(2, "worker", "/Users/user/jarvis/w1")],
     three: [mk(1, "master", "/Users/user/jarvis"), mk(2, "cso", "/Users/user/jarvis/cso"), mk(3, "worker", "/Users/user/jarvis/w1")],
     late: [mk(2, "worker", "/Users/user/jarvis/w1")], // (R1c) master 자리가 늦게 선다 — __shimAddSeat 로 나중에 세운다
+    // (v116-auto-equalize) 본부 + 워커 3 · 워커만 3(우리 개발 기기 모양)
+    hq5: [mk(1, "master", "/Users/user/jarvis"), mk(2, "cso", "/Users/user/jarvis/cso"), mk(3, "worker", "/Users/user/jarvis/w1"), mk(4, "worker", "/Users/user/jarvis/w2"), mk(5, "worker", "/Users/user/jarvis/w3")],
+    w3: [mk(3, "worker", "/Users/user/jarvis/w1"), mk(4, "worker", "/Users/user/jarvis/w2"), mk(5, "worker", "/Users/user/jarvis/w3")],
   };
   const seats = SEATS[SC] || SEATS.two;
   window.__shimSeats = seats;

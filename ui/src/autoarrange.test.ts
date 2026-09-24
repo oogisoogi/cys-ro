@@ -130,6 +130,16 @@ describe("⑴ 좌열 보존(오너 ①)", () => {
     const t1 = autoArrange(t0, roles([...HQ, ...W(3, 4)]), { add: [{ sid: 4 }] })!;
     expect(t1).toEqual(formationLayout(seats([...HQ, ...W(3, 4)])));
   });
+  it("master·cso 가 좌우로 나란한 저장 배치(옛 판·창 옮기기) → 좌열로 보지 않고 표준 배치(헤드리스 c18 전체 실행 적발)", () => {
+    const t0 = S(S(P(1), P(2), "row", 0.5), P(3), "row", 0.5);
+    const t1 = autoArrange(t0, roles([...HQ, ...W(3, 4)]), { add: [{ sid: 4 }] })!;
+    expect(t1).toEqual(formationLayout(seats([...HQ, ...W(3, 4)])));
+    // 위아래가 뒤바뀐(cso 위) 좌열은 사람이 만든 모양이다 — 그대로 보존
+    const swapped = S(P(2), P(1), "col", 0.3);
+    const t2 = autoArrange(S(swapped, P(3), "row", 0.4), roles([...HQ, ...W(3, 4)]), { add: [{ sid: 4 }] })!;
+    expect((t2 as any).a).toBe(swapped);
+    expect(leftW(t2)).toBeCloseTo(0.4, 12);
+  });
   it("mode=standard(정렬 단추) = 종전 formationLayout 과 같은 결과", () => {
     const t0 = S(S(P(1), P(2), "col", 0.6), S(P(3), P(4), "row", 0.3), "row", 0.4);
     const r = roles([...HQ, ...W(3, 4)]);
@@ -289,6 +299,8 @@ describe("⑶ 좌석 집합 보존(속성 시험)", () => {
           const leftPicked = [got.find((s) => /^master(-|$)/.test(String(rm.get(s) ?? ""))), got.find((s) => /^cso(-|$)/.test(String(rm.get(s) ?? "")))].filter((x) => x !== undefined);
           const restW = got.filter((s) => !leftPicked.includes(s)).map((s) => sh.get(s)!);
           for (const x of restW) expect(x).toBeCloseTo(restW[0], 9);
+          // 좌열 두 칸은 언제나 위아래(가로 몫이 같다) — 좌우로 나란히 남지 않는다
+          if (leftPicked.length === 2) expect(sh.get(leftPicked[0]!)!).toBeCloseTo(sh.get(leftPicked[1]!)!, 9);
           void lf;
         }
       }

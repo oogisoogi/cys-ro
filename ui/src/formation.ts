@@ -136,7 +136,8 @@ export function formationIfRowOnly(
 // 규칙
 //  · 좌열(첫 master 계열 + 첫 cso 계열) = 입력 트리의 그 서브트리를 **그대로** 둔다(위아래 비율 포함).
 //    화면 가로 몫은 LeftShareMode "auto" 를 따른다(규칙값이면 새 워커 수로 다시 · 사람이 끈 값이면 그대로 — master 판정 D1 = C).
-//    좌열을 못 찾으면(처음 배치 · 좌석이 흩어짐 · 좌열 안에 다른 좌석이 끼어 있음 · 좌열이 위아래 분할 속에 있음)
+//    좌열을 못 찾으면(처음 배치 · 좌석이 흩어짐 · 좌열 안에 다른 좌석이 끼어 있음 · 좌열이 위아래 분할 속에 있음 ·
+//    master·cso 가 좌우로 나란함)
 //    formationLayout 표준(좌열 몫 leftColumnShare · master:cso = 4:1)으로 만든다.
 //  · 나머지 좌석 전부 = 한 줄 좌우 균등. 좌→우 순서 = 입력 트리 순회 순서(사람이 위아래로 나눠 둔 것도 한 줄로 편다).
 //  · master·cso 가 없으면 전부 한 줄 좌우 균등(우리 개발 기기 · 07-27 오너 확정 「개수 무관 1행 가로 균등」).
@@ -249,7 +250,10 @@ export function autoArrange(
       const sub = coveringSubtree(tree, new Set(inLeft));
       const subSids = sidsInOrder(sub);
       const exact = subSids.length === inLeft.length && inLeft.every((s) => subSids.includes(s));
-      const cs = exact ? columnShare(tree, sub) : null;
+      // 좌열 모양 = 칸 하나이거나 위아래(col) 둘. master·cso 가 좌우(row)로 나란한 것은 좌열이 아니다 —
+      //   옛 판 배치(1.0.x adoptLayout = 가로 comb)나 창 옮기기가 남긴 모양이다 → 표준으로(헤드리스 c18 전체 실행이 적발).
+      const colShaped = sub.type === "pane" || sub.dir === "col";
+      const cs = exact && colShaped ? columnShare(tree, sub) : null;
       if (cs !== null) {
         const pruned = prune(sub, drop);
         const ps = pruned ? sidsInOrder(pruned) : [];

@@ -5826,7 +5826,8 @@ function markRestartPending(version: string) {
   void (async () => {
     try {
       const appVer = (await invoke("app_version")) as string;
-      if (appVer) sessionStorage.setItem(RESTART_PENDING_KEY, encodeRestartPending(version, appVer));
+      const buildId = ((await invoke("app_build_id").catch(() => "")) as string) ?? "";
+      if (appVer) sessionStorage.setItem(RESTART_PENDING_KEY, encodeRestartPending(version, appVer, buildId));
     } catch {
       /* 판번 조회·저장 실패 = 새로고침을 넘기지 못할 뿐(메모리 대기는 그대로) */
     }
@@ -5852,7 +5853,8 @@ function restoreRestartPending(): Promise<void> {
     }
     // 판번을 모르면 검증 불가 → 복원하지 않되 칸은 남긴다(일시 오류로 맞는 기억을 지우지 않게 · 다음 새로고침에 다시 잰다).
     if (!appVer) return;
-    const v = decodeRestartPending(raw, appVer);
+    const buildId = ((await invoke("app_build_id").catch(() => "")) as string) ?? "";
+    const v = decodeRestartPending(raw, appVer, buildId);
     if (v === null) {
       try {
         sessionStorage.removeItem(RESTART_PENDING_KEY);
@@ -5895,6 +5897,11 @@ async function checkForUpdate(silent: boolean) {
   } catch {
     /* 팩 체크 실패(네트워크·부재) = 조용히 무시 */
     packCheckFailed = true;
+  }
+  // 확인을 기다리는 사이 교체가 끝났으면(이벤트) 설치 안내·설치 확인 창으로 덮지 않는다(클로드 적대 1R #2).
+  if (restartPendingVersion !== null) {
+    paintRestartPending();
+    return;
   }
 
   // ★fail-safe: 체크가 성공했을 때만 상태를 갱신한다. 일시 네트워크/업데이터 장애로 체크가 실패하면
@@ -6007,7 +6014,7 @@ async function restartAfterUpdate(version: string) {
   // 재진입 차단(v116-restart-toast · 4군 ①) — 첫 await 전에 세운다(같은 틱 연타도 1회). 실패·취소 뒤엔 풀려
   // 다시 누를 수 있다. 성공이면 백엔드가 앱을 재시작하므로 풀릴 일이 없다.
   if (restartingAfterUpdate) {
-    toast("feed", "다시 켜기 진행 중", "이미 다시 켜기를 시작했습니다. 잠시만 기다려 주세요.");
+    toast("feed", "다시 켜기 준비 중", "다시 켜기를 준비하고 있습니다. 잠시만 기다려 주세요.");
     return;
   }
   restartingAfterUpdate = true;
@@ -6468,6 +6475,9 @@ async function promptPackInstall() {
 ///   (v116-restart-toast) 예외 하나 — 맥 교체가 이미 끝나 다시 켜기만 남았으면 확인 대신 다시 켠다.
 ///   대기 판번은 「지난 확인의 캐시」가 아니라 **끝난 교체의 사실**이다(설정 = update-restart-required 뿐).
 async function onUpdateButton() {
+  // ⌘R 직후(복원 전) 누른 첫 클릭도 대기를 보도록 복원을 먼저 기다린다(클로드 적대 1R #4). 같은 틱 연타도
+  // 각자 이 await 뒤에 차례로 이어지고, 첫 번째가 restartAfterUpdate 에서 재진입 플래그를 먼저 세운다.
+  await restoreRestartPending();
   if (updateButtonAction(restartPendingVersion) === "restart") return restartAfterUpdate(restartPendingVersion!);
   return checkForUpdate(false);
 }
@@ -8078,6 +8088,7 @@ async function start() {
     dismissToast("upd-pack"); // 진행 토스트를 내리고 아래 완료 토스트로 교대.
     const badge = document.getElementById("update-badge")!;
     if (!updateAvailable) badge.hidden = true; // 바이너리 업데이트가 별도로 남아있지 않으면 배지 해제
+    paintRestartPending(); // 맥 교체 뒤 다시 켜기 대기면 배지를 다시 칠한다(클로드 적대 1R #6 · 대기 없으면 무동작)
     // degraded(reinject 일부 실패/보류)면 '완료' 단정 회피 — 상세는 update-warning이 띄운다(모순 차단).
     const failed = p.reinject_failed ?? 0;
     const deferred = p.reinject_deferred ?? 0;

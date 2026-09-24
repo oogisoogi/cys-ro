@@ -26,6 +26,10 @@
 //        n 진행 중 확인 뒤 교체 완료 → 설치 안내 0 · o ⌘R 직후 복원 전 첫 클릭 = 다시 켜기 · p 팩 적용 완료 뒤 배지 유지 ·
 //        q 좁은 창(800폭) — 「다시 켜기」가 상단바를 넘치거나 두 줄로 꺾이지 않음 ·
 //        r (master 편입 ①) 다운로드 진행 중 헤더 재클릭 · 확인 창 2개 쌓인 채 둘 다 「설치」 → install_update 1
+//   c18 (v116-auto-equalize · 오너 지시 2026-09-25) 창을 열고 닫을 때마다 자동 좌우 균등 — master·cso 좌열 몫·위아래 비율 유지:
+//       a 본부+워커1 → 워커 입양(R1 재현 자리) · b 외부 닫힘(가운데) · c ⌘W 닫기 · d 창 머리 × · e 새 창(창 만들기) ·
+//       f 사람이 끈 좌열 0.40·위아래 0.65 보존 · g 워커만(본부 없는 기기) 열기·닫기 · h 1280·1920·800 폭 ·
+//       i 팔레트 「세로 분할」 0 · ⌘⇧D = 오른쪽 분할과 같음(master 판정 ⓒ)
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -163,10 +167,12 @@ if (ONLY.includes("c4")) {
   const b = await ev(`(() => { const btn = [...document.querySelectorAll("#ws-expert button")].find(x => x.textContent.includes("창 만들기")); if (!btn || btn.offsetParent === null) return { btn: false }; btn.click(); const items = [...document.querySelectorAll("#ctx-menu .ctx-item")].map(x => x.textContent); return { btn: true, items }; })()`);
   await shot("c4b-expert-create.png");
   const n0 = await ev(`document.querySelectorAll("#root .pane").length`);
-  await ev(`[...document.querySelectorAll("#ctx-menu .ctx-item")][1]?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`);
+  await ev(`[...document.querySelectorAll("#ctx-menu .ctx-item")][0]?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`);
   await Bun.sleep(600);
   const n1 = await ev(`({ panes: document.querySelectorAll("#root .pane").length, col: document.querySelectorAll("#root .split.col").length })`);
-  check("c4b 전문가 칸 「창 만들기」 → 오른쪽/아래 메뉴 · 아래 누르면 세로 분할", b.btn && b.items?.length === 2 && n1.panes === n0 + 1 && n1.col >= 1, JSON.stringify({ ...b, n0, ...n1 }));
+  // ★오너 지시 09-25 로 변경(TICKET=v116-auto-equalize · master 판정 D2): 창은 언제나 좌우 균등으로 다시 서므로 「아래에 새 창」 항목을 뺐다.
+  //   종전 기대값 = 메뉴 2갈래 · 「아래」 → 세로 분할(col ≥ 1). 지금 = 메뉴 1갈래(오른쪽) · 누르면 창 +1 · 세로 분할 0.
+  check("c4b 전문가 칸 「창 만들기」 → 오른쪽 한 갈래(「아래」 0) · 누르면 창 +1 · 세로 분할 0", b.btn && b.items?.length === 1 && !b.items.some((x: string) => x.includes("아래")) && n1.panes === n0 + 1 && n1.col === 0, JSON.stringify({ ...b, n0, ...n1 }));
 }
 
 if (ONLY.includes("c5")) {
@@ -705,6 +711,121 @@ if (ONLY.includes("c18")) {
   await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
   await ev(`${exitWorker}; window.__shimEmit("exit-2", null)`); await Bun.sleep(800);
   await judge("m-exit-twice");
+}
+
+// (v116-integ-3 병합 ③) 1102 auto-equalize 의 c18 — 1088 exited-banner 도 「c18」 을 썼다(두 가지가 같은 번호를 따로 씀 · c17 과 같은 처리).
+//   판정 이름: 1088 = c18g-scrollback-full·c18h-burst-then-exit·c18i-carry-flush…c18n-narrow-420(꼬리 붙음) · 1102 = c18a…c18i(공백 뒤 설명)
+//   → 앞머리가 겹치는 이름(c18g·c18h·c18i)은 판정 줄 전문으로 가른다. 순서 = 1088 먼저 → 1102(자기 load 로 새로 시작 · 창 크기 스스로 복원).
+if (ONLY.includes("c18")) {
+  // 좌석별 화면 몫(가로·세로 = #root 대비) — divider 1px · 창 머리 때문에 ±0.01 허용.
+  const G = `(() => { const r = document.getElementById("root").getBoundingClientRect(); const o = {}; document.querySelectorAll("#root .pane[data-sid]").forEach(p => { const b = p.getBoundingClientRect(); o[p.dataset.sid] = { w: +(b.width / r.width).toFixed(4), h: +(b.height / r.height).toFixed(4) }; }); return { o, col: document.querySelectorAll("#root .split.col").length }; })()`;
+  const near = (a: number, b: number, t = 0.012) => Math.abs(a - b) <= t;
+  const even = (o: any, ids: number[]) => ids.every((i) => o[i] && near(o[i].w, o[ids[0]].w));
+  const ids = (o: any) => Object.keys(o).map(Number).sort((a, b) => a - b);
+  const tick = () => Bun.sleep(3800);
+  const view = (x: any) => JSON.stringify(Object.fromEntries(Object.entries(x.o).map(([k, v]: any) => [k, `${v.w}×${v.h}`])));
+
+  // a — 본부+워커1 → 워커 입양(종전 R1: 새 워커 0.50 · master 0.20 · cso 0.05)
+  await load("three");
+  const a0 = await ev(G);
+  await ev(`window.__shimAddSeat(4, "worker", "/Users/user/jarvis/w2")`); await tick();
+  const a1 = await ev(G);
+  await shot("c18a-adopt.png");
+  check("c18a 본부+워커1 → 워커 입양: 워커 2칸 같은 폭 · 좌열 1/2 → 1/3(규칙값 · 사람 손 안 탐) · master:cso 세로 4:1 유지",
+    near(a0.o[1].w, 1 / 2) && even(a1.o, [3, 4]) && near(a1.o[1].w, 1 / 3) && near(a1.o[1].h / a1.o[2].h, a0.o[1].h / a0.o[2].h, 0.05) && a1.o[1].h > a1.o[2].h * 3,
+    `before ${view(a0)} → after ${view(a1)}`);
+
+  // b — 외부 닫힘(가운데 워커) → 남은 워커 같은 폭
+  await load("hq5");
+  const b0 = await ev(G);
+  await ev(`window.__shimExit(4, true)`); await Bun.sleep(1500);
+  const b1 = await ev(G);
+  check("c18b 외부 닫힘(가운데 워커 4) → 남은 3·5 같은 폭 · 좌열 1/3 유지 · 칸 수 5→4",
+    ids(b0.o).length === 5 && even(b0.o, [3, 4, 5]) && JSON.stringify(ids(b1.o)) === "[1,2,3,5]" && even(b1.o, [3, 5]) && near(b1.o[1].w, 1 / 3),
+    `before ${view(b0)} → after ${view(b1)}`);
+
+  // c — ⌘W(확인 → 닫기) 경로
+  await load("hq5");
+  await ev(`document.querySelector('#root .pane[data-sid="3"]').dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))`);
+  await ev(key("w")); await Bun.sleep(250);
+  await ev(`document.querySelector(".modal-yes")?.click()`); await Bun.sleep(500);
+  const c1 = await ev(G);
+  check("c18c ⌘W 로 워커 3 닫기 → 남은 4·5 같은 폭 · 좌열 1/3", JSON.stringify(ids(c1.o)) === "[1,2,4,5]" && even(c1.o, [4, 5]) && near(c1.o[1].w, 1 / 3), view(c1));
+
+  // d — 창 머리 × (두 번 눌러 닫기)
+  await load("hq5");
+  await ev(`(() => { const x = document.querySelector('#root .pane[data-sid="5"] .pane-close'); x.click(); x.click(); })()`); await Bun.sleep(500);
+  const d1 = await ev(G);
+  check("c18d 창 머리 × 로 워커 5 닫기 → 남은 3·4 같은 폭 · 좌열 1/3", JSON.stringify(ids(d1.o)) === "[1,2,3,4]" && even(d1.o, [3, 4]) && near(d1.o[1].w, 1 / 3), view(d1));
+
+  // e — 새 창(전문가 칸 「창 만들기 → 오른쪽」) = 종전 새 칸 0.50
+  await load("hq5", `localStorage.setItem("cys-expert-mode", "1")`);
+  const eOrd0 = await ev(`[...document.querySelectorAll("#root .pane[data-sid]")].map(p => +p.dataset.sid)`);
+  await ev(`document.querySelector('#root .pane[data-sid="4"]').dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))`);
+  const eOrd1 = await ev(`[...document.querySelectorAll("#root .pane[data-sid]")].map(p => +p.dataset.sid)`);
+  // (앞 칸이 남긴 저장 배치를 이어받으므로 시작 순서는 칸마다 다르다 — 기대 순서는 분할 전 순서에서 만든다.)
+  void eOrd0;
+  await ev(`[...document.querySelectorAll("#ws-expert button")].find(x => x.textContent.includes("창 만들기")).click()`);
+  await ev(`[...document.querySelectorAll("#ctx-menu .ctx-item")][0]?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`);
+  await Bun.sleep(700);
+  const e1 = await ev(G);
+  const eNew = ids(e1.o).filter((i) => i >= 100);
+  const eOrder = await ev(`[...document.querySelectorAll("#root .pane[data-sid]")].map(p => +p.dataset.sid)`);
+  await shot("c18e-new-pane.png");
+  check("c18e 창 만들기 → 새 창이 워커와 같은 폭 · 분할 대상(4) 바로 오른쪽 · 좌열 몫 유지(사람 손 안 탄 1/3 → 워커 4대 규칙값 1/3)",
+    eNew.length === 1 && even(e1.o, [3, 4, eNew[0], 5]) && near(e1.o[1].w, 1 / 3) &&
+      JSON.stringify(eOrder) === JSON.stringify((eOrd1 as number[]).flatMap((x) => (x === 4 ? [4, eNew[0]] : [x]))),
+    `${view(e1)} before=${JSON.stringify(eOrd1)} order=${JSON.stringify(eOrder)}`);
+
+  // f — 사람이 끈 좌열 0.40 · 위아래 0.65 는 열기·닫기를 지나도 그대로(D1 = C)
+  const saved = { workspaces: [{ id: 1, name: "", tree: { type: "split", dir: "row", ratio: 0.4, a: { type: "split", dir: "col", ratio: 0.65, a: { type: "pane", sid: 1 }, b: { type: "pane", sid: 2 } }, b: { type: "pane", sid: 3 } } }], groups: [], active: 0, counter: 2, groupCounter: 1 };
+  await load("three", `localStorage.setItem("cys-layout-v2", ${JSON.stringify(JSON.stringify(saved))})`);
+  const f0 = await ev(G);
+  await ev(`window.__shimAddSeat(4, "worker", "/Users/user/jarvis/w2")`); await tick();
+  const f1 = await ev(G);
+  await ev(`window.__shimExit(3, true)`); await Bun.sleep(1500);
+  const f2 = await ev(G);
+  check("c18f 사람이 끈 좌열 0.40 · 위아래 0.65 → 입양 뒤·닫기 뒤 그대로 · 워커 같은 폭",
+    near(f0.o[1].w, 0.4) && near(f1.o[1].w, 0.4) && near(f2.o[1].w, 0.4) && even(f1.o, [3, 4]) && near(f1.o[1].h / (f1.o[1].h + f1.o[2].h), 0.65, 0.02) && near(f2.o[1].h / (f2.o[1].h + f2.o[2].h), 0.65, 0.02) && JSON.stringify(ids(f2.o)) === "[1,2,4]",
+    `${view(f0)} → ${view(f1)} → ${view(f2)}`);
+
+  // g — 본부 없는 기기(우리 개발 기기 모양): 전부 한 줄 균등 · 세로 분할 0
+  await load("w3");
+  const g0 = await ev(G);
+  await ev(`window.__shimAddSeat(6, "worker", "/Users/user/jarvis/w4")`); await tick();
+  const g1 = await ev(G);
+  await ev(`window.__shimExit(4, true)`); await Bun.sleep(1500);
+  const g2 = await ev(G);
+  await shot("c18g-workers-only.png");
+  check("c18g 워커만 3 → 입양 4칸 1/4 → 가운데 닫기 3칸 1/3 · 세로 분할 0",
+    even(g0.o, [3, 4, 5]) && near(g0.o[3].w, 1 / 3) && even(g1.o, [3, 4, 5, 6]) && near(g1.o[3].w, 1 / 4) && even(g2.o, [3, 5, 6]) && near(g2.o[3].w, 1 / 3) && g0.col + g1.col + g2.col === 0,
+    `${view(g0)} → ${view(g1)} → ${view(g2)}`);
+
+  // i — (master 판정 ⓒ) 팔레트 「분할」 검색 → 가로 분할만 · 세로 분할 0 · ⌘⇧D = 창 +1 · 세로 분할 0 · 워커 균등
+  await load("hq5");
+  await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`); await Bun.sleep(400);
+  await ev(`(() => { const i = document.querySelector(".palette-input"); i.value = "분할"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await Bun.sleep(300);
+  const pal = await ev(`[...document.querySelectorAll(".palette-item .pi-title")].map(x => x.textContent)`);
+  await shot("c18i-palette.png");
+  await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))`); await Bun.sleep(200);
+  await ev(`document.querySelector('#root .pane[data-sid="4"]').dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))`);
+  await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "D", metaKey: true, shiftKey: true, bubbles: true, cancelable: true }))`); await Bun.sleep(700);
+  const i1 = await ev(G);
+  const iNew = ids(i1.o).filter((x) => x >= 100);
+  check("c18i 팔레트 「분할」 → 가로 분할만(세로 분할 0) · ⌘⇧D → 창 +1 · 세로 분할은 좌열뿐 · 워커 균등",
+    Array.isArray(pal) && pal.includes("가로 분할") && !pal.some((t: string) => t.includes("세로 분할")) && iNew.length === 1 && i1.col === 1 && even(i1.o, [3, 4, iNew[0], 5]),
+    `palette=${JSON.stringify(pal)} ${view(i1)} col=${i1.col}`);
+
+  // h — 창 폭(1920 · 800)에서도 같은 몫
+  for (const width of [1920, 800]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: width === 1920 ? 2 : 1, mobile: false });
+    await load("hq5");
+    await ev(`window.__shimAddSeat(6, "worker", "/Users/user/jarvis/w4")`); await tick();
+    const h1 = await ev(G);
+    if (width === 800) await shot("c18h-w800.png");
+    check(`c18h ${width}폭 · 본부+워커 4 → 워커 같은 폭 · 좌열 1/3`, even(h1.o, [3, 4, 5, 6]) && near(h1.o[1].w, 1 / 3, 0.015), view(h1));
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

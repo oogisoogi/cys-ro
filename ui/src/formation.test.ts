@@ -113,14 +113,15 @@ describe("B16 전제 판정 · 사용자 배치 존중", () => {
 });
 
 describe("B16 호출부 — 3경로가 같은 함수를 부른다", () => {
-  it("입양·복원 입양·정렬 세 곳 전부 formationIfRowOnly/formationLayout 를 경유", () => {
-    expect(main).toContain('from "./formation"');
-    // 정렬(actionEqualize)
-    const eq = main.slice(main.indexOf("async function actionEqualize()"), main.indexOf("async function actionEqualize()") + 1200);
-    expect(eq).toContain("formationLayout");
-    // 입양 2경로
-    // 입양(주기 폴링) + 복원, 두 경로 = 2곳 이상. (toBeGreaterThanOrEqual 은 이 저장소 tsconfig 의
-    //  bun Matchers 타입에 없다 — 1 초과로 같은 것을 잰다.)
-    expect((main.match(/formationIfRowOnly\(/g) || []).length).toBeGreaterThan(1);
+  // ★오너 지시 09-25 로 변경(TICKET=v116-auto-equalize): 세 경로가 지나는 「같은 함수」가 formationIfRowOnly/formationLayout
+  //   에서 autoArrange(arrangeWs 한 곳)로 바뀌었다. 축(입양·복원 입양·정렬이 같은 배치 함수를 지난다)은 그대로다 —
+  //   열기·닫기 전 경로의 핀은 autoarrange.test.ts 「호출부」 절이 쥔다.
+  it("입양·복원 입양·정렬 세 곳 전부 arrangeWs(autoArrange)를 경유", () => {
+    expect(main).toContain('import { autoArrange, type ArrangeChange, type LeftShareMode } from "./formation";');
+    const eq = main.slice(main.indexOf("async function actionEqualize()"), main.indexOf("// ---------- workspace tabs ----------"));
+    expect(eq).toContain('arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");');
+    // 입양(3초 틱)·복원 입양 = 붙는 좌석마다 그 자리에서(Opus 적대 1R F2)
+    expect((main.match(/arrangeWs\(ws, \{ add: \[\{ sid: s\.surface_id \}\] \}\);/g) || []).length).toBe(2);
+    expect(main).not.toContain("formationIfRowOnly(");
   });
 });

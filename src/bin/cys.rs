@@ -23322,6 +23322,8 @@ mod tests {
         // 다른 오류 코드는 메타가 같아도 오류(연결 실패·not_found 를 삼키지 않는다)
         assert!(!set_meta_denied_is_same_meta("not_found: surface 2 not found", &row, "claude", "/x/claude"));
         assert!(!set_meta_denied_is_same_meta("surface.set_meta: broken pipe", &row, "claude", "/x/claude"));
+        // 코드는 오류 문자열 **머리**여야 한다(본문 중간의 같은 낱말은 다른 오류)
+        assert!(!set_meta_denied_is_same_meta("not_found: meta_denied: x", &row, "claude", "/x/claude"));
     }
 
     #[test]
@@ -23340,7 +23342,9 @@ mod tests {
         let after = &body[m..];
         let close = after.find(") {").expect("호출 끝");
         assert!(!after[..close].contains(")?"), "set_meta 오류가 `?` 로 바로 전파된다");
-        let chk = after.find("if !set_meta_denied_is_same_meta(").expect("「무해 아님이면」 분기 부재");
+        let chk = after.find("if !set_meta_denied_is_same_meta(&e, &entry, agent, &bin)")
+            .expect("「무해 아님이면」 분기 부재 또는 인자 오전달(요청 bin 이 아닌 값으로 대조)");
+        assert!(after[close..chk].contains("let entry = surface_entry(sid)"), "대조 행이 이 좌석(sid)의 행이 아니다");
         assert!(chk > close, "무해 판정이 오류 분기 안에 없다");
         let branch = &after[chk..chk + after[chk..].find('}').expect("분기 끝")];
         assert!(branch.contains("return Err(e)"), "무해 아님이면 오류를 돌려야 한다:\n{branch}");

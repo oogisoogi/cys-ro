@@ -12649,8 +12649,12 @@ mod tests {
             }
         }
         let mut rx = daemon.bus.subscribe();
+        // Fable 2R P3: 오래 죽어 있던 좌석(사망 타이머 래치 = 먼 과거) — 기동 줄 통과 시 풀려야 한다.
+        *s.agent_dead_since.lock().unwrap() = Some(1.0);
         let r = send(4, json!({"surface_id": s.id, "text": "true --continue", "agent_launch": true}));
         assert_eq!(r["result"]["sent"], json!(true), "기동 줄 통과 실패: {r}");
+        assert_eq!(*s.agent_dead_since.lock().unwrap(), None,
+                   "기동 줄을 쳤는데 사망 타이머가 남았다 — 재기동 직후 역할 회수 유예가 만료될 수 있다");
         let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
         assert_eq!(left, keep.map(String::from).to_vec(), "옛 기동 줄만 폐기 · 나머지 순서 보존이 아니다");
         let mut ev = None;
@@ -12675,6 +12679,18 @@ mod tests {
             .iter().filter_map(|e| e["text"].as_str()).collect();
         assert!(!texts.contains(&"true --x"), "옛 기동 줄이 WAL 에 남았다(영속 누락): {texts:?}");
         assert!(keep.iter().all(|k| texts.contains(k)), "보존분이 WAL 에 없다: {texts:?}");
+
+        // ⑤ 옛 기동 줄만 있던 큐가 폐기로 비면 막힘 사유(queue_blocked)도 사실이 아니다 → 지운다.
+        {
+            let mut q = s.pending_queue.lock().unwrap();
+            q.clear();
+            q.push_back(daemon.next_queue_entry("true --old".to_string(), None, "send"));
+        }
+        *s.queue_blocked.lock().unwrap() = Some(("prompt_unknown".to_string(), 1.0));
+        let r = send(5, json!({"surface_id": s.id, "text": "true --continue", "agent_launch": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "기동 줄 통과 실패: {r}");
+        assert_eq!(qlen(), 0, "옛 기동 줄만 있던 큐가 비지 않았다");
+        assert!(s.queue_blocked.lock().unwrap().is_none(), "빈 큐인데 막힘 사유가 남았다(queue.list blocked 오보)");
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);

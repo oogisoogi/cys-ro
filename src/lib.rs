@@ -3144,6 +3144,18 @@ pub mod mousereport {
 
 #[cfg(test)]
 mod tests {
+    /// (v116-usage D6-2 · master REVISE ①) claude 계열 에이전트 술어 진리표 — 파생 에이전트는 계정 귀속·rate 생산자에
+    /// 들고, 이름만 비슷한 것(접두 대시 없음·다른 에이전트)은 빠진다.
+    #[test]
+    fn is_claude_agent_truth_table() {
+        for a in ["claude", "claude-fable", "claude-sonnet"] {
+            assert!(super::is_claude_agent(a), "{a} 는 claude 계열");
+        }
+        for a in ["claudex", "codex", "gemini", "", "xclaude", "Claude"] {
+            assert!(!super::is_claude_agent(a), "{a} 는 claude 계열이 아니다");
+        }
+    }
+
     /// ★dbg-D3 #F1: 스폰 env 가 **자기 판** cysd·cys 를 명시로 싣는다(형제 실재 시에만 · 부재 = 무변화).
     /// 이 쌍이 빠지면 cys-dept 는 PATH 로 cysd 를 찾고, 옛 CLI 링크가 있는 기계에서 부서가 옛 판으로 뜬다.
     #[test]

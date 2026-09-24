@@ -3,6 +3,14 @@
 브랜치 `fix/v116-usage`(base = 태그 v1.1.5 `526325bf`) · worktree `~/axdev/.wt/cys-v116-tusage` · 워커 surface:1048 → 재개 후 surface:1060(worker-30) · Opus 5.5 · effort high(세션 jsonl 실측).
 검증 산출물 폴더 = `~/axdev/master/reports/cysr-116-plan/v116-usage/`(diff · agy 프롬프트·판정문 1R~7R · opus 판정문 1R~5R).
 
+## ★REVISE 델타(2026-09-24 11:5x~ · master#a80ae6d8 · 근거 = master 재검수 `~/axdev/master/reports/cysr-116-plan/v116-usage/MASTER-REVERIFY-07eafc1d.md`)
+- **무엇이 틀렸나(워커 성찰)**: 07eafc1d 【확인요청】은 cysd·cys 두 바이너리 시험만 돌렸다 — 정본 게이트(`cargo test --lib` · `run_bootstrap_health.py` 전량 · `secret-scan.sh --all`)를 안 돌려 이 브랜치가 새로 빨갛게 만든 4결함을 못 봤다. 기능 시험 초록 ≠ 게이트 초록.
+- **수리(제품 동작 무변경)**: ①② `f554bf6a` 에이전트 이름 접두 판정을 lib 공용 `cys::is_claude_agent` 로 — accounts.rs 에 `"claude-"` 리터럴 0(폴더 열거 규칙 재구현 핀·H-AUTH-PARSE 가 오탐하던 것 · 게이트 무변경) · 시험 `4919f439` · ③ `ec30a48c` main.rs `#[cfg(test)] mod d6_probe_tests;` → 파일 끝(첫 `#[cfg(test)]` 뒤를 자르는 H-TICK-ALIVE 절단) · ④ `c9fb33e9` 시험 픽스처 `admin` → `runner` · 부록 A 경로 → `$HOME`.
+- **편입**: `7bfc3ea1`(feat/v116-usage-oauth · 원천별 신선 한도 statusline 120 / oauth 240 + UI 흐림 한도·출처 배지) → **편입 `f0f60242`**(cherry-pick -x). 근거 = 이 브랜치 base 에 그 결함이 그대로(OAuth 탐침 주기 180s > UI stale 120s → oauth 로만 채워지는 계정이 주기마다 거짓 흐림) · 같은 T-USAGE 계기 참말화 · accounts.rs 충돌 = 시험 모듈 끝 두 시험 병존 · `"claude-"` 재도입 0. UI 무접촉 원칙은 이 편입으로 깨졌다(ui/src 5파일 · bun 1112 → 1123).
+- **정본 게이트 1차(4919f439 · 11:59~12:33)에서 워커가 만든 결함 1 발견·수리**: ③ 이동 때 선언 줄 꼬리 주석(`mod d6_probe_tests; // …`)을 달고 파일 끝에 두자, `spawn_policy_tests::production_slice` 가 항목 머리를 `;` 로 안 끝나 「분류 불가」 hard fail → lib 4건 적색(A13·D07d). 종전 35행 자리에선 다음 줄 `use …;` 까지 머리를 따라가 우연히 통과했었다. 수리 `cd428b05` = 주석을 윗줄로. 같은 회차 phoenix `w2_untomb_fullcycle` 1건 rc1(roster=[] · master 두 회차 모두 초록 · 이 브랜치 변경이 roster 경로 무접촉) → 2차 전량 재실행에서 재판정.
+- **수리 델타 검증(agy · 델타만 · `hetero-agy-v116-usage-revise.*`)**: REVISE 1건 = ⓓ「편입 시험 `".claude-acct2"` 가 `"claude-"` 탐지에 걸린다」 → **사실 오류로 기각**: 그 문자열은 `claude-` 앞 글자가 따옴표가 아니라 `.` 이라 탐지식(`'"claude-"' in acc` · `.starts_with(".claude-")`)에 안 걸린다 — 실측 python 둘 다 False · 적색이던 lib 핀이 HEAD 에서 초록. ⓐ 동작 동치 · ⓑ 픽스처 의미 보존 · ⓒ D6-1 병합과 충돌 없음(채택 0 이면 source 미갱신) = agy 판정 그대로.
+- **정본 게이트**: master 러너(`reverify-tools/gate_runner.py` · 워크플로 run 블록 원문)를 분리 스냅샷에서 HEAD 로 직렬 1회 — 결과 = 【확인요청】 본문(원문 요약) · 로그 = `~/msv-scratch/w30/res-<sha>/`.
+
 ## ★재개 델타(2026-09-24 09:3x~ · master#d487cc46 TICKET=resume-after-cysr115-0924 · 좌석 surface:1060)
 - **HEAD 대조**: 재개 시 HEAD = `deba443e` = 파킹 보고 sha(인박스 09:01:09 [정정 보충]) → 일치 확인 후 착수.
 - **이번 재개에서 한 일**: agy 4R 후보 2 판정(ⓐ 채택 · ⓑ 실측 기각) → 생성 시각 판별(`cb797df1`) → opus 4R 이 그 판의 새 결함(새 파일 연속 → 원 세션 참 경보 영구 보류) 발견 → **파일별 유예 기억으로 재설계(`67fb31c9`)** → opus 5R 시험 공백 보강(`4cfd185d`). 상세 = §6 표 「파킹 → 재개」 아래 행.

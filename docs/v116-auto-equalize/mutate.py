@@ -31,6 +31,7 @@ MUT=[
  ("M29 F3 × 탭 = current()", M, 'collectSids(w.tree).includes(sid)) ?? current();', 'collectSids(w.tree).includes(sid) && false) ?? current();'),
  ("M30 F2 입양 배치를 await 뒤로", M, '        arrangeWs(ws, { add: [{ sid: s.surface_id }] });\n        setRoleDot(rt.roleEl, s.role, surfaceWorking(s.surface_id, sk));', '        setRoleDot(rt.roleEl, s.role, surfaceWorking(s.surface_id, sk));\n        await Promise.resolve();\n        arrangeWs(ws, { add: [{ sid: s.surface_id }] });'),
 ]
+MUT.append(("M32 역할 표 이어 기억 제거", M, "if (!next.has(sid) && onScreen.has(sid)) next.set(sid, role);", "void onScreen;"))
 TESTS=['src/autoarrange.test.ts','src/formation.test.ts','src/adoptlayout.test.ts','src/exitedsweep.test.ts','src/closeguard.test.ts']
 base=subprocess.run([BUN,'test',*TESTS],cwd=R+'/ui',capture_output=True,text=True)
 print('BASE rc',base.returncode, re.findall(r'(\d+) fail',base.stdout+base.stderr))

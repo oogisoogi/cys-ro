@@ -107,7 +107,7 @@
 | cysd 직렬 전건 | — | 1056 통과(D6 적용 직후) | §4-1 | — |
 | cys 직렬 전건 | — | — | §4-1 | — |
 
-뮤턴트 누계 32/32(D6 10 · T2a 9 · T2b 13 — 회차별 스크립트 = scratchpad `mut*.py` · 판정 = 대상 시험만 적색). ※ 08:34 【진행】의 「33」은 MS3 재실행을 두 번 센 오기 — 정정.
+뮤턴트 누계 **42/42**(표의 32 + agy 3R·opus 2R 반영분 10 = 연속 틱 1 · 후보 틱 건너뜀 제거 · 에코 줄바꿈 민감 · 등록 재부착 승계 · 휴리스틱 새 유예 · 보류 % 대체 없음 · 살아 있는 창 유지 제거 · 기각 창 영속 · 채택 0 갱신 · 미상 창 지남 → D6 14 · T2a 12 · T2b 16 — 회차별 스크립트 = scratchpad `mut*.py` · 판정 = 대상 시험만 적색). ※ 08:34 【진행】의 「33」은 MS3 재실행을 두 번 센 오기 — 정정.
 실행: `env -u CYS_SURFACE_ID -u CYS_ROLE -u CYS_PACK_DIR -u CLAUDE_CONFIG_DIR -u CYS_SOCKET -u CYS_CLAUDE_CTX_WINDOW HOME=<격리> CYS_NO_AUTOSTART=1 target/debug/deps/<bin>-<hash> [필터] --test-threads=1`.
 
 ### 4-1. 전건 결과(최종 제품 HEAD d31f1358 · 격리 HOME · --test-threads=1)

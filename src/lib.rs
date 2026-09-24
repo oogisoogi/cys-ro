@@ -3315,6 +3315,12 @@ mod tests {
         assert_eq!(super::ENV_GATE_PENDING, "CYS_GATE_PENDING");
     }
 
+    #[test]
+    fn v116_agent_launch_wire_key_is_the_single_name() {
+        // cys(생산)·cysd(소비)가 공유하는 표지 키 — 구 데몬은 모르는 키를 무시한다(신 CLI × 구 데몬 = 종전 동작).
+        assert_eq!(super::AGENT_LAUNCH_KEY, "agent_launch");
+    }
+
     // ── ★(U-11) 보류 귀결: 만료 규약 · 롤백 킬스위치 · 종료코드 ──
     #[test]
     fn gate_pending_ttl_expires_only_past_the_bound_and_folds_unknown_time_to_fresh() {

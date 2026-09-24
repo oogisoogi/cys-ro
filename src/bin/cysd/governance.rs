@@ -6397,6 +6397,8 @@ mod tests {
         assert!(!m("claude --x\r", Some("claude")));
         assert!(!m("codex --x", Some("claude")), "다른 에이전트");
         assert!(!m("claudex --x", Some("claude")), "이름 접두 일치는 불일치");
+        assert!(!m("myclaude --x", Some("claude")), "이름 접미 일치는 불일치(ends_with 뮤턴트)");
+        assert!(!m("/opt/bin/myclaude --x", Some("/usr/bin/claude")), "경로형도 파일 이름 전체 일치");
         assert!(!m(r#"FOO="a b claude"#, Some("claude")), "닫히지 않은 따옴표");
         assert!(!m("FOO=1 BAR=2", Some("claude")), "대입만");
         assert!(!m("", Some("claude")));

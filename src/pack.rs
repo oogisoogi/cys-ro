@@ -2072,23 +2072,26 @@ include!("released_directive_hashes.rs");
 thread_local! {
     /// 시험 전용 발행 해시 주입(스레드 국소 — 병렬 시험 간 누출 0). 실물 표에는 시험 문자열이 없으므로
     /// 「발행 이력에 있는 옛 판」 형상을 픽스처 문자열로 재현할 때만 쓴다.
-    static TEST_RELEASED_EXTRA: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TEST_RELEASED_CEO_EXTRA: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TEST_RELEASED_MASTER_EXTRA: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// 디스크 텍스트가 표의 발행 바이트와 같은가 — 원 바이트 해시 또는 CRLF→LF 정규화 해시.
 /// 정규화 이유: 2026-08-23 LF 봉인 이전 윈도 빌드는 CRLF 로 임베드됐을 수 있다(.gitattributes 머리말).
 /// 줄끝만 다른 사본은 문면이 발행본과 같으므로 「손대지 않은 제품 사본」으로 본다.
 #[cfg(test)]
-fn test_released_extra_contains(h: &str) -> bool {
-    TEST_RELEASED_EXTRA.with(|v| v.borrow().iter().any(|x| x == h))
+fn test_released_extra_contains(ceo: bool, h: &str) -> bool {
+    let f = |v: &std::cell::RefCell<Vec<String>>| v.borrow().iter().any(|x| x == h);
+    if ceo { TEST_RELEASED_CEO_EXTRA.with(f) } else { TEST_RELEASED_MASTER_EXTRA.with(f) }
 }
 #[cfg(not(test))]
-fn test_released_extra_contains(_h: &str) -> bool {
+fn test_released_extra_contains(_ceo: bool, _h: &str) -> bool {
     false
 }
 
-fn released_contains(table: &[&str], text: &str) -> bool {
-    let hit = |h: &str| table.contains(&h) || test_released_extra_contains(h);
+fn released_contains(ceo: bool, text: &str) -> bool {
+    let table = if ceo { RELEASED_CEO_TEMPLATE_SHA256 } else { RELEASED_MASTER_DIRECTIVE_SHA256 };
+    let hit = |h: &str| table.contains(&h) || test_released_extra_contains(ceo, h);
     if hit(&content_hash(text)) {
         return true;
     }
@@ -2097,12 +2100,12 @@ fn released_contains(table: &[&str], text: &str) -> bool {
 
 /// ⓑ⁺: 디스크 MASTER 가 **어느 발행 판의 CEO_TEMPLATE 바이트 사본**인가(= 제품이 쓴 승격 사본).
 pub(crate) fn is_released_ceo_template(text: &str) -> bool {
-    released_contains(RELEASED_CEO_TEMPLATE_SHA256, text)
+    released_contains(true, text)
 }
 
 /// ⓔ: 디스크 MASTER(또는 .pre-ceo)가 **손대지 않은 옛 발행 표준 MASTER** 인가.
 pub(crate) fn is_released_master_directive(text: &str) -> bool {
-    released_contains(RELEASED_MASTER_DIRECTIVE_SHA256, text)
+    released_contains(false, text)
 }
 
 /// 승격 영수증 해시 — 64자리 hex 가 아니면 None(손상·빈 파일은 근거로 쓰지 않는다).
@@ -8231,6 +8234,109 @@ mod tests {
         assert_eq!(read(&format!("{md}.new")), "MASTER-V2", "②신판은 여전히 .new 로 병치");
         assert_eq!(read(&format!("{md}.pre-ceo")), "MASTER-V1", "②수정본 기계의 강등 백업 무접촉");
         let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★v116-ceo-directive-hold(master 판정 ⑴): 형상 표 한 파일을 bash 시험(test_ceo_pending_gate.py 12)과
+    /// **같이 읽는다** — 설치기 판정과 cys-dept 판정이 서로 다른 뜻으로 표류하면 한쪽이 적색이 된다.
+    #[test]
+    fn ceo_directive_shapes_installer() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let table: serde_json::Value = serde_json::from_str(include_str!(
+            "../cysjavis-pack/bin/tests/fixtures/ceo_directive_shapes.json"
+        ))
+        .unwrap();
+        let texts = table["texts"].as_object().unwrap();
+        let t = |k: &serde_json::Value| -> Option<String> {
+            k.as_str().map(|k| texts[k].as_str().unwrap_or_else(|| panic!("texts 에 {k} 없음")).to_string())
+        };
+        let td = std::env::temp_dir()
+            .join(format!("cys-ceo-shapes-{}-{}", std::process::id(), line!()));
+        let pd = td.join("pack");
+        let _env = set_pack_env(&pd, td.join("cfg"));
+        let md = MASTER_DIRECTIVE_PACK_REL;
+        let ceo_rel = CEO_TEMPLATE_PACK_REL;
+        let inst = |items: &[(&str, &str)], ver: &str| {
+            install_into(
+                pd.clone(), items.iter().copied(), false, ver, false, false,
+                pack_scope_of(&pd), None, None,
+            )
+            .unwrap()
+        };
+        let put = |rel: &str, v: Option<String>| {
+            let p = pd.join(rel);
+            match v {
+                Some(s) => std::fs::write(&p, s).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        };
+        let got = |rel: &str| std::fs::read_to_string(pd.join(rel)).ok();
+        let (c1, c2) = (texts["C1"].as_str().unwrap(), texts["C2"].as_str().unwrap());
+        let (m1, m2) = (texts["M1"].as_str().unwrap(), texts["M2"].as_str().unwrap());
+        let mut ran = 0;
+        for s in table["shapes"].as_array().unwrap() {
+            let id = s["id"].as_str().unwrap();
+            let exp = &s["installer"];
+            if exp.is_null() {
+                continue;
+            }
+            let _ = std::fs::remove_dir_all(&td);
+            std::fs::create_dir_all(&pd).unwrap();
+            inst(&[(ceo_rel, c1), (md, m1)], "1.0.0");
+            // 형상 심기 — 옛 사이드카가 지나간 뒤의 디스크·매니페스트(표 머리말 installer 설명).
+            put(md, t(&s["md"]));
+            put(&format!("{md}.pre-ceo"), t(&s["pre_ceo"]));
+            put(&format!("{md}.new"), t(&s["new"]));
+            put(CEO_RECEIPT_PACK_REL, t(&s["receipt"]).map(|x| format!("{}\n", content_hash(&x))));
+            put(ceo_rel, Some(c2.to_string()));
+            let mp = pd.join(INSTALL_MANIFEST);
+            let mut m: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+            m.insert(ceo_rel.to_string(), serde_json::json!(content_hash(c2)));
+            m.insert(md.to_string(), serde_json::json!(content_hash(&t(&s["manifest_master"]).unwrap())));
+            std::fs::write(&mp, serde_json::to_string(&m).unwrap()).unwrap();
+            let inject = |key: &str| -> Vec<String> {
+                s[key].as_array().unwrap().iter().map(|k| content_hash(&t(k).unwrap())).collect()
+            };
+            TEST_RELEASED_CEO_EXTRA.with(|v| *v.borrow_mut() = inject("released_ceo"));
+            TEST_RELEASED_MASTER_EXTRA.with(|v| *v.borrow_mut() = inject("released_master"));
+            let v2 = [(ceo_rel, c2), (md, m2)];
+            for round in ["1회", "2회(멱등)"] {
+                inst(&v2, "1.0.1");
+                assert_eq!(got(md), t(&exp["expect_md"]), "[{id} · {round}] MASTER_DIRECTIVE.md");
+                assert_eq!(got(&format!("{md}.pre-ceo")), t(&exp["expect_pre_ceo"]), "[{id} · {round}] .pre-ceo");
+                assert_eq!(got(&format!("{md}.new")), t(&exp["expect_new"]), "[{id} · {round}] .new");
+                assert_eq!(
+                    got(CEO_RECEIPT_PACK_REL).map(|x| x.trim().to_string()),
+                    t(&exp["expect_receipt"]).map(|x| content_hash(&x)),
+                    "[{id} · {round}] 승격 영수증"
+                );
+            }
+            ran += 1;
+        }
+        TEST_RELEASED_CEO_EXTRA.with(|v| v.borrow_mut().clear());
+        TEST_RELEASED_MASTER_EXTRA.with(|v| v.borrow_mut().clear());
+        assert!(ran >= 7, "형상 표 installer 칸이 줄었다({ran}) — 표를 줄이려면 이 하한도 함께 고친다");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★v116-ceo-directive-hold(master 판정 ⑵ 조건): 역대 발행 해시 표에 **현 임베드 판**이 들어 있어야 한다.
+    /// 빠지면 이 판이 발행된 뒤 다음 판 설치기가 이 판의 CEO 사본·표준본을 「제품이 쓴 것」으로 못 알아본다.
+    /// 적색이면: `python3 scripts/gen_released_directive_hashes.py` 로 재생성.
+    #[test]
+    fn released_tables_cover_current_embed() {
+        let embed = |rel: &str| PACK_ALL.iter().find(|(r, _)| *r == rel).map(|(_, c)| *c).unwrap();
+        assert!(is_released_ceo_template(embed(CEO_TEMPLATE_PACK_REL)),
+                "현 임베드 CEO_TEMPLATE 해시가 RELEASED_CEO_TEMPLATE_SHA256 에 없다 — 생성기 재실행");
+        assert!(is_released_master_directive(embed(MASTER_DIRECTIVE_PACK_REL)),
+                "현 임베드 MASTER_DIRECTIVE 해시가 RELEASED_MASTER_DIRECTIVE_SHA256 에 없다 — 생성기 재실행");
+        // 실측 앵커(발행 이력): 1085 VM-B 의 1.1.2 CEO 사본 · 1098 의 v0.14.27 표준본.
+        assert!(RELEASED_CEO_TEMPLATE_SHA256.iter().any(|h| h.starts_with("4d29c4c0876c")), "v1.1.2 CEO");
+        assert!(RELEASED_MASTER_DIRECTIVE_SHA256.iter().any(|h| h.starts_with("83bcae5e2826")), "v0.14.27 MASTER");
+        // CEO 표와 MASTER 표가 겹치면 ⓑ⁺(CEO 사본)와 ⓔ(표준본) 판정이 한 파일에 동시에 참이 된다.
+        assert!(RELEASED_CEO_TEMPLATE_SHA256.iter().all(|h| !RELEASED_MASTER_DIRECTIVE_SHA256.contains(h)),
+                "CEO 표와 MASTER 표가 겹친다");
     }
 
     /// 게이트는 target env가 아니라 dir 인자로 판정한다). 대조로 명시 인가 시 동일 쓰기가 성공한다.

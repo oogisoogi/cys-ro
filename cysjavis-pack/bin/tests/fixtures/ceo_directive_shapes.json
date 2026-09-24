@@ -1,0 +1,74 @@
+{
+  "_doc": [
+    "v116-ceo-directive-hold 형상 표 — 「이 MASTER_DIRECTIVE.md 는 제품이 쓴 것인가」를 판정하는 두 곳이 같은 표를 읽는다.",
+    "  · Rust 설치기(src/pack.rs 시험 ceo_directive_shapes_installer): installer 칸",
+    "  · bash cys-dept(cysjavis-pack/bin/tests/test_ceo_pending_gate.py 12)): dept 칸",
+    "한쪽 판정만 고치고 이 표를 안 고치면 다른 쪽 시험이 적색이 된다(master 판정 ⑴ · 표류 방지).",
+    "texts = 픽스처 문자열(CEO 사본은 합성 계약 동형: 머리글 + 구분선 + 표준 MASTER 전문 · 머리글에 C03 표지 3핀).",
+    "형상 칸: md · pre_ceo · new = texts 키 또는 null(부재) · receipt = texts 키(그 텍스트의 sha256 을 영수증으로) 또는 null.",
+    "released_ceo / released_master = 시험에서 각각 역대 발행 CEO_TEMPLATE / MASTER_DIRECTIVE 해시 표로 주입할 texts 키(실물 표에는 픽스처 문자열이 없다 · 두 표는 따로 — 섞으면 표준본이 CEO 사본으로 오판된다).",
+    "installer: 설치본 판 v1(C1/M1) 뒤 manifest[MASTER]=manifest_master · manifest[CEO]=C2(옛 사이드카가 전진시킨 형상) · 디스크 CEO_TEMPLATE=C2 에서 v2(C2/M2) init-pack. expect 의 null = 파일 부재.",
+    "dept: 디스크 CEO_TEMPLATE=C2 · 부트 마커 있음 · 부서 1개에서 promote-ceo. expect_stale / expect_edit_backup = 새로 생긴 .pre-ceo.stale-* / .pre-ceo-<시각> 의 내용(null = 생기지 않음). expect_after_down = 부서 0개 강등 뒤 md(없으면 생략)."
+  ],
+  "texts": {
+    "M_OLD": "STANDARD-MASTER-OLD\n",
+    "M_OLD_EDIT": "STANDARD-MASTER-OLD\nMY-EDIT\n",
+    "M1": "STANDARD-MASTER-V1\n",
+    "M2": "STANDARD-MASTER-V2\n",
+    "C1": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\nSTANDARD-MASTER-V1\n",
+    "C2": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\nSTANDARD-MASTER-V2\n",
+    "C1_EDIT": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\nSTANDARD-MASTER-V1\nMY-NOTE\n",
+    "C1_PINLESS": "# CEO-EDITED-BY-OWNER\n---\nSTANDARD-MASTER-V1\nMY-NOTE\n"
+  },
+  "shapes": [
+    {
+      "id": "vmb-old-sidecar",
+      "source": "1085 VM-B(1.1.2 승격 → 1.1.2 사이드카가 1.1.5 팩 적용) · scratch/repro.sh base-v112",
+      "md": "C1", "pre_ceo": "M1", "new": "M2", "receipt": "C1", "released_ceo": [], "released_master": [], "manifest_master": "M1",
+      "installer": {"expect_md": "C2", "expect_pre_ceo": "M2", "expect_new": null, "expect_receipt": "C2"},
+      "dept": {"expect_md": "C2", "expect_pre_ceo": "M1", "expect_stale": null, "expect_edit_backup": null}
+    },
+    {
+      "id": "released-ceo-no-receipt",
+      "source": "영수증이 없어진 승격 사본(수동 개명 등) — 역대 발행 CEO 해시 표로만 알아봄",
+      "md": "C1", "pre_ceo": "M1", "new": "M2", "receipt": null, "released_ceo": ["C1"], "released_master": [], "manifest_master": "M1",
+      "installer": {"expect_md": "C2", "expect_pre_ceo": "M2", "expect_new": null, "expect_receipt": "C2"},
+      "dept": {"expect_md": "C2", "expect_pre_ceo": "M1", "expect_stale": null, "expect_edit_backup": "C1"}
+    },
+    {
+      "id": "hand-edited-ceo",
+      "source": "승격 뒤 사용자가 CEO 사본을 손봄(표지 핀 유지)",
+      "md": "C1_EDIT", "pre_ceo": "M1", "new": "M2", "receipt": "C1", "released_ceo": ["C1"], "released_master": [], "manifest_master": "M1",
+      "installer": {"expect_md": "C1_EDIT", "expect_pre_ceo": "M1", "expect_new": "M2", "expect_receipt": "C1"},
+      "dept": {"expect_md": "C2", "expect_pre_ceo": "M1", "expect_stale": null, "expect_edit_backup": "C1_EDIT"}
+    },
+    {
+      "id": "pinless-edit",
+      "source": "승격 뒤 사용자가 CEO 사본에서 표지 핀까지 지움(agy B R1 반례 ①)",
+      "md": "C1_PINLESS", "pre_ceo": "M1", "new": "M2", "receipt": "C1", "released_ceo": ["C1"], "released_master": [], "manifest_master": "M1",
+      "installer": {"expect_md": "C1_PINLESS", "expect_pre_ceo": "M1", "expect_new": "M2", "expect_receipt": "C1"},
+      "dept": {"expect_md": "C2", "expect_pre_ceo": "M1", "expect_stale": null, "expect_edit_backup": "C1_PINLESS"}
+    },
+    {
+      "id": "pilot-1098-stale-pre-ceo",
+      "source": "1098 교회 부서 시범(부서 없음 · md=현행 표준 · 옛 승격의 .pre-ceo=옛 발행 표준 · 영수증 개명) · scratch/repro2.sh",
+      "md": "M2", "pre_ceo": "M_OLD", "new": null, "receipt": null, "released_ceo": [], "released_master": ["M_OLD"], "manifest_master": "M2",
+      "installer": {"expect_md": "M2", "expect_pre_ceo": "M_OLD", "expect_new": null, "expect_receipt": null},
+      "dept": {"expect_md": "C2", "expect_pre_ceo": "M2", "expect_stale": "M_OLD", "expect_edit_backup": null, "expect_after_down": "M2"}
+    },
+    {
+      "id": "demoted-to-old-release",
+      "source": "강등이 옛 판(발행본)을 되살린 뒤 다음 판 도착(ⓔ)",
+      "md": "M_OLD", "pre_ceo": null, "new": null, "receipt": null, "released_ceo": [], "released_master": ["M_OLD"], "manifest_master": "M1",
+      "installer": {"expect_md": "M2", "expect_pre_ceo": null, "expect_new": null, "expect_receipt": null},
+      "dept": null
+    },
+    {
+      "id": "demoted-old-hand-edited",
+      "source": "옛 판을 사용자가 손봄(표에 없음 · ⓔ 가 덮으면 안 됨)",
+      "md": "M_OLD_EDIT", "pre_ceo": null, "new": null, "receipt": null, "released_ceo": [], "released_master": ["M_OLD"], "manifest_master": "M1",
+      "installer": {"expect_md": "M_OLD_EDIT", "expect_pre_ceo": null, "expect_new": "M2", "expect_receipt": null},
+      "dept": null
+    }
+  ]
+}

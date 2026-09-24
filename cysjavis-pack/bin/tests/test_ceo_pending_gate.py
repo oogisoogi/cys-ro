@@ -406,5 +406,57 @@ else:
           "exit=%d %s" % (code, out[-200:]))
 shutil.rmtree(tmp)
 
+# ── 12. ★v116-ceo-directive-hold(master 판정 ⑴): 형상 표 한 파일(fixtures/ceo_directive_shapes.json)을
+#   Rust 설치기 시험(src/pack.rs ceo_directive_shapes_installer)과 **같이 읽는다** — 「제품이 쓴 파일인가」
+#   판정이 두 곳(설치기 = 해시 집합 · cys-dept = 표준 원본 긍정 증거)에 있으므로, 한쪽만 고치면 다른 쪽이 적색.
+import hashlib
+with open(os.path.join(SELF, "fixtures", "ceo_directive_shapes.json"), encoding="utf-8") as f:
+    SHAPES = json.load(f)
+_T = SHAPES["texts"]
+_tx = lambda k: None if k is None else _T[k]
+_ran12 = 0
+for s in SHAPES["shapes"]:
+    exp = s.get("dept")
+    if not exp:
+        continue
+    sid = s["id"]
+    tmp = tempfile.mkdtemp(prefix="ceo-t12-")
+    env, home = setup(tmp)
+    mdp, pre, pend, marker = paths(home)
+    _dirs = os.path.dirname(mdp)
+    for pth, val in ((mdp, _tx(s["md"])), (pre, _tx(s["pre_ceo"])), (mdp + ".new", _tx(s["new"]))):
+        if val is not None:
+            with open(pth, "w", encoding="utf-8", newline="") as f:
+                f.write(val)
+    if s["receipt"] is not None:
+        with open(os.path.join(_dirs, ".ceo-template-applied"), "w", encoding="utf-8") as f:
+            f.write(hashlib.sha256(_T[s["receipt"]].encode("utf-8")).hexdigest() + "\n")
+    with open(os.path.join(_dirs, "CEO_TEMPLATE.md"), "w", encoding="utf-8", newline="") as f:
+        f.write(_T["C2"])
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("{}")
+    _rd = lambda p: open(p, encoding="utf-8").read() if os.path.exists(p) else None
+    _bak = lambda kind: sorted(n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md" + kind))
+    for rnd in ("1회", "2회(멱등)"):
+        code, out = run(env, "promote-ceo")
+        stale, edit = _bak(".pre-ceo.stale-"), _bak(".pre-ceo-")
+        check("12 [%s · %s] md" % (sid, rnd), _rd(mdp) == _tx(exp["expect_md"]),
+              "exit=%d md=%r %s" % (code, (_rd(mdp) or "")[:40], out[-160:]))
+        check("12 [%s · %s] .pre-ceo" % (sid, rnd), _rd(pre) == _tx(exp["expect_pre_ceo"]),
+              repr((_rd(pre) or "")[:40]))
+        want_stale = [] if exp["expect_stale"] is None else [_T[exp["expect_stale"]]]
+        check("12 [%s · %s] .pre-ceo.stale-*" % (sid, rnd),
+              [_rd(os.path.join(_dirs, n)) for n in stale] == want_stale, repr(stale))
+        want_edit = [] if exp["expect_edit_backup"] is None else [_T[exp["expect_edit_backup"]]]
+        check("12 [%s · %s] 덮기 전 보존(.pre-ceo-<시각>)" % (sid, rnd),
+              [_rd(os.path.join(_dirs, n)) for n in edit] == want_edit, repr(edit))
+    if exp.get("expect_after_down"):
+        code, out = run(env, "down", "d0")
+        check("12 [%s] 부서 0개 강등 뒤 md" % sid, _rd(mdp) == _T[exp["expect_after_down"]],
+              "exit=%d md=%r %s" % (code, (_rd(mdp) or "")[:40], out[-160:]))
+    shutil.rmtree(tmp)
+    _ran12 += 1
+check("12 형상 표 dept 칸 5개 이상 실행", _ran12 >= 5, "ran=%d" % _ran12)
+
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

@@ -53,6 +53,7 @@ export function parseBriefSections(text: string): BriefSections {
     }
     if (!cur) continue;
     if (!/^\s*(?:[-*+]|\d+[.)])\s+\S/.test(raw)) continue; // 목록 줄만(설명 문단은 카드에 싣지 않는다)
+    if (REC_LINE.test(raw)) continue; // `- 기록 YYYY-MM-DD HH:MM` 은 기록 시각 줄이지 할 일이 아니다(판정 B 후속 2)
     if (/^\s{2,}/.test(raw)) continue; // 하위 항목은 뺀다(한눈 요지)
     if (out[cur].length >= BRIEF_MAX_ITEMS) continue;
     const line = plainLine(raw);
@@ -72,8 +73,8 @@ export function recordedAt(text: string, notAfter?: string): string | null {
   const okFull = (t: string) => notAfter === undefined || t <= notAfter;
   // ★(판정 B · master#88e8cb7b) 3절 안의 `기록 YYYY-MM-DD HH:MM` 줄(지침 §9 예시)이 있으면 그것이 기록 시각이다 —
   //   파일 전체 최댓값은 기계용 절에만 새 시각이 적혀도(오너 지시 대장 등) 낡은 3절에 새 시각을 붙였다(거짓 신선도).
-  const rec = briefRecordLine(text);
-  if (rec !== null && okFull(rec)) return rec;
+  const rec = briefRecordLine(text, notAfter);
+  if (rec !== null) return rec;
   const okDay = (d: string) => notAfter === undefined || d <= notAfter.slice(0, 10);
   const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`).filter(okFull);
   if (full.length) return full.sort().at(-1) ?? null;
@@ -81,19 +82,29 @@ export function recordedAt(text: string, notAfter?: string): string | null {
   return d.length ? (d.sort().at(-1) ?? null) : null;
 }
 
-/** 3절(완료 / 진행 중 / 결정 필요) 안에 있는 첫 `기록 YYYY-MM-DD HH:MM` 줄의 시각(「기록:」·T 구분자 허용). 3절 밖이면 치지 않는다. */
-function briefRecordLine(text: string): string | null {
+/** 기록 시각 줄 — `기록 YYYY-MM-DD HH:MM`(「기록:」·T 구분자 · 들여쓰지 않은 목록 표기 `- 기록 …` 허용). */
+const REC_LINE = /^(?:[-*+]\s+)?기록\s*[:：]?\s*(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/;
+
+/**
+ * 3절(완료 / 진행 중 / 결정 필요) 안의 기록 줄 중 **가장 늦은 유효한** 시각(`notAfter` 보다 늦은 줄은 뺀다).
+ * 3절 밖이면 치지 않는다. ★(판정 B 후속 2 · agy 2R) 첫 줄에서 멈추면 지우지 않은 옛 기록 줄이 새 줄을 가렸다.
+ */
+function briefRecordLine(text: string, notAfter?: string): string | null {
   let inBrief = false;
+  let best: string | null = null;
   for (const raw of text.split(/\r?\n/)) {
     if (/^#{1,6}\s/.test(raw)) {
       inBrief = HEADS.some(([, re]) => re.test(raw));
       continue;
     }
     if (!inBrief) continue;
-    const m = raw.match(/^기록\s*[:：]?\s*(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
-    if (m) return `${m[1]} ${m[2]}`;
+    const m = raw.match(REC_LINE);
+    if (!m) continue;
+    const t = `${m[1]} ${m[2]}`;
+    if (notAfter !== undefined && t > notAfter) continue;
+    if (best === null || t > best) best = t;
   }
-  return null;
+  return best;
 }
 
 /** 지금 시각을 파일 기록과 같은 모양(로컬 「YYYY-MM-DD HH:MM」)으로 — recordedAt 의 notAfter 재료. */
@@ -162,8 +173,7 @@ export function pickBriefText(found: { path: string; text: string }[], notAfter?
   let best: { text: string; known: boolean; at: string } | null = null;
   for (const f of found) {
     if (!hasBriefSections(f.text)) continue;
-    const rec = briefRecordLine(f.text);
-    const known = rec !== null && (notAfter === undefined || rec <= notAfter);
+    const known = briefRecordLine(f.text, notAfter) !== null;
     const at = recordedAt(f.text, notAfter) ?? "";
     if (best === null || (known && !best.known) || (known === best.known && at > best.at)) best = { text: f.text, known, at };
   }

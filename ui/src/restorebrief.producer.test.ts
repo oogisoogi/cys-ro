@@ -191,3 +191,28 @@ describe("판정 B 후속 — 파일 고르기는 같은 잣대로(기록 줄 �
     expect(pickBriefText([{ path: "c", text: futureRec }, { path: "d", text: CWD_OLD }], NOW)).toBe(CWD_OLD);
   });
 });
+
+// ★(agy 2R 발견 1·2 · Opus 적대 1R 기록만 2a·2b 와 같은 자리 — 두 검토자 · 재현 입력 그대로)
+//   ⑴ 기록 줄을 목록으로 쓰면(`- 기록 …`) 기록 줄로 못 읽고 카드 항목으로 샜다 ⑵ 기록 줄이 여럿이면 첫 줄(옛 시각)이 이겼다.
+describe("판정 B 후속 2 — 기록 줄의 흔한 변형", () => {
+  const NOW = "2026-09-24 16:00";
+  it("★⑴ `- 기록 …` 도 기록 줄이다(파일 고르기 · 시각) — 그리고 카드 항목으로 새지 않는다", () => {
+    const NEW_CANON = "## 완료\n- 새 작업\n- 기록 2026-09-24 15:40\n| 2026-09-24 09:00 |";
+    const OLD_CWD = "## 완료\n- 옛 작업\n기록 2026-09-24 10:00";
+    expect(pickBriefText([{ path: "c", text: NEW_CANON }, { path: "d", text: OLD_CWD }], NOW)).toBe(NEW_CANON);
+    expect(recordedAt(NEW_CANON, NOW)).toBe("2026-09-24 15:40");
+    expect(parseBriefSections("## 결정 필요\n- c\n- 기록 2026-09-24 14:30\n").decide).toEqual(["c"]);
+  });
+  it("★⑵ 기록 줄이 여럿이면 가장 늦은 유효한 줄(지금보다 늦은 줄은 뺀다)", () => {
+    const FRESH = "## 완료\n- 옛 작업\n기록 2026-09-24 10:00\n## 결정 필요\n- 새 작업\n기록 2026-09-24 15:40";
+    const OLD_CWD = "## 완료\n- 다른 작업\n기록 2026-09-24 11:00";
+    expect(pickBriefText([{ path: "c", text: FRESH }, { path: "d", text: OLD_CWD }], NOW)).toBe(FRESH);
+    expect(recordedAt(FRESH, NOW)).toBe("2026-09-24 15:40");
+    expect(recordedAt(FRESH + "\n기록 2026-10-01 09:00", NOW)).toBe("2026-09-24 15:40");
+    // 순서가 아니라 시각이다 — 늦은 줄이 먼저 오고 옛 줄이 뒤에 남아도 늦은 줄
+    expect(recordedAt("## 결정 필요\n- a\n기록 2026-09-24 15:40\n## 완료\n- b\n기록 2026-09-24 10:00", NOW)).toBe("2026-09-24 15:40");
+  });
+  it("「기록」으로 시작하지만 시각이 없는 보통 항목은 그대로 항목이다", () => {
+    expect(parseBriefSections("## 완료\n- 기록 화면을 고쳤습니다\n").done).toEqual(["기록 화면을 고쳤습니다"]);
+  });
+});

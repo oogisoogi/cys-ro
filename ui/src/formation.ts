@@ -276,8 +276,8 @@ export function autoArrange(
       ? { type: "split" as const, dir: "col" as const, ratio: MASTER_CSO_RATIO, a: pane(left[0]), b: pane(left[1]) }
       : pane(left[0]));
   if (rest.length === 0) return leftNode;
-  // 몫이 없거나(표준·좌열 미발견·사람 값이 아닌 깊은 길) 퇴화면(좌열이 화면 전체였다 = 워커가 처음 생긴다) 표준 몫.
+  // 몫이 없으면(표준·좌열 미발견·좌열이 화면 전체였다·사람 값이 아닌 깊은 길 — 사람 값은 끌기 범위 안에서만 선다) 표준 몫.
   // 사람 손을 안 탄 몫은 새 워커 수의 규칙값으로(D1 = C).
-  if (untouched || share === null || !(share > 0 && share < 1)) share = leftColumnShare(rest.length);
+  if (untouched || share === null) share = leftColumnShare(rest.length);
   return { type: "split", dir: "row", ratio: share, a: leftNode, b: evenRow(rest.map(pane)) };
 }

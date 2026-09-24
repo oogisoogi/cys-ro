@@ -2445,6 +2445,58 @@ mod tests {
         assert!(grace_from > 1.0, "등록 경로 재부착(새 세션)이 옛 유예 기준을 이어받았다 — 새 claude 가 유예 없이 오발");
     }
 
+    /// agy 4R ⓐ · opus 3R low · opus 4R: 유예 상태는 파일별 기억 — 휴리스틱이 처음 보는 파일(새 세션)은 옛 세션의 끝난
+    /// 유예·보류 %를 물려받지 않고, 원 세션으로 돌아오면 원 세션의 상태를 되찾는다(같은 cwd 에 새 파일이 잇달아 생겨도
+    /// 원 세션의 참 경보가 영영 보류되지 않는다). 등록 경로는 언제나 새로 시작.
+    #[test]
+    fn t2_grace_memo_per_file() {
+        let (daemon, s, dir) = t2_seat("memo");
+        let s1 = std::path::PathBuf::from(s.registered_transcript.lock().unwrap().clone().unwrap());
+        let (f1, f2) = (dir.join("f1.jsonl"), dir.join("f2.jsonl"));
+        std::fs::write(&f1, "").unwrap();
+        std::fs::write(&f2, "").unwrap();
+        let mut tails = std::collections::HashMap::new();
+        let st = |tails: &std::collections::HashMap<u64, super::TailState>| {
+            let t = &tails[&s.id];
+            (t.path.clone(), t.grace_from, t.threshold_deferred, t.deferred_pct)
+        };
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1000.0);
+        let first = st(&tails);
+        let t = tails.get_mut(&s.id).unwrap();
+        (t.threshold_deferred, t.deferred_pct) = (true, Some(77));
+        super::reattach_tail(&daemon, &mut tails, s.id, f1.clone(), true, 1100.0);
+        let new1 = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1130.0);
+        let back1 = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, f2.clone(), true, 1150.0);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1170.0);
+        let back2 = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, f1.clone(), true, 1190.0);
+        let revisit = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), false, 1200.0);
+        let registered = st(&tails);
+        // 상한: 기억 파일 수는 GRACE_MEMO_CAP 을 넘지 않는다
+        for i in 0..super::GRACE_MEMO_CAP + 4 {
+            super::reattach_tail(&daemon, &mut tails, s.id, dir.join(format!("x{i}.jsonl")), true, 1300.0 + i as f64);
+        }
+        let memo_len = tails[&s.id].grace_memo.len();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(first, (s1.clone(), 1000.0, false, None), "처음 보는 파일 = 부착 시각");
+        assert_eq!(new1, (f1.clone(), 1100.0, false, None), "새 세션이 옛 세션의 끝난 유예·보류 77%를 물려받았다 — 유예 없이 오발");
+        assert_eq!(back1, (s1.clone(), 1000.0, true, Some(77)), "원 세션으로 돌아왔는데 원 세션 상태를 잃었다");
+        assert_eq!(back2, (s1.clone(), 1000.0, true, Some(77)), "새 파일이 잇달아 생기자 원 세션 유예가 재시작 — 참 경보 영영 보류");
+        assert_eq!(revisit.1, 1100.0, "전에 본 파일로 돌아오면 그 파일의 기준 — 오가기마다 재시작하면 영영 침묵(opus 1R)");
+        assert_eq!(registered, (s1, 1200.0, false, None), "등록 경로는 언제나 새로 시작");
+        assert!(memo_len <= super::GRACE_MEMO_CAP, "기억 파일 수 무제한 증가({memo_len})");
+        // 배선: 관측 루프의 경로 전환이 이 함수를 거친다(휴리스틱 발견은 실제 프로필 폴더를 읽어 단위 시험으로 몰 수 없다)
+        let src = include_str!("usage.rs");
+        let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
+        assert!(
+            prod.contains("reattach_tail(daemon, tails, s.id, path.clone(), heuristic, now);"),
+            "관측 루프의 경로 전환이 reattach_tail 을 거치지 않는다 — 파일별 유예 기억이 배선되지 않음"
+        );
+    }
+
     /// opus 적대 1R(low): 창 크기(ctx %)가 없는 statusline 보고는 보류를 지우지 못한다.
     #[test]
     fn t2_statusline_without_ctx_keeps_deferral() {

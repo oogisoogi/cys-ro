@@ -10546,6 +10546,44 @@ mod tests {
         assert_eq!(d.entry.text, old, "다른 에이전트 좌석에서 폐기가 일어났다");
     }
 
+    /// ★v116-seat agy 3R 반례 2건(구체 입력): ①「claude is an AI」처럼 에이전트 이름으로 시작하는 한 줄 산문은
+    /// 옛 기동 줄이 아니다 — 폐기되면 안 된다(기동 줄은 실행 파일 뒤가 언제나 플래그). ②틱 경로에서 폐기가 일어나면
+    /// 그 틱은 배달하지 않는다 — 준비 판정은 폐기 전 머리(옛 줄 · 오래 기다림 = overdue 완화)로 내려졌으므로, 새 머리를
+    /// 같은 판정으로 내보내면 check-then-act 가 깨진다. 강제 배달(조준 id 있음)은 조준 항목이 남아 있으면 그대로 배달.
+    #[test]
+    fn v116_deliver_stale_drop_keeps_prose_and_skips_tick_delivery() {
+        let daemon = drill_daemon("v116-deliver-agy3");
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let prose = "claude is an AI 라는 문장을 설명하라";
+        {
+            let mut q = s.pending_queue.lock().unwrap();
+            q.push_back(daemon.next_queue_entry("claude --dangerously-skip-permissions --continue".into(), None, "wal-legacy"));
+            q.push_back(daemon.next_queue_entry(prose.into(), Some("surface:7".into()), "send"));
+            q.push_back(daemon.next_queue_entry("새 글".into(), Some("surface:8".into()), "send"));
+        }
+        // ② 틱 경로: 폐기가 일어난 호출은 배달 0(다음 틱이 새 머리로 다시 판정).
+        assert!(deliver_head_locked(&daemon, &s, false, false, None, None).is_none(),
+                "폐기한 틱이 새 머리를 옛 판정으로 배달했다(check-then-act)");
+        let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
+        // ① 산문은 남는다(옛 기동 줄만 폐기).
+        assert_eq!(left, vec![prose.to_string(), "새 글".to_string()], "산문이 폐기됐거나 순서가 바뀌었다");
+        let d = deliver_head_locked(&daemon, &s, false, false, None, None).expect("다음 틱 = 산문 배달");
+        assert_eq!(d.entry.text, prose);
+        // 강제 배달: 조준 항목이 남아 있으면 폐기가 있어도 그 호출에서 배달(거짓 Raced 금지).
+        let target = {
+            let mut q = s.pending_queue.lock().unwrap();
+            q.push_front(daemon.next_queue_entry("claude --continue".into(), None, "wal-legacy"));
+            q.get(1).expect("새 글").clone()
+        };
+        let d = deliver_head_locked(&daemon, &s, true, false, Some(&target.id), None)
+            .expect("조준 항목은 폐기와 무관하게 배달");
+        assert_eq!(d.entry.id, target.id);
+    }
+
     /// deliver_head_locked 단독 계약: 머리를 id 로 pop 하고 remaining 을 보고하며,
     /// 빈 큐는 None(부작용 0 — queue.delivered 미발행). watchdog 틱·queue.deliver RPC
     /// (W2-E)가 이 단일 헬퍼를 공유한다는 전제의 기초 핀.

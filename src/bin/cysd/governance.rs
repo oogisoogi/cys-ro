@@ -13769,3 +13769,408 @@ mod todo_decl_tests {
         assert_eq!(f.owner("LEGACY_TODO.md"), None, "센티널이 owner로 새어나갔다");
     }
 }
+
+#[cfg(test)]
+mod accept_v116 {
+    //! v116-seat 수용 시험(구현 비열람 · 명세 S1~S4 기준).
+    use super::{deliver_head_locked, is_stale_launch_line, launch_line_matches_seat};
+    use crate::state::{Daemon, QueueEntry, Surface};
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering as AO};
+    use std::sync::Arc;
+
+    const EX: &str = r#"CLAUDE_CONFIG_DIR="${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}" /x/claude --dangerously-skip-permissions --continue"#;
+
+    fn st(t: &str, b: &str) -> bool {
+        is_stale_launch_line(t, Some(b))
+    }
+    fn gd(t: &str, b: &str) -> bool {
+        launch_line_matches_seat(t, Some(b))
+    }
+    fn sha8(t: &str) -> String {
+        let h = Sha256::digest(t.as_bytes());
+        h.iter().map(|b| format!("{:02x}", b)).collect::<String>()[..8].to_string()
+    }
+
+    fn rig(tag: &str, meta: Option<(&str, &str)>) -> (Arc<Daemon>, Arc<Surface>) {
+        crate::delivery::tests::isolate_state_dir_for_thread(tag);
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, AO::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cys-accept116-{}-{}-{}-{}",
+            tag,
+            std::process::id(),
+            crate::state::now_epoch() as u64,
+            n
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = meta.map(|(a, b)| (a.to_string(), b.to_string()));
+        (daemon, s)
+    }
+
+    fn push(d: &Arc<Daemon>, s: &Arc<Surface>, text: &str, from: &str) -> QueueEntry {
+        let e = d.next_queue_entry(text.into(), Some(from.into()), "send");
+        s.pending_queue.lock().unwrap().push_back(e.clone());
+        e
+    }
+    fn queue_texts(s: &Arc<Surface>) -> Vec<String> {
+        s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect()
+    }
+    fn events(d: &Arc<Daemon>, name: &str) -> Vec<serde_json::Value> {
+        d.bus.tail(500).into_iter().filter(|e| e["name"] == name).collect()
+    }
+    fn wal_texts(d: &Arc<Daemon>) -> Vec<String> {
+        let p = crate::state::state_dir(&d.socket_path).join("queue-state.json");
+        let raw = std::fs::read_to_string(&p).unwrap_or_else(|_| "[]".into());
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::json!([]));
+        v.as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e["text"].as_str().map(|s| s.to_string()))
+            .collect()
+    }
+
+    // ───────── S1 순수 판정 ─────────
+
+    #[test]
+    fn accept_v116_s1_positive_basic_forms() {
+        assert!(st("claude", "claude"), "실행 파일만(인자 없음) = 옛 기동 줄");
+        assert!(st("claude --continue", "claude"));
+        assert!(st("claude -c", "claude"), "단일 대시 플래그");
+        assert!(st("/x/claude --dangerously-skip-permissions --continue", "/x/claude"));
+        assert!(st(EX, "/x/claude"), "명세 예시 · 절대 bin");
+        assert!(st(EX, "claude"), "명세 예시 · 상대 bin");
+    }
+
+    #[test]
+    fn accept_v116_s1_basename_relative_vs_absolute() {
+        assert!(st("claude --x", "/opt/x/claude"), "줄=상대 · bin=절대");
+        assert!(st("/usr/local/bin/claude --x", "claude"), "줄=절대 · bin=상대");
+        assert!(st("/a/b/claude --x", "/c/d/claude"), "서로 다른 디렉터리 같은 파일명");
+        assert!(st("./claude --x", "claude"), "./ 상대 경로");
+    }
+
+    #[test]
+    fn accept_v116_s1_windows_exe_stripped() {
+        assert!(st("claude --x", "/c/tools/claude.exe"), "bin 쪽 .exe 제거");
+        assert!(st("claude.exe --x", "claude"), "줄 쪽 .exe 제거");
+        assert!(st("claude.exe --x", "claude.exe"), "양쪽 .exe");
+    }
+
+    #[test]
+    fn accept_v116_s1_windows_backslash_path() {
+        // 경계 사례(명세 = basename): Windows 경로 구분자.
+        assert!(st(r"C:\tools\claude.exe --x", "claude"), "백슬래시 경로의 파일명");
+        assert!(st("claude --x", r"C:\tools\claude.exe"), "bin 이 백슬래시 경로");
+    }
+
+    #[test]
+    fn accept_v116_s1_env_assignments() {
+        assert!(st(r#"FOO="a b c" claude --x"#, "claude"), "값에 공백");
+        assert!(st(r#"A="1" B="two words" claude -c"#, "claude"), "복수 env");
+        assert!(st(r#"A="" claude --x"#, "claude"), "빈 값");
+        assert!(st(r#"A="x;y|z&w<v>u" claude --x"#, "claude"), "따옴표 안의 ; | & < > 는 비인용 아님");
+        assert!(st(r#"A="1" claude"#, "claude"), "env + 실행 파일만");
+        assert!(!st(r#"A="1""#, "claude"), "env 만 있고 실행 파일 없음");
+    }
+
+    #[test]
+    fn accept_v116_s1_excluded_shell_forms() {
+        assert!(!st("claude --x\nmore", "claude"), "개행");
+        assert!(!st("claude --x\n", "claude"), "끝 개행");
+        assert!(!st("claude\n--x", "claude"));
+        assert!(!st("claude --x `id`", "claude"), "백틱");
+        assert!(!st("claude --x $(id)", "claude"), "$(");
+        assert!(!st(r#"A="$(id)" claude --x"#, "claude"), "따옴표 안이어도 $( 는 제외");
+        assert!(!st("claude --x; rm -rf /tmp/z", "claude"), "비인용 ;");
+        assert!(!st("claude --x & echo", "claude"), "비인용 &");
+        assert!(!st("claude --x && echo", "claude"), "비인용 &&");
+        assert!(!st("claude --x | tee y", "claude"), "비인용 |");
+        assert!(!st("claude --x < in", "claude"), "비인용 <");
+        assert!(!st("claude --x > out", "claude"), "비인용 >");
+    }
+
+    #[test]
+    fn accept_v116_s1_prose_other_agent_and_affixes_not_stale() {
+        assert!(!st("claude is an AI", "claude"), "산문");
+        assert!(!st("claude please continue --x", "claude"), "첫 인자가 단어");
+        assert!(!st("codex --x", "claude"), "다른 에이전트");
+        assert!(!st("codex --x", "/x/claude"));
+        assert!(!st("claudex --x", "claude"), "접미 공유");
+        assert!(!st("myclaude --x", "claude"), "접두 공유");
+        assert!(!st("/x/myclaude --x", "/x/claude"));
+        assert!(!st("claude-code --x", "claude"));
+        assert!(!st("echo claude --x", "claude"), "실행 파일이 echo");
+        assert!(!st("sudo claude --x", "claude"));
+    }
+
+    #[test]
+    fn accept_v116_s1_empty_and_no_meta() {
+        assert!(!st("", "claude"), "빈 본문");
+        assert!(!st("   ", "claude"), "공백만");
+        assert!(!is_stale_launch_line("claude --x", None), "메타 없는 좌석");
+        assert!(!is_stale_launch_line(EX, None));
+        assert!(!launch_line_matches_seat("claude --x", None), "가드도 메타 없음 = 거짓");
+    }
+
+    #[test]
+    fn accept_v116_s1_guard_is_broader_superset() {
+        assert!(gd("claude is an AI", "claude"), "가드 = 플래그 조건 없음");
+        assert!(gd("claude --x", "claude"));
+        assert!(gd(EX, "claude"));
+        assert!(!gd("codex --x", "claude"));
+        assert!(!gd("claudex foo", "claude"));
+        assert!(!gd("claude --x; rm z", "claude"), "가드도 셸 조합 제외");
+        // 함의: stale ⇒ guard.
+        let cases = [
+            "claude", "claude --x", EX, "claude is an AI", "codex --x", r#"A="a b" claude -c"#,
+            "claude --x\n", "claude.exe --x", "/usr/bin/claude -p",
+        ];
+        for c in cases {
+            if st(c, "claude") {
+                assert!(gd(c, "claude"), "stale 인데 가드 거짓: {c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn accept_v116_s1_quoting_edges() {
+        assert!(st(r#"claude --x "a; b | c""#, "claude"), "인자 속 큰따옴표 안 ; | = 비인용 아님");
+        assert!(!st(r#"A="abc claude --x"#, "claude"), "닫히지 않은 따옴표 = env 아님");
+        assert!(st("claude -- foo", "claude"), "첫 인자 -- 는 대시로 시작");
+        assert!(!st("claude\r\n--x", "claude"), "CRLF");
+    }
+
+    // ───────── S2~S4 배달 헬퍼 ─────────
+
+    #[test]
+    fn accept_v116_s4_no_stale_delivers_head_unchanged() {
+        let (d, s) = rig("s4plain", Some(("claude", "/x/claude")));
+        let a = push(&d, &s, "hello there", "surface:9");
+        push(&d, &s, "second", "surface:8");
+        let got = deliver_head_locked(&d, &s, false, false, None, None).expect("머리 배달");
+        assert_eq!(got.entry.id, a.id);
+        assert_eq!(got.body, "hello there");
+        assert_eq!(got.remaining, 1);
+        assert!(events(&d, "queue.dropped").is_empty(), "stale 없음 = queue.dropped 0");
+        assert_eq!(queue_texts(&s), vec!["second".to_string()]);
+    }
+
+    #[test]
+    fn accept_v116_s2_s3_tick_drops_interleaved_then_delivers_next() {
+        let (d, s) = rig("s2mix", Some(("claude", "/x/claude")));
+        let s1 = EX.to_string();
+        let s2 = "claude --continue".to_string();
+        push(&d, &s, &s1, "surface:1");
+        let a = push(&d, &s, "keep A", "surface:2");
+        push(&d, &s, &s2, "surface:3");
+        push(&d, &s, "keep B", "surface:4");
+        push(&d, &s, "claude is an AI", "surface:5");
+        let r = deliver_head_locked(&d, &s, false, false, None, None);
+        assert!(r.is_none(), "폐기한 틱은 배달 0 · None");
+        assert!(events(&d, "queue.delivered").is_empty(), "배달 이벤트 없어야");
+        assert_eq!(
+            queue_texts(&s),
+            vec!["keep A".to_string(), "keep B".to_string(), "claude is an AI".to_string()],
+            "나머지 상대 순서 보존"
+        );
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1, "이벤트 정확히 1건");
+        let p = &ev[0]["payload"];
+        assert_eq!(p["reason"], "stale_launch_line");
+        assert_eq!(p["count"], 2);
+        assert_eq!(p["surface_ref"], serde_json::json!(cys::surface_ref(s.id)));
+        assert_eq!(p["line_sha8"], serde_json::json!([sha8(&s1), sha8(&s2)]), "큐 순서 sha8");
+        let wal = wal_texts(&d);
+        assert!(!wal.contains(&s1) && !wal.contains(&s2), "WAL 에 폐기 본문 잔존: {wal:?}");
+        assert!(wal.contains(&"keep A".to_string()), "WAL 에 보존 항목 없음: {wal:?}");
+        // 다음 틱 = 새 머리 정상 배달.
+        let n = deliver_head_locked(&d, &s, false, false, None, None).expect("다음 틱 배달");
+        assert_eq!(n.entry.id, a.id);
+        assert_eq!(n.body, "keep A");
+        assert_eq!(events(&d, "queue.dropped").len(), 1, "두 번째 틱엔 추가 폐기 없음");
+    }
+
+    #[test]
+    fn accept_v116_s2_only_stale_empties_queue_and_clears_block() {
+        let (d, s) = rig("s2only", Some(("claude", "claude")));
+        let l1 = "claude --dangerously-skip-permissions";
+        let l2 = r#"X="a b" /opt/bin/claude -c"#;
+        push(&d, &s, l1, "surface:1");
+        push(&d, &s, l2, "surface:1");
+        push(&d, &s, l1, "surface:1");
+        *s.queue_blocked.lock().unwrap() = Some(("empty_seat".into(), crate::state::now_epoch()));
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none());
+        assert!(s.pending_queue.lock().unwrap().is_empty());
+        assert!(s.queue_blocked.lock().unwrap().is_none(), "빈 큐 = 막힘 사유 해제");
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["payload"]["count"], 3);
+        assert_eq!(ev[0]["payload"]["line_sha8"], serde_json::json!([sha8(l1), sha8(l2), sha8(l1)]));
+        let wal = wal_texts(&d);
+        assert!(!wal.iter().any(|t| t == l1 || t == l2), "WAL 잔존: {wal:?}");
+        assert!(events(&d, "queue.delivered").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s2_wal_persisted_even_if_preexisting() {
+        // 폐기 전에 WAL 에 이미 기록돼 있던 stale 본문도 폐기 후엔 사라져야 한다.
+        let (d, s) = rig("s2wal", Some(("claude", "/x/claude")));
+        push(&d, &s, "claude -r", "surface:1");
+        push(&d, &s, "payload", "surface:2");
+        d.persist_queue_state();
+        assert!(wal_texts(&d).contains(&"claude -r".to_string()), "사전 조건: WAL 에 기록");
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none());
+        let wal = wal_texts(&d);
+        assert!(!wal.contains(&"claude -r".to_string()), "WAL 에 폐기 본문 잔존: {wal:?}");
+        assert!(wal.contains(&"payload".to_string()));
+    }
+
+    #[test]
+    fn accept_v116_s1_no_meta_seat_delivers_launch_line() {
+        let (d, s) = rig("nometa", None);
+        push(&d, &s, "claude --continue", "surface:1");
+        let got = deliver_head_locked(&d, &s, false, false, None, None).expect("메타 없음 = 폐기 0 · 배달");
+        assert_eq!(got.body, "claude --continue");
+        assert!(events(&d, "queue.dropped").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s1_prose_and_other_agent_delivered_on_claude_seat() {
+        let (d, s) = rig("prose", Some(("claude", "/x/claude")));
+        push(&d, &s, "claude is an AI", "surface:1");
+        push(&d, &s, "codex --x", "surface:2");
+        push(&d, &s, "claudex --x", "surface:3");
+        let g1 = deliver_head_locked(&d, &s, false, false, None, None).expect("산문 배달");
+        assert_eq!(g1.body, "claude is an AI");
+        let g2 = deliver_head_locked(&d, &s, false, false, None, None).expect("다른 에이전트 줄 배달");
+        assert_eq!(g2.body, "codex --x");
+        let g3 = deliver_head_locked(&d, &s, false, false, None, None).expect("접미 공유 배달");
+        assert_eq!(g3.body, "claudex --x");
+        assert!(events(&d, "queue.dropped").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s1_codex_seat_keeps_claude_line_drops_own() {
+        let (d, s) = rig("codexseat", Some(("codex", "/usr/local/bin/codex")));
+        push(&d, &s, "claude --x", "surface:1");
+        push(&d, &s, "codex --yolo", "surface:2");
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none(), "codex 줄 폐기 → 배달 0");
+        assert_eq!(queue_texts(&s), vec!["claude --x".to_string()]);
+        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("claude 줄은 codex 좌석에서 배달");
+        assert_eq!(g.body, "claude --x");
+    }
+
+    #[test]
+    fn accept_v116_s2_empty_text_entry_not_dropped() {
+        let (d, s) = rig("emptytext", Some(("claude", "claude")));
+        let e = d.next_queue_entry(String::new(), Some("surface:1".into()), "send-key");
+        let id = e.id.clone();
+        s.pending_queue.lock().unwrap().push_back(e);
+        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("빈 본문 항목 배달");
+        assert_eq!(g.entry.id, id);
+        assert!(events(&d, "queue.dropped").is_empty());
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_target_head_after_drop_delivered_same_call() {
+        let (d, s) = rig("forced1", Some(("claude", "/x/claude")));
+        push(&d, &s, EX, "surface:1");
+        let a = push(&d, &s, "target A", "surface:2");
+        let g = deliver_head_locked(&d, &s, true, false, Some(&a.id), None).expect("조준 항목 같은 호출에 배달");
+        assert_eq!(g.entry.id, a.id);
+        assert_eq!(g.body, "target A");
+        assert!(s.pending_queue.lock().unwrap().is_empty());
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["payload"]["count"], 1);
+        assert!(!wal_texts(&d).contains(&EX.to_string()));
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_target_is_stale_itself() {
+        let (d, s) = rig("forced2", Some(("claude", "claude")));
+        let st_e = push(&d, &s, "claude --continue", "surface:1");
+        push(&d, &s, "next", "surface:2");
+        let r = deliver_head_locked(&d, &s, true, false, Some(&st_e.id), None);
+        assert!(r.is_none(), "조준이 stale 자체 = 폐기 · 배달 0: {:?}", r.map(|x| x.body));
+        assert_eq!(queue_texts(&s), vec!["next".to_string()], "다른 항목 오배달 금지");
+        assert_eq!(events(&d, "queue.dropped").len(), 1);
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_target_not_head_after_drop() {
+        let (d, s) = rig("forced3", Some(("claude", "claude")));
+        push(&d, &s, "A", "surface:1");
+        push(&d, &s, "claude -c", "surface:2");
+        let b = push(&d, &s, "B", "surface:3");
+        let r = deliver_head_locked(&d, &s, true, false, Some(&b.id), None);
+        assert!(r.is_none(), "조준이 머리 아님 = 배달 0");
+        assert_eq!(queue_texts(&s), vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(events(&d, "queue.dropped").len(), 1, "폐기 자체는 일어남");
+    }
+
+    #[test]
+    fn accept_v116_s3_forced_merge_excludes_dropped_middle() {
+        // 같은 발신자 연속 항목 사이에 끼인 stale 줄 — 강제 배달 병합 본문에 섞이면 안 된다.
+        let (d, s) = rig("forcedmerge", Some(("claude", "/x/claude")));
+        let a = push(&d, &s, "part one", "surface:7");
+        let mid = push(&d, &s, "/x/claude --continue", "surface:7");
+        push(&d, &s, "part two", "surface:7");
+        let g = deliver_head_locked(&d, &s, true, false, Some(&a.id), None).expect("조준 머리 배달");
+        assert_eq!(g.entry.id, a.id);
+        assert!(!g.body.contains("/x/claude --continue"), "병합 본문에 stale 줄: {:?}", g.body);
+        assert!(!g.merged_ids.contains(&mid.id), "merged_ids 에 폐기 id");
+        assert!(!queue_texts(&s).contains(&"/x/claude --continue".to_string()));
+        assert_eq!(events(&d, "queue.dropped").len(), 1);
+    }
+
+    #[test]
+    fn accept_v116_s3_tick_merge_after_drop() {
+        let (d, s) = rig("tickmerge", Some(("claude", "claude")));
+        let a = push(&d, &s, "m1", "surface:7");
+        let mid = push(&d, &s, "claude --resume", "surface:7");
+        push(&d, &s, "m2", "surface:7");
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none(), "비머리 stale 이어도 폐기 틱 = 배달 0");
+        let g = deliver_head_locked(&d, &s, false, false, None, None).expect("다음 틱 배달");
+        assert_eq!(g.entry.id, a.id);
+        assert!(!g.body.contains("claude --resume"));
+        assert!(!g.merged_ids.contains(&mid.id));
+    }
+
+    #[test]
+    fn accept_v116_s2_duplicate_stale_lines_counted_in_order() {
+        let (d, s) = rig("dups", Some(("claude", "/x/claude.exe")));
+        let l = "claude.exe --x";
+        push(&d, &s, l, "surface:1");
+        push(&d, &s, "keep", "surface:2");
+        push(&d, &s, l, "surface:3");
+        assert!(deliver_head_locked(&d, &s, false, false, None, None).is_none());
+        let ev = events(&d, "queue.dropped");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["payload"]["count"], 2);
+        assert_eq!(ev[0]["payload"]["line_sha8"], serde_json::json!([sha8(l), sha8(l)]));
+        assert_eq!(queue_texts(&s), vec!["keep".to_string()]);
+    }
+
+    #[test]
+    fn accept_v116_s2_sha8_is_lowercase_hex_8() {
+        let (d, s) = rig("sha8", Some(("claude", "claude")));
+        push(&d, &s, "claude", "surface:1");
+        push(&d, &s, "x", "surface:2");
+        let _ = deliver_head_locked(&d, &s, false, false, None, None);
+        let ev = events(&d, "queue.dropped");
+        let arr = ev[0]["payload"]["line_sha8"].as_array().expect("배열").clone();
+        assert_eq!(arr.len(), 1);
+        let h = arr[0].as_str().unwrap();
+        assert_eq!(h.len(), 8);
+        assert!(h.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)), "소문자 hex: {h}");
+        assert_eq!(h, sha8("claude"));
+    }
+}

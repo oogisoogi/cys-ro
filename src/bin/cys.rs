@@ -29574,3 +29574,40 @@ mod tests {
         assert!(e < rl, "effort env 주입이 기동 줄 렌더 뒤");
     }
 }
+
+#[cfg(test)]
+mod accept_v116 {
+    //! v116-seat 수용 시험 S5(구현 비열람).
+    use super::set_meta_denied_is_same_meta as f;
+    use serde_json::json;
+
+    #[test]
+    fn accept_v116_s5_true_only_on_exact_same_meta() {
+        let row = json!({"agent": "claude", "agent_bin": "/x/claude", "ref": "surface:3"});
+        assert!(f("meta_denied: owned by surface:1", &row, "claude", "/x/claude"));
+        assert!(f("meta_denied:", &row, "claude", "/x/claude"), "코드만");
+    }
+
+    #[test]
+    fn accept_v116_s5_false_cases() {
+        let row = json!({"agent": "claude", "agent_bin": "/x/claude"});
+        let no_bin = json!({"agent": "claude"});
+        let null_bin = json!({"agent": "claude", "agent_bin": null});
+        assert!(!f("meta_denied: x", &no_bin, "claude", "/x/claude"), "agent_bin 키 없음");
+        assert!(!f("meta_denied: x", &null_bin, "claude", "/x/claude"), "agent_bin null");
+        assert!(!f("meta_denied: x", &row, "codex", "/x/claude"), "다른 에이전트");
+        assert!(!f("meta_denied: x", &row, "claude", "claude"), "다른 bin(상대)");
+        assert!(!f("meta_denied: x", &row, "claude", "/x/claude "), "bin 끝 공백");
+        assert!(!f("meta_denied: x", &row, "Claude", "/x/claude"), "대소문자");
+        assert!(!f("not_found: meta_denied: x", &row, "claude", "/x/claude"), "코드가 뒤에 등장");
+        assert!(!f("error meta_denied: x", &row, "claude", "/x/claude"));
+        assert!(!f(" meta_denied: x", &row, "claude", "/x/claude"), "앞 공백");
+        assert!(!f("meta_denied x", &row, "claude", "/x/claude"), "콜론 없음");
+        assert!(!f("Meta_denied: x", &row, "claude", "/x/claude"));
+        assert!(!f("seat_denied: x", &row, "claude", "/x/claude"), "다른 코드");
+        assert!(!f("", &row, "claude", "/x/claude"));
+        assert!(!f("meta_denied: x", &json!(null), "claude", "/x/claude"), "행 없음");
+        assert!(!f("meta_denied: x", &json!({"agent_bin": "/x/claude"}), "claude", "/x/claude"), "agent 키 없음");
+        assert!(!f("meta_denied: x", &json!({"agent": "claude", "agent_bin": 7}), "claude", "7"), "숫자 bin");
+    }
+}

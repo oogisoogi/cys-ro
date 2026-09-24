@@ -27,7 +27,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -370,6 +370,8 @@ if (ONLY.includes("c17")) {
     a: `${fill} + "╭──────────────╮\\r\\n│ ❯ 입력       │\\r\\n╰──────────────╯\\r\\n  ? for shortcuts\\r\\n  ctx 12% · opus" + "\\x1b[3A\\x1b[5G"`,
     b: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 30 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[12;5H"`,
     c: `${fill} + "user@mac ~ % "`,
+    // b2 대체 화면이 마지막 행까지 참(60줄 → 화면 44행 전부 · 커서 중간) — opus 적대 1R MINOR-1: 손실은 맨 윗줄 1줄까지만
+    b2: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 60 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[12;5H"`,
     // ⒠ 죽은 앱이 스크롤 영역(5~20행)·원점 모드(DECOM)를 남긴 채 커서를 영역 안에 두고 종료 · 맨 아래 줄(영역 밖)에 상태 줄
     e: `${fill} + "\\x1b[999;1HSTATUS LINE" + "\\x1b[5;20r\\x1b[?6h\\x1b[3;1H"`,
     // ⒡ 스크롤백이 쌓인 뒤 화면 지우기(2J) → 짧은 화면 · 커서 2행 · 아래 안내 줄(판독이 스크롤백 기준선 baseY 를 더해야 맞는 줄을 읽는다)
@@ -382,7 +384,7 @@ if (ONLY.includes("c17")) {
   const ROWS = `[...${PANE("worker")}.querySelector(".xterm-rows").children].map(d => d.textContent.replace(/\\u00a0/g, " ").trimEnd())`;
   for (const w of [1280, 800]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 820, deviceScaleFactor: 1, mobile: false });
-    for (const st of ["a", "b", "c", "d", "e", "f", "a0", "b0"]) {
+    for (const st of ["a", "b", "b2", "c", "d", "e", "f", "a0", "b0"]) {
       await load("two");
       await ev(`window.__shimEmit("out-2", ${enc}(${STATES[st]}))`); await Bun.sleep(300);
       await ev(`window.__shimExit(2, false)`); await Bun.sleep(700);
@@ -393,7 +395,7 @@ if (ONLY.includes("c17")) {
       let top = "";
       if (st === "a") { await ev(`${PANE("worker")}.querySelector(".xterm-viewport").scrollTop = 0`); await Bun.sleep(400); top = ((await ev(ROWS)) as string[]).slice(0, 8).find((r) => r.startsWith("fill ")) ?? ""; }
       // 덮어쓰기 0 = 종료 전 화면 글자가 한 줄도 사라지지 않음(⒜ 입력 상자 아래 테두리 · ⒝ tui 0~29 전부)
-      const must = st.startsWith("a") ? ["╰──────────────╯", "? for shortcuts", "ctx 12% · opus"] : st.startsWith("b") ? Array.from({ length: 30 }, (_, i) => `tui ${i}`) : st === "e" ? ["STATUS LINE"] : st === "f" ? ["short 1", "short 2", "footer"] : [];
+      const must = st.startsWith("a") ? ["╰──────────────╯", "? for shortcuts", "ctx 12% · opus"] : st === "b2" ? Array.from({ length: 43 }, (_, i) => `tui ${60 - 43 + i}`) : st.startsWith("b") ? Array.from({ length: 30 }, (_, i) => `tui ${i}`) : st === "e" ? ["STATUS LINE"] : st === "f" ? ["short 1", "short 2", "footer"] : [];
       const lost = must.filter((m) => !rows.some((r) => r.trim() === m.trim()));
       let gap = 0; for (let y = at - 1; y >= 0 && rows[y].trim() === ""; y--) gap++;
       const ok = at >= 0 && gap <= 1 && below.length === 0 && rows[at].trim() === "[surface exited]" && lost.length === 0 && (st !== "a" || top.startsWith("fill 0"));
@@ -401,6 +403,83 @@ if (ONLY.includes("c17")) {
     }
   }
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+}
+
+if (ONLY.includes("c18")) {
+  // (v116-exited-banner 정밀 디버깅 경계) 모두 「⒜ 입력 상자 + 커서 되올림」 끝 화면을 기본으로 경계 조건 하나씩 더한다.
+  //   g 스크롤백 가득(6000줄 > scrollback 5000) · h 종료 직전 대량 출력(200청크 × 약 10KB, 종료와 같은 틱) · i 필터 carry(끝에 미완 `ESC[?100`)
+  //   j 창 크기 바뀐 직후 종료(fit 60ms 디바운스 전) · k 사용자가 위로 스크롤해 둔 채 종료(바닥으로 내려 판독) · l 마지막 열 줄넘김 대기(열 수만큼 X)
+  //   n 아주 좁은 창(420폭) · m 종료 이벤트 2회(보이는 배너 1개)
+  const enc = `((s) => btoa(String.fromCharCode(...new TextEncoder().encode(s))))`;
+  const FOOT = `"╭──────────────╮\\r\\n│ ❯ 입력       │\\r\\n╰──────────────╯\\r\\n  ? for shortcuts\\r\\n  ctx 12% · opus" + "\\x1b[3A\\x1b[5G"`;
+  const ROWS = `[...${PANE("worker")}.querySelector(".xterm-rows").children].map(d => d.textContent.replace(/\\u00a0/g, " ").trimEnd())`;
+  const emitLines = (n: number, per = 500) => `(() => { for (let k = 0; k < ${n}; k += ${per}) window.__shimEmit("out-2", btoa(Array.from({ length: Math.min(${per}, ${n} - k) }, (_, i) => "L" + (k + i) + " " + "x".repeat(20)).join("\\r\\n") + "\\r\\n")); })()`;
+  const judge = async (name: string, extra: (rows: string[]) => Record<string, unknown> = () => ({}), bannersExpected = 1) => {
+    const rows = (await ev(ROWS)) as string[];
+    const at = rows.findIndex((r) => r.includes("[surface exited]"));
+    const n = rows.filter((r) => r.includes("[surface exited]")).length;
+    const below = at < 0 ? [] : rows.slice(at + 1).filter((r) => r.trim() !== "");
+    const lost = ["╰──────────────╯", "? for shortcuts", "ctx 12% · opus"].filter((m) => !rows.some((r) => r.trim() === m));
+    const garbage = rows.filter((r) => /\?100|\[\?|\x1b/.test(r));
+    const x = extra(rows);
+    const ok = at >= 0 && n === bannersExpected && below.length === 0 && lost.length === 0 && garbage.length === 0 && Object.values(x).every((v) => v !== false);
+    await shot(`c18${name}.png`);
+    check(`c18${name} 경계 — 배너 맨 아래 · ${bannersExpected}회 · 덮어쓰기 0 · 잔여 글자 0`, ok, JSON.stringify({ at, n, below: below.slice(0, 3), lost, garbage: garbage.slice(0, 2), ...x }));
+  };
+  const exitWorker = `window.__shimExit(2, false)`;
+  // g 스크롤백 가득
+  await load("two");
+  await ev(emitLines(6000)); await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(600);
+  await ev(exitWorker); await Bun.sleep(800);
+  await judge("g-scrollback-full");
+  // h 종료 직전 대량 출력 — 출력과 종료를 같은 평가(같은 틱)에서
+  await load("two");
+  await ev(`${emitLines(40000, 400)}; window.__shimEmit("out-2", ${enc}(${FOOT})); ${exitWorker}`); await Bun.sleep(4000);
+  await judge("h-burst-then-exit");
+  // i 필터 carry — 스트림 끝이 미완 DECSET 후보
+  await load("two");
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT} + "\\x1b[?100"))`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  await judge("i-carry-flush");
+  // j 창 크기 바뀐 직후 종료
+  await load("two");
+  await ev(emitLines(120)); await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 900, height: 600, deviceScaleFactor: 1, mobile: false });
+  await ev(exitWorker); await Bun.sleep(1200);
+  await judge("j-resize-then-exit");
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+  // k 위로 스크롤해 둔 채 종료 → 바닥으로 내려 판독
+  await load("two");
+  await ev(emitLines(300)); await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await ev(`${PANE("worker")}.querySelector(".xterm-viewport").scrollTop = 0`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  const topAfter = ((await ev(ROWS)) as string[])[0];
+  await ev(`(() => { const v = ${PANE("worker")}.querySelector(".xterm-viewport"); v.scrollTop = v.scrollHeight; })()`); await Bun.sleep(400);
+  await judge("k-scrolled-up", () => ({ topAfter }));
+  // l 마지막 열 줄넘김 대기 — 열 수만큼 X 를 쓴 뒤 커서 되올림 없이(대기 상태) 종료
+  await load("two");
+  const cols = await ev(`(window.__shimCalls.filter(c => c.cmd === "resize_surface" && c.args.surfaceId === 2).at(-1)?.args.cols ?? 120)`);
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT} + "\\x1b[3B\\r\\n" + "X".repeat(${cols})))`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  await judge("l-pending-wrap", (rows) => ({ cols, xLineIntact: rows.some((r) => r === "X".repeat(Number(cols))) }));
+  // n 아주 좁은 창 — 열이 10 안팎이라 모든 줄이 접힌다 → 행 단위가 아니라 공백 뺀 이어 붙인 글로 판독
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 420, height: 820, deviceScaleFactor: 1, mobile: false });
+  await load("two");
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  {
+    const joined = ((await ev(ROWS)) as string[]).join("").replace(/\s+/g, "");
+    const keep = ["╰──────────────╯", "?forshortcuts", "ctx12%·opus"].filter((m) => !joined.includes(m));
+    await shot("c18n-narrow-420.png");
+    check("c18n-narrow-420 경계 — 모든 줄이 접히는 좁은 창: 배너가 글 끝 · 1회 · 덮어쓰기 0", joined.endsWith("[surfaceexited]") && joined.split("[surfaceexited]").length === 2 && keep.length === 0, JSON.stringify({ tail: joined.slice(-60), lost: keep }));
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+  // m 종료 이벤트 2회(실경로에서는 스트림당 1회 — 방어 관측) — 수리본은 두 콜백이 같은 화면을 읽어 같은 자리에 같은 글을 쓴다
+  //   ⇒ 보이는 배너 1개(종전 = 2개가 중간에 흩어짐). 합격 = 1개 · 내용 아래.
+  await load("two");
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await ev(`${exitWorker}; window.__shimEmit("exit-2", null)`); await Bun.sleep(800);
+  await judge("m-exit-twice");
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

@@ -4,7 +4,7 @@
 // 커서가 입력 상자·대체 화면 TUI 중간에 있는 채 끝나면 배너가 그 아래 내용 위에 덮어써졌다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { bannerRow, exitedBannerSeq, writeExitedBanner, EXITED_BANNER, type ExitTerm } from "./exitbanner";
+import { bannerRow, exitedBannerSeq, writeExitedBanner, EXITED_BANNER, EXITED_BANNER_ALT_LAST, type ExitTerm } from "./exitbanner";
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const view = (lines: string[], cursorY: number) => ({ rows: lines.length, cursorY, line: (y: number) => lines[y] ?? "" });
@@ -57,6 +57,26 @@ describe("v116-exited-banner 배너 문자열", () => {
     expect(s).toBe(`\x1b[r\x1b[4;1H${EXITED_BANNER}`);
     expect(count(s, "[surface exited]")).toBe(1);
     expect(s.includes("1049")).toBe(false);
+  });
+});
+
+describe("v116-exited-banner 대체 화면 마지막 행(opus 적대 1R MINOR-1)", () => {
+  it("대체 화면 · 마지막 행까지 내용 → 뒤 줄바꿈 없는 판(윗줄 손실 1줄) · 배너 1회", () => {
+    const s = exitedBannerSeq({ ...view(["a", "b", "c", "d"], 1), alt: true });
+    expect(s).toBe(`\x1b[r\x1b[4;1H${EXITED_BANNER_ALT_LAST}`);
+    expect(count(s, "\n")).toBe(1);
+    expect(count(s, "[surface exited]")).toBe(1);
+  });
+  it("대체 화면이라도 마지막 행이 비었으면 · 주 화면은 마지막 행이라도 → 종전 판", () => {
+    expect(exitedBannerSeq({ ...view(["a", "b", "c", ""], 1), alt: true }).endsWith(EXITED_BANNER)).toBe(true);
+    expect(exitedBannerSeq(view(["a", "b", "c", "d"], 1)).endsWith(EXITED_BANNER)).toBe(true);
+  });
+  it("writeExitedBanner 는 buffer.type === alternate 를 대체 화면으로 넘긴다", () => {
+    const f = fake(["a", "b", "c"], 0);
+    (f.term.buffer.active as any).type = "alternate";
+    writeExitedBanner(f.term, filter(""));
+    f.drain();
+    expect(f.log.at(-1)).toBe(`\x1b[r\x1b[3;1H${EXITED_BANNER_ALT_LAST}`);
   });
 });
 

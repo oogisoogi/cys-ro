@@ -1,0 +1,97 @@
+너는 적대적 코드 검토자다(1R). 파일 읽기·도구 사용 없이 이 텍스트만으로 판정하라. 칭찬·요약 금지. 판정 = ACCEPT 또는 BLOCK(결함마다 심각도 MAJOR/MINOR/NIT + 근거 줄 + 재현 조건).
+맥락: 터미널 앱(xterm.js 5.5 · Tauri UI)에서 좌석 프로세스가 끝나면 pane 에 빨간 「[surface exited]」 배너를 쓴다. 종전 코드는 `term.write("\r\n\x1b[31m[surface exited]\x1b[0m\r\n")` 로 **커서 다음 줄**에 써서, 앱이 커서를 화면 중간(입력 상자 · 대체 화면 TUI)에 둔 채 끝나면 배너가 중간에 뜨고 그 아래 줄을 덮어썼다(헤드리스 재현 · 대조군 확인).
+수리: 앞선 쓰기(필터 잔여 방류 · 마우스 모드 DECRST reset)가 해석된 뒤(write 콜백) 활성 버퍼에서 「커서 줄과 그 아래 마지막 비어 있지 않은 줄 중 더 아래」를 찾아 `ESC[r`(스크롤 영역 해제) + CUP 로 옮긴 다음 종전 배너를 쓴다. 대체 화면(1049)은 일부러 풀지 않는다(죽은 TUI 마지막 화면 보존). 종료 이벤트 뒤 같은 터미널에 출력은 다시 오지 않는다(스트림은 pane 생성 시 1회만 시작 · pane 생성은 멱등). 단, 이 종료 이벤트는 데몬 연결 끊김(EOF)에도 발화한다.
+조준: ①다른 화면 상태(대체 화면 · 스크롤 영역 · 원점 모드 · 줄 넘김 대기 · 좁은 창 · 스크롤백 가득 · 사용자가 위로 스크롤해 둔 상태)에서 배너가 사라지거나 두 번 뜨거나 내용을 덮어쓰는가 ②스크롤백을 지우거나 잃는가 ③쓰기 순서(잔여 방류 → reset → 배너)가 깨지는가 ④창 파괴·예외 경로.
+아래가 제품 diff 전문이다.
+
+diff --git a/ui/src/exitbanner.ts b/ui/src/exitbanner.ts
+new file mode 100644
+index 00000000..772d807b
+--- /dev/null
++++ b/ui/src/exitbanner.ts
+@@ -0,0 +1,58 @@
++// exitbanner.ts — 좌석 종료 배너 「[surface exited]」 를 화면 **내용 맨 아래**에 쓰는 순서·위치 (TICKET=v116-exited-banner)
++//
++// ★왜 커서 자리가 아닌가(박사님 09-24 「맨 아래가 아니라 중간에 나온다」 · 헤드리스 c17 재현):
++//   종전 배너는 `\r\n` 으로 **커서가 있던 줄의 다음 줄**에 쓰였다. 좌석 프로그램이 커서를 화면 중간
++//   (Claude Code 입력 상자 · 대체 화면 TUI 의 입력 칸)에 둔 채 끝나면, 그 아래 테두리·안내 줄 위에
++//   배너가 덮어써져 중간에 떴다. 대조군(커서 위치만 바꿈)에서 배너가 맨 아래로 가는 것을 확인했다.
++// ★왜 대체 화면을 풀지 않는가(1049l 미포함 — trackfilter reset 과 같은 편): 풀면 죽은 TUI 의 마지막
++//   화면(오류 문구일 수 있다)이 사라지고 옛 주 화면이 나온다. 배너는 지금 보이는 화면의 내용 뒤에 붙인다.
++
++export const EXITED_BANNER = "\r\n\x1b[31m[surface exited]\x1b[0m\r\n";
++
++// 배너 앞에 푸는 상태 — 죽은 앱이 남긴 스크롤 영역(DECSTBM)이 있으면 절대 좌표 이동이 영역 안에 갇히거나
++// (원점 모드 DECOM 이 켜진 경우) 영역 밖 마지막 줄의 줄바꿈이 스크롤되지 않아 배너가 그 줄을 덮어쓴다.
++// 영역을 전체 화면으로 되돌리면 DECOM 이 켜져 있어도 원점 = 1행이라 따로 끄지 않는다(헤드리스 ⒠ 로 확인 —
++// `ESC[?6l` 을 더한 판과 결과 같음). 종료 이벤트 뒤에는 같은 터미널에 출력이 다시 오지 않는다(makePane 멱등 ·
++// 스트림은 makePane 에서만 시작) — 그래서 이 해제가 산 앱의 그리기를 깨지 않는다. 커서를 원점으로 보내므로 이동은 늘 쓴다.
++const RESET_MARGINS = "\x1b[r";
++
++export type ScreenView = { rows: number; cursorY: number; line: (y: number) => string };
++
++/// 배너 바로 앞 줄(0-기준 화면 행) — 커서 줄과 「그 아래 마지막 내용 줄」 중 더 아래.
++/// 커서 아래에 내용이 없으면 커서 줄 그대로(종전과 같은 자리 — 멀쩡한 화면은 바뀌지 않는다).
++export function bannerRow(v: ScreenView): number {
++  for (let y = v.rows - 1; y > v.cursorY; y--) {
++    if (v.line(y).trim() !== "") return y;
++  }
++  return v.cursorY;
++}
++
++export function exitedBannerSeq(v: ScreenView): string {
++  return `${RESET_MARGINS}\x1b[${bannerRow(v) + 1};1H${EXITED_BANNER}`;
++}
++
++type Line = { translateToString(trimRight?: boolean): string };
++export type ExitTerm = {
++  rows: number;
++  buffer: { active: { baseY: number; cursorY: number; getLine(y: number): Line | undefined } };
++  write(data: string | Uint8Array, callback?: () => void): void;
++};
++export type ExitFilter = { flush(): Uint8Array; reset(): string };
++
++/// 종료 쓰기 순서(스펙 D4 ③ 유지): ①필터 잔여 carry 방류 ②정합기 reset(필터 우회 직접 기록) ③배너.
++/// ③의 위치 판독은 ①②와 앞서 대기열에 쌓인 출력이 **해석된 뒤**(write 콜백)에 한다 — 먼저 읽으면
++/// 아직 그려지지 않은 화면을 보고 틀린 줄을 고른다. 판독이 실패해도(창 파괴 등) 배너는 1회 쓴다.
++export function writeExitedBanner(term: ExitTerm, filter: ExitFilter, done?: () => void): void {
++  const rest = filter.flush();
++  if (rest.length > 0) term.write(rest);
++  term.write(filter.reset(), () => {
++    let seq = EXITED_BANNER;
++    try {
++      const buf = term.buffer.active;
++      seq = exitedBannerSeq({ rows: term.rows, cursorY: buf.cursorY, line: (y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? "" });
++    } catch {
++      /* 판독 실패 — 종전 자리(커서 다음 줄)로 강등 */
++    }
++    term.write(seq, done);
++  });
++}
+diff --git a/ui/src/main.ts b/ui/src/main.ts
+index a2c24183..8e2a91d9 100644
+--- a/ui/src/main.ts
++++ b/ui/src/main.ts
+@@ -25,6 +25,7 @@ import {
+ import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
+ import { appVersionLabel, appVersionTitle, daemonInfoLabel, daemonInfoTitle, holdReasonText } from "./headerlabels";
+ import { exitedSweepTargets, armSweep, sweepScopeFor, settleSweep, type SweepArm } from "./exitedsweep";
++import { writeExitedBanner } from "./exitbanner";
+ import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
+ import { hqWorkspaceId, wsDisplayName, renamedName } from "./wsname";
+ import {
+@@ -3420,11 +3421,9 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
+   const un2 = await listen(ev.exited_event, () => {
+     // 순서 고정(스펙 D4 ③): ①필터 잔여 carry 방류(시퀀스 중간 사망 시에도 바이트 소실 0)
+     // ②정합기 reset — 장부 소거 + 8종 상수 DECRST 를 **필터 우회 term.write 직접** 기록
+-    //   (feed 재진입 금지 — 자기 스트리핑. 트래킹 소등·선택 복원, 1049l 미포함) ③종료 배너.
+-    const rest = trackFilter.flush();
+-    if (rest.length > 0) term.write(rest);
+-    term.write(trackFilter.reset());
+-    term.write("\r\n\x1b[31m[surface exited]\x1b[0m\r\n", snapToBottom);
++    //   (feed 재진입 금지 — 자기 스트리핑. 트래킹 소등·선택 복원, 1049l 미포함) ③종료 배너 — 커서 자리가
++    //   아니라 화면 **내용 맨 아래**(v116-exited-banner · 순서·위치 = exitbanner.ts).
++    writeExitedBanner(term, trackFilter, snapToBottom);
+   });
+   // listen 등록을 마친 뒤에 스트림을 시작해야 초기 화면 snapshot(프롬프트)이 유실되지 않는다
+   // (런치 시 첫 pane 빈 화면 버그 — snapshot이 listen 전에 emit되던 race 차단).

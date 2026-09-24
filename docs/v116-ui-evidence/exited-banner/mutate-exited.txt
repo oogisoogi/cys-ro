@@ -1,4 +1,4 @@
-KILLED   E1 이동 제거(커서 자리 배너로 회귀) — unit + headless[c17a@1280,c17b@1280,c17e@1280,c17f@1280,c17a@800,c17b@800,c17e@800,c17f@800]
+KILLED   E1 이동 제거(커서 자리 배너로 회귀) — unit + headless[c17a@1280,c17b@1280,c17b2@1280,c17e@1280,c17f@1280,c17a@800,c17b@800,c17b2@800,c17e@800,c17f@800]
 KILLED   E2 판독을 콜백 전(동기)으로 — unit
 KILLED   E3 첫 내용 줄에서 멈춤(마지막 아님) — unit
 KILLED   E4 스크롤 영역 해제 제거 — unit + headless[c17e@1280,c17e@800]
@@ -7,6 +7,8 @@ KILLED   E6 baseY 무시 — unit + headless[c17f@1280,c17f@800]
 KILLED   E7 판독 실패 강등 제거 — unit
 KILLED   E8 done(snapToBottom) 미전달 — unit
 KILLED   E9 순서 뒤집기(배너 뒤에 정합기 reset) — unit
-KILLED   E10 배선 되돌리기(main.ts 종전 직접 쓰기) — unit + headless[c17a@1280,c17b@1280,c17e@1280,c17f@1280,c17a@800,c17b@800,c17e@800,c17f@800]
+KILLED   E10 배선 되돌리기(main.ts 종전 직접 쓰기) — unit + headless[c17a@1280,c17b@1280,c17b2@1280,c17e@1280,c17f@1280,c17a@800,c17b@800,c17b2@800,c17e@800,c17f@800]
 KILLED   E11 잔여 방류 제거 — unit
-KILLED 11/11
+KILLED   E12 대체 화면 마지막 행 판 제거(2줄 손실로 회귀) — unit + headless[c17b2@1280,c17b2@800]
+KILLED   E13 대체 화면 판정 입력 누락 — unit + headless[c17b2@1280,c17b2@800]
+KILLED 13/13

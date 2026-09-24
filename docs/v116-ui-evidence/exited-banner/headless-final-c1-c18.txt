@@ -31,6 +31,7 @@ PASS c15 업데이트 확인 실패 → 본문 사람 말 · 원문은 접힌 �
 PASS c16 새 앱 설치 확인창 = 설치/취소 · 내부 용어 0 · 저장 안심 문장 — {"modal":true,"yes":"설치","no":"취소","text":"새 앱 1.1.7 설치 / 새 앱 1.1.7 을 설치합니다. 받은 파일이 진짜인지 확인한 뒤 앱을 바꿉니다. 바꾸기가 끝나면 다시 켤지 한 번 더 여쭙고, 다시 켜면 부서와 창, 대화가 돌아옵니다. / 지금 설치하시겠습니까? / 수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr / 취소 / 설치","bad":null}
 PASS c17a@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · 스크롤백 보존 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[],"top":"fill 0"}
 PASS c17b@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":30,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+PASS c17b2@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":43,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17c@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17d@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":6,"gap":1,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17e@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
@@ -39,10 +40,19 @@ PASS c17a0@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — 
 PASS c17b0@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":30,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17a@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · 스크롤백 보존 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[],"top":"fill 0"}
 PASS c17b@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":30,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+PASS c17b2@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":43,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17c@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17d@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":6,"gap":1,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17e@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17f@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":4,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17a0@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
 PASS c17b0@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":30,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+PASS c18g-scrollback-full 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":42,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18h-burst-then-exit 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":42,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18i-carry-flush 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":10,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18j-resize-then-exit 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":29,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18k-scrolled-up 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":42,"n":1,"below":[],"lost":[],"garbage":[],"topAfter":"L263 xxxxxxxxxxxxxxxxxxxx"}
+PASS c18l-pending-wrap 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":11,"n":1,"below":[],"lost":[],"garbage":[],"cols":66,"xLineIntact":true}
+PASS c18n-narrow-420 경계 — 모든 줄이 접히는 좁은 창: 배너가 글 끝 · 1회 · 덮어쓰기 0 — {"tail":"│❯입력│╰──────────────╯?forshortcutsctx12%·opus[surfaceexited]","lost":[]}
+PASS c18m-exit-twice 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":10,"n":1,"below":[],"lost":[],"garbage":[]}
 ALL PASS

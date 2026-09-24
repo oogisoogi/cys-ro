@@ -10,10 +10,10 @@ HEADLESS = '--headless' in sys.argv
 M = [
  # (id, 파일, 원문, 뮤턴트, 헤드리스로도 잴지)
  ('E1 이동 제거(커서 자리 배너로 회귀)', 'src/exitbanner.ts',
-  'return `${RESET_MARGINS}\\x1b[${bannerRow(v) + 1};1H${EXITED_BANNER}`;', 'return EXITED_BANNER;', True),
+  'return `${RESET_MARGINS}\\x1b[${row + 1};1H${v.alt && row === v.rows - 1 ? EXITED_BANNER_ALT_LAST : EXITED_BANNER}`;', 'return EXITED_BANNER;', True),
  ('E2 판독을 콜백 전(동기)으로', 'src/exitbanner.ts',
-  '  term.write(filter.reset(), () => {\n    let seq = EXITED_BANNER;\n    try {\n      const buf = term.buffer.active;\n      seq = exitedBannerSeq({ rows: term.rows, cursorY: buf.cursorY, line: (y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? "" });\n    } catch {\n      /* 판독 실패 — 종전 자리(커서 다음 줄)로 강등 */\n    }\n    term.write(seq, done);\n  });',
-  '  let seq = EXITED_BANNER;\n  try {\n    const buf = term.buffer.active;\n    seq = exitedBannerSeq({ rows: term.rows, cursorY: buf.cursorY, line: (y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? "" });\n  } catch {}\n  term.write(filter.reset(), () => {\n    term.write(seq, done);\n  });', False),
+  '  term.write(filter.reset(), () => {\n    let seq = EXITED_BANNER;\n    try {\n      const buf = term.buffer.active;\n      seq = exitedBannerSeq({ rows: term.rows, cursorY: buf.cursorY, line: (y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? "", alt: buf.type === "alternate" });\n    } catch {\n      /* 판독 실패 — 종전 자리(커서 다음 줄)로 강등 */\n    }\n    term.write(seq, done);\n  });',
+  '  let seq = EXITED_BANNER;\n  try {\n    const buf = term.buffer.active;\n    seq = exitedBannerSeq({ rows: term.rows, cursorY: buf.cursorY, line: (y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? "", alt: buf.type === "alternate" });\n  } catch {}\n  term.write(filter.reset(), () => {\n    term.write(seq, done);\n  });', False),
  ('E3 첫 내용 줄에서 멈춤(마지막 아님)', 'src/exitbanner.ts',
   '  for (let y = v.rows - 1; y > v.cursorY; y--) {\n    if (v.line(y).trim() !== "") return y;\n  }',
   '  for (let y = v.cursorY + 1; y < v.rows; y++) {\n    if (v.line(y).trim() !== "") return y;\n  }', False),
@@ -35,6 +35,10 @@ M = [
   '    const rest = trackFilter.flush();\n    if (rest.length > 0) term.write(rest);\n    term.write(trackFilter.reset());\n    term.write("\\r\\n\\x1b[31m[surface exited]\\x1b[0m\\r\\n", snapToBottom);', True),
  ('E11 잔여 방류 제거', 'src/exitbanner.ts',
   '  if (rest.length > 0) term.write(rest);\n', '', False),
+ ('E12 대체 화면 마지막 행 판 제거(2줄 손실로 회귀)', 'src/exitbanner.ts',
+  'v.alt && row === v.rows - 1 ? EXITED_BANNER_ALT_LAST : EXITED_BANNER', 'EXITED_BANNER', True),
+ ('E13 대체 화면 판정 입력 누락', 'src/exitbanner.ts',
+  ', alt: buf.type === "alternate" });', ' });', True),
 ]
 
 def run(cmd, cwd):

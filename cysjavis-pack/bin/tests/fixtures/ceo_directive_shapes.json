@@ -33,7 +33,9 @@
   "C2_TITLE": "# CEO (master of master) — 내가 고친 제목 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n",
   "EMPTY": "",
   "M2_TRUNC_HDR": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2",
-  "C2_HEADLESS": "---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n"
+  "C2_HEADLESS": "---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n",
+  "M1_TRUNC_HDR": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V1",
+  "C2_SEPEDIT": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n"
  },
  "shapes": [
   {
@@ -586,6 +588,72 @@
     "expect_after_down": "M2",
     "expect_stale_after_down": [],
     "expect_edit_backup_after_down": "__MD_BYTES__"
+   }
+  },
+  {
+   "id": "truncated-pre-ceo-only-close",
+   "source": "Opus 적대 R4 P1 변형 — 옛 판(M1)에서 승격한 기계 · 강등 복사 중단으로 md = .pre-ceo(M1) 의 진접두(현행 CEO 본문 M2 와는 무관) → 바로 부서 닫음",
+   "md": "M1_TRUNC_HDR",
+   "pre_ceo": "M1",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M1_TRUNC_HDR",
+    "expect_pre_ceo": "M1",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M1",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M1_TRUNC_HDR"
+   }
+  },
+  {
+   "id": "truncated-new-only-close",
+   "source": "Opus 적대 R4 P1 변형 — md = .new(M1) 의 진접두 · .pre-ceo(M_OLD)·CEO 본문(M2) 와는 무관 → 바로 부서 닫음(.new ref 단독 검사)",
+   "md": "M1_TRUNC_HDR",
+   "pre_ceo": "M_OLD",
+   "new": "M1",
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M1_TRUNC_HDR",
+    "expect_pre_ceo": "M_OLD",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M_OLD",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M1_TRUNC_HDR"
+   }
+  },
+  {
+   "id": "promoted-sep-title-edited-then-close",
+   "source": "뮤턴트 B8 생존 보강(P2 수리 뒤) — 승격 중 CEO 사본(UTF-8)의 구분선 제목만 손봄 → 한글 표지 없음 · 머리글 'master of master' 만 남음 → 부서 닫음(표준본 오판이면 CEO 영구 잔존)",
+   "md": "C2_SEPEDIT",
+   "pre_ceo": "M2",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "C2_SEPEDIT",
+    "expect_pre_ceo": "M2",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M2",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "C2_SEPEDIT"
    }
   }
  ]

@@ -541,7 +541,7 @@ for s in SHAPES["shapes"]:
             check("12 [%s] 강등 뒤 .pre-ceo.stale-*" % sid, _sd == [_T[k] for k in exp["expect_stale_after_down"]], repr(_sd))
     shutil.rmtree(tmp)
     _ran12 += 1
-check("12 형상 표 dept 칸 21개 이상 실행", _ran12 >= 21, "ran=%d" % _ran12)
+check("12 형상 표 dept 칸 24개 이상 실행", _ran12 >= 24, "ran=%d" % _ran12)
 
 # ── 13. 구분선 계약: cys-dept 가 판정에 쓰는 구분선 = 합성기(gen_ceo_template.SEPARATOR) 바이트.
 #   합성기 구분선이 바뀌면 cys-dept ⓕ·강등의 「구분선 뒤 본문 == md」 판정이 조용히 전부 거짓이 된다.

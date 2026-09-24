@@ -150,5 +150,13 @@
 - `compare_runs.py`(대상 51fca96b · 기준 adf50d44): 대상 실패 5 · 기준 실패 3 · **신규 2 = 같은 한 건**(`D07b.test_phoenix_w2_untomb_fullcycle` 와 그 하위 단언 「① live 역할 desired 엔트리 등재 | roster=[]」) · 해소 0.
   - 기준과 같은 실패: `D07b.test_phoenix_c6_reap`(기준선에서도 적색).
   - 신규 1건 판정: 이 시험은 이 티켓이 바꾼 파일을 읽지 않는다(grep 0 — SESSION_STATE·지침·restorebrief). 실패 모양 = 하니스가 띄운 좌석이 로스터에 아직 없어(roster=[]) 다음 호출에 None 경로가 넘어가 TypeError. 그 순간 부하 18~23(같은 기기에서 다른 워커의 게이트 3개가 동시에 돌았다 · ps 관측). 지금까지 기록된 다른 7회 실행에서는 전부 통과. 【추정 · 부하 타이밍】 → 브리프 규칙대로 그 스텝만 1회 재실행(아래).
-- 재실행(D07a 빌드 + 그 스텝 + c6_reap · 같은 커밋 새 스냅샷 · gate_runner_subset.py): **결과 대기 중** — 【확인요청】에 붙인다.
+- 재실행과 원인 조사(실패 증상에서 출발 · 기준선 대조):
+  | 실행 | 51fca96b | adf50d44(기준) |
+  |---|---|---|
+  | 정본 게이트 전량(gate_runner) | 적색(부하 18~23) | 초록(13:08 master 실행) |
+  | 스텝 재실행(gate_runner_subset · D07a+이 스텝+c6) | 적색(부하 12~15) | **초록**(roster=['worker-fc']) |
+  | 실제 시험 파일 3회 반복(새 스냅샷 · 같은 조건 · 부하 12~22) | 적색 3/3 | **적색 3/3** |
+  - 두 커밋 모두 실패 모양이 같다: `FAIL ① … roster=[]` → 다음 호출 TypeError · 데몬 로그 `error: another cysd holds the startup lock … reason=healthy-holder` — 하니스가 데몬을 두 번 띄우고(`_fresh_harness()` 안의 기동 + 시험의 `start_daemon`) 1단계 시점에 소켓이 없다.
+  - 판정: **기준선에서도 같은 조건에서 같은 실패가 재현되는 기존 부하 민감 하니스 경합**(【관측】 두 커밋 3/3 대 3/3) · 이 티켓은 데몬·하니스·phoenix 코드를 바꾸지 않는다(diff 대상 = 지침·골격·restorebrief·시험·문서). 「이 커밋이 원인이 아니다」의 근거는 대조 실험이지 증명은 아니다 — 게이트 한 번과 서브셋 한 번은 이 커밋만 적색이었다(표 윗줄 두 칸). v116-flake-pty 계열 티켓 관할로 올린다.
+  - 증거: scratchpad `ev/loop-51fca96b/` · `ev/loop-adf50d44/`(run·daemon 로그) · `~/msv-scratch/v116rv/results/51fca96b-rerun` · `…/adf50d44-w41-rerun`.
 - 게이트 밖 확인: `bunx tsc -p tsconfig.check.json` = 7건(기준선 7 · 신규 0 · 로컬 실측).

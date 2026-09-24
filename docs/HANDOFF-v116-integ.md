@@ -276,7 +276,7 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 
 ### 17-2. 충돌 해결 목록(두 의도 보존 · 의미 판단 표기)
 1. **c99a7af1 src/lib.rs** — B `inject_claude_prompt_suggestion_default` 와 T-USAGE `is_claude_agent` 가 같은 자리에 새로 붙음 = 인접 충돌 → 둘 다 유지(의미 판단 없음).
-2. **c99a7af1 ui/src/wsusage.ts** 【의미 판단 · 기본값 진행 · master 확인 요청 대상】 — T-UI D4 #11 은 `7d·<모델>` 게이지 문턱을 클라이언트 상수 `SCOPED_STALE_SECS`=240 으로, T-USAGE 는 판정을 데몬으로 옮겨 `fresh_limit_secs`(statusline 120 · oauth 240)를 싣고 필드 부재(옛 판본 데몬) 폴백 = `USAGE_STALE_SECS`(120)로 했다. 해결 = `obsFreshLimit(v, fallback = USAGE_STALE_SECS)` · 게이지만 `obsFreshLimit(g.fresh_limit_secs, SCOPED_STALE_SECS)` → **필드가 오면 데몬 값(T-USAGE) · 필드 부재 게이지만 240(T-UI)** · 계정 행 폴백 120 그대로. 근거: 1.1.5 데몬의 게이지 생산자는 oauth 하나뿐(526325bf accounts.rs 시험 `scoped[0].source == "oauth"`)이라 옛 데몬 게이지에 240 은 추정이 아니라 원천 한도와 같은 값. T-USAGE 주석에 예외 1곳을 적음.
+2. **c99a7af1 ui/src/wsusage.ts** 【의미 판단 · master#f0d58fa9 = 현행 확정(근거: 문턱은 생산자 주기 짝 · 옛 데몬 게이지 생산자 = oauth 뿐 · 대가 = 멈춘 값이 최대 4분 새것으로 보임 · 확신도 중상)】 — T-UI D4 #11 은 `7d·<모델>` 게이지 문턱을 클라이언트 상수 `SCOPED_STALE_SECS`=240 으로, T-USAGE 는 판정을 데몬으로 옮겨 `fresh_limit_secs`(statusline 120 · oauth 240)를 싣고 필드 부재(옛 판본 데몬) 폴백 = `USAGE_STALE_SECS`(120)로 했다. 해결 = `obsFreshLimit(v, fallback = USAGE_STALE_SECS)` · 게이지만 `obsFreshLimit(g.fresh_limit_secs, SCOPED_STALE_SECS)` → **필드가 오면 데몬 값(T-USAGE) · 필드 부재 게이지만 240(T-UI)** · 계정 행 폴백 120 그대로. 근거: 1.1.5 데몬의 게이지 생산자는 oauth 하나뿐(526325bf accounts.rs 시험 `scoped[0].source == "oauth"`)이라 옛 데몬 게이지에 240 은 추정이 아니라 원천 한도와 같은 값. T-USAGE 주석에 예외 1곳을 적음.
 3. **c99a7af1 ui/src/wsusage.test.ts** — 두 describe 모두 유지 + 합류 핀 1(데몬 `FRESH_LIMIT_OAUTH_SECS = OAUTH_PROBE_INTERVAL_SECS + 60` 식을 읽어 `== SCOPED_STALE_SECS` · 필드 부재 200초 = 초록 · 필드 120 = 흐림 · 필드 300 = 초록). 뮤턴트: 게이지 폴백 제거(120) → 3 fail KILLED · 데몬 필드 무시(상수 240 고정) → 1 fail KILLED.
 4. **e7d1fbfc src/lib.rs** — B·is_claude_agent 와 seat `CLAUDE_SEAT_EFFORT`/`inject_claude_effort_env` 인접 → 모두 유지 · B doc 의 Windows 도달 자리 표기 = `launch_create_env_pairs`.
 5. **e7d1fbfc src/bin/cys.rs boot_agent_on_surface** — D5 → B → effort 순 셋 다 유지.
@@ -301,9 +301,11 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 | javis_phoenix_harness.live_surfaces | 줄 머리 `surface:` 개수 | ✗ | 아니오(1092 가 같은 파일 수정 · 이 함수 무변경) | **같음** |
 | tests/test_phoenix_c6_reap.py (89 · 95 · 117) | 0칸 · 부분 문자열 `exited=true` | ✗ | **예(1092 ⑴ 줄 이동·추가)** | **같음** |
 | .github/workflows/windows-build.yml T4 | 부분 문자열 `role=master` | ✗ | 아니오 | **같음** |
+| javis_phoenix live_role_surfaces(1249 · known 드리프트 판정) · _surface_shell_pids(1379) | 머리 고정 정규식 `surface:N role= pid= exited=`(뒤 칸 무시) | ✗ | 아니오 | **같음**(Opus 1R 부기로 추가 · 정규식은 소스에서 떼어 실행 · known 참 유지) |
+| javis_phoenix_harness 기타(389·495·594·611·2011·2062) · windows-build 451·649·733 | 줄 머리 `surface:` · 종료 코드만 | ✗ | 아니오 | Opus 1R 가 같은 픽스처로 확인(전=후) |
 | javis_orchestra 역할 레지스트리(1019) | surface.list JSON(텍스트 아님) | — | 아니오 | 해당 없음 |
 | Rust·TS | 파서 0(cys.rs 3060 = 생산자) | — | — | 해당 없음 |
-- 결론: T14 밖 지점 5곳 전부 픽스처 결과 **전 = 후**(T14X ALL SAME) · 새로 들어온 파싱 지점 = 1092 의 c6 시험 줄뿐이고 0칸·부분 문자열만 쓴다. T14 9곳 파일은 4285e910 대비 통합에서 무변경(phoenix_harness 만 1092 로 바뀜 · 파서 함수 무변경).
+- 결론: T14 밖 지점(내 grep 5곳 + Opus 1R 추가 phoenix 2함수) 전부 픽스처 결과 **전 = 후**(T14X ALL SAME) · 새로 들어온 파싱 지점 = 1092 의 c6 시험 줄뿐이고 0칸·부분 문자열만 쓴다. T14 9곳 파일은 4285e910 대비 통합에서 무변경(phoenix_harness 만 1092 로 바뀜 · 파서 함수 무변경).
 
 ### 17-4. CEO 주입 여유(1089 ⚠)
 - `core_inject.py session` 출력 길이(격리 HOME · 같은 측정 경로): 91aa600d master 6,313 / CEO 8,273 → f089fac9 master 6,518 / CEO 8,478 = **+205(1089 HANDOFF §6 값과 같음)** → 1083·1091·1077 의 주입 증가 0 · **CEO 남은 여유 344자 그대로**(상한 8,800 · 러너 오프셋 +22 는 두 판 공통).
@@ -321,3 +323,42 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - 새로 뜨는 Claude 좌석이 늘 높은 사고 수준(effort high)으로 켜지고, 빈 좌석에 옛 기동 명령이 뒤늦게 글자로 들어가던 일이 막혔습니다.(1083)
 
 **내부용(공개 금지):** 1092 = 시험 하네스 수리(PTY 고갈 재시도 · c6 준비 대기 · CI 임시 팩 폴더 정리) — 제품 동작 무변경 · 릴리스 노트 대상 아님.
+
+### 17-6. 적대 검토(3라운드 상한 · 1라운드에서 두 검증자 dry)
+- 의뢰문 = `integ-v116-work/agy/prompt-i2-r1.txt`(R1 wsusage 합류 · R2 B 주입 이전·핀 재작성 · R3 cys list 대조 + remerge-diff 원문).
+- **agy 1R = ACCEPT**(`agy-i2-r1.md` · blocking 0 · 요약형 — 칭찬 문구는 판정 근거로 쓰지 않음).
+- **Opus 5.5 서브에이전트 1R = ACCEPT**(읽기 전용 · 전사 model = `claude-opus-5-5` 84건 실측) · blocking 0 · 부기 4(전부 비차단 · 제품 결함 0 · **이 통합에서 코드 무수정 · 기록만**):
+  1. cys list 소비자 추가 발견 = javis_phoenix live_role_surfaces·_surface_shell_pids 등 → 픽스처로 전=후 같음(위 표 반영 · `r2/t14x.py` 확장). 제안: T14 results() 에 phoenix 2함수 편입(M25 음성 대조가 함께 지키게) — 1.1.7 후보 · master 판정.
+  2. B 순서 핀은 D5<B 만 잰다 — B 를 effort 뒤로 옮기는 뮤턴트는 산다(키가 달라 현재 실패 0). 조립 함수 doc 의 「같은 순서」 표현보다 핀이 약함 → 핀에 `b < effort` 1줄 추가 또는 doc 표현 완화 = 1줄 후속(게이트 머리 보존 위해 보류 · master 판정).
+  3. `prompt_suggestion_reaches_all_three_install_paths` 의 compose 는 D5+B 를 손으로 조립(effort 없음) — `launch_create_env_pairs` 로 바꾸면 조립 경로 단일화(후속 후보).
+  4. 여러 팩 시험 모의 `cys list` 행이 옛 형식(no= 없음) — 파서가 호환이라 초록 · 새 형식 미행사(선택 후속).
+- 줄 유실 점검(Opus): 충돌 5파일 양쪽 추가 줄 대비 병합 결과 — 빠진 줄은 전부 의도된 대체(SCOPED 줄 → obsFreshLimit 폴백 · 수동 조립 → 조립 함수 호출 · doc 2줄 재작성).
+
+### 17-7. 정본 게이트 — 최종 머리 ce6c2779(코드 기준 · 이 문서 커밋은 문서만 더함)
+- 러너 = master `reverify-tools/gate_runner.py`(v2 2형태 · 워크플로 run 블록 원문) · `master-verify-snapshot.sh`(분리 스냅샷 · `--deps ui` · MSV_NOTIFY=0) · 격리 HOME/TMPDIR · 정제 PATH `~/msv-scratch/v116rv/bin` · 04:33:08 → 05:10:05 · load 7.2 → 8.5 · 스냅샷 추적 변경 0 · 결과 `~/msv-scratch/v116-integ2/results/ce6c2779/` · 대조 `cmp-ce6c2779-vs-91aa600d.json`.
+- **compare_runs(대상 ce6c2779 · 기준 master 91aa600d 결과) = 대상 실패 0 · 기준 실패 3 · 신규 0 · 해소 3**(해소 = D07b test_phoenix_c6_reap 과 그 하위 판정 2 — 1092 편입 효과).
+- ⚠ f089fac9 로 먼저 띄운 게이트는 1101 편입으로 머리가 바뀌어 **내가 띄운 pid 74012 만 TERM** 중단(04:32:44 · 스냅샷 제거·잔존 0 실측 · 부분 결과 = `results/f089fac9-aborted`). 첫 시도는 러너가 미리 만든 HOME 폴더를 거부(FileExistsError · 명령 미실행)해 폴더 삭제 후 재기동.
+
+| 스텝 | 결과(ce6c2779) | 기준 91aa600d |
+|---|---|---|
+| 전체 | 98스텝 rc≠0 **0** | rc≠0 1(D07b c6) |
+| A12 / D07e `cargo test --bin cys` | 340/0 | — |
+| A13 / D07d `cargo test --lib` | 546/0(1 ignored) | — |
+| A14 `-p cys-app --bins` | 172/0 | — |
+| B01 boot-health-full | **GREEN 149/0/1**(406s) | GREEN |
+| D02 secret-scan --all | clean 1239 파일 | clean |
+| D06 `bun test` | 1313/0 | — |
+| D07c `cargo test --bin cysd --test-threads=1` | 1192/0(2 ignored) | — |
+| X01 hwmon | 2/0 | — |
+| **D07b test_phoenix_e2e_replacement**(③ 포함) | **6/6 PASS** rc 0(44.1s) | 초록 |
+| **D07b test_phoenix_w2_untomb_fullcycle** | **8/8 PASS** rc 0(37.0s) — 1083 ACCEPT 조건(w2 초록) 해소 근거 | 초록 |
+| D07b test_phoenix_c6_reap | rc 0(37.6s) | **적색** → 해소 |
+- 기준 표의 세부 수는 master 결과 폴더 원문 그대로 비교하지 않았다(대조는 compare_runs 판정만 근거) — 「—」 칸은 기준 수를 따로 옮기지 않은 것.
+- 빈칸(정직): T-PACK(8f439373)은 이번 편입 대상 아님 → §10-1 「T-PACK 편입 뒤 고아 데몬 0 실측」은 여전히 미결. 윈 설치파일 = 이 기기 툴체인 없음 → push 뒤 CI(push = master 게이트).
+
+### 17-8. 4군 점검
+- ①폭주 큐: 1083 이 배달 경로를 바꿈(표지 붙은 기동 줄이 좌석 에이전트와 안 맞으면 큐에 넣지 않고 거부 · 낡은 기동 줄은 배달 대신 폐기) → cysd 직렬 전건 1192/0 · 1083 수용 시험(accept_v116 S1~S5) 초록 · 1092 PTY 재시도는 시험 전용 모듈(제품 무접촉).
+- ②무clear 100%+: 좌석 출생 CTX 경로 변경 0(1083 effort env = 기동 env 1키 · 1089 = 지침 문구 +205자 · CEO 주입 여유 344자 불변 §17-4).
+- ③자가치유 전멸: phoenix 게이트 D07b 전건 초록(c6 해소 · e2e_replacement 6/6 · w2_untomb 8/8) · 1091 = 대기 중 install_update 재호출 0(헤드리스 c17b·c17c·c17h·c17n) · 1089 = 복원 카드 읽기/쓰기(헤드리스 c5·c11 초록).
+- ④전 pane 사망: 헤드리스 c1~c17 ALL PASS(닫기 확인·exited 청소 술어 불변) · B·effort env 는 키 부재 시 추가만(사용자 값 불가침 · 재정렬 0 · 단언 실행) · Windows 에서 pane env 로 닿는 경로 = launch_create_env_pairs 하나(구조 불변). 윈 설치파일 = push 뒤 CI.
+- 프로세스 정리: 내가 띄운 것 잔존 0(헤드리스 크롬 · 게이트 스냅샷 · cargo) 실측 · 이름 패턴 kill 0.

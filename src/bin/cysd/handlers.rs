@@ -3745,9 +3745,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         cys::surface_ref(sid),
                         seat_bin.as_deref().unwrap_or("?")
                     );
-                    // ★v116-seat Fable 3-1: 1.1.5 가 이 좌석 큐에 남긴 옛 기동 줄은 곧 뜰 에이전트에게 사용자
-                    //   입력으로 배달된다 — 기동 줄 통과 지점 1곳에서 그 좌석의 기동 줄 일치분만 폐기(이벤트 + 영속).
-                    crate::governance::drop_stale_launch_lines(daemon, &surface, seat_bin.as_deref());
+                    // (옛 기동 줄 폐기는 판정 C 로 큐 배달 직전 1곳 — governance::deliver_head_locked — 으로 옮겼다.)
                     // ★v116-seat Fable 2R P3: 다른 페인이 부른 node-recover 는 set_meta 가 meta_denied(같은 메타 = 무해)라
                     //   set_meta 성공 경로의 agent_seen 리셋을 못 받는다 → 죽음 최초 관측 시각(agent_dead_since)이 그대로
                     //   남아, 재기동 직후 새 프로세스가 표에 오르기 전 틱에 역할 회수 유예(60초)가 만료될 수 있었다.
@@ -12636,19 +12634,8 @@ mod tests {
         assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "표지 없는 본문이 빈 셸에 타이핑됐다: {r}");
         assert_eq!(qlen(), 1, "표지 없는 본문은 종전대로 큐 보류");
 
-        // ④ ★Fable 3-1(master#4d8f12ec): ③ 이 남긴 큐 항목 = 1.1.5 식 옛 기동 줄(표지 없이 보류됨). 다른 보류 글과
-        //   「기동 줄과 비슷하지만 다른 줄」을 섞어 두고 기동 줄을 통과시키면 → 옛 기동 줄만 폐기(이벤트 · sha8) ·
-        //   나머지는 순서 그대로 남는다.
-        let keep = ["[DRAIN] 지금 저장하라", "[master#abc123] 지시 본문", "truex --continue",
-                    "true --x ; rm -rf ~", "true --a\ntrue --b"];
-        {
-            let mut q = s.pending_queue.lock().unwrap();
-            for t in keep {
-                let e = daemon.next_queue_entry(t.to_string(), None, "send");
-                q.push_back(e);
-            }
-        }
-        let mut rx = daemon.bus.subscribe();
+        // ④ ★판정 C(master#623fa6b9) 단일 지점: 기동 줄 통과는 큐를 건드리지 않는다(옛 기동 줄 폐기는 배달 직전 1곳 —
+        //   governance v116_deliver_drops_stale_launch_line_instead_of_delivering). ③ 이 남긴 옛 기동 줄 그대로 남는다.
         // Fable 2R P3: 오래 죽어 있던 좌석(사망 타이머 래치 = 먼 과거) — 기동 줄 통과 시 풀려야 한다.
         *s.agent_dead_since.lock().unwrap() = Some(1.0);
         let r = send(4, json!({"surface_id": s.id, "text": "true --continue", "agent_launch": true}));
@@ -12656,41 +12643,7 @@ mod tests {
         assert_eq!(*s.agent_dead_since.lock().unwrap(), None,
                    "기동 줄을 쳤는데 사망 타이머가 남았다 — 재기동 직후 역할 회수 유예가 만료될 수 있다");
         let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
-        assert_eq!(left, keep.map(String::from).to_vec(), "옛 기동 줄만 폐기 · 나머지 순서 보존이 아니다");
-        let mut ev = None;
-        while let Ok(e) = rx.try_recv() {
-            if e["name"].as_str() == Some("queue.dropped") {
-                ev = Some(e);
-            }
-        }
-        let ev = ev.expect("옛 기동 줄을 조용히 지웠다 — queue.dropped 미발행");
-        let p = &ev["payload"];
-        use sha2::{Digest, Sha256};
-        let want: String = Sha256::digest(b"true --x").iter().take(4).map(|b| format!("{b:02x}")).collect();
-        assert_eq!(p["reason"], json!("stale_launch_line"), "{p}");
-        assert_eq!(p["count"], json!(1), "{p}");
-        assert_eq!(p["line_sha8"], json!([want]), "{p}");
-        assert_eq!(p["surface_ref"], json!(cys::surface_ref(s.id)), "{p}");
-        // 영속: 큐 WAL 에도 옛 기동 줄이 없고(③ 적재 때 기록됐던 것) 보존분은 남는다 — 재기동 뒤 되살아나지 않는다.
-        let wal = std::fs::read_to_string(crate::state::state_dir(&daemon.socket_path).join("queue-state.json"))
-            .expect("queue-state.json");
-        let wal: Value = serde_json::from_str(&wal).expect("WAL json");
-        let texts: Vec<&str> = wal.as_array().or_else(|| wal["entries"].as_array()).expect("WAL 항목 배열")
-            .iter().filter_map(|e| e["text"].as_str()).collect();
-        assert!(!texts.contains(&"true --x"), "옛 기동 줄이 WAL 에 남았다(영속 누락): {texts:?}");
-        assert!(keep.iter().all(|k| texts.contains(k)), "보존분이 WAL 에 없다: {texts:?}");
-
-        // ⑤ 옛 기동 줄만 있던 큐가 폐기로 비면 막힘 사유(queue_blocked)도 사실이 아니다 → 지운다.
-        {
-            let mut q = s.pending_queue.lock().unwrap();
-            q.clear();
-            q.push_back(daemon.next_queue_entry("true --old".to_string(), None, "send"));
-        }
-        *s.queue_blocked.lock().unwrap() = Some(("prompt_unknown".to_string(), 1.0));
-        let r = send(5, json!({"surface_id": s.id, "text": "true --continue", "agent_launch": true}));
-        assert_eq!(r["result"]["sent"], json!(true), "기동 줄 통과 실패: {r}");
-        assert_eq!(qlen(), 0, "옛 기동 줄만 있던 큐가 비지 않았다");
-        assert!(s.queue_blocked.lock().unwrap().is_none(), "빈 큐인데 막힘 사유가 남았다(queue.list blocked 오보)");
+        assert_eq!(left, vec!["true --x".to_string()], "기동 줄 통과 지점이 큐를 건드렸다(폐기 지점 이원화)");
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);

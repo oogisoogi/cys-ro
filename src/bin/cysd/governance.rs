@@ -3645,9 +3645,11 @@ pub fn hold_for_vacant_seat(
     qid
 }
 
-/// ★v116-seat Fable 3-1(master#4d8f12ec 판정 A): 좌석 기동 줄(`agent_launch`)이 빈 셸 가드를 통과하는 그 자리에서,
-/// 그 좌석 큐에 남은 **옛 기동 줄**만 폐기한다. 1.1.5 의 node-recover 는 기동 줄이 가드에 막혀 큐로 갔고(WAL 영속),
-/// 1.1.6 에서 좌석이 되살아나면 그 줄이 에이전트에게 사용자 입력으로 배달된다(4군 ① 폭주 큐 계열).
+/// ★v116-seat Fable 3-1(master#4d8f12ec 판정 A → master#623fa6b9 판정 C): **큐 배달 직전 1곳**(`deliver_head_locked`
+/// 머리)에서 그 좌석 큐에 남은 **옛 기동 줄**만 폐기한다. 1.1.5 의 node-recover 는 기동 줄이 가드에 막혀 큐로 갔고
+/// (WAL 영속), 1.1.6 에서 그 줄이 에이전트에게 사용자 입력으로 배달된다(4군 ① 폭주 큐 계열) — 가장 흔한 경로는
+/// 업그레이드 = 데몬 재기동 → restored_queue → rehome → 새 좌석(기동 줄을 메타 등록 전에 보내 빈 셸 가드를 안 탄다).
+/// 판정 A 의 폐기 지점(agent_launch 가드 통과)은 그 경로를 못 덮어 여기로 옮겼다(단일 지점). 메타 없는 좌석 = 폐기 0.
 /// 폐기 대상 = `launch_line_matches_seat` 일치분뿐 — 다른 보류 글(DRAIN·master 지시 등)은 순서 그대로 남는다.
 /// 조용히 지우지 않는다: `queue.dropped`(reason `stale_launch_line` · 좌석 · 개수 · 줄 sha256 앞 8자) + 영속.
 /// 반환 = 폐기 개수.
@@ -3687,7 +3689,7 @@ pub(crate) fn drop_stale_launch_lines(
     daemon.bus.publish("queue.dropped", "queue", Some(s.id), payload);
     daemon.persist_queue_state();
     eprintln!(
-        "[cysd] {} 옛 기동 줄 {}건 큐에서 폐기 — 기동 줄 통과 시점(sha8 {})",
+        "[cysd] {} 옛 기동 줄 {}건 큐에서 폐기 — 배달 직전(sha8 {})",
         cys::surface_ref(s.id),
         dropped.len(),
         sha8.join(",")
@@ -5787,6 +5789,11 @@ pub(crate) fn deliver_head_locked(
     expect_head_id: Option<&str>,
     expect_pending: Option<u64>,
 ) -> Option<Delivered> {
+    // ★v116-seat 판정 C: 배달 직전 1곳 — 이 좌석 에이전트의 옛 기동 줄은 배달하지 않고 폐기(이벤트 + 영속).
+    //   임계영역 **밖**에서 부른다(persist_queue_state 가 surfaces → pending_queue 를 잡는다 — 큐 락을 쥔 채
+    //   부르면 교착). 두 호출자(watchdog 틱 · queue.deliver RPC)는 여기 올 때 락을 쥐고 있지 않다.
+    let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
+    drop_stale_launch_lines(daemon, s, seat_bin.as_deref());
     let delivered = {
         let mut q = s.pending_queue.lock().unwrap();
         // 락 순서 계약: pending_queue → input_gate (state.rs Surface::input_gate doc).

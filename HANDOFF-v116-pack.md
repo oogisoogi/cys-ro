@@ -8,8 +8,7 @@
 
 - **끝난 것**: R-B1 원인(§1) · agent_alive 판정(§2) · 설계·판정 A(§3·§4) · D1 #4 + B8 뿌리 방어선 · R-B1 P1·P1′(=D1 #5)·P2-b·P3 구현 · 이종 검증 **수렴**(Fable 2R ACCEPT · agy 2R dry — §7-1) · 디버깅 패스(회귀·cargo 직렬 1045/0·뮤턴트 13 중 12 + M12 재처리 KILLED — §7-2) · 성찰 2회차(§7-3) · VM 체크리스트(§6) · 1.1.7 백로그(§5) · 기억 증류 1건(project_cysd-seat-state-root-pid-blind).
 - **남은 것(다음 할 일)**: ⑴ 【확인요청】 master 발신 — **✅ 발신 완료 2026-09-24T09:38:48+0900**(재개 master#3e7d8657 · HEAD 7a8aebac 대조 성립 · 좌석 surface:1058 · 재개 직후 시험 5종 재실행 rc=0) · master 판정 대기 ⑵ (가능 · 미착수) F6 · D3-f ⑶ 병합은 master(T-USAGE → T-PACK → T-NUM).
-- **결정 대기(09:40:33 발신 · master#895d97bb 응답)**: 「진행 중 phoenix 복원이 새 묘비를 존중」 1.1.6 편입 여부 — 권고 A(팩 javis_phoenix.py 스폰 직전 묘비 재조회) · B(데몬 등록 시 묘비 해제 억제)=1.1.7. 원인 = fresh 강등 `spawn_fresh_production`(launch-agent) 묘비 무확인 + `state.rs:3853-3857` 등록 시 묘비 해제 · 저널 w18 09:33:01·w15 09:33:21 fresh_fallback(묘비 09:31:23 뒤). 내 P1·P1′·P2·P3 로는 못 막음.
-  해소 판정: 인박스에 이 결정에 대한 [master#…] 회신이 있거나 `git log --oneline -- cysjavis-pack/bin/javis_phoenix.py 526325bf..HEAD` 에 커밋이 잡히면 해소
+- **재개 판정 이행(master#f5ba25d5 · 09-24)**: ① R-B1 실사례 = A 채택 → `fbdd3941`(phoenix 스폰 직전 묘비 재조회 3곳 · tombstoned_mid_run · 집계 제외) ② B(데몬 등록 시 묘비 해제 억제)·「close-surface 없이 끝난 좌석=사고사」 = 1.1.7(§5) ③ m-1 = 유예 600초 → `3e8e683a`. 끝나면 【확인요청】 재발신.
 - **진행 중이던 검증 라운드**: 없음(전부 종결). 파킹 직전 최종 회귀 스냅샷(HEAD · 08:56 종료 · 전부 rc=0): d1 #4+rb1+v115_dept 통합 OK · test_formation 43/43 · default_fleet 120/120 · dept_request OK · d1_dept_ready_probe OK · nowin_captured_spawns OK · import_guard 138/138.
 - **재개 첫 행동**: `git -C ~/axdev/.wt/cys-v116-pack log --oneline 526325bf..HEAD` 로 최종 커밋 확인 → 이 문서 §4·§7 을 근거로 【확인요청】 작성·발신.
 - **함정**: ① 이 좌석의 셸 env 에 라이브 `CYS_SOCKET`·`CYS_ROLE` 이 있다 — 시험·cargo 는 `env -u CYS_SOCKET -u CYS_ROLE CYS_NO_AUTOSTART=1` 로 ② cargo = `export PATH="$HOME/.cargo/bin:$PATH"` ③ `test_dbg_d3_d11_shared_profile_hooks` 는 /tmp 아래 사본에서 돌리면 위치 탓 적색 ④ cargo 병렬 실행은 선재 PoisonError flake(직렬 `--test-threads=1` 로 판정).
@@ -81,7 +80,7 @@
 
 ### 3-2. D1 #4 빈 셸 회수 규칙(A-2 = 유예 2분 · master 권고대로 진행 고지)
 
-- **대상(모두 참일 때만)**: 닫히지 않음 ∧ **역할 없음** ∧ 에이전트 메타 있음(`agent` 칸 = launch-agent 로 에이전트가 앉았던 좌석 · 사용자가 연 평범한 창은 `agent=None` 이라 제외) ∧ **`seat == "empty"`(커널 사실 = 자손 프로세스 0)** ∧ `idle_secs ≥ 120`(출력 0 = 사람 타이핑 에코도 0) ∧ `queue_depth == 0` ∧ 생성 폴더가 그 부서 폴더 안(레지스트리 cwd 접두 · 모르면 회수 안 함).
+- **대상(모두 참일 때만)**: 닫히지 않음 ∧ **역할 없음** ∧ 에이전트 메타 있음(`agent` 칸 = launch-agent 로 에이전트가 앉았던 좌석 · 사용자가 연 평범한 창은 `agent=None` 이라 제외) ∧ **`seat == "empty"`(커널 사실 = 자손 프로세스 0)** ∧ `idle_secs ≥ 600`(★09-24 master#f5ba25d5 m-1 판정으로 120→600)(출력 0 = 사람 타이핑 에코도 0) ∧ `queue_depth == 0` ∧ 생성 폴더가 그 부서 폴더 안(레지스트리 cwd 접두 · 모르면 회수 안 함).
 - **`agent_alive` 는 판정에 쓰지 않는다** — §2 의 퇴행(산 claude 좌석이 None/False 로 보임)이 그대로 오판 경로가 되기 때문. 살아 있음의 근거는 커널 사실 `seat` 하나다(산 claude = 자손 → `occupied`).
 - **닫기 직전 재조회**: 새 `cys status --json` 으로 위 조건을 **같은 pid** 에 대해 다시 전부 확인(B8 의 `act2` 규율과 같음 · `javis_boot_node.py:1515-1521`) → `cys close-surface <ref> --reap`(묘비 없음).
 - **알림(사람 말)**: 「<부서> 의 빈 창 1개를 정리했습니다 — 그 창의 claude 가 꺼진 뒤 2분 넘게 아무 일도 없었습니다. 그 자리의 일은 새 창이 이어받습니다.」 feed 1건 + 이벤트 `seat.orphan_reaped`.
@@ -118,6 +117,8 @@
 | 6f7ce28b | 팩 | 편성 P1 봉인 · P1′(=D1 #5) 되살림 · P2 복원 대기 · P3 cwd · D1 #4 매 틱 배선 · boot_node `--reap-orphans` |
 | 2f7d045b | 시험 | `test_v116_rb1_formation.py` 22 · `test_formation.py` 하니스 새 접점 스텁(트립와이어 9z 가 실 cys 호출을 잡음 → 스텁) |
 | c701c0bd | CI | 새 시험 3종 3레인 4목록 등재 |
+| fbdd3941 | 팩·시험·CI | ★재개 ①(master#f5ba25d5): phoenix `current_tombstones` + 스폰 직전 재조회 3곳(resume 회차 · 빈 좌석 재사용 · fresh 강등) · 저널 `tombstoned_mid_run` · 결과 `tombstoned_mid_run_roles` · 완결성·판정 집계 제외 · `test_v116_phoenix_midrun_tomb`(C0+T1~T3 · 뮤턴트 4 KILLED · 수정 전 코드 T1~T3 적색 = 실사고 재현) · CI 3레인 등재 |
+| 3e8e683a | 팩·시험 | ★재개 ③(m-1): 회수 유예 120→600초 · 알림 「10분」 · 경계 시험 599/600 · 뮤턴트 3 KILLED(상수 120 · 경계 `<=` · 문구 2분) |
 
 - **BUILTIN_JOBS_VERSION 판정(코드)**: 범프 **불요**. 심박 잡(`schedule.rs:211-219`) 문자열을 바꾸지 않았다 — 부서명은 편성이 레지스트리(`~/.cys/depts.json`)에서 소켓으로 역산한다. 근거 = `schedule.rs:299-326`: 저장된 builtin 의 `_builtin_version` 이 코드 값보다 작을 때만 코드 정의로 갱신하고, 범프하면 builtin 전부가 교체돼 운영자 수기 편집이 소실된다(`:99-103` 주석).
 - **handlers.rs 겹침**: 내 변경 = `org.status` 팔의 daemon 블록 1키(≈6853) · T-USAGE(D6-1-2 patch) = `usage.report` 팔(≈6527). 둘 다 거대 `dispatch` 함수 안의 **서로 다른 match 팔**이고 300줄 이상 떨어져 줄 단위 병합 충돌은 없다 — 다만 「같은 함수」라는 점은 정직 고지.
@@ -127,6 +128,7 @@
 
 - **P4** 데몬 특권 역할(master·cso) 등록 원자화 — 생성 관문(PTY 전)과 `roles.insert`(latest-wins · `state.rs:3827-3840`) 사이 창을 닫는다. 이미 띄운 PTY 롤백 설계 필요(M~L). 이번 판은 편성이 복원을 기다려 알려진 경합 주체만 줄 세웠다 — 다른 두 생성자(예: 사용자 `launch-agent` 와 복원)가 겹치면 여전히 latest-wins.
 - **P5** 이미 깨진 상태 치유 — 업데이트 전 재부팅으로 topology 에 들어간 「홈 빈 셸 master」·「worker-2(홈)」 항목이 다음 재부팅 복원 때 다시 설 수 있다. 빈 보유자를 닫아도 진짜 좌석의 역할은 그 창 안에서 다시 claim 해야 붙어 외부 재지정 RPC 가 필요.
+- **B(09-24 R-B1 실사례 · master#f5ba25d5)** 복원 경로가 띄운 좌석은 데몬 역할 등록 때 묘비를 지우지 않게(`state.rs:3853-3857` 해제 분기 · launch-agent 복원 표식) — 1.1.6 팩 재조회(fbdd3941)가 남긴 「재조회↔launch-agent 사이 수 초 창」을 닫는다. 「close-surface 없이 끝난 좌석 = 사고사로 부활」(우리 맥 7좌석) 원칙 재검토는 master 가 1.1.7 설계 티켓으로 별도 등재.
 - (곁) 데몬 `seat_state`(`governance.rs:3184-3195`)가 뿌리 pid 를 안 본다 — 이번 판은 팩 방어선으로 막았고, 데몬 판정 자체(및 `seat_claimable_now` 를 쓰는 데몬 승계)는 그대로다.
 
 ## 6. VM 확인 체크리스트(다음 VM 좌석용 · R-B1 이 닫혔다고 말하려면)
@@ -138,8 +140,9 @@
 5. 미뤄진 부서(행정부 같은)가 켜진 경로: `dept-launch-path.log` 에 줄이 없고 부서 `cysd.log` 첫 줄 전에 `[cys-dept] … 가동 완료` 가 본부 편성 쪽 로그/알림(「부서 다시 켜기」 · 「다시 켰습니다」)으로 남는지 — 즉 **CLI 자동기동이 아니라 cys-dept launch 로** 켜졌는지.
 6. 부서장 앞 `cys send --to master --queued`(ping) → 즉시 진짜 부서장 대화에 도착 · `queue.held empty_seat` 0.
 7. 알림: 행정부를 되살렸다는 사람 말 1줄 · 이중 보유 0 이므로 이상 알림 0.
-8. D1 #4: 부서 워커 claude `kill -9` → +61s 데드맨 역할 회수 → 다음 편성 심박(최대 10분)에 새 워커 → 그 다음 심박에 옛 빈 셸 회수 + 「빈 창 정리」 알림 1 · **다른 좌석 닫힘 0**.
+8. D1 #4: 부서 워커 claude `kill -9` → +61s 데드맨 역할 회수 → 다음 편성 심박(최대 10분)에 새 워커 → 사망 +10분(유예 600초) 이후 첫 심박에 옛 빈 셸 회수 + 「빈 창 정리」 알림 1 · **다른 좌석 닫힘 0**.
 9. 재부팅 2회째에도 2·3·6 동일(여분 누적 0).
+10. (★09-24 추가) R-B1 실사례: 부서 복원 진행 중(`daemon.auto_restore=running`)에 역할 좌석 하나를 `cys close-surface` → 그 역할이 같은 런에서 다시 서지 않음 · topology 묘비 유지 · phoenix 결과 `tombstoned_mid_run_roles` 에 그 역할 · completeness 가 그 역할 때문에 INCOMPLETE 아님.
 
 ## 7. 검증 · 디버깅 · 성찰 2회차(완료 전)
 
@@ -172,7 +175,7 @@
 | 8 필요성 | 적용 | P4·P5·seat_state 데몬 수리 = 1.1.7(§5) · m-1 잔여 위험 명시(§7-4) |
 
 ### 7-4. 미수용·잔여 위험(정직)
-- **m-1(잔여 위험 · 4군 ④ 의 유일한 열린 칸)**: 사람이 claude 를 끈 뒤 빈 프롬프트를 2분 넘게 **읽기만** 하면(출력 0 · 자식 0 · 역할 없음 · 에이전트 메타 있음) 다음 심박에 그 창이 닫히고 스크롤백이 사라진다. A-2 확정값(2분) · 「빈 창 정리」 알림 1줄로 짝. 완화안(기록): `live_cwd != cwd` 를 활동 신호로 보존 · 또는 유예를 심박 1틱(600s)으로.
+- **m-1 → ✅ 완화(09-24 · 3e8e683a · 유예 600초)** — 아래는 원 기록. **m-1(잔여 위험 · 4군 ④ 의 유일한 열린 칸)**: 사람이 claude 를 끈 뒤 빈 프롬프트를 2분 넘게 **읽기만** 하면(출력 0 · 자식 0 · 역할 없음 · 에이전트 메타 있음) 다음 심박에 그 창이 닫히고 스크롤백이 사라진다. A-2 확정값(2분) · 「빈 창 정리」 알림 1줄로 짝. 완화안(기록): `live_cwd != cwd` 를 활동 신호로 보존 · 또는 유예를 심박 1틱(600s)으로.
 - m-3 심박 600s 캡: 부서당 최악 ≈ 복원 대기 120 + 회수 60 → 3부서 ≈ 570s < 600 · 4부서부터 초과 가능(종전 boot_node 130s×역할 축도 이미 초과하던 선재 축).
 - m-4 묘비 경로 = 기본 소켓 규약 하드코딩(비기본 본부 소켓이면 「없음」과 「모름」 융합 · 실방어 = down 의 등재 삭제).
 - m-5 크래시루프 부서 = 10분당 1회 재기동(폭주 아님 · 알림 매번) → 1.1.7.

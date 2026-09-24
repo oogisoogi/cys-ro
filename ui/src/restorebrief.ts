@@ -154,13 +154,18 @@ export function hasBriefSections(text: string): boolean {
  * 읽힌 후보들 중 카드에 쓸 하나. ① 고정 3절 제목이 있는 파일을 먼저(없는 파일은 카드에 실을 것이 없다)
  * ② 그중 **기록 시각(recordedAt)이 가장 늦은 것** — 드레인 저장이 방금 cwd 쪽에 썼으면 그쪽이 더 새 기록이다
  * ③ 같으면 **앞선 후보**(= 정본). 3절 제목이 있는 파일이 하나도 없으면 null(카드는 아는 것만 말한다).
+ * ★(판정 B 후속 · Opus 적대 1R 발견 1) ②의 잣대는 파일끼리 같아야 한다 — 3절 안에 유효한 `기록` 줄이 있는 파일
+ *   (3절을 쓴 시각을 안다)이 없는 파일(파일 전체 최댓값 = 기계용 절의 새 시각일 수 있다)보다 먼저다. 섞어 재면 옛 3절
+ *   파일이 대장 한 줄 덕에 이겼다. 같은 줄 안에서만 시각을 비교한다.
  */
 export function pickBriefText(found: { path: string; text: string }[], notAfter?: string): string | null {
-  let best: { text: string; at: string } | null = null;
+  let best: { text: string; known: boolean; at: string } | null = null;
   for (const f of found) {
     if (!hasBriefSections(f.text)) continue;
+    const rec = briefRecordLine(f.text);
+    const known = rec !== null && (notAfter === undefined || rec <= notAfter);
     const at = recordedAt(f.text, notAfter) ?? "";
-    if (best === null || at > best.at) best = { text: f.text, at };
+    if (best === null || (known && !best.known) || (known === best.known && at > best.at)) best = { text: f.text, known, at };
   }
   return best ? best.text : null;
 }

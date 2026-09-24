@@ -168,3 +168,26 @@ describe("CORE 요지(새 세션이 보는 유일한 문안)도 3절 서식의 �
     });
   }
 });
+
+// ★(Opus 적대 1R 발견 1 · P2 · 재현 입력 그대로) 판정 B 뒤 두 파일을 서로 다른 잣대로 쟀다 — 기록 줄 있는 파일은 3절을
+//   쓴 시각, 없는 파일은 파일 전체 최댓값(거짓 신선도 그 값). 그래서 옛 3절 파일이 대장 한 줄 덕에 이겼다.
+//   규칙: 3절 시각을 아는 파일(유효한 기록 줄)이 먼저 · 그 안에서 늦은 것 · 둘 다 모르면 종전 규칙.
+describe("판정 B 후속 — 파일 고르기는 같은 잣대로(기록 줄 있는 파일 먼저)", () => {
+  const NOW = "2026-09-24 16:00";
+  const CANON = "# S\n## 완료\n- 새 것: 로그인 오류 수정\n## 진행 중\n- 새 것: 결제 화면\n## 결정 필요\n기록 2026-09-24 10:00\n\n## 오너 지시 대장\n| 2026-09-24 15:00 | 배포 준비 | 진행 |";
+  const CWD_OLD = "# S\n## 완료\n- 옛 것\n## 진행 중\n- 옛 것\n## 결정 필요\n\n## 오너 지시 대장\n| 2026-09-24 09:00 | 옛 지시 | 완료 |\n| 2026-09-24 12:00 | 옛 지시 2 | 완료 |";
+  it("★재현: 기록 줄 있는 정본(3절 10:00 · 대장 15:00) vs 기록 줄 없는 cwd(대장 12:00) → 정본", () => {
+    expect(pickBriefText([{ path: "c", text: CANON }, { path: "d", text: CWD_OLD }], NOW)).toBe(CANON);
+    expect(pickBriefText([{ path: "d", text: CWD_OLD }, { path: "c", text: CANON }], NOW)).toBe(CANON); // 순서 무관
+  });
+  it("반대 방향: 기록 줄 없는 정본(대장 15:00) vs 기록 줄 있는 cwd(12:00) → cwd(3절 시각을 아는 쪽)", () => {
+    const canonNoRec = CANON.replace("기록 2026-09-24 10:00", "");
+    const cwdRec = "## 진행 중\n- 드레인 저장분\n기록 2026-09-24 12:00";
+    expect(pickBriefText([{ path: "c", text: canonNoRec }, { path: "d", text: cwdRec }], NOW)).toBe(cwdRec);
+  });
+  it("미래 기록 줄은 모르는 것으로 친다(기록 줄 없는 파일과 같은 줄에 선다)", () => {
+    // 미래 기록 줄 파일은 「모름」 줄에서 종전 규칙 11:00 · CWD_OLD 는 같은 줄에서 12:00 → CWD_OLD(미래 줄을 「안다」로 치면 거꾸로 된다)
+    const futureRec = "## 완료\n- 미래 줄\n기록 2026-10-01 09:00\n| 2026-09-24 11:00 |";
+    expect(pickBriefText([{ path: "c", text: futureRec }, { path: "d", text: CWD_OLD }], NOW)).toBe(CWD_OLD);
+  });
+});

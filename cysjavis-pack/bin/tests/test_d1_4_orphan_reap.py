@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import javis_boot_node as bn  # noqa: E402
 
-DEPT = "/Users/u/Desktop/CYSjavis/행정부"
+DEPT = "/Users/x/Desktop/CYSjavis/행정부"
 GRACE = 600.0
 
 
@@ -100,7 +100,7 @@ class OrphanVerdict(unittest.TestCase):
             "N3b 좌석 미상": seat(seat="unknown"),
             "N4 유예 안(idle 599)": seat(idle_secs=599),
             "N5 큐 남음": seat(queue_depth=1),
-            "N6 부서 폴더 밖(홈)": seat(cwd="/Users/u"),
+            "N6 부서 폴더 밖(홈)": seat(cwd="/Users/x"),
             "N6b 부서 폴더 접두만 같은 형제": seat(cwd=DEPT + "2/workers/w1"),
             "N7 이미 닫힘": seat(exited=True),
             "N8 idle 칸 없음": seat(idle_secs=None),

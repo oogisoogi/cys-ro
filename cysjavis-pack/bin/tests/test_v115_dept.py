@@ -455,7 +455,7 @@ class A2B8BootNodeRun(unittest.TestCase):
         # master#5c9ceb39 ⑶: 뿌리 = claude 자신(`new-surface --cmd claude`) · 자식 0 순간 → 데몬 seat=empty 오판
         #   → 종전 B8 은 이 산 좌석을 회수(close-surface --reap)했다. 뿌리 확인이 막아야 한다(4군 ④).
         rows = [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
-                 "created": time.time() - 900, "root": "/Users/u/.local/bin/claude"}]
+                 "created": time.time() - 900, "root": "/Users/x/.local/bin/claude"}]
         rc, out, fake = self._run(rows, "worker", self.env)
         acted = [c for c in fake.calls if c[1:2] in (["close-surface"], ["launch-agent"], ["send"])]
         self.assertEqual(acted, [], "뿌리 claude 좌석을 빈 좌석으로 회수·재기동했다")

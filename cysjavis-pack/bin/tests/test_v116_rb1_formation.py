@@ -258,7 +258,7 @@ class P1ReviveDept(_Base):
 class P3Cwd(_Base):
     def test_child_cwd_prefers_occupied_master_and_skips_home(self):
         home = os.path.expanduser("~")
-        dept = "/Users/u/Desktop/CYSjavis/행정부"
+        dept = "/Users/x/Desktop/CYSjavis/행정부"
         st = {"surfaces": [
             {"surface_id": 9, "role": "master", "cwd": home, "seat": "empty"},
             {"surface_id": 10, "role": "master", "cwd": dept, "seat": "occupied"}]}
@@ -268,13 +268,13 @@ class P3Cwd(_Base):
     def test_master_seat_uses_dept_folder_when_cwd_missing(self):
         fm._ensure_master_seat = self.saved["_ensure_master_seat"]
         fm._live_roles = lambda socket=None, require_live_agent=True: set()
-        fm._dept_registry_cwd = lambda socket: "/Users/u/Desktop/CYSjavis/행정부"
+        fm._dept_registry_cwd = lambda socket: "/Users/x/Desktop/CYSjavis/행정부"
         ran = []
         fm._run = lambda argv, timeout=30: (ran.append(argv) or (0, "", ""))
         fm._boot_node = lambda role, socket, cwd=None, timeout=200: (True, cwd)
         ok, cwd = fm._ensure_master_seat("/s/dept-3.sock", None)
-        self.assertEqual(ran[0][-2:], ["--cwd", "/Users/u/Desktop/CYSjavis/행정부"], ran)
-        self.assertEqual(cwd, "/Users/u/Desktop/CYSjavis/행정부")
+        self.assertEqual(ran[0][-2:], ["--cwd", "/Users/x/Desktop/CYSjavis/행정부"], ran)
+        self.assertEqual(cwd, "/Users/x/Desktop/CYSjavis/행정부")
 
 
 class M4WindowsTombstones(unittest.TestCase):

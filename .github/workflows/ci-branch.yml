@@ -451,7 +451,7 @@ jobs:
           trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           f="cysjavis-pack/bin/tests/test_report_gate.py"
           [ -f "$f" ] || { echo "게이트 대장 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
-          log="$(mktemp)"; first=""
+          log="$(mktemp "$CYS_TMP/log.XXXXXX")"; first=""   # ★v116-flake-pty ⑶: 같은 잔재원(파일) — 루트 안으로
           for i in 1 2 3 4 5; do
             rc=0
             CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f" >"$log" 2>&1 || rc=$?

@@ -2062,6 +2062,55 @@ pub fn is_user_mergeable(rel: &str) -> bool {
 /// CEO 승격 사본의 정본 경로 2개 — 파생 규칙(ⓑ)의 SOT.
 pub const MASTER_DIRECTIVE_PACK_REL: &str = "directives/MASTER_DIRECTIVE.md";
 pub const CEO_TEMPLATE_PACK_REL: &str = "directives/CEO_TEMPLATE.md";
+/// 승격 영수증(cys-dept `_swap` 이 기록 · 내용 = 교체 직후 MASTER_DIRECTIVE.md 의 sha256 hex 1줄).
+pub const CEO_RECEIPT_PACK_REL: &str = "directives/.ceo-template-applied";
+
+// ★v116-ceo-directive-hold: 역대 발행 지침 해시 표(생성기 = scripts/gen_released_directive_hashes.py).
+include!("released_directive_hashes.rs");
+
+#[cfg(test)]
+thread_local! {
+    /// 시험 전용 발행 해시 주입(스레드 국소 — 병렬 시험 간 누출 0). 실물 표에는 시험 문자열이 없으므로
+    /// 「발행 이력에 있는 옛 판」 형상을 픽스처 문자열로 재현할 때만 쓴다.
+    static TEST_RELEASED_EXTRA: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 디스크 텍스트가 표의 발행 바이트와 같은가 — 원 바이트 해시 또는 CRLF→LF 정규화 해시.
+/// 정규화 이유: 2026-08-23 LF 봉인 이전 윈도 빌드는 CRLF 로 임베드됐을 수 있다(.gitattributes 머리말).
+/// 줄끝만 다른 사본은 문면이 발행본과 같으므로 「손대지 않은 제품 사본」으로 본다.
+#[cfg(test)]
+fn test_released_extra_contains(h: &str) -> bool {
+    TEST_RELEASED_EXTRA.with(|v| v.borrow().iter().any(|x| x == h))
+}
+#[cfg(not(test))]
+fn test_released_extra_contains(_h: &str) -> bool {
+    false
+}
+
+fn released_contains(table: &[&str], text: &str) -> bool {
+    let hit = |h: &str| table.contains(&h) || test_released_extra_contains(h);
+    if hit(&content_hash(text)) {
+        return true;
+    }
+    text.contains("\r\n") && hit(&content_hash(&text.replace("\r\n", "\n")))
+}
+
+/// ⓑ⁺: 디스크 MASTER 가 **어느 발행 판의 CEO_TEMPLATE 바이트 사본**인가(= 제품이 쓴 승격 사본).
+pub(crate) fn is_released_ceo_template(text: &str) -> bool {
+    released_contains(RELEASED_CEO_TEMPLATE_SHA256, text)
+}
+
+/// ⓔ: 디스크 MASTER(또는 .pre-ceo)가 **손대지 않은 옛 발행 표준 MASTER** 인가.
+pub(crate) fn is_released_master_directive(text: &str) -> bool {
+    released_contains(RELEASED_MASTER_DIRECTIVE_SHA256, text)
+}
+
+/// 승격 영수증 해시 — 64자리 hex 가 아니면 None(손상·빈 파일은 근거로 쓰지 않는다).
+pub(crate) fn read_ceo_receipt(dir: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(dir.join(CEO_RECEIPT_PACK_REL)).ok()?;
+    let h = s.trim().to_ascii_lowercase();
+    (h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())).then_some(h)
+}
 
 /// ★D1-ⓑ(1.1.5 6차) **제품이 쓴 결정론 파생본** 판정 — CEO 승격 기계의 MASTER_DIRECTIVE.md.
 ///
@@ -2075,10 +2124,20 @@ pub const CEO_TEMPLATE_PACK_REL: &str = "directives/CEO_TEMPLATE.md";
 /// 가 **아니라 신판 CEO_TEMPLATE** 인 이유: 승격 기계에 vendor MASTER 를 쓰면 그 자리에서 조용히
 /// 강등(CEO 지침 소멸)된다 — 갱신의 목적은 '신판 문안 적용'이지 '승격 취소'가 아니다.
 /// 비승격 기계·사용자 수정본·CEO_TEMPLATE 미설치에서는 None(치환 없음 = 종전 경로).
+///
+/// ★v116-ceo-directive-hold(ⓑ⁺): 「제품이 쓴 CEO 사본」의 증거를 manifest[CEO] 하나에서 셋으로 넓힌다 —
+///   ①manifest[CEO](종전) ②승격 영수증(`.ceo-template-applied` = cys-dept `_swap` 이 교체 직후 기록한
+///   디스크 MASTER 의 sha256 · v1.0.0 부터) ③역대 발행 CEO_TEMPLATE 해시 표.
+///   ①만으로는 **옛 판 사이드카가 먼저 판정한** 기계를 못 구한다: 단추 갱신은 옛 앱의 `cys pack-update`
+///   가 새 팩을 먼저 적용하는데(D1-ⓑ 없는 1.1.4 이하), 그 판정이 System 등급 CEO_TEMPLATE 을 갱신하며
+///   manifest[CEO] 를 신판으로 전진시키고 MASTER 는 `.new` 로 보류한다 → 재시작 뒤 새 판 init-pack 에서
+///   ①이 영원히 불성립(1085 VM-B · 격리 재현 대조군으로 확정). ②③은 바이트 sha256 등가라 사용자
+///   수정본을 제품 사본으로 오인하지 않는다(한 글자라도 고치면 셋 다 불일치 → 종전 Keep+`.new`).
 pub(crate) fn ceo_derived_override<'a>(
     rel: &str,
     disk: Option<&str>,
     manifest_ceo_hash: Option<&str>,
+    receipt_hash: Option<&str>,
     items: &[(&'a str, &'a str)],
 ) -> Option<(&'a str, String)> {
     if rel != MASTER_DIRECTIVE_PACK_REL {
@@ -2086,7 +2145,10 @@ pub(crate) fn ceo_derived_override<'a>(
     }
     let d = disk?;
     let dh = content_hash(d);
-    if manifest_ceo_hash != Some(dh.as_str()) {
+    let product_written = manifest_ceo_hash == Some(dh.as_str())
+        || receipt_hash == Some(dh.as_str())
+        || is_released_ceo_template(d);
+    if !product_written {
         return None;
     }
     let new_ceo = items
@@ -2224,6 +2286,15 @@ pub fn decide_file_action(
                 //   system 등급의 비수정 자동갱신(아래 2124 arm)과 같은 술어이며, 그쪽과 달리
                 //   되돌릴 자리를 남긴다(`<rel>.bak-<판번>` 백업 — 실행부 install_into).
                 if manifest_hash == Some(content_hash(d).as_str()) {
+                    return FileAction::RefreshUser;
+                }
+                // ★v116-ceo-directive-hold(ⓔ · MASTER_DIRECTIVE.md 한 파일 한정): manifest 가 기록을
+                //   잃었어도 디스크가 **손대지 않은 옛 발행 표준 MASTER** 바이트 그대로면 미수정이다.
+                //   발화 형상: CEO 강등(cys-dept ceo_demote)이 낡은 .pre-ceo(옛 판)를 되살린 기계 —
+                //   manifest[MASTER] 는 현행 판이라 위 술어가 불성립하고, 같은 판번에선 `.new` 도 없이
+                //   옛 master 지침이 조용히 남는다(1098 교회 부서 시범 실측 · scratch/repro2.sh).
+                //   발행 해시 표는 바이트 sha256 등가라 사용자 수정본(표에 없음)은 종전대로 Keep+`.new`.
+                if rel == MASTER_DIRECTIVE_PACK_REL && is_released_master_directive(d) {
                     return FileAction::RefreshUser;
                 }
                 // ★D1: 혼합 설정(schedule.json·acl.json)은 사용자 수정본이어도 동결하지 않는다 —
@@ -2526,6 +2597,7 @@ pub fn plan_install(
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+    let ceo_receipt: Option<String> = read_ceo_receipt(dir);
     for (rel, content) in items.iter().copied() {
         let path = dir.join(rel);
         let exists = path.exists();
@@ -2536,6 +2608,7 @@ pub fn plan_install(
             rel,
             disk.as_deref(),
             manifest.get(CEO_TEMPLATE_PACK_REL).map(String::as_str),
+            ceo_receipt.as_deref(),
             items,
         );
         let content: &str = ceo_ov.as_ref().map(|(c, _)| *c).unwrap_or(content);
@@ -3402,6 +3475,9 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     // 디스크(구판 CEO 사본)와 영원히 불일치하고, 파생본 판정이 **한 번도 발화하지 않는다**.
     // 그래서 판정 기준(= 이 설치본이 **마지막으로 썼던** CEO 템플릿 해시)을 루프 전에 떠 둔다.
     let ceo_manifest_before: Option<String> = manifest.get(CEO_TEMPLATE_PACK_REL).cloned();
+    // ★v116-ceo-directive-hold(ⓑ⁺): 승격 영수증도 루프 전에 한 번 뜬다(같은 순서 함정 — 루프가 구제 시
+    // 영수증을 새 CEO 해시로 전진시키므로, 루프 안에서 읽으면 판정 기준이 흔들린다).
+    let ceo_receipt: Option<String> = read_ceo_receipt(&dir);
     let now_ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -3466,6 +3542,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             rel,
             disk.as_deref(),
             ceo_manifest_before.as_deref(),
+            ceo_receipt.as_deref(),
             &items,
         );
         let content: &str = ceo_ov.as_ref().map(|(c, _)| *c).unwrap_or(content);
@@ -3755,7 +3832,11 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                     if ceo_ov.is_some() {
                         let pre = dir.join(format!("{MASTER_DIRECTIVE_PACK_REL}.pre-ceo"));
                         if let Ok(cur) = std::fs::read_to_string(&pre) {
+                            // ★v116-ceo-directive-hold(ⓔ): manifest[MASTER] 와 같거나 **손대지 않은 옛
+                            // 발행 표준본**이면 전진 — 옛 사이드카를 거친 기계·1098 형상의 낡은 백업도
+                            // 사용자 수정이 아니므로 신판으로 올린다(수정본 = 표에 없음 = 무접촉).
                             if Some(content_hash(&cur)) == manifest.get(MASTER_DIRECTIVE_PACK_REL).cloned()
+                                || is_released_master_directive(&cur)
                             {
                                 let _ = write_atomic(&pre, vendor_embed.as_bytes());
                             }
@@ -3873,6 +3954,21 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
         let record: &str = if ceo_ov.is_some() { vendor_embed } else { content };
         manifest.insert(rel.to_string(), content_hash(record));
         ensure_pristine(&dir, rel, record);
+        // ★v116-ceo-directive-hold(ⓑ⁺): 승격 사본을 신판 CEO 로 바꿨으면 ①영수증을 새 사본 해시로 전진
+        //   (옛 해시로 남으면 C03 영수증 판정·다음 구제 근거가 흔들린다 — 대조군 실측: 영수증 4d29 · MASTER
+        //   9f4e) ②옛 사이드카가 남긴 `.new`(= 이번 vendor MASTER 바이트 그대로)를 정리한다 — 원장에
+        //   new-pending 항목이 없어도(1.1.2 등 옛 판 원장) 바이트가 vendor 그대로면 사용자 손길이 없는
+        //   잔재다. 내용이 다르면(사용자가 .new 를 손봄) 무접촉.
+        if ceo_ov.is_some() {
+            let _ = write_atomic(
+                &dir.join(CEO_RECEIPT_PACK_REL),
+                format!("{}\n", content_hash(out)).as_bytes(),
+            );
+            let newp = dir.join(format!("{rel}.new"));
+            if std::fs::read_to_string(&newp).ok().as_deref() == Some(vendor_embed) {
+                let _ = std::fs::remove_file(&newp);
+            }
+        }
         // 정상 갱신으로 합류(비수정 update·신규 생성) — 남은 new-pending 잔재는 무의미하므로 청소.
         if pending
             .get(rel)

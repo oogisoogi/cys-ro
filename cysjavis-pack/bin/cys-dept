@@ -1004,12 +1004,35 @@ if not ref:
 sys.exit(0 if ref.replace(b"\r\n", b"\n") in ceo.replace(b"\r\n", b"\n") else 1)
 PY
 }
+# ★v116-ceo-directive-hold(ⓕ · 1098 교회 부서 시범 실측): 「.pre-ceo 가 있다」 ≠ 「유효한 승격 백업이 있다」.
+#   부서가 없는 기계에 옛 승격 때의 .pre-ceo 가 남아 있으면(수동 되돌림 잔재 등) 종전 코드는 ①승격 때
+#   현행 master 지침을 백업하지 않고(`[ -f .pre-ceo ] || cp`) ②자동 승격 알림을 끄고(_auto) ③부트 게이트를
+#   우회했으며, 부서를 다 닫으면 강등이 **옛 판을 되살렸다**(격리 재현 scratch/repro2.sh).
+#   판정은 **긍정 증거**로만 한다: md 가 현행 CEO 템플릿이 감싼 표준 원본 그 자체(CEO ⊇ md · 기존 DCE-3
+#   함수)이고 승격 영수증과 다를 때만 .pre-ceo 를 낡은 백업으로 본다. 증거가 없으면(손본 CEO 사본 · 핀을
+#   지운 사본 · 옛 CEO 사본) 종전 동작 그대로다 — 부정 증거(「CEO 표지가 없으면 미승격」) 초안은 핀을 지운
+#   손수정 사본을 오판해 진짜 백업을 밀어내는 반례로 폐기(agy B R1 · 시험 11e).
+ceo_receipt_matches(){  # $1=파일 — 승격 영수증(.ceo-template-applied) 해시 == sha256($1) 이면 0
+  local r h
+  r="$(tr -d '\r\n\t ' < "$PACK_DEFAULT/directives/.ceo-template-applied" 2>/dev/null)" || return 1
+  [ -n "$r" ] || return 1
+  h="$(shasum -a 256 "$1" 2>/dev/null)" || return 1
+  [ "$r" = "${h%% *}" ]
+}
+pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md = 현행 표준 원본이라는 긍정 증거)
+  [ -f "$1.pre-ceo" ] || return 1
+  cmp -s "$1" "$2" 2>/dev/null && return 1
+  cmp -s "$1" "$1.pre-ceo" 2>/dev/null && return 1
+  ceo_receipt_matches "$1" && return 1
+  ceo_template_superset_ok "$2" "$1" 2>/dev/null
+}
+pre_ceo_valid(){ [ -f "$1.pre-ceo" ] && ! pre_ceo_is_stale "$1" "$2"; }  # 유효한 승격 백업이 있으면 0
 ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자동 승격 알림 생략
   local md="$PACK_DEFAULT/directives/MASTER_DIRECTIVE.md"
   local ceo="$PACK_DEFAULT/directives/CEO_TEMPLATE.md"
   [ -f "$ceo" ] || { echo "[cys-dept] CEO 템플릿 없음 — 승격 생략(cys init-pack 필요)"; return 0; }
   cmp -s "$md" "$ceo" 2>/dev/null && { rm -f "$CEO_PENDING" 2>/dev/null || true; return 0; }
-  if [ ! -f "$md.pre-ceo" ] && [ ! -f "$BOOT_MARKER" ]; then
+  if ! pre_ceo_valid "$md" "$ceo" && [ ! -f "$BOOT_MARKER" ]; then
     # PENDING: 부서 생성 자체는 성공 유지(return 0). 침묵 금지 — feed(비대기·보조)+stderr 고지,
     # GUI 상시 배지는 ceo-pending 파일 존재로 렌더(WP-2/T6). 해소=부트 ⑦ one-shot 또는 차기 lifecycle.
     mkdir -p "$(dirname "$CEO_PENDING")"
@@ -1023,7 +1046,7 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
   #   간주해 자동 승격한다(GUI 승인 버튼이 §3.2 자기승인 차단·토큰 불일치로 침묵 실패해 승격이 걸리던 문제 해소).
   #   위 ③ 부트 마커 PENDING 게이트는 불변(미부트 머신 승격 금지). consented(오너 지명)는 원래 자동 아님 — 알림 생략 판별용.
   local _auto=0
-  if [ ! -f "$md.pre-ceo" ] && [ "${1:-}" != "consented" ]; then _auto=1; fi
+  if ! pre_ceo_valid "$md" "$ceo" && [ "${1:-}" != "consented" ]; then _auto=1; fi
   # ★동시 승격 직렬화(2026-07-15 적대검증 D-5): 두 promote가 겹치면 두 번째가 "pre-ceo 없음"을
   # 읽은 뒤 첫 번째의 cp(ceo→md) 이후 실행돼 CEO 템플릿을 .pre-ceo로 복사→ceo_demote 원복 불능.
   # flock으로 백업+교체를 원자화(flock 미설치 환경은 그대로 진행 — 인간 페이스 더블클릭은 저위험).
@@ -1032,7 +1055,8 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
   #   등가 > 표지 3핀 폴백' 우선순위로 승격 표지를 결정론 판정한다. 위치를 ~/.cys/state가 아닌
   #   pack 트리에 두는 근거=Tier1 백업 원자성(.pre-ceo와 같은 축·복원 시 세대 불일치 방지).
   #   기록 실패는 승격 불차단(fail-open — 판정은 표지 핀 폴백). shasum=mac/win PortableGit 공통 가용.
-  _swap(){
+  _swap(){  # $1: 1 = 승격 락 보유(flock·mkdir 성공) · 0 = 무락 강행 경로
+    local _locked="${1:-0}"
     # ★DCE-3(T10) 1단계 — 스왑 '직전' 상위집합 런타임 검사(락 안 = 검사·스왑 원자). 실패 rc 3
     #   = 스왑 미실행(md·.pre-ceo·영수증 전부 무접촉) — 보류 처리(PENDING 유지+loud)는 호출부.
     # ★MF-1(P3 수정 라운드): OR-포함 판정 — ceo ⊇ md 또는 ceo ⊇ .pre-ceo 중 하나면 통과.
@@ -1066,7 +1090,24 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
       ceo_template_superset_ok "$ceo" "$md.pre-ceo" && _sup_ok=0
     fi
     [ "$_sup_ok" -eq 0 ] || return 3
-    [ -f "$md.pre-ceo" ] || cp "$md" "$md.pre-ceo"; cp "$ceo" "$md"
+    # ★v116-ceo-directive-hold(ⓕ): 낡은 백업은 지우지 않고 .stale-<시각> 로 옮긴 뒤 현행 md 를 새로 백업한다.
+    #   락 안에서 다시 판정(검사·교체 원자) · **락을 못 잡은 무락 강행 경로에서는 하지 않는다** — 그 창에서
+    #   .pre-ceo 를 옮기면 동시 승격이 백업을 서로 덮는다(agy B R1 ③ · 시험 11f · 무락 강행 자체는 종전 결함).
+    local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)"
+    if [ "$_locked" = 1 ] && pre_ceo_is_stale "$md" "$ceo"; then
+      mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" || return 4
+      echo "[cys-dept] 낡은 승격 백업을 $md.pre-ceo.stale-$_ts 로 보존하고 현행 master 지침을 새로 백업" >&2
+    fi
+    if [ ! -f "$md.pre-ceo" ]; then
+      cp "$md" "$md.pre-ceo.tmp" && mv "$md.pre-ceo.tmp" "$md.pre-ceo" || return 4
+    elif ! ceo_receipt_matches "$md"; then
+      # ★v116-ceo-directive-hold(ⓧ1): 이미 승격 백업이 있는데 md 가 영수증과 다르다 = 제품이 쓴 사본이
+      #   아닐 수 있다(손본 CEO 사본 등). 종전엔 아래 교체가 그 사본을 백업 없이 덮었다 — 덮기 전 보존.
+      cp "$md" "$md.pre-ceo-$_ts" || return 4
+      echo "[cys-dept] 덮기 전 현재 master 지침을 $md.pre-ceo-$_ts 로 보존(손본 사본일 수 있음)" >&2
+    fi
+    # 원자 교체(같은 디렉터리 임시 파일 + rename) — 반쯤 쓴 지침으로 master 가 기동하는 창 0.
+    cp "$ceo" "$md.tmp" && mv "$md.tmp" "$md" || return 4
     local h
     if h="$(shasum -a 256 "$md" 2>/dev/null)" && [ -n "$h" ]; then
       printf '%s\n' "${h%% *}" > "$PACK_DEFAULT/directives/.ceo-template-applied"
@@ -1076,17 +1117,17 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
   }
   local _swap_rc=0
   if command -v flock >/dev/null 2>&1; then
-    ( flock 9; _swap ) 9>"$md.promote.lock" || _swap_rc=$?
+    ( flock 9; _swap 1 ) 9>"$md.promote.lock" || _swap_rc=$?
   else
     # ★A13(win): PortableGit엔 flock CLI가 없어 종전엔 무락(D-5 동시 승격 레이스 방어 부재) —
     #   mkdir 원자 락 폴백(원자적 mkdir 성공=락 획득). 획득 실패=경고 후 진행(현행 무락보다 강화·
     #   인간 페이스 더블클릭은 저위험이라 차단하지 않는다 — 잔존 락은 수동 rmdir 안내).
     if mkdir "$md.promote.lock.d" 2>/dev/null; then
-      _swap || _swap_rc=$?
+      _swap 1 || _swap_rc=$?
       rmdir "$md.promote.lock.d" 2>/dev/null || true
     else
       echo "[cys-dept] WARN: 승격 락($md.promote.lock.d) 획득 실패 — 동시 승격 의심, 무락 진행(잔존 락은 rmdir로 정리)" >&2
-      _swap || _swap_rc=$?
+      _swap 0 || _swap_rc=$?
     fi
   fi
   if [ "$_swap_rc" -ne 0 ]; then

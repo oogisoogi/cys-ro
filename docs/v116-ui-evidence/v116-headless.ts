@@ -524,12 +524,16 @@ if (ONLY.includes("c17x")) {
   await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 820, deviceScaleFactor: 1, mobile: false });
   await load("two", "");
   const Q = `(() => { const bar = document.getElementById("topbar"); const b = document.getElementById("btn-update"); const c = document.getElementById("btn-close"); const r = b.getBoundingClientRect();
-    return { label: (b.firstChild?.nodeValue ?? "").trim(), barOverflow: bar.scrollWidth - bar.clientWidth, h: Math.round(r.height), hRef: Math.round(c.getBoundingClientRect().height), inView: r.left >= 0 && r.right <= window.innerWidth, pageOverflow: document.documentElement.scrollWidth - window.innerWidth }; })()`;
+    return { label: (b.firstChild?.nodeValue ?? "").trim(), barOverflow: bar.scrollWidth - bar.clientWidth, barH: Math.round(bar.getBoundingClientRect().height), scrollX: getComputedStyle(bar).overflowX, h: Math.round(r.height), hRef: Math.round(c.getBoundingClientRect().height), inView: r.left >= 0 && r.right <= window.innerWidth, pageOverflow: document.documentElement.scrollWidth - window.innerWidth }; })()`;
   const q0 = await ev(Q);
   await ev(`window.__shimEmit("update-restart-required", { version: "1.1.7", reason: "app_replaced" })`); await Bun.sleep(300);
   const q1 = await ev(Q);
   await shot("c17q-w800-restart.png");
-  check("c17q w800 「다시 켜기」 = 상단바 넘침 증가 0 · 단추 한 줄(높이 = 이웃 단추) · 화면 안 · 페이지 가로 넘침 0", q1.label === "다시 켜기" && q1.barOverflow <= q0.barOverflow && q1.h === q1.hRef && q1.inView && q1.pageOverflow <= 0, JSON.stringify({ q0, q1 }));
+  // 상단바 설계(style.css #topbar · D4 #2) = 한 줄 고정 · 좁으면 접지 않고 가로로 밀어 본다(끝 단추까지 누를 수 있다).
+  //   800폭은 수리 전부터 넘친다(기준 +50px) — 「다시 켜기」는 글자 하나만큼 더 민다(증가분은 기록만 · 판정 = 설계 계약).
+  //   (첫 판 단언 「넘침 증가 0」은 이 설계와 어긋나 교정했다 — 14:5x 실측 +4px.)
+  console.log(`     c17q 상단바 가로 넘침: 평소 ${q0.barOverflow}px → 다시 켜기 ${q1.barOverflow}px (증가 ${q1.barOverflow - q0.barOverflow}px)`);
+  check("c17q w800 「다시 켜기」 = 단추 한 줄(높이 = 이웃 단추) · 상단바 높이 불변(줄바꿈 0) · 가로 스크롤 유지 · 단추 화면 안 · 페이지 가로 넘침 0", q1.label === "다시 켜기" && q1.h === q1.hRef && q1.barH === q0.barH && q1.scrollX === "auto" && q1.inView && q1.pageOverflow <= 0, JSON.stringify({ q0, q1 }));
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }
 

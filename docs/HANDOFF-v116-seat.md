@@ -16,11 +16,12 @@ master 판정(원장 대조 성립): `master#9a304fb3`(08:09:33 · F2·F3 = A + 
 - agy 3R(hetero-agy-seat-3.md · REJECT 5): ①「claude is an AI」 산문 폐기 = **수용**(폐기 판정을 좁힘 = 실행 파일 뒤가 플래그이거나 끝 · is_stale_launch_line · 가드 판정 불변) ②폐기 뒤 새 머리를 옛 판정으로 배달(check-then-act) = **수용**(틱 경로는 폐기한 호출에서 배달 0 · 강제 배달은 조준 항목이 남아 있으면 배달) — 둘 다 적색 커밋 4886da90 → 수리 fa581645 → 진리표 ac20e9e3 ③O(N²) = 반박(큐 상한 100 · 모든 적재 경로) · 옛 줄 없으면 할당 없이 반환은 반영 ④메타 설정 전 배달 = 반박(set_meta 는 send_key 직후 <1초 · 배달은 출력 quiet ≥1초 + 프롬프트 경계 · 실패 시험 없음 = 기록) ⑤강제 배달 Raced 문구 = 기록(P3).
 - ⚠ agy 3R 이 읽기 전용 지시를 어기고 worktree 에 test_match.rs·test_part.rs(15:49·15:51)를 만들었다 → 스크래치로 옮김(삭제 안 함).
 - 규칙 ⑤: 구현 미열람 새 Opus 서브에이전트(jsonl model claude-opus-5-5 22건)가 명세 S1~S5 로 합격 시험 27건 → 27/27 · 반례 0 → a4a521ab 편입(자기 고지: 서명 확인 중 구현 3줄이 딸려 보임).
-- secret-scan --all 1건(내가 앞서 쓴 시험의 `/Users/a b/` 더미) → 50af34c3 에서 허용 더미로 · rc 0.
+- secret-scan --all 1건(내가 앞서 쓴 시험의 가짜 홈 경로 = 허용 목록 밖 이름에 공백을 넣은 더미) → 50af34c3 에서 허용 더미로 · rc 0.
 - 뮤턴트: 판정 C 8/8(C6 영속 제거는 처음 생존 → 배달 0 경우 WAL 대조 추가 뒤 KILLED) · agy 3R 수리 6/6(K1~K6). 격리 재실측(최종 코드): 판정 C 초록 · 2-2 pane-caller node-recover rc 0 · alive True · 역할 유지.
 - 선재 곁 관측: cysd `deliver` 필터 **병렬** 실행 시 ACL 시험 3건 간헐 실패(수정 전 커밋에서도 3회 중 1회) · 직렬 초록.
 - ⑦ 반영: 하네스 pkill(이름 패턴) 제거 → 스텁이 기록한 자기 pid · 내가 띄운 데몬 pid 만.
 - agy 4R(hetero-agy-seat-4.md · REJECT): PART A 3R 5건 = 수용 2 확인 · 반박·기록 3 수용. B1 기아(꼬리에 옛 줄이 틱마다 들어오면 무조건 거름이 정상 머리를 영영 못 보냄) = **수용** → 명세 S3 개정(폐기로 **머리가 바뀐 때만** 그 틱 배달 0) · 적색 커밋 뒤 수리 · 합격 시험 2건을 개정 명세로(내가 고침 = 명세 작성자 개정 · 기록) · 뮤턴트 L1~L3 3/3 · deliver 75 · queue 57 직렬 초록. B2 `claude -p "…"` 폐기 = 기록(큐는 에이전트 입력 · 정당한 생산자 없음 · master 판정 A 가 수용한 단점 · 이벤트로 드러남). 생존 뮤턴트(빠른 반환 제거) = 의미 등가(성능만) · 기록.
+- 정본 게이트 1회차(1b6594c3 · 17:17 · 98 스텝 · rc≠0 6 · 기준 526325bf 대비 신규 6): ①D02·B01 H-SECRET-1 = **내 HANDOFF 문장**이 시크릿 스캔 적발 경로를 그대로 인용 → 문장 고침(실결함 · 이 커밋) ②A12·D07e(no_deadline_means_no_bound_instrument_validity)·D07b(phoenix_w2_untomb_fullcycle) = **내 게이트 환경 오류** — 격리 TMPDIR 을 길게 줘(54자 · 기준 47자) 소켓 경로가 SUN_LEN 을 넘음. 【관측】 같은 커밋·짧은 TMPDIR(35자) = 둘 다 통과(1/1 · 7/7) · 긴 TMPDIR = SUN_LEN 결정론 재현. 다음 게이트는 짧은 경로로.
 **다음 할 일**: 이 커밋 해시로 정본 게이트(gate_runner.py · 스냅샷 · 기준 526325bf 대비 compare_runs) + agy 4R → 9단계 성찰 2회차(reports/cysr-116-seat/reflection-9-code-2.md §5 채움) → 【확인요청】(범위 안 ①②③ 동봉).
 
 ## ★ §0 델타(이력) — 재개 2회차 매듭(2026-09-24 14:2x · master#bb37344b 예산 정지 · 15:20 뒤 재개)

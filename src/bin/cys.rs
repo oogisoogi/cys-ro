@@ -23647,8 +23647,8 @@ mod tests {
         format!(
             "admin@vm cso % {T2_LAUNCH}\n\
              > 설치 폴더 점검해 줘\n\
-             ● Bash(ls /Users/admin/install-jarvis/old)\n  \
-             ⎿  ls: /Users/admin/install-jarvis/old: No such file or directory\n\
+             ● Bash(ls /Users/runner/install-jarvis/old)\n  \
+             ⎿  ls: /Users/runner/install-jarvis/old: No such file or directory\n\
              \n\
              ────────────────────────────────────────────────────────────\n\
              ❯ \n\
@@ -23662,7 +23662,7 @@ mod tests {
         let grid = t2_resume_grid();
         // 전제(결함 본체): 옛 판정은 신규 출현분 문면만 봤다 — 재출력된 옛 대화가 신규 출현분이면 「기동 실패」였다.
         let delta = "admin@vm cso % claude --dangerously-skip-permissions --resume b8bb4651\n\
-                     ● Bash(ls /Users/admin/install-jarvis/old)\n  ⎿  ls: /Users/admin/install-jarvis/old: No such file or directory\n";
+                     ● Bash(ls /Users/runner/install-jarvis/old)\n  ⎿  ls: /Users/runner/install-jarvis/old: No such file or directory\n";
         assert!(screen_shows_launch_failure(&flatten_ws(delta)), "전제: 수리 전 = LaunchFailed → close");
         // 전제(opus 적대 1R #2): 옛 5줄 창이면 마지막 대화 줄(옛 오류)이 꼬리에 들어온다 — 3줄 창의 이유
         assert!(screen_shows_launch_failure(&cys::first_run_gates::flatten(&screen_tail_lines(&grid, 5))));
@@ -23689,14 +23689,14 @@ mod tests {
         let reused = format!("{}\n{zsh}", t2_resume_grid());
         assert!(launch_failure_confirmed(&reused, T2_LAUNCH, None));
         // Windows cmd.exe · 새 좌석
-        let cmd = "C:\\Users\\admin> claude --model claude-opus-5-5\n'claude' is not recognized as an internal or external command,\noperable program or batch file.\n\nC:\\Users\\admin>";
+        let cmd = "C:\\Users\\runner> claude --model claude-opus-5-5\n'claude' is not recognized as an internal or external command,\noperable program or batch file.\n\nC:\\Users\\runner>";
         assert!(launch_failure_confirmed(cmd, "claude --model claude-opus-5-5", None));
         // Windows PowerShell · 새 좌석: 오류 블록이 길어 인식 문면이 꼬리 창 **밖** — 에코 아래 TUI 없음이 확증한다
         let ps_launch = "claude --model claude-opus-5-5";
-        let ps = "PS C:\\Users\\admin> claude --model claude-opus-5-5\n\
+        let ps = "PS C:\\Users\\runner> claude --model claude-opus-5-5\n\
 claude : The term 'claude' is not recognized as the name of a cmdlet, function, script file, or operable program.\n\
 At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo          : ObjectNotFound: (claude:String) [], CommandNotFoundException\n\
-    + FullyQualifiedErrorId : CommandNotFoundException\n\nPS C:\\Users\\admin>";
+    + FullyQualifiedErrorId : CommandNotFoundException\n\nPS C:\\Users\\runner>";
         assert!(
             !screen_shows_launch_failure(&cys::first_run_gates::flatten(&screen_tail_lines(ps, LAUNCH_FAILURE_TAIL_LINES))),
             "전제: 인식 문면이 꼬리 창 밖"
@@ -23729,7 +23729,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(grid_after_launch_echo(twice, "claude --dangerously-skip-permissions"), "B");
         assert_eq!(grid_after_launch_echo("% claude --dangerously-skip-permissions", "claude --dangerously-skip-permissions"), "");
         // agy 3R #2: 긴 프롬프트 뒤 에코가 그리드 폭에서 접혀 앞 16자가 두 행에 걸친다
-        let wrapped = "old ╭────────╮\nPS C:\\Users\\admin\\a\\very\\long\\path> claude --mo\ndel claude-opus-5-5\nerr\nPS>";
+        let wrapped = "old ╭────────╮\nPS C:\\Users\\runner\\a\\very\\long\\path> claude --mo\ndel claude-opus-5-5\nerr\nPS>";
         assert_eq!(grid_after_launch_echo(wrapped, "claude --model claude-opus-5-5"), "del claude-opus-5-5\nerr\nPS>".split_once('\n').map(|(_, r)| r).unwrap());
     }
 

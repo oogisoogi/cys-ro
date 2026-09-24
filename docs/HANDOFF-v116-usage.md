@@ -240,7 +240,7 @@ echo "[$V] closed events: $(grep -c '"surface.closed"' "$R/events.jsonl")"
 #!/bin/sh
 # 가짜 claude v2 — 실제 claude 처럼: 옛 대화 재출력은 개행(scrollback 에 실림) · 하단 영역은 개행 없이 제자리 그리기.
 sleep 1
-printf '%s\n' '> 설치 폴더 점검해 줘' '● Bash(ls /Users/admin/install-jarvis/old)' '  ⎿  ls: /Users/admin/install-jarvis/old: No such file or directory' ''
+printf '%s\n' '> 설치 폴더 점검해 줘' '● Bash(ls $HOME/install-jarvis/old)' '  ⎿  ls: $HOME/install-jarvis/old: No such file or directory' ''
 # 하단 영역: 줄마다 지우고 쓰고 커서 한 줄 아래 + 행 처음(개행 문자 없음)
 for l in '────────────────────────────────────────────────────────────' '❯ ' '────────────────────────────────────────────────────────────' '  ⏵⏵ bypass permissions on (shift+tab to cycle)'; do
   printf '\033[2K%s\033[1B\r' "$l"

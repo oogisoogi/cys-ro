@@ -8,7 +8,19 @@
 //! 무엇을 하나(좁게):
 //!   · **ENXIO 일 때만** 상한 있는 재시도(백오프 · 매 재시도 stderr 1줄). 다른 에러는 한 번도
 //!     재시도하지 않고 그대로 돌려준다 — 진짜 결함은 종전과 똑같이 붉다.
-//!   · 상한을 넘기면 「PTY 고갈(환경) — 제품 결함 아님 · 열린 PTY n/max」 문구로 실패한다.
+//!   · 상한을 넘기면 「PTY 고갈(…)」 문구로 실패한다. 단 **누가 PTY 를 쥐고 있는지**로 문구가 갈린다
+//!     (적대 1R #1): 다른 프로세스가 상한의 1/4 이상을 쥐면 「환경」, 아니면 「자기 프로세스 n개 보유 —
+//!     시험 점유 또는 제품 PTY 누수 의심 · 제품 결함 배제 불가」. 격리 러너(다른 PTY 보유자 없음)에서
+//!     제품이 PTY 를 새면 후자로 드러난다 — 「제품 결함 아님」을 증거 없이 단정하지 않는다.
+//!   · 재시도 줄은 libtest 출력 캡처를 우회해 stderr 로 직접 쓴다 — 재시도 뒤 통과한 시험도 흔적이 남는다.
+//!
+//! 범위(정직 고지): 감싼 곳 = 도우미 5종(make_surface · create_surface_rpc · create_surface_rpc_idem ·
+//! create_rpc · watch_wake seat) + usage.rs 3곳 = 09-24 관측 ENXIO 실패 9건의 경로 전부. 그 밖 직접
+//! `create_surface` 호출(governance·state·channels·boot_supervisor 시험 등)은 감싸지 않았다 — 거기서 난
+//! ENXIO 는 종전처럼 원문(`openpty failed … Device not configured`) 적색이다(편입 충돌 회피 · 후속 후보).
+//! 부수효과(정직 고지): 재시도 뒤 성공하면 실패한 시도가 surface id 1개씩을 소비하고, RPC 경로는
+//! `surface.create_failed` 이벤트를 1건씩 남긴다 — id·이벤트 수를 단언하는 시험은 그때 다른 문구로 붉을 수
+//! 있다(재시도 줄이 stderr 에 남으므로 원인 추적 가능).
 //!
 //! 제품 `state.rs` openpty 경로는 무접촉이다(이 모듈은 `#[cfg(test)]` 로만 컴파일된다).
 
@@ -31,37 +43,80 @@ pub(crate) fn is_pty_exhaustion(err: &str) -> bool {
         && (err.contains("Os { code: 6,") || err.contains("(os error 6)"))
 }
 
-/// 지금 열린 PTY 수 / 상한(최선 노력 — 못 재면 `?`).
-pub(crate) fn pty_census() -> String {
-    let open = std::fs::read_dir("/dev")
-        .map(|it| {
-            it.filter_map(|e| e.ok())
-                .filter(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.starts_with("ttys") && n[4..].chars().all(|c| c.is_ascii_digit()) && n.len() > 4
-                })
-                .count()
-                .to_string()
-        })
-        .unwrap_or_else(|_| "?".into());
+/// PTY 실측(최선 노력 · macOS): 기기 전체 열린 PTY · 상한 · **이 프로세스가 쥔 PTY**.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PtyCensus {
+    pub total: Option<usize>,
+    pub max: Option<usize>,
+    pub own: Option<usize>,
+}
+
+pub(crate) fn pty_census() -> PtyCensus {
+    let total = std::fs::read_dir("/dev").ok().map(|it| {
+        it.filter_map(|e| e.ok())
+            .filter(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.len() > 4 && n.starts_with("ttys") && n[4..].chars().all(|c| c.is_ascii_digit())
+            })
+            .count()
+    });
     let max = std::process::Command::new("sysctl")
         .args(["-n", "kern.tty.ptmx_max"])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "?".into());
-    format!("{open}/{max}")
+        .and_then(|s| s.trim().parse().ok());
+    // 이 프로세스의 PTY fd(마스터 /dev/ptmx · 슬레이브 /dev/ttysN) — lsof 한 번(재시도·실패 경로에서만 부른다).
+    let own = std::process::Command::new("lsof")
+        .args(["-a", "-p", &std::process::id().to_string(), "-Fn"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| l.starts_with("n/dev/ptmx") || l.starts_with("n/dev/ttys"))
+                .count()
+        });
+    PtyCensus { total, max, own }
 }
 
-/// 상한을 넘긴 고갈의 실패 문구 — 결함 실패와 **문구가 갈린다**.
-pub(crate) fn exhaustion_message(what: &str, attempts: usize, err: &str) -> String {
+fn q(v: Option<usize>) -> String {
+    v.map(|n| n.to_string()).unwrap_or_else(|| "?".into())
+}
+
+/// 상한을 넘긴 고갈의 실패 문구(순수) — 결함 실패와 문구가 갈리고, **누가 쥐었는지**로 한 번 더 갈린다.
+/// 다른 프로세스 보유(= 전체 − 자기)가 상한의 1/4 이상일 때만 「환경」이라 부른다.
+pub(crate) fn exhaustion_wording(what: &str, attempts: usize, err: &str, c: PtyCensus) -> String {
+    let others = match (c.total, c.own) {
+        (Some(t), Some(o)) => Some(t.saturating_sub(o)),
+        _ => None,
+    };
+    let env = matches!((others, c.max), (Some(k), Some(m)) if k * 4 >= m);
+    let head = if env {
+        format!("PTY 고갈(환경) — 다른 프로세스가 {}개 보유 · 제품 결함 아님", q(others))
+    } else {
+        format!(
+            "PTY 고갈(자기 프로세스 {}개 보유 — 시험 점유 또는 제품 PTY 누수 의심 · 제품 결함 배제 불가)",
+            q(c.own)
+        )
+    };
     format!(
-        "PTY 고갈(환경) — 제품 결함 아님 · {what} · 시도 {attempts}회 · 열린 PTY {} · 원문: {err}",
-        pty_census()
+        "{head} · {what} · 시도 {attempts}회 · 열린 PTY {}/{} · 이 프로세스 {} · 원문: {err}",
+        q(c.total),
+        q(c.max),
+        q(c.own)
     )
+}
+
+pub(crate) fn exhaustion_message(what: &str, attempts: usize, err: &str) -> String {
+    exhaustion_wording(what, attempts, err, pty_census())
+}
+
+/// libtest 는 `eprintln!` 을 **통과한 시험에서 삼킨다** — 재시도 흔적은 fd 2 에 직접 쓴다(적대 1R #1).
+fn log_uncaptured(line: &str) {
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(format!("{line}\n").as_bytes());
 }
 
 /// 순수 재시도 루프(대기 함수 주입 — 단위 시험이 실제로 자지 않는다).
@@ -82,12 +137,15 @@ pub(crate) fn retry_with<T>(
                 let Some(d) = backoff.get(attempts - 1) else {
                     return (Err(exhaustion_message(what, attempts, &e)), attempts);
                 };
-                eprintln!(
-                    "[pty-retry] {what}: openpty ENXIO — {}ms 뒤 재시도 {attempts}/{} · 열린 PTY {}",
+                let c = pty_census();
+                log_uncaptured(&format!(
+                    "[pty-retry] {what}: openpty ENXIO — {}ms 뒤 재시도 {attempts}/{} · 열린 PTY {}/{} · 이 프로세스 {}",
                     d.as_millis(),
                     backoff.len(),
-                    pty_census()
-                );
+                    q(c.total),
+                    q(c.max),
+                    q(c.own)
+                ));
                 sleep(*d);
             }
         }
@@ -138,6 +196,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")] // 오류 문구(strerror)가 OS 마다 다르다 — 관측 원문은 macOS(적대 1R #6)
     fn real_shape_matches_the_observed_failure_text() {
         // 09-24 X-7·D07c 로그 원문과 한 글자도 다르지 않아야 주입이 실물이다.
         assert_eq!(
@@ -215,8 +274,30 @@ mod tests {
         assert_eq!(attempts, PTY_RETRY_BACKOFF.len() + 1);
         assert_eq!(total.get(), Duration::from_secs(15), "재시도 총량이 1+2+4+8초가 아니다");
         let e = r.unwrap_err();
-        assert!(e.starts_with("PTY 고갈(환경) — 제품 결함 아님 · seat(master) · 시도 5회 · 열린 PTY "), "{e}");
-        assert!(e.contains("Device not configured"), "원문이 사라졌다: {e}");
+        assert!(e.starts_with("PTY 고갈("), "{e}");
+        assert!(e.contains(" · seat(master) · 시도 5회 · 열린 PTY "), "{e}");
+        assert!(e.contains(&openpty_err(libc::ENXIO)), "원문이 사라졌다: {e}");
+    }
+
+    /// ★적대 1R #1: 「환경」은 다른 프로세스가 쥔 증거가 있을 때만. 자기 프로세스가 대부분을 쥐면(격리 러너의
+    /// 제품 PTY 누수 모양) 「제품 결함 배제 불가」로 적는다. 판정 모를 때도 「환경」이라 단정하지 않는다.
+    #[test]
+    fn wording_says_environment_only_when_other_processes_hold_ptys() {
+        let e = openpty_err(libc::ENXIO);
+        let w = |total, own| exhaustion_wording("t", 5, &e, PtyCensus { total, max: Some(511), own });
+        // 다른 워커 병렬 시험이 300개 · 나는 200개 → 환경
+        let env = w(Some(511), Some(200));
+        assert!(env.starts_with("PTY 고갈(환경) — 다른 프로세스가 311개 보유 · 제품 결함 아님"), "{env}");
+        // 격리 러너: 나 혼자 500개 → 누수 의심(환경 아님)
+        let own = w(Some(511), Some(500));
+        assert!(own.starts_with("PTY 고갈(자기 프로세스 500개 보유 — "), "{own}");
+        assert!(own.contains("제품 결함 배제 불가") && !own.contains("제품 결함 아님"), "{own}");
+        // 경계: 다른 프로세스 127(< 511/4) → 환경 아님 · 128 → 환경
+        assert!(!w(Some(511), Some(384)).contains("(환경)"));
+        assert!(w(Some(511), Some(383)).contains("(환경)"));
+        // 실측 불가(lsof 실패 등) → 환경이라 단정하지 않는다
+        let unk = w(Some(511), None);
+        assert!(!unk.contains("(환경)") && unk.contains("이 프로세스 ?"), "{unk}");
     }
 
     #[test]
@@ -233,9 +314,34 @@ mod tests {
         }
     }
 
+    /// ★적대 1R #1(자동 판정): 재시도 줄은 libtest 기본 캡처를 **뚫고** 나와야 한다 — 재시도 뒤 통과한
+    /// 시험도 흔적을 남겨야 흡수된 PTY 압박이 보인다. 이 시험 바이너리를 기본 캡처로 한 시험만 재실행해
+    /// 그 stderr 에 `[pty-retry]` 줄이 있는지 본다(`eprintln!` 로 되돌리면 캡처돼 사라진다 = 적색).
     #[test]
-    fn census_reports_open_over_max() {
+    fn retry_line_survives_libtest_output_capture() {
+        let exe = std::env::current_exe().expect("현재 시험 바이너리");
+        let out = std::process::Command::new(exe)
+            .args(["--exact", "pty_test_support::tests::transient_exhaustion_is_retried_then_succeeds"])
+            .output()
+            .expect("시험 바이너리 재실행");
+        let err = String::from_utf8_lossy(&out.stderr);
+        let so = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "재실행 시험 실패: {so}{err}");
+        assert!(so.contains("1 passed"), "대상 시험이 돌지 않았다: {so}");
+        assert_eq!(err.matches("[pty-retry] t: openpty ENXIO").count(), 2, "재시도 줄이 캡처에 삼켜졌다: {err}");
+    }
+
+    /// 실측이 실제로 돈다(macOS): 이 시험 프로세스가 PTY 하나를 열면 own 이 1 이상.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn census_counts_this_process_ptys() {
         let c = pty_census();
-        assert!(c.contains('/'), "{c}");
+        assert!(c.total.is_some() && c.max.is_some() && c.own.is_some(), "{c:?}");
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 });
+        if let Ok(_pair) = pair {
+            let c2 = pty_census();
+            assert!(c2.own.unwrap_or(0) >= 1, "열린 PTY 를 못 셌다: {c2:?}");
+        }
     }
 }

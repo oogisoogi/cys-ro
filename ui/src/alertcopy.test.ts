@@ -4,7 +4,7 @@
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
-  seatNo, seatName, durText, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy,
+  seatNo, seatName, visibleNo, durText, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy,
   masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy, type AlertCopy,
 } from "./alertcopy";
 
@@ -102,7 +102,7 @@ describe("D4 #8 도우미", () => {
     expect(roleTakeoverCopy(null, { role: "master" }).body).toBe("옛 창이 비어 있어 이 역할을 새 창으로 옮겨 붙였습니다. 옛 창은 곧 정리됩니다. 전할 말이 남아 있으면 그대로 둡니다.");
     expect(agentExitedCopy(3, { role: "worker", dept: "영업부" }).body.startsWith("영업부 3번 작업 창의")).toBe(true);
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
-    expect(main).toContain("approvalStalledCopy(seatNo(null, payload.surface_ref), ap)");
+    expect(main).toContain("approvalStalledCopy(shown(seatNo(null, payload.surface_ref)), ap)");
     expect(main).toContain("{ ...payload, dept: ctxGroupLabel(evSock) } : payload;");
     expect(main).toContain("toast(\"alert\", c.title, c.body, undefined, c.raw);");
   });
@@ -128,5 +128,25 @@ describe("D4 #8 배선 — 경보 처리부가 원문을 조립하지 않는다"
     expect(ev.includes("payload.action")).toBe(false);
     expect(ev.includes("에이전트 사망")).toBe(false);
     expect(ev.includes("master 유휴")).toBe(false);
+  });
+});
+
+// ★v116-num — 알림 「N번 창」 = 창 머리와 같은 보이는 번호.
+describe("v116-num visibleNo", () => {
+  it("번호표에 있으면 보이는 번호 · null 이면 번호 없음 · 모르면 내부 번호(옛 데몬)", () => {
+    const table = new Map<number, number | null>([[1049, 50], [1500, null]]);
+    const look = (id: number) => table.get(id);
+    expect(visibleNo(1049, look)).toBe(50);
+    expect(visibleNo(1500, look)).toBe(null);
+    expect(visibleNo(7, look)).toBe(7);
+    expect(visibleNo(null, look)).toBe(null);
+    expect(seatName(visibleNo(1049, look), "worker")).toBe("50번 작업 창");
+    expect(seatName(visibleNo(1500, look), "worker")).toBe("작업 창");
+  });
+  it("배선: 알림 번호는 이벤트를 낸 데몬의 번호표로 푼다", () => {
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    expect(main).toContain("const shown = (n: number | null) => visibleNo(n, (id) => displayNoByKey.get(paneKey(id, evSock)));");
+    expect(main).toContain("const no = shown(seatNo(sid, payload.surface_ref));");
+    expect(main).toContain("roleTakeoverCopy(shown(seatNo(payload.prev_surface ?? sid, null)), ap)");
   });
 });

@@ -1,7 +1,7 @@
 // panetitle.test.ts — 창 머리 제목(D4 #12) · TICKET=v116-ui-close-r2.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { paneTitleText, renameCommitTitle, ruleTitleOf, stripExited, cwdBase, isAutoTitle, EXITED_TITLE_PREFIX } from "./panetitle";
+import { paneTitleText, renameCommitTitle, ruleTitleOf, stripExited, cwdBase, isAutoTitle, EXITED_TITLE_PREFIX, titleNo, NO_DISPLAY_NO } from "./panetitle";
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
@@ -68,11 +68,44 @@ describe("D4 #12 이름 변경 확정(opus 결함 1·2·3 반영)", () => {
     expect(ruleTitleOf(1, "master", "12 · master")).toBe(null);
   });
   it("배선: 규칙 제목은 역할 창에서만 기억 · 확정은 판정 모듈 · null 이면 쓰지 않음 · 툴팁 = 전체 경로", () => {
-    expect(main).toContain("const rule = ruleTitleOf(s.surface_id, s.role, s.title);");
+    expect(main).toContain("const rule = ruleTitleOf(s.surface_id, s.role, s.title, s.display_no);");
     expect(main).toContain("if (rule) rt.titleEl.dataset.ruleTitle = rule;");
     expect(main).toContain('const shownBefore = titleEl.textContent || "";');
     expect(main).toContain('const name = renameCommitTitle(titleEl.textContent || "", shownBefore, titleEl.dataset.ruleTitle ?? null);');
     expect(main).toContain("if (name === null) {");
     expect(main).toContain('rt.titleEl.title = s.live_cwd ?? "";');
+  });
+});
+
+// ★v116-num T8 — 창 머리 번호 = 보이는 번호(데몬 display_no · 1~999 순환). M17(sid 그대로) 이면 아래가 적색.
+describe("v116-num 보이는 번호", () => {
+  it("titleNo — 번호 있음 · 없음(「—」) · 옛 데몬(필드 없음 = 내부 번호)", () => {
+    expect(titleNo(1049, 50)).toBe("50");
+    expect(titleNo(1049, null)).toBe(NO_DISPLAY_NO);
+    expect(NO_DISPLAY_NO).toBe("—");
+    expect(titleNo(1049, undefined)).toBe("1049");
+    expect(titleNo(1049)).toBe("1049");
+  });
+  it("역할 없는 창 자동 제목 = 「보이는 번호 · 폴더」", () => {
+    expect(paneTitleText(1049, "", "/a/proj", false, 50)).toBe("50 · proj");
+    expect(paneTitleText(1049, "surface 1049", "/a/proj", false, 50)).toBe("50 · proj");
+    expect(paneTitleText(1049, "", "/a/proj", false, null)).toBe("— · proj");
+    expect(paneTitleText(1049, "", null, false, 50)).toBe("50");
+    expect(paneTitleText(1049, "", "/a/proj", false)).toBe("1049 · proj");
+    expect(paneTitleText(1049, "", "/a/proj", true, 50)).toBe(EXITED_TITLE_PREFIX + "50 · proj");
+  });
+  it("데몬이 지은 역할 창 제목은 그대로(번호를 다시 붙이지 않는다)", () => {
+    expect(paneTitleText(1049, "50 · Opus · worker1", "/a/proj", false, 50)).toBe("50 · Opus · worker1");
+    expect(paneTitleText(1500, "— · worker2", "/a/proj", false, null)).toBe("— · worker2");
+  });
+  it("ruleTitleOf — 보이는 번호로 시작할 때만 규칙 제목", () => {
+    expect(ruleTitleOf(1049, "worker", "50 · worker1", 50)).toBe("50 · worker1");
+    expect(ruleTitleOf(1049, "worker", "1049 · worker1", 50)).toBe(null);
+    expect(ruleTitleOf(1500, "worker-2", "— · worker2", null)).toBe("— · worker2");
+    expect(ruleTitleOf(1049, "worker", "1049 · worker1")).toBe("1049 · worker1");
+  });
+  it("배선: 머리 제목·규칙 제목에 display_no 를 넘긴다", () => {
+    expect(main).toContain("paneTitleText(s.surface_id, s.title, s.live_cwd, !!s.exited, s.display_no)");
+    expect(main).toContain('if ("display_no" in s) displayNoByKey.set(paneKey(s.surface_id, sk), s.display_no ?? null);');
   });
 });

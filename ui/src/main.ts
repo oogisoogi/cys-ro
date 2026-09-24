@@ -162,7 +162,7 @@ import {
   type AlarmRecord,
 } from "./toastttl";
 import { paneTitleText, renameCommitTitle, ruleTitleOf } from "./panetitle";
-import { seatNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
+import { seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
 import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
@@ -277,6 +277,8 @@ let layoutLoaded = false;
 
 // pane 식별 복합키 — 서로 다른 데몬이 같은 surface_id를 독립 발급하므로 (socket, sid)로 구분한다.
 const paneKey = (sid: number, socket?: string): string => `${socket ?? ""}#${sid}`;
+// (v116-num) paneKey → 데몬이 준 보이는 번호(null=「—」). 없으면 옛 데몬/미관측 → 알림은 내부 번호 그대로.
+const displayNoByKey = new Map<string, number | null>();
 
 interface PaneRuntime {
   sid: number;
@@ -2552,6 +2554,8 @@ async function refreshPaneTitles() {
           role: string | null;
           live_cwd: string | null;
           exited: boolean;
+          // (v116-num) 보이는 번호 1~999 · null=「—」 · 필드 없음=옛 데몬(내부 번호로 표시)
+          display_no?: number | null;
           usage?: ObservedUsage | null;
           // surface.list 가 이미 싣는 단조 줄 커서 — ③ 자리표 무접촉 판정의 「출력」 축.
           line_count?: number | null;
@@ -2604,6 +2608,8 @@ async function refreshPaneTitles() {
       }
       if (sweepHere) sweptSockets.push(sk ?? ""); // 이 소켓은 이번에 쓸렸다 — 실패·건너뜀 소켓은 여기 안 온다
       for (const s of r.surfaces) {
+        // (v116-num) 알림 문구의 「N번 창」도 보이는 번호로 — 화면에 없는 창의 알림도 있으므로 창 유무와 무관하게 기억한다.
+        if ("display_no" in s) displayNoByKey.set(paneKey(s.surface_id, sk), s.display_no ?? null);
         const rt = panes.get(paneKey(s.surface_id, sk));
         if (!rt) continue;
         // 닫기 보호 판정 재료 — 화면에 있는 창만(누적 0). (Fable MINOR-4) 데몬의 지금 말을 거울처럼 따른다 —
@@ -2615,10 +2621,10 @@ async function refreshPaneTitles() {
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
         if (rt.titleEl.isContentEditable) continue; // 이름 편집 중에는 덮어쓰지 않음
         // (v116-ui-close · D4 #13) 끝난 창 표시 = 「(끝남)」 — 종전 영어 「[exited]」. (r2 · D4 #12) 앞머리 · 전체 경로는 툴팁.
-        rt.titleEl.textContent = paneTitleText(s.surface_id, s.title, s.live_cwd, !!s.exited);
+        rt.titleEl.textContent = paneTitleText(s.surface_id, s.title, s.live_cwd, !!s.exited, s.display_no);
         rt.titleEl.title = s.live_cwd ?? "";
         // 이름 변경에서 빈 이름 확정 시 되돌릴 규칙 제목 — 역할 창의 「번호 · 특성」을 볼 때마다 기억(사람 이름으로 바뀌어도 유지).
-        const rule = ruleTitleOf(s.surface_id, s.role, s.title);
+        const rule = ruleTitleOf(s.surface_id, s.role, s.title, s.display_no);
         if (rule) rt.titleEl.dataset.ruleTitle = rule;
       }
       // 자동 입양: 그 소켓의 role surface 중 UI에 없는 것 → '같은 소켓을 가진 ws'에만 표출.
@@ -7542,9 +7548,11 @@ function onDaemonEvent(event: Record<string, unknown>) {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const sid = event.surface_id;
   // ★(v116-ui-close-r2 · D4 #8) 경보 문구 = alertcopy.ts(「N번 <역할 이름> 창」 · 역할 코드·surface:N·내부 지침 문구 0 · 세기 그대로).
-  const no = seatNo(sid, payload.surface_ref);
   // (Fable MINOR-3) 부서 데몬 이벤트면 부서 이름을 싣는다(본부·부서 창 번호 겹침) — 기본 데몬은 「본부」를 붙이지 않는다.
   const evSock = event.socket_slug ? socketForSlug.get(String(event.socket_slug)) : undefined;
+  // (v116-num) 알림의 번호 = 창 머리와 같은 보이는 번호(그 이벤트를 낸 데몬의 번호표로 푼다).
+  const shown = (n: number | null) => visibleNo(n, (id) => displayNoByKey.get(paneKey(id, evSock)));
+  const no = shown(seatNo(sid, payload.surface_ref));
   const ap: Record<string, unknown> = evSock && deptNameFromSocket(evSock) ? { ...payload, dept: ctxGroupLabel(evSock) } : payload; // 원 payload 는 건드리지 않는다
 
   // ★(v116-ui-close-r2 · R1c) 마스터 자리가 늦게 섰으면 복원 카드 판정을 다시 돈다(판정·1회는 maybeShowRestoreBrief 가 진다).
@@ -7565,7 +7573,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // master가 stall 임계(기본 5분) 내 처리하지 못한 승인 = 사람 개입 필요 신호 —
     // 이때만 화면을 전환한다(승인 UX 원칙: 알림과 포커스 강탈의 분리, escalation 짝).
     // (Fable MINOR-2) 이 이벤트의 surface_id 는 발행자 자기신고일 수 있다 — 종전처럼 관측값(surface_ref)을 쓴다.
-    const c = approvalStalledCopy(seatNo(null, payload.surface_ref), ap);
+    const c = approvalStalledCopy(shown(seatNo(null, payload.surface_ref)), ap);
     toast("approval", c.title, c.body);
     osBanner(c.title, c.body);
     openFeed();
@@ -7588,7 +7596,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "role.takeover") {
     // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
     //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).
-    const c = roleTakeoverCopy(seatNo(payload.prev_surface ?? sid, null), ap);
+    const c = roleTakeoverCopy(shown(seatNo(payload.prev_surface ?? sid, null)), ap);
     stickyToast(`role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`, "health", c.title, c.body);
     return;
   }

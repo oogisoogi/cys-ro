@@ -18,6 +18,17 @@ export function seatNo(sid: unknown, surfaceRef: unknown): number | null {
 }
 
 /**
+ * (v116-num) 알림의 번호 = 창 머리 제목과 같은 **보이는 번호**(1~999 순환). `lookup` 은 내부 번호 → 데몬이 준 display_no.
+ *   · lookup 이 undefined(옛 데몬 · 목록에서 아직 못 본 창) → 내부 번호 그대로(종전 동작).
+ *   · lookup 이 null(보이는 번호 없음 「—」) → null(번호 없이 「작업 창」).
+ */
+export function visibleNo(internal: number | null, lookup: (sid: number) => number | null | undefined): number | null {
+  if (internal == null) return null;
+  const d = lookup(internal);
+  return d === undefined ? internal : d;
+}
+
+/**
  * 「3번 작업 창」 · 역할 없으면 「3번 창」 · 번호 없으면 「작업 창」/「한 창」.
  * (Fable MINOR-3) 부서 데몬의 이벤트면 부서 이름을 앞에 — 본부와 부서는 창 번호가 겹칠 수 있다.
  */

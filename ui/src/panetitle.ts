@@ -19,17 +19,33 @@ export function cwdBase(cwd: string): string {
   return parts.length ? parts[parts.length - 1] : cwd;
 }
 
+/**
+ * (v116-num) 제목에 쓰는 번호 = **보이는 번호**(데몬 surface.list 의 display_no · 1~999 순환).
+ *   · undefined = 필드가 없는 옛 데몬(1.1.6 이전) → 종전대로 내부 번호.
+ *   · null = 보이는 번호 없음 → 「—」(데몬 panetitle.rs 와 같은 글자).
+ * 기계 경로(닫기·입력·배달)는 여전히 내부 번호(sid)만 쓴다 — 이것은 사람 눈의 이름표다.
+ */
+export const NO_DISPLAY_NO = "—";
+export function titleNo(sid: number, displayNo?: number | null): string {
+  if (displayNo === undefined) return String(sid);
+  return displayNo === null ? NO_DISPLAY_NO : String(displayNo);
+}
+
 /** 머리에 보일 제목. sid 를 모르면(생성 직후) 종전처럼 받은 제목·경로를 그대로. */
 export function paneTitleText(
   sid: number | null,
   title: string | null | undefined,
   liveCwd: string | null | undefined,
   exited: boolean,
+  displayNo?: number | null,
 ): string {
   let t: string;
   if (!isAutoTitle(title)) t = title as string;
   else if (sid == null) t = liveCwd || "…";
-  else t = liveCwd ? `${sid}${SEP}${cwdBase(liveCwd)}` : String(sid);
+  else {
+    const no = titleNo(sid, displayNo);
+    t = liveCwd ? `${no}${SEP}${cwdBase(liveCwd)}` : no;
+  }
   return exited ? EXITED_TITLE_PREFIX + t : t;
 }
 
@@ -42,8 +58,13 @@ export function stripExited(t: string): string {
  * 역할 창의 규칙 제목(데몬 initial_title 「번호 · 특성」)인가 — 되돌리기 재료로 기억할 값. 역할 없는 창은 null
  * (그 창의 기본은 경로를 따라가는 자동 제목이라 고정 제목으로 되돌리면 안 된다 — opus 결함 1).
  */
-export function ruleTitleOf(sid: number, role: string | null | undefined, title: string | null | undefined): string | null {
-  return role && title && title.startsWith(`${sid}${SEP}`) ? title : null;
+export function ruleTitleOf(
+  sid: number,
+  role: string | null | undefined,
+  title: string | null | undefined,
+  displayNo?: number | null,
+): string | null {
+  return role && title && title.startsWith(`${titleNo(sid, displayNo)}${SEP}`) ? title : null;
 }
 
 /**

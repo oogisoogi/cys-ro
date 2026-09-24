@@ -523,6 +523,12 @@ for s in SHAPES["shapes"]:
         stale, edit = _bak(".pre-ceo.stale-"), _bak(".pre-ceo-")
         check("12 [%s · %s] md" % (sid, rnd), _rd(mdp) == _tx(exp["expect_md"]),
               "exit=%d md=%r %s" % (code, (_rd(mdp) or "")[:40], out[-160:]))
+        # ★A-Z14(v116-ceo-hold-az14): 보고 = 실제. exit 0 은 md 가 지금 CEO 템플릿일 때만 · 그 밖(부트 보류 ·
+        #   상위집합 보류 · 교체 실패)은 exit 5. 종전 사후 검증은 「.pre-ceo 가 있기만 하면 확정」이라 보류를
+        #   「승격 완료」로 보고했다(형상 pilot-1098-no-boot-marker · edited-standard-held).
+        _now_ceo = _rd(mdp) == _T["C2"]
+        check("12 [%s · %s] 보고 = 실제(exit 0 ⇔ md == CEO · 그 밖 exit 5)" % (sid, rnd),
+              code in (0, 5) and (code == 0) == _now_ceo, "exit=%d md==CEO=%s" % (code, _now_ceo))
         check("12 [%s · %s] .pre-ceo" % (sid, rnd), _rd(pre) == _tx(exp["expect_pre_ceo"]),
               repr((_rd(pre) or "")[:40]))
         want_stale = [] if exp["expect_stale"] is None else [_T[exp["expect_stale"]]]
@@ -567,6 +573,39 @@ except ImportError:
 _dept_src = open(DEPT, encoding="utf-8").read()
 check("13b cys-dept 표준본 판정에 내용 휴리스틱 표지 grep 없음(B = 정확 일치)",
       not any(("grep -qF '%s'" % k) in _dept_src for k in ("MASTER ABSOLUTE DIRECTIVE", "master of master", "운영 계약 전문]")))
+
+# ── 14. ★A-Z14(v116-ceo-hold-az14 · 1100 재현 az14.sh): 낡은 .pre-ceo + 미부트에서 오너 지명(promote-ceo).
+#   ceo_promote 는 게이트(pre_ceo_valid · 부트 마커)로 보류(pending 생성 · md 무교체)하는데, 사후 검증이
+#   「.pre-ceo 존재 = 확정」이라 exit 0 → GUI 「✅ CEO 승격 완료」 오보. 기대: exit 5 · 보류 문구 · 부트 안내.
+tmp = tempfile.mkdtemp(prefix="ceo-t14-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")                # 옛 승격 잔재(1098 형상) · 부트 마커 없음
+code, out = run(env, "promote-ceo")
+check("14a 낡은 .pre-ceo + 미부트 지명 = exit 5(보류를 완료로 보고하지 않음)", code == 5, "exit=%d %s" % (code, out[-200:]))
+check("14b md 무교체 · pending 생성", md(home) == MASTER_BODY and os.path.exists(pend))
+check("14c 출력 = 보류 사유(부트 필요) · 승격 교체 문구 없음",
+      "보류" in out and "부트" in out and "기본 데몬 CEO 승격(directives 교체" not in out, out[-240:])
+check("14d 영수증 파일이 없어도 출력에 셸 오류 줄이 섞이지 않음(GUI 상세에 그대로 실린다)",
+      "No such file" not in out, out[-240:])
+shutil.rmtree(tmp)
+
+# ── 14e. 부트는 됐지만 손본 표준본 + 낡은 .pre-ceo → 상위집합 검사 보류(rc 3). 유효 백업처럼 보여 게이트를
+#   통과하므로 「pre_ceo_valid 면 확정」 으로 고쳐도 여전히 거짓 exit 0 이 된다 — 판정은 md 실측이어야 한다.
+tmp = tempfile.mkdtemp(prefix="ceo-t14e-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write("STANDARD-MASTER-OLD\n")
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY + "MY-EDIT\n")
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+code, out = run(env, "promote-ceo")
+check("14e 상위집합 보류(부트 완료 · 유효 백업처럼 보임) = exit 5 · md 무교체",
+      code == 5 and md(home) == MASTER_BODY + "MY-EDIT\n" and "보류" in out, "exit=%d %s" % (code, out[-200:]))
+shutil.rmtree(tmp)
 
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

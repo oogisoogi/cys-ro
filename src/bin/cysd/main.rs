@@ -32,6 +32,9 @@ mod state;
 mod undo;
 mod usage;
 mod watch_wake;
+// ★v116-flake-pty ⑵: 시험 전용 PTY 고갈 판별·재시도(제품 빌드에는 없다).
+#[cfg(test)]
+mod pty_test_support;
 
 use cys::Request;
 use handlers::Reply;

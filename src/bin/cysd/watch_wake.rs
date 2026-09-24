@@ -437,9 +437,11 @@ mod tests {
     }
 
     fn seat(daemon: &Arc<Daemon>, role: &str) -> Arc<crate::state::Surface> {
-        let s = daemon
-            .create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
-            .expect("create surface");
+        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 문구로 실패.
+        let s = crate::pty_test_support::retry_on_pty_exhaustion("seat", || {
+            daemon.create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
+        })
+        .expect("create surface");
         daemon.roles.lock().unwrap().insert(role.into(), s.id);
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         s

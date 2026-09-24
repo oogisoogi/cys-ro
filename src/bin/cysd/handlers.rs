@@ -11738,9 +11738,11 @@ mod tests {
     }
 
     fn make_surface(daemon: &Arc<Daemon>, role: Option<&str>) -> u64 {
-        let s = daemon
-            .create_surface(None, Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
-            .expect("create surface");
+        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 문구로 실패.
+        let s = crate::pty_test_support::retry_on_pty_exhaustion("make_surface", || {
+            daemon.create_surface(None, Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
+        })
+        .expect("create surface");
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         s.id
     }
@@ -12949,15 +12951,18 @@ mod tests {
             Some(r) => json!({ "cmd": "sleep 30", "role": r }),
             None => json!({ "cmd": "sleep 30" }),
         };
-        let req = Request {
-            id: json!(1),
-            method: "surface.create".into(),
-            params,
-        };
-        let Reply::Single(resp) = dispatch(daemon, req, caller_pid) else {
-            panic!("expected single reply");
-        };
-        resp
+        // ★v116-flake-pty ⑵: ENXIO 응답만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 panic · 그 밖 응답은 그대로.
+        crate::pty_test_support::rpc_retry_on_pty_exhaustion("create_surface_rpc", || {
+            let req = Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: params.clone(),
+            };
+            let Reply::Single(resp) = dispatch(daemon, req, caller_pid) else {
+                panic!("expected single reply");
+            };
+            resp
+        })
     }
 
     /// (E-g) idempotency_key를 동봉한 surface.create — 멱등 게이트 테스트 전용.
@@ -12972,15 +12977,18 @@ mod tests {
             Some(r) => json!({ "cmd": "sleep 30", "role": r, "idempotency_key": idem_key }),
             None => json!({ "cmd": "sleep 30", "idempotency_key": idem_key }),
         };
-        let req = Request {
-            id: json!(1),
-            method: "surface.create".into(),
-            params,
-        };
-        let Reply::Single(resp) = dispatch(daemon, req, caller_pid) else {
-            panic!("expected single reply");
-        };
-        resp
+        // ★v116-flake-pty ⑵: create_surface_rpc 와 같은 감쌈(ENXIO 만 · 상한 · 환경 문구).
+        crate::pty_test_support::rpc_retry_on_pty_exhaustion("create_surface_rpc_idem", || {
+            let req = Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: params.clone(),
+            };
+            let Reply::Single(resp) = dispatch(daemon, req, caller_pid) else {
+                panic!("expected single reply");
+            };
+            resp
+        })
     }
 
     /// fresh Arc<Daemon>는 refcount 1이라 get_mut으로 config를 테스트값으로 고정한다.
@@ -18202,15 +18210,18 @@ mod tests {
     }
 
     fn create_rpc(daemon: &Arc<Daemon>, params: Value) -> Value {
-        let req = Request {
-            id: json!(1),
-            method: "surface.create".into(),
-            params,
-        };
-        let Reply::Single(resp) = dispatch(daemon, req, Some(993_001_u32)) else {
-            panic!("expected single reply");
-        };
-        resp
+        // ★v116-flake-pty ⑵: ENXIO 응답만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 panic(09-24 D07c 실패 지점).
+        crate::pty_test_support::rpc_retry_on_pty_exhaustion("create_rpc", || {
+            let req = Request {
+                id: json!(1),
+                method: "surface.create".into(),
+                params: params.clone(),
+            };
+            let Reply::Single(resp) = dispatch(daemon, req, Some(993_001_u32)) else {
+                panic!("expected single reply");
+            };
+            resp
+        })
     }
 
     /// ★자기 발화 루프 차단(U-18 의 핵심 검체 · 설계서 `H-AUTH-SELFLOOP`).

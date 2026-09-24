@@ -322,5 +322,33 @@ check("10a CRLF 드리프트 통과(정규화 후 ⊇ = 승격)",
 check("10b PENDING 해소", not os.path.exists(pend))
 shutil.rmtree(tmp)
 
+# ── 11. ★v116-ceo-directive-hold 경로 2(1098 교회 부서 시범 실측): **미승격** 기계에 옛 승격의
+#   낡은 .pre-ceo 가 남음(md = 현행 표준 · 영수증 없음). 종전: 승격이 현행 md 를 백업하지 않고
+#   (`[ -f .pre-ceo ] || cp`) 자동 승격 알림도 끈 채(`_auto` = .pre-ceo 부재 조건) 교체 → 부서를 다
+#   닫으면 강등이 **옛 판을 되살린다**(격리 재현 scratch/repro2.sh). 기대: 승격 직전 현행 md 가 새
+#   백업이 되고 옛 백업은 지우지 않고 `.pre-ceo.stale-*` 로 보존 · 강등 뒤 md = 현행 표준.
+#   (8b 는 같은 형상의 종전 동작 「.pre-ceo 무접촉」을 고정한다 — 이 시험과 동시에 초록일 수 없다.)
+tmp = tempfile.mkdtemp(prefix="ceo-t11-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+OLD_STD = "STANDARD-MASTER-OLD\n"                   # 옛 판 표준(1098 = v0.14.27 발행본)
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(OLD_STD)
+with open(marker, "w", encoding="utf-8") as f:
+    f.write("{}")
+code, out = run(env, "promote-ceo")
+_dirs = os.path.join(home, ".cys", "pack", "directives")
+_stale = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo.stale-")]
+check("11a 승격 통과", code == 0 and md(home) == CEO_BODY, "exit=%d %s" % (code, out[-200:]))
+check("11b 승격 직전 현행 md 가 새 백업(.pre-ceo)이 된다",
+      open(pre, encoding="utf-8").read() == MASTER_BODY, repr(open(pre, encoding="utf-8").read()[:40]))
+check("11c 옛 백업은 지우지 않고 .stale- 로 보존",
+      len(_stale) == 1 and open(os.path.join(_dirs, _stale[0]), encoding="utf-8").read() == OLD_STD,
+      repr(_stale))
+code, out = run(env, "down", "d0")
+check("11d 부서 0개 → 강등 = 현행 표준 복귀(옛 판 부활 금지)",
+      md(home) == MASTER_BODY, "exit=%d md=%r %s" % (code, md(home)[:40], out[-200:]))
+shutil.rmtree(tmp)
+
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

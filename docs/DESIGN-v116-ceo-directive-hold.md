@@ -113,7 +113,11 @@ TICKET=v116-ceo-directive-hold · 기점 adf50d44 · 작성 worker-42 · 2026-09
    - ⒝ **영수증을 새 CEO 해시로 원자 갱신**(write_atomic) — 영수증이 옛 해시로 남는 문제(성찰 4 ⑴)를 막는다.
    - ⒞ `.new` 파일과 병합 대기 원장의 new-pending 항목 정리. 이미 있는 「정상 갱신 합류 → 잔재 청소」 경로가 이 파일에도 도는지 시험으로 확인하고, 안 돌면 추가한다.
    - ⒟ `.bak-<판번>`: 기존 RefreshUser 백업이 치환 경로에서도 도는지 확인한다.
-4. **ⓕ cys-dept**: 새 함수 `ceo_is_promoted`(C03 D3 술어 · python 한 조각 · CRLF 정규화 · 인자 argv 전달 = MSYS 경로 규약).
+4. **ⓕ cys-dept**: 새 함수 `ceo_is_promoted` · python 한 조각 · CRLF 정규화 · 인자 argv 전달(= MSYS 경로 규약).
+   - 술어 = `md == CEO_TEMPLATE` ∨ `영수증 == sha256(md)` ∨ `md 가 표지 3핀(MARKER_PINS) 전부 포함`.
+   - C03 D3 ③ 의 「∧ .pre-ceo 존재」는 **빼야 한다**. 이 함수가 묻는 것은 「md 자체가 CEO 문안인가」이고, `.pre-ceo` 존재 여부는 바로 지금 의심하는 대상이기 때문이다.
+   - 이렇게 빼도 되는 실측 근거: 3핀 중 `master of master` · `단일소유 강제` 는 표준 MASTER 에 0건, CEO 에 2건·1건이다(v1.0.0 · v1.1.2 · adf50d44 모두 · `exit 7` 은 양쪽에 있음). 그러므로 「3핀 전부」는 CEO 문안에서만 참이다.
+   - ⚠ 기존 시험 8′ 픽스처(`CEO-HEADER\n---\n…`)에는 핀도 영수증도 없어, 이 술어에서는 「미승격」으로 판정된다 → 8′ 픽스처에 실제 형상대로 영수증(v1.0.0 부터 모든 승격이 기록)을 더해 고정한다. 핀·영수증이 둘 다 없는 CEO 사본은 실제 경로에서는 생기지 않는다【관측 · 모든 태그의 `_swap` 이 영수증을 쓴다 · 쓰기 실패 = fail-open 경고】. 다만 그 경우에도 결과는 「옛 백업을 `.stale-` 로 보존 + md 를 새 백업」이라 삭제는 0이다.
    - `_auto` = `! ceo_is_promoted`(consented 제외).
    - `_swap` 안(락 보유 중): `ceo_is_promoted` 거짓 ∧ `.pre-ceo` 존재 → `mv .pre-ceo .pre-ceo.stale-<YYYYmmddTHHMMSS>` → `cp md .pre-ceo.tmp && mv .pre-ceo.tmp .pre-ceo` → CEO 교체(`cp ceo md.tmp && mv md.tmp md` = 원자 교체 · 성찰 3·브리프 할 일 6).
    - 부트 마커 PENDING 게이트의 `.pre-ceo` 조건(:1012)도 같은 술어로 바꾼다. 낡은 백업이 부트 게이트를 우회하는 틈을 막기 위해서다【추정 · 시험으로 확인】.

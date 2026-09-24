@@ -6,5 +6,11 @@
        마이크 접근을 프롬프트 없이 SIGABRT로 차단한다. -->
   <key>NSMicrophoneUsageDescription</key>
   <string>음성 지시를 듣기 위해 마이크를 사용합니다 (voice-jarvis 음성 대화 모드).</string>
+  <!-- v116-app-firstrun(A-3): 폴더 권한 창 자체에 붙는 사람 말 한 문장. 이 키가 없으면 창이 이유 없이
+       뜬다. 앱 안내 토스트(ui/src/main.ts perm-guide)와 같은 말을 한다. -->
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>AI 직원들이 데스크탑의 CYSjavis 폴더에서 일할 수 있도록 허용을 눌러 주세요.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>AI 직원들이 문서 폴더에 있는 작업도 도울 수 있도록 허용을 눌러 주세요.</string>
 </dict>
 </plist>

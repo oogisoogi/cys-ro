@@ -386,4 +386,5 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
   - 【관측】 taskkill /PID <cysd> /T /F 출력 = 「SUCCESS: … PID 8272 … terminated」 + 「ERROR: The process with PID 5836 (child process of PID 2492) could not be terminated. Reason: The operation attempted is not supported」 → 트리 안 손자 1개를 못 죽여 rc≠0. 기준 런(91aa600d · 35973475472)의 같은 줄 = cysd 1개만 종료(자식 트리 없음).
   - 【관측】 91aa600d..0133dcd4 에서 `javis_phoenix.py`·`javis_phoenix_win_smoke.py`·windows-build.yml 무변경 · cysd/lib 의 새 프로세스 생성 = pty_test_support.rs(cfg(test) 시험 전용) 1곳뿐 → **이번 편입이 데몬에 새 자식 프로세스를 들이지 않았다.**
   - 【추정 · 중상】 kill 순간 데몬에 자식 트리가 살아 있었던 타이밍 경합(기동 직후 cysd 가 스스로 띄우는 auto-restore 등 기존 자식 · 끝나기 전에 kill) + 종료 불가 손자(「not supported」 = 콘솔 호스트류 추정)로 rc≠0. 제품 결함 아님 · 하네스 판정(rc0 엄격)의 부하 의존 흔들림 쪽. windows-build 최근 40런 중 이 판정 적색 = 이번 1회(다른 1회 = v113 가지 · 다른 원인 미확인).
-  - 제안(실행 안 함 · master 판정): 실패 잡 1회 재실행으로 재현 여부 확인(CI 트리거 = master 게이트).
+  - 재실행(master#3f6b62d2 승인 · 원장 06:38:22 · `gh run rerun 36058649809 --failed` 1회 06:38:33) → **attempt 2 = success**(build success · 07:03 KST · win_smoke_pass true · ③ taskkill = cysd PID 4416 만 종료 · 손자 트리 없음) ⇒ **플레이크 확정**(재현 0/1).
+  - 1.1.7 하네스 후보(master 기록): ③ 에서 대상 데몬 종료가 확인되면(파이프 해제·새 세대) 트리 손자 종료 실패는 적색이 아니라 경고로.

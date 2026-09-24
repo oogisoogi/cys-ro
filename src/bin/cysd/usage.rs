@@ -2024,7 +2024,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
-        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 문구로 실패.
+        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
         let s = crate::pty_test_support::retry_on_pty_exhaustion("worker seat", || {
             daemon.create_surface(None, Some("sleep 30".into()), None, Some("worker".into()), 24, 80)
         })
@@ -2070,7 +2070,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
         let mk = |daemon: &std::sync::Arc<crate::state::Daemon>| {
-            // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 문구로 실패.
+            // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
             let s = crate::pty_test_support::retry_on_pty_exhaustion("master seat", || {
                 daemon.create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
             })
@@ -2136,7 +2136,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
-        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 문구로 실패.
+        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
         let s = crate::pty_test_support::retry_on_pty_exhaustion("cso seat", || {
             daemon.create_surface(None, Some("sleep 30".into()), None, Some("cso".into()), 24, 80)
         })

@@ -11738,7 +11738,7 @@ mod tests {
     }
 
     fn make_surface(daemon: &Arc<Daemon>, role: Option<&str>) -> u64 {
-        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 문구로 실패.
+        // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
         let s = crate::pty_test_support::retry_on_pty_exhaustion("make_surface", || {
             daemon.create_surface(None, Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
         })
@@ -12951,7 +12951,7 @@ mod tests {
             Some(r) => json!({ "cmd": "sleep 30", "role": r }),
             None => json!({ "cmd": "sleep 30" }),
         };
-        // ★v116-flake-pty ⑵: ENXIO 응답만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 panic · 그 밖 응답은 그대로.
+        // ★v116-flake-pty ⑵: ENXIO 응답만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 panic · 그 밖 응답은 그대로.
         crate::pty_test_support::rpc_retry_on_pty_exhaustion("create_surface_rpc", || {
             let req = Request {
                 id: json!(1),
@@ -12977,7 +12977,7 @@ mod tests {
             Some(r) => json!({ "cmd": "sleep 30", "role": r, "idempotency_key": idem_key }),
             None => json!({ "cmd": "sleep 30", "idempotency_key": idem_key }),
         };
-        // ★v116-flake-pty ⑵: create_surface_rpc 와 같은 감쌈(ENXIO 만 · 상한 · 환경 문구).
+        // ★v116-flake-pty ⑵: create_surface_rpc 와 같은 감쌈(ENXIO 만 · 상한 · 판정 보류 문구).
         crate::pty_test_support::rpc_retry_on_pty_exhaustion("create_surface_rpc_idem", || {
             let req = Request {
                 id: json!(1),
@@ -18210,7 +18210,7 @@ mod tests {
     }
 
     fn create_rpc(daemon: &Arc<Daemon>, params: Value) -> Value {
-        // ★v116-flake-pty ⑵: ENXIO 응답만 상한 재시도 · 넘기면 「PTY 고갈(환경)」 panic(09-24 D07c 실패 지점).
+        // ★v116-flake-pty ⑵: ENXIO 응답만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 panic(09-24 D07c 실패 지점).
         crate::pty_test_support::rpc_retry_on_pty_exhaustion("create_rpc", || {
             let req = Request {
                 id: json!(1),

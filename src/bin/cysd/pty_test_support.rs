@@ -61,7 +61,8 @@ pub(crate) fn pty_census() -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "?".into());
-    let max = std::process::Command::new("sysctl")
+    // 원시 스폰 금지(lib `raw_command_new_census_is_frozen` 동결표 — 적대 3R #1) → 저장소 헬퍼.
+    let max = cys::hidden_command("sysctl")
         .args(["-n", "kern.tty.ptmx_max"])
         .output()
         .ok()

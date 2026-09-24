@@ -929,14 +929,15 @@ def settle_unknown_seat(status, role, requery, tick_s=1.0, *, max_wait_s):
 # ── ★v116-pack D1 #4: 역할 없이 남은 빈 에이전트 좌석(claude 가 죽고 남은 셸) 회수 ──
 # 실측(D1-daemon.md:44): 워커 claude kill -9 → +61s 데드맨이 역할만 걷고 셸은 남김 → 편성 심박이 새 좌석을
 # 세운 뒤에도 옛 빈 셸이 영구 누적. B8(reap-launch)은 「그 역할을 쥔 좌석」만 보므로 역할이 걷힌 좌석은 못 본다.
-# 유예 = master 판정 A-2(2분 · 편성 심박 10분보다 짧게). 실제 회수는 「사망 +2분 이후 첫 심박」.
+# 유예 = 10분(600s · master#f5ba25d5 m-1 판정 · 구 A-2 2분). 역할은 이미 새 창이 이어받으므로 급할 이유가 없고,
+#   claude 가 죽은 뒤 오류 화면을 읽거나 찍어 두는 사람의 스크롤백을 지킨다. 실제 회수는 「사망 +10분 이후 첫 심박」.
 # ★4군 ④(산 좌석 닫힘 0) 방어선: ①seat=="empty" ②역할 없음(역할 가진 좌석은 절대 대상 아님 — 부서 만들기의
 #   빈 셸 master 도 제외) ③에이전트 메타 필수(사용자가 연 평범한 창 제외) ④닫기 직전 같은 pid 재조회
 #   ⑤뿌리 프로세스가 셸이고 자식 0(ps) — 데몬 seat 는 뿌리 pid 의 자손만 세서, 뿌리가 claude 자신인 좌석
 #   (`new-surface --cmd claude`)은 산 채로 empty 로 보인다(governance.rs seat_state). agent_alive 는 쓰지 않는다
 #   (설치본 1.0.2 에서 산 claude 가 None/False 로 보이는 퇴행 = 오판 경로 · HANDOFF-v116-pack §2).
 SEAT_ORPHAN_GRACE_ENV = "CYS_SEAT_ORPHAN_GRACE_S"
-SEAT_ORPHAN_GRACE_S_DEFAULT = 120.0
+SEAT_ORPHAN_GRACE_S_DEFAULT = 600.0
 _ORPHAN_SHELLS = ("zsh", "bash", "sh", "dash", "fish", "ksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh")
 
 

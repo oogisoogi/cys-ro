@@ -137,7 +137,7 @@ class D14ReapHook(_Base):
         reap = [f for f in self.feeds if f[1] == "빈 창 정리"]
         self.assertEqual(len(reap), 1, self.feeds)
         self.assertIn("surface:4", reap[0][2])
-        self.assertIn("2분", reap[0][2])
+        self.assertIn("10분", reap[0][2])
 
     def test_no_feed_when_nothing_reaped(self):
         fm._reap_orphans = lambda socket: {"reaped": [], "kept": [["surface:9", "root_not_bare_shell"]]}

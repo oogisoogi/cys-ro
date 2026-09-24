@@ -1245,7 +1245,7 @@ def _reap_feed(socket, res):
         return
     name = _dept_name_for_socket(socket) or "부서"
     _feed("빈 창 정리",
-          "「%s」의 빈 창 %d개(%s)를 정리했습니다 — 그 창의 claude 가 꺼진 뒤 2분 넘게 아무 일도 없었습니다. "
+          "「%s」의 빈 창 %d개(%s)를 정리했습니다 — 그 창의 claude 가 꺼진 뒤 10분 넘게 아무 일도 없었습니다. "
           "그 자리의 일은 새 창이 이어받습니다." % (name, len(reaped), ", ".join(reaped)),
           "formation-partial")
 

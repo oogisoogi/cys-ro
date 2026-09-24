@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D1 #4 — claude 가 죽고 역할 없이 남은 빈 셸 좌석 회수(유예 2분 · master 판정 A-2) 행위 시험.
+"""D1 #4 — claude 가 죽고 역할 없이 남은 빈 셸 좌석 회수(유예 10분 · master#f5ba25d5 m-1 · 구 A-2 2분) 행위 시험.
 
 증상(D1-daemon.md:44): 부서 좌석의 claude 가 죽으면 데드맨(61s)이 역할만 걷고 셸은 남는다 → 편성 심박이
 새 좌석을 세운 뒤에도 옛 빈 셸이 영구히 누적된다.
@@ -25,12 +25,12 @@ sys.path.insert(0, os.path.dirname(HERE))
 import javis_boot_node as bn  # noqa: E402
 
 DEPT = "/Users/u/Desktop/CYSjavis/행정부"
-GRACE = 120.0
+GRACE = 600.0
 
 
 def seat(ref="surface:4", **kw):
     s = {"surface_ref": ref, "role": None, "agent": "claude", "agent_alive": False,
-         "seat": "empty", "idle_secs": 300, "queue_depth": 0, "exited": False,
+         "seat": "empty", "idle_secs": 900, "queue_depth": 0, "exited": False,
          "cwd": DEPT + "/workers/w1"}
     s.update(kw)
     return s
@@ -98,7 +98,7 @@ class OrphanVerdict(unittest.TestCase):
             "N2 에이전트 메타 없음(사용자 평범한 창)": seat(agent=None),
             "N3 좌석 참(자손 있음)": seat(seat="occupied"),
             "N3b 좌석 미상": seat(seat="unknown"),
-            "N4 유예 안(idle 119)": seat(idle_secs=119),
+            "N4 유예 안(idle 599)": seat(idle_secs=599),
             "N5 큐 남음": seat(queue_depth=1),
             "N6 부서 폴더 밖(홈)": seat(cwd="/Users/u"),
             "N6b 부서 폴더 접두만 같은 형제": seat(cwd=DEPT + "2/workers/w1"),
@@ -244,15 +244,34 @@ class OrphanReap(unittest.TestCase):
     def test_grace_env_default(self):
         old = os.environ.pop(bn.SEAT_ORPHAN_GRACE_ENV, None)
         try:
-            self.assertEqual(bn.seat_orphan_grace_s(), 120.0)
+            self.assertEqual(bn.seat_orphan_grace_s(), 600.0)
             os.environ[bn.SEAT_ORPHAN_GRACE_ENV] = "-5"
-            self.assertEqual(bn.seat_orphan_grace_s(), 120.0)
+            self.assertEqual(bn.seat_orphan_grace_s(), 600.0)
             os.environ[bn.SEAT_ORPHAN_GRACE_ENV] = "abc"
-            self.assertEqual(bn.seat_orphan_grace_s(), 120.0)
+            self.assertEqual(bn.seat_orphan_grace_s(), 600.0)
             os.environ[bn.SEAT_ORPHAN_GRACE_ENV] = "30"
             self.assertEqual(bn.seat_orphan_grace_s(), 30.0)
         finally:
             os.environ.pop(bn.SEAT_ORPHAN_GRACE_ENV, None)
+            if old is not None:
+                os.environ[bn.SEAT_ORPHAN_GRACE_ENV] = old
+
+    def test_grace_boundary_599_600_default(self):
+        # m-1(master#f5ba25d5): 기본 유예 = 600초 — 599 는 유예 안(회수 0) · 600 부터 대상(경계 포함)
+        old = os.environ.pop(bn.SEAT_ORPHAN_GRACE_ENV, None)
+        try:
+            g = bn.seat_orphan_grace_s()
+            self.assertFalse(bn.orphan_seat_verdict(seat(idle_secs=599), DEPT, g)[0])
+            self.assertFalse(bn.orphan_seat_verdict(seat(idle_secs=599.9), DEPT, g)[0])
+            self.assertTrue(bn.orphan_seat_verdict(seat(idle_secs=600), DEPT, g)[0])
+            w = FakeWorld([seat(idle_secs=599)], {"surface:4": 4001}, comm={4001: "-zsh"})
+            self.assertEqual(bn.reap_orphan_seats(socket="/tmp/x.sock", dept_cwd=DEPT, status_fn=w.status,
+                                                  list_fn=w.list_probe, runner=w.run, os_name="posix")["reaped"], [])
+            w = FakeWorld([seat(idle_secs=600)], {"surface:4": 4001}, comm={4001: "-zsh"})
+            self.assertEqual(bn.reap_orphan_seats(socket="/tmp/x.sock", dept_cwd=DEPT, status_fn=w.status,
+                                                  list_fn=w.list_probe, runner=w.run, os_name="posix")["reaped"],
+                             ["surface:4"])
+        finally:
             if old is not None:
                 os.environ[bn.SEAT_ORPHAN_GRACE_ENV] = old
 

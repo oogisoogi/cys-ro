@@ -5,7 +5,7 @@
 - **어디까지 했나**: ②데몬 + ③표시 구현 완료 · 로컬 커밋만(push·병합 0 = master 게이트).
   · fix/v116-num: 8b8e90d1(②) → f657c1e0(code-1R 반영 + ③데몬 제목·CLI) → 이 커밋(code-2R 반영 · 문서 · 증거).
   · **fix/v116-num-ui**(로컬 · fix/v116-ui=3bc73856 위) 42596ebf = ③ 앱 창 머리·알림 번호. ⚠T-UI 가 만든 ui/src/panetitle.ts 위에만 선다 → **병합 때 T-UI 뒤에 cherry-pick**.
-  · 사용자본(저장소 밖) ~/.cys/pack/bin/javis_panetitle.py · javis_reconstruct_state.py 선배포 완료(조건 ⑴) — 백업 = 세션 스크래치패드 pack-backup/(sha256 ac3bf061…· c176fb6d…) · 자체 시험 PASS · 옛 데몬 plan 변경 0.
+  · 사용자본(저장소 밖) ~/.cys/pack/bin/javis_panetitle.py · javis_reconstruct_state.py 선배포 완료(조건 ⑴) — 백업 = ~/.cys/state/v116-num-pack-backup/(원본 · sha256 ac3bf061…· c176fb6d…) · 자체 시험 PASS · 옛 데몬 plan 변경 0.
 - **검증**: 뮤턴트 34/34 KILLED(r1 24 · r2 10) · E2E T5+T11 10/10(1,051좌석) · CLI E2E 15/15 · 회귀 cysd 1072×3 · cys 289 · lib 535 · UI 1244 · 적대 agy code 1R·2R ACCEPT · Fable code 1R·2R 메커니즘 결함 0(문서·시험 강도 발견 반영) · agy ui 1R(HIGH = T-UI 기존 동작 · 상신).
 - **백그라운드**: 없음(검증자·뮤턴트·E2E 종료 · 격리 /tmp 폴더 0 · 기준선 작업트리 제거).
 - **다음 할 일**: master 검수 → 병합 순서 T-USAGE → T-PACK → T-NUM(겹침 handlers.rs·governance.rs·cys.rs·lib.rs rebase) → T-UI 뒤 fix/v116-num-ui cherry-pick.

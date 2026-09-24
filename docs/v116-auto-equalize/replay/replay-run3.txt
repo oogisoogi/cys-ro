@@ -1,0 +1,12 @@
+s0 복원 입양(master·cso·worker)                    {"10":"0.5×0.799","11":"0.5×0.2","12":"0.5×1"}
+   daemon: surface:13 surface:14
+s1 master 가 워커 2대 열기(데몬)                       {"10":"0.333×0.799","11":"0.333×0.2","12":"0.222×1","13":"0.221×1","14":"0.221×1"}
+   daemon: closed 13 (descendants killed)
+s2 master 가 가운데 워커 닫기(데몬 close)                {"10":"0.333×0.799","11":"0.333×0.2","12":"0.333×1","14":"0.333×1"}
+s3 사람이 첫 워커 닫기(⌘W·확인)                          {"10":"0.5×0.799","11":"0.5×0.2","14":"0.5×1"}
+s4 사람이 새 창(⌘T)                                 {"10":"0.333×0.799","11":"0.333×0.2","14":"0.333×1","15":"0.333×1"}
+   daemon list:
+surface:10	role=master	pid=91100	exited=false	10 · master	/tmp
+surface:11	role=cso	pid=91105	exited=false	11 · cso	/tmp
+surface:14	role=worker-3	pid=91408	exited=false	14 · worker3	/tmp
+surface:15	role=-	pid=92387	exited=false	surface 15	/tmp

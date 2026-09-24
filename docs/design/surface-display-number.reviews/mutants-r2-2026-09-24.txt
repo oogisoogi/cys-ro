@@ -1,0 +1,17 @@
+CONTROL --lib display_ref_grammar rc=0 → GREEN
+CONTROL cys v116_num_cli_tests rc=0 → GREEN
+CONTROL cysd v116_num_tests rc=0 → GREEN
+CONTROL cysd v116_num_rpc_tests rc=0 → GREEN
+CONTROL cysd panetitle:: rc=0 → GREEN
+CONTROL -c /Users/oogisoogi/.cargo/bin/cargo build --bin cys --bin cysd -q && python3 scripts/v116_num_e2e.py --cli-only rc=0 → GREEN
+M11-INSERT를PTY뒤로: rc=101 KILLED · m11_numbers_insert_precedes_openpty_in_source , t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , pk_conflict_alarms_and_never_overwrites_foreign_row , t13_write_failure_still_creates_seats 
+M14-다찼을때생성거부: rc=101 KILLED · t2_external_damage_triggers_suspension_once 
+M24-쓰기실패를생성실패로: rc=101 KILLED · t2_unreadable_db_alarms_seed_failed , t2_readonly_db_keeps_snapshot_and_alarms_write_io_once , t13_write_failure_still_creates_seats 
+M11f-⑴실패때평문읽기포기(MED-1): rc=101 KILLED · t2_unreadable_db_alarms_seed_failed , t2_readonly_v115_db_keeps_seed_via_plain_read , t2_readonly_non_wal_db_keeps_snapshot 
+M15-제목에내부번호: rc=101 KILLED · create_titles_role_seat_with_display_number 
+M15b-「—」를번호칸으로안봄: rc=101 KILLED · v116_no_display_number_is_dash_slot 
+M18-없는번호를마지막주인으로풀어줌: rc=101 KILLED · rpc_fields_and_resolve_display 
+M19-#017허용: rc=101 KILLED · display_ref_grammar_truth_table 
+M22-기계출력줄에보이는번호: rc=101 KILLED · t3c_machine_output_lines_stay_internal_surface_ref 
+M23-stderr소켓줄제거: rc=1 KILLED · (근거 줄 없음)
+원복 확인: 대상 파일 바이트 동일

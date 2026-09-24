@@ -3315,7 +3315,10 @@ impl Daemon {
                 "대응표 쓰기 실패 — 이 좌석은 재기동 뒤 내부 번호 재사용 보호(I0)가 빠짐"
             }
             "seed_failed" => "대응표·트랜스크립트 시드 읽기 실패 — 내부 번호 재사용 위험(I0)",
-            _ => "대응표 쓰기 실패",
+            // 부팅 write_io — 읽기(시드·holders)는 됐고 쓰기가 막혔다: 스키마 생성 또는 고아 정리 실패
+            // (사유 칸 `schema:` / `boot_orphan update:` 로 가른다 · Fable code-2R LOW-5).
+            "write_io" => "부팅 중 대응표 쓰기 불가(스키마 생성·고아 정리) — 시드·번호 막힘은 읽은 값으로 유지",
+            _ => "대응표 경보",
         };
         eprintln!(
             "[cysd] surface.numbers_alarm kind={kind} surface_id={} — {note}{}",

@@ -93,7 +93,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | 좌석 만들기 | 내부 번호 받기 → 보이는 번호 정하기(메모리) → **행 INSERT** → 그 다음 PTY 열기 | state.rs:3483 `create_surface_with_env` · :3502 `fetch_add` 바로 뒤 · PTY 는 :3503~ | **동기 쓰기**(전용 연결 · `busy_timeout` · 할당기 락 밖). recall 쓰기 스레드(1초 묶음 · recall.rs:86~)를 거치지 않는다 — 묶음 사이에 데몬이 죽으면 그 내부 번호가 기록 없이 사라져 X-10 이 다시 열린다 |
 | PTY 열기 실패 | `closed_at = now` · `close_kind='spawn_failed'` | 같은 함수의 `?` 반환 경로들 | 동기 UPDATE |
 | 좌석 닫기 | `closed_at = now` · `close_kind='close'` | governance.rs:4885 `close_surface` — 좌석이 목록에서 빠지는 **유일한 자리**(주석 governance.rs 같은 함수 「surface가 맵에서 사라지는 유일 지점」 【관측】) | surfaces 락을 푼 **뒤** 동기 UPDATE |
-| 데몬 부팅 | ⓪「DB 파일이 이 단계 **전에** 있었나」 기록 ⑴**전체 스키마** = 기존 `open_db`(recall.rs:24-55 · WAL 설정 포함 · 새 표 추가)를 전용 동기 연결로 호출 ⑵**읽기 스냅샷 하나**(지연 읽기 트랜잭션 1개): 시드 3갈래(표마다 따로 `Ok/Failed`) + surface_numbers 에서 holders 재구성 — `closed_at IS NULL` 행은 **메모리에서 곧바로 `Closed(부팅 시각)`** 으로 둔다 ⑶고아 행 UPDATE(`boot_orphan`)는 스냅샷 **뒤 · 별도 · 최선 노력** — 실패해도 ⑵의 시드·holders 를 버리지 않는다(메모리가 원본 · 못 쓴 고아는 다음 부팅에 다시 고아로 잡혀 24시간 더 막힐 뿐) ⑷경보는 이벤트 버스가 생긴 **뒤** 발행 · 부팅당 종류별 1회 | state.rs:3000 `next_id` 시드 자리(Daemon 생성 · 같은 구조체 리터럴의 다음 칸이 :3001 `EventBus::new` 라 :3000 에서는 발행 불가 — Fable 2R 【관측: 검증자】) · 두 번째 데몬은 시작 잠금(main.rs:1157 `acquire_startup_lock` → :1277 `Daemon::new`)에서 먼저 걸러져 ⑶이 산 데몬의 행을 건드리지 않는다(Fable 3R·4R 【관측: 검증자】) | 새 좌석을 만들기 **전에** 1회 · 실패 처리(Fable 4R 반영): ⑴ 실패 → 파일이 ⓪에서 **없었으면** 로그 1줄만(새 설치 · 시드 0 이 맞음 · 이후 좌석 쓰기가 실패하면 그때 `write_io` 가 따로 남) / **있었으면** `seed_failed` 1회 · holders 비움 · 시드 0+1 ⑵의 surface_numbers 갈래 `Failed` → holders 비움 + `seed_failed` 1회 ⑶ 실패 → `write_io` 1회(`surface_id` 없음) — `seed_failed` 아님 |
+| 데몬 부팅 | ⓪「DB 파일이 이 단계 **전에** 있었나」 기록 ⑴**전체 스키마** = 기존 `open_db`(recall.rs:24-55 · WAL 설정 포함 · 새 표 추가)를 전용 동기 연결로 호출 ⑵**읽기 스냅샷 하나**(지연 읽기 트랜잭션 1개): 시드 3갈래(표마다 따로 `Ok/Failed`) + surface_numbers 에서 holders 재구성 — `closed_at IS NULL` 행은 **메모리에서 곧바로 `Closed(부팅 시각)`** 으로 둔다 ⑶고아 행 UPDATE(`boot_orphan`)는 스냅샷 **뒤 · 별도 · 최선 노력** — 실패해도 ⑵의 시드·holders 를 버리지 않는다(메모리가 원본 · 못 쓴 고아는 다음 부팅에 다시 고아로 잡혀 24시간 더 막힐 뿐) ⑷경보는 이벤트 버스가 생긴 **뒤** 발행 · 부팅당 종류별 1회 | state.rs:3000 `next_id` 시드 자리(Daemon 생성 · 같은 구조체 리터럴의 다음 칸이 :3001 `EventBus::new` 라 :3000 에서는 발행 불가 — Fable 2R 【관측: 검증자】) · 두 번째 데몬은 시작 잠금(main.rs:1157 `acquire_startup_lock` → :1277 `Daemon::new`)에서 먼저 걸러져 ⑶이 산 데몬의 행을 건드리지 않는다(Fable 3R·4R 【관측: 검증자】) | 새 좌석을 만들기 **전에** 1회 · 실패 처리(Fable 4R 반영): ⑴ 실패 → 파일이 ⓪에서 **없었으면** 로그 1줄만(새 설치 · 시드 0 이 맞음 · 이후 좌석 쓰기가 실패하면 그때 `write_io` 가 따로 남) / **있었으면** ~~`seed_failed` 1회 · holders 비움 · 시드 0+1~~ → **(구현 code-1R MED-1 개정) 평문 연결로 ⑵ 를 그대로 읽는다** — 읽기는 되고 쓰기만 막힌 DB(읽기 전용·가득 참·비-WAL)에서 1.1.5 가 지키던 시드를 버리지 않기 위해. 읽기 성공 = 부팅 `write_io`(스키마 못 세움) · 읽기도 실패 = `seed_failed` + 시드 0 · 스키마 없는 업그레이드 첫 기동의 「no such table: surface_numbers」 는 부재(행 없음)로 흡수 ⑵의 surface_numbers 갈래 `Failed` → holders 비움 + `seed_failed` 1회 ⑶ 실패 → `write_io` 1회(`surface_id` 없음) — `seed_failed` 아님 |
 
 - ①**왜 PTY 전에 쓰나**: 자식 프로세스는 생성 순간 환경변수로 내부 번호를 받는다. PTY 를 연 뒤에 쓰면 「내부 번호는 밖으로 나갔는데 기록은 없다」 틈이 생긴다(PLAN §4-2 CLI 행: pane 이 죽은 뒤 살아남은 백그라운드 프로세스).
 - ②**락 순서**(Fable 2R LOW · agy 4R MED-2 반영 — **락 안에서는 DB 를 쓰지 않는다**): 할당기 상태는 **잎(leaf) 락** `display_alloc` 하나에 둔다. 좌석을 만들 때 `display_alloc` 을 잡고 `fetch_add` → 후보 계산 → 메모리 `holders[n] = Live(id)` → **놓기** → 그 다음 **INSERT(락 밖 · 동기 · PTY 전)** → PTY 열기(state.rs:3511 openpty ~ :3654 spawn ~ :3822 surfaces 락 · 그 사이 다른 락 없음 【관측: 검증자】). 이렇게 하면 DB 가 잠깐 막혀도(prune 중 최대 5초) 다른 좌석의 만들기·닫기가 할당기 락에서 기다리지 않는다. 동시 생성 두 개의 INSERT 순서가 뒤바뀌어도 열쇠(내부 번호)가 달라 문제없다. INSERT 실패 → 메모리는 그대로 두고 `write_io`/`pk_conflict` 경보(§3-2 ⑤). surfaces·roles 락을 쥔 채로 할당기 락을 잡지 않는다. `busy_timeout` = rusqlite 기본값 **5초 그대로**(rusqlite-0.32.1 inner_connection.rs:119 · Fable 3R 【관측: 검증자】) — 쓰기 잠금을 오래 쥐는 쪽은 1초 묶음(묶음을 모은 **뒤** BEGIN · recall.rs:126-141)이 아니라 `maybe_prune` 이다. 최악의 경우 prune 중 좌석 생성 **한 건**이 최대 5초 기다린다【추정 · ②에서 prune 중 생성 지연 1줄 실측】. 닫기·PTY 실패의 DB UPDATE 도 락 밖이다(메모리가 원본이라 UPDATE 를 잃어도 다음 부팅에 `boot_orphan` 으로 보수적으로 막힌다).
@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | `system.identify`(handlers.rs:3048) | `caller_display_no` | 호출 좌석이 목록에 있으면 그 번호 · 없거나 번호 없음이면 `null` |
 | `org.status` 좌석 항목(있으면) | `display_no` | 같음 — 앱 사이드바·CSO 가 같은 사실을 보게(선택 · 구현 티켓 ②가 필드 위치 확인) |
 | 이벤트 `surface.created`(state.rs:3865 payload) | `display_no` | 같음 |
-| 새 이벤트 **`surface.numbers_alarm`** 하나(9단계 성찰 2회차 단순화 — 경보를 이름 하나 + `kind` 5종으로) | — | `{kind, surface_id?, error?}` · `kind` ∈ `exhausted`(다 찬 상태 진입 · 1회 · §2-1 ⑤) · `write_io` / `pk_conflict`(§3-2 ⑤) · `seed_failed`(§6) · `suspended`(§2-3 · 1회) |
+| 새 이벤트 **`surface.numbers_alarm`** 하나(9단계 성찰 2회차 단순화 — 경보를 이름 하나 + `kind` 5종으로) | — | `{kind, surface_id?, error?}` · `kind` ∈ `exhausted`(다 찬 상태 진입 · 1회 · §2-1 ⑤) · `write_io`(§3-2 ⑤ 좌석 쓰기 · 부팅 때는 스키마 못 세움·고아 UPDATE 실패 — `surface_id` 유무로 가른다) / `pk_conflict`(§3-2 ⑤) · `seed_failed`(§6) · `suspended`(§2-3 · 1회) |
 | **새 RPC `surface.resolve_display`**(읽기 전용) | 요청 `{display_no}` | 성공 `{surface_id, surface_ref, display_no, socket}` · 실패 코드 `display_out_of_range` / `display_not_live`(+ `last: {surface_id, closed_at}` 가 있으면) |
 
 - CLI 는 `#N` 을 풀어 **파괴 명령**(close · reap · send · send-key · queue · cycle 계열)으로 보내기 전에 stderr 로 `#17 → surface:1016 @<소켓 이름>` 한 줄을 찍는다(Fable 1R MED-3 — 사람이 어느 데몬의 좌석을 건드리는지 보게).
@@ -220,7 +220,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | T14 | `cys list` 소비자 호환 | 단위(팩 · 파이썬) | 새 칸(`no=50` / `no=-`)이 든 `cys list` 픽스처로 §4-1 ※ 의 팩 파서(저장소 9곳 + 사용자본 javis_reconstruct_state.py — 저장소에 사본이 없으므로 그 파서 함수의 **고정 사본을 시험 픽스처로** 두거나 시험을 사용자본 옆에 둔다 · Fable 3R)가 **바뀌기 전과 같은 행**을 돌려줌(특히 boot_node `surface_occupied` 참 · awaken cwd 정확) | M25 새 칸을 맨 앞/맨 뒤에 둠 → 적색 |
 | T10 | 정리(prune)가 대응표를 안 건드림 | 단위(recall.rs) | `maybe_prune` 실행 뒤 surface_numbers 행 수 불변 | M20 prune 에 surface_numbers 삭제 추가 |
 | T11 | 두 소켓 | E2E(격리 본부 + 격리 부서 소켓) | 두 데몬이 각자 1~999 · 같은 `#N` 이 소켓별로 다른 좌석으로 풀림 · 한쪽 닫기가 다른 쪽에 영향 0 | M21 대응표를 공용 경로에 둠 |
-| T12 | 윈도 | CI(windows) | 표 생성·시드·해석기 문법(같은 시험 묶음이 윈도 CI 에서 초록) | — |
+| T12 | 윈도 | CI(windows) | 표 생성·시드·해석기 문법(같은 시험 묶음이 윈도 CI 에서 초록) — **【구현 정직 고지】 미실행**: windows-health.yml 은 `--bin cysd` 시험 레인이 없다(Fable code-1R MED-2). 시험 소켓 파일 이름은 윈도 state_dir(파일 이름 슬러그) 격리에 맞게 고유화했다 · 레인 추가 여부 = master 판단 | — |
 
 - 모든 E2E 는 부서·본부 **실데몬 소켓에 CLI 를 부르지 않는다**(`CYS_NO_AUTOSTART=1` · 격리 소켓만 · 이월 사고 PLAN §4 머리).
 
@@ -340,6 +340,20 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | 8 필요성 마지막 성찰 | 적용 | 덧붙인 요소 점검: 새 RPC(닫힌 번호 안내·소켓 이름 때문에 필요 — 유지) · 경보 5종 → **이름 하나로 통합**(단순화) · `socket` 칸(브리프 5칸 요구 — 유지 · 판정 미사용 명시) · I1 보호·번호 정지(정상 경로 도달 불가 — 바깥 손상 방어로 유지 · 지울지 master 판단) · 번호 정지 중 `#N` 거부(불필요 — 삭제) |
 | 9 저장 후 구현 | 해당(저장만) | 최종 설계 = 이 문서 커밋 · 구현은 ②③ 티켓(이 티켓 코드 0) |
 
+### 14-3. 3회차(구현 ②③ · 완료 전 · 2026-09-24 10:03~)
+
+| 단계 | 적용 | 이유·결과 1줄 |
+|---|---|---|
+| 1 철학·로컬·구독·품질 | 적용 | 외부 호출 0 · 부하가 높아도(load 63 · 다른 좌석 VM) 검증을 줄이지 않았다 — 뮤턴트 34개 · E2E 1,051좌석 · 적대 2종×2R |
+| 2 구체 설계안 | 적용 | 설계 §10 파일·행 그대로 구현 · 설계 밖으로 나간 곳 2곳을 명시(아래 5 · 8) |
+| 3 의도·영향 범위 | 적용 | 의도 = 「사람 눈 번호만 1~999 순환」 · 영향 = 데몬 5파일 + cys.rs + 사용자본 2 + UI(T-UI 위 별도 브랜치) · 제품 밖 운영 문구(master 규칙)는 무접촉 |
+| 4 설계 결함 재조사 | 적용 | 구현 중 발견 2건: ⑴ `fetch_add` 를 할당기 락 밖에서 하면 정상 경로에서 I1 보호가 오발(id 5 와 1004 순서 역전) → 락 안으로 · ⑵ 설계 §3-2 「⑴ 실패 → 시드 0」 은 쓰기만 막힌 DB 에서 1.1.5 보다 퇴행(Fable code-1R MED-1) → 평문 읽기 폴백 |
+| 5 할루시네이션·결정론 치환 | 적용 | 모든 주장을 도구 출력으로 — 시험 결과·뮤턴트 KILLED 목록·E2E PASS 줄을 reviews/ 에 원문 보관 · 검증자 주장도 코드 행으로 대조 뒤 반영(UI HIGH 는 원본 행 대조로 「기존 동작」 판정) |
+| 6 적대 A/B/C | 적용 | 운영 실패·부팅·락 = Fable code 1R·2R · 이종 단순성 = agy code 1R·2R · UI = agy ui 1R |
+| 7 언어 원칙 | 부분 | 저장소 관례(한국어 주석)를 따름 · 식별자는 영어 |
+| 8 필요성 마지막 성찰 | 적용 | 덧붙인 것 점검: `DisplayAlloc` 메서드 분리(T4 속성 시험이 제품 코드를 그대로 돌리게 — 유지) · push_alarm(부팅당 종류별 1회 계약 — 유지) · `socket_label`(stderr 한 줄의 가독성 — 유지) · UI 별도 브랜치(T-UI 파일 의존 — 병합 순서 문제로 불가피) |
+| 9 저장 후 구현 | 해당 | 로컬 커밋 8b8e90d1 → f657c1e0 → (이번) · push·병합 0(master 게이트) |
+
 ## 15. 검증 기록 — 이종 1R · 적대 1R (초안 1f045cee 대상)
 
 - 원문: `docs/design/surface-display-number.reviews/agy-1R-2026-09-24.md`(agy 1.2.9 · `--sandbox --effort high` · 도구 금지 · 문서 전문만 · sha256 앞 16자 025f988c981f119e) · `docs/design/surface-display-number.reviews/fable-adversarial-1R-2026-09-24.md`(Fable 서브에이전트 · 읽기 전용 · 코드 대조).
@@ -421,3 +435,11 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | LOW `pk_conflict` 뒤 그 행을 UPDATE 하면 남의 행을 덮음 | 수용 — `pk_conflict` 좌석은 이후 UPDATE 생략 | §3-2 ⑤ |
 
 - **수렴 판정**: 서로 다른 두 검증자 중 agy 는 5R 에서 dry. Fable 은 5R 에서 메커니즘 발견 0 · 문서 정합 발견만 남았고 전수 반영했다. 반영분에 대한 6R 은 돌리지 않았다(정직 고지) — 남은 확인은 구현 티켓 ②의 코드 리뷰에서 같은 조준(부팅 순서·락 범위·경보 식별)으로 한다.
+
+### 15-6. 구현 코드 검증(②③ · 2026-09-24)
+
+- 원문: `surface-display-number.reviews/agy-code-1R · agy-code-2R · fable-code-1R · fable-code-2R · agy-ui-1R`(모두 2026-09-24) · 뮤턴트 `mutants-daemon-r1`(24/24 KILLED) · `mutants-r2`(10/10 KILLED) · E2E `e2e-t5-t11`(10/10) · `e2e-cli`(15/15).
+- 판정: **agy code 1R·2R = ACCEPT(발견 0)** · **Fable code 1R = REVISE(MED 2 · LOW 6 · 메커니즘 결함 0)** → 전수 처리 · **Fable code 2R = REVISE(MED 1 · LOW 5 · 메커니즘 결함 0)** — MED-1(새 뮤턴트 실행 기록 없음)은 `mutants-r2` 로 해소, LOW-1(이 문서 문장)·LOW-5(부팅 write_io 문구) 반영, LOW-2(NO_NUMBER 교차 계약 — UI 브랜치 병합 뒤 확인)·LOW-3(해석기 핀 강도)·LOW-4(RPC 0회를 데몬 요청 계수로는 안 잼 · 구조로 성립) 는 잔여로 기록.
+- UI(agy ui 1R = REVISE 2): HIGH(ruleTitleOf 접두 오인)는 T-UI 원본 46행과 같은 기존 동작 — 범위 밖 · master 상신 / MED(배선 소스 핀) 기각(사유: 행동 시험이 주 판정 · M17 KILLED).
+- 수렴: 서로 다른 두 검증자 중 agy 는 2R dry · Fable 은 2R 에서 메커니즘 결함 0(문서·시험 강도만) — 3R 은 돌리지 않았다(정직 고지).
+

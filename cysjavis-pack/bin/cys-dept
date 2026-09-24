@@ -1041,14 +1041,19 @@ ceo_md_is_standard(){  # $1=md — 0 = md 가 **표준 MASTER 라는 긍정 증�
   # ★Opus 적대 R3 M1: 강등의 기본값은 「복원」이다. 「승격 사본이라는 증거가 없으면 복원 안 함」으로 두면 빈 파일
   #   (1.1.5 이하 비원자 cp 중단)·파일 없음·UTF-16 저장본처럼 **내용으로 판정할 수 없는 md** 가 부서를 다 닫아도
   #   영구히 빈/깨진 지침으로 남았다. 복원을 건너뛰는 것은 표준본이라는 증거가 있을 때(승격 보류 · 손본 표준본)뿐.
-  grep -qF 'MASTER ABSOLUTE DIRECTIVE' "$1" 2>/dev/null && ! grep -qF 'master of master' "$1" 2>/dev/null
+  #   CEO 합성 구분선의 표지(「운영 계약 전문]」 · CEO 에만 있음)도 없어야 한다 — 머리글만 지운 CEO 사본은 표준 본문을
+  #   통째로 담고 있어 머리말만으로는 표준본처럼 보인다(agy B R1 반례 ① 재발 방지 · 형상 pinless-edit).
+  grep -qF 'MASTER ABSOLUTE DIRECTIVE' "$1" 2>/dev/null && ! grep -qF 'master of master' "$1" 2>/dev/null \
+    && ! grep -qF '운영 계약 전문]' "$1" 2>/dev/null
 }
 pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md = 현행 표준 원본 그 자체라는 긍정 증거)
   [ -f "$1.pre-ceo" ] || return 1
   cmp -s "$1" "$2" 2>/dev/null && return 1
   cmp -s "$1" "$1.pre-ceo" 2>/dev/null && return 1
   ceo_receipt_matches "$1" && return 1
-  ceo_body_equals "$2" "$1" 2>/dev/null
+  # ★agy C3 반례 ③: 사용자가 손본 표준본은 「구분선 뒤 본문 == md」 가 거짓이라 낡은 백업을 못 알아봤다(갱신이 남긴
+  #   .new 로 DCE-3 가 통과하면 승격이 일어나고, 강등이 옛 판을 복원) → 표준본이라는 ASCII 긍정 증거도 인정한다.
+  ceo_body_equals "$2" "$1" 2>/dev/null || ceo_md_is_standard "$1"
 }
 pre_ceo_valid(){ [ -f "$1.pre-ceo" ] && ! pre_ceo_is_stale "$1" "$2"; }  # 유효한 승격 백업이 있으면 0
 ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자동 승격 알림 생략

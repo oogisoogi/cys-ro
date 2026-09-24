@@ -565,6 +565,8 @@ check("13b 강등 표지 'master of master' = CEO 에만(표준 MASTER 0회)",
       "master of master" not in _mt and "master of master" in _ct)
 check("13c 표준본 증거 'MASTER ABSOLUTE DIRECTIVE' = 현행 표준 MASTER 에 있음",
       "MASTER ABSOLUTE DIRECTIVE" in _mt)
+check("13d CEO 구분선 표지 '운영 계약 전문]' = CEO 에만(표준 MASTER 0회)",
+      "운영 계약 전문]" not in _mt and "운영 계약 전문]" in _ct)
 
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

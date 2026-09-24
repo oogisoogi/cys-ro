@@ -155,3 +155,16 @@ describe("판정 B — 기록 시각은 3절 안의 `기록 YYYY-MM-DD HH:MM` �
     expect(recordedAt(writtenPerDirective(ex) + "\n| 2099-01-01 00:00 | x | y |", "2098-12-31 00:00")).toBe(m?.[1] ?? "");
   });
 });
+
+// ★(실증 · ⓔ 효과 실측 run B 15:2x) 새 세션(startup)은 §9 원문이 아니라 CORE 요지만 본다. 요지에 기록 줄·5줄·80자가
+//   없자 실제 클로드가 `기록` 줄 없이 3절을 썼다 → 판정 B 의 거짓 신선도 방어가 새 세션에서만 빠졌다.
+describe("CORE 요지(새 세션이 보는 유일한 문안)도 3절 서식의 핵심을 말한다", () => {
+  for (const f of ["MASTER_CORE.md", "CEO_CORE.md"]) {
+    const line = read(`../../cysjavis-pack/directives/${f}`).split("\n").find((l) => l.startsWith("- 영속(§9):")) ?? "";
+    it(`${f} §9 요지: 3절 제목 · 기록 줄 · 5줄 · 80자`, () => {
+      for (const h of ["## 완료", "## 진행 중", "## 결정 필요"]) expect(line.includes(h)).toBe(true);
+      expect(line.includes("기록 YYYY-MM-DD HH:MM")).toBe(true);
+      expect(/5줄/.test(line) && /80자/.test(line)).toBe(true);
+    });
+  }
+});

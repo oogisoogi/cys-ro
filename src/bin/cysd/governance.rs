@@ -10526,8 +10526,16 @@ mod tests {
             q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
         }
         *s3.queue_blocked.lock().unwrap() = Some(("prompt_unknown".to_string(), 1.0));
+        daemon.persist_queue_state(); // 옛 기동 줄이 WAL 에 실린 상태(재기동 뒤 되살아날 재료)에서 시작
         assert!(deliver_head_locked(&daemon, &s3, false, false, None, None).is_none(), "빈 큐인데 배달이 났다");
         assert!(s3.queue_blocked.lock().unwrap().is_none(), "빈 큐인데 막힘 사유가 남았다");
+        // 배달이 없으니 배달 쪽 영속도 없다 — 폐기 자신이 영속해야 WAL 에서 옛 줄이 빠진다.
+        let wal = std::fs::read_to_string(crate::state::state_dir(&daemon.socket_path).join("queue-state.json"))
+            .expect("queue-state.json");
+        let wal: serde_json::Value = serde_json::from_str(&wal).expect("WAL json");
+        assert!(!wal.as_array().expect("WAL 배열").iter()
+                    .any(|e| e["surface_id"].as_u64() == Some(s3.id) && e["text"].as_str() == Some(old)),
+                "폐기가 영속되지 않았다 — 데몬 재기동 뒤 옛 기동 줄이 되살아난다");
         // ② 대조: 메타 없는 좌석은 판정 재료가 없어 폐기 0 — 머리 그대로(배달 가부는 빈 좌석 게이트 몫).
         let bare = seat(None);
         let d = deliver_head_locked(&daemon, &bare, true, false, None, None).expect("머리 배달");

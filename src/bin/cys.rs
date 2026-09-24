@@ -29438,3 +29438,537 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert!(call < early, "배선 호출이 --no-install-hook 조기 반환 뒤에 있다 — 앱 갱신 경로가 배선을 못 탄다");
     }
 }
+
+// (v116-usage · master 규칙 ⑤) 합격 시험 — 구현을 보지 않은 Opus 서브에이전트가 명세·인터페이스만 보고 작성
+// (명세 원문 = HANDOFF §3 진리표 + 이 브랜치 REVISE 인터페이스 · 워커는 감싸 붙이기만 함).
+#[cfg(test)]
+mod acceptance_v116 {
+    // v116-usage 합격 시험 — cys 바이너리(C1·C2). 구현 비공개 · 명세만으로 작성.
+
+    const LAUNCH: &str = "claude --resume abc";
+    const ECHO: &str = "% claude --resume abc";
+
+    fn scr(lines: &[&str]) -> String {
+        lines.join("\n")
+    }
+
+    fn bx(n: usize) -> String {
+        "─".repeat(n)
+    }
+
+    fn run_of(c: char, n: usize) -> String {
+        std::iter::repeat(c).take(n).collect()
+    }
+
+    /// alive = None 과 Some(false) 는 같은 결과여야 한다 — 둘 다 검사한다.
+    fn expect_dead(screen: &str, launch_line: &str, want: bool, why: &str) {
+        let a = super::launch_failure_confirmed(screen, launch_line, None);
+        let b = super::launch_failure_confirmed(screen, launch_line, Some(false));
+        assert_eq!(a, want, "[alive=None] {why}\n--- 화면 ---\n{screen}\n--- launch_line = {launch_line:?}");
+        assert_eq!(b, want, "[alive=Some(false)] {why}\n--- 화면 ---\n{screen}\n--- launch_line = {launch_line:?}");
+    }
+
+    // ───────────────────────── C1: alive ─────────────────────────
+
+    #[test]
+    fn accept_c1_alive_true_never_confirms() {
+        let b8 = bx(8);
+        let screens = [
+            scr(&[ECHO, "zsh: command not found: claude", "% "]),
+            scr(&[ECHO, "bash: claude: No such file or directory", "a", "b", "c"]),
+            scr(&[ECHO, &b8, "zsh: command not found: claude", "% "]),
+            scr(&[ECHO, "a", "b", "c"]),
+            String::new(),
+        ];
+        for s in screens.iter() {
+            assert!(
+                !super::launch_failure_confirmed(s, LAUNCH, Some(true)),
+                "alive=Some(true) 면 화면과 무관하게 false(닫지 않음)여야 한다\n--- 화면 ---\n{s}"
+            );
+            assert!(
+                !super::launch_failure_confirmed(s, "", Some(true)),
+                "alive=Some(true) 면 launch_line 이 비어도 false\n--- 화면 ---\n{s}"
+            );
+        }
+    }
+
+    // ───────────────────────── C1: 명세 사례 4종 ─────────────────────────
+
+    #[test]
+    fn accept_c1_case_zsh_command_not_found_confirms() {
+        let s = scr(&["% claude --resume abc", "zsh: command not found: claude", "% "]);
+        expect_dead(&s, LAUNCH, true, "zsh command not found 뒤 프롬프트 → 확증(true)");
+    }
+
+    #[test]
+    fn accept_c1_case_resume_redraw_with_old_tool_error_is_not_confirmed() {
+        let b40 = bx(40);
+        let body = [
+            "> 설정 파일을 읽어 줘",
+            "⏺ Bash(cat ~/.config/nope.toml)",
+            "  ⎿  cat: /Users/x/.config/nope.toml: No such file or directory",
+            "⏺ 파일이 없습니다. 새로 만들까요?",
+            "",
+            b40.as_str(),
+            "❯ ",
+            b40.as_str(),
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+        ];
+        let launch = "claude --resume 3f2a9c";
+
+        let mut with_echo: Vec<&str> = vec!["% claude --resume 3f2a9c"];
+        with_echo.extend_from_slice(&body);
+        expect_dead(
+            &scr(&with_echo),
+            launch,
+            false,
+            "--resume 이 옛 도구 오류(No such file…)를 다시 그린 뒤 하단 TUI 4줄 → 닫지 않음(false)",
+        );
+
+        // 에코가 화면에서 사라진 경우(전체 재그림) — 화면 전체에서 TUI 증거를 찾는다.
+        expect_dead(
+            &scr(&body),
+            launch,
+            false,
+            "에코를 못 찾으면 화면 전체 — 하단 TUI 가 있으니 닫지 않음(false)",
+        );
+    }
+
+    #[test]
+    fn accept_c1_case_powershell_long_error_pushed_out_of_tail_confirms() {
+        let s = scr(&[
+            "PS C:\\Users\\x> claude --resume abc",
+            "claude : The term 'claude' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.",
+            "At line:1 char:1",
+            "+ claude --resume abc",
+            "+ ~~~~~~",
+            "    + CategoryInfo          : ObjectNotFound: (claude:String) [], CommandNotFoundException",
+            "    + FullyQualifiedErrorId : CommandNotFoundException",
+            "",
+            "PS C:\\Users\\x> ",
+        ]);
+        expect_dead(&s, LAUNCH, true, "PowerShell 긴 오류(문면이 꼬리 밖) · 에코 아래 TUI 없음 → 확증(true)");
+    }
+
+    #[test]
+    fn accept_c1_case_reused_seat_tui_residue_above_echo_confirms() {
+        let b30 = bx(30);
+        let top = format!("╭{}╮", bx(30));
+        let bottom = format!("╰{}╯", bx(30));
+        // 꼬리 3줄에 실패 문면이 없도록 구성 — 에코 판정만으로 갈리게 한다.
+        let s = scr(&[
+            top.as_str(),
+            "│ ✻ Welcome to Claude Code!    │",
+            bottom.as_str(),
+            b30.as_str(),
+            "❯ ",
+            b30.as_str(),
+            "  ? for shortcuts",
+            "PS C:\\> claude --resume abc",
+            "claude : The term 'claude' is not recognized as the name of a cmdlet, function, script file, or operable program.",
+            "Check the spelling of the name, or if a path was included, verify that the path is correct and try again.",
+            "At line:1 char:1",
+            "+ ~~~~~~",
+            "PS C:\\> ",
+        ]);
+        expect_dead(
+            &s,
+            LAUNCH,
+            true,
+            "재사용 좌석: 에코 위 옛 TUI 잔상은 무시 · 에코 아래는 오류뿐 → 확증(true)",
+        );
+
+        // zsh 판본(꼬리에 문면이 있으니 어쨌든 true)
+        let s2 = scr(&[
+            top.as_str(),
+            bottom.as_str(),
+            b30.as_str(),
+            ECHO,
+            "zsh: command not found: claude",
+            "% ",
+        ]);
+        expect_dead(&s2, LAUNCH, true, "재사용 좌석 zsh 판본 → 확증(true)");
+    }
+
+    // ───────────────────────── C1: 실패 문면 ─────────────────────────
+
+    #[test]
+    fn accept_c1_each_failure_phrase_in_tail_confirms_despite_tui() {
+        let b8 = bx(8);
+        let phrases = [
+            "zsh: command not found: claude",
+            "env: claude: not found in PATH",
+            "bash: /usr/local/bin/claude: No such file or directory",
+            "claude : The term 'claude' is not recognized as the name of a cmdlet, function, script file, or operable program.",
+            "'claude' is not recognized as an internal or external command,",
+        ];
+        for ph in phrases {
+            let s = scr(&[ECHO, &b8, ph, "% "]);
+            expect_dead(
+                &s,
+                LAUNCH,
+                true,
+                &format!("꼬리에 실패 문면 {ph:?} 이 있으면 에코 아래 TUI 와 무관하게 true"),
+            );
+        }
+    }
+
+    #[test]
+    fn accept_c1_failure_phrase_ignores_all_whitespace() {
+        let b8 = bx(8);
+        for ph in [
+            "zsh: command  not\tfound: claude",
+            "bash: claude: No  such\tfile or  directory",
+            "x: not   found in\tPATH",
+            "'claude' is  not recognized\tas an internal or  external command,",
+            "The term 'claude' is not  recognized as the\tname of a  cmdlet",
+        ] {
+            let s = scr(&[ECHO, &b8, ph, "% "]);
+            expect_dead(
+                &s,
+                LAUNCH,
+                true,
+                &format!("공백·탭이 섞인 실패 문면 {ph:?} 도 공백 제거 후 일치해야 한다"),
+            );
+        }
+    }
+
+    #[test]
+    fn accept_c1_near_miss_is_not_a_failure_phrase() {
+        let b8 = bx(8);
+        for ph in ["claude: not found", "command found", "no such thing", "is not recognized"] {
+            let s = scr(&[ECHO, &b8, ph, "% "]);
+            expect_dead(
+                &s,
+                LAUNCH,
+                false,
+                &format!("{ph:?} 는 5개 실패 문면 어느 것도 아니다 — 에코 아래 TUI 가 있으니 false"),
+            );
+        }
+    }
+
+    // ───────────────────────── C1: 꼬리 = 공백 아닌 마지막 3줄 ─────────────────────────
+
+    #[test]
+    fn accept_c1_tail_third_from_last_nonblank_counts() {
+        let b8 = bx(8);
+        let s = scr(&[ECHO, &b8, "zsh: command not found: claude", "p1", "p2"]);
+        expect_dead(&s, LAUNCH, true, "실패 문면이 끝에서 3번째 줄 → 꼬리 안 → true");
+    }
+
+    #[test]
+    fn accept_c1_tail_fourth_from_last_nonblank_is_outside() {
+        let b8 = bx(8);
+        let s = scr(&[ECHO, &b8, "zsh: command not found: claude", "p1", "p2", "p3"]);
+        expect_dead(
+            &s,
+            LAUNCH,
+            false,
+            "실패 문면이 끝에서 4번째 줄 → 꼬리 밖 · 에코 아래 TUI 있음 → false",
+        );
+    }
+
+    #[test]
+    fn accept_c1_tail_skips_whitespace_only_lines() {
+        let b8 = bx(8);
+        let trailing = scr(&[
+            ECHO,
+            &b8,
+            "zsh: command not found: claude",
+            "p1",
+            "p2",
+            "",
+            "   ",
+            "\t",
+            "",
+            "      ",
+        ]);
+        expect_dead(
+            &trailing,
+            LAUNCH,
+            true,
+            "꼬리 뒤 공백만인 줄들은 세지 않는다 — 문면은 여전히 공백 아닌 마지막 3줄 안 → true",
+        );
+        let interleaved = scr(&[
+            ECHO,
+            &b8,
+            "zsh: command not found: claude",
+            "",
+            "p1",
+            "  \t ",
+            "p2",
+            "",
+        ]);
+        expect_dead(
+            &interleaved,
+            LAUNCH,
+            true,
+            "사이사이 공백만인 줄도 세지 않는다 → true",
+        );
+    }
+
+    // ───────────────────────── C1: TUI 증거 ─────────────────────────
+
+    /// 실패 문면을 꼬리 밖(4번째)에 두고 마지막 줄에 `last` 를 둔 화면.
+    fn tui_probe(last: &str) -> String {
+        scr(&[ECHO, "bash: /x/claude: No such file or directory", "a", "b", last])
+    }
+
+    #[test]
+    fn accept_c1_box_run_8_is_tui_7_is_not() {
+        expect_dead(&tui_probe(&bx(8)), LAUNCH, false, "박스 문자 연속 8개 = TUI 증거 → false");
+        expect_dead(&tui_probe(&bx(7)), LAUNCH, true, "박스 문자 연속 7개는 TUI 아님 → true");
+        expect_dead(&tui_probe(&format!("  {}  ", bx(8))), LAUNCH, false, "앞뒤 공백 속 8연속도 TUI → false");
+    }
+
+    #[test]
+    fn accept_c1_box_chars_must_be_consecutive() {
+        let split = format!("{} {}", bx(4), bx(4));
+        expect_dead(&tui_probe(&split), LAUNCH, true, "공백으로 끊긴 4+4 는 연속 8 아님 → true");
+        let split7 = format!("{}x{}", bx(7), bx(7));
+        expect_dead(&tui_probe(&split7), LAUNCH, true, "글자로 끊긴 7+7 은 연속 8 아님 → true");
+    }
+
+    #[test]
+    fn accept_c1_box_run_may_mix_different_box_chars() {
+        let mixed = "─│┌┐└┘├┤";
+        assert_eq!(mixed.chars().count(), 8);
+        expect_dead(&tui_probe(mixed), LAUNCH, false, "서로 다른 박스 문자 8개 연속도 TUI → false");
+    }
+
+    #[test]
+    fn accept_c1_box_char_range_bounds() {
+        let lo = char::from_u32(0x2500).unwrap();
+        let hi = char::from_u32(0x259F).unwrap();
+        let block = char::from_u32(0x2580).unwrap();
+        let below = char::from_u32(0x24FF).unwrap();
+        let above = char::from_u32(0x25A0).unwrap();
+        expect_dead(&tui_probe(&run_of(lo, 8)), LAUNCH, false, "U+2500 ×8 는 범위 하한 포함 → TUI → false");
+        expect_dead(&tui_probe(&run_of(hi, 8)), LAUNCH, false, "U+259F ×8 는 범위 상한 포함 → TUI → false");
+        expect_dead(&tui_probe(&run_of(block, 8)), LAUNCH, false, "U+2580(블록 요소) ×8 → TUI → false");
+        expect_dead(&tui_probe(&run_of(below, 8)), LAUNCH, true, "U+24FF ×8 는 범위 밖 → TUI 아님 → true");
+        expect_dead(&tui_probe(&run_of(above, 8)), LAUNCH, true, "U+25A0 ×8 는 범위 밖 → TUI 아님 → true");
+    }
+
+    #[test]
+    fn accept_c1_for_shortcuts_is_tui_evidence() {
+        expect_dead(&tui_probe("  ? for shortcuts"), LAUNCH, false, "\"? for shortcuts\" = TUI 증거 → false");
+        expect_dead(&tui_probe("? for    shortcuts"), LAUNCH, false, "공백 여러 개 \"for    shortcuts\" 도 공백 제거 후 TUI → false");
+        expect_dead(&tui_probe("  ? for help"), LAUNCH, true, "\"for help\" 는 TUI 증거 아님 → true");
+    }
+
+    #[test]
+    fn accept_c1_no_failure_in_tail_and_no_tui_confirms() {
+        let s = scr(&[ECHO, "bash: claude: No such file or directory", "a", "b", "c"]);
+        expect_dead(&s, LAUNCH, true, "꼬리에 문면 없음 · TUI 없음 → true(진리표 3행)");
+        expect_dead(&s, "", true, "launch_line 비어도 TUI 없으면 true");
+    }
+
+    // ───────────────────────── C1: 에코 아래 ─────────────────────────
+
+    #[test]
+    fn accept_c1_uses_last_occurrence_of_echo() {
+        let b8 = bx(8);
+        let s = scr(&[
+            ECHO,
+            &b8,
+            "  ? for shortcuts",
+            ECHO,
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(
+            &s,
+            LAUNCH,
+            true,
+            "에코가 두 번이면 마지막 에코 아래만 본다 — 첫 에코와 둘째 에코 사이 TUI 는 무시 → true",
+        );
+        let s2 = scr(&[
+            ECHO,
+            "bash: claude: No such file or directory",
+            ECHO,
+            &b8,
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(&s2, LAUNCH, false, "마지막 에코 아래에 TUI 가 있으면 false");
+    }
+
+    #[test]
+    fn accept_c1_echo_folded_across_two_rows_is_found() {
+        let b8 = bx(8);
+        let launch = "claude --resume 0123456789abcdef";
+        let s = scr(&[
+            &b8,
+            "  ? for shortcuts",
+            "% claude --re",
+            "sume 0123456789abcdef",
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(
+            &s,
+            launch,
+            true,
+            "에코가 두 행에 접혀도(줄바꿈 무시) 찾아야 한다 — 에코 위 TUI 잔상은 무시 → true",
+        );
+    }
+
+    #[test]
+    fn accept_c1_echo_line_itself_is_excluded() {
+        let s = scr(&[
+            &format!("{} % claude --resume abc", bx(10)),
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(
+            &s,
+            LAUNCH,
+            true,
+            "에코 아래 = 에코 줄 다음 줄부터 — 에코 줄 자체의 박스 문자는 TUI 증거가 아니다 → true",
+        );
+    }
+
+    #[test]
+    fn accept_c1_echo_matches_first_16_chars_only() {
+        let b8 = bx(8);
+        let s = scr(&[
+            &b8,
+            "% claude --resume 0000",
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(
+            &s,
+            "claude --resume 1111",
+            true,
+            "앞 16글자(\"claude --resume \")만 맞으면 에코로 찾는다 — 에코 위 TUI 무시 → true",
+        );
+    }
+
+    #[test]
+    fn accept_c1_echo_uses_trimmed_launch_line() {
+        let b8 = bx(8);
+        let s = scr(&[
+            &b8,
+            ECHO,
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(
+            &s,
+            "   claude --resume abc   \n",
+            true,
+            "launch_line 은 trim 뒤 앞 16글자로 찾는다 — 에코 위 TUI 무시 → true",
+        );
+    }
+
+    #[test]
+    fn accept_c1_echo_prefix_counts_chars_not_bytes() {
+        let b8 = bx(8);
+        let launch = "cd 가나다라마바 && claude --resume abc";
+        let s = scr(&[
+            &b8,
+            "% cd 가나다라마바 && claude --resume abc",
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(
+            &s,
+            launch,
+            true,
+            "앞 16글자는 바이트가 아니라 글자 — 한글 경로 에코도 찾아야 한다(패닉 금지) → true",
+        );
+    }
+
+    #[test]
+    fn accept_c1_empty_launch_line_uses_whole_screen() {
+        let b8 = bx(8);
+        let s = scr(&[
+            &b8,
+            ECHO,
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(&s, LAUNCH, true, "대조군: 에코를 찾으면 에코 위 TUI 무시 → true");
+        expect_dead(&s, "", false, "launch_line 이 비면 화면 전체 — 에코 위 TUI 도 증거 → false");
+    }
+
+    #[test]
+    fn accept_c1_echo_not_found_uses_whole_screen() {
+        let b8 = bx(8);
+        let s = scr(&[
+            &b8,
+            ECHO,
+            "bash: claude: No such file or directory",
+            "a",
+            "b",
+            "c",
+        ]);
+        expect_dead(
+            &s,
+            "codex resume --last-session",
+            false,
+            "에코를 못 찾으면 화면 전체 — 화면 위쪽 TUI 도 증거 → false",
+        );
+    }
+
+    // ───────────────────────── C2 ─────────────────────────
+
+    #[test]
+    fn accept_c2_confirm_ticks_constant_is_2() {
+        let c: u32 = super::LAUNCH_FAILURE_CONFIRM_TICKS;
+        assert_eq!(c, 2, "LAUNCH_FAILURE_CONFIRM_TICKS 는 2");
+    }
+
+    #[test]
+    fn accept_c2_streak_increments_resets_and_saturates() {
+        assert_eq!(super::launch_failure_streak(0, true), 1, "0 에서 확증 → 1");
+        assert_eq!(super::launch_failure_streak(1, true), 2, "1 에서 확증 → 2");
+        assert_eq!(super::launch_failure_streak(0, false), 0, "비확증 → 0");
+        assert_eq!(super::launch_failure_streak(1, false), 0, "1 에서 비확증 → 0(초기화)");
+        assert_eq!(super::launch_failure_streak(5, false), 0, "5 에서 비확증 → 0");
+        assert_eq!(
+            super::launch_failure_streak(u32::MAX, true),
+            u32::MAX,
+            "u32::MAX 에서 확증 → 포화(넘침 패닉·감김 금지)"
+        );
+        assert_eq!(super::launch_failure_streak(u32::MAX, false), 0, "u32::MAX 에서 비확증 → 0");
+    }
+
+    fn closes(seq: &[bool]) -> bool {
+        let mut streak = 0u32;
+        let mut closed = false;
+        for &c in seq {
+            streak = super::launch_failure_streak(streak, c);
+            if streak >= super::LAUNCH_FAILURE_CONFIRM_TICKS {
+                closed = true;
+            }
+        }
+        closed
+    }
+
+    #[test]
+    fn accept_c2_two_consecutive_confirmations_required() {
+        assert!(!closes(&[true]), "확증 1틱만으로는 닫지 않는다");
+        assert!(!closes(&[true, false, true]), "확증·비확증·확증 = 닫지 않음");
+        assert!(!closes(&[true, false, true, false, true]), "확증이 연속되지 않으면 몇 번이든 닫지 않음");
+        assert!(closes(&[true, true]), "확증·확증 = 닫음");
+        assert!(closes(&[false, true, false, true, true]), "마지막에 연속 2틱이면 닫음");
+    }
+}

@@ -2574,3 +2574,485 @@ mod tests {
         assert_eq!(fired[0]["payload"]["context_pct"], 77);
     }
 }
+
+// (v116-usage · master 규칙 ⑤) 합격 시험 — 구현을 보지 않은 Opus 서브에이전트가 명세·인터페이스만 보고 작성
+// (명세 원문 = HANDOFF §3 진리표 + 이 브랜치 REVISE 인터페이스 · 워커는 감싸 붙이기만 함).
+#[cfg(test)]
+mod acceptance_v116 {
+    // v116-usage 합격 시험 — usage 모듈(B1·B2). 구현 비공개 · 명세만으로 작성.
+
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    // ───────────────────────── B1 ─────────────────────────
+
+    #[test]
+    fn accept_b1_grace_constant_is_60() {
+        let g: f64 = super::ESTIMATED_WINDOW_GRACE_SECS;
+        assert_eq!(g, 60.0, "ESTIMATED_WINDOW_GRACE_SECS 는 60.0 이어야 한다");
+    }
+
+    #[test]
+    fn accept_b1_estimated_window_young_attach_defers() {
+        for age in [0.0, 1.0, 30.0, 59.0, 59.999] {
+            assert!(
+                super::defer_estimated_threshold(true, age),
+                "창이 추정이고 부착 {age}초(< 60)면 발화 보류(true)여야 한다"
+            );
+        }
+        assert!(
+            super::defer_estimated_threshold(true, -1.0),
+            "부착 나이가 음수(시계 역행)여도 < 60 이므로 보류(true)"
+        );
+    }
+
+    #[test]
+    fn accept_b1_age_exactly_60_does_not_defer() {
+        assert!(
+            !super::defer_estimated_threshold(true, 60.0),
+            "부착 나이 정확히 60초면 보류 해제(false) — 경계는 < 60"
+        );
+        for age in [60.001, 61.0, 3600.0] {
+            assert!(
+                !super::defer_estimated_threshold(true, age),
+                "부착 {age}초(>= 60)면 보류하지 않는다"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_b1_confirmed_window_never_defers() {
+        for age in [-1.0, 0.0, 10.0, 59.999, 60.0, 1e6] {
+            assert!(
+                !super::defer_estimated_threshold(false, age),
+                "창이 확정(false)이면 나이({age})와 무관하게 보류하지 않는다"
+            );
+        }
+    }
+
+    // ───────────────────────── B2 도우미 ─────────────────────────
+
+    type Grace = (f64, bool, Option<u8>);
+
+    struct TmpDir(PathBuf);
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tmp_dir(tag: &str) -> TmpDir {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!(
+            "cys-accept-v116-usage-{}-{}-{}",
+            tag,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&p).expect("임시 폴더를 만들지 못했다");
+        TmpDir(p)
+    }
+
+    fn make_daemon(t: &TmpDir) -> Arc<crate::state::Daemon> {
+        crate::state::Daemon::new(t.0.join("cysd.sock")).into()
+    }
+
+    fn file(t: &TmpDir, name: &str) -> PathBuf {
+        let p = t.0.join(name);
+        let _ = std::fs::write(&p, b"");
+        p
+    }
+
+    fn attach(
+        d: &Arc<crate::state::Daemon>,
+        tails: &mut HashMap<u64, super::TailState>,
+        sid: u64,
+        p: &Path,
+        heuristic: bool,
+        now: f64,
+    ) -> Grace {
+        super::reattach_tail(d, tails, sid, p.to_path_buf(), heuristic, now);
+        let t = tails
+            .get(&sid)
+            .unwrap_or_else(|| panic!("reattach_tail 뒤 좌석 {sid} 의 TailState 가 없다"));
+        assert!(
+            t.path.as_path() == p,
+            "reattach_tail 뒤 path 가 새 경로여야 한다: 기대 {:?} · 실제 {:?}",
+            p,
+            t.path
+        );
+        (t.grace_from, t.threshold_deferred, t.deferred_pct)
+    }
+
+    fn set_state(
+        tails: &mut HashMap<u64, super::TailState>,
+        sid: u64,
+        grace_from: Option<f64>,
+        deferred: bool,
+        pct: Option<u8>,
+    ) {
+        let t = tails
+            .get_mut(&sid)
+            .unwrap_or_else(|| panic!("좌석 {sid} 의 TailState 가 없다(상태 대입 불가)"));
+        if let Some(g) = grace_from {
+            t.grace_from = g;
+        }
+        t.threshold_deferred = deferred;
+        t.deferred_pct = pct;
+    }
+
+    fn memo_entries(tails: &HashMap<u64, super::TailState>, sid: u64, p: &Path) -> Vec<Grace> {
+        let t = tails.get(&sid).expect("좌석 TailState 가 없다");
+        t.grace_memo
+            .iter()
+            .filter(|(mp, _)| mp.as_path() == p)
+            .map(|(_, g)| *g)
+            .collect()
+    }
+
+    fn memo_has(tails: &HashMap<u64, super::TailState>, sid: u64, p: &Path) -> bool {
+        !memo_entries(tails, sid, p).is_empty()
+    }
+
+    fn memo_len(tails: &HashMap<u64, super::TailState>, sid: u64) -> usize {
+        tails.get(&sid).expect("좌석 TailState 가 없다").grace_memo.len()
+    }
+
+    fn assert_memo_unique(tails: &HashMap<u64, super::TailState>, sid: u64, when: &str) {
+        let t = tails.get(&sid).expect("좌석 TailState 가 없다");
+        for (i, (a, _)) in t.grace_memo.iter().enumerate() {
+            for (b, _) in t.grace_memo.iter().skip(i + 1) {
+                assert!(
+                    a != b,
+                    "[{when}] grace_memo 에 같은 경로 {:?} 가 두 번 있다 — 기억은 경로당 최신 하나여야 한다",
+                    a
+                );
+            }
+        }
+    }
+
+    // ───────────────────────── B2 ─────────────────────────
+
+    #[test]
+    fn accept_b2_memo_cap_constant_is_16() {
+        let c: usize = super::GRACE_MEMO_CAP;
+        assert_eq!(c, 16, "GRACE_MEMO_CAP 은 16 이어야 한다");
+    }
+
+    #[test]
+    fn accept_b2_spec_scenario_full() {
+        let tmp = tmp_dir("scenario");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let s1 = file(&tmp, "s1.jsonl");
+        let f1 = file(&tmp, "f1.jsonl");
+        let f2 = file(&tmp, "f2.jsonl");
+
+        assert_eq!(attach(&d, &mut tails, sid, &s1, true, 1000.0), (1000.0, false, None), "S1 첫 부착(1000)");
+        set_state(&mut tails, sid, None, true, Some(77));
+
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f1, true, 1100.0),
+            (1100.0, false, None),
+            "F1 처음(1100): 직전 S1 의 보류(true·77)를 물려받으면 안 된다"
+        );
+        assert_eq!(
+            memo_entries(&tails, sid, &s1),
+            vec![(1000.0, true, Some(77))],
+            "S1 을 떠날 때 (1000·true·77) 이 기억돼야 한다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 1130.0),
+            (1000.0, true, Some(77)),
+            "S1 복귀(1130, 휴리스틱): 떠날 때 상태를 되찾아야 한다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f2, true, 1150.0),
+            (1150.0, false, None),
+            "F2 처음(1150): 새 유예"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 1170.0),
+            (1000.0, true, Some(77)),
+            "S1 두 번째 복귀(1170): 여전히 (1000·true·77)"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f1, true, 1190.0),
+            (1100.0, false, None),
+            "F1 복귀(1190): F1 을 떠날 때의 grace_from 1100 을 되찾아야 한다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, false, 1200.0),
+            (1200.0, false, None),
+            "S1 등록 경로(heuristic=false, 1200): 기억과 무관하게 새 유예(1200·false·None)"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f2, true, 1210.0),
+            (1150.0, false, None),
+            "F2 복귀(1210): F2 를 떠날 때의 grace_from 1150 을 되찾아야 한다"
+        );
+        assert_eq!(
+            memo_entries(&tails, sid, &s1),
+            vec![(1200.0, false, None)],
+            "S1 기억은 최신(1200·false·None) 하나뿐이어야 한다 — 옛 (1000·true·77) 잔존 금지"
+        );
+        assert_memo_unique(&tails, sid, "F2 복귀 뒤");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 1220.0),
+            (1200.0, false, None),
+            "S1 휴리스틱 복귀(1220): 최신 기억(1200·false·None) — 옛 1000·true·77 이 되살아나면 안 된다"
+        );
+
+        let mut news = Vec::new();
+        for i in 0..20u32 {
+            let p = file(&tmp, &format!("n{i:02}.jsonl"));
+            let now = 1300.0 + i as f64;
+            assert_eq!(
+                attach(&d, &mut tails, sid, &p, true, now),
+                (now, false, None),
+                "새 파일 n{i:02} 처음({now}): 새 유예여야 한다"
+            );
+            assert!(
+                memo_len(&tails, sid) <= 16,
+                "새 파일 n{i:02} 부착 뒤 기억 수 {} > 16",
+                memo_len(&tails, sid)
+            );
+            assert_memo_unique(&tails, sid, "새 파일 순회 중");
+            news.push(p);
+        }
+
+        assert_eq!(memo_len(&tails, sid), 16, "새 파일 20개 뒤 기억 수는 정확히 16");
+        assert_eq!(
+            memo_entries(&tails, sid, &news[18]),
+            vec![(1318.0, false, None)],
+            "방금 떠난 n18 은 기억에 (1318·false·None) 으로 있어야 한다"
+        );
+        for (i, p) in news.iter().enumerate().take(19).skip(3) {
+            assert!(memo_has(&tails, sid, p), "n{i:02} 는 최근 떠난 16개 안이라 기억돼야 한다");
+        }
+        for (i, p) in news.iter().enumerate().take(3) {
+            assert!(!memo_has(&tails, sid, p), "n{i:02} 는 가장 오래전에 떠난 쪽이라 잊혀야 한다");
+        }
+        assert!(!memo_has(&tails, sid, &s1), "S1 은 잊혀야 한다");
+        assert!(!memo_has(&tails, sid, &f1), "F1 은 잊혀야 한다");
+        assert!(!memo_has(&tails, sid, &f2), "F2 는 잊혀야 한다");
+        assert!(!memo_has(&tails, sid, &news[19]), "현재 붙어 있는 n19 는 아직 떠나지 않았으니 기억에 없어야 한다");
+
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 2000.0),
+            (2000.0, false, None),
+            "잊힌 S1 로 돌아오면 처음 보는 것처럼 now(2000)"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_deferred_state_restored_per_file() {
+        let tmp = tmp_dir("perfile");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let a = file(&tmp, "a.jsonl");
+        let b = file(&tmp, "b.jsonl");
+
+        assert_eq!(attach(&d, &mut tails, sid, &a, true, 100.0), (100.0, false, None), "A 처음");
+        set_state(&mut tails, sid, None, true, Some(91));
+        assert_eq!(attach(&d, &mut tails, sid, &b, true, 110.0), (110.0, false, None), "B 처음 — A 의 보류 상속 금지");
+        set_state(&mut tails, sid, None, true, Some(55));
+        assert_eq!(
+            attach(&d, &mut tails, sid, &a, true, 120.0),
+            (100.0, true, Some(91)),
+            "A 복귀: A 자기 상태(100·true·91) — B 의 55 가 섞이면 안 된다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &b, true, 130.0),
+            (110.0, true, Some(55)),
+            "B 복귀: B 자기 상태(110·true·55)"
+        );
+        assert_memo_unique(&tails, sid, "A·B 왕복 뒤");
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_registered_path_always_fresh_even_if_remembered() {
+        let tmp = tmp_dir("registered");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let a = file(&tmp, "a.jsonl");
+        let b = file(&tmp, "b.jsonl");
+
+        assert_eq!(attach(&d, &mut tails, sid, &a, false, 100.0), (100.0, false, None), "A 등록 첫 부착");
+        set_state(&mut tails, sid, None, true, Some(80));
+        assert_eq!(attach(&d, &mut tails, sid, &b, false, 150.0), (150.0, false, None), "B 등록 부착 — 상속 금지");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &a, false, 200.0),
+            (200.0, false, None),
+            "A 등록 복귀(heuristic=false): 기억(100·true·80)이 있어도 언제나 now·false·None"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_revisit_memory_is_latest_state_only() {
+        let tmp = tmp_dir("latest");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let p = file(&tmp, "p.jsonl");
+        let q = file(&tmp, "q.jsonl");
+
+        attach(&d, &mut tails, sid, &p, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(42));
+        attach(&d, &mut tails, sid, &q, true, 110.0);
+        assert_eq!(attach(&d, &mut tails, sid, &p, true, 120.0), (100.0, true, Some(42)), "P 첫 복귀");
+        // P 에 붙어 있는 동안 상태가 바뀐다(보류 해제 + grace 재시작).
+        set_state(&mut tails, sid, Some(150.0), false, None);
+        assert_eq!(attach(&d, &mut tails, sid, &q, true, 160.0), (110.0, false, None), "Q 복귀");
+        assert_eq!(
+            memo_entries(&tails, sid, &p),
+            vec![(150.0, false, None)],
+            "P 기억은 떠날 때의 최신(150·false·None) 하나 — 옛(100·true·42) 이 남으면 안 된다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &p, true, 170.0),
+            (150.0, false, None),
+            "P 두 번째 복귀: 최신 상태(150·false·None) — 오래된 상태 부활 금지"
+        );
+        // 다시 보류로 바꿔 떠났다 돌아와도 최신을 따른다.
+        set_state(&mut tails, sid, None, true, Some(99));
+        attach(&d, &mut tails, sid, &q, true, 180.0);
+        assert_eq!(
+            attach(&d, &mut tails, sid, &p, true, 190.0),
+            (150.0, true, Some(99)),
+            "P 세 번째 복귀: 최신(150·true·99)"
+        );
+        assert_memo_unique(&tails, sid, "P·Q 다회 왕복 뒤");
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_exactly_16_other_files_all_remembered() {
+        let tmp = tmp_dir("cap16");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let s0 = file(&tmp, "s0.jsonl");
+
+        attach(&d, &mut tails, sid, &s0, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(61));
+        for i in 1..=16u32 {
+            let p = file(&tmp, &format!("n{i:02}.jsonl"));
+            attach(&d, &mut tails, sid, &p, true, 100.0 + i as f64);
+        }
+        // 현재 n16 · 떠난 다른 파일 = s0, n01..n15 = 16개 → 아무것도 잊지 않는다.
+        assert_eq!(memo_len(&tails, sid), 16, "다른 파일 정확히 16개면 기억 수 16");
+        assert!(memo_has(&tails, sid, &s0), "다른 파일이 정확히 16개면 가장 오래된 s0 도 기억돼야 한다(상한 경계)");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s0, true, 500.0),
+            (100.0, true, Some(61)),
+            "16개 경계에서 s0 복귀는 기억을 되찾아야 한다"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_seventeenth_other_file_evicts_oldest_departure() {
+        let tmp = tmp_dir("cap17");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let s0 = file(&tmp, "s0.jsonl");
+
+        attach(&d, &mut tails, sid, &s0, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(61));
+        let mut ns = Vec::new();
+        for i in 1..=17u32 {
+            let p = file(&tmp, &format!("n{i:02}.jsonl"));
+            attach(&d, &mut tails, sid, &p, true, 100.0 + i as f64);
+            ns.push(p);
+        }
+        // 현재 n17 · 떠난 다른 파일 = s0, n01..n16 = 17개 → 가장 오래전에 떠난 s0 만 잊는다.
+        assert_eq!(memo_len(&tails, sid), 16, "17번째 다른 파일이 생기면 기억 수는 16 으로 유지");
+        assert!(!memo_has(&tails, sid, &s0), "가장 오래전에 떠난 s0 가 잊혀야 한다");
+        assert!(memo_has(&tails, sid, &ns[0]), "n01 은 두 번째로 오래됐으므로 아직 기억돼야 한다(한 개만 잊는다)");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s0, true, 500.0),
+            (500.0, false, None),
+            "잊힌 s0 로 돌아오면 처음 보는 것처럼 now(500)·false·None"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_eviction_order_is_by_last_departure_not_first_seen() {
+        let tmp = tmp_dir("lru");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let p = file(&tmp, "p.jsonl");
+
+        attach(&d, &mut tails, sid, &p, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(42));
+        let mut ns = Vec::new();
+        for i in 1..=15u32 {
+            let n = file(&tmp, &format!("n{i:02}.jsonl"));
+            attach(&d, &mut tails, sid, &n, true, 100.0 + i as f64);
+            ns.push(n);
+        }
+        // P 는 가장 먼저 기억됐지만 이제 다시 붙었다 떠난다 → 떠난 시각이 최신이 된다.
+        assert_eq!(attach(&d, &mut tails, sid, &p, true, 200.0), (100.0, true, Some(42)), "P 복귀");
+        let n16 = file(&tmp, "n16.jsonl");
+        attach(&d, &mut tails, sid, &n16, true, 201.0);
+        let n17 = file(&tmp, "n17.jsonl");
+        attach(&d, &mut tails, sid, &n17, true, 202.0);
+        // 떠난 순서: n01(가장 오래) … n15, P(201), n16(202) = 17개 → n01 을 잊어야 한다.
+        assert_eq!(memo_len(&tails, sid), 16, "기억 수 16");
+        assert!(
+            !memo_has(&tails, sid, &ns[0]),
+            "가장 오래전에 떠난 n01 이 잊혀야 한다"
+        );
+        assert!(
+            memo_has(&tails, sid, &p),
+            "P 는 처음 기억된 건 가장 이르지만 최근(201)에 떠났으므로 남아야 한다 — 떠난 순서 기준 퇴출"
+        );
+        assert_memo_unique(&tails, sid, "LRU 순회 뒤");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &p, true, 300.0),
+            (100.0, true, Some(42)),
+            "P 재복귀: 기억(100·true·42)을 되찾아야 한다"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_memory_is_per_seat() {
+        let tmp = tmp_dir("perseat");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let p = file(&tmp, "p.jsonl");
+        let q = file(&tmp, "q.jsonl");
+
+        attach(&d, &mut tails, 7, &p, true, 100.0);
+        set_state(&mut tails, 7, None, true, Some(70));
+        attach(&d, &mut tails, 7, &q, true, 110.0);
+
+        assert_eq!(
+            attach(&d, &mut tails, 8, &p, true, 120.0),
+            (120.0, false, None),
+            "좌석 8 은 P 에 붙었다 떠난 적이 없다 — 좌석 7 의 기억(100·true·70)을 쓰면 안 된다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, 7, &p, true, 130.0),
+            (100.0, true, Some(70)),
+            "좌석 7 은 자기 기억(100·true·70)을 되찾는다 — 좌석 8 부착에 오염되면 안 된다"
+        );
+        drop(d);
+    }
+}

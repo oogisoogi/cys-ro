@@ -114,7 +114,7 @@
 
 호출부: 위 표가 참인 틱이 **연속 2번**이어야 닫는다 · 참인 틱은 준비 판정을 건너뛴다.
 
-`defer_estimated_threshold(window_estimated, age)`: 추정 ∧ age < 60 → 보류 · 그 밖 발화(경계 60.0 = 발화). `reattach_grace_from(prev, heuristic, now)`: 휴리스틱 ∧ 직전 있음 → 승계 · 그 밖 now.
+`defer_estimated_threshold(window_estimated, age)`: 추정 ∧ age < 60 → 보류 · 그 밖 발화(경계 60.0 = 발화). `reattach_tail(…, path, heuristic, now)`(구 `reattach_grace_from` 대체 · 67fb31c9): 등록 경로 → now · 휴리스틱 ∧ 그 경로를 전에 떠난 적 있음 → 그 경로의 (기준 시각·보류·보류 %) 복원 · 처음 보는 경로 → now · 기억 = 다른 파일 16개(가장 오래전 떠난 것부터 방출).
 `merge_rate_windows(old, old_at, new, now)`: 새 창이 리셋 지남(resets_at < now) ∧ 같은 라벨 기존 창 살아 있음 → 기존 유지(기각) · 그 밖 채택 · 채택 0 이면 갱신 생략.
 
 ## 4. 시험 · 기준선 · 뮤턴트

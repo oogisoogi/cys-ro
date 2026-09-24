@@ -11,7 +11,8 @@
   "dept: 디스크 CEO_TEMPLATE=C2 · 부트 마커 있음 · 부서 1개에서 promote-ceo. expect_stale / expect_edit_backup = 새로 생긴 .pre-ceo.stale-* / .pre-ceo-<시각> 의 내용(null = 생기지 않음). expect_after_down = 부서 0개 강등 뒤 md(없으면 생략).",
   "texts 의 CEO 사본(C*)은 실제 합성 계약(scripts/gen_ceo_template.py SEPARATOR)과 같은 구분선을 쓴다 — cys-dept ⓕ·강등 판정이 「구분선 뒤 본문 == md」 동등 비교라서다(Opus 적대 F1).",
   "dept 선택 칸: boot_marker(기본 true) · expect_after_down · expect_stale_after_down(강등 뒤 .pre-ceo.stale-* 내용 목록 · Opus 적대 F2).",
-  "installer 선택 칸: pending_new = true 면 병합 대기 원장(.merge-pending.json)에 MASTER 의 new-pending 항목을 심는다(옛 사이드카가 남긴 원장 형상)."
+  "installer 선택 칸: pending_new = true 면 병합 대기 원장(.merge-pending.json)에 MASTER 의 new-pending 항목을 심는다(옛 사이드카가 남긴 원장 형상).",
+  "dept 선택 칸: skip_promote(승격 없이 바로 부서 닫기 — 승격 중 손본 사본의 강등) · md_encoding(md 를 그 인코딩 바이트로 심음 · 예 cp949) · expect_edit_backup_after_down."
  ],
  "texts": {
   "M_OLD": "STANDARD-MASTER-OLD\n",
@@ -26,7 +27,8 @@
   "C2_CRLF": "# CEO (master of master) — 단일소유 강제 · exit 7\r\n---\r\n\r\n# [본문 — 표준 MASTER 운영 계약 전문]\r\n\r\nSTANDARD-MASTER-V2\r\n",
   "M2_TRUNC": "STANDARD-MASTER-V",
   "M2_EDIT": "STANDARD-MASTER-V2\nMY-EDIT\n",
-  "M2_NEWEDIT": "STANDARD-MASTER-V2\nMY-MERGE-NOTE\n"
+  "M2_NEWEDIT": "STANDARD-MASTER-V2\nMY-MERGE-NOTE\n",
+  "C2_TITLE": "# CEO (master of master) — 내가 고친 제목 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\nSTANDARD-MASTER-V2\n"
  },
  "shapes": [
   {
@@ -357,6 +359,51 @@
     "expect_receipt": "C2"
    },
    "dept": null
+  },
+  {
+   "id": "promoted-title-edited-then-close",
+   "source": "Opus 적대 N1 R6 — 승격 중 사용자가 CEO 사본 제목(단일소유 강제)을 고침 → 부서 닫음",
+   "md": "C2_TITLE",
+   "pre_ceo": "M2",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "C2_TITLE",
+    "expect_pre_ceo": "M2",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M2",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "C2_TITLE"
+   }
+  },
+  {
+   "id": "promoted-cp949-then-close",
+   "source": "Opus 적대 N1 R6d — 승격 중 CEO 사본을 ko-KR 메모장이 CP949 로 저장 → 부서 닫음",
+   "md": "C2",
+   "md_encoding": "cp949",
+   "pre_ceo": "M2",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": null,
+    "expect_pre_ceo": "M2",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M2",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "__MD_BYTES__"
+   }
   }
  ]
 }

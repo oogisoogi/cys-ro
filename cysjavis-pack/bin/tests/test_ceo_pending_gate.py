@@ -477,6 +477,11 @@ for s in SHAPES["shapes"]:
         if val is not None:
             with open(pth, "w", encoding="utf-8", newline="") as f:
                 f.write(val)
+    _md_bytes = None
+    if s.get("md_encoding"):
+        _md_bytes = _T[s["md"]].encode(s["md_encoding"], errors="replace")
+        with open(mdp, "wb") as f:
+            f.write(_md_bytes)
     if s["receipt"] is not None:
         with open(os.path.join(_dirs, ".ceo-template-applied"), "w", encoding="utf-8") as f:
             f.write(hashlib.sha256(_T[s["receipt"]].encode("utf-8")).hexdigest() + "\n")
@@ -485,9 +490,9 @@ for s in SHAPES["shapes"]:
     if exp.get("boot_marker", True):
         with open(marker, "w", encoding="utf-8") as f:
             f.write("{}")
-    _rd = lambda p: open(p, encoding="utf-8", newline="").read() if os.path.exists(p) else None  # 줄끝 무변환(CRLF 형상)
+    _rd = lambda p: open(p, encoding="utf-8", errors="replace", newline="").read() if os.path.exists(p) else None  # 줄끝 무변환(CRLF) · 비UTF-8(CP949) 도 판정 가능
     _bak = lambda kind: sorted(n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md" + kind))
-    for rnd in ("1회", "2회(멱등)"):
+    for rnd in (() if exp.get("skip_promote") else ("1회", "2회(멱등)")):
         code, out = run(env, "promote-ceo")
         stale, edit = _bak(".pre-ceo.stale-"), _bak(".pre-ceo-")
         check("12 [%s · %s] md" % (sid, rnd), _rd(mdp) == _tx(exp["expect_md"]),
@@ -504,12 +509,17 @@ for s in SHAPES["shapes"]:
         code, out = run(env, "down", "d0")
         check("12 [%s] 부서 0개 강등 뒤 md" % sid, _rd(mdp) == _T[exp["expect_after_down"]],
               "exit=%d md=%r %s" % (code, (_rd(mdp) or "")[:40], out[-160:]))
+        if "expect_edit_backup_after_down" in exp:
+            _eb = [open(os.path.join(_dirs, n), "rb").read() for n in _bak(".pre-ceo-")]
+            _want = exp["expect_edit_backup_after_down"]
+            _wb = _md_bytes if _want == "__MD_BYTES__" else _T[_want].encode("utf-8")
+            check("12 [%s] 강등 덮기 전 보존(.pre-ceo-<시각>)" % sid, _eb == [_wb], "n=%d" % len(_eb))
         if "expect_stale_after_down" in exp:
             _sd = [_rd(os.path.join(_dirs, n)) for n in _bak(".pre-ceo.stale-")]
             check("12 [%s] 강등 뒤 .pre-ceo.stale-*" % sid, _sd == [_T[k] for k in exp["expect_stale_after_down"]], repr(_sd))
     shutil.rmtree(tmp)
     _ran12 += 1
-check("12 형상 표 dept 칸 11개 이상 실행", _ran12 >= 11, "ran=%d" % _ran12)
+check("12 형상 표 dept 칸 13개 이상 실행", _ran12 >= 13, "ran=%d" % _ran12)
 
 # ── 13. 구분선 계약: cys-dept 가 판정에 쓰는 구분선 = 합성기(gen_ceo_template.SEPARATOR) 바이트.
 #   합성기 구분선이 바뀌면 cys-dept ⓕ·강등의 「구분선 뒤 본문 == md」 판정이 조용히 전부 거짓이 된다.

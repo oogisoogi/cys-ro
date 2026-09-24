@@ -53,6 +53,7 @@ export function parseBriefSections(text: string): BriefSections {
     }
     if (!cur) continue;
     if (!/^\s*(?:[-*+]|\d+[.)])\s+\S/.test(raw)) continue; // 목록 줄만(설명 문단은 카드에 싣지 않는다)
+    if (REC_LINE.test(raw)) continue; // `- 기록 YYYY-MM-DD HH:MM` 은 기록 시각 줄이지 할 일이 아니다(판정 B 후속 2)
     if (/^\s{2,}/.test(raw)) continue; // 하위 항목은 뺀다(한눈 요지)
     if (out[cur].length >= BRIEF_MAX_ITEMS) continue;
     const line = plainLine(raw);
@@ -62,18 +63,51 @@ export function parseBriefSections(text: string): BriefSections {
 }
 
 /**
- * 기록 시각 — 파일 안에 적힌 가장 늦은 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null).
+ * 기록 시각 — 3절 안의 `기록 YYYY-MM-DD HH:MM` 줄이 먼저(지금보다 늦으면 버린다). 없으면 파일 안에 적힌 가장 늦은
+ * 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null).
  * ★(v116-ui-close · opus 디버깅 결함 1) `notAfter`(지금 시각 「YYYY-MM-DD HH:MM」)를 주면 그보다 늦은 시각은
  *   버린다 — 본문에 적힌 **예정** 시각(「다음 점검 2026-10-01 09:00 예정」)이 기록 시각으로 뽑혀 카드가 「이 기록은
  *   10-01 기준」이라고 거짓말하고, 두 파일 중 옛 파일을 고르던 결함. 주지 않으면 종전 그대로.
  */
 export function recordedAt(text: string, notAfter?: string): string | null {
   const okFull = (t: string) => notAfter === undefined || t <= notAfter;
+  // ★(판정 B · master#88e8cb7b) 3절 안의 `기록 YYYY-MM-DD HH:MM` 줄(지침 §9 예시)이 있으면 그것이 기록 시각이다 —
+  //   파일 전체 최댓값은 기계용 절에만 새 시각이 적혀도(오너 지시 대장 등) 낡은 3절에 새 시각을 붙였다(거짓 신선도).
+  const rec = briefRecordLine(text, notAfter);
+  if (rec !== null) return rec;
   const okDay = (d: string) => notAfter === undefined || d <= notAfter.slice(0, 10);
   const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`).filter(okFull);
   if (full.length) return full.sort().at(-1) ?? null;
   const d = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})/g)].map((m) => m[1]).filter(okDay);
   return d.length ? (d.sort().at(-1) ?? null) : null;
+}
+
+/**
+ * 기록 시각 줄 — 줄 전체가 `기록 YYYY-MM-DD HH:MM`(초·꼬리 공백 · 「기록:」 · T 구분자 허용). 목록 표기(`- ` · `1.` · `1)`)와
+ * 1칸 들여쓰기는 카드가 목록으로 세는 모양과 같게 허용한다(2칸+ = 하위 항목). ★(agy 3R) 시각 뒤에 말이 이어지면 할 일이다.
+ */
+const REC_LINE = /^ ?(?:(?:[-*+]|\d+[.)])\s+)?기록\s*[:：]?\s*(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::\d{2})?\s*$/;
+
+/**
+ * 3절(완료 / 진행 중 / 결정 필요) 안의 기록 줄 중 **가장 늦은 유효한** 시각(`notAfter` 보다 늦은 줄은 뺀다).
+ * 3절 밖이면 치지 않는다. ★(판정 B 후속 2 · agy 2R) 첫 줄에서 멈추면 지우지 않은 옛 기록 줄이 새 줄을 가렸다.
+ */
+function briefRecordLine(text: string, notAfter?: string): string | null {
+  let inBrief = false;
+  let best: string | null = null;
+  for (const raw of text.split(/\r?\n/)) {
+    if (/^#{1,6}\s/.test(raw)) {
+      inBrief = HEADS.some(([, re]) => re.test(raw));
+      continue;
+    }
+    if (!inBrief) continue;
+    const m = raw.match(REC_LINE);
+    if (!m) continue;
+    const t = `${m[1]} ${m[2]}`;
+    if (notAfter !== undefined && t > notAfter) continue;
+    if (best === null || t > best) best = t;
+  }
+  return best;
 }
 
 /** 지금 시각을 파일 기록과 같은 모양(로컬 「YYYY-MM-DD HH:MM」)으로 — recordedAt 의 notAfter 재료. */
@@ -134,13 +168,17 @@ export function hasBriefSections(text: string): boolean {
  * 읽힌 후보들 중 카드에 쓸 하나. ① 고정 3절 제목이 있는 파일을 먼저(없는 파일은 카드에 실을 것이 없다)
  * ② 그중 **기록 시각(recordedAt)이 가장 늦은 것** — 드레인 저장이 방금 cwd 쪽에 썼으면 그쪽이 더 새 기록이다
  * ③ 같으면 **앞선 후보**(= 정본). 3절 제목이 있는 파일이 하나도 없으면 null(카드는 아는 것만 말한다).
+ * ★(판정 B 후속 · Opus 적대 1R 발견 1) ②의 잣대는 파일끼리 같아야 한다 — 3절 안에 유효한 `기록` 줄이 있는 파일
+ *   (3절을 쓴 시각을 안다)이 없는 파일(파일 전체 최댓값 = 기계용 절의 새 시각일 수 있다)보다 먼저다. 섞어 재면 옛 3절
+ *   파일이 대장 한 줄 덕에 이겼다. 같은 줄 안에서만 시각을 비교한다.
  */
 export function pickBriefText(found: { path: string; text: string }[], notAfter?: string): string | null {
-  let best: { text: string; at: string } | null = null;
+  let best: { text: string; known: boolean; at: string } | null = null;
   for (const f of found) {
     if (!hasBriefSections(f.text)) continue;
+    const known = briefRecordLine(f.text, notAfter) !== null;
     const at = recordedAt(f.text, notAfter) ?? "";
-    if (best === null || at > best.at) best = { text: f.text, at };
+    if (best === null || (known && !best.known) || (known === best.known && at > best.at)) best = { text: f.text, known, at };
   }
   return best ? best.text : null;
 }

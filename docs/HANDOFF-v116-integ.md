@@ -374,3 +374,16 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
   - 영향: 1088 `mutate-exited.py`(ONLY=c17 · `FAIL c17` 접두)는 그대로 동작하나 1091 의 c17 판정도 함께 돈다(exitbanner 뮤턴트와 무관 · 시간만 늘어남).
 - 증거 파일 치환: master 정정(#f73e8693) 그대로 — `exited-banner/headless-final-c1-c18.txt` 의 `/Users/u` = **0줄**(1088 139ca0d1 에서 이미 `/Users/user/`) · 치환 커밋 없음.
 - 빠른 확인(af8cf0df): `bun test` **1332/0** · `exitbanner.test.ts` 19/0 · tsc 7(기준 목록 동일) · `secret-scan --all` **clean 1277 파일** · 헤드리스(worktree 밖 사본 실번들 · chrome-headless-shell 154) 전체 = **ALL PASS 79줄**(c1~c16 + 1088 c17 + 1091 c17/c17x/c17w + c18) · ONLY=c17(1088 뮤턴트 스크립트 경로) = **ALL PASS 29줄** · 내 크롬 잔존 0.
+
+### 17-9. git push 기록(2차 통합 0133dcd4 · 불변식 5 2단계)
+- ① master#ce998f62(ACCEPT + push 승인 · 원장 대조 성립 05:59:31) → ② 【실행직전확인요청】 05:59:57 → ③ master#aca6f088 재승인(원장: surface:1086 · submitted yes · 06:00:09 · 유효 범위 = 이 push 1건) → ④ 실행 06:00:22.
+- 명령(정확히 1개): `/usr/bin/git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin 0133dcd4278d49f627e5acacacdff9a9571d5713:refs/heads/fix/v116-integ` → rc 0 · `91aa600d..0133dcd4`(빨리감기).
+- 사후 실측: ls-remote fix/v116-integ = 0133dcd4(일치) · main = 721bc990(무접촉) · 키체인 github.com 항목 전 1 = 후 1 · 저장소·전역 credential.helper 미설정(무변경) · 로컬 3차 머리 27d80ff0 미전송 · 태그 0.
+- 발화 런(headSha 0133dcd4): ci-branch 36058650072 · windows-build (feasibility) 36058649809 · windows-health (H-WIN 실기) 36058649606.
+- 결과: **ci-branch = success**(macos-rust-pack · nsis-hook-harness · boot-health-full 전부 success) · **windows-health = success** · **windows-build = failure**(아티팩트 cys-windows-x64-nsis 140,786,742B 는 생성됨).
+- windows-build 적색 원인 분류(수리 0 · 보고만):
+  - 실패 스텝 = 18 「T5 피닉스 Windows 패리티 스모크」 · 판정 50여 개 중 **1개만 적색 = 「③ taskkill 수행(rc0)」**. 같은 ③ 의 뒤 판정(파이프 해제 관측 · schtasks /Run 재기동 · pong 복귀 · boot-epoch 새 세대)은 전부 PASS → **데몬 종료·재기동 자체는 성공**.
+  - 【관측】 taskkill /PID <cysd> /T /F 출력 = 「SUCCESS: … PID 8272 … terminated」 + 「ERROR: The process with PID 5836 (child process of PID 2492) could not be terminated. Reason: The operation attempted is not supported」 → 트리 안 손자 1개를 못 죽여 rc≠0. 기준 런(91aa600d · 35973475472)의 같은 줄 = cysd 1개만 종료(자식 트리 없음).
+  - 【관측】 91aa600d..0133dcd4 에서 `javis_phoenix.py`·`javis_phoenix_win_smoke.py`·windows-build.yml 무변경 · cysd/lib 의 새 프로세스 생성 = pty_test_support.rs(cfg(test) 시험 전용) 1곳뿐 → **이번 편입이 데몬에 새 자식 프로세스를 들이지 않았다.**
+  - 【추정 · 중상】 kill 순간 데몬에 자식 트리가 살아 있었던 타이밍 경합(기동 직후 cysd 가 스스로 띄우는 auto-restore 등 기존 자식 · 끝나기 전에 kill) + 종료 불가 손자(「not supported」 = 콘솔 호스트류 추정)로 rc≠0. 제품 결함 아님 · 하네스 판정(rc0 엄격)의 부하 의존 흔들림 쪽. windows-build 최근 40런 중 이 판정 적색 = 이번 1회(다른 1회 = v113 가지 · 다른 원인 미확인).
+  - 제안(실행 안 함 · master 판정): 실패 잡 1회 재실행으로 재현 여부 확인(CI 트리거 = master 게이트).

@@ -7,7 +7,7 @@
 ## 0-F. 최종(2026-09-24 13:1x · master#50e24753 ACCEPT)
 
 - **판정**: ACCEPT — 코드 최종 = `5c8890d1`(526325bf 이후 28커밋 · 이 문서 갱신 커밋은 그 뒤 1개 · 로컬 · push 0). master 보고서 = `~/axdev/master/reports/cysr-116-plan/v116-pack/MASTER-REVERIFY-5c8890d1.md`(부모 `…-8f5b0878.md`).
-- **재개 뒤 추가분**: ① phoenix 진행 중 묘비 존중 `fbdd3941` ③ 빈 좌석 회수 유예 600초 `3e8e683a` · 시험 cysd 누수 수리 `8f439373`(test_dept_name_guard CYS_* 격리·정리·잔존 0 단언) · 시크릿 스캔 걸림 수리 `5c8890d1`(픽스처 `/Users/u`→`/Users/x` · 문서 사용자 경로 → `$HOME`).
+- **재개 뒤 추가분**: ① phoenix 진행 중 묘비 존중 `fbdd3941` ③ 빈 좌석 회수 유예 600초 `3e8e683a` · 시험 cysd 누수 수리 `8f439373`(test_dept_name_guard CYS_* 격리·정리·잔존 0 단언) · 시크릿 스캔 걸림 수리 `5c8890d1`(시험 픽스처의 더미 사용자 이름 u → 스캐너 허용 이름 x · 문서의 실제 사용자 홈 경로 → `$HOME`).
 - **D07c 정직 기록**: 5c8890d1 정본 게이트 1회차(master 러너 · 12:32~13:06 · 102스텝)에서 D07c(`cargo test --bin cysd -- --test-threads=1 --skip hwmon::`) rc=101 · 1042/2 — 두 실패(`surface_create_never_blocks_on_config_only_evidence` · `surface_create_privileged_gate_keeps_lock_order_no_deadlock`) 모두 `openpty failed … Device not configured`(ENXIO). 델타에 Rust 0 · 단독 재실행 ok · 전체 재실행 1044/0 · master 판단 = 호스트 PTY 고갈 환경 원인(같은 시각 다른 좌석 X-7 도 ENXIO). **1회차 원결과는 적색이었다**.
 - **편입 때 주의점(병합은 1086 · master 지시 뒤 · 이 좌석은 병합 안 함)**:
   - 겹치는 파일(실측 `git diff --name-only`): T-USAGE 와 `src/bin/cysd/handlers.rs`·`main.rs` · T-NUM 과 `handlers.rs`·`state.rs`. 순서대로 `git merge-tree` 모의(usage+pack → +num) = 텍스트 충돌 0(13:1x · usage d24228db · num 17cc0a68 기준 — 그 뒤 브랜치가 움직이면 재확인).

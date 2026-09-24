@@ -68,7 +68,7 @@ def main():
     #   `roster=[]` 적색 뒤 close-surface(None) TypeError 로 끝났고(원인 불가시), 데몬 없이 가면 `cys new-surface`
     #   가 추적 밖 cysd 를 autostart 할 수 있다(CYS_STATE_DIR 격리 없음 — c6 와 같은 처리).
     pid = h.start_daemon(wait=12.0)
-    ready = bool(pid) and h.harness_ping()
+    ready = bool(pid)  # start_daemon 은 ping 성공 때만 pid 를 돌려준다(두 번째 ping = 과부하 거짓 적색 면 · 적대 1R #3)
     check("셋업: 격리 데몬 응답", ready, "pid=%s daemon.log=%s" % (pid, h.DAEMON_LOG))
     if not ready:
         print("\n=== %d/%d PASS ===" % (sum(1 for c in results if c), len(results)))

@@ -70,7 +70,8 @@ def _wipe_state():
 #   끝남(daemon.log 종료 줄)은 상한을 기다리지 않고 바로 빠져 적색이 된다.
 STAGE_WAIT = 90.0
 _AR_END = ("auto-restore finished", "auto-restore non-zero", "auto-restore BREAKER_OPEN",
-           "auto-restore CORRUPT", "auto-restore ABORTED", "auto-restore spawn failed")
+           "auto-restore CORRUPT", "auto-restore ABORTED", "auto-restore spawn failed",
+           "auto-restore skipped", "auto-restore 스레드 panic")
 
 
 def _daemon_log_size():
@@ -107,8 +108,10 @@ def _boot_and_capture(stage, want="티켓="):
     while pid and time.time() - t0 < STAGE_WAIT:
         ended = _auto_restore_ended(off)  # 먼저 본다 — 종료 뒤 로그 재독이 자식의 마지막 쓰기까지 담게
         if os.path.exists(LOG):
-            body = open(LOG).read()
-            if want in body:
+            body = open(LOG, encoding="utf-8", errors="replace").read()
+            i = body.find(want)
+            # 판정 줄이 **끝까지**(개행) 쓰였을 때만 — 줄 중간을 읽고 빠지면 뒤 칸(대상역할=)이 잘린다(agy 1R #1).
+            if i >= 0 and "\n" in body[i:]:
                 t_want = time.time() - t0
                 break
         if ended:

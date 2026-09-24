@@ -191,7 +191,7 @@ describe("B16 결선 — 닫기가 먼저, 배치가 나중", () => {
     const body = main.slice(main.indexOf("async function refreshPaneTitles() {"));
     const sweep = body.indexOf("exitedSweepTargets(sweepHere");
     expect(body).toContain("const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];");
-    const place = body.indexOf("arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });");
+    const place = body.indexOf("arrangeWs(ws, { add: [{ sid: s.surface_id }] });");
     expect(sweep).toBeGreaterThan(-1);
     expect(place).toBeGreaterThan(-1);
     expect(sweep).toBeLessThan(place);
@@ -199,7 +199,8 @@ describe("B16 결선 — 닫기가 먼저, 배치가 나중", () => {
     const dp = main.slice(main.indexOf("function detachPane("), main.indexOf("function removeDeadPane("));
     expect(dp).toContain("arrangeWs(ws, { remove: [sid] });");
     expect(dp).not.toContain("replaceNode(");
-    expect(body.slice(sweep, place)).toContain("relayoutWs.add(w)");
+    // (Opus 적대 1R F2 뒤) 틱 끝 relayoutWs 모음 배치는 걷었다 — 배치는 detachPane 안에서 곧장 돈다.
+    expect(body.replace(/\/\/[^\n]*/g, "")).not.toContain("relayoutWs"); // 주석(걷은 까닭)은 빼고 선언만 본다
   });
 
 });

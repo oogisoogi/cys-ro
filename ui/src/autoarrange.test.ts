@@ -6,7 +6,7 @@
 //   ⑶좌석 집합 보존 — 결과 sid 집합 = (입력 − remove) ∪ add. 빠지면 「살아 있는데 안 보이는 좌석」(4군 ④).
 //   ⑷재현된 세 결함(R1 HQ 첫 배치 뒤 재배치 멈춤 · R2 닫기 형제 독차지 · R3 새 창 0.5)이 이 함수로 사라지는가.
 import { describe, it, expect } from "bun:test";
-import { autoArrange, formationLayout, leftColumnShare, MASTER_CSO_RATIO, RULE_TOL, type LayoutNode, type Seat } from "./formation";
+import { autoArrange, formationLayout, leftColumnShare, MASTER_CSO_RATIO, RULE_TOL, DRAG_MIN, DRAG_MAX, type LayoutNode, type Seat } from "./formation";
 
 const P = (sid: number): LayoutNode => ({ type: "pane", sid });
 const S = (a: LayoutNode, b: LayoutNode, dir: "row" | "col" = "row", ratio?: number): LayoutNode =>
@@ -155,9 +155,57 @@ describe("⑴ 좌열 보존(오너 ①)", () => {
     const r = roles([...HQ, ...W(3, 4)]);
     expect(autoArrange(t0, r, {}, "standard")).toEqual(formationLayout(seats([...HQ, ...W(3, 4)])));
   });
-  it("기본 정책 = auto(D1 = C) · 허용 오차 0.01", () => {
+  it("기본 정책 = auto(D1 = C) · 허용 오차 0.01 · 끌기 범위 0.15~0.85", () => {
     expect(RULE_TOL).toBe(0.01);
+    expect([DRAG_MIN, DRAG_MAX]).toEqual([0.15, 0.85]);
+    const t0 = S(S(P(1), P(2), "col", 0.7), S(P(3), P(4)), "row", 0.42);
+    const r = roles([...HQ, ...W(3, 4, 5)]);
+    expect(autoArrange(t0, r, { add: [{ sid: 5 }] })).toEqual(autoArrange(t0, r, { add: [{ sid: 5 }] }, "auto"));
+    expect(autoArrange(t0, r, { add: [{ sid: 5 }] })).not.toEqual(autoArrange(t0, r, { add: [{ sid: 5 }] }, "standard"));
   });
+});
+
+describe("Opus 적대 1R 봉합 — F1 깊은 길 몫 · F4 좌열 비율", () => {
+  const r = roles([...HQ, ...W(3, 4, 5, 6)]);
+  it("F1 R1 잔재 트리(옛 입양 0.5 감싸기 · 좌열 0.25) → 사람 값으로 보지 않고 표준 몫 1/3 · 위아래 비율은 보존", () => {
+    const old = S(formationLayout(seats([...HQ, ...W(3)]))!, P(4), "row", 0.5);
+    expect(leftW(old)).toBeCloseTo(0.25, 12);
+    const t = autoArrange(old, r, { add: [{ sid: 5 }] })!;
+    expect(leftW(t)).toBeCloseTo(leftColumnShare(3), 12);
+    evenRest(t, [3, 4, 5]);
+    const a = area(t);
+    expect(a.get(1)! / a.get(2)!).toBeCloseTo(4, 9);
+  });
+  it("F1 두 번 감싼 잔재(0.125)도 표준 몫", () => {
+    const old = S(S(formationLayout(seats([...HQ, ...W(3)]))!, P(4), "row", 0.5), P(5), "row", 0.5);
+    expect(leftW(autoArrange(old, r, { remove: [5] })!)).toBeCloseTo(leftColumnShare(2), 12);
+  });
+  it("F1 창 옮기기가 0.5 로 감싼 뒤(좌열 1/6) → 다음 열기·닫기에 표준 몫", () => {
+    const moved = S(formationLayout(seats([...HQ, ...W(3, 4)]))!, P(5), "row", 0.5);
+    expect(leftW(moved)).toBeCloseTo(1 / 6, 12);
+    expect(leftW(autoArrange(moved, r, { add: [{ sid: 6 }] })!)).toBeCloseTo(leftColumnShare(4), 12);
+    expect(leftW(autoArrange(moved, r, { remove: [3] })!)).toBeCloseTo(leftColumnShare(2), 12);
+  });
+  for (const [v, human] of [[DRAG_MIN, true], [DRAG_MAX, true], [DRAG_MIN - 0.01, false], [DRAG_MAX + 0.01, false]] as const) {
+    it(`F1 끌기 범위 경계: 좌열 몫 ${v.toFixed(2)} → ${human ? "사람 값 보존" : "표준 몫"}`, () => {
+      const t0 = S(S(P(1), P(2), "col", 0.8), S(P(3), P(4)), "row", v);
+      expect(leftW(autoArrange(t0, r, { add: [{ sid: 5 }] })!)).toBeCloseTo(human ? v : leftColumnShare(3), 12);
+    });
+  }
+  it("F4 첫 master 가 닫히고 master-2 가 올라와도 사람이 바꾼 위아래 비율(0.6) 보존", () => {
+    const rr = roles([[1, "master"], [2, "cso"], [7, "master-2"], ...W(3)]);
+    const t0 = S(S(P(1), P(2), "col", 0.6), S(P(7), P(3)), "row", 0.4);
+    const t1 = autoArrange(t0, rr, { remove: [1] })!;
+    expect((t1 as any).a).toEqual({ type: "split", dir: "col", ratio: 0.6, a: P(7), b: P(2) });
+    expect(leftW(t1)).toBeCloseTo(0.4, 12);
+  });
+  for (const bad of [NaN, 1, 0, -0.2]) {
+    it(`F4 손상된 좌열 위아래 비율(${bad}) → 좌열로 보지 않고 표준`, () => {
+      const t0 = S(S(P(1), P(2), "col", bad), S(P(3), P(4)), "row", 0.4);
+      const t1 = autoArrange(t0, r, { add: [{ sid: 5 }] })!;
+      expect(t1).toEqual(formationLayout(seats([...HQ, ...W(3, 4, 5)])));
+    });
+  }
 });
 
 describe("D1 = C(master 판정 2026-09-25 master#c443981e) — 규칙값이면 다시 재고 사람이 끈 값이면 보존", () => {
@@ -293,16 +341,25 @@ describe("⑶ 좌석 집합 보존(속성 시험)", () => {
       const rm = new Map<number, string | null>();
       for (const s of [...ids, 900, 901, 902]) rm.set(s, ROLE_POOL[Math.floor(r() * ROLE_POOL.length)]);
       const remove = ids.filter(() => r() < 0.25);
-      const add = [900, 901, 902].filter(() => r() < 0.4).map((sid) => ({ sid, after: r() < 0.5 && ids.length ? ids[Math.floor(r() * ids.length)] : undefined }));
+      // (Opus 적대 1R F5) 없는 좌석 닫기 · 이미 있는 좌석 다시 붙이기 · 빠지는 좌석을 after 로 가리키기도 섞는다
+      const add = [900, 901, 902, ...(ids.length && r() < 0.2 ? [ids[0]] : [])].filter(() => r() < 0.4).map((sid) => ({ sid, after: r() < 0.5 && ids.length ? ids[Math.floor(r() * ids.length)] : undefined }));
+      if (r() < 0.2) remove.push(777);
       for (const mode of ["auto", "standard"] as const) {
         const out = autoArrange(tree, rm, { add, remove }, mode);
-        const want = new Set([...ids.filter((s) => !remove.includes(s)), ...add.map((a) => a.sid)]);
+        const want = new Set([...ids.filter((s) => !remove.includes(s)), ...add.map((a) => a.sid)]); // = (입력 − remove) ∪ add
         const got = sids(out);
         expect(new Set(got)).toEqual(want);
         expect(got.length).toBe(want.size);
         if (out) {
           const tot = [...area(out).values()].reduce((a, b) => a + b, 0);
           expect(tot).toBeCloseTo(1, 9);
+          // (Opus 적대 1R F5) 가로 몫: 좌열 한 칸 + 워커 칸 전부 = 1 · 모든 비율이 (0,1) 안
+          const shH = shares(out);
+          const lp = [got.find((s) => /^master(-|$)/.test(String(rm.get(s) ?? ""))), got.find((s) => /^cso(-|$)/.test(String(rm.get(s) ?? "")))].filter((x) => x !== undefined) as number[];
+          const hsum = (lp.length ? shH.get(lp[0])! : 0) + got.filter((s) => !lp.includes(s)).reduce((a, s) => a + shH.get(s)!, 0);
+          expect(hsum).toBeCloseTo(1, 9);
+          const ratiosOk = (n: LayoutNode): boolean => n.type === "pane" || (n.ratio === undefined || (n.ratio > 0 && n.ratio < 1)) && ratiosOk(n.a) && ratiosOk(n.b);
+          expect(ratiosOk(out)).toBe(true);
           // 좌열 밖에는 세로 분할이 없다 · 좌열 좌석이 아닌 칸은 모두 같은 가로 몫
           const lf = new Set(got.filter((s) => { const f = String(rm.get(s) ?? ""); return f === "master" || f.startsWith("master-") || f === "cso" || f.startsWith("cso-"); }));
           const sh = shares(out);
@@ -337,7 +394,7 @@ describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수"
     expect(b).toContain('ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode);');
   });
   const paths: [string, string, string, string][] = [
-    ["자동 입양(3초 틱)", "async function refreshPaneTitles() {", "\n}\n", "arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });"],
+    ["자동 입양(3초 틱)", "async function refreshPaneTitles() {", "\n}\n", "arrangeWs(ws, { add: [{ sid: s.surface_id }] });"],
     ["자리표 회수(틱 안)", "── ③ 빈 자리표 회수", "const masterSids", "arrangeWs(ws, { remove: [sid] });"],
     ["새 창", "async function actionNew() {", "\n}\n", "arrangeWs(ws, { add: [{ sid }] });"],
     ["분할", "async function actionSplit(", "\n}\n", "arrangeWs(ws, { add: [{ sid, after: target }] });"],
@@ -345,7 +402,7 @@ describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수"
     ["창 머리 ×", 'closeBtn.dataset.arm !== "1"', "header.append(", "arrangeWs(ws, { remove: [sid] });"],
     ["외부 닫힘·유령·스윕(detachPane)", "function detachPane(", "\n}\n", "arrangeWs(ws, { remove: [sid] });"],
     ["복원 때 죽은 좌석 정리", "const dead = deadLiveSids(", "workspaces = workspaces.filter", "if (dead.length) arrangeWs(ws, { remove: dead });"],
-    ["복원 입양", "const restoreAdds: { sid: number }[] = [];", "plain 셸 1개로 충전", "if (restoreAdds.length) arrangeWs(ws, { add: restoreAdds });"],
+    ["복원 입양", "재시작(복원) 경로도 **같은 함수**", "plain 셸 1개로 충전", "arrangeWs(ws, { add: [{ sid: s.surface_id }] });"],
     ["정렬 단추·팔레트 패널 균등화", "async function actionEqualize() {", "\n}\n", '"standard");'],
   ];
   for (const [name, head, end, call] of paths) {
@@ -378,5 +435,31 @@ describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수"
     expect((c.match(/rememberRoles\(/g) || []).length).toBe(4); // 정의 1 + 호출 3
     expect(c).toContain("rememberRoles(sk, r.surfaces);");
     expect(c).toContain("rememberRoles(ws.socket, r.surfaces);");
+  });
+});
+
+describe("호출부 — 입양은 런타임이 선 그 자리에서 트리에 붙는다(Opus 적대 1R F2)", () => {
+  for (const [name, head, mk] of [
+    ["3초 틱", "async function refreshPaneTitles() {", "const rt = await makePane(s.surface_id, s.title, sk);"],
+    ["복원", "재시작(복원) 경로도 **같은 함수**", "await makePane(s.surface_id, s.title, sk);"],
+  ] as const) {
+    it(`${name}: makePane 과 arrangeWs(add) 사이에 다른 await 0 · 틱 끝 모음 배치 0`, () => {
+      const b = code(fnBody(head, name === "3초 틱" ? "\n}\n" : "plain 셸 1개로 충전"));
+      const i = b.indexOf(mk);
+      const j = b.indexOf("arrangeWs(ws, { add: [{ sid: s.surface_id }] });", i);
+      expect(i).toBeGreaterThan(-1);
+      expect(j).toBeGreaterThan(i);
+      expect(b.slice(i + mk.length, j)).not.toContain("await ");
+      expect(b).not.toContain("relayoutWs");
+      expect(b).not.toContain("adoptAdds");
+    });
+  }
+  it("이미 붙은 좌석을 또 붙이거나 없는 좌석을 닫으면 배치 무변경(정렬 단추만 예외)", () => {
+    const b = code(fnBody("function arrangeWs(", "\n}\n"));
+    expect(b).toContain('if (!effective && mode !== "standard") return;');
+  });
+  it("창 머리 × = 그 창을 품은 탭을 짠다(기다리는 사이 탭을 옮겨도)", () => {
+    const b = code(fnBody('closeBtn.dataset.arm !== "1"', "header.append("));
+    expect(b).toContain("collectSids(w.tree).includes(sid)) ?? current();");
   });
 });

@@ -63,13 +63,13 @@ describe("B3 호출부 — 입양 루프가 실제로 재배치를 부른다", (
     expect(s).toBeGreaterThan(-1);
     const body = main.slice(s, main.indexOf("\n}\n", s));
     expect(body).not.toContain('{ type: "split", dir: "row", a: ws.tree, b: { type: "pane", sid: s.surface_id } }');
-    const push = body.indexOf("adoptAdds.get(ws)!.push({ sid: s.surface_id });");
-    const add = body.indexOf("relayoutWs.add(ws);", push);
-    const call = body.indexOf("arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });");
-    expect(push).toBeGreaterThan(-1);
-    expect(add).toBeGreaterThan(push);
-    expect(call).toBeGreaterThan(add);
-    expect(body.slice(add, call)).toContain("for (const ws of relayoutWs)");
+    // (Opus 적대 1R F2 뒤) 붙는 좌석마다 런타임이 선 그 자리에서 배치 — 틱 끝 모음 배치(relayoutWs)는 걷었다.
+    const mk = body.indexOf("const rt = await makePane(s.surface_id, s.title, sk);");
+    const call = body.indexOf("arrangeWs(ws, { add: [{ sid: s.surface_id }] });", mk);
+    expect(mk).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(mk);
+    const between = body.slice(mk + "const rt = await makePane(s.surface_id, s.title, sk);".length, call).replace(/\/\/[^\n]*/g, "");
+    expect(between).not.toContain("await "); // 런타임이 선 뒤 트리에 붙기 전까지 다른 await(던질 자리) 0
     expect(main).not.toContain('from "./adoptlayout"');
   });
 });

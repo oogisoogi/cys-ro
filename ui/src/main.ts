@@ -2420,6 +2420,12 @@ function rememberRoles(socket: string | undefined, surfaces: { surface_id: numbe
   arrangeRolesBySocket.set(socket ?? "", new Map(surfaces.map((x) => [x.surface_id, x.role] as [number, string | null])));
 }
 function arrangeWs(ws: Workspace, change: ArrangeChange, mode?: LeftShareMode): void {
+  // 실제로 열리거나 닫히는 좌석이 없으면(이미 닫힌 창을 또 닫기 · 이미 붙은 창을 또 붙이기) 배치를 건드리지 않는다 —
+  //   정렬 단추(standard)만 예외(Opus 적대 1R F3).
+  const have = collectSids(ws.tree);
+  const effective =
+    (change.add ?? []).some((a) => !have.includes(a.sid)) || (change.remove ?? []).some((sid) => have.includes(sid));
+  if (!effective && mode !== "standard") return;
   ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode);
 }
 
@@ -2548,12 +2554,9 @@ async function refreshPaneTitles() {
     if (await openNewlyRegisteredDepts()) layoutChanged = true;
     const sockets = [...new Set(workspaces.map((w) => w.socket))];
     let adopted = false;
-    // ★이름이 relayout 인 이유(2026-09-20 · B17 결선): 이 집합에는 이제 **입양이 일어난 ws** 뿐
-    //   아니라 **옛 자리를 닫은 ws** 도 들어간다. 둘 다 "열 구성이 바뀌었으니 다시 짜야 하는" 같은
-    //   이유로 같은 배치 함수를 지나야 한다 — 두 벌로 나누면 한쪽만 배치되는 비대칭이 생긴다.
-    const relayoutWs = new Set<Workspace>();
-    // (v116-auto-equalize) 이번 틱에 붙는 좌석 — 트리를 먼저 0.5 로 감싸지 않고 배치 함수에 넘긴다.
-    const adoptAdds = new Map<Workspace, { sid: number }[]>();
+    // (v116-auto-equalize) 종전 relayoutWs 집합(B17 결선: 입양 ws + 옛 자리를 닫은 ws 를 틱 끝에 한 번 배치)은 걷었다 —
+    //   닫기는 detachPane 이, 입양은 붙이는 그 자리에서 arrangeWs 를 직접 부른다(같은 함수 · 비대칭 0).
+    //   틱 끝으로 미루면 중간 makePane 이 던질 때 이미 런타임이 선 좌석이 트리에 영영 안 붙는다(Opus 적대 1R F2).
     // 사이드바 사용량 패널용 수집 — 이미 도는 폴링에 얹는다(새 폴링을 만들지 않는다).
     // 이번 틱에 성공한 소켓만 담고, 실패한 소켓은 lastSurfacesBySocket의 직전 값으로 메운다.
     const socketRows = new Map<string, SurfaceLike[]>();
@@ -2618,11 +2621,7 @@ async function refreshPaneTitles() {
       const sweepHere = sweepScope !== null;
       const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];
       for (const sid of exitedSweepTargets(sweepHere, sweepSids, r.surfaces)) {
-        for (const w of workspaces) {
-          if ((w.socket ?? undefined) === (sk ?? undefined) && w.tree != null && collectSids(w.tree).includes(sid))
-            relayoutWs.add(w);
-        }
-        detachPane(sid, sk);
+        detachPane(sid, sk); // 닫기 + 남은 창 배치(arrangeWs remove) — 닫기가 먼저, 배치가 같은 자리에서
         layoutChanged = true;
       }
       if (sweepHere) sweptSockets.push(sk ?? ""); // 이 소켓은 이번에 쓸렸다 — 실패·건너뜀 소켓은 여기 안 온다
@@ -2656,12 +2655,11 @@ async function refreshPaneTitles() {
         // !w.pending — 런칭 중 placeholder(socket 미정)에는 입양 금지(타 데몬 surface 오입양 차단).
         const ws = workspaces.find((w) => !w.pending && (w.socket ?? undefined) === (sk ?? undefined));
         if (!ws || collectSids(ws.tree).includes(s.surface_id)) continue;
-        setRoleDot((await makePane(s.surface_id, s.title, sk)).roleEl, s.role, surfaceWorking(s.surface_id, sk)); // 입양 즉시 역할 점 채색 + 작동중 판정
-        if (!adoptAdds.has(ws)) adoptAdds.set(ws, []);
-        if (adoptAdds.get(ws)!.some((x) => x.sid === s.surface_id)) continue;
-        adoptAdds.get(ws)!.push({ sid: s.surface_id });
+        const rt = await makePane(s.surface_id, s.title, sk);
+        // ★런타임이 선 바로 그 자리에서 트리에 붙인다(다음 await 전) — 다음 좌석의 makePane 이 던져도 이 좌석은 화면에 있다.
+        arrangeWs(ws, { add: [{ sid: s.surface_id }] });
+        setRoleDot(rt.roleEl, s.role, surfaceWorking(s.surface_id, sk)); // 입양 즉시 역할 점 채색 + 작동중 판정
         adopted = true;
-        relayoutWs.add(ws);
       }
       // ★cysr 1.0.2 B3: 입양이 루트를 매번 0.5 로 감싸 [[[셸|master]|cso]|worker] = 1/8·1/8·1/4·1/2 가 됐다
       //   (깨끗한 VM run4 · 마스터 칸 ≈100px). 입양이 일어난 ws 만 기존 좌→우 순서 그대로 열을 다시 짠다 —
@@ -2717,11 +2715,7 @@ async function refreshPaneTitles() {
       //   전제가 없는 기기(우리 개발 기기 — master·cso 는 cmux 페인)는 전부 한 줄 좌우 균등이다(07-27 오너 확정).
       // ★v116-auto-equalize(오너 지시 2026-09-25): 종전 「순수 row 트리일 때만」 좁힘을 걷었다 — HQ 기기에서는 첫 배치가
       //   좌열을 세로로 나누는 순간부터 입양이 다시 짜이지 않았다(재현 R1: 새 워커 0.50 · master 0.20).
-      //   닫기 쪽 배치는 detachPane 이 이미 했다(스윕 → 배치 순서는 그 함수 안에서 성립한다).
-      for (const ws of relayoutWs) {
-        if ((ws.socket ?? undefined) !== (sk ?? undefined)) continue;
-        arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });
-      }
+      //   배치는 이제 열기·닫기가 일어난 그 자리에서 arrangeWs 가 한다(위 입양 루프 · detachPane · 자리표 회수).
      } catch {
        // ★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다(codex [High] 수리).
        //   이 소켓 몫은 아래에서 직전 값으로 메워지고, 나이가 자라 stale로 표시된다.
@@ -2860,7 +2854,9 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     }
     await invoke("close_surface", { socket, surfaceId: sid }).catch(() => {});
     destroyPaneRuntime(sid, socket);
-    const ws = current();
+    // (v116-auto-equalize · Opus 적대 1R F3) 기다리는 사이 탭을 옮겼으면 current() 는 다른 탭이다 — 그 창을 품은 탭을 짠다.
+    const ws =
+      workspaces.find((w) => (w.socket ?? undefined) === (socket ?? undefined) && collectSids(w.tree).includes(sid)) ?? current();
     if (ws.tree) arrangeWs(ws, { remove: [sid] });
     if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
     render();
@@ -8664,18 +8660,16 @@ async function start() {
     // 화면 밖 고아 런타임(xterm·리스너)이 남았고, 그 런타임이 `panes.has` 게이트로 **같은 세션의
     // 재입양을 영구 차단**했다(실측 34개). 위 '존재 진실원 보강'으로 ws 는 늘 있지만, 이중 방어다.
     if (!ws) continue;
-    const restoreAdds: { sid: number }[] = [];
+    // ★B16 — 재시작(복원) 경로도 **같은 함수**를 지난다. (v116-auto-equalize) 종전 병합 루프는 매번 루트를 0.5 로
+    //   감싸고 HQ 기기에서만 다시 짰다 — 이제 붙는 좌석마다 기기와 무관하게 같은 함수로 짠다(런타임이 선 그 자리에서 ·
+    //   다음 makePane 이 던져도 앞 좌석은 트리에 있다 — Opus 적대 1R F2). 붙는 좌석이 없으면 저장된 배치를 건드리지 않는다.
     for (const s of lb.list) {
       await makePane(s.surface_id, s.title, sk);
       if (ws && !collectSids(ws.tree).includes(s.surface_id)) {
-        restoreAdds.push({ sid: s.surface_id });
+        arrangeWs(ws, { add: [{ sid: s.surface_id }] });
         ws.autoCreated = undefined; // pane 이 붙었다 = 이제 '쓰는 탭'(다음 기동 상한 면제)
       }
     }
-    // ★B16 — 재시작(복원) 경로도 **같은 함수**를 지난다. (v116-auto-equalize) 종전 병합 루프는 매번 루트를 0.5 로
-    //   감싸고 HQ 기기에서만 다시 짰다 — 이제 붙는 좌석이 있으면 기기와 무관하게 같은 함수로 짠다.
-    //   붙는 좌석이 없으면 저장된 배치를 건드리지 않는다(열기·닫기가 아니다).
-    if (restoreAdds.length) arrangeWs(ws, { add: restoreAdds });
   }
   // master 자동기동 제거 후: 데몬은 살아있으나(ok===true) 입양할 surface가 0개인 부서 ws(비활성 부서가
   // 재-launch된 경우)는 위 병합 루프가 못 채운다 — plain 셸 1개로 충전해 빈 탭 소실/고아 placeholder 방지.

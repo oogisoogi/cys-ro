@@ -120,8 +120,8 @@ describe("B16 호출부 — 3경로가 같은 함수를 부른다", () => {
     expect(main).toContain('import { autoArrange, type ArrangeChange, type LeftShareMode } from "./formation";');
     const eq = main.slice(main.indexOf("async function actionEqualize()"), main.indexOf("// ---------- workspace tabs ----------"));
     expect(eq).toContain('arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");');
-    expect(main).toContain("arrangeWs(ws, { add: adoptAdds.get(ws) ?? [] });");
-    expect(main).toContain("if (restoreAdds.length) arrangeWs(ws, { add: restoreAdds });");
+    // 입양(3초 틱)·복원 입양 = 붙는 좌석마다 그 자리에서(Opus 적대 1R F2)
+    expect((main.match(/arrangeWs\(ws, \{ add: \[\{ sid: s\.surface_id \}\] \}\);/g) || []).length).toBe(2);
     expect(main).not.toContain("formationIfRowOnly(");
   });
 });

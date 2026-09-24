@@ -166,6 +166,12 @@ export type ArrangeChange = {
 export type LeftShareMode = "auto" | "standard";
 /// 「규칙값과 같다」의 허용 오차 — 규칙값끼리의 최소 간격(1/2 ↔ 1/3 = 0.167)보다 충분히 작다.
 export const RULE_TOL = 0.01;
+/// 사람이 칸 경계를 끌 수 있는 범위(main.ts 경계 끌기 = Math.min(0.85, Math.max(0.15, …)) 와 같은 값).
+/// ★「사람이 끈 값」은 좌열이 **루트의 왼쪽 직계 자식**이고 몫이 이 범위 안일 때만이다 — 이 함수와 경계 끌기가 만들 수 있는
+///   모양이 그것뿐이다. 더 깊은 길(옛 입양·창 옮기기의 0.5 감싸기)이 만든 몫은 사람 값이 아니므로 표준으로 다시 잰다
+///   (Opus 적대 1R F1 실측: R1 잔재 트리 0.25 · 창 옮기기 뒤 1/6 이 사람 값으로 오독돼 영구 고정됐다).
+export const DRAG_MIN = 0.15;
+export const DRAG_MAX = 0.85;
 
 type RoleMap = Map<number, string | null | undefined>;
 
@@ -243,15 +249,24 @@ export function autoArrange(
       const exact = subSids.length === inLeft.length && inLeft.every((s) => subSids.includes(s));
       // 좌열 모양 = 칸 하나이거나 위아래(col) 둘. master·cso 가 좌우(row)로 나란한 것은 좌열이 아니다 —
       //   옛 판 배치(1.0.x adoptLayout = 가로 comb)나 창 옮기기가 남긴 모양이다 → 표준으로(헤드리스 c18 전체 실행이 적발).
-      const colShaped = sub.type === "pane" || sub.dir === "col";
+      // 위아래 비율이 손상된 저장 배치(NaN·0·1)는 좌열로 보지 않는다(Opus 적대 1R F4) — 끌기로는 못 만드는 값이다.
+      const okRatio = (r?: number) => r === undefined || (Number.isFinite(r) && r > 0 && r < 1);
+      const colShaped = sub.type === "pane" || (sub.dir === "col" && okRatio(sub.ratio));
       const cs = exact && colShaped ? columnShare(tree, sub) : null;
       if (cs !== null) {
         // 좌열 구성이 그대로면 그 서브트리를 보존한다(위아래 비율 포함). 좌열 좌석이 빠지거나 새로 들어오면
         //   좌열만 표준으로 다시 짓되 몫은 이어받는다 — 좌석 하나 남은 좌열은 칸 하나라 비율이 없다.
         if (subSids.length === left.length && left.every((s) => subSids.includes(s))) keptLeft = sub;
-        share = cs;
-        const prevRest = inOrder.length - inLeft.length;
-        untouched = prevRest > 0 && Math.abs(cs - leftColumnShare(prevRest)) <= RULE_TOL;
+        else if (sub.type === "split" && left.length === 2 && family(roles.get(sidsInOrder(sub.a)[0])) === "master") {
+          // 첫 master 가 닫히고 master-2 가 올라온 경우 등 — 좌열 사람이 바꾼 위아래 비율은 이어받는다(Opus 적대 1R F4).
+          keptLeft = { type: "split", dir: "col", ratio: sub.ratio ?? 0.5, a: pane(left[0]), b: pane(left[1]) };
+        }
+        const direct = tree.type === "split" && tree.dir === "row" && tree.a === sub;
+        if (direct && cs >= DRAG_MIN && cs <= DRAG_MAX) {
+          share = cs;
+          const prevRest = new Set(inOrder).size - inLeft.length;
+          untouched = prevRest > 0 && Math.abs(cs - leftColumnShare(prevRest)) <= RULE_TOL;
+        }
       }
     }
   }
@@ -261,7 +276,7 @@ export function autoArrange(
       ? { type: "split" as const, dir: "col" as const, ratio: MASTER_CSO_RATIO, a: pane(left[0]), b: pane(left[1]) }
       : pane(left[0]));
   if (rest.length === 0) return leftNode;
-  // 몫이 없거나(표준·좌열 미발견) 퇴화면(좌열이 화면 전체였다 = 워커가 처음 생긴다) 표준 몫.
+  // 몫이 없거나(표준·좌열 미발견·사람 값이 아닌 깊은 길) 퇴화면(좌열이 화면 전체였다 = 워커가 처음 생긴다) 표준 몫.
   // 사람 손을 안 탄 몫은 새 워커 수의 규칙값으로(D1 = C).
   if (untouched || share === null || !(share > 0 && share < 1)) share = leftColumnShare(rest.length);
   return { type: "split", dir: "row", ratio: share, a: leftNode, b: evenRow(rest.map(pane)) };

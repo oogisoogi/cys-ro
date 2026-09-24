@@ -229,3 +229,27 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - 우회 실측: `GIT_EXEC_PATH=<runtime>/git/libexec/git-core` 를 주면 정상.
 - 재현 1줄: `/Applications/cys.app/Contents/Resources/runtime/git/bin/git --exec-path; /Applications/cys.app/Contents/Resources/runtime/git/bin/git ls-remote https://github.com/oogisoogi/cys-ro.git HEAD`
 - 【추정】 원인 후보: 빌드의 「runtime/git dedup(git-core 빌트인 → git 심볼릭링크)」 또는 RUNTIME_PREFIX 재배치 판정 — 미규명.
+
+## 16. B — 제안 글 끄기 env 의 키 부재 시 런타임 주입(master#70442818 판정 B · #d98da256 재개 · 새 검증 규칙 ①~⑥ 적용)
+- 커밋 **cafba326**(src/lib.rs `ENV_CLAUDE_PROMPT_SUGGESTION` + `inject_claude_prompt_suggestion_default` · src/bin/cys.rs 호출 2곳 + 시험 3).
+- 계약(D5 `inject_claude_alt_screen_default_for` 와 같은 불가침 3계약): ⑴ 키 부재 시에만 끝에 `"false"` 1쌍 ⑵ 사용자 값 불가침(무엇이든 있으면 손대지 않음) ⑶ 재정렬 금지. 대상 = `claude` 만 · OS 게이트 없음(D 가 이미 전 OS · 기능 끄기뿐).
+- 조립 지점 = 운영 코드의 `agent_env_pairs` 호출 전부(2곳): `boot_agent_on_surface`(인라인 재조립) · `run_launch_agent_opts`(surface.create env 맵 = Windows 도달 경로) — 둘 다 D5 호출 바로 뒤. cysd·src-tauri 는 에이전트 env 를 조립하지 않는다(grep 0).
+- 도달 경로 3(시험 `prompt_suggestion_reaches_all_three_install_paths`): P1 새 설치 · P2 미수정 업데이트(`RefreshUser`) · P3 수정본(보존 · 디스크 env 에 키 없음 → 주입이 채움) · P3′ 사용자 `"true"` 불가침.
+- 디버깅 순서(규칙 ④): 시험 먼저 → 헬퍼 빈 몸통(스텁)에서 빨강 3건(계약 · 배선 · 도달) · 도달 시험의 빨강 자리 = P3 단언(조립 결과 `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1]` · 제안 글 키 없음 = 증상 그대로) → 구현 → 초록.
+- 뮤턴트 7/7 KILLED(몸통 no-op · 사용자 값 가드 제거 · 대상 한정 제거 · 값 false→0 · 호출 1 삭제 · 호출 2 삭제 · 호출 1 을 D5 앞으로).
+- 타사 검토(agy · 규칙 ⑥ 설계·코드 둘 다): 설계 1R ACCEPT(구현 전) · 코드 1R REVISE 3(설치 경로별 인라인 env 순서 차이 · Windows env_injected · 제3 조립 경로) → 근거 제시(순서 의존 소비자 0 · 제안 수정으로도 순서 동일 불가 · 기본 팩 env 에 CLAUDE_CONFIG_DIR 상존 · 운영 호출처 2곳뿐) → 코드 2R **ACCEPT**(3건 철회 · cafba326 에 묶임).
+- 블라인드 합격 시험(규칙 ⑤): 구현을 보지 않은 Opus 서브에이전트가 명세·인터페이스만 보고 4개 작성(`integ-v116-work/blind-B-tests.rs`) → 결과 = 아래 §16-1. 정직 고지: 작성자가 grep 줄 번호로 호출 지점에 3줄이 끼었다는 것만 봤고 본문은 읽지 않았다고 자진 고지.
+- 영향 게이트(cafba326): 아래 §16-1.
+- 검증 모델 실측(규칙 ①): 블라인드 서브에이전트 = 부모 상속(Opus 5.5) — jsonl model 필드는 §16-1.
+
+### 1.1.6 공개 릴리스 노트 1줄(master#70442818 문안 · §14 초안 대체 · `cys pack-merge` 안내 삭제)
+「이제 자비스가 띄우는 모든 Claude 창에서 답변 뒤 입력칸에 뜨던 회색 제안 글이 나오지 않습니다. 필요 없는 추가 요청이 줄고, 제안 글 때문에 지시 전달이 늦어지던 일이 사라집니다.」
+- 기술 설명(내부용 · 공개 금지): 기본 팩 agents.json 값(D) + 조립 지점 키 부재 시 주입(B) — agents.json 을 고친 기계도 덮는다 · 사용자가 이 키를 직접 적어 두었으면 그 값을 따른다 · 되돌리기 = agents.json 클로드 env 에 `"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "true"`.
+- ⚠ §14 의 릴리스 노트 초안(수정본 예외 문장 + pack-merge 안내)은 **폐기** — 이 절이 대체한다.
+- 규칙 ⑦(master#3dd0fad5 · 15:45) 정직 고지: 이 티켓 10:5x 1차 기준선 중단 때 `pkill -f 'integ-v116-work/run_gates.sh'`(이름 패턴 · 자기 작업 폴더 경로로 좁힘) 1회 사용 — 그 뒤 남은 자식 2개는 cwd 실측(=이 worktree) 후 pid 로 kill. 규칙 발효(15:45) 이후 이름 패턴 kill 0.
+
+### 16-1. B 결과(cafba326)
+- 영향 게이트(같은 러너 · ONLY 01~12·14·16 + secret-scan): ci-branch 01~11 전부 rc0 · cargo test --bin cys **291/0**(289 + B 2) · cargo test --lib **539/0**(538 + B 1) · boot-health-full **GREEN 149/0/1** · secret-scan --all clean(1187).
+- 블라인드 합격 시험 4(구현 미열람 Opus 서브에이전트 작성 · 시험 모듈에 임시로 붙여 실행 · 커밋 안 함 · 원복 clean): `blind_b_prompt_suggestion_contract_table` · `…_three_install_paths`(P1 Write · P2 RefreshUser · P3/P3′ Keep 판정까지 단언) · `…_rendered_send_string_unix`(인라인 문자열에 `="false"` 정확히 1번 · P3′ 는 true) · `…_wired_after_alt_screen_before_render` → **4/4 통과**. 원문 = `integ-v116-work/blind-B-tests.rs` · 실행 로그 = `blind-B-run.log`.
+- 검증 모델 실측(규칙 ①): 블라인드 서브에이전트 jsonl(`subagents/agent-a9fc4f80….jsonl`) `"model":"claude-opus-5-5"` 26건 · 그 밖 모델 0.
+- 수렴(규칙 ③) 현황: 결정론 게이트 초록 · 풀리지 않은 반례 0(agy 코드 2R 에서 3건 전부 철회) · 타사 ACCEPT = agy 코드 2R(cafba326) · **master 독립 재실행 = 대기**.

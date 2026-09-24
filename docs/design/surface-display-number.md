@@ -220,7 +220,7 @@ CREATE INDEX IF NOT EXISTS surface_numbers_by_display
 | T14 | `cys list` 소비자 호환 | 단위(팩 · 파이썬) | 새 칸(`no=50` / `no=-`)이 든 `cys list` 픽스처로 §4-1 ※ 의 팩 파서(저장소 9곳 + 사용자본 javis_reconstruct_state.py — 저장소에 사본이 없으므로 그 파서 함수의 **고정 사본을 시험 픽스처로** 두거나 시험을 사용자본 옆에 둔다 · Fable 3R)가 **바뀌기 전과 같은 행**을 돌려줌(특히 boot_node `surface_occupied` 참 · awaken cwd 정확) | M25 새 칸을 맨 앞/맨 뒤에 둠 → 적색 |
 | T10 | 정리(prune)가 대응표를 안 건드림 | 단위(recall.rs) | `maybe_prune` 실행 뒤 surface_numbers 행 수 불변 | M20 prune 에 surface_numbers 삭제 추가 |
 | T11 | 두 소켓 | E2E(격리 본부 + 격리 부서 소켓) | 두 데몬이 각자 1~999 · 같은 `#N` 이 소켓별로 다른 좌석으로 풀림 · 한쪽 닫기가 다른 쪽에 영향 0 | M21 대응표를 공용 경로에 둠 |
-| T12 | 윈도 | CI(windows) | 표 생성·시드·해석기 문법(같은 시험 묶음이 윈도 CI 에서 초록) — **【구현 정직 고지】 미실행**: windows-health.yml 은 `--bin cysd` 시험 레인이 없다(Fable code-1R MED-2). 시험 소켓 파일 이름은 윈도 state_dir(파일 이름 슬러그) 격리에 맞게 고유화했다 · 레인 추가 여부 = master 판단 · **master 판정([master#2ac3a293] 09-24): 1.1.6 = 윈도/VM 실기 점검(창 머리 번호 표시 + #N 해석 1회)으로 대체 · 레인 = 1.1.7** | — |
+| T12 | 윈도 | CI(windows) | 표 생성·시드·해석기 문법(같은 시험 묶음이 윈도 CI 에서 초록) — **【구현 정직 고지】 미실행**: windows-health.yml 은 `--bin cysd` 시험 레인이 없다(Fable code-1R MED-2). 시험 소켓 파일 이름은 윈도 state_dir(파일 이름 슬러그) 격리에 맞게 고유화했다 · 레인 추가 여부 = master 판단 · **master 판정([master#2ac3a293] 09-25): 1.1.6 = 윈도/VM 실기 점검(창 머리 번호 표시 + #N 해석 1회)으로 대체 · 레인 = 1.1.7** | — |
 
 - 모든 E2E 는 부서·본부 **실데몬 소켓에 CLI 를 부르지 않는다**(`CYS_NO_AUTOSTART=1` · 격리 소켓만 · 이월 사고 PLAN §4 머리).
 

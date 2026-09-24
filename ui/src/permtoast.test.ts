@@ -51,7 +51,7 @@ describe("첫 실행 폴더 권한 안내(A-3)", () => {
     const from = block.indexOf('"📁');
     const body = block.slice(from, block.indexOf("\n    );", from));
     expect(body).toContain("허용을 눌러 주세요");
-    expect(body).not.toMatch(/[()\[\]（）]/);
+    expect(/[()\[\]（）]/.test(body)).toBe(false);
   });
 
   it("권한 창 자체의 설명(Info.plist)이 같은 말을 한다 — 두 폴더 키 · 「~해 주세요」 · 괄호 없음", () => {
@@ -60,12 +60,12 @@ describe("첫 실행 폴더 권한 안내(A-3)", () => {
       const m = plist.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`));
       expect(m).not.toBeNull();
       expect(m![1]).toContain("허용을 눌러 주세요");
-      expect(m![1]).not.toMatch(/[()\[\]]/);
+      expect(/[()\[\]]/.test(m![1])).toBe(false);
     }
   });
 
   it("권한 창이 끝나면(성공·실패 무관) 안내를 내린다", () => {
-    expect(block).toMatch(/finally \{\s*dismissToast\("perm-guide"\);/);
+    expect(/finally \{\s*dismissToast\("perm-guide"\);/.test(block)).toBe(true);
   });
 
   it("판정·대기의 정확한 형태(opus 1R 생존 후보: === true 반전 · await 삭제 · 지연 0)", () => {

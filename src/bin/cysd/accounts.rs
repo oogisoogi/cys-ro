@@ -153,7 +153,7 @@ fn resolve(
 ) -> Option<(AccountKey, String, Option<String>, Option<String>)> {
     match agent {
         // D6-2: agents.json 의 claude 파생 에이전트(claude-fable·claude-sonnet 등 · 같은 claude 바이너리)도 계정 귀속.
-        a if a == "claude" || a.starts_with("claude-") => {
+        a if cys::is_claude_agent(a) => {
             let dir = profile_dir_from_session(session_file)?;
             let (uuid, email, plan) = claude_identity(state, &dir)?;
             Some((

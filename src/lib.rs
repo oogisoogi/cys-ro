@@ -2453,6 +2453,14 @@ pub fn inject_claude_alt_screen_default_for(
     env_pairs.push((ENV_CLAUDE_NO_ALT_SCREEN.to_string(), "1".to_string()));
 }
 
+/// 에이전트 이름이 claude 계열인가 — `claude` 와 agents.json 의 claude 파생 에이전트(`claude-fable`·`claude-sonnet`
+/// 등 · 같은 claude 바이너리). 데몬의 계정 귀속(`cysd/accounts.rs`)과 statusline rate 생산자 판정(`cysd/handlers.rs`)이
+/// 이 술어 하나를 쓴다(v116-usage D6-2). ⚠프로필 **폴더** 이름 규칙(`profile_gate`)과는 다른 뜻이다 — accounts.rs 에
+/// 접두 리터럴을 두면 폴더 열거 규칙 재구현 핀이 둘을 구별하지 못하므로 여기 한 곳에만 둔다.
+pub fn is_claude_agent(agent: &str) -> bool {
+    agent == "claude" || agent.starts_with("claude-")
+}
+
 /// Claude Code projects/ 디렉터리명 munge — 실측: '/'와 특수문자가 '-'로 치환된다.
 /// ASCII 영숫자·'-'만 보존하는 보수 구현. resume 사전검증 게이트(cys.rs)와 usage 휴리스틱이 공유한다.
 pub fn claude_project_component(cwd: &str) -> String {

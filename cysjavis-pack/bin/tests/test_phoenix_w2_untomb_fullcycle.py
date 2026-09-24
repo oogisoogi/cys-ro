@@ -63,18 +63,33 @@ def main():
     for f in ("topology.json", "desired_roster.json"):
         try: os.remove(os.path.join(h.HARN_DIR, f))
         except OSError: pass
-    h.start_daemon(wait=12.0)
+    # ★v116-phoenix-e2e: 하네스 start_daemon 이 멱등이라(v116-flake-pty ⑴) 이 호출은 _fresh_harness 가 띄운 데몬의
+    #   준비를 기다릴 뿐이다. 데몬이 응답하지 않으면 첫 판정으로 드러내고 멈춘다 — 종전엔 반환값을 버려
+    #   `roster=[]` 적색 뒤 close-surface(None) TypeError 로 끝났고(원인 불가시), 데몬 없이 가면 `cys new-surface`
+    #   가 추적 밖 cysd 를 autostart 할 수 있다(CYS_STATE_DIR 격리 없음 — c6 와 같은 처리).
+    pid = h.start_daemon(wait=12.0)
+    ready = bool(pid)  # start_daemon 은 ping 성공 때만 pid 를 돌려준다(두 번째 ping = 과부하 거짓 적색 면 · 적대 1R #3)
+    check("셋업: 격리 데몬 응답", ready, "pid=%s daemon.log=%s" % (pid, h.DAEMON_LOG))
+    if not ready:
+        print("\n=== %d/%d PASS ===" % (sum(1 for c in results if c), len(results)))
+        return 1
     try:
         # ① 역할 live: worker-fc surface 생성(role 등록) + 관측 영속.
-        ns = h.cys("new-surface", "--role", "worker-fc").stdout or ""
+        r_ns = h.cys("new-surface", "--role", "worker-fc")
+        ns = r_ns.stdout or ""
         ref = re.search(r"(surface:\d+)", ns)
         ref = ref.group(1) if ref else None
         if ref:
             h.cys("send", "--surface", ref, "sleep 3600"); h.cys("send-key", "--surface", ref, "Return")
         _phoenix(["reconcile"])  # observe → desired 에 worker-fc 엔트리 영속
         d1 = _desired()
-        check("① live 역할 desired 엔트리 등재", "worker-fc" in (d1.get("roster") or {}),
-              "roster=%s" % list((d1.get('roster') or {}).keys()))
+        check("① live 역할 desired 엔트리 등재", bool(ref) and "worker-fc" in (d1.get("roster") or {}),
+              "roster=%s | new-surface rc=%s err=%s" % (list((d1.get('roster') or {}).keys()), r_ns.returncode,
+                                                        (r_ns.stderr or "").strip()[:160]))
+        if not ref:
+            # 좌석이 없으면 뒤 칸(close·untomb)은 판정할 대상이 없다 — 적색을 유지한 채 멈춘다.
+            print("\n=== %d/%d PASS ===" % (sum(1 for c in results if c), len(results)))
+            return 1
 
         # ② owner close(묘비 삽입): 데몬이 worker-fc 를 topology 묘비에 올린다(rev++).
         h.cys("close-surface", ref)  # 기본 OwnerClose

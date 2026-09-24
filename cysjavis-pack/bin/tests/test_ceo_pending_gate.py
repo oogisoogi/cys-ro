@@ -70,8 +70,12 @@ def setup(tmp, ndepts=1):
     env = dict(os.environ)
     env.update({"HOME": home, "CYS_DEPTS_JSON": reg,
                 "PATH": bindir + os.pathsep + env.get("PATH", "")})
-    for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR"):
+    # ★좌석 env 누출 차단(v116-ceo-directive-hold 실측 2026-09-24): 좌석 셸에서 돌리면 CYS_CYS_BIN 이
+    #   남아 cys-dept 가 스텁 대신 **설치본 cys** 를 부르고(cys-dept:35 1순위), 그 cys 가 가짜 HOME 에
+    #   데몬을 띄워 고아 cysd 가 남았다. CYS_* 전부 제거 + 자동 기동 금지.
+    for k in [k for k in env if k.startswith("CYS_")]:
         env.pop(k, None)
+    env["CYS_NO_AUTOSTART"] = "1"
     return env, home
 
 

@@ -10443,6 +10443,52 @@ mod tests {
         );
     }
 
+    /// ★v116-seat 판정 C(master#623fa6b9): 배달 직전 1곳에서 그 좌석 메타 agent_bin 의 옛 기동 줄을 배달 대신
+    /// 폐기한다. 실증(격리 cysd · 스텁 좌석): 1.1.5 식 WAL 의 옛 기동 줄이 restored_queue → rehome → 새 좌석에
+    /// 사용자 입력으로 배달됐다(queue.delivered 2 · 스텁 stdin 에 `--continue` 줄 1). 대조 = 메타 없는 좌석은
+    /// 폐기 0(판정 재료 없음 — 그런 좌석의 배달은 빈 좌석 게이트 몫).
+    #[test]
+    fn v116_deliver_drops_stale_launch_line_instead_of_delivering() {
+        let daemon = drill_daemon("v116-deliver-stale");
+        let old = r#"CLAUDE_CONFIG_DIR="${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}" /x/stub/claude --dangerously-skip-permissions --continue"#;
+        let seat = |meta: Option<(&str, &str)>| {
+            let s = daemon
+                .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+                .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            *s.agent_meta.lock().unwrap() = meta.map(|(a, b)| (a.to_string(), b.to_string()));
+            {
+                let mut q = s.pending_queue.lock().unwrap();
+                q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
+                q.push_back(daemon.next_queue_entry("KEEP 보류 글".to_string(), Some("surface:9".into()), "send"));
+            }
+            s
+        };
+        // ① 에이전트 좌석: 옛 기동 줄은 배달되지 않고 폐기 · 다음 글이 배달된다.
+        let s = seat(Some(("claude", "/x/stub/claude")));
+        let d = deliver_head_locked(&daemon, &s, false, false, None, None).expect("보류 글 배달");
+        assert!(!d.body.contains("--continue"), "옛 기동 줄이 에이전트에게 배달됐다: {}", d.body);
+        assert_eq!(d.entry.text, "KEEP 보류 글");
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 0);
+        let dropped: Vec<serde_json::Value> = daemon
+            .bus
+            .tail(50)
+            .into_iter()
+            .filter(|ev| ev["name"] == "queue.dropped" && ev["payload"]["reason"] == "stale_launch_line")
+            .collect();
+        assert_eq!(dropped.len(), 1, "폐기 이벤트 1건이어야 한다");
+        assert_eq!(dropped[0]["payload"]["count"], serde_json::json!(1));
+        assert_eq!(dropped[0]["payload"]["line_sha8"].as_array().map(|a| a.len()), Some(1));
+        // ② 대조: 메타 없는 좌석은 판정 재료가 없어 폐기 0 — 머리 그대로(배달 가부는 빈 좌석 게이트 몫).
+        let bare = seat(None);
+        let d = deliver_head_locked(&daemon, &bare, true, false, None, None).expect("머리 배달");
+        assert_eq!(d.entry.text, old, "메타 없는 좌석에서 폐기가 일어났다");
+        // ③ 대조: 다른 에이전트 좌석(bin 불일치)은 폐기 0.
+        let other = seat(Some(("codex", "codex")));
+        let d = deliver_head_locked(&daemon, &other, true, false, None, None).expect("머리 배달");
+        assert_eq!(d.entry.text, old, "다른 에이전트 좌석에서 폐기가 일어났다");
+    }
+
     /// deliver_head_locked 단독 계약: 머리를 id 로 pop 하고 remaining 을 보고하며,
     /// 빈 큐는 None(부작용 0 — queue.delivered 미발행). watchdog 틱·queue.deliver RPC
     /// (W2-E)가 이 단일 헬퍼를 공유한다는 전제의 기초 핀.

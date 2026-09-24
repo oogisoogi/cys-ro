@@ -38,7 +38,9 @@ import tempfile
 SELF = os.path.dirname(os.path.abspath(__file__))
 DEPT = os.path.join(SELF, "..", "cys-dept")
 MASTER_BODY = "STANDARD-MASTER\n"
-CEO_BODY = "CEO-HEADER\n---\n" + MASTER_BODY   # 상위집합(합성 계약 동형: 머리글+구분선+전문)
+# 합성 계약 구분선(scripts/gen_ceo_template.py SEPARATOR 와 같은 바이트 · 시험 13 이 cys-dept 사본과 대조)
+SEP = "\n---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n"
+CEO_BODY = "CEO-HEADER" + SEP + MASTER_BODY   # 상위집합(합성 계약 동형: 머리글+구분선+전문)
 fails = []
 
 
@@ -211,7 +213,7 @@ tmp = tempfile.mkdtemp(prefix="ceo-t8-")
 env, home = setup(tmp)
 mdp, pre, pend, marker = paths(home)
 V2_BODY = "STANDARD-MASTER-V2\n"
-CEO_V2 = "CEO-HEADER\n---\n" + V2_BODY
+CEO_V2 = "CEO-HEADER" + SEP + V2_BODY
 _dirs = os.path.join(home, ".cys", "pack", "directives")
 with open(mdp, "w", encoding="utf-8") as f:
     f.write(V2_BODY)                                # 팩 업데이트: md=새 표준 v2
@@ -259,8 +261,8 @@ tmp = tempfile.mkdtemp(prefix="ceo-t8b-")
 env, home = setup(tmp)
 mdp, pre, pend, marker = paths(home)
 V2_BODY = "STANDARD-MASTER-V2\n"
-CEO_V1 = "CEO-HEADER\n---\n" + MASTER_BODY          # 승격 당시 적용된 구 CEO 템플릿
-CEO_V2 = "CEO-HEADER\n---\n" + V2_BODY              # 팩 갱신이 치유한 신 CEO 템플릿(System 등급)
+CEO_V1 = "CEO-HEADER" + SEP + MASTER_BODY          # 승격 당시 적용된 구 CEO 템플릿
+CEO_V2 = "CEO-HEADER" + SEP + V2_BODY              # 팩 갱신이 치유한 신 CEO 템플릿(System 등급)
 _dirs = os.path.join(home, ".cys", "pack", "directives")
 with open(mdp, "w", encoding="utf-8") as f:
     f.write(CEO_V1)                                 # md = 구 CEO 사본(User 소유 — 갱신 불가)
@@ -453,8 +455,9 @@ for s in SHAPES["shapes"]:
             f.write(hashlib.sha256(_T[s["receipt"]].encode("utf-8")).hexdigest() + "\n")
     with open(os.path.join(_dirs, "CEO_TEMPLATE.md"), "w", encoding="utf-8", newline="") as f:
         f.write(_T["C2"])
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write("{}")
+    if exp.get("boot_marker", True):
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("{}")
     _rd = lambda p: open(p, encoding="utf-8").read() if os.path.exists(p) else None
     _bak = lambda kind: sorted(n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md" + kind))
     for rnd in ("1회", "2회(멱등)"):
@@ -474,9 +477,25 @@ for s in SHAPES["shapes"]:
         code, out = run(env, "down", "d0")
         check("12 [%s] 부서 0개 강등 뒤 md" % sid, _rd(mdp) == _T[exp["expect_after_down"]],
               "exit=%d md=%r %s" % (code, (_rd(mdp) or "")[:40], out[-160:]))
+        if "expect_stale_after_down" in exp:
+            _sd = [_rd(os.path.join(_dirs, n)) for n in _bak(".pre-ceo.stale-")]
+            check("12 [%s] 강등 뒤 .pre-ceo.stale-*" % sid, _sd == [_T[k] for k in exp["expect_stale_after_down"]], repr(_sd))
     shutil.rmtree(tmp)
     _ran12 += 1
-check("12 형상 표 dept 칸 5개 이상 실행", _ran12 >= 5, "ran=%d" % _ran12)
+check("12 형상 표 dept 칸 11개 이상 실행", _ran12 >= 11, "ran=%d" % _ran12)
+
+# ── 13. 구분선 계약: cys-dept 가 판정에 쓰는 구분선 = 합성기(gen_ceo_template.SEPARATOR) 바이트.
+#   합성기 구분선이 바뀌면 cys-dept ⓕ·강등의 「구분선 뒤 본문 == md」 판정이 조용히 전부 거짓이 된다.
+sys.path.insert(0, os.path.join(SELF, "..", "..", "..", "scripts"))
+try:
+    import gen_ceo_template as _g
+    _sep_src = _g.SEPARATOR.decode("utf-8")
+    _dept_src = open(DEPT, encoding="utf-8").read()
+    _esc = _sep_src.encode("unicode_escape").decode("ascii")
+    check("13 cys-dept 구분선 = gen_ceo_template.SEPARATOR", SEP == _sep_src and _esc in _dept_src,
+          "esc=%r" % _esc)
+except ImportError:
+    check("13 (건너뜀: 팩 설치본에서 실행 — scripts/ 없음)", True)
 
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

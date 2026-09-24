@@ -93,7 +93,9 @@ python3 $S/mutants.py                                          # 뮤턴트(작�
 | B 설계 R2 | agy | ACCEPT(새 반례 0) | — |
 | C 구현 R1 | agy | ACCEPT(NOTE 3: 잔존 mkdir 락 · 손본 표준본 무접촉 · CRLF .new 잔재) | 기록만(§7) |
 | C 구현 R1 | Opus 5.5 적대 서브에이전트(jsonl model = claude-opus-5-5 × 65) | **REVISE** — F1 부분 포함 판정이 개행 누락·CRLF CEO 사본·잘린 표준본을 표준 원본으로 오판(회귀 · 재현 있음) · F2 승격 없는 강등이 옛 판·손본 표준본을 덮음(재현 있음) · NOTE F3~F11 | 기준선 적색 8d39c38a(26 FAIL 실측) → 수리 cee0ec7a(ALL PASS): F1 동등 비교(구분선 뒤 본문 == md · 시험 13 구분선 계약) · F2 강등 = 승격 긍정 증거 있을 때만 · F3 보존본 중복 금지·tmp 정리 · F5 발행 표 = 태그 전부(44종) · F6 손본 .new 보호 · F7 고유 tmp · F8 원자 강등 · F9 flock 실패=무락. 불채택: F4(ⓔ = master 승인 정책 · .bak 로 되돌림 가능) · F10(CEO_TEMPLATE = System 등급 · 사용자 편집 비대상) · F11(promote-ceo post-verify 「.pre-ceo 존재=성공」 = 종전 결함 · 곁 항목) |
-| C 구현 R2 | Opus 5.5 적대(같은 검토자 · 자기 반례 재실행) | (진행 중) | |
-| 합격 시험(규칙 ⑤) | 구현 미열람 Opus 5.5 서브에이전트(jsonl model = claude-opus-5-5 × 25) | **20/20 PASS**(S1~S6 · 실 바이너리 · 발행 v1.1.5 팩) | 모호점 5건 기록(HEAD 지침 = v1.1.5 와 바이트 동일이라 판별력 일부 제한 등) · 스크립트 `scratch/blind/acceptance.py` · ⚠ cee0ec7a 이전 판에서 실행(80e7b628 · ⓕ 술어 교체 전) |
-| 뮤턴트 | scratch/mutants.py | 1차 10/12 → 생존 2(R7·B5) 보강 → 12/12 · 수리 뒤 16개 재실행(진행 중) | |
-| 정본 게이트 | gate_runner(워크플로 run 블록 원문) | 80e7b628 실행은 수리로 무효화·중단 → cee0ec7a 재실행(진행 중) · 기준 adf50d44 실패 = D07b.test_phoenix_c6_reap 1건 | |
+| C 구현 R2 | Opus 5.5 적대(같은 검토자 · 자기 반례 재실행 · cee0ec7a) | **REVISE** — 1R 반례 전부 해소 · 새 회귀 N1(강등 판정이 한글 핀 「단일소유 강제」까지 요구 → CEO 제목 편집·CP949 저장 사본은 강등 생략 = 영구 CEO) · NOTE N2(강등이 손본 CEO 사본을 백업 없이 덮음 · 종전) · N3(생성기 개발 태그 포함) · N4(보존본 이름 초 단위 충돌) | 기준선 적색 6a57b5ae(6 FAIL) → 수리 ad0c9b38(ALL PASS): 강등 표지 = ASCII 'master of master'(시험 13b = CEO 에만·표준 0회) · 강등 전 보존 · 발행 계열 태그만 · 이름 -pid |
+| C 구현 R3 | Opus 5.5 적대 | (진행 중 · ad0c9b38) | |
+| C 구현 R2 | agy | (진행 중 · ad0c9b38) | |
+| 합격 시험(규칙 ⑤) | 구현 미열람 Opus 5.5 서브에이전트(jsonl model = claude-opus-5-5 × 25) | **20/20 PASS**(S1~S6 · 실 바이너리 · 발행 v1.1.5 팩) · 수리본(cee0ec7a 재빌드)에서 같은 스크립트 재실행 = **20/20 PASS** | 모호점 5건 기록(HEAD 지침 = v1.1.5 와 바이트 동일이라 판별력 일부 제한 등) · 스크립트 `scratch/blind/acceptance.py` · 결과 `scratch/blind/rerun-cee0ec7a.out` · ad0c9b38 재실행 예정 |
+| 뮤턴트 | scratch/mutants.py | 1차 10/12 → 생존 2(R7·B5) 보강 → 12/12 · cee0ec7a 16개 = 14/16(생존 R8·B7) → 보강(형상 vmb-user-edited-new · 시험 11h) · ad0c9b38 18개(B8·B9 추가) 재실행(진행 중) | |
+| 정본 게이트 | gate_runner(워크플로 run 블록 원문) | 80e7b628·cee0ec7a 실행은 이후 수리로 무효화 → 내 실행만 중단(잔여 자식 1개 = 스스로 종료 확인) → **ad0c9b38 재실행(진행 중)** · 기준 adf50d44 실패 = D07b.test_phoenix_c6_reap 1건 | |

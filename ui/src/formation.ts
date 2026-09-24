@@ -199,15 +199,6 @@ function contains(n: LayoutNode, t: LayoutNode): boolean {
   return n.type === "split" && (contains(n.a, t) || contains(n.b, t));
 }
 
-// 트리에서 좌석 하나를 떼어낸다(형제가 부모 자리로 올라간다 — main.ts replaceNode 와 같은 모양).
-function prune(n: LayoutNode, drop: Set<number>): LayoutNode | null {
-  if (n.type === "pane") return drop.has(n.sid) ? null : n;
-  const a = prune(n.a, drop);
-  const b = prune(n.b, drop);
-  if (a && b) return a === n.a && b === n.b ? n : { ...n, a, b };
-  return a ?? b;
-}
-
 // 좌열 좌석 = 순서상 첫 master 계열 + 첫 cso 계열(formationLayout 과 같은 고르기).
 function leftSids(order: number[], roles: RoleMap): number[] {
   const m = order.find((s) => family(roles.get(s)) === "master");
@@ -255,10 +246,9 @@ export function autoArrange(
       const colShaped = sub.type === "pane" || sub.dir === "col";
       const cs = exact && colShaped ? columnShare(tree, sub) : null;
       if (cs !== null) {
-        const pruned = prune(sub, drop);
-        const ps = pruned ? sidsInOrder(pruned) : [];
-        // 좌열 구성이 그대로면(빠진 것만 있어도) 그 서브트리를 보존한다. 새 HQ 가 들어오면 좌열만 표준으로 다시 짓되 몫은 보존.
-        if (pruned && ps.length === left.length && left.every((s) => ps.includes(s))) keptLeft = pruned;
+        // 좌열 구성이 그대로면 그 서브트리를 보존한다(위아래 비율 포함). 좌열 좌석이 빠지거나 새로 들어오면
+        //   좌열만 표준으로 다시 짓되 몫은 이어받는다 — 좌석 하나 남은 좌열은 칸 하나라 비율이 없다.
+        if (subSids.length === left.length && left.every((s) => subSids.includes(s))) keptLeft = sub;
         share = cs;
         const prevRest = inOrder.length - inLeft.length;
         untouched = prevRest > 0 && Math.abs(cs - leftColumnShare(prevRest)) <= RULE_TOL;

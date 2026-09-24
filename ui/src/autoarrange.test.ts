@@ -125,6 +125,11 @@ describe("⑴ 좌열 보존(오너 ①)", () => {
     const t1 = autoArrange(t0, roles([...HQ, ...W(3, 4)]), { add: [{ sid: 5 }] })!;
     expect(t1).toEqual(formationLayout(seats([...HQ, ...W(3, 4, 5)])));
   });
+  it("좌열 이상 위치(좌열이 위아래 분할 속 · 비율이 규칙값과 다름) → 표준 배치로 폴백(세로 비율을 가로 몫으로 오독하지 않는다)", () => {
+    const t0 = S(S(P(1), P(2), "col", 0.6), P(3), "col", 0.7);
+    const t1 = autoArrange(t0, roles([...HQ, ...W(3, 4)]), { add: [{ sid: 4 }] })!;
+    expect(t1).toEqual(formationLayout(seats([...HQ, ...W(3, 4)])));
+  });
   it("좌열 이상 위치(좌열이 위아래 분할 속) → 표준 배치로 폴백", () => {
     const t0 = S(S(P(1), P(2), "col", 0.8), P(3), "col", 0.5);
     const t1 = autoArrange(t0, roles([...HQ, ...W(3, 4)]), { add: [{ sid: 4 }] })!;

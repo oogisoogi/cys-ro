@@ -30,10 +30,10 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       kind: "pack-and-binary",
       badge: "↻",
       ok: false,
-      title: `팩 ${i.packVersion} 무중단 적용 가능 (새 본체 ${i.binVersion}은 패치 설치)`,
+      title: `새 자비스 구성 ${i.packVersion} 은 재시작 없이 적용 · 새 앱 ${i.binVersion} 도 설치 가능`,
       toastMsg:
-        `팩 ${i.packVersion}은 상단 Update로 무중단 적용(재시작 없음) · ` +
-        `새 본체 ${i.binVersion}은 Update 버튼으로 패치 설치(재시작·자동 복원)`,
+        `새 자비스 구성 ${i.packVersion} 은 상단 「업데이트」로 재시작 없이 적용됩니다. ` +
+        `새 앱 ${i.binVersion} 도 같은 단추로 설치하며, 설치 뒤 다시 켜지면 하던 창이 돌아옵니다.`,
     };
   }
   if (i.binVersion) {
@@ -42,8 +42,8 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       kind: "binary",
       badge: "!",
       ok: false,
-      title: `새 본체 버전 ${i.binVersion} (Update 버튼으로 패치 설치)`,
-      toastMsg: `새 본체 ${i.binVersion} — 상단 Update 버튼으로 패치 설치(재시작·자동 복원)`,
+      title: `새 앱 ${i.binVersion} — 상단 「업데이트」로 설치`,
+      toastMsg: `새 앱 ${i.binVersion} 이 나왔습니다. 상단 「업데이트」를 누르면 설치하고, 다시 켜지면 하던 창이 돌아옵니다.`,
     };
   }
   if (i.packVersion && !i.binaryTooOld) {
@@ -51,8 +51,8 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       kind: "pack",
       badge: "↻",
       ok: false,
-      title: `팩 ${i.packVersion} (무중단·세션 유지)`,
-      toastMsg: `팩 ${i.packVersion} — 상단 Update(재시작 없음)`,
+      title: `새 자비스 구성 ${i.packVersion} — 재시작 없이 적용`,
+      toastMsg: `새 자비스 구성 ${i.packVersion} 이 있습니다. 상단 「업데이트」를 누르면 재시작 없이 적용됩니다.`,
     };
   }
   if (i.packVersion && i.binaryTooOld) {
@@ -60,10 +60,10 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
       kind: "binary-required",
       badge: "!",
       ok: false,
-      title: `팩 ${i.packVersion}: 본체 업데이트 필요 (설치 사이트에서 다운로드)`,
+      title: `새 자비스 구성 ${i.packVersion} — 앱을 먼저 새 판으로 받아 주세요`,
       toastMsg:
-        `새 팩 ${i.packVersion}은 더 새로운 본체를 요구합니다 — ` +
-        `본체를 업데이트한 뒤 적용됩니다. 설치 사이트: https://jarvis-install.godmeyou.kr`,
+        `새 자비스 구성 ${i.packVersion} 은 더 새로운 앱이 있어야 적용됩니다. ` +
+        `설치 사이트에서 앱을 먼저 받아 주세요: https://jarvis-install.godmeyou.kr`,
     };
   }
   if (!i.binCheckFailed && !i.packCheckFailed) {

@@ -22,12 +22,12 @@ export function drainVerifyFallbackToast(reason: "unsupported" | "verify_failed"
   if (reason === "unsupported") {
     return {
       title: "⚠ 저장 검증 미지원",
-      body: "현재 cys 버전은 저장 검증을 지원하지 않습니다 — 기존 방식(best-effort 저장)으로 재시작합니다.",
+      body: "지금 판은 저장이 끝났는지 확인하는 기능이 없어, 저장을 한 번 요청한 뒤 확인 없이 재시작합니다.",
     };
   }
   return {
     title: "⚠ 저장 검증 실패",
-    body: "저장 검증 실행에 실패했습니다(원인 미상) — 기존 방식(best-effort 저장)으로 재시작합니다. 재시작 후 노드 상태를 점검하세요.",
+    body: "저장이 끝났는지 확인하지 못해, 저장을 한 번 요청한 뒤 확인 없이 재시작합니다. 다시 켜진 뒤 각 창이 하던 일을 이어 가는지 살펴봐 주세요.",
   };
 }
 

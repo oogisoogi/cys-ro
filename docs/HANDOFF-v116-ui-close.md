@@ -1,0 +1,206 @@
+# HANDOFF — TICKET=v116-ui-close (cysr 1.1.6 T-UI · worker-9 @ surface:1025)
+
+브랜치 `fix/v116-ui` ← 526325bf · 착수 23:31 · 상한 01:11 · 브리프 `~/axdev/master/briefs/2026-09-23-v116-ui-close.md`.
+
+## §0 델타(후임·재개용 — 최신이 위)
+### 2026-09-24 01:4x r2(worker-13 @ surface:1031 · TICKET=v116-ui-close-r2 · 브리프 2026-09-24-v116-ui-close-r2)
+- **끝낸 것(1ad9cf80 위 20 커밋 · push·태그·판번 0)**: R1c(f282b8a8·eaa3a03d) · D4 #12(6c76c748·b63fbb96 · 신규 panetitle.ts) · D4 #18(4e1922de·87ae4a0a + 나머지 절반 main.ts 4경로 38e276ce·8e199ac0 = master#f55cc917 A) · D4 #8(3914eaa6·126478c6 · agy 3R MAJOR 90e1c2b3 · Fable 반영 6a42e41f·64c41c74 · 신규 alertcopy.ts) · D4 #14(9f1584f3·31982b22 · 오류 알림 26곳 + 업데이트 문구 = master#a50791f8 A) · D4 #10(d292eab5·15ccffaf) · D4 #20(d20788c7·1a7643e3).
+- **검증 반영**: #8 agy 3R BLOCK(MAJOR 총괄 유휴 기준 시간 손실) = 수용 90e1c2b3 · Fable BLOCK(MAJOR 3·MINOR 6·NIT 3) = MAJOR 전부·MINOR 2·3·5·6·NIT 1·3 수용 6a42e41f·64c41c74 / MINOR-4(범위 밖 알림 3종) 기록만 · agy 4R BLOCK(MINOR 자리 이동 부서 접두) = 수용 0978d7bd·6290fec1 · agy 5R BLOCK(TS2345 주장) = **기각**(seatName dept 인자 = unknown · tsc 신규 0 실측 · agy-5r.md 말미) → agy 수렴. opus 정밀 디버깅(MAJOR 1·MINOR 4·NIT 5 · BLOCK 0) = MAJOR·MINOR 전부 + NIT 4 수용 f695ff14·83e45f03 / NIT 「머리줄 이름 늦은 갱신」 기록만.
+- **남은 「가능」(T-UI)**: 0.
+- **기록만(미반영 · 범위 밖)**: 같은 onDaemonEvent 의 osc.notify·health·watchdog 폴백 알림에 surface:N·rule=·영문 이벤트 이름 잔존(Fable MINOR-4) · 알람 이력 탭 메타 줄의 카테고리·id 원문 · drainVerifyNotice 의 역할 코드 원문(drainverify.ts:75) · restore.retrying 본문 = 데몬 문자열(「자비스(master)」) · 피드백 창 오류(main.ts confirmModal 「피드백 창을 열지 못했습니다: ${String(e)}」) · update-error 리스너 payload 원문 · ↻ 재시작 툴팁·차이 배지 「데몬 v…」 = 「엔진」 용어 전수 별건(master#e997f947) · 부서 탭 이름을 바꿔도 CTX 머리줄은 다음 서명 변화 때 갱신 · Control Center KPI 는 관측 0 일 때 종전처럼 0%(null 과 무관한 기존 동작).
+- **함정(추가)**: 헤드리스 새 칸 c11(sc=late · 16초)·c12(800폭)·c13(CC Live 탭 클릭 필요 — ccTab 기본값이 live 아님)·c14·c15·c16 · 셸 `timeout` 없음(agy 는 `--print-timeout 900s`) · 헤드리스 페이지 쪽 정규식은 템플릿 안이라 `\\n` 이중 이스케이프 · 뮤턴트 M3b 는 단위 시험 생존이 정상(헤드리스 c3 가 죽인다 — 01:4x 재확인) · 기준선 적색 비교 = scratchpad 에 `git archive HEAD ui` + node_modules 복사 후 빌드.
+- **수치(83e45f03)**: bun 1175 → 1237/0 · tsc 신규 0(기존 7건) · 헤드리스 c1~c16 30/30(headless-final.txt) · 뮤턴트 42 → 91/91(단위 90 KILLED + M3b 헤드리스 c3 KILLED — 01:4x 재확인).
+
+### 2026-09-24 01:0x 매듭(master#622d03c0 · 좌석 종료 · 후임 = master 결정)
+- **끝낸 것(전부 master 수용)**: 필수 = D4 #7 닫기 확인 · D4 #17 exited 잔재 · X-1 남은 창 폭 · N-3 new split(권고 C) / R1a = 읽기 경로 배선만(**완료 아님** · 생산자 0 = 사용자 효과 0) / 「가능」 = D4 #21 경보 가림 · #5 상단 엔진 라벨 · #13 영어 단추 · #4 본부/새 화면 · #6 Ctrl+O 안내 오발화 · #11 스코프 게이지 흐림.
+- **남은 「가능」 7(가치 순 · master 확인 순서)**: #8(알림·시스템 배너의 `surface:N`·역할 코드 원문 → friendlyRole 재사용·문구 완화 · main.ts 알림 경로 — Fable 적대 권장: 경보 경로) → #14(업데이트 문구 내부 용어·백엔드 오류 원문 약 15곳 · updateplan.ts·main.ts) → #10(사이드바 CTX 부서 줄 「dept-」 잘림 → 부서 표시명) → R1c(restoreBriefShown 을 master 확인 전에 켬 · main.ts showRestoreBrief 첫 줄) → #20(확인창 단추 말 「확인/아니오」 vs 「취소」 통일) → #18(used_pct null → 0% 게이지 · 잠복) → #12(좁은 창 제목 끝 잘림·이름 비우기 시 번호 소실).
+- **별건 결정(이 티켓 밖 · 손대지 말 것)**: ① 사용자 화면 용어 = 「엔진」 통일(master 결정 master#e997f947 · 1.1.6 문구 전수 별건 — ↻ 재시작 툴팁·설명서·부서 데몬 문구 포함) ② R1a 생산자(마스터 지침·설치 골격에 사용자용 3절) = 박사님 결정 ③ X-1 VM stty 실측 = 1.1.6 VM 티켓(1026 T-APP §7 묶음) ④ 1026 perm-warning 구역 = 1026 몫.
+- **기록만(미반영)**: Control Center 영어 유지(기능 이름) · startup/recovery failed 영어(기존) · 「새 화면」 탭에 손으로 「본부」 입력 시 본부 2개 · 프로브만 갱신되는 계정 rate 행 흐림 가능성【추정】.
+- **함정**: bun = ~/.bun/bin(PATH 밖 · rc 127) · 헤드리스 = docs/v116-ui-evidence(v116-headless.ts c1~c10 · shim.js · mutate.py) — chrome-headless-shell 은 세션 scratchpad 사본이라 새 세션은 재확보(`find / -name chrome-headless-shell`) · 새 시험에 `toMatch` 금지(tsc TS2339 → `re.test`) · `readdirSync` 는 `{ withFileTypes: true }` 형 · 뮤턴트가 try 블록 변수를 finally 에서 참조하면 무효 · 헤드리스 실패 주입은 횟수 말고 시간 창 · 커밋 수는 `git rev-list --count` 출력으로.
+- **수치(e92277f1)**: 526325bf 위 33 커밋 · bun test 1112 → 1175/0 · tsc 신규 0 · 헤드리스 20/20 · 뮤턴트 42/42.
+
+### 2026-09-24 00:5x
+- 상태: 필수 4 + R1a 경로(완료 아님) + 「가능」 #21·#5·#13·#4·#6 = master 수용 · #11 = 확인요청 중. 브랜치 fix/v116-ui · push·태그·판번 0.
+- 2026-09-24 01:00 갱신: D4 #11 완료(§13 · 확인요청). 남은 「가능」 목록(가치 순 · worker-9 판단 · master 확정 아님): ① D4 #8 알림·시스템 배너의 `surface:N`·역할 코드 원문(friendlyRole 재사용 · 문구) ③ D4 #14 업데이트 문구 내부 용어·백엔드 오류 원문 약 15곳 ④ D4 #10 사이드바 CTX 부서 줄 「dept-」 잘림 ⑤ D2 R1c 카드 표시 판정 순서(restoreBriefShown 을 master 확인 전 켬) ⑥ D4 #20 확인창 단추 말 통일 ⑦ D4 #18 used_pct null 가드(잠복) ⑧ D4 #12 좁은 창 제목 잘림.
+- 결정된 별건(이 티켓 밖): 「엔진」 용어 통일 = 1.1.6 문구 전수(master#e997f947) · R1a 생산자(3절 기록) = 박사님 결정 · X-1 VM stty = 1.1.6 VM 티켓.
+- 함정: bun = ~/.bun/bin(PATH 밖) · 헤드리스 = docs/v116-ui-evidence(v116-headless.ts · shim.js · CHS 는 scratchpad 사본 — 새 세션이면 재복사 필요: find / -name chrome-headless-shell) · 새 시험에 toMatch 금지(tsc TS2339) · readdirSync 는 withFileTypes 형.
+
+## 0. 기준선(526325bf · 편집 전 실측)
+- `bun test`(ui) = 1112 pass · 0 fail · tsc(tsconfig.check.json) = 오류 7건(목록 = scratchpad tsc-base.txt · 전부 기존)
+- 헤드리스 실번들(`docs/v116-ui-evidence/v116-headless.ts` · 526325bf ui/dist) = 적색 9 / 10 (c1a·c1b·c1c·c1d·c2·c3·c4a·c4b·c5 적색 · c1e 만 초록 — c1e 는 「exited 창은 바로 닫힘」으로 원래 성립하는 동작의 무회귀 확인 줄)
+
+## 1. 원인표
+| 항목 | 원인(파일:행 · 526325bf) | 등급 |
+|---|---|---|
+| X-1 남은 창 반폭 | `renderNode`(main.ts:3830-3831)가 split 자식에 인라인 `style.flex = "0.5 1 0%"` 를 박는다. 창이 1개로 줄면 그 pane 요소(런타임 재사용)가 `#root` 직계가 되는데 인라인 flex 를 지우지 않아 `#root > * {flex:1}`(style.css:429)을 이긴다 → 형제 없는 flex-grow 0.5 = 남은 공간의 절반. fitPane 은 실제 반폭을 재서 PTY cols 도 반폭(실측 66 · VM 65) | 【관측·모의】 헤드리스 실번들: pane 530/1061px · cols 66 · style.flex "0.5 1 0%" |
+| D4 #17 exited 잔재 | 복원 1회 청소 무장이 불리언 1개(main.ts:2440)이고 **패스 끝 finally 에서 무조건 해제**(:2660). 그 패스에서 소켓 조회가 in-flight 가드로 건너뛰어지거나(:2508) 시간초과·예외(:2651)면 그 소켓은 한 번도 안 쓸렸는데 무장이 사라진다 | 【관측·모의】 헤드리스: 조회 실패 2회 주입 → 7초 뒤에도 [exited] 창 1개 잔존 |
+| D4 #7 산 창 무확인 닫기 | `actionClose`(main.ts:4824-4833)가 확인 없이 `close_surface` — 상단 Close(:8371)·⌘W(:9003)·팔레트 「패널 닫기」(:6553) 세 경로가 모두 이 함수 | 【관측·코드】 + 헤드리스(close_surface 즉시 1회) |
+| N-3 new split | 상단바 index.html:16-18(+ New · Split → · Split ↓) | 【관측】 |
+| R1a 카드 경로 | `stateCandidates`(restorebrief.ts:73-88)가 `<마스터 cwd>/_round/SESSION_STATE.md` 계열만 후보로 만든다. MASTER_DIRECTIVE 의 기록 정본 = `${CYS_PACK_DIR:-~/.cys/pack}/round/SESSION_STATE.md`(MASTER_DIRECTIVE.md:78·406) | 【관측·코드】 + 헤드리스(카드에 정본 내용 없음) |
+
+### ⚠ R1a 상태 표기(master 판정 master#37fad5d9 · A 채택)
+**R1a = 완료 아님.** 읽기 경로 배선(c926328f · ca4cbdf4 접기 · 47812928 시험) · **생산자 0 = 사용자 효과 0** · PLAN-1.1.6 R1a 합격 기준(정본 경로에 기록 → 카드에 기록 표시) **미충족** · 효과는 생산자 작업(마스터 지침·설치 골격에 사용자용 3절을 쉬운 말로 기록 = 팩 지침 변경 · 박사님 결정 사항 · 이 티켓 범위 밖) 뒤. 헤드리스 c5 는 3절 제목을 가진 **흉내 파일**로 배선만 잰 것이다.
+
+## 2. 설계(착수 전 성찰 반영 · 9단계 필요성 판단)
+| 단계 | 적용 | 이유 1줄 |
+|---|---|---|
+| 1 철학·원칙 | 적용 | 로컬 전용·품질 우선 → 모든 판정은 「모르면 안전한 쪽」(산 창 여부를 모르면 확인을 띄운다 · 잔재 청소는 exited 확정만) |
+| 2 구체 설계안 | 적용 | 아래 D1~D5 |
+| 3 의존·파급 | 적용 | 공개 함수 시그니처 변경 = exitedsweep(무장 API 추가 · 기존 `exitedSweepTargets` 유지) · restorebrief = `stateCandidates` 무변경 + `canonicalStatePath`·`briefStatePaths`·`pickBriefText`(·곁 `hasBriefSections`) 신설(기존 호출·시험 무변경) · index.html 단추 id 3개 제거 → main.ts:8367-8369 배선 교체(널 역참조 방지) |
+| 4 설계 결함 재조사 | 적용 | ⑴확인 창 대기 중 창이 사라지거나 포커스가 바뀌면? → 요청 시점 sid·ws 를 붙잡고 확인 뒤 **그 창이 아직 트리에 있을 때만** 닫는다 ⑵무장 영구 잔존? → 5분 상한 ⑶CYS_PACK_DIR 재지정 기기 → 기본 경로만 봄(정직 고지 · main.rs 무접촉 규율) |
+| 5 결정론 치환 | 적용 | 판정 4개를 순수 모듈로(closeguard · exitedsweep 무장 · restorebrief 후보/선택 · 폭은 헤드리스로) |
+| 6 적대 A/B/C | 적용 | A(운영): 확인 창 겹침·반복 발화 → 진행 중 플래그 + 전역 키 모달 가드(기존) · 청소가 산 창을 닫는 경로 0(술어 = exited 확정만 · 불변) / B(단순성): 무장 = 소켓 키 집합 1개 · 새 타이머 0 / C(유지보수): 문안·정책 상수 한 곳 |
+| 7 언어 원칙 | 비적용 | 이 저장소 UI 코드·주석 관례가 한국어 — 관례를 따른다(외과적 변경) |
+| 8 필요성 최종 | 적용 | 모든 변경 = 브리프 할 일 1~5 로 추적 · 「가능」 목록은 필수 완료 뒤에만 |
+| 9 저장 후 구현 | 적용 | 이 문서 |
+
+- D1 닫기 보호: `ui/src/closeguard.ts` = 정책 상수(`CLOSE_CONFIRM_POLICY` = "live-only" · A-1 답이 B 면 "all") + 문안 상수 + `needsCloseConfirm(policy, exited)`. main.ts 는 pane 별 exited 확정 집합(**데몬 목록의 exited=true 하나뿐** — 구현 중 정정: src-tauri 의 스트림 종료 이벤트는 연결 끊김·데몬 재시작에도 발화하므로 재료에서 뺐다)을 들고 actionClose 에서 판정 → confirmModal(기본 포커스 = 취소 · Escape = 취소 · 기존) → 확인 시 **요청 당시 그 창**만 닫는다. 창 머리 × 는 무변경.
+- D2 잔재 0: 무장 = 「아직 한 번도 성공적으로 조회·청소되지 않은 소켓 키 집합 + 무장 시각」. 소켓별로 조회가 성공해 청소 줄을 지난 때만 그 소켓을 뺀다. 5분(= in-flight 재시도 60초 × 5) 지나면 무장 소멸. 술어(exited 확정만 친다)는 그대로 → 산 창을 닫는 새 경로 0.
+- D3 폭: render() 가 루트 직계 요소의 인라인 flex 를 지운다(split 안에서는 renderNode 가 매번 다시 박으므로 루트만 문제).
+- D4 new split: 상단 + New·Split →·Split ↓ 제거 → 전문가 칸(#ws-expert) 「창 만들기」 1개 → 메뉴 「오른쪽에 새 창 (⌘D)」·「아래에 새 창 (⌘⇧D)」. 단축키 ⌘T·⌘D·⌘⇧D·팔레트 유지.
+- D5 R1a: 후보 = 정본(`<home>/.cys/pack/round/SESSION_STATE.md`) + cwd `_round` 사슬. 둘 다 읽히면 기록 시각이 더 늦은 쪽 · 같으면 정본. (곁 ca4cbdf4: 고정 3절 제목이 없는 파일은 후보에서 뺀다 — §4-3) 첫 기동 판정(T4 · isFirstLaunch)은 무접촉.
+
+## 3. 커밋(제품 · 시험 · 문서 분리)
+| sha | 종류 | 내용 |
+|---|---|---|
+| c926328f | 제품 | 닫기 확인 · 소켓별 무장 · 루트 flex · 권고 C · 정본 경로 |
+| 5c402f26 | 시험 | closeguard.test.ts 신설 · exitedsweep/restorebrief 시험 갱신 |
+| ca4cbdf4 | 제품 | R1a 곁 — 3절 제목 없는 작업기억 = 기록 없음(정본 설치 골격 회귀 차단 · 완료 전 성찰에서 발견) |
+| 47812928 | 시험 | 위 곁의 시험 |
+| 905bdee7 | 제품 | 검증 반영(§7) — CC 먼저 닫기 · 닫는 중 재확인 차단 · 취소 뒤 포커스 · 탭 바뀜 포커스 · exited 거울 · 청소 스냅숏 · 카드 예정 시각 제외 · 가장 가까운 cwd 파일만 |
+| 6aa7aad4 | 시험 | 위 반영의 시험 + 생존 뮤턴트 X1·X5·X7 핀 · toMatch → re.test(tsc 신규 0) |
+| (문서 커밋) | 문서 | HANDOFF · USER-MANUAL §4.1 · 헤드리스 하네스 · 뮤턴트 스크립트 · 캡처 · agy 원문 |
+
+## 4. 진리표
+### 4-1 닫기 확인(closeguard.needsCloseConfirm · 정책 live-only)
+| 데몬 exited 확정 | 입구 | 확인 창 | 결과 |
+|---|---|---|---|
+| true | Close·⌘W·팔레트 | 0 | 바로 닫힘 |
+| false(산 창) | Close·⌘W·팔레트 | 1(기본 포커스 = 취소) | 취소·Escape·배경 = 그대로 · 닫기 = **그 창만** |
+| null(모름 · 목록 전) | 〃 | 1 | 〃 |
+| 무관 | 창 머리 × | 0(× 는 두 번 눌러 닫기 · 무변경) | 종전 |
+| 무관 | 확인 창이 이미 떠 있음 | 추가 0(전역 키 모달 가드 + closeConfirmOpen) | — |
+| 무관 | 묻는 사이 그 창이 사라짐 | — | 아무것도 안 닫음 |
+| 무관 | 포커스가 이 탭 트리에 없음(낡은 포커스) | — | 무동작 |
+| 무관 | 같은 창 닫기 요청이 데몬에 가 있는 중(closingPaneKeys) | 0 | 무동작(재확인·이중 닫기 0) |
+| false | Control Center 열린 채 ⌘W·Close | 1 — CC 를 먼저 닫고 띄움(확인 창이 CC 뒤에 숨지 않게) | 〃 |
+| false | 취소 | — | 그 창에 키보드 포커스 복귀 |
+정책 "all"(A-1 답이 B 일 때): exited 포함 전부 확인 1.
+
+### 4-2 소켓별 무장(armSweep · sweepArmedFor · settleSweep)
+| 패스 | 소켓 A(본부) | 소켓 B(부서) | 무장 뒤 상태 |
+|---|---|---|---|
+| 복원 완료 | — | — | {A,B} |
+| 1 | 조회 성공 → 쓸림 | 시간초과 / in-flight 건너뜀 | {B} |
+| 2 | 대상 아님 | 조회 성공 → [exited] 옛 창 닫힘 | null(해제) |
+| 전부 실패 | — | — | {A,B} 유지 |
+| 무장 후 5분 초과 | — | — | null(영구 무장 0) |
+| 산 창(exited=false·모름) | 무장 중에도 대상 0 | | 술어 불변 |
+| 복원 **뒤** 생겨 끝난 창 | 무장 스냅숏 밖 → 대상 0(「읽을 권리」 보존) | | 905bdee7 |
+
+### 4-3 복원 카드 기록 선택(pickBriefText)
+| 정본 | cwd _round | 선택 |
+|---|---|---|
+| 3절 · 22:10 | 없음 | 정본 |
+| 3절 · 22:10 | 3절 · 23:05 | cwd(더 새 기록) |
+| 3절 · 22:10 | 3절 · 22:10 | 정본(동률) |
+| 설치 골격(3절 없음) | 없음 | 없음 → 짧은 참말 카드(T4) |
+| 골격 + 더 늦은 시각 | 3절 · 20:00 | cwd(3절 있는 쪽 우선) |
+| 첫 기동 | 무관 | 카드 생략(T4 · 무접촉) |
+| 3절 · 23:40 + 본문 「2026-10-01 09:00 예정」 | 3절 · 23:50 | cwd(지금 이후 시각은 기록 시각 아님 · 카드 기준 시각도 23:40) |
+| 없음 | 가까운 폴더 20:00 · 상위 폴더 23:00 | 가까운 폴더(사슬은 첫 적중 1개 — 종전 계약) |
+
+## 5. 시험·기준선·뮤턴트
+- 기준선(526325bf) → 최종(6aa7aad4): bun test 1112/0 → **1148/0** · tsc 오류 7 → 7(파일·코드·메시지 기준 목록 동일 · 신규 0). ⚠정정: 5c402f26 시점엔 closeguard.test.ts 의 toMatch(TS2339 — 기존과 같은 부류) 7건이 새로 생겨 **7 → 14** 였다(opus 디버깅이 적발 · 앞선 「7 → 7」은 그 파일 작성 전 측정). 6aa7aad4 에서 re.test 로 바꿔 신규 0.
+- 헤드리스(실번들 · chrome-headless-shell 154 · 1280×820): 기준선 적색 c1a·c1b·c1c·c1d·c1f·c2·c3·c4a·c4b·c5 / 초록 c1e·c1g·c5b(무회귀 줄) → 최종 **13/13 초록**(docs/v116-ui-evidence/headless-final.txt)
+  - c2 재현은 실패 창 5초 주입(횟수 주입은 시각에 따라 갈렸다 — 판 2에서 교정 · 기준선 2/2 적색 · 수리본 2/2 초록)
+- 뮤턴트(docs/v116-ui-evidence/mutate.py · 단위 시험 · +헤드리스 2)
+| id | 항목 | 변이 | 결과 · 귀속 |
+|---|---|---|---|
+| M1a | 닫기 | exited!==true → exited===false(모름=무확인) | KILLED · 진리표 「권고 A」 |
+| M1b | 닫기 | 취소 시 return 제거 | KILLED · 배선 「취소면 닫지 않고」 |
+| M1c | 닫기 | 스트림 종료 이벤트로 exited 표시 | KILLED · 배선 「재료 = 데몬 목록 하나」 |
+| M1d | 닫기 | 확인 뒤 트리 재확인 제거 | KILLED · 배선 「취소면 닫지 않고…」 |
+| M2a | 잔재 | settle 이 전부 해제(종전) | KILLED · 진리표 「패스 1 조회 실패」·「전부 실패」 |
+| M2b | 잔재 | TTL > → >= | KILLED · 진리표 「상한 5분」 |
+| M2c | 잔재 | finally 에서 pending 전부 해제 | KILLED · 배선 「청소 줄 소켓만」 + 헤드리스 c2 2/2 |
+| M3a | 폭 | 루트 flex 비우기 제거 | KILLED · 「render() 가 … 비운 뒤」 |
+| M3b | 폭 | split 일 때만 비움(pane 루트 미적용) | 단위 SURVIVED → **헤드리스 c3 KILLED**(pane 530.5/1061 · cols 66) |
+| M4a | 권고 C | 상단 + New 복귀 | KILLED · 「상단바에 … 없다」 |
+| M4b | 권고 C | 오른쪽 메뉴 → col | KILLED · 「두 갈래」 |
+| M5a | R1a | 정본 후보 제거 | KILLED · 「후보 = 정본 먼저」 |
+| M5b | R1a | 동률 시 뒤 후보 | KILLED · 「같으면 정본」 |
+| M5c | R1a | 카드 cwd 인자 null | KILLED · 배선 |
+| M5d | R1a 곁 | 3절 검사 제거 | KILLED · 「설치 골격 = 기록 없음」·「3절 우선」 |
+| M1e | 닫기 | CC 먼저 닫기 제거 | KILLED · 「(Fable MAJOR-1) … 전에 닫는다」 (+헤드리스 c1f 기준선 적색) |
+| M1f | 닫기 | 닫는 중 가드 제거 | KILLED · 「(agy 1R ②) 닫는 중인 창」 |
+| M1g | 닫기 | exited 거울(else delete) 제거 | KILLED · 「재료 = 데몬 목록 하나」 |
+| M2d | 잔재 | 스냅숏 필터 제거 | KILLED · 배선 「sweepSids」 |
+| M5e | R1a | cwd 사슬 첫 적중 break 제거 | KILLED · 배선 「가장 가까운 한 파일」 |
+| M5f | R1a | 예정 시각 필터 무력화 | KILLED · 「예정 미래 시각은 기록 시각이 아니다」 |
+| X1 | 닫기 | 낡은 포커스 가드 제거(opus 생존분) | KILLED · 「(opus 뮤턴트 X1)」 |
+| X5 | 잔재 | 청소 범위 키를 본부로 고정(opus 생존분) | KILLED · 「(opus 뮤턴트 X5·X7)」 |
+| X7 | 잔재 | 재무장 보호 가드 제거(opus 생존분) | KILLED · 「(opus 뮤턴트 X5·X7)」 |
+최종 실행: 24개 중 단위 시험 23 KILLED · M3b 는 헤드리스 c3 KILLED = **24/24**. opus 의 등가·준등가 생존 X4(파괴 때 키 삭제 — 번호 단조라 등가)·X12(모달 중 포커스 변경 경로 없음)·X10(이름 → 헤드리스 c1a 에 이름 판정 추가로 보강)은 기록만.
+(무효 뮤턴트 1건 기록: 첫 M2c 는 finally 에서 try 블록 변수 `sockets` 를 참조해 런타임 예외 → 판정 무효 · 교체)
+
+## 6. 4군 점검
+- ① 폭주 큐: 확인 창 = 사람 입력 1회당 최대 1개(closeConfirmOpen + 전역 키 모달 가드) · 청소는 새 타이머 0(3초 틱에 얹음) · 무장 5분 상한. 반복 발화 0.
+- ② 무clear 100%+: 해당 없음(UI 층 · 컨텍스트 경로 무접촉).
+- ③ 자가치유 전멸: 청소 술어 불변(데몬 exited=true 만) · 입양·자리표 회수·유령 수렴·phoenix 좌석 경로 무접촉. 창 만들기는 삭제가 아니라 이동(마스터 사망 시 사람의 비상 탈출구 = 전문가 칸·⌘T·⌘D·팔레트 유지).
+- ④ 전 pane 사망(핵심): 산 창을 닫는 새 경로 0 — 오히려 산 창 무확인 경로 3개(Close·⌘W·팔레트)가 확인 1회로 좁아졌다. 청소가 무장 중에도 치는 것은 exited=true 뿐 · 낡은 포커스는 무동작 · 확인 뒤 대상 재확인.
+
+## 7. 검증(이종 적대 · 서브에이전트)
+| 검토자 | 대상 | 판정 | 반영 / 기각 |
+|---|---|---|---|
+| agy 1R(외부 · diff 전문만 · 파일 권한 0 · 원문 docs/v116-ui-evidence/agy-1r.md) | 526325bf..ca4cbdf4 제품 diff | **BLOCK** | ② 닫기 요청 대기 중 같은 창 ⌘W → 확인 창 재발화·이중 닫기 = **반영**(closingPaneKeys · 905bdee7) / ⑤ 정본의 다른 절 제목을 카드가 읽어야 한다 = **기각** — master 판정(master#37fad5d9 · A 채택 · B 기각: 정본 절은 마스터 개발 용어라 초보 카드 문구 규율 위반) · 「첫 기동 판정을 깬다」는 사실 아님(isFirstLaunch·briefTiming 무접촉 · 기록 없으면 T4 짧은 카드) |
+| Fable 적대 서브에이전트(고위험: 닫기·청소) | c926328f | BLOCK 0 · MAJOR 1 · MINOR 4 · NIT 4 | MAJOR-1 CC 열림 중 확인 창 은닉(Tab+Enter 무확인 닫기) = 반영 · MINOR-2 취소 뒤 포커스 = 반영 · MINOR-3 탭 바뀜 포커스 = 반영 · MINOR-4 exited 래치 → 거울 = 반영 · MINOR-5 무장 5분 동안 복원 뒤 끝난 창까지 청소 = 반영(스냅숏) · NIT-6 대기 탭 키 "" = 기록(대기 탭은 트리 null 이라 옛 창 0 · 실해 경로 미확인) · NIT-7 TTL 윈 배율 = 주석 정정 · NIT-8 예정 날짜 = opus 결함 1 과 같은 건으로 반영 · NIT-9 배선 시험이 문자열뿐 = 헤드리스 c1f·c1g 추가로 보강 |
+| agy 2R(원문 docs/v116-ui-evidence/agy-2r.md) | 47812928..905bdee7 제품 diff | **ACCEPT** | ② 닫힘 확인 · ⑤ 기각 사유 수용 · 새 diff 결함 0(스냅숏·notAfter 비교·포커스 복원) |
+
+## 8. 완료 뒤 정밀 디버깅(opus 서브에이전트 · 원문 요지)
+- 범위(「어디까지 뒤졌나」): 헤드리스 기존 10 + 닫기 경계 6(창 1개·포커스 없음·팔레트·확인 창 중 ⌘W/Close/⌘K·Escape) + 실제 키 Enter·Space·Tab→닫기 3 + 팔레트 Enter 누수 1 + 확인 창 중 종료 3 + 3창 가운데 종료 2 + 세로 분할 2 + 전문가 모드 토글 3 + 카드 후보 6 + TTL 추론 + 새 뮤턴트 12 + 제거 단추 잔여 참조 grep + tsc 대조 = **산 창이 잘못 닫히는 경로 0**.
+- 발견: 결함 1(중) 본문 예정 미래 시각 → 반영 · 결함 2(경) 상위 폴더 기록 끼어듦 → 반영 · 결함 3(문서) USER-MANUAL §4.1 제거된 단추 안내 → 반영 · tsc 7→14 보고 불일치 → 정정·반영 · 생존 뮤턴트 X1·X5·X7·X10 → 시험 보강.
+
+## 9. 완료 전 성찰(코드 9단계 · 필요성 판단)
+| 단계 | 적용 | 이유 · 핵심 수정 |
+|---|---|---|
+| 1 의도·파급 전수 | 적용 | 파급 = main.ts 5 함수 + 순수 모듈 3 + index.html·style.css + USER-MANUAL(opus 적발). 강결합 지점 = 제거 단추 id(널 역참조) → 시험으로 잠금 |
+| 2 언어 원칙 | 비적용 | 저장소 관례(한국어 주석) 유지 |
+| 3 목표 대비 미구현·결함 | 적용 | **R1a 회귀 발견·수리**(정본 골격이 빈 문장 카드를 되살림 → ca4cbdf4) · R1a 합격 기준 미충족 정직 표기(§2 앞 ⚠) · 스트림 종료 이벤트를 exited 재료에서 뺀 설계 정정(연결 끊김에도 발화) |
+| 4~9(설계 성찰의 워크플로 전용 항목: SOT·RLM·에이전트 팀 선택) | 비적용 | UI 수리 티켓 — 해당 구조 없음 |
+
+## 10. 정직 고지 · 미결
+- R1a = 완료 아님(§2 앞 ⚠ · master#37fad5d9).
+- X-1 은 헤드리스 흉내층 실측이다(실기·VM 미실측). 브리프 해소 판정(Tart 새 clone stty cols)은 VM = master 배정 사항.
+- CYS_PACK_DIR 를 따로 지정한 기기는 카드가 기본 정본 경로만 본다(main.rs 무접촉 규율 · UI 에 그 값을 읽는 통로 없음).
+- 확인 창 문안은 권고안 A — 박사님 A-1 답이 오면 closeguard.ts 상수만 바꾼다.
+- 「가능」 목록 = 2차 배치에서 착수(§11 · master#364ee5b8 순서 #21 → #5 → #13 → #4).
+- 무장 대기 탭 키(NIT-6)·TTL 윈 배율(NIT-7)은 기록만.
+- bun 은 PATH 밖(~/.bun/bin) — 명령 앞에 PATH 보강 필요.
+
+## 11. 2차 배치 — 「가능」 목록(master#364ee5b8 · 가치 순)
+| 항목 | 필요성 | 커밋(제품 / 시험) | 요지 | 헤드리스(기준선 → 최종) | 뮤턴트 |
+|---|---|---|---|---|---|
+| D4 #21 경보 가림 | 안전(경보 은닉) — 최상 | 9379f5a0 → **교정 a192a098** / 1f866eef · f94c10ef | 알림 줄 z 99 → 950(카드 900 위 · 확인 창 1000 아래) + 카드 = 오른쪽 위(상단바 아래). 첫 판의 왼쪽 아래 이동은 Fable 적대(F1 편성 CSO 창·마스터 입력줄 가림 · F3 파일 목록 가림)로 **철회** | c6 w1280·w800 적색 → 초록(경보 3건 · 겹침 0 · 카드 [닫기] 눌림) | M6a·M6b KILLED |
+| D4 #5 상단 데몬 라벨 | 내부 용어 + 사용자 폴더 경로 상시 노출 | d551f6b8 / eae8be68 | 라벨 = 「엔진 v1.1.6」(판번 없으면 「엔진 연결됨」) · 전문(pid·소켓)은 툴팁 · 초기 「엔진 연결 중…」 · 무응답 「엔진 응답 없음」 | c7 적색 → 초록 | M7a·M7b KILLED |
+| D4 #13 영어 단추 | 초보 화면 영어 | 06664be3 / 2b7a81ae · 문서 35acdb1f | 창 닫기 · 파일 · 업데이트 · 끝난 창 「(끝남)」 · 안내 문구. **Control Center = 기능 이름이라 유지**(설명서·안내가 그 이름으로 가리킴 · 시험 허용 목록 1개) | c1~c8 전체 무회귀 | M8a·M8b KILLED |
+| D4 #4 「non title」 | 모든 사용자 첫 화면 영어 | 4f0c2e0a / 3766b556 | master 판정 A: 저장값 그대로 · 보여 줄 때만 — 본부 = 마스터 좌석이 있는 기본 데몬 탭(모르면 첫째) · 그 밖 = 「새 화면」 · 탭·삭제 확인·전출·부서 알림·그룹 이름 · 자동 이름 그대로 편집 확정 시 저장값 미정 유지 | c8 적색 → 초록 | M9a·M9b·M9c KILLED |
+- Fable 적대 2R(#21 교정·#5·#13·#4 · a89e86aa..674253fd): BLOCK 0 · MAJOR 1 · MINOR 6 · NIT 3
+  - MAJOR updateplan.ts 3곳 「Update 버튼」 안내 잔존(업데이트 모달·토스트의 원천 — main.ts 만 고쳤었다 · updateplan.test 가 옛 문구를 고정) = **반영** 33d1925b(+ 시험을 ui/src 제품 파일 전수로 확대)
+  - MINOR 탭 이름 편집 중 renderWsTabs 가 편집 글자를 버림(기존 10초 주기 결함 포함) = 반영(편집 중 재그리기 차단) · 본부 튐 2경로(마스터 잠깐 exited · 드래그 재정렬) = 반영(마지막 마스터 좌석 유지 · 폴백 id 최소) · deptPendingRows 표시 누락 = 반영 · 카드/알림 세로 충돌 = 반영(알림 40vh · 카드 나머지 · 10건 헤드리스) · USER-MANUAL:221 Files · DARWIN 검증표 = 반영
+  - MINOR 「엔진」(라벨) vs 「데몬」(↻ 재시작 툴팁·설명서·부서 데몬 문구) 용어 분열 = **기록 · master 결정 사항**(용어 통일은 이 티켓 범위 밖 여러 화면) · 부기 startup failed/recovery failed 영어 = 기존 문구 · 기록
+  - NIT 그룹 이름에 표시 라벨 고착 = 반영(그룹 → 「그룹」) · 「새 화면」 탭에 손으로 「본부」 입력 시 본부 2개 = 기록 · O(n²) = 무의미(기록)
+- 완료 뒤 정밀 디버깅(opus · 2차 배치): 탭 이름 편집 7 · 둘째 이름 없는 탭 5 · 상단바 1024/800 × 13요소 · 높이 820 경보 10건 + 긴 카드 2폭 × 6 · 재연결 툴팁 2 = **결함 1(D-1 경미)**: 짧아진 엔진 라벨이 800폭에서 「엔.」으로 찌그러짐(옛 긴 라벨용 flex 줄어듦·말줄임 잔존) → 반영(flex none · 무응답 라벨 짧게+툴팁 · 헤드리스 c7 800폭 판정 · M7c). 기록: 「새 화면」 탭에 손으로 「본부」 입력 시 본부 2개(사용자 선택 · 판단 사안) · 시작 무응답 경로 흉내 미판정(코드로 툴팁 보강).
+- 최종 누계: bun test **1170/0** · tsc 신규 0 · 헤드리스 **18/18**(+경보 10건 변형 2/2) · 뮤턴트 **38/38**(단위 37 + M3b 헤드리스).
+
+## 12. 3차 — D4 #6(master#e997f947 · 「작고 체감 큰 것 1개」)
+- 필요성: 스크롤백이 없는 모든 창(짧은 셸·vim·less)에서 첫 위 휠 한 번에 「클로드가 접어 두었습니다 — Ctrl+O」가 떴다(클로드와 무관한 창 포함) · 세션당 1회 몫을 써 버려 정작 긴 클로드 출력 맨 위에서는 안 떴다. 모든 사용자가 매일 닿는 경로.
+- 수리: scrollfollow.shouldShowFoldHint 에 `baseY > 0`(위 내용 있음) · `bufferType === "normal"` 조건(D4 하위조사 B 처방) — 커밋 제품 / 시험 = git log 참조.
+- 시험: bun test 1172/0 · tsc 신규 0 · 헤드리스 c9 기준선 적색(짧은 창 안내 1) → 초록(짧은 창 0 · 긴 출력 맨 위 1) · 뮤턴트 M10a·M10b KILLED.
+- Fable 적대(#21 첫 판): F1 MAJOR(카드 왼쪽 아래 = 편성 CSO 창·마스터 입력줄 가림) = 반영(위치 철회 → 오른쪽 위) · F2 MINOR(좁은 창에서 카드 [닫기]가 알림 밑) = 반영(세로 분리 + c6 경보 3건·800폭 겹침 0 판정) · F3 MINOR(파일 목록 가림) = F1 과 함께 해소 · F4 NIT(협폭 max-width 음수) = 식에서 사이드바 항 제거로 해소 · F5 NIT(하네스 미커밋) = 이 문서 커밋에 포함.
+
+## 13. 4차 — D4 #11(master#f210e90f · §0 순서 ①)
+- 필요성: 사이드바 「7d·<모델>」(모델 스코프 주간) 게이지가 **정상 가동 중에도** 3분마다 약 1분 흐려지고 「stale」 툴팁 — 생산자(데몬 OAuth 프로브) 주기 180초(src/bin/cysd/accounts.rs OAUTH_PROBE_INTERVAL_SECS) > UI 문턱 120초(wsusage.ts USAGE_STALE_SECS). 사용량 확인은 매일 보는 칸이고, 늘 반쯤 흐린 게이지는 「고장 났나」로 읽힌다.
+- 수리: SCOPED_STALE_SECS = 240(주기 180 + 여유 60) · scopedRates 만 사용. 계정 rate·페인 CTX 의 120초는 그대로. 흐림의 뜻 = 「그 값의 생산자가 기대 주기를 한 번 넘겼다」로 한 표 안에서 하나 — 종전 계약 시험(「rate 행과 같은 문턱」)을 이 뜻으로 개정.
+- 시험: bun test 1175/0 · tsc 신규 0 · 헤드리스 c10 기준선 적색(150초 전 관측 = 흐림) → 초록(150초 = 흐림 0 · 400초 = 흐림) · 뮤턴트 M11a(120초로 되돌림)·M11b(문턱 400 = 한 번 거른 주기보다 김) KILLED · 전체 헤드리스 20/20 · 뮤턴트 42/42(단위 41 + M3b 헤드리스).
+- 【추정】 곁: 프로브만으로 갱신되는 **계정 rate 행**(statusline 이 없는 둘째 계정 등)도 같은 이유로 3분마다 흐려질 수 있다 — 계정 행은 생산자가 섞여(statusline·프로브) 행별 출처를 UI 가 모른다(AccountLike 에 source 없음) · 이 티켓에선 확장하지 않음(실측 없음).

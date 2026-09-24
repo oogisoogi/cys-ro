@@ -40,8 +40,11 @@ html, body {
 #brand { font-weight: 700; color: var(--accent); }
 /* 앱 판번 상시 표시(TICKET=cysr-ui-polish-101 ⓐ) — 브랜드 옆 소형 · build_id 는 툴팁 */
 #app-ver { color: #8b949e; font-size: calc(10px * var(--ui-chrome-scale)); margin-left: -4px; }
+/* (v116-ui-close · D4 #5 · opus 디버깅 D-1) 줄어들지 않는다(flex: none). 종전 flex 0 1 auto·말줄임은 긴 옛 라벨
+   (pid·소켓 경로)용이었다 — 짧아진 「엔진 v1.1.6」이 800폭에서 「엔.」까지 찌그러져 판번이 사라졌다. 좁으면 상단바가
+   가로로 밀린다(#topbar overflow-x: auto). 긴 설명은 전부 툴팁(title)으로 간다. */
 #daemon-info { color: #8b949e; font-size: calc(11px * var(--ui-chrome-scale));
-  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  flex: none; white-space: nowrap; }
 /* P2 버전 스큐 배지 — lame-duck 데몬(세션 보존) 안내. 경고색이되 위협적이지 않게(불안 방지가 목적).
    클릭 = 데몬 교대(manualRotateSkewed — 메인+부서 순차). */
 .ver-skew-badge {
@@ -132,6 +135,10 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 #ws-expert #btn-master-start, #ws-expert #btn-dept-master, #ws-expert #btn-ws-dept {
   font-size: calc(14px * var(--wsbar-font, 1)); padding: 0 6px;
 }
+/* v116-ui-close(권고 C): 상단에서 내려온 「창 만들기」도 같은 칸의 알약이다 — 크기·배율 축·id 2개 특이도 동일. */
+#ws-expert #btn-pane-create {
+  font-size: calc(14px * var(--wsbar-font, 1)); padding: 0 6px;
+}
 /* A1-3 M1 + v110-sidebar ⓑ′ — 조직 단추 3종은 머리줄을 떠나 전문가 모드 칸으로 내려갔다(index.html 주석).
    ① 안내 한 줄은 왕초보가 제일 먼저 읽는 자리라 상단 버튼과 같은 사이드바 배율 축에 매되, 버튼이
       아니라 글이므로 한 단계 작게·흐리게 둔다. 좁은 사이드바에서 넘치면 줄바꿈한다(잘리면 안 된다).
@@ -216,6 +223,8 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
   font-size: .9em;
 }
 .wsu-head:first-child { margin-top: 0; }
+/* (D4 #10) 페인 CTX 부서 머리줄 — 부서 이름 전체를 패널 폭에 싣는다(행 라벨 열은 번호만) */
+.wsu-ctx-group { margin-top: 4px; font-size: .9em; /* 패널 글자 배율(A−/A＋)을 따른다 — opus 결함 4 */ color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wsu-rate, .wsu-ctx { display: flex; align-items: center; gap: 6px; padding: 1px 0; min-width: 0; }
 /* ★고정 칸들은 「자기 폭을 원하되, 정 안 되면 줄어든다」로 바꿨다(오너 지시 2026-08-11의 귀결).
    ① 왜 필요해졌나 — 패널 글자가 배율을 타면서 **행의 고정 칸이 통째로 배율을 탄다**.
@@ -736,10 +745,15 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
 
 /* ★T-0147-3: 높이 상한 없던 구 구현은 알람이 몰리면 화면 전체를 덮었다(무한 스택).
    상한 + 스크롤로 캔버스를 지키고, 넘친 이력은 Control Center 알람 탭에서 본다. */
+/* ★(v116-ui-close · D4 #21) z-index 99 → 950: 복원 카드(900)보다 **위**. 종전엔 카드가 같은 오른쪽 아래를 덮어
+   그 뒤에 뜬 경보(「Claude Code CLI가 없습니다」·「❌ 에이전트 사망」)가 카드 뒤에 깔려 안 보였다(VM 실물 2회).
+   경보는 어떤 알림 카드에도 가려지면 안 된다. 확인 창(1000)·Control Center(1500)·팔레트(1600)보다는 아래 그대로. */
 #toasts {
   position: fixed; right: 12px; bottom: 12px;
-  display: flex; flex-direction: column; gap: 8px; z-index: 99;
-  max-height: 60vh; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 8px; z-index: 950;
+  /* (v116-ui-close · Fable 2R) 60vh → 40vh: 복원 카드(오른쪽 위)와 세로 높이를 나눠 가진다 — 둘 다 길어져도 만나지
+     않게(카드 max-height 가 이 40vh 를 빼고 잡는다 · 두 값은 짝이다). 넘친 알림은 이 칸 안에서 스크롤된다. */
+  max-height: 40vh; overflow-y: auto; overflow-x: hidden;
   padding: 2px; scrollbar-width: thin;
 }
 .toast {
@@ -758,6 +772,10 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
   color: #8b949e; font-size: 14px; cursor: pointer;
 }
 .toast .toast-x:hover { background: rgba(255,255,255,.10); color: var(--text); }
+/* (D4 #14) 오류 원문 — 접힌 「자세히」 안쪽(진단용 · 본문은 사람 말) */
+.toast .toast-raw { margin-top: 6px; }
+.toast .toast-raw > summary { cursor: pointer; color: #8b949e; font-size: 11px; }
+.toast .toast-raw-text { margin-top: 4px; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, monospace; font-size: 11px; color: #8b949e; }
 .toast.health { border-color: var(--error); }
 .toast.watchdog { border-color: var(--warn); }
 .toast.feed { border-color: var(--accent); }
@@ -1018,9 +1036,16 @@ body.cc-office #cc-view-office { flex: 1; min-height: 0; }
 /* F6: 전출 대상 ws 탭 하이라이트 */
 .ws-tab.transfer-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* 복원 브리핑 카드(A2-2 T8) — 마스터 자리 1곳 · 앱이 다시 켜졌을 때 1회 */
+/* ★(v116-ui-close · D4 #21) 오른쪽 아래(알림 줄 자리) → **오른쪽 위**(상단바 바로 아래). 알림 줄(오른쪽 아래)과 세로로
+   자리를 나눠, 경보가 카드에 가려지지도 · 카드의 유일한 [닫기]가 경보에 깔리지도 않게 한다. 겹칠 만큼 둘 다 길면
+   위 #toasts z-index 가 경보를 위로 올린다(이중 방어).
+   ⛔왼쪽 아래 금지(Fable 적대 2R F1·F3 · 첫 판 9379f5a0 에서 철회): 편성 배치(좌열 master 4 : cso 1)에서 CSO 창 전체와
+   마스터 입력줄을 덮고, 파일 목록이 열려 있으면 그 위에 앉는다. 위쪽은 창들의 옛 출력(스크롤) 자리라 입력줄을 안 가린다. */
 #restore-brief {
-  position: fixed; right: 16px; bottom: 16px; z-index: 900; max-width: min(440px, calc(100vw - 32px));
-  max-height: 70vh; overflow: auto; padding: 14px 16px; border-radius: 8px;
+  position: fixed; top: calc(var(--topbar-h, 38px) + 12px); right: 16px; z-index: 900;
+  max-width: min(440px, calc(100vw - 32px));
+  /* 알림 줄(#toasts max-height 40vh · bottom 12px)과 겹치지 않는 높이까지만 — 넘치면 카드 안에서 스크롤. */
+  max-height: calc(100vh - var(--topbar-h, 38px) - 12px - 40vh - 12px - 12px); overflow: auto; padding: 14px 16px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--canvas-text);
   box-shadow: 0 6px 24px rgba(0, 0, 0, .35); font-size: 13px;
 }

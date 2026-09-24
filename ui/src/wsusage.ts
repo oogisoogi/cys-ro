@@ -9,6 +9,16 @@
 // 두 표면이 다른 문턱을 쓰면 같은 페인이 한쪽에선 stale, 한쪽에선 정상으로 보인다.
 export const USAGE_STALE_SECS = 120;
 
+/**
+ * ★(v116-ui-close · D4 #11) 모델 스코프 주간 게이지(`7d·<모델>`)의 낡음 문턱 — USAGE_STALE_SECS 와 **다른 값이어야 한다**.
+ * 이 게이지의 생산자는 데몬 OAuth 프로브 하나이고 주기가 180초다(src/bin/cysd/accounts.rs OAUTH_PROBE_INTERVAL_SECS).
+ * 120초 문턱을 물려 쓰면 정상 가동 중에도 매 3분마다 약 1분씩 흐려지고 「stale」 툴팁이 떴다(D4 #11 · 나이 150초 → stale).
+ * 240초 = 주기 180 + 여유 60(프로브 1회 시간 상한 10초 · 사이드바 갱신 주기 · 시계 오차). 프로브가 한 번이라도 거르면
+ * (실패 시 주기 2배 = 360초 · accounts.rs 백오프) 그때는 흐려진다 — 「한 번 놓쳤다」를 참으로 알린다.
+ * ⚠주기를 바꾸면 이 값을 함께 바꿔라(두 값은 짝 · wsusage.test 가 180 < 문턱 < 360 을 잰다).
+ */
+export const SCOPED_STALE_SECS = 240;
+
 export interface RateWindowLike {
   label: string;
   used_pct: number;
@@ -94,6 +104,17 @@ const scopeKey = (socket: string, agent: string) => JSON.stringify([socket, agen
 // 신선도 규율(같은 검증 [High]): updated_at을 안 보면 낡은 95%가 최신 10%를 영원히 이긴다.
 // ⇒ **신선한 관측이 하나라도 있으면 신선한 것들 중에서만** 최댓값을 고른다. 전부 낡았을 때만
 // 낡은 값을 쓰고 stale로 표시한다(데이터를 버리지 않되 거짓 최신으로 보이지도 않게).
+/**
+ * (D4 #18) 사용률 값 읽기 — null·빈 값(미관측)은 NaN 이다. `Number(null)` 은 0 이라 그대로 두면 「0% 사용」 게이지로
+ * 그려진다(미관측 ≠ 0%). 지금 데몬은 null 을 내지 않지만(잠복) 한 줄만 어긋나도 「넉넉하다」는 거짓 신호가 된다.
+ */
+export function usedPctOf(v: unknown): number {
+  // (opus NIT) 공백 문자열·불리언도 미관측 — Number(" ")=0 · Number(false)=0 이 0% 로 새지 않게.
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && v.trim() !== "") return Number(v);
+  return NaN;
+}
+
 export function aggregateRates(surfaces: SurfaceLike[], nowSecs: number): RateRow[] {
   // key → { fresh: 후보, stale: 후보 }
   const best = new Map<string, { fresh: RateRow | null; stale: RateRow | null }>();
@@ -104,7 +125,7 @@ export function aggregateRates(surfaces: SurfaceLike[], nowSecs: number): RateRo
     const isStale = age > USAGE_STALE_SECS;
     const agent = u.agent || "?";
     for (const w of u.rate ?? []) {
-      const used = Number(w.used_pct);
+      const used = usedPctOf(w.used_pct);
       if (!Number.isFinite(used)) continue;
       const k = JSON.stringify([scopeKey(s.socket, agent), w.label]);
       const cand: RateRow = {
@@ -203,7 +224,7 @@ export function accountRates(accounts: AccountLike[] | null | undefined, nowSecs
     const age = Math.max(0, Math.round(nowSecs - updatedAt));
     const agent = a.provider || "?";
     for (const w of a.rate ?? []) {
-      const used = Number(w?.used_pct);
+      const used = usedPctOf(w?.used_pct);
       if (!Number.isFinite(used)) continue;
       rows.push({
         // 계정 저장소는 부서 데몬까지 병합한 뷰라 특정 소켓에 속하지 않는다.
@@ -244,7 +265,7 @@ export function scopedRates(accounts: AccountLike[] | null | undefined, nowSecs:
     if (!a) continue;
     for (const g of a.scoped ?? []) {
       if (!g || typeof g.model !== "string" || !g.model) continue; // 이름 없는 게이지는 만들지 않는다
-      const used = Number(g.used_pct);
+      const used = usedPctOf(g.used_pct);
       const updatedAt = Number(g.updated_at);
       if (!Number.isFinite(used)) continue;
       // accountRates와 **같은 규율**: 관측 시각이 없으면 그리지 않는다(나이 0 = 거짓 신선).
@@ -260,7 +281,7 @@ export function scopedRates(accounts: AccountLike[] | null | undefined, nowSecs:
         resetsAt: g.resets_at ?? null,
         ageSecs: age,
         updatedAt,
-        stale: age > USAGE_STALE_SECS,
+        stale: age > SCOPED_STALE_SECS, // (D4 #11) 프로브 주기 180초에 맞춘 문턱 — USAGE_STALE_SECS 아님
         // accountRates와 같은 규율 — 게이지 자기 관측 시각으로 데몬이 판정한 값.
         windowStale: g.stale === true,
         windowStaleReason: g.stale === true ? (g.stale_reason ?? null) : null,
@@ -422,6 +443,25 @@ export function namedCtxRows(named: NamedReporterLike[] | null | undefined, nowS
 }
 
 // 두 원천을 합쳐 한 표로 — 이름 행이 위, 번호 행이 아래.
+/**
+ * (v116-ui-close-r2 · D4 #10) 페인 CTX 표의 줄 배치 — 소켓(본부·부서)이 여럿이면 부서마다 머리줄 1개를 두고
+ * 행 라벨은 번호만 쓴다. 종전엔 행마다 「dept-3:12」를 좁은 라벨 열에 넣어 「dept-」로 잘렸다 — 부서 이름은
+ * 머리줄(패널 전체 폭)에 싣는다. 이름 보고자(master·cso) 행은 소켓 축 밖이라 머리줄을 두지 않는다.
+ */
+export type CtxLine = { kind: "group"; label: string; socket: string } | { kind: "row"; row: CtxRow };
+export function ctxLines(rows: CtxRow[], showSocket: boolean, groupLabel: (socket: string) => string): CtxLine[] {
+  const out: CtxLine[] = [];
+  let last: string | null = null;
+  for (const r of rows) {
+    if (showSocket && !r.name && r.socket !== last) {
+      out.push({ kind: "group", label: groupLabel(r.socket), socket: r.socket });
+      last = r.socket;
+    }
+    out.push({ kind: "row", row: r });
+  }
+  return out;
+}
+
 export function mergeCtxRows(namedRows: CtxRow[], paneRows: CtxRow[]): CtxRow[] {
   return sortCtxRows([...namedRows, ...paneRows]);
 }

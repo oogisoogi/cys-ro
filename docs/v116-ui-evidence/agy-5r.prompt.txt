@@ -1,0 +1,16 @@
+너는 적대적 코드 검토자다(3R). 파일 읽기·도구 사용 없이 이 텍스트만으로 판정하라. 칭찬·요약 금지. 판정 = ACCEPT 또는 BLOCK.
+2R 에서 너는 BLOCK(MINOR: roleTakeoverCopy 가 부서 접두 없이 「N번 창」을 하드코딩)을 냈다. 아래가 그 수리 diff 전문이다. seatName(no, role, dept) = 「<부서> N번 <역할 이름> 창」(role null 이면 역할 이름 생략 · dept 없으면 접두 없음). 2R 지적이 닫혔는지와 이 diff 가 새 결함을 만들었는지만 판정하라.
+
+diff --git a/ui/src/alertcopy.ts b/ui/src/alertcopy.ts
+--- a/ui/src/alertcopy.ts
++++ b/ui/src/alertcopy.ts
+@@ -120,7 +120,8 @@ export function deadmanCopy(no: number | null, p: Record<string, unknown>): Aler
+ 
+ export function roleTakeoverCopy(prevNo: number | null, p: Record<string, unknown>): AlertCopy {
+   const name = typeof p.role === "string" && p.role ? friendlyRole(p.role) : "도우미";
+-  const prev = prevNo != null ? `${prevNo}번 창` : "옛 창";
++  // (agy 4R MINOR 수용) 부서 이벤트면 부서 이름 접두 — 다른 경보와 같은 seatName.
++  const prev = prevNo != null ? seatName(prevNo, null, p.dept) : "옛 창";
+   return {
+     title: `ℹ ${name} 자리가 다른 창으로 옮겨졌습니다`,
+     body: `${prev}이 비어 있어 이 역할을 새 창으로 옮겨 붙였습니다. 옛 창에 전할 말이 남아 있으면 그대로 둡니다.`,

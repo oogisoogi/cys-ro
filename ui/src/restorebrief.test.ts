@@ -5,6 +5,11 @@ import {
   parseBriefSections,
   recordedAt,
   stateCandidates,
+  canonicalStatePath,
+  briefStatePaths,
+  pickBriefText,
+  hasBriefSections,
+  localStamp,
   buildBriefCard,
   friendlyRole,
   plainLine,
@@ -13,6 +18,7 @@ import {
   cycleAdviceLines,
   CYCLE_ADVICE_PCT,
   briefTiming,
+  isMasterSeatSignal,
   isFirstLaunch,
 } from "./restorebrief";
 
@@ -273,5 +279,106 @@ describe("v115r5 T4 — 첫 기동·갱신·기록 없음·기록 늦음 진리�
     expect(snap).toBeLessThan(src.indexOf("layoutLoaded = true;", snap - 2000));
     expect(src.includes("firstLaunch: false };")).toBe(true); // 기본값 = 첫 기동 아님(모름 → 띄운다)
     expect(src.includes('if (briefTiming(briefGate) === "show") void showRestoreBrief();')).toBe(true);
+  });
+});
+
+describe("v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다", () => {
+  it("정본 경로 = <홈>/.cys/pack/round/SESSION_STATE.md (맥·윈 구분자)", () => {
+    expect(canonicalStatePath("/Users/u")).toBe("/Users/u/.cys/pack/round/SESSION_STATE.md");
+    expect(canonicalStatePath("/Users/u/")).toBe("/Users/u/.cys/pack/round/SESSION_STATE.md");
+    expect(canonicalStatePath("C:\\Users\\u")).toBe("C:\\Users\\u\\.cys\\pack\\round\\SESSION_STATE.md");
+  });
+  it("후보 = 정본 먼저 + 종전 cwd _round 사슬 그대로 · 작업 폴더를 몰라도 정본은 본다", () => {
+    expect(briefStatePaths("/Users/u/jarvis", "/Users/u")).toEqual([
+      "/Users/u/.cys/pack/round/SESSION_STATE.md",
+      ...stateCandidates("/Users/u/jarvis", "/Users/u"),
+    ]);
+    expect(briefStatePaths(null, "/Users/u")).toEqual(["/Users/u/.cys/pack/round/SESSION_STATE.md"]);
+  });
+  it("정본만 있으면 정본 · cwd 쪽이 더 늦게 기록됐으면 cwd 쪽 · 같으면 정본 · 없으면 null", () => {
+    const canon = { path: "c", text: "## 완료\n- 정본\n2026-09-23 22:10" };
+    const drainNewer = { path: "d", text: "## 완료\n- 드레인\n2026-09-23 23:05" };
+    const drainOlder = { path: "d", text: "## 완료\n- 드레인\n2026-09-22 08:00" };
+    const drainSame = { path: "d", text: "## 완료\n- 드레인\n2026-09-23 22:10" };
+    expect(pickBriefText([canon])).toBe(canon.text);
+    expect(pickBriefText([canon, drainNewer])).toBe(drainNewer.text);
+    expect(pickBriefText([canon, drainOlder])).toBe(canon.text);
+    expect(pickBriefText([canon, drainSame])).toBe(canon.text);
+    expect(pickBriefText([{ path: "c", text: "## 완료\n- 시각 없음" }, { path: "d", text: "## 완료\n- 시각 없음 2" }])).toBe("## 완료\n- 시각 없음");
+    expect(pickBriefText([])).toBeNull();
+  });
+  // 설치 골격(cysjavis-pack/round/SESSION_STATE.md)의 절 이름 그대로 — 고정 3절 제목이 하나도 없다.
+  const SKELETON = readFileSync(new URL("../../cysjavis-pack/round/SESSION_STATE.md", import.meta.url), "utf-8");
+  it("★정본 설치 골격(3절 제목 없음)은 「기록 없음」 — 빈 문장 카드가 정본 경로로 되돌아오지 않는다(T4 무회귀)", () => {
+    expect(hasBriefSections(SKELETON)).toBe(false);
+    expect(pickBriefText([{ path: "c", text: SKELETON }])).toBeNull();
+    const c = buildBriefCard({ sections: null, recordedAt: null, restoredRoles: ["master"], waitingRoles: [] });
+    expect(JSON.stringify(c).includes("하던 일을 복원")).toBe(false);
+  });
+  it("3절 제목이 있는 파일이 시각과 무관하게 먼저 — 제목 없는 더 새 파일이 기록 있는 파일을 가리지 않는다", () => {
+    const newerNoHeads = { path: "c", text: SKELETON + "\n2026-09-23 23:59" };
+    const olderWithHeads = { path: "d", text: "## 진행 중\n- 드레인 저장분\n2026-09-23 20:00" };
+    expect(pickBriefText([newerNoHeads, olderWithHeads])).toBe(olderWithHeads.text);
+    expect(hasBriefSections("### ✅ 완료\n- a")).toBe(true);
+    expect(hasBriefSections("- 진행 중 작업: (없음)")).toBe(false); // 목록 줄 안의 낱말은 제목이 아니다
+  });
+  it("배선: 카드가 정본 포함 후보 전부를 읽고 pickBriefText 로 고른다(첫 적중에서 멈추지 않는다)", () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
+    const f = src.slice(src.indexOf("async function showRestoreBrief()"));
+    const body = f.slice(0, f.indexOf("const card = buildBriefCard("));
+    expect(body).toContain("const [canonPath, ...chain] = briefStatePaths(master.live_cwd, home);");
+    expect(body).toContain("const text = pickBriefText(found, now);");
+    expect(body).not.toContain("stateCandidates(");
+    // 정본은 늘 읽고, cwd 사슬은 가장 가까운 한 파일에서 멈춘다(opus 디버깅 결함 2)
+    const loop = body.indexOf("for (const p of chain) {");
+    expect(loop).toBeGreaterThan(body.indexOf("const canonText = await readHead(canonPath);"));
+    expect(body.slice(loop, body.indexOf("const now =", loop))).toContain("break;");
+    // 카드에 적는 기록 시각도 지금 이후(예정) 시각을 버린다
+    expect(f).toContain("recordedAt: text === null ? null : recordedAt(text, now),");
+  });
+  it("(opus 디버깅 결함 1) 본문의 「예정」 미래 시각은 기록 시각이 아니다 — 새 기록을 이기지 못하고 카드에도 안 뜬다", () => {
+    const now = "2026-09-24 00:10";
+    const canon = { path: "c", text: "## 완료\n- a\n2026-09-23 23:40 저장\n다음 점검 2026-10-01 09:00 예정" };
+    const drain = { path: "d", text: "## 완료\n- b\n2026-09-23 23:50 저장" };
+    expect(recordedAt(canon.text, now)).toBe("2026-09-23 23:40");
+    expect(pickBriefText([canon, drain], now)).toBe(drain.text);
+    expect(recordedAt("2026-10-01 · 2026-09-20", now)).toBe("2026-09-20"); // 날짜만 있는 경우도
+    expect(recordedAt(canon.text)).toBe("2026-10-01 09:00"); // notAfter 없으면 종전 그대로(다른 호출자 무변경)
+    expect(localStamp(new Date(2026, 8, 4, 7, 5))).toBe("2026-09-04 07:05");
+  });
+  it("첫 기동 행은 그대로 — 정본 기록이 있어도 첫 기동이면 카드 skip(T4 무회귀)", () => {
+    expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: true, firstLaunch: true })).toBe("skip");
+  });
+});
+
+describe("v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다", () => {
+  const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function showRestoreBrief()"), src.indexOf("async function start()"));
+  it("마스터가 서는 두 신호만 다시 부른다(역할 등록 · 역할 실은 창 만들기)", () => {
+    expect(isMasterSeatSignal("role.claimed", { role: "master" })).toBe(true);
+    expect(isMasterSeatSignal("surface.created", { role: "master" })).toBe(true);
+    expect(isMasterSeatSignal("role.claimed", { role: "worker" })).toBe(false);
+    expect(isMasterSeatSignal("surface.created", { role: null })).toBe(false);
+    expect(isMasterSeatSignal("surface.created", {})).toBe(false);
+    expect(isMasterSeatSignal("role.released", { role: "master" })).toBe(false);
+    expect(isMasterSeatSignal("agent.exited", { role: "master" })).toBe(false);
+  });
+  it("「한 번 띄움」 표지는 마스터 자리를 찾은 뒤에 켠다(첫 줄에서 켜지 않는다)", () => {
+    const iMaster = fn.indexOf("if (!master) return;");
+    const iShown = fn.indexOf("restoreBriefShown = true;");
+    expect(iMaster).toBeGreaterThan(0);
+    expect(iShown).toBeGreaterThan(iMaster);
+    expect(fn.split("restoreBriefShown = true;").length - 1).toBe(1);
+  });
+  it("조회 중에 온 부름은 버리지 않는다 — 끝난 뒤 판정 경유로 1회 재조회", () => {
+    expect(fn.includes("restoreBriefAgain = true;")).toBe(true);
+    const fin = fn.slice(fn.lastIndexOf("} finally {"));
+    expect(fin.includes("restoreBriefBusy = false;")).toBe(true);
+    expect(fin.includes("if (again && !restoreBriefShown) maybeShowRestoreBrief();")).toBe(true);
+  });
+  it("데몬 이벤트 배선: 마스터 신호 → maybeShowRestoreBrief(판정·1회는 거기서)", () => {
+    const ev = src.slice(src.indexOf("function onDaemonEvent("));
+    const head = ev.slice(0, ev.indexOf('if (name === "approval.request")'));
+    expect(head.includes("if (isMasterSeatSignal(name, payload) && !factoryResetting && !resetCompleted) maybeShowRestoreBrief();")).toBe(true);
   });
 });

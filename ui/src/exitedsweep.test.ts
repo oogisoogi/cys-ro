@@ -5,7 +5,7 @@
 // (knownIds 밖만 친다)에는 영원히 걸리지 않는다 — 그래서 축을 따로 세운다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { exitedSweepTargets } from "./exitedsweep";
+import { exitedSweepTargets, armSweep, sweepArmedFor, sweepScopeFor, settleSweep, SWEEP_ARM_TTL_MS } from "./exitedsweep";
 import { formationIfRowOnly, type LayoutNode } from "./formation";
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -39,22 +39,102 @@ describe("B17 옛 자리 스윕 판정", () => {
   });
 });
 
+// ── D4 #17(TICKET=v116-ui-close): 조회가 건너뛰어지거나 실패한 소켓은 다음 틱이 다시 쓴다 ─────────
+//   종전 계약은 「한 패스 뒤 finally 에서 무조건 내린다」였고, 그 때문에 조회 실패 소켓의 [exited] 옛 창이
+//   다음 복원까지 남았다(헤드리스 재현). 새 계약 = 「청소 줄까지 도달한 소켓만 무장에서 뺀다 · 5분 상한」.
+describe("D4 #17 소켓별 무장 — 진리표", () => {
+  const T0 = 1_000_000;
+  const rows = [
+    { surface_id: 1, exited: false },
+    { surface_id: 7, exited: true }, // 이벤트를 놓친 옛 자리
+  ];
+
+  it("무장 = 그때 화면의 소켓 전부 · 소켓이 없으면 무장 없음", () => {
+    const arm = armSweep([["", [1]], ["/d/a.sock", [7]]], T0);
+    expect(sweepArmedFor(arm, "", T0)).toBe(true);
+    expect(sweepArmedFor(arm, "/d/a.sock", T0)).toBe(true);
+    expect(sweepArmedFor(arm, "/d/other.sock", T0)).toBe(false); // 무장 뒤 생긴 소켓은 대상 밖
+    expect(armSweep([], T0)).toBeNull();
+    // 같은 소켓 탭이 여럿이면 창 번호를 합친다
+    expect([...(sweepScopeFor(armSweep([["", [1]], ["", [2]]], T0), "", T0) ?? [])].sort()).toEqual([1, 2]);
+    expect(sweepArmedFor(null, "", T0)).toBe(false);
+  });
+
+  it("패스 1 에서 부서 소켓 조회 실패 → 그 소켓은 무장이 남고, 패스 2 에서 쓸린다(잔재 0)", () => {
+    let arm = armSweep([["", [1]], ["/d/a.sock", [1, 7]]], T0);
+    // 패스 1: 본부("")만 청소 줄 도달 · 부서는 시간초과(청소 줄 미도달)
+    arm = settleSweep(arm, [""], T0 + 3_000);
+    expect(sweepArmedFor(arm, "", T0 + 6_000)).toBe(false); // 본부는 다시 쓸지 않는다(1회)
+    expect(sweepArmedFor(arm, "/d/a.sock", T0 + 6_000)).toBe(true); // 부서는 아직 무장
+    // 패스 2: 부서 조회 성공 → 옛 자리를 친다
+    expect(exitedSweepTargets(sweepArmedFor(arm, "/d/a.sock", T0 + 6_000), [1, 7], rows)).toEqual([7]);
+    arm = settleSweep(arm, ["/d/a.sock"], T0 + 6_000);
+    expect(arm).toBeNull(); // 전부 쓸렸다 = 무장 해제(평시 창을 쓸지 않는다)
+  });
+
+  it("아무 소켓도 청소 줄에 못 닿은 패스(전부 실패·건너뜀) → 무장이 그대로 남는다", () => {
+    const arm = armSweep([["", [1]], ["/d/a.sock", [7]]], T0);
+    const after = settleSweep(arm, [], T0 + 3_000);
+    expect(sweepArmedFor(after, "", T0 + 3_000)).toBe(true);
+    expect(sweepArmedFor(after, "/d/a.sock", T0 + 3_000)).toBe(true);
+  });
+
+  it("상한(5분)을 넘기면 무장이 사라진다 — 응답 없는 소켓 때문에 영구 무장 0", () => {
+    const arm = armSweep([["/d/dead.sock", [7]]], T0);
+    expect(sweepArmedFor(arm, "/d/dead.sock", T0 + SWEEP_ARM_TTL_MS)).toBe(true); // 경계 = 아직 유효
+    expect(sweepArmedFor(arm, "/d/dead.sock", T0 + SWEEP_ARM_TTL_MS + 1)).toBe(false);
+    expect(settleSweep(arm, [], T0 + SWEEP_ARM_TTL_MS + 1)).toBeNull();
+  });
+
+  it("(Fable MINOR-5) 복원 뒤 새로 끝난 창은 옛 자리가 아니다 — 무장 시점 스냅숏 밖은 치지 않는다", () => {
+    const arm = armSweep([["", [1, 7]]], T0); // 복원 완료 순간 화면 = 1(새 좌석) · 7(옛 자리)
+    const scope = sweepScopeFor(arm, "", T0 + 60_000)!;
+    const tree = [1, 7, 12]; // 12 = 복원 뒤 생긴 창
+    const rowsNow = [{ surface_id: 1, exited: false }, { surface_id: 7, exited: true }, { surface_id: 12, exited: true }];
+    expect(exitedSweepTargets(true, tree.filter((sid) => scope.has(sid)), rowsNow)).toEqual([7]);
+  });
+
+  it("무장이 길어져도 산 창은 치지 않는다 — 술어는 exited=true 만(4군 ④)", () => {
+    const arm = armSweep([["", [1, 2]]], T0);
+    const live = [{ surface_id: 1, exited: false }, { surface_id: 2 }];
+    expect(exitedSweepTargets(sweepArmedFor(arm, "", T0 + 60_000), [1, 2], live)).toEqual([]);
+  });
+});
+
 describe("B17 배선", () => {
-  it("복원 완료(done)에서 무장하고, 한 패스 뒤 finally 에서 내린다", () => {
+  it("복원 완료(done)에서 무장한다 — 그때 화면의 소켓 전부", () => {
     const done = main.indexOf('} else if (p.phase === "done") {');
     expect(done).toBeGreaterThan(-1);
     const block = main.slice(done, main.indexOf('} else if (p.phase === "error")', done));
-    expect(block).toContain("exitedSweepArmed = true;");
+    expect(/exitedSweepArm = armSweep\(\s*workspaces\.map\(\(w\) => \[w\.socket \?\? "", collectSids\(w\.tree\)\] as const\),/.test(block)).toBe(true);
     expect(block).toContain("void refreshPaneTitles();");
-    // 무장 해제가 finally 에 있어야 예외 경로에서도 「1회」가 성립한다.
+  });
+
+  it("무장 정리는 finally 에서 — 청소 줄에 닿은 소켓만 뺀다(무조건 해제 금지 · D4 #17)", () => {
     const body = main.slice(main.indexOf("async function refreshPaneTitles() {"));
     const fin = body.indexOf("} finally {");
     expect(fin).toBeGreaterThan(-1);
-    expect(body.slice(fin, fin + 600)).toContain("if (sweepArmed) exitedSweepArmed = false;");
+    const finBlock = body.slice(fin, fin + 900);
+    expect(finBlock).toContain("exitedSweepArm = settleSweep(sweepArm, sweptSockets, Date.now())");
+    expect(finBlock).not.toContain("exitedSweepArm = null");
+    // 「쓸렸다」 표시는 소켓 조회가 **성공한 경로 안**(try · 스윕 루프 뒤)에만 있다 — catch·건너뜀 경로엔 없다.
+    const sweep = body.indexOf("exitedSweepTargets(sweepHere, sweepSids, r.surfaces)");
+    const mark = body.indexOf('if (sweepHere) sweptSockets.push(sk ?? "")');
+    const sockCatch = body.indexOf("★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다");
+    expect(sweep).toBeGreaterThan(-1);
+    expect(mark).toBeGreaterThan(sweep);
+    expect(mark).toBeLessThan(sockCatch);
+    expect(body.split("sweptSockets.push").length - 1).toBe(1);
+  });
+
+  it("(opus 뮤턴트 X5·X7) 청소 범위는 **그 소켓의** 키로 묻고, 패스 도중 새로 무장됐으면 새 무장을 건드리지 않는다", () => {
+    const body = main.slice(main.indexOf("async function refreshPaneTitles() {"));
+    expect(body).toContain('const sweepScope = sweepScopeFor(sweepArm, sk ?? "", Date.now());');
+    expect(body).toContain("if (sweepArm && exitedSweepArm === sweepArm) exitedSweepArm = settleSweep(");
   });
 
   it("스윕은 유령 수렴과 **다른 함수**로 판정한다(두 축을 뭉치지 않는다)", () => {
-    expect(main).toContain("exitedSweepTargets(sweepArmed, sockSids, r.surfaces)");
+    expect(main).toContain("exitedSweepTargets(sweepHere, sweepSids, r.surfaces)");
     expect(main).toContain("advanceGhostStrikes(ghostStrike,");
   });
 });
@@ -106,7 +186,9 @@ describe("B16 결선 — 닫기가 먼저, 배치가 나중", () => {
 
   it("배선이 그 순서다 — 스윕 루프가 배치 블록보다 앞에 있고, roleBySid 는 exited 를 뺀다", () => {
     const body = main.slice(main.indexOf("async function refreshPaneTitles() {"));
-    const sweep = body.indexOf("exitedSweepTargets(sweepArmed");
+    const sweep = body.indexOf("exitedSweepTargets(sweepHere");
+    // 스냅숏 밖 창은 대상에서 뺀 목록(sweepSids)으로만 친다
+    expect(body).toContain("const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];");
     const place = body.indexOf("formationIfRowOnly(ws.tree, roleBySid)");
     expect(sweep).toBeGreaterThan(-1);
     expect(place).toBeGreaterThan(-1);

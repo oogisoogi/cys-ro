@@ -23,8 +23,10 @@ import {
   restoringRetryKeys,
 } from "./drainverify";
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
-import { appVersionLabel, appVersionTitle, daemonInfoLabel, holdReasonText } from "./headerlabels";
-import { exitedSweepTargets } from "./exitedsweep";
+import { appVersionLabel, appVersionTitle, daemonInfoLabel, daemonInfoTitle, holdReasonText } from "./headerlabels";
+import { exitedSweepTargets, armSweep, sweepScopeFor, settleSweep, type SweepArm } from "./exitedsweep";
+import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
+import { hqWorkspaceId, wsDisplayName, renamedName } from "./wsname";
 import {
   deptPlaceholderLabel,
   deptSlugOfSocket,
@@ -81,12 +83,14 @@ import {
   namedCtxRows,
   oldestFootText,
   paneCtxRows,
+  ctxLines,
   renderSignature,
   scopedRates,
   sevClassFor,
   shortSocketTag,
   sourceGrade,
   USAGE_STALE_SECS,
+  usedPctOf,
   windowStaleText,
   type AccountLike,
   type NamedReporterLike,
@@ -156,7 +160,9 @@ import {
   formatAlarmTime,
   type AlarmRecord,
 } from "./toastttl";
-import { parseBriefSections, recordedAt, stateCandidates, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { paneTitleText, renameCommitTitle, ruleTitleOf } from "./panetitle";
+import { seatNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
+import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 
@@ -324,7 +330,9 @@ function renderUsage(el: HTMLElement, u: ObservedUsage | null | undefined) {
   const parts: { text: string; cls: string }[] = [];
   if (u.ctx_pct !== null && u.ctx_pct !== undefined)
     parts.push({ text: `CTX ${u.ctx_pct}%`, cls: sevClass(u.ctx_pct, 60, 80) });
-  for (const w of u.rate ?? [])
+  // (D4 #18 나머지 절반) used_pct null(미관측)은 0% 로 그리지 않는다 — 사이드바(wsusage.ts)와 같은 usedPctOf.
+  const rates = (u.rate ?? []).filter((w) => Number.isFinite(usedPctOf(w.used_pct)));
+  for (const w of rates)
     parts.push({ text: `${w.label} ${Math.round(w.used_pct)}%`, cls: sevClass(w.used_pct, 70, 90) });
   if (!parts.length) {
     el.title = "";
@@ -339,7 +347,7 @@ function renderUsage(el: HTMLElement, u: ObservedUsage | null | undefined) {
   const tip: string[] = [`${u.agent} 사용량 (관측: ${u.source})`];
   if (u.ctx_tokens != null && u.ctx_window != null)
     tip.push(`context ${u.ctx_tokens.toLocaleString()} / ${u.ctx_window.toLocaleString()} tokens`);
-  for (const w of u.rate ?? []) {
+  for (const w of rates) {
     const reset = w.resets_at ? ` — reset ${new Date(w.resets_at * 1000).toLocaleString()}` : "";
     tip.push(`rate ${w.label}: ${w.used_pct}%${reset}`);
   }
@@ -572,7 +580,17 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
     head.className = "wsu-head";
     head.textContent = "페인 CTX";
     frag.appendChild(head);
-    for (const c of ctxRows) {
+    for (const line of ctxLines(ctxRows, showSocket, ctxGroupLabel)) {
+      if (line.kind === "group") {
+        // (D4 #10) 부서 머리줄 — 부서 이름 전체(패널 폭). 행 라벨 열에는 번호만.
+        const gh = document.createElement("div");
+        gh.className = "wsu-ctx-group";
+        gh.textContent = line.label;
+        gh.title = line.socket || "본부";
+        frag.appendChild(gh);
+        continue;
+      }
+      const c = line.row;
       const row = document.createElement("div");
       row.className = `wsu-ctx${c.stale ? " stale" : ""}${c.ctxPct == null ? " unobserved" : ""}`;
       const sid = document.createElement("span");
@@ -580,7 +598,7 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
       const tag = showSocket ? shortSocketTag(c.socket) : "";
       // ★이름 있는 보고자는 번호 대신 이름(오너 지시: 「master」·「cso」).
       //   이들에겐 surface_id가 없으므로 번호를 적으면 화면의 어떤 페인과도 대조되지 않는다.
-      sid.textContent = c.name ? c.name : tag ? `${tag}:${c.surfaceId}` : String(c.surfaceId);
+      sid.textContent = c.name ? c.name : String(c.surfaceId); // (D4 #10) 부서 이름은 머리줄로 — 「dept-3:12」 잘림 제거
       const track = document.createElement("span");
       track.className = "cc-tbar-track";
       if (c.ctxPct != null) {
@@ -716,6 +734,7 @@ function ccAggRate(fleet: any[]): Record<string, { used: number; reset: number |
   const agg: Record<string, { used: number; reset: number | null }> = {};
   for (const f of fleet) {
     for (const w of f.usage?.rate ?? []) {
+      if (!Number.isFinite(usedPctOf(w.used_pct))) continue; // (D4 #18) 미관측 창은 0% 후보가 아니다
       const cur = agg[w.label] ?? { used: 0, reset: null };
       if (w.used_pct > cur.used) cur.used = w.used_pct;
       if (w.resets_at != null && (cur.reset == null || w.resets_at < cur.reset)) cur.reset = w.resets_at;
@@ -753,7 +772,7 @@ function ccAcctMax(label: string): { used: number; reset: number | null; acct: s
   for (const a of ccAccounts) {
     for (const r of a.rate ?? []) {
       if (r.label !== label) continue;
-      const used = Number(r.used_pct);
+      const used = usedPctOf(r.used_pct); // (D4 #18) Number(null)=0 이 「최고 사용 계정 0%」 후보가 되던 것
       if (!Number.isFinite(used)) continue;
       if (r.stale === true) continue; // 데몬이 죽었다고 판정한 창은 KPI 「최고 사용 계정」 후보가 아니다
       if (!best || used > best.used)
@@ -780,6 +799,8 @@ function renderAccounts() {
       // ★데몬이 죽었다고 판정한 창(stale:true)은 채움·숫자를 그리지 않고 「—」+사유(회색) — 사이드바와 같은 규율.
       // r = 창 1개(없으면 undefined) · observedAt = 그 창의 관측 시각(stale 사유 문구용).
       const gauge = (lab: string, r: any, observedAt: number) => {
+        // (D4 #18) 미관측 = 창 없음(「—」) · 0% 게이지 아님. (opus 결함 5) 데몬이 죽었다고 판정한 창은 그대로 둔다 — 사유 표시가 우선.
+        if (r && r.stale !== true && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined;
         const dead = !!r && r.stale === true;
         const used = r ? Math.round(Number(r.used_pct)) : 0;
         const reset = dead
@@ -1484,7 +1505,7 @@ async function runSkillButton(s: any) {
     setCcOpen(false);
     toast("system", "skill.launched", `${s.label ?? s.name} — 일회용 워커 pane이 열렸습니다`);
   } catch (e) {
-    toast("watchdog", "skill.failed", `${s.label ?? s.name} 실행 실패: ${e}`);
+    toast("watchdog", "스킬 실행 실패", `「${s.label ?? s.name}」 스킬을 실행하지 못했습니다. 잠시 뒤 다시 시도해 주세요.`, undefined, String(e));
   }
 }
 
@@ -2220,6 +2241,12 @@ let groups: GroupMeta[] = []; // 06: 그룹 메타 배열(진실원=localStorage
 let groupCounter = 1; // 06: 그룹 id 발급(ws의 wsCounter와 분리)
 let focusedSid: number | null = null;
 const panes = new Map<string, PaneRuntime>(); // 키 = paneKey(sid, socket)
+// ★(v116-ui-close · 닫기 보호) 셸이 끝났다고 **데몬이 확정한** 창(키 = paneKey). 재료 = 데몬 목록의 exited
+// **하나뿐**이고, 목록이 올 때마다 그 말을 거울처럼 따른다(exited=true 면 넣고 아니면 뺀다 · 런타임 파괴 때 뺀다).
+// ⚠pane 스트림 종료 이벤트(exited_event)는 재료가 아니다 — src-tauri 는 연결 실패·EOF(데몬 재시작 포함)에도
+//   그 이벤트를 쏜다(main.rs start_surface_stream). 그걸 믿으면 데몬 재시작 뒤 **산 창을 묻지 않고** 닫는다.
+// 여기 없는 창 = 「산 창 또는 모름」 → 닫기 전에 묻는다(closeguard.ts). 종료 직후 ~3초(다음 목록)는 묻는 쪽으로 틀린다.
+const exitedPaneKeys = new Set<string>();
 // 부서 데몬 socket_slug(F3 백엔드 단일진실) → socket 경로. launch_dept_daemon 반환·daemon-event로 채운다.
 const socketForSlug = new Map<string, string>();
 // 사이드바 노드 신호 캐시(B3) — org.status 응답을 워크스페이스 행 집계용으로 보관.
@@ -2260,7 +2287,7 @@ const deptPendingRows = (): DeptPending[] => {
     const ws =
       workspaces.find((w) => !w.pending && (w.socket ?? DEFAULT_SOCKET_KEY) === sock) ??
       workspaces.find((w) => (w.socket ?? DEFAULT_SOCKET_KEY) === sock);
-    rows.push({ socket: sock, label: ws?.name ?? deptSlugOfSocket(sock), count: cnt });
+    rows.push({ socket: sock, label: ws ? wsLabel(ws) : deptSlugOfSocket(sock), count: cnt }); // (D4 #4) 표시 이름
   }
   return rows.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
 };
@@ -2392,10 +2419,7 @@ const imageExtFromMime = (mime: string): string => {
   return "png"; // image/png 및 기타
 };
 
-// surface도 번호 대신 이름 — 기본 자동 제목("surface N"·빈 문자열)이면 현재 디렉토리 경로 표시.
-const isAutoTitle = (t: string | null | undefined) => !t || /^surface \d+$/.test(t);
-const paneTitle = (title: string | null | undefined, liveCwd?: string | null) =>
-  isAutoTitle(title) ? liveCwd || "…" : (title as string);
+// surface 제목 — 기본 자동 제목("surface N"·빈 문자열)이면 「번호 · 폴더 이름」(판정 = panetitle.ts · D4 #12).
 
 // pane 헤더 역할 점 — CC 깜박이 점(cc-blink)을 역할색으로 제목 앞에 표시(무역할 셸·종료 pane은 숨김).
 // 작동 여부는 nodeSig(org.status 폴링 10s + status.changed 이벤트 즉시 갱신)에서 읽는다 —
@@ -2435,9 +2459,11 @@ function notePlaceholderTouched(sid: number): void {
 // 치우되, **단발 응답으로는 치우지 않는다** — 데몬이 한 틱만 부분/빈 목록을 돌려줘도 트리가 통째로
 // 증발하면 '터미널에 글자가 하나도 안 보이는' 최악이 된다. 2회 연속 같은 판정일 때만 집행한다.
 let ghostStrike = new Map<string, number>();
-// ★B17: 복원 완료(restore-progress done) 직후 **한 번만** 켜지는 스윕 무장. 켜진 채로 두면
-// 사용자가 직접 끝낸 세션의 마지막 화면까지 쓸어 가므로 한 패스 뒤 스스로 내린다.
-let exitedSweepArmed = false;
+// ★B17: 복원 완료(restore-progress done) 직후 켜지는 스윕 무장. 켜진 채로 두면
+// 사용자가 직접 끝낸 세션의 마지막 화면까지 쓸어 가므로 쓸고 나면 스스로 내린다.
+// ★(v116-ui-close · D4 #17) 무장 = 「아직 쓸리지 않은 소켓 키 집합」 — 조회가 건너뛰어지거나 실패한 소켓은
+//   다음 틱이 다시 쓴다(판정·상한 = exitedsweep.ts armSweep/sweepArmedFor/settleSweep).
+let exitedSweepArm: SweepArm = null;
 // ★A1-3 M7①: 이번 세션에 '본 적 있는' 부서 소켓. 시작 대조가 레지스트리를 읽으면 그때 심고,
 // 못 읽었으면 null 로 두어 첫 틱이 심는다(newlyRegisteredDepts 설명). 한 번 본 부서는 탭을 닫아도
 // 틱이 되살리지 않는다 — 닫은 탭이 3초마다 돌아오는 자가치유 과잉을 막는 것이 이 집합의 일이다.
@@ -2468,7 +2494,8 @@ function releaseFlightWhenSettled(key: string, p: Promise<unknown>): void {
 }
 async function refreshPaneTitles() {
   // 이 패스 동안의 무장 상태를 **한 번** 읽는다(패스 중간에 켜지면 다음 패스가 친다 — 반쪽 스윕 금지).
-  const sweepArmed = exitedSweepArmed;
+  const sweepArm = exitedSweepArm;
+  const sweptSockets: string[] = []; // 이번 패스에서 청소 줄까지 도달한 소켓(= 무장에서 뺄 것)
   if (!started || refreshing) return; // 겹친 호출의 이중 입양 방지
   refreshing = true;
   let layoutChanged = false; // 이번 틱에서 워크스페이스/트리를 고쳤는가(render 필요 판정)
@@ -2549,7 +2576,11 @@ async function refreshPaneTitles() {
       // ★B17 — 복원 직후 1회: 데몬이 **종료됨으로 알고 있는** 옛 자리를 닫는다(유령 수렴과 다른 축).
       //   닫은 ws 는 아래 배치 블록의 대상에 넣는다 — **닫기가 먼저, 배치가 나중**이어야 한다
       //   (B16 계약 · panetitle HANDOFF §3: 닫힌 sid 가 roleBySid 에 섞이면 그 좌석이 열을 하나 차지한다).
-      for (const sid of exitedSweepTargets(sweepArmed, sockSids, r.surfaces)) {
+      // 무장 시점 스냅숏 안의 창만 옛 자리다(복원 뒤 새로 끝난 창은 대상 밖 — exitedsweep.ts SweepArm 설명).
+      const sweepScope = sweepScopeFor(sweepArm, sk ?? "", Date.now());
+      const sweepHere = sweepScope !== null;
+      const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];
+      for (const sid of exitedSweepTargets(sweepHere, sweepSids, r.surfaces)) {
         for (const w of workspaces) {
           if ((w.socket ?? undefined) === (sk ?? undefined) && w.tree != null && collectSids(w.tree).includes(sid))
             relayoutWs.add(w);
@@ -2557,14 +2588,24 @@ async function refreshPaneTitles() {
         detachPane(sid, sk);
         layoutChanged = true;
       }
+      if (sweepHere) sweptSockets.push(sk ?? ""); // 이 소켓은 이번에 쓸렸다 — 실패·건너뜀 소켓은 여기 안 온다
       for (const s of r.surfaces) {
         const rt = panes.get(paneKey(s.surface_id, sk));
         if (!rt) continue;
+        // 닫기 보호 판정 재료 — 화면에 있는 창만(누적 0). (Fable MINOR-4) 데몬의 지금 말을 거울처럼 따른다 —
+        //   「참으로만 바뀐다·번호 비재사용」 가정에 기대지 않는다(기록 저장소가 지워진 채 데몬만 재시작되면 번호가 되돌 수 있다).
+        if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk));
+        else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
         setRoleDot(rt.roleEl, s.exited ? null : s.role, !s.exited && surfaceWorking(s.surface_id, sk)); // 역할 점 + 작동중일 때만 깜빡, 동일 주기 갱신
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
         if (rt.titleEl.isContentEditable) continue; // 이름 편집 중에는 덮어쓰지 않음
-        rt.titleEl.textContent = paneTitle(s.title, s.live_cwd) + (s.exited ? " [exited]" : "");
+        // (v116-ui-close · D4 #13) 끝난 창 표시 = 「(끝남)」 — 종전 영어 「[exited]」. (r2 · D4 #12) 앞머리 · 전체 경로는 툴팁.
+        rt.titleEl.textContent = paneTitleText(s.surface_id, s.title, s.live_cwd, !!s.exited);
+        rt.titleEl.title = s.live_cwd ?? "";
+        // 이름 변경에서 빈 이름 확정 시 되돌릴 규칙 제목 — 역할 창의 「번호 · 특성」을 볼 때마다 기억(사람 이름으로 바뀌어도 유지).
+        const rule = ruleTitleOf(s.surface_id, s.role, s.title);
+        if (rule) rt.titleEl.dataset.ruleTitle = rule;
       }
       // 자동 입양: 그 소켓의 role surface 중 UI에 없는 것 → '같은 소켓을 가진 ws'에만 표출.
       // ★소켓 일치 가드 — 부서A 노드가 부서B 탭에 잘못 입양되는 격리 누수 차단(검증 mustFix).
@@ -2622,6 +2663,16 @@ async function refreshPaneTitles() {
         }
       }
       const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
+      // (D4 #4) 기본 소켓이면 「본부」 판정 재료를 갱신 — 판정이 바뀌면 탭만 다시 그린다(창 배치는 무접촉).
+      if ((sk ?? undefined) === undefined) {
+        // (Fable 2R) 마스터 좌석이 잠깐 끝났을(exited) 때 빈 집합으로 덮으면 「본부」가 첫째 탭으로 튀었다 돌아온다 —
+        //   마지막으로 본 마스터 좌석을 유지하고, 새로 보일 때만 바꾼다.
+        if (masterSids.size) {
+          const before = hqMasterSids ? [...hqMasterSids].sort().join(",") : null;
+          hqMasterSids = masterSids;
+          if ([...masterSids].sort().join(",") !== before) renderWsTabs();
+        }
+      }
       // ★B16(오너 확정 2026-09-19 16:1x) — 본부 역할이 **cys 좌석으로 있는 기기**에서는 역할 배치를 쓴다:
       //   좌열 master(위):cso(아래)=4:1 · 우열 worker. 참가자 기기(cysr)가 그 경우다.
       //   전제가 없는 기기(우리 개발 기기 — master·cso 는 cmux 페인)는 종전 adoptLayout 그대로다(무회귀).
@@ -2655,9 +2706,11 @@ async function refreshPaneTitles() {
     /* 데몬 일시 미응답은 다음 틱에 */
   } finally {
     refreshing = false;
-    // ★B17 무장 해제는 **finally** 다 — 중간에 예외가 나도 무장이 남아 다음 틱에 또 쓸지 않는다
-    //   (「1회」라고 적어 놓고 실제로는 예외 때마다 반복되는 것이 이런 플래그의 전형적 사고다).
-    if (sweepArmed) exitedSweepArmed = false;
+    // ★B17 무장 정리는 **finally** 다 — 중간에 예외가 나도 쓸린 소켓은 빠지고, 안 쓸린 소켓만 남는다.
+    //   (v116-ui-close · D4 #17) 종전엔 여기서 무조건 내려, 조회가 실패한 부서의 옛 창이 다음 복원까지 남았다.
+    //   ⚠패스 도중 새로 무장됐으면(exitedSweepArm !== sweepArm) 새 무장은 건드리지 않는다 — 그 복원분은
+    //   이 패스가 쓴 목록보다 뒤의 일이다.
+    if (sweepArm && exitedSweepArm === sweepArm) exitedSweepArm = settleSweep(sweepArm, sweptSockets, Date.now());
     // ★렌더는 finally에 둔다 — 위쪽 어디서 예외가 나도 패널은 매 틱 다시 그려진다.
     //   초판은 예외 시 렌더 자체를 건너뛰어 now가 재계산되지 않았고, 그래서 낡은 행이
     //   영원히 「fresh 모양」으로 굳었다(codex [High]). 나이는 그릴 때 다시 계산된다.
@@ -2743,7 +2796,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   roleEl.style.display = "none";
   const titleEl = document.createElement("span");
   titleEl.className = "pane-title-text";
-  titleEl.textContent = paneTitle(title);
+  titleEl.textContent = paneTitleText(sid, title, null, false);
   const usageEl = document.createElement("span");
   usageEl.className = "pane-usage";
   // 배지 위 mousedown이 pane 드래그로 번지지 않게 — tooltip(hover) 확인 중 오발 방지
@@ -2781,6 +2834,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
       {
         label: "이름 변경",
         action: () => {
+          const shownBefore = titleEl.textContent || ""; // 편집 전 보이던 제목 — 바뀐 것이 없으면 보내지 않는다
           titleEl.contentEditable = "true";
           titleEl.focus();
           window.getSelection()?.selectAllChildren(titleEl);
@@ -2793,8 +2847,12 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
           const commit = () => {
             titleEl.removeEventListener("keydown", onKey); // rename마다 리스너 누적 방지
             titleEl.contentEditable = "false";
-            const name = (titleEl.textContent || "").trim();
-            // 빈 이름 = 자동 제목(경로)으로 복귀 — 데몬에 ""를 저장하면 isAutoTitle이 잡는다
+            // 빈 이름 = 기본으로 복귀 — 역할 창은 「번호 · 특성」, 역할 없는 창은 ""(자동 제목) (D4 #12 · panetitle.ts)
+            const name = renameCommitTitle(titleEl.textContent || "", shownBefore, titleEl.dataset.ruleTitle ?? null);
+            if (name === null) {
+              void refreshPaneTitles(); // 바뀐 것 없음 — 데몬에 쓰지 않고 표시만 되돌린다
+              return;
+            }
             invoke("rename_surface", { socket, surfaceId: sid, title: name })
               .catch(() => {})
               .then(() => refreshPaneTitles());
@@ -2858,7 +2916,8 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
       requestAnimationFrame(() => {
         follow = nextFollow(follow, dy, atBottom(), false);
         // B1 ②: 맨 위에 닿으면 접힌 출력 안내 1회(앱 세션당)
-        if (shouldShowFoldHint(foldHintShown, dy, term.buffer.active.viewportY)) {
+        const ab = term.buffer.active;
+        if (shouldShowFoldHint(foldHintShown, dy, ab.viewportY, ab.baseY, ab.type)) {
           foldHintShown = true;
           toast("feed", FOLD_HINT_TITLE, FOLD_HINT_BODY);
         }
@@ -3070,7 +3129,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
           const isWin = /Windows/i.test(navigator.userAgent);
           term.paste(shellQuote(path as string, isWin) + " ");
         })
-        .catch((err) => toast("health", "이미지 붙여넣기 실패", String(err)));
+        .catch((err) => toast("health", "이미지 붙여넣기 실패", "이미지를 붙이지 못했습니다. 다시 붙여 넣어 주세요.", undefined, String(err)));
     },
     true,
   );
@@ -3404,6 +3463,7 @@ function destroyPaneRuntime(sid: number, socket?: string) {
   rt.term.dispose();
   rt.el.remove();
   panes.delete(paneKey(sid, socket));
+  exitedPaneKeys.delete(paneKey(sid, socket));
 }
 
 // ---------- pane drag 이동 (탭을 끌어 자유 배치) ----------
@@ -3518,7 +3578,7 @@ async function transferPaneToWs(sid: number, destWsId: number) {
   if (focusedSid === sid) focusedSid = collectSids(srcWs.tree)[0] ?? null;
   render();
   if (focusedSid != null) setFocus(focusedSid);
-  toast("feed", "pane 전출 완료", `→ ${destWs.name || UNTITLED}`);
+  toast("feed", "pane 전출 완료", `→ ${wsLabel(destWs)}`);
 }
 
 // F6-2: 크로스 부서 전출 — 라이브 프로세스는 데몬 간 이주가 물리적으로 불가하므로,
@@ -3658,16 +3718,16 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
       destroyPaneRuntime(newSid, destWs.socket);
       if (destWs.tree) destWs.tree = replaceNode(destWs.tree, newSid, () => null);
       render();
-      toast("watchdog", "전출 실패", `${e} — 원본 pane은 보존되고 새 pane은 회수했습니다`);
+      toast("watchdog", "전출 실패", "옮기지 못했습니다. 원래 창은 그대로 있고, 새로 만들던 창은 거두었습니다.", undefined, String(e));
       return;
     }
     destroyPaneRuntime(sid, srcSock);
     if (srcWs.tree) srcWs.tree = replaceNode(srcWs.tree, sid, () => null);
     if (focusedSid === sid) focusedSid = collectSids(current()?.tree ?? null)[0] ?? null;
     render();
-    toast("feed", "부서 전출 완료", `→ ${destWs.name || UNTITLED} (surface:${newSid})`);
+    toast("feed", "부서 전출 완료", `→ ${wsLabel(destWs)} (surface:${newSid})`);
   } catch (e) {
-    toast("watchdog", "전출 실패", `${e} — 원본 pane은 보존됩니다`);
+    toast("watchdog", "전출 실패", "옮기지 못했습니다. 원래 창은 그대로 있습니다.", undefined, String(e));
   } finally {
     dismissToast("transfer");
   }
@@ -3725,7 +3785,16 @@ function render() {
   root.innerHTML = "";
   const ws = current();
   const tree = ws?.tree;
-  if (tree) root.appendChild(renderNode(tree));
+  if (tree) {
+    const top = renderNode(tree);
+    // ★(v116-ui-close · X-1) 루트 직계는 스타일시트(#root > * {flex:1})가 폭을 정한다. 그런데 pane 요소는
+    //   런타임과 함께 **재사용**되고, split 안에 있던 때 renderNode 가 박은 인라인 flex("0.5 1 0%")가 남아
+    //   있으면 인라인이 스타일시트를 이긴다 → 창이 1개로 줄어도 flex-grow 0.5 = 폭 절반 · fitPane 이 그 절반을
+    //   재서 PTY 도 절반 열로 맞춘다(VM 65열 · 헤드리스 66열 실측). split 안의 요소는 renderNode 가 매번 다시
+    //   박으므로 지울 곳은 여기 한 곳이다.
+    top.style.flex = "";
+    root.appendChild(top);
+  }
   else if (ws?.pending) root.appendChild(renderDeptPending()); // WP-10: 부서 준비 중 빈 pane 스피너·안내
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
   renderWsTabs();
@@ -3803,7 +3872,7 @@ function renderIdleWorkspace(ws: Workspace): HTMLElement {
     } catch (e) {
       btn.disabled = false;
       btn.textContent = "다시 시도";
-      toast("watchdog", isDept ? "부서를 켜지 못했습니다" : "셸을 열지 못했습니다", String(e));
+      toast("watchdog", isDept ? "부서를 켜지 못했습니다" : "새 창을 열지 못했습니다", isDept ? "부서를 켜는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요." : "새 창을 여는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
     }
   });
   box.append(msg, btn);
@@ -4129,6 +4198,10 @@ const WS_COLORS = ["#2f81f7", "#3fb950", "#d29922", "#f85149", "#a371f7", "#db61
 
 function renderWsTabs() {
   const bar = document.getElementById("ws-tabs")!;
+  // (v116-ui-close · Fable 적대 2R) 탭 이름을 고치는 중이면 다시 그리지 않는다 — innerHTML 을 비우면 편집 중인
+  //   글자가 확정(blur) 없이 사라진다. 10초 주기 사이드바 갱신·본부 판정 갱신이 모두 이 함수를 부른다(창 제목 쪽
+  //   isContentEditable 가드와 같은 계약). 편집이 끝나면 확정 처리기가 render() 로 다시 그린다.
+  if (bar.querySelector('.ws-name[contenteditable="true"]')) return;
   bar.innerHTML = "";
   // 06: 2계층 tier 정렬 — pinned 그룹 → unpinned 그룹 → ungrouped ws(배열 순서). 시각 순서≠배열 순서이므로
   // 탭 핸들러는 캡처 idx 대신 workspaces.indexOf(ws)로 활성 비교/전환(stale idx 회피, close 핸들러 패턴 일치).
@@ -4151,7 +4224,7 @@ function buildTab(ws: Workspace): HTMLElement {
   titleRow.className = "ws-title-row";
   const label = document.createElement("span");
   label.className = "ws-name";
-  label.textContent = deptPlaceholderLabel(ws); // WP-10: pending이면 "부서 제작 중…" (멈춘 줄 오해 방지)
+  label.textContent = deptPlaceholderLabel({ pending: ws.pending, name: wsLabel(ws) }); // (D4 #4) 보여 주는 이름 · WP-10: pending이면 "부서 제작 중…" (멈춘 줄 오해 방지)
   const close = document.createElement("span");
   close.className = "ws-close";
   close.textContent = "×";
@@ -4217,8 +4290,10 @@ function buildTab(ws: Workspace): HTMLElement {
     }
     startWsDrag(e, ws.id); // 4px 임계 초과 시에만 재정렬 드래그(단순 클릭은 위 전환만)
   });
+  let shownBeforeRename = "";
   const startRename = () => {
     // WKWebView에서 prompt()는 무동작 — 인라인 편집
+    shownBeforeRename = (label.textContent || "").trim();
     label.contentEditable = "true";
     label.focus();
     const sel = window.getSelection();
@@ -4233,7 +4308,8 @@ function buildTab(ws: Workspace): HTMLElement {
       label.removeEventListener("keydown", onKey); // rename마다 리스너 누적 방지
       label.contentEditable = "false";
       const name = (label.textContent || "").trim();
-      ws.name = name || UNTITLED; // 이름을 지우면 미정 표시로 복귀
+      // 이름을 지우면 미정 표시로 복귀 · (D4 #4) 자동 이름(본부·새 화면)을 그대로 두면 저장값도 미정 그대로
+      ws.name = renamedName(name, shownBeforeRename, ws.name, UNTITLED);
       render();
     };
     label.addEventListener("blur", commit, { once: true });
@@ -4253,7 +4329,7 @@ function buildTab(ws: Workspace): HTMLElement {
     // ★완전 삭제 확인(오너 2026-07-15 — 발견 불가 UX 수리): 숨은 2-click 무장 패턴을 설명형
     // 확인 다이얼로그로 교체(WKWebView confirm() 무동작 → 기존 confirmModal 재사용). 초보자가
     // "무엇이 어떻게 삭제되는지" 읽고 결정한다. pane 개별 ×(저위험)는 종전 2-click 유지.
-    const wsName = ws.name || UNTITLED;
+    const wsName = wsLabel(ws); // (D4 #4) 보여 주는 이름과 같은 말로 묻는다
     const ok = await confirmModal(
       ws.socket ? `부서 "${wsName}" 완전 삭제` : `워크스페이스 "${wsName}" 완전 삭제`,
       (ws.socket
@@ -4270,7 +4346,7 @@ function buildTab(ws: Workspace): HTMLElement {
       try {
         await invoke("dept_tombstone_by_socket", { socket: ws.socket });
       } catch (e) {
-        toast("watchdog", "부서 삭제 의도 기록 실패", `${e} — 삭제는 계속 진행되나 재시작 시 부활할 수 있습니다. 같은 탭을 다시 삭제하면 재시도됩니다.`);
+        toast("watchdog", "부서 삭제 의도 기록 실패", "삭제는 계속 진행되지만 앱을 다시 켜면 이 부서가 되살아날 수 있습니다. 같은 탭을 다시 삭제하면 재시도됩니다.", undefined, String(e));
       }
     }
     for (const sid of collectSids(ws.tree)) {
@@ -4288,7 +4364,7 @@ function buildTab(ws: Workspace): HTMLElement {
     // 차회 부팅 reaper가 수렴하지만, 사용자에게는 알린다.
     if (ws.socket && !stillUsed)
       await invoke("stop_dept_daemon_by_socket", { socket: ws.socket }).catch((e) =>
-        toast("watchdog", "부서 데몬 종료 실패", `${e} — 부활은 차단됨(삭제 의도 기록됨)·다음 앱 시작 시 자동 정리를 재시도합니다.`),
+        toast("watchdog", "부서 엔진 종료 실패", "부서 엔진을 끄지 못했습니다. 되살아나지는 않으며, 다음에 앱을 켤 때 자동으로 다시 정리합니다.", undefined, String(e)),
       );
     if (workspaces.length === 0) {
       await addWorkspace(); // addWorkspace가 activeWs를 설정
@@ -4383,7 +4459,8 @@ function wsGroupCtxItems(ws: Workspace): { label: string; action: () => void }[]
     items.push({
       label: "새 그룹으로 묶기",
       action: () => {
-        const g: GroupMeta = { id: groupCounter++, name: ws.name || "그룹", collapsed: false, pinned: false };
+        // (D4 #4 · Fable 2R NIT) 이름 없는 탭이면 그룹 이름은 「그룹」 — 표시 전용 라벨(본부·새 화면)을 저장 이름으로 굳히지 않는다.
+        const g: GroupMeta = { id: groupCounter++, name: ws.name && ws.name !== UNTITLED ? ws.name : "그룹", collapsed: false, pinned: false };
         groups.push(g);
         ws.groupId = g.id;
         render();
@@ -4523,6 +4600,23 @@ async function confirmDeleteGroup(g: GroupMeta) {
 
 // ws는 번호가 아니라 이름으로 구분 — 이름이 정해지지 않으면 "non title" 표시.
 const UNTITLED = "non title";
+// ★(v116-ui-close · D4 #4 · master 판정 A) 기본 데몬의 마스터 좌석 번호 — 「본부」 탭 판정 재료. refreshPaneTitles 가
+//   기본 소켓 목록을 받을 때마다 갱신한다. null = 아직 모름(→ 첫째 기본 데몬 탭으로 폴백).
+let hqMasterSids: Set<number> | null = null;
+/** (D4 #10) 페인 CTX 부서 머리줄 이름 — 기본 소켓 = 「본부」 · 부서 = 그 부서 탭 이름(없으면 소켓의 부서 이름). */
+function ctxGroupLabel(socket: string): string {
+  if (!socket) return "본부";
+  const ws = workspaces.find((w) => !w.pending && (w.socket ?? "") === socket);
+  return ws ? wsLabel(ws) : (deptNameFromSocket(socket) ?? shortSocketTag(socket)) || socket;
+}
+/** 탭을 **보여 줄** 이름 — 저장값(ws.name)은 건드리지 않는다. 판정 = wsname.ts. */
+function wsLabel(ws: Workspace): string {
+  const hq = hqWorkspaceId(
+    workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: w.pending, sids: collectSids(w.tree) })),
+    hqMasterSids,
+  );
+  return wsDisplayName(ws.name, UNTITLED, ws.id === hq);
+}
 
 // 커스텀 컨텍스트 메뉴 (WKWebView 기본 메뉴 대체) — 싱글톤, 바깥 클릭·Esc로 닫힘.
 function showCtxMenu(
@@ -4821,13 +4915,56 @@ async function actionSplit(dir: "row" | "col") {
   setFocus(sid);
 }
 
+// ★(v116-ui-close · 닫기 보호) 확인 창이 떠 있는 동안의 재진입 차단. 전역 단축키는 모달이 떠 있으면 이미
+//   빠져나가지만(키 처리기 첫머리), 팔레트·단추 등 다른 입구가 같은 함수를 부르므로 함수 자신도 막는다.
+let closeConfirmOpen = false;
+// ★(agy 1R ②) 닫기 요청이 데몬에 가 있는 동안의 창(키 = paneKey). close_surface 응답을 기다리는 사이 같은 창에
+//   ⌘W 를 또 누르면 확인 창이 다시 뜨고 같은 창에 닫기가 두 번 나갔다 — 닫는 중인 창은 다시 묻지도 닫지도 않는다.
+const closingPaneKeys = new Set<string>();
+
+// 상단 「Close」·⌘W·팔레트 「패널 닫기」 세 입구가 모두 이 함수다(창 머리 × 는 따로 · 두 번 눌러 닫기 · 무변경).
 async function actionClose() {
   const ws = current();
   if (focusedSid == null || !ws.tree) return;
   const sid = focusedSid;
-  await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
+  // 포커스가 이 탭의 창이 아니면(낡은 포커스) 아무것도 닫지 않는다 — 보이지 않는 창을 닫는 경로 0.
+  if (!collectSids(ws.tree).includes(sid)) return;
+  const key = paneKey(sid, ws.socket);
+  if (closingPaneKeys.has(key)) return;
+  if (needsCloseConfirm(CLOSE_CONFIRM_POLICY, exitedPaneKeys.has(key) ? true : null)) {
+    if (closeConfirmOpen) return;
+    // ★(Fable 적대 MAJOR-1) Control Center(z 1500)가 열려 있으면 확인 창(z 1000)이 그 **뒤에** 숨는다 — 보이지
+    //   않는 확인 창의 「닫기」가 Tab·Enter 로 눌려 산 창이 닫힐 수 있었다. 팔레트 run 과 같은 「먼저 닫기」 계약.
+    if (ccOpen) setCcOpen(false);
+    closeConfirmOpen = true;
+    let ok = false;
+    try {
+      const name = panes.get(key)?.titleEl.textContent ?? "";
+      ok = await confirmModal(CLOSE_CONFIRM_TEXT.title, closeConfirmBody(name), CLOSE_CONFIRM_TEXT.yes, CLOSE_CONFIRM_TEXT.no);
+    } finally {
+      closeConfirmOpen = false;
+    }
+    if (!ok) {
+      // (Fable MINOR-2) 취소 뒤 키보드 포커스를 그 창으로 돌려준다(확인 창 단추가 사라지며 포커스가 body 로 빠진다).
+      if (ws === current() && ws.tree && collectSids(ws.tree).includes(sid)) setFocus(sid);
+      return;
+    }
+    // 묻는 사이 그 창이 이미 사라졌으면(데몬 종료 이벤트 등) 할 일이 없다 — 다른 창으로 옮겨 닫지 않는다.
+    if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;
+  }
+  closingPaneKeys.add(key);
+  try {
+    await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
+  } finally {
+    closingPaneKeys.delete(key);
+  }
   destroyPaneRuntime(sid, ws.socket);
-  ws.tree = replaceNode(ws.tree, sid, () => null);
+  if (ws.tree) ws.tree = replaceNode(ws.tree, sid, () => null);
+  // (Fable MINOR-3) 그사이 다른 탭으로 옮겨 갔으면 포커스는 지금 보이는 탭의 것을 건드리지 않는다.
+  if (ws !== current()) {
+    render();
+    return;
+  }
   focusedSid = collectSids(ws.tree)[0] ?? null;
   render();
   if (focusedSid != null) setFocus(focusedSid);
@@ -5100,10 +5237,10 @@ async function openPathChecked(full: string) {
       );
       if (!ok) return;
       await invoke("open_path", { path: full, force: true }).catch((e2) =>
-        toast("watchdog", "파일 열기 실패", String(e2)),
+        toast("watchdog", "파일 열기 실패", "파일을 열지 못했습니다. 파일이 옮겨졌거나 지워지지 않았는지 확인해 주세요.", undefined, String(e2)),
       );
     } else {
-      toast("watchdog", "파일 열기 실패", String(e));
+      toast("watchdog", "파일 열기 실패", "파일을 열지 못했습니다. 파일이 옮겨졌거나 지워지지 않았는지 확인해 주세요.", undefined, String(e));
     }
   }
 }
@@ -5138,7 +5275,7 @@ function ftContextMenu(e: MouseEvent, full: string, isDir: boolean) {
     label: "Finder에서 보기",
     action: () =>
       void invoke("reveal_path", { path: full }).catch((err) =>
-        toast("watchdog", "Finder 표시 실패", String(err)),
+        toast("watchdog", "Finder 표시 실패", "Finder 에서 위치를 보여 주지 못했습니다. 다시 시도해 주세요.", undefined, String(err)),
       ),
   });
   for (const sid of collectSids(current()?.tree ?? null).slice(0, 6)) {
@@ -5208,7 +5345,7 @@ async function injectRawToPane(rt: PaneRuntime, data: string) {
     setTimeout(() => rt.el.classList.remove("inject-flash"), 700);
     toast("feed", "경로 삽입됨", `${rt.titleEl.textContent || rt.sid} — Enter를 눌러야 전송됩니다`);
   } catch (e) {
-    toast("watchdog", "삽입 실패", String(e));
+    toast("watchdog", "삽입 실패", "경로를 창의 입력칸에 넣지 못했습니다. 창을 한 번 누른 뒤 다시 시도해 주세요.", undefined, String(e));
   }
 }
 
@@ -5612,7 +5749,7 @@ async function refreshFeed() {
                 }
               } catch (e) {
                 // 승격 실패 — feed_reply 하지 않음(항목 pending 유지·재시도 가능). 실패 사유 표시.
-                toast("health", "CEO 승격 실패", String(e));
+                toast("health", "CEO 승격 실패", "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
               }
             } else {
               try {
@@ -5667,7 +5804,7 @@ async function checkForUpdate(silent: boolean) {
   } catch (e) {
     // ★early-return 안 함(팩 체크는 계속) — 단, 바이너리 상태 불명을 기억해 아래 '최신' 단정을 억제한다.
     binCheckFailed = true;
-    if (!silent) toast("health", "업데이트 확인 실패", String(e));
+    if (!silent) toast("health", "업데이트 확인 실패", "업데이트 정보를 받아 오지 못했습니다. 인터넷 연결을 확인한 뒤 다시 눌러 주세요.", undefined, String(e));
   }
   // 2) 무중단 팩 업데이트(pack-manifest.json) — 세션·데몬 유지 경로. 실패는 조용히(폴링).
   let pack: PackUpdateInfo | null = null;
@@ -5717,22 +5854,22 @@ async function checkForUpdate(silent: boolean) {
       // silent 경로에만 해당·비silent도 모달 1개 상한), 본체는 토스트로 병행 안내(T5 경로 유지).
       if (!silent) {
         promptPackInstall();
-        toast("feed", "🔄 새 본체도 있음", `새 본체 ${updateAvailable!.version} — 상단 Update 버튼으로 패치 설치(재시작·자동 복원)`);
-      } else toast("feed", "↻ 무중단 팩 + 새 본체", plan.toastMsg);
+        toast("feed", "🔄 새 앱도 있음", `새 앱 ${updateAvailable!.version} 도 나왔습니다. 상단 「업데이트」로 설치하고, 다시 켜지면 하던 창이 돌아옵니다.`);
+      } else toast("feed", "↻ 새 자비스 구성 + 새 앱", plan.toastMsg);
       break;
     case "binary":
       // 본체(바이너리) 패치 설치 — 오너 지시(2026-07-15) 재배선(구 T5 홈페이지 전용의 실험적 개정).
       if (!silent) promptBinaryPatch();
-      else toast("feed", "🔄 새 본체 버전", plan.toastMsg);
+      else toast("feed", "🔄 새 앱", plan.toastMsg);
       break;
     case "pack":
       // 팩만 변경 + 바이너리 호환 → 무중단 가능(세션·데몬 생존).
       if (!silent) promptPackInstall();
-      else toast("feed", "↻ 무중단 팩 업데이트", plan.toastMsg);
+      else toast("feed", "↻ 새 자비스 구성", plan.toastMsg);
       break;
     case "binary-required":
       // 팩은 있으나 min_binary_version > 설치 바이너리 → 무중단 불가, 본체 업데이트(홈페이지) 필요(T5 정책).
-      if (!silent) toast("health", "본체 업데이트 필요", plan.toastMsg);
+      if (!silent) toast("health", "앱 업데이트 필요", plan.toastMsg);
       else toast("feed", "⚠ 업데이트 있음", plan.toastMsg);
       break;
     case "none":
@@ -5761,13 +5898,12 @@ async function promptBinaryPatch() {
   //   윈도: 설치 직후 앱이 스스로 재시작. 맥: 교체까지 하고 **재시작을 한 번 더 묻는다**.
   //   여기서 한 문장으로 뭉뚱그리면 맥 사용자는 "재시작한다더니 안 한다"를 보게 된다.
   const tail = IS_MACOS
-    ? `받아서 검증(크기·해시·서명·CDHash)한 뒤 설치본을 교체합니다. 교체가 끝나면 재시작 여부를 다시 여쭙고, ` +
-      `재시작하면 부서·노드가 자동 복원됩니다(대화 기억 포함).`
-    : `저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 재시작합니다. 부서·노드는 재시작 후 자동 ` +
-      `복원됩니다(대화 기억 포함). 마지막 미저장분은 손실될 수 있습니다.`;
+    ? `받은 파일이 진짜인지 확인한 뒤 앱을 바꿉니다. 바꾸기가 끝나면 다시 켤지 한 번 더 여쭙고, ` +
+      `다시 켜면 부서와 창, 대화가 돌아옵니다.`
+    : `받은 파일이 진짜인지 확인한 뒤 앱을 바꾸고 다시 켭니다. 재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.`;
   const ok = await confirmModal(
-    `새 본체 버전 ${v} — 패치 설치`,
-    `새 본체(앱) ${v}을 패치 방식으로 설치합니다: ${tail}` +
+    `새 앱 ${v} 설치`,
+    `새 앱 ${v} 을 설치합니다. ${tail}` +
       `\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr`,
     "설치",
   );
@@ -5777,7 +5913,7 @@ async function promptBinaryPatch() {
     // 성공 시 백엔드가 app.restart()까지 수행 — 후속 UI 처리 없음(진행은 update-progress 리스너).
   } catch (e) {
     dismissToast("upd-bin");
-    toast("health", "패치 설치 실패", String(e));
+    toast("health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, String(e));
   }
 }
 
@@ -5791,20 +5927,19 @@ async function restartAfterUpdate(version: string) {
   } catch (e) {
     const msg = String(e);
     if (!msg.includes("live_sessions:")) {
-      toast("health", "재시작 실패", msg);
+      toast("health", "재시작 실패", "앱을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, msg);
       return;
     }
     const ok = await confirmModal(
       `재시작 (새 판 v${version})`,
-      `${holdReasonText(msg)}\n\n저장(drain) 신호를 보낸 뒤 재시작하고 노드를 복원합니다. 마지막 미저장분은 ` +
-        `손실될 수 있습니다.\n\n지금 재시작하시겠습니까?`,
+      `${holdReasonText(msg)}\n\n재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.\n\n지금 재시작하시겠습니까?`,
       "재시작",
     );
     if (!ok) return;
     try {
       await invoke("restart_after_update", { force: true });
     } catch (e2) {
-      toast("health", "재시작 실패", String(e2));
+      toast("health", "재시작 실패", "앱을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e2));
     }
   }
 }
@@ -5936,8 +6071,8 @@ function showSkewBadge(
     ? `데몬 v${daemonVer} · 앱 v${appVer}${suffix} — 세션 보존 중`
     : `앱 v${appVer} · 부서 ${heldDepts.length}개 구버전 — 세션 보존 중`;
   verSkewBadge.title =
-    "업데이트가 적용됐지만 실행 중인 세션(마스터·워커·부서)을 보존하기 위해 기존 데몬이 계속 봉사합니다.\n" +
-    "클릭하면 저장(drain) 후 새 버전으로 순차 교대(메인→부서)하고 세션을 복원합니다.";
+    "업데이트는 받았지만 작업 중인 창을 지키려고 옛 엔진이 계속 돌고 있습니다.\n" +
+    "누르면 하던 대화를 저장하고 본부부터 부서 순으로 새 판 엔진으로 바꾼 뒤 창과 대화를 되돌립니다.";
   verSkewBadge.onclick = () => void manualRotateSkewed(appVer, heldMain, heldDepts);
 }
 
@@ -5952,14 +6087,14 @@ async function manualRotateSkewed(appVer: string, heldMain: boolean, heldDepts: 
   }
   const nodes = (heldMain ? 1 : 0) + heldDepts.length;
   const ok = await confirmModal(
-    `데몬 교대 (새 버전 v${appVer})`,
-    `작업 세션이 물려 있는 데몬 ${nodes}개를 새 버전으로 순차 교대(메인→부서)합니다. 저장(drain) 신호 후 ` +
-      `교대하고 세션을 복원합니다. 마지막 미저장분은 손실될 수 있습니다.\n\n지금 교대하시겠습니까?`,
+    `엔진 교대 (새 판 v${appVer})`,
+    `작업 중인 창이 붙어 있는 엔진 ${nodes}개를 본부부터 부서 순으로 새 판으로 바꿉니다. ` +
+      `바꾸기 직전에 하던 대화를 저장하고, 바꾼 뒤 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.\n\n지금 교대하시겠습니까?`,
     "교대",
   );
   if (!ok) return;
   rotatingDaemon = true;
-  stickyToast("rotate-daemon", "feed", "↻ 데몬 교대", `새 버전 v${appVer}로 교대 중… 저장 후 세션을 복원합니다.`);
+  stickyToast("rotate-daemon", "feed", "↻ 엔진 교대", `새 판 v${appVer} 엔진으로 바꾸는 중… 하던 대화를 저장한 뒤 창과 대화를 되돌립니다.`);
   try {
     if (heldMain) await invoke("rotate_daemon", { force: true, skipDrain: false });
     // 경미2: rotate_dept_daemon이 반환하는 restore_ok=false(교대 후 부서 노드 복원 실패)를 삼키지 않고 승격.
@@ -5972,10 +6107,10 @@ async function manualRotateSkewed(appVer: string, heldMain: boolean, heldDepts: 
     clearSkewBadge();
     if (deptRestoreFailed)
       toast("health", "⚠ 교대 후 부서 복원 실패", `데몬은 v${appVer}로 교대됐으나 일부 부서 노드 복원이 실패했습니다 — 상태를 점검하세요.`);
-    else toast("watchdog", "✅ 데몬 교대 완료", `데몬이 v${appVer}로 교대됐습니다. 노드 복원이 진행됩니다.`);
+    else toast("watchdog", "✅ 엔진 교대 완료", `엔진이 새 판 v${appVer} 로 바뀌었습니다. 창과 대화를 되돌리는 중입니다.`);
   } catch (e) {
     dismissToast("rotate-daemon");
-    toast("health", "데몬 교대 실패", String(e));
+    toast("health", "엔진 교대 실패", "엔진을 새 판으로 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
   } finally {
     rotatingDaemon = false;
   }
@@ -6140,7 +6275,7 @@ async function manualRestartAllDaemons() {
     void restartContinuityToast(restartStartedAt);
   } catch (e) {
     dismissToast("restart-daemon");
-    toast("health", "데몬 재시작 실패", String(e));
+    toast("health", "엔진 재시작 실패", "엔진을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
   } finally {
     rotatingDaemon = false;
   }
@@ -6213,14 +6348,14 @@ async function promptPackInstall() {
   }
   const pv = packUpdateAvailable.pack_version;
   // 지속형 토스트: pack-progress 리스너가 갱신하고 pack-updated/update-warning이 dismiss한다.
-  stickyToast("upd-pack", "feed", "↻ 무중단 팩 업데이트", `팩 ${pv} 적용 중… 세션·데몬 유지(재시작 없음).`);
+  stickyToast("upd-pack", "feed", "↻ 자비스 구성 업데이트", `새 자비스 구성 ${pv} 적용 중… 하던 창은 그대로이고 재시작하지 않습니다.`);
   try {
     await invoke("install_pack_update", { manifestUrl: packUpdateAvailable.manifest_url });
     // 성공(또는 degraded)은 pack-updated/update-warning 리스너가 후속 처리(sticky도 거기서 dismiss).
   } catch (e) {
     dismissToast("upd-pack"); // 완료 이벤트 없이 reject된 경로 — 진행 토스트를 내린다.
     // 백엔드가 update-error도 emit하지만, join/실행 단계 실패는 emit 없이 reject되므로 여기서 표시.
-    toast("health", "팩 업데이트 실패", String(e));
+    toast("health", "자비스 구성 업데이트 실패", "새 자비스 구성을 적용하지 못했습니다. 지금 쓰던 창은 그대로 두고 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
   }
 }
 
@@ -6517,7 +6652,7 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
             const r = (await invoke("promote_pending_ceo")) as string;
             toast("feed", "CEO 승격 처리", r || "완료");
           } catch (e) {
-            toast("health", "CEO 승격 실패", String(e));
+            toast("health", "CEO 승격 실패", "CEO 자리를 세우지 못했습니다. 요청은 그대로 남아 있으니 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
           }
         },
       });
@@ -6538,7 +6673,7 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
             const r = (await invoke("approve_ceo_promotion")) as string;
             toast("watchdog", "✅ CEO 승격 재실행 완료", r || "새 템플릿을 적용했습니다.");
           } catch (e) {
-            toast("health", "CEO 승격 재실행 실패", String(e));
+            toast("health", "CEO 승격 재실행 실패", "새 설정으로 CEO 자리를 다시 세우지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
           }
         },
       });
@@ -6645,13 +6780,15 @@ async function openPalette() {
 
 // ★확인 버튼 라벨 매개변수화(오너 2026-07-15 실보고): 업데이트 창용 "설치" 하드코딩이 모든
 // 확인 창에 노출(완전 삭제 창의 확인 버튼이 "설치"로 표시). 호출부가 동작 동사를 지정한다.
-/// `noLabel` — 거절 버튼 라벨(기본 "아니오"). 완료 보고형 모달에서 "아니오"는 의미가 어긋나
+/// `noLabel` — 거절 버튼 라벨(기본 "취소"). 완료 보고형 모달에서 "취소"는 의미가 어긋나
 /// "나중에" 처럼 상황에 맞는 말이 필요하다(P0-4 시뮬레이션 지적). 본문은 길어질 수 있어 스크롤한다.
+/// ★(v116-ui-close-r2 · D4 #20) 기본을 「아니오」→「취소」로 — 확인 버튼이 동작 동사(설치·교대·열기)라 짝은 「취소」이고,
+///   창 닫기(closeguard)·부서 만들기(deptconfirm)·경로 확인(clipath) 창이 이미 「취소」다. 한 앱 안에서 같은 뜻을 두 말로 쓰지 않는다.
 function confirmModal(
   title: string,
   body: string,
   yesLabel = "확인",
-  noLabel = "아니오",
+  noLabel = "취소",
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const ov = document.createElement("div");
@@ -6872,10 +7009,10 @@ async function purgeDept(ws: Workspace) {
   try {
     info = (await invoke("dept_purge_preview_by_socket", { socket: ws.socket })) as typeof info;
   } catch (e) {
-    toast("watchdog", "삭제 프리뷰 실패", `${e} — 삭제를 중단합니다. 다시 시도해 주세요.`);
+    toast("watchdog", "삭제 미리보기 실패", "지울 내용을 확인하지 못해 삭제를 멈췄습니다. 다시 시도해 주세요.", undefined, String(e));
     return;
   }
-  const nm = info.name || ws.name || UNTITLED;
+  const nm = info.name || wsLabel(ws);
   const bytes = Number(info.size_bytes || 0);
   const sizeHuman =
     bytes >= 1e9
@@ -6908,7 +7045,7 @@ async function purgeDept(ws: Workspace) {
     try {
       await invoke("purge_dept_daemon_by_socket", { socket: ws.socket });
     } catch (e) {
-      stickyToast(failId, "watchdog", "부서 완전 삭제 실패", `${nm}: ${e} — 삭제되지 않았습니다.`);
+      stickyToast(failId, "watchdog", "부서 완전 삭제 실패", `${nm} 부서는 삭제되지 않았습니다. 다시 시도해 주세요.`, undefined, String(e));
       return;
     }
     dismissToast(failId);
@@ -7003,7 +7140,7 @@ async function factoryResetFlow() {
     info = (await invoke("factory_reset_preview", {})) as typeof info;
   } catch (e) {
     dismissToast("reset-preview");
-    toast("watchdog", "초기화 프리뷰 실패", `${e} — 초기화를 중단합니다. 다시 시도해 주세요.`);
+    toast("watchdog", "초기화 미리보기 실패", "지울 내용을 확인하지 못해 초기화를 멈췄습니다. 다시 시도해 주세요.", undefined, String(e));
     return;
   }
   dismissToast("reset-preview");
@@ -7046,7 +7183,7 @@ async function factoryResetFlow() {
       rep = (await invoke("factory_reset_execute", { purgeLicense: false, purgeLocal: false })) as typeof rep;
     } catch (e) {
       dismissToast("factory-reset");
-      stickyToast(failId, "watchdog", "완전 초기화 실패", `${e} — 아무것도(또는 일부만) 변경되지 않았을 수 있습니다. 재시도하거나 cys factory-reset --plan 으로 상태를 확인하세요.`);
+      stickyToast(failId, "watchdog", "완전 초기화 실패", "초기화가 끝나지 않았습니다. 아무것도 바뀌지 않았거나 일부만 바뀌었을 수 있으니 다시 시도해 주세요. 상태 확인 명령은 「자세히」 안에 있습니다.", undefined, `${String(e)}\n상태 확인: cys factory-reset --plan`);
       return;
     }
     dismissToast("factory-reset");
@@ -7099,9 +7236,31 @@ async function factoryResetFlow() {
 // main.ts:4878 주석의 실사고("실패를 인지 못함")는 이력 + 수동 × + 만료 배너로 대체 방어한다.
 let alarmHistory: AlarmRecord[] = [];
 
-function recordAlarm(category: string, name: string, detail: string, id?: string) {
-  alarmHistory = pushAlarm(alarmHistory, { ts: Date.now(), category, name, detail, id });
+function recordAlarm(category: string, name: string, detail: string, id?: string, raw?: string) {
+  // (D4 #14) 오류 원문은 알람 이력에 그대로 남긴다 — 진단 재료(화면에서는 「자세히」 안쪽).
+  alarmHistory = pushAlarm(alarmHistory, { ts: Date.now(), category, name, detail: raw ? `${detail}\n${RAW_DETAIL_LABEL}: ${raw}` : detail, id });
   if (ccOpen && ccTab === "alarms") renderAlarmHistory();
+}
+
+// ★(v116-ui-close-r2 · D4 #14) 오류 원문(백엔드 문자열 String(e))은 본문에 싣지 않고 접힌 「자세히」 안쪽에 둔다 —
+//   본문은 사람 말 한두 문장. 원문은 지우지 않는다(지원·진단에 필요). raw 가 없으면 「자세히」도 없다(갱신 시 제거).
+const RAW_DETAIL_LABEL = "자세히";
+function setToastRaw(el: HTMLElement, raw?: string) {
+  const prev = el.querySelector(".toast-raw") as HTMLDetailsElement | null;
+  const wasOpen = prev?.open === true; // (opus NIT) 같은 알림 갱신 때 펼쳐 둔 「자세히」를 접지 않는다
+  prev?.remove();
+  if (!raw) return;
+  const d = document.createElement("details");
+  d.open = wasOpen;
+  d.className = "toast-raw";
+  const sm = document.createElement("summary");
+  sm.textContent = RAW_DETAIL_LABEL;
+  const pre = document.createElement("div");
+  pre.className = "toast-raw-text";
+  pre.textContent = raw; // textContent — 원문이 마크업으로 해석되지 않게
+  d.append(sm, pre);
+  d.addEventListener("click", (e) => e.stopPropagation()); // 펼치기가 토스트 클릭 동작으로 번지지 않게
+  el.querySelector(".toast-detail")?.after(d);
 }
 
 // 우상단 × — 자동 소멸을 기다리지 않고 즉시 치울 수 있는 수동 경로(sticky는 id로 정리).
@@ -7121,14 +7280,15 @@ function addToastCloseButton(el: HTMLElement, id?: string) {
 
 /// `onClick` — 토스트 본문을 눌렀을 때의 동작(선택). 완전 초기화 완료 후 격리 폴더를 여는
 /// 것처럼 **행동으로 이어지는 안내**에만 쓴다(P1-2). 닫기 버튼 클릭과는 분리한다.
-function toast(category: string, name: string, detail: string, onClick?: () => void) {
-  recordAlarm(category, name, detail);
+function toast(category: string, name: string, detail: string, onClick?: () => void, raw?: string) {
+  recordAlarm(category, name, detail, undefined, raw);
   const box = document.getElementById("toasts")!;
   const el = document.createElement("div");
   el.className = toastClassName(category); // 등급색 서식의 단일 진실(sticky 와 같은 함수)
   el.innerHTML = `<span class="toast-name"></span><span class="toast-detail"></span>`;
   (el.querySelector(".toast-name") as HTMLElement).textContent = name;
   (el.querySelector(".toast-detail") as HTMLElement).textContent = detail;
+  setToastRaw(el, raw);
   if (onClick) {
     el.style.cursor = "pointer";
     el.addEventListener("click", (e) => {
@@ -7148,8 +7308,8 @@ const stickyToasts = new Map<string, { el: HTMLElement; timer: ReturnType<typeof
 
 // onClick: 누를 수 있는 지속형 토스트(B15 재시작 1클릭). 갱신마다 다시 매기 위해 핸들러를
 // 요소에 직접 둔다(addEventListener 누적 금지 — 같은 id 로 여러 번 갱신되면 중복 발화한다).
-function stickyToast(id: string, category: string, name: string, detail: string, onClick?: () => void) {
-  recordAlarm(category, name, detail, id);
+function stickyToast(id: string, category: string, name: string, detail: string, onClick?: () => void, raw?: string) {
+  recordAlarm(category, name, detail, id, raw);
   const box = document.getElementById("toasts")!;
   const prev = stickyToasts.get(id);
   const plan = toastTimerPlan("sticky", id, !!prev);
@@ -7167,6 +7327,7 @@ function stickyToast(id: string, category: string, name: string, detail: string,
   el.className = toastClassName(category);
   (el.querySelector(".toast-name") as HTMLElement).textContent = name;
   (el.querySelector(".toast-detail") as HTMLElement).textContent = detail;
+  setToastRaw(el, raw);
   el.style.cursor = onClick ? "pointer" : "";
   el.onclick = onClick
     ? (ev: MouseEvent) => {
@@ -7239,11 +7400,20 @@ function onDaemonEvent(event: Record<string, unknown>) {
   const category = String(event.category ?? "");
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const sid = event.surface_id;
+  // ★(v116-ui-close-r2 · D4 #8) 경보 문구 = alertcopy.ts(「N번 <역할 이름> 창」 · 역할 코드·surface:N·내부 지침 문구 0 · 세기 그대로).
+  const no = seatNo(sid, payload.surface_ref);
+  // (Fable MINOR-3) 부서 데몬 이벤트면 부서 이름을 싣는다(본부·부서 창 번호 겹침) — 기본 데몬은 「본부」를 붙이지 않는다.
+  const evSock = event.socket_slug ? socketForSlug.get(String(event.socket_slug)) : undefined;
+  const ap: Record<string, unknown> = evSock && deptNameFromSocket(evSock) ? { ...payload, dept: ctxGroupLabel(evSock) } : payload; // 원 payload 는 건드리지 않는다
 
+  // ★(v116-ui-close-r2 · R1c) 마스터 자리가 늦게 섰으면 복원 카드 판정을 다시 돈다(판정·1회는 maybeShowRestoreBrief 가 진다).
+  // (opus NIT) 완전 초기화 중·뒤에는 「다시 켜졌어요」 카드를 띄우지 않는다(P1-3 — 복원 토스트 억제와 같은 원칙).
+  if (isMasterSeatSignal(name, payload) && !factoryResetting && !resetCompleted) maybeShowRestoreBrief();
   // --- name-우선 전용 처리(B1) : name 매칭이 category 폴백보다 우선 ---
   if (name === "approval.request") {
-    toast("approval", "⚠ 승인 대기", `${payload.role ?? ""} ${payload.surface_ref ?? ""} — ${String(payload.excerpt ?? "").slice(0, 100)}`);
-    osBanner("⚠ 승인 대기", `${payload.role ?? ""} ${payload.surface_ref ?? ""} — ${String(payload.excerpt ?? "").slice(0, 100)}`); // B4 OS 배너(고우선)
+    const c = approvalRequestCopy(no, ap);
+    toast("approval", c.title, c.body);
+    osBanner(c.title, c.body); // B4 OS 배너(고우선)
     // 자동 화면전환 없음 — 페인 승인 프롬프트는 master 즉각 자동승인 관할.
     // 토스트·OS 배너·사이드바 배지로만 알린다(feed.item.created의 유예 경로와 정합).
     refreshFeed();
@@ -7253,17 +7423,19 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "approval.stalled") {
     // master가 stall 임계(기본 5분) 내 처리하지 못한 승인 = 사람 개입 필요 신호 —
     // 이때만 화면을 전환한다(승인 UX 원칙: 알림과 포커스 강탈의 분리, escalation 짝).
-    toast("approval", "⚠ 승인 방치", `${payload.surface_ref ?? ""} ${String(payload.title ?? "").slice(0, 80)} — ${payload.age_secs}s 경과`);
-    osBanner("⚠ 승인 방치 — 사람 확인 필요", `${payload.surface_ref ?? ""} ${String(payload.title ?? "").slice(0, 80)}`);
+    // (Fable MINOR-2) 이 이벤트의 surface_id 는 발행자 자기신고일 수 있다 — 종전처럼 관측값(surface_ref)을 쓴다.
+    const c = approvalStalledCopy(seatNo(null, payload.surface_ref), ap);
+    toast("approval", c.title, c.body);
+    osBanner(c.title, c.body);
     openFeed();
     refreshFeed();
     refreshSidebarStatus();
     return;
   }
   if (name === "context.threshold") {
-    toast("threshold", `🔋 컨텍스트 ${payload.context_pct}%`, `${payload.role ?? ""} ${payload.surface_ref ?? ""} ≥ ${payload.threshold}% — ${payload.action ?? ""}`);
-    if (Number(payload.context_pct ?? 0) >= 80)
-      osBanner(`🔋 컨텍스트 ${payload.context_pct}%`, `${payload.role ?? ""} ${payload.surface_ref ?? ""} ≥ ${payload.threshold}% — ${payload.action ?? ""}`); // B4 OS 배너(≥80만)
+    const c = contextThresholdCopy(no, ap); // 데몬 action 칸(내부 지침 문구)은 싣지 않는다
+    toast("threshold", c.title, c.body);
+    if (Number(payload.context_pct ?? 0) >= 80) osBanner(c.title, c.body); // B4 OS 배너(≥80만)
     refreshSidebarStatus();
     return;
   }
@@ -7275,28 +7447,21 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "role.takeover") {
     // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
     //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).
-    stickyToast(
-      `role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`,
-      "health",
-      `ℹ '${payload.role ?? ""}' 자리가 다른 칸으로 옮겨졌습니다`,
-      `surface:${payload.prev_surface ?? sid ?? ""} 이 비어 있어 부활 절차가 역할을 새 칸에 이어 붙였습니다. 옛 칸은 비어 있어 곧 정리됩니다(전할 말이 남아 있으면 그대로 둡니다).`,
-    );
+    const c = roleTakeoverCopy(seatNo(payload.prev_surface ?? sid, null), ap);
+    stickyToast(`role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`, "health", c.title, c.body);
     return;
   }
   if (name === "seat.folder_denied") {
     // ★v114-dept-fd 수리 1‴: 좌석 폴더를 macOS 가 막아 claude 가 못 뜬다(좌석엔 빈 셸만 남는다).
     //   claude 가 내는 「file descriptors」 오류 문구는 원인이 아니다 — 원인 문장으로 대신 알린다.
     const f = payload.folder === "Documents" ? "문서" : payload.folder === "Downloads" ? "다운로드" : "데스크탑";
-    stickyToast(
-      `perm-seat-${String(payload.folder ?? "folder")}`,
-      "health",
-      `⚠ 부서 폴더 접근 권한이 꺼져 있습니다`,
-      `${payload.role ?? ""} 자리가 폴더(${payload.cwd ?? ""})를 열지 못해 AI 가 시작되지 않았습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더 → cysr 에서 「${f} 폴더」를 켠 뒤 앱을 재시작하세요.`,
-    );
+    const c = seatFolderDeniedCopy(no, ap, f);
+    stickyToast(`perm-seat-${String(payload.folder ?? "folder")}`, "health", c.title, c.body);
     return;
   }
   if (name === "pane.idle") {
-    toast("idle", "💤 노드 유휴", `surface:${sid} — ${payload.idle_seconds}s 무출력`);
+    const c = paneIdleCopy(no, ap);
+    toast("idle", c.title, c.body);
     refreshSidebarStatus();
     return;
   }
@@ -7313,18 +7478,15 @@ function onDaemonEvent(event: Record<string, unknown>) {
     //   ③ 알람 이력: stickyToast→recordAlarm(id) — 같은 id는 최신 1건으로 합쳐져
     //      이력 링버퍼를 잠식하지 않는다(pushAlarm coalesce).
     const role = String(payload.role ?? "master");
-    stickyToast(
-      `master-idle:${event.socket_slug ?? ""}:${role}`,
-      "idle",
-      "💤 master 유휴",
-      `surface:${sid} ${role} — ${payload.idle_secs}s 무출력(임계 ${payload.threshold_secs}s)`,
-    );
+    const c = masterIdleCopy(no, role, ap);
+    stickyToast(`master-idle:${event.socket_slug ?? ""}:${role}`, "idle", c.title, c.body);
     refreshSidebarStatus();
     return;
   }
   if (name === "agent.exited") {
-    toast("alert", "❌ 에이전트 사망", `surface:${sid} ${payload.role ?? ""}`);
-    osBanner("❌ 에이전트 사망", `surface:${sid} ${payload.role ?? ""}`); // B4 OS 배너(고우선)
+    const c = agentExitedCopy(no, ap);
+    toast("alert", c.title, c.body);
+    osBanner(c.title, c.body); // B4 OS 배너(고우선)
     refreshSidebarStatus();
     // ★정합기 리셋 훅(스펙 D4 ②): 앱 즉사(SIGKILL — 복원 시퀀스 없음)로 유출·잔존한 트래킹을
     // 소등한다. 조준은 socket_slug **실해석 성공** pane 만(:5194 선례 — slug 부재·미해석 시
@@ -7352,8 +7514,9 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // v2(G2)는 role·axis 등 additive 필드를 싣고, v1 은 {reason,idle_secs}뿐 — payload.role
     // 폴백이 양 버전을 모두 흡수한다(governance.rs). reason 은 verbatim 표시라 신규값
     // ("shell process dead"/"agent process dead" 등)도 자연 수용 — 핸들러 무변경(W3-B).
-    toast("alert", "🚨 master 무응답(deadman)", `surface:${sid} ${payload.role ?? ""} ${payload.reason ?? ""}`);
-    osBanner("🚨 master 무응답(deadman)", `surface:${sid} ${payload.reason ?? ""}`); // B4 OS 배너(고우선)
+    const c = deadmanCopy(no, ap); // 축(axis) → 사람 말 · 데몬 사유 원문은 「자세히」 안쪽
+    toast("alert", c.title, c.body, undefined, c.raw);
+    osBanner(c.title, c.body); // B4 OS 배너(고우선)
     return;
   }
   if (name === "status.changed" || name === "task.changed") {
@@ -7404,6 +7567,7 @@ async function refreshDaemonInfo(info: HTMLElement) {
   try {
     const st = (await invoke("daemon_status")) as Record<string, unknown>;
     const text = daemonInfoLabel(st);
+    info.title = daemonInfoTitle(st); // (D4 #5) 전문(pid·소켓 경로)은 툴팁으로
     const first = info.firstChild;
     if (first && first.nodeType === Node.TEXT_NODE) first.textContent = text;
     else info.insertBefore(document.createTextNode(text), first);
@@ -7424,6 +7588,10 @@ async function refreshDaemonInfo(info: HTMLElement) {
 //   · 한 번 켜질 때 1회만. 실패는 조용히 넘긴다(카드는 부가 기능 — 복원 자체를 막지 않는다).
 // ────────────────────────────────────────────────────────────────────────────
 let restoreBriefShown = false;
+// ★(v116-ui-close-r2 · R1c) 「한 번 띄움」 표지는 마스터 자리를 찾은 뒤에만 켠다(종전엔 첫 줄에서 켜, 유예 시점에
+//   마스터가 없으면 그 켜짐엔 카드가 영영 안 떴다). 조회가 도는 동안 온 두 번째 부름은 버리지 않고 1회 재조회로 접는다.
+let restoreBriefBusy = false;
+let restoreBriefAgain = false;
 // ★v115-restore(B5): 카드 시점 = 조직 복원이 끝난 뒤(판정 = restorebrief.briefTiming). 복원 신호가 유예 안에
 //   안 오면 이번 켜짐엔 복원이 없다고 보고 띄운다.
 // ★v115r5-T4: firstLaunch = 설치 뒤 첫 기동(화면 배치 저장본 부재 · 적재 시점 스냅숏) → 카드 생략(restorebrief.isFirstLaunch).
@@ -7460,7 +7628,11 @@ async function readUnsubmittedRoles(
 }
 async function showRestoreBrief(): Promise<void> {
   if (restoreBriefShown) return;
-  restoreBriefShown = true;
+  if (restoreBriefBusy) {
+    restoreBriefAgain = true;
+    return;
+  }
+  restoreBriefBusy = true;
   try {
     const r = (await rpcT(invoke("list_surfaces", { socket: undefined }), T_LIST)) as {
       surfaces: {
@@ -7474,23 +7646,39 @@ async function showRestoreBrief(): Promise<void> {
     };
     const seats = r.surfaces.filter((s) => s.role);
     const master = seats.find((s) => s.role === "master" && !s.exited);
-    if (!master) return; // 마스터 자리가 없으면 띄우지 않는다(카드는 마스터 자리 1곳 전용)
+    if (!master) return; // 마스터 자리가 없으면 띄우지 않는다(카드는 마스터 자리 1곳 전용) — 서면 isMasterSeatSignal 이 다시 부른다
+    restoreBriefShown = true;
     const home = String(await invoke("home_dir_path"));
-    let text: string | null = null;
-    for (const p of stateCandidates(master.live_cwd, home)) {
+    // ★(v116-ui-close · R1a) 정본(~/.cys/pack/round) + 종전 cwd `_round` 사슬을 모두 읽고, 기록 시각이 가장 늦은
+    //   것을 쓴다(같으면 정본). 종전엔 cwd 사슬만 보고 첫 적중에서 멈춰 정본 기록을 한 번도 못 읽었다(D2 R1a).
+    //   (opus 디버깅 결함 2) cwd 사슬은 종전처럼 **가장 가까운 한 파일**만 — 상위 폴더(다른 마스터일 수 있다)의
+    //   더 늦은 기록이 끼어들지 않게. 비교는 「정본 vs 가장 가까운 cwd 기록」 둘뿐이다(설계 D5).
+    const readHead = async (p: string): Promise<string | null> => {
       try {
-        text = String(await rpcT(invoke("read_text_head", { path: p, maxBytes: 65536 }), T_LIST));
-        break;
+        return String(await rpcT(invoke("read_text_head", { path: p, maxBytes: 65536 }), T_LIST));
       } catch {
-        /* 다음 후보 */
+        return null; // 없는 후보
+      }
+    };
+    const [canonPath, ...chain] = briefStatePaths(master.live_cwd, home);
+    const found: { path: string; text: string }[] = [];
+    const canonText = await readHead(canonPath);
+    if (canonText !== null) found.push({ path: canonPath, text: canonText });
+    for (const p of chain) {
+      const t = await readHead(p);
+      if (t !== null) {
+        found.push({ path: p, text: t });
+        break;
       }
     }
+    const now = localStamp(new Date()); // 본문의 「예정」 시각을 기록 시각으로 오인하지 않게(recordedAt notAfter)
+    const text = pickBriefText(found, now);
     // ★(v112-restore ①) 부트 주입 제출 기록 — 미제출 실측 자리를 정직 표기(기본 레인만 · 못 읽으면 생략).
     const unsubmittedRoles = await readUnsubmittedRoles(seats, home);
     const card = buildBriefCard({
       unsubmittedRoles,
       sections: text === null ? null : parseBriefSections(text),
-      recordedAt: text === null ? null : recordedAt(text),
+      recordedAt: text === null ? null : recordedAt(text, now),
       restoredRoles: seats.filter((s) => !s.exited).map((s) => s.role as string),
       waitingRoles: seats.filter((s) => s.exited).map((s) => s.role as string),
       seatCtx: seats
@@ -7538,6 +7726,11 @@ async function showRestoreBrief(): Promise<void> {
     document.body.appendChild(box);
   } catch {
     /* 카드는 부가 기능 — 실패해도 복원·화면에는 영향이 없다 */
+  } finally {
+    restoreBriefBusy = false;
+    const again = restoreBriefAgain;
+    restoreBriefAgain = false;
+    if (again && !restoreBriefShown) maybeShowRestoreBrief(); // 판정 경유(직접 부름은 maybeShowRestoreBrief 한 곳)
   }
 }
 
@@ -7682,8 +7875,10 @@ async function start() {
   try {
     const status = (await rpcT(invoke("daemon_status"), T_STATUS)) as Record<string, unknown>;
     info.textContent = daemonInfoLabel(status);
+    info.title = daemonInfoTitle(status); // (D4 #5) 전문(pid·소켓 경로)은 툴팁으로
   } catch {
-    info.textContent = "데몬 응답 없음 — 화면은 계속 사용할 수 있습니다(연결되면 자동으로 붙습니다)";
+    info.textContent = "엔진 응답 없음"; // (D-1) 라벨은 짧게 — 설명은 툴팁
+    info.title = "엔진이 아직 응답하지 않습니다 — 화면은 계속 사용할 수 있습니다(연결되면 자동으로 붙습니다)";
   }
 
   // 버전 스큐 세대교체(메인 + 부서 데몬) — 시작 1회 + 5분 주기 재검(B). 무중단 rename-swap의 짝으로
@@ -7741,15 +7936,15 @@ async function start() {
       }
     } else if (p.phase === "verify") {
       // 맥 경로(B7): 크기·sha256·codesign 봉인·CDHash 를 차례로 본다. 윈도는 플러그인이 minisign 으로 대신한다.
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "받은 파일 검증 중(크기·해시·서명)…");
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "받은 파일이 진짜인지 확인하는 중…");
     } else if (p.phase === "swap") {
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "설치본 교체 중…");
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "앱을 새 판으로 바꾸는 중…");
     } else if (p.phase === "dry-run") {
       // 개발기 격리 실행 — 검증까지만 하고 교체하지 않았다는 사실을 화면에도 남긴다(무증상 성공 금지).
       dismissToast("upd-bin");
       toast("watchdog", "🧪 업데이트 드라이런", "검증 전건 통과 — 교체는 하지 않았습니다(CYS_UPDATE_DRY_RUN=1).");
     } else if (p.phase === "drain") {
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "세션 정리 중…");
+      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "하던 대화를 저장하는 중…");
     } else if (p.phase === "handoff") {
       stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "재시작 준비 중…");
     }
@@ -7766,7 +7961,7 @@ async function start() {
       "upd-restart",
       "feed",
       "✅ 새 판 교체 완료 — 눌러서 재시작",
-      `새 판 v${p.version ?? ""} 이 설치본에 들어갔습니다. 지금 누르면 저장 후 재시작하고 노드를 복원합니다(나중에 눌러도 됩니다).`,
+      `새 판 v${p.version ?? ""} 이 설치됐습니다. 지금 누르면 하던 대화를 저장하고 다시 켜서 창과 대화를 되돌립니다. 나중에 눌러도 됩니다.`,
       () => void restartAfterUpdate(p.version ?? ""),
     );
   });
@@ -7775,7 +7970,7 @@ async function start() {
   await listen("pack-progress", (e) => {
     const p = (e.payload ?? {}) as { phase?: string };
     if (p.phase === "start")
-      stickyToast("upd-pack", "feed", "🔄 무중단 적용 중", "서명검증 → 다운로드 → 원자적 팩 교체 → 노드 reinject…");
+      stickyToast("upd-pack", "feed", "🔄 자비스 구성 적용 중", "받은 파일을 확인하고 새 구성으로 바꾼 뒤 각 창에 알리는 중…");
   });
   await listen("pack-updated", (e) => {
     const p = (e.payload ?? {}) as { pack_version?: string; reinject_failed?: number; reinject_deferred?: number };
@@ -7789,21 +7984,21 @@ async function start() {
     if (failed > 0 || deferred > 0) {
       toast(
         "watchdog",
-        "✅ 팩 디스크 반영 완료",
-        `팩 ${p.pack_version ?? ""} 적용 — 세션 유지(재시작 없음). 일부 노드 reinject 보류/실패는 다음 폴링에서 재시도.`,
+        "✅ 자비스 구성 적용 · 일부 창 대기",
+        `새 자비스 구성 ${p.pack_version ?? ""} 을 적용했습니다. 몇몇 창에는 아직 알리지 못해 잠시 뒤 자동으로 다시 알립니다.`,
       );
     } else {
       toast(
         "watchdog",
-        "✅ 팩 업데이트 완료",
-        `팩 ${p.pack_version ?? ""} 적용 — 세션 유지·노드 reinject 완료(재시작 없음).`,
+        "✅ 자비스 구성 업데이트 완료",
+        `새 자비스 구성 ${p.pack_version ?? ""} 을 적용했고 모든 창에 알렸습니다. 재시작은 없었습니다.`,
       );
     }
   });
   await listen("update-warning", (e) => {
     const p = (e.payload ?? {}) as { message?: string };
     dismissToast("upd-pack"); // 진행 토스트를 내리고 아래 경고 토스트로 교대.
-    toast("health", "⚠ 팩 일부 미각성", p.message ?? "디스크 팩은 갱신됐으나 일부 노드 reinject 보류/실패(라이브 유지).");
+    toast("health", "⚠ 일부 창이 새 구성을 아직 모릅니다", "새 자비스 구성은 저장됐지만 몇몇 창에 알리지 못했습니다. 그 창들은 하던 대로 계속 돌아갑니다.", undefined, p.message);
   });
 
   // (T4) 업데이트 후 조직 복원 진행(restore-progress·spawn_org_restore emit) — '직원 복귀 중' 가시화.
@@ -7905,7 +8100,10 @@ async function start() {
       })();
       // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
       //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
-      exitedSweepArmed = true;
+      exitedSweepArm = armSweep(
+        workspaces.map((w) => [w.socket ?? "", collectSids(w.tree)] as const),
+        Date.now(),
+      );
       // 3초를 기다리지 않는다 — 사용자가 보는 것은 "복원됐다"는 말 직후의 화면이다.
       // 이 틱 안에서 ①옛 자리 닫기 → ②새 roleBySid 생성 → ③formationIfRowOnly 배치가 그 순서로 돈다.
       void refreshPaneTitles();
@@ -8011,7 +8209,7 @@ async function start() {
       }
     } catch (e) {
       dismissToast("upd-bin");
-      toast("health", "자동 테스트 패치 실패", String(e));
+      toast("health", "자동 테스트 패치 실패", "시험용 자동 설치를 마치지 못했습니다.", undefined, String(e));
     }
   })();
 
@@ -8393,9 +8591,15 @@ async function start() {
 
 // ---------- ui wiring ----------
 
-document.getElementById("btn-new")!.addEventListener("click", actionNew);
-document.getElementById("btn-split-h")!.addEventListener("click", () => actionSplit("row"));
-document.getElementById("btn-split-v")!.addEventListener("click", () => actionSplit("col"));
+// ★(v116-ui-close · 권고 C) 창 만들기는 상단에서 빠져 전문가 칸의 단추 1개가 됐다 — 누르면 방향 2개를 고른다.
+//   동작은 종전 Split →/↓ 와 같은 함수다(포커스 창이 없으면 actionSplit 이 actionNew 로 넘긴다 = 종전 + New).
+document.getElementById("btn-pane-create")!.addEventListener("click", (e) => {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  showCtxMenu(r.left, r.bottom, [
+    { label: "오른쪽에 새 창 (⌘D)", action: () => void actionSplit("row") },
+    { label: "아래에 새 창 (⌘⇧D)", action: () => void actionSplit("col") },
+  ]);
+});
 document.getElementById("btn-equalize")!.addEventListener("click", actionEqualize);
 document.getElementById("btn-close")!.addEventListener("click", actionClose);
 document.getElementById("btn-files")!.addEventListener("click", () => setFtOpen(!ftOpen));
@@ -8605,9 +8809,9 @@ document.getElementById("btn-dept-master")?.addEventListener("click", async () =
   }
   try {
     await invoke("start_dept_master", { socket: ws.socket });
-    toast("feed", "▶ 부서장 시작", `${ws.name ?? "부서"}에 마스터(부서장) 노드를 기동했습니다 — 잠시 후 pane이 자동으로 나타납니다.`);
+    toast("feed", "▶ 부서장 시작", `${wsLabel(ws)}에 마스터(부서장) 노드를 기동했습니다 — 잠시 후 pane이 자동으로 나타납니다.`);
   } catch (e) {
-    toast("health", "부서장 시작 실패", masterDeniedMsg(e, `이 부서(${ws.name ?? ws.socket})`));
+    toast("health", "부서장 시작 실패", masterDeniedMsg(e, `이 부서(${wsLabel(ws)})`));
   }
 });
 

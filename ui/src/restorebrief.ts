@@ -61,12 +61,25 @@ export function parseBriefSections(text: string): BriefSections {
   return out;
 }
 
-/** 기록 시각 — 파일 안에 적힌 가장 늦은 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null). */
-export function recordedAt(text: string): string | null {
-  const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`);
+/**
+ * 기록 시각 — 파일 안에 적힌 가장 늦은 「YYYY-MM-DD HH:MM」(없으면 날짜만, 그것도 없으면 null).
+ * ★(v116-ui-close · opus 디버깅 결함 1) `notAfter`(지금 시각 「YYYY-MM-DD HH:MM」)를 주면 그보다 늦은 시각은
+ *   버린다 — 본문에 적힌 **예정** 시각(「다음 점검 2026-10-01 09:00 예정」)이 기록 시각으로 뽑혀 카드가 「이 기록은
+ *   10-01 기준」이라고 거짓말하고, 두 파일 중 옛 파일을 고르던 결함. 주지 않으면 종전 그대로.
+ */
+export function recordedAt(text: string, notAfter?: string): string | null {
+  const okFull = (t: string) => notAfter === undefined || t <= notAfter;
+  const okDay = (d: string) => notAfter === undefined || d <= notAfter.slice(0, 10);
+  const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`).filter(okFull);
   if (full.length) return full.sort().at(-1) ?? null;
-  const d = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})/g)].map((m) => m[1]);
+  const d = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})/g)].map((m) => m[1]).filter(okDay);
   return d.length ? (d.sort().at(-1) ?? null) : null;
+}
+
+/** 지금 시각을 파일 기록과 같은 모양(로컬 「YYYY-MM-DD HH:MM」)으로 — recordedAt 의 notAfter 재료. */
+export function localStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** 작업기억 파일 후보 경로 — 마스터 작업 폴더에서 위로 올라가되 홈 폴더를 넘지 않는다. */
@@ -85,6 +98,51 @@ export function stateCandidates(cwd: string | null | undefined, home: string): s
     d = d.slice(0, cut);
   }
   return out;
+}
+
+/**
+ * ★(v116-ui-close · R1a) 작업기억의 **정본** 경로 — 마스터 지침(MASTER_DIRECTIVE §0 ③·주요 이벤트 기록)이
+ * 쓰는 곳은 `${CYS_PACK_DIR:-~/.cys/pack}/round/SESSION_STATE.md` 다. 종전 카드는 `<마스터 cwd>/_round/…`
+ * 계열만 찾아서, 드레인 저장이 없던 켜짐에선 늘 「기록을 찾지 못했습니다」가 떴다(D2 R1a).
+ * ⚠CYS_PACK_DIR 을 따로 지정한 기기는 이 기본 경로와 다를 수 있다 — UI 는 그 값을 읽을 통로가 없어
+ *   기본 경로(= 설치 기본값)만 본다(없으면 종전 후보로 넘어간다 · 지어내지 않는다).
+ */
+export function canonicalStatePath(home: string): string {
+  const h = home.replace(/[\\/]+$/, "");
+  const sep = h.includes("\\") && !h.includes("/") ? "\\" : "/";
+  return [h, ".cys", "pack", "round", "SESSION_STATE.md"].join(sep);
+}
+
+/** 카드가 읽어 볼 경로 전부 — 정본 먼저, 그다음 종전 cwd `_round` 사슬(드레인 저장이 쓰는 곳 · cys.rs DRAIN 지시). */
+export function briefStatePaths(cwd: string | null | undefined, home: string): string[] {
+  const canon = canonicalStatePath(home);
+  return [canon, ...stateCandidates(cwd, home).filter((p) => p !== canon)];
+}
+
+/**
+ * 이 파일에 카드가 읽는 고정 3절 제목(완료 / 진행 중 / 결정 필요) 중 **하나라도** 있는가.
+ * ★(v116-ui-close · R1a 곁) 정본 파일은 설치 골격(cysjavis-pack/round/SESSION_STATE.md)부터 절 이름이 다르다
+ *   (현재 위치 · 오너 지시 대장 · 미해결 게이트 · 다음 액션 큐). 제목이 하나도 없는 파일을 「기록 있음」으로
+ *   다루면 카드가 「하던 일을 복원했어요」 + 「적힌 것이 없습니다」×3 을 싣는다 — T4 가 없앤 빈 문장이 정본
+ *   경로를 타고 되돌아온다. 그래서 제목이 하나도 없으면 **기록 없음**으로 접는다(아는 것만 말한다).
+ */
+export function hasBriefSections(text: string): boolean {
+  return text.split(/\r?\n/).some((l) => /^#{1,6}\s/.test(l) && HEADS.some(([, re]) => re.test(l)));
+}
+
+/**
+ * 읽힌 후보들 중 카드에 쓸 하나. ① 고정 3절 제목이 있는 파일을 먼저(없는 파일은 카드에 실을 것이 없다)
+ * ② 그중 **기록 시각(recordedAt)이 가장 늦은 것** — 드레인 저장이 방금 cwd 쪽에 썼으면 그쪽이 더 새 기록이다
+ * ③ 같으면 **앞선 후보**(= 정본). 3절 제목이 있는 파일이 하나도 없으면 null(카드는 아는 것만 말한다).
+ */
+export function pickBriefText(found: { path: string; text: string }[], notAfter?: string): string | null {
+  let best: { text: string; at: string } | null = null;
+  for (const f of found) {
+    if (!hasBriefSections(f.text)) continue;
+    const at = recordedAt(f.text, notAfter) ?? "";
+    if (best === null || at > best.at) best = { text: f.text, at };
+  }
+  return best ? best.text : null;
 }
 
 /** 역할 코드명 → 처음 쓰는 사람이 읽는 이름. 모르는 역할은 「도우미」로 뭉친다(코드명을 내지 않는다). */
@@ -231,6 +289,16 @@ export const BRIEF_RESTORE_GRACE_MS = 15000;
 export function isFirstLaunch(savedLayoutRaw: string | null | undefined): boolean {
   return savedLayoutRaw === null;
 }
+/**
+ * ★(v116-ui-close-r2 · R1c) 「마스터 자리가 방금 섰다」 신호인가 — 순수 판정.
+ * 카드는 마스터 자리 1곳 전용이라, 유예(15초) 시점에 마스터가 아직 없으면(↻ 재시도 대기 · 느린 기동)
+ * 그때는 띄우지 않고 기다린다. 마스터가 서는 두 경로의 데몬 신호가 그 기다림을 푼다 —
+ * 역할 등록(role.claimed · claim-role)과 역할을 싣고 만든 창(surface.created · launch-agent·복원).
+ */
+export function isMasterSeatSignal(name: string, payload: { role?: unknown }): boolean {
+  return (name === "role.claimed" || name === "surface.created") && payload.role === "master";
+}
+
 export function briefTiming(s: {
   restoreStarted: boolean;
   restoreFinished: boolean;

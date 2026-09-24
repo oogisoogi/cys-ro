@@ -5,7 +5,7 @@ env=dict(os.environ, PATH=os.path.expanduser('~/.bun/bin')+':'+os.environ['PATH'
 M=[
  ('M1a','src/closeguard.ts','return exited !== true;','return exited === false;','src/closeguard.test.ts'),
  ('M1b','src/main.ts','      if (ws === current() && ws.tree && collectSids(ws.tree).includes(sid)) setFocus(sid);\n      return;\n','      if (ws === current() && ws.tree && collectSids(ws.tree).includes(sid)) setFocus(sid);\n','src/closeguard.test.ts'),
- ('M1c','src/main.ts','term.write("\\r\\n\\x1b[31m[surface exited]\\x1b[0m\\r\\n", snapToBottom);','term.write("\\r\\n\\x1b[31m[surface exited]\\x1b[0m\\r\\n", snapToBottom); exitedPaneKeys.add(paneKey(sid, socket));','src/closeguard.test.ts'),
+ ('M1c','src/main.ts','writeExitedBanner(term, trackFilter, snapToBottom);','writeExitedBanner(term, trackFilter, snapToBottom); exitedPaneKeys.add(paneKey(sid, socket));','src/closeguard.test.ts'),  # (v116-exited-banner) 배너 쓰기가 exitbanner.ts 로 옮겨 앵커 갱신
  ('M1d','src/main.ts','    if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;\n  }\n','  }\n','src/closeguard.test.ts'),
  ('M2a','src/exitedsweep.ts','for (const k of swept) pending.delete(k);','for (const k of swept) pending.delete(k); pending.clear();','src/exitedsweep.test.ts'),
  ('M2b','src/exitedsweep.ts','if (now - arm.armedAt > SWEEP_ARM_TTL_MS) return null;\n  return arm.pending.get','if (now - arm.armedAt >= SWEEP_ARM_TTL_MS) return null;\n  return arm.pending.get','src/exitedsweep.test.ts'),

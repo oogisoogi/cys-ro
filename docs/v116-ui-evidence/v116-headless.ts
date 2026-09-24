@@ -36,7 +36,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c17x,c17w").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c17x,c17w,c18").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -366,6 +366,63 @@ if (ONLY.includes("c16")) {
 }
 
 if (ONLY.includes("c17")) {
+  // (v116-exited-banner) 좌석 종료 배너 「[surface exited]」 가 화면 **맨 아래**(내용 뒤)에 뜨는가 — 박사님 09-24 「중간에 나온다」.
+  //   좌석 화면 4상태를 만든 뒤 종료(__shimExit) → 보이는 행(DOM 렌더러 .xterm-rows)에서 배너 행 · 그 아래 내용 · 배너 행 글자 판독.
+  //   ⒜ 주 화면 · 커서가 입력 상자 안(아래에 테두리·안내 줄이 남음 = Ink 인라인 화면 흉내)  ⒝ 대체 화면(1049h) · 커서 중간 · 1049l 없이 종료
+  //   ⒞ 평범한 셸 끝줄(대조 — 커서가 이미 맨 아래)  ⒟ 대체 화면 진입·이탈(1049h→1049l) 뒤 종료(복귀 커서 = 진입 전 자리)
+//   ⒠ 스크롤 영역(DECSTBM 5~20)·원점 모드(DECOM)가 남은 채 종료 · 영역 밖 맨 아래 줄에 상태 줄
+//   ⒡ 스크롤백 뒤 화면 지우기 → 짧은 화면(커서 2행 · 아래 안내 줄) — 배너가 내용 바로 뒤(맨 밑으로 튀지 않음)
+//   붙음 = 배너 바로 위 빈 줄 ≤ 1(⒟ 처럼 커서 줄이 빈 채 끝나면 1줄)
+  //   합격 = 배너 행이 존재 · 배너 아래 빈 줄뿐 · 배너 행 글자 = 「[surface exited]」 그대로(남의 글자 위에 덮어쓰지 않음) · ⒜ 는 스크롤백 맨 위(앞 8행 안) 「fill 0」 보존.
+  const enc = `((s) => btoa(String.fromCharCode(...new TextEncoder().encode(s))))`;
+  const fill = `Array.from({ length: 80 }, (_, i) => "fill " + i).join("\\r\\n") + "\\r\\n"`;
+  const STATES: Record<string, string> = {
+    a: `${fill} + "╭──────────────╮\\r\\n│ ❯ 입력       │\\r\\n╰──────────────╯\\r\\n  ? for shortcuts\\r\\n  ctx 12% · opus" + "\\x1b[3A\\x1b[5G"`,
+    b: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 30 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[12;5H"`,
+    c: `${fill} + "user@mac ~ % "`,
+    // b2 대체 화면이 마지막 행까지 참(60줄 → 화면 44행 전부 · 커서 중간) — opus 적대 1R MINOR-1: 손실은 맨 윗줄 1줄까지만
+    b2: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 60 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[12;5H"`,
+    // b3 대체 화면 · 마지막 행만 빔(43줄 = 0~42행) · 커서 중간 — opus 2R MINOR-3: 손실 0
+    b3: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 43 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[12;5H"`,
+    // b4 대체 화면 · 내용 10줄 · 커서는 빈 마지막 행에 둔 채 종료 — agy 2R: 손실 0 · 배너가 내용 바로 뒤
+    b4: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 10 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[999;1H"`,
+    // ⒠ 죽은 앱이 스크롤 영역(5~20행)·원점 모드(DECOM)를 남긴 채 커서를 영역 안에 두고 종료 · 맨 아래 줄(영역 밖)에 상태 줄
+    e: `${fill} + "\\x1b[999;1HSTATUS LINE" + "\\x1b[5;20r\\x1b[?6h\\x1b[3;1H"`,
+    // ⒡ 스크롤백이 쌓인 뒤 화면 지우기(2J) → 짧은 화면 · 커서 2행 · 아래 안내 줄(판독이 스크롤백 기준선 baseY 를 더해야 맞는 줄을 읽는다)
+    f: `${fill} + "\\x1b[2J\\x1b[Hshort 1\\r\\nshort 2\\r\\n\\r\\n  footer" + "\\x1b[2;1H"`,
+    // 대조군(조건 하나만 바꿈): a0 = ⒜ 에서 커서 되올림(\x1b[3A) 만 뺌 · b0 = ⒝ 에서 커서 중간 이동(\x1b[12;5H) 만 뺌
+    a0: `${fill} + "╭──────────────╮\\r\\n│ ❯ 입력       │\\r\\n╰──────────────╯\\r\\n  ? for shortcuts\\r\\n  ctx 12% · opus"`,
+    b0: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 30 }, (_, i) => "tui " + i).join("\\r\\n")`,
+    d: `"\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 30 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[?1049l"`,
+  };
+  const ROWS = `[...${PANE("worker")}.querySelector(".xterm-rows").children].map(d => d.textContent.replace(/\\u00a0/g, " ").trimEnd())`;
+  for (const w of [1280, 800]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 820, deviceScaleFactor: 1, mobile: false });
+    for (const st of ["a", "b", "b2", "b3", "b4", "c", "d", "e", "f", "a0", "b0"]) {
+      await load("two");
+      await ev(`window.__shimEmit("out-2", ${enc}(${STATES[st]}))`); await Bun.sleep(300);
+      await ev(`window.__shimExit(2, false)`); await Bun.sleep(700);
+      const rows = (await ev(ROWS)) as string[];
+      const at = rows.findIndex((r) => r.includes("[surface exited]"));
+      const below = at < 0 ? [] : rows.slice(at + 1).filter((r) => r.trim() !== "");
+      await shot(`c17${st}-${w}.png`);
+      let top = "";
+      if (st === "a") { await ev(`${PANE("worker")}.querySelector(".xterm-viewport").scrollTop = 0`); await Bun.sleep(400); top = ((await ev(ROWS)) as string[]).slice(0, 8).find((r) => r.startsWith("fill ")) ?? ""; }
+      // 덮어쓰기 0 = 종료 전 화면 글자가 한 줄도 사라지지 않음(⒜ 입력 상자 아래 테두리 · ⒝ tui 0~29 전부)
+      const must = st.startsWith("a") ? ["╰──────────────╯", "? for shortcuts", "ctx 12% · opus"] : st === "b2" ? Array.from({ length: 43 }, (_, i) => `tui ${60 - 43 + i}`) : st === "b3" ? Array.from({ length: 43 }, (_, i) => `tui ${i}`) : st === "b4" ? Array.from({ length: 10 }, (_, i) => `tui ${i}`) : st.startsWith("b") ? Array.from({ length: 30 }, (_, i) => `tui ${i}`) : st === "e" ? ["STATUS LINE"] : st === "f" ? ["short 1", "short 2", "footer"] : [];
+      const lost = must.filter((m) => !rows.some((r) => r.trim() === m.trim()));
+      let gap = 0; for (let y = at - 1; y >= 0 && rows[y].trim() === ""; y--) gap++;
+      const ok = at >= 0 && gap <= 1 && below.length === 0 && rows[at].trim() === "[surface exited]" && lost.length === 0 && (st !== "a" || top.startsWith("fill 0"));
+      check(`c17${st}@${w} 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0${st === "a" ? " · 스크롤백 보존" : ""}`, ok, JSON.stringify({ rows: rows.length, bannerRow: at, gap, bannerLine: at >= 0 ? rows[at] : null, below: below.slice(0, 4), belowN: below.length, lost, ...(st === "a" ? { top } : {}) }));
+    }
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+}
+
+// (v116-integ-3 병합) 1091 restart-toast 의 c17·c17x·c17w — 1088 exited-banner 도 「c17」 을 썼다(두 가지가 같은 번호를 따로 씀).
+//   두 판정 이름은 겹치지 않는다(1088 = c17a@1280 처럼 폭 붙음 · 1091 = c17a…c17x 폭 없음) → 블록 열쇠 「c17」 를 둘이 같이 쓴다.
+//   순서 = 1088 먼저(자기 가지처럼 c16 바로 뒤 · 기본 UA) → 1091(맥 UA 를 세우고 되돌리지 않음 · 자기 load 로 새로 시작) → c18.
+if (ONLY.includes("c17")) {
   const MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
   await cdp("Emulation.setUserAgentOverride", { userAgent: MAC_UA });
   // 누를 수 있는 재시작 자리 = 누르면 동작하는 알림 + 「다시 켜기」 상태의 헤더 단추
@@ -570,6 +627,84 @@ if (ONLY.includes("c17w")) {
   const w2 = await ev(`({ installs: ${NCALL("install_update")}, restarts: ${NCALL("restart_after_update")} })`);
   check("c17w 윈도 = 단추 「업데이트」 · 누르면 설치 확인 → install_update · 재시작 대기 0", w.label === "업데이트" && /새 앱 1\.1\.7 설치/.test(w.modal) && w.restarts === 0 && w.pending === 0 && w2.installs === 1 && w2.restarts === 0, JSON.stringify({ ...w, ...w2 }));
   await cdp("Emulation.setUserAgentOverride", { userAgent: "" });
+}
+
+if (ONLY.includes("c18")) {
+  // (v116-exited-banner 정밀 디버깅 경계) 모두 「⒜ 입력 상자 + 커서 되올림」 끝 화면을 기본으로 경계 조건 하나씩 더한다.
+  //   g 스크롤백 가득(6000줄 > scrollback 5000) · h 종료 직전 대량 출력(200청크 × 약 10KB, 종료와 같은 틱) · i 필터 carry(끝에 미완 `ESC[?100`)
+  //   j 창 크기 바뀐 직후 종료(fit 60ms 디바운스 전) · k 사용자가 위로 스크롤해 둔 채 종료(바닥으로 내려 판독) · l 마지막 열 줄넘김 대기(열 수만큼 X)
+  //   n 아주 좁은 창(420폭) · m 종료 이벤트 2회(보이는 배너 1개)
+  const enc = `((s) => btoa(String.fromCharCode(...new TextEncoder().encode(s))))`;
+  const FOOT = `"╭──────────────╮\\r\\n│ ❯ 입력       │\\r\\n╰──────────────╯\\r\\n  ? for shortcuts\\r\\n  ctx 12% · opus" + "\\x1b[3A\\x1b[5G"`;
+  const ROWS = `[...${PANE("worker")}.querySelector(".xterm-rows").children].map(d => d.textContent.replace(/\\u00a0/g, " ").trimEnd())`;
+  const emitLines = (n: number, per = 500) => `(() => { for (let k = 0; k < ${n}; k += ${per}) window.__shimEmit("out-2", btoa(Array.from({ length: Math.min(${per}, ${n} - k) }, (_, i) => "L" + (k + i) + " " + "x".repeat(20)).join("\\r\\n") + "\\r\\n")); })()`;
+  const judge = async (name: string, extra: (rows: string[]) => Record<string, unknown> = () => ({}), bannersExpected = 1) => {
+    const rows = (await ev(ROWS)) as string[];
+    const at = rows.findIndex((r) => r.includes("[surface exited]"));
+    const n = rows.filter((r) => r.includes("[surface exited]")).length;
+    const below = at < 0 ? [] : rows.slice(at + 1).filter((r) => r.trim() !== "");
+    const lost = ["╰──────────────╯", "? for shortcuts", "ctx 12% · opus"].filter((m) => !rows.some((r) => r.trim() === m));
+    const garbage = rows.filter((r) => /\?100|\[\?|\x1b/.test(r));
+    const x = extra(rows);
+    const ok = at >= 0 && n === bannersExpected && below.length === 0 && lost.length === 0 && garbage.length === 0 && Object.values(x).every((v) => v !== false);
+    await shot(`c18${name}.png`);
+    check(`c18${name} 경계 — 배너 맨 아래 · ${bannersExpected}회 · 덮어쓰기 0 · 잔여 글자 0`, ok, JSON.stringify({ at, n, below: below.slice(0, 3), lost, garbage: garbage.slice(0, 2), ...x }));
+  };
+  const exitWorker = `window.__shimExit(2, false)`;
+  // g 스크롤백 가득
+  await load("two");
+  await ev(emitLines(6000)); await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(600);
+  await ev(exitWorker); await Bun.sleep(800);
+  await judge("g-scrollback-full");
+  // h 종료 직전 대량 출력 — 출력과 종료를 같은 평가(같은 틱)에서
+  await load("two");
+  await ev(`${emitLines(40000, 400)}; window.__shimEmit("out-2", ${enc}(${FOOT})); ${exitWorker}`); await Bun.sleep(4000);
+  await judge("h-burst-then-exit");
+  // i 필터 carry — 스트림 끝이 미완 DECSET 후보
+  await load("two");
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT} + "\\x1b[?100"))`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  await judge("i-carry-flush");
+  // j 창 크기 바뀐 직후 종료
+  await load("two");
+  await ev(emitLines(120)); await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 900, height: 600, deviceScaleFactor: 1, mobile: false });
+  await ev(exitWorker); await Bun.sleep(1200);
+  await judge("j-resize-then-exit");
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+  // k 위로 스크롤해 둔 채 종료 → 바닥으로 내려 판독
+  await load("two");
+  await ev(emitLines(300)); await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await ev(`${PANE("worker")}.querySelector(".xterm-viewport").scrollTop = 0`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  const topAfter = ((await ev(ROWS)) as string[])[0];
+  await ev(`(() => { const v = ${PANE("worker")}.querySelector(".xterm-viewport"); v.scrollTop = v.scrollHeight; })()`); await Bun.sleep(400);
+  await judge("k-scrolled-up", () => ({ topAfter }));
+  // l 마지막 열 줄넘김 대기 — 열 수만큼 X 를 쓴 뒤 커서 되올림 없이(대기 상태) 종료
+  await load("two");
+  const cols = await ev(`(window.__shimCalls.filter(c => c.cmd === "resize_surface" && c.args.surfaceId === 2).at(-1)?.args.cols ?? 120)`);
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT} + "\\x1b[3B\\r\\n" + "X".repeat(${cols})))`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  await judge("l-pending-wrap", (rows) => ({ cols, xLineIntact: rows.some((r) => r === "X".repeat(Number(cols))) }));
+  // n 아주 좁은 창 — 열이 10 안팎이라 모든 줄이 접힌다 → 행 단위가 아니라 공백 뺀 이어 붙인 글로 판독
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 420, height: 820, deviceScaleFactor: 1, mobile: false });
+  await load("two");
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await ev(exitWorker); await Bun.sleep(800);
+  {
+    const joined = ((await ev(ROWS)) as string[]).join("").replace(/\s+/g, "");
+    const keep = ["╰──────────────╯", "?forshortcuts", "ctx12%·opus"].filter((m) => !joined.includes(m));
+    await shot("c18n-narrow-420.png");
+    check("c18n-narrow-420 경계 — 모든 줄이 접히는 좁은 창: 배너가 글 끝 · 1회 · 덮어쓰기 0", joined.endsWith("[surfaceexited]") && joined.split("[surfaceexited]").length === 2 && keep.length === 0, JSON.stringify({ tail: joined.slice(-60), lost: keep }));
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+  // m 종료 이벤트 2회(실경로에서는 스트림당 1회 — Rust 가 1회만 보냄 · 방어 관측) — 이 모양(짧은 화면 · 같은 틱)에서는 두 콜백이
+  //   같은 화면을 읽어 같은 자리에 같은 글을 쓴다 ⇒ 보이는 배너 1개. ⚠조건부(opus 2R): 대상이 맨 아래 근처(스크롤 발생)거나 두 번째가
+  //   첫 배너 해석 뒤에 오면 2개가 **내용 아래에** 잇달아 선다. 합격 = 이 모양에서 1개 · 내용 아래.
+  await load("two");
+  await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
+  await ev(`${exitWorker}; window.__shimEmit("exit-2", null)`); await Bun.sleep(800);
+  await judge("m-exit-twice");
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

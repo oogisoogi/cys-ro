@@ -1,0 +1,198 @@
+M1a KILLED
+    (fail) 닫기 확인 판정 — 진리표 > 권고 A(live-only): exited 확정만 묻지 않는다 · 산 창·모름은 묻는다 [0.20ms]
+M1b KILLED
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > 취소면 닫지 않고, 묻는 사이 그 창이 사라졌으면 다른 창을 닫지 않는다 [0.18ms]
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > (Fable MINOR-2·3) 취소하면 그 창에 포커스를 돌려주고, 닫은 뒤 탭이 바뀌었으면 보이는 탭 포커스를 건드리지 않는다 [0.07ms]
+M1c KILLED
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > exited 판정 재료 = 데몬 목록의 exited 하나뿐 — 스트림 종료 이벤트로는 넣지 않는다 [0.36ms]
+M1d KILLED
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > 취소면 닫지 않고, 묻는 사이 그 창이 사라졌으면 다른 창을 닫지 않는다 [0.16ms]
+M2a KILLED
+    (fail) D4 #17 소켓별 무장 — 진리표 > 패스 1 에서 부서 소켓 조회 실패 → 그 소켓은 무장이 남고, 패스 2 에서 쓸린다(잔재 0) [4.67ms]
+    (fail) D4 #17 소켓별 무장 — 진리표 > 아무 소켓도 청소 줄에 못 닿은 패스(전부 실패·건너뜀) → 무장이 그대로 남는다 [0.16ms]
+M2b KILLED
+    (fail) D4 #17 소켓별 무장 — 진리표 > 상한(5분)을 넘기면 무장이 사라진다 — 응답 없는 소켓 때문에 영구 무장 0 [0.30ms]
+M2c KILLED
+    (fail) B17 배선 > 무장 정리는 finally 에서 — 청소 줄에 닿은 소켓만 뺀다(무조건 해제 금지 · D4 #17) [0.39ms]
+M1e KILLED
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > (Fable MAJOR-1) Control Center 가 열려 있으면 확인 창을 띄우기 **전에** 닫는다(확인 창이 그 뒤에 숨지 않게) [0.20ms]
+M1f KILLED
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > (agy 1R ②) 닫는 중인 창은 다시 묻지도 닫지도 않는다 — 요청이 끝나면 표시를 푼다 [0.27ms]
+M1g KILLED
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > exited 판정 재료 = 데몬 목록의 exited 하나뿐 — 스트림 종료 이벤트로는 넣지 않는다 [4.26ms]
+M2d KILLED
+    (fail) B16 결선 — 닫기가 먼저, 배치가 나중 > 배선이 그 순서다 — 스윕 루프가 배치 블록보다 앞에 있고, roleBySid 는 exited 를 뺀다 [7.23ms]
+M5e KILLED
+    (fail) v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다 > 배선: 카드가 정본 포함 후보 전부를 읽고 pickBriefText 로 고른다(첫 적중에서 멈추지 않는다) [1.39ms]
+M5f KILLED
+    (fail) v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다 > (opus 디버깅 결함 1) 본문의 「예정」 미래 시각은 기록 시각이 아니다 — 새 기록을 이기지 못하고 카드에도 안 뜬다 [0.23ms]
+X1 KILLED
+    (fail) 닫기 배선 — 세 입구가 모두 판정을 지난다 > (opus 뮤턴트 X1) 낡은 포커스 가드는 판정보다 앞 · close_surface 경로에 우회 0 [0.13ms]
+X5 KILLED
+    (fail) B17 배선 > (opus 뮤턴트 X5·X7) 청소 범위는 **그 소켓의** 키로 묻고, 패스 도중 새로 무장됐으면 새 무장을 건드리지 않는다 [4.78ms]
+X7 KILLED
+    (fail) B17 배선 > (opus 뮤턴트 X5·X7) 청소 범위는 **그 소켓의** 키로 묻고, 패스 도중 새로 무장됐으면 새 무장을 건드리지 않는다 [8.54ms]
+M6a KILLED
+    (fail) D4 #21 경보 층위 — 알림 줄은 복원 카드보다 위 > #toasts z-index > #restore-brief z-index [0.26ms]
+M6b KILLED
+    (fail) D4 #21 경보 층위 — 알림 줄은 복원 카드보다 위 > 복원 카드는 알림 줄(아래)과 다른 모서리 — 오른쪽 **위**(상단바 아래)에 선다 · 아래·왼쪽에 붙지 않는다 [0.34ms]
+M7a KILLED
+    (fail) ⓒ 데몬 판번 상시 표시 > 판번이 오면 라벨에 늘 싣는다(스큐가 아닐 때도) [0.15ms]
+    (fail) ⓓ 상단바 데몬 라벨 — 판번만(D4 #5) > 라벨에 pid·소켓 경로·영어 내부 용어가 없다 [0.19ms]
+M7b KILLED
+    (fail) ⓓ 상단바 데몬 라벨 — 판번만(D4 #5) > 두 자리(시작 · 재연결) 모두 툴팁에 전문을 싣는다 · 초기 문구·무응답 문구도 내부 용어 0 [6.11ms]
+M8a KILLED
+    (fail) D4 #13 상단바 단추 글자 = 한국어 > 단추 글자에 영어가 없다(허용 목록 제외) [0.47ms]
+    (fail) D4 #13 상단바 단추 글자 = 한국어 > 창 닫기 · 파일 · 업데이트 [0.05ms]
+M8b KILLED
+    (fail) D4 #13 끝난 창 제목 표지 = 「(끝남)」(r2 · D4 #12 앞머리) > 제목 배선이 판정 모듈을 쓰고, 영어 [exited] 를 화면에 싣지 않는다 [0.57ms]
+M9a KILLED
+    (fail) 본부 판정 — 마스터 좌석 우선 · 모르면 첫째 기본 탭 > 마스터 좌석이 있는 기본 탭이 본부(둘째여도 빼앗기지 않는다) [0.39ms]
+M9b KILLED
+    (fail) 이름 편집 — 자동 이름을 그대로 두면 저장값은 미정 그대로 > 본부·새 화면을 그대로 두고 편집을 끝내면 untitled 유지(부서 표시명 회복·본부 판정 이동이 멈추지 않게) [0.17ms]
+M9c KILLED
+    (fail) 배선 — 저장값은 무변경 · 보여 주는 자리는 전부 wsLabel > 탭 이름 · 삭제 확인 · 전출 알림 · 부서 삭제 · 그룹 이름 · 부서장 알림이 wsLabel 을 쓴다 [3.73ms]
+M8c KILLED
+    (fail) D4 #13 상단바 단추 글자 = 한국어 > 안내 문구가 옛 영어 단추 이름을 가리키지 않는다 — ui/src 제품 파일 전부(Fable 적대 2R MAJOR: updateplan.ts 누락) [2.93ms]
+M9d KILLED
+    (fail) 배선 — 저장값은 무변경 · 보여 주는 자리는 전부 wsLabel > 이름 편집 확정이 renamedName 을 지나고, 본부 판정 재료는 기본 소켓 목록에서만 갱신된다 [4.54ms]
+M9e KILLED
+    (fail) 배선 — 저장값은 무변경 · 보여 주는 자리는 전부 wsLabel > 이름 편집 확정이 renamedName 을 지나고, 본부 판정 재료는 기본 소켓 목록에서만 갱신된다 [0.28ms]
+M9f KILLED
+    (fail) 본부 판정 — 마스터 좌석 우선 · 모르면 첫째 기본 탭 > (Fable 2R) 폴백은 id 최소 — 탭을 끌어 순서가 바뀌어도 본부가 옮겨 가지 않는다 [0.15ms]
+M7c KILLED
+    (fail) ⓓ 상단바 데몬 라벨 — 판번만(D4 #5) > (opus 디버깅 D-1) 라벨은 줄어들지 않는다 — 좁은 창에서 판번이 찌그러지지 않게(상단바가 가로로 밀린다) [0.20ms]
+M10a KILLED
+    (fail) 맨 위 도달 안내(B1 ②) > (D4 #6) 스크롤백이 없는 짧은 창(baseY 0)·대체 화면(vim·less)에서는 첫 위 휠에 띄우지 않는다 [0.17ms]
+M10b KILLED
+    (fail) 맨 위 도달 안내(B1 ②) > (D4 #6) 스크롤백이 없는 짧은 창(baseY 0)·대체 화면(vim·less)에서는 첫 위 휠에 띄우지 않는다 [0.34ms]
+M11a KILLED
+    (fail) scopedRates — 「7d·Fable」 실게이지 > stale 의 뜻 = 생산자 주기를 넘김 — 스코프 게이지는 프로브 주기 문턱(SCOPED_STALE_SECS)을 쓴다 [0.14ms]
+    (fail) D4 #11 스코프 게이지 낡음 문턱 = 프로브 주기 짝 > 정상 주기 안(150초 · 180초 · 문턱)은 흐리지 않고, 한 번 거른 뒤(문턱+1 · 360초)는 흐린다 [0.14ms]
+M11b KILLED
+    (fail) D4 #11 스코프 게이지 낡음 문턱 = 프로브 주기 짝 > 문턱은 프로브 주기보다 길고, 한 번 거른 주기(백오프 2배)보다 짧다 [0.20ms]
+    (fail) D4 #11 스코프 게이지 낡음 문턱 = 프로브 주기 짝 > 정상 주기 안(150초 · 180초 · 문턱)은 흐리지 않고, 한 번 거른 뒤(문턱+1 · 360초)는 흐린다 [0.08ms]
+M12a KILLED
+    (fail) v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다 > 「한 번 띄움」 표지는 마스터 자리를 찾은 뒤에 켠다(첫 줄에서 켜지 않는다) [0.31ms]
+M12b KILLED
+    (fail) v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다 > 데몬 이벤트 배선: 마스터 신호 → maybeShowRestoreBrief(판정·1회는 거기서) [0.25ms]
+M12c KILLED
+    (fail) v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다 > 마스터가 서는 두 신호만 다시 부른다(역할 등록 · 역할 실은 창 만들기) [3.67ms]
+M12d KILLED
+    (fail) v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다 > 조회 중에 온 부름은 버리지 않는다 — 끝난 뒤 판정 경유로 1회 재조회 [0.18ms]
+M12e KILLED
+    (fail) v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다 > 마스터가 서는 두 신호만 다시 부른다(역할 등록 · 역할 실은 창 만들기) [0.15ms]
+M13a KILLED
+    (fail) D4 #12 끝난 창 표지 = 앞머리(말줄임이 먼저 자르지 않게) > 「(끝남) 」이 맨 앞 [0.19ms]
+M13b KILLED
+    (fail) D4 #12 역할 없는 창 = 「번호 · 폴더 이름」 > 자동 제목(빈 · surface N)이면 번호 먼저 + 마지막 폴더 이름 [0.29ms]
+    (fail) D4 #12 끝난 창 표지 = 앞머리(말줄임이 먼저 자르지 않게) > 「(끝남) 」이 맨 앞 [0.13ms]
+M13f KILLED
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > 배선: 규칙 제목은 역할 창에서만 기억 · 확정은 판정 모듈 · null 이면 쓰지 않음 · 툴팁 = 전체 경로 [7.47ms]
+M14a KILLED
+    (fail) accountRates: used_pct null 은 0% 행이 되면 안 된다(미관측 ≠ 0%) [1.00ms]
+    (fail) aggregateRates: surface rate used_pct null 도 0% 로 접히면 안 된다 [0.30ms]
+    (fail) scopedRates: used_pct null [0.19ms]
+    (fail) usedPctOf: null·undefined·빈 값 = NaN(미관측) · 수·수 문자열 = 그 값 [0.17ms]
+M14b KILLED
+    (fail) scopedRates: used_pct null [0.20ms]
+M14c KILLED
+    (fail) 창 머리 배지(renderUsage): 미관측 창을 걸러 낸 목록으로 배지·툴팁을 모두 그린다 [0.15ms]
+M14d KILLED
+    (fail) Control Center 합산(ccAggRate): 미관측 창은 후보가 아니다 [0.14ms]
+M14e KILLED
+    (fail) Control Center 최고 사용 계정(ccAcctMax): usedPctOf 로 읽는다 [0.17ms]
+M14f KILLED
+    (fail) Control Center 계정 게이지(renderAccounts gauge): 미관측 = 창 없음(「—」) [0.10ms]
+M14g KILLED
+    (fail) usedPctOf: null·undefined·빈 값 = NaN(미관측) · 수·수 문자열 = 그 값 [0.16ms]
+M15a KILLED
+    (fail) D4 #8 ② 세기 머리 · ③ 사실 유지 > ⑤ 사망 = ❌ 유지 · 무엇이 멈췄나 + 안심 문장(창·폴더 그대로) + 행동 [0.15ms]
+M15b KILLED
+    (fail) D4 #8 ① 코드 원문 0 · ④ 행동 한 문장 > ctx [0.33ms]
+M15c KILLED
+    (fail) D4 #8 배선 — 경보 처리부가 원문을 조립하지 않는다 > surface:${…} · payload.action · 「에이전트 사망」·「master 유휴」 원문 조립 0 [0.14ms]
+M15d KILLED
+    (fail) D4 #8 ① 코드 원문 0 · ④ 행동 한 문장 > dead [0.24ms]
+    (fail) D4 #8 ② 세기 머리 · ③ 사실 유지 > deadman = 🚨 · 축별 사람 말 · 모르는 축은 데몬 사유 원문(사실 보존) [0.20ms]
+M15e KILLED
+    (fail) D4 #8 도우미 > seatNo — surface_id 우선 · 없으면 surface_ref [0.22ms]
+M15f KILLED
+    (fail) D4 #8 ② 세기 머리 · ③ 사실 유지 > ⑤ 사망 = ❌ 유지 · 무엇이 멈췄나 + 안심 문장(창·폴더 그대로) + 행동 [0.17ms]
+M15g KILLED
+    (fail) D4 #8 ② 세기 머리 · ③ 사실 유지 > deadman = 🚨 · 축별 사람 말 · 모르는 축은 데몬 사유 원문(사실 보존) [0.45ms]
+M15h KILLED
+    (fail) D4 #8 도우미 > (Fable MINOR-3) 부서 이벤트 = 부서 이름을 앞에 · (MINOR-2) 방치 승인은 관측 번호(surface_ref) [8.48ms]
+M15i KILLED
+    (fail) D4 #8 도우미 > (Fable MINOR-3) 부서 이벤트 = 부서 이름을 앞에 · (MINOR-2) 방치 승인은 관측 번호(surface_ref) [5.44ms]
+M15j KILLED
+    (fail) D4 #8 ② 세기 머리 · ③ 사실 유지 > deadman = 🚨 · 축별 사람 말 · 모르는 축은 데몬 사유 원문(사실 보존) [0.21ms]
+M16a KILLED
+    (fail) D4 #14 도우미 > setToastRaw — 접힌 details · 「자세히」 · textContent 로만 · 갱신 때 옛 원문 제거 [0.94ms]
+M16b KILLED
+    (fail) D4 #14 원문을 본문에 싣는 알림 0 > 템플릿 ${e} 로 원문을 본문 앞에 붙이는 알림 0 [0.57ms]
+    (fail) D4 #14 원문을 본문에 싣는 알림 0 > 대표 경로 — 부서 완전 삭제·완전 초기화 실패(고위험 경보)는 원문을 「자세히」로 보존 [9.54ms]
+M16c KILLED
+    (fail) D4 #14 도우미 > toast · stickyToast 둘 다 원문을 받아 붙이고, 알람 이력에는 원문을 남긴다(진단 재료 삭제 0) [7.68ms]
+M16d KILLED
+    (fail) D4 #14 원문을 본문에 싣는 알림 0 > 대표 경로 — 부서 완전 삭제·완전 초기화 실패(고위험 경보)는 원문을 「자세히」로 보존 [5.83ms]
+M16e KILLED
+    (fail) D4 #14 업데이트 문구 — 내부 용어 0 > updateplan 문자열에 팩·본체·패치·무중단 0 [0.34ms]
+M16f KILLED
+    (fail) D4 #14 업데이트 문구 — 내부 용어 0 > 업데이트·교대 확인창·진행 알림에 drain·CDHash·reinject 0 · 저장 안심 문장 있음 [0.52ms]
+M16g KILLED
+    (fail) D4 #14 도우미 > toast · stickyToast 둘 다 원문을 받아 붙이고, 알람 이력에는 원문을 남긴다(진단 재료 삭제 0) [7.41ms]
+M17a KILLED
+    (fail) D4 #10 배선 > 행 라벨에 소켓 태그(「dept-3:12」)를 붙이지 않는다 · 머리줄은 부서 탭 이름 [4.27ms]
+M17b KILLED
+    (fail) D4 #10 ctxLines — 부서마다 머리줄 1개 · 행 라벨은 번호만 > 소켓이 여럿이면 소켓이 바뀔 때마다 머리줄(부서 이름 전체) [0.41ms]
+M17c KILLED
+    (fail) D4 #10 ctxLines — 부서마다 머리줄 1개 · 행 라벨은 번호만 > 소켓이 여럿이면 소켓이 바뀔 때마다 머리줄(부서 이름 전체) [0.34ms]
+    (fail) D4 #10 ctxLines — 부서마다 머리줄 1개 · 행 라벨은 번호만 > 이름 보고자(master·cso) 행에는 머리줄을 두지 않는다 [0.07ms]
+M17d KILLED
+    (fail) D4 #10 배선 > 행 라벨에 소켓 태그(「dept-3:12」)를 붙이지 않는다 · 머리줄은 부서 탭 이름 [0.70ms]
+M18a KILLED
+    (fail) D4 #20 확인창 거절 버튼 = 「취소」 > confirmModal 기본 거절 말 = 취소 (종전 아니오) [0.62ms]
+    (fail) D4 #20 확인창 거절 버튼 = 「취소」 > 호출부가 거절 말을 따로 줄 때는 상황 말(나중에·닫기)만 — 「아니오」 0 [0.39ms]
+M15k KILLED
+    (fail) D4 #8 도우미 > (Fable MINOR-3) 부서 이벤트 = 부서 이름을 앞에 · (MINOR-2) 방치 승인은 관측 번호(surface_ref) [0.14ms]
+M13c KILLED
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > (결함 1) 바뀐 것이 없으면 보내지 않는다(null) — 눌렀다 떼기만 해도 자동 제목이 굳던 것 [0.16ms]
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > (결함 2) 「(끝남) 」 앞머리는 떼고 비교·저장 [0.05ms]
+M13d KILLED
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > 배선: 규칙 제목은 역할 창에서만 기억 · 확정은 판정 모듈 · null 이면 쓰지 않음 · 툴팁 = 전체 경로 [4.26ms]
+M13e KILLED
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > 배선: 규칙 제목은 역할 창에서만 기억 · 확정은 판정 모듈 · null 이면 쓰지 않음 · 툴팁 = 전체 경로 [3.98ms]
+M13g KILLED
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > 역할 창: 빈 이름 = 기억해 둔 규칙 제목 「번호 · 특성」 [0.14ms]
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > (결함 3) 역할 창에 사람 이름을 붙였다가 비워도 규칙 제목으로 [0.04ms]
+M13h KILLED
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > (결함 2) 「(끝남) 」 앞머리는 떼고 비교·저장 [0.14ms]
+M13i KILLED
+    (fail) D4 #12 이름 변경 확정(opus 결함 1·2·3 반영) > ruleTitleOf — 역할 있고 이 번호로 시작할 때만 [0.18ms]
+M16h KILLED
+    (fail) D4 #14 도우미 > setToastRaw — 접힌 details · 「자세히」 · textContent 로만 · 갱신 때 옛 원문 제거 [0.42ms]
+M14h KILLED
+    (fail) Control Center 계정 게이지(renderAccounts gauge): 미관측 = 창 없음(「—」) [0.16ms]
+M14i KILLED
+    (fail) usedPctOf: null·undefined·빈 값 = NaN(미관측) · 수·수 문자열 = 그 값 [0.18ms]
+M12f KILLED
+    (fail) v116 R1c — 마스터 자리가 유예 뒤에 서도 카드는 1회 뜬다 > 데몬 이벤트 배선: 마스터 신호 → maybeShowRestoreBrief(판정·1회는 거기서) [0.29ms]
+M17e KILLED
+    (fail) D4 #10 배선 > 머리줄은 패널 폭에 한 줄(말줄임은 머리줄 전체 폭 기준) [0.33ms]
+M3a KILLED
+    (fail) X-1 남은 창 폭 — 루트 직계의 인라인 flex 를 지운다 > render() 가 루트에 붙이는 요소의 style.flex 를 비운 뒤 붙인다 [0.23ms]
+M3b SURVIVED
+M4a KILLED
+    (fail) 권고 C — 창 만들기는 상단에서 빠지고 전문가 칸에 > 상단바에 + New · Split → · Split ↓ 단추가 없다 [0.26ms]
+M4b KILLED
+    (fail) 권고 C — 창 만들기는 상단에서 빠지고 전문가 칸에 > 누르면 오른쪽/아래 두 갈래 — 종전 Split 과 같은 함수 · 단축키 유지 [0.19ms]
+M5a KILLED
+    (fail) v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다 > 후보 = 정본 먼저 + 종전 cwd _round 사슬 그대로 · 작업 폴더를 몰라도 정본은 본다 [0.43ms]
+M5b KILLED
+    (fail) v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다 > 정본만 있으면 정본 · cwd 쪽이 더 늦게 기록됐으면 cwd 쪽 · 같으면 정본 · 없으면 null [0.31ms]
+M5d KILLED
+    (fail) v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다 > ★정본 설치 골격(3절 제목 없음)은 「기록 없음」 — 빈 문장 카드가 정본 경로로 되돌아오지 않는다(T4 무회귀) [0.25ms]
+    (fail) v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다 > 3절 제목이 있는 파일이 시각과 무관하게 먼저 — 제목 없는 더 새 파일이 기록 있는 파일을 가리지 않는다 [0.36ms]
+M5c KILLED
+    (fail) v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다 > 배선: 카드가 정본 포함 후보 전부를 읽고 pickBriefText 로 고른다(첫 적중에서 멈추지 않는다) [0.53ms]

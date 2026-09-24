@@ -1,0 +1,8 @@
+PASS c18g-scrollback-full 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":42,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18h-burst-then-exit 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":42,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18i-carry-flush 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":10,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18j-resize-then-exit 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":29,"n":1,"below":[],"lost":[],"garbage":[]}
+PASS c18k-scrolled-up 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":42,"n":1,"below":[],"lost":[],"garbage":[],"topAfter":"L263 xxxxxxxxxxxxxxxxxxxx"}
+PASS c18l-pending-wrap 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":11,"n":1,"below":[],"lost":[],"garbage":[],"cols":66,"xLineIntact":true}
+PASS c18n-narrow-420 경계 — 모든 줄이 접히는 좁은 창: 배너가 글 끝 · 1회 · 덮어쓰기 0 — {"tail":"│❯입력│╰──────────────╯?forshortcutsctx12%·opus[surfaceexited]","lost":[]}
+PASS c18m-exit-twice 경계 — 배너 맨 아래 · 1회 · 덮어쓰기 0 · 잔여 글자 0 — {"at":10,"n":1,"below":[],"lost":[],"garbage":[]}

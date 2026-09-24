@@ -26,6 +26,7 @@ import {
 import { classifyPendingFeed, CYCLE_VERIFY_NOTE, CYCLE_VERIFY_DISMISS_TITLE } from "./feedclass";
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, daemonInfoTitle, holdReasonText } from "./headerlabels";
 import { exitedSweepTargets, armSweep, sweepScopeFor, settleSweep, type SweepArm } from "./exitedsweep";
+import { writeExitedBanner } from "./exitbanner";
 import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
 import { hqWorkspaceId, wsDisplayName, renamedName } from "./wsname";
 import {
@@ -3440,11 +3441,9 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   const un2 = await listen(ev.exited_event, () => {
     // 순서 고정(스펙 D4 ③): ①필터 잔여 carry 방류(시퀀스 중간 사망 시에도 바이트 소실 0)
     // ②정합기 reset — 장부 소거 + 8종 상수 DECRST 를 **필터 우회 term.write 직접** 기록
-    //   (feed 재진입 금지 — 자기 스트리핑. 트래킹 소등·선택 복원, 1049l 미포함) ③종료 배너.
-    const rest = trackFilter.flush();
-    if (rest.length > 0) term.write(rest);
-    term.write(trackFilter.reset());
-    term.write("\r\n\x1b[31m[surface exited]\x1b[0m\r\n", snapToBottom);
+    //   (feed 재진입 금지 — 자기 스트리핑. 트래킹 소등·선택 복원, 1049l 미포함) ③종료 배너 — 커서 자리가
+    //   아니라 화면 **내용 맨 아래**(v116-exited-banner · 순서·위치 = exitbanner.ts).
+    writeExitedBanner(term, trackFilter, snapToBottom);
   });
   // listen 등록을 마친 뒤에 스트림을 시작해야 초기 화면 snapshot(프롬프트)이 유실되지 않는다
   // (런치 시 첫 pane 빈 화면 버그 — snapshot이 listen 전에 emit되던 race 차단).

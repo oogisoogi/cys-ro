@@ -1,0 +1,23 @@
+FAIL c17a@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · 스크롤백 보존 — {"rows":44,"bannerRow":41,"gap":0,"bannerLine":"[surface exited]","below":["  ? for shortcuts","  ctx 12% · opus"],"belowN":2,"lost":["╰──────────────╯"],"top":"fill 0"}
+FAIL c17b@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":12,"gap":0,"bannerLine":"[surface exited]","below":["tui 13","tui 14","tui 15","tui 16"],"belowN":17,"lost":["tui 12"]}
+FAIL c17b2@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":12,"gap":0,"bannerLine":"[surface exited]","below":["tui 29","tui 30","tui 31","tui 32"],"belowN":31,"lost":["tui 28"]}
+FAIL c17b3@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":12,"gap":0,"bannerLine":"[surface exited]","below":["tui 13","tui 14","tui 15","tui 16"],"belowN":30,"lost":["tui 12"]}
+FAIL c17b4@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":34,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":["tui 0","tui 1"]}
+PASS c17c@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+PASS c17d@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":6,"gap":1,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+FAIL c17e@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":7,"gap":0,"bannerLine":"[surface exited]","below":["fill 45","fill 46","fill 47","fill 48"],"belowN":36,"lost":[]}
+FAIL c17f@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":2,"gap":0,"bannerLine":"[surface exited]","below":["  footer"],"belowN":1,"lost":[]}
+PASS c17a0@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+PASS c17b0@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":30,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+FAIL c17a@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · 스크롤백 보존 — {"rows":44,"bannerRow":41,"gap":0,"bannerLine":"[surface exited]","below":["  ? for shortcuts","  ctx 12% · opus"],"belowN":2,"lost":["╰──────────────╯"],"top":"fill 0"}
+FAIL c17b@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":12,"gap":0,"bannerLine":"[surface exited]","below":["tui 13","tui 14","tui 15","tui 16"],"belowN":17,"lost":["tui 12"]}
+FAIL c17b2@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":12,"gap":0,"bannerLine":"[surface exited]","below":["tui 29","tui 30","tui 31","tui 32"],"belowN":31,"lost":["tui 28"]}
+FAIL c17b3@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":12,"gap":0,"bannerLine":"[surface exited]","below":["tui 13","tui 14","tui 15","tui 16"],"belowN":30,"lost":["tui 12"]}
+FAIL c17b4@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":34,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":["tui 0","tui 1"]}
+PASS c17c@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+PASS c17d@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":6,"gap":1,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+FAIL c17e@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":7,"gap":0,"bannerLine":"[surface exited]","below":["fill 45","fill 46","fill 47","fill 48"],"belowN":36,"lost":[]}
+FAIL c17f@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":2,"gap":0,"bannerLine":"[surface exited]","below":["  footer"],"belowN":1,"lost":[]}
+PASS c17a0@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":42,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+PASS c17b0@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 — {"rows":44,"bannerRow":30,"gap":0,"bannerLine":"[surface exited]","below":[],"belowN":0,"lost":[]}
+FAIL (14): c17a@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · 스크롤백 보존 · c17b@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17b2@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17b3@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17b4@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17e@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17f@1280 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17a@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · 스크롤백 보존 · c17b@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17b2@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17b3@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17b4@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17e@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0 · c17f@800 종료 배너 = 내용 맨 아래(붙음) · 덮어쓰기 0

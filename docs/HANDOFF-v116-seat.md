@@ -9,7 +9,14 @@ master 판정(원장 대조 성립): `master#9a304fb3`(08:09:33 · F2·F3 = A + 
 
 ---
 
-## ★ §0 델타(최신) — 재개 1회차 매듭(2026-09-24 10:1x · master#b29b9d60 재개 → master#d2e852f0·561dbb60 계정 이관 매듭)
+## ★ §0 델타(최신) — 재개 2회차 매듭(2026-09-24 14:2x · master#bb37344b 예산 정지 · 15:20 뒤 재개)
+
+**이 회차에 한 것(커밋 eac5ef5a..HEAD)**: 47ad0e80(기동 줄 통과 시 사망 타이머 해제 — Fable 2R P3 역할 회수 창) · d98d5c4b(시험 · 생존 뮤턴트 대비) · 6d5c9610(agy 2R P2/P3 판정 박제 = 둘 다 반박 · 거부 방향/래퍼는 메타도 래퍼) · 뮤턴트 J1~J4 4/4 KILLED.
+**진행 중이던 것 = master#623fa6b9 판정 C**(폐기 지점을 배달 직전 1곳 = governance.rs `deliver_head_locked` 머리로 옮기고 handlers.rs agent_launch 통과 지점 폐기 제거 · 사망 타이머 해제는 그 자리에 유지). 조건 ⑴재현 먼저 ⑵정상 배달 회귀 + 메타 없는 좌석 대조 + 뮤턴트(지점 제거 · 조건 반전) ⑶정본 게이트 전체 직렬(gate_runner.py · secret-scan · boot-health · cysd 직렬 · ENXIO 는 단독 재실행) ⑷범위 안 ①②③ 결과 함께 【확인요청】.
+- ⑴ 재현 = **미완(적색 미획득)**: 하네스 scratchpad/h31.sh(WAL queue-state.json 에 1.1.5 식 옛 기동 줄 + 대조 보류 글 → 격리 cysd → launch-agent 스텁). 【관측】 WAL 2건이 새 좌석으로 rehome(queue.rehomed) 됐으나 90초 동안 **둘 다** 미배달 · queue.list blocked_by = `prompt_unknown(프롬프트 경계 관측 불능)`. 원인 = 스텁 화면이 커서를 입력줄에 두지 않음(observe_prompt 는 커서 행에 ❯ 필요) → 스텁에 `ESC[4A ESC[3G` 추가했으나 여전히 미배달(원인 미확정 — 다음: queue.list blocked_by 재확인 · input_line_state 가 Empty 로 읽는지 · pending_input_bytes(각성문 붙여넣기 뒤 CR 로 0 인지) 확인). 코드 수정 0.
+- 함정: 격리 cysd 첫 기동이 ≈11초(debug 빌드 · init-pack) — 소켓 대기는 ping 으로 최대 60초.
+
+## ★ §0 델타(이력) — 재개 1회차 매듭(2026-09-24 10:1x · master#b29b9d60 재개 → master#d2e852f0·561dbb60 계정 이관 매듭)
 
 **어디까지 했나(재개 뒤 · 커밋 d5b1bab6..HEAD)**:
 - Fable 2-2 = 격리 재현 성립(master 역할 페인 안 node-recover → 스텁은 `--continue` 로 떴는데 set_meta `meta_denied` → rc 1 · run_boot 이면 reclaim=kill) → 수리 12157cce(CLI: meta_denied ∧ 좌석 행 agent·agent_bin 정확 일치일 때만 무해 · 데몬 게이트 불변 · surface.list 에 agent_bin 키) → 격리 재실측 rc 0 · 1초 뒤 alive True · 역할 유지 · 시험 6176dd7e·12128d7c · 뮤턴트 6/6.

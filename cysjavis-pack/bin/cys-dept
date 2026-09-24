@@ -1036,14 +1036,12 @@ i = c.find(SEP)
 sys.exit(0 if i >= 0 and m and c[i + len(SEP):] == m else 1)
 PY
 }
-ceo_md_is_promoted(){  # $1=md $2=CEO 템플릿 — 0 = md 가 승격 사본이라는 긍정 증거
-  # ①md == CEO 템플릿 ②영수증 == sha256(md) ③ASCII 표지 'master of master'(CEO 머리글 · 표준 MASTER 에는 0회 —
-  #   시험 13b 가 현행 원문으로 대조). ★Opus 적대 R2 N1: 한글 핀(단일소유 강제)까지 요구하면 CEO 에 제목 한 줄로만
-  #   있는 그 문구를 사용자가 고치거나 ko-KR 메모장이 CP949 로 저장한 사본이 「미승격」으로 판정돼, 부서를 다
-  #   닫아도 강등이 생략되는 영구 CEO 가 됐다 — 인코딩·편집에 살아남는 ASCII 표지 하나로 판정한다.
-  cmp -s "$1" "$2" 2>/dev/null && return 0
-  ceo_receipt_matches "$1" && return 0
-  grep -qF 'master of master' "$1" 2>/dev/null
+ceo_md_is_standard(){  # $1=md — 0 = md 가 **표준 MASTER 라는 긍정 증거**(원문 머리말 'MASTER ABSOLUTE DIRECTIVE' ∧ CEO
+  # 표지 'master of master' 없음 · 둘 다 ASCII 라 CP949·CRLF 저장에도 판정 불변 · 시험 13b 가 현행 원문으로 대조).
+  # ★Opus 적대 R3 M1: 강등의 기본값은 「복원」이다. 「승격 사본이라는 증거가 없으면 복원 안 함」으로 두면 빈 파일
+  #   (1.1.5 이하 비원자 cp 중단)·파일 없음·UTF-16 저장본처럼 **내용으로 판정할 수 없는 md** 가 부서를 다 닫아도
+  #   영구히 빈/깨진 지침으로 남았다. 복원을 건너뛰는 것은 표준본이라는 증거가 있을 때(승격 보류 · 손본 표준본)뿐.
+  grep -qF 'MASTER ABSOLUTE DIRECTIVE' "$1" 2>/dev/null && ! grep -qF 'master of master' "$1" 2>/dev/null
 }
 pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md = 현행 표준 원본 그 자체라는 긍정 증거)
   [ -f "$1.pre-ceo" ] || return 1
@@ -1231,15 +1229,15 @@ ceo_demote(){
   #   증거가 없으면(승격이 보류된 채 부서를 닫음 · 사용자가 손본 표준본) 복원은 곧 「옛 판 부활」 또는
   #   「사용자 수정 덮기」다 — md 는 그대로 두고 .pre-ceo 는 지우지 않고 .stale-<시각> 로 옮긴다.
   local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)-$$"
-  if ! ceo_md_is_promoted "$md" "$ceo"; then
+  if [ -f "$md" ] && ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md" && ceo_md_is_standard "$md"; then
     mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" 2>/dev/null || true
     rm -f "$receipt" 2>/dev/null || true
-    echo "[cys-dept] CEO 강등 생략 — master 지침이 승격 사본이 아니다(승격 보류·손본 표준본). 백업은 $md.pre-ceo.stale-$_ts 로 보존" >&2
+    echo "[cys-dept] CEO 강등 생략 — master 지침이 이미 표준본이다(승격 보류·손본 표준본). 백업은 $md.pre-ceo.stale-$_ts 로 보존" >&2
     return 0
   fi
   # ★Opus 적대 R2 N2: 승격 사본이어도 영수증과 다르면(사용자가 손본 CEO 사본) 복원 전에 보존한다 — 승격 쪽
   #   ⓧ1 과 같은 규칙 · 같은 바이트 보존본이 이미 있으면 다시 만들지 않는다.
-  if ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md"; then
+  if [ -s "$md" ] && ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md"; then
     local _have=0 _b
     for _b in "$md".pre-ceo-*; do
       [ -f "$_b" ] && cmp -s "$md" "$_b" 2>/dev/null && { _have=1; break; }

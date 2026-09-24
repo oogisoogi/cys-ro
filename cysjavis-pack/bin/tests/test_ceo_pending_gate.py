@@ -534,5 +534,14 @@ try:
 except ImportError:
     check("13 (건너뜀: 팩 설치본에서 실행 — scripts/ 없음)", True)
 
+# ── 13b. 강등 표지 계약(Opus 적대 R2 N1): cys-dept 강등 판정의 ASCII 표지 'master of master' 는 CEO_TEMPLATE 에는
+#   있고 표준 MASTER_DIRECTIVE 에는 없어야 한다 — 표준본에 들어가면 미승격 기계를 승격 사본으로 오인해 강등이
+#   옛 백업을 덮어쓴다.
+_dd = os.path.join(SELF, "..", "..", "directives")
+_mt = open(os.path.join(_dd, "MASTER_DIRECTIVE.md"), encoding="utf-8").read()
+_ct = open(os.path.join(_dd, "CEO_TEMPLATE.md"), encoding="utf-8").read()
+check("13b 강등 표지 'master of master' = CEO 에만(표준 MASTER 0회)",
+      "master of master" not in _mt and "master of master" in _ct)
+
 print("\n%d FAIL" % len(fails) if fails else "\nALL PASS")
 sys.exit(1 if fails else 0)

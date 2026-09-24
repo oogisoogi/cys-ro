@@ -1036,11 +1036,14 @@ i = c.find(SEP)
 sys.exit(0 if i >= 0 and m and c[i + len(SEP):] == m else 1)
 PY
 }
-ceo_md_is_promoted(){  # $1=md $2=CEO 템플릿 — 0 = md 가 승격 사본이라는 긍정 증거(C03 D3 표지 ①②③ · 3핀은 md 자체)
+ceo_md_is_promoted(){  # $1=md $2=CEO 템플릿 — 0 = md 가 승격 사본이라는 긍정 증거
+  # ①md == CEO 템플릿 ②영수증 == sha256(md) ③ASCII 표지 'master of master'(CEO 머리글 · 표준 MASTER 에는 0회 —
+  #   시험 13b 가 현행 원문으로 대조). ★Opus 적대 R2 N1: 한글 핀(단일소유 강제)까지 요구하면 CEO 에 제목 한 줄로만
+  #   있는 그 문구를 사용자가 고치거나 ko-KR 메모장이 CP949 로 저장한 사본이 「미승격」으로 판정돼, 부서를 다
+  #   닫아도 강등이 생략되는 영구 CEO 가 됐다 — 인코딩·편집에 살아남는 ASCII 표지 하나로 판정한다.
   cmp -s "$1" "$2" 2>/dev/null && return 0
   ceo_receipt_matches "$1" && return 0
-  grep -qF 'master of master' "$1" 2>/dev/null && grep -qF '단일소유 강제' "$1" 2>/dev/null \
-    && grep -qF 'exit 7' "$1" 2>/dev/null
+  grep -qF 'master of master' "$1" 2>/dev/null
 }
 pre_ceo_is_stale(){  # $1=md $2=CEO 템플릿 — 0 = .pre-ceo 가 낡은 백업(md = 현행 표준 원본 그 자체라는 긍정 증거)
   [ -f "$1.pre-ceo" ] || return 1
@@ -1116,7 +1119,7 @@ ceo_promote(){  # $1: "consented"면 오너 지명(promote-ceo) 경로 — 자�
     # ★v116-ceo-directive-hold(ⓕ): 낡은 백업은 지우지 않고 .stale-<시각> 로 옮긴 뒤 현행 md 를 새로 백업한다.
     #   락 안에서 다시 판정(검사·교체 원자) · **락을 못 잡은 무락 강행 경로에서는 하지 않는다** — 그 창에서
     #   .pre-ceo 를 옮기면 동시 승격이 백업을 서로 덮는다(agy B R1 ③ · 시험 11f · 무락 강행 자체는 종전 결함).
-    local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)"
+    local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)-$$"  # 같은 초 충돌 방지(Opus N4)
     if [ "$_locked" = 1 ] && pre_ceo_is_stale "$md" "$ceo"; then
       mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" || return 4
       echo "[cys-dept] 낡은 승격 백업을 $md.pre-ceo.stale-$_ts 로 보존하고 현행 master 지침을 새로 백업" >&2
@@ -1227,12 +1230,24 @@ ceo_demote(){
   # ★v116-ceo-directive-hold(Opus 적대 F2): md 가 **승격 사본이라는 긍정 증거**가 있을 때만 복원한다.
   #   증거가 없으면(승격이 보류된 채 부서를 닫음 · 사용자가 손본 표준본) 복원은 곧 「옛 판 부활」 또는
   #   「사용자 수정 덮기」다 — md 는 그대로 두고 .pre-ceo 는 지우지 않고 .stale-<시각> 로 옮긴다.
+  local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)-$$"
   if ! ceo_md_is_promoted "$md" "$ceo"; then
-    local _ts; _ts="$(date +%Y%m%dT%H%M%S 2>/dev/null || echo unknown)"
     mv "$md.pre-ceo" "$md.pre-ceo.stale-$_ts" 2>/dev/null || true
     rm -f "$receipt" 2>/dev/null || true
     echo "[cys-dept] CEO 강등 생략 — master 지침이 승격 사본이 아니다(승격 보류·손본 표준본). 백업은 $md.pre-ceo.stale-$_ts 로 보존" >&2
     return 0
+  fi
+  # ★Opus 적대 R2 N2: 승격 사본이어도 영수증과 다르면(사용자가 손본 CEO 사본) 복원 전에 보존한다 — 승격 쪽
+  #   ⓧ1 과 같은 규칙 · 같은 바이트 보존본이 이미 있으면 다시 만들지 않는다.
+  if ! cmp -s "$md" "$ceo" 2>/dev/null && ! ceo_receipt_matches "$md"; then
+    local _have=0 _b
+    for _b in "$md".pre-ceo-*; do
+      [ -f "$_b" ] && cmp -s "$md" "$_b" 2>/dev/null && { _have=1; break; }
+    done
+    if [ "$_have" = 0 ]; then
+      cp "$md" "$md.pre-ceo-$_ts" || { echo "[cys-dept] WARN: 강등 전 보존 실패 — 강등 보류(md·.pre-ceo 무접촉)" >&2; return 0; }
+      echo "[cys-dept] 강등 전 현재 master 지침을 $md.pre-ceo-$_ts 로 보존(손본 CEO 사본일 수 있음)" >&2
+    fi
   fi
   # 원자 복원(고유 임시 파일 + rename · Opus 적대 F8) — 실패 시 md·.pre-ceo 무접촉.
   if ! { cp "$md.pre-ceo" "$md.tmp.$$" && mv "$md.tmp.$$" "$md"; }; then

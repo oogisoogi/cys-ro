@@ -3182,6 +3182,12 @@ mod startup_lock_retry_tests {
     }
 }
 
+// ★v116-flake-pty ⑵: 시험 전용 PTY 고갈 판별·재시도(제품 빌드에는 없다). 위치 주의 — 건강성 검체
+//   (`run_bootstrap_health.py _rs_prod`)는 main.rs 의 **첫 cfg(test) 속성 이후를 시험 코드로 잘라낸다**.
+//   파일 머리 모듈 목록에 두면 제품 부분이 잘려 H-TICK-ALIVE 가 붉는다(09-24 실측) — 시험 모듈 구역에 둔다.
+#[cfg(test)]
+mod pty_test_support;
+
 #[cfg(test)]
 mod env_scrub_tests {
     /// 회귀 박제: claude 세션 안에서 spawn된 데몬이 세션 정체성 env를 보존하면 PTY 자식

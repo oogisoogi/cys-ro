@@ -443,12 +443,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           f="cysjavis-pack/bin/tests/test_report_gate.py"
           [ -f "$f" ] || { echo "게이트 대장 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
-          log="$(mktemp)"; first=""
+          log="$(mktemp "$CYS_TMP/log.XXXXXX")"; first=""   # ★v116-flake-pty ⑶: 같은 잔재원(파일) — 루트 안으로
           for i in 1 2 3 4 5; do
             rc=0
-            CYS_PACK_DIR="$(mktemp -d)" python3 "$f" >"$log" 2>&1 || rc=$?
+            CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f" >"$log" 2>&1 || rc=$?
             echo "== report-gate(mac) run $i/5: exit=$rc · $(grep -E '^(Ran |OK|FAILED)' "$log" | tr '\n' ' ')"
             [ -n "$first" ] || first="$rc"
             if [ "$rc" != "$first" ]; then
@@ -475,6 +481,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           d="cysjavis-pack/bin/tests/fixtures/todo-decl"
           h="cysjavis-pack/bin/tests/parity_todo_decl.py"
           [ -d "$d" ] || { echo "골든 픽스처 디렉터리 누락: $d (계약 SOT 부재 = 실패)" >&2; exit 1; }
@@ -488,7 +500,7 @@ jobs:
           echo "== todo-decl parity(mac): 픽스처 ${n}종 + 조합 1024건 =="
           python3 "$h" --fuzz 1024 --list-mismatch 20
           # Python 측 골든 회귀(계약 대장 해석·A2 자해 회귀 핀)도 같은 레인에서 건다.
-          CYS_PACK_DIR="$(mktemp -d)" python3 cysjavis-pack/bin/tests/test_todo_decl.py
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 cysjavis-pack/bin/tests/test_todo_decl.py
 
       # ★유령 todo·선언 소비자 회귀(test_report_ghost) + HUD 브리지 스큐(test_hud_bridge_skew).
       #   **이 스텝이 왜 존재하는가**: 07-26 유령 집계 사고의 수정과 그 위에 얹은 선언 모델(C1)의
@@ -509,6 +521,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           # ★W8(2026-08-16): v4-repair 스위트 3종 편입 — 부서 이름검증(`launch --help` 실사고 회귀 핀)·
           #   preflight C03 두 축 상태기계·CONTENT_PINS↔디렉티브 패리티(P0 스큐 봉인). 전부 격리
           #   HOME/목 바이너리 하네스라 러너 자기완결(라이브 무접촉) — 3완전 레인 동시 등재(대칭).
@@ -568,7 +586,7 @@ jobs:
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== $t (mac) =="
-            CYS_PACK_DIR="$(mktemp -d)" python3 "$f"
+            CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f"
           done
           # ★W-CI(2026-08-21): Wave 1 부트 결정론 회귀 핀 2종 편입 — "안 도는 검체는 게이트가
           #   아니다"(리뷰어 2기 독립 적발: 두 핀 모두 어느 CI 레인에서도 0회 실행이던 격차 봉합).
@@ -587,7 +605,7 @@ jobs:
           g="cysjavis-pack/bin/javis_detect.py"
           [ -f "$g" ] || { echo "감지기 누락: $g (git add 누락 의심)" >&2; exit 1; }
           echo "== javis_detect --self-test (mac) =="
-          CYS_PACK_DIR="$(mktemp -d)" python3 "$g" --self-test
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$g" --self-test
           # ★W-CI2(2026-08-21): Wave 2 좌석 래치 회귀 핀 test_seat_latch_negation 편입(위 루프
           #   말미 · 실측 0.007s·19케이스 · 순수 픽스처·서브프로세스 0·라이브 무접촉) — 리뷰어
           #   2기 공통 지적: 이 핀이 어느 CI 레인에서도 0회 실행이었다. 봉인 대상은 awakened_at
@@ -627,12 +645,18 @@ jobs:
         shell: bash
         run: |
           set -u
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           rc=0
           for t in test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== $t (mac) =="
-            CYS_PACK_DIR="$(mktemp -d)" python3 "$f" > "/tmp/ig35-$t.log" 2>&1
+            CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f" > "/tmp/ig35-$t.log" 2>&1
             r=$?
             tail -40 "/tmp/ig35-$t.log"
             if [ $r -ne 0 ]; then
@@ -754,11 +778,17 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           # 스텝 사이에서 읽어야 하므로 mktemp 가 아니라 **고정 경로**다(mktemp 값은 전달되지
           # 않는다 · 같은 잡이라 파일시스템은 공유된다). 낡은 로그 오독을 막으려 먼저 지운다.
           LOG="${RUNNER_TEMP:-/tmp}/cys-rehearsal.log"
           rm -f "$LOG"
-          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys -- --test-threads=1 > "$LOG" 2>&1
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --bin cys -- --test-threads=1 > "$LOG" 2>&1
           rc=$?
           cat "$LOG"
           exit "$rc"
@@ -807,7 +837,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib -- --test-threads=1
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --lib -- --test-threads=1
 
       # ★W-CI2(2026-08-21 · Wave 2): `cargo test -p cys-app --bins` — GUI env 대칭 핀 편입.
       #   전수 실측(cargo test grep): cys-app(src-tauri) 크레이트 테스트를 돌리는 CI 레인이
@@ -831,6 +867,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
+          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
+          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
+          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           # 핀 실존 단언(이 리포 관례) — cargo test 필터는 0매치도 초록이라 존재를 먼저 못박는다.
           grep -q "fn gui_spawn_env_matches_pane_spawn_env" src-tauri/src/main.rs \
             || { echo "GUI env 대칭 핀 부재: src-tauri/src/main.rs (f524e92 회귀·git add 누락 의심)" >&2; exit 1; }
@@ -838,7 +880,7 @@ jobs:
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           touch "src-tauri/binaries/cys-$triple" "src-tauri/binaries/cysd-$triple" \
                 src-tauri/resources/pack.tar.gz src-tauri/resources/pack-manifest.json
-          CYS_PACK_DIR="$(mktemp -d)" cargo test -p cys-app --bins -- --test-threads=1
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test -p cys-app --bins -- --test-threads=1
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 잡2 — 부트스트랩 건강성 러너 **전량**(macos-latest · 2026-08-24 M4)

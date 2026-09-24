@@ -329,9 +329,31 @@ def _annihilate():
 
 # ------------------------------------------------------------------ 데몬 lifecycle
 
+# ★v116-flake-pty ⑴: 빈 팩 폴더(워크플로 = 시험마다 새 mktemp)로 뜨는 **첫** 데몬은 팩 설치(478파일 ·
+#   파일마다 fsync)를 끝낸 뒤에야 소켓을 연다. 실측(2026-09-24 · 개발 기기 · 부하 9~47): 28~44초 중
+#   CPU 1.2초 = 디스크 대기. 종전 대기 12초는 이 창을 못 덮어, c6 가 데몬 없이 진행해 `list=` 빈
+#   출력으로 붉어졌다(계수·대조군 = docs/HANDOFF-v116-flake-pty.md). 대기 **상한**만 늘린다 — 준비되면 즉시
+#   반환하므로 초록 경로는 느려지지 않고, 데몬이 죽으면 즉시 빠진다(아래 poll).
+FRESH_BOOT_WAIT = 120.0
+
+
 def start_daemon(wait=12.0):
-    """격리 cysd를 자기 프로세스 그룹 리더로 기동하고 ping OK까지 대기."""
+    """격리 cysd를 자기 프로세스 그룹 리더로 기동하고 ping OK까지 대기.
+    ★멱등(v116-flake-pty ⑴): 이 프로세스가 띄운 데몬이 아직 살아 있으면 두 번째를 띄우지 않고 그 데몬을
+    기다린다. 종전엔 두 번째 cysd 가 startup lock 에 져서 곧 죽는데도 `_tracked_daemon` 을 그것으로
+    덮었다(c6·w2_untomb·seat_revival 의 `_fresh_harness()` 뒤 재호출). 기다리는 중 추적 데몬이 죽으면
+    (kill 직후 호출 등) 종전처럼 새로 띄운다."""
     global _tracked_daemon
+    if _tracked_daemon is not None and _tracked_daemon.poll() is None:
+        t0 = time.time()
+        while time.time() - t0 < wait:
+            if harness_ping():
+                return _tracked_daemon.pid
+            if _tracked_daemon.poll() is not None:
+                break
+            time.sleep(0.2)
+        else:
+            return _tracked_daemon.pid if harness_ping() else None
     os.makedirs(HARN_DIR, exist_ok=True)
     lf = open(DAEMON_LOG, "ab")
     _tracked_daemon = subprocess.Popen(
@@ -434,7 +456,12 @@ def _fresh_harness():
     import shutil as _sh
     for d in ("phoenix", "dept-root"):
         _sh.rmtree(os.path.join(HARN_DIR, d), ignore_errors=True)
-    start_daemon()
+    t0 = time.time()
+    pid = start_daemon(wait=FRESH_BOOT_WAIT)
+    # stdout 은 드릴 JSON 소비자가 읽으므로 stderr 로 — 준비 시간이 시험 로그에 남아 느린 기동이 가려지지 않는다.
+    sys.stderr.write("[harness] 격리 데몬 %s %.1fs (첫 기동 팩 설치 포함 · 상한 %.0fs)\n"
+                     % ("준비" if pid else "★미응답", time.time() - t0, FRESH_BOOT_WAIT))
+    return pid
 
 
 # 시그널/atexit 안전망 — 외부 timeout(SIGTERM)에도 정리 시도

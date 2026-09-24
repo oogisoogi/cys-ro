@@ -39,7 +39,8 @@
   "C2_SEPEDIT": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n",
   "M1_APPEND": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V1\nNEW-RULE\n",
   "M2_CRLF_CUT_CR": "# MASTER ABSOLUTE DIRECTIVE\r\nSTANDARD-MASTER-V2\r",
-  "M2_CRLF": "# MASTER ABSOLUTE DIRECTIVE\r\nSTANDARD-MASTER-V2\r\n"
+  "M2_CRLF": "# MASTER ABSOLUTE DIRECTIVE\r\nSTANDARD-MASTER-V2\r\n",
+  "M1_CRLF": "# MASTER ABSOLUTE DIRECTIVE\r\nSTANDARD-MASTER-V1\r\n"
  },
  "shapes": [
   {
@@ -754,6 +755,62 @@
     "expect_stale": null,
     "expect_edit_backup": null,
     "expect_after_down": "M2_CRLF",
+    "expect_stale_after_down": [
+     "M_OLD"
+    ],
+    "expect_edit_backup_after_down": null
+   }
+  },
+  {
+   "id": "released-old-standard-mid-list-close",
+   "source": "Opus 적대 R6 S1 — md = 손대지 않은 옛 발행본이 목록 **가운데 줄**(실 목록은 26줄 · 첫 줄만 읽는 파서(뮤턴트 Y6)면 옛 판 부활) · .pre-ceo = 옛 승격 잔재 → 부서 닫음",
+   "md": "M1",
+   "pre_ceo": "M_OLD",
+   "new": null,
+   "receipt": null,
+   "released_ceo": [],
+   "released_master": [
+    "M_OLD",
+    "M1",
+    "M1_APPEND"
+   ],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M1",
+    "expect_pre_ceo": "M_OLD",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M1",
+    "expect_stale_after_down": [
+     "M_OLD"
+    ],
+    "expect_edit_backup_after_down": null
+   }
+  },
+  {
+   "id": "released-old-standard-crlf-mid-list-close",
+   "source": "Opus 적대 R6 S2 — 같은 형상 · md 를 CRLF 로 저장(② 목록 대조도 LF 정규화 뒤 · 뮤턴트 Y2)",
+   "md": "M1_CRLF",
+   "pre_ceo": "M_OLD",
+   "new": null,
+   "receipt": null,
+   "released_ceo": [],
+   "released_master": [
+    "M_OLD",
+    "M1",
+    "M1_APPEND"
+   ],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M1_CRLF",
+    "expect_pre_ceo": "M_OLD",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M1_CRLF",
     "expect_stale_after_down": [
      "M_OLD"
     ],

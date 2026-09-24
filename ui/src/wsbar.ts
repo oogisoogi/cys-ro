@@ -60,9 +60,15 @@ export const CTX_TRACK_MIN_EM = 2.4; // 이보다 좁아지면 막대가 값을 
 // ★폭은 fail-safe(모르면 거짓), 배율은 **1.0 폴백**이다 — 비대칭이 의도다: CSS가
 //   `var(--wsbar-font, 1)`로 같은 폴백을 쓰므로, 변수가 없을 때 화면은 실제로 1.0로 그려진다.
 //   여기서 거짓을 내면 「화면은 20px인데 산식만 자리 없다고 판정」하는 어긋남이 된다.
-export function showsRowAge(wsbarW: number, wsbarFont: number): boolean {
+// (TICKET=cysr-usage-two-accounts) rate 행도 ctx 행과 같은 5칸(이름·트랙·%·출처 마크·나이)이 됐다.
+// 이름 칸은 모델 스코프 게이지(「7d·Fable」)가 있으면 6em으로 넓어지므로(style.css has-scoped) 그때는
+// **rate 행이 표에서 가장 넓은 행**이다 — 판정은 가장 넓은 행으로 해야 그 행의 트랙이 0이 되지 않는다.
+export const RATE_ROW_SCOPED_FIXED_EM = 6 /* 이름(has-scoped) */ + 2.6 /* % */ + 1 * 0.85 /* 출처 마크 */ + 2.9 * 0.85 /* 나이 */;
+// ★셋째 인자는 기본값을 둔다 — 함수 길이(.length)는 2로 남아 「인자를 다시 떼면 잡힌다」 가드가 그대로 산다.
+export function showsRowAge(wsbarW: number, wsbarFont: number, hasScopedRates = false): boolean {
   if (!Number.isFinite(wsbarW)) return false;
   const scale = Number.isFinite(wsbarFont) && wsbarFont > 0 ? wsbarFont : 1;
   const availPx = wsbarW - 1 /* border-right */ - 16 /* padding 8+8 */ - 24 /* gap 6px × 4 */;
-  return availPx >= (CTX_ROW_FIXED_EM + CTX_TRACK_MIN_EM) * WSU_FONT_PX * scale;
+  const fixedEm = hasScopedRates ? Math.max(CTX_ROW_FIXED_EM, RATE_ROW_SCOPED_FIXED_EM) : CTX_ROW_FIXED_EM;
+  return availPx >= (fixedEm + CTX_TRACK_MIN_EM) * WSU_FONT_PX * scale;
 }

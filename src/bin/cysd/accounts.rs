@@ -152,7 +152,8 @@ fn resolve(
     session_file: &str,
 ) -> Option<(AccountKey, String, Option<String>, Option<String>)> {
     match agent {
-        "claude" => {
+        // D6-2: agents.json 의 claude 파생 에이전트(claude-fable·claude-sonnet 등 · 같은 claude 바이너리)도 계정 귀속.
+        a if cys::is_claude_agent(a) => {
             let dir = profile_dir_from_session(session_file)?;
             let (uuid, email, plan) = claude_identity(state, &dir)?;
             Some((
@@ -214,13 +215,24 @@ pub fn note_rate(
         if let Some(p) = profile {
             view.profiles.insert(p);
         }
-        // 최신 승자 — note는 신선 생산분만 받으므로 timestamp 비교로 충분
-        if now >= view.updated_at {
-            view.rate = rate.to_vec();
-            view.updated_at = now;
-            view.source = source.into();
-        }
-        for w in rate {
+        // 최신 승자 — note는 신선 생산분만 받으므로 timestamp 비교로 충분.
+        // ★(v116-usage · opus 적대 1R·2R) 단 **창 라벨 단위**로: 리셋이 지난 창(idle 좌석 statusline 이 마지막 API
+        //   응답의 캐시 창을 다시 보고 — 보통 [5h 리셋 지남, 7d 살아 있음])은 같은 라벨의 살아 있는 창(OAuth 프로브 등)을
+        //   대체하지 못한다(merge_rate_windows). 대체하면 D6-1 경보 필터가 그 창을 빼 경보 키가 사라졌다가 다음 신선
+        //   관측에 돌아오며 매번 재발화한다(경보 깜빡임). 받아들인 창이 하나도 없으면 갱신 자체를 하지 않는다.
+        //   기각된 창은 스냅샷에도 영속하지 않는다 — 영속하면 재부팅 예열이 죽은 행을 올린다.
+        let accepted: Vec<bool> = if now >= view.updated_at {
+            let (merged, accepted) = merge_rate_windows(&view.rate, view.updated_at, rate, now);
+            if accepted.iter().any(|a| *a) {
+                view.rate = merged;
+                view.updated_at = now;
+                view.source = source.into();
+            }
+            accepted
+        } else {
+            vec![true; rate.len()]
+        };
+        for (w, _) in rate.iter().zip(&accepted).filter(|(_, a)| **a) {
             let pk = (key.clone(), w.label.clone());
             let prev = st.last_persisted.get(&pk).copied();
             if prev.map_or(true, |p| (w.used_pct - p).abs() >= SNAPSHOT_MIN_DELTA_PCT) {
@@ -972,6 +984,9 @@ pub fn local_json(daemon: &Arc<Daemon>, now: f64) -> Value {
                     "updated_at": if v.updated_at > 0.0 { json!(v.updated_at) } else { Value::Null },
                     "stale_secs": if v.updated_at > 0.0 { json!((now - v.updated_at).max(0.0)) } else { Value::Null },
                     "source": v.source,
+                    // ★rate 슬롯의 원천과 **짝으로** 나간다 — 앱의 데몬 병합(usage_accounts_all)이 행을
+                    //   통째로 옮기므로 한도가 다른 원천의 시각과 섞이지 않는다.
+                    "fresh_limit_secs": fresh_limit_secs(&v.source),
                     "adapter": v.adapter,
                     // 모델 스코프 게이지 — ★자기 updated_at을 들고 나간다. 계정의 updated_at(rate 슬롯)을
                     // 물려 쓰면 statusline이 rate를 갱신할 때마다 이 게이지가 「방금 관측」으로 둔갑한다.
@@ -981,6 +996,9 @@ pub fn local_json(daemon: &Arc<Daemon>, now: f64) -> Value {
                         "resets_at": g.resets_at,
                         "updated_at": g.updated_at,
                         "source": g.source,
+                        // 게이지 자기 원천의 한도 — 계정 source(rate 슬롯)를 물려 쓰면 statusline 계정의
+                        // oauth 게이지가 120초 문턱에 걸려 주기마다 흐려진다.
+                        "fresh_limit_secs": fresh_limit_secs(&g.source),
                         // 스코프 게이지는 자기 관측 시각(g.updated_at)으로 잰다 — 위 주석과 같은 이유.
                         "stale": rate_window_stale_reason(g.resets_at, g.updated_at, now).is_some(),
                         "stale_reason": rate_window_stale_reason(g.resets_at, g.updated_at, now),
@@ -1035,6 +1053,27 @@ pub fn rate_window_stale_reason(resets_at: Option<f64>, observed_at: f64, now: f
     None
 }
 
+/// statusline 원천의 관측 신선 한도(초). 패널 `wsusage.ts USAGE_STALE_SECS`·페인 배지와 **같은 값**이다
+/// (한 표 안에서 원천만 같으면 같은 문턱 — 그 값을 옮기지 않는다).
+pub const FRESH_LIMIT_STATUSLINE_SECS: f64 = 120.0;
+/// oauth 원천의 관측 신선 한도(초) = 프로브 주기 + 여유 60초. (TICKET=cysr-usage-two-accounts · master 09:00 지정)
+///
+/// ★왜 120이 아닌가: 프로브는 180초마다 한 번 온다. statusline 문턱(120)을 그대로 쓰면 oauth로만
+///   채워지는 행(statusline을 못 받는 계정의 5h·7d · 모든 계정의 7d·모델 게이지)이 **매 주기 약 60초씩**
+///   「최근 관측 없음」으로 흐려진다 — 원천은 정상인데 화면이 거짓 stale을 말한다.
+/// ★여유 60초의 근거: 틱은 「주기 + 한 바퀴 조회 소요」마다 온다(정상 소요 = 수 초 · 명령 타임아웃 10초).
+///   한 바퀴를 **통째로 놓치면**(실패·백오프 270초) 한도를 넘어 흐려진다 — 그것은 진짜 낡음이다.
+pub const FRESH_LIMIT_OAUTH_SECS: f64 = OAUTH_PROBE_INTERVAL_SECS as f64 + 60.0;
+
+/// 원천 → 관측 신선 한도(초). **판정은 데몬이 정한다** — 패널은 이 값과 자기 시계로 흐림만 그린다.
+/// 모르는 원천은 statusline 한도로 둔다(종전 동작 = 한도 필드가 없던 때의 120초와 같다).
+pub fn fresh_limit_secs(source: &str) -> f64 {
+    match source {
+        "oauth" => FRESH_LIMIT_OAUTH_SECS,
+        _ => FRESH_LIMIT_STATUSLINE_SECS,
+    }
+}
+
 /// rate 창 1개 → JSON. 종전 직렬화(`label`·`used_pct`·`resets_at`)를 그대로 두고 두 필드만 더한다.
 fn rate_window_json(w: &RateWindow, observed_at: f64, now: f64) -> Value {
     let why = rate_window_stale_reason(w.resets_at, observed_at, now);
@@ -1083,8 +1122,43 @@ pub fn predict_exhaust(series: &[(f64, f64)], now: f64, resets_at: Option<f64>) 
     }
 }
 
+/// (v116-usage) 새 관측 묶음을 기존 묶음에 **창 라벨 단위**로 합친다(순수 — 진리표 핀). 반환 = (합친 묶음, 새 창별 채택 여부).
+/// 새 창이 리셋 지남(resets_at < now)이고 같은 라벨의 기존 창이 살아 있으면(rate_window_stale_reason == None) 기존 창을
+/// 유지하고 그 새 창은 기각한다. 그 밖은 새 창 채택(종전 최신 승자). resets_at 미상 창은 리셋 지남으로 보지 않는다.
+/// 새 묶음에 없는 라벨의 기존 창은 종전처럼 사라진다(묶음 통째 교체 규약 유지 — 생산자가 창 목록의 정본).
+pub fn merge_rate_windows(
+    old: &[RateWindow],
+    old_observed_at: f64,
+    incoming: &[RateWindow],
+    now: f64,
+) -> (Vec<RateWindow>, Vec<bool>) {
+    let mut merged = Vec::with_capacity(incoming.len());
+    let mut accepted = Vec::with_capacity(incoming.len());
+    for w in incoming {
+        let passed = matches!(w.resets_at, Some(r) if r < now);
+        let live_old = old
+            .iter()
+            .filter(|_| passed)
+            .find(|o| o.label == w.label && rate_window_stale_reason(o.resets_at, old_observed_at, now).is_none());
+        match live_old {
+            Some(o) => {
+                merged.push(o.clone());
+                accepted.push(false);
+            }
+            None => {
+                merged.push(w.clone());
+                accepted.push(true);
+            }
+        }
+    }
+    (merged, accepted)
+}
+
 /// alerts용 스냅샷: (라벨, 창, pct) — 관측된 계정만.
+/// D6-1: 계기(local_json)가 죽었다고 표시하는 창(resets_at_passed · no_observation_24h)은 경보에서 뺀다 —
+/// 같은 판정 함수를 써서 계기와 경보가 갈리지 않게 한다.
 pub fn alert_rates(daemon: &Arc<Daemon>) -> Vec<(String, String, f64)> {
+    let now = crate::state::now_epoch();
     let st = daemon.accounts.lock().unwrap();
     let mut out = Vec::new();
     for v in st.views.values() {
@@ -1092,6 +1166,9 @@ pub fn alert_rates(daemon: &Arc<Daemon>) -> Vec<(String, String, f64)> {
             continue;
         }
         for w in &v.rate {
+            if rate_window_stale_reason(w.resets_at, v.updated_at, now).is_some() {
+                continue;
+            }
             out.push((v.label.clone(), w.label.clone(), w.used_pct));
         }
     }
@@ -1648,5 +1725,464 @@ mod tests {
         );
         // 관측 전(0.0) — 나이를 셀 수 없으면 신선이라 주장하지 않는다
         assert_eq!(rate_window_stale_reason(Some(now + 60.0), 0.0, now), Some("no_observation_24h"));
+    }
+
+    /// (v116-usage · opus 적대 2R) 기각된 창(살아 있는 같은 라벨 창을 대체하지 못한 리셋 지난 창)은 스냅샷에 영속하지 않는다 —
+    /// 영속하면 재부팅 예열(last_rate_snapshots 창별 최신 행)이 죽은 값을 올려 경보 키가 첫 신선 관측 전까지 빠진다.
+    #[test]
+    fn v116_rejected_window_is_not_persisted() {
+        let d = test_daemon();
+        let now = crate::state::now_epoch();
+        let root = std::env::temp_dir().join(format!("cys-v116-persist-{}-{}", std::process::id(), now.to_bits()));
+        let prof = root.join("prof");
+        std::fs::create_dir_all(prof.join("projects/p")).unwrap();
+        std::fs::write(
+            prof.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-persist","emailAddress":"persist@x"}}"#,
+        )
+        .unwrap();
+        let sf = prof.join("projects/p/s.jsonl").to_string_lossy().into_owned();
+        let w = |l: &str, p: f64, r: f64| RateWindow { label: l.into(), used_pct: p, resets_at: Some(r) };
+        note_rate(&d, "claude", &sf, &[w("5h", 88.0, now + 3600.0), w("7d", 35.0, now + 86400.0)], "oauth", now - 10.0);
+        note_rate(&d, "claude", &sf, &[w("5h", 93.0, now - 60.0), w("7d", 40.0, now + 86400.0)], "statusline", now);
+        let st = d.accounts.lock().unwrap();
+        let key = AccountKey { provider: "claude".into(), account_id: "uuid-persist".into() };
+        let p5 = st.last_persisted.get(&(key.clone(), "5h".to_string())).copied();
+        let p7 = st.last_persisted.get(&(key, "7d".to_string())).copied();
+        drop(st);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(p5, Some(88.0), "기각된 리셋 지난 5h(93)가 영속됐다");
+        assert_eq!(p7, Some(40.0), "채택된 7d 는 영속");
+    }
+
+    /// (TICKET=cysr-usage-two-accounts) 원천별 신선 한도의 **값과 그 근거**를 고정한다.
+    ///
+    /// 근거(master 09:00 지정 · 브리프 「값 근거를 시험에 남겨라」):
+    ///  ① statusline = 120초 — 패널 `USAGE_STALE_SECS`·페인 배지와 같은 값(UI 시험이 이 상수를 소스에서 읽어 대조한다).
+    ///  ② oauth = 주기 180초 + 여유 60초 = 240초 — 한도가 주기보다 **커야** 정상 주기의 행이 흐려지지 않는다
+    ///     (120초였던 때: 매 주기 약 60초 거짓 stale). 한도가 **백오프 첫 대기(270초)보다 작아야** 한 바퀴를
+    ///     놓친(실패한) 원천이 흐려진다 — 진짜 낡음은 여전히 보여야 한다.
+    #[test]
+    fn fresh_limit_values_follow_source_cadence() {
+        assert_eq!(FRESH_LIMIT_STATUSLINE_SECS, 120.0);
+        assert_eq!(FRESH_LIMIT_OAUTH_SECS, 240.0);
+        let iv = OAUTH_PROBE_INTERVAL_SECS as f64;
+        assert!(FRESH_LIMIT_OAUTH_SECS > iv, "정상 주기 행은 흐려지면 안 된다");
+        let first_backoff_wait = iv * 2.0 - iv / 2.0; // probe_round 실패 1회 대기(270초)
+        assert!(FRESH_LIMIT_OAUTH_SECS < first_backoff_wait, "한 바퀴 놓친 원천은 흐려져야 한다");
+        assert_eq!(fresh_limit_secs("oauth"), 240.0);
+        assert_eq!(fresh_limit_secs("statusline"), 120.0);
+        // 모르는 원천·스냅샷 예열·빈 원천 = 종전 동작(한도 필드가 없던 때의 120초)
+        assert_eq!(fresh_limit_secs("snapshot"), 120.0);
+        assert_eq!(fresh_limit_secs(""), 120.0);
+    }
+
+    /// 계정 JSON의 한도는 **자기 원천과 짝**이다 — rate 슬롯은 계정 source, 게이지는 게이지 source.
+    /// statusline 이 이긴 계정(A)의 oauth 게이지가 120초로 판정되면 주기마다 흐려진다(그 회귀를 잡는다).
+    #[tokio::test]
+    async fn local_json_pairs_fresh_limit_with_its_own_source() {
+        let (home, dirs) = two_account_home("fresh-limit");
+        let d = test_daemon();
+        let targets = probe_targets(&mut d.accounts.lock().unwrap(), &home, &dirs);
+        let svc_b = keychain_service_for(&home, &home.join(".claude-acct2"));
+        let fetch = |s: String| {
+            let v = if s == svc_b { oauth_fixture_account('b') } else { oauth_fixture_account('a') };
+            async move { Ok::<Value, String>(v) }
+        };
+        let mut bo = ProbeBackoff::new();
+        probe_round(&d, &targets, &mut bo, 1000.0, &fetch).await;
+        // 계정 A 는 그 뒤 statusline 이 rate 슬롯을 이겼다(게이지는 oauth 그대로).
+        {
+            let mut st = d.accounts.lock().unwrap();
+            let key = AccountKey { provider: "claude".into(), account_id: "uuid-a".into() };
+            let v = st.views.get_mut(&key).expect("계정 A");
+            v.source = "statusline".into();
+        }
+        let rows = local_json(&d, crate::state::now_epoch());
+        let row = |id: &str| {
+            rows.as_array().unwrap().iter().find(|r| r["account_id"] == id).cloned().expect(id)
+        };
+        let a = row("uuid-a");
+        let b = row("uuid-b");
+        assert_eq!(a["source"], "statusline");
+        assert_eq!(a["fresh_limit_secs"].as_f64(), Some(120.0));
+        assert_eq!(a["scoped"][0]["source"], "oauth");
+        assert_eq!(a["scoped"][0]["fresh_limit_secs"].as_f64(), Some(240.0), "게이지는 자기 원천(oauth) 한도");
+        assert_eq!(b["source"], "oauth");
+        assert_eq!(b["fresh_limit_secs"].as_f64(), Some(240.0), "statusline 을 못 받는 계정 = oauth 한도");
+        assert_eq!(b["scoped"][0]["fresh_limit_secs"].as_f64(), Some(240.0));
+    }
+}
+
+// (v116-usage · master 규칙 ⑤) 합격 시험 — 구현을 보지 않은 Opus 서브에이전트가 명세·인터페이스만 보고 작성
+// (명세 원문 = HANDOFF §3 진리표 + 이 브랜치 REVISE 인터페이스 · 워커는 감싸 붙이기만 함).
+#[cfg(test)]
+mod acceptance_v116 {
+    // v116-usage 합격 시험 — accounts 모듈(A1~A5). 구현 비공개 · 명세만으로 작성.
+    // ⚠A5: 이 본문도 accounts.rs 끝에 붙으므로 금지 문자열 두 개를 그대로 쓰지 않는다(concat! 조립).
+
+    use crate::usage::RateWindow;
+
+    const NOW: f64 = 1_000_000.0;
+    const DAY: f64 = 24.0 * 3600.0;
+
+    fn w(label: &str, pct: f64, resets_at: Option<f64>) -> RateWindow {
+        RateWindow {
+            label: label.to_string(),
+            used_pct: pct,
+            resets_at,
+        }
+    }
+
+    fn view(v: &[RateWindow]) -> Vec<(String, f64, Option<f64>)> {
+        v.iter()
+            .map(|x| (x.label.clone(), x.used_pct, x.resets_at))
+            .collect()
+    }
+
+    // ───────────────────────── A1 ─────────────────────────
+
+    #[test]
+    fn accept_a1_reset_passed_is_stale() {
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW - 1.0), NOW - 10.0, NOW),
+            Some("resets_at_passed"),
+            "resets_at 이 now 보다 1초 전이면 리셋 지남이어야 한다"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW - 0.5), NOW - 10.0, NOW),
+            Some("resets_at_passed"),
+            "resets_at 이 now 보다 0.5초 전이어도 리셋 지남이어야 한다(정수 절삭 금지)"
+        );
+    }
+
+    #[test]
+    fn accept_a1_reset_equal_now_is_not_passed() {
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW), NOW - 10.0, NOW),
+            None,
+            "resets_at == now 는 지나지 않은 것 — 관측도 신선하니 살아 있어야 한다"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW), NOW - DAY - 1.0, NOW),
+            Some("no_observation_24h"),
+            "resets_at == now 는 리셋 지남이 아니므로, 관측이 24h 넘게 오래되면 no_observation_24h 여야 한다"
+        );
+    }
+
+    #[test]
+    fn accept_a1_reset_passed_takes_priority_over_old_observation() {
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW - 1.0), 0.0, NOW),
+            Some("resets_at_passed"),
+            "리셋 지남과 관측 없음이 동시면 리셋 지남이 먼저다"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW - 1.0), NOW - 10.0 * DAY, NOW),
+            Some("resets_at_passed"),
+            "리셋 지남과 24h 초과 관측이 동시면 리셋 지남이 먼저다"
+        );
+    }
+
+    #[test]
+    fn accept_a1_no_observation_when_observed_at_not_positive() {
+        assert_eq!(
+            super::rate_window_stale_reason(None, 0.0, NOW),
+            Some("no_observation_24h"),
+            "observed_at == 0.0 은 관측 없음이다"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(None, -5.0, NOW),
+            Some("no_observation_24h"),
+            "observed_at 이 음수면 관측 없음이다"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW + 1000.0), 0.0, NOW),
+            Some("no_observation_24h"),
+            "리셋이 미래여도 observed_at <= 0 이면 관측 없음이다"
+        );
+    }
+
+    #[test]
+    fn accept_a1_exactly_24h_is_alive_and_beyond_is_stale() {
+        assert_eq!(
+            super::rate_window_stale_reason(None, NOW - DAY, NOW),
+            None,
+            "관측 나이가 정확히 24h 면 살아 있어야 한다"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW + 50.0), NOW - DAY, NOW),
+            None,
+            "리셋 미래 + 관측 정확히 24h 는 살아 있어야 한다"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(None, NOW - DAY - 1.0, NOW),
+            Some("no_observation_24h"),
+            "관측 나이 24h+1초면 no_observation_24h"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(None, NOW - DAY - 0.25, NOW),
+            Some("no_observation_24h"),
+            "관측 나이 24h+0.25초도 초과다(정수 절삭 금지)"
+        );
+    }
+
+    #[test]
+    fn accept_a1_resets_none_only_checks_observation_age() {
+        assert_eq!(
+            super::rate_window_stale_reason(None, NOW - 10.0, NOW),
+            None,
+            "resets_at 미상 + 신선 관측은 살아 있어야 한다(리셋 판정 없음)"
+        );
+        assert_eq!(
+            super::rate_window_stale_reason(None, NOW, NOW),
+            None,
+            "resets_at 미상 + 방금 관측은 살아 있어야 한다"
+        );
+    }
+
+    #[test]
+    fn accept_a1_future_reset_fresh_observation_is_alive() {
+        assert_eq!(
+            super::rate_window_stale_reason(Some(NOW + 1000.0), NOW - 10.0, NOW),
+            None,
+            "리셋 미래 + 신선 관측은 살아 있어야 한다"
+        );
+    }
+
+    // ───────────────────────── A2 ─────────────────────────
+
+    #[test]
+    fn accept_a2_spec_example_reject_reset_passed_5h() {
+        let old = vec![
+            w("5h", 88.0, Some(NOW + 1000.0)),
+            w("7d", 35.0, Some(NOW + 4000.0)),
+        ];
+        let incoming = vec![
+            w("5h", 93.0, Some(NOW - 1.0)),
+            w("7d", 40.0, Some(NOW + 4000.0)),
+        ];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![false, true], "명세 예 1: accepted 는 [false, true]");
+        assert_eq!(merged.len(), 2, "merged 길이는 incoming 과 같아야 한다");
+        assert_eq!(
+            view(&merged),
+            vec![
+                ("5h".to_string(), 88.0, Some(NOW + 1000.0)),
+                ("7d".to_string(), 40.0, Some(NOW + 4000.0)),
+            ],
+            "명세 예 1: 5h 는 old 창 그대로(88%·old resets_at), 7d 는 incoming(40%)"
+        );
+    }
+
+    #[test]
+    fn accept_a2_spec_example_old_resets_none_still_protects() {
+        let old = vec![w("5h", 0.0, None)];
+        let incoming = vec![w("5h", 93.0, Some(NOW - 1.0))];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![false], "명세 예 2: old 5h 의 resets_at 미상이어도 신선 관측이면 살아 있어 기각");
+        assert_eq!(
+            view(&merged),
+            vec![("5h".to_string(), 0.0, None)],
+            "명세 예 2: 0% · resets_at None 유지"
+        );
+    }
+
+    #[test]
+    fn accept_a2_incoming_not_passed_is_accepted_even_if_old_alive() {
+        let old = vec![w("5h", 88.0, Some(NOW + 1000.0))];
+        let incoming = vec![w("5h", 10.0, Some(NOW + 18000.0))];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true], "리셋 안 지난 incoming 은 채택");
+        assert_eq!(view(&merged), view(&incoming), "채택 시 merged = incoming");
+    }
+
+    #[test]
+    fn accept_a2_incoming_reset_equal_now_is_not_passed() {
+        let old = vec![w("5h", 88.0, Some(NOW + 1000.0))];
+        let incoming = vec![w("5h", 93.0, Some(NOW))];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true], "incoming resets_at == now 는 지나지 않았으니 채택");
+        assert_eq!(view(&merged), view(&incoming), "채택 시 merged = incoming");
+    }
+
+    #[test]
+    fn accept_a2_incoming_resets_unknown_is_accepted() {
+        let old = vec![w("5h", 88.0, Some(NOW + 1000.0))];
+        let incoming = vec![w("5h", 93.0, None)];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true], "incoming resets_at 미상은 채택");
+        assert_eq!(view(&merged), view(&incoming), "채택 시 merged = incoming");
+    }
+
+    #[test]
+    fn accept_a2_no_same_label_is_accepted() {
+        let old = vec![w("7d", 35.0, Some(NOW + 4000.0))];
+        let incoming = vec![w("5h", 93.0, Some(NOW - 1.0))];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true], "같은 라벨이 없으면 리셋 지난 incoming 도 채택");
+        assert_eq!(view(&merged), view(&incoming), "채택 시 merged = incoming");
+    }
+
+    #[test]
+    fn accept_a2_empty_old_accepts_all() {
+        let old: Vec<RateWindow> = Vec::new();
+        let incoming = vec![
+            w("5h", 93.0, Some(NOW - 1.0)),
+            w("7d", 40.0, Some(NOW - 100.0)),
+        ];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true, true], "old 가 비면 전부 채택");
+        assert_eq!(view(&merged), view(&incoming), "old 가 비면 merged = incoming");
+    }
+
+    #[test]
+    fn accept_a2_empty_incoming_gives_empty() {
+        let old = vec![w("5h", 88.0, Some(NOW + 1000.0))];
+        let incoming: Vec<RateWindow> = Vec::new();
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert!(merged.is_empty(), "incoming 이 비면 merged 도 비어야 한다(old 를 끼워 넣지 않는다)");
+        assert!(accepted.is_empty(), "incoming 이 비면 accepted 도 비어야 한다");
+    }
+
+    #[test]
+    fn accept_a2_old_dead_by_own_reset_passed_is_accepted() {
+        let old = vec![w("5h", 88.0, Some(NOW - 5.0))];
+        let incoming = vec![w("5h", 93.0, Some(NOW - 1.0))];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true], "같은 라벨 old 가 자기 리셋이 지나 죽었으면 incoming 채택");
+        assert_eq!(view(&merged), view(&incoming), "채택 시 merged = incoming");
+    }
+
+    #[test]
+    fn accept_a2_old_dead_by_observation_age_is_accepted() {
+        let old = vec![w("5h", 88.0, Some(NOW + 1000.0))];
+        let incoming = vec![w("5h", 93.0, Some(NOW - 1.0))];
+
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - DAY - 1.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true], "old 관측이 24h+1초 전이면 old 는 죽음 → incoming 채택");
+        assert_eq!(view(&merged), view(&incoming), "채택 시 merged = incoming");
+
+        let (merged, accepted) = super::merge_rate_windows(&old, 0.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true], "old 관측 시각 0 이면 old 는 죽음 → incoming 채택");
+        assert_eq!(view(&merged), view(&incoming), "채택 시 merged = incoming");
+    }
+
+    #[test]
+    fn accept_a2_old_observed_exactly_24h_ago_still_protects() {
+        let old = vec![w("5h", 88.0, Some(NOW + 1000.0))];
+        let incoming = vec![w("5h", 93.0, Some(NOW - 1.0))];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - DAY, &incoming, NOW);
+        assert_eq!(accepted, vec![false], "old 관측이 정확히 24h 전이면 살아 있으니 기각");
+        assert_eq!(
+            view(&merged),
+            vec![("5h".to_string(), 88.0, Some(NOW + 1000.0))],
+            "기각 시 merged = old 창"
+        );
+    }
+
+    #[test]
+    fn accept_a2_order_follows_incoming_not_old() {
+        let old = vec![
+            w("5h", 88.0, Some(NOW + 1000.0)),
+            w("7d", 35.0, Some(NOW + 4000.0)),
+            w("7d_opus", 12.0, Some(NOW + 4000.0)),
+        ];
+        let incoming = vec![
+            w("7d", 36.0, Some(NOW + 4000.0)),
+            w("extra", 1.0, Some(NOW - 1.0)),
+            w("5h", 93.0, Some(NOW - 1.0)),
+        ];
+        let (merged, accepted) = super::merge_rate_windows(&old, NOW - 10.0, &incoming, NOW);
+        assert_eq!(accepted, vec![true, true, false], "순서는 incoming 기준: [7d 채택, extra 채택(라벨 없음), 5h 기각]");
+        assert_eq!(
+            view(&merged),
+            vec![
+                ("7d".to_string(), 36.0, Some(NOW + 4000.0)),
+                ("extra".to_string(), 1.0, Some(NOW - 1.0)),
+                ("5h".to_string(), 88.0, Some(NOW + 1000.0)),
+            ],
+            "merged 도 incoming 순서·길이 — incoming 에 없는 old(7d_opus)는 끼어들지 않는다"
+        );
+    }
+
+    // ───────────────────────── A3 ─────────────────────────
+
+    #[test]
+    fn accept_a3_fresh_limit_by_source() {
+        assert_eq!(super::fresh_limit_secs("statusline"), 120.0, "statusline 한도는 120초");
+        assert_eq!(super::fresh_limit_secs("oauth"), 240.0, "oauth 한도는 240초");
+        assert_eq!(super::fresh_limit_secs("snapshot"), 120.0, "snapshot 은 그 밖 → 120초");
+        assert_eq!(super::fresh_limit_secs(""), 120.0, "빈 문자열은 그 밖 → 120초");
+        assert_eq!(super::fresh_limit_secs("unknown-source"), 120.0, "모르는 원천은 120초");
+    }
+
+    #[test]
+    fn accept_a3_constants_match_function() {
+        let s: f64 = super::FRESH_LIMIT_STATUSLINE_SECS;
+        let o: f64 = super::FRESH_LIMIT_OAUTH_SECS;
+        assert_eq!(s, 120.0, "FRESH_LIMIT_STATUSLINE_SECS 는 120.0");
+        assert_eq!(o, 240.0, "FRESH_LIMIT_OAUTH_SECS 는 240.0");
+        assert_eq!(super::fresh_limit_secs("statusline"), s, "함수와 상수가 어긋난다(statusline)");
+        assert_eq!(super::fresh_limit_secs("oauth"), o, "함수와 상수가 어긋난다(oauth)");
+    }
+
+    #[test]
+    fn accept_a3_oauth_limit_between_probe_period_and_first_backoff() {
+        let o = super::FRESH_LIMIT_OAUTH_SECS;
+        assert!(o > 180.0, "oauth 신선 한도({o})는 OAuth 탐침 주기 180초보다 커야 한다 — 정상 주기마다 거짓 stale");
+        assert!(o < 270.0, "oauth 신선 한도({o})는 첫 실패 백오프 270초보다 작아야 한다 — 실패가 가려진다");
+    }
+
+    #[test]
+    fn accept_a3_source_match_is_exact() {
+        assert_eq!(super::fresh_limit_secs("OAuth"), 120.0, "명세상 정확히 \"oauth\" 만 240 — \"OAuth\" 는 그 밖(120)");
+        assert_eq!(super::fresh_limit_secs("oauth "), 120.0, "꼬리 공백 붙은 \"oauth \" 는 그 밖(120)");
+    }
+
+    // ───────────────────────── A4 ─────────────────────────
+
+    #[test]
+    fn accept_a4_is_claude_agent_true_cases() {
+        let bare_dash = concat!("claude", "-");
+        for name in ["claude", "claude-fable", "claude-sonnet", "claude-opus-5", bare_dash] {
+            assert!(cys::is_claude_agent(name), "{name:?} 는 claude 계열(참)이어야 한다");
+        }
+    }
+
+    #[test]
+    fn accept_a4_is_claude_agent_false_cases() {
+        for name in [
+            "claudex",
+            "codex",
+            "gemini",
+            "",
+            "Claude",
+            "xclaude",
+            "Claude-fable",
+            "CLAUDE",
+            "claude_fable",
+            "claudecode",
+            "claud",
+        ] {
+            assert!(!cys::is_claude_agent(name), "{name:?} 는 claude 계열이 아니어야 한다(거짓)");
+        }
+    }
+
+    // ───────────────────────── A5 ─────────────────────────
+
+    #[test]
+    fn accept_a5_source_has_no_adhoc_claude_prefix_checks() {
+        let src = include_str!("accounts.rs");
+        let quoted_prefix = concat!("\"", "claude", "-", "\"");
+        let dot_prefix_call = concat!(".starts_with(\"", ".claude", "-", "\")");
+        assert!(
+            !src.contains(quoted_prefix),
+            "accounts.rs 에 claude 접두 리터럴(따옴표 표기)이 남아 있다 — cys::is_claude_agent 로 통일해야 한다"
+        );
+        assert!(
+            !src.contains(dot_prefix_call),
+            "accounts.rs 에 .claude 접두 starts_with 호출이 남아 있다 — 결정론 게이트 위반"
+        );
     }
 }

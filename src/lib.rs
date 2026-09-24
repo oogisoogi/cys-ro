@@ -2475,6 +2475,14 @@ pub fn inject_claude_prompt_suggestion_default(env_pairs: &mut Vec<(String, Stri
     env_pairs.push((ENV_CLAUDE_PROMPT_SUGGESTION.to_string(), "false".to_string()));
 }
 
+/// 에이전트 이름이 claude 계열인가 — `claude` 와 agents.json 의 claude 파생 에이전트(`claude-fable`·`claude-sonnet`
+/// 등 · 같은 claude 바이너리). 데몬의 계정 귀속(`cysd/accounts.rs`)과 statusline rate 생산자 판정(`cysd/handlers.rs`)이
+/// 이 술어 하나를 쓴다(v116-usage D6-2). ⚠프로필 **폴더** 이름 규칙(`profile_gate`)과는 다른 뜻이다 — accounts.rs 에
+/// 접두 리터럴을 두면 폴더 열거 규칙 재구현 핀이 둘을 구별하지 못하므로 여기 한 곳에만 둔다.
+pub fn is_claude_agent(agent: &str) -> bool {
+    agent == "claude" || agent.starts_with("claude-")
+}
+
 /// Claude Code projects/ 디렉터리명 munge — 실측: '/'와 특수문자가 '-'로 치환된다.
 /// ASCII 영숫자·'-'만 보존하는 보수 구현. resume 사전검증 게이트(cys.rs)와 usage 휴리스틱이 공유한다.
 pub fn claude_project_component(cwd: &str) -> String {
@@ -3158,6 +3166,18 @@ pub mod mousereport {
 
 #[cfg(test)]
 mod tests {
+    /// (v116-usage D6-2 · master REVISE ①) claude 계열 에이전트 술어 진리표 — 파생 에이전트는 계정 귀속·rate 생산자에
+    /// 들고, 이름만 비슷한 것(접두 대시 없음·다른 에이전트)은 빠진다.
+    #[test]
+    fn is_claude_agent_truth_table() {
+        for a in ["claude", "claude-fable", "claude-sonnet"] {
+            assert!(super::is_claude_agent(a), "{a} 는 claude 계열");
+        }
+        for a in ["claudex", "codex", "gemini", "", "xclaude", "Claude"] {
+            assert!(!super::is_claude_agent(a), "{a} 는 claude 계열이 아니다");
+        }
+    }
+
     /// ★dbg-D3 #F1: 스폰 env 가 **자기 판** cysd·cys 를 명시로 싣는다(형제 실재 시에만 · 부재 = 무변화).
     /// 이 쌍이 빠지면 cys-dept 는 PATH 로 cysd 를 찾고, 옛 CLI 링크가 있는 기계에서 부서가 옛 판으로 뜬다.
     #[test]

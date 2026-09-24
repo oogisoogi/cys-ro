@@ -6527,7 +6527,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             });
             // CC v2 WS-A: statusline은 claude rate의 유일한 생산자 — 계정 귀속(신선 생산분).
             // session_file(=statusline stdin의 transcript_path)로 프로필 dir→accountUuid 해석.
-            if agent == "claude" && !rate.is_empty() {
+            // D6-2: claude 파생 에이전트(agents.json claude-fable·claude-sonnet 등)도 같은 claude statusline 생산자다.
+            if cys::is_claude_agent(&agent) && !rate.is_empty() {
                 crate::accounts::note_rate(
                     daemon,
                     "claude",

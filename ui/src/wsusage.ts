@@ -19,6 +19,18 @@ export const USAGE_STALE_SECS = 120;
  */
 export const SCOPED_STALE_SECS = 240;
 
+// 계정·게이지 관측의 신선 한도(초) — **데몬이 원천별로 정해 싣는다**(accounts.rs fresh_limit_secs ·
+// TICKET=cysr-usage-two-accounts). statusline = 120(위 상수와 같은 값) · oauth = 프로브 주기 + 여유.
+// ★패널은 판정 정책을 갖지 않는다 — 받은 한도와 자기 시계로 흐림만 그린다(나이는 매 틱 자라므로
+//   불리언이 아니라 한도를 받는다: 다음 조회 전에도 한도를 넘는 순간 흐려져야 한다).
+// ★필드 부재(옛 판본 부서 데몬)·비정상 값 = 종전 동작 그대로 USAGE_STALE_SECS. 여기서 추정으로 늘리지 않는다.
+//   예외 1곳(v116-integ-2 병합 · D4 #11 과 합류): `7d·<모델>` 게이지는 옛 판본에서도 생산자가 oauth 프로브 하나라
+//   (1.1.5 accounts.rs scoped = source "oauth" 뿐) 종전 폴백 = SCOPED_STALE_SECS(= 데몬 FRESH_LIMIT_OAUTH_SECS 와 같은 값).
+export function obsFreshLimit(v: unknown, fallback: number = USAGE_STALE_SECS): number {
+  const n = Number(v);
+  return v != null && Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 export interface RateWindowLike {
   label: string;
   used_pct: number;
@@ -81,6 +93,8 @@ export interface RateRow {
   ageSecs: number;
   // ★관측 시각 원본. 나이는 그릴 때마다 다시 계산해야 하므로(재생성 없이 갱신) 원본을 들고 다닌다.
   updatedAt: number;
+  // 관측 원천 — 출처 마크(sourceGrade)로 그린다. surface 유래는 페인 usage.source.
+  source: string;
   stale: boolean;
   // ★`stale`(120초 — 관측이 조금 낡음 · 흐리게)과 다른 축: 데몬이 판정한 **값 자체가 죽은 창**.
   //   참이면 숫자 대신 「—」와 사유를 그린다(TICKET=cys-usage-stale-rate). 행은 지우지 않는다 —
@@ -140,6 +154,7 @@ export function aggregateRates(surfaces: SurfaceLike[], nowSecs: number): RateRo
         resetsAt: w.resets_at ?? null, // ★같은 관측에서 함께 가져온다(짝 유지)
         ageSecs: age,
         updatedAt: u.updated_at,
+        source: u.source ?? "",
         stale: isStale,
         // surface 관측은 살아 있는 페인의 값이다 — 데몬의 계정 창 판정 대상이 아니다.
         windowStale: false,
@@ -198,6 +213,8 @@ export interface ScopedGaugeLike {
   resets_at: number | null;
   updated_at: number;
   source: string;
+  // 게이지 자기 원천의 신선 한도(초) — 데몬 판정(부재 = 옛 판본 데몬 → obsFreshLimit 폴백).
+  fresh_limit_secs?: number | null;
   // RateWindowLike와 같은 데몬 판정 표지(부재 = 옛 판본 데몬).
   stale?: boolean;
   stale_reason?: string | null;
@@ -210,6 +227,9 @@ export interface AccountLike {
   rate: RateWindowLike[];
   // 관측이 한 번도 없으면 null이다(계정은 등록됐으나 아직 못 봤다).
   updated_at: number | null;
+  // rate 슬롯의 원천("statusline" | "oauth" | "snapshot" …)과 그 원천의 신선 한도(초) — 짝으로 온다.
+  source?: string;
+  fresh_limit_secs?: number | null;
   scoped?: ScopedGaugeLike[] | null;
 }
 
@@ -239,7 +259,9 @@ export function accountRates(accounts: AccountLike[] | null | undefined, nowSecs
         resetsAt: w.resets_at ?? null, // ★같은 관측에서 함께 가져온다(짝 유지)
         ageSecs: age,
         updatedAt,
-        stale: age > USAGE_STALE_SECS,
+        source: a.source ?? "",
+        // ★한도는 데몬이 원천별로 준 값이다(oauth 로만 채워지는 계정이 주기마다 흐려지지 않게).
+        stale: age > obsFreshLimit(a.fresh_limit_secs),
         // 데몬 판정을 그대로 싣는다. 사유는 stale:true일 때만(짝 유지 — 신선 창에 사유가 붙어 오면 버린다).
         windowStale: w.stale === true,
         windowStaleReason: w.stale === true ? (w.stale_reason ?? null) : null,
@@ -281,7 +303,10 @@ export function scopedRates(accounts: AccountLike[] | null | undefined, nowSecs:
         resetsAt: g.resets_at ?? null,
         ageSecs: age,
         updatedAt,
-        stale: age > SCOPED_STALE_SECS, // (D4 #11) 프로브 주기 180초에 맞춘 문턱 — USAGE_STALE_SECS 아님
+        source: g.source ?? "",
+        // ★게이지 **자기** 원천의 한도 — 계정(rate 슬롯) 한도를 물려 쓰면 statusline 계정의 게이지가 120초에 걸린다.
+        // (D4 #11 합류) 필드 부재(옛 판본 데몬) = 프로브 주기 짝 SCOPED_STALE_SECS — USAGE_STALE_SECS 아님
+        stale: age > obsFreshLimit(g.fresh_limit_secs, SCOPED_STALE_SECS),
         // accountRates와 같은 규율 — 게이지 자기 관측 시각으로 데몬이 판정한 값.
         windowStale: g.stale === true,
         windowStaleReason: g.stale === true ? (g.stale_reason ?? null) : null,
@@ -545,6 +570,11 @@ export function oldestFootText(ageSecs: number): string {
 // 추정한 값이다. ★두 값을 같은 눈금으로 나란히 두면 추정치를 실측으로 오독하므로 등급을 표시한다.
 export function sourceGrade(source: string): { mark: string; title: string } {
   if (source === "statusline") return { mark: "●", title: "서버 진실 (statusline 보고)" };
+  // (TICKET=cysr-usage-two-accounts) 데몬이 사용량 API를 직접 조회한 값 — 서버 진실이되 주기 조회다.
+  //   종전엔 이 분기가 없어 아래 폴백에서 「추정(트랜스크립트 tail)」으로 오분류될 자리였다.
+  if (source === "oauth") return { mark: "◆", title: "서버 진실 (사용량 API 직접 조회 · 데몬 주기 조회)" };
+  // 데몬 재시작 직후 예열 — 지난 관측의 복원이지 추정이 아니다(나이가 그대로 보인다).
+  if (source === "snapshot") return { mark: "○", title: "이전 관측 복원 (데몬 재시작 전 마지막 값)" };
   if (!source) return { mark: "?", title: "출처 불명" };
   const heuristic = source.includes("heuristic");
   return {
@@ -583,7 +613,7 @@ export function renderSignature(
         //   식별자(accountId)만 넣으면 라벨 변경이 화면에 반영되지 않는다.
         `${showScope ? x.socket + "/" + x.agent + "/" + x.accountLabel : ""}|${x.label}|${Math.round(x.usedPct)}|${
           x.resetsAt ?? ""
-        }|${x.stale ? 1 : 0}|${x.windowStale ? 1 : 0}`,
+        }|${x.source}|${x.stale ? 1 : 0}|${x.windowStale ? 1 : 0}`,
     )
     .join(";");
   const c = ctxRows

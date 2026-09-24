@@ -42,6 +42,14 @@ const REDISCOVER_SECS: f64 = 30.0;
 /// statusline 보고(usage.report) 신선도 창 초 — claude는 이 안에 statusline 보고가 있으면
 /// 트랜스크립트 tail이 ctx를 덮어써 rate limit을 유실시키지 않게 수집을 건너뛴다(우선순위 병합).
 const STATUSLINE_FRESH_SECS: f64 = 60.0;
+/// (TICKET=v116-usage · T2) 창 크기 미확정 유예 초 — tail 부착 뒤 statusline 이 서버 진실 창을 한 번도
+/// 주지 않은 동안은 트랜스크립트 추정 창(모델명 기본 200k)으로 context.threshold 를 내지 않는다.
+/// ★왜: 1M 창 모델(claude-fable-5-1·claude-opus-5-5 — 모델명에 `[1m]` 이 없다)을 resume 한 새 좌석의 첫
+///   관측이 5배 과대 %(VM ↻ 실측 77% · 1초 뒤 statusline 15%)로 임계를 넘겨 거짓 발화했다.
+/// ★왜 영구 보류가 아닌가: statusline 이 없는 좌석(훅 결손·체인 위임 실패)은 이 추정치가 **유일한** CTX
+///   근거다 — 유예가 지나면 종전대로 추정치로 발화해 무clear 100%+ 안전망을 지킨다. 60초 = 같은 파일의
+///   statusline 신선도 창(STATUSLINE_FRESH_SECS)과 같은 크기(첫 statusline 은 TUI 첫 렌더에 온다 — VM 1.3초).
+const ESTIMATED_WINDOW_GRACE_SECS: f64 = 60.0;
 /// 외부(비-pane) 세션 스윕 주기 초 기본값 — CYS_USAGE_EXTERNAL_SECS로 조정(0=끔)
 const EXTERNAL_SWEEP_SECS_DEFAULT: u64 = 15;
 /// 외부 세션 추적 시작 조건: 이 창 안에 mtime이 있는 활동 파일만 (과거 세션 소급 적재 금지)
@@ -83,12 +91,27 @@ struct TailState {
     server_ctx_window: Option<u64>,
     /// codex rollout의 turn_context가 준 모델명 — token_count 소비 귀속용(전수조사 A-2)
     codex_model: Option<String>,
+    /// 창 크기 미확정 유예(ESTIMATED_WINDOW_GRACE_SECS)의 기준 시각(T2) — [`reattach_tail`] 이 정한다:
+    /// 등록 경로(훅이 세션을 명시 = 새 세션) 부착·처음 보는 파일은 부착 시각 · 휴리스틱이 전에 본 파일로 돌아오면
+    /// 그 파일의 기준을 되찾는다.
+    grace_from: f64,
+    /// 직전 관측의 임계 발화를 유예로 보류했는가 — 새 줄이 없는 틱에서도 유예가 끝나면 재평가한다(T2 · agy 1R #2).
+    threshold_deferred: bool,
+    /// 보류한 추정 % — 재평가 때 현재 관측에 %가 없으면(창 없는 statusline 이 덮음) 이 값으로 발화한다(agy 3R #4).
+    deferred_pct: Option<u8>,
+    /// 이 좌석이 전에 붙었던 **다른** 파일들의 유예 상태(오래된 것부터 · [`reattach_tail`] 이 관리).
+    grace_memo: Vec<(PathBuf, GraceMemo)>,
 }
+
+/// 파일별로 기억한 유예 상태 — (기준 시각, 보류, 보류 %).
+type GraceMemo = (f64, bool, Option<u8>);
+/// 좌석당 기억하는 파일 수 상한 — 넘치면 오래된 것부터 잊는다(잊힌 파일로 돌아오면 유예를 한 번 새로 받는다).
+const GRACE_MEMO_CAP: usize = 16;
 
 impl TailState {
     /// 새 tail — 영속 오프셋(analytics tail_offsets)이 있으면 거기서 정확 재개해
     /// 재시작 시 마지막 256KB 재파싱→DB 중복 INSERT(전수조사 A-4)를 근절한다.
-    fn attach(daemon: &Arc<Daemon>, path: PathBuf, heuristic: bool, now: f64) -> Self {
+    fn attach(daemon: &Arc<Daemon>, path: PathBuf, heuristic: bool, now: f64, grace_from: f64) -> Self {
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let stored = daemon
             .analytics
@@ -100,7 +123,19 @@ impl TailState {
             Some(o) if o <= len => o,
             _ => len.saturating_sub(FIRST_ATTACH_TAIL),
         };
-        TailState { path, offset, carry: String::new(), heuristic, last_discovery: now, server_ctx_window: None, codex_model: None }
+        TailState {
+            path,
+            offset,
+            carry: String::new(),
+            heuristic,
+            last_discovery: now,
+            server_ctx_window: None,
+            codex_model: None,
+            grace_from,
+            threshold_deferred: false,
+            deferred_pct: None,
+            grace_memo: Vec::new(),
+        }
     }
 }
 
@@ -246,7 +281,7 @@ fn collect_for(
     // tail 상태 초기화/전환: 경로가 바뀌었으면 영속 오프셋(없으면 파일 끝 창)에서 새로 시작
     let need_reset = tails.get(&s.id).map(|t| t.path != path).unwrap_or(true);
     if need_reset {
-        tails.insert(s.id, TailState::attach(daemon, path.clone(), heuristic, now));
+        reattach_tail(daemon, tails, s.id, path.clone(), heuristic, now);
         // 새 세션 파일 = 새 세션 — 에지 게이트 재무장. 직전 세션이 임계 위에서 끝났어도
         // 새 세션이 곧장 임계 이상으로 시작하면(거대 지침 재주입) 발화해야 한다.
         s.ctx_threshold_armed.store(true, Ordering::Relaxed);
@@ -294,6 +329,19 @@ fn collect_for(
                 }
             }
         }
+        // (T2 · agy 1R #2) 보류됐던 추정 임계의 재평가 — 새 줄이 없는 틱이 유예 뒤 발화할 유일한 자리다.
+        //   statusline 이 신선하면 그 경로가 진실원이라 보류를 버린다. 발화는 공유 에지 게이트라 중복 0.
+        if state.threshold_deferred {
+            if statusline_fresh && statusline_has_ctx(s) {
+                state.threshold_deferred = false;
+            } else if !statusline_fresh && !defer_estimated_threshold(true, now - state.grace_from) {
+                state.threshold_deferred = false;
+                let cur = s.observed_usage.lock().unwrap().clone();
+                if let Some(p) = cur.as_ref().and_then(|u| u.ctx_pct).or(state.deferred_pct) {
+                    crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(agent));
+                }
+            }
+        }
         return;
     }
     let prev = s.observed_usage.lock().unwrap().clone();
@@ -308,11 +356,14 @@ fn collect_for(
     // CC v2 WS-A: 이 틱에 **신선 생산된** rate만 계정 귀속(claude transcript의 rate 이월분은
     // 제외 — 이월은 stale을 최신으로 둔갑시킨다. accounts.rs 모듈 헤더 계약).
     let mut codex_fresh_rate: Option<Vec<RateWindow>> = None;
+    // (T2) 이 틱의 claude ctx% 가 서버 진실 창이 아니라 모델명 추정 창으로 계산됐는가.
+    let mut window_estimated = false;
     for line in &lines {
         match agent {
             "claude" => {
                 if let Some((ctx_tokens, model)) = parse_claude_line(line) {
                     let window = state.server_ctx_window.unwrap_or_else(|| claude_ctx_window(&model));
+                    window_estimated = claude_window_is_estimate(state.server_ctx_window);
                     next = Some(ObservedUsage {
                         agent: agent.into(),
                         ctx_tokens: Some(ctx_tokens),
@@ -424,6 +475,9 @@ fn collect_for(
     // statusline이 신선하면 관측 스냅샷·이벤트·임계발화는 statusline 경로가 진실원 — 여기서 종료
     // (소비 적재는 위에서 이미 완료). 끊기면(60s+) 아래 트랜스크립트 관측으로 graceful 폴백.
     if statusline_fresh {
+        if statusline_has_ctx(s) {
+            state.threshold_deferred = false;
+        }
         return;
     }
 
@@ -468,9 +522,60 @@ fn collect_for(
     // 결정론 컨텍스트 임계 — 자기보고(status.set)와 **공유 에지 게이트**(ctx_threshold_armed)
     // 로 발화한다. 분리된 에지 상태를 쓰면 같은 교차에 두 경로가 각각 발화해 master/CSO가
     // cycle-agent를 이중 집행한다. payload source:"observed"로 자기보고 발화와 구분.
-    if let Some(p) = new.ctx_pct {
+    // (T2) 창 크기 미확정 유예 안의 추정치는 발화하지 않는다 — 에지 무장 상태도 건드리지 않는다
+    //   (유예 뒤 첫 관측·statusline 발화가 같은 에지로 정상 판정한다).
+    let defer = defer_estimated_threshold(window_estimated, now - state.grace_from);
+    state.threshold_deferred = defer && new.ctx_pct.is_some();
+    state.deferred_pct = if defer { new.ctx_pct } else { None };
+    if let Some(p) = new.ctx_pct.filter(|_| !defer) {
         crate::handlers::maybe_fire_context_threshold(daemon, s, p, "observed", Some(&new.agent));
     }
+}
+
+/// (T2 · agy 3R #3 · agy 4R ⓐ · opus 적대 4R) 세션 파일이 바뀌면 새 tail 을 붙인다 — 유예 상태(기준 시각·보류·
+/// 보류 %)는 **파일별로** 기억한다. 등록 경로 부착(`heuristic=false` — SessionStart 훅이 세션을 명시 = 이 좌석에 새로
+/// 뜬 에이전트)은 언제나 **부착 시각**에서 새로 시작한다(오래된 좌석에 새로 띄운 claude 도 유예를 받는다). 휴리스틱
+/// 재발견 재부착은 그 파일을 전에 봤으면 **그 파일의** 상태를 되찾고, 처음 보는 파일이면 부착 시각에서 시작한다:
+/// * 같은 cwd 동시 세션 사이를 오가도 재시작은 파일 하나당 첫 방문 1회뿐(opus 1R — 매번 새로 시작하면 영영 침묵).
+/// * 새 세션이 옛 세션의 끝난 유예·보류 %를 물려받아 유예 없이 오발하지 않는다(agy 4R ⓐ · opus 3R low).
+/// * 같은 cwd 에 새 파일(`claude -p` 등)이 잇달아 생겨도 원 세션으로 돌아오면 원 세션의 끝난 유예를 되찾아 참 경보가
+///   침묵하지 않는다(opus 4R — 좌석 단일 기준 시각이면 새 파일마다 유예가 재시작돼 영영 침묵).
+fn reattach_tail(daemon: &Arc<Daemon>, tails: &mut HashMap<u64, TailState>, sid: u64, path: PathBuf, heuristic: bool, now: f64) {
+    let mut memo = Vec::new();
+    if let Some(old) = tails.remove(&sid) {
+        memo = old.grace_memo;
+        memo.push((old.path, (old.grace_from, old.threshold_deferred, old.deferred_pct)));
+    }
+    let prior = memo.iter().position(|(p, _)| *p == path).map(|i| memo.remove(i).1).filter(|_| heuristic);
+    if memo.len() > GRACE_MEMO_CAP {
+        memo.drain(..memo.len() - GRACE_MEMO_CAP);
+    }
+    let mut t = TailState::attach(daemon, path, heuristic, now, prior.map_or(now, |m| m.0));
+    if let Some((_, deferred, pct)) = prior {
+        t.threshold_deferred = deferred;
+        t.deferred_pct = pct;
+    }
+    t.grace_memo = memo;
+    tails.insert(sid, t);
+}
+
+/// (T2) 신선한 statusline 이 CTX %를 실제로 줬는가 — 창 크기 없는 보고(구판 등)는 보류를 대신하지 못한다
+/// (opus 적대 1R: 그런 보고가 보류를 지우면 statusline 이 낡은 뒤 idle 좌석의 추정 임계가 영영 안 난다).
+fn statusline_has_ctx(s: &Surface) -> bool {
+    s.observed_usage.lock().unwrap().as_ref().is_some_and(|u| u.source == "statusline" && u.ctx_pct.is_some())
+}
+
+/// (T2) claude 창이 추정인가 — statusline 이 서버 진실 창을 준 적 없고 운영자 강제값(CYS_CLAUDE_CTX_WINDOW)도
+/// 없으면 `claude_ctx_window` 의 모델명 추정이다(순수 판정은 아래 `defer_estimated_threshold`).
+fn claude_window_is_estimate(server_ctx_window: Option<u64>) -> bool {
+    server_ctx_window.is_none()
+        && cys::env_compat("CYS_CLAUDE_CTX_WINDOW").and_then(|v| v.parse::<u64>().ok()).is_none()
+}
+
+/// (T2) 관측 경로 context.threshold 보류 판정(순수 — 진리표 핀). 추정 창 **이면서** 부착 뒤 유예 안일 때만 보류.
+/// 경계는 엄격 부등호: 정확히 유예 초가 지난 순간부터는 추정치로 발화한다(안전망 복귀).
+pub(crate) fn defer_estimated_threshold(window_estimated: bool, attached_age_secs: f64) -> bool {
+    window_estimated && attached_age_secs < ESTIMATED_WINDOW_GRACE_SECS
 }
 
 // ───────────────────────── 외부(비-pane) 세션 소비 수집 ─────────────────────────
@@ -571,7 +676,7 @@ fn collect_external(
                     if !external_eligible(now, mt, &comp, &guards) {
                         continue;
                     }
-                    ext.tails.insert(p.clone(), TailState::attach(daemon, p, false, now));
+                    ext.tails.insert(p.clone(), TailState::attach(daemon, p, false, now, now));
                 }
             }
         }
@@ -1904,6 +2009,10 @@ mod tests {
             last_discovery: 0.0,
             server_ctx_window: None,
             codex_model: None,
+            grace_from: 0.0,
+            threshold_deferred: false,
+            deferred_pct: None,
+            grace_memo: Vec::new(),
         };
         let lines = read_new_lines(&mut st);
         assert_eq!(lines, vec!["line1".to_string(), "line2".to_string()]);
@@ -2168,5 +2277,788 @@ mod tests {
             Some("cccccccc-0000-4000-8000-0000000000cc"),
             "등록이 도착했는데 topology session_id 가 빈 값으로 남았다 — 2차 재시작이 --continue 로 폴백"
         );
+    }
+
+    // ─────────── (TICKET=v116-usage · T2) 창 크기 확정 전 추정치로 context.threshold 오발 ───────────
+    /// VM ↻ 실측(REPORT-v115-vm-verify-r3 §3-3 · 본부 surface:9 · 11:46:52): 옛 세션을 resume 한 새 좌석의
+    /// 첫 관측이 statusline 도착(1초 뒤 1,000,000 창 15%) **전에** 모델명 기본 추정(200k)으로 77% 를 계산해
+    /// context.threshold 를 냈다. 이 시험은 그 순서를 그대로 재현한다: 새 좌석 + 154,805 토큰 트랜스크립트
+    /// (모델 claude-fable-5-1 = `[1m]` 표기 없음) + statusline 아직 없음 → 관측 틱 1회.
+    fn t2_seat(tag: &str) -> (Arc<crate::state::Daemon>, Arc<crate::state::Surface>, std::path::PathBuf) {
+        use std::sync::atomic::AtomicU64;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-t2-{tag}-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("cso".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let t = dir.join("b8bb4651-2614-447b-9db2-4ce8ab3123bd.jsonl");
+        std::fs::write(
+            &t,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":150000,"cache_creation_input_tokens":4800,"output_tokens":10}}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        *s.registered_transcript.lock().unwrap() = Some(t.to_string_lossy().into_owned());
+        (daemon, s, dir)
+    }
+
+    fn t2_threshold_events(daemon: &Arc<crate::state::Daemon>, sid: u64) -> Vec<Value> {
+        daemon
+            .bus
+            .replay_after(0)
+            .into_iter()
+            .filter(|e| e["name"].as_str() == Some("context.threshold") && e["surface_id"].as_u64() == Some(sid))
+            .collect()
+    }
+
+    #[test]
+    fn t2_estimated_window_does_not_fire_threshold_on_fresh_seat() {
+        let (daemon, s, dir) = t2_seat("fresh");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let obs = s.observed_usage.lock().unwrap().clone().expect("관측 스냅샷");
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        // 선-assert: 재현 전제(추정 창 200k · 77%)가 서야 판정이 대상을 건드린 것이다.
+        assert_eq!((obs.ctx_window, obs.ctx_pct), (Some(200_000), Some(77)), "전제: 200k 추정 77%");
+        assert!(
+            fired.is_empty(),
+            "창 크기 미확정(statusline 전) 추정치 77% 로 context.threshold 발행 — VM ↻ T2 오산 재현: {fired:?}"
+        );
+    }
+
+    /// 안전망(4군 ② 무clear 100%+): statusline 이 끝내 오지 않는 좌석은 유예가 지나면 **추정치로 발화**한다.
+    /// 보류가 영구 침묵으로 번지면 이 좌석의 CTX 경보는 영영 없다 — 그 수리를 잡는다.
+    #[test]
+    fn t2_estimate_still_fires_after_grace_without_statusline() {
+        let (daemon, s, dir) = t2_seat("grace");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert!(t2_threshold_events(&daemon, s.id).is_empty(), "전제: 유예 안 보류");
+        // 유예 경과(부착 시각을 과거로) + 새 assistant 줄(여전히 statusline 없음)
+        tails.get_mut(&s.id).unwrap().grace_from -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        let t = s.registered_transcript.lock().unwrap().clone().unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        std::io::Write::write_all(
+            &mut f,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":156000,"cache_creation_input_tokens":0,"output_tokens":10}}}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        drop(f);
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(fired.len(), 1, "유예 뒤에도 추정치 발화 0 — statusline 없는 좌석의 CTX 경보 영구 침묵");
+        assert_eq!(fired[0]["payload"]["source"], "observed");
+    }
+
+    /// 보류는 **창 미확정**에만 건다: statusline 이 창(1M)을 이미 준 좌석은 부착 직후라도 진짜 임계를 즉시 낸다.
+    #[test]
+    fn t2_known_window_fires_immediately_on_fresh_seat() {
+        let (daemon, s, dir) = t2_seat("known");
+        // statusline 이 한 번 창을 줬다(신선도 창 밖 = 트랜스크립트 폴백이 도는 상태)
+        *s.observed_usage.lock().unwrap() = Some(ObservedUsage {
+            agent: "claude".into(),
+            ctx_tokens: Some(100_000),
+            ctx_window: Some(1_000_000),
+            ctx_pct: Some(10),
+            rate: vec![],
+            source: "statusline".into(),
+            session_file: String::new(),
+            updated_at: now_epoch() - STATUSLINE_FRESH_SECS - 5.0,
+        });
+        let t = s.registered_transcript.lock().unwrap().clone().unwrap();
+        std::fs::write(
+            &t,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":700000,"cache_creation_input_tokens":0,"output_tokens":10}}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let obs = s.observed_usage.lock().unwrap().clone().unwrap();
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!((obs.ctx_window, obs.ctx_pct), (Some(1_000_000), Some(70)), "전제: 서버 진실 창 70%");
+        assert_eq!(fired.len(), 1, "창이 확정된 좌석의 진짜 70% 가 보류됐다 — 참 CTX 경보 지연");
+    }
+
+    #[test]
+    fn t2_defer_truth_table() {
+        let g = super::ESTIMATED_WINDOW_GRACE_SECS;
+        assert!(super::defer_estimated_threshold(true, 0.0));
+        assert!(super::defer_estimated_threshold(true, g - 0.001));
+        assert!(!super::defer_estimated_threshold(true, g), "경계 = 유예 끝 → 발화");
+        assert!(!super::defer_estimated_threshold(false, 0.0), "창 확정이면 부착 직후라도 발화");
+        assert!(!super::defer_estimated_threshold(false, g + 1.0));
+        assert_eq!(g, 60.0, "유예 = statusline 신선도 창과 같은 60초(근거는 상수 주석)");
+    }
+
+    /// agy 1R #2(채택): 유예 안에서 보류된 발화는 **새 줄이 없는 틱**에도 유예가 끝나면 다시 평가돼야 한다.
+    /// 종전 수리는 발화 지점이 「새 줄이 있는 틱」에만 있어, 부착 직후 한 번 크게 쓰고 조용해진 좌석은
+    /// 추정 임계가 영영 안 났다(빈 줄 분기 = 발화 없이 반환).
+    #[test]
+    fn t2_deferred_threshold_fires_on_idle_tick_after_grace() {
+        let (daemon, s, dir) = t2_seat("idle");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert!(t2_threshold_events(&daemon, s.id).is_empty(), "전제: 유예 안 보류");
+        tails.get_mut(&s.id).unwrap().grace_from -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        // 새 줄 없음 — 빈 줄 틱
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(fired.len(), 1, "유예가 끝났는데 새 줄이 없어 보류된 추정 임계가 영구 침묵");
+    }
+
+    /// opus 1R(low)·agy 3R #3: 등록 경로 재부착(새 세션)은 유예를 새로 시작한다(휴리스틱 재부착 = `t2_grace_memo_per_file`).
+    #[test]
+    fn t2_grace_registered_reattach_restarts_heuristic_carries() {
+        let (daemon, s, dir) = t2_seat("reattach");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        tails.get_mut(&s.id).unwrap().grace_from = 1.0; // 옛 기준을 표지값으로
+        let b = dir.join("cccccccc-0000-4000-8000-0000000000cc.jsonl");
+        std::fs::write(&b, "").unwrap();
+        *s.registered_transcript.lock().unwrap() = Some(b.to_string_lossy().into_owned());
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let t = tails.get(&s.id).expect("재부착 tail");
+        let (path, grace_from) = (t.path.clone(), t.grace_from);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(path, b, "전제: 재부착됨");
+        assert!(grace_from > 1.0, "등록 경로 재부착(새 세션)이 옛 유예 기준을 이어받았다 — 새 claude 가 유예 없이 오발");
+    }
+
+    /// agy 4R ⓐ · opus 3R low · opus 4R: 유예 상태는 파일별 기억 — 휴리스틱이 처음 보는 파일(새 세션)은 옛 세션의 끝난
+    /// 유예·보류 %를 물려받지 않고, 원 세션으로 돌아오면 원 세션의 상태를 되찾는다(같은 cwd 에 새 파일이 잇달아 생겨도
+    /// 원 세션의 참 경보가 영영 보류되지 않는다). 등록 경로는 언제나 새로 시작.
+    #[test]
+    fn t2_grace_memo_per_file() {
+        let (daemon, s, dir) = t2_seat("memo");
+        let s1 = std::path::PathBuf::from(s.registered_transcript.lock().unwrap().clone().unwrap());
+        let (f1, f2) = (dir.join("f1.jsonl"), dir.join("f2.jsonl"));
+        std::fs::write(&f1, "").unwrap();
+        std::fs::write(&f2, "").unwrap();
+        let mut tails = std::collections::HashMap::new();
+        let st = |tails: &std::collections::HashMap<u64, super::TailState>| {
+            let t = &tails[&s.id];
+            (t.path.clone(), t.grace_from, t.threshold_deferred, t.deferred_pct)
+        };
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1000.0);
+        let first = st(&tails);
+        let t = tails.get_mut(&s.id).unwrap();
+        (t.threshold_deferred, t.deferred_pct) = (true, Some(77));
+        super::reattach_tail(&daemon, &mut tails, s.id, f1.clone(), true, 1100.0);
+        let new1 = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1130.0);
+        let back1 = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, f2.clone(), true, 1150.0);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1170.0);
+        let back2 = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, f1.clone(), true, 1190.0);
+        let revisit = st(&tails);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), false, 1200.0);
+        let registered = st(&tails);
+        // 상태가 바뀐 뒤 재방문 = 최신 상태를 되찾는다(옛 항목이 남아 낡은 상태를 복원하지 않는다)
+        super::reattach_tail(&daemon, &mut tails, s.id, f2.clone(), true, 1210.0);
+        super::reattach_tail(&daemon, &mut tails, s.id, s1.clone(), true, 1220.0);
+        let latest = st(&tails);
+        // 상한: 기억 파일 수는 GRACE_MEMO_CAP 을 넘지 않고, 넘치면 **가장 오래전에 떠난** 것부터 잊는다
+        let n = super::GRACE_MEMO_CAP + 4;
+        for i in 0..n {
+            super::reattach_tail(&daemon, &mut tails, s.id, dir.join(format!("x{i}.jsonl")), true, 1300.0 + i as f64);
+        }
+        let memo: Vec<_> = tails[&s.id].grace_memo.iter().map(|(p, _)| p.clone()).collect();
+        let memo_len = memo.len();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(first, (s1.clone(), 1000.0, false, None), "처음 보는 파일 = 부착 시각");
+        assert_eq!(new1, (f1.clone(), 1100.0, false, None), "새 세션이 옛 세션의 끝난 유예·보류 77%를 물려받았다 — 유예 없이 오발");
+        assert_eq!(back1, (s1.clone(), 1000.0, true, Some(77)), "원 세션으로 돌아왔는데 원 세션 상태를 잃었다");
+        assert_eq!(back2, (s1.clone(), 1000.0, true, Some(77)), "새 파일이 잇달아 생기자 원 세션 유예가 재시작 — 참 경보 영영 보류");
+        assert_eq!(revisit.1, 1100.0, "전에 본 파일로 돌아오면 그 파일의 기준 — 오가기마다 재시작하면 영영 침묵(opus 1R)");
+        assert_eq!(registered, (s1.clone(), 1200.0, false, None), "등록 경로는 언제나 새로 시작");
+        assert_eq!(latest, (s1.clone(), 1200.0, false, None), "재방문이 최신 상태가 아니라 낡은 기억(1000·77%)을 복원했다");
+        assert_eq!(memo_len, super::GRACE_MEMO_CAP, "기억 파일 수가 상한과 다르다 — 무제한 증가 또는 기억 소실");
+        assert!(memo.contains(&dir.join(format!("x{}.jsonl", n - 2))), "방금 떠난 파일을 잊었다 — 최신 쪽을 버림");
+        assert!(!memo.contains(&s1), "가장 오래전에 떠난 파일이 남았다 — 오래된 것부터 잊지 않음");
+        // 배선: 관측 루프의 경로 전환이 이 함수를 거친다(휴리스틱 발견은 실제 프로필 폴더를 읽어 단위 시험으로 몰 수 없다)
+        let src = include_str!("usage.rs");
+        let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
+        assert!(
+            prod.contains("reattach_tail(daemon, tails, s.id, path.clone(), heuristic, now);"),
+            "관측 루프의 경로 전환이 reattach_tail 을 거치지 않는다 — 파일별 유예 기억이 배선되지 않음"
+        );
+    }
+
+    /// opus 적대 1R(low): 창 크기(ctx %)가 없는 statusline 보고는 보류를 지우지 못한다.
+    #[test]
+    fn t2_statusline_without_ctx_keeps_deferral() {
+        let (daemon, s, dir) = t2_seat("noctx");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert!(tails.get(&s.id).unwrap().threshold_deferred, "전제: 보류됨");
+        *s.observed_usage.lock().unwrap() = Some(ObservedUsage {
+            agent: "claude".into(),
+            ctx_tokens: None,
+            ctx_window: None,
+            ctx_pct: None,
+            rate: vec![],
+            source: "statusline".into(),
+            session_file: String::new(),
+            updated_at: now_epoch(),
+        });
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let still_idle = tails.get(&s.id).unwrap().threshold_deferred;
+        // 새 줄이 있는 틱(본류의 statusline 신선 조기 반환 경로)도 같다
+        let t = s.registered_transcript.lock().unwrap().clone().unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        std::io::Write::write_all(
+            &mut f,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":5,"#,
+                r#""cache_read_input_tokens":156000,"cache_creation_input_tokens":0,"output_tokens":10}}}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        drop(f);
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let still_main = tails.get(&s.id).unwrap().threshold_deferred;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(still_idle, "ctx 없는 statusline 이 보류를 지웠다(빈 줄 틱) — statusline 이 낡은 뒤 idle 좌석 추정 임계 영구 침묵");
+        assert!(still_main, "ctx 없는 statusline 이 보류를 지웠다(새 줄 틱)");
+    }
+
+    /// agy 3R #4: 보류 뒤 창 없는 statusline 이 관측을 덮고(%) 없음) 그것이 낡은 다음, 새 줄 없이 유예가 끝나면
+    /// 보류했던 추정 %로 발화한다 — 현재 관측에 %가 없다는 이유로 영구 침묵하지 않는다.
+    #[test]
+    fn t2_idle_reeval_uses_deferred_pct_when_current_has_none() {
+        let (daemon, s, dir) = t2_seat("dpct");
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        assert_eq!(tails.get(&s.id).unwrap().deferred_pct, Some(77), "전제: 추정 77% 보류");
+        *s.observed_usage.lock().unwrap() = Some(ObservedUsage {
+            agent: "claude".into(),
+            ctx_tokens: None,
+            ctx_window: None,
+            ctx_pct: None,
+            rate: vec![],
+            source: "statusline".into(),
+            session_file: String::new(),
+            updated_at: now_epoch() - STATUSLINE_FRESH_SECS - 5.0,
+        });
+        tails.get_mut(&s.id).unwrap().grace_from -= super::ESTIMATED_WINDOW_GRACE_SECS + 1.0;
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let fired = t2_threshold_events(&daemon, s.id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(fired.len(), 1, "현재 관측에 %가 없어 보류된 추정 임계가 영구 침묵");
+        assert_eq!(fired[0]["payload"]["context_pct"], 77);
+    }
+}
+
+// (v116-usage · master 규칙 ⑤) 합격 시험 — 구현을 보지 않은 Opus 서브에이전트가 명세·인터페이스만 보고 작성
+// (명세 원문 = HANDOFF §3 진리표 + 이 브랜치 REVISE 인터페이스 · 워커는 감싸 붙이기만 함).
+#[cfg(test)]
+mod acceptance_v116 {
+    // v116-usage 합격 시험 — usage 모듈(B1·B2). 구현 비공개 · 명세만으로 작성.
+
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    // ───────────────────────── B1 ─────────────────────────
+
+    #[test]
+    fn accept_b1_grace_constant_is_60() {
+        let g: f64 = super::ESTIMATED_WINDOW_GRACE_SECS;
+        assert_eq!(g, 60.0, "ESTIMATED_WINDOW_GRACE_SECS 는 60.0 이어야 한다");
+    }
+
+    #[test]
+    fn accept_b1_estimated_window_young_attach_defers() {
+        for age in [0.0, 1.0, 30.0, 59.0, 59.999] {
+            assert!(
+                super::defer_estimated_threshold(true, age),
+                "창이 추정이고 부착 {age}초(< 60)면 발화 보류(true)여야 한다"
+            );
+        }
+        assert!(
+            super::defer_estimated_threshold(true, -1.0),
+            "부착 나이가 음수(시계 역행)여도 < 60 이므로 보류(true)"
+        );
+    }
+
+    #[test]
+    fn accept_b1_age_exactly_60_does_not_defer() {
+        assert!(
+            !super::defer_estimated_threshold(true, 60.0),
+            "부착 나이 정확히 60초면 보류 해제(false) — 경계는 < 60"
+        );
+        for age in [60.001, 61.0, 3600.0] {
+            assert!(
+                !super::defer_estimated_threshold(true, age),
+                "부착 {age}초(>= 60)면 보류하지 않는다"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_b1_confirmed_window_never_defers() {
+        for age in [-1.0, 0.0, 10.0, 59.999, 60.0, 1e6] {
+            assert!(
+                !super::defer_estimated_threshold(false, age),
+                "창이 확정(false)이면 나이({age})와 무관하게 보류하지 않는다"
+            );
+        }
+    }
+
+    // ───────────────────────── B2 도우미 ─────────────────────────
+
+    type Grace = (f64, bool, Option<u8>);
+
+    struct TmpDir(PathBuf);
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tmp_dir(tag: &str) -> TmpDir {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!(
+            "cys-accept-v116-usage-{}-{}-{}",
+            tag,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&p).expect("임시 폴더를 만들지 못했다");
+        TmpDir(p)
+    }
+
+    fn make_daemon(t: &TmpDir) -> Arc<crate::state::Daemon> {
+        crate::state::Daemon::new(t.0.join("cysd.sock")).into()
+    }
+
+    fn file(t: &TmpDir, name: &str) -> PathBuf {
+        let p = t.0.join(name);
+        let _ = std::fs::write(&p, b"");
+        p
+    }
+
+    fn attach(
+        d: &Arc<crate::state::Daemon>,
+        tails: &mut HashMap<u64, super::TailState>,
+        sid: u64,
+        p: &Path,
+        heuristic: bool,
+        now: f64,
+    ) -> Grace {
+        super::reattach_tail(d, tails, sid, p.to_path_buf(), heuristic, now);
+        let t = tails
+            .get(&sid)
+            .unwrap_or_else(|| panic!("reattach_tail 뒤 좌석 {sid} 의 TailState 가 없다"));
+        assert!(
+            t.path.as_path() == p,
+            "reattach_tail 뒤 path 가 새 경로여야 한다: 기대 {:?} · 실제 {:?}",
+            p,
+            t.path
+        );
+        (t.grace_from, t.threshold_deferred, t.deferred_pct)
+    }
+
+    fn set_state(
+        tails: &mut HashMap<u64, super::TailState>,
+        sid: u64,
+        grace_from: Option<f64>,
+        deferred: bool,
+        pct: Option<u8>,
+    ) {
+        let t = tails
+            .get_mut(&sid)
+            .unwrap_or_else(|| panic!("좌석 {sid} 의 TailState 가 없다(상태 대입 불가)"));
+        if let Some(g) = grace_from {
+            t.grace_from = g;
+        }
+        t.threshold_deferred = deferred;
+        t.deferred_pct = pct;
+    }
+
+    fn memo_entries(tails: &HashMap<u64, super::TailState>, sid: u64, p: &Path) -> Vec<Grace> {
+        let t = tails.get(&sid).expect("좌석 TailState 가 없다");
+        t.grace_memo
+            .iter()
+            .filter(|(mp, _)| mp.as_path() == p)
+            .map(|(_, g)| *g)
+            .collect()
+    }
+
+    fn memo_has(tails: &HashMap<u64, super::TailState>, sid: u64, p: &Path) -> bool {
+        !memo_entries(tails, sid, p).is_empty()
+    }
+
+    fn memo_len(tails: &HashMap<u64, super::TailState>, sid: u64) -> usize {
+        tails.get(&sid).expect("좌석 TailState 가 없다").grace_memo.len()
+    }
+
+    fn assert_memo_unique(tails: &HashMap<u64, super::TailState>, sid: u64, when: &str) {
+        let t = tails.get(&sid).expect("좌석 TailState 가 없다");
+        for (i, (a, _)) in t.grace_memo.iter().enumerate() {
+            for (b, _) in t.grace_memo.iter().skip(i + 1) {
+                assert!(
+                    a != b,
+                    "[{when}] grace_memo 에 같은 경로 {:?} 가 두 번 있다 — 기억은 경로당 최신 하나여야 한다",
+                    a
+                );
+            }
+        }
+    }
+
+    // ───────────────────────── B2 ─────────────────────────
+
+    #[test]
+    fn accept_b2_memo_cap_constant_is_16() {
+        let c: usize = super::GRACE_MEMO_CAP;
+        assert_eq!(c, 16, "GRACE_MEMO_CAP 은 16 이어야 한다");
+    }
+
+    #[test]
+    fn accept_b2_spec_scenario_full() {
+        let tmp = tmp_dir("scenario");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let s1 = file(&tmp, "s1.jsonl");
+        let f1 = file(&tmp, "f1.jsonl");
+        let f2 = file(&tmp, "f2.jsonl");
+
+        assert_eq!(attach(&d, &mut tails, sid, &s1, true, 1000.0), (1000.0, false, None), "S1 첫 부착(1000)");
+        set_state(&mut tails, sid, None, true, Some(77));
+
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f1, true, 1100.0),
+            (1100.0, false, None),
+            "F1 처음(1100): 직전 S1 의 보류(true·77)를 물려받으면 안 된다"
+        );
+        assert_eq!(
+            memo_entries(&tails, sid, &s1),
+            vec![(1000.0, true, Some(77))],
+            "S1 을 떠날 때 (1000·true·77) 이 기억돼야 한다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 1130.0),
+            (1000.0, true, Some(77)),
+            "S1 복귀(1130, 휴리스틱): 떠날 때 상태를 되찾아야 한다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f2, true, 1150.0),
+            (1150.0, false, None),
+            "F2 처음(1150): 새 유예"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 1170.0),
+            (1000.0, true, Some(77)),
+            "S1 두 번째 복귀(1170): 여전히 (1000·true·77)"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f1, true, 1190.0),
+            (1100.0, false, None),
+            "F1 복귀(1190): F1 을 떠날 때의 grace_from 1100 을 되찾아야 한다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, false, 1200.0),
+            (1200.0, false, None),
+            "S1 등록 경로(heuristic=false, 1200): 기억과 무관하게 새 유예(1200·false·None)"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &f2, true, 1210.0),
+            (1150.0, false, None),
+            "F2 복귀(1210): F2 를 떠날 때의 grace_from 1150 을 되찾아야 한다"
+        );
+        assert_eq!(
+            memo_entries(&tails, sid, &s1),
+            vec![(1200.0, false, None)],
+            "S1 기억은 최신(1200·false·None) 하나뿐이어야 한다 — 옛 (1000·true·77) 잔존 금지"
+        );
+        assert_memo_unique(&tails, sid, "F2 복귀 뒤");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 1220.0),
+            (1200.0, false, None),
+            "S1 휴리스틱 복귀(1220): 최신 기억(1200·false·None) — 옛 1000·true·77 이 되살아나면 안 된다"
+        );
+
+        let mut news = Vec::new();
+        for i in 0..20u32 {
+            let p = file(&tmp, &format!("n{i:02}.jsonl"));
+            let now = 1300.0 + i as f64;
+            assert_eq!(
+                attach(&d, &mut tails, sid, &p, true, now),
+                (now, false, None),
+                "새 파일 n{i:02} 처음({now}): 새 유예여야 한다"
+            );
+            assert!(
+                memo_len(&tails, sid) <= 16,
+                "새 파일 n{i:02} 부착 뒤 기억 수 {} > 16",
+                memo_len(&tails, sid)
+            );
+            assert_memo_unique(&tails, sid, "새 파일 순회 중");
+            news.push(p);
+        }
+
+        assert_eq!(memo_len(&tails, sid), 16, "새 파일 20개 뒤 기억 수는 정확히 16");
+        assert_eq!(
+            memo_entries(&tails, sid, &news[18]),
+            vec![(1318.0, false, None)],
+            "방금 떠난 n18 은 기억에 (1318·false·None) 으로 있어야 한다"
+        );
+        for (i, p) in news.iter().enumerate().take(19).skip(3) {
+            assert!(memo_has(&tails, sid, p), "n{i:02} 는 최근 떠난 16개 안이라 기억돼야 한다");
+        }
+        for (i, p) in news.iter().enumerate().take(3) {
+            assert!(!memo_has(&tails, sid, p), "n{i:02} 는 가장 오래전에 떠난 쪽이라 잊혀야 한다");
+        }
+        assert!(!memo_has(&tails, sid, &s1), "S1 은 잊혀야 한다");
+        assert!(!memo_has(&tails, sid, &f1), "F1 은 잊혀야 한다");
+        assert!(!memo_has(&tails, sid, &f2), "F2 는 잊혀야 한다");
+        assert!(!memo_has(&tails, sid, &news[19]), "현재 붙어 있는 n19 는 아직 떠나지 않았으니 기억에 없어야 한다");
+
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s1, true, 2000.0),
+            (2000.0, false, None),
+            "잊힌 S1 로 돌아오면 처음 보는 것처럼 now(2000)"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_deferred_state_restored_per_file() {
+        let tmp = tmp_dir("perfile");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let a = file(&tmp, "a.jsonl");
+        let b = file(&tmp, "b.jsonl");
+
+        assert_eq!(attach(&d, &mut tails, sid, &a, true, 100.0), (100.0, false, None), "A 처음");
+        set_state(&mut tails, sid, None, true, Some(91));
+        assert_eq!(attach(&d, &mut tails, sid, &b, true, 110.0), (110.0, false, None), "B 처음 — A 의 보류 상속 금지");
+        set_state(&mut tails, sid, None, true, Some(55));
+        assert_eq!(
+            attach(&d, &mut tails, sid, &a, true, 120.0),
+            (100.0, true, Some(91)),
+            "A 복귀: A 자기 상태(100·true·91) — B 의 55 가 섞이면 안 된다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &b, true, 130.0),
+            (110.0, true, Some(55)),
+            "B 복귀: B 자기 상태(110·true·55)"
+        );
+        assert_memo_unique(&tails, sid, "A·B 왕복 뒤");
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_registered_path_always_fresh_even_if_remembered() {
+        let tmp = tmp_dir("registered");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let a = file(&tmp, "a.jsonl");
+        let b = file(&tmp, "b.jsonl");
+
+        assert_eq!(attach(&d, &mut tails, sid, &a, false, 100.0), (100.0, false, None), "A 등록 첫 부착");
+        set_state(&mut tails, sid, None, true, Some(80));
+        assert_eq!(attach(&d, &mut tails, sid, &b, false, 150.0), (150.0, false, None), "B 등록 부착 — 상속 금지");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &a, false, 200.0),
+            (200.0, false, None),
+            "A 등록 복귀(heuristic=false): 기억(100·true·80)이 있어도 언제나 now·false·None"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_revisit_memory_is_latest_state_only() {
+        let tmp = tmp_dir("latest");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let p = file(&tmp, "p.jsonl");
+        let q = file(&tmp, "q.jsonl");
+
+        attach(&d, &mut tails, sid, &p, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(42));
+        attach(&d, &mut tails, sid, &q, true, 110.0);
+        assert_eq!(attach(&d, &mut tails, sid, &p, true, 120.0), (100.0, true, Some(42)), "P 첫 복귀");
+        // P 에 붙어 있는 동안 상태가 바뀐다(보류 해제 + grace 재시작).
+        set_state(&mut tails, sid, Some(150.0), false, None);
+        assert_eq!(attach(&d, &mut tails, sid, &q, true, 160.0), (110.0, false, None), "Q 복귀");
+        assert_eq!(
+            memo_entries(&tails, sid, &p),
+            vec![(150.0, false, None)],
+            "P 기억은 떠날 때의 최신(150·false·None) 하나 — 옛(100·true·42) 이 남으면 안 된다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, sid, &p, true, 170.0),
+            (150.0, false, None),
+            "P 두 번째 복귀: 최신 상태(150·false·None) — 오래된 상태 부활 금지"
+        );
+        // 다시 보류로 바꿔 떠났다 돌아와도 최신을 따른다.
+        set_state(&mut tails, sid, None, true, Some(99));
+        attach(&d, &mut tails, sid, &q, true, 180.0);
+        assert_eq!(
+            attach(&d, &mut tails, sid, &p, true, 190.0),
+            (150.0, true, Some(99)),
+            "P 세 번째 복귀: 최신(150·true·99)"
+        );
+        assert_memo_unique(&tails, sid, "P·Q 다회 왕복 뒤");
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_exactly_16_other_files_all_remembered() {
+        let tmp = tmp_dir("cap16");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let s0 = file(&tmp, "s0.jsonl");
+
+        attach(&d, &mut tails, sid, &s0, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(61));
+        for i in 1..=16u32 {
+            let p = file(&tmp, &format!("n{i:02}.jsonl"));
+            attach(&d, &mut tails, sid, &p, true, 100.0 + i as f64);
+        }
+        // 현재 n16 · 떠난 다른 파일 = s0, n01..n15 = 16개 → 아무것도 잊지 않는다.
+        assert_eq!(memo_len(&tails, sid), 16, "다른 파일 정확히 16개면 기억 수 16");
+        assert!(memo_has(&tails, sid, &s0), "다른 파일이 정확히 16개면 가장 오래된 s0 도 기억돼야 한다(상한 경계)");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s0, true, 500.0),
+            (100.0, true, Some(61)),
+            "16개 경계에서 s0 복귀는 기억을 되찾아야 한다"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_seventeenth_other_file_evicts_oldest_departure() {
+        let tmp = tmp_dir("cap17");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let s0 = file(&tmp, "s0.jsonl");
+
+        attach(&d, &mut tails, sid, &s0, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(61));
+        let mut ns = Vec::new();
+        for i in 1..=17u32 {
+            let p = file(&tmp, &format!("n{i:02}.jsonl"));
+            attach(&d, &mut tails, sid, &p, true, 100.0 + i as f64);
+            ns.push(p);
+        }
+        // 현재 n17 · 떠난 다른 파일 = s0, n01..n16 = 17개 → 가장 오래전에 떠난 s0 만 잊는다.
+        assert_eq!(memo_len(&tails, sid), 16, "17번째 다른 파일이 생기면 기억 수는 16 으로 유지");
+        assert!(!memo_has(&tails, sid, &s0), "가장 오래전에 떠난 s0 가 잊혀야 한다");
+        assert!(memo_has(&tails, sid, &ns[0]), "n01 은 두 번째로 오래됐으므로 아직 기억돼야 한다(한 개만 잊는다)");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &s0, true, 500.0),
+            (500.0, false, None),
+            "잊힌 s0 로 돌아오면 처음 보는 것처럼 now(500)·false·None"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_eviction_order_is_by_last_departure_not_first_seen() {
+        let tmp = tmp_dir("lru");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let sid = 7u64;
+        let p = file(&tmp, "p.jsonl");
+
+        attach(&d, &mut tails, sid, &p, true, 100.0);
+        set_state(&mut tails, sid, None, true, Some(42));
+        let mut ns = Vec::new();
+        for i in 1..=15u32 {
+            let n = file(&tmp, &format!("n{i:02}.jsonl"));
+            attach(&d, &mut tails, sid, &n, true, 100.0 + i as f64);
+            ns.push(n);
+        }
+        // P 는 가장 먼저 기억됐지만 이제 다시 붙었다 떠난다 → 떠난 시각이 최신이 된다.
+        assert_eq!(attach(&d, &mut tails, sid, &p, true, 200.0), (100.0, true, Some(42)), "P 복귀");
+        let n16 = file(&tmp, "n16.jsonl");
+        attach(&d, &mut tails, sid, &n16, true, 201.0);
+        let n17 = file(&tmp, "n17.jsonl");
+        attach(&d, &mut tails, sid, &n17, true, 202.0);
+        // 떠난 순서: n01(가장 오래) … n15, P(201), n16(202) = 17개 → n01 을 잊어야 한다.
+        assert_eq!(memo_len(&tails, sid), 16, "기억 수 16");
+        assert!(
+            !memo_has(&tails, sid, &ns[0]),
+            "가장 오래전에 떠난 n01 이 잊혀야 한다"
+        );
+        assert!(
+            memo_has(&tails, sid, &p),
+            "P 는 처음 기억된 건 가장 이르지만 최근(201)에 떠났으므로 남아야 한다 — 떠난 순서 기준 퇴출"
+        );
+        assert_memo_unique(&tails, sid, "LRU 순회 뒤");
+        assert_eq!(
+            attach(&d, &mut tails, sid, &p, true, 300.0),
+            (100.0, true, Some(42)),
+            "P 재복귀: 기억(100·true·42)을 되찾아야 한다"
+        );
+        drop(d);
+    }
+
+    #[test]
+    fn accept_b2_memory_is_per_seat() {
+        let tmp = tmp_dir("perseat");
+        let d = make_daemon(&tmp);
+        let mut tails: HashMap<u64, super::TailState> = HashMap::new();
+        let p = file(&tmp, "p.jsonl");
+        let q = file(&tmp, "q.jsonl");
+
+        attach(&d, &mut tails, 7, &p, true, 100.0);
+        set_state(&mut tails, 7, None, true, Some(70));
+        attach(&d, &mut tails, 7, &q, true, 110.0);
+
+        assert_eq!(
+            attach(&d, &mut tails, 8, &p, true, 120.0),
+            (120.0, false, None),
+            "좌석 8 은 P 에 붙었다 떠난 적이 없다 — 좌석 7 의 기억(100·true·70)을 쓰면 안 된다"
+        );
+        assert_eq!(
+            attach(&d, &mut tails, 7, &p, true, 130.0),
+            (100.0, true, Some(70)),
+            "좌석 7 은 자기 기억(100·true·70)을 되찾는다 — 좌석 8 부착에 오염되면 안 된다"
+        );
+        drop(d);
     }
 }

@@ -97,8 +97,18 @@ python3 $S/mutants.py                                          # 뮤턴트(작�
 | C 구현 R2 | agy(ad0c9b38) | REVISE — 발행 해시 생성기가 태그 없는 얕은 클론·CRLF 작업트리에 의존(얕은 클론에서 돌리면 표가 현재 판 1줄로 덮여 이력 소실) | dfdb92e4: 태그 0개면 생성·검사 거부 exit 3 · 작업 트리 CRLF→LF(실측: 거부 rc 3 · --check OK) |
 | C 구현 R3 | Opus 5.5 적대(ad0c9b38) | **REVISE** — N1~N4 해소 · 새 회귀 M1(강등 기본값이 「증거 없으면 복원 안 함」 → 빈 파일·부재·UTF-16 md 가 영구히 빈 지침 · 기점은 복원) | 기준선 적색 dfdb92e4(7 FAIL) → 3cd6e36a: 강등 기본값 = 복원 · 건너뛰기 = 표준본 ASCII 긍정 증거일 때만 · 시험 13c |
 | C 구현 R3 | agy(3cd6e36a) | BLOCK 3 — ①Keep 분기가 손본 .new 를 vendor 로 재기록 ②손본 CEO 사본 Keep 시 manifest 미전진 ③손본 표준본 + 갱신 .new + 낡은 .pre-ceo → 부서 생성이 .new 로 통과 → 낡은 백업 미인정 → 강등이 옛 판 복원 | ③ 수용: 기준선 적색(8 FAIL) → b87bbf07: 낡은 백업 판정 = 본문 동등 ∨ 표준본 ASCII 긍정 증거(CEO 구분선 표지 배제 · 시험 13d) · ①② = `git diff adf50d44..HEAD` 대조로 종전 설치기 동작(이 티켓 밖 · 기록만 · ②는 사용자 수정 보존 설계, 반복 설치 멱등은 형상 시험 2회로 고정) |
-| C 구현 R4 | Opus 5.5 적대 | (진행 중 · b87bbf07) | |
+| C 구현 R4 | Opus 5.5 적대(b87bbf07) | **REVISE** — M1 해소 · 새 반례 P1(표준본 판정 `ceo_md_is_standard` 가 1행 머리말만 봐서 **잘린 표준본**을 온전한 표준본으로 판정 → R2b 승격→강등 = 잘린 md 가 새 백업·진짜 백업 .stale- · R2c 바로 강등 = 복원 생략 → 부서 0개에 잘린 4096B 지침 · 기점 정상 · R2b 는 b87bbf07 회귀, R2c 는 cee0ec7a 부터) · NOTE P2(머리글 지운 CEO 사본 + CP949 → 한글 구분선 표지 grep 불발 → 표준본 오판) | **미해결 → §11** |
 | C 구현 R4 | agy | (진행 중 · b87bbf07) | |
 | 합격 시험(규칙 ⑤) | 구현 미열람 Opus 5.5 서브에이전트(jsonl model = claude-opus-5-5 × 25) | **20/20 PASS**(S1~S6 · 실 바이너리 · 발행 v1.1.5 팩) · 수리본(cee0ec7a 재빌드)에서 같은 스크립트 재실행 = **20/20 PASS** | 모호점 5건 기록(HEAD 지침 = v1.1.5 와 바이트 동일이라 판별력 일부 제한 등) · 스크립트 `scratch/blind/acceptance.py` · 결과 `scratch/blind/rerun-{cee0ec7a,ad0c9b38,3cd6e36a,b87bbf07}.out` = 매번 20/20 |
 | 뮤턴트 | scratch/mutants.py | 1차 10/12 → 생존 2(R7·B5) 보강 → 12/12 · cee0ec7a 16개 = 14/16(생존 R8·B7) → 보강(형상 vmb-user-edited-new · 시험 11h) · ad0c9b38 18개(B8·B9 추가) 재실행(진행 중) | |
 | 정본 게이트 | gate_runner(워크플로 run 블록 원문) | 80e7b628·cee0ec7a 실행은 이후 수리로 무효화 → 내 실행만 중단(잔여 자식 1개 = 스스로 종료 확인) → **ad0c9b38 재실행(진행 중)** · 기준 adf50d44 실패 = D07b.test_phoenix_c6_reap 1건 | |
+
+## 11. 미해결(수렴 전) — 다음 사람이 여기서 시작
+- **P1(REVISE · 재현 있음)**: `cysjavis-pack/bin/cys-dept` `ceo_md_is_standard` 가 「파일이 끝까지 온전한가」를 안 본다.
+  - 재현 = `~/axdev/.wt/v116-ceo-directive-hold-scratch/adv-opus/repro_dept.py`(R2b · R2c · `REAL=1` = 실 발행 바이트 · md = 표준본 앞 4096B).
+  - 입력 발생 경로 = 1.1.5 이하 강등 `cp .pre-ceo md`(비원자)가 끊김 → md 잘림 · .pre-ceo·영수증 잔존(M1 빈 파일과 같은 계열).
+  - 검토자 수정안 = 표준본 증거에 「잘리지 않음」 추가: LF 정규화한 md 가 `.pre-ceo` · CEO 구분선 뒤 본문 · `.new` 중 하나의 **진접두(strict prefix)** 면 손상본 → ⓕ 는 낡은 백업으로 보지 않고, 강등은 건너뛰지 않는다(비어 있지 않으면 보존 뒤 복원). 형상 표에 R2b·R2c 두 형상 추가 → 기준선 적색 먼저(규칙 ④).
+  - 추가 뮤턴트 = 진접두 검사 제거.
+- **P2(NOTE · 두 조건 겹침)**: 머리글 지운 CEO 사본 + CP949 저장 → 한글 표지 '운영 계약 전문]' 불발. 수정안 = 표준본 증거에 「UTF-8 로 디코드 가능」 추가(python 한 줄) 또는 구분선 ASCII 부분(`\n---\n\n# [`) 검사.
+- ★설계 성찰(후임 판단 재료): 「md 내용으로 표준본/CEO 사본을 가르는」 휴리스틱이 라운드마다 새 경계(개행·CRLF·잘림·빈 파일·인코딩·머리글 삭제)를 만났다(F1→N1→M1→③→P1). 대안 = 판정을 **정확 일치**로만(현행 표준 본문 · 역대 발행 MASTER 해시 표 — 설치기가 팩 안에 해시 목록 파일을 떨구면 bash 도 읽을 수 있다) 하고, 그 밖은 종전 동작 + 보존본. 이 경우 agy C3 ③(손본 표준본)은 「보존본에 남고 강등은 옛 판」으로 후퇴한다 — master 판정 사안.
+- 수집 중이던 것: agy C4 재실행(첫 실행 rc 137 SIGKILL · 원인 미상 · 내가 죽인 것 아님) · 뮤턴트 22개(b87bbf07 · scratch/mutants5.out) · 정본 게이트(b87bbf07 · ~/msv-scratch/v116rv/results/ceo-b87bbf07-*).

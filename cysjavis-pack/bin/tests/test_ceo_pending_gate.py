@@ -508,6 +508,11 @@ for s in SHAPES["shapes"]:
             f.write(hashlib.sha256(_T[s["receipt"]].encode("utf-8")).hexdigest() + "\n")
     with open(os.path.join(_dirs, "CEO_TEMPLATE.md"), "w", encoding="utf-8", newline="") as f:
         f.write(_T["C2"])
+    # ★B(정확 일치): 역대 발행 MASTER 해시 목록 = 팩 파일 directives/RELEASED_MASTER_DIRECTIVE.sha256 — 형상의
+    #   released_master 를 그 파일로 심는다(실물 목록에는 픽스처 문자열이 없다 · Rust 는 TEST_RELEASED_MASTER_EXTRA).
+    with open(os.path.join(_dirs, "RELEASED_MASTER_DIRECTIVE.sha256"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("# test fixture\n" + "".join(hashlib.sha256(_T[k].encode("utf-8")).hexdigest() + "\n"
+                                            for k in s["released_master"]))
     if exp.get("boot_marker", True):
         with open(marker, "w", encoding="utf-8") as f:
             f.write("{}")
@@ -541,7 +546,7 @@ for s in SHAPES["shapes"]:
             check("12 [%s] 강등 뒤 .pre-ceo.stale-*" % sid, _sd == [_T[k] for k in exp["expect_stale_after_down"]], repr(_sd))
     shutil.rmtree(tmp)
     _ran12 += 1
-check("12 형상 표 dept 칸 24개 이상 실행", _ran12 >= 24, "ran=%d" % _ran12)
+check("12 형상 표 dept 칸 27개 이상 실행", _ran12 >= 27, "ran=%d" % _ran12)
 
 # ── 13. 구분선 계약: cys-dept 가 판정에 쓰는 구분선 = 합성기(gen_ceo_template.SEPARATOR) 바이트.
 #   합성기 구분선이 바뀌면 cys-dept ⓕ·강등의 「구분선 뒤 본문 == md」 판정이 조용히 전부 거짓이 된다.

@@ -14,7 +14,8 @@
   "installer 선택 칸: pending_new = true 면 병합 대기 원장(.merge-pending.json)에 MASTER 의 new-pending 항목을 심는다(옛 사이드카가 남긴 원장 형상).",
   "dept 선택 칸: skip_promote(승격 없이 바로 부서 닫기 — 승격 중 손본 사본의 강등) · md_encoding(md 를 그 인코딩 바이트로 심음 · 예 cp949) · expect_edit_backup_after_down.",
   "표준본(M*) 픽스처는 실제 원문 첫 줄 「# MASTER ABSOLUTE DIRECTIVE」 로 시작한다 — cys-dept 강등이 「표준본이라는 긍정 증거」(이 머리말 ∧ master of master 없음)가 있을 때만 복원을 건너뛰기 때문이다(Opus 적대 R3 M1). expect_edit_backup_after_down = null 이면 보존본 0개를 기대.",
-  "Opus 적대 R4 P1 · P2(master 판정 A): 표준본 긍정 증거에 「잘리지 않음」(LF 정규화 md 가 .pre-ceo · CEO 구분선 뒤 본문 · .new 의 진접두가 아님) ∧ 「UTF-8 디코드 가능」을 더한다 — M2_TRUNC_HDR = 머리말은 온전하고 뒤가 잘린 표준본(M2 만의 진접두) · C2_HEADLESS = CEO 사본에서 머리글만 지움(구분선부터 · CP949 로 심으면 한글 표지 grep 불발). dept 칸 expect_edit_backup 도 \"__MD_BYTES__\"(심은 바이트 그대로) 를 받는다."
+  "Opus 적대 R4 P1 · P2(master 판정 A): 표준본 긍정 증거에 「잘리지 않음」(LF 정규화 md 가 .pre-ceo · CEO 구분선 뒤 본문 · .new 의 진접두가 아님) ∧ 「UTF-8 디코드 가능」을 더한다 — M2_TRUNC_HDR = 머리말은 온전하고 뒤가 잘린 표준본(M2 만의 진접두) · C2_HEADLESS = CEO 사본에서 머리글만 지움(구분선부터 · CP949 로 심으면 한글 표지 grep 불발). dept 칸 expect_edit_backup 도 \"__MD_BYTES__\"(심은 바이트 그대로) 를 받는다.",
+  "★B(master 판정 [master#2da27fe2] · 멈춤 규칙 발동 뒤): cys-dept 「md 가 표준 MASTER 라는 증거」 = **정확 일치만** — LF 정규화한 md 바이트가 ①CEO_TEMPLATE 구분선 뒤 본문 ②.new ③directives/RELEASED_MASTER_DIRECTIVE.sha256(역대 발행 MASTER 해시 목록 · 생성기가 Rust 표와 함께 씀) 중 하나와 같을 때. 내용 휴리스틱(머리말·표지 grep·진접두·UTF-8) 없음. dept 시험은 released_master 를 그 목록 파일로 심는다. 알려진 한계(known_limitation) = 손본 표준본·끝 개행만 지운 현행본 + 낡은 .pre-ceo → 강등이 .pre-ceo 복원 · md 는 .pre-ceo-<시각> 보존."
  ],
  "texts": {
   "M_OLD": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-OLD\n",
@@ -35,7 +36,9 @@
   "M2_TRUNC_HDR": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2",
   "C2_HEADLESS": "---\n\n# [본문 — 표준 MASTER 운영 계약 전문]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n",
   "M1_TRUNC_HDR": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V1",
-  "C2_SEPEDIT": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n"
+  "C2_SEPEDIT": "# CEO (master of master) — 단일소유 강제 · exit 7\n---\n\n# [본문 — 표준 MASTER 운영 계약]\n\n# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V2\n",
+  "M1_APPEND": "# MASTER ABSOLUTE DIRECTIVE\nSTANDARD-MASTER-V1\nNEW-RULE\n",
+  "M2_CRLF_CUT_CR": "# MASTER ABSOLUTE DIRECTIVE\r\nSTANDARD-MASTER-V2\r"
  },
  "shapes": [
   {
@@ -326,7 +329,7 @@
   },
   {
    "id": "edited-standard-held",
-   "source": "Opus 적대 F2 R4 — 사용자가 손본 표준본 · 낡은 .pre-ceo → 승격 보류(DCE-3) → 부서 닫음",
+   "source": "Opus 적대 F2 R4 — 사용자가 손본 표준본 · 낡은 .pre-ceo → 승격 보류(DCE-3) → 부서 닫음 · ★B 알려진 한계: 정확 일치 아님 → 강등이 .pre-ceo(옛 판) 복원 · 손본 표준본은 .pre-ceo-<시각> 보존(옛 판이 발행본이면 다음 init-pack ⓔ 가 현행으로)",
    "md": "M2_EDIT",
    "pre_ceo": "M_OLD",
    "new": null,
@@ -342,11 +345,11 @@
     "expect_pre_ceo": "M_OLD",
     "expect_stale": null,
     "expect_edit_backup": null,
-    "expect_after_down": "M2_EDIT",
-    "expect_stale_after_down": [
-     "M_OLD"
-    ]
-   }
+    "expect_after_down": "M_OLD",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M2_EDIT"
+   },
+   "known_limitation": true
   },
   {
    "id": "vmb-user-edited-new",
@@ -481,7 +484,7 @@
   },
   {
    "id": "edited-standard-with-new-stale-pre-ceo",
-   "source": "agy C3 반례 ③ — 사용자가 손본 표준본 + 갱신이 남긴 .new + 옛 승격의 낡은 .pre-ceo → 부서 생성(DCE-3 가 .new 로 통과) → 부서 닫음",
+   "source": "agy C3 반례 ③ — 사용자가 손본 표준본 + 갱신이 남긴 .new + 옛 승격의 낡은 .pre-ceo → 부서 생성(DCE-3 가 .new 로 통과) → 부서 닫음 · ★B 알려진 한계: 낡은 백업으로 보지 않음 → 승격 때 손본 표준본은 덮기 전 보존(.pre-ceo-<시각>) · 강등이 .pre-ceo(옛 판) 복원",
    "md": "M2_EDIT",
    "pre_ceo": "M_OLD",
    "new": "M2",
@@ -494,14 +497,14 @@
    "installer": null,
    "dept": {
     "expect_md": "C2",
-    "expect_pre_ceo": "M2_EDIT",
-    "expect_stale": "M_OLD",
-    "expect_edit_backup": null,
-    "expect_after_down": "M2_EDIT",
-    "expect_stale_after_down": [
-     "M_OLD"
-    ]
-   }
+    "expect_pre_ceo": "M_OLD",
+    "expect_stale": null,
+    "expect_edit_backup": "M2_EDIT",
+    "expect_after_down": "M_OLD",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M2_EDIT"
+   },
+   "known_limitation": true
   },
   {
    "id": "truncated-standard-hdr-promote-then-close",
@@ -654,6 +657,80 @@
     "expect_after_down": "M2",
     "expect_stale_after_down": [],
     "expect_edit_backup_after_down": "C2_SEPEDIT"
+   }
+  },
+  {
+   "id": "released-old-standard-append-new-close",
+   "source": "agy C5 반례 A · Opus 적대 R5 Q3 — md = 손대지 않은 옛 발행 표준(M1) · .new = M1 끝에 규칙만 덧붙인 신판 · .pre-ceo = 옛 승격 잔재 → 부서 닫음(진접두 규칙은 손상본으로 오판해 옛 판 부활 · B = 발행 해시 목록으로 표준본)",
+   "md": "M1",
+   "pre_ceo": "M_OLD",
+   "new": "M1_APPEND",
+   "receipt": null,
+   "released_ceo": [],
+   "released_master": [
+    "M1",
+    "M_OLD"
+   ],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M1",
+    "expect_pre_ceo": "M_OLD",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M1",
+    "expect_stale_after_down": [
+     "M_OLD"
+    ],
+    "expect_edit_backup_after_down": null
+   }
+  },
+  {
+   "id": "crlf-truncated-at-cr-close",
+   "source": "Opus 적대 R5 Q2 C1 — CRLF 표준본의 강등 cp 가 \\r 과 \\n 사이에서 끊김(md 끝 = \\r) · .pre-ceo 온전 → 바로 부서 닫음(진접두 규칙은 끝 \\r 때문에 빠져나감 · B = 정확 일치 아님 → 복원)",
+   "md": "M2_CRLF_CUT_CR",
+   "pre_ceo": "M2",
+   "new": null,
+   "receipt": "C2",
+   "released_ceo": [],
+   "released_master": [],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M2_CRLF_CUT_CR",
+    "expect_pre_ceo": "M2",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M2",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M2_CRLF_CUT_CR"
+   }
+  },
+  {
+   "id": "current-standard-eol-stripped-stale-pre-ceo-close",
+   "known_limitation": true,
+   "source": "agy C5 반례 B · Opus 적대 R5 Q1 T2 — 현행 표준에서 끝 개행만 지움(편집기) · .pre-ceo = 옛 승격 잔재 → 부서 닫음 · ★B 알려진 한계: 정확 일치 아님 → .pre-ceo(옛 판) 복원 · 편집본 보존",
+   "md": "M2_TRUNC_HDR",
+   "pre_ceo": "M_OLD",
+   "new": null,
+   "receipt": null,
+   "released_ceo": [],
+   "released_master": [
+    "M_OLD"
+   ],
+   "manifest_master": "M2",
+   "installer": null,
+   "dept": {
+    "skip_promote": true,
+    "expect_md": "M2_TRUNC_HDR",
+    "expect_pre_ceo": "M_OLD",
+    "expect_stale": null,
+    "expect_edit_backup": null,
+    "expect_after_down": "M_OLD",
+    "expect_stale_after_down": [],
+    "expect_edit_backup_after_down": "M2_TRUNC_HDR"
    }
   }
  ]

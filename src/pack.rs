@@ -8355,6 +8355,33 @@ mod tests {
                 "CEO 표와 MASTER 표가 겹친다");
     }
 
+    /// ★v116 B(master 판정 [master#2da27fe2]): 역대 발행 MASTER 해시 목록을 **팩 파일**로도 싣는다 — cys-dept(bash)가
+    /// 「md 가 손대지 않은 발행 표준본인가」를 정확 일치로 판정할 유일한 근거. ①임베드·pack-manifest 원천(PACK+
+    /// PACK_SKILLS)에 있고 ②내용 = Rust 표(RELEASED_MASTER_DIRECTIVE_SHA256)와 같은 집합 ③System 등급(매 설치 강제
+    /// 갱신 = 옛 목록 잔존 0) ④실제 설치 경로(install_into)가 디스크에 떨군다 — 하나라도 어긋나면 적색.
+    #[test]
+    fn released_master_hash_pack_file_matches_table() {
+        let rel = "directives/RELEASED_MASTER_DIRECTIVE.sha256";
+        let embed = PACK.iter().chain(PACK_SKILLS.iter()).find(|(r, _)| *r == rel).map(|(_, c)| *c)
+            .unwrap_or_else(|| panic!("{rel} 가 임베드 팩(pack-manifest 원천)에 없다 — 생성기 실행·git add"));
+        let mut listed: Vec<&str> = embed.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+        listed.sort_unstable();
+        let mut table: Vec<&str> = RELEASED_MASTER_DIRECTIVE_SHA256.to_vec();
+        table.sort_unstable();
+        assert_eq!(listed, table, "{rel} 와 RELEASED_MASTER_DIRECTIVE_SHA256 이 다르다 — 생성기 재실행");
+        assert!(ownership(rel) == Ownership::System, "{rel} 는 System 등급이어야 한다(옛 목록 잔존 금지)");
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let td = std::env::temp_dir().join(format!("cys-relhash-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pd = td.join("pack");
+        std::fs::create_dir_all(&pd).unwrap();
+        let _env = set_pack_env(&pd, td.join("cfg"));
+        install_into(pd.clone(), PACK_ALL.iter().copied(), false, "9.9.9", false, false, pack_scope_of(&pd), None, None)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(pd.join(rel)).ok().as_deref(), Some(embed), "설치 경로가 {rel} 를 안 떨궜다");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
     /// 게이트는 target env가 아니라 dir 인자로 판정한다). 대조로 명시 인가 시 동일 쓰기가 성공한다.
     #[test]
     fn w0d_rejects_unauthorized_write_to_live_default_path() {

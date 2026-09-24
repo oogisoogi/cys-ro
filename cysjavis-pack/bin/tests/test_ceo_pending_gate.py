@@ -409,6 +409,25 @@ if sys.platform == "darwin":
 else:
     check("11h (건너뜀: chflags 없는 OS)", True)
 
+# ── 11i. ★강등 쪽 보존본 중복 금지(뮤턴트 B7b 보강): 승격 중 손본 CEO 사본을 강등할 때, 같은 바이트의 보존본이
+#   이미 있으면(앞선 강등 시도가 복원 실패로 끝난 기계 등) 또 만들지 않는다.
+tmp = tempfile.mkdtemp(prefix="ceo-t11i-")
+env, home = setup(tmp)
+mdp, pre, pend, marker = paths(home)
+_dirs = os.path.dirname(mdp)
+_edited = CEO_BODY + "MY-NOTE\n"
+with open(pre, "w", encoding="utf-8") as f:
+    f.write(MASTER_BODY)
+with open(mdp, "w", encoding="utf-8") as f:
+    f.write(_edited)
+with open(os.path.join(_dirs, "MASTER_DIRECTIVE.md.pre-ceo-20000101T000000-1"), "w", encoding="utf-8") as f:
+    f.write(_edited)                                # 앞선 시도가 남긴 같은 바이트 보존본
+code, out = run(env, "down", "d0")
+_eb = [n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md.pre-ceo-")]
+check("11i 강등 — 같은 바이트 보존본이 있으면 새로 만들지 않음 · 복원은 수행",
+      len(_eb) == 1 and md(home) == MASTER_BODY, "backups=%r md=%r %s" % (_eb, md(home)[:30], out[-160:]))
+shutil.rmtree(tmp)
+
 # ── 11e. ★가드(agy B R1 반례 ①): **승격 중** 사용자가 CEO 사본을 손봐 표지 핀까지 지움 → 두 번째
 #   부서(재승격). md 가 「현행 표준 원본」이라는 긍정 증거(CEO ⊇ md)가 없으므로 .pre-ceo(진짜 표준
 #   백업)는 무접촉이어야 한다 — 낡은 백업으로 오판해 밀어내면 강등이 손수정 사본을 복원한다.

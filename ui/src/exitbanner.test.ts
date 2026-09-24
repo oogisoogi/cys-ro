@@ -60,16 +60,29 @@ describe("v116-exited-banner 배너 문자열", () => {
   });
 });
 
-describe("v116-exited-banner 대체 화면 마지막 행(opus 적대 1R MINOR-1)", () => {
-  it("대체 화면 · 마지막 행까지 내용 → 뒤 줄바꿈 없는 판(윗줄 손실 1줄) · 배너 1회", () => {
+describe("v116-exited-banner 대체 화면(스크롤백 없음 — 줄바꿈 = 윗줄 영구 손실)", () => {
+  const T = "\x1b[31m[surface exited]\x1b[0m";
+  it("가득(마지막 행에 내용) → 마지막 행으로 가서 앞 줄바꿈 1번만(손실 1줄 · opus 1R MINOR-1) · 배너 1회", () => {
     const s = exitedBannerSeq({ ...view(["a", "b", "c", "d"], 1), alt: true });
     expect(s).toBe(`\x1b[r\x1b[4;1H${EXITED_BANNER_ALT_LAST}`);
     expect(count(s, "\n")).toBe(1);
     expect(count(s, "[surface exited]")).toBe(1);
   });
-  it("대체 화면이라도 마지막 행이 비었으면 · 주 화면은 마지막 행이라도 → 종전 판", () => {
-    expect(exitedBannerSeq({ ...view(["a", "b", "c", ""], 1), alt: true }).endsWith(EXITED_BANNER)).toBe(true);
+  it("마지막 행만 빔 → 그 행에 줄바꿈 없이(손실 0 · opus 2R MINOR-3)", () => {
+    expect(exitedBannerSeq({ ...view(["a", "b", "c", ""], 1), alt: true })).toBe(`\x1b[r\x1b[4;1H${T}`);
+  });
+  it("커서가 빈 마지막 행에 있어도 커서 무관 — 마지막 내용 줄 바로 다음(손실 0 · agy 2R)", () => {
+    expect(exitedBannerSeq({ ...view(["a", "b", "", "", ""], 4), alt: true })).toBe(`\x1b[r\x1b[3;1H${T}`);
+  });
+  it("커서 아래에 내용 · 중간 빈 줄 → 마지막 내용 줄 바로 다음", () => {
+    expect(exitedBannerSeq({ ...view(["a", "", "b", "c", "", ""], 0), alt: true })).toBe(`\x1b[r\x1b[5;1H${T}`);
+  });
+  it("대체 화면이 통째로 빔 → 첫 행", () => {
+    expect(exitedBannerSeq({ ...view(["", "", ""], 2), alt: true })).toBe(`\x1b[r\x1b[1;1H${T}`);
+  });
+  it("주 화면은 마지막 행이라도 종전 판(밀린 줄은 스크롤백으로)", () => {
     expect(exitedBannerSeq(view(["a", "b", "c", "d"], 1)).endsWith(EXITED_BANNER)).toBe(true);
+    expect(exitedBannerSeq({ ...view(["a", "b", "c", "d"], 1), alt: false }).endsWith(EXITED_BANNER)).toBe(true);
   });
   it("writeExitedBanner 는 buffer.type === alternate 를 대체 화면으로 넘긴다", () => {
     const f = fake(["a", "b", "c"], 0);

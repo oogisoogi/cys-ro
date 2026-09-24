@@ -372,6 +372,10 @@ if (ONLY.includes("c17")) {
     c: `${fill} + "user@mac ~ % "`,
     // b2 대체 화면이 마지막 행까지 참(60줄 → 화면 44행 전부 · 커서 중간) — opus 적대 1R MINOR-1: 손실은 맨 윗줄 1줄까지만
     b2: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 60 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[12;5H"`,
+    // b3 대체 화면 · 마지막 행만 빔(43줄 = 0~42행) · 커서 중간 — opus 2R MINOR-3: 손실 0
+    b3: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 43 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[12;5H"`,
+    // b4 대체 화면 · 내용 10줄 · 커서는 빈 마지막 행에 둔 채 종료 — agy 2R: 손실 0 · 배너가 내용 바로 뒤
+    b4: `${fill} + "\\x1b[?1049h\\x1b[H\\x1b[2J" + Array.from({ length: 10 }, (_, i) => "tui " + i).join("\\r\\n") + "\\x1b[999;1H"`,
     // ⒠ 죽은 앱이 스크롤 영역(5~20행)·원점 모드(DECOM)를 남긴 채 커서를 영역 안에 두고 종료 · 맨 아래 줄(영역 밖)에 상태 줄
     e: `${fill} + "\\x1b[999;1HSTATUS LINE" + "\\x1b[5;20r\\x1b[?6h\\x1b[3;1H"`,
     // ⒡ 스크롤백이 쌓인 뒤 화면 지우기(2J) → 짧은 화면 · 커서 2행 · 아래 안내 줄(판독이 스크롤백 기준선 baseY 를 더해야 맞는 줄을 읽는다)
@@ -384,7 +388,7 @@ if (ONLY.includes("c17")) {
   const ROWS = `[...${PANE("worker")}.querySelector(".xterm-rows").children].map(d => d.textContent.replace(/\\u00a0/g, " ").trimEnd())`;
   for (const w of [1280, 800]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 820, deviceScaleFactor: 1, mobile: false });
-    for (const st of ["a", "b", "b2", "c", "d", "e", "f", "a0", "b0"]) {
+    for (const st of ["a", "b", "b2", "b3", "b4", "c", "d", "e", "f", "a0", "b0"]) {
       await load("two");
       await ev(`window.__shimEmit("out-2", ${enc}(${STATES[st]}))`); await Bun.sleep(300);
       await ev(`window.__shimExit(2, false)`); await Bun.sleep(700);
@@ -395,7 +399,7 @@ if (ONLY.includes("c17")) {
       let top = "";
       if (st === "a") { await ev(`${PANE("worker")}.querySelector(".xterm-viewport").scrollTop = 0`); await Bun.sleep(400); top = ((await ev(ROWS)) as string[]).slice(0, 8).find((r) => r.startsWith("fill ")) ?? ""; }
       // 덮어쓰기 0 = 종료 전 화면 글자가 한 줄도 사라지지 않음(⒜ 입력 상자 아래 테두리 · ⒝ tui 0~29 전부)
-      const must = st.startsWith("a") ? ["╰──────────────╯", "? for shortcuts", "ctx 12% · opus"] : st === "b2" ? Array.from({ length: 43 }, (_, i) => `tui ${60 - 43 + i}`) : st.startsWith("b") ? Array.from({ length: 30 }, (_, i) => `tui ${i}`) : st === "e" ? ["STATUS LINE"] : st === "f" ? ["short 1", "short 2", "footer"] : [];
+      const must = st.startsWith("a") ? ["╰──────────────╯", "? for shortcuts", "ctx 12% · opus"] : st === "b2" ? Array.from({ length: 43 }, (_, i) => `tui ${60 - 43 + i}`) : st === "b3" ? Array.from({ length: 43 }, (_, i) => `tui ${i}`) : st === "b4" ? Array.from({ length: 10 }, (_, i) => `tui ${i}`) : st.startsWith("b") ? Array.from({ length: 30 }, (_, i) => `tui ${i}`) : st === "e" ? ["STATUS LINE"] : st === "f" ? ["short 1", "short 2", "footer"] : [];
       const lost = must.filter((m) => !rows.some((r) => r.trim() === m.trim()));
       let gap = 0; for (let y = at - 1; y >= 0 && rows[y].trim() === ""; y--) gap++;
       const ok = at >= 0 && gap <= 1 && below.length === 0 && rows[at].trim() === "[surface exited]" && lost.length === 0 && (st !== "a" || top.startsWith("fill 0"));
@@ -474,8 +478,9 @@ if (ONLY.includes("c18")) {
     check("c18n-narrow-420 경계 — 모든 줄이 접히는 좁은 창: 배너가 글 끝 · 1회 · 덮어쓰기 0", joined.endsWith("[surfaceexited]") && joined.split("[surfaceexited]").length === 2 && keep.length === 0, JSON.stringify({ tail: joined.slice(-60), lost: keep }));
   }
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
-  // m 종료 이벤트 2회(실경로에서는 스트림당 1회 — 방어 관측) — 수리본은 두 콜백이 같은 화면을 읽어 같은 자리에 같은 글을 쓴다
-  //   ⇒ 보이는 배너 1개(종전 = 2개가 중간에 흩어짐). 합격 = 1개 · 내용 아래.
+  // m 종료 이벤트 2회(실경로에서는 스트림당 1회 — Rust 가 1회만 보냄 · 방어 관측) — 이 모양(짧은 화면 · 같은 틱)에서는 두 콜백이
+  //   같은 화면을 읽어 같은 자리에 같은 글을 쓴다 ⇒ 보이는 배너 1개. ⚠조건부(opus 2R): 대상이 맨 아래 근처(스크롤 발생)거나 두 번째가
+  //   첫 배너 해석 뒤에 오면 2개가 **내용 아래에** 잇달아 선다. 합격 = 이 모양에서 1개 · 내용 아래.
   await load("two");
   await ev(`window.__shimEmit("out-2", ${enc}(${FOOT}))`); await Bun.sleep(300);
   await ev(`${exitWorker}; window.__shimEmit("exit-2", null)`); await Bun.sleep(800);

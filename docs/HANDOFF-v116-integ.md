@@ -253,3 +253,71 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - 블라인드 합격 시험 4(구현 미열람 Opus 서브에이전트 작성 · 시험 모듈에 임시로 붙여 실행 · 커밋 안 함 · 원복 clean): `blind_b_prompt_suggestion_contract_table` · `…_three_install_paths`(P1 Write · P2 RefreshUser · P3/P3′ Keep 판정까지 단언) · `…_rendered_send_string_unix`(인라인 문자열에 `="false"` 정확히 1번 · P3′ 는 true) · `…_wired_after_alt_screen_before_render` → **4/4 통과**. 원문 = `integ-v116-work/blind-B-tests.rs` · 실행 로그 = `blind-B-run.log`.
 - 검증 모델 실측(규칙 ①): 블라인드 서브에이전트 jsonl(`subagents/agent-a9fc4f80….jsonl`) `"model":"claude-opus-5-5"` 26건 · 그 밖 모델 0.
 - 수렴(규칙 ③) 현황: 결정론 게이트 초록 · 풀리지 않은 반례 0(agy 코드 2R 에서 3건 전부 철회) · 타사 ACCEPT = agy 코드 2R(cafba326) · **master 독립 재실행 = 대기**.
+
+---
+
+## 17. 2차 통합(ACCEPT 묶음 편입 · TICKET=v116-integ-2 · master#07b7abe5 · #e0de3a95)
+
+- 브리프 = `~/axdev/master/briefs/2026-09-25-v116-integ-2.md` · 좌석 = worker-38(surface:1086) · Opus 5.5 · 착수 03:53 KST · 기점 91aa600d(= origin)
+- 규칙: 적대 검토 3라운드 상한 · push/태그/발행 = master 게이트(이 절 전 구간 push 0 · 태그 0).
+- 도구·로그(저장소 밖) = `~/axdev/.wt/integ-v116-work/r2/`(qt.sh 빠른 확인 래퍼 · qt-*.log · t14x.py · mut_bpin.sh/txt) · 헤드리스 = `integ-v116-work/headless4/` · 정본 게이트 = `~/msv-scratch/v116-integ2/results/<sha8>/`(master 러너 gate_runner.py v2 · 스냅샷 · 기준 = master 결과 `~/msv-scratch/v116rv/results/91aa600d`)
+
+### 17-1. 병합 표(순서 = 브리프 1→5 + master#e0de3a95 ⑥)
+| 순 | 가지 · 결속 해시 | 병합 커밋 | 문자 충돌 | 빠른 확인(병합 직후 · 좌석 env 제거) |
+|---|---|---|---|---|
+| 1 | 1092 flake-pty @9f62f1a4(가지 끝 90a85ca4 = 문서 5커밋 · master 지시로 제외) | **af7d1026** | 0 | cysd `pty_` 32/0(1 ignored) · test_phoenix_c6_reap 3/3(6/6 PASS ×3) |
+| 2 | 1078 tusage @2efaf0a7 | **c99a7af1** | 3(lib.rs · wsusage.ts · wsusage.test.ts) | bun wsusage+wsbar 129/0 · tsc 7(기준 동일) · cysd accounts/usage/d6 119/0 · cys 325/0 · lib 540/0 · 뮤턴트 2/2 |
+| 3 | 1083 seat @0e5f4bb0 | **e7d1fbfc** | 2(cys.rs 2곳 · lib.rs) | cysd v116_/accept_v116/governance 244/0 · cys 336/0 · lib 545/0 · test_t6_injection_policy OK · 뮤턴트 2/2 |
+| 4 | 1089 restore-card-producer @113a36f8(코드 51fca96b) | **b7d0fd88** | 0 | bun 1282/0 · tsc 7 · test_core_inject/bootv2_doc_contract/event_inject ALL PASS · gen_ceo_template --check GREEN · CEO 주입 여유 344자 불변(아래) |
+| 5 | 1091 restart-toast @1ef56746(코드 f5ee9415) | **37069ddf** | 0(main.ts 자동) | bun 1306/0 · tsc 7 · secret-scan --all clean(1213) · 헤드리스 c1~c17 **ALL PASS 49줄** |
+| 6 | 1077 num @4285e910(코드 17cc0a68 + 경로 수리 27570e9e) | **e60d0539** | 0 | (7 과 함께) |
+| 7 | num-ui 42596ebf cherry-pick -x | **f089fac9** | 0(panetitle.test.ts 자동) | bun 1313/0 · tsc 7 · secret-scan --all clean(1238) · T14 2/2 |
+- git rerere 가 켜져 있어 충돌 해결이 기록됨(`Recorded resolution` — 같은 충돌 재발 시 자동 재적용 · 결과는 반드시 재확인할 것).
+
+### 17-2. 충돌 해결 목록(두 의도 보존 · 의미 판단 표기)
+1. **c99a7af1 src/lib.rs** — B `inject_claude_prompt_suggestion_default` 와 T-USAGE `is_claude_agent` 가 같은 자리에 새로 붙음 = 인접 충돌 → 둘 다 유지(의미 판단 없음).
+2. **c99a7af1 ui/src/wsusage.ts** 【의미 판단 · 기본값 진행 · master 확인 요청 대상】 — T-UI D4 #11 은 `7d·<모델>` 게이지 문턱을 클라이언트 상수 `SCOPED_STALE_SECS`=240 으로, T-USAGE 는 판정을 데몬으로 옮겨 `fresh_limit_secs`(statusline 120 · oauth 240)를 싣고 필드 부재(옛 판본 데몬) 폴백 = `USAGE_STALE_SECS`(120)로 했다. 해결 = `obsFreshLimit(v, fallback = USAGE_STALE_SECS)` · 게이지만 `obsFreshLimit(g.fresh_limit_secs, SCOPED_STALE_SECS)` → **필드가 오면 데몬 값(T-USAGE) · 필드 부재 게이지만 240(T-UI)** · 계정 행 폴백 120 그대로. 근거: 1.1.5 데몬의 게이지 생산자는 oauth 하나뿐(526325bf accounts.rs 시험 `scoped[0].source == "oauth"`)이라 옛 데몬 게이지에 240 은 추정이 아니라 원천 한도와 같은 값. T-USAGE 주석에 예외 1곳을 적음.
+3. **c99a7af1 ui/src/wsusage.test.ts** — 두 describe 모두 유지 + 합류 핀 1(데몬 `FRESH_LIMIT_OAUTH_SECS = OAUTH_PROBE_INTERVAL_SECS + 60` 식을 읽어 `== SCOPED_STALE_SECS` · 필드 부재 200초 = 초록 · 필드 120 = 흐림 · 필드 300 = 초록). 뮤턴트: 게이지 폴백 제거(120) → 3 fail KILLED · 데몬 필드 무시(상수 240 고정) → 1 fail KILLED.
+4. **e7d1fbfc src/lib.rs** — B·is_claude_agent 와 seat `CLAUDE_SEAT_EFFORT`/`inject_claude_effort_env` 인접 → 모두 유지 · B doc 의 Windows 도달 자리 표기 = `launch_create_env_pairs`.
+5. **e7d1fbfc src/bin/cys.rs boot_agent_on_surface** — D5 → B → effort 순 셋 다 유지.
+6. **e7d1fbfc src/bin/cys.rs run_launch_agent_opts** 【구조 이동 · 의미 불변】 — seat 가 surface.create env 조립을 `launch_create_env_pairs(spec, agent)` 로 옮김 → seat 쪽 호출을 채택하고 **B 주입을 그 함수 안 D5 뒤·effort 앞**에 넣음(기동 줄과 같은 순서) · 함수 doc 갱신.
+7. **e7d1fbfc B 배선 핀 이전**(시험 변경 · 명시) — `prompt_suggestion_injection_wired_in_both_consumers` 가 run_launch_agent_opts 본문의 D5 호출을 찾던 것이 seat 이동으로 무너짐 → ⑴ boot_agent_on_surface·launch_create_env_pairs 안 D5<B ⑵ run_launch_agent_opts 가 `launch_create_env_pairs(&spec, agent)` 를 render_launch 앞에서 부름 ⑶ 조립 결과 실행 단언(false 정확히 1쌍 · 사용자 "true" 불가침 · codex 0). 뮤턴트(`r2/mut_bpin.sh`): 조립 함수 B 삭제 KILLED · B 를 D5 앞으로 KILLED · 원본 3/3.
+
+### 17-3. `cys list` 파싱 지점 대조표(master#e0de3a95 통합 점검 1)
+- 방법: 통합 트리(f089fac9)에서 `cys list` 호출·파싱 지점 전수 grep(파이썬·셸·PowerShell·Rust·TS · 문서 제외) → 526325bf(T14 기점) 결과와 comm 대조 → T14 목록과 대조 → T14 밖 지점을 no= 칸 든 픽스처(T14 의 OLD/NEW 그대로)로 1회 실행(`r2/t14x.py`).
+
+| 지점 | 읽는 칸 | T14 | 이번 통합에서 새로? | no= 픽스처 |
+|---|---|---|---|---|
+| javis_awaken.surface_row | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 2/2 |
+| javis_bootstrap (2152 · 2193) | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 |
+| javis_boot_node.parse_list_rows | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 |
+| javis_cycle_autopilot (684) | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 |
+| javis_formation (472) | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 |
+| javis_orchestra guard-master-claim (2841) | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 |
+| javis_wakeup (195) | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 |
+| cys-dept dept_live_roles | 설계 §4-1 ※(1077 실측 · 0~3칸 · 마지막 칸만) | ✅ | 아니오 | T14 |
+| hooks/guard.sh cys_live_pids | 정규식 `pid=` `exited=` · 첫 낱말 | ✗ | 아니오(526325bf 에 있음) | **같음** |
+| javis_idle_audit.parse_cys_list | 낱말 `surface:` `pid=` | ✗ | 아니오 | **같음** |
+| javis_phoenix_harness.live_surfaces | 줄 머리 `surface:` 개수 | ✗ | 아니오(1092 가 같은 파일 수정 · 이 함수 무변경) | **같음** |
+| tests/test_phoenix_c6_reap.py (89 · 95 · 117) | 0칸 · 부분 문자열 `exited=true` | ✗ | **예(1092 ⑴ 줄 이동·추가)** | **같음** |
+| .github/workflows/windows-build.yml T4 | 부분 문자열 `role=master` | ✗ | 아니오 | **같음** |
+| javis_orchestra 역할 레지스트리(1019) | surface.list JSON(텍스트 아님) | — | 아니오 | 해당 없음 |
+| Rust·TS | 파서 0(cys.rs 3060 = 생산자) | — | — | 해당 없음 |
+- 결론: T14 밖 지점 5곳 전부 픽스처 결과 **전 = 후**(T14X ALL SAME) · 새로 들어온 파싱 지점 = 1092 의 c6 시험 줄뿐이고 0칸·부분 문자열만 쓴다. T14 9곳 파일은 4285e910 대비 통합에서 무변경(phoenix_harness 만 1092 로 바뀜 · 파서 함수 무변경).
+
+### 17-4. CEO 주입 여유(1089 ⚠)
+- `core_inject.py session` 출력 길이(격리 HOME · 같은 측정 경로): 91aa600d master 6,313 / CEO 8,273 → f089fac9 master 6,518 / CEO 8,478 = **+205(1089 HANDOFF §6 값과 같음)** → 1083·1091·1077 의 주입 증가 0 · **CEO 남은 여유 344자 그대로**(상한 8,800 · 러너 오프셋 +22 는 두 판 공통).
+
+### 17-5. 1.1.6 공개 릴리스 노트 초안(§16 한 줄에 이어 붙임 · 최종 문안 = master)
+**공지 한 줄(master 확정 문구 · 맨 위):**
+「업데이트가 끝나면 '눌러서 재시작' 알림이 나옵니다. 알림이 보이면 바로 눌러 주세요.」
+
+**바뀐 점:**
+- 이제 자비스가 띄우는 모든 Claude 창에서 답변 뒤 입력칸에 뜨던 회색 제안 글이 나오지 않습니다. 필요 없는 추가 요청이 줄고, 제안 글 때문에 지시 전달이 늦어지던 일이 사라집니다.(§16 문안 그대로)
+- 업데이트를 받은 뒤 알림을 놓쳐도, 맥에서는 머리줄의 「업데이트」 단추가 「다시 켜기」로 바뀌어 누르면 바로 새 판으로 다시 켜집니다(같은 파일을 다시 받지 않습니다). ※ 이 동작은 1.1.6 에서 다음 판으로 갈 때부터 적용됩니다.(1091)
+- 앱이 다시 켜지면 복원 카드에 「끝난 일 · 하던 일 · 정하셔야 할 일」이 쉬운 말로 나오고, 언제 적힌 내용인지 시각이 함께 보입니다.(1089)
+- 창마다 1~999 사이의 짧은 번호가 붙어, 창 머리와 알림에 같은 번호가 보입니다.(1077)
+- 사이드바 사용량 게이지가 정상인데도 몇 분마다 흐려지던 일이 없어지고, 값이 어디서 온 것인지 표시가 붙습니다.(1078)
+- 새로 뜨는 Claude 좌석이 늘 높은 사고 수준(effort high)으로 켜지고, 빈 좌석에 옛 기동 명령이 뒤늦게 글자로 들어가던 일이 막혔습니다.(1083)
+
+**내부용(공개 금지):** 1092 = 시험 하네스 수리(PTY 고갈 재시도 · c6 준비 대기 · CI 임시 팩 폴더 정리) — 제품 동작 무변경 · 릴리스 노트 대상 아님.

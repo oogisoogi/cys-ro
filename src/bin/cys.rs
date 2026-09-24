@@ -23340,9 +23340,10 @@ mod tests {
         let after = &body[m..];
         let close = after.find(") {").expect("호출 끝");
         assert!(!after[..close].contains(")?"), "set_meta 오류가 `?` 로 바로 전파된다");
-        let chk = after.find("set_meta_denied_is_same_meta(").expect("무해 판정 호출 부재");
+        let chk = after.find("if !set_meta_denied_is_same_meta(").expect("「무해 아님이면」 분기 부재");
         assert!(chk > close, "무해 판정이 오류 분기 안에 없다");
-        assert!(after[chk..].contains("return Err(e)"), "무해 아님이면 오류를 돌려야 한다");
+        let branch = &after[chk..chk + after[chk..].find('}').expect("분기 끝")];
+        assert!(branch.contains("return Err(e)"), "무해 아님이면 오류를 돌려야 한다:\n{branch}");
     }
 
     #[test]

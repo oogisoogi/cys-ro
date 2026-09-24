@@ -161,7 +161,7 @@ if (ONLY.includes("c4")) {
 
 if (ONLY.includes("c5")) {
   const body = "# 작업기억\\n2026-09-23 22:10 저장\\n## 완료\\n- 정본 경로 기록 표시 시험 줄\\n## 진행 중\\n- 진행 줄\\n## 결정 필요\\n- 없음\\n";
-  await load("two", "", `window.__shimFiles["/Users/u/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
+  await load("two", "", `window.__shimFiles["/Users/user/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
   await Bun.sleep(16000); // 카드 유예(복원 신호 없음 → 15초 뒤 표시)
   const a = await ev(`({ card: !!document.getElementById("restore-brief"), text: document.getElementById("restore-brief")?.innerText ?? "" })`);
   check("c5 정본 경로 기록 → 카드 표시", a.card && a.text.includes("정본 경로 기록 표시 시험 줄") && !a.text.includes("찾지 못했"), JSON.stringify({ card: a.card, text: a.text.replace(/\n+/g, " / ").slice(0, 240) }));
@@ -170,7 +170,7 @@ if (ONLY.includes("c5")) {
 if (ONLY.includes("c5")) {
   // 정본 파일이 설치 골격 그대로(고정 3절 제목 없음)면 카드는 「하던 일을 복원했어요」·빈 절을 싣지 않는다(T4 무회귀).
   const skel = readFileSync(join(H, "../../cysjavis-pack/round/SESSION_STATE.md"), "utf8");
-  await load("two", "", `window.__shimFiles["/Users/u/.cys/pack/round/SESSION_STATE.md"] = ${JSON.stringify(skel)}`);
+  await load("two", "", `window.__shimFiles["/Users/user/.cys/pack/round/SESSION_STATE.md"] = ${JSON.stringify(skel)}`);
   await Bun.sleep(16000);
   const a = await ev(`({ card: !!document.getElementById("restore-brief"), text: document.getElementById("restore-brief")?.innerText ?? "" })`);
   check("c5b 정본 = 설치 골격(3절 없음) → 짧은 카드 · 빈 문장 0", a.card && !a.text.includes("하던 일을 복원") && !a.text.includes("적힌 것이 없습니다"), JSON.stringify({ card: a.card, text: a.text.replace(/\n+/g, " / ").slice(0, 200) }));
@@ -180,7 +180,7 @@ if (ONLY.includes("c6")) {
   for (const w of [1280, 800]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 820, deviceScaleFactor: 1, mobile: false });
     const body = "## 완료\\n- 끝난 일 1\\n- 끝난 일 2\\n## 진행 중\\n- 하던 일 1\\n- 하던 일 2\\n## 결정 필요\\n- 정할 일\\n2026-09-23 22:10";
-    await load("two", "", `window.__shimFiles["/Users/u/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
+    await load("two", "", `window.__shimFiles["/Users/user/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
     await Bun.sleep(16000); // 카드 유예
     // 경보 3건을 겹쳐 쌓는다(Fable F2 — 짧은 1건만으로는 알림 줄이 카드의 [닫기]까지 자라는 경우를 못 잰다)
     for (const role of process.env.MANY ? ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10"] : ["worker", "cso", "master"])
@@ -257,10 +257,10 @@ if (ONLY.includes("c11")) {
   // (R1c) 복원 신호 없음 · master 없이 시작 → 15초 유예가 지나도 카드 0(마스터 자리 전용) → master 가 선다(role.claimed)
   //   → 카드 1회. 종전엔 유예 시점에 「한 번 띄움」 표지를 먼저 켜 버려 그 켜짐엔 카드가 영영 안 떴다.
   const body = "## 완료\\n- 늦게 선 마스터 시험 줄\\n## 진행 중\\n- 진행 줄\\n## 결정 필요\\n- 없음\\n2026-09-23 22:10";
-  await load("late", "", `window.__shimFiles["/Users/u/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
+  await load("late", "", `window.__shimFiles["/Users/user/.cys/pack/round/SESSION_STATE.md"] = "${body}"`);
   await Bun.sleep(16000);
   const a = await ev(`!!document.getElementById("restore-brief")`);
-  await ev(`window.__shimAddSeat(1, "master", "/Users/u/jarvis"); window.__shimEmit("daemon-event", { name: "role.claimed", category: "system", surface_id: 1, payload: { role: "master", surface_ref: "surface:1" } })`);
+  await ev(`window.__shimAddSeat(1, "master", "/Users/user/jarvis"); window.__shimEmit("daemon-event", { name: "role.claimed", category: "system", surface_id: 1, payload: { role: "master", surface_ref: "surface:1" } })`);
   await Bun.sleep(800);
   const b = await ev(`({ card: !!document.getElementById("restore-brief"), text: document.getElementById("restore-brief")?.innerText ?? "" })`);
   await ev(`document.querySelector("#restore-brief .rb-close")?.click()`); await Bun.sleep(100);
@@ -272,7 +272,7 @@ if (ONLY.includes("c11")) {
 
 if (ONLY.includes("c12")) {
   await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 820, deviceScaleFactor: 1, mobile: false });
-  const LONG = "/Users/u/axdev/.wt/very-long-worktree-name/nested/project-alpha";
+  const LONG = "/Users/user/axdev/.wt/very-long-worktree-name/nested/project-alpha";
   await load("two", "", `Object.assign(window.__shimSeats[1], { role: null, title: "", live_cwd: ${JSON.stringify(LONG)} })`);
   await Bun.sleep(3500); // 제목 갱신 주기
   const TT = (n: string) => `(() => { const t = ${PANE(n)}?.querySelector(".pane-title-text"); return t ? { text: t.textContent, tip: t.title } : null; })()`;

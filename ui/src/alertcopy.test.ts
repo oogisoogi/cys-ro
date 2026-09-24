@@ -19,7 +19,7 @@ const all: [string, AlertCopy][] = [
   ["exit", agentExitedCopy(4, { role: "worker-2", agent: "claude" })],
   ["dead", deadmanCopy(1, { role: "master", axis: "agent_dead", reason: "agent process dead" })],
   ["take", roleTakeoverCopy(7, { role: "master" })],
-  ["folder", seatFolderDeniedCopy(9, { role: "worker", cwd: "/Users/u/Documents/x" }, "문서")],
+  ["folder", seatFolderDeniedCopy(9, { role: "worker", cwd: "/Users/user/Documents/x" }, "문서")],
 ];
 
 describe("D4 #8 ① 코드 원문 0 · ④ 행동 한 문장", () => {
@@ -83,7 +83,7 @@ describe("D4 #8 ② 세기 머리 · ③ 사실 유지", () => {
   it("자리 이동 · 폴더 권한", () => {
     expect(all[8][1].title).toBe("ℹ 총괄 자리가 다른 창으로 옮겨졌습니다");
     expect(all[8][1].body.startsWith("7번 창이 비어")).toBe(true);
-    expect(all[9][1].body.includes("/Users/u/Documents/x 폴더를")).toBe(true);
+    expect(all[9][1].body.includes("/Users/user/Documents/x 폴더를")).toBe(true);
     expect(all[9][1].body.includes("「문서 폴더」")).toBe(true);
   });
 });

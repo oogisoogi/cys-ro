@@ -15,9 +15,9 @@
   const now = Date.now() / 1000;
   const mk = (id, role, cwd) => ({ surface_id: id, role, title: `${id} · ${role}`, live_cwd: cwd, exited: false, agent: "claude", usage: { ctx_pct: 10 } });
   const SEATS = {
-    two: [mk(1, "master", "/Users/u/jarvis"), mk(2, "worker", "/Users/u/jarvis/w1")],
-    three: [mk(1, "master", "/Users/u/jarvis"), mk(2, "cso", "/Users/u/jarvis/cso"), mk(3, "worker", "/Users/u/jarvis/w1")],
-    late: [mk(2, "worker", "/Users/u/jarvis/w1")], // (R1c) master 자리가 늦게 선다 — __shimAddSeat 로 나중에 세운다
+    two: [mk(1, "master", "/Users/user/jarvis"), mk(2, "worker", "/Users/user/jarvis/w1")],
+    three: [mk(1, "master", "/Users/user/jarvis"), mk(2, "cso", "/Users/user/jarvis/cso"), mk(3, "worker", "/Users/user/jarvis/w1")],
+    late: [mk(2, "worker", "/Users/user/jarvis/w1")], // (R1c) master 자리가 늦게 선다 — __shimAddSeat 로 나중에 세운다
   };
   const seats = SEATS[SC] || SEATS.two;
   window.__shimSeats = seats;
@@ -36,7 +36,7 @@
   const screen = (s) =>
     `\x1b[2J\x1b[H\x1b[1m✻ Welcome to Claude Code\x1b[0m  (${s.role})\r\n\r\n  작업 폴더: ${s.live_cwd}\r\n\r\n❯ \r\n`;
   const R = {
-    daemon_status: () => ({ daemon_pid: 4242, version: "1.1.6", socket_path: "/Users/u/.local/state/cys/cys.sock", surface_count: seats.length, started_at: now - 60 }),
+    daemon_status: () => ({ daemon_pid: 4242, version: "1.1.6", socket_path: "/Users/user/.local/state/cys/cys.sock", surface_count: seats.length, started_at: now - 60 }),
     list_surfaces: () => {
       if (window.__shimFailList > 0) { window.__shimFailList--; throw new Error("rpc timeout (shim)"); }
       if (Date.now() < (window.__shimFailUntil || 0)) throw new Error("rpc timeout (shim · window)");
@@ -49,7 +49,7 @@
       setTimeout(() => { if (s) emit(`out-${a.surfaceId}`, b64(screen(s))); if (s && s.exited) emit(`exit-${a.surfaceId}`, null); }, 50);
       return null;
     },
-    create_surface: () => { const id = 100 + seats.length; const s = mk(id, null, "/Users/u"); s.title = ""; seats.push(s); return { surface_id: id }; },
+    create_surface: () => { const id = 100 + seats.length; const s = mk(id, null, "/Users/user"); s.title = ""; seats.push(s); return { surface_id: id }; },
     rename_surface: (a) => { const s = seats.find((x) => x.surface_id === a.surfaceId); if (s) s.title = a.title; return null; },
     close_surface: (a) => { const i = seats.findIndex((x) => x.surface_id === a.surfaceId); if (i >= 0) seats.splice(i, 1); return null; },
     check_update: () => { if (window.__shimFailUpdate) throw "error sending request for url (https://example.invalid/latest.json): dns error"; return window.__shimUpdate || null; },
@@ -59,7 +59,7 @@
     list_depts: () => ({ depts: {} }),
     dept_tombstones: () => ({ tombstones: [] }),
     app_version: () => "1.1.6",
-    home_dir_path: () => "/Users/u",
+    home_dir_path: () => "/Users/user",
     read_text_head: (a) => { const t = window.__shimFiles[a.path]; if (t == null) throw new Error("not found"); return t; },
     list_dir: () => [],
     feed_list: () => ({ items: [] }),

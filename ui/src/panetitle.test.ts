@@ -7,14 +7,14 @@ const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
 describe("D4 #12 역할 없는 창 = 「번호 · 폴더 이름」", () => {
   it("자동 제목(빈 · surface N)이면 번호 먼저 + 마지막 폴더 이름", () => {
-    expect(paneTitleText(7, "", "/Users/u/axdev/.wt/long/project-alpha", false)).toBe("7 · project-alpha");
-    expect(paneTitleText(7, "surface 7", "/Users/u/", false)).toBe("7 · u");
-    expect(paneTitleText(7, null, "C:\\Users\\u\\proj", false)).toBe("7 · proj");
+    expect(paneTitleText(7, "", "/Users/user/axdev/.wt/long/project-alpha", false)).toBe("7 · project-alpha");
+    expect(paneTitleText(7, "surface 7", "/Users/user/", false)).toBe("7 · user");
+    expect(paneTitleText(7, null, "C:\\Users\\x\\proj", false)).toBe("7 · proj");
     expect(paneTitleText(7, "", null, false)).toBe("7");
   });
   it("데몬이 지은 제목(역할 창 · 사람 이름)은 그대로", () => {
-    expect(paneTitleText(1, "1 · master", "/Users/u/jarvis", false)).toBe("1 · master");
-    expect(paneTitleText(1, "내 창", "/Users/u/jarvis", false)).toBe("내 창");
+    expect(paneTitleText(1, "1 · master", "/Users/user/jarvis", false)).toBe("1 · master");
+    expect(paneTitleText(1, "내 창", "/Users/user/jarvis", false)).toBe("내 창");
   });
   it("번호를 모르면(생성 직후) 종전처럼", () => {
     expect(paneTitleText(null, "", null, false)).toBe("…");

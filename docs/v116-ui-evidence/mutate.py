@@ -1,5 +1,6 @@
 import subprocess, sys, os, json
-UI='/Users/oogisoogi/axdev/.wt/cys-v116-ui/ui'
+# UI 폴더 = 환경변수 V116_UI_DIR(기본 = 이 스크립트 기준 ../../ui · 저장소 안 실행)
+UI=os.environ.get('V116_UI_DIR') or os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','..','ui'))
 env=dict(os.environ, PATH=os.path.expanduser('~/.bun/bin')+':'+os.environ['PATH'])
 M=[
  ('M1a','src/closeguard.ts','return exited !== true;','return exited === false;','src/closeguard.test.ts'),

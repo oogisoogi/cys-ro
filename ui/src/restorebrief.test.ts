@@ -284,16 +284,16 @@ describe("v115r5 T4 — 첫 기동·갱신·기록 없음·기록 늦음 진리�
 
 describe("v116 R1a — 작업기억 정본 경로(~/.cys/pack/round)도 읽는다", () => {
   it("정본 경로 = <홈>/.cys/pack/round/SESSION_STATE.md (맥·윈 구분자)", () => {
-    expect(canonicalStatePath("/Users/u")).toBe("/Users/u/.cys/pack/round/SESSION_STATE.md");
-    expect(canonicalStatePath("/Users/u/")).toBe("/Users/u/.cys/pack/round/SESSION_STATE.md");
-    expect(canonicalStatePath("C:\\Users\\u")).toBe("C:\\Users\\u\\.cys\\pack\\round\\SESSION_STATE.md");
+    expect(canonicalStatePath("/Users/user")).toBe("/Users/user/.cys/pack/round/SESSION_STATE.md");
+    expect(canonicalStatePath("/Users/user/")).toBe("/Users/user/.cys/pack/round/SESSION_STATE.md");
+    expect(canonicalStatePath("C:\\Users\\x")).toBe("C:\\Users\\x\\.cys\\pack\\round\\SESSION_STATE.md");
   });
   it("후보 = 정본 먼저 + 종전 cwd _round 사슬 그대로 · 작업 폴더를 몰라도 정본은 본다", () => {
-    expect(briefStatePaths("/Users/u/jarvis", "/Users/u")).toEqual([
-      "/Users/u/.cys/pack/round/SESSION_STATE.md",
-      ...stateCandidates("/Users/u/jarvis", "/Users/u"),
+    expect(briefStatePaths("/Users/user/jarvis", "/Users/user")).toEqual([
+      "/Users/user/.cys/pack/round/SESSION_STATE.md",
+      ...stateCandidates("/Users/user/jarvis", "/Users/user"),
     ]);
-    expect(briefStatePaths(null, "/Users/u")).toEqual(["/Users/u/.cys/pack/round/SESSION_STATE.md"]);
+    expect(briefStatePaths(null, "/Users/user")).toEqual(["/Users/user/.cys/pack/round/SESSION_STATE.md"]);
   });
   it("정본만 있으면 정본 · cwd 쪽이 더 늦게 기록됐으면 cwd 쪽 · 같으면 정본 · 없으면 null", () => {
     const canon = { path: "c", text: "## 완료\n- 정본\n2026-09-23 22:10" };

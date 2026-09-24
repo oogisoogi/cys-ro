@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { ctxLines, type CtxRow } from "./wsusage";
 
 const r = (surfaceId: number, socket: string, name = ""): CtxRow => ({ surfaceId, name, socket, ctxPct: 10, ageSecs: 1, updatedAt: 1, stale: false, source: "statusline" });
-const D = "/Users/u/.local/state/cys-dept-dept-3/cys.sock";
+const D = "/Users/user/.local/state/cys-dept-dept-3/cys.sock";
 const label = (s: string) => (s ? "영업 기획 부서" : "본부");
 
 describe("D4 #10 ctxLines — 부서마다 머리줄 1개 · 행 라벨은 번호만", () => {

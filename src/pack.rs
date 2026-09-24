@@ -3973,6 +3973,8 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             }
         }
         // 정상 갱신으로 합류(비수정 update·신규 생성) — 남은 new-pending 잔재는 무의미하므로 청소.
+        // ★v116-ceo-directive-hold(Opus 적대 F6): CEO 파생 구제 경로에서는 `.new` 가 vendor 바이트와 다르면
+        //   (사용자가 병합하려고 손본 사본) 파일은 남기고 원장 항목만 정리한다 — 위 정리와 같은 약속.
         if pending
             .get(rel)
             .and_then(|e| e.get("kind"))
@@ -3981,7 +3983,12 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
         {
             pending.remove(rel);
             pending_dirty = true;
-            let _ = std::fs::remove_file(dir.join(format!("{rel}.new")));
+            let newp = dir.join(format!("{rel}.new"));
+            let user_touched = ceo_ov.is_some()
+                && std::fs::read_to_string(&newp).ok().is_some_and(|n| n != vendor_embed);
+            if !user_touched {
+                let _ = std::fs::remove_file(newp);
+            }
         }
         written += 1;
     }

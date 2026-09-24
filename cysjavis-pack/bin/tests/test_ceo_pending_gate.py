@@ -458,7 +458,7 @@ for s in SHAPES["shapes"]:
     if exp.get("boot_marker", True):
         with open(marker, "w", encoding="utf-8") as f:
             f.write("{}")
-    _rd = lambda p: open(p, encoding="utf-8").read() if os.path.exists(p) else None
+    _rd = lambda p: open(p, encoding="utf-8", newline="").read() if os.path.exists(p) else None  # 줄끝 무변환(CRLF 형상)
     _bak = lambda kind: sorted(n for n in os.listdir(_dirs) if n.startswith("MASTER_DIRECTIVE.md" + kind))
     for rnd in ("1회", "2회(멱등)"):
         code, out = run(env, "promote-ceo")

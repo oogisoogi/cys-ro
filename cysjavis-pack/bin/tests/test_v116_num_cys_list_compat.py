@@ -24,7 +24,7 @@ OLD = (
     "surface:1049\trole=worker-3\tpid=111\texited=false\t50 · Opus · worker3\t/Users/x/axdev/research\n"
     "surface:1050\trole=master\tpid=222\texited=false\t51 · master\t/Users/x/jarvis\n"
     "surface:1051\trole=cso\tpid=333\texited=true\t52 · cso\t/Users/x/jarvis/cso\n"
-    "surface:1052\trole=-\tpid=444\texited=false\tsurface 1052\t/Users/x\n"
+    "surface:1052\trole=-\tpid=444\texited=false\tsurface 1052\t/Users/x/home\n"
 )
 
 
@@ -102,6 +102,8 @@ class CysListNoColumnCompat(unittest.TestCase):
         # 결과가 비어 있어서 같은 것이 아님을 확인(측정력)
         self.assertEqual(old["awaken.surface_row(surface)"]["cwd"], "/Users/x/axdev/research")
         self.assertEqual(old["cycle_autopilot.parse_cys_list"][1050]["cwd"], "/Users/x/jarvis")
+        # 역할 없는 좌석(role=-) 행도 마지막 칸을 cwd 로 읽는다 — no= 칸이 끼어도 같다(위 동일성 단언)
+        self.assertEqual(old["cycle_autopilot.parse_cys_list"][1052]["cwd"], "/Users/x/home")
         self.assertTrue(any(r["surface_ref"] == "surface:1049" for r in old["boot_node._parse_cys_list"]))
         self.assertEqual(old["orchestra._cys_list_masters"], [1050])
 

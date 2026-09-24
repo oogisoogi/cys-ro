@@ -1,6 +1,18 @@
 # HANDOFF — v116-num ①설계 (보이는 번호 1~999 순환)
 
-## §0 델타 (②③ 구현 완료 · 2026-09-24 12:3x · TICKET=v116-num · 판정 [master#725963ea] ①ACCEPT → ②③)
+## §0 델타 (경로 적색 3건 수리 · 2026-09-25 · 판정 [master#2ac3a293] · 이 티켓의 마지막 항목)
+
+- **한 것**: 발행 차단 검사(secret-scan) 적색 3건 수리 — 전부 이 가지 커밋 유래.
+  ① `reviews/fable-adversarial-4R-2026-09-24.md` · ② `reviews/mutants-r2-2026-09-24.txt` = 실계정 절대경로를 `~/` 로 뜻 보존 치환(원문 보관 파일이므로 치환 전 sha256 기록):
+  · ① 치환 전 sha256 = f4b95dc7c0a354e500c8d124e1ed407dab608fdc6d6074ff3ff21da8f1bdeb5f (치환 1곳 · 24행)
+  · ② 치환 전 sha256 = 362a3a0f05dd9c1338c53807e6687bfc76f793676f08b90b90c622fee0674349 (치환 1곳 · 6행)
+  ③ `cysjavis-pack/bin/tests/test_v116_num_cys_list_compat.py` 역할 없는 좌석 픽스처 cwd `/Users/x` → `/Users/x/home`(허용 형태) + 그 행의 뜻(역할 없는 좌석도 마지막 칸 = cwd) 단언 1줄 추가.
+- **재검**: `scripts/secret-scan.sh --all` = clean(1116 파일 · 0건) · 팩 시험 2/2 초록.
+- **master 답 반영**: 설계 §9 T12 줄 = 「1.1.6 = 윈도/VM 실기 점검으로 대체 · 레인 = 1.1.7」 · ruleTitleOf 접두 오인 = 1.1.7(이 가지 무접촉) · I1 보호·번호 정지 유지.
+- **다음**: master 델타 재검수 → ACCEPT → 1086 편입(fix/v116-num-ui 42596ebf = T-UI 뒤 cherry-pick · master 몫). 이 좌석 = 새 항목 없음 · 대기.
+- **백그라운드**: 없음.
+
+## (이력) §0 델타 (②③ 구현 완료 · 2026-09-24 12:3x · TICKET=v116-num · 판정 [master#725963ea] ①ACCEPT → ②③)
 
 - **어디까지 했나**: ②데몬 + ③표시 구현 완료 · 로컬 커밋만(push·병합 0 = master 게이트).
   · fix/v116-num: 8b8e90d1(②) → f657c1e0(code-1R 반영 + ③데몬 제목·CLI) → 이 커밋(code-2R 반영 · 문서 · 증거).

@@ -190,8 +190,14 @@ describe("문구 — 공개 문구 규칙(새로 생기거나 바뀐 문자열�
     expect(t.detail.split(". ").length).toBe(3);
     expect(restartReadyToast("").detail.startsWith("새 앱 설치가 끝났습니다.")).toBe(true); // 판번 없는 이벤트
   });
-  test("재진입 안내 문구(main.ts) — 규칙 준수 · 「재시작」 낱말 0", () => {
-    expect(MAIN).toContain('toast("feed", "다시 켜기 준비 중", "다시 켜기를 준비하고 있습니다. 잠시만 기다려 주세요.");');
+  test("재진입 안내 문구(main.ts) — 괄호 0 · 「재시작」 낱말 0 · 전문 용어 0 · 안내자 말투", () => {
+    const m = /toast\("feed", "(다시 켜기[^"]*)", "([^"]*)"\);/.exec(fnBody(MAIN, "async function restartAfterUpdate(version: string)"));
+    expect(m).not.toBeNull();
+    for (const s of [m![1], m![2]]) {
+      expect(/[()（）]/.test(s)).toBe(false);
+      expect(/재시작|drain|데몬|세션|판번|새 판/.test(s)).toBe(false);
+    }
+    expect(m![2].endsWith("기다려 주세요.")).toBe(true);
   });
   test("알림은 사라진다 — 수명 규칙(오너 정책) 무변경 · upd-restart 는 지속형 기본 60초", () => {
     const ttl = readFileSync(new URL("./toastttl.ts", import.meta.url), "utf8");

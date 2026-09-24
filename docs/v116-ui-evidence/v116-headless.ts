@@ -23,7 +23,8 @@
 //   c17x 경계 — 설치 확인 창이 떠 있는 사이 교체 완료 → 「설치」 눌러도 재다운로드 0(다시 켜기) · 대기 중 더 새 판(1.1.8) → 먼저 다시 켜기 ·
 //        새 앱으로 켜진 뒤 확인이 1.1.8 을 설치로 안내 · 알림 × 로 닫아도 단추 유지 · (agy 1R) ⌘R 뒤 판번 조회 실패 = 복원 0 · 기억 보존 ·
 //        복원이 판번을 기다리는 사이 새 교체 완료(1.1.8) → 복원(1.1.7)이 덮지 않음 · (클로드 적대 1R) m 같은 판 재빌드 ⌘R 유지·새 build 로 풀림 ·
-//        n 진행 중 확인 뒤 교체 완료 → 설치 안내 0 · o ⌘R 직후 복원 전 첫 클릭 = 다시 켜기 · p 팩 적용 완료 뒤 배지 유지
+//        n 진행 중 확인 뒤 교체 완료 → 설치 안내 0 · o ⌘R 직후 복원 전 첫 클릭 = 다시 켜기 · p 팩 적용 완료 뒤 배지 유지 ·
+//        q 좁은 창(800폭) — 「다시 켜기」가 상단바를 넘치거나 두 줄로 꺾이지 않음
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -397,7 +398,8 @@ if (ONLY.includes("c17")) {
   await ev(`document.getElementById("btn-update").click()`); await Bun.sleep(600);
   const b2 = await ev(SPOTS);
   if (b2.modal) { await ev(`document.querySelector(".modal-no")?.click()`); await Bun.sleep(200); }
-  check("c17c ⌘R 뒤에도 「다시 켜기」 유지 · 시작 확인이 설치 안내를 띄우지 않음 · 누르면 재시작(설치 0)", b1.label === "다시 켜기" && b1.installToasts === 0 && JSON.stringify(b2.restarts) === "[false]" && b2.installs === 0, JSON.stringify({ afterReload: b1, afterClick: b2 }));
+  // (뮤턴트 M17 생존 봉합) ⌘R 뒤엔 시작 확인이 머리에서 끝나므로 배지 「!」 는 다시 칠하기만이 켠다 — 여기서 잰다.
+  check("c17c ⌘R 뒤에도 「다시 켜기」·배지 「!」 유지 · 시작 확인이 설치 안내를 띄우지 않음 · 누르면 재시작(설치 0)", b1.label === "다시 켜기" && b1.badge === "!" && b1.installToasts === 0 && JSON.stringify(b2.restarts) === "[false]" && b2.installs === 0, JSON.stringify({ afterReload: b1, afterClick: b2 }));
   // ── C. 새 판으로 켜진 앱(판번 = 대기 판번) — 대기 상태가 저절로 풀린다(남은 기억이 있어도)
   await ev(`sessionStorage.setItem("__shimAppVersion", "1.1.7"); sessionStorage.removeItem("__shimUpdate")`);
   await cdp("Page.reload", {}); await Bun.sleep(3500);
@@ -518,6 +520,17 @@ if (ONLY.includes("c17x")) {
   await ev(`window.__shimEmit("pack-updated", { pack_version: "9.9.9" })`); await Bun.sleep(300);
   const p1 = await ev(`({ badgeHidden: document.getElementById("update-badge").hidden, badge: document.getElementById("update-badge").textContent, ...${X} })`);
   check("c17p 대기 중 팩 적용 완료 → 배지 「!」 유지 · 단추 「다시 켜기」", !p1.badgeHidden && p1.badge === "!" && p1.label === "다시 켜기", JSON.stringify(p1));
+  // q. 좁은 창 — 단추 글자가 「업데이트」(4자)보다 긴 「다시 켜기」(5자)가 돼도 상단바 넘침·줄바꿈 0 · 단추가 화면 안
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 820, deviceScaleFactor: 1, mobile: false });
+  await load("two", "");
+  const Q = `(() => { const bar = document.getElementById("topbar"); const b = document.getElementById("btn-update"); const c = document.getElementById("btn-close"); const r = b.getBoundingClientRect();
+    return { label: (b.firstChild?.nodeValue ?? "").trim(), barOverflow: bar.scrollWidth - bar.clientWidth, h: Math.round(r.height), hRef: Math.round(c.getBoundingClientRect().height), inView: r.left >= 0 && r.right <= window.innerWidth, pageOverflow: document.documentElement.scrollWidth - window.innerWidth }; })()`;
+  const q0 = await ev(Q);
+  await ev(`window.__shimEmit("update-restart-required", { version: "1.1.7", reason: "app_replaced" })`); await Bun.sleep(300);
+  const q1 = await ev(Q);
+  await shot("c17q-w800-restart.png");
+  check("c17q w800 「다시 켜기」 = 상단바 넘침 증가 0 · 단추 한 줄(높이 = 이웃 단추) · 화면 안 · 페이지 가로 넘침 0", q1.label === "다시 켜기" && q1.barOverflow <= q0.barOverflow && q1.h === q1.hRef && q1.inView && q1.pageOverflow <= 0, JSON.stringify({ q0, q1 }));
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }
 
 if (ONLY.includes("c17w")) {

@@ -110,8 +110,8 @@
 뮤턴트 누계 32/32(D6 10 · T2a 9 · T2b 13 — 회차별 스크립트 = scratchpad `mut*.py` · 판정 = 대상 시험만 적색). ※ 08:34 【진행】의 「33」은 MS3 재실행을 두 번 센 오기 — 정정.
 실행: `env -u CYS_SURFACE_ID -u CYS_ROLE -u CYS_PACK_DIR -u CLAUDE_CONFIG_DIR -u CYS_SOCKET -u CYS_CLAUDE_CTX_WINDOW HOME=<격리> CYS_NO_AUTOSTART=1 target/debug/deps/<bin>-<hash> [필터] --test-threads=1`.
 
-### 4-1. 전건 결과(최종 HEAD)
-(채움)
+### 4-1. 전건 결과(최종 제품 HEAD d31f1358 · 격리 HOME · --test-threads=1)
+- cysd: **1068 통과 · 0 실패 · 1 ignore**(기존 ignore) · cys: **291 통과 · 0 실패**. (중간 회차: 1056 → 1060 → 1065 / 289 → 290 — 시험 추가분만큼 증가 · 실패 0 유지.)
 
 ## 5. 4군 점검
 1. **폭주 큐** — 큐 경로 무접촉. D6-1 이 새로 열 뻔한 경보 깜빡임 재발화(키 소멸↔복귀)는 `4f18c032` 로 차단. T2a 보류→재평가는 공유 에지 게이트(`ctx_threshold_armed`)라 중복 발화 0. T2b 확증 조회는 실패 문면이 보인 틱에만 `surface.list` 1회.
@@ -125,10 +125,14 @@
 | 1R | agy(이종 · diff 전문) | BLOCK 4건 | #2(빈 줄 틱 재평가 누락) 채택 · #3-①(재사용 좌석 잔상) 채택 · #1(note_rate "claude" 고정) 기각 = 계정 키는 프로필 신원 · #3-②(래퍼 생존 거부) 기각 = 오살 비대칭 원칙 · #4(예열 스냅샷) 부분 채택(문서화) |
 | 2R | agy | ACCEPT | ★그러나 2R 이 승인한 「TUI 증거를 신규 출현분에서」(b080056b)는 실제 claude 에서 틀렸다 — 아래 opus 1R · 격리 실측으로 확증 · 판정문보다 실측을 따름 |
 | 1R | opus 적대 서브에이전트(「참 경보 침묵」 조준) | REVISE 7건 | high #1 채택(재설계 3361b4f8 · 실측 확증) · med #2 채택(꼬리 3줄) · low 3건 채택(창 없는 statusline · 재부착 리셋 · 죽은 묶음 깜빡임) · low 2건 곁 항목(스냅샷 심장박동 · D6-2 절반) |
-| 3R | agy | (채움) | |
-| 2R | opus | (채움) | |
+| 3R | agy | BLOCK 5건 | #1(재출력 도중 틱)·#2(접힌 에코)·#3(좌석 생성 시각 기준 회귀)·#4(창 없는 statusline 뒤 침묵) 채택 → 57f6a92d · #5(빈 묶음 덮어쓰기) 기각 = 유일 호출부 비어 있지 않을 때만 |
+| 2R | opus | REVISE(A·B·C + low) | 전부 채택 → 57f6a92d(C = 창 라벨 단위 병합) · PS7 문면 = 곁 항목 |
+| 4R | agy | BLOCK — #1·#2·#4 닫힘 · #5 기각 타당 · **새 결함 후보 2**: ⓐ[high] 휴리스틱 좌석의 새 세션이 끝난 유예를 승계(usage.rs `reattach_grace_from`) ⓑ[med·추정] 기존 창 resets_at 미상이면 리셋 지난 정당 관측이 기각(accounts.rs `merge_rate_windows`) | **파킹으로 미처리** — 재개 때 판정·반영. 1차 평가: ⓐ = opus 3R low 와 같은 지점(훅 없는 좌석 한정 · 종전보다 오발이 최대 60초 앞당겨지는 크기) · ⓑ = 미상 창을 「살아 있음」으로 보는 현 규약의 귀결 — 반례 입력(리셋 직후 과거 resets_at 을 주는 API)의 실재 여부부터 확인 필요 |
+| 3R | opus | **ACCEPT** | 참고 low 2(휴리스틱 재부착 때 보류 필드 승계 · 휴리스틱 전용 좌석 새 세션 유예 0초) = agy 4R ⓐ 와 같은 지점 · 잔여 = 느린 VM 에서 재출력→하단 2.5초 초과 + 생존 미관측이면 여전히 닫힘(실물 claude 미실측) |
 
-판정문 원문: `hetero-agy-v116-usage.md`(1R) · `-r2.md` · `-r3.md` · `adversarial-opus-v116-usage-r1.md` · `-r2.md`.
+수렴 상태: opus = dry(ACCEPT) · agy = 새 결함 후보 2(위) → **미수렴 · 재개 때 1회 더**.
+
+판정문 원문: `hetero-agy-v116-usage.md`(1R) · `-r2.md` · `-r3.md` · `-r4.md` · `adversarial-opus-v116-usage-r1.md` · `-r2.md` · `-r3.md`.
 
 ## 7. 곁 항목(이 티켓 밖 · 수리 안 함)
 1. **ctx relay 노출 창**: `javis_ctx_relay.py` 는 2분마다 좌석 CTX(관측·자기보고 중 신선한 큰 값 · cso 제외)를 읽는다. T2a 는 threshold **이벤트**만 보류하므로 추정치(예 77%)가 배지·`observed_usage` 에 statusline 도착까지(VM 실측 약 1초) 남는다 — 그 1초에 relay 틱이 걸리면 비-cso 좌석에 `[ctx-threshold]` 가 배달될 수 있다. 처방 후보 = 유예 중 추정 `ctx_pct` 를 비워 「못 쟀다」로(배지 변화 동반 → master 판단).
@@ -138,6 +142,7 @@
 5. **D6-2 절반(opus 1R)**: `usage.rs:177-181` collect_tick · `:574` collect_external · `:203` statusline_fresh · `:159` 소비 수집이 `"claude"` 완전일치 → claude-fable·claude-sonnet 좌석은 트랜스크립트 폴백·관측 경로 CTX 임계(4군 ② 안전망 — statusline 경로 발화는 에이전트 무관이라 살아 있음)·세션 핀·소비 적재가 없다(수리 전부터).
 6. 재부팅 예열 스냅샷 심장박동 없음(§1 남는 지연) — 처방 후보 = 값이 그대로여도 N시간마다 스냅샷 1회.
 7. zsh 절대경로 실패 문면 소문자 `no such file or directory` 미탐(`cys.rs:10042` 대문자만) — 기존 틈 · 절대경로 cmd 에서만(기본 팩 cmd 는 PATH 조회 = `command not found` 로 잡힘).
+9. PowerShell 7 문면 「is not recognized as **a** name of a cmdlet」 미탐(opus 2R·3R) — 기동 실패가 시간초과 → 좌석 보존으로 흘러 죽은 좌석이 역할을 쥔다(기존 · 다음 티켓 권고).
 8. 노드 단위 `rate_limit` 경보 임계 90(`alerts.rs:131`) — 계정 경고 80~90 구간은 노드 경보가 받치지 못한다(opus 1R 관찰).
 
 ## 8. 다음 VM 좌석 확인 체크리스트(T2 · 이 티켓은 VM 무접촉)

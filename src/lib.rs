@@ -2730,6 +2730,26 @@ pub fn surface_ref(id: u64) -> String {
     format!("surface:{id}")
 }
 
+/// ★v116-num(T-NUM): 좌석의 **보이는 번호** 상한 — 1..=999 를 돌아서 다시 쓴다(설계 §2-1).
+pub const DISPLAY_NO_MAX: u16 = 999;
+
+/// ★v116-num(T-NUM): 사람이 치는 보이는 번호 `#N` → N(1..=999). **CLI 전용 문법**이다 —
+/// 데몬 RPC 는 `#` 를 모른다(`parse_surface_ref` 는 무변경이라 `#17` 은 거기서 None 으로
+/// 거부된다 · 설계 §4-1 「데몬 쪽 입구는 하나다」). 앞뒤 공백만 허용하고, `#0`·`#1000`·
+/// `#017`(앞자리 0)·`# 17`·`#17a`·`surface:#17` 은 거부한다 — 추측해서 받아 주지 않는다(§4-2).
+pub fn parse_display_ref(s: &str) -> Option<u16> {
+    let digits = s.trim().strip_prefix('#')?;
+    if digits.is_empty()
+        || digits.len() > 3
+        || digits.starts_with('0')
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let n: u16 = digits.parse().ok()?;
+    (1..=DISPLAY_NO_MAX).contains(&n).then_some(n)
+}
+
 /// Map a named key name to the byte sequence
 /// written to the PTY. Supports C- (ctrl), M- (alt/meta) prefixes.
 pub fn key_to_bytes(key: &str) -> Option<Vec<u8>> {
@@ -4804,6 +4824,37 @@ mod tests {
         assert_eq!(parse_surface_ref("3.5"), None);
         // u64 초과는 None (오버플로 시 silent wrap 금지)
         assert_eq!(parse_surface_ref("18446744073709551616"), None);
+    }
+
+    /// ★v116-num T9 문법 진리표 — M19(`#017` 허용) 적색 · T3(데몬 입구 무변경) 핀.
+    #[test]
+    fn display_ref_grammar_truth_table() {
+        for (s, want) in [
+            ("#1", Some(1u16)),
+            ("#999", Some(999)),
+            ("#50", Some(50)),
+            ("  #17\t", Some(17)),
+            ("#0", None),
+            ("#1000", None),
+            ("#017", None),
+            ("#00", None),
+            ("# 17", None),
+            ("#17a", None),
+            ("#-1", None),
+            ("#+17", None),
+            ("#", None),
+            ("17", None),
+            ("surface:#17", None),
+            ("#surface:17", None),
+            ("##17", None),
+            ("#１７", None), // 전각 숫자 — ASCII 숫자만
+        ] {
+            assert_eq!(parse_display_ref(s), want, "입력 {s:?}");
+        }
+        // 데몬 입구(parse_surface_ref)는 `#` 를 모른다 — 벗겨 주지 않는다(M12 적색 핀).
+        for s in ["#17", "surface:#17", "#1", "#999"] {
+            assert_eq!(parse_surface_ref(s), None, "parse_surface_ref({s:?}) 는 None 이어야 한다");
+        }
     }
 
     #[test]

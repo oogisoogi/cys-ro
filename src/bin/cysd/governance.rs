@@ -4828,7 +4828,7 @@ pub fn collect_scoped_for_shutdown(
 /// watchdog 태스크-로컬 디바운스/카운터 맵의 무한 성장을 막는다.
 /// 이 4개 맵은 spawn_watchdog 루프 안의 로컬 변수라 close_surface가 접근할 수 없어
 /// prune_surface_health_keys(close_surface 지점에서 회수)와 같은 방식을 쓸 수 없다.
-/// surface_id는 max_surface_id+1에서 단조 증가해 재시작 너머로도 재사용되지 않으므로,
+/// surface_id는 부팅 시드(recall::surface_numbers_boot)+1에서 단조 증가해 재시작 너머로도 재사용되지 않으므로,
 /// surface가 닫혀도 surface_id-키 엔트리가 영구 잔존한다 → watchdog 틱마다 살아있는
 /// surface 집합으로 솎아낸다(prune_surface_health_keys와 동일 철학, 회수 지점만 다름):
 ///   · last_proc_alert·restart_counts(키=surface_id) → 죽은 surface 키 제거
@@ -4967,6 +4967,9 @@ pub fn close_surface(daemon: &Arc<Daemon>, id: u64, cause: CloseCause) -> Result
         Some(id),
         json!({"surface_ref": cys::surface_ref(id), "descendants_killed": descendants.len()}),
     );
+    // ★v116-num: 보이는 번호 닫힘(메모리 → 24시간 막힘 시작) + 대응표 closed_at — surfaces 락 밖 ·
+    //   kill 뒤(대응표 쓰기가 prune 잠금에 최대 5초 걸려도 좌석 종료는 늦추지 않는다).
+    daemon.note_surface_closed(&surface);
     persist_topology(daemon);
     Ok(())
 }

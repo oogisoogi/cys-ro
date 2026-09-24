@@ -49,7 +49,17 @@ fn open_db(path: &PathBuf) -> rusqlite::Result<Connection> {
            hash TEXT NOT NULL,
            anchor_count INTEGER NOT NULL DEFAULT 0,
            anchor_hash TEXT NOT NULL DEFAULT ''
-         );",
+         );
+         CREATE TABLE IF NOT EXISTS surface_numbers(
+           surface_id INTEGER PRIMARY KEY,
+           display_no INTEGER,
+           created_at REAL NOT NULL,
+           closed_at REAL,
+           close_kind TEXT,
+           socket TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS surface_numbers_by_display
+           ON surface_numbers(display_no, surface_id);",
     )?;
     Ok(conn)
 }
@@ -378,33 +388,179 @@ pub fn attest_verify(
     }))
 }
 
-/// 데몬 재시작 시 surface_id 연속성 seed: 영속 트랜스크립트의 최대 id.
-/// (재시작마다 1부터 재발급하면 무관 세션이 같은 id로 recall에 합쳐진다)
-/// lines만 보면 prune이 한 surface의 라인을 전부 삭제했을 때(전체가 보존창 밖) 그
-/// surface_id가 빠져 seed가 낮아진다 → 새 surface가 옛 chains 행과 같은 id를 공유하는
-/// 체인 오염이 발생한다. chains는 prune에서 삭제되지 않는 영구 권위 레지스트리이므로
-/// 두 테이블의 MAX를 함께 취해 high-water mark가 prune에도 단조 유지되게 한다.
-pub fn max_surface_id(socket_path: &std::path::Path) -> u64 {
+/// ★v116-num: 대응표 `surface_numbers` 의 한 행 — 부팅 때 holders 재구성의 입력(설계 §3-2 ③).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NumbersRow {
+    pub surface_id: u64,
+    pub display_no: Option<i64>,
+    pub closed_at: Option<f64>,
+    pub close_kind: Option<String>,
+}
+
+/// ★v116-num: 부팅 읽기 결과(설계 §3-2 부팅 행 · §6).
+pub struct NumbersBoot {
+    /// 시드 = 읽힌(Ok) 갈래들의 최대 내부 번호. 다음 발급 = seed + 1.
+    pub seed: u64,
+    /// 대응표 전 행(읽기 실패면 비어 있다 = holders 비움).
+    pub rows: Vec<NumbersRow>,
+    /// 부팅 경보 (kind, error) — 종류별 1회. 발행은 이벤트 버스가 생긴 **뒤** 호출자가 한다.
+    pub alarms: Vec<(&'static str, String)>,
+}
+
+/// ★v116-num: 데몬 재시작 시 surface_id 연속성 seed + 보이는 번호 holders 재구성(설계 §3-2 · §6).
+///
+/// 시드 3갈래 — 한 갈래라도 빠지면 그 갈래에만 있던 번호가 재기동 뒤 다시 나온다:
+/// · lines: 영속 트랜스크립트(재시작마다 1부터 재발급하면 무관 세션이 같은 id로 recall에 합쳐진다)
+/// · chains: prune이 한 surface의 라인을 전부 지워도 남는 영구 레지스트리(옛 chains 행과 id 공유 차단)
+/// · surface_numbers: PTY 를 열기 **전에** 동기로 쓰는 좌석 원장 — 줄을 하나도 안 남긴 좌석(X-10)까지 본다
+///
+/// 순서(Fable 2R·3R·4R 반영 — 셋 다 「부팅 순서」 결함이었다):
+/// ⓪ 파일이 이 단계 전에 있었나 기록 → ⑴ **전체 스키마**(open_db)를 먼저 세운다(새 표만 만들면
+/// 새 설치 때 lines·chains 갈래가 「no such table」 로 실패해 거짓 경보) → ⑵ 읽기 스냅샷 하나에서
+/// 표마다 따로 Ok/Failed(한 갈래 실패가 나머지를 0 으로 만들지 않는다) → ⑶ 고아 행 UPDATE 는
+/// 스냅샷 **뒤 · 별도 · 최선 노력**(실패해도 ⑵의 시드·holders 를 버리지 않는다 = 메모리가 원본).
+pub fn surface_numbers_boot(socket_path: &std::path::Path, boot_now: f64) -> NumbersBoot {
     let path = state_dir(socket_path).join("transcripts.db");
-    if !path.exists() {
-        return 0;
+    let mut alarms: Vec<(&'static str, String)> = Vec::new();
+    // ⓪
+    let existed = path.exists();
+    // ⑴
+    let conn = match open_db(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            if existed {
+                // 있던 DB 를 못 연다 = 시드가 조용히 0 이 되는 길(I0 파괴) — 드러낸다.
+                alarms.push(("seed_failed", format!("open {}: {e}", path.display())));
+            } else {
+                // 새 설치 — 시드 0 이 맞다. 이후 좌석 쓰기가 실패하면 그때 write_io 가 따로 남는다.
+                eprintln!("[cysd] surface_numbers: 새 DB 생성 실패 {}: {e}", path.display());
+            }
+            return NumbersBoot { seed: 0, rows: Vec::new(), alarms };
+        }
+    };
+    // ⑵ 읽기 스냅샷 하나(지연 읽기 트랜잭션) — 시드와 holders 가 같은 시점을 본다.
+    let _ = conn.execute_batch("BEGIN DEFERRED");
+    let mut seed: u64 = 0;
+    let mut failed: Vec<String> = Vec::new();
+    let mut numbers_ok = true;
+    for (table, sql) in [
+        ("lines", "SELECT COALESCE(MAX(surface_id), 0) FROM lines"),
+        ("chains", "SELECT COALESCE(MAX(surface_id), 0) FROM chains"),
+        ("surface_numbers", "SELECT COALESCE(MAX(surface_id), 0) FROM surface_numbers"),
+    ] {
+        match conn.query_row(sql, [], |r| r.get::<_, i64>(0)) {
+            Ok(v) => seed = seed.max(v.max(0) as u64),
+            Err(e) => {
+                failed.push(format!("{table}: {e}"));
+                if table == "surface_numbers" {
+                    numbers_ok = false;
+                }
+            }
+        }
     }
-    Connection::open(&path)
-        .ok()
-        .and_then(|c| {
-            c.query_row(
-                "SELECT MAX(m) FROM (
-                   SELECT COALESCE(MAX(surface_id), 0) AS m FROM lines
-                   UNION ALL
-                   SELECT COALESCE(MAX(surface_id), 0) AS m FROM chains
-                 )",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .ok()
-        })
-        .map(|v| v.max(0) as u64)
-        .unwrap_or(0)
+    let rows: Vec<NumbersRow> = if numbers_ok {
+        match read_numbers_rows(&conn) {
+            Ok(r) => r,
+            Err(e) => {
+                failed.push(format!("surface_numbers rows: {e}"));
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let _ = conn.execute_batch("COMMIT");
+    if !failed.is_empty() {
+        alarms.push(("seed_failed", failed.join("; ")));
+    }
+    // ⑶ 닫힘 기록 없이 죽은 행(데몬과 함께 죽은 좌석) — 메모리에서는 이미 Closed(boot_now) 로 다룬다.
+    //    고아가 있을 때만 쓴다(읽기 전용 DB 에서 헛 UPDATE 가 거짓 write_io 를 내지 않게).
+    if rows.iter().any(|r| r.closed_at.is_none()) {
+        if let Err(e) = conn.execute(
+            "UPDATE surface_numbers SET closed_at = ?1, close_kind = 'boot_orphan'
+             WHERE closed_at IS NULL",
+            [boot_now],
+        ) {
+            alarms.push(("write_io", format!("boot_orphan update: {e}")));
+        }
+    }
+    NumbersBoot { seed, rows, alarms }
+}
+
+fn read_numbers_rows(conn: &Connection) -> rusqlite::Result<Vec<NumbersRow>> {
+    let mut stmt =
+        conn.prepare("SELECT surface_id, display_no, closed_at, close_kind FROM surface_numbers")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(NumbersRow {
+                surface_id: r.get::<_, i64>(0)?.max(0) as u64,
+                display_no: r.get::<_, Option<i64>>(1)?,
+                closed_at: r.get::<_, Option<f64>>(2)?,
+                close_kind: r.get::<_, Option<String>>(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// ★v116-num: 대응표 쓰기 실패의 두 원인(설계 §3-2 ⑤ · Fable 1R LOW-4 — 「디스크 가득」 으로 뭉개지 않는다).
+#[derive(Debug, PartialEq)]
+pub enum NumbersWriteErr {
+    /// 같은 내부 번호 행이 이미 있음 = **I0 위반**(시드가 틀렸다는 뜻).
+    PkConflict(String),
+    /// 디스크·잠김 시간 초과·스키마 없음 등.
+    Io(String),
+}
+
+/// ★v116-num: 좌석 행 INSERT — **동기 · 전용 연결 · PTY 를 열기 전**(설계 §3-2 ①).
+/// recall 쓰기 스레드(1초 묶음)를 거치지 않는다: 묶음 사이에 데몬이 죽으면 밖으로 나간
+/// 내부 번호가 기록 없이 사라져 X-10 이 다시 열린다. busy_timeout = rusqlite 기본 5초.
+pub fn surface_numbers_insert(
+    socket_path: &std::path::Path,
+    surface_id: u64,
+    display_no: Option<u16>,
+    created_at: f64,
+) -> Result<(), NumbersWriteErr> {
+    let path = state_dir(socket_path).join("transcripts.db");
+    let conn = Connection::open(&path).map_err(|e| NumbersWriteErr::Io(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO surface_numbers(surface_id, display_no, created_at, socket)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            surface_id as i64,
+            display_no.map(i64::from),
+            created_at,
+            socket_path.to_string_lossy()
+        ],
+    )
+    .map(|_| ())
+    .map_err(|e| match &e {
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY =>
+        {
+            NumbersWriteErr::PkConflict(e.to_string())
+        }
+        _ => NumbersWriteErr::Io(e.to_string()),
+    })
+}
+
+/// ★v116-num: 좌석 행 닫힘 기록(`close` · `spawn_failed`) — 동기 · 락 밖. 이미 닫힌 행은 덮지 않는다.
+/// 실패해도 메모리가 원본이다(다음 부팅에 boot_orphan 으로 보수적으로 막힌다 · 설계 §3-2 ②).
+pub fn surface_numbers_close(
+    socket_path: &std::path::Path,
+    surface_id: u64,
+    closed_at: f64,
+    close_kind: &str,
+) -> Result<(), String> {
+    let path = state_dir(socket_path).join("transcripts.db");
+    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE surface_numbers SET closed_at = ?2, close_kind = ?3
+         WHERE surface_id = ?1 AND closed_at IS NULL",
+        rusqlite::params![surface_id as i64, closed_at, close_kind],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// FTS 검색 (RPC recall.search). 쿼리는 phrase로 quoting해 FTS 구문 주입을 차단.
@@ -1360,6 +1516,43 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// ★v116-num T10 — 보존 정리(prune)는 대응표를 건드리지 않는다(M20: prune 에 surface_numbers
+    /// 삭제를 넣으면 적색). 대응표는 시드 3갈래의 한 갈래이자 24시간 막힘의 원본이라 줄어들면 X-10 이 다시 열린다.
+    #[test]
+    fn t10_prune_never_touches_surface_numbers() {
+        let (path, conn) = temp_db(line!());
+        let old_ts = crate::state::now_epoch() - 1000.0 * 86400.0;
+        conn.execute(
+            "INSERT INTO lines(ts,surface_id,role,title,line) VALUES (?1,17,NULL,NULL,'old')",
+            [old_ts],
+        )
+        .unwrap();
+        for (sid, closed) in [(17i64, Some(old_ts)), (18, None)] {
+            conn.execute(
+                "INSERT INTO surface_numbers(surface_id,display_no,created_at,closed_at,close_kind,socket)
+                 VALUES (?1,?1,?2,?3,'close','t')",
+                rusqlite::params![sid, old_ts, closed],
+            )
+            .unwrap();
+        }
+        let mut chains: std::collections::HashMap<u64, (u64, [u8; 32])> =
+            std::collections::HashMap::new();
+        let mut last_prune: Option<std::time::Instant> = None;
+        {
+            let _g = RETAIN_ENV_LOCK.lock().unwrap();
+            std::env::set_var("CYS_RECALL_RETAIN_DAYS", "1");
+            maybe_prune(&conn, &mut chains, &mut last_prune);
+            std::env::remove_var("CYS_RECALL_RETAIN_DAYS");
+        }
+        let lines: i64 = conn.query_row("SELECT COUNT(*) FROM lines", [], |r| r.get(0)).unwrap();
+        assert_eq!(lines, 0, "prune 이 실제로 돌았다(대조)");
+        let nums: i64 =
+            conn.query_row("SELECT COUNT(*) FROM surface_numbers", [], |r| r.get(0)).unwrap();
+        assert_eq!(nums, 2, "대응표 행 수 불변");
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// ★회귀: prune이 한 surface의 라인을 전부 삭제하면(전체가 보존창 밖) chains 행은
     /// 영구 잔존하지만 lines에서는 그 surface_id가 사라진다. max_surface_id가 lines만
     /// 보면 seed가 낮아져 재시작 후 새 surface가 옛 chains 행과 같은 surface_id를 재사용
@@ -1433,7 +1626,7 @@ mod tests {
 
         drop(conn);
 
-        // ③ 실제 public 함수 경로 검증: max_surface_id는 같은 디렉터리의 transcripts.db를
+        // ③ 실제 public 함수 경로 검증: 시드(surface_numbers_boot)는 같은 디렉터리의 transcripts.db를
         // 열어야 하므로, temp_db 파일을 state_dir 규약(socket 형제) 디렉터리의 transcripts.db로
         // 복사한 뒤 socket_path를 넘겨 end-to-end로 high-water mark가 100임을 박제한다.
         let e2e_dir = std::env::temp_dir().join(format!(
@@ -1446,11 +1639,15 @@ mod tests {
         let _ = std::fs::remove_file(&db_dst);
         std::fs::copy(&path, &db_dst).unwrap();
         let fake_socket = e2e_dir.join("cys.sock");
+        let boot = super::surface_numbers_boot(&fake_socket, 1.0);
         assert_eq!(
-            super::max_surface_id(&fake_socket),
-            pruned_sid as u64,
-            "max_surface_id는 전체 prune된 surface의 chains 행까지 보아 100을 반환해야 한다"
+            boot.seed, pruned_sid as u64,
+            "시드는 전체 prune된 surface의 chains 행까지 보아 100이어야 한다"
         );
+        assert!(boot.alarms.is_empty(), "정상 DB 경보 0: {:?}", boot.alarms);
+        // ★v116-num 세 번째 갈래: 줄을 하나도 안 남긴 좌석(대응표에만 있음)도 시드에 든다(X-10 · M9).
+        super::surface_numbers_insert(&fake_socket, 150, Some(150), 1.0).unwrap();
+        assert_eq!(super::surface_numbers_boot(&fake_socket, 1.0).seed, 150);
 
         let _ = std::fs::remove_file(&db_dst);
         let _ = std::fs::remove_file(&path);

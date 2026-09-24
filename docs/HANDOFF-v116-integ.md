@@ -388,3 +388,9 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
   - 【추정 · 중상】 kill 순간 데몬에 자식 트리가 살아 있었던 타이밍 경합(기동 직후 cysd 가 스스로 띄우는 auto-restore 등 기존 자식 · 끝나기 전에 kill) + 종료 불가 손자(「not supported」 = 콘솔 호스트류 추정)로 rc≠0. 제품 결함 아님 · 하네스 판정(rc0 엄격)의 부하 의존 흔들림 쪽. windows-build 최근 40런 중 이 판정 적색 = 이번 1회(다른 1회 = v113 가지 · 다른 원인 미확인).
   - 재실행(master#3f6b62d2 승인 · 원장 06:38:22 · `gh run rerun 36058649809 --failed` 1회 06:38:33) → **attempt 2 = success**(build success · 07:03 KST · win_smoke_pass true · ③ taskkill = cysd PID 4416 만 종료 · 손자 트리 없음) ⇒ **플레이크 확정**(재현 0/1).
   - 1.1.7 하네스 후보(master 기록): ③ 에서 대상 데몬 종료가 확인되면(파이프 해제·새 세대) 트리 손자 종료 실패는 적색이 아니라 경고로.
+
+### 18-2. ③ 1102 auto-equalize @3656840e(0133dcd4 위 14커밋 · master#e3e6c762) → 병합 **27968f82**(^2 = 3656840e 실측)
+- 충돌 1 = 헤드리스 하네스 — 1088 과 1102 가 같은 블록 열쇠 「c18」 을 따로 씀(1088 = c18g-scrollback-full·c18h-burst-then-exit·c18i-carry-flush…c18n-narrow-420 / 1102 = c18a…c18i 공백 뒤 설명). c17 과 같은 처리: 열쇠 공유 · 블록 둘 다 유지 · 순서 = 1088 c18 → 1102 c18(자기 load 로 시작 · 창 크기 스스로 복원) · 판정 이름 무변경(두 가지 증거 파일과 대응 유지). ⚠ 앞머리가 겹치는 이름(c18g·c18h·c18i)은 판정 줄 전문으로 가른다.
+- 의미 충돌 점검(main.ts 자동 병합 · 기호 계수 = 도구 출력): 1077 `display_no|displayNo` 6 = 27d80ff0 과 같음(유지) · 1088 `writeExitedBanner` 2(유지) · 1102 `relayoutWs` = 주석 2뿐(3656840e 와 같음 · 틱 끝 일괄 배치 제거) · `arrangeWs` 14(3656840e 와 같음) · `split-col` 0(팔레트 세로 분할 제거 반영). 1102 가 가장 크게 바꾼 refreshPaneTitles 는 1077 num-ui 가 고친 함수이나 겹친 줄 없음(자동 병합 · 두 쪽 기호 보존). `formation.ts` = 1102 단독(526325bf 이후 다른 가지 무접촉). 헤드리스 c4b 기대값 변경(오너 09-25)은 자동 병합으로 반영.
+- 부기(master): b5d4bd52 = 알려진 적색 커밋(시험 · d207034f 정정) → bisect 때 건너뜀.
+- 빠른 확인(27968f82): `bun test` **1409/0** · tsc 7(기준 목록 동일) · `secret-scan --all` **clean 1292** · 헤드리스 실번들 전체(c1~c18 · 1088·1091·1102 블록 전부) = **ALL PASS 89줄**(부하 16~21 하에서 · 약 14분) · 크롬 잔존 0.

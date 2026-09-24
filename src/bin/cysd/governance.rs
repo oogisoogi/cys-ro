@@ -3505,7 +3505,7 @@ pub(crate) fn is_shell_name(name: &str) -> bool {
 /// 통과 조건 = 한 줄(개행 없음) ∧ 명령 치환·따옴표 밖 연결/리다이렉트 문자 없음 ∧ 환경 대입(`KEY="값"` ·
 /// 값에 공백 허용)을 건너뛴 첫 낱말의 파일 이름이 좌석 메타의 실행 파일(agent_bin) 이름과 같다. 기동 줄이 아닌 본문(각성문·DRAIN 지시 등)은 첫 낱말이
 /// 에이전트 이름이 아니므로 종전대로 보류된다.
-pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bool {
+fn launch_line_after_bin(text: &str, seat_bin: Option<&str>) -> Option<Option<String>> {
     fn file_name(p: &str) -> &str {
         let n = p.rsplit(['/', '\\']).next().unwrap_or(p);
         n.strip_suffix(".exe").unwrap_or(n)
@@ -3519,15 +3519,13 @@ pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bo
             None => false,
         }
     }
-    let Some(seat_bin) = seat_bin.map(file_name).filter(|b| !b.is_empty()) else {
-        return false;
-    };
+    let seat_bin = seat_bin.map(file_name).filter(|b| !b.is_empty())?;
     if text.contains(['\n', '\r']) {
-        return false;
+        return None;
     }
     // 명령 치환(백틱 · `$(`)은 따옴표 안에서도 셸이 실행한다 — 기동 줄엔 없다(대입 값은 `${…}` 전개뿐).
     if text.contains('`') || text.contains("$(") {
-        return false;
+        return None;
     }
     // 셸 낱말 나누기(따옴표 안 공백은 낱말을 끊지 않는다) — 따옴표 문자는 낱말에 남긴다(판정엔 무관).
     let mut words: Vec<String> = Vec::new();
@@ -3551,20 +3549,33 @@ pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bo
             }
             // 따옴표 밖 명령 연결·리다이렉트(`;` `&` `|` `<` `>`)가 있으면 기동 줄 한 개가 아니다 — 두 번째
             // 명령이 빈 셸에서 실행될 수 있다(agy 1R ④ 수용 · 방어 심층).
-            None if matches!(c, ';' | '&' | '|' | '<' | '>') => return false,
+            None if matches!(c, ';' | '&' | '|' | '<' | '>') => return None,
             None => cur.push(c),
         }
     }
     if quote.is_some() {
-        return false;
+        return None;
     }
     if !cur.is_empty() {
         words.push(cur);
     }
-    words
-        .iter()
-        .find(|w| !is_assignment(w))
-        .is_some_and(|w| file_name(w) == seat_bin)
+    let i = words.iter().position(|w| !is_assignment(w))?;
+    (file_name(&words[i]) == seat_bin).then(|| words.get(i + 1).cloned())
+}
+
+pub(crate) fn launch_line_matches_seat(text: &str, seat_bin: Option<&str>) -> bool {
+    launch_line_after_bin(text, seat_bin).is_some()
+}
+
+/// ★v116-seat agy 3R 반례 ①: 큐 폐기용 좁은 판정 — 기동 줄 판정 ∧ 실행 파일 뒤가 **플래그(`-…`)이거나 끝**.
+/// cys 가 만드는 기동 줄은 언제나 `<bin> --…`(compose_agent_cmd = 어댑터 cmd + resume 인자)이고, 「claude is an AI」
+/// 같은 한 줄 산문은 실행 파일 뒤가 낱말이다 — 그런 글은 폐기하지 않는다(빈 셸 가드 통과 판정은 종전 그대로).
+pub(crate) fn is_stale_launch_line(text: &str, seat_bin: Option<&str>) -> bool {
+    match launch_line_after_bin(text, seat_bin) {
+        Some(None) => true,
+        Some(Some(next)) => next.starts_with('-'),
+        None => false,
+    }
 }
 
 /// ★v114-dept-fd 수리 3: 권위 주입 직전 즉시 프로브(캐시는 watchdog 틱 주기라 stale 할 수 있다).
@@ -3661,8 +3672,12 @@ pub(crate) fn drop_stale_launch_lines(
     use sha2::{Digest, Sha256};
     let (dropped, now_empty) = {
         let mut q = s.pending_queue.lock().unwrap();
+        // 평시(옛 줄 없음)는 할당 없이 곧장 돌아간다 — 배달마다 부르므로(큐 상한 100 · agy 3R ③).
+        if !q.iter().any(|e| is_stale_launch_line(&e.text, seat_bin)) {
+            return 0;
+        }
         let (drop, keep): (Vec<_>, Vec<_>) =
-            q.drain(..).partition(|e| launch_line_matches_seat(&e.text, seat_bin));
+            q.drain(..).partition(|e| is_stale_launch_line(&e.text, seat_bin));
         q.extend(keep);
         (drop, q.is_empty())
     };
@@ -5793,7 +5808,13 @@ pub(crate) fn deliver_head_locked(
     //   임계영역 **밖**에서 부른다(persist_queue_state 가 surfaces → pending_queue 를 잡는다 — 큐 락을 쥔 채
     //   부르면 교착). 두 호출자(watchdog 틱 · queue.deliver RPC)는 여기 올 때 락을 쥐고 있지 않다.
     let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
-    drop_stale_launch_lines(daemon, s, seat_bin.as_deref());
+    let dropped = drop_stale_launch_lines(daemon, s, seat_bin.as_deref());
+    // ★agy 3R 반례 ②: 틱 경로(조준 id 없음)는 폐기가 있었으면 이번엔 배달하지 않는다 — 준비 판정(quiet·overdue ·
+    //   expect_pending)은 폐기 전 머리로 내려졌다. 다음 틱이 새 머리로 다시 판정한다. 강제 배달은 조준 항목을
+    //   아래 머리 대조가 지킨다(조준 항목이 남았으면 배달 · 폐기됐으면 None).
+    if dropped > 0 && expect_head_id.is_none() {
+        return None;
+    }
     let delivered = {
         let mut q = s.pending_queue.lock().unwrap();
         // 락 순서 계약: pending_queue → input_gate (state.rs Surface::input_gate doc).
@@ -10473,6 +10494,8 @@ mod tests {
         };
         // ① 에이전트 좌석: 옛 기동 줄은 배달되지 않고 폐기 · 다음 글이 배달된다.
         let s = seat(Some(("claude", "/x/stub/claude")));
+        // 폐기한 틱은 배달 0(agy 3R ② · check-then-act) → 다음 틱이 보류 글을 배달한다.
+        assert!(deliver_head_locked(&daemon, &s, false, false, None, None).is_none(), "폐기한 틱이 배달했다");
         let d = deliver_head_locked(&daemon, &s, false, false, None, None).expect("보류 글 배달");
         assert!(!d.body.contains("--continue"), "옛 기동 줄이 에이전트에게 배달됐다: {}", d.body);
         assert_eq!(d.entry.text, "KEEP 보류 글");
@@ -10499,6 +10522,7 @@ mod tests {
             }
             q.push_back(daemon.next_queue_entry(old.to_string(), None, "wal-legacy"));
         }
+        assert!(deliver_head_locked(&daemon, &s2, false, false, None, None).is_none(), "폐기한 틱이 배달했다");
         let d = deliver_head_locked(&daemon, &s2, false, false, None, None).expect("첫 보류 글 배달");
         assert_eq!(d.entry.text, keep[0]);
         let left: Vec<String> = s2.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();

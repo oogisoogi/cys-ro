@@ -3745,6 +3745,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         cys::surface_ref(sid),
                         seat_bin.as_deref().unwrap_or("?")
                     );
+                    // ★v116-seat Fable 3-1: 1.1.5 가 이 좌석 큐에 남긴 옛 기동 줄은 곧 뜰 에이전트에게 사용자
+                    //   입력으로 배달된다 — 기동 줄 통과 지점 1곳에서 그 좌석의 기동 줄 일치분만 폐기(이벤트 + 영속).
+                    crate::governance::drop_stale_launch_lines(daemon, &surface, seat_bin.as_deref());
                 } else {
                     let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
                         params.get("from").and_then(|v| v.as_str()).map(str::to_string)

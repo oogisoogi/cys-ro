@@ -3645,6 +3645,56 @@ pub fn hold_for_vacant_seat(
     qid
 }
 
+/// ★v116-seat Fable 3-1(master#4d8f12ec 판정 A): 좌석 기동 줄(`agent_launch`)이 빈 셸 가드를 통과하는 그 자리에서,
+/// 그 좌석 큐에 남은 **옛 기동 줄**만 폐기한다. 1.1.5 의 node-recover 는 기동 줄이 가드에 막혀 큐로 갔고(WAL 영속),
+/// 1.1.6 에서 좌석이 되살아나면 그 줄이 에이전트에게 사용자 입력으로 배달된다(4군 ① 폭주 큐 계열).
+/// 폐기 대상 = `launch_line_matches_seat` 일치분뿐 — 다른 보류 글(DRAIN·master 지시 등)은 순서 그대로 남는다.
+/// 조용히 지우지 않는다: `queue.dropped`(reason `stale_launch_line` · 좌석 · 개수 · 줄 sha256 앞 8자) + 영속.
+/// 반환 = 폐기 개수.
+pub(crate) fn drop_stale_launch_lines(
+    daemon: &Daemon,
+    s: &crate::state::Surface,
+    seat_bin: Option<&str>,
+) -> usize {
+    use sha2::{Digest, Sha256};
+    let (dropped, now_empty) = {
+        let mut q = s.pending_queue.lock().unwrap();
+        let (drop, keep): (Vec<_>, Vec<_>) =
+            q.drain(..).partition(|e| launch_line_matches_seat(&e.text, seat_bin));
+        q.extend(keep);
+        (drop, q.is_empty())
+    };
+    if dropped.is_empty() {
+        return 0;
+    }
+    // 큐를 비웠으면 막힘 사유도 사실이 아니다(queue.clear 와 같은 이유 — 빈 큐는 틱이 건너뛴다).
+    if now_empty {
+        *s.queue_blocked.lock().unwrap() = None;
+    }
+    let sha8: Vec<String> = dropped
+        .iter()
+        .map(|e| {
+            Sha256::digest(e.text.as_bytes())
+                .iter()
+                .take(4)
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
+        .collect();
+    let mut payload = crate::state::queue_dropped_payload("stale_launch_line", &dropped, None);
+    payload["surface_ref"] = json!(cys::surface_ref(s.id));
+    payload["line_sha8"] = json!(sha8);
+    daemon.bus.publish("queue.dropped", "queue", Some(s.id), payload);
+    daemon.persist_queue_state();
+    eprintln!(
+        "[cysd] {} 옛 기동 줄 {}건 큐에서 폐기 — 기동 줄 통과 시점(sha8 {})",
+        cys::surface_ref(s.id),
+        dropped.len(),
+        sha8.join(",")
+    );
+    dropped.len()
+}
+
 /// [`seat_inject_guarded`] 결과.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SeatInject {

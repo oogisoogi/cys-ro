@@ -6462,7 +6462,7 @@ mod tests {
     fn v116_launch_line_matches_seat_only_registered_agent_one_liner() {
         use super::launch_line_matches_seat as m;
         // 실제 unix 기동 줄 형태(render_launch: `KEY="값" cmd`) — 값에 공백이 있어도 첫 낱말은 claude
-        let line = r#"CLAUDE_CONFIG_DIR="/Users/a b/.cys/claude" CLAUDE_CODE_NO_FLICKER="1" claude --model claude-opus-5-5 --dangerously-skip-permissions --continue"#;
+        let line = r#"CLAUDE_CONFIG_DIR="/Users/x/My Files/.cys/claude" CLAUDE_CODE_NO_FLICKER="1" claude --model claude-opus-5-5 --dangerously-skip-permissions --continue"#;
         assert!(m(line, Some("claude")));
         assert!(m("claude --continue", Some("claude")));
         assert!(m("/opt/homebrew/bin/claude --x", Some("claude")), "경로형 실행 파일");

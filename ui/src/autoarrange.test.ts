@@ -199,6 +199,14 @@ describe("Opus 적대 1R 봉합 — F1 깊은 길 몫 · F4 좌열 비율", () =
     expect((t1 as any).a).toEqual({ type: "split", dir: "col", ratio: 0.6, a: P(7), b: P(2) });
     expect(leftW(t1)).toBeCloseTo(0.4, 12);
   });
+  it("F4 역할 표에서 이미 빠진 옛 master(유령 수렴)여도 master-2 승격 때 위아래 비율(0.6) 보존 · 윗칸이 cso 면 표준 4:1", () => {
+    const rr = roles([[2, "cso"], [7, "master-2"], ...W(3)]); // sid 1 = 역할 모름
+    const t0 = S(S(P(1), P(2), "col", 0.6), S(P(7), P(3)), "row", 0.4);
+    expect((autoArrange(t0, rr, { remove: [1] })! as any).a).toEqual({ type: "split", dir: "col", ratio: 0.6, a: P(7), b: P(2) });
+    const swapped = S(S(P(2), P(1), "col", 0.3), S(P(7), P(3)), "row", 0.4); // cso 가 위에 있던 좌열
+    const rr2 = roles([[1, "master"], [2, "cso"], [7, "master-2"], ...W(3)]);
+    expect((autoArrange(swapped, rr2, { remove: [1] })! as any).a).toEqual({ type: "split", dir: "col", ratio: MASTER_CSO_RATIO, a: P(7), b: P(2) });
+  });
   for (const bad of [NaN, 1, 0, -0.2]) {
     it(`F4 손상된 좌열 위아래 비율(${bad}) → 좌열로 보지 않고 표준`, () => {
       const t0 = S(S(P(1), P(2), "col", bad), S(P(3), P(4)), "row", 0.4);

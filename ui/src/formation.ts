@@ -257,7 +257,8 @@ export function autoArrange(
         // 좌열 구성이 그대로면 그 서브트리를 보존한다(위아래 비율 포함). 좌열 좌석이 빠지거나 새로 들어오면
         //   좌열만 표준으로 다시 짓되 몫은 이어받는다 — 좌석 하나 남은 좌열은 칸 하나라 비율이 없다.
         if (subSids.length === left.length && left.every((s) => subSids.includes(s))) keptLeft = sub;
-        else if (sub.type === "split" && left.length === 2 && family(roles.get(sidsInOrder(sub.a)[0])) === "master") {
+        // 윗칸이 cso 가 아니면 이어받는다 — 유령 수렴으로 빠진 옛 master 는 역할 표에 이미 없어 역할을 모른다(Opus 2R 잔여).
+        else if (sub.type === "split" && left.length === 2 && family(roles.get(sidsInOrder(sub.a)[0])) !== "cso") {
           // 첫 master 가 닫히고 master-2 가 올라온 경우 등 — 좌열 사람이 바꾼 위아래 비율은 이어받는다(Opus 적대 1R F4).
           keptLeft = { type: "split", dir: "col", ratio: sub.ratio ?? 0.5, a: pane(left[0]), b: pane(left[1]) };
         }

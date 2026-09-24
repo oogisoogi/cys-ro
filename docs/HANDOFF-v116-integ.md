@@ -203,3 +203,29 @@ python3 $W/lock_audit.py .                    # X-7 규약 정적 감사(worktre
 python3 $W/mutants_integ.py                   # 뮤턴트 5(묶음 대표)
 bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 ```
+
+---
+
+## 13. git push 기록(master#46d1d297 · 불변식 5 2단계)
+- ① master#a7483471(ACCEPT + push 지시) → ② 【실행직전확인요청】 13:42:43 → ③ master#4eed87a8 = 원장 제출 판정 queued 라 **실행 보류·질의** → master#46d1d297 재발신(submitted yes · 13:44:46) → ④ 실행.
+- 명령(정확히 1개): `/usr/bin/git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin adf50d44ea3f3a5e23aef433ba70972d04f485c1:refs/heads/fix/v116-integ` → rc 0 · [new branch].
+- 사후 실측: ls-remote `fix/v116-integ` = adf50d44(일치) · main 무접촉 · 키체인 github.com 항목 수 전 1 = 후 1 · 저장소·전역 credential.helper 무변경.
+- 발화 런(headSha adf50d44): ci-branch 35956973252 · windows-build (feasibility) 35956973262 · windows-health (H-WIN 실기) 35956973266 — 결과는 【진행】 보고.
+
+## 14. D 제안 글 끄기 편입(master#4d497471 · 1.1.6 범위 추가 = master 판정)
+- cherry-pick -x(feat/chat-ui-v1): c644c448 → **d7ec7b9b**(cysjavis-pack/agents.json 클로드 어댑터 env 에 `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`) · 99dcbbfd → **9fdf06a0**(cys.rs 핀 `claude_adapter_env_disables_prompt_suggestion` — 임베드 팩 env 에 그 쌍 + CLAUDE_CONFIG_DIR 유지). 충돌 0.
+- 성찰(짧게) = `integ-v116-work/reflect-D.md`(9단계 · 도달 범위 고지 1).
+- 영향 게이트(9fdf06a0 · 같은 러너 ONLY): ci-branch 01~11 전부 rc0 · cargo test --bin cys 289/0(288 + 새 핀 1) · cargo test --lib 538/0 · boot-health-full GREEN 149/0/1 · secret-scan --all clean(1187).
+- 뮤턴트: agents.json 에서 env 쌍 제거 → 핀 적색(KILLED) · 원복 clean.
+- agy D 1R REJECT 2 → 2R ACCEPT: #2 env 순서 비결정 = 기각(`agent_env_pairs` 가 정렬 뒤 조립) · #1 수정 사용자 미배달 = 도달 한계는 사실(아래 고지) · 「큐 영구 보류」는 2차 방어(`input_line_state` 가 커서 뒤 고스트를 빈 입력으로 판정 · b4fdfc95)로 일어나지 않음.
+- **도달 범위(코드 근거)**: agents.json = 사용자 소유 파일. ⑴ 새 설치 = 적용 ⑵ 업데이트 + agents.json 미수정(디스크 해시 = 설치 manifest 해시) = 적용(1.1.5 D1 `RefreshUser` · `.bak-<판번>` 백업 · GUI 인앱 업데이트 `init-pack --no-install-hook` 도 `install_staged` 를 먼저 돈다) ⑶ 사용자가 agents.json 을 고친 기계 = **미적용**(`.new` 병치만 · `load_agent_spec` 은 디스크 정의 우선 · `fill_missing_fields` 계층 3키에 env 없음) — 이 경우는 1.1.5 와 같다(퇴행 아님 · 제안 글 생성만 남음).
+- 📌 결정 후보(master): governance.rs:5163 주석이 「근본 방어」로 적은 **키 부재 시 런타임 주입**(lib.rs `inject_claude_alt_screen_default_for` 와 같은 불가침 3계약 · 사용자 값 불가침)을 더하면 ⑶ 도 덮는다 — 새 제품 코드라 이 티켓에서 하지 않음.
+- **1.1.6 릴리스 노트 1줄(초안)**: 「이제 cys 가 띄우는 모든 Claude 세션(대화 화면과 터미널 탭 모두)에서 답변 뒤 입력창에 뜨던 회색 제안 글을 끕니다 — 불필요한 추가 요청을 줄이고, 제안 글 때문에 전달이 늦어지던 일을 막습니다. agents.json 을 직접 고쳐 쓰신 경우에는 옆에 생기는 agents.json.new 를 병합(cys pack-merge --file agents.json)해야 적용됩니다.」
+- VM 체크 1줄: 클로드 좌석에서 답 뒤 입력창 회색 제안 글 0(대화 화면 · 터미널 탭 각 1).
+
+## 15. 곁 항목 추가 — 설치본 cys 런타임 git 의 https 원격 불가(13:4x 실측 · 판 배정 = master)
+- 대상: 설치본 cysr 1.1.5 의 `Contents/Resources/runtime/git/bin/git`(git 2.53.0 · 좌석 PATH 1순위).
+- 증상: `--exec-path` 가 번들 기준이 아니라 `//libexec/git-core` 로 풀려 `git ls-remote https://…` = 「git: 'remote-https' is not a git command」 — https fetch/push 불가. 도우미 파일(`runtime/git/libexec/git-core/git-remote-https`)은 번들에 있다.
+- 우회 실측: `GIT_EXEC_PATH=<runtime>/git/libexec/git-core` 를 주면 정상.
+- 재현 1줄: `/Applications/cys.app/Contents/Resources/runtime/git/bin/git --exec-path; /Applications/cys.app/Contents/Resources/runtime/git/bin/git ls-remote https://github.com/oogisoogi/cys-ro.git HEAD`
+- 【추정】 원인 후보: 빌드의 「runtime/git dedup(git-core 빌트인 → git 심볼릭링크)」 또는 RUNTIME_PREFIX 재배치 판정 — 미규명.

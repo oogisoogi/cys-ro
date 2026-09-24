@@ -7,7 +7,7 @@
 ## 0. 파킹 델타(2026-09-24 08:5x · master#eee74a97 · 본부 cysr 1.0.2→1.1.5 업데이트 대기)
 
 - **끝난 것**: R-B1 원인(§1) · agent_alive 판정(§2) · 설계·판정 A(§3·§4) · D1 #4 + B8 뿌리 방어선 · R-B1 P1·P1′(=D1 #5)·P2-b·P3 구현 · 이종 검증 **수렴**(Fable 2R ACCEPT · agy 2R dry — §7-1) · 디버깅 패스(회귀·cargo 직렬 1045/0·뮤턴트 13 중 12 + M12 재처리 KILLED — §7-2) · 성찰 2회차(§7-3) · VM 체크리스트(§6) · 1.1.7 백로그(§5) · 기억 증류 1건(project_cysd-seat-state-root-pid-blind).
-- **남은 것(다음 할 일)**: ⑴ 【확인요청】 master 발신(머리 3줄 = 성찰·검증·디버깅 · 커밋 sha · 시험 표 · §6 VM 체크리스트 · 4군 4줄) — **파킹 요청으로 미발신** ⑵ (가능 · 미착수) F6 · D3-f ⑶ 병합은 master(T-USAGE → T-PACK → T-NUM).
+- **남은 것(다음 할 일)**: ⑴ 【확인요청】 master 발신 — **✅ 발신 완료 2026-09-24T09:38:48+0900**(재개 master#3e7d8657 · HEAD 7a8aebac 대조 성립 · 좌석 surface:1058 · 재개 직후 시험 5종 재실행 rc=0) · master 판정 대기 ⑵ (가능 · 미착수) F6 · D3-f ⑶ 병합은 master(T-USAGE → T-PACK → T-NUM).
 - **진행 중이던 검증 라운드**: 없음(전부 종결). 파킹 직전 최종 회귀 스냅샷(HEAD · 08:56 종료 · 전부 rc=0): d1 #4+rb1+v115_dept 통합 OK · test_formation 43/43 · default_fleet 120/120 · dept_request OK · d1_dept_ready_probe OK · nowin_captured_spawns OK · import_guard 138/138.
 - **재개 첫 행동**: `git -C ~/axdev/.wt/cys-v116-pack log --oneline 526325bf..HEAD` 로 최종 커밋 확인 → 이 문서 §4·§7 을 근거로 【확인요청】 작성·발신.
 - **함정**: ① 이 좌석의 셸 env 에 라이브 `CYS_SOCKET`·`CYS_ROLE` 이 있다 — 시험·cargo 는 `env -u CYS_SOCKET -u CYS_ROLE CYS_NO_AUTOSTART=1` 로 ② cargo = `export PATH="$HOME/.cargo/bin:$PATH"` ③ `test_dbg_d3_d11_shared_profile_hooks` 는 /tmp 아래 사본에서 돌리면 위치 탓 적색 ④ cargo 병렬 실행은 선재 PoisonError flake(직렬 `--test-threads=1` 로 판정).

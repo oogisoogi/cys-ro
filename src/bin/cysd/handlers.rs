@@ -3748,6 +3748,12 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     // ★v116-seat Fable 3-1: 1.1.5 가 이 좌석 큐에 남긴 옛 기동 줄은 곧 뜰 에이전트에게 사용자
                     //   입력으로 배달된다 — 기동 줄 통과 지점 1곳에서 그 좌석의 기동 줄 일치분만 폐기(이벤트 + 영속).
                     crate::governance::drop_stale_launch_lines(daemon, &surface, seat_bin.as_deref());
+                    // ★v116-seat Fable 2R P3: 다른 페인이 부른 node-recover 는 set_meta 가 meta_denied(같은 메타 = 무해)라
+                    //   set_meta 성공 경로의 agent_seen 리셋을 못 받는다 → 죽음 최초 관측 시각(agent_dead_since)이 그대로
+                    //   남아, 재기동 직후 새 프로세스가 표에 오르기 전 틱에 역할 회수 유예(60초)가 만료될 수 있었다.
+                    //   기동 줄이 실제로 쳐지는 여기서 사망 타이머를 풀어 유예를 기동 시점부터 다시 센다(래치 해제만 ·
+                    //   생존 판정·통지 래치는 그대로 — 되살아나면 check_agent_death 가 agent.recovered 로 재무장).
+                    *surface.agent_dead_since.lock().unwrap() = None;
                 } else {
                     let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
                         params.get("from").and_then(|v| v.as_str()).map(str::to_string)

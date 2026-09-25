@@ -414,3 +414,53 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - git push(불변식 5): ① #b39d3b36(원장 09:36:21) → ② 【실행직전확인요청】 09:36:37 → ③ #2edcaf12 재승인(원장 surface:1086 · submitted yes · 09:36:48 · 유효 범위 = 이 push 1건) → ④ 09:37:01 `push origin a848351890fc35ce861f8fb13f660d3b739c326b:refs/heads/fix/v116-integ` rc 0 · `0133dcd4..a8483518` 빨리감기.
 - 사후: ls-remote fix/v116-integ = a8483518 일치 · main 721bc990 무접촉 · 키체인 github.com 1 = 1 · credential.helper 미설정(무변경) · 태그 0.
 - 발화 런(headSha a8483518): ci-branch 36078366417 · windows-build (feasibility) 36078366290 · windows-health (H-WIN 실기) 36078366422 — **3종 전부 success**(ci-branch 3잡 · windows-build build · windows-health win-health · 10:12 KST) · ci-branch 로그에 「== test_ceo_pending_gate (mac) == ALL PASS」 = 레인 편입이 실제로 돈다.
+
+---
+
+## 19. VM 2차 재료 빌드 + 점검표 초안(TICKET=v116-vm2-build · master#85f0e180)
+
+### 19-1. 빌드 식별(맥 arm64 · 1차 §7 과 같은 방식)
+- 빌드 트리 = **a8483518**(worktree 를 그 커밋에 detached 로 둔 채 빌드 → 끝난 뒤 fix/v116-integ 복귀 · 작업트리 변경 0). 이유: 앱의 build_id = git HEAD 12자라 문서 커밋 머리에서 빌드하면 식별값이 어긋난다(build.rs 「W1 identity」).
+- 명령: CYS_* 제거 + `CYS_NO_AUTOSTART=1` · 키 = env(`TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/cys-updater-A2.key)"` · 비밀번호 빈 값 · 키 파일 복사·출력 0) → `scripts/build-macos-local.sh aarch64 ~/axdev/.wt/out-mac-v116-integ-3/` · rc 0 · 10:14:17~10:16:34(target 데워져 있음). 로그 = `integ-v116-work/r2/build3.log` · **로그 속 키 문자열 0건**(전문·줄 단위 모두 실측).
+
+| 항목 | 값 |
+|---|---|
+| zip | `~/axdev/.wt/out-mac-v116-integ-3/cysr-macos-arm64-v1.1.5.zip` · **207,939,359 B** |
+| zip sha256 | **e78eea95c9edea29a31f428e52e1e235c2e450a6afb00688f9b822ce38f672ee** |
+| 앱 CDHash(압축 푼 앱 · codesign -dvvv) | **6328f1e1dbeb7cb859b710674ce534c4eaaf812b** · Identifier com.cysjavis.terminal · Authority cys-local(자체서명 · 공증 없음) |
+| codesign --verify --deep --strict | 빌드 안 + 압축 푼 앱 재검 **모두 통과** |
+| Resources/pack.tar.gz | **2,950,065 B**(1차 2,942,335) · pack-manifest.json 53,574 B · RELEASED_MASTER_DIRECTIVE.sha256 포함(1090) |
+| 내장 build_id | cys·cysd = `a848351890fc.20260925T0114Z` · 앱 본체 = `a848351890fc.20260925T0115Z`(로컬 빌드는 크레이트마다 자기 분을 찍음 · CI 는 CYSR_BUILD_ID 로 한 값 · -dirty 없음) |
+| runtime-manifest digest | eb911d0e09a0cf18(1차와 같음 · 동봉 런타임 이미 준비돼 「동봉 런타임 준비」 단계는 이번 로그에 없음) |
+- 판번 1.1.5 그대로(bump 0) · 업로드 0 · 발행 0.
+
+### 19-2. 점검표(VM 워커가 그대로 따라 할 순서 · 근거 = a8483518 파일:행)
+- 전제: 새 Tart arm64 VM · 위 zip 설치 · 자격증명 = 1차와 같은 조건부 주입(없으면 ①⑨ 대화 행 = 빈칸) · 부서 = 1차처럼 금지(⑧ 은 master 가 부서 허용할 때만).
+- 점검 원료 = 편입 가지 HANDOFF + 코드 대조(서브에이전트 Opus 5.5 추출 · 전사 model 113건 · 인용 8곳 표본 대조 전부 일치). 추측·VM 불가 칸 = 【미확인】.
+
+| # | 가지 | 무엇을 | 확인 방법 | 기대 | 근거(파일:행) |
+|---|---|---|---|---|---|
+| 1 | 1078 T-USAGE | 사이드바 계정 행 출처 마크 · 흐림 문턱 | ①자격증명 VM 에서 앱 켜고 계정 행 마크 본다 ②claude 말 걸지 않고 **5분+** 두며 2초 간격 캡처(`wsu-rate stale` 흐림 여부) ③`cys usage-accounts --json` 의 `source`·`fresh_limit_secs` ④행 툴팁 「관측 N… 전」 | oauth 행 = ◆ · fresh_limit_secs 240 / statusline 행 = ● · 120 · oauth 행은 관측 나이 120~240초에 흐리지 않음 · 240초 넘으면 툴팁 「⚠ stale — 이 계정에 최근 관측이 없다」 | main.ts:546-553·513·577 · wsusage.ts:571-587(마크)·264(계정)·309(게이지 · 필드 부재 240) · accounts.rs:509(주기 180)·1058-1073·989·1001 |
+|  |  | 【미확인】 | VM 에서 oauth 프로브 성공 여부(키체인 항목 이름 산식 · 1차 §0-3) · 호스트와 같은 토큰 동시 사용 시 HTTP 429 가능(HANDOFF-usage-two-accounts.md:83-87) · ↻ 뒤 cso 닫힘(T2)은 원 조건(1M 세션·CTX 120k+) 재현 어려움 — 선택 행: ↻ 뒤 `cys events` 생성 30초 안 `surface.closed` 0(HANDOFF-v116-usage.md:180-186) | | |
+| 2 | 1083 T-SEAT | 좌석 effort high · 빈 좌석 재기동 | ①worker claude pid: `ps eww -o command= -p <pid> \| tr ' ' '\n' \| grep -E 'EFFORT\|SUGGESTION'` · 좌석 창 위로 스크롤해 기동 줄 ②`~/.cys/claude/projects/*/<세션>.jsonl` assistant 레코드 `"effort"` ③worker claude 만 `kill -9` → 다른 셸 `cys node-recover --role worker; echo rc=$?` ④소켓 폴더 옆 cysd.log | ①`CLAUDE_CODE_EFFORT_LEVEL=high` ②`"effort":"high"` ③rc=0 · 같은 좌석에 claude 재기동 · 로그 `[cysd] surface:N 빈 좌석 재기동 줄 타이핑 — agent_launch · bin=claude` · 좌석 창에 `zsh: event not found` 류 오류 0 | lib.rs:2494-2537 · cys.rs:10401·10952 · handlers.rs:3790-3812 · governance.rs:3664-3700·5987-6001 · launchd.rs:19-25 · HANDOFF-v116-seat.md:139 |
+|  |  | 【미확인】 | 옛 기동 줄 폐기는 1.1.5 큐(WAL)에 옛 줄이 있어야 재현 → 새 VM 은 `queue.dropped reason=stale_launch_line` 0 이 정상 · macOS 에서 `ps eww` 로 env 가 보이는지 미실측 | | |
+| 3 | 1089 복원 카드 | 세 절 + `기록` 줄 시각 | ①앱 종료 → `~/.cys/pack/round/SESSION_STATE.md` 제목 줄 다음에 MASTER_DIRECTIVE §9 예시 블록(세 절 + `기록 2026-09-24 14:30`) · 본문 아래 함정 시각 1개(`2026-09-30 10:00`) ②앱 재실행 → 15초 유예 뒤 카드 ③(자격증명 있으면) master 에 「작업기억을 갱신하라」 뒤 파일 맨 위 | 제목 「다시 켜졌어요 — 하던 일을 복원했어요」 · 절 「끝난 일 · 하던 일 · 정하셔야 할 일」 · 꼬리 「이 기록은 2026-09-24 14:30 기준입니다. 그 뒤에 한 일은 빠져 있을 수 있습니다.」(함정 시각 아님) · `기록` 줄은 항목에 안 보임 · ③세 절 + 기록 줄(절당 5줄·줄당 80자 이내·내부 용어 0) | restorebrief.ts:24-28·56·72-77·89·143-147·282-294·314 · MASTER_DIRECTIVE.md:593-607 · restorebrief.producer.test.ts |
+|  |  | 【미확인】 | ③은 LLM 산출(비결정 · 워커 실측 2회뿐) · 1차 S4 「복원 0」 에 이 카드가 드는지 판정 = 여전히 master 미결 | | |
+| 4 | 1091 다시 켜기 | 헤더 단추 음성 대조 | 앱 기동 직후 헤더 단추 글자 | 「업데이트」(「다시 켜기」 아님) | restartpending.ts:19·23·64-72 · main.ts:8112·5828 · src-tauri main.rs:6428 |
+|  |  | 【미확인 · VM 불가】 | 효과는 **1.1.6 → 다음 판** 갱신부터(HANDOFF-v116-restart-toast.md:10) — 이 빌드보다 새 판을 주는 업데이트 서버 없이는 양성 확인 불가 · 1.1.6-dev 가 발행본 1.1.5 를 「새 판」으로 권하는지 미확인 · 「종료 뒤 재실행 시 새 판」 미측정(:86) | | |
+| 5 | 1077 보이는 번호 | `cys list` no= · `#N` 해석 · 창 머리 번호 | ①`cys list` ②`cys send --surface=#<산 번호> hello` ③`cys send --surface=#0 x` ④`cys send --surface=#<없는 번호> x` ⑤셸 창 하나 닫고 그 번호로 ④ | ①모든 행 5번째 칸(0부터 4번) `no=N`/`no=-` · 새 VM 은 내부 번호 <1000 이라 no = 내부 번호 ②stderr `#N → surface:N @<소켓 폴더 이름>` ③「invalid surface ref: #0 — 보이는 번호는 #1~#999 입니다」 ④「#N 인 좌석이 지금 없습니다. 다른 좌석으로 보내지 않습니다.」 ⑤「…(마지막 주인 surface:N · … 전 닫힘) …」 · 창 머리 숫자 = no= 값 | cys.rs:3057-3060·1463-1474·1478-1487 · handlers.rs:3095·3109·3113 · panetitle.ts:28-50 · main.ts:2651·7556-7558 · alertcopy.ts:25-29 |
+|  |  | ⚠ · 【미확인】 | 반드시 `--surface=#N`(띄어 쓴 `--surface #N` 은 셸이 주석으로 잘라 「값 필요」 오류 · 설계 §4-2) · 999 넘는 순환·24시간 번호 잠금은 새 VM 에서 불가(design/HANDOFF-v116-num.md:11) | | |
+| 6 | 1088 exited 배너 | 1차와 **같은 재현**으로 수리 전후 비교 | 1차 하네스 원문(`~/axdev/.wt/v116-vm-1/harness/exited-pair.txt`): ①claude 칸 `exec claude` → 입력 상자 보이는 상태에서 claude pid 만 `kill -9` ②U: `exec zsh -c 'for i in 1 2 3 4 5 6; do echo U-line$i; done; printf "\033[3A"; sleep 2; kill -9 $$'` ③C(대조): `exec zsh -c 'for i in 1 2 3 4 5 6; do echo C-line$i; done; sleep 2; kill -9 $$'` | ①빨간 `[surface exited]` 가 입력 상자 아래 테두리·상태 줄(「auto mode on …」) **아래 맨 끝** · 테두리 온전(1차 = 테두리를 덮음) ②U-line6 **아래** · U-line5 온전(1차 = U-line5 덮음) ③C-line6 아래(1차와 같음 = 외과적) | exitbanner.ts:10-13·35-37·63 · main.ts:3463-3468 · HANDOFF-v116-exited-banner.md:6-21·130-132 |
+|  |  | 주의 | 종료 이벤트 2회면 배너 두 줄 가능(조건부 · 같은 HANDOFF :101 · 실경로는 스트림당 1회) | | |
+| 7 | 1102 자동 좌우 균등 | 창 열기·닫기 균등 · 세로 분할 제거 | ①새 작업공간 셸 칸 ⌘D ×2 → 칸마다 `stty size` ②가운데 칸 ⌘W → `stty size` ③⌘⇧D → 칸 수·폭 ④⌘K → 「분할」 입력 ⑤창 만들기 단추 메뉴 | ①②③ 칸들 cols 서로 같음(±2 · ②는 1차 X-1 49/49 수준) · ③세로(위아래) 칸 0 · ④「가로 분할」만 · ⑤「오른쪽에 새 창 (⌘D)」 한 항목 · 본부 칸 master:cso 위아래 4:1 유지 | formation.ts:46-49·216 · main.ts:6836-6837·8750-8751·9385-9387 · v116-auto-equalize/headless-final.txt:53-62 · DESIGN.md:7-11 |
+|  |  | 【미확인】 | 실VM 열 수 허용치는 코드에 없음(헤드리스 비율 차 0.001 수준) | | |
+| 8 | 1090+1104 CEO 보류 | promote-ceo 보류 = exit 5 · 「보류」 토스트 | (**조건부 · 부서 1개 이상 필요 = master 결정**) 부서 생성 뒤 `~/.cys/.master-bootstrapped` 없음 또는 낡은 `.pre-ceo` 상태에서 feed 「CEO 승격」 [허용] 또는 `cys-dept promote-ceo; echo rc=$?` | rc=5 · stderr 「CEO 승격 보류(부트 필요)」 또는 「CEO 승격 보류(지침 미교체)」 · 토스트 제목 「CEO 승격 보류」(✅ 없음) · 부트 보류 본문 「아직 CEO로 바꾸지 않았어요. 지금 설정은 그대로예요. 본부 마스터를 먼저 한 번 시작한 뒤 다시 눌러 주세요.」 · MASTER_DIRECTIVE.md 바이트 불변 | cys-dept:977·1949-1975 · src-tauri main.rs:5387-5394 · selfdiag.ts:31·45-73 · main.ts:5773·6825 · HANDOFF-v116-ceo-directive-hold.md:11-18·176-180 |
+|  |  | 【미확인 · 정책】 | 1차는 부서 금지 → 부서 0이면 promote-ceo exit 4 로 판정 불가 · 경로 1(1.1.4 이하에서 승격한 기계 갱신)은 새 VM 재현 불가 | | |
+| 9 | D/B 제안 글 끄기 | 회색 제안 글 0 · 큐 굶주림 | ①master 에 한 번 말 걸고 답 끝난 뒤 입력칸 캡처(대화 화면·터미널 탭 각 1) ②#2 ① 의 `ps eww … \| grep SUGGESTION` ③10분+ `cys events --reconnect` 로 cso→master 배달 관찰 · `queue.starved` 계수 | ①회색 제안 글 0 ②`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` ③1차의 `queue.starved`(A 2건 최장 903초 · B 1건 602초) → 0건 | cysjavis-pack/agents.json:6 · lib.rs:2466-2480 · cys.rs:10400·10950 · HANDOFF-v116-integ.md:215-224(D)·233-241(B) |
+|  |  | 【미확인】 | 1차의 「제안 글 = 굶주림 원인」은 【추정】 — 0건은 뒷받침일 뿐 증명 아님 · 입력줄 2차 방어(b4fdfc95)는 1차 빌드에도 있었음 | | |
+| 10 | 1차 🔴 S5 재확인 | 「직원 복귀 중 → 완료」 알림 | 1차와 같은 절차: 앱 종료 → `echo 1.1.4 > ~/.cys/.last-app-version` → 재실행 → +3~11초 캡처 · 대조 = Control Center 알람 탭 기록 유무(원인 ⒜ 리스너 등록 전 발신 / ⒝ 받았으나 안 그림 갈림) | **미해결 행** — 편입 가지 중 이 수리 없음(아래) · 결과 기록 | 발신 src-tauri main.rs:3705(`emit("restore-progress",{phase:start})`) · 수신 main.ts:7890 start() 안 `daemon-ready` 대기(:7986) 뒤 `listen`(:8207) · 문구 :8225·:8235 · adf50d44..a8483518 두 파일 restore-progress 변경 줄 0 |
+
+### 19-3. 이 빌드에 없음 · 1차에서 넘어온 빈칸
+- **T-PACK(fix/v116-pack 8f439373) = a8483518 에 없음**(`git merge-base --is-ancestor` 실측) → T-PACK §6 10항목(부서 3 재부팅 · 역할별 1자리 · surface.created 복원 caller 만 · auto_restore running→done · 미룬 부서 cys-dept launch · 부서장 --queued ping · 되살림 알림 1줄 · 데드맨 회수 · 재부팅 2회째 동일 · 복원 중 close-surface 묘비 유지 · 출처 `~/axdev/.wt/cys-v116-pack/HANDOFF-v116-pack.md:149-160`) = **전부 「이 빌드에 없음」** · §10-1 「T-PACK 편입 뒤 고아 데몬 0 실측」도 미결 그대로.
+- 1차 빈칸 이월: x64(Tart = arm64 만) · 윈도(CI 미서명 setup.exe · 0133dcd4/a8483518 windows-build 아티팩트 cys-windows-x64-nsis) · 부서 좌석(부서 금지) · 닫기 확인 모달 경로(상단 「창 닫기」·⌘W — #7 ② 가 ⌘W 로 겸함) · 좌석 정상 응답(말 걸기) · S2 「≈1.5초」 정밀 간격 · 1차 S4 카드 판정.
+- 1차에서 이미 ✅ 인 행(S1·S2·S3·S4·X-1)은 이 빌드에서 **회귀 확인 1회씩**만 권함(특히 X-1 은 #7 과 같은 칸 구성이라 함께 잰다).

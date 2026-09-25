@@ -9321,7 +9321,8 @@ async function openFeedbackModal() {
   document.body.appendChild(ov);
   setTimeout(() => q<HTMLInputElement>(".fb-title").focus(), 50);
 }
-document.getElementById("ws-feedback")?.addEventListener("click", () => void openFeedbackModal());
+// (v116-feedback-top) 상단바 맨 앞 단추 — 사이드바에서 옮겨 왔다(동작·창 무변경).
+document.getElementById("btn-feedback")!.addEventListener("click", () => void openFeedbackModal());
 // 보내지 못해 둔 피드백을 다시 보낸다 — 켜고 30초 뒤 한 번, 그 뒤 10분마다(때가 안 된 건은 Rust 가 건너뛴다).
 const FEEDBACK_FLUSH_MS = 10 * 60_000;
 setTimeout(() => void invoke("feedback_flush").catch(() => {}), 30_000);

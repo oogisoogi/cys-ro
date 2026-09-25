@@ -34,6 +34,8 @@
 //       v (v2) 사람이 세로로 나눈 기둥이 입양·닫기 뒤에도 그대로 · 좌열 4:1 유지 · 기둥끼리만 균등 · 팔레트 세로 분할 실행
 //       D·h·w·o (박사님 결정 14:5x · master#73a7390d) 좌열 기본 폭 = 창의 25% · 노트북 글자 90칸 · 상한 50% — 창 폭별(3440·1920·1280·800) ·
 //       창 크기 변경 때 기본 폭만 다시 잼(사람 0.40 그대로) · 옛 기본 1/3 저장 배치 → 새 기본으로
+//   c19 (v116-feedback-top · 박사님 09-26 00:2x · 00:3x 글자 「피드백」) 피드백 단추 = 상단바 맨 앞(정렬 왼쪽) · 사이드바 0 · 크기 ≥ 정렬 ·
+//       기본·밝은 배경 테마 둘 다 글자 대비 ≥ 4.5 · 테두리가 이웃 단추와 다름(강조) · 누르면 같은 피드백 창 · 폭별 넘침 기록
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -44,7 +46,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c17x,c17w,c18").split(",");
+const ONLY = (process.env.ONLY || "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c17x,c17w,c18,c19").split(",");
 const shim = readFileSync(join(H, "shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -935,6 +937,57 @@ if (ONLY.includes("c18")) {
     near(o0.o[1].w, 1 / 3) && near(o1.o[1].w, D) && near(o1.o[1].h / (o1.o[1].h + o1.o[2].h), 0.65, 0.02) && even(o1.o, [3, 4]),
     `${view(o0)} → ${view(o1)}`);
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+}
+
+if (ONLY.includes("c19")) {
+  // 색 문자열 → [r,g,b,a] · 상대 휘도 대비(WCAG) — 반투명 배경은 상단바(--bar) 위에 섞어서 잰다.
+  const M = `(() => {
+    const P = (c) => { const m = c.match(/rgba?\\(([^)]+)\\)/); if (!m) return [0,0,0,0]; const v = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number); return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1]; };
+    const mix = (f, b) => [0,1,2].map(i => f[i] * f[3] + b[i] * (1 - f[3]));
+    const L = (c) => { const [r,g,b] = c.map(x => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126*r + 0.7152*g + 0.0722*b; };
+    const CR = (a, b) => { const x = L(a), y = L(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    const bar = document.getElementById("topbar"); const barBg = P(getComputedStyle(bar).backgroundColor);
+    const vis = (el) => !!el && el.offsetParent !== null;
+    const tb = [...bar.querySelectorAll("button")].filter(vis);
+    const fb = document.getElementById("btn-feedback"); const eq = document.getElementById("btn-equalize");
+    if (!fb) return { fb: false, first: tb[0]?.textContent.trim() ?? null };
+    const cs = getComputedStyle(fb), ce = getComputedStyle(eq);
+    const bg = mix(P(cs.backgroundColor), barBg); const fg = mix(P(cs.color), bg);
+    const r = fb.getBoundingClientRect(), re = eq.getBoundingClientRect();
+    return { fb: true, first: tb[0]?.textContent.trim() ?? null, second: tb[1]?.id ?? null,
+      side: document.querySelectorAll("#wsbar #ws-feedback, #wsbar #btn-feedback").length + [...document.querySelectorAll("#wsbar button")].filter(b => b.textContent.includes("피드백")).length,
+      fs: parseFloat(cs.fontSize), fsEq: parseFloat(ce.fontSize), padX: parseFloat(cs.paddingLeft), padXEq: parseFloat(ce.paddingLeft),
+      h: Math.round(r.height), hEq: Math.round(re.height), w: Math.round(r.width),
+      contrast: +CR(fg, bg).toFixed(2), borderDiff: cs.borderTopColor !== ce.borderTopColor, border: cs.borderTopColor, bg: cs.backgroundColor, color: cs.color,
+      inView: r.left >= 0 && r.right <= innerWidth, barH: Math.round(bar.getBoundingClientRect().height), overflow: bar.scrollWidth - bar.clientWidth };
+  })()`;
+  const res: any = {};
+  for (const [name, pre] of [["dark", `localStorage.removeItem("cys-bg-color")`], ["light", `localStorage.setItem("cys-bg-color", "#ffffff")`]] as const) {
+    await load("two", `localStorage.removeItem("cys-expert-mode"); ${pre}`);
+    res[name] = await ev(M);
+    await shot(`c19-${name}-1280.png`);
+  }
+  const ok = (m: any) => m.fb && m.first === "피드백" && m.second === "btn-equalize" && m.side === 0 && m.fs >= m.fsEq && m.padX >= m.padXEq && m.h >= m.hEq && m.contrast >= 4.5 && m.borderDiff && m.inView;
+  check("c19a 상단바 첫 단추 = 「피드백」(정렬 왼쪽) · 사이드바 0 · 글자·여백·높이 ≥ 정렬 · 대비 ≥ 4.5 · 테두리 강조 — 기본·밝은 배경 둘 다", ok(res.dark) && ok(res.light), JSON.stringify(res));
+  // 누르면 종전과 같은 피드백 창 — 흉내층엔 feedback_new_draft 가 없어 이 칸에서만 초안 응답을 세운다(호출 계수는 그대로 남긴다)
+  await load("two", `localStorage.removeItem("cys-bg-color")`);
+  await ev(`(() => { const o = window.__TAURI__.core.invoke; window.__TAURI__.core.invoke = (c, a) => { if (c === "feedback_new_draft") { window.__shimCalls.push({ cmd: c, args: a || {} }); return Promise.resolve({ id: "d1", capture_supported: false }); } return o(c, a); }; })()`);
+  await ev(`document.getElementById("btn-feedback")?.click()`); await Bun.sleep(500);
+  const c = await ev(`({ drafts: ${NCALL("feedback_new_draft")}, modal: !!document.querySelector(".modal.feedback-modal"), title: document.querySelector(".modal.feedback-modal h3")?.textContent ?? null })`);
+  await shot("c19-click-modal.png");
+  check("c19b 누르면 같은 피드백 창(feedback_new_draft 1 · 창 제목 「피드백 보내기」)", c.drafts === 1 && c.modal && c.title === "피드백 보내기", JSON.stringify(c));
+  // 폭별 — 상단바 높이 불변(줄바꿈 0) · 피드백 단추는 모든 폭에서 스크롤 없이 화면 안 · 넘침 수치는 기록(되살림 뒤 수치와 비교)
+  const widths: any = {};
+  for (const w of [1280, 1024, 800, 390]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 820, deviceScaleFactor: 1, mobile: false });
+    await load("two", `localStorage.removeItem("cys-bg-color"); localStorage.removeItem("cys-expert-mode")`);
+    const m = await ev(M);
+    widths[w] = { overflow: m.overflow, barH: m.barH, inView: m.inView };
+    await shot(`c19-w${w}.png`);
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+  console.log(`     c19 상단바 넘침(px): ${Object.entries(widths).map(([w, m]: any) => `${w}=${m.overflow}`).join(" · ")}`);
+  check("c19c 폭 1280·1024·800·390 — 상단바 높이 38 그대로 · 피드백 단추 스크롤 없이 화면 안", Object.values(widths).every((m: any) => m.barH === 38 && m.inView), JSON.stringify(widths));
 }
 
 if (logs.length) console.log("page exceptions:\n  " + logs.slice(0, 5).join("\n  "));

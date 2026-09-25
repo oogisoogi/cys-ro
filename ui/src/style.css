@@ -167,13 +167,12 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 /* 원작자 표기(박사님 지시 2026-09-10) — 사이드바 최하단 상주 한 줄.
    ★hidden 속성도 조건부 렌더도 두지 않는다: 표기가 조건부면 언젠가 사라지고, 사라지는 순간
    원작자와의 배포 조건이 깨진다. 사이드바가 아무리 좁아도 줄바꿈으로 살아남게(ellipsis 금지). */
-/* 피드백 버튼(2026-09-15) — 사용량 패널 아래 한 줄. 글자 축은 사이드바 공통 --wsbar-font. */
-#ws-feedback {
-  flex: none; margin: 4px 8px 6px; padding: 5px 8px; border-radius: 6px;
-  border: 1px solid var(--hairline); background: transparent; color: var(--muted, #8b949e);
-  font-size: calc(12px * var(--wsbar-font, 1)); text-align: left; cursor: pointer;
-}
-#ws-feedback:hover { color: var(--text, #e2e8f0); border-color: var(--border); }
+/* 피드백 버튼(2026-09-15 · v116-feedback-top 09-26) — 상단바 맨 앞(정렬 왼쪽). 글자·여백·높이는 상단 단추 공통
+   (#topbar button)을 그대로 쓴다(작아 보이지 않게 · 크기 규칙을 여기 두지 않는다 — feedbacktop.test.ts 가 잰다).
+   강조 = 파란 테두리 + 옅은 파란 바탕 + 흰 글자 한 가지뿐(과한 장식 금지). 상단바 표면(--bar)은 배경색 테마와 무관하게
+   고정이라 대비는 기본·밝은 배경 테마에서 같다(헤드리스 c19 가 둘 다 잰다). */
+#topbar #btn-feedback { border-color: var(--accent); background: rgba(47, 129, 247, 0.22); color: #fff; }
+#topbar #btn-feedback:hover { background: rgba(47, 129, 247, 0.36); }
 /* 피드백 창 — .modal 재사용 · 폭만 넓힌다 */
 .modal.feedback-modal { max-width: 540px; width: calc(100vw - 48px); max-height: 88vh; overflow-y: auto; }
 .feedback-modal .modal-input { min-height: auto; margin-bottom: 8px; }

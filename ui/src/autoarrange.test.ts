@@ -7,7 +7,8 @@
 //   ⑶좌석 집합 보존 — 결과 sid 집합 = (입력 − remove) ∪ add. 빠지면 「살아 있는데 안 보이는 좌석」(4군 ④).
 //   ⑷재현된 세 결함(R1 HQ 첫 배치 뒤 재배치 멈춤 · R2 닫기 형제 독차지 · R3 새 창 0.5)이 이 함수로 사라지는가.
 import { describe, it, expect } from "bun:test";
-import { autoArrange, formationLayout, leftColumnShare, MASTER_CSO_RATIO, RULE_TOL, DRAG_MIN, DRAG_MAX, type LayoutNode, type Seat } from "./formation";
+import { autoArrange, formationLayout, defaultLeftShare, LEFT_SHARE_DEFAULT, LEFT_MIN_COLS, LEFT_SHARE_MAX, OLD_DEFAULT_SHARES, MASTER_CSO_RATIO, RULE_TOL, DRAG_MIN, DRAG_MAX, type LayoutNode, type Seat } from "./formation";
+const leftColumnShare = (_n: number) => LEFT_SHARE_DEFAULT; // (박사님 결정 14:5x) 옛 규칙 함수 자리 — 기본 폭은 워커 수와 무관한 상수
 
 const P = (sid: number): LayoutNode => ({ type: "pane", sid });
 const S = (a: LayoutNode, b: LayoutNode, dir: "row" | "col" = "row", ratio?: number): LayoutNode =>
@@ -176,7 +177,7 @@ describe("⑴ 좌열 보존(오너 ①)", () => {
     const r = roles([...HQ, ...W(3, 4)]);
     expect(autoArrange(t0, r, {}, "standard")).toEqual(formationLayout(seats([...HQ, ...W(3, 4)])));
   });
-  it("기본 정책 = auto(D1 = C) · 허용 오차 0.01 · 끌기 범위 0.15~0.85", () => {
+  it("기본 정책 = auto · 옛 기본값 허용 오차 0.01 · 끌기 범위 0.15~0.85", () => {
     expect(RULE_TOL).toBe(0.01);
     expect([DRAG_MIN, DRAG_MAX]).toEqual([0.15, 0.85]);
     const t0 = S(S(P(1), P(2), "col", 0.7), S(P(3), P(4)), "row", 0.42);
@@ -188,9 +189,9 @@ describe("⑴ 좌열 보존(오너 ①)", () => {
 
 describe("Opus 적대 1R 봉합 — F1 깊은 길 몫 · F4 좌열 비율", () => {
   const r = roles([...HQ, ...W(3, 4, 5, 6)]);
-  it("F1 R1 잔재 트리(옛 입양 0.5 감싸기 · 좌열 0.25) → 사람 값으로 보지 않고 표준 몫 1/3 · 위아래 비율은 보존", () => {
+  it("F1 R1 잔재 트리(옛 입양 0.5 감싸기 · 좌열 0.125) → 사람 값으로 보지 않고 기본 몫 · 위아래 비율은 보존", () => {
     const old = S(formationLayout(seats([...HQ, ...W(3)]))!, P(4), "row", 0.5);
-    expect(leftW(old)).toBeCloseTo(0.25, 12);
+    expect(leftW(old)).toBeCloseTo(0.125, 12);
     const t = autoArrange(old, r, { add: [{ sid: 5 }] })!;
     expect(leftW(t)).toBeCloseTo(leftColumnShare(3), 12);
     evenRest(t, [3, 4, 5]);
@@ -201,9 +202,9 @@ describe("Opus 적대 1R 봉합 — F1 깊은 길 몫 · F4 좌열 비율", () =
     const old = S(S(formationLayout(seats([...HQ, ...W(3)]))!, P(4), "row", 0.5), P(5), "row", 0.5);
     expect(leftW(autoArrange(old, r, { remove: [5] })!)).toBeCloseTo(leftColumnShare(2), 12);
   });
-  it("F1 창 옮기기가 0.5 로 감싼 뒤(좌열 1/6) → 다음 열기·닫기에 표준 몫", () => {
+  it("F1 창 옮기기가 0.5 로 감싼 뒤(좌열 0.125) → 다음 열기·닫기에 기본 몫", () => {
     const moved = S(formationLayout(seats([...HQ, ...W(3, 4)]))!, P(5), "row", 0.5);
-    expect(leftW(moved)).toBeCloseTo(1 / 6, 12);
+    expect(leftW(moved)).toBeCloseTo(0.125, 12);
     expect(leftW(autoArrange(moved, r, { add: [{ sid: 6 }] })!)).toBeCloseTo(leftColumnShare(4), 12);
     expect(leftW(autoArrange(moved, r, { remove: [3] })!)).toBeCloseTo(leftColumnShare(2), 12);
   });
@@ -238,19 +239,49 @@ describe("Opus 적대 1R 봉합 — F1 깊은 길 몫 · F4 좌열 비율", () =
   }
 });
 
-describe("D1 = C(master 판정 2026-09-25 master#c443981e) — 규칙값이면 다시 재고 사람이 끈 값이면 보존", () => {
+// ★박사님 결정 09-25 14:5x(master#db159bcf) + master#73a7390d 로 변경: 옛 D1 = C(「직전 워커 수의 규칙값이면 새 워커 수로 다시」)
+//   폐기 — 좌열 폭은 **다시 재지 않는다**. 기본 폭 = 창의 25% · 노트북이면 글자 90칸 · 상한 50%(defaultLeftShare) + leftAuto 표지.
+describe("박사님 결정 14:5x — 좌열 가로 폭은 균등 정렬에서 뺀다 · 기본 = 창의 25%(노트북 90칸 · 상한 50%)", () => {
   const r12 = roles([...HQ, ...W(...Array.from({ length: 12 }, (_, i) => 10 + i))]);
-  it("첫 부팅 워커 1→7 한 대씩 입양 → 좌열 1/2 → 1/3(A 였으면 1/2 영구 고정)", () => {
-    let t: LayoutNode | null = formationLayout(seats(HQ));
-    const got: number[] = [];
-    for (let k = 0; k < 7; k++) {
-      t = autoArrange(t, r12, { add: [{ sid: 10 + k }] })!;
-      got.push(leftW(t));
-      evenRest(t, Array.from({ length: k + 1 }, (_, i) => 10 + i));
+  const ws = (...ids: number[]) => ids;
+  it("defaultLeftShare: 넓은 창 3440px = 25% · 노트북 1512px = 90칸 몫 · 아주 좁은 창 = 50% 상한 · 모르면 25%", () => {
+    const cell = 7.8; // 13px 고정폭 글꼴 한 칸
+    expect(defaultLeftShare(3440, cell)).toBe(0.25);
+    expect(defaultLeftShare(1512, cell)).toBeCloseTo((LEFT_MIN_COLS * cell) / 1512, 12);
+    expect(defaultLeftShare(1512, cell) * 1512 / cell).toBeCloseTo(90, 9);
+    expect(defaultLeftShare(900, cell)).toBe(0.5);
+    for (const [w, c] of [[0, cell], [NaN, cell], [1512, 0], [1512, NaN], [-5, cell]]) expect(defaultLeftShare(w, c)).toBe(0.25);
+    expect([LEFT_SHARE_DEFAULT, LEFT_MIN_COLS, LEFT_SHARE_MAX]).toEqual([0.25, 90, 0.5]);
+    expect(OLD_DEFAULT_SHARES).toEqual([1 / 2, 1 / 3]);
+  });
+  it("기본 폭은 워커 0→1→2→5 열기·닫기 내내 그대로(25%) · 표지 유지", () => {
+    let t: LayoutNode | null = autoArrange(null, r12, { add: [{ sid: 1 }, { sid: 2 }] });
+    for (const add of [ws(10), ws(11), ws(12, 13, 14)]) {
+      t = autoArrange(t, r12, { add: add.map((sid) => ({ sid })) })!;
+      expect(leftW(t)).toBe(0.25);
+      expect((t as any).leftAuto).toBe(true);
     }
-    expect(got[0]).toBeCloseTo(1 / 2, 12);
-    for (let k = 1; k < 7; k++) expect(got[k]).toBeCloseTo(leftColumnShare(k + 1), 12);
-    expect(got[6]).toBeCloseTo(1 / 3, 12);
+    for (const rm of [[12], [10, 11], [13]]) {
+      t = autoArrange(t, r12, { remove: rm })!;
+      expect(leftW(t)).toBe(0.25);
+    }
+    expect(sids(t)).toEqual([1, 2, 14]);
+  });
+  it("입양 경로(트리 없음·좌열 먼저·워커 나중)도 기본 폭 · 창 폭이 다르면 그 폭의 기본값", () => {
+    const d = defaultLeftShare(1512, 7.8);
+    let t: LayoutNode | null = null;
+    for (const sid of [1, 10, 2, 11]) t = autoArrange(t, r12, { add: [{ sid }] }, "auto", d);
+    expect(leftW(t!)).toBeCloseTo(d, 12);
+    expect((t as any).leftAuto).toBe(true);
+  });
+  it("창 크기가 바뀌면(기본값 d → d') 표지 있는 트리만 새 기본값 · 사람이 끈 0.40(표지 없음)은 그대로", () => {
+    const a = autoArrange(null, r12, { add: [1, 2, 10, 11].map((sid) => ({ sid })) }, "auto", 0.25)!;
+    expect(leftW(autoArrange(a, r12, {}, "auto", 0.46)!)).toBeCloseTo(0.46, 12);
+    const human = S(S(P(1), P(2), "col", 0.65), S(P(10), P(11)), "row", 0.4);
+    const h1 = autoArrange(human, r12, { add: [{ sid: 12 }] }, "auto", 0.46)!;
+    expect(leftW(h1)).toBeCloseTo(0.4, 12);
+    expect((h1 as any).leftAuto).toBeUndefined();
+    expect(autoArrange(h1, r12, {}, "auto", 0.3)).toEqual(h1); // 창 크기 변경(재배치 호출) 뒤에도 그대로
   });
   it("사람이 0.40 으로 끈 뒤 열기·닫기 반복 → 0.40 유지 · 위아래 비율 유지", () => {
     const left = S(P(1), P(2), "col", 0.65);
@@ -265,25 +296,28 @@ describe("D1 = C(master 판정 2026-09-25 master#c443981e) — 규칙값이면 �
     }
     expect(sids(t)).toEqual([1, 2, 14]);
   });
-  it("워커가 0 이 됐다가 다시 생기면 표준 몫(좌열이 화면 전체였던 순간 몫 정보가 없다)", () => {
+  it("정렬 단추 = 기본 폭 복귀(사람 0.40 → d) + 4:1 + 표지", () => {
+    const t0 = S(S(P(1), P(2), "col", 0.65), S(P(10), P(11)), "row", 0.4);
+    const t1 = autoArrange(t0, r12, {}, "standard", 0.3)!;
+    expect(leftW(t1)).toBeCloseTo(0.3, 12);
+    expect((t1 as any).leftAuto).toBe(true);
+    expect((t1 as any).a.ratio).toBe(MASTER_CSO_RATIO);
+  });
+  it("워커가 0 이 됐다가 다시 생기면 기본 몫(좌열이 화면 전체였던 순간 몫 정보가 없다)", () => {
     let t: LayoutNode = S(S(P(1), P(2), "col", 0.8), P(10), "row", 0.6);
     t = autoArrange(t, r12, { remove: [10] })!;
     t = autoArrange(t, r12, { add: [{ sid: 11 }] })!;
-    expect(leftW(t)).toBeCloseTo(leftColumnShare(1), 12);
+    expect(leftW(t)).toBe(0.25);
   });
-  for (const [d, rule] of [[+RULE_TOL * 0.9, true], [-RULE_TOL * 0.9, true], [+RULE_TOL * 1.5, false], [-RULE_TOL * 1.5, false]] as const) {
-    it(`경계: 직전 규칙값(워커 1 = 1/2) ${d >= 0 ? "+" : ""}${d.toFixed(4)} → ${rule ? "규칙값으로 다시" : "사람 값 보존"}`, () => {
-      const v = leftColumnShare(1) + d;
-      const t0 = S(S(P(1), P(2), "col", 0.8), P(10), "row", v);
-      const t1 = autoArrange(t0, r12, { add: [{ sid: 11 }] })!;
-      expect(leftW(t1)).toBeCloseTo(rule ? leftColumnShare(2) : v, 12);
+  for (const old of [1 / 2, 1 / 3]) for (const [d, migrate] of [[0, true], [+RULE_TOL * 0.9, true], [-RULE_TOL * 0.9, true], [+RULE_TOL * 1.5, false], [-RULE_TOL * 1.5, false]] as const) {
+    it(`옛 기본값(1.1.5 이하) ${old.toFixed(3)} ${d >= 0 ? "+" : ""}${d.toFixed(4)} · 표지 없음 → ${migrate ? "기본을 쓰던 것 → 새 기본으로" : "사람 값 보존"}`, () => {
+      const v = old + d;
+      const t0 = S(S(P(1), P(2), "col", 0.8), S(P(10), P(11)), "row", v);
+      const t1 = autoArrange(t0, r12, { add: [{ sid: 12 }] }, "auto", 0.27)!;
+      expect(leftW(t1)).toBeCloseTo(migrate ? 0.27 : v, 12);
+      expect((t1 as any).leftAuto).toBe(migrate ? true : undefined);
     });
   }
-  it("닫기로 워커 수가 줄어도 규칙값 따라감(1/3 → 1/2)", () => {
-    const t0 = formationLayout(seats([...HQ, ...W(10, 11)]))!;
-    const t1 = autoArrange(t0, r12, { remove: [11] })!;
-    expect(leftW(t1)).toBeCloseTo(leftColumnShare(1), 12);
-  });
 });
 
 describe("⑵ 나머지 좌석 한 줄 균등(오너 ②)", () => {
@@ -293,7 +327,7 @@ describe("⑵ 나머지 좌석 한 줄 균등(오너 ②)", () => {
       const r = roles([...HQ, ...W(...ws)]);
       const t = autoArrange(formationLayout(seats(HQ)), r, { add: ws.map((sid) => ({ sid })) })!;
       expect(sids(t)).toEqual([1, 2, ...ws]);
-      if (n) { evenRest(t, ws); expect(leftW(t)).toBeCloseTo(leftColumnShare(n), 12); }
+      if (n) { evenRest(t, ws); expect(leftW(t)).toBe(LEFT_SHARE_DEFAULT); }
       expect(hasCol(t)).toBe(true); // 좌열 위아래만
       const shW = shares(t);
       const total = [1, ...ws].reduce((s, k) => s + shW.get(k)!, 0);
@@ -470,7 +504,7 @@ describe("v2 기둥 — 박사님 결정 09-25 14:1x 「master:cso 4:1 유지 ·
     const c = S(P(3), P(4), "col", 0.7);
     const t0 = S(P(1), S(P(2), c));
     const t1 = autoArrange(t0, roles([...HQ, ...W(3, 4)]), {})!;
-    expect(t1).toEqual(S(S(P(1), P(2), "col", MASTER_CSO_RATIO), c, "row", leftColumnShare(1)));
+    expect(t1).toEqual({ ...(S(S(P(1), P(2), "col", MASTER_CSO_RATIO), c, "row", LEFT_SHARE_DEFAULT) as any), leftAuto: true });
     expect((t1 as any).b).toBe(c);
   });
   it("처리표 4행: 역할이 바뀌어 cso 가 워커 기둥 안에 → 무정렬(워커를 옮기거나 펴지 않음)", () => {
@@ -500,6 +534,39 @@ describe("v2 기둥 — 박사님 결정 09-25 14:1x 「master:cso 4:1 유지 ·
   });
 });
 
+describe("Fable 적대 1R 봉합(model = claude-fable-5-1) — R1 좌열 속 워커 닫힘 · R2 둘째 master 가 좌열을 밀어냄 · R3 손상 비율", () => {
+  it("R1 워커가 좌열 기둥 안(cso 아래)에 있다가 닫히면 → 좌열 사람 값(가로 0.4 · 위아래 0.6) 그대로", () => {
+    const r = roles([...HQ, ...W(3, 4)]);
+    const t0 = S(S(P(1), S(P(2), P(3), "col", 0.5), "col", 0.6), P(4), "row", 0.4);
+    expect(autoArrange(t0, r, { remove: [3] })).toEqual(S(S(P(1), P(2), "col", 0.6), P(4), "row", 0.4));
+    // master 바로 아래에 끼어 있던 경우 · 둘을 한 번에 닫는 경우도
+    const t1 = S(S(S(P(1), P(3), "col", 0.5), P(2), "col", 0.6), P(4), "row", 0.4);
+    expect(autoArrange(t1, r, { remove: [3] })).toEqual(S(S(P(1), P(2), "col", 0.6), P(4), "row", 0.4));
+    const r5 = roles([...HQ, ...W(3, 4, 5)]);
+    const t2 = S(S(S(P(1), P(3), "col", 0.5), S(P(2), P(5), "col", 0.5), "col", 0.6), P(4), "row", 0.4);
+    expect(autoArrange(t2, r5, { remove: [3, 5] })).toEqual(S(S(P(1), P(2), "col", 0.6), P(4), "row", 0.4));
+  });
+  it("R2 새로 붙는 둘째 master(master-2)는 기존 좌열 master 를 밀어내지 않는다(after 가 앞이어도)", () => {
+    const r = roles([...HQ, ...W(3), [9, "master-2"]]);
+    const left = S(P(1), P(2), "col", 0.8);
+    const t0 = S(P(3), left, "row", 0.5);
+    const t1 = autoArrange(t0, r, { add: [{ sid: 9, after: 3 }] })!;
+    expect((t1 as any).a).toBe(left);
+    expect(units(t1).slice(1)).toEqual([P(3), P(9)]);
+    evenUnits(t1, true);
+  });
+  it("R3 워커 기둥 안 손상 비율(0·1·NaN·음수)은 0.5 로 · 멀쩡한 기둥은 같은 객체", () => {
+    const r = roles([...HQ, ...W(3, 4, 5, 6, 9)]);
+    for (const bad of [0, 1, NaN, -0.3, 1.7]) {
+      const good = S(P(5), P(6), "col", 0.7);
+      const t0 = S(S(P(1), P(2), "col", 0.8), S(S(P(3), P(4), "col", bad), good), "row", 0.4);
+      const t1 = autoArrange(t0, r, { add: [{ sid: 9 }] })!;
+      expect(units(t1)[1]).toEqual(S(P(3), P(4), "col", 0.5));
+      expect(units(t1)[2]).toBe(good);
+    }
+  });
+});
+
 describe("⑶ 좌석 집합 보존(속성 시험)", () => {
   // 결정론 난수(mulberry32) — 실패하면 같은 시드로 재현된다.
   function rng(seed: number) {
@@ -508,7 +575,8 @@ describe("⑶ 좌석 집합 보존(속성 시험)", () => {
   function randTree(r: () => number, ids: number[]): LayoutNode {
     if (ids.length === 1) return P(ids[0]);
     const k = 1 + Math.floor(r() * (ids.length - 1));
-    return S(randTree(r, ids.slice(0, k)), randTree(r, ids.slice(k)), r() < 0.5 ? "row" : "col", r() < 0.3 ? undefined : 0.05 + r() * 0.9);
+    const bad = r() < 0.05 ? [0, 1, NaN][Math.floor(r() * 3)] : null; // (Fable R3) 손상 비율도 섞는다
+    return S(randTree(r, ids.slice(0, k)), randTree(r, ids.slice(k)), r() < 0.5 ? "row" : "col", bad !== null ? bad : r() < 0.3 ? undefined : 0.05 + r() * 0.9);
   }
   const ROLE_POOL = ["master", "cso", "worker", "worker-2", "reviewer", null, "master-2", "cso-2"];
   it("무작위 트리 3000개 × 열기·닫기 — sid 집합 = (입력 − remove) ∪ add · 중복 0 · 기둥 폭 합 = 1 · 사람 위아래 나눔 무접촉(v2)", () => {
@@ -538,7 +606,9 @@ describe("⑶ 좌석 집합 보존(속성 시험)", () => {
           const ratiosOk = (n: LayoutNode): boolean => n.type === "pane" || (n.ratio === undefined || (n.ratio > 0 && n.ratio < 1)) && ratiosOk(n.a) && ratiosOk(n.b);
           expect(ratiosOk(out)).toBe(true);
           const lf = (x: number) => { const f = String(rm.get(x) ?? ""); return f === "master" || f.startsWith("master-") || f === "cso" || f.startsWith("cso-"); };
-          const leftPicked = [got.find((s) => /^master(-|$)/.test(String(rm.get(s) ?? ""))), got.find((s) => /^cso(-|$)/.test(String(rm.get(s) ?? "")))].filter((x) => x !== undefined) as number[];
+          // 좌열 좌석 = 이미 있던 좌석에서 먼저(Fable R2 봉합과 같은 고르기) · 없으면 새 좌석에서
+          const pref = [...got.filter((x) => ids.includes(x)), ...got.filter((x) => !ids.includes(x))];
+          const leftPicked = [pref.find((s) => /^master(-|$)/.test(String(rm.get(s) ?? ""))), pref.find((s) => /^cso(-|$)/.test(String(rm.get(s) ?? "")))].filter((x) => x !== undefined) as number[];
           void lf;
           if (mode === "standard") {
             // 정렬 단추 = 종전 표준: 좌열 밖 세로 분할 0 · 좌열 아닌 칸 전부 같은 가로 몫 · 좌열 두 칸은 위아래
@@ -552,6 +622,8 @@ describe("⑶ 좌석 집합 보존(속성 시험)", () => {
             if (tree) for (const u of units(tree)) {
               const us = sids(u);
               if (us.some((x) => leftPicked.includes(x) || remove.includes(x) || add.some((a) => a.after === x || a.sid === x))) continue;
+              const damaged = (n: LayoutNode): boolean => n.type === "split" && ((n.ratio !== undefined && !(Number.isFinite(n.ratio) && n.ratio > 0 && n.ratio < 1)) || damaged(n.a) || damaged(n.b));
+              if (damaged(u)) continue; // (Fable R3) 손상 비율 기둥은 0.5 로 고쳐진다 — 같은 객체가 아니다
               expect(hasNode(out, u)).toBe(true);
             }
             // 결과가 「맞춘 모양」(좌열 좌석을 품은 기둥이 좌열 좌석만 품음)이면 워커 기둥끼리 가로 몫이 같다
@@ -585,7 +657,7 @@ const code = (s: string) => s.replace(/\/\/[^\n]*/g, "");
 describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수", () => {
   it("단일 입구 arrangeWs = autoArrange 한 줄", () => {
     const b = code(fnBody("function arrangeWs(", "\n}\n"));
-    expect(b).toContain('ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode);');
+    expect(b).toContain('ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode, currentDefaultLeftShare());');
   });
   const paths: [string, string, string, string][] = [
     ["자동 입양(3초 틱)", "async function refreshPaneTitles() {", "\n}\n", "arrangeWs(ws, { add: [{ sid: s.surface_id }] });"],

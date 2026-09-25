@@ -6,7 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
-import { autoArrange, type ArrangeChange, type LeftShareMode } from "./formation";
+import { autoArrange, defaultLeftShare, type ArrangeChange, type LeftShareMode } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -233,7 +233,7 @@ const listen = (name: string, handler: (e: { payload: unknown }) => void) =>
 // ---------- layout model (v2: multiple workspaces, splits with ratio) ----------
 
 type Node =
-  | { type: "split"; dir: "row" | "col"; ratio?: number; a: Node; b: Node }
+  | { type: "split"; dir: "row" | "col"; ratio?: number; a: Node; b: Node; leftAuto?: boolean }
   | { type: "pane"; sid: number };
 
 interface Workspace {
@@ -2435,8 +2435,44 @@ function arrangeWs(ws: Workspace, change: ArrangeChange, mode?: LeftShareMode): 
   const effective =
     (change.add ?? []).some((a) => !have.includes(a.sid)) || (change.remove ?? []).some((sid) => have.includes(sid));
   if (!effective && mode !== "standard") return;
-  ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode);
+  ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode, currentDefaultLeftShare());
 }
+
+// (v116-equalize-v2 · 박사님 결정 09-25 14:5x · master#73a7390d) 좌열 기본 폭 = 창 가로의 25% · 노트북이면 글자 90칸 · 상한 50%
+//   (formation.ts defaultLeftShare). 글자 한 칸 폭은 터미널과 같은 글꼴로 잰다(xterm 도 「W」 폭으로 잰다).
+let cellMeasureCtx: CanvasRenderingContext2D | null = null;
+function currentDefaultLeftShare(): number {
+  let cell = 0;
+  try {
+    cellMeasureCtx ??= document.createElement("canvas").getContext("2d");
+    if (cellMeasureCtx) {
+      cellMeasureCtx.font = `${fontSize}px ${composeFontFamily(fontFace)}`;
+      cell = cellMeasureCtx.measureText("W".repeat(20)).width / 20;
+    }
+  } catch {
+    cell = 0; // 못 재면 defaultLeftShare 가 25% 로
+  }
+  return defaultLeftShare(root.getBoundingClientRect().width, cell);
+}
+// 창 크기가 바뀌면 기본 폭을 쓰는 탭(루트 leftAuto 표지)만 다시 잰다 — 사람이 끈 폭(표지 없음)은 그대로.
+let leftDefaultResizeTimer: number | undefined;
+window.addEventListener("resize", () => {
+  clearTimeout(leftDefaultResizeTimer);
+  leftDefaultResizeTimer = setTimeout(() => {
+    const d = currentDefaultLeftShare();
+    let changed = false;
+    for (const ws of workspaces) {
+      const t = ws.tree;
+      if (!t || t.type !== "split" || !t.leftAuto) continue;
+      const next = autoArrange(t, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), {}, "auto", d);
+      if (next && JSON.stringify(next) !== JSON.stringify(t)) {
+        ws.tree = next;
+        changed = true;
+      }
+    }
+    if (changed) render(); // 새 폭으로 DOM 재구성 + fitPane + saveLayout
+  }, 120) as unknown as number;
+});
 
 // ---------- pane lifecycle ----------
 
@@ -3961,6 +3997,7 @@ function attachDividerDrag(
       const size = horizontal ? rect.width : rect.height;
       const ratio = Math.min(0.85, Math.max(0.15, pos / size));
       node.ratio = ratio;
+      delete node.leftAuto; // 사람이 끈 폭 — 이제 기본 폭이 아니다(창 크기 변경·자동 정렬이 다시 재지 않는다)
       aEl.style.flex = `${ratio} 1 0%`;
       bEl.style.flex = `${1 - ratio} 1 0%`;
     };
@@ -4153,7 +4190,7 @@ async function actionEqualize() {
   } catch {
     /* 마지막 역할 표 그대로 */
   }
-  // 정렬 단추 = 같은 함수 · "standard" = 좌열까지 표준(4:1 · leftColumnShare)으로 새로 — 종전 단추 결과와 같다(기존 기능 보존).
+  // 정렬 단추 = 같은 함수 · "standard" = 좌열까지 표준(4:1 · 기본 폭 defaultLeftShare)으로 새로 — 박사님 결정 09-25 14:5x.
   arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");
   render(); // 새 트리로 DOM 재구성 + fitPane→resize_surface + saveLayout
 }

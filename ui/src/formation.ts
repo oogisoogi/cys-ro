@@ -60,11 +60,17 @@ export function defaultLeftShare(rootPx: number, cellPx: number): number {
   if (!(rootPx > 0) || !(cellPx > 0)) return LEFT_SHARE_DEFAULT;
   return Math.min(LEFT_SHARE_MAX, Math.max(LEFT_SHARE_DEFAULT, (LEFT_MIN_COLS * cellPx) / rootPx));
 }
-/// 1.1.5 이하의 옛 기본 폭(leftColumnShare = 워커 1대 1/2 · 2대+ 1/3). 표지 없이 이 값(±RULE_TOL)이면 「기본을 쓰던 사용자」로 보고
-///   다음 자동 정렬 때 새 기본으로 옮긴다(master#73a7390d). 잔여 위험: 손으로 정확히 1/2·1/3(±0.01)에 맞춘 드문 사용자도 옮겨진다.
+/// 1.1.5 이하의 옛 기본 폭(leftColumnShare = 워커 1대 1/2 · 2대+ 1/3). 저장 배치의 루트가 표지 없이 이 값(±RULE_TOL)이면 「기본을 쓰던 사용자」로
+///   보고 기본 폭 표지를 붙인다(master#73a7390d) — ★복원 때 **한 번만**(main.ts 플래그 · Fable 적대 2R ②: autoArrange 안에서 매번 보면
+///   이 판에서 새로 1/2·1/3 에 끈 폭까지 영영 되돌렸다). 잔여 위험: 옛 판에서 손으로 정확히 1/2·1/3(±0.01)에 맞춘 드문 사용자도 옮겨진다.
 export const OLD_DEFAULT_SHARES = [1 / 2, 1 / 3];
 /// 「옛 기본값과 같다」의 허용 오차.
 export const RULE_TOL = 0.01;
+export function migrateOldDefaultShare(tree: LayoutNode): LayoutNode {
+  if (tree.type !== "split" || tree.dir !== "row" || tree.leftAuto) return tree;
+  const r = tree.ratio ?? 0.5;
+  return OLD_DEFAULT_SHARES.some((v) => Math.abs(r - v) <= RULE_TOL) ? { ...tree, leftAuto: true } : tree;
+}
 
 /// 역할 배치. 반환 `null` = 배치할 것이 없다(호출자는 트리를 건드리지 않는다).
 ///
@@ -220,11 +226,12 @@ function contains(n: LayoutNode, t: LayoutNode): boolean {
   return n.type === "split" && (contains(n.a, t) || contains(n.b, t));
 }
 
-// 좌열 좌석 = 순서상 첫 master 계열 + 첫 cso 계열(formationLayout 과 같은 고르기).
+// 좌열 좌석 = 계열마다 **sid 가 가장 작은** master 계열 + cso 계열. 트리 위치·붙는 순서와 무관한 고르기라 같은 좌석 집합이면
+//   언제나 같은 좌열이다(Fable 적대 2R ③ — 「있던 좌석 먼저 · 순서 첫」은 한 번 배치한 뒤 다시 부르면 좌열이 바뀌었다).
+//   sid 는 만든 순서로 늘어나므로 보통은 먼저 선 좌석 = 옛 「순서 첫」과 같다.
 function leftSids(order: number[], roles: RoleMap): number[] {
-  const m = order.find((s) => family(roles.get(s)) === "master");
-  const c = order.find((s) => family(roles.get(s)) === "cso");
-  return [m, c].filter((s): s is number => s !== undefined);
+  const pick = (f: "master" | "cso") => order.filter((s) => family(roles.get(s)) === f).sort((x, y) => x - y)[0];
+  return [pick("master"), pick("cso")].filter((s): s is number => s !== undefined);
 }
 
 // (v2) 기둥 목록 — 루트를 가로(row) 분할로 끝까지 펼친다. 가로 분할이 아닌 서브트리(칸 · 위아래 묶음)가 기둥 하나.
@@ -286,6 +293,11 @@ function minimalChange(tree: LayoutNode | null, change: ArrangeChange, drop: Set
   return t ? heal(t) : t; // 손상 비율만 0.5 로(끌기로 못 만드는 값 — 사람 배치가 아니다)
 }
 
+/// 역할을 모를 때(그 데몬의 목록을 한 번도 못 받았다)의 열기·닫기 — 다시 짜지 않고 그 자리 접힘·반 나눔·오른쪽 덧붙임만(Fable 적대 2R ①).
+export function arrangeWithoutRoles(tree: LayoutNode | null, change: ArrangeChange = {}): LayoutNode | null {
+  return minimalChange(tree, change, new Set(change.remove ?? []));
+}
+
 /// 자동 정렬. 반환 `null` = 좌석이 하나도 없다(빈 탭).
 export function autoArrange(
   tree: LayoutNode | null,
@@ -308,10 +320,8 @@ export function autoArrange(
   if (order.length === 0) return null;
   const pane = (sid: number): LayoutNode => ({ type: "pane", sid });
 
-  // 좌열 좌석은 이미 있던 좌석에서 먼저 고른다 — 새로 붙는 둘째 master 가 after 때문에 앞에 서도 기존 좌열을 밀어내지 않게
-  //   (Fable 적대 1R R2). 빠진 계열만 새 좌석에서 채운다.
-  const had = new Set(inOrder);
-  const left = leftSids([...order.filter((s) => had.has(s)), ...order.filter((s) => !had.has(s))], roles);
+  // 좌열 좌석 = 계열마다 가장 작은 sid(leftSids) — 새로 붙는 둘째 master 가 after 때문에 앞에 서도 기존 좌열을 밀어내지 않는다(Fable 1R R2).
+  const left = leftSids(order, roles);
   const rest = order.filter((s) => !left.includes(s));
   if (mode === "standard") {
     // 정렬 단추 = 종전 표준 그대로(좌열 4:1 · 나머지 한 줄 균등 — 사람이 누르는 것이라 위아래 나눔도 편다).
@@ -329,8 +339,12 @@ export function autoArrange(
     const p = prune(u, drop, seen);
     if (p) rowUnits(p, units);
   }
+  // 기본 폭 표지가 있는 트리 = 본부 좌석이 있던 배치다. 그런데 역할 표에 본부가 한 명도 없으면(데몬이 아직 목록을 안 줬다 ·
+  //   부서 데몬이 죽었다) 역할을 모르는 것이지 본부가 없는 것이 아니다 → 다시 짜지 않는다(Fable 적대 2R ① — 좌열이 워커 기둥으로 펴지고
+  //   표지까지 잃은 채 저장됐다).
+  const rolesBlind = tree !== null && tree.type === "split" && tree.leftAuto === true && leftSids(inOrder, roles).length === 0;
   // 맞출 수 있는가 = 좌열 좌석을 품은 기둥은 좌열 좌석만 품는다. 아니면 무정렬(사람 위아래 나눔을 지우지 않는다).
-  const fits = units.every((u) => {
+  const fits = !rolesBlind && units.every((u) => {
     const us = sidsInOrder(u);
     return !us.some(isLeft) || us.every(isLeft);
   });
@@ -381,8 +395,8 @@ export function autoArrange(
         }
         const direct = tree.type === "split" && tree.dir === "row" && tree.a === pil;
         // 사람이 끈 폭이면 언제나 그대로(박사님 결정 14:5x · 옛 D1 = C 의 「규칙값이면 다시 잰다」와 v2 규칙 5 는 폐기).
-        // leftAuto 표지(기본 폭) · 옛 기본값(1/2·1/3 ± RULE_TOL) = 기본을 쓰던 것 → 새 기본 폭으로(master#73a7390d).
-        const wasDefault = (tree as { leftAuto?: boolean }).leftAuto === true || OLD_DEFAULT_SHARES.some((v) => Math.abs(cs - v) <= RULE_TOL);
+        // leftAuto 표지(기본 폭) = 새 기본 폭으로(옛 1/2·1/3 은 복원 때 한 번 migrateOldDefaultShare 가 표지로 바꾼다).
+        const wasDefault = (tree as { leftAuto?: boolean }).leftAuto === true;
         if (direct && !wasDefault && cs >= DRAG_MIN && cs <= DRAG_MAX) share = cs;
       }
     }

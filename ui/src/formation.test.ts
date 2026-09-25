@@ -116,7 +116,7 @@ describe("B16 호출부 — 3경로가 같은 함수를 부른다", () => {
   //   에서 autoArrange(arrangeWs 한 곳)로 바뀌었다. 축(입양·복원 입양·정렬이 같은 배치 함수를 지난다)은 그대로다 —
   //   열기·닫기 전 경로의 핀은 autoarrange.test.ts 「호출부」 절이 쥔다.
   it("입양·복원 입양·정렬 세 곳 전부 arrangeWs(autoArrange)를 경유", () => {
-    expect(main).toContain('import { autoArrange, defaultLeftShare, type ArrangeChange, type LeftShareMode } from "./formation";');
+    expect(main).toContain('import { autoArrange, arrangeWithoutRoles, defaultLeftShare, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";');
     const eq = main.slice(main.indexOf("async function actionEqualize()"), main.indexOf("// ---------- workspace tabs ----------"));
     expect(eq).toContain('arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");');
     // 입양(3초 틱)·복원 입양 = 붙는 좌석마다 그 자리에서(Opus 적대 1R F2)

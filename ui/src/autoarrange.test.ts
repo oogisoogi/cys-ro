@@ -7,7 +7,7 @@
 //   ⑶좌석 집합 보존 — 결과 sid 집합 = (입력 − remove) ∪ add. 빠지면 「살아 있는데 안 보이는 좌석」(4군 ④).
 //   ⑷재현된 세 결함(R1 HQ 첫 배치 뒤 재배치 멈춤 · R2 닫기 형제 독차지 · R3 새 창 0.5)이 이 함수로 사라지는가.
 import { describe, it, expect } from "bun:test";
-import { autoArrange, formationLayout, defaultLeftShare, LEFT_SHARE_DEFAULT, LEFT_MIN_COLS, LEFT_SHARE_MAX, OLD_DEFAULT_SHARES, MASTER_CSO_RATIO, RULE_TOL, DRAG_MIN, DRAG_MAX, type LayoutNode, type Seat } from "./formation";
+import { autoArrange, arrangeWithoutRoles, migrateOldDefaultShare, formationLayout, defaultLeftShare, LEFT_SHARE_DEFAULT, LEFT_MIN_COLS, LEFT_SHARE_MAX, OLD_DEFAULT_SHARES, MASTER_CSO_RATIO, RULE_TOL, DRAG_MIN, DRAG_MAX, type LayoutNode, type Seat } from "./formation";
 const leftColumnShare = (_n: number) => LEFT_SHARE_DEFAULT; // (박사님 결정 14:5x) 옛 규칙 함수 자리 — 기본 폭은 워커 수와 무관한 상수
 
 const P = (sid: number): LayoutNode => ({ type: "pane", sid });
@@ -309,15 +309,51 @@ describe("박사님 결정 14:5x — 좌열 가로 폭은 균등 정렬에서 �
     t = autoArrange(t, r12, { add: [{ sid: 11 }] })!;
     expect(leftW(t)).toBe(0.25);
   });
+  // ★(Fable 적대 2R ②로 변경) 옛 기본값 이동은 autoArrange 안이 아니라 복원 때 한 번(migrateOldDefaultShare · main 플래그).
   for (const old of [1 / 2, 1 / 3]) for (const [d, migrate] of [[0, true], [+RULE_TOL * 0.9, true], [-RULE_TOL * 0.9, true], [+RULE_TOL * 1.5, false], [-RULE_TOL * 1.5, false]] as const) {
-    it(`옛 기본값(1.1.5 이하) ${old.toFixed(3)} ${d >= 0 ? "+" : ""}${d.toFixed(4)} · 표지 없음 → ${migrate ? "기본을 쓰던 것 → 새 기본으로" : "사람 값 보존"}`, () => {
+    it(`옛 기본값(1.1.5 이하 저장본) ${old.toFixed(3)} ${d >= 0 ? "+" : ""}${d.toFixed(4)} · 표지 없음 → 복원 이동 뒤 ${migrate ? "새 기본으로" : "사람 값 보존"}`, () => {
       const v = old + d;
-      const t0 = S(S(P(1), P(2), "col", 0.8), S(P(10), P(11)), "row", v);
+      const t0 = migrateOldDefaultShare(S(S(P(1), P(2), "col", 0.8), S(P(10), P(11)), "row", v));
       const t1 = autoArrange(t0, r12, { add: [{ sid: 12 }] }, "auto", 0.27)!;
       expect(leftW(t1)).toBeCloseTo(migrate ? 0.27 : v, 12);
       expect((t1 as any).leftAuto).toBe(migrate ? true : undefined);
     });
   }
+  it("(Fable 2R ②) 이 판에서 사람이 정확히 1/2·1/3 로 끈 폭(표지 없음)은 열기·닫기 때 옮기지 않는다 · 이동은 복원 때 한 번", () => {
+    for (const v of [1 / 2, 1 / 3]) {
+      const t0 = S(S(P(1), P(2), "col", 0.8), S(P(10), P(11)), "row", v);
+      const t1 = autoArrange(t0, r12, { add: [{ sid: 12 }] }, "auto", 0.27)!;
+      expect(leftW(t1)).toBeCloseTo(v, 12);
+      expect(migrateOldDefaultShare(t1)).toEqual({ ...(t1 as any), leftAuto: true });
+    }
+    const marked = autoArrange(null, r12, { add: [1, 2, 10].map((sid) => ({ sid })) })!;
+    expect(migrateOldDefaultShare(marked)).toBe(marked); // 이미 표지 · 무변경
+    expect(migrateOldDefaultShare(P(3))).toEqual(P(3));
+  });
+});
+
+describe("Fable 적대 2R 봉합 — ① 역할 모름 ③ 좌열 고르기 멱등", () => {
+  it("① 표지 있는 본부 배치 + 역할 표에 본부 0명(목록 아직 못 받음) → 다시 짜지 않는다(좌열 안 펴짐 · 표지 유지)", () => {
+    const t = { ...(S(S(P(1), P(2), "col", 0.8), S(P(3), S(P(4), S(P(5), P(6)))), "row", 0.27) as any), leftAuto: true };
+    const out = autoArrange(t, new Map(), {}, "auto", 0.27)!;
+    expect(out).toBe(t);
+    const out2 = autoArrange(t, roles(W(3, 4, 5, 6, 7)), { add: [{ sid: 7 }] }, "auto", 0.27)!;
+    expect((out2 as any).a).toBe(t); // 오른쪽 덧붙임만
+  });
+  it("① 역할 표를 한 번도 못 받은 데몬의 닫기 = arrangeWithoutRoles(그 자리 접힘) · 사람 0.4 유지", () => {
+    const t0 = S(S(P(1), P(2), "col", 0.6), S(P(3), P(4)), "row", 0.4);
+    expect(arrangeWithoutRoles(t0, { remove: [3] })).toEqual(S(S(P(1), P(2), "col", 0.6), P(4), "row", 0.4));
+    expect(arrangeWithoutRoles(null, { add: [{ sid: 9 }] })).toEqual(P(9));
+  });
+  it("③ 좌열 = 계열마다 가장 작은 sid — 붙는 순서·위치와 무관 · 한 번 짠 결과를 다시 넣어도 같다(Fable 재현 입력)", () => {
+    const tree = { ...(S(P(100), S(S(S(P(101), P(102), "col", 0.64), P(103), "col", 0.68), P(104), "col", 0.22), "row", 0.476) as any), leftAuto: true };
+    const rr = roles([[100, "cso-2"], [101, null], [102, "master-2"], [103, "cso"], [104, "master-2"], [901, "master"]]);
+    const out = autoArrange(tree, rr, { add: [{ sid: 901, after: 100 }], remove: [102] })!;
+    expect(autoArrange(out, rr, {})).toEqual(out);
+    // 좌열 = master 계열 최소 sid 104(master-2) · cso 계열 최소 sid 100(cso-2) — 붙는 master(901)는 sid 가 커서 좌열이 아니다
+    const mixedUnit = units(out).find((u) => sids(u).includes(104))!;
+    expect(sids(mixedUnit)).toContain(101); // 섞인 기둥 → 무정렬(재배치 없음)
+  });
 });
 
 describe("⑵ 나머지 좌석 한 줄 균등(오너 ②)", () => {
@@ -606,8 +642,7 @@ describe("⑶ 좌석 집합 보존(속성 시험)", () => {
           const ratiosOk = (n: LayoutNode): boolean => n.type === "pane" || (n.ratio === undefined || (n.ratio > 0 && n.ratio < 1)) && ratiosOk(n.a) && ratiosOk(n.b);
           expect(ratiosOk(out)).toBe(true);
           const lf = (x: number) => { const f = String(rm.get(x) ?? ""); return f === "master" || f.startsWith("master-") || f === "cso" || f.startsWith("cso-"); };
-          // 좌열 좌석 = 이미 있던 좌석에서 먼저(Fable R2 봉합과 같은 고르기) · 없으면 새 좌석에서
-          const pref = [...got.filter((x) => ids.includes(x)), ...got.filter((x) => !ids.includes(x))];
+          const pref = [...got].sort((x, y) => x - y); // 좌열 = 계열마다 가장 작은 sid(Fable 2R ③ 봉합과 같은 고르기)
           const leftPicked = [pref.find((s) => /^master(-|$)/.test(String(rm.get(s) ?? ""))), pref.find((s) => /^cso(-|$)/.test(String(rm.get(s) ?? "")))].filter((x) => x !== undefined) as number[];
           void lf;
           if (mode === "standard") {
@@ -657,7 +692,9 @@ const code = (s: string) => s.replace(/\/\/[^\n]*/g, "");
 describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수", () => {
   it("단일 입구 arrangeWs = autoArrange 한 줄", () => {
     const b = code(fnBody("function arrangeWs(", "\n}\n"));
-    expect(b).toContain('ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode, currentDefaultLeftShare());');
+    expect(b).toContain('const roles = arrangeRolesBySocket.get(ws.socket ?? "");');
+    expect(b).toContain("? autoArrange(ws.tree, roles, change, mode, currentDefaultLeftShare())");
+    expect(b).toContain(": arrangeWithoutRoles(ws.tree, change);");
   });
   const paths: [string, string, string, string][] = [
     ["자동 입양(3초 틱)", "async function refreshPaneTitles() {", "\n}\n", "arrangeWs(ws, { add: [{ sid: s.surface_id }] });"],
@@ -743,9 +780,18 @@ describe("박사님 결정 14:5x 호출부 — 기본 폭은 창 크기로 재�
     expect(b).toContain('cell = cellMeasureCtx.measureText("W".repeat(20)).width / 20;');
     expect(b).toContain("return defaultLeftShare(root.getBoundingClientRect().width, cell);");
   });
-  it("경계를 끌면 그 분할의 leftAuto 표지를 지운다(사람 값 = 다시 안 잰다)", () => {
+  it("경계를 끌면 그 분할의 leftAuto 표지를 지운다(사람 값 = 다시 안 잰다) · 끄는 동안 창 크기 재측정 멈춤(Fable 2R ④)", () => {
     const b = code(fnBody("function attachDividerDrag(", "\n}\n"));
     expect(/node\.ratio = ratio;\s*delete node\.leftAuto;/.test(b)).toBe(true);
+    expect(/divider\.classList\.add\("dragging"\);\s*dividerDragActive = true;/.test(b)).toBe(true);
+    expect(/divider\.classList\.remove\("dragging"\);\s*dividerDragActive = false;/.test(b)).toBe(true);
+  });
+  it("옛 기본 폭 이동은 복원 적재 직후 한 번(플래그) · 모든 탭에 migrateOldDefaultShare", () => {
+    const i = main.indexOf('if (localStorage.getItem("cys-left-default-migrated") !== "1") {');
+    expect(i).toBeGreaterThan(main.indexOf("workspaces = normalizeWorkspaces(workspaces);", main.indexOf("const savedRaw = localStorage.getItem(LAYOUT_KEY);")));
+    const b = main.slice(i, main.indexOf("\n  }\n", i));
+    expect(b).toContain("for (const ws of workspaces) if (ws.tree) ws.tree = migrateOldDefaultShare(ws.tree) as Node;");
+    expect(b).toContain('localStorage.setItem("cys-left-default-migrated", "1");');
   });
   it("창 크기 변경 → 루트에 leftAuto 표지가 있는 탭만 autoArrange(…, 새 기본 폭) · 바뀌면 render", () => {
     const i = main.indexOf("let leftDefaultResizeTimer");
@@ -753,7 +799,9 @@ describe("박사님 결정 14:5x 호출부 — 기본 폭은 창 크기로 재�
     const b = code(main.slice(i, main.indexOf("\n});\n", i)));
     expect(b).toContain('window.addEventListener("resize"');
     expect(b).toContain('if (!t || t.type !== "split" || !t.leftAuto) continue;');
-    expect(b).toContain('const next = autoArrange(t, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), {}, "auto", d);');
+    expect(b).toContain("if (dividerDragActive) return;");
+    expect(b).toContain("if (!roles) continue;");
+    expect(b).toContain('const next = autoArrange(t, roles, {}, "auto", d);');
     expect(b).toContain("if (changed) render();");
   });
 });

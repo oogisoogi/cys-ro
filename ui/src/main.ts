@@ -6,7 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
-import { autoArrange, defaultLeftShare, type ArrangeChange, type LeftShareMode } from "./formation";
+import { autoArrange, arrangeWithoutRoles, defaultLeftShare, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -2435,7 +2435,11 @@ function arrangeWs(ws: Workspace, change: ArrangeChange, mode?: LeftShareMode): 
   const effective =
     (change.add ?? []).some((a) => !have.includes(a.sid)) || (change.remove ?? []).some((sid) => have.includes(sid));
   if (!effective && mode !== "standard") return;
-  ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode, currentDefaultLeftShare());
+  // 이 데몬의 역할 표를 아직 한 번도 못 받았으면 다시 짜지 않는다 — 본부를 모르는 채 짜면 좌열이 워커 줄로 펴진다(Fable 적대 2R ①).
+  const roles = arrangeRolesBySocket.get(ws.socket ?? "");
+  ws.tree = roles
+    ? autoArrange(ws.tree, roles, change, mode, currentDefaultLeftShare())
+    : arrangeWithoutRoles(ws.tree, change);
 }
 
 // (v116-equalize-v2 · 박사님 결정 09-25 14:5x · master#73a7390d) 좌열 기본 폭 = 창 가로의 25% · 노트북이면 글자 90칸 · 상한 50%
@@ -2455,16 +2459,20 @@ function currentDefaultLeftShare(): number {
   return defaultLeftShare(root.getBoundingClientRect().width, cell);
 }
 // 창 크기가 바뀌면 기본 폭을 쓰는 탭(루트 leftAuto 표지)만 다시 잰다 — 사람이 끈 폭(표지 없음)은 그대로.
+let dividerDragActive = false;
 let leftDefaultResizeTimer: number | undefined;
 window.addEventListener("resize", () => {
   clearTimeout(leftDefaultResizeTimer);
   leftDefaultResizeTimer = setTimeout(() => {
     const d = currentDefaultLeftShare();
     let changed = false;
+    if (dividerDragActive) return; // 경계를 끄는 중에 다시 짜면 끌기가 떨어진 옛 노드에 쓰여 표지가 남는다(Fable 적대 2R ④)
     for (const ws of workspaces) {
       const t = ws.tree;
       if (!t || t.type !== "split" || !t.leftAuto) continue;
-      const next = autoArrange(t, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), {}, "auto", d);
+      const roles = arrangeRolesBySocket.get(ws.socket ?? "");
+      if (!roles) continue; // 역할을 모르면 건드리지 않는다(Fable 적대 2R ①)
+      const next = autoArrange(t, roles, {}, "auto", d);
       if (next && JSON.stringify(next) !== JSON.stringify(t)) {
         ws.tree = next;
         changed = true;
@@ -3990,6 +3998,7 @@ function attachDividerDrag(
   divider.addEventListener("mousedown", (down) => {
     down.preventDefault();
     divider.classList.add("dragging");
+    dividerDragActive = true;
     const horizontal = node.dir === "row";
     const move = (e: MouseEvent) => {
       const rect = container.getBoundingClientRect();
@@ -4003,6 +4012,7 @@ function attachDividerDrag(
     };
     const up = () => {
       divider.classList.remove("dragging");
+      dividerDragActive = false;
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
       saveLayout();
@@ -8426,6 +8436,12 @@ async function start() {
   for (const ws of workspaces) ws.socket = ws.socket ?? undefined; // 하위호환 마이그레이션(기본 데몬)
   // socket 1:1 수렴 + id 중복 제거(중복 탭 증식 차단) — 복원 적재 직후 단일 게이트.
   workspaces = normalizeWorkspaces(workspaces);
+  // (v116-equalize-v2 · master#73a7390d · Fable 적대 2R ②) 옛 판(1.1.5 이하) 기본 좌열 폭 1/2·1/3 저장본 = 「기본을 쓰던 사용자」 →
+  //   기본 폭 표지. 이 판에서 **한 번만**(플래그) — 이 판에서 사람이 1/2·1/3 로 끈 폭은 다시 옮기지 않는다.
+  if (localStorage.getItem("cys-left-default-migrated") !== "1") {
+    for (const ws of workspaces) if (ws.tree) ws.tree = migrateOldDefaultShare(ws.tree) as Node;
+    try { localStorage.setItem("cys-left-default-migrated", "1"); } catch { /* 저장 불가 — 다음 기동에 다시(같은 결과) */ }
+  }
   // 카운터 보정: 신규 id/이름이 항상 기존 최댓값 초과하도록(중복·손상 저장본에도 강건)
   wsCounter = Math.max(wsCounter, 0, ...workspaces.map((w) => w.id)) + 1;
   // 06: 고아 그룹 청소 + groupCounter를 기존 최대 id+1로 보정(중복·손상 저장본에도 강건).

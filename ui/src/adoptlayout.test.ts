@@ -19,21 +19,22 @@ function shares(n: LayoutNode, w = 1, out = new Map<number, number>()): Map<numb
 const comb = (ids: number[]): LayoutNode => ids.slice(1).reduce<LayoutNode>((t, i) => R(t, P(i)), P(ids[0]));
 
 describe("B3 master 칸 폭", () => {
-  it("run4 재현 트리: 수정 전 master 1/8 → 재배치 후 1/3 · 나머지 2/9 · 순서 보존", () => {
+  // ★박사님 결정 09-25 14:5x(master#db159bcf)로 변경: master 몫 1/3(열 2개면 1/2) → 언제나 25%(LEFT_SHARE_DEFAULT).
+  it("run4 재현 트리: 수정 전 master 1/8 → 재배치 후 25% · 나머지 1/4 · 순서 보존", () => {
     const run4 = comb([1, 2, 3, 4]);
     expect(shares(run4).get(2)).toBeCloseTo(1 / 8, 9);
     const sh = shares(adoptLayoutIfRowOnly(run4, new Set([2])));
-    expect(sh.get(2)).toBeCloseTo(1 / 3, 9);
-    for (const k of [1, 3, 4]) expect(sh.get(k)).toBeCloseTo(2 / 9, 9);
+    expect(sh.get(2)).toBeCloseTo(0.25, 9);
+    for (const k of [1, 3, 4]) expect(sh.get(k)).toBeCloseTo(0.25, 9);
     expect([...sh.keys()]).toEqual([1, 2, 3, 4]);
   });
 
-  it("열 수 2·3·5·6·8 에서 master ≥ 1/3 · 합 1", () => {
-    expect(shares(adoptLayout([2, 3], new Set([2]))).get(2)).toBeCloseTo(0.5, 9);
+  it("열 수 2·3·5·6·8 에서 master = 정확히 25% · 합 1(워커 수와 무관 · 박사님 결정 14:5x)", () => {
+    expect(shares(adoptLayout([2, 3], new Set([2]))).get(2)).toBeCloseTo(0.25, 9);
     for (const n of [3, 5, 6, 8]) {
       const ids = [...Array(n).keys()].map((i) => i + 1);
       const sh = shares(adoptLayoutIfRowOnly(comb(ids), new Set([2])));
-      expect(sh.get(2)!).toBeGreaterThan(1 / 3 - 1e-9);
+      expect(sh.get(2)!).toBeCloseTo(0.25, 9);
       expect([...sh.values()].reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
     }
   });

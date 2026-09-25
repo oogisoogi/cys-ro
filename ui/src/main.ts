@@ -6,7 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
-import { autoArrange, type ArrangeChange, type LeftShareMode } from "./formation";
+import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -233,7 +233,7 @@ const listen = (name: string, handler: (e: { payload: unknown }) => void) =>
 // ---------- layout model (v2: multiple workspaces, splits with ratio) ----------
 
 type Node =
-  | { type: "split"; dir: "row" | "col"; ratio?: number; a: Node; b: Node }
+  | { type: "split"; dir: "row" | "col"; ratio?: number; a: Node; b: Node; leftAuto?: boolean }
   | { type: "pane"; sid: number };
 
 interface Workspace {
@@ -2435,7 +2435,76 @@ function arrangeWs(ws: Workspace, change: ArrangeChange, mode?: LeftShareMode): 
   const effective =
     (change.add ?? []).some((a) => !have.includes(a.sid)) || (change.remove ?? []).some((sid) => have.includes(sid));
   if (!effective && mode !== "standard") return;
-  ws.tree = autoArrange(ws.tree, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), change, mode);
+  // 이 데몬의 역할 표를 아직 한 번도 못 받았으면 다시 짜지 않는다 — 본부를 모르는 채 짜면 좌열이 워커 줄로 펴진다(Fable 적대 2R ①).
+  const roles = arrangeRolesBySocket.get(ws.socket ?? "");
+  ws.tree = roles
+    ? autoArrange(ws.tree, roles, change, mode, currentDefaultLeftShare())
+    : arrangeWithoutRoles(ws.tree, change);
+}
+
+// (v116-equalize-v2 · 박사님 결정 09-25 14:5x · master#73a7390d) 좌열 기본 폭 = 창 가로의 25% · 노트북이면 글자 90칸 · 상한 50%
+//   (formation.ts defaultLeftShare). ★글자 한 칸 폭과 칸 여백은 **실제 칸에서 잰다**(master#94526717) — 화면에 붙은 칸 하나의
+//   .xterm-screen 폭 ÷ 열 수 = 한 칸 · 칸 폭 − .xterm-screen 폭 = 여백(안쪽 여백·스크롤바·반올림 나머지). 못 재면 같은 글꼴의
+//   「W」 폭(xterm 도 그렇게 잰다) + CSS 기준 폴백 여백.
+function measuredPaneMetrics(): { cell: number; chrome: number } | null {
+  for (const rt of panes.values()) {
+    if (!rt.el.isConnected || !(rt.term.cols > 0)) continue;
+    const screen = rt.termHost.querySelector(".xterm-screen") as HTMLElement | null;
+    const sw = screen?.getBoundingClientRect().width ?? 0;
+    const pw = rt.el.getBoundingClientRect().width;
+    if (!(sw > 0) || !(pw >= sw)) continue;
+    const cell = sw / rt.term.cols;
+    const chrome = pw - sw;
+    if (cell > 0 && chrome < 200) return { cell, chrome };
+  }
+  return null;
+}
+let cellMeasureCtx: CanvasRenderingContext2D | null = null;
+function currentDefaultLeftShare(): number {
+  // 분할 경계(divider)는 flex 몫 밖이라 좌열 칸 = 몫 × (배치 영역 − 경계) — 경계 폭도 여백에 더한다(모자라는 쪽으로 어긋나지 않게).
+  const div = (root.querySelector(".split.row > .divider") as HTMLElement | null)?.getBoundingClientRect().width ?? 1;
+  const m = measuredPaneMetrics();
+  if (m) return defaultLeftShare(root.getBoundingClientRect().width, m.cell, m.chrome + div);
+  let cell = 0;
+  try {
+    cellMeasureCtx ??= document.createElement("canvas").getContext("2d");
+    if (cellMeasureCtx) {
+      cellMeasureCtx.font = `${fontSize}px ${composeFontFamily(fontFace)}`;
+      cell = cellMeasureCtx.measureText("W".repeat(20)).width / 20;
+    }
+  } catch {
+    cell = 0; // 못 재면 defaultLeftShare 가 25% 로
+  }
+  return defaultLeftShare(root.getBoundingClientRect().width, cell, LEFT_CHROME_FALLBACK_PX);
+}
+// 창 크기가 바뀌면 기본 폭을 쓰는 탭(루트 leftAuto 표지)만 다시 잰다 — 사람이 끈 폭(표지 없음)은 그대로.
+let dividerDragActive = false;
+let leftDefaultResizeSkipped = false;
+let leftDefaultResizeTimer: number | undefined;
+// 웹뷰 밖에서 손을 떼면 mouseup 이 안 올 수 있다 — 창이 포커스를 잃으면 끄는 중 표지를 푼다(Fable 적대 3R ③).
+window.addEventListener("blur", () => { dividerDragActive = false; });
+window.addEventListener("resize", () => {
+  clearTimeout(leftDefaultResizeTimer);
+  leftDefaultResizeTimer = setTimeout(recomputeDefaultLeft, 120) as unknown as number;
+});
+function recomputeDefaultLeft(): void {
+  {
+    const d = currentDefaultLeftShare();
+    let changed = false;
+    if (dividerDragActive) { leftDefaultResizeSkipped = true; return; } // 끄는 중에 다시 짜면 끌기가 떨어진 옛 노드에 쓰여 표지가 남는다(Fable 적대 2R ④) — 손을 떼면 다시(3R ③)
+    for (const ws of workspaces) {
+      const t = ws.tree;
+      if (!t || t.type !== "split" || !t.leftAuto) continue;
+      const roles = arrangeRolesBySocket.get(ws.socket ?? "");
+      if (!roles) continue; // 역할을 모르면 건드리지 않는다(Fable 적대 2R ①)
+      const next = autoArrange(t, roles, {}, "auto", d);
+      if (next && JSON.stringify(next) !== JSON.stringify(t)) {
+        ws.tree = next;
+        changed = true;
+      }
+    }
+    if (changed) render(); // 새 폭으로 DOM 재구성 + fitPane + saveLayout
+  }
 }
 
 // ---------- pane lifecycle ----------
@@ -3954,6 +4023,7 @@ function attachDividerDrag(
   divider.addEventListener("mousedown", (down) => {
     down.preventDefault();
     divider.classList.add("dragging");
+    dividerDragActive = true;
     const horizontal = node.dir === "row";
     const move = (e: MouseEvent) => {
       const rect = container.getBoundingClientRect();
@@ -3961,11 +4031,14 @@ function attachDividerDrag(
       const size = horizontal ? rect.width : rect.height;
       const ratio = Math.min(0.85, Math.max(0.15, pos / size));
       node.ratio = ratio;
+      delete node.leftAuto; // 사람이 끈 폭 — 이제 기본 폭이 아니다(창 크기 변경·자동 정렬이 다시 재지 않는다)
       aEl.style.flex = `${ratio} 1 0%`;
       bEl.style.flex = `${1 - ratio} 1 0%`;
     };
     const up = () => {
       divider.classList.remove("dragging");
+      dividerDragActive = false;
+      if (leftDefaultResizeSkipped) { leftDefaultResizeSkipped = false; recomputeDefaultLeft(); } // 끄는 중 건너뛴 창 크기 변경을 이제 반영
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
       saveLayout();
@@ -4153,7 +4226,7 @@ async function actionEqualize() {
   } catch {
     /* 마지막 역할 표 그대로 */
   }
-  // 정렬 단추 = 같은 함수 · "standard" = 좌열까지 표준(4:1 · leftColumnShare)으로 새로 — 종전 단추 결과와 같다(기존 기능 보존).
+  // 정렬 단추 = 같은 함수 · "standard" = 좌열까지 표준(4:1 · 기본 폭 defaultLeftShare)으로 새로 — 박사님 결정 09-25 14:5x.
   arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");
   render(); // 새 트리로 DOM 재구성 + fitPane→resize_surface + saveLayout
 }
@@ -4916,8 +4989,8 @@ async function actionNew() {
   setFocus(sid);
 }
 
-// (v116-auto-equalize · master 판정 D2 = A) 방향 인자는 남기되 배치는 언제나 자동 좌우 균등이다 —
-//   분할한 새 창은 대상 창 바로 다음 순서에 선다. 「아래에 새 창」 메뉴는 실제 동작과 어긋나 뺐다.
+// (v116-equalize-v2 · 박사님 결정 09-25 14:1x) 방향을 배치에 넘긴다 — "row" = 대상 창이 든 기둥 바로 오른쪽 새 기둥 ·
+//   "col" = 대상 창 바로 아래(같은 기둥 · 기둥 폭 불변). 사람이 만든 위아래 나눔은 그 뒤 열기·닫기에도 그대로 남는다.
 async function actionSplit(dir: "row" | "col") {
   if (daemonActionBlocked()) return; // ★P1-3: 리셋 진행/완료 중 분할 차단(무반응 금지)
   const ws = current();
@@ -4928,9 +5001,8 @@ async function actionSplit(dir: "row" | "col") {
   }
   const target = focusedSid;
   const sid = await newSurface(null, ws.socket);
-  void dir;
   // await 사이에 대상이 닫혔으면 after 가 트리에 없으므로 맨 끝에 선다 — 루트에 덧붙여 고아를 만들지 않는다(종전과 같은 보장).
-  arrangeWs(ws, { add: [{ sid, after: target }] });
+  arrangeWs(ws, { add: [{ sid, after: target, dir }] });
   render();
   setFocus(sid);
 }
@@ -6834,8 +6906,8 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
   items.push(
     { id: "act:new-tab", title: "새 탭", keywords: "new tab 탭", action: () => actionNew() },
     { id: "act:split-row", title: "가로 분할", keywords: "split row 분할", action: () => actionSplit("row") },
-    // (v116-auto-equalize · master 판정 ⓒ 09-25) 「세로 분할」 항목 제거 — 창은 언제나 좌우 균등으로 다시 서므로 세로 분할을 더는
-    //   만들 수 없다(이름이 거짓 표시가 된다). ⌘⇧D 는 이름이 없고 손버릇 보호로 남긴다(오른쪽 분할과 같게 동작).
+    // (v116-equalize-v2 · 박사님 결정 09-25) 「세로 분할」 복원 — 사람이 만든 위아래 나눔을 자동 정렬이 지키므로 다시 참이다.
+    { id: "act:split-col", title: "세로 분할", keywords: "split col 분할", action: () => actionSplit("col") },
     { id: "act:close", title: "패널 닫기", keywords: "close 닫기", action: () => actionClose() },
     { id: "act:equalize", title: "패널 균등화", keywords: "equalize 균등", action: () => actionEqualize() },
     { id: "act:cc", title: "Control Center 토글", keywords: "control center dashboard 대시보드", action: () => setCcOpen(!ccOpen) },
@@ -8390,6 +8462,12 @@ async function start() {
   for (const ws of workspaces) ws.socket = ws.socket ?? undefined; // 하위호환 마이그레이션(기본 데몬)
   // socket 1:1 수렴 + id 중복 제거(중복 탭 증식 차단) — 복원 적재 직후 단일 게이트.
   workspaces = normalizeWorkspaces(workspaces);
+  // (v116-equalize-v2 · master#73a7390d · Fable 적대 2R ②) 옛 판(1.1.5 이하) 기본 좌열 폭 1/2·1/3 저장본 = 「기본을 쓰던 사용자」 →
+  //   기본 폭 표지. 이 판에서 **한 번만**(플래그) — 이 판에서 사람이 1/2·1/3 로 끈 폭은 다시 옮기지 않는다.
+  if (localStorage.getItem("cys-left-default-migrated") !== "1") {
+    for (const ws of workspaces) if (ws.tree) ws.tree = migrateOldDefaultShare(ws.tree) as Node;
+    try { localStorage.setItem("cys-left-default-migrated", "1"); } catch { /* 저장 불가 — 다음 기동에 다시(같은 결과) */ }
+  }
   // 카운터 보정: 신규 id/이름이 항상 기존 최댓값 초과하도록(중복·손상 저장본에도 강건)
   wsCounter = Math.max(wsCounter, 0, ...workspaces.map((w) => w.id)) + 1;
   // 06: 고아 그룹 청소 + groupCounter를 기존 최대 id+1로 보정(중복·손상 저장본에도 강건).
@@ -9384,7 +9462,7 @@ window.addEventListener("keydown", (e) => {
     actionSplit("row");
   } else if ((e.key === "D" || e.key === "d") && e.shiftKey) {
     e.preventDefault();
-    actionSplit("col"); // (v116-auto-equalize) 손버릇 보호 — 배치는 자동 좌우 균등이라 오른쪽 분할과 같다
+    actionSplit("col"); // 세로 분할(대상 창 아래 · 같은 기둥) — v116-equalize-v2 에서 다시 진짜 세로 분할
   } else if (e.key === "w") {
     e.preventDefault();
     actionClose();

@@ -6,7 +6,7 @@
 //     그 기전 ⑵는 「열이 1개일 때 래퍼가 소멸」이었으므로, 전원 워커 함대를 직접 태워 확인한다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { formationLayout, formationIfRowOnly, hasHqSeats, leftColumnShare, MASTER_CSO_RATIO, type LayoutNode, type Seat } from "./formation";
+import { formationLayout, formationIfRowOnly, hasHqSeats, LEFT_SHARE_DEFAULT, MASTER_CSO_RATIO, type LayoutNode, type Seat } from "./formation";
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const P = (sid: number): LayoutNode => ({ type: "pane", sid });
@@ -48,17 +48,16 @@ describe("B16 오너 확정 비·방향", () => {
     for (const k of [1, 2, 3]) expect(right.get(k)).toBeCloseTo(1 / 3, 9);
   });
 
-  it("전체 면적 합 = 1 · 워커가 늘수록 좌열은 1/3 로 수렴", () => {
+  // ★박사님 결정 09-25 14:5x(master#db159bcf)로 변경: 옛 「워커가 늘수록 1/3 로 수렴(1대 1/2)」 → 워커 수와 무관한 25%.
+  it("전체 면적 합 = 1 · 좌열은 워커 수와 무관하게 화면 25%", () => {
     for (const n of [1, 2, 4, 6]) {
       const ws: [number, string | null][] = [...Array(n).keys()].map((i) => [100 + i, "worker"]);
       const t = formationLayout(seats([30, "master"], [31, "cso"], ...ws))!;
       const sh = shares(t);
       expect([...sh.values()].reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
-      expect(sh.get(30)! + sh.get(31)!).toBeCloseTo(leftColumnShare(n), 9);
+      expect(sh.get(30)! + sh.get(31)!).toBeCloseTo(0.25, 9);
     }
-    expect(leftColumnShare(1)).toBeCloseTo(1 / 2, 9);
-    expect(leftColumnShare(2)).toBeCloseTo(1 / 3, 9);
-    expect(leftColumnShare(6)).toBeCloseTo(1 / 3, 9);
+    expect(LEFT_SHARE_DEFAULT).toBe(0.25);
   });
 });
 
@@ -79,7 +78,7 @@ describe("B16 2026-07-27 붕괴 재발 방지", () => {
     // master 1 + worker 1 = 좌열은 pane 하나(빈 cso 칸이 생기지 않는다)
     const t = formationLayout(seats([30, "master"], [1, "worker"]))! as any;
     expect(t.a).toEqual(P(30));
-    expect(shares(t).get(30)).toBeCloseTo(1 / 2, 9);
+    expect(shares(t).get(30)).toBeCloseTo(0.25, 9); // (박사님 결정 09-25 14:5x) 좌열 기본 25%
   });
 
   it("좌석 0개는 null(호출자가 트리를 건드리지 않는다)", () => {
@@ -117,7 +116,7 @@ describe("B16 호출부 — 3경로가 같은 함수를 부른다", () => {
   //   에서 autoArrange(arrangeWs 한 곳)로 바뀌었다. 축(입양·복원 입양·정렬이 같은 배치 함수를 지난다)은 그대로다 —
   //   열기·닫기 전 경로의 핀은 autoarrange.test.ts 「호출부」 절이 쥔다.
   it("입양·복원 입양·정렬 세 곳 전부 arrangeWs(autoArrange)를 경유", () => {
-    expect(main).toContain('import { autoArrange, type ArrangeChange, type LeftShareMode } from "./formation";');
+    expect(main).toContain('import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";');
     const eq = main.slice(main.indexOf("async function actionEqualize()"), main.indexOf("// ---------- workspace tabs ----------"));
     expect(eq).toContain('arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");');
     // 입양(3초 틱)·복원 입양 = 붙는 좌석마다 그 자리에서(Opus 적대 1R F2)

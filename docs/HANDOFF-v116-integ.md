@@ -544,3 +544,9 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - ③자가치유 전멸: auto_restore 단계가 모든 종료 경로에서 done(20-6) · 편성 대기 상한 900초(무기한 정지 없음) · phoenix D07b 16종 rc 0 · midrun_tomb OK — **해당(점검) · 이상 없음**.
 - ④전 pane 사망 + 윈 설치파일: 회수 대상 = 역할 없음·600초+·자식 없는 셸 · 닫기 직전 재조회 · 잔여 창 1(20-5 ①) · 「다른 좌석 닫힘 0」은 VM §6-8 로 실측 예정 — **해당 · 잔여 위험 1 기록**. 윈 설치파일 = 이 기기 툴체인 없음 → git push 뒤 CI windows-build(master 게이트).
 - 프로세스 정리: 내가 띄운 것(게이트 pgid 4700 · codex 7678·42396 · 격리 cysd 시험) 잔존 0 · 이름 패턴 kill 0.
+
+### 20-9. master 판정(master#61380137 · 원장 11:59:26 surface:1105 submitted yes)
+- 1차 대조 통과(master 실측: 2dd4954b 트리 = merge-tree(c86ae675, e98c42c8) 자동 병합 트리 353fd547 · 병합 커밋 안 손 편집 0).
+- 20-5 ① 잔여 위험(빈 좌석 재기동 × 빈 좌석 회수 경합 창) = **1.1.7 이관 = master 판정**(차단 4종 밖 · 역할 없음·600초+ 좌석 한정 · 데몬 쪽 조건부 원자 회수 백로그).
+- 20-5 ④ test_v116_num_cys_list_compat = **지금 3레인 편입**(master 판정 · 이유 = cys list 해석 파손은 설치·갱신 실패 축인데 유일한 시험이 CI 밖) → ci-branch 1 · pack-release 1 · release 2(새 4종과 같은 자리 · 바로 뒤) · yaml 3파일 safe_load OK · A01 rc 0(ci-branch 64 · pack-release 60 · release 64 · 공통 60 · 허용 비대칭 5 = 종전 그대로 · ALLOWED 추가 0 · 비대칭 0) · 시험 1회 Ran 2 OK. 정본 게이트 재실행 = master 독립 재실행(워커 안 함).
+- MINOR 3(cys.rs:8639 · 900초 뒤 go · main.rs:4062 주석) = 1.1.7 기록 그대로 수용(master).

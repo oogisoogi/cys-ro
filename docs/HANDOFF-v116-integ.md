@@ -394,3 +394,16 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - 의미 충돌 점검(main.ts 자동 병합 · 기호 계수 = 도구 출력): 1077 `display_no|displayNo` 6 = 27d80ff0 과 같음(유지) · 1088 `writeExitedBanner` 2(유지) · 1102 `relayoutWs` = 주석 2뿐(3656840e 와 같음 · 틱 끝 일괄 배치 제거) · `arrangeWs` 14(3656840e 와 같음) · `split-col` 0(팔레트 세로 분할 제거 반영). 1102 가 가장 크게 바꾼 refreshPaneTitles 는 1077 num-ui 가 고친 함수이나 겹친 줄 없음(자동 병합 · 두 쪽 기호 보존). `formation.ts` = 1102 단독(526325bf 이후 다른 가지 무접촉). 헤드리스 c4b 기대값 변경(오너 09-25)은 자동 병합으로 반영.
 - 부기(master): b5d4bd52 = 알려진 적색 커밋(시험 · d207034f 정정) → bisect 때 건너뜀.
 - 빠른 확인(27968f82): `bun test` **1409/0** · tsc 7(기준 목록 동일) · `secret-scan --all` **clean 1292** · 헤드리스 실번들 전체(c1~c18 · 1088·1091·1102 블록 전부) = **ALL PASS 89줄**(부하 16~21 하에서 · 약 14분) · 크롬 잔존 0.
+
+### 18-3. ② 1090 ceo-directive-hold + 1104 A-Z14 수리 @12d47daf(master#a63d296b · 기점 adf50d44 = 옛 갈래 · 39커밋) → 병합 **5966d11a**(^2 = 12d47daf 실측) + 수리 **6d237a16**
+- 문자 충돌 0(main.ts 자동). 통합 쪽 adf50d44 이후 `cys-dept`·`src-tauri/src/main.rs`·`src/pack.rs`·`ui/src/selfdiag.ts`·`test_ceo_pending_gate.py` 변경 0(git log 실측) → promote-ceo 사후 검증·exit 5 표지·ceo_promote_held 태그 경로는 1090 단독.
+- main.ts 의미 점검: 1090 변경 = CEO 승격 실패 토스트 2곳을 `ceoPromoteFailToast`(보류 exit 5 = 「보류」 등급)로 바꾼 것 + import 1줄뿐 — 1077 번호·1088 배너·1091 재시작·1102 배치 경로와 겹침 0.
+- ★**의미 충돌 1 = 발행 지침 해시 표**: 1090 의 `src/released_directive_hashes.rs`·`RELEASED_MASTER_DIRECTIVE.sha256` 는 태그 + 작업 트리 지침으로 만든 생성물인데 1089 가 MASTER_DIRECTIVE §9·CEO_TEMPLATE 을 고쳐 통합 트리에서 `gen_released_directive_hashes.py --check` = 표류 rc 1(두 파일). → 생성기 그대로 재생성(손 편집 0 · **추가 3줄 · 삭제 0**) = 수리 커밋 **6d237a16** · `--check` OK. 이 표류는 게이트 A13(`cargo test --lib`)의 `pack.rs` `released_tables_cover_current_embed` 가 잡는 축(생성기 자체는 CI 레인 밖).
+- ⚠ **레인 등재 여부(master 점검 항목)**: `test_ceo_pending_gate.py` 는 **어느 워크플로에도 없다**(ci-branch A04 목록·release·pack-release 전부 0 · git grep 실측) → 정본 게이트는 이 시험을 안 돈다. 이번엔 손으로 돌림(ALL PASS). 레인 편입 여부 = master 판정(범위 확장이라 손대지 않음).
+- 빠른 확인(6d237a16): `cargo test --lib -- ceo_ d1 released_ pack::` 117/0 · `cargo test -p cys-app --bins ceo_` 2/0 · `test_ceo_pending_gate.py` ALL PASS · `selfdiag.test.ts` 11/0 · `bun test` 전체 **1416/0** · tsc 7(기준 목록 동일) · `secret-scan --all` clean 1298.
+
+### 18-4. 정본 게이트(3차 통합 전부 모인 머리 6d237a16 · 1회)
+- 러너 = master gate_runner.py v2 · 스냅샷(`--deps ui` · MSV_NOTIFY=0) · 08:33:37 → 09:05:44 · load 10.4 → 6.3 · 추적 변경 0 · 결과 `~/msv-scratch/v116-integ2/results/6d237a16/` · 대조 `cmp-6d237a16-vs-0133dcd4m.json`.
+- **98스텝 rc≠0 0 · compare_runs(기준 = master 0133dcd4-m) = 대상 실패 0 · 기준 실패 0 · 신규 0 · 해소 0.**
+- 주요 수: A12/D07e cys 340/0 · A13/D07d lib **550/0**(1 ignored · released_tables_cover_current_embed 포함) · A14 cys-app 173/0 · B01 boot-health GREEN · D02 secret-scan clean 1298 · D06 bun 1416/0 · D07c cysd 직렬 1192/0 · X01 2/0 · D07b c6_reap·e2e_replacement·w2_untomb_fullcycle 전부 rc 0.
+- 게이트 밖(손으로): test_ceo_pending_gate ALL PASS(§18-3 · 레인 미등재) · 헤드리스 = 08b379bc(③ 까지) ALL PASS 89줄 — ② 의 main.ts 변경은 CEO 승격 실패 토스트 문구 2곳뿐(헤드리스 경로 밖).

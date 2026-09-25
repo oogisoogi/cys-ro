@@ -7,7 +7,7 @@
 ## 끝난 것
 | 항목 | 위치 | 증거 |
 |---|---|---|
-| autoArrange v2(기둥 · 무정렬 최소 변경 · 규칙 5 기둥 수) | ui/src/formation.ts | bun 전체 초록 · 뮤턴트 18/18 |
+| autoArrange v2(기둥 · 무정렬 최소 변경) | ui/src/formation.ts | bun 전체 초록 · 뮤턴트(아래) |
 | actionSplit 방향 전달 · 팔레트 「세로 분할」 복원 · ⌘⇧D 주석 | ui/src/main.ts(3곳) | autoarrange.test 「v2 — 팔레트」 절 · 헤드리스 c18i |
 | 시험 신설 16 · 교체 9 | ui/src/autoarrange.test.ts | 아래 「바꾼 시험」 |
 | 헤드리스 c18i 교체 · c18v 신설 | docs/v116-ui-evidence/v116-headless.ts | 새 번들 c18 전건 PASS · 옛 번들(2db641e8) c18i·c18v FAIL · c18a~h PASS |
@@ -41,7 +41,8 @@
 ## 함정
 - ui/node_modules = 심볼릭 링크(→ cys-v116-integ) · `.gitignore` 의 `node_modules/` 는 링크를 못 걸러 untracked 로 보인다 — `git add -A` 금지.
 - 뮤턴트는 스냅샷(스크래치 git archive)에서만 — 작업트리에서 돌리지 마라.
-- leftColumnShare(2) = leftColumnShare(3) = 1/3 — 규칙 5(기둥 수 vs 좌석 수) 시험은 1↔2 경계로만 갈린다(M9 생존 → 시험 추가로 봉합).
+- 헤드리스 기본 폭 D 는 창 폭 의존(1280 = 상한 50%) — 기대값을 상수로 박지 말고 c18D 처럼 잰 D 와 master 실제 열 수로 대조하라.
+- leftAuto 표지는 루트 가로 분할에만 뜻이 있다 — 시험에서 기본 배치를 「끈 것처럼」 만들 땐 표지를 지워야 실제 끌기와 같다(디버깅 패스에서 한 번 헛디딤).
 
 ## 재현
 ```

@@ -1,6 +1,6 @@
 // 디버깅 정밀 패스(TICKET=v116-equalize-v2) — 열기·닫기·세로 분할·사람 끌기 연쇄를 무작위로 굴리며 매 걸음 불변식 검사.
 import { it, expect } from "bun:test";
-import { autoArrange, formationLayout, LEFT_SHARE_DEFAULT, OLD_DEFAULT_SHARES, RULE_TOL, type LayoutNode } from "./formation";
+import { autoArrange, formationLayout, LEFT_SHARE_DEFAULT, type LayoutNode } from "./formation";
 const leftColumnShare = (_n: number) => LEFT_SHARE_DEFAULT;
 type N = LayoutNode;
 const sids = (n: N | null, o: number[] = []): number[] => { if (!n) return o; if (n.type === "pane") o.push(n.sid); else { sids(n.a, o); sids(n.b, o); } return o; };
@@ -55,7 +55,7 @@ it("연쇄 20,000걸음 × 시드 40 — 좌석 보존 · 비율 (0,1) · 맞춘
           const bs = (bl as any).ratio ?? 0.5;
           const bothSameLeft = JSON.stringify(sids((bl as any).a).sort()) === JSON.stringify(sids((ol as any).a).sort());
           if ((bl as any).leftAuto) { expect((ol as any).ratio).toBeCloseTo(D, 12); defaultKept++; }
-          else if (bothSameLeft && bs >= 0.15 && bs <= 0.85 && !OLD_DEFAULT_SHARES.some((v) => Math.abs(bs - v) <= RULE_TOL)) { expect((ol as any).ratio).toBe(bs); humanKept++; }
+          else if (bothSameLeft && bs >= 0.15 && bs <= 0.85) { expect((ol as any).ratio).toBe(bs); humanKept++; } // (Fable 2R ②) 옛 기본 이동은 복원 때 한 번 — 이 판의 1/2·1/3 도 사람 값
         }
         if (fit) { fitted++; const w = widths(out).filter((_, i) => !sids(ou[i]).some((x) => L.includes(x))); for (const x of w) expect(x).toBeCloseTo(w[0], 9); } else unfit++;
         // 손 안 댄 입력 워커 기둥(닫힘·after 없음)은 같은 객체

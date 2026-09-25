@@ -4916,8 +4916,8 @@ async function actionNew() {
   setFocus(sid);
 }
 
-// (v116-auto-equalize · master 판정 D2 = A) 방향 인자는 남기되 배치는 언제나 자동 좌우 균등이다 —
-//   분할한 새 창은 대상 창 바로 다음 순서에 선다. 「아래에 새 창」 메뉴는 실제 동작과 어긋나 뺐다.
+// (v116-equalize-v2 · 박사님 결정 09-25 14:1x) 방향을 배치에 넘긴다 — "row" = 대상 창이 든 기둥 바로 오른쪽 새 기둥 ·
+//   "col" = 대상 창 바로 아래(같은 기둥 · 기둥 폭 불변). 사람이 만든 위아래 나눔은 그 뒤 열기·닫기에도 그대로 남는다.
 async function actionSplit(dir: "row" | "col") {
   if (daemonActionBlocked()) return; // ★P1-3: 리셋 진행/완료 중 분할 차단(무반응 금지)
   const ws = current();
@@ -4928,9 +4928,8 @@ async function actionSplit(dir: "row" | "col") {
   }
   const target = focusedSid;
   const sid = await newSurface(null, ws.socket);
-  void dir;
   // await 사이에 대상이 닫혔으면 after 가 트리에 없으므로 맨 끝에 선다 — 루트에 덧붙여 고아를 만들지 않는다(종전과 같은 보장).
-  arrangeWs(ws, { add: [{ sid, after: target }] });
+  arrangeWs(ws, { add: [{ sid, after: target, dir }] });
   render();
   setFocus(sid);
 }
@@ -6834,8 +6833,8 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
   items.push(
     { id: "act:new-tab", title: "새 탭", keywords: "new tab 탭", action: () => actionNew() },
     { id: "act:split-row", title: "가로 분할", keywords: "split row 분할", action: () => actionSplit("row") },
-    // (v116-auto-equalize · master 판정 ⓒ 09-25) 「세로 분할」 항목 제거 — 창은 언제나 좌우 균등으로 다시 서므로 세로 분할을 더는
-    //   만들 수 없다(이름이 거짓 표시가 된다). ⌘⇧D 는 이름이 없고 손버릇 보호로 남긴다(오른쪽 분할과 같게 동작).
+    // (v116-equalize-v2 · 박사님 결정 09-25) 「세로 분할」 복원 — 사람이 만든 위아래 나눔을 자동 정렬이 지키므로 다시 참이다.
+    { id: "act:split-col", title: "세로 분할", keywords: "split col 분할", action: () => actionSplit("col") },
     { id: "act:close", title: "패널 닫기", keywords: "close 닫기", action: () => actionClose() },
     { id: "act:equalize", title: "패널 균등화", keywords: "equalize 균등", action: () => actionEqualize() },
     { id: "act:cc", title: "Control Center 토글", keywords: "control center dashboard 대시보드", action: () => setCcOpen(!ccOpen) },
@@ -9384,7 +9383,7 @@ window.addEventListener("keydown", (e) => {
     actionSplit("row");
   } else if ((e.key === "D" || e.key === "d") && e.shiftKey) {
     e.preventDefault();
-    actionSplit("col"); // (v116-auto-equalize) 손버릇 보호 — 배치는 자동 좌우 균등이라 오른쪽 분할과 같다
+    actionSplit("col"); // 세로 분할(대상 창 아래 · 같은 기둥) — v116-equalize-v2 에서 다시 진짜 세로 분할
   } else if (e.key === "w") {
     e.preventDefault();
     actionClose();

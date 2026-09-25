@@ -139,8 +139,16 @@ export function formationIfRowOnly(
 //    좌열을 못 찾으면(처음 배치 · 좌석이 흩어짐 · 좌열 안에 다른 좌석이 끼어 있음 · 좌열이 위아래 분할 속에 있음 ·
 //    master·cso 가 좌우로 나란함)
 //    formationLayout 표준(좌열 몫 leftColumnShare · master:cso = 4:1)으로 만든다.
-//  · 나머지 좌석 전부 = 한 줄 좌우 균등. 좌→우 순서 = 입력 트리 순회 순서(사람이 위아래로 나눠 둔 것도 한 줄로 편다).
-//  · master·cso 가 없으면 전부 한 줄 좌우 균등(우리 개발 기기 · 07-27 오너 확정 「개수 무관 1행 가로 균등」).
+//  · ★(v2 · 박사님 결정 09-25 14:1x 「사용자가 임의로 세로로 정렬한 것들도 그대로 유지한다. 오직 워커 페인들의 좌우폭만
+//    균등하게 정렬한다」 · DESIGN-v2) 나머지 좌석은 「기둥」 단위로 본다 — 기둥 = 루트를 가로(row) 분할로 끝까지 펼친 단위
+//    (칸 하나 또는 위아래 묶음). 워커 기둥은 **같은 객체 그대로**(안의 위아래 비율 무접촉) · 기둥끼리만 좌우 균등.
+//    (v1 은 사람이 위아래로 나눈 것도 한 줄로 폈다 — 폐기.)
+//  · 새 칸(add): dir 없음/"row" = after 가 든 기둥 바로 오른쪽 새 기둥 · dir "col"(세로 분할) = after 칸 바로 아래(같은 기둥 ·
+//    기둥 수 불변 = 폭 불변). after 가 좌열이면 좌열 무접촉 → 워커 맨 왼쪽 새 기둥 · after 없음 → 맨 오른쪽.
+//  · 닫기(remove): 그 자리에서 잘라내고 형제가 자리를 받는다(기둥 폭 불변) · 기둥이 통째로 사라지면 남은 기둥 재균등.
+//  · 좌열 좌석이 워커와 한 기둥에 섞였으면(사람이 워커를 master 아래에 넣음 · 좌열이 위아래 분할 속 · 역할이 바뀜) 맞출 수 없다 —
+//    **무정렬**: 그 자리 접힘·반 나눔·루트 오른쪽 덧붙임만(사람 위아래 나눔을 지우지 않는다 · v1 은 표준으로 다시 짜 지웠다).
+//  · master·cso 가 없으면 기둥 전부 좌우 균등(우리 개발 기기 · 07-27 오너 확정 「개수 무관 1행 가로 균등」의 기둥판).
 //  · ★좌석 집합 보존: 결과의 sid 집합 = (입력 − remove) ∪ add. 이 함수는 좌석을 지우거나 만들지 않는다 —
 //    트리에서 빠진 좌석은 「살아 있는데 안 보이는 좌석」이 되기 때문이다(4군 ④).
 //  · 죽은 좌석·자리표·역할 모르는 셸: 역할이 없으면 워커 칸과 같이 오른쪽 줄에 선다. 끝난(exited) 좌석을 빼는 것은
@@ -150,8 +158,9 @@ export function formationIfRowOnly(
 //   좌열의 화면 몫이 그 순간 바뀌어 「지금 비율」을 잃는다. 바뀌기 **전** 트리에서 몫을 재야 한다.
 
 export type ArrangeChange = {
-  /// 새로 붙는 좌석. `after` 가 트리에 있으면 그 바로 다음 순서에, 없으면 맨 끝(오른쪽)에 선다.
-  add?: { sid: number; after?: number }[];
+  /// 새로 붙는 좌석. `after` 가 트리에 있으면 그 칸이 든 기둥 바로 오른쪽 새 기둥(dir "col" = 그 칸 바로 아래 · 같은 기둥),
+  /// 없으면 맨 끝(오른쪽) 새 기둥.
+  add?: { sid: number; after?: number; dir?: "row" | "col" }[];
   /// 빠지는 좌석(닫기 · 외부 닫힘 · 자리표 회수 · 죽은 좌석 정리).
   remove?: number[];
 };
@@ -212,6 +221,56 @@ function leftSids(order: number[], roles: RoleMap): number[] {
   return [m, c].filter((s): s is number => s !== undefined);
 }
 
+// (v2) 기둥 목록 — 루트를 가로(row) 분할로 끝까지 펼친다. 가로 분할이 아닌 서브트리(칸 · 위아래 묶음)가 기둥 하나.
+function rowUnits(n: LayoutNode, out: LayoutNode[] = []): LayoutNode[] {
+  if (n.type === "split" && n.dir === "row") { rowUnits(n.a, out); rowUnits(n.b, out); }
+  else out.push(n);
+  return out;
+}
+
+// (v2) 빠지는 좌석을 그 자리에서 잘라낸다 — 형제가 자리를 받는다(replaceNode 의 접힘과 같다). 같은 sid 가 두 번 나오면
+//   뒤엣것을 뺀다(좌석 중복 0). 바뀐 것이 없는 서브트리는 **같은 객체**로 돌려준다(사람 배치 무접촉의 근거).
+function prune(n: LayoutNode, drop: Set<number>, seen: Set<number>): LayoutNode | null {
+  if (n.type === "pane") {
+    if (drop.has(n.sid) || seen.has(n.sid)) return null;
+    seen.add(n.sid);
+    return n;
+  }
+  const a = prune(n.a, drop, seen);
+  const b = prune(n.b, drop, seen);
+  if (a && b) return a === n.a && b === n.b ? n : { ...n, a, b };
+  return a ?? b;
+}
+
+// (v2) target 칸을 make(칸)으로 바꾼다 — 나머지는 같은 객체.
+function replacePane(n: LayoutNode, target: number, make: (p: LayoutNode) => LayoutNode): LayoutNode {
+  if (n.type === "pane") return n.sid === target ? make(n) : n;
+  const a = replacePane(n.a, target, make);
+  const b = replacePane(n.b, target, make);
+  return a === n.a && b === n.b ? n : { ...n, a, b };
+}
+
+// (v2) 맞출 수 없는 모양(좌열 좌석이 워커와 한 기둥에 섞임)의 최소 변경 — 사람 배치를 지우지 않는다.
+//   닫기 = 그 자리 접힘 · after 가 있는 열기 = after 칸을 dir 방향으로 반 나눔(1.1.6 이전 분할과 같다) ·
+//   after 없는 열기 = 루트 오른쪽 새 칸(몫 1/(기둥+1) — 나머지 비율은 그대로 줄어든다).
+function minimalChange(tree: LayoutNode | null, change: ArrangeChange, drop: Set<number>): LayoutNode | null {
+  const seen = new Set<number>();
+  let t = tree ? prune(tree, drop, seen) : null;
+  for (const { sid, after, dir } of change.add ?? []) {
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    const p: LayoutNode = { type: "pane", sid };
+    if (!t) t = p;
+    else if (after !== undefined && after !== sid && sidsInOrder(t).includes(after)) {
+      t = replacePane(t, after, (old) => ({ type: "split", dir: dir ?? "row", ratio: 0.5, a: old, b: p }));
+    } else {
+      const k = rowUnits(t).length;
+      t = { type: "split", dir: "row", ratio: k / (k + 1), a: t, b: p };
+    }
+  }
+  return t;
+}
+
 /// 자동 정렬. 반환 `null` = 좌석이 하나도 없다(빈 탭).
 export function autoArrange(
   tree: LayoutNode | null,
@@ -235,13 +294,49 @@ export function autoArrange(
 
   const left = leftSids(order, roles);
   const rest = order.filter((s) => !left.includes(s));
-  if (left.length === 0) return evenRow(rest.map(pane));
+  if (mode === "standard") {
+    // 정렬 단추 = 종전 표준 그대로(좌열 4:1 · 나머지 한 줄 균등 — 사람이 누르는 것이라 위아래 나눔도 편다).
+    if (left.length === 0) return evenRow(rest.map(pane));
+    const std: LayoutNode =
+      left.length === 2 ? { type: "split", dir: "col", ratio: MASTER_CSO_RATIO, a: pane(left[0]), b: pane(left[1]) } : pane(left[0]);
+    return rest.length === 0 ? std : { type: "split", dir: "row", ratio: leftColumnShare(rest.length), a: std, b: evenRow(rest.map(pane)) };
+  }
+
+  // (v2) 기둥 — 입력 트리의 기둥마다 빠지는 좌석을 그 자리에서 잘라낸다. 잘린 기둥이 가로 조각으로 남으면 조각을 기둥으로 편다.
+  const isLeft = (s: number) => left.includes(s);
+  const seen = new Set<number>();
+  const units: LayoutNode[] = [];
+  for (const u of tree ? rowUnits(tree) : []) {
+    const p = prune(u, drop, seen);
+    if (p) rowUnits(p, units);
+  }
+  // 맞출 수 있는가 = 좌열 좌석을 품은 기둥은 좌열 좌석만 품는다. 아니면 무정렬(사람 위아래 나눔을 지우지 않는다).
+  const fits = units.every((u) => {
+    const us = sidsInOrder(u);
+    return !us.some(isLeft) || us.every(isLeft);
+  });
+  if (!fits) return minimalChange(tree, change, drop);
+
+  // 워커 기둥 + 새 칸 — after 가 든 기둥 바로 오른쪽(세로 분할 = 그 칸 아래) · after 가 좌열이면 맨 왼쪽 · 없으면 맨 오른쪽.
+  const workers = units.filter((u) => !sidsInOrder(u).some(isLeft));
+  for (const { sid, after, dir } of change.add ?? []) {
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    if (isLeft(sid)) continue; // 좌열로 들어간다(아래 leftNode)
+    const i = after === undefined ? -1 : workers.findIndex((u) => sidsInOrder(u).includes(after));
+    if (i >= 0 && dir === "col") {
+      workers[i] = replacePane(workers[i], after!, (old) => ({ type: "split", dir: "col", ratio: 0.5, a: old, b: pane(sid) }));
+    } else if (i >= 0) workers.splice(i + 1, 0, pane(sid));
+    else if (after !== undefined && isLeft(after) && seen.has(after)) workers.unshift(pane(sid));
+    else workers.push(pane(sid));
+  }
+  if (left.length === 0) return evenRow(workers);
 
   // 입력 트리의 좌열을 찾는다 — 입력 기준 좌열 좌석을 정확히 그것만 덮는 온전한 세로 열이어야 한다.
   let keptLeft: LayoutNode | null = null;
   let share: number | null = null;
   let untouched = false; // 좌열 몫이 직전 규칙값 그대로였다(사람 손 안 탐)
-  if (tree && mode !== "standard") {
+  if (tree) {
     const inLeft = leftSids(inOrder, roles);
     if (inLeft.length > 0) {
       const sub = coveringSubtree(tree, new Set(inLeft));
@@ -266,7 +361,9 @@ export function autoArrange(
         const direct = tree.type === "split" && tree.dir === "row" && tree.a === sub;
         if (direct && cs >= DRAG_MIN && cs <= DRAG_MAX) {
           share = cs;
-          const prevRest = new Set(inOrder).size - inLeft.length;
+          // (v2 규칙 5) 워커 수 = 워커 **기둥** 수 — 세로 분할·기둥 안 닫기가 좌열 폭을 바꾸지 않게. 칸 하나 기둥뿐이면 v1 좌석 수와 같다.
+          const prevRest = rowUnits(tree).filter((u) => !sidsInOrder(u).some((s) => inLeft.includes(s))).length;
+          // ★보류(박사님 확인 중 · 좌열 가로 폭도 그대로?): 답이 「언제나 보존」이면 이 한 줄을 `untouched = false;` 로 바꾼다.
           untouched = prevRest > 0 && Math.abs(cs - leftColumnShare(prevRest)) <= RULE_TOL;
         }
       }
@@ -277,9 +374,9 @@ export function autoArrange(
     (left.length === 2
       ? { type: "split" as const, dir: "col" as const, ratio: MASTER_CSO_RATIO, a: pane(left[0]), b: pane(left[1]) }
       : pane(left[0]));
-  if (rest.length === 0) return leftNode;
-  // 몫이 없으면(표준·좌열 미발견·좌열이 화면 전체였다·사람 값이 아닌 깊은 길 — 사람 값은 끌기 범위 안에서만 선다) 표준 몫.
-  // 사람 손을 안 탄 몫은 새 워커 수의 규칙값으로(D1 = C).
-  if (untouched || share === null) share = leftColumnShare(rest.length);
-  return { type: "split", dir: "row", ratio: share, a: leftNode, b: evenRow(rest.map(pane)) };
+  if (workers.length === 0) return leftNode;
+  // 몫이 없으면(좌열 미발견·좌열이 화면 전체였다·사람 값이 아닌 깊은 길 — 사람 값은 끌기 범위 안에서만 선다) 표준 몫.
+  // 사람 손을 안 탄 몫은 새 워커 기둥 수의 규칙값으로(D1 = C · v2 규칙 5).
+  if (untouched || share === null) share = leftColumnShare(workers.length);
+  return { type: "split", dir: "row", ratio: share, a: leftNode, b: evenRow(workers) };
 }

@@ -1,6 +1,6 @@
 # 윈 실기 묶음 재료(최종판) — cysr 1.1.6 + 설치기 0.3.36 · 박사님 윈 노트북 한 자리
 
-- 최종판: TICKET=v116-cut-close A부 · master#668dddf4(원장 19:20:27 surface:1112 submitted yes) · 작성 = worker@surface:1112 · 2026-09-25 19:2x~
+- 최종판: TICKET=v116-cut-close A부 · master#668dddf4(원장 19:20:27 surface:1112 submitted yes) + 개정 master#f703427c(원장 19:33:15 · 【결정필요】1 = B 채택 — 새 설치 길 포함) · 작성 = worker@surface:1112 · 2026-09-25 19:2x~
 - 초안: TICKET=v116-integ-5 8단계 · master#0eb6ba6f · worker@surface:1105(커밋 3758bfed) — 초안의 ① 은 절단 **전** CI 아티팩트(`cysr_1.1.5_x64-setup.exe` · 판번 1.1.5 · .sig 없음)였다. 이 최종판은 절단 **뒤** draft 자산으로 바꿨다(아래 ①). 초안 원문은 git 이력(3758bfed)에 그대로 있다.
 - 성격: master 가 박사님용 묶음 브리프를 쓰기 위한 **재료**다. 업로드·공유·배포·태그·게시·habitat/ai-jarvis 수정은 이 문서를 만들면서 **하나도 하지 않았다**(읽기·내려받기만 · 받은 파일은 이 좌석 scratchpad 에만 있음).
 - 기준: 태그 v1.1.6 = 주석 태그 fa6e8abf → 커밋 **f243e04a**(master C3 18:47 push) · release.yml 태그 런 36120443264 success(18:47~19:15 · master 실측) · draft 릴리스 1개(비공개).
@@ -57,12 +57,12 @@
 
 ## ③ 윈 점검표(1.1.6 실기) — 박사님이 실제로 할 순서
 
-순서 전제 = ④ 의 판정(설치기 0.3.36 시험이 기기에 **1.1.5** 함대를 세운 뒤 → 그 위에 1.1.6 setup.exe 덮어 설치). 그래서 **W8·W9 가 맨 앞**이고, 나머지는 1.1.6 이 선 뒤에 본다.
+순서 전제 = master#f703427c 판정(B 채택): ㉮ 노트북에 **지금 깔려 있는 1.1.5** 위에 draft setup.exe 를 덮어 설치(W8·W9) → W1~W12 → ㉯ 설치기 0.3.36 재설치(스테이징)로 1.1.6 을 **새로** 깐다(④·⑤). 그래서 **W8·W9 가 맨 앞**이고, 나머지는 1.1.6 이 선 뒤에 본다. ⚠ 노트북에 지금 1.1.5 가 깔려 있는지는 【미확인】(지난 윈 실기 = 09-23 1.1.3→1.1.5 덮어 설치 기록 · SESSION_STATE 09-23 01:4x) — 1.1.5 가 아니면 W9 는 「그 판 → 1.1.6」 덮어 설치로 읽는다.
 
 | # | 무엇을 | 확인 방법 | 기대 | 근거 |
 |---|---|---|---|---|
 | W8 | (윈만) 설치 파일 = 서명 없음 · SmartScreen | ① 의 setup.exe 더블클릭 → 첫 화면 | 「Windows의 PC 보호」 → 「추가 정보 → 실행」(손 1 · 1.1.1 윈 실기 선례와 같음) | ① Authenticode 없음 【관측】 · SESSION_STATE 1.1.1 윈 실기 1차 「손 1 = SmartScreen 추가 정보→실행」 |
-| W9 | (윈만) 1.1.5 위 덮어 설치 — 함대가 떠 있는 채로 | 설치기 시험이 남긴 1.1.5 함대(master·cso·worker1)를 켠 채 setup.exe 진행 → 끝나면 앱 재시작 안내대로 | ⑴ 설치 뒤 판번 1.1.6(PowerShell `cys --version` → `cys 1.1.6` · 이 명령은 맥 설치본에서 `cys 1.1.5` 를 찍는 것 실측) ⑵ 좌석이 되살아남 ⑶ **팩 병합 대기 `.new` 파일 0개** — PowerShell `Get-ChildItem $HOME\.cys\pack -Recurse -Filter *.new` 결과 없음(1.1.3→1.1.5 덮어 설치 때 `.new` 4개 발행 차단 결함의 재발 점검) | 메모리 tauri-nsis-update-mode-skips-uninstaller(NSIS 업데이트 모드는 옛 제거기를 안 불러 데몬·세션을 끊지 않는다) · SESSION_STATE 09-23 01:4x 「윈 1.1.3→1.1.5 덮어쓰기 = `.new` 4」 · HANDOFF-v116-integ.md §14(:221) 「1.1.5 D1 RefreshUser」 |
+| W9 | (윈만) 1.1.5 위 덮어 설치 — 함대가 떠 있는 채로 | 지금 노트북에 깔린 1.1.5 함대(master·cso·worker1)를 켠 채 setup.exe 진행 → 끝나면 앱 재시작 안내대로 | ⑴ 설치 뒤 판번 1.1.6(PowerShell `cys --version` → `cys 1.1.6` · 이 명령은 맥 설치본에서 `cys 1.1.5` 를 찍는 것 실측) ⑵ 좌석이 되살아남 ⑶ **팩 병합 대기 `.new` 파일 0개** — PowerShell `Get-ChildItem $HOME\.cys\pack -Recurse -Filter *.new` 결과 없음(1.1.3→1.1.5 덮어 설치 때 `.new` 4개 발행 차단 결함의 재발 점검) | 메모리 tauri-nsis-update-mode-skips-uninstaller(NSIS 업데이트 모드는 옛 제거기를 안 불러 데몬·세션을 끊지 않는다) · SESSION_STATE 09-23 01:4x 「윈 1.1.3→1.1.5 덮어쓰기 = `.new` 4」 · HANDOFF-v116-integ.md §14(:221) 「1.1.5 D1 RefreshUser」 |
 | W1 | 창 머리 번호 + `#N` 해석 1회 | PowerShell 에서 `cys list` → 창 머리 숫자와 5번째 칸 `no=N` 을 **같은 시각 캡처 1장**으로 대조 → `cys send '--surface=#<산 번호>' hello` | 창 머리 숫자 = `no=` 값 · stderr `#N → surface:N @<소켓 이름>` | HANDOFF §19-2 #5 · cys.rs:1463-1476(resolve_surface_arg) |
 |  | ⚠ | PowerShell 에서 `#` 이 주석으로 먹히는지 【미확인】 — 작은따옴표로 감싸 넘길 것(`'--surface=#5'`) | | 맥 zsh 함정 §19-2 #5 ⚠ 의 윈 판 |
 | W4 | 좌열 기본 폭 · 노트북 90칸 | 1.1.6 첫 기동 직후 master 칸 열 수(칸 안 `mode con` 또는 창 머리) | 좌열 = 창의 25%(상한 50%) · 노트북 화면에서 master 약 90칸(창이 좁으면 상한 50% 에서 멈춤) | 박사님 결정 14:5x · §22 · HANDOFF-v2 「좌열 기본 폭에 칸 여백」 |
@@ -103,68 +103,95 @@
 - 같은 자리에서 /effort: 표시가 high(Not applied(high) 꼴 포함).
 ```
 - 두 줄의 근거(설치기 쪽): r4 커밋 aa89583 = wake.ps1 에 `CLAUDE_CODE_EFFORT_LEVEL='high'` · `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION='false'`(환경 키 없을 때만) · r5 커밋 2513925 = 창 폴백 `& $fallbackExe` 앞에도 두 값. 맥 pwsh 7 로는 실측했고 **PS 5.1 실물은 미실측**(1108 r4 보고 「9칸 중 8칸 실측 · PS 5.1 실물 1칸 미실측」) → 이 2줄이 그 1칸을 닫는다.
-- ⚠ 이 2줄은 **설치기가 깨운 본부 자비스(wake.ps1 경로)** 를 본다. ③ W6·W7 은 **cys 앱이 띄우는 좌석(launch_create_env_pairs 경로)** 을 본다 — 같은 모양의 확인이지만 다른 경로라 **둘 다** 본다(W9 덮어 설치 전에 이 2줄, 1.1.6 뒤에 W6·W7).
+- ⚠ 이 2줄은 **설치기가 깨운 본부 자비스(wake.ps1 경로)** 를 본다. ③ W6·W7 은 **cys 앱이 띄우는 좌석(launch_create_env_pairs 경로)** 을 본다 — 같은 모양의 확인이지만 다른 경로라 **둘 다** 본다(㉮ 1.1.6 덮어 설치 뒤 W6·W7, ㉯ 새 설치 뒤 이 2줄).
 
-### 박사님이 치는 한 줄(스테이징 · 라이브 무접촉)
-선행 조건(아래 표)이 다 선 뒤, 노트북 **명령 프롬프트 또는 PowerShell** 에 붙여 넣는 한 줄. 라이브 한 줄(`bootstrap.ps1:941`의 try/catch 정본)과 글자가 같고 **주소만 `/install/` → `/install/next/`** 다:
+### ㉯ 새 설치 — 반드시 「앱까지 지우기 → 설치」 두 줄로(재설치 한 줄은 새 설치가 아니다)
+【판정 · 신뢰도 높음(코드 원문)】 master#f703427c 의 「설치기 재설치(제거 뒤 새 설치)」 를 **재설치 한 줄(reinstall.ps1)** 로 하면 앱은 **지워지지 않는다**:
+- habitat dce10a5 `install-master/reinstall.ps1:94` 원문 `powershell -ExecutionPolicy Bypass -File $ResetFile -KeepApp -Yes` · `:90` 주석 「-KeepApp : cys 프로그램은 지우지 않는다(설치 도우미가 [6/10] 에서 이미 깔린 프로그램을 그대로 쓴다).」
+- 그 뒤 설치기 [5/10] 은 설치 자리의 표지(`jarvis-cys-pin.json`)를 본다(`bootstrap.ps1:1152-1164` Get-CysContentState). ㉮ 에서 사람이 setup.exe 로 깐 1.1.6 에는 이번 핀 지문의 표지가 없으므로(마지막 표지 = 지난 설치기의 1.1.5 핀 지문 → 'pin-changed' 또는 'no-stamp' · 【추정 · 노트북 실물 미확인】) 설치기는 임시 프리릴리스에서 1.1.6 을 다시 받아 **덮어** 깐다 — 받기·핀·덮어 설치는 재지만 「앱이 없는 기기에 처음 까는 길」은 안 잰다.
+- ⇒ 워크숍 참가자의 첫 설치 길을 재려면 **① 지우기 한 줄(reset-clean · -KeepApp 없음)** 로 앱까지 지운 뒤 **② 설치 한 줄(bootstrap)** 을 돌린다. reset-clean 은 앱을 직접 지우지 않고 **윈도우 설정 앱에서 지우도록 안내**한다(`reset-clean.ps1:30-34` 원문 「cys 프로그램 자체는 이 스크립트가 지우지 않는다 — 윈도우 설정 앱에서 지우시게 안내한다.」 · 까닭 = 백신이 제거 프로그램 실행을 막고 PowerShell 을 종료시킨 실사고 2026-09-05). 로그인은 기본으로 남긴다(`:21` 「★로그인은 기본으로 남긴다」) → ② 에서 로그인 카드는 안 뜬다(로그아웃 갈래는 이번 범위 밖).
+
+**① 지우기 한 줄**(명령 프롬프트 또는 PowerShell · 원문 = `reset-clean.ps1:15` 정본의 주소만 `/install/next/`):
+```
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Remove-Item ([Environment]::GetFolderPath('UserProfile')+'\reset-clean.ps1') -ErrorAction SilentlyContinue; irm https://jarvis.godmeyou.kr/install/next/reset-clean.ps1 -OutFile ([Environment]::GetFolderPath('UserProfile')+'\reset-clean.ps1') -ErrorAction Stop; powershell -ExecutionPolicy Bypass -File ([Environment]::GetFolderPath('UserProfile')+'\reset-clean.ps1') } catch { Write-Host '설치 파일을 받지 못했습니다. 인터넷 연결을 확인하신 뒤 이 줄을 다시 붙여 넣어 주십시오.'; exit 1 }"
+```
+- 박사님이 만나는 물음(원문 `reset-clean.ps1` Read-Host 줄): `:1529` 「계속하려면 「지웁니다」 라고 입력해 주십시오」 → 설정 앱에서 cysr 제거 → `:1259` 「제거를 마치셨으면 Enter 를 눌러 주십시오」 → `:1300` 「이 폴더를 지웁니다. 계속하시려면 Enter …」 · 경우에 따라 `:1523`·`:1549` = 손 약 5~6회(입력 1 · 설정 앱 제거 2~3 · Enter 2).
+
+**② 설치 한 줄**(명령 프롬프트 또는 PowerShell · 원문 = `bootstrap.ps1:941` 정본의 주소만 `/install/next/`):
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Remove-Item ([Environment]::GetFolderPath('UserProfile')+'\install-jarvis.ps1') -ErrorAction SilentlyContinue; irm https://jarvis.godmeyou.kr/install/next/bootstrap.ps1 -OutFile ([Environment]::GetFolderPath('UserProfile')+'\install-jarvis.ps1') -ErrorAction Stop; powershell -ExecutionPolicy Bypass -File ([Environment]::GetFolderPath('UserProfile')+'\install-jarvis.ps1') } catch { Write-Host '설치 파일을 받지 못했습니다. 인터넷 연결을 확인하신 뒤 이 줄을 다시 붙여 넣어 주십시오.'; exit 1 }"
 ```
-- 근거: ⑴ 정본 한 줄 = habitat fix/installer-0336(dce10a5) `install-master/bootstrap.ps1:941` 【관측】 ⑵ 스테이징 경로 = 메모리 `~/.claude/projects/-Users-oogisoogi-axdev/memory/installer-field-test-staging-path.md` 원문: 「bootstrap.ps1 단독은 형제 파일을 안 받으므로 `next/bootstrap.ps1` 한 줄이면 된다.」 ⑶ 옛 꼴(`irm …; powershell -File …`)을 쓰지 않는 이유 = 메모리 `windows-oneliner-semicolon-runs-after-failed-download`: 「받기 실패(-ErrorAction Stop 포함)에도 ; 뒤가 돌아 옛 파일을 실행한다 — $ 없는 try/catch + 선삭제가 정본」 — 이 노트북은 지난 실기(0.3.3x·1.1.5)의 `install-jarvis.ps1` 이 남아 있을 수 있어 특히 해당.
-- 「PS 5.1 -File 사람 설치」 = 위 한 줄 안쪽의 `powershell -ExecutionPolicy Bypass -File` 이 Windows PowerShell 5.1 로 돈다(윈 기본 `powershell` = 5.1) → r3 체크리스트 1줄째를 그대로 덮는다.
-- 「지난 실행이 끊긴 기기에서 재실행」(r3 2줄째): 같은 한 줄을 한 번 돌리다 **[3/10] 이후 아무 곳에서 창을 닫고**(Ctrl-C 또는 창 닫기) 다시 붙여 넣는다 = 박사님 손 +1. 【판정】 한 자리에서 보려면 이 순서(끊기 → 재실행)여야 한다.
+- 근거: ⑴ 정본 한 줄 = habitat fix/installer-0336(dce10a5) `install-master/bootstrap.ps1:941` 【관측】(라이브 `/install/bootstrap.ps1` 0.3.35 도 같은 try/catch 꼴 2곳 【관측】) ⑵ 스테이징 경로 = 메모리 `~/.claude/projects/-Users-oogisoogi-axdev/memory/installer-field-test-staging-path.md` 원문: 「bootstrap.ps1 단독은 형제 파일을 안 받으므로 `next/bootstrap.ps1` 한 줄이면 된다.」 ⑶ 옛 꼴(`irm …; powershell -File …`)을 쓰지 않는 이유 = 메모리 `windows-oneliner-semicolon-runs-after-failed-download`: 「받기 실패(-ErrorAction Stop 포함)에도 ; 뒤가 돌아 옛 파일을 실행한다 — $ 없는 try/catch + 선삭제가 정본」 — 이 노트북은 지난 실기의 `install-jarvis.ps1` 이 남아 있을 수 있어 특히 해당.
+- 「PS 5.1 -File 사람 설치」(r3 1줄째) = 위 한 줄 안쪽의 `powershell -ExecutionPolicy Bypass -File` 이 Windows PowerShell 5.1 로 돈다(윈 기본 `powershell` = 5.1).
+- 「지난 실행이 끊긴 기기에서 재실행」(r3 2줄째): ② 를 한 번 돌리다 **[3/10] 이후 아무 곳에서 창을 닫고**(Ctrl-C 또는 창 닫기) ② 를 다시 붙여 넣는다 = 박사님 손 +1. 【판정】 한 자리에서 보려면 이 순서(끊기 → 재실행)여야 한다. 끊긴 뒤 재실행은 이미 받은 1.1.6 을 다시 쓸 수 있다(표지 'match' 면 [5/10] 건너뜀 · `bootstrap.ps1:3142` 원문 「같은 판(v$CysVersion)의 cys 가 이미 설치돼 있습니다 (지문 확인) — 받지 않고 건너뜁니다.」) — ⚠ 끊는 자리가 [6/10](설치) **앞**이면 새 설치 길이 재실행 쪽에서 이어지고, **뒤**면 재실행은 설치를 건너뛴다. **새 설치 화면을 온전히 보려면 [3/10]~[4/10] 에서 끊는다**(【판정】 · 단계 번호 = 설치기 화면 표기).
+- 새 설치에서 확인할 첫 화면(master 지시 · 1.1.1 윈 실기 합격 기록과 같은 축 · SESSION_STATE 09-21 14:2x 원문 「함대 3 = 43 jarvis·44 cso·45 worker1 · 10/10 rc=0 · 9/10 wake:cys-seat · awaken:auto·master/child-verified」): ⑴ 머리글 「cysr 1.1.6 · 설치 도우미 0.3.36」(`bootstrap.ps1:128-129` 주석 「화면 머리글은 이 값으로 「<이름> <판> · 설치 도우미 <설치기 판>」」) ⑵ [5/10] 이 임시 프리릴리스에서 받음 ⑶ 10/10 끝 ⑷ **창 3개**(master·cso·worker1 — 1.1.x 자리 제목 규칙 = 메모리 cysr-seat-title-is-role-not-jarvis 「총괄 자리는 jarvis 가 아니라 master」) ⑸ **본부 각성**(본부 자비스가 첫 인사로 깨어남) ⑹ r5 2줄(회색 제안 글 없음 · `/effort` high).
 - 로그아웃 갈래를 볼 필요가 있으면: 메모리 installer-field-test-staging-path 「①지우기가 로그인을 기본으로 남겨 [3/10] 카드 갈래가 안 돈다 → `Remove-Item ~\.claude\.credentials.json` 뒤 `next/bootstrap.ps1` 재실행으로 진입」 — 이번 체크리스트에는 없는 항목이라 **기본은 하지 않음**(master 판단).
+- 참고(쓰지 않는 길): 재설치 한 줄(`reinstall.ps1:35` 정본 + `$env:JARVIS_BASE_URL='https://jarvis.godmeyou.kr/install/next'` 선행 · `reinstall.ps1:64` 원문 `$Base = if ($env:JARVIS_BASE_URL) { $env:JARVIS_BASE_URL } else { 'https://jarvis.godmeyou.kr/install' }`)은 앱을 남기므로(-KeepApp) 이번 「새 설치」 목적에 안 맞는다 — 쓰면 ㉮ 와 같은 덮어 설치를 한 번 더 재는 셈이다.
 
 ### 선행 조건 — 누가(master 게이트) · 명령 · 되돌리기
 | # | 선행 조건 | 누가 | 명령(원문 출처) | 되돌리기 |
 |---|---|---|---|---|
 | P1 | 서버·고지 = ai-jarvis `feat/hw-model-0336` **f1b1ccf4** 배포(설치 전용 사이트 Worker `jarvis-install-site` — 고지 페이지 `web-install/src/page.ts` + 수신 `web-install/src/telemetry.ts:130` ENV_TEXT_KEYS 에 hw_model·mem_gb·disk_free_gb) · 발행 순서 원문 「서버·고지 먼저 → 설치기」(master#70a20b94) | master 게이트 | `site/hub` 를 f1b1ccf4 로 빨리감기(원격 site/hub ⊂ feat · 앞선 6커밋 · 뒤진 0 【관측】) → `bash web-install/deploy.sh`(드라이런) → `bash web-install/deploy.sh --go`(원문 = deploy.sh 머리말 「쓰는 법」) | 되돌림 커밋(`git revert`) 뒤 `deploy.sh --go` — deploy.sh G3 「마지막으로 배포한 커밋이 지금 HEAD 의 조상이 아니면 거부」 때문에 **옛 커밋 재배포는 거부된다**(머리말 원문) · 이 서버 변경은 모르는 키를 「버린다(거부 아님)」(installer-0336 브리프 D6-c · telemetry.ts:225-231) 라 옛 설치기에 무해 |
-| P2 | 설치기 최종 해시 확정(1108 r5 뒤) | master(1108 【확인요청】 r5 ACCEPT) | 【빈칸】 — 지금 habitat fix/installer-0336 로컬 HEAD = **dce10a5**(r5 · 18:53 커밋 · 【확인요청】 상한 19:50 · 아직 미보고) · 원격 fix/installer-0336 = 13a2392(r3) 【관측】 | 해당 없음(판정 단계) |
-| P3 | 스테이징 게시 = `/install/next/` 에 그 해시의 ps1 3파일 | master 게이트 | ai-jarvis site/hub 에서 `mkdir -p site/install/next && cp <habitat 최종 해시 트리>/install-master/{bootstrap,reinstall,reset-clean}.ps1 site/install/next/` → 커밋 → `bash web/build-web.sh && (cd web && unset NODE_OPTIONS && npx wrangler deploy --config /Users/oogisoogi/axdev/ai-jarvis/web/wrangler.jsonc)`(배포 줄 원문 = `~/axdev/master/installer-golive.sh` 5단계 · 스테이징 선례 커밋 = ai-jarvis 26e442a·68f5097·956aeb4·fe5d8bf) · 게시 뒤 `curl -H 'Cache-Control: no-cache'` 로 next/ sha 3/3 대조(메모리 원문: 「첫 curl 이 엣지 HIT 로 구판을 줄 수 있으니 20초 뒤 no-cache 재측」) | `rm -rf site/install/next` 커밋 → 같은 배포 줄 → `next/bootstrap.ps1` **404** 실측(메모리 원문 「실기 통과 뒤 릴리스 커밋에서 next/ 삭제(임시 경로 잔존 금지 · 404 실측)」 · golive.sh 4단계도 같은 삭제) |
-| P4 | 설치기 cys 핀 = 시험 동안 **1.1.5(발행본)** 유지 | master(확인만) | 확인 명령: `grep -n -E '^\$CysVersion' <habitat 최종 해시>/install-master/bootstrap.ps1` → `'1.1.5'` · `$CysDownloadDir` = `…/cys-ro/releases/download/v${CysVersion}/`(발행 릴리스 주소) — dce10a5 에서 `:134-135` 가 정확히 이 값 【관측】 · 라이브 `/install/bootstrap.ps1:130` 도 1.1.5 · InstallerVersion 0.3.35 【관측 19:2x】 | 해당 없음(바꾸지 않음) |
-| P5 | 라이브 무접촉 확인 | master | 게시 전후 `/install/bootstrap.ps1` sha 동일(지금 = InstallerVersion 0.3.35) · `/install/next/bootstrap.ps1` 게시 전 404 【관측 19:2x】 | — |
+| P2 | 설치기 최종 해시 확정(1108 r5 뒤 · P7 r6 커밋 뒤) | master(1108 【확인요청】 ACCEPT) | 【빈칸】 — 지금 habitat fix/installer-0336 로컬 HEAD = **dce10a5**(r5 · 18:53 커밋) · 원격 fix/installer-0336 = 13a2392(r3) 【관측 19:2x】 · P7(핀 1.1.6) 이 r6 커밋을 하나 더 얹으므로 **스테이징에 올릴 해시 = r6 머리** | 해당 없음(판정 단계) |
+| P3 | 스테이징 게시 = `/install/next/` 에 P2 해시의 ps1 3파일(단 bootstrap.ps1 = P8 치환본) | master 게이트 | ai-jarvis site/hub 에서 `mkdir -p site/install/next && cp <habitat P2 해시 트리>/install-master/{bootstrap,reinstall,reset-clean}.ps1 site/install/next/` → (P8 치환) → 커밋 → `bash web/build-web.sh && (cd web && unset NODE_OPTIONS && npx wrangler deploy --config /Users/oogisoogi/axdev/ai-jarvis/web/wrangler.jsonc)`(배포 줄 원문 = `~/axdev/master/installer-golive.sh` 5단계 · 스테이징 선례 커밋 = ai-jarvis 26e442a·68f5097·956aeb4·fe5d8bf) · 게시 뒤 `curl -H 'Cache-Control: no-cache'` 로 next/ sha 3/3 대조(메모리 원문: 「첫 curl 이 엣지 HIT 로 구판을 줄 수 있으니 20초 뒤 no-cache 재측」) | `rm -rf site/install/next` 커밋 → 같은 배포 줄 → `next/bootstrap.ps1` **404** 실측(메모리 원문 「실기 통과 뒤 릴리스 커밋에서 next/ 삭제(임시 경로 잔존 금지 · 404 실측)」 · golive.sh 4단계도 같은 삭제) |
+| P4 | 라이브 설치기는 그대로(**라이브 핀 1.1.5 · 0.3.35 무접촉**) — 핀 1.1.6 은 스테이징(next/)에만 선다 | master(확인만) | 확인: 라이브 `/install/bootstrap.ps1:130` `$CysVersion = '1.1.5'` · InstallerVersion 0.3.35 【관측 19:2x】 · 스테이징 쪽 핀 = P7 · 주소 = P8 | 해당 없음(바꾸지 않음) |
+| P5 | 라이브 무접촉 확인 | master | 게시 전후 `/install/bootstrap.ps1` sha 동일 · `/install/next/bootstrap.ps1` 게시 전 404 【관측 19:2x】 | — |
+| P6 | jarvis-install 임시 프리릴리스 `wintest-v1.1.6-<날짜>` · 자산 = draft 의 `cysr_1.1.6_x64-setup.exe`(+ `.sig`) **그대로** | master 게이트(공개 업로드 · 실기 뒤 삭제) | **선례 생성 명령 원문 = 【미확인】**(인박스·SESSION_STATE·TODO·브리프에서 `gh release create wintest…` 줄을 못 찾음 · 1.1.1 은 결과만 기록: SESSION_STATE 09-21 13:5x 「임시 호스트 jarvis-install 프리릴리스 `wintest-v1.1.1-20260921`(exe 140,416,627 B + .sig · URL 200)」). 선례의 **속성**은 실측: `wintest-v1.1.5-20260923` = prerelease true · draft false · target main · 제목 「wintest 1.1.5 (임시 · 윈 실기용 · 실기 뒤 삭제)」 · 본문 「윈 실기용 임시 호스트 · 발행 뒤 삭제」 · 자산 bootstrap.ps1·exe·.sig 【`gh api …/releases` 관측】. 자산 교체 선례 원문 = 인박스 09-23 18:50:15 worker@987 ⑨ `gh release upload wintest-v1.1.5-20260923 -R oogisoogi/jarvis-install <새 exe> <새 sig> --clobber`. 참고(선례 아님 · 도구 도움말 실측): `gh release create` 에 `-p/--prerelease` · `-t/--title` · `-n/--notes` · `--target` 이 있다(gh 2.87.3 `--help`). 프리릴리스는 「Latest」 가 되지 않는다 — 【문서】 REST 원문 「Drafts and prereleases cannot be set as latest.」 · 확인 = 자산 주소 로그인 없는 `curl -sIL` 200 · 크기 140,837,194 · sha256 a8ab563b… | 삭제 — 명령 원문 【미확인】(선례 삭제 기록 없음 · P9 참조) · 도구 도움말 실측: `gh release delete <tag> --yes --cleanup-tag`(태그까지 삭제) |
+| P7 | 설치기 핀 1.1.6 올림 = 설치기 좌석 **r6 몫**(habitat 커밋) | master 발주 → 1108(또는 설치기 좌석) | 고치는 곳 = `bootstrap.ps1` 「릴리스 핀 자리」 블록뿐(`:127` 원문 「다음 판 … 으로 올릴 때 고치는 곳은 **이 블록뿐**이다: $CysDisplayName · $CysVersion · $CysWinFile(자산 이름이 바뀌면) · $CysWinBytes · $CysWinSha256」). **윈 값(지금 실측)** = `$CysVersion '1.1.6'` · `$CysWinFile` 그대로(`"cysr_${CysVersion}_x64-setup.exe"` → 풀면 `cysr_1.1.6_x64-setup.exe` = draft 자산 이름 글자 일치) · `$CysWinBytes 140837194` · `$CysWinSha256 'a8ab563b0c7c0db5a5eebdba257a6d31ed1450c4438c380281b48cd61c7e6153'`(① 표 · API digest·내려받은 실물 2/3 일치 · ⚠핀 주석의 정본 출처 「릴리스 SHA256SUMS.txt」 는 **아직 없다** — B부 postprocess 뒤 3/3 대조) · **맥 값 = B부 산출 뒤**(zip 이름·크기·sha256·CDHash·build_id). ⚠ `tests/win-pin-release.sh` 는 발행 전 [릴리스] 항이 404 로 적색(1.1.5 선례: 인박스 09-23 14:53:59 worker@962 「④ [전환] 맥/윈 핀 = 릴리스 실측 → 공개 URL SHA256SUMS HTTP 404 (드래프트라 공개 다운로드 불가)」) | r6 커밋 되돌림(가역 · 로컬) |
+| P8 | next/bootstrap.ps1 의 `$CysDownloadDir` **1줄만** 임시 프리릴리스 주소로 | master(P3 과 함께) | 선례 원문 ⑴ 인박스 09-23 14:53:59 worker@962 「wintest 치환본 … 커밋본과의 diff = 1줄(127행): $CysDownloadDir = "https://github.com/oogisoogi/jarvis-install/releases/download/wintest-v1.1.5-20260923/"   # wintest 임시 호스트(실기용 · 발행 뒤 폐기) — 기존 프리릴리스의 bootstrap.ps1 과 같은 치환 방식」 ⑵ 인박스 09-23 18:50:15 worker@987 「9차 선례 = 핀 커밋 → 127행 $CysDownloadDir 1줄 치환」 ⑶ ai-jarvis fe5d8bf(1.1.3) next/bootstrap.ps1 의 `$CysDownloadDir = "https://github.com/oogisoogi/jarvis-install/releases/download/wintest-v1.1.3-20260922/"`. 이번 줄 = `:135`(dce10a5 기준 · r6 뒤 줄번호 재확인) → `$CysDownloadDir = "https://github.com/oogisoogi/jarvis-install/releases/download/wintest-v1.1.6-<날짜>/"`. 확인 = 치환본과 P2 커밋본의 diff 가 정확히 1줄 · 그 주소 + `cysr_1.1.6_x64-setup.exe` 가 로그인 없이 200. ⚠ 선례 1.1.5 는 치환본 bootstrap.ps1 을 프리릴리스 자산으로도 올렸다(자산 목록 실측) — 이번에 next/ 만 쓰면 프리릴리스에 bootstrap.ps1 은 불필요(【판정】 · 한 줄이 next/ 를 가리키므로) | next/ 삭제(P3 되돌리기)와 함께 사라진다 |
+| P9 | 옛 프리릴리스 `wintest-v1.1.5-20260923` 삭제(제목 「실기 뒤 삭제」 인데 남아 있음 【관측 19:2x】) | master 게이트(비가역 · P6 와 같은 때) | 명령 원문 【미확인】(선례 삭제 기록 못 찾음) · 도구 도움말 실측: `gh release delete wintest-v1.1.5-20260923 -R oogisoogi/jarvis-install --yes --cleanup-tag` · 확인 = `gh release list -R oogisoogi/jarvis-install` 에서 사라짐 · 옛 자산 주소 404 | 되돌리기 없음(비가역) — 필요하면 같은 자산(bootstrap.ps1 481,193 B · exe 140,687,576 B · .sig 412 B)으로 다시 만들 수 있으나 태그 커밋(605cdc35)·게시 시각은 새 값이 된다 |
 
-### 판정 — 「설치기 시험 → 그 위에 1.1.6 setup.exe 덮어 설치(W9)」 순서가 맞는가
-【판정】 **맞다(이 순서가 유일하게 안전하다)**. 신뢰도 높음(근거는 전부 코드·원장 실측).
-1. 설치기 핀이 1.1.5(P4)이므로 설치기는 1.1.5 를 깐다. 그 결과가 곧 W9 에 필요한 「1.1.5 가 떠 있는 기기」다 — 1.1.5 를 따로 깔 손이 없다.
-2. **반대 순서(1.1.6 먼저 → 설치기)** 는 핀 1.1.5 설치기가 1.1.6 기기에 1.1.5 를 **내려 까는**(판 되감기) 시험이 된다 — 실제 사용자 경로가 아니고, 1.1.6 덮어 설치(W9)도 못 본다.
-3. 1.1.5→1.1.6 덮어 설치는 기존 참가자가 실제로 겪는 길(발행 뒤 setup.exe 재설치)과 같고, 1.1.3→1.1.5 에서 난 `.new` 4 결함(발행 차단급)의 재발을 여기서 본다(W9 ⑶).
-4. 설치기 체크리스트 5줄(r3 3 + r5 2)은 1.1.5 함대 위에서 본다 — 이 5줄은 **설치기** 쪽 코드(wake.ps1·고지 문)를 재는 것이라 cys 판번과 무관하다(【판정】 · wake.ps1 은 설치기가 쓰는 파일).
-- ⚠ 이 순서가 **안 덮는 것**(📌 master): 「설치기로 1.1.6 을 **새로** 까는 길」(워크숍 참가자의 첫 설치 길). 선례(1.1.1·1.1.3·1.1.5 윈 실기)는 임시 공개 호스트(`oogisoogi/jarvis-install` 프리릴리스 `wintest-v1.1.x-…`)에 setup.exe 를 올리고 next/bootstrap.ps1 의 `$CysDownloadDir` 1줄을 치환해 새 판을 설치기로 깔았다(ai-jarvis fe5d8bf 원문: 「$CysDownloadDir = "https://github.com/oogisoogi/jarvis-install/releases/download/wintest-v1.1.3-20260922/"」). 이번 브리프는 핀 1.1.5 유지이므로 그 길은 **이번 실기 범위 밖** — 1.1.6 의 새 설치 길은 설치기 핀을 1.1.6 으로 올리는 다음 판(발행 뒤)에서 본다. 대안(박사님·master 판단): 선례처럼 wintest 임시 호스트를 쓰면 한 자리에서 새 설치까지 볼 수 있으나 **공개 업로드 = 게이트** · 박사님 손 +1(설치기 한 번 더).
-- 관측(행동 0 · master 참고): 옛 임시 호스트 `oogisoogi/jarvis-install` 프리릴리스 **`wintest-v1.1.5-20260923`(제목 「임시 · 윈 실기용 · 실기 뒤 삭제」)가 아직 남아 있다** — 자산 bootstrap.ps1 481,193 B · cysr_1.1.5_x64-setup.exe 140,687,576 B · .sig 412 B 【관측 19:2x `gh release list/view`】. 지우는 것은 비가역·공개 행위라 master 게이트.
+### 판정 — 순서(㉮ 덮어 설치 → W1~W12 → ㉯ 지우기 → 새 설치)
+【판정】 **맞다.** 신뢰도 높음(근거 = 코드·원장 실측).
+1. ㉮ 는 **지금 노트북의 1.1.5** 를 바탕으로 쓴다 — 기존 참가자가 발행 뒤 겪는 덮어 설치 길이고, 1.1.3→1.1.5 에서 난 `.new` 4 결함(발행 차단급)의 재발을 여기서 본다(W9 ⑶).
+2. ㉯ 는 앱까지 지운 기기에 **핀 1.1.6 설치기(스테이징)** 로 새로 깐다 — 워크숍 참가자의 첫 설치 길(master#f703427c B 채택 까닭).
+3. 반대 순서(㉯ 먼저)면 ㉮ 의 바탕(1.1.5)이 사라져 덮어 설치를 못 본다 — 1.1.5 를 다시 깔 손이 든다.
+4. ㉯ 끝에 1.1.6 이 새로 선 기기가 남는다 = 발행 뒤 앱 안 Update(1.1.6→다음 판) 시험 바탕으로 이어 쓸 수 있다(【판정】).
+- 이전 판(A 기준 · 19:30 커밋 6ad09601)의 「설치기 시험(핀 1.1.5) → 그 위 덮어 설치」 판정은 master#f703427c 로 대체됐다(이력은 git 에 있다).
 
 ---
 
 ## ⑤ 박사님 세션 진행 순서(번호 목록)
 
-전제: P1~P5 선행 조건이 선 뒤 master 가 「시작하셔도 됩니다」 알림. 노트북 = 지난 실기 기기(oogis · 1.1.x 설치 이력 있음).
+전제: P1~P9 선행 조건이 선 뒤 master 가 「시작하셔도 됩니다」 알림. 노트북 = 지난 실기 기기(oogis · 1.1.x 설치 이력 있음 · 지금 1.1.5 인지는 【미확인】).
 
-1. **설치 파일 받기**(② ⒜): github.com 로그인 → Releases 목록 → `cysr_1.1.6_x64-setup.exe` 받기 — 손 2~4(로그인 상태에 따라). *받아만 두고 아직 실행하지 않는다.*
-2. **설치기 0.3.36 시험 1회차**(④ 한 줄): 명령 프롬프트/PowerShell 에 한 줄 붙여 넣기 → **[3/10] 이후에서 창 닫기**(끊긴 기기 만들기) — 손 2.
-3. **설치기 재실행**(같은 한 줄): 10/10 까지 · 체크리스트 r3 1·2줄(고지 뒤 서버 도착 · 앞 증거 0)은 master 가 텔레메트리로 대조 — 손 1(+ SmartScreen·로그인 창이 뜨면 각 1).
-4. **본부 자비스에 한 번 말 걸기** → r5 2줄(회색 제안 글 없음 · `/effort` = high) — 손 2(말 걸기 1 · `/effort` 1) · 사진 1.
-5. (선택 · 막힘 재현 시에만) r3 3줄째(보고 번호·폰 주소) — 막힘이 없으면 건너뜀.
-6. **1.1.6 덮어 설치**(W8·W9): 1 에서 받은 setup.exe 실행 → SmartScreen 「추가 정보 → 실행」 → 설치 → 앱 재시작 안내대로 — 손 3(실행 · 추가 정보 · 실행). 그 뒤 `.new` 확인 한 줄(W9 ⑶) — 손 1.
-7. **첫 화면 점검**(W1·W4·W3): `cys list` 캡처 1장 + `cys send '--surface=#N' hello` — 손 2 · 사진 1.
-8. **창 늘리기·팔레트**(W2·W5): 셸 칸 2~3개 · 팔레트에 「분할」 — 손 3~4 · 사진 1.
-9. **master 말 걸기**(W6·W7): 답 뒤 입력칸 · `/effort` — 손 2 · 사진 1.
-10. **창 하나 닫고 앱 재실행**(W11 → W10): 손 2 · 사진 1.
-11. **공지 대조**(W12): master 가 사진으로 대조(박사님 손 0).
+**㉮ 1.1.6 덮어 설치 + 점검표**
+1. **설치 파일 받기**(② ⒜): github.com 로그인 → Releases 목록 → `cysr_1.1.6_x64-setup.exe` 받기 — 손 2~4(로그인 상태에 따라).
+2. **덮어 설치**(W8·W9): 지금 깔린 1.1.5 함대를 켠 채 setup.exe 실행 → SmartScreen 「추가 정보 → 실행」 → 설치 → 앱 재시작 안내대로 — 손 3~4. 이어 `cys --version`(1.1.6) + `.new` 확인 한 줄(W9 ⑶) — 손 2 · 사진 1.
+3. **첫 화면 점검**(W1·W4·W3): `cys list` 캡처 + `cys send '--surface=#N' hello` — 손 2 · 사진 1.
+4. **창 늘리기·팔레트**(W2·W5): 셸 칸 2~3개 · 팔레트에 「분할」 — 손 3~4 · 사진 1.
+5. **master 말 걸기**(W6·W7): 답 뒤 입력칸 · `/effort` — 손 2 · 사진 1.
+6. **창 하나 닫고 앱 재실행**(W11 → W10): 손 2 · 사진 1.
+7. **공지 대조**(W12): master 가 사진으로 대조(박사님 손 0).
+- ㉮ 소계: 손 **약 16~20회** · 사진 **5장**.
 
-- 박사님 손 합계: **약 19~24회**(받기 2~4 · 설치기 3~5 · r5 2 · 덮어 설치 4 · W1~W11 11~12 · 선택 항목 제외) · 사진 약 5장.
+**㉯ 지우기 → 설치기 0.3.36 새 설치(스테이징 · 1.1.6 을 임시 프리릴리스에서 받음)**
+8. **① 지우기 한 줄**(④): 「지웁니다」 입력 → 윈도우 설정 앱에서 cysr 제거 → Enter → 폴더 지우기 Enter — 손 **약 5~6회**(붙여넣기 1 포함 약 6~7).
+9. **② 설치 한 줄 1회차 → [3/10]~[4/10] 에서 창 닫기**(끊긴 기기 만들기 · r3 2줄째 준비) — 손 2.
+10. **② 설치 한 줄 재실행 → 10/10**: r3 1·2줄(고지 뒤 서버 도착 · 앞 증거 0)은 master 가 텔레메트리로 대조 · 설치 중 SmartScreen·확인 창이 뜨면 각 1 — 손 1~3 · 사진 1(끝 화면 · 머리글 「cysr 1.1.6 · 설치 도우미 0.3.36」).
+11. **첫 설치 화면 점검**: 창 3개(master·cso·worker1) · 본부 각성 — 손 0 · 사진 1.
+12. **본부 자비스에 한 번 말 걸기** → r5 2줄(회색 제안 글 없음 · `/effort` = high) — 손 2 · 사진 1.
+13. (선택 · 막힘 재현 시에만) r3 3줄째(보고 번호·폰 주소) — 막힘이 없으면 건너뜀.
+- ㉯ 소계: 손 **약 11~14회** · 사진 **3장**.
+
+- 박사님 손 합계: **약 27~34회**(㉮ 16~20 + ㉯ 11~14 · 선택 항목 제외 · 이전 판 19~24 에서 ㉯ 지우기·새 설치만큼 늘었다) · 사진 약 **8장**.
 - 예상 소요(실측 계수 인용):
-  - 설치기 1회 = **약 10분대** — 1.1.1 윈 실기 1차 「텔레메트리 mkLNG74P 14:1x~14:25:52 10/10 rc=0」(SESSION_STATE · 시작 분은 「14:1x」 로만 기록 → 정확한 분 미상). 이번은 2회(끊기 + 재실행)라 **약 15~25분**(끊는 1회차는 [3/10] 에서 끝나므로 짧다 · 이 배분은 실측 아님).
+  - 설치기 1회(새 설치 · 10/10) = **약 10분대** — 1.1.1 윈 실기 1차 「텔레메트리 mkLNG74P 14:1x~14:25:52 10/10 rc=0」(SESSION_STATE · 시작 분은 「14:1x」 로만 기록 → 정확한 분 미상). ㉯ 는 끊는 1회차 + 재실행 1회라 **약 15~25분**(끊는 1회차는 [3/10]~[4/10] 에서 끝나 짧다 · 이 배분은 실측 아님).
   - 재시작 레인(W10·W11) = 1.1.1 윈 실기 2차 「14:3x」 = 1차 끝(14:25:52) 뒤 **약 10분 안** 합격 기록 【SESSION_STATE 원문 · 분 단위 미상】.
-  - 1.1.6 덮어 설치(W9) · 파일 받기(1) = **실측 없음 · 첫 실기로 계수 확보**(참고: 이 좌석 GitHub 받기 22.1초 · 노트북 회선은 다름).
-  - 합계 = 실측 계수 있는 구간만 약 25~35분 + 실측 없는 구간(받기·덮어 설치·W1~W7 사진) — 전체 시간은 **실측 없음**으로 표기한다.
+  - 파일 받기 · 덮어 설치(W9) · 지우기(①) = **실측 없음 · 첫 실기로 계수 확보**(참고: 이 좌석 GitHub 받기 22.1초 · 노트북 회선은 다름).
+  - 합계 = 실측 계수 있는 구간만 약 25~35분 + 실측 없는 구간 — 전체 시간은 **실측 없음**으로 표기한다.
+- 실기 뒤 정리(master 게이트 · 박사님 손 0): P3 되돌리기(next/ 삭제 → 404) · P6 임시 프리릴리스 삭제 — 둘 다 「실기 뒤 삭제」 규율(메모리 installer-field-test-staging-path · 선례 제목).
 
 ---
 
 ## 막힌 곳 · 미확인(정직)
 - 윈 실측 0 — 이 좌석엔 윈 기기가 없다. ③의 【미확인】(PowerShell `#`·윈 단축키 이름)과 ② 의 Edge 내려받기 경고·드라이브 경고 실제 문구는 박사님 실기에서만 닫힌다.
 - ② ⒜ 「로그인하면 draft 자산을 브라우저로 내려받을 수 있다」 = 공식 문서는 「보인다·목록에 나온다」까지 · 내려받기는 같은 권한의 `gh` 실측으로 추정(신뢰도 중).
-- ② ⒝ 구글 드라이브 대용량 경고 = 공식 도움말 문장 없음 · 커뮤니티 글 제목의 문구만(신뢰도 중).
-- ④ P2 설치기 최종 해시 = 빈칸(1108 r5 【확인요청】 전 · 로컬 후보 dce10a5).
+- ② ⒝ 구글 드라이브 대용량 경고 = 공식 도움말에 문장 없음 · 커뮤니티 글 제목의 문구만(신뢰도 중).
+- 노트북에 지금 깔린 판이 1.1.5 인지 · 설치 자리 표지(`jarvis-cys-pin.json`) 상태 = 【미확인】(기기 실물 필요).
+- ④ P2 설치기 최종 해시 = 빈칸(1108 r5 【확인요청】 전 · 로컬 후보 dce10a5 · P7 r6 커밋이 하나 더 얹힌다).
+- ④ P6 프리릴리스 생성 · P9 삭제 명령의 **선례 원문 = 못 찾음**(결과·속성·자산 교체 명령만 원문 인용) — 표의 `gh release …` 형태는 도구 도움말 실측이지 선례가 아니다.
+- ④ P7 윈 핀 값의 3번째 대조(릴리스 SHA256SUMS.txt)는 B부 postprocess 뒤에만 가능 · 맥 핀 값은 B부 산출 뒤.
 - ⑤ 소요 = 설치기·재시작 구간만 실측 계수(분 단위 일부 미상) · 나머지 실측 없음.
 - 내려받은 setup.exe·.sig·latest.json 은 이 좌석 scratchpad 에만 있다(공유·업로드 0).

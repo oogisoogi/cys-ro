@@ -29,7 +29,8 @@
 //   c18 (v116-auto-equalize · 오너 지시 2026-09-25) 창을 열고 닫을 때마다 자동 좌우 균등 — master·cso 좌열 몫·위아래 비율 유지:
 //       a 본부+워커1 → 워커 입양(R1 재현 자리) · b 외부 닫힘(가운데) · c ⌘W 닫기 · d 창 머리 × · e 새 창(창 만들기) ·
 //       f 사람이 끈 좌열 0.40·위아래 0.65 보존 · g 워커만(본부 없는 기기) 열기·닫기 · h 1280·1920·800 폭 ·
-//       i 팔레트 「세로 분할」 0 · ⌘⇧D = 오른쪽 분할과 같음(master 판정 ⓒ)
+//       i (v2 · 박사님 결정 09-25 14:1x) 팔레트 「세로 분할」 복원 · ⌘⇧D = 대상 아래(같은 기둥 · 기둥 폭 불변) ·
+//       v (v2) 사람이 세로로 나눈 기둥이 입양·닫기 뒤에도 그대로 · 좌열 4:1 유지 · 기둥끼리만 균등 · 팔레트 세로 분할 실행
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -801,8 +802,10 @@ if (ONLY.includes("c18")) {
     even(g0.o, [3, 4, 5]) && near(g0.o[3].w, 1 / 3) && even(g1.o, [3, 4, 5, 6]) && near(g1.o[3].w, 1 / 4) && even(g2.o, [3, 5, 6]) && near(g2.o[3].w, 1 / 3) && g0.col + g1.col + g2.col === 0,
     `${view(g0)} → ${view(g1)} → ${view(g2)}`);
 
-  // i — (master 판정 ⓒ) 팔레트 「분할」 검색 → 가로 분할만 · 세로 분할 0 · ⌘⇧D = 창 +1 · 세로 분할 0 · 워커 균등
+  // i — (v2 · 박사님 결정 09-25 14:1x · master#88533ed8 로 변경 · v1 은 「세로 분할 0」을 단언했다)
+  //   팔레트 「분할」 검색 → 가로·세로 분할 둘 다 · ⌘⇧D(워커 4) → 새 창이 4 바로 아래 · 같은 기둥 · 기둥 폭·좌열 몫 불변
   await load("hq5");
+  const i0 = await ev(G);
   await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`); await Bun.sleep(400);
   await ev(`(() => { const i = document.querySelector(".palette-input"); i.value = "분할"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await Bun.sleep(300);
   const pal = await ev(`[...document.querySelectorAll(".palette-item .pi-title")].map(x => x.textContent)`);
@@ -812,9 +815,35 @@ if (ONLY.includes("c18")) {
   await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "D", metaKey: true, shiftKey: true, bubbles: true, cancelable: true }))`); await Bun.sleep(700);
   const i1 = await ev(G);
   const iNew = ids(i1.o).filter((x) => x >= 100);
-  check("c18i 팔레트 「분할」 → 가로 분할만(세로 분할 0) · ⌘⇧D → 창 +1 · 세로 분할은 좌열뿐 · 워커 균등",
-    Array.isArray(pal) && pal.includes("가로 분할") && !pal.some((t: string) => t.includes("세로 분할")) && iNew.length === 1 && i1.col === 1 && even(i1.o, [3, 4, iNew[0], 5]),
-    `palette=${JSON.stringify(pal)} ${view(i1)} col=${i1.col}`);
+  await shot("c18i-cmd-shift-d.png");
+  check("c18i 팔레트 「분할」 → 가로·세로 분할 둘 다 · ⌘⇧D(워커 4) → 새 창이 4 아래 반 · 같은 기둥 폭 · 기둥 3개 폭 불변 · 좌열 1/3 · 4:1",
+    Array.isArray(pal) && pal.includes("가로 분할") && pal.includes("세로 분할") && iNew.length === 1 && i1.col === 2 &&
+      near(i1.o[iNew[0]].w, i1.o[4].w) && near(i1.o[4].h, 0.5, 0.02) && near(i1.o[iNew[0]].h, 0.5, 0.02) &&
+      even(i1.o, [3, 4, 5]) && near(i1.o[4].w, i0.o[4].w) && near(i1.o[1].w, 1 / 3) && i1.o[1].h > i1.o[2].h * 3,
+    `palette=${JSON.stringify(pal)} ${view(i0)} → ${view(i1)} col=${i1.col}`);
+
+  // v — (v2) 사람이 세로로 나눈 기둥(4 위 · 새 창 아래)이 입양·닫기를 지나도 그대로 · 좌열 4:1 · 기둥끼리만 균등 · 팔레트 세로 분할 실행
+  await ev(`window.__shimAddSeat(6, "worker", "/Users/user/jarvis/w4")`); await tick();
+  const v1 = await ev(G);
+  await ev(`window.__shimExit(3, true)`); await Bun.sleep(1500);
+  const v2 = await ev(G);
+  await ev(`document.querySelector('#root .pane[data-sid="5"]').dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))`);
+  await ev(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`); await Bun.sleep(400);
+  await ev(`(() => { const i = document.querySelector(".palette-input"); i.value = "세로 분할"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await Bun.sleep(300);
+  await ev(`[...document.querySelectorAll(".palette-item")].find(r => r.querySelector(".pi-title").textContent === "세로 분할").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))`); await Bun.sleep(700);
+  const v3 = await ev(G);
+  const vNew = ids(v3.o).filter((x) => x >= 100 && x !== iNew[0]);
+  await ev(`window.__shimExit(${iNew[0]}, true)`); await Bun.sleep(1500);
+  const v4 = await ev(G);
+  await shot("c18v-vertical-kept.png");
+  const pil = (o: any, a: number, b: number) => near(o[a].w, o[b].w) && near(o[a].h, 0.5, 0.02) && near(o[b].h, 0.5, 0.02);
+  const hq = (o: any, share: number) => near(o[1].w, share) && near(o[1].h / (o[1].h + o[2].h), 0.8, 0.02);
+  check("c18v 사람 세로 기둥(4/새 창) → 입양(6) 뒤 그대로 · 기둥 4개 균등 → 워커 3 닫기 뒤 그대로 · 3기둥 균등 → 팔레트 세로 분할(5) → 5 아래 · 폭 불변 → 새 창 닫기 → 4 가 기둥 전체 · 좌열 4:1 내내",
+    pil(v1.o, 4, iNew[0]) && even(v1.o, [3, 4, 5, 6]) && near(v1.o[3].w, (2 / 3) / 4) && hq(v1.o, 1 / 3) && v1.col === 2 &&
+      JSON.stringify(ids(v2.o)) === JSON.stringify([1, 2, 4, 5, 6, iNew[0]].sort((a, b) => a - b)) && pil(v2.o, 4, iNew[0]) && even(v2.o, [4, 5, 6]) && hq(v2.o, 1 / 3) && v2.col === 2 &&
+      vNew.length === 1 && pil(v3.o, 5, vNew[0]) && pil(v3.o, 4, iNew[0]) && even(v3.o, [4, 5, 6]) && near(v3.o[5].w, v2.o[5].w) && hq(v3.o, 1 / 3) && v3.col === 3 &&
+      near(v4.o[4].h, 1, 0.02) && pil(v4.o, 5, vNew[0]) && even(v4.o, [4, 5, 6]) && hq(v4.o, 1 / 3) && v4.col === 2,
+    `${view(v1)} col=${v1.col} → ${view(v2)} col=${v2.col} → ${view(v3)} col=${v3.col} → ${view(v4)} col=${v4.col}`);
 
   // h — 창 폭(1920 · 800)에서도 같은 몫
   for (const width of [1920, 800]) {

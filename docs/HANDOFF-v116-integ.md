@@ -641,3 +641,5 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - ②무clear 100%+: 좌석 출생·주입 경로 변경 0 — **무관**.
 - ③자가치유 전멸: phoenix D07b 전건 rc 0 · 복원 경로 코드 변경 0(ui 배치 복원만 = 옛 1/2·1/3 좌열 1회 이동 · 가지 잔여 위험으로 기록) — **무관(점검 초록)**.
 - ④전 pane 사망 + 윈 설치파일: 창 닫기·배치 경로 변경(autoArrange v2) = 가지 헤드리스 94/94 · 디버깅 14,183걸음 위반 0(가지 증거) · 병합본 바이트 동일 — **해당 · 이상 없음** · 윈 설치파일 = git push 뒤 CI windows-build(master 게이트).
+
+## 23. 8단계 — 윈 실기 묶음 재료 초안(TICKET=v116-integ-5 · master#0eb6ba6f · 원장 17:31:24) = `docs/WINTEST-v116-bundle-draft.md`(① 윈 setup.exe = `cysr_1.1.5_x64-setup.exe` 140,856,763 B · sha256 ef67ee69… · 판번 1.1.5(소스 미올림) · 서명 없음 · 아티팩트 로그인 없이 401 / ② 앱 안 Update 1.1.5→1.1.6 = 판번 올림 + 태그 절단(draft) 필요 · 기본 경로는 발행 뒤에만 · 발행 전은 CYS_UPDATE_MANIFEST_URL 우회+재호스팅 / ③ 윈 점검표 W1~W12 / ④ 설치기 0.3.36 윈 체크리스트 원문 + 발행 순서 원문 · 설치기 최종 해시 = r4 뒤) · 업로드·공유·절단 0.

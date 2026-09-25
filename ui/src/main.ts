@@ -2460,13 +2460,19 @@ function currentDefaultLeftShare(): number {
 }
 // 창 크기가 바뀌면 기본 폭을 쓰는 탭(루트 leftAuto 표지)만 다시 잰다 — 사람이 끈 폭(표지 없음)은 그대로.
 let dividerDragActive = false;
+let leftDefaultResizeSkipped = false;
 let leftDefaultResizeTimer: number | undefined;
+// 웹뷰 밖에서 손을 떼면 mouseup 이 안 올 수 있다 — 창이 포커스를 잃으면 끄는 중 표지를 푼다(Fable 적대 3R ③).
+window.addEventListener("blur", () => { dividerDragActive = false; });
 window.addEventListener("resize", () => {
   clearTimeout(leftDefaultResizeTimer);
-  leftDefaultResizeTimer = setTimeout(() => {
+  leftDefaultResizeTimer = setTimeout(recomputeDefaultLeft, 120) as unknown as number;
+});
+function recomputeDefaultLeft(): void {
+  {
     const d = currentDefaultLeftShare();
     let changed = false;
-    if (dividerDragActive) return; // 경계를 끄는 중에 다시 짜면 끌기가 떨어진 옛 노드에 쓰여 표지가 남는다(Fable 적대 2R ④)
+    if (dividerDragActive) { leftDefaultResizeSkipped = true; return; } // 끄는 중에 다시 짜면 끌기가 떨어진 옛 노드에 쓰여 표지가 남는다(Fable 적대 2R ④) — 손을 떼면 다시(3R ③)
     for (const ws of workspaces) {
       const t = ws.tree;
       if (!t || t.type !== "split" || !t.leftAuto) continue;
@@ -2479,8 +2485,8 @@ window.addEventListener("resize", () => {
       }
     }
     if (changed) render(); // 새 폭으로 DOM 재구성 + fitPane + saveLayout
-  }, 120) as unknown as number;
-});
+  }
+}
 
 // ---------- pane lifecycle ----------
 
@@ -4013,6 +4019,7 @@ function attachDividerDrag(
     const up = () => {
       divider.classList.remove("dragging");
       dividerDragActive = false;
+      if (leftDefaultResizeSkipped) { leftDefaultResizeSkipped = false; recomputeDefaultLeft(); } // 끄는 중 건너뛴 창 크기 변경을 이제 반영
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
       saveLayout();

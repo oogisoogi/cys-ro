@@ -337,8 +337,16 @@ describe("Fable 적대 2R 봉합 — ① 역할 모름 ③ 좌열 고르기 멱�
     const t = { ...(S(S(P(1), P(2), "col", 0.8), S(P(3), S(P(4), S(P(5), P(6)))), "row", 0.27) as any), leftAuto: true };
     const out = autoArrange(t, new Map(), {}, "auto", 0.27)!;
     expect(out).toBe(t);
-    const out2 = autoArrange(t, roles(W(3, 4, 5, 6, 7)), { add: [{ sid: 7 }] }, "auto", 0.27)!;
-    expect((out2 as any).a).toBe(t); // 오른쪽 덧붙임만
+    const out2 = autoArrange(t, new Map(), { add: [{ sid: 7 }] }, "auto", 0.27)!;
+    expect((out2 as any).a).toBe(t); // 오른쪽 덧붙임만(역할 표가 비었을 때 — 벨트 · 본 방어는 arrangeWs)
+  });
+  it("(Fable 3R ①) 옛 기본 이동이 표지를 붙인 워커만 탭(역할 표 있음) → 닫기는 형제 독차지 아닌 균등 · 본부가 붙으면 바로 좌열", () => {
+    const t = migrateOldDefaultShare(S(P(3), S(P(4), P(5)), "row", 1 / 3));
+    expect((t as any).leftAuto).toBe(true);
+    expect(autoArrange(t, roles(W(3, 4, 5)), { remove: [4] })).toEqual(S(P(3), P(5), "row", 0.5));
+    const t2 = autoArrange(t, roles([[1, "master"], ...W(3, 4, 5)]), { add: [{ sid: 1 }] })!;
+    expect((t2 as any).a).toEqual(P(1));
+    expect(leftW(t2)).toBe(0.25);
   });
   it("① 역할 표를 한 번도 못 받은 데몬의 닫기 = arrangeWithoutRoles(그 자리 접힘) · 사람 0.4 유지", () => {
     const t0 = S(S(P(1), P(2), "col", 0.6), S(P(3), P(4)), "row", 0.4);
@@ -784,7 +792,7 @@ describe("박사님 결정 14:5x 호출부 — 기본 폭은 창 크기로 재�
     const b = code(fnBody("function attachDividerDrag(", "\n}\n"));
     expect(/node\.ratio = ratio;\s*delete node\.leftAuto;/.test(b)).toBe(true);
     expect(/divider\.classList\.add\("dragging"\);\s*dividerDragActive = true;/.test(b)).toBe(true);
-    expect(/divider\.classList\.remove\("dragging"\);\s*dividerDragActive = false;/.test(b)).toBe(true);
+    expect(/divider\.classList\.remove\("dragging"\);\s*dividerDragActive = false;\s*if \(leftDefaultResizeSkipped\) \{ leftDefaultResizeSkipped = false; recomputeDefaultLeft\(\); \}/.test(b)).toBe(true);
   });
   it("옛 기본 폭 이동은 복원 적재 직후 한 번(플래그) · 모든 탭에 migrateOldDefaultShare", () => {
     const i = main.indexOf('if (localStorage.getItem("cys-left-default-migrated") !== "1") {');
@@ -793,16 +801,17 @@ describe("박사님 결정 14:5x 호출부 — 기본 폭은 창 크기로 재�
     expect(b).toContain("for (const ws of workspaces) if (ws.tree) ws.tree = migrateOldDefaultShare(ws.tree) as Node;");
     expect(b).toContain('localStorage.setItem("cys-left-default-migrated", "1");');
   });
-  it("창 크기 변경 → 루트에 leftAuto 표지가 있는 탭만 autoArrange(…, 새 기본 폭) · 바뀌면 render", () => {
-    const i = main.indexOf("let leftDefaultResizeTimer");
-    expect(i).toBeGreaterThan(-1);
-    const b = code(main.slice(i, main.indexOf("\n});\n", i)));
-    expect(b).toContain('window.addEventListener("resize"');
-    expect(b).toContain('if (!t || t.type !== "split" || !t.leftAuto) continue;');
-    expect(b).toContain("if (dividerDragActive) return;");
-    expect(b).toContain("if (!roles) continue;");
-    expect(b).toContain('const next = autoArrange(t, roles, {}, "auto", d);');
-    expect(b).toContain("if (changed) render();");
+  it("창 크기 변경 → 루트에 leftAuto 표지가 있는 탭만 autoArrange(…, 새 기본 폭) · 바뀌면 render · 끄는 중이면 미뤘다가 손을 떼면", () => {
+    const c = code(main);
+    expect(c).toContain('window.addEventListener("resize", () => {');
+    expect(c).toContain("leftDefaultResizeTimer = setTimeout(recomputeDefaultLeft, 120)");
+    expect(c).toContain('window.addEventListener("blur", () => { dividerDragActive = false; });');
+    const r = code(fnBody("function recomputeDefaultLeft(", "\n}\n"));
+    expect(r).toContain("if (dividerDragActive) { leftDefaultResizeSkipped = true; return; }");
+    expect(r).toContain('if (!t || t.type !== "split" || !t.leftAuto) continue;');
+    expect(r).toContain("if (!roles) continue;");
+    expect(r).toContain('const next = autoArrange(t, roles, {}, "auto", d);');
+    expect(r).toContain("if (changed) render();");
   });
 });
 

@@ -339,10 +339,10 @@ export function autoArrange(
     const p = prune(u, drop, seen);
     if (p) rowUnits(p, units);
   }
-  // 기본 폭 표지가 있는 트리 = 본부 좌석이 있던 배치다. 그런데 역할 표에 본부가 한 명도 없으면(데몬이 아직 목록을 안 줬다 ·
-  //   부서 데몬이 죽었다) 역할을 모르는 것이지 본부가 없는 것이 아니다 → 다시 짜지 않는다(Fable 적대 2R ① — 좌열이 워커 기둥으로 펴지고
-  //   표지까지 잃은 채 저장됐다).
-  const rolesBlind = tree !== null && tree.type === "split" && tree.leftAuto === true && leftSids(inOrder, roles).length === 0;
+  // 역할 표가 비어 있는데(데몬이 아직 목록을 안 줬다) 기본 폭 표지가 있는 트리 = 역할을 모르는 것이지 본부가 없는 것이 아니다 →
+  //   다시 짜지 않는다(Fable 적대 2R ① 의 벨트 · 본 방어는 main.ts arrangeWs 의 「역할 표 없음 → arrangeWithoutRoles」).
+  //   ★「본부 역할 0명」으로 넓히지 마라(Fable 3R ①): 옛 기본 이동이 워커만 있는 탭에도 표지를 붙이므로 그 탭의 닫기가 형제 독차지가 됐다.
+  const rolesBlind = tree !== null && tree.type === "split" && tree.leftAuto === true && roles.size === 0;
   // 맞출 수 있는가 = 좌열 좌석을 품은 기둥은 좌열 좌석만 품는다. 아니면 무정렬(사람 위아래 나눔을 지우지 않는다).
   const fits = !rolesBlind && units.every((u) => {
     const us = sidsInOrder(u);

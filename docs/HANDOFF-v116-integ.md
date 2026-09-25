@@ -550,3 +550,47 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - 20-5 ① 잔여 위험(빈 좌석 재기동 × 빈 좌석 회수 경합 창) = **1.1.7 이관 = master 판정**(차단 4종 밖 · 역할 없음·600초+ 좌석 한정 · 데몬 쪽 조건부 원자 회수 백로그).
 - 20-5 ④ test_v116_num_cys_list_compat = **지금 3레인 편입**(master 판정 · 이유 = cys list 해석 파손은 설치·갱신 실패 축인데 유일한 시험이 CI 밖) → ci-branch 1 · pack-release 1 · release 2(새 4종과 같은 자리 · 바로 뒤) · yaml 3파일 safe_load OK · A01 rc 0(ci-branch 64 · pack-release 60 · release 64 · 공통 60 · 허용 비대칭 5 = 종전 그대로 · ALLOWED 추가 0 · 비대칭 0) · 시험 1회 Ran 2 OK. 정본 게이트 재실행 = master 독립 재실행(워커 안 함).
 - MINOR 3(cys.rs:8639 · 900초 뒤 go · main.rs:4062 주석) = 1.1.7 기록 그대로 수용(master).
+
+---
+
+## 21. VM 2차 재료 빌드(4차 통합 · TICKET=v116-integ-4 7단계 · master#3789393c)
+- 전제: master ACCEPT @2db641e8(#3789393c · master 독립 정본 게이트 12:14:31~12:44:13 rc 0 · d1230772-m 대비 신규 0) · master git push a8483518..2db641e8(origin fix/v116-integ = 2db641e8 · ls-remote 일치 · 이 좌석은 push 0).
+- ⇒ **§19-3 「이 빌드에 없음(T-PACK)」 은 이 빌드에서 해소** — 2차 재료 = 아래 zip(§19-1 a8483518 zip 은 대체됨).
+
+### 21-1. 빌드 식별(맥 arm64 · §19-1 과 같은 방식)
+- 빌드 트리 = **2db641e8**(HEAD 그대로 · 코드 커밋이라 detach 불요 · build_id = HEAD 12자와 일치).
+- 명령: CYS_* 제거 + `CYS_NO_AUTOSTART=1` · PATH 에 ~/.cargo/bin · 키 = env(`TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/cys-updater-A2.key)"` · 비밀번호 빈 값 · 키 파일 복사·출력 0) → `scripts/build-macos-local.sh aarch64 ~/axdev/.wt/out-mac-v116-integ-4/` · **rc 0** · 12:45:36~12:47:15(target 데워져 있음). 로그 = `integ-v116-work/r4/build4.log` · **로그 속 키 문자열 0건**(키 파일 줄 단위 전수 0 · 조각 대조 0) · 빌드 뒤 작업트리 변경 0.
+
+| 항목 | 값(빌드 스크립트 출력 = 압축 푼 앱 독립 재측정 · 일치) |
+|---|---|
+| zip | `~/axdev/.wt/out-mac-v116-integ-4/cysr-macos-arm64-v1.1.5.zip` · **207,993,267 B** |
+| zip sha256 | **c83ad9a7e47b68cbf92eeaad7b58314884bde79ee39649790e920642d1ba54c3** |
+| 앱 CDHash(ditto 로 푼 앱 · codesign -dvvv) | **e92b0489414bddcc6fbf38aa0bd5718b55ee037c** · Identifier com.cysjavis.terminal · Authority cys-local(자체서명 · 공증 없음 · TeamIdentifier 없음) |
+| codesign --verify --deep --strict | 빌드 안 + 압축 푼 앱 재검 **모두 통과** |
+| Resources/pack.tar.gz | **2,958,697 B**(3차 2,950,065 · +8,632 = T-PACK 팩 코드 boot_node·formation·phoenix · tests 폴더는 임베드 제외 = 동봉 0) · 479 파일 · pack-manifest.json 53,574 B · `directives/RELEASED_MASTER_DIRECTIVE.sha256` 포함 · `bin/javis_boot_node.py` 에 T-PACK 코드(SEAT_ORPHAN_GRACE_S_DEFAULT 4회) 실재 |
+| 내장 build_id | cys·cysd = `2db641e860d1.20260925T0345Z` · 앱 본체 = `2db641e860d1.20260925T0346Z`(로컬 빌드는 크레이트마다 자기 분을 찍음 · §19 와 같은 성질 · -dirty 없음) |
+| runtime-manifest digest | eb911d0e09a0cf18(1차·3차와 같음) |
+- 판번 1.1.5 그대로(bump 0) · 업로드 0 · 발행 0 · 설치기 핀 5칸 채우기 = VM 좌석 몫(21-3).
+
+### 21-2. §19-2 점검표 추가 행 11~20(T-PACK §6 10항목 · 근거 = 2db641e8 파일:행 · 준비·함정 = VM 1차 인계서 ⑤ 5-2 같은 번호)
+- 전제(⑤ 5-0 그대로 · master 결정 사안): **부서 생성 필요**(부서 3 · claude ≈12+/VM · 원 계정 비용) · 새 clone(한도 2) · 자격증명 종료선 안에 「부서 3 생성(≈15분/부서) + 재부팅 2회 + 관찰(행 18 = 20분+)」이 드는지 먼저 계수 · 부서 소켓 조회·close-surface = master 게이트 · 조회 명령엔 `CYS_NO_AUTOSTART=1`.
+
+| # | 가지 | 무엇을 | 확인 방법 | 기대 | 근거(파일:행) |
+|---|---|---|---|---|---|
+| 11 | T-PACK §6-1 | 부서 3 + 재부팅(저부하 1 · 고부하 1) | master 에게 말로 부서 3 → 저부하에서 VM `sudo reboot` 1회 → 부서 3 동시 가동(고부하·자원 게이트로 미뤄진 부서가 생기게) 상태에서 재부팅 1회 | 두 재부팅 모두 12~20 행 기대 충족 | HANDOFF-v116-pack.md §6-1 · ⑤ 5-2 #1(재부팅 뒤 ssh 재접속 대기 루프 · VNC 비번 불변) |
+| 12 | §6-2 | 역할별 1자리 | 부서 소켓마다 `CYS_NO_AUTOSTART=1 cys status --json` | 부서마다 master·cso·worker 1자리 · `role=worker-2` 0 · cwd = 홈인 좌석 0 · 전체 claude = 12 | javis_formation.py:1182(restore_settle_verdict)·1204(대기 상한 RESTORE_WAIT_S 120 · :1035)·481(_master_seat_cwd_from_status · 홈 제외) |
+| 13 | §6-3 | 좌석 생성 caller | 부서 evrec(부서 생성 뒤·재부팅 뒤 재기동 · ⑤ 5-2 #3) 에서 데몬 기동 뒤 `surface.created` · `role.claim_denied` 계수 | `surface.created` 가 복원 caller 에서만(편성 caller 의 master·worker 생성 0) · claim_denied 중 requested_surface 가 claude 좌석인 것 0 | javis_formation.py:1285-1298(복원 중 partial:restoring · 좌석 안 세움) |
+| 14 | §6-4 | auto_restore 단계 · 편성 상태 | 재부팅 직후 5초 간격: 부서 소켓 `cys status --json` 의 `daemon.auto_restore` + `~/.cys/state/formation/<소켓키>.json` | running → done(재시도면 running→retry_wait→running→done) · 편성 `partial:restoring` 이 보여도 다음 틱 complete | cysd main.rs:1866(accept 전 running)·1901(스레드 끝 done · panic 포함)·1599(재시도 단계) · handlers.rs:6958(org.status 키) · javis_formation.py:1038(RESTORE_STALE_S 900 · 넘으면 go) |
+| 15 | §6-5 | 미룬 부서 되살림 경로 | 고부하 재부팅 뒤 `dept-launch-path.log` · 부서 `cysd.log` 첫 줄 시각 · 본부 알림 | 부서가 CLI 자동기동이 아니라 `cys-dept launch` 로 켜짐 · 알림 제목 「부서 다시 켜기」 · 본문 「…부서가 꺼져 있어 다시 켰습니다…」 | javis_formation.py:1117(_revive_dept)·1042(REVIVE_FEED_TITLE)·1162(본문)·1030-1031(P1 봉인 · P1′ 틱당 1부서) |
+| 16 | §6-6 | 부서장 큐 ping | 부서 소켓으로 `cys send --to master --queued ping` | 즉시 진짜 부서장 대화(jsonl)에 도착 · `queue.held empty_seat` 0 | HANDOFF-v116-pack.md §6-6 · ⑤ 5-2 #6 |
+| 17 | §6-7 | 알림 | 캡처(배너 먼저 닫기) + `alert.*` 계수 | 되살림 사람 말 1줄 · 이중 보유 0 이라 이상 알림 0(1차 기준 거짓 1 = node.nonstandard_launch) | javis_formation.py:1162 |
+| 18 | §6-8 | 빈 좌석 회수(D1 #4) | 부서 워커 claude 만 `kill -9`(pid = cys list 3번째 칸 + comm=claude 확인) → 관찰 ≥ 사망 +10분 + 편성 심박(최대 10분) ≈ 20분+ | +61초 데드맨 역할 회수 → 다음 심박 새 워커 → 사망 +600초 뒤 첫 심박에 옛 빈 셸 회수 + 알림 「빈 창 정리」 1 · **다른 좌석 닫힘 0** | javis_boot_node.py:940(유예 600초 · env CYS_SEAT_ORPHAN_GRACE_S)·977(orphan_seat_verdict)·1028(reap_orphan_seats · 닫기 직전 재조회)·1143(큐 찬 좌석 보존) · javis_formation.py:1220(_reap_orphans)·1247(알림 문구) |
+|  |  | 【잔여 위험 · 1.1.7(master 판정 §20-9)】 | 회수 직전 재조회 ~ close 사이 창(최대 ≈20초)에 같은 좌석으로 node-recover·cys restore 기동 줄이 들어가면 막 깬 좌석이 닫힐 수 있음 — 이 행 절차에선 사람이 그 창에 node-recover 를 치지 말 것(재현 시험이 아님) | | §20-5 ① |
+| 19 | §6-9 | 재부팅 2회째 | 11 의 두 번째 재부팅 뒤 12·13·16 반복 | 같은 결과 · 여분 누적 0 | ⑤ 5-2 #9(자격증명은 재부팅 뒤 남아야 정상 · 삭제는 마지막) |
+| 20 | §6-10 | 복원 중 close-surface → 묘비 존중 | 재부팅 직후 폴링으로 `daemon.auto_restore=running` 을 본 즉시 역할 좌석 하나 `cys close-surface`(부서 소켓 · master 게이트) | 그 역할이 같은 런에서 다시 서지 않음 · topology 묘비 유지 · phoenix 결과 `tombstoned_mid_run_roles` 에 그 역할 · completeness 가 그 역할 때문에 INCOMPLETE 아님 | javis_phoenix.py:1832(current_tombstones · 스폰 직전 재조회)·2400(저널 tombstoned_mid_run)·2792(결과 칸) |
+
+### 21-3. VM 1차 인계서 ⑤ 준비표와 대조(`~/axdev/.wt/v116-vm-1/HANDOFF-v116-vm-1.md` 102-142)
+- 5-0 빌드 전제 「2차 재료 = 4차 통합 빌드의 새 zip · 설치기 사본 핀 5칸 다시 채움」 → **이 빌드가 그것**(21-1 값으로 핀 5칸 = 크기·sha256·CDHash·build_id·zip 이름 · 채우기 = VM 좌석 몫).
+- 5-2 T-PACK 10항목 ↔ 21-2 행 11~20: 번호 1:1 대응 · 5-2 의 준비·함정은 그대로 유효(코드 근거만 21-2 에 더함) · 차이 = 없음. 추가 1줄 = 행 18 의 잔여 위험(5-2 에 없음 · §20-9 이후 생김).
+- 5-1 §19 10행 ↔ §19-2: 변경 없음(4차 통합은 T-PACK 만). §19-2 의 cysd 인용 줄(handlers.rs:3095·3109·3113·3790-3812 · governance.rs:3664-3700·5987-6001)은 2db641e8 에서도 그대로 유효 — T-PACK 의 handlers.rs 삽입은 :6955 뒤(인용 줄보다 뒤) · governance.rs 는 a8483518..2db641e8 무변경(git diff --stat 0) · 다른 인용 파일(ui·src-tauri·팩)도 T-PACK 무접촉.
+- 5-0 부서·clone·자격증명 = master 결정 사안 그대로(이 좌석 결정 0).

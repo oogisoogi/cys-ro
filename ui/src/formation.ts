@@ -54,12 +54,17 @@ export const LEFT_MIN_COLS = 90;
 export const LEFT_SHARE_MAX = 0.5;
 /// 좌열 기본 폭 = 창 가로의 25% · 단 글자 90칸보다 좁으면 90칸 · 상한 50%.
 ///   넓은 모니터 = 화면의 1/4 · 노트북 = 대화하기 편한 최소 폭(박사님 질문 「노트북과 모니터를 파악하여 비율을 조정할 수 있는가」).
-///   rootPx = 창(배치 영역) 가로 픽셀 · cellPx = 터미널 글자 한 칸 폭. 모르면(0·NaN) 25%.
-///   ★근사: 칸 여백·스크롤바만큼 실제 열 수는 90 보다 몇 칸 적을 수 있다(적은 쪽으로 어긋남).
-export function defaultLeftShare(rootPx: number, cellPx: number): number {
+///   rootPx = 창(배치 영역) 가로 픽셀 · cellPx = 터미널 글자 한 칸 폭 · chromePx = 칸 안에서 글자가 못 쓰는 가로 픽셀
+///   (안쪽 여백·스크롤바·반올림 나머지 — master#94526717: 여백을 안 넣으면 1920px 에서 87칸으로 「최소 90칸」 미달이었다).
+///   모르면(0·NaN) 25%.
+export function defaultLeftShare(rootPx: number, cellPx: number, chromePx = 0): number {
   if (!(rootPx > 0) || !(cellPx > 0)) return LEFT_SHARE_DEFAULT;
-  return Math.min(LEFT_SHARE_MAX, Math.max(LEFT_SHARE_DEFAULT, (LEFT_MIN_COLS * cellPx) / rootPx));
+  const chrome = Number.isFinite(chromePx) && chromePx > 0 ? chromePx : 0;
+  return Math.min(LEFT_SHARE_MAX, Math.max(LEFT_SHARE_DEFAULT, (LEFT_MIN_COLS * cellPx + chrome) / rootPx));
 }
+/// 여백을 실제 칸에서 못 잴 때(칸이 아직 없다 · 숨겨져 있다)의 폴백 — CSS 기준: .term-host 좌우 padding 2px×2 + 경계 1px +
+///   반올림 나머지 한 칸 몫 여유. 실측(헤드리스 13px)에서 잰 칸 여백보다 크게 잡는다(모자라는 쪽으로 어긋나지 않게).
+export const LEFT_CHROME_FALLBACK_PX = 24;
 /// 1.1.5 이하의 옛 기본 폭(leftColumnShare = 워커 1대 1/2 · 2대+ 1/3). 저장 배치의 루트가 표지 없이 이 값(±RULE_TOL)이면 「기본을 쓰던 사용자」로
 ///   보고 기본 폭 표지를 붙인다(master#73a7390d) — ★복원 때 **한 번만**(main.ts 플래그 · Fable 적대 2R ②: autoArrange 안에서 매번 보면
 ///   이 판에서 새로 1/2·1/3 에 끈 폭까지 영영 되돌렸다). 잔여 위험: 옛 판에서 손으로 정확히 1/2·1/3(±0.01)에 맞춘 드문 사용자도 옮겨진다.

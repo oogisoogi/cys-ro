@@ -730,7 +730,8 @@ if (ONLY.includes("c18")) {
   // (박사님 결정 09-25 14:5x · master#73a7390d) 좌열 기본 폭 = 창의 25% · 노트북이면 글자 90칸 · 상한 50%. 기대값 D 는 이 창(1280)에서
   //   실제로 선 좌열 폭이고, 그 D 가 규칙에 맞는지는 master 창의 실제 터미널 열 수(shim resize_surface)로 따로 잰다.
   const mcols = async () => (await ev(`(window.__shimCalls.filter(c => c.cmd === "resize_surface" && c.args.surfaceId === 1).at(-1)?.args.cols ?? 0)`)) as number;
-  const defRule = (w: number, cols: number) => (near(w, 0.25) && cols >= 84) || (near(w, 0.5) && cols <= 92) || (w > 0.25 + 0.012 && w < 0.5 - 0.012 && cols >= 84 && cols <= 92);
+  // (master#94526717) 실제 열 ≥ 90 — 상한 50%에 걸린 좁은 창만 예외(그 창은 90칸을 못 채운다) · 90칸 몫이면 90~91칸(반올림 나머지 한 칸 이내).
+  const defRule = (w: number, cols: number) => (near(w, 0.25) && cols >= 90) || (near(w, 0.5) && cols <= 92) || (w > 0.25 + 0.012 && w < 0.5 - 0.012 && cols >= 90 && cols <= 91);
   await load("hq5");
   const D = ((await ev(G)) as any).o[1].w as number;
   const Dcols = await mcols();
@@ -866,8 +867,8 @@ if (ONLY.includes("c18")) {
     hw[width] = h1.o[1].w;
     if (width === 800) await shot("c18h-w800.png");
     if (width === 3440) await shot("c18h-w3440.png");
-    check(`c18h ${width}폭 · 본부+워커 4 → 워커 같은 폭 · 좌열 기본 폭 규칙(25% · 90칸 · 상한 50%)`,
-      even(h1.o, [3, 4, 5, 6]) && defRule(h1.o[1].w, hc) && (width !== 3440 || near(h1.o[1].w, 0.25)) && (width !== 800 || near(h1.o[1].w, 0.5)), `${view(h1)} cols=${hc}`);
+    check(`c18h ${width}폭 · 본부+워커 4 → 워커 같은 폭 · 좌열 기본 폭 규칙(25% · 실제 열 ≥ 90 · 상한 50%)`,
+      even(h1.o, [3, 4, 5, 6]) && defRule(h1.o[1].w, hc) && (width !== 3440 || near(h1.o[1].w, 0.25)) && (width !== 800 || near(h1.o[1].w, 0.5)) && (width !== 1920 || hc >= 90), `${view(h1)} cols=${hc}`);
   }
   // w — 창 크기가 바뀌면 기본 폭 사용자(표지)는 다시 잰다(3440 → 800 → 3440) · 사람이 끈 0.40 은 그대로
   await cdp("Emulation.setDeviceMetricsOverride", { width: 3440, height: 900, deviceScaleFactor: 1, mobile: false });

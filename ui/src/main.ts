@@ -6,7 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
-import { autoArrange, arrangeWithoutRoles, defaultLeftShare, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
+import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
 import { updatePlan } from "./updateplan";
@@ -2443,9 +2443,28 @@ function arrangeWs(ws: Workspace, change: ArrangeChange, mode?: LeftShareMode): 
 }
 
 // (v116-equalize-v2 · 박사님 결정 09-25 14:5x · master#73a7390d) 좌열 기본 폭 = 창 가로의 25% · 노트북이면 글자 90칸 · 상한 50%
-//   (formation.ts defaultLeftShare). 글자 한 칸 폭은 터미널과 같은 글꼴로 잰다(xterm 도 「W」 폭으로 잰다).
+//   (formation.ts defaultLeftShare). ★글자 한 칸 폭과 칸 여백은 **실제 칸에서 잰다**(master#94526717) — 화면에 붙은 칸 하나의
+//   .xterm-screen 폭 ÷ 열 수 = 한 칸 · 칸 폭 − .xterm-screen 폭 = 여백(안쪽 여백·스크롤바·반올림 나머지). 못 재면 같은 글꼴의
+//   「W」 폭(xterm 도 그렇게 잰다) + CSS 기준 폴백 여백.
+function measuredPaneMetrics(): { cell: number; chrome: number } | null {
+  for (const rt of panes.values()) {
+    if (!rt.el.isConnected || !(rt.term.cols > 0)) continue;
+    const screen = rt.termHost.querySelector(".xterm-screen") as HTMLElement | null;
+    const sw = screen?.getBoundingClientRect().width ?? 0;
+    const pw = rt.el.getBoundingClientRect().width;
+    if (!(sw > 0) || !(pw >= sw)) continue;
+    const cell = sw / rt.term.cols;
+    const chrome = pw - sw;
+    if (cell > 0 && chrome < 200) return { cell, chrome };
+  }
+  return null;
+}
 let cellMeasureCtx: CanvasRenderingContext2D | null = null;
 function currentDefaultLeftShare(): number {
+  // 분할 경계(divider)는 flex 몫 밖이라 좌열 칸 = 몫 × (배치 영역 − 경계) — 경계 폭도 여백에 더한다(모자라는 쪽으로 어긋나지 않게).
+  const div = (root.querySelector(".split.row > .divider") as HTMLElement | null)?.getBoundingClientRect().width ?? 1;
+  const m = measuredPaneMetrics();
+  if (m) return defaultLeftShare(root.getBoundingClientRect().width, m.cell, m.chrome + div);
   let cell = 0;
   try {
     cellMeasureCtx ??= document.createElement("canvas").getContext("2d");
@@ -2456,7 +2475,7 @@ function currentDefaultLeftShare(): number {
   } catch {
     cell = 0; // 못 재면 defaultLeftShare 가 25% 로
   }
-  return defaultLeftShare(root.getBoundingClientRect().width, cell);
+  return defaultLeftShare(root.getBoundingClientRect().width, cell, LEFT_CHROME_FALLBACK_PX);
 }
 // 창 크기가 바뀌면 기본 폭을 쓰는 탭(루트 leftAuto 표지)만 다시 잰다 — 사람이 끈 폭(표지 없음)은 그대로.
 let dividerDragActive = false;

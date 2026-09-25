@@ -252,6 +252,16 @@ describe("박사님 결정 14:5x — 좌열 가로 폭은 균등 정렬에서 �
     expect(defaultLeftShare(900, cell)).toBe(0.5);
     for (const [w, c] of [[0, cell], [NaN, cell], [1512, 0], [1512, NaN], [-5, cell]]) expect(defaultLeftShare(w, c)).toBe(0.25);
     expect([LEFT_SHARE_DEFAULT, LEFT_MIN_COLS, LEFT_SHARE_MAX]).toEqual([0.25, 90, 0.5]);
+  });
+  it("(master#94526717) 칸 여백(chrome)을 넣으면 여백을 뺀 글자 폭이 정확히 90칸 · 넓은 창 25% · 상한 50% 는 그대로", () => {
+    const cell = 7.8, chrome = 23;
+    const d = defaultLeftShare(1920, cell, chrome);
+    expect(d).toBeCloseTo((90 * cell + chrome) / 1920, 12);
+    expect(Math.floor((d * 1920 - chrome) / cell + 1e-9)).toBe(90); // 여백을 빼고도 90칸
+    expect(Math.floor((defaultLeftShare(1920, cell) * 1920 - chrome) / cell)).toBeLessThan(90); // 여백을 무시하면 모자란다(옛 87칸)
+    expect(defaultLeftShare(3440, cell, chrome)).toBe(0.25);
+    expect(defaultLeftShare(1000, cell, chrome)).toBe(0.5);
+    for (const bad of [NaN, -5, 0]) expect(defaultLeftShare(1920, cell, bad)).toBeCloseTo((90 * cell) / 1920, 12);
     expect(OLD_DEFAULT_SHARES).toEqual([1 / 2, 1 / 3]);
   });
   it("기본 폭은 워커 0→1→2→5 열기·닫기 내내 그대로(25%) · 표지 유지", () => {
@@ -782,11 +792,16 @@ describe("호출부 — 입양은 런타임이 선 그 자리에서 트리에 �
 // ★v2(박사님 결정 09-25 14:1x · master#88533ed8)로 변경: v1(master 판정 ⓒ)은 「세로 분할」을 뺐다 — 창이 언제나 한 줄로 펴져
 //   이름이 거짓이 됐기 때문이다. v2 는 사람이 만든 위아래 나눔을 지키므로 세로 분할이 다시 참이다 → 복원.
 describe("박사님 결정 14:5x 호출부 — 기본 폭은 창 크기로 재고 · 사람이 끌면 표지를 지우고 · 창 크기가 바뀌면 표지 있는 탭만 다시", () => {
-  it("currentDefaultLeftShare = defaultLeftShare(배치 영역 가로 · 터미널 글꼴 「W」 한 칸 폭)", () => {
+  it("currentDefaultLeftShare = 실제 칸에서 잰 한 칸·여백(+ 가로 경계) · 못 재면 「W」 폭 + 폴백 여백", () => {
     const b = code(fnBody("function currentDefaultLeftShare(", "\n}\n"));
+    expect(b).toContain("if (m) return defaultLeftShare(root.getBoundingClientRect().width, m.cell, m.chrome + div);");
+    expect(b).toContain('root.querySelector(".split.row > .divider")');
+    const mp = code(fnBody("function measuredPaneMetrics(", "\n}\n"));
+    expect(mp).toContain("const cell = sw / rt.term.cols;");
+    expect(mp).toContain("const chrome = pw - sw;");
     expect(b).toContain("cellMeasureCtx.font = `${fontSize}px ${composeFontFamily(fontFace)}`;");
     expect(b).toContain('cell = cellMeasureCtx.measureText("W".repeat(20)).width / 20;');
-    expect(b).toContain("return defaultLeftShare(root.getBoundingClientRect().width, cell);");
+    expect(b).toContain("return defaultLeftShare(root.getBoundingClientRect().width, cell, LEFT_CHROME_FALLBACK_PX);");
   });
   it("경계를 끌면 그 분할의 leftAuto 표지를 지운다(사람 값 = 다시 안 잰다) · 끄는 동안 창 크기 재측정 멈춤(Fable 2R ④)", () => {
     const b = code(fnBody("function attachDividerDrag(", "\n}\n"));

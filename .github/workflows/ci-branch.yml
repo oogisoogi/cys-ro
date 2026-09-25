@@ -165,6 +165,16 @@ jobs:
                   "편입하면 오히려 근거 없는 목록이 된다(이 게이트 자신의 규율). "
                   "ci-branch = 브랜치 조기 경보 · release = 소비 직전 도구 증명의 2레인 편입.",
               ),
+              "test_ceo_pending_gate": (
+                  {"ci-branch"},
+                  "v1.1.6 3차 통합(master 판정 B · 2026-09-25) — cys-dept CEO 부트 게이트·PENDING 상태 기계·지침 "
+                  "보류(A-Z14) 핀. 그 전에는 **0레인 실행**(정의만 있고 어떤 CI 도 안 돌리는 죽은 보호)이었다. "
+                  "**팩 배송과 무관해서가 아니다** — 대상 cys-dept 는 팩에 실려 나간다. 실제 이유는 측정 공백이다: "
+                  "release·pack-release 는 ubuntu(bash 5 · flock 있음)인데 이 시험은 flock 유무로 갈래가 갈리고 "
+                  "(_has_flock) bash 5 결과를 아무도 재지 않았다(원 가지 HANDOFF §5 「미측정」). 발행 직전에 미측정 "
+                  "적색 위험을 새로 들이지 않으려 브랜치 레인(macOS · bash 3.2)에만 둔다 — **잔여 격차**다. "
+                  "우분투에서 측정해 초록이면 release·pack-release 에 편입하고 이 등재를 지워라(1.1.7).",
+              ),
           }
           # (2026-08-12 편입 완료: test_bootstrap_chain 을 3레인 전부에 배선 — 위계 폴백의 유일
           #  회귀 핀 세트가 CI 0회 실행이던 격차를 봉합. ALLOWED 예외도 함께 제거 — 대칭이 정본.)
@@ -575,7 +585,7 @@ jobs:
                    test_session_start_hook \
                    test_core_inject \
                    test_event_inject \
-                   test_py_resolver_clt_stub test_v115_dept \
+                   test_py_resolver_clt_stub test_v115_dept test_ceo_pending_gate \
                    test_preflight_c62_c68_ledger \
                    test_runtime_seal test_preflight_c80_runtime_seal test_runtime_manifest_parity \
                    test_check_ack_addr_gate test_hook_launcher_split test_mission_origin_parity \

@@ -12,8 +12,10 @@
 | 시험 신설 16 · 교체 9 | ui/src/autoarrange.test.ts | 아래 「바꾼 시험」 |
 | 헤드리스 c18i 교체 · c18v 신설 | docs/v116-ui-evidence/v116-headless.ts | 새 번들 c18 전건 PASS · 옛 번들(2db641e8) c18i·c18v FAIL · c18a~h PASS |
 | 좌열 기본 폭(defaultLeftShare · leftAuto 표지 · 창 크기 변경 재측정 · 옛 1/2·1/3 이동) | formation.ts · main.ts · adoptlayout.ts | bun · 헤드리스 c18D·h·w·o |
-| Fable 적대 1R 봉합 R1~R3 | formation.ts(pil 잘라 보기 · had 우선 · heal) | 「Fable 적대 1R 봉합」 절 · M29~M31 |
-| 뮤턴트 하네스 | mutants-v2.py · mutants-v2.txt | 스냅샷 기준선 162/0 → 30/30 KILLED |
+| Fable 적대 1R 봉합 R1~R3 | formation.ts(pil 잘라 보기 · heal) | 「Fable 적대 1R 봉합」 절 · M29~M31 |
+| Fable 적대 2R 봉합 ①~④ | arrangeWithoutRoles · migrateOldDefaultShare(복원 1회) · 최소 sid 좌열 · 끄는 중 재측정 멈춤 | 「Fable 적대 2R 봉합」 절 · M33~M38 |
+| Fable 적대 3R 봉합 ①③ | rolesBlind = 표지+빈 역할 표(2R 봉합의 회귀 수리) · blur 해제 · 손 떼면 재측정 | M39~M41 |
+| 뮤턴트 하네스 | mutants-v2.py · mutants-v2.txt | 스냅샷 기준선 168/0 → 38/38 KILLED |
 | 디버깅 정밀 패스 | debugpass-v2.test.ts(증거 · 스위트 밖) | 14,183걸음(창 크기 4종 · 끌기 3,055 · 재측정 177) · 사람 폭 유지 7,504 · 기본 폭 1,237 대조 · 위반 0 |
 
 ## 바꾼 옛 시험(이유 = 박사님 결정 09-25 14:1x 「사용자가 세로로 정렬한 것 유지 · 워커 좌우폭만」)
@@ -34,7 +36,11 @@
 - (해소) 좌열 가로 폭 보류 → 박사님 결정 14:5x 로 구현.
 - 잔여: 창 크기 변경 재측정은 window resize 에만 걸려 있다 — 파일 트리 패널 열기/닫기처럼 창은 그대로인데 배치 영역(#root)만 좁아지는 경우는
   다음 열기·닫기 때까지 옛 기본 폭(좁아진 만큼 90칸 미만일 수 있다). 글꼴 크기 변경도 같다.
-- 잔여(수용): 손으로 정확히 1/2·1/3(±0.01)에 맞춘 사용자는 옛 기본값으로 읽혀 새 기본 폭으로 옮겨진다.
+- 잔여(수용): 옛 판에서 손으로 정확히 1/2·1/3(±0.01)에 맞춘 사용자는 복원 때 한 번 새 기본 폭으로 옮겨진다(이 판에서 끈 값은 안 옮긴다).
+- 잔여(Fable 3R ② · 미수리): 좌열 = 계열마다 최소 sid — ⒜ master-2(sid 작음)가 master(sid 큼)보다 먼저 뽑힌다(옛 「순서 첫」도 보통 같은 결과)
+  ⒝ phoenix 복원에서 화면에 남은 끝난 옛 master(sid 작음)가 산 master 보다 먼저(죽은 좌석 정리 전까지 · 옛 동작과 같음). 처방 후보 = 정확한 역할명 우선.
+- 잔여(Fable 3R ④ · 미수리): 옛 기본 이동 플래그는 첫 기동에 선다 — 그 뒤 가져온 옛 배치(1/2·1/3)는 이동되지 않고 사람 값으로 남는다.
+- 적대 검토 = Fable(claude-fable-5-1 · 서브에이전트 jsonl 31줄 실측) 3라운드 상한 도달: 1R REVISE 3 → 봉합 · 2R REVISE 4 → 봉합 · 3R REVISE(중 1 = 2R 봉합의 회귀 → 봉합 · 낮음 3 중 1 봉합 · 2 잔여). 3R 봉합은 4라운드 검토를 거치지 않았다 — master 판정.
 - 무접촉(범위 밖): 전문가 칸 「창 만들기」 메뉴는 여전히 「오른쪽에 새 창」 한 갈래(v1 D2 · closeguard.test 핀). 「아래에 새 창」 복원은 지시 없음.
 - 무정렬 모양은 자동 경로가 스스로 만들지 않는다(디버깅 패스 unfit 0) — 창 옮기기(movePane)·옛 저장 배치·역할 변경으로만 생긴다.
 

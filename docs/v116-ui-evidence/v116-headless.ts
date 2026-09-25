@@ -887,7 +887,8 @@ if (ONLY.includes("c18")) {
   // o — 1.1.5 이하 옛 기본 폭 1/3 저장 배치(표지 없음) → 다음 입양 때 새 기본 폭으로(master#73a7390d) · 위아래 0.65 는 그대로
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
   const old13 = { workspaces: [{ id: 1, name: "", tree: { type: "split", dir: "row", ratio: 1 / 3, a: { type: "split", dir: "col", ratio: 0.65, a: { type: "pane", sid: 1 }, b: { type: "pane", sid: 2 } }, b: { type: "pane", sid: 3 } } }], groups: [], active: 0, counter: 2, groupCounter: 1 };
-  await load("three", `localStorage.setItem("cys-layout-v2", ${JSON.stringify(JSON.stringify(old13))})`);
+  // 1.1.5 에서 올라온 사용자 = 옛 배치는 있고 이동 플래그는 없다(같은 헤드리스 프로필의 앞 장면이 플래그를 세웠으므로 지운다).
+  await load("three", `localStorage.setItem("cys-layout-v2", ${JSON.stringify(JSON.stringify(old13))}); localStorage.removeItem("cys-left-default-migrated")`);
   const o0 = await ev(G);
   await ev(`window.__shimAddSeat(4, "worker", "/Users/user/jarvis/w2")`); await tick();
   const o1 = await ev(G);

@@ -28,7 +28,7 @@ M = [
  ("M28 14:5x adoptLayout master 가중 옛 규칙", "src/adoptlayout.ts", "const mw = n >= 2 ? ((n - 1) * LEFT_SHARE_DEFAULT) / (1 - LEFT_SHARE_DEFAULT) : 1;", "const mw = Math.max(1, (n - 1) / 2);"),
  ("M29 Fable R1 좌열 기둥 속 워커를 안 잘라 냄", "src/formation.ts", "prune(pil, new Set([...drop].filter((s) => !inLeft.includes(s))), new Set())", "prune(pil, new Set(), new Set())"),
  ("M31 Fable R3 워커 기둥 손상 비율 그대로", "src/formation.ts", "const workers = units.filter((u) => !sidsInOrder(u).some(isLeft)).map(heal);", "const workers = units.filter((u) => !sidsInOrder(u).some(isLeft));"),
- ("M32 14:5x 기본 폭 계산 창 폭 무시", "src/formation.ts", "return Math.min(LEFT_SHARE_MAX, Math.max(LEFT_SHARE_DEFAULT, (LEFT_MIN_COLS * cellPx) / rootPx));", "return LEFT_SHARE_DEFAULT;"),
+ ("M32 14:5x 기본 폭 계산 창 폭 무시", "src/formation.ts", "return Math.min(LEFT_SHARE_MAX, Math.max(LEFT_SHARE_DEFAULT, (LEFT_MIN_COLS * cellPx + chrome) / rootPx));", "return LEFT_SHARE_DEFAULT;"),
  ("M23 2R② 옛 기본 이동 함수 무효", "src/formation.ts", "return OLD_DEFAULT_SHARES.some((v) => Math.abs(r - v) <= RULE_TOL) ? { ...tree, leftAuto: true } : tree;", "return tree;"),
  ("M33 2R① rolesBlind 없음", "src/formation.ts", "const fits = !rolesBlind && units.every", "const fits = units.every"),
  ("M34 2R① 역할 표 없어도 autoArrange", "src/main.ts", "  ws.tree = roles\n    ? autoArrange(ws.tree, roles, change, mode, currentDefaultLeftShare())\n    : arrangeWithoutRoles(ws.tree, change);", "  ws.tree = autoArrange(ws.tree, roles ?? new Map(), change, mode, currentDefaultLeftShare());"),
@@ -39,6 +39,8 @@ M = [
  ("M39 3R① rolesBlind 를 본부 0명으로 넓힘(회귀)", "src/formation.ts", "tree.leftAuto === true && roles.size === 0;", "tree.leftAuto === true && leftSids(inOrder, roles).length === 0;"),
  ("M40 3R③ blur 때 끄는 중 표지 안 풂", "src/main.ts", "window.addEventListener(\"blur\", () => { dividerDragActive = false; });", "window.addEventListener(\"blur\", () => { void dividerDragActive; });"),
  ("M41 3R③ 손 떼도 건너뛴 재측정 안 함", "src/main.ts", "if (leftDefaultResizeSkipped) { leftDefaultResizeSkipped = false; recomputeDefaultLeft(); }", "if (leftDefaultResizeSkipped) { leftDefaultResizeSkipped = false; }"),
+ ("M42 94526717 여백 무시(공식)", "src/formation.ts", "(LEFT_MIN_COLS * cellPx + chrome) / rootPx", "(LEFT_MIN_COLS * cellPx) / rootPx"),
+ ("M43 94526717 실측 여백을 안 넘김(main)", "src/main.ts", "m.cell, m.chrome + div);", "m.cell);"),
 ]
 tests = ["src/autoarrange.test.ts", "src/formation.test.ts", "src/closeguard.test.ts", "src/adoptlayout.test.ts", "src/exitedsweep.test.ts"]
 res = []

@@ -15,7 +15,8 @@
 | Fable 적대 1R 봉합 R1~R3 | formation.ts(pil 잘라 보기 · heal) | 「Fable 적대 1R 봉합」 절 · M29~M31 |
 | Fable 적대 2R 봉합 ①~④ | arrangeWithoutRoles · migrateOldDefaultShare(복원 1회) · 최소 sid 좌열 · 끄는 중 재측정 멈춤 | 「Fable 적대 2R 봉합」 절 · M33~M38 |
 | Fable 적대 3R 봉합 ①③ | rolesBlind = 표지+빈 역할 표(2R 봉합의 회귀 수리) · blur 해제 · 손 떼면 재측정 | M39~M41 |
-| 뮤턴트 하네스 | mutants-v2.py · mutants-v2.txt | 스냅샷 기준선 168/0 → 38/38 KILLED |
+| 좌열 기본 폭에 칸 여백(master#94526717) | formation.ts defaultLeftShare(chrome) · main.ts measuredPaneMetrics | 1920px 87 → 90칸 · c18 23/23 |
+| 뮤턴트 하네스 | mutants-v2.py · mutants-v2.txt | 스냅샷 기준선 169/0 → 40/40 KILLED |
 | 디버깅 정밀 패스 | debugpass-v2.test.ts(증거 · 스위트 밖) | 14,183걸음(창 크기 4종 · 끌기 3,055 · 재측정 177) · 사람 폭 유지 7,504 · 기본 폭 1,237 대조 · 위반 0 |
 
 ## 바꾼 옛 시험(이유 = 박사님 결정 09-25 14:1x 「사용자가 세로로 정렬한 것 유지 · 워커 좌우폭만」)

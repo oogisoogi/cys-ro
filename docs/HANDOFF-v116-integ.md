@@ -643,3 +643,11 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - ④전 pane 사망 + 윈 설치파일: 창 닫기·배치 경로 변경(autoArrange v2) = 가지 헤드리스 94/94 · 디버깅 14,183걸음 위반 0(가지 증거) · 병합본 바이트 동일 — **해당 · 이상 없음** · 윈 설치파일 = git push 뒤 CI windows-build(master 게이트).
 
 ## 23. 8단계 — 윈 실기 묶음 재료 초안(TICKET=v116-integ-5 · master#0eb6ba6f · 원장 17:31:24) = `docs/WINTEST-v116-bundle-draft.md`(① 윈 setup.exe = `cysr_1.1.5_x64-setup.exe` 140,856,763 B · sha256 ef67ee69… · 판번 1.1.5(소스 미올림) · 서명 없음 · 아티팩트 로그인 없이 401 / ② 앱 안 Update 1.1.5→1.1.6 = 판번 올림 + 태그 절단(draft) 필요 · 기본 경로는 발행 뒤에만 · 발행 전은 CYS_UPDATE_MANIFEST_URL 우회+재호스팅 / ③ 윈 점검표 W1~W12 / ④ 설치기 0.3.36 윈 체크리스트 원문 + 발행 순서 원문 · 설치기 최종 해시 = r4 뒤) · 업로드·공유·절단 0.
+
+## 24. 1.1.6 첫 절단 준비 C1 — 판번 올림(TICKET=v116-cut-1 · master#c39dc198 지시 · #69b373be ACCEPT)
+- 커밋 **f243e04a**(3758bfed 위 1) · master ACCEPT · master C2 git push 691111d5..f243e04a(빨리감기 · ls-remote 일치) · C3(태그 v1.1.6) = CI 초록 뒤 master.
+- 판번 1.1.5 → 1.1.6 = 버전 SOT **8곳**: Cargo.toml · src-tauri/Cargo.toml · src-tauri/tauri.conf.json · ui/package.json · dist-win/cys.wxs · dist-win/cys-x64.wxs(<Product Version>) · Cargo.lock 2(cys-terminal · cys-app · `cargo metadata --offline` 재생성 · 판번 줄만 · 의존 변동 0) · 7파일 +8/−8.
+- 지시 이탈(master 수용): 지시 3곳 + Cargo.lock → `scripts/version-check.sh`(release.yml 「Version SOT check」 = build 잡 첫 게이트)가 8곳 일치를 요구해 나머지 3곳도 올림.
+- 검증: version-check.sh(인자 없음 · `v1.1.6` 태그 모드 = 태그=소스 + 벤더 idoforgod/cys-terminal 동명 태그 없음) ✅ · test_version_sot_mutation 14/14 · 정본 게이트 f243e04a 17:39~18:11 104스텝 rc≠0 0 · master 691111d5-m 대비 신규 0 · D04 = 8곳 일치 1.1.6.
+- 판번 단언 시험·게이트 목록: ① scripts/version-check.sh(8곳 · 태그 모드) — release.yml:278-289 ② scripts/tests/test_version_sot_mutation.py(같은 스텝 · 음성 대조) ③ release.yml:275 = 태그 push 면 태그=소스 단언(①과 같은 스텝) ④ src-tauri/src/main.rs:7692 v116_rows 픽스처 stamp 「1.1.5」 = 옛 판 표본(A14 173/0 · 판번 올림 무영향) ⑤ 설치기 핀(저장소 밖 · habitat) ⑥ 릴리스 노트 = docs/RELEASE_NOTES_1.1.x 없음 · 워크플로 참조 0 → 게이트 아님 · 공지 문안 = §17-5 초안(+ WINTEST ③ W12 창 정렬 v2 줄 보완 후보).
+- ⚠ **설치기 핀 메모**: `scripts/build-macos-local.sh:25·87` 이 zip 이름에 tauri.conf.json 판번을 넣는다 → 다음 로컬 빌드 = `cysr-macos-arm64-v1.1.6.zip`(§19·§21 의 `…-v1.1.5.zip` 과 이름이 다르다) · 설치기 사본 핀 칸(zip 이름·크기·sha256·CDHash·build_id)은 새 빌드 값으로 다시 채워야 한다. 윈 setup.exe 이름도 `cysr_1.1.6_x64-setup.exe` 가 된다(windows-build·release 산출).

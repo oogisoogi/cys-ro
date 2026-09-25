@@ -464,3 +464,83 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - **T-PACK(fix/v116-pack 8f439373) = a8483518 에 없음**(`git merge-base --is-ancestor` 실측) → T-PACK §6 10항목(부서 3 재부팅 · 역할별 1자리 · surface.created 복원 caller 만 · auto_restore running→done · 미룬 부서 cys-dept launch · 부서장 --queued ping · 되살림 알림 1줄 · 데드맨 회수 · 재부팅 2회째 동일 · 복원 중 close-surface 묘비 유지 · 출처 `~/axdev/.wt/cys-v116-pack/HANDOFF-v116-pack.md:149-160`) = **전부 「이 빌드에 없음」** · §10-1 「T-PACK 편입 뒤 고아 데몬 0 실측」도 미결 그대로.
 - 1차 빈칸 이월: x64(Tart = arm64 만) · 윈도(CI 미서명 setup.exe · 0133dcd4/a8483518 windows-build 아티팩트 cys-windows-x64-nsis) · 부서 좌석(부서 금지) · 닫기 확인 모달 경로(상단 「창 닫기」·⌘W — #7 ② 가 ⌘W 로 겸함) · 좌석 정상 응답(말 걸기) · S2 「≈1.5초」 정밀 간격 · 1차 S4 카드 판정.
 - 1차에서 이미 ✅ 인 행(S1·S2·S3·S4·X-1)은 이 빌드에서 **회귀 확인 1회씩**만 권함(특히 X-1 은 #7 과 같은 칸 구성이라 함께 잰다).
+
+---
+
+## 20. 4차 통합 — T-PACK 편입(TICKET=v116-integ-4 · 브리프 11:19 원장 surface:1105 kind=brief)
+
+- 좌석 = worker@surface:1105(원 계정 · Opus 5.5) · 전임 1086(계정2) 닫힘 → 이관. 기점 = 로컬 c86ae675(= a8483518 + 문서 2) · 원격 a8483518.
+- 편입 사유: 계획 순서 T-USAGE → **T-PACK** → T-NUM 중 T-PACK 만 2·3차에서 빠짐(master 누락) · `merge-base --is-ancestor e98c42c8 a8483518` rc 1.
+- 도구·로그(저장소 밖) = `~/axdev/.wt/integ-v116-work/r4/`(qt.sh · qt-*.log · pkt/ = 타사 검토 묶음 · codex-r1.out).
+
+### 20-1. 병합
+| 가지 · 결속 해시 | 병합 커밋 | 문자 충돌 | 공통 조상 |
+|---|---|---|---|
+| fix/v116-pack @e98c42c8(코드 최종 5c8890d1 · 뒤 커밋 = 문서만 · 31커밋) | **2dd4954b**(^1 = c86ae675 · ^2 = e98c42c8 실측) | 0(자동 병합 6파일) | 526325bf |
+
+### 20-2. 의미 충돌 판정(겹친 6파일 · 도구 출력 근거)
+| 파일 | T-PACK 변경 | 통합 쪽 변경 | 판정 |
+|---|---|---|---|
+| ci-branch.yml | 팩 스위트 긴 줄에 새 시험 4종 | flake-pty ⑶ CYS_TMP trap · test_ceo_pending_gate A04 + ALLOWED | **충돌 없음** — 낱말 diff(a8483518→병합) = 4종 추가뿐 · e98c42c8→병합 = 통합 쪽 줄만 · 4종 1회 등재 |
+| pack-release.yml | 같은 긴 줄 4종 | CYS_TMP trap | **충돌 없음** — 4종 1회 |
+| release.yml | 긴 줄 2목록 4종 | CYS_TMP trap | **충돌 없음** — 4종 각 2회(build·pack-artifacts) |
+| handlers.rs | org.status daemon 블록 `auto_restore` 1키(:6958) | usage.report · 빈 좌석 재기동 줄(X-4) · display_no 해석 등 | **충돌 없음** — 다른 match 팔 · 키 1회 · Ordering import(:7) |
+| state.rs | Daemon 필드 `auto_restore_phase` + 생성자 1줄 | 필드·함수 다수(1083·1077 등) | **충돌 없음** — 이름 중복 0 · cysd 안 `Daemon {` 리터럴 1곳(:3223)뿐 |
+| main.rs | auto_restore 상수·함수(:1578-1610) · running/done 기록(:1863·:1900) · 시험 2 | pty_test_support·d6_probe_tests 선언(시험 구역) | **충돌 없음** — T-PACK 제품 코드가 첫 `#[cfg(test)]`(:3238) 앞 → 건강 검체 `_rs_prod` 절단 범위 밖 |
+- 교차 상호작용(6파일 밖) 점검: ⑴ 1077 `cys list` 5번째 칸 `no=`(인덱스 4) — T-PACK 새 코드는 `cys list` 새 파서 0 · `_parse_cys_list` 키 기반 · formation 폴백 `_roster_from_list_tsv` 는 f[1]·f[3]만 → 무영향 ⑵ `cys queue list` 행(queue_list_row · cols[3]=preview) 무변경 ⑶ close-surface 는 `resolve_surface_arg` 경유 — `surface:N` 종전대로 ⑷ 1083 빈 좌석 재기동 타이핑 × T-PACK 회수 = 아래 20-5 잔여 위험 ⑸ 1090 promote-ceo exit 5 는 launch 경로 무관(_revive_dept 오판 없음 · Opus 확인).
+- 수리 커밋 = **0**(병합 그대로).
+
+### 20-3. 빠른 확인(병합 직후 · 좌석 env 제거 · 직렬 · 로그 r4/qt-*.log)
+- `cargo build --bin cysd --bin cys` + `cargo test --bin cysd --no-run` 초록 · `cargo test --bin cysd -- --test-threads=1 auto_restore org_status` **27/0**.
+- 팩 시험(T-PACK 합격 목록 + 수정 시험): test_d1_4_orphan_reap OK · test_v116_rb1_formation OK · **test_v116_auto_restore_status === PASS ===(26s · 실제 격리 cysd · 관측 단계 running→done · 옵트아웃 off · 편성 판정 running→wait)** · test_v116_phoenix_midrun_tomb PHOENIX-V116-MIDRUN-TOMB-OK(뮤턴트 KILLED 포함) · test_dept_name_guard OK(45s) · test_formation 43/43 · test_v115_dept OK.
+- 레인 밖(손으로): test_v116_num_cys_list_compat(1077 · 어느 워크플로에도 없음) Ran 2 OK.
+
+### 20-4. 정본 게이트(병합 머리 2dd4954b · 1회 · 직렬)
+- 러너 = master gate_runner.py v2 · master-verify-snapshot.sh(`--deps ui` · MSV_NOTIFY=0) · 격리 HOME/TMPDIR · 정제 PATH `~/msv-scratch/v116rv/bin` · 11:23:42 → 11:56:14(32분) · 스냅샷 추적 변경 0 · 스냅샷 제거 · 러너 프로세스 그룹(pgid 4700) 잔존 0 · 결과 `~/msv-scratch/v116-integ2/results/2dd4954b/`.
+- **103스텝 rc≠0 0.** compare_runs:
+  - 기준 master **d1230772-m**(= 6d237a16 코드) → 대상 실패 0 · 기준 실패 0 · **신규 0** · 해소 0 · 대상에만 있는 스텝 = A04.test_ceo_pending_gate(3차 레인 편입) + T-PACK 4종 → `cmp-2dd4954b-vs-d1230772m.json`
+  - 기준 내 6d237a16 → 같은 판정 → `cmp-2dd4954b-vs-6d237a16.json`
+- 주요 수: A12/D07e cys 340/0 · A13/D07d lib 550/0(1 ignored) · A14 cys-app 173/0(1 ignored) · B01 boot-health **GREEN 149/0/1**(387.9s) · D02 secret-scan clean **1303** 파일 · D06 bun **1416/0** · D07c cysd 직렬 **1194/0**(2 ignored · 3차 1192 + T-PACK v116_auto_restore 2) · X01 2/0 · D07b phoenix 16종 전부 rc 0(e2e_replacement · w2_untomb_fullcycle 8/8 · c6_reap).
+- 레인 대조: A01 rc 0(3레인 대칭 · 새 4종 = ALLOWED 밖 대칭 등재 · ALLOWED 예외 = 3차의 ceo_pending_gate {ci-branch} 1건 그대로 · 사유 = 우분투 bash5·flock 갈래 미측정 · §18-5).
+- ⚠ 정직 고지: 게이트 A04 에서 test_v116_auto_restore_status 는 **SKIP 초록**(ci-branch 레인에 target/debug 없음 — T-PACK §7-4 기록 그대로). 실제로 도는 곳 = release.yml build 잡(CI) · 이번 실측 = 20-3 손 실행 1회.
+
+### 20-5. 적대 검토(3라운드 상한 · 2라운드에서 수렴)
+| 라운드 | 검증자 | 판정 | 요지 |
+|---|---|---|---|
+| 1R | Opus 5.5 서브에이전트(읽기 전용 · 전사 model `claude-opus-5-5` 127건 실측) | **ACCEPT** · BLOCK/MAJOR 0 | 부기 6(아래) · 병합 유발 결함 0 · 읽은 지점 약 40 |
+| 1R | codex(gpt-6-astra · `--sandbox read-only` · 묶음 폴더 쓰기 불가) | REVISE · MAJOR 2 · NOTE 3 | ⚠ 내 묶음 결함: 07(회수 함수) 0바이트 · 병합본 워크플로 본문 없음 · 목록 파서 없음 |
+| 2R | codex(묶음 보강 + 작성자 반론 A·B) | **ACCEPT** | MAJOR 2건 → NOTE(병합 차단 반론 수용) · 남은 NOTE 2 = 자료 절단(레인 줄 cut 400자) · formation 폴백 f[1]/f[3] — 실제 `cys list` 형식(`ref\trole\tpid\texited\tno=\ttitle\tcwd` · cys.rs 생산자)으로 no= = 인덱스 4 → 무영향(작성자 확인) |
+- 부기·잔여(전부 수리 0 · 기록 · 판정 = master):
+  1. 【잔여 위험 · 1.1.7 후보】 1083 빈 좌석 재기동 타이핑 × T-PACK 빈 좌석 회수: reap_orphan_seats(javis_boot_node.py:1028)는 닫기 직전 status·list·뿌리 셸을 같은 pid 로 다시 잰다 → 남는 창 = `_seat_queue_block` 의 `cys queue list`(상한 8s) + close RPC(상한 12s). 그 창 안에 node-recover·cys restore 가 같은 좌석에 기동 줄을 치면 막 깬 좌석이 닫힐 수 있다(codex 모의 실행 재현 · 편성이 역할을 다시 세우나 같은 세션·스크롤백은 잃는다). 병합 전(1083 이전)엔 그 기동 줄이 큐에 보류돼 queue_nonempty 로 보존됐던 경로가 1083 뒤 타이핑으로 바뀐 것 — **두 가지가 만나 생긴 창**. 대상 = 역할 없음·idle 600초+·자식 없는 셸 좌석(Opus: agent_launch 는 CLI 가 역할 좌석에 주로 보냄 → 겹침 드묾). 처방 후보 = 데몬 쪽 조건부 원자 회수(좌석 세대·재기동 예약 확인과 닫기를 한 잠금 안에서 · T-PACK §5 P4 와 같은 영역).
+  2. (codex) 복원 900초 상한 뒤 go = T-PACK 의도 설계(Fable M-3 · 무기한 대기 방지) — 느린 정상 복원과 걸린 복원을 못 가름 · 병합 범위 밖.
+  3. (Opus MINOR) `src/bin/cys.rs:8639-8648` master_seat_cwd_from_rows 가 T-PACK 이 바꾼 파이썬 규칙(홈 제외·에이전트 좌석 우선 · javis_formation.py:481)을 안 따라감 — 주석 「같은 규칙」 거짓. 이중 master 상태에서 `cys boot` 가 홈을 기준 삼을 수 있음 · T-PACK 가지 자체의 것 · 1.1.7.
+  4. (Opus NOTE) **test_v116_num_cys_list_compat(1077) 가 어느 CI 레인에도 없음** — A01 은 레인 간 비대칭만 봐서 못 잡는다 · T-PACK 이 쓰는 `_parse_cys_list` 의 no= 내성을 지키는 유일한 시험 · 손 실행 OK(20-3) · 3레인 편입 여부 = master 판정(범위 확장이라 손대지 않음).
+  5. (Opus NOTE) 1083 옛 기동 줄 폐기는 배달 직전에만 → 역할 없는 빈 좌석 큐는 안 빠짐 → T-PACK 이 queue_nonempty 로 계속 보존(미집행 쪽 · 안전).
+  6. (Opus NOTE · 추정) 1102 자동 균등 리사이즈가 셸 재그림 바이트로 idle_secs 를 되돌려 600초 유예를 늦출 수 있음(안전 쪽 · zsh 리사이즈 출력 미실측).
+  7. (Opus NOTE) `main.rs:4062` 문서 주석 `/// ★성공(0)은 재시도 없음` 이 T-PACK 새 시험에 붙고 원 대상 `success_runs_once`(:4116)는 주석을 잃음 — 표기만.
+
+### 20-6. 디버깅 패스(겹친 6파일 경로의 실패 경로·경계 · 읽기)
+- auto_restore 실패 경로: `spawn_auto_restore` 스레드 = guard_restore_panic(catch_unwind) 뒤 DONE 기록(main.rs:1900) → 성공·실패·ABORTED(Failed)·panic 모두 done · 옵트아웃·미발화 = off(생성자) · 재시도 규칙 = `auto_restore_will_retry`(첫 실행·0/5/6 제외)와 루프 일치(시험 v116_auto_restore_phase_names_and_retry_rule_match_the_loop).
+- org.status 키: 1회 · 값 = auto_restore_phase_str(99→off 기본) · 편성 판독 불가 = go(종전 흐름).
+- 레인: 4종 × 3워크플로 계수(ci 1 · pack-release 1 · release 2) · 낱말 diff 양방향.
+- 「어디까지 뒤졌나」 계수: 겹친 6파일 전부(양쪽 diff + 병합본) · 교차 지점 6(cys list 파서 3 · queue list 행 · close-surface 해석 · 1083 재기동 줄 · 1090 exit 5) · 시험 손 실행 8종 + cargo 27 · 정본 게이트 103스텝 · 이종 검토 3회(Opus 1 · codex 2). 안 한 것: 경합 창의 실기 재현(격리 데몬 + node-recover 타이밍 주입) · VM(20-7).
+
+### 20-7. 성찰(9단계 · 1회차 = 병합 판단 때 · 2회차 = 【확인요청】 전)
+| 단계 | 1회차(병합 판단) | 2회차(완료 전) |
+|---|---|---|
+| 1 원칙·의도 | 적용 — 편입 대상 = T-PACK 1가지 · 두 의도 보존 · 범위 동결(오늘) | 적용 — 수리 0 · 병합 그대로(범위 밖 수정 0) |
+| 2 구체 설계 | 적용 — 병합 1커밋 · 수리는 별도 커밋(3차 관례) · 의미 판단 필요 시 【결정필요】 | 적용 — 【결정필요】 없음(의미 충돌 0) |
+| 3 영향 범위 | 적용 — 6파일 + 교차 지점(cys list no= · queue list · close-surface 해석 · 1083 · 1090)까지 조사 | 적용 — Opus 가 교차 지점을 약 40곳으로 넓혀 재확인 |
+| 4 결함 재조사 | 적용 — 1083×D1#4 상호작용을 검토 질문으로 명시 | 적용 — codex 가 창을 구체 순서로 재현 → 잔여 위험 1 로 기록(20-5 ①) |
+| 5 기능별 다른 관점 | 적용 — auto_restore 단계가 1089 복원 카드·phoenix c6 경로와 무관 확인 | 적용 — auto_restore_status 가 게이트에선 SKIP 이라는 측정 공백을 정직 고지(20-4) |
+| 6 적대 | 적용 — Opus + 타사(codex) 동시 발주 | 적용 — 2R 수렴 · 내 묶음 결함(07 0바이트)이 R1 MAJOR 의 한 원인이었음을 기록 |
+| 7 다른 관점 | 적용 — 레인 목록을 낱말 단위 양방향 diff 로(줄 단위 자동 병합의 맹점 대비) | 적용 — 1077 compat 시험의 레인 부재(선재) 발견 → 판정 항목화 |
+| 8 필요성 | 적용 — 새 수리·리팩터 0(Opus MINOR 3·주석 7 도 범위 밖이라 기록만) | 적용 — 같은 판단 유지 |
+| 9 저장 | 적용 — 이 §20 · TODO(cys todo-path) | 적용 — 커밋 |
+
+### 20-8. 4군 점검
+- ①폭주 큐: T-PACK 회수는 큐가 비지 않은 좌석을 보존(queue_nonempty·queue_unknown) · 1083 폐기 경로와 겹쳐도 미집행 쪽(20-5 ⑤) · cysd 직렬 1194/0 — **해당(점검) · 이상 없음**.
+- ②무clear 100%+: 좌석 출생 CTX 경로 변경 0(T-PACK = 편성 대기·회수·phoenix 묘비 · 주입 문구 변경 0) — **무관**.
+- ③자가치유 전멸: auto_restore 단계가 모든 종료 경로에서 done(20-6) · 편성 대기 상한 900초(무기한 정지 없음) · phoenix D07b 16종 rc 0 · midrun_tomb OK — **해당(점검) · 이상 없음**.
+- ④전 pane 사망 + 윈 설치파일: 회수 대상 = 역할 없음·600초+·자식 없는 셸 · 닫기 직전 재조회 · 잔여 창 1(20-5 ①) · 「다른 좌석 닫힘 0」은 VM §6-8 로 실측 예정 — **해당 · 잔여 위험 1 기록**. 윈 설치파일 = 이 기기 툴체인 없음 → git push 뒤 CI windows-build(master 게이트).
+- 프로세스 정리: 내가 띄운 것(게이트 pgid 4700 · codex 7678·42396 · 격리 cysd 시험) 잔존 0 · 이름 패턴 kill 0.

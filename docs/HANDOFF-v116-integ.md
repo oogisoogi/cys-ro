@@ -407,3 +407,10 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
 - **98스텝 rc≠0 0 · compare_runs(기준 = master 0133dcd4-m) = 대상 실패 0 · 기준 실패 0 · 신규 0 · 해소 0.**
 - 주요 수: A12/D07e cys 340/0 · A13/D07d lib **550/0**(1 ignored · released_tables_cover_current_embed 포함) · A14 cys-app 173/0 · B01 boot-health GREEN · D02 secret-scan clean 1298 · D06 bun 1416/0 · D07c cysd 직렬 1192/0 · X01 2/0 · D07b c6_reap·e2e_replacement·w2_untomb_fullcycle 전부 rc 0.
 - 게이트 밖(손으로): test_ceo_pending_gate ALL PASS(§18-3 · 레인 미등재) · 헤드리스 = 08b379bc(③ 까지) ALL PASS 89줄 — ② 의 main.ts 변경은 CEO 승격 실패 토스트 문구 2곳뿐(헤드리스 경로 밖).
+
+### 18-5. 레인 편입(B) · 판정 · git push(3차 통합 a8483518)
+- test_ceo_pending_gate 레인(master#cd276f10 → 【결정필요】 → #829f2073 = B): ci-branch 1줄만이면 A01 적색(작업 트리 실측·원복) → **ci-branch A04 편입 + A01 ALLOWED {ci-branch} 등재**(이유 = bash 5·flock 갈래 우분투 미측정 · 측정 뒤 release·pack-release 편입·등재 삭제 = 1.1.7) = 커밋 **a8483518**(ci-branch.yml 만 · +11/−1). A01 비대칭 0 · yaml OK · 시험 1회 ALL PASS · 러너 계획에 A04.test_ceo_pending_gate.
+- master 판정 = **ACCEPT @a8483518**(#b39d3b36 · q5 d1230772-m 98스텝 rc 0 · 0133dcd4-m 대비 신규 0).
+- git push(불변식 5): ① #b39d3b36(원장 09:36:21) → ② 【실행직전확인요청】 09:36:37 → ③ #2edcaf12 재승인(원장 surface:1086 · submitted yes · 09:36:48 · 유효 범위 = 이 push 1건) → ④ 09:37:01 `push origin a848351890fc35ce861f8fb13f660d3b739c326b:refs/heads/fix/v116-integ` rc 0 · `0133dcd4..a8483518` 빨리감기.
+- 사후: ls-remote fix/v116-integ = a8483518 일치 · main 721bc990 무접촉 · 키체인 github.com 1 = 1 · credential.helper 미설정(무변경) · 태그 0.
+- 발화 런(headSha a8483518): ci-branch 36078366417 · windows-build (feasibility) 36078366290 · windows-health (H-WIN 실기) 36078366422 — **3종 전부 success**(ci-branch 3잡 · windows-build build · windows-health win-health · 10:12 KST) · ci-branch 로그에 「== test_ceo_pending_gate (mac) == ALL PASS」 = 레인 편입이 실제로 돈다.

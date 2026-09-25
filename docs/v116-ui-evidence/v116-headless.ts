@@ -31,6 +31,8 @@
 //       f 사람이 끈 좌열 0.40·위아래 0.65 보존 · g 워커만(본부 없는 기기) 열기·닫기 · h 1280·1920·800 폭 ·
 //       i (v2 · 박사님 결정 09-25 14:1x) 팔레트 「세로 분할」 복원 · ⌘⇧D = 대상 아래(같은 기둥 · 기둥 폭 불변) ·
 //       v (v2) 사람이 세로로 나눈 기둥이 입양·닫기 뒤에도 그대로 · 좌열 4:1 유지 · 기둥끼리만 균등 · 팔레트 세로 분할 실행
+//       D·h·w·o (박사님 결정 14:5x · master#73a7390d) 좌열 기본 폭 = 창의 25% · 노트북 글자 90칸 · 상한 50% — 창 폭별(3440·1920·1280·800) ·
+//       창 크기 변경 때 기본 폭만 다시 잼(사람 0.40 그대로) · 옛 기본 1/3 저장 배치 → 새 기본으로
 //   c5 작업기억이 정본 경로(~/.cys/pack/round/SESSION_STATE.md)에만 있을 때 복원 카드가 그 내용을 싣는다
 // 원형 = D4-evidence/headless-layout-check.ts(996) 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -725,6 +727,14 @@ if (ONLY.includes("c18")) {
   const ids = (o: any) => Object.keys(o).map(Number).sort((a, b) => a - b);
   const tick = () => Bun.sleep(3800);
   const view = (x: any) => JSON.stringify(Object.fromEntries(Object.entries(x.o).map(([k, v]: any) => [k, `${v.w}×${v.h}`])));
+  // (박사님 결정 09-25 14:5x · master#73a7390d) 좌열 기본 폭 = 창의 25% · 노트북이면 글자 90칸 · 상한 50%. 기대값 D 는 이 창(1280)에서
+  //   실제로 선 좌열 폭이고, 그 D 가 규칙에 맞는지는 master 창의 실제 터미널 열 수(shim resize_surface)로 따로 잰다.
+  const mcols = async () => (await ev(`(window.__shimCalls.filter(c => c.cmd === "resize_surface" && c.args.surfaceId === 1).at(-1)?.args.cols ?? 0)`)) as number;
+  const defRule = (w: number, cols: number) => (near(w, 0.25) && cols >= 84) || (near(w, 0.5) && cols <= 92) || (w > 0.25 + 0.012 && w < 0.5 - 0.012 && cols >= 84 && cols <= 92);
+  await load("hq5");
+  const D = ((await ev(G)) as any).o[1].w as number;
+  const Dcols = await mcols();
+  check("c18D 1280폭 기본 좌열 폭 D = 규칙(25% · 90칸 · 상한 50%)에 맞음 — master 창 실제 열 수로 대조", defRule(D, Dcols), `D=${D} cols=${Dcols}`);
 
   // a — 본부+워커1 → 워커 입양(종전 R1: 새 워커 0.50 · master 0.20 · cso 0.05)
   await load("three");
@@ -732,8 +742,8 @@ if (ONLY.includes("c18")) {
   await ev(`window.__shimAddSeat(4, "worker", "/Users/user/jarvis/w2")`); await tick();
   const a1 = await ev(G);
   await shot("c18a-adopt.png");
-  check("c18a 본부+워커1 → 워커 입양: 워커 2칸 같은 폭 · 좌열 1/2 → 1/3(규칙값 · 사람 손 안 탐) · master:cso 세로 4:1 유지",
-    near(a0.o[1].w, 1 / 2) && even(a1.o, [3, 4]) && near(a1.o[1].w, 1 / 3) && near(a1.o[1].h / a1.o[2].h, a0.o[1].h / a0.o[2].h, 0.05) && a1.o[1].h > a1.o[2].h * 3,
+  check("c18a 본부+워커1 → 워커 입양: 워커 2칸 같은 폭 · 좌열 기본 폭 D 그대로(워커 수와 무관) · master:cso 세로 4:1 유지",
+    near(a0.o[1].w, D) && even(a1.o, [3, 4]) && near(a1.o[1].w, D) && near(a1.o[1].h / a1.o[2].h, a0.o[1].h / a0.o[2].h, 0.05) && a1.o[1].h > a1.o[2].h * 3,
     `before ${view(a0)} → after ${view(a1)}`);
 
   // b — 외부 닫힘(가운데 워커) → 남은 워커 같은 폭
@@ -741,8 +751,8 @@ if (ONLY.includes("c18")) {
   const b0 = await ev(G);
   await ev(`window.__shimExit(4, true)`); await Bun.sleep(1500);
   const b1 = await ev(G);
-  check("c18b 외부 닫힘(가운데 워커 4) → 남은 3·5 같은 폭 · 좌열 1/3 유지 · 칸 수 5→4",
-    ids(b0.o).length === 5 && even(b0.o, [3, 4, 5]) && JSON.stringify(ids(b1.o)) === "[1,2,3,5]" && even(b1.o, [3, 5]) && near(b1.o[1].w, 1 / 3),
+  check("c18b 외부 닫힘(가운데 워커 4) → 남은 3·5 같은 폭 · 좌열 D 유지 · 칸 수 5→4",
+    ids(b0.o).length === 5 && even(b0.o, [3, 4, 5]) && JSON.stringify(ids(b1.o)) === "[1,2,3,5]" && even(b1.o, [3, 5]) && near(b1.o[1].w, D),
     `before ${view(b0)} → after ${view(b1)}`);
 
   // c — ⌘W(확인 → 닫기) 경로
@@ -751,13 +761,13 @@ if (ONLY.includes("c18")) {
   await ev(key("w")); await Bun.sleep(250);
   await ev(`document.querySelector(".modal-yes")?.click()`); await Bun.sleep(500);
   const c1 = await ev(G);
-  check("c18c ⌘W 로 워커 3 닫기 → 남은 4·5 같은 폭 · 좌열 1/3", JSON.stringify(ids(c1.o)) === "[1,2,4,5]" && even(c1.o, [4, 5]) && near(c1.o[1].w, 1 / 3), view(c1));
+  check("c18c ⌘W 로 워커 3 닫기 → 남은 4·5 같은 폭 · 좌열 D", JSON.stringify(ids(c1.o)) === "[1,2,4,5]" && even(c1.o, [4, 5]) && near(c1.o[1].w, D), view(c1));
 
   // d — 창 머리 × (두 번 눌러 닫기)
   await load("hq5");
   await ev(`(() => { const x = document.querySelector('#root .pane[data-sid="5"] .pane-close'); x.click(); x.click(); })()`); await Bun.sleep(500);
   const d1 = await ev(G);
-  check("c18d 창 머리 × 로 워커 5 닫기 → 남은 3·4 같은 폭 · 좌열 1/3", JSON.stringify(ids(d1.o)) === "[1,2,3,4]" && even(d1.o, [3, 4]) && near(d1.o[1].w, 1 / 3), view(d1));
+  check("c18d 창 머리 × 로 워커 5 닫기 → 남은 3·4 같은 폭 · 좌열 D", JSON.stringify(ids(d1.o)) === "[1,2,3,4]" && even(d1.o, [3, 4]) && near(d1.o[1].w, D), view(d1));
 
   // e — 새 창(전문가 칸 「창 만들기 → 오른쪽」) = 종전 새 칸 0.50
   await load("hq5", `localStorage.setItem("cys-expert-mode", "1")`);
@@ -773,8 +783,8 @@ if (ONLY.includes("c18")) {
   const eNew = ids(e1.o).filter((i) => i >= 100);
   const eOrder = await ev(`[...document.querySelectorAll("#root .pane[data-sid]")].map(p => +p.dataset.sid)`);
   await shot("c18e-new-pane.png");
-  check("c18e 창 만들기 → 새 창이 워커와 같은 폭 · 분할 대상(4) 바로 오른쪽 · 좌열 몫 유지(사람 손 안 탄 1/3 → 워커 4대 규칙값 1/3)",
-    eNew.length === 1 && even(e1.o, [3, 4, eNew[0], 5]) && near(e1.o[1].w, 1 / 3) &&
+  check("c18e 창 만들기 → 새 창이 워커와 같은 폭 · 분할 대상(4) 바로 오른쪽 · 좌열 기본 폭 D 유지",
+    eNew.length === 1 && even(e1.o, [3, 4, eNew[0], 5]) && near(e1.o[1].w, D) &&
       JSON.stringify(eOrder) === JSON.stringify((eOrd1 as number[]).flatMap((x) => (x === 4 ? [4, eNew[0]] : [x]))),
     `${view(e1)} before=${JSON.stringify(eOrd1)} order=${JSON.stringify(eOrder)}`);
 
@@ -816,10 +826,10 @@ if (ONLY.includes("c18")) {
   const i1 = await ev(G);
   const iNew = ids(i1.o).filter((x) => x >= 100);
   await shot("c18i-cmd-shift-d.png");
-  check("c18i 팔레트 「분할」 → 가로·세로 분할 둘 다 · ⌘⇧D(워커 4) → 새 창이 4 아래 반 · 같은 기둥 폭 · 기둥 3개 폭 불변 · 좌열 1/3 · 4:1",
+  check("c18i 팔레트 「분할」 → 가로·세로 분할 둘 다 · ⌘⇧D(워커 4) → 새 창이 4 아래 반 · 같은 기둥 폭 · 기둥 3개 폭 불변 · 좌열 D · 4:1",
     Array.isArray(pal) && pal.includes("가로 분할") && pal.includes("세로 분할") && iNew.length === 1 && i1.col === 2 &&
       near(i1.o[iNew[0]].w, i1.o[4].w) && near(i1.o[4].h, 0.5, 0.02) && near(i1.o[iNew[0]].h, 0.5, 0.02) &&
-      even(i1.o, [3, 4, 5]) && near(i1.o[4].w, i0.o[4].w) && near(i1.o[1].w, 1 / 3) && i1.o[1].h > i1.o[2].h * 3,
+      even(i1.o, [3, 4, 5]) && near(i1.o[4].w, i0.o[4].w) && near(i1.o[1].w, D) && i1.o[1].h > i1.o[2].h * 3,
     `palette=${JSON.stringify(pal)} ${view(i0)} → ${view(i1)} col=${i1.col}`);
 
   // v — (v2) 사람이 세로로 나눈 기둥(4 위 · 새 창 아래)이 입양·닫기를 지나도 그대로 · 좌열 4:1 · 기둥끼리만 균등 · 팔레트 세로 분할 실행
@@ -839,21 +849,51 @@ if (ONLY.includes("c18")) {
   const pil = (o: any, a: number, b: number) => near(o[a].w, o[b].w) && near(o[a].h, 0.5, 0.02) && near(o[b].h, 0.5, 0.02);
   const hq = (o: any, share: number) => near(o[1].w, share) && near(o[1].h / (o[1].h + o[2].h), 0.8, 0.02);
   check("c18v 사람 세로 기둥(4/새 창) → 입양(6) 뒤 그대로 · 기둥 4개 균등 → 워커 3 닫기 뒤 그대로 · 3기둥 균등 → 팔레트 세로 분할(5) → 5 아래 · 폭 불변 → 새 창 닫기 → 4 가 기둥 전체 · 좌열 4:1 내내",
-    pil(v1.o, 4, iNew[0]) && even(v1.o, [3, 4, 5, 6]) && near(v1.o[3].w, (2 / 3) / 4) && hq(v1.o, 1 / 3) && v1.col === 2 &&
-      JSON.stringify(ids(v2.o)) === JSON.stringify([1, 2, 4, 5, 6, iNew[0]].sort((a, b) => a - b)) && pil(v2.o, 4, iNew[0]) && even(v2.o, [4, 5, 6]) && hq(v2.o, 1 / 3) && v2.col === 2 &&
-      vNew.length === 1 && pil(v3.o, 5, vNew[0]) && pil(v3.o, 4, iNew[0]) && even(v3.o, [4, 5, 6]) && near(v3.o[5].w, v2.o[5].w) && hq(v3.o, 1 / 3) && v3.col === 3 &&
-      near(v4.o[4].h, 1, 0.02) && pil(v4.o, 5, vNew[0]) && even(v4.o, [4, 5, 6]) && hq(v4.o, 1 / 3) && v4.col === 2,
+    pil(v1.o, 4, iNew[0]) && even(v1.o, [3, 4, 5, 6]) && near(v1.o[3].w, (1 - D) / 4) && hq(v1.o, D) && v1.col === 2 &&
+      JSON.stringify(ids(v2.o)) === JSON.stringify([1, 2, 4, 5, 6, iNew[0]].sort((a, b) => a - b)) && pil(v2.o, 4, iNew[0]) && even(v2.o, [4, 5, 6]) && hq(v2.o, D) && v2.col === 2 &&
+      vNew.length === 1 && pil(v3.o, 5, vNew[0]) && pil(v3.o, 4, iNew[0]) && even(v3.o, [4, 5, 6]) && near(v3.o[5].w, v2.o[5].w) && hq(v3.o, D) && v3.col === 3 &&
+      near(v4.o[4].h, 1, 0.02) && pil(v4.o, 5, vNew[0]) && even(v4.o, [4, 5, 6]) && hq(v4.o, D) && v4.col === 2,
     `${view(v1)} col=${v1.col} → ${view(v2)} col=${v2.col} → ${view(v3)} col=${v3.col} → ${view(v4)} col=${v4.col}`);
 
-  // h — 창 폭(1920 · 800)에서도 같은 몫
-  for (const width of [1920, 800]) {
-    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: width === 1920 ? 2 : 1, mobile: false });
+  // h — (박사님 결정 14:5x · master#73a7390d) 창 폭별 기본 좌열 폭: 넓은 모니터 3440 = 25% · 1920·1280 = 90칸 또는 상한 · 800 = 상한 50%
+  const hw: Record<number, number> = {};
+  for (const width of [3440, 1920, 800]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await load("hq5");
     await ev(`window.__shimAddSeat(6, "worker", "/Users/user/jarvis/w4")`); await tick();
     const h1 = await ev(G);
+    const hc = await mcols();
+    hw[width] = h1.o[1].w;
     if (width === 800) await shot("c18h-w800.png");
-    check(`c18h ${width}폭 · 본부+워커 4 → 워커 같은 폭 · 좌열 1/3`, even(h1.o, [3, 4, 5, 6]) && near(h1.o[1].w, 1 / 3, 0.015), view(h1));
+    if (width === 3440) await shot("c18h-w3440.png");
+    check(`c18h ${width}폭 · 본부+워커 4 → 워커 같은 폭 · 좌열 기본 폭 규칙(25% · 90칸 · 상한 50%)`,
+      even(h1.o, [3, 4, 5, 6]) && defRule(h1.o[1].w, hc) && (width !== 3440 || near(h1.o[1].w, 0.25)) && (width !== 800 || near(h1.o[1].w, 0.5)), `${view(h1)} cols=${hc}`);
   }
+  // w — 창 크기가 바뀌면 기본 폭 사용자(표지)는 다시 잰다(3440 → 800 → 3440) · 사람이 끈 0.40 은 그대로
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 3440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await load("hq5");
+  const w0 = await ev(G);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 900, deviceScaleFactor: 1, mobile: false }); await Bun.sleep(900);
+  const w1 = await ev(G);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 3440, height: 900, deviceScaleFactor: 1, mobile: false }); await Bun.sleep(900);
+  const w2 = await ev(G);
+  const human = { workspaces: [{ id: 1, name: "", tree: { type: "split", dir: "row", ratio: 0.4, a: { type: "split", dir: "col", ratio: 0.65, a: { type: "pane", sid: 1 }, b: { type: "pane", sid: 2 } }, b: { type: "pane", sid: 3 } } }], groups: [], active: 0, counter: 2, groupCounter: 1 };
+  await load("three", `localStorage.setItem("cys-layout-v2", ${JSON.stringify(JSON.stringify(human))})`);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 900, deviceScaleFactor: 1, mobile: false }); await Bun.sleep(900);
+  const w3 = await ev(G);
+  check("c18w 창 크기 변경: 기본 폭 3440(25%) → 800(50%) → 3440(25%) 다시 잼 · 사람이 끈 0.40 은 800 에서도 그대로",
+    near(w0.o[1].w, 0.25) && near(w1.o[1].w, 0.5) && near(w2.o[1].w, 0.25) && near(w3.o[1].w, 0.4) && even(w1.o, [3, 4, 5]),
+    `${view(w0)} → ${view(w1)} → ${view(w2)} · human ${view(w3)}`);
+  // o — 1.1.5 이하 옛 기본 폭 1/3 저장 배치(표지 없음) → 다음 입양 때 새 기본 폭으로(master#73a7390d) · 위아래 0.65 는 그대로
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
+  const old13 = { workspaces: [{ id: 1, name: "", tree: { type: "split", dir: "row", ratio: 1 / 3, a: { type: "split", dir: "col", ratio: 0.65, a: { type: "pane", sid: 1 }, b: { type: "pane", sid: 2 } }, b: { type: "pane", sid: 3 } } }], groups: [], active: 0, counter: 2, groupCounter: 1 };
+  await load("three", `localStorage.setItem("cys-layout-v2", ${JSON.stringify(JSON.stringify(old13))})`);
+  const o0 = await ev(G);
+  await ev(`window.__shimAddSeat(4, "worker", "/Users/user/jarvis/w2")`); await tick();
+  const o1 = await ev(G);
+  check("c18o 옛 기본 폭 1/3(1.1.5 저장) → 입양 뒤 새 기본 폭 D · master:cso 0.65 그대로",
+    near(o0.o[1].w, 1 / 3) && near(o1.o[1].w, D) && near(o1.o[1].h / (o1.o[1].h + o1.o[2].h), 0.65, 0.02) && even(o1.o, [3, 4]),
+    `${view(o0)} → ${view(o1)}`);
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }
 

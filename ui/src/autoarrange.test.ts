@@ -455,6 +455,17 @@ describe("v2 기둥 — 박사님 결정 09-25 14:1x 「master:cso 4:1 유지 ·
     const shut4 = autoArrange(t0, r, { remove: [4] })!; // 기둥 2 → 2 = 그대로
     expect(leftW(shut4)).toBeCloseTo(leftColumnShare(2), 12);
   });
+  it("규칙5 워커 1대를 세로 분할(기둥 1·좌석 2 · 좌열 1/2 그대로) 뒤 새 워커 입양 → 규칙값 1/2 을 「손 안 탄 값」으로 알아보고 1/3 로(뮤턴트 M9)", () => {
+    const left = LEFT();
+    const t0 = S(left, P(3), "row", leftColumnShare(1));
+    const r = roles([...HQ, ...W(3, 4, 5)]);
+    const t1 = autoArrange(t0, r, { add: [{ sid: 4, after: 3, dir: "col" }] })!;
+    expect(leftW(t1)).toBeCloseTo(leftColumnShare(1), 12); // 세로 분할 = 기둥 수 불변 → 좌열 폭 불변
+    const t2 = autoArrange(t1, r, { add: [{ sid: 5 }] })!;
+    expect(leftW(t2)).toBeCloseTo(leftColumnShare(2), 12); // 좌석 수(2)로 셌다면 1/2 를 사람 값으로 오독해 고정됐다
+    expect(units(t2).slice(1)).toEqual([S(P(3), P(4), "col", 0.5), P(5)]);
+    evenUnits(t2, true);
+  });
   it("처리표 3행: 좌열 좌석이 칸 하나 기둥으로 흩어진 트리(row 뿐 · 첫 배치) → 좌열만 표준 4:1 · 워커 위아래 기둥 보존", () => {
     const c = S(P(3), P(4), "col", 0.7);
     const t0 = S(P(1), S(P(2), c));

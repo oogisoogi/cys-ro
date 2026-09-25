@@ -2,13 +2,13 @@ import subprocess, sys, pathlib, re
 SNAP = pathlib.Path(sys.argv[1]) / "ui"
 M = [
  ("M1 사양1 좌열 서브트리 보존", "src/formation.ts", "left.every((s) => subSids.includes(s))) keptLeft = sub;", "left.every((s) => subSids.includes(s))) keptLeft = null;"),
- ("M2 사양2 위아래 기둥을 한 줄로 편다(v1 회귀)", "src/formation.ts", "    if (p) rowUnits(p, units);\n  }\n  // 기본 폭 표지가 있는 트리", "    if (p) units.push(...sidsInOrder(p).map(pane));\n  }\n  // 기본 폭 표지가 있는 트리"),
+ ("M2 사양2 위아래 기둥을 한 줄로 편다(v1 회귀)", "src/formation.ts", "    if (p) rowUnits(p, units);\n  }", "    if (p) units.push(...sidsInOrder(p).map(pane));\n  }"),
  ("M3 사양2 기둥끼리 균등 안 함(반씩 접기)", "src/formation.ts", "b: evenRow(workers) };", "b: workers.reduceRight((acc, u) => ({ type: \"split\" as const, dir: \"row\" as const, ratio: 0.5, a: u, b: acc })) };"),
  ("M4 사양3 after 기둥 오른쪽 → 맨 끝", "src/formation.ts", "} else if (i >= 0) workers.splice(i + 1, 0, pane(sid));", "} else if (i >= 0) workers.push(pane(sid));"),
  ("M5 사양3 세로 분할 → 새 기둥", "src/formation.ts", "if (i >= 0 && dir === \"col\") {", "if (i >= 0 && dir === \"never\") {"),
  ("M6 사양3 after=좌열 → 맨 끝", "src/formation.ts", "else if (after !== undefined && isLeft(after) && seen.has(after)) workers.unshift(pane(sid));", "else if (after !== undefined && isLeft(after) && seen.has(after)) workers.push(pane(sid));"),
  ("M7 사양4 기둥 안 닫기 → 기둥 통째 삭제(형제 안 받음)", "src/formation.ts", "  if (a && b) return a === n.a && b === n.b ? n : { ...n, a, b };\n  return a ?? b;\n}", "  if (a && b) return a === n.a && b === n.b ? n : { ...n, a, b };\n  return a && b ? a : n.type === \"split\" && n.dir === \"col\" ? null : (a ?? b);\n}"),
- ("M8 사양4 잘린 가로 조각을 안 펼침", "src/formation.ts", "    if (p) rowUnits(p, units);\n  }\n  // 기본 폭 표지가 있는 트리", "    if (p) units.push(p);\n  }\n  // 기본 폭 표지가 있는 트리"),
+ ("M8 사양4 잘린 가로 조각을 안 펼침", "src/formation.ts", "    if (p) rowUnits(p, units);\n  }", "    if (p) units.push(p);\n  }"),
  ("M11 처리표 무정렬 → 그대로 진행(표준 쪽으로)", "src/formation.ts", "if (!fits) return minimalChange(tree, change, drop);", "if (!fits && false) return minimalChange(tree, change, drop);"),
  ("M12 무정렬 세로 분할 → 가로", "src/formation.ts", "({ type: \"split\", dir: dir ?? \"row\", ratio: 0.5, a: old, b: p })", "({ type: \"split\", dir: \"row\", ratio: 0.5, a: old, b: p })"),
  ("M13 무정렬 루트 덧붙임 몫 1/2", "src/formation.ts", "t = { type: \"split\", dir: \"row\", ratio: k / (k + 1), a: t, b: p };", "t = { type: \"split\", dir: \"row\", ratio: 0.5, a: t, b: p };"),
@@ -33,9 +33,12 @@ M = [
  ("M33 2R① rolesBlind 없음", "src/formation.ts", "const fits = !rolesBlind && units.every", "const fits = units.every"),
  ("M34 2R① 역할 표 없어도 autoArrange", "src/main.ts", "  ws.tree = roles\n    ? autoArrange(ws.tree, roles, change, mode, currentDefaultLeftShare())\n    : arrangeWithoutRoles(ws.tree, change);", "  ws.tree = autoArrange(ws.tree, roles ?? new Map(), change, mode, currentDefaultLeftShare());"),
  ("M35 2R③ 좌열 = 순서 첫(옛)", "src/formation.ts", "order.filter((s) => family(roles.get(s)) === f).sort((x, y) => x - y)[0];", "order.filter((s) => family(roles.get(s)) === f)[0];"),
- ("M36 2R④ 끄는 중에도 재측정", "src/main.ts", "    if (dividerDragActive) return; // 경계를", "    if (false && dividerDragActive) return; // 경계를"),
+ ("M36 2R④ 끄는 중에도 재측정", "src/main.ts", "    if (dividerDragActive) { leftDefaultResizeSkipped = true; return; }", "    if (false && dividerDragActive) { leftDefaultResizeSkipped = true; return; }"),
  ("M37 2R② 복원 이동 안 함", "src/main.ts", "for (const ws of workspaces) if (ws.tree) ws.tree = migrateOldDefaultShare(ws.tree) as Node;", "for (const ws of workspaces) if (ws.tree) ws.tree = ws.tree as Node;"),
  ("M38 2R① 창 크기 핸들러 역할 없음 무시 안 함", "src/main.ts", "      if (!roles) continue; // 역할을 모르면", "      if (false && !roles) continue; // 역할을 모르면"),
+ ("M39 3R① rolesBlind 를 본부 0명으로 넓힘(회귀)", "src/formation.ts", "tree.leftAuto === true && roles.size === 0;", "tree.leftAuto === true && leftSids(inOrder, roles).length === 0;"),
+ ("M40 3R③ blur 때 끄는 중 표지 안 풂", "src/main.ts", "window.addEventListener(\"blur\", () => { dividerDragActive = false; });", "window.addEventListener(\"blur\", () => { void dividerDragActive; });"),
+ ("M41 3R③ 손 떼도 건너뛴 재측정 안 함", "src/main.ts", "if (leftDefaultResizeSkipped) { leftDefaultResizeSkipped = false; recomputeDefaultLeft(); }", "if (leftDefaultResizeSkipped) { leftDefaultResizeSkipped = false; }"),
 ]
 tests = ["src/autoarrange.test.ts", "src/formation.test.ts", "src/closeguard.test.ts", "src/adoptlayout.test.ts", "src/exitedsweep.test.ts"]
 res = []

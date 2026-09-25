@@ -736,6 +736,28 @@ describe("호출부 — 입양은 런타임이 선 그 자리에서 트리에 �
 
 // ★v2(박사님 결정 09-25 14:1x · master#88533ed8)로 변경: v1(master 판정 ⓒ)은 「세로 분할」을 뺐다 — 창이 언제나 한 줄로 펴져
 //   이름이 거짓이 됐기 때문이다. v2 는 사람이 만든 위아래 나눔을 지키므로 세로 분할이 다시 참이다 → 복원.
+describe("박사님 결정 14:5x 호출부 — 기본 폭은 창 크기로 재고 · 사람이 끌면 표지를 지우고 · 창 크기가 바뀌면 표지 있는 탭만 다시", () => {
+  it("currentDefaultLeftShare = defaultLeftShare(배치 영역 가로 · 터미널 글꼴 「W」 한 칸 폭)", () => {
+    const b = code(fnBody("function currentDefaultLeftShare(", "\n}\n"));
+    expect(b).toContain("cellMeasureCtx.font = `${fontSize}px ${composeFontFamily(fontFace)}`;");
+    expect(b).toContain('cell = cellMeasureCtx.measureText("W".repeat(20)).width / 20;');
+    expect(b).toContain("return defaultLeftShare(root.getBoundingClientRect().width, cell);");
+  });
+  it("경계를 끌면 그 분할의 leftAuto 표지를 지운다(사람 값 = 다시 안 잰다)", () => {
+    const b = code(fnBody("function attachDividerDrag(", "\n}\n"));
+    expect(/node\.ratio = ratio;\s*delete node\.leftAuto;/.test(b)).toBe(true);
+  });
+  it("창 크기 변경 → 루트에 leftAuto 표지가 있는 탭만 autoArrange(…, 새 기본 폭) · 바뀌면 render", () => {
+    const i = main.indexOf("let leftDefaultResizeTimer");
+    expect(i).toBeGreaterThan(-1);
+    const b = code(main.slice(i, main.indexOf("\n});\n", i)));
+    expect(b).toContain('window.addEventListener("resize"');
+    expect(b).toContain('if (!t || t.type !== "split" || !t.leftAuto) continue;');
+    expect(b).toContain('const next = autoArrange(t, arrangeRolesBySocket.get(ws.socket ?? "") ?? new Map(), {}, "auto", d);');
+    expect(b).toContain("if (changed) render();");
+  });
+});
+
 describe("v2 — 팔레트 「세로 분할」 복원 · ⌘⇧D = 세로 분할", () => {
   it("팔레트 빌트인 액션에 세로 분할 = actionSplit(\"col\") · 가로 분할·패널 균등화 유지", () => {
     const b = code(fnBody("// ── (5) 빌트인 webview 액션(정적) ──", "\n  );\n"));

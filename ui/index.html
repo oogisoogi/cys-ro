@@ -13,10 +13,12 @@
     <span id="daemon-info">엔진 연결 중…</span>
     <span class="spacer"></span>
     <button id="btn-equalize" title="모든 pane 을 좌우로 나란히 같은 폭으로 정렬 — 개수 무관 1행 가로 균등 · 수동 크기 조절엔 영향 없음">정렬</button>
-    <!-- v116-ui-close(박사님 09-23 10:0x 「권고대로」 = C): 창 만들기 단추(+ New · Split → · Split ↓)는 상단에서
-         뺐다 — 창은 마스터가 만든다. 직접 만들 사람은 Control Center 의 전문가 모드를 켜면 사이드바
-         전문가 칸의 「창 만들기」(오른쪽/아래)로 만든다. 단축키 ⌘T·⌘D·⌘⇧D 와 팔레트(⌘K)는 그대로다.
-         ⛔완전 삭제 금지 — 마스터 좌석이 죽었을 때 사람이 창을 여는 비상 탈출구다(4군 ③). -->
+    <!-- v116-recut-newsplit(박사님 09-25 23:2x 「new split은 그대로 두자」): 창 만들기 세 단추를 1.1.5 모습 그대로
+         되살렸다 — 윈에서는 전문가 칸이 기본 꺼짐이고 터미널 초점 중 단축키를 xterm 이 먹어, 손으로 창을 만드는
+         보이는 길이 이 세 단추뿐이다. ⛔다시 빼려면 윈에서 창을 만드는 다른 보이는 길부터 세워라. -->
+    <button id="btn-new" title="새 surface (⌘T)">+ New</button>
+    <button id="btn-split-h" title="오른쪽 분할 (⌘D)">Split →</button>
+    <button id="btn-split-v" title="아래 분할 (⌘⇧D)">Split ↓</button>
     <button id="btn-close" title="창 닫기 (⌘W) — 아직 켜져 있는 창이면 한 번 더 묻습니다">창 닫기</button>
     <button id="btn-files" title="파일 목록 — 선택한 창의 폴더">파일</button>
     <button id="btn-cc" title="Control Center — 실시간 플릿·사용량·시스템 모니터링 · 승인 Feed">Control Center <span id="cc-pending-badge" class="badge" hidden>0</span></button>

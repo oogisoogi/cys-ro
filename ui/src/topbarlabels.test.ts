@@ -1,12 +1,15 @@
 // topbarlabels.test.ts — 상단 단추·끝난 창 표시의 영어 제거(D4 #13) · TICKET=v116-ui-close.
 // ★예외 1개 = 「Control Center」 — 기능 이름으로 사용 설명서·화면 안내 문구 여러 곳이 그 이름으로 가리킨다(이름을 바꾸면
 //   안내가 서로 어긋난다). 이 목록을 늘리려면 이유를 여기 함께 적어라.
+// ★예외 2·3 = 「+ New」·「Split →」·「Split ↓」 글자 전체(v116-recut-newsplit · 박사님 09-25 23:2x) — 상단 「+ New · Split → · Split ↓」 를 1.1.5 모습
+//   그대로 되살렸다(박사님이 그 이름으로 가리킨 단추 · 되돌림만). 글자 바꾸기는 이 티켓 범위 밖이다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const ALLOW = ["Control Center"];
+const ALLOW_EXACT = ["+ New", "Split →", "Split ↓"]; // 예외 2·3 — 글자 전체가 같을 때만(부분 일치로 다른 영어 단추가 새지 않게)
 
 describe("D4 #13 상단바 단추 글자 = 한국어", () => {
   const top = html.slice(html.indexOf('<header id="topbar">'), html.indexOf("</header>"));
@@ -17,6 +20,7 @@ describe("D4 #13 상단바 단추 글자 = 한국어", () => {
   it("단추 글자에 영어가 없다(허용 목록 제외)", () => {
     expect(labels.length).toBeGreaterThan(5);
     for (const l of labels) {
+      if (ALLOW_EXACT.includes(l)) continue;
       const rest = ALLOW.reduce((acc, a) => acc.replace(a, ""), l);
       expect(/[A-Za-z]/.test(rest)).toBe(false);
     }

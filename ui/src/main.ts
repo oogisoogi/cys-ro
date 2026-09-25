@@ -8820,8 +8820,12 @@ async function start() {
 
 // ---------- ui wiring ----------
 
-// ★(v116-ui-close · 권고 C) 창 만들기는 상단에서 빠져 전문가 칸의 단추 1개가 됐다 — 누르면 방향 2개를 고른다.
-//   동작은 종전 Split →/↓ 와 같은 함수다(포커스 창이 없으면 actionSplit 이 actionNew 로 넘긴다 = 종전 + New).
+// ★(v116-recut-newsplit · 박사님 09-25 23:2x) 상단 + New · Split → · Split ↓ 되살림 — 1.1.5 배선 그대로.
+document.getElementById("btn-new")!.addEventListener("click", actionNew);
+document.getElementById("btn-split-h")!.addEventListener("click", () => actionSplit("row"));
+document.getElementById("btn-split-v")!.addEventListener("click", () => actionSplit("col"));
+// ★(v116-ui-close · 권고 C) 전문가 칸의 「창 만들기」 단추 — 누르면 「오른쪽에 새 창」 메뉴(상단 세 단추와 함께 산다).
+//   동작은 상단 Split → 와 같은 함수다(포커스 창이 없으면 actionSplit 이 actionNew 로 넘긴다 = + New).
 document.getElementById("btn-pane-create")!.addEventListener("click", (e) => {
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
   showCtxMenu(r.left, r.bottom, [

@@ -152,12 +152,25 @@ describe("X-1 남은 창 폭 — 루트 직계의 인라인 flex 를 지운다",
   });
 });
 
-describe("권고 C — 창 만들기는 상단에서 빠지고 전문가 칸에", () => {
-  it("상단바에 + New · Split → · Split ↓ 단추가 없다", () => {
+// ★(v116-recut-newsplit · 박사님 09-25 23:2x 「new split은 그대로 두자」) 상단 세 단추를 1.1.5 모습 그대로 되살렸다 —
+//   윈에서는 전문가 칸이 기본 꺼짐이고 터미널에 초점이 있으면 단축키를 xterm 이 먹어, 손으로 창을 만드는 보이는 길이
+//   상단 단추뿐이다. 종전 기대값 = 상단에 세 단추 0(권고 C). 전문가 칸 「창 만들기」는 그대로 둔다(제거 = 1.1.7).
+describe("창 만들기 — 상단 세 단추(1.1.5 되살림) + 전문가 칸 「창 만들기」", () => {
+  it("상단바에 + New · Split → · Split ↓ 단추가 1.1.5 모습 그대로 있다", () => {
     const top = html.slice(html.indexOf('<header id="topbar">'), html.indexOf("</header>"));
-    for (const id of ["btn-new", "btn-split-h", "btn-split-v"]) expect(top).not.toContain(`id="${id}"`);
-    expect(/>\s*(\+ New|Split →|Split ↓)\s*</.test(top)).toBe(false);
+    expect(top).toContain('<button id="btn-new" title="새 surface (⌘T)">+ New</button>');
+    expect(top).toContain('<button id="btn-split-h" title="오른쪽 분할 (⌘D)">Split →</button>');
+    expect(top).toContain('<button id="btn-split-v" title="아래 분할 (⌘⇧D)">Split ↓</button>');
+    // 1.1.5 순서 = 정렬 → + New → Split → → Split ↓ → 닫기
+    const order = ['id="btn-equalize"', 'id="btn-new"', 'id="btn-split-h"', 'id="btn-split-v"', 'id="btn-close"'].map((s) => top.indexOf(s));
+    expect(order.every((v, i) => v > -1 && (i === 0 || v > order[i - 1]))).toBe(true);
     expect(top).toContain('id="btn-close"'); // 닫기는 남는다(확인 1회를 거친다)
+  });
+
+  it("세 단추 배선 = + New → actionNew · Split → → actionSplit(row) · Split ↓ → actionSplit(col)", () => {
+    expect(main).toContain('document.getElementById("btn-new")!.addEventListener("click", actionNew);');
+    expect(main).toContain('document.getElementById("btn-split-h")!.addEventListener("click", () => actionSplit("row"));');
+    expect(main).toContain('document.getElementById("btn-split-v")!.addEventListener("click", () => actionSplit("col"));');
   });
 
   it("전문가 칸(기본 숨김) 안에 「창 만들기」 단추 1개", () => {
@@ -177,7 +190,10 @@ describe("권고 C — 창 만들기는 상단에서 빠지고 전문가 칸에"
     expect(/e\.key === "t"\) \{\s*e\.preventDefault\(\);\s*actionNew\(\);/.test(main)).toBe(true);
     expect(/e\.key === "d" && !e\.shiftKey\) \{\s*e\.preventDefault\(\);\s*actionSplit\("row"\);/.test(main)).toBe(true);
     expect(main).toContain('actionSplit("col");');
-    // 지운 단추를 여전히 붙잡는 배선이 남으면 앱 시작에서 널 역참조로 죽는다
-    for (const id of ["btn-new", "btn-split-h", "btn-split-v"]) expect(main).not.toContain(`getElementById("${id}")`);
+    // 배선이 붙잡는 단추 id 가 html 에 없으면 앱 시작에서 널 역참조로 죽는다(되살린 세 단추 포함)
+    for (const id of ["btn-new", "btn-split-h", "btn-split-v", "btn-pane-create"]) {
+      expect(main).toContain(`getElementById("${id}")!`);
+      expect(html.split(`id="${id}"`).length - 1).toBe(1); // 정확히 1개(중복 id 0)
+    }
   });
 });

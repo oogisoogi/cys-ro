@@ -4,7 +4,8 @@
 //   c1 산 창 Close·⌘W → 확인 1회(기본 포커스 = 취소 · 겹침 0 · 취소 시 close_surface 0) · exited 창 Close → 확인 0 · 바로 닫힘
 //   c2 복원 직후 목록 조회 실패(이벤트 유실 잔재) → 다음 틱에 [exited] 옛 창 0
 //   c3 창 2개 중 1개 exited(이벤트) → 남은 창 폭 = 전체 · PTY cols 재조정
-//   c4 기본 화면 상단에 창 만들기 단추(+ New·Split) 0 · 전문가 모드 칸에 「창 만들기」 → 오른쪽/아래 메뉴
+//   c4 (v116-recut-newsplit) 기본 화면 상단에 + New · Split → · Split ↓ 보임(1.1.5 되살림) · 누르면 창 +1(Split ↓ = 세로 분할) ·
+//      전문가 모드 칸에 「창 만들기」 → 오른쪽 한 갈래
 //   c6 복원 카드가 떠 있을 때 뒤에 뜬 경보(에이전트 사망 알림)가 카드에 가려지지 않는다(D4 #21 · 1280·800 폭)
 //   c7 상단바 데몬 라벨 = 판번만(pid·소켓 경로·daemon 0) · 전문은 툴팁(D4 #5)
 //   c8 이름 없는 본부 탭 = 「본부」 · 화면 어디에도 「non title」 0 · 탭 삭제 확인도 같은 이름(D4 #4)
@@ -165,7 +166,10 @@ if (ONLY.includes("c4")) {
   await load("two", `localStorage.removeItem("cys-expert-mode")`);
   const a = await ev(`(() => { const vis = (el) => !!el && el.offsetParent !== null; const tb = [...document.querySelectorAll("#topbar button")].filter(vis).map(b => b.textContent.trim()); const all = [...document.querySelectorAll("body *")].filter(vis); const hits = all.filter(el => /new split|split|\\+ New|창 만들기/i.test([...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(""))).map(el => el.textContent.trim().slice(0, 20)); return { tb, hits }; })()`);
   await shot("c4a-beginner.png");
-  check("c4a 초보 화면 창 만들기·Split·New 단추 0", a.hits.length === 0, JSON.stringify(a));
+  // ★(v116-recut-newsplit · 박사님 09-25 23:2x) 상단 「+ New · Split → · Split ↓」 되살림(1.1.5 모습) — 종전 기대값 = 초보 화면에
+  //   창 만들기·Split·New 0. 지금 = 상단에 세 단추가 보이고(1.1.5 글자) · 전문가 칸 「창 만들기」는 초보 화면에 여전히 0.
+  const TOP3 = ["+ New", "Split →", "Split ↓"];
+  check("c4a 초보 화면 상단 + New · Split → · Split ↓ 보임 · 「창 만들기」 0", TOP3.every((t) => a.tb.includes(t)) && !a.hits.some((h: string) => h.includes("창 만들기")), JSON.stringify(a));
   await load("two", `localStorage.setItem("cys-expert-mode", "1")`);
   const b = await ev(`(() => { const btn = [...document.querySelectorAll("#ws-expert button")].find(x => x.textContent.includes("창 만들기")); if (!btn || btn.offsetParent === null) return { btn: false }; btn.click(); const items = [...document.querySelectorAll("#ctx-menu .ctx-item")].map(x => x.textContent); return { btn: true, items }; })()`);
   await shot("c4b-expert-create.png");
@@ -176,6 +180,36 @@ if (ONLY.includes("c4")) {
   // ★오너 지시 09-25 로 변경(TICKET=v116-auto-equalize · master 판정 D2): 창은 언제나 좌우 균등으로 다시 서므로 「아래에 새 창」 항목을 뺐다.
   //   종전 기대값 = 메뉴 2갈래 · 「아래」 → 세로 분할(col ≥ 1). 지금 = 메뉴 1갈래(오른쪽) · 누르면 창 +1 · 세로 분할 0.
   check("c4b 전문가 칸 「창 만들기」 → 오른쪽 한 갈래(「아래」 0) · 누르면 창 +1 · 세로 분할 0", b.btn && b.items?.length === 1 && !b.items.some((x: string) => x.includes("아래")) && n1.panes === n0 + 1 && n1.col === 0, JSON.stringify({ ...b, n0, ...n1 }));
+  // c4c 는 hq5 장면을 쓴다 — 저장 배치(localStorage)가 뒤 칸(c5~)으로 새지 않게 c4b 가 남긴 상태를 통째로 떠 두었다가 되돌린다.
+  const lsBefore = await ev(`JSON.stringify(Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])))`);
+  // 누르면 = 단축키와 같은 결과: + New ≡ ⌘T · Split → ≡ ⌘D · Split ↓ ≡ ⌘⇧D. 장면 = c18i 와 같은 hq5 · 대상 = 워커 4
+  //   (세로 분할이 실제로 서는 자리 — "two" 장면의 master 대상은 ⌘⇧D 도 세로 분할을 만들지 않는다 · 배치 v2 동작).
+  //   판정 = 창 +1 · 세로 분할 수 증가(Split → 0 · Split ↓ +1) · 단추 결과의 배치 모양이 단축키 결과와 같다.
+  const SHAPE = `(() => { const r = document.getElementById("root").getBoundingClientRect(); return { panes: document.querySelectorAll("#root .pane").length, col: document.querySelectorAll("#root .split.col").length, box: [...document.querySelectorAll("#root .pane")].map(p => { const b = p.getBoundingClientRect(); return [p.dataset.sid, +((b.left - r.left) / r.width).toFixed(2), +((b.top - r.top) / r.height).toFixed(2), +(b.width / r.width).toFixed(2), +(b.height / r.height).toFixed(2)].join(":"); }).sort() }; })()`;
+  const via = async (how: string) => {
+    await load("hq5", `localStorage.removeItem("cys-layout-v2")`); // 칸마다 같은 출발 — 앞 부름의 저장 배치 0
+    const s0 = await ev(SHAPE);
+    await ev(`document.querySelector('#root .pane[data-sid="4"]').dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))`);
+    await ev(how); await Bun.sleep(700);
+    return { s0, s1: await ev(SHAPE) };
+  };
+  const btn = (id: string) => `document.getElementById(${JSON.stringify(id)}).click()`;
+  const kd = (k: string, shift = false) => `window.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, metaKey: true, shiftKey: ${shift}, bubbles: true, cancelable: true }))`;
+  const rows: any[] = [];
+  let okAll = true;
+  for (const [id, keyExpr, dCol] of [["btn-new", kd("t"), 0], ["btn-split-h", kd("d"), 0], ["btn-split-v", kd("D", true), 1]] as const) {
+    const b = await via(btn(id));
+    const k = await via(keyExpr);
+    // 새 창 번호는 부를 때마다 달라질 수 있으므로 모양 비교는 번호를 뗀 좌표 목록으로 한다
+    const strip = (xs: string[]) => xs.map((x) => x.split(":").slice(1).join(":")).sort().join(",");
+    const ok = b.s1.panes === b.s0.panes + 1 && b.s1.col === b.s0.col + dCol && strip(b.s1.box) === strip(k.s1.box);
+    if (!ok) okAll = false;
+    rows.push({ id, panes: `${b.s0.panes}→${b.s1.panes}`, col: `${b.s0.col}→${b.s1.col}`, sameAsKey: strip(b.s1.box) === strip(k.s1.box) });
+  }
+  await shot("c4c-after-split-v.png");
+  check("c4c 상단 + New ≡ ⌘T · Split → ≡ ⌘D · Split ↓ ≡ ⌘⇧D(워커 4) — 창 +1 · 세로 분할 +0/+0/+1 · 배치 모양 = 단축키 결과", okAll, JSON.stringify(rows));
+  await cdp("Page.navigate", { url: `http://127.0.0.1:${server.port}/blank-origin` }); await Bun.sleep(150);
+  await ev(`localStorage.clear(); for (const [k, v] of Object.entries(${lsBefore})) localStorage.setItem(k, v);`);
 }
 
 if (ONLY.includes("c5")) {
@@ -613,7 +647,8 @@ if (ONLY.includes("c17x")) {
   await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 820, deviceScaleFactor: 1, mobile: false });
   await load("two", "");
   const Q = `(() => { const bar = document.getElementById("topbar"); const b = document.getElementById("btn-update"); const c = document.getElementById("btn-close"); const r = b.getBoundingClientRect();
-    return { label: (b.firstChild?.nodeValue ?? "").trim(), barOverflow: bar.scrollWidth - bar.clientWidth, barH: Math.round(bar.getBoundingClientRect().height), scrollX: getComputedStyle(bar).overflowX, h: Math.round(r.height), hRef: Math.round(c.getBoundingClientRect().height), inView: r.left >= 0 && r.right <= window.innerWidth, pageOverflow: document.documentElement.scrollWidth - window.innerWidth }; })()`;
+    return { label: (b.firstChild?.nodeValue ?? "").trim(), barOverflow: bar.scrollWidth - bar.clientWidth, barH: Math.round(bar.getBoundingClientRect().height), scrollX: getComputedStyle(bar).overflowX, h: Math.round(r.height), hRef: Math.round(c.getBoundingClientRect().height), inView: r.left >= 0 && r.right <= window.innerWidth, pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      reach: (() => { const keep = bar.scrollLeft; b.scrollIntoView({ block: "nearest", inline: "nearest" }); const q = b.getBoundingClientRect(); const ok = q.left >= 0 && q.right <= window.innerWidth && document.documentElement.scrollWidth - window.innerWidth <= 0; bar.scrollLeft = keep; return ok; })() }; })()`;
   const q0 = await ev(Q);
   await ev(`window.__shimEmit("update-restart-required", { version: "1.1.7", reason: "app_replaced" })`); await Bun.sleep(300);
   const q1 = await ev(Q);
@@ -621,8 +656,11 @@ if (ONLY.includes("c17x")) {
   // 상단바 설계(style.css #topbar · D4 #2) = 한 줄 고정 · 좁으면 접지 않고 가로로 밀어 본다(끝 단추까지 누를 수 있다).
   //   800폭은 수리 전부터 넘친다(기준 +50px) — 「다시 켜기」는 글자 하나만큼 더 민다(증가분은 기록만 · 판정 = 설계 계약).
   //   (첫 판 단언 「넘침 증가 0」은 이 설계와 어긋나 교정했다 — 14:5x 실측 +4px.)
+  //   ★(v116-recut-newsplit · 박사님 09-25 23:2x) 상단 + New · Split → · Split ↓ 되살림으로 800폭 넘침 50 → 284px — 「업데이트」·
+  //   「다시 켜기」 단추가 스크롤 전 화면 밖이 된다(1.1.5 800폭 = 넘침 216px · 업데이트 보임). 종전 단언 「스크롤 없이 화면 안(inView)」 →
+  //   설계 계약 「상단바를 밀면 닿는다(reach)」 로 되돌림 · inView 값은 기록에 남긴다(📌 master 결정 사안 · HANDOFF §26).
   console.log(`     c17q 상단바 가로 넘침: 평소 ${q0.barOverflow}px → 다시 켜기 ${q1.barOverflow}px (증가 ${q1.barOverflow - q0.barOverflow}px)`);
-  check("c17q w800 「다시 켜기」 = 단추 한 줄(높이 = 이웃 단추) · 상단바 높이 불변(줄바꿈 0) · 가로 스크롤 유지 · 단추 화면 안 · 페이지 가로 넘침 0", q1.label === "다시 켜기" && q1.h === q1.hRef && q1.barH === q0.barH && q1.scrollX === "auto" && q1.inView && q1.pageOverflow <= 0, JSON.stringify({ q0, q1 }));
+  check("c17q w800 「다시 켜기」 = 단추 한 줄(높이 = 이웃 단추) · 상단바 높이 불변(줄바꿈 0) · 가로 스크롤 유지 · 상단바를 밀면 단추 화면 안 · 페이지 가로 넘침 0", q1.label === "다시 켜기" && q1.h === q1.hRef && q1.barH === q0.barH && q1.scrollX === "auto" && q1.reach && q1.pageOverflow <= 0, JSON.stringify({ q0, q1 }));
   await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
 }
 

@@ -487,15 +487,19 @@ def _master_seat_cwd_from_status(obj):
       폴더 신뢰 관문에 갇힌다 — 이 티켓이 고치려는 바로 그 증상이다.
     ★exited 좌석은 보지 않는다(죽은 좌석의 폴더를 상속할 이유가 없다). 값이 빈 문자열이면
       None 으로 접는다 — 빈 cwd 는 launch-agent 에서 '미지정'과 같아야 한다."""
+    # ★v116-pack P3: master 좌석이 둘이면(R-B1 L4 — 홈 빈 셸 자리표 + 진짜 부서장) **에이전트가 앉은 좌석**을
+    #   먼저 본다 · 홈 폴더 자체는 상속하지 않는다(None = 부서 레지스트리 폴더로 떨어진다 · boot_node).
+    home = os.path.normpath(os.path.expanduser("~"))
+    cands = []
     for srf in (obj or {}).get("surfaces") or []:
         if srf.get("exited"):
             continue
         if _canonical_role(srf.get("role") or "") != "master":
             continue
         cwd = (srf.get("cwd") or "").strip()
-        if cwd:
-            return cwd
-    return None
+        if cwd and os.path.normpath(cwd) != home:
+            cands.append((0 if srf.get("seat") == "occupied" else 1, cwd))
+    return min(cands, key=lambda c: c[0])[1] if cands else None
 
 
 def _master_seat_cwd(socket):
@@ -818,6 +822,17 @@ def _boot_verdict_text(stdout):
     return None
 
 
+def _dept_registry_cwd(socket):
+    """부서 소켓 → 레지스트리 부서 폴더(javis_boot_node.dept_registry_cwd 재사용) · 본부·실패 = None."""
+    if not socket:
+        return None
+    try:
+        import javis_boot_node as _bn
+        return _bn.dept_registry_cwd(socket=socket)
+    except Exception:
+        return None
+
+
 def _ensure_master_seat(socket, cwd):
     """master 자리 확보: seat 닫힘 → new-surface --role master 재생성(node-recover·Sim S2-7).
     빈 셸/미각성 → boot_node 입양 경로가 claude 부착. 이미 각성 → no-op(already_up)."""
@@ -832,6 +847,9 @@ def _ensure_master_seat(socket, cwd):
     env = dict(os.environ)
     if socket:
         env["CYS_SOCKET"] = socket
+    # ★v116-pack P3: cwd 미지정(심박·launch 꼬리)이면 부서 레지스트리 폴더 — 종전엔 데몬 기본 = 홈 빈 셸 자리표였다(R-B1 L2).
+    if not cwd:
+        cwd = _dept_registry_cwd(socket)
     if roles is None or "master" not in roles:
         # seat 부재로 판단 → 재생성(빈 셸). 이후 boot_node 입양이 claude 부착.
         argv = ["cys", "new-surface"]
@@ -846,7 +864,7 @@ def _ensure_master_seat(socket, cwd):
 
 
 # ── ⑦ 상태 파일 + feed 표면화(침묵 금지 C6) ──
-def _write_state(socket, state, detail, roles_booted, attempts=None, gate=None, held=None):
+def _write_state(socket, state, detail, roles_booted, attempts=None, gate=None, held=None, revive=None):
     root = _state_root()
     try:
         os.makedirs(root, exist_ok=True)
@@ -882,6 +900,9 @@ def _write_state(socket, state, detail, roles_booted, attempts=None, gate=None, 
         obj["gate"] = gate
     if held:
         obj["held"] = list(held)
+    # ★v116-pack P1′: 부서 되살림 원장(무응답 경로에서만 · 데몬이 살아 돌아오면 키가 빠져 리셋).
+    if revive:
+        obj["revive"] = revive
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
@@ -1004,6 +1025,231 @@ def _surface(socket, prev_state, state, force=False, detail=None):
 
 
 # ── ensure: 상태 기계 전이 주체 ──
+# ── ★v116-pack R-B1(재부팅 뒤 빈 셸이 부서장 역할을 먼저 쥔다 · VM r4) — HANDOFF-v116-pack §1·§3 ──
+# L1: 본부 심박(formation-heartbeat)이 죽은 부서 소켓에 `cys status` → CLI 자동 기동이 부서 데몬을 cys-dept launch
+#     밖에서(계정격리 env 없이) 되살렸다. → P1: 편성이 부르는 cys 는 데몬을 되살리지 않는다(_cmd_ensure 봉인) ·
+#     P1′(= D1 #5): 등재·비묘비·무응답 부서는 정식 경로 `cys-dept launch` 로 틱당 1부서·유계 되살림 + 알림.
+# L3·L4: 막 뜬 데몬의 자동 복원(phoenix)과 편성이 같은 순간 좌석을 세워 master 이중 보유·worker 여분.
+#     → P2: 데몬 `org.status` `daemon.auto_restore` 가 running·retry_wait 인 동안 좌석을 세우지 않는다.
+NO_AUTOSTART_ENV = "CYS_NO_AUTOSTART"
+RESTORE_WAIT_S = 120.0            # 복원 끝 대기 상한(넘으면 partial:restoring · 다음 틱 재판정)
+RESTORE_POLL_S = 3.0
+RESTORE_OLD_DAEMON_SETTLE_S = 90.0
+RESTORE_STALE_S = 900.0             # running·retry_wait 가 데몬 기동 뒤 이만큼 넘으면 복원이 걸린 것으로 보고 진행(Fable 1R M-3)  # auto_restore 칸이 없는 옛 데몬 = 데몬 나이로 갈음(팩·데몬 판 어긋남 폴백)
+REVIVE_GAP_S = 540.0              # 되살림 = 전 부서 합쳐 심박(10분) 1틱에 1부서
+REVIVE_MAX = 3                    # 부서당 연속 되살림 시도 상한(FORMATION_ATTEMPT_RESET_S 뒤 리셋)
+REVIVE_TIMEOUT_S = 180
+REVIVE_FEED_TITLE = "부서 다시 켜기"
+
+
+def _cys_env(socket):
+    env = dict(os.environ)
+    if socket:
+        env["CYS_SOCKET"] = socket
+    env[NO_AUTOSTART_ENV] = "1"
+    return env
+
+
+def _daemon_down(socket):
+    """그 소켓의 데몬이 응답하지 않는가(`cys ping` · 자동 기동 봉인). 판정 불가(cys 부재)도 down 으로 보지 않는다."""
+    try:
+        r = subprocess.run(["cys", "ping"], capture_output=True, text=True, timeout=10,
+                           env=_cys_env(socket), **NOWIN)
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return True
+    return r.returncode != 0
+
+
+def _depts_registry():
+    path = os.environ.get("CYS_DEPTS_JSON") or os.path.join(os.path.expanduser("~"), ".cys", "depts.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            reg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    depts = (reg or {}).get("depts")
+    return depts if isinstance(depts, dict) else None
+
+
+def _dept_name_for_socket(socket, depts=None):
+    """부서 소켓 → 등재 부서명(레지스트리 socket 칸 일치 · 칸이 없으면 `cys-dept-<이름>` 규약) 또는 None."""
+    if not socket:
+        return None
+    depts = _depts_registry() if depts is None else depts
+    for name, meta in (depts or {}).items():
+        s = (meta or {}).get("socket") if isinstance(meta, dict) else None
+        if isinstance(s, str) and s:
+            if s == socket:
+                return name
+        elif ("cys-dept-%s" % name) in socket.replace("\\", "/").split("/"):
+            return name
+    return None
+
+
+def _dept_tombstones():
+    """본부 데몬 묘비 집합(`<본부 상태 폴더>/dept_tombstones.json`) — 파일 없음 = 빈 집합 · 판독 불가·윈도 = None."""
+    # 본부 상태 폴더 = Rust state_dir(기본 소켓) — 윈도 = %LOCALAPPDATA%\cys(기본 파이프 호환 예외 · state.rs state_dir)
+    #   · unix = 기본 소켓 부모 ~/.local/state/cys(Fable 1R M-4: 윈도를 None 으로 두면 봉인 뒤 되살림이 영영 없다).
+    if os.name == "nt":
+        la = os.environ.get("LOCALAPPDATA")
+        if not la:
+            return None
+        p = os.path.join(la, "cys", "dept_tombstones.json")
+    else:
+        p = os.path.join(os.path.expanduser("~"), ".local", "state", "cys", "dept_tombstones.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            v = json.load(f)
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError):
+        return None
+    arr = v.get("dept_tombstones") if isinstance(v, dict) else None
+    return set(x for x in arr if isinstance(x, str)) if isinstance(arr, list) else None
+
+
+def _revive_ledger_path():
+    return os.path.join(_state_root(), "revive-last.json")
+
+
+def _revive_dept(socket, prev_obj, now=None):
+    """무응답 부서 데몬을 정식 경로로 되살린다. 반환 None(부서 아님 → 종전 흐름) 또는 (state, detail, revive 원장)."""
+    name = _dept_name_for_socket(socket)
+    if not name:
+        return None
+    now = time.time() if now is None else now
+    led = dict(prev_obj.get("revive") or {})
+    if now - float(led.get("last") or 0) >= FORMATION_ATTEMPT_RESET_S:
+        led = {}
+    tombs = _dept_tombstones()
+    if tombs is None:
+        return ("partial:daemon-down", "부서 데몬 무응답 — 삭제 기록(묘비)을 못 읽어 되살림 보류", led)
+    if name in tombs:
+        return ("partial:daemon-down", "부서 데몬 무응답 — 삭제된 부서(묘비)라 되살리지 않음", led)
+    if int(led.get("n") or 0) >= REVIVE_MAX:
+        return ("partial:daemon-down", "부서 데몬 무응답 — 되살림 %d회 소진(%.0fs 뒤 리셋)"
+                % (REVIVE_MAX, FORMATION_ATTEMPT_RESET_S), led)
+    try:
+        with open(_revive_ledger_path(), encoding="utf-8") as f:
+            last = json.load(f)
+    except (OSError, ValueError):
+        last = {}
+    if last.get("dept") != name and now - float(last.get("at") or 0) < REVIVE_GAP_S:
+        return ("partial:daemon-down", "부서 데몬 무응답 — 방금 다른 부서(%s)를 되살려 다음 틱에" % last.get("dept"), led)
+    if not _resource_ok(socket):
+        return ("partial:daemon-down", "부서 데몬 무응답 — 자원 게이트 hard 라 되살림 보류", led)
+    led = {"n": int(led.get("n") or 0) + 1, "last": now}
+    try:
+        os.makedirs(_state_root(), exist_ok=True)
+        with open(_revive_ledger_path(), "w", encoding="utf-8") as f:
+            json.dump({"at": now, "dept": name}, f)
+    except OSError:
+        pass
+    # ★봉인 해제: 새 cysd → 좌석 env 로 CYS_NO_AUTOSTART 가 상속되면 사용자 창의 cys 가 본부 데몬을 못 되살린다.
+    #   CYS_SOCKET·CYS_ROLE 도 뺀다(cys-dept 단일소유 가드 = 역할 없는 주체 · 부서 소켓 오염 금지).
+    env = {k: v for k, v in os.environ.items() if k not in (NO_AUTOSTART_ENV, "CYS_SOCKET", "CYS_ROLE")}
+    tool = os.path.join(PACK_DIR, "bin", "cys-dept")
+    try:
+        r = subprocess.run(["bash", tool, "launch", name], capture_output=True, text=True,
+                           timeout=REVIVE_TIMEOUT_S, env=env, **NOWIN)
+        rc, tail = r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()[-200:]
+    except Exception as e:
+        rc, tail = 127, str(e)[:200]
+    if rc == 0:
+        _feed(REVIVE_FEED_TITLE,
+              "「%s」 부서가 꺼져 있어 다시 켰습니다. 직원 자리는 곧 이어서 돌아옵니다(대화는 저장된 곳에서 이어집니다)." % name,
+              feed_kind_for_state("partial"))
+        return ("partial:revived", "부서 데몬 무응답 → cys-dept launch %s 성공(%d/%d회)" % (name, led["n"], REVIVE_MAX), led)
+    _feed(REVIVE_FEED_TITLE,
+          "「%s」 부서가 꺼져 있어 다시 켜려 했지만 실패했습니다(%d/%d회). 왼쪽 부서 화면에서 그 부서를 열면 다시 켜집니다."
+          % (name, led["n"], REVIVE_MAX), feed_kind_for_state("partial"))
+    return ("partial:daemon-down", "부서 데몬 무응답 → cys-dept launch %s 실패 rc=%d(%s)" % (name, rc, tail), led)
+
+
+def _status_obj(socket):
+    try:
+        r = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True, timeout=15,
+                           env=_cys_env(socket), **NOWIN)
+        if r.returncode == 0:
+            return json.loads(r.stdout or "{}")
+    except Exception:
+        pass
+    return None
+
+
+def restore_settle_verdict(obj, now):
+    """`org.status` → ("wait"|"go", 사유) — **순수**. 복원이 도는 동안(running·retry_wait) wait ·
+    칸 없는 옛 데몬은 데몬 나이 RESTORE_OLD_DAEMON_SETTLE_S 까지 wait · 판독 불가 = go(종전 흐름 · 편성을 멈추지 않는다)."""
+    d = (obj or {}).get("daemon") if isinstance(obj, dict) else None
+    if not isinstance(d, dict):
+        return "go", "데몬 상태 판독 불가 — 종전 흐름"
+    phase = d.get("auto_restore")
+    sa = d.get("started_at")
+    age = (now - sa) if isinstance(sa, (int, float)) and not isinstance(sa, bool) else None
+    if phase in ("running", "retry_wait"):
+        # ★Fable 1R M-3: phoenix 자식 대기에 데드라인이 없어 걸리면 running 이 영구히 남는다 — 종전(좌석을 세움)보다
+        #   나빠지지 않게, 데몬 기동 뒤 RESTORE_STALE_S 가 지나면 걸린 것으로 보고 진행한다.
+        if age is not None and age > RESTORE_STALE_S:
+            return "go", None
+        return "wait", "데몬 자동 복원 %s" % phase
+    if phase is not None:
+        return "go", None
+    if age is not None and age < RESTORE_OLD_DAEMON_SETTLE_S:
+        return "wait", "옛 데몬(auto_restore 칸 없음) · 기동 %.0fs — 복원 정착 대기" % age
+    return "go", None
+
+
+def _wait_restore_settled(socket, max_wait=None, sleep=time.sleep, clock=time.time, status_fn=None):
+    """복원이 끝날 때까지 유계 대기. 반환 (settled bool, 사유|None — 기다렸거나 못 끝났을 때만)."""
+    max_wait = RESTORE_WAIT_S if max_wait is None else max_wait
+    status_fn = status_fn or _status_obj
+    t0 = clock()
+    why = None
+    while True:
+        v, w = restore_settle_verdict(status_fn(socket), clock())
+        if v == "go":
+            return True, (("%s → %.0fs 대기 뒤 진행" % (why, clock() - t0)) if why else None)
+        why = w
+        if clock() - t0 >= max_wait:
+            return False, "%s — %.0fs 대기에도 안 끝나 이번 틱 보류(다음 심박 재판정)" % (why, clock() - t0)
+        sleep(RESTORE_POLL_S)
+
+
+def _reap_orphans(socket):
+    """D1 #4: 역할 없이 남은 빈 에이전트 좌석 회수(javis_boot_node --reap-orphans) — 부서 소켓만 · 결과 dict|None."""
+    if not socket:
+        return None
+    node = os.path.join(PACK_DIR, "bin", "javis_boot_node.py")
+    if not os.path.isfile(node):
+        return None
+    try:
+        r = subprocess.run([sys.executable or "python3", node, "--reap-orphans", "--json"],
+                           capture_output=True, text=True, timeout=60, env=_cys_env(socket), **NOWIN)
+    except Exception:
+        return None
+    for line in reversed((r.stdout or "").strip().splitlines()):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "reaped" in obj:
+            return obj
+    return None
+
+
+def _reap_feed(socket, res):
+    reaped = (res or {}).get("reaped") or []
+    if not reaped:
+        return
+    name = _dept_name_for_socket(socket) or "부서"
+    _feed("빈 창 정리",
+          "「%s」의 빈 창 %d개(%s)를 정리했습니다 — 그 창의 claude 가 꺼진 뒤 10분 넘게 아무 일도 없었습니다. "
+          "그 자리의 일은 새 창이 이어받습니다." % (name, len(reaped), ", ".join(reaped)),
+          "formation-partial")
+
+
 def ensure(socket=None, cwd=None, force_surface=False):
     """편성 전이(멱등·싱글플라이트). 반환: (state, detail). 모든 실패 graceful.
 
@@ -1035,6 +1281,25 @@ def ensure(socket=None, cwd=None, force_surface=False):
     with _singleflight(socket) as lock:
         if not lock.acquired:
             return "partial:inflight", "다른 편성 진행 중(싱글플라이트) — no-op"
+
+        # ★v116-pack P1′(= D1 #5): 부서 데몬 무응답 → 정식 경로(cys-dept launch)로 유계 되살림. 좌석은 여기서
+        #   세우지 않는다 — launch 꼬리의 편성과 다음 심박이 복원 뒤에 채운다(P2).
+        if socket and _daemon_down(socket):
+            rv = _revive_dept(socket, prev_obj)
+            if rv is not None:
+                state, detail, led = rv
+                _write_state(socket, state, detail + _external_note(), set(),
+                             attempts=_attempts_carry(prev_obj, set()), revive=led)
+                return state, detail
+        # ★v116-pack P2: 이 데몬의 자동 복원이 도는 동안은 좌석을 세우지 않는다(복원과 같은 자리 이중 생성 차단).
+        settled, why_restore = _wait_restore_settled(socket)
+        if not settled:
+            live = _live_roles(socket) or set()
+            state, detail = "partial:restoring", why_restore + _external_note()
+            _write_state(socket, state, detail, live, attempts=_attempts_carry(prev_obj, live))
+            return state, detail
+        # ★v116-pack D1 #4: 역할 없이 남은 빈 에이전트 좌석 회수(역할이 다 차 있어도 매 틱 — 로스터 판정 앞).
+        _reap_feed(socket, _reap_orphans(socket))
 
         # ③ CLI 가용성(로그인셸 우산 프로브 — 이 ensure 에서 1회만 수행하고 이하 전 경로가 재사용)
         installed = _installed_clis()
@@ -1489,6 +1754,9 @@ def _cmd_ensure(argv):
         if a == "--force-surface":
             force_surface = True; i += 1; continue
         i += 1
+    # ★v116-pack P1: 이 프로세스와 자식(boot_node·launch-agent)의 cys 는 죽은 데몬을 되살리지 않는다 — 심박이 부서
+    #   데몬을 cys-dept launch 밖에서(계정격리 env 없이) 띄운 R-B1 L1 차단. 되살림은 _revive_dept 만(봉인 해제 env).
+    os.environ[NO_AUTOSTART_ENV] = "1"
     try:
         state, detail = ensure(socket=socket, cwd=cwd, force_surface=force_surface)
     except Exception as e:  # 최후 graceful — 예외 스택 대신 명시 메시지

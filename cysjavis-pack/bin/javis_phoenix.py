@@ -1829,6 +1829,22 @@ def master_seat_cwd(socket, entries=None):
     return dc if dc and not home_like(dc) and _dir_ok(dc) else None
 
 
+def current_tombstones(socket):
+    """★v116-pack(R-B1 실사례 2026-09-24 · 1.0.2→1.1.5 교체): 스폰 **직전** 묘비 재조회.
+    부활 대상은 런 시작에 1회 정해지는데, 그 뒤 재시도·fresh 강등(수 분) 사이에 사람이 닫은 역할
+    (OwnerClose 묘비)을 모른 채 launch-agent 로 다시 세웠고, 데몬은 역할 등록 순간 묘비를 지웠다
+    (state.rs register · 「(재)기동 = 부활 의도」) → 닫은 창 부활 + 묘비 소실(우리 맥 worker-18·15 실측).
+    데몬은 묘비를 kill 전에 topology.json 에 선영속하므로(governance.rs D7) 디스크 판독으로 충분하다.
+    반환 set | None(topology 부재·파손 = 모름 → 호출측은 런 시작 판정만 쓴다 · 종전 동작)."""
+    topo = read_topology(socket)
+    if topo.get("_missing") or topo.get("_error"):
+        return None
+    tombs = set(t for t in topo.get("tombstones", []) if isinstance(t, str))
+    # 데몬 다운타임 CLI 폐역(intent 저널)도 같은 묘비로 본다(observe_and_persist_roster 와 같은 규칙).
+    _apply_intents_to_tombstones(_read_tombstone_intents(socket), tombs)
+    return tombs
+
+
 def spawn_fresh_production(socket, role, agent, cwd=None):
     """★Phase11 독약세션 fresh-fallback(prod): 무 resume 로 새 세션 기동(cys launch-agent).
     cys restore 는 topology 의 session_id 를 resume 하므로 독약 세션이면 계속 실패한다 → 세션핀을 버리고
@@ -2370,6 +2386,22 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     #    prod: cys restore 는 idempotent(죽은 역할만 재스폰)이라 재호출로 미스폰 역할만 다시 시도된다.
     #    stub: 역할별 재시도. 스폰 후 settle·회차별 backoff 증가로 동시 경합(부활 폭풍)을 완화한다. ──
     need = [r for r in pending if not stage_done(j, r, "spawn") and r not in role_surface]
+    # ★v116-pack: 런 도중 묘비(사람이 닫음)가 생긴 역할 — 스폰 직전마다 재조회해 뺀다(current_tombstones 주석).
+    #   부활 실패가 아니라 의도 삭제이므로 완결성(INCOMPLETE)·최종 판정 집계에서도 뺀다(아래 target_roles 정리).
+    _mid_tomb = []
+
+    def _drop_tombstoned(roles, where):
+        now = current_tombstones(socket)
+        if not now:
+            return roles
+        for _r in roles:
+            if _r in now and _r not in _mid_tomb:
+                _mid_tomb.append(_r)
+                jevent(j, _r, "spawn", "tombstoned_mid_run",
+                       "%s 직전 묘비 재조회 — 런 도중 의도 삭제(묘비) → 스폰 안 함(부활 실패 아님 · INCOMPLETE 미집계)"
+                       % where)
+                log("★런 도중 묘비: role=%s (%s 직전) — 스폰 안 함(의도삭제>강제부활)." % (_r, where))
+        return [_r for _r in roles if _r not in now]
     # ★R4-2: 이번 사이클의 스폰 발주를 역할별 1회로 센다(재시도 회차·fresh 강등은 같은 발주의 일부).
     #   스폰 **전**에 영속한다 — 스폰 도중 phoenix 가 죽어도 발주 사실은 남는다(카운트 유실 = 캡 우회).
     if need:
@@ -2401,6 +2433,9 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
     need = [r for r in need if r not in forced_fresh]
     attempt = 0
     while need and attempt <= SPAWN_RETRIES:
+        need = _drop_tombstoned(need, "resume %d회차" % attempt)
+        if not need:
+            break
         if stub:
             still = []
             for role in need:
@@ -2487,6 +2522,9 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                 if _refs:
                     _empties[_r] = _refs
             if _empties:
+                need = _drop_tombstoned(need, "빈 좌석 재사용")
+                _empties = {_r: _v for _r, _v in _empties.items() if _r in need}
+            if _empties:
                 _res = spawn_in_seat_production(socket, include_master=include_master or "master" in _empties,
                                                 cwd=restore_cwd)
                 jevent(j, "*", "spawn", "in_seat_attempt",
@@ -2522,6 +2560,8 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                                else "empty_seat_reap_failed",
                                "빈 좌석 %s 재사용 불가 → Reap 회수(좌석 증식 방지)" % _ref)
         for role in need:
+            if not _drop_tombstoned([role], "fresh 강등"):
+                continue
             exp = entries.get(role, {}).get("session_id", "")
             if stub:
                 # fresh stub = 새 세션(원 poison sid 아님)으로 뜬다 — observed≠expected 로 정직 반영.
@@ -2570,6 +2610,10 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
         mark_stage(j, role, "spawn", False, "재시도 %d회 + fresh 강등 소진 후에도 surface 미발견" % SPAWN_RETRIES)
         jevent(j, role, "spawn", "fail", "재시도 %d회 + fresh 강등 소진 — 부활 실패(INCOMPLETE)" % SPAWN_RETRIES)
     save_journal(socket, ticket, j)
+    # ★v116-pack: 런 도중 묘비 역할은 하위 단계·완결성·최종 판정에서 뺀다(부활 실패가 아니라 의도 삭제).
+    if _mid_tomb:
+        pending = [r for r in pending if r not in _mid_tomb]
+        target_roles = [r for r in target_roles if r not in _mid_tomb]
 
     # ── 역할별 하위 단계: ready → resume → reinject → g2_ack → verify ──
     for role in pending:
@@ -2731,6 +2775,9 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
                     "실행'해야 채워지는 상태이거나, agent 미상(claim-role 등록 pane)이라 무엇을 띄울지 "
                     "결정론으로 알 수 없는 상태다. 좌석 앞 큐 메시지는 배달 보류(보존)된다 — 침묵 성공 "
                     "아님." % manual_seats)
+    if _mid_tomb:
+        honesty += (" ★런 도중 묘비=%s: 부활을 진행하는 사이 사람이 닫아(묘비) 스폰하지 않았다 — 부활 실패가 "
+                    "아니라 의도 삭제이므로 완결성·판정 집계에서 뺐다(재편입 = untomb)." % _mid_tomb)
     if fresh_fallback_roles:
         honesty += (" ★fresh 강등 역할=%s: 원 세션이 독약(resume 불가)이라 무 resume 로 새 세션을 기동하고 "
                     "디렉티브/원장을 재주입했다(세션 보존 실패를 정직히 밝힘 — roster 는 부활 완료). "
@@ -2742,6 +2789,7 @@ def run_restore(socket, ticket="default", stub=False, no_breaker=False, roles=No
         "incomplete_roles": incomplete_roles,  # ★Phase10: 미부활 역할 정직 명시(침묵 성공 금지)
         "manual_seats": manual_seats,          # ★SEAT: 좌석은 있으나 에이전트 부재(사람 개입 필요) — 정직 명시
         "liveness_unknown_roles": liveness_unknown_roles,  # ★R4-4: 생존·사망 확정 불가(부활 보류 · 생존 취급 아님)
+        "tombstoned_mid_run_roles": _mid_tomb,  # ★v116-pack: 런 도중 묘비 → 스폰 안 함(INCOMPLETE 미집계)
         "fresh_fallback_roles": fresh_fallback_roles,  # ★Phase11: 독약 세션→fresh 강등 역할 정직 명시
         "ready_roles": ready_roles,
         "ticket": ticket,

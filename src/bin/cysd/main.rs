@@ -1571,6 +1571,44 @@ fn log_lock_loss(state_dir: &std::path::Path, lock_path: &std::path::Path, reaso
     }
 }
 
+/// ★v116-pack(R-B1 P2-b): 콜드부트 자동 복원 단계 — `Daemon::auto_restore_phase` 값.
+/// 재부팅 뒤 편성(javis_formation)이 이 데몬의 복원과 **같은 순간** 좌석을 세워 master 이중 보유·worker 여분이
+/// 생겼다(VM r4 R-B1). 편성은 `org.status` `daemon.auto_restore` 가 running·retry_wait 인 동안 좌석을 세우지 않는다.
+/// 기본 OFF = 복원을 발화하지 않는 데몬(옵트아웃·시험 데몬) — 편성이 기다리지 않는다.
+pub const AUTO_RESTORE_OFF: u8 = 0;
+pub const AUTO_RESTORE_RUNNING: u8 = 1;
+pub const AUTO_RESTORE_RETRY_WAIT: u8 = 2;
+pub const AUTO_RESTORE_DONE: u8 = 3;
+
+pub fn auto_restore_phase_str(v: u8) -> &'static str {
+    match v {
+        AUTO_RESTORE_RUNNING => "running",
+        AUTO_RESTORE_RETRY_WAIT => "retry_wait",
+        AUTO_RESTORE_DONE => "done",
+        _ => "off",
+    }
+}
+
+/// 복원 1회 실행과 단계 기록 — 실행 전 running · 재시도 대기로 들어가면 retry_wait(기본 60초 동안도 「복원 중」이다 —
+/// lease 가 비는 이 틈에 편성이 끼면 두 번째 실행과 같은 자리를 또 세운다). 루프(`loop_auto_restore_with`)와 분리해 시험이 직접 구동한다.
+fn auto_restore_attempt<F: FnOnce() -> Option<i32>>(
+    phase: &std::sync::atomic::AtomicU8,
+    attempt: u32,
+    run_once: F,
+) -> Option<i32> {
+    phase.store(AUTO_RESTORE_RUNNING, std::sync::atomic::Ordering::Relaxed);
+    let code = run_once();
+    if auto_restore_will_retry(attempt, code) {
+        phase.store(AUTO_RESTORE_RETRY_WAIT, std::sync::atomic::Ordering::Relaxed);
+    }
+    code
+}
+
+/// 재시도 대기에 들어가는 결과인가 — `loop_auto_restore_with` 의 재시도 규칙(첫 실행 · 0·5·6 아님)과 같은 판정.
+fn auto_restore_will_retry(attempt: u32, code: Option<i32>) -> bool {
+    attempt == 0 && !matches!(code, Some(0) | Some(5) | Some(6))
+}
+
 /// ★W2 콜드부트 자동 복원 판정(순수 함수 — 부수효과 없음, 단위 테스트 가능).
 /// opt-out(CYS_NO_AUTORESTORE)이 아니면 항상 Ready — ★B1: phoenix 는 바이너리 임베드본이 권위이므로
 /// 디스크 팩 phoenix 부재가 "미설치 skip"이 아니다(임베드 추출로 실행). args[0]=디스크 phoenix(폴백 후보).
@@ -1821,6 +1859,12 @@ fn spawn_auto_restore(
             let tail = args; // ["restore","--auto"]
             let log_path = state_dir.join("phoenix-restore.log");
             let state_dir = state_dir.to_path_buf();
+            // ★v116-pack(P2-b): accept 루프 시작 **전**(post_listen_boot 동기 구간)에 running 을 찍는다 —
+            //   소켓이 요청을 받기 시작한 첫 순간부터 편성이 「복원 중」을 본다(0.1초 틈도 없게).
+            daemon
+                .auto_restore_phase
+                .store(AUTO_RESTORE_RUNNING, std::sync::atomic::Ordering::Relaxed);
+            let phase_daemon = daemon.clone();
             let daemon = daemon.clone();
             std::thread::spawn(move || {
                 let log_for_panic = log_path.clone();
@@ -1851,6 +1895,10 @@ fn spawn_auto_restore(
                         }
                     }
                 });
+                // ★v116-pack(P2-b): 성공·실패·중단·panic 무엇이든 이 스레드가 끝나면 done — 편성이 영원히 기다리지 않는다.
+                phase_daemon
+                    .auto_restore_phase
+                    .store(AUTO_RESTORE_DONE, std::sync::atomic::Ordering::Relaxed);
             });
             eprintln!("[cysd] auto-restore triggered (phoenix restore --auto · 임베드 추출 우선)");
         }
@@ -2065,7 +2113,9 @@ fn loop_auto_restore(
     let delay = autorestore_retry_delay();
     loop_auto_restore_with(
         |attempt| {
-            let code = run_auto_restore_once(&daemon, &program, &args, &env, &log_path);
+            let code = auto_restore_attempt(&daemon.auto_restore_phase, attempt, || {
+                run_auto_restore_once(&daemon, &program, &args, &env, &log_path)
+            });
             // ★v115-restore(A4): 재시도 대기(기본 60초) 동안 master 자리가 비어 있으면 사용자는 아무 말도 못
             //   들었다(904 VM ↻-B1 · 본부 master 약 3분 공백 · 알림 0). 재시도 직전 1회만 알린다.
             let master_present = daemon.roles.lock().unwrap().contains_key("master");
@@ -3774,6 +3824,8 @@ mod auto_restore_tests {
 
     use super::{
         restore_retry_notice,
+        auto_restore_attempt, auto_restore_phase_str, auto_restore_will_retry, AUTO_RESTORE_DONE, AUTO_RESTORE_OFF,
+        AUTO_RESTORE_RETRY_WAIT, AUTO_RESTORE_RUNNING,
         bundled_python3, disk_fallback_verify, extract_phoenix_embed, phoenix_embed_files,
         phoenix_self_test,
     };
@@ -4009,6 +4061,49 @@ mod auto_restore_tests {
     }
 
     /// ★성공(0)은 재시도 없음 — 1회 실행.
+    #[test]
+    fn v116_auto_restore_phase_names_and_retry_rule_match_the_loop() {
+        // ★v116-pack(R-B1 P2-b): 편성(javis_formation.restore_settle_verdict)이 읽는 wire 값 — 이름이 바뀌면 편성이
+        //   「옛 데몬」 폴백으로 떨어진다(대기 90초). 이름을 여기서 고정한다.
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_OFF), "off");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RUNNING), "running");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RETRY_WAIT), "retry_wait");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_DONE), "done");
+        assert_eq!(auto_restore_phase_str(99), "off");
+        // retry_wait 를 찍는 판정 = 실제 재시도 규칙(loop_auto_restore_with)과 같은가 — 어긋나면 재시도 틈이 열린다.
+        for code in [Some(0), Some(5), Some(6), Some(1), Some(3), None] {
+            let attempts = loop_auto_restore_with(|_| code, std::time::Duration::from_millis(0));
+            assert_eq!(attempts == 2, auto_restore_will_retry(0, code), "code={code:?}");
+        }
+        assert!(!auto_restore_will_retry(1, Some(3)), "두 번째 실행 뒤엔 재시도 없음");
+    }
+
+    #[test]
+    fn v116_auto_restore_phase_is_retry_wait_during_the_retry_gap() {
+        // 회귀 핀(뮤턴트 M12 생존 대응): 1차 실패 → 재시도 대기 동안 단계 = retry_wait · 실행 중 = running.
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let phase = AtomicU8::new(AUTO_RESTORE_OFF);
+        let mut at_entry = Vec::new();
+        let mut during = Vec::new();
+        let attempts = loop_auto_restore_with(
+            |a| {
+                at_entry.push(phase.load(Ordering::Relaxed));
+                auto_restore_attempt(&phase, a, || {
+                    during.push(phase.load(Ordering::Relaxed));
+                    Some(3)
+                })
+            },
+            std::time::Duration::from_millis(0),
+        );
+        assert_eq!(attempts, 2);
+        assert_eq!(at_entry, vec![AUTO_RESTORE_OFF, AUTO_RESTORE_RETRY_WAIT], "재시도 대기 틈에 retry_wait 가 아니다");
+        assert_eq!(during, vec![AUTO_RESTORE_RUNNING, AUTO_RESTORE_RUNNING]);
+        // 성공(0) 은 재시도 대기 없음 — 스레드 끝의 done 은 spawn_auto_restore 소관.
+        let p2 = AtomicU8::new(AUTO_RESTORE_OFF);
+        assert_eq!(auto_restore_attempt(&p2, 0, || Some(0)), Some(0));
+        assert_eq!(p2.load(Ordering::Relaxed), AUTO_RESTORE_RUNNING);
+    }
+
     /// ★v115-restore(A4): 복원 재시도 대기 중 master 공백 알림 — 첫 비0·master 부재일 때만 1회.
     #[test]
     fn v115_restore_retry_notice_only_when_master_missing_on_first_failure() {

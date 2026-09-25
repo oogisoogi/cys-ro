@@ -25,6 +25,8 @@
 import hashlib
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -37,6 +39,79 @@ import unittest
 
 SELF = os.path.dirname(os.path.abspath(__file__))
 DEPT = os.path.join(SELF, "..", "cys-dept")
+# ★v116-pack(CSO 실측 2026-09-24 · 시험 cysd 누수): 이 실행의 임시 폴더는 전부 RUN_ROOT 아래 — 케이스마다
+#   띄운 프로세스 회수·폴더 삭제(Base._cleanup) + 모듈 끝 「잔존 0」 단언(tearDownModule)의 범위가 된다.
+RUN_ROOT = tempfile.mkdtemp(prefix="deptguard-run-")
+
+
+def _pids_holding(root, deep=False):
+    """root 아래 파일을 열어 둔(또는 그 안이 작업 폴더인) 프로세스 pid — 이 시험이 띄운 데몬의 표지.
+    cys-dept 는 데몬 출력을 $HOME(=root 아래)/.local/state/cys-dept-*/…/cysd.log 로 돌리므로 진짜·목 데몬
+    어느 쪽이든 잡힌다. Linux = /proc(fd·cwd) · 그 밖 = lsof. 자기 자신은 제외.
+    deep=True(모듈 끝 안전망) = 폴더가 이미 지워져 +D 로 못 찾는 경우까지 — 전 프로세스 열린 경로를 접두 대조."""
+    root = os.path.realpath(root)
+    me = os.getpid()
+    found = set()
+    if os.path.isdir("/proc/self/fd"):
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or int(pid) == me:
+                continue
+            links = []
+            try:
+                links.append(os.readlink("/proc/%s/cwd" % pid))
+                fd = "/proc/%s/fd" % pid
+                links += [os.readlink(os.path.join(fd, x)) for x in os.listdir(fd)]
+            except OSError:
+                continue
+            if any(l == root or l.startswith(root + os.sep) for l in links):
+                found.add(int(pid))
+        return sorted(found)
+    if deep:
+        try:
+            r = subprocess.run(["lsof", "-Fpn"], capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        pid = None
+        for line in r.stdout.splitlines():
+            if line.startswith("p"):
+                pid = int(line[1:]) if line[1:].isdigit() else None
+            elif line.startswith("n") and pid and pid != me and (
+                    line[1:] == root or line[1:].startswith(root + os.sep)):
+                found.add(pid)
+        return sorted(found)
+    try:
+        r = subprocess.run(["lsof", "-t", "+D", root], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return sorted({int(x) for x in r.stdout.split() if x.isdigit() and int(x) != me})
+
+
+def _reap(root, deep=False):
+    """root 를 쥔 프로세스를 TERM → (3초) → KILL. 반환 = 처음 발견한 pid 목록."""
+    pids = _pids_holding(root, deep)
+    for p in pids:
+        try:
+            os.kill(p, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 3
+    while pids and time.time() < deadline and _pids_holding(root, deep):
+        time.sleep(0.1)
+    for p in _pids_holding(root, deep):
+        try:
+            os.kill(p, signal.SIGKILL)
+        except OSError:
+            pass
+    return pids
+
+
+def tearDownModule():
+    # 「이 실행이 띄운 데몬 잔존 0」 — 케이스 정리(Base._cleanup)가 빠뜨린 것이 있으면 회수한 뒤 적색.
+    left = _pids_holding(RUN_ROOT, deep=True)
+    _reap(RUN_ROOT, deep=True)
+    shutil.rmtree(RUN_ROOT, ignore_errors=True)
+    if left:
+        raise AssertionError("시험이 띄운 프로세스가 끝나지 않고 남음(누수): pid=%s" % left)
 
 
 def _write_exec(path, content):
@@ -72,13 +147,14 @@ def make_home(tmp):
 
 def make_env(home):
     env = dict(os.environ)
+    # ★v116-pack: 상속 CYS_* 는 전부 지운다(아래 update 전에). 종전 목록은 CYS_CYSD_BIN·CYS_CYS_BIN(cys-dept 1순위 ·
+    #   1.1.5 데몬이 좌석 env 로 주입)을 빠뜨려, 좌석 안에서 돌리면 목 대신 /Applications 의 진짜 cysd·cys 가 격리
+    #   HOME 에서 떠 끝나지 않았다(09-24 18기 누수 · 이 시험 적색 8건의 원인). 필요한 CYS_* 는 각 시험이 명시로 넣는다.
+    for k in [k for k in env if k.startswith("CYS_")]:
+        env.pop(k, None)
     env.update({"HOME": home,
                 "CYS_DEPTS_JSON": os.path.join(home, ".cys", "depts.json"),
                 "PATH": os.path.join(home, ".local", "bin") + os.pathsep + env.get("PATH", "")})
-    for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_NO_AUTOSTART",
-              "CYS_DEPT_ROTATE", "CYS_DEPT_CATALOG", "CYS_DEPT_DEFAULT_ACCOUNT",
-              "CYS_PRIMARY_ACCOUNT"):
-        env.pop(k, None)
     return env
 
 
@@ -105,9 +181,15 @@ def seed_sock(home, name):
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="deptguard-")
+        self.tmp = tempfile.mkdtemp(prefix="deptguard-", dir=RUN_ROOT)
+        self.addCleanup(self._cleanup)  # 예외·실패 경로에서도 돈다(setUp 이후 전부)
         self.home, self.log, self.feedlist = make_home(self.tmp)
         self.env = make_env(self.home)
+
+    def _cleanup(self):
+        """이 케이스가 띄운 프로세스(데몬 등) 회수 + 임시 폴더 삭제."""
+        _reap(self.tmp)
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def run_dept(self, *args, env=None):
         r = subprocess.run(["bash", DEPT] + list(args), capture_output=True, text=True,
@@ -411,6 +493,23 @@ class FeedDedupe(Base):
         self.assertEqual(rc, 0, out + err)
         self.assertIn("feed push --title CEO 승격 대기", self.calls(),
                       "무관 pending에 오-dedupe(제목 정합 검사 결여)")
+
+
+class DaemonLeakGuard(Base):
+    # v116-pack: 케이스 정리가 띄운 데몬을 실제로 끝내는가 — 끝나지 않는 목 cysd 로 launch 해 잔존을 만든 뒤
+    #   _cleanup 이 0 으로 만드는지 본다(목이 즉시 끝나는 다른 케이스로는 정리 경로가 검증되지 않는다).
+    def test_spawned_daemon_reaped_by_cleanup(self):
+        _write_exec(os.path.join(self.home, ".local", "bin", "cysd"),
+                    '#!/bin/sh\nmkdir -p "$(dirname "$CYS_SOCKET")"\ntouch "$CYS_SOCKET"\nexec sleep 600\n')
+        write_reg(self.env, {"leakprobe": {"socket": "", "pack_dir": ""}})
+        self.run_dept("launch", "leakprobe")
+        spawned = _pids_holding(self.tmp)
+        self.assertTrue(spawned, "전제 실패: launch 가 목 데몬을 띄우지 않음(이 검사가 공허해짐)")
+        self._cleanup()
+        self.assertEqual(_pids_holding(self.tmp), [], "정리 뒤에도 띄운 데몬이 남음")
+        for p in spawned:
+            with self.assertRaises(OSError, msg="pid %d 생존" % p):
+                os.kill(p, 0)
 
 
 if __name__ == "__main__":

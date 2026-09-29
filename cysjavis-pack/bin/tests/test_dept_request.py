@@ -300,6 +300,57 @@ class TestFolderStep(Base):
         self.assertIn("파일입니다", o["say"])
 
 
+class TestFolderStepR1(Base):
+    """(1.1.7 G · 적대 검증 R1 Fable/agy) 부모·부서 폴더 혼동 · 이미 있는 폴더 · 너무 위쪽 · javis_org 절대 경로."""
+
+    def test_candidate_dept_folder_given_as_folder_is_folded(self):
+        want = os.path.join(self.home, "CYSjavis", "설교준비부")
+        rc, o = self.propose(folder=want)            # 목록에 보인 「부서 폴더」를 그대로 말함
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(self.req(o["request"])["cwd"], want, "<위치>/<이름>/<이름> 으로 겹치면 안 된다")
+
+    def test_folder_needed_also_returns_parents(self):
+        rc, o = self.propose(folder=None)
+        self.assertEqual(o["parents"][0], os.path.join(self.home, "CYSjavis"))
+        self.assertEqual(len(o["parents"]), len(o["candidates"]))
+
+    def test_existing_nonempty_folder_is_disclosed_on_card(self):
+        d = os.path.join(self.home, "Documents", "설교준비부")
+        os.makedirs(d)
+        for n in ("a.txt", "b.txt"):
+            open(os.path.join(d, n), "w").close()
+        rc, o = self.propose(folder=os.path.join(self.home, "Documents"))
+        self.assertEqual(rc, 0, o)
+        self.assertIn("이미 있는 폴더입니다 — 안의 파일 2개는 그대로", o["card"])
+
+    def test_too_high_locations_refused(self):
+        for bad in ("/", os.path.dirname(os.path.realpath(self.home))):
+            rc, o = self.propose(folder=bad)
+            self.assertEqual((rc, o.get("reason")), (2, "folder"), (bad, o))
+            self.assertIn("너무 위쪽", o["say"])
+
+    def test_symlinked_parent_into_program_area_refused(self):
+        os.makedirs(os.path.join(self.home, ".cys", "x"), exist_ok=True)
+        link = os.path.join(self.home, "링크")
+        os.symlink(os.path.join(self.home, ".cys"), link)
+        rc, o = self.propose(folder=os.path.join(link, "x"))
+        self.assertEqual((rc, o.get("reason")), (2, "folder"), o)
+
+    def test_javis_org_rejects_relative_or_dotdot_cwd(self):
+        import javis_org
+        disp = "설교준비부"
+        quote = "우리 교회에 %s 부서를 새로 두어 설교 준비를 돕게 한다" % disp
+        for cwd in (disp, os.path.join(self.home, "a", "..", disp)):
+            m = {"kind": "org-manifest", "manifest_version": 1,
+                 "source": {"design_doc": "x", "design_doc_sha256": "x"},
+                 "departments": [{"key": "c0a1b2", "display": disp, "account": "shared", "cwd": cwd,
+                                  "mission_md": "m", "source_quote": quote, "new_dept_approved": True}],
+                 "tasks": []}
+            errs = javis_org.validate_manifest(m, doc_text=quote,
+                                               catalog={"accounts": {"shared": "/x"}, "departments": {}})
+            self.assertTrue([e for e in errs if "절대 경로" in e], (cwd, errs))
+
+
 class TestHappyPath(Base):
     def test_propose_confirm_tick_creates(self):
         rid = self.proposed_confirmed(first="이번 주 본문 자료 모으기")

@@ -221,6 +221,9 @@ def v_quote_binding(depts, doc_text, catalog, dept_level=True):
             # cwd 규약(1.1.7 G) — 위치는 사용자가 고른다(바탕화면 강제 폐지) · 폴더 **끝 이름 = 표시명** 만 결속한다.
             cwd = d.get("cwd", "")
             tail = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            full = os.path.expanduser(os.path.expandvars(cwd))
+            if not os.path.isabs(full) or ".." in full.replace("\\", "/").split("/"):
+                errs.append(f"{tag}: cwd 는 절대 경로여야 하고 .. 를 쓸 수 없다({cwd or '-'})")
             if disp and tail != disp:
                 errs.append(f"{tag}: cwd 끝 폴더 이름({tail or '-'})이 표시명({disp})과 다름 — 규약(<위치>/{disp}) 불일치")
     return errs

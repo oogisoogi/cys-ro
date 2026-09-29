@@ -122,8 +122,8 @@ def default_parent():
 
 def _forbidden_roots(under_home):
     """막는 뿌리 — 집 폴더 안이면 집 안의 프로그램 자리만, 밖이면 시스템 자리를 본다(집 폴더가 /var·/private
-    아래에 있는 기계도 있어서 — 시험 임시 집 · 일부 관리형 기기)."""
-    h = home()
+    아래에 있는 기계도 있어서 — 시험 임시 집 · 일부 관리형 기기). 판정은 실제 자리(realpath)끼리 견준다."""
+    h = os.path.realpath(home())
     if under_home:
         roots = [os.path.join(h, n) for n in (".cys", ".local", ".claude", ".config", "Library", "AppData")]
         return [os.path.normcase(os.path.normpath(r)) for r in roots]
@@ -147,17 +147,31 @@ def folder_problem(raw):
     p = os.path.expanduser(t)
     if not os.path.isabs(p):
         return None, "위치는 전체 경로로 말씀해 주세요(예: %s)." % default_parent()
-    p = os.path.normpath(p)
+    p = os.path.normpath(p)                       # 저장·표시는 사용자가 준 경로 그대로
+    rp = os.path.realpath(p)                      # 판정은 실제 자리로 — 심볼릭 부모(예: 문서/링크 → ~/.cys)로 비켜 가지 못하게
     # 맥(APFS 기본)·윈은 이름의 대소문자를 가르지 않는다 — ~/library 로 막힌 자리를 비켜 가지 못하게 소문자로 견준다
     fold = (lambda x: os.path.normcase(x).lower()) if sys.platform == "darwin" or os.name == "nt" else os.path.normcase
-    np_ = fold(p)
-    hk = fold(os.path.normpath(home()))
+    np_ = fold(rp)
+    hk = fold(os.path.realpath(os.path.normpath(home())))
+    if np_ == fold(os.path.dirname(rp)) or np_ == os.path.dirname(hk):
+        return None, "그 위치(%s)는 너무 위쪽(디스크 맨 위·사용자 폴더들의 모음)입니다. 집 폴더 아래 위치를 말씀해 주세요(예: %s)." % (p, default_parent())
     for r in [fold(x) for x in _forbidden_roots(np_ == hk or np_.startswith(hk + os.sep))]:
         if np_ == r or np_.startswith(r + os.sep):
             return None, "그 위치(%s)는 프로그램·시스템이 쓰는 곳이라 부서 폴더를 두지 않습니다. 다른 위치를 말씀해 주세요." % p
     if os.path.exists(p) and not os.path.isdir(p):
         return None, "그 위치(%s)는 폴더가 아니라 파일입니다. 다른 위치를 말씀해 주세요." % p
     return p, None
+
+
+def resolve_folder(raw, display):
+    """--folder → (부모 위치, 문제|None). 사용자가 후보 목록의 **부서 폴더**(`<위치>/<이름>`)를 그대로 말해도
+    `<위치>/<이름>/<이름>` 으로 겹치지 않게 부모로 접는다(적대 검증 R1 Fable)."""
+    parent, prob = folder_problem(raw)
+    if prob:
+        return None, prob
+    if os.path.basename(parent) == display:
+        return folder_problem(os.path.dirname(parent))
+    return parent, None
 
 
 def folder_candidates(live):
@@ -175,7 +189,9 @@ def folder_candidates(live):
     for e in sorted((live or {}).values(), key=lambda x: str((x or {}).get("cwd") or "")):
         c = (e or {}).get("cwd")
         if c and os.path.isabs(c):
-            add(os.path.dirname(os.path.normpath(c)), "지금 있는 부서들이 모여 있는 곳")
+            par = os.path.dirname(os.path.normpath(c))
+            if par != os.path.dirname(par) and par != os.path.dirname(os.path.normpath(h)):   # 디스크 맨 위·사용자 모음 폴더는 추천하지 않는다
+                add(par, "지금 있는 부서들이 모여 있는 곳")
     docs = os.path.join(h, "Documents")
     if os.path.isdir(docs):
         add(os.path.join(docs, DEPT_PARENT_NAME), "문서 폴더 안 — 맥에서는 처음 한 번 폴더 접근 확인 창이 뜰 수 있습니다")
@@ -596,6 +612,14 @@ def render_create_card(r, gate, n_live):
     folder = r["cwd"]
     if not os.path.isdir(os.path.dirname(os.path.normpath(r["cwd"]))):
         folder += "  (이 위치는 아직 없어서 새로 만듭니다)"
+    elif os.path.isdir(r["cwd"]):
+        try:
+            n = len(os.listdir(r["cwd"]))
+        except OSError:
+            n = -1
+        if n != 0:      # 이미 있는 폴더를 부서 폴더로 쓴다 — 사용자 자료와 겹칠 수 있어 카드에 밝힌다(적대 검증 R1)
+            folder += ("  (이미 있는 폴더입니다 — 안의 파일 %d개는 그대로 두고 부서 폴더로 씁니다)" % n
+                       if n > 0 else "  (이미 있는 폴더입니다 — 안을 읽지 못했습니다 · 파일은 그대로 둡니다)")
     lines = [
         "📋 새 부서 제안",
         "  이름        %s" % r["display"],
@@ -699,8 +723,8 @@ def cmd_propose(a):
     if not getattr(a, "folder", None):
         cands = folder_candidates(live)
         return _refuse(folder_question(disp, cands), code=2, reason="folder_needed",
-                       candidates=[workdir_for(disp, p) for p, _ in cands])
-    parent, fprob = folder_problem(a.folder)
+                       candidates=[workdir_for(disp, p) for p, _ in cands], parents=[p for p, _ in cands])
+    parent, fprob = resolve_folder(a.folder, disp)
     if fprob:
         return _refuse(fprob, code=2, reason="folder")
     gate = resource_check()

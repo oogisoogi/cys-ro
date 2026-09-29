@@ -82,3 +82,15 @@
 - 자기 정정: E3 「같은 판이면 다른 갈래」 주장 틀림(installer.nsi:265-267·335-337 = 같은 판·높은 판 같은 자동 경로) → P1 사유 = 판 표시·갱신 판정.
 - 다음(master 발주): §1 정밀 디버깅 = 계정2 3좌석(S1 A1+A2 · S2 B1+B2 · S3 C1+C3+C2 정독 · 보고만) → 차단 4종 결함은 이 좌석으로 라우팅(수리 · 건당 K2 25분) · §2 VM 축 4·2·3 = P1 push 뒤 계정2 VM 좌석 · WIN-CHECK = master 보관 · 박사님 실기 시각 = 준비 완료 뒤 master.
 - 남은 것: CI 3종 @dfcfe2e8 결과 · 새 windows-build 아티팩트 이름·바이트 【진행】 · 디버깅 결과 대기.
+
+## 8. fix-blockers(TICKET=cysr-117-fix-blockers · master#2f4fc93f · 09-30 08:2x) — 순환 뒤 새 세션이 할 일
+- 확정 차단 2건(S1 디버깅 발견 · agy BLOCK + codex astra BLOCK 수렴). 근거 원문 = `~/axdev/master/reports/cysr-117-plan/dbg/codex-1R-out.md`(52줄 · 먼저 읽는다) · agy = 같은 폴더 `agy-1R-out.md` · 재현 = `c3_repro_test.py` · `a1_repro_empty_files.py`(v1.1.6 대조 `a1_repro_empty_files_v116.py`) · `a1_dept_unreadable_ext.py` · 변이 = `a1_mutations.py`·`c3-mutate.py`.
+- 순서(master 지정): ① C3-F1(작음) → ② A1 설계 1쪽(잠금·게시 규약) → ③ codex astra 1R 설계 검토 → ④ 실패 시험 먼저 → ⑤ 구현 → ⑥ 변이 → ⑦ 게이트 전체(스크래치 gates.sh 형식 · 좌석 CYS_* 비움 · cys-app 뒤 재빌드) → 【확인요청】. **push = master 게이트(master 정본 게이트 재실행 뒤).**
+- ⑴ C3-F1 거짓 안심 알림(20~40줄 · 시험 5~6): `cysjavis-pack/bin/javis_dept_request.py` — `_create_step`(:1698 · catalog_upsert → write_mission → ensure_dirs 순) · `_run_step`(:1840 · 일반 예외 = `_fail(r,"crash:…")` 만) · `_fail`(:1656 · leftover 있을 때만 기록) · 알림 `row == 4`(:1033-1036 · leftover 부재 = 「남은 것은 없습니다」). 수리 = 완료 효과·확인 가능한 잔여물 기록 · 잔여 확인 실패 = 「남은 항목을 확인하지 못했습니다」 · 확인된 경우에만 「남은 것은 없습니다」 · **자동 삭제 추가 금지** · 「모든 예외에 카탈로그 1개」 식 고정 문구 금지(카탈로그 생성 전 실패에서 거짓). 시험 = 두 폴더 예외 · 카탈로그 생성 전 실패 · 잔여 확인 실패 · 중복 재제안(rc 5) · discard 후 재생성.
+- ⑵ A1-F1~F3 0바이트 = 영구 잠금 = 1.1.7 회귀(v1.1.6 자가 치유) · 100~180줄 · 시험 12~16. **원칙 = 정확히 0바이트만 복구 · 권한 오류·비어 있지 않은 손상 = 계속 무변경 거부**(v1.1.6 「모든 오류 = 빈 상태」 회귀 금지).
+  · F1 `.approval-secret` — `src/bin/cysd/approval.rs` `signing_secret_at`(:427 · hard_link 게시 :453 · create_new :482): 공통 프로세스 간 잠금 → 잠금 안 재판독 → 임시 키 작성·권한·동기화 → 게시. 부재 생성·빈 파일 복구·create_new 대체 경로 **전부 같은 규약** · 게시 실패를 성공으로 반환 금지 · 옛 승인 자동 재서명 금지 · 옛 데몬은 새 잠금을 모름 = 갱신 시 데몬 종료 필요(기록). 잠금 헬퍼 후보 = `src/pack.rs:681 acquire_settings_lock`(윈 None = 헬퍼 한계 · HANDOFF §4).
+  · F2 `approvals.json` — `load_records_at`(:555): 기존 읽기·변경·저장 잠금 안에서 0바이트 = 빈 목록 · 선두 BOM 뒤 유효 JSON = BOM 만 제거하고 파싱(BOM 파일 전체를 빈 목록으로 접지 않는다).
+  · F3 `depts.json` — `cysjavis-pack/bin/cys-dept` `reg_init`(:293 · `[ -f ]` + 잠금 밖 `printf >`) → 공통 잠금(:341-348 fcntl.flock 관례) + 원자 게시 · 읽기·쓰기 경로 같은 0바이트 규칙 · 「목록 초기화」 와 「기존 부서 복구」 알림 구분(부서 폴더·데몬은 복구 안 됨) · 비어 있지 않은 손상 보존. GUI/Rust 쪽 list_depts(src-tauri main.rs list_depts_at)도 같은 규칙인지 대조.
+  · 시험 필수: 세 파일 0바이트 회귀 · 비어 있지 않은 손상 보존 · BOM 보존 · 다중 프로세스 게시 · create_new 직후 중단점 결정적 경합.
+- 함정 이월: §3 전부 + 좌석 env CYS_* 누출(시험·게이트) · externalBin 0바이트(cys-app 뒤 재빌드) · 실행 중 스크립트 편집 금지 · zsh 는 따옴표 없는 변수를 안 쪼갠다(`${=V}`) · `$r:s` 는 zsh 수식어(`${r}:` 로).
+- 상태: fix/117-int 원격 = dfcfe2e8(1.1.7 범프) · 로컬 int/117 = 그 위 225cb312(HANDOFF §7) + 이 §8 커밋 = 미push.

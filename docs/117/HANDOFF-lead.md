@@ -33,8 +33,8 @@
 ## 3. 함정 (재현·다음 사람용)
 - cargo 는 PATH 에 없다 → `export PATH="$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"`. TMPDIR 은 짧게(`/tmp/c117s`) — 소켓 SUN_LEN.
 - cys-app 시험은 CI 처럼 자리표시자 필요: `mkdir -p ui/dist src-tauri/binaries src-tauri/resources src-tauri/runtime` + `touch src-tauri/binaries/{cys,cysd}-<triple> src-tauri/resources/pack.tar.gz src-tauri/resources/pack-manifest.json`(git 무시됨).
-- `target/debug/cys·cysd` 가 0바이트로 생기는 일이 있었다(19:41 · 원인 미규명) → test_v116_auto_restore_status 가 PermissionError. `cargo build --bin cys --bin cysd` 로 해소.
-- test_dept_teardown_atomicity 는 이 기계 Python 3.14 에서 rmtree ENOTEMPTY 적색 — v1.1.6 스냅샷에서도 같음(선재 · CI 3.12 는 무관 추정).
+- `target/debug/cys·cysd` 가 0바이트로 생기는 일 = **원인 규명(순환 1 · 21:1x 재현)**: `cargo test -p cys-app` 이 tauri externalBin 자리표시자(src-tauri/binaries/*-<triple> 0바이트)를 `target/debug/cys·cysd` 로 복사해 덮는다(53MB/72MB → 0 → 재빌드 복구). → test_v116_auto_restore_status 가 PermissionError. 로컬 게이트는 cys-app 뒤 `cargo build --bin cys --bin cysd` 재빌드 필수(CI 무관 · CI 초록).
+- test_dept_teardown_atomicity 는 이 기계 Python 3.14 에서 rmtree ENOTEMPTY 적색 — v1.1.6 스냅샷에서도 같음(선재 · CI 3.12 는 무관 추정). → **정정(순환 1)**: 좌석 env 누출로 설치본 데몬이 임시 폴더에 쓰던 탓으로 보인다【추정】 · 수리(e8de7be6·ec777382) 뒤 로컬 ALL PASS 실측(§6).
 - ui typecheck 는 node_modules 없어 15 오류(전부 모듈 부재 · 변경 전후 같은 수). node_modules 는 git 무시 대상 아님 → 설치 금지(오염).
 - Fable 헤드리스는 `--add-dir` 뒤에 프롬프트를 인자로 주면 디렉터리로 먹힌다 → **stdin** 으로.
 - agy 헤드리스는 `--mode plan` 이어도 명령 실행 도구를 쓰려다 거부돼 산출 0 → `.git` 없는 사본에서 `--dangerously-skip-permissions --sandbox`.
@@ -57,3 +57,10 @@
 - 부수 기록: 20:46 `javis_todo_stamp.py --apply`(cys todo-path 안내 문구대로 실행)가 팩 round/ 의 다른 todo 54개에도 선언 블록을 넣었다(mtime 보존 · 내용 추가만) — master 처분 = 되돌리지 않음 · 유지보수 후보(「--apply 기본값이 남의 todo 까지 고친다」).
 - CI 편입 18d7fa6d: scripts/tests/test_mac_cli_alias_link.py → ci-branch(macOS) 스텝 + 레인 대조 ALLOWED {ci-branch}(대상 lib 는 팩 밖 · 소비 = 로컬 맥 빌드 스크립트 2개). 레인 대조 로컬 실행 초록 · 등재 제거 뮤테이션 rc=1. 그 밖 새 시험: ui/*.test.ts 3개(deptreg·droppoint·restartplan)는 release.yml `bun test` 글롭이 자동 포함(ci-branch 는 파일 머리 주석대로 UI 잡 없음) · nsis-template/check.py 는 갈래3 가 이미 편입 · test_phoenix_g2_ack_only(갈래2)는 ci 1·release 2 등장.
 - ACL flaky(`CYS_PACK_DIR` env 경합): v1.1.6 에 이미 공용 락 `governance::PACK_DIR_ENV_LOCK`(QUEUE_ENV_LOCK·ACL_ENV_LOCK 별칭 · governance.rs:6607·11327 · handlers.rs:8433) 있음. cysd 크레이트 안 `ENV_PACK_DIR` set/remove 106곳 정적 대조 = 락 밖 0(예외 daemon_with_acl·daemon_auto = 호출자가 ACL_ENV_LOCK 보유 헬퍼). 즉 input HANDOFF §5-⑥ 의 「원작자 공용 락 우리 판 미편입」 은 사실과 다름 · 남은 경합 원인은 미특정(다른 env 키 또는 가드 밖 스레드 추정) → 기록만.
+- 소비처 grep 교훈: 18d7fa6d 에서 「release 는 mac-bundle-common.sh 를 source 안 함(.github grep 0)」 이라 적었다가 적대 R1(agy BLOCK · Fable MAJOR)에 적발 — release.yml:684 → build-macos-signed.sh:37 간접 소비. **소비처는 직접 참조 grep 이 아니라 호출 사슬(워크플로 → 스크립트 → source)로 센다.** 92c79e41 로 release 맥 레그 편입 + ALLOWED {ci-branch, release}.
+- R1 반영: ec777382(부서 시험 3 = CYS_* 전량 제거 · b11·teardown cysd 스텁 + CYS_NO_AUTOSTART=1 · creds_seed 는 launch 시험이라 자동 기동 금지 제외) · 2d72faa2(UI typecheck 8 → 0 · bun-env.d.ts toMatch · restorebrief readFileSync(URL)).
+- 게이트(20:57~21:2x ≈ 27분 · 좌석 CYS_* 비움): lib 550 · cys 344 · cysd 1212 · app 174 · gen 2 · UI 1471 · typecheck 0 · 팩 62/62 · 건강 150/0/1 · NSIS 3 · mac-alias · 레인 대조 0. ⚠ 게이트 스크립트를 실행 중 편집해 bash 가 어긋나 끝 단계가 문법 오류 → 남은 단계 따로 실행(실행 중 스크립트 편집 금지).
+- push(master#a4c6daf5 재승인): fix/117-int @ec777382 · CI = ci-branch 36567990615 · windows-build 36567990669 · windows-health 36567990826.
+- E2 「앱 데이터까지 지우기」 = **박사님 결정 완료(21:1x · 유지)** — 칸 없이 자동 보관 + 사용법 「완전히 지우려면」 한 줄(BACKLOG-117 · 문서 몫).
+- 갈래1 내부 MINOR(적대 R1 Fable 범위 밖 관찰 · 수리 안 함): cys-dept:1855 down-sock 역인덱스가 `json.load(open(p))` 라 BOM 흡수 미적용.
+- 남음: 적대 R2 판정 · CI 3 결과 · 갈래2 input 병합(153 R2 중 → master 수용 뒤).

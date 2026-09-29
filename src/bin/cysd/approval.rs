@@ -595,6 +595,109 @@ mod tests {
         }
     }
 
+    /// ⑲(TICKET=cysr-117-impl-lead) 재작성 전 골든 핀 — 서명 원문 바이트·서명값은 **디스크에 있는 모든
+    /// 승인 레코드의 계약**이다. 기대값은 코드가 아니라 파이썬 hmac/base64 로 독립 계산했다. 한 바이트라도
+    /// 바뀌면 참가자 기기의 기존 승인이 전부 거부된다 — 이 시험이 적색이면 재작성이 틀린 것이다.
+    #[test]
+    fn golden_signing_payload_and_signature_bytes_are_frozen() {
+        let mut r = ApprovalRecord {
+            version: 1,
+            id: "rec-골든-1".into(),
+            command_prefix: vec!["git".into(), "push".into(), "--force, \"x\"=1".into()],
+            cwd: Some("/tmp/작업 폴더".into()),
+            environment: vec![
+                ("HOME".into(), "/Users/한글".into()),
+                ("LANG".into(), "ko_KR.UTF-8".into()),
+            ],
+            created_at: 1700000000.25,
+            updated_at: 1700000100.0,
+            signature: String::new(),
+        };
+        assert_eq!(
+            String::from_utf8(r.signing_payload()).unwrap(),
+            "version=1\nid=rec-골든-1\ncommandPrefix=Z2l0,cHVzaA==,LS1mb3JjZSwgIngiPTE=\n\
+             cwd=L3RtcC/snpHsl4Ug7Y+0642U\n\
+             environment=SE9NRQ===L1VzZXJzL+2VnOq4gA==,TEFORw===a29fS1IuVVRGLTg=\n\
+             createdAt=1700000000.25\nupdatedAt=1700000100"
+        );
+        r.sign(b"golden-secret-0123456789");
+        assert_eq!(r.signature, "/eGEZxkMdIGwwAGWm/5Yh9ZfzhZee1SLfDmIKhwFggk=");
+        assert!(r.has_valid_signature(b"golden-secret-0123456789"));
+        let mut r2 = ApprovalRecord {
+            version: 1,
+            id: "r2".into(),
+            command_prefix: vec!["ls".into()],
+            cwd: None,
+            environment: vec![],
+            created_at: 0.0,
+            updated_at: 0.0,
+            signature: String::new(),
+        };
+        assert_eq!(
+            String::from_utf8(r2.signing_payload()).unwrap(),
+            "version=1\nid=r2\ncommandPrefix=bHM=\ncwd=\nenvironment=\ncreatedAt=0\nupdatedAt=0"
+        );
+        r2.sign(b"k");
+        assert_eq!(r2.signature, "j3aLIBJE3b3l6T2OPdOzrBwWaASiybyBDz/+igRD+jI=");
+        // 디스크 형식(두 형) 왕복: 객체형 · 최상위 배열형 모두 같은 레코드로 읽히고 서명이 산다.
+        let d = tdir("golden");
+        let p = d.join("approvals.json");
+        let one = serde_json::to_value(&r).unwrap();
+        for text in [
+            serde_json::json!({"records": [one.clone()]}).to_string(),
+            serde_json::json!([one.clone()]).to_string(),
+        ] {
+            std::fs::write(&p, text).unwrap();
+            let got = load_records_at(&p).unwrap();
+            assert_eq!(got.len(), 1);
+            assert!(got[0].has_valid_signature(b"golden-secret-0123456789"));
+            assert_eq!(got[0].signing_payload(), r.signing_payload());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑲ 재작성 전 토큰화 진리표 핀(따옴표·백슬래시·공백·미닫힘).
+    #[test]
+    fn golden_tokenize_table_is_frozen() {
+        let v = |xs: &[&str]| Some(xs.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        let table: &[(&str, Option<Vec<String>>)] = &[
+            ("git push origin main", v(&["git", "push", "origin", "main"])),
+            ("  a\t b\n", v(&["a", "b"])),
+            ("echo 'a b' \"c d\"", v(&["echo", "a b", "c d"])),
+            ("echo ''", v(&["echo", ""])),
+            ("a\\ b", v(&["a b"])),
+            ("a\\", v(&["a"])),
+            (r#""a\"b\\c\$d\x""#, v(&[r#"a"b\c$d\x"#])),
+            (r"'a\b'", v(&[r"a\b"])),
+            ("a\"b c\"d", v(&["ab cd"])),
+            ("", v(&[])),
+            ("\"unterminated", None),
+            ("'x", None),
+            ("\"a\\", None),
+            ("x\r\ny", v(&["x", "y"])),
+        ];
+        for (input, want) in table {
+            assert_eq!(&tokenize(input), want, "입력 {input:?}");
+        }
+    }
+
+    /// ⑲ 재작성 전 env 정규화 핀(민감 키 부분일치 제거 · 바이트 정렬).
+    #[test]
+    fn golden_sort_norm_env_is_frozen() {
+        let e = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let got = sort_norm_env(&[
+            e("b", "1"),
+            e("MY_TOKEN_X", "s"),
+            e("a", "2"),
+            e("api_key", "k"),
+            e("PATH", "/bin"),
+            e("cookie_jar", "c"),
+            e("Passwd", "p"),
+            e("aws_secret", "z"),
+        ]);
+        assert_eq!(got, vec![e("PATH", "/bin"), e("a", "2"), e("b", "1")]);
+    }
+
     fn tdir(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!(
             "cys-appr-{tag}-{}-{}",

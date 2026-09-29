@@ -20130,6 +20130,53 @@ mod tests {
         assert!(compose_full_directive(false, false), "빈 컨텍스트(신규)에는 전문이 필요하다");
     }
 
+    /// ⑲(TICKET=cysr-117-impl-lead) 재작성 전후 동치 핀 — 이벤트 스트림 「재연결해도 되는 오류」 판정표.
+    /// 기대값은 재작성 **전**(v1.1.6) 판정과 같다. 적색이면 재작성이 틀린 것이다.
+    #[test]
+    fn golden_transient_event_error_table_is_frozen() {
+        let table: &[(&str, bool)] = &[
+            ("cannot connect to cysd at /x/cysd.sock: No such file or directory (os error 2)", true),
+            ("Connection refused (os error 61)", true),
+            ("CONNECTION RESET by peer", true),
+            ("Broken pipe (os error 32)", true),
+            ("event stream closed", true),
+            ("server: slow_consumer", true),
+            ("Resource temporarily unavailable (os error 35)", true),
+            ("Connection reset by peer (os error 54)", true),
+            ("Socket is not connected (os error 57)", true),
+            ("Operation timed out (os error 60)", true),
+            ("os error 3", false),
+            ("os error 320", true), // 부분 일치(「os error 32」) — 종전 동작 그대로
+            ("invalid_params: missing name", false),
+            ("permission denied (os error 13)", false),
+            ("", false),
+            ("Cannot Connect To CYSD", true),
+        ];
+        for (msg, want) in table {
+            assert_eq!(is_transient_event_error(msg), *want, "{msg:?}");
+        }
+    }
+
+    /// ⑲ 커서 파일 판독 진리표(부재 = None · 공백 허용 · 비숫자 = Err) + 쓰기 형식 `"{seq}\n"`.
+    #[test]
+    fn golden_event_cursor_format_is_frozen() {
+        let dir = std::env::temp_dir().join(format!("cys-cursor-golden-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("sub").join("cur");
+        let ps = p.to_string_lossy().to_string();
+        assert_eq!(read_event_cursor(&ps).unwrap(), None);
+        write_event_cursor(&ps, 42).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "42\n");
+        assert_eq!(read_event_cursor(&ps).unwrap(), Some(42));
+        std::fs::write(&p, "  7 \n\n").unwrap();
+        assert_eq!(read_event_cursor(&ps).unwrap(), Some(7));
+        for bad in ["x", "-1", "1.5", ""] {
+            std::fs::write(&p, bad).unwrap();
+            assert!(read_event_cursor(&ps).is_err(), "{bad:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ⑰ⓐ(TICKET=cysr-117-impl-lead) `cys schedule add/remove` 가 고치려고 읽는 schedule.json —
     /// 부재만 빈 스케줄 · 판독·파싱 실패는 오류(쓰기 금지). 종전 `unwrap_or_else(json!({"jobs":[]}))`
     /// 로 되돌리면 BOM·잘린 파일이 Ok(빈 스케줄) 가 되어 적색.

@@ -168,6 +168,48 @@ fn is_side_effecting_tool(tool_name: &str, _source: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// ⑲(TICKET=cysr-117-impl-lead) 재작성 전후 동치 핀 — source × event × tool 전 조합의 분류 결과를
+    /// 한 줄씩 이어 sha256 으로 박는다. 골든 값은 재작성 **전**(v1.1.6 = 76d2b5e9) 코드로 산출했다.
+    /// 재작성이 한 조합이라도 바꾸면 적색 — 그때는 재작성이 틀린 것이다(골든을 고치지 마라).
+    fn classify_table_digest() -> (usize, String) {
+        use sha2::{Digest, Sha256};
+        const SOURCES: &[&str] = &["claude", "codex", "gemini", "agy", "grok", "kiro", ""];
+        const EVENTS: &[&str] = &[
+            "PermissionRequest", "PreToolUse", "PostToolUse", "PRE_TOOL", "POST_TOOL",
+            "UserPromptSubmit", "SessionStart", "SessionEnd", "Stop", "STOP", "SubagentStop",
+            "SUBAGENT_STOP", "Notification", "beforeShellExecution", "stop", "pretooluse",
+            "Unknown", "",
+        ];
+        const TOOLS: &[&str] = &[
+            "Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch", "shell",
+            "terminal", "run_command", "write_to_file", "replace_file_content",
+            "multi_replace_file_content", "manage_task", "schedule", "ask_permission",
+            "invoke_subagent", "define_subagent", "manage_subagents", "generate_image",
+            "ExitPlanMode", "AskUserQuestion", "Read", "Grep", "Glob", "Task", "WebFetch",
+            "WebSearch", "LS", "TodoWrite", "bash", "write", "", "Unknown",
+        ];
+        let mut h = Sha256::new();
+        let mut n = 0usize;
+        for s in SOURCES {
+            for e in EVENTS {
+                for t in TOOLS {
+                    let (w, a) = classify(s, e, t);
+                    h.update(format!("{s}|{e}|{t}=>{w},{a}\n").as_bytes());
+                    n += 1;
+                }
+            }
+        }
+        let d: [u8; 32] = h.finalize().into();
+        (n, d.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    #[test]
+    fn golden_classify_full_table_is_frozen() {
+        let (n, digest) = classify_table_digest();
+        assert_eq!(n, 7 * 18 * 33);
+        assert_eq!(digest, "a8cdbec6441e0305dbb2d1d2f26edb8aa63e8aa59f71621ca976dde11e3643b5", "분류표가 바뀌었다(재작성 동치 위반)");
+    }
+
     #[test]
     fn claude_pretool_is_non_actionable() {
         assert_eq!(

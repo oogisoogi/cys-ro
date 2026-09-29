@@ -24,7 +24,8 @@
 
 | 동사 | 부르는 쪽 | 인자 | 하는 일 |
 |---|---|---|---|
-| `propose` | 마스터(본부) | `--name <표시명>` `--mission <맡을 일 한 줄>` `--claude-md-file <본문 파일>` [`--utterance-file <발화 원문>`] [`--first-task <처음 맡길 일>`] | 새 부서 카드. 열린 제안은 언제나 1장 — 새 제안이 나오면 옛 제안은 `superseded` |
+| `suggest-folder` | 마스터(본부) | `--name <표시명>` | (1.1.7 G) 저장 위치 질문 `say` + 추천 `parents`/`candidates`(1순위 `~/CYSjavis` · 지금 부서들이 있는 곳 · 있으면 문서·바탕화면) — 읽기만 |
+| `propose` | 마스터(본부) | `--name <표시명>` `--mission <맡을 일 한 줄>` `--folder <위치>` `--claude-md-file <본문 파일>` [`--utterance-file <발화 원문>`] [`--first-task <처음 맡길 일>`] | 새 부서 카드. 부서 폴더 = `<위치>/<표시명>`. `--folder` 없으면 카드 없이 위치 질문(exit 2 · `reason: folder_needed`) · 상대 경로·프로그램/시스템 자리·파일이면 거부(exit 2 · `reason: folder`). 열린 제안은 언제나 1장 — 새 제안이 나오면 옛 제안은 `superseded` |
 | `propose --close <이름>` | 마스터(본부) | 표시명 · 카탈로그 표시명 · 시스템 이름(`dept-N`) 중 하나 | 닫기 카드(후보 1개) · 후보 여럿이면 거부(exit 5 · `candidates`) · 없으면 거부(exit 4) |
 | `confirm <번호>` | 마스터(본부) | 요청 번호 | 사용자 「네」 뒤. `request.json` 을 `confirmed` 로 영속한 **뒤에** `.pending` 표지를 만든다 |
 | `tick` | **스케줄 틱만** | — | 집행기(§4). `CYS_ROLE=cso` 가 아니면 exit 3 |
@@ -144,7 +145,7 @@
 - **지금 여유**: `부서 k/2`(살아 있는 부서 = 레지스트리 − 묘비 · 메뉴 부서 포함) · `켜진 Claude 자리 지금 N개 → 만들면 N+3개`(N = `javis_resource_gate.py check --json` 의 `measured.nodes` — 두 번째 계수기를 만들지 않는다 · 2R ⑥).
 - **로그인**(2R ④⑤): 공유안이 서는 조건 = 계정 키(`shared`) ≠ `CYS_PRIMARY_ACCOUNT`(기본 `owner`) — **카드마다 재판정**한다. 같으면 「로그인을 한 번」 문장으로 자동 전환. 새 폴더가 설정 파일 `projects` 에서 그 폴더나 상위 폴더로 신뢰돼 있지 않으면 「처음 한 번 확인 창」 문장을 붙인다(읽기만 — 신뢰 시드는 `javis_seat` 단일 소유).
 - **첫 부서 줄**: `~/.cys/.master-bootstrapped` 존재 ∧ `MASTER_DIRECTIVE.md.pre-ceo` 부재 ∧ `MASTER_DIRECTIVE.md ≠ CEO_TEMPLATE.md` 일 때만(cys-dept `ceo_promote` 의 자동 승격 조건).
-- **폴더**: `~/Desktop` 이 없으면 「바탕화면에는 보이지 않을 수 있습니다」를 덧붙인다(Windows OneDrive 바탕화면).
+- **폴더**(1.1.7 G · 박사님 09-28 「이름과 장소를 지정하도록」): 옛 고정 규약 `~/Desktop/CYSjavis/<표시명>` 폐지 → 사용자가 고른 `<위치>/<표시명>`. 위치가 아직 없으면 「이 위치는 아직 없어서 새로 만듭니다」를 덧붙인다. `javis_org` 결속 규칙 = 폴더 끝 이름 = 표시명.
 - 카드에 시스템 이름(`dept-N`)·내부 용어를 싣지 않는다(시험이 단언) — 닫기 카드만 대상 확인을 위해 `dept-N` 을 보인다(설계 §8-2).
 
 ## 7. 계정(D2)

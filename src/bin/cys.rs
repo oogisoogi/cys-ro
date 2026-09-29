@@ -4000,29 +4000,27 @@ fn run_feed(action: FeedAction) -> i32 {
     }
 }
 
-/// (2c) 재연결해도 되는 일시적 오류인가? cmux isTransientEventStreamError(Events.swift:105-134) 포팅.
-/// ★실측 정렬: cys connect()는 `cannot connect to cysd at {path}: {e}`를 반환하고 {e}는 OS 에러
-/// Display라 누락 소켓="No such file or directory (os error 2)"·거부="Connection refused (os error 61)",
-/// read half-open="Broken pipe (os error 32)"/"Connection reset by peer (os error 54)"로 나온다.
-/// 서버가 (2a) slow_consumer로 스트림을 종료한 케이스도 재연결 대상. 그 외(invalid_params 등)는 비-transient.
+/// (2c) 이벤트 구독이 끊겼을 때 **다시 붙어도 되는** 오류인가 — 데몬 재기동 중·부팅 직전·반쯤 끊긴
+/// 연결·서버가 느린 구독자를 끊은 경우(2a slow_consumer)·정상 종료(EOF). 그 밖(invalid_params 등)은 아니다.
+/// 판정 = 오류 문장(소문자)에 아래 낱말이 **들어 있는지**(부분 일치). 문장은 우리 `connect()` 가 만드는
+/// `cannot connect to cysd at {path}: {os 오류}` 와 OS 오류 표시문에서 실측했다.
+/// (TICKET=cysr-117-impl-lead ⑲ 재작성 · 진리표 = 시험 `golden_transient_event_error_table_is_frozen`.)
 fn is_transient_event_error(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    const MARKERS: &[&str] = &[
-        "no such file or directory", // cys connect_raw: 누락 소켓(ENOENT) — 데몬 재기동 중
-        "connection refused",        // 데몬 부팅 직전(ECONNREFUSED)
-        "connection reset",          // half-open read(ECONNRESET)
-        "broken pipe",               // write/read 단절(EPIPE)
-        "event stream closed",       // 정상 EOF — 재연결로 이어붙임
-        "slow_consumer",             // 서버가 (2a)로 종료한 케이스
-        "cannot connect to cysd",    // connect_raw 래퍼 문구(autostart 실패 포함)
-        "os error 32",
-        "os error 35",
-        "os error 54",
-        "os error 57",
-        "os error 60",
-        "os error 61",
+    const PHRASES: &[&str] = &[
+        "no such file or directory", // 소켓 없음 — 데몬 재기동 중
+        "connection refused",        // 데몬 부팅 직전
+        "connection reset",          // 반쯤 끊긴 연결에서 읽기
+        "broken pipe",               // 쓰기·읽기 중 끊김
+        "event stream closed",       // 정상 EOF — 다시 붙어 이어 간다
+        "slow_consumer",             // 서버가 느린 구독자를 끊음(2a)
+        "cannot connect to cysd",    // connect() 머리말(자동 기동 실패 포함)
     ];
-    MARKERS.iter().any(|k| m.contains(k))
+    // macOS errno — 문장이 달라도 번호는 남는다: 32 끊긴 파이프 · 35 잠시 불가 · 54 연결 재설정 ·
+    // 57 연결 안 됨 · 60 시간 초과 · 61 연결 거부.
+    const ERRNOS: &[u32] = &[32, 35, 54, 57, 60, 61];
+    let m = msg.to_lowercase();
+    PHRASES.iter().any(|p| m.contains(p))
+        || ERRNOS.iter().any(|n| m.contains(&format!("os error {n}")))
 }
 
 /// (2c-gap) events.stream 구독 프레임 조립 — after_seq 커서를 그대로 싣는다.
@@ -4121,7 +4119,7 @@ fn stream_events(
     reconnect: bool,
     cursor_file: Option<String>,
 ) -> Result<(), String> {
-    // (3) 시드: --after_seq 미지정이면 cursor-file에서 읽는다(cmux Events.swift:25-27).
+    // (3) 시작 위치: --after_seq 가 없으면 커서 파일에 적어 둔 마지막 seq 부터 이어 받는다.
     let mut last_seq = after_seq.or_else(|| {
         cursor_file
             .as_ref()
@@ -4205,30 +4203,25 @@ fn stream_events(
     }
 }
 
-/// (3) cmux readEventCursor(Events.swift:206-222): 없으면 None, 비숫자면 Err.
+/// (3) 이벤트 커서 파일 읽기 — 파일 없음 = None(처음부터) · 앞뒤 공백을 뗀 부호 없는 정수만 받고
+/// 그 밖은 오류(커서를 멋대로 0 으로 접으면 과거 이벤트 전량을 다시 받는다).
+/// (TICKET=cysr-117-impl-lead ⑲ 재작성 · 형식 = 시험 `golden_event_cursor_format_is_frozen`.)
 fn read_event_cursor(path: &str) -> Result<Option<u64>, String> {
-    let p = expand_tilde(path);
-    match std::fs::read_to_string(&p) {
-        Ok(s) => s
-            .trim()
-            .parse::<u64>()
-            .map(Some)
-            .map_err(|_| format!("bad cursor in {path}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let text = match std::fs::read_to_string(expand_tilde(path)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    text.trim()
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| format!("bad cursor in {path}"))
 }
 
-/// (3) cmux writeEventCursor(Events.swift:224-231): 디렉터리 생성 + 원자적 쓰기(tmp+rename).
-/// std::fs::write 직접보다 tmp+rename으로 쓰기 도중 프로세스가 죽어도 커서가 절반 상태로 남지 않게 한다.
+/// (3) 이벤트 커서 파일 쓰기 — 내용 `"{seq}\n"` · 원자 교체(쓰다 죽어도 반쪽 커서가 남지 않는다).
 fn write_event_cursor(path: &str, seq: u64) -> Result<(), String> {
-    let p = expand_tilde(path);
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, format!("{seq}\n")).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    cys::atomic_write_bytes(&expand_tilde(path), format!("{seq}\n").as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 /// Mirror raw PTY output to stdout.

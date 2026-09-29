@@ -12,9 +12,9 @@ use std::path::PathBuf;
 
 // ── 자료구조 ────────────────────────────────────────────────────────────────
 
-/// 서명된 prefix 승인 레코드. cmux SurfaceResumeApprovalRecord의 cys 단순화(단일머신).
-/// environment는 정렬된 Vec<(String,String)>로 — serde_json 맵 순서 비결정성을 피하고
-/// 서명 직렬화와 일치시킨다(결정론 서명의 핵심).
+/// 서명된 명령 접두 승인 레코드(한 기계 안에서 쓰는 형식).
+/// environment 는 정렬된 Vec<(String,String)> — JSON 맵의 키 순서에 기대지 않아야 같은 레코드가
+/// 언제나 같은 서명 원문을 만든다(결정론 서명의 핵심).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
     pub version: u32,
@@ -160,38 +160,41 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 // ── 결정론 직렬화 + 서명/검증 ─────────────────────────────────────────────────
 
 impl ApprovalRecord {
-    /// cmux signingPayloadData 1:1 흡수 — 각 필드 base64 후 newline-join, environment는
-    /// 키 정렬(이미 정렬 전제) 후 `b64key=b64val,…`. base64+구분자가 충돌(따옴표/등호/콤마/
-    /// 줄바꿈을 값에 넣어 필드 경계를 위조)을 차단한다.
+    /// 서명 원문 — 7줄 `이름=값`, 줄 사이는 `\n`(끝 줄바꿈 없음). 문자열 값은 전부 base64 로 싸서
+    /// 따옴표·등호·쉼표·줄바꿈으로 칸 경계를 흉내 내는 위조를 막는다.
+    ///
+    /// ★이 형식(칸 이름·순서·구분자·숫자 표기)은 **디스크에 있는 모든 승인 레코드의 계약**이다. 한 글자만
+    /// 바뀌어도 기존 승인 서명이 전부 거부된다 — 바꾸지 마라(시험 `golden_signing_payload_and_signature_bytes_are_frozen`).
+    /// (TICKET=cysr-117-impl-lead ⑲: 우리 방식으로 재작성 · 원문 바이트 불변.)
     pub fn signing_payload(&self) -> Vec<u8> {
-        let prefix = self
-            .command_prefix
-            .iter()
-            .map(|t| b64_encode(t.as_bytes()))
-            .collect::<Vec<_>>()
-            .join(",");
+        fn b64_joined<'a>(parts: impl Iterator<Item = &'a str>) -> String {
+            parts.map(|p| b64_encode(p.as_bytes())).collect::<Vec<_>>().join(",")
+        }
         let env = self
             .environment
-            .iter() // 이미 정렬됨(sort_norm_env가 보장)
+            .iter() // sort_norm_env 가 정렬을 보장한다
             .map(|(k, v)| format!("{}={}", b64_encode(k.as_bytes()), b64_encode(v.as_bytes())))
             .collect::<Vec<_>>()
             .join(",");
-        let fields = [
-            format!("version={}", self.version),
-            format!("id={}", self.id),
-            format!("commandPrefix={prefix}"),
-            format!(
-                "cwd={}",
-                self.cwd
-                    .as_deref()
-                    .map(|c| b64_encode(c.as_bytes()))
-                    .unwrap_or_default()
-            ),
-            format!("environment={env}"),
-            format!("createdAt={}", self.created_at),
-            format!("updatedAt={}", self.updated_at),
+        let lines: [(&str, String); 7] = [
+            ("version", self.version.to_string()),
+            ("id", self.id.clone()),
+            ("commandPrefix", b64_joined(self.command_prefix.iter().map(String::as_str))),
+            ("cwd", b64_joined(self.cwd.as_deref().into_iter())),
+            ("environment", env),
+            ("createdAt", self.created_at.to_string()),
+            ("updatedAt", self.updated_at.to_string()),
         ];
-        fields.join("\n").into_bytes()
+        let mut out = String::new();
+        for (i, (name, value)) in lines.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(name);
+            out.push('=');
+            out.push_str(value);
+        }
+        out.into_bytes()
     }
 
     pub fn sign(&mut self, secret: &[u8]) {
@@ -259,67 +262,73 @@ pub fn best_match<'a>(
 
 // ── 토큰화 / 정규화 / 민감 env ─────────────────────────────────────────────────
 
-/// 셸 토크나이저(cmux SurfaceResumeCommandCanonicalizer.tokens 포팅): 따옴표('/")·백슬래시
-/// 인식. 미닫힌 따옴표는 None(거부). shell Turing-complete 한계(파이프·;·$())는 prefix
-/// 매칭으로 blast radius만 좁힌다(완전차단 아님).
+/// 명령 문자열을 셸처럼 낱말로 나눈다 — 승인 접두 비교의 재료.
+///
+/// 규칙(POSIX 셸의 근사 · TICKET=cysr-117-impl-lead ⑲ 재작성 · 진리표 = 시험 `golden_tokenize_table_is_frozen`):
+/// - 따옴표 밖: 공백·탭·`\n`·`\r` 이 낱말을 끊는다. `\` 는 다음 한 글자를 그대로 싣는다(맨 끝 `\` 는 버린다).
+///   따옴표를 여는 순간 낱말이 생긴다 — `''` 도 빈 낱말 하나다.
+/// - 작은따옴표 안: 닫는 `'` 말고는 전부 글자 그대로(`\` 포함).
+/// - 큰따옴표 안: `\` 뒤가 `"` `\` `$` `` ` `` 이면 그 글자만, 아니면 `\` 를 그대로 둔다.
+/// - 따옴표가 안 닫히면 None — 접두 끼워 넣기를 막으려고 비교 자체를 거부한다.
+///
+/// 셸 문법 전체(파이프·`;`·`$()`)를 해석하지는 않는다 — 접두 일치로 허용 범위를 좁힐 뿐이다.
 pub fn tokenize(command: &str) -> Option<Vec<String>> {
-    let mut tokens: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut has_token = false;
-    let mut chars = command.chars().peekable();
-    let mut quote: Option<char> = None;
-
-    while let Some(c) = chars.next() {
-        match quote {
-            Some(q) => {
-                if c == q {
-                    quote = None; // 따옴표 닫힘
-                } else if c == '\\' && q == '"' {
-                    // 큰따옴표 안의 백슬래시: 다음 문자 리터럴(POSIX 근사)
-                    if let Some(&n) = chars.peek() {
-                        if n == '"' || n == '\\' || n == '$' || n == '`' {
-                            cur.push(chars.next().unwrap());
-                        } else {
-                            cur.push('\\');
-                        }
-                    } else {
-                        cur.push('\\');
-                    }
-                } else {
-                    cur.push(c);
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mode {
+        Bare,
+        Single,
+        Double,
+    }
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut mode = Mode::Bare;
+    let mut it = command.chars().peekable();
+    while let Some(c) = it.next() {
+        match (mode, c) {
+            (Mode::Single, '\'') | (Mode::Double, '"') => mode = Mode::Bare,
+            (Mode::Single, _) => word.push(c),
+            (Mode::Double, '\\') => match it.peek() {
+                Some(&n @ ('"' | '\\' | '$' | '`')) => {
+                    word.push(n);
+                    it.next();
+                }
+                _ => word.push('\\'),
+            },
+            (Mode::Double, _) => word.push(c),
+            (Mode::Bare, '\'') => {
+                mode = Mode::Single;
+                in_word = true;
+            }
+            (Mode::Bare, '"') => {
+                mode = Mode::Double;
+                in_word = true;
+            }
+            (Mode::Bare, '\\') => {
+                if let Some(n) = it.next() {
+                    word.push(n);
+                    in_word = true;
                 }
             }
-            None => match c {
-                '\'' | '"' => {
-                    quote = Some(c);
-                    has_token = true;
+            (Mode::Bare, ' ' | '\t' | '\n' | '\r') => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
                 }
-                '\\' => {
-                    if let Some(n) = chars.next() {
-                        cur.push(n);
-                        has_token = true;
-                    }
-                }
-                ' ' | '\t' | '\n' | '\r' => {
-                    if has_token {
-                        tokens.push(std::mem::take(&mut cur));
-                        has_token = false;
-                    }
-                }
-                _ => {
-                    cur.push(c);
-                    has_token = true;
-                }
-            },
+            }
+            (Mode::Bare, _) => {
+                word.push(c);
+                in_word = true;
+            }
         }
     }
-    if quote.is_some() {
-        return None; // 미닫힌 따옴표 = 거부
+    if mode != Mode::Bare {
+        return None;
     }
-    if has_token {
-        tokens.push(cur);
+    if in_word {
+        words.push(word);
     }
-    Some(tokens)
+    Some(words)
 }
 
 /// cwd 정규화 — tilde 확장 + 후행 슬래시 제거. 단일머신 전제(symlink 정규화는 비용·미사용).
@@ -346,8 +355,8 @@ pub fn normalize_cwd(cwd: Option<&str>) -> Option<String> {
     })
 }
 
-/// 민감키 drop(서명 페이로드에 시크릿값 미포함) + 키 정렬(결정론·binary_search 전제).
-/// cmux isSensitiveEnvironmentKey 흡수 — 키 대문자화 후 부분일치 drop.
+/// 민감한 환경변수를 빼고(서명 원문에 비밀값을 싣지 않는다) 키 순으로 정렬한다(결정론 ·
+/// `matches` 의 binary_search 전제). 키를 대문자로 바꿔 아래 낱말이 **들어 있기만** 해도 뺀다.
 pub fn sort_norm_env(env: &[(String, String)]) -> Vec<(String, String)> {
     const SENSITIVE: &[&str] = &[
         "API_KEY",
@@ -374,7 +383,7 @@ pub fn sort_norm_env(env: &[(String, String)]) -> Vec<(String, String)> {
     out
 }
 
-// ── 시크릿 저장 (cmux fileBackedSecret 흡수 — keyring crate 부재 대안) ──────────
+// ── 서명 키 저장 (운영체제 키체인 대신 0600 파일 — 외부 crate 없이) ─────────────
 
 const ENV_SECRET_B64: &str = "CYS_APPROVAL_SECRET_B64";
 
@@ -431,10 +440,13 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
     let secret = random_32()?;
     let dir = path.parent().unwrap_or(std::path::Path::new("."));
     let _ = std::fs::create_dir_all(dir);
+    // tmp 이름 = pid + 프로세스 안 순번 — 같은 데몬의 두 스레드가 같은 tmp 를 덮어 「게시된 키 ≠ 돌려준 키」
+    // 가 되는 것을 막는다(시각만 쓰면 같은 틱에 겹친다 · 시험 signing_secret_concurrent_* 가 잡았다).
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tmp = dir.join(format!(
         ".approval-secret.tmp-{}-{}",
         std::process::id(),
-        crate::state::now_epoch().to_bits()
+        TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let published = std::fs::write(&tmp, &secret).is_ok() && {
         set_owner_only(&tmp.to_path_buf());
@@ -502,7 +514,7 @@ fn random_32() -> Option<Vec<u8>> {
 
 // ── 레코드 영속 (JSON 0600, atomic tmp+rename) ────────────────────────────────
 
-/// 저장 포맷: `{"records":[...]}` 또는 bare 배열 둘 다 디코드(cmux 하위호환).
+/// 저장 형식: `{"records":[...]}`(현행 쓰기 형식) 또는 최상위 배열(옛 형식) 둘 다 읽는다.
 ///
 /// ⑨(TICKET=cysr-117-impl-lead) 파일 부재만 빈 목록 · 읽기·해석 실패는 Err — 호출부는 저장하지
 /// 않는다. 종전엔 실패를 빈 목록으로 접어 `approval.sign` 이 새 1건만 남기고 기존 승인을 덮었다.

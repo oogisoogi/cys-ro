@@ -5,6 +5,7 @@
 # 미설정 시 호스트 타깃으로 빌드 — 로컬 빌드 동작 그대로 유지.
 set -e
 cd "$(dirname "$0")/.."
+. scripts/lib/place-sidecar.sh   # 사이드카 배치 = 권한 강제(cd 뒤라 저장소 루트 기준)
 
 # Windows(.exe)·python3-부재 환경 대응: python 인터프리터를 OS 무관하게 해석
 # (Windows CPython은 python3 없이 python만 제공하는 경우가 있어 폴백).
@@ -12,21 +13,24 @@ PY="$(command -v python3 || command -v python || true)"
 
 sh ui/build.sh
 
+if [ -n "$CYS_TARGET" ]; then triple="$CYS_TARGET"; else triple="$(rustc -vV | sed -n 's/^host: //p')"; fi
+# Windows 사이드카는 .exe 확장자 필수(tauri externalBin은 cys-<triple>.exe 를 찾음).
+case "$triple" in *windows*) exe=".exe" ;; *) exe="" ;; esac
+# ★빌드 전 사이드카 잔재 청소(master#5daf328b): 빌드가 도중에 죽어도 지난 빌드의 사이드카가 남아
+#   다음 번들에 실리지 않게 한다(이 타깃의 두 파일만 — 다른 타깃 잔재는 tauri 가 고르지 않는다).
+rm -f "src-tauri/binaries/cys-$triple$exe" "src-tauri/binaries/cysd-$triple$exe"
+
 if [ -n "$CYS_TARGET" ]; then
-  triple="$CYS_TARGET"
   cargo build --release --target "$triple" --bin cys --bin cysd
   bindir="target/$triple/release"
 else
-  triple="$(rustc -vV | sed -n 's/^host: //p')"
   cargo build --release --bin cys --bin cysd
   bindir="target/release"
 fi
 
-# Windows 사이드카는 .exe 확장자 필수(tauri externalBin은 cys-<triple>.exe 를 찾음).
-case "$triple" in *windows*) exe=".exe" ;; *) exe="" ;; esac
 mkdir -p src-tauri/binaries
-cp "$bindir/cys$exe" "src-tauri/binaries/cys-$triple$exe"
-cp "$bindir/cysd$exe" "src-tauri/binaries/cysd-$triple$exe"
+place_sidecar "$bindir/cys$exe" "src-tauri/binaries/cys-$triple$exe"
+place_sidecar "$bindir/cysd$exe" "src-tauri/binaries/cysd-$triple$exe"
 
 # ── pack.tar.gz를 .app Contents/Resources/ 에 동봉 (옵션4 — 오프라인 자기완결·가시·핫스왑) ──
 # 임베드 PACK_ALL(build.rs가 git-추적 cysjavis-pack/ 전 트리에서 생성한 권위 테이블)을 단일 SOT로

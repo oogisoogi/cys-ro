@@ -696,6 +696,48 @@ def h_secret_1():
             % (scanned, len(fired), len(_SECRET_PROBES), " ".join(fired), len(blind), " ".join(blind)))
 
 
+@specimen("H-BUNDLE-PERM-1", "W0",
+          "사이드카 배치 = 실행 비트 강제 — 기존 644 대상 위에 배치해도 755 · 원본 바이트 동일 · bundle-prep 가 그 한 곳만 쓴다",
+          ["전-pane-사망", "발행-차단-4종"])
+def h_bundle_perm_1():
+    """(TICKET=cysr-117-impl-lead · master#5daf328b) `cp` 는 대상이 이미 있으면 **대상의 권한을 유지**한다 —
+    한 번 644 로 남은 사이드카가 이후 번들마다 실행 비트 없이 실렸다(09-25 arm64 zip · 「전 pane 사망」 계급).
+    ⓐ 기존 644 대상 위에 `place_sidecar` → 대상 실행 가능 · 바이트 = 원본.
+    ⓑ 소스 핀: bundle-prep.sh 가 place_sidecar 로만 두 사이드카를 놓고, 날 `cp "$bindir/…` 가 없다 ·
+       빌드 전 청소(rm -f) 가 cargo build 보다 앞에 있다.
+    임시 파일은 저장소 밖에만 만들고 지운다."""
+    if not os.path.isfile(os.path.join(REPO_DIR, "Cargo.toml")):
+        raise Skip("레포 체크아웃이 아니다(배포 팩 실행) — 빌드 스크립트 부재")
+    if os.name != "posix":
+        raise Skip("실행 비트는 POSIX 개념 — Windows 사이드카는 .exe 확장자로 실행")
+    lib = os.path.join(REPO_DIR, "scripts", "lib", "place-sidecar.sh")
+    prep = os.path.join(REPO_DIR, "scripts", "bundle-prep.sh")
+    need(os.path.isfile(lib), "사이드카 배치 함수 파일 부재: %s" % lib)
+    tmp = tempfile.mkdtemp(prefix="cys-sidecar-")
+    try:
+        src = os.path.join(tmp, "cys-built")
+        dst = os.path.join(tmp, "cys-aarch64-apple-darwin")
+        with open(src, "wb") as f:
+            f.write(b"#!/bin/sh\necho sidecar\n")
+        os.chmod(src, 0o755)
+        with open(dst, "wb") as f:
+            f.write(b"stale")
+        os.chmod(dst, 0o644)                      # ★사고 형상: 지난 빌드가 남긴 644 대상
+        r = _run([BASH, "-c", '. "$1"; place_sidecar "$2" "$3"', "x", lib, src, dst], timeout=60)
+        need(r.returncode == 0, "place_sidecar 실패 rc=%d: %s" % (r.returncode, r.stderr[-300:]))
+        need(os.access(dst, os.X_OK), "기존 644 대상 위에 배치했더니 실행 비트가 없다(cp 권한 유지 사고 재발)")
+        with open(dst, "rb") as f:
+            need(f.read() == b"#!/bin/sh\necho sidecar\n", "배치된 사이드카 바이트 ≠ 원본")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    text = _read(prep)
+    need(text.count('place_sidecar "$bindir/') == 2, "bundle-prep 이 두 사이드카를 place_sidecar 로 놓지 않는다")
+    need(re.search(r'^\s*cp "\$bindir/', text, re.M) is None, "bundle-prep 에 날 cp 사이드카 배치가 남았다")
+    pre = text.find('rm -f "src-tauri/binaries/cys-$triple$exe"')
+    need(0 <= pre < text.find("cargo build --release"), "빌드 전 사이드카 청소가 cargo build 보다 앞에 없다")
+    return "644 대상 위 배치 → 755 · 바이트 동일 · bundle-prep 배치 2곳 = place_sidecar · 빌드 전 청소"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 0. 베이스라인 (결정론 회귀 — 재감사 부채 V3)
 # ═══════════════════════════════════════════════════════════════════════════

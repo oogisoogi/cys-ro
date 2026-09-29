@@ -7767,7 +7767,14 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 // 시크릿 부재(파일·env·생성 모두 실패) = fail-closed(미서명 취급).
                 return Reply::Single(ok_response(&id, json!({"approved": false})));
             };
-            let mut records = crate::approval::load_records();
+            // ⑨ 목록 판독 실패 = 미승인 취급(fail-closed) · 저장 없음(원본 보호).
+            let mut records = match crate::approval::load_records() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[cysd] approval.check: {e} — 미승인 취급 · 무저장");
+                    return Reply::Single(ok_response(&id, json!({"approved": false})));
+                }
+            };
             // best_match는 불변 참조라 갱신을 위해 id/prefix를 먼저 복제한다.
             let hit = crate::approval::best_match(&records, &secret, &command, cwd.as_deref(), &env)
                 .map(|r| (r.id.clone(), r.command_prefix.clone()));
@@ -7899,7 +7906,17 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             };
             rec.sign(&secret);
             let new_id = rec.id.clone();
-            let mut records = crate::approval::load_records();
+            // ⑨ 기존 목록을 못 읽으면 새 1건만 남기고 덮지 않는다 — 서명 거부.
+            let mut records = match crate::approval::load_records() {
+                Ok(r) => r,
+                Err(e) => {
+                    return Reply::Single(err_response(
+                        &id,
+                        "records_unreadable",
+                        &format!("{e} — 기존 승인을 지키려고 저장하지 않았습니다"),
+                    ))
+                }
+            };
             records.push(rec);
             if let Err(e) = crate::approval::save_records(&records) {
                 return Reply::Single(err_response(&id, "persist_failed", &e));

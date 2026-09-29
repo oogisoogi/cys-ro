@@ -395,8 +395,12 @@ fn records_path() -> PathBuf {
         .join("approvals.json")
 }
 
-/// 우선순위: ① env override(B64, 로깅 금지) → ② 0600 파일 → ③ 생성·0600 저장.
-/// 파일 쓰기 실패해도 in-memory secret 반환(세션 한정 — 재시작 시 재생성).
+/// 우선순위: ① env override(B64, 로깅 금지) → ② 0600 파일 → ③ **파일이 없을 때만** 생성·0600 저장.
+///
+/// ⑨(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑨ · 원작자 8be494d1 의 우리 판 재구현) 키 파일이
+/// **있는데** 못 읽거나(권한·백신 잠금) 비어 있으면 새 키로 덮지 않고 None(= 호출부 fail-closed:
+/// 미승인 취급)을 돌린다. 종전엔 새 키를 같은 경로에 써서 기존 승인 서명이 전부 무효가 됐다
+/// (가드 훅이 `approval check` 를 자동으로 부르므로 사람 조작 없이도 났다).
 pub fn signing_secret() -> Option<Vec<u8>> {
     // ① env override(B64) — 로깅·이벤트 payload에 절대 미포함.
     if let Ok(b64) = std::env::var(ENV_SECRET_B64) {
@@ -406,23 +410,52 @@ pub fn signing_secret() -> Option<Vec<u8>> {
             }
         }
     }
-    // ② 0600 파일(pack 밖 ~/.cys/ 하위) — Keychain crate 부재라 1차 경로.
-    let path = secret_path();
-    if let Ok(d) = std::fs::read(&path) {
-        if !d.is_empty() {
-            return Some(d);
+    signing_secret_at(&secret_path())
+}
+
+/// ②③ 파일 경로 판(시험 주입용). 생성은 **덮어쓰지 않는 게시**(tmp 작성 → `hard_link` = 대상이
+/// 있으면 실패) — 부서 데몬 여럿이 같은 경로에서 동시에 처음 만들 때도 먼저 게시된 키 하나로 수렴한다.
+fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(d) if !d.is_empty() => return Some(d),
+        Ok(_) => {
+            eprintln!("[cysd] approval: 서명 키 파일이 비어 있음 — 새 키로 덮지 않는다(기존 승인 보호 · 미승인 취급)");
+            return None;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            eprintln!("[cysd] approval: 서명 키 파일 읽기 실패({e}) — 새 키로 덮지 않는다(미승인 취급)");
+            return None;
         }
     }
-    // ③ 생성 + 0600 저장.
     let secret = random_32()?;
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = dir.join(format!(
+        ".approval-secret.tmp-{}-{}",
+        std::process::id(),
+        crate::state::now_epoch().to_bits()
+    ));
+    let published = std::fs::write(&tmp, &secret).is_ok() && {
+        set_owner_only(&tmp.to_path_buf());
+        match std::fs::hard_link(&tmp, path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // 다른 데몬이 먼저 게시했다 — 그 키를 쓴다(내 것은 버린다).
+                let _ = std::fs::remove_file(&tmp);
+                return match std::fs::read(path) {
+                    Ok(d) if !d.is_empty() => Some(d),
+                    _ => None,
+                };
+            }
+            Err(_) => false,
+        }
+    };
+    let _ = std::fs::remove_file(&tmp);
+    if published {
+        set_owner_only(&path.to_path_buf());
     }
-    if std::fs::write(&path, &secret).is_ok() {
-        set_owner_only(&path);
-        return Some(secret);
-    }
-    Some(secret) // 파일 실패해도 세션 한정 secret 반환.
+    Some(secret) // 게시 실패해도 세션 한정 secret 반환(종전과 같음 — 디스크엔 아무것도 안 덮음).
 }
 
 /// 0600 권한 부여(Unix). Windows는 ACL 미설정(단일 사용자 데스크톱 전제).
@@ -470,21 +503,30 @@ fn random_32() -> Option<Vec<u8>> {
 // ── 레코드 영속 (JSON 0600, atomic tmp+rename) ────────────────────────────────
 
 /// 저장 포맷: `{"records":[...]}` 또는 bare 배열 둘 다 디코드(cmux 하위호환).
-pub fn load_records() -> Vec<ApprovalRecord> {
-    let path = records_path();
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
+///
+/// ⑨(TICKET=cysr-117-impl-lead) 파일 부재만 빈 목록 · 읽기·해석 실패는 Err — 호출부는 저장하지
+/// 않는다. 종전엔 실패를 빈 목록으로 접어 `approval.sign` 이 새 1건만 남기고 기존 승인을 덮었다.
+pub fn load_records() -> Result<Vec<ApprovalRecord>, String> {
+    load_records_at(&records_path())
+}
+
+fn load_records_at(path: &std::path::Path) -> Result<Vec<ApprovalRecord>, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{} 읽기 실패({e})", path.display())),
     };
     // ① {"records":[...]} 형태
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if let Some(arr) = v.get("records") {
             if let Ok(recs) = serde_json::from_value::<Vec<ApprovalRecord>>(arr.clone()) {
-                return recs;
+                return Ok(recs);
             }
         }
     }
     // ② bare 배열
-    serde_json::from_str::<Vec<ApprovalRecord>>(&content).unwrap_or_default()
+    serde_json::from_str::<Vec<ApprovalRecord>>(&content)
+        .map_err(|e| format!("{} 해석 실패({e})", path.display()))
 }
 
 /// atomic write: tmp 작성·0600 부여 후 rename. 디렉토리 자동 생성.
@@ -551,6 +593,84 @@ mod tests {
             updated_at: 1000.0,
             signature: String::new(),
         }
+    }
+
+    fn tdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "cys-appr-{tag}-{}-{}",
+            std::process::id(),
+            crate::state::now_epoch().to_bits()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// ⑨(TICKET=cysr-117-impl-lead) 서명 키는 **없을 때만** 만든다 — 있는데 못 읽거나 비어 있으면
+    /// None(fail-closed) · 디스크 무변경. 종전(읽기 실패 → 새 키 덮기)으로 되돌리면 적색.
+    #[test]
+    fn signing_secret_never_overwrites_existing_unreadable_or_empty_key() {
+        let d = tdir("key");
+        let p = d.join(".approval-secret");
+        let k1 = signing_secret_at(&p).expect("부재 = 생성");
+        assert_eq!(k1.len(), 32);
+        assert_eq!(std::fs::read(&p).unwrap(), k1, "게시된 키 = 반환 키");
+        assert_eq!(signing_secret_at(&p).unwrap(), k1, "재호출 = 같은 키");
+        std::fs::write(&p, b"").unwrap();
+        assert!(signing_secret_at(&p).is_none(), "빈 키 파일 = 미승인 취급");
+        assert_eq!(std::fs::read(&p).unwrap(), b"", "빈 키 파일이 덮였다");
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir_all(&p).unwrap(); // 읽기 오류
+        assert!(signing_secret_at(&p).is_none());
+        assert!(p.is_dir(), "읽기 오류 자리가 바뀌었다");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::remove_dir_all(&p).unwrap();
+            std::fs::write(&p, &k1).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read(&p).is_err() {
+                assert!(signing_secret_at(&p).is_none(), "권한 거부 = 미승인 취급");
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(std::fs::read(&p).unwrap(), k1, "권한 거부 키가 덮였다");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑨ 여러 데몬이 동시에 처음 만들어도 게시된 키 하나로 수렴한다(덮어쓰지 않는 게시).
+    #[test]
+    fn signing_secret_concurrent_first_creation_converges_to_one_key() {
+        let d = tdir("race");
+        let p = d.join(".approval-secret");
+        let hs: Vec<_> = (0..8)
+            .map(|_| {
+                let p = p.clone();
+                std::thread::spawn(move || signing_secret_at(&p).unwrap())
+            })
+            .collect();
+        let keys: Vec<Vec<u8>> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        let disk = std::fs::read(&p).unwrap();
+        assert!(keys.iter().all(|k| *k == disk), "스레드마다 다른 키 = 기존 승인 무효화 경합");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑨ 승인 목록: 부재만 빈 목록 · BOM·잘림·형식 불일치 = Err(호출부 무저장).
+    #[test]
+    fn load_records_unreadable_is_error_not_empty() {
+        let d = tdir("recs");
+        let p = d.join("approvals.json");
+        assert!(load_records_at(&p).unwrap().is_empty(), "부재 = 빈 목록");
+        std::fs::write(&p, r#"{"records":[]}"#).unwrap();
+        assert!(load_records_at(&p).unwrap().is_empty());
+        std::fs::write(&p, "[]").unwrap();
+        assert!(load_records_at(&p).unwrap().is_empty(), "bare 배열 하위호환");
+        for bytes in [&b"\xEF\xBB\xBF{\"records\":[]}"[..], &b"{\"records\":["[..], &b"{\"x\":1}"[..]] {
+            std::fs::write(&p, bytes).unwrap();
+            assert!(load_records_at(&p).is_err(), "판독 불가가 빈 목록으로 접혔다");
+            assert_eq!(std::fs::read(&p).unwrap(), bytes);
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

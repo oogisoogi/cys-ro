@@ -930,7 +930,8 @@ fn text_command_allowed(cmd: &str) -> Result<(), String> {
     let Some(secret) = crate::approval::signing_secret() else {
         return Err("text_command 승인 시크릿 부재 — 미승인 셸 실행 거부".into());
     };
-    let records = crate::approval::load_records();
+    let records = crate::approval::load_records()
+        .map_err(|e| format!("text_command 승인 목록 판독 실패({e}) — 미승인 셸 실행 거부"))?;
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().to_string());

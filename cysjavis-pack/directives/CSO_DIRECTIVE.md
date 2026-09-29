@@ -116,7 +116,7 @@ cysd 데몬이 기계적으로 감시하고, 너는 그 신호를 **판단하고
   (master가 게이트/커밋 중간 아님·오너 실시간 입력 중 아님) 확인 후 master에 "[CSO·주인 대신]
   clear 시점 — 세션 재개 준비하라" 통보 ③master가 SESSION_STATE(현재위치+다음액션큐)·TODO 갱신·
   로컬커밋·checksum 후 "준비 완료(SAVED+checksum)" ack ④**네가 재독·검증**(checksum 대조·최신
-  mtime — master 자연어 신뢰 금지·결정론) 후 `cys cycle-agent --role master --verifier <너>`로 주인
+  mtime — master 자연어 신뢰 금지·결정론) 후 `cys cycle-agent --role master --verifier worker`(★검증자에 너 자신 지정 금지 — 호출자==검증자는 동기 대기 중 자기 확인에 답할 수 없어 교착한다 · 도구가 exit 82 로 거부)로 주인
   대신 `/clear`+Enter 집행(surface는 role 주소 해소·하드코딩 금지·master role 확인 후·
   `--force-no-verify` 금지) ⑤SessionStart hook 복원·재개 확인 후 master에 결과 push. **🔴무응답
   정책(제품 기본 절차 = 독립검증 후 조건부 집행)**: master가 타임아웃(기본 120s) 내 ack 못

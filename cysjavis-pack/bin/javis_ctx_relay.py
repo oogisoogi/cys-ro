@@ -133,7 +133,7 @@ def notice_text(role, sid, pct, thr, n=1):
     if role == "master":
         step = ("할 일: CSO 규약 §2 master 사이클 ②부터 — 대상 master 입력줄에서 오너가 치는 중이 아니면 "
                 "master 에 「[CSO·주인 대신] clear 시점 — 세션 재개 준비하라」 통보 → ack·검증 뒤 "
-                "`cys cycle-agent --role master --verifier cso`. 되묻지 말 것.")
+                "`cys cycle-agent --role master --verifier worker`(너 자신을 검증자로 두면 교착 · exit 82). 되묻지 말 것.")
     else:
         step = ("할 일: 대상 좌석에 60%% 매듭(새 항목 금지·커밋·HANDOFF)을 알리고, 저장이 확인되면 70%% 이전에 "
                 "`cys cycle-agent --surface surface:%s` 집행. 그 과정에서 [CYCLE-VERIFY] 가 너에게 오면 네가 검증자다 — "

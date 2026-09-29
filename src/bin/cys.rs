@@ -15908,6 +15908,16 @@ fn run_cycle_agent(
             .collect();
 
         // 1) 저장 지시
+        // ★⑤(1.1.7 · 원작자 결재 6 ⓑ 의 우리 판) 호출자==검증자·대상==검증자 사전검사 — **저장 지시 주입 전**
+        //   (첫 쓰기 앞)에 거부한다. 호출자가 검증자면 아래 3/5 동기 대기 속에서 자기 handshake 에 답할 시점이
+        //   없어 교착한다(CSO 가 지침대로 `--verifier <너>` 로 master 순환을 걸면 성립).
+        if let Some(v) = &verifier {
+            let vsid = request("system.resolve_role", json!({"role": v})).and_then(|r| {
+                r["surface_id"].as_u64().ok_or_else(|| "bad verifier resolve".to_string())
+            });
+            let caller = cys::env_compat(ENV_SURFACE_ID);
+            verifier_precheck(caller.as_deref(), sid, v, &vsid)?;
+        }
         eprintln!("[cycle 1/5] 저장 지시 주입 → surface:{sid} ({role_name})");
         // ★A′: 고정 산문 대신 감시 목록(files) 실경로 열거 — 지시 경로↔게이트 경로 정합.
         inject_text(sid, &cycle_save_directive(&role_name, &files))?;
@@ -16034,12 +16044,77 @@ fn run_cycle_agent(
         println!("cycle complete → surface:{sid} ({role_name})");
         Ok(())
     })();
+    if let Err(e) = &result {
+        eprintln!("error: {e}");
+    }
+    cycle_agent_exit(&result)
+}
+
+/// ★⑤(1.1.7) cycle-agent 결과 → 종료코드(순수). 머리표 없는 에러는 종전대로 1.
+/// 82 = 검증자 충돌 **확인됨** · 83 = 호출자가 pane 인데 검증자를 해소 못 해 비중복을 증명할 수 없음 —
+/// 두 갈래를 다른 코드로 낸다(합치면 진단 불가 · 원작자와 같은 번호).
+fn cycle_agent_exit(result: &Result<(), String>) -> i32 {
     match result {
         Ok(()) => 0,
-        Err(e) => {
-            eprintln!("error: {e}");
-            1
+        Err(e) if e.starts_with(VERIFIER_COLLISION_TOKEN) => EXIT_VERIFIER_COLLISION,
+        Err(e) if e.starts_with(VERIFIER_UNRESOLVED_TOKEN) => EXIT_VERIFIER_UNRESOLVED,
+        Err(_) => 1,
+    }
+}
+
+const EXIT_VERIFIER_COLLISION: i32 = 82;
+const EXIT_VERIFIER_UNRESOLVED: i32 = 83;
+const VERIFIER_COLLISION_TOKEN: &str = "verifier-collision:";
+const VERIFIER_UNRESOLVED_TOKEN: &str = "verifier-unresolved:";
+
+/// ★⑤(1.1.7) 호출자==검증자 사전검사(순수 · 원작자 `verifier_precheck` 의 우리 판).
+/// `caller_env` = 호출자 pane 의 CYS_SURFACE_ID(없으면 None) · `target` = 순환 대상 surface ·
+/// `verifier` = 검증자 역할명 · `vsid` = 그 역할의 해소 결과(Err = 해소 불능 사유).
+/// 호출자가 pane 이 아니면(스케줄 잡·cmux 페인 등 CYS_SURFACE_ID 부재) 호출자 교착은 성립하지 않으므로
+/// 종전 거동 그대로(검증자 부재는 3/5 handshake 가 거부 · exit 1) — 거부 범위를 넓히지 않는다.
+/// 거부 문면에는 **다음 행동**을 싣는다 — 막기만 하는 거부는 순환을 멈춰 컨텍스트가 계속 찬다.
+fn verifier_precheck(
+    caller_env: Option<&str>,
+    target: u64,
+    verifier: &str,
+    vsid: &Result<u64, String>,
+) -> Result<(), String> {
+    let next = "다음 행동: 호출자·대상과 다른 좌석을 --verifier 로 지정하라(기본 worker)";
+    let raw = caller_env.map(str::trim).filter(|s| !s.is_empty());
+    let caller = match raw {
+        None => None,
+        Some(r) => match r.trim_start_matches("surface:").parse::<u64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                return Err(format!(
+                    "{VERIFIER_UNRESOLVED_TOKEN} 호출자 CYS_SURFACE_ID={r:?} 판독 불가 — 검증자 \
+                     '{verifier}' 와의 비중복을 증명할 수 없다. {next}"
+                ))
+            }
+        },
+    };
+    match vsid {
+        Ok(v) => {
+            if caller == Some(*v) {
+                return Err(format!(
+                    "{VERIFIER_COLLISION_TOKEN} 호출자 surface:{v} 가 검증자 '{verifier}' 자신이다 — \
+                     동기 대기 중 자기 handshake 에 답할 수 없다(교착). {next}"
+                ));
+            }
+            if target == *v {
+                return Err(format!(
+                    "{VERIFIER_COLLISION_TOKEN} 대상 surface:{target} 가 검증자 '{verifier}' 자신이다 — \
+                     산출자가 자기 저장을 판정한다(producer≠evaluator 위반). {next}"
+                ));
+            }
+            Ok(())
         }
+        Err(e) if caller.is_some() => Err(format!(
+            "{VERIFIER_UNRESOLVED_TOKEN} 호출자는 pane(surface:{})인데 검증자 '{verifier}' 를 \
+             해소하지 못했다({e}) — 비중복을 증명할 수 없어 저장 지시 전에 멈춘다. {next}",
+            caller.unwrap_or_default()
+        )),
+        Err(_) => Ok(()),
     }
 }
 
@@ -20290,6 +20365,61 @@ mod tests {
         assert_eq!(rel, pk, "두 레인 팩 하한이 갈렸다(release={rel} · pack-release={pk})");
         let v: Vec<u64> = rel.split('.').map(|x| x.parse().expect("숫자")).collect();
         assert!(v >= vec![1, 1, 7], "팩 하한 {rel} < 1.1.7 — 옛 바이너리가 --ack-only 를 모른다");
+    }
+
+    /// ★⑤(1.1.7) 검증자 사전검사(순수) — 같은 창 82 · 판별 불능 83 · 다른 창 통과 · 호출자 pane 아님 = 종전 거동.
+    #[test]
+    fn e5_verifier_precheck_table() {
+        let ok = |v: u64| -> Result<u64, String> { Ok(v) };
+        let unres: Result<u64, String> = Err("no role".into());
+        let code = |r: Result<(), String>| cycle_agent_exit(&r);
+        // CSO(surface:7)가 자기를 검증자로 master(surface:3) 순환 → 82(교착 확인)
+        assert_eq!(code(verifier_precheck(Some("7"), 3, "cso", &ok(7))), EXIT_VERIFIER_COLLISION);
+        assert_eq!(code(verifier_precheck(Some("surface:7"), 3, "cso", &ok(7))), EXIT_VERIFIER_COLLISION);
+        // 대상 == 검증자(산출자가 자기 저장 판정) → 82
+        assert_eq!(code(verifier_precheck(Some("7"), 3, "master", &ok(3))), EXIT_VERIFIER_COLLISION);
+        // 다른 창 → 통과
+        assert_eq!(verifier_precheck(Some("7"), 3, "worker", &ok(9)), Ok(()));
+        // 호출자 pane 인데 검증자 해소 불능 · 호출자 id 판독 불가 → 83
+        assert_eq!(code(verifier_precheck(Some("7"), 3, "worker", &unres)), EXIT_VERIFIER_UNRESOLVED);
+        assert_eq!(code(verifier_precheck(Some("abc"), 3, "worker", &ok(9))), EXIT_VERIFIER_UNRESOLVED);
+        // 호출자 pane 아님(스케줄 잡 · cmux 페인) → 종전 거동(해소 불능은 3/5 handshake 가 exit 1 로 거부)
+        assert_eq!(verifier_precheck(None, 3, "worker", &unres), Ok(()));
+        assert_eq!(verifier_precheck(Some("  "), 3, "worker", &ok(9)), Ok(()));
+        // 머리표 없는 실패는 종전대로 1 · 거부 문면엔 다음 행동이 실린다
+        assert_eq!(code(Err("저장 검증 실패".into())), 1);
+        let e = verifier_precheck(Some("7"), 3, "cso", &ok(7)).unwrap_err();
+        assert!(e.contains("--verifier"), "다음 행동 없는 거부: {e}");
+        for other in [0, 1, EXIT_BOOT_BUSY, cys::EXIT_GATE_PENDING, cys::EXIT_RECOVER_REFUSED] {
+            assert_ne!(EXIT_VERIFIER_COLLISION, other);
+            assert_ne!(EXIT_VERIFIER_UNRESOLVED, other);
+        }
+    }
+
+    /// ★⑤(1.1.7) 배선·문면 핀 — ① 사전검사가 **저장 지시 주입(첫 쓰기)보다 먼저** ② 지침·통지문 4곳에
+    /// 「CSO 자신을 검증자로」 지시 잔존 0(그대로면 도구가 82 로 거부해 순환이 막힌다).
+    #[test]
+    fn e5_verifier_precheck_before_first_write_and_no_self_verifier_text() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let f = prod.find("\nfn run_cycle_agent(").expect("run_cycle_agent");
+        let body = &prod[f..];
+        let pre = body.find("verifier_precheck(caller.as_deref(), sid, v, &vsid)?;").expect("사전검사 배선 없음");
+        let save = body.find("inject_text(sid, &cycle_save_directive(").expect("저장 지시 주입");
+        assert!(pre < save, "사전검사가 저장 지시 주입 뒤에 있다 — 거부 전에 이미 좌석에 썼다");
+        for (name, text) in [
+            ("CSO_DIRECTIVE.md", include_str!("../../cysjavis-pack/directives/CSO_DIRECTIVE.md")),
+            ("MASTER_DIRECTIVE.md", include_str!("../../cysjavis-pack/directives/MASTER_DIRECTIVE.md")),
+            ("CEO_TEMPLATE.md", include_str!("../../cysjavis-pack/directives/CEO_TEMPLATE.md")),
+            ("javis_ctx_relay.py", include_str!("../../cysjavis-pack/bin/javis_ctx_relay.py")),
+            ("feedback_autonomous-pilot-mandate.md",
+             include_str!("../../cysjavis-pack/memory/feedback_autonomous-pilot-mandate.md")),
+        ] {
+            for bad in ["--verifier <너>", "--verifier <cso>", "--verifier cso"] {
+                assert!(!text.contains(bad), "{name} 에 자기 검증자 지시 {bad:?} 가 남았다");
+            }
+            assert!(text.contains("--role master --verifier worker"), "{name} 에 올바른 검증자 지시가 없다");
+        }
     }
 
     /// (TICKET=v111-restore ②) 전문 조립은 **컨텍스트가 빈 좌석에서만** 일어난다.

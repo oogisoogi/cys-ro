@@ -8354,6 +8354,8 @@ async function start() {
     } else if (p.phase === "error") {
       dismissToast("restore");
       toast("health", "⚠ 본부 복원 확인 필요", p.detail || "노드 복원 실행에 실패했습니다.");
+      // ①(Fable R3) 본부 실패와 부서 목록 판독 실패가 겹치면 부서 쪽 원인도 따로 알린다(「부서 없음」 으로 읽히지 않게).
+      if (p.depts_unreadable) toast("health", "⚠ 부서 복원 건너뜀", deptRegistryUnreadableNote(p.depts_unreadable));
     }
   });
 

@@ -3823,7 +3823,8 @@ fn spawn_org_restore(app: AppHandle) {
             // 본부 복원조차 못 돌고 부서도 없음 = 복원 경로 자체 실패 → 가시화(UI health 토스트).
             let _ = app.emit(
                 "restore-progress",
-                json!({"phase": "error", "detail": hq_note.clone().unwrap_or_default()}),
+                json!({"phase": "error", "detail": hq_note.clone().unwrap_or_default(),
+                       "depts_unreadable": depts_unreadable}), // Fable R3: 이 경로도 부서 목록 판독 실패 사유를 싣는다
             );
             return;
         }

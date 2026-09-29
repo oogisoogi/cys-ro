@@ -214,6 +214,49 @@ def case2_schtasks():
           real.get("supervisor") == "schtasks" and real.get("state") in ("managed", "orphan", "unmanaged"), real)
 
 
+def _proc_table():
+    """Windows: {pid: (ppid, name)} — Win32_Process 전수(CIM · 읽기 전용). 실패 = {}(진단 전용 · 판정 근거 아님)."""
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress"],
+                           capture_output=True, text=True, timeout=30, **NOWIN)
+        rows = json.loads(r.stdout or "[]")
+        if isinstance(rows, dict):
+            rows = [rows]
+        return {int(x["ProcessId"]): (int(x.get("ParentProcessId") or 0), str(x.get("Name") or "")) for x in rows}
+    except Exception:
+        return {}
+
+
+def _descendants(table, root):
+    """table 에서 root 의 후손 pid 목록(너비 우선 · root 제외)."""
+    out, frontier = [], [root]
+    while frontier:
+        cur = frontier.pop(0)
+        kids = [p for p, (pp, _n) in table.items() if pp == cur and p != cur and p not in out]
+        out.extend(kids)
+        frontier.extend(kids)
+    return out
+
+
+class _TaskkillRecorder:
+    """_PH.subprocess 대역 — taskkill 호출의 rc·출력 **전문**을 기록한다(제품 res["taskkill_out"] 은 200자 절단).
+    그 밖의 속성·호출은 진짜 subprocess 로 그대로 넘긴다(동작 무변경 · 하네스 계측만)."""
+    def __init__(self, real):
+        self._real = real
+        self.calls = []
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def run(self, args, *a, **kw):
+        r = self._real.run(args, *a, **kw)
+        if isinstance(args, (list, tuple)) and args and str(args[0]).lower().startswith("taskkill"):
+            self.calls.append({"args": list(args), "rc": r.returncode,
+                               "out": ((r.stdout or "") + (r.stderr or "")) if kw.get("text") else repr(r.stdout)})
+        return r
+
+
 def case3_restart_primitive():
     """★결정론화: 재기동을 lazy-spawn(cys list) 대신 throwaway schtasks 태스크 /Run 으로(라이브 managed 경로 동형)."""
     _cp("③ restart setup")
@@ -247,10 +290,35 @@ def case3_restart_primitive():
         _PH.CYS = CYS_BIN
         _PH.SUPERVISOR_LABEL = task          # managed → 재기동 유발이 schtasks /Run /TN <task> 경로를 타게
         epoch1 = _PH.get_boot_epoch(pipe)
-        res = _PH._win_restart_daemon(pipe, timeout=30)   # 내부 폴링·retrigger 전부 바운드
-        check("③ identify→daemon_pid 획득", isinstance(res.get("daemon_pid"), int), res.get("daemon_pid"))
-        check("③ taskkill 수행(rc0)", res.get("taskkill_rc") == 0, res.get("taskkill_out"))
+        # ★(1.1.7 int · master#55edc55d 판정) ③ 합격 = 「taskkill rc0」 이 아니라 ⓐ 대상 데몬 pid 소멸 + ⓑ 파이프 해제.
+        #   rc≠0 은 대개 트리 안 손자 1개를 못 죽인 부수 관측(v1.1.6 플레이크 · fix/117-int 2/2)이라 판정에서 빼되,
+        #   가리지 않도록 경고 + 진단(kill 직전 트리 · taskkill 이유 전문) + ⓒ 고아 확인(못 죽인 pid 가 몇 초 뒤에도 살면 FAIL)으로 바꾼다.
+        tree_pid = _PH._win_identify_daemon_pid(pipe)
+        table = _proc_table()
+        tree = [tree_pid] + _descendants(table, tree_pid) if isinstance(tree_pid, int) else []
+        rec = _TaskkillRecorder(_PH.subprocess)
+        _PH.subprocess = rec
+        try:
+            res = _PH._win_restart_daemon(pipe, timeout=30)   # 내부 폴링·retrigger 전부 바운드
+        finally:
+            _PH.subprocess = rec._real
+        dpid = res.get("daemon_pid")
+        check("③ identify→daemon_pid 획득", isinstance(dpid, int), dpid)
+        check("③ 대상 데몬 pid 소멸(tasklist 실측)", isinstance(dpid, int) and not _alive_pid(dpid), dpid)
         check("③ 파이프 해제(socket_death) 관측 후 retrigger", res.get("socket_death_observed") is True, res.get("retrigger"))
+        unkilled = []
+        if res.get("taskkill_rc") != 0:
+            import re as _re
+            full = "\n".join(c["out"] for c in rec.calls) or (res.get("taskkill_out") or "")
+            err_pids = [int(m) for m in _re.findall(r"ERROR:[^\n]*?PID (\d+)", full)]
+            alive_tree = [p for p in tree[1:] if _alive_pid(p)]
+            unkilled = sorted(set(err_pids) | set(alive_tree))
+            log("WARN ③ taskkill rc=%s(판정 아님 · 부수 관측) · 못 죽인 트리 pid=%s" % (res.get("taskkill_rc"), unkilled))
+            log("WARN ③ kill 직전 트리(pid·이름·부모): %s" % [(p, table.get(p, (None, "?"))[1], table.get(p, (None, "?"))[0]) for p in tree])
+            for c in rec.calls:
+                log("WARN ③ taskkill %s rc=%s 전문 ↓" % (" ".join(c["args"][1:]), c["rc"]))
+                for line in (c["out"] or "").splitlines():
+                    log("WARN ③   | " + line)
         check("③ retrigger=schtasks /Run(managed 경로)", "schtasks /Run" in (res.get("retrigger") or ""), res.get("retrigger"))
         revived = False
         for _ in range(100):
@@ -263,6 +331,15 @@ def case3_restart_primitive():
         check("③ 재기동 후 pong 복귀", revived)
         check("③ boot-epoch delta(실제 새 세대·조용한 오복원 아님)",
               epoch1 is not None and epoch2 is not None and epoch1 != epoch2, "%s->%s" % (epoch1, epoch2))
+        # ⓒ 고아 확인 — 재기동·pong 뒤 몇 초 기다려 못 죽인 pid 가 (같은 이름으로) 아직 살아 있으면 = 제품 결함 후보.
+        if unkilled:
+            time.sleep(5)
+            now = _proc_table()
+            orphans = [(p, table.get(p, (None, "?"))[1]) for p in unkilled
+                       if _alive_pid(p) and (not now or now.get(p, (None, ""))[1] == table.get(p, (None, "?"))[1])]
+            check("③ 고아 없음(못 죽인 트리 pid 가 5초 뒤 소멸)", not orphans, "살아 있음=%s · 대상=%s" % (orphans, unkilled))
+        else:
+            check("③ 고아 없음(못 죽인 트리 pid 가 5초 뒤 소멸)", True, "해당 없음(taskkill 이 트리 전부 종료)")
     finally:
         _cp("③ teardown")
         teardown_daemon(pipe, state_dir=sd, tracked=tracked)

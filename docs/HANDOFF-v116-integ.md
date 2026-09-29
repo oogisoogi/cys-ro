@@ -388,6 +388,7 @@ bash scripts/secret-scan.sh --all             # H-SECRET-1 사전 확인
   - 【추정 · 중상】 kill 순간 데몬에 자식 트리가 살아 있었던 타이밍 경합(기동 직후 cysd 가 스스로 띄우는 auto-restore 등 기존 자식 · 끝나기 전에 kill) + 종료 불가 손자(「not supported」 = 콘솔 호스트류 추정)로 rc≠0. 제품 결함 아님 · 하네스 판정(rc0 엄격)의 부하 의존 흔들림 쪽. windows-build 최근 40런 중 이 판정 적색 = 이번 1회(다른 1회 = v113 가지 · 다른 원인 미확인).
   - 재실행(master#3f6b62d2 승인 · 원장 06:38:22 · `gh run rerun 36058649809 --failed` 1회 06:38:33) → **attempt 2 = success**(build success · 07:03 KST · win_smoke_pass true · ③ taskkill = cysd PID 4416 만 종료 · 손자 트리 없음) ⇒ **플레이크 확정**(재현 0/1).
   - 1.1.7 하네스 후보(master 기록): ③ 에서 대상 데몬 종료가 확인되면(파이프 해제·새 세대) 트리 손자 종료 실패는 적색이 아니라 경고로.
+    · **집행(1.1.7 int · master#55edc55d · 2026-09-29)**: fix/117-int windows-build 2/2 같은 적색(36567990669 · 36568135853) 뒤. 「경고로 낮추기」 가 아니라 두 성질로 교체 — ③ 합격 = ⓐ 대상 데몬 pid 소멸(tasklist) + ⓑ 파이프 해제 · rc≠0 = WARN + 진단(kill 직전 트리 pid·이름·부모 · taskkill 출력 전문 = 하네스가 _PH.subprocess 를 기록기로 감싸 받음 · 제품 res 는 200자 절단) · 새 판정 ⓒ 고아 없음(못 죽인 pid 가 재기동·pong 뒤 5초에도 같은 이름으로 살아 있으면 FAIL = 제품 결함 후보). 제품 코드(javis_phoenix.py) 무변경.
 
 ### 18-2. ③ 1102 auto-equalize @3656840e(0133dcd4 위 14커밋 · master#e3e6c762) → 병합 **27968f82**(^2 = 3656840e 실측)
 - 충돌 1 = 헤드리스 하네스 — 1088 과 1102 가 같은 블록 열쇠 「c18」 을 따로 씀(1088 = c18g-scrollback-full·c18h-burst-then-exit·c18i-carry-flush…c18n-narrow-420 / 1102 = c18a…c18i 공백 뒤 설명). c17 과 같은 처리: 열쇠 공유 · 블록 둘 다 유지 · 순서 = 1088 c18 → 1102 c18(자기 load 로 시작 · 창 크기 스스로 복원) · 판정 이름 무변경(두 가지 증거 파일과 대응 유지). ⚠ 앞머리가 겹치는 이름(c18g·c18h·c18i)은 판정 줄 전문으로 가른다.

@@ -69,3 +69,9 @@
 - 갈래2 병합(master#e77bbb4c 병합 가): f3c916da ← fix/117-input @19dac8e8(F4 수리 3285af12 포함) · 텍스트 충돌 0 · 합성물 --check 2종 GREEN · 레인 대조 비대칭 0.
   · `#[cfg(` 시험 속성 diff(master 조건 · 스크래치 cfgdiff.py = 시험 함수마다 붙은 #[cfg…]/#[ignore] 목록을 두 리비전에서 비교): v1.1.6=2270 → f3c916da=2313 · 사라짐 0 · 새로 43 · **속성 바뀐 시험 0**. 도구 검산 = F4 결함판 e980d563 에 대면 `governance.rs::v115_seat_inject_guarded_holds_vacant_agent_seat` 1건(#[cfg(unix)] 상실)을 잡고 수리판 19dac8e8 은 0.
   · 1.1.8 후보(갈래2 남은 위험 · master 지정): F1 사람 키가 CR 전 수백 ms 창에 섞이면 사람 몫 잔존 · F2 µs 창 · F3 열거 시험의 문자열 앵커.
+- 윈 스모크 ③ 판정 교체 f8260cdd(master#55edc55d) · 갈래2 통합 적대(Fable ACCEPT MINOR 3 · agy BLOCK 1 = 실측 반증 기각) → 9d52157e(문서 주석 4곳 v1.1.6 배치 복귀 · handlers pause 시험 #[cfg(unix)]).
+- 게이트 run2(3916b8ef · 21:56~22:21 · 25분 · cys-app 뒤 재빌드 포함): lib 550 · cys 351 · cysd 1226 · app 175 · gen 2 · UI 1474 · typecheck 0 · 팩 63/63 · 건강 150/0/1 · NSIS 3 · mac-alias · 레인 대조 0 · 남은 cysd 0.
+- push 3(master#0a98321b): fix/117-int @9d52157e(25a1601e..9d52157e FF) · CI **3종 초록** = ci-branch 36575046483 · windows-build 36575046447 · windows-health 36575046286.
+  · 윈 스모크 ③(windows-build 36575046447): ⓐ 대상 데몬 pid 소멸 PASS(3172) · ⓑ 파이프 해제 PASS · 재기동 pong·새 세대 PASS · ⓒ 고아 없음 PASS(해당 없음 = taskkill 이 트리 전부 종료) · WARN 0 · win_smoke PASS.
+  · ⚠ 정직 고지: 트리 조회(Win32_Process)로 pong→identify 가 약 5.6초(13:52:54.7→13:53:00.3)로 늘었다 — 기동 직후 자식 트리가 끝날 시간이 생겨 경합 창 자체가 줄었을 수 있다【추정】. 새 판정의 WARN·ⓒ 경로는 이번 표본에서 실측되지 않았다.
+  · 이전 통합판 2/2 적색(36567990669 · 36568135853)은 교체 전 판정(rc0)의 결과. 통합판 윈도 표본 3개 중 교체 판정 = 1개(초록).

@@ -5401,6 +5401,202 @@ pub(crate) fn stale_pending_contradiction(
     pending > 0 && framed && quiet_for >= quiet && !approval_pending
 }
 
+/// ★④(1.1.7 · 원작자 C-03 사람 바이트 축의 우리 판) 사람 초안 바이트 계수의 순수 전이.
+///
+/// `pending_input_after` 와 **같은 제출·취소 집합**(CR·LF·Ctrl-U·Ctrl-C)을 쓴다 — 그 문자가 있으면
+/// 그 앞은 제출됐거나 지워졌으므로 마지막 그 문자 뒤만 남는다(사람 쓰기면 그 뒤 바이트 = 사람 몫 ·
+/// 기계 쓰기면 0). 없으면 사람 쓰기만 누적하고 기계 쓰기는 사람 몫을 바꾸지 않는다(사람 초안 뒤에
+/// 기계 본문이 붙어도 그 초안은 여전히 사람 것이다). 봉투(붙여넣기) 해석은 하지 않는다 — 우리 계수기와
+/// 같은 층이다(원작자 봉투 상태기계는 1.1.7 범위 밖).
+pub(crate) fn human_pending_after(prev_human: u64, written: &[u8], is_human: bool) -> u64 {
+    match written
+        .iter()
+        .rposition(|b| matches!(b, b'\r' | b'\n' | 0x15 | 0x03))
+    {
+        Some(i) if is_human => (written.len() - i - 1) as u64,
+        Some(_) => 0,
+        None if is_human => prev_human.saturating_add(written.len() as u64),
+        None => prev_human,
+    }
+}
+
+/// ★④ 직접 입력의 종류 — 게이트 판정 축(원작자 D-12 `DirectSendKind` 의 우리 판).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectSendKind {
+    /// 본문 주입(제출 문자 없음) 또는 GUI 가 조립해 개행까지 실은 문안.
+    Text,
+    /// Return/Enter 등 제출 바이트(CR·LF)를 내는 키.
+    SubmitKey,
+    /// `clear_first` — Ctrl-U 선정리 + 본문 + CR 원자 주입.
+    ClearFirst,
+    /// Ctrl-U·Ctrl-C 등 취소 바이트만 내는 키(또는 그 바이트만 실은 본문).
+    CancelKey,
+}
+
+impl DirectSendKind {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::SubmitKey => "submit_key",
+            Self::ClearFirst => "clear_first",
+            Self::CancelKey => "cancel_key",
+        }
+    }
+}
+
+/// ★④ 초안 게이트 거부 사유.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DraftGateDenied {
+    /// 미제출 입력(사람·기계 불문)이 있는 줄에 본문을 이어 붙이려 했다.
+    PendingInput { bytes: u64 },
+    /// 사람 초안이 있는 줄을 기계가 제출·삭제하려 했다.
+    HumanDraft { bytes: u64 },
+    /// 계수는 0 인데 화면 입력줄(커서 앞)에 글자가 있다(데몬 재기동으로 계수가 휘발된 경우 등).
+    ScreenOccupied,
+}
+
+impl DraftGateDenied {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::PendingInput { .. } => "pending_input",
+            Self::HumanDraft { .. } => "human_draft",
+            Self::ScreenOccupied => "screen_occupied",
+        }
+    }
+}
+
+/// ★④ `surface.send_text` 의 게이트 종류(순수 · 정의처 단일). `None` = 게이트 대상 아님.
+///
+/// * 면제(`exempt` = authoritative ∧ 권위 호출자 — 타이핑 가드와 같은 술어)는 통과.
+/// * 사람 실키(`human ∧ ¬machine_origin`)는 통과 — 사람이 자기 줄에 치는 것이다.
+/// * GUI 가 조립한 문안(`human ∧ machine_origin`)은 **삭제(clear_first)·자동 제출(개행)·취소 바이트**가
+///   있을 때만 게이트에 들어온다 — 경로 삽입처럼 오너가 자기 초안에 이어 붙이려고 누른 것은 통과.
+/// * 바이트 축은 `surface.send_key` 와 같다: clear_first > 제출(CR/LF → Text) > 취소만(→ CancelKey) > Text.
+///   개행을 실은 본문을 SubmitKey 가 아니라 Text 로 보는 이유: 남의 잔여와 한 줄로 제출되는 것 자체가 사고다.
+pub(crate) fn direct_send_text_gate_kind(
+    human: bool,
+    machine_origin: bool,
+    clear_first: bool,
+    text_submits: bool,
+    text_cancels: bool,
+    exempt: bool,
+) -> Option<DirectSendKind> {
+    if exempt {
+        return None;
+    }
+    let machine_like = !human || (machine_origin && (clear_first || text_submits || text_cancels));
+    if !machine_like {
+        return None;
+    }
+    Some(if clear_first {
+        DirectSendKind::ClearFirst
+    } else if text_submits {
+        DirectSendKind::Text
+    } else if text_cancels {
+        DirectSendKind::CancelKey
+    } else {
+        DirectSendKind::Text
+    })
+}
+
+/// ★④ `surface.send_key` 의 게이트 종류(순수) — 판정 축은 키 **이름이 아니라 생성 바이트**다
+/// (`C-m`·`C-j` 는 Return 과 같은 바이트 — 이름으로 가르면 한 단어 치환으로 우회된다). 화살표·Esc·Tab
+/// 등 제출·취소 바이트가 없는 키는 대상 아님.
+pub(crate) fn direct_send_key_gate_kind(bytes: &[u8], exempt: bool) -> Option<DirectSendKind> {
+    if exempt {
+        None
+    } else if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+        Some(DirectSendKind::SubmitKey)
+    } else if bytes.iter().any(|b| matches!(b, 0x15 | 0x03)) {
+        Some(DirectSendKind::CancelKey)
+    } else {
+        None
+    }
+}
+
+/// ★④ 초안 게이트 순수 판정(입출력 없음 · 원작자 `draft_gate_verdict` 의 우리 판 — 선택기 행 축 없음).
+///
+/// * Text: 미제출 입력이 **조금이라도** 있으면 거부(이어 붙이기 차단) · 계수 0 인데 화면 커서 앞에 글자가
+///   있어도 거부. 화면 관측 불능(`None`)은 막지 않는다(마커 모르는 좌석·맨 셸 = 종전 거동).
+/// * SubmitKey·ClearFirst: **사람 초안**이 있으면 거부(기계가 사람 문장을 제출·삭제하지 않는다). 자기 본문
+///   (기계 잔여)만 남은 줄은 통과 — `cys send` 뒤 `send-key Return` 이 그 계약이다. 계수 0 · 승인 창 아님 ·
+///   화면 점유면 거부(사람 초안이 계수 밖에 있을 수 있다). 승인 창 위의 Return 은 승인 조작이라 막지 않는다.
+/// * CancelKey: 사람 초안만 거부 — 화면 축을 걸면 순환의 `C-u` 가 렌더 잔상 하나로 막혀 `/clear` 가 안 된다.
+pub(crate) fn draft_gate_verdict(
+    kind: DirectSendKind,
+    pending: u64,
+    human_pending: u64,
+    line: Option<PromptLine<'_>>,
+    approval_pending: bool,
+) -> Option<DraftGateDenied> {
+    let screen_occupied = || input_line_state(0, line) == InputLine::Occupied;
+    match kind {
+        DirectSendKind::Text => {
+            if pending > 0 {
+                Some(DraftGateDenied::PendingInput { bytes: pending })
+            } else if screen_occupied() {
+                Some(DraftGateDenied::ScreenOccupied)
+            } else {
+                None
+            }
+        }
+        DirectSendKind::SubmitKey | DirectSendKind::ClearFirst => {
+            if human_pending > 0 {
+                Some(DraftGateDenied::HumanDraft { bytes: human_pending })
+            } else if pending == 0 && !approval_pending && screen_occupied() {
+                Some(DraftGateDenied::ScreenOccupied)
+            } else {
+                None
+            }
+        }
+        DirectSendKind::CancelKey => {
+            (human_pending > 0).then_some(DraftGateDenied::HumanDraft { bytes: human_pending })
+        }
+    }
+}
+
+/// ★④ 초안 게이트 입출력 래퍼 — 계수로 거부가 확정되면 화면을 보지 않는다. 화면 축은 어댑터
+/// `ready_marker` 를 아는 좌석에서만(큐 배달자와 같은 재료 `observe_prompt`) · 승인 축 = 허락 창 화면 ∨
+/// 첫기동 관문 feed(`approval_screen_now` · `pending_gate_items`). 파서·agent_meta 락을 잠깐씩 쓰므로
+/// 호출자는 `input_gate` **밖**에서 부른다.
+pub(crate) fn draft_gate(
+    daemon: &Arc<Daemon>,
+    s: &Arc<crate::state::Surface>,
+    kind: DirectSendKind,
+) -> Option<DraftGateDenied> {
+    let pending = s.pending_input_bytes.load(Ordering::Relaxed);
+    let human = s.pending_input_human_bytes.load(Ordering::Relaxed).min(pending);
+    if let Some(why) = draft_gate_verdict(kind, pending, human, None, false) {
+        return Some(why);
+    }
+    if kind == DirectSendKind::CancelKey {
+        return None;
+    }
+    let agent = s.agent_meta.lock().unwrap().clone().map(|(a, _)| a)?;
+    let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let embed = cys::pack::PACK_ALL
+        .iter()
+        .find(|(r, _)| *r == "agents.json")
+        .and_then(|(_, c)| serde_json::from_str(c).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let marker = merged_ready_marker(&disk, &embed, &agent)?;
+    let (_seen, line, _framed) = observe_prompt(s, &marker);
+    let approval = approval_screen_now(s) || !pending_gate_items(daemon, s.id).is_empty();
+    draft_gate_verdict(
+        kind,
+        pending,
+        human,
+        line.as_ref().map(|(b, a)| PromptLine {
+            before_cursor: b,
+            at_or_after_cursor: a,
+        }),
+        approval,
+    )
+}
+
 /// ★⑭ 고착 계수 해제 — 모순이 **같은 (계수, 쓰기 세대)** 로 `window` 초 이상 이어졌을 때만 0 으로 쓴다.
 /// 첫 관측은 스탬프만 찍는다. 해제는 `input_gate` 안에서 세대·계수를 다시 보고(그 사이 쓰기가 있었으면
 /// 포기) 한다. 반환 true = 이번 틱에 해제했다(호출부는 이번 틱 배달하지 않고 다음 틱에 다시 관측한다).
@@ -5438,6 +5634,7 @@ fn maybe_release_stale_pending_input(
             return false; // 관측 뒤 누군가 이 줄에 썼다 — 포기
         }
         s.pending_input_bytes.store(0, Ordering::Relaxed);
+        s.pending_input_human_bytes.store(0, Ordering::Relaxed);
         s.input_gen.fetch_add(1, Ordering::Release);
     }
     daemon.bus.publish(
@@ -6180,6 +6377,7 @@ pub(crate) fn deliver_head_locked(
     *s.last_injected.lock().unwrap() = Some(std::time::Instant::now());
     // ★B1(0.14.30): Inject 는 본문+CR 을 원자로 보내 줄을 제출한다 → 미제출 계수 0.
     s.pending_input_bytes.store(0, Ordering::Relaxed);
+    s.pending_input_human_bytes.store(0, Ordering::Relaxed);
     s.input_gen.fetch_add(1, Ordering::Release); // ★⑭ 쓰기 세대
     // ★T-0147-2 §2 층3 A3′(R2-C3): 배달 영수증에 봉입 W-id 를 **배열**로 에코한다.
     // 배열인 이유 — javis_wakeup 의 digest 모드(층1 I6)가 같은 target 의 N건을 1회
@@ -10166,6 +10364,86 @@ mod tests {
         let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
         deliver_queued(&daemon, &mut depth, &mut starve);
         assert_eq!(s.pending_queue.lock().unwrap().len(), 1);
+    }
+
+    /// ★④ 사람 초안 계수 전이(순수) — 사람 쓰기만 누적 · 기계 쓰기는 사람 몫 불변 · 제출·취소 뒤는 재시작.
+    #[test]
+    fn d12_human_pending_after_table() {
+        use super::human_pending_after as h;
+        assert_eq!(h(0, b"abc", true), 3, "사람 글자 누적");
+        assert_eq!(h(3, b"xyz", false), 3, "기계 본문이 사람 초안 뒤에 붙어도 사람 몫은 그대로");
+        assert_eq!(h(3, b"\r", false), 0, "기계 Return 이 제출하면 사람 몫 0");
+        assert_eq!(h(3, b"\x15", false), 0, "기계 C-u 가 지우면 사람 몫 0");
+        assert_eq!(h(3, b"ok\rnext", true), 4, "사람 쓰기의 제출 뒤 바이트 = 새 사람 초안");
+        assert_eq!(h(3, b"done\rtail", false), 0, "기계 쓰기의 제출 뒤 바이트는 기계 몫");
+        assert_eq!(h(0, b"\x03", true), 0, "사람 C-c 도 취소");
+    }
+
+    /// ★④ 게이트 종류 판정(순수) — send_text · send_key.
+    #[test]
+    fn d12_gate_kind_tables() {
+        use super::{direct_send_key_gate_kind as k, direct_send_text_gate_kind as t, DirectSendKind as K};
+        // send_text(human, machine_origin, clear_first, submits, cancels, exempt)
+        assert_eq!(t(false, false, false, false, false, false), Some(K::Text), "기계 본문");
+        assert_eq!(t(false, false, true, false, false, false), Some(K::ClearFirst), "기계 clear_first");
+        assert_eq!(t(false, false, false, true, false, false), Some(K::Text), "개행 실은 기계 본문 = Text 축");
+        assert_eq!(t(false, false, false, false, true, false), Some(K::CancelKey), "취소 바이트만 = CancelKey");
+        assert_eq!(t(true, false, true, true, true, false), None, "사람 실키는 게이트 밖");
+        assert_eq!(t(true, true, false, false, false, false), None, "GUI 경로 삽입(개행 없음)은 통과");
+        assert_eq!(t(true, true, false, true, false, false), Some(K::Text), "GUI 조립 문안 + 개행 = 게이트");
+        assert_eq!(t(true, true, true, false, false, false), Some(K::ClearFirst), "GUI clear_first = 게이트");
+        assert_eq!(t(false, false, false, false, false, true), None, "권위 면제");
+        // send_key — 생성 바이트 축(별칭 포함)
+        for (bytes, want) in [
+            (&b"\r"[..], Some(K::SubmitKey)),   // Return·Enter·C-m
+            (&b"\n"[..], Some(K::SubmitKey)),   // C-j
+            (&b"\x15"[..], Some(K::CancelKey)), // C-u
+            (&b"\x03"[..], Some(K::CancelKey)), // C-c
+            (&b"\x1b"[..], None),               // Escape
+            (&b"\x1b[B"[..], None),             // Down
+            (&b"\t"[..], None),                 // Tab
+        ] {
+            assert_eq!(k(bytes, false), want, "키 바이트 {bytes:?}");
+            assert_eq!(k(bytes, true), None, "권위 면제 {bytes:?}");
+        }
+    }
+
+    /// ★④ 초안 게이트 순수 진리표 — 종류(Text·SubmitKey·ClearFirst·CancelKey) × 줄 상태
+    /// (빔·기계 잔여·사람 초안·화면만 점유·관측 불능·승인 대기). 원작자 `d12_*` 순수 검체의 우리 판.
+    #[test]
+    fn d12_draft_gate_verdict_truth_table() {
+        use super::{draft_gate_verdict as v, DirectSendKind as K, DraftGateDenied as D};
+        let empty = Some(PromptLine { before_cursor: "", at_or_after_cursor: "" });
+        let ghost = Some(PromptLine { before_cursor: "", at_or_after_cursor: "try tests" });
+        let typed = Some(PromptLine { before_cursor: "쓰다 만 글", at_or_after_cursor: "" });
+        // (kind, pending, human, line, approval) → 기대
+        let rows: Vec<(K, u64, u64, Option<PromptLine>, bool, Option<D>)> = vec![
+            // Text — 미제출 입력이 조금이라도 있으면 거부
+            (K::Text, 0, 0, empty, false, None),
+            (K::Text, 0, 0, ghost, false, None),
+            (K::Text, 5, 0, empty, false, Some(D::PendingInput { bytes: 5 })),
+            (K::Text, 5, 5, empty, false, Some(D::PendingInput { bytes: 5 })),
+            (K::Text, 0, 0, typed, false, Some(D::ScreenOccupied)),
+            (K::Text, 0, 0, None, false, None),
+            // SubmitKey — 사람 초안만 거부 · 자기 본문(기계 잔여)은 통과
+            (K::SubmitKey, 5, 0, empty, false, None),
+            (K::SubmitKey, 5, 2, empty, false, Some(D::HumanDraft { bytes: 2 })),
+            (K::SubmitKey, 0, 0, typed, false, Some(D::ScreenOccupied)),
+            (K::SubmitKey, 0, 0, typed, true, None), // 승인 창 위 Return = 승인 조작
+            (K::SubmitKey, 5, 0, typed, false, None), // 계수 있는 기계 잔여 = 자기 본문
+            (K::SubmitKey, 0, 0, None, false, None),
+            // ClearFirst — SubmitKey 와 같은 팔
+            (K::ClearFirst, 5, 0, typed, false, None),
+            (K::ClearFirst, 5, 5, empty, false, Some(D::HumanDraft { bytes: 5 })),
+            (K::ClearFirst, 0, 0, typed, false, Some(D::ScreenOccupied)),
+            // CancelKey — 사람 초안만 · 화면 축 없음
+            (K::CancelKey, 5, 0, typed, false, None),
+            (K::CancelKey, 0, 0, typed, false, None),
+            (K::CancelKey, 5, 1, empty, false, Some(D::HumanDraft { bytes: 1 })),
+        ];
+        for (kind, p, h, line, a, want) in rows {
+            assert_eq!(v(kind, p, h, line, a), want, "{kind:?} pending={p} human={h} line={line:?} approval={a}");
+        }
     }
 
     /// ★⑭ 고착 모순 판정 진리표(순수) — 네 축 중 하나라도 아니면 해제하지 않는다.

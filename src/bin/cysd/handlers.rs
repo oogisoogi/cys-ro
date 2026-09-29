@@ -1558,6 +1558,44 @@ fn append_owner_grant_audit(daemon: &Daemon, rec: &Value) {
     }
 }
 
+/// ★④(1.1.7) 초안 게이트 거부의 단일 응답·관측 경로 — 이벤트 1건(`queue.draft_gate_denied`) + 오류 응답.
+/// 코드 = `ERR_TYPING_GUARD` · 문면 = `MSG_TYPING_GUARD`(CancelKey 는 전용 문면) + `[draft_gate:<사유>]`.
+fn draft_gate_denied_response(
+    daemon: &Daemon,
+    surface: &crate::state::Surface,
+    id: &Value,
+    kind: crate::governance::DirectSendKind,
+    why: crate::governance::DraftGateDenied,
+    verified_from: Option<u64>,
+    hint: Option<&str>,
+) -> Value {
+    let pending = surface.pending_input_bytes.load(Ordering::Relaxed);
+    let human = surface.pending_input_human_bytes.load(Ordering::Relaxed).min(pending);
+    daemon.bus.publish(
+        "queue.draft_gate_denied",
+        "queue",
+        Some(surface.id),
+        json!({
+            "surface_ref": cys::surface_ref(surface.id),
+            "kind": kind.as_str(),
+            "reason": why.as_str(),
+            "pending_input_bytes": pending,
+            "pending_input_human_bytes": human,
+            "from": verified_from.map(cys::surface_ref),
+        }),
+    );
+    let base = match kind {
+        crate::governance::DirectSendKind::CancelKey => cys::MSG_DRAFT_GATE_CANCEL_KEY,
+        _ => cys::MSG_TYPING_GUARD,
+    };
+    let mut message = format!("{base} [{}:{}]", cys::DRAFT_GATE_TAG, why.as_str());
+    if let Some(hint) = hint {
+        message.push(' ');
+        message.push_str(hint);
+    }
+    err_response(id, cys::ERR_TYPING_GUARD, &message)
+}
+
 /// T3-13 타이핑 가드 창 (초). 0 = 비활성.
 fn typing_guard_secs() -> u64 {
     std::env::var("CYS_TYPING_GUARD_SECS")
@@ -3867,6 +3905,24 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     }
                 }
             }
+            // ★④(1.1.7 · 원작자 D-12 의 우리 판) 초안 게이트 — 3초 시계가 지나도 사람 초안은 기계가
+            //   이어 붙이거나 제출·삭제하지 않는다(윈 설치 [10/10] 「Unknown command: /The」 사고 부류).
+            //   거부는 **원장 기록·쓰기 전**이라 바이트 0 · 코드 = typing_guard(설치된 CLI 의 --queued 폴백).
+            let draft_kind = crate::governance::direct_send_text_gate_kind(
+                human,
+                params.get("machine_origin").and_then(|v| v.as_bool()).unwrap_or(false),
+                clear_first,
+                text.bytes().any(|b| matches!(b, b'\r' | b'\n')),
+                text.bytes().any(|b| matches!(b, 0x15 | 0x03)),
+                authoritative && authoritative_caller_ok(daemon, verified_from, caller_pid),
+            );
+            if let Some(kind) = draft_kind {
+                if let Some(why) = crate::governance::draft_gate(daemon, &surface, kind) {
+                    return Reply::Single(draft_gate_denied_response(
+                        daemon, &surface, &id, kind, why, verified_from, None,
+                    ));
+                }
+            }
             // ★R1 배달 원장 — **주입보다 반드시 앞**(delivery.rs 불변식 ①). try_write 는 writer
             //   채널로 넘기고 실제 PTY 쓰기는 writer 스레드가 하므로, 여기서 기록하면
             //   기록 → try_send → 수신 → write 순서가 구조적으로 보장된다.
@@ -3947,6 +4003,20 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   락 순서 계약: pending_queue → input_gate. 여기서는 input_gate 하나만 잡고
             //   그 안에서 다른 락을 잡지 않는다(사이클 없음).
             let _gate = surface.input_gate.lock().unwrap();
+            // ★④ 계수 축 재판정(임계영역 안) — 위 1차 판정은 파서 락 때문에 게이트 밖이었다. 그 사이
+            //   사람 키가 들어왔으면 여기서 막는다(화면 축은 관측 지연이 있어 밖의 1회로 둔다).
+            if let Some(kind) = draft_kind {
+                let pending = surface.pending_input_bytes.load(Ordering::Relaxed);
+                let human_b = surface.pending_input_human_bytes.load(Ordering::Relaxed).min(pending);
+                if let Some(why) =
+                    crate::governance::draft_gate_verdict(kind, pending, human_b, None, false)
+                {
+                    drop(_gate);
+                    return Reply::Single(draft_gate_denied_response(
+                        daemon, &surface, &id, kind, why, verified_from, None,
+                    ));
+                }
+            }
             if let Some(err) = try_write(&surface, write_req, &id) {
                 return Reply::Single(err);
             }
@@ -3970,6 +4040,19 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     )
                 };
                 surface.pending_input_bytes.store(next, Ordering::Relaxed);
+                // ★④ 사람 초안 축 — 사람 실키(human ∧ ¬machine_origin)만 사람 몫으로 센다.
+                if !autoreply {
+                    let human_next = if clear_first {
+                        0
+                    } else {
+                        crate::governance::human_pending_after(
+                            surface.pending_input_human_bytes.load(Ordering::Relaxed),
+                            text.as_bytes(),
+                            human && !machine_origin,
+                        )
+                    };
+                    surface.pending_input_human_bytes.store(human_next, Ordering::Relaxed);
+                }
                 // ★⑭: 입력줄에 쓴 쓰기는 세대를 올린다(고착 해제 관측을 무효화) — 자동 응답은 쓰기 아님.
                 if !autoreply {
                     surface.input_gen.fetch_add(1, Ordering::Release);
@@ -4158,6 +4241,23 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     }
                 }
             }
+            // ★④(1.1.7) 초안 게이트 — 3초가 지나도 사람 초안은 기계 Return 이 제출하지 않고 C-u 가 지우지
+            //   않는다. 판정 축 = 생성 바이트(키 이름 별칭 우회 차단). 면제 술어는 타이핑 가드와 같다.
+            let draft_kind = crate::governance::direct_send_key_gate_kind(
+                &bytes,
+                authoritative && authoritative_caller_ok(daemon, verified_from, caller_pid),
+            );
+            // 별칭(C-m·C-j …)은 CLI 의 --queued 1회 폴백(Return|Enter 이름 축)을 못 받는다 — 실행 가능한 처방을 붙인다.
+            let alias_hint = (draft_kind == Some(crate::governance::DirectSendKind::SubmitKey)
+                && !matches!(key.as_str(), "Return" | "Enter"))
+            .then(|| format!("(key {key:?} cannot be queued: use `Return --queued`)"));
+            if let Some(kind) = draft_kind {
+                if let Some(why) = crate::governance::draft_gate(daemon, &surface, kind) {
+                    return Reply::Single(draft_gate_denied_response(
+                        daemon, &surface, &id, kind, why, verified_from, alias_hint.as_deref(),
+                    ));
+                }
+            }
             // ★B2′(codex 감사 R1 · 0.14.24 결함3 세 번째 층): 제출 Return 은 프로그램이 꽂은
             //   본문과 최소 간격만큼 떨어져야 한다 — 붙여넣기 처리 창 안에 떨어진 CR 은 TUI 가
             //   삼켜 미제출로 끝난다(본문은 들어갔는데 Enter 만 안 먹는 증상의 나머지 절반).
@@ -4170,6 +4270,20 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 Some(min_gap_ms) => crate::state::WriteReq::SubmitAfterGap { bytes, min_gap_ms },
                 None => crate::state::WriteReq::Data(bytes),
             };
+            // ★④ send_text 와 같은 임계영역 규약 — 계수 축 재판정 + writer 인계 + 계수 갱신을 input_gate 하나로.
+            let _gate = surface.input_gate.lock().unwrap();
+            if let Some(kind) = draft_kind {
+                let pending = surface.pending_input_bytes.load(Ordering::Relaxed);
+                let human_b = surface.pending_input_human_bytes.load(Ordering::Relaxed).min(pending);
+                if let Some(why) =
+                    crate::governance::draft_gate_verdict(kind, pending, human_b, None, false)
+                {
+                    drop(_gate);
+                    return Reply::Single(draft_gate_denied_response(
+                        daemon, &surface, &id, kind, why, verified_from, alias_hint.as_deref(),
+                    ));
+                }
+            }
             if let Some(err) = try_write(&surface, write_req, &id) {
                 return Reply::Single(err);
             }
@@ -4183,7 +4297,17 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 ),
                 Ordering::Relaxed,
             );
+            // ★④ 키는 전부 기계 쓰기다(사람 키는 GUI send_text human 경로) — 사람 몫은 제출·취소에서만 0 이 된다.
+            surface.pending_input_human_bytes.store(
+                crate::governance::human_pending_after(
+                    surface.pending_input_human_bytes.load(Ordering::Relaxed),
+                    &key_bytes,
+                    false,
+                ),
+                Ordering::Relaxed,
+            );
             surface.input_gen.fetch_add(1, Ordering::Release); // ★⑭ 쓰기 세대
+            drop(_gate);
             Reply::Single(ok_response(
                 &id,
                 json!({"surface_id": sid, "key": key, "sent": true}),
@@ -11521,6 +11645,156 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★④ 회귀 핀(윈 설치 [10/10] 「Unknown command: /The」 부류 · 원작자 D-12 의 우리 판): 사람 초안이
+    /// 3초 넘게 멈춰 있어도 기계는 ⓐ 그 뒤에 본문을 이어 붙이지 못하고 ⓑ Return(별칭 C-m 포함)으로
+    /// 제출하지 못하고 ⓒ C-u 로 지우지 못하고 ⓓ clear_first 로 덮지 못한다. 거부는 바이트 0 · 코드 =
+    /// typing_guard(설치된 CLI 의 --queued 폴백) · 이벤트 1건씩. 사람은 자기 초안을 그대로 계속 쓴다.
+    #[test]
+    fn d12_machine_never_appends_submits_or_clears_a_human_draft() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d12-draft", r#"{ "default": "allow", "rules": [] }"#);
+        let target = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
+            .expect("create target");
+        daemon.surfaces.lock().unwrap().insert(target.id, target.clone());
+        *target.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let gui_pid = 999_420_u32;
+        bind_caller(&daemon, gui_pid, target.id);
+        let worker = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker-1".into()), 24, 80)
+            .expect("create worker");
+        daemon.surfaces.lock().unwrap().insert(worker.id, worker.clone());
+        let worker_pid = 999_421_u32;
+        bind_caller(&daemon, worker_pid, worker.id);
+        let call = |pid: u32, method: &str, p: Value| {
+            let req = Request { id: json!(1), method: method.into(), params: p };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(pid)) else { panic!("single") };
+            resp
+        };
+        // 사람이 초안 3바이트를 쓰고 3초 넘게 멈췄다(타이핑 가드 시계는 식었다).
+        let r = call(gui_pid, "surface.send_text",
+            json!({"surface_id": target.id, "text": "abc", "quiet": true, "human": true}));
+        assert_eq!(r["ok"], json!(true), "전제: 사람 입력 {r}");
+        *target.last_human_input.lock().unwrap() = None;
+        assert_eq!(target.pending_input_human_bytes.load(Ordering::Relaxed), 3);
+        let denied = |r: &Value, reason: &str, what: &str| {
+            assert_eq!(r["error"]["code"], json!(cys::ERR_TYPING_GUARD), "{what}: 코드 {r}");
+            let msg = r["error"]["message"].as_str().unwrap_or_default();
+            assert!(msg.contains(&format!("[draft_gate:{reason}]")), "{what}: 사유 {r}");
+        };
+        // ⓐ 기계 본문 이어 붙이기
+        let r = call(worker_pid, "surface.send_text", json!({"surface_id": target.id, "text": "The"}));
+        denied(&r, "pending_input", "이어붙기");
+        assert!(r["error"]["message"].as_str().unwrap().contains(cys::MSG_TYPING_GUARD),
+            "CLI --queued 폴백 접두가 깨졌다");
+        // ⓑ Return · 별칭 C-m(처방 꼬리 동반)
+        let r = call(worker_pid, "surface.send_key", json!({"surface_id": target.id, "key": "Return"}));
+        denied(&r, "human_draft", "Return");
+        let r = call(worker_pid, "surface.send_key", json!({"surface_id": target.id, "key": "C-m"}));
+        denied(&r, "human_draft", "C-m 별칭");
+        assert!(r["error"]["message"].as_str().unwrap().contains("Return --queued"), "별칭 처방 누락 {r}");
+        // ⓒ C-u — 전용 문면(--queued 처방 없음)
+        let r = call(worker_pid, "surface.send_key", json!({"surface_id": target.id, "key": "C-u"}));
+        denied(&r, "human_draft", "C-u");
+        assert!(r["error"]["message"].as_str().unwrap().starts_with(cys::MSG_DRAFT_GATE_CANCEL_KEY));
+        // ⓓ clear_first
+        let r = call(worker_pid, "surface.send_text",
+            json!({"surface_id": target.id, "text": "/clear", "clear_first": true}));
+        denied(&r, "human_draft", "clear_first");
+        // ⓔ GUI 가 조립한 재기동 문안(human+machine_origin+개행)도 게이트 대상
+        let r = call(gui_pid, "surface.send_text", json!({"surface_id": target.id,
+            "text": "cys restart\n", "quiet": true, "human": true, "machine_origin": true}));
+        denied(&r, "pending_input", "GUI 조립 문안");
+        // 바이트 0 — 계수 불변 · 거부 6건 = 이벤트 6건
+        assert_eq!(target.pending_input_bytes.load(Ordering::Relaxed), 3, "거부된 쓰기가 계수를 바꿨다");
+        assert_eq!(target.pending_input_human_bytes.load(Ordering::Relaxed), 3);
+        let n = daemon.bus.tail(50).into_iter().filter(|e| e["name"] == "queue.draft_gate_denied").count();
+        assert_eq!(n, 6, "거부마다 관측 이벤트 1건");
+        // 사람은 계속 쓴다 · GUI 경로 삽입(개행 없음)은 초안에 이어 붙는다(오너가 누른 것).
+        let r = call(gui_pid, "surface.send_text",
+            json!({"surface_id": target.id, "text": "d", "quiet": true, "human": true}));
+        assert_eq!(r["ok"], json!(true), "사람 자신의 입력이 막혔다 {r}");
+        let r = call(gui_pid, "surface.send_text", json!({"surface_id": target.id,
+            "text": "/tmp/a.png", "quiet": true, "human": true, "machine_origin": true}));
+        assert_eq!(r["ok"], json!(true), "GUI 경로 삽입이 막혔다 {r}");
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★④ 무회귀 핀 — 기계 흐름은 그대로 도달한다:
+    /// ① `cys send` 본문 → `send-key Return`(자기 본문 제출) ② master-send 순서(기계 잔여 위 Ctrl-U →
+    /// 비워짐 → 본문 → Return) ③ 권위 면제(master 좌석의 authoritative 주입).
+    #[test]
+    fn d12_machine_flows_still_reach_the_pane() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d12-flows", r#"{ "default": "allow", "rules": [] }"#);
+        let target = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker-9".into()), 24, 80)
+            .expect("create target");
+        daemon.surfaces.lock().unwrap().insert(target.id, target.clone());
+        *target.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let master = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
+            .expect("create master");
+        daemon.surfaces.lock().unwrap().insert(master.id, master.clone());
+        let master_pid = 999_430_u32;
+        bind_caller(&daemon, master_pid, master.id);
+        let call = |method: &str, p: Value| {
+            let shown = p.to_string();
+            let req = Request { id: json!(1), method: method.into(), params: p };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(master_pid)) else { panic!("single") };
+            assert_eq!(resp["ok"], json!(true), "{method} {shown}: 기계 흐름이 막혔다 {resp}");
+        };
+        // ①
+        call("surface.send_text", json!({"surface_id": target.id, "text": "보고 본문"}));
+        call("surface.send_key", json!({"surface_id": target.id, "key": "Return"}));
+        assert_eq!(target.pending_input_bytes.load(Ordering::Relaxed), 0);
+        // ② 기계 잔여가 남은 줄 — Ctrl-U 로 비우고 보낸다.
+        call("surface.send_text", json!({"surface_id": target.id, "text": "잔여물"}));
+        call("surface.send_key", json!({"surface_id": target.id, "key": "C-u"}));
+        assert_eq!(target.pending_input_bytes.load(Ordering::Relaxed), 0, "C-u 뒤 비워짐");
+        call("surface.send_text", json!({"surface_id": target.id, "text": "[master#abcdef] 지시"}));
+        call("surface.send_key", json!({"surface_id": target.id, "key": "Return"}));
+        // ③ 사람 초안이 있어도 권위 면제(master 좌석 · authoritative)는 종전대로 통과.
+        let gui_pid = 999_431_u32;
+        bind_caller(&daemon, gui_pid, target.id);
+        let req = Request { id: json!(2), method: "surface.send_text".into(),
+            params: json!({"surface_id": target.id, "text": "x", "quiet": true, "human": true}) };
+        let _ = dispatch(&daemon, req, Some(gui_pid));
+        *target.last_human_input.lock().unwrap() = None;
+        call("surface.send_text", json!({"surface_id": target.id, "text": "디렉티브", "authoritative": true}));
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★④ 화면 축 — 계수가 휘발(데몬 재기동)돼 0 이어도 커서 앞에 글자가 보이면 기계 본문을 붙이지 않는다.
+    #[test]
+    fn d12_screen_occupied_blocks_text_when_counter_is_zero() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d12-screen", r#"{ "default": "allow", "rules": [] }"#);
+        let target = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker-8".into()), 24, 80)
+            .expect("create target");
+        daemon.surfaces.lock().unwrap().insert(target.id, target.clone());
+        *target.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let pid = 999_440_u32;
+        bind_caller(&daemon, pid, target.id);
+        target.parser.lock().unwrap().process("\r\x1b[2K❯ 재기동 전 초안".as_bytes());
+        let req = Request { id: json!(1), method: "surface.send_text".into(),
+            params: json!({"surface_id": target.id, "text": "The"}) };
+        let Reply::Single(r) = dispatch(&daemon, req, Some(pid)) else { panic!("single") };
+        assert!(r["error"]["message"].as_str().unwrap_or_default().contains("[draft_gate:screen_occupied]"),
+            "화면 초안 위에 기계 본문이 붙었다 {r}");
+        // 빈 입력줄이면 통과(대조군).
+        target.parser.lock().unwrap().process("\r\x1b[2K❯ ".as_bytes());
+        let req = Request { id: json!(2), method: "surface.send_text".into(),
+            params: json!({"surface_id": target.id, "text": "The"}) };
+        let Reply::Single(r) = dispatch(&daemon, req, Some(pid)) else { panic!("single") };
+        assert_eq!(r["ok"], json!(true), "빈 입력줄에 막혔다 {r}");
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ★B2′ 판정 표 박제(0.14.24 · codex 감사 R1 반영): 제출 CR 을 늦출지·얼마나 늦출지의
     /// **전 경우**를 고정한다. 판정이 두 층으로 갈렸으므로 두 층을 함께 박는다 —
     ///   · 핸들러층 `submit_gap_for_key`: '이 키에 간격을 거는가' (잔여는 재지 않는다)
@@ -12790,6 +13064,15 @@ mod tests {
         //   governance v116_deliver_drops_stale_launch_line_instead_of_delivering). ③ 이 남긴 옛 기동 줄 그대로 남는다.
         // Fable 2R P3: 오래 죽어 있던 좌석(사망 타이머 래치 = 먼 과거) — 기동 줄 통과 시 풀려야 한다.
         *s.agent_dead_since.lock().unwrap() = Some(1.0);
+        // ★④(1.1.7) ① 의 기동 줄은 제출(Return) 없이 줄에 남아 있다 — 초안 게이트는 미제출 입력 뒤에 본문을
+        //   이어 붙이지 않는다. 실제 재기동(`run_node_recover`)처럼 C-u 로 줄을 비운 뒤 친다(사람 초안 아님 = 통과).
+        let req = Request {
+            id: json!(40),
+            method: "surface.send_key".into(),
+            params: json!({"surface_id": s.id, "key": "C-u"}),
+        };
+        let Reply::Single(cu) = dispatch(&daemon, req, Some(caller)) else { panic!("expected single reply") };
+        assert_eq!(cu["result"]["sent"], json!(true), "기계 잔여 선정리 C-u 가 막혔다: {cu}");
         let r = send(4, json!({"surface_id": s.id, "text": "true --continue", "agent_launch": true}));
         assert_eq!(r["result"]["sent"], json!(true), "기동 줄 통과 실패: {r}");
         assert_eq!(*s.agent_dead_since.lock().unwrap(), None,

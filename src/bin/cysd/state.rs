@@ -853,6 +853,10 @@ pub struct Surface {
     /// 큐 Inject)마다 1 씩 오른다. 고착 계수 해제(`governance::maybe_release_stale_pending_input`)가
     /// 「관측하는 동안 아무도 이 줄에 안 썼다」를 이 값으로 확인한다(원작자 `input_gen` 의 우리 판).
     pub input_gen: AtomicU64,
+    /// ★④(1.1.7): `pending_input_bytes` 중 **사람 경로**(send_text human=true ∧ ¬machine_origin ∧
+    /// 자동 응답 아님)로 들어온 바이트 — 초안 게이트(`governance::draft_gate`)의 Return·C-u 축.
+    /// 전이 = `governance::human_pending_after`(항상 ≤ pending_input_bytes 로 읽는다).
+    pub pending_input_human_bytes: AtomicU64,
     /// ★⑭(1.1.7): 고착 계수 관측 스탬프 (계수, 쓰기 세대, 첫 관측 시각). 화면이 빈 입력창인데 계수만
     /// >0 인 모순을 처음 본 틱에 찍고, 같은 (계수, 세대) 로 창 이상 지속돼야 해제한다.
     pub pending_input_stale: Mutex<Option<(u64, u64, Instant)>>,
@@ -4128,6 +4132,7 @@ impl Daemon {
             last_human_input: Mutex::new(None),
             pending_input_bytes: AtomicU64::new(0),
             input_gen: AtomicU64::new(0),
+            pending_input_human_bytes: AtomicU64::new(0),
             pending_input_stale: Mutex::new(None),
             input_gate: std::sync::Mutex::new(()),
             queue_blocked: Mutex::new(None),

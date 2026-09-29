@@ -585,7 +585,23 @@ async fn send_input(
             params["operator_token"] = json!(t);
         }
     }
-    rpc_on(&sock, "surface.send_text", params).await.map(|_| ())
+    // ★④(1.1.7 · 원작자 C-06 의 우리 판) 데몬 오류 **코드**를 UI 까지 올린다 — `rpc_on` 은 message 만 올려
+    //   초안 게이트 거부(code=typing_guard · message 꼬리 `[draft_gate:…]`)와 다른 실패를 UI 가 가를 수 없었다.
+    //   형식 = 「{code}: {message}」(코드가 없으면 message 만) — 기존 소비부는 문자열을 그대로 보이기만 한다.
+    let resp = rpc_full(&sock, "surface.send_text", params).await?;
+    if resp["ok"].as_bool() == Some(true) {
+        return Ok(());
+    }
+    Err(send_input_error_text(&resp))
+}
+
+/// ★④ `send_input` 실패 문자열(순수) — 「{code}: {message}」. 코드가 비면 message 만.
+fn send_input_error_text(resp: &Value) -> String {
+    let msg = resp["error"]["message"].as_str().unwrap_or("unknown error");
+    match resp["error"]["code"].as_str() {
+        Some(code) if !code.is_empty() => format!("{code}: {msg}"),
+        _ => msg.to_string(),
+    }
 }
 
 /// 전출(F6-2) 핸드오프 폴백 경로용 홈 디렉토리 — cwd가 루트류(/·C:\)인 pane은
@@ -7174,6 +7190,27 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    /// ★④(1.1.7) `send_input` 은 데몬 오류 코드를 버리지 않는다 — 초안 게이트 거부가 UI 에서 갈려야
+    /// 재기동이 기계 잔여 좌석에서 clear_first 로 재시도할 수 있다(원작자 C-06: 코드 유실 = 검체가 조작된
+    /// 전제로 초록이었고 실제로는 한 번도 발화하지 않았다).
+    #[test]
+    fn d12_send_input_error_carries_daemon_code() {
+        let r = serde_json::json!({"ok": false, "error": {"code": "typing_guard",
+            "message": "human is typing in this pane; retry later or use --queued [draft_gate:pending_input]"}});
+        let t = super::send_input_error_text(&r);
+        assert!(t.starts_with("typing_guard: "), "{t}");
+        assert!(t.contains("[draft_gate:pending_input]"), "{t}");
+        let r = serde_json::json!({"ok": false, "error": {"message": "surface process has exited"}});
+        assert_eq!(super::send_input_error_text(&r), "surface process has exited");
+        // 배선 — send_input 이 message 만 올리는 rpc_on 으로 되돌아가지 않았다.
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let f = prod.find("async fn send_input(").expect("send_input");
+        let body = &prod[f..f + prod[f..].find("\n}\n").unwrap()];
+        assert!(body.contains("rpc_full(&sock, \"surface.send_text\""), "send_input 이 코드를 버리는 경로로 돌아갔다");
+        assert!(!body.contains("rpc_on(&sock, \"surface.send_text\""));
+    }
+
     /// ★v114-dept-fd 수리 1″ 배선 핀: 앱의 부서 데몬 기동 4경로(launch·rotate·create·allocate)가 전부
     /// run_dept_tool 을 거치고, 맥에서는 본부 데몬 대행(dept.run)이 먼저 · 직접 실행은 그 폴백 1곳뿐이다.
     #[test]

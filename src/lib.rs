@@ -821,6 +821,14 @@ pub fn wait_named_pipe(path: &Path, timeout: std::time::Duration) -> bool {
 pub const ERR_TYPING_GUARD: &str = "typing_guard";
 pub const MSG_TYPING_GUARD: &str = "human is typing in this pane; retry later or use --queued";
 
+/// ★④(1.1.7 · 원작자 D-12 초안 게이트의 우리 판) 초안 게이트 거부 표지 — 응답 문면
+/// `MSG_TYPING_GUARD [draft_gate:<사유>]` 의 꼬리. 코드는 `ERR_TYPING_GUARD` 를 그대로 쓴다
+/// (설치된 CLI 의 `--queued` 1회 폴백이 문면 접두로 판정하므로 접두를 바꾸지 않는다).
+pub const DRAFT_GATE_TAG: &str = "draft_gate";
+/// ★④ 취소 키(C-u·C-c) 거부 문면 — 취소 키는 큐에 실을 수 없어 「--queued」 처방이 거짓이다.
+pub const MSG_DRAFT_GATE_CANCEL_KEY: &str =
+    "human draft in this pane; cancel key refused (the owner must submit or clear the draft)";
+
 /// `cys boot` 가 **무스폰 skip**(다른 boot 가 락 보유)을 낼 때의 종료코드 — EX_TEMPFAIL(75).
 ///
 /// ★(T-0147-7 W4 · G11·하드 제약 6-⑧) bare exit 계약: **0 = Fatal 없음(Degrade-only 포함) ·
@@ -1187,6 +1195,12 @@ pub fn gate_pending_close_from(env_val: Option<&str>) -> bool {
 /// `CYS_LAUNCH_EXIT_GATE_PENDING` ↔ GUI `src-tauri` 분기. 구 바이너리는 78 을 내지 않으므로
 /// (0/1 만) 이 분기는 신 바이너리에서만 발동한다 — 스큐 안전.
 pub const EXIT_GATE_PENDING: i32 = 78;
+
+/// ★④(1.1.7 · 원작자 C-05 EXIT_RECOVER_REFUSED 의 우리 판) `cys node-recover` 가 **사람 입력 보호**
+/// (타이핑 가드·초안 게이트)에 거부됐을 때의 종료코드 — 좌석은 살아 있고 사람이 그 입력줄을 쓰는
+/// 중이다. 소비부(`run_boot`)는 이 값을 회수·파괴·스폰 없이 보류로 접는다(종전엔 rc 1 →
+/// `escalate_reclaim` = 좌석 kill). 소비부는 같은 바이너리 안(run_boot) 하나다.
+pub const EXIT_RECOVER_REFUSED: i32 = 79;
 
 /// 동봉 runtime PATH 선두 주입(RC-5 · 공용 — cysd PTY 자식·GUI 직스폰이 공유, 중복 구현 금지).
 /// `exe_dir`(바이너리 폴더) + Windows 자기완결 설치의 `<install>\runtime\{python, git\cmd, git\usr\bin}`

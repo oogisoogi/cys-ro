@@ -9,6 +9,7 @@ import { shellQuote } from "./shellquote";
 import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath } from "./ftdrop";
 import { transferTrees } from "./transfer";
+import { restartRetryPlan } from "./restartplan";
 import { updatePlan } from "./updateplan";
 import { RESTART_PENDING_KEY, RESTART_BUTTON_LABEL, encodeRestartPending, decodeRestartPending, updateButtonAction, restartReadyToast, restartPendingTitle } from "./restartpending";
 import { DEFAULT_BG, readableForeground } from "./theme";
@@ -3105,9 +3106,9 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   //   입력이 죽는다 — 무음 삼킴을 고치려던 코드가 정확히 그 결함보다 나쁜 결함을 만드는 셈이다.
   //   현재 stickyToast 경로가 실제로 throw 하지는 않지만(#toasts 는 index.html 에 정적으로 존재),
   //   불변식이 **외부 DOM 의 존재**에만 의존하게 두지 않는다.
-  // ★사유는 원문 그대로 보인다: send_input 은 rpc_on 경로라 데몬의 error.code 가 UI 까지 오지
-  //   않고 message 만 온다(src-tauri/src/main.rs 의 rpc_on — error.message 만 String 으로 승격).
-  //   ∴ feedReplyErrorText 같은 코드 기반 분류를 쓸 수 없다. 대신 데몬 메시지가 이미 자기설명적이다
+  // ★사유는 원문 그대로 보인다: send_input 은 「{code}: {message}」 문자열로 실패를 올린다(④ 1.1.7 ·
+  //   src-tauri/src/main.rs send_input_error_text — 종전 rpc_on 은 message 만 올렸다). 여기서는 코드로
+  //   분류하지 않는다(재기동 재시도만 restartplan.ts 가 초안 게이트 표지를 본다). 데몬 메시지가 이미 자기설명적이다
   //   ("surface process has exited" / "surface input channel full (pane not consuming input)" 등).
   //   ★상한값 3초의 근거(임의 수가 아니다): ①이 창이 곧 표시 상한을 정의한다 — 표시는 창당
   //   1회이므로 **3초에 1회(≈0.33건/초)·pane 당**이 실제 상한이고, 화면에 남는 줄은 아래
@@ -6705,12 +6706,27 @@ async function restartNode(role: string, cmd: string, surfaces: OrgSurface[], so
     return;
   }
   jumpToSurface(target.surface_id, socket);
-  await invoke("send_input", {
-    socket: socket ?? null,
-    surfaceId: target.surface_id,
-    data: cmd + "\n",
-    machineOrigin: true,
-  });
+  // ★④(1.1.7) 데몬 초안 게이트가 기계 잔여 좌석에서 plain 을 거부하면 clear_first 로 1회 재시도한다
+  //   (restartplan.ts — 사람 초안은 데몬이 다시 막는다). 실패는 삼키지 않고 원문을 토스트로 보인다.
+  const send = (data: string, clearFirst: boolean) =>
+    invoke("send_input", {
+      socket: socket ?? null,
+      surfaceId: target.surface_id,
+      data,
+      clearFirst,
+      machineOrigin: true,
+    });
+  try {
+    await send(cmd + "\n", false);
+  } catch (e) {
+    const retry = restartRetryPlan(cmd, e);
+    try {
+      if (!retry) throw e;
+      await send(retry.data, retry.clearFirst);
+    } catch (e2) {
+      toast("watchdog", "재기동 실패", `${role} — ${String(e2)}`);
+    }
+  }
 }
 
 // feed 승인(팔레트 액션): **대상이 확정된 뒤에만** 노출한다 — 아래 buildPaletteItems 가

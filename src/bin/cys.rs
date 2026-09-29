@@ -1578,6 +1578,14 @@ fn is_typing_guard_err(e: &str) -> bool {
     e.contains(cys::MSG_TYPING_GUARD) || e.contains(cys::ERR_TYPING_GUARD)
 }
 
+/// ★④(1.1.7) 데몬 거부가 **사람 입력 보호**(타이핑 가드 · 초안 게이트)인가 — node-recover 의 rc 79 판정.
+/// 초안 게이트의 C-u 거부 문면(`MSG_DRAFT_GATE_CANCEL_KEY`)은 `--queued` 처방이 거짓이라 타이핑 가드
+/// 문면을 쓰지 않는다 — 그래서 `is_typing_guard_err` 만 보면 node-recover 첫 동작(C-u)의 거부가 rc 1 →
+/// 좌석 kill 로 샌다. 표지 `[draft_gate:` 를 함께 본다(큐 폴백 판정 `is_typing_guard_err` 는 넓히지 않는다).
+fn is_input_guard_refusal(e: &str) -> bool {
+    is_typing_guard_err(e) || e.contains(&format!("[{}:", cys::DRAFT_GATE_TAG))
+}
+
 /// ★B3(0.14.24) `cys send-key` 가 타이핑 가드 거부를 **큐로 1회 전환**해야 하는가(순수 판정).
 ///
 /// 왜 필요한가: 노드 보고 경로는 `cys send --to master "<본문>"` + `cys send-key --to master
@@ -9301,6 +9309,20 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                                              "hint": "첫기동 관문(테마·로그인·OAuth·폴더신뢰·면책·새기능안내) 통과 후 재부트 — 좌석과 프로세스는 살아 있다"}));
                         continue;
                     }
+                    // ★④(1.1.7) 사람 입력 보호 거부(rc 79) — 사람이 그 좌석 입력줄을 쓰는 중이다. 회수·파괴·스폰 0.
+                    //   outcome 은 기존 `skipped_unconfirmed`(비치명·무스폰 버킷 · 원작자도 같은 접기)를 쓴다 — 새
+                    //   outcome 을 만들면 요약 버킷·python 소비부(`_boot_fatal_verdict`)가 함께 늘어야 한다.
+                    if rc == cys::EXIT_RECOVER_REFUSED {
+                        println!(
+                            "· {agent}: 역할 '{role}' 재기동이 사람 입력 보호에 보류됨 — 회수·파괴 모두 하지 않음(사람 입력 끝난 뒤 재부트)"
+                        );
+                        outcomes.push(json!({"role": role, "agent": agent,
+                                             "outcome": "skipped_unconfirmed", "mandatory": mandatory,
+                                             "surface_ref": sref,
+                                             "reason": "node-recover 가 타이핑 가드·초안 게이트에 거부됨(사람 초안 보호)",
+                                             "hint": "그 좌석 입력줄의 사람 초안을 제출·삭제한 뒤 재부트 — 좌석은 파괴하지 않았다"}));
+                        continue;
+                    }
                     println!("· {agent}: node-recover 실패 — reclaim 에스컬레이션(파괴·hold-first 판정 내장)");
                     escalate_reclaim(role);
                     let after = fetch_surfaces();
@@ -16077,6 +16099,13 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
             eprintln!("error: {evidence}");
             1
         }
+        // ★④(1.1.7 · 원작자 C-05 의 우리 판) 사람 입력 보호(타이핑 가드·초안 게이트)에 걸린 거부는 **좌석이
+        //   살아 있고 사람이 그 줄을 쓰는 중**이라는 뜻이다 — rc 1 로 내면 run_boot 이 escalate_reclaim(kill)
+        //   으로 올려 사람 초안째 좌석을 죽인다. 전용 코드 79 로 접는다(회수·파괴·스폰 0).
+        Err(e) if is_input_guard_refusal(&e) => {
+            eprintln!("refused: {e} — 사람 입력 보호로 재기동 보류(좌석 보존 · 회수 0)");
+            cys::EXIT_RECOVER_REFUSED
+        }
         Err(e) => {
             eprintln!("error: {e}");
             1
@@ -20105,6 +20134,38 @@ mod tests {
         assert!(c.starts_with("[RESUME]"), "{c}");
         assert!(!c.contains("[RESTORE]"), "{c}");
         assert_eq!(compose_boot_directive("worker", false, false, FULL), FULL);
+    }
+
+    /// ★④(1.1.7 · 원작자 C-05 `c4_node_recover_input_guard_refusal_is_nondestructive` 의 우리 판)
+    /// 사람 입력 보호에 걸린 node-recover 는 **rc 79** 이고 run_boot 은 그것을 회수(kill) 없이 보류로 접는다.
+    #[test]
+    fn c4_node_recover_input_guard_refusal_is_nondestructive() {
+        for other in [0, 1, EXIT_BOOT_BUSY, cys::EXIT_GATE_PENDING] {
+            assert_ne!(cys::EXIT_RECOVER_REFUSED, other, "rc 79 가 다른 계약 코드와 겹친다");
+        }
+        // ① 판정: 타이핑 가드 · 초안 게이트(본문·Return·C-u 거부 문면 전부) = 사람 입력 보호.
+        assert!(is_input_guard_refusal(cys::MSG_TYPING_GUARD));
+        assert!(is_input_guard_refusal(&format!("{} [draft_gate:human_draft]", cys::MSG_TYPING_GUARD)));
+        assert!(is_input_guard_refusal(&format!("{} [draft_gate:human_draft]", cys::MSG_DRAFT_GATE_CANCEL_KEY)),
+            "C-u 거부가 사람 입력 보호로 안 읽히면 node-recover 첫 동작에서 rc 1 → 좌석 kill 이다");
+        for other in ["acl_denied: x", "surface process has exited", "agent 메타 없음"] {
+            assert!(!is_input_guard_refusal(other), "무관 실패를 보류로 접었다: {other}");
+        }
+        // ② 배선 핀 — node-recover 가 그 판정으로 79 를 내고, run_boot 은 79 를 reclaim 앞에서 가른다.
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let nr = prod.find("fn run_node_recover(").expect("run_node_recover");
+        let nr_body = &prod[nr..nr + prod[nr..].find("\n}\n").expect("함수 끝")];
+        assert!(
+            nr_body.contains("Err(e) if is_input_guard_refusal(&e)")
+                && nr_body.contains("cys::EXIT_RECOVER_REFUSED"),
+            "node-recover 가 사람 입력 보호 거부를 79 로 접지 않는다"
+        );
+        let refused = prod.find("if rc == cys::EXIT_RECOVER_REFUSED {").expect("run_boot 의 79 분기가 없다");
+        let reclaim = prod.find("escalate_reclaim(role);").expect("reclaim 호출부");
+        assert!(refused < reclaim, "79 분기가 escalate_reclaim 뒤에 있다 — 좌석이 먼저 죽는다");
+        let branch: String = prod[refused..reclaim].chars().collect();
+        assert!(branch.contains("continue;"), "79 분기가 빠져나가지 않고 reclaim 으로 흘러간다");
     }
 
     /// (TICKET=v111-restore ②) 전문 조립은 **컨텍스트가 빈 좌석에서만** 일어난다.

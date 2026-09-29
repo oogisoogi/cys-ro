@@ -38,13 +38,17 @@ def _cysdept_env(tmp, depts):
     os.chmod(os.path.join(bindir, "cys"), 0o755)
     with open(os.path.join(fakepack, "javis_phoenix.py"), "w") as f:
         f.write("pass\n")
+    with open(os.path.join(bindir, "cysd"), "w", newline="\n") as f:
+        f.write("#!/bin/sh\nexit 1\n")
+    os.chmod(os.path.join(bindir, "cysd"), 0o755)
     env = dict(os.environ)
-    env.update({"HOME": home, "CYS_DEPTS_JSON": reg, "CYS_PACK_DIR": os.path.join(tmp, "fakepack"),
-                "PATH": bindir + os.pathsep + env.get("PATH", "")})
-    # ★좌석 env 누출 차단(1.1.7 int · test_ceo_pending_gate 선례): 좌석 셸의 CYS_CYS_BIN·CYS_CYSD_BIN 이 남으면
-    #   cys-dept(:29-35 1순위)가 스텁 대신 설치본 cys/cysd 를 부르고 가짜 HOME 에 데몬이 떠 고아로 남는다.
-    for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_DEPT_EXPECT_GEN", "CYS_CYS_BIN", "CYS_CYSD_BIN"):
+    # ★좌석 env 누출 차단(1.1.7 int · test_ceo_pending_gate:75 선례 형태): 좌석 셸의 CYS_CYS_BIN·CYS_CYSD_BIN 이 남으면
+    #   cys-dept(:29-35 1순위)가 스텁 대신 설치본 cys/cysd 를 부르고 가짜 HOME 에 데몬이 떠 고아로 남았다(실측 9개).
+    #   CYS_* 전부 제거 뒤 필요한 키만 명시 + 자동 기동 금지 · cysd 도 스텁(PATH 폴백으로 설치본이 풀리는 길 차단).
+    for k in [k for k in env if k.startswith("CYS_")]:
         env.pop(k, None)
+    env.update({"HOME": home, "CYS_DEPTS_JSON": reg, "CYS_PACK_DIR": os.path.join(tmp, "fakepack"),
+                "PATH": bindir + os.pathsep + env.get("PATH", ""), "CYS_NO_AUTOSTART": "1"})
     return env, home, reg
 
 

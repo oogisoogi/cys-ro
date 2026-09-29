@@ -99,6 +99,31 @@ mac_build_app_bundle() {
 
   APP="$BUNDLE_BASE/macos/cysr.app"
   DMG="$BUNDLE_BASE/dmg/cysr_${VERSION}_${DMG_ARCH}.dmg"
+
+  mac_link_cli_alias "$APP"
+}
+
+# (1.1.7 E1-b) 명령 별칭 `cysr` = 번들 안 `Contents/MacOS/cysr -> cys` 상대 심볼릭 링크 — **손 0** 경로.
+#   왜 번들 안인가: cysr 창의 PATH 에는 `Contents/MacOS` 가 실린다(lib.rs runtime_prefixed_path) → 번들에 링크가
+#     있으면 설치·업데이트만으로 창 안에서 `cysr` 가 풀린다. `/usr/local/bin/cysr` 는 root 소유 폴더라(이 맥 실측
+#     root:wheel 755) 관리자 창 = 사람 손이 필요하다 — 그 길(「CLI 설치」)은 창 밖 터미널용으로 그대로 둔다.
+#   왜 사본이 아니라 링크인가: 윈도는 cysr.exe 바이트 사본(nsis-hooks.nsh)이지만 맥 번들은 링크가 봉인에 그대로
+#     실린다(dedup 링크 선례 · 실측: ad-hoc codesign --deep → --verify --deep --strict 통과 · ditto zip 왕복 보존)
+#     → 27MB 중복 없이 같은 바이너리. 대상이 같은 폴더의 `cys` 라 번들 밖을 가리키지 않는다.
+#   ★자리: .app 생성 직후 · 서명(재봉인) 전 — 서명 뒤에 만들면 봉인 목록에 없는 「추가된 파일」이 된다
+#     (app_bundle.rs seal_broken_notice 의 cys-dept 링크 실사례).
+#   fail-closed: 대상 `cys` 가 없거나 링크 결과가 기대와 다르면 빌드를 멈춘다(측정 불능은 통과가 아니다).
+mac_link_cli_alias() {
+  local macos="$1/Contents/MacOS"
+  [ -f "$macos/cys" ] && [ ! -L "$macos/cys" ] || {
+    echo "  ✗ 별칭 대상 $macos/cys 가 일반 파일이 아니다 — cysr 링크를 만들 수 없다" >&2; exit 1; }
+  if [ -e "$macos/cysr" ] && [ ! -L "$macos/cysr" ]; then
+    echo "  ✗ $macos/cysr 가 링크가 아닌 실파일로 있다 — 누가 만들었는지 규명 전엔 덮지 않는다" >&2; exit 1
+  fi
+  ln -sfn cys "$macos/cysr"
+  [ "$(readlink "$macos/cysr")" = "cys" ] && [ -x "$macos/cysr" ] || {
+    echo "  ✗ cysr 링크 검증 실패: $(readlink "$macos/cysr" 2>&1)" >&2; exit 1; }
+  echo "  ✓ 명령 별칭 Contents/MacOS/cysr -> cys (봉인 전 · 창 PATH 로 손 0)"
 }
 
 # 선컴파일 산출물이 .app 안에 그대로 실렸는가(fail-closed) — SRC_PYC 를 세운다(뒤 무회귀 검사가 쓴다).

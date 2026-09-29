@@ -664,6 +664,15 @@ fn check_agent_death(
         if s.agent_exit_notified.swap(true, Ordering::Relaxed) {
             continue; // 이미 통지
         }
+        // ★적대 R2(Fable F2 · 1.1.7 ④ 회귀 봉합): 입력줄의 주인(에이전트 TUI)이 죽었다 — 그 초안도 함께 사라졌으므로
+        //   미제출 계수(사람 몫 포함)를 비운다. 비우지 않으면 소멸한 초안의 사람 계수가 node-recover 의 C-u·기동 줄을
+        //   human_draft 로 영구 거부해(rc 79 매 부트) 오너가 그 창에서 Enter 를 칠 때까지 원격 복구가 안 된다.
+        {
+            let _gate = s.input_gate.lock().unwrap();
+            s.pending_input_bytes.store(0, Ordering::Relaxed);
+            s.pending_input_human_bytes.store(0, Ordering::Relaxed);
+            s.input_gen.fetch_add(1, Ordering::Release);
+        }
         let role = s.role.lock().unwrap().clone();
         daemon.bus.publish(
             "agent.exited",
@@ -9500,6 +9509,28 @@ mod tests {
         assert_eq!(dropped[0]["payload"]["reason"].as_str(), Some("ttl_expired"));
         assert_eq!(dropped[0]["payload"]["agent"].as_str(), Some("claude"));
         assert_eq!(dropped[0]["payload"]["role"].as_str(), Some("worker"));
+    }
+
+    /// ★적대 R2(Fable F2) 에이전트 사망 확정 = 그 입력줄의 초안도 소멸 — 미제출 계수(사람 몫 포함)를 비운다.
+    #[test]
+    fn r2_agent_death_clears_pending_input_counters() {
+        let daemon = drill_daemon("r2-death-clears");
+        let id = spawn_role_surface(&daemon, "worker");
+        let s = daemon.surfaces.lock().unwrap().get(&id).cloned().unwrap();
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        s.agent_seen.store(true, Ordering::Relaxed);
+        s.pending_input_bytes.store(3, Ordering::Relaxed);
+        s.pending_input_human_bytes.store(3, Ordering::Relaxed);
+        let gen0 = s.input_gen.load(Ordering::Acquire);
+        let sys = sysinfo::System::new(); // 빈 프로세스 표 = 에이전트 부재
+        let mut rc: HashMap<u64, u32> = HashMap::new();
+        let mut sp: HashMap<u64, Option<(String, u32)>> = HashMap::new();
+        super::check_agent_death(&daemon, &sys, &mut rc, &mut sp);
+        assert!(s.agent_exit_notified.load(Ordering::Relaxed), "전제: 사망 통지가 섰다");
+        assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0, "죽은 TUI 의 미제출 계수가 남았다");
+        assert_eq!(s.pending_input_human_bytes.load(Ordering::Relaxed), 0,
+            "소멸한 사람 초안 계수가 남아 node-recover C-u 를 영구 거부한다");
+        assert!(s.input_gen.load(Ordering::Acquire) > gen0, "쓰기 세대가 오르지 않았다(⑭ 관측 무효화)");
     }
 
     /// ★G5-③(W5-A) Keep·가드 소거 의미 핀 — ① 신선 pending + 무관측 = Keep(소거·이벤트 0)

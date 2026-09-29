@@ -89,3 +89,17 @@
 | Fable F5 minor | ack-only awake 줄이 「(ACK 수신)」 으로 읽힘 | **수용(문면)** | 「디렉티브 생존 확인 (ACK 기록 · N초 전 · TTL 안 · 재핑 생략)」 · phoenix 는 `(ACK 수신)`·`(ACK 기록 · ` 둘 다 ACK(판정 불변 = 종전 「awake」 우연과 같은 결과 · 이제 명시) |
 | Fable F6 minor【추정】 | pane 안에서 뜬 데몬의 스케줄 잡이 상속 env 로 거짓 82 | 잔여 | 개발 흐름 한정 · 데몬 기동 env 스크럽은 이 티켓 밖 |
 | Fable F7 minor | 데몬 재기동 뒤 기계 잔여 좌석의 GUI 재기동이 screen_occupied 로 막힘 | 잔여 | 원작자와 같은 판정 · §5-3 |
+
+## 8. 적대 검증 R2 (스냅샷 d17dec40 · agy = ACCEPT 0건 · Fable = REVISE major 2 · minor 6) — 처분 · ★여기서 매듭(CTX 60% 근접)
+| 지적 | 처분 | 근거·다음 |
+|---|---|---|
+| Fable F2 major — 에이전트 사망 뒤 사람 계수 잔존 → node-recover C-u 영구 거부(79 반복 · 원격 복구 불가) | **수용·수리(이 커밋)** | 사망 확정(agent.exited 최초 통지) 때 input_gate 안에서 계수 0 · 사람 0 · 세대+1 — 입력줄 주인(TUI)과 초안이 함께 소멸 · 시험 `r2_agent_death_clears_pending_input_counters` · 뮤테이션 적색 |
+| Fable F1 major — 데몬 내부 Inject 5경로(channels inject_master · schedule push · boot_supervisor · handlers 2150대 · watch_wake)가 초안 게이트·계수 밖 → 사람 초안 뒤 제출 + 사람 계수 잔존 → 순환 C-u human_draft 거부 | **미수리 · 📌 master 판정** | 게이트 밖 주입 자체는 1.1.6 부터 있던 경로(④ 최소 단위 = handlers 2지점 · v3) · 새로 생긴 해악은 「잔존 사람 계수」 쪽. 권고 = 5경로가 제출(CR) 뒤 계수 0·사람 0·세대+1 을 쓰게(`deliver_head_locked` 와 같은 3줄 · 게이트 배선은 하지 않음) — R3 한 커밋 크기. 대안 = 1.1.7 밖(다음 정기) · 그 동안 순환이 human_draft 로 멈추면 오너가 그 창에서 Enter/지우기 1회 |
+| F3 minor — setsid 재부모화로 무귀속 위조 | 잔여 | 같은 UID 악의 프로세스 = 위협 모델 밖(ACL 층 · 오퍼레이터 토큰도 같은 UID 로 읽힘 — 기존 주석) |
+| F4 minor — pane 안 개발 GUI 의 machineOrigin 문안은 토큰이 없어 기계 취급 | 잔여 | 개발 흐름 한정 · 실키는 토큰으로 통과 · §7 F1 행의 「토큰으로 통과」는 **실키에 한함**으로 정정 |
+| F5 minor — reinject-guard 기록이 재기동을 넘어 G2 를 「기록 ACK」로 통과 | 잔여 | 종전 「awake」 우연과 같은 결과(회귀 아님) · 문면은 이제 「기록 · N초 전」 · node-recover 때 가드 기록 삭제는 다음 정기 후보 |
+| F6 minor — 이벤트 수 단정 완화(n≥9) · kind 함수 exempt 인자 = 프로덕션 상수 false | 잔여(시험 품질) | 정확 계수 단정·죽은 인자 제거는 R3 에서 함께 |
+| F7 minor【추정】— 순환 /clear 가 C-u 재렌더 지연 시 screen_occupied | 잔여 | 실기 재현 없음 · 발생 시 순환 rc 1(파괴 없음) |
+| F8 minor — 초안 게이트 거부에도 CLI 6초 재시도 후 큐 | 잔여 | 비용(지연)만 · `[draft_gate:` 표지로 즉시 큐 전환은 CLI 개정(다음 정기) |
+
+**라운드 현황**: R1(수리 5) → R2(수리 1 · 결정 1) = 2/3 라운드 사용. 수렴 판정 = agy ACCEPT · Fable 은 major 1건(F1) 이 master 판정 대기라 미수렴.

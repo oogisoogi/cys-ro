@@ -66,3 +66,6 @@
 - 남음: 적대 R2 판정 · CI 3 결과 · 갈래2 input 병합(153 R2 중 → master 수용 뒤).
 - 적대 R2(스냅샷 ec777382 · 수리 3커밋): Fable **ACCEPT**(MINOR 2 · NIT 2) · agy **REVISE**(MINOR 1 = release 스텝이 맥 두 레그 중복 실행 · 관례 = `matrix.target == 'aarch64-apple-darwin'`) → 반영 커밋(release.yml 조건 + 「적색 = 윈도 단독 발행도 막힘」 주석 = Fable MINOR #2). 레인 대조 초록.
   · 기록만(범위 밖): Fable MINOR #1 — 부서 시험 3개(b11_lock·creds_seed·teardown_atomicity)는 **어느 워크플로에도 이름 등재 0 = 0레인 실행**(v1.1.6 선재 · 이번 env 수리를 되돌려도 CI 가 모른다) → 편입은 다음 정기 후보. NIT #3 레인 대조가 스텝 `if:` 조건을 안 봄(조건이 좁혀져 실행 0 이 돼도 초록). NIT #4 인용 선례 test_ceo_pending_gate.py:73-80 은 update 뒤 pop 이라 CYS_DEPTS_JSON 이 지워짐(cys-dept:25 $HOME 폴백이 같은 경로라 우연히 동작) → 별도 티켓 후보.
+- 갈래2 병합(master#e77bbb4c 병합 가): f3c916da ← fix/117-input @19dac8e8(F4 수리 3285af12 포함) · 텍스트 충돌 0 · 합성물 --check 2종 GREEN · 레인 대조 비대칭 0.
+  · `#[cfg(` 시험 속성 diff(master 조건 · 스크래치 cfgdiff.py = 시험 함수마다 붙은 #[cfg…]/#[ignore] 목록을 두 리비전에서 비교): v1.1.6=2270 → f3c916da=2313 · 사라짐 0 · 새로 43 · **속성 바뀐 시험 0**. 도구 검산 = F4 결함판 e980d563 에 대면 `governance.rs::v115_seat_inject_guarded_holds_vacant_agent_seat` 1건(#[cfg(unix)] 상실)을 잡고 수리판 19dac8e8 은 0.
+  · 1.1.8 후보(갈래2 남은 위험 · master 지정): F1 사람 키가 CR 전 수백 ms 창에 섞이면 사람 몫 잔존 · F2 µs 창 · F3 열거 시험의 문자열 앵커.

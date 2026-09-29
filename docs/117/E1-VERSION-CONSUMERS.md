@@ -26,7 +26,8 @@
 | 18 | 저장소 `scripts/deploy_gate.py:312-315` | 스모크(rc 0 + 원문 출력) | rc | 무해 |
 | 19 | 저장소 `windows-build.yml:223-225` A1 | cys·cysr 두 출력이 **서로 같은가** | 상호 비교 | 무해(둘 다 「cysr X」) |
 | 20 | 저장소 `windows-build.yml:853-854` T4-14 | `$vOut -match [regex]::Escape($expVer)` | 숫자 부분 일치 | 무해 |
+| 22 | ★저장소 `cysjavis-pack/bin/tests/run_bootstrap_health.py:1677` `_cys_bin()` | 건강 검체가 실 바이너리인지 가림(H-EXIT 계열 실측 검체의 입구) | **`^\s*cys\s+\d+\.\d+` = 「cys 」 접두 의존** | **깨짐 → 고침**(`cysr?` · 적대 검증 R1 Fable 적발 · 이 표 초판이 놓쳤다) |
 | 21 | 저장소 팩 시험 스텁(`test_bootstrap_chain.py:62` 등 · `run_bootstrap_health.py:2541`) | 가짜 cys 가 「cys 0.0.0-stub」 출력 | 스텁 자체 문자열(실 바이너리 무관) | 무해 |
 
-**결론: 「cys 」 접두에 의존해 깨지는 소비처 = 0건.** 바뀌는 것은 설치기 화면 3·7 의 표시 한 줄(「cys 가 답합니다: cysr 1.1.7」 — 문구와 이름이 섞여 보임)뿐이고 이는 다른 저장소(설치기)라 이 티켓에서 고치지 않는다(설치기 문구를 cysr 로 바꿀지 = 설치기 티켓 후보).
+**결론(정정 · R1 뒤): 「cys 」 접두에 의존해 깨지는 소비처 = 저장소 안 1건(22행 · 건강 검체 `_cys_bin` — 같은 브랜치에서 `cysr?` 로 고침) · 다른 저장소 0건.** 초판 결론 「0건」은 grep 모양(`cys --version` 호출 줄)만 보고 **출력 정규식**(`cys\s+\d`)을 따로 찾지 않아 틀렸다 — 정정 뒤 `git grep -E "cys\\s[+*]\\d|\^cys "` 재실행 = 22행 1건뿐. 바뀌는 것은 설치기 화면 3·7 의 표시 한 줄(「cys 가 답합니다: cysr 1.1.7」 — 문구와 이름이 섞여 보임)뿐이고 이는 다른 저장소(설치기)라 이 티켓에서 고치지 않는다(설치기 문구를 cysr 로 바꿀지 = 설치기 티켓 후보).
 한계(정직): grep 모양 `cys(.exe)? --version` · `'--version'` 인자 배열 기준 — 셸 변수로 조립한 호출 이름(예 `"$cli" --version`)은 1·2·5 처럼 따로 읽어 확인했고, 그 밖 저장소(`hybrid-jarvis`·`jarvis-platform`)는 0건.

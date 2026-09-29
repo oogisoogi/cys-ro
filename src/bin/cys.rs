@@ -16014,16 +16014,22 @@ fn run_cycle_agent(
         set_surface_quiescing(sid, true)?;
         let clear_resume = (|| -> Result<(), String> {
             // 4) 입력 버퍼 정리 + clear
+            // ★⑯(1.1.7) 세 입력 모두 `refuse_on_approval` — 대상에 승인·질문 창이 떠 있으면 데몬이 쓰기 전에 거부하고
+            //   (C-u·/clear·Return 이 그 창의 선택지를 사람 대신 누르지 않게), 이 클로저가 Err 로 끝나 clear 는 실행되지
+            //   않는다(quiescing 은 아래에서 무조건 해제). ⑤ 로 CSO 순환이 교착 없이 여기까지 오게 된 뒤의 동반 수리.
             eprintln!("[cycle 4/5] 입력 버퍼 정리 + '{clear}'");
-            request("surface.send_key", json!({"surface_id": sid, "key": "C-u"}))?;
+            request(
+                "surface.send_key",
+                json!({"surface_id": sid, "key": "C-u", "refuse_on_approval": true}),
+            )?;
             std::thread::sleep(std::time::Duration::from_millis(200));
             request(
                 "surface.send_text",
-                json!({"surface_id": sid, "text": clear, "quiet": true}),
+                json!({"surface_id": sid, "text": clear, "quiet": true, "refuse_on_approval": true}),
             )?;
             request(
                 "surface.send_key",
-                json!({"surface_id": sid, "key": "Return"}),
+                json!({"surface_id": sid, "key": "Return", "refuse_on_approval": true}),
             )?;
             std::thread::sleep(std::time::Duration::from_secs(4));
 
@@ -20420,6 +20426,27 @@ mod tests {
             }
             assert!(text.contains("--role master --verifier worker"), "{name} 에 올바른 검증자 지시가 없다");
         }
+    }
+
+    /// ★⑯(1.1.7) 순환 clear 의 세 입력(C-u·/clear·Return)은 모두 `refuse_on_approval` 을 싣고, 거부로 끝나도
+    /// quiescing 은 해제된다(채널이 영구 보류되지 않게).
+    #[test]
+    fn u16_cycle_clear_inputs_refuse_on_approval() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let f = prod.find("\nfn run_cycle_agent(").expect("run_cycle_agent");
+        let body = &prod[f..];
+        let cl = body.find("let clear_resume = ").expect("clear_resume");
+        let step4 = &body[cl..cl + body[cl..].find("[cycle 5/5]").expect("5단계")];
+        for input in ["\"key\": \"C-u\", \"refuse_on_approval\": true",
+                      "\"text\": clear, \"quiet\": true, \"refuse_on_approval\": true",
+                      "\"key\": \"Return\", \"refuse_on_approval\": true"] {
+            assert!(step4.contains(input), "순환 4단계 입력에 승인 창 거부 옵션이 없다: {input}\n{step4}");
+        }
+        assert_eq!(step4.matches("request(").count(), 3, "순환 4단계에 옵션 없는 입력이 새로 생겼다");
+        let end = body.find("clear_resume?;").expect("clear_resume?");
+        let release = body.find("let _ = set_surface_quiescing(sid, false);").expect("quiescing 해제");
+        assert!(cl < release && release < end, "거부로 끝나면 quiescing 이 안 풀린다");
     }
 
     /// (TICKET=v111-restore ②) 전문 조립은 **컨텍스트가 빈 좌석에서만** 일어난다.

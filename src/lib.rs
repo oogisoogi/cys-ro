@@ -1196,6 +1196,10 @@ pub fn gate_pending_close_from(env_val: Option<&str>) -> bool {
 /// (0/1 만) 이 분기는 신 바이너리에서만 발동한다 — 스큐 안전.
 pub const EXIT_GATE_PENDING: i32 = 78;
 
+/// ★⑯(1.1.7) `refuse_on_approval` 이 켜진 직접 입력이 **승인·질문 창 화면**에서 거부될 때의 오류 코드.
+/// 순환의 무확인 `C-u`→`/clear`→Return 이 그 창의 선택지를 사람 대신 누르지 않게 한다(쓰기 0).
+pub const ERR_APPROVAL_SCREEN: &str = "approval_screen";
+
 /// ★④(1.1.7 · 원작자 C-05 EXIT_RECOVER_REFUSED 의 우리 판) `cys node-recover` 가 **사람 입력 보호**
 /// (타이핑 가드·초안 게이트)에 거부됐을 때의 종료코드 — 좌석은 살아 있고 사람이 그 입력줄을 쓰는
 /// 중이다. 소비부(`run_boot`)는 이 값을 회수·파괴·스폰 없이 보류로 접는다(종전엔 rc 1 →

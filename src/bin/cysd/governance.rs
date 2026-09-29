@@ -5584,7 +5584,7 @@ pub(crate) fn draft_gate(
         .unwrap_or_else(|| serde_json::json!({}));
     let marker = merged_ready_marker(&disk, &embed, &agent)?;
     let (_seen, line, _framed) = observe_prompt(s, &marker);
-    let approval = approval_screen_now(s) || !pending_gate_items(daemon, s.id).is_empty();
+    let approval = seat_approval_pending(daemon, s);
     draft_gate_verdict(
         kind,
         pending,
@@ -5932,6 +5932,13 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
         Some(m) => approval_in_prompt_tail(&rows, cursor_row, &m, &res, gates),
         None => approval_in_prompt_tail(&rows, usize::MAX, "", &res, gates),
     }
+}
+
+/// ★⑯(1.1.7) 좌석이 **지금** 승인·질문 창을 띄우고 있는가 — 큐 배달자와 같은 두 재료의 OR
+/// (허락 창 화면 `approval_screen_now` ∨ 첫기동 관문 feed `pending_gate_items`). 직접 입력의
+/// `refuse_on_approval`(순환 clear) 과 초안 게이트 승인 축이 이 한 곳을 쓴다.
+pub(crate) fn seat_approval_pending(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) -> bool {
+    approval_screen_now(s) || !pending_gate_items(daemon, s.id).is_empty()
 }
 
 /// 선택 메뉴 행인가(순수) — 마커 뒤(공백 무시)가 `숫자.` 로 시작한다(`❯ 1. Yes` · `❯ 2. No`).

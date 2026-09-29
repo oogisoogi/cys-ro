@@ -3923,6 +3923,18 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     ));
                 }
             }
+            // ★⑯(1.1.7) `refuse_on_approval` — 호출자가 「승인·질문 창이면 쓰지 마라」를 요구한 입력(순환의 C-u·
+            //   /clear·Return). 판정은 큐 배달자와 같은 술어이고 **쓰기 전** 같은 요청 안에서 본다(조회 RPC 를 따로
+            //   부르면 그 사이에 창이 뜰 틈이 생긴다). 거부 = 바이트 0 · 원장 기록 0.
+            if params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                && crate::governance::seat_approval_pending(daemon, &surface)
+            {
+                return Reply::Single(err_response(
+                    &id,
+                    cys::ERR_APPROVAL_SCREEN,
+                    "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written",
+                ));
+            }
             // ★R1 배달 원장 — **주입보다 반드시 앞**(delivery.rs 불변식 ①). try_write 는 writer
             //   채널로 넘기고 실제 PTY 쓰기는 writer 스레드가 하므로, 여기서 기록하면
             //   기록 → try_send → 수신 → write 순서가 구조적으로 보장된다.
@@ -4257,6 +4269,18 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         daemon, &surface, &id, kind, why, verified_from, alias_hint.as_deref(),
                     ));
                 }
+            }
+            // ★⑯(1.1.7) `refuse_on_approval` — 호출자가 「승인·질문 창이면 쓰지 마라」를 요구한 입력(순환의 C-u·
+            //   /clear·Return). 판정은 큐 배달자와 같은 술어이고 **쓰기 전** 같은 요청 안에서 본다(조회 RPC 를 따로
+            //   부르면 그 사이에 창이 뜰 틈이 생긴다). 거부 = 바이트 0 · 원장 기록 0.
+            if params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                && crate::governance::seat_approval_pending(daemon, &surface)
+            {
+                return Reply::Single(err_response(
+                    &id,
+                    cys::ERR_APPROVAL_SCREEN,
+                    "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written",
+                ));
             }
             // ★B2′(codex 감사 R1 · 0.14.24 결함3 세 번째 층): 제출 Return 은 프로그램이 꽂은
             //   본문과 최소 간격만큼 떨어져야 한다 — 붙여넣기 처리 창 안에 떨어진 CR 은 TUI 가
@@ -11791,6 +11815,59 @@ mod tests {
             params: json!({"surface_id": target.id, "text": "The"}) };
         let Reply::Single(r) = dispatch(&daemon, req, Some(pid)) else { panic!("single") };
         assert_eq!(r["ok"], json!(true), "빈 입력줄에 막혔다 {r}");
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★⑯(1.1.7) `refuse_on_approval` — 허락 창 실화면(claude 2.1.280 classic)에서는 C-u·/clear·Return 을
+    /// **쓰기 전에** 거부한다(바이트 0 · 계수 불변). 대조군 ① 옵션 없는 Return 은 종전대로 통과(승인 조작은
+    /// 사람·master 의 명시 행동이다) ② 입력창으로 돌아온 화면에서는 옵션이 있어도 통과(과잉 차단 없음).
+    #[test]
+    fn u16_refuse_on_approval_writes_nothing_on_permission_dialog() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("u16-refuse", r#"{ "default": "allow", "rules": [] }"#);
+        let seat = |raw: &[u8]| {
+            let s = daemon
+                .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 40, 120)
+                .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+            let alt = {
+                let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+                p.process(raw);
+                p.screen().alternate_screen()
+            };
+            s.alt_screen.store(alt, Ordering::Relaxed);
+            s.pending_input_bytes.store(5, Ordering::Relaxed);
+            s
+        };
+        let pid = 999_450_u32;
+        let call = |sid: u64, method: &str, p: Value| {
+            bind_caller(&daemon, pid, sid);
+            let req = Request { id: json!(1), method: method.into(), params: p };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(pid)) else { panic!("single") };
+            resp
+        };
+        let dialog = seat(include_bytes!("testdata/claude_2_1_280_permission_classic.raw"));
+        // (본문 /clear 는 계수 0 에서 본다 — 계수 >0 이면 초안 게이트가 먼저 막아 ⑯ 경로를 가린다.)
+        for (method, p, pending) in [
+            ("surface.send_key", json!({"surface_id": dialog.id, "key": "C-u", "refuse_on_approval": true}), 5),
+            ("surface.send_key", json!({"surface_id": dialog.id, "key": "Return", "refuse_on_approval": true}), 5),
+            ("surface.send_text", json!({"surface_id": dialog.id, "text": "/clear", "refuse_on_approval": true}), 0),
+        ] {
+            dialog.pending_input_bytes.store(pending, Ordering::Relaxed);
+            let r = call(dialog.id, method, p.clone());
+            assert_eq!(r["error"]["code"], json!(cys::ERR_APPROVAL_SCREEN), "{method} {p}: 허락 창에 썼다 {r}");
+            assert_eq!(dialog.pending_input_bytes.load(Ordering::Relaxed), pending, "{method}: 거부했는데 계수가 바뀌었다(쓰기 발생)");
+        }
+        dialog.pending_input_bytes.store(5, Ordering::Relaxed);
+        // 대조군 ① — 옵션 없는 Return 은 종전대로 통과(승인 조작).
+        let r = call(dialog.id, "surface.send_key", json!({"surface_id": dialog.id, "key": "Return"}));
+        assert_eq!(r["ok"], json!(true), "옵션 없는 Return 이 막혔다(과잉 차단) {r}");
+        // 대조군 ② — 입력창으로 돌아온 실화면에서는 옵션이 있어도 통과.
+        let ready = seat(include_bytes!("testdata/claude_2_1_280_ready_after_esc_classic.raw"));
+        let r = call(ready.id, "surface.send_key", json!({"surface_id": ready.id, "key": "C-u", "refuse_on_approval": true}));
+        assert_eq!(r["ok"], json!(true), "입력창 화면에서 순환 C-u 가 막혔다(과잉 차단) {r}");
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);
     }

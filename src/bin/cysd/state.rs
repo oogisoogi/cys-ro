@@ -3123,6 +3123,18 @@ fn guard_unreadable_queue_wal(dir: &std::path::Path) -> bool {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
         _ => {}
     }
+    // (Fable R1 #7) 같은 바이트의 보존 사본이 이미 있으면 새로 만들지 않는다 — 판독 불능이 이어지는 동안
+    //   부팅마다 사본이 쌓이지 않게.
+    if let Ok(orig) = std::fs::read(&p) {
+        let same = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+            e.file_name().to_string_lossy().starts_with("queue-state.json.unreadable-")
+                && std::fs::read(e.path()).map(|b| b == orig).unwrap_or(false)
+        });
+        if same {
+            eprintln!("[cysd] queue-state.json 을 읽을 수 없어 빈 큐로 시작합니다 — 같은 원본의 보존 사본이 이미 있습니다");
+            return false;
+        }
+    }
     let keep = dir.join(format!("queue-state.json.unreadable-{}", now_epoch() as u64));
     match std::fs::copy(&p, &keep) {
         Ok(_) => {
@@ -8099,6 +8111,15 @@ mod tests {
                 .collect();
             assert_eq!(kept.len(), 1, "{tag}: 보존 사본 1개");
             assert_eq!(std::fs::read(kept[0].path()).unwrap(), bytes, "{tag}: 보존 = 원본 바이트");
+            // 같은 원본으로 다시 부팅해도 사본이 늘지 않는다(누적 방지).
+            drop(daemon);
+            let _ = Daemon::new(dir.join("cysd.sock"));
+            let n = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("queue-state.json.unreadable-"))
+                .count();
+            assert_eq!(n, 1, "{tag}: 재부팅마다 보존 사본 누적");
             let _ = std::fs::remove_dir_all(&dir);
         }
         // 정상·부재 WAL 은 사본을 만들지 않는다.

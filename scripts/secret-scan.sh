@@ -111,6 +111,8 @@ done > "$tmp/exists"
 if [ -s "$tmp/missing" ]; then
   echo "✗ secret-scan: 대상 $(wc -l < "$tmp/missing" | tr -d ' ')건이 없거나 일반 파일이 아니다 — 판정 불가(fail-closed):"
   head -5 "$tmp/missing" | sed 's/^/  /'
+  [ "$mode" = "--all" ] || [ "$mode" = "--staged" ] || [ "$mode" = "staged" ] \
+    && echo "  (추적·스테이징 목록에는 있는데 작업 폴더에 없다 — 스캐너는 작업 폴더 파일을 읽으므로 이 파일의 인덱스 내용을 보지 못했다)"
   exit 2
 fi
 rc=0; grep -vE -e "$skip_re" "$tmp/exists" > "$tmp/flist" || rc=$?; grep_rc_ok "$rc" "제외 목록"

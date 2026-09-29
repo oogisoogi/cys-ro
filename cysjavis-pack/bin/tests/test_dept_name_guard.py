@@ -379,7 +379,7 @@ class RegistryUnreadable(Base):
     def test_unreadable_registry_every_verb_exit12_bytes_unchanged(self):
         for tag, data in self.BAD.items():
             for args in (["list"], ["rotate", "a"], ["promote-ceo"], ["down", "a"],
-                         ["launch", "b"], ["allocate"], ["create", "k9"]):
+                         ["launch", "b"], ["allocate"], ["create", "k9"], ["reap"]):
                 self._write_raw(data)
                 seed_sock(self.home, "b")
                 CreateGate._seed_catalog(self, "k9", "m9")  # create 가 카탈로그 검사를 지나 레지스트리까지 가게

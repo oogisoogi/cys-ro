@@ -7768,6 +7768,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 return Reply::Single(ok_response(&id, json!({"approved": false})));
             };
             // ⑨ 목록 판독 실패 = 미승인 취급(fail-closed) · 저장 없음(원본 보호).
+            let _records_lock = crate::approval::lock_records(); // 재서명 저장까지 다른 데몬과 직렬화
             let mut records = match crate::approval::load_records() {
                 Ok(r) => r,
                 Err(e) => {
@@ -7907,6 +7908,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             rec.sign(&secret);
             let new_id = rec.id.clone();
             // ⑨ 기존 목록을 못 읽으면 새 1건만 남기고 덮지 않는다 — 서명 거부.
+            let _records_lock = crate::approval::lock_records(); // 추가 저장까지 다른 데몬과 직렬화
             let mut records = match crate::approval::load_records() {
                 Ok(r) => r,
                 Err(e) => {

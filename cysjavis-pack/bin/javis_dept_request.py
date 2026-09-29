@@ -258,7 +258,7 @@ class RegistryUnreadable(Exception):
 def registry():
     p = depts_json()
     try:
-        with open(p, encoding="utf-8") as f:
+        with open(p, encoding="utf-8-sig") as f:   # ①(TICKET=cysr-117-impl-lead) BOM 흡수 = cys-dept·GUI 와 같은 판독 규칙
             reg = json.load(f)
     except FileNotFoundError:
         return {}                                    # 파일 없음 = 정상 부재(부서를 한 번도 안 만든 기계)

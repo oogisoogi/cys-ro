@@ -460,7 +460,12 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
                     _ => None,
                 };
             }
-            Err(_) => false,
+            // 하드링크를 못 쓰는 파일시스템(SMB·exFAT 등): 덮어쓰지 않는 직접 생성(O_EXCL)으로 게시한다 —
+            // 여기서 세션 한정 키만 돌려주면 호출마다 다른 키가 되어 check·sign 이 영영 어긋난다(Fable R1 #2).
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp);
+                return publish_secret_exclusive(path, secret);
+            }
         }
     };
     let _ = std::fs::remove_file(&tmp);
@@ -468,6 +473,31 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
         set_owner_only(&path.to_path_buf());
     }
     Some(secret) // 게시 실패해도 세션 한정 secret 반환(종전과 같음 — 디스크엔 아무것도 안 덮음).
+}
+
+/// ⑨ 하드링크 없는 게시 — `create_new`(O_EXCL): 이미 있으면 그 키를 읽고, 만들었으면 쓴 키를 돌린다.
+/// 쓰기 도중 다른 호출이 빈 파일을 읽으면 그쪽은 「빈 키 = 미승인 취급」 으로 한 번 거절될 뿐 덮지 않는다.
+fn publish_secret_exclusive(path: &std::path::Path, secret: Vec<u8>) -> Option<Vec<u8>> {
+    use std::io::Write;
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut f) => {
+            if f.write_all(&secret).and_then(|_| f.sync_all()).is_ok() {
+                set_owner_only(&path.to_path_buf());
+            }
+            Some(secret)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::read(path) {
+            Ok(d) if !d.is_empty() => Some(d),
+            _ => None,
+        },
+        Err(_) => Some(secret), // 디스크에 못 씀 — 세션 한정(종전과 같음 · 디스크 무접촉)
+    }
+}
+
+/// ⑨(Fable R1 #1) approvals.json 읽기→변경→저장 직렬화 락 — 본부·부서 데몬이 같은 파일을 쓴다.
+/// 돌려받은 핸들을 **이름 있는 바인딩**으로 RMW 끝까지 쥐어라(drop = 해제 · 윈도 = 기존 헬퍼대로 None).
+pub fn lock_records() -> Option<std::fs::File> {
+    cys::pack::acquire_settings_lock(&records_path())
 }
 
 /// 0600 권한 부여(Unix). Windows는 ACL 미설정(단일 사용자 데스크톱 전제).
@@ -549,10 +579,19 @@ pub fn save_records(records: &[ApprovalRecord]) -> Result<(), String> {
     }
     let body = serde_json::to_string_pretty(&serde_json::json!({"records": records}))
         .map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
+    // ⑨(Fable R1 #1) tmp 이름 = pid+순번 — 고정 이름은 두 데몬이 같은 tmp 를 서로 잘라 먹는다.
+    static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "json.tmp-{}-{}",
+        std::process::id(),
+        SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, body.as_bytes()).map_err(|e| e.to_string())?;
     set_owner_only(&tmp);
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     set_owner_only(&path);
     Ok(())
 }
@@ -768,6 +807,35 @@ mod tests {
         let disk = std::fs::read(&p).unwrap();
         assert!(keys.iter().all(|k| *k == disk), "스레드마다 다른 키 = 기존 승인 무효화 경합");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑨(Fable R1 #2) 하드링크를 못 쓰는 경로에서도 키는 한 번만 게시되고 이후 호출은 같은 키를 받는다.
+    /// (종전 수리판: hard_link 실패 → 호출마다 새 세션 키 → check·sign 영구 불일치.)
+    #[test]
+    fn exclusive_publish_fallback_keeps_one_key() {
+        let d = tdir("excl");
+        let p = d.join(".approval-secret");
+        let k1 = publish_secret_exclusive(&p, vec![7u8; 32]).unwrap();
+        let k2 = publish_secret_exclusive(&p, vec![9u8; 32]).unwrap();
+        assert_eq!(k1, vec![7u8; 32]);
+        assert_eq!(k2, k1, "두 번째 게시가 다른 키를 돌렸다");
+        assert_eq!(std::fs::read(&p).unwrap(), k1, "게시된 키가 덮였다");
+        assert_eq!(signing_secret_at(&p).unwrap(), k1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑨(Fable R1 #1) 저장 tmp 이름이 호출마다 다르다(고정 `json.tmp` 로 되돌리면 두 데몬이 서로 잘라 먹는다).
+    #[test]
+    fn save_records_tmp_name_is_unique_per_call() {
+        let src = include_str!("approval.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let f = &prod[prod.find("pub fn save_records(").unwrap()..];
+        let f = &f[..f.find("\n}\n").unwrap()];
+        assert!(!f.contains("with_extension(\"json.tmp\")"), "고정 tmp 이름 잔존");
+        assert!(f.contains("SAVE_SEQ.fetch_add"), "호출마다 다른 tmp 이름이 아니다");
+        let h = include_str!("handlers.rs");
+        assert_eq!(h.matches("let _records_lock = crate::approval::lock_records();").count(), 2,
+                   "approval.check·sign 의 RMW 락");
     }
 
     /// ⑨ 승인 목록: 부재만 빈 목록 · BOM·잘림·형식 불일치 = Err(호출부 무저장).

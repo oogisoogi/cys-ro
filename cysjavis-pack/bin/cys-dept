@@ -1927,6 +1927,8 @@ PY
     reg_check || exit $?
     graceful_kill "$pid"
     rm -f "$sock" "$sock.lock" 2>/dev/null || true
+    # ①(Fable R1 #5) kill 뒤에도 판독 실패는 「폐기(exit 8)」 가 아니라 12 로 알린다(원인을 바로 말한다).
+    reg_check || exit $?
     # ★필수2(A·리뷰) TOCTOU 재확인: kill·rm 도중 CSO down(reg_remove+dept_tombstone)이 레이스로 끼어들어
     # 폐기됐으면 launch(부활) 금지 — 사전 게이트 이후 창을 최소화하려 launch 직전에 한 번 더 확인(미등재→exit 8).
     if ! reg_names | grep -Fxq -- "$name"; then
@@ -1976,7 +1978,7 @@ try:
         print("%s\t%s\t%s"%(n, e.get('socket',''), e.get('reserved_at',0) or 0))
 finally: _ulk(lf)
 PY
-) || { echo "[cys-dept] reap: 스냅샷 실패" >&2; exit 1; }
+) || { _rc=$?; echo "[cys-dept] reap: 스냅샷 실패" >&2; [ "$_rc" = 12 ] && exit 12; exit 1; }  # ① 판독 실패(12)는 그대로 전달
     # 분류+집행(flock 밖·probe). reg_remove/down-sock는 각자 자체 flock·원자. 현재 셸 루프(카운터 보존).
     nd=0; ni=0; ns=0
     while IFS=$'\t' read -r nm sk rat; do

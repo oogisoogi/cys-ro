@@ -3740,7 +3740,15 @@ fn spawn_org_restore(app: AppHandle) {
         // 부서 순회 — 등록 부서(depts.json)만 대상(유령 부서 재-launch 차단).
         let mut ok = 0usize;
         let mut fail = 0usize;
-        if let Ok(reg) = list_depts() {
+        let reg_read = list_depts();
+        if let Err(e) = &reg_read {
+            // ①(Fable R1 #3) 부서 목록을 못 읽으면 부서 복원 전체를 건너뛴 사실을 알린다(종전: 조용히 ok=0·fail=0).
+            let _ = app.emit(
+                "restore-progress",
+                json!({"phase": "skip", "detail": format!("부서 목록을 읽지 못해 부서 복원을 건너뜀 — {e}")}),
+            );
+        }
+        if let Ok(reg) = reg_read {
             if let Some(depts) = reg.get("depts").and_then(|d| d.as_object()) {
                 for (name, meta) in depts {
                     let sock = meta
@@ -4877,6 +4885,14 @@ fn list_depts() -> Result<Value, String> {
     list_depts_at(&reg)
 }
 
+/// ①(Fable R1 #3) 부서 수 — 판독 실패면 (None, Some(사유)). 목록은 읽혔는데 depts 칸이 없으면 0(종전과 같음).
+fn dept_count_or_unreadable() -> (Option<usize>, Option<String>) {
+    match list_depts() {
+        Ok(r) => (Some(r.get("depts").and_then(|d| d.as_object()).map(|o| o.len()).unwrap_or(0)), None),
+        Err(e) => (None, Some(e)),
+    }
+}
+
 /// ①(TICKET=cysr-117-impl-lead · MUST-DO-117 ①) 파일 **없음**만 빈 목록 · 읽기 오류(권한·백신 잠금)는
 /// Err — 종전엔 읽기 오류도 `Ok(빈 목록)` 이라 소비처가 「부서 0」 으로 읽었다. 앞머리 BOM 은 떼고 읽는다
 /// (cys-dept 의 utf-8-sig 판독과 같은 규칙).
@@ -5554,10 +5570,9 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
         Err(_) => (0, 0, false),
     };
     // 부서 수(depts.json) — 1이면 이 삭제가 마지막 → CEO 강등 고지.
-    let dept_count = list_depts()
-        .ok()
-        .and_then(|r| r.get("depts").and_then(|d| d.as_object()).map(|o| o.len()))
-        .unwrap_or(0);
+    // ①(TICKET=cysr-117-impl-lead · Fable R1 #3) 판독 실패 = 부서 수 미상(null) + 사유 — 0 으로 접으면
+    //   「마지막 부서 → CEO 강등」 을 잘못 고지하고 초기화 미리보기가 「부서 0」 으로 보인다.
+    let (dept_count, depts_unreadable) = dept_count_or_unreadable();
     Ok(json!({
         "name": name,
         "state_dir": state_dir.to_string_lossy(),
@@ -5565,7 +5580,8 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
         "size_bytes": size_bytes,
         "mtime_secs": mtime_secs,
         "dept_count": dept_count,
-        "is_last": dept_count <= 1,
+        "is_last": dept_count.map(|c| c <= 1),
+        "depts_unreadable": depts_unreadable,
     }))
 }
 
@@ -5579,10 +5595,9 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
 #[tauri::command]
 async fn factory_reset_preview() -> Result<Value, String> {
     let live_sessions = live_session_count().await.unwrap_or(0);
-    let dept_count = list_depts()
-        .ok()
-        .and_then(|r| r.get("depts").and_then(|d| d.as_object()).map(|o| o.len()))
-        .unwrap_or(0);
+    // ①(TICKET=cysr-117-impl-lead · Fable R1 #3) 판독 실패 = 부서 수 미상(null) + 사유 — 0 으로 접으면
+    //   「마지막 부서 → CEO 강등」 을 잘못 고지하고 초기화 미리보기가 「부서 0」 으로 보인다.
+    let (dept_count, depts_unreadable) = dept_count_or_unreadable();
     tokio::task::spawn_blocking(move || {
         let roots =
             cys::factory_reset::ResetRoots::live().ok_or("홈 디렉토리를 해석할 수 없다")?;
@@ -5611,6 +5626,7 @@ async fn factory_reset_preview() -> Result<Value, String> {
             "report_only": plan.report_only,
             "live_sessions": live_sessions,
             "dept_count": dept_count,
+            "depts_unreadable": depts_unreadable,
             "trash_root_ready": plan.trash_root_ready.is_ok(),
             "trash_root_error": plan.trash_root_ready.as_ref().err(),
             "interrupted_prior": plan.interrupted_prior.iter()

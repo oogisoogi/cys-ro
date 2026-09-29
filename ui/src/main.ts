@@ -7235,7 +7235,8 @@ async function purgeDept(ws: Workspace) {
     name?: string;
     size_bytes?: number;
     mtime_secs?: number;
-    is_last?: boolean;
+    is_last?: boolean | null;
+    depts_unreadable?: string | null;
     exists?: boolean;
   } = {};
   try {
@@ -7244,6 +7245,9 @@ async function purgeDept(ws: Workspace) {
     toast("watchdog", "삭제 미리보기 실패", "지울 내용을 확인하지 못해 삭제를 멈췄습니다. 다시 시도해 주세요.", undefined, String(e));
     return;
   }
+  // ①(TICKET=cysr-117-impl-lead) 부서 목록을 못 읽었으면 「마지막 부서인지」 를 모른다 — 알리고 계속한다.
+  if (info.depts_unreadable)
+    toast("health", "⚠ 부서 목록을 읽을 수 없음", deptRegistryUnreadableNote(info.depts_unreadable));
   const nm = info.name || wsLabel(ws);
   const bytes = Number(info.size_bytes || 0);
   const sizeHuman =
@@ -7258,7 +7262,7 @@ async function purgeDept(ws: Workspace) {
   const ok = await purgeConfirmModal(nm, {
     sizeHuman,
     mtime,
-    isLast: !!info.is_last,
+    isLast: !!info.is_last, // ①: 판독 실패면 null → 강등 고지 없음(미상을 「마지막」 으로 읽지 않는다)
     exists: !!info.exists,
   });
   if (!ok) return;
@@ -7360,7 +7364,8 @@ async function factoryResetFlow() {
     strip_profiles?: number;
     report_only?: string[];
     live_sessions?: number;
-    dept_count?: number;
+    dept_count?: number | null;
+    depts_unreadable?: string | null;
     trash_root_ready?: boolean;
     trash_root_error?: string | null;
     interrupted_prior?: string[];
@@ -7397,6 +7402,8 @@ async function factoryResetFlow() {
     deptCount: info.dept_count ?? 0,
     interruptedPrior: info.interrupted_prior ?? [],
   };
+  if (info.depts_unreadable)
+    toast("health", "⚠ 부서 목록을 읽을 수 없음", deptRegistryUnreadableNote(info.depts_unreadable));
   const ok = await factoryResetConfirmModal(preview);
   if (!ok) return;
   // TOCTOU 재확인(purgeDept와 동일 근거): 모달이 열려 있던 동안 restart/purge가 시작됐을 수 있다.

@@ -1318,14 +1318,17 @@ jobs:
           # ① 옛 판이 등록한 모양(따옴표만 · /P 없음)으로 되돌려 둔다 = 1.1.6 이하 설치본 재현
           Set-ItemProperty $key -Name UninstallString -Value "`"$dir\uninstall.exe`""
           # ② 앱이 켜진 채(훅 PREINSTALL taskkill 경로) 인자 없이 실행 — 화면이 하나라도 뜨면 상한 초과
-          $app = Start-Process -FilePath (Join-Path $dir 'cys-app.exe') -PassThru
+          $app = $null
+          try { $app = Start-Process -FilePath (Join-Path $dir 'cys-app.exe') -PassThru } catch { Write-Host "T8 정보: 러너에서 앱 기동 거부 — 켜진 채 조건 없이 진행: $($_.Exception.Message)" }
           Start-Sleep 5
+          $appId = if ($app) { $app.Id } else { -1 }
+          Write-Host ("T8 사전: 앱 켜짐 = {0}" -f [bool](Get-Process -Id $appId -ErrorAction SilentlyContinue))
           $g = Start-Process -FilePath $setup.FullName -PassThru
           $gc = WaitExit $g 300000
           $res.E3_1_no_args_finishes_without_screens = ($gc -eq 0)
           $res.E3_2_new_build_in_place = (Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $expVer)
           $res.E2_1_existing_entry_rewritten_with_P = ((UStr) -eq "`"$dir\uninstall.exe`" /P")
-          $launched = @(Get-Process cys-app -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $app.Id }).Count
+          $launched = @(Get-Process cys-app -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $appId }).Count
           Write-Host ("T8 정보: 설치 뒤 앱 자동 실행 = cys-app 새 프로세스 {0}개 (RunAsUser 는 탐색기 토큰이 필요 — 러너에서 0 이어도 판정 제외)" -f $launched)
           Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 

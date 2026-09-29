@@ -3954,9 +3954,14 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   clear_first 주입은 Ctrl-U 선정리 + 본문 + CR 을 원자로 보내 **줄을 비우고 제출**
             //   하므로 계수는 0 이다. 그 외 본문(사람 키·프로그램 미제출 본문)은 누적한다 —
             //   제출 CR 이 별도 send_key 로 오기 전까지 그 줄은 점유 상태다.
+            //   ★⑮(1.1.7): 터미널 자동 응답(포커스 `ESC[I`·CPR·마우스 보고 등)은 입력줄에 글자를
+            //   남기지 않는다 — 타이핑 가드(위 B1)와 같은 술어로 계수에서도 뺀다. 빼지 않으면
+            //   창을 클릭만 해도 계수가 올라 그 창으로 가는 큐가 사람이 Enter 칠 때까지 멈춘다.
             {
                 let next = if clear_first {
                     0
+                } else if cys::mousereport::is_pure_terminal_autoreply(&text) {
+                    surface.pending_input_bytes.load(Ordering::Relaxed)
                 } else {
                     crate::governance::pending_input_after(
                         surface.pending_input_bytes.load(Ordering::Relaxed),
@@ -11450,6 +11455,61 @@ mod tests {
             resp["error"]["code"], json!(cys::ERR_TYPING_GUARD),
             "사람 타이핑 중 비-권위 Return 은 종전대로 거부돼야 한다 (응답: {resp})"
         );
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★⑮ 회귀 핀(1.1.7 · 원작자 C-03 자동응답 면제의 우리 판 1조건): 창을 클릭만 해도
+    /// GUI 가 포커스 응답 `ESC[I` 를 human=true 로 올린다. 타이핑 가드(B1)는 이 바이트를
+    /// 빼는데 **미제출 입력 계수는 안 빼서** 계수가 오르고, 그 창으로 가는 큐 배달이
+    /// input_pending 으로 사람이 Enter 칠 때까지 멈췄다(VM 2차 #9② 와 같은 모양).
+    /// 계약: 자동 응답은 계수를 **바꾸지 않는다**(0 이면 0 · 사람 초안이 있으면 그 값 유지) ·
+    ///       대조군 = 사람 글자는 종전대로 누적.
+    #[test]
+    fn terminal_autoreply_does_not_count_as_pending_input() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) =
+            daemon_with_acl("autoreply-pending", r#"{ "default": "allow", "rules": [] }"#);
+        let master = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
+            .expect("create master surface");
+        daemon.surfaces.lock().unwrap().insert(master.id, master.clone());
+        let gui_pid = 999_412_u32;
+        bind_caller(&daemon, gui_pid, master.id);
+        let send_human = |text: &str| {
+            let req = Request {
+                id: json!(1),
+                method: "surface.send_text".into(),
+                params: json!({ "surface_id": master.id, "text": text, "quiet": true, "human": true }),
+            };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(gui_pid)) else {
+                panic!("expected single reply");
+            };
+            assert_eq!(resp["ok"], json!(true), "전제: 전송 자체는 성공해야 한다 (응답: {resp})");
+        };
+        let pending = || master.pending_input_bytes.load(Ordering::Relaxed);
+        let autoreplies = [
+            "\u{1b}[I",                          // 포커스 획득(클릭)
+            "\u{1b}[O",                          // 포커스 상실
+            "\u{1b}[24;80R",                     // CPR
+            "\u{1b}[?62;1;6c",                   // DA1
+            "\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{7}", // OSC 11
+            "\u{1b}[<64;10;20M",                 // 마우스 보고
+        ];
+        // ① 빈 줄 + 자동 응답 → 0 유지.
+        for auto in autoreplies {
+            send_human(auto);
+            assert_eq!(pending(), 0, "자동 응답 {auto:?} 이 빈 줄의 미제출 계수를 올렸다");
+        }
+        // ② 대조군 — 사람 글자는 누적(3).
+        send_human("abc");
+        assert_eq!(pending(), 3, "사람 글자는 종전대로 계수에 누적돼야 한다");
+        // ③ 사람 초안이 있는 줄 + 자동 응답 → 사람 초안 값 유지(지우지도 올리지도 않는다).
+        for auto in autoreplies {
+            send_human(auto);
+            assert_eq!(pending(), 3, "자동 응답 {auto:?} 이 사람 초안 계수를 바꿨다");
+        }
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);

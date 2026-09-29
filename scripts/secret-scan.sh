@@ -25,18 +25,34 @@
 #   ⚠ 패턴·필터 정규식은 **전부 grep 이 그대로 평가**한다(awk 로 옮기지 않았다). awk 의 동적
 #     정규식은 `\\` 처리가 구현마다 갈려 macOS(bwk awk)와 Windows(gawk)에서 다르게 판정될 수
 #     있고, 이 티켓의 사고가 바로 '로컬에서 못 재는 Windows 차이'다. awk 는 **구조 작업만** 한다.
+#
+# ★⑥(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑥ · 원작자 4커밋의 우리 판) 「못 봤다」 를 「깨끗하다」 로 접지 않는다:
+#   ⑴ 저장소 밖 = exit 2 — 종전 `cd "$(…)"` 는 rev-parse 가 실패하면 `cd ""` 가 되는데 그것이 성공(rc 0)해
+#      가드가 죽어 있었다. ⑵ 목록은 NUL 구분(`-z`) — 줄 단위 `git ls-files` 는 한글 파일명을 따옴표·8진수로
+#      내보내 `[ -f ]` 에서 조용히 빠졌다(파일 수에는 들어가 건너뛴 사실도 안 보였다). ⑶ `--all` 인데 0건 =
+#      측정 실패(exit 2). ⑷ 목록에 있는데 파일이 아닌 것 = exit 2. ⑸ grep 오류(rc≥2 — 읽기 거부 등) = exit 2
+#      (종전 `2>/dev/null || true` 가 삼켰다). 출력 계약(발견 줄 형식 · clean 줄)은 불변.
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "git repo 아님"; exit 2; }
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
+[ -n "$top" ] && cd "$top" || { echo "git repo 아님"; exit 2; }
+
+# grep 의 rc: 0=찾음 · 1=없음 · 2↑=오류. 오류를 「없음」 으로 접으면 못 읽은 파일이 깨끗한 파일이 된다.
+grep_rc_ok() { [ "$1" -le 1 ] || { echo "✗ secret-scan: grep 오류(rc=$1 · $2) — 판정 불가(fail-closed)"; exit 2; }; }
 
 mode="${1:-staged}"
 files=()
 case "$mode" in
-  --all)      while IFS= read -r f; do files+=("$f"); done < <(git ls-files) ;;
-  --staged|staged|"") while IFS= read -r f; do files+=("$f"); done \
-                  < <(git diff --cached --name-only --diff-filter=ACM) ;;
+  --all)      while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z) ;;
+  --staged|staged|"") while IFS= read -r -d '' f; do files+=("$f"); done \
+                  < <(git diff --cached --name-only -z --diff-filter=ACM) ;;
   *)          files=("$@") ;;
 esac
-[ "${#files[@]}" -gt 0 ] || { echo "✓ secret-scan: 스캔 대상 없음"; exit 0; }
+if [ "${#files[@]}" -eq 0 ]; then
+  if [ "$mode" = "--all" ]; then
+    echo "✗ secret-scan: --all 인데 추적 파일 0건 — 목록을 못 얻었다(측정 실패 · fail-closed)"; exit 2
+  fi
+  echo "✓ secret-scan: 스캔 대상 없음"; exit 0
+fi
 
 # 스캔 제외(노이즈·바이너리·잠금파일): 시크릿이 살지 않고 오탐만 만드는 파일들
 # 스캐너 자신과 형제 스캐너(scan-pack-secrets.sh)는 제외 — 둘 다 자기 패턴/정책 정의에 /Users/cys·
@@ -87,12 +103,19 @@ findings="$tmp/findings"
 # 종전 루프의 `[ -f "$f" ] || continue` 는 셸 내장이라 그대로 두고(프로세스 0),
 # `printf | grep -qE "$skip_re"` 는 **목록 전체에 대한 grep 1회**로 접는다.
 # ★필터를 bash `[[ =~ ]]` 로 옮기지 않은 이유: 정규식 엔진이 grep 과 갈릴 수 있다(위 헤더 ⚠).
+: > "$tmp/missing"
 for f in "${files[@]}"; do
-  if [ -f "$f" ]; then printf '%s\n' "$f"; fi
+  if [ -f "$f" ]; then printf '%s\n' "$f"; else printf '%s\n' "$f" >> "$tmp/missing"; fi
 done > "$tmp/exists"
-grep -vE -e "$skip_re" "$tmp/exists" > "$tmp/flist" || true
+# ⑥⑷ 목록에 있는데 일반 파일이 아니다 = 못 본 것 — 건너뛰고 clean 이라 하지 않는다.
+if [ -s "$tmp/missing" ]; then
+  echo "✗ secret-scan: 대상 $(wc -l < "$tmp/missing" | tr -d ' ')건이 없거나 일반 파일이 아니다 — 판정 불가(fail-closed):"
+  head -5 "$tmp/missing" | sed 's/^/  /'
+  exit 2
+fi
+rc=0; grep -vE -e "$skip_re" "$tmp/exists" > "$tmp/flist" || rc=$?; grep_rc_ok "$rc" "제외 목록"
 # 규칙 3(이메일)만 파일 단위 허용목록이 있다 — 종전의 per-file `grep -qE "$email_allow_re"` 와 동치.
-grep -vE -e "$email_allow_re" "$tmp/flist" > "$tmp/flist_email" || true
+rc=0; grep -vE -e "$email_allow_re" "$tmp/flist" > "$tmp/flist_email" || rc=$?; grep_rc_ok "$rc" "이메일 허용 목록"
 
 scan_files=(); n_scan=0
 while IFS= read -r f; do scan_files+=("$f"); n_scan=$((n_scan+1)); done < "$tmp/flist"
@@ -106,9 +129,11 @@ for r in 1 2 3 4 5 6; do : > "$tmp/raw$r"; done
 
 batch_grep() {  # $1=출력파일 $2=패턴 $3..=대상 파일
   local out="$1" pat="$2"; shift 2
-  local args=("$@") i=0 n=$#
+  local args=("$@") i=0 n=$# rc
   while [ "$i" -lt "$n" ]; do
-    grep -HnE -e "$pat" -- "${args[@]:i:CHUNK}" >> "$out" 2>/dev/null || true
+    # ⑥⑸ stderr 는 버리되(GNU grep 의 「binary file matches」 안내가 stderr 다) rc 는 본다 — 2↑ = 읽기 오류.
+    rc=0; grep -HnE -e "$pat" -- "${args[@]:i:CHUNK}" >> "$out" 2>/dev/null || rc=$?
+    grep_rc_ok "$rc" "규칙 스캔"
     i=$((i+CHUNK))
   done
 }
@@ -179,9 +204,9 @@ END{ exit (bad ? 3 : 0) }
 for x in cs1 cs2 cs4 meta keep; do [ -f "$tmp/$x" ] || : > "$tmp/$x"; done
 
 # ── 필터 적용(종전과 같은 grep·같은 정규식·같은 플래그) ──────────────────────
-grep -vE  -e "$dummy_user_re"     "$tmp/cs1" > "$tmp/k1" || true
-grep -vE  -e "$win_dummy_user_re" "$tmp/cs2" > "$tmp/k2" || true
-grep -vEi -e "$email_fp_re"       "$tmp/cs4" > "$tmp/k4" || true
+rc=0; grep -vE  -e "$dummy_user_re"     "$tmp/cs1" > "$tmp/k1" || rc=$?; grep_rc_ok "$rc" "더미 경로 필터"
+rc=0; grep -vE  -e "$win_dummy_user_re" "$tmp/cs2" > "$tmp/k2" || rc=$?; grep_rc_ok "$rc" "윈 더미 경로 필터"
+rc=0; grep -vEi -e "$email_fp_re"       "$tmp/cs4" > "$tmp/k4" || rc=$?; grep_rc_ok "$rc" "이메일 오탐 필터"
 
 # ── 살아남은 레코드를 되붙이고 파일순→규칙순→줄번호순으로 정렬 ──────────────
 awk -v META="$tmp/meta" '

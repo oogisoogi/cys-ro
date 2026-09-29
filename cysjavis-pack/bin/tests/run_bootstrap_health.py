@@ -644,13 +644,56 @@ def h_secret_1():
         shutil.rmtree(tmp, ignore_errors=True)
     need(not os.path.isdir(tmp), "합성 표본 임시 디렉터리가 남았다: %s" % tmp)
 
+    # ⓓ ★「못 봤다」 ≠ 「깨끗하다」(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑥) — 측정 실패 4형이 전부
+    #    exit 2 인가. 종전엔 넷 다 exit 0(clean)이었다: 저장소 밖(죽은 `cd ""` 가드) · 한글 파일명(줄 단위
+    #    목록의 따옴표 이스케이프로 조용히 누락) · `--all` 0건 · 읽기 거부 파일(grep rc 2 삼킴).
+    probe_secret = dict((pid, body) for pid, _, body in _SECRET_PROBES)["secret"]
+    tmp2 = tempfile.mkdtemp(prefix="cys-secret-fail-")   # ★저장소 밖 · HOME 무접촉
+    blind = []
+    try:
+        outside = os.path.join(tmp2, "outside")
+        os.makedirs(outside)
+        r2 = _run([BASH, scan, "--all"], cwd=outside, timeout=120)
+        need(r2.returncode == 2, "저장소 밖 실행이 exit=%d(≠2) — 죽은 가드: %s" % (r2.returncode, r2.stdout[-300:]))
+        blind.append("저장소밖")
+        repo = os.path.join(tmp2, "repo")
+        os.makedirs(repo)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        _run(git + ["init", "-q"], cwd=repo, timeout=60)
+        r3 = _run([BASH, scan, "--all"], cwd=repo, timeout=120)
+        need(r3.returncode == 2, "--all 추적 0건이 exit=%d(≠2) — 측정 실패를 clean 으로 접었다" % r3.returncode)
+        blind.append("0건")
+        kor = os.path.join(repo, "한글 비밀.txt")
+        with open(kor, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(probe_secret + "\n")
+        _run(git + ["add", "-A"], cwd=repo, timeout=60)
+        r4 = _run([BASH, scan, "--all"], cwd=repo, timeout=120)
+        need(r4.returncode == 1 and "SECRET" in _labels(r4.stdout),
+             "한글 이름 파일의 양성 표본을 못 봤다(exit=%d) — 줄 단위 목록 누락: %s"
+             % (r4.returncode, r4.stdout[-400:]))
+        blind.append("한글파일명")
+        r5 = _scan(os.path.join(tmp2, "없는-파일.txt"))
+        need(r5.returncode == 2, "없는 대상이 exit=%d(≠2) — 건너뛰고 clean" % r5.returncode)
+        blind.append("없는대상")
+        if os.name == "posix" and os.geteuid() != 0:
+            locked = os.path.join(tmp2, "locked.txt")
+            with open(locked, "w", encoding="utf-8") as fh:
+                fh.write(probe_secret + "\n")
+            os.chmod(locked, 0)
+            r6 = _scan(locked)
+            os.chmod(locked, 0o644)
+            need(r6.returncode == 2, "읽기 거부 파일이 exit=%d(≠2) — grep 오류를 clean 으로 접었다" % r6.returncode)
+            blind.append("읽기거부")
+    finally:
+        shutil.rmtree(tmp2, ignore_errors=True)
+
     # ⓒ 자기 면제 동결
     stext = _read(scan)
     need("run_bootstrap_health" not in stext,
          "스캐너 제외 목록에 이 러너가 등재됐다 — 계측기가 자기 판정 대상을 줄인 것이다(완화 금지)")
 
-    return ("산 트리 %d파일 clean · 합성 변조 %d/%d FIRE(%s) · 음성 대조 0건"
-            % (scanned, len(fired), len(_SECRET_PROBES), " ".join(fired)))
+    return ("산 트리 %d파일 clean · 합성 변조 %d/%d FIRE(%s) · 음성 대조 0건 · 측정 실패 %d형 exit 2(%s)"
+            % (scanned, len(fired), len(_SECRET_PROBES), " ".join(fired), len(blind), " ".join(blind)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

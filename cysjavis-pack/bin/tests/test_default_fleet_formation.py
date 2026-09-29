@@ -525,13 +525,20 @@ def t_winjob():
           "assign_child 가 실패를 삼키는 형태로 되돌아갔다")
 
 
-# ── ⓕ 원작자 표기(박사님 지시 2026-09-10 · 원작자 통화 허락 조건 = 최초 개발자 명시) ──────
+# ── ⓕ 출발지 표기(박사님 확정 2026-09-27 · 구 2026-09-10 「원작자」 표기 대체) ──────────────
+# 박사님 09-27 원문: 「선언적으로 cysr의 시초가 어디인지만 밝히면 된다」 · 「도의상 cys가
+#   출발지였다는 내용만 표시」 ⇒ 5자리 모두 **한 문안**(ORIGIN_LINE) · 옛 「원작자」 문안 부재 ·
+#   cmux 표기 없음 · MIT LICENSE 저작권 줄은 라이선스 조건이라 유지(ⓕ-L).
 # ★1R#6(codex): 종전 축은 「파일 어디든 idoforgod」였다. release.yml 에는 무관한 upstream URL·
 #   주석이, pack-release.yml 에는 시험 설명 주석이 이미 그 문자열을 갖고 있어 **실제 표기 블록을
 #   지워도 초록**이었다. 이제 자리마다 그 블록을 **파싱해서** 본다 — 그리고 각 축은 그 블록만
 #   지운 **음성 픽스처**로 자기 실효를 증명한다(안 잡는 게이트는 게이트가 아니다).
-ATTRIB_MUST = ("CYSJavis", "idoforgod", "원작자의 허락을 받아", "oogisoogi",
-               "https://github.com/idoforgod/cys-terminal")
+ORIGIN_LINE = "cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니다."
+ORIGIN_LINE_EN = "cysr started from the cys terminal (github.com/idoforgod/cys-terminal)."
+# 옛 「원작자」 문안의 흔적 — 새 표기가 **대체**여야지 **덧붙임**이면 안 된다.
+ATTRIB_STALE = ("원작자", "CYSJavis", "원작자의 허락을 받아", "파생판", "Original author")
+# LICENSE 3번째 줄(저작권 줄) sha256 — 원문에 연락처가 있어 문자열 대신 해시로 못박는다(secret-scan --all 규칙).
+LICENSE_COPYRIGHT_SHA256 = "45a16ba2127b37b237ece46b658e40345f2ed64cc355bba7a958c2f1afe398e1"
 
 
 def _block_scalar(text, key):
@@ -616,22 +623,28 @@ ATTRIB_SITES = [
      "본체 릴리스 본문(releaseBody 블록 스칼라)", _kill_block_scalar),
     (".github/workflows/pack-release.yml", lambda t: _heredoc(t, "NOTES"),
      "팩-only 릴리스 본문(release-notes heredoc)", _kill_heredoc),
-    ("README.md", lambda t: _md_section(t, "## 원작자"),
-     "포크 README 「원작자」 절", _kill_md("## 원작자")),
-    ("README.en.md", lambda t: _md_section(t, "## Original author"),
-     "영문 README 「Original author」 절", _kill_md("## Original author")),
+    ("README.md", lambda t: _md_section(t, "## 출발지"),
+     "포크 README 「출발지」 절", _kill_md("## 출발지")),
+    ("README.en.md", lambda t: _md_section(t, "## Origin"),
+     "영문 README 「Origin」 절", _kill_md("## Origin")),
     ("ui/index.html", _ws_credit, "앱 안 표기(#ws-credit 요소)", _kill_credit),
 ]
 
 
 def _attrib_ok(block, site):
-    """그 자리의 표기가 성립하는가(순수). ui 는 요소 한 줄이라 문안이 축약형이다."""
+    """그 자리의 표기가 성립하는가(순수) — 출발지 문안 전문 + 옛 원작자 문안 0 + cmux 0.
+    ui 는 요소 한 줄(title 이 전문 · 보이는 글은 축약형) · 영문 README 는 영문 줄도 요구."""
     if not block:
         return False
+    if ORIGIN_LINE not in block or "cmux" in block.lower():
+        return False
+    if any(w in block for w in ATTRIB_STALE):
+        return False
     if site == "ui/index.html":
-        return ("idoforgod" in block and "CYSJavis" in block and "oogisoogi" in block
-                and " hidden" not in block)
-    return all(w in block for w in ATTRIB_MUST)
+        return " hidden" not in block and ">cys 터미널에서 출발<" in block
+    if site == "README.en.md":
+        return ORIGIN_LINE_EN in block
+    return True
 
 
 def t_attribution():
@@ -649,7 +662,30 @@ def t_attribution():
         # ★음성 픽스처: **그 블록만** 지우면 반드시 적색이어야 한다(종전 축은 여기서 초록이었다).
         check("ⓕ %s — 블록 제거 시 적색(게이트 실효 증명)" % rel,
               not _attrib_ok(extract(kill(src)), rel),
-              "블록을 지웠는데도 통과 — 파일 어딘가의 무관한 idoforgod 를 세고 있다")
+              "블록을 지웠는데도 통과 — 파일 어딘가의 무관한 문자열을 세고 있다")
+        # ★음성 픽스처 2: 옛 원작자 문안을 **덧붙이면** 적색(대체가 아니라 덧붙임 방지).
+        if block:
+            check("ⓕ %s — 옛 원작자 문안 덧붙이면 적색" % rel,
+                  not _attrib_ok(block + "\n원작자 CYSJavis", rel),
+                  "옛 문안이 되살아나도 통과 — 대체 판정이 죽었다")
+    # 옛 절 제목 부재(README 두 파일) · LICENSE 저작권 줄 불변.
+    for rel, heading in (("README.md", "## 원작자"), ("README.en.md", "## Original author")):
+        try:
+            src = io.open(os.path.join(REPO, rel), encoding="utf-8", errors="replace").read()
+        except OSError as e:
+            check("ⓕ %s 판독" % rel, False, str(e))
+            continue
+        check("ⓕ %s — 옛 「%s」 절 부재" % (rel, heading),
+              _md_section(src, heading) is None, "옛 절이 남아 있다")
+    try:
+        lic = io.open(os.path.join(REPO, "LICENSE"), encoding="utf-8").read().splitlines()
+    except OSError as e:
+        lic = []
+        check("ⓕ-L LICENSE 판독", False, str(e))
+    import hashlib
+    got = hashlib.sha256(lic[2].encode("utf-8")).hexdigest() if len(lic) >= 3 else ""
+    check("ⓕ-L MIT LICENSE 저작권 줄 유지(라이선스 조건)",
+          got == LICENSE_COPYRIGHT_SHA256 and lic[2].startswith("Copyright (c) 2026 CYSJavis"), got)
 
 
 def _apple_secret_names(text):

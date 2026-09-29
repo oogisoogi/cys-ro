@@ -12,11 +12,9 @@
 
 *Read this in [English](README.en.md).*
 
-## 원작자
+## 출발지
 
-cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아
-oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다.
-원작 저장소: https://github.com/idoforgod/cys-terminal
+cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니다.
 
 ## 문서
 

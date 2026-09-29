@@ -101,10 +101,118 @@ def dept_sock(name):
     return os.path.join(home(), ".local", "state", "cys-dept-%s" % name, "cys.sock")
 
 
-def workdir_for(display):
-    """부서 작업 폴더 규약 — javis_org v_quote_binding 의 'Desktop/CYSjavis/<표시명>' 과 같아야 한다
-    (self-test 의 의미 대조 시험이 javis_org 코드로 이것을 판정한다)."""
-    return os.path.join(home(), "Desktop", "CYSjavis", display)
+def workdir_for(display, parent):
+    """부서 작업 폴더 규약 = <사용자가 고른 위치>/<표시명>(1.1.7 G · 박사님 09-28 「이름과 장소를 지정하도록」).
+    javis_org v_quote_binding 은 폴더 **끝 이름 = 표시명**만 본다(self-test 의 의미 대조 시험이 javis_org
+    코드로 이것을 판정한다). 옛 고정 규약 `~/Desktop/CYSjavis/<표시명>` 은 바탕화면 강제라 걷었다."""
+    return os.path.join(parent, display)
+
+
+# ── 저장 위치(1.1.7 G) ────────────────────────────────────────────────────────
+# 박사님 09-28 14:5x: 「폴더를 만들 곳을 지정할 수 있도록 하자 … 이름과 장소를 지정하도록 한다. 사용자 컴퓨터 자료
+#   저장 구조를 파악한 뒤 적당한 곳을 추천해도 좋다.」 · BACKLOG G ④ 「바탕화면 강제 금지」.
+# 추천 1순위 = 집 폴더 바로 아래 `CYSjavis` — 맥은 바탕화면·문서·다운로드 폴더만 접근 확인 창(TCC)을 띄우고
+#   집 폴더 바로 아래는 띄우지 않는다. 문서·바탕화면은 있으면 선택지로만 보인다(고르면 그대로 쓴다).
+DEPT_PARENT_NAME = "CYSjavis"
+
+
+def default_parent():
+    return os.path.join(home(), DEPT_PARENT_NAME)
+
+
+def _forbidden_roots(under_home):
+    """막는 뿌리 — 집 폴더 안이면 집 안의 프로그램 자리만, 밖이면 시스템 자리를 본다(집 폴더가 /var·/private
+    아래에 있는 기계도 있어서 — 시험 임시 집 · 일부 관리형 기기). 판정은 실제 자리(realpath)끼리 견준다."""
+    h = os.path.realpath(home())
+    if under_home:
+        roots = [os.path.join(h, n) for n in (".cys", ".local", ".claude", ".config", "Library", "AppData")]
+        return [os.path.normcase(os.path.normpath(r)) for r in roots]
+    roots = []
+    if os.name == "nt":
+        for env in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+            v = os.environ.get(env)
+            if v:
+                roots.append(v)
+    else:
+        roots += ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/private",
+                  "/var", "/opt", "/dev", "/Volumes/Recovery"]
+    return [os.path.normcase(os.path.normpath(r)) for r in roots]
+
+
+def folder_problem(raw):
+    """사용자가 말한 저장 위치(부모 폴더) → (정규화한 절대경로, 문제 문장|None) · 순수(디스크는 읽기만)."""
+    t = (raw or "").strip().strip("\"'「」『』")
+    if not t:
+        return None, "부서 파일을 둘 위치를 말씀해 주세요."
+    p = os.path.expanduser(t)
+    if not os.path.isabs(p):
+        return None, "위치는 전체 경로로 말씀해 주세요(예: %s)." % default_parent()
+    p = os.path.normpath(p)                       # 저장·표시는 사용자가 준 경로 그대로
+    rp = os.path.realpath(p)                      # 판정은 실제 자리로 — 심볼릭 부모(예: 문서/링크 → ~/.cys)로 비켜 가지 못하게
+    # 맥(APFS 기본)·윈은 이름의 대소문자를 가르지 않는다 — ~/library 로 막힌 자리를 비켜 가지 못하게 소문자로 견준다
+    fold = (lambda x: os.path.normcase(x).lower()) if sys.platform == "darwin" or os.name == "nt" else os.path.normcase
+    np_ = fold(rp)
+    hk = fold(os.path.realpath(os.path.normpath(home())))
+    if np_ == fold(os.path.dirname(rp)) or np_ == os.path.dirname(hk):
+        return None, "그 위치(%s)는 너무 위쪽(디스크 맨 위·사용자 폴더들의 모음)입니다. 집 폴더 아래 위치를 말씀해 주세요(예: %s)." % (p, default_parent())
+    for r in [fold(x) for x in _forbidden_roots(np_ == hk or np_.startswith(hk + os.sep))]:
+        if np_ == r or np_.startswith(r + os.sep):
+            return None, "그 위치(%s)는 프로그램·시스템이 쓰는 곳이라 부서 폴더를 두지 않습니다. 다른 위치를 말씀해 주세요." % p
+    if os.path.exists(p) and not os.path.isdir(p):
+        return None, "그 위치(%s)는 폴더가 아니라 파일입니다. 다른 위치를 말씀해 주세요." % p
+    return p, None
+
+
+def resolve_folder(raw, display):
+    """--folder → (부모 위치, 문제|None). 사용자가 후보 목록의 **부서 폴더**(`<위치>/<이름>`)를 그대로 말해도
+    `<위치>/<이름>/<이름>` 으로 겹치지 않게 부모로 접는다(적대 검증 R1 Fable)."""
+    parent, prob = folder_problem(raw)
+    if prob:
+        return None, prob
+    if os.path.basename(parent) == display:
+        parent, prob = folder_problem(os.path.dirname(parent))
+        if prob:
+            return None, prob
+    target = workdir_for(display, parent)
+    if os.path.exists(target) and not os.path.isdir(target):     # 적대 검증 R2 Fable — 틱의 makedirs 가 늦게 실패하기 전에
+        return None, "그 위치에 「%s」라는 **파일**이 이미 있어 부서 폴더를 만들 수 없습니다. 다른 위치나 이름을 말씀해 주세요." % display
+    return parent, None
+
+
+def folder_candidates(live):
+    """추천 위치 목록 [(부모 폴더, 까닭)] — 사용자 컴퓨터에 **실재하는** 폴더만 근거로 쓴다(없는 것은 만들 자리만)."""
+    h = home()
+    out_, seen = [], set()
+
+    def add(parent, why):
+        k = os.path.normcase(os.path.normpath(parent))
+        if k not in seen:
+            seen.add(k)
+            out_.append((os.path.normpath(parent), why))
+
+    add(default_parent(), "추천 — 집 폴더 바로 아래라 찾기 쉽고, 맥에서도 폴더 접근 확인 창이 뜨지 않습니다")
+    for e in sorted((live or {}).values(), key=lambda x: str((x or {}).get("cwd") or "")):
+        c = (e or {}).get("cwd")
+        if c and os.path.isabs(c):
+            par = os.path.dirname(os.path.normpath(c))
+            if folder_problem(par)[1] is None:      # 추천해 놓고 거절하지 않게 — 같은 판정을 먼저 통과한 곳만(R2 Fable)
+                add(par, "지금 있는 부서들이 모여 있는 곳")
+    docs = os.path.join(h, "Documents")
+    if os.path.isdir(docs):
+        add(os.path.join(docs, DEPT_PARENT_NAME), "문서 폴더 안 — 맥에서는 처음 한 번 폴더 접근 확인 창이 뜰 수 있습니다")
+    desk = os.path.join(h, "Desktop")
+    if os.path.isdir(desk):
+        add(os.path.join(desk, DEPT_PARENT_NAME), "바탕화면 — 화면에 폴더가 보입니다 · 맥에서는 폴더 접근 확인 창이 뜰 수 있습니다")
+    return out_
+
+
+def folder_question(display, cands):
+    marks = "①②③④⑤⑥⑦⑧"
+    lines = ["부서 「%s」의 파일을 어디에 둘까요?" % display]
+    for i, (parent, why) in enumerate(cands):
+        lines.append("  %s %s  (%s)" % (marks[i] if i < len(marks) else "-", workdir_for(display, parent), why))
+    lines.append("번호를 고르시거나, 원하시는 위치(폴더 경로)를 말씀해 주세요.")
+    return "\n".join(lines)
 
 
 # ── 상수 ──────────────────────────────────────────────────────────────────────
@@ -507,8 +615,16 @@ def render_create_card(r, gate, n_live):
     else:
         seats = "켜진 Claude 자리는 세지 못했습니다"
     folder = r["cwd"]
-    if not os.path.isdir(os.path.join(home(), "Desktop")):
-        folder += "  (이 폴더는 화면의 바탕화면에는 보이지 않을 수 있습니다)"
+    if not os.path.isdir(os.path.dirname(os.path.normpath(r["cwd"]))):
+        folder += "  (이 위치는 아직 없어서 새로 만듭니다)"
+    elif os.path.isdir(r["cwd"]):
+        try:
+            n = len([x for x in os.listdir(r["cwd"]) if not x.startswith(".")])   # .DS_Store 등 숨김 항목은 세지 않는다
+        except OSError:
+            n = -1
+        if n != 0:      # 이미 있는 폴더를 부서 폴더로 쓴다 — 사용자 자료와 겹칠 수 있어 카드에 밝힌다(적대 검증 R1)
+            folder += ("  (이미 있는 폴더입니다 — 안의 파일 %d개는 그대로 두고 부서 폴더로 씁니다)" % n
+                       if n > 0 else "  (이미 있는 폴더입니다 — 안을 읽지 못했습니다 · 파일은 그대로 둡니다)")
     lines = [
         "📋 새 부서 제안",
         "  이름        %s" % r["display"],
@@ -608,6 +724,14 @@ def cmd_propose(a):
     if display_in_flight(disp):
         return _refuse("같은 이름의 부서 「%s」를 지금 만들고 있습니다. 1~2분 뒤 다 만들어지면 알려 드리겠습니다." % disp,
                        reason="duplicate_in_flight")
+    # (1.1.7 G) 저장 위치 확정 단계 — 위치 없이 카드를 만들지 않는다(바탕화면 강제 규약 대체).
+    if not getattr(a, "folder", None):
+        cands = folder_candidates(live)
+        return _refuse(folder_question(disp, cands), code=2, reason="folder_needed",
+                       candidates=[workdir_for(disp, p) for p, _ in cands], parents=[p for p, _ in cands])
+    parent, fprob = resolve_folder(a.folder, disp)
+    if fprob:
+        return _refuse(fprob, code=2, reason="folder")
     gate = resource_check()
     if gate.get("verdict") == "hard_block":
         return _refuse(busy_say(len(live)), reason="resource")
@@ -629,7 +753,7 @@ def cmd_propose(a):
     rid = new_req_id()
     key = new_key(cat)
     acct_key, login_needed = account_plan()
-    cwd = workdir_for(disp)
+    cwd = workdir_for(disp, parent)
     text, sha = build_claude_md(rid, disp, mission, body)
     first = norm_name(a.first_task) if a.first_task else ""
     r = {"id": rid, "kind": "create", "state": "proposed", "created_at": now(),
@@ -646,6 +770,20 @@ def cmd_propose(a):
     atomic_write_text(os.path.join(req_dir(rid), "card.txt"), card)
     _publish(r)                          # 열린 제안은 언제나 1장(2-1 ②)
     out({"ok": True, "request": rid, "card": card})
+    return 0
+
+
+def cmd_suggest_folder(a):
+    """(1.1.7 G) 부서 파일을 둘 위치 질문 + 추천 목록(읽기만 · 아무것도 만들지 않는다)."""
+    disp = norm_name(a.name)
+    prob = name_problem(disp)
+    if prob:
+        return _refuse(prob, reason="name")
+    reg, ts = registry(), tombstones()
+    cands = folder_candidates(live_depts(reg, ts))
+    out({"ok": True, "say": folder_question(disp, cands),
+         "candidates": [workdir_for(disp, p) for p, _ in cands],
+         "parents": [p for p, _ in cands]})
     return 0
 
 
@@ -1836,16 +1974,22 @@ def self_test():
         m = {"kind": "org-manifest", "manifest_version": 1,
              "source": {"design_doc": "x", "design_doc_sha256": "x"},
              "departments": [{"key": "c0a1b2", "display": disp, "account": "shared",
-                              "cwd": workdir_for(disp), "mission_md": "m", "source_quote": quote,
+                              "cwd": workdir_for(disp, default_parent()), "mission_md": "m", "source_quote": quote,
                               "new_dept_approved": True}], "tasks": []}
         errs = javis_org.validate_manifest(m, doc_text=quote,
                                            catalog={"accounts": {"shared": "/x"}, "departments": {}})
         ck("semantic: javis_org 가 도구의 cwd 규약을 수용", not [e for e in errs if "cwd" in e], str(errs))
         m2 = json.loads(json.dumps(m))
-        m2["departments"][0]["cwd"] = workdir_for(disp).replace("CYSjavis", "CYSJavis")
+        m2["departments"][0]["cwd"] = workdir_for(disp + "x", default_parent())   # 끝 이름 ≠ 표시명
         errs2 = javis_org.validate_manifest(m2, doc_text=quote,
                                             catalog={"accounts": {"shared": "/x"}, "departments": {}})
-        ck("semantic-mutant: 규약 한 글자 변경 → javis_org 거부", any("cwd" in e for e in errs2))
+        ck("semantic-mutant: 끝 폴더 이름 한 글자 변경 → javis_org 거부", any("cwd" in e for e in errs2))
+        m3 = json.loads(json.dumps(m))
+        m3["departments"][0]["cwd"] = workdir_for(disp, os.path.join(home(), "Documents", "일"))
+        errs3 = javis_org.validate_manifest(m3, doc_text=quote,
+                                            catalog={"accounts": {"shared": "/x"}, "departments": {}})
+        ck("semantic: 사용자가 고른 다른 위치도 javis_org 수용(바탕화면 강제 없음)",
+           not [e for e in errs3 if "cwd" in e], str(errs3))
     except Exception as e:
         ck("semantic: javis_org import", False, "%s: %s" % (type(e).__name__, e))
     # ④ 레인
@@ -2102,7 +2246,10 @@ def main(argv=None):
     p.add_argument("--claude-md-file", dest="claude_md_file")
     p.add_argument("--utterance-file", dest="utterance_file")
     p.add_argument("--first-task", dest="first_task")
+    p.add_argument("--folder", help="부서 파일을 둘 위치(부모 폴더) — 부서 폴더 = <위치>/<이름> (1.1.7 G)")
     p.add_argument("--close")
+    sf = sub.add_parser("suggest-folder")
+    sf.add_argument("--name", required=True)
     c = sub.add_parser("confirm")
     c.add_argument("request")
     sub.add_parser("tick")
@@ -2136,7 +2283,7 @@ def _main_dispatch(a, ap):
             return _refuse("부서 목록을 읽지 못해 제안하지 않았습니다(%s). 잠시 뒤 다시 말씀해 주세요." % e,
                            code=2, reason="registry_unreadable")
     fn = {"confirm": cmd_confirm, "tick": cmd_tick, "status": cmd_status, "kickoff": cmd_kickoff,
-          "discard": cmd_discard}.get(a.cmd)
+          "discard": cmd_discard, "suggest-folder": cmd_suggest_folder}.get(a.cmd)
     if a.cmd == "hook-prompt":
         try:
             return cmd_hook_prompt(a)

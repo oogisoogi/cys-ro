@@ -167,6 +167,7 @@ import { seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThr
 import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
+import { dropPointToCss } from "./droppoint";
 
 declare global {
   interface Window {
@@ -3876,13 +3877,13 @@ function setFocus(sid: number) {
   updateFtRoot(); // 파일 트리가 열려 있으면 선택한 surface의 폴더로 전환
 }
 
-// 드롭 물리좌표(디바이스 픽셀)를 CSS px로 환산해 그 지점을 '직격'하는 pane만 찾는다.
-// 폴백 없음 — 빗나간 드롭이 포커스 pane에 조용히 주입되던 오배달 footgun 제거.
-// 호출측이 undefined를 무동작+토스트로 처리한다(무음 실패 금지).
+// 드롭 좌표를 CSS px로 환산해 그 지점을 '직격'하는 pane만 찾는다(환산 = droppoint.ts · 맥은 이미 포인트라
+// 나누지 않는다 — 1.1.7 ② Retina 오배달). 폴백 없음 — 빗나간 드롭이 포커스 pane에 조용히 주입되던 오배달
+// footgun 제거. 호출측이 undefined를 무동작+토스트로 처리한다(무음 실패 금지).
 function paneAtPointStrict(pos?: { x: number; y: number }): PaneRuntime | undefined {
-  if (!pos) return undefined;
-  const dpr = window.devicePixelRatio || 1;
-  const hit = document.elementFromPoint(pos.x / dpr, pos.y / dpr) as HTMLElement | null;
+  const css = dropPointToCss(pos, window.devicePixelRatio, IS_MACOS);
+  if (!css) return undefined;
+  const hit = document.elementFromPoint(css.x, css.y) as HTMLElement | null;
   const paneEl = hit?.closest(".pane") as HTMLElement | null;
   if (!paneEl) return undefined;
   for (const rt of panes.values()) if (rt.el === paneEl) return rt;

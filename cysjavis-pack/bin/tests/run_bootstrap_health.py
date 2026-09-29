@@ -1758,8 +1758,8 @@ def _cys_bin():
             reasons.append("%s 실행 불가(%s)" % (rel, e))
             continue
         out = (r.stdout or "") + (r.stderr or "")
-        # clap 정본: `#[command(name = "cys", version)]` → "cys <semver>"
-        if r.returncode == 0 and re.search(r"(?m)^\s*cys\s+\d+\.\d+", out):
+        # clap 정본: `#[command(name = "cysr", version)]` → "cysr <semver>"(1.1.7 E1 · 옛 판 = "cys <semver>" 도 인정)
+        if r.returncode == 0 and re.search(r"(?m)^\s*cysr?\s+\d+\.\d+", out):
             _CYS_BIN_SKIP_REASON = None
             return p
         reasons.append("%s 는 cys 바이너리가 아니다(rc=%d · --version=%r · %dB) — 빌드 픽스처 스텁 의심"

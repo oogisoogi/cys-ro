@@ -131,7 +131,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "b2a500013096399a563c7fff8a0b35b5439c170025b5003fece9dfb5857a9e55"
+GUARD_PIN = "9655bcf5c0b1b65a4dfbc338ed6c2351661268c32ab69632fe3e54b5a8b335b9"
 
 
 def hook_path():

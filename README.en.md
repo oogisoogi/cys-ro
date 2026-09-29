@@ -13,15 +13,11 @@ talk to each other over sockets, and monitor cost, context, and hardware in real
 
 *한국어 문서(전체 레퍼런스 포함)는 [README.md](README.md)를 보세요.*
 
-## Original author
+## Origin
 
-cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아
-oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다.
-원작 저장소: https://github.com/idoforgod/cys-terminal
+cysr started from the cys terminal (github.com/idoforgod/cys-terminal).
 
-*(English)* The original author of cys terminal is CYSJavis (GitHub: idoforgod). This build is a
-derivative distribution — built, signed and published by oogisoogi from the original (MIT) with the
-original author's permission. Upstream: https://github.com/idoforgod/cys-terminal
+*(한국어)* cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니다.
 
 ## Docs
 

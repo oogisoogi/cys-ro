@@ -218,10 +218,14 @@ def v_quote_binding(depts, doc_text, catalog, dept_level=True):
                     errs.append(f"{tag}: 신규 key의 account '{acct}'가 승인 accounts에 없음")
                 if not d.get("new_dept_approved"):
                     errs.append(f"{tag}: 신규 key '{key}'는 오너 승인 플래그(new_dept_approved) 필요 — account 유효성만으로 통과 불가")
-            # cwd 규약 경로
+            # cwd 규약(1.1.7 G) — 위치는 사용자가 고른다(바탕화면 강제 폐지) · 폴더 **끝 이름 = 표시명** 만 결속한다.
             cwd = d.get("cwd", "")
-            if disp and not cwd.replace("\\", "/").endswith(f"Desktop/CYSjavis/{disp}"):
-                errs.append(f"{tag}: cwd가 규약 경로($HOME/Desktop/CYSjavis/{disp}) 불일치")
+            tail = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            full = os.path.expanduser(os.path.expandvars(cwd))
+            if not os.path.isabs(full) or ".." in full.replace("\\", "/").split("/"):
+                errs.append(f"{tag}: cwd 는 절대 경로여야 하고 .. 를 쓸 수 없다({cwd or '-'})")
+            if disp and tail != disp:
+                errs.append(f"{tag}: cwd 끝 폴더 이름({tail or '-'})이 표시명({disp})과 다름 — 규약(<위치>/{disp}) 불일치")
     return errs
 
 def intake_ok(surfaces, idle_max=600):

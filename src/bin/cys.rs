@@ -1,4 +1,5 @@
-//! cys — the CYSJavis terminal CLI client. 모든 pane 안의 AI가 이 CLI로 동등 노드가 된다.
+//! cysr — the CYSJavis terminal CLI client. 모든 pane 안의 AI가 이 CLI로 동등 노드가 된다.
+//! (1.1.7 E1) 사람에게 보이는 명령 이름 정본 = `cysr` · 실행파일·팩 호출의 기계 이름 `cys` 는 별칭으로 유지.
 //! 예: cys send --surface surface:31 "..." ; cys send-key --surface surface:31 Return
 
 use clap::{Parser, Subcommand};
@@ -9,9 +10,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 
 #[derive(Parser)]
 #[command(
-    name = "cys",
+    name = "cysr",
+    // (1.1.7 E1) 사용법 줄(`Usage: …`)은 clap 이 argv[0] 에서 bin_name 을 뽑아 따라간다(실측: `cys --help`
+    // = 「Usage: cys」) — 정본 이름으로 고정해 어느 이름으로 불러도 같은 도움말이 나오게 한다.
+    bin_name = "cysr",
     version,
-    about = "cys — the CYSJavis terminal CLI (bidirectional socket, multi-agent OS)"
+    about = "cysr — the CYSJavis terminal CLI (bidirectional socket, multi-agent OS)"
 )]
 struct Cli {
     /// Socket path override (default: AITERM_SOCKET or platform default)
@@ -20224,7 +20228,9 @@ mod tests {
 
     /// (cysr-alias · 2026-09-16) 명령 별칭 `cysr` 는 같은 바이너리를 다른 이름(맥 심링크 · 윈 사본)으로
     /// 부른다. 출력이 호출 이름(argv[0])을 따라가면 `cysr --version` ≠ `cys --version` 이 되어 도구·스크립트의
-    /// 버전 대조가 갈린다 — clap `name = "cys"` 고정이 그 불변식의 근거이므로 렌더 결과로 못박는다.
+    /// 버전 대조가 갈린다 — clap `name` 고정이 그 불변식의 근거이므로 렌더 결과로 못박는다.
+    /// (1.1.7 E1 · 박사님 09-25 「1.1.7에 cysr 넣는다」) 고정 이름 = `cysr` 정본(구 `cys`) — 어느 이름으로
+    /// 불러도 「cysr X.Y.Z」 한 가지다.
     #[test]
     fn cysr_alias_version_and_help_do_not_follow_argv0() {
         use clap::CommandFactory;
@@ -20240,13 +20246,17 @@ mod tests {
             assert_eq!(k1, clap::error::ErrorKind::DisplayVersion);
             assert_eq!(k2, clap::error::ErrorKind::DisplayVersion);
             assert_eq!(a, b, "{flag}: cysr 와 cys 의 버전 출력이 갈렸다");
-            assert_eq!(a.trim(), format!("cys {}", env!("CARGO_PKG_VERSION")));
+            assert_eq!(a.trim(), format!("cysr {}", env!("CARGO_PKG_VERSION")));
         }
         // 절대경로·윈도 확장자로 불려도 같다(심링크 경로 · cysr.exe 사본).
         let (_, win) = render(r"C:\Users\user\AppData\Local\cys\cysr.exe", "--version");
         let (_, mac) = render("/usr/local/bin/cysr", "--version");
         assert_eq!(win, render("cys", "--version").1);
         assert_eq!(mac, render("cys", "--version").1);
+        // (1.1.7 E1) 도움말의 사용법 줄도 정본 이름 — `cys` 로 불러도 「Usage: cysr」.
+        let (k, help) = render("cys", "--help");
+        assert_eq!(k, clap::error::ErrorKind::DisplayHelp);
+        assert!(help.contains("Usage: cysr "), "도움말 사용법 줄이 cysr 가 아니다: {help}");
     }
 
     /// ★A12 승격 가드 단위 테스트(v4 · W4): 승격 중(.pre-ceo 존재) base MASTER 를 덮는

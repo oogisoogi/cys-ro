@@ -191,8 +191,10 @@ class Base(unittest.TestCase):
         finally:
             os.environ.pop("CYS_ROLE", None)
 
-    def propose(self, name="설교준비부", first=None):
+    def propose(self, name="설교준비부", first=None, folder="~/CYSjavis"):
         args = ["propose", "--name", name, "--mission", "주일 설교 준비를 돕습니다", "--claude-md-file", self.body]
+        if folder is not None:                     # (1.1.7 G) 저장 위치 확정 단계 — 기본 = 추천 1순위
+            args += ["--folder", folder]
         if first:
             args += ["--first-task", first]
         return self.run_cmd(*args)
@@ -230,6 +232,138 @@ class Base(unittest.TestCase):
 
     def pending_exists(self):
         return os.path.exists(os.path.join(self.m.root_dir(), ".pending"))
+
+
+class TestFolderStep(Base):
+    """(1.1.7 G · 박사님 09-28 「이름과 장소를 지정하도록 한다 … 적당한 곳을 추천해도 좋다」 · 바탕화면 강제 금지)."""
+
+    def test_propose_without_folder_asks_location_first(self):
+        rc, o = self.propose(folder=None)
+        self.assertEqual(rc, 2, o)
+        self.assertEqual(o.get("reason"), "folder_needed", o)
+        self.assertIn("어디에 둘까요", o["say"])
+        want = os.path.join(self.home, "CYSjavis", "설교준비부")
+        self.assertEqual(o["candidates"][0], want, "추천 1순위 = 집 폴더 아래 CYSjavis(바탕화면 아님)")
+        self.assertFalse(os.listdir(self.m.root_dir()) if os.path.isdir(self.m.root_dir()) else [],
+                         "위치 없이 제안 카드·요청 폴더를 만들면 안 된다")
+
+    def test_suggest_lists_only_real_folders_desktop_not_first(self):
+        rc, o = self.run_cmd("suggest-folder", "--name", "교육부")
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(o["parents"][0], os.path.join(self.home, "CYSjavis"))
+        # setUp 은 Desktop 만 만든다 → Documents 후보 없음 · Desktop 후보는 있되 1순위 아님
+        self.assertNotIn(os.path.join(self.home, "Documents", "CYSjavis"), o["parents"])
+        self.assertIn(os.path.join(self.home, "Desktop", "CYSjavis"), o["parents"][1:])
+        os.makedirs(os.path.join(self.home, "Documents"))
+        rc, o2 = self.run_cmd("suggest-folder", "--name", "교육부")
+        self.assertIn(os.path.join(self.home, "Documents", "CYSjavis"), o2["parents"])
+        self.assertIn("①", o2["say"])
+        self.assertIn(os.path.join(self.home, "CYSjavis", "교육부"), o2["say"])
+
+    def test_suggest_includes_where_existing_depts_live(self):
+        cwd = os.path.join(self.home, "work", "부서들", "행정부")
+        json.dump({"depts": {"dept-1": {"socket": os.path.join(self.home, "s1.sock"), "cwd": cwd,
+                                        "display_name": "행정부"}}}, open(os.environ["CYS_DEPTS_JSON"], "w"))
+        rc, o = self.run_cmd("suggest-folder", "--name", "교육부")
+        self.assertEqual(rc, 0, o)
+        self.assertIn(os.path.join(self.home, "work", "부서들"), o["parents"])
+
+    def test_chosen_folder_is_used_and_no_desktop_folder(self):
+        rid = self.proposed_confirmed()          # 기본 --folder ~/CYSjavis
+        self.assertEqual(self.req(rid)["cwd"], os.path.join(self.home, "CYSjavis", "설교준비부"))
+        self.assertEqual(self.tick(), 0)
+        r = self.req(rid)
+        self.assertEqual(r["state"], "created", r.get("events"))
+        self.assertTrue(os.path.isfile(os.path.join(self.home, "CYSjavis", "설교준비부", "CLAUDE.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "Desktop", "CYSjavis")), "바탕화면 폴더 0")
+
+    def test_user_typed_folder_card_and_new_location_note(self):
+        rc, o = self.propose(folder=os.path.join(self.home, "교회", "자료"))
+        self.assertEqual(rc, 0, o)
+        want = os.path.join(self.home, "교회", "자료", "설교준비부")
+        self.assertEqual(self.req(o["request"])["cwd"], want)
+        self.assertIn(want, o["card"])
+        self.assertIn("새로 만듭니다", o["card"], "없는 위치는 새로 만든다고 카드에 적는다")
+
+    def test_bad_folders_are_refused_without_card(self):
+        bad_list = [("상대/경로", "전체 경로"), ("~/.cys/x", "프로그램"), ("~/Library/x", "프로그램")]
+        if sys.platform == "darwin" or os.name == "nt":
+            bad_list.append(("~/library/x", "프로그램"))      # 대소문자 무시 파일 시스템 — 소문자로 비켜 가지 못한다
+        for bad, why in bad_list:
+            rc, o = self.propose(folder=bad)
+            self.assertEqual((rc, o.get("reason")), (2, "folder"), (bad, o))
+            self.assertIn(why, o["say"], bad)
+        f = os.path.join(self.home, "파일")
+        open(f, "w").close()
+        rc, o = self.propose(folder=f)
+        self.assertEqual((rc, o.get("reason")), (2, "folder"), o)
+        self.assertIn("파일입니다", o["say"])
+
+
+class TestFolderStepR1(Base):
+    """(1.1.7 G · 적대 검증 R1 Fable/agy) 부모·부서 폴더 혼동 · 이미 있는 폴더 · 너무 위쪽 · javis_org 절대 경로."""
+
+    def test_candidate_dept_folder_given_as_folder_is_folded(self):
+        want = os.path.join(self.home, "CYSjavis", "설교준비부")
+        rc, o = self.propose(folder=want)            # 목록에 보인 「부서 폴더」를 그대로 말함
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(self.req(o["request"])["cwd"], want, "<위치>/<이름>/<이름> 으로 겹치면 안 된다")
+
+    def test_folder_needed_also_returns_parents(self):
+        rc, o = self.propose(folder=None)
+        self.assertEqual(o["parents"][0], os.path.join(self.home, "CYSjavis"))
+        self.assertEqual(len(o["parents"]), len(o["candidates"]))
+
+    def test_existing_nonempty_folder_is_disclosed_on_card(self):
+        d = os.path.join(self.home, "Documents", "설교준비부")
+        os.makedirs(d)
+        for n in ("a.txt", "b.txt"):
+            open(os.path.join(d, n), "w").close()
+        rc, o = self.propose(folder=os.path.join(self.home, "Documents"))
+        self.assertEqual(rc, 0, o)
+        self.assertIn("이미 있는 폴더입니다 — 안의 파일 2개는 그대로", o["card"])
+
+    def test_too_high_locations_refused(self):
+        for bad in ("/", os.path.dirname(os.path.realpath(self.home))):
+            rc, o = self.propose(folder=bad)
+            self.assertEqual((rc, o.get("reason")), (2, "folder"), (bad, o))
+            self.assertIn("너무 위쪽", o["say"])
+
+    def test_symlinked_parent_into_program_area_refused(self):
+        os.makedirs(os.path.join(self.home, ".cys", "x"), exist_ok=True)
+        link = os.path.join(self.home, "링크")
+        os.symlink(os.path.join(self.home, ".cys"), link)
+        rc, o = self.propose(folder=os.path.join(link, "x"))
+        self.assertEqual((rc, o.get("reason")), (2, "folder"), o)
+
+    def test_same_name_file_at_target_refused(self):
+        os.makedirs(os.path.join(self.home, "CYSjavis"))
+        open(os.path.join(self.home, "CYSjavis", "설교준비부"), "w").close()
+        rc, o = self.propose(folder="~/CYSjavis")
+        self.assertEqual((rc, o.get("reason")), (2, "folder"), o)
+        self.assertIn("파일", o["say"])
+
+    def test_hidden_only_folder_not_reported_as_having_files(self):
+        d = os.path.join(self.home, "CYSjavis", "설교준비부")
+        os.makedirs(d)
+        open(os.path.join(d, ".DS_Store"), "w").close()
+        rc, o = self.propose()
+        self.assertEqual(rc, 0, o)
+        self.assertNotIn("이미 있는 폴더", o["card"])
+
+    def test_javis_org_rejects_relative_or_dotdot_cwd(self):
+        import javis_org
+        disp = "설교준비부"
+        quote = "우리 교회에 %s 부서를 새로 두어 설교 준비를 돕게 한다" % disp
+        for cwd in (disp, os.path.join(self.home, "a", "..", disp)):
+            m = {"kind": "org-manifest", "manifest_version": 1,
+                 "source": {"design_doc": "x", "design_doc_sha256": "x"},
+                 "departments": [{"key": "c0a1b2", "display": disp, "account": "shared", "cwd": cwd,
+                                  "mission_md": "m", "source_quote": quote, "new_dept_approved": True}],
+                 "tasks": []}
+            errs = javis_org.validate_manifest(m, doc_text=quote,
+                                               catalog={"accounts": {"shared": "/x"}, "departments": {}})
+            self.assertTrue([e for e in errs if "절대 경로" in e], (cwd, errs))
 
 
 class TestHappyPath(Base):
@@ -659,7 +793,7 @@ class TestReviewR1(Base):
         utter = os.path.join(self.tmp, "u.txt")
         open(utter, "w").write("사용자 발화 원문")
         rc, o = self.run_cmd("propose", "--name", "가부서", "--mission", "일", "--claude-md-file", self.body,
-                             "--utterance-file", utter)
+                             "--folder", "~/CYSjavis", "--utterance-file", utter)
         r = self.req(o["request"])
         r["state"] = "created"                       # 가동 알림 전 · 옛 코드엔 삭제 분기가 없던 상태
         r["created_at"] = time.time() - 8 * 86400
@@ -986,7 +1120,7 @@ class TestReviewR2(TestReviewR1):
 
     def test_2r_f9_rm_failure_does_not_kill_tick(self):
         rc, o = self.run_cmd("propose", "--name", "가부서", "--mission", "일", "--claude-md-file", self.body,
-                             "--utterance-file", self.body)
+                             "--folder", "~/CYSjavis", "--utterance-file", self.body)
         r = self.req(o["request"])
         r["state"] = "superseded"
         r["created_at"] = time.time() - 8 * 86400

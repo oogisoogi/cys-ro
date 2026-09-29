@@ -741,7 +741,7 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
      ②MASTER_TODO 갱신 ③진행 중 작업 로컬 커밋(push 금지 — denylist) ④checksum 산출 → CSO에
      "clear 준비 완료(SAVED+checksum)"를 push한다.
   4. **CSO 검증→집행(주인 대신)**: CSO가 SESSION_STATE를 재독·검증(checksum 대조·최신 mtime —
-     자연어 신뢰 금지·결정론) 후 `cys cycle-agent --role master --verifier <cso>`로 master surface에
+     자연어 신뢰 금지·결정론) 후 `cys cycle-agent --role master --verifier worker`(CSO 자신은 검증자 불가 — 호출자==검증자 교착 · exit 82)로 master surface에
      `/clear`+Enter를 주인 대신 집행한다(surface는 role 주소로 해소·하드코딩 금지·master role 확인 후·
      `--force-no-verify` 평시 금지).
   5. **master 자동복구**: `/clear` 직후 SessionStart:clear hook이 SESSION_STATE·RECOVERY를 주입 →

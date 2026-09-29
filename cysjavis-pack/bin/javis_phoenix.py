@@ -2015,16 +2015,32 @@ def stage_reinject(socket, role, surface, stub):
     return r.returncode == 0, "reinject rc=%s %s" % (r.returncode, (r.stdout or r.stderr or "").strip()[:120])
 
 
+# ★③(1.1.7) `cys reinject --check` 의 ACK 줄(정본 = src/bin/cys.rs `REINJECT_ACK_LINE`) — **줄 단위**로만 읽는다.
+#   종전 `"각성" in stdout` 은 실제 ACK 줄을 한 번도 인정하지 못했고(원작자 6a090055 실측), `"awake"` 는 가드의
+#   skip 줄 낱말에 우연히 걸렸을 뿐이다(무관 텍스트 속 낱말로도 참이 된다).
+#   ★(적대 R1 · Fable F5) 가드 「awake」(TTL 안 ACK 기록)의 확인 전용 줄은 「(ACK 기록 · N초 전 …」 — 같은 머리 `(ACK` 로 받는다.
+_REINJECT_ACK_LINE_RE = re.compile(r"(?m)^디렉티브 생존 확인 \(ACK (?:수신\)|기록 · )")
+
+
+def g2_acked(returncode, stdout):
+    """G2 ACK 판정(순수) — rc 0 ∧ ACK 줄이 줄 머리에 있을 때만."""
+    return returncode == 0 and _REINJECT_ACK_LINE_RE.search(stdout or "") is not None
+
+
 def stage_g2_ack(socket, role, surface, stub):
     """G2 핸드셰이크 ack — 부활 노드가 원장 대조 핑에 응답하는지(M7). 응답 없으면
     타임아웃 → unverified 격하 모드로 전진(무한 보류 금지). stub은 응답자가 없으므로
     best-effort 로 시도만 하고 결과를 저널에 남긴다.
-    ★WP-11 agent-gate: agent=None 빈 셸엔 각성 핑을 쏘지 않는다(빈 셸은 ack 주체 없음)."""
+    ★WP-11 agent-gate: agent=None 빈 셸엔 각성 핑을 쏘지 않는다(빈 셸은 ack 주체 없음).
+    ★③(1.1.7 · 원작자 U8 P0-M2 의 우리 판) **확인 전용**(`--ack-only`) — 어떤 결과에서도 전문을 넣지 않는다.
+      종전엔 stage_reinject 와 **같은 명령**(`--check`)이라 복원 1회에 핑 2 + 전문 최대 2회였다. 재주입 자격은
+      stage_reinject 한 곳뿐이다(좌석당 전문 제출 ≤1). 구 cys(플래그 미지원 → clap rc 2)는 ACK 아님으로 접히고
+      그 호출은 아무것도 주입하지 않는다(버전 스큐 안전 · 팩 하한 1.1.7 이 새 팩 × 옛 바이너리를 막는다)."""
     if _surface_agent_present(socket, surface) is False:
         return False, "g2 skip: agent 없음(빈 셸) — 각성 핑 미발사(WP-11 agent-gate)"
-    r = cys("reinject", "--check", "--role", role, "--surface", surface, "--timeout", "4",
+    r = cys("reinject", "--check", "--ack-only", "--role", role, "--surface", surface, "--timeout", "4",
             socket=socket, timeout=10, owner=True)
-    acked = (r.returncode == 0) and ("각성" in (r.stdout or "") or "awake" in (r.stdout or "").lower())
+    acked = g2_acked(r.returncode, r.stdout)
     return acked, "g2 ack=%s (%s)" % (acked, (r.stdout or r.stderr or "").strip()[:120])
 
 

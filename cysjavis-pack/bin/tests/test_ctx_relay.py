@@ -74,7 +74,8 @@ class T(unittest.TestCase):
     def test_master_notice_names_handshake(self):
         t = R.notice_text("master", "2", 65, 60)
         self.assertIn("오너 입력 아님", t)
-        self.assertIn("--role master --verifier cso", t, "master 는 self-clear 금지 — 검증자 핸드셰이크를 지시해야 한다")
+        self.assertIn("--role master --verifier worker", t, "master 는 self-clear 금지 — 검증자 핸드셰이크를 지시해야 한다(검증자 ≠ 호출자 CSO · ⑤ 1.1.7)")
+        self.assertNotIn("--verifier cso", t, "CSO 가 자기를 검증자로 두면 동기 대기 중 교착한다(exit 82)")
         self.assertNotIn("--surface surface:2", t)
 
     def test_decide_threshold_env(self):

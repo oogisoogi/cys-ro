@@ -1,0 +1,119 @@
+# HANDOFF-input — 1.1.7 갈래 2 「입력·순환」 (TICKET=cysr-117-impl-input · master#275572ce)
+
+- 좌석: surface:1152 · 117input(계정2) · 브랜치 `fix/117-input`(기준 1bc32693 = SPLIT 커밋 · 그 밑 v1.1.6 = 76d2b5e9)
+- 착수 19:18 KST · 6항목 커밋 끝 20:20(62분) · 게이트·성찰 뒤 이 문서.
+- 합치는 쪽(151 · int/117) 이 읽을 것: §1 커밋 표 · §3 겹치는 파일 · §5 남은 위험.
+
+## 1. 커밋 표 (갈래 안 순서 = SPLIT §2)
+
+| # | 커밋 | 무엇 | 시험(새) · 뮤테이션 |
+|---|---|---|---|
+| ⑮ | 40b7567e | 터미널 자동 응답(ESC[I·CPR·마우스 보고…)을 미제출 입력 계수에서 제외 — 타이핑 가드와 같은 술어 1조건 | handlers `terminal_autoreply_does_not_count_as_pending_input` · 적색 확인 |
+| ⑭ | 19928670 | 계수 고착 해제 — 쓰기 세대(`input_gen`) + 빈 입력창(가로줄 사이 빈 「❯ 」 행 · framed)·출력 정적·승인 창 없음이 같은 (계수, 세대)로 quiet 초 이상 → input_gate 안 재확인 뒤 0 · 해제 틱 배달 0 · `queue.input_pending_reset` | governance `u14_*` 3 · 뮤턴트 3종 적색 |
+| ④ | 3426508d · 71672c42 | 초안 게이트(draft_gate) — Text/SubmitKey/ClearFirst/CancelKey × 사람 초안·기계 잔여·화면 점유 · 사람 바이트 계수 · node-recover 사람 입력 보호 거부 = rc 79(회수 0) · GUI send_input 오류 코드 전달 · 재기동 clear_first 1회 재시도(`ui/src/restartplan.ts`) | cysd `d12_*` 6 · cys `c4_node_recover_…` · cys-app `d12_send_input_…` · ui `restartplan.test.ts` · 뮤턴트 3종 적색 |
+| ③ | f7ab5a1f | `reinject --check --ack-only`(확인 전용 · 전문 0) · phoenix G2 = --ack-only + 줄 단위 ACK · 순환·node-recover 깨움 글 제출 1회 · 팩 하한 1.1.7 두 레인 | cys `u8_*` 3 · 팩 `test_phoenix_g2_ack_only.py`(CI 4루프 등재 · 뮤턴트 2 내장) · 뮤턴트 3종 적색 |
+| ⑤ | 4680f0db | cycle-agent `verifier_precheck`(저장 지시 주입 전) · 82 충돌/83 증명 불가 · 지침·통지문 4곳 `--verifier worker` · CEO_TEMPLATE 재합성 · 해시 2종 재생성 · MASTER_CORE/CEO_CORE §11 절 해시 재기입 | cys `e5_*` 2 · test_ctx_relay 개정 · 뮤턴트 3종 적색 |
+| ⑯ | c5888582 | send_key/send_text 옵션 `refuse_on_approval`(같은 요청 안에서 쓰기 전 판정 · 코드 `approval_screen`) · 순환 4단계 C-u·/clear·Return 에 적용 | cysd `u16_…`(claude 2.1.280 허락 창 실화면) · cys `u16_…` · 뮤턴트 적색 |
+
+## 2. 로컬 게이트 (이 좌석 실측 · 20:2x)
+- `cargo test --bin cysd` 1207 통과(전체 7회 중 1회 적색 3건 = ACL 시험 `CYS_PACK_DIR` env 경합 부류 · 재실행 초록 — 아래 §5-⑥)
+- `cargo test --bin cys` 347 · `cargo test --lib` 550 · `cargo test -p cys-app --bins` 174(스텁 스테이징 = ci-branch 와 같은 방식 · 스텁은 .gitignore)
+- `ui`: `bun test` 1463 통과 · `bun run typecheck` 오류 7 = **기준 커밋 1bc32693 에서도 7**(restorebrief.test.ts·updateplan.test.ts · 이 갈래 무관 · 스크래치 worktree 로 실측)
+- 합성기: `gen_ceo_template.py --check` GREEN · `gen_released_directive_hashes.py --check` OK
+- 팩 파이썬 루프(ci-branch 목록 57) 전부 통과 · 디렉티브 3줄 증명(gen --check · test_bootv2_doc_contract · test_event_inject) + test_core_inject · test_content_pins_parity · test_ctx_relay
+- 건강 검체 `run_bootstrap_health.py` = §6 에 결과
+
+## 3. 겹치는 파일 · 통합 주의 (SPLIT §2 규칙 대비)
+- `src/lib.rs`: 상수 4개 추가(DRAFT_GATE_TAG · MSG_DRAFT_GATE_CANCEL_KEY · EXIT_RECOVER_REFUSED=79 · ERR_APPROVAL_SCREEN) — `MSG_TYPING_GUARD` 바로 뒤 · `EXIT_GATE_PENDING` 바로 뒤. 갈래 1 공용 헬퍼와 구역 다름.
+- `src/bin/cysd/state.rs`: Surface 필드 3개(input_gen · pending_input_stale · pending_input_human_bytes) — `pending_input_bytes` 곁(L851 부근) + 초기화(L4122 부근). 갈래 1 구역(L3079~ · L4708~)과 떨어짐.
+- `governance.rs`: 새 함수 묶음은 `pending_input_after` 뒤 · `approval_screen_now` 뒤 · 배달 틱(⑭ 배선) · `deliver_head_locked`(Inject 뒤 사람 계수 0). **Q2(갈래 1 · L6576 앞 1줄)와 겹침 없음** — 단 줄 번호가 약 +300 밀렸으니 grep 으로 찾을 것.
+- `handlers.rs`: send_text·send_key 안(가드 뒤 · 원장 앞 · 계수 갱신) + 테스트. 갈래 1 구역(L7378~ · L7742~)과 떨어짐.
+- `src/bin/cys.rs`: clap Reinject · run_reinject · run_boot(79 분기) · run_node_recover · boot_agent_on_surface(인자 `note` 추가 — 호출자 3곳 전부 갱신) · run_cycle_agent · 새 함수 몇 개 · 테스트. 갈래 1(L4003~4950) · 갈래 3(L11-14 · 버전 문자열 시험) 과 구역 다름.
+- `src-tauri/src/main.rs`: send_input 끝부분(rpc_full) + 시험 1. `ui/src/main.ts`: import 1줄 · restartNode · 주석 3줄(L3108).
+- `.github/workflows/{ci-branch,release,pack-release}.yml`: 팩 루프에 `test_phoenix_g2_ack_only \` **독립 줄**(test_event_inject 다음 줄 · 긴 끝줄은 무접촉 — 갈래 1 이 끝줄에 붙여도 충돌 없게) · release.yml L1047 · pack-release.yml L61 팩 하한 '1.1.7'(+주석 3·2줄). 갈래 3 의 Q1(L978-986 · L457-465)과 구역 다름.
+- 디렉티브(갈래 2 전용): CSO_DIRECTIVE §2 · MASTER_DIRECTIVE §11 — **줄 수 불변**(줄 범위 상수 보호). 합성물은 이 브랜치에서 재생성해 커밋했지만 **int/117 병합 뒤 다시 재생성**(SPLIT §2 · 손 병합 금지): `python3 scripts/gen_ceo_template.py` · `python3 scripts/gen_released_directive_hashes.py` · MASTER_CORE/CEO_CORE 머리 주석의 `§11=` 절 해시는 `cysjavis-pack/hooks/core_inject.py` `keyed_sections()` 로 다시 잴 것(다른 갈래가 §11 을 안 바꾸면 그대로).
+
+## 4. 9단계 성찰(갈래 완료 · 코드 성찰 기준 — 30년차 아키텍트 3원칙 × 3층위)
+**① 의도(한두 문장)**: 사람이 쓰던 입력줄을 기계가 덮거나 이어 붙이거나 대신 제출하지 않게 하고(④⑭⑮), 순환·복원이 같은 좌석에 같은 목적 글을 두 번 넣거나 스스로 교착하지 않게 한다(③⑤⑯). 새 기능·리팩터링 0 — 원작자 수정의 **우리 판 최소 단위 재구현**이며 커밋 본문에 원작자 해시를 남겼다(다음 통째 편입 때 버릴 수 있게).
+
+**② 영향 범위(파급) — 1층위 사실 매핑**
+| 바뀐 축 | 직접 | 호출자·소비자 | 확인 |
+|---|---|---|---|
+| 입력 계수(⑮⑭④) | handlers send_text/send_key · governance 틱 · state 필드 | 큐 배달 틱 · pane.idle 각성(seat_input_line) · 강제 배달 | cysd 전체 · b1_* 무회귀 |
+| 초안 게이트(④) | send_text/send_key 거부 | CLI `cys send`/`send-key`(문면 접두로 --queued 1회 폴백 · 기존 계약) · inject_text(폴백 있음) · node-recover(79) · cycle-agent(C-u 거부 = Err 1 · quiescing 해제) · 팩 send+Return 호출자(awaken·autopilot·verifier = 같은 CLI 폴백) · master-send.sh(C-u → 워커 좌석엔 사람 초안 없음 전제) · GUI(사람 실키 통과 · 조립 문안만) | cys 347 · 팩 57 · ui 1463 |
+| 종료코드(④⑤) | 79 · 82 · 83 | run_boot(79 → skipped_unconfirmed = 기존 버킷) · 82/83 소비부 없음(사람·CSO 가 문면을 읽음) | c4 · e5 |
+| reinject(③) | clap 1 · run_reinject | phoenix G2 · 팩 하한(두 레인) · 옛 팩 × 새 바이너리 = --check 불변(무회귀) | u8 · 팩 시험 |
+| 디렉티브(⑤) | 문면 4곳 | CEO_TEMPLATE(재합성) · released hashes · CORE 절 해시 | 3줄 증명 + core_inject |
+
+**③ 변경 설계 — 2층위 구조(강결합·샷건 서저리 지점, 미리 고지)**
+- **문면 결박**: 초안 게이트 거부는 코드가 아니라 **문면 접두**(`MSG_TYPING_GUARD`)로 CLI 폴백을 탄다(와이어가 message 만 넘김 · 기존 계약). 이 접두를 바꾸면 폴백이 조용히 죽는다 — lib 상수 1곳이 정본. C-u 거부만 전용 문면이라 node-recover 판정에 `is_input_guard_refusal` 을 따로 뒀다(**뮤테이션으로 발견한 실제 구멍**: 없으면 rc 1 → 좌석 kill).
+- **판정자 단일화**: 승인 축(`seat_approval_pending`)을 초안 게이트·⑯ 옵션이 함께 쓴다(큐 배달자와 같은 재료). 관문 코퍼스·어댑터 문면이 바뀌면 세 곳이 같이 움직인다 — 의도된 결합.
+- **boot_agent_on_surface 인자 1개 추가(note)**: 호출자 3곳 · 소스 핀 시험 5개가 이 함수 본문을 본다(서명 무관 · 전부 초록).
+- **결합도↓ 기회(제안만 · 미구현)**: 원작자처럼 `pending_input_bytes`·human·stale·gen 을 한 상태 구조체로 묶으면 원자성이 좋아진다 — 1.1.7 범위 밖(리팩터링 금지) → 다음 정기 편입 후보.
+
+**④ 3층위 철학 정합성**: 박사님 범위 밖 새 기능 0 · 문구 손질 0(원작자 C-06 한국어 토스트 번역표는 v4 가 뺐으므로 옮기지 않음 · 재기동 실패 토스트는 기존 제목+원문 칸만) · 원작자 문면 가운데 **우리 판에서 거짓인 근거**(「CSO 는 feed reply 권한 없음」 — 우리 role-capability-gate 는 CSO full-trust)는 옮기지 않았다.
+
+**⑤ 결정론 치환**: 합격 판정은 전부 명령 — 소스 핀(제출 횟수 · 분기 순서 · 옵션 동반) · 두 레인 하한 값 일치 · 줄 단위 ACK 정규식 · 원본 계수 불변.
+
+**⑥ 적대(방어 불가·약한 지점)**: §5.
+
+**⑦ 언어**: 코드 주석·시험 이름 = 파일 관행(한국어 주석 + 영어 식별자) 유지.
+
+**⑧ 필요성**: 6항목 모두 v4 필수 · ⑯ 은 확신 Low(실기 재현 없음) — 최소 단위(옵션 1개 · 호출 3곳)로 한정.
+
+**⑨ 최종**: 이 문서의 줄 번호 언급은 쓰지 않았다(구현이 줄을 밀었다 · grep 으로 찾을 것).
+
+## 5. 남은 위험 · 판단 기록 (정직)
+1. **⑭ 판단 1건**: 입력창 모양(framed)인 **대체화면**은 해제를 허용했다 — 배달 게이트 `alt_screen_blocks` 와 같은 규칙(윈 claude 좌석은 본 화면이 대체화면). SPLIT 요약 「alt-screen 이면 비해제」와 다르다 → 메뉴·대화상자 모양 대체화면만 비해제. 마커를 모르거나 가로줄 없는 어댑터(codex·gemini)는 해제 안 됨(종전 보류 유지).
+2. **④ 거동 변화(의도)**: `cys send` 로 본문을 **두 번** 나눠 보낸 뒤 Return 하는 흐름은 둘째 본문이 `pending_input` 거부 → CLI 가 --queued 로 돌린다(둘째 본문은 따로 배달). 같은 계약의 원작자 판과 동일. 팩 호출자 grep 에서 두 번 나눠 보내는 곳은 못 찾았다.
+3. **④ 화면 축**: 계수 0 · 화면 커서 앞 글자 = 거부(ScreenOccupied). 에이전트 자신이 입력줄에 남긴 글자(드묾)도 막는다 — 원작자와 같음.
+4. **⑤**: 기본 편성에 worker 좌석이 없으면(사용자가 지움) CSO 의 master 순환이 83 으로 멈춘다(문면에 다음 행동). 기존 설치의 디렉티브는 사용자 소유라 `.new` 병치로만 닿는다(pack.rs 기존 경로 · 이 티켓 무접촉).
+5. **⑯**: 실기 재현 없음(확신 Low) · 판정과 쓰기 사이 틈 = 한 요청 안(파서 락 순서 때문에 input_gate 밖). 옛 데몬 × 새 cys = 옵션 무시(보호 없음·실패 없음).
+6. **[정정] 시험 적색의 원인** — 앞 판(과 【진행】 보고)에서 「ACL 시험 `CYS_PACK_DIR` env 경합 부류」라고 적었는데 **틀렸다**. 실측 원인 = **내 새 시험의 경합**: `sleep 30` 좌석을 만든 직후 기계 본문을 보내면 셸이 아직 `sleep` 으로 exec 하기 전이라 빈 좌석 가드(`no_agent`)가 먼저 발화했고, 그 패닉이 `ACL_ENV_LOCK` 을 오염시켜 v116 시험이 `PoisonError` 로 연쇄 적색이었다. 수리 = 새 handlers 시험 전부에 기존 `test_wait_seat_runs(&s, "sleep", &["30"])` 대기(커밋 R1 수리). 수리 뒤 cysd 전체 7회 연속 초록. 남은 기지 flake = `a_spawned_pty_child_does_not_inherit_the_lock_fd`(HANDOFF-v116-rel 기록 · 1회 관측).
+7. **③ 범위**: 원작자 핑 운명 판정(세션 기록 5상태)·재주입 멱등 키는 넣지 않았다(v3 최소 단위) — 우리 `reinject_guard`(시간당 3 · 간격)가 상한. 옛 팩 × 새 바이너리의 `--check`(ACK 없으면 전문 주입)는 무회귀를 위해 그대로다.
+8. **③ 팩 하한 1.1.7**: 1.1.7 미만 앱은 새 팩을 인앱으로 못 받는다(1.1.7 은 앱·팩 동시 발행 전제). pack-release 의 하한 검증기는 `v$MIN_BINARY` 태그로 빌드되므로 **v1.1.7 태그가 먼저 있어야** 팩-온리 발행이 통과한다.
+
+## 6. 건강 검체
+- `run_bootstrap_health.py`(전 검체 · 20:29~20:36 · 커밋 71672c42 트리): **GREEN — 발효 149 PASS / 0 FAIL / 1 SKIP(적용불가) / 0 OFF · 399.6s**. SKIP 1 = `SKIP H-WIN-11     W4   Windows CI 실기 재실행(부채 V4 해소) — 로컬은 잡 계약 검증`
+
+## 7. 적대 검증 R1 (스냅샷 afbbcce1 · agy = BLOCK 3건 · Fable = REVISE 7건) — 처분
+| 출처 | 지적 | 처분 | 근거·수리 |
+|---|---|---|---|
+| agy F1 blocking | CYS_SURFACE_ID 판독 불가 → 83 은 오판 | **기각** | 데몬은 pane 에 숫자 id 를 주입(state.rs `builder.env(ENV_SURFACE_ID, id)`) · cmux 페인은 CMUX_SURFACE_ID 를 쓴다 → 「cmux:0」 은 생기지 않는다 · 판독 불가 = 비중복 증명 불가 = fail-closed(원작자와 같음) |
+| agy F2 blocking | send-key 글자·화살표·Backspace 가 사람 초안을 고칠 수 있다 | **수용(좁힘)** | `key_to_bytes` 는 글자 1개도 통과 → 새 종류 EditKey = 사람 초안 축만(기계 잔여·화면으로는 안 막음 · 메뉴 조작 무회귀) |
+| agy F3 major | ⑯ 판정과 쓰기 사이 틈 | **잔여 위험 유지** | §5-5 · 같은 요청 안 · 쓰기 직전 판정은 writer 층 개조가 필요(최소 단위 밖) |
+| Fable F1 major | 사람 축이 자기신고 human — pane 발신자가 위조 | **수용** | 사람 축 = `human ∧ (호출자 pane 무귀속 ∨ 오퍼레이터 토큰 일치)` — pane 안에서 띄운 개발 GUI 는 토큰으로 통과 · 시험 2개의 GUI 흉내 발신자를 미귀속으로(실제 GUI 와 같게) |
+| Fable F2 major | 권위 면제가 살아 있는 좌석의 사람 초안 위 주입을 허용 | **수용** | 면제는 기계 잔여·화면 축만 건너뛰고 **사람 초안 축은 유지**(inject_text·cycle-agent 1단계·reinject 는 거부 시 기존 --queued 폴백) |
+| Fable F3 minor | ⑭ 해제 관측이 큐가 있을 때만 | 잔여 | 직접 send → CLI 6초 뒤 --queued → 다음 틱부터 해제 관측(결과 정상 · 지연) · 틱마다 모든 좌석 화면 판독은 비용 증가 |
+| Fable F4 minor | GUI 경로 삽입 뒤 기계 Return 이 오너 삽입물을 제출 | **수용** | 게이트 밖 GUI 문안(경로 삽입)은 사람 몫으로 센다 |
+| Fable F5 minor | ack-only awake 줄이 「(ACK 수신)」 으로 읽힘 | **수용(문면)** | 「디렉티브 생존 확인 (ACK 기록 · N초 전 · TTL 안 · 재핑 생략)」 · phoenix 는 `(ACK 수신)`·`(ACK 기록 · ` 둘 다 ACK(판정 불변 = 종전 「awake」 우연과 같은 결과 · 이제 명시) |
+| Fable F6 minor【추정】 | pane 안에서 뜬 데몬의 스케줄 잡이 상속 env 로 거짓 82 | 잔여 | 개발 흐름 한정 · 데몬 기동 env 스크럽은 이 티켓 밖 |
+| Fable F7 minor | 데몬 재기동 뒤 기계 잔여 좌석의 GUI 재기동이 screen_occupied 로 막힘 | 잔여 | 원작자와 같은 판정 · §5-3 |
+
+## 8. 적대 검증 R2 (스냅샷 d17dec40 · agy = ACCEPT 0건 · Fable = REVISE major 2 · minor 6) — 처분 · ★여기서 매듭(CTX 60% 근접)
+| 지적 | 처분 | 근거·다음 |
+|---|---|---|
+| Fable F2 major — 에이전트 사망 뒤 사람 계수 잔존 → node-recover C-u 영구 거부(79 반복 · 원격 복구 불가) | **수용·수리(이 커밋)** | 사망 확정(agent.exited 최초 통지) 때 input_gate 안에서 계수 0 · 사람 0 · 세대+1 — 입력줄 주인(TUI)과 초안이 함께 소멸 · 시험 `r2_agent_death_clears_pending_input_counters` · 뮤테이션 적색 |
+| Fable F1 major — 데몬 내부 Inject 5경로(channels inject_master · schedule push · boot_supervisor · handlers 2150대 · watch_wake)가 초안 게이트·계수 밖 → 사람 초안 뒤 제출 + 사람 계수 잔존 → 순환 C-u human_draft 거부 | **미수리 · 📌 master 판정** | 게이트 밖 주입 자체는 1.1.6 부터 있던 경로(④ 최소 단위 = handlers 2지점 · v3) · 새로 생긴 해악은 「잔존 사람 계수」 쪽. 권고 = 5경로가 제출(CR) 뒤 계수 0·사람 0·세대+1 을 쓰게(`deliver_head_locked` 와 같은 3줄 · 게이트 배선은 하지 않음) — R3 한 커밋 크기. 대안 = 1.1.7 밖(다음 정기) · 그 동안 순환이 human_draft 로 멈추면 오너가 그 창에서 Enter/지우기 1회 |
+| F3 minor — setsid 재부모화로 무귀속 위조 | 잔여 | 같은 UID 악의 프로세스 = 위협 모델 밖(ACL 층 · 오퍼레이터 토큰도 같은 UID 로 읽힘 — 기존 주석) |
+| F4 minor — pane 안 개발 GUI 의 machineOrigin 문안은 토큰이 없어 기계 취급 | 잔여 | 개발 흐름 한정 · 실키는 토큰으로 통과 · §7 F1 행의 「토큰으로 통과」는 **실키에 한함**으로 정정 |
+| F5 minor — reinject-guard 기록이 재기동을 넘어 G2 를 「기록 ACK」로 통과 | 잔여 | 종전 「awake」 우연과 같은 결과(회귀 아님) · 문면은 이제 「기록 · N초 전」 · node-recover 때 가드 기록 삭제는 다음 정기 후보 |
+| F6 minor — 이벤트 수 단정 완화(n≥9) · kind 함수 exempt 인자 = 프로덕션 상수 false | 잔여(시험 품질) | 정확 계수 단정·죽은 인자 제거는 R3 에서 함께 |
+| F7 minor【추정】— 순환 /clear 가 C-u 재렌더 지연 시 screen_occupied | 잔여 | 실기 재현 없음 · 발생 시 순환 rc 1(파괴 없음) |
+| F8 minor — 초안 게이트 거부에도 CLI 6초 재시도 후 큐 | 잔여 | 비용(지연)만 · `[draft_gate:` 표지로 즉시 큐 전환은 CLI 개정(다음 정기) |
+
+**라운드 현황**: R1(수리 5) → R2(수리 1 · 결정 1) = 2/3 라운드 사용. 수렴 판정 = agy ACCEPT · Fable 은 major 1건(F1) 이 master 판정 대기라 미수렴.
+
+## 9. R3(마지막 라운드 · master#84c3982f A 채택) — 수리 7e7efefb · Fable R3 = REVISE(major 1 · minor 3) · **3라운드 상한 = 수리하지 않음**(판정 원문 경로만)
+- 수리 내용: 제출 지점 공통 기록 `note_line_submitted`(계수 0 · 사람 0 · 세대+1) — `seat_inject_guarded`(channels·schedule·boot_supervisor 공통 입구) · `deliver_to_ceo` · `deliver_head_locked` · watch_wake 제출 재시도 CR + 열거 시험 `r3_every_production_submit_point_notes_line_submitted` + 행동 시험 `r3_internal_inject_clears_stale_counters` · 뮤테이션 4종 적색 · cysd 1210 통과.
+- Fable R3 원문 = 스크래치 `…/scratchpad/fable-r3.out`(이 좌석 · 요지 아래) · 스냅샷 `…/scratchpad/snap-7e7efefb`.
+  - F1 major: 0 쓰기가 writer 인계 직후라 실제 CR(cr_delay 120~500ms 뒤) 전에 들어온 사람 키가 CR 로 함께 제출된 뒤에도 사람 몫이 남을 수 있다(수백 ms 창).
+  - F2 minor: try_send 와 0 쓰기가 한 임계영역이 아님(µs 창).
+  - F3 minor: 열거 시험이 두 철자(`WriteReq::Inject {` · `WriteReq::Data(b"\r"`)에 앵커 — send_key Return·Program·async fn 등은 비가시 · 판정이 문자열 포함 여부라 주석으로도 통과.
+  - **F4 minor(내 편집 실수 · 사실 확인함)**: 새 시험을 v115 시험의 doc 2줄·`#[cfg(unix)]` 과 `#[test]` 사이에 끼워 넣어, 그 속성이 새 시험에 붙고 `v115_seat_inject_guarded_holds_vacant_agent_seat` 는 cfg 를 잃었다(윈에서 /bin/zsh 조기 반환으로 공허 통과 · 현 CI 는 cysd 시험을 darwin 에서만 돌려 적색 없음). 고치려면 속성 3줄을 v115 시험 앞으로 옮기면 된다(2분 · master 지시 전 무수리).
+- BACKLOG 다음 판 후보(master 판정 원문): 게이트 밖 데몬 내부 주입이 「오너 초안 뒤에 붙어 제출」되는 것 자체(1.1.6 부터의 경로).
+
+## 10. master 판정 r3(master#e5d710b9) — 머리 e980d563 수용(3라운드 상한)
+- F4 = 원상 복구 수리(커밋 3285af12): v115 시험 속성 3줄 제자리 + R3 행동 시험에 자기 `#[cfg(unix)]` · 두 시험 머리 grep 확인 · 해당 시험 통과.
+- F1(major · CR 전 수백 ms 창의 사람 키 → 사람 몫 잔존) = 남은 위험으로 수용 · 1.1.7 무수리 · 1.1.8 후보(writer 쪽 회계 = 실제 CR 을 쓴 순간 0 기록 · 「오너 초안 뒤에 붙어 제출」과 같은 가족).
+- F2(µs 창)·F3(열거 시험 두 철자 앵커·주석 통과) = 1.1.8 후보 · F3 는 구문 기반(주석 제외) 열거로.

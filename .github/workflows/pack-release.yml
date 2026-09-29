@@ -58,7 +58,9 @@ jobs:
       # ★1.0.0 상향(2026-09-16 · TICKET=cys-v101-integrate · master#b39abd5c) — 팩 서명 키가 P2 로 바뀌었고
       #   P2 는 1.0.0 바이너리 키링에서 처음 신뢰된다(≤0.14.x 키링 = 옛 키만 → 서명 거부). 아래 하한 검증기도
       #   v$MIN_BINARY 로 빌드되므로 0.14.29 로 두면 발행이 막힌다. release.yml PACK_MIN_BINARY 와 동시 상향.
-      PACK_MIN_BINARY_OVERRIDE: '1.0.0'
+      # ★1.1.7 상향(2026-09-29 · TICKET=cysr-117-impl-input ③) — 새 팩 phoenix G2 가 1.1.7 신설 `reinject --check --ack-only`
+      #   를 부른다. release.yml PACK_MIN_BINARY 와 동시 상향(두 값 동일 계약 · cys.rs 시험 핀).
+      PACK_MIN_BINARY_OVERRIDE: '1.1.7'
     steps:
       - uses: actions/checkout@v4
 
@@ -211,6 +213,7 @@ jobs:
                    test_session_start_hook \
                    test_core_inject \
                    test_event_inject \
+                   test_phoenix_g2_ack_only \
                    test_py_resolver_clt_stub test_v115_dept \
                    test_preflight_c62_c68_ledger \
                    test_runtime_seal test_preflight_c80_runtime_seal test_runtime_manifest_parity \

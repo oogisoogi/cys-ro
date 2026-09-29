@@ -464,6 +464,7 @@ jobs:
                    test_session_start_hook \
                    test_core_inject \
                    test_event_inject \
+                   test_phoenix_g2_ack_only \
                    test_py_resolver_clt_stub test_v115_dept \
                    test_preflight_c62_c68_ledger \
                    test_runtime_seal test_preflight_c80_runtime_seal test_runtime_manifest_parity \
@@ -1058,7 +1059,10 @@ jobs:
       # ★1.0.0 상향(2026-09-16 · TICKET=cys-v101-integrate · master#b39abd5c) — 팩 서명 키 P2 는 1.0.0 키링에서
       #   처음 신뢰된다. 0.14.29 로 서명하면 0.14.29~0.14.37 이 「호환」으로 적힌 채 서명을 거부한다(선언 거짓).
       #   pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약).
-      PACK_MIN_BINARY: '1.0.0'
+      # ★1.1.7 상향(2026-09-29 · TICKET=cysr-117-impl-input ③) — 새 팩의 phoenix G2 가 `cys reinject --check --ack-only`
+      #   (1.1.7 신설 표면)를 부른다. 옛 바이너리는 clap rc 2 로 「ACK 아님」이 돼 부활 G2 가 늘 degraded 가 된다(주입은 0 ·
+      #   안전하지만 선언 거짓). pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약 · cys.rs 시험 핀).
+      PACK_MIN_BINARY: '1.1.7'
     steps:
       - uses: actions/checkout@v4
 
@@ -1201,6 +1205,7 @@ jobs:
                    test_session_start_hook \
                    test_core_inject \
                    test_event_inject \
+                   test_phoenix_g2_ack_only \
                    test_py_resolver_clt_stub test_v115_dept \
                    test_preflight_c62_c68_ledger \
                    test_runtime_seal test_preflight_c80_runtime_seal test_runtime_manifest_parity \

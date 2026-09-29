@@ -310,7 +310,9 @@ pub(crate) fn tick_probes(daemon: &Arc<Daemon>) {
             cys::submit_probe::SubmitProbe::Unmeasured => done.push((p, "unmeasured")),
             cys::submit_probe::SubmitProbe::NotSubmitted if !p.retried => {
                 // CR 만 보낸다(본문 재주입 금지 — 재주입은 입력줄에 같은 줄을 두 번 붙인다).
-                let _ = s.write_tx.try_send(crate::state::WriteReq::Data(b"\r".to_vec()));
+                if s.write_tx.try_send(crate::state::WriteReq::Data(b"\r".to_vec())).is_ok() {
+                    crate::governance::note_line_submitted(&s); // ★R3 — CR 제출 뒤 계수를 비운다
+                }
                 p.retried = true;
                 p.delivered_at = Some(now);
                 keep.push(p);

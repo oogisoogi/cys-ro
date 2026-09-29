@@ -3251,7 +3251,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     }
                 }
             }
-            // ── 워커 기동 게이트 ② (cmux beginCreate 보상 트랜잭션 흡수) ──
+            // ── 워커 기동 게이트 ② (보상 트랜잭션 — 중간에 실패하면 만든 것을 되돌린다) ──
             // (1) idempotency: 같은 key 재시도면 기존 surface 재반환(추가 spawn 0).
             let idem_key = param_str(&params, "idempotency_key");
             if let Some(ref key) = idem_key {

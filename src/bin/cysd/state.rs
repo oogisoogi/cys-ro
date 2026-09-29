@@ -4422,9 +4422,9 @@ impl Daemon {
                             drop(carry);
                             for (mut title, body) in extracted {
                                 if title.is_empty() {
-                                    title = surf.title.lock().unwrap().clone(); // cmux 폴백
+                                    title = surf.title.lock().unwrap().clone(); // 창 제목으로 대신
                                 }
-                                // 억제 게이트: 직전 1.5s 내 주입(에코)이 있으면 폐기(cmux suppressesRaw 대응)
+                                // 억제 게이트: 직전 1.5s 안에 우리가 넣은 주입의 되울림이면 버린다
                                 let recently_injected = surf
                                     .last_injected
                                     .lock()
@@ -8140,6 +8140,29 @@ mod tests {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), bytes, "못 읽은 원본이 덮였다");
         assert!(daemon.queue_wal_block_reported.load(Ordering::SeqCst), "경보 1회");
+        // master#a62921f6 조건: 경보가 **실제로 듣는 쪽**에 닿는다 — CSO 지침의 상시 구독
+        // (`cys events --category watchdog --category health --category queue`)이 이 이벤트를 고른다.
+        let evs: Vec<_> = daemon
+            .bus
+            .tail(50)
+            .into_iter()
+            .filter(|ev| ev["name"] == "queue.persist_blocked")
+            .collect();
+        assert_eq!(evs.len(), 1, "두 번 저장해도 경보는 1회");
+        let cso = include_str!("../../../cysjavis-pack/directives/CSO_DIRECTIVE.md");
+        let line = cso
+            .lines()
+            .find(|l| l.contains("상시 구독하라: `cys events"))
+            .expect("CSO 상시 구독 줄");
+        let cats: Vec<String> = line
+            .split("--category ")
+            .skip(1)
+            .map(|t| t.split_whitespace().next().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            crate::events::event_matches(&evs[0], &[], &cats),
+            "CSO 상시 구독({cats:?})이 queue.persist_blocked 를 못 받는다"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

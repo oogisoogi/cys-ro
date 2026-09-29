@@ -74,4 +74,4 @@
 8. **③ 팩 하한 1.1.7**: 1.1.7 미만 앱은 새 팩을 인앱으로 못 받는다(1.1.7 은 앱·팩 동시 발행 전제). pack-release 의 하한 검증기는 `v$MIN_BINARY` 태그로 빌드되므로 **v1.1.7 태그가 먼저 있어야** 팩-온리 발행이 통과한다.
 
 ## 6. 건강 검체
-(아래 줄은 run_bootstrap_health.py 결과가 나오면 채운다)
+- `run_bootstrap_health.py`(전 검체 · 20:29~20:36 · 커밋 71672c42 트리): **GREEN — 발효 149 PASS / 0 FAIL / 1 SKIP(적용불가) / 0 OFF · 399.6s**. SKIP 1 = `SKIP H-WIN-11     W4   Windows CI 실기 재실행(부채 V4 해소) — 로컬은 잡 계약 검증`

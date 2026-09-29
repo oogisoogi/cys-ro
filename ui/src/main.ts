@@ -8300,6 +8300,7 @@ async function start() {
       ok?: number;
       fail?: number;
       detail?: string;
+      depts_unreadable?: string | null;
     };
     // ★P1-3: 방금 조직을 지운 사용자에게 "직원 복귀 중"은 정반대 신호다. 리셋 진행/완료
     // 상태에서는 복원 토스트를 띄우지 않는다(복원 자체는 백엔드 판단이므로 표시만 억제).
@@ -8320,6 +8321,8 @@ async function start() {
       if (p.hq_ok === false)
         toast("health", "⚠ 본부 복원 확인 필요", `${p.hq_note ?? "본부 복원이 끝나지 않았습니다."} (부서 성공 ${ok} · 실패 ${fail})`);
       else if (fail > 0) toast("health", "⚠ 직원 복귀 일부 실패", `부서 복원 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
+      // ①(Fable R2 A) 부서 목록을 못 읽어 부서 복원을 건너뛰었으면 「완료」 가 아니다.
+      else if (p.depts_unreadable) toast("health", "⚠ 부서 복원 건너뜀", deptRegistryUnreadableNote(p.depts_unreadable));
       else toast("watchdog", "✅ 직원 복귀 완료", `노드 세션 복원 완료 (부서 ${ok}).`);
       // ★(v112-restore ①) 카드는 앱 시작 직후 뜨고 복원 주입은 그 뒤 끝난다 — 미제출 실측 자리는
       //   복원이 끝난 이 시점에 알림 1줄로 정직하게 알린다(묻지 않는다 · 자동 조치는 이미 1회 했다).

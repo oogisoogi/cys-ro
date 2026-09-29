@@ -8058,6 +8058,8 @@ mod tests {
     /// seq가 살아있는 복원 항목과 절대 불충돌) + id 조립 = boot 식별자(started_at) + seq.
     /// ⑩(TICKET=cysr-117-impl-lead) 비상 정지 복원 진리표 — 부재·명시 false 만 해제, 손상 3형상·읽기
     /// 거부는 정지 유지. 종전 `.ok()…filter(paused==true)` 로 되돌리면 손상 행이 None 이 되어 적색.
+    // 윈도 state_dir 은 %LOCALAPPDATA% 아래라 픽스처 폴더와 다르다(Fable R2 C) — POSIX 에서만.
+    #[cfg(unix)]
     #[test]
     fn pause_restore_fails_closed_on_unreadable_or_corrupt_state() {
         let dir = queue_wal_dir("pause");
@@ -8093,6 +8095,8 @@ mod tests {
 
     /// ⑧(TICKET=cysr-117-impl-lead) 판독 불능 WAL(BOM·잘림·배열 아님) → 부팅 때 원본 바이트 그대로
     /// `queue-state.json.unreadable-*` 에 보존 · 쓰기 금지 아님. 보존을 빼면 적색.
+    // 윈도 state_dir 은 %LOCALAPPDATA% 아래라 픽스처 폴더와 다르다(Fable R2 C) — POSIX 에서만.
+    #[cfg(unix)]
     #[test]
     fn unreadable_queue_wal_is_preserved_before_first_persist() {
         for (tag, bytes) in [

@@ -7946,7 +7946,6 @@ mod tests {
     use super::*;
 
     /// ★v115-restore(A1): 거부 로그 줄이 발신자 명령줄·부모를 싣는다(단명 발신자 특정용).
-    #[cfg(unix)]
     /// ⑩(TICKET=cysr-117-impl-lead) pause·resume 저장 실패는 ok 가 아니라 persist_failed 로 돌아온다
     /// (종전: 결과를 버리고 늘 ok). 메모리 정지는 그대로 걸린다.
     #[test]
@@ -7975,6 +7974,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn v115_reject_log_line_carries_caller_lineage() {
         let mut child = std::process::Command::new("sleep").arg("7.25").spawn().expect("sleep");

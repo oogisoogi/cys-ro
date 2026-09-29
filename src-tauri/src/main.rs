@@ -3741,6 +3741,7 @@ fn spawn_org_restore(app: AppHandle) {
         let mut ok = 0usize;
         let mut fail = 0usize;
         let reg_read = list_depts();
+        let depts_unreadable = reg_read.as_ref().err().cloned(); // done 알림에 싣는다(Fable R2 A — skip 은 UI 가 안 듣는다)
         if let Err(e) = &reg_read {
             // ①(Fable R1 #3) 부서 목록을 못 읽으면 부서 복원 전체를 건너뛴 사실을 알린다(종전: 조용히 ok=0·fail=0).
             let _ = app.emit(
@@ -3830,7 +3831,8 @@ fn spawn_org_restore(app: AppHandle) {
         // 이 작업의 목적). error 페이즈는 '본부 실패 + 부서 없음' 전면 실패만 담당(위).
         let _ = app.emit(
             "restore-progress",
-            json!({"phase": "done", "hq_ok": hq_ok, "hq_note": hq_note, "ok": ok, "fail": fail}),
+            json!({"phase": "done", "hq_ok": hq_ok, "hq_note": hq_note, "ok": ok, "fail": fail,
+                   "depts_unreadable": depts_unreadable}),
         );
     });
 }

@@ -1434,6 +1434,8 @@ case "$cmd" in
     #   slug 충돌도 부작용 이전 조기 거부(reg_upsert 진입부 검사와 공통 헬퍼 — 기존명 재-launch는 자기
     #   제외로 통과).
     validate_dept_name "$name" "launch <name>"
+    # ①(Fable R2 E) 판독 실패 = 폴더도 만들지 않는다(12 로 끝난 뒤 빈 부서 폴더가 남으면 passthrough 가 「기존 부서」 로 본다).
+    reg_check || exit $?
     reject_slug_collision "$name"
     sock="$(dept_sock "$name")"; pack="$(dept_pack "$name")"
     mkdir -p "$(dept_logdir "$name")" "$pack/directives"
@@ -1927,8 +1929,8 @@ PY
     reg_check || exit $?
     graceful_kill "$pid"
     rm -f "$sock" "$sock.lock" 2>/dev/null || true
-    # ①(Fable R1 #5) kill 뒤에도 판독 실패는 「폐기(exit 8)」 가 아니라 12 로 알린다(원인을 바로 말한다).
-    reg_check || exit $?
+    # ①(Fable R1 #5 · R2 B) kill 뒤 판독 실패 = 12 · 이 시점엔 데몬이 이미 죽었으므로 「무변경」 이 아니라 그 사실을 말한다.
+    reg_check 2>/dev/null || { _rc=$?; echo "[cys-dept] $name 데몬은 종료됨 · 부서 목록을 읽을 수 없어 재기동 보류 — 목록을 고친 뒤 cys-dept launch $name 으로 재기동하라" >&2; exit $_rc; }
     # ★필수2(A·리뷰) TOCTOU 재확인: kill·rm 도중 CSO down(reg_remove+dept_tombstone)이 레이스로 끼어들어
     # 폐기됐으면 launch(부활) 금지 — 사전 게이트 이후 창을 최소화하려 launch 직전에 한 번 더 확인(미등재→exit 8).
     if ! reg_names | grep -Fxq -- "$name"; then

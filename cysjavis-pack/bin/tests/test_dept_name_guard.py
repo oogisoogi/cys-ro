@@ -387,6 +387,9 @@ class RegistryUnreadable(Base):
                 self.assertEqual(rc, 12, "%s %s: exit=%d(≠12)\n%s%s" % (tag, args, rc, out, err))
                 self.assertIn("판독 실패", err, "%s %s: 사유 안내 부재" % (tag, args))
                 self.assertEqual(self._raw(), data, "%s %s: 판독 불가 레지스트리가 바뀌었다" % (tag, args))
+                if args[0] == "launch":
+                    self.assertFalse(os.path.exists(os.path.join(self.home, ".cys", "pack-dept-b")),
+                                     "%s: 판독 실패인데 부서 팩 폴더를 만들었다" % tag)
 
     def test_rotate_rechecks_registry_before_kill(self):
         # 사전 게이트 통과 뒤·kill 직전에 레지스트리가 판독 불가가 되면 데몬을 죽이지 않고 exit 12.

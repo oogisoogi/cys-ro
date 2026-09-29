@@ -375,6 +375,8 @@ fn apply_dept_lane_jobs(jobs: &mut Vec<serde_json::Value>, is_dept: bool) -> boo
 
 pub fn ensure_builtin_jobs() {
     let path = schedule_path();
+    // ⑰ CLI `schedule add/remove`·원샷 제거와 같은 락 — 부트 중에도 CLI 가 동시에 쓸 수 있다.
+    let _guard = cys::pack::acquire_settings_lock(&path);
     let mut root: serde_json::Value = match std::fs::read_to_string(&path) {
         Ok(c) => match serde_json::from_str(&c) {
             Ok(v) => v,
@@ -794,21 +796,43 @@ fn scheduler_tick(daemon: &Arc<Daemon>) {
 }
 
 /// T3-10: 처리 완료된 원샷 job을 schedule.json에서 제거 (영구 잔존 차단)
+///
+/// ⑰(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑰ⓑ) `cys schedule add/remove` 와 **같은 파일을 읽고 덮는
+/// 두 번째 writer** 다. 락 없이 읽기→제거→저장하면 그 사이 CLI 가 더한 잡이 이 저장에 덮여 사라진다
+/// (lost-update). CLI 와 같은 락(`schedule.json.cys-lock`)으로 직렬화하고, 저장은 원자 교체로 한다.
+/// 판독·파싱 실패 = 무접촉(종전과 같음 — 손상본 격리는 `load_jobs` 소관).
 fn remove_job_from_file(job_id: &str) {
-    let path = schedule_path();
+    remove_job_at(&schedule_path(), job_id)
+}
+
+fn remove_job_at(path: &std::path::Path, job_id: &str) {
+    let path = path.to_path_buf();
+    let _guard = cys::pack::acquire_settings_lock(&path);
     let Ok(content) = std::fs::read_to_string(&path) else {
         return;
     };
     let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
         return;
     };
-    if let Some(arr) = root["jobs"].as_array_mut() {
-        arr.retain(|j| j["id"].as_str() != Some(job_id));
+    let Some(arr) = root["jobs"].as_array_mut() else {
+        return;
+    };
+    let before = arr.len();
+    arr.retain(|j| j["id"].as_str() != Some(job_id));
+    if arr.len() == before {
+        return; // 이미 없음 — 쓸 것이 없다(무의미한 재기록으로 CLI 저장과 부딪히지 않게)
     }
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&root).unwrap_or_default(),
-    );
+    let mut text = match serde_json::to_string_pretty(&root) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[cysd] schedule: 원샷 제거 직렬화 실패({e}) — 무접촉");
+            return;
+        }
+    };
+    text.push('\n');
+    if let Err(e) = cys::atomic_write_bytes(&path, text.as_bytes()) {
+        eprintln!("[cysd] schedule: 원샷 '{job_id}' 제거 저장 실패({e}) — 파일에 그대로 남음(원본 무손상)");
+    }
 }
 
 /// 즉시 발화 (CLI `schedule run-now` — 검증용, last_fired 갱신 없음)
@@ -906,7 +930,8 @@ fn text_command_allowed(cmd: &str) -> Result<(), String> {
     let Some(secret) = crate::approval::signing_secret() else {
         return Err("text_command 승인 시크릿 부재 — 미승인 셸 실행 거부".into());
     };
-    let records = crate::approval::load_records();
+    let records = crate::approval::load_records()
+        .map_err(|e| format!("text_command 승인 목록 판독 실패({e}) — 미승인 셸 실행 거부"))?;
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().to_string());
@@ -2092,6 +2117,65 @@ mod tests {
             backup.file_name().unwrap().to_string_lossy().contains(".corrupt-"),
             "백업 이름에 .corrupt- 표식이 있어야 한다"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑰ⓑ(TICKET=cysr-117-impl-lead) 원샷 제거는 `cys schedule add` 와 같은 락을 잡고 읽는다 —
+    /// 락을 쥔 쪽이 그 사이에 더한 잡은 제거 저장에 덮여 사라지지 않는다(lost-update 0).
+    /// 락을 빼면 제거 스레드가 옛 내용을 읽고 덮어 'added' 가 사라진다(뮤테이션 적색).
+    #[cfg(unix)]
+    #[test]
+    fn oneshot_removal_serializes_with_cli_lock_no_lost_update() {
+        let dir = std::env::temp_dir().join(format!(
+            "cys-sched-lock-{}-{}",
+            std::process::id(),
+            now_epoch().to_bits()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("schedule.json");
+        std::fs::write(&p, r#"{"jobs":[{"id":"once1","at":1,"once":true}]}"#).unwrap();
+        let held = cys::pack::acquire_settings_lock(&p).expect("unix 락");
+        let p2 = p.clone();
+        let t = std::thread::spawn(move || remove_job_at(&p2, "once1"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // CLI 가 락을 쥔 채 읽기→추가→저장하는 자리.
+        std::fs::write(
+            &p,
+            r#"{"jobs":[{"id":"once1","at":1,"once":true},{"id":"added","every_minutes":5}]}"#,
+        )
+        .unwrap();
+        drop(held);
+        t.join().unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let ids: Vec<&str> = v["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|j| j["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["added"], "락 보유 중 추가된 잡이 유실됐다(lost-update)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑰ 판독·파싱 불가 파일은 원샷 제거가 한 바이트도 바꾸지 않는다(BOM · 잘린 JSON).
+    #[test]
+    fn oneshot_removal_leaves_unreadable_schedule_byte_identical() {
+        let dir = std::env::temp_dir().join(format!(
+            "cys-sched-unread-{}-{}",
+            std::process::id(),
+            now_epoch().to_bits()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("schedule.json");
+        for bytes in [
+            &b"\xEF\xBB\xBF{\"jobs\":[{\"id\":\"once1\",\"at\":1}]}"[..],
+            &b"{\"jobs\":[{\"id\":\"once1\""[..],
+        ] {
+            std::fs::write(&p, bytes).unwrap();
+            remove_job_at(&p, "once1");
+            assert_eq!(std::fs::read(&p).unwrap(), bytes, "판독 불가 파일이 바뀌었다");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

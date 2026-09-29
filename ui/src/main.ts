@@ -4,6 +4,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { deptRegistryUnreadableNote, readDeptRegistry } from "./deptreg";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
 import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
@@ -6227,9 +6228,10 @@ async function rotateDeptDaemon(name: string, force: boolean, skipDrain = false)
 }
 
 // 메인+부서 데몬 버전 스큐 감지. 부서 열거=list_depts(레지스트리 SOT — 열린 탭 무관·Windows pipe 포함).
+let deptsUnreadableNotified = false;
 async function detectSkew(
   appVer: string,
-): Promise<{ mainSkew: boolean; daemonVer: string; skewedDepts: SkewedDept[] }> {
+): Promise<{ mainSkew: boolean; daemonVer: string; skewedDepts: SkewedDept[]; deptsUnreadable: string | null }> {
   let daemonVer = "";
   let mainSkew = false;
   try {
@@ -6242,9 +6244,8 @@ async function detectSkew(
   // ★F3(리뷰): 부서 열거를 레지스트리 SOT(list_depts)로 — name+socket을 레지스트리에서 직접 얻어
   // deptNameFromSocket(unix 전용 정규식) 의존을 없앤다(Windows named pipe 우회). 죽은 등재 항목은
   // daemon_status(socket) 실패로 skip돼 무해.
-  const reg = (await invoke("list_depts").catch(() => ({ depts: {} }))) as {
-    depts?: Record<string, { socket?: string }>;
-  };
+  // ①(TICKET=cysr-117-impl-lead) 판독 실패를 「부서 0」 으로 접지 않는다 — 호출부가 알린다.
+  const reg = await readDeptRegistry((c) => invoke(c));
   const skewedDepts: SkewedDept[] = [];
   for (const [name, meta] of Object.entries(reg.depts ?? {})) {
     const socket = meta.socket;
@@ -6257,7 +6258,7 @@ async function detectSkew(
       /* 죽은/전이 중 부서 소켓 skip(무해) */
     }
   }
-  return { mainSkew, daemonVer, skewedDepts };
+  return { mainSkew, daemonVer, skewedDepts, deptsUnreadable: reg.unreadable };
 }
 
 function clearSkewBadge() {
@@ -6360,12 +6361,15 @@ async function restartAllDaemons(
 ): Promise<{ failedDepts: string[]; deptRestoreFailed: boolean; restoreNotes: string[] }> {
   await invoke("rotate_daemon", { force: true, skipDrain });
   // 부서 열거=list_depts(레지스트리 SOT) + daemon_status 생존 확인 — detectSkew 동형(죽은 등재 skip).
-  const reg = (await invoke("list_depts").catch(() => ({ depts: {} }))) as {
-    depts?: Record<string, { socket?: string }>;
-  };
+  // ①(TICKET=cysr-117-impl-lead) 못 읽음 = 부서 재시작을 조용히 건너뛰지 않고 결과 알림에 싣는다.
+  const reg = await readDeptRegistry((c) => invoke(c));
   let deptRestoreFailed = false;
   const failedDepts: string[] = [];
   const restoreNotes: string[] = [];
+  if (reg.unreadable) {
+    deptRestoreFailed = true;
+    restoreNotes.push(deptRegistryUnreadableNote(reg.unreadable));
+  }
   for (const [name, meta] of Object.entries(reg.depts ?? {})) {
     if (!meta.socket) continue;
     try {
@@ -6508,7 +6512,12 @@ async function checkVersionSkew() {
   if (!appVer) return;
   const info = document.getElementById("daemon-info");
   if (!info) return;
-  const { mainSkew, daemonVer, skewedDepts } = await detectSkew(appVer);
+  const { mainSkew, daemonVer, skewedDepts, deptsUnreadable } = await detectSkew(appVer);
+  // ① 부서 목록을 못 읽으면 부서 판번 교대를 못 본다 — 한 번 알린다(주기 점검마다 반복하지 않음).
+  if (deptsUnreadable && !deptsUnreadableNotified) {
+    deptsUnreadableNotified = true;
+    toast("health", "⚠ 부서 목록을 읽을 수 없음", deptRegistryUnreadableNote(deptsUnreadable));
+  } else if (!deptsUnreadable) deptsUnreadableNotified = false;
   if (!mainSkew && skewedDepts.length === 0) {
     clearSkewBadge();
     return;
@@ -7226,7 +7235,8 @@ async function purgeDept(ws: Workspace) {
     name?: string;
     size_bytes?: number;
     mtime_secs?: number;
-    is_last?: boolean;
+    is_last?: boolean | null;
+    depts_unreadable?: string | null;
     exists?: boolean;
   } = {};
   try {
@@ -7235,6 +7245,9 @@ async function purgeDept(ws: Workspace) {
     toast("watchdog", "삭제 미리보기 실패", "지울 내용을 확인하지 못해 삭제를 멈췄습니다. 다시 시도해 주세요.", undefined, String(e));
     return;
   }
+  // ①(TICKET=cysr-117-impl-lead) 부서 목록을 못 읽었으면 「마지막 부서인지」 를 모른다 — 알리고 계속한다.
+  if (info.depts_unreadable)
+    toast("health", "⚠ 부서 목록을 읽을 수 없음", deptRegistryUnreadableNote(info.depts_unreadable));
   const nm = info.name || wsLabel(ws);
   const bytes = Number(info.size_bytes || 0);
   const sizeHuman =
@@ -7249,7 +7262,7 @@ async function purgeDept(ws: Workspace) {
   const ok = await purgeConfirmModal(nm, {
     sizeHuman,
     mtime,
-    isLast: !!info.is_last,
+    isLast: !!info.is_last, // ①: 판독 실패면 null → 강등 고지 없음(미상을 「마지막」 으로 읽지 않는다)
     exists: !!info.exists,
   });
   if (!ok) return;
@@ -7351,7 +7364,8 @@ async function factoryResetFlow() {
     strip_profiles?: number;
     report_only?: string[];
     live_sessions?: number;
-    dept_count?: number;
+    dept_count?: number | null;
+    depts_unreadable?: string | null;
     trash_root_ready?: boolean;
     trash_root_error?: string | null;
     interrupted_prior?: string[];
@@ -7388,6 +7402,8 @@ async function factoryResetFlow() {
     deptCount: info.dept_count ?? 0,
     interruptedPrior: info.interrupted_prior ?? [],
   };
+  if (info.depts_unreadable)
+    toast("health", "⚠ 부서 목록을 읽을 수 없음", deptRegistryUnreadableNote(info.depts_unreadable));
   const ok = await factoryResetConfirmModal(preview);
   if (!ok) return;
   // TOCTOU 재확인(purgeDept와 동일 근거): 모달이 열려 있던 동안 restart/purge가 시작됐을 수 있다.
@@ -8284,6 +8300,7 @@ async function start() {
       ok?: number;
       fail?: number;
       detail?: string;
+      depts_unreadable?: string | null;
     };
     // ★P1-3: 방금 조직을 지운 사용자에게 "직원 복귀 중"은 정반대 신호다. 리셋 진행/완료
     // 상태에서는 복원 토스트를 띄우지 않는다(복원 자체는 백엔드 판단이므로 표시만 억제).
@@ -8304,6 +8321,8 @@ async function start() {
       if (p.hq_ok === false)
         toast("health", "⚠ 본부 복원 확인 필요", `${p.hq_note ?? "본부 복원이 끝나지 않았습니다."} (부서 성공 ${ok} · 실패 ${fail})`);
       else if (fail > 0) toast("health", "⚠ 직원 복귀 일부 실패", `부서 복원 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
+      // ①(Fable R2 A) 부서 목록을 못 읽어 부서 복원을 건너뛰었으면 「완료」 가 아니다.
+      else if (p.depts_unreadable) toast("health", "⚠ 부서 복원 건너뜀", deptRegistryUnreadableNote(p.depts_unreadable));
       else toast("watchdog", "✅ 직원 복귀 완료", `노드 세션 복원 완료 (부서 ${ok}).`);
       // ★(v112-restore ①) 카드는 앱 시작 직후 뜨고 복원 주입은 그 뒤 끝난다 — 미제출 실측 자리는
       //   복원이 끝난 이 시점에 알림 1줄로 정직하게 알린다(묻지 않는다 · 자동 조치는 이미 1회 했다).
@@ -8335,6 +8354,8 @@ async function start() {
     } else if (p.phase === "error") {
       dismissToast("restore");
       toast("health", "⚠ 본부 복원 확인 필요", p.detail || "노드 복원 실행에 실패했습니다.");
+      // ①(Fable R3) 본부 실패와 부서 목록 판독 실패가 겹치면 부서 쪽 원인도 따로 알린다(「부서 없음」 으로 읽히지 않게).
+      if (p.depts_unreadable) toast("health", "⚠ 부서 복원 건너뜀", deptRegistryUnreadableNote(p.depts_unreadable));
     }
   });
 

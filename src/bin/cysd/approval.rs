@@ -12,9 +12,9 @@ use std::path::PathBuf;
 
 // ── 자료구조 ────────────────────────────────────────────────────────────────
 
-/// 서명된 prefix 승인 레코드. cmux SurfaceResumeApprovalRecord의 cys 단순화(단일머신).
-/// environment는 정렬된 Vec<(String,String)>로 — serde_json 맵 순서 비결정성을 피하고
-/// 서명 직렬화와 일치시킨다(결정론 서명의 핵심).
+/// 서명된 명령 접두 승인 레코드(한 기계 안에서 쓰는 형식).
+/// environment 는 정렬된 Vec<(String,String)> — JSON 맵의 키 순서에 기대지 않아야 같은 레코드가
+/// 언제나 같은 서명 원문을 만든다(결정론 서명의 핵심).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
     pub version: u32,
@@ -160,38 +160,41 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 // ── 결정론 직렬화 + 서명/검증 ─────────────────────────────────────────────────
 
 impl ApprovalRecord {
-    /// cmux signingPayloadData 1:1 흡수 — 각 필드 base64 후 newline-join, environment는
-    /// 키 정렬(이미 정렬 전제) 후 `b64key=b64val,…`. base64+구분자가 충돌(따옴표/등호/콤마/
-    /// 줄바꿈을 값에 넣어 필드 경계를 위조)을 차단한다.
+    /// 서명 원문 — 7줄 `이름=값`, 줄 사이는 `\n`(끝 줄바꿈 없음). 문자열 값은 전부 base64 로 싸서
+    /// 따옴표·등호·쉼표·줄바꿈으로 칸 경계를 흉내 내는 위조를 막는다.
+    ///
+    /// ★이 형식(칸 이름·순서·구분자·숫자 표기)은 **디스크에 있는 모든 승인 레코드의 계약**이다. 한 글자만
+    /// 바뀌어도 기존 승인 서명이 전부 거부된다 — 바꾸지 마라(시험 `golden_signing_payload_and_signature_bytes_are_frozen`).
+    /// (TICKET=cysr-117-impl-lead ⑲: 우리 방식으로 재작성 · 원문 바이트 불변.)
     pub fn signing_payload(&self) -> Vec<u8> {
-        let prefix = self
-            .command_prefix
-            .iter()
-            .map(|t| b64_encode(t.as_bytes()))
-            .collect::<Vec<_>>()
-            .join(",");
+        fn b64_joined<'a>(parts: impl Iterator<Item = &'a str>) -> String {
+            parts.map(|p| b64_encode(p.as_bytes())).collect::<Vec<_>>().join(",")
+        }
         let env = self
             .environment
-            .iter() // 이미 정렬됨(sort_norm_env가 보장)
+            .iter() // sort_norm_env 가 정렬을 보장한다
             .map(|(k, v)| format!("{}={}", b64_encode(k.as_bytes()), b64_encode(v.as_bytes())))
             .collect::<Vec<_>>()
             .join(",");
-        let fields = [
-            format!("version={}", self.version),
-            format!("id={}", self.id),
-            format!("commandPrefix={prefix}"),
-            format!(
-                "cwd={}",
-                self.cwd
-                    .as_deref()
-                    .map(|c| b64_encode(c.as_bytes()))
-                    .unwrap_or_default()
-            ),
-            format!("environment={env}"),
-            format!("createdAt={}", self.created_at),
-            format!("updatedAt={}", self.updated_at),
+        let lines: [(&str, String); 7] = [
+            ("version", self.version.to_string()),
+            ("id", self.id.clone()),
+            ("commandPrefix", b64_joined(self.command_prefix.iter().map(String::as_str))),
+            ("cwd", b64_joined(self.cwd.as_deref().into_iter())),
+            ("environment", env),
+            ("createdAt", self.created_at.to_string()),
+            ("updatedAt", self.updated_at.to_string()),
         ];
-        fields.join("\n").into_bytes()
+        let mut out = String::new();
+        for (i, (name, value)) in lines.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(name);
+            out.push('=');
+            out.push_str(value);
+        }
+        out.into_bytes()
     }
 
     pub fn sign(&mut self, secret: &[u8]) {
@@ -259,67 +262,73 @@ pub fn best_match<'a>(
 
 // ── 토큰화 / 정규화 / 민감 env ─────────────────────────────────────────────────
 
-/// 셸 토크나이저(cmux SurfaceResumeCommandCanonicalizer.tokens 포팅): 따옴표('/")·백슬래시
-/// 인식. 미닫힌 따옴표는 None(거부). shell Turing-complete 한계(파이프·;·$())는 prefix
-/// 매칭으로 blast radius만 좁힌다(완전차단 아님).
+/// 명령 문자열을 셸처럼 낱말로 나눈다 — 승인 접두 비교의 재료.
+///
+/// 규칙(POSIX 셸의 근사 · TICKET=cysr-117-impl-lead ⑲ 재작성 · 진리표 = 시험 `golden_tokenize_table_is_frozen`):
+/// - 따옴표 밖: 공백·탭·`\n`·`\r` 이 낱말을 끊는다. `\` 는 다음 한 글자를 그대로 싣는다(맨 끝 `\` 는 버린다).
+///   따옴표를 여는 순간 낱말이 생긴다 — `''` 도 빈 낱말 하나다.
+/// - 작은따옴표 안: 닫는 `'` 말고는 전부 글자 그대로(`\` 포함).
+/// - 큰따옴표 안: `\` 뒤가 `"` `\` `$` `` ` `` 이면 그 글자만, 아니면 `\` 를 그대로 둔다.
+/// - 따옴표가 안 닫히면 None — 접두 끼워 넣기를 막으려고 비교 자체를 거부한다.
+///
+/// 셸 문법 전체(파이프·`;`·`$()`)를 해석하지는 않는다 — 접두 일치로 허용 범위를 좁힐 뿐이다.
 pub fn tokenize(command: &str) -> Option<Vec<String>> {
-    let mut tokens: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut has_token = false;
-    let mut chars = command.chars().peekable();
-    let mut quote: Option<char> = None;
-
-    while let Some(c) = chars.next() {
-        match quote {
-            Some(q) => {
-                if c == q {
-                    quote = None; // 따옴표 닫힘
-                } else if c == '\\' && q == '"' {
-                    // 큰따옴표 안의 백슬래시: 다음 문자 리터럴(POSIX 근사)
-                    if let Some(&n) = chars.peek() {
-                        if n == '"' || n == '\\' || n == '$' || n == '`' {
-                            cur.push(chars.next().unwrap());
-                        } else {
-                            cur.push('\\');
-                        }
-                    } else {
-                        cur.push('\\');
-                    }
-                } else {
-                    cur.push(c);
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mode {
+        Bare,
+        Single,
+        Double,
+    }
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut mode = Mode::Bare;
+    let mut it = command.chars().peekable();
+    while let Some(c) = it.next() {
+        match (mode, c) {
+            (Mode::Single, '\'') | (Mode::Double, '"') => mode = Mode::Bare,
+            (Mode::Single, _) => word.push(c),
+            (Mode::Double, '\\') => match it.peek() {
+                Some(&n @ ('"' | '\\' | '$' | '`')) => {
+                    word.push(n);
+                    it.next();
+                }
+                _ => word.push('\\'),
+            },
+            (Mode::Double, _) => word.push(c),
+            (Mode::Bare, '\'') => {
+                mode = Mode::Single;
+                in_word = true;
+            }
+            (Mode::Bare, '"') => {
+                mode = Mode::Double;
+                in_word = true;
+            }
+            (Mode::Bare, '\\') => {
+                if let Some(n) = it.next() {
+                    word.push(n);
+                    in_word = true;
                 }
             }
-            None => match c {
-                '\'' | '"' => {
-                    quote = Some(c);
-                    has_token = true;
+            (Mode::Bare, ' ' | '\t' | '\n' | '\r') => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
                 }
-                '\\' => {
-                    if let Some(n) = chars.next() {
-                        cur.push(n);
-                        has_token = true;
-                    }
-                }
-                ' ' | '\t' | '\n' | '\r' => {
-                    if has_token {
-                        tokens.push(std::mem::take(&mut cur));
-                        has_token = false;
-                    }
-                }
-                _ => {
-                    cur.push(c);
-                    has_token = true;
-                }
-            },
+            }
+            (Mode::Bare, _) => {
+                word.push(c);
+                in_word = true;
+            }
         }
     }
-    if quote.is_some() {
-        return None; // 미닫힌 따옴표 = 거부
+    if mode != Mode::Bare {
+        return None;
     }
-    if has_token {
-        tokens.push(cur);
+    if in_word {
+        words.push(word);
     }
-    Some(tokens)
+    Some(words)
 }
 
 /// cwd 정규화 — tilde 확장 + 후행 슬래시 제거. 단일머신 전제(symlink 정규화는 비용·미사용).
@@ -346,8 +355,8 @@ pub fn normalize_cwd(cwd: Option<&str>) -> Option<String> {
     })
 }
 
-/// 민감키 drop(서명 페이로드에 시크릿값 미포함) + 키 정렬(결정론·binary_search 전제).
-/// cmux isSensitiveEnvironmentKey 흡수 — 키 대문자화 후 부분일치 drop.
+/// 민감한 환경변수를 빼고(서명 원문에 비밀값을 싣지 않는다) 키 순으로 정렬한다(결정론 ·
+/// `matches` 의 binary_search 전제). 키를 대문자로 바꿔 아래 낱말이 **들어 있기만** 해도 뺀다.
 pub fn sort_norm_env(env: &[(String, String)]) -> Vec<(String, String)> {
     const SENSITIVE: &[&str] = &[
         "API_KEY",
@@ -374,7 +383,7 @@ pub fn sort_norm_env(env: &[(String, String)]) -> Vec<(String, String)> {
     out
 }
 
-// ── 시크릿 저장 (cmux fileBackedSecret 흡수 — keyring crate 부재 대안) ──────────
+// ── 서명 키 저장 (운영체제 키체인 대신 0600 파일 — 외부 crate 없이) ─────────────
 
 const ENV_SECRET_B64: &str = "CYS_APPROVAL_SECRET_B64";
 
@@ -395,8 +404,12 @@ fn records_path() -> PathBuf {
         .join("approvals.json")
 }
 
-/// 우선순위: ① env override(B64, 로깅 금지) → ② 0600 파일 → ③ 생성·0600 저장.
-/// 파일 쓰기 실패해도 in-memory secret 반환(세션 한정 — 재시작 시 재생성).
+/// 우선순위: ① env override(B64, 로깅 금지) → ② 0600 파일 → ③ **파일이 없을 때만** 생성·0600 저장.
+///
+/// ⑨(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑨ · 원작자 8be494d1 의 우리 판 재구현) 키 파일이
+/// **있는데** 못 읽거나(권한·백신 잠금) 비어 있으면 새 키로 덮지 않고 None(= 호출부 fail-closed:
+/// 미승인 취급)을 돌린다. 종전엔 새 키를 같은 경로에 써서 기존 승인 서명이 전부 무효가 됐다
+/// (가드 훅이 `approval check` 를 자동으로 부르므로 사람 조작 없이도 났다).
 pub fn signing_secret() -> Option<Vec<u8>> {
     // ① env override(B64) — 로깅·이벤트 payload에 절대 미포함.
     if let Ok(b64) = std::env::var(ENV_SECRET_B64) {
@@ -406,23 +419,85 @@ pub fn signing_secret() -> Option<Vec<u8>> {
             }
         }
     }
-    // ② 0600 파일(pack 밖 ~/.cys/ 하위) — Keychain crate 부재라 1차 경로.
-    let path = secret_path();
-    if let Ok(d) = std::fs::read(&path) {
-        if !d.is_empty() {
-            return Some(d);
+    signing_secret_at(&secret_path())
+}
+
+/// ②③ 파일 경로 판(시험 주입용). 생성은 **덮어쓰지 않는 게시**(tmp 작성 → `hard_link` = 대상이
+/// 있으면 실패) — 부서 데몬 여럿이 같은 경로에서 동시에 처음 만들 때도 먼저 게시된 키 하나로 수렴한다.
+fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(d) if !d.is_empty() => return Some(d),
+        Ok(_) => {
+            eprintln!("[cysd] approval: 서명 키 파일이 비어 있음 — 새 키로 덮지 않는다(기존 승인 보호 · 미승인 취급)");
+            return None;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            eprintln!("[cysd] approval: 서명 키 파일 읽기 실패({e}) — 새 키로 덮지 않는다(미승인 취급)");
+            return None;
         }
     }
-    // ③ 생성 + 0600 저장.
     let secret = random_32()?;
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let _ = std::fs::create_dir_all(dir);
+    // tmp 이름 = pid + 프로세스 안 순번 — 같은 데몬의 두 스레드가 같은 tmp 를 덮어 「게시된 키 ≠ 돌려준 키」
+    // 가 되는 것을 막는다(시각만 쓰면 같은 틱에 겹친다 · 시험 signing_secret_concurrent_* 가 잡았다).
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        ".approval-secret.tmp-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let published = std::fs::write(&tmp, &secret).is_ok() && {
+        set_owner_only(&tmp.to_path_buf());
+        match std::fs::hard_link(&tmp, path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // 다른 데몬이 먼저 게시했다 — 그 키를 쓴다(내 것은 버린다).
+                let _ = std::fs::remove_file(&tmp);
+                return match std::fs::read(path) {
+                    Ok(d) if !d.is_empty() => Some(d),
+                    _ => None,
+                };
+            }
+            // 하드링크를 못 쓰는 파일시스템(SMB·exFAT 등): 덮어쓰지 않는 직접 생성(O_EXCL)으로 게시한다 —
+            // 여기서 세션 한정 키만 돌려주면 호출마다 다른 키가 되어 check·sign 이 영영 어긋난다(Fable R1 #2).
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp);
+                return publish_secret_exclusive(path, secret);
+            }
+        }
+    };
+    let _ = std::fs::remove_file(&tmp);
+    if published {
+        set_owner_only(&path.to_path_buf());
     }
-    if std::fs::write(&path, &secret).is_ok() {
-        set_owner_only(&path);
-        return Some(secret);
+    Some(secret) // 게시 실패해도 세션 한정 secret 반환(종전과 같음 — 디스크엔 아무것도 안 덮음).
+}
+
+/// ⑨ 하드링크 없는 게시 — `create_new`(O_EXCL): 이미 있으면 그 키를 읽고, 만들었으면 쓴 키를 돌린다.
+/// 쓰기 도중 다른 호출이 빈 파일을 읽으면 그쪽은 「빈 키 = 미승인 취급」 으로 한 번 거절될 뿐 덮지 않는다.
+fn publish_secret_exclusive(path: &std::path::Path, secret: Vec<u8>) -> Option<Vec<u8>> {
+    use std::io::Write;
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut f) => {
+            if f.write_all(&secret).and_then(|_| f.sync_all()).is_ok() {
+                set_owner_only(&path.to_path_buf());
+            }
+            Some(secret)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::read(path) {
+            Ok(d) if !d.is_empty() => Some(d),
+            _ => None,
+        },
+        Err(_) => Some(secret), // 디스크에 못 씀 — 세션 한정(종전과 같음 · 디스크 무접촉)
     }
-    Some(secret) // 파일 실패해도 세션 한정 secret 반환.
+}
+
+/// ⑨(Fable R1 #1) approvals.json 읽기→변경→저장 직렬화 락 — 본부·부서 데몬이 같은 파일을 쓴다.
+/// 돌려받은 핸들을 **이름 있는 바인딩**으로 RMW 끝까지 쥐어라(drop = 해제 · 윈도 = 기존 헬퍼대로 None).
+pub fn lock_records() -> Option<std::fs::File> {
+    cys::pack::acquire_settings_lock(&records_path())
 }
 
 /// 0600 권한 부여(Unix). Windows는 ACL 미설정(단일 사용자 데스크톱 전제).
@@ -469,22 +544,31 @@ fn random_32() -> Option<Vec<u8>> {
 
 // ── 레코드 영속 (JSON 0600, atomic tmp+rename) ────────────────────────────────
 
-/// 저장 포맷: `{"records":[...]}` 또는 bare 배열 둘 다 디코드(cmux 하위호환).
-pub fn load_records() -> Vec<ApprovalRecord> {
-    let path = records_path();
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
+/// 저장 형식: `{"records":[...]}`(현행 쓰기 형식) 또는 최상위 배열(옛 형식) 둘 다 읽는다.
+///
+/// ⑨(TICKET=cysr-117-impl-lead) 파일 부재만 빈 목록 · 읽기·해석 실패는 Err — 호출부는 저장하지
+/// 않는다. 종전엔 실패를 빈 목록으로 접어 `approval.sign` 이 새 1건만 남기고 기존 승인을 덮었다.
+pub fn load_records() -> Result<Vec<ApprovalRecord>, String> {
+    load_records_at(&records_path())
+}
+
+fn load_records_at(path: &std::path::Path) -> Result<Vec<ApprovalRecord>, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{} 읽기 실패({e})", path.display())),
     };
     // ① {"records":[...]} 형태
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if let Some(arr) = v.get("records") {
             if let Ok(recs) = serde_json::from_value::<Vec<ApprovalRecord>>(arr.clone()) {
-                return recs;
+                return Ok(recs);
             }
         }
     }
     // ② bare 배열
-    serde_json::from_str::<Vec<ApprovalRecord>>(&content).unwrap_or_default()
+    serde_json::from_str::<Vec<ApprovalRecord>>(&content)
+        .map_err(|e| format!("{} 해석 실패({e})", path.display()))
 }
 
 /// atomic write: tmp 작성·0600 부여 후 rename. 디렉토리 자동 생성.
@@ -495,10 +579,19 @@ pub fn save_records(records: &[ApprovalRecord]) -> Result<(), String> {
     }
     let body = serde_json::to_string_pretty(&serde_json::json!({"records": records}))
         .map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
+    // ⑨(Fable R1 #1) tmp 이름 = pid+순번 — 고정 이름은 두 데몬이 같은 tmp 를 서로 잘라 먹는다.
+    static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "json.tmp-{}-{}",
+        std::process::id(),
+        SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, body.as_bytes()).map_err(|e| e.to_string())?;
     set_owner_only(&tmp);
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     set_owner_only(&path);
     Ok(())
 }
@@ -551,6 +644,216 @@ mod tests {
             updated_at: 1000.0,
             signature: String::new(),
         }
+    }
+
+    /// ⑲(TICKET=cysr-117-impl-lead) 재작성 전 골든 핀 — 서명 원문 바이트·서명값은 **디스크에 있는 모든
+    /// 승인 레코드의 계약**이다. 기대값은 코드가 아니라 파이썬 hmac/base64 로 독립 계산했다. 한 바이트라도
+    /// 바뀌면 참가자 기기의 기존 승인이 전부 거부된다 — 이 시험이 적색이면 재작성이 틀린 것이다.
+    #[test]
+    fn golden_signing_payload_and_signature_bytes_are_frozen() {
+        let mut r = ApprovalRecord {
+            version: 1,
+            id: "rec-골든-1".into(),
+            command_prefix: vec!["git".into(), "push".into(), "--force, \"x\"=1".into()],
+            cwd: Some("/tmp/작업 폴더".into()),
+            environment: vec![
+                ("HOME".into(), "/Users/한글".into()),
+                ("LANG".into(), "ko_KR.UTF-8".into()),
+            ],
+            created_at: 1700000000.25,
+            updated_at: 1700000100.0,
+            signature: String::new(),
+        };
+        assert_eq!(
+            String::from_utf8(r.signing_payload()).unwrap(),
+            "version=1\nid=rec-골든-1\ncommandPrefix=Z2l0,cHVzaA==,LS1mb3JjZSwgIngiPTE=\n\
+             cwd=L3RtcC/snpHsl4Ug7Y+0642U\n\
+             environment=SE9NRQ===L1VzZXJzL+2VnOq4gA==,TEFORw===a29fS1IuVVRGLTg=\n\
+             createdAt=1700000000.25\nupdatedAt=1700000100"
+        );
+        r.sign(b"golden-secret-0123456789");
+        assert_eq!(r.signature, "/eGEZxkMdIGwwAGWm/5Yh9ZfzhZee1SLfDmIKhwFggk=");
+        assert!(r.has_valid_signature(b"golden-secret-0123456789"));
+        let mut r2 = ApprovalRecord {
+            version: 1,
+            id: "r2".into(),
+            command_prefix: vec!["ls".into()],
+            cwd: None,
+            environment: vec![],
+            created_at: 0.0,
+            updated_at: 0.0,
+            signature: String::new(),
+        };
+        assert_eq!(
+            String::from_utf8(r2.signing_payload()).unwrap(),
+            "version=1\nid=r2\ncommandPrefix=bHM=\ncwd=\nenvironment=\ncreatedAt=0\nupdatedAt=0"
+        );
+        r2.sign(b"k");
+        assert_eq!(r2.signature, "j3aLIBJE3b3l6T2OPdOzrBwWaASiybyBDz/+igRD+jI=");
+        // 디스크 형식(두 형) 왕복: 객체형 · 최상위 배열형 모두 같은 레코드로 읽히고 서명이 산다.
+        let d = tdir("golden");
+        let p = d.join("approvals.json");
+        let one = serde_json::to_value(&r).unwrap();
+        for text in [
+            serde_json::json!({"records": [one.clone()]}).to_string(),
+            serde_json::json!([one.clone()]).to_string(),
+        ] {
+            std::fs::write(&p, text).unwrap();
+            let got = load_records_at(&p).unwrap();
+            assert_eq!(got.len(), 1);
+            assert!(got[0].has_valid_signature(b"golden-secret-0123456789"));
+            assert_eq!(got[0].signing_payload(), r.signing_payload());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑲ 재작성 전 토큰화 진리표 핀(따옴표·백슬래시·공백·미닫힘).
+    #[test]
+    fn golden_tokenize_table_is_frozen() {
+        let v = |xs: &[&str]| Some(xs.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        let table: &[(&str, Option<Vec<String>>)] = &[
+            ("git push origin main", v(&["git", "push", "origin", "main"])),
+            ("  a\t b\n", v(&["a", "b"])),
+            ("echo 'a b' \"c d\"", v(&["echo", "a b", "c d"])),
+            ("echo ''", v(&["echo", ""])),
+            ("a\\ b", v(&["a b"])),
+            ("a\\", v(&["a"])),
+            (r#""a\"b\\c\$d\x""#, v(&[r#"a"b\c$d\x"#])),
+            (r"'a\b'", v(&[r"a\b"])),
+            ("a\"b c\"d", v(&["ab cd"])),
+            ("", v(&[])),
+            ("\"unterminated", None),
+            ("'x", None),
+            ("\"a\\", None),
+            ("x\r\ny", v(&["x", "y"])),
+        ];
+        for (input, want) in table {
+            assert_eq!(&tokenize(input), want, "입력 {input:?}");
+        }
+    }
+
+    /// ⑲ 재작성 전 env 정규화 핀(민감 키 부분일치 제거 · 바이트 정렬).
+    #[test]
+    fn golden_sort_norm_env_is_frozen() {
+        let e = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let got = sort_norm_env(&[
+            e("b", "1"),
+            e("MY_TOKEN_X", "s"),
+            e("a", "2"),
+            e("api_key", "k"),
+            e("PATH", "/bin"),
+            e("cookie_jar", "c"),
+            e("Passwd", "p"),
+            e("aws_secret", "z"),
+        ]);
+        assert_eq!(got, vec![e("PATH", "/bin"), e("a", "2"), e("b", "1")]);
+    }
+
+    fn tdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "cys-appr-{tag}-{}-{}",
+            std::process::id(),
+            crate::state::now_epoch().to_bits()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// ⑨(TICKET=cysr-117-impl-lead) 서명 키는 **없을 때만** 만든다 — 있는데 못 읽거나 비어 있으면
+    /// None(fail-closed) · 디스크 무변경. 종전(읽기 실패 → 새 키 덮기)으로 되돌리면 적색.
+    #[test]
+    fn signing_secret_never_overwrites_existing_unreadable_or_empty_key() {
+        let d = tdir("key");
+        let p = d.join(".approval-secret");
+        let k1 = signing_secret_at(&p).expect("부재 = 생성");
+        assert_eq!(k1.len(), 32);
+        assert_eq!(std::fs::read(&p).unwrap(), k1, "게시된 키 = 반환 키");
+        assert_eq!(signing_secret_at(&p).unwrap(), k1, "재호출 = 같은 키");
+        std::fs::write(&p, b"").unwrap();
+        assert!(signing_secret_at(&p).is_none(), "빈 키 파일 = 미승인 취급");
+        assert_eq!(std::fs::read(&p).unwrap(), b"", "빈 키 파일이 덮였다");
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir_all(&p).unwrap(); // 읽기 오류
+        assert!(signing_secret_at(&p).is_none());
+        assert!(p.is_dir(), "읽기 오류 자리가 바뀌었다");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::remove_dir_all(&p).unwrap();
+            std::fs::write(&p, &k1).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read(&p).is_err() {
+                assert!(signing_secret_at(&p).is_none(), "권한 거부 = 미승인 취급");
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(std::fs::read(&p).unwrap(), k1, "권한 거부 키가 덮였다");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑨ 여러 데몬이 동시에 처음 만들어도 게시된 키 하나로 수렴한다(덮어쓰지 않는 게시).
+    #[test]
+    fn signing_secret_concurrent_first_creation_converges_to_one_key() {
+        let d = tdir("race");
+        let p = d.join(".approval-secret");
+        let hs: Vec<_> = (0..8)
+            .map(|_| {
+                let p = p.clone();
+                std::thread::spawn(move || signing_secret_at(&p).unwrap())
+            })
+            .collect();
+        let keys: Vec<Vec<u8>> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        let disk = std::fs::read(&p).unwrap();
+        assert!(keys.iter().all(|k| *k == disk), "스레드마다 다른 키 = 기존 승인 무효화 경합");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑨(Fable R1 #2) 하드링크를 못 쓰는 경로에서도 키는 한 번만 게시되고 이후 호출은 같은 키를 받는다.
+    /// (종전 수리판: hard_link 실패 → 호출마다 새 세션 키 → check·sign 영구 불일치.)
+    #[test]
+    fn exclusive_publish_fallback_keeps_one_key() {
+        let d = tdir("excl");
+        let p = d.join(".approval-secret");
+        let k1 = publish_secret_exclusive(&p, vec![7u8; 32]).unwrap();
+        let k2 = publish_secret_exclusive(&p, vec![9u8; 32]).unwrap();
+        assert_eq!(k1, vec![7u8; 32]);
+        assert_eq!(k2, k1, "두 번째 게시가 다른 키를 돌렸다");
+        assert_eq!(std::fs::read(&p).unwrap(), k1, "게시된 키가 덮였다");
+        assert_eq!(signing_secret_at(&p).unwrap(), k1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⑨(Fable R1 #1) 저장 tmp 이름이 호출마다 다르다(고정 `json.tmp` 로 되돌리면 두 데몬이 서로 잘라 먹는다).
+    #[test]
+    fn save_records_tmp_name_is_unique_per_call() {
+        let src = include_str!("approval.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let f = &prod[prod.find("pub fn save_records(").unwrap()..];
+        let f = &f[..f.find("\n}\n").unwrap()];
+        assert!(!f.contains("with_extension(\"json.tmp\")"), "고정 tmp 이름 잔존");
+        assert!(f.contains("SAVE_SEQ.fetch_add"), "호출마다 다른 tmp 이름이 아니다");
+        let h = include_str!("handlers.rs");
+        assert_eq!(h.matches("let _records_lock = crate::approval::lock_records();").count(), 2,
+                   "approval.check·sign 의 RMW 락");
+    }
+
+    /// ⑨ 승인 목록: 부재만 빈 목록 · BOM·잘림·형식 불일치 = Err(호출부 무저장).
+    #[test]
+    fn load_records_unreadable_is_error_not_empty() {
+        let d = tdir("recs");
+        let p = d.join("approvals.json");
+        assert!(load_records_at(&p).unwrap().is_empty(), "부재 = 빈 목록");
+        std::fs::write(&p, r#"{"records":[]}"#).unwrap();
+        assert!(load_records_at(&p).unwrap().is_empty());
+        std::fs::write(&p, "[]").unwrap();
+        assert!(load_records_at(&p).unwrap().is_empty(), "bare 배열 하위호환");
+        for bytes in [&b"\xEF\xBB\xBF{\"records\":[]}"[..], &b"{\"records\":["[..], &b"{\"x\":1}"[..]] {
+            std::fs::write(&p, bytes).unwrap();
+            assert!(load_records_at(&p).is_err(), "판독 불가가 빈 목록으로 접혔다");
+            assert_eq!(std::fs::read(&p).unwrap(), bytes);
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -3740,7 +3740,16 @@ fn spawn_org_restore(app: AppHandle) {
         // 부서 순회 — 등록 부서(depts.json)만 대상(유령 부서 재-launch 차단).
         let mut ok = 0usize;
         let mut fail = 0usize;
-        if let Ok(reg) = list_depts() {
+        let reg_read = list_depts();
+        let depts_unreadable = reg_read.as_ref().err().cloned(); // done 알림에 싣는다(Fable R2 A — skip 은 UI 가 안 듣는다)
+        if let Err(e) = &reg_read {
+            // ①(Fable R1 #3) 부서 목록을 못 읽으면 부서 복원 전체를 건너뛴 사실을 알린다(종전: 조용히 ok=0·fail=0).
+            let _ = app.emit(
+                "restore-progress",
+                json!({"phase": "skip", "detail": format!("부서 목록을 읽지 못해 부서 복원을 건너뜀 — {e}")}),
+            );
+        }
+        if let Ok(reg) = reg_read {
             if let Some(depts) = reg.get("depts").and_then(|d| d.as_object()) {
                 for (name, meta) in depts {
                     let sock = meta
@@ -3814,7 +3823,8 @@ fn spawn_org_restore(app: AppHandle) {
             // 본부 복원조차 못 돌고 부서도 없음 = 복원 경로 자체 실패 → 가시화(UI health 토스트).
             let _ = app.emit(
                 "restore-progress",
-                json!({"phase": "error", "detail": hq_note.clone().unwrap_or_default()}),
+                json!({"phase": "error", "detail": hq_note.clone().unwrap_or_default(),
+                       "depts_unreadable": depts_unreadable}), // Fable R3: 이 경로도 부서 목록 판독 실패 사유를 싣는다
             );
             return;
         }
@@ -3822,7 +3832,8 @@ fn spawn_org_restore(app: AppHandle) {
         // 이 작업의 목적). error 페이즈는 '본부 실패 + 부서 없음' 전면 실패만 담당(위).
         let _ = app.emit(
             "restore-progress",
-            json!({"phase": "done", "hq_ok": hq_ok, "hq_note": hq_note, "ok": ok, "fail": fail}),
+            json!({"phase": "done", "hq_ok": hq_ok, "hq_note": hq_note, "ok": ok, "fail": fail,
+                   "depts_unreadable": depts_unreadable}),
         );
     });
 }
@@ -4874,9 +4885,26 @@ fn list_depts() -> Result<Value, String> {
         .unwrap_or_else(|_| {
             cys::home_dir().join(".cys/depts.json")
         });
-    match std::fs::read_to_string(&reg) {
-        Ok(s) => serde_json::from_str::<Value>(&s).map_err(|e| e.to_string()),
-        Err(_) => Ok(json!({ "depts": {} })),
+    list_depts_at(&reg)
+}
+
+/// ①(Fable R1 #3) 부서 수 — 판독 실패면 (None, Some(사유)). 목록은 읽혔는데 depts 칸이 없으면 0(종전과 같음).
+fn dept_count_or_unreadable() -> (Option<usize>, Option<String>) {
+    match list_depts() {
+        Ok(r) => (Some(r.get("depts").and_then(|d| d.as_object()).map(|o| o.len()).unwrap_or(0)), None),
+        Err(e) => (None, Some(e)),
+    }
+}
+
+/// ①(TICKET=cysr-117-impl-lead · MUST-DO-117 ①) 파일 **없음**만 빈 목록 · 읽기 오류(권한·백신 잠금)는
+/// Err — 종전엔 읽기 오류도 `Ok(빈 목록)` 이라 소비처가 「부서 0」 으로 읽었다. 앞머리 BOM 은 떼고 읽는다
+/// (cys-dept 의 utf-8-sig 판독과 같은 규칙).
+fn list_depts_at(reg: &std::path::Path) -> Result<Value, String> {
+    match std::fs::read_to_string(reg) {
+        Ok(s) => serde_json::from_str::<Value>(s.strip_prefix('\u{feff}').unwrap_or(&s))
+            .map_err(|e| format!("부서 목록({}) 해석 실패: {e}", reg.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({ "depts": {} })),
+        Err(e) => Err(format!("부서 목록({}) 읽기 실패: {e}", reg.display())),
     }
 }
 
@@ -5545,10 +5573,9 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
         Err(_) => (0, 0, false),
     };
     // 부서 수(depts.json) — 1이면 이 삭제가 마지막 → CEO 강등 고지.
-    let dept_count = list_depts()
-        .ok()
-        .and_then(|r| r.get("depts").and_then(|d| d.as_object()).map(|o| o.len()))
-        .unwrap_or(0);
+    // ①(TICKET=cysr-117-impl-lead · Fable R1 #3) 판독 실패 = 부서 수 미상(null) + 사유 — 0 으로 접으면
+    //   「마지막 부서 → CEO 강등」 을 잘못 고지하고 초기화 미리보기가 「부서 0」 으로 보인다.
+    let (dept_count, depts_unreadable) = dept_count_or_unreadable();
     Ok(json!({
         "name": name,
         "state_dir": state_dir.to_string_lossy(),
@@ -5556,7 +5583,8 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
         "size_bytes": size_bytes,
         "mtime_secs": mtime_secs,
         "dept_count": dept_count,
-        "is_last": dept_count <= 1,
+        "is_last": dept_count.map(|c| c <= 1),
+        "depts_unreadable": depts_unreadable,
     }))
 }
 
@@ -5570,10 +5598,9 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
 #[tauri::command]
 async fn factory_reset_preview() -> Result<Value, String> {
     let live_sessions = live_session_count().await.unwrap_or(0);
-    let dept_count = list_depts()
-        .ok()
-        .and_then(|r| r.get("depts").and_then(|d| d.as_object()).map(|o| o.len()))
-        .unwrap_or(0);
+    // ①(TICKET=cysr-117-impl-lead · Fable R1 #3) 판독 실패 = 부서 수 미상(null) + 사유 — 0 으로 접으면
+    //   「마지막 부서 → CEO 강등」 을 잘못 고지하고 초기화 미리보기가 「부서 0」 으로 보인다.
+    let (dept_count, depts_unreadable) = dept_count_or_unreadable();
     tokio::task::spawn_blocking(move || {
         let roots =
             cys::factory_reset::ResetRoots::live().ok_or("홈 디렉토리를 해석할 수 없다")?;
@@ -5602,6 +5629,7 @@ async fn factory_reset_preview() -> Result<Value, String> {
             "report_only": plan.report_only,
             "live_sessions": live_sessions,
             "dept_count": dept_count,
+            "depts_unreadable": depts_unreadable,
             "trash_root_ready": plan.trash_root_ready.is_ok(),
             "trash_root_error": plan.trash_root_ready.as_ref().err(),
             "interrupted_prior": plan.interrupted_prior.iter()
@@ -7176,6 +7204,26 @@ fn main() {
 mod tests {
     /// ★v114-dept-fd 수리 1″ 배선 핀: 앱의 부서 데몬 기동 4경로(launch·rotate·create·allocate)가 전부
     /// run_dept_tool 을 거치고, 맥에서는 본부 데몬 대행(dept.run)이 먼저 · 직접 실행은 그 폴백 1곳뿐이다.
+    /// ①(TICKET=cysr-117-impl-lead) 부서 목록: 없음 = 빈 목록 · BOM = 읽음 · 읽기 오류·해석 실패 = Err.
+    /// 읽기 오류를 `Ok(빈 목록)` 으로 되돌리면 적색.
+    #[test]
+    fn list_depts_unreadable_is_error_not_zero_depts() {
+        let d = std::env::temp_dir().join(format!("cys-listdepts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("depts.json");
+        assert_eq!(list_depts_at(&p).unwrap(), json!({"depts": {}}), "없음 = 빈 목록");
+        std::fs::write(&p, "\u{feff}{\"depts\":{\"a\":{}}}").unwrap();
+        assert_eq!(list_depts_at(&p).unwrap()["depts"]["a"], json!({}), "BOM = 읽음");
+        std::fs::write(&p, "{\"depts\":{").unwrap();
+        assert!(list_depts_at(&p).is_err(), "잘린 JSON = Err");
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir_all(&p).unwrap(); // 읽기 오류
+        let e = list_depts_at(&p).expect_err("읽기 오류가 빈 목록으로 접혔다");
+        assert!(e.contains("읽기 실패"), "{e}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn v114_dept_daemon_spawns_go_through_delegation() {
         let src = include_str!("main.rs");

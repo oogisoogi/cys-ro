@@ -4000,29 +4000,27 @@ fn run_feed(action: FeedAction) -> i32 {
     }
 }
 
-/// (2c) 재연결해도 되는 일시적 오류인가? cmux isTransientEventStreamError(Events.swift:105-134) 포팅.
-/// ★실측 정렬: cys connect()는 `cannot connect to cysd at {path}: {e}`를 반환하고 {e}는 OS 에러
-/// Display라 누락 소켓="No such file or directory (os error 2)"·거부="Connection refused (os error 61)",
-/// read half-open="Broken pipe (os error 32)"/"Connection reset by peer (os error 54)"로 나온다.
-/// 서버가 (2a) slow_consumer로 스트림을 종료한 케이스도 재연결 대상. 그 외(invalid_params 등)는 비-transient.
+/// (2c) 이벤트 구독이 끊겼을 때 **다시 붙어도 되는** 오류인가 — 데몬 재기동 중·부팅 직전·반쯤 끊긴
+/// 연결·서버가 느린 구독자를 끊은 경우(2a slow_consumer)·정상 종료(EOF). 그 밖(invalid_params 등)은 아니다.
+/// 판정 = 오류 문장(소문자)에 아래 낱말이 **들어 있는지**(부분 일치). 문장은 우리 `connect()` 가 만드는
+/// `cannot connect to cysd at {path}: {os 오류}` 와 OS 오류 표시문에서 실측했다.
+/// (TICKET=cysr-117-impl-lead ⑲ 재작성 · 진리표 = 시험 `golden_transient_event_error_table_is_frozen`.)
 fn is_transient_event_error(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    const MARKERS: &[&str] = &[
-        "no such file or directory", // cys connect_raw: 누락 소켓(ENOENT) — 데몬 재기동 중
-        "connection refused",        // 데몬 부팅 직전(ECONNREFUSED)
-        "connection reset",          // half-open read(ECONNRESET)
-        "broken pipe",               // write/read 단절(EPIPE)
-        "event stream closed",       // 정상 EOF — 재연결로 이어붙임
-        "slow_consumer",             // 서버가 (2a)로 종료한 케이스
-        "cannot connect to cysd",    // connect_raw 래퍼 문구(autostart 실패 포함)
-        "os error 32",
-        "os error 35",
-        "os error 54",
-        "os error 57",
-        "os error 60",
-        "os error 61",
+    const PHRASES: &[&str] = &[
+        "no such file or directory", // 소켓 없음 — 데몬 재기동 중
+        "connection refused",        // 데몬 부팅 직전
+        "connection reset",          // 반쯤 끊긴 연결에서 읽기
+        "broken pipe",               // 쓰기·읽기 중 끊김
+        "event stream closed",       // 정상 EOF — 다시 붙어 이어 간다
+        "slow_consumer",             // 서버가 느린 구독자를 끊음(2a)
+        "cannot connect to cysd",    // connect() 머리말(자동 기동 실패 포함)
     ];
-    MARKERS.iter().any(|k| m.contains(k))
+    // macOS errno — 문장이 달라도 번호는 남는다: 32 끊긴 파이프 · 35 잠시 불가 · 54 연결 재설정 ·
+    // 57 연결 안 됨 · 60 시간 초과 · 61 연결 거부.
+    const ERRNOS: &[u32] = &[32, 35, 54, 57, 60, 61];
+    let m = msg.to_lowercase();
+    PHRASES.iter().any(|p| m.contains(p))
+        || ERRNOS.iter().any(|n| m.contains(&format!("os error {n}")))
 }
 
 /// (2c-gap) events.stream 구독 프레임 조립 — after_seq 커서를 그대로 싣는다.
@@ -4121,7 +4119,7 @@ fn stream_events(
     reconnect: bool,
     cursor_file: Option<String>,
 ) -> Result<(), String> {
-    // (3) 시드: --after_seq 미지정이면 cursor-file에서 읽는다(cmux Events.swift:25-27).
+    // (3) 시작 위치: --after_seq 가 없으면 커서 파일에 적어 둔 마지막 seq 부터 이어 받는다.
     let mut last_seq = after_seq.or_else(|| {
         cursor_file
             .as_ref()
@@ -4205,30 +4203,25 @@ fn stream_events(
     }
 }
 
-/// (3) cmux readEventCursor(Events.swift:206-222): 없으면 None, 비숫자면 Err.
+/// (3) 이벤트 커서 파일 읽기 — 파일 없음 = None(처음부터) · 앞뒤 공백을 뗀 부호 없는 정수만 받고
+/// 그 밖은 오류(커서를 멋대로 0 으로 접으면 과거 이벤트 전량을 다시 받는다).
+/// (TICKET=cysr-117-impl-lead ⑲ 재작성 · 형식 = 시험 `golden_event_cursor_format_is_frozen`.)
 fn read_event_cursor(path: &str) -> Result<Option<u64>, String> {
-    let p = expand_tilde(path);
-    match std::fs::read_to_string(&p) {
-        Ok(s) => s
-            .trim()
-            .parse::<u64>()
-            .map(Some)
-            .map_err(|_| format!("bad cursor in {path}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let text = match std::fs::read_to_string(expand_tilde(path)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    text.trim()
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| format!("bad cursor in {path}"))
 }
 
-/// (3) cmux writeEventCursor(Events.swift:224-231): 디렉터리 생성 + 원자적 쓰기(tmp+rename).
-/// std::fs::write 직접보다 tmp+rename으로 쓰기 도중 프로세스가 죽어도 커서가 절반 상태로 남지 않게 한다.
+/// (3) 이벤트 커서 파일 쓰기 — 내용 `"{seq}\n"` · 원자 교체(쓰다 죽어도 반쪽 커서가 남지 않는다).
 fn write_event_cursor(path: &str, seq: u64) -> Result<(), String> {
-    let p = expand_tilde(path);
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, format!("{seq}\n")).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    cys::atomic_write_bytes(&expand_tilde(path), format!("{seq}\n").as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 /// Mirror raw PTY output to stdout.
@@ -4762,6 +4755,26 @@ fn run_persona(action: PersonaAction) -> i32 {
 }
 
 /// Heartbeat 스케줄 관리: schedule.json은 CLI가 직접 편집(데몬 핫 리로드), 조회·즉발은 RPC.
+/// ⑰(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑰ⓐ) schedule.json 을 **고치려고** 읽는다.
+/// 파일이 없을 때만 빈 스케줄로 시작하고, 읽기·파싱 실패는 오류로 돌려 **아무것도 쓰지 않는다**.
+/// 종전엔 실패를 `{"jobs":[]}` 로 접고 새 잡 1개만 얹어 덮어써서, BOM 한 글자로 기존 일정이 전멸했다.
+fn read_schedule_for_update(path: &std::path::Path) -> Result<Value, String> {
+    let keep = "기존 일정을 지키려고 아무것도 쓰지 않았습니다 — 파일을 고치거나 옮긴 뒤 다시 하세요";
+    match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::from_str(&s)
+            .map_err(|e| format!("{} 을(를) 해석할 수 없습니다({e}) · {keep}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({"jobs": []})),
+        Err(e) => Err(format!("{} 을(를) 읽을 수 없습니다({e}) · {keep}", path.display())),
+    }
+}
+
+/// ⑰ schedule.json 원자 저장(tmp 이름이 매번 다른 `atomic_write_bytes` — 데몬과 동시에 써도 반쪽 파일 0).
+fn write_schedule(path: &std::path::Path, root: &Value) -> Result<(), String> {
+    let mut text = serde_json::to_string_pretty(root).map_err(|e| e.to_string())?;
+    text.push('\n');
+    cys::atomic_write_bytes(path, text.as_bytes()).map_err(|e| e.to_string())
+}
+
 fn run_schedule(action: ScheduleAction) -> i32 {
     let path = cys::pack::pack_dir().join("schedule.json");
     let result: Result<(), String> = match action {
@@ -4834,10 +4847,9 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                     }
                     None => None,
                 };
-                let mut root: Value = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_else(|| json!({"jobs": []}));
+                // ⑰ 읽기→추가→저장을 데몬의 원샷 제거와 같은 락으로 직렬화한다(_guard = 끝까지 보유).
+                let _guard = cys::pack::acquire_settings_lock(&path);
+                let mut root = read_schedule_for_update(&path)?;
                 let jobs = root
                     .as_object_mut()
                     .ok_or("schedule.json root is not an object")?
@@ -4884,11 +4896,7 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                     job["command"] = json!(command.unwrap());
                 }
                 arr.push(job);
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap())
-                    .map_err(|e| e.to_string())?;
+                write_schedule(&path, &root)?;
                 println!(
                     "job added to {} (daemon hot-reloads within 30s)",
                     path.display()
@@ -4933,9 +4941,8 @@ fn run_schedule(action: ScheduleAction) -> i32 {
             }
         }),
         ScheduleAction::Remove { id } => (|| {
-            let mut root: Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
+            let _guard = cys::pack::acquire_settings_lock(&path);
+            let mut root = read_schedule_for_update(&path)?;
             let arr = root["jobs"]
                 .as_array_mut()
                 .ok_or("'jobs' is not an array")?;
@@ -4944,8 +4951,7 @@ fn run_schedule(action: ScheduleAction) -> i32 {
             if arr.len() == before {
                 return Err(format!("no job '{id}'"));
             }
-            std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap())
-                .map_err(|e| e.to_string())?;
+            write_schedule(&path, &root)?;
             println!("removed {id}");
             Ok(())
         })(),
@@ -20115,6 +20121,105 @@ mod tests {
         assert!(!compose_full_directive(false, true), "resume 좌석에 전문 재조립 금지");
         assert!(compose_full_directive(true, false), "빈 컨텍스트(복원)에는 전문이 필요하다");
         assert!(compose_full_directive(false, false), "빈 컨텍스트(신규)에는 전문이 필요하다");
+    }
+
+    /// ⑲(TICKET=cysr-117-impl-lead) 재작성 전후 동치 핀 — 이벤트 스트림 「재연결해도 되는 오류」 판정표.
+    /// 기대값은 재작성 **전**(v1.1.6) 판정과 같다. 적색이면 재작성이 틀린 것이다.
+    #[test]
+    fn golden_transient_event_error_table_is_frozen() {
+        let table: &[(&str, bool)] = &[
+            ("cannot connect to cysd at /x/cysd.sock: No such file or directory (os error 2)", true),
+            ("Connection refused (os error 61)", true),
+            ("CONNECTION RESET by peer", true),
+            ("Broken pipe (os error 32)", true),
+            ("event stream closed", true),
+            ("server: slow_consumer", true),
+            ("Resource temporarily unavailable (os error 35)", true),
+            ("Connection reset by peer (os error 54)", true),
+            ("Socket is not connected (os error 57)", true),
+            ("Operation timed out (os error 60)", true),
+            ("os error 3", false),
+            ("os error 320", true), // 부분 일치(「os error 32」) — 종전 동작 그대로
+            ("invalid_params: missing name", false),
+            ("permission denied (os error 13)", false),
+            ("", false),
+            ("Cannot Connect To CYSD", true),
+        ];
+        for (msg, want) in table {
+            assert_eq!(is_transient_event_error(msg), *want, "{msg:?}");
+        }
+    }
+
+    /// ⑲ 커서 파일 판독 진리표(부재 = None · 공백 허용 · 비숫자 = Err) + 쓰기 형식 `"{seq}\n"`.
+    #[test]
+    fn golden_event_cursor_format_is_frozen() {
+        let dir = std::env::temp_dir().join(format!("cys-cursor-golden-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("sub").join("cur");
+        let ps = p.to_string_lossy().to_string();
+        assert_eq!(read_event_cursor(&ps).unwrap(), None);
+        write_event_cursor(&ps, 42).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "42\n");
+        assert_eq!(read_event_cursor(&ps).unwrap(), Some(42));
+        std::fs::write(&p, "  7 \n\n").unwrap();
+        assert_eq!(read_event_cursor(&ps).unwrap(), Some(7));
+        for bad in ["x", "-1", "1.5", ""] {
+            std::fs::write(&p, bad).unwrap();
+            assert!(read_event_cursor(&ps).is_err(), "{bad:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑰ⓐ(TICKET=cysr-117-impl-lead) `cys schedule add/remove` 가 고치려고 읽는 schedule.json —
+    /// 부재만 빈 스케줄 · 판독·파싱 실패는 오류(쓰기 금지). 종전 `unwrap_or_else(json!({"jobs":[]}))`
+    /// 로 되돌리면 BOM·잘린 파일이 Ok(빈 스케줄) 가 되어 적색.
+    #[test]
+    fn schedule_read_for_update_refuses_unreadable_and_seeds_only_missing() {
+        let dir = std::env::temp_dir().join(format!("cys-sched-rfu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("schedule.json");
+        assert_eq!(read_schedule_for_update(&p).unwrap(), json!({"jobs": []}), "부재 = 빈 스케줄");
+        for bytes in [
+            &b"\xEF\xBB\xBF{\"jobs\":[{\"id\":\"a\"}]}"[..],
+            &b"{\"jobs\":[{\"id\":\"a\""[..],
+            &b"\xFF\xFE{\x00}\x00"[..],
+        ] {
+            std::fs::write(&p, bytes).unwrap();
+            let e = read_schedule_for_update(&p).expect_err("판독 불가 파일은 오류여야 한다");
+            assert!(e.contains("아무것도 쓰지 않았습니다"), "{e}");
+            assert_eq!(std::fs::read(&p).unwrap(), bytes);
+        }
+        // 읽기 오류(디렉터리) 도 오류 — 빈 스케줄로 접지 않는다.
+        let d = dir.join("as_dir");
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(read_schedule_for_update(&d).is_err());
+        // 원자 저장 왕복.
+        std::fs::remove_file(&p).unwrap();
+        write_schedule(&p, &json!({"jobs": [{"id": "x"}]})).unwrap();
+        assert_eq!(read_schedule_for_update(&p).unwrap()["jobs"][0]["id"], "x");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑰ⓑ 소스 핀: add·remove 둘 다 **락을 먼저 잡고** 고치려고 읽고 원자 저장한다(데몬 원샷 제거와
+    /// 같은 락 파일). 비원자 `std::fs::write(&path` 가 run_schedule 에 다시 생기면 적색.
+    #[test]
+    fn schedule_add_remove_lock_then_read_then_atomic_write() {
+        let src = include_str!("cys.rs");
+        let start = src.find("fn run_schedule(action: ScheduleAction) -> i32 {").unwrap();
+        let body = &src[start..];
+        let body = &body[..body.find("\nfn ").unwrap()];
+        assert_eq!(body.matches("acquire_settings_lock(&path)").count(), 2, "add·remove 락");
+        assert_eq!(body.matches("read_schedule_for_update(&path)?").count(), 2);
+        assert_eq!(body.matches("write_schedule(&path, &root)?").count(), 2);
+        assert!(!body.contains("std::fs::write(&path"), "비원자 저장 잔존");
+        assert!(!body.contains(r#"unwrap_or_else(|| json!({"jobs": []}))"#), "판독 실패 접기 잔존");
+        for arm in ["ScheduleAction::Add {", "ScheduleAction::Remove { id } =>"] {
+            let a = &body[body.find(arm).unwrap()..];
+            let lock = a.find("acquire_settings_lock").unwrap();
+            let read = a.find("read_schedule_for_update").unwrap();
+            assert!(lock < read, "{arm}: 락보다 읽기가 먼저");
+        }
     }
 
     /// (cysr-alias · 2026-09-16) 명령 별칭 `cysr` 는 같은 바이너리를 다른 이름(맥 심링크 · 윈 사본)으로

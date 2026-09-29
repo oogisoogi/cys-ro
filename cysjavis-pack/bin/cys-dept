@@ -291,7 +291,21 @@ USAGE
 }
 
 reg_init(){ [ -f "$REG" ] || { mkdir -p "$(dirname "$REG")"; printf '{"depts":{}}\n' > "$REG"; }; }
-reg_count(){ reg_init; python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['depts']))" "$REG" | tr -d '\r'; }
+# ①(TICKET=cysr-117-impl-lead) 레지스트리 엄격 판독 — 부재 = 빈 등재 · BOM 흡수 · 그 밖 판독 실패 = stderr + exit 12.
+#   종전엔 파싱 예외가 빈 출력이 되어 소비자가 「부서 0」·「미등재(exit 8)」 로 읽었다.
+reg_read_py='import json,sys
+p,mode=sys.argv[1],sys.argv[2]
+try:
+    with open(p,encoding="utf-8-sig") as f: d=json.load(f)
+    if not isinstance(d,dict) or not isinstance(d.get("depts",{}),dict): raise ValueError("형식이 {\"depts\":{...}} 가 아님")
+except FileNotFoundError: d={"depts":{}}
+except Exception as e:
+    sys.stderr.write("[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n"%(p,e)); sys.exit(12)
+ds=d.get("depts",{})
+if mode=="count": print(len(ds))
+elif mode=="names": [print(k) for k in ds]'
+reg_check(){ reg_init; python3 -c "$reg_read_py" "$REG" check; }
+reg_count(){ reg_init; python3 -c "$reg_read_py" "$REG" count | tr -d '\r'; }
 # ★CRLF 위생(2026-08-16 win T3-ng3 실증): Windows 임베디드 python 의 stdout 은 텍스트 모드라
 #   줄끝이 \r\n 이다. $(...) 캡처는 MSYS bash 가 \r 을 벗겨 안전(allocate 상시 green 이 실증)하나
 #   파이프 소비자(`reg_names | grep -Fxq -- name` — rotate 등재 게이트 L:rotate·TOCTOU 재확인)는
@@ -300,7 +314,7 @@ reg_count(){ reg_init; python3 -c "import json,sys;print(len(json.load(open(sys.
 #   실행 인자의 POSIX 경로만 Windows 경로로 자동 변환한다 — -c 코드 안의 '/c/Users/…' 는 미변환이라
 #   Windows python 이 FileNotFoundError 로 죽고, 파이프 소비자(rotate 등재 게이트)·reg_count 캡처
 #   ("부서 수" 산정·down 의 강등 판정)가 전부 빈 값이 됐다(win 잠복 결함).
-reg_names(){ reg_init; python3 -c "import json,sys;[print(k) for k in json.load(open(sys.argv[1]))['depts']]" "$REG" | tr -d '\r'; }
+reg_names(){ reg_init; python3 -c "$reg_read_py" "$REG" names | tr -d '\r'; }
 
 # ★A2(SURVEY B3): 등재(SOT=depts.json)에 없는데 **소켓 디렉터리만** 남은 부서를 stderr 로 고지한다.
 #   정상 teardown 은 상태 디렉터리를 TRASH_ROOT 로 격리하므로 이 형상은 **비정상 종료 잔재**다.
@@ -341,14 +355,20 @@ except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락(파일
 p,n,s,k=sys.argv[1:5]
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     # F2(codex#2): full-replace 대신 merge — 기존 메타(display_name/account/mission_key) 보존.
     # launch 재진입 시 create가 심은 메타 소실 방지. 신규 엔트리는 3필드만(하위호환).
     e=d.setdefault('depts',{}).setdefault(n,{})
     e.update({'socket':s,'pack_dir':k,'role':'dept-master'})
     tmp=p+'.tmp.%d'%os.getpid()
-    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
 finally: _ulk(lf)
 PY
@@ -368,11 +388,17 @@ except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락(파일
 p,n=sys.argv[1:3]
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     d.setdefault('depts',{}).pop(n,None)
     tmp=p+'.tmp.%d'%os.getpid()
-    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
 finally: _ulk(lf)
 PY
@@ -428,8 +454,14 @@ def _alive(pid):
 p,n,me=sys.argv[1:4]; want=os.environ.get("CYS_DEPT_EXPECT_GEN","")
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     e=d.setdefault('depts',{}).get(n)
     if e is None:
         if want: sys.stderr.write("[cys-dept] down: %s 가 레지스트리에 없다 — 기대 세대 대조 불가(닫지 않음)\n"%n); sys.exit(9)
@@ -442,7 +474,7 @@ try:
         sys.stderr.write("[cys-dept] down: %s 는 이미 닫는 중(pid %s)\n"%(n,c.get('pid'))); sys.exit(10)
     e['closing']={'pid':int(me),'at':time.time()}
     tmp=p+'.tmp.%d'%os.getpid()
-    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
 finally: _ulk(lf)
 PY
@@ -464,14 +496,20 @@ except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락(파일
 p,n,disp,acct=sys.argv[1:5]
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     e=d.setdefault('depts',{}).get(n)
     if e is None:   # ★fail-closed(CSO GAP①): create가 base 엔트리 선기록 → 부재=버그 → no-op 말고 에러
         sys.stderr.write("reg_set_meta: 엔트리 부재 %s — fail-closed(예약 base 미기록=버그)\n"%n); sys.exit(1)
     e['display_name']=disp; e['account']=acct   # mission_key는 예약시 원자기록(중복 set 제거)
     tmp=p+'.tmp.%d'%os.getpid()
-    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
 finally: _ulk(lf)
 PY
@@ -656,7 +694,8 @@ PY
 reg_get_field(){ reg_init; python3 - "$REG" "$1" "$2" <<'PY'
 import json,sys
 p,n,f=sys.argv[1:4]
-try: d=json.load(open(p))
+try:
+    with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)   # ① BOM 흡수(읽기 전용 — 실패 = 빈 값 종전대로)
 except Exception: sys.exit(0)
 e=(d.get('depts') or {}).get(n) or {}
 print(e.get(f) or '')
@@ -687,12 +726,18 @@ except ImportError:
 p,n,k,v=sys.argv[1:5]
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     e=d.setdefault('depts',{}).setdefault(n,{})
     e[k]=v
     tmp=p+'.tmp.%d'%os.getpid()
-    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
 finally: _ulk(lf)
 PY
@@ -1389,6 +1434,8 @@ case "$cmd" in
     #   slug 충돌도 부작용 이전 조기 거부(reg_upsert 진입부 검사와 공통 헬퍼 — 기존명 재-launch는 자기
     #   제외로 통과).
     validate_dept_name "$name" "launch <name>"
+    # ①(Fable R2 E) 판독 실패 = 폴더도 만들지 않는다(12 로 끝난 뒤 빈 부서 폴더가 남으면 passthrough 가 「기존 부서」 로 본다).
+    reg_check || exit $?
     reject_slug_collision "$name"
     sock="$(dept_sock "$name")"; pack="$(dept_pack "$name")"
     mkdir -p "$(dept_logdir "$name")" "$pack/directives"
@@ -1467,8 +1514,14 @@ except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락. ★�
 p=sys.argv[1]
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     depts=d.setdefault('depts',{})
     home=os.path.expanduser('~')
     # ★[2] hard cap(reserve flock 안 — 동시성·원자성 유지): 죽은(미reap) 등록은 빼고 ★살아있는 데몬만 카운트.
@@ -1494,7 +1547,7 @@ try:
                  'pack_dir':f"{home}/.cys/pack-dept-{name}",'role':'dept-master',
                  'gen':os.urandom(8).hex()}  # ★B11: 세대 ID — 번호가 재사용돼도 닫기 대조가 옛 부서와 새 부서를 가른다
     tmp=p+'.tmp.%d'%os.getpid()
-    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
     print(name)
 finally: _ulk(lf)
@@ -1640,8 +1693,14 @@ def alive_sock(sk):  # RC-6: AF_UNIX→cys ping(named pipe 대응·os.path.exist
     except Exception: return False
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     depts=d.setdefault('depts',{}); now=time.time()
     # 멱등(원자): 같은 mission_key 엔트리=청구됨 → REUSE. 死活+reserved_at grace로 3분기(CSO 봉인):
     #   UP=서빙중 즉시반환 / BOOTING=생성자 부팅중(grace내)→신뢰·반환(boot tail 안 함=더블각성·더블미션 봉인)
@@ -1654,7 +1713,7 @@ try:
         #   reserved_at=now 재청구 + cwd/account_dir 최신 catalog로 갱신 → 동시 follower=REUSE_BOOTING(더블부트 봉인)·메타 최신.
         e['reserved_at']=now; e['cwd']=cwd; e['account_dir']=acctdir
         tmp=p+'.tmp.%d'%os.getpid()
-        with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+        with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
         os.replace(tmp,p)
         print("REUSE_DEAD "+n); sys.exit(0)
     # ★v113(2026-09-21 · 오너 결정): 구 live 부서 수 고정 상한(CYS_DEPT_CAP=8 · exit 8) 삭제 — 자원 게이트만 판정.
@@ -1668,7 +1727,7 @@ try:
                  'mission_key':mkey,'cwd':cwd,'account_dir':acctdir,'reserved_at':now,
                  'gen':os.urandom(8).hex()}  # ★B11: 세대 ID(allocate 와 같은 규약)
     tmp=p+'.tmp.%d'%os.getpid()
-    with open(tmp,'w') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
+    with open(tmp,'w',encoding='utf-8') as f: json.dump(d,f,ensure_ascii=False,indent=2); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,p)
     print("NEW "+name)
 finally: _ulk(lf)
@@ -1836,6 +1895,8 @@ PY
     sock="$(dept_sock "$name")"
     # ★필수2(A·리뷰) 사전 게이트: 미등재(down됨/없음) 부서는 즉시 중단(exit 8·부활 금지). ping/identify(autostart
     # 부작용) 이전에 레지스트리(SOT)부터 확인해 side-effect 0으로 빠르게 거부한다. reg_names(SOT) 재사용.
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패를 「미등재(exit 8)」 로 오독하지 않게 먼저 판독 확인(exit 12).
+    reg_check || exit $?
     if ! reg_names | grep -Fxq -- "$name"; then
       echo "[cys-dept] $name 미등재(down됨) — rotate 중단(부활 금지)" >&2
       exit 8
@@ -1863,8 +1924,13 @@ PY
     fi
     # 프로세스만 종료(down의 graceful_kill 재사용 — OS중립·Windows taskkill 분기 포함, 신설 분기 없음).
     # graceful_kill이 사망을 동기 확인하므로 아래 launch의 ready 프로브가 죽은 소켓을 새것으로 오인하지 않는다.
+    # ①(TICKET=cysr-117-impl-lead) kill **전** 판독 재확인 — kill 뒤 재확인이 판독 실패를 「미등재」 로 읽어
+    #   데몬만 죽고 끝나는 반쪽 상태를 막는다(판독 불가면 데몬 불변 · exit 12).
+    reg_check || exit $?
     graceful_kill "$pid"
     rm -f "$sock" "$sock.lock" 2>/dev/null || true
+    # ①(Fable R1 #5 · R2 B) kill 뒤 판독 실패 = 12 · 이 시점엔 데몬이 이미 죽었으므로 「무변경」 이 아니라 그 사실을 말한다.
+    reg_check 2>/dev/null || { _rc=$?; echo "[cys-dept] $name 데몬은 종료됨 · 부서 목록을 읽을 수 없어 재기동 보류 — 목록을 고친 뒤 cys-dept launch $name 으로 재기동하라" >&2; exit $_rc; }
     # ★필수2(A·리뷰) TOCTOU 재확인: kill·rm 도중 CSO down(reg_remove+dept_tombstone)이 레이스로 끼어들어
     # 폐기됐으면 launch(부활) 금지 — 사전 게이트 이후 창을 최소화하려 launch 직전에 한 번 더 확인(미등재→exit 8).
     if ! reg_names | grep -Fxq -- "$name"; then
@@ -1902,13 +1968,19 @@ except ImportError:  # RC-6 Windows: fcntl 부재 → msvcrt 바이트락(파일
 p=sys.argv[1]
 lf=open(p+'.lock','w'); _lk(lf)
 try:
-    try: d=json.load(open(p))
-    except Exception: d={'depts':{}}
+    # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
+    #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
+    try:
+        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
+    except FileNotFoundError: d={'depts':{}}
+    except Exception as _re:
+        sys.stderr.write('[cys-dept] 부서 목록(%s) 판독 실패(%s) — 등록 부서를 지키려고 아무것도 바꾸지 않았습니다\n'%(p,_re)); sys.exit(12)
     for n,e in d.get('depts',{}).items():
         print("%s\t%s\t%s"%(n, e.get('socket',''), e.get('reserved_at',0) or 0))
 finally: _ulk(lf)
 PY
-) || { echo "[cys-dept] reap: 스냅샷 실패" >&2; exit 1; }
+) || { _rc=$?; echo "[cys-dept] reap: 스냅샷 실패" >&2; [ "$_rc" = 12 ] && exit 12; exit 1; }  # ① 판독 실패(12)는 그대로 전달
     # 분류+집행(flock 밖·probe). reg_remove/down-sock는 각자 자체 flock·원자. 현재 셸 루프(카운터 보존).
     nd=0; ni=0; ns=0
     while IFS=$'\t' read -r nm sk rat; do

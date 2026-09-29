@@ -6574,6 +6574,10 @@ fn deliver_queued(
         // ★G1(W2-D): 배달 임계영역은 단일 헬퍼(deliver_head_locked — RPC 강제 배달과 공유).
         // pop은 writer 채널 인계 성공 후에만 — 실패 시 메시지를 보존해 다음 틱에 재시도.
         // 블로킹 write·sleep은 surface 전용 writer 스레드가 수행하므로 watchdog은 멈추지 않는다.
+        // ⑩ Q2(TICKET=cysr-117-impl-lead · A2-12) 틱 머리 확인 뒤 같은 틱 안에 걸린 pause 도 존중한다.
+        if daemon.paused.load(Ordering::Relaxed) {
+            break;
+        }
         if deliver_head_locked(daemon, &s, false, overdue, None, Some(pending_at_verdict)).is_some() {
             // 배달 성공 = 기아 해소 — 쿨다운 리셋(다음 기아는 새 사건으로 다시 경보).
             starve_alerted.remove(&s.id);
@@ -6687,6 +6691,23 @@ mod tests {
 
     /// ★v114-dept-fd 수리 3: 빈 셸 판정 — 등록 에이전트 좌석 ∧ 셸 단독 ∧ 뿌리도 에이전트 아님 셋 다일 때만.
     /// 판정 불능(뿌리 None·Unknown)은 종전 동작(주입)으로 강등한다.
+    /// ⑩ Q2(TICKET=cysr-117-impl-lead) 소스 핀: 큐 배달 루프는 좌석마다 배달 직전 pause 를 다시 본다
+    /// (틱 머리 1회 확인 뒤 같은 틱에 걸린 pause 가 남은 좌석 배달을 막는다).
+    #[test]
+    fn q2_deliver_loop_rechecks_pause_right_before_delivery() {
+        let src = include_str!("governance.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        let f = &prod[prod.find("fn deliver_queued(").unwrap()..];
+        let call = f
+            .find("if deliver_head_locked(daemon, &s, false, overdue, None, Some(pending_at_verdict))")
+            .unwrap();
+        let pos = f[..call]
+            .rfind("if daemon.paused.load(Ordering::Relaxed) {\n            break;")
+            .expect("배달 직전 pause 재확인 부재");
+        // 재확인과 배달 사이에 다른 문장이 끼면 안 된다(주석·빈칸만 · 약 150바이트 안).
+        assert!(call - pos < 150, "pause 재확인이 배달 호출과 떨어져 있다({}바이트)", call - pos);
+    }
+
     #[test]
     fn v114_agent_seat_vacant_verdict_only_bare_shell_of_registered_seat() {
         use super::{agent_seat_vacant_verdict as v, is_shell_name, SeatState::*};

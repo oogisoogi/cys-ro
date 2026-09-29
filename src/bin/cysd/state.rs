@@ -2387,6 +2387,12 @@ pub struct Daemon {
     /// tokio 핸들러가 동시에 호출할 수 있는데 write_json_atomic의 tmp 이름이 고정이라 동시 쓰기가
     /// 파일을 파손할 수 있다 — G1 이후 WAL은 queue_seq 시드·entry id의 근거라 손상 대가가 크다.
     pub queue_persist_lock: Mutex<()>,
+    /// ⑧(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑧) 부팅 때 queue-state.json 이 있는데 못 읽었고
+    /// 원본 보존 사본도 못 만들었으면 true — `persist_queue_state` 가 쓰지 않는다(다음 저장이 못 읽은
+    /// 원본을 덮어 미배달 지시가 사라지는 것을 막는다). 재기동 때 다시 판정한다.
+    pub queue_wal_write_blocked: AtomicBool,
+    /// ⑧ 쓰기 금지 경보를 이미 냈는지(데몬 수명당 1회 — 저장 호출마다 반복하지 않는다).
+    pub queue_wal_block_reported: AtomicBool,
     /// ★S3(TICKET=cys-phoenix-s3-master-persist): `persist_topology` 직렬화 락
     /// (`feed_persist_lock`·`queue_persist_lock` 관례 동형). 그 함수는 이제 **직전 영속본을 읽어**
     /// 살아있지 않은 역할을 보존하므로 read-modify-write 가 됐다 — 두 호출이 겹치면 한쪽이 읽은
@@ -3076,6 +3082,78 @@ fn queue_mid(sid: u64, text: &str) -> String {
 ///
 /// ★비타입 감사 지점 ①(§Daemon::restored_queue) — QueueEntry 스키마 변경 시 여기의
 /// 레거시 합성이 전 항목에 신 필드를 보장해야 하류(rehome·queue.list)가 결손 없이 읽는다.
+/// ⑩(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑩ · 원작자 c357b67b 의 pause 부분 재구현) 비상 정지 복원.
+/// 파일 부재 = 정지 아님(첫 기동). **있는데** 읽기·해석이 안 되거나 `paused` 가 불리언이 아니면
+/// 정지 유지로 접는다 — 비상 정지는 풀리는 쪽으로 틀리면 안 된다(종전: None = 정지가 풀린 채 부팅).
+/// `{"paused": false}` 만 명시 해제로 본다.
+fn restore_pause_state(dir: &std::path::Path) -> Option<(f64, String)> {
+    let held = |why: &str| {
+        Some((
+            now_epoch(),
+            format!("autopilot.json {why} — 안전을 위해 정지를 유지합니다(`cys resume` 으로 해제)"),
+        ))
+    };
+    let content = match std::fs::read_to_string(dir.join("autopilot.json")) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return held(&format!("읽기 실패({e})")),
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return held("해석 실패");
+    };
+    match v["paused"].as_bool() {
+        Some(true) => Some((
+            v["since"].as_f64().unwrap_or_else(now_epoch),
+            v["reason"].as_str().unwrap_or("").to_string(),
+        )),
+        Some(false) => None,
+        None => held("paused 칸 손상"),
+    }
+}
+
+/// ⑧(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑧ · 원작자 1d757cd8·2e43a2bf 의 우리 판 재구현)
+/// queue-state.json 이 있는데 읽기·해석이 안 되면 `load_queue_state` 는 빈 큐로 시작하고, 다음
+/// `persist_queue_state` 가 그 원본을 덮는다 — 미배달 지시가 흔적 없이 사라진다. 그래서 부팅 때
+/// **원본을 옆에 보존**(`queue-state.json.unreadable-<epoch>`)하고, 보존조차 못 하면 쓰기 금지를 건다.
+/// 반환: true = 쓰기 금지. 부재·정상 파일 = false(종전 동작).
+fn guard_unreadable_queue_wal(dir: &std::path::Path) -> bool {
+    let p = dir.join("queue-state.json");
+    match std::fs::read_to_string(&p) {
+        Ok(c) if serde_json::from_str::<Vec<serde_json::Value>>(&c).is_ok() => return false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        _ => {}
+    }
+    // (Fable R1 #7) 같은 바이트의 보존 사본이 이미 있으면 새로 만들지 않는다 — 판독 불능이 이어지는 동안
+    //   부팅마다 사본이 쌓이지 않게.
+    if let Ok(orig) = std::fs::read(&p) {
+        let same = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+            e.file_name().to_string_lossy().starts_with("queue-state.json.unreadable-")
+                && std::fs::read(e.path()).map(|b| b == orig).unwrap_or(false)
+        });
+        if same {
+            eprintln!("[cysd] queue-state.json 을 읽을 수 없어 빈 큐로 시작합니다 — 같은 원본의 보존 사본이 이미 있습니다");
+            return false;
+        }
+    }
+    let keep = dir.join(format!("queue-state.json.unreadable-{}", now_epoch() as u64));
+    match std::fs::copy(&p, &keep) {
+        Ok(_) => {
+            eprintln!(
+                "[cysd] queue-state.json 을 읽을 수 없어 빈 큐로 시작합니다 — 원본은 {} 에 보존했습니다",
+                keep.display()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!(
+                "[cysd] queue-state.json 을 읽을 수 없고 보존 사본도 못 만들었습니다({e}) — \
+                 원본을 지키려고 이번 실행 동안 큐 저장을 하지 않습니다"
+            );
+            true
+        }
+    }
+}
+
 fn load_queue_state(dir: &std::path::Path) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -3173,16 +3251,8 @@ impl Daemon {
             }
         }
         // T4-15 kill-switch 상태 복원 — 재부팅 후에도 pause는 유지된다 (명시 resume까지)
-        let pause_restored: Option<(f64, String)> = std::fs::read_to_string(dir.join("autopilot.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .filter(|v| v["paused"].as_bool() == Some(true))
-            .map(|v| {
-                (
-                    v["since"].as_f64().unwrap_or_else(now_epoch),
-                    v["reason"].as_str().unwrap_or("").to_string(),
-                )
-            });
+        // ⑩(TICKET=cysr-117-impl-lead) 판독·해석 실패 = 정지 유지(종전: None = 정지가 풀린 채 부팅).
+        let pause_restored: Option<(f64, String)> = restore_pause_state(&dir);
         // ★GUI 오퍼레이터 승인(오너 2026-07-15): 오퍼레이터 토큰 발급 — 소켓 listen 전(new 내부)에
         // 기동마다 재발급·덮어쓰기해 파일=메모리 정합을 데몬 재시작(churn)에도 유지한다. GUI(Tauri)가
         // 이 파일을 매 호출 신선 재독해 feed.reply에 첨부. 실패는 비치명(로그만) — 부트체인 차단 금지.
@@ -3203,6 +3273,8 @@ impl Daemon {
         // (미배달 큐 재기동 생존·P7). ★G1(W2-A): queue_seq 시드 계산이 이 복원분을 근거로
         // 하므로 struct init 전에 먼저 로드한다 — 시드 = max(seq)+1(WAL 부재 시 1)로
         // 재기동 후 발급 seq가 살아있는 복원 항목과 절대 겹치지 않는다.
+        // ⑧ 판독 불능 WAL = 원본 보존 사본 먼저 · 사본 실패면 쓰기 금지(load 는 종전대로 빈 복원).
+        let queue_wal_blocked = guard_unreadable_queue_wal(&dir);
         let restored_qentries = load_queue_state(&dir);
         let queue_seq_seed = restored_qentries
             .iter()
@@ -3271,6 +3343,8 @@ impl Daemon {
             restored_queue: Mutex::new(restored_qentries),
             queue_seq: AtomicU64::new(queue_seq_seed),
             queue_persist_lock: Mutex::new(()),
+            queue_wal_write_blocked: AtomicBool::new(queue_wal_blocked),
+            queue_wal_block_reported: AtomicBool::new(false),
             topology_persist_lock: Mutex::new(()),
             config: Config::from_env(),
             recall_tx: Mutex::new(crate::recall::spawn_writer(socket_path.clone())),
@@ -3636,6 +3710,19 @@ impl Daemon {
         // 이 락은 여기서만 잡히므로 pending_queue·surfaces 락과의 역순 획득자가 없다(데드락 무관).
         let _guard = self.queue_persist_lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = state_dir(&self.socket_path);
+        // ⑧ 못 읽은 원본을 보존하지 못한 실행 = 쓰기 금지(쓰기 금지는 이 한 곳 — 호출부 13곳 무접촉).
+        if self.queue_wal_write_blocked.load(Ordering::SeqCst) {
+            if !self.queue_wal_block_reported.swap(true, Ordering::SeqCst) {
+                self.bus.publish(
+                    "queue.persist_blocked",
+                    "queue",
+                    None,
+                    json!({"path": dir.join("queue-state.json").display().to_string(),
+                           "reason": "unreadable_wal_not_preserved"}),
+                );
+            }
+            return;
+        }
         let mut entries: Vec<serde_json::Value> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         {
@@ -4347,9 +4434,9 @@ impl Daemon {
                             drop(carry);
                             for (mut title, body) in extracted {
                                 if title.is_empty() {
-                                    title = surf.title.lock().unwrap().clone(); // cmux 폴백
+                                    title = surf.title.lock().unwrap().clone(); // 창 제목으로 대신
                                 }
-                                // 억제 게이트: 직전 1.5s 내 주입(에코)이 있으면 폐기(cmux suppressesRaw 대응)
+                                // 억제 게이트: 직전 1.5s 안에 우리가 넣은 주입의 되울림이면 버린다
                                 let recently_injected = surf
                                     .last_injected
                                     .lock()
@@ -4705,7 +4792,10 @@ impl Daemon {
     }
 
     /// T4-15 pause 상태 영속 — 데몬 재시작 후에도 kill-switch가 유지된다.
-    pub fn persist_pause(&self) {
+    ///
+    /// ⑩(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑩) 원자 저장(tmp 이름 매번 다름 — pause·resume 이
+    /// 겹쳐도 반쪽 파일 0) + 결과를 돌려준다. 종전엔 비원자 `fs::write` 결과를 버리고 늘 「정지됨」 응답.
+    pub fn persist_pause(&self) -> std::io::Result<()> {
         let dir = state_dir(&self.socket_path);
         let info = self.pause_info.lock().unwrap().clone();
         let v = match (
@@ -4717,7 +4807,7 @@ impl Daemon {
             }
             _ => json!({"paused": false}),
         };
-        let _ = std::fs::write(dir.join("autopilot.json"), v.to_string());
+        cys::atomic_write_bytes(&dir.join("autopilot.json"), v.to_string().as_bytes())
     }
 
     pub fn get_surface(&self, id: u64) -> Option<Arc<Surface>> {
@@ -7966,6 +8056,141 @@ mod tests {
     /// [WAL 왕복 + queue_seq 시드] persist→load 라운드트립: id/seq/enqueued_at/from/origin·
     /// role·mid(구 데몬 롤백 하위호환 병기) 보존 + 시드 = 복원 항목 max(seq)+1(재기동 후 발급
     /// seq가 살아있는 복원 항목과 절대 불충돌) + id 조립 = boot 식별자(started_at) + seq.
+    /// ⑩(TICKET=cysr-117-impl-lead) 비상 정지 복원 진리표 — 부재·명시 false 만 해제, 손상 3형상·읽기
+    /// 거부는 정지 유지. 종전 `.ok()…filter(paused==true)` 로 되돌리면 손상 행이 None 이 되어 적색.
+    // 윈도 state_dir 은 %LOCALAPPDATA% 아래라 픽스처 폴더와 다르다(Fable R2 C) — POSIX 에서만.
+    #[cfg(unix)]
+    #[test]
+    fn pause_restore_fails_closed_on_unreadable_or_corrupt_state() {
+        let dir = queue_wal_dir("pause");
+        let p = dir.join("autopilot.json");
+        assert!(restore_pause_state(&dir).is_none(), "부재 = 정지 아님");
+        std::fs::write(&p, r#"{"paused":false}"#).unwrap();
+        assert!(restore_pause_state(&dir).is_none(), "명시 해제");
+        std::fs::write(&p, r#"{"paused":true,"since":12.5,"reason":"owner"}"#).unwrap();
+        assert_eq!(restore_pause_state(&dir), Some((12.5, "owner".to_string())));
+        for (tag, bytes) in [
+            ("bom", &b"\xEF\xBB\xBF{\"paused\":true}"[..]),
+            ("trunc", &b"{\"paused\":tr"[..]),
+            ("nonbool", &b"{\"paused\":\"yes\"}"[..]),
+        ] {
+            std::fs::write(&p, bytes).unwrap();
+            let r = restore_pause_state(&dir).unwrap_or_else(|| panic!("{tag}: 정지가 풀린 채 부팅"));
+            assert!(r.1.contains("정지를 유지"), "{tag}: {}", r.1);
+        }
+        // 읽기 거부(디렉터리) 도 정지 유지.
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir_all(&p).unwrap();
+        assert!(restore_pause_state(&dir).is_some(), "읽기 거부 = 정지 유지");
+        // 데몬 부팅 경로도 같은 판정을 쓴다.
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        assert!(daemon.paused.load(Ordering::SeqCst), "부팅 = 정지");
+        // 저장 실패(대상이 디렉터리) 는 오류로 돌아온다(종전: 결과 버림).
+        assert!(daemon.persist_pause().is_err(), "저장 실패가 삼켜졌다");
+        std::fs::remove_dir_all(&p).unwrap();
+        assert!(daemon.persist_pause().is_ok());
+        assert_eq!(restore_pause_state(&dir).map(|v| v.0 > 0.0), Some(true), "원자 저장 왕복");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑧(TICKET=cysr-117-impl-lead) 판독 불능 WAL(BOM·잘림·배열 아님) → 부팅 때 원본 바이트 그대로
+    /// `queue-state.json.unreadable-*` 에 보존 · 쓰기 금지 아님. 보존을 빼면 적색.
+    // 윈도 state_dir 은 %LOCALAPPDATA% 아래라 픽스처 폴더와 다르다(Fable R2 C) — POSIX 에서만.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_queue_wal_is_preserved_before_first_persist() {
+        for (tag, bytes) in [
+            ("bom", &b"\xEF\xBB\xBF[{\"id\":\"q1\",\"text\":\"x\"}]"[..]),
+            ("trunc", &b"[{\"id\":\"q1\",\"text\":"[..]),
+            ("obj", &b"{\"id\":\"q1\"}"[..]),
+        ] {
+            let dir = queue_wal_dir(tag);
+            std::fs::write(dir.join("queue-state.json"), bytes).unwrap();
+            let daemon = Daemon::new(dir.join("cysd.sock"));
+            assert!(!daemon.queue_wal_write_blocked.load(Ordering::SeqCst), "{tag}");
+            let kept: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("queue-state.json.unreadable-"))
+                .collect();
+            assert_eq!(kept.len(), 1, "{tag}: 보존 사본 1개");
+            assert_eq!(std::fs::read(kept[0].path()).unwrap(), bytes, "{tag}: 보존 = 원본 바이트");
+            // 같은 원본으로 다시 부팅해도 사본이 늘지 않는다(누적 방지).
+            drop(daemon);
+            let _ = Daemon::new(dir.join("cysd.sock"));
+            let n = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("queue-state.json.unreadable-"))
+                .count();
+            assert_eq!(n, 1, "{tag}: 재부팅마다 보존 사본 누적");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // 정상·부재 WAL 은 사본을 만들지 않는다.
+        let dir = queue_wal_dir("ok");
+        std::fs::write(dir.join("queue-state.json"), "[]").unwrap();
+        assert!(!guard_unreadable_queue_wal(&dir));
+        std::fs::remove_file(dir.join("queue-state.json")).unwrap();
+        assert!(!guard_unreadable_queue_wal(&dir));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑧ 읽기도 보존도 안 되는 WAL(권한 0) → 쓰기 금지 · enqueue 뒤 persist 해도 원본 바이트 불변.
+    /// `persist_queue_state` 의 금지 분기를 빼면 원자 교체가 원본을 덮어 적색.
+    #[cfg(unix)]
+    #[test]
+    fn unpreservable_queue_wal_blocks_persist_and_keeps_original_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = queue_wal_dir("noperm");
+        let p = dir.join("queue-state.json");
+        let bytes = br#"[{"id":"q1","seq":1,"role":"r","text":"undelivered"}]"#;
+        std::fs::write(&p, bytes).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&p).is_ok() {
+            // root 등 권한 무시 환경 — 전제 불성립이라 건너뛴다(거짓 초록 방지 표기).
+            eprintln!("SKIP: 권한 0 파일을 읽을 수 있는 환경");
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644));
+            return;
+        }
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        assert!(daemon.queue_wal_write_blocked.load(Ordering::SeqCst), "보존 실패 = 쓰기 금지");
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("r8".into()), 24, 80)
+            .unwrap();
+        let e = daemon.next_queue_entry("새 지시".into(), Some("surface:1".into()), "send");
+        s.pending_queue.lock().unwrap().push_back(e);
+        daemon.persist_queue_state();
+        daemon.persist_queue_state();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), bytes, "못 읽은 원본이 덮였다");
+        assert!(daemon.queue_wal_block_reported.load(Ordering::SeqCst), "경보 1회");
+        // master#a62921f6 조건: 경보가 **실제로 듣는 쪽**에 닿는다 — CSO 지침의 상시 구독
+        // (`cys events --category watchdog --category health --category queue`)이 이 이벤트를 고른다.
+        let evs: Vec<_> = daemon
+            .bus
+            .tail(50)
+            .into_iter()
+            .filter(|ev| ev["name"] == "queue.persist_blocked")
+            .collect();
+        assert_eq!(evs.len(), 1, "두 번 저장해도 경보는 1회");
+        let cso = include_str!("../../../cysjavis-pack/directives/CSO_DIRECTIVE.md");
+        let line = cso
+            .lines()
+            .find(|l| l.contains("상시 구독하라: `cys events"))
+            .expect("CSO 상시 구독 줄");
+        let cats: Vec<String> = line
+            .split("--category ")
+            .skip(1)
+            .map(|t| t.split_whitespace().next().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            crate::events::event_matches(&evs[0], &[], &cats),
+            "CSO 상시 구독({cats:?})이 queue.persist_blocked 를 못 받는다"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn queue_seq_seeds_from_wal_max_and_persist_load_roundtrip() {
         let dir = queue_wal_dir("seed");

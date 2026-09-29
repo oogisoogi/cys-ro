@@ -215,7 +215,7 @@ describe("v115 B5 — 복원 카드 시점 = 복원 완료 뒤", () => {
     expect(briefTiming({ restoreStarted: false, restoreFinished: false, graceElapsed: true })).toBe("show");
   });
   it("배선: start() 는 카드를 곧장 띄우지 않고, 복원 done/error 가 카드를 부른다", () => {
-    const src = require("fs").readFileSync(require("path").join(__dirname, "main.ts"), "utf8") as string;
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     expect(src.includes("void showRestoreBrief(); // 복원 브리핑 카드(1단계)")).toBe(false);
     const listen = src.slice(src.indexOf('await listen("restore-progress"'));
     const head = listen.slice(0, listen.indexOf('if (p.phase === "start") {'));

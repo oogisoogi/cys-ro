@@ -62,6 +62,7 @@ declare module "bun:test" {
     toBe(expected: unknown): void;
     toEqual(expected: unknown): void;
     toContain(expected: unknown): void;
+    toMatch(expected: string | RegExp): void;
     toHaveLength(expected: number): void;
     toBeNull(): void;
     toBeUndefined(): void;

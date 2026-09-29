@@ -286,7 +286,10 @@ class TestFolderStep(Base):
         self.assertIn("새로 만듭니다", o["card"], "없는 위치는 새로 만든다고 카드에 적는다")
 
     def test_bad_folders_are_refused_without_card(self):
-        for bad, why in (("상대/경로", "전체 경로"), ("~/.cys/x", "프로그램"), ("~/Library/x", "프로그램")):
+        bad_list = [("상대/경로", "전체 경로"), ("~/.cys/x", "프로그램"), ("~/Library/x", "프로그램")]
+        if sys.platform == "darwin" or os.name == "nt":
+            bad_list.append(("~/library/x", "프로그램"))      # 대소문자 무시 파일 시스템 — 소문자로 비켜 가지 못한다
+        for bad, why in bad_list:
             rc, o = self.propose(folder=bad)
             self.assertEqual((rc, o.get("reason")), (2, "folder"), (bad, o))
             self.assertIn(why, o["say"], bad)

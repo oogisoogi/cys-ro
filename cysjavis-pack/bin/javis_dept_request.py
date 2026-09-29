@@ -148,9 +148,11 @@ def folder_problem(raw):
     if not os.path.isabs(p):
         return None, "위치는 전체 경로로 말씀해 주세요(예: %s)." % default_parent()
     p = os.path.normpath(p)
-    np_ = os.path.normcase(p)
-    hk = os.path.normcase(os.path.normpath(home()))
-    for r in _forbidden_roots(np_ == hk or np_.startswith(hk + os.sep)):
+    # 맥(APFS 기본)·윈은 이름의 대소문자를 가르지 않는다 — ~/library 로 막힌 자리를 비켜 가지 못하게 소문자로 견준다
+    fold = (lambda x: os.path.normcase(x).lower()) if sys.platform == "darwin" or os.name == "nt" else os.path.normcase
+    np_ = fold(p)
+    hk = fold(os.path.normpath(home()))
+    for r in [fold(x) for x in _forbidden_roots(np_ == hk or np_.startswith(hk + os.sep))]:
         if np_ == r or np_.startswith(r + os.sep):
             return None, "그 위치(%s)는 프로그램·시스템이 쓰는 곳이라 부서 폴더를 두지 않습니다. 다른 위치를 말씀해 주세요." % p
     if os.path.exists(p) and not os.path.isdir(p):

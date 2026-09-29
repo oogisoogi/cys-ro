@@ -3082,6 +3082,35 @@ fn queue_mid(sid: u64, text: &str) -> String {
 ///
 /// ★비타입 감사 지점 ①(§Daemon::restored_queue) — QueueEntry 스키마 변경 시 여기의
 /// 레거시 합성이 전 항목에 신 필드를 보장해야 하류(rehome·queue.list)가 결손 없이 읽는다.
+/// ⑩(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑩ · 원작자 c357b67b 의 pause 부분 재구현) 비상 정지 복원.
+/// 파일 부재 = 정지 아님(첫 기동). **있는데** 읽기·해석이 안 되거나 `paused` 가 불리언이 아니면
+/// 정지 유지로 접는다 — 비상 정지는 풀리는 쪽으로 틀리면 안 된다(종전: None = 정지가 풀린 채 부팅).
+/// `{"paused": false}` 만 명시 해제로 본다.
+fn restore_pause_state(dir: &std::path::Path) -> Option<(f64, String)> {
+    let held = |why: &str| {
+        Some((
+            now_epoch(),
+            format!("autopilot.json {why} — 안전을 위해 정지를 유지합니다(`cys resume` 으로 해제)"),
+        ))
+    };
+    let content = match std::fs::read_to_string(dir.join("autopilot.json")) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return held(&format!("읽기 실패({e})")),
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return held("해석 실패");
+    };
+    match v["paused"].as_bool() {
+        Some(true) => Some((
+            v["since"].as_f64().unwrap_or_else(now_epoch),
+            v["reason"].as_str().unwrap_or("").to_string(),
+        )),
+        Some(false) => None,
+        None => held("paused 칸 손상"),
+    }
+}
+
 /// ⑧(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑧ · 원작자 1d757cd8·2e43a2bf 의 우리 판 재구현)
 /// queue-state.json 이 있는데 읽기·해석이 안 되면 `load_queue_state` 는 빈 큐로 시작하고, 다음
 /// `persist_queue_state` 가 그 원본을 덮는다 — 미배달 지시가 흔적 없이 사라진다. 그래서 부팅 때
@@ -3210,16 +3239,8 @@ impl Daemon {
             }
         }
         // T4-15 kill-switch 상태 복원 — 재부팅 후에도 pause는 유지된다 (명시 resume까지)
-        let pause_restored: Option<(f64, String)> = std::fs::read_to_string(dir.join("autopilot.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .filter(|v| v["paused"].as_bool() == Some(true))
-            .map(|v| {
-                (
-                    v["since"].as_f64().unwrap_or_else(now_epoch),
-                    v["reason"].as_str().unwrap_or("").to_string(),
-                )
-            });
+        // ⑩(TICKET=cysr-117-impl-lead) 판독·해석 실패 = 정지 유지(종전: None = 정지가 풀린 채 부팅).
+        let pause_restored: Option<(f64, String)> = restore_pause_state(&dir);
         // ★GUI 오퍼레이터 승인(오너 2026-07-15): 오퍼레이터 토큰 발급 — 소켓 listen 전(new 내부)에
         // 기동마다 재발급·덮어쓰기해 파일=메모리 정합을 데몬 재시작(churn)에도 유지한다. GUI(Tauri)가
         // 이 파일을 매 호출 신선 재독해 feed.reply에 첨부. 실패는 비치명(로그만) — 부트체인 차단 금지.
@@ -4759,7 +4780,10 @@ impl Daemon {
     }
 
     /// T4-15 pause 상태 영속 — 데몬 재시작 후에도 kill-switch가 유지된다.
-    pub fn persist_pause(&self) {
+    ///
+    /// ⑩(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑩) 원자 저장(tmp 이름 매번 다름 — pause·resume 이
+    /// 겹쳐도 반쪽 파일 0) + 결과를 돌려준다. 종전엔 비원자 `fs::write` 결과를 버리고 늘 「정지됨」 응답.
+    pub fn persist_pause(&self) -> std::io::Result<()> {
         let dir = state_dir(&self.socket_path);
         let info = self.pause_info.lock().unwrap().clone();
         let v = match (
@@ -4771,7 +4795,7 @@ impl Daemon {
             }
             _ => json!({"paused": false}),
         };
-        let _ = std::fs::write(dir.join("autopilot.json"), v.to_string());
+        cys::atomic_write_bytes(&dir.join("autopilot.json"), v.to_string().as_bytes())
     }
 
     pub fn get_surface(&self, id: u64) -> Option<Arc<Surface>> {
@@ -8020,6 +8044,41 @@ mod tests {
     /// [WAL 왕복 + queue_seq 시드] persist→load 라운드트립: id/seq/enqueued_at/from/origin·
     /// role·mid(구 데몬 롤백 하위호환 병기) 보존 + 시드 = 복원 항목 max(seq)+1(재기동 후 발급
     /// seq가 살아있는 복원 항목과 절대 불충돌) + id 조립 = boot 식별자(started_at) + seq.
+    /// ⑩(TICKET=cysr-117-impl-lead) 비상 정지 복원 진리표 — 부재·명시 false 만 해제, 손상 3형상·읽기
+    /// 거부는 정지 유지. 종전 `.ok()…filter(paused==true)` 로 되돌리면 손상 행이 None 이 되어 적색.
+    #[test]
+    fn pause_restore_fails_closed_on_unreadable_or_corrupt_state() {
+        let dir = queue_wal_dir("pause");
+        let p = dir.join("autopilot.json");
+        assert!(restore_pause_state(&dir).is_none(), "부재 = 정지 아님");
+        std::fs::write(&p, r#"{"paused":false}"#).unwrap();
+        assert!(restore_pause_state(&dir).is_none(), "명시 해제");
+        std::fs::write(&p, r#"{"paused":true,"since":12.5,"reason":"owner"}"#).unwrap();
+        assert_eq!(restore_pause_state(&dir), Some((12.5, "owner".to_string())));
+        for (tag, bytes) in [
+            ("bom", &b"\xEF\xBB\xBF{\"paused\":true}"[..]),
+            ("trunc", &b"{\"paused\":tr"[..]),
+            ("nonbool", &b"{\"paused\":\"yes\"}"[..]),
+        ] {
+            std::fs::write(&p, bytes).unwrap();
+            let r = restore_pause_state(&dir).unwrap_or_else(|| panic!("{tag}: 정지가 풀린 채 부팅"));
+            assert!(r.1.contains("정지를 유지"), "{tag}: {}", r.1);
+        }
+        // 읽기 거부(디렉터리) 도 정지 유지.
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir_all(&p).unwrap();
+        assert!(restore_pause_state(&dir).is_some(), "읽기 거부 = 정지 유지");
+        // 데몬 부팅 경로도 같은 판정을 쓴다.
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        assert!(daemon.paused.load(Ordering::SeqCst), "부팅 = 정지");
+        // 저장 실패(대상이 디렉터리) 는 오류로 돌아온다(종전: 결과 버림).
+        assert!(daemon.persist_pause().is_err(), "저장 실패가 삼켜졌다");
+        std::fs::remove_dir_all(&p).unwrap();
+        assert!(daemon.persist_pause().is_ok());
+        assert_eq!(restore_pause_state(&dir).map(|v| v.0 > 0.0), Some(true), "원자 저장 왕복");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ⑧(TICKET=cysr-117-impl-lead) 판독 불능 WAL(BOM·잘림·배열 아님) → 부팅 때 원본 바이트 그대로
     /// `queue-state.json.unreadable-*` 에 보존 · 쓰기 금지 아님. 보존을 빼면 적색.
     #[test]

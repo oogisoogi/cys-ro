@@ -7379,24 +7379,39 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             let reason = param_str(&params, "reason").unwrap_or_default();
             daemon.paused.store(true, Ordering::Relaxed);
             *daemon.pause_info.lock().unwrap() = Some((crate::state::now_epoch(), reason.clone()));
-            daemon.persist_pause();
+            let saved = daemon.persist_pause();
             daemon
                 .bus
                 .publish("autopilot.paused", "system", None, json!({"reason": reason}));
-            Reply::Single(ok_response(&id, json!({"paused": true})))
+            // ⑩ 정지는 메모리에서 이미 걸렸다 — 저장 실패는 「재기동하면 풀릴 수 있다」 는 사실로 알린다.
+            match saved {
+                Ok(()) => Reply::Single(ok_response(&id, json!({"paused": true}))),
+                Err(e) => Reply::Single(err_response(
+                    &id,
+                    "persist_failed",
+                    &format!("정지는 걸렸으나 상태 저장 실패({e}) — 데몬을 재기동하면 정지가 풀릴 수 있습니다"),
+                )),
+            }
         }
 
         "system.resume" => {
             daemon.paused.store(false, Ordering::Relaxed);
             *daemon.pause_info.lock().unwrap() = None;
-            daemon.persist_pause();
+            let saved = daemon.persist_pause();
             // §2.6 O5: pause 중 동결된 채널 아웃바운드 이벤트 재발행 + 보류 inbox 드레인.
             // paused=false 확정 후 호출해야 deliverable_master의 pause 게이트를 통과한다.
             crate::channels::resume_flush(daemon);
             daemon
                 .bus
                 .publish("autopilot.resumed", "system", None, json!({}));
-            Reply::Single(ok_response(&id, json!({"paused": false})))
+            match saved {
+                Ok(()) => Reply::Single(ok_response(&id, json!({"paused": false}))),
+                Err(e) => Reply::Single(err_response(
+                    &id,
+                    "persist_failed",
+                    &format!("재개는 됐으나 상태 저장 실패({e}) — 데몬을 재기동하면 다시 정지 상태로 뜰 수 있습니다"),
+                )),
+            }
         }
 
         "system.gate_check" => {
@@ -7913,6 +7928,34 @@ mod tests {
 
     /// ★v115-restore(A1): 거부 로그 줄이 발신자 명령줄·부모를 싣는다(단명 발신자 특정용).
     #[cfg(unix)]
+    /// ⑩(TICKET=cysr-117-impl-lead) pause·resume 저장 실패는 ok 가 아니라 persist_failed 로 돌아온다
+    /// (종전: 결과를 버리고 늘 ok). 메모리 정지는 그대로 걸린다.
+    #[test]
+    fn pause_resume_report_persist_failure_instead_of_ok() {
+        let dir = std::env::temp_dir().join(format!(
+            "cys-pausefail-{}-{}",
+            std::process::id(),
+            crate::state::now_epoch() as u64
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let target = crate::state::state_dir(&daemon.socket_path).join("autopilot.json");
+        let _ = std::fs::remove_file(&target);
+        std::fs::create_dir_all(&target).unwrap(); // 저장 대상이 디렉터리 = 교체 실패
+        for (method, paused) in [("system.pause", true), ("system.resume", false)] {
+            let req = Request { id: json!(1), method: method.into(), params: json!({"reason": "t"}) };
+            let Reply::Single(resp) = dispatch(&daemon, req, None) else { panic!("single") };
+            assert_ne!(resp["ok"], json!(true), "{method}: 저장 실패인데 ok: {resp}");
+            assert!(resp.to_string().contains("persist_failed"), "{method}: {resp}");
+            assert_eq!(daemon.paused.load(Ordering::SeqCst), paused, "{method}: 메모리 상태");
+        }
+        std::fs::remove_dir_all(&target).unwrap();
+        let req = Request { id: json!(2), method: "system.pause".into(), params: json!({}) };
+        let Reply::Single(resp) = dispatch(&daemon, req, None) else { panic!("single") };
+        assert_eq!(resp["ok"], json!(true), "{resp}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn v115_reject_log_line_carries_caller_lineage() {
         let mut child = std::process::Command::new("sleep").arg("7.25").spawn().expect("sleep");

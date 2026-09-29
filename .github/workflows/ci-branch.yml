@@ -176,13 +176,15 @@ jobs:
                   "우분투에서 측정해 초록이면 release·pack-release 에 편입하고 이 등재를 지워라(1.1.7).",
               ),
               "test_mac_cli_alias_link": (
-                  {"ci-branch"},
+                  {"ci-branch", "release"},
                   "cysr 1.1.7 E1-b(갈래3 brand) — scripts/tests/ 스위트(팩 스위트 아님) · 맥 번들 별칭 "
                   "Contents/MacOS/cysr -> cys(scripts/lib/mac-bundle-common.sh mac_link_cli_alias) 핀. "
-                  "대상 lib 는 배송 팩 tar 에 실리지 않고, 소비 지점은 로컬 맥 빌드 스크립트 2개"
-                  "(build-macos-local.sh:27 · build-macos-signed.sh:37)뿐이다 — release·pack-release 는 "
-                  "이 lib 를 source 하지 않는다(실측 grep .github 0건). ⑥ codesign 단언은 macOS 전용이라 "
-                  "ubuntu 레인에서 의미가 없다. 1.1.7 통합(int/117) 편입 전에는 0레인 실행이었다.",
+                  "대상 lib 는 배송 팩 tar 에 실리지 않고, 소비 지점은 맥 빌드 스크립트 2개"
+                  "(build-macos-local.sh:27 · build-macos-signed.sh:37)다 — 그중 signed 는 release.yml 맥 레그가 "
+                  "실행한다(간접 소비 · 통합 적대 검증 R1 agy 지적으로 정정). pack-release 는 팩만 서명·배송하고 "
+                  "맥 번들을 만들지 않아 이 lib 를 실행할 일이 없다(편입하면 근거 없는 목록). "
+                  "ci-branch = 브랜치 조기 경보 · release = 번들을 만들기 직전 증명의 2레인 편입. "
+                  "1.1.7 통합(int/117) 편입 전에는 0레인 실행이었다.",
               ),
           }
           # (2026-08-12 편입 완료: test_bootstrap_chain 을 3레인 전부에 배선 — 위계 폴백의 유일
@@ -721,7 +723,7 @@ jobs:
           python3 "$f"
 
       # (cysr 1.1.7 E1-b · 통합 int/117 편입) 맥 번들 명령 별칭 cysr -> cys 시험 — 그 전 0레인 실행.
-      #   release·pack-release 미편입 사유는 위 '팩 스위트 레인 대조' ALLOWED 등재 참조. stdlib · 네트워크 0.
+      #   release 맥 레그와 동시 편입 · pack-release 미편입 사유는 위 '팩 스위트 레인 대조' ALLOWED 등재 참조. stdlib · 네트워크 0.
       - name: 맥 번들 명령 별칭 cysr -> cys (test_mac_cli_alias_link · macOS)
         shell: bash
         run: |

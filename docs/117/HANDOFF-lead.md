@@ -94,3 +94,4 @@
   · 시험 필수: 세 파일 0바이트 회귀 · 비어 있지 않은 손상 보존 · BOM 보존 · 다중 프로세스 게시 · create_new 직후 중단점 결정적 경합.
 - 함정 이월: §3 전부 + 좌석 env CYS_* 누출(시험·게이트) · externalBin 0바이트(cys-app 뒤 재빌드) · 실행 중 스크립트 편집 금지 · zsh 는 따옴표 없는 변수를 안 쪼갠다(`${=V}`) · `$r:s` 는 zsh 수식어(`${r}:` 로).
 - 상태: fix/117-int 원격 = dfcfe2e8(1.1.7 범프) · 로컬 int/117 = 그 위 225cb312(HANDOFF §7) + 이 §8 커밋 = 미push.
+- [CYCLE 저장 09-30 08:2x] 현재 = fix-blockers 착수 전(매듭 완료 · §8 계획 · todo ①~⑦). 미해결 게이트 = push(master 정본 게이트 재실행 뒤) · windows-health 36641441087 attempt 2 잡 결론(건강성 success · 비차단 A10 진행 중). 다음 액션 = §8 → codex-1R-out.md → ① C3-F1(javis_dept_request.py:1033·1656·1698·1840). int/117 로컬 머리 = §8 커밋 뒤 이 줄(미커밋 · 미push).

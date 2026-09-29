@@ -893,6 +893,16 @@ cys_post_legacy_sm_done:
   !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
 cys_post_legacy_done:
   ClearErrors
+
+  ; ★(cysr 1.1.7 E2 · master#bd7a4a80) 삭제 길 손 줄이기 — 제거 등록값(UninstallString)에 /P.
+  ;   설정 → 앱 → cysr 「제거」가 부르는 명령이 passive 가 되어 NSIS 확인 화면·[닫기]가 사라진다
+  ;   (템플릿 un.onInit 이 /P 를 읽어 un.SkipIfPassive·SetAutoClose). passive 에서는 「앱 데이터 삭제」
+  ;   칸이 꺼진 채라 사용자 데이터는 자동 보관된다(완전 삭제 = 설치기 reset-clean 길).
+  ;   템플릿이 이 섹션 앞(installer.nsi WriteRegStr … "UninstallString")에서 따옴표만 둘러 쓴 값을
+  ;   **매 설치마다** 덮어쓰므로 옛 판에서 등록된 값도 이번 덮어 설치로 바뀐다. 재설치 「먼저 제거」
+  ;   경로는 이 값 뒤에 /UPDATE·/P·_?= 를 덧붙여 부르므로(/P 가 두 번이어도 GetOptions 는 같다) 그대로 돈다.
+  WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\" /P"
+  ClearErrors
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

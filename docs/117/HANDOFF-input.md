@@ -103,3 +103,12 @@
 | F8 minor — 초안 게이트 거부에도 CLI 6초 재시도 후 큐 | 잔여 | 비용(지연)만 · `[draft_gate:` 표지로 즉시 큐 전환은 CLI 개정(다음 정기) |
 
 **라운드 현황**: R1(수리 5) → R2(수리 1 · 결정 1) = 2/3 라운드 사용. 수렴 판정 = agy ACCEPT · Fable 은 major 1건(F1) 이 master 판정 대기라 미수렴.
+
+## 9. R3(마지막 라운드 · master#84c3982f A 채택) — 수리 7e7efefb · Fable R3 = REVISE(major 1 · minor 3) · **3라운드 상한 = 수리하지 않음**(판정 원문 경로만)
+- 수리 내용: 제출 지점 공통 기록 `note_line_submitted`(계수 0 · 사람 0 · 세대+1) — `seat_inject_guarded`(channels·schedule·boot_supervisor 공통 입구) · `deliver_to_ceo` · `deliver_head_locked` · watch_wake 제출 재시도 CR + 열거 시험 `r3_every_production_submit_point_notes_line_submitted` + 행동 시험 `r3_internal_inject_clears_stale_counters` · 뮤테이션 4종 적색 · cysd 1210 통과.
+- Fable R3 원문 = 스크래치 `…/scratchpad/fable-r3.out`(이 좌석 · 요지 아래) · 스냅샷 `…/scratchpad/snap-7e7efefb`.
+  - F1 major: 0 쓰기가 writer 인계 직후라 실제 CR(cr_delay 120~500ms 뒤) 전에 들어온 사람 키가 CR 로 함께 제출된 뒤에도 사람 몫이 남을 수 있다(수백 ms 창).
+  - F2 minor: try_send 와 0 쓰기가 한 임계영역이 아님(µs 창).
+  - F3 minor: 열거 시험이 두 철자(`WriteReq::Inject {` · `WriteReq::Data(b"\r"`)에 앵커 — send_key Return·Program·async fn 등은 비가시 · 판정이 문자열 포함 여부라 주석으로도 통과.
+  - **F4 minor(내 편집 실수 · 사실 확인함)**: 새 시험을 v115 시험의 doc 2줄·`#[cfg(unix)]` 과 `#[test]` 사이에 끼워 넣어, 그 속성이 새 시험에 붙고 `v115_seat_inject_guarded_holds_vacant_agent_seat` 는 cfg 를 잃었다(윈에서 /bin/zsh 조기 반환으로 공허 통과 · 현 CI 는 cysd 시험을 darwin 에서만 돌려 적색 없음). 고치려면 속성 3줄을 v115 시험 앞으로 옮기면 된다(2분 · master 지시 전 무수리).
+- BACKLOG 다음 판 후보(master 판정 원문): 게이트 밖 데몬 내부 주입이 「오너 초안 뒤에 붙어 제출」되는 것 자체(1.1.6 부터의 경로).

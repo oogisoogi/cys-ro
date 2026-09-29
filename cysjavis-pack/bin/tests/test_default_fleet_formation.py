@@ -537,7 +537,8 @@ ORIGIN_LINE = "cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 �
 ORIGIN_LINE_EN = "cysr started from the cys terminal (github.com/idoforgod/cys-terminal)."
 # 옛 「원작자」 문안의 흔적 — 새 표기가 **대체**여야지 **덧붙임**이면 안 된다.
 ATTRIB_STALE = ("원작자", "CYSJavis", "원작자의 허락을 받아", "파생판", "Original author")
-LICENSE_COPYRIGHT = "Copyright (c) 2026 CYSJavis (cysinsight@gmail.com)"
+# LICENSE 3번째 줄(저작권 줄) sha256 — 원문에 연락처가 있어 문자열 대신 해시로 못박는다(secret-scan --all 규칙).
+LICENSE_COPYRIGHT_SHA256 = "45a16ba2127b37b237ece46b658e40345f2ed64cc355bba7a958c2f1afe398e1"
 
 
 def _block_scalar(text, key):
@@ -681,8 +682,10 @@ def t_attribution():
     except OSError as e:
         lic = []
         check("ⓕ-L LICENSE 판독", False, str(e))
+    import hashlib
+    got = hashlib.sha256(lic[2].encode("utf-8")).hexdigest() if len(lic) >= 3 else ""
     check("ⓕ-L MIT LICENSE 저작권 줄 유지(라이선스 조건)",
-          len(lic) >= 3 and lic[2] == LICENSE_COPYRIGHT, repr(lic[2] if len(lic) >= 3 else lic))
+          got == LICENSE_COPYRIGHT_SHA256 and lic[2].startswith("Copyright (c) 2026 CYSJavis"), got)
 
 
 def _apple_secret_names(text):

@@ -7012,8 +7012,6 @@ mod tests {
         plan_duplicate_alerts, plan_duplicate_kills, wakeup_entry_ids, ProcObs,
     };
 
-    /// ★v114-dept-fd 수리 3: 빈 셸 판정 — 등록 에이전트 좌석 ∧ 셸 단독 ∧ 뿌리도 에이전트 아님 셋 다일 때만.
-    /// 판정 불능(뿌리 None·Unknown)은 종전 동작(주입)으로 강등한다.
     /// ⑩ Q2(TICKET=cysr-117-impl-lead) 소스 핀: 큐 배달 루프는 좌석마다 배달 직전 pause 를 다시 본다
     /// (틱 머리 1회 확인 뒤 같은 틱에 걸린 pause 가 남은 좌석 배달을 막는다).
     #[test]
@@ -7031,6 +7029,8 @@ mod tests {
         assert!(call - pos < 150, "pause 재확인이 배달 호출과 떨어져 있다({}바이트)", call - pos);
     }
 
+    /// ★v114-dept-fd 수리 3: 빈 셸 판정 — 등록 에이전트 좌석 ∧ 셸 단독 ∧ 뿌리도 에이전트 아님 셋 다일 때만.
+    /// 판정 불능(뿌리 None·Unknown)은 종전 동작(주입)으로 강등한다.
     #[test]
     fn v114_agent_seat_vacant_verdict_only_bare_shell_of_registered_seat() {
         use super::{agent_seat_vacant_verdict as v, is_shell_name, SeatState::*};

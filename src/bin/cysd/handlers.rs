@@ -8119,6 +8119,9 @@ mod tests {
 
     /// ⑩(TICKET=cysr-117-impl-lead) pause·resume 저장 실패는 ok 가 아니라 persist_failed 로 돌아온다
     /// (종전: 결과를 버리고 늘 ok). 메모리 정지는 그대로 걸린다.
+    // 윈도 state_dir 은 소켓 이름 슬러그로 %LOCALAPPDATA%\cys\<슬러그> 를 공유해 시험 끝의 정지가 다른 시험 데몬에
+    //   남는다(1.1.7 통합 적대 검증 Fable MINOR · state.rs 짝 시험 2개와 같은 처분) — POSIX 에서만.
+    #[cfg(unix)]
     #[test]
     fn pause_resume_report_persist_failure_instead_of_ok() {
         let dir = std::env::temp_dir().join(format!(

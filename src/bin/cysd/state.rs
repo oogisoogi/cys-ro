@@ -3075,24 +3075,6 @@ fn queue_mid(sid: u64, text: &str) -> String {
     format!("q{h:016x}")
 }
 
-/// queue-state.json replay: 엔트리 배열을 **파일 등장순 보존**으로 dedup 복원한다.
-///
-/// ★G1(W2-A) 재작성: 종전 HashMap.into_values()는 해시-랜덤 순서라 '레거시 seq=파일 등장순
-/// 재발급' 합성 규칙과 WAL 라운드트립이 성립 불가였다 — Vec(순서) + HashSet(dedup)으로 교체.
-/// dedup 키 = id 우선·부재 시 mid(레거시). 둘 다 없으면 폐기(신원 불능 — fail-safe).
-///
-/// 레거시(구 WAL: {mid, surface_id, text, role}만) 항목의 신 필드 합성 규칙:
-/// - id = mid 재사용 — 레거시 항목도 재기동 간 동일 ID를 갖는다(안정성 유지).
-/// - seq = 파일 등장순 재발급(1-기반) — 병합·정렬의 타이브레이커 근거.
-/// - enqueued_at = **복원 시각**(0.0 금지 · BLOCKER) — 0.0 합성 시 업그레이드 재기동 직후 전
-///   레거시 항목이 wait≈수십억 초로 즉시 overdue 최전선 배달되고 typing 가드가 무방비인
-///   부트체인 최취약 창에서 stale 백로그가 폭주한다.
-/// from/origin은 합성하지 않는다(없는 정보를 지어내지 않는다 — 소비측 unwrap_or 폴백).
-///
-/// 파일 부재/파손이면 빈 벡터(fail-safe — 큐 없음이 기본).
-///
-/// ★비타입 감사 지점 ①(§Daemon::restored_queue) — QueueEntry 스키마 변경 시 여기의
-/// 레거시 합성이 전 항목에 신 필드를 보장해야 하류(rehome·queue.list)가 결손 없이 읽는다.
 /// ⑩(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑩ · 원작자 c357b67b 의 pause 부분 재구현) 비상 정지 복원.
 /// 파일 부재 = 정지 아님(첫 기동). **있는데** 읽기·해석이 안 되거나 `paused` 가 불리언이 아니면
 /// 정지 유지로 접는다 — 비상 정지는 풀리는 쪽으로 틀리면 안 된다(종전: None = 정지가 풀린 채 부팅).
@@ -3165,6 +3147,24 @@ fn guard_unreadable_queue_wal(dir: &std::path::Path) -> bool {
     }
 }
 
+/// queue-state.json replay: 엔트리 배열을 **파일 등장순 보존**으로 dedup 복원한다.
+///
+/// ★G1(W2-A) 재작성: 종전 HashMap.into_values()는 해시-랜덤 순서라 '레거시 seq=파일 등장순
+/// 재발급' 합성 규칙과 WAL 라운드트립이 성립 불가였다 — Vec(순서) + HashSet(dedup)으로 교체.
+/// dedup 키 = id 우선·부재 시 mid(레거시). 둘 다 없으면 폐기(신원 불능 — fail-safe).
+///
+/// 레거시(구 WAL: {mid, surface_id, text, role}만) 항목의 신 필드 합성 규칙:
+/// - id = mid 재사용 — 레거시 항목도 재기동 간 동일 ID를 갖는다(안정성 유지).
+/// - seq = 파일 등장순 재발급(1-기반) — 병합·정렬의 타이브레이커 근거.
+/// - enqueued_at = **복원 시각**(0.0 금지 · BLOCKER) — 0.0 합성 시 업그레이드 재기동 직후 전
+///   레거시 항목이 wait≈수십억 초로 즉시 overdue 최전선 배달되고 typing 가드가 무방비인
+///   부트체인 최취약 창에서 stale 백로그가 폭주한다.
+/// from/origin은 합성하지 않는다(없는 정보를 지어내지 않는다 — 소비측 unwrap_or 폴백).
+///
+/// 파일 부재/파손이면 빈 벡터(fail-safe — 큐 없음이 기본).
+///
+/// ★비타입 감사 지점 ①(§Daemon::restored_queue) — QueueEntry 스키마 변경 시 여기의
+/// 레거시 합성이 전 항목에 신 필드를 보장해야 하류(rehome·queue.list)가 결손 없이 읽는다.
 fn load_queue_state(dir: &std::path::Path) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -8067,9 +8067,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// [WAL 왕복 + queue_seq 시드] persist→load 라운드트립: id/seq/enqueued_at/from/origin·
-    /// role·mid(구 데몬 롤백 하위호환 병기) 보존 + 시드 = 복원 항목 max(seq)+1(재기동 후 발급
-    /// seq가 살아있는 복원 항목과 절대 불충돌) + id 조립 = boot 식별자(started_at) + seq.
     /// ⑩(TICKET=cysr-117-impl-lead) 비상 정지 복원 진리표 — 부재·명시 false 만 해제, 손상 3형상·읽기
     /// 거부는 정지 유지. 종전 `.ok()…filter(paused==true)` 로 되돌리면 손상 행이 None 이 되어 적색.
     // 윈도 state_dir 은 %LOCALAPPDATA% 아래라 픽스처 폴더와 다르다(Fable R2 C) — POSIX 에서만.
@@ -8205,6 +8202,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// [WAL 왕복 + queue_seq 시드] persist→load 라운드트립: id/seq/enqueued_at/from/origin·
+    /// role·mid(구 데몬 롤백 하위호환 병기) 보존 + 시드 = 복원 항목 max(seq)+1(재기동 후 발급
+    /// seq가 살아있는 복원 항목과 절대 불충돌) + id 조립 = boot 식별자(started_at) + seq.
     #[test]
     fn queue_seq_seeds_from_wal_max_and_persist_load_roundtrip() {
         let dir = queue_wal_dir("seed");

@@ -7239,8 +7239,6 @@ mod tests {
         assert!(!body.contains("rpc_on(&sock, \"surface.send_text\""));
     }
 
-    /// ★v114-dept-fd 수리 1″ 배선 핀: 앱의 부서 데몬 기동 4경로(launch·rotate·create·allocate)가 전부
-    /// run_dept_tool 을 거치고, 맥에서는 본부 데몬 대행(dept.run)이 먼저 · 직접 실행은 그 폴백 1곳뿐이다.
     /// ①(TICKET=cysr-117-impl-lead) 부서 목록: 없음 = 빈 목록 · BOM = 읽음 · 읽기 오류·해석 실패 = Err.
     /// 읽기 오류를 `Ok(빈 목록)` 으로 되돌리면 적색.
     #[test]
@@ -7261,6 +7259,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// ★v114-dept-fd 수리 1″ 배선 핀: 앱의 부서 데몬 기동 4경로(launch·rotate·create·allocate)가 전부
+    /// run_dept_tool 을 거치고, 맥에서는 본부 데몬 대행(dept.run)이 먼저 · 직접 실행은 그 폴백 1곳뿐이다.
     #[test]
     fn v114_dept_daemon_spawns_go_through_delegation() {
         let src = include_str!("main.rs");

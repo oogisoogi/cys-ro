@@ -1333,6 +1333,123 @@ class TestReviewV113Fable(Base):
         self.assertIn("다시", self.m.FAIL_SAY["lock_busy"])
 
 
+class TestC3F1Leftover(Base):
+    """1.1.7 fix-blockers C3-F1(codex 1R 차단 · 거짓 안심 알림): 생성 실패 알림의 「남은 것」은 지금 디스크로 확인한
+    것만 말한다 — 「남은 것은 없습니다」는 확인됐을 때만 · 확인 못 하면 그렇다고 말한다 · 자동 삭제는 없다."""
+
+    def say(self, rid):
+        return self.run_cmd("status", "--say", rid)[1]["say"]
+
+    def cat_keys(self):
+        p = os.environ["CYS_DEPT_CATALOG"]
+        return set(json.load(open(p))["departments"]) if os.path.exists(p) else set()
+
+    def crash_with(self, fn, exc):
+        import javis_org
+        from unittest import mock
+        rid = self.proposed_confirmed("교육부")
+        with mock.patch.object(javis_org, fn, side_effect=exc):
+            self.assertEqual(self.tick(), 0)
+        r = self.req(rid)
+        self.assertEqual(r["state"], "failed", r.get("events"))
+        self.assertTrue(r["fail_reason"].startswith("crash:"), r["fail_reason"])
+        return rid, r
+
+    def test_folder_error_ancestor_is_file_reports_catalog_and_mission(self):
+        open(os.path.join(self.home, "afile"), "w").write("x")
+        rc, o = self.propose("교육부", folder="~/afile/sub")
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(self.run_cmd("confirm", o["request"])[0], 0)
+        self.tick()
+        r = self.req(o["request"])
+        self.assertTrue(r["fail_reason"].startswith("crash:"), r["fail_reason"])
+        self.assertTrue(r.get("leftover_checked"), r)
+        self.assertIn("카탈로그 항목 1개", r["leftover"])
+        self.assertIn("맡은 일 파일 1개", r["leftover"])
+        s = self.say(o["request"])
+        self.assertNotIn("남은 것은 없습니다", s)
+        self.assertIn("지우기", s)
+        self.assertIn(r["key"], self.cat_keys(), "자동 삭제 추가 금지 — 잔여물은 그대로 두고 알린다")
+
+    def test_folder_permission_error_reports_leftover(self):
+        rid, r = self.crash_with("ensure_dirs", PermissionError(13, "denied"))
+        self.assertEqual(r["fail_reason"], "crash:PermissionError")
+        self.assertIn("카탈로그 항목 1개", r["leftover"])
+        self.assertNotIn("남은 것은 없습니다", self.say(rid))
+
+    def test_failure_before_catalog_says_nothing_left_only_when_checked(self):
+        rid, r = self.crash_with("catalog_upsert", RuntimeError("boom"))
+        self.assertNotIn(r["key"], self.cat_keys())
+        self.assertTrue(r.get("leftover_checked"), r)
+        self.assertFalse(r.get("leftover"), "카탈로그를 만들기 전 실패에 「카탈로그 1개」를 붙이면 거짓이다")
+        self.assertIn("남은 것은 없습니다", self.say(rid))
+
+    def test_leftover_check_failure_says_unconfirmed(self):
+        def corrupt_then_fail(*a, **k):
+            with open(os.environ["CYS_DEPT_CATALOG"], "w") as f:
+                f.write("{")                       # 잔여 확인 자체가 불가능한 상태
+            raise OSError("disk")
+        rid, r = self.crash_with("ensure_dirs", corrupt_then_fail)
+        self.assertFalse(r.get("leftover_checked"), r)
+        s = self.say(rid)
+        self.assertIn("남은 항목을 확인하지 못했습니다", s)
+        self.assertNotIn("남은 것은 없습니다", s)
+
+    def test_legacy_record_without_check_is_not_reassuring(self):
+        rid, _ = self.crash_with("catalog_upsert", RuntimeError("boom"))
+        r = self.req(rid)
+        r.pop("leftover_checked", None)            # 수리 전 판이 남긴 실패 기록(확인 표지 없음)
+        r.pop("leftover", None)
+        self.m.save_req(r)
+        s = self.say(rid)
+        self.assertIn("남은 항목을 확인하지 못했습니다", s)
+        self.assertNotIn("남은 것은 없습니다", s)
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "POSIX 권한 비트 · 비루트 한정")
+    def test_unreadable_residue_location_is_unconfirmed_not_absent(self):
+        md = os.environ["CYS_DEPT_MISSIONS"]
+
+        def lock_then_fail(*a, **k):
+            os.chmod(md, 0)                            # 맡은 일 파일 자리를 볼 수 없다 — 「없음」이 아니라 「모름」
+            raise OSError("disk")
+        try:
+            rid, r = self.crash_with("ensure_dirs", lock_then_fail)
+        finally:
+            os.chmod(md, 0o700)
+        self.assertFalse(r.get("leftover_checked"), r)
+        self.assertIn("확인하지 못했습니다", self.say(rid))
+
+    def test_generated_claude_md_listed_user_claude_md_not(self):
+        rid = self.proposed_confirmed("교육부")
+        os.environ["CYS_DEPT_BIN"] = os.path.join(self.tmp, "없는-cys-dept")   # 안내 파일 작성 뒤 crash
+        self.tick()
+        r = self.req(rid)
+        self.assertTrue(r["fail_reason"].startswith("crash:"), r["fail_reason"])
+        self.assertIn("안내 파일(CLAUDE.md)", r["leftover"])
+        rid2 = self.proposed_confirmed("학생부")
+        r2 = self.req(rid2)
+        os.makedirs(r2["cwd"], exist_ok=True)
+        with open(os.path.join(r2["cwd"], "CLAUDE.md"), "w") as f:
+            f.write("사용자 자신의 파일\n")
+        self.tick()
+        r2 = self.req(rid2)
+        self.assertEqual(r2["fail_reason"], "claude_md_conflict")
+        self.assertNotIn("안내 파일", r2.get("leftover") or "", "사용자 파일을 이 요청의 잔여물로 적으면 안 된다")
+        self.assertIn("카탈로그 항목 1개", r2["leftover"])
+
+    def test_duplicate_repropose_then_discard_recreates(self):
+        rid, r = self.crash_with("ensure_dirs", PermissionError(13, "denied"))
+        rc, o = self.propose("교육부")
+        self.assertEqual(rc, 5, o)                  # 남은 카탈로그가 이름을 잡고 있다 — 알림이 그것을 말해야 한다
+        self.assertEqual(o.get("reason"), "duplicate", o)
+        rc, o = self.run_cmd("discard", rid)
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(sorted(o["removed"]), ["catalog", "mission"])
+        rid2 = self.proposed_confirmed("교육부")
+        self.tick()
+        self.assertIn(self.req(rid2)["state"], ("created", "reused"), self.req(rid2).get("events"))
+
+
 class TestNoProduction(unittest.TestCase):
     """하네스가 실 자원을 건드리지 않았다는 것을 시험 스스로 단언한다."""
     def test_real_request_root_untouched(self):

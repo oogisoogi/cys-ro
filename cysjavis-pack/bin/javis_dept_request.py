@@ -1033,7 +1033,12 @@ def say_for(row, r, name, x, reg=None, cat=None):
     if row == 4:
         reason = (r or {}).get("fail_reason") or ""
         base = FAIL_SAY.get(reason.split(":")[0])
-        left = " 남은 것: %s" % r.get("leftover") if (r or {}).get("leftover") else " 남은 것은 없습니다."
+        # ★C3-F1: 「남은 것은 없습니다」는 디스크로 확인됐을 때만(leftover_checked) — 기록 부재는 증거가 아니다
+        left = (" 남은 것: %s" % r["leftover"] if (r or {}).get("leftover") else
+                " 남은 것은 없습니다." if (r or {}).get("leftover_checked") else
+                " 남은 항목을 확인하지 못했습니다.")
+        if (r or {}).get("leftover") and not r.get("leftover_checked"):
+            left += " 그 밖에 남은 항목은 확인하지 못했습니다."
         return "「%s」을 만들지 못했습니다. %s%s" % (disp, base or "(사유: %s)" % reason, left)
     if row == 5:
         return "「%s」은 닫혀 있습니다." % disp
@@ -1653,9 +1658,50 @@ def _write_claude_md(r):
     return None
 
 
+def _absent(path):
+    """없음이 확인되면 True · 있으면 False · 확인 못 하면(권한 등) 예외 — exists() 는 오류를 「없음」으로 접는다."""
+    try:
+        os.stat(path)
+        return False
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+
+
+def _probe_leftover(r):
+    """★C3-F1(1.1.7 fix-blockers · codex 1R): 생성 실패의 「남은 것」은 기억한 단계가 아니라 **지금 디스크**로 적는다 —
+    단계 기록은 「쓰기 성공 직후 예외」를 놓치고, 고정 문구는 카탈로그를 만들기 전 실패에서 거짓이 된다.
+    대상 = 지우기(discard)가 걷는 셋. 한 칸이라도 확인 못 하면 None(= 「확인하지 못했습니다」)."""
+    try:
+        left, key = [], r.get("key")
+        if key and not _absent(catalog_json()):
+            with open(catalog_json(), encoding="utf-8") as f:
+                deps = json.load(f).get("departments")
+            if not isinstance(deps, dict):
+                raise ValueError("catalog departments")
+            if key in deps:
+                left.append("카탈로그 항목 1개")
+        if key and not _absent(os.path.join(missions_dir(), key + ".md")):
+            left.append("맡은 일 파일 1개")
+        cm = os.path.join(r["cwd"], "CLAUDE.md") if r.get("cwd") else None
+        if cm and not _absent(cm):
+            with open(cm, encoding="utf-8", errors="replace") as f:
+                first = f.readline()
+            if first.startswith(MARKER_PREFIX) and ("request=%s " % r["id"]) in first:
+                left.append("부서 폴더의 안내 파일(CLAUDE.md)")
+        return left
+    except Exception:
+        return None
+
+
 def _fail(r, reason, leftover=None):
     r["state"] = "failed"
     r["fail_reason"] = reason
+    if r.get("kind") == "create":
+        left = _probe_leftover(r)
+        r["leftover_checked"] = left is not None
+        parts = ([leftover] if leftover else []) + (
+            ["%s(지우기로 걷을 수 있습니다)" % " · ".join(left)] if left else [])
+        leftover = " · ".join(parts) or None
     if leftover:
         r["leftover"] = leftover
     _event(r, "failed %s" % reason)
@@ -1745,7 +1791,7 @@ def _create_step(r, st, reqs):
         javis_org.ensure_dirs({"cwd": r["cwd"]})
     err = _write_claude_md(r)                            # 재호출 직전에도 안내문을 다시 대조한다(F7)
     if err:
-        _fail(r, err, leftover="카탈로그 항목 1개(지우기로 걷을 수 있습니다)")
+        _fail(r, err)
         return
     cysd = find_cysd()
     if not cysd:
@@ -1789,7 +1835,7 @@ def _create_step(r, st, reqs):
         r["create_calls"] = max(0, (r.get("create_calls") or 1) - 1)
         _event(r, "lock-busy %d (다음 틱 재시도)" % r["lock_busy"])
     else:
-        _fail(r, "lock_busy" if p.returncode == LOCK_BUSY_RC else "create_rc:%s" % p.returncode, leftover="카탈로그 항목 1개(지우기로 걷을 수 있습니다)")
+        _fail(r, "lock_busy" if p.returncode == LOCK_BUSY_RC else "create_rc:%s" % p.returncode)
 
 
 def _close_step(r):

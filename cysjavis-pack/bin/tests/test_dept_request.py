@@ -336,6 +336,21 @@ class TestFolderStepR1(Base):
         rc, o = self.propose(folder=os.path.join(link, "x"))
         self.assertEqual((rc, o.get("reason")), (2, "folder"), o)
 
+    def test_same_name_file_at_target_refused(self):
+        os.makedirs(os.path.join(self.home, "CYSjavis"))
+        open(os.path.join(self.home, "CYSjavis", "설교준비부"), "w").close()
+        rc, o = self.propose(folder="~/CYSjavis")
+        self.assertEqual((rc, o.get("reason")), (2, "folder"), o)
+        self.assertIn("파일", o["say"])
+
+    def test_hidden_only_folder_not_reported_as_having_files(self):
+        d = os.path.join(self.home, "CYSjavis", "설교준비부")
+        os.makedirs(d)
+        open(os.path.join(d, ".DS_Store"), "w").close()
+        rc, o = self.propose()
+        self.assertEqual(rc, 0, o)
+        self.assertNotIn("이미 있는 폴더", o["card"])
+
     def test_javis_org_rejects_relative_or_dotdot_cwd(self):
         import javis_org
         disp = "설교준비부"

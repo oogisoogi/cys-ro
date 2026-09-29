@@ -170,7 +170,12 @@ def resolve_folder(raw, display):
     if prob:
         return None, prob
     if os.path.basename(parent) == display:
-        return folder_problem(os.path.dirname(parent))
+        parent, prob = folder_problem(os.path.dirname(parent))
+        if prob:
+            return None, prob
+    target = workdir_for(display, parent)
+    if os.path.exists(target) and not os.path.isdir(target):     # 적대 검증 R2 Fable — 틱의 makedirs 가 늦게 실패하기 전에
+        return None, "그 위치에 「%s」라는 **파일**이 이미 있어 부서 폴더를 만들 수 없습니다. 다른 위치나 이름을 말씀해 주세요." % display
     return parent, None
 
 
@@ -190,7 +195,7 @@ def folder_candidates(live):
         c = (e or {}).get("cwd")
         if c and os.path.isabs(c):
             par = os.path.dirname(os.path.normpath(c))
-            if par != os.path.dirname(par) and par != os.path.dirname(os.path.normpath(h)):   # 디스크 맨 위·사용자 모음 폴더는 추천하지 않는다
+            if folder_problem(par)[1] is None:      # 추천해 놓고 거절하지 않게 — 같은 판정을 먼저 통과한 곳만(R2 Fable)
                 add(par, "지금 있는 부서들이 모여 있는 곳")
     docs = os.path.join(h, "Documents")
     if os.path.isdir(docs):
@@ -614,7 +619,7 @@ def render_create_card(r, gate, n_live):
         folder += "  (이 위치는 아직 없어서 새로 만듭니다)"
     elif os.path.isdir(r["cwd"]):
         try:
-            n = len(os.listdir(r["cwd"]))
+            n = len([x for x in os.listdir(r["cwd"]) if not x.startswith(".")])   # .DS_Store 등 숨김 항목은 세지 않는다
         except OSError:
             n = -1
         if n != 0:      # 이미 있는 폴더를 부서 폴더로 쓴다 — 사용자 자료와 겹칠 수 있어 카드에 밝힌다(적대 검증 R1)

@@ -175,6 +175,15 @@ jobs:
                   "적색 위험을 새로 들이지 않으려 브랜치 레인(macOS · bash 3.2)에만 둔다 — **잔여 격차**다. "
                   "우분투에서 측정해 초록이면 release·pack-release 에 편입하고 이 등재를 지워라(1.1.7).",
               ),
+              "test_mac_cli_alias_link": (
+                  {"ci-branch"},
+                  "cysr 1.1.7 E1-b(갈래3 brand) — scripts/tests/ 스위트(팩 스위트 아님) · 맥 번들 별칭 "
+                  "Contents/MacOS/cysr -> cys(scripts/lib/mac-bundle-common.sh mac_link_cli_alias) 핀. "
+                  "대상 lib 는 배송 팩 tar 에 실리지 않고, 소비 지점은 로컬 맥 빌드 스크립트 2개"
+                  "(build-macos-local.sh:27 · build-macos-signed.sh:37)뿐이다 — release·pack-release 는 "
+                  "이 lib 를 source 하지 않는다(실측 grep .github 0건). ⑥ codesign 단언은 macOS 전용이라 "
+                  "ubuntu 레인에서 의미가 없다. 1.1.7 통합(int/117) 편입 전에는 0레인 실행이었다.",
+              ),
           }
           # (2026-08-12 편입 완료: test_bootstrap_chain 을 3레인 전부에 배선 — 위계 폴백의 유일
           #  회귀 핀 세트가 CI 0회 실행이던 격차를 봉합. ALLOWED 예외도 함께 제거 — 대칭이 정본.)
@@ -709,6 +718,16 @@ jobs:
           set -euo pipefail
           f="scripts/tests/test_release_postprocess_gate.py"
           [ -f "$f" ] || { echo "::error::게이트 회귀 그물 누락: $f (git add 누락 의심) — 이 파일 없이 게이트를 신뢰할 수 없다" >&2; exit 1; }
+          python3 "$f"
+
+      # (cysr 1.1.7 E1-b · 통합 int/117 편입) 맥 번들 명령 별칭 cysr -> cys 시험 — 그 전 0레인 실행.
+      #   release·pack-release 미편입 사유는 위 '팩 스위트 레인 대조' ALLOWED 등재 참조. stdlib · 네트워크 0.
+      - name: 맥 번들 명령 별칭 cysr -> cys (test_mac_cli_alias_link · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_mac_cli_alias_link.py"
+          [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
           python3 "$f"
 
       # ★todo **스캔 집합** 2언어 파리티(설계 §14 S18 · W14). 위 파서 파리티와 **다른 표면**이다:

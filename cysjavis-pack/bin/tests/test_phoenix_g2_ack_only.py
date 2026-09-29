@@ -83,8 +83,9 @@ def run_suite(mod, sink=None):
         ok, _ = mod.stage_g2_ack("sock", "worker", "surface:9", False)
         check("A5/A6 ACK 아님: %r" % out.strip(), ok is False, sink=sink)
     check("A6 rc≠0 + ACK 줄 → ACK 아님", mod.g2_acked(1, ACK) is False, sink=sink)
-    check("A3′ 가드 기록 ACK 줄도 ACK", mod.g2_acked(0, "디렉티브 생존 확인 (ACK 수신) — ACK 기록(TTL 안) · 재핑 생략 surface:9\n"),
+    check("A3′ 가드 기록 ACK 줄도 ACK", mod.g2_acked(0, "디렉티브 생존 확인 (ACK 기록 · 120초 전 · TTL 안 · 재핑 생략) surface:9\n"),
           sink=sink)
+    check("A3″ 비슷한 머리의 다른 줄은 ACK 아님", mod.g2_acked(0, "디렉티브 생존 확인 (ACK 없음)\n") is False, sink=sink)
 
 
 with open(PH, encoding="utf-8") as f:

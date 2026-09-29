@@ -16603,8 +16603,11 @@ fn run_reinject(
             if let cys::reinject_guard::Decision::Skip(why) = cys::reinject_guard::decide(&guard, now) {
                 // ★③(1.1.7) 확인 전용 호출에서 「이미 깨어 있음」(TTL 안 ACK 기록)은 **ACK 다** — 줄 단위 ACK 판독
                 //   (phoenix G2)이 읽는 문면으로 낸다. 종전 phoenix 는 skip 줄의 「awake」 낱말에 우연히 기대고 있었다.
+                //   ★적대 R1(Fable F5): 문면이 「이번에 받았다」로 읽히지 않게 **기록 ACK·경과 초**를 밝힌다(판정 불변 —
+                //   phoenix 는 `(ACK` 머리로 둘 다 받는다 · 종전 「awake」 우연 판정과 같은 결과).
                 if ack_only && why == "awake" {
-                    println!("{} — ACK 기록(TTL 안) · 재핑 생략 surface:{sid}", REINJECT_ACK_LINE);
+                    let age = guard.ack_at.map(|t| now.saturating_sub(t)).unwrap_or(0);
+                    println!("디렉티브 생존 확인 (ACK 기록 · {age}초 전 · TTL 안 · 재핑 생략) surface:{sid}");
                     return Ok(());
                 }
                 println!("reinject --check skip (surface:{sid}) — {why}");
@@ -20322,7 +20325,8 @@ mod tests {
         assert!(!miss_arm.contains("inject_text("), "ack_only 분기 안에서 주입한다");
         // ③ ACK 줄 정본 — phoenix 줄 판독(`_REINJECT_ACK_LINE_RE`)과 같은 문면.
         let ph = include_str!("../../cysjavis-pack/bin/javis_phoenix.py");
-        assert!(ph.contains("^디렉티브 생존 확인 \\(ACK 수신\\)"), "phoenix ACK 줄 판독이 cys 문면과 갈렸다");
+        assert!(ph.contains("^디렉티브 생존 확인 \\(ACK (?:수신\\)|기록 · )"), "phoenix ACK 줄 판독이 cys 문면과 갈렸다");
+        assert!(body.contains("println!(\"디렉티브 생존 확인 (ACK 기록 · {age}초 전"), "기록 ACK 문면이 phoenix 판독과 갈렸다");
         assert_eq!(REINJECT_ACK_LINE, "디렉티브 생존 확인 (ACK 수신)");
         assert!(ph.contains("\"--check\", \"--ack-only\""), "phoenix G2 가 --ack-only 를 안 쓴다");
     }

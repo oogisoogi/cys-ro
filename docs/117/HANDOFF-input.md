@@ -69,9 +69,23 @@
 3. **④ 화면 축**: 계수 0 · 화면 커서 앞 글자 = 거부(ScreenOccupied). 에이전트 자신이 입력줄에 남긴 글자(드묾)도 막는다 — 원작자와 같음.
 4. **⑤**: 기본 편성에 worker 좌석이 없으면(사용자가 지움) CSO 의 master 순환이 83 으로 멈춘다(문면에 다음 행동). 기존 설치의 디렉티브는 사용자 소유라 `.new` 병치로만 닿는다(pack.rs 기존 경로 · 이 티켓 무접촉).
 5. **⑯**: 실기 재현 없음(확신 Low) · 판정과 쓰기 사이 틈 = 한 요청 안(파서 락 순서 때문에 input_gate 밖). 옛 데몬 × 새 cys = 옵션 무시(보호 없음·실패 없음).
-6. **시험 경합(기지 부류)**: cysd 전체 7회 중 1회, ACL 시험 3건이 동시 적색(내 d12 2건 + 기존 v116 1건) — 거버넌스 시험(QUEUE_ENV_LOCK)과 ACL 시험(ACL_ENV_LOCK)이 **다른 락으로 같은 `CYS_PACK_DIR` env** 를 바꾸는 부류(원작자 0.14.31 이 공용 락으로 고친 것 · 우리 판 미편입). 재실행 6회 초록. 게이트 러너에서 1회 적색이 나면 이 부류를 먼저 의심할 것.
+6. **[정정] 시험 적색의 원인** — 앞 판(과 【진행】 보고)에서 「ACL 시험 `CYS_PACK_DIR` env 경합 부류」라고 적었는데 **틀렸다**. 실측 원인 = **내 새 시험의 경합**: `sleep 30` 좌석을 만든 직후 기계 본문을 보내면 셸이 아직 `sleep` 으로 exec 하기 전이라 빈 좌석 가드(`no_agent`)가 먼저 발화했고, 그 패닉이 `ACL_ENV_LOCK` 을 오염시켜 v116 시험이 `PoisonError` 로 연쇄 적색이었다. 수리 = 새 handlers 시험 전부에 기존 `test_wait_seat_runs(&s, "sleep", &["30"])` 대기(커밋 R1 수리). 수리 뒤 cysd 전체 7회 연속 초록. 남은 기지 flake = `a_spawned_pty_child_does_not_inherit_the_lock_fd`(HANDOFF-v116-rel 기록 · 1회 관측).
 7. **③ 범위**: 원작자 핑 운명 판정(세션 기록 5상태)·재주입 멱등 키는 넣지 않았다(v3 최소 단위) — 우리 `reinject_guard`(시간당 3 · 간격)가 상한. 옛 팩 × 새 바이너리의 `--check`(ACK 없으면 전문 주입)는 무회귀를 위해 그대로다.
 8. **③ 팩 하한 1.1.7**: 1.1.7 미만 앱은 새 팩을 인앱으로 못 받는다(1.1.7 은 앱·팩 동시 발행 전제). pack-release 의 하한 검증기는 `v$MIN_BINARY` 태그로 빌드되므로 **v1.1.7 태그가 먼저 있어야** 팩-온리 발행이 통과한다.
 
 ## 6. 건강 검체
 - `run_bootstrap_health.py`(전 검체 · 20:29~20:36 · 커밋 71672c42 트리): **GREEN — 발효 149 PASS / 0 FAIL / 1 SKIP(적용불가) / 0 OFF · 399.6s**. SKIP 1 = `SKIP H-WIN-11     W4   Windows CI 실기 재실행(부채 V4 해소) — 로컬은 잡 계약 검증`
+
+## 7. 적대 검증 R1 (스냅샷 afbbcce1 · agy = BLOCK 3건 · Fable = REVISE 7건) — 처분
+| 출처 | 지적 | 처분 | 근거·수리 |
+|---|---|---|---|
+| agy F1 blocking | CYS_SURFACE_ID 판독 불가 → 83 은 오판 | **기각** | 데몬은 pane 에 숫자 id 를 주입(state.rs `builder.env(ENV_SURFACE_ID, id)`) · cmux 페인은 CMUX_SURFACE_ID 를 쓴다 → 「cmux:0」 은 생기지 않는다 · 판독 불가 = 비중복 증명 불가 = fail-closed(원작자와 같음) |
+| agy F2 blocking | send-key 글자·화살표·Backspace 가 사람 초안을 고칠 수 있다 | **수용(좁힘)** | `key_to_bytes` 는 글자 1개도 통과 → 새 종류 EditKey = 사람 초안 축만(기계 잔여·화면으로는 안 막음 · 메뉴 조작 무회귀) |
+| agy F3 major | ⑯ 판정과 쓰기 사이 틈 | **잔여 위험 유지** | §5-5 · 같은 요청 안 · 쓰기 직전 판정은 writer 층 개조가 필요(최소 단위 밖) |
+| Fable F1 major | 사람 축이 자기신고 human — pane 발신자가 위조 | **수용** | 사람 축 = `human ∧ (호출자 pane 무귀속 ∨ 오퍼레이터 토큰 일치)` — pane 안에서 띄운 개발 GUI 는 토큰으로 통과 · 시험 2개의 GUI 흉내 발신자를 미귀속으로(실제 GUI 와 같게) |
+| Fable F2 major | 권위 면제가 살아 있는 좌석의 사람 초안 위 주입을 허용 | **수용** | 면제는 기계 잔여·화면 축만 건너뛰고 **사람 초안 축은 유지**(inject_text·cycle-agent 1단계·reinject 는 거부 시 기존 --queued 폴백) |
+| Fable F3 minor | ⑭ 해제 관측이 큐가 있을 때만 | 잔여 | 직접 send → CLI 6초 뒤 --queued → 다음 틱부터 해제 관측(결과 정상 · 지연) · 틱마다 모든 좌석 화면 판독은 비용 증가 |
+| Fable F4 minor | GUI 경로 삽입 뒤 기계 Return 이 오너 삽입물을 제출 | **수용** | 게이트 밖 GUI 문안(경로 삽입)은 사람 몫으로 센다 |
+| Fable F5 minor | ack-only awake 줄이 「(ACK 수신)」 으로 읽힘 | **수용(문면)** | 「디렉티브 생존 확인 (ACK 기록 · N초 전 · TTL 안 · 재핑 생략)」 · phoenix 는 `(ACK 수신)`·`(ACK 기록 · ` 둘 다 ACK(판정 불변 = 종전 「awake」 우연과 같은 결과 · 이제 명시) |
+| Fable F6 minor【추정】 | pane 안에서 뜬 데몬의 스케줄 잡이 상속 env 로 거짓 82 | 잔여 | 개발 흐름 한정 · 데몬 기동 env 스크럽은 이 티켓 밖 |
+| Fable F7 minor | 데몬 재기동 뒤 기계 잔여 좌석의 GUI 재기동이 screen_occupied 로 막힘 | 잔여 | 원작자와 같은 판정 · §5-3 |

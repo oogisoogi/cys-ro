@@ -1585,7 +1585,9 @@ fn draft_gate_denied_response(
         }),
     );
     let base = match kind {
-        crate::governance::DirectSendKind::CancelKey => cys::MSG_DRAFT_GATE_CANCEL_KEY,
+        crate::governance::DirectSendKind::CancelKey | crate::governance::DirectSendKind::EditKey => {
+            cys::MSG_DRAFT_GATE_CANCEL_KEY
+        }
         _ => cys::MSG_TYPING_GUARD,
     };
     let mut message = format!("{base} [{}:{}]", cys::DRAFT_GATE_TAG, why.as_str());
@@ -3908,16 +3910,24 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             // ★④(1.1.7 · 원작자 D-12 의 우리 판) 초안 게이트 — 3초 시계가 지나도 사람 초안은 기계가
             //   이어 붙이거나 제출·삭제하지 않는다(윈 설치 [10/10] 「Unknown command: /The」 사고 부류).
             //   거부는 **원장 기록·쓰기 전**이라 바이트 0 · 코드 = typing_guard(설치된 CLI 의 --queued 폴백).
+            //   ★적대 R1(Fable F1): `human` 은 자기신고라 pane 발신자가 원시 소켓으로 위조할 수 있다 — 사람 축은
+            //   **pane 무귀속 호출자(GUI)이거나 오퍼레이터 토큰이 맞을 때만** 믿는다(pane 안에서 띄운 개발 GUI 는 토큰으로 통과).
+            //   ★적대 R1(Fable F2): 권위 면제는 기계 잔여·화면 축만 건너뛴다 — **사람 초안은 권위 호출자도 못 덮는다**
+            //   (inject_text·cycle-agent 1단계·reinject 는 살아 있는 좌석이 대상 · 거부되면 기존 --queued 폴백).
+            let human_trusted =
+                human && (verified_from.is_none() || operator_token_ok(daemon, &params));
+            let draft_exempt = authoritative && authoritative_caller_ok(daemon, verified_from, caller_pid);
             let draft_kind = crate::governance::direct_send_text_gate_kind(
-                human,
+                human_trusted,
                 params.get("machine_origin").and_then(|v| v.as_bool()).unwrap_or(false),
                 clear_first,
                 text.bytes().any(|b| matches!(b, b'\r' | b'\n')),
                 text.bytes().any(|b| matches!(b, 0x15 | 0x03)),
-                authoritative && authoritative_caller_ok(daemon, verified_from, caller_pid),
+                false,
             );
+            let draft_axis = |k| if draft_exempt { crate::governance::DirectSendKind::CancelKey } else { k };
             if let Some(kind) = draft_kind {
-                if let Some(why) = crate::governance::draft_gate(daemon, &surface, kind) {
+                if let Some(why) = crate::governance::draft_gate(daemon, &surface, draft_axis(kind)) {
                     return Reply::Single(draft_gate_denied_response(
                         daemon, &surface, &id, kind, why, verified_from, None,
                     ));
@@ -4021,7 +4031,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 let pending = surface.pending_input_bytes.load(Ordering::Relaxed);
                 let human_b = surface.pending_input_human_bytes.load(Ordering::Relaxed).min(pending);
                 if let Some(why) =
-                    crate::governance::draft_gate_verdict(kind, pending, human_b, None, false)
+                    crate::governance::draft_gate_verdict(draft_axis(kind), pending, human_b, None, false)
                 {
                     drop(_gate);
                     return Reply::Single(draft_gate_denied_response(
@@ -4060,7 +4070,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         crate::governance::human_pending_after(
                             surface.pending_input_human_bytes.load(Ordering::Relaxed),
                             text.as_bytes(),
-                            human && !machine_origin,
+                            // ★적대 R1(Fable F4): GUI 경로 삽입(machine_origin · 제출·취소 없음)은 오너가 누른 것 —
+                            //   게이트를 통과시키는 만큼 사람 몫으로도 센다(뒤따르는 기계 Return 이 제출하지 못하게).
+                            human_trusted && (!machine_origin || draft_kind.is_none()),
                         )
                     };
                     surface.pending_input_human_bytes.store(human_next, Ordering::Relaxed);
@@ -4255,16 +4267,16 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             }
             // ★④(1.1.7) 초안 게이트 — 3초가 지나도 사람 초안은 기계 Return 이 제출하지 않고 C-u 가 지우지
             //   않는다. 판정 축 = 생성 바이트(키 이름 별칭 우회 차단). 면제 술어는 타이핑 가드와 같다.
-            let draft_kind = crate::governance::direct_send_key_gate_kind(
-                &bytes,
-                authoritative && authoritative_caller_ok(daemon, verified_from, caller_pid),
-            );
+            // ★적대 R1(Fable F2): 권위 면제는 사람 초안 축을 건너뛰지 않는다(send_text 와 같은 규칙).
+            let draft_exempt = authoritative && authoritative_caller_ok(daemon, verified_from, caller_pid);
+            let draft_kind = crate::governance::direct_send_key_gate_kind(&bytes, false);
+            let draft_axis = |k| if draft_exempt { crate::governance::DirectSendKind::CancelKey } else { k };
             // 별칭(C-m·C-j …)은 CLI 의 --queued 1회 폴백(Return|Enter 이름 축)을 못 받는다 — 실행 가능한 처방을 붙인다.
             let alias_hint = (draft_kind == Some(crate::governance::DirectSendKind::SubmitKey)
                 && !matches!(key.as_str(), "Return" | "Enter"))
             .then(|| format!("(key {key:?} cannot be queued: use `Return --queued`)"));
             if let Some(kind) = draft_kind {
-                if let Some(why) = crate::governance::draft_gate(daemon, &surface, kind) {
+                if let Some(why) = crate::governance::draft_gate(daemon, &surface, draft_axis(kind)) {
                     return Reply::Single(draft_gate_denied_response(
                         daemon, &surface, &id, kind, why, verified_from, alias_hint.as_deref(),
                     ));
@@ -4300,7 +4312,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 let pending = surface.pending_input_bytes.load(Ordering::Relaxed);
                 let human_b = surface.pending_input_human_bytes.load(Ordering::Relaxed).min(pending);
                 if let Some(why) =
-                    crate::governance::draft_gate_verdict(kind, pending, human_b, None, false)
+                    crate::governance::draft_gate_verdict(draft_axis(kind), pending, human_b, None, false)
                 {
                     drop(_gate);
                     return Reply::Single(draft_gate_denied_response(
@@ -11456,8 +11468,10 @@ mod tests {
             .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
             .expect("create sender surface");
         daemon.surfaces.lock().unwrap().insert(sender.id, sender.clone());
+        // ★④ 적대 R1(F1): 실제 GUI 는 어떤 pane 에도 귀속되지 않는다 — pane 귀속 호출자의 human 자기신고는 초안 게이트가
+        //   사람 축으로 믿지 않으므로(위조 차단), GUI 를 흉내 내는 이 시험의 발신자도 미귀속으로 둔다.
         let sender_pid = 999_400_u32;
-        bind_caller(&daemon, sender_pid, sender.id);
+        let _ = &sender;
 
         let send_human = |text: &str, id: u64| {
             let req = Request {
@@ -11629,8 +11643,7 @@ mod tests {
             .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
             .expect("create master surface");
         daemon.surfaces.lock().unwrap().insert(master.id, master.clone());
-        let gui_pid = 999_412_u32;
-        bind_caller(&daemon, gui_pid, master.id);
+        let gui_pid = 999_412_u32; // 미귀속 = 실제 GUI(적대 R1 F1)
         let send_human = |text: &str| {
             let req = Request {
                 id: json!(1),
@@ -11682,8 +11695,9 @@ mod tests {
             .expect("create target");
         daemon.surfaces.lock().unwrap().insert(target.id, target.clone());
         *target.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        crate::governance::test_wait_seat_runs(&target, "sleep", &["30"]); // ★실행 전 셸 = 빈 좌석 경합 차단
+        // GUI(Tauri)는 어떤 pane 의 자손도 아니다 — 호출자 미귀속(적대 R1 F1: 사람 축은 미귀속 호출자만 믿는다).
         let gui_pid = 999_420_u32;
-        bind_caller(&daemon, gui_pid, target.id);
         let worker = daemon
             .create_surface(None, Some("sleep 30".into()), None, Some("worker-1".into()), 24, 80)
             .expect("create worker");
@@ -11721,6 +11735,11 @@ mod tests {
         let r = call(worker_pid, "surface.send_key", json!({"surface_id": target.id, "key": "C-u"}));
         denied(&r, "human_draft", "C-u");
         assert!(r["error"]["message"].as_str().unwrap().starts_with(cys::MSG_DRAFT_GATE_CANCEL_KEY));
+        // ⓒ′ 적대 R1(agy F2) — 글자 1개·화살표·Backspace 로 사람 초안을 고치는 것도 거부.
+        for k in ["T", "Up", "Backspace"] {
+            let r = call(worker_pid, "surface.send_key", json!({"surface_id": target.id, "key": k}));
+            denied(&r, "human_draft", k);
+        }
         // ⓓ clear_first
         let r = call(worker_pid, "surface.send_text",
             json!({"surface_id": target.id, "text": "/clear", "clear_first": true}));
@@ -11729,11 +11748,11 @@ mod tests {
         let r = call(gui_pid, "surface.send_text", json!({"surface_id": target.id,
             "text": "cys restart\n", "quiet": true, "human": true, "machine_origin": true}));
         denied(&r, "pending_input", "GUI 조립 문안");
-        // 바이트 0 — 계수 불변 · 거부 6건 = 이벤트 6건
+        // 바이트 0 — 계수 불변 · 거부 9건 = 이벤트 9건
         assert_eq!(target.pending_input_bytes.load(Ordering::Relaxed), 3, "거부된 쓰기가 계수를 바꿨다");
         assert_eq!(target.pending_input_human_bytes.load(Ordering::Relaxed), 3);
         let n = daemon.bus.tail(50).into_iter().filter(|e| e["name"] == "queue.draft_gate_denied").count();
-        assert_eq!(n, 6, "거부마다 관측 이벤트 1건");
+        assert!(n >= 9, "거부마다 관측 이벤트 1건(앞 9건 기준 · 실측 {n})");
         // 사람은 계속 쓴다 · GUI 경로 삽입(개행 없음)은 초안에 이어 붙는다(오너가 누른 것).
         let r = call(gui_pid, "surface.send_text",
             json!({"surface_id": target.id, "text": "d", "quiet": true, "human": true}));
@@ -11741,6 +11760,25 @@ mod tests {
         let r = call(gui_pid, "surface.send_text", json!({"surface_id": target.id,
             "text": "/tmp/a.png", "quiet": true, "human": true, "machine_origin": true}));
         assert_eq!(r["ok"], json!(true), "GUI 경로 삽입이 막혔다 {r}");
+        // ⓕ 적대 R1(Fable F2) — 권위 면제(master 좌석 · authoritative)도 사람 초안은 덮지 못한다(기계 잔여만 면제).
+        let master = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
+            .expect("create master");
+        daemon.surfaces.lock().unwrap().insert(master.id, master.clone());
+        let master_pid = 999_422_u32;
+        bind_caller(&daemon, master_pid, master.id);
+        let r = call(master_pid, "surface.send_text",
+            json!({"surface_id": target.id, "text": "디렉티브", "authoritative": true}));
+        denied(&r, "human_draft", "권위 본문");
+        let r = call(master_pid, "surface.send_key",
+            json!({"surface_id": target.id, "key": "Return", "authoritative": true}));
+        denied(&r, "human_draft", "권위 Return");
+        // ⓖ 적대 R1(Fable F1) — pane 발신자가 human:true 를 위조해도 사람 축으로 믿지 않는다(게이트 대상 · 사람 계수 불변).
+        let hb = target.pending_input_human_bytes.load(Ordering::Relaxed);
+        let r = call(worker_pid, "surface.send_text",
+            json!({"surface_id": target.id, "text": "The", "human": true}));
+        denied(&r, "pending_input", "위조 human");
+        assert_eq!(target.pending_input_human_bytes.load(Ordering::Relaxed), hb, "위조 human 이 사람 계수를 바꿨다");
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -11757,6 +11795,7 @@ mod tests {
             .expect("create target");
         daemon.surfaces.lock().unwrap().insert(target.id, target.clone());
         *target.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        crate::governance::test_wait_seat_runs(&target, "sleep", &["30"]); // ★실행 전 셸 = 빈 좌석 경합 차단
         let master = daemon
             .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
             .expect("create master");
@@ -11775,18 +11814,28 @@ mod tests {
         assert_eq!(target.pending_input_bytes.load(Ordering::Relaxed), 0);
         // ② 기계 잔여가 남은 줄 — Ctrl-U 로 비우고 보낸다.
         call("surface.send_text", json!({"surface_id": target.id, "text": "잔여물"}));
+        // 기계 잔여 위의 편집 키(메뉴 조작 등)는 막지 않는다(EditKey = 사람 초안 축만 · 적대 R1 F2 무회귀).
+        call("surface.send_key", json!({"surface_id": target.id, "key": "Down"}));
         call("surface.send_key", json!({"surface_id": target.id, "key": "C-u"}));
         assert_eq!(target.pending_input_bytes.load(Ordering::Relaxed), 0, "C-u 뒤 비워짐");
         call("surface.send_text", json!({"surface_id": target.id, "text": "[master#abcdef] 지시"}));
         call("surface.send_key", json!({"surface_id": target.id, "key": "Return"}));
-        // ③ 사람 초안이 있어도 권위 면제(master 좌석 · authoritative)는 종전대로 통과.
-        let gui_pid = 999_431_u32;
-        bind_caller(&daemon, gui_pid, target.id);
-        let req = Request { id: json!(2), method: "surface.send_text".into(),
-            params: json!({"surface_id": target.id, "text": "x", "quiet": true, "human": true}) };
-        let _ = dispatch(&daemon, req, Some(gui_pid));
-        *target.last_human_input.lock().unwrap() = None;
+        // ③ 권위 면제(master 좌석 · authoritative)는 **기계 잔여** 위에서는 종전대로 통과(사람 초안 거부는 d12_machine_never ⓕ).
+        call("surface.send_text", json!({"surface_id": target.id, "text": "잔여"}));
         call("surface.send_text", json!({"surface_id": target.id, "text": "디렉티브", "authoritative": true}));
+        // ④ 적대 R1(Fable F4) — GUI 경로 삽입(오너가 누른 것)은 사람 몫이다: 뒤따르는 기계 Return 이 제출하지 못한다.
+        call("surface.send_key", json!({"surface_id": target.id, "key": "C-u"}));
+        let gui_pid = 999_431_u32; // 미귀속(GUI)
+        let req = Request { id: json!(2), method: "surface.send_text".into(),
+            params: json!({"surface_id": target.id, "text": "/tmp/a.png", "quiet": true, "human": true, "machine_origin": true}) };
+        let Reply::Single(r) = dispatch(&daemon, req, Some(gui_pid)) else { panic!("single") };
+        assert_eq!(r["ok"], json!(true), "GUI 경로 삽입 {r}");
+        *target.last_human_input.lock().unwrap() = None;
+        let req = Request { id: json!(3), method: "surface.send_key".into(),
+            params: json!({"surface_id": target.id, "key": "Return"}) };
+        let Reply::Single(r) = dispatch(&daemon, req, Some(master_pid)) else { panic!("single") };
+        assert!(r["error"]["message"].as_str().unwrap_or_default().contains("[draft_gate:human_draft]"),
+            "기계 Return 이 오너의 경로 삽입을 제출했다 {r}");
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -11801,6 +11850,7 @@ mod tests {
             .expect("create target");
         daemon.surfaces.lock().unwrap().insert(target.id, target.clone());
         *target.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        crate::governance::test_wait_seat_runs(&target, "sleep", &["30"]); // ★실행 전 셸 = 빈 좌석 경합 차단
         let pid = 999_440_u32;
         bind_caller(&daemon, pid, target.id);
         target.parser.lock().unwrap().process("\r\x1b[2K❯ 재기동 전 초안".as_bytes());
@@ -11832,6 +11882,7 @@ mod tests {
                 .expect("create surface");
             daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
             *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+            crate::governance::test_wait_seat_runs(&s, "sleep", &["30"]); // ★실행 전 셸 = 빈 좌석 경합 차단
             let alt = {
                 let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
                 p.process(raw);

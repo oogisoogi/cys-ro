@@ -2018,7 +2018,8 @@ def stage_reinject(socket, role, surface, stub):
 # ★③(1.1.7) `cys reinject --check` 의 ACK 줄(정본 = src/bin/cys.rs `REINJECT_ACK_LINE`) — **줄 단위**로만 읽는다.
 #   종전 `"각성" in stdout` 은 실제 ACK 줄을 한 번도 인정하지 못했고(원작자 6a090055 실측), `"awake"` 는 가드의
 #   skip 줄 낱말에 우연히 걸렸을 뿐이다(무관 텍스트 속 낱말로도 참이 된다).
-_REINJECT_ACK_LINE_RE = re.compile(r"(?m)^디렉티브 생존 확인 \(ACK 수신\)")
+#   ★(적대 R1 · Fable F5) 가드 「awake」(TTL 안 ACK 기록)의 확인 전용 줄은 「(ACK 기록 · N초 전 …」 — 같은 머리 `(ACK` 로 받는다.
+_REINJECT_ACK_LINE_RE = re.compile(r"(?m)^디렉티브 생존 확인 \(ACK (?:수신\)|기록 · )")
 
 
 def g2_acked(returncode, stdout):

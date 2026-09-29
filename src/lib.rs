@@ -825,9 +825,9 @@ pub const MSG_TYPING_GUARD: &str = "human is typing in this pane; retry later or
 /// `MSG_TYPING_GUARD [draft_gate:<사유>]` 의 꼬리. 코드는 `ERR_TYPING_GUARD` 를 그대로 쓴다
 /// (설치된 CLI 의 `--queued` 1회 폴백이 문면 접두로 판정하므로 접두를 바꾸지 않는다).
 pub const DRAFT_GATE_TAG: &str = "draft_gate";
-/// ★④ 취소 키(C-u·C-c) 거부 문면 — 취소 키는 큐에 실을 수 없어 「--queued」 처방이 거짓이다.
+/// ★④ 취소·편집 키(C-u·C-c·화살표·글자 키 등) 거부 문면 — 이 키들은 큐에 실을 수 없어 「--queued」 처방이 거짓이다.
 pub const MSG_DRAFT_GATE_CANCEL_KEY: &str =
-    "human draft in this pane; cancel key refused (the owner must submit or clear the draft)";
+    "human draft in this pane; key refused (the owner must submit or clear the draft)";
 
 /// `cys boot` 가 **무스폰 skip**(다른 boot 가 락 보유)을 낼 때의 종료코드 — EX_TEMPFAIL(75).
 ///

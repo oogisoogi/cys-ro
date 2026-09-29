@@ -5431,6 +5431,10 @@ pub(crate) enum DirectSendKind {
     ClearFirst,
     /// Ctrl-U·Ctrl-C 등 취소 바이트만 내는 키(또는 그 바이트만 실은 본문).
     CancelKey,
+    /// ★④ 적대 R1(agy F2): 제출·취소 바이트가 없는 그 밖의 키(글자 1개·Space·Tab·화살표·Backspace·Esc …).
+    /// 사람 초안을 **고치거나 이어 붙일** 수 있다(제출은 Return 축이 막는다). CancelKey 와 같은 사람 초안 축만 본다
+    /// — 기계 잔여·화면 점유로는 막지 않는다(메뉴 조작·관문 응답 같은 기계 흐름 무회귀).
+    EditKey,
 }
 
 impl DirectSendKind {
@@ -5440,6 +5444,7 @@ impl DirectSendKind {
             Self::SubmitKey => "submit_key",
             Self::ClearFirst => "clear_first",
             Self::CancelKey => "cancel_key",
+            Self::EditKey => "edit_key",
         }
     }
 }
@@ -5501,7 +5506,8 @@ pub(crate) fn direct_send_text_gate_kind(
 
 /// ★④ `surface.send_key` 의 게이트 종류(순수) — 판정 축은 키 **이름이 아니라 생성 바이트**다
 /// (`C-m`·`C-j` 는 Return 과 같은 바이트 — 이름으로 가르면 한 단어 치환으로 우회된다). 화살표·Esc·Tab
-/// 등 제출·취소 바이트가 없는 키는 대상 아님.
+/// 등 제출·취소 바이트가 없는 키는 EditKey(사람 초안 축만 · 적대 R1 agy F2 — 종전 None 은 기계가 글자·화살표로
+/// 사람 초안을 고칠 수 있었다).
 pub(crate) fn direct_send_key_gate_kind(bytes: &[u8], exempt: bool) -> Option<DirectSendKind> {
     if exempt {
         None
@@ -5510,7 +5516,7 @@ pub(crate) fn direct_send_key_gate_kind(bytes: &[u8], exempt: bool) -> Option<Di
     } else if bytes.iter().any(|b| matches!(b, 0x15 | 0x03)) {
         Some(DirectSendKind::CancelKey)
     } else {
-        None
+        Some(DirectSendKind::EditKey)
     }
 }
 
@@ -5549,7 +5555,7 @@ pub(crate) fn draft_gate_verdict(
                 None
             }
         }
-        DirectSendKind::CancelKey => {
+        DirectSendKind::CancelKey | DirectSendKind::EditKey => {
             (human_pending > 0).then_some(DraftGateDenied::HumanDraft { bytes: human_pending })
         }
     }
@@ -5569,7 +5575,7 @@ pub(crate) fn draft_gate(
     if let Some(why) = draft_gate_verdict(kind, pending, human, None, false) {
         return Some(why);
     }
-    if kind == DirectSendKind::CancelKey {
+    if matches!(kind, DirectSendKind::CancelKey | DirectSendKind::EditKey) {
         return None;
     }
     let agent = s.agent_meta.lock().unwrap().clone().map(|(a, _)| a)?;
@@ -10406,9 +10412,11 @@ mod tests {
             (&b"\n"[..], Some(K::SubmitKey)),   // C-j
             (&b"\x15"[..], Some(K::CancelKey)), // C-u
             (&b"\x03"[..], Some(K::CancelKey)), // C-c
-            (&b"\x1b"[..], None),               // Escape
-            (&b"\x1b[B"[..], None),             // Down
-            (&b"\t"[..], None),                 // Tab
+            (&b"\x1b"[..], Some(K::EditKey)),   // Escape
+            (&b"\x1b[B"[..], Some(K::EditKey)), // Down
+            (&b"\t"[..], Some(K::EditKey)),     // Tab
+            (&b"T"[..], Some(K::EditKey)),       // 글자 1개(key_to_bytes 통과)
+            (&b"\x7f"[..], Some(K::EditKey)),   // Backspace
         ] {
             assert_eq!(k(bytes, false), want, "키 바이트 {bytes:?}");
             assert_eq!(k(bytes, true), None, "권위 면제 {bytes:?}");
@@ -10447,6 +10455,10 @@ mod tests {
             (K::CancelKey, 5, 0, typed, false, None),
             (K::CancelKey, 0, 0, typed, false, None),
             (K::CancelKey, 5, 1, empty, false, Some(D::HumanDraft { bytes: 1 })),
+            // EditKey — CancelKey 와 같은 축(사람 초안만)
+            (K::EditKey, 5, 0, typed, false, None),
+            (K::EditKey, 0, 0, typed, true, None),
+            (K::EditKey, 5, 2, empty, false, Some(D::HumanDraft { bytes: 2 })),
         ];
         for (kind, p, h, line, a, want) in rows {
             assert_eq!(v(kind, p, h, line, a), want, "{kind:?} pending={p} human={h} line={line:?} approval={a}");

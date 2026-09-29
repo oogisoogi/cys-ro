@@ -264,6 +264,10 @@ enum Command {
         check: bool,
         #[arg(long, default_value_t = 30)]
         timeout: u64,
+        /// ★③(1.1.7) 확인 전용 — 핑·ACK 대기만 하고 어떤 결과에서도 지침 전문을 넣지 않는다(`--check` 필수).
+        /// 부활(phoenix G2)이 재주입 없는 ACK 확인에 쓴다. 이 플래그를 모르는 옛 바이너리는 clap rc 2 → 주입 0.
+        #[arg(long, requires = "check")]
+        ack_only: bool,
     },
     /// T3-14 완료 대기: scrollback 라인이 regex에 매칭될 때까지 블로킹 (plain-line 마커 규약)
     Watch {
@@ -3464,8 +3468,8 @@ fn run(command: Command) -> i32 {
             return run_restore(cwd, include_master, no_resume)
         }
 
-        Command::Reinject { role, surface, check, timeout } => {
-            return run_reinject(role, surface, check, timeout)
+        Command::Reinject { role, surface, check, timeout, ack_only } => {
+            return run_reinject(role, surface, check, timeout, ack_only)
         }
 
         Command::Watch { surface, to, until, timeout, since } => {
@@ -10842,6 +10846,25 @@ fn compose_full_directive(_restore: bool, resume: bool) -> bool {
     !resume
 }
 
+/// ★③(1.1.7) 순환 뒤 깨움 글(순수) — 절대지침 전문 + 재개 포인터를 **한 문자열**로(전송 1회).
+fn compose_cycle_directive(full: &str, resume: &str) -> String {
+    format!("{full}\n\n{resume}")
+}
+
+/// ★③(1.1.7) node-recover 의 깨움 글(순수) — 재기동 좌석은 resume 좌석이라 전문 없이 복귀 안내 1장이다.
+/// 종전엔 boot 층의 [RESUME](「이어서 작업하라」)과 [RECOVER](「재개는 master 지시를 따르라」)가 **서로 다른
+/// 말로 두 번** 들어갔다. 이제 [RECOVER] 한 장이 boot 층의 유일한 전송이다(`boot_agent_on_surface` 의 `note`).
+const RECOVER_NOTE: &str = "[RECOVER] 너는 방금 재기동되었다. _round/SESSION_STATE.md와 자기 TODO 파일을 읽어 작업 기억을 복원한 뒤 master에게 복귀를 1줄 push로 보고하라. 작업 재개는 master 지시를 따른다.";
+
+/// ★③(1.1.7) boot 층 깨움 글에 호출자 안내(note)를 반영(순수) — 비복원 resume 좌석만 note 가 [RESUME] 을
+/// **대신한다**(덧붙이지 않는다 = 전송 1회 · 서로 다른 복귀 지시 두 장 금지). 그 밖의 경우는 불변.
+fn boot_directive_with_note(directive: String, restore: bool, resume: bool, note: Option<&str>) -> String {
+    match note {
+        Some(n) if !restore && resume => n.to_string(),
+        _ => directive,
+    }
+}
+
 /// 좌석에 **한 번에** 보낼 깨움 글을 조립한다(순수 · TICKET=v111-restore ②).
 ///
 /// # 불변식 — 복원 경로의 전송은 1회다
@@ -10919,6 +10942,8 @@ fn boot_agent_on_surface(
     // config_dir=None이면 게이트가 cys::resolve_claude_config_dir()로 best-effort 해소한다.
     cwd: Option<&str>,
     config_dir: Option<&str>,
+    // ★③(1.1.7) resume 좌석의 복귀 안내를 [RESUME] 대신 이 글로(node-recover 의 [RECOVER]) — 전송은 여전히 1회.
+    note: Option<&str>,
 ) -> Result<BootVerdict, String> {
     let cmd = compose_agent_cmd(spec, agent, resume, session_id, config_dir, cwd)?;
     let delay = spec["inject_delay_secs"].as_u64().unwrap_or(12);
@@ -10939,6 +10964,7 @@ fn boot_agent_on_surface(
     } else {
         compose_boot_directive(role, restore, resume, "")
     };
+    let directive = boot_directive_with_note(directive, restore, resume, note);
 
     // 1) 에이전트 기동 (authoritative: launch-agent의 모든 시스템 주입은 타이핑 가드 면제)
     // RC-3(B′): OS-aware 렌더 — unix는 `KEY="val" cmd` 인라인(기존 byte-identical·셸 전개),
@@ -13625,6 +13651,7 @@ fn run_launch_agent_opts(
             restore,
             cwd.as_deref(),
             recorded_cfg.as_deref(),
+            None,
         )?;
         // ★(W4 · B5) stdout 계약: **보류에서도** 생성한 surface ref 를 낸다. GUI(start_master)와
         //   `javis_bootstrap` 이 이 값으로 ③claim-role 을 그 pane 에 귀속시키므로, 보류를 침묵으로
@@ -15990,15 +16017,14 @@ fn run_cycle_agent(
             )?;
             std::thread::sleep(std::time::Duration::from_secs(4));
 
-            // 5) 디렉티브 재주입 + 재개 포인터
-            eprintln!("[cycle 5/5] 디렉티브 재주입 + 재개 포인터");
-            let directive = compose_directive(&role_name)?;
-            inject_text(sid, &directive)?;
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            // 5) 디렉티브 재주입 + 재개 포인터 — ★③(1.1.7) **한 전송**. 종전엔 전문 제출 → 2초 → [RESUME] 제출
+            //   두 번이라, 전문을 읽는 동안 둘째 글이 큐에 쌓이고 뒤따르는 실제 지시가 그 뒤에 수 분 막혔다
+            //   (원작자 U8 P0-M1 · 우리 BACKLOG D ㉮⑤ 경로). 복원 경로(compose_boot_directive)와 같은 규약.
+            eprintln!("[cycle 5/5] 디렉티브 재주입 + 재개 포인터(한 전송)");
             let resume = resume_text.unwrap_or_else(|| {
                 "[RESUME] 컨텍스트 순환 완료. _round/SESSION_STATE.md와 자기 TODO를 읽고 직전 작업을 이어가라.".into()
             });
-            inject_text(sid, &resume)?;
+            inject_text(sid, &compose_cycle_directive(&compose_directive(&role_name)?, &resume))?;
             Ok(())
         })();
         // 재개 성공/실패와 무관하게 quiescing 해제 — 실패로 master가 quiescing에 갇혀 채널이
@@ -16069,10 +16095,11 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
             false,
             rec_cwd.as_deref(),
             rec_cfg.as_deref(),
+            Some(RECOVER_NOTE),
         )?;
         match &verdict {
             BootVerdict::Ready => {
-                inject_text(sid, "[RECOVER] 너는 방금 재기동되었다. _round/SESSION_STATE.md와 자기 TODO 파일을 읽어 작업 기억을 복원한 뒤 master에게 복귀를 1줄 push로 보고하라. 작업 재개는 master 지시를 따른다.")?;
+                // ★③(1.1.7) [RECOVER] 는 boot 층의 한 전송으로 이미 들어갔다(`note`) — 여기서 두 번째 제출 0.
                 println!("recovered surface:{sid} ({agent})");
             }
             // ★(U-11) 이 호출부의 귀결은 launch 와 **다르다** — 여기엔 닫을 새 surface 가 없다.
@@ -16322,6 +16349,7 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                     false,
                     seat_cwd.as_deref(),
                     cfg.as_deref(),
+                    None,
                 ) {
                     Ok(BootVerdict::Ready) => {
                         ok += 1;
@@ -16460,11 +16488,16 @@ fn reinject_guard_save(sid: u64, rec: &cys::reinject_guard::SeatRecord) {
     }
 }
 
+/// ★③(1.1.7) `reinject --check` 의 ACK 줄 머리(정본) — phoenix G2 가 **줄 단위**로 읽는다
+/// (`javis_phoenix.py` `_REINJECT_ACK_LINE_RE`). 문면을 바꾸면 두 곳을 함께 바꾼다(시험 핀).
+const REINJECT_ACK_LINE: &str = "디렉티브 생존 확인 (ACK 수신)";
+
 fn run_reinject(
     role: Option<String>,
     surface: Option<String>,
     check: bool,
     timeout: u64,
+    ack_only: bool,
 ) -> i32 {
     let result = (|| -> Result<(), String> {
         let sid = resolve_role_or_surface(&role, &surface)?;
@@ -16487,6 +16520,12 @@ fn run_reinject(
             let now = epoch_secs_now();
             let mut guard = reinject_guard_load(sid);
             if let cys::reinject_guard::Decision::Skip(why) = cys::reinject_guard::decide(&guard, now) {
+                // ★③(1.1.7) 확인 전용 호출에서 「이미 깨어 있음」(TTL 안 ACK 기록)은 **ACK 다** — 줄 단위 ACK 판독
+                //   (phoenix G2)이 읽는 문면으로 낸다. 종전 phoenix 는 skip 줄의 「awake」 낱말에 우연히 기대고 있었다.
+                if ack_only && why == "awake" {
+                    println!("{} — ACK 기록(TTL 안) · 재핑 생략 surface:{sid}", REINJECT_ACK_LINE);
+                    return Ok(());
+                }
                 println!("reinject --check skip (surface:{sid}) — {why}");
                 return Ok(());
             }
@@ -16508,7 +16547,13 @@ fn run_reinject(
             if r["matched"].as_bool() == Some(true) {
                 cys::reinject_guard::record_ack(&mut guard, epoch_secs_now());
                 reinject_guard_save(sid, &guard);
-                println!("디렉티브 생존 확인 (ACK 수신) — 재주입 불필요");
+                println!("{REINJECT_ACK_LINE} — 재주입 불필요");
+                return Ok(());
+            }
+            // ★③(1.1.7) 확인 전용 — ACK 가 없어도 **전문을 넣지 않는다**(확인과 주입을 명령 수준에서 뗀다 ·
+            //   핑이 에이전트 큐에 회색 대기 중이어도 여기서 58KB 가 나가던 구조를 끊는다). rc 0 · 보고만.
+            if ack_only {
+                println!("재주입 생략(ack-only · ACK 미수신 {timeout}s) — surface:{sid} ({role_name})");
                 return Ok(());
             }
             eprintln!("[reinject] ACK 없음 ({timeout}s) — 드리프트 판정, 재주입 진행");
@@ -20166,6 +20211,85 @@ mod tests {
         assert!(refused < reclaim, "79 분기가 escalate_reclaim 뒤에 있다 — 좌석이 먼저 죽는다");
         let branch: String = prod[refused..reclaim].chars().collect();
         assert!(branch.contains("continue;"), "79 분기가 빠져나가지 않고 reclaim 으로 흘러간다");
+    }
+
+    /// ★③(1.1.7) `reinject --check --ack-only` 는 **어떤 결과에서도 지침 전문을 넣지 않는다**(확인과 주입을
+    /// 명령 수준에서 뗀다 · 원작자 U8 P0-M2 `u8_m2_run_reinject_ack_only_never_submits_full_directive` 의 우리 판).
+    #[test]
+    fn u8_reinject_ack_only_never_submits_full_directive() {
+        // ① clap — --ack-only 는 --check 없이 못 쓴다(확인 없는 「확인 전용」 금지).
+        let c = Cli::try_parse_from(["cys", "reinject", "--check", "--ack-only", "--role", "worker"])
+            .expect("--check --ack-only 파싱");
+        match c.command {
+            Command::Reinject { check, ack_only, .. } => assert!(check && ack_only),
+            _ => panic!("reinject 가 아니다"),
+        }
+        assert!(Cli::try_parse_from(["cys", "reinject", "--ack-only", "--role", "worker"]).is_err(),
+            "--check 없는 --ack-only 가 통과했다");
+        // ② 배선 핀 — run_reinject 안에서 ack_only 분기가 **전문 조립·주입보다 먼저** 반환한다(두 자리:
+        //    가드의 awake skip · ACK 대기 시간초과).
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let f = prod.find("\nfn run_reinject(").expect("run_reinject");
+        let body = &prod[f..f + prod[f + 1..].find("\n}\n").expect("함수 끝") + 1];
+        let inject_full = body.find("let directive = compose_directive(&role_name)?;").expect("전문 조립 자리");
+        let miss = body.find("if ack_only {\n").expect("ACK 미수신 ack_only 분기가 없다");
+        let awake = body.find("if ack_only && why == \"awake\" {").expect("awake ack_only 분기가 없다");
+        assert!(miss < inject_full && awake < inject_full, "ack_only 반환이 전문 주입 뒤에 있다");
+        let miss_arm: String = body[miss..inject_full].chars().collect();
+        assert!(miss_arm.contains("return Ok(());"), "ack_only 분기가 반환하지 않고 주입으로 흘러간다");
+        assert!(!miss_arm.contains("inject_text("), "ack_only 분기 안에서 주입한다");
+        // ③ ACK 줄 정본 — phoenix 줄 판독(`_REINJECT_ACK_LINE_RE`)과 같은 문면.
+        let ph = include_str!("../../cysjavis-pack/bin/javis_phoenix.py");
+        assert!(ph.contains("^디렉티브 생존 확인 \\(ACK 수신\\)"), "phoenix ACK 줄 판독이 cys 문면과 갈렸다");
+        assert_eq!(REINJECT_ACK_LINE, "디렉티브 생존 확인 (ACK 수신)");
+        assert!(ph.contains("\"--check\", \"--ack-only\""), "phoenix G2 가 --ack-only 를 안 쓴다");
+    }
+
+    /// ★③(1.1.7) 순환·node-recover 의 깨움 글은 **좌석당 제출 1회**다(원작자 U8 P0-M1 · 우리 BACKLOG D ㉮⑤).
+    #[test]
+    fn u8_cycle_and_recover_submit_wake_text_once() {
+        // ① 순수 — 순환 글 = 전문 + 재개 포인터 한 문자열 · recover 안내는 [RESUME] 을 **대신한다**.
+        let c = compose_cycle_directive("<전문>", "[RESUME] 이어가라");
+        assert!(c.starts_with("<전문>") && c.ends_with("[RESUME] 이어가라"), "{c}");
+        assert_eq!(boot_directive_with_note("[RESUME] x".into(), false, true, Some(RECOVER_NOTE)), RECOVER_NOTE);
+        assert_eq!(boot_directive_with_note("<전문>".into(), false, false, Some(RECOVER_NOTE)), "<전문>",
+            "빈 컨텍스트 좌석의 전문을 안내로 덮었다");
+        assert_eq!(boot_directive_with_note("[RESTORE] x".into(), true, true, Some(RECOVER_NOTE)), "[RESTORE] x",
+            "복원 경로의 단일 글을 바꿨다");
+        assert_eq!(boot_directive_with_note("[RESUME] x".into(), false, true, None), "[RESUME] x");
+        // ② 배선 핀 — 순환 clear 뒤 주입 1회 · node-recover 는 boot 층 밖에서 주입 0 · recover 가 note 를 넘긴다.
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let fn_body = |name: &str| -> String {
+            let f = prod.find(&format!("\nfn {name}(")).unwrap_or_else(|| panic!("{name}"));
+            let end = prod[f + 1..].find("\n}\n").expect("함수 끝") + 1;
+            prod[f..f + end].to_string()
+        };
+        let cycle = fn_body("run_cycle_agent");
+        let clear_resume = &cycle[cycle.find("let clear_resume = ").expect("clear_resume")..];
+        let clear_resume = &clear_resume[..clear_resume.find("})();").expect("클로저 끝")];
+        assert_eq!(clear_resume.matches("inject_text(").count(), 1,
+            "순환 clear 뒤 깨움 글이 두 번 제출된다(전문 → 2초 → [RESUME]):\n{clear_resume}");
+        let recover = fn_body("run_node_recover");
+        assert_eq!(recover.matches("inject_text(").count(), 0, "node-recover 가 boot 뒤에 두 번째 글을 넣는다");
+        assert!(recover.contains("Some(RECOVER_NOTE)"), "node-recover 가 복귀 안내를 boot 한 전송에 싣지 않는다");
+    }
+
+    /// ★③(1.1.7) 팩 하한은 **두 레인이 같은 값**이고 1.1.7 이상이다 — 새 팩 phoenix G2 의 `--ack-only` 는 1.1.7
+    /// 신설 표면이라, 한 레인만 올리면 그 레인으로 나간 팩이 옛 바이너리에서 G2 를 영구 degraded 로 만든다.
+    #[test]
+    fn u8_pack_min_binary_two_lanes_match_and_cover_ack_only() {
+        let pick = |yml: &str, key: &str| -> String {
+            let at = yml.find(&format!("{key}: '")).unwrap_or_else(|| panic!("{key} 부재"));
+            let rest = &yml[at + key.len() + 3..];
+            rest[..rest.find('\'').expect("닫는 따옴표")].to_string()
+        };
+        let rel = pick(include_str!("../../.github/workflows/release.yml"), "PACK_MIN_BINARY");
+        let pk = pick(include_str!("../../.github/workflows/pack-release.yml"), "PACK_MIN_BINARY_OVERRIDE");
+        assert_eq!(rel, pk, "두 레인 팩 하한이 갈렸다(release={rel} · pack-release={pk})");
+        let v: Vec<u64> = rel.split('.').map(|x| x.parse().expect("숫자")).collect();
+        assert!(v >= vec![1, 1, 7], "팩 하한 {rel} < 1.1.7 — 옛 바이너리가 --ack-only 를 모른다");
     }
 
     /// (TICKET=v111-restore ②) 전문 조립은 **컨텍스트가 빈 좌석에서만** 일어난다.

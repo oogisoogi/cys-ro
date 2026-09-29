@@ -82,6 +82,13 @@
 - **Q4 int/117 CI**: A = `int/117` 머리를 `fix/117-int` 로도 push(기존 `fix/**` 트리거 · 워크플로 무수정 · 브리프 push 허용 이름 `fix/117-*` 안) · B = 워크플로 트리거에 `int/**` 추가(워크플로 수정 = 범위 확장). **권고 A**.
 - (정보) ④ BACKLOG 원문 「양쪽」 의 설치기(habitat bootstrap.ps1 `Send-MasterRetry` L4605-4617 · 문구 L4246)는 다른 저장소 → 이 티켓은 앱(데몬) 쪽만. 설치기 짝은 별도 티켓 후보.
 
+### 4-1. master 판정(master#4ead2ecd · 19:16 · 원장 대조 완료)
+- Q1 = **A** — 「출발지 = cys」 한 줄을 README 2 + releaseBody 2 + 앱 `#ws-credit` 5자리 전부에 · LICENSE 저작권 줄 유지.
+- Q2 = **A** — 1.1.7 = NSIS 앱 제거기 쪽만 · 설치기(reset-clean) 절반 + 「재설치 뒤 부서 편성·좌석 보존」 = master 별도 설치기 티켓. 「손 5~6」 근거 = SESSION_STATE 09-25 21:3x 「결함 4」 줄 + `master/reports/cysr-115-2026-09-22/vm-btn-update-0924/REPORT-btn-update-vm-0924.md`(B 경로 손 5~6) → 갈래 3 은 기준선 계수부터 실측.
+- Q3 = 목록 없음 — 갈래 3 이 윈 CI(또는 VM)에서 설치 모드별 창 계수 기준선부터.
+- Q4 = **A** — `int/117` 머리를 `fix/117-int` 로도 push(워크플로 무수정 · force 0).
+- 범위: BACKLOG E 나머지 7줄 = 1.1.7 밖. bundle-prep.sh 644 = ⑥ 정의(secret-scan 판정) 밖 → §5 표(master 보고 19:17 · `scripts/bundle-prep.sh:28-29` 권한 강제 없는 cp 선재).
+
 ## 5. 겹침 대조 · 다음 정기 편입 후보
 | master TODO 1.1.7 후보 | 대조 | 처리 |
 |---|---|---|
@@ -93,7 +100,8 @@
 |---|---|
 | 릴리스 notes 템플릿 문안 | master TODO L62 |
 | 피닉스 부활 설정 폴더 · 원 계정 신뢰 기록 | master TODO L65 |
-| (범위 밖 · 브리프가 E 절 = 3건으로 정의) 재설치 뒤 부서 편성 보존 · bundle-prep 사이드카 644 · integ-4 zip 재확인 · 상단바 좁은 폭 · Split↓ 툴팁 · 배지 폭 · 번들 git PATH | BACKLOG-117 E 절 L42-49 — master 가 필수 여부 판정 |
+| bundle-prep.sh 사이드카 644(`scripts/bundle-prep.sh:28-29` · 「전 pane 사망」 계급 · 발행 전 별도 판정 권고) | BACKLOG-117 E 절 L43 · master 판정 4ead2ecd |
+| (범위 밖 · 브리프가 E 절 = 3건으로 정의) 재설치 뒤 부서 편성 보존(→ 설치기 티켓) · bundle-prep 사이드카 644(윗줄) · integ-4 zip 재확인 · 상단바 좁은 폭 · Split↓ 툴팁 · 배지 폭 · 번들 git PATH | BACKLOG-117 E 절 L42-49 — master 가 필수 여부 판정 |
 | ⑦ 완전 초기화 뒤 피드백 보관함(E2 곁들이기 가능이나 v4 제외) | MUST-DO v4 §0 |
 
 ## 6. 9단계 성찰(SPLIT · 1회) — 요지

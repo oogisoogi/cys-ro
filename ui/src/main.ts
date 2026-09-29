@@ -6724,7 +6724,7 @@ async function restartNode(role: string, cmd: string, surfaces: OrgSurface[], so
       if (!retry) throw e;
       await send(retry.data, retry.clearFirst);
     } catch (e2) {
-      toast("watchdog", "재기동 실패", `${role} — ${String(e2)}`);
+      toast("watchdog", "재기동 실패", role, undefined, String(e2));
     }
   }
 }

@@ -649,8 +649,10 @@ jobs:
       # (cysr 1.1.7 E1-b · 통합 int/117 편입) 맥 번들 명령 별칭 cysr -> cys 시험 — 아래 build-macos-signed.sh(:37)가
       #   scripts/lib/mac-bundle-common.sh 의 mac_link_cli_alias 를 부른다(간접 소비). 서명 여부와 무관하게 맥 레그에서 돈다.
       #   ci-branch 와 같은 커밋에 동시 편입(한쪽만이면 그 레인의 초록이 거짓 신호) · pack-release 미편입 사유 = ci-branch 레인 대조 ALLOWED.
+      #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(340·381·506 관례) · ⚠이 스텝 적색 = 맥 레그 적색 → 서명 없는
+      #   윈도우 단독 발행도 후속 잡(needs: build)에서 막힌다(기존 맥 전용 게이트와 같은 부류).
       - name: 맥 번들 명령 별칭 cysr -> cys (test_mac_cli_alias_link · macOS 전용)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
         run: |
           set -euo pipefail

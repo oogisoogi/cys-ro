@@ -64,3 +64,5 @@
 - E2 「앱 데이터까지 지우기」 = **박사님 결정 완료(21:1x · 유지)** — 칸 없이 자동 보관 + 사용법 「완전히 지우려면」 한 줄(BACKLOG-117 · 문서 몫).
 - 갈래1 내부 MINOR(적대 R1 Fable 범위 밖 관찰 · 수리 안 함): cys-dept:1855 down-sock 역인덱스가 `json.load(open(p))` 라 BOM 흡수 미적용.
 - 남음: 적대 R2 판정 · CI 3 결과 · 갈래2 input 병합(153 R2 중 → master 수용 뒤).
+- 적대 R2(스냅샷 ec777382 · 수리 3커밋): Fable **ACCEPT**(MINOR 2 · NIT 2) · agy **REVISE**(MINOR 1 = release 스텝이 맥 두 레그 중복 실행 · 관례 = `matrix.target == 'aarch64-apple-darwin'`) → 반영 커밋(release.yml 조건 + 「적색 = 윈도 단독 발행도 막힘」 주석 = Fable MINOR #2). 레인 대조 초록.
+  · 기록만(범위 밖): Fable MINOR #1 — 부서 시험 3개(b11_lock·creds_seed·teardown_atomicity)는 **어느 워크플로에도 이름 등재 0 = 0레인 실행**(v1.1.6 선재 · 이번 env 수리를 되돌려도 CI 가 모른다) → 편입은 다음 정기 후보. NIT #3 레인 대조가 스텝 `if:` 조건을 안 봄(조건이 좁혀져 실행 0 이 돼도 초록). NIT #4 인용 선례 test_ceo_pending_gate.py:73-80 은 update 뒤 pop 이라 CYS_DEPTS_JSON 이 지워짐(cys-dept:25 $HOME 폴백이 같은 경로라 우연히 동작) → 별도 티켓 후보.

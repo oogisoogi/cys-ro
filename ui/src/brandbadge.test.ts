@@ -37,8 +37,11 @@ describe("ⓐ 표시명 cysr", () => {
     expect(conf.identifier).toBe("com.cysjavis.terminal");
   });
 
-  it("원작자 표기 줄은 손대지 않았다", () => {
-    expect(html).toContain('원작 CYSJavis(idoforgod) · MIT · 파생판 배포 oogisoogi</div>');
+  // (1.1.7 ⑱ · 박사님 09-27 「도의상 cys가 출발지였다는 내용만 표시」) 옛 「원작자」 표기 → 출발지 한 줄.
+  //   문안 정본 = README「출발지」절 · 5자리 결박 = test_default_fleet_formation.py ⓕ.
+  it("앱 표기 = 출발지 한 줄(옛 원작자 문안 없음)", () => {
+    expect(html).toContain('title="cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니다.">cys 터미널에서 출발</div>');
+    expect(html).not.toContain("파생판 배포 oogisoogi");
   });
 });
 

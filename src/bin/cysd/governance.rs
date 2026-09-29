@@ -7099,11 +7099,10 @@ mod tests {
         assert!(body.contains("notify_seat_folder_denied(daemon, &s, seat);"), "폴더 거부 감지 미배선");
     }
 
-    /// ★v115-restore(A3): 데몬 내부 직접 주입 생산자의 단일 입구 — 빈 에이전트 좌석(zsh 단독)이면
-    /// 타이핑 0 · 큐 보류 · 입력 원장 기록 0 / 대조군(좌석이 셸 아님)은 종전대로 주입.
-    #[cfg(unix)]
     /// ★R3(Fable R2 F1 · master#84c3982f) 게이트 밖 데몬 내부 주입(seat_inject_guarded)도 제출 뒤 계수를 비운다 —
     /// 남은 사람 몫이 다음 순환의 C-u 를 human_draft 로 멈추게 하던 1.1.7 새 해악.
+    /// (`exec sleep 30` 좌석 = 유닉스 셸 전제 → v115 시험과 같이 unix 한정.)
+    #[cfg(unix)]
     #[test]
     fn r3_internal_inject_clears_stale_counters() {
         let daemon = drill_daemon("r3-internal-inject");
@@ -7187,6 +7186,9 @@ mod tests {
         assert!(bad.is_empty(), "제출 뒤 note_line_submitted 를 안 부르는 production 경로: {bad:?}");
     }
 
+    /// ★v115-restore(A3): 데몬 내부 직접 주입 생산자의 단일 입구 — 빈 에이전트 좌석(zsh 단독)이면
+    /// 타이핑 0 · 큐 보류 · 입력 원장 기록 0 / 대조군(좌석이 셸 아님)은 종전대로 주입.
+    #[cfg(unix)]
     #[test]
     fn v115_seat_inject_guarded_holds_vacant_agent_seat() {
         if !std::path::Path::new("/bin/zsh").exists() {

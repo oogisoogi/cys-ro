@@ -47,3 +47,13 @@
 
 ## 5. 9단계 성찰(갈래1 · 요지)
 1·2 의도: 「못 읽으면 빈 것으로 접고 덮는다」 4곳+예약·발행 위생·포팅 재작성 — 새 기능 0. 3 파급: 종료코드 12 는 dept_request 가 `create_rc:12` 로 실패 처리(무파괴) · list_depts Err 는 소비처 8곳 중 4곳이 영향 → R1 #3 으로 3곳 수리(prior_install_evidence 는 Err=증거 있음 = 의도 방향). 4 결함 재조사: 수리 자체의 결함 3건을 적대 검증이 적발(tmp 충돌 · 하드링크 폴백 · approvals 무락) — **「판독 실패 = 무변경」 을 넣으면 자가 치유가 사라지므로 쓰기 경합이 영구 잠금으로 격상된다**(이번 티켓의 핵심 교훈). 5 결정론: 모든 합격 = 바이트 해시·grep·rc 단언. 6 방어 불가: 윈도 락 부재(헬퍼 한계). 8 필요성: MINOR #8 은 헬퍼 교체가 범위 밖이라 남김.
+
+## 6. 순환 1(후임 159 · 원 계정 · 20:46~) — int/117 통합
+- 브리프 원장 = spawn-worker brief surface:1158 20:45:55 · 판정 master#2c56ce50(누수 ⑴⑵⑶ 수용 · 부수 고지 처분).
+- 병합(int/117 · 로컬): c4d7c43f ← fix/117-store 49881db7 · 그다음 ← fix/117-brand 27e92f62(master 수용 머리 · 로컬 f59dd8e4 는 그 위 HANDOFF-brand 문서 1커밋이라 제외) · 텍스트 충돌 0 · 합성물 `gen_ceo_template --check`·`gen_released_directive_hashes --check` GREEN(재생성 불요).
+- 시험 cysd 누수(CSO 20:43 · 고아 9 · 약 340MB): 원인 = cys-dept:29-35 가 좌석 env `CYS_CYSD_BIN`·`CYS_CYS_BIN`(앱이 넣은 설치본 경로)을 1순위 채택 → 시험 가짜 대신 설치본이 가짜 HOME 에서 돌아 데몬 자동 기동. 걸린 시험 = test_dept_b11_lock(대체 호출 6) · test_dept_teardown_atomicity(9 · A4 적색) · test_dept_creds_seed(대체 cysd · 2 적색) — 부서 시험 19개 전수 실측(두 키를 기록용 가짜로) · 나머지 16 = 0. 수리 e8de7be6 = 세 시험 env 에서 두 키 제거(test_ceo_pending_gate:75 선례) → 대체 호출 0 · 3개 초록. CI 러너엔 두 키가 없어 CI 초록은 원래 가짜 경로(유효).
+  · §3 의 「teardown_atomicity 는 Python 3.14 rmtree ENOTEMPTY 선재 적색」 은 이 누출(임시 폴더에 데몬이 계속 씀)로 보인다【추정】 — 수리 뒤 로컬 ALL PASS 실측.
+  · 게이트 스크립트는 좌석 `CYS_*` env 를 전부 비우고 돈다(CI 대칭 · 같은 누출 재발 차단).
+- 부수 기록: 20:46 `javis_todo_stamp.py --apply`(cys todo-path 안내 문구대로 실행)가 팩 round/ 의 다른 todo 54개에도 선언 블록을 넣었다(mtime 보존 · 내용 추가만) — master 처분 = 되돌리지 않음 · 유지보수 후보(「--apply 기본값이 남의 todo 까지 고친다」).
+- CI 편입 18d7fa6d: scripts/tests/test_mac_cli_alias_link.py → ci-branch(macOS) 스텝 + 레인 대조 ALLOWED {ci-branch}(대상 lib 는 팩 밖 · 소비 = 로컬 맥 빌드 스크립트 2개). 레인 대조 로컬 실행 초록 · 등재 제거 뮤테이션 rc=1. 그 밖 새 시험: ui/*.test.ts 3개(deptreg·droppoint·restartplan)는 release.yml `bun test` 글롭이 자동 포함(ci-branch 는 파일 머리 주석대로 UI 잡 없음) · nsis-template/check.py 는 갈래3 가 이미 편입 · test_phoenix_g2_ack_only(갈래2)는 ci 1·release 2 등장.
+- ACL flaky(`CYS_PACK_DIR` env 경합): v1.1.6 에 이미 공용 락 `governance::PACK_DIR_ENV_LOCK`(QUEUE_ENV_LOCK·ACL_ENV_LOCK 별칭 · governance.rs:6607·11327 · handlers.rs:8433) 있음. cysd 크레이트 안 `ENV_PACK_DIR` set/remove 106곳 정적 대조 = 락 밖 0(예외 daemon_with_acl·daemon_auto = 호출자가 ACL_ENV_LOCK 보유 헬퍼). 즉 input HANDOFF §5-⑥ 의 「원작자 공용 락 우리 판 미편입」 은 사실과 다름 · 남은 경합 원인은 미특정(다른 env 키 또는 가드 밖 스레드 추정) → 기록만.

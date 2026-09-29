@@ -1,5 +1,6 @@
 // droppoint.ts 순수 함수 회귀 테스트 (bun test — 신규 의존성 0). (1.1.7 ② Retina 드롭 오배달)
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { dropPointToCss } from "./droppoint";
 
 describe("dropPointToCss — 플랫폼별 드롭 좌표 단위", () => {
@@ -22,5 +23,14 @@ describe("dropPointToCss — 플랫폼별 드롭 좌표 단위", () => {
     for (const bad of [undefined, 0, NaN, -1, Infinity]) {
       expect(dropPointToCss({ x: 30, y: 40 }, bad as number | undefined, false)).toEqual({ x: 30, y: 40 });
     }
+  });
+});
+
+// 배선 핀(적대 검증 R1 Fable): 순수 함수만 재면 호출부가 isMac 에 false 를 넘겨도 초록이다 — 실제 호출이 IS_MACOS 를 넘기는지 소스로 못박는다.
+describe("paneAtPointStrict 배선", () => {
+  const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  test("드롭 좌표 환산 = dropPointToCss(pos, window.devicePixelRatio, IS_MACOS)", () => {
+    expect(main).toContain("dropPointToCss(pos, window.devicePixelRatio, IS_MACOS)");
+    expect(main).not.toMatch(/elementFromPoint\(pos\.x \/ dpr/);
   });
 });

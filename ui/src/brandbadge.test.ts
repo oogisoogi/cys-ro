@@ -1,7 +1,8 @@
 // brandbadge.test.ts — cysr 표시명 핀 + Control Center 헤더 경보 배지 제거 회귀(TICKET=cysr-brand-version).
 //
 // ⓐ 표시명: 창 제목·문서 제목·좌상단 이름·CC 아래쪽 안내가 「cysr」다. 개명은 **표시명만**이다 —
-//    원작자 표기 줄과 명령어 이름(cys)은 바꾸지 않는다(master 설계 결정 2026-09-15).
+//    (당시) 원작자 표기 줄과 명령어 이름(cys)은 바꾸지 않는다(master 설계 결정 2026-09-15).
+//    ⇒ 1.1.7 에서 둘 다 바뀌었다: 표기 = 출발지 한 줄(⑱) · 명령어 정본 = cysr · cys 는 별칭(E1).
 // ⓔ 경보 배지: 헤더의 ⚠N 개수 배지는 경보가 몇 개든 **요소 자체가 없다**(박사님 결정 2026-09-15).
 //    경보 목록은 Control Center 안 Live 스트립(#cc-alerts)으로만 보인다 — 그 스트립과 승인 대기·
 //    Update 배지는 그대로여야 한다(과잉 삭제 방지 축).
@@ -30,7 +31,7 @@ describe("ⓐ 표시명 cysr", () => {
   //   productName 은 cysr 가 됐다(TICKET=cysr-product-rename · master 결정 A). 연속성은 이제
   //   productName 이 아니라 NSIS 훅이 진다 — 설치 폴더를 %LOCALAPPDATA%\cys 에 고정하고 옛 이름의
   //   제어판 키·바로가기만 정리한다(src-tauri/nsis-hooks.nsh ⓪-b · 컴파일 하네스 N8).
-  //   identifier(업데이터·서명 연속성)와 명령어 이름 cys 는 여전히 그대로다.
+  //   identifier(업데이터·서명 연속성)는 여전히 그대로다. 명령어는 1.1.7 E1 에서 정본 cysr · 실행파일 cys 는 별칭.
   it("productName 은 cysr · 식별자는 그대로다(제자리 업데이트 연속성)", () => {
     expect(conf.productName).toBe("cysr");
     expect(conf.productName).not.toBe("cys");

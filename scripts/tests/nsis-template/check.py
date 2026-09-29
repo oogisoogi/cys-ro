@@ -11,7 +11,7 @@
   P1 원문 사본의 sha256 = 핀(원문을 손대면 적색) · P2 원문 파일 이름의 판번 = 워크플로·빌드 스크립트의 TAURI_CLI_VERSION 핀 전부
      (CLI 를 올리면 적색 → 새 원문을 받아 사본 교체 + 아래 차이를 다시 얹는다) · P3 tauri.windows.conf.json 이 우리 사본을 쓴다
   P4 원문 대비 **삭제·교체 0 · 삽입 줄 = EXPECTED_INSERTS 그대로**(차이만 우리 쪽에)
-  S1~S7 동작 단언(아래) · N1~N4 음성 대조: 핵심 줄을 지운 변이가 반드시 적색이어야 한다(안 잡는 가드는 가드가 아니다).
+  S1~S7(+S3b) 동작 단언(아래) · N1~N5 음성 대조: 핵심 줄을 지운 변이가 반드시 적색이어야 한다(안 잡는 가드는 가드가 아니다).
 """
 import difflib
 import hashlib
@@ -36,6 +36,12 @@ EXPECTED_INSERTS = [
     M + " 인자 없이 실행된 사람용 설치(/P·/S 아님) = 확인 화면 없이 passive 처럼 자동 진행하고 끝나면 앱을 켠다.",
     ";   박사님 09-25 「손이 안 가게」 · master#bd7a4a80 E3=A. 원문 = tauri-cli-2.11.4-installer.nsi · 차이 = 이 표식 줄들뿐.",
     "Var AutoGui",
+    "  " + M + " 낮은 판으로 덮어쓰기(다운그레이드)는 사람이 봐야 한다 — 자동 진행을 끄고 원래 화면 흐름으로",
+    "  ${If} $AutoGui = 1",
+    "  ${AndIf} $R0 = -1",
+    "    StrCpy $AutoGui 0",
+    "  ${EndIf}",
+    "",
     "  " + M + " 재설치 선택 화면을 띄우지 않는다",
     "  ${OrIf} $AutoGui = 1",
     "    Goto reinst_done",           # ← difflib 는 이 블록을 원문의 같은 줄들과 한 칸 어긋나게 맞춘다(결정론 · 뜻은 같음)
@@ -97,6 +103,12 @@ def semantic(ours, hook):
     pr = func_body(ours, "PageReinstall") or ""
     if not re.search(r"\$\{If\} \$PassiveMode = 1\n(\s*;[^\n]*\n)?\s*\$\{OrIf\} \$AutoGui = 1\n\s*Call PageLeaveReinstall", pr):
         bad.append("S3 PageReinstall: AutoGui 에서 화면을 건너뛰지 않는다")
+    # S3b 다운그레이드(판 비교 $R0 = -1)는 자동 진행을 끄고 원래 화면으로 — 화면 건너뜀 판정보다 앞
+    idg = pr.find("${If} $AutoGui = 1\n  ${AndIf} $R0 = -1\n    StrCpy $AutoGui 0")
+    isk = pr.find("${OrIf} $AutoGui = 1")
+    icmp = pr.find("nsis_tauri_utils::SemverCompare")
+    if not (0 <= icmp < idg < isk):
+        bad.append("S3b PageReinstall: 다운그레이드 때 자동 진행 끄기가 판 비교 뒤·화면 건너뜀 앞에 없다")
     pl = func_body(ours, "PageLeaveReinstall") or ""
     iw, ia, iu = pl.find("$WixMode = 1"), pl.find("${If} $AutoGui = 1\n    Goto reinst_done"), pl.find("reinst_uninstall:")
     if not (0 <= iw < ia < iu):
@@ -162,6 +174,7 @@ def main():
         ("N2 SkipIfPassive 의 AutoGui 건너뜀 제거", ours.replace("  ${IfThen} $AutoGui = 1  ${|} Abort ${|}\n", ""), hook),
         ("N3 재설치 AutoGui → 덮어 설치 제거", ours.replace("  ${If} $AutoGui = 1\n    Goto reinst_done\n  ${EndIf}\n", ""), hook),
         ("N4 훅 /P 제거", ours, hook.replace('uninstall.exe$\\" /P"', 'uninstall.exe$\\""')),
+        ("N5 다운그레이드 자동 진행 끄기 제거", ours.replace("  ${AndIf} $R0 = -1\n    StrCpy $AutoGui 0\n", ""), hook),
     ]
     for name, o2, h2 in negs:
         if (o2, h2) == (ours, hook):
@@ -173,7 +186,7 @@ def main():
         for f in fails:
             print("  - " + f)
         return 1
-    print("nsis-template: OK (원문 %s sha 핀 · CLI 핀 %d곳 · 삽입 %d줄 = 목록 · 동작 단언 S1~S7 · 음성 대조 N1~N4 적색)"
+    print("nsis-template: OK (원문 %s sha 핀 · CLI 핀 %d곳 · 삽입 %d줄 = 목록 · 동작 단언 S1~S7 · 음성 대조 N1~N5 적색)"
           % (PIN_VER, len(CLI_PIN_FILES), len(EXPECTED_INSERTS)))
     return 0
 

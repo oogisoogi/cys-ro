@@ -261,6 +261,12 @@ Function PageReinstall
     Abort
   ${EndIf}
 
+  ; (cysr 1.1.7 E3) 낮은 판으로 덮어쓰기(다운그레이드)는 사람이 봐야 한다 — 자동 진행을 끄고 원래 화면 흐름으로
+  ${If} $AutoGui = 1
+  ${AndIf} $R0 = -1
+    StrCpy $AutoGui 0
+  ${EndIf}
+
   ; Skip showing the page if passive
   ;
   ; Note that we don't call this earlier at the begining

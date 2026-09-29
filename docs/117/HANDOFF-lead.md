@@ -22,6 +22,7 @@
 - 적대 검증 R2: Fable(31bd4a5d · 스크래치 rev-fable2/out.md) + agy(3차 시도 · `.git` 없는 사본 rev-agy2 · 샌드박스) — agy 1·2차는 헤드리스 「command 권한」 자동 거부로 산출 0(도구 문제 · 결함 아님).
 - R2 반영 → 전체 게이트(스크래치 gates.sh) → `git push origin fix/117-store`(force 금지) → int/117 병합(no-ff) → 합성물 재생성 확인 → `fix/117-int` push(Q4=A) → 【확인요청】.
 - 통합: 갈래2(153 · fix/117-input) · 갈래3(154 · fix/117-brand) 는 각 좌석이 push → 내가 int/117 에 1→2→3 순으로 병합.
+- ★갈래3 brand = master 수용(master#193559c7 · 20:3x) · 머리 fix/117-brand @27e92f62 · 조건 = CI 3개(ci-branch 36562175238 · windows-build 36562175298 T8 · windows-health 36562175264) 초록(154 추적). 통합 주의: scripts/tests/test_mac_cli_alias_link.py = CI 미편입(레인 대조 ALLOWED 필요) · 겹침 = cys.rs L1-16·시험 L20120대 · main.ts L3880·import 1줄 · release.yml·pack-release.yml 크레딧 블록.
 
 ## 3. 함정 (재현·다음 사람용)
 - cargo 는 PATH 에 없다 → `export PATH="$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"`. TMPDIR 은 짧게(`/tmp/c117s`) — 소켓 SUN_LEN.

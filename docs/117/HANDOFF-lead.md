@@ -18,6 +18,12 @@
 
 로컬 게이트(244236c2 기준 · 20:08): cargo --lib 550 · --bin cys 344 · --bin cysd 1210 · cys-app 174 · gen_ceo/hash --check · ui 1465 · 팩 파이썬 루프 전건(0바이트 target/debug 함정 1건 = 빌드 후 PASS) · 건강 검체 150 PASS/1 SKIP. 31bd4a5d 뒤 재실행 = 영향 모듈만(cysd approval·queue_wal · cys-app · ui · name_guard · dept_request · H-SECRET-1) 초록 — **전체 재실행은 push 전 필수**.
 
+## 1-1. 적대 검증 · push 결과(20:5x 갱신)
+- R1 Fable REVISE(MAJOR 3) → 31bd4a5d · R2 Fable REVISE(MAJOR 1 = 복원 skip 을 UI 가 안 들음) → 79190615 · R3 Fable REVISE(MAJOR 1 = error 경로) → ebe0430f(3라운드 상한 · 수렴 판정 = master).
+- agy: 1·2차 산출 0(헤드리스 command 권한 거부) · 3차(.git 없는 사본 · --dangerously-skip-permissions --sandbox) BLOCK 주장 3 → #1 「분류기 도구 8개 누락」 = 사실 아님(v1.1.6 classifier.rs 303줄 · 그 이름 0건 · L1975 부재) · #2 소비처 4곳 = 기존 동작 기록 · #3 윈도 락 = 헬퍼 한계 기록.
+- push: fix/117-store @ebe0430f(force 0). CI(ebe0430f) = ci-branch 36563307307 · windows-build 36563307316 · windows-health 36563307309 (79190615 판 = 36563029335·36563029275·36563029456).
+- 남은 MINOR(기록): 초기화 모달 본문 「부서 0」 · kill 뒤 경로 시험 없음 · dept_logdir 미단언 · rotate 가 launch 12 를 1 로 가림(선재) · create acctdir 선생성(선재) · 소비처 4곳 Err→부서 0(기존) · 윈도 락 없음 · ⑨ 키 판독 실패 eprintln 뿐 · WAL 사본 초 단위 이름.
+
 ## 2. 진행 중 / 남은 것
 - 적대 검증 R2: Fable(31bd4a5d · 스크래치 rev-fable2/out.md) + agy(3차 시도 · `.git` 없는 사본 rev-agy2 · 샌드박스) — agy 1·2차는 헤드리스 「command 권한」 자동 거부로 산출 0(도구 문제 · 결함 아님).
 - R2 반영 → 전체 게이트(스크래치 gates.sh) → `git push origin fix/117-store`(force 금지) → int/117 병합(no-ff) → 합성물 재생성 확인 → `fix/117-int` push(Q4=A) → 【확인요청】.

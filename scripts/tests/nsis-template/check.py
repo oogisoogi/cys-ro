@@ -11,7 +11,7 @@
   P1 원문 사본의 sha256 = 핀(원문을 손대면 적색) · P2 원문 파일 이름의 판번 = 워크플로·빌드 스크립트의 TAURI_CLI_VERSION 핀 전부
      (CLI 를 올리면 적색 → 새 원문을 받아 사본 교체 + 아래 차이를 다시 얹는다) · P3 tauri.windows.conf.json 이 우리 사본을 쓴다
   P4 원문 대비 **삭제·교체 0 · 삽입 줄 = EXPECTED_INSERTS 그대로**(차이만 우리 쪽에)
-  S1~S7(+S3b) 동작 단언(아래) · N1~N5 음성 대조: 핵심 줄을 지운 변이가 반드시 적색이어야 한다(안 잡는 가드는 가드가 아니다).
+  S1~S8(+S3b) 동작 단언(아래) · N1~N7 음성 대조: 핵심 줄을 지운 변이가 반드시 적색이어야 한다(안 잡는 가드는 가드가 아니다).
 """
 import difflib
 import hashlib
@@ -33,36 +33,40 @@ M = "; (cysr 1.1.7 E3)"
 
 # 원문 대비 삽입 줄 전부(순서 그대로) — 이 목록 밖의 차이는 적색.
 EXPECTED_INSERTS = [
-    M + " 인자 없이 실행된 사람용 설치(/P·/S 아님) = 확인 화면 없이 passive 처럼 자동 진행하고 끝나면 앱을 켠다.",
-    ";   박사님 09-25 「손이 안 가게」 · master#bd7a4a80 E3=A. 원문 = tauri-cli-2.11.4-installer.nsi · 차이 = 이 표식 줄들뿐.",
-    "Var AutoGui",
-    "  " + M + " 낮은 판으로 덮어쓰기(다운그레이드)는 사람이 봐야 한다 — 자동 진행을 끄고 원래 화면 흐름으로",
-    "  ${If} $AutoGui = 1",
-    "  ${AndIf} $R0 = -1",
-    "    StrCpy $AutoGui 0",
-    "  ${EndIf}",
-    "",
-    "  " + M + " 재설치 선택 화면을 띄우지 않는다",
-    "  ${OrIf} $AutoGui = 1",
-    "    Goto reinst_done",           # ← difflib 는 이 블록을 원문의 같은 줄들과 한 칸 어긋나게 맞춘다(결정론 · 뜻은 같음)
-    "  ${EndIf}",
-    "",
-    "  " + M + " 자동 진행 = 먼저 제거하지 않고 제자리 덮어 설치(설치기 /S 길과 같은 길 — 훅이 켜진 앱·데몬 위 덮어 설치를 맡는다)",
-    "  ${If} $AutoGui = 1",
-    "  ${EndIf}",
-    "",
-    "  " + M + " 사람이 그냥 실행(/P 아님 · /S 아님) → 자동 진행",
-    "  ${If} $PassiveMode <> 1",
-    "  ${AndIfNot} ${Silent}",
-    "    StrCpy $AutoGui 1",
-    "  " + M + " 진행 화면 자동 닫힘",
-    "  ${OrIf} $AutoGui = 1",
-    "  " + M + " 마침 화면의 「앱 실행」(기본 켜짐)을 대신한다",
-    "  ${If} $AutoGui = 1",
+    M + ' 인자 없이 실행된 사람용 설치(/P·/S 아님) = 확인 화면 없이 passive 처럼 자동 진행하고 끝나면 앱을 켠다.',
+    ';   박사님 09-25 「손이 안 가게」 · master#bd7a4a80 E3=A. 원문 = tauri-cli-2.11.4-installer.nsi · 차이 = 이 표식 줄들뿐.',
+    'Var AutoGui',
+    '  ' + M + ' 낮은 판으로 덮어쓰기(다운그레이드)는 사람이 봐야 한다 — 자동 진행을 끄고 원래 화면 흐름으로',
+    '  ${If} $AutoGui = 1',
+    '  ${AndIf} $R0 = -1',
+    '    StrCpy $AutoGui 0',
+    '  ${EndIf}',
+    '',
+    '  ' + M + ' 재설치 선택 화면을 띄우지 않는다',
+    '  ${OrIf} $AutoGui = 1',
+    '    Goto reinst_done',
+    '  ${EndIf}',
+    '',
+    '  ' + M + ' 자동 진행 = 먼저 제거하지 않고 제자리 덮어 설치(설치기 /S 길과 같은 길 — 훅이 켜진 앱·데몬 위 덮어 설치를 맡는다)',
+    '  ${If} $AutoGui = 1',
+    '  ' + M + ' 사람이 그냥 실행(/P·/S·/UPDATE 아님) → 자동 진행',
+    '  ${If} $PassiveMode <> 1',
+    '  ${AndIfNot} ${Silent}',
+    '  ${AndIf} $UpdateMode <> 1',
+    '    StrCpy $AutoGui 1',
+    '  ${EndIf}',
+    '',
+    '  ' + M + ' 훅의 앱 종료 뒤에도 앱이 살아 있으면 묻지 말고 닫는다 — utils.nsh CheckIfAppIsRunning 은 $PassiveMode 로 확인 창을 가른다',
+    '  ${IfThen} $AutoGui = 1 ${|} StrCpy $PassiveMode 1 ${|}',
+    '',
+    '  ' + M + ' 진행 화면 자동 닫힘',
+    '  ${OrIf} $AutoGui = 1',
+    '  ' + M + ' 마침 화면의 「앱 실행」(기본 켜짐)을 대신한다',
+    '  ${If} $AutoGui = 1',
     '    nsis_tauri_utils::RunAsUser "$INSTDIR\\${MAINBINARYNAME}.exe" ""',
-    "  ${EndIf}",
-    "  " + M + " 환영·설치 폴더·마침 화면 건너뜀",
-    "  ${IfThen} $AutoGui = 1  ${|} Abort ${|}",
+    '  ${EndIf}',
+    '  ' + M + ' 환영·설치 폴더·마침 화면 건너뜀',
+    '  ${IfThen} $AutoGui = 1  ${|} Abort ${|}',
 ]
 
 
@@ -86,10 +90,11 @@ def semantic(ours, hook):
     bad = []
     oninit = func_body(ours, ".onInit") or ""
     # S1 AutoGui 는 /P 도 /S 도 아닐 때만 켜진다(설치기 /S · 업데이터 /P 경로 무변경)
-    if not re.search(r"\$\{If\} \$PassiveMode <> 1\n\s*\$\{AndIfNot\} \$\{Silent\}\n\s*StrCpy \$AutoGui 1", oninit):
-        bad.append("S1 .onInit: AutoGui = (/P 아님 ∧ /S 아님) 조건이 없다")
-    if oninit.find("StrCpy $AutoGui 1") < oninit.find('${GetOptions} $CMDLINE "/P" $PassiveMode'):
-        bad.append("S1 .onInit: AutoGui 판정이 /P 해석보다 앞선다")
+    if not re.search(r"\$\{If\} \$PassiveMode <> 1\n\s*\$\{AndIfNot\} \$\{Silent\}\n\s*\$\{AndIf\} \$UpdateMode <> 1\n\s*StrCpy \$AutoGui 1", oninit):
+        bad.append("S1 .onInit: AutoGui = (/P 아님 ∧ /S 아님 ∧ /UPDATE 아님) 조건이 없다")
+    ia_ = oninit.find("StrCpy $AutoGui 1")
+    if ia_ < oninit.find('${GetOptions} $CMDLINE "/P" $PassiveMode') or ia_ < oninit.find('${GetOptions} $CMDLINE "/UPDATE" $UpdateMode'):
+        bad.append("S1 .onInit: AutoGui 판정이 /P·/UPDATE 해석보다 앞선다")
     # S2 환영·폴더·마침 화면 = SkipIfPassive 가 AutoGui 에서도 건너뛴다(화면 3개가 이 함수를 PRE 로 쓴다)
     sk = func_body(ours, "SkipIfPassive") or ""
     if "${IfThen} $AutoGui = 1  ${|} Abort ${|}" not in sk:
@@ -122,6 +127,12 @@ def semantic(ours, hook):
     ok = func_body(ours, ".onInstSuccess") or ""
     if not re.search(r'\$\{If\} \$AutoGui = 1\n\s*nsis_tauri_utils::RunAsUser "\$INSTDIR\\\$\{MAINBINARYNAME\}\.exe" ""', ok):
         bad.append("S5 .onInstSuccess: AutoGui 앱 실행 없음")
+    # S8 섹션: 훅(앱 종료) 뒤·앱 실행 확인(utils.nsh CheckIfAppIsRunning — $PassiveMode <> 1 이면 확인 창) 앞에서 AutoGui = passive
+    sec = ours[ours.find("Section Install"):]
+    ih8, ip8 = sec.find("!insertmacro NSIS_HOOK_PREINSTALL"), sec.find("${IfThen} $AutoGui = 1 ${|} StrCpy $PassiveMode 1 ${|}")
+    ic8 = sec.find('!insertmacro CheckIfAppIsRunning')
+    if not (0 <= ih8 < ip8 < ic8):
+        bad.append("S8 Section Install: AutoGui → PassiveMode 가 훅 뒤·앱 실행 확인 앞에 없다(앱이 살아 있으면 확인 창)")
     # S6 E2 — 훅 POSTINSTALL 이 등록값을 /P 로 덮고, 그 훅은 템플릿의 등록값 쓰기 **뒤**에 삽입된다
     post = macro_body(hook, "NSIS_HOOK_POSTINSTALL") or ""
     if 'WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\\"$INSTDIR\\uninstall.exe$\\" /P"' not in post:
@@ -174,6 +185,8 @@ def main():
         ("N2 SkipIfPassive 의 AutoGui 건너뜀 제거", ours.replace("  ${IfThen} $AutoGui = 1  ${|} Abort ${|}\n", ""), hook),
         ("N3 재설치 AutoGui → 덮어 설치 제거", ours.replace("  ${If} $AutoGui = 1\n    Goto reinst_done\n  ${EndIf}\n", ""), hook),
         ("N4 훅 /P 제거", ours, hook.replace('uninstall.exe$\\" /P"', 'uninstall.exe$\\""')),
+        ("N6 섹션 AutoGui → passive 제거", ours.replace("  ${IfThen} $AutoGui = 1 ${|} StrCpy $PassiveMode 1 ${|}\n", ""), hook),
+        ("N7 /UPDATE 단독 제외 제거", ours.replace("  ${AndIf} $UpdateMode <> 1\n    StrCpy $AutoGui 1", "    StrCpy $AutoGui 1"), hook),
         ("N5 다운그레이드 자동 진행 끄기 제거", ours.replace("  ${AndIf} $R0 = -1\n    StrCpy $AutoGui 0\n", ""), hook),
     ]
     for name, o2, h2 in negs:
@@ -186,7 +199,7 @@ def main():
         for f in fails:
             print("  - " + f)
         return 1
-    print("nsis-template: OK (원문 %s sha 핀 · CLI 핀 %d곳 · 삽입 %d줄 = 목록 · 동작 단언 S1~S7 · 음성 대조 N1~N5 적색)"
+    print("nsis-template: OK (원문 %s sha 핀 · CLI 핀 %d곳 · 삽입 %d줄 = 목록 · 동작 단언 S1~S8 · 음성 대조 N1~N7 적색)"
           % (PIN_VER, len(CLI_PIN_FILES), len(EXPECTED_INSERTS)))
     return 0
 

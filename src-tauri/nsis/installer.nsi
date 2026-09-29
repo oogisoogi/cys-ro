@@ -496,12 +496,6 @@ Function .onInit
     StrCpy $PassiveMode 1
   ${EndIf}
 
-  ; (cysr 1.1.7 E3) 사람이 그냥 실행(/P 아님 · /S 아님) → 자동 진행
-  ${If} $PassiveMode <> 1
-  ${AndIfNot} ${Silent}
-    StrCpy $AutoGui 1
-  ${EndIf}
-
   ${GetOptions} $CMDLINE "/NS" $NoShortcutMode
   ${IfNot} ${Errors}
     StrCpy $NoShortcutMode 1
@@ -510,6 +504,13 @@ Function .onInit
   ${GetOptions} $CMDLINE "/UPDATE" $UpdateMode
   ${IfNot} ${Errors}
     StrCpy $UpdateMode 1
+  ${EndIf}
+
+  ; (cysr 1.1.7 E3) 사람이 그냥 실행(/P·/S·/UPDATE 아님) → 자동 진행
+  ${If} $PassiveMode <> 1
+  ${AndIfNot} ${Silent}
+  ${AndIf} $UpdateMode <> 1
+    StrCpy $AutoGui 1
   ${EndIf}
 
   !if "${DISPLAYLANGUAGESELECTOR}" == "true"
@@ -663,6 +664,9 @@ Section Install
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
+
+  ; (cysr 1.1.7 E3) 훅의 앱 종료 뒤에도 앱이 살아 있으면 묻지 말고 닫는다 — utils.nsh CheckIfAppIsRunning 은 $PassiveMode 로 확인 창을 가른다
+  ${IfThen} $AutoGui = 1 ${|} StrCpy $PassiveMode 1 ${|}
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 

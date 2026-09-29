@@ -1323,6 +1323,9 @@ jobs:
           Start-Sleep 5
           $appId = if ($app) { $app.Id } else { -1 }
           Write-Host ("T8 사전: 앱 켜짐 = {0}" -f [bool](Get-Process -Id $appId -ErrorAction SilentlyContinue))
+          # 판 마커를 먼저 지운다 — T7 이 같은 빌드를 이미 깔아 마커가 expVer 라, 지우지 않으면 설치가 아무것도 안 해도 E3_2 가 초록(공허 · Fable R1)
+          Remove-Item $marker -Force -ErrorAction SilentlyContinue
+          if (Test-Path $marker) { throw "T8 사전: 판 마커를 지우지 못했다" }
           $g = Start-Process -FilePath $setup.FullName -PassThru
           $gc = WaitExit $g 300000
           $res.E3_1_no_args_finishes_without_screens = ($gc -eq 0)
@@ -1333,9 +1336,10 @@ jobs:
           Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
           # ③ 「먼저 제거」 경로 — 같은 판을 /P 로: 템플릿 재설치 판단이 옛 제거기를 `<UninstallString> /P _?=` 로 부른 뒤 설치
+          Remove-Item $marker -Force -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath $setup.FullName -ArgumentList '/P' -PassThru
           $pc = WaitExit $p 300000
-          $res.E3_3_uninstall_first_path_ok = ($pc -eq 0) -and (Test-Path (Join-Path $dir 'cys.exe')) -and ((Get-Content $marker -Raw).Trim() -eq $expVer)
+          $res.E3_3_uninstall_first_path_ok = ($pc -eq 0) -and (Test-Path (Join-Path $dir 'cys.exe')) -and (Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $expVer)
           $res.E2_2_still_P_after_passive_reinstall = ((UStr) -eq "`"$dir\uninstall.exe`" /P")
           Get-Process cys-app,cys,cysd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 

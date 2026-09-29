@@ -5375,6 +5375,83 @@ pub(crate) fn pending_input_after(prev: u64, written: &[u8]) -> u64 {
     }
 }
 
+/// ★⑭(1.1.7 · 원작자 0.14.31 B-2② + 488825b2 보정의 우리 판 재구현) 계수 고착 모순 판정(순수).
+///
+/// `pending_input_bytes` 는 제출·취소 제어문자를 봐야만 0 으로 돌아간다. 그래서 사람이 창에서 직접
+/// 지우거나(백스페이스) 에이전트 TUI 가 스스로 줄을 비우면 **화면은 빈 입력창인데 계수만 >0** 으로 남고,
+/// `input_line_state` 가 화면과 무관하게 `Occupied` 를 돌려 그 좌석 큐가 영영 안 풀린다(VM 2차 #9② 40분).
+///
+/// 모순 = 아래 **전부**(하나라도 아니면 false = 종전처럼 보류 · 초안 보호 쪽으로 접는다):
+/// * 계수 > 0
+/// * `framed` — 커서 행이 입력창 모양(마커 뒤 **행 전체** 공백 ∧ 위·아래 행이 가로줄). 커서 **앞**만 보면
+///   Home 으로 줄 머리에 옮긴 실초안이, 커서 **행**만 보면 멀티라인 초안의 빈 첫 행이 「빈 줄」로 읽힌다
+///   (원작자 R1·R2 blocking) — 가로줄 두 개 사이 한 줄은 두 경우를 다 배제한다. 대체화면도 이 모양이면
+///   입력창이다(`alt_screen_blocks` 와 같은 규칙) · 입력창 모양이 아닌 대체화면(메뉴·대화상자)은 해제 없음.
+/// * 출력 정적 ≥ `quiet`(사람이 치는 중이면 에코로 깨진다)
+/// * 승인 대기 아님(허락 창 위에서 계수를 지우지 않는다)
+///
+/// 고스트 제안문(커서 뒤)이 떠 있으면 행이 비지 않아 해제되지 않는다 — 종전 보류가 이어질 뿐(안전 쪽).
+pub(crate) fn stale_pending_contradiction(
+    pending: u64,
+    framed: bool,
+    quiet_for: u64,
+    quiet: u64,
+    approval_pending: bool,
+) -> bool {
+    pending > 0 && framed && quiet_for >= quiet && !approval_pending
+}
+
+/// ★⑭ 고착 계수 해제 — 모순이 **같은 (계수, 쓰기 세대)** 로 `window` 초 이상 이어졌을 때만 0 으로 쓴다.
+/// 첫 관측은 스탬프만 찍는다. 해제는 `input_gate` 안에서 세대·계수를 다시 보고(그 사이 쓰기가 있었으면
+/// 포기) 한다. 반환 true = 이번 틱에 해제했다(호출부는 이번 틱 배달하지 않고 다음 틱에 다시 관측한다).
+fn maybe_release_stale_pending_input(
+    daemon: &Arc<Daemon>,
+    s: &Arc<crate::state::Surface>,
+    contradiction: bool,
+    window: u64,
+) -> bool {
+    let pending = s.pending_input_bytes.load(Ordering::Relaxed);
+    let gen = s.input_gen.load(Ordering::Acquire);
+    let mut slot = s.pending_input_stale.lock().unwrap();
+    if !contradiction {
+        *slot = None;
+        return false;
+    }
+    let since = match *slot {
+        Some((pb, pg, since)) if pb == pending && pg == gen => since,
+        _ => {
+            *slot = Some((pending, gen, std::time::Instant::now()));
+            return false;
+        }
+    };
+    if since.elapsed().as_secs() < window.max(1) {
+        return false; // 아직 관측 지속 중
+    }
+    let stale_secs = since.elapsed().as_secs();
+    *slot = None;
+    drop(slot);
+    {
+        let _gate = s.input_gate.lock().unwrap();
+        if s.input_gen.load(Ordering::Acquire) != gen
+            || s.pending_input_bytes.load(Ordering::Relaxed) != pending
+        {
+            return false; // 관측 뒤 누군가 이 줄에 썼다 — 포기
+        }
+        s.pending_input_bytes.store(0, Ordering::Relaxed);
+        s.input_gen.fetch_add(1, Ordering::Release);
+    }
+    daemon.bus.publish(
+        "queue.input_pending_reset",
+        "queue",
+        Some(s.id),
+        json!({"surface_ref": cys::surface_ref(s.id),
+               "role": s.role.lock().unwrap().clone(),
+               "pending_bytes": pending,
+               "stale_secs": stale_secs}),
+    );
+    true
+}
+
 /// 프롬프트 경계 판정 결과.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptBoundary {
@@ -6103,6 +6180,7 @@ pub(crate) fn deliver_head_locked(
     *s.last_injected.lock().unwrap() = Some(std::time::Instant::now());
     // ★B1(0.14.30): Inject 는 본문+CR 을 원자로 보내 줄을 제출한다 → 미제출 계수 0.
     s.pending_input_bytes.store(0, Ordering::Relaxed);
+    s.input_gen.fetch_add(1, Ordering::Release); // ★⑭ 쓰기 세대
     // ★T-0147-2 §2 층3 A3′(R2-C3): 배달 영수증에 봉입 W-id 를 **배열**로 에코한다.
     // 배열인 이유 — javis_wakeup 의 digest 모드(층1 I6)가 같은 target 의 N건을 1회
     // Inject 로 병합하므로, 병합된 **전** W-id 가 ack 돼야 critical-tier 가 disarm 된다.
@@ -6462,6 +6540,17 @@ fn deliver_queued(
             };
             let approval_pending = approval_screen || !pending_gate_items(daemon, s.id).is_empty();
             let alt_blocks = alt_screen_blocks(s.alt_screen.load(Ordering::Relaxed), framed);
+            // ★⑭(1.1.7): 화면은 빈 입력창·정적·승인 창 없음인데 계수만 >0 이 같은 세대로 quiet 초 이상
+            //   이어지면 고착으로 보고 0 으로 푼다. 해제한 틱엔 배달하지 않는다(다음 틱이 다시 관측).
+            if maybe_release_stale_pending_input(
+                daemon,
+                &s,
+                stale_pending_contradiction(pending, framed, quiet_for, quiet, approval_pending),
+                quiet,
+            ) {
+                mark_queue_blocked(&s, "input_pending(입력줄에 미제출 입력)");
+                continue;
+            }
             let verdict = prompt_boundary_verdict(marker_seen, input, alt_blocks, approval_pending);
             if verdict == PromptBoundary::NotReady {
                 // 사유를 갈라 기록한다 — 손잡이가 다르다(입력줄 점유는 사람이 비워야 풀리고,
@@ -9715,7 +9804,7 @@ mod tests {
     use super::{
         alt_screen_blocks, approval_in_prompt_tail, empty_line_block_reason, gate_corpus_cached,
         input_line_state, is_numbered_choice_row, is_rule_row, prompt_boundary_verdict,
-        queue_starve_alert_secs, InputLine, PromptBoundary, PromptLine,
+        queue_starve_alert_secs, stale_pending_contradiction, InputLine, PromptBoundary, PromptLine,
     };
     use std::sync::atomic::Ordering;
 
@@ -10077,6 +10166,148 @@ mod tests {
         let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
         deliver_queued(&daemon, &mut depth, &mut starve);
         assert_eq!(s.pending_queue.lock().unwrap().len(), 1);
+    }
+
+    /// ★⑭ 고착 모순 판정 진리표(순수) — 네 축 중 하나라도 아니면 해제하지 않는다.
+    #[test]
+    fn u14_stale_pending_contradiction_truth_table() {
+        // (pending, framed, quiet_for, quiet, approval) → 기대
+        let rows: &[(u64, bool, u64, u64, bool, bool)] = &[
+            (7, true, 5, 3, false, true),  // 전부 성립 = 모순
+            (0, true, 5, 3, false, false), // 계수 0 — 풀 것이 없다
+            (7, false, 5, 3, false, false), // 입력창 모양 아님(초안·메뉴·관측 불능)
+            (7, true, 2, 3, false, false), // 출력 중(사람 에코 포함)
+            (7, true, 3, 3, false, true),  // 경계 = 정확히 quiet
+            (7, true, 5, 3, true, false),  // 승인 창 위
+        ];
+        for &(p, f, qf, q, a, want) in rows {
+            assert_eq!(
+                stale_pending_contradiction(p, f, qf, q, a),
+                want,
+                "pending={p} framed={f} quiet_for={qf} quiet={q} approval={a}"
+            );
+        }
+    }
+
+    /// ★⑭ 비-대체화면 claude 입력창 — 1행 머리, 2·4행 가로줄, 3행 「❯ {row3}」, 5행 {row5}.
+    /// `cursor_col` = 3행 커서 열(None 이면 쓴 자리 그대로).
+    fn paint_composer(s: &Arc<crate::state::Surface>, row3: &str, row4: Option<&str>, cursor_col: Option<u16>) {
+        let rule = "────────────────────────────";
+        let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let (r4, r5) = match row4 {
+            // 멀티라인 초안: 4행 = 초안 둘째 줄, 5행 = 가로줄
+            Some(t) => (t.to_string(), rule.to_string()),
+            None => (rule.to_string(), String::new()),
+        };
+        p.process(
+            format!("\x1b[2J\x1b[1;1Hclaude\x1b[2;1H{rule}\x1b[4;1H{r4}\x1b[5;1H{r5}\x1b[3;1H❯ {row3}")
+                .as_bytes(),
+        );
+        if let Some(c) = cursor_col {
+            p.process(format!("\x1b[3;{}H", c + 1).as_bytes());
+        }
+    }
+
+    /// ★⑭ 고착 좌석 1개를 세운다 — 계수 7 · 출력 정적 10초 · 사람 흔적 없음 · 스탬프는 창 밖으로 당겨 둔다
+    /// (첫 관측 틱을 이미 지난 상태).
+    fn run_stale_seat(tag: &str, paint: impl Fn(&Arc<crate::state::Surface>)) -> (Arc<Daemon>, Arc<crate::state::Surface>) {
+        let (daemon, s) = marker_seat(tag);
+        paint(&s);
+        s.pending_input_bytes.store(7, AtomicOrdering::Relaxed);
+        *s.last_output.lock().unwrap() =
+            std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *s.last_human_input.lock().unwrap() = None;
+        let gen = s.input_gen.load(AtomicOrdering::Acquire);
+        *s.pending_input_stale.lock().unwrap() =
+            Some((7, gen, std::time::Instant::now() - std::time::Duration::from_secs(5)));
+        (daemon, s)
+    }
+
+    /// ★⑭ 회귀 핀(VM 2차 #9② — master 큐 input_pending 40분): 빈 입력창·정적·승인 창 없음인데 계수만
+    /// 남은 좌석은 같은 세대로 창을 넘기면 풀리고(해제 틱엔 배달 0 · 이벤트 1) 다음 틱에 배달된다.
+    /// 첫 관측 틱은 스탬프만 찍는다(한 번 본 것으로 지우지 않는다).
+    #[test]
+    fn u14_stale_pending_released_after_window_then_delivered() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("u14-release");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+        // ① 첫 관측 — 스탬프만(해제 0 · 배달 0).
+        let (daemon, s) = run_stale_seat("u14-first", |s| paint_composer(s, "", None, None));
+        *s.pending_input_stale.lock().unwrap() = None;
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert_eq!(s.pending_input_bytes.load(AtomicOrdering::Relaxed), 7, "첫 관측에서 지웠다");
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1);
+        assert!(s.pending_input_stale.lock().unwrap().is_some(), "첫 관측 스탬프가 없다");
+        // ② 창을 넘긴 같은 세대 — 해제(이번 틱 배달 0 · 이벤트 1).
+        let (daemon, s) = run_stale_seat("u14-release", |s| paint_composer(s, "", None, None));
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert_eq!(s.pending_input_bytes.load(AtomicOrdering::Relaxed), 0, "고착 계수가 풀리지 않았다");
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "해제 틱에 배달했다(재관측 없이)");
+        let ev = daemon.bus.tail(30).into_iter().find(|e| e["name"] == "queue.input_pending_reset");
+        let ev = ev.expect("해제 사실이 이벤트로 남지 않았다");
+        assert_eq!(ev["payload"]["pending_bytes"], serde_json::json!(7));
+        // ③ 다음 틱 — 배달.
+        deliver_queued(&daemon, &mut depth, &mut starve);
+        assert!(s.pending_queue.lock().unwrap().is_empty(), "해제 뒤 다음 틱에 배달되지 않았다");
+    }
+
+    /// ★⑭ 음성 핀 — 사람 초안·관측 무효 경우엔 창을 넘겨도 계수를 지우지 않는다(초안 보호가 우선).
+    #[test]
+    fn u14_stale_pending_never_released_over_draft_or_changed_generation() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("u14-neg");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let keep = |tag: &str, daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>| {
+            let (mut depth, mut starve) = (HashMap::new(), HashMap::new());
+            deliver_queued(daemon, &mut depth, &mut starve);
+            assert_eq!(
+                s.pending_input_bytes.load(AtomicOrdering::Relaxed),
+                7,
+                "{tag}: 초안·관측 무효 상태에서 계수를 지웠다"
+            );
+            assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "{tag}: 배달했다");
+        };
+        // ⓐ Home 으로 줄 머리에 옮긴 한 줄 초안(커서 앞 공백 · 커서 뒤 초안) — 원작자 R1 blocking.
+        let (d, s) = run_stale_seat("u14-home", |s| paint_composer(s, "보내려던 문장", None, Some(2)));
+        keep("home", &d, &s);
+        // ⓑ 멀티라인 초안의 빈 첫 행에 커서(둘째 행에 실초안) — 원작자 R2 blocking.
+        let (d, s) = run_stale_seat("u14-multi", |s| paint_composer(s, "", Some("둘째 줄 초안"), None));
+        keep("multiline", &d, &s);
+        // ⓒ 커서 앞 초안(평범한 미제출 입력).
+        let (d, s) = run_stale_seat("u14-typed", |s| paint_composer(s, "쓰다 만 글", None, None));
+        keep("typed", &d, &s);
+        // ⓓ 출력 중(정적 아님).
+        let (d, s) = run_stale_seat("u14-busy", |s| paint_composer(s, "", None, None));
+        *s.last_output.lock().unwrap() = std::time::Instant::now();
+        keep("busy", &d, &s);
+        // ⓔ 입력창 모양이 아닌 대체화면(메뉴·대화상자).
+        let (d, s) = run_stale_seat("u14-alt", |s| paint_alt_seat(s, false, "❯ "));
+        keep("alt-unframed", &d, &s);
+        // ⓕ 관측 뒤 쓰기(세대 변화) — 스탬프가 옛 세대면 새로 찍기만 한다.
+        let (d, s) = run_stale_seat("u14-gen", |s| paint_composer(s, "", None, None));
+        s.input_gen.fetch_add(1, AtomicOrdering::Release);
+        keep("gen-moved", &d, &s);
+        let stamp = *s.pending_input_stale.lock().unwrap();
+        assert_eq!(
+            stamp.map(|(_, g, _)| g),
+            Some(s.input_gen.load(AtomicOrdering::Acquire)),
+            "세대가 바뀌면 새 세대로 다시 찍어야 한다"
+        );
+        // ⓖ 계수 변화(관측 뒤 한 글자 더) — 같은 규칙.
+        let (d, s) = run_stale_seat("u14-bytes", |s| paint_composer(s, "", None, None));
+        *s.pending_input_stale.lock().unwrap() = Some((
+            6,
+            s.input_gen.load(AtomicOrdering::Acquire),
+            std::time::Instant::now() - std::time::Duration::from_secs(5),
+        ));
+        keep("bytes-moved", &d, &s);
     }
 
     /// 사람 입력 흔적(30s) 가드는 프롬프트 경계 배달에서도 **면제되지 않는다**(R1 MED-2 불변).

@@ -849,6 +849,13 @@ pub struct Surface {
     /// `governance::pending_input_after` 가 전이 규칙, `governance::input_line_state` 가 소비자).
     /// 휘발이므로 재기동 직후엔 0 이고, 그때는 화면 축(커서 앞 텍스트)이 2차로 판정한다.
     pub pending_input_bytes: AtomicU64,
+    /// ★⑭(1.1.7): 입력 **쓰기 세대** — `pending_input_bytes` 를 바꾸는 쓰기(사람 키·프로그램 본문·
+    /// 큐 Inject)마다 1 씩 오른다. 고착 계수 해제(`governance::maybe_release_stale_pending_input`)가
+    /// 「관측하는 동안 아무도 이 줄에 안 썼다」를 이 값으로 확인한다(원작자 `input_gen` 의 우리 판).
+    pub input_gen: AtomicU64,
+    /// ★⑭(1.1.7): 고착 계수 관측 스탬프 (계수, 쓰기 세대, 첫 관측 시각). 화면이 빈 입력창인데 계수만
+    /// >0 인 모순을 처음 본 틱에 찍고, 같은 (계수, 세대) 로 창 이상 지속돼야 해제한다.
+    pub pending_input_stale: Mutex<Option<(u64, u64, Instant)>>,
     /// ★R1-blocking-2 입력줄 게이트 — **직접 write 경로와 큐 Inject 경로의 상호배제**.
     ///
     /// 왜 필요한가(codex 감사 실측): `surface.send_text` 는 writer 에 Program 을 넣은 **뒤**
@@ -4120,6 +4127,8 @@ impl Daemon {
             last_cmd_ack: Mutex::new(None),
             last_human_input: Mutex::new(None),
             pending_input_bytes: AtomicU64::new(0),
+            input_gen: AtomicU64::new(0),
+            pending_input_stale: Mutex::new(None),
             input_gate: std::sync::Mutex::new(()),
             queue_blocked: Mutex::new(None),
             line_count: AtomicU64::new(0),

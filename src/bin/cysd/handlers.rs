@@ -3958,9 +3958,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   남기지 않는다 — 타이핑 가드(위 B1)와 같은 술어로 계수에서도 뺀다. 빼지 않으면
             //   창을 클릭만 해도 계수가 올라 그 창으로 가는 큐가 사람이 Enter 칠 때까지 멈춘다.
             {
+                let autoreply = !clear_first && cys::mousereport::is_pure_terminal_autoreply(&text);
                 let next = if clear_first {
                     0
-                } else if cys::mousereport::is_pure_terminal_autoreply(&text) {
+                } else if autoreply {
                     surface.pending_input_bytes.load(Ordering::Relaxed)
                 } else {
                     crate::governance::pending_input_after(
@@ -3969,6 +3970,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     )
                 };
                 surface.pending_input_bytes.store(next, Ordering::Relaxed);
+                // ★⑭: 입력줄에 쓴 쓰기는 세대를 올린다(고착 해제 관측을 무효화) — 자동 응답은 쓰기 아님.
+                if !autoreply {
+                    surface.input_gen.fetch_add(1, Ordering::Release);
+                }
             }
             drop(_gate); // 여기까지가 임계영역 — 이후 이벤트·에코창 갱신은 게이트 밖이다.
             if !human_verified {
@@ -4178,6 +4183,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 ),
                 Ordering::Relaxed,
             );
+            surface.input_gen.fetch_add(1, Ordering::Release); // ★⑭ 쓰기 세대
             Reply::Single(ok_response(
                 &id,
                 json!({"surface_id": sid, "key": key, "sent": true}),

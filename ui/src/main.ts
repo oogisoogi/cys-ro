@@ -4,6 +4,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { deptRegistryUnreadableNote, readDeptRegistry } from "./deptreg";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
 import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
@@ -6227,9 +6228,10 @@ async function rotateDeptDaemon(name: string, force: boolean, skipDrain = false)
 }
 
 // 메인+부서 데몬 버전 스큐 감지. 부서 열거=list_depts(레지스트리 SOT — 열린 탭 무관·Windows pipe 포함).
+let deptsUnreadableNotified = false;
 async function detectSkew(
   appVer: string,
-): Promise<{ mainSkew: boolean; daemonVer: string; skewedDepts: SkewedDept[] }> {
+): Promise<{ mainSkew: boolean; daemonVer: string; skewedDepts: SkewedDept[]; deptsUnreadable: string | null }> {
   let daemonVer = "";
   let mainSkew = false;
   try {
@@ -6242,9 +6244,8 @@ async function detectSkew(
   // ★F3(리뷰): 부서 열거를 레지스트리 SOT(list_depts)로 — name+socket을 레지스트리에서 직접 얻어
   // deptNameFromSocket(unix 전용 정규식) 의존을 없앤다(Windows named pipe 우회). 죽은 등재 항목은
   // daemon_status(socket) 실패로 skip돼 무해.
-  const reg = (await invoke("list_depts").catch(() => ({ depts: {} }))) as {
-    depts?: Record<string, { socket?: string }>;
-  };
+  // ①(TICKET=cysr-117-impl-lead) 판독 실패를 「부서 0」 으로 접지 않는다 — 호출부가 알린다.
+  const reg = await readDeptRegistry((c) => invoke(c));
   const skewedDepts: SkewedDept[] = [];
   for (const [name, meta] of Object.entries(reg.depts ?? {})) {
     const socket = meta.socket;
@@ -6257,7 +6258,7 @@ async function detectSkew(
       /* 죽은/전이 중 부서 소켓 skip(무해) */
     }
   }
-  return { mainSkew, daemonVer, skewedDepts };
+  return { mainSkew, daemonVer, skewedDepts, deptsUnreadable: reg.unreadable };
 }
 
 function clearSkewBadge() {
@@ -6360,12 +6361,15 @@ async function restartAllDaemons(
 ): Promise<{ failedDepts: string[]; deptRestoreFailed: boolean; restoreNotes: string[] }> {
   await invoke("rotate_daemon", { force: true, skipDrain });
   // 부서 열거=list_depts(레지스트리 SOT) + daemon_status 생존 확인 — detectSkew 동형(죽은 등재 skip).
-  const reg = (await invoke("list_depts").catch(() => ({ depts: {} }))) as {
-    depts?: Record<string, { socket?: string }>;
-  };
+  // ①(TICKET=cysr-117-impl-lead) 못 읽음 = 부서 재시작을 조용히 건너뛰지 않고 결과 알림에 싣는다.
+  const reg = await readDeptRegistry((c) => invoke(c));
   let deptRestoreFailed = false;
   const failedDepts: string[] = [];
   const restoreNotes: string[] = [];
+  if (reg.unreadable) {
+    deptRestoreFailed = true;
+    restoreNotes.push(deptRegistryUnreadableNote(reg.unreadable));
+  }
   for (const [name, meta] of Object.entries(reg.depts ?? {})) {
     if (!meta.socket) continue;
     try {
@@ -6508,7 +6512,12 @@ async function checkVersionSkew() {
   if (!appVer) return;
   const info = document.getElementById("daemon-info");
   if (!info) return;
-  const { mainSkew, daemonVer, skewedDepts } = await detectSkew(appVer);
+  const { mainSkew, daemonVer, skewedDepts, deptsUnreadable } = await detectSkew(appVer);
+  // ① 부서 목록을 못 읽으면 부서 판번 교대를 못 본다 — 한 번 알린다(주기 점검마다 반복하지 않음).
+  if (deptsUnreadable && !deptsUnreadableNotified) {
+    deptsUnreadableNotified = true;
+    toast("health", "⚠ 부서 목록을 읽을 수 없음", deptRegistryUnreadableNote(deptsUnreadable));
+  } else if (!deptsUnreadable) deptsUnreadableNotified = false;
   if (!mainSkew && skewedDepts.length === 0) {
     clearSkewBadge();
     return;

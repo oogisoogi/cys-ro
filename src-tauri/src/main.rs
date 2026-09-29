@@ -4874,9 +4874,18 @@ fn list_depts() -> Result<Value, String> {
         .unwrap_or_else(|_| {
             cys::home_dir().join(".cys/depts.json")
         });
-    match std::fs::read_to_string(&reg) {
-        Ok(s) => serde_json::from_str::<Value>(&s).map_err(|e| e.to_string()),
-        Err(_) => Ok(json!({ "depts": {} })),
+    list_depts_at(&reg)
+}
+
+/// ①(TICKET=cysr-117-impl-lead · MUST-DO-117 ①) 파일 **없음**만 빈 목록 · 읽기 오류(권한·백신 잠금)는
+/// Err — 종전엔 읽기 오류도 `Ok(빈 목록)` 이라 소비처가 「부서 0」 으로 읽었다. 앞머리 BOM 은 떼고 읽는다
+/// (cys-dept 의 utf-8-sig 판독과 같은 규칙).
+fn list_depts_at(reg: &std::path::Path) -> Result<Value, String> {
+    match std::fs::read_to_string(reg) {
+        Ok(s) => serde_json::from_str::<Value>(s.strip_prefix('\u{feff}').unwrap_or(&s))
+            .map_err(|e| format!("부서 목록({}) 해석 실패: {e}", reg.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({ "depts": {} })),
+        Err(e) => Err(format!("부서 목록({}) 읽기 실패: {e}", reg.display())),
     }
 }
 
@@ -7176,6 +7185,26 @@ fn main() {
 mod tests {
     /// ★v114-dept-fd 수리 1″ 배선 핀: 앱의 부서 데몬 기동 4경로(launch·rotate·create·allocate)가 전부
     /// run_dept_tool 을 거치고, 맥에서는 본부 데몬 대행(dept.run)이 먼저 · 직접 실행은 그 폴백 1곳뿐이다.
+    /// ①(TICKET=cysr-117-impl-lead) 부서 목록: 없음 = 빈 목록 · BOM = 읽음 · 읽기 오류·해석 실패 = Err.
+    /// 읽기 오류를 `Ok(빈 목록)` 으로 되돌리면 적색.
+    #[test]
+    fn list_depts_unreadable_is_error_not_zero_depts() {
+        let d = std::env::temp_dir().join(format!("cys-listdepts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("depts.json");
+        assert_eq!(list_depts_at(&p).unwrap(), json!({"depts": {}}), "없음 = 빈 목록");
+        std::fs::write(&p, "\u{feff}{\"depts\":{\"a\":{}}}").unwrap();
+        assert_eq!(list_depts_at(&p).unwrap()["depts"]["a"], json!({}), "BOM = 읽음");
+        std::fs::write(&p, "{\"depts\":{").unwrap();
+        assert!(list_depts_at(&p).is_err(), "잘린 JSON = Err");
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir_all(&p).unwrap(); // 읽기 오류
+        let e = list_depts_at(&p).expect_err("읽기 오류가 빈 목록으로 접혔다");
+        assert!(e.contains("읽기 실패"), "{e}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn v114_dept_daemon_spawns_go_through_delegation() {
         let src = include_str!("main.rs");

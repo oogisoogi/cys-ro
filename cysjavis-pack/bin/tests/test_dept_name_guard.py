@@ -346,6 +346,66 @@ class RotateGuard(Base):
         self.assertEqual(rc, 2, "CYS_DEPT_ROTATE=1에서 launch 검증 우회(exit=%d)" % rc)
 
 
+class RegistryUnreadable(Base):
+    """①(TICKET=cysr-117-impl-lead · MUST-DO-117 ①) 부서 목록 판독 실패 = 무변경(exit 12).
+    종전: 8곳이 판독 실패를 빈 목록으로 접어 다음 저장이 등록 부서를 전멸시켰고, rotate 는 판독 실패를
+    「미등재(exit 8)」 로 읽었다(kill 뒤 재확인이면 데몬만 죽은 반쪽 상태)."""
+
+    BAD = {
+        "truncated": b'{"depts":{"a":{"socket":"',
+        "utf16": '{"depts":{"a":{}}}'.encode("utf-16"),
+        "not_dict": b'{"depts":["a"]}',
+        "array": b'[1,2]',
+    }
+
+    def _write_raw(self, data):
+        with open(self.env["CYS_DEPTS_JSON"], "wb") as f:
+            f.write(data)
+
+    def _raw(self):
+        with open(self.env["CYS_DEPTS_JSON"], "rb") as f:
+            return f.read()
+
+    def test_bom_registry_is_read_not_destroyed(self):
+        self._write_raw(b'\xef\xbb\xbf' + json.dumps({"depts": {"keep1": {"socket": "", "pack_dir": ""}}}).encode())
+        rc, out, err = self.run_dept("list")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.split(), ["keep1"], "BOM 레지스트리를 못 읽음")
+        seed_sock(self.home, "new1")
+        rc, out, err = self.run_dept("launch", "new1")
+        self.assertEqual(rc, 0, "BOM 레지스트리 위 launch 실패: %s" % err)
+        self.assertEqual(sorted(read_reg(self.env)), ["keep1", "new1"], "BOM 한 글자로 기존 부서 전멸")
+
+    def test_unreadable_registry_every_verb_exit12_bytes_unchanged(self):
+        for tag, data in self.BAD.items():
+            for args in (["list"], ["rotate", "a"], ["promote-ceo"], ["down", "a"],
+                         ["launch", "b"], ["allocate"], ["create", "k9"]):
+                self._write_raw(data)
+                seed_sock(self.home, "b")
+                CreateGate._seed_catalog(self, "k9", "m9")  # create 가 카탈로그 검사를 지나 레지스트리까지 가게
+                rc, out, err = self.run_dept(*args)
+                self.assertEqual(rc, 12, "%s %s: exit=%d(≠12)\n%s%s" % (tag, args, rc, out, err))
+                self.assertIn("판독 실패", err, "%s %s: 사유 안내 부재" % (tag, args))
+                self.assertEqual(self._raw(), data, "%s %s: 판독 불가 레지스트리가 바뀌었다" % (tag, args))
+
+    def test_rotate_rechecks_registry_before_kill(self):
+        # 사전 게이트 통과 뒤·kill 직전에 레지스트리가 판독 불가가 되면 데몬을 죽이지 않고 exit 12.
+        victim = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(lambda: (victim.kill(), victim.wait()))
+        sock = seed_sock(self.home, "a")
+        write_reg(self.env, {"a": {"socket": sock, "pack_dir": ""}})
+        _write_exec(os.path.join(self.home, ".local", "bin", "cys"),
+                    '#!/bin/sh\n'
+                    'case "$1" in\n'
+                    '  ping) exit 0 ;;\n'
+                    '  identify) printf \'{"depts":{"a":\' > "$CYS_DEPTS_JSON";'
+                    ' echo \'{"version":"1.0.0","daemon_pid":%d}\'; exit 0 ;;\n'
+                    'esac\nexit 0\n' % victim.pid)
+        rc, out, err = self.run_dept("rotate", "a")
+        self.assertEqual(rc, 12, "kill 전 판독 재확인 부재: exit=%d\n%s" % (rc, err))
+        self.assertIsNone(victim.poll(), "판독 불가인데 데몬을 죽였다(반쪽 상태)")
+
+
 class PassthroughArm(Base):
     # 6) 실존(등재) 이름은 비정형이라도 통과 — 기존 부서 컨텍스트 실행 불차단(정리 동사형 규칙)
     def test_existing_nonconforming_passes(self):

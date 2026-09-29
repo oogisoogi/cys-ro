@@ -51,7 +51,9 @@ def setup(tmp, reg_depts):
     env.update({"HOME": home, "CYS_DEPTS_JSON": reg,
                 "CYS_PACK_DIR": os.path.join(tmp, "fakepack"),
                 "PATH": bindir + os.pathsep + env.get("PATH", "")})
-    for k in ("CYS_ROLE", "CYS_SOCKET"):
+    # ★좌석 env 누출 차단(1.1.7 int · test_ceo_pending_gate 선례): 좌석 셸의 CYS_CYS_BIN·CYS_CYSD_BIN 이 남으면
+    #   cys-dept(:29-35 1순위)가 스텁 대신 설치본 cys/cysd 를 부르고 가짜 HOME 에 데몬이 떠 고아로 남는다.
+    for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_CYS_BIN", "CYS_CYSD_BIN"):
         env.pop(k, None)
     return env, home, reg
 

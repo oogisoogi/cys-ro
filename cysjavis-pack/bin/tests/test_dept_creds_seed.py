@@ -63,10 +63,12 @@ class Base(unittest.TestCase):
         env.update({"HOME": self.home,
                     "CYS_DEPTS_JSON": os.path.join(self.home, ".cys", "depts.json"),
                     "PATH": self.bindir + os.pathsep + env.get("PATH", "")})
+        # ★좌석 env 누출 차단(1.1.7 int · test_ceo_pending_gate 선례): 좌석 셸의 CYS_CYS_BIN·CYS_CYSD_BIN 이 남으면
+        #   cys-dept(:29-35 1순위)가 스텁 대신 설치본 cys/cysd 를 부르고 가짜 HOME 에 데몬이 떠 고아로 남는다.
         for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_ACCOUNT_DIR",
                   "CYS_NO_AUTOSTART", "CYS_DEPT_ROTATE", "CYS_DEPT_CATALOG",
                   "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT",
-                  "CYS_DEPT_SEED_CREDS"):
+                  "CYS_DEPT_SEED_CREDS", "CYS_CYS_BIN", "CYS_CYSD_BIN"):
             env.pop(k, None)
         env.update(extra)
         return env

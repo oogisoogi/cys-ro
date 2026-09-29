@@ -2387,6 +2387,12 @@ pub struct Daemon {
     /// tokio 핸들러가 동시에 호출할 수 있는데 write_json_atomic의 tmp 이름이 고정이라 동시 쓰기가
     /// 파일을 파손할 수 있다 — G1 이후 WAL은 queue_seq 시드·entry id의 근거라 손상 대가가 크다.
     pub queue_persist_lock: Mutex<()>,
+    /// ⑧(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑧) 부팅 때 queue-state.json 이 있는데 못 읽었고
+    /// 원본 보존 사본도 못 만들었으면 true — `persist_queue_state` 가 쓰지 않는다(다음 저장이 못 읽은
+    /// 원본을 덮어 미배달 지시가 사라지는 것을 막는다). 재기동 때 다시 판정한다.
+    pub queue_wal_write_blocked: AtomicBool,
+    /// ⑧ 쓰기 금지 경보를 이미 냈는지(데몬 수명당 1회 — 저장 호출마다 반복하지 않는다).
+    pub queue_wal_block_reported: AtomicBool,
     /// ★S3(TICKET=cys-phoenix-s3-master-persist): `persist_topology` 직렬화 락
     /// (`feed_persist_lock`·`queue_persist_lock` 관례 동형). 그 함수는 이제 **직전 영속본을 읽어**
     /// 살아있지 않은 역할을 보존하므로 read-modify-write 가 됐다 — 두 호출이 겹치면 한쪽이 읽은
@@ -3076,6 +3082,37 @@ fn queue_mid(sid: u64, text: &str) -> String {
 ///
 /// ★비타입 감사 지점 ①(§Daemon::restored_queue) — QueueEntry 스키마 변경 시 여기의
 /// 레거시 합성이 전 항목에 신 필드를 보장해야 하류(rehome·queue.list)가 결손 없이 읽는다.
+/// ⑧(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑧ · 원작자 1d757cd8·2e43a2bf 의 우리 판 재구현)
+/// queue-state.json 이 있는데 읽기·해석이 안 되면 `load_queue_state` 는 빈 큐로 시작하고, 다음
+/// `persist_queue_state` 가 그 원본을 덮는다 — 미배달 지시가 흔적 없이 사라진다. 그래서 부팅 때
+/// **원본을 옆에 보존**(`queue-state.json.unreadable-<epoch>`)하고, 보존조차 못 하면 쓰기 금지를 건다.
+/// 반환: true = 쓰기 금지. 부재·정상 파일 = false(종전 동작).
+fn guard_unreadable_queue_wal(dir: &std::path::Path) -> bool {
+    let p = dir.join("queue-state.json");
+    match std::fs::read_to_string(&p) {
+        Ok(c) if serde_json::from_str::<Vec<serde_json::Value>>(&c).is_ok() => return false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        _ => {}
+    }
+    let keep = dir.join(format!("queue-state.json.unreadable-{}", now_epoch() as u64));
+    match std::fs::copy(&p, &keep) {
+        Ok(_) => {
+            eprintln!(
+                "[cysd] queue-state.json 을 읽을 수 없어 빈 큐로 시작합니다 — 원본은 {} 에 보존했습니다",
+                keep.display()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!(
+                "[cysd] queue-state.json 을 읽을 수 없고 보존 사본도 못 만들었습니다({e}) — \
+                 원본을 지키려고 이번 실행 동안 큐 저장을 하지 않습니다"
+            );
+            true
+        }
+    }
+}
+
 fn load_queue_state(dir: &std::path::Path) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -3203,6 +3240,8 @@ impl Daemon {
         // (미배달 큐 재기동 생존·P7). ★G1(W2-A): queue_seq 시드 계산이 이 복원분을 근거로
         // 하므로 struct init 전에 먼저 로드한다 — 시드 = max(seq)+1(WAL 부재 시 1)로
         // 재기동 후 발급 seq가 살아있는 복원 항목과 절대 겹치지 않는다.
+        // ⑧ 판독 불능 WAL = 원본 보존 사본 먼저 · 사본 실패면 쓰기 금지(load 는 종전대로 빈 복원).
+        let queue_wal_blocked = guard_unreadable_queue_wal(&dir);
         let restored_qentries = load_queue_state(&dir);
         let queue_seq_seed = restored_qentries
             .iter()
@@ -3271,6 +3310,8 @@ impl Daemon {
             restored_queue: Mutex::new(restored_qentries),
             queue_seq: AtomicU64::new(queue_seq_seed),
             queue_persist_lock: Mutex::new(()),
+            queue_wal_write_blocked: AtomicBool::new(queue_wal_blocked),
+            queue_wal_block_reported: AtomicBool::new(false),
             topology_persist_lock: Mutex::new(()),
             config: Config::from_env(),
             recall_tx: Mutex::new(crate::recall::spawn_writer(socket_path.clone())),
@@ -3636,6 +3677,19 @@ impl Daemon {
         // 이 락은 여기서만 잡히므로 pending_queue·surfaces 락과의 역순 획득자가 없다(데드락 무관).
         let _guard = self.queue_persist_lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = state_dir(&self.socket_path);
+        // ⑧ 못 읽은 원본을 보존하지 못한 실행 = 쓰기 금지(쓰기 금지는 이 한 곳 — 호출부 13곳 무접촉).
+        if self.queue_wal_write_blocked.load(Ordering::SeqCst) {
+            if !self.queue_wal_block_reported.swap(true, Ordering::SeqCst) {
+                self.bus.publish(
+                    "queue.persist_blocked",
+                    "queue",
+                    None,
+                    json!({"path": dir.join("queue-state.json").display().to_string(),
+                           "reason": "unreadable_wal_not_preserved"}),
+                );
+            }
+            return;
+        }
         let mut entries: Vec<serde_json::Value> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         {
@@ -7966,6 +8020,70 @@ mod tests {
     /// [WAL 왕복 + queue_seq 시드] persist→load 라운드트립: id/seq/enqueued_at/from/origin·
     /// role·mid(구 데몬 롤백 하위호환 병기) 보존 + 시드 = 복원 항목 max(seq)+1(재기동 후 발급
     /// seq가 살아있는 복원 항목과 절대 불충돌) + id 조립 = boot 식별자(started_at) + seq.
+    /// ⑧(TICKET=cysr-117-impl-lead) 판독 불능 WAL(BOM·잘림·배열 아님) → 부팅 때 원본 바이트 그대로
+    /// `queue-state.json.unreadable-*` 에 보존 · 쓰기 금지 아님. 보존을 빼면 적색.
+    #[test]
+    fn unreadable_queue_wal_is_preserved_before_first_persist() {
+        for (tag, bytes) in [
+            ("bom", &b"\xEF\xBB\xBF[{\"id\":\"q1\",\"text\":\"x\"}]"[..]),
+            ("trunc", &b"[{\"id\":\"q1\",\"text\":"[..]),
+            ("obj", &b"{\"id\":\"q1\"}"[..]),
+        ] {
+            let dir = queue_wal_dir(tag);
+            std::fs::write(dir.join("queue-state.json"), bytes).unwrap();
+            let daemon = Daemon::new(dir.join("cysd.sock"));
+            assert!(!daemon.queue_wal_write_blocked.load(Ordering::SeqCst), "{tag}");
+            let kept: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("queue-state.json.unreadable-"))
+                .collect();
+            assert_eq!(kept.len(), 1, "{tag}: 보존 사본 1개");
+            assert_eq!(std::fs::read(kept[0].path()).unwrap(), bytes, "{tag}: 보존 = 원본 바이트");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // 정상·부재 WAL 은 사본을 만들지 않는다.
+        let dir = queue_wal_dir("ok");
+        std::fs::write(dir.join("queue-state.json"), "[]").unwrap();
+        assert!(!guard_unreadable_queue_wal(&dir));
+        std::fs::remove_file(dir.join("queue-state.json")).unwrap();
+        assert!(!guard_unreadable_queue_wal(&dir));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑧ 읽기도 보존도 안 되는 WAL(권한 0) → 쓰기 금지 · enqueue 뒤 persist 해도 원본 바이트 불변.
+    /// `persist_queue_state` 의 금지 분기를 빼면 원자 교체가 원본을 덮어 적색.
+    #[cfg(unix)]
+    #[test]
+    fn unpreservable_queue_wal_blocks_persist_and_keeps_original_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = queue_wal_dir("noperm");
+        let p = dir.join("queue-state.json");
+        let bytes = br#"[{"id":"q1","seq":1,"role":"r","text":"undelivered"}]"#;
+        std::fs::write(&p, bytes).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&p).is_ok() {
+            // root 등 권한 무시 환경 — 전제 불성립이라 건너뛴다(거짓 초록 방지 표기).
+            eprintln!("SKIP: 권한 0 파일을 읽을 수 있는 환경");
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644));
+            return;
+        }
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        assert!(daemon.queue_wal_write_blocked.load(Ordering::SeqCst), "보존 실패 = 쓰기 금지");
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("r8".into()), 24, 80)
+            .unwrap();
+        let e = daemon.next_queue_entry("새 지시".into(), Some("surface:1".into()), "send");
+        s.pending_queue.lock().unwrap().push_back(e);
+        daemon.persist_queue_state();
+        daemon.persist_queue_state();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), bytes, "못 읽은 원본이 덮였다");
+        assert!(daemon.queue_wal_block_reported.load(Ordering::SeqCst), "경보 1회");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn queue_seq_seeds_from_wal_max_and_persist_load_roundtrip() {
         let dir = queue_wal_dir("seed");

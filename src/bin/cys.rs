@@ -4762,6 +4762,26 @@ fn run_persona(action: PersonaAction) -> i32 {
 }
 
 /// Heartbeat 스케줄 관리: schedule.json은 CLI가 직접 편집(데몬 핫 리로드), 조회·즉발은 RPC.
+/// ⑰(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑰ⓐ) schedule.json 을 **고치려고** 읽는다.
+/// 파일이 없을 때만 빈 스케줄로 시작하고, 읽기·파싱 실패는 오류로 돌려 **아무것도 쓰지 않는다**.
+/// 종전엔 실패를 `{"jobs":[]}` 로 접고 새 잡 1개만 얹어 덮어써서, BOM 한 글자로 기존 일정이 전멸했다.
+fn read_schedule_for_update(path: &std::path::Path) -> Result<Value, String> {
+    let keep = "기존 일정을 지키려고 아무것도 쓰지 않았습니다 — 파일을 고치거나 옮긴 뒤 다시 하세요";
+    match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::from_str(&s)
+            .map_err(|e| format!("{} 을(를) 해석할 수 없습니다({e}) · {keep}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({"jobs": []})),
+        Err(e) => Err(format!("{} 을(를) 읽을 수 없습니다({e}) · {keep}", path.display())),
+    }
+}
+
+/// ⑰ schedule.json 원자 저장(tmp 이름이 매번 다른 `atomic_write_bytes` — 데몬과 동시에 써도 반쪽 파일 0).
+fn write_schedule(path: &std::path::Path, root: &Value) -> Result<(), String> {
+    let mut text = serde_json::to_string_pretty(root).map_err(|e| e.to_string())?;
+    text.push('\n');
+    cys::atomic_write_bytes(path, text.as_bytes()).map_err(|e| e.to_string())
+}
+
 fn run_schedule(action: ScheduleAction) -> i32 {
     let path = cys::pack::pack_dir().join("schedule.json");
     let result: Result<(), String> = match action {
@@ -4834,10 +4854,9 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                     }
                     None => None,
                 };
-                let mut root: Value = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_else(|| json!({"jobs": []}));
+                // ⑰ 읽기→추가→저장을 데몬의 원샷 제거와 같은 락으로 직렬화한다(_guard = 끝까지 보유).
+                let _guard = cys::pack::acquire_settings_lock(&path);
+                let mut root = read_schedule_for_update(&path)?;
                 let jobs = root
                     .as_object_mut()
                     .ok_or("schedule.json root is not an object")?
@@ -4884,11 +4903,7 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                     job["command"] = json!(command.unwrap());
                 }
                 arr.push(job);
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap())
-                    .map_err(|e| e.to_string())?;
+                write_schedule(&path, &root)?;
                 println!(
                     "job added to {} (daemon hot-reloads within 30s)",
                     path.display()
@@ -4933,9 +4948,8 @@ fn run_schedule(action: ScheduleAction) -> i32 {
             }
         }),
         ScheduleAction::Remove { id } => (|| {
-            let mut root: Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
+            let _guard = cys::pack::acquire_settings_lock(&path);
+            let mut root = read_schedule_for_update(&path)?;
             let arr = root["jobs"]
                 .as_array_mut()
                 .ok_or("'jobs' is not an array")?;
@@ -4944,8 +4958,7 @@ fn run_schedule(action: ScheduleAction) -> i32 {
             if arr.len() == before {
                 return Err(format!("no job '{id}'"));
             }
-            std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap())
-                .map_err(|e| e.to_string())?;
+            write_schedule(&path, &root)?;
             println!("removed {id}");
             Ok(())
         })(),
@@ -20115,6 +20128,58 @@ mod tests {
         assert!(!compose_full_directive(false, true), "resume 좌석에 전문 재조립 금지");
         assert!(compose_full_directive(true, false), "빈 컨텍스트(복원)에는 전문이 필요하다");
         assert!(compose_full_directive(false, false), "빈 컨텍스트(신규)에는 전문이 필요하다");
+    }
+
+    /// ⑰ⓐ(TICKET=cysr-117-impl-lead) `cys schedule add/remove` 가 고치려고 읽는 schedule.json —
+    /// 부재만 빈 스케줄 · 판독·파싱 실패는 오류(쓰기 금지). 종전 `unwrap_or_else(json!({"jobs":[]}))`
+    /// 로 되돌리면 BOM·잘린 파일이 Ok(빈 스케줄) 가 되어 적색.
+    #[test]
+    fn schedule_read_for_update_refuses_unreadable_and_seeds_only_missing() {
+        let dir = std::env::temp_dir().join(format!("cys-sched-rfu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("schedule.json");
+        assert_eq!(read_schedule_for_update(&p).unwrap(), json!({"jobs": []}), "부재 = 빈 스케줄");
+        for bytes in [
+            &b"\xEF\xBB\xBF{\"jobs\":[{\"id\":\"a\"}]}"[..],
+            &b"{\"jobs\":[{\"id\":\"a\""[..],
+            &b"\xFF\xFE{\x00}\x00"[..],
+        ] {
+            std::fs::write(&p, bytes).unwrap();
+            let e = read_schedule_for_update(&p).expect_err("판독 불가 파일은 오류여야 한다");
+            assert!(e.contains("아무것도 쓰지 않았습니다"), "{e}");
+            assert_eq!(std::fs::read(&p).unwrap(), bytes);
+        }
+        // 읽기 오류(디렉터리) 도 오류 — 빈 스케줄로 접지 않는다.
+        let d = dir.join("as_dir");
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(read_schedule_for_update(&d).is_err());
+        // 원자 저장 왕복.
+        std::fs::remove_file(&p).unwrap();
+        write_schedule(&p, &json!({"jobs": [{"id": "x"}]})).unwrap();
+        assert_eq!(read_schedule_for_update(&p).unwrap()["jobs"][0]["id"], "x");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⑰ⓑ 소스 핀: add·remove 둘 다 **락을 먼저 잡고** 고치려고 읽고 원자 저장한다(데몬 원샷 제거와
+    /// 같은 락 파일). 비원자 `std::fs::write(&path` 가 run_schedule 에 다시 생기면 적색.
+    #[test]
+    fn schedule_add_remove_lock_then_read_then_atomic_write() {
+        let src = include_str!("cys.rs");
+        let start = src.find("fn run_schedule(action: ScheduleAction) -> i32 {").unwrap();
+        let body = &src[start..];
+        let body = &body[..body.find("\nfn ").unwrap()];
+        assert_eq!(body.matches("acquire_settings_lock(&path)").count(), 2, "add·remove 락");
+        assert_eq!(body.matches("read_schedule_for_update(&path)?").count(), 2);
+        assert_eq!(body.matches("write_schedule(&path, &root)?").count(), 2);
+        assert!(!body.contains("std::fs::write(&path"), "비원자 저장 잔존");
+        assert!(!body.contains(r#"unwrap_or_else(|| json!({"jobs": []}))"#), "판독 실패 접기 잔존");
+        for arm in ["ScheduleAction::Add {", "ScheduleAction::Remove { id } =>"] {
+            let a = &body[body.find(arm).unwrap()..];
+            let lock = a.find("acquire_settings_lock").unwrap();
+            let read = a.find("read_schedule_for_update").unwrap();
+            assert!(lock < read, "{arm}: 락보다 읽기가 먼저");
+        }
     }
 
     /// (cysr-alias · 2026-09-16) 명령 별칭 `cysr` 는 같은 바이너리를 다른 이름(맥 심링크 · 윈 사본)으로

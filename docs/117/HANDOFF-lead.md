@@ -75,3 +75,10 @@
   · 윈 스모크 ③(windows-build 36575046447): ⓐ 대상 데몬 pid 소멸 PASS(3172) · ⓑ 파이프 해제 PASS · 재기동 pong·새 세대 PASS · ⓒ 고아 없음 PASS(해당 없음 = taskkill 이 트리 전부 종료) · WARN 0 · win_smoke PASS.
   · ⚠ 정직 고지: 트리 조회(Win32_Process)로 pong→identify 가 약 5.6초(13:52:54.7→13:53:00.3)로 늘었다 — 기동 직후 자식 트리가 끝날 시간이 생겨 경합 창 자체가 줄었을 수 있다【추정】. 새 판정의 WARN·ⓒ 경로는 이번 표본에서 실측되지 않았다.
   · 이전 통합판 2/2 적색(36567990669 · 36568135853)은 교체 전 판정(rc0)의 결과. 통합판 윈도 표본 3개 중 교체 판정 = 1개(초록).
+
+## 7. precut(TICKET=cysr-117-precut · 09-30 07:36~)
+- master 정본 게이트 9d52157e = 106 스텝 rc 0 · 사라진 스텝 0(master#f3625453). 계획서 docs/117/PRECUT-117.md + 박사님 윈 확인표 docs/117/WIN-CHECK-117.md = 9b741944 · master 수용(master#e134e519).
+- P1 판 번호 범프 dfcfe2e8(버전 SOT 8곳 · version-check 상호·v1.1.7 단언 rc 0 · test_version_sot_mutation 14건 · cys 351 · app 175 · UI 1474 · cysr --version = cysr 1.1.7) → push fix/117-int 9d52157e..dfcfe2e8(b83086e0·9b741944 문서 2개 동반) · CI = ci-branch 36641441026 · windows-build 36641440849 · windows-health 36641441087.
+- 자기 정정: E3 「같은 판이면 다른 갈래」 주장 틀림(installer.nsi:265-267·335-337 = 같은 판·높은 판 같은 자동 경로) → P1 사유 = 판 표시·갱신 판정.
+- 다음(master 발주): §1 정밀 디버깅 = 계정2 3좌석(S1 A1+A2 · S2 B1+B2 · S3 C1+C3+C2 정독 · 보고만) → 차단 4종 결함은 이 좌석으로 라우팅(수리 · 건당 K2 25분) · §2 VM 축 4·2·3 = P1 push 뒤 계정2 VM 좌석 · WIN-CHECK = master 보관 · 박사님 실기 시각 = 준비 완료 뒤 master.
+- 남은 것: CI 3종 @dfcfe2e8 결과 · 새 windows-build 아티팩트 이름·바이트 【진행】 · 디버깅 결과 대기.

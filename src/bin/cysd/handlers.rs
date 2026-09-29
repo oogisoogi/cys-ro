@@ -2155,6 +2155,7 @@ fn deliver_to_ceo(
     if surface.write_tx.try_send(req).is_err() {
         return CeoDelivery::SeatEmpty; // writer 채널 불능 → escalation
     }
+    crate::governance::note_line_submitted(&surface); // ★R3 — 게이트 밖 주입도 제출 뒤 계수를 비운다
     *surface.last_injected.lock().unwrap() = Some(std::time::Instant::now());
     daemon.bus.publish(
         "feed.auto_routed",

@@ -3720,6 +3720,19 @@ pub(crate) fn drop_stale_launch_lines(
     dropped.len()
 }
 
+/// ★R3(1.1.7 · Fable R2 F1 · master#84c3982f) **제출 지점 공통 기록** — 입력줄에 본문+CR(Inject)이나 CR 을 넘긴 뒤
+/// 그 줄은 제출돼 비었다: 미제출 계수 0 · 사람 몫 0 · 쓰기 세대+1. 게이트 밖 데몬 내부 주입(텔레그램 inbox·예약 push·
+/// 부트 감독·CEO 자동 라우팅·제출 재시도 CR)이 이것을 안 부르면 옛 계수(특히 사람 몫)가 남아 다음 순환의 C-u 가
+/// human_draft 로 멈춘다. 새 Inject/CR 생산 지점은 이 함수를 불러야 한다 — 시험
+/// `r3_every_production_submit_point_notes_line_submitted` 가 production 코드 전체를 열거해 지킨다.
+/// 호출자는 `input_gate` 를 쥐고 있지 않아야 한다(이 함수가 잡는다 · 비재진입).
+pub(crate) fn note_line_submitted(s: &crate::state::Surface) {
+    let _gate = s.input_gate.lock().unwrap();
+    s.pending_input_bytes.store(0, Ordering::Relaxed);
+    s.pending_input_human_bytes.store(0, Ordering::Relaxed);
+    s.input_gen.fetch_add(1, Ordering::Release);
+}
+
 /// [`seat_inject_guarded`] 결과.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SeatInject {
@@ -3756,7 +3769,10 @@ pub fn seat_inject_guarded(
         cr_delay_ms,
         clear_first: false,
     }) {
-        Ok(()) => SeatInject::Injected,
+        Ok(()) => {
+            note_line_submitted(s); // ★R3 — 게이트 밖 주입도 제출 뒤 계수를 비운다
+            SeatInject::Injected
+        }
         Err(_) => SeatInject::WriterUnavailable,
     }
 }
@@ -6397,10 +6413,8 @@ pub(crate) fn deliver_head_locked(
     }
     // T4-17 에코 제외 창 — 큐 배달도 원격 주입이다
     *s.last_injected.lock().unwrap() = Some(std::time::Instant::now());
-    // ★B1(0.14.30): Inject 는 본문+CR 을 원자로 보내 줄을 제출한다 → 미제출 계수 0.
-    s.pending_input_bytes.store(0, Ordering::Relaxed);
-    s.pending_input_human_bytes.store(0, Ordering::Relaxed);
-    s.input_gen.fetch_add(1, Ordering::Release); // ★⑭ 쓰기 세대
+    // ★B1(0.14.30): Inject 는 본문+CR 을 원자로 보내 줄을 제출한다 → 미제출 계수 0(★R3 공통 지점 경유).
+    note_line_submitted(s);
     // ★T-0147-2 §2 층3 A3′(R2-C3): 배달 영수증에 봉입 W-id 를 **배열**로 에코한다.
     // 배열인 이유 — javis_wakeup 의 digest 모드(층1 I6)가 같은 target 의 N건을 1회
     // Inject 로 병합하므로, 병합된 **전** W-id 가 ack 돼야 critical-tier 가 disarm 된다.
@@ -7088,6 +7102,91 @@ mod tests {
     /// ★v115-restore(A3): 데몬 내부 직접 주입 생산자의 단일 입구 — 빈 에이전트 좌석(zsh 단독)이면
     /// 타이핑 0 · 큐 보류 · 입력 원장 기록 0 / 대조군(좌석이 셸 아님)은 종전대로 주입.
     #[cfg(unix)]
+    /// ★R3(Fable R2 F1 · master#84c3982f) 게이트 밖 데몬 내부 주입(seat_inject_guarded)도 제출 뒤 계수를 비운다 —
+    /// 남은 사람 몫이 다음 순환의 C-u 를 human_draft 로 멈추게 하던 1.1.7 새 해악.
+    #[test]
+    fn r3_internal_inject_clears_stale_counters() {
+        let daemon = drill_daemon("r3-internal-inject");
+        let s = daemon
+            .create_surface(None, Some("exec sleep 30".into()), None, None, 24, 120)
+            .expect("surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        crate::governance::test_wait_seat_runs(&s, "sleep", &["30"]);
+        s.pending_input_bytes.store(3, Ordering::Relaxed);
+        s.pending_input_human_bytes.store(3, Ordering::Relaxed);
+        let gen0 = s.input_gen.load(Ordering::Acquire);
+        let r = seat_inject_guarded(&daemon, &s, "[inbox] x", 120, crate::delivery::Origin::Schedule, None, "schedule.push");
+        assert_eq!(r, SeatInject::Injected, "전제: 주입됨");
+        assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0, "게이트 밖 주입 뒤 계수가 남았다");
+        assert_eq!(s.pending_input_human_bytes.load(Ordering::Relaxed), 0,
+            "게이트 밖 주입 뒤 사람 몫이 남아 다음 순환 C-u 가 human_draft 로 멈춘다");
+        assert!(s.input_gen.load(Ordering::Acquire) > gen0, "쓰기 세대가 오르지 않았다");
+    }
+
+    /// ★R3 열거 시험(master#84c3982f 「규칙이 대상 목록에 묶이면 재발한다」) — cysd **production** 코드에서
+    /// 입력줄을 제출하는 쓰기(`WriteReq::Inject {` · CR 만 싣는 `WriteReq::Data(b"\r"`)를 만드는 **모든 함수**는
+    /// `note_line_submitted(` 를 불러야 한다. 예외 = 쓰기 소비자(state.rs `run_writer_loop`) · 사람/기계 계수를 핸들러가
+    /// 직접 갱신하는 send_text 의 요청 조립(`send_text_write_req`). 새 제출 경로가 계수 초기화 없이 생기면 적색.
+    #[test]
+    fn r3_every_production_submit_point_notes_line_submitted() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/cysd");
+        let allow = [("state.rs", "run_writer_loop"), ("handlers.rs", "send_text_write_req")];
+        let pats = ["WriteReq::Inject {", "WriteReq::Data(b\"\\r\""];
+        let fn_re = regex::Regex::new(r"(?m)^\s*(?:pub(?:\([a-z]+\))?\s+)?fn\s+([A-Za-z0-9_]+)").unwrap();
+        let mut seen = 0usize;
+        let mut bad = Vec::new();
+        for ent in std::fs::read_dir(&dir).expect("cysd 폴더") {
+            let path = ent.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let file = path.file_name().unwrap().to_string_lossy().to_string();
+            let src = std::fs::read_to_string(&path).unwrap();
+            // 시험 모듈 구간(열 0 의 `#[cfg(test)]` 다음 줄이 `mod …{` · 열 0 `}` 까지)은 제외한다.
+            let mut test_spans = Vec::new();
+            let mut from = 0;
+            while let Some(i) = src[from..].find("#[cfg(test)]\nmod ") {
+                let a = from + i;
+                let b = src[a..].find("\n}\n").map(|j| a + j).unwrap_or(src.len());
+                test_spans.push((a, b));
+                from = b.max(a + 1);
+            }
+            for pat in pats {
+                for (pos, _) in src.match_indices(pat) {
+                    if test_spans.iter().any(|&(a, b)| pos >= a && pos < b) {
+                        continue;
+                    }
+                    let head = &src[..pos];
+                    let Some(m) = fn_re.captures_iter(head).last() else { continue };
+                    let name = m.get(1).unwrap().as_str().to_string();
+                    let fstart = m.get(0).unwrap().start();
+                    // 주석·문서 속 언급은 세지 않는다(그 줄이 // 로 시작).
+                    let line_start = head.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    if src[line_start..pos].trim_start().starts_with("//") {
+                        continue;
+                    }
+                    seen += 1;
+                    if allow.iter().any(|&(f, n)| f == file && n == name) {
+                        continue;
+                    }
+                    // 함수 끝 = 그 fn 줄과 **같은 들여쓰기**의 닫는 괄호(impl 안 메서드도 형제 함수로 번지지 않게).
+                    let fn_line = &src[fstart..];
+                    let fn_line = fn_line.trim_start_matches('\n');
+                    let indent: String = fn_line.chars().take_while(|c| *c == ' ').collect();
+                    let close = format!("\n{indent}}}\n");
+                    let end = src[pos..].find(&close).map(|j| pos + j).unwrap_or(src.len());
+                    let body = &src[fstart..end];
+                    if !body.contains("note_line_submitted(") {
+                        bad.push(format!("{file}:{name}"));
+                    }
+                }
+            }
+        }
+        assert!(seen >= 6, "열거가 눈이 멀었다 — 제출 쓰기 {seen}곳만 찾았다(최소 6: 입구·배달·CEO·CR 재시도·writer·send_text)");
+        assert!(bad.is_empty(), "제출 뒤 note_line_submitted 를 안 부르는 production 경로: {bad:?}");
+    }
+
     #[test]
     fn v115_seat_inject_guarded_holds_vacant_agent_seat() {
         if !std::path::Path::new("/bin/zsh").exists() {

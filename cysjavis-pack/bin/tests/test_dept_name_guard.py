@@ -359,6 +359,36 @@ def _wait_lock_opener(lock_path, timeout=20.0):
     return False
 
 
+def _make_winlock_sim(sim_dir, counter=False):
+    """윈 잠금 실패 흉내 폴더(PYTHONPATH 로 끼움) — **sitecustomize 로 주입**한다. 가짜 msvcrt.py 를 모듈 파일로 두면
+    파이썬 3.14 의 subprocess 가 `import msvcrt` 성공을 윈도 판정으로 삼아 try 밖에서 `import _winapi` 를 해 맥에서 즉사한다
+    (3.9 는 같은 try 로 삼킴 — 해석기 판에 따라 갈림 · master#0a5cd587 실측). 그래서 표준 라이브러리를 **먼저** 실제
+    플랫폼으로 불러 두고, 그 뒤에 sys.modules 에 fcntl=None(= import 실패)·가짜 msvcrt 를 넣어 cys-dept 블록의 import 만
+    흉내에 걸리게 한다. counter=True = N번째 잠금부터 실패(SIMLOCK_COUNTER·SIMLOCK_FAIL_AT · 블록마다 새 프로세스라 파일)."""
+    os.makedirs(sim_dir, exist_ok=True)
+    body = (
+        "import sys, types, os\n"
+        "import subprocess, tempfile, socket, shutil, getpass, selectors  # 실제 플랫폼 판정을 먼저 굳힌다\n"
+        "sys.modules['fcntl'] = None\n"
+        "_m = types.ModuleType('msvcrt'); _m.LK_LOCK = 1; _m.LK_UNLCK = 0\n"
+    )
+    if counter:
+        body += (
+            "def _locking(fd, mode, n):\n"
+            "    c = os.environ['SIMLOCK_COUNTER']\n"
+            "    k = int(open(c).read() or 0) if os.path.exists(c) else 0\n"
+            "    open(c, 'w').write(str(k + 1))\n"
+            "    if k >= int(os.environ['SIMLOCK_FAIL_AT']):\n"
+            "        raise OSError(36, 'sim: lock timeout')\n"
+        )
+    else:
+        body += "def _locking(fd, mode, n):\n    raise OSError(36, 'sim: lock timeout')\n"
+    body += "_m.locking = _locking\nsys.modules['msvcrt'] = _m\n"
+    with open(os.path.join(sim_dir, "sitecustomize.py"), "w") as f:
+        f.write(body)
+    return sim_dir
+
+
 def _dept_py_block(header):
     """cys-dept 안 `header` 가 든 줄에서 시작하는 인용 heredoc(<<'PY' … PY) 파이썬 본문을 그대로 떼어 낸다."""
     src = open(DEPT, encoding="utf-8").read()
@@ -372,7 +402,7 @@ class WinLockFailure(unittest.TestCase):
     """1.1.7 fix-blockers A1-F3 · master#6e5aef09·af0da6d9 판정 A: 윈도 레지스트리 잠금(msvcrt) 실패를 삼키고 무잠금으로
     진행하던 5곳 = 「잠금 실패 = 읽지도 쓰지도 않음 · exit 11 다시 시도」(선례 = 울타리·예약 블록). 0바이트 규칙과 결합하면
     무잠금 판독이 쓰는 중인 목록을 「등록 없음」 으로 보아 등록을 지우는 경로가 되므로(데이터 손실 가족) 막는다.
-    흉내: fcntl 부재 + msvcrt.locking 이 OSError(10초 재시도 뒤 실패와 같은 모양)."""
+    흉내: fcntl 부재 + msvcrt.locking 이 OSError(10초 재시도 뒤 실패와 같은 모양) — _make_winlock_sim(해석기 판 무관)."""
 
     TARGETS = {                                   # header → 인자(REG 뒤)
         "reg_upsert(){": ["d1", "/s", "/k"],
@@ -389,12 +419,7 @@ class WinLockFailure(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="winlock-")
-        sim = os.path.join(self.tmp, "sim")
-        os.makedirs(sim)
-        with open(os.path.join(sim, "fcntl.py"), "w") as f:
-            f.write("raise ImportError('sim-win: no fcntl')\n")
-        with open(os.path.join(sim, "msvcrt.py"), "w") as f:
-            f.write("LK_LOCK = 1\nLK_UNLCK = 0\ndef locking(fd, mode, n):\n    raise OSError(36, 'sim: lock timeout')\n")
+        sim = _make_winlock_sim(os.path.join(self.tmp, "sim"))
         self.env = {"HOME": self.tmp, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": sim}
         self.reg = os.path.join(self.tmp, "depts.json")
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -441,18 +466,7 @@ class WinLockFailureCallers(Base):
     (N번째 잠금부터 실패 · 파이썬 블록마다 새 프로세스라 계수기는 파일)."""
 
     def _sim(self, fail_at):
-        sim = os.path.join(self.home, "sim")
-        os.makedirs(sim, exist_ok=True)
-        with open(os.path.join(sim, "fcntl.py"), "w") as f:
-            f.write("raise ImportError('sim-win: no fcntl')\n")
-        with open(os.path.join(sim, "msvcrt.py"), "w") as f:
-            f.write("import os\nLK_LOCK = 1\nLK_UNLCK = 0\n"
-                    "def locking(fd, mode, n):\n"
-                    "    c = os.environ['SIMLOCK_COUNTER']\n"
-                    "    k = int(open(c).read() or 0) if os.path.exists(c) else 0\n"
-                    "    open(c, 'w').write(str(k + 1))\n"
-                    "    if k >= int(os.environ['SIMLOCK_FAIL_AT']):\n"
-                    "        raise OSError(36, 'sim: lock timeout')\n")
+        sim = _make_winlock_sim(os.path.join(self.home, "sim"), counter=True)
         env = dict(self.env)
         env.update({"PYTHONPATH": sim, "SIMLOCK_COUNTER": os.path.join(self.home, "simlock.cnt"),
                     "SIMLOCK_FAIL_AT": str(fail_at)})

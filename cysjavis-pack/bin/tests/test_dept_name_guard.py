@@ -356,6 +356,9 @@ class RegistryUnreadable(Base):
         "utf16": '{"depts":{"a":{}}}'.encode("utf-16"),
         "not_dict": b'{"depts":["a"]}',
         "array": b'[1,2]',
+        # 1.1.7 fix-blockers A1-F3: 복구는 「정확히 0바이트」 만 — 공백만 · BOM 만은 비어 있지 않은 손상(12 유지)
+        "blank": b" \n",
+        "bom_only": b"\xef\xbb\xbf",
     }
 
     def _write_raw(self, data):
@@ -390,6 +393,127 @@ class RegistryUnreadable(Base):
                 if args[0] == "launch":
                     self.assertFalse(os.path.exists(os.path.join(self.home, ".cys", "pack-dept-b")),
                                      "%s: 판독 실패인데 부서 팩 폴더를 만들었다" % tag)
+
+    def test_zero_byte_registry_reinitialized_every_verb(self):
+        """A1-F3(1.1.7 fix-blockers · codex 1R 차단): 0바이트 = 지킬 부서가 없는 파일 — v1.1.6 처럼 빈 목록으로
+        다시 만든다(영구 exit 12 회귀 금지). 목록 초기화는 알리되 「복구」 가 아님을 말한다."""
+        for args in (["list"], ["rotate", "a"], ["promote-ceo"], ["down", "a"],
+                     ["launch", "b"], ["allocate"], ["create", "k9"], ["reap"]):
+            self._write_raw(b"")
+            seed_sock(self.home, "b")
+            CreateGate._seed_catalog(self, "k9", "m9")
+            rc, out, err = self.run_dept(*args)
+            self.assertNotEqual(rc, 12, "%s: 0바이트가 영구 판독 실패로 남았다\n%s%s" % (args, out, err))
+            self.assertIn("목록 초기화", err, "%s: 0바이트 초기화 안내 부재" % (args,))
+            self.assertIn("돌아오지 않습니다", err, "%s: 옛 부서가 복구된 것처럼 들린다" % (args,))
+            d = json.loads(self._raw().decode("utf-8"))
+            self.assertIsInstance(d.get("depts"), dict, "%s: 초기화 결과가 유효한 부서 목록이 아니다" % (args,))
+
+    def test_zero_byte_then_launch_registers(self):
+        self._write_raw(b"")
+        seed_sock(self.home, "new1")
+        rc, out, err = self.run_dept("launch", "new1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(sorted(read_reg(self.env)), ["new1"])
+        rc, out, err = self.run_dept("list")
+        self.assertEqual((rc, out.split()), (0, ["new1"]), err)
+        self.assertNotIn("목록 초기화", err, "비어 있지 않은 목록에 초기화 안내가 또 나왔다")
+
+    def test_absent_registry_created_silently(self):
+        os.remove(self.env["CYS_DEPTS_JSON"]) if os.path.exists(self.env["CYS_DEPTS_JSON"]) else None
+        rc, out, err = self.run_dept("list")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("목록 초기화", err, "처음 만들기(부재)는 초기화가 아니다")
+        self.assertEqual(json.loads(self._raw().decode("utf-8")), {"depts": {}})
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "POSIX 권한 비트 · 비루트 한정")
+    def test_zero_byte_read_rule_holds_when_reinit_fails(self):
+        """초기화(쓰기)가 권한으로 실패해도 판독은 같은 0바이트 규칙 — 목록 = 비어 있음(12 아님) · 파일 무변경."""
+        self._write_raw(b"")
+        d = os.path.dirname(self.env["CYS_DEPTS_JSON"])
+        lock = self.env["CYS_DEPTS_JSON"] + ".lock"
+        if os.path.exists(lock):
+            os.remove(lock)
+        os.chmod(d, 0o555)
+        try:
+            rc, out, err = self.run_dept("list")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertEqual((rc, out.split()), (0, []), err)
+        self.assertIn("초기화 실패", err)
+        self.assertEqual(self._raw(), b"")
+
+    @unittest.skipIf(os.name == "nt", "fcntl 잠금 — POSIX 한정")
+    def test_reinit_rechecks_under_lock_and_keeps_concurrent_write(self):
+        """결정적 경합: reg_init 이 셸 빠른 길에서 0바이트를 본 뒤 잠금을 기다리는 동안 다른 쓰기가 목록을 채우면,
+        잠금을 얻은 reg_init 은 다시 재서 아무것도 덮지 않는다(잠금 밖 판정 → 잠금 안 쓰기 금지)."""
+        import fcntl
+        self._write_raw(b"")
+        lf = open(self.env["CYS_DEPTS_JSON"] + ".lock", "w")
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(["bash", DEPT, "list"], env=self.env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, encoding="utf-8")
+            time.sleep(1.5)                          # 자식이 빠른 길(0바이트)을 지나 잠금에서 기다리게
+            write_reg(self.env, {"held1": {"socket": "", "pack_dir": ""}})
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+            lf.close()
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(sorted(read_reg(self.env)), ["held1"], "잠금을 기다린 초기화가 그 사이의 등록을 덮었다")
+        self.assertNotIn("목록 초기화", err)
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "POSIX 권한 비트 · 비루트 한정")
+    def test_unreadable_zero_byte_file_is_not_replaced(self):
+        """codex 2R: 크기만 보고 교체하면 읽기 권한 오류인 빈 파일을 덮는다 — 잠금 안에서 실제로 읽어 판정."""
+        self._write_raw(b"")
+        rp = self.env["CYS_DEPTS_JSON"]
+        ino = os.stat(rp).st_ino
+        os.chmod(rp, 0)
+        try:
+            rc, out, err = self.run_dept("list")
+            st = os.stat(rp)
+        finally:
+            os.chmod(rp, 0o644)
+        self.assertEqual(rc, 12, err)
+        self.assertEqual((st.st_ino, st.st_size), (ino, 0), "읽을 수 없는 빈 파일이 교체됐다")
+        self.assertNotIn("목록 초기화이지", err)
+
+    @unittest.skipIf(os.name == "nt", "fcntl 잠금 — POSIX 한정")
+    def test_locked_block_reading_zero_bytes_announces_reset(self):
+        """초기화(빠른 길) 뒤·잠금 블록 판독 전에 목록이 0바이트가 되는 경로 — 잠금 블록도 같은 규칙 + 같은 알림."""
+        import fcntl
+        write_reg(self.env, {"keep1": {"socket": "", "pack_dir": ""}})
+        lf = open(self.env["CYS_DEPTS_JSON"] + ".lock", "w")
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(["bash", DEPT, "reap", "--dry"], env=self.env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, encoding="utf-8")
+            time.sleep(1.5)                          # 빠른 길(비어 있지 않음)을 지나 잠금 블록에서 기다리게
+            self._write_raw(b"")
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+            lf.close()
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn("빈 목록으로 다룹니다", err)
+        self.assertIn("돌아오지 않습니다", err)
+
+    def test_zero_byte_concurrent_verbs_converge_and_keep_launch(self):
+        """reg_init 복구와 등록 쓰기가 겹쳐도 등록이 사라지지 않는다(잠금 안 재판정 · 원자 게시)."""
+        for _ in range(5):
+            self._write_raw(b"")
+            seed_sock(self.home, "c1")
+            env = dict(self.env)
+            procs = [subprocess.Popen(["bash", DEPT, "list"], env=env, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL) for _ in range(6)]
+            procs.append(subprocess.Popen(["bash", DEPT, "launch", "c1"], env=env, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL))
+            rcs = [p.wait(timeout=60) for p in procs]
+            self.assertNotIn(12, rcs, "동시 호출 중 판독 실패")
+            self.assertIn("c1", read_reg(self.env), "0바이트 복구가 동시 등록을 지웠다")
+            write_reg(self.env, {})
 
     def test_rotate_rechecks_registry_before_kill(self):
         # 사전 게이트 통과 뒤·kill 직전에 레지스트리가 판독 불가가 되면 데몬을 죽이지 않고 exit 12.

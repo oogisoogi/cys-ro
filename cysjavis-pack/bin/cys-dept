@@ -290,13 +290,47 @@ usage: cys-dept <verb> ...
 USAGE
 }
 
-reg_init(){ [ -f "$REG" ] || { mkdir -p "$(dirname "$REG")"; printf '{"depts":{}}\n' > "$REG"; }; }
+# A1-F3(1.1.7 fix-blockers · codex 1R 차단): 부재·**정확히 0바이트**만 쓰기 동사와 같은 잠금($REG.lock) 안에서 다시
+#   판정하고 tmp + os.replace 로 원자 게시한다. 있고 비어 있지 않으면 셸 한 줄로 끝(무동작 · 손상은 아래 엄격 판독이 12).
+#   종전 = 잠금 밖 비원자 `printf >`(중단·디스크 꽉 참이면 0바이트가 남는다) + 0바이트도 「있음」 → 전 동사 영구 exit 12.
+#   0바이트 초기화만 stderr 로 알린다(목록 초기화 ≠ 부서 복구). stdout 무출력 — `$(reg_init; …)` 캡처 소비자가 있다.
+reg_init(){ [ -s "$REG" ] && return 0; mkdir -p "$(dirname "$REG")"; python3 - "$REG" <<'PY'
+import os,sys
+try:
+    import fcntl
+    def _lk(f): fcntl.flock(f, fcntl.LOCK_EX)
+except ImportError:  # RC-6 Windows: msvcrt 바이트락 — ★잠금 실패를 삼키지 않는다(무잠금 초기화 = 동시 등록을 덮는다 · codex 2R)
+    import msvcrt
+    def _lk(f): msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+p=sys.argv[1]
+try:
+    lf=open(p+'.lock','w'); _lk(lf)             # 잠금 실패 = 예외 → 아래에서 알리고 쓰지 않는다
+    try:
+        try:                                    # 잠금 안에서 **실제로 읽어** 재판정 — 크기만 보면 읽기 권한 오류인 빈 파일을 덮는다
+            with open(p,'rb') as rf: raw=rf.read()
+        except FileNotFoundError: raw=None
+        if raw is None or raw==b'':             # 부재 또는 정확히 0바이트만 · 그 사이 누가 썼으면 무동작
+            tmp=p+'.tmp.%d'%os.getpid()         # 프로세스마다 새 파이썬 = pid 로 유일
+            try:
+                with open(tmp,'w',encoding='utf-8') as f: f.write('{"depts":{}}\n'); f.flush(); os.fsync(f.fileno())
+                os.replace(tmp,p)
+            finally:
+                if os.path.exists(tmp): os.remove(tmp)
+            if raw==b'':
+                sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다시 만들었습니다 — '
+                                 '목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+    finally: lf.close()
+except Exception as e:                          # 초기화 실패(잠금·권한)는 알리고 넘긴다 — 판정은 뒤의 엄격 판독이 한다
+    sys.stderr.write('[cys-dept] 부서 목록(%s) 초기화 실패(%s)\n'%(p,e))
+PY
+}
 # ①(TICKET=cysr-117-impl-lead) 레지스트리 엄격 판독 — 부재 = 빈 등재 · BOM 흡수 · 그 밖 판독 실패 = stderr + exit 12.
 #   종전엔 파싱 예외가 빈 출력이 되어 소비자가 「부서 0」·「미등재(exit 8)」 로 읽었다.
 reg_read_py='import json,sys
 p,mode=sys.argv[1],sys.argv[2]
 try:
-    with open(p,encoding="utf-8-sig") as f: d=json.load(f)
+    with open(p,"rb") as f: raw=f.read()
+    d=json.loads(raw.decode("utf-8-sig")) if raw else {"depts":{}}   # A1-F3: 정확히 0바이트만 빈 목록(공백·BOM 만 = 판독 실패)
     if not isinstance(d,dict) or not isinstance(d.get("depts",{}),dict): raise ValueError("형식이 {\"depts\":{...}} 가 아님")
 except FileNotFoundError: d={"depts":{}}
 except Exception as e:
@@ -358,7 +392,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:
@@ -391,7 +427,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:
@@ -457,7 +495,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:
@@ -499,7 +539,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:
@@ -729,7 +771,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:
@@ -1517,7 +1561,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:
@@ -1696,7 +1742,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:
@@ -1971,7 +2019,9 @@ try:
     # ①(TICKET=cysr-117-impl-lead) 판독 실패 = 쓰기 금지(exit 12) — 빈 목록으로 접으면 다음 저장이
     #   등록 부서를 전멸시킨다. BOM 은 utf-8-sig 로 흡수(백신·편집기가 붙인 BOM 을 손상으로 보지 않음).
     try:
-        with open(p,encoding='utf-8-sig') as _rf: d=json.load(_rf)
+        with open(p,'rb') as _rf: _raw=_rf.read()
+        if not _raw: sys.stderr.write('[cys-dept] 부서 목록 파일(%s)이 비어 있어(0바이트) 빈 목록으로 다룹니다 — 목록 초기화이지 복구가 아닙니다. 전에 있던 부서 폴더와 실행 중인 부서는 목록에 돌아오지 않습니다\n'%p)
+        d=json.loads(_raw.decode('utf-8-sig')) if _raw else {'depts':{}}   # A1-F3: 정확히 0바이트만 빈 목록
         if not isinstance(d,dict) or not isinstance(d.get('depts',{}),dict): raise ValueError('형식이 {"depts":{...}} 가 아님')
     except FileNotFoundError: d={'depts':{}}
     except Exception as _re:

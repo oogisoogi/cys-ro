@@ -7948,20 +7948,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     return Reply::Single(ok_response(&id, json!({"approved": false})));
                 }
             };
-            // best_match는 불변 참조라 갱신을 위해 id/prefix를 먼저 복제한다.
-            // A1(1.1.7 fix-blockers · codex 2R): 갱신·재서명 대상은 **현재 키로 검증된 바로 그 기록**(위치)이다 —
-            // id 로 다시 찾으면 같은 id 의 앞선 옛(다른 키) 기록을 새 키로 재서명할 수 있다(옛 승인 자동 재서명 금지).
-            let hit = crate::approval::best_match(&records, &secret, &command, cwd.as_deref(), &env).map(|m| {
-                let idx = records.iter().position(|r| std::ptr::eq(r, m));
-                (idx, m.id.clone(), m.command_prefix.clone())
-            });
+            // A1(1.1.7 fix-blockers · codex 2R): 갱신·재서명 대상 = 현재 키로 검증된 바로 그 기록(위치) — touch_best_match.
+            let hit = crate::approval::touch_best_match(&mut records, &secret, &command, cwd.as_deref(), &env);
             match hit {
-                Some((matched_idx, matched_id, matched_prefix)) => {
-                    // updated_at(lastUsed) 갱신 후 재서명·persist — 최장매칭 동률 tie-break 유지.
-                    if let Some(r) = matched_idx.and_then(|i| records.get_mut(i)) {
-                        r.updated_at = crate::state::now_epoch();
-                        r.sign(&secret);
-                    }
+                Some((matched_id, matched_prefix)) => {
+                    // updated_at(lastUsed) 갱신·재서명(위 호출) 뒤 persist — 최장매칭 동률 tie-break 유지.
                     let _ = crate::approval::save_records(&records);
                     daemon.bus.publish(
                         "autopilot.approval_checked",

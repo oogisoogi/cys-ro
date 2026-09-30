@@ -260,6 +260,24 @@ pub fn best_match<'a>(
         })
 }
 
+/// approval.check 의 매칭 갱신 — `best_match` 가 **현재 키로 검증한 바로 그 기록(위치)** 만 updated_at 갱신·재서명한다.
+/// A1(1.1.7 fix-blockers · codex 2R Q3-8): id 로 다시 찾으면 같은 id 의 앞선 옛(다른 키) 기록을 새 키로 재서명할 수 있다
+/// (옛 승인 자동 재서명 금지). 반환 = (id, prefix) · 매칭 없음 = None(무변경).
+pub fn touch_best_match(
+    records: &mut [ApprovalRecord],
+    secret: &[u8],
+    command: &str,
+    cwd: Option<&str>,
+    env: &[(String, String)],
+) -> Option<(String, Vec<String>)> {
+    let m = best_match(records, secret, command, cwd, env)?;
+    let idx = records.iter().position(|r| std::ptr::eq(r, m))?;
+    let r = &mut records[idx];
+    r.updated_at = crate::state::now_epoch();
+    r.sign(secret);
+    Some((r.id.clone(), r.command_prefix.clone()))
+}
+
 // ── 토큰화 / 정규화 / 민감 env ─────────────────────────────────────────────────
 
 /// 명령 문자열을 셸처럼 낱말로 나눈다 — 승인 접두 비교의 재료.
@@ -446,6 +464,8 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
         eprintln!("[cysd] approval: 서명 키 폴더 준비 실패({e}) — 키를 만들지 않는다(미승인 취급)");
         return None;
     }
+    #[cfg(test)]
+    tests::run_hook(path, "prelock");
     let Some(_key_lock) = lock_key_exclusive(path) else {
         eprintln!("[cysd] approval: 서명 키 잠금 실패 — 키를 만들지 않는다(미승인 취급)");
         return None;
@@ -461,7 +481,7 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
         }
     };
     #[cfg(test)]
-    tests::run_publish_hook(path);
+    tests::run_hook(path, "publish");
     let secret = random_32()?;
     // tmp 이름 = pid + 프로세스 안 순번(같은 데몬의 두 스레드가 같은 tmp 를 덮지 않게).
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -470,33 +490,60 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
         std::process::id(),
         TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let published = write_key_tmp(&tmp, &secret).and_then(|()| {
-        if was_empty {
-            std::fs::rename(&tmp, path) // 0바이트 → 원자 교체(잠금 참여자끼리는 재판독으로 닫혔다)
-        } else {
-            // 부재 → 덮지 않는 게시(비참여 writer 가 먼저 쓴 키 보존). 하드링크를 못 쓰는 FS 는 잠금 안 원자 교체.
-            match std::fs::hard_link(&tmp, path) {
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
-                Err(_) => std::fs::rename(&tmp, path),
-                ok => ok,
-            }
-        }
-    });
-    let _ = std::fs::remove_file(&tmp);
-    if let Err(e) = published {
-        if e.kind() != std::io::ErrorKind::AlreadyExists {
-            eprintln!("[cysd] approval: 서명 키 게시 실패({e}) — 미승인 취급");
-            return None;
-        }
+    #[cfg(test)]
+    tests::run_tmp_hook(path, &tmp);
+    // 임시 키 실패는 게시 충돌과 섞지 않는다 — 만들지 못했으면(남의 잔재 등) 건드리지 않고, 만든 뒤 실패면 내 것만 지운다.
+    if let Err(e) = write_key_tmp(&tmp, &secret, path) {
+        eprintln!("[cysd] approval: 서명 임시 키 작성 실패({e}) — 미승인 취급");
+        return None;
     }
-    // 게시 뒤 경로를 다시 읽어 확인한다 — 경로의 키만 돌려준다(반환 키 == 경로 키).
-    match std::fs::read(path) {
+    // 게시: Ok(true) = 부재 게시가 선점에 막힘(hard_link AlreadyExists — 덮지 않고 ⑥ 에서 경로의 키).
+    let publish: std::io::Result<bool> = match fail_point(path, "publish") {
+        Some(e) => Err(e),
+        None if was_empty => std::fs::rename(&tmp, path).map(|()| false), // 0바이트 → 원자 교체
+        None => match std::fs::hard_link(&tmp, path) {
+            Ok(()) => Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(true),
+            // 하드링크를 못 쓰는 FS 등: 잠금 안 원자 교체(참여자끼리는 닫힘 · 비참여 writer 보존은 보장 밖).
+            Err(_) => std::fs::rename(&tmp, path).map(|()| false),
+        },
+    };
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("[cysd] approval: 서명 임시 키 정리 실패({e}) — {}", tmp.display());
+        }
+        _ => {}
+    }
+    if let Err(e) = publish {
+        eprintln!("[cysd] approval: 서명 키 게시 실패({e}) — 미승인 취급");
+        return None;
+    }
+    // 게시 뒤 경로를 다시 읽어 확인한다 — 경로의 키만 돌려준다(반환 키 == 경로 키). 잠금은 여기까지 쥐지만,
+    // 게시 뒤 참여자는 잠금 없는 첫 판독에서 키를 읽으므로 ⑥ 구간 보유는 참여자끼리의 정확성 조건이 아니다.
+    let reread = match fail_point(path, "verify") {
+        Some(e) => Err(e),
+        None => std::fs::read(path),
+    };
+    match reread {
         Ok(d) if d == secret => Some(secret),
-        Ok(d) if !d.is_empty() => Some(d), // 비참여 writer 가 먼저 게시(AlreadyExists) — 경로의 키로 수렴
+        Ok(d) if !d.is_empty() => Some(d), // 비참여 writer 가 먼저 게시(선점) — 경로의 키로 수렴
         _ => {
             eprintln!("[cysd] approval: 서명 키 게시 확인 실패 — 미승인 취급");
             None
         }
+    }
+}
+
+/// 시험 전용 실패 주입점(경로·단계별) — 운영 빌드에서는 언제나 None.
+fn fail_point(path: &std::path::Path, stage: &str) -> Option<std::io::Error> {
+    #[cfg(test)]
+    {
+        tests::injected_failure(path, stage)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = (path, stage);
+        None
     }
 }
 
@@ -505,12 +552,17 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
 fn lock_key_exclusive(path: &std::path::Path) -> Option<std::fs::File> {
     let lp = std::path::PathBuf::from(format!("{}.cys-lock", path.display()));
     let f = std::fs::OpenOptions::new().create(true).write(true).open(&lp).ok()?;
+    if let Some(e) = fail_point(path, "lock") {
+        let _ = e;
+        return None;
+    }
     f.lock().ok()?;
     Some(f)
 }
 
-/// 완성 임시 키: 새 파일(create_new) · 0600(유닉스 · 실패 = Err) · 전량 쓰기 · sync_all.
-fn write_key_tmp(tmp: &std::path::Path, secret: &[u8]) -> std::io::Result<()> {
+/// 완성 임시 키: 새 파일(create_new · 이미 있으면 Err = 남의 것 · 건드리지 않음) · 0600(유닉스 · 실패 = Err) ·
+/// 전량 쓰기 · sync_all. 연 뒤의 실패는 **이 호출이 만든 임시 파일만** 지우고 Err.
+fn write_key_tmp(tmp: &std::path::Path, secret: &[u8], key: &std::path::Path) -> std::io::Result<()> {
     use std::io::Write;
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create_new(true);
@@ -520,13 +572,29 @@ fn write_key_tmp(tmp: &std::path::Path, secret: &[u8]) -> std::io::Result<()> {
         o.mode(0o600);
     }
     let mut f = o.open(tmp)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    let r = (|| {
+        if let Some(e) = fail_point(key, "tmp_perm") {
+            return Err(e);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        if let Some(e) = fail_point(key, "tmp_write") {
+            return Err(e);
+        }
+        f.write_all(secret)?;
+        if let Some(e) = fail_point(key, "tmp_sync") {
+            return Err(e);
+        }
+        f.sync_all()
+    })();
+    if r.is_err() {
+        drop(f);
+        let _ = std::fs::remove_file(tmp);
     }
-    f.write_all(secret)?;
-    f.sync_all()
+    r
 }
 
 /// ⑨(Fable R1 #1) approvals.json 읽기→변경→저장 직렬화 락 — 본부·부서 데몬이 같은 파일을 쓴다.
@@ -615,7 +683,11 @@ fn load_records_at(path: &std::path::Path) -> Result<Vec<ApprovalRecord>, String
 
 /// atomic write: tmp 작성·0600 부여 후 rename. 디렉토리 자동 생성.
 pub fn save_records(records: &[ApprovalRecord]) -> Result<(), String> {
-    let path = records_path();
+    save_records_at(&records_path(), records)
+}
+
+fn save_records_at(path: &std::path::Path, records: &[ApprovalRecord]) -> Result<(), String> {
+    let path = path.to_path_buf();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -859,48 +931,106 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    // ── A1-F1 시험 전용 중단점: 「잠금 안 재판독 뒤 · 게시 전」 (경로가 같을 때만 · 병렬 시험 무간섭) ──
-    type PublishHook = std::sync::Arc<dyn Fn() + Send + Sync>;
-    static PUBLISH_HOOK: std::sync::Mutex<Vec<(std::path::PathBuf, PublishHook)>> = std::sync::Mutex::new(Vec::new());
+    // ── A1-F1 시험 전용 중단점·실패 주입(경로·단계별 · 병렬 시험 무간섭) ──
+    type Hook = std::sync::Arc<dyn Fn() + Send + Sync>;
+    static HOOKS: std::sync::Mutex<Vec<(std::path::PathBuf, &'static str, Hook)>> = std::sync::Mutex::new(Vec::new());
+    static FAILS: std::sync::Mutex<Vec<(std::path::PathBuf, &'static str)>> = std::sync::Mutex::new(Vec::new());
 
-    pub(super) fn run_publish_hook(path: &std::path::Path) {
-        let h = PUBLISH_HOOK.lock().unwrap().iter().find(|(p, _)| p == path).map(|(_, f)| f.clone());
+    pub(super) fn run_hook(path: &std::path::Path, stage: &str) {
+        let h = HOOKS.lock().unwrap().iter().find(|(p, s, _)| p == path && *s == stage).map(|(_, _, f)| f.clone());
         if let Some(f) = h {
             f()
         }
     }
 
-    /// 결정적 경합: A 가 잠금 안에서 부재/0바이트를 판정하고 게시 직전에 멈춘 동안 B 가 들어오면 B 는 잠금에서
-    /// 기다렸다가 A 가 게시한 키를 받는다(두 키 = 경로 키 하나). 잠금·잠금 안 재판독을 빼면 B 가 자기 키를 게시한다.
-    fn locked_recovery_serializes(start_empty: bool) {
-        let d = tdir(if start_empty { "lock0" } else { "lockabs" });
-        let p = d.join(".approval-secret");
-        if start_empty {
-            std::fs::write(&p, b"").unwrap();
+    pub(super) fn injected_failure(path: &std::path::Path, stage: &str) -> Option<std::io::Error> {
+        FAILS.lock().unwrap().iter().any(|(p, s)| p == path && *s == stage)
+            .then(|| std::io::Error::other(format!("injected {stage}")))
+    }
+
+    type TmpHook = std::sync::Arc<dyn Fn(&std::path::Path) + Send + Sync>;
+    static TMP_HOOKS: std::sync::Mutex<Vec<(std::path::PathBuf, TmpHook)>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn run_tmp_hook(path: &std::path::Path, tmp: &std::path::Path) {
+        let h = TMP_HOOKS.lock().unwrap().iter().find(|(p, _)| p == path).map(|(_, f)| f.clone());
+        if let Some(f) = h {
+            f(tmp)
         }
+    }
+
+    /// 임시 키 이름 자리에 이미 남의 파일(비정상 종료 잔재·pid 재사용)이 있으면: 만들지 못한 것이므로 None 이고,
+    /// 그 파일은 건드리지 않는다(게시 충돌로 섞어 재판독하거나 남의 임시 파일을 지우지 않는다 · codex 3R ②).
+    #[test]
+    fn signing_secret_foreign_tmp_is_left_alone() {
+        let d = tdir("foreigntmp");
+        let p = d.join(".approval-secret");
+        std::fs::write(&p, b"").unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+        let seen2 = seen.clone();
+        TMP_HOOKS.lock().unwrap().push((p.clone(), std::sync::Arc::new(move |t: &std::path::Path| {
+            std::fs::write(t, b"other").unwrap();
+            *seen2.lock().unwrap() = Some(t.to_path_buf());
+        })));
+        let got = signing_secret_at(&p);
+        TMP_HOOKS.lock().unwrap().retain(|(q, _)| *q != p);
+        assert!(got.is_none(), "임시 키를 만들지 못했는데 키를 돌려줬다");
+        let t = seen.lock().unwrap().clone().expect("임시 경로 훅 미발화");
+        assert_eq!(std::fs::read(&t).unwrap(), b"other", "남의 임시 파일을 지우거나 덮었다");
+        assert_eq!(std::fs::read(&p).unwrap(), b"", "임시 키 실패인데 경로가 바뀌었다");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn set_hook(p: &std::path::Path, stage: &'static str, f: Hook) {
+        HOOKS.lock().unwrap().push((p.to_path_buf(), stage, f));
+    }
+
+    fn clear_hooks(p: &std::path::Path) {
+        HOOKS.lock().unwrap().retain(|(q, _, _)| q != p);
+        FAILS.lock().unwrap().retain(|(q, _)| q != p);
+    }
+
+    /// 첫 호출자만 세우는 중단점: (도착 신호 수신기, 풀어 주기 송신기).
+    fn pause_first(p: &std::path::Path, stage: &'static str)
+        -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (at_tx, at_rx) = std::sync::mpsc::channel::<()>();
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let at_tx = std::sync::Mutex::new(at_tx);
         let go_rx = std::sync::Mutex::new(go_rx);
         let fired = std::sync::atomic::AtomicBool::new(false);
-        PUBLISH_HOOK.lock().unwrap().push((p.clone(), std::sync::Arc::new(move || {
+        set_hook(p, stage, std::sync::Arc::new(move || {
             if fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                return; // 첫 호출자(A)만 세운다 — B 가 잠금 없이 여기 오면 그대로 지나가 게시한다(무잠금 변이를 드러냄)
+                return; // 첫 호출자(A)만 — B 가 잠금 없이 여기 오면 그대로 지나간다(무잠금 변이를 드러냄)
             }
             let _ = at_tx.lock().unwrap().send(());
             let _ = go_rx.lock().unwrap().recv_timeout(std::time::Duration::from_secs(20));
-        })));
+        }));
+        (at_rx, go_tx)
+    }
+
+    /// 결정적 경합: A 가 잠금 안에서 부재/0바이트를 판정하고 게시 직전에 멈춘 동안 B 가 들어오면 B 는 잠금에서
+    /// 기다렸다가 A 가 게시한 키를 받는다(두 키 = 경로 키 하나). 잠금·잠금 안 재판독을 빼면 B 가 자기 키를 게시한다.
+    fn locked_recovery_serializes(start_empty: bool, stage: &'static str) {
+        let d = tdir(&format!("lock{}{stage}", if start_empty { "0" } else { "abs" }));
+        let p = d.join(".approval-secret");
+        if start_empty {
+            std::fs::write(&p, b"").unwrap();
+        }
+        let (at_rx, go_tx) = pause_first(&p, stage);
         let pa = p.clone();
         let a = std::thread::spawn(move || signing_secret_at(&pa));
-        at_rx.recv_timeout(std::time::Duration::from_secs(20)).expect("A 가 게시 직전 중단점에 오지 않았다");
+        at_rx.recv_timeout(std::time::Duration::from_secs(20)).expect("A 가 중단점에 오지 않았다");
+        // B 가 잠금 진입점까지 온 것을 신호로 확인한 뒤에 「기다리는 중」 을 단언한다(스케줄 지연 거짓 초록 차단).
+        let (b_rx, b_go) = pause_first(&p, "prelock");
+        drop(b_go); // B 는 prelock 에서 멈추지 않는다(신호만 · recv 즉시 끊김)
         let pb = p.clone();
         let b = std::thread::spawn(move || signing_secret_at(&pb));
+        b_rx.recv_timeout(std::time::Duration::from_secs(20)).expect("B 가 잠금 진입점에 오지 않았다");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(!b.is_finished(), "B 가 A 의 잠금을 기다리지 않고 끝났다(무잠금 게시)");
+        assert!(!b.is_finished(), "B 가 A 의 잠금({stage})을 기다리지 않고 끝났다");
         go_tx.send(()).unwrap();
         let ka = a.join().unwrap().expect("A");
         let kb = b.join().unwrap().expect("B");
-        PUBLISH_HOOK.lock().unwrap().retain(|(q, _)| *q != p);
+        clear_hooks(&p);
         let disk = std::fs::read(&p).unwrap();
         assert_eq!(ka, disk, "A 반환 키 ≠ 경로 키");
         assert_eq!(kb, disk, "B 반환 키 ≠ 경로 키");
@@ -909,12 +1039,13 @@ mod tests {
 
     #[test]
     fn signing_secret_zero_byte_recovery_is_serialized_by_lock() {
-        locked_recovery_serializes(true);
+        locked_recovery_serializes(true, "publish");
     }
+
 
     #[test]
     fn signing_secret_absent_creation_is_serialized_by_lock() {
-        locked_recovery_serializes(false);
+        locked_recovery_serializes(false, "publish");
     }
 
     /// 비참여 writer(잠금을 모르는 구판 등)가 재판독 뒤·게시 전에 먼저 키를 쓰면, 부재 게시(hard_link)는 그 키를
@@ -924,11 +1055,11 @@ mod tests {
         let d = tdir("nonpart");
         let p = d.join(".approval-secret");
         let pw = p.clone();
-        PUBLISH_HOOK.lock().unwrap().push((p.clone(), std::sync::Arc::new(move || {
+        set_hook(&p, "publish", std::sync::Arc::new(move || {
             std::fs::write(&pw, [5u8; 32]).unwrap();
-        })));
+        }));
         let got = signing_secret_at(&p);
-        PUBLISH_HOOK.lock().unwrap().retain(|(q, _)| *q != p);
+        clear_hooks(&p);
         assert_eq!(got.as_deref(), Some(&[5u8; 32][..]), "경로의 키가 아닌 자기 키를 돌려줬다");
         assert_eq!(std::fs::read(&p).unwrap(), vec![5u8; 32], "비참여 writer 의 키를 덮었다");
         let _ = std::fs::remove_dir_all(&d);
@@ -1025,10 +1156,23 @@ mod tests {
         assert_ne!(k_old, k_new);
         assert!(best_match(std::slice::from_ref(&old), &k_new, "git push origin", None, &[]).is_none(),
                 "옛 키 기록이 새 키로 승인됐다");
+        // 실제 중복 id: 앞 = 옛 키 기록 · 뒤 = 새 키 기록(같은 id). 갱신·재서명은 뒤(검증된 것)만.
+        let mut old2 = old.clone();
+        let mut cur = rec(&["git", "push"], None, &[]);
+        cur.id = old2.id.clone();
+        cur.updated_at = 1.0;
+        cur.sign(&k_new);
+        old2.updated_at = 1.0;
+        old2.sign(&k_old);
+        let old_sig = old2.signature.clone();
+        let mut recs = vec![old2, cur];
+        let hit = touch_best_match(&mut recs, &k_new, "git push origin", None, &[]);
+        assert!(hit.is_some());
+        assert_eq!(recs[0].signature, old_sig, "같은 id 의 옛 기록이 새 키로 재서명됐다");
+        assert!(!recs[0].has_valid_signature(&k_new));
+        assert!(recs[1].updated_at > 1.0 && recs[1].has_valid_signature(&k_new), "검증된 기록이 갱신되지 않았다");
         let h = include_str!("handlers.rs");
-        assert!(!h.contains("records.iter_mut().find(|r| r.id == matched_id)"),
-                "approval.check 가 id 로 다시 찾아 재서명한다(같은 id 옛 기록 재서명)");
-        assert!(h.contains("records.iter().position(|r| std::ptr::eq(r, m))"), "검증된 기록 위치 갱신 배선 부재");
+        assert!(h.contains("crate::approval::touch_best_match(&mut records"), "approval.check 가 touch_best_match 를 안 쓴다");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1037,7 +1181,7 @@ mod tests {
     fn save_records_tmp_name_is_unique_per_call() {
         let src = include_str!("approval.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
-        let f = &prod[prod.find("pub fn save_records(").unwrap()..];
+        let f = &prod[prod.find("fn save_records_at(").unwrap()..]; // 본문 = save_records_at(A1 에서 경로 판 분리)
         let f = &f[..f.find("\n}\n").unwrap()];
         assert!(!f.contains("with_extension(\"json.tmp\")"), "고정 tmp 이름 잔존");
         assert!(f.contains("SAVE_SEQ.fetch_add"), "호출마다 다른 tmp 이름이 아니다");
@@ -1086,6 +1230,63 @@ mod tests {
         std::fs::write(&p, format!("\u{feff}{}", serde_json::json!([serde_json::to_value(&r).unwrap()]))).unwrap();
         assert_eq!(load_records_at(&p).expect("BOM + bare 배열").len(), 1);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A1-F2: 0바이트 목록 위 저장이 된다(v1.1.6 처럼 재승인 가능) · BOM 파일의 기존 기록은 새 기록과 함께 보존된다.
+    #[test]
+    fn records_zero_bytes_then_save_and_bom_records_survive_append() {
+        let d = tdir("recsave");
+        let p = d.join("approvals.json");
+        std::fs::write(&p, b"").unwrap();
+        let mut recs = load_records_at(&p).unwrap();
+        let mut r1 = rec(&["git", "push"], None, &[]);
+        r1.sign(SECRET);
+        recs.push(r1.clone());
+        save_records_at(&p, &recs).unwrap();
+        let back = load_records_at(&p).unwrap();
+        assert_eq!(back.len(), 1);
+        assert!(back[0].has_valid_signature(SECRET));
+        let mut bom = b"\xEF\xBB\xBF".to_vec();
+        bom.extend_from_slice(serde_json::json!({"records": [serde_json::to_value(&r1).unwrap()]}).to_string().as_bytes());
+        std::fs::write(&p, &bom).unwrap();
+        let mut recs = load_records_at(&p).unwrap();
+        let mut r2 = rec(&["npm", "publish"], None, &[]);
+        r2.id = "ap-test-2".into();
+        r2.sign(SECRET);
+        recs.push(r2);
+        save_records_at(&p, &recs).unwrap();
+        let back = load_records_at(&p).unwrap();
+        assert_eq!(back.len(), 2, "BOM 파일의 기존 기록이 저장에서 사라졌다");
+        assert!(back.iter().all(|r| r.has_valid_signature(SECRET)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A1-F1: 단계별 실패 주입 — 잠금·임시 키(권한·쓰기·sync)·게시·게시 뒤 확인 어느 단계가 실패해도 None ·
+    /// 반환하지 않은 키가 경로에 새로 서지 않음(확인 단계 제외) · 임시 파일 잔재 0.
+    #[test]
+    fn signing_secret_each_stage_failure_returns_none_without_residue() {
+        for stage in ["lock", "tmp_perm", "tmp_write", "tmp_sync", "publish", "verify"] {
+            for start_empty in [true, false] {
+                let d = tdir(&format!("fail-{stage}-{start_empty}"));
+                let p = d.join(".approval-secret");
+                if start_empty {
+                    std::fs::write(&p, b"").unwrap();
+                }
+                FAILS.lock().unwrap().push((p.clone(), stage));
+                let got = signing_secret_at(&p);
+                clear_hooks(&p);
+                assert!(got.is_none(), "{stage}/{start_empty}: 실패인데 키를 돌려줬다");
+                let now = std::fs::read(&p).ok();
+                if stage != "verify" {
+                    let want = if start_empty { Some(Vec::new()) } else { None };
+                    assert_eq!(now, want, "{stage}/{start_empty}: 실패인데 경로가 바뀌었다");
+                }
+                let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten()
+                    .filter(|e| e.file_name().to_string_lossy().contains(".tmp-")).collect();
+                assert!(left.is_empty(), "{stage}/{start_empty}: 임시 키 잔재");
+                let _ = std::fs::remove_dir_all(&d);
+            }
+        }
     }
 
     #[test]

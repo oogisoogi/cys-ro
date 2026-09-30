@@ -346,6 +346,96 @@ class RotateGuard(Base):
         self.assertEqual(rc, 2, "CYS_DEPT_ROTATE=1에서 launch 검증 우회(exit=%d)" % rc)
 
 
+def _wait_python_child(bash_pid, timeout=20.0):
+    """자식 bash 아래 **오래 머무는 자식**(= 잠금에서 기다리는 파이썬)을 관측할 때까지 기다린다 — 시간 대기 대신.
+    맥에서는 그 파이썬의 명령줄이 ps 에 비어 보여(실측) 이름 대신 「같은 자식 pid 가 0.3초 넘게 살아 있음」 으로 판정한다
+    (셸 빠른 길의 순간 자식은 그 전에 사라진다)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        kids = subprocess.run(["pgrep", "-P", str(bash_pid)], capture_output=True, text=True).stdout.split()
+        if kids:
+            time.sleep(0.3)
+            again = subprocess.run(["pgrep", "-P", str(bash_pid)], capture_output=True, text=True).stdout.split()
+            if set(kids) & set(again):
+                return True
+        time.sleep(0.05)
+    return False
+
+
+def _dept_py_block(header):
+    """cys-dept 안 `header` 가 든 줄에서 시작하는 인용 heredoc(<<'PY' … PY) 파이썬 본문을 그대로 떼어 낸다."""
+    src = open(DEPT, encoding="utf-8").read()
+    i = src.index(header)
+    j = src.index("<<'PY'\n", i) + len("<<'PY'\n")
+    k = src.index("\nPY\n", j)
+    return src[j:k + 1]
+
+
+class WinLockFailure(unittest.TestCase):
+    """1.1.7 fix-blockers A1-F3 · master#6e5aef09·af0da6d9 판정 A: 윈도 레지스트리 잠금(msvcrt) 실패를 삼키고 무잠금으로
+    진행하던 5곳 = 「잠금 실패 = 읽지도 쓰지도 않음 · exit 11 다시 시도」(선례 = 울타리·예약 블록). 0바이트 규칙과 결합하면
+    무잠금 판독이 쓰는 중인 목록을 「등록 없음」 으로 보아 등록을 지우는 경로가 되므로(데이터 손실 가족) 막는다.
+    흉내: fcntl 부재 + msvcrt.locking 이 OSError(10초 재시도 뒤 실패와 같은 모양)."""
+
+    TARGETS = {                                   # header → 인자(REG 뒤)
+        "reg_upsert(){": ["d1", "/s", "/k"],
+        "reg_remove(){": ["keep1"],
+        "reg_set_meta(){": ["keep1", "표시", "acct"],
+        "reg_set_field(){": ["keep1", "gen", "g1"],
+        "snap=$(python3 - \"$REG\" <<'PY'": [],   # reap 스냅샷(읽기 전용)
+    }
+    CONTROLS = {                                  # 이미 exit 11 인 선례(흉내가 실제로 잠금 실패를 만드는지 대조)
+        "reg_fence_close(){": ["keep1", ""],
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="winlock-")
+        sim = os.path.join(self.tmp, "sim")
+        os.makedirs(sim)
+        with open(os.path.join(sim, "fcntl.py"), "w") as f:
+            f.write("raise ImportError('sim-win: no fcntl')\n")
+        with open(os.path.join(sim, "msvcrt.py"), "w") as f:
+            f.write("LK_LOCK = 1\nLK_UNLCK = 0\ndef locking(fd, mode, n):\n    raise OSError(36, 'sim: lock timeout')\n")
+        self.env = {"HOME": self.tmp, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": sim}
+        self.reg = os.path.join(self.tmp, "depts.json")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _run(self, header, args, data):
+        with open(self.reg, "wb") as f:
+            f.write(data)
+        r = subprocess.run([sys.executable, "-", self.reg] + args, input=_dept_py_block(header), capture_output=True,
+                           text=True, encoding="utf-8", env=self.env, timeout=60)
+        with open(self.reg, "rb") as f:
+            after = f.read()
+        return r.returncode, r.stdout, r.stderr, after
+
+    def test_simulation_really_fails_the_lock(self):
+        for header, args in self.CONTROLS.items():
+            rc, out, err, _ = self._run(header, args, json.dumps({"depts": {"keep1": {}}}).encode())
+            self.assertEqual(rc, 11, "%s: 흉내가 잠금 실패를 만들지 못함\n%s" % (header, err))
+
+    def test_lock_failure_never_reads_or_writes(self):
+        keep = json.dumps({"depts": {"keep1": {"socket": "", "pack_dir": ""}}}).encode()
+        for header, args in self.TARGETS.items():
+            for data in (keep, b""):
+                rc, out, err, after = self._run(header, args, data)
+                self.assertEqual(rc, 11, "%s(%r): 잠금 실패인데 exit=%d\n%s" % (header, data[:10], rc, err))
+                self.assertEqual(after, data, "%s: 잠금 실패인데 목록을 바꿨다" % header)
+                self.assertEqual(out.strip(), "", "%s: 잠금 실패인데 판독 결과를 내보냈다(무잠금 판독)" % header)
+                self.assertIn("다시", err, "%s: 「다시 시도」 안내 부재" % header)
+
+    def test_lock_blocks_zero_byte_rule_and_notice_direct(self):
+        """판독 9곳 중 잠금 블록 8곳을 직접: 0바이트 입력 → 12 아님 · 0바이트 알림(잠금 성공 경로 = 실제 fcntl)."""
+        env = {"HOME": self.tmp, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        for header, args in list(self.TARGETS.items()) + list(self.CONTROLS.items()):
+            with open(self.reg, "wb") as f:
+                f.write(b"")
+            r = subprocess.run([sys.executable, "-", self.reg] + args, input=_dept_py_block(header),
+                               capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+            self.assertNotEqual(r.returncode, 12, "%s: 0바이트가 판독 실패\n%s" % (header, r.stderr))
+            self.assertIn("빈 목록으로 다룹니다", r.stderr, "%s: 0바이트 알림 부재" % header)
+
+
 class RegistryUnreadable(Base):
     """①(TICKET=cysr-117-impl-lead · MUST-DO-117 ①) 부서 목록 판독 실패 = 무변경(exit 12).
     종전: 8곳이 판독 실패를 빈 목록으로 접어 다음 저장이 등록 부서를 전멸시켰고, rotate 는 판독 실패를
@@ -454,7 +544,7 @@ class RegistryUnreadable(Base):
         try:
             proc = subprocess.Popen(["bash", DEPT, "list"], env=self.env, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, encoding="utf-8")
-            time.sleep(1.5)                          # 자식이 빠른 길(0바이트)을 지나 잠금에서 기다리게
+            self.assertTrue(_wait_python_child(proc.pid), "자식이 초기화 잠금 블록에 들어서지 않았다")
             write_reg(self.env, {"held1": {"socket": "", "pack_dir": ""}})
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
@@ -490,7 +580,7 @@ class RegistryUnreadable(Base):
         try:
             proc = subprocess.Popen(["bash", DEPT, "reap", "--dry"], env=self.env, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, encoding="utf-8")
-            time.sleep(1.5)                          # 빠른 길(비어 있지 않음)을 지나 잠금 블록에서 기다리게
+            self.assertTrue(_wait_python_child(proc.pid), "자식이 스냅샷 잠금 블록에 들어서지 않았다")
             self._write_raw(b"")
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)

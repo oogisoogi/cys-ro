@@ -64,3 +64,14 @@
 | 7 | RMW 직접 0바이트 알림 누락 | 잠금 블록 8곳 알림(시험: 잠금 쥔 채 절단) |
 | 8 | 시험 공백 | §4(결정적 경합 F1 2·F3 1 · 다중 프로세스 · 잠금·게시 실패 · 읽기 불가 빈 파일) |
 | 9 | 구판 fs::write 경합 · 데몬 종료 | §1 구판 데몬 정정 · ⑦ 게이트 대조 항목 |
+
+## 6. codex 3R(구현 검토 · REVISE · must_fix 6) 처리표 — 원문 = reports/…/dbg/fix-blockers/codex-A1-impl-3R-out.md
+| # | 지적 | 처리 |
+|---|---|---|
+| 1 | F3 기존 writer 5곳 윈도 잠금 실패 무시 | **master#6e5aef09·af0da6d9 판정 A** — reg_upsert·reg_remove·reg_set_meta·reg_set_field·reap 스냅샷 = 잠금 실패 시 읽지도 쓰지도 않고 exit 11(울타리·예약 선례 문구). 시험 = 블록 파이썬을 떼어 「fcntl 부재 + msvcrt.locking OSError」 로 흉내(대조군 = 울타리 11) · 한 곳씩 되돌리기 5/5 적색. 호출 쪽 전수: dept_request 생성 11 = lock_busy 재시도(기존 한국어) · 닫기 = javis_org destroy rc 1 → 「닫지 못했습니다」 · GUI launch/create/rotate = stderr(한국어 「다시 시도」) 토스트 · GUI stop_dept_daemon_by_socket = 종료 코드 무시(선재 · 울타리 11 도 같음 · down-sock 은 목록 제거 실패를 `|| true` 로 넘김) → **down-sock 의 「teardown 완료」 가 목록 정리 실패를 숨기던 줄만** 「목록 정리 보류 — 다음 회수 때 정리」 로 정직화. create 내부 `reg_set_field account_dir || true`·실패 시 예약 회수 trap `|| true` 는 선재 최선 노력(잠금 10초+ 경합 때만 · 기록). |
+| 2 | F1 임시 생성 오류 ↔ 게시 충돌 혼합 · 남의 임시 파일 삭제 | write_key_tmp 실패 = 즉시 None(연 뒤 실패면 **자기** 임시 파일만 지움 · create_new 실패 = 건드리지 않음) · AlreadyExists 는 hard_link 분기 안에서만(Ok(true)) · 정리 실패는 eprintln 으로 관측. 시험 = 남의 임시 파일 보존 · 단계별 실패 주입 6단계×(부재·0바이트). |
+| 3 | F1 경합 시험 B 진입 확인 · ⑥ 잠금 보유 · 단계별 실패 | B 는 잠금 진입점(prelock) 신호를 받은 뒤에만 「기다리는 중」 단언. ⑥ 구간 잠금 보유는 **참여자 정확성 조건이 아님**(게시 뒤 참여자는 잠금 없는 첫 판독에서 키를 읽는다 — 그 시험이 설계상 성립하지 않음을 실측) → 코드 주석으로 명시. 실패 주입 = lock·tmp_perm·tmp_write·tmp_sync·publish·verify. |
+| 4 | F3 시간 대기 → 관측 신호 · 판독 지점 직접 · 잠금 실패 무쓰기 | 시험 2개의 sleep → 「자식 bash 아래 같은 자식 pid 가 0.3초+ 생존」 관측(맥에서 파이썬 명령줄이 ps 에 비어 보여 이름 판정 불가 — 실측). 잠금 블록 8곳 = 파이썬 본문을 떼어 0바이트 직접 입력(12 아님 · 알림). 잠금 실패 무쓰기 = #1 시험. |
+| 5 | 중복 id 실제 갱신 · F2 저장 | handlers 의 갱신을 `approval::touch_best_match`(검증된 기록 위치만)로 옮겨 실제 중복 id 목록으로 시험 · `save_records_at` 분리 → 0바이트 위 저장·BOM 기존 기록 + 새 기록 보존 시험. |
+| 6 | 구판 데몬 종료 증거 | ⑦ 게이트에서 갱신 절차의 데몬 재기동을 대조해 【확인요청】 에 근거로 남김. |
+- codex 재확인: master 조건 ③ 「3라운드 상한 안이면」 — 이번 티켓 codex 라운드 = 1R(디버깅 판정)·2R(설계)·3R(구현)으로 상한 도달 → 4R 은 master 결정 대기(【확인요청】 에 명시).

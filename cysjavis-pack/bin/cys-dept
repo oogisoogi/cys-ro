@@ -1940,6 +1940,7 @@ PY
     [ "$_rrc" = 0 ] || echo "[cys-dept] down-sock: $name 목록 정리 보류(exit $_rrc) — 부서 엔진 종료·묘비는 처리했고, 목록 항목은 다음 회수 때 정리합니다" >&2
     [ "$(reg_count)" = "0" ] && ceo_demote || true
     echo "[cys-dept] socket teardown 완료(name=${name:-미등록}$([ "$_rrc" = 0 ] || printf ' · 목록 정리 보류')). 부서 수=$(reg_count)"
+    [ "$_rrc" = 0 ] || exit "$_rrc"   # 목록 정리 보류는 종료 코드로도 전달(reap 이 「완료」 로 세지 않게 · GUI 는 종료 코드를 안 본다)
     ;;
   rotate)
     # ★버전 스큐 세대교체(재기동, ★폐기 아님): 데몬 프로세스만 정지→새 on-disk cysd로 재기동한다.
@@ -2038,9 +2039,9 @@ try:
         print("%s\t%s\t%s"%(n, e.get('socket',''), e.get('reserved_at',0) or 0))
 finally: _ulk(lf)
 PY
-) || { _rc=$?; echo "[cys-dept] reap: 스냅샷 실패" >&2; [ "$_rc" = 12 ] && exit 12; exit 1; }  # ① 판독 실패(12)는 그대로 전달
+) || { _rc=$?; echo "[cys-dept] reap: 스냅샷 실패" >&2; case "$_rc" in 11|12) exit "$_rc" ;; esac; exit 1; }  # ① 판독 실패(12)·잠금 실패(11 · A1-F3 codex 4R)는 그대로 전달
     # 분류+집행(flock 밖·probe). reg_remove/down-sock는 각자 자체 flock·원자. 현재 셸 루프(카운터 보존).
-    nd=0; ni=0; ns=0
+    nd=0; ni=0; ns=0; nh=0
     while IFS=$'\t' read -r nm sk rat; do
       [ -n "$nm" ] || continue
       if ! sock_alive "$sk"; then
@@ -2055,7 +2056,10 @@ PY
       # ★[5] TOCTOU 차단: kill(down-sock) 직전 원자 재검증 — 스냅샷 이후 master/agent가 붙었으면 회수 취소.
       recls="ACTIVE:gone"; sock_alive "$sk" && recls="$(dept_classify_idle "$sk" "$rat")"
       if [ "$recls" = "IDLE" ]; then
-        ni=$((ni+1)); echo "[cys-dept] reap: IDLE $nm → down-sock teardown"; "$0" down-sock "$sk" >/dev/null 2>&1 || true
+        # A1-F3(codex 4R): down-sock 의 목록 정리 보류(비0)를 버리고 「완료」 로 세지 않는다 — 보류는 따로 세고 알린다.
+        echo "[cys-dept] reap: IDLE $nm → down-sock teardown"
+        if "$0" down-sock "$sk" >/dev/null 2>&1; then ni=$((ni+1))
+        else _drc=$?; nh=$((nh+1)); echo "[cys-dept] reap: IDLE $nm 정리 보류(exit $_drc) — 다음 회수 때 다시" >&2; fi
       else
         ns=$((ns+1)); echo "[cys-dept] reap: SKIP $nm — 집행직전 재검증서 활동전환($recls), teardown 취소(TOCTOU 보호)" >&2
       fi
@@ -2074,7 +2078,7 @@ EOF
         else rm -rf "$_td" && nt=$((nt+1)) && echo "[cys-dept] reap: TRASH-EXPIRE $_td (>${ttl}d)"; fi
       done < <(find "$TRASH_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +"$ttl" 2>/dev/null)
     fi
-    echo "[cys-dept] reap 완료(dry=$dry): DEAD=$nd IDLE=$ni SKIP=$ns TRASH-EXPIRE=$nt. 부서 수=$(reg_count)"
+    echo "[cys-dept] reap 완료(dry=$dry): DEAD=$nd IDLE=$ni SKIP=$ns HOLD=$nh TRASH-EXPIRE=$nt. 부서 수=$(reg_count)"
     ;;
   promote-ceo)
     # 오너 지명 경로(2026-07-14): 오너/CSO가 기본 데몬 master를 CEO로 직접 지명 — 호출 자체가 동의.

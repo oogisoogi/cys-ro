@@ -520,6 +520,8 @@ fn signing_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
     }
     // 게시 뒤 경로를 다시 읽어 확인한다 — 경로의 키만 돌려준다(반환 키 == 경로 키). 잠금은 여기까지 쥐지만,
     // 게시 뒤 참여자는 잠금 없는 첫 판독에서 키를 읽으므로 ⑥ 구간 보유는 참여자끼리의 정확성 조건이 아니다.
+    #[cfg(test)]
+    tests::run_hook(path, "verify");
     let reread = match fail_point(path, "verify") {
         Some(e) => Err(e),
         None => std::fs::read(path),
@@ -592,7 +594,9 @@ fn write_key_tmp(tmp: &std::path::Path, secret: &[u8], key: &std::path::Path) ->
     })();
     if r.is_err() {
         drop(f);
-        let _ = std::fs::remove_file(tmp);
+        if let Err(e) = std::fs::remove_file(tmp) {
+            eprintln!("[cysd] approval: 서명 임시 키 정리 실패({e}) — {}", tmp.display());
+        }
     }
     r
 }
@@ -1048,6 +1052,32 @@ mod tests {
         locked_recovery_serializes(false, "publish");
     }
 
+    /// 잠금은 게시 뒤 확인(⑥)까지 쥔다 — ⑥ 직전에 A 를 세운 동안 같은 잠금 파일에 대한 try_lock 이 막힌다(codex 4R:
+    /// 게시 뒤 참여자는 잠금 없는 판독으로 끝나지만, 가드 보유 자체는 직접 검사할 수 있다).
+    #[test]
+    fn signing_secret_lock_is_held_through_verification() {
+        for start_empty in [true, false] {
+            let d = tdir(&format!("hold6-{start_empty}"));
+            let p = d.join(".approval-secret");
+            if start_empty {
+                std::fs::write(&p, b"").unwrap();
+            }
+            let (at_rx, go_tx) = pause_first(&p, "verify");
+            let pa = p.clone();
+            let a = std::thread::spawn(move || signing_secret_at(&pa));
+            at_rx.recv_timeout(std::time::Duration::from_secs(20)).expect("A 가 ⑥ 직전에 오지 않았다");
+            let lf = std::fs::OpenOptions::new().write(true).open(d.join(".approval-secret.cys-lock")).unwrap();
+            let held = matches!(lf.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+            drop(lf);
+            go_tx.send(()).unwrap();
+            let k = a.join().unwrap().expect("A");
+            clear_hooks(&p);
+            assert!(held, "{start_empty}: ⑥ 직전에 키 잠금이 풀려 있다");
+            assert_eq!(std::fs::read(&p).unwrap(), k);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
     /// 비참여 writer(잠금을 모르는 구판 등)가 재판독 뒤·게시 전에 먼저 키를 쓰면, 부재 게시(hard_link)는 그 키를
     /// 덮지 않고 게시 뒤 확인이 경로의 키를 돌려준다(반환 키 == 경로 키).
     #[test]
@@ -1171,6 +1201,13 @@ mod tests {
         assert_eq!(recs[0].signature, old_sig, "같은 id 의 옛 기록이 새 키로 재서명됐다");
         assert!(!recs[0].has_valid_signature(&k_new));
         assert!(recs[1].updated_at > 1.0 && recs[1].has_valid_signature(&k_new), "검증된 기록이 갱신되지 않았다");
+        // 핸들러와 같은 순서(갱신 → 저장)로 디스크까지: 다시 읽어도 옛 기록 서명 보존 · 검증된 기록만 갱신.
+        let rp = d.join("approvals.json");
+        save_records_at(&rp, &recs).unwrap();
+        let back = load_records_at(&rp).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].signature, old_sig, "저장 뒤 옛 기록이 새 키로 재서명돼 있다");
+        assert!(back[1].updated_at > 1.0 && back[1].has_valid_signature(&k_new), "저장 뒤 검증된 기록 갱신 소실");
         let h = include_str!("handlers.rs");
         assert!(h.contains("crate::approval::touch_best_match(&mut records"), "approval.check 가 touch_best_match 를 안 쓴다");
         let _ = std::fs::remove_dir_all(&d);

@@ -11980,6 +11980,21 @@ mod tests {
         let ready = seat(include_bytes!("testdata/claude_2_1_280_ready_after_esc_classic.raw"));
         let r = call(ready.id, "surface.send_key", json!({"surface_id": ready.id, "key": "C-u", "refuse_on_approval": true}));
         assert_eq!(r["ok"], json!(true), "입력창 화면에서 순환 C-u 가 막혔다(과잉 차단) {r}");
+        // ★precut ㉮ — 질문 창(AskUserQuestion · VM r1001 3-5 실화면)도 같은 거부. 순환 저장 지시는 권위 주입
+        //   (authoritative)이라 그 플래그 그대로 싣는다. 종전엔 판정이 이 창을 못 봐 붙여넣기·Return 이 1번을 골랐다.
+        let ask = seat(include_bytes!("testdata/claude_askuserquestion_vm_r1001.raw"));
+        for (method, p, pending) in [
+            ("surface.send_text", json!({"surface_id": ask.id, "text": "[CYCLE] 저장", "quiet": true,
+                                         "authoritative": true, "refuse_on_approval": true}), 0),
+            ("surface.send_key", json!({"surface_id": ask.id, "key": "Return", "authoritative": true,
+                                        "refuse_on_approval": true}), 5),
+        ] {
+            ask.pending_input_bytes.store(pending, Ordering::Relaxed);
+            let r = call(ask.id, method, p.clone());
+            assert_eq!(r["error"]["code"], json!(cys::ERR_APPROVAL_SCREEN), "{method} {p}: 질문 창에 썼다 {r}");
+            assert_eq!(ask.pending_input_bytes.load(Ordering::Relaxed), pending, "{method}: 거부했는데 계수가 바뀌었다(쓰기 발생)");
+        }
+
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);
     }

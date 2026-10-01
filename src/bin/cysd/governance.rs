@@ -5864,7 +5864,18 @@ pub(crate) fn approval_in_prompt_tail(
         None => return false,
     };
     let text = region.join("\n");
-    patterns.iter().any(|re| re.is_match(&text))
+    // ⑶ 선택지 창 서명(1.1.7 precut ㉮) — 같은 판독 범위에서 막기만 한다. ⑴의 키에 넣지 않는 이유는 ⑵와 같다
+    //   (승인 스캔이 master 각성을 낸다 · U-16 분리).
+    patterns.iter().any(|re| re.is_match(&text)) || region.iter().any(|r| is_choice_dialog_footer(r))
+}
+
+/// 선택지 창의 꼬리 행인가(순수 · 1.1.7 precut ㉮) — claude 의 AskUserQuestion·선택 메뉴 꼬리
+/// `Enter to select · ↑/↓ to navigate · Esc to cancel`(VM r1001 3-5 실화면 2회). 어댑터 `approval_patterns`
+/// (허락 창 문면)·관문 코퍼스(첫기동 창) 어느 쪽에도 없어 순환 저장 지시가 이 창 위로 들어가 Return 이
+/// 1번을 골랐다. 한 행에 「Enter to select」 와 「Esc to cancel」 이 함께 있어야 한다(허락 창 꼬리
+/// `Esc to cancel · Tab to amend` · 신뢰 창 `Enter to confirm · Esc to cancel` 은 아니다 — 각자 ⑴·⑵ 몫).
+fn is_choice_dialog_footer(row: &str) -> bool {
+    row.find("Enter to select").is_some_and(|i| row[i..].contains("Esc to cancel"))
 }
 
 /// 승인 축 ⑵ 재료 — 이 어댑터의 관문 코퍼스 해소본 **전 관문**(`approval_in_prompt_tail` doc 의 두 출처
@@ -11210,6 +11221,37 @@ mod tests {
         assert!(matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)));
     }
 
+    /// ★⑯(1.1.7 precut ㉮) 선택지 창(AskUserQuestion 실화면 · VM r1001 3-5 · 2회 캡처)은 어댑터 패턴·관문
+    /// 코퍼스 **없이도** 승인 대기로 읽힌다 — 종전엔 claude 패턴(`Do you want to …`)·코퍼스 어느 쪽에도 안 걸려
+    /// 순환 저장 지시가 창 위로 배달되고 Return 이 1번을 골랐다. 대조군 ① 같은 꼬리 문구가 입력창 **위 본문**에
+    /// 있고 마지막 가로줄 아래가 상태줄뿐이면 false ② 허락 창 꼬리(`Esc to cancel · Tab to amend`)는 이 서명이
+    /// 아니다(⑴ 몫 — 서명이 허락 창을 대신 잡아 ⑴ 시험을 가리지 않게).
+    #[test]
+    fn u16_choice_dialog_tail_reads_as_approval_without_patterns() {
+        let rows = |t: &str| t.split("\r\n").map(String::from).collect::<Vec<_>>();
+        for (name, raw) in [
+            ("vm-1", include_str!("testdata/claude_askuserquestion_vm_r1001.raw")),
+            ("vm-2", include_str!("testdata/claude_askuserquestion_vm_r1001_2.raw")),
+        ] {
+            let r = rows(raw);
+            let c = r.iter().position(|l| l.contains("❯ 1.")).unwrap();
+            for cur in [c, r.len() - 1, usize::MAX] {
+                assert!(
+                    approval_in_prompt_tail(&r, cur, "❯", &[], &[]),
+                    "{name}: 질문 창을 승인 대기로 못 읽었다(커서 {cur})"
+                );
+            }
+        }
+        let rule = "─".repeat(40);
+        let body = rows(&format!(
+            "Enter to select · ↑/↓ to navigate · Esc to cancel\r\n{rule}\r\n❯ \r\n{rule}\r\n  ? for shortcuts"
+        ));
+        let c = body.iter().rposition(|l| l.trim() == "❯").unwrap();
+        assert!(!approval_in_prompt_tail(&body, c, "❯", &[], &[]), "본문 속 문구로 입력창 좌석을 막았다");
+        let perm = rows(&format!("{rule}\r\n Bash command\r\n ❯ 1. Yes\r\n   2. No\r\n\r\n Esc to cancel · Tab to amend"));
+        assert!(!approval_in_prompt_tail(&perm, 2, "❯", &[], &[]), "허락 창 꼬리가 선택지 서명으로 읽혔다");
+    }
+
     /// ⓑ 두 출처 묶음(순수): ⑴ 어댑터 approval_patterns ⑵ 관문 코퍼스(전 관문) — 출처별 책임과 공통 판독 범위.
     #[test]
     fn qa_approval_tail_binds_adapter_patterns_and_trust_corpus() {
@@ -11457,6 +11499,25 @@ mod tests {
             why.starts_with("approval_pending"),
             "허락 창 보류 사유가 승인 대기가 아니다: {why}"
         );
+    }
+
+    /// ★precut ㉮ — 질문 창(AskUserQuestion · VM r1001 3-5 실화면)에도 큐 배달 0 · 강제 배달 거부 · 사유 = 승인 대기.
+    ///    본문 + Return 이 1번을 고르는 같은 피해(허락 창 ①·⑥ 과 같은 계약).
+    #[test]
+    fn qa_question_dialog_blocks_queue_and_force() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qa-ask");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ]);
+        let (daemon, s) = qa_fixture_seat("qa-ask", include_bytes!("testdata/claude_askuserquestion_vm_r1001.raw"));
+        qa_tick(&daemon);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "질문 창에 배달했다(Return = 1번)");
+        let why = qa_blocked_reason(&s);
+        assert!(why.starts_with("approval_pending"), "질문 창 보류 사유가 승인 대기가 아니다: {why}");
+        let r = super::force_deliver_entry(&daemon, &s, None, false);
+        assert!(matches!(r, Err(super::ForceDeliverDenied::ApprovalPending)), "질문 창 강제 배달이 거부되지 않았다");
     }
 
     /// ② 실화면(fullscreen · 윈 옵트인 밖 기본 렌더러) 허락 창: 배달 0 + 사유 승인 대기.

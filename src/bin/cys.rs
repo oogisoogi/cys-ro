@@ -2019,6 +2019,21 @@ fn with_owner_token_on(params: Value, socket: &std::path::Path) -> Value {
 }
 
 fn inject_text(sid: u64, text: &str) -> Result<(), String> {
+    inject_text_opts(sid, text, false)
+}
+
+/// ★⑯(1.1.7 precut ㉮) 직접 입력(붙여넣기·제출 Return)에 `refuse_on_approval` 을 싣는다 — 대상에 승인·질문 창이
+/// 떠 있으면 데몬이 **쓰기 전에** 거부한다(`ERR_APPROVAL_SCREEN` · 바이트 0). 순환은 좌석이 자리를 비운 사이 사람
+/// 손 없이 도는 입력이라 그 창의 선택지를 누르면 안 된다(VM r1001 3-5: 저장 지시가 질문을 1번으로 답함).
+/// 끄면(`false`) 요청 바이트는 종전 그대로다(옵션 키 자체를 싣지 않는다).
+fn refusing_on_approval(mut params: Value, on: bool) -> Value {
+    if on {
+        params["refuse_on_approval"] = json!(true);
+    }
+    params
+}
+
+fn inject_text_opts(sid: u64, text: &str, refuse_on_approval: bool) -> Result<(), String> {
     // ★U-14 관문 가드 ①(붙여넣기 직전). 이 한 줄이 `inject_text` 를 부르는 모든 경로를 덮는다.
     gate_guard_check(sid, "디렉티브 주입")?;
     let wrapped = format!("\x1b[200~{text}\x1b[201~");
@@ -2027,7 +2042,10 @@ fn inject_text(sid: u64, text: &str) -> Result<(), String> {
     // 차단하던 경로(human is typing 무한)를 끊는다. ACL은 데몬에서 그대로 집행된다.
     match request(
         "surface.send_text",
-        with_owner_token(json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true})),
+        refusing_on_approval(
+            with_owner_token(json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true})),
+            refuse_on_approval,
+        ),
     ) {
         Ok(_) => {}
         Err(e) if is_typing_guard_err(&e) => {
@@ -2060,7 +2078,10 @@ fn inject_text(sid: u64, text: &str) -> Result<(), String> {
     gate_guard_check(sid, "제출 Return")?;
     match request(
         "surface.send_key",
-        with_owner_token(json!({"surface_id": sid, "key": "Return", "authoritative": true})),
+        refusing_on_approval(
+            with_owner_token(json!({"surface_id": sid, "key": "Return", "authoritative": true})),
+            refuse_on_approval,
+        ),
     ) {
         Ok(_) => Ok(()),
         Err(e) if is_typing_guard_err(&e) => {
@@ -3334,7 +3355,9 @@ fn run(command: Command) -> i32 {
                             // ★(N7) 방향은 그대로 fail-open 이되 **침묵하지 않는다**.
                             //   여기서 통째로 버려지던 것은 관문 Hold 처방 전문이고, 이 신호를
                             //   못 받은 노드는 업데이트 재시작 전에 상태를 저장하지 못한다.
-                            if let Err(e) = inject_text(sid, "[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 _round/SESSION_STATE.md와 자기 TODO를 저장하고 작업을 멈춰라. 작업 재개는 복원 후 master 지시를 기다린다.") {
+                            // ★⑯(1.1.7 precut ㉮ 형제) 무인 팬아웃 — 「승인 프롬프트 대기 중이면 무시하라」는 문안만으로는 그 창을
+                            //   못 지킨다(붙여넣기 뒤 Return 이 선택지를 누른다). 창이 떠 있으면 데몬이 쓰기 전에 거부 → 아래 사유 출력.
+                            if let Err(e) = inject_text_opts(sid, "[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 _round/SESSION_STATE.md와 자기 TODO를 저장하고 작업을 멈춰라. 작업 재개는 복원 후 master 지시를 기다린다.", true) {
                                 eprintln!(
                                     "[drain] {role} {} 저장 신호 미전달(계속 진행) — {e}",
                                     surface_ref(sid)
@@ -14505,9 +14528,13 @@ fn inject_text_on(
         // ★D10: 부서 팩 ACL `{"from":"external","to":"worker*","allow":false}` 는 이 팬아웃을
         //   겨냥한 규칙이 아니다(CEO·타 부서의 워커 직접 조향을 막는 규칙이다). 대상 데몬의
         //   토큰을 실어 A1 과 **같은 입구**로 오너 등급을 받는다 — 토큰이 없으면 종전 바이트 동일.
-        with_owner_token_on(
-            json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true}),
-            socket,
+        // ★⑯(precut ㉮ 형제) 이 경로의 유일한 호출자 = drain --verify 무인 팬아웃 — 승인·질문 창 위에 쓰지 않는다.
+        refusing_on_approval(
+            with_owner_token_on(
+                json!({"surface_id": sid, "text": wrapped, "quiet": true, "authoritative": true}),
+                socket,
+            ),
+            true,
         ),
         timeout,
     )?;
@@ -14517,9 +14544,12 @@ fn inject_text_on(
         socket,
         "surface.send_key",
         // ★D10: 본문이 들어가고 **제출만** 막히면 저장은 일어나지 않는다 — 붙여넣기와 같은 등급으로.
-        with_owner_token_on(
-            json!({"surface_id": sid, "key": "Return", "authoritative": true}),
-            socket,
+        refusing_on_approval(
+            with_owner_token_on(
+                json!({"surface_id": sid, "key": "Return", "authoritative": true}),
+                socket,
+            ),
+            true,
         ),
         timeout,
     )?;
@@ -15930,7 +15960,9 @@ fn run_cycle_agent(
         }
         eprintln!("[cycle 1/5] 저장 지시 주입 → surface:{sid} ({role_name})");
         // ★A′: 고정 산문 대신 감시 목록(files) 실경로 열거 — 지시 경로↔게이트 경로 정합.
-        inject_text(sid, &cycle_save_directive(&role_name, &files))?;
+        // ★⑯(1.1.7 precut ㉮) 저장 지시도 clear 세 입력과 같은 거부 — 질문·승인 창 위에 붙여넣고 Return 하면 그 창의
+        //   선택지가 사람 손 없이 눌린다(VM r1001 3-5 재현 2/2). 거부 = 쓰기 0 · 기존 거부 분기와 같은 문구로 rc 1.
+        inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true)?;
 
         // 2) 파일 변화 게이트 (화면 마커는 참고 신호일 뿐 — reward-hack·stale 마커 차단)
         match cycle_verify_plan(force_no_verify, baseline.len()) {
@@ -15981,7 +16013,8 @@ fn run_cycle_agent(
                        "body": body, "surface_id": sid, "wait": false}),
             )?;
             let req_id = push["request_id"].as_str().unwrap_or("").to_string();
-            inject_text(vsid, &format!("[CYCLE-VERIFY] role '{role_name}'(surface:{sid})의 컨텍스트 순환 전 저장 검증 요청. SESSION_STATE/TODO 파일이 방금 갱신되었는지 확인하고 `cys feed reply {req_id} allow` 또는 `cys feed reply {req_id} deny`로 판정하라."))?;
+            // ★⑯(precut ㉮) 검증자 좌석도 같은 거부 — CSO 에 허락·질문 창이 떠 있을 때 이 글의 Return 이 그 창을 누르지 않게.
+            inject_text_opts(vsid, &format!("[CYCLE-VERIFY] role '{role_name}'(surface:{sid})의 컨텍스트 순환 전 저장 검증 요청. SESSION_STATE/TODO 파일이 방금 갱신되었는지 확인하고 `cys feed reply {req_id} allow` 또는 `cys feed reply {req_id} deny`로 판정하라."), true)?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
             // ★W4-B(결함 7): 해소 항목을 발견해도 decision 문자열로 즉석 판정하지 않고 영수증
             // 검증(cycle_receipt_ok — resolver==지정 검증자 대조)에 넘긴다. Err 는 전부 clear
@@ -16050,7 +16083,8 @@ fn run_cycle_agent(
             let resume = resume_text.unwrap_or_else(|| {
                 "[RESUME] 컨텍스트 순환 완료. _round/SESSION_STATE.md와 자기 TODO를 읽고 직전 작업을 이어가라.".into()
             });
-            inject_text(sid, &compose_cycle_directive(&compose_directive(&role_name)?, &resume))?;
+            // ★⑯(precut ㉮) clear 뒤 재주입도 같은 거부(순환의 어떤 입력도 창 위에 들어가지 않는다).
+            inject_text_opts(sid, &compose_cycle_directive(&compose_directive(&role_name)?, &resume), true)?;
             Ok(())
         })();
         // 재개 성공/실패와 무관하게 quiescing 해제 — 실패로 master가 quiescing에 갇혀 채널이
@@ -17561,7 +17595,8 @@ fn run_pack_reinject(new_version: &str) -> Result<ReinjectReport, String> {
             ReinjectDecision::Inject => {
                 // per-node 에러 격리(Fix3): 한 노드의 transient 실패가 나머지 건강 노드의 reinject를
                 // 중단시키지 않게 `?` 전파 대신 count+continue 한다.
-                if let Err(e) = inject_text(sid, &directive) {
+                // ★⑯(precut ㉮ 형제) 팩 갱신 뒤 무인 재주입 — 승인·질문 창 위에는 쓰지 않는다(실패 = 아래 사유 · 다음 노드).
+                if let Err(e) = inject_text_opts(sid, &directive, true) {
                     eprintln!("[pack-update] reinject 주입 실패(surface {sid}, role {role}): {e} — 다음 노드로 계속");
                     failed += 1;
                     continue;
@@ -20364,7 +20399,7 @@ mod tests {
         let cycle = fn_body("run_cycle_agent");
         let clear_resume = &cycle[cycle.find("let clear_resume = ").expect("clear_resume")..];
         let clear_resume = &clear_resume[..clear_resume.find("})();").expect("클로저 끝")];
-        assert_eq!(clear_resume.matches("inject_text(").count(), 1,
+        assert_eq!(clear_resume.matches("inject_text(").count() + clear_resume.matches("inject_text_opts(").count(), 1,
             "순환 clear 뒤 깨움 글이 두 번 제출된다(전문 → 2초 → [RESUME]):\n{clear_resume}");
         let recover = fn_body("run_node_recover");
         assert_eq!(recover.matches("inject_text(").count(), 0, "node-recover 가 boot 뒤에 두 번째 글을 넣는다");
@@ -20425,7 +20460,7 @@ mod tests {
         let f = prod.find("\nfn run_cycle_agent(").expect("run_cycle_agent");
         let body = &prod[f..];
         let pre = body.find("verifier_precheck(caller.as_deref(), sid, v, &vsid)?;").expect("사전검사 배선 없음");
-        let save = body.find("inject_text(sid, &cycle_save_directive(").expect("저장 지시 주입");
+        let save = body.find("inject_text_opts(sid, &cycle_save_directive(").expect("저장 지시 주입");
         assert!(pre < save, "사전검사가 저장 지시 주입 뒤에 있다 — 거부 전에 이미 좌석에 썼다");
         for (name, text) in [
             ("CSO_DIRECTIVE.md", include_str!("../../cysjavis-pack/directives/CSO_DIRECTIVE.md")),
@@ -20458,6 +20493,33 @@ mod tests {
             assert!(step4.contains(input), "순환 4단계 입력에 승인 창 거부 옵션이 없다: {input}\n{step4}");
         }
         assert_eq!(step4.matches("request(").count(), 3, "순환 4단계에 옵션 없는 입력이 새로 생겼다");
+        // ★precut ㉮ — 4단계 밖의 순환 입력(1단계 저장 지시 · 3단계 검증자 글 · 5단계 재주입)도 같은 거부를 싣는다.
+        //   종전엔 저장 지시가 거부 없이 나가 질문 창을 1번으로 답했다(VM r1001 3-5). 옵션 없는 inject_text( 가
+        //   순환 본문에 새로 생기면 적색.
+        let cycle = &body[..body.find("\nfn cycle_agent_exit(").expect("순환 본문 끝")];
+        assert_eq!(cycle.matches("inject_text(").count(), 0, "순환에 거부 없는 주입이 있다");
+        let opts: Vec<&str> = cycle.match_indices("inject_text_opts(").map(|(i, _)| {
+            let rest = &cycle[i..];
+            &rest[..rest.find(")?;").expect("주입 끝") + 1]
+        }).collect();
+        assert_eq!(opts.len(), 3, "순환 주입 지점 수가 바뀌었다: {opts:?}");
+        for o in &opts {
+            assert!(o.ends_with(", true)"), "순환 주입에 거부 옵션이 꺼져 있다: {o}");
+        }
+        // 주입부는 붙여넣기·제출 Return 두 요청에 같은 옵션을 싣는다.
+        let ii = prod.find("fn inject_text_opts(sid: u64").expect("inject_text_opts");
+        let ib = &prod[ii..ii + prod[ii..].find("\n}\n").unwrap()];
+        assert_eq!(ib.matches("refusing_on_approval(").count(), 2, "붙여넣기·Return 중 거부 옵션 누락");
+        assert_eq!(ib.matches("\n            refuse_on_approval,\n").count(), 2, "붙여넣기·Return 이 호출자 옵션을 전달하지 않는다");
+        let base = json!({"surface_id": 3, "key": "Return", "authoritative": true});
+        assert_eq!(refusing_on_approval(base.clone(), true)["refuse_on_approval"], json!(true), "켰는데 옵션이 안 실렸다");
+        assert_eq!(refusing_on_approval(base.clone(), false), base, "껐는데 요청 바이트가 바뀌었다(다른 주입 경로 회귀)");
+        // 형제(무인 팬아웃 3곳) — [DRAIN] · 팩 갱신 재주입 · drain --verify(부서 소켓 판 붙여넣기·Return).
+        assert!(prod.contains("inject_text_opts(sid, \"[DRAIN] "), "[DRAIN] 팬아웃이 거부 없이 나간다");
+        assert!(prod.contains("if let Err(e) = inject_text_opts(sid, &directive, true)"), "팩 갱신 재주입이 거부 없이 나간다");
+        let oi = prod.find("fn inject_text_on(").expect("inject_text_on");
+        let ob = &prod[oi..oi + prod[oi..].find("\n}\n").unwrap()];
+        assert_eq!(ob.matches("            true,\n        ),\n        timeout,").count(), 2, "drain --verify 주입에 거부 옵션 누락");
         let end = body.find("clear_resume?;").expect("clear_resume?");
         let release = body.find("let _ = set_surface_quiescing(sid, false);").expect("quiescing 해제");
         assert!(cl < release && release < end, "거부로 끝나면 quiescing 이 안 풀린다");
@@ -25412,7 +25474,8 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         //   ⚠줄어드는 방향의 개정이므로 근거 없이 다시 내리지 마라: 내리려면 「어느 주입이
         //   어디로 접혔는가」를 여기 적어야 한다(적을 수 없으면 그것이 침묵이다).
         assert_eq!(
-            prod.matches("if let Err(e) = inject_text(").count(),
+            prod.matches("if let Err(e) = inject_text(").count()
+                + prod.matches("if let Err(e) = inject_text_opts(").count(),
             3,
             "주입 사유를 남기는 지점 수가 동결값(3)을 벗어났다 — 줄었다면 침묵이 되살아난 것이다"
         );
@@ -27662,7 +27725,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(got["surface_id"], json!(3));
         let src = include_str!("cys.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
-        let a = prod.find("fn inject_text(sid: u64, text: &str)").unwrap();
+        let a = prod.find("fn inject_text_opts(sid: u64, text: &str").unwrap();
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
         assert_eq!(body.matches("with_owner_token(json!(").count(), 4, "inject_text 의 주입 요청 4곳 중 토큰 누락");
         let r = prod.find("fn rotate_depts(").unwrap();

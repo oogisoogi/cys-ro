@@ -2271,6 +2271,14 @@ const exitedPaneKeys = new Set<string>();
 const socketForSlug = new Map<string, string>();
 // 기본(본부) 데몬 socket_slug — 백엔드 단일진실(default_socket_slug). 모르면(null) 본부 판정을 하지 않는다(F4 보호 유지).
 let defaultSocketSlug: string | null = null;
+// 기본 slug 받기 — 실패하면 null 유지(종전 동작 = 목록 대조에 맡김). 다음 판정 실패 때 다시 시도한다(codex 1R).
+async function loadDefaultSocketSlug(): Promise<void> {
+  try {
+    defaultSocketSlug = String(await invoke("default_socket_slug"));
+  } catch {
+    /* null 유지 */
+  }
+}
 // 사이드바 노드 신호 캐시(B3) — org.status 응답을 워크스페이스 행 집계용으로 보관.
 type NodeSig = { role: string | null; state: string; ctx_pct: number | null; idle_secs: number; agent_alive: boolean | null; working: boolean };
 const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
@@ -7818,7 +7826,10 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // (cys-117-exitedpane-b1) 기본 데몬 이벤트에도 slug 가 붙으므로 기본 slug 를 본부(socket undefined)로 푼다 —
     //   종전엔 여기서 조기 return 해 본부 창이 3초 목록 대조(0개면 보류)로만 지워졌다. 판정 = evsock.ts.
     const src = eventSock(event.socket_slug, socketForSlug, defaultSocketSlug);
-    if (!src.ok) return; // slug 명시됐는데 미해결 → 기본 데몬 폴백 금지(타부서 동일 sid 오제거 방지)
+    if (!src.ok) {
+      if (defaultSocketSlug === null) void loadDefaultSocketSlug(); // 기동 때 못 받았으면 다음 소식을 위해 재시도
+      return; // slug 명시됐는데 미해결 → 기본 데몬 폴백 금지(타부서 동일 sid 오제거 방지)
+    }
     removeDeadPane(Number(sid), src.socket);
   }
 }
@@ -8151,11 +8162,7 @@ async function start() {
   setInterval(() => void checkVersionSkew(), 5 * 60_000);
 
   // (cys-117-exitedpane-b1) 본부 이벤트의 출처를 알아보려면 기본 slug 를 먼저 받아 둔다(데몬 왕복 없는 로컬 계산).
-  try {
-    defaultSocketSlug = String(await invoke("default_socket_slug"));
-  } catch {
-    /* 못 받으면 null 유지 — 본부 창은 종전처럼 3초 목록 대조가 지운다 */
-  }
+  await loadDefaultSocketSlug();
   await listen("daemon-event", (e) => onDaemonEvent(e.payload as Record<string, unknown>));
   // ⓑ 데몬 재기동 뒤 스트림 재수립(main.rs spawn_event_forwarder) → pid·소켓 라벨을 다시 쓴다.
   //   같은 순간 스큐 배지도 다시 판정한다(agy 1R 수용 — 교대 뒤 옛 배지가 다음 5분 주기까지 남던 자리).

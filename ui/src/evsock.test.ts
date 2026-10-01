@@ -46,7 +46,8 @@ describe("main.ts 배선 — 종료 소식 처리기가 판정부를 쓰고 기�
   test("처리기가 eventSock(… defaultSocketSlug) 로 판정하고 그 결과로 removeDeadPane 을 부른다", () => {
     expect(at).toBeGreaterThan(0);
     expect(branch.includes("eventSock(event.socket_slug, socketForSlug, defaultSocketSlug)")).toBe(true);
-    expect(branch.includes("if (!src.ok) return;")).toBe(true);
+    expect(branch.includes("if (!src.ok) {")).toBe(true);
+    expect(branch.includes("if (defaultSocketSlug === null) void loadDefaultSocketSlug();")).toBe(true);
     expect(branch.includes("removeDeadPane(Number(sid), src.socket)")).toBe(true);
   });
 

@@ -7412,6 +7412,11 @@ mod tests {
         let full = include_str!("main.rs");
         let src = &full[..full.find("#[cfg(test)]\nmod tests {").expect("tests")]; // 이 시험 자신의 문자열을 잡지 않게
         assert!(src.contains("spawn_event_forwarder(handle.clone(), default_socket())"), "본부 전달기 소켓 = default_socket()");
+        // 전달기가 붙이는 slug 계산 자체도 고정한다(codex 1R — 명령 쪽만 보면 자기반복 비교가 된다).
+        let fwd = &src[src.find("fn spawn_event_forwarder(").expect("forwarder")..];
+        let fwd = &fwd[..fwd.find("\n}\n").expect("forwarder end")];
+        assert!(fwd.contains("let slug = sock_slug(&socket);") && fwd.contains(r#"obj.insert("socket_slug".into(), json!(slug));"#),
+            "전달기 slug = sock_slug(소켓) 이어야 default_socket_slug 와 같다");
         let handlers = &src[src.find("tauri::generate_handler![").expect("handler")..];
         assert!(handlers.contains("default_socket_slug,"), "UI 가 부를 default_socket_slug 가 등록돼 있어야 한다");
     }

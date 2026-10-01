@@ -7825,7 +7825,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // 멀티마스터 F4: 출처 데몬을 socket_slug로 특정해 그 부서 pane만 제거(타 부서 같은 sid 보호).
     // (cys-117-exitedpane-b1) 기본 데몬 이벤트에도 slug 가 붙으므로 기본 slug 를 본부(socket undefined)로 푼다 —
     //   종전엔 여기서 조기 return 해 본부 창이 3초 목록 대조(0개면 보류)로만 지워졌다. 판정 = evsock.ts.
-    const src = eventSock(event.socket_slug, socketForSlug, defaultSocketSlug);
+    // (precut ㉯) 표에 없는 부서(시작 때 이미 살아 있던 · 대화로 생긴)는 전달기가 싣는 출처 소켓을 열린 작업공간과 대조한다.
+    const src = eventSock(event.socket_slug, socketForSlug, defaultSocketSlug, event.source_socket, workspaces.map((w) => w.socket));
     if (!src.ok) {
       if (defaultSocketSlug === null) void loadDefaultSocketSlug(); // 기동 때 못 받았으면 다음 소식을 위해 재시도
       return; // slug 명시됐는데 미해결 → 기본 데몬 폴백 금지(타부서 동일 sid 오제거 방지)

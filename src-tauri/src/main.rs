@@ -4681,6 +4681,9 @@ fn spawn_event_forwarder(app: AppHandle, socket: std::path::PathBuf) {
         }
     }
     let slug = sock_slug(&socket);
+    // (precut ㉯) 출처 소켓 경로 — UI 의 식별표 표(socketForSlug)에 없는 부서(시작 때 이미 살아 있던 · 대화로 생긴)도
+    //   종료 소식을 열린 작업공간과 대조해 그 창을 지울 수 있게(evsock.ts). slug 와 같은 소켓 값에서 나온다.
+    let source_socket = socket.to_string_lossy().to_string();
     tauri::async_runtime::spawn(async move {
         let mut after_seq: Option<u64> = None;
         let mut fails: u32 = 0;
@@ -4709,6 +4712,7 @@ fn spawn_event_forwarder(app: AppHandle, socket: std::path::PathBuf) {
                             }
                             if let Some(obj) = v.as_object_mut() {
                                 obj.insert("socket_slug".into(), json!(slug));
+                                obj.insert("source_socket".into(), json!(source_socket));
                             }
                             let _ = app.emit("daemon-event", v);
                         }
@@ -7417,6 +7421,11 @@ mod tests {
         let fwd = &fwd[..fwd.find("\n}\n").expect("forwarder end")];
         assert!(fwd.contains("let slug = sock_slug(&socket);") && fwd.contains(r#"obj.insert("socket_slug".into(), json!(slug));"#),
             "전달기 slug = sock_slug(소켓) 이어야 default_socket_slug 와 같다");
+        // (precut ㉯) 전달기는 출처 소켓 경로도 싣는다 — UI 가 식별표 표에 없는 부서(시작 때 이미 살아 있던 · 대화로 생긴)의
+        //   종료 소식을 열린 작업공간 소켓과 대조해 그 창을 지운다(evsock.ts). slug 와 **같은 소켓 값**에서 나와야 한다.
+        assert!(fwd.contains("let source_socket = socket.to_string_lossy().to_string();")
+                && fwd.contains(r#"obj.insert("source_socket".into(), json!(source_socket));"#),
+            "전달기가 출처 소켓을 싣지 않는다 — 표에 없는 부서의 끝난 창이 reap 까지 남는다");
         let handlers = &src[src.find("tauri::generate_handler![").expect("handler")..];
         assert!(handlers.contains("default_socket_slug,"), "UI 가 부를 default_socket_slug 가 등록돼 있어야 한다");
     }

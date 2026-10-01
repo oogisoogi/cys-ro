@@ -4,6 +4,14 @@
 - 원장 지시: master#75ed3b05(브리프) · #4ead2ecd(Q1~Q4 판정) · #5daf328b(bundle-prep 편입) · #a62921f6(⑲ 주석 2곳 · ⑧ 경보 청취 단언)
 - 소요 계수(다음 티켓용): SPLIT 10분(19:04→19:15) · 갈래1 구현 8항목 31분(19:15→19:46) · 게이트 전체 21분(19:47→20:08) · 적대 검증 R1(Fable) ≈20분
 
+## 0. 최신 델타(10-01 13:3x · 좌석 1187 cutprep · 원 계정 7d 98% 정지 · master#0cd143f3)
+- fix/117-int 원격 = 7510f5c5(B-1 병합) · CI 3종 **초록** = ci-branch 36813041319 · windows-build 36813041334 · windows-health 36813041330(success @7510f5c5).
+- ⚠ 윈 실기 키트 프리릴리스 **이미 게시됨**(13:3x · master#0db63a2b 조건부 승인 · 조건 windows-health success 충족 뒤 집행 · 정지 지시 #0cd143f3 는 게시 직후 도착): https://github.com/oogisoogi/jarvis-install/releases/tag/wintest-v1.1.7-20261001 · pre=true · 자산 2 = cysr_1.1.7_x64-setup.exe 140,913,153 B sha256 0961e3755e75cd4eeb0debec9093b243200fa0e092a6b68a1931624ff8530be0 · bootstrap.ps1 541,734 B sha256 8fabfbe695757a7e14cd67f4c31de4f3fb56e98872d15122c294343d03ea182e — 둘 다 내려받아 재대조 일치.
+  · 설치 한 줄용 주소 = https://github.com/oogisoogi/jarvis-install/releases/download/wintest-v1.1.7-20261001/bootstrap.ps1 (bootstrap 원본 = habitat 563426b = 공개 df5efc8 블롭 c6fa348 · 4줄 치환).
+  · 키트 폴더 = /private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-117-lead/774c6717-3fb3-4be9-ae37-12e0bff4fab2/scratchpad/wintest117/out-36813041334-563426b(wintest.diff · SHA256SUMS.local · verify/) · 재현 = 같은 폴더 위 make-kit.sh `36813041334 563426b`.
+  · 실기 뒤 삭제 = master 게이트(`gh release delete wintest-v1.1.7-20261001 -R oogisoogi/jarvis-install --cleanup-tag`).
+- 남은 것(새 좌석): 설치 한 줄 문구 확정·박사님 전달 = master · P4 = 1.1.8 이월(§9) · 로컬 int/117 = 7510f5c5 위 문서 커밋(미push).
+
 ## 1. 끝난 것 (fix/117-store · 전부 로컬 커밋 · push 는 R2 판정 뒤)
 | 항목 | 커밋 | 시험(새) · 뮤테이션 |
 |---|---|---|

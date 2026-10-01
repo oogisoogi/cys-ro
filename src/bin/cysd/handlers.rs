@@ -1599,16 +1599,21 @@ fn draft_gate_denied_response(
 }
 
 /// T3-13 타이핑 가드 창 (초). 0 = 비활성.
-/// ★precut ㉮(codex 1R BLOCK) writer 쓰기 직전 재판정 — `refuse_on_approval` 제출 키 전용. 창이 떠 있으면 `true`
-/// (writer 가 CR 을 쓰지 않는다) + 버스 `input.refused_at_write` 1건(호출자 응답은 이미 나갔으므로 흔적은 여기 남긴다).
+/// ★precut ㉮(codex 1R BLOCK) writer 쓰기 직전 재판정 — `refuse_on_approval` 키 전용. 창이 떠 있으면 `true`
+/// (writer 가 그 키를 쓰지 않는다) + 버스 `input.refused_at_write` 1건(호출자 응답은 이미 나갔으므로 흔적은 여기 남긴다).
+/// ★codex 2R: 핸들러는 이미 「제출됨」으로 미제출 계수를 0 으로 접었다 — 거부하면 계수를 **쓰기 전 값(최소 1)** 으로
+/// 되돌린다(입력줄에 본문이 남았다 = 비어 있지 않다는 쪽이 안전 방향 · 뒤따르는 기계 본문이 그 잔여에 이어붙지 않게).
+/// ⚠한계(정직): 호출자에게 거부를 돌려주지는 못한다 — 순환은 다음 입력의 핸들러 판정에서 같은 창으로 거부돼 멈춘다.
 fn approval_write_guard(
     daemon: &Arc<Daemon>,
     surface: &Arc<crate::state::Surface>,
 ) -> Box<dyn Fn() -> bool + Send> {
     let (d, s) = (daemon.clone(), surface.clone());
+    let before = surface.pending_input_bytes.load(Ordering::Relaxed);
     Box::new(move || {
         let hit = crate::governance::seat_approval_pending(&d, &s);
         if hit {
+            s.pending_input_bytes.fetch_max(before.max(1), Ordering::Relaxed);
             d.bus.publish(
                 "input.refused_at_write",
                 "surface",
@@ -4330,11 +4335,12 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   지연은 writer 스레드에서 일어난다(단일 소비자 = 순서 보존 · 핸들러 무블로킹).
             let key_bytes = bytes.clone();
             let write_req = match submit_gap_for_key(&key, cr_min_gap_ms()) {
-                // ★precut ㉮ codex 1R(BLOCK): 위 판정과 실제 CR 쓰기 사이(writer 적체 + 최소 간격 대기)에 창이 뜨면
-                //   CR 이 그 선택지를 누른다. 거부 요청의 제출 키는 writer 가 **쓰기 직전** 같은 술어로 한 번 더 본다.
-                Some(min_gap_ms) if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {
+                // ★precut ㉮ codex 1R(BLOCK): 위 판정과 실제 쓰기 사이(writer 적체 + 최소 간격 대기)에 창이 뜨면
+                //   CR 이 그 선택지를 누른다. 거부 요청의 키는 writer 가 **쓰기 직전** 같은 술어로 한 번 더 본다.
+                //   ★codex 2R: 간격 설정(0 = 끔)·키 이름(C-m 별칭)과 **무관하게** 거부 요청이면 늘 재판정한다.
+                gap if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {
                     bytes,
-                    min_gap_ms,
+                    min_gap_ms: gap.unwrap_or(0),
                     refuse_now: approval_write_guard(daemon, &surface),
                 },
                 Some(min_gap_ms) => crate::state::WriteReq::SubmitAfterGap { bytes, min_gap_ms },
@@ -12039,12 +12045,20 @@ mod tests {
             let r = call(ask.id, method, p.clone());
             assert_eq!(r["error"]["code"], json!(cys::ERR_APPROVAL_SCREEN), "{method}: 사람 입력 직후 사유가 승인 창이 아니다 {r}");
         }
+        // codex 2R — writer 재판정이 거부하면 핸들러가 0 으로 접은 미제출 계수를 쓰기 전 값으로 되돌린다(잔여 = 비어 있지 않음).
+        ask.pending_input_bytes.store(7, Ordering::Relaxed);
+        let guard = approval_write_guard(&daemon, &ask);
+        ask.pending_input_bytes.store(0, Ordering::Relaxed); // 핸들러가 「제출됨」으로 접은 상태
+        assert!(guard(), "질문 창인데 writer 재판정이 통과시켰다");
+        assert_eq!(ask.pending_input_bytes.load(Ordering::Relaxed), 7, "거부했는데 미제출 계수가 0 으로 남았다");
+        let ready_guard = approval_write_guard(&daemon, &ready);
+        assert!(!ready_guard(), "입력창 화면에서 writer 재판정이 막았다(과잉 차단)");
         // codex 1R(BLOCK) 배선 핀 — 거부 요청의 제출 키는 writer 재판정 변형으로 나가고, 그 재판정은 같은 술어다
         //   (writer 쪽 거동은 state::submit_guarded_rechecks_dialog_right_before_writing_cr 가 고정).
         let src = include_str!("handlers.rs");
         let prod = &src[..src.find("\n#[cfg(test)]").expect("테스트 경계")];
-        assert!(prod.contains("Some(min_gap_ms) if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {"),
-            "거부 요청 제출 키가 writer 재판정 없이 나간다");
+        assert!(prod.contains("gap if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {"),
+            "거부 요청 키가 writer 재판정 없이 나간다(간격 설정과 무관해야 한다)");
         let g = prod.find("fn approval_write_guard(").expect("approval_write_guard");
         assert!(prod[g..g + prod[g..].find("\n}\n").unwrap()].contains("crate::governance::seat_approval_pending(&d, &s)"),
             "writer 재판정이 핸들러와 다른 술어다");

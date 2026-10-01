@@ -5865,7 +5865,9 @@ pub(crate) fn approval_in_prompt_tail(
             t
         }
     };
-    if is_choice_dialog_footer(&choice_tail.join(" ")) {
+    // ★codex 2R: 꼬리 문구만으로는 본문(이 창을 설명한 답 · 가로줄 없는 어댑터 화면)에 속는다 — 화면에 이 어댑터의
+    //   준비 마커로 시작하는 **번호 선택지 행**(`❯ 1. …` · 선택지는 늘 보이게 스크롤된다)이 함께 있어야 창이다.
+    if is_choice_dialog_footer(&choice_tail.join(" ")) && rows.iter().any(|r| is_numbered_choice_row(r, marker)) {
         return true;
     }
     // ⑴ 어댑터 패턴 — 가로줄이 없으면 커서 행이 번호 선택지일 때만 전량(흔한 낱말 기아 방지 · 위 doc).
@@ -11273,6 +11275,10 @@ mod tests {
         narrow.push("Enter to select · ↑/↓ to navigate · Esc to   ".into()); // 칸 맞춤 공백 + 구절 안에서 접힘
         narrow.push("cancel".into());
         assert!(approval_in_prompt_tail(&narrow, usize::MAX, "❯", &[], &[]), "접힌 꼬리를 못 읽었다");
+        // codex 2R 반례 — 가로줄 없는 답 화면의 맨 아래에 꼬리 문구가 있어도 번호 선택지 행이 없으면 창이 아니다.
+        let prose = rows("답: 그 창은 이렇게 생겼다\r\nEnter to select · ↑/↓ to navigate · Esc to cancel\r\n›\r\n? for shortcuts");
+        assert!(!approval_in_prompt_tail(&prose, usize::MAX, "❯", &[], &[]), "본문 속 꼬리 문구로 좌석을 막았다(가로줄 없음)");
+        assert!(!approval_in_prompt_tail(&prose, usize::MAX, "? for shortcuts", &[], &[]), "본문 속 꼬리 문구(codex 마커)");
         let perm = rows(&format!("{rule}\r\n Bash command\r\n ❯ 1. Yes\r\n   2. No\r\n\r\n Esc to cancel · Tab to amend"));
         assert!(!approval_in_prompt_tail(&perm, 2, "❯", &[], &[]), "허락 창 꼬리가 선택지 서명으로 읽혔다");
     }

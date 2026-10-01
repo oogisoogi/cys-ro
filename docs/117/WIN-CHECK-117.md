@@ -33,6 +33,15 @@
 | 13 | 총괄 창에 「부서 하나 만들어 줘」라고 보냅니다. | 부서 **이름과 저장 위치**를 묻는다(바탕화면에 바로 만들지 않는다) | 1장 |
 | 14 | 추천 위치를 그대로 받겠다고 답합니다. | 부서가 생기고, 왼쪽 칸에 새 부서가 보인다 | 1장 |
 
+## ㉰-2 끝난 창 정리 · 질문 창 보호 (precut-fix ㉯·㉮ — 14번에서 만든 부서로)
+
+| # | 하실 일 | 보이면 됨 | 사진 |
+|---|---|---|---|
+| 14-1 | 새 부서의 작업자(worker) 창을 누르고 `/exit` 를 치고 Enter, 이어서 `exit` 를 치고 Enter 를 누릅니다(두 번 끝내야 창이 「끝남」이 됩니다). | 그 창이 **사람 손 없이 몇 초 안에 사라진다** · 그 부서의 총괄·CSO 창은 **남는다** · 화면이 빈 칸이 되지 않는다 | 끝내기 전·10초 뒤 2장 |
+| 14-2 | 본부(처음 탭)로 돌아와 작업자(worker) 창에 「AskUserQuestion 도구로 사과/배 중 하나를 묻는 질문을 띄우고 기다려라」라고 보냅니다. | 작업자 창에 「❯ 1. 사과 / 2. 배」 질문 창이 뜬다 — **아무것도 누르지 마십시오** | 1장 |
+| 14-3 | PowerShell 에 `cys cycle-agent --role worker --verifier cso` 를 치고 Enter 를 누릅니다. | PowerShell 에 `approval or question dialog is on screen — refused` 가 나오고 끝난다 · 작업자 창의 질문은 **그대로 떠 있다**(사과가 저절로 골라지지 않는다) | PowerShell·작업자 창 2장 |
+| 14-4 | 작업자 창에서 질문에 직접 답합니다(아무거나). | 질문 창이 닫힌다(사람이 고른 것만 반영) | — |
+
 ## ㉱ 맨 마지막 — 앱 지우기 (지운 뒤 다시 설치하셔야 합니다)
 
 | # | 하실 일 | 보이면 됨 | 사진 |
@@ -52,11 +61,17 @@
 ---
 <!-- master 용 메모(박사님께 드릴 때 이 아래는 빼도 됨)
 - 파일 = fix/117-int windows-build 아티팩트 `cys-windows-x64-nsis`. 받기: `gh run download <run id> -R oogisoogi/cys-ro -n cys-windows-x64-nsis`.
-  지금 있는 것 = run 36575046447(@9d52157e · 140,911,335 B · 만료 2026-12-28) = **판 번호 1.1.6**(PRECUT-117 §0 P1) → 10·11번이 「cysr 1.1.6」 으로 나온다.
-  P1 판 번호 범프 뒤 새 run 파일을 드리면 1.1.7 로 맞는다.
+  ★지금 키트(10-02 · precut-fix 포함) = run 36937607940(@c33f2ab2) → 프리릴리스 `wintest-v1.1.7-20261002`(jarvis-install · pre=true · 실기 뒤 삭제)
+  · `cysr_1.1.7_x64-setup.exe` 140,910,610 B · sha256 886feec3b599605d3c9e666f50bce479bac3030c463339ddd92078a4f0372de8
+  · `bootstrap.ps1` 541,734 B · sha256 c608e9301c6a42c4e750e18480b46feb6744c7a73956ce35e07cfe95715390a7(공개 df5efc8 블롭 c6fa348 의 139·140·151·152 4줄 치환 · BOM 보존)
+  · 설치 파일 직접 받기: https://github.com/oogisoogi/jarvis-install/releases/download/wintest-v1.1.7-20261002/cysr_1.1.7_x64-setup.exe
+  · ★20 설치 한 줄(공개 README 와 같은 꼴):
+    `irm https://github.com/oogisoogi/jarvis-install/releases/download/wintest-v1.1.7-20261002/bootstrap.ps1 -OutFile $env:TEMP\install-jarvis.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\install-jarvis.ps1`
+  (옛 wintest-v1.1.7-20261001 = 7510f5c5 수리 전 판 · 10-02 삭제.)
 - ★5·★6·★8 = D4 W1·W4·W7(master/reports/cysr-115-debug-2026-09-23/D4-ui-win-checklist.md) · ★20 = D5 W1(D5-installer-win-checklist.md) —
   ★20 은 설치기가 이 파일을 받아 가게 하는 wintest 주소(1.1.5 10차 선례)가 있어야 한다 = master 게이트. 없으면 절단 산출물로.
 - 4번 = E3(창 줄이기 · 덮어 설치 6 → 2) · 10·11 = E1 · 12 = ⑱(ui/index.html #ws-credit) · 13·14 = G · 16~18 = E2(/P 제거 · 데이터 칸 꺼짐 = 보관 · 박사님 21:1x 결정 유지)
   · 19 = 제거 뒤 재설치 복원(E2 결정의 짝 — 「앱만 지워지고 기록은 남는다」 확인).
+  · 14-1 = precut ㉯(부서 끝난 창 즉시 제거 · VM r1001 3-8 은 23~45초+ 남음) · 14-2~14-4 = precut ㉮(⑯ 질문 창 위 순환 입력 0 · VM 3-5 는 1번이 저절로 골라짐).
 - 이 파일은 발행 서명·업데이터 레인과 다를 수 있다(RELEASE-PROCESS-v2 §3-3 「서명 여부 확인 필요」 미해소).
 -->

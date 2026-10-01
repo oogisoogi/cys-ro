@@ -1613,6 +1613,8 @@ fn approval_write_guard(
     Box::new(move || {
         let hit = crate::governance::seat_approval_pending(&d, &s);
         if hit {
+            // codex 3R: 핸들러는 input_gate 를 쥔 채 enqueue → 계수 0 기록을 한다 — 같은 잠금을 잡아야 그 0 뒤에 복원된다.
+            let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
             s.pending_input_bytes.fetch_max(before.max(1), Ordering::Relaxed);
             d.bus.publish(
                 "input.refused_at_write",
@@ -12060,6 +12062,11 @@ mod tests {
         assert!(prod.contains("gap if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {"),
             "거부 요청 키가 writer 재판정 없이 나간다(간격 설정과 무관해야 한다)");
         let g = prod.find("fn approval_write_guard(").expect("approval_write_guard");
+        {
+            let gb = &prod[g..g + prod[g..].find("\n}\n").unwrap()];
+            let lock = gb.find("s.input_gate.lock()").expect("writer 복원이 input_gate 를 안 잡는다(핸들러 0 기록에 덮인다)");
+            assert!(lock < gb.find("fetch_max(").unwrap(), "복원이 잠금 밖이다");
+        }
         assert!(prod[g..g + prod[g..].find("\n}\n").unwrap()].contains("crate::governance::seat_approval_pending(&d, &s)"),
             "writer 재판정이 핸들러와 다른 술어다");
 

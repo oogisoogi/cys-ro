@@ -5867,7 +5867,11 @@ pub(crate) fn approval_in_prompt_tail(
     };
     // ★codex 2R: 꼬리 문구만으로는 본문(이 창을 설명한 답 · 가로줄 없는 어댑터 화면)에 속는다 — 화면에 이 어댑터의
     //   준비 마커로 시작하는 **번호 선택지 행**(`❯ 1. …` · 선택지는 늘 보이게 스크롤된다)이 함께 있어야 창이다.
-    if is_choice_dialog_footer(&choice_tail.join(" ")) && rows.iter().any(|r| is_numbered_choice_row(r, marker)) {
+    //   ★codex 3R: 준비 마커를 모르는 어댑터("")는 이 축을 세우지 않는다 — 빈 마커면 아무 번호 목록이나 선택지로 읽힌다.
+    if !marker.is_empty()
+        && is_choice_dialog_footer(&choice_tail.join(" "))
+        && rows.iter().any(|r| is_numbered_choice_row(r, marker))
+    {
         return true;
     }
     // ⑴ 어댑터 패턴 — 가로줄이 없으면 커서 행이 번호 선택지일 때만 전량(흔한 낱말 기아 방지 · 위 doc).
@@ -11279,6 +11283,9 @@ mod tests {
         let prose = rows("답: 그 창은 이렇게 생겼다\r\nEnter to select · ↑/↓ to navigate · Esc to cancel\r\n›\r\n? for shortcuts");
         assert!(!approval_in_prompt_tail(&prose, usize::MAX, "❯", &[], &[]), "본문 속 꼬리 문구로 좌석을 막았다(가로줄 없음)");
         assert!(!approval_in_prompt_tail(&prose, usize::MAX, "? for shortcuts", &[], &[]), "본문 속 꼬리 문구(codex 마커)");
+        // codex 3R — 마커 없는 어댑터(grok · "")에선 본문 번호 목록 + 꼬리 문구로도 서지 않는다.
+        let listed = rows("1. 설명\r\nEnter to select · ↑/↓ to navigate · Esc to cancel\r\n> ");
+        assert!(!approval_in_prompt_tail(&listed, usize::MAX, "", &[], &[]), "빈 마커에서 번호 목록을 선택지로 읽었다");
         let perm = rows(&format!("{rule}\r\n Bash command\r\n ❯ 1. Yes\r\n   2. No\r\n\r\n Esc to cancel · Tab to amend"));
         assert!(!approval_in_prompt_tail(&perm, 2, "❯", &[], &[]), "허락 창 꼬리가 선택지 서명으로 읽혔다");
     }

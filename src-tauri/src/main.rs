@@ -192,6 +192,13 @@ async fn rpc_full(socket: &std::path::Path, method: &str, params: Value) -> Resu
     serde_json::from_str(resp_line.trim()).map_err(|e| e.to_string())
 }
 
+/// 기본(본부) 데몬의 socket_slug — 전달기는 기본 데몬 이벤트에도 slug 를 붙이므로(spawn_event_forwarder)
+/// UI 가 그 slug 를 본부로 풀 수 있게 알려 준다(cys-117-exitedpane-b1 · 종료 즉시 창 제거의 본부 경로).
+#[tauri::command]
+fn default_socket_slug() -> String {
+    sock_slug(&default_socket())
+}
+
 #[tauri::command]
 async fn daemon_status(socket: Option<String>) -> Result<Value, String> {
     rpc_on(&resolve_socket(&socket), "system.identify", json!({"caller": "ui"})).await
@@ -6973,6 +6980,7 @@ fn main() {
             promote_pending_ceo,
             approve_ceo_promotion,
             daemon_status,
+            default_socket_slug,
             list_surfaces,
             org_status,
             org_fleet,
@@ -7394,6 +7402,24 @@ mod tests {
     }
 
     use super::*;
+
+    /// (cys-117-exitedpane-b1) UI 가 받는 기본 slug 는 전달기가 기본 데몬 이벤트에 붙이는 slug 와 같아야 한다 —
+    /// 둘이 어긋나면 본부 종료 소식이 다시 「미해결 slug」로 조기 return 된다. 명령 등록도 함께 고정한다.
+    #[test]
+    fn default_socket_slug_matches_forwarder_slug_and_is_registered() {
+        assert_eq!(default_socket_slug(), sock_slug(&default_socket()));
+        assert_eq!(default_socket_slug(), sock_slug(&resolve_socket(&None)));
+        let full = include_str!("main.rs");
+        let src = &full[..full.find("#[cfg(test)]\nmod tests {").expect("tests")]; // 이 시험 자신의 문자열을 잡지 않게
+        assert!(src.contains("spawn_event_forwarder(handle.clone(), default_socket())"), "본부 전달기 소켓 = default_socket()");
+        // 전달기가 붙이는 slug 계산 자체도 고정한다(codex 1R — 명령 쪽만 보면 자기반복 비교가 된다).
+        let fwd = &src[src.find("fn spawn_event_forwarder(").expect("forwarder")..];
+        let fwd = &fwd[..fwd.find("\n}\n").expect("forwarder end")];
+        assert!(fwd.contains("let slug = sock_slug(&socket);") && fwd.contains(r#"obj.insert("socket_slug".into(), json!(slug));"#),
+            "전달기 slug = sock_slug(소켓) 이어야 default_socket_slug 와 같다");
+        let handlers = &src[src.find("tauri::generate_handler![").expect("handler")..];
+        assert!(handlers.contains("default_socket_slug,"), "UI 가 부를 default_socket_slug 가 등록돼 있어야 한다");
+    }
 
     /// ★팩 원격 매니페스트 URL 결속 핀 (2026-09-12 · TICKET=cys-v01436-pack-url)
     ///

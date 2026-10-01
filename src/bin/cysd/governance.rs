@@ -11228,10 +11228,11 @@ mod tests {
     /// 아니다(⑴ 몫 — 서명이 허락 창을 대신 잡아 ⑴ 시험을 가리지 않게).
     #[test]
     fn u16_choice_dialog_tail_reads_as_approval_without_patterns() {
-        let rows = |t: &str| t.split("\r\n").map(String::from).collect::<Vec<_>>();
+        // 픽스처 = VM `read-screen` 글자 캡처(LF · 저장소 eol=lf 봉인 대상이라 CR 을 담지 않는다).
+        let rows = |t: &str| t.split('\n').map(|l| l.trim_end_matches('\r').to_string()).collect::<Vec<_>>();
         for (name, raw) in [
-            ("vm-1", include_str!("testdata/claude_askuserquestion_vm_r1001.raw")),
-            ("vm-2", include_str!("testdata/claude_askuserquestion_vm_r1001_2.raw")),
+            ("vm-1", include_str!("testdata/claude_askuserquestion_vm_r1001.txt")),
+            ("vm-2", include_str!("testdata/claude_askuserquestion_vm_r1001_2.txt")),
         ] {
             let r = rows(raw);
             let c = r.iter().position(|l| l.contains("❯ 1.")).unwrap();
@@ -11511,7 +11512,9 @@ mod tests {
             ("CYS_PACK_DIR", pack.to_str().unwrap()),
             ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
         ]);
-        let (daemon, s) = qa_fixture_seat("qa-ask", include_bytes!("testdata/claude_askuserquestion_vm_r1001.raw"));
+        // 글자 캡처(LF)를 PTY 바이트로 — 줄머리 복귀(CR) 없이는 파서에서 계단이 진다.
+        let raw = include_str!("testdata/claude_askuserquestion_vm_r1001.txt").replace('\n', "\r\n");
+        let (daemon, s) = qa_fixture_seat("qa-ask", raw.as_bytes());
         qa_tick(&daemon);
         assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "질문 창에 배달했다(Return = 1번)");
         let why = qa_blocked_reason(&s);

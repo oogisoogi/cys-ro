@@ -11982,7 +11982,7 @@ mod tests {
         assert_eq!(r["ok"], json!(true), "입력창 화면에서 순환 C-u 가 막혔다(과잉 차단) {r}");
         // ★precut ㉮ — 질문 창(AskUserQuestion · VM r1001 3-5 실화면)도 같은 거부. 순환 저장 지시는 권위 주입
         //   (authoritative)이라 그 플래그 그대로 싣는다. 종전엔 판정이 이 창을 못 봐 붙여넣기·Return 이 1번을 골랐다.
-        let ask = seat(include_bytes!("testdata/claude_askuserquestion_vm_r1001.raw"));
+        let ask = seat(include_str!("testdata/claude_askuserquestion_vm_r1001.txt").replace('\n', "\r\n").as_bytes()); // 글자 캡처(LF) → PTY 바이트
         for (method, p, pending) in [
             ("surface.send_text", json!({"surface_id": ask.id, "text": "[CYCLE] 저장", "quiet": true,
                                          "authoritative": true, "refuse_on_approval": true}), 0),

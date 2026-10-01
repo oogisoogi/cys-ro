@@ -695,6 +695,14 @@ pub enum WriteReq {
     /// 뒤의 Enter 가 최소 간격에 걸려 대화가 굼떠진다. 기준점은 **프로그램 주입**에만 찍는다
     /// (handlers send_text 가 `human_verified` 로 가른다 — `last_injected` 갱신 조건과 동일).
     Program(Vec<u8>),
+    /// ★precut ㉮(codex 1R BLOCK) `SubmitAfterGap` + **쓰기 직전 재판정** — `refuse_on_approval` 제출 키 전용.
+    /// 핸들러 판정과 실제 CR 쓰기 사이(writer 적체 · 최소 간격 대기)에 승인·질문 창이 뜨면 CR 이 그 선택지를
+    /// 누른다. writer 는 대기 뒤 `refuse_now()` 가 참이면 쓰지 않는다(화면 렌더 지연만큼의 경합은 남는다 — 0 불가).
+    SubmitGuarded {
+        bytes: Vec<u8>,
+        min_gap_ms: u64,
+        refuse_now: Box<dyn Fn() -> bool + Send>,
+    },
     /// ★B2′(codex 감사 R1) 제출 CR 쓰기 — **writer 가 실제로 본문을 쓴 시각**(`last_program_write`)
     /// 으로부터 `min_gap_ms` 가 지나도록 잔여만큼 자고 나서 쓴다.
     ///
@@ -4924,6 +4932,24 @@ pub(crate) fn run_writer_loop<W: Write>(
                 }
                 r
             }
+            // ★precut ㉮(codex 1R BLOCK) 거부 요청의 제출 키 — 최소 간격 대기 **뒤**, 쓰기 직전에 창을 다시 본다.
+            //   창이 떠 있으면 쓰지 않는다(기준점도 안 찍는다 — 화면에 없는 바이트를 기준 삼지 않는 규율).
+            WriteReq::SubmitGuarded { bytes, min_gap_ms, refuse_now } => {
+                if let Some(delay) =
+                    cr_gap_delay_ms(last_program_write.map(|t| t.elapsed()), min_gap_ms)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                }
+                if refuse_now() {
+                    Ok(())
+                } else {
+                    let r = writer.write_all(&bytes).and_then(|_| writer.flush());
+                    if r.is_ok() {
+                        last_program_write = Some(std::time::Instant::now());
+                    }
+                    r
+                }
+            }
             WriteReq::Inject {
                 text,
                 cr_delay_ms,
@@ -6246,6 +6272,39 @@ mod tests {
     /// 이 테스트는 그 상황을 재현한다: 300ms 짜리 선행 요청으로 writer 를 붙들어 두고, 본문을
     /// 큐에 넣은 뒤, **핸들러 기준으로는 이미 150ms 를 넘긴** 200ms 뒤에 제출 CR 을 넣는다.
     /// 계약이 살아 있으면 CR 은 여전히 본문 write 로부터 150ms 이상 떨어져야 한다.
+    /// ★precut ㉮(codex 1R BLOCK) 거부 요청의 제출 키는 writer 가 **최소 간격 대기 뒤·쓰기 직전**에 창을 다시 본다.
+    /// 적체로 붙들린 사이(핸들러 판정 뒤)에 창이 뜨면 CR 을 쓰지 않는다 · 창이 없으면 종전처럼 쓴다.
+    #[test]
+    fn submit_guarded_rechecks_dialog_right_before_writing_cr() {
+        use std::sync::atomic::AtomicBool as Flag;
+        use std::sync::mpsc::sync_channel;
+        for (dialog_appears, want) in [(true, b"XBODY".to_vec()), (false, b"XBODY\r".to_vec())] {
+            let log: WriteLog = Arc::new(Mutex::new(Vec::new()));
+            let (tx, rx) = sync_channel::<WriteReq>(8);
+            let stop = Arc::new(AtomicBool::new(false));
+            let w = TimedBuf::new(&log);
+            let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
+            let dialog = Arc::new(Flag::new(false));
+            let seen = dialog.clone();
+            // ① 적체 300ms — 핸들러 판정(창 없음)은 이 앞에서 이미 끝났다.
+            tx.send(WriteReq::DataAfter { bytes: b"X".to_vec(), delay_ms: 300 }).unwrap();
+            tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
+            tx.send(WriteReq::SubmitGuarded {
+                bytes: b"\r".to_vec(),
+                min_gap_ms: 50,
+                refuse_now: Box::new(move || seen.load(Ordering::SeqCst)),
+            })
+            .unwrap();
+            // ② 적체 중에 창이 뜬다(또는 안 뜬다).
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            dialog.store(dialog_appears, Ordering::SeqCst);
+            drop(tx);
+            handle.join().ok();
+            let flat: Vec<u8> = log.lock().unwrap().iter().flat_map(|(_, b)| b.clone()).collect();
+            assert_eq!(flat, want, "창 {dialog_appears}: {:?}", String::from_utf8_lossy(&flat));
+        }
+    }
+
     #[test]
     fn submit_after_gap_measures_from_actual_write_not_handler_enqueue() {
         use std::sync::mpsc::sync_channel;

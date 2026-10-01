@@ -1599,6 +1599,28 @@ fn draft_gate_denied_response(
 }
 
 /// T3-13 타이핑 가드 창 (초). 0 = 비활성.
+/// ★precut ㉮(codex 1R BLOCK) writer 쓰기 직전 재판정 — `refuse_on_approval` 제출 키 전용. 창이 떠 있으면 `true`
+/// (writer 가 CR 을 쓰지 않는다) + 버스 `input.refused_at_write` 1건(호출자 응답은 이미 나갔으므로 흔적은 여기 남긴다).
+fn approval_write_guard(
+    daemon: &Arc<Daemon>,
+    surface: &Arc<crate::state::Surface>,
+) -> Box<dyn Fn() -> bool + Send> {
+    let (d, s) = (daemon.clone(), surface.clone());
+    Box::new(move || {
+        let hit = crate::governance::seat_approval_pending(&d, &s);
+        if hit {
+            d.bus.publish(
+                "input.refused_at_write",
+                "surface",
+                Some(s.id),
+                json!({"reason": cys::ERR_APPROVAL_SCREEN,
+                       "note": "승인·질문 창이 쓰기 직전에 떠 제출 키를 쓰지 않았다(refuse_on_approval)"}),
+            );
+        }
+        hit
+    })
+}
+
 fn typing_guard_secs() -> u64 {
     std::env::var("CYS_TYPING_GUARD_SECS")
         .ok()
@@ -3880,6 +3902,20 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     ));
                 }
             }
+            // ★⑯(1.1.7) `refuse_on_approval` — 호출자가 「승인·질문 창이면 쓰지 마라」를 요구한 입력(순환의 C-u·
+            //   /clear·Return · 저장 지시 · 무인 팬아웃). 판정은 큐 배달자와 같은 술어이고 **쓰기 전** 같은 요청 안에서
+            //   본다(조회 RPC 를 따로 부르면 그 사이에 창이 뜰 틈이 생긴다). 거부 = 바이트 0 · 원장 기록 0.
+            //   ★precut ㉮ codex 1R: 타이핑 가드·초안 게이트보다 **먼저** 본다 — 사람이 질문 창에서 화살표를 누른 직후면
+            //   그 게이트가 typing_guard 로 먼저 거부하고, CLI 가 옵션 없는 `--queued` 로 갈아타 창이 닫힌 뒤 낡은 지시가
+            //   배달됐다(승인 사유가 아니라 저장 검증 시간초과로 끝남).
+            let refuse_on_approval = params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false);
+            if refuse_on_approval && crate::governance::seat_approval_pending(daemon, &surface) {
+                return Reply::Single(err_response(
+                    &id,
+                    cys::ERR_APPROVAL_SCREEN,
+                    "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written",
+                ));
+            }
             // T3-13 타이핑 가드: 사람이 방금(기본 3초) 입력 중인 pane에 원격 직접 주입 금지.
             // 무음 큐잉 대신 명시 에러 — 후속 send-key Return이 사람의 미완성 입력을
             // 실행해버리는 최악 경로를 차단한다 (--queued는 quiet 대기 배달이라 허용).
@@ -3933,18 +3969,6 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         daemon, &surface, &id, kind, why, verified_from, None,
                     ));
                 }
-            }
-            // ★⑯(1.1.7) `refuse_on_approval` — 호출자가 「승인·질문 창이면 쓰지 마라」를 요구한 입력(순환의 C-u·
-            //   /clear·Return). 판정은 큐 배달자와 같은 술어이고 **쓰기 전** 같은 요청 안에서 본다(조회 RPC 를 따로
-            //   부르면 그 사이에 창이 뜰 틈이 생긴다). 거부 = 바이트 0 · 원장 기록 0.
-            if params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
-                && crate::governance::seat_approval_pending(daemon, &surface)
-            {
-                return Reply::Single(err_response(
-                    &id,
-                    cys::ERR_APPROVAL_SCREEN,
-                    "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written",
-                ));
             }
             // ★R1 배달 원장 — **주입보다 반드시 앞**(delivery.rs 불변식 ①). try_write 는 writer
             //   채널로 넘기고 실제 PTY 쓰기는 writer 스레드가 하므로, 여기서 기록하면
@@ -4236,6 +4260,20 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                            "queue_entry_id": entry.id}),
                 ));
             }
+            // ★⑯(1.1.7) `refuse_on_approval` — 호출자가 「승인·질문 창이면 쓰지 마라」를 요구한 입력(순환의 C-u·
+            //   /clear·Return · 저장 지시 · 무인 팬아웃). 판정은 큐 배달자와 같은 술어이고 **쓰기 전** 같은 요청 안에서
+            //   본다(조회 RPC 를 따로 부르면 그 사이에 창이 뜰 틈이 생긴다). 거부 = 바이트 0 · 원장 기록 0.
+            //   ★precut ㉮ codex 1R: 타이핑 가드·초안 게이트보다 **먼저** 본다 — 사람이 질문 창에서 화살표를 누른 직후면
+            //   그 게이트가 typing_guard 로 먼저 거부하고, CLI 가 옵션 없는 `--queued` 로 갈아타 창이 닫힌 뒤 낡은 지시가
+            //   배달됐다(승인 사유가 아니라 저장 검증 시간초과로 끝남).
+            let refuse_on_approval = params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false);
+            if refuse_on_approval && crate::governance::seat_approval_pending(daemon, &surface) {
+                return Reply::Single(err_response(
+                    &id,
+                    cys::ERR_APPROVAL_SCREEN,
+                    "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written",
+                ));
+            }
             // 권위 주입(send_text와 동일 근거)은 타이핑 가드를 면제 — launch-agent/reinject가
             // 디렉티브 주입 후 보내는 제출 Return이 사람-입력 잔향에 막히지 않게 한다.
             let authoritative = params
@@ -4283,18 +4321,6 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     ));
                 }
             }
-            // ★⑯(1.1.7) `refuse_on_approval` — 호출자가 「승인·질문 창이면 쓰지 마라」를 요구한 입력(순환의 C-u·
-            //   /clear·Return). 판정은 큐 배달자와 같은 술어이고 **쓰기 전** 같은 요청 안에서 본다(조회 RPC 를 따로
-            //   부르면 그 사이에 창이 뜰 틈이 생긴다). 거부 = 바이트 0 · 원장 기록 0.
-            if params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
-                && crate::governance::seat_approval_pending(daemon, &surface)
-            {
-                return Reply::Single(err_response(
-                    &id,
-                    cys::ERR_APPROVAL_SCREEN,
-                    "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written",
-                ));
-            }
             // ★B2′(codex 감사 R1 · 0.14.24 결함3 세 번째 층): 제출 Return 은 프로그램이 꽂은
             //   본문과 최소 간격만큼 떨어져야 한다 — 붙여넣기 처리 창 안에 떨어진 CR 은 TUI 가
             //   삼켜 미제출로 끝난다(본문은 들어갔는데 Enter 만 안 먹는 증상의 나머지 절반).
@@ -4304,6 +4330,13 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   지연은 writer 스레드에서 일어난다(단일 소비자 = 순서 보존 · 핸들러 무블로킹).
             let key_bytes = bytes.clone();
             let write_req = match submit_gap_for_key(&key, cr_min_gap_ms()) {
+                // ★precut ㉮ codex 1R(BLOCK): 위 판정과 실제 CR 쓰기 사이(writer 적체 + 최소 간격 대기)에 창이 뜨면
+                //   CR 이 그 선택지를 누른다. 거부 요청의 제출 키는 writer 가 **쓰기 직전** 같은 술어로 한 번 더 본다.
+                Some(min_gap_ms) if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {
+                    bytes,
+                    min_gap_ms,
+                    refuse_now: approval_write_guard(daemon, &surface),
+                },
                 Some(min_gap_ms) => crate::state::WriteReq::SubmitAfterGap { bytes, min_gap_ms },
                 None => crate::state::WriteReq::Data(bytes),
             };
@@ -11994,6 +12027,27 @@ mod tests {
             assert_eq!(r["error"]["code"], json!(cys::ERR_APPROVAL_SCREEN), "{method} {p}: 질문 창에 썼다 {r}");
             assert_eq!(ask.pending_input_bytes.load(Ordering::Relaxed), pending, "{method}: 거부했는데 계수가 바뀌었다(쓰기 발생)");
         }
+        // codex 1R: 사람이 질문 창에서 방금 화살표를 눌렀어도(타이핑 가드·사람 초안 계수) 거부 사유는 승인 창이다 —
+        //   typing_guard 로 먼저 거부되면 CLI 가 옵션 없는 --queued 로 갈아타 창이 닫힌 뒤 낡은 지시가 배달된다.
+        *ask.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        ask.pending_input_bytes.store(3, Ordering::Relaxed);
+        ask.pending_input_human_bytes.store(3, Ordering::Relaxed);
+        for (method, p) in [
+            ("surface.send_text", json!({"surface_id": ask.id, "text": "[CYCLE] 저장", "quiet": true, "refuse_on_approval": true})),
+            ("surface.send_key", json!({"surface_id": ask.id, "key": "Return", "refuse_on_approval": true})),
+        ] {
+            let r = call(ask.id, method, p.clone());
+            assert_eq!(r["error"]["code"], json!(cys::ERR_APPROVAL_SCREEN), "{method}: 사람 입력 직후 사유가 승인 창이 아니다 {r}");
+        }
+        // codex 1R(BLOCK) 배선 핀 — 거부 요청의 제출 키는 writer 재판정 변형으로 나가고, 그 재판정은 같은 술어다
+        //   (writer 쪽 거동은 state::submit_guarded_rechecks_dialog_right_before_writing_cr 가 고정).
+        let src = include_str!("handlers.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]").expect("테스트 경계")];
+        assert!(prod.contains("Some(min_gap_ms) if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {"),
+            "거부 요청 제출 키가 writer 재판정 없이 나간다");
+        let g = prod.find("fn approval_write_guard(").expect("approval_write_guard");
+        assert!(prod[g..g + prod[g..].find("\n}\n").unwrap()].contains("crate::governance::seat_approval_pending(&d, &s)"),
+            "writer 재판정이 핸들러와 다른 술어다");
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);
@@ -12733,6 +12787,7 @@ mod tests {
             crate::state::WriteReq::Program(_) => "Program",
             crate::state::WriteReq::DataAfter { .. } => "DataAfter",
             crate::state::WriteReq::SubmitAfterGap { .. } => "SubmitAfterGap",
+            crate::state::WriteReq::SubmitGuarded { .. } => "SubmitGuarded",
             crate::state::WriteReq::Inject { .. } => "Inject",
         }
     }

@@ -16666,7 +16666,9 @@ fn run_reinject(
                 ["latest_cursor"]
                 .as_u64()
                 .unwrap_or(0);
-            inject_text(sid, &format!("지침 각성 확인 핑: 너의 절대지침(디렉티브)이 컨텍스트에 살아있다면, 다음 두 토큰을 공백 없이 이어붙인 한 줄을 plain으로 출력하라: 'DIRECTIVE-ACK-' 그리고 '{}'", std::process::id()))?;
+            // ★⑯(precut ㉮ 형제 · codex 1R) phoenix 복원·사람 명령 모두 화면을 안 보고 쏜다 — 승인·질문 창 위에는 쓰지 않는다
+            //   (거부 = rc 1 · phoenix 는 warn 으로 전진 · 무파괴).
+            inject_text_opts(sid, &format!("지침 각성 확인 핑: 너의 절대지침(디렉티브)이 컨텍스트에 살아있다면, 다음 두 토큰을 공백 없이 이어붙인 한 줄을 plain으로 출력하라: 'DIRECTIVE-ACK-' 그리고 '{}'", std::process::id()), true)?;
             let r = request(
                 "surface.wait_for",
                 json!({"surface_id": sid, "pattern": marker,
@@ -16687,7 +16689,7 @@ fn run_reinject(
             eprintln!("[reinject] ACK 없음 ({timeout}s) — 드리프트 판정, 재주입 진행");
         }
         let directive = compose_directive(&role_name)?;
-        inject_text(sid, &directive)?;
+        inject_text_opts(sid, &directive, true)?; // ★⑯(precut ㉮ 형제) 위 핑과 같은 거부
         println!(
             "reinjected {} bytes → surface:{sid} ({role_name})",
             directive.len()
@@ -20520,6 +20522,10 @@ mod tests {
         let oi = prod.find("fn inject_text_on(").expect("inject_text_on");
         let ob = &prod[oi..oi + prod[oi..].find("\n}\n").unwrap()];
         assert_eq!(ob.matches("            true,\n        ),\n        timeout,").count(), 2, "drain --verify 주입에 거부 옵션 누락");
+        let ri = prod.find("\nfn run_reinject(").expect("run_reinject");
+        let rb = &prod[ri..ri + prod[ri + 1..].find("\n}\n").unwrap() + 1];
+        assert_eq!(rb.matches("inject_text(").count(), 0, "reinject(phoenix 핑·재주입)에 거부 없는 주입이 남았다");
+        assert_eq!(rb.matches(", true)?;").count(), 2, "reinject 핑·재주입 둘 다 거부 옵션");
         let end = body.find("clear_resume?;").expect("clear_resume?");
         let release = body.find("let _ = set_surface_quiescing(sid, false);").expect("quiescing 해제");
         assert!(cl < release && release < end, "거부로 끝나면 quiescing 이 안 풀린다");

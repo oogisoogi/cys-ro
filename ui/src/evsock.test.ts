@@ -80,6 +80,13 @@ describe("main.ts 배선 — 종료 소식 처리기가 판정부를 쓰고 기�
     expect(branch.includes("removeDeadPane(Number(sid), src.socket)")).toBe(true);
   });
 
+  test("켜진 뒤 새로 생긴 부서 탭을 열 때 그 부서의 전달기를 보장한다(종료 소식이 와야 대조가 선다)", () => {
+    const at2 = main.indexOf("async function openNewlyRegisteredDepts(");
+    const body = main.slice(at2, main.indexOf("\n}\n", at2));
+    expect(at2).toBeGreaterThan(0);
+    expect(body.includes('if (step.open.length > 0) invoke("ensure_dept_forwarders")')).toBe(true);
+  });
+
   test("기본 식별표는 백엔드 명령 default_socket_slug 로 받는다", () => {
     expect(main.includes('invoke("default_socket_slug")')).toBe(true);
   });

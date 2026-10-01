@@ -5852,6 +5852,22 @@ pub(crate) fn approval_in_prompt_tail(
     if cys::first_run_gates::identify(gates, &gate_text).is_some() {
         return true;
     }
+    // ⑶ 선택지 창 서명(1.1.7 precut ㉮) — 막기 전용. ⑴의 키에 넣지 않는 이유는 ⑵와 같다(승인 스캔이 master 각성을
+    //   낸다 · U-16 분리). 판독 범위 = 마지막 가로줄 아래, 가로줄이 없으면(창이 높아 밀려남) **화면 맨 아래 비지 않은
+    //   3행** — 꼬리는 늘 창의 맨 아래다(codex 1R: 가로줄·커서 조건에 묶이면 높은 창에서 못 본다). 좁은 창에서 꼬리가
+    //   두 행으로 접혀도 잡히게 행을 이어 붙여 본다.
+    let choice_tail: Vec<&str> = match rows.iter().rposition(|r| is_rule_row(r)) {
+        Some(last_rule) => rows[last_rule + 1..].iter().map(String::as_str).collect(),
+        None => {
+            let mut t: Vec<&str> =
+                rows.iter().rev().filter(|r| !r.trim().is_empty()).take(3).map(String::as_str).collect();
+            t.reverse();
+            t
+        }
+    };
+    if is_choice_dialog_footer(&choice_tail.join(" ")) {
+        return true;
+    }
     // ⑴ 어댑터 패턴 — 가로줄이 없으면 커서 행이 번호 선택지일 때만 전량(흔한 낱말 기아 방지 · 위 doc).
     let region = match rows.iter().rposition(|r| is_rule_row(r)) {
         Some(last_rule) => &rows[last_rule + 1..],
@@ -5864,18 +5880,18 @@ pub(crate) fn approval_in_prompt_tail(
         None => return false,
     };
     let text = region.join("\n");
-    // ⑶ 선택지 창 서명(1.1.7 precut ㉮) — 같은 판독 범위에서 막기만 한다. ⑴의 키에 넣지 않는 이유는 ⑵와 같다
-    //   (승인 스캔이 master 각성을 낸다 · U-16 분리).
-    patterns.iter().any(|re| re.is_match(&text)) || region.iter().any(|r| is_choice_dialog_footer(r))
+    patterns.iter().any(|re| re.is_match(&text))
 }
 
 /// 선택지 창의 꼬리 행인가(순수 · 1.1.7 precut ㉮) — claude 의 AskUserQuestion·선택 메뉴 꼬리
 /// `Enter to select · ↑/↓ to navigate · Esc to cancel`(VM r1001 3-5 실화면 2회). 어댑터 `approval_patterns`
 /// (허락 창 문면)·관문 코퍼스(첫기동 창) 어느 쪽에도 없어 순환 저장 지시가 이 창 위로 들어가 Return 이
-/// 1번을 골랐다. 한 행에 「Enter to select」 와 「Esc to cancel」 이 함께 있어야 한다(허락 창 꼬리
+/// 1번을 골랐다. 꼬리 글에 「Enter to select」 뒤 「Esc to cancel」 이 있어야 한다(허락 창 꼬리
 /// `Esc to cancel · Tab to amend` · 신뢰 창 `Enter to confirm · Esc to cancel` 은 아니다 — 각자 ⑴·⑵ 몫).
-fn is_choice_dialog_footer(row: &str) -> bool {
-    row.find("Enter to select").is_some_and(|i| row[i..].contains("Esc to cancel"))
+/// 공백은 접어서 본다(좁은 창에서 행이 접혀 이어 붙인 글 · 칸 맞춤 공백).
+fn is_choice_dialog_footer(tail: &str) -> bool {
+    let t = tail.split_whitespace().collect::<Vec<_>>().join(" ");
+    t.find("Enter to select").is_some_and(|i| t[i..].contains("Esc to cancel"))
 }
 
 /// 승인 축 ⑵ 재료 — 이 어댑터의 관문 코퍼스 해소본 **전 관문**(`approval_in_prompt_tail` doc 의 두 출처
@@ -11249,6 +11265,14 @@ mod tests {
         ));
         let c = body.iter().rposition(|l| l.trim() == "❯").unwrap();
         assert!(!approval_in_prompt_tail(&body, c, "❯", &[], &[]), "본문 속 문구로 입력창 좌석을 막았다");
+        // codex 1R: 창이 높아 가로줄이 전부 밀려나고 커서가 선택지 행에 없어도 · 좁은 창에서 꼬리가 두 행으로 접혀도 잡는다.
+        let vm = rows(include_str!("testdata/claude_askuserquestion_vm_r1001.txt"));
+        let tall: Vec<String> = vm.iter().filter(|r| !is_rule_row(r)).cloned().collect();
+        assert!(approval_in_prompt_tail(&tall, 0, "❯", &[], &[]), "가로줄 없는 높은 질문 창을 못 읽었다");
+        let mut narrow: Vec<String> = vm[..vm.len() - 1].to_vec();
+        narrow.push("Enter to select · ↑/↓ to navigate · Esc to   ".into()); // 칸 맞춤 공백 + 구절 안에서 접힘
+        narrow.push("cancel".into());
+        assert!(approval_in_prompt_tail(&narrow, usize::MAX, "❯", &[], &[]), "접힌 꼬리를 못 읽었다");
         let perm = rows(&format!("{rule}\r\n Bash command\r\n ❯ 1. Yes\r\n   2. No\r\n\r\n Esc to cancel · Tab to amend"));
         assert!(!approval_in_prompt_tail(&perm, 2, "❯", &[], &[]), "허락 창 꼬리가 선택지 서명으로 읽혔다");
     }

@@ -2892,6 +2892,9 @@ async function openNewlyRegisteredDepts(): Promise<boolean> {
     if (g) ws.groupId = g.id;
     workspaces.push(ws);
   }
+  // (precut ㉯ · codex 1R) 켜진 뒤 새로 생긴 부서는 전달기가 없다(ensure_dept_forwarders 는 시작 때 1회) — 그 부서의
+  //   종료 소식이 아예 안 오면 출처 소켓 대조도 소용없다. 탭을 여는 이 자리에서 전달기를 보장한다(멱등 · 이미 돌면 무동작).
+  if (step.open.length > 0) invoke("ensure_dept_forwarders").catch(() => {});
   return step.open.length > 0;
 }
 

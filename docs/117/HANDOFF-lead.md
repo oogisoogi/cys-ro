@@ -116,3 +116,13 @@
 
 ### 1.1.8 이월
 - **P4 감지 구멍(master#9bda16ae · 1.1.8)**: `src/bin/cys.rs:8854` `windows_agent_candidates` 는 PATH 재해석 + `%APPDATA%\npm`·`%LOCALAPPDATA%\npm` 만 본다. 좌석·앱 부트 PATH 는 이미 `~\.local\bin` 을 무조건 붙인다(`src/lib.rs:2069` windows_user_bin_dirs → `:1274` runtime_prefixed_path → `:1955` spawn_env_pairs_from_process → cysd state.rs:4018 · src-tauri main.rs:4508). 남은 영향 = PATH 쓰기 막힌 기기에서 사람이 새 창에 `cys boot`·`cys agent-detect` 를 직접 칠 때 claude = missing(안 띄우는 쪽 · 데이터 위험 0). 수리안 = ② 다음에 `%USERPROFILE%\.local\bin\<stem>.exe`·`.cmd` 1자리 + 시험 1(가짜 `.local\bin\claude.exe` 만 · PATH·npm 없음 → Some(그 경로) · 지금 None = 적색 · 대조군 = npm claude.cmd 만 → 종전대로). 시험은 cfg(windows) 전용 → 적색 먼저 = 윈 CI. 부트(:9137)는 det.resolved 가 아니라 이름으로 띄우므로 감지만 고쳐도 기동 성공(좌석 PATH 에 그 자리 있음).
+
+## 10. precut-fix(TICKET=cys-117-precut-fix-1001 · 좌석 1207 · 계정2 · 10-01 21:2x~22:3x · master#9f4f700d)
+- ★현재 위치(22:3x · 맥북 덮개 닫힘 전 정지 · master#63a38c4e): 수리 2건 구현·커밋 완료 · **전체 게이트 미완(최종 머리 0be2f7f0 기준 0회)** · codex 3R 상한 도달(새 결함 0 · R2 부분 2 → 0be2f7f0 로 반영 · 수렴 판정 = master) · push 0.
+- 다음(기상 뒤 · 처음부터 · 중간 결과 이어 붙이기 금지): ① 전체 게이트 = `~/axdev/master/reports/cysr-117-plan/dbg/precut-fix/gates.sh`(좌석 CYS_* 비움 · TMPDIR=/tmp/c117f · cys-app 뒤 재빌드 · 팩 111개 전수 · 건강 · NSIS 3 · mac-alias) ② 결과 + codex 판정(같은 폴더 codex-1R~3R-out.md)으로 【실행직전확인요청】 → master 승인 뒤 `git push origin int/117:fix/117-int`(force 금지) → CI 3종 번호.
+- 커밋(17bb55e2 위): 7b0ab491 ㉮ 선택지 창 판정 ⑶ + 순환·무인 형제 주입 refuse_on_approval · 4b78cbb4 ㉯ 전달기 source_socket + eventSock 소켓 대조 · fcca3ebf 픽스처 LF(.txt) · cb4c8cb0 codex 1R(writer 쓰기 직전 재판정 SubmitGuarded · 거부를 타이핑/초안 게이트 앞으로 · 높은/접힌 꼬리 · 새 부서 전달기 · reinject 형제) · 9f8709b6 codex 2R(간격 0 무관 재판정 · writer 거부 시 계수 복원 · 번호 선택지 행 요구) · 0be2f7f0 codex 3R 잔여(복원을 input_gate 안 · 빈 마커 미적용).
+- 부분 게이트 실측(9f8709b6 · 22:00~22:09 · 좌석 CYS_* 비움): cysd 1239/0 · lib 550/0 · cys 351/0 · cys-app 176/0 · 재빌드 53.5MB/73.1MB · gen_ceo ✓ · UI 1487/0 · typecheck 0. 팩·건강·NSIS 는 그 판에서 안 끝남(중단). 직전 판(4b78cbb4 무렵 · 21:36~21:50) 건강 GREEN 150/0/1 · NSIS 3 ✓ · mac-alias ✓ · 남은 cysd 0 — 팩 루프는 스크립트에 macOS 에 없는 `timeout` 을 써서 111개 전부 미실행(제품 실패 아님 · 수정본 = 위 gates.sh).
+- 변이: ㉮ 6/6 · ㉯ 5/5 · 1R 8/8 · 2R 3/3 · 3R 2/2 적색(스크립트 = 같은 폴더 mut_*.py).
+- 실측 곁 발견: 수리 전 데몬은 **큐 배달도 질문 창에 넣었다**(qa_question_dialog_blocks_queue_and_force 가 ⑶ 없이 적색) — ⑶ 로 같이 막힘. 옵션 없는 일반 Return·본문은 수리 전후 동일(넓힘 0 실측).
+- 남은 잔여(정직): 화면 렌더 지연만큼의 경합(0 불가) · writer 거부는 호출자에게 못 돌려줌(응답 선송신 — 계수 복원 + 다음 순환 입력의 핸들러 거부로 멈춤) · onDaemonEvent 의 다른 socketForSlug 소비처 2곳(알림 부서 이름 · agent.exited 마우스 리셋)은 같은 표 결손이 남음(범위 밖 · 미수리) · 부팅·관문 조작·node-recover 주입은 거부 옵션 미적용(새 좌석·관문 조작 의도 경로 — 형제 표 근거).
+- 함정 이월: 픽스처가 순수 글자면 eol=lf 봉인이 CR 을 지운다(.txt + 시험에서 CRLF 변환) · `git checkout -- <파일>` 로 변이를 되돌리지 말 것(미커밋 편집까지 지워진다 — 실제로 한 번 겪음) · codex 스냅샷은 .git 이 없어 `--skip-git-repo-check` 필요.

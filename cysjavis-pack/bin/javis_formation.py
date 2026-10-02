@@ -1152,7 +1152,9 @@ def _revive_dept(socket, prev_obj, now=None):
     env = {k: v for k, v in os.environ.items() if k not in (NO_AUTOSTART_ENV, "CYS_SOCKET", "CYS_ROLE")}
     tool = os.path.join(PACK_DIR, "bin", "cys-dept")
     try:
-        r = subprocess.run(["bash", tool, "launch", name], capture_output=True, text=True,
+        # ★precut-fix3 형제 스윕: 윈은 bash 전체 경로(문자 그대로의 "bash" = System32 WSL 스텁) · bash 없음 = 아래 except 가 127.
+        import javis_org
+        r = subprocess.run(javis_org.dept_cmd(tool, ["launch", name], posix_bash=True), capture_output=True, text=True,
                            timeout=REVIVE_TIMEOUT_S, env=env, **NOWIN)
         rc, tail = r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()[-200:]
     except Exception as e:

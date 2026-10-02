@@ -3276,7 +3276,14 @@ def _cmd_run_chain(log):
     if _is_base_socket():
         dept = os.path.join(PACK, "bin", "cys-dept")
         if os.path.isfile(dept):
-            code, out = _run(["bash", dept, "promote-if-pending", "--request-only"], timeout=30)
+            # ★precut-fix3 형제 스윕: 윈은 bash 전체 경로(문자 그대로의 "bash" = System32 WSL 스텁) · 맥은 종전 그대로.
+            try:
+                import javis_org
+                argv = javis_org.dept_cmd(dept, ["promote-if-pending", "--request-only"], posix_bash=True)
+            except Exception as e:   # bash 없음(BashNotFound)·형제 import 실패 = 신호만 생략(best-effort · 부트는 계속)
+                code, out = 127, "%s: %s" % (type(e).__name__, e)
+            else:
+                code, out = _run(argv, timeout=30)
             log.step(STEP.PROMOTE_REQUEST, code, out)  # best-effort — 실패해도 부트는 성공
         else:
             log.step(STEP.PROMOTE_REQUEST, 0, "cys-dept 부재 — 생략")
@@ -3302,8 +3309,13 @@ def _cmd_run_chain(log):
             for _k in ("CYS_SOCKET", "CYS_PACK_DIR", "CYS_ACCOUNT_DIR"):
                 _sig_env.pop(_k, None)
             _sig_env["CYS_NO_AUTOSTART"] = "1"
-            code, out = _run(["bash", base_dept, "promote-if-pending", "--request-only"],
-                             timeout=30, env=_sig_env)
+            try:
+                import javis_org
+                argv = javis_org.dept_cmd(base_dept, ["promote-if-pending", "--request-only"], posix_bash=True)
+            except Exception as e:   # bash 없음(BashNotFound)·형제 import 실패 = 신호만 생략(best-effort · 부트는 계속)
+                code, out = 127, "%s: %s" % (type(e).__name__, e)
+            else:
+                code, out = _run(argv, timeout=30, env=_sig_env)
             log.step(STEP.PROMOTE_REQUEST, code,
                      "부서 레인 신호 발사(request-only · env 스크럽: -CYS_SOCKET -CYS_PACK_DIR "
                      "-CYS_ACCOUNT_DIR +CYS_NO_AUTOSTART=1) — %s" % out)

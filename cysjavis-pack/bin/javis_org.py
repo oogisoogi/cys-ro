@@ -18,16 +18,17 @@ class BashNotFound(OSError):
     """윈도우에서 cys-dept(bash 스크립트)를 돌릴 bash 를 찾지 못했다 — crash 가 아니라 이름 붙은 실패."""
 
 
-def dept_cmd(cys_dept, args, windows=None, which=shutil.which):
+def dept_cmd(cys_dept, args, windows=None, which=shutil.which, posix_bash=False):
     """cys-dept 실행 명령(만들기·닫기 공용 · precut-fix3).
 
     윈도우 CreateProcess 는 셔뱅(#!/usr/bin/env bash)을 모른다 — 확장자 없는 스크립트를 직접 띄우면
     OSError [WinError 193](10-02 윈 실기 tick-errors.log 원문). 그래서 윈도우는 bash **전체 경로**로 감싼다:
     해소 = shutil.which("bash")(PATH 순서 · 리터럴 "bash" 는 CreateProcess 가 System32 의 WSL 스텁을 먼저 집는다 —
-    run_bootstrap_health.py BASH 와 같은 해소). 맥·리눅스는 종전 그대로 직접 실행."""
+    run_bootstrap_health.py BASH 와 같은 해소). 맥·리눅스는 종전 그대로 직접 실행.
+    posix_bash=True = 종전에 맥·리눅스에서도 ["bash", 스크립트, …] 로 띄우던 호출부(형제 스윕) — 그 동작을 그대로 둔다."""
     windows = (os.name == "nt") if windows is None else windows
     if not windows:
-        return [cys_dept] + list(args)
+        return (["bash"] if posix_bash else []) + [cys_dept] + list(args)
     bash = which("bash")
     if not bash:
         raise BashNotFound("bash 를 찾지 못했다(PATH) — cys-dept 를 실행할 수 없다")

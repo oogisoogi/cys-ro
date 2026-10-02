@@ -116,5 +116,37 @@ class TestWinDeptSpawnReal(unittest.TestCase):
         self.assertEqual(self.marks()[-1].split("|", 1)[1], "create k2")
 
 
+class TestSiblingSweep(unittest.TestCase):
+    """형제 스윕(precut-fix3 ②): 같은 cys-dept 를 문자 그대로의 "bash" 로 띄우던 3곳 — 윈도우 CreateProcess 는
+    System32 를 PATH 보다 먼저 보므로 WSL 이 깔린 기계에서는 WSL 스텁(System32\\bash.exe)을 집는다.
+    윈 = dept_cmd(bash 전체 경로) · 맥·리눅스 = 종전 그대로 ["bash", 스크립트, …](posix_bash=True)."""
+
+    def test_posix_bash_keeps_mac_argv_and_wraps_windows(self):
+        which = lambda n: r"C:\cys\runtime\git\usr\bin\bash.exe" if n == "bash" else None
+        self.assertEqual(javis_org.dept_cmd("/p/cys-dept", ["launch", "d1"], windows=False, which=which, posix_bash=True),
+                         ["bash", "/p/cys-dept", "launch", "d1"])
+        self.assertEqual(javis_org.dept_cmd("/p/cys-dept", ["launch", "d1"], windows=True, which=which, posix_bash=True),
+                         [r"C:\cys\runtime\git\usr\bin\bash.exe", "/p/cys-dept", "launch", "d1"])
+        with self.assertRaises(javis_org.BashNotFound):
+            javis_org.dept_cmd("/p/cys-dept", ["launch", "d1"], windows=True, which=lambda n: None, posix_bash=True)
+
+    def _src(self, name):
+        with open(os.path.join(BIN, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_formation_revive_uses_dept_cmd(self):
+        s = self._src("javis_formation.py")
+        self.assertNotIn('["bash", tool, "launch", name]', s, "부서 다시 켜기가 문자 그대로의 bash 를 띄운다(윈 WSL 스텁)")
+        self.assertIn('javis_org.dept_cmd(tool, ["launch", name], posix_bash=True)', s)
+
+    def test_bootstrap_promote_signal_uses_dept_cmd(self):
+        s = self._src("javis_bootstrap.py")
+        self.assertNotIn('_run(["bash", dept, "promote-if-pending"', s)
+        self.assertNotIn('_run(["bash", base_dept, "promote-if-pending"', s)
+        self.assertEqual(s.count('["promote-if-pending", "--request-only"], posix_bash=True)'), 2)
+        self.assertEqual(s.count("except Exception as e:   # bash 없음(BashNotFound)·형제 import 실패"), 2,
+                         "bash 없음이 부트를 죽이면 안 된다(best-effort)")
+
+
 if __name__ == "__main__":
     unittest.main()

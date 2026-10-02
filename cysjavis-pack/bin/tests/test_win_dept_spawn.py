@@ -11,7 +11,7 @@
      (이게 초록이면 원인 명명이 기각된 것 — 수리 초록만으로 합격 판정하지 마라).
   ⒝ 만들기 — 실제 `_spawn_create` 가 가짜 cys-dept 를 띄워 rc 0 · 인자 · CYS_ROLE=cso · stdout 파일 기록.
   ⒞ 닫기 — `javis_org.dept_cmd(…, ["down", …])` 를 destroy_dept 와 같은 subprocess.run 꼴로 실행.
-  ⒟ 윈 전용 — 해소된 bash 가 System32 의 WSL 스텁이 아니다(러너 PATH 순서 확인 · 거짓 초록 차단).
+  ⒟ 윈 전용 — dept_cmd 가 쓰는 해소(win_bash)가 System32 의 WSL 스텁이 아니다(러너에서 실제 값 · which 값 병기).
   ⒠ 모든 OS — windows=True 강제 감쌈을 진짜 bash 로 실행(인자 순서 [bash, 스크립트, 동사…] 가 실제로 돈다).
 stdlib 전용 · 네트워크 0 · 실 ~/.cys 를 건드리지 않는다(경로 전부 임시 폴더 env 주입).
 """
@@ -99,8 +99,9 @@ class TestWinDeptSpawnReal(unittest.TestCase):
 
     @unittest.skipUnless(IS_WIN, "WSL 스텁 = 윈도우 전용")
     def test_d_resolved_bash_is_not_wsl_stub(self):
-        b = shutil.which("bash")
-        self.assertTrue(b, "PATH 에 bash 가 없다")
+        b = javis_org.win_bash()                   # dept_cmd 가 실제로 쓰는 해소(WSL 스텁 제외)
+        self.assertTrue(b, "PATH 에 (스텁 아닌) bash 가 없다")
+        print("which(bash) = %s" % shutil.which("bash"))
         low = os.path.normcase(b)
         sysdir = os.path.normcase(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32"))
         self.assertFalse(low.startswith(sysdir + os.sep), "WSL 스텁을 집었다: %s" % b)
@@ -108,7 +109,8 @@ class TestWinDeptSpawnReal(unittest.TestCase):
         print("resolved bash = %s" % b)
 
     def test_e_forced_windows_wrap_runs_on_real_bash(self):
-        cmd = javis_org.dept_cmd(self.fake, ["create", "k2"], windows=True)
+        # 윈 = 실제 해소(win_bash) · 맥·리눅스 = bash.exe 가 없으니 which 주입(감쌈의 인자 순서를 진짜 bash 로 본다)
+        cmd = javis_org.dept_cmd(self.fake, ["create", "k2"], windows=True, which=None if IS_WIN else shutil.which)
         self.assertEqual(cmd[1:], [self.fake, "create", "k2"])
         r = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ), **javis_org.NOWIN)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -129,6 +131,28 @@ class TestSiblingSweep(unittest.TestCase):
                          [r"C:\cys\runtime\git\usr\bin\bash.exe", "/p/cys-dept", "launch", "d1"])
         with self.assertRaises(javis_org.BashNotFound):
             javis_org.dept_cmd("/p/cys-dept", ["launch", "d1"], windows=True, which=lambda n: None, posix_bash=True)
+
+    def test_win_bash_skips_wsl_stub_before_real(self):
+        # 윈 기본 시스템 PATH 머리 = C:\Windows\System32 — WSL 이 깔린 기계에서 which("bash") 가 집는 스텁을 건너뛴다.
+        real = r"C:\Users\u\AppData\Local\cys\runtime\git\usr\bin"
+        path = ";".join([r"C:\WINDOWS\system32", r"C:\Windows\SysWOW64",
+                         r"C:\Users\u\AppData\Local\Microsoft\WindowsApps", real])
+        files = {r"C:\WINDOWS\system32\bash.exe", r"C:\Windows\SysWOW64\bash.exe",
+                 r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\bash.exe", real + r"\bash.exe"}
+        got = javis_org.win_bash(path, sysroot=r"C:\Windows", isfile=lambda p: p in files)
+        self.assertEqual(got, real + r"\bash.exe")
+
+    def test_win_bash_stub_only_is_bash_not_found(self):
+        path = r"C:\Windows\System32;C:\Users\u\AppData\Local\Microsoft\WindowsApps"
+        files = {r"C:\Windows\System32\bash.exe", r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\bash.exe"}
+        self.assertIsNone(javis_org.win_bash(path, sysroot=r"C:\Windows", isfile=lambda p: p in files))
+        orig = javis_org.win_bash
+        javis_org.win_bash = lambda *a, **k: orig(path, sysroot=r"C:\Windows", isfile=lambda p: p in files)
+        try:
+            with self.assertRaises(javis_org.BashNotFound):
+                javis_org.dept_cmd("/p/cys-dept", ["create", "k1"], windows=True)
+        finally:
+            javis_org.win_bash = orig
 
     def _src(self, name):
         with open(os.path.join(BIN, name), encoding="utf-8") as f:

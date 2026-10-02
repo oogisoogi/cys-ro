@@ -18,20 +18,44 @@ class BashNotFound(OSError):
     """윈도우에서 cys-dept(bash 스크립트)를 돌릴 bash 를 찾지 못했다 — crash 가 아니라 이름 붙은 실패."""
 
 
-def dept_cmd(cys_dept, args, windows=None, which=shutil.which, posix_bash=False):
+def win_bash(path=None, sysroot=None, isfile=os.path.isfile):
+    r"""윈도우 bash.exe 전체 경로 — PATH 를 차례로 훑되 WSL 스텁을 건너뛴다(precut-fix3 보강 · master#2cf69fdb).
+
+    윈 기본 시스템 PATH 의 머리가 %SystemRoot%\System32 라, WSL 이 깔린 기계에서 shutil.which("bash") 는
+    System32\bash.exe(WSL 스텁)를 집는다 — 틱은 bash 의 자식이라 PATH 머리에 그 bash 폴더가 오지만, 부서 다시 켜기
+    (formation 심박)·bootstrap ⑦ 처럼 bash 를 거치지 않는 길은 보장이 없다. 그래서 System32·SysWOW64·WindowsApps 아래
+    후보는 버리고 첫 남는 것을 쓴다. 남는 것이 없으면 None(호출부 = BashNotFound · 스텁을 쓰느니 이름 붙은 실패)."""
+    import ntpath
+    path = os.environ.get("PATH", "") if path is None else path
+    sysroot = sysroot or os.environ.get("SystemRoot") or r"C:\Windows"
+    stubs = {ntpath.normcase(ntpath.join(sysroot, d)) for d in ("System32", "SysWOW64")}
+    for d in path.split(";"):
+        d = d.strip().strip('"')
+        if not d:
+            continue
+        nd = ntpath.normcase(ntpath.normpath(d))
+        if nd in stubs or ntpath.basename(nd) == "windowsapps" or "\\windowsapps\\" in nd:
+            continue
+        c = ntpath.join(d, "bash.exe")
+        if isfile(c):
+            return c
+    return None
+
+
+def dept_cmd(cys_dept, args, windows=None, which=None, posix_bash=False):
     """cys-dept 실행 명령(만들기·닫기 공용 · precut-fix3).
 
     윈도우 CreateProcess 는 셔뱅(#!/usr/bin/env bash)을 모른다 — 확장자 없는 스크립트를 직접 띄우면
     OSError [WinError 193](10-02 윈 실기 tick-errors.log 원문). 그래서 윈도우는 bash **전체 경로**로 감싼다:
-    해소 = shutil.which("bash")(PATH 순서 · 리터럴 "bash" 는 CreateProcess 가 System32 의 WSL 스텁을 먼저 집는다 —
-    run_bootstrap_health.py BASH 와 같은 해소). 맥·리눅스는 종전 그대로 직접 실행.
+    해소 = win_bash()(PATH 순서 · WSL 스텁 제외 — master#2cf69fdb 보강 · 리터럴 "bash" 는 CreateProcess 가 System32 의 WSL 스텁을 먼저 집는다).
+    맥·리눅스는 종전 그대로 직접 실행.
     posix_bash=True = 종전에 맥·리눅스에서도 ["bash", 스크립트, …] 로 띄우던 호출부(형제 스윕) — 그 동작을 그대로 둔다."""
     windows = (os.name == "nt") if windows is None else windows
     if not windows:
         return (["bash"] if posix_bash else []) + [cys_dept] + list(args)
-    bash = which("bash")
+    bash = which("bash") if which else win_bash()       # which = 시험 주입용 · 기본 = WSL 스텁 건너뛰는 해소
     if not bash:
-        raise BashNotFound("bash 를 찾지 못했다(PATH) — cys-dept 를 실행할 수 없다")
+        raise BashNotFound("bash 를 찾지 못했다(PATH · WSL 스텁 제외) — cys-dept 를 실행할 수 없다")
     return [bash, cys_dept] + list(args)
 
 # RC-6: OS중립 파일락 — unix는 fcntl.flock(제로 회귀·파일 닫힐 때 자동 해제), Windows는 fcntl

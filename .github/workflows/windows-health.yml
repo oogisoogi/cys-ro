@@ -244,7 +244,7 @@ jobs:
       # ★(1.1.7 precut-fix3 · 10-02 윈 실기 tick-errors.log 원문 「OSError: [WinError 193]」) 말로 부서 만들기·닫기의
       #   **실행 단계**가 윈 러너에서 진짜 프로세스로 뜨는가. 확장자 없는 bash 스크립트 cys-dept 를 인터프리터 없이
       #   Popen 하던 것 → bash 전체 경로로 감쌈(javis_org.dept_cmd). 맥은 셔뱅을 알아 이 결함을 못 가르므로 윈 러너가 진다.
-      #   대조군(직접 Popen = winerror 193)·형제 스윕 3건까지 8건 전부 **실행**(skip 0)을 단언한다 — 대조군이 skip·초록이면 원인 명명 기각.
+      #   대조군(직접 Popen = winerror 193)·형제 스윕 3건·WSL 스텁 건너뛰기 2건까지 10건 전부 **실행**(skip 0)을 단언한다 — 대조군이 skip·초록이면 원인 명명 기각.
       #   (팩 스위트를 직접 부르므로 ci-branch '팩 스위트 레인 대조' 의 SUBSET_LANES 에 이 파일을 등재했다.)
       - name: 말로 부서 만들기·닫기 실행 단계 (Windows 실기 · cys-dept 를 bash 로 · WinError 193 대조군)
         shell: bash
@@ -252,7 +252,7 @@ jobs:
           set -euo pipefail
           out="$(cd cysjavis-pack/bin/tests && CYS_PACK_DIR="$(mktemp -d)" python -m unittest -v test_win_dept_spawn 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
-          echo "$out" | grep -q '^Ran 8 tests' || { echo "::error::부서 실행 단계 시험이 8건 실행되지 않았다"; exit 1; }
+          echo "$out" | grep -q '^Ran 10 tests' || { echo "::error::부서 실행 단계 시험이 10건 실행되지 않았다"; exit 1; }
           echo "$out" | grep -qE '^OK$' || { echo "::error::부서 실행 단계 시험 결과가 'OK'(skip 0)가 아니다 — 윈에서 대조군이 건너뛰어졌다"; exit 1; }
           # 관측(비차단 · 다음 벽 훑기): cys-dept create 는 카탈로그 한 줄을 `read < <(python3 …)` 로 받는다(마지막 칸 = cwd).
           #   윈 파이썬은 줄 끝을 \r\n 으로 쓴다 — read 가 \r 을 남기면 cwd 끝에 \r 이 붙는다. allocate 의 $(…) 꼴은 windows-build

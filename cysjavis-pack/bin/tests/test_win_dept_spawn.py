@@ -134,17 +134,17 @@ class TestSiblingSweep(unittest.TestCase):
 
     def test_win_bash_skips_wsl_stub_before_real(self):
         # 윈 기본 시스템 PATH 머리 = C:\Windows\System32 — WSL 이 깔린 기계에서 which("bash") 가 집는 스텁을 건너뛴다.
-        real = r"C:\Users\u\AppData\Local\cys\runtime\git\usr\bin"
+        real = r"C:\Users\user\AppData\Local\cys\runtime\git\usr\bin"
         path = ";".join([r"C:\WINDOWS\system32", r"C:\Windows\SysWOW64",
-                         r"C:\Users\u\AppData\Local\Microsoft\WindowsApps", real])
+                         r"C:\Users\user\AppData\Local\Microsoft\WindowsApps", real])
         files = {r"C:\WINDOWS\system32\bash.exe", r"C:\Windows\SysWOW64\bash.exe",
-                 r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\bash.exe", real + r"\bash.exe"}
+                 r"C:\Users\user\AppData\Local\Microsoft\WindowsApps\bash.exe", real + r"\bash.exe"}
         got = javis_org.win_bash(path, sysroot=r"C:\Windows", isfile=lambda p: p in files)
         self.assertEqual(got, real + r"\bash.exe")
 
     def test_win_bash_stub_only_is_bash_not_found(self):
-        path = r"C:\Windows\System32;C:\Users\u\AppData\Local\Microsoft\WindowsApps"
-        files = {r"C:\Windows\System32\bash.exe", r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\bash.exe"}
+        path = r"C:\Windows\System32;C:\Users\user\AppData\Local\Microsoft\WindowsApps"
+        files = {r"C:\Windows\System32\bash.exe", r"C:\Users\user\AppData\Local\Microsoft\WindowsApps\bash.exe"}
         self.assertIsNone(javis_org.win_bash(path, sysroot=r"C:\Windows", isfile=lambda p: p in files))
         orig = javis_org.win_bash
         javis_org.win_bash = lambda *a, **k: orig(path, sysroot=r"C:\Windows", isfile=lambda p: p in files)

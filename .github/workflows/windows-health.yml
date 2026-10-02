@@ -254,6 +254,13 @@ jobs:
           echo "$out"
           echo "$out" | grep -q '^Ran 5 tests' || { echo "::error::부서 실행 단계 시험이 5건 실행되지 않았다"; exit 1; }
           echo "$out" | grep -qE '^OK$' || { echo "::error::부서 실행 단계 시험 결과가 'OK'(skip 0)가 아니다 — 윈에서 대조군이 건너뛰어졌다"; exit 1; }
+          # 관측(비차단 · 다음 벽 훑기): cys-dept create 는 카탈로그 한 줄을 `read < <(python3 …)` 로 받는다(마지막 칸 = cwd).
+          #   윈 파이썬은 줄 끝을 \r\n 으로 쓴다 — read 가 \r 을 남기면 cwd 끝에 \r 이 붙는다. allocate 의 $(…) 꼴은 windows-build
+          #   Rec 7 이 이미 초록이라 여기선 read 꼴만 본다. 판정이 아니라 기록이다(od 출력에 \r 이 보이면 다음 벽).
+          IFS=$'\t' read -r _a _cwd < <(python -c "print('\t'.join(['A', 'C:/w']))") || true
+          echo "관측 read 꼴 마지막 칸: $(printf '%s' "$_cwd" | od -c | head -1)"
+          _x="$(python -c "print('dept-1')")"
+          echo "관측 \$(…) 꼴: $(printf '%s' "$_x" | od -c | head -1)"
 
       # ★v113-restore B1: 윈 `cys rotate` 가 stage 2(identify)에서 316s 멈춘 원인(자동 기동 cysd 가 부른 쪽의
       #   출력 파이프를 상속 → EOF 영구 부재)의 **대조군 + 수리** 실측. 대조군(unsealed)이 적색이면 원인

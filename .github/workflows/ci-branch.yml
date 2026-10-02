@@ -107,6 +107,12 @@ jobs:
                   "macOS/ubuntu 잡이라 D1(형제 import 실패)의 **실제 런타임에서는 0회 실행**된다 — "
                   "그 레인의 재현은 runpy 모사다. 여기서 빠지면 D1 회귀는 다시 무증상으로 산다.",
               ),
+              "windows-health": (
+                  ".github/workflows/windows-health.yml",
+                  {"test_win_dept_spawn"},
+                  "말로 부서 만들기·닫기의 실행 단계를 **윈도우 CreateProcess** 로 진짜 띄우는 것(precut-fix3 · "
+                  "WinError 193 대조군 포함). 3완전 레인은 맥·우분투라 셔뱅을 알아 이 결함을 원리적으로 못 가른다.",
+              ),
           }
 
           # 레인별 "빠지면 무엇이 거짓말이 되는가" — 에러 메시지에 붙여 편입 방향을 지시한다.
@@ -604,7 +610,7 @@ jobs:
                    test_bootlast_golden_lock_parity test_bootv2_doc_contract test_pyseal_census \
                    test_preflight_hook_body test_preflight_win_hook_launcher \
                    test_preflight_npm_prefix test_learn_digest_queue \
-                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat; do
+                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== $t (mac) =="

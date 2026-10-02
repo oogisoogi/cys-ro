@@ -21,6 +21,7 @@ name: windows-health (H-WIN 실기)
 #   상시 적색으로 만든다. 러너의 검체 목록은 파일 안(`_REG`)에 있고 `--list`/`--json` 으로 기계
 #   판독되므로 레인 간 사본이 애초에 없다. **이 잡이 나중에 `test_*.py` 를 직접 부르기 시작하면
 #   그때 SUBSET_LANES 에 등재하라**(그 시점부터는 드리프트 표면이 생긴다).
+#   ⇒ 1.1.7 precut-fix3(10-02)에서 그 시점이 왔다 — `test_win_dept_spawn` 을 직접 부르므로 SUBSET_LANES 에 등재했다.
 
 # ★U-26 ①(2026-08-24 · 부트 결정론 캠페인): 종전 트리거는 `feat/**` push + 수동뿐이라
 #   **태그 릴리스(`v*`)에서 Windows 검체가 한 번도 돌지 않았다.** 릴리스 레인(release.yml)은
@@ -239,6 +240,20 @@ jobs:
           out="$(CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys reinject_guard_record_roundtrip -- --test-threads=1 2>&1)" || { echo "$out"; exit 1; }
           echo "$out" | tail -5
           echo "$out" | grep -q 'test result: ok. 1 passed' || { echo "::error::reinject 가드 왕복 시험이 1건 실행되지 않았다(이름 불일치·필터 0건)"; exit 1; }
+
+      # ★(1.1.7 precut-fix3 · 10-02 윈 실기 tick-errors.log 원문 「OSError: [WinError 193]」) 말로 부서 만들기·닫기의
+      #   **실행 단계**가 윈 러너에서 진짜 프로세스로 뜨는가. 확장자 없는 bash 스크립트 cys-dept 를 인터프리터 없이
+      #   Popen 하던 것 → bash 전체 경로로 감쌈(javis_org.dept_cmd). 맥은 셔뱅을 알아 이 결함을 못 가르므로 윈 러너가 진다.
+      #   대조군(직접 Popen = winerror 193)까지 5건 전부 **실행**(skip 0)을 단언한다 — 대조군이 skip·초록이면 원인 명명 기각.
+      #   (팩 스위트를 직접 부르므로 ci-branch '팩 스위트 레인 대조' 의 SUBSET_LANES 에 이 파일을 등재했다.)
+      - name: 말로 부서 만들기·닫기 실행 단계 (Windows 실기 · cys-dept 를 bash 로 · WinError 193 대조군)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(cd cysjavis-pack/bin/tests && CYS_PACK_DIR="$(mktemp -d)" python -m unittest -v test_win_dept_spawn 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q '^Ran 5 tests' || { echo "::error::부서 실행 단계 시험이 5건 실행되지 않았다"; exit 1; }
+          echo "$out" | grep -qE '^OK$' || { echo "::error::부서 실행 단계 시험 결과가 'OK'(skip 0)가 아니다 — 윈에서 대조군이 건너뛰어졌다"; exit 1; }
 
       # ★v113-restore B1: 윈 `cys rotate` 가 stage 2(identify)에서 316s 멈춘 원인(자동 기동 cysd 가 부른 쪽의
       #   출력 파이프를 상속 → EOF 영구 부재)의 **대조군 + 수리** 실측. 대조군(unsealed)이 적색이면 원인

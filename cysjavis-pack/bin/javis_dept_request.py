@@ -1004,6 +1004,7 @@ FAIL_SAY = {
     # A1-2b 2R(agy): 이 사유들이 날것(「(사유: …)」)으로 나가지 않게
     "create_timeout_exhausted": "부서를 만드는 일이 두 번 모두 제시간에 끝나지 않아 멈췄습니다.",
     "crash": "부서 일을 처리하던 중 내부 오류가 나서 멈췄습니다.",
+    "bash_not_found": "부서를 만드는 데 필요한 실행 도구(bash)를 이 컴퓨터에서 찾지 못해 만들지 못했습니다. 자비스를 다시 설치하시면 함께 들어옵니다.",
     "target_changed": "확인하신 뒤 그 번호의 부서가 다른 부서로 바뀌어 있어서 닫지 않았습니다. 지금 부서 목록을 다시 보여 드릴까요?",
     "close_rc": "닫는 프로그램이 실패했습니다.",
     "duplicate": "같은 이름의 부서가 이미 만들어져 있어서 하나 더 만들지 않았습니다.",
@@ -1565,6 +1566,10 @@ def create_out_path(key, call):
 
 
 def _spawn_create(key, cysd, call):
+    # ★precut-fix3: 윈도우는 cys-dept(bash 스크립트)를 bash 로 감싼다 — 직접 실행 = WinError 193. 파일을 열기 **전에**
+    #   해소한다(bash 없음 = BashNotFound → 호출부가 bash_not_found 로 접는다 · 빈 로그 파일을 남기지 않는다).
+    import javis_org
+    cmd = javis_org.dept_cmd(cys_dept_bin(), ["create", key])
     env = dict(os.environ)
     env["CYS_ROLE"] = "cso"
     env["PATH"] = os.path.dirname(cysd) + os.pathsep + env.get("PATH", "")
@@ -1582,7 +1587,7 @@ def _spawn_create(key, cysd, call):
     #   (CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP · 출력을 받는 호출이라 창 숨김 계약 대상).
     flags = (0x08000000 | 0x00000200) if os.name == "nt" else 0
     try:
-        p = subprocess.Popen([cys_dept_bin(), "create", key], stdout=of, stderr=lf,
+        p = subprocess.Popen(cmd, stdout=of, stderr=lf,
                              stdin=subprocess.DEVNULL, env=env, creationflags=flags,
                              start_new_session=(os.name != "nt"))
     finally:
@@ -1808,7 +1813,12 @@ def _create_step(r, st, reqs):
     atomic_write_json(tick_state_path(), st)             # F2: 간격 기준을 spawn 전에 영속
     save_req(r)                                          # F2: 호출 의도를 spawn 전에 영속
     call = r["create_calls"]
-    p, lf = _spawn_create(r["key"], cysd, call)
+    import javis_org
+    try:
+        p, lf = _spawn_create(r["key"], cysd, call)
+    except javis_org.BashNotFound:
+        _fail(r, "bash_not_found")
+        return
     r["create_pid"] = p.pid
     save_req(r)                                          # 기다리는 동안 틱이 죽어도 pid 가 남는다
     try:

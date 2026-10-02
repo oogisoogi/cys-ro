@@ -13,6 +13,26 @@ import argparse, json, os, sys, hashlib, subprocess, tempfile, tarfile, time, sh
 # **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
+
+class BashNotFound(OSError):
+    """윈도우에서 cys-dept(bash 스크립트)를 돌릴 bash 를 찾지 못했다 — crash 가 아니라 이름 붙은 실패."""
+
+
+def dept_cmd(cys_dept, args, windows=None, which=shutil.which):
+    """cys-dept 실행 명령(만들기·닫기 공용 · precut-fix3).
+
+    윈도우 CreateProcess 는 셔뱅(#!/usr/bin/env bash)을 모른다 — 확장자 없는 스크립트를 직접 띄우면
+    OSError [WinError 193](10-02 윈 실기 tick-errors.log 원문). 그래서 윈도우는 bash **전체 경로**로 감싼다:
+    해소 = shutil.which("bash")(PATH 순서 · 리터럴 "bash" 는 CreateProcess 가 System32 의 WSL 스텁을 먼저 집는다 —
+    run_bootstrap_health.py BASH 와 같은 해소). 맥·리눅스는 종전 그대로 직접 실행."""
+    windows = (os.name == "nt") if windows is None else windows
+    if not windows:
+        return [cys_dept] + list(args)
+    bash = which("bash")
+    if not bash:
+        raise BashNotFound("bash 를 찾지 못했다(PATH) — cys-dept 를 실행할 수 없다")
+    return [bash, cys_dept] + list(args)
+
 # RC-6: OS중립 파일락 — unix는 fcntl.flock(제로 회귀·파일 닫힐 때 자동 해제), Windows는 fcntl
 # 부재라 msvcrt 바이트락으로 폴백(과거 top-level `import fcntl`이 Windows에서 즉시 ModuleNotFoundError로
 # javis_org 전체 불능이던 P0 차단). 락 실패해도 최종 원자교체(os.replace)가 일관성 보장 → best-effort.
@@ -530,7 +550,12 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
         actions.append(("down", 127))
         sys.stderr.write("[destroy] %s: cys-dept 미발견(%s) — down 불가\n" % (name, cys_dept))
         return actions  # down 실패로 cmd_destroy가 비0 판정
-    down_cmd = [cys_dept, "down", name] + (["--purge-state"] if purge_state else [])
+    try:
+        down_cmd = dept_cmd(cys_dept, ["down", name] + (["--purge-state"] if purge_state else []))
+    except BashNotFound as e:
+        actions.append(("down", 127))
+        sys.stderr.write("[destroy] %s: %s — down 불가\n" % (name, e))
+        return actions  # down 실패로 cmd_destroy가 비0 판정
     r = subprocess.run(down_cmd, capture_output=True, text=True,
                        env={**os.environ, "CYS_TRASH_STAMP": ts, "CYS_DEPT_EXPECT_GEN": expect_gen or ""}, **NOWIN)
     actions.append(("down", r.returncode))

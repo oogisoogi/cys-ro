@@ -1419,6 +1419,23 @@ class TestC3F1Leftover(Base):
         self.assertFalse(r.get("leftover_checked"), r)
         self.assertIn("확인하지 못했습니다", self.say(rid))
 
+    def test_windows_no_bash_is_named_failure_not_crash(self):
+        """precut-fix3: 윈에서 bash 를 못 찾으면 crash 가 아니라 bash_not_found · 사람 말 = 실행 도구(bash)를 찾지 못했다."""
+        import javis_org
+        rid = self.proposed_confirmed("교육부")
+        orig = javis_org.dept_cmd
+        def no_bash(*a, **k):
+            raise javis_org.BashNotFound("bash 를 찾지 못했다(PATH)")
+        javis_org.dept_cmd = no_bash
+        try:
+            self.tick()
+        finally:
+            javis_org.dept_cmd = orig
+        r = self.req(rid)
+        self.assertEqual(r["fail_reason"], "bash_not_found", r)
+        self.assertNotIn("create_pid", r, "bash 없는데 자식 pid 가 적혔다")
+        self.assertIn("실행 도구(bash)를 이 컴퓨터에서 찾지 못해", self.say(rid))
+
     def test_generated_claude_md_listed_user_claude_md_not(self):
         rid = self.proposed_confirmed("교육부")
         os.environ["CYS_DEPT_BIN"] = os.path.join(self.tmp, "없는-cys-dept")   # 안내 파일 작성 뒤 crash
@@ -1448,6 +1465,35 @@ class TestC3F1Leftover(Base):
         rid2 = self.proposed_confirmed("교육부")
         self.tick()
         self.assertIn(self.req(rid2)["state"], ("created", "reused"), self.req(rid2).get("events"))
+
+
+class TestWinDeptCmd(unittest.TestCase):
+    """precut-fix3(10-02 윈 실기 WinError 193): 윈도우는 셔뱅(#!/usr/bin/env bash)을 모른다 — cys-dept(확장자 없는
+    bash 스크립트)를 직접 실행하면 OSError [WinError 193]. 만들기·닫기 둘 다 bash 전체 경로로 감싼다(shutil.which ·
+    WSL 스텁 System32\\bash.exe 를 피하는 기존 해소). bash 없음 = crash 가 아니라 사유가 드러나는 실패."""
+
+    def test_windows_wraps_with_bash_full_path_mac_unchanged(self):
+        import javis_org
+        which = lambda n: r"C:\\cys\\runtime\\git\\usr\\bin\\bash.exe" if n == "bash" else None
+        got = javis_org.dept_cmd("/p/bin/cys-dept", ["create", "k1"], windows=True, which=which)
+        self.assertEqual(got, [r"C:\\cys\\runtime\\git\\usr\\bin\\bash.exe", "/p/bin/cys-dept", "create", "k1"])
+        self.assertEqual(javis_org.dept_cmd("/p/bin/cys-dept", ["down", "dept-1"], windows=False, which=which),
+                         ["/p/bin/cys-dept", "down", "dept-1"])
+
+    def test_windows_without_bash_raises_named_reason(self):
+        import javis_org
+        with self.assertRaises(javis_org.BashNotFound):
+            javis_org.dept_cmd("/p/bin/cys-dept", ["create", "k1"], windows=True, which=lambda n: None)
+
+    def test_spawn_and_down_use_dept_cmd_source_pin(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        dr = open(os.path.join(here, "javis_dept_request.py"), encoding="utf-8").read()
+        org = open(os.path.join(here, "javis_org.py"), encoding="utf-8").read()
+        self.assertNotIn("Popen([cys_dept_bin(),", dr, "만들기가 cys-dept 를 인터프리터 없이 직접 띄운다(윈 WinError 193)")
+        self.assertIn('javis_org.dept_cmd(cys_dept_bin(), ["create", key])', dr)
+        self.assertIn('"bash_not_found"', dr)
+        self.assertNotIn("down_cmd = [cys_dept,", org, "닫기가 cys-dept 를 인터프리터 없이 직접 띄운다")
+        self.assertIn("dept_cmd(cys_dept, [\"down\", name]", org)
 
 
 class TestNoProduction(unittest.TestCase):

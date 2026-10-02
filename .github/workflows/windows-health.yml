@@ -229,6 +229,17 @@ jobs:
           set -euo pipefail
           CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys d5_env_injection -- --test-threads=1
 
+      # ★(1.1.7 precut-fix2 · 10-02 윈 실기 진단) reinject 폭주 가드 기록이 **윈 파이프 소켓에서** 실제로 써지고 읽히는가.
+      #   종전 경로(소켓 부모)는 윈에서 파이프 이름공간이라 쓰기가 조용히 실패했다 — 맥에선 두 경로가 같아 이 시험이
+      #   못 가르므로 윈 러너가 진다. 시험 0건 매치를 초록으로 읽지 않게 「1 passed」 를 확인한다.
+      - name: cargo test --bin cys reinject 가드 기록 왕복 (Windows 실기 · 파이프 소켓)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys reinject_guard_record_roundtrip -- --test-threads=1 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out" | tail -5
+          echo "$out" | grep -q 'test result: ok. 1 passed' || { echo "::error::reinject 가드 왕복 시험이 1건 실행되지 않았다(이름 불일치·필터 0건)"; exit 1; }
+
       # ★v113-restore B1: 윈 `cys rotate` 가 stage 2(identify)에서 316s 멈춘 원인(자동 기동 cysd 가 부른 쪽의
       #   출력 파이프를 상속 → EOF 영구 부재)의 **대조군 + 수리** 실측. 대조군(unsealed)이 적색이면 원인
       #   명명이 기각된 것이다 — 그때는 수리 초록만으로 합격 판정하지 마라.

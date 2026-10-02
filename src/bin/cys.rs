@@ -16587,21 +16587,19 @@ fn epoch_secs_now() -> u64 {
 }
 
 /// 좌석 reinject 기록 읽기 — 없거나 깨졌으면 빈 기록(= 첫 시도 허용 · 조용한 영구 정지 금지).
+/// ★(precut-fix2) 자리 = 데몬 상태 폴더(`daemon_state_dir`) — 종전 소켓 부모는 윈에서 파이프 이름공간이라 쓰기가
+///   늘 조용히 실패했다(= 매번 빈 기록 · 간격·시간당 상한이 윈에서 꺼짐 · 10-02 윈 실기 진단). 맥·리눅스는 같은 자리.
 fn reinject_guard_load(sid: u64) -> cys::reinject_guard::SeatRecord {
-    cys::socket_path()
-        .parent()
-        .map(|d| d.join(cys::reinject_guard::record_rel_path(sid)))
-        .and_then(|p| std::fs::read_to_string(p).ok())
+    let path = cys::daemon_state_dir(&cys::socket_path()).join(cys::reinject_guard::record_rel_path(sid));
+    std::fs::read_to_string(path)
+        .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
 /// 좌석 reinject 기록 쓰기(임시파일 → rename 원자 교체). 실패는 조용히 — 기록 실패가 복원을 막지 않는다.
 fn reinject_guard_save(sid: u64, rec: &cys::reinject_guard::SeatRecord) {
-    let Some(dir) = cys::socket_path().parent().map(|p| p.to_path_buf()) else {
-        return;
-    };
-    let path = dir.join(cys::reinject_guard::record_rel_path(sid));
+    let path = cys::daemon_state_dir(&cys::socket_path()).join(cys::reinject_guard::record_rel_path(sid));
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -20023,7 +20021,9 @@ mod tests {
             let b = prod[a..].find("\n}\n").map(|i| a + i).unwrap();
             &prod[a..b]
         };
-        for f in ["restore_inject_claim", "restore_guard_reason"] {
+        // ★(precut-fix2 · 윈 실기 10-02 진단) reinject 폭주 가드 기록도 같은 폴더 — 소켓 부모(윈 = 파이프 이름공간)면
+        //   쓰기가 조용히 실패해 매번 빈 기록 = 간격·시간당 상한이 윈에서 통째로 꺼진다(v112 수리에서 빠졌던 두 함수).
+        for f in ["restore_inject_claim", "restore_guard_reason", "reinject_guard_load", "reinject_guard_save"] {
             let b = body(f);
             assert!(b.contains("cys::daemon_state_dir("), "{f}: 데몬 상태 폴더를 안 쓴다");
             assert!(
@@ -21982,6 +21982,41 @@ mod tests {
     fn sha256_of(bytes: &[u8]) -> String {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// ★(precut-fix2) reinject 폭주 가드 기록 **저장 → 읽기 왕복**이 실제 소켓 설정에서 성립한다 — 윈도 러너
+    ///   (windows-health `reinject_guard_record_roundtrip` 단계)에서 파이프 소켓(`\\.\pipe\…`)으로 돈다. 종전 경로(소켓 부모 =
+    ///   파이프 이름공간)는 쓰기가 조용히 실패해 읽기가 빈 기록 → 이 시험이 윈에서 적색이었다(실패를 삼키던 자리를 시험이 잡는다).
+    ///   맥·리눅스에서는 상태 폴더 = 소켓 부모 그대로임(종전 기록 자리 불변)도 함께 단언한다.
+    #[test]
+    fn reinject_guard_record_roundtrip_on_daemon_state_dir() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let td = std::env::temp_dir().join(format!("cys-rguard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        let saved_sock = std::env::var(cys::ENV_SOCKET).ok();
+        let saved_lad = std::env::var("LOCALAPPDATA").ok();
+        let sock = if cfg!(windows) {
+            std::env::set_var("LOCALAPPDATA", &td);
+            format!(r"\\.\pipe\cys-rguard-{}", std::process::id())
+        } else {
+            td.join("cys.sock").to_string_lossy().into_owned()
+        };
+        std::env::set_var(cys::ENV_SOCKET, &sock);
+        let sid = 4_242_u64;
+        let rec = cys::reinject_guard::SeatRecord { ack_at: Some(1_700_000_123), attempts: vec![1_700_000_001, 1_700_000_061] };
+        reinject_guard_save(sid, &rec);
+        let back = reinject_guard_load(sid);
+        let file = cys::daemon_state_dir(std::path::Path::new(&sock)).join(cys::reinject_guard::record_rel_path(sid));
+        let exists = file.exists();
+        if !cfg!(windows) {
+            assert_eq!(cys::daemon_state_dir(std::path::Path::new(&sock)), td, "맥·리눅스 상태 폴더가 소켓 부모가 아니다(종전 기록 자리 이동)");
+        }
+        match saved_sock { Some(v) => std::env::set_var(cys::ENV_SOCKET, v), None => std::env::remove_var(cys::ENV_SOCKET) }
+        match saved_lad { Some(v) => std::env::set_var("LOCALAPPDATA", v), None => std::env::remove_var("LOCALAPPDATA") }
+        let _ = std::fs::remove_dir_all(&td);
+        assert!(exists, "가드 기록 파일이 데몬 상태 폴더에 없다: {} (소켓 {sock})", file.display());
+        assert_eq!(back, rec, "가드 기록 왕복 실패 — 쓰기가 조용히 실패해 빈 기록이 읽혔다(윈 = 간격·상한 꺼짐)");
     }
 
     /// ★W-B 보완 핀(성찰 2 산물): agents.json 을 user 승격하면 사용자 수정본이 동결돼 vendor

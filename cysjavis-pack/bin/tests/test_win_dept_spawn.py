@@ -118,6 +118,68 @@ class TestWinDeptSpawnReal(unittest.TestCase):
         self.assertEqual(self.marks()[-1].split("|", 1)[1], "create k2")
 
 
+CR_PY_WRAPPER = r'''#!/bin/bash
+# 맥·리눅스에서 윈 파이썬의 줄 끝(\r\n)을 흉내 — cys-dept create 의 카탈로그 한 줄 읽기(그 파이썬 조각)에만 적용한다.
+if [ "${1:-}" = "-" ]; then
+  shift; t="$(mktemp)"; cat > "$t"
+  if grep -q "d\['departments'\].get(key)" "$t"; then
+    "$REAL_PY3" "$t" "$@" | "$REAL_PY3" -c "import sys;sys.stdout.write(sys.stdin.read().replace('\n','\r\n'))"
+    rc=${PIPESTATUS[0]}; rm -f "$t"; exit $rc
+  fi
+  "$REAL_PY3" "$t" "$@"; rc=$?; rm -f "$t"; exit $rc
+fi
+exec "$REAL_PY3" "$@"
+'''
+
+
+class TestCreateCatalogCR(unittest.TestCase):
+    """precut-fix3 다음 벽(윈 러너 관측 실측 · master#057fb9b7): 윈 Git bash 의 `read < <(python3 …)` 는 줄 끝 \\r 을
+    남긴다 → cys-dept create 의 카탈로그 한 줄(마지막 칸 = cwd)이 \\r 을 달고 등록부에 들어갔다. 진짜 cys-dept create 를
+    REUSE_DEAD 길(등록부 cwd 를 카탈로그 값으로 다시 쓰는 길)로 돌리고, 가짜 데몬이 바로 끝나 기동 실패(등록 유지)로
+    멈추게 해서 등록부 cwd 를 본다. 윈 = 진짜 \\r\\n · 맥·리눅스 = 그 조각에만 \\r\\n 을 입히는 python3 감쌈."""
+
+    def test_f_create_catalog_line_cr_not_in_registry_cwd(self):
+        import json
+        tmp = tempfile.mkdtemp(prefix="wcr-")
+        try:
+            home = os.path.join(tmp, "home"); os.makedirs(home)
+            acct = os.path.join(tmp, "acct"); os.makedirs(acct)
+            cwd = os.path.join(tmp, "dept-folder"); os.makedirs(cwd)
+            cat = os.path.join(tmp, "catalog.json"); reg = os.path.join(tmp, "depts.json")
+            with open(cat, "w", encoding="utf-8") as f:
+                json.dump({"accounts": {"acc": acct}, "departments": {"k1": {
+                    "display": "시험부", "account": "acc", "mission_key": "mk1", "cwd": cwd}}}, f)
+            sock = r"\\.\pipe\cys-dept-wcr-none" if IS_WIN else os.path.join(tmp, "none.sock")
+            with open(reg, "w", encoding="utf-8") as f:
+                json.dump({"depts": {"dept-1": {"socket": sock, "pack_dir": os.path.join(home, "p"), "role": "dept-master",
+                                                "mission_key": "mk1", "cwd": "old", "account_dir": acct,
+                                                "reserved_at": 0, "gen": "aa"}}}, f)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("CYS_")}
+            env.update({"HOME": home, "LOCALAPPDATA": os.path.join(tmp, "la"), "CYS_ROLE": "cso", "CYS_NO_AUTOSTART": "1",
+                        "CYS_DEPT_CATALOG": cat, "CYS_DEPTS_JSON": reg,
+                        "CYS_DEPT_MISSIONS": os.path.join(tmp, "missions"),
+                        # 가짜 데몬·cys = 인자 없는/엉뚱한 인자의 파이썬 → 곧바로 끝남(ping 실패 · 기동 실패)
+                        "CYS_CYSD_BIN": sys.executable, "CYS_CYS_BIN": sys.executable})
+            if not IS_WIN:
+                wd = os.path.join(tmp, "wrap"); os.makedirs(wd)
+                w = os.path.join(wd, "python3")
+                with open(w, "w", newline="\n") as f:
+                    f.write(CR_PY_WRAPPER)
+                os.chmod(w, 0o755)
+                env["REAL_PY3"] = shutil.which("python3") or sys.executable
+                env["PATH"] = wd + os.pathsep + env.get("PATH", "")
+            cmd = javis_org.dept_cmd(os.path.join(BIN, "cys-dept"), ["create", "k1"], posix_bash=True)
+            r = subprocess.run(cmd, capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+                               timeout=120, **javis_org.NOWIN)
+            self.assertIn("등록부 잔존(dept-1)", r.stderr, "REUSE_DEAD 길을 타지 않았다:\n%s" % r.stderr[-1500:])
+            with open(reg, encoding="utf-8") as f:
+                got = json.load(f)["depts"]["dept-1"]["cwd"]
+            self.assertNotIn("\r", got, "등록부 cwd 에 \\r 이 들어갔다: %r" % got)
+            self.assertEqual(got, cwd)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestSiblingSweep(unittest.TestCase):
     """형제 스윕(precut-fix3 ②): 같은 cys-dept 를 문자 그대로의 "bash" 로 띄우던 3곳 — 윈도우 CreateProcess 는
     System32 를 PATH 보다 먼저 보므로 WSL 이 깔린 기계에서는 WSL 스텁(System32\\bash.exe)을 집는다.

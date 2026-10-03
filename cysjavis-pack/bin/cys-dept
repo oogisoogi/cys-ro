@@ -1686,7 +1686,9 @@ PY
     MISS="${CYS_DEPT_MISSIONS:-$HOME/.cys/dept-missions}"
     [ -f "$CAT" ] || { echo "[cys-dept] 카탈로그 부재: $CAT (GUI=레거시 allocate fallback)" >&2; exit 3; }  # fail-closed
     # 카탈로그 조회 + account dir 해석($HOME 전개). 파싱실패/키부재=fail-closed.
-    IFS=$'\t' read -r disp acctkey acctdir mkey cwd < <(python3 - "$CAT" "$key" <<'PY'
+    # ★precut-fix3(윈 러너 관측 실측): 윈 파이썬은 줄 끝을 \r\n 으로 쓰고 Git bash 의 read 는 \r 을 남긴다 → 마지막 칸(cwd)이
+    #   \r 을 달고 등록부·new-surface --cwd 로 갔다. 한 곳에서(이 파이프) 모든 칸의 \r 을 뗀다 — 맥·리눅스는 \r 이 없어 무변경.
+    IFS=$'\t' read -r disp acctkey acctdir mkey cwd < <(python3 - "$CAT" "$key" <<'PY' | tr -d '\r'
 import json,sys,os
 cat,key=sys.argv[1:3]
 d=json.load(open(cat))                                   # 파싱실패=예외=비0=fail-closed

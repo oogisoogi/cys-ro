@@ -3,7 +3,7 @@
 2. **빌드·시험 정확 명령**(cwd = 작업트리 루트 · W=래퍼 경로):
    - 빌드: `$W cargo build -q -p cys-terminal`
    - Rust 전체: `$W cargo test -p cys-terminal --lib --bins` (≈13분 · lib 763/0 · cys 577/0 · cysd 2449/1) · 필터: `$W cargo test -q -p cys-terminal --bin cysd -- <필터>`(lib = `--lib` · cys = `--bin cys`)
-   - ui: `cd ui && $W /Users/oogisoogi/.bun/bin/bun test`(6초 · 2807/0 · 레인 81) · 타입: `$W /Users/oogisoogi/.bun/bin/bunx tsc -p tsconfig.check.json`(0) — ui/node_modules = ~/axdev/.wt/cys-117-lead/ui/node_modules 심볼릭 링크(커밋 금지)
+   - ui: `cd ui && $W $HOME/.bun/bin/bun test`(6초 · 2807/0 · 레인 81) · 타입: `$W $HOME/.bun/bin/bunx tsc -p tsconfig.check.json`(0) — ui/node_modules = ~/axdev/.wt/cys-117-lead/ui/node_modules 심볼릭 링크(커밋 금지)
    - 팩 전체: `python3 /private/tmp/claude-501/s118/pk/packtests.py <작업트리> "" -<태그>`(≈28분 · 결과 json 은 그 폴더) · 일부: 둘째 인자 = 시험 이름 목록 파일. ⚠측정 산출을 저장소 안(docs/merge/work 포함)에 두지 마라 — test_pyseal_census 스캔이 집어 적색이 된다.
    - 팩 단일: `$W env CYS_PACK_DIR=<빈 임시 폴더> python3 cysjavis-pack/bin/tests/<시험>.py`
 3. **휴면-on 레인 켜는 법**(기본 CI 미실행 · BACKLOG B1·B4): ui `CYS_UI_DORMANT_LANE=1`(81건) · 팩 teamtoken D8·D11 `CYS_ENABLE_TEAM_FLOW=1` · 팩 session_start_hook 22·22b master `CYS_DORMANT_LANE=1` — 래퍼 뒤 `env <변수>=1` 로 붙인다. 지금 켜면 그 항목만 적색이 정상(실측).

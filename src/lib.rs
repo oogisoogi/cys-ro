@@ -2655,6 +2655,20 @@ pub fn inject_claude_effort_env(env_pairs: &mut Vec<(String, String)>, agent: &s
     env_pairs.push((ENV_CLAUDE_EFFORT_LEVEL.to_string(), CLAUDE_SEAT_EFFORT.to_string()));
 }
 
+/// ★J-📌1(1.1.8 · DECISION-TABLE §0 8행 · master 결정 「원작자가 윈에서 끈 입력 안전장치를 윈에서도 켬」) **윈 입력 안전장치
+/// 옛 모드인가** — 참이면 원작자 v0.14.43 의 윈도우 갈래(S21 정착 0 · F1 보류·재제출 0 · 직접 울타리·CRLF 0 · H0 초안 축 0 ·
+/// 입력 계수 v2)로 되돌린다. 기본 = 거짓(윈에서도 켬) · 비윈도우 = 언제나 거짓(맥·리눅스 바이트 무변경).
+/// 되돌리는 법(윈 실기에서 막힐 때 · 축 한 번에) = 데몬 env `CYS_WIN_INPUT_GUARDS=0`(또는 `off`). 값은 프로세스 수명 고정.
+pub fn win_input_guards_legacy() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| win_input_guards_legacy_for(cfg!(windows), std::env::var("CYS_WIN_INPUT_GUARDS").ok().as_deref()))
+}
+
+/// [`win_input_guards_legacy`] 의 순수 판(OS·env 주입 — 어느 호스트에서든 두 갈래를 잰다).
+pub fn win_input_guards_legacy_for(windows: bool, env: Option<&str>) -> bool {
+    windows && env.map(str::trim).is_some_and(|v| v == "0" || v.eq_ignore_ascii_case("off"))
+}
+
 /// ★D25·D24ⓒ(1.1.8 · master 결정 [master#7f82e8c4] ①② = A · [master#99924a73] 두 키 + 허용 역할) **claude 좌석 기동 설정**
 /// (순수) — `claude --settings <파일>` 로 실을 JSON. 전역 사용자 설정값에 기대지 않고 좌석 기동 인자로 강제한다(윈 1.1.7 실측:
 /// 전역 `remoteControlAtStartup=true` 하나로 cso·worker 까지 RC 가 켜져 폰에 노출됐다 · 규칙 = 폰 노출 master 1기).
@@ -5019,6 +5033,18 @@ mod tests {
     ///   ⓑ `ensure_ascii=false`(한글이 `\uXXXX` 로 escape 되지 않는다)
     ///   ⓒ **말미 개행**
     /// 하나라도 갈리면 같은 상태를 두 구현이 서로 다른 파일로 낳고, boot-last 골든 대조가 깨진다.
+    /// ★J-📌1 윈 입력 안전장치 옛 모드 판정 — 윈 기본 = 켬(옛 모드 아님) · env 0/off = 원작자 윈 갈래 · 비윈도우 = 언제나 켬.
+    #[test]
+    fn j1_win_input_guards_legacy_table() {
+        assert!(!win_input_guards_legacy_for(true, None), "윈 기본 = 안전장치 켬");
+        assert!(win_input_guards_legacy_for(true, Some("0")));
+        assert!(win_input_guards_legacy_for(true, Some(" OFF ")));
+        assert!(!win_input_guards_legacy_for(true, Some("1")));
+        assert!(!win_input_guards_legacy_for(false, Some("0")), "맥·리눅스는 노브와 무관하게 켬");
+        #[cfg(not(windows))]
+        assert!(!win_input_guards_legacy(), "이 호스트(비윈도우) = 켬");
+    }
+
     /// ★D25·D24ⓒ(1.1.8 · [master#99924a73] 시험) 허용 목록 밖 역할 = 두 키 존재 · 안 역할 = 키 0 · 부서 좌석 = 언제나 두 키.
     #[test]
     fn d25_claude_seat_settings_table() {

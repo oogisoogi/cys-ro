@@ -7135,7 +7135,8 @@ pub(crate) fn machine_direct_hold(
     s: &Arc<crate::state::Surface>,
     want: MachineHoldAxes,
 ) -> Option<MachineHold> {
-    let mask = hold_axes_mask_from(h_knob("CYS_MACHINE_INJECT_HOLD_AXES").as_deref(), cfg!(windows));
+    // ★J-📌1(1.1.8): 초안(draft) 축의 윈 꺼짐 = 옛 모드일 때만(원작자 표 `hold_axes_default(windows)` 는 그대로 · 넣는 OS 값만 바뀐다).
+    let mask = hold_axes_mask_from(h_knob("CYS_MACHINE_INJECT_HOLD_AXES").as_deref(), cys::win_input_guards_legacy());
     machine_direct_hold_masked(daemon, s, want, mask)
 }
 
@@ -7732,7 +7733,7 @@ impl PendingInputModel {
 
     /// OS 별 기본 모델 — [`Self::default_for`] 에 이 빌드의 OS 를 넣은 한 식이다(런타임 분기 `cfg!`). 본문이 그 한 식이라는 것은 소스 핀(`a5_m2_os_default_is_one_expression…`)이 고정한다.
     pub(crate) fn os_default() -> Self {
-        Self::default_for(cfg!(windows))
+        Self::default_for(cys::win_input_guards_legacy())
     }
 
     /// env 값의 **명시 해석**(순수) — `v2`/`v3`(대소문자·앞뒤 공백 무시). 그 밖·부재는 `None`(= OS 기본으로 내려간다). 아래 두 판이 같은 표를 쓴다.
@@ -17209,8 +17210,9 @@ mod tests {
         assert_eq!(PendingInputModel::default_for(false), PendingInputModel::V3, "그 밖(맥·리눅스) 기본은 V3");
         assert_eq!(
             PendingInputModel::os_default(),
-            PendingInputModel::default_for(cfg!(windows)),
-            "OS 기본: 이 빌드의 판은 순수 표에 이 빌드의 OS 를 넣은 값이다"
+            // ★1.1.8 J-📌1 조정(원장 1줄): 넣는 값 = 「윈 입력 안전장치 옛 모드」(윈 기본 = 켬 = V3 · 노브 0 = V2 · 비윈도우 = V3).
+            PendingInputModel::default_for(cys::win_input_guards_legacy()),
+            "OS 기본: 이 빌드의 판은 순수 표에 이 빌드의 옛 모드 여부를 넣은 값이다"
         );
         for (is_windows, want_default) in [(true, PendingInputModel::V2), (false, PendingInputModel::V3)] {
             for (v, want) in [
@@ -17232,7 +17234,7 @@ mod tests {
         }
         // 이 빌드의 env 판은 OS 인자판에 이 빌드의 OS 를 넣은 값과 같다(같은 입력 · 두 경로).
         for v in [Some("v2"), Some(" V3 "), Some("junk"), Some(""), None] {
-            assert_eq!(PendingInputModel::from_env_value(v), PendingInputModel::from_env_value_for(v, cfg!(windows)), "{v:?}");
+            assert_eq!(PendingInputModel::from_env_value(v), PendingInputModel::from_env_value_for(v, cys::win_input_guards_legacy()), "{v:?}"); // ★J-📌1 조정
         }
     }
 
@@ -17249,7 +17251,8 @@ mod tests {
             let close = rest.find("\n    }\n").expect("본문 끝(메서드 들여쓰기 4칸)");
             rest[open + 1..close].split_whitespace().collect::<Vec<_>>().join(" ")
         };
-        assert_eq!(body(concat!("pub(crate) fn os_default", "() -> Self {")), "Self::default_for(cfg!(windows))");
+        // ★1.1.8 J-📌1 조정(원장 1줄): OS 인자 = 「윈 입력 안전장치 옛 모드」(윈 기본 = 켬 → V3 · 노브 0 = 원작자 윈 갈래 V2).
+        assert_eq!(body(concat!("pub(crate) fn os_default", "() -> Self {")), "Self::default_for(cys::win_input_guards_legacy())");
         assert_eq!(body(concat!("pub(crate) fn from_env_value", "(v: Option<&str>) -> Self {")), "Self::explicit_from_env_value(v).unwrap_or_else(Self::os_default)");
         assert_eq!(
             body(concat!("pub(crate) fn default_for", "(is_windows: bool) -> Self {")),

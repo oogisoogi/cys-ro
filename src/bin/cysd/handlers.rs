@@ -2827,7 +2827,8 @@ fn send_settle_applies(
     gate_kind: Option<DirectSendKind>,
 ) -> bool {
     gate_kind == Some(DirectSendKind::Text)
-        && cfg!(unix)
+        // ★J-📌1(1.1.8): 원작자 `cfg!(unix)` → 윈에서도 켬(옛 모드 노브 `CYS_WIN_INPUT_GUARDS=0` = 원작자 윈 갈래).
+        && !cys::win_input_guards_legacy()
         && surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).is_some()
         && !send_settle_disabled(daemon)
 }
@@ -6514,7 +6515,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   gate_kind·draft_gate·타이핑 가드·원장·input_injected 는 원문 기준 그대로다(더 보수적).
             let fence = direct_fence_mode(
                 &text,
-                DirectFenceFlags { human, authoritative, clear_first, platform_ok: cfg!(unix) },
+                DirectFenceFlags { human, authoritative, clear_first, platform_ok: !cys::win_input_guards_legacy() }, // ★J-📌1
                 || direct_fence_seat_ok(&surface),
                 || direct_fence_disabled(daemon),
                 || surface.bracketed_paste.load(Ordering::Relaxed),
@@ -7034,7 +7035,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             let cr_guard_ctx = if gate_kind == Some(DirectSendKind::SubmitKey)
                 && !refuse_on_approval
                 && matches!(write_req, crate::state::WriteReq::SubmitAfterGap { .. })
-                && cfg!(unix)
+                && !cys::win_input_guards_legacy() // ★J-📌1: 원작자 cfg!(unix) → 윈에서도 켬
                 && governance::submit_guard_scope(&surface) != governance::SubmitGuardScope::Off
                 && !send_settle_disabled(daemon)
             {

@@ -7,6 +7,9 @@
 
 pub mod buildinfo;
 pub mod gates;
+pub mod hold;
+pub mod journal;
+pub mod lock;
 pub mod sched;
 
 pub use errors::{ErrCode, UpdateErr};

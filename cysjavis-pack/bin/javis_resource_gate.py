@@ -636,6 +636,44 @@ def _socket_listening(path):
                 pass
 
 
+def _dept_sockets(windows=None):
+    """[(부서 이름, 소켓)] — unix = 소켓 파일 glob(종전) · ★D3(1.1.8 · 윈 실측): 윈은 부서 소켓이 named pipe
+    (`\\\\.\\pipe\\cys-dept-…`)라 파일 glob 이 늘 0건이었다(부서 가동 중인데 depts active=0 seats=0) — 윈은 부서 등재
+    (CYS_DEPTS_JSON · 기본 ~/.cys/depts.json)의 socket 값으로 묻는다. 판정은 종전처럼 `cys status` 왕복이 한다."""
+    if not (os.name == "nt" if windows is None else windows):
+        out = []
+        for sock in sorted(glob.glob(os.path.expanduser(DEPT_SOCKET_GLOB))):
+            name = os.path.basename(os.path.dirname(sock))
+            if name.startswith("cys-dept-"):
+                name = name[len("cys-dept-"):]
+            out.append((name, sock))
+        return out
+    reg = os.environ.get("CYS_DEPTS_JSON") or os.path.join(os.path.expanduser("~"), ".cys", "depts.json")
+    try:
+        with open(reg, encoding="utf-8-sig") as f:
+            depts = (json.load(f) or {}).get("depts") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    return sorted((str(k), str(v.get("socket"))) for k, v in depts.items()
+                  if isinstance(v, dict) and v.get("socket"))
+
+
+def _base_live_seats():
+    """본부 데몬의 살아 있는 좌석 수(`cys status --json` 비-exited surfaces) — 실패 = None(측정 불능)."""
+    try:
+        p = subprocess.run(["cys", "status", "--json"], capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=DEPT_STATUS_TIMEOUT, **NOWIN)
+        if p.returncode != 0:
+            return None
+        doc = json.loads(p.stdout)
+        surfaces = doc.get("surfaces") if isinstance(doc, dict) else None
+        if not isinstance(surfaces, list):
+            return None
+        return sum(1 for x in surfaces if isinstance(x, dict) and not x.get("exited"))
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+
+
 def _dept_roster(override=None, status_sink=None):
     """부서 로스터 — {"active": 응답 부서 수, "seats": Σ비-exited 좌석, "errors": ["dept(<이름>)", …],
     "depts": [{"name", "seats"}, …]}. 소켓 glob 마다 `cys status --json --socket <sock>` 를 묻는다.
@@ -655,10 +693,7 @@ def _dept_roster(override=None, status_sink=None):
                 "errors": list(override.get("errors") or []),
                 "depts": list(override.get("depts") or [])}
     roster = {"active": 0, "seats": 0, "errors": [], "depts": []}
-    for sock in sorted(glob.glob(os.path.expanduser(DEPT_SOCKET_GLOB))):
-        name = os.path.basename(os.path.dirname(sock))
-        if name.startswith("cys-dept-"):
-            name = name[len("cys-dept-"):]
+    for name, sock in _dept_sockets():
         # ★A3-c(2026-09-03 23:1x 실측): 죽은 데몬이 남긴 **stale 소켓 파일** 하나당 이 루프가
         #   DEPT_STATUS_TIMEOUT(5s)을 통째로 태운다(실측 5.11s). 이 게이트는 부트 ④′와 formation
         #   심박(10분)이 부르는 경로라 그 지연이 그대로 부트에 얹힌다. 리스너 유무는 connect
@@ -2201,6 +2236,15 @@ def measure(a):
     #   을 부트 앵커(안 A)로 재사용하기 위해서다(왕복 추가 0). errors 합류·좌석 계산은 종전 자리 그대로.
     _status_started_at = {}
     roster = _dept_roster(getattr(a, "dept_roster_override", None), status_sink=_status_started_at)
+    # ★D3(1.1.8 · 윈 실측 nodes=0): 윈 Git Bash 의 MSYS `ps` 는 네이티브 claude·node 프로세스를 보이지 않아
+    #   본부 노드까지 0 으로 셌다(느슨한 쪽 오차 · 측정 공백). 윈 호스트에서 ps 계수가 0/불능이면 좌석 집계
+    #   (본부 비-exited 좌석 + 부서 좌석)로 대신하고 그 사실을 errors 에 남긴다(조용한 대체 금지).
+    if a.nodes_override is None and _is_windows_host() and not nodes \
+            and getattr(a, "dept_roster_override", None) is None:
+        _base = _base_live_seats()
+        if _base is not None:
+            nodes = _base + int(roster.get("seats") or 0)
+            errors.append("nodes(windows: ps 대신 좌석 집계)")
     boot_elapsed, boot_reason = _boot_elapsed(getattr(a, "boot_elapsed_override", None),
                                               started_at_by_sock=_status_started_at)
     # 음수 경과초는 시각이 아니다(주입 오류·시계 이상) — 유예를 주지 않는다.

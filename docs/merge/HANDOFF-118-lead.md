@@ -1,3 +1,11 @@
+# ★§0 델타 v2 — 후임 리드(수리 2차 후반) (01:2x · 좌석 계정2 · master#398d4463 재브리프)
+1. **끝난 것(커밋)**: ff2fc8bd ui(DS-1 3석 결속 · X2-R 가드 · UNW 82 휴면-on 레인 · cysr 문구) · 542c6cf0 Rust(B(a) 창 밖만 강등 · submit_probe 열린 박스 `> ` 오독 수리 = drain_verify 흔들림 · r2f_dm 이음매 · BACKLOG-118).
+   ui 기본 레인 = 2800 통과 · 82 레인(CYS_UI_DORMANT_LANE=1) · 적색 1 = X2-W(updatenotice 윈 문안 · master 결정 없음 → 목록) · tsc 0.
+2. **진행 중**: Rust 전체(격리 · 스크래치패드 ctest4.log) · X18 서브(test_cso_directive_rev.py 만 조정 · 지침 무수정 · 산출 docs/merge/work/x18-upstream-diff.md · ledger-fix-x18.tsv).
+3. **남은 일**: 팩 전체 재측정(packtests.py · 짧은 HOME) · dept_team_token 재빌드+CYS_ENABLE_TEAM_FLOW=1 재측정 · inject_track 흔들림 여부(단독·모듈 3회 초록) · b3_status = 원작자 결함 행 · RESOLUTION-LEDGER-118 · MERGE-RECORD-118 · 【확인요청】.
+4. **master 결정 없음 → 목록으로 올릴 것**: X2-W(윈 설치 문안) · test_core_inject(MASTER_CORE/CEO_CORE 해시 재작성) · test_teamtoken D8/D11(휴면 지침 문면) · session_start_hook 22·22b(지침 전문 읽기 줄) · phoenix spawn timeout 90 · 우리 설치 재진입 안내 등급 feed(원작자 watchdog) · CC 게이지 windowView(UNW 레인에 넣음 · 행동 차이) · DS-1 정체/15분 안내가 3석에선 고장 신호에 가까움(문구 결정).
+5. 도구: 격리 래퍼 사본 = docs/merge/work/isoenv-lead2.sh(SB 경로 = 이 세션 스크래치패드 · 새 세션이면 고쳐 쓸 것) · 원장 docs/merge/work/ledger-fix2-lead.tsv · ledger-fix-ds1-*.tsv.
+
 # ★§0 델타 — 후임 리드(수리 2차)는 이것부터 (01:1x · master#c6a9de68 · 앞 좌석 CTX ≈58%에서 매듭)
 1. **master 결정 6(수리 2차 입력)** — DECISIONS-PENDING-118.md 끝 절 [master#c6a9de68]:
    ① ★DS-1 의무 역할 출처를 우리 편성 정본(3석)에 결속 + 시험 기대값 동반(≈58) — **첫 항목** ② ★B(a) 사용량 = 창 밖 보고만 강등(501edcf2 의 전체 순위를 좁혀라 · D6-1 시험 그대로 초록이어야) ③ B(b) 휴면 스위치 env 유지 + 문서 1줄 ④ X2-R 우리 installingUpdate 가드를 SAC 사전 검사까지 ⑤ UNW ≈80 ui 시험 = 휴면 스위치 켠 상태에서만 도는 격리 묶음(삭제·skip 0) + BACKLOG 「휴면-on CI 레인 = 1.1.9」 1줄 ⑥ X18 = 우리 팩 지침 정본 우선 · 원작자 변경분은 diff 로 BACKLOG 행.

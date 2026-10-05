@@ -211,6 +211,18 @@ def gate_fixture(root, dept=False, state=True, seats=1, daemon="unjudged", check
     return fx
 
 
+def d14_to_canon(fx, old_out):
+    """★D14(1.1.8): 본부(hub) lead 좌석의 작업기억 정본 = 레인 팩 round/ (javis_session.session_state_path).
+    기준 훅은 cwd 상향 `_round` 를 실었으므로, 같은 내용을 정본 자리로 **옮긴 뒤** 새 훅을 돌리고 기준 출력의
+    출처 경로만 정본 경로로 바꿔 대조한다 — 「U13 이 lead 출력을 바꾸지 않았다」 단언은 경로 한 줄 밖에서 그대로."""
+    leg = os.path.join(fx["cwd"], "_round", "SESSION_STATE.md")
+    canon = os.path.join(fx["pack"], "round", "SESSION_STATE.md")
+    if os.path.isfile(leg):
+        os.makedirs(os.path.dirname(canon), exist_ok=True)
+        shutil.move(leg, canon)
+    return old_out.replace(leg, canon)
+
+
 def gate_run(fx, role_env=None, source="clear", surface=True, hook=None):
     """훅 1회 — 실행마다 새 TMPDIR(정본 역할 캐시 격리 · 앞 실행의 캐시가 뒤 판정을 정하지 않게)."""
     env = {k: v for k, v in os.environ.items() if k not in _STRIP}
@@ -455,14 +467,16 @@ try:
                     fx = gate_fixture(os.path.join(tmp, "g12c-%s-%d-%s" % (role, dept, src)),
                                       dept=dept, seats=2, daemon=role)
                     a = gate_run(fx, role_env=role, source=src, hook=old)
+                    a_out = a.stdout if dept else d14_to_canon(fx, a.stdout)
                     b = gate_run(fx, role_env=role, source=src)
-                    if a.stdout != b.stdout or a.returncode != b.returncode:
+                    if a_out != b.stdout or a.returncode != b.returncode:
                         diffs.append("%s/%s/%s" % (role, "dept" if dept else "hub", src))
         # 데몬 권위로만 lead 가 확정되는 좌석(env 없음)도 같다.
         fx = gate_fixture(os.path.join(tmp, "g12c-daemon"), seats=2, daemon="master")
         a = gate_run(fx, source="clear", hook=old)
+        a_out = d14_to_canon(fx, a.stdout)
         b = gate_run(fx, source="clear")
-        if a.stdout != b.stdout:
+        if a_out != b.stdout:
             diffs.append("daemon-master/hub/clear")
         check("12c ★lead 전문 바이트 동일(기준 커밋 %s 훅 대조 · 17케이스)" % BASE_REF, not diffs,
               "갈린 케이스: %s" % diffs)

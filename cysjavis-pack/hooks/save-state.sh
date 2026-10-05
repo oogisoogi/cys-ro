@@ -43,6 +43,17 @@ if [ -z "$RD" ] && [ -f "$ROOT/_round/ACTIVE_PROJECT" ]; then
   AP=$(head -1 "$ROOT/_round/ACTIVE_PROJECT" 2>/dev/null)
   [ -n "$AP" ] && [ -d "$AP/_round" ] && RD="$AP/_round"
 fi
+# ★D14(1.1.8): lead 좌석(master·cso*)의 작업기억 정본 = 레인 팩 round/ (inject-context 와 같은 술어 ·
+#   cys_session_state_path 단일 해소). 종전엔 위 상향탐색이 옛 자리(<cwd>/_round)를 골라 압축 직전 타임스탬프·
+#   비대 워치·BOOT_SNAPSHOT 이 정본이 아닌 파일 옆에 쌓였다(윈 실측: 두 round 에 BOOT_SNAPSHOT 이 각각 생김).
+#   env 역할만 본다(조회 0 — 훅 지연 불변) · member·미상 좌석은 종전 그대로.
+_SS_ROLE=""
+command -v cys_role_line >/dev/null 2>&1 && _SS_ROLE="$(cys_role_line "${CYS_ROLE:-}")"
+if command -v cys_session_state_path >/dev/null 2>&1 && command -v cys_start_gate_is_lead >/dev/null 2>&1 \
+   && cys_start_gate_is_lead "$_SS_ROLE"; then
+  _SS_CANON_D="$(dirname "$(cys_session_state_path)")"
+  [ -d "$_SS_CANON_D" ] && RD="$_SS_CANON_D"
+fi
 [ -z "$RD" ] && exit 0
 
 NOW=$(date -Iseconds 2>/dev/null || date)

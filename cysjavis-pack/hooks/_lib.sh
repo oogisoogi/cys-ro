@@ -1271,6 +1271,20 @@ cys_start_gate_note() {      # stdout: 착수 게이트 1줄(개행 없음) — 
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 11. SESSION_STATE 정본 경로 (★D14 · 1.1.8 — python 쌍둥이 = bin/javis_session.py session_state_path)
+# ─────────────────────────────────────────────────────────────────────────────
+# 정본 = 자기 레인 팩 round/ (지침 MASTER §0 ③·§9 · cys todo-path · cycle 저장 검증과 같은 자리).
+# 1.1.7 까지 복원 훅은 cwd 상향탐색 `_round` 를 주입해 master 가 거기에 쓰고, 판정기(orchestra)는 팩을
+# 읽어 큐가 늘 빈 것으로 나왔다(윈 실측 2026-10-05). 키 순서 = PACK_DIR_ENV_KEYS · 첫 값이 이긴다.
+# 계약: 외부 명령 0 · stdout 1줄(개행 없음) · 시험 = bin/tests/test_session_state_canon.py(python 과 대조).
+cys_session_state_path() {
+  _cys_ssp="${CYS_PACK_DIR:-${JAVIS_PACK_DIR:-${AITERM_PACK_DIR:-${AITERM_JARVIS_DIR:-}}}}"
+  [ -n "$_cys_ssp" ] || _cys_ssp="${HOME:-${USERPROFILE:-.}}/.cys/pack"
+  printf '%s' "${_cys_ssp%/}/round/SESSION_STATE.md"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 로드 시 자동 적용 (부작용 없음·stdout 무출력)
 # ─────────────────────────────────────────────────────────────────────────────
 cys_resolve_py >/dev/null 2>&1 || :

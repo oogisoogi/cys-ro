@@ -5844,8 +5844,10 @@ class Preflight:
         cid = "C61.doc-code-sot"
         if self.skipped(cid):
             return
-        root = os.environ.get("JAVIS_ROOT") or os.getcwd()
-        docs = [os.path.join(root, "_round", "SESSION_STATE.md")]
+        # ★D14(1.1.8): SESSION_STATE 는 정본(레인 팩 round/) 하나 — 종전 `<JAVIS_ROOT|cwd>/_round` 는
+        #   master·판정기가 읽지 않는 옛 자리였다(윈 실측: 정본과 다른 파일을 대조).
+        import javis_session as _jsess   # 형제 모듈 — 모듈 머리 _SELF_DIR 가드 뒤
+        docs = [_jsess.session_state_path(pack=pack_dir())]
         ddir = os.path.join(pack_dir(), "directives")
         if os.path.isdir(ddir):
             docs += [os.path.join(ddir, f) for f in sorted(os.listdir(ddir))

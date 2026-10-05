@@ -248,10 +248,14 @@ try:
     rn, _, rdn, _, _ = run_d07_snapshot(round_exists=False, dry_run=True)
     round_missing = [line for line in rn.stdout.splitlines()
                      if "(없음)" in line and rdn + os.sep in line]
-    check("E3-D07-ROUND-0 round 자체 부재 시 SESSION_STATE·TODO 패턴 최소 2건 누락",
-          rn.returncode == 0 and len(round_missing) >= 2
-          and any("SESSION_STATE.md" in line for line in round_missing)
-          and any("*_TODO.md" in line for line in round_missing), repr(round_missing))
+    # ★D14(1.1.8): SESSION_STATE 는 정본(레인 팩 round/ · javis_session.session_state_path)을 담는다 —
+    #   round 부재 형상에서 그 누락도 **보여야** 한다는 계약은 그대로이고, 보이는 자리만 정본 경로로 옮겼다.
+    ss_missing = [line for line in rn.stdout.splitlines()
+                  if "(없음)" in line and line.rstrip().endswith(
+                      os.path.join("round", "SESSION_STATE.md"))]
+    check("E3-D07-ROUND-0 round 자체 부재 시 SESSION_STATE·TODO 패턴 누락이 보인다",
+          rn.returncode == 0 and len(round_missing) >= 1 and len(ss_missing) >= 1
+          and any("*_TODO.md" in line for line in round_missing), repr((round_missing, ss_missing)))
 
     check("E4-D07-OPTIONAL-CONST autopilot 은 선택 소스이면서 선언 소스에 잔류",
           getattr(ss, "OPTIONAL_BASENAMES", None) == ("autopilot.json",)

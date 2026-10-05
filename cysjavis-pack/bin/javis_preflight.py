@@ -1146,6 +1146,32 @@ def _load_core_inject(hooks_dir):
     return mod
 
 
+def _c82_fake_resolves(which, fake, sh, env, is_win):
+    """C82 격리 판정 — PATH 가 가짜 cys 로 해소되는가. 반환 (ok, 보고용 해소 결과).
+
+    ★D12(1.1.8 · 윈 실측 「격리 실패: PATH 해소가 가짜 cys 가 아니다(…\\cys.EXE)」): 윈의 `shutil.which` 는
+    PATHEXT 확장자(.EXE·.CMD …)가 붙은 파일만 잇는다 — 확장자 없는 가짜 `cys`(셸 스크립트)는 파이썬 눈에 안 보여
+    다음 PATH 칸의 진짜 cys.EXE 를 집는다. 그러나 훅을 실제로 도는 것은 sh(Git Bash)이고 sh 는 PATH 첫 칸의 `cys`
+    를 집는다 = 격리는 성립해 있었다(PATH 파손 D10 과 별개 원인). 그래서 윈에서 파이썬 판정이 어긋나면 **훅이 쓰는
+    그 셸에게 묻는다**(`command -v cys` 가 격리 폴더의 bin/cys 인가). 최종 증명은 종전대로 드라이런 뒤 가짜 cys
+    호출 로그(claim-role master)다. 맥·리눅스는 종전 판정 그대로."""
+    if which and os.path.realpath(which) == os.path.realpath(fake):
+        return True, which
+    if not is_win or not sh:
+        return False, which
+    try:
+        r = subprocess.run([sh, "-c", "command -v cys"], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", env=env, timeout=10, **NOWIN)
+    except (OSError, subprocess.SubprocessError):
+        return False, which
+    got = (r.stdout or "").strip().splitlines()[-1:] or [""]
+    got = got[0].replace("\\", "/")
+    tmpname = os.path.basename(os.path.dirname(os.path.dirname(fake)))
+    if r.returncode == 0 and got.endswith("/bin/cys") and tmpname and tmpname in got:
+        return True, got
+    return False, "%s · sh=%s" % (which, got or "없음")
+
+
 def core_injection_problems(pack, sh=None, timeout=20, home=None):
     """(문제 목록, 관측 목록). 문제 0건 = PASS. 축: 이름 규칙 · 파일 실재 · CORE-MIN 동일성 · 절 해시 ·
     드라이런(두 훅 × source 2종 · 크기 · 맨 앞 CORE-MIN · rc) · 격리 증명(가짜 cys 호출·해소).
@@ -1236,7 +1262,8 @@ def core_injection_problems(pack, sh=None, timeout=20, home=None):
         if home:
             env["HOME"] = home
         which = shutil.which("cys", path=env["PATH"])
-        if not which or os.path.realpath(which) != os.path.realpath(fake):
+        ok, which = _c82_fake_resolves(which, fake, sh, env, os.name == "nt")
+        if not ok:
             probs.append("격리 실패: PATH 해소가 가짜 cys 가 아니다(%s) — 드라이런 중단" % which)
             return probs, notes
         sizes = []

@@ -954,6 +954,15 @@ jobs:
           #     핀(cys.rs 문자열 존재·순서)은 파싱 변이(`TP=${SS#*|}` → `TP=${SS%%|*}`)에 초록이었다 — 이 검체는 적색 43행.
           #     임시 팩(레포 hooks/ 사본)·격리 HOME·스텁 cys 만 쓰는 밀폐 검체(데몬 불요 · 라이브 무접촉) · test_hook_r34 옆 5곳.
           #     실측 2026-09-26 00:5x PDT · macOS arm64 · python 3.14.7 · sh·dash·bash 46행 rc=0 · 약 24s(10s 상한 행 1회 포함).
+          # ★1.1.8 W2(TICKET=cysr-118-w2-pack · master#0bfb98f0): 신규 팩 검체 13종 편입 — 「안 도는 검체는 게이트가 아니다」 · 3완전 레인 5루프 동시·대칭.
+          #   러너 적합(실측 2026-10-06 · macOS arm64 · 빈 HOME · CYS_PACK_DIR=mktemp · 13종 rc=0 · 합 약 17s · HOME 생성물 0 · 저장소 무접촉):
+          #   test_awaken_seat_fold(D6 · 대역 cys · CYS_STATE_DIR tmp · 0s) · test_awaken_status_lane(D13 · tmp · 1s) ·
+          #   test_boot_preflight_degraded(D8+D7 · tmp 상태 · 0s) · test_c82_win_isolation(D12 · 윈 갈래 is_win 모의 · 0s) ·
+          #   test_dept_tick_stdin(D18 · 정적 핀 + 대역 run · 쓰기 0 · 0s) · test_dept_tombstone_no_autostart(D21 · 격리 HOME · 1s) ·
+          #   test_dept_win_python_resolve(D4/D9-b · 가짜 uname · 1s) · test_hook_fail_log(D9-b · tmp 상태 · 0s) ·
+          #   test_mission_anomaly_provenance(D15 · tmp · 0s) · test_preflight_fresh_full_json(C61 · 신선 팩 사본 전체 실행 · 13s) ·
+          #   test_report_gate_win_na(D2 · 문면 · 0s) · test_resource_gate_win_roster(D3 · 대역 · 0s) · test_session_state_canon(D14 · 격리 · 1s).
+          #   윈 이름 검체 4종은 posix 모의라 완전 레인 소속(windows-health 부분 레인 계약 ⊆·⊇ 무관 · test_win_dept_spawn 그대로).
           for t in test_report_ghost test_hud_bridge_skew test_todo_shared_constants test_todo_stamp \
                    test_import_guard test_radio test_scrub test_bootstrap_chain test_snapshot \
                    test_dept_name_guard test_preflight_c03_states test_content_pins_parity \
@@ -995,7 +1004,8 @@ jobs:
                    test_dept_notice_lane test_team_create_u16 \
                    test_teamtoken test_teamtoken_hook test_dept_team_token \
                    test_dept_create_progress \
-                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn; do
+                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
+                   test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== $t (mac) =="
@@ -1756,6 +1766,15 @@ jobs:
           CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
           trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           echo "== [pack][ubuntu] release.yml pack-artifacts 와 동일 토큰 집합 · 동일 env 격리 =="
+          # ★1.1.8 W2(TICKET=cysr-118-w2-pack · master#0bfb98f0): 신규 팩 검체 13종 편입 — 「안 도는 검체는 게이트가 아니다」 · 3완전 레인 5루프 동시·대칭.
+          #   러너 적합(실측 2026-10-06 · macOS arm64 · 빈 HOME · CYS_PACK_DIR=mktemp · 13종 rc=0 · 합 약 17s · HOME 생성물 0 · 저장소 무접촉):
+          #   test_awaken_seat_fold(D6 · 대역 cys · CYS_STATE_DIR tmp · 0s) · test_awaken_status_lane(D13 · tmp · 1s) ·
+          #   test_boot_preflight_degraded(D8+D7 · tmp 상태 · 0s) · test_c82_win_isolation(D12 · 윈 갈래 is_win 모의 · 0s) ·
+          #   test_dept_tick_stdin(D18 · 정적 핀 + 대역 run · 쓰기 0 · 0s) · test_dept_tombstone_no_autostart(D21 · 격리 HOME · 1s) ·
+          #   test_dept_win_python_resolve(D4/D9-b · 가짜 uname · 1s) · test_hook_fail_log(D9-b · tmp 상태 · 0s) ·
+          #   test_mission_anomaly_provenance(D15 · tmp · 0s) · test_preflight_fresh_full_json(C61 · 신선 팩 사본 전체 실행 · 13s) ·
+          #   test_report_gate_win_na(D2 · 문면 · 0s) · test_resource_gate_win_roster(D3 · 대역 · 0s) · test_session_state_canon(D14 · 격리 · 1s).
+          #   윈 이름 검체 4종은 posix 모의라 완전 레인 소속(windows-health 부분 레인 계약 ⊆·⊇ 무관 · test_win_dept_spawn 그대로).
           for t in test_todo_decl test_todo_stamp test_report_ghost test_hud_bridge_skew \
                    test_report_gate test_todo_shared_constants test_import_guard test_radio test_scrub \
                    test_bootstrap_chain test_snapshot \
@@ -1798,7 +1817,8 @@ jobs:
                    test_dept_notice_lane test_team_create_u16 \
                    test_teamtoken test_teamtoken_hook test_dept_team_token \
                    test_dept_create_progress \
-                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn; do
+                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
+                   test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack] declared-state test: $t =="

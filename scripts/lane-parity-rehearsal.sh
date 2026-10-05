@@ -140,10 +140,10 @@ PENDING_MERGE = {}
 _BASELINE = ("0.14.31 이전부터 0레인이던 격차의 기준선 등재(2026-09-10 D3 · integration-notes §7-3 · "
              "로컬 rc=0) — 정당한 무관함이 아니라 미해소 기록 · 편입 커밋이 이 항목을 지운다")
 UNREGISTERED_OK = {n: _BASELINE for n in (
-    "test_atomic_bundle", "test_ceo_pending_gate", "test_cli_probe", "test_completion_guard_notice",
+    "test_atomic_bundle", "test_cli_probe", "test_completion_guard_notice",
     "test_contracts_ct", "test_deploy_gate_bundle_swap", "test_dept_creds_seed", "test_dept_doctrine_v1",
     "test_dept_list_unregistered", "test_dept_ticket_deficit_zero", "test_dept_ticket_request",
-    "test_distill_fx", "test_formation", "test_hud_bridge_master_idle", "test_installer_atomic",
+    "test_distill_fx", "test_hud_bridge_master_idle", "test_installer_atomic",
     "test_lane_isolation_v1", "test_memory_desc_drift", "test_mission_boot_command_filter",
     "test_mission_harness_filter", "test_orchestra_ticket_snapshot", "test_orchestra_todo_path",
     "test_org_audit", "test_pack_syntax_warnings", "test_preflight_nlm_pin", "test_preflight_phase1_checks",

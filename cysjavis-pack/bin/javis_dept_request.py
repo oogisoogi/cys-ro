@@ -847,6 +847,10 @@ def cmd_confirm(a):
     if r["state"] != "proposed":
         return _refuse("이 제안은 이미 처리됐습니다(%s)." % r["state"], code=7, reason="state")
     ans = human_ack_after(r) if r.get("human_axis") else "yes"
+    if getattr(a, "meaning", None):
+        ans, why = _meaning_verdict(r, a.meaning, getattr(a, "answer_file", None))
+        if ans == "mismatch":
+            return _refuse(why, code=7, reason="answer_mismatch")
     if ans == "no":
         # M2: 사람이 카드 뒤에 거절했다 — 확인하지 않고 제안을 걷는다(다시 원하면 새로 말씀하시면 된다).
         def _decl(x):
@@ -854,16 +858,18 @@ def cmd_confirm(a):
             x["discarded_at"] = now()
             x["discard_reason"] = "human_declined"
         transition(r["id"], ("proposed",), _decl)
-        return _refuse("「아니요」라고 하셔서 만들지 않았습니다. 필요하시면 언제든 다시 말씀해 주세요."
+        return _refuse("하지 않겠다고 하셔서 만들지 않았습니다. 필요하시면 언제든 다시 말씀해 주세요."
                        if r.get("kind") == "create" else
-                       "「아니요」라고 하셔서 닫지 않았습니다.", code=7, reason="human_declined")
+                       "하지 않겠다고 하셔서 닫지 않았습니다.", code=7, reason="human_declined")
     if ans != "yes":
         # ★v113 A1(사람 확인 축): 이 기계에서 훅(dept-chat-inject)이 돌고 있으면(제안 시점 기록), 카드 **뒤에**
         #   사람이 직접 친 입력(배달 원장 대조로 기계 유래 아님)이 있어야 확인한다 — 마스터(LLM)가 스스로 「네」를
         #   판정해 부르는 경로를 닫는다. 훅이 없는 기계(human_axis 거짓)는 종전 그대로(편의 우선 · fail-open).
-        return _refuse("이 제안은 화면에서 직접 「네」라고 답해 주셔야 진행합니다. 이대로 만들까요? (네 / 아니요)"
+        return _refuse("이 제안은 화면에서 직접 답해 주셔야 진행합니다. 이대로 만들까요? "
+                       "(「네」·「좋아요, 만들어 주세요」처럼 편하게 말씀하시면 됩니다)"
                        if r.get("kind") == "create" else
-                       "이 닫기는 화면에서 직접 「네」라고 답해 주셔야 진행합니다. 닫을까요? (네 / 아니요)",
+                       "이 닫기는 화면에서 직접 답해 주셔야 진행합니다. 닫을까요? "
+                       "(「네」·「닫아 주세요」처럼 편하게 말씀하시면 됩니다)",
                        code=7, reason="human_unverified")
     if r["kind"] == "create":
         with open(os.path.join(req_dir(r["id"]), "claude_md.txt"), encoding="utf-8") as f:
@@ -2128,6 +2134,52 @@ def human_ack_after(r):
     return a.get("verdict") if a.get("verdict") in ("yes", "no") else "other"
 
 
+def _norm_answer(text):
+    """사람 답 대조용 정규화 — 앞뒤 공백·줄끝(CRLF)·연속 공백만 접는다(뜻은 건드리지 않는다)."""
+    return " ".join((text or "").replace("\r", "").split())
+
+
+def _meaning_verdict(r, meaning, answer_file):
+    """★D16(1.1.8): 뜻 축 = 좌석 모델의 문맥 판정 · 출처 축 = 결정론(사람 입력 기록 + 원문 해시 대조).
+
+    박사님 원칙(2026-10-05): 「사용자 명령어를 예시로 한정하면 자유로운 표현이 막힌다 — 자연어 맥락으로 처리하라.」
+    종전엔 훅이 고정 사전(classify_answer)으로만 뜻을 정해 「닫는다」(평서형)가 승낙으로 안 잡혔다(윈 D16).
+    이제 대화를 읽은 좌석 모델이 뜻(yes/no/unclear)을 넘기되, 그 뜻이 **사람이 실제로 친 그 답**에 대한 것임을
+    원문 해시로 묶는다(모델이 답을 지어내 스스로 승인하는 경로 차단 — 1.1.3 A1 사람 확인 축 그대로).
+    고정 사전은 폴백이자 안전 장치로만 남는다: 사전이 분명한 거절(no)로 읽은 답을 모델이 승낙으로 넘기면 되묻는다.
+    반환 (판정, 사유문) — 판정 ∈ yes|no|other|mismatch.
+    """
+    if not r.get("human_axis"):
+        # 훅이 없는 기계 = 사람 입력 기록 자체가 없다(종전 fail-open 그대로) — 모델 뜻을 그대로 쓴다.
+        return ({"yes": "yes", "no": "no"}.get(meaning, "other"), "no-human-axis")
+    base = human_ack_after(r)
+    if base is None:
+        return "other", "no-human-answer"      # 카드 뒤 사람 입력 없음 → 종전 되묻기(human_unverified)
+    if not answer_file:
+        return "mismatch", "사용자 답 원문을 --answer-file 로 함께 넘겨야 합니다(사람이 친 답과 대조합니다)."
+    try:
+        with open(answer_file, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return "mismatch", "사용자 답 원문 파일을 읽지 못했습니다 — 답 원문을 파일로 다시 넘겨 주세요."
+    a = load_json(ack_path(r["id"]), None) or {}
+    want = a.get("prompt_norm_sha256")
+    got = sha256_text(_norm_answer(text))
+    if not want:
+        # 1.1.7 이전 훅이 남긴 기록(정규화 해시 없음) — 원문 해시로만 대조한다.
+        want, got = a.get("prompt_sha256"), sha256_text(text)
+    if want != got:
+        return "mismatch", ("넘겨준 답이 화면에서 사람이 친 답과 다릅니다 — 카드 뒤 사용자 답을 한 글자도 바꾸지 말고 "
+                            "그대로 넘겨 주세요.")
+    if meaning == "no":
+        return "no", "model-no"
+    if meaning == "yes":
+        if a.get("verdict") == "no":
+            return "other", "dict-no-guard"    # 사전이 분명한 거절로 읽었다 — 승낙으로 넘기지 않고 되묻는다
+        return "yes", "model-yes"
+    return "other", "model-unclear"
+
+
 # 카드 뒤 사람 답 판정 — ★dbg-D3 F4(2026-09-23): 종전은 「거절 낱말 부분일치 우선 · 긍정 낱말 접두 일치」였다.
 #   그래서 「취소하지 말고 진행해」·「안 할 이유 없죠, 만들어요」(동의)가 `취소`·`안 할` 부분일치로 **거절**이 되어
 #   제안이 버려지고 「「아니요」라고 하셔서 만들지 않았습니다」가 나갔고, 「진행 상황 알려줘」·「예산은 얼마나 들어」
@@ -2142,7 +2194,9 @@ _ANS_YES_CORE = re.compile(
     r"그래|그래요|그러세요|그럽시다|그러죠|알겠어|알겠어요|알겠습니다|알았어|알았어요|당연하죠|당연히|물론|물론이죠|"
     r"맞아|맞아요|맞습니다|부탁해|부탁해요|부탁합니다|부탁드려요|부탁드립니다|진행|진행해|진행해요|진행하세요|진행합시다|"
     r"진행하죠|만들어|만들어요|만드세요|만듭시다|만들자|닫아|닫아요|닫으세요|닫읍시다|닫자|해|해요|하세요|합시다|하자|하죠|"
-    r"가자|갑시다)")
+    r"가자|갑시다|"
+    # ★D16(1.1.8): 평서형 승낙(윈 실측 「닫는다」 미인식) — 사전은 폴백이고 뜻 판정의 본선은 좌석 모델(_meaning_verdict)
+    r"닫는다|만든다|진행한다|한다|좋다|그러자|그렇게하자)")
 _ANS_YES_FILL = re.compile(r"(줘|주세요|줄래|줄래요|주라|주십시오|좀|바로|이대로|그대로|그렇게|그럼|어서|빨리|요|이제|지금)")
 _ANS_NO_CORE = re.compile(
     r"(아니|아니요|아니오|아뇨|아닙니다|아니야|싫어|싫어요|싫습니다|싫다|노|no|nope|취소|취소해|취소해요|취소할게|"
@@ -2242,6 +2296,7 @@ def cmd_hook_prompt(a):
             r = max(opened, key=lambda x: x.get("created_at") or 0)
             atomic_write_json(ack_path(r["id"]), {"at": now(), "session": sid, "origin": why,
                                                   "prompt_sha256": sha256_text(prompt),
+                                                  "prompt_norm_sha256": sha256_text(_norm_answer(prompt)),
                                                   "verdict": classify_answer(prompt)})
     seen_all = load_json(_hook_seen_path(), {}) or {}
     seen = seen_all.get(sid) or {"guide": 0, "news": []}
@@ -2265,7 +2320,8 @@ def cmd_hook_prompt(a):
                 "`cys skill show dept-by-chat` 로 읽어도 된다) · 도구 = %s" % runner,
                 "  · 만들기: 안내 본문·발화 원문을 임시 파일로 → propose --name <이름> --mission <맡을 일> --claude-md-file <본문> "
                 "--utterance-file <발화> → card 전문 그대로 보여 준다",
-                "  · 사용자가 직접 「네」 → confirm <번호> · 닫기 = propose --close <이름> → 「네」 → confirm <번호>",
+                "  · 카드 뒤 사용자 답의 뜻을 문맥으로 판단(정해진 낱말 아님) → 답 원문 그대로 파일로 → "
+                "confirm <번호> --meaning yes|no|unclear --answer-file <답 파일> · 닫기 = propose --close <이름> → 같은 confirm",
                 "  · [부서결과]/[부서가동] 알림·상태 질문 → status --say <번호>(전부는 status --pending) 의 say 를 그대로 전한다",
                 "  · JSON 의 say·card 를 한 글자도 바꾸지 않는다 · 부서 수명주기 명령을 직접 부르지 않는다(집행 = 틱)",
             ]
@@ -2309,6 +2365,10 @@ def main(argv=None):
     sf.add_argument("--name", required=True)
     c = sub.add_parser("confirm")
     c.add_argument("request")
+    # ★D16(1.1.8 · 박사님 원칙 「자연어 맥락 판정」): 뜻 축 = 대화 문맥을 읽은 좌석 모델이 판정해 넘긴다.
+    c.add_argument("--meaning", choices=("yes", "no", "unclear"),
+                   help="사용자 답의 뜻(대화 문맥으로 판정) — --answer-file 과 함께")
+    c.add_argument("--answer-file", help="사용자가 카드 뒤에 친 답 원문(그대로) 파일 — 기록된 사람 입력과 대조")
     sub.add_parser("tick")
     s = sub.add_parser("status")
     s.add_argument("--pending", action="store_true")

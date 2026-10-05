@@ -1686,6 +1686,69 @@ class TestChatHook(Base):
         rc, o = self.run_cmd("confirm", rid)
         self.assertEqual(rc, 0, o)
 
+    # ── ★D16(1.1.8 · 박사님 원칙 「자연어 맥락 판정」): 뜻 축 = 좌석 모델 판정 · 출처 축 = 사람 입력 기록 + 원문 해시 ──
+    def _answer(self, text):
+        p = os.path.join(self.tmp, "answer-%d.txt" % len(os.listdir(self.tmp)))
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+        return p
+
+    def test_d16_free_phrase_yes_by_model_meaning(self):
+        """사전에 없는 자유 표현도 모델이 문맥으로 승낙이라 판정하면 확인된다(사람이 친 원문과 해시 대조)."""
+        for i, said in enumerate(("음 그래 그 이름으로 가 보자", "닫는다", "좋네요 이대로 갑시다 고마워요")):
+            self.hook("부서 만들어 줘")
+            rc, o = self.propose("자유표현%d" % i)
+            rid = o["request"]
+            self.hook(said)
+            rc, o = self.run_cmd("confirm", rid, "--meaning", "yes", "--answer-file", self._answer(said))
+            self.assertEqual(rc, 0, (said, o))
+            self.assertEqual(self.req(rid)["state"], "confirmed", said)
+
+    def test_d16_answer_must_match_human_input(self):
+        """모델이 답을 지어내면(화면 입력과 다른 원문) 거부 — LLM 자기 승인 경로 차단(출처 축 결정론)."""
+        rid = self._card()
+        self.hook("잠깐만요")
+        rc, o = self.run_cmd("confirm", rid, "--meaning", "yes", "--answer-file", self._answer("네"))
+        self.assertEqual((rc, o.get("reason")), (7, "answer_mismatch"), o)
+        self.assertEqual(self.req(rid)["state"], "proposed")
+        rc, o = self.run_cmd("confirm", rid, "--meaning", "yes")          # 원문 없이 뜻만
+        self.assertEqual(o.get("reason"), "answer_mismatch", o)
+
+    def test_d16_answer_whitespace_normalized(self):
+        rid = self._card()
+        self.hook("  그래 닫는다\r\n")
+        rc, o = self.run_cmd("confirm", rid, "--meaning", "yes", "--answer-file", self._answer("그래 닫는다\n"))
+        self.assertEqual(rc, 0, o)
+
+    def test_d16_dictionary_no_guards_model_yes(self):
+        """사전이 분명한 거절로 읽은 답을 모델이 승낙으로 넘기면 확인하지 않고 되묻는다(안전 장치)."""
+        rid = self._card()
+        self.hook("아니요")
+        rc, o = self.run_cmd("confirm", rid, "--meaning", "yes", "--answer-file", self._answer("아니요"))
+        self.assertEqual((rc, o.get("reason")), (7, "human_unverified"), o)
+        self.assertEqual(self.req(rid)["state"], "proposed")
+
+    def test_d16_model_no_declines(self):
+        rid = self._card()
+        self.hook("이번엔 넘어가고 다음에 생각해 볼게")
+        rc, o = self.run_cmd("confirm", rid, "--meaning", "no",
+                             "--answer-file", self._answer("이번엔 넘어가고 다음에 생각해 볼게"))
+        self.assertEqual((rc, o.get("reason")), (7, "human_declined"), o)
+        self.assertEqual(self.req(rid)["state"], "discarded")
+
+    def test_d16_model_meaning_needs_human_answer(self):
+        """카드 뒤 사람 입력이 없으면 모델 뜻만으로는 확인되지 않는다(종전 human_unverified)."""
+        rid = self._card()
+        rc, o = self.run_cmd("confirm", rid, "--meaning", "yes", "--answer-file", self._answer("네"))
+        self.assertEqual((rc, o.get("reason")), (7, "human_unverified"), o)
+
+    def test_d16_unclear_reasks(self):
+        rid = self._card()
+        self.hook("음 글쎄요")
+        rc, o = self.run_cmd("confirm", rid, "--meaning", "unclear", "--answer-file", self._answer("음 글쎄요"))
+        self.assertEqual(o.get("reason"), "human_unverified", o)
+        self.assertIn("편하게 말씀하시면", o["say"])
+
     def test_fable_d_open_proposal_wakes_for_plain_yes(self):
         """열린 제안 뒤 「네」(부서 낱말 없음)는 반드시 파이썬을 깨워 사람 확인을 기록해야 한다."""
         self.hook("부서 만들어 줘")

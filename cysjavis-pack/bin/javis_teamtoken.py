@@ -20,6 +20,9 @@ r"""javis_teamtoken — **대화 승인 → 1회용 팀 생성 토큰**의 단�
      짧은 긍정 화이트리스트와 **통째로 같을 때만** 승인. 부분 문자열 매칭을 쓰지 않는다. 길이 상한 20자.
   ⓒ 거부 신호 선검사 — 부정어·의문형·조건/예시 표현이 원문(또는 공백 제거형)에 있으면 승인 아님.
   ⓓ 애매하면 발급 거부 + 되묻기.
+  ★(1.1.8 M4 · 오너 원칙 2026-10-05 「예시 낱말로 한정하지 말고 자연어 맥락으로」) ⓒⓓ 를 둘로 가른다: 명시적 부정(STRONG)은
+     종전대로 거절로 닫고, 약한 단서·목록 밖 답은 질문을 닫지 않고 뜻 판정 대기(answer_pending)로 남긴다 — 대화를 읽은 좌석
+     모델이 `answer --meaning` 으로 뜻을 넘기고, 출처 축은 훅이 기록한 원문 정규형 해시 대조로 결정론을 유지한다.
   오너 실키 입력 판별은 `javis_mission.machine_origin`(층1 배달 원장 sha256 · 층2 push 라벨)을 **호출만**
   한다(사본 금지) — harness 내부 알림(`harness_origin`)도 같은 모듈에서 호출한다.
 
@@ -58,6 +61,8 @@ token_ok 로 허용한다. 토큰이 1회성이면 ①에서 소비된 토큰으
 읽기-판정-쓰기 전 구간을 락 안에서 한다(1회성은 경합 하에서도 성립). 권한 0600(토큰 보관).
 레코드(한 줄 JSON · 공통 `v:1`·`kind`·`event`):
   team-create-ask   ask_opened  {ask_id(16hex), proposal_id, surface, body_digest(64hex), opened_at, expires_at, pid}
+  team-create-ask   answer_pending {ask_id, surface, proposal_id, prompt_norm_sha256, typed_at, at, via:"hook",
+                                  hook_session, hook_input, hook_input_mtime}   ← 사람의 첫 답 · 뜻 판정 대기(1.1.8 M4)
   team-create-ask   ask_closed  {ask_id, surface, proposal_id, why, at}
       why ∈ approved | answered_rejected | answered_ambiguous | expired | superseded | proposal_gone |
             multiple_pending | body_changed | feed_unreadable | proposal_body_invalid
@@ -83,6 +88,8 @@ token_ok 로 허용한다. 토큰이 1회성이면 ①에서 소비된 토큰으
                                                     #   Windows 면 platform_gui_only(질문·표지 0 · 화면 경로)
   issue   --payload-file F                          # ★UserPromptSubmit 훅 전용 — F = 런처가 **방금** 쓴
                                                     #   <상태>/hook-input-<좌석>-<pid>.json(출처·좌석 확인 · stdin 경로 없음)
+  answer  --meaning yes|no|unclear --answer-file F # 좌석(1.1.8 M4) — 훅이 뜻 판정 대기(answer_pending)로 남긴 오너의 첫 답에
+                                                    #   뜻을 넘긴다 · F = 오너 답 원문(그대로) · 해시 불일치 answer_mismatch
   verify  --token T --proposal P --surface S (--body-digest D | --body-b64 B) [--phase create|allow]
   consume --token T --proposal P --surface S (--body-digest D | --body-b64 B) [--phase create|allow]
   settle  --token T --proposal P --surface S --outcome created|failed [--dept NAME] [--code N]
@@ -190,6 +197,15 @@ _HOOK_ONLY_DETAIL = ("훅 입력으로 확인되지 않아 판정하지 않았�
                      "직접 호출·손으로 만든 입력은 규약 위반이며 원장에 기록된다. 재시도하지 말고 오너에게 승인을 "
                      "한 번 더 직접 쳐 달라고 하라.")
 
+# ★(1.1.8 M4) 뜻 판정 대기 — 좌석 모델에게 하는 지시(훅 고지·answer_pending 결과 detail). 원문을 그대로 넘기라는 것과
+#   판정 전에는 만들지도 되묻지도 말라는 것(질문은 첫 답 1회로 소비된다 — 오너가 다시 친 말은 질문을 닫는다)을 함께 싣는다.
+_ANSWER_NEXT = ('javis_teamtoken.py answer --meaning yes|no|unclear --answer-file <오너 답 원문 파일>')
+_ANSWER_PENDING_DETAIL = ("오너의 답이 짧은 승인 목록 밖이라 훅이 뜻을 정하지 않았다(질문은 열린 채 · 발급 0). 대화 맥락으로 그 답이 "
+                          "'이 제안대로 지금 만들자'는 뜻인지 판정하고, 오너가 친 답을 한 글자도 바꾸지 말고 파일에 담아 "
+                          "%s 를 1회 부른다 — yes 면 출력의 token 으로 생성 집행 · no 면 만들지 않는다 · 확신이 없으면 "
+                          "unclear(되묻기). 판정 전에는 만들지도 오너에게 다시 묻지도 않는다(질문은 첫 답 1회로 소비된다)."
+                          % _ANSWER_NEXT)
+
 # ★(리뷰 N1) 대화 승인 이전 판 지침을 읽는 좌석 — 질문을 열지 않고 화면 경로를 말한다(되묻기 약속 없음: 이 좌석은
 #   지침이 갱신되기 전에는 몇 번을 물어도 대화로 만들 수 없다).
 _MSG_DIRECTIVE_STALE = ("이 컴퓨터의 대표 지침이 아직 대화 승인 이전 판이라 대화로는 만들 수 없습니다 — Control Center → "
@@ -260,6 +276,12 @@ OWNER_MESSAGES = {
     "awaiting_answer": "",
     "token_ready": "",
     "token_used": "",
+    # ── 뜻 판정 경로(1.1.8 M4) — 좌석 모델에게 하는 말(detail)이 본문이고 오너에게 할 말은 없다:
+    #    answer_pending = 아직 판정 전(오너에게 되묻지 않는다 — 질문은 첫 답 1회로 소비된다) ·
+    #    answer_mismatch / answer_not_pending = 좌석의 호출 오류(원문을 그대로 다시 넘기거나 부르지 않는다).
+    "answer_pending": "",
+    "answer_mismatch": "",
+    "answer_not_pending": "",
     "path": "",
     "messages": "",
     "digest": "",
@@ -284,6 +306,10 @@ REFUSAL_CODES = (
     "grant_expired", "not_consumed", "already_settled",
     "bad_args", "ledger_corrupt", "lock_unavailable", "internal_error",
 )
+# ★(1.1.8 M4) 뜻 판정 경로의 코드 — issue(훅)·answer(좌석)가 돌려준다. REFUSAL_CODES 와 따로 두는 이유: 그 목록은 지침
+#   §4-A 오너 안내 표(휴면 고정물 · test_teamtoken D3)와 전량 대조되는데, 이 코드들은 오너에게 할 말이 없는 **좌석용** 코드다
+#   (OWNER_MESSAGES 값이 빈 문자열 · 좌석 지시는 detail·훅 고지가 싣는다). 휴면 해제 때 지침 표·절차에 answer 단계를 넣는다.
+MEANING_CODES = ("answer_pending", "answer_mismatch", "answer_not_pending")
 # 원장 감사 줄(issue_refused)의 code 로만 쓰는 사유 — 출력은 언제나 not_hook_caller 한 모양이다(리뷰 RR1-SEC-B:
 #   출력 코드가 갈리면 '출처 확인은 통과했고 이제 형식' 이라는 단계 신호가 된다).
 AUDIT_ONLY_CODES = ("hook_payload_invalid",)
@@ -311,9 +337,17 @@ APPROVE_EXACT = frozenset([
 # 거부 신호 — 하나라도 있으면 승인이 아니다(화이트리스트보다 먼저 본다).
 #   §6-3 초안 + 이식 시 추가(뒤 10개 · '만들지 마'가 되묻기가 아니라 '아직 만들지 않았습니다'로 답하게).
 #   추가는 거부 쪽으로만 움직인다 — 승인 집합(화이트리스트)은 넓히지 않았다.
-NEGATORS = ("안 ", "안돼", "안 돼", "하지마", "하지 마", "말고", "말아", "아니", "아직", "나중",
-            "취소", "그만", "보류", "빼고", "없이", "지마",
-            "싫", "안해", "안 해", "하지말", "멈춰", "기다려", "잠깐", "no", "stop", "cancel")
+# ★(1.1.8 M4 · 오너 원칙 2026-10-05 「사용자 명령어를 예시로 한정하면 자유로운 표현이 막힌다 — 자연어 맥락으로 처리하라」)
+#   거부 신호를 둘로 가른다. 종전엔 부분 문자열 하나로 동의도 닫았다 — 「그렇게 하죠」(의문형 '하죠')·「망설임 없이
+#   만들어」(부정어 '없이')·「좋아요 만들어 주세요」(목록 밖)가 전부 '승인 아님'으로 질문을 닫아 오너가 다시 답해야 했다.
+#   · STRONG(명시적 부정) = 종전과 똑같이 거절로 닫는다(사전이 분명한 거절로 읽은 답은 모델이 뒤집지 못한다 — 안전 장치).
+#   · WEAK(뜻이 문맥에 달린 단서)·목록 밖 = 질문을 닫지 않고 **뜻 판정 대기**(answer_pending)로 남긴다 → 대화를 읽은 좌석
+#     모델이 `answer --meaning` 으로 뜻을 넘긴다(출처 축 = 원문 해시 대조로 결정론 유지 · javis_dept_request D16 형제).
+#   NEGATORS(합집합)는 approval_verdict 의 3값 계약(승인 유사 판정 · 훅 고지 정책)을 바꾸지 않으려고 그대로 둔다.
+STRONG_NEGATORS = ("아니", "취소", "그만", "싫", "안돼", "안 돼", "안해", "안 해", "하지마", "하지 마",
+                   "하지말", "지마", "멈춰", "no", "stop", "cancel")
+WEAK_NEGATORS = ("안 ", "말고", "말아", "아직", "나중", "보류", "빼고", "없이", "기다려", "잠깐")
+NEGATORS = STRONG_NEGATORS + WEAK_NEGATORS
 INTERROGATIVES = ("?", "？", "까", "나요", "을까", "ㄹ까", "어때", "인지", "건지", "하죠")
 CONDITIONALS = ("면 ", "하면", "라면", "예를", "예시", "가정", "혹시", "만약", "대신")
 
@@ -367,6 +401,41 @@ def approval_verdict(text):
     if norm in APPROVE_EXACT or keep in APPROVE_EXACT:
         return "approve", "짧은 긍정 전문 일치(%r)" % (norm if norm in APPROVE_EXACT else keep)
     return "ambiguous", "긍정 화이트리스트와 전문 일치하지 않음(%r) — 되묻기" % norm
+
+
+def strong_negation(text):
+    """명시적 부정어(STRONG_NEGATORS) — 걸린 낱말 · 없으면 ''. approval_verdict 와 같은 원문·공백 제거형 검사."""
+    low = unicodedata.normalize("NFC", text or "").strip().lower()
+    compact = _WS.sub("", low)
+    return next((w for w in STRONG_NEGATORS if w in low or w in compact), "")
+
+
+def answer_route(text):
+    """(route, 사유) — 사람의 답을 어디로 보낼지(M4). route ∈ {"approve", "reject", "pending"}.
+
+    approve = 화이트리스트 전문 일치(종전 그대로 · 훅이 바로 발급) · reject = 빈 발화·명시적 부정(종전 그대로 · 질문 닫힘) ·
+    pending = 그 밖(약한 단서·목록 밖) — 질문을 닫지 않고 좌석 모델의 뜻 판정(`answer`)을 기다린다.
+    ★실패 방향은 그대로다: pending 은 발급이 아니다(모델이 yes 를 넘기고 원문 해시가 맞아야만 발급 · 명시적 부정은 모델이
+      뒤집지 못한다)."""
+    verdict, why = approval_verdict(text)
+    if verdict == "approve":
+        return "approve", why
+    if not unicodedata.normalize("NFC", text or "").strip():
+        return "reject", why
+    w = strong_negation(text)
+    if w:
+        return "reject", "명시적 부정어 포함(%r) — 승인으로 읽지 않는다" % w
+    return "pending", "%s — 뜻은 대화 맥락으로 판정한다(좌석 모델 · answer --meaning)" % why
+
+
+def _norm_answer(text):
+    """사람 답 대조용 정규화 — 앞뒤 공백·줄끝(CRLF)·연속 공백만 접는다(뜻은 건드리지 않는다).
+    ★javis_dept_request._norm_answer 와 같은 규칙(훅이 기록한 해시 ↔ 좌석이 넘긴 원문 파일의 해시가 같은 정규형으로 비교된다)."""
+    return " ".join((text or "").replace("\r", "").split())
+
+
+def _norm_sha(text):
+    return hashlib.sha256(_norm_answer(text).encode("utf-8")).hexdigest()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -738,6 +807,12 @@ _REQ = {
     (KIND_ASK, "ask_opened"): {"ask_id": _re(_HEX16), "proposal_id": _re(_TP_ID), "surface": _is_str,
                                "body_digest": _re(_HEX64), "opened_at": _is_num, "expires_at": _is_num},
     (KIND_ASK, "ask_closed"): {"ask_id": _re(_HEX16), "why": _is_str, "at": _is_num},
+    # ★(1.1.8 M4) 사람의 첫 답이 뜻 판정 대기 — 출처 축의 증거(원문 정규형 해시·입력 시각·훅 목격 증거)를 싣는다.
+    #   answer(yes) 가 이 증거를 토큰에 그대로 옮긴다(_judge_token 의 via=hook·hook_session 인가가 계속 성립하게).
+    (KIND_ASK, "answer_pending"): {"ask_id": _re(_HEX16), "surface": _is_str, "prompt_norm_sha256": _re(_HEX64),
+                                   "typed_at": _is_num, "at": _is_num, "via": lambda v: v == "hook",
+                                   "hook_session": _is_str, "hook_input": _is_str,
+                                   "hook_input_mtime": _is_num},
     (KIND_TOKEN, "token_issued"): {"token": _re(_HEX32), "proposal_id": _re(_TP_ID), "surface": _is_str,
                                    "body_digest": _re(_HEX64), "issued_at": _is_num,
                                    "expires_at": _is_num, "ask_id": _re(_HEX16)},
@@ -815,7 +890,7 @@ def _load(path):
 def _derive(recs):
     """(asks, tokens, audits) — 전이 규칙대로 재생한다. 규칙 위반 = 위조 정황 → _Corrupt.
 
-    asks[ask_id]   = {"rec": ask_opened, "closed": ask_closed|None, "idx": n}
+    asks[ask_id]   = {"rec": ask_opened, "closed": ask_closed|None, "idx": n, "pending"?: answer_pending}
     tokens[token]  = {"issued": …, "state": issued|consumed|created|failed|done, "settled": …, "idx": n}
     """
     asks, tokens, audits = {}, {}, []
@@ -830,6 +905,13 @@ def _derive(recs):
             if a is None or a["closed"] is not None:
                 raise _Corrupt("없는 질문을 닫거나 이중으로 닫았다(%s)" % r["ask_id"])
             a["closed"] = r
+        elif ev == "answer_pending":
+            a = asks.get(r["ask_id"])
+            if a is None or a["closed"] is not None or a.get("pending") is not None:
+                raise _Corrupt("열린 질문 없이(또는 이중으로) 기록된 뜻 판정 대기(%s)" % r["ask_id"])
+            if a["rec"]["surface"] != r["surface"]:
+                raise _Corrupt("뜻 판정 대기의 좌석이 질문 좌석과 다르다(%s)" % r["ask_id"])
+            a["pending"] = r
         elif ev == "token_issued":
             a = asks.get(r["ask_id"])
             if r["token"] in tokens:
@@ -1086,25 +1168,8 @@ def _judge(prompt, surf, now, feed_items, ask, meta, audits=()):
       매번 남긴다(§13 P4 '기계 배달 승인 문장 → 원장에 사유')."""
     a = ask["rec"]
     aid, pid = a["ask_id"], a["proposal_id"]
-    psha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    base = {"ask_id": aid, "proposal_id": pid, "surface": surf}
     approvalish = approval_verdict(prompt)[0] == "approve"
-
-    def refuse(code, detail, close_why=None, n=2, shown=None):
-        """shown = 호출자에게 보일 detail(없으면 detail) — 감사 줄에는 구체 사유(detail)를 남긴다."""
-        recs = []
-        if close_why:
-            recs.append({"v": SCHEMA_VERSION, "kind": KIND_ASK, "event": "ask_closed", "ask_id": aid,
-                         "surface": surf, "proposal_id": pid, "why": close_why, "at": now})
-        dup = (not close_why and not approvalish
-               and any(r.get("event") == "issue_refused" and r.get("ask_id") == aid and r.get("code") == code
-                       for r in audits))
-        if not dup:
-            recs.append({"v": SCHEMA_VERSION, "kind": KIND_AUDIT, "event": "issue_refused", "code": code,
-                         "detail": (detail or "")[:300], "at": now, "ask_id": aid, "proposal_id": pid,
-                         "surface": surf, "prompt_sha256": psha, "prompt_chars": len(prompt),
-                         "ask_closed": bool(close_why)})
-        return _result(False, code, shown or detail, n=n, ask_closed=bool(close_why), **base), recs
+    refuse = _refuser(a, surf, now, audits, prompt, approvalish)
 
     # ★(리뷰 SEC-1) 답은 질문 **뒤**에 쳐진 것이어야 한다 — 훅 입력 파일은 그 프롬프트의 훅이 도는 순간에 쓰이므로
     #   정상 경로에서는 언제나 질문보다 뒤다. 앞이면 질문 전에 친 문장의 재생이다(질문은 소비하지 않는다).
@@ -1132,11 +1197,63 @@ def _judge(prompt, surf, now, feed_items, ask, meta, audits=()):
         return refuse("ask_expired", "질문 TTL %ds 경과(%.0fs 초과)" % (ASK_TTL_S, now - float(a["expires_at"])),
                       close_why="expired")
     # ── 여기부터 '사람의 답' — 승인이든 아니든 이 답이 질문을 1회 소비한다 ──
-    verdict, vwhy = approval_verdict(prompt)
-    if verdict == "reject":
+    if ask.get("pending") is not None:
+        # ★(1.1.8 M4) 첫 답이 이미 뜻 판정 대기다 — 그 판정(answer) 전에 온 사람의 새 발화는 **두 번째 답**이다. 질문은 첫 답
+        #   1회로 소비된다(G7: 다른 질문에 대한 '응'이 팀을 만들지 않게) → 새 발화로 발급하지 않고 질문을 닫는다(명시적 부정이면
+        #   거절로 · 그 밖은 애매로). 다시 승인받으려면 ask 부터 다시 연다.
+        if strong_negation(prompt) or not prompt.strip():
+            return refuse("utterance_rejected", "뜻 판정 대기 중 새 발화 — 명시적 부정", close_why="answered_rejected")
+        return refuse("utterance_ambiguous", "앞선 답이 뜻 판정(answer) 대기 중인데 새 발화가 왔다 — 질문은 첫 답 1회로 "
+                      "소비된다(새 발화로 발급하지 않는다)", close_why="answered_ambiguous")
+    route, vwhy = answer_route(prompt)
+    if route == "reject":
         return refuse("utterance_rejected", vwhy, close_why="answered_rejected")
-    if verdict != "approve":
-        return refuse("utterance_ambiguous", vwhy, close_why="answered_ambiguous")
+    if route == "pending":
+        # ★(1.1.8 M4) 질문을 닫지 않는다 — 출처 축(이 답은 사람이 이 좌석에 친 것)은 여기까지의 결정론 검사가 끝냈고, 뜻 축은
+        #   대화를 읽은 좌석 모델이 정한다. 증거(원문 정규형 해시 · 입력 시각 · 훅 목격 증거)를 남겨 answer 가 그 답에만 묶이게 한다.
+        pend = {"v": SCHEMA_VERSION, "kind": KIND_ASK, "event": "answer_pending", "ask_id": aid, "surface": surf,
+                "proposal_id": pid, "prompt_norm_sha256": _norm_sha(prompt), "typed_at": typed_at, "at": now,
+                "via": "hook", "hook_session": meta.get("session_id"), "hook_input": meta.get("hook_input"),
+                "hook_input_mtime": meta.get("hook_input_mtime")}
+        return refuse("answer_pending", vwhy, pre=(pend,), shown=_ANSWER_PENDING_DETAIL,
+                      next=_ANSWER_NEXT)
+    return _issue_tail(refuse, a, surf, now, feed_items, meta, vwhy)
+
+
+def _refuser(a, surf, now, audits, prompt, loud, **audit_extra):
+    """판정 경로(issue·answer)의 거부 1건 → (결과, append 할 레코드). 한 정의를 두 경로가 쓴다(사본 분기 금지).
+
+    ★(fatal-fix R1-06) 질문을 닫지 않는 거부는 `loud`(승인처럼 들림)가 아니면 같은 질문·같은 사유 감사 줄을 1줄만 남긴다."""
+    aid, pid = a["ask_id"], a["proposal_id"]
+    psha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    base = {"ask_id": aid, "proposal_id": pid, "surface": surf}
+
+    def refuse(code, detail, close_why=None, n=2, shown=None, pre=(), **extra):
+        """shown = 호출자에게 보일 detail(없으면 detail) — 감사 줄에는 구체 사유(detail)를 남긴다.
+        pre = 감사 줄보다 먼저 쓸 레코드(뜻 판정 대기)."""
+        recs = list(pre)
+        if close_why:
+            recs.append({"v": SCHEMA_VERSION, "kind": KIND_ASK, "event": "ask_closed", "ask_id": aid,
+                         "surface": surf, "proposal_id": pid, "why": close_why, "at": now})
+        dup = (not close_why and not loud
+               and any(r.get("event") == "issue_refused" and r.get("ask_id") == aid and r.get("code") == code
+                       for r in audits))
+        if not dup:
+            rec = {"v": SCHEMA_VERSION, "kind": KIND_AUDIT, "event": "issue_refused", "code": code,
+                   "detail": (detail or "")[:300], "at": now, "ask_id": aid, "proposal_id": pid,
+                   "surface": surf, "prompt_sha256": psha, "prompt_chars": len(prompt),
+                   "ask_closed": bool(close_why)}
+            rec.update(audit_extra)
+            recs.append(rec)
+        return _result(False, code, shown or detail, n=n, ask_closed=bool(close_why), **dict(base, **extra)), recs
+    return refuse
+
+
+def _issue_tail(refuse, a, surf, now, feed_items, witness, why, **token_extra):
+    """승인 판정 **뒤** 발급 단계(제안 대기 · 대기 1건 · 제안 id 일치 · 본문 해시 불변 → 토큰) — 훅의 화이트리스트 승인과
+    좌석의 뜻 판정 승인(answer yes)이 **같은 함수**를 지난다(1.1.8 M4 · 두 경로가 갈라지지 않게).
+    witness = 훅 목격 증거(session_id·hook_input·hook_input_mtime) — 토큰 레코드에 그대로 실려 _judge_token 인가가 성립한다."""
+    aid, pid = a["ask_id"], a["proposal_id"]
     items, ferr = _feed(feed_items)
     if items is None:
         return refuse("feed_unreadable", ferr, close_why="feed_unreadable")
@@ -1158,20 +1275,22 @@ def _judge(prompt, surf, now, feed_items, ask, meta, audits=()):
         return refuse("body_changed", "질문을 연 뒤 제안 본문이 바뀌었다(%s… → %s…)"
                       % (a["body_digest"][:12], cur[:12]), close_why="body_changed")
     token = secrets.token_hex(16)
-    recs = [
-        # 닫힘을 먼저 쓴다 — 쓰기가 찢기면 토큰이 사라지는 쪽(안전 방향)이 되게.
-        {"v": SCHEMA_VERSION, "kind": KIND_ASK, "event": "ask_closed", "ask_id": aid, "surface": surf,
-         "proposal_id": pid, "why": "approved", "at": now},
-        # 목격 증거(via·hook_session·hook_input) — 검증·소비(_judge_token)가 이것 없는 발급 레코드를 인가하지 않는다.
-        {"v": SCHEMA_VERSION, "kind": KIND_TOKEN, "event": "token_issued", "token": token,
-         "proposal_id": pid, "surface": surf, "body_digest": cur, "issued_at": now,
-         "expires_at": now + TOKEN_TTL_S, "consumed": False, "ask_id": aid,
-         "pid": os.getpid(), "ppid": os.getppid(), "via": "hook",
-         "hook_session": meta.get("session_id"), "hook_input": meta.get("hook_input"),
-         "hook_input_mtime": meta.get("hook_input_mtime")},
-    ]
-    return _result(True, "token_issued", vwhy, token=token, expires_at=now + TOKEN_TTL_S,
-                   body_digest=cur, next="cys-dept create --team-token %s" % token, **base), recs
+    closed = {"v": SCHEMA_VERSION, "kind": KIND_ASK, "event": "ask_closed", "ask_id": aid, "surface": surf,
+              "proposal_id": pid, "why": "approved", "at": now}
+    closed.update(token_extra)
+    tok = {"v": SCHEMA_VERSION, "kind": KIND_TOKEN, "event": "token_issued", "token": token,
+           "proposal_id": pid, "surface": surf, "body_digest": cur, "issued_at": now,
+           "expires_at": now + TOKEN_TTL_S, "consumed": False, "ask_id": aid,
+           "pid": os.getpid(), "ppid": os.getppid(), "via": "hook",
+           "hook_session": witness.get("session_id"), "hook_input": witness.get("hook_input"),
+           "hook_input_mtime": witness.get("hook_input_mtime")}
+    tok.update(token_extra)
+    # 닫힘을 먼저 쓴다 — 쓰기가 찢기면 토큰이 사라지는 쪽(안전 방향)이 되게.
+    # 목격 증거(via·hook_session·hook_input) — 검증·소비(_judge_token)가 이것 없는 발급 레코드를 인가하지 않는다.
+    recs = [closed, tok]
+    return _result(True, "token_issued", why, token=token, expires_at=now + TOKEN_TTL_S,
+                   body_digest=cur, next="cys-dept create --team-token %s" % token,
+                   ask_id=aid, proposal_id=pid, surface=surf, **token_extra), recs
 
 
 def _no_ask(prompt, surf, feed_items, tokens=None, now=None):
@@ -1196,6 +1315,85 @@ def _no_ask(prompt, surf, feed_items, tokens=None, now=None):
         return quiet
     return _result(False, "ask_not_open", "열린 질문이 없는데 승인처럼 들리는 발화 — master 가 먼저 "
                    "`ask` 로 질문을 열어야 한다", surface=surf, proposal_id=mine[0].get("request_id"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# answer — 뜻 판정(좌석 모델) · 1.1.8 M4
+# ══════════════════════════════════════════════════════════════════════════════
+@_guarded
+def answer(meaning, answer_file, surface=None, now=None, feed_items=None):
+    """훅이 뜻 판정 대기(answer_pending)로 남긴 **사람의 첫 답**에 좌석 모델이 뜻을 넘긴다 → 닫기 또는 발급.
+
+    두 축(오너 원칙 2026-10-05 · javis_dept_request `_meaning_verdict` 형제):
+      출처 축(결정론) — 그 답이 이 좌석에 사람이 친 것이라는 판정은 훅이 이미 끝냈다(배달 원장·기계 유래·훅 입력 파일).
+        여기서는 좌석이 넘긴 원문 파일의 정규형 sha256 이 훅이 기록한 것과 같아야만 그 기록을 쓴다(answer_mismatch) —
+        모델이 답을 지어내 스스로 승인하는 경로를 닫는다. 기록된 답이 없으면 판정할 것이 없다(answer_not_pending).
+      뜻 축(모델) — yes(만들자)·no(만들지 말자)·unclear. no = 거절로 닫기 · unclear = 애매로 닫기(종전 되묻기와 같다) ·
+        yes = 명시적 부정어(STRONG_NEGATORS)가 든 답이면 승낙으로 넘기지 않고 애매로 닫는다(사전 = 안전 장치) · 그 밖은
+        훅 승인과 **같은** 발급 단계(_issue_tail)를 지나 토큰을 낸다 — 목격 증거는 대기 레코드의 훅 증거를 옮기고
+        `meaning_by: "model"` 을 덧붙인다(검증·소비 인가 `_judge_token` 은 그대로 성립한다).
+    질문 TTL 이 지났으면 만료로 닫는다. 좌석은 env(CYS_SURFACE_ID) — ask·status 와 같다(인자로 바꿀 수 없다).
+    """
+    now = _now(now)
+    if meaning not in ("yes", "no", "unclear"):
+        return _result(False, "bad_args", "meaning 은 yes|no|unclear")
+    surf = _env_surface() if surface is None else _surface_key(surface)
+    if not surf:
+        return _result(False, "surface_unknown", "이 pane 의 좌석을 모른다(CYS_SURFACE_ID 부재)")
+    text, ferr = None, ""
+    if not isinstance(answer_file, str) or not answer_file:
+        ferr = "오너 답 원문을 --answer-file 로 함께 넘겨야 한다(훅이 기록한 사람 입력과 대조한다)"
+    else:
+        try:
+            with open(answer_file, "rb") as f:
+                raw = f.read(HOOK_INPUT_MAX_BYTES + 1)
+            if len(raw) > HOOK_INPUT_MAX_BYTES:
+                ferr = "오너 답 원문 파일이 상한 %d 바이트 초과" % HOOK_INPUT_MAX_BYTES
+            else:
+                text = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            ferr = "오너 답 원문 파일을 읽지 못했다(%s) — 답 원문을 파일로 다시 넘겨라" % e
+    path = ledger_path()
+    no_ask = _result(False, "ask_not_open", "이 좌석에 열린 질문이 없다 — 뜻을 판정할 답이 없다(질문이 이미 닫혔거나 "
+                     "열리지 않았다 · 토큰 없음 → 만들지 마라)", surface=surf)
+    if not os.path.exists(path):
+        return no_ask
+    with _Locked(path):
+        recs0 = _load(path)
+        asks, _t, audits = _derive(recs0)
+        ask = _open_ask_for(asks, surf)
+        if ask is None:
+            return no_ask                     # 질문 단위 감사 키가 없다 — 무기록(반복 호출이 원장을 키우지 않게)
+        a, pend = ask["rec"], ask.get("pending")
+        refuse = _refuser(a, surf, now, audits, text or "", False, via="answer", meaning=meaning)
+        if pend is None:
+            res, recs = refuse("answer_not_pending", "이 질문에 뜻 판정을 기다리는 사람의 답이 없다 — 훅 고지(뜻 판정 필요)가 "
+                               "온 답에만 부른다(모델이 답을 대신 만들 수 없다)")
+        elif text is None or _norm_sha(text) != pend["prompt_norm_sha256"]:
+            res, recs = refuse("answer_mismatch", ferr or "넘겨준 답이 이 좌석에 사람이 친 답과 다르다 — 오너 답을 한 글자도 "
+                               "바꾸지 말고 그대로 파일에 담아 다시 넘겨라(오너에게 다시 묻지 마라)")
+        elif now > float(a["expires_at"]):
+            res, recs = refuse("ask_expired", "질문 TTL %ds 경과(%.0fs 초과) — 뜻 판정이 늦었다"
+                               % (ASK_TTL_S, now - float(a["expires_at"])), close_why="expired")
+        elif meaning == "no":
+            res, recs = refuse("utterance_rejected", "좌석 모델 판정: 만들지 말자는 뜻", close_why="answered_rejected")
+        elif meaning == "unclear":
+            res, recs = refuse("utterance_ambiguous", "좌석 모델 판정: 뜻이 분명하지 않다(되묻기)",
+                               close_why="answered_ambiguous")
+        elif strong_negation(text):
+            res, recs = refuse("utterance_ambiguous", "모델은 승낙으로 읽었으나 답에 명시적 부정어(%r)가 있다 — 승낙으로 "
+                               "넘기지 않고 되묻는다(사전 안전 장치)" % strong_negation(text),
+                               close_why="answered_ambiguous")
+        else:
+            witness = {"session_id": pend["hook_session"], "hook_input": pend["hook_input"],
+                       "hook_input_mtime": pend["hook_input_mtime"]}
+            res, recs = _issue_tail(refuse, a, surf, now, feed_items, witness,
+                                    "좌석 모델 판정: 승낙(원문 해시 일치)", meaning_by="model")
+        if recs:
+            _append(path, recs)
+            asks, _t, _a = _derive(recs0 + recs)
+        _sync_marker(asks, now)
+    return res
 
 
 def _is_hook_meta(meta):
@@ -1586,7 +1784,7 @@ def status(surface=None, proposal_id=None, now=None):
         ar, cl = ask["rec"], ask["closed"]
         ask_view = {"ask_id": ar["ask_id"], "proposal_id": ar["proposal_id"], "opened_at": ar["opened_at"],
                     "expires_at": ar["expires_at"], "closed": cl is not None,
-                    "why": cl.get("why") if cl else None}
+                    "why": cl.get("why") if cl else None, "answer_pending": ask.get("pending") is not None}
     tok_view = None
     if tok is not None:
         iss = tok["issued"]
@@ -1604,6 +1802,10 @@ def status(surface=None, proposal_id=None, now=None):
         #   이미 만료라 다시 쳐도 성공할 수 없었다(다시 친 답 = ask_expired). 질문을 새로 열어야 한다(디렉티브 절차 5
         #   '3 부터 다시'). 승인이 닿지 않은 경우(§7-2 턴 도중 입력)는 TTL 안에서 awaiting_answer 로 잡힌다.
         code = "awaiting_answer" if now <= float(ask["rec"]["expires_at"]) else "ask_expired"
+        if code == "awaiting_answer" and ask.get("pending") is not None:
+            # ★(1.1.8 M4) 오너의 답은 이미 닿았고 뜻 판정(answer)만 남았다 — '한 번 더 쳐 주세요'(awaiting_answer 안내)를
+            #   말하게 하면 그 새 발화가 질문을 닫는다(첫 답 1회 소비). 좌석이 answer 를 부르게 한다.
+            code = "answer_pending"
     else:
         last = [r for r in audits if r.get("event") == "issue_refused"
                 and r.get("ask_id") == ask["rec"]["ask_id"]]
@@ -1660,6 +1862,10 @@ def _build_parser():
     p.add_argument("--proposal", default="")
     p = sub.add_parser("issue", help="훅 전용 발급(직접 호출은 판정 없이 거부·기록된다)")
     p.add_argument("--payload-file", default=None)
+    p = sub.add_parser("answer", help="뜻 판정(좌석) — 훅이 뜻 판정 대기로 남긴 오너 답에 뜻을 넘긴다(1.1.8 M4)")
+    p.add_argument("--meaning", choices=("yes", "no", "unclear"), required=True,
+                   help="오너 답의 뜻(대화 맥락으로 판정) — --answer-file 과 함께")
+    p.add_argument("--answer-file", default=None, help="오너가 친 답 원문(그대로) 파일 — 훅이 기록한 사람 입력과 해시 대조")
     for name in ("verify", "consume"):
         p = sub.add_parser(name)
         p.add_argument("--token", default="")
@@ -1716,6 +1922,8 @@ def _main(args):
         if res.get("exit") == EXIT_NO_ASK:
             return EXIT_NO_ASK                  # 무출력 — 훅은 열린 질문이 있는 동안 매 프롬프트마다 부른다
         return _emit(res)
+    if cmd == "answer":
+        return _emit(answer(args.meaning, args.answer_file))
     if cmd in ("verify", "consume"):
         dig, bad = _body_arg(args)
         if bad is not None:
@@ -1740,7 +1948,8 @@ def _main(args):
     if cmd == "messages":
         return _emit(_result(True, "messages", "", messages={c: owner_message(c) for c in OWNER_MESSAGES},
                              section10=sorted(SECTION10_CODES), new_rows=sorted(NEW_ROW_CODES),
-                             refusal_codes=list(REFUSAL_CODES), external_codes=list(EXTERNAL_CODES)))
+                             refusal_codes=list(REFUSAL_CODES), external_codes=list(EXTERNAL_CODES),
+                             meaning_codes=list(MEANING_CODES)))
     if cmd == "digest":
         try:
             if args.body_b64:

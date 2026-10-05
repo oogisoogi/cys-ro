@@ -23,6 +23,8 @@ r"""test_teamtoken.py — 대화 승인 → 1회용 팀 생성 토큰(`javis_tea
   W 문구·어휘    — §10 문구 원문 핀 · 모든 사유 코드에 문구 · 화이트리스트 불변식.
   X 구조         — machine_origin 사본 금지(AST) · 호출은 javis_mission 경유.
   Y CLI 계약     — 서브커맨드·종료코드·JSON 1줄·issue 무질문 무출력·--now 부재·원장 0600.
+  J 뜻 판정(M4)  — 자유 표현 동의 → 대기 → answer yes(원문 해시) 발급 · 불일치·명시적 부정·no·unclear·답 없음·
+                   두 번째 발화·TTL·발급 단계 공유·CLI·휴면 게이트(1.1.8 · 오너 원칙 2026-10-05).
 
 라이브 무접촉: HOME·CYS_STATE_DIR·CYS_SOCKET·CYS_SURFACE_ID·LOCALAPPDATA 전부 임시 경로.
 실 데몬·실 원장·실 feed 를 읽지도 쓰지도 않는다.
@@ -272,6 +274,15 @@ def hissue(prompt, now=None, surface=None, feed_items=None, session="sess-test")
             os.environ["CYS_SURFACE_ID"] = saved
 
 
+def answer_file(text):
+    """좌석이 `answer --answer-file` 로 넘기는 오너 답 원문 파일(상태 폴더 밖 임시 자리 · 내용 그대로)."""
+    _n[0] += 1
+    p = os.path.join(TMP, "answer-%d.txt" % _n[0])
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    return p
+
+
 def forged_token():
     # 소스에 16진 리터럴을 두지 않는다(secret 스캐너 오탐 회피) — 실행 시 파생.
     return hashlib.md5(b"forged-guess").hexdigest()
@@ -417,8 +428,13 @@ def suite_fp():
         tt.open_ask(PROPOSAL, now=NOW, feed_items=FEED1)
         r = hissue(utter, now=NOW, feed_items=FEED1)
         got = bool(r.get("token"))
-        want_codes = ("token_issued",) if expect else ("utterance_rejected", "utterance_ambiguous")
-        check("F", cid, got == expect and r.get("code") in want_codes,
+        # ★(1.1.8 M4 · 의도된 동작 변경) 명시적 부정이 없는 비승인 답(질문·조건·목록 밖·약한 단서)은 이제 질문을 닫지 않고
+        #   뜻 판정 대기(answer_pending)로 남는다(오너 원칙 2026-10-05 — 뜻은 좌석 모델이 대화 맥락으로 판정). 표 B 의 핵심
+        #   단언 '발급 0' 은 그대로다 — 대기는 발급이 아니고(모델 yes + 원문 해시 일치가 있어야 발급), 질문이 열린 채인지도 잰다.
+        want_codes = ("token_issued",) if expect else ("utterance_rejected", "utterance_ambiguous", "answer_pending")
+        pend_ok = (r.get("code") != "answer_pending"
+                   or (not r.get("ask_closed") and tt.status(now=NOW + 1).get("code") == "answer_pending"))
+        check("F", cid, got == expect and r.get("code") in want_codes and pend_ok,
               "%r → %s(%s)" % (utter, r.get("code"), r.get("detail", "")[:80]))
     # §10: 부정·거부는 '되묻기'가 아니라 '아직 만들지 않았습니다' 로 답해야 한다(F13·F2·F4)
     for cid, utter in (("F13", "만들지 마"), ("F2", "승인하지 마라"), ("F4", "아직 만들어보지 말고 기다려")):
@@ -488,13 +504,18 @@ def suite_ask():
           not r1.get("token") and r1.get("code") == "machine_origin" and bool(r2.get("token")),
           "기계=%s 이어서 오너=%s" % (r1.get("code"), r2.get("code")))
     # G7 — 사람의 첫 답이 승인이 아니면 질문은 닫힌다(다른 질문에 대한 '응'이 팀을 만들지 않게)
+    # ★(1.1.8 M4 · 의도된 동작 변경) 목록 밖 첫 답은 이제 바로 닫히지 않고 뜻 판정 대기(answer_pending)가 된다 — 그러나 질문은
+    #   여전히 **첫 답 1회**로 소비된다: 판정 전에 온 사람의 새 발화('응')는 두 번째 답이라 발급하지 않고 질문을 닫는다.
+    #   G7 의 보장('뒤이은 응은 발급 안 됨')은 그대로이고, 닫히는 시점만 첫 답 → 두 번째 발화로 옮겨졌다.
     fresh()
     delivery([boot(NOW)])
     tt.open_ask(PROPOSAL, now=NOW, feed_items=FEED1)
     r1 = hissue("이름을 편집부로 바꿔줘", now=NOW, feed_items=FEED1)
     r2 = hissue("응", now=NOW + 1, feed_items=FEED1)
     check("G", "G7 사람의 비승인 답은 질문을 닫는다(뒤이은 '응'은 발급 안 됨)",
-          not r1.get("token") and r1.get("code") == "utterance_ambiguous" and not r2.get("token"),
+          not r1.get("token") and r1.get("code") == "answer_pending" and not r1.get("ask_closed")
+          and not r2.get("token") and r2.get("code") == "utterance_ambiguous" and r2.get("ask_closed")
+          and not events("token_issued"),
           "1차=%s 2차=%s" % (r1.get("code"), r2.get("code")))
     # G8 — 무질문·무관 발화는 무출력 무기록(훅이 매 프롬프트마다 부른다)
     fresh()
@@ -898,6 +919,9 @@ def suite_status():
     delivery([boot(NOW)])
     tt.open_ask(PROPOSAL, now=NOW, feed_items=FEED1)
     hissue("음 글쎄", now=NOW + 1, feed_items=FEED1)
+    # ★(1.1.8 M4 · 의도된 동작 변경) 목록 밖 답은 뜻 판정 대기로 남는다 — 좌석 모델의 unclear 판정이 질문을 '애매'로 닫는다
+    #   (닫힌 뒤 status 가 그 사유 코드를 그대로 보고하는지는 종전 단언 그대로 잰다).
+    tt.answer("unclear", answer_file("음 글쎄"), now=NOW + 1.5, feed_items=FEED1)
     s4 = tt.status(now=NOW + 2)
     check("S", "S5 최근 질문이 거부로 닫힘 → 그 사유 코드를 그대로 보고",
           s4.get("code") == "utterance_ambiguous", s4.get("code"))
@@ -1625,10 +1649,195 @@ def suite_fatal_fix():
           outs[0] == (3, "") and outs[1][0] == 4 and '"internal_error"' in outs[1][1], repr(outs)[:300])
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# J — 뜻 판정(1.1.8 M4 · 오너 원칙 2026-10-05 「예시 낱말로 한정하지 말고 자연어 맥락으로」)
+#   출처 축(사람이 친 답인가) = 결정론(훅 기록 · 원문 정규형 해시) · 뜻 축(동의인가) = 좌석 모델(answer --meaning).
+#   종전: 「그렇게 하죠」(의문형 '하죠')·「망설임 없이 만들어」(부정어 '없이')·「좋아요 만들어 주세요」(목록 밖)가 질문을 닫았다.
+# ══════════════════════════════════════════════════════════════════════════════
+CONSENT_FREE = ("그렇게 하죠", "망설임 없이 만들어", "좋아요 만들어 주세요")
+
+
+def _pending_case(utter, t0=None):
+    t0 = NOW if t0 is None else t0
+    fresh()
+    delivery([boot(t0)])
+    tt.open_ask(PROPOSAL, now=t0, feed_items=FEED1)
+    return hissue(utter, now=t0 + 1, feed_items=FEED1)
+
+
+def suite_meaning():
+    # J1~J3 자유 표현 동의 → 훅은 질문을 열어 둔 채 대기 기록 · 좌석 yes + 원문 그대로 → 발급(훅 증거 승계 · 소비 인가)
+    for i, utter in enumerate(CONSENT_FREE, 1):
+        r = _pending_case(utter)
+        pend = events("answer_pending")
+        st = tt.status(now=NOW + 2)
+        ok_hook = (r.get("code") == "answer_pending" and not r.get("ask_closed") and not r.get("token")
+                   and r.get("exit") == tt.EXIT_REFUSED and "answer --meaning" in (r.get("detail") or "")
+                   and len(pend) == 1 and pend[0].get("prompt_norm_sha256") == hashlib.sha256(
+                       " ".join(utter.split()).encode("utf-8")).hexdigest()
+                   and pend[0].get("hook_session") == "sess-test" and pend[0].get("via") == "hook"
+                   and _is_hookname(pend[0].get("hook_input")) and st.get("code") == "answer_pending"
+                   and not events("ask_closed"))
+        a = tt.answer("yes", answer_file(utter + "\n"), now=NOW + 3, feed_items=FEED1)
+        iss = events("token_issued")
+        tok = a.get("token")
+        c = tt.consume(tok or "", PROPOSAL, SURFACE, BODY_D, phase="create", now=NOW + 4)
+        check("J", "J%d %r → 대기(질문 열림·발급 0) → answer yes(원문 그대로) → 발급 · 훅 증거 승계 · meaning_by=model · "
+                   "create 소비 인가" % (i, utter),
+              ok_hook and a.get("ok") and a.get("code") == "token_issued" and len(iss) == 1
+              and iss[0].get("token") == tok and iss[0].get("via") == "hook"
+              and iss[0].get("hook_session") == pend[0].get("hook_session")
+              and iss[0].get("hook_input") == pend[0].get("hook_input")
+              and iss[0].get("meaning_by") == "model" and c.get("ok"),
+              "hook=%s/%s answer=%s consume=%s" % (r.get("code"), ok_hook, a.get("code"), c.get("code")))
+
+    # J4 원문이 다르면 answer_mismatch(발급 0 · 질문 열린 채) — 그 뒤 정확한 원문이면 발급(정규형: 앞뒤 공백·CRLF·연속 공백)
+    r = _pending_case("그렇게 하죠")
+    m1 = tt.answer("yes", answer_file("그렇게 하자"), now=NOW + 2, feed_items=FEED1)
+    m2 = tt.answer("yes", "", now=NOW + 2, feed_items=FEED1)
+    m3 = tt.answer("yes", os.path.join(TMP, "no-such-answer.txt"), now=NOW + 2, feed_items=FEED1)
+    mid = tt.status(now=NOW + 2)
+    ok = tt.answer("yes", answer_file("  그렇게\r\n  하죠 \r\n"), now=NOW + 3, feed_items=FEED1)
+    check("J", "J4 다른 원문·파일 없음·읽기 불가 → answer_mismatch · 발급 0 · 질문 열림 → 같은 답(공백·CRLF 차이) → 발급",
+          r.get("code") == "answer_pending"
+          and all(x.get("code") == "answer_mismatch" and not x.get("token") and not x.get("ask_closed")
+                  for x in (m1, m2, m3))
+          and mid.get("code") == "answer_pending" and ok.get("code") == "token_issued"
+          and len(events("token_issued")) == 1,
+          "%s/%s/%s status=%s ok=%s" % (m1.get("code"), m2.get("code"), m3.get("code"), mid.get("code"),
+                                       ok.get("code")))
+    mm = [x for x in events("issue_refused") if x.get("code") == "answer_mismatch"]
+    check("J", "J4b 반복 불일치 감사는 질문당 1줄(R1-06 — 좌석 재시도 루프가 원장을 키우지 않는다)", len(mm) == 1,
+          "answer_mismatch 감사 %d줄" % len(mm))
+
+    # J5 명시적 부정 「아니 취소해」 → 훅이 종전대로 거절로 닫는다 → 모델 yes 는 판정할 질문이 없다(발급 0)
+    r = _pending_case("아니 취소해")
+    a = tt.answer("yes", answer_file("아니 취소해"), now=NOW + 2, feed_items=FEED1)
+    closed = [x for x in events("ask_closed") if x.get("why") == "answered_rejected"]
+    check("J", "J5 「아니 취소해」 → utterance_rejected(질문 닫힘) · 모델 yes → ask_not_open · 발급 0",
+          r.get("code") == "utterance_rejected" and r.get("ask_closed") and len(closed) == 1
+          and not a.get("ok") and a.get("code") == "ask_not_open" and not events("token_issued")
+          and not events("answer_pending"), "hook=%s answer=%s" % (r.get("code"), a.get("code")))
+    # J5b 안전 장치(심층 방어): 대기 기록 뒤 사전이 분명한 거절로 읽는 답이면 모델 yes 를 승낙으로 넘기지 않는다(되묻기)
+    saved = tt.STRONG_NEGATORS
+    try:
+        tt.STRONG_NEGATORS = tuple(w for w in saved if w != "취소")   # 훅 시점에만 '취소' 를 모른다고 가정
+        r = _pending_case("취소해 줘")
+    finally:
+        tt.STRONG_NEGATORS = saved
+    a = tt.answer("yes", answer_file("취소해 줘"), now=NOW + 2, feed_items=FEED1)
+    check("J", "J5b 명시적 부정이 든 대기 답 + 모델 yes → 발급 0 · 애매로 닫기(되묻기)",
+          r.get("code") == "answer_pending" and a.get("code") == "utterance_ambiguous" and a.get("ask_closed")
+          and not events("token_issued"), "hook=%s answer=%s" % (r.get("code"), a.get("code")))
+
+    # J6 모델 no → 거절로 닫기 · unclear → 애매로 닫기(둘 다 발급 0 · status 가 그 사유를 보고)
+    for cid, meaning, code, why in (("J6a", "no", "utterance_rejected", "answered_rejected"),
+                                    ("J6b", "unclear", "utterance_ambiguous", "answered_ambiguous")):
+        _pending_case("글쎄 그렇게 할까 말까")
+        a = tt.answer(meaning, answer_file("글쎄 그렇게 할까 말까"), now=NOW + 2, feed_items=FEED1)
+        st = tt.status(now=NOW + 3)
+        again = tt.answer("yes", answer_file("글쎄 그렇게 할까 말까"), now=NOW + 4, feed_items=FEED1)
+        check("J", "%s 모델 %s → %s · 질문 닫힘(%s) · 다시 yes 해도 발급 0" % (cid, meaning, code, why),
+              a.get("code") == code and a.get("ask_closed") and st.get("code") == code
+              and [x.get("why") for x in events("ask_closed")] == [why]
+              and again.get("code") == "ask_not_open" and not events("token_issued"),
+              "%s / status=%s / again=%s" % (a.get("code"), st.get("code"), again.get("code")))
+
+    # J7 기록된 사람의 답이 없으면 거부 — 답 없음(질문만 열림) · 질문 없음 · 기계 배달만 있음(대기 기록 0)
+    fresh()
+    delivery([boot(NOW)])
+    a0 = tt.answer("yes", answer_file("그렇게 하죠"), now=NOW, feed_items=FEED1)
+    tt.open_ask(PROPOSAL, now=NOW, feed_items=FEED1)
+    a1 = tt.answer("yes", answer_file("그렇게 하죠"), now=NOW + 1, feed_items=FEED1)
+    delivery([boot(NOW), drec("그렇게 하죠", NOW + 1)])
+    rm = hissue("그렇게 하죠", now=NOW + 2, feed_items=FEED1)
+    a2 = tt.answer("yes", answer_file("그렇게 하죠"), now=NOW + 3, feed_items=FEED1)
+    check("J", "J7 사람 답 없음 → 질문 없음=ask_not_open · 답 없음=answer_not_pending · 기계 배달(대기 0)=answer_not_pending · "
+               "발급 0 · 질문 열린 채",
+          a0.get("code") == "ask_not_open" and a1.get("code") == "answer_not_pending"
+          and rm.get("code") == "machine_origin" and not events("answer_pending")
+          and a2.get("code") == "answer_not_pending" and not a2.get("ask_closed")
+          and tt.status(now=NOW + 4).get("code") == "awaiting_answer" and not events("token_issued"),
+          "%s/%s/%s/%s" % (a0.get("code"), a1.get("code"), rm.get("code"), a2.get("code")))
+
+    # J8 대기 중 사람의 새 발화 = 두 번째 답 → 발급하지 않고 질문을 닫는다(첫 답 1회 소비) · 뒤늦은 answer 도 발급 0
+    _pending_case("좋아요 만들어 주세요")
+    r2 = hissue("만들어", now=NOW + 2, feed_items=FEED1)
+    a = tt.answer("yes", answer_file("좋아요 만들어 주세요"), now=NOW + 3, feed_items=FEED1)
+    check("J", "J8 대기 중 새 발화('만들어')도 발급하지 않고 질문을 닫는다 · 뒤늦은 answer yes → ask_not_open",
+          r2.get("code") == "utterance_ambiguous" and r2.get("ask_closed") and not r2.get("token")
+          and a.get("code") == "ask_not_open" and not events("token_issued"),
+          "2차=%s answer=%s" % (r2.get("code"), a.get("code")))
+
+    # J9 질문 TTL 뒤의 뜻 판정 → 만료로 닫기(발급 0)
+    _pending_case("그렇게 하죠")
+    a = tt.answer("yes", answer_file("그렇게 하죠"), now=NOW + tt.ASK_TTL_S + 5, feed_items=FEED1)
+    check("J", "J9 TTL 뒤 answer yes → ask_expired · 질문 닫힘(expired) · 발급 0",
+          a.get("code") == "ask_expired" and a.get("ask_closed") and not events("token_issued")
+          and [x.get("why") for x in events("ask_closed")] == ["expired"], a.get("code"))
+
+    # J10 발급 단계는 훅 승인과 같은 함수 — 본문 변경·대기 2건·제안 없음은 answer yes 에서도 같은 코드로 막힌다
+    swapped = [item(PROPOSAL, body=body_of(PROPOSAL, display="다른부서"))]
+    outs = []
+    for feed, code in ((swapped, "body_changed"), ([item(PROPOSAL), item(OTHER_PROPOSAL)], "multiple_pending"),
+                       ([item(PROPOSAL, status="resolved")], "no_pending")):
+        _pending_case("그렇게 하죠")
+        a = tt.answer("yes", answer_file("그렇게 하죠"), now=NOW + 2, feed_items=feed)
+        outs.append((a.get("code"), code, bool(events("token_issued"))))
+    check("J", "J10 answer yes 도 훅 발급과 같은 발급 단계(본문 변경·대기 2건·제안 없음 → 거부 · 발급 0)",
+          all(g == w and not t for g, w, t in outs), repr(outs))
+    src = open(MODULE_PATH, encoding="utf-8").read()
+    check("J", "J10b 발급 레코드(token_issued) 조립은 한 곳(_issue_tail) — 두 경로 사본 분기 없음",
+          src.count('"event": "token_issued"') == 1 and "def _issue_tail" in src,
+          "token_issued 조립 %d곳" % src.count('"event": "token_issued"'))
+
+    # J11 CLI — 훅 입력 파일로 대기 → answer 서브커맨드(--meaning·--answer-file) → 토큰 · 인자 오류는 exit 2
+    real_ask()
+    rc1, j1, _o, _e = cli(["issue", "--payload-file", hook_file(prompt="좋아요 만들어 주세요")])
+    rc2, j2, _o, _e = cli(["answer", "--meaning", "maybe", "--answer-file", answer_file("좋아요 만들어 주세요")])
+    rc3, j3, _o, _e = cli(["answer", "--meaning", "yes", "--answer-file", answer_file("좋아요 만들어 주세요")])
+    check("J", "J11 CLI issue → exit 1 answer_pending · answer --meaning maybe → exit 2 · answer yes → exit 0 토큰 32hex",
+          rc1 == 1 and (j1 or {}).get("code") == "answer_pending" and rc2 == 2
+          and rc3 == 0 and (j3 or {}).get("code") == "token_issued" and len((j3 or {}).get("token") or "") == 32,
+          "%s/%s · %s · %s/%s" % (rc1, (j1 or {}).get("code"), rc2, rc3, (j3 or {}).get("code")))
+
+    # J12 어휘·코드 등록 불변식
+    rc, j, _o, _e = cli(["messages"])
+    check("J", "J12 STRONG∪WEAK = NEGATORS(서로소) · 뜻 판정 코드는 문구 표·messages 출력에 등록 · 화이트리스트 원소는 승인 경로",
+          set(tt.STRONG_NEGATORS) | set(tt.WEAK_NEGATORS) == set(tt.NEGATORS)
+          and not set(tt.STRONG_NEGATORS) & set(tt.WEAK_NEGATORS)
+          and all(c in tt.OWNER_MESSAGES for c in tt.MEANING_CODES)
+          and rc == 0 and set(tt.MEANING_CODES) <= set((j or {}).get("messages", {}))
+          and list((j or {}).get("meaning_codes") or []) == list(tt.MEANING_CODES)
+          and all(tt.answer_route(w)[0] == "approve" for w in tt.APPROVE_EXACT)
+          and [tt.answer_route(u)[0] for u in CONSENT_FREE] == ["pending"] * 3
+          and tt.answer_route("만들지 마")[0] == "reject" and tt.approval_verdict("그렇게 하죠")[0] == "reject",
+          "rc=%s" % rc)
+
+    # J13 휴면 게이트 유지 — 라이브 지침에 §4-A-2 가 없으면(출하 휴면 판) 질문이 열리지 않아 자유 표현도 대기·발급 0
+    anchor = tt.DIRECTIVE_ANCHOR
+    live_pack(SHIPPED_TEXT.replace(anchor, "4-A-X. (휴면)"), name="pack-j-dormant")
+    try:
+        ra = real_ask()
+        r = hissue("그렇게 하죠", feed_items=FEED1)
+        a = tt.answer("yes", answer_file("그렇게 하죠"), feed_items=FEED1)
+        check("J", "J13 휴면 지침(§4-A-2 없음) → ask directive_stale · 자유 표현 무동작(exit 3) · answer → ask_not_open · 발급 0",
+              ra.get("code") == "directive_stale" and r.get("exit") == tt.EXIT_NO_ASK
+              and a.get("code") == "ask_not_open" and not events("answer_pending") and not events("token_issued"),
+              "ask=%s issue=%s/%s answer=%s" % (ra.get("code"), r.get("code"), r.get("exit"), a.get("code")))
+    finally:
+        os.environ["CYS_PACK_DIR"] = BASE_PACK
+
+
+def _is_hookname(name):
+    return isinstance(name, str) and re.fullmatch(r"hook-input-[0-9]+-[0-9]+\.json", name) is not None
+
+
 def main():
     for fn in (suite_attack, suite_life, suite_fp, suite_ask, suite_race, suite_transition,
                suite_missing, suite_failclosed, suite_status, suite_words, suite_structure, suite_cli,
-               suite_hook_only, suite_directive_gate, suite_marker, suite_directive, suite_fatal_fix):
+               suite_hook_only, suite_directive_gate, suite_marker, suite_directive, suite_fatal_fix,
+               suite_meaning):
         try:
             fn()
         except Exception as e:  # noqa: BLE001 — 스위트 예외는 FAIL 로 계수한다(조용한 누락 금지)
@@ -1639,7 +1848,7 @@ def main():
     names = {"A": "공격", "L": "수명", "F": "오탐", "G": "ask", "K": "경합", "T": "상태전이",
              "M": "결측형", "C": "fail-closed", "S": "관측", "W": "문구", "X": "구조", "Y": "CLI",
              "H": "발급자=훅", "N": "지침 판 게이트", "O": "질문 표지", "D": "디렉티브 정합",
-             "Z": "치명위험 수정"}
+             "Z": "치명위험 수정", "J": "뜻 판정(M4)"}
     total_fail = 0
     for k, rows in RESULTS.items():
         ok = sum(1 for _c, o, _d in rows if o)

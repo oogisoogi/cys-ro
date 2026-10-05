@@ -38,6 +38,8 @@
 #      언제나 알린다. 질문을 닫지 않은 거부(기계 배달 · 배달 원장 부재/손상 · 입력 확인 실패)는 모듈이 **승인처럼 들린다고
 #      판정한 발화일 때만** 알린다(판정 불가 = 알리지 않는다 · fatal-fix R1-01) — 질문이 열린 동안 master 좌석에 들어오는
 #      모든 기계 push 마다 "시스템이 보낸 메시지"를 말하게 하면 그 자체가 잡음 폭주다. 거부 사실은 원장(issue_refused)에 남는다.
+#   ②-b 뜻 판정 대기(rc 1 · answer_pending · 1.1.8 M4) : 사람의 첫 답이 짧은 승인 목록 밖 — 질문은 열린 채다. 언제나 알린다:
+#      좌석 모델이 대화 맥락으로 뜻을 판정해 오너 답 원문 파일과 함께 `javis_teamtoken.py answer --meaning …` 을 부르게.
 #   ③ 기반 고장(rc 2·4) : 모듈이 승인처럼 들린다고 판정한 발화일 때만 알린다(fatal-fix R1-05 · R3-F4).
 #   ④ 결과 없음(시간 초과·해석 불가 출력·모듈 import 불가) : 승인처럼 들리거나(모듈 판정) 모듈 없이도 승인일 수 있는
 #      모양(기계 라벨 없는 짧은 발화)일 때만 판정 불가 고지(fatal-fix R2-1). 모듈을 쓸 수 없으면 until 이 지난 표지를 여기서 걷는다.
@@ -238,6 +240,13 @@ if rc == 0 and res and res.get("ok") and code == "token_issued" and res.get("tok
             "다른 좌석 전달문에 싣지 마라."
             % (tok, res.get("proposal_id") or "?", ttl, hhmmss(res.get("expires_at")),
                res.get("next") or ("cys-dept create --team-token %s" % tok)))
+elif res and rc == 1 and code == "answer_pending":
+    # ★(1.1.8 M4) 사람의 첫 답이 짧은 승인 목록 밖 — 질문은 열린 채 뜻 판정을 기다린다. 승인처럼 들리지 않아도 **언제나** 알린다
+    #   (좌석 모델이 판정하지 않으면 그 답은 버려지고 다음 발화가 질문을 닫는다). 기계 배달은 여기 오지 않는다(출처 검사가 먼저).
+    #   한 질문에 1회뿐이다(두 번째 사람 발화는 질문을 닫는다) — 잡음 폭주 없음.
+    note = ("[팀 만들기 대화 승인 - 뜻 판정 필요 · answer_pending] %s 토큰이 아직 없으므로 판정 전에는 "
+            "cys-dept create 를 부르지 마라. 근거: %s · 상태 확인: javis_teamtoken.py status"
+            % (clean(res.get("detail"), 600), clean(res.get("next") or "", 160)))
 elif res and rc in (1, 2, 4):
     closed = bool(res.get("ask_closed"))
     if closed or code == "ask_not_open":

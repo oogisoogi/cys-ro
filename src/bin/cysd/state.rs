@@ -1856,14 +1856,6 @@ pub enum WriteReq {
     /// 뒤의 Enter 가 최소 간격에 걸려 대화가 굼떠진다. 기준점은 **프로그램 주입**에만 찍는다
     /// (handlers send_text 가 `human_verified` 로 가른다 — `last_injected` 갱신 조건과 동일).
     Program(Vec<u8>),
-    /// ★precut ㉮(codex 1R BLOCK) `SubmitAfterGap` + **쓰기 직전 재판정** — `refuse_on_approval` 제출 키 전용.
-    /// 핸들러 판정과 실제 CR 쓰기 사이(writer 적체 · 최소 간격 대기)에 승인·질문 창이 뜨면 CR 이 그 선택지를
-    /// 누른다. writer 는 대기 뒤 `refuse_now()` 가 참이면 쓰지 않는다(화면 렌더 지연만큼의 경합은 남는다 — 0 불가).
-    SubmitGuarded {
-        bytes: Vec<u8>,
-        min_gap_ms: u64,
-        refuse_now: Box<dyn Fn() -> bool + Send>,
-    },
     /// ★B2′(codex 감사 R1) 제출 CR 쓰기 — **writer 가 실제로 본문을 쓴 시각**(`last_program_write`)
     /// 으로부터 `min_gap_ms` 가 지나도록 잔여만큼 자고 나서 쓴다.
     ///
@@ -1884,6 +1876,14 @@ pub enum WriteReq {
         /// `governance::submit_cr_withhold_probe` 하나다(규칙·귀결은 그 doc). 보류한 CR 은 표식상 '소비 · 미기록'이고
         /// 최소 간격 기준점(`last_program_write`)도 찍지 않는다 — 화면에 없는 바이트를 기준 삼지 않는다(B2′ 규율).
         withhold: Option<SafetyProbe>,
+        /// ★1.1.8 병합 K17(⑯ `refuse_on_approval` 이식 · 우리 1.1.7 precut ㉮ `SubmitGuarded` 를 이 변형의 모드로 접었다) **거부 탐침** —
+        /// writer 가 최소 간격을 잔 **뒤 · 쓰기 직전** 한 번(보류 탐침보다 먼저) 부른다. `true` = 이 요청의 바이트를 **한 바이트도
+        /// 쓰지 않는다 · 재제출 없음**(보류와 달리 미룸이 아니라 거부 — 순환 `/clear`·C-u 를 창이 닫힌 뒤 다시 넣지 않는다).
+        /// 호출자가 「승인·질문 창이면 쓰지 마라」를 요구한 키(`refuse_on_approval`)에만 걸리고, **키 종류·간격과 무관**하다
+        /// (C-u·C-m 별칭·간격 0 = 종전 `Data` 경로의 키도 이 변형으로 온다 — judge 집행 조건 ② · codex R1 F7). 그래서 이
+        /// 변형의 `bytes` 는 CR 이 아닐 수 있다 — S21 인계 표식(`InjectTrack::submit_*`)은 **CR/LF 를 실은 요청만** 올리고
+        /// 내린다(핸들러 `submit_handed` 와 같은 조건 · H7 틈 닫음). 생성자 = `handlers::approval_write_guard` 하나.
+        refuse: Option<SafetyProbe>,
     },
 }
 
@@ -6091,7 +6091,7 @@ impl Daemon {
         // 하므로 struct init 전에 먼저 로드한다 — 시드 = max(seq)+1(WAL 부재 시 1)로
         // 재기동 후 발급 seq가 살아있는 복원 항목과 절대 겹치지 않는다.
         // ⑧ 판독 불능 WAL = 원본 보존 사본 먼저 · 사본 실패면 쓰기 금지(load 는 종전대로 빈 복원).
-        let queue_wal_blocked = guard_unreadable_queue_wal(&dir);
+        let mut queue_wal_blocked = guard_unreadable_queue_wal(&dir);
         // ★1.1.8 병합(판정 갈림 S2): 우리 ⑧ 원본 보존 사본·쓰기 금지 위에 원작자 판독 결과 구조(QueueWalRead)·두 파일 보존을 그대로 받는다.
         let active_wal = load_queue_state(&dir);
         // ★(0.14.31 · WP-5 M) 만료 복원분은 별 파일(queue-expired.json · 구 데몬 비가시). 시드는
@@ -6105,8 +6105,15 @@ impl Daemon {
         // 해석 가능한 내용이 전부 메모리에 있고 다음 영속이 그것을 되쓴다.
         let mut queue_wal_unpreserved: std::collections::BTreeSet<&'static str> =
             std::collections::BTreeSet::new();
-        if active_wal.unreadable && !preserve_unreadable_queue_wal(&dir, "queue-state.json") {
-            queue_wal_unpreserved.insert("queue-state.json");
+        if active_wal.unreadable {
+            if preserve_unreadable_queue_wal(&dir, "queue-state.json") {
+                // ★1.1.8 병합(판정 갈림 S2 · 보존 2회 시도의 합성): 우리 ⑧ 사본(copy)이 실패해 쓰기를 막았어도 원작자 보존(rename)이
+                //   원본을 옆 이름으로 옮겼으면 그 이름에 덮을 원본이 없다 — 막음을 푼다(안 풀면 이번 실행 내내 큐 WAL 을 못 써
+                //   재기동 생존이 사라진다). 둘 다 실패하면 막음 유지 + 원작자 미보존 집합(쓰기 직전 재보존·거절)이 함께 지킨다.
+                queue_wal_blocked = false;
+            } else {
+                queue_wal_unpreserved.insert("queue-state.json");
+            }
         }
         if expired_wal.unreadable && !preserve_unreadable_queue_wal(&dir, "queue-expired.json") {
             queue_wal_unpreserved.insert("queue-expired.json");
@@ -8250,17 +8257,27 @@ pub(crate) fn run_writer_loop_tracked<W: Write>(
             }
             // ★B2′: 제출 CR — 잔여를 **여기서, 소비 시점에** 계산한다. 이 계산이 핸들러에
             // 있으면 적체 구간에서 간격이 붕괴한다(codex 감사 R1 · SubmitAfterGap doc 참조).
-            WriteReq::SubmitAfterGap { bytes, min_gap_ms, withhold } => {
+            WriteReq::SubmitAfterGap { bytes, min_gap_ms, withhold, refuse } => {
                 if let Some(delay) =
                     cr_gap_delay_ms(last_program_write.map(|t| t.elapsed()), min_gap_ms)
                 {
                     std::thread::sleep(std::time::Duration::from_millis(delay));
                 }
+                // ★1.1.8 K17 — S21 표식은 CR/LF 를 실은 요청만(거부 모드는 C-u 등 비제출 키도 싣는다 · 핸들러 인계와 같은 조건).
+                let carries_cr = bytes.iter().any(|b| matches!(b, b'\r' | b'\n'));
+                // ★1.1.8 K17(⑯ refuse 모드) — 간격을 잔 **뒤**(쓰기 직전) 창을 다시 본다. 창이면 한 바이트도 쓰지 않고 기준점도
+                //   찍지 않는다 · 재제출 기록도 남기지 않는다(거부 ≠ 보류). 표식은 대기 계수만 내린다(분리 보류 영구화 0).
+                if refuse.as_ref().is_some_and(|p| p()) {
+                    if let (true, Some(t)) = (carries_cr, &track) {
+                        t.submit_consumed(false);
+                    }
+                    continue;
+                }
                 // ★(0.14.42 · 수정 2회차 F1) 제출 CR 보류 — 간격을 잔 **뒤**(쓰기 직전) 화면을 다시 본다. 인계~쓰기 사이에
                 //   뜬 질문·선택 창에 CR 을 쓰면 기본 선택지를 누른다(오승인). 보류면 한 바이트도 쓰지 않고 기준점·쓴 시각을
                 //   찍지 않는다 — 대기 계수만 내린다(분리 보류가 영구화되지 않는다). writer 는 막지 않는다(사람 키가 창을 푼다).
                 if withhold.as_ref().is_some_and(|p| p()) {
-                    if let Some(t) = &track {
+                    if let (true, Some(t)) = (carries_cr, &track) {
                         t.submit_consumed(false);
                     }
                     continue;
@@ -8275,30 +8292,10 @@ pub(crate) fn run_writer_loop_tracked<W: Write>(
                 }
                 // ★(0.14.42 · S21-SETTLE) 제출 정착 표식 — 대기 계수 내림 + (성공 시) 쓴 시각. 핸들러가 이것으로
                 //   '대기 CR 뒤에 다음 본문을 붙이지 않는다'(분리 보류)를 판정한다. 원자 쓰기뿐.
-                if let Some(t) = &track {
+                if let (true, Some(t)) = (carries_cr, &track) {
                     t.submit_consumed(r.is_ok());
                 }
                 r
-            }
-            // ★precut ㉮(우리 1.1.7 · codex 1R BLOCK) 거부 요청(`refuse_on_approval`)의 제출 키 — 최소 간격 대기 **뒤**, 쓰기
-            //   직전에 창을 다시 본다. 창이 떠 있으면 쓰지 않는다(기준점도 안 찍는다 — 화면에 없는 바이트를 기준 삼지 않는 규율).
-            //   ★1.1.8 병합(판정 갈림 H7 · 원작자대로): 핸들러가 S21 인계 표식(`submit_handed`)을 올리지 않는 변형이라 여기서도
-            //   표식을 소비하지 않는다(`track` 무접촉).
-            WriteReq::SubmitGuarded { bytes, min_gap_ms, refuse_now } => {
-                if let Some(delay) =
-                    cr_gap_delay_ms(last_program_write.map(|t| t.elapsed()), min_gap_ms)
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(delay));
-                }
-                if refuse_now() {
-                    Ok(())
-                } else {
-                    let r = writer.write_all(&bytes).and_then(|_| writer.flush());
-                    if r.is_ok() {
-                        last_program_write = Some(std::time::Instant::now());
-                    }
-                    r
-                }
             }
             WriteReq::Inject {
                 text,
@@ -9772,25 +9769,41 @@ mod tests {
     /// 계약이 살아 있으면 CR 은 여전히 본문 write 로부터 150ms 이상 떨어져야 한다.
     /// ★precut ㉮(codex 1R BLOCK) 거부 요청의 제출 키는 writer 가 **최소 간격 대기 뒤·쓰기 직전**에 창을 다시 본다.
     /// 적체로 붙들린 사이(핸들러 판정 뒤)에 창이 뜨면 CR 을 쓰지 않는다 · 창이 없으면 종전처럼 쓴다.
+    /// ★1.1.8 K17: 우리 `SubmitGuarded` 를 원작자 `SubmitAfterGap` 의 거부 모드(`refuse`)로 접었다 — 기능 동치(승인 창 위 바이트 0)를
+    /// 같은 적체 각본으로 보인다. 덧붙여 ⓐ 간격 없는 키(C-u · 간격 0 = 종전 `Data` 경로 · judge 집행 조건 ②)도 바이트 0
+    /// ⓑ 거부는 재제출 기록을 남기지 않는다(보류와 다름) ⓒ S21 표식(H7): CR 을 실은 거부 요청은 인계 계수를 소비한다(쓰면 쓴 시각 ·
+    /// 거부면 쓴 시각 없음) · CR 없는 키는 표식에 손대지 않는다.
     #[test]
     fn submit_guarded_rechecks_dialog_right_before_writing_cr() {
         use std::sync::atomic::AtomicBool as Flag;
         use std::sync::mpsc::sync_channel;
-        for (dialog_appears, want) in [(true, b"XBODY".to_vec()), (false, b"XBODY\r".to_vec())] {
+        for (key, gap, dialog_appears, want) in [
+            (b"\r".to_vec(), 50, true, b"XBODY".to_vec()),
+            (b"\r".to_vec(), 50, false, b"XBODY\r".to_vec()),
+            (vec![0x15u8], 0, true, b"XBODY".to_vec()),
+            (vec![0x15u8], 0, false, b"XBODY\x15".to_vec()),
+        ] {
             let log: WriteLog = Arc::new(Mutex::new(Vec::new()));
             let (tx, rx) = sync_channel::<WriteReq>(8);
             let stop = Arc::new(AtomicBool::new(false));
             let w = TimedBuf::new(&log);
-            let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
+            let track = Arc::new(InjectTrack::default());
+            let t2 = Arc::clone(&track);
+            let handle = std::thread::spawn(move || run_writer_loop_tracked(w, rx, stop, Some(t2)));
             let dialog = Arc::new(Flag::new(false));
             let seen = dialog.clone();
+            let carries_cr = key.contains(&b'\r');
             // ① 적체 300ms — 핸들러 판정(창 없음)은 이 앞에서 이미 끝났다.
             tx.send(WriteReq::DataAfter { bytes: b"X".to_vec(), delay_ms: 300 }).unwrap();
             tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
-            tx.send(WriteReq::SubmitGuarded {
-                bytes: b"\r".to_vec(),
-                min_gap_ms: 50,
-                refuse_now: Box::new(move || seen.load(Ordering::SeqCst)),
+            if carries_cr {
+                track.submit_handed(); // 핸들러 인계 표식(H7 — 거부 모드도 CR 이면 올린다)
+            }
+            tx.send(WriteReq::SubmitAfterGap {
+                bytes: key.clone(),
+                min_gap_ms: gap,
+                withhold: None,
+                refuse: Some(Arc::new(move || seen.load(Ordering::SeqCst))),
             })
             .unwrap();
             // ② 적체 중에 창이 뜬다(또는 안 뜬다).
@@ -9799,7 +9812,15 @@ mod tests {
             drop(tx);
             handle.join().ok();
             let flat: Vec<u8> = log.lock().unwrap().iter().flat_map(|(_, b)| b.clone()).collect();
-            assert_eq!(flat, want, "창 {dialog_appears}: {:?}", String::from_utf8_lossy(&flat));
+            assert_eq!(flat, want, "키 {key:?} 창 {dialog_appears}: {:?}", String::from_utf8_lossy(&flat));
+            assert!(track.withheld().is_none(), "거부는 재제출 기록을 남기지 않는다(키 {key:?})");
+            let obs = track.submit_settle_obs(settle_mono_ms(), 5000);
+            assert!(!obs.inflight && obs.pending == 0, "인계 계수는 소비된다(키 {key:?} 창 {dialog_appears}): {obs:?}");
+            assert_eq!(
+                obs.since_written_ms.is_some(),
+                carries_cr && !dialog_appears,
+                "쓴 시각은 CR 을 실제로 쓴 경우만(키 {key:?} 창 {dialog_appears}): {obs:?}"
+            );
         }
     }
 
@@ -9820,7 +9841,7 @@ mod tests {
             let handle = std::thread::spawn(move || run_writer_loop_tracked(w, rx, stop, Some(t2)));
             tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
             track.submit_handed();
-            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: 30, withhold }).unwrap();
+            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: 30, withhold, refuse: None }).unwrap();
             tx.send(WriteReq::Data(b"k".to_vec())).unwrap();
             drop(tx);
             handle.join().ok();
@@ -9862,7 +9883,7 @@ mod tests {
         tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
         // ③ 200ms 뒤 제출 CR — 핸들러 시계로는 본문 enqueue 후 이미 150ms 초과다.
         std::thread::sleep(std::time::Duration::from_millis(200));
-        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
+        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None, refuse: None })
             .unwrap();
         drop(tx);
         handle.join().ok();
@@ -9950,7 +9971,7 @@ mod tests {
         tx.send(WriteReq::Inject { text: "hi".into(), cr_delay_ms: 0, clear_first: false, guard: None })
             .unwrap();
         let t_enqueue = std::time::Instant::now();
-        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
+        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None, refuse: None })
             .unwrap();
         drop(tx);
         handle.join().ok();
@@ -9979,7 +10000,7 @@ mod tests {
         let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
         tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
         for _ in 0..2 {
-            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
+            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None, refuse: None })
                 .unwrap();
         }
         drop(tx);
@@ -10024,7 +10045,7 @@ mod tests {
         // 사람 키(Data)는 기준점을 찍지 않는다 — Program 이 아니므로 여전히 '본문 없음'이다.
         tx.send(WriteReq::Data(b"typed".to_vec())).unwrap();
         let t0 = std::time::Instant::now();
-        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
+        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None, refuse: None })
             .unwrap();
         drop(tx);
         handle.join().ok();
@@ -10054,7 +10075,7 @@ mod tests {
             let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
             tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
+            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None, refuse: None })
                 .unwrap();
             drop(tx);
             handle.join().ok();
@@ -10087,6 +10108,7 @@ mod tests {
             bytes: b"\r".to_vec(),
             min_gap_ms: OVERWAIT_GAP_MS,
             withhold: None,
+            refuse: None,
         })
         .unwrap();
         drop(tx);
@@ -11782,6 +11804,46 @@ mod tests {
 
     /// ⑧ 읽기도 보존도 안 되는 WAL(권한 0) → 쓰기 금지 · enqueue 뒤 persist 해도 원본 바이트 불변.
     /// `persist_queue_state` 의 금지 분기를 빼면 원자 교체가 원본을 덮어 적색.
+    /// ★1.1.8 병합(판정 갈림 S2 · 보존 2회 시도의 합성) 짝 시험 — 우리 ⑧ 사본(copy)은 권한 0 파일이라 실패해도 원작자 보존(rename)이
+    /// 원본을 옆 이름으로 옮기면 원본 바이트는 그 사본에 그대로 있고, 쓰기 막음은 풀린다(큐 WAL 이 다시 영속된다 — 막음이 남으면
+    /// 이번 실행 내내 재기동 생존이 사라진다).
+    #[cfg(unix)]
+    #[test]
+    fn s2_unreadable_wal_moved_aside_by_rename_unblocks_persist() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = queue_wal_dir("noperm-rename");
+        let p = dir.join("queue-state.json");
+        let bytes = br#"[{"id":"q1","seq":1,"role":"r","text":"undelivered"}]"#;
+        std::fs::write(&p, bytes).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&p).is_ok() {
+            eprintln!("SKIP: 권한 0 파일을 읽을 수 있는 환경");
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644));
+            return;
+        }
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        assert!(!daemon.queue_wal_write_blocked.load(Ordering::SeqCst), "옆 이름 보존이 성공했는데 쓰기를 막았다");
+        let aside: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|q| q.file_name().unwrap().to_string_lossy().starts_with("queue-state.json.corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "원본 보존 사본이 하나가 아니다: {aside:?}");
+        std::fs::set_permissions(&aside[0], std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(std::fs::read(&aside[0]).unwrap(), bytes, "보존 사본의 바이트가 원본과 다르다");
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("r8b".into()), 24, 80)
+            .unwrap();
+        let e = daemon.next_queue_entry("새 지시".into(), Some("surface:1".into()), "send");
+        s.pending_queue.lock().unwrap().push_back(e);
+        daemon.persist_queue_state();
+        let now = std::fs::read_to_string(&p).expect("막음이 풀려 새 WAL 이 쓰였다");
+        assert!(now.contains("새 지시"), "새 WAL 에 현재 큐가 없다: {now}");
+        let _ = s.child.lock().unwrap().kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn unpreservable_queue_wal_blocks_persist_and_keeps_original_bytes() {
@@ -11797,6 +11859,12 @@ mod tests {
             let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644));
             return;
         }
+        // ★1.1.8 병합(판정 갈림 S2): 원작자 보존은 사본이 아니라 **옆 이름으로 옮기기**(rename)라 디렉터리가 쓰기 가능하면 권한 0
+        //   파일도 보존된다(= 이 시험의 전제 「보존도 안 된다」가 깨진다 · 그 경우는 아래 짝 시험). 디렉터리를 읽기 전용으로 둬
+        //   두 보존(우리 copy · 원작자 rename)이 모두 실패하는 전제를 되살린다. 데몬 상태 파일은 같은 디렉터리라 함께 못 쓴다
+        //   — 이 시험이 보는 것은 큐 WAL 원본 바이트·경보뿐이다.
+        let wal_dir = p.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&wal_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
         let daemon = Daemon::new(dir.join("cysd.sock"));
         assert!(daemon.queue_wal_write_blocked.load(Ordering::SeqCst), "보존 실패 = 쓰기 금지");
         let s = daemon
@@ -11806,6 +11874,7 @@ mod tests {
         s.pending_queue.lock().unwrap().push_back(e);
         daemon.persist_queue_state();
         daemon.persist_queue_state();
+        std::fs::set_permissions(&wal_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), bytes, "못 읽은 원본이 덮였다");
         assert!(daemon.queue_wal_block_reported.load(Ordering::SeqCst), "경보 1회");
@@ -11818,19 +11887,14 @@ mod tests {
             .filter(|ev| ev["name"] == "queue.persist_blocked")
             .collect();
         assert_eq!(evs.len(), 1, "두 번 저장해도 경보는 1회");
+        // ★1.1.8 병합 재표적(원작자 CSO 수신 경로 교체): CSO 는 더 이상 `cys events` 를 상시 구독하지 않는다(CSO_DIRECTIVE §1 ·
+        //   「경보 수신 경로 = 데몬 inbox push · 직접 구독 금지」) — 경보는 cysd alert 라우터(`alert_route::routable` 허용 목록)가
+        //   CSO 큐에 적재한다. master#a62921f6 조건(경보가 실제로 듣는 쪽에 닿는다)의 단언 목적은 그대로, 듣는 경로만 새 판으로.
         let cso = include_str!("../../../cysjavis-pack/directives/CSO_DIRECTIVE.md");
-        let line = cso
-            .lines()
-            .find(|l| l.contains("상시 구독하라: `cys events"))
-            .expect("CSO 상시 구독 줄");
-        let cats: Vec<String> = line
-            .split("--category ")
-            .skip(1)
-            .map(|t| t.split_whitespace().next().unwrap_or("").to_string())
-            .collect();
+        assert!(cso.contains("경보 수신 경로 = 데몬 inbox push"), "CSO 수신 경로 문면이 바뀌었다 — 이 핀을 다시 겨눈다");
         assert!(
-            crate::events::event_matches(&evs[0], &[], &cats),
-            "CSO 상시 구독({cats:?})이 queue.persist_blocked 를 못 받는다"
+            crate::alert_route::routable(evs[0]["name"].as_str().unwrap_or("")),
+            "CSO 수신 경로(alert_route 허용 목록)가 queue.persist_blocked 를 못 받는다"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

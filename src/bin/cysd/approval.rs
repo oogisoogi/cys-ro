@@ -1550,8 +1550,14 @@ pub(crate) mod tests {
         assert_eq!(back.len(), 2);
         assert_eq!(back[0].signature, old_sig, "저장 뒤 옛 기록이 새 키로 재서명돼 있다");
         assert!(back[1].updated_at > 1.0 && back[1].has_valid_signature(&k_new), "저장 뒤 검증된 기록 갱신 소실");
+        // ★1.1.8 병합(판정 갈림 A1·H3 · 원작자 판): 운영 `approval.check` 는 우리 `touch_best_match` 대신 원작자 `best_match_index_at` 의
+        //   **인덱스**(검증한 바로 그 자리)를 `mutate_records` 트랜잭션 안에서 갱신·재서명한다 — 같은 보장(id 재검색 금지)의 원작자 판.
+        //   단언 목적(검증된 위치만 갱신)을 그 배선으로 재표적한다.
         let h = include_str!("handlers.rs");
-        assert!(h.contains("crate::approval::touch_best_match(&mut records"), "approval.check 가 touch_best_match 를 안 쓴다");
+        let a = h.find("\"approval.check\" =>").expect("approval.check 팔");
+        let arm = &h[a..a + h[a..].find("\"approval.sign\" =>").unwrap_or(h.len() - a)];
+        assert!(arm.contains("crate::approval::best_match_index_at("), "approval.check 가 검증 인덱스 선택을 안 쓴다");
+        assert!(arm.contains("records.get_mut(*matched_idx)"), "approval.check 가 검증한 그 자리 대신 다른 기준으로 갱신한다");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1559,7 +1565,8 @@ pub(crate) mod tests {
     #[test]
     fn save_records_tmp_name_is_unique_per_call() {
         let src = include_str!("approval.rs");
-        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        // ★1.1.8 병합: 원작자가 검체 모듈을 `pub(crate) mod tests` 로 열었다(다른 모듈 검체가 이음매를 쓴다) — 경계 앵커만 맞춘다.
+        let prod = &src[..src.find("\n#[cfg(test)]\npub(crate) mod tests {").unwrap()];
         let f = &prod[prod.find("fn save_records_at(").unwrap()..]; // 본문 = save_records_at(A1 에서 경로 판 분리)
         let f = &f[..f.find("\n}\n").unwrap()];
         assert!(!f.contains("with_extension(\"json.tmp\")"), "고정 tmp 이름 잔존");

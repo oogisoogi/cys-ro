@@ -327,7 +327,9 @@ fn clear_first_and_human_keys_are_not_held() {
     assert_eq!(direct(&fx, Some(P + 61), &t, "M|x|AAA")["ok"], json!(true));
     assert_eq!(pair_return(&fx, Some(P + 61), &t)["result"]["sent"], json!(true));
     // 사람 키(GUI term.onData 모양) — 게이트 밖(종전 그대로).
-    let h = rpc(&fx, Some(P + 60), "surface.send_text", json!({
+    // ★1.1.8 판정 갈림 H1 ⓐ(master 결정): GUI 는 pane 무귀속 호출자다 — 원작자 고정물은 좌석 자신의 pid(pane 귀속)로 보냈는데
+    //   우리 규칙에서 pane 귀속 발신자의 `human:true` 는 사람이 아니다(위조 차단). 실제 GUI 모양(귀속 없음)으로 보낸다.
+    let h = rpc(&fx, None, "surface.send_text", json!({
         "surface_id": t.id, "text": "q", "human": true, "quiet": true,
     }));
     assert_eq!(h["ok"], json!(true), "사람 키는 정착 보류 대상이 아니다: {h}");
@@ -1320,4 +1322,45 @@ fn r3c_queue_ttl_bounds_post_close_wait_with_pause_credit() {
         dropped(&fx2)
     );
     assert_eq!(named(&fx2, "queue.submit_resubmitted").len(), 1);
+}
+
+/// ★1.1.8 K17·H7(판정 갈림 H7 틈 닫음) — 거부 모드(`refuse_on_approval`)의 Return(순환 `/clear` 의 제출 키)도 S21 인계 표식을
+/// 올린다 → 그 CR 직후 다른 발신자의 본문은 분리 보류(`submit_settling`)를 받는다(종전 우리 `SubmitGuarded` 는 표식 밖이라 그 본문이
+/// 대기 CR 바로 뒤에 붙을 수 있었다). writer 가 CR 을 쓰면 표식이 내려간다. CR 을 싣지 않는 거부 키(C-u · 간격 없는 `Data` 경로였던 키)는
+/// 표식에 손대지 않는다(제출이 아니다).
+/// (윈도우 `ignore` 집합 44 핀(`r2f_dm_windows_ignore_attributes_are_exactly_the_decided_set_of_44`)을 늘리지 않도록 속성 대신 분리 보류
+/// 단언만 `cfg!(unix)` 로 가른다 — 표식 자체는 OS 공통이다.)
+#[test]
+fn k17_refuse_mode_return_raises_settle_marker_but_cancel_key_does_not() {
+    let fx = fx("k17-refuse");
+    let t = agent_pane(&fx, "worker-1", P + 90);
+    let _x = pane(&fx, "worker-2", P + 91);
+    let _y = pane(&fx, "worker-3", P + 92);
+    let obs = |s: &Arc<Surface>| s.inject_track.submit_settle_obs(crate::state::settle_mono_ms(), 2000);
+    assert_eq!(direct(&fx, Some(P + 91), &t, "M|x|AAA")["ok"], json!(true));
+    let r = rpc(&fx, Some(P + 91), "surface.send_key", json!({
+        "surface_id": t.id, "key": "Return", "refuse_on_approval": true,
+    }));
+    assert_eq!(r["result"]["sent"], json!(true), "창 없는 화면의 거부 모드 Return 은 쓴다: {r}");
+    let o = obs(&t);
+    assert!(o.inflight && o.pending == 1, "거부 모드 Return 도 인계 표식(H7): {o:?}");
+    if cfg!(unix) {
+        let y = direct(&fx, Some(P + 92), &t, "M|y|BBB");
+        assert!(msg(&y).contains("[draft_gate:submit_settling]"), "대기 CR 뒤 본문은 분리 보류: {y}");
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while obs(&t).inflight && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let o = obs(&t);
+    assert!(!o.inflight && o.pending == 0 && o.since_written_ms.is_some(), "writer 가 CR 을 쓰면 표식이 내려간다: {o:?}");
+
+    let k = agent_pane(&fx, "worker-4", P + 93);
+    let c = rpc(&fx, Some(P + 91), "surface.send_key", json!({
+        "surface_id": k.id, "key": "C-u", "refuse_on_approval": true,
+    }));
+    assert_eq!(c["result"]["sent"], json!(true), "{c}");
+    std::thread::sleep(Duration::from_millis(50));
+    let ko = obs(&k);
+    assert!(!ko.inflight && ko.pending == 0 && ko.since_written_ms.is_none(), "C-u 는 제출 CR 표식 밖: {ko:?}");
 }

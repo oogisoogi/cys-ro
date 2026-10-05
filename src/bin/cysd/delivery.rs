@@ -2819,7 +2819,9 @@ pub(crate) mod tests {
                 .map(normalize)
                 .max_by_key(|l| l.chars().count())
                 .unwrap();
-            assert_eq!(line.chars().count(), 583, "기준 행 길이가 VM 실측(583자)과 다르다");
+            // ★1.1.8 병합: 원작자 0.14.43 이 CEO_TEMPLATE 에 절을 더해(P-BYTES · 선별은 팩 갈래) 최장 행이 583 → 829자가 됐다.
+            //   단언 목적(VM 실측급 긴 기계 행이 원장 부분일치로 접힌다)은 그대로 — 길이 고정 대신 실측 문턱(583자) 이상을 요구한다.
+            assert!(line.chars().count() >= 583, "기준 행이 VM 실측(583자)보다 짧다: {}", line.chars().count());
             // 기계 배달 583자(틀 포함 · 이번 수리로 틀만 벗겨 기록된다).
             record_full(sock, 2, &f1_frame(&line), Origin::Send, None);
             let owner = "이건 원장에 없는 사람이 쓴 문단이다. 교안 목차를 세 절로 나누고 각 절에 예시를 붙여라.";

@@ -199,13 +199,16 @@ fn d6_1_true_alarm_rearms_on_fresh_observation() {
     assert_eq!(account_alert_keys(&d, now), vec!["account_rate:re@x:7d".to_string()]);
 }
 
-/// 경계 안쪽(관측 23시간 전 · 리셋 2분 뒤)은 아직 살아 있는 창이다 — 경보가 나야 한다.
+/// 경계 안쪽(관측 나이 상한 1분 전 · 리셋 2분 뒤)은 아직 살아 있는 창이다 — 경보가 나야 한다.
+/// ★1.1.8 병합(판정 갈림 U2 · 원작자 경보 로직 채택): 경보 입력의 관측 나이 상한은 우리 D6-1 의 24시간이 아니라 원작자 B3 노브
+/// `CYS_ACCOUNT_ALERT_STALE_SECS`(기본 1800초)다 — 경계 안쪽 표본을 그 상한 기준으로 옮긴다(단언 목적 「경계 안쪽 참 경보는 난다」 불변).
 #[test]
 fn d6_1_true_alarm_inside_boundaries_still_alerts() {
     let d = daemon("d61t4");
     let now = crate::state::now_epoch();
     let sf = profile_session("d61t4", "uuid-edge", "edge@x");
-    crate::accounts::note_rate(&d, "claude", &sf, &[w("5h", 99.0, now + 120.0)], "statusline", now - 23.0 * 3600.0);
+    let inside = (crate::accounts::account_alert_stale_secs() - 60.0).max(0.0);
+    crate::accounts::note_rate(&d, "claude", &sf, &[w("5h", 99.0, now + 120.0)], "statusline", now - inside);
     assert_eq!(account_alert_keys(&d, now), vec!["account_rate:edge@x:5h".to_string()]);
 }
 

@@ -180,6 +180,7 @@ fn proposal(tag: &str, pid: u32) -> (Arc<Daemon>, u64, String, String) {
 
 #[test]
 fn p5_full_protocol_consume_settle_then_allow_from_publisher_seat() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_001;
     let (d, sid, rid, b) = proposal("tt-full", m);
     let t = tok(1);
@@ -237,6 +238,7 @@ fn p5_full_protocol_consume_settle_then_allow_from_publisher_seat() {
 
 #[test]
 fn p5_forged_or_missing_token_refused_with_specific_codes() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_010;
     let (d, sid, rid, b) = proposal("tt-forge", m);
     issue_armed(&d, &rid, sid, &digest(&d, &b), &tok(10));
@@ -274,6 +276,7 @@ fn p5_forged_or_missing_token_refused_with_specific_codes() {
 /// 모듈 API)이 소비 시점에 훅 발급 토큰과 구별되지 않았다. 증거 없는 발급 레코드는 생성·allow 둘 다 거부된다.
 #[test]
 fn p5_token_without_hook_witness_is_refused() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_020;
     let (d, sid, rid, b) = proposal("tt-nowit", m);
     let t = tok(20);
@@ -290,6 +293,7 @@ fn p5_token_without_hook_witness_is_refused() {
 
 #[test]
 fn p5_seat_binding_uses_kernel_identity_not_self_report() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_020;
     let w = 720_021;
     let (d, sid, rid, b) = proposal("tt-seat", m);
@@ -325,6 +329,7 @@ fn p5_seat_binding_uses_kernel_identity_not_self_report() {
 
 #[test]
 fn p5_body_changed_after_approval_is_token_body_mismatch() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_030;
     let (d, sid, rid, b) = proposal("tt-body", m);
     let t = tok(30);
@@ -343,6 +348,7 @@ fn p5_body_changed_after_approval_is_token_body_mismatch() {
 
 #[test]
 fn p5_withdrawn_proposal_or_other_proposal_is_refused() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_040;
     let (d, sid, rid, b) = proposal("tt-gone", m);
     let dig = digest(&d, &b);
@@ -364,6 +370,7 @@ fn p5_withdrawn_proposal_or_other_proposal_is_refused() {
 
 #[test]
 fn p5_expired_token_is_token_expired() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_050;
     let (d, sid, rid, b) = proposal("tt-exp", m);
     let t = tok(50);
@@ -377,6 +384,7 @@ fn p5_expired_token_is_token_expired() {
 
 #[test]
 fn p5_token_never_authorizes_deny_and_absent_token_keeps_owner_gui_required() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_060;
     let (d, sid, rid, b) = proposal("tt-deny", m);
     let t = tok(60);
@@ -395,6 +403,7 @@ fn p5_token_never_authorizes_deny_and_absent_token_keeps_owner_gui_required() {
 
 #[test]
 fn p5_failed_creation_revokes_allow() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_070;
     let (d, sid, rid, b) = proposal("tt-fail", m);
     let t = tok(70);
@@ -410,6 +419,7 @@ fn p5_failed_creation_revokes_allow() {
 
 #[test]
 fn p5_ledger_corrupt_is_refused_not_authorized() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let m = 720_080;
     let (d, sid, rid, b) = proposal("tt-corrupt", m);
     let t = tok(80);
@@ -425,6 +435,7 @@ fn p5_ledger_corrupt_is_refused_not_authorized() {
 /// 다른 kind 는 `team_token` 인자를 보지 않는다(무회귀 대조군 — 인자가 붙어도 종전 흐름).
 #[test]
 fn p5_other_kinds_ignore_team_token() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon("tt-other", false);
     let w = 720_090;
     let m = 720_091;

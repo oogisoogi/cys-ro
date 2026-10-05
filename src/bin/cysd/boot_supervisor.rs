@@ -6221,8 +6221,10 @@ mod tests {
             let mut st = SupState::default();
             let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
             notify_no_spawn(&d, &mut st, &it, "schema_mismatch", &mut budget);
+            // ★1.1.8 병합: 「종전 문안」 = 우리 v112-wake ③ 문안(기계 표식 + master 할 일 1줄 — 병합에서 우리 판 유지)이다.
+            //   원작자 단언의 목적(H5 하드축이 통보 바이트를 바꾸지 않는다)은 그대로, 기준 문안만 우리 판으로 조정.
             let want = format!(
-                "[cys-supervisor] 팀이 이 선언으로 뜨지 않았다(intent={} why=schema_mismatch) — {}. 재선언이 재개 신호다. 근거: boot-supervisor.log · boot-last",
+                "[cys-supervisor · 기계 통지 · 사용자 할 일 없음] 팀 자동 기동이 스폰 0회로 끝났다(intent={} why=schema_mismatch) — {}. master 할 일 1줄: 오너에게 묻지 말고 cys list 로 좌석을 확인해 1줄 보고한다(재선언이 재개 신호). 근거: boot-supervisor.log · boot-last",
                 it.id,
                 no_spawn_reason("schema_mismatch")
             );

@@ -2519,27 +2519,36 @@ fn append_owner_grant_audit(daemon: &Daemon, rec: &Value) {
 /// ★codex 2R: 핸들러는 이미 「제출됨」으로 미제출 계수를 0 으로 접었다 — 거부하면 계수를 **쓰기 전 값(최소 1)** 으로
 /// 되돌린다(입력줄에 본문이 남았다 = 비어 있지 않다는 쪽이 안전 방향 · 뒤따르는 기계 본문이 그 잔여에 이어붙지 않게).
 /// ⚠한계(정직): 호출자에게 거부를 돌려주지는 못한다 — 순환은 다음 입력의 핸들러 판정에서 같은 창으로 거부돼 멈춘다.
+/// ★1.1.8 K17: 반환형 = 원작자 `SafetyProbe` — `WriteReq::SubmitAfterGap` 의 거부 모드(`refuse`)에 실린다(우리 `SubmitGuarded` 폐지).
+///   보류 탐침(`governance::submit_cr_withhold_probe`)과 같은 규율로 `Weak` 를 잡는다(채널의 요청이 좌석·데몬을 살려 두지 않는다).
+///   데몬·좌석 소멸·판정 패닉 = `true`(거부 — 이 요청의 호출자는 「창이면 쓰지 마라」를 요구했다 · 패닉이 writer 를 죽이지 않게 가둔다).
 fn approval_write_guard(
     daemon: &Arc<Daemon>,
     surface: &Arc<crate::state::Surface>,
-) -> Box<dyn Fn() -> bool + Send> {
-    let (d, s) = (daemon.clone(), surface.clone());
+) -> crate::state::SafetyProbe {
+    let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(surface));
     let before = surface.pending_input_bytes.load(Ordering::Relaxed);
-    Box::new(move || {
-        let hit = crate::governance::seat_approval_pending(&d, &s);
-        if hit {
-            // codex 3R: 핸들러는 input_gate 를 쥔 채 enqueue → 계수 0 기록을 한다 — 같은 잠금을 잡아야 그 0 뒤에 복원된다.
-            let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
-            s.pending_input_bytes.fetch_max(before.max(1), Ordering::Relaxed);
-            d.bus.publish(
-                "input.refused_at_write",
-                "surface",
-                Some(s.id),
-                json!({"reason": cys::ERR_APPROVAL_SCREEN,
-                       "note": "승인·질문 창이 쓰기 직전에 떠 제출 키를 쓰지 않았다(refuse_on_approval)"}),
-            );
-        }
-        hit
+    Arc::new(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
+                return true;
+            };
+            let hit = crate::governance::seat_approval_pending(&d, &s);
+            if hit {
+                // codex 3R: 핸들러는 input_gate 를 쥔 채 enqueue → 계수 0 기록을 한다 — 같은 잠금을 잡아야 그 0 뒤에 복원된다.
+                let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+                s.pending_input_bytes.fetch_max(before.max(1), Ordering::Relaxed);
+                d.bus.publish(
+                    "input.refused_at_write",
+                    "surface",
+                    Some(s.id),
+                    json!({"reason": cys::ERR_APPROVAL_SCREEN,
+                           "note": "승인·질문 창이 쓰기 직전에 떠 제출 키를 쓰지 않았다(refuse_on_approval)"}),
+                );
+            }
+            hit
+        }))
+        .unwrap_or(true)
     })
 }
 
@@ -4973,6 +4982,15 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
     //   전담한다(channel.* 과 같은 단일 위임). `cys-dept create --team-token` 이 **데몬에 묻는 곳**이다.
     //   좌석은 여기서 커널 peer pid 의 조상 체인으로 도출해 넘긴다(env·인자 자기신고 불신).
     if let Some(sub) = req.method.strip_prefix("team.token.") {
+        // ★1.1.8 D-TEAM 휴면(master 결정 1 · judge 집행 조건 ① 데몬 스위치 1개 · 기본 off): 팀 흐름 스위치가 꺼져 있으면
+        //   토큰 RPC 를 열지 않는다(코드·시험은 남고 배선만 끊는다 — 제거 아님). 시험은 `cys::dormant::force_for_thread` 로 켠다.
+        if !cys::dormant::team_flow_enabled() {
+            return Reply::Single(err_response(
+                &id,
+                cys::dormant::DORMANT_TEAM_FLOW_CODE,
+                "team flow is dormant in this build (team.token.* disabled — CYS_ENABLE_TEAM_FLOW=1 to enable)",
+            ));
+        }
         let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
         return crate::teamtoken::handle(daemon, sub, &params, &id, caller_sid);
     }
@@ -6975,14 +6993,16 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 // ★precut ㉮ codex 1R(BLOCK): 위 판정과 실제 쓰기 사이(writer 적체 + 최소 간격 대기)에 창이 뜨면
                 //   CR 이 그 선택지를 누른다. 거부 요청의 키는 writer 가 **쓰기 직전** 같은 술어로 한 번 더 본다.
                 //   ★codex 2R: 간격 설정(0 = 끔)·키 이름(C-m 별칭)과 **무관하게** 거부 요청이면 늘 재판정한다.
-                //   ★1.1.8 병합: 원작자 F1 의 보류 탐침(`withhold` · 보류 후 재제출)은 SubmitAfterGap 에만 걸린다 — 거부 요청은
-                //   「쓰지 않음」(오버레이 2 · 계수 복원은 approval_write_guard)이라 이 변형을 따로 쓴다.
-                gap if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {
+                //   ★1.1.8 K17(결정표 · judge 집행 조건 ②): 우리 `SubmitGuarded` 를 원작자 `SubmitAfterGap` 의 **거부 모드**(`refuse`)로
+                //   접었다 — 원작자 F1 의 보류 탐침(`withhold` · 보류 후 재제출) 대신 「쓰지 않음 · 재제출 없음」(오버레이 2 · 계수 복원은
+                //   approval_write_guard). 간격 없는 키(C-u · C-m 별칭 · 간격 0 = 아래 `Data` 팔)도 이 팔로 온다(R1 codex F7).
+                gap if refuse_on_approval => crate::state::WriteReq::SubmitAfterGap {
                     bytes,
                     min_gap_ms: gap.unwrap_or(0),
-                    refuse_now: approval_write_guard(daemon, &surface),
+                    withhold: None,
+                    refuse: Some(approval_write_guard(daemon, &surface)),
                 },
-                Some(min_gap_ms) => crate::state::WriteReq::SubmitAfterGap { bytes, min_gap_ms, withhold: None },
+                Some(min_gap_ms) => crate::state::WriteReq::SubmitAfterGap { bytes, min_gap_ms, withhold: None, refuse: None },
                 None => crate::state::WriteReq::Data(bytes),
             };
             // ★(0.14.42 · 수정 2회차 F1) 제출 CR 보류 탐침의 인계 재료 — 게이트 **밖** 1회(어댑터·파서·agent_meta 는
@@ -6990,7 +7010,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   `governance::submit_guard_scope` 가 Off 아님 — 생존 좌석 ∨ 좌석 캐시가 에이전트 확인 전 틱의 Empty 인 좌석(재개 S94))
             //   · 킬 스위치 꺼짐(`CYS_SEND_SETTLE=0`·`send-settle-off` 가 제출 정착 전체의 한 노브 롤백이다). 권위 Return(부트
             //   체인)은 `gate_kind` 가 None 이라 대상 밖 · 윈도우·셸은 무변경. 거는지는 게이트 안에서 줄 위 본문을 보고 정한다.
+            // ★1.1.8 K17: 거부 모드(`refuse_on_approval`)에는 보류 탐침을 걸지 않는다(보류 = 재제출 · 거부 = 쓰지 않음 — 한 요청에 한 모드).
             let cr_guard_ctx = if gate_kind == Some(DirectSendKind::SubmitKey)
+                && !refuse_on_approval
                 && matches!(write_req, crate::state::WriteReq::SubmitAfterGap { .. })
                 && cfg!(unix)
                 && governance::submit_guard_scope(&surface) != governance::SubmitGuardScope::Off
@@ -7126,7 +7148,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 // ★(0.14.42 · S21-SETTLE) 제출 CR 인계 표식 — 계수는 아래에서 곧바로 0 이 되지만 CR 은 writer 가 최소 간격
                 //   뒤에 쓴다. 그 사이 직접 본문이 이 CR 바로 뒤에 붙지 않도록(분리 보류) writer 소비 전까지 '진행 중' 이다.
                 //   원자 연산뿐(게이트 안 락 계약 무변경). 인계 실패면 되돌린다.
-                let submit_cr = matches!(req, crate::state::WriteReq::SubmitAfterGap { .. });
+                //   ★1.1.8 K17·H7: 거부 모드의 Return(순환 /clear 의 제출 키)도 같은 표식을 올린다 — 그 CR 직후 본문이 S21 분리 보류를
+                //   받는다(판정 갈림 H7 틈 닫음). CR 을 싣지 않은 거부 키(C-u 등)는 제출이 아니라 표식 밖(writer 도 같은 조건으로 내린다).
+                let submit_cr = matches!(&req, crate::state::WriteReq::SubmitAfterGap { bytes, .. }
+                    if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')));
                 if submit_cr {
                     surface.inject_track.submit_handed();
                 }
@@ -7203,7 +7228,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             let gen_before = surface.output_gen.load(Ordering::Acquire);
             // ★(⑴) scrollback 정지 판정 — 두 경로(lines·since_line)가 같은 사실을 쓴다.
             // 판정부는 state::scrollback_is_stale(순수 함수)이고 여기서는 관측만 한다(헬퍼 `scrollback_stale_now`).
-            // ★1.1.8 병합: 원작자 quiet 관측 핀(read_text arm 안에서 `.last_output` 을 직접 읽지 않는다)에 맞춰 판독을 헬퍼로 옮겼다.
+            // ★1.1.8 병합: 원작자 quiet 관측 핀(read_text arm 안에서 출력 스탬프 `last_output` 을 직접 읽지 않는다)에 맞춰 판독을 헬퍼로 옮겼다.
             let stale = scrollback_stale_now(&surface);
             // T3-14 델타 읽기: 단조 라인 커서 이후의 새 라인만 반환 (토큰 절약 모니터링)
             if let Some(since) = param_u64(&params, "since_line") {
@@ -8811,7 +8836,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   결박 대조의 두 사실은 데몬 것이다: 좌석 = 위 caller_sid(커널 peer pid 조상 체인) ·
             //   본문 = 이 항목의 **현재** 본문. 순서(P3 2단 권한): verify(비소비) → 해소 → 해소
             //   **성공 뒤에만** consume(allow 권한 닫기 — 해소 실패면 권한 TTL 안에서 재시도 가능).
-            let team_token = if team_item && decision == "allow" && !operator_ok {
+            // ★1.1.8 D-TEAM 휴면(judge 조건 ①): 토큰 경로는 팀 흐름 스위치가 켜졌을 때만 — 꺼짐 = 종전 판정(owner_gui_required).
+            let team_token = if team_item && decision == "allow" && !operator_ok && cys::dormant::team_flow_enabled() {
                 crate::teamtoken::token_param(&params)
             } else {
                 None
@@ -16650,8 +16676,11 @@ mod tests {
         //   (writer 쪽 거동은 state::submit_guarded_rechecks_dialog_right_before_writing_cr 가 고정).
         let src = include_str!("handlers.rs");
         let prod = &src[..src.find("\n#[cfg(test)]").expect("테스트 경계")];
-        assert!(prod.contains("gap if refuse_on_approval => crate::state::WriteReq::SubmitGuarded {"),
+        // ★1.1.8 K17: 우리 SubmitGuarded → 원작자 SubmitAfterGap 의 거부 모드(refuse). 단언 목적(간격·키와 무관하게 writer 재판정)은 같다.
+        assert!(prod.contains("gap if refuse_on_approval => crate::state::WriteReq::SubmitAfterGap {"),
             "거부 요청 키가 writer 재판정 없이 나간다(간격 설정과 무관해야 한다)");
+        assert!(prod.contains("refuse: Some(approval_write_guard(daemon, &surface)),"),
+            "거부 모드에 writer 재판정 탐침이 실리지 않는다");
         let g = prod.find("fn approval_write_guard(").expect("approval_write_guard");
         {
             let gb = &prod[g..g + prod[g..].find("\n}\n").unwrap()];
@@ -16673,14 +16702,20 @@ mod tests {
     // GUI 경로(tauri `send_input`)와 같은 파라미터 모양(`human:true`·`quiet:true`)을 쓴다.
     // 수정 구현이 아니다 — 제품 코드는 건드리지 않는다.
 
+    /// ★1.1.8 판정 갈림 H1 ⓐ(master 결정 — 우리 `human_trusted` 유지): GUI(tauri 앱) 는 어느 pane 에도 묶이지 않은 호출자다.
+    ///   원작자 고정물은 사람 경로를 pane 에 묶인 pid(`v7_pane` 의 `bind_caller`)로 보냈는데, 우리 규칙에서 pane 귀속 발신자의
+    ///   자기신고 `human:true` 는 사람이 아니다(위조 차단 · F1). 실제 GUI 와 같은 모양 = **pane 무귀속 pid** 로 보낸다.
+    ///   (`pid` 인자는 호출부 호환을 위해 남긴다 — 귀속은 이 함수가 무시한다 · 단언 목적(계수 관측)은 불변.)
+    const V7_GUI_PID: u32 = 999_998;
+
     /// GUI 가 올리는 사람 경로 1회 호출(= term.onData 1회 = RPC 1회). 호출 뒤 계수를 돌려준다.
-    fn v7_send_human(daemon: &Arc<Daemon>, sid: u64, pid: u32, text: &str) -> u64 {
+    fn v7_send_human(daemon: &Arc<Daemon>, sid: u64, _pid: u32, text: &str) -> u64 {
         let req = Request {
             id: json!(1),
             method: "surface.send_text".into(),
             params: json!({ "surface_id": sid, "text": text, "quiet": true, "human": true }),
         };
-        let Reply::Single(resp) = dispatch(daemon, req, Some(pid)) else {
+        let Reply::Single(resp) = dispatch(daemon, req, Some(V7_GUI_PID)) else {
             panic!("expected single reply");
         };
         assert_eq!(resp["ok"], json!(true), "전제: 전송 자체는 성공해야 한다 (응답: {resp})");
@@ -17512,7 +17547,9 @@ mod tests {
         v7_send_human(&daemon, target.id, pid, "owner half sentence");
         *target.last_human_input.lock().unwrap() = None;
         let before = d12_input_counts(&target);
-        let resp = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+        // ★1.1.8 판정 갈림 H1 ⓐ(master 결정): 오너 클릭(injectRawToPane)의 발신자는 GUI = pane 무귀속 호출자다(pane 귀속 발신자의
+        //   `human:true` 는 우리 규칙에서 사람이 아니다 — 원작자 고정물은 pane 귀속 pid 로 보냈다).
+        let resp = d12_rpc(&daemon, V7_GUI_PID, "surface.send_text", json!({
             "surface_id": target.id, "text": "/tmp/a.txt", "human": true,
             "machine_origin": true, "queued": false, "quiet": true,
         }));
@@ -17535,7 +17572,9 @@ mod tests {
         v7_send_human(&daemon, target.id, pid, "owner half sentence");
         *target.last_human_input.lock().unwrap() = None;
         let before = d12_input_counts(&target);
-        let resp = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+        // ★1.1.8 판정 갈림 H1 ⓐ(master 결정): 실키(sendRaw)의 발신자는 GUI = pane 무귀속 호출자다. pane 귀속 발신자의 `human:true` 위조는
+        //   우리 규칙에서 사람 초안을 제출하지 못한다(원작자는 ACL 층 문제로 남겼다 · 음성 대조는 아래).
+        let resp = d12_rpc(&daemon, V7_GUI_PID, "surface.send_text", json!({
             "surface_id": target.id, "text": "\r", "human": true, "queued": false, "quiet": true,
         }));
         let after = d12_input_counts(&target);
@@ -17544,6 +17583,29 @@ mod tests {
         assert_eq!(before, (19, 19, 19), "전제: 사람 초안 19바이트");
         assert_eq!(resp["ok"], json!(true), "실키 Return 은 자기 초안을 제출할 수 있다: {resp}");
         assert_eq!(after, (0, 0, 0), "실키 제출 뒤 미제출 계수는 비워진다");
+    }
+
+    /// ★1.1.8 판정 갈림 H1 ⓐ(master 결정) 음성 대조 — pane 에 묶인 발신자(다른 노드)가 원시 소켓으로 `human:true` 를 실어 보낸 Return 은
+    /// 사람 초안을 제출하지 못한다(우리 1.1.7 적대 R1 Fable F1 · human_trusted = pane 무귀속 ∨ 오퍼레이터 토큰).
+    #[test]
+    fn d12_pane_bound_forged_human_return_is_denied_on_human_draft() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d12-forged-human-return", r#"{"default":"allow","rules":[]}"#);
+        let pid = 999_580;
+        let target = v7_pane(&daemon, "worker-1", pid);
+        let _sender = v7_pane(&daemon, "worker-2", pid + 1);
+        v7_send_human(&daemon, target.id, pid, "owner half sentence");
+        *target.last_human_input.lock().unwrap() = None;
+        let before = d12_input_counts(&target);
+        let resp = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+            "surface_id": target.id, "text": "\r", "human": true, "queued": false, "quiet": true,
+        }));
+        let after = d12_input_counts(&target);
+        d12_cleanup(&daemon, &dir);
+
+        assert_eq!(before, (19, 19, 19), "전제: 사람 초안 19바이트");
+        d12_assert_denied(&resp, "pending_input");
+        assert_eq!(after, before, "위조 human Return 거부 뒤 사람 초안 계수 보존");
     }
 
     /// 검증된 권위 호출자(master/cso pane 자손 — 면제 술어 authoritative_caller_ok 의 (a) 축)의 C-u 는 CancelKey 도 면제된다. 면제의 다른 축 (b) restore-root 자손은 caller_in_restore_root 검체가 덮는다. 분리 호출자·role 없는 pane 은 면제되지 않는다(d12_detached_caller_authoritative_cancel_key_is_still_denied) — 그 거부는 cys.rs run_node_recover 가 rc 79 로 접는다.
@@ -17572,14 +17634,38 @@ mod tests {
             "surface_id": target.id, "key": "C-u",
         }));
         let control_after = d12_input_counts(&target);
+
+        // 면제의 실효(우리 규칙 아래) — 타이핑 가드(사람 입력 직후 3초) 축. 기계 잔여 위 C-u 를 사람 입력 직후에 보낸다:
+        //   권위 호출자는 통과(잔여 선정리) · 비권위는 타이핑 가드로 거부.
+        v7_send_human(&daemon, target.id, pid, "\u{15}");
+        *target.last_human_input.lock().unwrap() = None;
+        let residue = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+            "surface_id": target.id, "text": "foo", "human": false, "queued": false, "quiet": true,
+        }));
+        *target.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let typing_denied = d12_rpc(&daemon, pid + 1, "surface.send_key", json!({
+            "surface_id": target.id, "key": "C-u",
+        }));
+        let residue_kept = d12_input_counts(&target);
+        let typing_exempt = d12_rpc(&daemon, pid + 1, "surface.send_key", json!({
+            "surface_id": target.id, "key": "C-u", "authoritative": true,
+        }));
+        let residue_after = d12_input_counts(&target);
         d12_cleanup(&daemon, &dir);
 
         assert_eq!(before, (11, 11, 11), "전제: 사람 초안 11바이트");
-        assert_eq!(resp["ok"], json!(true), "검증된 권위 호출자는 CancelKey 도 면제: {resp}");
-        assert_eq!(after, (0, 0, 0), "권위 C-u 는 사람 초안 선정리 허용");
+        // ★1.1.8 판정 갈림 H1 ⓐ(master 결정) — 권위 면제도 사람 초안은 못 덮는다(우리 1.1.7 적대 R1 Fable F2). 원작자 단언(면제 = 선정리 허용)을
+        //   우리 결정 동작(거부 · 초안 보존)으로 조정한다 — 면제 자체의 실효는 아래 타이핑 가드 축으로 단언한다.
+        d12_assert_cancel_denied(&resp);
+        assert_eq!(after, before, "권위 C-u 도 사람 초안은 보존(H1 ⓐ)");
         assert_eq!(control_before, before, "대조도 같은 좌석의 사람 초안 11바이트");
         d12_assert_cancel_denied(&denied);
         assert_eq!(control_after, control_before, "authoritative 없는 C-u 는 사람 초안 보존");
+        assert_eq!(residue["ok"], json!(true), "전제: 기계 잔여 생성: {residue}");
+        assert_eq!(typing_denied["error"]["code"], json!(cys::ERR_TYPING_GUARD), "비권위 C-u 는 사람 입력 직후 거부: {typing_denied}");
+        assert_eq!(residue_kept, (3, 3, 0), "거부 뒤 기계 잔여 보존");
+        assert_eq!(typing_exempt["ok"], json!(true), "검증된 권위 호출자는 타이핑 가드 면제: {typing_exempt}");
+        assert_eq!(residue_after, (0, 0, 0), "권위 C-u 는 기계 잔여를 선정리");
     }
 
     /// ★음성 핀(라운드 4 · 감사 minor 2): authoritative 면제는 두 축뿐이다 — (a) 호출자 pane 의 role∈{master,cso} (b) phoenix restore-root 의 살아있는 자손. pane 무귀속 호출자(setsid 부트의 cys boot · GUI start_master 체인 · 데몬 watchdog 의 node-recover 자식)와 비권위/무 role pane 은 authoritative:true 를 실어도 거부된다. 이 거부는 cys.rs run_node_recover 가 RECOVER_REFUSED_TOKEN 으로 접어 rc 79(비파괴) 로 낸다 — 데몬 쪽 면제를 넓히지 않는다(리뷰 비권장).
@@ -17625,6 +17711,25 @@ mod tests {
             "surface_id": target.id, "key": "C-u", "authoritative": true,
         }));
         let master_after = d12_input_counts(&target);
+
+        // ★1.1.8 판정 갈림 H1 ⓐ(master 결정) — 사람 초안은 master 권위도 못 덮으므로 role 판별 대조는 타이핑 가드 축(기계 잔여 · 사람 입력 직후)에서 한다:
+        //   같은 sender pane 이 worker role 이면 거부 · master role 이면 면제.
+        v7_send_human(&daemon, target.id, pid, "\u{15}");
+        *target.last_human_input.lock().unwrap() = None;
+        let residue = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+            "surface_id": target.id, "text": "foo", "human": false, "queued": false, "quiet": true,
+        }));
+        *target.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        *sender.role.lock().unwrap() = Some("worker-2".into());
+        let worker_typing = d12_rpc(&daemon, pid + 1, "surface.send_key", json!({
+            "surface_id": target.id, "key": "C-u", "authoritative": true,
+        }));
+        let worker_typing_after = d12_input_counts(&target);
+        *sender.role.lock().unwrap() = Some("master".into());
+        let master_typing = d12_rpc(&daemon, pid + 1, "surface.send_key", json!({
+            "surface_id": target.id, "key": "C-u", "authoritative": true,
+        }));
+        let master_typing_after = d12_input_counts(&target);
         d12_cleanup(&daemon, &dir);
 
         assert_eq!(before, (19, 19, 19), "전제: 사람 초안 19바이트");
@@ -17643,8 +17748,16 @@ mod tests {
         assert_eq!(detached_boot["ok"], json!(false), "분리 호출자의 기동 send 도 거부: {detached_boot}");
         d12_assert_denied(&detached_boot, "pending_input");
         assert_eq!(detached_boot_after, before, "거부된 기동 send 는 사람 초안 계수 보존");
-        assert_eq!(master_cancel["ok"], json!(true), "master role 의 authoritative C-u 는 허용: {master_cancel}");
-        assert_eq!(master_after, (0, 0, 0), "권위 C-u 는 사람 초안을 정상 선정리");
+        // ★1.1.8 판정 갈림 H1 ⓐ(master 결정) — master role 의 권위 C-u 도 사람 초안은 거부(초안 보존 · 우리 1.1.7 적대 R1 Fable F2). 원작자 단언(허용)을
+        //   우리 결정 동작으로 조정하고, role 판별(면제 축이 role 에 달렸다는 단언 목적)은 아래 타이핑 가드 대조로 지킨다.
+        d12_assert_cancel_denied(&master_cancel);
+        assert_eq!(master_after, before, "권위 C-u 도 사람 초안 보존");
+        assert_eq!(residue["ok"], json!(true), "전제: 기계 잔여 생성: {residue}");
+        assert_eq!(worker_typing["error"]["code"], json!(cys::ERR_TYPING_GUARD),
+            "worker role 의 authoritative 자기신고는 면제가 아니다: {worker_typing}");
+        assert_eq!(worker_typing_after, (3, 3, 0), "거부 뒤 기계 잔여 보존");
+        assert_eq!(master_typing["ok"], json!(true), "master role 의 authoritative C-u 는 허용: {master_typing}");
+        assert_eq!(master_typing_after, (0, 0, 0), "권위 C-u 는 기계 잔여를 정상 선정리");
     }
 
     /// 제출 별칭 C-m 의 거부에는 실행 가능한 Return --queued 경로를 처방한다.
@@ -18367,10 +18480,31 @@ mod tests {
             "queued": false, "quiet": true, "authoritative": true,
         }));
         let after = d12_input_counts(&target);
+
+        // 면제의 실효(우리 규칙 아래) — 기계 잔여 위 본문: 비권위는 초안 게이트(pending_input)로 거부 · 권위는 면제.
+        v7_send_human(&daemon, target.id, pid, "\u{15}");
+        *target.last_human_input.lock().unwrap() = None;
+        let residue = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+            "surface_id": target.id, "text": "foo", "human": false, "queued": false, "quiet": true,
+        }));
+        let plain = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+            "surface_id": target.id, "text": "directive", "human": false, "queued": false, "quiet": true,
+        }));
+        let exempt = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
+            "surface_id": target.id, "text": "directive", "human": false,
+            "queued": false, "quiet": true, "authoritative": true,
+        }));
+        let exempt_after = d12_input_counts(&target);
         d12_cleanup(&daemon, &dir);
 
-        assert_eq!(resp["ok"], json!(true), "검증된 권위 호출자는 초안 게이트 면제: {resp}");
-        assert_eq!(after, (20, 20, 11));
+        // ★1.1.8 판정 갈림 H1 ⓐ(master 결정) — 권위 면제도 사람 초안 위에는 붙지 못한다(우리 1.1.7 적대 R1 Fable F2 · 원작자 단언 「면제 → (20,20,11)」을
+        //   우리 결정 동작으로 조정). 면제 자체는 기계 잔여 축에서 단언한다.
+        d12_assert_denied(&resp, "human_draft");
+        assert_eq!(after, (11, 11, 11), "권위 본문도 사람 초안 위에는 쓰지 않는다(H1 ⓐ)");
+        assert_eq!(residue["ok"], json!(true), "전제: 기계 잔여 생성: {residue}");
+        d12_assert_denied(&plain, "pending_input");
+        assert_eq!(exempt["ok"], json!(true), "검증된 권위 호출자는 기계 잔여 위 초안 게이트 면제: {exempt}");
+        assert_eq!(exempt_after, (12, 12, 0), "기계 잔여 3 + 권위 본문 9 · 사람 몫 0");
     }
 
     #[test]
@@ -19860,24 +19994,51 @@ mod tests {
                 .find(|e| e["name"] == json!("role.takeover") && e["payload"]["prev_surface"] == json!(sid))
                 .expect("role.takeover 이벤트 부재")
         };
+        // ★1.1.8 판정 갈림 H2(잠정 수용 · 우리 A3 화면 출력 `display_notice`): 승계 고지는 입력 주입이 아니라 화면 출력이라
+        //   배달 원장에 남지 않는다(원작자 단언 「원장 1·2」 → 원장 늘 0 + 화면에 문안이 찍혔는가로 조정 · 생략 규칙 단언은 불변).
+        let head: String = seat_takeover_notice("master").chars().take(24).collect();
+        let shown = |sid: u64| scrollback_text(&daemon, sid).contains(&head);
         // ① 미제출 입력 5바이트 — pane 줄 생략 · 이벤트는 유지.
         let sid = make_surface(&daemon, None);
         daemon.get_surface(sid).unwrap().pending_input_bytes.store(5, Ordering::Relaxed);
         announce_seat_takeover(&daemon, sid, "master", "claim_role");
         assert_eq!(crate::governance::h_ledger_count(&daemon, "seat_takeover"), 0, "초안 위에 승계 고지를 주입했다");
+        assert!(!shown(sid), "초안 위에 승계 고지를 찍었다");
         assert_eq!(takeover_ev(&daemon, sid)["payload"]["pane_notice"], json!("skipped_pending_input"));
-        // ② 계수 0 — 종전 그대로 고지(문안·cr 120 무변경은 seat_takeover_notice_reaches_… 가 잰다).
+        // ② 계수 0 — 종전 그대로 고지(문안은 seat_takeover_notice_… 가 잰다) · 화면 출력이라 원장 0.
         let sid2 = make_surface(&daemon, None);
         announce_seat_takeover(&daemon, sid2, "master", "claim_role");
-        assert_eq!(crate::governance::h_ledger_count(&daemon, "seat_takeover"), 1);
+        assert_eq!(crate::governance::h_ledger_count(&daemon, "seat_takeover"), 0, "화면 고지가 입력 원장에 남았다(H2)");
+        assert!(shown(sid2), "계수 0 좌석에 고지가 없다");
         assert_eq!(takeover_ev(&daemon, sid2)["payload"]["pane_notice"], json!("sent"));
-        // ③ 노브에서 takeover 를 빼면 HEAD 동작(계수와 무관하게 주입 · pane_notice 키 없음).
+        // ③ 노브에서 takeover 를 빼면 HEAD 동작(계수와 무관하게 고지 · pane_notice 키 없음).
         let _k = crate::governance::HKnobGuard::set(&[("CYS_MACHINE_INJECT_HOLD", "schedule,channel,ceo,supervisor")]);
         let sid3 = make_surface(&daemon, None);
         daemon.get_surface(sid3).unwrap().pending_input_bytes.store(5, Ordering::Relaxed);
         announce_seat_takeover(&daemon, sid3, "master", "claim_role");
-        assert_eq!(crate::governance::h_ledger_count(&daemon, "seat_takeover"), 2);
+        assert_eq!(crate::governance::h_ledger_count(&daemon, "seat_takeover"), 0, "화면 고지가 입력 원장에 남았다(H2)");
+        assert!(shown(sid3), "노브 끔인데 고지를 생략했다");
         assert!(takeover_ev(&daemon, sid3)["payload"].get("pane_notice").is_none(), "HEAD 이벤트에 키가 붙었다");
+    }
+
+    /// ★1.1.8 D-TEAM 휴면(master 결정 1 · judge 집행 조건 ①): 팀 흐름 스위치가 꺼져 있으면 `team.token.*` RPC 는 휴면 코드로 거부된다
+    /// (토큰 모듈에 닿지 않는다) · 켜면 토큰 모듈이 응답한다(휴면 코드가 아니다).
+    #[test]
+    fn dormant_team_flow_switch_gates_team_token_rpc() {
+        let daemon = isolated_daemon();
+        let call = || {
+            let req = Request { id: json!(1), method: "team.token.status".into(), params: json!({}) };
+            let Reply::Single(resp) = dispatch(&daemon, req, None) else { panic!("single") };
+            resp
+        };
+        {
+            let _off = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, false);
+            let r = call();
+            assert_eq!(r["error"]["code"], json!(cys::dormant::DORMANT_TEAM_FLOW_CODE), "휴면인데 토큰 RPC 가 열렸다: {r}");
+        }
+        let _on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true);
+        let r = call();
+        assert_ne!(r["error"]["code"], json!(cys::dormant::DORMANT_TEAM_FLOW_CODE), "스위치를 켰는데 휴면 거부: {r}");
     }
 
     /// (테스트 보조) WriteReq 변형 이름 — 실패 메시지에 "무엇이 나왔는지"를 남긴다.
@@ -19887,7 +20048,6 @@ mod tests {
             crate::state::WriteReq::Program(_) => "Program",
             crate::state::WriteReq::DataAfter { .. } => "DataAfter",
             crate::state::WriteReq::SubmitAfterGap { .. } => "SubmitAfterGap",
-            crate::state::WriteReq::SubmitGuarded { .. } => "SubmitGuarded",
             crate::state::WriteReq::Inject { .. } => "Inject",
         }
     }
@@ -23028,6 +23188,8 @@ mod tests {
     /// 더 내지 않는다(agy 는 상태가 바뀔 때마다 상태줄을 부른다 — 이벤트 폭주 금지).
     #[test]
     fn usage_report_agy_statusline_attributes_antigravity_on_gemini_seats() {
+        // ★1.1.8 C4 agy 휴면(master 결정 6 · 기본 off): 원작자 agy 갈래 시험은 이 스레드에서만 스위치를 켠다.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let daemon = claim_daemon();
         let seat = make_surface(&daemon, Some("agy-1"));
         set_agent(&daemon, seat, "gemini", "agy");
@@ -23254,6 +23416,8 @@ mod tests {
     /// 사실은 계정 축(`account_rate:Antigravity (agy)`)이 덮는다. ② 리셋 시각이 지난 창을 싣지 않는다(UI '리셋됨'과 같다).
     #[test]
     fn fatal_fix_node_rate_alerts_skip_agy_seats_and_reset_windows() {
+        // ★1.1.8 C4 agy 휴면(master 결정 6 · 기본 off): 원작자 agy 갈래 시험은 이 스레드에서만 스위치를 켠다.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let daemon = claim_daemon();
         let now = crate::state::now_epoch();
         let mut agy_seats = Vec::new();

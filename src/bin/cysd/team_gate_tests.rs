@@ -123,6 +123,7 @@ fn count_kind(daemon: &Arc<Daemon>) -> usize {
 
 #[test]
 fn u16_base_master_can_propose_and_tier_is_pinned_d() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon("ok", false);
     seat(&d, "master", 710_001);
     // 클라이언트가 tier=a 를 주장해도 데몬이 d 로 고정해야 한다(원격 미러 금지).
@@ -145,6 +146,7 @@ fn u16_base_master_can_propose_and_tier_is_pinned_d() {
 /// 이 테스트가 반드시 깨진다.
 #[test]
 fn u16_team_proposal_excluded_from_ceo_auto_route_even_when_flag_on() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon_auto_route_on("autoon", false);
     seat(&d, "master", 710_005);
     // approval_risk::AUTO_MARKERS 의 "학습추천" — title_for(spec) 가 아니라 body(JSON 원문)에
@@ -169,6 +171,7 @@ fn u16_team_proposal_excluded_from_ceo_auto_route_even_when_flag_on() {
 
 #[test]
 fn u16_non_master_or_unattributed_or_dept_lane_cannot_propose() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     // (a) 발행 좌석 미상(pane 밖 프로세스) — 각인 없음
     let d = tmp_daemon("anon", false);
     let r = push(&d, None, "tp-anon", &body("tp-anon", "팀", "일"), json!({}));
@@ -200,6 +203,7 @@ fn u16_non_master_or_unattributed_or_dept_lane_cannot_propose() {
 
 #[test]
 fn u16_malformed_or_wait_is_rejected_without_side_effects() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon("fmt", false);
     seat(&d, "master", 710_010);
     let cases: Vec<(&str, String, Value)> = vec![
@@ -225,6 +229,7 @@ fn u16_malformed_or_wait_is_rejected_without_side_effects() {
 
 #[test]
 fn u16_one_pending_and_three_per_24h() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon("cap", false);
     let master = 710_020;
     seat(&d, "master", master);
@@ -261,6 +266,7 @@ fn u16_one_pending_and_three_per_24h() {
 
 #[test]
 fn u16_only_operator_token_resolves_except_publisher_superseded() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon("rep", false);
     let master = 710_030;
     let worker = 710_031;
@@ -303,6 +309,7 @@ fn u16_only_operator_token_resolves_except_publisher_superseded() {
 /// 다른 kind 는 이 잠금의 영향을 받지 않는다(무회귀 대조군).
 #[test]
 fn u16_other_kinds_unaffected() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon("other", false);
     let worker = 710_040;
     let master = 710_041;
@@ -330,6 +337,7 @@ fn u16_other_kinds_unaffected() {
 /// `cys.rs` 쪽 파싱 테스트만 있어 이 표지 자체를 잰 적이 없었다 — REVIEW1 뮤테이션 생존).
 #[test]
 fn u16_daemon_response_shape_satisfies_cli_team_gate_ok() {
+    let _team_on = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, true); // ★1.1.8 D-TEAM 휴면(기본 off) — 이 스레드에서만 켠다
     let d = tmp_daemon("gate-shape", false);
     seat(&d, "master", 710_050);
     let r = push(&d, Some(710_050), "tp-shape-1", &body("tp-shape-1", "팀", "일"), json!({}));

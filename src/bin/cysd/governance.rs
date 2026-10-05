@@ -998,7 +998,10 @@ fn check_agent_death_with_model(
         // ★적대 R2(Fable F2 · 우리 1.1.7 ④ 회귀 봉합 — 1.1.8 병합: 원작자 상태기계 API 로 옮김): 입력줄의 주인(에이전트 TUI)이
         //   죽었다 — 그 초안도 함께 사라졌으므로 미제출 계수(사람 몫 포함)를 비운다. 비우지 않으면 소멸한 초안의 사람 계수가
         //   node-recover 의 C-u·기동 줄을 human_draft 로 영구 거부해(rc 79 매 부트) 원격 복구가 안 된다.
-        {
+        //   ★1.1.8 병합(판정 갈림 G2 · 원작자 R1F-IN 핀 `r1f_in_tick_blank_process_table_…` 과의 정합): 비울 계수가 **있을 때만**
+        //   비운다. 계수 0 이면 지울 초안이 없고, `clear_pending_input` 이 잠정 Esc 면제 표식까지 내려 원작자 틱 되돌리기(전경 그룹
+        //   대조)의 재료를 지운다 — 프로세스 표가 한 틱 비는 관측 결손에서도 표식은 유지돼야 한다(원작자 단언).
+        if s.pending_input_bytes.load(Ordering::Relaxed) > 0 {
             let _gate = s.input_gate.lock().unwrap();
             s.clear_pending_input();
         }
@@ -6814,6 +6817,7 @@ fn resubmit_withheld_one(
             bytes: b"\r".to_vec(),
             min_gap_ms: crate::handlers::cr_min_gap_ms(),
             withhold: Some(probe),
+            refuse: None, // ★1.1.8 K17 — 재제출은 거부 요청이 아니다(거부 모드는 `refuse_on_approval` 키 전용)
         };
         s.inject_track.submit_handed();
         if s.write_tx.try_send(req).is_err() {
@@ -9091,7 +9095,9 @@ pub(crate) const REMEDY_EMPTY_SEAT_COUNT_CLAUSE: &str = " — 다시 띄우기 �
 pub(crate) use cys::GHOST_CTRL_U_SUFFIX;
 
 /// 막힘 사유 → `wait`(일시 보류 · 스스로 풀린다) 접두 목록. `queue_paused` 는 좌석 pause 가 **이미 만료된** 경우(진단 시점 `paused=false`)다.
-const REMEDY_WAIT_PREFIXES: [&str; 7] = [
+/// ★1.1.8 병합: 우리 좌석 보류 사유 2종(v115r3-d7 — `seat_unknown` 생성 직후 첫 틱 전 · `seat_no_agent` 부서 좌석 부팅 유예 안)은
+/// 스스로 풀리는 보류라 `wait` 행에 든다(종전 병합판에선 처방 표 밖 = `unknown` · `c5_blocked_by_reasons_map_to_the_documented_rows` 가 적발).
+const REMEDY_WAIT_PREFIXES: [&str; 9] = [
     "busy",
     "delivery_interval",
     "settle",
@@ -9099,6 +9105,8 @@ const REMEDY_WAIT_PREFIXES: [&str; 7] = [
     "prompt_not_ready",
     "human_typing",
     "queue_paused",
+    "seat_unknown",
+    "seat_no_agent",
 ];
 
 /// 막힘 사유(blocked_by)가 입력줄 점유 계열인가 — **접두 일치**(상수 문면 `BLOCKED_INPUT_PENDING` 을 바꾸지 않는다).
@@ -12827,15 +12835,28 @@ mod tests {
         assert!(raw.contains("schedule"), "주입본이 원장에 선기록되지 않았다: {raw}");
 
         // 배선 핀 — 데몬 내부 직접 주입 생산자 4곳이 입구를 쓴다(직접 write_tx Inject 0).
+        // ★1.1.8 병합 재표적(원작자 0.14.42~43 이 함수를 갈랐다): channels `inject_master` → `inject_master_confirmed`
+        //   (판정 H3 은 호출부 · 인계만 여기) · boot_supervisor `notify_no_spawn` → pane 줄 쓰기 `pane_notice_line`(H5 판정은
+        //   호출부). 단언 목적(입구 경유 · 직접 write_tx 0)은 그대로다.
         for (file, src, fname) in [
-            ("channels.rs", include_str!("channels.rs"), "fn inject_master("),
-            ("schedule.rs", include_str!("schedule.rs"), "fn inject("),
-            ("boot_supervisor.rs", include_str!("boot_supervisor.rs"), "fn notify_no_spawn("),
+            ("channels.rs", include_str!("channels.rs"), "fn inject_master_confirmed("),
+            ("boot_supervisor.rs", include_str!("boot_supervisor.rs"), "fn pane_notice_line("),
         ] {
             let a = src.find(fname).unwrap_or_else(|| panic!("{file} {fname} 소실"));
             let body = &src[a..a + src[a..].find("\n}\n").unwrap()];
             assert!(body.contains("seat_inject_guarded("), "{file} {fname} 입구 미경유");
             assert!(!body.contains("write_tx"), "{file} {fname} 직접 write_tx 잔존");
+        }
+        // ★1.1.8 병합 재표적(판정 갈림 SC2): schedule `inject` → 원작자 `inject_on`. 원작자 C8 계상(인계·계수 0 을 한 input_gate
+        //   안에서)을 지키려고 입구를 부르지 않고 **입구와 같은 술어·같은 보류 함수**를 첫머리에 둔다 — 그 보류가 write_tx 보다 앞인지 본다.
+        {
+            let src = include_str!("schedule.rs");
+            let a = src.find("\nfn inject_on(").expect("schedule.rs fn inject_on( 소실");
+            let body = &src[a..a + src[a..].find("\n}\n").unwrap()];
+            let g = body.find("crate::governance::agent_seat_vacant_now(surface)").expect("schedule inject_on 빈 좌석 프로브 미배선");
+            let h = body.find("crate::governance::hold_for_vacant_seat(").expect("schedule inject_on 보류 미호출");
+            let w = body.find("write_tx").expect("schedule inject_on 주입 지점");
+            assert!(g < h && h < w, "schedule inject_on 빈 좌석 보류가 주입보다 뒤");
         }
         let h = include_str!("handlers.rs");
         let a = h.find(") -> CeoDelivery {").expect("CEO 배달 함수");
@@ -13808,7 +13829,9 @@ mod tests {
         let p = prod.find("pub fn prime_seat_cache_at_create(").unwrap();
         let prime_body = &prod[p..p + prod[p..].find("\n}\n").unwrap()];
         assert!(prime_body.contains("cache_seat_verdict(&sys, s, &mut None)"), "생성 직후 채움이 판정을 우회");
-        let b = prod.find("fn check_agent_death(").unwrap();
+        // ★1.1.8 병합 재표적: 원작자가 사망 감지를 래퍼 `check_agent_death` + 본체 `check_agent_death_with_model`(계수 모델 인자)로
+        //   갈랐다 — 생존 판정 배선은 본체에 있다(단언 목적 불변).
+        let b = prod.find("fn check_agent_death_with_model(").unwrap();
         let body = &prod[b..b + prod[b..].find("\n}\n").unwrap()];
         assert!(body.contains("cmdlines.push(root)"), "생존 판정 미배선");
     }
@@ -17726,6 +17749,10 @@ mod tests {
             .expect("create surface");
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         *s.agent_meta.lock().unwrap() = Some(("claude".to_string(), "claude".to_string()));
+        // ★1.1.8 병합 안정화(시험 전제 · 단언 무변경): `live_process_table` 은 자손이 **하나라도** 뜨면 돌려준다 — 부하가 큰 전수
+        //   실행에선 로그인 셸 초기화의 `path_helper`(/etc/zprofile)만 잡혀 전제가 깨졌다(ctest2 적색 · 단독 실행 3/3 초록).
+        //   안쪽 `sh` 가 실제로 뜰 때까지 좌석 명령 대기 헬퍼(argv 완전 일치)로 기다린다.
+        crate::governance::test_wait_seat_runs(&s, "sh", &["-c", "sleep 30 ; :", "sh", "/tmp/rqfix2/claude/NOTES.md"]);
         let sys = live_process_table(&[&s]);
         let cmds: Vec<String> = super::collect_descendants_with_cmd(&sys, s.pid).into_iter().map(|(_, c)| c).collect();
         assert_eq!(
@@ -18510,8 +18537,12 @@ mod tests {
             ("channels", include_str!("channels.rs")),
         ];
         // (파일, set_pending_input, clear_pending_input, apply_pending_input) — 정의처(state.rs)는 `fn` 선언 1줄을 포함한다.
+        // ★1.1.8 병합 조정: governance 의 clear_pending_input 은 1 → 3 — 우리 두 리셋 경로가 원작자 API 로 계수를 비운다
+        //   ① 판정 갈림 G2(에이전트 사망 = 입력줄 주인 소멸 · `check_agent_death_with_model` · 우리 1.1.7 ④ 회귀 봉합)
+        //   ② `note_line_submitted`(우리 A3 단일 입구 `seat_inject_guarded`·watch_wake 의 제출 뒤 계상).
+        //   둘 다 `clear_pending_input` 이 잠정 Esc 면제 표식까지 함께 내리므로(state.rs 정의처) 이 핀의 목적(리셋 경로가 표식을 내리는가)을 충족한다.
         let want: [(&str, usize, usize, usize); 5] = [
-            ("governance", 2, 1, 1),
+            ("governance", 2, 3, 1),
             ("handlers", 0, 1, 2),
             ("schedule", 1, 0, 0),
             ("state", 4, 1, 1),
@@ -20947,7 +20978,11 @@ mod tests {
             tick(&daemon);
             assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "[{name}] 배달돼서는 안 된다");
             let why = blocked_reason(&s);
-            assert!(why.starts_with(want), "[{name}] 사유 {why:?} ≠ {want}*");
+            // ★1.1.8 판정 갈림 G1(잠정 OR 합성 유지 · 우리 결정 동작 단언): 틱 승인 축에 우리 화면 판독(`approval_screen_now` —
+            //   어댑터 승인 패턴 ∨ 첫기동 관문 코퍼스 ∨ 번호 선택지 창)을 OR 했으므로, 모달 반례 가운데 그 축이 먼저 잡는 화면은 사유가
+            //   `approval_pending` 이다(판정 순서상 승인 축이 모달 축보다 앞). 단언 목적(전부 거부 · 모달·관문 계열 사유)은 그대로다.
+            let ok = why.starts_with(want) || (want == "modal_pending" && why.starts_with("approval_pending"));
+            assert!(ok, "[{name}] 사유 {why:?} ≠ {want}*");
         }
     }
 
@@ -21512,11 +21547,13 @@ mod tests {
             Some(Wp5Denied::PromptGate(BLOCKED_INPUT_PENDING))
         );
         // ② 모달이 전경이면 거부.
+        //   ★1.1.8 판정 갈림 G1(잠정 OR 합성 유지 · 우리 결정 동작 단언): 번호 선택지 창은 우리 승인 화면 축(게이트 ⑦ · 프롬프트
+        //   게이트보다 앞)이 먼저 잡는다 — 사유 = ApprovalPending(거부 결과 불변 · 원작자 단언 PromptGate(modal) 를 조정).
         paint_screen(&s, &[" Do you want to proceed?", " ❯ 1. Yes", "   2. No", " Enter to confirm · Esc to cancel"], 1, 3, false);
         quiet_since(&s, 5);
         assert_eq!(
             wp5_force(&daemon, &s, None, false).err(),
-            Some(Wp5Denied::PromptGate(BLOCKED_MODAL))
+            Some(Wp5Denied::ApprovalPending)
         );
         // ③ 깨끗한 프롬프트(모달 잔상 없이 화면 전체를 다시 그린다) → 배달.
         paint_screen(&s, &[RULE, "❯ ", RULE, STATUS1, STATUS2], 1, 2, false);
@@ -24608,6 +24645,9 @@ mod tests {
             q.push_front(daemon.next_queue_entry("claude --continue".into(), None, "wal-legacy"));
             q.get(1).expect("새 글").clone()
         };
+        // ★1.1.8 병합: 원작자 배달 최소 간격(기본 10초 · 임계영역 안 권위 판정 · 강제 배달도 지킨다)이 직전 배달 뒤 이 호출을
+        //   막는다 — 이 시험은 폐기·조준 계약만 보므로 간격 기준점을 비운다(같은 파일 큐 검체의 관례 · 단언 불변).
+        *s.last_queue_delivery_at.lock().unwrap() = None;
         let d = deliver_head_locked(&daemon, &s, true, false, Some(&target.id), None, None, None)
             .expect("조준 항목은 폐기와 무관하게 배달");
         assert_eq!(d.entry.id, target.id);
@@ -27429,11 +27469,23 @@ mod tests {
         for (i, _) in body.match_indices("mark_queue_blocked(&s, ") {
             take(&body[i + "mark_queue_blocked(&s, ".len()..]);
         }
+        // ★1.1.8 병합 조정: 원작자 리터럴 `block("empty_seat(…)")` 자리에 우리 SEAT 게이트(v115r3-d7)가 사유 3종 표
+        //   (`let label = match hold { … }` → `block(label)`)를 얹었다 — 그 표의 리터럴을 따로 모아 전부 처방 표의 행에 드는지 본다
+        //   (단언 목적 「틱의 리터럴 사유는 전부 문서화된 행에 든다」 불변 · `label` 은 그 표의 값만 가지는 변수).
         let known_lits: std::collections::BTreeSet<String> =
-            ["empty_seat(좌석에 에이전트 미연결)", "human_typing(사람 입력 직후)"].iter().map(|s| s.to_string()).collect();
+            ["human_typing(사람 입력 직후)"].iter().map(|s| s.to_string()).collect();
         assert_eq!(lits, known_lits, "틱의 리터럴 막힘 사유가 표와 어긋났다 — queue_remedy 표·WORKLOG 매핑을 갱신하라");
-        // 상수 인자는 전부 위 표에 있는 이름이어야 하고, 변수 인자는 게이트 판정이 돌려준 사유(`why`) 하나뿐이다(그 값은 `BLOCKED_*` 상수다).
-        let known_idents: std::collections::BTreeSet<String> = documented.iter().cloned().chain(["why".to_string()]).collect();
+        let lt = body.find("let label = match hold {").expect("SEAT 게이트 사유 표 소실");
+        let table = &body[lt..lt + body[lt..].find("};").expect("사유 표 끝")];
+        let seat_lits: Vec<&str> = table.split('"').skip(1).step_by(2).filter(|t| t.contains('(')).collect();
+        assert_eq!(seat_lits.len(), 3, "SEAT 게이트 사유 표 3종이 아니다: {seat_lits:?}");
+        assert!(seat_lits.contains(&"empty_seat(좌석에 에이전트 미연결)"), "{seat_lits:?}");
+        for lit in seat_lits {
+            assert_ne!(queue_remedy(lit, &d0).0, "unknown", "SEAT 사유가 처방 표 밖이다: {lit}");
+        }
+        // 상수 인자는 전부 위 표에 있는 이름이어야 하고, 변수 인자는 게이트 판정이 돌려준 사유(`why`)와 SEAT 사유 표 값(`label`)뿐이다.
+        let known_idents: std::collections::BTreeSet<String> =
+            documented.iter().cloned().chain(["why".to_string(), "label".to_string()]).collect();
         let stray: Vec<&String> = idents.difference(&known_idents).collect();
         assert!(stray.is_empty(), "틱이 표에 없는 식별자를 막힘 사유로 기록한다: {stray:?}");
         for must in ["BLOCKED_QUEUE_PAUSED", "BLOCKED_QUIESCING", "BLOCKED_SETTLE_BUDGET", "BLOCKED_INTERVAL", "BLOCKED_INPUT_PENDING", "BLOCKED_BUSY", "why"] {
@@ -27806,8 +27858,11 @@ mod tests {
         paint_screen(&s, &[" Do you want to proceed?", " ❯ 1. Yes", "   2. No", " Enter to confirm · Esc to cancel"], 1, 3, false);
         quiet_since(&s, 5);
         let denied = wp5_force(&daemon, &s, None, false).err().expect("거부");
-        assert_eq!(denied, Wp5Denied::PromptGate(BLOCKED_MODAL));
-        assert_eq!(denied.message(), legacy(BLOCKED_MODAL));
+        // ★1.1.8 판정 갈림 G1(잠정 OR 합성 유지 · 우리 결정 동작 단언): 이 번호 선택지 창은 우리 승인 화면 축(강제 배달 게이트 ⑦
+        //   `approval_screen_now` — 원작자 프롬프트 게이트보다 앞)이 먼저 잡아 사유가 `ApprovalPending` 이다. 단언 목적(입력줄 계열이
+        //   아닌 거부엔 유령 처방이 붙지 않는다 · 거부 결과 불변)은 그대로다.
+        assert_eq!(denied, Wp5Denied::ApprovalPending);
+        assert!(!denied.message().contains(GHOST_CTRL_U_SUFFIX), "모달·승인 거부에 유령 처방이 붙었다: {}", denied.message());
 
         // ⓓ 관측 불능 1 — 마커 좌석인데 커서 행에 프롬프트 줄이 없다(+ 계수) — 종전 문구 그대로(유령으로 넓히지 않는다).
         paint_screen(&s, &["그냥 출력 줄입니다"], 0, 10, false);
@@ -29405,10 +29460,15 @@ mod accept_v116 {
         push(&d, &s, "claude is an AI", "surface:1");
         push(&d, &s, "codex --x", "surface:2");
         push(&d, &s, "claudex --x", "surface:3");
+        // ★1.1.8 병합: 원작자 배달 최소 간격(`CYS_QUEUE_MIN_INTERVAL_SECS` 기본 10초 · 임계영역 안 권위 판정)이 연속 호출을
+        //   막는다 — 이 시험은 폐기 판정(S1)만 보므로 배달 사이에 간격 기준점을 비운다(같은 파일 큐 검체의 관례 · 단언 불변).
+        let next_tick = |s: &Arc<Surface>| *s.last_queue_delivery_at.lock().unwrap() = None;
         let g1 = deliver_head_locked(&d, &s, false, false, None, None, None, None).expect("산문 배달");
         assert_eq!(g1.body, "claude is an AI");
+        next_tick(&s);
         let g2 = deliver_head_locked(&d, &s, false, false, None, None, None, None).expect("다른 에이전트 줄 배달");
         assert_eq!(g2.body, "codex --x");
+        next_tick(&s);
         let g3 = deliver_head_locked(&d, &s, false, false, None, None, None, None).expect("접미 공유 배달");
         assert_eq!(g3.body, "claudex --x");
         assert!(events(&d, "queue.dropped").is_empty());
@@ -30082,22 +30142,29 @@ mod reflect_queue_tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         assert!(s.exited.load(AtomicOrdering::Relaxed), "전제: 좌석이 15초 안에 종료하지 않았다");
+        // ★1.1.8 판정 갈림 S1(잠정 해소 유지 · master 결정 「시험이 우리 결정 동작을 단언」): 자력 종료(셸 EOF) 경로의 보존소는
+        //   우리 역할 주차(`parked_queues` → claim_role 상속 · D7⑵)이고, reap 경로는 원작자 `restored_queue`(위 q7 reap 검체)다.
+        //   단언 목적(EOF 경로가 역할 좌석의 활성 큐를 폐기하지 않고 순서대로 보존)은 그대로 — 보존소 이름만 우리 판으로 조정.
         // reader 스레드의 후처리(park)가 끝날 때까지 잠깐.
+        let parked_ids = |daemon: &Arc<Daemon>| -> Vec<String> {
+            daemon
+                .parked_queues
+                .lock()
+                .unwrap()
+                .get("worker-q7eof")
+                .map(|pq| pq.entries.iter().map(|e| e.id.clone()).collect())
+                .unwrap_or_default()
+        };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while daemon.restored_queue.lock().unwrap().len() < 2
-            && std::time::Instant::now() < deadline
-        {
+        while parked_ids(&daemon).len() < 2 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        let rq: Vec<String> = daemon
-            .restored_queue
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|it| it["id"].as_str().map(str::to_string))
-            .collect();
-        assert_eq!(rq, ids, "EOF 경로가 활성 큐를 보존소로 옮기지 않았다");
+        assert_eq!(parked_ids(&daemon), ids, "EOF 경로가 활성 큐를 보존소(역할 주차)로 옮기지 않았다");
         let evs = drain_bus(&mut rx);
+        assert!(
+            evs.iter().any(|e| e["name"] == "queue.parked"),
+            "EOF 주차 사실(queue.parked)이 발행되지 않았다: {evs:?}"
+        );
         assert!(
             !evs.iter().any(|e| e["name"] == "queue.dropped" && e["payload"]["reason"] == "process_exited"),
             "EOF 경로가 역할 좌석의 활성 큐를 폐기했다: {evs:?}"
@@ -31478,12 +31545,12 @@ mod h_machine_hold_tests {
             found.extend(guard_none_producers(f, src));
         }
         let allow: std::collections::BTreeSet<String> = [
-            "channels::inject_master_confirmed",
+            // ★1.1.8 병합 조정(판정 갈림 H2 · 우리 v115-restore A3 단일 입구): `channels::inject_master_confirmed`·
+            //   `boot_supervisor::pane_notice_line` 은 `governance::seat_inject_guarded`(아래 · 목록에 있음)를 거쳐 주입하므로
+            //   스스로 `guard: None` 을 싣지 않는다 — 생산자 집합에서 빠지고 그 입구가 대신 든다(시험 삭제 아님 · 판정 →
+            //   입구 순서는 아래 순서 핀이 그대로 본다).
             "schedule::inject_on",
             "handlers::deliver_to_ceo",
-            // ★(R3SH-3) 통보 줄 쓰기가 즉시·미룬 재시도 공용 `pane_notice_line` 으로 모였다 — 두 호출자가 모두 그 앞에서
-            //   `pane_notice_hold`(H0) 를 판정한다(아래 순서 핀).
-            "boot_supervisor::pane_notice_line",
             // ★1.1.8 병합(원작자 시험 조정 · 삭제 아님): 우리 v115-restore A3 는 좌석 승계·npm 고지를 **화면 출력**
             //   (`display_notice`)으로 내므로 `handlers::announce_seat_takeover`·`handlers::npm_prefix_pane_notice_req` 는
             //   입력 주입 생산자가 아니다(handlers 판정 갈림 H2). 우리 빈 좌석 단일 입구 `seat_inject_guarded`(오버레이 5 ·
@@ -31519,7 +31586,9 @@ mod h_machine_hold_tests {
             ("boot_supervisor", include_str!("boot_supervisor.rs"), "notify_no_spawn", "pane_notice_hold(", "pane_notice_line("),
             ("boot_supervisor", include_str!("boot_supervisor.rs"), "retry_deferred_pane_notices", "pane_notice_hold(", "pane_notice_line("),
             ("boot_supervisor", include_str!("boot_supervisor.rs"), "pane_notice_hold", "machine_hold_enabled(", "machine_direct_hold("),
-            ("boot_supervisor", include_str!("boot_supervisor.rs"), "pane_notice_line", "record_audited(", "write_tx.try_send("),
+            // ★1.1.8 병합 조정(H2 · A3): pane 줄 쓰기는 단일 입구를 지난다 — 원장 선기록 → 주입 순서는 입구 안에서 본다.
+            ("boot_supervisor", include_str!("boot_supervisor.rs"), "pane_notice_line", "seat_inject_guarded(", "Origin::Supervisor"),
+            ("governance", include_str!("governance.rs"), "seat_inject_guarded", "record_audited(", "write_tx.try_send("),
         ];
         for (f, src, body_fn, gate, inject) in order {
             let code = strip_line_comments(&production(src));

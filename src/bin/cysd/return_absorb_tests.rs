@@ -522,7 +522,9 @@ fn a2_human_key_invalidates_owner_no_compensation() {
     assert_eq!(direct(&fx, Some(P + 182), &t, "yyy")["ok"], json!(true));
     // GUI 포커스 보고(사람 경로 · 자동응답) — 계수는 그대로지만 세대가 오른다.
     let g0 = counts(&t).2;
-    let r = rpc(&fx, Some(P + 180), "surface.send_text", json!({
+    // ★1.1.8 판정 갈림 H1 ⓐ(master 결정): GUI 는 pane 무귀속 호출자다 — 원작자 고정물은 좌석 자신의 pid(pane 귀속)로 보냈는데
+    //   우리 규칙에서 pane 귀속 발신자의 `human:true` 는 사람이 아니다(위조 차단). 실제 GUI 모양(귀속 없음)으로 보낸다.
+    let r = rpc(&fx, None, "surface.send_text", json!({
         "surface_id": t.id, "text": "\u{1b}[I", "human": true, "quiet": true,
     }));
     assert_eq!(r["ok"], json!(true));

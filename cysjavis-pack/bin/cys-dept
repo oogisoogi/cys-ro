@@ -483,6 +483,13 @@ rot_reg_degraded(){   # $1=rc · $2=생략되는 단계 이름
   [ "${_CYS_ROTATE_SELF:-}" = "1" ] || return 1
   [ "$1" = "12" ] || return 1
   echo "[cys-dept] ${name:-?}: depts.json 판독 실패 — kill 이후이므로 재기동 진행(반파괴 차단): $2 생략(원본 미변경·바이트 보존) · 레지스트리 복구 뒤 cys-dept rotate 재실행" >&2
+  # ★1.1.8(master#83744f83 조건 1 · 조용한 성공 금지): stderr 는 호출자가 버릴 수 있다 — 첫 관용 때 부서 로그 폴더에
+  #   한 줄을 남긴다(append · 실패 삼킴 · 판독 불가 원본은 건드리지 않는다). 최종 rc 는 여전히 12 다.
+  if [ "${_ROT_DEGRADED_SEEN:-0}" != "1" ] && [ -n "${name:-}" ]; then
+    _rdl="$(dept_logdir "$name" 2>/dev/null)/rotate-degraded.log"
+    { mkdir -p "$(dirname "$_rdl")" && printf '%s %s 목록 판독 실패 상태로 재기동(첫 생략 단계: %s · 원본 미변경 · 최종 rc 12 · %s 복구 뒤 rotate 재실행)\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$name" "$2" "$REG" >> "$_rdl"; } 2>/dev/null || true
+  fi
   _ROT_DEGRADED_SEEN=1   # 아래 rot_reg_quiet 의 래치 — 같은 사유 줄의 반복을 막는다
   return 0
 }

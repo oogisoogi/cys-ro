@@ -224,23 +224,67 @@ fn cwd_basename(cwd: Option<&str>) -> Option<&str> {
 /// (agy R1 문제점 1 — 접두 휴리스틱의 실제 반례였다). 전체 일치는 그 방향을 구조적으로 막는다.
 /// ★재구성이 빗나가면(다른 cwd·새 에이전트) 판정은 false 로 떨어져 제목이 **사람 이름처럼 보존**
 /// 된다 — 길어질 뿐 잃는 것은 없다(안전 방향).
+/// ★D17(1.1.8 · 맥 1271 재현 · 윈 D17-W 재현): 둘째 워커부터 옛 꼴 제목이 남던 결함의 수리 — 세 원인을 함께 닫는다.
+///   ⑴ 데몬이 선언 role `worker` 를 `worker-N` 으로 번호 매긴 뒤 이 함수가 `{role_now}-{agent}` = `worker-7-claude` 로
+///      재구성해 CLI 제목 `worker-claude · soop` 과 어긋났다 → **선언 role(번호 떼기 `-\d+`)도** 후보로 대조한다.
+///   ⑵ 닫힌 어휘 AGENT_NAMES 에 `claude-sonnet`·`claude-fable` 같은 agents.json 선언 어댑터가 없었다 → 어휘 = 고정 4 ∪
+///      agents.json 선언 키(디스크 팩 · 임베드)로 넓힌다(여전히 닫힌 어휘 — 사람 이름 오인 방향은 그대로 막힌다).
+///   ⑶ launch-agent 페이로드에 agent 가 없었다 → `title_agent` 키로 싣는다(handlers surface.create · agent_meta 는 건드리지 않는다).
 fn is_machine_title(title: &str, sid: u64, role: &str, agent: Option<&str>, cwd: Option<&str>) -> bool {
+    is_machine_title_with(title, sid, role, agent, cwd, &declared_agent_names())
+}
+
+/// [`is_machine_title`] 의 순수 판(어댑터 선언 어휘를 주입받는다 · 시험용).
+fn is_machine_title_with(
+    title: &str,
+    sid: u64,
+    role: &str,
+    agent: Option<&str>,
+    cwd: Option<&str>,
+    declared: &[String],
+) -> bool {
     if title == format!("surface {sid}") {
         return true;
     }
     let folder = cwd_basename(cwd);
-    let single: [&str; 1];
-    let names: &[&str] = match agent {
-        Some(a) => {
-            single = [a];
-            &single
-        }
-        None => &AGENT_NAMES,
+    let names: Vec<&str> = match agent {
+        Some(a) => vec![a],
+        None => AGENT_NAMES.iter().copied().chain(declared.iter().map(String::as_str)).collect(),
     };
-    names.iter().any(|a| {
-        let head = format!("{role}-{a}");
-        title == head || folder.is_some_and(|f| title == format!("{head}{SEP}{f}"))
+    let roles: Vec<&str> = match strip_ordinal(role) {
+        Some(base) => vec![role, base],
+        None => vec![role],
+    };
+    roles.iter().any(|r| {
+        names.iter().any(|a| {
+            let head = format!("{r}-{a}");
+            title == head || folder.is_some_and(|f| title == format!("{head}{SEP}{f}"))
+        })
     })
+}
+
+/// 데몬이 붙인 번호 꼬리(`-\d+`)를 뗀 선언 role(순수) — `worker-7` → `worker` · `worker-eduscan-2` → `worker-eduscan`.
+/// 번호 꼬리가 없거나 떼면 비는 경우 = None.
+fn strip_ordinal(role: &str) -> Option<&str> {
+    let (base, tail) = role.rsplit_once('-')?;
+    (!base.is_empty() && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit())).then_some(base)
+}
+
+/// agents.json 에 선언된 어댑터 이름(디스크 팩 ∪ 임베드 · `_` 로 시작하는 메타 키 제외).
+fn declared_agent_names() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json")).ok();
+    let embed = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == "agents.json").map(|(_, c)| c.to_string());
+    for text in [disk, embed].into_iter().flatten() {
+        if let Ok(serde_json::Value::Object(m)) = serde_json::from_str::<serde_json::Value>(&text) {
+            for k in m.keys() {
+                if !k.starts_with('_') && !out.contains(k) {
+                    out.push(k.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// 첫 조각이 **번호 칸**(숫자만 · v116-num 「—」)인가 — 그렇다면 뒤따르는 나머지를 돌려준다(낡은 번호 판정).
@@ -628,6 +672,37 @@ mod tests {
             initial_title(60, Some(60), Some("worker"), JARVIS, Some("60 · worker-claude · 회의록"), None),
             None
         );
+    }
+
+    /// ★D17(1.1.8) 둘째 워커 케이스(맥 1271 · 윈 D17-W 재현 형상) — 데몬이 role 을 `worker-N` 으로 번호 매겨도 CLI 가 지은
+    /// `worker-claude · <폴더>` 를 기계 제목으로 알아보고 「N · workerN」 으로 짓는다 · agents.json 선언 어댑터(claude-sonnet) 포함.
+    #[test]
+    fn d17_second_worker_numbered_role_still_recognizes_cli_title() {
+        let cwd = Some("/Users/x/axdev/soop");
+        // ⑴ 번호 붙은 role · agent 를 모를 때(구 페이로드)
+        assert_eq!(
+            initial_title(7, Some(106), Some("worker-2"), cwd, Some("worker-claude · soop"), None),
+            Some("106 · worker2".into()),
+            "둘째 워커 = 「번호 · workerK」"
+        );
+        // ⑶ title_agent 를 실은 페이로드
+        assert_eq!(
+            initial_title(7, Some(106), Some("worker-2"), cwd, Some("worker-claude · soop"), Some("claude")),
+            Some("106 · worker2".into())
+        );
+        // ⑵ 선언 어댑터 — eduscan 좌석 `worker-eduscan-claude-sonnet`(번호 없는 키워드 role)
+        let declared = vec!["claude-sonnet".to_string(), "claude-fable".to_string()];
+        assert!(is_machine_title_with("worker-eduscan-claude-sonnet", 9, "worker-eduscan", None, None, &declared));
+        assert!(is_machine_title_with("worker-claude-fable · soop", 9, "worker-3", None, cwd, &declared));
+        // 사람 이름은 여전히 보존(닫힌 어휘 · 폴더 전체 일치)
+        assert!(!is_machine_title_with("worker-claude · 회의록", 9, "worker-2", None, cwd, &declared));
+        assert!(!is_machine_title_with("worker-메모", 9, "worker-2", None, cwd, &declared));
+        // 번호 떼기 순수 술어
+        assert_eq!(strip_ordinal("worker-7"), Some("worker"));
+        assert_eq!(strip_ordinal("worker-eduscan-2"), Some("worker-eduscan"));
+        assert_eq!(strip_ordinal("worker-eduscan"), None);
+        assert_eq!(strip_ordinal("worker"), None);
+        assert_eq!(strip_ordinal("-3"), None);
     }
 
     #[test]

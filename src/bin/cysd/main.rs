@@ -46,6 +46,7 @@ mod handlers;
 mod hwmon;
 mod named;
 mod panetitle;
+mod rc_guard;
 mod recall;
 mod reclaim;
 mod schedule;

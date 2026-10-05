@@ -919,9 +919,12 @@ fn raise_hook_timeout_in(
 /// 경합은 막지 못한다. 그래서 **같은 이름의 같은 락 파일**로 직렬화한다.
 ///  · unix: `flock(LOCK_EX)` **블로킹**(보유 창 = 파일 1개 RMW · 수 ms) · 락 파일 열기 실패는
 ///    `None`(직렬화만 포기하고 작업은 진행 — 락 실패가 치유를 막으면 잔존 훅이 영구화된다).
-///  · windows: **미획득(None) — 감수 범위 명기**. python 백엔드가 msvcrt 바이트락이라 flock 과
-///    상호 배제가 성립하지 않는다(이종 락). 파손은 원자 교체가 차단하고 최악은 lost-update 로
-///    다음 preflight C28·부트 시드가 재수렴한다. 승격 조건은 `LockFileEx` 동형 배선이다.
+///  · windows: ★D27(1.1.8 · BACKLOG D27 · judge 📌7ⓓ) **`File::lock`(= `LockFileEx` 배타 · 전 범위) 블로킹**.
+///    종전엔 None(무잠금)이라 이 락에 기대는 승인 저장소(`approval::lock_records`)·⑰ 예약 공유 락이 윈에서
+///    프로세스 간 보호 0 이었다 — 본부·부서 데몬이 같은 approvals.json 을 덮어쓸 수 있었다. 전 범위 잠금은
+///    python `javis_lock` 의 msvcrt 바이트락(0번 바이트 1개)과 범위가 겹쳐 **서로 배제된다**(윈 바이트 범위 잠금 =
+///    겹치면 충돌). 같은 모듈의 서명 키 잠금(`approval.rs::lock_key_exclusive`)이 이미 쓰는 그 API 다.
+///    잠금은 핸들이 닫히면(프로세스 사망 포함) OS 가 푼다 — 부패 잠금 청소가 필요 없다.
 ///
 /// ★반환 핸들이 **살아 있는 동안만** 락이 선다(drop = 해제). 호출부는 RMW 가 끝날 때까지 이름
 /// 있는 바인딩으로 붙들어라 — `let _ = ...` 는 즉시 drop 이라 락이 아예 서지 않는다.
@@ -945,8 +948,14 @@ pub fn acquire_settings_lock(settings: &Path) -> Option<std::fs::File> {
     }
     #[cfg(not(unix))]
     {
-        let _ = settings;
-        None
+        let lock_path = PathBuf::from(format!("{}.cys-lock", settings.display()));
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        f.lock().ok()?;
+        Some(f)
     }
 }
 
@@ -1970,6 +1979,11 @@ fn existing_file_mode(_path: &Path) -> Option<u32> {
 /// 설치한 그대로인가(=사용자 비수정)"를 판정하는 유일한 근거다.
 pub const INSTALL_MANIFEST: &str = ".install-manifest.json";
 const PACK_VERSION_FILE: &str = ".pack-version";
+/// ★W-a(1.1.8 · D1 triage 파생) 내장 팩 설치 지문 — 비트랜잭션(내장) 설치가 쓴 항목 집합의 sha256(`pack_items_sha256`).
+/// 같은 판 번호로 다시 빌드한 바이너리(시험 기기 교체)는 `.pack-version` 이 같아 부트 스윕이 「판 같음 = 스킵」으로 닫혀
+/// 팩이 옛 내용에 정체했다(윈 10-02 실측: cys-dept 수리 전 166,425B 그대로 → WinError 193). 판이 같을 때 이 지문이
+/// 바이너리의 내장 팩 해시와 다르면 스윕한다. 지문 부재(옛 설치 · pack-update 트랜잭션 적용분) = 종전대로 스킵.
+const PACK_EMBED_HASH_FILE: &str = ".pack-embed-hash";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // free/pro 채널 상태 계약 (DESIGN-free-pro-distribution.md v6 §3·§5)
@@ -2853,6 +2867,11 @@ pub fn pending_kind_counts(
 pub struct InstallPlan {
     pub create: Vec<String>,              // 신규 생성
     pub update: Vec<String>,              // 자동 갱신(비수정 system)
+    // ★D22(1.1.8 · BACKLOG D22): 종전엔 아래 두 행동도 update 에 합쳐 `cys pack-plan` 이 한 문구(「비수정 — 그대로
+    //   갱신됨」)로 출력했다 — 오너가 job 을 더한 schedule.json 이 「비수정」으로 보였다(윈 실기 10-05 22:12 · 실제 적용은
+    //   항목 병합이라 오너 job 보존). 행동이 다르면 버킷도 다르다.
+    pub refresh_user: Vec<String>,        // user-owned 미수정 + 임베드 전진 — `.bak-<판>` 백업 뒤 신판 적용(RefreshUser)
+    pub merge_user: Vec<String>,          // user-owned 혼합 설정 수정본 — 항목 병합(사용자 값 유지 · 새 항목만 추가 · 백업)
     pub heal: Vec<String>,                // 수정본 강제 치유(사용자본 `<rel>.user` 보존 후 덮어씀)
     pub merge_new: Vec<String>,           // user-owned 보존 + 신버전 `<rel>.new` 병치(병합 대기)
     pub keep_user: Vec<String>,           // user-owned 보존(신버전 병치 불요)
@@ -2950,9 +2969,10 @@ pub fn plan_install(
             }
             FileAction::KeepDrift => plan.kept_drift.push(rel.to_string()), // ★T3(D14): 전용 버킷 계상
             FileAction::Merge3 => plan.merge3.push(rel.to_string()),        // ★T3(D14): 전용 버킷 계상
-            // ★D1(1.1.5 6차): 둘 다 디스크를 바꾸는 갱신이다 — 드라이런은 update 버킷으로 보고한다
-            // (플랜≠실제 드리프트 차단: 실행부도 공통 write 로 합류해 written 로 계상된다).
-            FileAction::RefreshUser | FileAction::MergeUser => plan.update.push(rel.to_string())
+            // ★D1(1.1.5 6차): 둘 다 디스크를 바꾸는 갱신이다(실행부는 공통 write 로 합류해 written 로 계상된다).
+            // ★D22(1.1.8): 드라이런 **표시**는 행동별 버킷으로 가른다 — 미수정 신판 적용 ↔ 수정본 항목 병합.
+            FileAction::RefreshUser => plan.refresh_user.push(rel.to_string()),
+            FileAction::MergeUser => plan.merge_user.push(rel.to_string()),
         }
     }
     // prune 프리뷰(install_into prune 블록과 동일 판정).
@@ -3019,6 +3039,12 @@ pub fn remote_is_newer(remote: &str, disk: &str) -> bool {
 ///   매니페스트 부재 = false = **스윕(치유) 실행**. 게이트는 "확실히 최신"일 때만 닫힌다.
 /// - 매니페스트는 존재 stat만 검사한다 — 깊은 파싱 검증은 doctor 소관(매 부트 파싱 = 비용 재유입).
 pub fn pack_current_in(dir: &Path, binary_version: &str) -> bool {
+    pack_current_in_with(dir, binary_version, None)
+}
+
+/// [`pack_current_in`] + ★W-a 같은 판 지문 대조 — `embed_hash` 가 `Some` 이고 디스크 판 == 바이너리 판이면 `.pack-embed-hash`
+/// 가 그 값과 같을 때만 「최신」. 지문 파일 부재 = 종전대로 최신(옛 설치 호환). 디스크 판 > 바이너리 판 = 지문 무관 최신.
+pub fn pack_current_in_with(dir: &Path, binary_version: &str, embed_hash: Option<&str>) -> bool {
     if !dir.join(INSTALL_MANIFEST).exists() {
         return false;
     }
@@ -3026,7 +3052,11 @@ pub fn pack_current_in(dir: &Path, binary_version: &str) -> bool {
         return false;
     };
     match (parse_semver(disk.trim()), parse_semver(binary_version)) {
-        (Some(d), Some(b)) => d >= b,
+        (Some(d), Some(b)) if d > b => true,
+        (Some(d), Some(b)) if d == b => match (embed_hash, std::fs::read_to_string(dir.join(PACK_EMBED_HASH_FILE))) {
+            (Some(want), Ok(got)) => got.trim() == want,
+            _ => true,
+        },
         _ => false,
     }
 }
@@ -3035,7 +3065,7 @@ pub fn pack_current_in(dir: &Path, binary_version: &str) -> bool {
 /// ★게이트는 반드시 **부트 호출부**에 두고 install() 내부에 넣지 마라 — 내부에 넣으면 수동
 /// `cys init-pack`·pack-update·pack-downgrade(치유의 정식 경로)까지 게이트되어 치유가 불구가 된다.
 pub fn pack_current_for(binary_version: &str) -> bool {
-    pack_current_in(&pack_dir(), binary_version)
+    pack_current_in_with(&pack_dir(), binary_version, Some(embedded_pack_hash_ref()))
 }
 
 /// 원자적 파일 쓰기(§7-⑤): 같은 디렉터리 temp 파일에 쓰고 fsync → rename으로 원자 교체 →
@@ -4419,6 +4449,10 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     if !transactional {
         match write_atomic(&dir.join(PACK_VERSION_FILE), target_version.as_bytes()) {
             Ok(()) => {
+                // ★W-a: 내장 설치 지문 — 같은 판 재빌드 교체를 부트 스윕이 알아보게(best-effort · 실패 = 지문 부재 = 종전 동작).
+                if let Err(e) = write_atomic(&dir.join(PACK_EMBED_HASH_FILE), pack_items_sha256(&items).as_bytes()) {
+                    eprintln!("[init-pack] 팩 지문 기록 실패({e}) — 같은 판 재빌드 감지만 꺼진다(설치는 유효)");
+                }
                 if let PackStateRead::Valid(mut st) = read_pack_state(&dir) {
                     if st.channel == "free" && st.base_version != target_version {
                         st.base_version = target_version.to_string();
@@ -4886,6 +4920,9 @@ where
         let _ = rollback_journal();
         return Err(format!(".pack-version 커밋 실패(rollback 완료): {e}"));
     }
+    // ★W-a: 트랜잭션(원격 팩) 적용분은 내장 팩이 아니다 — 내장 지문을 지운다(부재 = 같은 판에서 종전대로 스킵 · 원격 팩을
+    //   내장 팩으로 덮는 스윕을 만들지 않는다).
+    let _ = std::fs::remove_file(dir.join(PACK_EMBED_HASH_FILE));
     // ⑤ post-commit(record_accepted) — 커밋은 이미 유효. 실패 = loud + false 반환(침묵 포장 금지).
     let post_commit_ok = match post_commit() {
         Ok(()) => true,
@@ -5799,6 +5836,15 @@ mod tests {
         // ⑦ 마커 손상(비semver) → 스윕(fail-open 치유)
         std::fs::write(td.join(PACK_VERSION_FILE), "garbage").unwrap();
         assert!(!pack_current_in(&td, "0.12.51"), "마커 손상 = 스윕");
+        // ★W-a(1.1.8): 같은 판 + 내장 지문 대조 — 지문 다름 = 스윕 · 같음 = 스킵 · 지문 부재 = 스킵(옛 설치 호환) · 디스크 전진 = 지문 무관 스킵.
+        std::fs::write(td.join(PACK_VERSION_FILE), "0.12.51").unwrap();
+        assert!(pack_current_in_with(&td, "0.12.51", Some("H-NEW")), "지문 부재 = 종전대로 스킵");
+        std::fs::write(td.join(PACK_EMBED_HASH_FILE), "H-OLD\n").unwrap();
+        assert!(!pack_current_in_with(&td, "0.12.51", Some("H-NEW")), "같은 판 재빌드(지문 다름) = 스윕");
+        assert!(pack_current_in_with(&td, "0.12.51", Some("H-OLD")), "지문 같음 = 스킵");
+        assert!(pack_current_in_with(&td, "0.12.51", None), "지문 미지정 호출 = 종전 판정");
+        std::fs::write(td.join(PACK_VERSION_FILE), "0.12.52").unwrap();
+        assert!(pack_current_in_with(&td, "0.12.51", Some("H-NEW")), "디스크 전진 = 지문 무관 스킵");
 
         let _ = std::fs::remove_dir_all(&td);
     }
@@ -6342,9 +6388,19 @@ mod tests {
             std::fs::create_dir_all(pp.parent().unwrap()).unwrap();
             std::fs::write(&pp, &m3_base).unwrap();
         }
+        // ★D22(1.1.8): 오너가 job 을 더한 schedule.json(혼합 설정 수정본) — 드라이런 = merge_user 버킷(「비수정 갱신」
+        //   오보 금지) · 실제 설치 = 오너 job 잔존(윈 실기 10-05 22:12 형상).
+        let sched_embed = PACK_ALL.iter().find(|(r, _)| *r == "schedule.json").map(|(_, c)| *c)
+            .expect("팩에 schedule.json 부재");
+        let mut sched_user: serde_json::Value = serde_json::from_str(sched_embed).unwrap();
+        sched_user["jobs"].as_array_mut().expect("jobs 배열").push(serde_json::json!({
+            "id": "d22-owner-daily-summary", "cron": "0 9 * * *", "action": "echo owner", "enabled": true
+        }));
+        std::fs::write(td.join("schedule.json"), serde_json::to_string_pretty(&sched_user).unwrap()).unwrap();
         // 캡처는 td 내부로 격리(공유 temp 오염 방지 — env 오버라이드 경로 검증 겸용).
         let _cap = EnvGuard::set("CYS_PACK_CAPTURES_DIR", td.join("cap-root"));
         let manifest = serde_json::json!({
+            "schedule.json": content_hash(sched_embed),
             "README.md": content_hash("OLD-INSTALLED"),
             "soul.md": content_hash("OLD-SOUL-BASE"),
             kd_rel: content_hash(kd_embed),
@@ -6364,9 +6420,13 @@ mod tests {
         assert!(plan.merge3.iter().any(|r| r == m3_rel),
                 "★T3(커밋②): 수정+vendor 전진+검증 base → merge3 버킷");
         assert!(!plan.heal.iter().any(|r| r == m3_rel), "merge3 를 heal 로 오보 금지(R7)");
+        assert!(plan.merge_user.iter().any(|r| r == "schedule.json"), "★D22: 수정된 혼합 설정 → merge_user: {plan:?}");
+        assert!(!plan.update.iter().any(|r| r == "schedule.json"), "★D22: 항목 병합을 「비수정 갱신」으로 오보 금지");
         // 실제 install 이 플랜과 같은 행동을 하는지 대조.
         install(false, None).expect("install 실패");
         let read = |rel: &str| std::fs::read_to_string(td.join(rel)).unwrap();
+        // ★W-a: 내장 설치는 지문 = 바이너리 내장 팩 해시를 남긴다(같은 판 재빌드 감지의 입력).
+        assert_eq!(read(PACK_EMBED_HASH_FILE), embedded_pack_hash(), "W-a 내장 설치 지문");
         assert_eq!(read("soul.md"), "USER-SOUL");
         assert!(td.join("soul.md.new").exists());
         assert!(td.join("alerts-config.json.user").exists());
@@ -6384,6 +6444,7 @@ mod tests {
         assert_eq!(pend.get(m3_rel).and_then(|e| e["kind"].as_str()), Some("merged"),
                    "merged 원장 계상(plan=actual)");
         assert_eq!(read(&format!("{PRISTINE_DIR}/{m3_rel}")), m3_embed, "pristine = 임베드 전진");
+        assert!(read("schedule.json").contains("d22-owner-daily-summary"), "★D22 plan=actual: 항목 병합 = 오너 job 잔존");
 
         let _ = std::fs::remove_dir_all(&td);
     }
@@ -8905,12 +8966,13 @@ mod tests {
             ("acl.json", acl_v2),
         ];
         let plan = plan_install(&pd, &v4, false, "1.0.4");
-        assert!(plan.update.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
-                "⑥드라이런이 승격본 갱신을 update 로 보고하지 않는다: {plan:?}");
+        // ★D22(1.1.8): 미수정 user-owned 신판 적용은 update 와 갈린 refresh_user 버킷으로 보고한다(행동 = 백업 뒤 적용).
+        assert!(plan.refresh_user.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
+                "⑥드라이런이 승격본 갱신을 refresh_user 로 보고하지 않는다: {plan:?}");
         assert!(!plan.merge_new.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
                 "⑥드라이런이 아직 `.new` 병치로 보고한다(실제 설치와 불일치): {plan:?}");
-        assert!(plan.update.iter().any(|r| r == "directives/WORKER_DIRECTIVE.md"),
-                "⑥미수정 갱신도 update 버킷이어야 한다: {plan:?}");
+        assert!(plan.refresh_user.iter().any(|r| r == "directives/WORKER_DIRECTIVE.md"),
+                "⑥미수정 갱신도 refresh_user 버킷이어야 한다: {plan:?}");
         let _ = std::fs::remove_dir_all(&td);
     }
 
@@ -10936,6 +10998,40 @@ mod tests {
     /// 오라클: 락을 **먼저 잡아 붙들고 있으면** 병합기는 해제 전에 끝날 수 없다. 같은 창에서
     /// 락을 안 잡는 RMW 를 먼저 재어 이 시간 오라클이 '락 없음'을 실제로 구별함을 보인다 —
     /// 구별 못 하는 오라클로 얻은 GREEN 은 아무것도 증명하지 않는다.
+    /// ★D27(1.1.8) 공용 락은 **모든 OS 에서** 잡힌다(윈 종전 = None) · 같은 락 아래 RMW 는 동시 쓰기에서 갱신 유실 0.
+    /// 스레드마다 락 파일을 따로 열어(= 프로세스 간과 같은 열린 파일 단위 잠금) 8×25 증가 → 정확히 200.
+    /// 음성 대조: 락 없이 같은 RMW 를 돌리면 유실이 나는지 먼저 본다(유실이 안 나면 오라클이 무효라 판정 생략이 아니라 실패).
+    #[test]
+    fn d27_settings_lock_serializes_rmw_on_every_os() {
+        let td = conc_dir("d27");
+        let f = td.join("approvals.json");
+        let run = |locked: bool| -> u64 {
+            std::fs::write(&f, "{\"n\":0}").unwrap();
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    let f = f.clone();
+                    std::thread::spawn(move || {
+                        for _ in 0..25 {
+                            let _g = if locked { Some(acquire_settings_lock(&f).expect("D27: 공용 락 미획득")) } else { None };
+                            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+                            let n = v["n"].as_u64().unwrap();
+                            std::thread::yield_now();
+                            write_atomic(&f, format!("{{\"n\":{}}}", n + 1).as_bytes()).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.join().unwrap();
+            }
+            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+            v["n"].as_u64().unwrap()
+        };
+        let naive = run(false);
+        assert!(naive < 200, "오라클 무효 — 락 없는 RMW 도 유실이 없었다({naive})");
+        assert_eq!(run(true), 200, "공용 락 아래 RMW 갱신 유실");
+    }
+
     #[test]
     fn h_conc_3_settings_writers_share_the_preflight_lock() {
         use std::time::{Duration, Instant};

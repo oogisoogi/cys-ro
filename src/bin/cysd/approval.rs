@@ -688,7 +688,8 @@ fn write_key_tmp(tmp: &std::path::Path, secret: &[u8], key: &std::path::Path) ->
 }
 
 /// ⑨(Fable R1 #1) approvals.json 읽기→변경→저장 직렬화 락 — 본부·부서 데몬이 같은 파일을 쓴다.
-/// 돌려받은 핸들을 **이름 있는 바인딩**으로 RMW 끝까지 쥐어라(drop = 해제 · 윈도 = 기존 헬퍼대로 None).
+/// 돌려받은 핸들을 **이름 있는 바인딩**으로 RMW 끝까지 쥐어라(drop = 해제). ★D27(1.1.8): 윈도도 이제 잡힌다
+/// (`acquire_settings_lock` 윈 = `File::lock`/LockFileEx · 종전 None = 본부·부서 데몬 간 승인 저장소 갱신 유실 가능).
 pub fn lock_records() -> Option<std::fs::File> {
     cys::pack::acquire_settings_lock(&records_path())
 }

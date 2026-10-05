@@ -949,6 +949,16 @@ enum DaemonAction {
     Uninstall,
     /// 등록·가동 상태 확인
     Status,
+    /// ★D5(1.1.8) 부서 데몬 상태 읽기 전용 조회 — 좌석·상태 폴더(기동·autostart 0 · 닫힌 부서 거절 exit 3).
+    /// (최상위 동사로 두지 않은 이유: 최상위 Command 에 인자를 늘리면 clap 파생 코드가 커져 기본 2MB 시험 스레드의
+    ///  j3 시험이 스택 넘침 — 실측. 하위 동사 enum 은 파싱 코드가 따로라 무영향)
+    DeptStatus {
+        /// 부서 이름(depts.json 키 · 예: dept-1)
+        name: String,
+        /// JSON 한 줄로 출력
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2677,6 +2687,11 @@ enum FeedAction {
         /// ★1.1.8 휴면: 숨김 인자(도움말 비노출) · 휴면 스위치가 꺼져 있으면 토큰이 실린 결재는 보내지 않고 거부한다.
         #[arg(long = "team-token", allow_hyphen_values = true, hide = true)]
         team_token: Option<String>,
+        /// ★D24ⓐ(1.1.8) pane 밖 오퍼레이터(외부 터미널의 master 등) 결재 — 대상 데몬의 operator.token 을 읽어 싣는다.
+        /// 데몬은 **pane 무귀속 호출자** 또는 master·cso 좌석일 때만 인정한다(워커 pane 안에서는 무효).
+        /// 데몬 감지 승인 창 항목이면 창이 아직 떠 있고 선택 줄이 「1. Yes」일 때 데몬이 그 창에 Return(allow)/Esc(deny)를 넣는다.
+        #[arg(long)]
+        operator: bool,
     },
 }
 
@@ -5339,6 +5354,8 @@ fn run(command: Command) -> i32 {
             .map(|r| println!("{}", r["surface_ref"].as_str().unwrap_or("?")))
         }
 
+        // ★D5: 본문은 줄 밖 함수로(이 거대 match 의 디버그 스택 프레임을 키우지 않는다 — j3 시험이 기본 스레드 스택에서 이 fn 을 돈다).
+
         Command::List => request("surface.list", json!({})).map(|r| {
             for s in r["surfaces"].as_array().cloned().unwrap_or_default() {
                 // ★v116-num: 보이는 번호 칸 `no=50`(없으면 `no=-`)은 **4번 자리**(exited 뒤·제목 앞) 고정 —
@@ -6580,7 +6597,7 @@ fn run_feed(action: FeedAction) -> i32 {
             }
             0
         }),
-        FeedAction::Reply { request_id, decision, reason, team_token } => {
+        FeedAction::Reply { request_id, decision, reason, team_token, operator } => {
             // ★1.1.8 휴면: 토큰이 실린 결재는 팀 토큰 갈래가 켜졌을 때만 보낸다(꺼짐 = 보내지 않고 거부 · 인가 없음).
             if team_token.is_some() && !cys::dormant::team_flow_enabled() {
                 return team_flow_dormant_refusal("feed reply --team-token", 1);
@@ -6591,8 +6608,23 @@ fn run_feed(action: FeedAction) -> i32 {
             if let Some(t) = team_token {
                 params["team_token"] = json!(t);
             }
-            request("feed.reply", params).map(|_| {
-                println!("OK");
+            // ★D24ⓐ: 명시 플래그일 때만 싣는다(종전 바이트 무변경 · 자동 첨부 0). 토큰 파일이 없으면 실패를 알린다.
+            if operator {
+                match owner_token_for_socket(&cys::socket_path()) {
+                    Some(t) => params["operator_token"] = json!(t),
+                    None => {
+                        eprintln!("error: --operator — 데몬 operator.token 을 읽지 못했다(데몬 미기동 또는 다른 계정)");
+                        return 1;
+                    }
+                }
+            }
+            request("feed.reply", params).map(|r| {
+                // 데몬 감지 승인 항목이면 창을 눌렀는지 함께 알린다(actuated = null → 기록만).
+                match r.get("actuated") {
+                    Some(Value::String(k)) => println!("OK (창에 {k} 입력)"),
+                    Some(Value::Null) => println!("OK (결정 기록만 — 창 키 입력 없음 · 오퍼레이터 자격 아님)"),
+                    _ => println!("OK"),
+                }
                 0
             })
         }
@@ -15321,6 +15353,110 @@ fn resume_guard_yields_to_followup(directive: String, effective_resume: bool, fo
     }
 }
 
+/// ★D25·D24ⓒ(1.1.8 · master 결정 [master#7f82e8c4] · [master#99924a73]) claude 좌석이면 기동 설정을 파일로 쓰고
+/// `--settings <파일>` 를 cmd 끝에 붙인다. 내용 = `cys::claude_seat_settings`(빈 객체면 붙이지 않음 = 종전 바이트).
+/// 파일 쓰기 실패 = 붙이지 않고 경고 1줄(기동은 막지 않는다 · 기동 뒤 rc 감시가 남는다).
+fn apply_seat_settings_arg(cmd: &mut String, role: &str, agent: &str) {
+    if !cys::is_claude_seat(agent, extract_bin(cmd, agent)) || cys::cmd_has_settings_flag(cmd) {
+        return;
+    }
+    let settings = cys::claude_seat_settings(
+        role,
+        cys::is_dept_socket(&cys::socket_path()),
+        &cys::seat_policy_permissions_allow(),
+        &cys::rc_allowed_roles(),
+    );
+    if settings.as_object().is_some_and(|o| o.is_empty()) {
+        return;
+    }
+    let path = cys::seat_settings_path(role);
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|_| cys::atomic_write_json(&path, &settings));
+    match written {
+        Ok(()) => cmd.push_str(&cys::seat_settings_arg(&path, cfg!(windows))),
+        Err(e) => eprintln!("[launch-agent] 좌석 기동 설정 파일 쓰기 실패({}: {e}) — --settings 없이 기동(RC 감시는 유지)", path.display()),
+    }
+}
+
+/// ★D5(1.1.8 · 윈 결함 보고 D5) 부서 상태 읽기 전용 조회의 사전 판정(순수) — 이름 형식 · 레지스트리 상태.
+/// 닫힌 부서(레지스트리에 없음) = 거절(exit 3 · 조회가 기동·부활을 부르지 않게 — D21 과 같은 방향).
+/// 레지스트리 판독 불가 = 진행하되 경고(판정 불가는 닫힘의 근거가 아니다 — `DeptRegistration::Unknown` doc).
+fn dept_status_precheck(name: &str, reg: cys::DeptRegistration) -> Result<Option<String>, (i32, String)> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err((2, format!("부서 이름 형식이 아니다: {name:?}(영숫자·-·_ 만)")));
+    }
+    match reg {
+        cys::DeptRegistration::Deregistered => Err((
+            3,
+            format!("닫힌 부서다(depts.json 에 {name} 없음) — 조회만 하며 기동하지 않는다. 다시 열려면 cys-dept 의 명시 명령을 쓴다"),
+        )),
+        cys::DeptRegistration::Unknown => Ok(Some("부서 레지스트리(depts.json)를 읽지 못했다 — 등록 여부 미확인 상태로 조회만 한다".into())),
+        _ => Ok(None),
+    }
+}
+
+/// `cys daemon dept-status <이름>` — 부서 소켓(레지스트리의 socket 칸 ‖ OS 규약 이름)으로 **autostart 없이** 접속해
+/// `surface.list` 만 읽는다. 종전 경로(`CYS_SOCKET=<부서> cys list`)는 연결 실패 시 autostart 를 시도해 레인↔팩 가드에
+/// 막혔고(윈 실측: 부서 데몬 live 인데 조회 불가), 본부의 CEO 가 부서 좌석을 스스로 확증할 길이 없었다.
+/// exit: 0 = 조회됨 · 2 = 형식/연결 실패(부서 데몬 미가동 포함) · 3 = 닫힌 부서.
+fn run_dept_status(name: &str, as_json: bool) -> i32 {
+    let reg_path = std::env::var("CYS_DEPTS_JSON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| cys::home_dir().join(".cys/depts.json"));
+    let reg: Option<Value> = std::fs::read_to_string(&reg_path)
+        .ok()
+        .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok());
+    let sock = reg
+        .as_ref()
+        .and_then(|r| r["depts"][name]["socket"].as_str().map(std::path::PathBuf::from))
+        .unwrap_or_else(|| cys::dept_socket_path(name));
+    let warn = match dept_status_precheck(name, cys::dept_registration(&sock)) {
+        Ok(w) => w,
+        Err((code, msg)) => {
+            eprintln!("error: {msg}");
+            return code;
+        }
+    };
+    if let Some(w) = &warn {
+        eprintln!("[dept-status] {w}");
+    }
+    let state_dir = cys::daemon_state_dir(&sock);
+    match request_on(&sock, "surface.list", json!({})) {
+        Ok(r) => {
+            let seats = r["surfaces"].as_array().cloned().unwrap_or_default();
+            if as_json {
+                println!(
+                    "{}",
+                    json!({"dept": name, "socket": sock.display().to_string(),
+                           "state_dir": state_dir.display().to_string(), "surfaces": seats})
+                );
+            } else {
+                println!("부서 {name} · 소켓 {} · 상태 폴더 {}", sock.display(), state_dir.display());
+                for s in &seats {
+                    println!(
+                        "{}\trole={}\texited={}\t{}",
+                        s["surface_ref"].as_str().unwrap_or("?"),
+                        s["role"].as_str().unwrap_or("-"),
+                        s["exited"].as_bool().unwrap_or(false),
+                        s["title"].as_str().unwrap_or("")
+                    );
+                }
+                println!("(좌석 {}개 · 읽기 전용 조회 · 기동 0)", seats.len());
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!(
+                "error: 부서 {name} 데몬에 연결하지 못했다({e}) — 조회는 기동하지 않는다(autostart 0). 상태 폴더 = {} · 기동은 cys-dept launch {name}",
+                state_dir.display()
+            );
+            2
+        }
+    }
+}
+
 /// launch-agent(새 surface)와 node-recover(기존 surface 재기동)가 공유한다.
 fn boot_agent_on_surface(
     sid: u64,
@@ -15415,6 +15551,9 @@ fn boot_agent_on_surface(
     cys::inject_claude_prompt_suggestion_default(&mut env_pairs, extract_bin(&cmd, agent));
     // ★v116-seat N-4: Claude 좌석 effort = env(키 부재 시에만 high) — lib `inject_claude_effort_env` doc.
     cys::inject_claude_effort_env(&mut env_pairs, agent, extract_bin(&cmd, agent));
+    // ★D25·D24ⓒ(1.1.8): claude 좌석 기동 설정 파일(RC 끄기 두 키 · 정책 allow 목록) — 사용자 cmd 에 --settings 가
+    //   이미 있으면 붙이지 않는다(병합 방식 미실측 · 기동 뒤 cysd rc 감시만 동작).
+    apply_seat_settings_arg(&mut cmd, role, agent);
     let (send, _send_env) = render_launch(&cmd, &env_pairs);
     // ★(W2 · B4) **기동 send 직전 line_count 스냅샷** — readiness 판정의 시간 귀속 기준선.
     //
@@ -18341,6 +18480,7 @@ fn hook_record_mission(
         ledger_status,
         &decision.anomalies,
         Some(prompt.chars().count()),
+        Some(prompt), // ★D15: 이상징후 출처(프롬프트 해시 앞 12자 · 원문은 싣지 않는다)
     ) {
         if let Err(e) = cys::atomic_write_json(mission_p, &rec) {
             notes.push(format!("대장 쓰기 실패({e}) — 판정 무영향"));
@@ -18975,6 +19115,8 @@ fn run_launch_agent_opts(
         let r = request(
             "surface.create",
             json!({"cwd": cwd, "title": workflow_title(role, agent, &cwd), "role": role,
+                   // ★D17(1.1.8): 제목 판정 전용 어댑터 이름(데몬 initial_title 만 읽는다 · agent_meta 무접촉).
+                   "title_agent": agent,
                    "rows": 40, "cols": 140, "idempotency_key": idem, "env": env_obj,
                    // ★SEAT: launch-agent 는 '이 역할의 노드를 실제로 띄우겠다'는 명시 의사다 —
                    // 보유자가 빈 좌석(agent 없는 셸)이면 승계를 요청한다. 데몬이 그 좌석이 정말
@@ -19071,6 +19213,10 @@ fn run_launch_agent_opts(
 // plist 포맷·경로·LABEL은 `cys::launchd`(앱 자동등록과 단일 소스) 위임 — 드리프트 방지.
 
 fn run_daemon_cmd(action: DaemonAction) -> i32 {
+    // ★D5: OS 무관 읽기 전용 조회 — 아래 OS 별 등록 관리 분기 앞에서 끝낸다.
+    if let DaemonAction::DeptStatus { name, json } = &action {
+        return run_dept_status(name, *json);
+    }
     let result: Result<(), String> = (|| {
         #[cfg(target_os = "macos")]
         {
@@ -19179,6 +19325,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("launchd 등록 해제 완료 (데몬 정지됨 — 세션도 함께 종료)");
                     Ok(())
                 }
+                DaemonAction::DeptStatus { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let path = cys::launchd::plist_path();
                     let registered = path.exists();
@@ -19257,6 +19404,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("작업 스케줄러 등록 해제 완료");
                     Ok(())
                 }
+                DaemonAction::DeptStatus { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let registered = cys::hidden_command("schtasks")
                         .args(["/Query", "/TN", TASK])
@@ -24896,6 +25044,9 @@ fn run_pack_plan(force: bool) -> i32 {
     };
     println!("팩 반영 플랜 (대상: {} · 바이너리 {} · 쓰기 없음)", dir.display(), env!("CARGO_PKG_VERSION"));
     section("🔄 자동 갱신", &plan.update, "비수정 — 그대로 갱신됨");
+    // ★D22(1.1.8): 사용자 소유 파일의 두 갱신을 따로 보인다(종전 = 위 한 문구로 합쳐 「비수정」 오보).
+    section("🔄 자동 갱신(사용자 소유 · 미수정)", &plan.refresh_user, "손대지 않은 사본 — <파일>.bak-<판> 백업 뒤 신판 적용");
+    section("🔀 항목 병합", &plan.merge_user, "사용자 수정본 유지 · 새 항목만 추가 · 백업");
     section("✨ 신규 생성", &plan.create, "");
     section("🛠 강제 치유", &plan.heal, "system 수정본 — 덮기 전 사용자본을 <파일>.user 로 보존");
     section("🧬 자동 병합(3-way)", &plan.merge3, "수정본+vendor 전진 — 검증된 조상 위 자동 병합(충돌·실패는 치유+.user 강등)");
@@ -46325,6 +46476,76 @@ mod team_token_cli_tests {
         let c = Cli::try_parse_from(["cys", "feed", "reply", "tp-1-00ab", "allow"]).expect("종전 호출형");
         match c.command {
             Command::Feed { action: FeedAction::Reply { team_token, .. } } => assert!(team_token.is_none()),
+            _ => panic!("feed reply 파싱 실패"),
+        }
+    }
+
+    /// ★D17·D25(1.1.8) 배선 핀 — launch-agent 의 surface.create 가 제목 판정용 `title_agent` 를 싣고,
+    /// 기동 줄은 render_launch 전에 좌석 기동 설정 인자(apply_seat_settings_arg)를 붙인다.
+    #[test]
+    fn d17_d25_launch_wiring_pins() {
+        let src = include_str!("cys.rs");
+        let la = src.find("fn run_launch_agent_opts(").expect("run_launch_agent_opts");
+        let la_body = &src[la..la + src[la..].find("\n}\n").unwrap()];
+        let r = la_body.find("\"surface.create\"").expect("surface.create");
+        assert!(la_body[r..].contains("\"title_agent\": agent"), "D17: launch-agent 페이로드에 title_agent 없음");
+        let b = src.find("fn boot_agent_on_surface(").unwrap();
+        let b_body = &src[b..b + src[b..].find("\n}\n").unwrap()];
+        let a = b_body.find("apply_seat_settings_arg(&mut cmd, role, agent)").expect("D25: 기동 설정 인자 배선 없음");
+        let rl = b_body.find("render_launch(&cmd, &env_pairs)").unwrap();
+        assert!(a < rl, "D25: 기동 설정 인자가 기동 줄 렌더 뒤");
+    }
+
+    /// ★D5(1.1.8) 부서 상태 조회 사전 판정 — 닫힌 부서 = exit 3 거절(기동 0) · 판독 불가 = 경고 뒤 조회 · 형식 오류 = 2.
+    #[test]
+    fn d5_dept_status_precheck_table() {
+        assert_eq!(dept_status_precheck("dept-1", cys::DeptRegistration::Registered), Ok(None));
+        assert_eq!(dept_status_precheck("dept-1", cys::DeptRegistration::Deregistered).unwrap_err().0, 3);
+        assert!(dept_status_precheck("dept-1", cys::DeptRegistration::Unknown).unwrap().is_some());
+        assert_eq!(dept_status_precheck("../x", cys::DeptRegistration::Registered).unwrap_err().0, 2);
+        assert_eq!(dept_status_precheck("", cys::DeptRegistration::Registered).unwrap_err().0, 2);
+        let c = Cli::try_parse_from(["cys", "daemon", "dept-status", "dept-1", "--json"]).expect("daemon dept-status 파싱");
+        assert!(matches!(c.command, Command::Daemon { action: DaemonAction::DeptStatus { ref name, json: true } } if name == "dept-1"));
+    }
+
+    /// ★D5 연결 실패 = exit 2 · autostart 0(없는 부서 소켓으로 조회해도 데몬을 띄우지 않는다 — request_on 은 연결만 한다).
+    #[test]
+    fn d5_dept_status_connect_failure_never_autostarts() {
+        let src = include_str!("cys.rs");
+        let f = src.find("fn run_dept_status(").unwrap();
+        let body = &src[f..f + src[f..].find("\n}\n").unwrap()];
+        assert!(body.contains("request_on(&sock, \"surface.list\""), "읽기 전용 단일 RPC");
+        assert!(!body.contains("request(") || body.matches("request(").count() == body.matches("request_on(").count(),
+                "autostart 하는 request() 경로 금지");
+        assert!(!body.contains("ensure_daemon"), "기동 경로 호출 금지");
+    }
+
+    /// ★D25(1.1.8) 기동 인자 부착 제외 경로 — 비claude 어댑터·사용자 cmd 에 --settings 가 이미 있으면 cmd 바이트 무변경
+    /// (master 결정: 그때는 기동 뒤 감시만). 부착 경로의 내용 결정표는 lib `d25_claude_seat_settings_table`.
+    #[test]
+    fn d25_seat_settings_arg_skips_non_claude_and_user_settings() {
+        for (cmd, agent) in [
+            ("codex --yolo", "codex"),
+            ("claude --dangerously-skip-permissions --settings /mine.json", "claude"),
+            ("claude --settings=/mine.json", "claude"),
+        ] {
+            let mut c = cmd.to_string();
+            apply_seat_settings_arg(&mut c, "worker-2", agent);
+            assert_eq!(c, cmd, "{agent}: 무변경");
+        }
+    }
+
+    /// ★D24ⓐ(1.1.8) `feed reply --operator` — 명시 플래그일 때만 참(종전 호출형 = 거짓 · 자동 첨부 0).
+    #[test]
+    fn d24_feed_reply_operator_flag_is_opt_in() {
+        let c = Cli::try_parse_from(["cys", "feed", "reply", "daemon-1-0", "allow", "--operator"]).expect("--operator");
+        match c.command {
+            Command::Feed { action: FeedAction::Reply { operator, .. } } => assert!(operator),
+            _ => panic!("feed reply 파싱 실패"),
+        }
+        let c = Cli::try_parse_from(["cys", "feed", "reply", "daemon-1-0", "allow"]).expect("종전 호출형");
+        match c.command {
+            Command::Feed { action: FeedAction::Reply { operator, .. } } => assert!(!operator),
             _ => panic!("feed reply 파싱 실패"),
         }
     }

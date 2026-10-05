@@ -2385,17 +2385,29 @@ fn check_approvals(
                 .take(160)
                 .collect();
             let role = s.role.lock().unwrap().clone();
+            // ★D24ⓑ(1.1.8) 명령 원문·읽기 전용 추정 동봉 — 사람·오퍼레이터가 화면을 열지 않고 feed 에서 바로 판단하게.
+            //   추정은 기계 낱말 대조일 뿐이다(문구에 그대로 적는다). 패턴 행 위 창 머리까지가 원문 블록이다.
+            let screen_lines: Vec<&str> = screen.lines().collect();
+            let match_row = screen[..m.start()].matches('\n').count();
+            let command = approval_command_block(&screen_lines, match_row);
+            let readonly = approval_readonly_verdict(&command);
             daemon.bus.publish(
                 "approval.request",
                 "feed",
                 Some(s.id),
                 json!({"surface_ref": cys::surface_ref(s.id), "role": role,
-                       "agent": agent, "pattern": name, "excerpt": excerpt}),
+                       "agent": agent, "pattern": name, "excerpt": excerpt,
+                       "command": command, "readonly": readonly}),
             );
+            let body = if command.is_empty() {
+                excerpt.clone()
+            } else {
+                format!("{excerpt}\n— 명령 원문:\n{command}\n— 읽기 전용 판정(기계 추정 · 근거 아님): {readonly}")
+            };
             daemon.push_feed_notification(
                 "approval",
                 &format!("{agent} 승인 대기 감지 ({})", cys::surface_ref(s.id)),
-                &excerpt,
+                &body,
                 Some(s.id),
             );
             // L2 방치 차단(2026-07-07 재발방지): 새 에피소드 1건당 master를 큐로 1회 각성 —
@@ -7123,7 +7135,8 @@ pub(crate) fn machine_direct_hold(
     s: &Arc<crate::state::Surface>,
     want: MachineHoldAxes,
 ) -> Option<MachineHold> {
-    let mask = hold_axes_mask_from(h_knob("CYS_MACHINE_INJECT_HOLD_AXES").as_deref(), cfg!(windows));
+    // ★J-📌1(1.1.8): 초안(draft) 축의 윈 꺼짐 = 옛 모드일 때만(원작자 표 `hold_axes_default(windows)` 는 그대로 · 넣는 OS 값만 바뀐다).
+    let mask = hold_axes_mask_from(h_knob("CYS_MACHINE_INJECT_HOLD_AXES").as_deref(), cys::win_input_guards_legacy());
     machine_direct_hold_masked(daemon, s, want, mask)
 }
 
@@ -7720,7 +7733,7 @@ impl PendingInputModel {
 
     /// OS 별 기본 모델 — [`Self::default_for`] 에 이 빌드의 OS 를 넣은 한 식이다(런타임 분기 `cfg!`). 본문이 그 한 식이라는 것은 소스 핀(`a5_m2_os_default_is_one_expression…`)이 고정한다.
     pub(crate) fn os_default() -> Self {
-        Self::default_for(cfg!(windows))
+        Self::default_for(cys::win_input_guards_legacy())
     }
 
     /// env 값의 **명시 해석**(순수) — `v2`/`v3`(대소문자·앞뒤 공백 무시). 그 밖·부재는 `None`(= OS 기본으로 내려간다). 아래 두 판이 같은 표를 쓴다.
@@ -8340,6 +8353,13 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
     let Some((agent, _)) = s.agent_meta.lock().unwrap().clone() else {
         return false;
     };
+    approval_screen_with(s, &agent, true)
+}
+
+/// [`approval_screen_now`] 본체 — `with_gates=false` 면 첫기동 관문 축(⑵)을 빼고 어댑터 승인 창만 본다
+/// (D24ⓐ 집행은 관문 창을 누르지 않는다 · 관문 통과는 부트 경로 소관 = `scan_first_run_gate` doc).
+fn approval_screen_with(s: &Arc<crate::state::Surface>, agent: &str, with_gates: bool) -> bool {
+    let agent = agent.to_string();
     let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -8355,7 +8375,7 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
         .filter_map(approval_regex_cached)
         .collect();
     let marker = merged_ready_marker(&disk, &embed, &agent);
-    let corpus = gate_corpus_cached(&disk, &embed, &agent);
+    let corpus = if with_gates { gate_corpus_cached(&disk, &embed, &agent) } else { None };
     let gates = corpus.as_deref().map_or(&[][..], Vec::as_slice);
     let (rows, cursor_row) = {
         let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
@@ -8368,6 +8388,143 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
         Some(m) => approval_in_prompt_tail(&rows, cursor_row, &m, &res, gates),
         None => approval_in_prompt_tail(&rows, usize::MAX, "", &res, gates),
     }
+}
+
+// ─── ★D24ⓐⓑ(1.1.8 · BACKLOG D24) 데몬 감지 승인 창 — 오퍼레이터 결정의 실제 집행 + 명령 원문·읽기 전용 추정 ───
+//
+// 【무엇이 틀렸었나】(10-05 22:2x 실측 · 276 좌석 교착) 데몬 감지 승인 항목(`daemon-…`)에 `cys feed reply allow` 가
+// 와도 데몬은 **결정만 기록하고 창은 누르지 않았다**. 큐는 승인 대기(approval_pending)로 멈추고, 외부 Return 은
+// 타이핑 가드(human_draft)에 막혀, 사람이 GUI 앞에 오기 전엔 좌석이 영구 대기했다. 이 절은 자격 있는 오퍼레이터의
+// 결정을 그 창에 실제로 넣는다 — 단 **창이 아직 화면에 있고 선택 줄이 「1. Yes」일 때만**(아니면 키 0).
+
+/// 오퍼레이터 결정 → 창에 넣을 바이트(순수). 승인 창 판독은 호출자가 끝낸 뒤다.
+/// 선택 줄 = 준비 마커로 시작하는 번호 선택지 행(`❯ 1. Yes`)이 **정확히 1개**여야 한다(둘 이상·0 = 모양 불명 → 거부).
+/// allow 는 그 줄이 `1. Yes` 일 때만 Return(기본 선택 그대로 누름 · 숫자 키를 쓰지 않는 이유 = 선택 줄을 이미 대조했으므로
+/// Return 이 가장 좁다) · deny 는 Esc(claude 선택 창 꼬리 「Esc to cancel」).
+pub(crate) fn approval_actuation_bytes(
+    rows: &[String],
+    marker: &str,
+    allow: bool,
+) -> Result<&'static [u8], &'static str> {
+    if marker.is_empty() {
+        return Err("marker_unknown");
+    }
+    let selected: Vec<&String> = rows.iter().filter(|r| is_numbered_choice_row(r, marker)).collect();
+    let [row] = selected.as_slice() else {
+        return Err("selected_row_ambiguous");
+    };
+    if !allow {
+        return Ok(b"\x1b");
+    }
+    let Some(i) = row.find(marker) else {
+        return Err("selected_row_ambiguous");
+    };
+    let rest = row[i + marker.len()..].trim_start();
+    match rest.strip_prefix("1.") {
+        Some(label) if label.trim_start().starts_with("Yes") => Ok(b"\r"),
+        _ => Err("selected_not_yes"),
+    }
+}
+
+/// D24ⓐ 집행 — 좌석 `sid` 의 어댑터 승인 창에 오퍼레이터 결정을 넣는다. `Ok(키 이름)` = 넣음 · `Err(사유)` = 키 0.
+/// 사유: `gone`(좌석·창 없음) · `agent_unknown` · `marker_unknown` · `selected_row_ambiguous` · `selected_not_yes` ·
+/// `writer_closed`. 첫기동 관문 창은 판독에서 뺀다(관문 통과 = 부트 경로 소관).
+pub(crate) fn actuate_screen_approval(
+    daemon: &Arc<Daemon>,
+    sid: u64,
+    allow: bool,
+) -> Result<&'static str, &'static str> {
+    let Some(s) = daemon.get_surface(sid) else {
+        return Err("gone");
+    };
+    let Some((agent, _)) = s.agent_meta.lock().unwrap().clone() else {
+        return Err("agent_unknown");
+    };
+    if !approval_screen_with(&s, &agent, false) {
+        return Err("gone");
+    }
+    let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let embed = cys::pack::PACK_ALL
+        .iter()
+        .find(|(r, _)| *r == "agents.json")
+        .and_then(|(_, c)| serde_json::from_str(c).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let marker = merged_ready_marker(&disk, &embed, &agent).unwrap_or_default();
+    let rows: Vec<String> = {
+        let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let screen = p.screen();
+        let (_, cols) = screen.size();
+        screen.rows(0, cols).collect()
+    };
+    let bytes = approval_actuation_bytes(&rows, &marker, allow)?;
+    s.write_tx
+        .send(crate::state::WriteReq::Data(bytes.to_vec()))
+        .map_err(|_| "writer_closed")?;
+    Ok(if allow { "return" } else { "escape" })
+}
+
+/// D24ⓑ 명령 원문 블록(순수) — 승인 패턴이 걸린 행(`match_row`) 위로 거슬러 올라가 창 머리(가로줄·상자 윗변)까지의
+/// 비지 않은 행을 모은다(최대 12행·600자). 상자 테두리(`│`)는 벗긴다. 창이 무엇을 실행하려는지 사람이 feed 에서 바로 보게.
+pub(crate) fn approval_command_block(lines: &[&str], match_row: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = match_row.min(lines.len());
+    while i > 0 && out.len() < 12 {
+        i -= 1;
+        let raw = lines[i];
+        let t = raw.trim();
+        if is_rule_row(raw) || t.starts_with('╭') || t.starts_with('┌') {
+            break;
+        }
+        let t = t.trim_start_matches('│').trim_end_matches('│').trim();
+        if !t.is_empty() {
+            out.push(t.to_string());
+        }
+    }
+    out.reverse();
+    out.join("\n").chars().take(600).collect()
+}
+
+/// D24ⓑ 읽기 전용 추정(순수 · **기계 추정이지 근거가 아니다** — 사람이 원문을 보고 판단한다).
+/// 쓰기·삭제 낱말이 하나라도 있으면 「쓰기·삭제 가능」 · 첫 낱말이 읽기 명령 목록이면 「읽기 전용 추정」 · 그 밖 「판정 불가」.
+pub(crate) fn approval_readonly_verdict(cmd: &str) -> &'static str {
+    static WRITE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let write = WRITE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?x)(^|[\s;&|(`])(rm|rmdir|mv|cp|dd|tee|truncate|unlink|chmod|chown|kill|pkill|killall|mkdir|touch|ln|install|shred)\b
+              | (^|[^-<>])>{1,2}[^&=]
+              | \bsed\s+(-[a-zA-Z]*i|--in-place)
+              | \bgit\s+(push|commit|reset|checkout|clean|rebase|merge|stash|tag|rm|mv|restore|switch|apply|am|cherry-pick)\b
+              | \bcurl\b.*\s-(X|d|T|F)\b
+              | \b(npm|pnpm|yarn|bun|pip|pip3|brew|cargo)\s+(i|install|add|remove|uninstall|publish)\b
+              | -delete\b | -exec\b",
+        )
+        .expect("정적 정규식")
+    });
+    if write.is_match(cmd) {
+        return "쓰기·삭제 가능";
+    }
+    const READ: &[&str] = &[
+        "ls", "cat", "head", "tail", "grep", "rg", "wc", "find", "ps", "pgrep", "stat", "file", "du", "df",
+        "pwd", "which", "echo", "jq", "git", "sed", "awk", "sort", "uniq", "diff", "cut", "tr", "date", "env",
+    ];
+    // 「Bash command」 같은 창 제목 행은 건너뛰고 첫 실명령 행의 첫 낱말을 본다.
+    let first = cmd
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.ends_with("command") && !l.ends_with("command:"))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or("");
+    let first = first.rsplit('/').next().unwrap_or(first);
+    if READ.contains(&first) {
+        let git_read_ok = !cmd.contains("git ") || regex::Regex::new(r"\bgit\s+(log|status|diff|show|branch|rev-parse|ls-files|grep|blame)\b").map(|r| r.is_match(cmd)).unwrap_or(false);
+        if git_read_ok {
+            return "읽기 전용 추정";
+        }
+    }
+    "판정 불가"
 }
 
 /// ★⑯(1.1.7) 좌석이 **지금** 승인·질문 창을 띄우고 있는가 — 큐 배달자와 같은 두 재료의 OR
@@ -14278,6 +14435,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★D24ⓐ 집행 바이트 결정표(순수) — 선택 줄이 정확히 1개이고 「1. Yes」 일 때만 allow=Return · deny=Esc.
+    #[test]
+    fn d24_approval_actuation_bytes_table() {
+        let rows = |t: &str| -> Vec<String> { t.lines().map(str::to_string).collect() };
+        let live = rows(cys::first_run_gates::fixtures::LIVE_PERMISSION_PROMPT);
+        assert_eq!(super::approval_actuation_bytes(&live, "❯", true), Ok(&b"\r"[..]));
+        assert_eq!(super::approval_actuation_bytes(&live, "❯", false), Ok(&b"\x1b"[..]));
+        assert_eq!(super::approval_actuation_bytes(&live, "", true), Err("marker_unknown"));
+        let moved = rows("Do you want to proceed?\n  1. Yes\n❯ 2. Yes, and don't ask again\n  3. No");
+        assert_eq!(super::approval_actuation_bytes(&moved, "❯", true), Err("selected_not_yes"));
+        assert_eq!(super::approval_actuation_bytes(&moved, "❯", false), Ok(&b"\x1b"[..]), "deny 는 선택 줄과 무관(Esc = 취소)");
+        let none = rows("Do you want to proceed?\n  1. Yes\n  2. No");
+        assert_eq!(super::approval_actuation_bytes(&none, "❯", true), Err("selected_row_ambiguous"));
+        let two = rows("❯ 1. Yes\n❯ 1. Yes");
+        assert_eq!(super::approval_actuation_bytes(&two, "❯", true), Err("selected_row_ambiguous"));
+        let yesish = rows("❯ 1. Yesterday's plan");
+        assert_eq!(super::approval_actuation_bytes(&yesish, "❯", true), Ok(&b"\r"[..]), "라벨 머리 Yes 대조(접두) — 실제 창 문면 고정");
+    }
+
+    /// ★D24ⓑ 명령 원문 블록·읽기 전용 추정(순수) — 창 머리(가로줄·상자 윗변)까지 거슬러 모으고 테두리를 벗긴다.
+    #[test]
+    fn d24_approval_command_block_and_readonly_verdict() {
+        let boxed = [
+            "previous output",
+            "╭──────────────────────────────╮",
+            "│ Bash command                 │",
+            "│                              │",
+            "│   rm -rf /tmp/x              │",
+            "│   Remove scratch             │",
+            "│                              │",
+            "│ Do you want to proceed?      │",
+        ];
+        assert_eq!(super::approval_command_block(&boxed, 7), "Bash command\nrm -rf /tmp/x\nRemove scratch");
+        let ruled = ["────────────────", " Bash command", "   ls -la target", " Do you want to proceed?"];
+        assert_eq!(super::approval_command_block(&ruled, 3), "Bash command\nls -la target");
+        assert_eq!(super::approval_command_block(&ruled, 0), "", "맨 윗줄 매치 = 빈 블록");
+        let v = super::approval_readonly_verdict;
+        assert_eq!(v("Bash command\nrm -rf /tmp/x"), "쓰기·삭제 가능");
+        assert_eq!(v("Bash command\nls -la target"), "읽기 전용 추정");
+        assert_eq!(v("grep -n foo src/x.rs | head"), "읽기 전용 추정");
+        assert_eq!(v("echo hi > out.txt"), "쓰기·삭제 가능");
+        assert_eq!(v("cat a 2>&1"), "읽기 전용 추정", "2>&1 은 쓰기 아님");
+        assert_eq!(v("git status"), "읽기 전용 추정");
+        assert_eq!(v("git push origin main"), "쓰기·삭제 가능");
+        assert_eq!(v("sed -i s/a/b/ f"), "쓰기·삭제 가능");
+        assert_eq!(v("find . -name x -delete"), "쓰기·삭제 가능");
+        assert_eq!(v("sh -c 'something'"), "판정 불가");
+        assert_eq!(v("python3 tool.py"), "판정 불가");
+        assert_eq!(v(""), "판정 불가");
+    }
+
     /// L2 escalation 핀: stall 임계 초과 pending 감지 항목은 approval.stalled를 항목당
     /// 정확히 1회 발행하고, 해소된 항목은 fired 집합에서 회수된다.
     #[test]
@@ -17002,8 +17210,9 @@ mod tests {
         assert_eq!(PendingInputModel::default_for(false), PendingInputModel::V3, "그 밖(맥·리눅스) 기본은 V3");
         assert_eq!(
             PendingInputModel::os_default(),
-            PendingInputModel::default_for(cfg!(windows)),
-            "OS 기본: 이 빌드의 판은 순수 표에 이 빌드의 OS 를 넣은 값이다"
+            // ★1.1.8 J-📌1 조정(원장 1줄): 넣는 값 = 「윈 입력 안전장치 옛 모드」(윈 기본 = 켬 = V3 · 노브 0 = V2 · 비윈도우 = V3).
+            PendingInputModel::default_for(cys::win_input_guards_legacy()),
+            "OS 기본: 이 빌드의 판은 순수 표에 이 빌드의 옛 모드 여부를 넣은 값이다"
         );
         for (is_windows, want_default) in [(true, PendingInputModel::V2), (false, PendingInputModel::V3)] {
             for (v, want) in [
@@ -17025,7 +17234,7 @@ mod tests {
         }
         // 이 빌드의 env 판은 OS 인자판에 이 빌드의 OS 를 넣은 값과 같다(같은 입력 · 두 경로).
         for v in [Some("v2"), Some(" V3 "), Some("junk"), Some(""), None] {
-            assert_eq!(PendingInputModel::from_env_value(v), PendingInputModel::from_env_value_for(v, cfg!(windows)), "{v:?}");
+            assert_eq!(PendingInputModel::from_env_value(v), PendingInputModel::from_env_value_for(v, cys::win_input_guards_legacy()), "{v:?}"); // ★J-📌1 조정
         }
     }
 
@@ -17042,7 +17251,8 @@ mod tests {
             let close = rest.find("\n    }\n").expect("본문 끝(메서드 들여쓰기 4칸)");
             rest[open + 1..close].split_whitespace().collect::<Vec<_>>().join(" ")
         };
-        assert_eq!(body(concat!("pub(crate) fn os_default", "() -> Self {")), "Self::default_for(cfg!(windows))");
+        // ★1.1.8 J-📌1 조정(원장 1줄): OS 인자 = 「윈 입력 안전장치 옛 모드」(윈 기본 = 켬 → V3 · 노브 0 = 원작자 윈 갈래 V2).
+        assert_eq!(body(concat!("pub(crate) fn os_default", "() -> Self {")), "Self::default_for(cys::win_input_guards_legacy())");
         assert_eq!(body(concat!("pub(crate) fn from_env_value", "(v: Option<&str>) -> Self {")), "Self::explicit_from_env_value(v).unwrap_or_else(Self::os_default)");
         assert_eq!(
             body(concat!("pub(crate) fn default_for", "(is_windows: bool) -> Self {")),

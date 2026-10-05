@@ -148,7 +148,13 @@ pub fn last_rate_snapshots(
     out
 }
 
+/// 소진 예측 표본에서 빼는 출처(cys 창 밖 보고 · accounts::OUTSIDE_SOURCE 와 같은 문자열 — 시험이 대조한다).
+pub const RATE_SERIES_EXCLUDED_SOURCE: &str = "statusline-outside";
+
 /// 계정×창 최근 시계열(소진 예측용) — ts 오름차순 (ts, used_pct).
+/// ★1.1.8 📌5(R1 codex F1·agy F4 필수 오버레이): 표본에서 cys 창 밖 보고(`statusline-outside` · 검증 안 된 표시용 값)를
+/// 뺀다 — 행 필터만으론 「창 밖 보고 뒤 정상 보고」 때 예측 이력이 오염돼 `exhaust_at`(master 토큰 리미트 게이트)이
+/// 흔들린다. 출처 열이 없던 구 행(NULL)은 신뢰 행으로 남긴다(last_rate_snapshots 의 exclude_source 와 같은 규칙).
 pub fn rate_series(
     conn: &Connection,
     provider: &str,
@@ -159,11 +165,12 @@ pub fn rate_series(
     let mut out = Vec::new();
     let Ok(mut stmt) = conn.prepare(
         "SELECT ts, used_pct FROM rate_snapshots
-         WHERE provider=?1 AND account=?2 AND win=?3 AND ts>=?4 ORDER BY ts",
+         WHERE provider=?1 AND account=?2 AND win=?3 AND ts>=?4
+           AND (source IS NULL OR source != ?5) ORDER BY ts",
     ) else {
         return out;
     };
-    let rows = stmt.query_map(rusqlite::params![provider, account, win, since], |r| {
+    let rows = stmt.query_map(rusqlite::params![provider, account, win, since, RATE_SERIES_EXCLUDED_SOURCE], |r| {
         Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?))
     });
     if let Ok(rows) = rows {
@@ -1987,6 +1994,17 @@ mod tests {
         // prune: ts<250 삭제 → 5h는 300 한 점, 7d 250 한 점
         prune_rate_snapshots(&conn, 250.0);
         assert_eq!(rate_series(&conn, "claude", "u1", "5h", 0.0), vec![(300.0, 30.0)]);
+    }
+
+    /// ★1.1.8 📌5: 소진 예측 표본(rate_series)은 창 밖 보고를 뺀다 — 「창 밖 보고 뒤 정상 보고」 에도 이력이 오염되지 않는다.
+    #[test]
+    fn rate_series_excludes_outside_reports_from_the_exhaust_sample() {
+        let (_socket, conn) = open_change_db("ratesnap-outside");
+        record_rate_snapshot(&conn, 100.0, "claude", "u1", "a@b.c", "5h", 10.0, None, "statusline");
+        record_rate_snapshot(&conn, 150.0, "claude", "u1", "a@b.c", "5h", 90.0, None, RATE_SERIES_EXCLUDED_SOURCE);
+        record_rate_snapshot(&conn, 200.0, "claude", "u1", "a@b.c", "5h", 20.0, None, "oauth");
+        assert_eq!(rate_series(&conn, "claude", "u1", "5h", 0.0), vec![(100.0, 10.0), (200.0, 20.0)], "창 밖 표본이 섞였다");
+        assert_eq!(RATE_SERIES_EXCLUDED_SOURCE, crate::accounts::OUTSIDE_SOURCE, "창 밖 출처 문자열이 갈라졌다");
     }
 
     /// fix-values-1 SP-1: 스냅샷에 출처를 싣는다 — 출처 열이 없던 구 DB 에도 열이 붙고(멱등), 구 행(출처 NULL ·

@@ -208,7 +208,11 @@ pub fn schedule_path() -> PathBuf {
 /// v3: v113 — phoenix-snapshot-6h·phoenix-drill-weekly push→command(893 ⓑ [heartbeat] 산문 주입 수리). master 판정
 ///     (master#dc245743): 1.1.3 트레인 범프는 트랙 P 단독 1회. ⚠범프는 builtin 전부를 코드 정의로 교체한다 —
 ///     운영자가 builtin 잡 문자열을 손으로 고쳤다면 그 편집은 소실된다(apply_builtin_jobs 가 경고 1줄로 가청화).
-const BUILTIN_JOBS_VERSION: u64 = 3;
+/// v4: 1.1.8 병합 K49(DECISION-TABLE-118 K49 행) — 원작자 경보 라우터(alert_route · context.threshold 소비)를 받고
+///     우리 javis_ctx_relay 중계(본부 `ctx-relay-base` · 부서 `ctx-relay-tick`)를 폐기한다(두 소비자 공존 = 같은 넘김에
+///     통보 2벌). 버전은 우리 3·원작자 2 보다 커야 기존 설치(우리 v3 · 원작자 v2 계열)가 코드 정의로 재시드된다.
+///     폐기 잡의 기존 설치본 청소 = [`retire_builtin_jobs`](마커 소유 · 바이트 정확 일치만).
+const BUILTIN_JOBS_VERSION: u64 = 4;
 
 /// built-in 잡 정의(phoenix 인프라 + learn 학습 루프) — 팩 schedule.json 배달이 아니라 코드가 소유한다
 /// (schedule.json 이 user-owned 로 전환돼 팩 강제갱신이 사용자 잡을 보존하므로, built-in 잡 진화는 이 코드가
@@ -440,22 +444,9 @@ fn builtin_jobs() -> Vec<serde_json::Value> {
             "_builtin": "deptreq",
             "_builtin_version": BUILTIN_JOBS_VERSION
         }),
-        // ── ★v113 A3(ISSUES B9) 본부 좌석 컨텍스트 정지선 중계 — 2분 · base_only · command 레인 ──
-        // 신규 id(버전 무관 append) — 같은 판의 v3 범프(phoenix command 레인)와 한 번에 실렸다(master#dc245743).
-        // 데몬은 context.threshold 를 **발행만** 하고 소비자가 없었다 — javis_ctx_relay tick 이 좌석 CTX
-        // (관측·자기보고 중 신선한 큰 값)가 임계를 넘을 때 1회 CSO 에 `[ctx-threshold]` 를 큐 배달한다(없으면 보류).
-        // 부서 레인은 cys-dept seed_schedule 의 `ctx-relay-tick`(마커 없는 부서 잡)이 담당 — id 를 갈라 둔
-        // 이유는 부서 데몬 ensure 가 그 잡을 예약 id 선점 충돌로 경고하지 않게 하려는 것이고, base_only 는
-        // 부서 데몬에 복제 기록된 이 잡이 같은 레인을 이중 통지하지 않게 하는 관문이다.
-        json!({
-            "id": "ctx-relay-base",
-            "every_minutes": 2,
-            "action": "command",
-            "base_only": true,
-            "command": "pk=\"${CYS_PACK_DIR:-$HOME/.cys/pack}\"; [ -f \"$pk/bin/javis_ctx_relay.py\" ] || exit 0; python3 \"$pk/bin/javis_ctx_relay.py\" tick",
-            "_builtin": "ctxrelay",
-            "_builtin_version": BUILTIN_JOBS_VERSION
-        }),
+        // ── (폐기 · 1.1.8 K49) v113 A3 본부 좌석 컨텍스트 정지선 중계 `ctx-relay-base`(마커 ctxrelay) — 원작자 경보
+        //   라우터(alert_route)가 context.threshold 를 소비하므로 두 소비자 공존 = 통보 2벌. 기존 설치본은
+        //   retire_builtin_jobs 가 지운다(RETIRED_BUILTIN_JOBS).
         // ── ★(0.14.31 · WP-3 B) CSO alert inbox 정기 점검(60분) ────────────────────────
         // **신규 id 라 BUILTIN_JOBS_VERSION 범프 불요·금지**(R3-P03-3 선례와 동일: 범프하면
         // 기존 builtin 전체가 코드 정의로 통째 교체돼 운영자 수기 편집이 무언 소실된다).
@@ -674,7 +665,7 @@ impl Drop for ScheduleFileLock {
 
 /// built-in 잡을 jobs 배열에 idempotent upsert(순수 — 회귀 핀). id 로 대조:
 ///   · 부재 → append(생성)
-///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote"·"deptreq"·"ctxrelay") → 버전 상이 시 교체(갱신)·동버전 무접촉
+///   · 존재 + built-in 마커(`_builtin`이 코드 정의와 일치: "phoenix"·"learn"·"cycle"·"formation"·"promote"·"deptreq"·"alert") → 버전 상이 시 교체(갱신)·동버전 무접촉
 ///   · 존재 + **마커 없음/불일치(사용자가 그 id 선점)** → ★codex W3: 교체 금지(사용자 잡 보존)·경고(conflicts 반환)
 /// 반환 `(changed, preempted, edited_action)` — ★(0.14.31 · 수렴 R2 · triage X13) **덮지 않은
 /// 두 사유를 가른다**. 종전에는 둘이 한 벡터라 호출부가 양쪽에 "예약 id 선점" 문안을 찍었다:
@@ -813,26 +804,43 @@ fn apply_builtin_jobs(
 /// user-owned(사용자 `cys schedule add` 잡 보존)이라 팩 배달로는 built-in 잡을 갱신할 수 없다 — 코드가 upsert 한다.
 /// 파일 부재=빈 골격 생성 · 손상(파싱 실패)=무접촉(load_jobs 의 격리 경로가 별도 처리 — 여기서 덮어써 사용자 잡을
 /// 잃지 않는다) · 변경 있을 때만 원자적 재기록(핫 리로드 torn read 회피).
-/// 부서 레인 좌석 컨텍스트 정지선 중계 잡 — `cys-dept seed_schedule` 이 새 부서에 쓰는 것과 **같은 잡**(id·주기·명령).
-/// 마커(`_builtin`) 없는 부서 잡이다(ctx-relay-base 의 base_only 관문과 id 가 갈려 이중 통지 없음).
+/// (폐기 · 1.1.8 K49) 부서 레인 좌석 컨텍스트 정지선 중계 잡 — 1.1.3~1.1.7 의 `cys-dept seed_schedule` 과 데몬 소급
+/// (구 `apply_dept_lane_jobs`)이 부서에 심던 **바로 그 잡**(id·주기·명령). 이제 심지 않고, 기존 부서에서 지운다.
 const DEPT_CTX_RELAY_ID: &str = "ctx-relay-tick";
 const DEPT_CTX_RELAY_CMD: &str = "pk=\"${CYS_PACK_DIR:-$HOME/.cys/pack}\"; [ -f \"$pk/bin/javis_ctx_relay.py\" ] || exit 0; python3 \"$pk/bin/javis_ctx_relay.py\" tick";
 
-/// ★Fable 1.1.3 M6(소급 · 순수): 부서 데몬의 schedule 에 중계 잡이 **없을 때만** 추가한다(있으면 무접촉 — 사용자가
-/// 고친 잡도 보존). 1.1.2 이하에서 만든 부서는 seed_schedule 이 이 잡을 쓰기 전이라 업그레이드 뒤에도 좌석 CTX
-/// 정지선 소비자가 없었다(4군②). 새 바이너리의 부서 데몬이 켜질 때마다(기동·rotate·앱 복원의 재기동) 멱등 보장.
-fn apply_dept_lane_jobs(jobs: &mut Vec<serde_json::Value>, is_dept: bool) -> bool {
-    if !is_dept || jobs.iter().any(|j| j.get("id").and_then(|v| v.as_str()) == Some(DEPT_CTX_RELAY_ID)) {
-        return false;
-    }
-    jobs.push(json!({
-        "id": DEPT_CTX_RELAY_ID,
-        "every_minutes": 2,
-        "action": "command",
-        "if_absent": "skip",
-        "command": DEPT_CTX_RELAY_CMD
-    }));
-    true
+/// (폐기 · 1.1.8 K49) 우리 builtin 이었던 본부 중계 잡 — `(id, 마커)`. 마커가 같으면 우리 소유라 지운다
+/// (버전 범프가 builtin 을 코드 정의로 통째 교체하는 것과 같은 소유 규칙).
+const RETIRED_BUILTIN_JOBS: &[(&str, &str)] = &[("ctx-relay-base", "ctxrelay")];
+
+/// ★1.1.8 K49(순수): 폐기한 중계 잡을 기존 설치본에서 걷는다 — 원작자 경보 라우터와 공존하면 같은 넘김에 통보가 2벌 간다.
+///   · 본부 builtin `ctx-relay-base` — 우리 마커(`_builtin:"ctxrelay"`)가 붙은 항목만(마커 없는 동명 = 사용자 잡 = 무접촉).
+///   · 부서 `ctx-relay-tick`(마커 없는 seed 잡) — 우리가 심은 **바이트 그대로**(id·주기 2·command·if_absent)일 때만.
+///     운영자가 한 글자라도 고쳤으면 그 편집은 남긴다(§B-5 · 표적 이관과 같은 규율 — 실패 방향 = 무접촉).
+/// 반환: 지운 id 목록(빈 = 무변경).
+fn retire_builtin_jobs(jobs: &mut Vec<serde_json::Value>) -> Vec<String> {
+    let mut gone = Vec::new();
+    jobs.retain(|j| {
+        let id = j.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let marker = j.get("_builtin").and_then(|v| v.as_str());
+        let retired_builtin = RETIRED_BUILTIN_JOBS.iter().any(|(rid, m)| *rid == id && marker == Some(*m));
+        let seeded_dept = id == DEPT_CTX_RELAY_ID
+            && marker.is_none()
+            && *j == json!({
+                "id": DEPT_CTX_RELAY_ID,
+                "every_minutes": 2,
+                "action": "command",
+                "if_absent": "skip",
+                "command": DEPT_CTX_RELAY_CMD
+            });
+        if retired_builtin || seeded_dept {
+            gone.push(id.to_string());
+            false
+        } else {
+            true
+        }
+    });
+    gone
 }
 
 pub fn ensure_builtin_jobs() {
@@ -891,8 +899,11 @@ fn ensure_builtin_jobs_locked(path: &std::path::Path) {
     }
     let (bchanged, preempted, edited_action) = apply_builtin_jobs(arr);
     let mut changed = normalized || bchanged;
-    if apply_dept_lane_jobs(arr, cys::is_dept_socket(&cys::socket_path())) {
-        eprintln!("[cysd] ensure_builtin_jobs: 부서 좌석 컨텍스트 정지선 중계(ctx-relay-tick) 소급 추가");
+    let retired = retire_builtin_jobs(arr);
+    if !retired.is_empty() {
+        eprintln!(
+            "[cysd] ensure_builtin_jobs: 폐기한 컨텍스트 정지선 중계 잡 {retired:?} 를 걷었다(1.1.8 K49 — 경보 라우터가 context.threshold 를 소비 · 통보 2벌 차단)"
+        );
         changed = true;
     }
     for id in &preempted {
@@ -2910,31 +2921,39 @@ mod tests {
     }
 
     // ★B2-1(W3): built-in 잡 부트 ensure idempotency — 부재 생성·재실행 무접촉(중복 0)·구버전 갱신·사용자 잡 보존.
+    // ★1.1.8 K49(DECISION-TABLE-118 K49 행 · 원장 ledger-fix-rustb): 우리 v113 중계(javis_ctx_relay)를 폐기했으므로
+    //   종전 시험 `v113_dept_lane_ctx_relay_backfill`(부서 소급 추가 핀)은 정책상 버린 구현의 시험이라 **청소 핀으로 바꿨다**.
+    //   이제 지키는 것: 우리가 심은 중계 잡만(본부 = 마커 · 부서 = 바이트 정확 일치) 걷고 운영자 편집은 남긴다 · cys-dept 가
+    //   새 부서에 다시 심지 않는다 · 부트 ensure 가 이 청소를 부른다.
     #[test]
-    fn v113_dept_lane_ctx_relay_backfill() {
-        // 부서 데몬 + 잡 없음 → 1개 추가 · 두 번째는 무접촉(멱등)
-        let mut jobs = vec![json!({"id": "other", "every_minutes": 5, "action": "command", "command": "true"})];
-        assert!(apply_dept_lane_jobs(&mut jobs, true), "옛 부서에 중계 잡을 소급하지 않았다");
-        assert!(!apply_dept_lane_jobs(&mut jobs, true), "멱등 아님");
-        assert_eq!(jobs.iter().filter(|j| j["id"] == DEPT_CTX_RELAY_ID).count(), 1);
-        // 본부 데몬 = 추가 안 함(본부는 ctx-relay-base 가 담당)
-        let mut base: Vec<serde_json::Value> = vec![];
-        assert!(!apply_dept_lane_jobs(&mut base, false));
-        // 사용자가 고친 같은 id 잡은 보존
-        let mut user = vec![json!({"id": DEPT_CTX_RELAY_ID, "every_minutes": 9, "action": "command", "command": "x"})];
-        assert!(!apply_dept_lane_jobs(&mut user, true));
-        assert_eq!(user[0]["every_minutes"], 9);
-        // cys-dept seed_schedule 과 같은 잡(명령 문자열 대조 — 두 벌이 갈라지면 적색)
+    fn k49_ctx_relay_jobs_are_retired_only_when_ours() {
+        let seeded = json!({"id": DEPT_CTX_RELAY_ID, "every_minutes": 2, "action": "command", "if_absent": "skip", "command": DEPT_CTX_RELAY_CMD});
+        let base_old = json!({"id": "ctx-relay-base", "every_minutes": 2, "action": "command", "base_only": true,
+            "command": "pk=\"${CYS_PACK_DIR:-$HOME/.cys/pack}\"; [ -f \"$pk/bin/javis_ctx_relay.py\" ] || exit 0; python3 \"$pk/bin/javis_ctx_relay.py\" tick",
+            "_builtin": "ctxrelay", "_builtin_version": 3});
+        let other = json!({"id": "other", "every_minutes": 5, "action": "command", "command": "true"});
+        let mut jobs = vec![other.clone(), seeded.clone(), base_old];
+        let gone = retire_builtin_jobs(&mut jobs);
+        assert_eq!(gone, vec![DEPT_CTX_RELAY_ID.to_string(), "ctx-relay-base".to_string()], "우리가 심은 중계 잡 2종을 걷지 않았다");
+        assert_eq!(jobs, vec![other.clone()], "다른 잡을 건드렸다");
+        assert!(retire_builtin_jobs(&mut jobs).is_empty(), "멱등 아님");
+        // 운영자 편집 보존: 주기를 고친 부서 잡 · 마커 없는 동명 본부 잡(사용자 선점)은 무접촉.
+        let mut edited = seeded.clone();
+        edited["every_minutes"] = json!(9);
+        let user_base = json!({"id": "ctx-relay-base", "every_minutes": 2, "action": "command", "command": "x"});
+        let mut user = vec![edited.clone(), user_base.clone()];
+        assert!(retire_builtin_jobs(&mut user).is_empty(), "운영자 편집·사용자 잡을 걷었다");
+        assert_eq!(user, vec![edited, user_base]);
+        // builtin 목록에 중계가 없다 + cys-dept 가 새 부서에 중계 잡을 심지 않는다(두 소비자 공존 = 통보 2벌).
+        assert!(builtin_jobs().iter().all(|j| j["id"] != "ctx-relay-base" && j["_builtin"] != "ctxrelay"));
         let seed = include_str!("../../../cysjavis-pack/bin/cys-dept");
         let i = seed.find("seed_schedule(){").expect("seed_schedule");
         let body = &seed[i..i + seed[i..].find("\n}\n").unwrap()];
-        let want = DEPT_CTX_RELAY_CMD.replace('"', "\\\\\"");
-        assert!(body.contains(&want), "cys-dept seed 잡과 소급 잡의 명령이 다르다");
-        assert!(body.contains("\"every_minutes\": 2") && body.contains("\"id\": \"ctx-relay-tick\""));
-        // 배선: 부트 ensure 가 부서 판정으로 부른다
+        assert!(!body.contains("ctx-relay-tick") && !body.contains("javis_ctx_relay.py"), "cys-dept 가 폐기한 중계 잡을 아직 심는다");
+        // 배선: 부트 ensure 가 청소를 부른다
         let src = include_str!("schedule.rs");
-        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
-        assert!(prod.contains("apply_dept_lane_jobs(arr, cys::is_dept_socket(&cys::socket_path()))"), "부트 미배선");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        assert!(prod.contains("let retired = retire_builtin_jobs(arr);"), "부트 미배선");
     }
 
     #[test]
@@ -2944,7 +2963,8 @@ mod tests {
             "id": "user-custom-job", "every_minutes": 30, "action": "push", "to": "master"
         })];
 
-        // 1차: built-in 11개(phoenix2 + learn2 + cycle2 + formation1 + promote1 + deptreq1 + ctxrelay1 + alert1) 생성 → changed=true.
+        // 1차: built-in 10개(phoenix2 + learn2 + cycle2 + formation1 + promote1 + deptreq1 + alert1) 생성 → changed=true.
+        // ★1.1.8 K49: ctxrelay1(ctx-relay-base) 폐기 — 11 → 10.
         // ★(0.14.31 · WP-3 B) 계수 갱신: 신규 id `cso-alert-inbox-check-60m` 1건 append.
         //   버전은 **범프하지 않았다**(신규 id 는 버전 무관 append — 아래 범프 금지 핀 유지).
         let (c1, conf1, _) = apply_builtin_jobs(&mut jobs);
@@ -2973,7 +2993,7 @@ mod tests {
             "A1-2 대화로 부서 만들기 집행 틱 잡 생성"
         );
         assert!(ids.contains(&"user-custom-job"), "사용자 잡은 보존돼야 한다");
-        assert_eq!(jobs.len(), 12, "사용자1 + built-in11");
+        assert_eq!(jobs.len(), 11, "사용자1 + built-in10(1.1.8 K49 — ctx-relay-base 폐기)");
         // 주기 정합(typed): snapshot=6h(360), drill=7일(10080), audit=일(1440), digest=7일(10080),
         // cycle tick=매분(1), verifier watchdog=10분(10), formation heartbeat=10분(10),
         // ceo promote tick=10분(10).
@@ -2991,21 +3011,8 @@ mod tests {
         assert_eq!(period("formation-heartbeat"), Some(10), "formation heartbeat 10분");
         assert_eq!(period("ceo-promote-pending-tick"), Some(10), "promote 집행 틱 10분");
         assert_eq!(period("dept-request-tick"), Some(1), "부서 요청 집행 틱 매분");
-        assert_eq!(period("ctx-relay-base"), Some(2), "본부 컨텍스트 정지선 중계 2분");
-        // ★v113 A3 중계 계약 핀: command 레인(master stdin 무주입) · base_only(부서 데몬 복제 = 같은 레인
-        //   이중 통지 차단 — 부서는 seed 잡 ctx-relay-tick 이 담당) · 마커 ctxrelay · tick 동사 · push 필드 부재.
-        {
-            let cr = jobs
-                .iter()
-                .find(|j| j["id"].as_str() == Some("ctx-relay-base"))
-                .unwrap();
-            assert_eq!(cr["action"].as_str(), Some("command"), "중계는 command 레인 핀");
-            assert_eq!(cr["base_only"].as_bool(), Some(true), "중계는 base_only 핀");
-            assert_eq!(cr["_builtin"].as_str(), Some("ctxrelay"), "마커 ctxrelay 핀");
-            assert!(cr.get("to").is_none() && cr.get("text_command").is_none(), "중계는 push 필드 없음");
-            let cmd = cr["command"].as_str().unwrap();
-            assert!(cmd.contains("javis_ctx_relay.py") && cmd.ends_with(" tick"), "중계 command 에 tick 동사 부재");
-        }
+        // ★1.1.8 K49: 본부 중계(ctx-relay-base)는 폐기 — 원작자 경보 라우터가 context.threshold 를 소비한다(통보 2벌 차단).
+        assert_eq!(period("ctx-relay-base"), None, "폐기한 중계 잡이 다시 생성됐다(K49)");
         // ★A1-2 집행 틱 계약 핀: command 레인(master stdin 무주입) · base_only(부서 데몬 복제 실행 =
         //   이중 생성 차단 — fire 관문과 쌍) · CSO 신원 고정(env CYS_ROLE=cso — 두 가드 동시 충족) ·
         //   tick 동사 · push 계열 필드 부재 · ★표지 셸 게이트 부재(적대 2R ② — 청소가 매 틱 돌아야 한다).
@@ -3083,7 +3090,7 @@ mod tests {
         //   기존 builtin 항목을 코드 정의로 통째 교체해 **운영자 수기 편집을 무언 소실**시킨다.
         //   builtin 잡 '내용' 변경으로 범프가 정말 필요해지면 이 핀을 의식적으로 함께 고치라
         //   (그 커밋이 곧 소실 고지다).
-        assert_eq!(BUILTIN_JOBS_VERSION, 3, "BUILTIN_JOBS_VERSION 무단 범프 금지(T9) — v3 = v113 phoenix command 레인");
+        assert_eq!(BUILTIN_JOBS_VERSION, 4, "BUILTIN_JOBS_VERSION 무단 범프 금지(T9) — v3 = v113 phoenix command 레인 · v4 = 1.1.8 K49(중계 폐기 · 원작자 v2 계열 재시드)");
         // ★v113(893 ⓑ) 회귀 핀: phoenix 2종은 master stdin 에 산문을 꽂지 않는다(command 레인 · push 필드 부재) ·
         //   종료 코드를 삼키는 tail 파이프 금지(실패가 schedule.error 로 떠야 한다).
         for id in ["phoenix-snapshot-6h", "phoenix-drill-weekly"] {
@@ -3115,7 +3122,7 @@ mod tests {
             .filter(|j| j["id"].as_str() == Some("phoenix-snapshot-6h"))
             .count();
         assert_eq!(snap_count, 1, "재실행에도 중복 생성 0");
-        assert_eq!(jobs.len(), 12, "중복 없이 12개 유지");
+        assert_eq!(jobs.len(), 11, "중복 없이 11개 유지(1.1.8 K49 — 중계 폐기)");
 
         // 3차: 구버전(마커=0) 항목이 있으면 갱신(교체) → changed=true, 여전히 중복 0.
         for j in jobs.iter_mut() {
@@ -4188,7 +4195,7 @@ mod tests {
         assert_eq!(j["base_only"].as_bool(), None, "부서 데몬도 자기 CSO 를 점검한다(base 전용 아님)");
         // ★범프 금지 — 신규 id 는 버전 무관 append 다(범프는 기존 builtin 을 코드 정의로 통째
         //   교체해 운영자 수기 편집을 무언 소실시킨다).
-        assert_eq!(BUILTIN_JOBS_VERSION, 2, "신규 잡 추가로 버전을 올리지 않았다");
+        assert_eq!(BUILTIN_JOBS_VERSION, 4 /* 1.1.8: 우리 판 값(우리 v3 + K49 v4) — 이 변경이 전역 버전을 올리지 않았다는 단언의 목적 유지 */, "신규 잡 추가로 버전을 올리지 않았다");
         assert_eq!(j["_builtin_version"].as_u64(), Some(BUILTIN_JOBS_VERSION));
         // 재실행 무접촉(중복 0) — add-if-missing 멱등.
         let (c2, _, _) = apply_builtin_jobs(&mut jobs);
@@ -4467,7 +4474,7 @@ mod tests {
         // ★운영자 편집은 **그대로** 남는다(통째 교체가 아니라 그 필드만 고쳤다는 증거).
         assert_eq!(j["every_minutes"].as_u64(), Some(120), "운영자 주기 편집이 소실됐다");
         assert_eq!(j["text"].as_str(), Some("운영자가 고친 문안"), "운영자 문안이 소실됐다");
-        assert_eq!(BUILTIN_JOBS_VERSION, 2, "표적 이관에 전역 버전을 올렸다(§B-5 위반)");
+        assert_eq!(BUILTIN_JOBS_VERSION, 4 /* 1.1.8: 우리 판 값(우리 v3 + K49 v4) — 이 변경이 전역 버전을 올리지 않았다는 단언의 목적 유지 */, "표적 이관에 전역 버전을 올렸다(§B-5 위반)");
         // 재실행 무접촉(멱등).
         let (c2, _, _) = apply_builtin_jobs(&mut jobs);
         assert!(!c2, "이관 뒤 재실행이 또 바꾼다(비멱등)");
@@ -4908,7 +4915,7 @@ exit 0
         let mut edited = vec![existing.clone()];
         let _ = apply_builtin_jobs(&mut edited);
         assert_eq!(edited[0], existing, "구 표현과 다른 운영자 편집이 소실됐다");
-        assert_eq!(BUILTIN_JOBS_VERSION, 2, "표적 이관에 전역 버전을 올렸다(§B-5 위반)");
+        assert_eq!(BUILTIN_JOBS_VERSION, 4 /* 1.1.8: 우리 판 값(우리 v3 + K49 v4) — 이 변경이 전역 버전을 올리지 않았다는 단언의 목적 유지 */, "표적 이관에 전역 버전을 올렸다(§B-5 위반)");
     }
 
     /// ★U10(0.14.41) 0.14.40 설치본이 심은 편성 심박 command — **바이트 정확 사본**(이관표 대조용).
@@ -5098,7 +5105,7 @@ exit 0
         );
 
         // ④ 전역 버전은 이 이관으로 올라가지 않는다(범프 = 모든 builtin 통째 교체).
-        assert_eq!(BUILTIN_JOBS_VERSION, 2, "표적 이관에 전역 버전을 올렸다(§B-5 위반)");
+        assert_eq!(BUILTIN_JOBS_VERSION, 4 /* 1.1.8: 우리 판 값(우리 v3 + K49 v4) — 이 변경이 전역 버전을 올리지 않았다는 단언의 목적 유지 */, "표적 이관에 전역 버전을 올렸다(§B-5 위반)");
     }
 
 }
@@ -5866,6 +5873,10 @@ mod c8_push_counts_submit_tests {
         daemon.roles.lock().unwrap().insert("master".into(), s.id);
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         *s.agent_meta.lock().unwrap() = Some(("claude".into(), "/usr/local/bin/claude".into()));
+        // 1.1.8 병합(고정물 조정): 우리 v115r3-d7 역할 좌석 보류(`role_seat_hold`)는 생성 직후 좌석 판정 전(seat=Unknown)
+        //   의 역할 좌석에 큐 배달을 보류한다(seat_unknown). 이 고정물은 「에이전트가 앉은 master 좌석」이므로 좌석 판정이
+        //   끝난 상태(Occupied)로 둔다 — 시험이 재는 것(유령 계수·push 계상)은 그대로.
+        s.seat_cache.store(crate::governance::SeatState::Occupied.as_u8(), Ordering::Relaxed);
         std::thread::sleep(std::time::Duration::from_millis(300));
         (daemon, s)
     }

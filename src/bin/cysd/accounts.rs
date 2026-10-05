@@ -197,6 +197,26 @@ fn feeds_alerts(source: &str) -> bool {
     source != OUTSIDE_SOURCE
 }
 
+/// ★1.1.8 📌5(master 결정 · DECISION-TABLE-118 §0 10행 · REVIEW-D ⓒ): 계정 **표시값** 우선순위 —
+/// OAuth 서버 조회(3) > 좌석 상태줄·rollout·어댑터(2) > cys 창 밖 보고(1) > 부트 예열·발견(0).
+/// 낮은 순위 관측은 **더 높은 순위의 표시값이 아직 신선한 동안**([`fresh_limit_secs`]) 표시를 바꾸지 못한다 — 그래야
+/// 박사님 지정 사이드바 패널과 master 토큰 리미트 게이트(`cys usage-accounts --json` 의 `rate[]`)에 창 밖 값이 섞이지 않는다.
+/// 높은 순위가 낡으면(한도 초과) 다음 순위가 표시를 넘겨받는다(값 없음보다 낫다 · 종전 최신 승자와 같은 동작).
+/// 경보 입력([`note_alert_input`])·스냅샷 영속은 이 순위와 무관하다(표시 전용 규칙).
+fn display_rank(source: &str) -> u8 {
+    match source {
+        "oauth" => 3,
+        OUTSIDE_SOURCE => 1,
+        "" | "snapshot" => 0,
+        _ => 2,
+    }
+}
+
+/// 지금 표시값(`cur_source`·`cur_at`)이 들어온 관측(`source`)보다 순위가 높고 아직 신선한가 — 참이면 표시 갱신을 보류한다.
+fn display_outranked(cur_source: &str, cur_at: f64, source: &str, now: f64) -> bool {
+    display_rank(cur_source) > display_rank(source) && now - cur_at <= fresh_limit_secs(cur_source)
+}
+
 /// 경보 입력 갱신(창 밖이 아닌 출처만 · 경보 입력끼리 최신 승자 — 값·라벨을 함께 바꾼다). 호출자가 accounts 락을 잡고 있다.
 fn note_alert_input(
     st: &mut AccountsState,
@@ -506,7 +526,7 @@ fn claude_resolution(home: Option<&Path>, dir: &Path, ident: Ident) -> Resolutio
 }
 
 /// 단일 홈 provider(codex·agy) → 귀속 결과. 미지 agent → None. (agy 는 데이터 폴더 **존재**만 본다 — 메타데이터.)
-fn fixed_resolution(_home: Option<&Path>, agent: &str) -> Option<Resolution> {
+fn fixed_resolution(home: Option<&Path>, agent: &str) -> Option<Resolution> {
     match agent {
         "codex" => Some((
             AccountKey { provider: "codex".into(), account_id: "default".into() },
@@ -517,7 +537,15 @@ fn fixed_resolution(_home: Option<&Path>, agent: &str) -> Option<Resolution> {
         // usage-noagy(2026-09-19 박사님 결정): agy(gemini)는 계정 사용량 표에서 뺀다 — 의미 없음.
         // note_rate가 이 분기로 오면 None → 호출부(usage.rs update_agy_usage)의 note_rate 호출은
         // 그대로 남아 있어도 무조건 no-op이다(HANDOFF-usage-noagy.md 결정 기록).
-        // ★(1.1.8 병합 · 잠정 우리 유지) 원작자 0.14.43 은 이 분기에 agy 행을 되살렸다(RC1 데이터 폴더 표기) — 결정대기.
+        // ★1.1.8 휴면(master C4 결정 · 「agy 갈래 휴면 · 삭제 아님」): 원작자 0.14.43 RC1 의 agy 귀속은
+        //   휴면 스위치(`cys::dormant::agy_lane_enabled` · 기본 꺼짐)가 켜졌을 때만 — 꺼짐 = 위 usage-noagy 그대로.
+        "gemini" | "agy" | "antigravity" if cys::dormant::agy_lane_enabled() => Some((
+            AccountKey { provider: "antigravity".into(), account_id: "default".into() },
+            "Antigravity (agy)".into(),
+            None,
+            // 실제로 있는 데이터 폴더를 적는다(없으면 표기 없음 — 지어내지 않는다)
+            home.and_then(|h| antigravity_profiles(h).into_iter().next()),
+        )),
         _ => None,
     }
 }
@@ -719,7 +747,10 @@ fn note_resolved(daemon: &Arc<Daemon>, resolved: Resolution, rate: &[RateWindow]
         //   (1.1.8 합성) 경보는 원작자 B3 의 별도 경보 입력(note_alert_input)이 맡는다 — 표시 병합과 독립.
         let accepted: Vec<bool> = if now >= view.updated_at {
             let (merged, accepted) = merge_rate_windows(&view.rate, view.updated_at, rate, now);
-            if accepted.iter().any(|a| *a) {
+            // ★1.1.8 📌5: 표시 우선순위(OAuth > 좌석 > 창 밖) — 더 높은 순위의 신선한 표시값은 낮은 순위 관측이 덮지 못한다.
+            //   (스냅샷 영속 판정 `accepted` 는 그대로 — 예측 표본은 analytics::rate_series 가 창 밖을 걸러 쓴다.)
+            let outranked = display_outranked(&view.source, view.updated_at, source, now);
+            if !outranked && accepted.iter().any(|a| *a) {
                 view.rate = merged;
                 view.updated_at = now;
                 view.source = source.into();
@@ -870,7 +901,8 @@ fn restore_from_snapshots(daemon: &Arc<Daemon>, now: f64) {
         for (ts, provider, account, label, win, pct, resets) in rows {
             // usage-noagy(2026-09-19): 옛 analytics.db에 antigravity 스냅샷 행이 남아 있어도
             // 부트 복원에서 버린다 — 코드에서 시딩을 지워도 과거 기록으로 되살아나면 의미가 없다.
-            if provider == "antigravity" {
+            // (1.1.8 휴면 스위치가 켜졌으면 원작자 판 그대로 복원한다.)
+            if provider == "antigravity" && !cys::dormant::agy_lane_enabled() {
                 continue;
             }
             let key = AccountKey { provider, account_id: account };
@@ -975,9 +1007,24 @@ fn apply_discovered(st: &mut AccountsState, home: &Path, found: Discovered) {
             });
     }
     // usage-noagy(2026-09-19 박사님 결정): antigravity(agy) 자동 시딩 제거 — 계정 사용량 표에서 뺀다("의미가 없다").
-    // ★(1.1.8 병합 · 잠정 우리 유지) 원작자 0.14.43 RC1 은 agy 데이터 폴더(`~/.gemini/antigravity-cli`)로 행을 시드한다 —
-    //   발견 결과(`found.agy`)는 받되 행을 만들지 않는다(결정대기).
-    let _ = found.agy;
+    // ★1.1.8 휴면(master C4): 원작자 0.14.43 RC1 은 agy 데이터 폴더(`~/.gemini/antigravity-cli` · 구 `~/.antigravity`)
+    //   **존재만** 보고 행을 시드한다 — 휴면 스위치가 켜졌을 때만. 꺼짐 = 발견 결과를 받되 행을 만들지 않는다(usage-noagy).
+    if cys::dormant::agy_lane_enabled() && !found.agy.is_empty() {
+        let key = AccountKey { provider: "antigravity".into(), account_id: "default".into() };
+        let v = st.views.entry(key.clone()).or_insert_with(|| AccountView {
+            key,
+            label: "Antigravity (agy)".into(),
+            plan: None,
+            profiles: BTreeSet::new(),
+            rate: Vec::new(),
+            updated_at: 0.0,
+            source: String::new(),
+            adapter: true,
+            scoped: Vec::new(),
+            source_error: None,
+        });
+        v.profiles.extend(found.agy);
+    }
 }
 
 /// 부트 시드 ①(설치 흔적 스캔) — 홈을 인자로 받는 시험 이음매. 계정 **발견**만 한다(rate 없음).
@@ -1127,10 +1174,27 @@ fn apply_agy_error(st: &mut AccountsState, err: Option<&str>, profiles: BTreeSet
                 v.source_error = Some(code.to_string());
                 return;
             }
-            // usage-noagy(박사님 결정 2026-09-19 · 1.1.8 병합 잠정 우리 유지): 오류 경로로도 agy 행을 새로 만들지 않는다 —
-            //   있던 행(선언 계정 등)의 고장 표기만 위에서 갱신한다. 원작자 0.14.43 은 실재 데이터 폴더(`profiles`)를 근거로
-            //   '관측 실패' 행을 새로 만들었다(결정대기 — 받기로 하면 그 삽입을 되살린다).
-            let _ = profiles;
+            // usage-noagy(박사님 결정 2026-09-19): 오류 경로로도 agy 행을 새로 만들지 않는다 — 있던 행(선언 계정 등)의
+            //   고장 표기만 위에서 갱신한다. ★1.1.8 휴면(master C4): 원작자 0.14.43 의 「실재 데이터 폴더(`profiles`)를
+            //   근거로 '관측 실패' 행 생성」은 휴면 스위치가 켜졌을 때만.
+            if !cys::dormant::agy_lane_enabled() || profiles.is_empty() {
+                return; // 꺼짐(휴면) 또는 흔적 0 — 유령 계정을 만들지 않는다
+            }
+            st.views.insert(
+                key.clone(),
+                AccountView {
+                    key,
+                    label: "Antigravity (agy)".into(),
+                    plan: None,
+                    profiles,
+                    rate: Vec::new(),
+                    updated_at: 0.0,
+                    source: String::new(),
+                    adapter: true,
+                    scoped: Vec::new(),
+                    source_error: Some(code.to_string()),
+                },
+            );
         }
         None => {
             if let Some(v) = st.views.get_mut(&key) {
@@ -2957,7 +3021,8 @@ mod tests {
     #[test]
     fn periodic_cmd_adapter_spawn_hides_console() {
         let src = include_str!("accounts.rs");
-        let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
+        // 1.1.8 병합: 원작자 판이 프로덕션 구간 곳곳에 시험 이음매 fn(cfg(test) 속성)을 둔다 — 경계 = 시험 모듈 머리.
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 앵커 소실")];
         let spawns: Vec<&str> = prod
             .lines()
             .filter(|l| l.contains("Command::new(\"cmd\")"))
@@ -3405,6 +3470,8 @@ mod tests {
     /// 기본 프로필(`~/.claude.json`)·Antigravity(`~/.gemini/antigravity-cli`)·구 경로(`~/.antigravity`) 호환.
     #[test]
     fn seed_discovers_default_profile_and_antigravity_data_dir() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let home = tmp("home-seed");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         write(&home.join(".claude.json"), ID_NULL_TIER);
@@ -3439,6 +3506,8 @@ mod tests {
     /// RC1(관측 표기): agy 관측의 프로필 표기는 실제 데이터 폴더다.
     #[test]
     fn antigravity_observation_labels_the_real_data_dir() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let home = tmp("home-agy-obs");
         std::fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
         let mut st = AccountsState::default();
@@ -3451,6 +3520,8 @@ mod tests {
     /// (가짜 홈에 agy 데이터 폴더를 둔다 — 행 생성 근거. 라이브 홈에 기대면 폴더 없는 CI 에서 결과가 갈린다.)
     #[test]
     fn source_error_is_exposed_until_a_fresh_observation_clears_it() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let dir = tmp("daemon-srcerr");
         let home = tmp("home-srcerr");
         std::fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
@@ -3497,6 +3568,8 @@ mod tests {
     /// 수정 전: `note_agy_error(Some)` 가 행을 만들고, 좌석이 닫히면 오류만 지워 '관측 전' 유령이 재시작까지 남았다.
     #[test]
     fn agy_error_without_any_agy_trace_creates_no_account_row() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let dir = tmp("daemon-noghost");
         let home = tmp("home-noghost"); // 빈 홈 — ~/.gemini/antigravity-cli · ~/.antigravity 없음
         let d = crate::state::Daemon::new(dir.join("cysd.sock"));
@@ -3521,6 +3594,8 @@ mod tests {
     /// (폴더가 있으니 데몬을 재시작해도 시드되는 행 — 재시작 전후가 같다).
     #[test]
     fn agy_error_creates_row_only_on_the_seed_evidence() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let dir = tmp("daemon-lateseed");
         let home = tmp("home-lateseed");
         let d = crate::state::Daemon::new(dir.join("cysd.sock"));
@@ -3545,6 +3620,8 @@ mod tests {
     /// 행을 만드는 것만 근거를 요구하고, 있는 행의 경로 고장 표기는 막지 않는다.
     #[test]
     fn agy_error_annotates_an_existing_row_without_the_data_dir() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let dir = tmp("daemon-annotate");
         let home = tmp("home-annotate");
         let d = crate::state::Daemon::new(dir.join("cysd.sock"));
@@ -3746,6 +3823,8 @@ mod tests {
     /// RC2-b: agy 상태줄 값이 antigravity 계정의 최신 출처면 RPC 수집기는 물러선다(참) — RPC 값·관측 전·행 없음은 거짓.
     #[test]
     fn agy_statusline_becomes_the_authoritative_source() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let dir = tmp("daemon-agy-auth");
         let d = crate::state::Daemon::new(dir.join("cysd.sock"));
         assert!(!agy_statusline_authoritative(&d), "행 없음");
@@ -3792,7 +3871,9 @@ mod tests {
         assert!(note_rate_at(&d, Some(&home), "claude", &sess, &[rw("5h", 97.0, None)], "statusline", t0));
         assert_eq!(report_outside_at(&d, Some(&home), &sess, &[rw("5h", 5.0, None)], t0 + 1.0), Ok(OutsideOutcome::Accepted));
         let row = claude_rows(&d).into_iter().find(|r| r["account_id"] == "u-keep").unwrap();
-        assert_eq!((row["source"].clone(), row["rate"][0]["used_pct"].clone()), (json!(OUTSIDE_SOURCE), json!(5.0)), "표시는 최신 승자");
+        // 1.1.8 📌5(master 결정 · 표시 우선순위 OAuth > 좌석 > 창 밖 — 데몬 편입): 원작자 단언 「표시는 최신 승자(창 밖 5%)」 는
+        //   우리 판에서 「신선한 좌석 값(97%)을 창 밖 값이 못 덮는다」 로 바뀐다 · 이 시험의 목적(경보 입력 보존)은 아래 그대로.
+        assert_eq!((row["source"].clone(), row["rate"][0]["used_pct"].clone()), (json!("statusline"), json!(97.0)), "신선한 좌석 표시값을 창 밖 값이 덮었다(📌5)");
         assert_eq!(
             alert_rates(&d),
             vec![("keep@example.test".to_string(), "5h".to_string(), 97.0)],
@@ -4232,6 +4313,8 @@ mod tests {
     /// 는 REMIND 안에 한 번만 난다(P4 재현 모양 · agy 는 리셋을 `now+reset_in_seconds` 로 지어 보내 몇 초씩 흔들린다).
     #[test]
     fn fatal_fix_alternating_agy_seats_do_not_refire_the_account_alert() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let dir = tmp("ff-agy-alt");
         let d = crate::state::Daemon::new(dir.join("cysd.sock"));
         let cfg = crate::alerts::AlertConfig::default();
@@ -4254,6 +4337,8 @@ mod tests {
     /// 뺀다(그 창은 리셋됐을 수밖에 없다). 리셋 시각이 epoch 초로 보이지 않으면(단위가 다른 원천) 빼는 근거로 쓰지 않는다.
     #[test]
     fn fatal_fix_windows_past_their_reset_are_not_alert_inputs() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드에서만 휴면 스위치를 켜고 원래 단언 그대로.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let dir = tmp("ff-reset-daemon");
         let home = tmp("ff-reset-home");
         let sess = outside_profile(&home, ".claude-3", "u-rst", "rst@example.test");
@@ -6969,6 +7054,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(p5, Some(88.0), "기각된 리셋 지난 5h(93)가 영속됐다");
         assert_eq!(p7, Some(40.0), "채택된 7d 는 영속");
+    }
+
+    /// ★1.1.8 📌5: 표시 우선순위 OAuth > 좌석 상태줄 > 창 밖 보고 — 높은 순위가 신선한 동안 낮은 순위는 표시를 못 바꾸고,
+    /// 낡으면(원천별 신선 한도 초과) 다음 순위가 넘겨받는다. 경보 입력은 순위와 무관(창 밖 = 언제나 제외).
+    #[test]
+    fn display_priority_oauth_over_seat_over_outside() {
+        let d = crate::state::Daemon::new(std::env::temp_dir().join(format!("cys-acct-prio-{}.sock", std::process::id())));
+        let now = 1_000_000.0;
+        let root = std::env::temp_dir().join(format!("cys-acct-prio-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let prof = root.join("prof");
+        std::fs::create_dir_all(prof.join("projects/p")).unwrap();
+        std::fs::write(prof.join(".claude.json"), r#"{"oauthAccount":{"accountUuid":"uuid-prio","emailAddress":"prio@x"}}"#).unwrap();
+        let sf = prof.join("projects/p/s.jsonl").to_string_lossy().into_owned();
+        let w = |p: f64| [RateWindow { label: "5h".into(), used_pct: p, resets_at: Some(now + 7200.0) }];
+        let key = AccountKey { provider: "claude".into(), account_id: "uuid-prio".into() };
+        let shown = |d: &Arc<Daemon>| {
+            let st = d.accounts.lock().unwrap();
+            let v = &st.views[&key];
+            (v.source.clone(), v.rate[0].used_pct)
+        };
+        note_rate(&d, "claude", &sf, &w(40.0), "oauth", now);
+        note_rate(&d, "claude", &sf, &w(41.0), "statusline", now + 10.0);
+        assert_eq!(shown(&d), ("oauth".to_string(), 40.0), "신선한 OAuth 를 좌석 값이 덮었다");
+        note_rate(&d, "claude", &sf, &w(5.0), OUTSIDE_SOURCE, now + 20.0);
+        assert_eq!(shown(&d), ("oauth".to_string(), 40.0), "신선한 OAuth 를 창 밖 값이 덮었다");
+        // OAuth 가 낡으면(240초 초과) 좌석이 넘겨받는다.
+        note_rate(&d, "claude", &sf, &w(45.0), "statusline", now + FRESH_LIMIT_OAUTH_SECS + 1.0);
+        assert_eq!(shown(&d), ("statusline".to_string(), 45.0), "낡은 OAuth 가 좌석 값을 막았다");
+        // 신선한 좌석 값은 창 밖 값이 못 덮는다 · 좌석이 낡으면(120초 초과) 창 밖 값이라도 표시한다.
+        let t_seat = now + FRESH_LIMIT_OAUTH_SECS + 1.0;
+        note_rate(&d, "claude", &sf, &w(6.0), OUTSIDE_SOURCE, t_seat + 30.0);
+        assert_eq!(shown(&d), ("statusline".to_string(), 45.0), "신선한 좌석 값을 창 밖 값이 덮었다");
+        note_rate(&d, "claude", &sf, &w(7.0), OUTSIDE_SOURCE, t_seat + FRESH_LIMIT_STATUSLINE_SECS + 1.0);
+        assert_eq!(shown(&d), (OUTSIDE_SOURCE.to_string(), 7.0), "낡은 좌석 값 뒤의 창 밖 값을 표시하지 않았다");
+        // 같은 순위·높은 순위는 언제나 넘겨받는다(최신 승자).
+        note_rate(&d, "claude", &sf, &w(50.0), "oauth", t_seat + 200.0);
+        assert_eq!(shown(&d), ("oauth".to_string(), 50.0));
+        // 경보 입력에는 창 밖 값이 들어가지 않는다(순위와 무관).
+        assert!(d.accounts.lock().unwrap().alert_inputs.get(&key).map_or(true, |i| i.rate.iter().all(|r| r.used_pct != 7.0)));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// (TICKET=cysr-usage-two-accounts) 원천별 신선 한도의 **값과 그 근거**를 고정한다.

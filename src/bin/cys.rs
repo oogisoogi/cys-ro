@@ -443,6 +443,10 @@ enum Command {
         #[command(subcommand)]
         action: FeedAction,
     },
+    /// ★1.1.8 휴면 동사(team-propose · team-token) — 숨김 · 파싱만([`DormantTeamCommand`]). 별도 열거로 평탄화한 이유:
+    /// 이 거대한 `Command` 의 clap 조립 함수 스택 프레임이 변형마다 커져 시험 스레드(2MB)에서 넘친다(rqfix_f10 실측).
+    #[command(flatten)]
+    DormantTeam(DormantTeamCommand),
     /// RSI 학습 루프 — 사람 직접 명령(제안 생성) 또는 현재 학습 라운드 상태 조회
     Learn {
         /// 학습 주제 (생략하고 --status면 상태 조회)
@@ -2668,16 +2672,49 @@ enum FeedAction {
         /// 결재 사유(W3.3 감사 기록용). 한글·공백은 셸에서 단일 인용으로 감싼다.
         #[arg(long)]
         reason: Option<String>,
+        /// ★0.14.42 팀 만들기 제안의 `allow` 전용 — 오너 승인 발화로 발급된 1회용 생성 토큰.
+        /// 데몬이 검증한다(생성 성공 기록 뒤에만 유효 · 좌석·제안·본문 결박). 없으면 종전과 같다.
+        /// ★1.1.8 휴면: 숨김 인자(도움말 비노출) · 휴면 스위치가 꺼져 있으면 토큰이 실린 결재는 보내지 않고 거부한다.
+        #[arg(long = "team-token", allow_hyphen_values = true, hide = true)]
+        team_token: Option<String>,
     },
 }
 
+
+/// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]) — 원작자 팀 만들기 동사 2개.
+/// `Command` 에 평탄화(`#[command(flatten)]`)되어 최상위 동사(`cys team-propose` · `cys team-token`)로 파싱된다.
+#[derive(Subcommand)]
+enum DormantTeamCommand {
+    /// 말로 팀 만들기(본부 대표 전용) — 오너와 정한 팀 이름·하는 일을 '팀 만들기 제안' 1건으로 올린다.
+    /// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]): 원작자 U16 동사를 **숨김**으로
+    /// 등록한다(파싱만 · 도움말 비노출). 휴면 스위치(`cys::dormant::team_flow_enabled` · 기본 꺼짐)가 꺼져 있으면
+    /// 실행을 거부한다(우리 경로 = dept-by-chat).
+    #[command(hide = true)]
+    TeamPropose {
+        /// 팀 이름(표시명 · 40자 이내 · 한글 가능)
+        #[arg(long)]
+        name: String,
+        /// 하는 일(2000자 이내 · 오너와 정한 문장 그대로)
+        #[arg(long, conflicts_with = "purpose_file")]
+        purpose: Option<String>,
+        /// 하는 일을 적은 UTF-8 파일(긴 문장·여러 줄은 이쪽을 쓴다)
+        #[arg(long)]
+        purpose_file: Option<std::path::PathBuf>,
+    },
+    /// ★0.14.42 대화 승인 1회용 팀 생성 토큰 — `cys-dept create --team-token` 전용 내부 동사(도움말 비노출)
+    /// · 1.1.8 휴면 스위치가 꺼져 있으면 실행 거부(team_flow_dormant · exit 1 = 인가 없음).
+    #[command(hide = true)]
+    TeamToken {
+        #[command(subcommand)]
+        action: TeamTokenAction,
+    },
+}
 
 /// ★0.14.42(설계 §11 R8) `cys team-token` — `cys-dept create --team-token` 이 **데몬에 묻는** 내부 동사.
 /// 판정은 전부 데몬이 한다(좌석 = 커널 peer 신원 · 원장 검증·소비 = 팩 javis_teamtoken). 이 CLI 는
 /// 판정하지 않고 데몬 답을 stdout JSON 1줄로 옮길 뿐이다 — exit 0 = 데몬 통과 · 1 = 데몬 거부(사유
 /// 코드 보존) · 3 = 데몬에 닿지 못함. **0 이 아닌 모든 값은 인가 없음**이다.
-// 1.1.8 휴면: 우리 dept-by-chat 경로 사용 · master#36f48cf7 — clap 등록(Command 변형) 없이 타입만 남긴다.
-#[allow(dead_code)]
+// 1.1.8 휴면: 숨김 동사로 등록(파싱만) · 실행은 휴면 스위치가 켜졌을 때만 — master#36f48cf7 · master#cd9e534c.
 #[derive(Subcommand)]
 enum TeamTokenAction {
     /// 생성 단계 1회 소비 — 통과 시 만들 명세(spec_b64 = 데몬 메모리의 현재 제안 본문)를 돌려준다
@@ -3135,9 +3172,11 @@ const SEND_SETTLE_JITTER_MS: u64 = 40;
 /// 한 `cys send`(대상 1곳)의 최대 요청 수(첫 요청 포함).
 const SEND_SETTLE_MAX_TRIES: u32 = 40;
 
-/// ★(S21-SETTLE) 정착 재시도 예산(순수). 끔(env `CYS_SEND_SETTLE`)·윈도우(요청 순서 무변경)·다중 대상(글롭 — 뒤 대상이
+/// ★(S21-SETTLE) 정착 재시도 예산(순수). 끔(env `CYS_SEND_SETTLE`)·다중 대상(글롭 — 뒤 대상이
 /// 늦어진다)·명시 큐(직접 요청이 없다)·clear_first(원자 경로 — 무clear 방향 위험이 있는 경로는 재시도하지 않는다)면 0.
 /// 0 이면 요청 순서가 종전과 바이트 단위로 같다(직접 1회 → 거부면 `--queued` 1회).
+/// ★1.1.8 📌1(master 결정 · DECISION-TABLE-118 §0 8행): 원작자는 윈도우에서 0(ConPTY 실측 전)이었다 — 우리 판은 **윈도우도
+/// 켠다**(`windows` 인자는 호출부 배선 핀을 위해 남긴다 · 값과 무관). 윈 실기 전 안전망 = [`send_guard_wait_retry`](윈도우 한정).
 fn send_settle_budget_ms(
     env_off: bool,
     budget_env: Option<&str>,
@@ -3146,13 +3185,50 @@ fn send_settle_budget_ms(
     queued: bool,
     clear_first: bool,
 ) -> u64 {
-    if env_off || windows || multi || queued || clear_first {
+    let _ = windows; // 📌1: 윈도우도 켬
+    if env_off || multi || queued || clear_first {
         return 0;
     }
     budget_env
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(|v| v.min(SEND_SETTLE_BUDGET_MS_MAX))
         .unwrap_or(SEND_SETTLE_BUDGET_MS_DEFAULT)
+}
+
+/// ★1.1.8 📌1 실기 전 안전망(윈도우 한정 · 우리 1.1.7 `cys send` 의 700ms·6초 재시도 계승): 정착 재시도가 끝난 뒤에도
+/// **타이핑 가드 거부**면 창(데몬 기본 3초)이 닫히기를 정직하게 기다렸다가 다시 직접 보낸다 — 가드를 우회하지 않는다(사람이
+/// 계속 치면 계속 거부 → 마지막 결과 그대로 호출부의 `--queued` 1회 전환). 윈 실기(S22·S21·CRLF)로 원작자 정착이 윈에서
+/// 서는 것이 확인되면 이 안전망을 걷는다(master 📌1 「그 전 윈 한정 우리 6초 재시도 유지」).
+/// 순수 시임: 요청·수면·시계를 주입받는다. `enabled=false`(맥·리눅스) 또는 `queued` 면 입력을 그대로 돌려준다.
+fn send_guard_wait_retry(
+    first: Result<Value, String>,
+    enabled: bool,
+    queued: bool,
+    wait_secs: u64,
+    mut req: impl FnMut() -> Result<Value, String>,
+    mut sleep: impl FnMut(u64),
+    mut elapsed_ms: impl FnMut() -> u64,
+) -> Result<Value, String> {
+    let mut attempt = first;
+    if !enabled || queued {
+        return attempt;
+    }
+    let deadline_ms = wait_secs.saturating_mul(1000);
+    while attempt.as_ref().err().map(|e| is_typing_guard_err(e)).unwrap_or(false) && elapsed_ms() < deadline_ms {
+        sleep(SEND_GUARD_RETRY_STEP_MS);
+        attempt = req();
+    }
+    attempt
+}
+
+/// 📌1 윈 안전망 재시도 간격(ms) — 우리 1.1.7 값.
+const SEND_GUARD_RETRY_STEP_MS: u64 = 700;
+
+/// 📌1 윈 안전망 대기 상한(초) — 우리 1.1.7 값(6초 · env `CYS_SEND_GUARD_WAIT_SECS`).
+fn send_guard_wait_secs() -> u64 {
+    cys::env_compat("CYS_SEND_GUARD_WAIT_SECS")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6)
 }
 
 /// 지터(ms · [0, `SEND_SETTLE_JITTER_MS`]) — pid·시계 나노초·시도 번호에서 파생(난수 크레이트 불요).
@@ -5303,17 +5379,18 @@ fn run(command: Command) -> i32 {
                     // ★(0.14.42 · S21-SETTLE) 첫 직접 요청만 정착 재시도로 감싼다 — 데몬이 정착 증명을 붙인 거부(쓰기 전
                     //   명시 거부)에서만 힌트만큼 쉬고 다시 보낸다. 증명이 없거나 예산 0(윈도우·다중·큐·clear_first·끔)이면
                     //   재시도 0회로 아래 큐 전환에 그대로 간다(요청 순서 종전과 같음).
+                    let direct = |settle_retry| {
+                        let mut params =
+                            json!({"surface_id": sid, "text": body, "from": from, "queued": queued, "clear_first": clear_first});
+                        // ★(수정 2회차 FV1-1) 정착 재시도 표식 — 재시도에만 싣는다(첫 요청은 종전 바이트). 데몬은 pause 중
+                        //   재시도를 쓰지 않고 증명 없이 거부한다 → 아래 `--queued` 1회(= pause 동안 동결).
+                        if settle_retry {
+                            params["settle_retry"] = json!(true);
+                        }
+                        request("surface.send_text", params)
+                    };
                     let settle = send_text_settled(
-                        |settle_retry| {
-                            let mut params =
-                                json!({"surface_id": sid, "text": body, "from": from, "queued": queued, "clear_first": clear_first});
-                            // ★(수정 2회차 FV1-1) 정착 재시도 표식 — 재시도에만 싣는다(첫 요청은 종전 바이트). 데몬은 pause 중
-                            //   재시도를 쓰지 않고 증명 없이 거부한다 → 아래 `--queued` 1회(= pause 동안 동결).
-                            if settle_retry {
-                                params["settle_retry"] = json!(true);
-                            }
-                            request("surface.send_text", params)
-                        },
+                        &direct,
                         |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
                         send_settle_budget_ms(settle_off, settle_budget_env.as_deref(), cfg!(windows), multi, queued, clear_first),
                         send_settle_jitter_ms,
@@ -5321,7 +5398,18 @@ fn run(command: Command) -> i32 {
                     if let Some(line) = send_settle_stderr_line(&settle, sid) {
                         eprintln!("{line}");
                     }
-                    let r = match settle.result {
+                    // ★1.1.8 📌1 윈 실기 전 안전망 — 윈도우에서만 우리 700ms·6초 타이핑 가드 대기 재시도(맥·리눅스 = 무변경).
+                    let guard_t0 = std::time::Instant::now();
+                    let settled = send_guard_wait_retry(
+                        settle.result,
+                        cfg!(windows),
+                        queued,
+                        send_guard_wait_secs(),
+                        || direct(false),
+                        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
+                        || guard_t0.elapsed().as_millis() as u64,
+                    );
+                    let r = match settled {
                         Ok(r) => r,
                         // ★B3: 타이핑 가드 거부 → `--queued` 1회 전환(inject_text T-0147-6 동형).
                         //   종전엔 여기서 에러가 그대로 올라가 **본문이 소실**됐다. 큐 배달은
@@ -6283,6 +6371,18 @@ fn run(command: Command) -> i32 {
         }),
 
         Command::Feed { action } => return run_feed(action),
+        Command::DormantTeam(DormantTeamCommand::TeamPropose { name, purpose, purpose_file }) => {
+            if !cys::dormant::team_flow_enabled() {
+                return team_flow_dormant_refusal("team-propose", 3);
+            }
+            return run_team_propose(&name, purpose, purpose_file);
+        }
+        Command::DormantTeam(DormantTeamCommand::TeamToken { action }) => {
+            if !cys::dormant::team_flow_enabled() {
+                return team_flow_dormant_refusal("team-token", 1);
+            }
+            return run_team_token(action);
+        }
 
         Command::Learn { topic, status } => {
             if status {
@@ -6345,8 +6445,18 @@ fn run(command: Command) -> i32 {
 /// exit: 0=제안 등록 · 2=입력 형식(이름·하는 일·파일) · 3=데몬 거부(제안자·건수·형식) 또는 데몬 오류 ·
 ///       4=데몬이 잠금을 모르는 구버전(제안을 스스로 거뒀다 — 앱 재시작으로 데몬을 갱신한 뒤 다시).
 /// 결과 확인의 진실원은 팀 명부(`~/.cys/depts.json` 의 `team_proposal_id`)다 — 피드 allow 는 보조 신호.
-// 1.1.8 휴면: 우리 dept-by-chat 경로 사용 · master#36f48cf7 — `cys team-propose` 서브커맨드 미등록.
-#[allow(dead_code)]
+/// ★1.1.8 휴면 거부 — 원작자 팀 만들기·팀 토큰 갈래가 꺼져 있다(stdout JSON 1줄 · 비0 = 인가 없음).
+/// 우리 경로 = 말로 부서 만들기(dept-by-chat · javis_dept_request.py).
+fn team_flow_dormant_refusal(verb: &str, rc: i32) -> i32 {
+    println!(
+        "{}",
+        json!({"ok": false, "code": cys::dormant::DORMANT_TEAM_FLOW_CODE,
+               "message": format!("{verb}: 이 판에서는 쓰지 않는 기능입니다(휴면) — 부서는 대화로 만듭니다(dept-by-chat)")})
+    );
+    rc
+}
+
+// 1.1.8 휴면: 우리 dept-by-chat 경로 사용 · master#36f48cf7 — 숨김 동사 · 휴면 스위치 켜짐일 때만 호출된다.
 fn run_team_propose(
     name: &str,
     purpose: Option<String>,
@@ -6470,13 +6580,18 @@ fn run_feed(action: FeedAction) -> i32 {
             }
             0
         }),
-        FeedAction::Reply { request_id, decision, reason } => {
+        FeedAction::Reply { request_id, decision, reason, team_token } => {
+            // ★1.1.8 휴면: 토큰이 실린 결재는 팀 토큰 갈래가 켜졌을 때만 보낸다(꺼짐 = 보내지 않고 거부 · 인가 없음).
+            if team_token.is_some() && !cys::dormant::team_flow_enabled() {
+                return team_flow_dormant_refusal("feed reply --team-token", 1);
+            }
             // reason은 Some일 때만 실어 보낸다(None=키 부재 → 데몬에서 null 처리).
-            request(
-                "feed.reply",
-                json!({"request_id": request_id, "decision": decision, "reason": reason}),
-            )
-            .map(|_| {
+            let mut params = json!({"request_id": request_id, "decision": decision, "reason": reason});
+            // ★0.14.42: 토큰은 준 경우에만 키를 싣는다 — 키 부재 = 토큰 경로 미시도(데몬 종전 판정 그대로).
+            if let Some(t) = team_token {
+                params["team_token"] = json!(t);
+            }
+            request("feed.reply", params).map(|_| {
                 println!("OK");
                 0
             })
@@ -6492,8 +6607,7 @@ fn run_feed(action: FeedAction) -> i32 {
 }
 
 /// ★0.14.42 `cys team-token …` — 데몬 답을 stdout JSON 1줄 + exit 로 옮긴다(판정 0 — 데몬이 한다).
-// 1.1.8 휴면: 우리 dept-by-chat 경로 사용 · master#36f48cf7 — `cys team-token` 서브커맨드 미등록.
-#[allow(dead_code)]
+// 1.1.8 휴면: 숨김 동사 · 휴면 스위치 켜짐일 때만 호출된다(master#36f48cf7 · master#cd9e534c).
 fn run_team_token(action: TeamTokenAction) -> i32 {
     let (method, params) = match action {
         TeamTokenAction::Consume { token } => ("team.token.consume", json!({"team_token": token})),
@@ -6511,8 +6625,6 @@ fn run_team_token(action: TeamTokenAction) -> i32 {
 /// 응답 → (stdout JSON, exit). 거부는 `rpc_roundtrip` 의 `"<code>: <message>"` 문자열이다 — 사유 코드를
 /// 되짚어 보존한다(cys-dept 가 오너에게 그 코드·문구를 그대로 전한다). 코드 모양(`[a-z_]+`)이 아니면
 /// 데몬의 판정이 아니라 연결 실패다 → `daemon_unreachable`(exit 3). 어느 쪽이든 비0 = 인가 없음.
-// 1.1.8 휴면: 우리 dept-by-chat 경로 사용 · master#36f48cf7.
-#[allow(dead_code)]
 fn team_token_outcome(r: Result<Value, String>) -> (Value, i32) {
     match r {
         Ok(v) => {
@@ -15327,8 +15439,8 @@ fn boot_agent_on_surface(
     //   정착 게이트를 지난다 — 정착 증명 거부는 `cys send` 와 같은 예산 안에서 다시 보낸다(권위 면제면 첫 요청 그대로).
     authoritative_paste_settled(
         |p| request("surface.send_text", p),
-        json!({"surface_id": sid, "text": send, "quiet": true, "authoritative": true,
-               (cys::AGENT_LAUNCH_KEY): true}),
+        // (1.1.8 병합: 우리 v116 표지를 한 줄 안·`authoritative` 앞에 둔다 — 원작자 소스 핀이 `"authoritative": true})` 줄을 센다.)
+        json!({"surface_id": sid, "text": send, "quiet": true, (cys::AGENT_LAUNCH_KEY): true, "authoritative": true}),
     )?;
     request(
         "surface.send_key",
@@ -20209,12 +20321,13 @@ fn inject_text_on(
     let wrapped = cys::paste_fence::wrap(text);
     // ★(0.14.42 · 통합 minor 정리) 좌석 밖 호출자(본부 CLI → 부서 데몬)는 권위 면제가 아니다 — 정착 증명 거부는 `cys send`
     //   와 같은 예산 안에서 다시 보낸다(종전: 재시도 없이 Err → `drain --verify` 가 '소켓 hung' 으로 오분류).
+    // ★D10: 부서 팩 ACL `{"from":"external","to":"worker*","allow":false}` 는 이 팬아웃을
+    //   겨냥한 규칙이 아니다(CEO·타 부서의 워커 직접 조향을 막는 규칙이다). 대상 데몬의
+    //   토큰을 실어 A1 과 **같은 입구**로 오너 등급을 받는다 — 토큰이 없으면 종전 바이트 동일.
+    // ★⑯(precut ㉮ 형제) 이 경로의 유일한 호출자 = drain --verify 무인 팬아웃 — 승인·질문 창 위에 쓰지 않는다.
+    // (1.1.8 병합: 이 두 주석은 원래 인자 사이에 있었다 — 원작자 소스 핀이 권위 붙여넣기 앞 6줄에서 도우미 호출을 찾으므로 위로 옮김.)
     authoritative_paste_settled(
         |p| request_on_timeout(socket, "surface.send_text", p, timeout),
-        // ★D10: 부서 팩 ACL `{"from":"external","to":"worker*","allow":false}` 는 이 팬아웃을
-        //   겨냥한 규칙이 아니다(CEO·타 부서의 워커 직접 조향을 막는 규칙이다). 대상 데몬의
-        //   토큰을 실어 A1 과 **같은 입구**로 오너 등급을 받는다 — 토큰이 없으면 종전 바이트 동일.
-        // ★⑯(precut ㉮ 형제) 이 경로의 유일한 호출자 = drain --verify 무인 팬아웃 — 승인·질문 창 위에 쓰지 않는다.
         refusing_on_approval(
             with_owner_token_on(
                 inject_params_with_sender(
@@ -27379,7 +27492,12 @@ mod tests {
         assert!(ph.contains("^디렉티브 생존 확인 \\(ACK (?:수신\\)|기록 · )"), "phoenix ACK 줄 판독이 cys 문면과 갈렸다");
         assert!(body.contains("println!(\"디렉티브 생존 확인 (ACK 기록 · {age}초 전"), "기록 ACK 문면이 phoenix 판독과 갈렸다");
         assert_eq!(REINJECT_ACK_LINE, "디렉티브 생존 확인 (ACK 수신)");
-        assert!(ph.contains("\"--check\", \"--ack-only\""), "phoenix G2 가 --ack-only 를 안 쓴다");
+        // 1.1.8 병합: phoenix 는 원작자 U8 P0-M2 판(`--ack-only` 를 인자 뒤에 둔다)을 받았다 — 인자 순서가 아니라
+        //   「reinject --check 호출 한 줄에 --ack-only 가 실린다」 를 핀한다(목적 = phoenix G2 는 확인 전용).
+        assert!(
+            ph.lines().any(|l| l.contains("cys(\"reinject\", \"--check\"") && l.contains("\"--ack-only\"")),
+            "phoenix G2 가 --ack-only 를 안 쓴다"
+        );
     }
 
     /// ★③(1.1.7) 팩 하한은 **두 레인이 같은 값**이고 1.1.7 이상이다 — 새 팩 phoenix G2 의 `--ack-only` 는 1.1.7
@@ -32652,7 +32770,8 @@ mod tests {
         assert_eq!(b(false, None, false, false, false, false), SEND_SETTLE_BUDGET_MS_DEFAULT);
         assert_eq!(SEND_SETTLE_BUDGET_MS_DEFAULT, 3000);
         assert_eq!(b(true, None, false, false, false, false), 0, "끔");
-        assert_eq!(b(false, None, true, false, false, false), 0, "윈도우 무변경");
+        // 1.1.8 📌1(master 결정): 윈도우도 켠다 — 원작자 단언 「윈도우 0(무변경)」 → 「윈도우도 기본 예산」.
+        assert_eq!(b(false, None, true, false, false, false), SEND_SETTLE_BUDGET_MS_DEFAULT, "윈도우도 정착 재시도를 켠다(📌1)");
         assert_eq!(b(false, None, false, true, false, false), 0, "다중 대상(글롭)은 재시도 없음");
         assert_eq!(b(false, None, false, false, true, false), 0, "명시 --queued 는 직접 요청이 없다");
         assert_eq!(b(false, None, false, false, false, true), 0, "clear_first(원자 경로)는 재시도 없음");
@@ -32660,6 +32779,55 @@ mod tests {
         assert_eq!(b(false, Some(" 1500 "), false, false, false, false), 1500);
         assert_eq!(b(false, Some("999999"), false, false, false, false), 10_000, "상한");
         assert_eq!(b(false, Some("abc"), false, false, false, false), SEND_SETTLE_BUDGET_MS_DEFAULT, "잘못된 값 = 기본");
+    }
+
+    /// ★1.1.8 📌1 윈 실기 전 안전망(시임) — 윈도우에서만 타이핑 가드 거부를 700ms 간격으로 6초까지 다시 보낸다 ·
+    /// 맥·리눅스·명시 큐 = 입력 그대로 · 가드 아닌 오류·성공 = 재시도 0 · 상한을 넘기면 마지막 거부 그대로(→ `--queued` 1회).
+    #[test]
+    fn pin1_windows_guard_wait_retry_net() {
+        let tg = || Err::<Value, String>(cys::MSG_TYPING_GUARD.to_string());
+        let run = |first: Result<Value, String>, enabled: bool, queued: bool, seq: Vec<Result<Value, String>>| {
+            let seq = std::cell::RefCell::new(seq.into_iter());
+            let clock = std::cell::Cell::new(0u64);
+            let (mut reqs, mut slept) = (0u32, 0u64);
+            let r = send_guard_wait_retry(
+                first,
+                enabled,
+                queued,
+                6,
+                || {
+                    reqs += 1;
+                    seq.borrow_mut().next().unwrap_or_else(|| Err(cys::MSG_TYPING_GUARD.to_string()))
+                },
+                |ms| {
+                    slept += ms;
+                    clock.set(clock.get() + ms);
+                },
+                || clock.get(),
+            );
+            (r, reqs, slept)
+        };
+        // 맥·리눅스(enabled=false) = 무변경
+        let (r, n, _) = run(tg(), false, false, vec![Ok(json!({"ok": true}))]);
+        assert!(r.is_err() && n == 0, "윈도우 밖에서 재시도했다");
+        // 명시 큐 = 무변경
+        let (_, n, _) = run(tg(), true, true, vec![]);
+        assert_eq!(n, 0);
+        // 윈도우: 두 번째 재시도에 성공
+        let (r, n, slept) = run(tg(), true, false, vec![tg(), Ok(json!({"ok": true}))]);
+        assert!(r.is_ok() && n == 2 && slept == 2 * SEND_GUARD_RETRY_STEP_MS);
+        // 윈도우: 계속 가드 → 6초 상한 뒤 마지막 거부 그대로(→ 호출부 --queued 1회)
+        let (r, n, slept) = run(tg(), true, false, vec![]);
+        assert!(r.as_ref().err().map(|e| is_typing_guard_err(e)).unwrap_or(false));
+        assert!(slept >= 6000 && slept < 6000 + SEND_GUARD_RETRY_STEP_MS && n == (slept / SEND_GUARD_RETRY_STEP_MS) as u32);
+        // 가드 아닌 오류는 재시도 0
+        let (_, n, _) = run(Err("cannot connect".into()), true, false, vec![]);
+        assert_eq!(n, 0);
+        // 배선: Command::Send 가 윈도우 한정으로 부른다
+        let src = include_str!("cys.rs");
+        let arm = src.split("Command::Send { surface, to, queued, clear_first, stdin, file, text } => {").nth(1).unwrap();
+        let first = arm.split("Err(e) if should_queue_fallback_send(queued, clear_first, &e) => {").next().unwrap();
+        assert!(first.contains("send_guard_wait_retry(") && first.contains("cfg!(windows),"), "📌1 안전망 미배선");
     }
 
     /// ★(0.14.42 · S21-SETTLE) 정착 재시도 실행기(시임) — **정착 증명이 붙은 D-12 거부에서만** 힌트만큼 쉬고 다시 보낸다.
@@ -36830,7 +36998,8 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
         let a = prod.find("fn inject_text_opts(sid: u64, text: &str").unwrap();
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
-        assert_eq!(body.matches("with_owner_token(json!(").count(), 4, "inject_text 의 주입 요청 4곳 중 토큰 누락");
+        // 1.1.8 병합: 첫 직접 요청은 원작자 J3 `inject_params_with_sender(json!(…))` 를 감싼다 — 바늘을 `with_owner_token(` 로.
+        assert_eq!(body.matches("with_owner_token(").count(), 4, "inject_text 의 주입 요청 4곳 중 토큰 누락");
         let r = prod.find("fn rotate_depts(").unwrap();
         let rb = &prod[r..r + prod[r..].find("\n}\n").unwrap()];
         assert!(rb.contains("cys::dept_registry_cwd(sock)"), "rotate ⑥ 부서 복원에 부서 폴더 미전달");
@@ -43476,11 +43645,18 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         // ★성찰 A(minor): 위 fake_daemon_with 와 동일 결함 — CARGO_MANIFEST_DIR 기반은 긴 체크아웃
         //   경로에서 macOS 소켓 경로 상한(104B)을 넘겨 u8_m2·d16_e2e 검체가 이유 없이 FAIL 한다
         //   (실측: 긴 경로 14 FAIL, 짧은 경로 0). /tmp 로 고정.
-        let socket = std::path::Path::new("/tmp").join(format!(
-            ".d16r-{}-{}.sock",
+        // ★1.1.8 병합(고정물 조정): 우리 1.1.7 ③ reinject 가드(cys::reinject_guard)는 좌석 기록을 **소켓의 부모 폴더**
+        //   (`daemon_state_dir` = unix 에선 소켓 parent)의 `reinject-guard/<sid>.json` 에 남긴다. 소켓을 /tmp 바로 아래에
+        //   두면 그 기록이 시험 간·실행 간에 공유돼(같은 surface:7) 두 번째 검체부터 「backoff」 skip 으로 핑 0회가 된다
+        //   (실측: /tmp/reinject-guard/7.json 잔존). 가짜 데몬마다 짧은 전용 폴더를 둔다 — 경로 상한(104B) 안.
+        let sock_dir = std::path::Path::new("/tmp").join(format!(
+            ".d16r-{}-{}",
             std::process::id(),
             NEXT_SOCKET.fetch_add(1, Ordering::Relaxed),
         ));
+        let _ = std::fs::remove_dir_all(&sock_dir);
+        std::fs::create_dir_all(&sock_dir).expect("가짜 소켓 폴더");
+        let socket = sock_dir.join("s.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("가짜 소켓 bind");
         let calls: D16DaemonCalls = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&calls);
@@ -43535,6 +43711,9 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             }
             let _ = server.join();
             let _ = std::fs::remove_file(&stop_socket);
+            if let Some(d) = stop_socket.parent() {
+                let _ = std::fs::remove_dir_all(d);
+            }
         };
         (socket, calls, stop)
     }
@@ -43626,6 +43805,11 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let after1 = calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(exit1, 0);
         assert_eq!(reinject_directive_sends(&after1), 1, "드리프트 첫 확정은 전문을 정확히 1회 재주입해야 한다");
+        // 1.1.8 병합(고정물 조정): 우리 1.1.7 ③ reinject 가드는 같은 좌석의 연속 시도를 간격(backoff)으로 막는다 — 이 검체가
+        //   재는 것은 원작자 **멱등 키 소진**이므로, 두 번째 호출 전에 가드 기록만 지워 「간격이 지난 뒤의 재호출」 을 만든다.
+        let _ = std::fs::remove_file(
+            cys::daemon_state_dir(&socket).join(cys::reinject_guard::record_rel_path(7)),
+        );
         let exit2 = run_reinject(None, Some("surface:7".into()), true, 1, false);
         let after2 = calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
         drop(stop);
@@ -46005,7 +46189,9 @@ mod u10_notice_lane {
             std::fs::create_dir_all(p.join("directives")).unwrap();
             std::fs::create_dir_all(p.join("memory")).unwrap();
             std::fs::write(p.join("directives/CSO_DIRECTIVE.md"), format!("# {mark}\n")).unwrap();
-            std::fs::write(p.join("memory/MEMORY.md"), format!("{mark}-MEMORY\n")).unwrap();
+            // 1.1.8 병합(고정물 조정): 우리 v116-seat F2 `capped_memory_index` 는 색인 **항목 줄**(`- [`)만 싣는다(맨 글줄은
+            //   색인이 아니다) — 고정물을 색인 항목 형식으로. 단언(부서 팩 MEMORY 합성 · 본부 미유출)은 그대로.
+            std::fs::write(p.join("memory/MEMORY.md"), format!("- [{mark}-MEMORY](m.md) — 고정물\n")).unwrap();
         }
         let sock = td.join(".local/state/cys-dept-u10/cys.sock");
         let _p = cys::pack::EnvGuard::set(cys::pack::ENV_PACK_DIR, &dept);
@@ -46074,7 +46260,7 @@ mod u10_notice_lane {
     }
 }
 
-// 1.1.8 휴면: 우리 dept-by-chat 경로 사용 · master#36f48cf7 — 서브커맨드 미등록이라 파싱 단언 시험은 적색 후보(원장 표시).
+// 1.1.8 휴면: 숨김 등록(파싱만) — 실행 거부는 휴면 스위치(team_flow_dormant_cli_tests) · master#36f48cf7 · master#cd9e534c.
 // ★U16(0.14.41) 말로 팀 만들기 — `cys team-propose` 계약 핀(표면·검증). 데몬 잠금은
 // cysd team_gate_tests 가, 스키마·코덱 SOT 는 lib `cys::team_spec` 테스트가 잰다.
 #[cfg(test)]
@@ -46124,9 +46310,7 @@ mod team_token_cli_tests {
     use super::*;
     use clap::CommandFactory as _;
 
-    // 1.1.8 휴면: 우리 dept-by-chat 경로 사용 · master#36f48cf7 — `feed reply --team-token` 인자를 등록하지 않아
-    //   이 시험은 컴파일조차 안 된다(FeedAction::Reply 에 team_token 필드 없음). 지우지 않고 컴파일에서만 뺀다(휴면 연동 적색 후보).
-    #[cfg(any())]
+    // 1.1.8 휴면: `feed reply --team-token` 은 숨김 인자로 등록돼 파싱된다(실행 거부는 휴면 스위치 몫 · 아래 시험).
     #[test]
     fn feed_reply_carries_optional_team_token() {
         let c = Cli::try_parse_from(["cys", "feed", "reply", "tp-1-00ab", "allow", "--team-token", "0123"])
@@ -46178,6 +46362,31 @@ mod team_token_cli_tests {
         let (v, rc) = team_token_outcome(Err("cannot connect to cysd at /x/cys.sock: No such file or directory (os error 2)".into()));
         assert_eq!(rc, 3);
         assert_eq!(v["code"], json!("daemon_unreachable"));
+    }
+}
+
+// ★1.1.8 휴면 스위치(master D-TEAM · judge 조건 ①) — 숨김 동사는 파싱되지만 스위치가 꺼져 있으면 실행을 거부하고,
+// 켜면 원작자 판 그대로 데몬에 묻는다(여기선 표면만 — 데몬 쪽 거부는 cysd 몫).
+#[cfg(test)]
+mod team_flow_dormant_cli_tests {
+    use super::*;
+    use clap::CommandFactory as _;
+
+    #[test]
+    fn dormant_switch_off_refuses_team_verbs_and_hides_them() {
+        let _off = cys::dormant::force_for_thread(cys::dormant::Switch::TeamFlow, false);
+        let help = Cli::command().render_help().to_string();
+        assert!(!help.contains("team-propose") && !help.contains("team-token"), "휴면 동사가 도움말에 노출됐다");
+        assert_eq!(team_flow_dormant_refusal("team-token", 1), 1);
+        // 실행 진입점 자체가 꺼짐에서 거부한다(데몬에 닿기 전 · 소켓 없음과 무관하게 같은 코드).
+        let c = Cli::try_parse_from(["cys", "team-token", "consume", "--token", "0123"]).expect("숨김 동사 파싱");
+        assert!(matches!(c.command, Command::DormantTeam(DormantTeamCommand::TeamToken { .. })));
+        let src = include_str!("cys.rs");
+        for verb in ["Command::DormantTeam(DormantTeamCommand::TeamPropose {", "Command::DormantTeam(DormantTeamCommand::TeamToken {"] {
+            let i = src.find(&format!("        {verb}")).expect("디스패치 갈래 소실");
+            let arm = &src[i..i + 220];
+            assert!(arm.contains("cys::dormant::team_flow_enabled()"), "{verb} 디스패치가 휴면 스위치를 보지 않는다");
+        }
     }
 }
 

@@ -4349,7 +4349,8 @@ mod tests {
         assert!(!memo.contains(&s1), "가장 오래전에 떠난 파일이 남았다 — 오래된 것부터 잊지 않음");
         // 배선: 관측 루프의 경로 전환이 이 함수를 거친다(휴리스틱 발견은 실제 프로필 폴더를 읽어 단위 시험으로 몰 수 없다)
         let src = include_str!("usage.rs");
-        let prod = &src[..src.find("#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
+        // 1.1.8 병합: 원작자 판은 함수 본문 안에도 cfg(test) 블록을 둔다(들여쓰기) — 경계 = 줄머리의 첫 cfg(test) 속성.
+        let prod = &src[..src.find("\n#[cfg(test)]").expect("테스트 모듈 앵커 소실")];
         assert!(
             prod.contains("reattach_tail(daemon, tails, s.id, path.clone(), heuristic, now);"),
             "관측 루프의 경로 전환이 reattach_tail 을 거치지 않는다 — 파일별 유예 기억이 배선되지 않음"
@@ -4650,6 +4651,8 @@ mod tests {
     /// 이제 그 플랫폼에서는 프로브하지 않고 '상태줄 연결 필요' 코드를 적는다(상태줄 값이 들어오면 종전처럼 물러선다).
     #[test]
     fn fatal_fix_agy_collector_points_to_the_statusline_where_rpc_cannot_work() {
+        // ★1.1.8 휴면(master C4): 원작자 agy 갈래 시험 — 이 스레드(current_thread 런타임 포함)에서만 휴면 스위치를 켠다.
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
         let d = tick_daemon("win");
         add_agy_seat(&d);
         // 행 준비(부트 시드 대용 — 오류 코드는 이미 있는 행에만 싣는다)

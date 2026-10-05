@@ -619,32 +619,6 @@ pub fn daemon_state_dir_for(
     }
 }
 
-#[cfg(test)]
-mod daemon_state_dir_tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn windows_base_pipe_maps_to_localappdata_cys_not_pipe_namespace() {
-        let d = daemon_state_dir_for(Path::new(r"\\.\pipe\cys"), true, Some(PathBuf::from("LA")));
-        assert_eq!(d, PathBuf::from("LA").join("cys"));
-        // 종전 결함의 대조군: 소켓 부모는 파이프 이름공간이다(파일을 만들 수 없는 자리).
-        assert!(!d.to_string_lossy().contains("pipe"), "{d:?}");
-    }
-
-    #[test]
-    fn windows_dept_pipe_maps_to_slug_subdir() {
-        let d = daemon_state_dir_for(Path::new(r"\\.\pipe\cys-dept-3"), true, Some(PathBuf::from("LA")));
-        assert_eq!(d, PathBuf::from("LA").join("cys").join("cys-dept-3"));
-    }
-
-    #[test]
-    fn unix_is_socket_parent() {
-        let d = daemon_state_dir_for(Path::new("/s/state/cys/cys.sock"), false, None);
-        assert_eq!(d, PathBuf::from("/s/state/cys"));
-    }
-}
-
 /// Windows named pipe busy-retry 정책 — CLI(cys)·GUI(cys-app) 클라이언트 공용 **단일 진실**
 /// (이원 정의는 정책 변경 시 샷건 서저리). ERROR_PIPE_BUSY(os error 231, "모든 파이프
 /// 인스턴스가 사용 중")는 데몬 다운이 아니라 listening 인스턴스 순간 소진(정상 혼잡)이다 —
@@ -2679,6 +2653,148 @@ pub fn inject_claude_effort_env(env_pairs: &mut Vec<(String, String)>, agent: &s
         return;
     }
     env_pairs.push((ENV_CLAUDE_EFFORT_LEVEL.to_string(), CLAUDE_SEAT_EFFORT.to_string()));
+}
+
+/// ★1.1.8 휴면 스위치(master D-TEAM·C4 결정 · judge 집행 조건 ① [master#cd9e534c]) — 원작자에게서 받은 코드
+/// 가운데 **우리 판에서 켜지 않는** 기능 2개를 데몬·CLI 가 같은 술어로 판정한다. 제거가 아니라 휴면이다(코드·원작자
+/// 시험 유지 — 제거는 박사님 게이트 ⓔ).
+///
+/// * `team_flow` — 원작자 「말로 팀 만들기」(U16 `cys team-propose` · 0.14.42 T2 팀 토큰 `team.token.*` RPC ·
+///   `feed.reply` 의 `team_token` 면제). 우리 경로 = dept-by-chat(javis_dept_request.py). **꺼짐이면** 데몬은
+///   `team.token.*`·팀 제안을 거부하고 `feed.reply` 는 `team_token` 을 무시하며, CLI 는 숨은 동사를 파싱만 하고 실행을 거부한다.
+/// * `agy_lane` — antigravity(agy) 계정 사용량 갈래(데이터 폴더 시드 · 오류 행 · agy 상태줄 권위 · `usage.report` 의
+///   agy 귀속). 박사님 09-19 「agy 는 계정 사용량 표에서 뺀다」(usage-noagy). **꺼짐이면** 우리 1.1.7 동작 그대로.
+///
+/// 켜는 법(운영) = 데몬 기동 env `CYS_ENABLE_TEAM_FLOW=1` / `CYS_ENABLE_AGY_LANE=1`(기본 = 둘 다 꺼짐 · 값은 프로세스
+/// 수명 동안 고정). 시험은 [`dormant::force_for_thread`] 로 **그 스레드에서만** 켠다(병렬 시험 간 간섭 0 — 우리
+/// usage-noagy 회귀 시험은 꺼진 채 · 원작자 agy·팀 시험은 켠 채로 같은 프로세스에서 동시에 돈다).
+pub mod dormant {
+    use std::cell::Cell;
+
+    pub const ENV_TEAM_FLOW: &str = "CYS_ENABLE_TEAM_FLOW";
+    pub const ENV_AGY_LANE: &str = "CYS_ENABLE_AGY_LANE";
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Switch {
+        TeamFlow,
+        AgyLane,
+    }
+
+    thread_local! {
+        static TEAM_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+        static AGY_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    fn env_on(key: &str) -> bool {
+        std::env::var(key).map(|v| v.trim() == "1").unwrap_or(false)
+    }
+
+    fn process_value(sw: Switch) -> bool {
+        static TEAM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static AGY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        match sw {
+            Switch::TeamFlow => *TEAM.get_or_init(|| env_on(ENV_TEAM_FLOW)),
+            Switch::AgyLane => *AGY.get_or_init(|| env_on(ENV_AGY_LANE)),
+        }
+    }
+
+    fn cell(sw: Switch) -> &'static std::thread::LocalKey<Cell<Option<bool>>> {
+        match sw {
+            Switch::TeamFlow => &TEAM_OVERRIDE,
+            Switch::AgyLane => &AGY_OVERRIDE,
+        }
+    }
+
+    pub fn enabled(sw: Switch) -> bool {
+        cell(sw).with(|c| c.get()).unwrap_or_else(|| process_value(sw))
+    }
+
+    /// 원작자 「말로 팀 만들기」·팀 토큰 갈래가 켜져 있는가(기본 꺼짐).
+    pub fn team_flow_enabled() -> bool {
+        enabled(Switch::TeamFlow)
+    }
+
+    /// antigravity(agy) 계정 사용량 갈래가 켜져 있는가(기본 꺼짐).
+    pub fn agy_lane_enabled() -> bool {
+        enabled(Switch::AgyLane)
+    }
+
+    /// 시험 이음매 — 이 스레드에서만 스위치를 덮는다(가드가 떨어지면 원래 값으로). 운영 경로는 부르지 않는다.
+    #[must_use]
+    pub fn force_for_thread(sw: Switch, on: bool) -> ForceGuard {
+        let prev = cell(sw).with(|c| c.replace(Some(on)));
+        ForceGuard { sw, prev }
+    }
+
+    pub struct ForceGuard {
+        sw: Switch,
+        prev: Option<bool>,
+    }
+
+    impl Drop for ForceGuard {
+        fn drop(&mut self) {
+            let prev = self.prev;
+            cell(self.sw).with(|c| c.set(prev));
+        }
+    }
+
+    /// 휴면 거부 사유 코드(데몬 RPC 오류·CLI stdout 에 같은 문자열).
+    pub const DORMANT_TEAM_FLOW_CODE: &str = "team_flow_dormant";
+}
+
+// (1.1.8 병합: 이 시험 mod 는 원래 daemon_state_dir_for 바로 뒤에 있었다 — 원작자 소스 핀
+//  macos_devtools::spawn_env_pairs_wires_seventh_verdict_through_single_source_source_pin 이 「첫 cfg(test) 속성 앞 = 프로덕션」
+//  으로 자르므로 spawn_env_pairs 뒤로 옮겼다 · 내용 무변경.)
+#[cfg(test)]
+mod daemon_state_dir_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn windows_base_pipe_maps_to_localappdata_cys_not_pipe_namespace() {
+        let d = daemon_state_dir_for(Path::new(r"\\.\pipe\cys"), true, Some(PathBuf::from("LA")));
+        assert_eq!(d, PathBuf::from("LA").join("cys"));
+        // 종전 결함의 대조군: 소켓 부모는 파이프 이름공간이다(파일을 만들 수 없는 자리).
+        assert!(!d.to_string_lossy().contains("pipe"), "{d:?}");
+    }
+
+    #[test]
+    fn windows_dept_pipe_maps_to_slug_subdir() {
+        let d = daemon_state_dir_for(Path::new(r"\\.\pipe\cys-dept-3"), true, Some(PathBuf::from("LA")));
+        assert_eq!(d, PathBuf::from("LA").join("cys").join("cys-dept-3"));
+    }
+
+    #[test]
+    fn unix_is_socket_parent() {
+        let d = daemon_state_dir_for(Path::new("/s/state/cys/cys.sock"), false, None);
+        assert_eq!(d, PathBuf::from("/s/state/cys"));
+    }
+}
+
+#[cfg(test)]
+mod dormant_switch_tests {
+    use super::dormant::*;
+
+    #[test]
+    fn switches_default_off_and_thread_override_restores() {
+        // 이 시험 프로세스는 두 env 를 켜지 않는다(격리 래퍼) — 기본 = 꺼짐.
+        if std::env::var(ENV_TEAM_FLOW).is_err() {
+            assert!(!team_flow_enabled(), "팀 흐름 기본값은 꺼짐(휴면)");
+        }
+        if std::env::var(ENV_AGY_LANE).is_err() {
+            assert!(!agy_lane_enabled(), "agy 갈래 기본값은 꺼짐(휴면)");
+        }
+        let base = (team_flow_enabled(), agy_lane_enabled());
+        {
+            let _t = force_for_thread(Switch::TeamFlow, true);
+            let _a = force_for_thread(Switch::AgyLane, true);
+            assert!(team_flow_enabled() && agy_lane_enabled());
+            // 다른 스레드는 영향 없음.
+            let other = std::thread::spawn(|| (team_flow_enabled(), agy_lane_enabled())).join().unwrap();
+            assert_eq!(other, base, "덮기가 다른 스레드로 샜다");
+        }
+        assert_eq!((team_flow_enabled(), agy_lane_enabled()), base, "가드가 원래 값으로 되돌리지 않았다");
+    }
 }
 
 #[cfg(test)]
@@ -6289,13 +6405,19 @@ mod spawn_policy_tests {
     /// 테스트 헬퍼 문자열·등급을 이미 체인에 단 곳이라 계수로만 묶는다(지점별 분류는 보고서 표).
     /// 숫자를 늘릴 때는 그 스폰이 ⓐ윈도에서 안 도는가 ⓑ등급을 체인에 달았는가를 먼저 적어라.
     const RAW_COMMAND_NEW_FROZEN: &[(&str, usize)] = &[
-        ("src-tauri/src/feedback.rs", 2),
-        ("src-tauri/src/main.rs", 37), // v114-dept-fd: cys-dept 직접 스폰 3곳 → run_dept_tool_direct 1곳(-2)
+        // 1.1.8 병합(T2): 원작자 U6 피드백 백엔드를 feedback::u6_local_bundle 하위 모듈로 휴면 편입 — +4 =
+        //   opener_command 의 open/explorer/xdg-open(cfg 3갈래 · 끝에 no_console) + Mail `open -a`(macOS cfg · no_console).
+        ("src-tauri/src/feedback.rs", 6),
+        // v114-dept-fd: cys-dept 직접 스폰 3곳 → run_dept_tool_direct 1곳(-2) · 1.1.8 병합 +1 = 원작자
+        //   open_privacy_settings `/usr/bin/open`(macOS cfg) · smart_app_control_state `reg.exe`(windows cfg · no_console).
+        ("src-tauri/src/main.rs", 38),
         ("src/app_bundle.rs", 4),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),
         ("src/bin/cysd/boot_supervisor.rs", 1),
         ("src/bin/cysd/channels.rs", 2),
+        // 1.1.8 병합: 원작자 cycle_jobs.rs(0.14.42) start() 의 cys 자식 — 체인에 SpawnPolicy 등급을 단다.
+        ("src/bin/cysd/cycle_jobs.rs", 1),
         ("src/bin/cysd/governance.rs", 2),
         ("src/bin/cysd/hwmon.rs", 3),
         ("src/bin/cysd/main.rs", 1),

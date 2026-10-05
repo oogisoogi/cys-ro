@@ -6252,7 +6252,22 @@ mod tests {
 
         install(false, None).expect("install 실패");
         let read = |rel: &str| std::fs::read(td.join(rel)).unwrap();
-        assert_eq!(read("agents.json"), old_vendor.as_bytes(), "옛 vendor 본도 user-owned 로 보존");
+        // ★1.1.8 병합(우리 D1 RefreshUser · 정책 §2-B): **사용자가 손대지 않은** 옛 vendor 본(디스크 해시 ==
+        //   설치 manifest 해시)은 user-owned 여도 신판으로 갱신하고 `.bak-<판번>` 에 직전 사본을 남긴다
+        //   (원작자 단언 「옛 vendor 본도 보존 + .new」 는 우리 판에선 **사용자 수정본**에만 성립 — 아래 ②).
+        let bak = format!("agents.json.bak-{}", env!("CARGO_PKG_VERSION"));
+        assert_eq!(read("agents.json"), embedded.as_bytes(), "미수정 옛 vendor 본은 신판으로 갱신(RefreshUser)");
+        assert_eq!(read(&bak), old_vendor.as_bytes(), "직전 사본은 .bak-<판번> 으로 보존(파괴 0)");
+        assert!(!td.join("agents.json.new").exists(), "갱신했으면 .new 병치 없음");
+        assert!(load_merge_pending(&td).get("agents.json").is_none(), "갱신했으면 병합 대기 원장 없음");
+        // ② 원작자 단언의 목적(사용자 소유 agents.json 은 덮지 않고 .new 로 병치)은 **사용자 수정본**에서 그대로 검사.
+        let mut edited = stale.clone();
+        edited["codex"]["_user_note"] = json!("내가 고친 줄");
+        let user_copy = serde_json::to_string_pretty(&edited).unwrap();
+        std::fs::write(td.join("agents.json"), &user_copy).unwrap();
+        std::fs::write(td.join(INSTALL_MANIFEST), json!({"agents.json": content_hash(&old_vendor)}).to_string()).unwrap();
+        install(false, None).expect("install(사용자 수정본) 실패");
+        assert_eq!(read("agents.json"), user_copy.as_bytes(), "사용자 수정본은 user-owned 로 보존");
         assert_eq!(read("agents.json.new"), embedded.as_bytes(), ".new = 임베드 신버전");
         let pending = load_merge_pending(&td);
         assert_eq!(pending.get("agents.json").and_then(|e| e["kind"].as_str()), Some("new-pending"));
@@ -6260,7 +6275,7 @@ mod tests {
         assert_eq!(embed["codex"]["prompt_marker"], json!(["›", "»"]));
         assert_eq!(embed["gemini"]["prompt_marker"], json!([">"]));
 
-        // 디스크 우선 읽기: 설치가 보존한 옛 codex 기본값은 메모리에서만 승격한다.
+        // 디스크 우선 읽기: 보존된 옛 codex 기본값(사용자 수정본에 남은 옛 마커)은 메모리에서만 승격한다.
         let disk: serde_json::Value = serde_json::from_slice(&read("agents.json")).unwrap();
         let mut spec = disk["codex"].clone();
         assert_eq!(
@@ -6282,7 +6297,7 @@ mod tests {
 
         // 재설치도 디스크·병치본·new-pending 항목을 보존하고 원장을 중복 계상하지 않는다.
         install(false, None).expect("재실행 실패");
-        assert_eq!(read("agents.json"), old_vendor.as_bytes());
+        assert_eq!(read("agents.json"), user_copy.as_bytes());
         assert_eq!(read("agents.json.new"), embedded.as_bytes());
         let pending_after = load_merge_pending(&td);
         assert_eq!(pending_after.get("agents.json").and_then(|e| e["kind"].as_str()), Some("new-pending"));

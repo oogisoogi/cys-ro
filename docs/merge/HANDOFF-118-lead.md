@@ -37,3 +37,7 @@
 - 결정 대기(master): X18 CSO 지침 3자 모순 · B(a) 사용량 순위 범위 · B(b) 휴면 스위치 env(CYS_ENABLE_TEAM_FLOW / CYS_ENABLE_AGY_LANE) 유지 · DS-1 · X2-R · UNW 처리 방식.
 - 다음 리드가 할 일: D 결과 커밋 → 팩 전체 재측정(packtests.py) → 남은 Rust 6 · 위 결정 반영 → 원장 RESOLUTION-LEDGER-118.md(서브 원장 합본 + `git diff v1.1.7..HEAD --stat` · `git diff up/v0.14.43..HEAD --stat`) · MERGE-RECORD-118.md(정책 §0-2 6항: 소요·충돌 파일·리뷰·CI·회귀) → 【확인요청】.
 - 정리 대상: 스크래치패드 기준판 작업트리 wt-up43 · wt-117 → `git worktree remove --force <경로>`(리드 직접 · 서브 금지).
+
+## ★순환 대비(01:00): 스크래치패드는 세션마다 바뀐다 → 서브 원장·보고·분류표·도구 사본 = 작업트리 `docs/merge/work/`(커밋 안 함 · info/exclude · 개인 절대경로가 있어 secret-scan 위험 — 원장 합본 때 경로 지워 docs/merge/RESOLUTION-LEDGER-118.md 로).
+- 도구: work/hk.py(덩어리 보기·적용) · work/isoenv.sh(격리 래퍼 — 안의 SB 경로를 새 세션 스크래치패드로 고쳐 쓸 것 · TMPDIR=/private/tmp/claude-501/s118/t 짧게 유지) · work/packtests.py <WT> [이름목록] [태그].
+- ui/node_modules = ~/axdev/.wt/cys-117-lead/ui/node_modules 심볼릭 링크(커밋 금지).

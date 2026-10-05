@@ -227,6 +227,7 @@ mod tests {
 
     #[test]
     fn state_dir_honors_env() {
+        let _k = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _l = crate::pack::EnvGuard::set(ENV_STATE_DIR, "/tmp/cys-u1-state");
         assert_eq!(state_dir(), PathBuf::from("/tmp/cys-u1-state"));
     }

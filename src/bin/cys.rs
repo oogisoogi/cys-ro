@@ -2768,6 +2768,19 @@ fn main() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    // ★1.1.8 U1(AUTO-UPDATE-118 §6-2·§4-2·§8): 갱신 3동사(update-verify·build-info·self-update)는 최상위 `Command` **밖**에서
+    //   먼저 처리한다 — 최상위 clap 열거형에 변형을 더하면 j3 시험이 기본 2MB 시험 스레드에서 스택 넘침(1.1.8 W1 실측 ·
+    //   DaemonAction::DeptStatus 주석과 같은 이유). 셋 다 판정·자기 보고라 데몬 자동 기동 0.
+    {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        if cys::update::cli::claims(&args) {
+            AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
+            let hooks = cys::update::check::Hooks { seats: &update_seat_facts, pending_approvals: &update_pending_approvals };
+            if let Some(rc) = cys::update::cli::dispatch(&args, &hooks) {
+                std::process::exit(rc);
+            }
+        }
+    }
     let cli = Cli::parse();
     if let Some(s) = &cli.socket {
         std::env::set_var(cys::ENV_SOCKET, s);
@@ -24155,6 +24168,55 @@ fn reinject_decision(
         return ReinjectDecision::Defer;
     }
     ReinjectDecision::Inject
+}
+
+/// ★1.1.8 U1(AUTO-UPDATE-118 §3-3·§3-4 N1~N3): `cys self-update --check` 의 좌석 사실 — 재주입 3신호(`reinject_decision`)와
+/// **같은 계기**(control.dashboard 의 state·agent_status + `adapter_ready` 화면 판정)에 org.status 의 큐 깊이·미제출 입력·
+/// 사람 입력 경과(`human_idle_secs`)를 붙인다. 데몬 없음·응답 어긋남·옛 데몬(`human_idle_secs` 키 없음) = None(판정 불가 = 보류).
+fn update_seat_facts() -> Option<Vec<cys::update::gates::SeatFact>> {
+    let dash = request("control.dashboard", json!({})).ok()?;
+    let org = request("org.status", json!({})).ok()?;
+    let mut by_id: std::collections::HashMap<u64, Value> = std::collections::HashMap::new();
+    for s in org["surfaces"].as_array()? {
+        if let Some(id) = s["surface_id"].as_u64() {
+            by_id.insert(id, s.clone());
+        }
+    }
+    let mut out = Vec::new();
+    for node in dash["fleet"].as_array()? {
+        let sid = node["surface_id"].as_u64()?;
+        if node["state"].as_str() == Some("offline") {
+            continue; // 끝난 좌석은 일하지 않는다
+        }
+        let o = by_id.get(&sid)?;
+        let human = o.get("human_idle_secs")?; // 키 부재(옛 데몬) = 모름
+        let agent = node["agent"].as_str().map(|s| s.to_string());
+        let idle = node["state"].as_str() == Some("idle");
+        let idle_secs = node["idle_secs"].as_u64().unwrap_or(0);
+        // 미보고(null) = working 일 수 있음 → 한가하지 않음(reinject 와 같은 보수).
+        let self_not_working = matches!(node["agent_status"].as_str(), Some(st) if st != "working");
+        let tail = request("surface.read_text", json!({"surface_id": sid}))
+            .ok()
+            .and_then(|r| r["text"].as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        out.push(cys::update::gates::SeatFact {
+            surface_id: sid,
+            idle,
+            self_not_working,
+            prompt_ready: adapter_ready(&agent, idle, idle_secs, &tail),
+            quiet_secs: idle_secs,
+            human_idle_secs: human.as_u64(),
+            pending_input_bytes: o["pending_input_bytes"].as_u64().unwrap_or(0),
+            queue_depth: o["queue_depth"].as_u64().unwrap_or(0),
+        });
+    }
+    Some(out)
+}
+
+/// ★1.1.8 U1(§3-4 N5 ⓑ · 📌16): 응답 대기 승인 요청 수(외부 발행 예정의 대리 신호). 데몬 없음 = None(보류).
+fn update_pending_approvals() -> Option<u64> {
+    let r = request("feed.list", json!({"status": "pending"})).ok()?;
+    Some(r["items"].as_array()?.len() as u64)
 }
 
 /// sha256 hex — 디렉티브 해시(§7-② ⓐ 선검사용). pack.rs content_hash와 동일 산식.

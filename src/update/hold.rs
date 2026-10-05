@@ -126,6 +126,21 @@ impl HoldLog {
     }
 }
 
+/// 읽기 전용 — 온전한 마지막 줄의 `hold_seq`(파일 없음 = 0 · 손상 = None). 꼬리 자르기 등 **쓰기 0**(`--check` 용).
+pub fn last_seq_readonly(dir: &Path) -> Option<u64> {
+    let buf = match std::fs::read(dir.join(HOLD_FILE)) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
+    };
+    let keep = buf.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+    let mut last = 0;
+    for line in buf[..keep].split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+        last = serde_json::from_slice::<HoldRecord>(line).ok()?.hold_seq;
+    }
+    Some(last)
+}
+
 /// 배송 큐 항목 id(중복 제거 키).
 pub fn queue_item_id(txn_id: &str, hold_seq: u64) -> String {
     format!("hold:{txn_id}:{hold_seq}")
@@ -175,6 +190,8 @@ mod tests {
         assert_eq!(h.append("u", "send", "셋", 102).unwrap().hold_seq, 3);
         assert_eq!(h.records_after(1).unwrap().iter().map(|r| r.hold_seq).collect::<Vec<_>>(), vec![2, 3]);
         assert_eq!(h.undelivered(1), 2);
+        assert_eq!(last_seq_readonly(&d), Some(3));
+        assert_eq!(last_seq_readonly(&d.join("none")), Some(0));
         let _ = std::fs::remove_dir_all(&d);
     }
 

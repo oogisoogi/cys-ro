@@ -6,6 +6,8 @@
 //! 로 격리한다(실 `~/.cys` 쓰기 0).
 
 pub mod buildinfo;
+pub mod check;
+pub mod cli;
 pub mod clock;
 pub mod errors;
 pub mod feed;
@@ -14,6 +16,7 @@ pub mod hold;
 pub mod journal;
 pub mod keys;
 pub mod lock;
+pub mod net;
 pub mod packgate;
 pub mod sched;
 pub mod url;
@@ -28,3 +31,7 @@ pub mod win;
 pub use crate::update_launch as launch_win;
 
 pub use errors::{ErrCode, UpdateErr};
+
+/// 갱신 모듈 시험 중 env(`CYS_UPDATE_*`)를 바꾸는 시험끼리의 직렬화.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

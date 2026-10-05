@@ -34,3 +34,7 @@
 - 윈 CI ignore 44 집합(`r2f_dm_windows_ignore_attributes_are_exactly_the_decided_set_of_44`) 사유 A·B(정착·초안 축 「유닉스 한정」) 는 J-📌1 뒤 문구가 낡았다 — 윈 실기 W-J1 통과 뒤 해제 후보(지금 해제 = 윈 CI 적색 위험이라 무변경).
 - 측정 함정: `--bin cys` 시험 일부가 격리 HOME 디버그 cysd 를 남긴다(이번 18개 · HOME=/private/tmp/claude-501/s118/ 확인 후 kill · 0 확인).
 - D25 dept 좌석(부서 데몬의 master 포함)은 RC 언제나 off(BACKLOG 「부서 = false」) — 부서 master 에 RC 가 필요하면 별도 결정.
+
+## 재측정(격리 래퍼 · 2026-10-06 03:35~03:49 · HEAD 6f158bac)
+- Rust lib **770/0**(기준 763/0 · +7 새 시험) · cys **582/0**(기준 577/0) · cysd **2460/0**(기준 2449/1 — 원작자 return_absorb 흔들림이 이번엔 초록) · ui **2807/0 + 레인 81 skip**(무변경 확인) · tsc 0 · 고아 디버그 cysd 0.
+- 1차 전체 실행(03:22) 적색 1 = 원작자 j3_cys_send_carries… 스택 넘침 → 최상위 동사 추가가 원인(실험 3) → `cys daemon dept-status` 로 옮겨 해소(6f158bac).

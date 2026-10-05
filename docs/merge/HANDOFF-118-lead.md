@@ -1,3 +1,10 @@
+# ★§0 델타 v3 (01:56 · CTX 48%) — master#114e0c71 결정 9 반영 중
+1. 커밋: 0fdbfa84(inject_track 시험 여유) · 3747431a(결정 ②~⑨ 전부). 미커밋 = X18 서브 작업 중(CSO_DIRECTIVE.md · test_cso_directive_rev.py · x18-upstream-diff.md §6) + docs/merge/MERGE-RECORD-118.md(초안) · RESOLUTION-LEDGER-118.md(생성기 docs/merge/work/mkledger.py · 재실행 후 커밋) · BACKLOG-118 B3 행.
+2. 현재 계수: Rust lib 763/0 · cys 577/0 · cysd 2449/1(원작자 return_absorb 부하 흔들림 · 모듈 3회 초록) · ui 2807/0 · 레인 81 · tsc 0.
+3. 팩: 전체 재측정 진행 중 — /private/tmp/claude-501/s118/pk/run.log(짧은 HOME · packtests.py <WT> "" -full2 → packtests-full2.json). ⚠측정 도중 결정 반영 파일이 바뀌었다 → 끝나면 /private/tmp/claude-501/s118/pk/batch1.txt 7개 + test_cso_directive_rev 재실행(packtests.py <WT> <목록> -b1). 그 뒤 dept_team_token: 재빌드 + CYS_ENABLE_TEAM_FLOW=1.
+4. 결정 필요로 올릴 것(새로 생김): ⑤ master 좌석 = 요지 조립기 설계라 「전문 끝까지 읽어라」 줄과 충돌(매 시작 ~9.5만 B Read) → master 22·22b 적색 유지 · 비master 만 적용.
+5. 마무리 순서: X18 결과 반영·커밋 → 팩 재실행 → MERGE-RECORD §2 끝 시각·§4-1 기입 → mkledger.py 재생성 → 커밋 → 【확인요청】(머리 3줄 = 성찰·검증·디버깅).
+
 # ★§0 델타 v2 — 후임 리드(수리 2차 후반) (01:2x · 좌석 계정2 · master#398d4463 재브리프)
 1. **끝난 것(커밋)**: ff2fc8bd ui(DS-1 3석 결속 · X2-R 가드 · UNW 82 휴면-on 레인 · cysr 문구) · 542c6cf0 Rust(B(a) 창 밖만 강등 · submit_probe 열린 박스 `> ` 오독 수리 = drain_verify 흔들림 · r2f_dm 이음매 · BACKLOG-118).
    ui 기본 레인 = 2800 통과 · 82 레인(CYS_UI_DORMANT_LANE=1) · 적색 1 = X2-W(updatenotice 윈 문안 · master 결정 없음 → 목록) · tsc 0.

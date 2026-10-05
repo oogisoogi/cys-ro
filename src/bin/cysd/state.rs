@@ -10137,7 +10137,10 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let t2 = Arc::clone(&track);
         let handle = std::thread::spawn(move || run_writer_loop_tracked(std::io::sink(), rx, stop, Some(t2)));
-        tx.send(WriteReq::DataAfter { bytes: Vec::new(), delay_ms: 300 }).unwrap();
+        // (1.1.8 병합 · 부하 흔들림) 선행 적체 300ms → 2000ms — 전체 스위트 병렬 부하에서 아래 두 번의 50ms 잠이 300ms 를
+        // 넘게 늘어져 writer 가 먼저 집으면 「begin 전」 전제가 깨졌다(단독·모듈 실행 초록 · 전체 실행 2회 연속 적색 실측).
+        // 단언의 목적(넘긴 뒤 집기 전 창 = handoff_pending)은 그대로 · 대기 상한도 같은 만큼 넓힌다.
+        tx.send(WriteReq::DataAfter { bytes: Vec::new(), delay_ms: 2000 }).unwrap();
         std::thread::sleep(ms(50));
         let _mark = track.note_handoff();
         tx.send(WriteReq::Inject { text: "행".into(), cr_delay_ms: 100, clear_first: false, guard: None })
@@ -10147,7 +10150,7 @@ mod tests {
         assert!(track.handoff_pending().is_some(), "넘겼으나 writer 가 집기 전인 창을 비웠다");
         assert!(!track.stuck_over(ms(0)), "인계 표식이 active 를 세웠다(H0 자기 붙여넣기 귀속 오염)");
         let t0 = std::time::Instant::now();
-        while track.handoff_pending().is_some() && t0.elapsed() < ms(3000) {
+        while track.handoff_pending().is_some() && t0.elapsed() < ms(6000) {
             std::thread::sleep(ms(10));
         }
         assert!(track.handoff_pending().is_none(), "arm 이 끝났는데 인계 대기가 풀리지 않았다");

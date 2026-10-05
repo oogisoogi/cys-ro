@@ -2862,6 +2862,11 @@ pub fn pending_kind_counts(
 pub struct InstallPlan {
     pub create: Vec<String>,              // 신규 생성
     pub update: Vec<String>,              // 자동 갱신(비수정 system)
+    // ★D22(1.1.8 · BACKLOG D22): 종전엔 아래 두 행동도 update 에 합쳐 `cys pack-plan` 이 한 문구(「비수정 — 그대로
+    //   갱신됨」)로 출력했다 — 오너가 job 을 더한 schedule.json 이 「비수정」으로 보였다(윈 실기 10-05 22:12 · 실제 적용은
+    //   항목 병합이라 오너 job 보존). 행동이 다르면 버킷도 다르다.
+    pub refresh_user: Vec<String>,        // user-owned 미수정 + 임베드 전진 — `.bak-<판>` 백업 뒤 신판 적용(RefreshUser)
+    pub merge_user: Vec<String>,          // user-owned 혼합 설정 수정본 — 항목 병합(사용자 값 유지 · 새 항목만 추가 · 백업)
     pub heal: Vec<String>,                // 수정본 강제 치유(사용자본 `<rel>.user` 보존 후 덮어씀)
     pub merge_new: Vec<String>,           // user-owned 보존 + 신버전 `<rel>.new` 병치(병합 대기)
     pub keep_user: Vec<String>,           // user-owned 보존(신버전 병치 불요)
@@ -2959,9 +2964,10 @@ pub fn plan_install(
             }
             FileAction::KeepDrift => plan.kept_drift.push(rel.to_string()), // ★T3(D14): 전용 버킷 계상
             FileAction::Merge3 => plan.merge3.push(rel.to_string()),        // ★T3(D14): 전용 버킷 계상
-            // ★D1(1.1.5 6차): 둘 다 디스크를 바꾸는 갱신이다 — 드라이런은 update 버킷으로 보고한다
-            // (플랜≠실제 드리프트 차단: 실행부도 공통 write 로 합류해 written 로 계상된다).
-            FileAction::RefreshUser | FileAction::MergeUser => plan.update.push(rel.to_string())
+            // ★D1(1.1.5 6차): 둘 다 디스크를 바꾸는 갱신이다(실행부는 공통 write 로 합류해 written 로 계상된다).
+            // ★D22(1.1.8): 드라이런 **표시**는 행동별 버킷으로 가른다 — 미수정 신판 적용 ↔ 수정본 항목 병합.
+            FileAction::RefreshUser => plan.refresh_user.push(rel.to_string()),
+            FileAction::MergeUser => plan.merge_user.push(rel.to_string()),
         }
     }
     // prune 프리뷰(install_into prune 블록과 동일 판정).
@@ -6351,9 +6357,19 @@ mod tests {
             std::fs::create_dir_all(pp.parent().unwrap()).unwrap();
             std::fs::write(&pp, &m3_base).unwrap();
         }
+        // ★D22(1.1.8): 오너가 job 을 더한 schedule.json(혼합 설정 수정본) — 드라이런 = merge_user 버킷(「비수정 갱신」
+        //   오보 금지) · 실제 설치 = 오너 job 잔존(윈 실기 10-05 22:12 형상).
+        let sched_embed = PACK_ALL.iter().find(|(r, _)| *r == "schedule.json").map(|(_, c)| *c)
+            .expect("팩에 schedule.json 부재");
+        let mut sched_user: serde_json::Value = serde_json::from_str(sched_embed).unwrap();
+        sched_user["jobs"].as_array_mut().expect("jobs 배열").push(serde_json::json!({
+            "id": "d22-owner-daily-summary", "cron": "0 9 * * *", "action": "echo owner", "enabled": true
+        }));
+        std::fs::write(td.join("schedule.json"), serde_json::to_string_pretty(&sched_user).unwrap()).unwrap();
         // 캡처는 td 내부로 격리(공유 temp 오염 방지 — env 오버라이드 경로 검증 겸용).
         let _cap = EnvGuard::set("CYS_PACK_CAPTURES_DIR", td.join("cap-root"));
         let manifest = serde_json::json!({
+            "schedule.json": content_hash(sched_embed),
             "README.md": content_hash("OLD-INSTALLED"),
             "soul.md": content_hash("OLD-SOUL-BASE"),
             kd_rel: content_hash(kd_embed),
@@ -6373,6 +6389,8 @@ mod tests {
         assert!(plan.merge3.iter().any(|r| r == m3_rel),
                 "★T3(커밋②): 수정+vendor 전진+검증 base → merge3 버킷");
         assert!(!plan.heal.iter().any(|r| r == m3_rel), "merge3 를 heal 로 오보 금지(R7)");
+        assert!(plan.merge_user.iter().any(|r| r == "schedule.json"), "★D22: 수정된 혼합 설정 → merge_user: {plan:?}");
+        assert!(!plan.update.iter().any(|r| r == "schedule.json"), "★D22: 항목 병합을 「비수정 갱신」으로 오보 금지");
         // 실제 install 이 플랜과 같은 행동을 하는지 대조.
         install(false, None).expect("install 실패");
         let read = |rel: &str| std::fs::read_to_string(td.join(rel)).unwrap();
@@ -6393,6 +6411,7 @@ mod tests {
         assert_eq!(pend.get(m3_rel).and_then(|e| e["kind"].as_str()), Some("merged"),
                    "merged 원장 계상(plan=actual)");
         assert_eq!(read(&format!("{PRISTINE_DIR}/{m3_rel}")), m3_embed, "pristine = 임베드 전진");
+        assert!(read("schedule.json").contains("d22-owner-daily-summary"), "★D22 plan=actual: 항목 병합 = 오너 job 잔존");
 
         let _ = std::fs::remove_dir_all(&td);
     }
@@ -8914,12 +8933,13 @@ mod tests {
             ("acl.json", acl_v2),
         ];
         let plan = plan_install(&pd, &v4, false, "1.0.4");
-        assert!(plan.update.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
-                "⑥드라이런이 승격본 갱신을 update 로 보고하지 않는다: {plan:?}");
+        // ★D22(1.1.8): 미수정 user-owned 신판 적용은 update 와 갈린 refresh_user 버킷으로 보고한다(행동 = 백업 뒤 적용).
+        assert!(plan.refresh_user.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
+                "⑥드라이런이 승격본 갱신을 refresh_user 로 보고하지 않는다: {plan:?}");
         assert!(!plan.merge_new.iter().any(|r| r == "directives/MASTER_DIRECTIVE.md"),
                 "⑥드라이런이 아직 `.new` 병치로 보고한다(실제 설치와 불일치): {plan:?}");
-        assert!(plan.update.iter().any(|r| r == "directives/WORKER_DIRECTIVE.md"),
-                "⑥미수정 갱신도 update 버킷이어야 한다: {plan:?}");
+        assert!(plan.refresh_user.iter().any(|r| r == "directives/WORKER_DIRECTIVE.md"),
+                "⑥미수정 갱신도 refresh_user 버킷이어야 한다: {plan:?}");
         let _ = std::fs::remove_dir_all(&td);
     }
 

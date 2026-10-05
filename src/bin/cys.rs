@@ -24946,6 +24946,9 @@ fn run_pack_plan(force: bool) -> i32 {
     };
     println!("팩 반영 플랜 (대상: {} · 바이너리 {} · 쓰기 없음)", dir.display(), env!("CARGO_PKG_VERSION"));
     section("🔄 자동 갱신", &plan.update, "비수정 — 그대로 갱신됨");
+    // ★D22(1.1.8): 사용자 소유 파일의 두 갱신을 따로 보인다(종전 = 위 한 문구로 합쳐 「비수정」 오보).
+    section("🔄 자동 갱신(사용자 소유 · 미수정)", &plan.refresh_user, "손대지 않은 사본 — <파일>.bak-<판> 백업 뒤 신판 적용");
+    section("🔀 항목 병합", &plan.merge_user, "사용자 수정본 유지 · 새 항목만 추가 · 백업");
     section("✨ 신규 생성", &plan.create, "");
     section("🛠 강제 치유", &plan.heal, "system 수정본 — 덮기 전 사용자본을 <파일>.user 로 보존");
     section("🧬 자동 병합(3-way)", &plan.merge3, "수정본+vendor 전진 — 검증된 조상 위 자동 병합(충돌·실패는 치유+.user 강등)");

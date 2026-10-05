@@ -5531,7 +5531,11 @@ def h_clt_5():
                 os.remove(sb["marker"])
             except OSError:
                 pass
-            e = dict(sb["env"], OSTYPE=ostype, CYS_DEPTS_JSON=os.path.join(tmp, "depts.json"))
+            # ★1.1.8 병합: 우리 cys-dept 는 `$HOME/.local/bin` 을 PATH **말미**에 붙인다(dbg-D3 #F1 · 원장 557 —
+            #   원작자의 선두 prepend 는 버림). 그래서 기록자를 PATH 1순위에 두는 일을 cys-dept 가 아니라 이
+            #   검체 env 가 한다 — 「무변경 = 기록자 실행 + PATH 선두 불변」 판정과 가드 삭제 탐지력은 그대로다.
+            e = dict(sb["env"], OSTYPE=ostype, CYS_DEPTS_JSON=os.path.join(tmp, "depts.json"),
+                     PATH=home_bin + os.pathsep + sb["env"]["PATH"])
             if marker:
                 e["CYS_PY_ORIGIN"] = "bundled-clt-absent"
             if cys_py is not None:

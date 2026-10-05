@@ -60,6 +60,8 @@ pub mod todo_scan;
 /// 데몬 잠금 정책 단일 정의처(cysd·cys CLI·cys-app 공용 · 사고 방지 층 — 머리말의 정직한 한계 참조).
 pub mod team_spec;
 pub mod update_launch;
+/// 1.1.8 데몬 자동 갱신 공용 모듈(U1 — 피드·검증·판정 · 설계 AUTO-UPDATE-118).
+pub mod update;
 pub mod wire;
 #[cfg(target_os = "macos")]
 pub mod launchd;

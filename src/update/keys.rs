@@ -1,0 +1,523 @@
+//! 갱신 키 체계 — 용도 분리 키링(R 루트 · U 릴리스 · F 피드 · A2 윈 자산 · P 팩) + R 서명 폐기문(위임·폐기).
+//! 설계 AUTO-UPDATE-118 §4-1 · §6-2 ⓐ.
+//!
+//! - 키링 원천 = `cysjavis-pack/trusted-keys.json`(build.rs 가 바이너리에 내장 — TOFU 0). 각 키의 `purpose` 칸
+//!   (`root|release|feed|win-asset|pack` · **부재 = pack** · 하위 호환)으로 용도를 가른다. **용도가 맞는 키만 수용**한다
+//!   (F 키로 서명한 릴리스 본문 = 거부 — 교차 사용 차단).
+//! - 이 판(U1)에는 R·U·F 실키가 없다(키 생성·기입 = U3 · 비가역 · master 게이트). 내장 키링에 갱신 용도 키가 0 이면
+//!   모든 피드 검증은 「알 수 없는 key_id」로 거부된다(fail-closed) — 그것이 자리표시의 뜻이다.
+//! - 시험 키링 덮어쓰기(`CYS_UPDATE_TEST_KEYRING`)는 **디버그 빌드에서만** 읽는다(§4-4 · §4-6 「시험 키 혼입」).
+//! - 서명 검증은 팩과 **같은 minisign 함수**(`packsig::verify_minisign`)를 쓴다 — 새 암호 코드 0.
+
+use super::errors::{ErrCode, UpdateErr};
+use serde::Deserialize;
+use std::collections::BTreeSet;
+
+/// 키 용도.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Purpose {
+    /// R — 위임·폐기문만 서명(내용 서명 권한 0).
+    Root,
+    /// U — 릴리스 본문.
+    Release,
+    /// F — 봉투(만료·단계 배포·정지).
+    Feed,
+    /// A2 — 윈 설치 파일 `.sig`.
+    WinAsset,
+    /// P — 팩 매니페스트(종전 키 전부).
+    Pack,
+}
+
+impl Purpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Purpose::Root => "root",
+            Purpose::Release => "release",
+            Purpose::Feed => "feed",
+            Purpose::WinAsset => "win-asset",
+            Purpose::Pack => "pack",
+        }
+    }
+
+    /// 키링 칸 해석 — 부재 = pack(하위 호환) · 미지 값 = None(그 키 거부).
+    pub fn parse(s: Option<&str>) -> Option<Purpose> {
+        match s {
+            None => Some(Purpose::Pack),
+            Some("root") => Some(Purpose::Root),
+            Some("release") => Some(Purpose::Release),
+            Some("feed") => Some(Purpose::Feed),
+            Some("win-asset") => Some(Purpose::WinAsset),
+            Some("pack") => Some(Purpose::Pack),
+            Some(_) => None,
+        }
+    }
+}
+
+/// 키링 파일의 한 줄(원시 — 용도·만료를 아직 해석하지 않음).
+#[derive(Debug, Clone, Deserialize)]
+struct RawKey {
+    key_id: String,
+    pubkey: String,
+    #[serde(default)]
+    not_after: String,
+    #[serde(default)]
+    purpose: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawKeyring {
+    #[serde(default)]
+    keys: Vec<RawKey>,
+    #[serde(default)]
+    revoked_key_ids: Vec<String>,
+}
+
+/// 해석된 갱신 키 1개.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateKey {
+    pub key_id: String,
+    pub pubkey: String,
+    /// Unix 초. 이 시각 이후(≥) 그 키 거부.
+    pub not_after: i64,
+    pub purpose: Purpose,
+    /// 내장(바이너리) 키인가 · R 위임으로 들어온 키인가.
+    pub delegated: bool,
+}
+
+/// 갱신 용도 키링(팩 키는 담지 않는다 — 팩 검증은 `packsig` 가 따로 한다).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateKeyring {
+    pub keys: Vec<UpdateKey>,
+    pub revoked_key_ids: BTreeSet<String>,
+}
+
+impl UpdateKeyring {
+    /// 키링 JSON(trusted-keys.json 서식)에서 **팩 외 용도** 키만 뽑는다. 미지 용도·만료 파싱 불가 키는 조용히 빼지 않고
+    /// 오류로 올린다(내장 키링 오기 = 빌드·시험이 잡아야 할 일).
+    pub fn from_trusted_keys_json(json: &str) -> Result<UpdateKeyring, String> {
+        let raw: RawKeyring = serde_json::from_str(json).map_err(|e| format!("키링 파싱 실패: {e}"))?;
+        let mut keys = Vec::new();
+        for k in raw.keys {
+            let purpose = Purpose::parse(k.purpose.as_deref())
+                .ok_or_else(|| format!("키 {} 의 purpose {:?} 는 미지 값", k.key_id, k.purpose))?;
+            if purpose == Purpose::Pack {
+                continue;
+            }
+            let not_after = crate::packsig::parse_rfc3339(&k.not_after)
+                .ok_or_else(|| format!("키 {} not_after 부재/파싱불가", k.key_id))?;
+            keys.push(UpdateKey { key_id: k.key_id, pubkey: k.pubkey, not_after, purpose, delegated: false });
+        }
+        Ok(UpdateKeyring { keys, revoked_key_ids: raw.revoked_key_ids.into_iter().collect() })
+    }
+
+    /// 바이너리 내장 키링(+ 디버그 빌드에서만 시험 키링 덮어쓰기).
+    pub fn embedded() -> Result<UpdateKeyring, String> {
+        if let Some(path) = test_keyring_override(cfg!(debug_assertions), |k| std::env::var_os(k)) {
+            let s = std::fs::read_to_string(&path)
+                .map_err(|e| format!("시험 키링 읽기 실패 {}: {e}", path.display()))?;
+            return UpdateKeyring::from_trusted_keys_json(&s);
+        }
+        UpdateKeyring::from_trusted_keys_json(crate::packsig::TRUSTED_KEYS_JSON)
+    }
+
+    pub fn key_ids(&self) -> Vec<String> {
+        self.keys.iter().map(|k| format!("{}:{}", k.purpose.as_str(), k.key_id)).collect()
+    }
+
+    /// 용도·폐기·만료를 따져 키 1개를 고른다.
+    pub fn find(&self, key_id: &str, purpose: Purpose, now: i64) -> Result<&UpdateKey, String> {
+        if self.revoked_key_ids.contains(key_id) {
+            return Err(format!("폐기된 key_id {key_id}"));
+        }
+        let k = self
+            .keys
+            .iter()
+            .find(|k| k.key_id == key_id)
+            .ok_or_else(|| format!("알 수 없는 key_id {key_id}"))?;
+        if k.purpose != purpose {
+            return Err(format!("용도 불일치 {key_id}: {}≠{}", k.purpose.as_str(), purpose.as_str()));
+        }
+        if now >= k.not_after {
+            return Err(format!("만료된 키 {key_id}"));
+        }
+        Ok(k)
+    }
+
+    /// `key_id` 가 가리키는 `purpose` 키로 `data` 의 minisign 서명을 검증한다.
+    pub fn verify(&self, purpose: Purpose, key_id: &str, data: &[u8], sig: &[u8], now: i64) -> Result<(), String> {
+        let k = self.find(key_id, purpose, now)?;
+        crate::packsig::verify_minisign(&k.pubkey, data, sig)
+    }
+
+    /// R 서명 폐기문을 반영한 유효 키링 — 위임 키 추가(루트 위임 불가) · `revoked_key_ids` 합집합.
+    /// 폐기문은 [`verify_revocations`] 를 통과한 것만 넘긴다.
+    pub fn with_revocations(&self, rev: &Revocations) -> UpdateKeyring {
+        let mut out = self.clone();
+        for d in &rev.delegations {
+            if out.keys.iter().any(|k| k.key_id == d.key_id) {
+                continue; // 같은 key_id 재위임은 무시(내장 키를 위임으로 바꿔치기 0)
+            }
+            out.keys.push(UpdateKey {
+                key_id: d.key_id.clone(),
+                pubkey: d.pubkey.clone(),
+                not_after: d.not_after,
+                purpose: d.purpose,
+                delegated: true,
+            });
+        }
+        out.revoked_key_ids.extend(rev.revoked_key_ids.iter().cloned());
+        out
+    }
+}
+
+/// 시험 키링 덮어쓰기 경로 — `debug` 가 거짓(출시 빌드)이면 env 가 있어도 None.
+pub fn test_keyring_override(
+    debug: bool,
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    if !debug {
+        return None;
+    }
+    get("CYS_UPDATE_TEST_KEYRING").filter(|v| !v.is_empty()).map(std::path::PathBuf::from)
+}
+
+// ── 폐기문(R 서명) ───────────────────────────────────────────────────────────────────
+
+/// 폐기 항목의 심각도(§4-1 · 3R MAJOR 3) — 미지 값은 `Advisory` 로 읽고 `unknown_severity` 로 표시(신호 1회).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Advisory,
+    StopSeats,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokedRelease {
+    pub component: String,
+    pub release_seq: u64,
+    pub severity: Severity,
+    pub unknown_severity: bool,
+    pub reason_code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delegation {
+    pub key_id: String,
+    pub purpose: Purpose,
+    pub pubkey: String,
+    pub not_after: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DrPins {
+    pub add: Vec<String>,
+    pub revoke: Vec<String>,
+}
+
+/// 검증을 통과한 폐기문.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revocations {
+    pub rev: u64,
+    pub signed_at: i64,
+    pub key_id: String,
+    pub delegations: Vec<Delegation>,
+    pub revoked_key_ids: Vec<String>,
+    pub revoked_releases: Vec<RevokedRelease>,
+    pub dr_pins: DrPins,
+}
+
+/// 폐기문 서식 표지(교차 사용 차단 — 봉투·본문·팩 매니페스트와 서로 역직렬화되지 않게).
+pub const REVOCATIONS_KIND: &str = "update-revocations";
+
+#[derive(Debug, Deserialize)]
+struct RawRevocations {
+    kind: String,
+    rev: u64,
+    key_id: String,
+    signed_at: i64,
+    #[serde(default)]
+    delegations: Vec<RawDelegation>,
+    #[serde(default)]
+    revoked_key_ids: Vec<String>,
+    #[serde(default)]
+    revoked_releases: Vec<RawRevokedRelease>,
+    #[serde(default)]
+    dr_pins: Option<RawDrPins>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawDelegation {
+    key_id: String,
+    purpose: String,
+    pubkey: String,
+    not_after: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRevokedRelease {
+    component: String,
+    release_seq: u64,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    reason_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawDrPins {
+    #[serde(default)]
+    add: Vec<String>,
+    #[serde(default)]
+    revoke: Vec<String>,
+}
+
+/// ⓐ 폐기문 검증 — 서식 → R 키(내장만 · 루트는 위임 불가) → minisign → `rev` 단조(`accepted_rev` 미만 = 거부).
+/// 실패 코드: 서명·서식 = `feed_sig_bad`(폐기문은 피드 계층의 일부) · `rev` 후퇴 = `feed_replay`.
+pub fn verify_revocations(
+    bytes: &[u8],
+    sig: &[u8],
+    embedded: &UpdateKeyring,
+    accepted_rev: Option<u64>,
+    now: i64,
+) -> Result<Revocations, UpdateErr> {
+    let bad = |d: String| UpdateErr::new(ErrCode::FeedSigBad, "ⓐ", d);
+    let raw: RawRevocations = serde_json::from_slice(bytes).map_err(|e| bad(format!("폐기문 서식: {e}")))?;
+    if raw.kind != REVOCATIONS_KIND {
+        return Err(bad(format!("폐기문 kind {}", raw.kind)));
+    }
+    // R 은 내장 키만(위임문이 스스로 루트를 늘리는 순환 차단). 내장 키링의 폐기 목록만 본다.
+    embedded.verify(Purpose::Root, &raw.key_id, bytes, sig, now).map_err(bad)?;
+    if let Some(acc) = accepted_rev {
+        if raw.rev < acc {
+            return Err(UpdateErr::new(ErrCode::FeedReplay, "ⓐ", format!("폐기문 rev {} < 수용 {acc}", raw.rev)));
+        }
+    }
+    let mut delegations = Vec::new();
+    for d in raw.delegations {
+        let purpose = Purpose::parse(Some(&d.purpose)).ok_or_else(|| bad(format!("위임 용도 {}", d.purpose)))?;
+        if purpose == Purpose::Root || purpose == Purpose::Pack {
+            return Err(bad(format!("위임 불가 용도 {}", purpose.as_str())));
+        }
+        if crate::packsig::pubkey_key_id(&d.pubkey).ok().as_deref() != Some(d.key_id.as_str()) {
+            return Err(bad(format!("위임 key_id≠공개키 {}", d.key_id)));
+        }
+        delegations.push(Delegation { key_id: d.key_id, purpose, pubkey: d.pubkey, not_after: d.not_after });
+    }
+    let revoked_releases = raw
+        .revoked_releases
+        .into_iter()
+        .map(|r| {
+            let (severity, unknown) = match r.severity.as_deref() {
+                None | Some("advisory") => (Severity::Advisory, false),
+                Some("stop_seats") => (Severity::StopSeats, false),
+                Some(_) => (Severity::Advisory, true),
+            };
+            RevokedRelease {
+                component: r.component,
+                release_seq: r.release_seq,
+                severity,
+                unknown_severity: unknown,
+                reason_code: r.reason_code,
+            }
+        })
+        .collect();
+    let dr = raw.dr_pins.unwrap_or(RawDrPins { add: vec![], revoke: vec![] });
+    Ok(Revocations {
+        rev: raw.rev,
+        signed_at: raw.signed_at,
+        key_id: raw.key_id,
+        delegations,
+        revoked_key_ids: raw.revoked_key_ids,
+        revoked_releases,
+        dr_pins: DrPins { add: dr.add, revoke: dr.revoke },
+    })
+}
+
+impl Revocations {
+    /// `(component, release_seq)` 가 폐기 목록에 있으면 그 항목.
+    pub fn revoked(&self, component: &str, release_seq: u64) -> Option<&RevokedRelease> {
+        self.revoked_releases.iter().find(|r| r.component == component && r.release_seq == release_seq)
+    }
+}
+
+// ── 시험 지원(시험 빌드에서만 컴파일 · 실키 0 — 키쌍은 시험 안에서 생성) ──────────────────────────
+#[cfg(test)]
+pub(crate) mod testkit {
+    use super::*;
+
+    /// 시험 키 1개(생성 · 서명 함수).
+    pub struct TestKey {
+        pub key_id: String,
+        pub pubkey: String,
+        sk: minisign::SecretKey,
+    }
+
+    impl TestKey {
+        pub fn new() -> TestKey {
+            let kp = minisign::KeyPair::generate_unencrypted_keypair().expect("keypair");
+            let pubkey = kp.pk.to_base64();
+            let key_id = crate::packsig::pubkey_key_id(&pubkey).expect("key_id");
+            TestKey { key_id, pubkey, sk: kp.sk }
+        }
+        pub fn sign(&self, data: &[u8]) -> Vec<u8> {
+            let c = std::io::Cursor::new(data.to_vec());
+            minisign::sign(None, &self.sk, c, None, None).expect("sign").into_string().into_bytes()
+        }
+        pub fn entry(&self, purpose: &str) -> serde_json::Value {
+            serde_json::json!({"key_id": self.key_id, "pubkey": self.pubkey,
+                "not_after": "2099-01-01T00:00:00Z", "purpose": purpose})
+        }
+    }
+
+    /// R·U·F·A2 시험 키 4개 + 그것을 담은 키링 JSON.
+    pub struct Keys {
+        pub r: TestKey,
+        pub u: TestKey,
+        pub f: TestKey,
+        pub a2: TestKey,
+    }
+
+    impl Keys {
+        pub fn new() -> Keys {
+            Keys { r: TestKey::new(), u: TestKey::new(), f: TestKey::new(), a2: TestKey::new() }
+        }
+        pub fn keyring_json(&self) -> String {
+            serde_json::json!({"keys": [self.r.entry("root"), self.u.entry("release"),
+                self.f.entry("feed"), self.a2.entry("win-asset")], "revoked_key_ids": []})
+            .to_string()
+        }
+        pub fn keyring(&self) -> UpdateKeyring {
+            UpdateKeyring::from_trusted_keys_json(&self.keyring_json()).unwrap()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testkit::*;
+    use super::*;
+
+    const NOW: i64 = 1_790_000_000;
+
+    fn revo(k: &Keys, rev: u64, extra: serde_json::Value) -> (Vec<u8>, Vec<u8>) {
+        let mut v = serde_json::json!({"kind": REVOCATIONS_KIND, "rev": rev, "key_id": k.r.key_id, "signed_at": NOW - 10});
+        if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+            for (a, b) in e {
+                o.insert(a.clone(), b.clone());
+            }
+        }
+        let bytes = v.to_string().into_bytes();
+        let sig = k.r.sign(&bytes);
+        (bytes, sig)
+    }
+
+    #[test]
+    fn purpose_absent_is_pack_and_unknown_is_rejected() {
+        assert_eq!(Purpose::parse(None), Some(Purpose::Pack));
+        assert_eq!(Purpose::parse(Some("win-asset")), Some(Purpose::WinAsset));
+        assert_eq!(Purpose::parse(Some("Feed")), None);
+        let bad = r#"{"keys":[{"key_id":"AAAAAAAAAAAAAAAA","pubkey":"x","not_after":"2030-01-01T00:00:00Z","purpose":"wat"}]}"#;
+        assert!(UpdateKeyring::from_trusted_keys_json(bad).is_err());
+    }
+
+    /// 내장 키링(이 판) = 팩 키뿐 → 갱신 용도 키 0(R·U·F 실키 기입 = U3 · 자리표시).
+    #[test]
+    fn embedded_keyring_has_no_update_keys_yet_so_everything_fails_closed() {
+        let kr = UpdateKeyring::from_trusted_keys_json(crate::packsig::TRUSTED_KEYS_JSON).unwrap();
+        assert!(kr.keys.is_empty(), "실키 기입은 U3(master 게이트) — U1 판에 갱신 키가 있으면 안 된다: {:?}", kr.key_ids());
+        assert!(kr.find("54FBA04AD0E0F49D", Purpose::Pack, NOW).is_err(), "팩 키는 갱신 키링에 들어오지 않는다");
+    }
+
+    #[test]
+    fn find_rejects_wrong_purpose_revoked_expired_unknown() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        assert!(kr.find(&k.u.key_id, Purpose::Release, NOW).is_ok());
+        assert!(kr.find(&k.u.key_id, Purpose::Feed, NOW).unwrap_err().contains("용도 불일치"));
+        assert!(kr.find("0000000000000000", Purpose::Feed, NOW).unwrap_err().contains("알 수 없는"));
+        let mut r = kr.clone();
+        r.revoked_key_ids.insert(k.f.key_id.clone());
+        assert!(r.find(&k.f.key_id, Purpose::Feed, NOW).unwrap_err().contains("폐기"));
+        let far = crate::packsig::parse_rfc3339("2099-01-01T00:00:00Z").unwrap();
+        assert!(kr.find(&k.f.key_id, Purpose::Feed, far).unwrap_err().contains("만료"));
+    }
+
+    /// 교차 사용: F 키로 서명한 데이터를 U 용도로 검증 = 거부(키 자체로 막는다).
+    #[test]
+    fn cross_purpose_signature_rejected() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let data = b"body";
+        let sig_f = k.f.sign(data);
+        assert!(kr.verify(Purpose::Feed, &k.f.key_id, data, &sig_f, NOW).is_ok());
+        assert!(kr.verify(Purpose::Release, &k.f.key_id, data, &sig_f, NOW).is_err());
+        // U key_id 를 주장하지만 F 키로 서명 = minisign 키 번호 불일치로 거부
+        assert!(kr.verify(Purpose::Release, &k.u.key_id, data, &sig_f, NOW).is_err());
+    }
+
+    #[test]
+    fn revocations_roundtrip_delegation_and_severity() {
+        let k = Keys::new();
+        let embedded = k.keyring();
+        let newf = TestKey::new();
+        let (b, s) = revo(
+            &k,
+            3,
+            serde_json::json!({
+                "delegations": [{"key_id": newf.key_id, "purpose": "feed", "pubkey": newf.pubkey, "not_after": NOW + 1000}],
+                "revoked_key_ids": [k.f.key_id],
+                "revoked_releases": [
+                    {"component": "cysr", "release_seq": 7, "severity": "stop_seats", "reason_code": "x"},
+                    {"component": "cysr", "release_seq": 8, "severity": "melt", "reason_code": "y"},
+                    {"component": "agora-client", "release_seq": 7}
+                ]
+            }),
+        );
+        let r = verify_revocations(&b, &s, &embedded, Some(2), NOW).unwrap();
+        assert_eq!(r.rev, 3);
+        assert_eq!(r.revoked("cysr", 7).unwrap().severity, Severity::StopSeats);
+        let unk = r.revoked("cysr", 8).unwrap();
+        assert_eq!((unk.severity, unk.unknown_severity), (Severity::Advisory, true));
+        assert_eq!(r.revoked("agora-client", 7).unwrap().severity, Severity::Advisory);
+        assert!(r.revoked("cysr", 9).is_none());
+        let eff = embedded.with_revocations(&r);
+        assert!(eff.find(&newf.key_id, Purpose::Feed, NOW).is_ok(), "위임 키 수용");
+        assert!(eff.find(&k.f.key_id, Purpose::Feed, NOW).is_err(), "폐기된 옛 F 키 거부");
+    }
+
+    #[test]
+    fn revocations_rev_rollback_and_bad_sig_and_non_root_signer_rejected() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let (b, s) = revo(&k, 3, serde_json::json!({}));
+        assert_eq!(verify_revocations(&b, &s, &kr, Some(4), NOW).unwrap_err().code, ErrCode::FeedReplay);
+        assert!(verify_revocations(&b, &s, &kr, Some(3), NOW).is_ok(), "같은 rev = 통과(무변화)");
+        let mut b2 = b.clone();
+        let i = b2.len() - 2;
+        b2[i] ^= 1; // 1바이트 변조
+        assert_eq!(verify_revocations(&b2, &s, &kr, None, NOW).unwrap_err().code, ErrCode::FeedSigBad);
+        // U 키로 서명한 폐기문 = R 용도 아님 → 거부
+        let v = serde_json::json!({"kind": REVOCATIONS_KIND, "rev": 1, "key_id": k.u.key_id, "signed_at": NOW});
+        let bb = v.to_string().into_bytes();
+        let ss = k.u.sign(&bb);
+        assert_eq!(verify_revocations(&bb, &ss, &kr, None, NOW).unwrap_err().code, ErrCode::FeedSigBad);
+    }
+
+    #[test]
+    fn delegating_root_or_mismatched_key_id_is_rejected() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let x = TestKey::new();
+        let (b, s) = revo(&k, 1, serde_json::json!({"delegations": [{"key_id": x.key_id, "purpose": "root", "pubkey": x.pubkey, "not_after": NOW + 9}]}));
+        assert!(verify_revocations(&b, &s, &kr, None, NOW).is_err());
+        let (b, s) = revo(&k, 1, serde_json::json!({"delegations": [{"key_id": "0000000000000000", "purpose": "feed", "pubkey": x.pubkey, "not_after": NOW + 9}]}));
+        assert!(verify_revocations(&b, &s, &kr, None, NOW).is_err());
+    }
+
+    /// §4-4·§7-1 「출시 빌드에서 시험 키링 env 무시」.
+    #[test]
+    fn test_keyring_override_only_in_debug() {
+        let get = |_: &str| Some(std::ffi::OsString::from("/tmp/x.json"));
+        assert!(test_keyring_override(true, get).is_some());
+        assert!(test_keyring_override(false, get).is_none());
+    }
+}

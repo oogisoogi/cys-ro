@@ -96,7 +96,34 @@ struct AcceptedPack {
 /// embed 키링(TRUSTED_KEYS_JSON) 파싱 — 프로덕션 검증 경로(verify_manifest)와 P4 `cys pack-update`가
 /// 동일 신뢰근원을 공유한다(키 SOT 단일화). build.rs 병합 실패 시 Err.
 pub fn embedded_keyring() -> Result<Keyring, String> {
-    serde_json::from_str(TRUSTED_KEYS_JSON).map_err(|e| format!("embed 키링 파싱 실패: {e}"))
+    pack_purpose_keyring(TRUSTED_KEYS_JSON)
+}
+
+/// 키링 JSON 에서 **팩 용도 키만** 남긴다(1.1.8 갱신 키 체계 · AUTO-UPDATE-118 §4-1 — 키마다 `purpose` 칸 ·
+/// 부재 = `pack` 하위 호환). 갱신 용도 키(R·U·F·A2)로 서명한 팩 매니페스트는 「알 수 없는 key_id」로 거부된다
+/// (교차 사용 차단). 미지 용도 값 = 그 키 제외(fail-closed).
+fn pack_purpose_keyring(json: &str) -> Result<Keyring, String> {
+    #[derive(Deserialize)]
+    struct Probe {
+        key_id: String,
+        #[serde(default)]
+        purpose: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct ProbeRing {
+        #[serde(default)]
+        keys: Vec<Probe>,
+    }
+    let mut kr: Keyring = serde_json::from_str(json).map_err(|e| format!("embed 키링 파싱 실패: {e}"))?;
+    let probe: ProbeRing = serde_json::from_str(json).map_err(|e| format!("embed 키링 파싱 실패: {e}"))?;
+    let non_pack: Vec<String> = probe
+        .keys
+        .into_iter()
+        .filter(|p| !matches!(p.purpose.as_deref(), None | Some("pack")))
+        .map(|p| p.key_id)
+        .collect();
+    kr.keys.retain(|k| !non_pack.contains(&k.key_id));
+    Ok(kr)
 }
 
 /// embed 키링(TRUSTED_KEYS_JSON)으로 manifest를 검증한다(프로덕션 진입점).
@@ -410,6 +437,36 @@ mod tests {
         assert!(!boot.not_after.is_empty(), "not_after 부재(fail-closed 위반)");
         // 부트스트랩 pubkey는 실제 minisign 공개키로 로드 가능해야 한다(형식 검증).
         load_public_key(&boot.pubkey).expect("부트스트랩 pubkey 로드 실패");
+    }
+
+    /// 1.1.8 갱신 키 체계(AUTO-UPDATE-118 §4-1): 키링에 갱신 용도 키(`purpose` = root·release·feed·win-asset)가
+    /// 섞여도 팩 검증 키링에는 **팩 용도(부재 = pack)만** 남는다 — 갱신 키로 서명한 팩 매니페스트 = 「알 수 없는 key_id」.
+    #[test]
+    fn pack_keyring_excludes_update_purpose_keys() {
+        let (pk_pack, sign_pack) = gen_key_and_signer();
+        let (pk_feed, sign_feed) = gen_key_and_signer();
+        let id_pack = pubkey_key_id(&pk_pack).unwrap();
+        let id_feed = pubkey_key_id(&pk_feed).unwrap();
+        let json = serde_json::json!({"keys": [
+            {"key_id": id_pack, "pubkey": pk_pack, "not_after": "2099-01-01T00:00:00Z"},
+            {"key_id": "AAAAAAAAAAAAAAAA", "pubkey": pk_pack, "not_after": "2099-01-01T00:00:00Z", "purpose": "pack"},
+            {"key_id": id_feed, "pubkey": pk_feed, "not_after": "2099-01-01T00:00:00Z", "purpose": "feed"},
+            {"key_id": "BBBBBBBBBBBBBBBB", "pubkey": pk_feed, "not_after": "2099-01-01T00:00:00Z", "purpose": "wat"}
+        ]}).to_string();
+        let kr = pack_purpose_keyring(&json).unwrap();
+        let ids: Vec<&str> = kr.keys.iter().map(|k| k.key_id.as_str()).collect();
+        assert_eq!(ids, vec![id_pack.as_str(), "AAAAAAAAAAAAAAAA"]);
+        let now = 1_780_000_000; // digest cutover(DIGEST_REQUIRED_EPOCH) 이전 — 이 시험은 키 용도만 본다
+        let acc = tmp_accepted("purpose");
+        let _ = std::fs::remove_file(&acc);
+        let m = manifest_json(&id_feed, "1.1.8", now - 10, now + 100);
+        let e = verify_with_keyring(&m, sign_feed(&m).as_bytes(), now, &acc, &kr).unwrap_err();
+        assert!(e.contains("알 수 없는 key_id"), "{e}");
+        let m = manifest_json(&id_pack, "1.1.8", now - 10, now + 100);
+        verify_with_keyring(&m, sign_pack(&m).as_bytes(), now, &acc, &kr).expect("팩 키 서명 = 통과");
+        // 내장 키링(이 판): 전부 팩 용도 — 걸러지는 키 0
+        let raw: Keyring = serde_json::from_str(TRUSTED_KEYS_JSON).unwrap();
+        assert_eq!(embedded_keyring().unwrap().keys.len(), raw.keys.len());
     }
 
     /// 키 분리(TICKET=key-bridge): 키링의 **모든** 항목에서 key_id == 공개키 파생 key_id.

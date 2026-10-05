@@ -19,7 +19,7 @@
 //   경고색 「확인 필요」 로 끝났다. 이제 켜는 중 문구는 '설치된 프로그램의 자리' 로 조건을 달고, 모든 문구의 자리 수는 **붙은 의무 역할 수**(탭의 칸 수가 아니다)로 통일하며,
 //   15분 상한은 경고가 아닌 일반 알림(「15분 경과」)이다. 좌석 목록을 못 받는 팀은 따로 말한다(「팀 데몬이 응답하지 않습니다」 — 경고).
 //   ※ 설치 여부를 '알고' 말하는 문구(N<5 문안)는 이 모듈에 없다 — 그 조회의 출처(`cys agent-detect` 오라클)가 편성 도구의 설치 판정(`javis_cli_probe.probe_cli` — 로그인셸 `command -v`)과 다르다(R2F-UI WORKLOG §A).
-//   ★(후속 · 정체 판정 — A2 B-1 최소 수정안 2) 설치 여부를 모르는 채로도 닫을 수 있는 한 가지: 부서장 자리는 붙어 있는데(M ≥ 1) 다섯이 안 됐고(M < 5) 붙은 의무 역할 수가 **3분 동안 늘지 않으면**(claude 만 깐 PC 는 3자리에서 더 늘지 않는다)
+//   ★(후속 · 정체 판정 — A2 B-1 최소 수정안 2) 설치 여부를 모르는 채로도 닫을 수 있는 한 가지: 부서장 자리는 붙어 있는데(M ≥ 1) 전부가 안 됐고(M < 의무 역할 수) 붙은 의무 역할 수가 **3분 동안 늘지 않으면**(0.14.42 원작자 5석 기준의 사례 = claude 만 깐 PC · 1.1.8 DS-1 우리 3석은 전부 claude 라 그 PC 도 다 붙는다 — 정체는 이제 고장 신호에 가깝다)
 //   그 사실을 한 번 알리고 「켜는 중」 갱신을 접는다(deptFormationStalled · 「팀원 켜기 — 자리가 더 붙지 않습니다」 — 일반 알림). 새 타이머·새 RPC 없음 — 3초 틱이 받는 목록의 자리 수만 쓴다.
 // ★이벤트 payload·좌석 목록은 **신뢰할 수 없는 데이터**다 — 단계 키는 정규식으로 거르고, 역할은 문자열만 본다.
 //   렌더는 main.ts 가 텍스트 노드·stickyToast 로만 한다(HTML 삽입 없음).
@@ -37,7 +37,7 @@ import { DEPT_SEAT_ROLES } from "./deptcreate";
 export const DEPT_TYPICAL_SECS = 30;
 /** '평소보다 오래' 로 바꾸는 배수 — `DEPT_TYPICAL_SECS × DEPT_SLOW_FACTOR` = 90초부터. */
 export const DEPT_SLOW_FACTOR = 3;
-/** 팀원 부팅 안내의 상한(초) — 15분. 닿으면 주기 갱신을 멈추고, 그때까지 의무 역할 다섯이 다 안 붙었으면 「15분 경과」(일반 알림)를 한 번 알린다(무한 갱신 금지). */
+/** 팀원 부팅 안내의 상한(초) — 15분. 닿으면 주기 갱신을 멈추고, 그때까지 의무 역할 전부가 다 안 붙었으면 「15분 경과」(일반 알림)를 한 번 알린다(무한 갱신 금지). */
 export const DEPT_FORMATION_CAP_SECS = 900;
 /** 팀원 부팅 안내 토스트 id 의 접두 — id 는 `dept-formation:<소켓>` 이다(탭마다 하나 · 같은 id 는 갱신된다). */
 export const DEPT_FORMATION_TOAST_PREFIX = "dept-formation:";
@@ -53,8 +53,8 @@ export const DEPT_FORMATION_REFRESH_SECS = 45;
  */
 export const DEPT_FORMATION_LIST_SILENT_SECS = 60;
 /**
- * 붙은 의무 역할 수가 이 시간(초) 동안 늘지 않으면 「자리가 더 붙지 않습니다」 를 **한 번** 알린다(정체 판정 — A2 B-1 최소 수정안 2). 부서장 자리가 붙어 있고(M ≥ 1) 다섯이 안 됐을(M < 5) 때만이다.
- * claude 만 깐 PC 는 3자리에서 더 늘지 않는데(편성은 설치된 프로그램의 역할만 띄운다) 「켜는 중」 이 15분까지 갱신되던 것을 사실대로 접는다. 문구의 「3분」 은 이 값에서 파생한다(15분 문구와 같은 방식).
+ * 붙은 의무 역할 수가 이 시간(초) 동안 늘지 않으면 「자리가 더 붙지 않습니다」 를 **한 번** 알린다(정체 판정 — A2 B-1 최소 수정안 2). 부서장 자리가 붙어 있고(M ≥ 1) 전부가 안 됐을(M < 의무 역할 수) 때만이다.
+ * (원작자 5석 기준) claude 만 깐 PC 는 3자리에서 더 늘지 않는데(편성은 설치된 프로그램의 역할만 띄운다) 「켜는 중」 이 15분까지 갱신되던 것을 사실대로 접는다 — 1.1.8 DS-1 우리 3석(전부 claude)에서는 그 사례가 없다. 문구의 「3분」 은 이 값에서 파생한다(15분 문구와 같은 방식).
  */
 export const DEPT_FORMATION_STALL_SECS = 180;
 /** 방금 만든 팀의 첫 자리가 붙기를 기다리는 창(초) — 이 안에서만 빈 탭이 '첫 자리를 붙이는 중' 이라고 말한다. */
@@ -219,7 +219,7 @@ export function deptLiveRoles(surfaces: unknown): string[] | null {
 }
 
 /**
- * 의무 역할(DEPT_SEAT_ROLES — master·cso·worker·reviewer-gemini·reviewer-codex) 가운데 붙어 있는 **서로 다른** 역할의 수(0~5).
+ * 의무 역할(DEPT_SEAT_ROLES — master·cso·worker · 1.1.8 DS-1 우리 편성 3석) 가운데 붙어 있는 **서로 다른** 역할의 수(0~3).
  * 이름이 정확히 같은 것만 센다 — 변형(`worker-2`·`cso-1`)·일회용(`cso-fresh-<epoch>`)·대소문자·공백·접두만 같은 이름은 의무 자리가 아니다. 배열이 아니면 0.
  */
 export function deptSeatedCount(roles: unknown): number {
@@ -229,13 +229,13 @@ export function deptSeatedCount(roles: unknown): number {
   return n;
 }
 
-/** 한 틱의 판정 — skip(목록을 못 받음 · 판정 건너뜀) · wait(아직 — 상한 전) · seated(의무 역할 다섯이 모두 붙음) · check(상한에 닿았는데 다 안 붙음). */
+/** 한 틱의 판정 — skip(목록을 못 받음 · 판정 건너뜀) · wait(아직 — 상한 전) · seated(의무 역할 전부가 모두 붙음) · check(상한에 닿았는데 다 안 붙음). */
 export type DeptFormationVerdict = "skip" | "wait" | "seated" | "check";
 
 /**
  * 한 틱의 판정 = 그 팀 소켓의 좌석 목록에서 읽은 역할(deptLiveRoles 의 값)과 경과(초).
  *  · roles 가 배열이 아니면(null·undefined — 이번 틱에 그 소켓의 목록을 못 받았다) **skip** — 완료로도 '확인 필요'로도 치지 않는다.
- *  · 의무 역할 다섯이 모두 붙었으면 **seated**(경과와 무관 — 상한 틱에도 이쪽이 먼저다).
+ *  · 의무 역할 전부가 모두 붙었으면 **seated**(경과와 무관 — 상한 틱에도 이쪽이 먼저다).
  *  · 아니면 상한(DEPT_FORMATION_CAP_SECS = 15분)에 닿았는지로 check 또는 wait. seated 필드는 붙은 의무 역할 수(모든 문구의 자리 수 — 탭의 칸 수가 아니다).
  */
 export function deptFormationVerdict(roles: unknown, elapsedSec: number): { verdict: DeptFormationVerdict; seated: number } {
@@ -246,10 +246,10 @@ export function deptFormationVerdict(roles: unknown, elapsedSec: number): { verd
 }
 
 /**
- * 팀원 부팅 안내의 제목·본문(경과는 분 단위 — formatDeptMinutes). **설치 여부를 모르는 채로 말한다** — 설치된 프로그램(claude·agy·codex)의 자리만 붙는다는 조건을 달고, 자리 수는 모두 `seats`(붙은 의무 역할 수)다.
+ * 팀원 부팅 안내의 제목·본문(경과는 분 단위 — formatDeptMinutes). **설치 여부를 모르는 채로 말한다** — 설치된 프로그램(1.1.8 DS-1 우리 3석 = claude)의 자리만 붙는다는 조건을 달고, 자리 수는 모두 `seats`(붙은 의무 역할 수)다.
  *  · booting(기본): 「팀원을 켜는 중」 — 설치된 프로그램의 자리가 차례로 붙는다는 것·최대 자리 수·보통 시간(5분 안팎 — 이 맥 실측 1회 약 5분)·붙은 자리 수·경과.
- *  · seated: 「팀 자리가 모두 붙었습니다」 — 의무 역할 다섯이 모두 붙은 것까지만 말한다('준비 완료'라고 단정하지 않는다 — 에이전트가 실제로 떴는지는 화면이 모른다) + 걸린 시간.
- *  · check: 「팀원 켜기 — 15분 경과」 — **경고가 아닌 일반 알림**. 15분 상한까지 다섯이 다 안 붙었다 — 붙은 자리 수와 '설치하지 않은 프로그램의 자리는 생기지 않는다'는 사실, 그 밖이면 확인할 곳(Control Center).
+ *  · seated: 「팀 자리가 모두 붙었습니다」 — 의무 역할 전부가 모두 붙은 것까지만 말한다('준비 완료'라고 단정하지 않는다 — 에이전트가 실제로 떴는지는 화면이 모른다) + 걸린 시간.
+ *  · check: 「팀원 켜기 — 15분 경과」 — **경고가 아닌 일반 알림**. 15분 상한까지 전부가 다 안 붙었다 — 붙은 자리 수와 '설치하지 않은 프로그램의 자리는 생기지 않는다'는 사실, 그 밖이면 확인할 곳(Control Center).
  *  · silent: 「팀 데몬이 응답하지 않습니다 — 확인 필요」 — **경고**. 좌석 목록을 받지 못했다(그 팀이 켜졌는지 화면이 모른다) + 확인할 곳 + 경과.
  *  · stall: 「팀원 켜기 — 자리가 더 붙지 않습니다」 — **경고가 아닌 일반 알림**. 붙은 의무 역할 수가 3분(DEPT_FORMATION_STALL_SECS 에서 파생) 동안 늘지 않았다 — 붙은 자리 수·경과와
  *    '설치하지 않은 프로그램의 자리는 생기지 않는다'는 사실, 더 붙어야 한다면 확인할 곳(Control Center).
@@ -264,7 +264,7 @@ export function deptFormationText(o: { seats: number; elapsedSec: number; state?
     case "check":
       return {
         title: `팀원 켜기 — ${Math.floor(DEPT_FORMATION_CAP_SECS / 60)}분 경과`,
-        body: `붙은 자리 ${seats}개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`,
+        body: `붙은 자리 ${seats}개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`,
       };
     case "silent":
       return {
@@ -276,12 +276,12 @@ export function deptFormationText(o: { seats: number; elapsedSec: number; state?
         title: "팀원 켜기 — 자리가 더 붙지 않습니다",
         body:
           `${Math.floor(DEPT_FORMATION_STALL_SECS / 60)}분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 ${seats}개 · 경과 ${formatDeptMinutes(sec)}. ` +
-          "설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요",
+          "설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요",
       };
     default:
       return {
         title: "팀원을 켜는 중",
-        body: `설치된 프로그램(claude·agy·codex)의 자리가 차례로 붙습니다(최대 ${DEPT_SEAT_ROLES.length}자리 · 보통 5분 안팎) · 붙은 자리 ${seats} · 경과 ${formatDeptMinutes(sec)}`,
+        body: `설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 ${DEPT_SEAT_ROLES.length}자리 · 보통 5분 안팎) · 붙은 자리 ${seats} · 경과 ${formatDeptMinutes(sec)}`,
       };
   }
 }
@@ -315,7 +315,7 @@ export function deptFormationListSilent(lastListMs: number | undefined, nowMs: n
 }
 
 /**
- * 자리 정체 판정(후속 · A2 B-1 최소 수정안 2) — 부서장 자리가 붙어 있는데(1 ≤ seated) 다섯이 안 됐고(seated < 5) 붙은 의무 역할 수가 마지막으로 늘어난 때(lastGrewMs)부터
+ * 자리 정체 판정(후속 · A2 B-1 최소 수정안 2) — 부서장 자리가 붙어 있는데(1 ≤ seated) 전부가 안 됐고(seated < 의무 역할 수) 붙은 의무 역할 수가 마지막으로 늘어난 때(lastGrewMs)부터
  * 지금(nowMs, 둘 다 ms)까지 DEPT_FORMATION_STALL_SECS(180초) **이상** 지났는가(정확히 180초부터 true · 179초는 아직).
  * 이 함수는 시간과 자리 수만 본다 — '이번 틱에 그 팀의 목록을 받았는가'·'15분 상한 전인가'는 호출측이 판정(deptFormationVerdict 의 wait)으로 정한다.
  * 자리 수가 0(부서장 자리도 없음)이면 false(정체가 아니라 아직 아무것도 안 붙은 것이다). 입력이 유한한 수가 아니거나 시계가 거꾸로 갔으면(차 < 0) false — 모르는 입력으로 정체를 지어내지 않는다.

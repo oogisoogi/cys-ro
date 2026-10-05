@@ -9,6 +9,8 @@
 // 설계 정본: 팀만들기-확인창-무반응-수정설계안-최종-20260923.md §5-3·§5-4 · §11 R10 · §13 P2.
 // P1(stacking.test.ts)과 파일을 나눈 것은 의도다 — §13 롤백 지점: P1·P2 는 독립적으로 되돌릴 수 있어야 한다.
 import { describe, expect, test } from "bun:test";
+// (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
+const testDormant = test.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
 
 const SRC = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
@@ -100,7 +102,7 @@ describe("팀 제안 카드 — 안내문(R10)·무음 경로 0(§5-4)", () => {
     return SRC.slice(i, SRC.indexOf("} else if", i + 10));
   };
 
-  test("안내문이 대화 승인 경로를 먼저 적고, 화면 경로([확인 창 열기] → [만들기])를 뒤에 적는다", () => {
+  testDormant("안내문이 대화 승인 경로를 먼저 적고, 화면 경로([확인 창 열기] → [만들기])를 뒤에 적는다", () => {
     const seg = card();
     const talk = seg.indexOf("'만들어'라고 답해 주시면 바로 만듭니다");
     const gui = seg.indexOf("화면에서 직접 하시려면 [확인 창 열기] → [만들기]");
@@ -111,7 +113,7 @@ describe("팀 제안 카드 — 안내문(R10)·무음 경로 0(§5-4)", () => {
   // ★(0.14.42 리뷰 m6) 카드는 UI 갱신과 함께 모든 설치에 즉시 뜨지만, 이미 CEO 로 승격된 기계는 MASTER_DIRECTIVE 가
   //   사용자 소유라 신본 지침이 .new 로만 도착한다(pack-merge 전까지 대표는 질문(ask)을 열지 않는다). 그래서 대화
   //   경로는 **대표가 먼저 여쭌 경우**로 조건을 걸어 적는다 — 무조건 "말씀하시면 바로 만듭니다"는 그 기계에서 거짓이다.
-  test("대화 경로 안내는 대표의 질문('만들까요?')을 조건으로 건다 — 지침이 옛 판인 기계에서도 거짓이 되지 않게", () => {
+  testDormant("대화 경로 안내는 대표의 질문('만들까요?')을 조건으로 건다 — 지침이 옛 판인 기계에서도 거짓이 되지 않게", () => {
     const seg = strip(card()); // 주석 속 인용(옛 문구)은 안내문이 아니다
     const cond = seg.indexOf("'만들까요?'라고 여쭈면");
     expect(cond).toBeGreaterThan(0);
@@ -119,7 +121,7 @@ describe("팀 제안 카드 — 안내문(R10)·무음 경로 0(§5-4)", () => {
     expect(seg).not.toContain("말씀하시면 바로 만듭니다");
   });
 
-  test("카드 버튼은 흐름의 예외를 삼키지 않는다 — 거부된 약속(Promise)은 토스트로 보인다", () => {
+  testDormant("카드 버튼은 흐름의 예외를 삼키지 않는다 — 거부된 약속(Promise)은 토스트로 보인다", () => {
     const seg = strip(card());
     expect(seg).toContain("runTeamProposalFlow(item).catch(");
     expect(seg).not.toContain("void runTeamProposalFlow(item)");

@@ -6,6 +6,8 @@
 //   R2 팩 확인 실패를 catch {} 로 삼킴 · 실패 시 낡은 배지 보존   R3 ↻ 배지인데 클릭은 본체 창부터
 //   R4 판독 실패를 '최신'으로 접음                            R5 no-op 팩 설치를 "완료"로 보고
 import { describe, it, expect } from "bun:test";
+// (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
+const itDormant = it.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
 
 const src = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
@@ -31,12 +33,12 @@ describe("업데이트 배지 배선 — 단일 상태 · 단일 보기", () => 
   //   — 오너 증상(초록 점·배지 불일치)의 재발 형태다. 기존 핀은 "update-badge 를 쓰는 곳은
   //   renderUpdateBadge 하나"만 세므로 호출 제거에는 반응하지 않는다(정의 안의 "update-badge"
   //   문자열은 여전히 1건). 호출부를 직접 죈다.
-  it("★(U16-A5-4) renderUpdateAll 은 실제로 renderUpdateBadge(deriveUpdateView(...)) 를 부른다(호출 제거 뮤턴트 차단)", () => {
+  itDormant("★(U16-A5-4) renderUpdateAll 은 실제로 renderUpdateBadge(deriveUpdateView(...)) 를 부른다(호출 제거 뮤턴트 차단)", () => {
     const b = fnBody("renderUpdateAll");
     expect(b).toContain("renderUpdateBadge(deriveUpdateView(updState, updClock));");
   });
 
-  it("★update-badge 를 쓰는 곳은 renderUpdateBadge 하나뿐", () => {
+  itDormant("★update-badge 를 쓰는 곳은 renderUpdateBadge 하나뿐", () => {
     const hits = code.split('"update-badge"').length - 1;
     expect(hits).toBe(1);
     const body = fnBody("renderUpdateBadge");
@@ -46,18 +48,18 @@ describe("업데이트 배지 배선 — 단일 상태 · 단일 보기", () => 
     expect(body).toContain("badge.hidden = v.badge.hidden");
   });
 
-  it("종전 이중 원천(updateAvailable · packUpdateAvailable 전역)이 되살아나지 않았다", () => {
+  itDormant("종전 이중 원천(updateAvailable · packUpdateAvailable 전역)이 되살아나지 않았다", () => {
     expect(/\blet updateAvailable\b/.test(code)).toBe(false);
     expect(/\blet packUpdateAvailable\b/.test(code)).toBe(false);
     expect(code.includes("updatePlan(")).toBe(false); // 판정은 deriveUpdateView 안에서만
   });
 
-  it("'최신' 문구는 main.ts 에 없다 — 파생 보기(updatestate.ts)만 말한다", () => {
+  itDormant("'최신' 문구는 main.ts 에 없다 — 파생 보기(updatestate.ts)만 말한다", () => {
     expect(code.includes("최신 버전입니다")).toBe(false);
     expect(code.includes("✅ 최신 버전")).toBe(false);
   });
 
-  it("팩 확인 실패를 삼키지 않는다(R2) — 두 invoke 결과가 모두 상태 전이 함수로 간다", () => {
+  itDormant("팩 확인 실패를 삼키지 않는다(R2) — 두 invoke 결과가 모두 상태 전이 함수로 간다", () => {
     const b = fnBody("refreshUpdateState");
     expect(b).toContain('invoke("check_update")');
     expect(b).toContain('invoke("check_pack_update")');
@@ -69,7 +71,7 @@ describe("업데이트 배지 배선 — 단일 상태 · 단일 보기", () => 
     expect(code.includes("packCheckFailed = true")).toBe(false);
   });
 
-  it("확인은 단일 비행(동시 클릭·폴링이 curl 을 겹쳐 띄우지 않는다) + 확인마다 상한(멈춘 연결이 비행을 영구히 붙잡지 않게)", () => {
+  itDormant("확인은 단일 비행(동시 클릭·폴링이 curl 을 겹쳐 띄우지 않는다) + 확인마다 상한(멈춘 연결이 비행을 영구히 붙잡지 않게)", () => {
     const b = fnBody("refreshUpdateState");
     expect(b).toContain("updRefreshInFlight");
     expect(b).toContain('rpcT(invoke("check_update"), T_UPD_CHECK)');
@@ -80,7 +82,7 @@ describe("업데이트 배지 배선 — 단일 상태 · 단일 보기", () => 
     expect(b).toContain("Promise.all([binCheck(), packCheck()])");
   });
 
-  it("Update 클릭 = 상태 창(R3) — 캐시로 본체 설치 창부터 여는 분기 금지", () => {
+  itDormant("Update 클릭 = 상태 창(R3) — 캐시로 본체 설치 창부터 여는 분기 금지", () => {
     const b = fnBody("onUpdateButton");
     expect(b).toContain("openUpdatePanel(");
     expect(b).toContain("refreshUpdateState(false)");
@@ -88,7 +90,7 @@ describe("업데이트 배지 배선 — 단일 상태 · 단일 보기", () => 
     expect(b.includes("promptPackInstall(")).toBe(false);
   });
 
-  it("no-op 팩 설치는 pack-uptodate 로 받는다(R5) · pack-updated 는 배지를 직접 만지지 않는다", () => {
+  itDormant("no-op 팩 설치는 pack-uptodate 로 받는다(R5) · pack-updated 는 배지를 직접 만지지 않는다", () => {
     const u = code.indexOf('listen("pack-uptodate"');
     expect(u).toBeGreaterThan(0);
     const upSeg = code.slice(u, code.indexOf("});", u));
@@ -105,7 +107,7 @@ describe("업데이트 배지 배선 — 단일 상태 · 단일 보기", () => 
     expect(seg).toContain("packAfterInstalled(");
   });
 
-  it("창 제목 색은 isLatest 일 때만 ok — 미확인·확인 중을 최신과 같은 초록으로 그리지 않는다(리뷰1 F3)", () => {
+  itDormant("창 제목 색은 isLatest 일 때만 ok — 미확인·확인 중을 최신과 같은 초록으로 그리지 않는다(리뷰1 F3)", () => {
     const b = fnBody("renderUpdatePanel");
     // v.badge.tone 을 그대로 클래스에 쓰면(중립 '…' 상태의 tone 이 "ok") '확인 중…'이 초록으로
     // 보인다 — isLatest 가 아닌 "ok" 톤은 muted 로 낮추는 분기가 있어야 한다.
@@ -113,7 +115,7 @@ describe("업데이트 배지 배선 — 단일 상태 · 단일 보기", () => 
     expect(b).toContain('v.badge.tone === "ok" ? "muted"');
   });
 
-  it("폴링 주기·silent 불변식 유지 — 시작 1회 + 6시간(새 타이머 0) · silent 경로는 창을 열지 않는다", () => {
+  itDormant("폴링 주기·silent 불변식 유지 — 시작 1회 + 6시간(새 타이머 0) · silent 경로는 창을 열지 않는다", () => {
     expect(code.includes("refreshUpdateState(true);")).toBe(true);
     expect(code.includes("setInterval(() => refreshUpdateState(true), 6 * 3600 * 1000)")).toBe(true);
     expect(fnBody("refreshUpdateState").includes("openUpdatePanel(")).toBe(false);

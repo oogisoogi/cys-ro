@@ -8,6 +8,8 @@
 //   · 새 DOM id 에 `!` 단언을 쓰면 index.html 과 번들이 어긋날 때 main.js 평가가 중단돼 전 pane 이
 //     백지가 된다(④). 새 모듈의 구형 WKWebView 비호환 문법·최상위 부수효과도 같은 치명도다(반박 D6).
 import { describe, it, expect } from "bun:test";
+// (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
+const itDormant = it.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf-8");
@@ -50,7 +52,7 @@ const tagsOnly = (s: string) => s.replace(/>\s+</g, "><");
 
 describe("사이드바 바닥 공용 꼬리 컨테이너(#wsbar-foot) — A2·A3 공통 마크업", () => {
   const h = tagsOnly(html);
-  it("#ws-tabs 바로 다음 형제로 사용량 → 피드백 슬롯 → 전문가용 순서", () => {
+  itDormant("#ws-tabs 바로 다음 형제로 사용량 → 피드백 슬롯 → 전문가용 순서", () => {
     expect(
       h.includes(
         '<div id="ws-tabs"></div><div id="wsbar-foot"><section id="wsbar-usage" aria-label="사용량"></section><div id="wsbar-feedback-slot">',
@@ -60,11 +62,11 @@ describe("사이드바 바닥 공용 꼬리 컨테이너(#wsbar-foot) — A2·A3
     const u = h.indexOf('id="wsbar-usage"'), f = h.indexOf('id="wsbar-feedback-slot"'), e = h.indexOf('id="wsbar-expert"');
     expect(u >= 0 && u < f && f < e).toBe(true);
   });
-  it("꼬리는 #wsbar 안에 있다", () => {
+  itDormant("꼬리는 #wsbar 안에 있다", () => {
     const nav = h.indexOf('<nav id="wsbar">'), foot = h.indexOf('id="wsbar-foot"'), end = h.indexOf("</nav>", nav);
     expect(nav >= 0 && nav < foot && foot < end).toBe(true);
   });
-  it("목록(#ws-tabs)에 최소 높이 · 꼬리 묶음에 상한 + 자체 스크롤 (목록이 0px 로 눌리지 않게 — 반박 U17 D5)", () => {
+  itDormant("목록(#ws-tabs)에 최소 높이 · 꼬리 묶음에 상한 + 자체 스크롤 (목록이 0px 로 눌리지 않게 — 반박 U17 D5)", () => {
     const flat = css.replace(/\s+/g, " ");
     expect(/#ws-tabs \{[^}]*min-height:/.test(flat)).toBe(true);
     const foot = /#wsbar-foot \{([^}]*)\}/.exec(flat);
@@ -73,7 +75,7 @@ describe("사이드바 바닥 공용 꼬리 컨테이너(#wsbar-foot) — A2·A3
     expect(foot![1]).toContain("overflow-y: auto");
     expect(foot![1]).toContain("min-height: 0");
   });
-  it("피드백 단추(A3)는 꼬리 여백 안에서 가로 여백을 걷는다 — 사용량·전문가용과 같은 선(리뷰1 M11 · 이중 들여쓰기 차단)", () => {
+  itDormant("피드백 단추(A3)는 꼬리 여백 안에서 가로 여백을 걷는다 — 사용량·전문가용과 같은 선(리뷰1 M11 · 이중 들여쓰기 차단)", () => {
     const flat = css.replace(/\s+/g, " ");
     const r = /#wsbar-feedback-slot > #btn-feedback \{([^}]*)\}/.exec(flat);
     expect(r).not.toBeNull();
@@ -82,12 +84,12 @@ describe("사이드바 바닥 공용 꼬리 컨테이너(#wsbar-foot) — A2·A3
 });
 
 describe("사용량 조회 — 공유 fetcher 하나 · in-flight 가드 · 전용 상한", () => {
-  it("usage_accounts_all 호출은 fetcher 본문 1곳뿐", () => {
+  itDormant("usage_accounts_all 호출은 fetcher 본문 1곳뿐", () => {
     const n = code.split('invoke("usage_accounts_all"').length - 1;
     expect(n).toBe(1);
     expect(fnBody("refreshAccountsShared")).toContain('invoke("usage_accounts_all"');
   });
-  it("fetcher 는 claimFlight + releaseFlightWhenSettled + rpcT(T_ACCT) 규약을 쓴다", () => {
+  itDormant("fetcher 는 claimFlight + releaseFlightWhenSettled + rpcT(T_ACCT) 규약을 쓴다", () => {
     const b = fnBody("refreshAccountsShared");
     for (const needle of ["claimFlight(", "releaseFlightWhenSettled(", "rpcT(", "T_ACCT", "shouldFetchAccounts("])
       expect({ 배선: needle, 있음: b.includes(needle) }).toEqual({ 배선: needle, 있음: true });
@@ -106,13 +108,13 @@ describe("사용량 조회 — 공유 fetcher 하나 · in-flight 가드 · 전�
     expect({ 위치: seq.map((s, i) => [s, pos[i] >= 0]) }).toEqual({ 위치: seq.map((s) => [s, true]) });
     expect({ 순서대로: pos.every((p, i) => i === 0 || pos[i - 1] < p) }).toEqual({ 순서대로: true });
   });
-  it("스로틀 판정에 실제 상태를 넘긴다(상수·null 로 바꿔치면 조회가 영구 0회 또는 무제한 — 리뷰1 V1)", () => {
+  itDormant("스로틀 판정에 실제 상태를 넘긴다(상수·null 로 바꿔치면 조회가 영구 0회 또는 무제한 — 리뷰1 V1)", () => {
     const b = fnBody("refreshAccountsShared");
     const gate = b.slice(b.indexOf("shouldFetchAccounts("), b.indexOf("});", b.indexOf("shouldFetchAccounts(")));
     for (const needle of ["started,", "startedAtMs: acctStartedAtMs,", "lastAttemptAtMs: acctLastAttemptAtMs,", "force,", "graceMs: ACCT_BOOT_GRACE_MS,", "minIntervalMs: ACCT_SIDEBAR_MIN_MS,"])
       expect({ 인자: needle, 있음: gate.includes(needle) }).toEqual({ 인자: needle, 있음: true });
   });
-  it("성공하면 연속 실패를 0 으로, 실패하면 +1 — '데몬 응답 없음'이 한 번 뜨면 영영 남는 되돌림 차단", () => {
+  itDormant("성공하면 연속 실패를 0 으로, 실패하면 +1 — '데몬 응답 없음'이 한 번 뜨면 영영 남는 되돌림 차단", () => {
     const b = fnBody("refreshAccountsShared");
     const iRpc = b.indexOf("await rpcT(call, T_ACCT)");
     const iOk = b.indexOf("acctFailStreak = 0;");
@@ -120,23 +122,23 @@ describe("사용량 조회 — 공유 fetcher 하나 · in-flight 가드 · 전�
     const iInc = b.indexOf("acctFailStreak++", iCatch);
     expect({ 성공_리셋: iOk > iRpc && iOk < iCatch, 실패_증가: iInc > iCatch }).toEqual({ 성공_리셋: true, 실패_증가: true });
   });
-  it("T_ACCT 는 winScaled 명명 상수(넘기면 무엇이 일어나는지 주석)", () => {
+  itDormant("T_ACCT 는 winScaled 명명 상수(넘기면 무엇이 일어나는지 주석)", () => {
     expect(/const T_ACCT = winScaled\(\d[\d_]*\);/.test(code)).toBe(true);
     const line = src.split("\n").find((l) => l.includes("const T_ACCT = winScaled("))!;
     expect(line).toContain("넘기면");
   });
-  it("호출 지점은 사이드바 10초 틱과 Control Center 두 곳뿐(반박 D7 의미 핀)", () => {
+  itDormant("호출 지점은 사이드바 10초 틱과 Control Center 두 곳뿐(반박 D7 의미 핀)", () => {
     const where = enclosingFns("refreshAccountsShared(").filter((f) => f !== "refreshAccountsShared");
     expect([...new Set(where)].sort()).toEqual(["refreshControlCenter", "refreshSidebarStatus"]);
   });
-  it("사이드바 틱에서는 void(비대기)로 renderWsTabs() 뒤에 — await 금지(승인 자동전환 판정 지연 차단)", () => {
+  itDormant("사이드바 틱에서는 void(비대기)로 renderWsTabs() 뒤에 — await 금지(승인 자동전환 판정 지연 차단)", () => {
     const b = fnBody("refreshSidebarStatus");
     expect(b.includes("await refreshAccountsShared")).toBe(false);
     const v = b.indexOf("void refreshAccountsShared(false)");
     const r = b.indexOf("renderWsTabs();");
     expect(v > r && r >= 0).toBe(true);
   });
-  it("Control Center Live 는 공유 fetcher 를 force 로 부른다(직접 invoke 제거 → 겹침 가드 획득)", () => {
+  itDormant("Control Center Live 는 공유 fetcher 를 force 로 부른다(직접 invoke 제거 → 겹침 가드 획득)", () => {
     expect(fnBody("refreshControlCenter")).toContain("await refreshAccountsShared(true)");
   });
   it("3초 입양 틱(refreshPaneTitles)에는 아무것도 얹지 않는다", () => {
@@ -159,7 +161,7 @@ describe("사용량 조회 — 공유 fetcher 하나 · in-flight 가드 · 전�
     expect(a > 0 && b > a).toBe(true);
     expect(stripComments(src.slice(a, b)).includes("refreshAccountsShared")).toBe(false);
   });
-  it("노드 신호(nodeSig) 폴백을 새로 만들지 않는다(설계 금지 — 제공자 혼합 최대값)", () => {
+  itDormant("노드 신호(nodeSig) 폴백을 새로 만들지 않는다(설계 금지 — 제공자 혼합 최대값)", () => {
     expect(fnBody("refreshAccountsShared").includes("nodeSig")).toBe(false);
     expect(fnBody("renderUsageBar").includes("nodeSig")).toBe(false);
   });
@@ -170,14 +172,14 @@ describe("사용량 렌더 — 백지(④) 차단", () => {
     for (const id of ["wsbar-usage", "wsbar-foot", "wsbar-expert", "wsbar-feedback-slot"])
       expect({ id, 단언: code.includes(`getElementById("${id}")!`) }).toEqual({ id, 단언: false });
   });
-  it("렌더는 textContent 로만(innerHTML 금지 — 라벨은 로컬 폴더·파일에서 온다)", () => {
+  itDormant("렌더는 textContent 로만(innerHTML 금지 — 라벨은 로컬 폴더·파일에서 온다)", () => {
     expect(fnBody("renderUsageBar").includes("innerHTML")).toBe(false);
     expect(fnBody("renderUsageBar")).toContain("buildUsageBarModel(");
   });
-  it("렌더는 스스로 오류를 삼킨다(표시 전용 — 호출측 틱으로 새지 않는다)", () => {
+  itDormant("렌더는 스스로 오류를 삼킨다(표시 전용 — 호출측 틱으로 새지 않는다)", () => {
     expect(fnBody("renderUsageBar")).toContain("catch");
   });
-  it("본문 모델이 직전과 같으면 본문을 다시 만들지 않는다(이벤트 구동 재렌더에 호버 툴팁이 사라지지 않게 — 리뷰1 M5)", () => {
+  itDormant("본문 모델이 직전과 같으면 본문을 다시 만들지 않는다(이벤트 구동 재렌더에 호버 툴팁이 사라지지 않게 — 리뷰1 M5)", () => {
     const b = fnBody("renderUsageBar");
     const iReset = b.indexOf('usageBodySig = "";'); // 머리·본문을 새로 만들면 반드시 다시 그린다
     const iSig = b.indexOf("const sig = JSON.stringify(model);");
@@ -192,22 +194,22 @@ describe("사용량 렌더 — 백지(④) 차단", () => {
     const firstTop = code.indexOf("\nrenderUsageBar();");
     expect({ 선언: decl >= 0, 선언이_먼저: decl >= 0 && decl < firstTop }).toEqual({ 선언: true, 선언이_먼저: true });
   });
-  it("최상위 접힘 판독(localStorage)은 try 안 — 저장소 차단이 main.js 평가를 끊지 않게(④)", () => {
+  itDormant("최상위 접힘 판독(localStorage)은 try 안 — 저장소 차단이 main.js 평가를 끊지 않게(④)", () => {
     expect(/\ntry \{\n\s*usageCollapsed = localStorage\.getItem\(USAGE_COLLAPSED_KEY\) === "1";\n\} catch/.test(code)).toBe(true);
   });
-  it("🔒 가림 상태를 모델에 넘긴다(툴팁의 설정 폴더 경로도 가린다 — 리뷰1 M9)", () => {
+  itDormant("🔒 가림 상태를 모델에 넘긴다(툴팁의 설정 폴더 경로도 가린다 — 리뷰1 M9)", () => {
     const b = fnBody("renderUsageBar");
     const call = b.slice(b.indexOf("buildUsageBarModel("), b.indexOf(");", b.indexOf("ccAcctLabel,")) + 2);
     expect(call).toContain("ccAcctLabel,");
     expect(call).toContain("ccAcctRedact");
   });
-  it("초기 렌더는 start() 와 무관한 배선부에서 1회(복원 중·start 실패에도 빈 섹션이 남지 않게 — 반박 D4·D5)", () => {
+  itDormant("초기 렌더는 start() 와 무관한 배선부에서 1회(복원 중·start 실패에도 빈 섹션이 남지 않게 — 반박 D4·D5)", () => {
     const at = src.indexOf("// ---------- ui wiring ----------");
     expect(at).toBeGreaterThan(0);
     const wiring = stripComments(src.slice(at));
     expect(/\nrenderUsageBar\(\);/.test(wiring)).toBe(true);
   });
-  it("🔒 계정 가림 토글이 사이드바도 다시 그린다(같은 키 공유)", () => {
+  itDormant("🔒 계정 가림 토글이 사이드바도 다시 그린다(같은 키 공유)", () => {
     const i = code.indexOf('acctRedactBtn.addEventListener("click"');
     expect(i).toBeGreaterThan(0);
     expect(code.slice(i, code.indexOf("});", i))).toContain("renderUsageBar()");
@@ -242,18 +244,18 @@ describe("새 순수 모듈 — 구형 WKWebView 파싱 실패·최상위 부수
 // 그 모델을 **어떻게 옮기는가**(textContent 만 · 저장소는 main.ts 만·try/catch 안 · CC 의 ccEsc · 위임 리스너)를 기계로 못박는다.
 describe("0.14.43 UI1 — 사이드바 본문 배선(모델의 가산 필드를 화면으로)", () => {
   const body = () => fnBody("renderUsageBar");
-  it("모델의 가산 필드를 전부 쓴다(쓰지 않으면 데몬·모델이 만든 표식이 화면에서 조용히 사라진다)", () => {
+  itDormant("모델의 가산 필드를 전부 쓴다(쓰지 않으면 데몬·모델이 만든 표식이 화면에서 조용히 사라진다)", () => {
     const b = body();
     for (const needle of ["p.inUse", "o.inUse", "headlineSev", "headlineTitle", "unobservedFold", "moreTooltip", "hiddenCount"])
       expect({ 필드: needle, 사용: b.includes(needle) }).toEqual({ 필드: needle, 사용: true });
   });
-  it("접힘 줄 '관측 없음 ${' 을 재도입하지 않는다 · 줄은 o.unobserved 를 반영한다(관측 전 계정 한 줄씩)", () => {
+  itDormant("접힘 줄 '관측 없음 ${' 을 재도입하지 않는다 · 줄은 o.unobserved 를 반영한다(관측 전 계정 한 줄씩)", () => {
     const b = body();
     expect(code.includes("관측 없음 ${")).toBe(false);
     expect(b.includes("관측 없음")).toBe(false);
     expect(/"usage-other" \+ \(o\.dim[^;]*o\.unobserved/.test(b)).toBe(true);
   });
-  it("'● 사용 중' 배지(.usage-inuse)·점(.usage-inuse-dot)은 textContent 로 · 같은 툴팁 · innerHTML 금지", () => {
+  itDormant("'● 사용 중' 배지(.usage-inuse)·점(.usage-inuse-dot)은 textContent 로 · 같은 툴팁 · innerHTML 금지", () => {
     const b = body();
     expect(b.includes("innerHTML")).toBe(false);
     expect(b.includes('inUseMark("usage-inuse", "● 사용 중")')).toBe(true);
@@ -263,12 +265,12 @@ describe("0.14.43 UI1 — 사이드바 본문 배선(모델의 가산 필드를 
     for (const needle of ["s.className = cls;", "s.textContent = text;", "s.title = USAGE_INUSE_TIP;"])
       expect({ 구현: needle, 있음: mark.includes(needle) }).toEqual({ 구현: needle, 있음: true });
   });
-  it("배지는 주 계정(p.inUse)에서만 · 점은 다른 줄(o.inUse)에서만 — 서로 바뀌지 않는다", () => {
+  itDormant("배지는 주 계정(p.inUse)에서만 · 점은 다른 줄(o.inUse)에서만 — 서로 바뀌지 않는다", () => {
     const b = body();
     expect(/if \(p\.inUse\) acctRow\.appendChild\(inUseMark\("usage-inuse", /.test(b)).toBe(true);
     expect(/if \(o\.inUse\) lab\.appendChild\(inUseMark\("usage-inuse-dot", /.test(b)).toBe(true);
   });
-  it("잘려 나간 관측 전 접힘 줄(.usage-other.unobs.dim · title = tooltip)이 '외 N개' 줄 앞에 · 그 줄에는 title = moreTooltip", () => {
+  itDormant("잘려 나간 관측 전 접힘 줄(.usage-other.unobs.dim · title = tooltip)이 '외 N개' 줄 앞에 · 그 줄에는 title = moreTooltip", () => {
     const b = body();
     const fold = b.indexOf("if (model.unobservedFold) {");
     const more = b.indexOf('el("usage-more"');
@@ -278,7 +280,7 @@ describe("0.14.43 UI1 — 사이드바 본문 배선(모델의 가산 필드를 
     // 접힘 줄만 있어도(관측 줄이 상한 안) 줄 묶음 상자가 만들어진다
     expect(b.includes("if (model.others.length || model.moreCount || model.unobservedFold) {")).toBe(true);
   });
-  it("숨김 안내(.usage-hidden)는 hiddenCount > 0 일 때만 · 본문 맨 끝(꼬리 경고 뒤)", () => {
+  itDormant("숨김 안내(.usage-hidden)는 hiddenCount > 0 일 때만 · 본문 맨 끝(꼬리 경고 뒤)", () => {
     const b = body();
     const foot = b.indexOf('el("usage-foot"');
     const hid = b.indexOf('el("usage-hidden"');
@@ -287,14 +289,14 @@ describe("0.14.43 UI1 — 사이드바 본문 배선(모델의 가산 필드를 
     expect(b.slice(b.lastIndexOf("if (", hid), hid).includes("model.hiddenCount > 0")).toBe(true);
     expect(b.slice(hid, b.indexOf(");", hid)).includes("Control Center > Live 에서 다시 보이기")).toBe(true);
   });
-  it("요약 줄: headlineSev 로 warn/crit 토글(응답 없음 경고와 같은 칸 · crit 가 이김) · headlineTitle 로 title 설정/제거", () => {
+  itDormant("요약 줄: headlineSev 로 warn/crit 토글(응답 없음 경고와 같은 칸 · crit 가 이김) · headlineTitle 로 title 설정/제거", () => {
     const b = body();
     expect(b.includes('sumEl.classList.toggle("warn", !!model.footer || model.headlineSev === "warn");')).toBe(true);
     expect(b.includes('sumEl.classList.toggle("crit", model.headlineSev === "crit");')).toBe(true);
     expect(b.includes("sumEl.title = model.headlineTitle")).toBe(true);
     expect(b.includes('sumEl.removeAttribute("title")')).toBe(true);
   });
-  it("모델 호출의 마지막 인자가 뷰어별 숨김 목록(usageHidden) — 🔒 가림 인자 뒤", () => {
+  itDormant("모델 호출의 마지막 인자가 뷰어별 숨김 목록(usageHidden) — 🔒 가림 인자 뒤", () => {
     const b = body();
     const call = b.slice(b.indexOf("buildUsageBarModel("), b.indexOf(");", b.indexOf("ccAcctLabel,")) + 2);
     expect(call.indexOf("ccAcctLabel,") < call.indexOf("ccAcctRedact,") && call.indexOf("ccAcctRedact,") < call.indexOf("usageHidden,")).toBe(true);
@@ -364,7 +366,7 @@ describe("0.14.43 UI1 — Control Center Live 계정 섹션·KPI 배선", () => 
     // 종전 'N분 전 관측' 배지는 유지
     expect(b.includes("분 전 관측")).toBe(true);
   });
-  it("게이지는 windowView 규칙(리셋 지남 → 폭 0·'리셋됨'·경고색 없음) — 종전 sevClass(used, 70, 90) 직접 판정을 쓰지 않는다", () => {
+  itDormant("게이지는 windowView 규칙(리셋 지남 → 폭 0·'리셋됨'·경고색 없음) — 종전 sevClass(used, 70, 90) 직접 판정을 쓰지 않는다", () => {
     const b = fnBody("renderAccounts");
     expect(b.includes("windowView(a, lab, nowSec)")).toBe(true);
     expect(b.includes('v.state === "ok" ?')).toBe(true);
@@ -408,22 +410,22 @@ describe("0.14.43 UI1 — style.css(기존 강조색 재사용 · 사이드바 �
     expect({ 규칙: sel, 존재: i >= 0 }).toEqual({ 규칙: sel, 존재: true });
     return flat.slice(i, flat.indexOf("}", i) + 1);
   };
-  it("새 규칙이 모두 있다(.usage-inuse · .usage-inuse-dot · .usage-hidden · .usage-sum.crit · .cc-acct-row.dim · .cc-acct-hide)", () => {
+  itDormant("새 규칙이 모두 있다(.usage-inuse · .usage-inuse-dot · .usage-hidden · .usage-sum.crit · .cc-acct-row.dim · .cc-acct-hide)", () => {
     for (const sel of ["#wsbar-usage .usage-inuse", "#wsbar-usage .usage-inuse-dot", "#wsbar-usage .usage-hidden", "#wsbar-usage .usage-sum.crit", ".cc-acct-row.dim", ".cc-acct-hide"]) rule(sel);
   });
-  it("사용 중 배지·점의 색은 기존 --ok 재사용(새 색 정의 없음) · 크롬 표면이라 --canvas-text 금지", () => {
+  itDormant("사용 중 배지·점의 색은 기존 --ok 재사용(새 색 정의 없음) · 크롬 표면이라 --canvas-text 금지", () => {
     expect(rule("#wsbar-usage .usage-inuse")).toContain("var(--ok)");
     expect(rule("#wsbar-usage .usage-inuse-dot")).toContain("var(--ok)");
     expect(/#[0-9a-fA-F]{3,6}\b/.test(rule("#wsbar-usage .usage-inuse") + rule("#wsbar-usage .usage-inuse-dot"))).toBe(false);
     for (const sel of ["#wsbar-usage .usage-inuse", "#wsbar-usage .usage-inuse-dot", "#wsbar-usage .usage-hidden"]) expect(rule(sel).includes("--canvas-text")).toBe(false);
   });
-  it("사이드바 줄의 말줄임을 깨지 않는다 — 라벨 칸 max-width 45% · 이름은 줄어들고(말줄임) 배지는 flex:none", () => {
+  itDormant("사이드바 줄의 말줄임을 깨지 않는다 — 라벨 칸 max-width 45% · 이름은 줄어들고(말줄임) 배지는 flex:none", () => {
     const lab = rule("#wsbar-usage .usage-other-lab");
     for (const decl of ["flex: none", "max-width: 45%", "text-overflow: ellipsis", "overflow: hidden"]) expect({ 선언: decl, 있음: lab.includes(decl) }).toEqual({ 선언: decl, 있음: true });
     expect(rule("#wsbar-usage .usage-acct-name")).toContain("text-overflow: ellipsis");
     expect(rule("#wsbar-usage .usage-inuse")).toContain("flex: none");
   });
-  it("요약 줄 crit 는 warn 규칙 뒤에(같은 특이도 — 응답 없음 warn 과 겹쳐도 crit 가 이긴다)", () => {
+  itDormant("요약 줄 crit 는 warn 규칙 뒤에(같은 특이도 — 응답 없음 warn 과 겹쳐도 crit 가 이긴다)", () => {
     expect(flat.indexOf("#wsbar-usage .usage-sum.crit {")).toBeGreaterThan(flat.indexOf("#wsbar-usage .usage-sum.warn {"));
   });
   it("흐린 행은 opacity 로(오래된 관측·숨긴 계정) · 단추는 flex:none", () => {
@@ -489,7 +491,7 @@ describe("R1F-UB(S2 m-1 ⓑ) — Control Center '이전 로그인' 배지는 순
     expect(b.includes("current_profiles")).toBe(false);
     expect(code.includes("current_profiles")).toBe(false);
   });
-  it("요약 줄 색 주석은 약식 요약의 실제(요약에 실린 값들)를 말한다 — 주 계정 창들뿐이라고 적지 않는다", () => {
+  itDormant("요약 줄 색 주석은 약식 요약의 실제(요약에 실린 값들)를 말한다 — 주 계정 창들뿐이라고 적지 않는다", () => {
     expect(src.includes("제공자별 약식이면 요약에 실린 값들")).toBe(true);
     expect(src.includes("요약 줄 색 = 주 계정 창들의 최고 심각도(headlineSev")).toBe(false);
   });

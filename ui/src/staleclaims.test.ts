@@ -6,6 +6,8 @@
 //   A2 m-1 — current_profiles 키 부재를 '구버전 데몬' 이라 단정한 주석(usagebar.ts · src-tauri main.rs 병합 설명)
 //   (7) deptcreate.test.ts 로스터 상수 핀 주석 한 줄
 import { describe, it, expect } from "bun:test";
+// (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
+const itDormant = it.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
 
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf-8");
@@ -43,7 +45,7 @@ describe("★R2F-UI(A3 n9) 낡은 주석 넷 — 사실대로", () => {
     // 대기 화면 문구가 말하는 값과 같은 출처다(deptprogress.ts 의 실측 상수 주석)
     expect(read("./deptprogress.ts").includes("DEPT_TYPICAL_SECS = 30")).toBe(true);
   });
-  it("③ style.css headlineSev 주석 — '주 계정 창 최고 심각도' 라고만 말하지 않는다: 약식이면 요약에 실린 값(오래돼 `?` 가 붙은 값 제외) · 한 제공자뿐이면 주 계정의 두 창", () => {
+  itDormant("③ style.css headlineSev 주석 — '주 계정 창 최고 심각도' 라고만 말하지 않는다: 약식이면 요약에 실린 값(오래돼 `?` 가 붙은 값 제외) · 한 제공자뿐이면 주 계정의 두 창", () => {
     const css = read("./style.css");
     const l = lineWith(css, "headlineSev");
     expect(l.includes("headlineSev — 주 계정 창 최고 심각도(오래된 값이면 클래스 없음)")).toBe(false); // 옛 단정

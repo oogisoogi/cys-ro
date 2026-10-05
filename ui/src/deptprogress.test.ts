@@ -5,16 +5,16 @@
 //   · 단계 표지(`[cys-dept] @stage <키>`)는 키 7종만 한글 줄이 되고 모르는 키·빈 값은 단계 줄 없이 경과만 보인다(구 팩에도 견딘다).
 //   · 표지 파서는 Rust 쪽 같은 이름의 파서와 **같은 벡터표**를 잰다(이 파일이 src-tauri/src/main.rs 의 표를 소스에서 읽어 자기 표와 대조한다).
 //   · 팀원 부팅 안내(R1F-UB 개정 · 성찰 2회차에서 5상태로): 문구 5상태(켜는 중 · 자리가 모두 붙음 · 15분 경과 · 팀 데몬 무응답 · 자리 정체) · 갱신 열쇠(자리 수·경과 분·45초 칸) · 15분 상한 · 첫 자리 창(60초).
-//     완료 판정(좌석 목록의 역할 다섯)은 deptprogressseats.test.ts 가 지킨다 — 편성 결과 feed 를 읽던 판정·사유 정제(deptFormationStateOfKind·deptFormationDetail)는 걷었다(S4 B1).
+//     완료 판정(좌석 목록의 의무 역할 셋 — 1.1.8 DS-1 우리 편성 3석)은 deptprogressseats.test.ts 가 지킨다 — 편성 결과 feed 를 읽던 판정·사유 정제(deptFormationStateOfKind·deptFormationDetail)는 걷었다(S4 B1).
 //   · 화면 문구의 수치는 **잰 만큼만**(S4 M1): 사전 검사는 「보통 10~30초 · 느린 컴퓨터는 더 걸립니다」(실측: 개발 맥 12.8초 · 윈도우 11 러너 27.4·28.4·31.9초 — '최대 12초'도 '약 12초'도 닫힌 범위 「10~30초」 도 아니다) · 팀원이 켜지는 데는 「보통 5분 안팎」(실측 1회 약 5분 — 3분 쪽은 잰 적이 없다).
 //   · 신뢰할 수 없는 입력(이벤트 payload)은 걸러 낸다 — 단계 키 정규식.
 //   · 순수 모듈 불변식: 최상위 부수효과 0 · 문서/창/저장소 낱말 0 · 구형 WKWebView 비호환 문법 0.
 //   · ★성찰 2회차 R2F-UI(A2 B-1 · A3 M1): 팀원 안내는 **설치 여부에 기대지 않는다** — 편성 도구는 설치된 프로그램(claude·agy·codex)의 역할만 띄우므로(미설치 역할은 건너뛰어 정상 종결 partial·pending-cli)
 //     「부서장·CSO·워커·리뷰어가 차례로 켜집니다」 를 조건 없이 말하면 거짓이다. 켜는 중 문구는 '설치된 프로그램의 자리' 로 조건을 달고 · 모든 문구의 자리 수는 붙은 의무 역할 수이며(「지금 N자리」 — 탭의 칸 수 — 는 없다) ·
 //     15분 상한(「15분 경과」)은 경고가 아닌 일반 알림이고 · 좌석 목록을 못 받는 팀은 「팀 데몬이 응답하지 않습니다」(경고)로 따로 말한다.
-//   · ★후속(정체 판정 · A2 B-1 최소 수정안 2): 부서장 자리가 붙어 있고(M ≥ 1) M < 5 인데 붙은 수가 3분(DEPT_FORMATION_STALL_SECS = 180) 동안 늘지 않으면 「팀원 켜기 — 자리가 더 붙지 않습니다」(일반 알림) —
-//     순수 판정(deptFormationStalled)은 경계(179.999초 아직 · 180초부터)·자리 수 조건(0 과 5 는 아님)·모르는 입력(false)을, 문구는 「3분」 이 상수에서 파생되는 것을 이 파일이 지킨다(점검 배선은 deptprogresswiring.test.ts).
-//   · ★후속(정체 판정 — A2 B-1 최소 수정안 2): claude 만 깐 PC 는 3자리에서 더 늘지 않는데 「켜는 중」 이 15분까지 갱신됐다. 부서장 자리가 붙어 있고(M ≥ 1) 다섯이 안 됐고(M < 5) 붙은 수가 180초 이상 늘지 않으면
+//   · ★후속(정체 판정 · A2 B-1 최소 수정안 2): 부서장 자리가 붙어 있고(M ≥ 1) M < 3(의무 역할 수 · 1.1.8 DS-1) 인데 붙은 수가 3분(DEPT_FORMATION_STALL_SECS = 180) 동안 늘지 않으면 「팀원 켜기 — 자리가 더 붙지 않습니다」(일반 알림) —
+//     순수 판정(deptFormationStalled)은 경계(179.999초 아직 · 180초부터)·자리 수 조건(0 과 3 은 아님)·모르는 입력(false)을, 문구는 「3분」 이 상수에서 파생되는 것을 이 파일이 지킨다(점검 배선은 deptprogresswiring.test.ts).
+//   · ★후속(정체 판정 — A2 B-1 최소 수정안 2): claude 만 깐 PC 는 3자리에서 더 늘지 않는데 「켜는 중」 이 15분까지 갱신됐다. 부서장 자리가 붙어 있고(M ≥ 1) 셋이 안 됐고(M < 3 · 1.1.8 DS-1 이전 원작자 5석 기준은 M < 5) 붙은 수가 180초 이상 늘지 않으면
 //     「팀원 켜기 — 자리가 더 붙지 않습니다」(일반 알림)를 한 번 알리고 갱신을 접는다 — 순수 판정(deptFormationStalled)·문구·등급·상수(180초 · 문구의 「3분」 은 상수에서 파생)를 이 파일이 지킨다(배선은 deptprogresswiring.test.ts).
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -331,17 +331,17 @@ describe("진행 id·이벤트 payload", () => {
 // ★후속(정체 판정): 이 describe 는 「4상태」 였다 — 자리 정체(stall)를 더해 5상태가 됐다. 기존 검체의 취지(보통 시간은 잰 만큼만 · 완료 낱말 금지 · 옛 문구 부재 · 이상한 입력 방어 · 십여 초 부재)는 stall 까지 넓혔다.
 describe("deptFormationText — 5상태(booting · seated · check · silent · stall) — 설치 여부를 모르는 채 말한다", () => {
   const BOOT = (seats: number, elapsed: string): string =>
-    `설치된 프로그램(claude·agy·codex)의 자리가 차례로 붙습니다(최대 5자리 · 보통 5분 안팎) · 붙은 자리 ${seats} · 경과 ${elapsed}`;
-  const CHECK = (seats: number): string => `붙은 자리 ${seats}개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`;
+    `설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 ${seats} · 경과 ${elapsed}`;
+  const CHECK = (seats: number): string => `붙은 자리 ${seats}개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`;
   const SILENT = (elapsed: string): string => `좌석 목록을 받지 못했습니다 — Control Center 에서 팀 상태를 확인하세요 · 경과 ${elapsed}`;
   const STALL = (seats: number, elapsed: string): string =>
-    `3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 ${seats}개 · 경과 ${elapsed}. 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요`;
+    `3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 ${seats}개 · 경과 ${elapsed}. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요`;
   const STATES: DeptFormationState[] = ["booting", "seated", "check", "silent", "stall"];
 
-  it("booting(기본) — 제목 「팀원을 켜는 중」 · 본문 「설치된 프로그램(claude·agy·codex)의 자리가 차례로 붙습니다(최대 5자리 · 보통 5분 안팎) · 붙은 자리 M · 경과 T」 — M = 붙은 의무 역할 수", () => {
+  it("booting(기본) — 제목 「팀원을 켜는 중」 · 본문 「설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 M · 경과 T」 — M = 붙은 의무 역할 수", () => {
     expect(deptFormationText({ seats: 0, elapsedSec: 0 })).toEqual({ title: "팀원을 켜는 중", body: BOOT(0, "1분 미만") });
-    expect(deptFormationText({ seats: 3, elapsedSec: 125, state: "booting" })).toEqual({ title: "팀원을 켜는 중", body: BOOT(3, "2분") });
-    expect(deptFormationText({ seats: 5, elapsedSec: 60 }).body).toBe(BOOT(5, "1분"));
+    expect(deptFormationText({ seats: 1, elapsedSec: 125, state: "booting" })).toEqual({ title: "팀원을 켜는 중", body: BOOT(1, "2분") });
+    expect(deptFormationText({ seats: 2, elapsedSec: 60 }).body).toBe(BOOT(2, "1분"));
     // state 를 생략한 것과 booting 은 같다
     expect(deptFormationText({ seats: 2, elapsedSec: 10 })).toEqual(deptFormationText({ seats: 2, elapsedSec: 10, state: "booting" }));
   });
@@ -354,13 +354,13 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
       }
     for (const rel of ["./deptprogress.ts", "./main.ts"]) expect({ 파일: rel, 하한: read(rel).includes("보통 3~5분") }).toEqual({ 파일: rel, 하한: false });
   });
-  it("seated — 제목 「팀 자리가 모두 붙었습니다」 · 본문 「자리 5개가 모두 붙었습니다 · 걸린 시간 <분>」(formatDeptMinutes) — '준비 완료'라고 단정하지 않는다", () => {
-    expect(deptFormationText({ seats: 5, elapsedSec: 252, state: "seated" })).toEqual({ title: "팀 자리가 모두 붙었습니다", body: "자리 5개가 모두 붙었습니다 · 걸린 시간 4분" });
-    expect(deptFormationText({ seats: 5, elapsedSec: 30, state: "seated" }).body).toBe("자리 5개가 모두 붙었습니다 · 걸린 시간 1분 미만");
-    expect(deptFormationText({ seats: 5, elapsedSec: 60, state: "seated" }).body).toBe("자리 5개가 모두 붙었습니다 · 걸린 시간 1분");
+  it("seated — 제목 「팀 자리가 모두 붙었습니다」 · 본문 「자리 3개가 모두 붙었습니다 · 걸린 시간 <분>」(formatDeptMinutes) — '준비 완료'라고 단정하지 않는다", () => {
+    expect(deptFormationText({ seats: 3, elapsedSec: 252, state: "seated" })).toEqual({ title: "팀 자리가 모두 붙었습니다", body: "자리 3개가 모두 붙었습니다 · 걸린 시간 4분" });
+    expect(deptFormationText({ seats: 3, elapsedSec: 30, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분 미만");
+    expect(deptFormationText({ seats: 3, elapsedSec: 60, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분");
   });
-  it("★check(설치 여부를 모르는 15분 상한) — 제목 「팀원 켜기 — 15분 경과」 · 본문 「붙은 자리 M개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요」", () => {
-    expect(deptFormationText({ seats: 3, elapsedSec: 900, state: "check" })).toEqual({ title: "팀원 켜기 — 15분 경과", body: CHECK(3) });
+  it("★check(설치 여부를 모르는 15분 상한) — 제목 「팀원 켜기 — 15분 경과」 · 본문 「붙은 자리 M개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요」", () => {
+    expect(deptFormationText({ seats: 2, elapsedSec: 900, state: "check" })).toEqual({ title: "팀원 켜기 — 15분 경과", body: CHECK(2) });
     expect(deptFormationText({ seats: 0, elapsedSec: 905, state: "check" }).body).toBe(CHECK(0));
     expect(deptFormationText({ seats: 1, elapsedSec: 905, state: "check" }).body).toBe(CHECK(1)); // CLI 가 하나도 없는 PC — 부서장 자리 1개만 붙는다(윈도우 11 러너 실측)
     // ★옛 제목 「확인 필요」 는 이 문구에 없다 — 설치하지 않은 프로그램의 자리가 안 생기는 것은 정상 종결이다(편성 도구도 일반 알림으로 알린다)
@@ -373,10 +373,10 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
     expect(deptFormationText({ seats: 4, elapsedSec: 1000, state: "silent" }).body).toBe(SILENT("16분")); // 자리 수는 말하지 않는다 — 목록을 못 받았다
     expect(deptFormationText({ seats: 4, elapsedSec: 1000, state: "silent" }).body.includes("자리")).toBe(false);
   });
-  it("★stall(자리가 3분 동안 더 붙지 않음) — 제목 「팀원 켜기 — 자리가 더 붙지 않습니다」 · 본문 「3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 M개 · 경과 T. 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요」", () => {
-    expect(deptFormationText({ seats: 3, elapsedSec: 280, state: "stall" })).toEqual({ title: "팀원 켜기 — 자리가 더 붙지 않습니다", body: STALL(3, "4분") });
+  it("★stall(자리가 3분 동안 더 붙지 않음) — 제목 「팀원 켜기 — 자리가 더 붙지 않습니다」 · 본문 「3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 M개 · 경과 T. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요」", () => {
+    expect(deptFormationText({ seats: 2, elapsedSec: 280, state: "stall" })).toEqual({ title: "팀원 켜기 — 자리가 더 붙지 않습니다", body: STALL(2, "4분") });
     expect(deptFormationText({ seats: 1, elapsedSec: 200, state: "stall" }).body).toBe(STALL(1, "3분")); // 부서장 자리 1개만(CLI 0개) — 경과도 분 단위 내림
-    expect(deptFormationText({ seats: 4, elapsedSec: 885, state: "stall" }).body).toBe(STALL(4, "14분"));
+    expect(deptFormationText({ seats: 2, elapsedSec: 885, state: "stall" }).body).toBe(STALL(2, "14분"));
     // 자리 수는 '붙은 의무 역할 수' 이고 경과는 분 단위 — 문구에 초 단위가 없다
     expect(deptFormationText({ seats: 3, elapsedSec: 280, state: "stall" }).body.includes("초")).toBe(false);
     // 경고 문구(「확인 필요」)가 아니다 — 설치하지 않은 프로그램의 자리가 안 생기는 것은 정상 종결이다
@@ -409,9 +409,9 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
       expect(t.body.includes("사유")).toBe(false);
     }
   });
-  it("자리 수·경과가 이상해도 던지지 않고 0 으로 접는다 — 다섯 상태 모두", () => {
+  it("자리 수·경과가 이상해도 던지지 않고 0 으로 접는다 — 5상태 모두", () => {
     expect(deptFormationText({ seats: -2, elapsedSec: -5 }).body).toBe(BOOT(0, "1분 미만"));
-    expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "seated" }).body).toBe("자리 5개가 모두 붙었습니다 · 걸린 시간 1분 미만");
+    expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분 미만");
     expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "check" }).body).toBe(CHECK(0));
     expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "silent" }).body).toBe(SILENT("1분 미만"));
     expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "stall" }).body).toBe(STALL(0, "1분 미만"));
@@ -485,30 +485,31 @@ describe("deptFormationStalled — 자리 정체 판정(시간과 자리 수만 
   const T = 7_000_000;
   const MS = DEPT_FORMATION_STALL_SECS * 1000;
   it("★경계 — 마지막으로 늘어난 때부터 179.999초는 아직, 정확히 180초부터 true(180초 이상) · 그 뒤로도 true", () => {
-    for (const seated of [1, 2, 3, 4]) {
+    for (const seated of [1, 2]) {
       expect({ seated, t: "179.999s", 정체: deptFormationStalled(seated, T, T + MS - 1) }).toEqual({ seated, t: "179.999s", 정체: false });
       expect({ seated, t: "180s", 정체: deptFormationStalled(seated, T, T + MS) }).toEqual({ seated, t: "180s", 정체: true });
       expect({ seated, t: "180.001s", 정체: deptFormationStalled(seated, T, T + MS + 1) }).toEqual({ seated, t: "180.001s", 정체: true });
       expect({ seated, t: "한 시간", 정체: deptFormationStalled(seated, T, T + 3_600_000) }).toEqual({ seated, t: "한 시간", 정체: true });
     }
-    expect(deptFormationStalled(3, T, T)).toBe(false); // 방금 늘었다
+    expect(deptFormationStalled(2, T, T)).toBe(false); // 방금 늘었다
   });
-  it("★자리 수 조건 — 0(부서장 자리도 없음)은 정체가 아니다 · 다섯(모두 붙음)은 정체가 아니다 · 그 사이(1~4)만 해당 · 음수·소수 이하도 0 과 같다", () => {
+  it("★자리 수 조건 — 0(부서장 자리도 없음)은 정체가 아니다 · 셋(모두 붙음 · 1.1.8 DS-1 의무 역할 3석)은 정체가 아니다 · 그 사이(1~2)만 해당 · 음수·소수 이하도 0 과 같다", () => {
     expect(deptFormationStalled(0, T, T + 10 * MS)).toBe(false);
     expect(deptFormationStalled(-1, T, T + 10 * MS)).toBe(false);
     expect(deptFormationStalled(0.5, T, T + 10 * MS)).toBe(false);
-    expect(deptFormationStalled(5, T, T + 10 * MS)).toBe(false);
-    expect(deptFormationStalled(6, T, T + 10 * MS)).toBe(false);
-    for (const seated of [1, 2, 3, 4]) expect(deptFormationStalled(seated, T, T + MS)).toBe(true);
+    expect(deptFormationStalled(3, T, T + 10 * MS)).toBe(false);
+    expect(deptFormationStalled(4, T, T + 10 * MS)).toBe(false);
+    expect(deptFormationStalled(5, T, T + 10 * MS)).toBe(false); // 원작자 5석 시절의 '모두' — 이제는 의무 수 초과
+    for (const seated of [1, 2]) expect(deptFormationStalled(seated, T, T + MS)).toBe(true);
   });
   it("모르는 입력(자리 수·기준 시각·지금이 유한한 수가 아님 · 기준이 없음 · 시계가 거꾸로 감)으로 정체를 지어내지 않는다 — 던지지 않고 false", () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, "3" as unknown as number, null as unknown as number, undefined as unknown as number]) {
       expect({ 값: String(bad), 정체: deptFormationStalled(bad, T, T + 10 * MS) }).toEqual({ 값: String(bad), 정체: false });
     }
     for (const bad of [undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "x" as unknown as number, null as unknown as number])
-      expect({ 기준: String(bad), 정체: deptFormationStalled(3, bad, T + 10 * MS) }).toEqual({ 기준: String(bad), 정체: false });
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, undefined as unknown as number, "x" as unknown as number]) expect(deptFormationStalled(3, T, bad)).toBe(false);
-    expect(deptFormationStalled(3, T + 10 * MS, T)).toBe(false); // 시계가 거꾸로 갔다(차 < 0)
+      expect({ 기준: String(bad), 정체: deptFormationStalled(2, bad, T + 10 * MS) }).toEqual({ 기준: String(bad), 정체: false });
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, undefined as unknown as number, "x" as unknown as number]) expect(deptFormationStalled(2, T, bad)).toBe(false);
+    expect(deptFormationStalled(2, T + 10 * MS, T)).toBe(false); // 시계가 거꾸로 갔다(차 < 0)
   });
 });
 

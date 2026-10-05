@@ -516,20 +516,28 @@ describe("main.ts 배선 — 기동 pull(bundle_integrity 바로 뒤 · fire-and
   });
 
   // ★R2F-UI(A3 m4): 이름·머리 핀을 고쳤다 — 종전 머리는 `if (promptBinaryPatchBusy) return;`(말없이 무시)였다. 받기가 멈추면 진행 토스트는 180초 뒤 사라지고 그 뒤 단추를 눌러도 화면에 아무 일도 없었다.
-  //   이제 이미 진행 중이면 안내 1줄(notifyBinaryPatchBusy)을 내고 return 한다(팀 만들기 재진입 안내 notifyTeamFlowBusy 와 같은 방식). 표식을 쓰는 곳(확인 1·올림 1·내림 1)·try/finally 구조는 그대로다.
+  //   이제 이미 진행 중이면 안내 1줄을 내고 return 한다. 표식을 쓰는 곳(확인 1·올림 1·내림 1)·try/finally 구조는 그대로다.
+  // (1.1.8 병합 X2-R · master#c6a9de68) 우리 판 = 우리 표식(installingUpdate)·우리 안내(INSTALL_BUSY 토스트)를 **사전 조회 앞**까지 넓혔다 — 이름만 우리 것이고
+  //   이 핀의 목적(진입 즉시 확인 → 안내 · return / 올린 뒤 조회·확인 창·설치 전부 try 안 / finally 에서 내림 / 다른 곳에서 안 만짐)은 그대로 지킨다.
+  //   우리 머리에는 데몬 작업 차단·설치할 본체 없음 확인이 표식 확인과 함께 있다(그 두 갈래는 표식을 올리지 않는다 — 아래 「표식은 어떤 갈래로 끝나도 내려간다」).
   it("★R1F-UA(S3 note 8) · R2F-UI(A3 m4): 진행 중 표식 — 모듈 수준 `let` 하나 · 진입하자마자 이미 올라 있으면 **안내 1줄을 내고** return · 올린 뒤 본문 전체가 try 안 · finally 에서 내린다(조기 return·예외 포함)", () => {
-    expect(count(code, "let promptBinaryPatchBusy = false;")).toBe(1);
+    expect(count(code, "let installingUpdate = false;")).toBe(1);
     const b = fnBody("promptBinaryPatch");
-    // 함수 머리: 표식 확인(→ 안내 · return) → 올림 → try — 첫 await·첫 return 보다 앞이다
-    expect(b.replace(/\s+/g, " ").startsWith("async function promptBinaryPatch() { if (promptBinaryPatchBusy) { notifyBinaryPatchBusy(); return; } promptBinaryPatchBusy = true; try {")).toBe(true);
+    const flat = b.replace(/\s+/g, " ");
+    // 함수 머리: 표식 확인(→ 안내 · return)이 첫 await 보다 앞이다
+    expect(flat.includes("if (installingUpdate) { toast(\"feed\", INSTALL_BUSY_NAME, INSTALL_BUSY_DETAIL); return; }")).toBe(true);
+    expect(b.indexOf("if (installingUpdate)")).toBeLessThan(b.indexOf("await"));
+    // 올림 → 곧바로 try — 사전 조회(smart_app_control)·확인 창·설치 호출은 모두 올림 뒤다
+    expect(/installingUpdate = true;\s*try \{/.test(b)).toBe(true);
+    const up = b.indexOf("installingUpdate = true;");
+    for (const at of ['invoke("smart_app_control")', "confirmModal(", 'invoke("install_update"']) expect({ 자리: at, 올림_뒤: b.indexOf(at) > up }).toEqual({ 자리: at, 올림_뒤: true });
     // 함수 끝: finally 에서 내린다
-    expect(/\} finally \{\s*promptBinaryPatchBusy = false;\s*\}\s*$/.test(b)).toBe(true);
+    expect(/\} finally \{\s*installingUpdate = false;\s*\}\s*$/.test(b)).toBe(true);
     // 표식을 쓰는 곳은 확인 1 · 올림 1 · 내림 1 — 다른 곳에서 만지지 않는다
-    expect(count(b, "promptBinaryPatchBusy")).toBe(3);
-    expect(count(b, "promptBinaryPatchBusy = true;")).toBe(1);
-    expect(count(b, "promptBinaryPatchBusy = false;")).toBe(1);
-    // 올림 뒤의 모든 await·return 이 try 안이다 — try 앞(머리)에는 await 가 없다
-    expect(b.slice(0, b.indexOf("try {")).includes("await")).toBe(false);
+    expect(count(b, "installingUpdate")).toBe(3);
+    expect(count(b, "installingUpdate = true;")).toBe(1);
+    expect(count(b, "installingUpdate = false;")).toBe(1);
+    expect(count(code, "installingUpdate = ")).toBe(3); // 모듈 전체: 선언 1 + 올림 1 + 내림 1
   });
 
   it("스마트 앱 컨트롤 조회·시도 판정 외에 업데이트 경로를 바꾸지 않는다 — install_update 호출 위치는 종전 둘(패치 설치·자동 테스트)뿐", () => {
@@ -772,7 +780,8 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     modalThrows?: boolean;
   };
   /** ★R2F-UI(A3 m4): 이미 진행 중일 때 다시 눌렀을 때의 안내 — toast(등급, 제목, 본문) 호출 인자(티켓 문안 그대로). */
-  const BUSY_TOAST = ["watchdog", "패치 설치 진행 중", "받는 중입니다 — 끝난 뒤 다시 시도하세요"];
+  // (1.1.8 병합 X2-R) 우리 판 안내 = INSTALL_BUSY 토스트(main.ts 상수 · 원작자 판 문안 = ["watchdog", "패치 설치 진행 중", "받는 중입니다 — 끝난 뒤 다시 시도하세요"]).
+  const BUSY_TOAST = ["feed", "새 앱 받는 중", "새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요."];
   function makePrompt(o: Opts) {
     const calls: string[] = [];
     const modal: unknown[][] = [];
@@ -978,18 +987,18 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     const p3 = h.fn();
     await tick();
     const sacCalls = () => h.invokes.filter((i) => i[0] === "smart_app_control").length;
-    expect({ 창: h.modal.length, 조회: sacCalls(), 표식: h.deps.promptBinaryPatchBusy }).toEqual({ 창: 0, 조회: 1, 표식: true });
+    expect({ 창: h.modal.length, 조회: sacCalls(), 표식: h.deps.installingUpdate }).toEqual({ 창: 0, 조회: 1, 표식: true });
     expect(h.toasts).toEqual([BUSY_TOAST, BUSY_TOAST]); // ★R2F-UI(A3 m4): 다시 눌린 둘(p2·p3)이 각각 안내를 받는다 — 말없이 무시되지 않는다
     h.gates.sac?.("off");
     await Promise.all([p1, p2, p3]);
-    expect({ 창: h.modal.length, 조회: sacCalls(), 표식: h.deps.promptBinaryPatchBusy }).toEqual({ 창: 1, 조회: 1, 표식: false });
+    expect({ 창: h.modal.length, 조회: sacCalls(), 표식: h.deps.installingUpdate }).toEqual({ 창: 1, 조회: 1, 표식: false });
     expect(h.toasts.length).toBe(2); // 첫 호출(p1)과 끝난 뒤에는 안내가 없다
     const p4 = h.fn(); // 끝난 뒤의 새 호출은 막히지 않는다(조회부터 다시 시작한다)
     await tick();
-    expect({ 조회: sacCalls(), 표식: h.deps.promptBinaryPatchBusy }).toEqual({ 조회: 2, 표식: true });
+    expect({ 조회: sacCalls(), 표식: h.deps.installingUpdate }).toEqual({ 조회: 2, 표식: true });
     h.gates.sac?.("off");
     await p4;
-    expect({ 창: h.modal.length, 조회: sacCalls(), 표식: h.deps.promptBinaryPatchBusy }).toEqual({ 창: 2, 조회: 2, 표식: false });
+    expect({ 창: h.modal.length, 조회: sacCalls(), 표식: h.deps.installingUpdate }).toEqual({ 창: 2, 조회: 2, 표식: false });
   });
 
   it("★재진입: 확인 창이 열려 있는 동안 · 설치 호출이 진행되는 동안에도 다시 불려도 설치를 시작하지 않는다(창 1 · 설치 호출 1) — 설치가 겹치지 않는다 · 안내 1줄만 낸다(R2F-UI)", async () => {
@@ -1006,30 +1015,33 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     await tick();
     expect({ 창: h.modal.length, 설치: installs() }).toEqual({ 창: 1, 설치: 1 });
     await h.fn(); // 설치 호출이 진행 중
-    expect({ 창: h.modal.length, 설치: installs(), 표식: h.deps.promptBinaryPatchBusy }).toEqual({ 창: 1, 설치: 1, 표식: true });
+    expect({ 창: h.modal.length, 설치: installs(), 표식: h.deps.installingUpdate }).toEqual({ 창: 1, 설치: 1, 표식: true });
     expect(h.toasts).toEqual([BUSY_TOAST, BUSY_TOAST]);
     h.gates.install?.(); // 설치 호출이 끝난다
     await p1;
-    expect(h.deps.promptBinaryPatchBusy).toBe(false);
+    expect(h.deps.installingUpdate).toBe(false);
     expect(h.toasts.length).toBe(2);
   });
 
   // ── ★R2F-UI(A3 m4): 진행 중에 다시 누르면 말없이 무시하지 않고 안내 1줄 — 팀 만들기 재진입 안내(notifyTeamFlowBusy)와 같은 방식 ──
-  it("★안내 문안 전문(티켓 그대로) — 등급 watchdog · 제목 「패치 설치 진행 중」 · 본문 「받는 중입니다 — 끝난 뒤 다시 시도하세요」 · 정상 호출(진행 중이 아님)에는 안내가 없다", async () => {
-    expect(BUSY_TOAST).toEqual(["watchdog", "패치 설치 진행 중", "받는 중입니다 — 끝난 뒤 다시 시도하세요"]);
+  // (1.1.8 병합 X2-R) 우리 판에는 안내 함수(notifyBinaryPatchBusy)가 없다 — 머리의 토스트 한 줄과 main.ts 상수가 안내의 정본이다.
+  it("★안내 문안 전문(우리 판) — 등급 feed · 제목 「새 앱 받는 중」 · 본문 「새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요.」 · 정상 호출(진행 중이 아님)에는 안내가 없다", async () => {
+    expect(BUSY_TOAST).toEqual(["feed", "새 앱 받는 중", "새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요."]);
+    expect(count(mainCode, `const INSTALL_BUSY_NAME = "${BUSY_TOAST[1]}";`)).toBe(1);
+    expect(count(mainCode, `const INSTALL_BUSY_DETAIL = "${BUSY_TOAST[2]}";`)).toBe(1);
     const r = await runPrompt({ sac: "off" });
     expect(r.toasts).toEqual([]); // 평범한 한 번의 설치 흐름에는 안내가 없다
-    // 안내 함수 본문은 toast 한 번뿐 — 설치·표식·창을 건드리지 않는다
-    const b = fnBodyOf("notifyBinaryPatchBusy").replace(/\s+/g, " ");
-    expect(b).toBe('function notifyBinaryPatchBusy(): void { toast("watchdog", "패치 설치 진행 중", "받는 중입니다 — 끝난 뒤 다시 시도하세요");');
+    // 안내는 toast 한 번뿐 — 설치·표식·창을 건드리지 않는다(표식 확인 갈래 = toast 한 줄 + return)
+    expect(count(fnBodyOf("promptBinaryPatch"), "toast(\"feed\", INSTALL_BUSY_NAME, INSTALL_BUSY_DETAIL)")).toBe(1);
   });
-  it("★같은 방식 — 안내 등급이 팀 만들기 재진입 안내(notifyTeamFlowBusy)의 등급과 같다 · 안내는 toast(volatile) 한 번이고 지속 알림·OS 배너가 아니다", () => {
-    const grade = (name: string): string | null => /toast\(\s*"(\w+)"/.exec(fnBodyOf(name))?.[1] ?? null;
-    expect(grade("notifyTeamFlowBusy")).toBe("watchdog");
-    expect(grade("notifyBinaryPatchBusy")).toBe(grade("notifyTeamFlowBusy"));
-    const b = fnBodyOf("notifyBinaryPatchBusy");
-    for (const bad of ["stickyToast", "osBanner", "invoke(", "confirmModal", "promptBinaryPatchBusy"]) expect({ 낱말: bad, 있음: b.includes(bad) }).toEqual({ 낱말: bad, 있음: false });
-    expect(count(mainCode, "notifyBinaryPatchBusy()")).toBe(2); // 호출 1(promptBinaryPatch 머리) + 정의 1
+  it("★같은 방식 — 안내 등급이 업데이트 흐름의 다른 재진입 안내(restartAfterUpdate 「다시 켜기 준비 중」)의 등급과 같다 · 안내는 toast(volatile) 한 번이고 지속 알림·OS 배너가 아니다", () => {
+    // (1.1.8 병합 X2-R) 원작자 판 기준 = 팀 만들기 재진입 안내(notifyTeamFlowBusy · watchdog)와 같은 등급 — 우리 판은 업데이트 흐름 안의 재진입 안내끼리 같은 등급(feed)이다.
+    const grade = (body: string, needle: string): string | null => new RegExp(`toast\\(\\s*"(\\w+)",\\s*${needle}`).exec(body)?.[1] ?? null;
+    expect(grade(fnBodyOf("restartAfterUpdate"), '"다시 켜기 준비 중"')).toBe("feed");
+    expect(grade(fnBodyOf("promptBinaryPatch"), "INSTALL_BUSY_NAME")).toBe(grade(fnBodyOf("restartAfterUpdate"), '"다시 켜기 준비 중"'));
+    const head = fnBodyOf("promptBinaryPatch");
+    const branch = head.slice(head.indexOf("if (installingUpdate) {"), head.indexOf("return;", head.indexOf("if (installingUpdate) {")));
+    for (const bad of ["stickyToast", "osBanner", "invoke(", "confirmModal"]) expect({ 낱말: bad, 있음: branch.includes(bad) }).toEqual({ 낱말: bad, 있음: false });
   });
 
   it("★표식은 어떤 갈래로 끝나도 내려간다 — 거절 · 데몬 차단 · 본체 없음 · 설치 거부 · 4551 차단 · 설치 성공 · 확인 창 예외 — 이어서 다시 부르면 열린다", async () => {

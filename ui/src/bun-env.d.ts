@@ -98,6 +98,8 @@ declare module "bun:test" {
      * 범위 계약은 위 선언들과 같다 — 실제로 쓰는 한 형태(배열 1개 → 라벨 → 행 1개 콜백)만 적는다.
      */
     each<T>(table: readonly T[]): (label: string, body: (row: T) => void | Promise<void>) => void;
+    /** 조건부 실행 — (1.1.8 병합 UNW) 휴면-on 레인 시험 묶음(`itDormant`·`testDormant`)만 쓴다. 조건이 거짓이면 등록만 하고 돌리지 않는다. */
+    if(condition: boolean): TestFn;
   }
 
   export function expect(actual: unknown): Matchers;

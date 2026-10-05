@@ -1,7 +1,7 @@
 // U17 팀 직접 만들기 — 확인 창 문구·판정 회귀 핀(deptcreate.ts · DOM·Tauri 불요).
 //
 // 무엇을 지키는가(설계 §3 U17 + 반박 D2·D7·D10 반영):
-//   · 확인 창은 무엇이 만들어지는지 말한다 — 이름 · 자리 **최대** 5 · 작업 폴더 · 첫 로그인 가능성 · CEO 전환(조건형).
+//   · 확인 창은 무엇이 만들어지는지 말한다 — 이름 · 자리 **최대** 3(1.1.8 DS-1 우리 편성 3석 — 원작자 0.14.42 는 5) · 작업 폴더 · 첫 로그인 가능성 · CEO 전환(조건형).
 //   · 이미 등재된 팀(mission_key 일치 → cys-dept REUSE)은 '다시 열기'이되, 꺼져 있으면 다시 켜고 자리를
 //     다시 띄운다는 사실을 숨기지 않는다(REUSE_DEAD 는 NEW 와 같은 부작용 — 반박 D2).
 //   · 카탈로그 부재(exit 3)로 번호 팀으로 바뀌면 **새 대상에 대한** 재확인 창이다(자동 생성 금지 — 설계 D5).
@@ -17,7 +17,7 @@ const catalog = {
   },
 };
 
-describe("자리 역할 드리프트 핀 — 편성 도구와 같은 5석", () => {
+describe("자리 역할 드리프트 핀 — 편성 도구와 같은 3석(1.1.8 DS-1)", () => {
   // 상수 동일성만 본다 — 실제 로스터는 설치된 CLI 에 달렸다(편성 도구는 설치된 프로그램의 역할만 띄운다 — javis_formation.py ROLE_CLI · 미설치 역할은 건너뛰어 정상 종결 partial·pending-cli).
   it("DEPT_SEAT_ROLES == javis_formation.py REQUIRED_ROLES", () => {
     const py = readFileSync(new URL("../../cysjavis-pack/bin/javis_formation.py", import.meta.url), "utf-8");
@@ -51,9 +51,11 @@ describe("확인 창 — 카탈로그 새 팀", () => {
     expect(p.legacy).toBe(false);
     expect(p.displayName).toBe("영업팀");
   });
-  it("본문: 이름 · 자리 최대 5개 · 작업 폴더 · 첫 로그인 가능성", () => {
+  it("본문: 이름 · 자리 최대 3개 · 작업 폴더 · 첫 로그인 가능성", () => {
     expect(p.body).toContain("영업팀");
-    expect(p.body).toContain("최대 5개");
+    expect(p.body).toContain("최대 3개");
+    expect(p.body).toContain("팀원 최대 2(CSO·워커)"); // DS-1: 리뷰어는 온디맨드라 자리 문구에 없다
+    expect(p.body).toContain("필요한 프로그램(claude)");
     expect(p.body).toContain("~/work/sales");
     expect(p.body).toContain("로그인");
     expect(p.body).toContain("acct-b");
@@ -86,7 +88,7 @@ describe("확인 창 — 이미 등재된 팀(REUSE) 은 '다시 열기' 이되 
   it("등재 이름과 '꺼져 있으면 다시 켜고 자리를 다시 띄운다'", () => {
     expect(p.body).toContain("dept-2");
     expect(p.body).toContain("다시 켜고");
-    expect(p.body).toContain("최대 5개");
+    expect(p.body).toContain("최대 3개");
   });
 });
 

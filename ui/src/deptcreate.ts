@@ -7,7 +7,7 @@
 //
 // ★확인 창이 말해야 하는 것(설계 §3 U17 · 반박 D2·D7·D10) — 근거는 cysjavis-pack/bin/cys-dept:
 //   · 이름 — 카탈로그 표시명, 번호 팀은 예상 이름(레지스트리의 빈 가장 작은 dept-N; 확정은 백엔드).
-//   · 자리 **최대** 5개 — 편성 로스터(javis_formation.py REQUIRED_ROLES). 외부 세션 역할은 env 로 빠질
+//   · 자리 **최대** 3개 — 편성 로스터(javis_formation.py REQUIRED_ROLES). 외부 세션 역할은 env 로 빠질
 //     수 있으므로(effective_required_roles) "최대" 다(반박 D10). 드리프트 핀이 두 목록을 대조한다.
 //   · 작업 폴더 — 카탈로그 cwd 원문, 번호 팀은 홈 폴더(CYS_DEPT_CWD 미지정 시).
 //   · 첫 로그인 — 팀 전용 설정 폴더를 새로 쓰면 macOS Keychain 이 폴더 경로 단위라 /login 1회가 필요할 수 있다.
@@ -18,8 +18,9 @@
 //
 // ★이 모듈의 불변식(usagewiring.test.ts 가 핀으로 고정): 최상위 부수효과 0 · 구형 WKWebView 비호환 문법 0.
 
-/** 부서 상비 편성 로스터 — javis_formation.py REQUIRED_ROLES 와 같아야 한다(deptcreate.test.ts 드리프트 핀). */
-export const DEPT_SEAT_ROLES = ["master", "cso", "worker", "reviewer-gemini", "reviewer-codex"] as const;
+/** 부서 상비 편성 로스터 — javis_formation.py REQUIRED_ROLES 와 같아야 한다(deptcreate.test.ts 드리프트 핀).
+ * ★1.1.8 병합 DS-1: 우리 기본 함대 = 3석(master·cso·worker · 09-10 결정 · 리뷰어는 온디맨드라 편성 대상 아님) — 원작자 0.14.42 의 5석을 우리 편성 정본에 결속. */
+export const DEPT_SEAT_ROLES = ["master", "cso", "worker"] as const;
 
 export interface DeptCatalogEntry {
   display?: string;
@@ -87,8 +88,8 @@ export function reuseRegistryName(key: string, catalog: DeptCatalog | null, regi
 }
 
 const SEATS_LINE =
-  `자리: 최대 ${DEPT_SEAT_ROLES.length}개 — 부서장 1 + 팀원 최대 ${DEPT_SEAT_ROLES.length - 1}(CSO·워커·검토 2). ` +
-  "부서장 자리가 먼저 뜨고, 팀원 자리는 필요한 프로그램(claude·agy·codex)이 설치돼 있으면 자동으로 채워집니다.";
+  `자리: 최대 ${DEPT_SEAT_ROLES.length}개 — 부서장 1 + 팀원 최대 ${DEPT_SEAT_ROLES.length - 1}(CSO·워커). ` +
+  "부서장 자리가 먼저 뜨고, 팀원 자리는 필요한 프로그램(claude)이 설치돼 있으면 자동으로 채워집니다.";
 const CEO_COND = "(본부 대표가 아직 시작 전이면 나중에 명령 팔레트에서 승인합니다. 팀이 0개가 되면 되돌아갑니다.)";
 const CANCEL_LINE = "[취소]를 누르면 아무것도 만들지 않습니다.";
 

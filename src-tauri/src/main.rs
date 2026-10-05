@@ -9133,7 +9133,7 @@ fn main() {
                     let msg = if cys::factory_reset::reset_in_progress() {
                         "완전 초기화가 진행 중입니다 — 끝난 뒤 앱을 종료했다가 다시 실행하세요.".to_string()
                     } else if cfg!(target_os = "macos") {
-                        format!("{e} — 데몬을 시작하지 못했습니다. 시스템 설정 → 일반 → 로그인 항목의 「백그라운드에서 허용」에서 「cys」와 개발자 이름 줄(「yoonsik choi」)을 모두 켠 뒤 앱을 다시 여세요.")
+                        format!("{e} — 데몬을 시작하지 못했습니다. 시스템 설정 → 일반 → 로그인 항목의 「백그라운드에서 허용」에서 「cysr」와 개발자 이름 줄(「yoonsik choi」)을 모두 켠 뒤 앱을 다시 여세요.")
                     } else {
                         format!("{e} — 데몬을 시작하지 못했습니다. 앱을 다시 여세요.")
                     };

@@ -7,6 +7,8 @@
 // ★통합 메모: WP-A2(U17)의 openTeamCreateFlow/confirmModal 공유는 병합 뒤다 — 이 파일의 배선 핀은
 //   함수 경계(runTeamProposalFlow)만 고정하므로 내부를 공유 흐름으로 바꿔도 핀 의미는 유지된다.
 import { describe, expect, test } from "bun:test";
+// (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
+const testDormant = test.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
 import {
   TEAM_CREATE_KIND,
@@ -125,7 +127,7 @@ describe("main.ts 배선 핀", () => {
     return code.slice(a, b);
   };
 
-  test("재진입 가드가 첫 await 앞에서 세워지고 finally 에서 풀린다(WP-A2 U17 공유 가드 teamFlowBusy)", () => {
+  testDormant("재진입 가드가 첫 await 앞에서 세워지고 finally 에서 풀린다(WP-A2 U17 공유 가드 teamFlowBusy)", () => {
     const f = fnBody("runTeamProposalFlow");
     const g = f.indexOf("teamFlowBusy = true");
     expect(g).toBeGreaterThan(0);
@@ -139,7 +141,7 @@ describe("main.ts 배선 핀", () => {
   //   표지를 세웠다). runTeamProposalFlow 의 생성 구간(addDeptWorkspace await)이 이 표지를 세우지
   //   않으면, 그 구간에 ⌘K 를 누른 사용자에게 "생성 중"이 아니라 "열려 있는 창을 닫아 주세요"라는
   //   틀린 안내가 나간다.
-  test("생성 구간(addDeptWorkspace await)은 deptLaunchInFlight 도 함께 세운다(진행 안내 오보 방지)", () => {
+  testDormant("생성 구간(addDeptWorkspace await)은 deptLaunchInFlight 도 함께 세운다(진행 안내 오보 방지)", () => {
     const f = fnBody("runTeamProposalFlow");
     const set = f.indexOf("deptLaunchInFlight = true;");
     const call = f.indexOf("addDeptWorkspace(");
@@ -149,7 +151,7 @@ describe("main.ts 배선 핀", () => {
     expect(clr).toBeGreaterThan(call); // 성공·실패 무관하게(finally) 되돌린다
   });
 
-  test("진행 중 가드는 openTeamCreateFlow/confirmAndCreateTeam 과 같은 모듈 변수를 공유한다(중복 확인 창 방지)", () => {
+  testDormant("진행 중 가드는 openTeamCreateFlow/confirmAndCreateTeam 과 같은 모듈 변수를 공유한다(중복 확인 창 방지)", () => {
     // teamFlowBusy·notifyTeamFlowBusy·deptBtnEl 이 main.ts 안에 정확히 한 번만 선언돼 있어야
     // "공유"다(각 함수가 자기 사본을 따로 선언하면 재진입 가드가 갈라져 두 확인 창이 동시에 뜰 수 있다).
     const decl = (pat: RegExp) => (code.match(pat) ?? []).length;
@@ -180,7 +182,7 @@ describe("main.ts 배선 핀", () => {
     expect(a).toContain("teamSpec");
   });
 
-  test("카드: team-create 는 Allow/Deny 대신 [확인 창 열기]·[만들지 않기] · deny 는 그 버튼에서만", () => {
+  testDormant("카드: team-create 는 Allow/Deny 대신 [확인 창 열기]·[만들지 않기] · deny 는 그 버튼에서만", () => {
     const i = code.indexOf('classifyPendingFeed(item) === "team-create"');
     expect(i).toBeGreaterThan(0);
     const seg = code.slice(i, code.indexOf("} else if", i + 10));

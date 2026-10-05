@@ -4,6 +4,8 @@
 // 판정 모듈(modalguard·feedback)이 옳아도 main.ts 가 그것을 부르지 않으면 결함은 그대로 산다.
 // 여기 실패는 "고쳐 두었다고 믿는 것이 코드에 없다"는 뜻이다.
 import { describe, it, expect } from "bun:test";
+// (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
+const itDormant = it.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
 
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf-8");
@@ -143,16 +145,16 @@ describe("② pane 드롭 리스너 첫 줄 가드", () => {
 });
 
 describe("③ 사이드바 바닥 공용 칸(A2·A3 공통 마크업) + 단추 배선", () => {
-  it("#wsbar-foot 은 #wsbar 안, #ws-tabs 바로 다음 형제이고 자식 순서는 사용량 → 피드백 → 전문가용", () => {
+  itDormant("#wsbar-foot 은 #wsbar 안, #ws-tabs 바로 다음 형제이고 자식 순서는 사용량 → 피드백 → 전문가용", () => {
     const compact = html.replace(/\s+/g, " ");
     expect(compact).toContain(
       '<div id="ws-tabs"></div> <div id="wsbar-foot"> <section id="wsbar-usage" aria-label="사용량"></section> <div id="wsbar-feedback-slot"></div> <section id="wsbar-expert"></section> </div> </nav>',
     );
   });
-  it("단추는 index.html 이 아니라 JS 가 슬롯에 단다(공용 마크업을 A2 와 바이트 동일하게 유지)", () => {
+  itDormant("단추는 index.html 이 아니라 JS 가 슬롯에 단다(공용 마크업을 A2 와 바이트 동일하게 유지)", () => {
     expect(html.includes("btn-feedback")).toBe(false);
   });
-  it("모듈 최상위 배선은 null 단정(!) 없이 슬롯을 넘긴다 — null 이면 main.js 전체가 죽어 모든 pane 백지(④)", () => {
+  itDormant("모듈 최상위 배선은 null 단정(!) 없이 슬롯을 넘긴다 — null 이면 main.js 전체가 죽어 모든 pane 백지(④)", () => {
     const code = stripComments(main);
     expect(code).toContain('mountFeedbackButton(document.getElementById("wsbar-feedback-slot"),');
     expect(code.includes('getElementById("wsbar-feedback-slot")!')).toBe(false);

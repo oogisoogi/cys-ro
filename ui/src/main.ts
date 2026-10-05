@@ -6922,7 +6922,7 @@ let restartPendingVersion: string | null = null;
 // restartAfterUpdate 진행 중 재진입 차단 — 연타·알림+단추 동시 누름이 저장 지시를 겹쳐 주입하지 않게(4군 ①).
 let restartingAfterUpdate = false;
 // install_update(다운로드·교체) 진행 중 이중 설치 차단(master 판정 ⑵ · 곁 ①) — 진행 중 헤더 재클릭 · 첫 확인 전 두 번 눌러
-// 쌓인 확인 창 둘 다 「설치」가 두 번째 전량 다운로드를 내지 않게.
+// 쌓인 확인 창 둘 다 「설치」가 두 번째 전량 다운로드를 내지 않게. (1.1.8 X2-R) 사전 조회·확인 창 구간부터 세운다(promptBinaryPatch).
 let installingUpdate = false;
 const INSTALL_BUSY_NAME = "새 앱 받는 중";
 const INSTALL_BUSY_DETAIL = "새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요.";
@@ -7129,41 +7129,41 @@ async function promptBinaryPatch() {
   // ★(R1F-UA · S3 minor 4) 켜짐일 때만 '확인 실행'(`CYS_UPDATE_CHECKED_LAUNCH`)이 켜져 있는지 한 번 더 묻는다(같은 상한 T_SAC) — 꺼져 있으면(=0) 막혀도 앱이 알림 없이 닫히므로
   //   사실대로 적은 판을 쓴다. 이 조회의 실패·시간 초과는 기본값(켜짐)으로 본다 — 문단 자체를 없애지 않는다.
   //   (1.1.8) 원작자 U9 업데이트 창(updatestate)은 받지 않았다(잠정 X2) — 이 고지와 아래 WU 알림만 우리 설치 확인 창에 붙였다.
-  let sacNote: string | null = null;
-  try {
-    const sac = await rpcT(invoke("smart_app_control"), T_SAC);
-    const checked = sac === "on" ? await rpcT(invoke("update_checked_launch_enabled"), T_SAC).catch(() => true) : true;
-    sacNote = sacPreflightText(typeof sac === "string" ? sac : null, checked !== false);
-  } catch {
-    sacNote = null;
-  }
-  const ok = await confirmModal(
-    `새 앱 ${v} 설치`,
-    `새 앱 ${v} 을 설치합니다. ${tail}` +
-      `\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr` +
-      (sacNote ? `\n\n${sacNote}` : ""),
-    "설치",
-  );
-  if (!ok) return;
-  // 확인 창이 떠 있는 사이 다른 설치의 교체가 끝났으면 또 받지 않고 다시 켜기로 넘긴다(v116-restart-toast).
-  if (restartPendingVersion !== null) return restartAfterUpdate(restartPendingVersion);
-  // 쌓인 두 번째 확인 창 승낙 = 이미 설치 중 → 또 받지 않는다. 플래그는 await 전에 세우고 finally 에서 푼다.
-  if (installingUpdate) {
-    toast("feed", INSTALL_BUSY_NAME, INSTALL_BUSY_DETAIL);
-    return;
-  }
+  // ★(1.1.8 병합 X2-R · master#c6a9de68) 진행 중 표식을 **스마트 앱 컨트롤 사전 조회 앞**에서 세운다 — 조회(윈 최대 T_SAC×2)·확인 창이
+  //   떠 있는 동안 다시 눌러도 조회·확인 창이 겹쳐 뜨지 않고 안내 1줄(INSTALL_BUSY)만 낸다(종전 = 설치 호출 동안만 · 조회 3회·확인 창 중첩).
+  //   어떤 갈래로 끝나도(거절·재시작 위임·설치 실패·확인 창 예외) finally 에서 내린다.
   installingUpdate = true;
   try {
-    await invoke("install_update", { force: true });
-    // 성공 시 백엔드가 app.restart()까지 수행 — 후속 UI 처리 없음(진행은 update-progress 리스너).
-  } catch (e) {
-    dismissToast("upd-bin");
-    // ★(0.14.43 · WU) 윈도우: 설치 파일 실행이 막혔으면(`installer_launch_failed:<코드>:<반환값>`) 앱은 닫히지 않은 채 여기로 온다 — J2 알림과 같은 자리·같은
-    //   지속 알림(수명 10분·만료 배너)으로 사람 말 문구를 보인다. 그 꼴이 아니면 종전 토스트 그대로다.
-    const cur = String((await invoke("app_version").catch(() => "")) ?? "");
-    const lf = installerLaunchFailure(String(e), cur, v);
-    if (lf) stickyToast(INSTALLER_LAUNCH_FAILED_TOAST_ID, "health", lf.title, lf.body);
-    else toast("health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, String(e));
+    let sacNote: string | null = null;
+    try {
+      const sac = await rpcT(invoke("smart_app_control"), T_SAC);
+      const checked = sac === "on" ? await rpcT(invoke("update_checked_launch_enabled"), T_SAC).catch(() => true) : true;
+      sacNote = sacPreflightText(typeof sac === "string" ? sac : null, checked !== false);
+    } catch {
+      sacNote = null;
+    }
+    const ok = await confirmModal(
+      `새 앱 ${v} 설치`,
+      `새 앱 ${v} 을 설치합니다. ${tail}` +
+        `\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr` +
+        (sacNote ? `\n\n${sacNote}` : ""),
+      "설치",
+    );
+    if (!ok) return;
+    // 확인 창이 떠 있는 사이 다른 설치의 교체가 끝났으면 또 받지 않고 다시 켜기로 넘긴다(v116-restart-toast).
+    if (restartPendingVersion !== null) return restartAfterUpdate(restartPendingVersion);
+    try {
+      await invoke("install_update", { force: true });
+      // 성공 시 백엔드가 app.restart()까지 수행 — 후속 UI 처리 없음(진행은 update-progress 리스너).
+    } catch (e) {
+      dismissToast("upd-bin");
+      // ★(0.14.43 · WU) 윈도우: 설치 파일 실행이 막혔으면(`installer_launch_failed:<코드>:<반환값>`) 앱은 닫히지 않은 채 여기로 온다 — J2 알림과 같은 자리·같은
+      //   지속 알림(수명 10분·만료 배너)으로 사람 말 문구를 보인다. 그 꼴이 아니면 종전 토스트 그대로다.
+      const cur = String((await invoke("app_version").catch(() => "")) ?? "");
+      const lf = installerLaunchFailure(String(e), cur, v);
+      if (lf) stickyToast(INSTALLER_LAUNCH_FAILED_TOAST_ID, "health", lf.title, lf.body);
+      else toast("health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, String(e));
+    }
   } finally {
     installingUpdate = false;
   }

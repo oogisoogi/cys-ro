@@ -4,6 +4,8 @@
 // 소켓 지정 없이 `cys feed push` 를 불러 **본부 데몬**으로 간다 — 화면의 `socketForSlug` 에는 부서 소켓만 들어 있어 본부 slug 는 풀리지 않는다. 그래서 화면으로 만든 팀에서는
 // 「팀 준비 완료」가 나오지 않고 「팀원을 켜는 중」이 15분 상한까지 남았다(S4 B1 · 합성 이벤트로만 통과하던 배선 검체가 이것을 못 잡았다).
 // 새 판정은 3초 틱이 **이미 받는** 그 팀 소켓의 좌석 목록(`list_surfaces` → `surfaces[].role`)에서 의무 역할 다섯이 모두 붙었는가로 한다(새 RPC·새 타이머 0).
+// ★1.1.8 병합 DS-1: 의무 역할 = 우리 편성 정본 3석(master·cso·worker · javis_formation.py REQUIRED_ROLES · 09-10 기본 함대 결정) — 원작자 0.14.42 의 5석에서 리뷰어 둘을 뺐다(온디맨드라 편성 대상 아님).
+//   리뷰어 좌석이 목록에 있어도(온디맨드로 붙은 경우) 의무 자리로 세지 않는다 — 아래 검체가 그것도 핀으로 둔다.
 //
 // ★이 파일의 입력은 데몬 `surface.list` 한 줄의 **실제 꼴**(handlers.rs surface.list 의 키 전부)이다 — 손으로 만든 이벤트가 아니다.
 // ★'준비 완료'라고 단정하지 않는다: 자리가 붙은 것과 에이전트가 실제로 떴는지는 다르고, 화면은 뒤를 모른다.
@@ -55,16 +57,21 @@ function row(sid: number, role: string | null, over: Record<string, unknown> = {
     ...over,
   };
 }
-const FIVE = ["master", "cso", "worker", "reviewer-gemini", "reviewer-codex"];
-const five = (): Record<string, unknown>[] => FIVE.map((r, i) => row(i + 1, r));
+/** 의무 역할(우리 편성 3석 · DS-1). */
+const ROSTER = ["master", "cso", "worker"];
+/** 온디맨드 리뷰어 — 좌석 목록에 붙을 수는 있지만 의무 자리가 아니다. */
+const ONDEMAND = ["reviewer-gemini", "reviewer-codex"];
+/** 리뷰어까지 붙은 실제 목록 꼴(다섯 줄). */
+const WITH_REVIEWERS = [...ROSTER, ...ONDEMAND];
+const fullRows = (): Record<string, unknown>[] => WITH_REVIEWERS.map((r, i) => row(i + 1, r));
 
 describe("의무 역할의 출처 — DEPT_SEAT_ROLES(deptcreate.ts) 하나", () => {
-  it("다섯 역할 · 순서까지 편성 로스터와 같다 — 이름은 0.14.42 와 같다(javis_formation.py REQUIRED_ROLES · 드리프트 핀은 deptcreate.test.ts)", () => {
-    expect([...DEPT_SEAT_ROLES]).toEqual(FIVE);
+  it("세 역할 · 순서까지 편성 로스터와 같다 — 1.1.8 DS-1 우리 편성 정본(javis_formation.py REQUIRED_ROLES · 드리프트 핀은 deptcreate.test.ts)", () => {
+    expect([...DEPT_SEAT_ROLES]).toEqual(ROSTER);
     const py = read("../../cysjavis-pack/bin/javis_formation.py");
     const m = /^REQUIRED_ROLES\s*=\s*\(([^)]*)\)/m.exec(py);
     expect(m).not.toBeNull();
-    expect([...(m as RegExpExecArray)[1].matchAll(/"([^"]+)"/g)].map((x) => x[1])).toEqual(FIVE);
+    expect([...(m as RegExpExecArray)[1].matchAll(/"([^"]+)"/g)].map((x) => x[1])).toEqual(ROSTER);
   });
   it("★deptprogress.ts 는 역할 이름을 따로 적지 않고 그 상수를 가져다 쓴다(두 번째 목록이 생기면 어긋날 수 있다)", () => {
     const code = read("./deptprogress.ts")
@@ -77,11 +84,11 @@ describe("의무 역할의 출처 — DEPT_SEAT_ROLES(deptcreate.ts) 하나", ()
 });
 
 describe("deptLiveRoles — list_surfaces 의 surfaces → 종료하지 않은 좌석의 역할(IPC 데이터라 전부 의심한다)", () => {
-  it("★실제 꼴 다섯 줄 → 다섯 역할(순서 보존)", () => {
-    expect(deptLiveRoles(five())).toEqual(FIVE);
+  it("★실제 꼴 다섯 줄(의무 셋 + 온디맨드 리뷰어 둘) → 다섯 역할(순서 보존 · deptLiveRoles 는 의무 여부를 가리지 않는다)", () => {
+    expect(deptLiveRoles(fullRows())).toEqual(WITH_REVIEWERS);
   });
   it("종료한 좌석(exited: true)은 붙은 자리가 아니다 — 역할이 있어도 뺀다", () => {
-    const list = five();
+    const list = fullRows();
     list[0] = row(1, "master", { exited: true });
     expect(deptLiveRoles(list)).toEqual(["cso", "worker", "reviewer-gemini", "reviewer-codex"]);
   });
@@ -105,11 +112,16 @@ describe("deptLiveRoles — list_surfaces 의 surfaces → 종료하지 않은 �
   });
 });
 
-describe("deptSeatedCount — 의무 역할 가운데 붙어 있는 서로 다른 역할의 수(0~5)", () => {
-  it("다섯이면 5 · 하나씩 빠질 때마다 4 · 비면 0", () => {
-    expect(deptSeatedCount(FIVE)).toBe(5);
-    for (const gone of FIVE) expect({ 빠진: gone, 수: deptSeatedCount(FIVE.filter((r) => r !== gone)) }).toEqual({ 빠진: gone, 수: 4 });
+describe("deptSeatedCount — 의무 역할 가운데 붙어 있는 서로 다른 역할의 수(0~3)", () => {
+  it("셋이면 3 · 하나씩 빠질 때마다 2 · 비면 0", () => {
+    expect(deptSeatedCount(ROSTER)).toBe(3);
+    for (const gone of ROSTER) expect({ 빠진: gone, 수: deptSeatedCount(ROSTER.filter((r) => r !== gone)) }).toEqual({ 빠진: gone, 수: 2 });
     expect(deptSeatedCount([])).toBe(0);
+  });
+  it("★DS-1: 온디맨드 리뷰어(reviewer-gemini · reviewer-codex)가 붙어도 의무 자리로 세지 않는다", () => {
+    expect(deptSeatedCount(WITH_REVIEWERS)).toBe(3);
+    expect(deptSeatedCount(ONDEMAND)).toBe(0);
+    for (const rv of ONDEMAND) expect({ 리뷰어: rv, 수: deptSeatedCount(["master", rv]) }).toEqual({ 리뷰어: rv, 수: 1 });
   });
   it("같은 역할이 여럿이어도 한 번만 센다(워커 둘 ≠ 두 자리)", () => {
     expect(deptSeatedCount(["master", "worker", "worker", "worker"])).toBe(2);
@@ -129,28 +141,30 @@ describe("deptFormationVerdict — 한 틱의 판정(skip · wait · seated · c
     for (const roles of [null, undefined, {}, "x"]) for (const sec of [0, 100, DEPT_FORMATION_CAP_SECS, DEPT_FORMATION_CAP_SECS * 10])
       expect({ roles, sec, 판정: deptFormationVerdict(roles, sec) }).toEqual({ roles, sec, 판정: { verdict: "skip", seated: 0 } });
   });
-  it("다섯 역할이 모두 붙었으면 seated — 경과와 무관하다(0초든 상한 뒤든)", () => {
-    for (const sec of [0, 30, 252, DEPT_FORMATION_CAP_SECS - 1, DEPT_FORMATION_CAP_SECS, DEPT_FORMATION_CAP_SECS + 600])
-      expect({ sec, 판정: deptFormationVerdict(FIVE, sec) }).toEqual({ sec, 판정: { verdict: "seated", seated: 5 } });
+  it("세 역할이 모두 붙었으면 seated — 경과와 무관하다(0초든 상한 뒤든) · 리뷰어가 더 붙어 있어도 같다", () => {
+    for (const sec of [0, 30, 252, DEPT_FORMATION_CAP_SECS - 1, DEPT_FORMATION_CAP_SECS, DEPT_FORMATION_CAP_SECS + 600]) {
+      expect({ sec, 판정: deptFormationVerdict(ROSTER, sec) }).toEqual({ sec, 판정: { verdict: "seated", seated: 3 } });
+      expect({ sec, 판정: deptFormationVerdict(WITH_REVIEWERS, sec) }).toEqual({ sec, 판정: { verdict: "seated", seated: 3 } });
+    }
   });
-  it("★다섯이 안 됐고 상한 전이면 wait · 자리 수를 함께 돌려준다", () => {
+  it("★셋이 안 됐고 상한 전이면 wait · 자리 수를 함께 돌려준다(리뷰어는 빈 의무 자리를 메우지 않는다)", () => {
     expect(deptFormationVerdict(["master"], 0)).toEqual({ verdict: "wait", seated: 1 });
-    expect(deptFormationVerdict(["master", "cso", "worker", "reviewer-gemini"], DEPT_FORMATION_CAP_SECS - 1)).toEqual({ verdict: "wait", seated: 4 });
+    expect(deptFormationVerdict(["master", "cso", "reviewer-gemini"], DEPT_FORMATION_CAP_SECS - 1)).toEqual({ verdict: "wait", seated: 2 });
     expect(deptFormationVerdict([], 10)).toEqual({ verdict: "wait", seated: 0 });
   });
-  it("★다섯이 안 됐는데 상한(900초)에 닿았으면 check — 경계 899/900", () => {
-    const four = ["master", "cso", "worker", "reviewer-codex"];
-    expect(deptFormationVerdict(four, DEPT_FORMATION_CAP_SECS - 1).verdict).toBe("wait");
-    expect(deptFormationVerdict(four, DEPT_FORMATION_CAP_SECS)).toEqual({ verdict: "check", seated: 4 });
+  it("★셋이 안 됐는데 상한(900초)에 닿았으면 check — 경계 899/900", () => {
+    const two = ["master", "cso", "reviewer-codex"];
+    expect(deptFormationVerdict(two, DEPT_FORMATION_CAP_SECS - 1).verdict).toBe("wait");
+    expect(deptFormationVerdict(two, DEPT_FORMATION_CAP_SECS)).toEqual({ verdict: "check", seated: 2 });
     expect(deptFormationVerdict([], DEPT_FORMATION_CAP_SECS + 1)).toEqual({ verdict: "check", seated: 0 });
     expect(deptFormationVerdict(["worker-2", "cso-fresh-1"], DEPT_FORMATION_CAP_SECS)).toEqual({ verdict: "check", seated: 0 });
   });
-  it("★실제 꼴 입력: 좌석 목록을 deptLiveRoles 로 읽어 그대로 판정한다 — 네 자리 + 종료한 마스터는 다섯이 아니다", () => {
-    const list = five();
-    expect(deptFormationVerdict(deptLiveRoles(list), 120)).toEqual({ verdict: "seated", seated: 5 });
+  it("★실제 꼴 입력: 좌석 목록을 deptLiveRoles 로 읽어 그대로 판정한다 — 의무 두 자리 + 리뷰어 둘 + 종료한 마스터는 셋이 아니다", () => {
+    const list = fullRows();
+    expect(deptFormationVerdict(deptLiveRoles(list), 120)).toEqual({ verdict: "seated", seated: 3 });
     list[0] = row(1, "master", { exited: true });
-    expect(deptFormationVerdict(deptLiveRoles(list), 120)).toEqual({ verdict: "wait", seated: 4 });
-    expect(deptFormationVerdict(deptLiveRoles(list), DEPT_FORMATION_CAP_SECS)).toEqual({ verdict: "check", seated: 4 });
+    expect(deptFormationVerdict(deptLiveRoles(list), 120)).toEqual({ verdict: "wait", seated: 2 });
+    expect(deptFormationVerdict(deptLiveRoles(list), DEPT_FORMATION_CAP_SECS)).toEqual({ verdict: "check", seated: 2 });
     expect(deptFormationVerdict(deptLiveRoles({ surfaces: list }), DEPT_FORMATION_CAP_SECS)).toEqual({ verdict: "skip", seated: 0 }); // 응답 껍데기가 그대로 들어와도 '못 받음'
   });
 });
@@ -159,19 +173,19 @@ describe("deptFormationVerdict — 한 틱의 판정(skip · wait · seated · c
 //   (설치하지 않은 프로그램의 자리가 안 생기는 것은 정상 종결이다 · 사실 확인: javis_formation.py ROLE_CLI) · 좌석 목록을 못 받는 팀의 silent 가 더해졌다.
 // ★후속(정체 판정): 자리 정체(stall)를 더했다 — 부서장 자리는 붙어 있는데 붙은 수가 3분 동안 늘지 않을 때(상한 전) 한 번 나가는 일반 알림.
 describe("최종 화면 문구 — 자리 판정의 결과(seated · check · silent · stall — WORKLOG 에 전문을 붙이는 문구와 같은 줄)", () => {
-  it("seated — 제목 「팀 자리가 모두 붙었습니다」 · 본문 「자리 5개가 모두 붙었습니다 · 걸린 시간 <분>」(formatDeptMinutes)", () => {
-    expect(deptFormationText({ seats: 5, elapsedSec: 252, state: "seated" })).toEqual({ title: "팀 자리가 모두 붙었습니다", body: "자리 5개가 모두 붙었습니다 · 걸린 시간 4분" });
-    expect(deptFormationText({ seats: 5, elapsedSec: 30, state: "seated" }).body).toBe("자리 5개가 모두 붙었습니다 · 걸린 시간 1분 미만");
-    expect(deptFormationText({ seats: 5, elapsedSec: 60, state: "seated" }).body).toBe("자리 5개가 모두 붙었습니다 · 걸린 시간 1분");
-    // 자리 수 인자와 무관하게 '5개'(의무 역할 수) — 판정이 이미 다섯을 확인했다
+  it("seated — 제목 「팀 자리가 모두 붙었습니다」 · 본문 「자리 3개가 모두 붙었습니다 · 걸린 시간 <분>」(formatDeptMinutes)", () => {
+    expect(deptFormationText({ seats: 3, elapsedSec: 252, state: "seated" })).toEqual({ title: "팀 자리가 모두 붙었습니다", body: "자리 3개가 모두 붙었습니다 · 걸린 시간 4분" });
+    expect(deptFormationText({ seats: 3, elapsedSec: 30, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분 미만");
+    expect(deptFormationText({ seats: 3, elapsedSec: 60, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분");
+    // 자리 수 인자와 무관하게 '3개'(의무 역할 수) — 판정이 이미 셋을 확인했다
     expect(deptFormationText({ seats: 0, elapsedSec: 252, state: "seated" }).body).toBe(`자리 ${DEPT_SEAT_ROLES.length}개가 모두 붙었습니다 · 걸린 시간 ${formatDeptMinutes(252)}`);
   });
-  it("check(설치 여부를 모르는 15분 상한 · 의무 역할 M개만 붙음) — 제목 「팀원 켜기 — 15분 경과」 · 본문 「붙은 자리 M개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요」", () => {
-    expect(deptFormationText({ seats: 3, elapsedSec: DEPT_FORMATION_CAP_SECS, state: "check" })).toEqual({
+  it("check(설치 여부를 모르는 15분 상한 · 의무 역할 M개만 붙음) — 제목 「팀원 켜기 — 15분 경과」 · 본문 「붙은 자리 M개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요」", () => {
+    expect(deptFormationText({ seats: 2, elapsedSec: DEPT_FORMATION_CAP_SECS, state: "check" })).toEqual({
       title: "팀원 켜기 — 15분 경과",
-      body: "붙은 자리 3개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요",
+      body: "붙은 자리 2개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요",
     });
-    expect(deptFormationText({ seats: 0, elapsedSec: 905, state: "check" }).body).toBe("붙은 자리 0개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요");
+    expect(deptFormationText({ seats: 0, elapsedSec: 905, state: "check" }).body).toBe("붙은 자리 0개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요");
   });
   it("silent(좌석 목록을 못 받는 채 15분 상한) — 제목 「팀 데몬이 응답하지 않습니다 — 확인 필요」 · 본문 「좌석 목록을 받지 못했습니다 — Control Center 에서 팀 상태를 확인하세요 · 경과 <분>」", () => {
     expect(deptFormationText({ seats: 0, elapsedSec: DEPT_FORMATION_CAP_SECS, state: "silent" })).toEqual({
@@ -179,10 +193,10 @@ describe("최종 화면 문구 — 자리 판정의 결과(seated · check · si
       body: "좌석 목록을 받지 못했습니다 — Control Center 에서 팀 상태를 확인하세요 · 경과 15분",
     });
   });
-  it("stall(자리가 3분 동안 더 붙지 않음 · 상한 전) — 제목 「팀원 켜기 — 자리가 더 붙지 않습니다」 · 본문 「3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 M개 · 경과 <분>. 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요」", () => {
-    expect(deptFormationText({ seats: 3, elapsedSec: 280, state: "stall" })).toEqual({
+  it("stall(자리가 3분 동안 더 붙지 않음 · 상한 전) — 제목 「팀원 켜기 — 자리가 더 붙지 않습니다」 · 본문 「3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 M개 · 경과 <분>. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요」", () => {
+    expect(deptFormationText({ seats: 2, elapsedSec: 280, state: "stall" })).toEqual({
       title: "팀원 켜기 — 자리가 더 붙지 않습니다",
-      body: "3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 3개 · 경과 4분. 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요",
+      body: "3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 2개 · 경과 4분. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요",
     });
   });
   it("★'준비 완료'·'정상'을 단정하지 않는다 — 에이전트가 실제로 떴는지는 화면이 모른다(네 문구 어디에도 완료·준비됐·정상·성공·켜졌습니다가 없다)", () => {

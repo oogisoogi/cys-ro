@@ -12,15 +12,17 @@
 //   · addDeptWorkspace: pendingSince·progressId · createdAt 은 성공 분기에서만 · 첫 안내는 try/catch 안(표시 실패가 생성 성공을 뒤집지 않는다) · 3분기·회수 로직은 그대로.
 //   · renderIdleWorkspace: 방금 만든 팀(60초 안)의 빈 탭만 '첫 자리를 붙이는 중' · 종료 실패 탭은 그대로.
 //   · 팀원 부팅 안내(R1F-UB 개정): 성공 직후 1회 + 값(열쇠)이 바뀔 때만 갱신(새 setInterval 0 — refreshPaneTitles 끝에서 점검) · **완료 판정은 그 팀 소켓의 좌석 목록(3초 틱이 이미 받는 list_surfaces)의
-//     역할 다섯**이다(편성 결과 feed 는 본부 데몬으로 가서 화면이 부서 탭과 대응시킬 수 없다 — S4 B1 · 그 배선은 걷었다) · 15분 상한에 다 안 붙었으면 「15분 경과」(일반 알림) 1회 · 목록을 못 받은 틱은 판정을 건너뛴다 ·
+//     역할 셋**이다(1.1.8 DS-1 · 우리 편성 3석 — 원작자 다섯에서)(편성 결과 feed 는 본부 데몬으로 가서 화면이 부서 탭과 대응시킬 수 없다 — S4 B1 · 그 배선은 걷었다) · 15분 상한에 다 안 붙었으면 「15분 경과」(일반 알림) 1회 · 목록을 못 받은 틱은 판정을 건너뛴다 ·
 //     닫힌 탭은 거둔다 · **× 로 닫은 안내만** 주기 갱신으로 되살리지 않는다(수명 만료는 닫음이 아니다 — S4 m3) · 새 팀 표지(createdAt)는 이 호출이 데몬을 띄웠을 때만(S4 m4) · 표시 전용(어떤 명령도 보내지 않는다).
 //   · Tauri 계약: invoke 인자 progressId ↔ allocate_dept_daemon 의 progress_id · 이벤트 'dept-create-progress' `{id, stage}`.
 //   · ★성찰 2회차 R2F-UI(A2 B-1 · A3 M1 · n1 · n13): 팀원 안내의 문구·자리 수는 **설치 여부에 기대지 않는다**(붙은 의무 역할 수 · 「15분 경과」 는 일반 알림) · 그 팀 좌석 목록을 연속으로 60초 넘게 못 받으면 갱신을 멈추고
 //     15분 상한에서 「팀 데몬이 응답하지 않습니다」 를 한 번 알린다 · 삭제 중·종료 실패 탭은 점검하지 않는다 · '새로 만든 팀' 판정은 **응답의 spawned**(백엔드가 표지를 읽는 자리에서 기억)가 1순위다.
 //     종전 검체 가운데 옛 문구·옛 자리 수(탭의 칸 수)·옛 상한 동작(목록이 없으면 침묵)을 박은 것은 새 문안·새 동작으로 고쳤다 — 고친 검체의 이름과 사유는 각 검체 위의 주석과 WORKLOG 에 있다.
 //   · ★후속(정체 판정): 부서장 자리가 붙어 있고(붙은 의무 역할 M ≥ 1) M < 5 인데 붙은 수가 3분(DEPT_FORMATION_STALL_SECS) 넘게 늘지 않으면 — 목록을 받은 틱에 한 번 「자리가 더 붙지 않습니다」(일반 알림 · × 로 닫았어도) 를 알리고
-//     「켜는 중」 갱신을 접는다. 다섯이 모두 붙으면 「모두 붙었습니다」 한 번으로 끝 · 15분 상한에는 추가 알림 없이 끝 · 기준 시각은 처음 목록을 받은 틱과 늘어난 틱에서만 선다 · 새 타이머·새 RPC 0.
+//     「켜는 중」 갱신을 접는다. 셋이 모두 붙으면 「모두 붙었습니다」 한 번으로 끝 · 15분 상한에는 추가 알림 없이 끝 · 기준 시각은 처음 목록을 받은 틱과 늘어난 틱에서만 선다 · 새 타이머·새 RPC 0.
 import { describe, it, expect } from "bun:test";
+// (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
+const itDormant = it.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
 import {
   deptPendingText,
@@ -401,7 +403,7 @@ describe("main.ts 소스 핀 — 이벤트·점검 배선(새 setInterval 0 · �
     expect(blk).toContain("track.stallShown = true;");
     expect(blk).toContain('showDeptFormation(ws, "stall", v.seated);');
     expect(blk.includes("muted")).toBe(false); // × 로 닫았어도 난다 — seated·15분 경과·무응답과 같은 최종 안내 계열
-    expect(blk.includes("formationDone")).toBe(false); // 접지 않는다 — 판정은 계속 본다(다섯이 붙으면 seated 가 닫는다)
+    expect(blk.includes("formationDone")).toBe(false); // 접지 않는다 — 판정은 계속 본다(셋이 모두 붙으면 seated 가 닫는다)
     expect(sa).toBeGreaterThan(fin);
     expect(chk.split('"stall"').length - 1).toBe(1);
     // ③ 알린 뒤 — seated 는 계속 알리고(정체 여부와 무관) 15분 상한(check)은 정체를 이미 알렸으면 추가 알림 없이 끝낸다 · 켜는 중 갱신은 접는다(view·muted 분기보다 앞)
@@ -783,7 +785,7 @@ describe("onDaemonEvent feed.item.created 분기 — 실제 본문 실행(실제
     expect(wait.map((c) => c.fn)).toEqual(["toast", "scheduleFeedSwitchIfStillPending"]);
     expect(wait[1].args).toEqual(["feed-18", false]);
   });
-  it("승인 요청 종류는 종전 토스트 그대로('📥 승인 요청') · 팀 제안 종류(team-create-request)는 종전 안내 그대로 — 이 분기가 편성 배선을 가졌던 자리는 비었다", () => {
+  itDormant("승인 요청 종류는 종전 토스트 그대로('📥 승인 요청') · 팀 제안 종류(team-create-request)는 종전 안내 그대로 — 이 분기가 편성 배선을 가졌던 자리는 비었다", () => {
     const approval = run({ kind: "approval", title: "권한 요청", request_id: "r1" }, { socket_slug: HQ_SLUG });
     expect(approval).toEqual([{ fn: "toast", args: ["feed", "📥 승인 요청", "권한 요청"] }]);
     const team = run({ kind: TEAM_CREATE_KIND, title: "영업팀", request_id: "r2" }, { socket_slug: HQ_SLUG });
@@ -868,7 +870,7 @@ describe("Tauri 계약 대조 — invoke 인자 · 이벤트 이름 · payload",
     expect(code).toContain("spawned?: boolean;");
     expect(code).toContain('typeof info.spawned === "boolean" ? info.spawned :');
   });
-  it("이벤트 이름 'dept-create-progress' 와 payload 모양 {id, stage} 가 양쪽이 같다", () => {
+  itDormant("이벤트 이름 'dept-create-progress' 와 payload 모양 {id, stage} 가 양쪽이 같다", () => {
     expect(RS).toContain('emit_app.emit("dept-create-progress", json!({"id": emit_id, "stage": key}))');
     expect(CODE).toContain('listen("dept-create-progress"');
     // 이벤트를 받는 쪽이 읽는 키(id·stage)는 순수 파서가 정한다
@@ -1171,9 +1173,9 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     claude_config_dir: null, agent: null, agent_alive: null, awakened_at: null, directive_verified: null, ack_nonce_ok: null, ack_source: null, boot_nonce_generation: null,
     alt_screen: false, line_count: 12, cwd_blocked: null, usage: null, ...over,
   });
-  const FIVE = ["master", "cso", "worker", "reviewer-gemini", "reviewer-codex"];
+  const ROSTER = ["master", "cso", "worker"]; // (1.1.8 병합 DS-1) 우리 편성 정본 3석 — DEPT_SEAT_ROLES(javis_formation.py REQUIRED_ROLES)와 같다
   /** 붙은 순서대로 앞 n 개 역할의 좌석 목록(list_surfaces 의 surfaces). */
-  const seatsOf = (n: number): Record<string, unknown>[] => FIVE.slice(0, n).map((r, i) => row(i + 1, r));
+  const seatsOf = (n: number): Record<string, unknown>[] => ROSTER.slice(0, n).map((r, i) => row(i + 1, r));
   /** 이번 3초 틱이 받은 목록 → refreshPaneTitles 가 만드는 소켓별 역할표(`seatRolesTick.set(sk ?? "", deptLiveRoles(r.surfaces))` 와 같은 한 줄). 목록을 못 받은 소켓은 항목이 없다. */
   const tickOf = (entries: [string, unknown][]): Map<string, string[] | null> => new Map(entries.map(([sock, surfaces]) => [sock, DP.deptLiveRoles(surfaces)] as [string, string[] | null]));
   const idOf = (sock: string): string => `dept-formation:${sock}`;
@@ -1233,7 +1235,7 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     expect(calls[0].id).toBe("dept-formation:/s/1.sock");
     expect(calls[0].category).toBe("feed");
     expect(calls[0].name).toBe("팀원을 켜는 중");
-    expect(calls[0].detail).toBe("설치된 프로그램(claude·agy·codex)의 자리가 차례로 붙습니다(최대 5자리 · 보통 5분 안팎) · 붙은 자리 0 · 경과 1분 미만");
+    expect(calls[0].detail).toBe("설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 0 · 경과 1분 미만");
     expect(ws.formationView).toEqual({ state: "booting", key: deptFormationNoticeKey({ seats: 0, elapsedSec: 0, state: "booting" }) });
   });
   it("createdAt 이 없는 탭(복원된 탭 · 기존 팀을 돌려받은 탭)·소켓이 없는 탭은 안내를 내지 않는다", () => {
@@ -1264,7 +1266,7 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     clock.now = T0 + 39_000;
     fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(1)]]));
     expect(calls.length).toBe(2);
-    expect(calls[1].detail).toBe("설치된 프로그램(claude·agy·codex)의 자리가 차례로 붙습니다(최대 5자리 · 보통 5분 안팎) · 붙은 자리 1 · 경과 1분 미만");
+    expect(calls[1].detail).toBe("설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 1 · 경과 1분 미만");
     fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(1)]])); // 같은 틱 반복
     expect(calls.length).toBe(2);
     // 탭의 칸 수는 더 이상 문구를 움직이지 않는다 — 칸이 늘어도(사용자가 셸을 열었다) 붙은 자리는 그대로 1
@@ -1286,26 +1288,27 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     clock.now = T0 + 60_000;
     fns.checkDeptFormationNotices();
     expect(calls.length).toBe(4);
-    expect(calls[3].detail).toBe("설치된 프로그램(claude·agy·codex)의 자리가 차례로 붙습니다(최대 5자리 · 보통 5분 안팎) · 붙은 자리 1 · 경과 1분");
+    expect(calls[3].detail).toBe("설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 1 · 경과 1분");
   });
 
-  it("★5분(3초 틱 100번)을 돌려도 호출은 한 자릿수~십여 회 · 두 호출 사이는 47초 이하(토스트 기본 수명 60초가 갱신 사이에 끝나지 않는다) — 매 틱 좌석 목록을 받아도(다섯 전에는) 같다", () => {
+  it("★5분(3초 틱 100번)을 돌려도 호출은 한 자릿수~십여 회 · 두 호출 사이는 47초 이하(토스트 기본 수명 60초가 갱신 사이에 끝나지 않는다) — 매 틱 좌석 목록을 받아도(셋이 다 붙기 전에는) 같다", () => {
     const { fns, calls, clock, newTeam } = setup();
     const ws = newTeam(1, "/s/1.sock");
     fns.showDeptFormation(ws, "booting");
+    // (1.1.8 병합 DS-1) 의무 역할 3석 — 다 붙기 전(최대 2)으로만 움직인다 · 한 값에 머무는 시간은 정체 판정(180초) 미만
     for (let t = 3; t <= 240; t += 3) {
       clock.now = T0 + t * 1000;
-      const seats = t >= 190 ? 4 : t >= 130 ? 3 : t >= 70 ? 2 : t >= 10 ? 1 : 0;
+      const seats = t >= 130 ? 2 : t >= 10 ? 1 : 0;
       ws.tree = treeOf(seats);
       fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(seats)]]));
     }
-    expect(ws.formationDone).toBeUndefined(); // 다섯이 안 됐다 — 아직 켜는 중
+    expect(ws.formationDone).toBeUndefined(); // 셋이 다 안 붙었다 — 아직 켜는 중
     expect(calls.length).toBeLessThan(25);
     expect(calls.length).toBeGreaterThan(6);
     let maxGap = 0;
     for (let i = 1; i < calls.length; i++) maxGap = Math.max(maxGap, (calls[i].at - calls[i - 1].at) / 1000);
     expect(maxGap).toBeLessThan(48); // 47초 이하(틱이 3초 격자라 정수)
-    expect(calls[calls.length - 1].detail).toContain("붙은 자리 4 · 경과"); // ★R2F-UI: 붙은 의무 역할 수(탭의 칸 수가 아니다 — 위 `ws.tree = treeOf(seats)` 와 무관하게 목록이 센 값)
+    expect(calls[calls.length - 1].detail).toContain("붙은 자리 2 · 경과"); // ★R2F-UI: 붙은 의무 역할 수(탭의 칸 수가 아니다 — 위 `ws.tree = treeOf(seats)` 와 무관하게 목록이 센 값)
     expect(new Set(calls.map((c) => c.id)).size).toBe(1); // 모든 호출은 같은 id 하나(탭마다 하나 · 갱신)
   });
 
@@ -1333,26 +1336,26 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     expect(calls[0].name).toBe("팀원을 켜는 중");
     expect(ws.formationView === undefined).toBe(false);
   });
-  it("pending 탭·createdAt 없는 탭·formationDone 탭은 점검이 건드리지 않는다 — 자리 목록이 다섯이어도", () => {
+  it("pending 탭·createdAt 없는 탭·formationDone 탭은 점검이 건드리지 않는다 — 의무 역할이 모두 붙어 있어도", () => {
     const { fns, calls, workspaces } = setup();
     workspaces.push(
       { id: 1, name: "…", tree: null, pending: true, socket: "/s/p", createdAt: T0 },
       { id: 2, name: "r", tree: null, socket: "/s/r" },
       { id: 3, name: "d", tree: null, socket: "/s/d", createdAt: T0, formationDone: true },
     );
-    fns.checkDeptFormationNotices(tickOf([["/s/p", seatsOf(5)], ["/s/r", seatsOf(5)], ["/s/d", seatsOf(5)]]));
+    fns.checkDeptFormationNotices(tickOf([["/s/p", seatsOf(3)], ["/s/r", seatsOf(3)], ["/s/d", seatsOf(3)]]));
     expect(calls.length).toBe(0);
   });
 
   // ════ ★S4 B1 — 완료 판정은 편성 결과 feed 가 아니라 그 팀 소켓의 좌석 목록이다 ════
-  describe("★S4 B1 — 완료 판정 = 그 팀 소켓의 좌석 목록(3초 틱이 이미 받는 list_surfaces)의 의무 역할 다섯", () => {
+  describe("★S4 B1 — 완료 판정 = 그 팀 소켓의 좌석 목록(3초 틱이 이미 받는 list_surfaces)의 의무 역할 셋(1.1.8 DS-1 · 우리 편성 3석)", () => {
     const SOCK = "/s/1.sock";
-    it("★다섯 역할이 모두 붙으면 안내가 「팀 자리가 모두 붙었습니다」로 **한 번** 바뀌고 더 갱신하지 않는다(formationDone) — 토스트는 수명대로 사라진다", () => {
+    it("★의무 역할 셋이 모두 붙으면 안내가 「팀 자리가 모두 붙었습니다」로 **한 번** 바뀌고 더 갱신하지 않는다(formationDone) — 토스트는 수명대로 사라진다", () => {
       const { fns, calls, clock, newTeam } = setup();
       const ws = newTeam(1, SOCK);
       fns.showDeptFormation(ws, "booting");
-      // 자리가 하나씩 붙는다(master → cso → worker → reviewer-gemini) — 다섯 전에는 완료가 아니다
-      for (const [t, n] of [[10, 1], [40, 2], [100, 3], [160, 4]] as const) {
+      // 자리가 하나씩 붙는다(master → cso) — 셋이 다 붙기 전에는 완료가 아니다
+      for (const [t, n] of [[10, 1], [100, 2]] as const) {
         clock.now = T0 + t * 1000;
         ws.tree = treeOf(n);
         fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(n)]]));
@@ -1362,14 +1365,14 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       const before = calls.length;
       clock.now = T0 + 252_000;
       ws.tree = treeOf(5);
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
       expect(calls.length).toBe(before + 1);
       const last = calls[calls.length - 1];
       expect({ id: last.id, category: last.category, name: last.name, detail: last.detail }).toEqual({
         id: "dept-formation:/s/1.sock",
         category: "feed",
         name: "팀 자리가 모두 붙었습니다",
-        detail: "자리 5개가 모두 붙었습니다 · 걸린 시간 4분",
+        detail: "자리 3개가 모두 붙었습니다 · 걸린 시간 4분",
       });
       expect(ws.formationDone).toBe(true);
       expect((ws.formationView as { state: string }).state).toBe("seated");
@@ -1377,11 +1380,11 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       for (const t of [255, 300, 400, 899, 900, 1000, 5000]) {
         clock.now = T0 + t * 1000;
         ws.tree = treeOf(6);
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
       }
       expect(calls.length).toBe(before + 1);
     });
-    it("★실제 꼴: 두 팀이 동시에 켜지는 중이면 각자 **자기 소켓의** 좌석 목록으로만 판정된다 — 본부(소켓 없음) 목록이 다섯이어도 부서 탭을 완료시키지 않는다", () => {
+    it("★실제 꼴: 두 팀이 동시에 켜지는 중이면 각자 **자기 소켓의** 좌석 목록으로만 판정된다 — 본부(소켓 없음) 목록이 모두 붙어 있어도 부서 탭을 완료시키지 않는다", () => {
       const { fns, calls, clock, newTeam } = setup();
       const a = newTeam(1, "/s/1.sock");
       const b = newTeam(2, "/s/2.sock");
@@ -1389,9 +1392,9 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       fns.showDeptFormation(b, "booting");
       clock.now = T0 + 90_000;
       const tick = tickOf([
-        ["", seatsOf(5)], // 본부 데몬의 좌석 목록(다섯이 붙어 있다) — 부서 탭의 판정과 무관하다
-        ["/s/1.sock", seatsOf(3)],
-        ["/s/2.sock", seatsOf(5)],
+        ["", seatsOf(3)], // 본부 데몬의 좌석 목록(셋이 모두 붙어 있다) — 부서 탭의 판정과 무관하다
+        ["/s/1.sock", seatsOf(2)],
+        ["/s/2.sock", seatsOf(3)],
       ]);
       fns.checkDeptFormationNotices(tick);
       expect(a.formationDone).toBeUndefined();
@@ -1400,12 +1403,12 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       expect(calls[calls.length - 1].name).toBe("팀 자리가 모두 붙었습니다");
       expect(calls.filter((c) => c.id === "dept-formation:/s/1.sock").every((c) => c.name === "팀원을 켜는 중")).toBe(true);
     });
-    it("★종료한 좌석·변형 역할(worker-2 · cso-fresh-…)은 세지 않는다 — 실제 꼴 목록에서 master 가 종료했으면 다섯이 아니다", () => {
+    it("★종료한 좌석·변형 역할(worker-2 · cso-fresh-…)은 세지 않는다 — 실제 꼴 목록에서 master 가 종료했으면 셋이 다 붙은 것이 아니다", () => {
       const { fns, calls, clock, newTeam } = setup();
       const ws = newTeam(1, SOCK);
       fns.showDeptFormation(ws, "booting");
       clock.now = T0 + 120_000;
-      const list = seatsOf(5);
+      const list = seatsOf(3);
       list[0] = row(1, "master", { exited: true });
       list.push(row(6, "worker-2"), row(7, "cso-fresh-1800000123"), row(8, null));
       fns.checkDeptFormationNotices(tickOf([[SOCK, list]]));
@@ -1418,12 +1421,12 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     });
     // ★R2F-UI(A3 M1 (b)): 이름·상한 구간을 고쳤다 — 종전은 「상한을 넘겨도 목록이 없으면 말하지 않는다 · 접지도 않는다」 였다. 목록을 못 받는 채 15분 상한에 닿은 팀(팀 데몬이 죽었거나 멈춤)에는 가장
     //   '확인 필요' 가 필요한데 알림이 없었다 — 이제 최근 60초 안에 받은 목록이 없으면 「팀 데몬이 응답하지 않습니다」 를 **한 번** 알린다(접지는 않는다: 목록이 다시 오면 그때 판정한다). 상한 전(60초 공백 이후)에는 갱신만 멈추고 말하지 않는다.
-    it("★목록을 못 받은 틱(그 소켓의 항목이 없음 · 응답이 배열이 아님 · 인자 없음)은 판정을 건너뛴다 — 다섯이 붙어 있어도 완료로 치지 않는다 · 상한 전에는 말하지 않고 · 상한에서는 「팀 데몬이 응답하지 않습니다」 한 번 · 다음에 받은 틱에 판정한다", () => {
+    it("★목록을 못 받은 틱(그 소켓의 항목이 없음 · 응답이 배열이 아님 · 인자 없음)은 판정을 건너뛴다 — 셋이 모두 붙어 있어도 완료로 치지 않는다 · 상한 전에는 말하지 않고 · 상한에서는 「팀 데몬이 응답하지 않습니다」 한 번 · 다음에 받은 틱에 판정한다", () => {
       const { fns, calls, clock, newTeam } = setup();
       const ws = newTeam(1, SOCK);
       fns.showDeptFormation(ws, "booting");
       clock.now = T0 + 100_000;
-      for (const tick of [undefined, new Map<string, string[] | null>(), tickOf([["/s/other.sock", seatsOf(5)]]), tickOf([[SOCK, { surfaces: seatsOf(5) }]])]) {
+      for (const tick of [undefined, new Map<string, string[] | null>(), tickOf([["/s/other.sock", seatsOf(3)]]), tickOf([[SOCK, { surfaces: seatsOf(3) }]])]) {
         fns.checkDeptFormationNotices(tick);
         expect(ws.formationDone).toBeUndefined();
         expect(calls.every((c) => c.name === "팀원을 켜는 중")).toBe(true);
@@ -1436,56 +1439,56 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       expect(calls.length).toBe(n + 1); // 한 번뿐 — 두 번째 점검은 말이 없다
       expect(calls[calls.length - 1].name).toBe("팀 데몬이 응답하지 않습니다 — 확인 필요");
       expect(ws.formationDone).toBeUndefined();
-      // 목록을 받은 틱 — 그제서야 판정한다(여기서는 다섯 → 완료)
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+      // 목록을 받은 틱 — 그제서야 판정한다(여기서는 셋 모두 → 완료)
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
       expect(ws.formationDone).toBe(true);
       expect(calls[calls.length - 1].name).toBe("팀 자리가 모두 붙었습니다");
     });
     // ★R2F-UI(A2 B-1): 이름·기대를 고쳤다 — 종전은 「팀원 켜기 — 확인 필요」·「아직 N자리입니다 …」·watchdog(경고) 등급이었다. 설치한 프로그램만 붙는 편성의 정상 종결(partial·pending-cli)에 경고색을 쓰던 것이 결함이라
-    //   「팀원 켜기 — 15분 경과」·「붙은 자리 M개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다 …」·**일반 알림(feed)** 으로 바뀌었다. 한 번만 내고 접는 동작·직전(899초) 경계는 그대로다.
-    it("★15분(900초)에 닿았는데 다섯 역할이 다 붙지 않았으면 「팀원 켜기 — 15분 경과」 를 **한 번** 낸다 — 본문 '붙은 자리 M개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다 …'(M = 붙은 의무 역할 수) · **feed(일반 알림) 등급** · 그 뒤 갱신 없음 · 직전(899초)에는 아직", () => {
+    //   「팀원 켜기 — 15분 경과」·「붙은 자리 M개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다 …」·**일반 알림(feed)** 으로 바뀌었다. 한 번만 내고 접는 동작·직전(899초) 경계는 그대로다.
+    it("★15분(900초)에 닿았는데 의무 역할 셋이 다 붙지 않았으면 「팀원 켜기 — 15분 경과」 를 **한 번** 낸다 — 본문 '붙은 자리 M개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다 …'(M = 붙은 의무 역할 수) · **feed(일반 알림) 등급** · 그 뒤 갱신 없음 · 직전(899초)에는 아직", () => {
       const { fns, calls, clock, newTeam } = setup();
       const ws = newTeam(1, SOCK);
       fns.showDeptFormation(ws, "booting");
       clock.now = T0 + 899_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(ws.formationDone).toBeUndefined();
       expect(calls.every((c) => c.name === "팀원을 켜는 중")).toBe(true);
       const before = calls.length;
       clock.now = T0 + 900_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(calls.length).toBe(before + 1);
       const last = calls[calls.length - 1];
       expect({ id: last.id, category: last.category, name: last.name, detail: last.detail }).toEqual({
         id: "dept-formation:/s/1.sock",
         category: "feed",
         name: "팀원 켜기 — 15분 경과",
-        detail: "붙은 자리 3개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요",
+        detail: "붙은 자리 2개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요",
       });
       expect(ws.formationDone).toBe(true);
       expect((ws.formationView as { state: string }).state).toBe("check");
-      // 그 뒤로는 값이 바뀌어도 호출 0 — 늦게 다섯이 붙어도 이 탭은 이미 접혔다(무한 갱신 금지)
+      // 그 뒤로는 값이 바뀌어도 호출 0 — 늦게 셋이 모두 붙어도 이 탭은 이미 접혔다(무한 갱신 금지)
       for (const t of [903, 960, 1200, 3000]) {
         clock.now = T0 + t * 1000;
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
       }
       expect(calls.length).toBe(before + 1);
     });
-    it("상한 틱에 다섯이 모두 붙어 있으면 '15분 경과'가 아니라 '모두 붙었습니다' — 자리 판정이 상한보다 먼저다 · 한 자리도 안 붙었으면 '붙은 자리 0개'", () => {
+    it("상한 틱에 셋이 모두 붙어 있으면 '15분 경과'가 아니라 '모두 붙었습니다' — 자리 판정이 상한보다 먼저다 · 한 자리도 안 붙었으면 '붙은 자리 0개'", () => {
       const a = setup();
       const wa = a.newTeam(1, SOCK);
       a.fns.showDeptFormation(wa, "booting");
       a.clock.now = T0 + 900_000;
-      a.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+      a.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
       expect(a.calls[a.calls.length - 1].name).toBe("팀 자리가 모두 붙었습니다");
-      expect(a.calls[a.calls.length - 1].detail).toBe("자리 5개가 모두 붙었습니다 · 걸린 시간 15분");
+      expect(a.calls[a.calls.length - 1].detail).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 15분");
       const b = setup();
       const wb = b.newTeam(1, SOCK);
       b.fns.showDeptFormation(wb, "booting");
       b.clock.now = T0 + 905_000;
       b.fns.checkDeptFormationNotices(tickOf([[SOCK, []]]));
       expect(b.calls[b.calls.length - 1].name).toBe("팀원 켜기 — 15분 경과"); // ★R2F-UI: 옛 「아직 0자리입니다 … 확인 필요」 → 일반 알림
-      expect(b.calls[b.calls.length - 1].detail).toBe("붙은 자리 0개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요");
+      expect(b.calls[b.calls.length - 1].detail).toBe("붙은 자리 0개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요");
     });
     it("15분 경과·완료 안내는 × 로 닫은 뒤에도 한 번 낸다 — 주기 갱신만 멈추고 결과는 놓치지 않는다(종전: 편성 결과 이벤트가 하던 일)", () => {
       const { fns, calls, clock, stickyToasts, newTeam } = setup();
@@ -1498,7 +1501,7 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
         stickyToasts.delete(idOf(sock));
       }
       clock.now = T0 + 120_000;
-      fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(2)], ["/s/2.sock", seatsOf(5)]]));
+      fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(2)], ["/s/2.sock", seatsOf(3)]]));
       expect(calls.length).toBe(3); // 닫힌 팀 1 은 아직 말하지 않는다(주기 갱신 멈춤) · 팀 2 의 완료는 나온다
       expect(calls[2].id).toBe("dept-formation:/s/2.sock");
       expect(calls[2].name).toBe("팀 자리가 모두 붙었습니다");
@@ -1514,8 +1517,8 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
   // ════ ★R2F-UI(A3 M1 (b) · n13 · A2 B-1) — 목록 60초 공백 · 상한의 무응답 알림 · 삭제 중·종료 실패 탭 · 붙은 의무 역할 수 ════
   describe("★R2F-UI — 좌석 목록을 못 받는 팀 · 삭제 중·종료 실패 탭 · 모든 문구의 자리 수는 붙은 의무 역할 수", () => {
     const SOCK = "/s/1.sock";
-    const BOOT = (m: number, min: string): string => `설치된 프로그램(claude·agy·codex)의 자리가 차례로 붙습니다(최대 5자리 · 보통 5분 안팎) · 붙은 자리 ${m} · 경과 ${min}`;
-    const CHECK = (m: number): string => `붙은 자리 ${m}개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`;
+    const BOOT = (m: number, min: string): string => `설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 ${m} · 경과 ${min}`;
+    const CHECK = (m: number): string => `붙은 자리 ${m}개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`;
 
     it("★목록을 연속으로 60초 넘게 못 받으면 「켜는 중」 갱신을 멈춘다(토스트는 수명으로 사라진다) — 정확히 60초는 아직이고 · 목록이 다시 오면 이어 간다", () => {
       const { fns, calls, clock, stickyToasts, newTeam } = setup();
@@ -1587,13 +1590,13 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
         fns.checkDeptFormationNotices(t === 960 ? new Map() : undefined);
       }
       expect(calls.length).toBe(2);
-      // 데몬이 돌아와 목록을 줬다(네 자리) → 이제 판정한다 — 상한을 넘었으니 「15분 경과」(일반 알림)
+      // 데몬이 돌아와 목록을 줬다(두 자리) → 이제 판정한다 — 상한을 넘었으니 「15분 경과」(일반 알림)
       clock.now = T0 + 3_100_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(4)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(calls.length).toBe(3);
       expect(calls[2].category).toBe("feed");
       expect(calls[2].name).toBe("팀원 켜기 — 15분 경과");
-      expect(calls[2].detail).toBe(CHECK(4));
+      expect(calls[2].detail).toBe(CHECK(2));
       expect(ws.formationDone).toBe(true);
     });
 
@@ -1602,20 +1605,20 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       const ws = newTeam(1, SOCK);
       fns.showDeptFormation(ws, "booting");
       clock.now = T0 + 897_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]])); // 방금까지 받고 있었다
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]])); // 방금까지 받고 있었다
       const n = calls.length;
       clock.now = T0 + 900_000; // 이 틱만 응답이 없다(공백 3초)
       fns.checkDeptFormationNotices(new Map());
       expect(calls.length).toBe(n);
       expect(ws.formationDone).toBeUndefined();
-      clock.now = T0 + 903_000; // 다음 틱 — 목록이 왔다(셋) → 15분 경과
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      clock.now = T0 + 903_000; // 다음 틱 — 목록이 왔다(둘) → 15분 경과
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(calls[calls.length - 1].name).toBe("팀원 켜기 — 15분 경과");
-      expect(calls[calls.length - 1].detail).toBe(CHECK(3));
+      expect(calls[calls.length - 1].detail).toBe(CHECK(2));
       expect(calls.some((c) => c.name.startsWith("팀 데몬이 응답하지 않습니다"))).toBe(false);
     });
 
-    it("★삭제 중(deleting)·종료 실패(stopFailed) 탭은 점검하지 않는다 — 다섯이 붙어 있어도·15분 상한에도·목록이 없어도 아무것도 하지 않는다(종료 실패로 남은 탭에 '켜는 중' 이 계속 뜨던 것)", () => {
+    it("★삭제 중(deleting)·종료 실패(stopFailed) 탭은 점검하지 않는다 — 셋이 모두 붙어 있어도·15분 상한에도·목록이 없어도 아무것도 하지 않는다(종료 실패로 남은 탭에 '켜는 중' 이 계속 뜨던 것)", () => {
       for (const flag of ["deleting", "stopFailed"] as const) {
         const { fns, calls, clock, newTeam } = setup();
         const ws = newTeam(1, SOCK);
@@ -1623,9 +1626,9 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
         fns.showDeptFormation(ws, "booting"); // 삭제를 누르기 전에 난 마지막 안내
         const n = calls.length;
         for (const [t, tick] of [
-          [10, tickOf([[SOCK, seatsOf(5)]])], // 다섯이 붙었다 — 완료 안내를 내지 않는다
+          [10, tickOf([[SOCK, seatsOf(3)]])], // 셋이 모두 붙었다 — 완료 안내를 내지 않는다
           [120, undefined], // 목록 없음(60초 공백) — 아무 말도 없다
-          [900, tickOf([[SOCK, seatsOf(3)]])], // 15분 상한 — 「15분 경과」 도 없다
+          [900, tickOf([[SOCK, seatsOf(2)]])], // 15분 상한 — 「15분 경과」 도 없다
           [1500, new Map<string, string[] | null>()], // 상한 + 목록 없음 — 「팀 데몬이 응답하지 않습니다」 도 없다
         ] as [number, Map<string, string[] | null> | undefined][]) {
           clock.now = T0 + t * 1000;
@@ -1637,7 +1640,7 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
         const w2 = ok.newTeam(1, SOCK);
         ok.fns.showDeptFormation(w2, "booting");
         ok.clock.now = T0 + 10_000;
-        ok.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+        ok.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
         expect(ok.calls[ok.calls.length - 1].name).toBe("팀 자리가 모두 붙었습니다");
       }
     });
@@ -1656,8 +1659,9 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       expect(calls[calls.length - 1].detail.includes("지금")).toBe(false);
     });
 
-    it("★'모름' 상태의 사례 둘 — CLI 가 하나도 없는 PC(부서장 1자리뿐)와 claude 만 있는 PC(3자리)는 15분에 경고가 아닌 「15분 경과」(feed)이고 문구에 붙은 자리 수가 그대로다 · 다섯이 붙은 PC 는 「모두 붙었습니다」", () => {
-      for (const [n, label] of [[1, "CLI 0개(윈도우 11 러너 실측 — 부서장 1자리)"], [3, "claude 만 설치(문서대로 설치한 PC)"]] as const) {
+    // (1.1.8 병합 DS-1) 우리 편성은 3석 모두 claude 라 「claude 만 있는 PC」 는 셋이 다 붙는다(→ 「모두 붙었습니다」 쪽 사례). 미완 사례 둘째는 2자리에서 멈춘 PC 로 바꿨다(취지 = 미완은 경고가 아닌 15분 경과 · 붙은 자리 수 그대로).
+    it("★'모름' 상태의 사례 둘 — CLI 가 하나도 없는 PC(부서장 1자리뿐)와 2자리에서 멈춘 PC 는 15분에 경고가 아닌 「15분 경과」(feed)이고 문구에 붙은 자리 수가 그대로다 · claude 만 있는 PC(셋이 모두 붙음)는 「모두 붙었습니다」", () => {
+      for (const [n, label] of [[1, "CLI 0개(윈도우 11 러너 실측 — 부서장 1자리)"], [2, "2자리에서 멈춤(워커 자리가 뜨지 않은 PC)"]] as const) {
         const { fns, calls, clock, newTeam } = setup();
         const ws = newTeam(1, SOCK);
         fns.showDeptFormation(ws, "booting");
@@ -1668,158 +1672,159 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
         expect(last.category === "watchdog").toBe(false); // 경고가 아니다
         expect(last.name.includes("확인 필요")).toBe(false);
       }
-      const five = setup();
-      const w5 = five.newTeam(1, SOCK);
-      five.fns.showDeptFormation(w5, "booting");
-      five.clock.now = T0 + 300_000;
-      five.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
-      expect(five.calls[five.calls.length - 1]).toEqual({ id: "dept-formation:/s/1.sock", category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 5개가 모두 붙었습니다 · 걸린 시간 5분", at: T0 + 300_000 });
+      const full = setup(); // claude 만 설치(문서대로 설치한 PC) — 우리 3석이 모두 붙는다
+      const wf = full.newTeam(1, SOCK);
+      full.fns.showDeptFormation(wf, "booting");
+      full.clock.now = T0 + 300_000;
+      full.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      expect(full.calls[full.calls.length - 1]).toEqual({ id: "dept-formation:/s/1.sock", category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 3개가 모두 붙었습니다 · 걸린 시간 5분", at: T0 + 300_000 });
     });
   });
 
   // ════ ★후속(정체 판정 · A2 B-1 최소 수정안 2) — claude 만 깐 PC 는 3자리에서 더 늘지 않는데 「켜는 중」 이 15분까지 갱신됐다 ════
-  // 규칙: 부서장 자리가 붙어 있고(붙은 의무 역할 수 M ≥ 1) M < 5 · 15분 상한 전 · **이번 틱에 그 팀의 목록을 받았고** · 붙은 수가 마지막으로 늘어난 때부터 180초 이상이면 「팀원 켜기 — 자리가 더 붙지 않습니다」(일반 알림)를
-  // 한 번 알린다. 기준 시각은 처음 목록을 받은 틱에서 서고 수가 늘 때마다 밀린다(줄어드는 것은 밀지 않는다). 알린 뒤 「켜는 중」 갱신을 멈추고, 판정은 계속 본다 — 다섯이 모두 붙으면 「모두 붙었습니다」 한 번 · 15분 상한에는 추가 알림 없이 끝.
+  // 규칙: 부서장 자리가 붙어 있고(붙은 의무 역할 수 M ≥ 1) M < 의무 역할 수(1.1.8 DS-1 = 3) · 15분 상한 전 · **이번 틱에 그 팀의 목록을 받았고** · 붙은 수가 마지막으로 늘어난 때부터 180초 이상이면 「팀원 켜기 — 자리가 더 붙지 않습니다」(일반 알림)를
+  // 한 번 알린다. 기준 시각은 처음 목록을 받은 틱에서 서고 수가 늘 때마다 밀린다(줄어드는 것은 밀지 않는다). 알린 뒤 「켜는 중」 갱신을 멈추고, 판정은 계속 본다 — 셋이 모두 붙으면 「모두 붙었습니다」 한 번 · 15분 상한에는 추가 알림 없이 끝.
+  // (1.1.8 병합 DS-1) 우리 편성은 3석이라 「claude 만 깐 PC」 는 셋이 다 붙어 정체가 아니다 — 아래 검체의 정체 사례는 셋 미만(2자리 · 늘어남을 볼 때는 1자리)에서 멈춘 팀이다.
   // × 로 닫았어도 한 번 난다(seated·15분 경과·무응답과 같은 '최종 안내' 계열 — muted 를 보지 않는다). 새 타이머·새 RPC 0.
   describe("★후속(정체 판정) — 자리가 3분 동안 더 붙지 않으면 한 번 알리고 켜는 중 갱신을 접는다", () => {
     const SOCK = "/s/1.sock";
     const STALL_TITLE = "팀원 켜기 — 자리가 더 붙지 않습니다";
     const STALL = (m: number, min: string): string =>
-      `3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 ${m}개 · 경과 ${min}. 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요`;
-    const CHECK = (m: number): string => `붙은 자리 ${m}개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`;
+      `3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 ${m}개 · 경과 ${min}. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요`;
+    const CHECK = (m: number): string => `붙은 자리 ${m}개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`;
     const stallCalls = (calls: { name: string }[]): number => calls.filter((c) => c.name === STALL_TITLE).length;
-    /** claude 만 깐 PC 의 붙는 순서 — 10초 master · 40초 cso · 100초 worker(마지막 증가 = 100초). 이후 3자리 그대로. */
-    function claudeOnly() {
+    /** 셋 미만에서 멈춘 팀의 붙는 순서 — top=2: 10초 master · 100초 cso · top=1: 100초 master(첫 목록). 둘 다 마지막 증가 = 100초 · 이후 top 자리 그대로. */
+    function stuckAt(top: 1 | 2 = 2) {
       const h = setup();
       const ws = h.newTeam(1, SOCK);
       h.fns.showDeptFormation(ws, "booting");
-      for (const [t, n] of [[10, 1], [40, 2], [100, 3]] as const) {
+      for (const [t, n] of (top === 2 ? [[10, 1], [100, 2]] : [[100, 1]]) as [number, number][]) {
         h.clock.now = T0 + t * 1000;
         h.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(n)]]));
       }
       return { ...h, ws };
     }
 
-    it("★3자리에서 180초 정체 → 그 알림 1회(일반 알림 feed · 문안 전문) · 179초까지는 없다 · 그 뒤 갱신 없음(45초 칸·분 경계·토스트 수명 만료도) · 그 뒤 5자리 → 「팀 자리가 모두 붙었습니다」 1회로 끝", () => {
-      const { fns, calls, clock, stickyToasts, ws } = claudeOnly();
+    it("★2자리에서 180초 정체 → 그 알림 1회(일반 알림 feed · 문안 전문) · 179초까지는 없다 · 그 뒤 갱신 없음(45초 칸·분 경계·토스트 수명 만료도) · 그 뒤 3자리(모두) → 「팀 자리가 모두 붙었습니다」 1회로 끝", () => {
+      const { fns, calls, clock, stickyToasts, ws } = stuckAt();
       // 마지막 증가(100초) 뒤 179초(= 279초)까지는 3초 틱마다 켜는 중 갱신뿐 — 정체 알림 0
       for (let t = 103; t <= 279; t += 3) {
         clock.now = T0 + t * 1000;
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       }
       expect(stallCalls(calls)).toBe(0);
       expect(calls.every((c) => c.name === "팀원을 켜는 중")).toBe(true);
       // 정확히 280초(마지막 증가 + 180초) — 정체 알림 1회
       clock.now = T0 + 280_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
-      expect(calls[calls.length - 1]).toEqual({ id: "dept-formation:/s/1.sock", category: "feed", name: STALL_TITLE, detail: STALL(3, "4분"), at: T0 + 280_000 });
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
+      expect(calls[calls.length - 1]).toEqual({ id: "dept-formation:/s/1.sock", category: "feed", name: STALL_TITLE, detail: STALL(2, "4분"), at: T0 + 280_000 });
       expect((ws.formationView as { state: string }).state).toBe("stall");
       expect(ws.formationDone).toBeUndefined(); // 접지 않는다 — 판정은 계속 본다
-      // 그 뒤 갱신 없음 — 같은 3자리로 800초까지(45초 칸·분 경계 · 토스트 수명 60초 만료를 흉내 내도 되살리지 않는다)
+      // 그 뒤 갱신 없음 — 같은 2자리로 800초까지(45초 칸·분 경계 · 토스트 수명 60초 만료를 흉내 내도 되살리지 않는다)
       const n = calls.length;
       for (let t = 283; t <= 800; t += 3) {
         clock.now = T0 + t * 1000;
         if (t % 60 === 1) stickyToasts.delete(idOf(SOCK)); // 수명 만료
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       }
       expect(calls.length).toBe(n);
       expect(stallCalls(calls)).toBe(1); // 한 번뿐
-      // 상한 전에 다섯이 모두 붙었다 → 「모두 붙었습니다」 1회 + 끝
+      // 상한 전에 셋이 모두 붙었다 → 「모두 붙었습니다」 1회 + 끝
       clock.now = T0 + 805_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
       expect(calls.length).toBe(n + 1);
-      expect(calls[calls.length - 1]).toEqual({ id: "dept-formation:/s/1.sock", category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 5개가 모두 붙었습니다 · 걸린 시간 13분", at: T0 + 805_000 });
+      expect(calls[calls.length - 1]).toEqual({ id: "dept-formation:/s/1.sock", category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 3개가 모두 붙었습니다 · 걸린 시간 13분", at: T0 + 805_000 });
       expect(ws.formationDone).toBe(true);
       for (const t of [808, 900, 2000]) {
         clock.now = T0 + t * 1000;
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(5)]]));
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
       }
       expect(calls.length).toBe(n + 1);
     });
 
     it("★정체 알림 뒤 15분 상한에 닿아도 추가 알림이 없다(「15분 경과」 를 또 내지 않는다) — 조용히 끝난다 · 대조: 정체 알림이 없었던 팀은 15분에 「15분 경과」 가 난다", () => {
-      const { fns, calls, clock, ws } = claudeOnly();
+      const { fns, calls, clock, ws } = stuckAt();
       clock.now = T0 + 280_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(1);
       const n = calls.length;
       for (const t of [500, 899]) {
         clock.now = T0 + t * 1000;
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       }
       expect(ws.formationDone).toBeUndefined(); // 상한 전
       clock.now = T0 + 900_000; // 15분 상한
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(calls.length).toBe(n); // 추가 알림 없음
       expect(calls.some((c) => c.name === "팀원 켜기 — 15분 경과")).toBe(false);
       expect(ws.formationDone).toBe(true); // 끝
       for (const t of [903, 1200, 5000]) {
         clock.now = T0 + t * 1000;
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       }
       expect(calls.length).toBe(n);
       // 대조: 마지막 증가가 상한 직전이라 정체(180초)에 못 닿은 팀 — 상한에서 「15분 경과」 가 그대로 난다
       const o = setup();
       const w2 = o.newTeam(2, "/s/2.sock");
       o.fns.showDeptFormation(w2, "booting");
-      for (const [t, k] of [[100, 1], [800, 3]] as const) {
+      for (const [t, k] of [[100, 1], [800, 2]] as const) {
         o.clock.now = T0 + t * 1000;
         o.fns.checkDeptFormationNotices(tickOf([["/s/2.sock", seatsOf(k)]]));
       }
       o.clock.now = T0 + 900_000;
-      o.fns.checkDeptFormationNotices(tickOf([["/s/2.sock", seatsOf(3)]]));
+      o.fns.checkDeptFormationNotices(tickOf([["/s/2.sock", seatsOf(2)]]));
       expect(o.calls.some((c) => c.name === STALL_TITLE)).toBe(false);
       expect(o.calls[o.calls.length - 1].name).toBe("팀원 켜기 — 15분 경과");
-      expect(o.calls[o.calls.length - 1].detail).toBe(CHECK(3));
+      expect(o.calls[o.calls.length - 1].detail).toBe(CHECK(2));
     });
 
     it("★179초는 아직 · 180초부터 — 밀리초 경계(마지막 증가 + 179.999초 · 180.000초)", () => {
-      const { fns, calls, clock } = claudeOnly();
+      const { fns, calls, clock } = stuckAt();
       clock.now = T0 + 100_000 + 179_999;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(0);
       clock.now = T0 + 100_000 + 180_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(1);
     });
 
-    it("★자리 수가 늘면 기준 시각이 밀린다 — 3자리에서 150초 만에 4자리가 되면 정체 시계는 4자리가 된 때부터 다시 센다", () => {
-      const { fns, calls, clock } = claudeOnly(); // 마지막 증가 = 100초(3자리)
+    it("★자리 수가 늘면 기준 시각이 밀린다 — 1자리에서 150초 만에 2자리가 되면 정체 시계는 2자리가 된 때부터 다시 센다", () => {
+      const { fns, calls, clock } = stuckAt(1); // 마지막 증가 = 100초(1자리)
       clock.now = T0 + 250_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(4)]])); // 150초 만에 4자리 — 정체 아님(기준이 250초로 밀린다)
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]])); // 150초 만에 2자리 — 정체 아님(기준이 250초로 밀린다)
       expect(stallCalls(calls)).toBe(0);
-      clock.now = T0 + 280_000; // 3자리 때의 기준(100초)이었다면 지금이 정체 시점
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(4)]]));
+      clock.now = T0 + 280_000; // 1자리 때의 기준(100초)이었다면 지금이 정체 시점
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       clock.now = T0 + 429_999;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(4)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(0);
       clock.now = T0 + 430_000; // 250 + 180
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(4)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(1);
-      expect(calls[calls.length - 1].detail).toBe(STALL(4, "7분"));
+      expect(calls[calls.length - 1].detail).toBe(STALL(2, "7분"));
     });
 
-    it("줄어드는 것은 기준을 밀지 않는다 — 3→2 로 줄어도 시계는 마지막 증가(100초)부터 흐른다 · 되돌아온 자리(2→3)의 증가는 직전 관측 대비 늘어난 때라 기준을 민다", () => {
-      // 줄어든 팀: 100초에 3자리 → 200초에 2자리(자리 하나가 죽음) → 280초(마지막 증가 + 180초)에 정체 — 붙은 자리는 지금 값(2)
-      const a = claudeOnly();
+    it("줄어드는 것은 기준을 밀지 않는다 — 2→1 로 줄어도 시계는 마지막 증가(100초)부터 흐른다 · 되돌아온 자리(1→2)의 증가는 직전 관측 대비 늘어난 때라 기준을 민다", () => {
+      // 줄어든 팀: 100초에 2자리 → 200초에 1자리(자리 하나가 죽음) → 280초(마지막 증가 + 180초)에 정체 — 붙은 자리는 지금 값(1)
+      const a = stuckAt();
       a.clock.now = T0 + 200_000;
-      a.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
+      a.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(1)]]));
       expect(stallCalls(a.calls)).toBe(0);
       a.clock.now = T0 + 280_000;
-      a.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
+      a.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(1)]]));
       expect(stallCalls(a.calls)).toBe(1);
-      expect(a.calls[a.calls.length - 1].detail).toBe(STALL(2, "4분"));
-      // 되돌아온 팀: 3 → 2(200초) → 3(250초: 직전 관측 2 대비 늘었다) — 기준이 250초로 밀려 280초에는 정체가 아니고 430초에 난다
-      const b = claudeOnly();
+      expect(a.calls[a.calls.length - 1].detail).toBe(STALL(1, "4분"));
+      // 되돌아온 팀: 2 → 1(200초) → 2(250초: 직전 관측 1 대비 늘었다) — 기준이 250초로 밀려 280초에는 정체가 아니고 430초에 난다
+      const b = stuckAt();
       b.clock.now = T0 + 200_000;
-      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
+      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(1)]]));
       b.clock.now = T0 + 250_000;
-      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       b.clock.now = T0 + 280_000;
-      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(b.calls)).toBe(0);
       b.clock.now = T0 + 430_000;
-      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      b.fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(b.calls)).toBe(1);
     });
 
@@ -1847,19 +1852,19 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     });
 
     it("★목록을 못 받은 틱은 정체를 판정하지 않는다 — 시간이 지나도 알리지 않고(목록 없음·응답이 배열이 아님·다른 소켓의 목록) · 목록을 받은 틱에 판정한다", () => {
-      const { fns, calls, clock } = claudeOnly(); // 마지막 증가 = 100초
+      const { fns, calls, clock } = stuckAt(); // 마지막 증가 = 100초
       for (const [t, tick] of [
         [290, undefined], // 인자 없음
         [293, new Map<string, string[] | null>()], // 그 소켓의 항목 없음
-        [296, tickOf([[SOCK, { surfaces: seatsOf(3) }]])], // 응답이 배열이 아님(껍데기)
-        [299, tickOf([["/s/other.sock", seatsOf(3)]])], // 다른 소켓의 목록
+        [296, tickOf([[SOCK, { surfaces: seatsOf(2) }]])], // 응답이 배열이 아님(껍데기)
+        [299, tickOf([["/s/other.sock", seatsOf(2)]])], // 다른 소켓의 목록
       ] as [number, Map<string, string[] | null> | undefined][]) {
         clock.now = T0 + t * 1000;
         fns.checkDeptFormationNotices(tick);
         expect({ t, 정체: stallCalls(calls) }).toEqual({ t, 정체: 0 }); // 180초를 훌쩍 넘겼지만 목록이 없다
       }
       clock.now = T0 + 302_000; // 목록을 받았다 — 이제 판정한다(마지막 증가 + 202초)
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(1);
     });
 
@@ -1867,37 +1872,37 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       const { fns, calls, clock, newTeam } = setup();
       const ws = newTeam(1, SOCK);
       fns.showDeptFormation(ws, "booting");
-      clock.now = T0 + 200_000; // 팀을 만든 지 200초 — 첫 목록이 이제 왔다(세 자리) — 팀 생성 시각이 기준이면 이 틱이 곧바로 정체가 된다
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      clock.now = T0 + 200_000; // 팀을 만든 지 200초 — 첫 목록이 이제 왔다(두 자리) — 팀 생성 시각이 기준이면 이 틱이 곧바로 정체가 된다
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(0);
       clock.now = T0 + 379_999;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(0);
       clock.now = T0 + 380_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(1);
     });
 
     it("★× 로 닫았어도 정체 알림은 한 번 난다 — 주기 갱신만 멈추고 최종 안내(seated·15분 경과·무응답·정체)는 놓치지 않는다(같은 계열)", () => {
-      const { fns, calls, clock, stickyToasts, ws } = claudeOnly();
+      const { fns, calls, clock, stickyToasts, ws } = stuckAt();
       fns.noteToastClosedByUser(idOf(SOCK)); // 사용자가 × 를 눌렀다(× 처리기: 표식 → dismissToast)
       stickyToasts.delete(idOf(SOCK));
       expect((ws.formationView as { muted?: boolean }).muted).toBe(true);
       const n = calls.length;
       clock.now = T0 + 200_000; // 닫힌 안내는 되살리지 않는다 — 정체 전
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(calls.length).toBe(n);
       clock.now = T0 + 280_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(calls.length).toBe(n + 1);
       expect(calls[calls.length - 1].name).toBe(STALL_TITLE);
       expect(stickyToasts.has(idOf(SOCK))).toBe(true);
     });
 
     it("정체 알림 뒤 목록이 끊겨 15분에 닿으면 「팀 데몬이 응답하지 않습니다」 는 종전대로 난다(정체와 독립) · 그 뒤 목록이 돌아와도 「15분 경과」 는 없다", () => {
-      const { fns, calls, clock, ws } = claudeOnly();
+      const { fns, calls, clock, ws } = stuckAt();
       clock.now = T0 + 280_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(1);
       // 데몬이 멈췄다 — 이후 목록 없음. 상한(900초)에서 마지막 목록(280초)이 60초보다 오래됐다 → 무응답 알림(경고) 한 번
       clock.now = T0 + 900_000;
@@ -1908,27 +1913,27 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       fns.checkDeptFormationNotices(new Map());
       expect(calls.length).toBe(n); // 되풀이하지 않는다
       expect(ws.formationDone).toBeUndefined();
-      clock.now = T0 + 1_000_000; // 목록이 돌아왔다(3자리) — 상한을 넘었지만 이미 정체를 알렸으므로 「15분 경과」 는 없다
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      clock.now = T0 + 1_000_000; // 목록이 돌아왔다(2자리) — 상한을 넘었지만 이미 정체를 알렸으므로 「15분 경과」 는 없다
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(calls.length).toBe(n);
       expect(ws.formationDone).toBe(true);
     });
 
-    it("정체 알림 뒤 자리가 늘어도(3→4) 켜는 중 갱신은 되살아나지 않는다 — 열쇠가 바뀌어도·수명이 만료돼도 다시 내지 않는다(판정만 본다)", () => {
-      const { fns, calls, clock, stickyToasts } = claudeOnly();
+    it("정체 알림 뒤 자리가 늘어도(1→2) 켜는 중 갱신은 되살아나지 않는다 — 열쇠가 바뀌어도·수명이 만료돼도 다시 내지 않는다(판정만 본다)", () => {
+      const { fns, calls, clock, stickyToasts } = stuckAt(1);
       clock.now = T0 + 280_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(1)]]));
       const n = calls.length;
       stickyToasts.delete(idOf(SOCK));
       for (const t of [400, 500, 700]) {
         clock.now = T0 + t * 1000;
-        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(4)]])); // 4자리가 됐다(기준이 밀려도 정체 알림은 한 번뿐)
+        fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]])); // 2자리가 됐다(기준이 밀려도 정체 알림은 한 번뿐)
       }
       expect(calls.length).toBe(n);
       expect(stallCalls(calls)).toBe(1);
     });
 
-    it("삭제 중(deleting)·종료 실패(stopFailed) 탭은 정체도 판정하지 않는다 — 같은 3자리가 몇 분 이어져도 아무 말이 없다(대조: 평소 탭은 난다)", () => {
+    it("삭제 중(deleting)·종료 실패(stopFailed) 탭은 정체도 판정하지 않는다 — 같은 2자리가 몇 분 이어져도 아무 말이 없다(대조: 평소 탭은 난다)", () => {
       for (const flag of ["deleting", "stopFailed"] as const) {
         const { fns, calls, clock, newTeam } = setup();
         const ws = newTeam(1, SOCK);
@@ -1937,30 +1942,30 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
         const n = calls.length;
         for (let t = 10; t <= 600; t += 10) {
           clock.now = T0 + t * 1000;
-          fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+          fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
         }
         expect({ flag, 호출: calls.length, 정체: stallCalls(calls) }).toEqual({ flag, 호출: n, 정체: 0 });
       }
     });
 
     it("★목록이 한참 끊겼다가 15분 상한 뒤에 처음 돌아온 틱은 정체가 아니라 「15분 경과」 로 끝난다 — 정체 판정은 상한 전(wait)에만(마지막 증가로부터 800초라 시간 조건은 참이어도)", () => {
-      const { fns, calls, clock, ws } = claudeOnly(); // 마지막 증가 = 100초 · 이후 목록 없음
+      const { fns, calls, clock, ws } = stuckAt(); // 마지막 증가 = 100초 · 이후 목록 없음
       clock.now = T0 + 905_000;
-      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(3)]]));
+      fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(2)]]));
       expect(stallCalls(calls)).toBe(0);
       expect(calls[calls.length - 1].name).toBe("팀원 켜기 — 15분 경과");
-      expect(calls[calls.length - 1].detail).toBe(CHECK(3));
+      expect(calls[calls.length - 1].detail).toBe(CHECK(2));
       expect(ws.formationDone).toBe(true);
     });
 
     it("정체 알림 등급·열쇠 — 일반 알림(feed)이고 formationView.state 는 stall · 문구의 자리 수는 그 틱의 붙은 의무 역할 수(변형·일회용·종료한 좌석은 세지 않는다)", () => {
-      const { fns, calls, clock, ws } = claudeOnly();
+      const { fns, calls, clock, ws } = stuckAt();
       clock.now = T0 + 280_000;
-      const list = seatsOf(3);
+      const list = seatsOf(2);
       list.push(row(7, "worker-2"), row(8, "cso-fresh-1800000123"), row(9, null), row(1, "master", { exited: true }));
       fns.checkDeptFormationNotices(tickOf([[SOCK, list]]));
       const last = calls[calls.length - 1];
-      expect({ 등급: last.category, 이름: last.name, 본문: last.detail }).toEqual({ 등급: "feed", 이름: STALL_TITLE, 본문: STALL(3, "4분") });
+      expect({ 등급: last.category, 이름: last.name, 본문: last.detail }).toEqual({ 등급: "feed", 이름: STALL_TITLE, 본문: STALL(2, "4분") });
       expect((ws.formationView as { state: string }).state).toBe("stall");
     });
   });
@@ -1986,8 +1991,8 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       fns.checkDeptFormationNotices(tick);
       expect(calls.length).toBe(2);
       // 몇 번을 사라져도 그때마다 다시 낸다(영구 침묵 없음)
-      // ★R2F-UI(후속 · 정체 판정): 같은 목록(붙은 자리 1)을 330초 넘게 되풀이하면 정체 알림(한 번)이 끼어들어 이 검체의 대상(토스트 수명)과 섞인다 — 자리가 느는 목록으로 바꿨다(이름·취지 그대로).
-      for (const [t, n] of [[200, 2], [330, 3], [460, 4]] as const) {
+      // ★R2F-UI(후속 · 정체 판정): 같은 목록(붙은 자리 1)을 330초 넘게 되풀이하면 정체 알림(한 번)이 끼어들어 이 검체의 대상(토스트 수명)과 섞인다 — 자리가 느는 목록으로 바꿨다(이름·취지 그대로). (1.1.8 DS-1) 3석이라 셋이 되면 완료로 접히므로, 2자리로 붙은 뒤(200초) 정체 기준 180초 안(300·370초)에서 되풀이한다.
+      for (const [t, n] of [[200, 2], [300, 2], [370, 2]] as const) {
         stickyToasts.delete(idOf(SOCK));
         clock.now = T0 + t * 1000;
         fns.checkDeptFormationNotices(tickOf([[SOCK, seatsOf(n)]]));
@@ -2004,14 +2009,14 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
       stickyToasts.delete(idOf("/s/1.sock"));
       stickyToasts.delete(idOf("/s/2.sock")); // 팀 2 의 안내는 수명으로 사라졌다
       clock.now = T0 + 20_000;
-      // ★R2F-UI: 값이 바뀌는 쪽은 붙은 의무 역할 수다(종전 `a.tree = treeOf(2)` 의 탭 칸 수가 아니다) — 팀 1 은 둘로, 팀 2 는 하나로 바뀐 목록을 받았다.
-      fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(2)], ["/s/2.sock", seatsOf(1)]]));
+      // ★R2F-UI: 값이 바뀌는 쪽은 붙은 의무 역할 수다(종전 `a.tree = treeOf(2)` 의 탭 칸 수가 아니다) — 팀 1 은 하나로(뒤에 둘로), 팀 2 는 하나로 바뀐 목록을 받았다(1.1.8 DS-1: 3석이라 셋이 되면 최종 안내가 나므로 셋 미만으로).
+      fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(1)], ["/s/2.sock", seatsOf(1)]]));
       expect((a.formationView as { muted?: boolean }).muted).toBe(true);
       expect((b.formationView as { muted?: boolean }).muted).toBeUndefined();
       expect(calls.filter((c) => c.id === idOf("/s/1.sock")).length).toBe(1); // 닫은 뒤 새 호출 없음
       expect(calls.filter((c) => c.id === idOf("/s/2.sock")).length).toBe(2); // 만료된 팀 2 는 다시 났다
       clock.now = T0 + 70_000;
-      fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(3)], ["/s/2.sock", seatsOf(1)]]));
+      fns.checkDeptFormationNotices(tickOf([["/s/1.sock", seatsOf(2)], ["/s/2.sock", seatsOf(1)]]));
       expect(calls.filter((c) => c.id === idOf("/s/1.sock")).length).toBe(1);
     });
     it("noteToastClosedByUser — dept-formation: 접두 id 만, 그 소켓의 탭(안내가 있는)에만 표식 · 다른 id·접두만 같은 문자열·없는 탭·안내 없는 탭·이상한 입력은 무동작(던지지 않는다)", () => {
@@ -2065,7 +2070,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
   const T0 = 30_000_000;
   const SOCK = "/s/1.sock";
   const ID = `dept-formation:${SOCK}`;
-  const FIVE = ["master", "cso", "worker", "reviewer-gemini", "reviewer-codex"];
+  const ROSTER = ["master", "cso", "worker"]; // (1.1.8 병합 DS-1) 우리 편성 정본 3석 — DEPT_SEAT_ROLES(javis_formation.py REQUIRED_ROLES)와 같다
   /** 데몬 surface.list 한 줄의 실제 꼴(handlers.rs surface.list 의 키 전부) — 값은 지어낸 값. */
   const row = (sid: number, role: string | null, over: Record<string, unknown> = {}): Record<string, unknown> => ({
     surface_id: sid, surface_ref: `surface:${sid}`, title: "zsh", role, cmd: "zsh", cwd: "/Users/runner/work", live_cwd: "/Users/runner/work", pid: 41000 + sid, exited: false,
@@ -2073,7 +2078,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
     claude_config_dir: null, agent: null, agent_alive: null, awakened_at: null, directive_verified: null, ack_nonce_ok: null, ack_source: null, boot_nonce_generation: null,
     alt_screen: false, line_count: 12, cwd_blocked: null, usage: null, ...over,
   });
-  const seatsOf = (n: number): Record<string, unknown>[] => FIVE.slice(0, n).map((r, i) => row(i + 1, r));
+  const seatsOf = (n: number): Record<string, unknown>[] => ROSTER.slice(0, n).map((r, i) => row(i + 1, r));
   const tree = (n: number): unknown => {
     let t: unknown = null;
     for (let i = 1; i <= n; i++) t = t === null ? { type: "pane", sid: i } : { type: "split", a: t, b: { type: "pane", sid: i } };
@@ -2143,10 +2148,10 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
   }
   const names = (t: { name: string }[]): string[] => t.map((x) => x.name);
 
-  it("★다섯 역할이 붙은 틱 — 실제 refreshPaneTitles 한 번이 새 팀 탭의 안내를 「팀 자리가 모두 붙었습니다」로 바꾼다(본부 feed·slug 는 어디에도 쓰이지 않는다)", async () => {
+  it("★의무 역할 셋이 모두 붙은 틱 — 실제 refreshPaneTitles 한 번이 새 팀 탭의 안내를 「팀 자리가 모두 붙었습니다」로 바꾼다(본부 feed·slug 는 어디에도 쓰이지 않는다)", async () => {
     const { clock, toasts, lists, wsDept, fns } = setup();
-    // 자리가 하나씩 붙는 3초 틱들 — 다섯 전에는 '켜는 중'
-    for (const [t, n] of [[3, 1], [30, 2], [90, 3], [150, 4]] as const) {
+    // 자리가 하나씩 붙는 3초 틱들 — 셋이 다 붙기 전에는 '켜는 중'
+    for (const [t, n] of [[3, 1], [90, 2]] as const) {
       clock.now = T0 + t * 1000;
       lists[SOCK] = seatsOf(n);
       await fns.refreshPaneTitles();
@@ -2154,10 +2159,10 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
     }
     expect(names(toasts).every((x) => x === "팀원을 켜는 중")).toBe(true);
     clock.now = T0 + 252_000;
-    lists[SOCK] = seatsOf(5);
+    lists[SOCK] = seatsOf(3);
     await fns.refreshPaneTitles();
     const last = toasts[toasts.length - 1];
-    expect(last).toEqual({ id: ID, category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 5개가 모두 붙었습니다 · 걸린 시간 4분" });
+    expect(last).toEqual({ id: ID, category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 3개가 모두 붙었습니다 · 걸린 시간 4분" });
     expect(wsDept.formationDone).toBe(true);
     // 그 뒤 틱들은 더 갱신하지 않는다
     const n = toasts.length;
@@ -2167,21 +2172,21 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
     }
     expect(toasts.length).toBe(n);
   });
-  it("★본부 데몬의 좌석 목록이 다섯이어도(편성 feed 가 본부로 가는 그 데몬) 부서 탭은 자기 소켓의 목록(세 자리)으로만 판정된다 — 완료로 바뀌지 않는다", async () => {
+  it("★본부 데몬의 좌석 목록이 모두 붙어 있어도(편성 feed 가 본부로 가는 그 데몬) 부서 탭은 자기 소켓의 목록(두 자리)으로만 판정된다 — 완료로 바뀌지 않는다", async () => {
     const { clock, toasts, lists, wsDept, fns } = setup();
-    lists.undefined = seatsOf(5);
-    lists[SOCK] = seatsOf(3);
+    lists.undefined = seatsOf(3);
+    lists[SOCK] = seatsOf(2);
     clock.now = T0 + 120_000;
     await fns.refreshPaneTitles();
     expect(wsDept.formationDone).toBeUndefined();
     expect(names(toasts).every((x) => x === "팀원을 켜는 중")).toBe(true);
   });
   // ★R2F-UI(A3 M1 (b)): 이름·기대를 고쳤다 — 종전은 「상한을 한참 넘겨도 '확인 필요' 로 치지 않고 첫 안내뿐」 이었다(목록이 없는 팀은 상한에서 말이 없었다). 이제 목록을 못 받는 채 15분 상한에 닿으면
-  //   「팀 데몬이 응답하지 않습니다 — 확인 필요」(경고)를 한 번 알린다. 그 판정을 '완료로도 15분 경과로도 치지 않는' 것(목록이 없는 틱의 판정 건너뜀)은 그대로이고, 다음에 받은 틱의 판정도 그대로다(네 자리 → 15분 경과).
+  //   「팀 데몬이 응답하지 않습니다 — 확인 필요」(경고)를 한 번 알린다. 그 판정을 '완료로도 15분 경과로도 치지 않는' 것(목록이 없는 틱의 판정 건너뜀)은 그대로이고, 다음에 받은 틱의 판정도 그대로다(두 자리 → 15분 경과).
   it("★그 소켓의 좌석 목록을 못 받은 틱(응답 없음)은 판정을 건너뛴다 — 완료로도 15분 경과로도 치지 않고, 상한에서는 「팀 데몬이 응답하지 않습니다」 한 번 · 다음에 받은 틱에 판정한다 · 다른 소켓(본부)의 목록은 정상으로 처리된다", async () => {
     const { clock, toasts, lists, wsDept, fns } = setup();
     lists[SOCK] = "reject";
-    lists.undefined = seatsOf(5);
+    lists.undefined = seatsOf(3);
     clock.now = T0 + 1_000_000; // 15분 상한을 한참 넘었다
     await fns.refreshPaneTitles();
     expect(wsDept.formationDone).toBeUndefined();
@@ -2189,45 +2194,45 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
     expect(toasts[1]).toEqual({ id: ID, category: "watchdog", name: "팀 데몬이 응답하지 않습니다 — 확인 필요", detail: "좌석 목록을 받지 못했습니다 — Control Center 에서 팀 상태를 확인하세요 · 경과 16분" });
     await fns.refreshPaneTitles(); // 그 뒤 틱에서도 무응답이면 같은 알림을 되풀이하지 않는다
     expect(toasts.length).toBe(2);
-    lists[SOCK] = seatsOf(4); // 목록을 받았다 — 이제 판정한다(상한을 넘었고 네 자리뿐)
+    lists[SOCK] = seatsOf(2); // 목록을 받았다 — 이제 판정한다(상한을 넘었고 두 자리뿐)
     await fns.refreshPaneTitles();
     expect(toasts[toasts.length - 1]).toEqual({
       id: ID,
       category: "feed",
       name: "팀원 켜기 — 15분 경과",
-      detail: "붙은 자리 4개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요",
+      detail: "붙은 자리 2개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요",
     });
     expect(wsDept.formationDone).toBe(true);
   });
   // ★R2F-UI(A2 B-1): 이름·기대를 고쳤다 — 종전은 「확인 필요」(경고) · 「아직 4자리입니다 …」 였다. 이제 「15분 경과」(일반 알림) · 「붙은 자리 4개 — 설치하지 않은 프로그램의 자리는 생기지 않습니다 …」.
-  it("★15분 상한에 다섯이 안 붙었으면 「15분 경과」(일반 알림) 한 번 · 종료한 좌석은 세지 않는다(master 가 종료한 다섯 줄 = 붙은 자리 4개) · 그 뒤 틱은 말이 없다", async () => {
+  it("★15분 상한에 셋이 다 안 붙었으면 「15분 경과」(일반 알림) 한 번 · 종료한 좌석은 세지 않는다(master 가 종료한 세 줄 = 붙은 자리 2개) · 그 뒤 틱은 말이 없다", async () => {
     const { clock, toasts, lists, fns } = setup();
-    const list = seatsOf(5);
+    const list = seatsOf(3);
     list[0] = row(1, "master", { exited: true });
     lists[SOCK] = list;
     clock.now = T0 + 900_000;
     await fns.refreshPaneTitles();
     expect(toasts[toasts.length - 1].name).toBe("팀원 켜기 — 15분 경과");
     expect(toasts[toasts.length - 1].category).toBe("feed");
-    expect(toasts[toasts.length - 1].detail).toBe("붙은 자리 4개 — 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요");
+    expect(toasts[toasts.length - 1].detail).toBe("붙은 자리 2개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요");
     const n = toasts.length;
     for (const t of [903, 1000, 4000]) {
       clock.now = T0 + t * 1000;
-      lists[SOCK] = seatsOf(5);
+      lists[SOCK] = seatsOf(3);
       await fns.refreshPaneTitles();
     }
     expect(toasts.length).toBe(n);
   });
-  // ★후속(정체 판정): 실제 3초 틱 본문(refreshPaneTitles)으로 — 같은 3자리가 3분 넘게 이어지면 정체 알림 한 번 · 그 뒤 켜는 중 갱신 없음 · 다섯이 붙으면 「모두 붙었습니다」 한 번 · 목록을 못 받은 틱은 판정하지 않는다.
-  it("★(정체 판정) 3자리가 3분 넘게 그대로면 실제 틱이 「자리가 더 붙지 않습니다」(일반 알림)를 한 번만 알린다 — 179초는 아직 · 그 뒤 틱은 켜는 중 갱신을 되살리지 않고 · 다섯이 붙으면 「모두 붙었습니다」 한 번으로 끝", async () => {
+  // ★후속(정체 판정): 실제 3초 틱 본문(refreshPaneTitles)으로 — 같은 2자리가 3분 넘게 이어지면 정체 알림 한 번 · 그 뒤 켜는 중 갱신 없음 · 셋이 모두 붙으면 「모두 붙었습니다」 한 번 · 목록을 못 받은 틱은 판정하지 않는다.
+  it("★(정체 판정) 2자리가 3분 넘게 그대로면 실제 틱이 「자리가 더 붙지 않습니다」(일반 알림)를 한 번만 알린다 — 179초는 아직 · 그 뒤 틱은 켜는 중 갱신을 되살리지 않고 · 셋이 모두 붙으면 「모두 붙었습니다」 한 번으로 끝", async () => {
     const { clock, toasts, stickyToasts, lists, wsDept, fns } = setup();
-    for (const [t, n] of [[3, 1], [30, 2], [90, 3]] as const) {
+    for (const [t, n] of [[3, 1], [90, 2]] as const) {
       clock.now = T0 + t * 1000;
       lists[SOCK] = seatsOf(n);
       await fns.refreshPaneTitles();
     }
     const STALL_NAME = "팀원 켜기 — 자리가 더 붙지 않습니다";
-    lists[SOCK] = seatsOf(3);
+    lists[SOCK] = seatsOf(2);
     clock.now = T0 + 269_000; // 마지막 증가(90초) + 179초 — 아직
     await fns.refreshPaneTitles();
     expect(names(toasts).includes(STALL_NAME)).toBe(false);
@@ -2238,10 +2243,10 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       category: "feed",
       name: STALL_NAME,
       detail:
-        "3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 3개 · 경과 4분. 설치하지 않은 프로그램(claude·agy·codex)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요",
+        "3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 2개 · 경과 4분. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요",
     });
     expect(wsDept.formationDone).toBeUndefined(); // 접지 않는다 — 판정은 계속 본다
-    // 그 뒤 15분 상한까지(수명 만료를 흉내 내며) 같은 3자리 — 갱신도 추가 알림도 없다
+    // 그 뒤 15분 상한까지(수명 만료를 흉내 내며) 같은 2자리 — 갱신도 추가 알림도 없다
     const n = toasts.length;
     for (let t = 273; t <= 899; t += 13) {
       clock.now = T0 + t * 1000;
@@ -2249,12 +2254,12 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       await fns.refreshPaneTitles();
     }
     expect(toasts.length).toBe(n);
-    // 상한 전에 다섯이 모두 붙었다 — 「모두 붙었습니다」 한 번
+    // 상한 전에 셋이 모두 붙었다 — 「모두 붙었습니다」 한 번
     clock.now = T0 + 895_000;
-    lists[SOCK] = seatsOf(5);
+    lists[SOCK] = seatsOf(3);
     await fns.refreshPaneTitles();
     expect(toasts.length).toBe(n + 1);
-    expect(toasts[toasts.length - 1]).toEqual({ id: ID, category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 5개가 모두 붙었습니다 · 걸린 시간 14분" });
+    expect(toasts[toasts.length - 1]).toEqual({ id: ID, category: "feed", name: "팀 자리가 모두 붙었습니다", detail: "자리 3개가 모두 붙었습니다 · 걸린 시간 14분" });
     expect(wsDept.formationDone).toBe(true);
     for (const t of [898, 1200, 4000]) {
       clock.now = T0 + t * 1000;
@@ -2264,12 +2269,12 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
   });
   it("★(정체 판정) 정체 알림 뒤 15분 상한에 닿아도 실제 틱은 추가 알림을 내지 않는다(「15분 경과」 없음) — 조용히 끝난다", async () => {
     const { clock, toasts, lists, wsDept, fns } = setup();
-    for (const [t, n] of [[3, 1], [30, 2], [90, 3]] as const) {
+    for (const [t, n] of [[3, 1], [90, 2]] as const) {
       clock.now = T0 + t * 1000;
       lists[SOCK] = seatsOf(n);
       await fns.refreshPaneTitles();
     }
-    lists[SOCK] = seatsOf(3);
+    lists[SOCK] = seatsOf(2);
     clock.now = T0 + 270_000;
     await fns.refreshPaneTitles();
     expect(toasts[toasts.length - 1].name).toBe("팀원 켜기 — 자리가 더 붙지 않습니다");
@@ -2284,7 +2289,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
   });
   it("★(정체 판정) 목록을 못 받은 틱은 정체를 판정하지 않는다 — 응답 없음이 몇 분 이어져도 정체 알림은 없고(상한 전), 목록이 돌아온 틱에 판정한다", async () => {
     const { clock, toasts, lists, fns } = setup();
-    for (const [t, n] of [[3, 1], [30, 2], [90, 3]] as const) {
+    for (const [t, n] of [[3, 1], [90, 2]] as const) {
       clock.now = T0 + t * 1000;
       lists[SOCK] = seatsOf(n);
       await fns.refreshPaneTitles();
@@ -2295,14 +2300,14 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       await fns.refreshPaneTitles();
     }
     expect(names(toasts).includes("팀원 켜기 — 자리가 더 붙지 않습니다")).toBe(false); // 180초를 넘겼지만 목록이 없었다
-    lists[SOCK] = seatsOf(3); // 목록이 돌아왔다 — 마지막 증가 + 510초
+    lists[SOCK] = seatsOf(2); // 목록이 돌아왔다 — 마지막 증가 + 510초
     clock.now = T0 + 600_000 + 3000;
     await fns.refreshPaneTitles();
     expect(toasts[toasts.length - 1].name).toBe("팀원 켜기 — 자리가 더 붙지 않습니다");
   });
   it("새 RPC 없음 — 한 틱의 호출은 소켓마다 list_surfaces 한 번뿐(본부 + 새 팀 = 2회)이고, 이전 틱이 진행 중(refreshing)이면 점검도 건너뛴다(종전 계약)", async () => {
     const { clock, lists, invokes, fns, scope, toasts } = setup();
-    lists[SOCK] = seatsOf(5);
+    lists[SOCK] = seatsOf(3);
     clock.now = T0 + 100_000;
     scope.refreshing = true;
     await fns.refreshPaneTitles();
@@ -2433,17 +2438,17 @@ describe("★S4 m3 — 실제 토스트 기계(stickyToast · addToastCloseButto
     fns.checkDeptFormationNotices(new Map([[SOCK, ["master", "cso"]]]));
     expect(stickyToasts.has(ID)).toBe(false);
   });
-  it("× 로 닫은 뒤에도 최종 안내(다섯이 붙음)는 한 번 난다 · 같은 id 의 다시 내기는 같은 엘리먼트를 갱신한다(두 개로 쌓이지 않는다)", () => {
+  it("× 로 닫은 뒤에도 최종 안내(셋이 모두 붙음)는 한 번 난다 · 같은 id 의 다시 내기는 같은 엘리먼트를 갱신한다(두 개로 쌓이지 않는다)", () => {
     const { fns, ws, stickyToasts, closeButton, clock } = setup();
     fns.showDeptFormation(ws, "booting");
     closeButton().click();
     clock.now = T0 + 130_000;
-    const roles = ["master", "cso", "worker", "reviewer-gemini", "reviewer-codex"];
+    const roles = ["master", "cso", "worker"]; // (1.1.8 병합 DS-1) 우리 편성 정본 3석
     fns.checkDeptFormationNotices(new Map([[SOCK, roles]]));
     expect(stickyToasts.has(ID)).toBe(true);
     const el = (stickyToasts.get(ID) as { el: ToastEl }).el;
     expect(el.querySelector(".toast-name")?.textContent).toBe("팀 자리가 모두 붙었습니다");
-    expect(el.querySelector(".toast-detail")?.textContent).toBe("자리 5개가 모두 붙었습니다 · 걸린 시간 2분");
+    expect(el.querySelector(".toast-detail")?.textContent).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 2분");
     expect(ws.formationDone).toBe(true);
     // 같은 id 로 다시 내면(여기서는 직접) 새 엘리먼트를 만들지 않고 갱신한다
     fns.showDeptFormation(ws, "check", 3);
@@ -2493,7 +2498,7 @@ describe("★S4 n1 — 「팀 직접 만들기」 실패 알림은 지속 알림
   }
   const ctx = { registry: null, catalog: null };
 
-  it("★일반 실패(코드 1·2·그 밖 · 평문)는 sticky 알림 하나 — id 는 고정(같은 실패는 갱신) · 등급 watchdog · 이름 '팀 만들기 실패' · **문구는 받은 그대로**(앞에 붙는 것도 자르는 것도 없다) · 일반 토스트(8초)는 아니다", async () => {
+  itDormant("★일반 실패(코드 1·2·그 밖 · 평문)는 sticky 알림 하나 — id 는 고정(같은 실패는 갱신) · 등급 watchdog · 이름 '팀 만들기 실패' · **문구는 받은 그대로**(앞에 붙는 것도 자르는 것도 없다) · 일반 토스트(8초)는 아니다", async () => {
     // Tauri 의 invoke 는 Rust `Err(String)` 을 **문자열**로 reject 한다(launchDept 가 String(e) 로 읽는다) — 검체도 문자열로 흘려 넣는다.
     for (const err of [LONG, `dept-create:2:팀 소개 기록 실패`, "dept-create:6:시드 실패", "평문 오류(레거시 allocate 실패)", "dept-create:-1:x"]) {
       const { fns, toasts } = setup(err);
@@ -2504,7 +2509,7 @@ describe("★S4 n1 — 「팀 직접 만들기」 실패 알림은 지속 알림
     }
     expect(LONG.length).toBeGreaterThan(150); // 8초 토스트로는 읽고 옮기기 어려운 길이다 — 이 실패 알림이 지속 알림이어야 하는 이유
   });
-  it("계정 격리 불가(5)·카탈로그 키(4)는 종전 일반 토스트 그대로 — 짧은 고정 문구라 지속 알림으로 바꾸지 않는다(이 알림만 바꾼다)", async () => {
+  itDormant("계정 격리 불가(5)·카탈로그 키(4)는 종전 일반 토스트 그대로 — 짧은 고정 문구라 지속 알림으로 바꾸지 않는다(이 알림만 바꾼다)", async () => {
     const five = setup("dept-create:5:account dir 미존재");
     await five.fns.launchDept("sales", ctx, "영업팀");
     expect(five.toasts).toEqual([{ fn: "toast", args: ["watchdog", "부서 생성 차단(계정 격리 불가)", "account dir 미존재 — 레거시 폴백 금지(보안). 카탈로그 account 경로 점검."] }]);
@@ -2512,12 +2517,12 @@ describe("★S4 n1 — 「팀 직접 만들기」 실패 알림은 지속 알림
     await four.fns.launchDept("sales", ctx, "영업팀");
     expect(four.toasts).toEqual([{ fn: "toast", args: ["watchdog", "부서 생성 실패(카탈로그 키)", "카탈로그 미정의 부서 — 레거시 폴백 안 함."] }]);
   });
-  it("exit 3(카탈로그 부재)는 종전대로 새 대상 재확인 창을 거친다 — 알림을 내지 않고, 거절하면 cancelled", async () => {
+  itDormant("exit 3(카탈로그 부재)는 종전대로 새 대상 재확인 창을 거친다 — 알림을 내지 않고, 거절하면 cancelled", async () => {
     const { fns, toasts } = setup("dept-create:3:카탈로그 없음");
     expect(await fns.launchDept("sales", ctx, "영업팀")).toBe("cancelled");
     expect(toasts).toEqual([]);
   });
-  it("★새 시도가 시작되면 지난 실패 알림(지속 알림 · 수명 60초)을 걷는다 — 재시도가 성공했는데 '팀 만들기 실패' 가 남아 있지 않다 · 실패하면 같은 id 로 다시 난다 · 진행 중(busy)·차단 때는 건드리지 않는다", async () => {
+  itDormant("★새 시도가 시작되면 지난 실패 알림(지속 알림 · 수명 60초)을 걷는다 — 재시도가 성공했는데 '팀 만들기 실패' 가 남아 있지 않다 · 실패하면 같은 id 로 다시 난다 · 진행 중(busy)·차단 때는 건드리지 않는다", async () => {
     const ok = setup(undefined);
     expect(await ok.fns.launchDept("sales", ctx, "영업팀")).toBe("created");
     expect(ok.dismissed).toEqual(["dept-create-failed"]);
@@ -2531,7 +2536,7 @@ describe("★S4 n1 — 「팀 직접 만들기」 실패 알림은 지속 알림
     expect(f.indexOf('dismissToast("dept-create-failed");')).toBeGreaterThan(f.indexOf("deptLaunchInFlight = true;"));
     expect(f.indexOf('dismissToast("dept-create-failed");')).toBeLessThan(f.indexOf("await addDeptWorkspace(catalogKey);"));
   });
-  it("성공은 알림 없음 · 실패 뒤에도 진행 중 가드와 버튼이 풀린다(종전 계약)", async () => {
+  itDormant("성공은 알림 없음 · 실패 뒤에도 진행 중 가드와 버튼이 풀린다(종전 계약)", async () => {
     const ok = setup(undefined);
     expect(await ok.fns.launchDept("sales", ctx, "영업팀")).toBe("created");
     expect(ok.toasts).toEqual([]);
@@ -2550,7 +2555,7 @@ describe("★S4 n1 — 「팀 직접 만들기」 실패 알림은 지속 알림
     // (1.1.8 병합) 우리 stickyToast 는 원문 칸(raw · D4#14)을 이력에도 싣는다 — 같은 id 합침은 그대로.
     expect(st).toContain("recordAlarm(category, name, detail, id, raw);"); // 같은 id 는 이력에서 합쳐진다
   });
-  it("★배선 핀: launchDept 의 일반 실패 분기가 stickyToast(\"dept-create-failed\", \"watchdog\", \"팀 만들기 실패\", msg) 하나 — 같은 분기에 일반 toast 가 남아 있지 않다 · 다른 호출 경로(팔레트·메뉴의 .catch)는 이번 범위가 아니다", () => {
+  itDormant("★배선 핀: launchDept 의 일반 실패 분기가 stickyToast(\"dept-create-failed\", \"watchdog\", \"팀 만들기 실패\", msg) 하나 — 같은 분기에 일반 toast 가 남아 있지 않다 · 다른 호출 경로(팔레트·메뉴의 .catch)는 이번 범위가 아니다", () => {
     const f = fnText("launchDept", true);
     expect(f).toContain('stickyToast("dept-create-failed", "watchdog", "팀 만들기 실패", msg);');
     expect(f.includes('toast("watchdog", "팀 만들기 실패", msg)')).toBe(false);

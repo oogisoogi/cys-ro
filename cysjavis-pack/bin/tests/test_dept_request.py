@@ -1581,6 +1581,26 @@ class TestChatHook(Base):
         rc, o4 = self.run_cmd("confirm", rid)
         self.assertEqual(rc, 0, o4)
 
+    def test_j7a_unreadable_origin_is_not_recorded_as_human(self):
+        """J-📌7ⓐ(1.1.8 · c0a66a3b): 출처 판독 불가(None — 원장 판정기 부재)면 「네」도 사람 답으로 기록하지 않는다
+        (fail-open 제거 · confirm 은 human_unverified 로 되묻는다)."""
+        self.hook("부서 만들어 줘")
+        rc, o = self.propose()
+        rid = o["request"]
+        import sys as _s
+        saved = _s.modules.get("javis_mission")
+        _s.modules["javis_mission"] = None
+        try:
+            self.hook("네")
+        finally:
+            if saved is None:
+                _s.modules.pop("javis_mission", None)
+            else:
+                _s.modules["javis_mission"] = saved
+        self.assertFalse(os.path.exists(self.m.ack_path(rid)), "판독 불가 출처를 사람 답으로 기록했다(fail-open)")
+        rc, o2 = self.run_cmd("confirm", rid)
+        self.assertEqual(o2.get("reason"), "human_unverified", o2)
+
     def test_no_hook_machine_keeps_old_behavior(self):
         rc, o = self.propose()
         self.assertFalse(self.req(o["request"]).get("human_axis"))

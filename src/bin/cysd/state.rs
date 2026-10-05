@@ -4049,6 +4049,14 @@ pub struct Daemon {
     /// 되살릴 의미가 없고, topology 스키마를 넓히면 조작 표면만 늘어난다. TTL은 create 재시도
     /// 창과 동일한 CREATE_IDEM_TTL_SECS를 재사용하고 만료분은 insert 시 lazy GC 한다.
     pub create_owner: Mutex<HashMap<u64, (u64, f64)>>,
+    /// ★D19(1.1.8 · 윈 결함 보고 10-05) **생성자 원장(무기한 · 좌석 수명)** — 새 surface id → 그것을 만든 pane surface id.
+    /// `create_owner`(롤백 전용 · TTL)와 달리 좌석이 살아 있는 동안 유지되고 닫히면 지운다. 소비자 = `surface.close`
+    /// 소유 게이트의 「생성자 닫기」 예외 하나(MASTER_DIRECTIVE §8 「자기/생성자 한정」 문면과 코드 일치 · 종전엔 생성자도
+    /// close_denied 라 master 가 자기가 띄운 워커를 못 닫고 그 좌석에 자기 닫기를 지시해야 했다 — 25초 우회).
+    /// 영속하지 않는다(데몬 재시작 = 원장 소실 → 그 뒤엔 종전처럼 자기 닫기만 · 안전 방향).
+    /// 값 = (생성자 surface id, 생성 시각 epoch). 권한 시한 = [`creator_close_ttl_secs`](기본 24h · master 결정 A′
+    /// [master#8761726c] — 원작자 T-0147-4 의 「오래 전 내가 만든 pane 을 언제든 죽일 권한으로 자라지 않게」 취지를 시한 값만 바꿔 유지).
+    pub created_by: Mutex<HashMap<u64, (u64, f64)>>,
     /// ★(0.14.31 · WP-4 R2 · codex major) **재결합 시도 취소 원장** — `attempt_id` → 취소 epoch.
     ///
     /// 왜 필요한가: `role.reclaim_auto` 의 왕복이 클라이언트 예산 안에 끝나지 않으면 CLI 는
@@ -5097,6 +5105,19 @@ pub const CREATE_IDEM_TTL_SECS: f64 = 120.0;
 /// 적혀 있어야 순서가 갈리지 않는다. `start_time` 이 `Option` 인 것은 관측 실패를 값으로
 /// 보존하기 위함이며, 판정부는 그 `None` 을 **거부**로 읽는다(fail-closed).
 pub type CreateCallerEntry = (u32, Option<u64>, f64);
+
+/// ★D19(1.1.8) 생성자 닫기 권한 시한(초) — env `CYS_CREATOR_CLOSE_TTL_SECS`(양의 정수) · 기본 86,400(24h).
+/// 0·비숫자·음수 = 기본값(무기한 금지 — master 결정 A′).
+pub const CREATOR_CLOSE_TTL_DEFAULT_SECS: f64 = 86_400.0;
+pub fn creator_close_ttl_secs() -> f64 {
+    creator_close_ttl_from(std::env::var("CYS_CREATOR_CLOSE_TTL_SECS").ok().as_deref())
+}
+/// [`creator_close_ttl_secs`] 의 순수 판.
+pub fn creator_close_ttl_from(v: Option<&str>) -> f64 {
+    v.and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .map_or(CREATOR_CLOSE_TTL_DEFAULT_SECS, |n| n as f64)
+}
 
 /// ★결함8 창작자 원장(`create_caller`) TTL(초) — **창작자 등급이 유효한 창**.
 ///
@@ -6223,6 +6244,7 @@ impl Daemon {
             create_idem: Mutex::new(HashMap::new()),
             parked_queues: Mutex::new(HashMap::new()),
             create_owner: Mutex::new(HashMap::new()),
+            created_by: Mutex::new(HashMap::new()),
             reclaim_cancelled: Mutex::new(HashMap::new()),
             create_caller: Mutex::new(HashMap::new()),
             ledger: Mutex::new(HashMap::new()),

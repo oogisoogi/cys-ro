@@ -392,6 +392,12 @@ fn rollback_allowed(
     })
 }
 
+/// ★D19(1.1.8 · master 결정 A′) 생성자 닫기 판정(순수) — 좌석 수명 원장 항목이 있고 · 생성자가 호출 pane 이고 ·
+/// 생성 뒤 시한(`ttl`) 안일 때만. 원장 부재(남이 만든 좌석 · 데몬 재시작 뒤) = 거부.
+fn creator_close_allowed(entry: Option<(u64, f64)>, caller_sid: u64, now: f64, ttl: f64) -> bool {
+    entry.is_some_and(|(creator, ts)| creator == caller_sid && now - ts < ttl)
+}
+
 /// 데몬 상태(create_owner 원장)를 읽어 `rollback_allowed`에 위임한다.
 /// 락 규약: `create_owner`는 **리프 락** — surfaces/roles를 쥔 채 잡지 않는다(AB-BA 차단).
 /// 이 함수는 close 게이트에서 다른 락 없이 호출된다.
@@ -5806,6 +5812,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     let creator_surface = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
                     if let Some(cs) = creator_surface {
                         record_create_owner(daemon, s.id, cs);
+                        // ★D19(1.1.8): 좌석 수명 생성자 원장(닫기 게이트의 생성자 예외 · state::created_by).
+                        daemon.created_by.lock().unwrap().insert(s.id, (cs, crate::state::now_epoch()));
                     }
                     // ★D7⑶(1.1.5 트랙 DAEMON) — **좌석을 만든 주체를 이벤트 스트림에 1줄 남긴다.**
                     //
@@ -7425,7 +7433,20 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 // 여기서 close_denied 되면 실패한 surface가 role을 쥔 채 남아 고아 좌석이 된다(사망 감지
                 // 스킵·부활 명단 제외 → 사용자는 백지 창을 "죽은 master"로 오인). 판정 3조건은
                 // rollback_allowed 참조 — 남의 surface·OwnerClose·만료는 여전히 전부 거부다.
-                if cs != sid && !creator_rollback_ok(daemon, sid, cs, cause) {
+                // ★D19(1.1.8 · BACKLOG D19): 예외 둘째 — **생성자**(state::created_by 기록 = 이 surface 를 만든 pane)는
+                //   자기가 만든 좌석을 닫을 수 있다(MASTER_DIRECTIVE §8 「자기/생성자 한정」 문면과 일치). 생성 기록 대조라
+                //   남의 좌석은 여전히 거부다. (위 G4 의 「예외 누적 금지」는 회수 RPC(reap) 축의 봉인이고, 이 예외는
+                //   지침 문면이 정한 소유 정의 자체다 — 감사 이벤트 surface.close_by_creator 로 남긴다.)
+                //   ★master 결정 A′([master#8761726c]): 시한 = 생성 뒤 24h(설정 키 · 무기한 금지) — 원작자 T-0147-4 불변식 2개의
+                //   「생성자라도 OwnerClose 거부 · 만료 후 거부」 를 「원장 있는 생성자만 · 24h 안에서만」 으로 조정(새 위험 = 누가 누르느냐뿐).
+                let by_creator = cs != sid
+                    && creator_close_allowed(
+                        daemon.created_by.lock().unwrap().get(&sid).copied(),
+                        cs,
+                        crate::state::now_epoch(),
+                        crate::state::creator_close_ttl_secs(),
+                    );
+                if cs != sid && !by_creator && !creator_rollback_ok(daemon, sid, cs, cause) {
                     daemon.bus.publish(
                         "surface.close_denied",
                         "surface",
@@ -7444,7 +7465,15 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 // 감사 흔적: 예외로 통과한 롤백은 조용히 지나가지 않는다(권한 게이트 우회처럼 보이는
                 // 정상 동작이므로, 사후 조사에서 "누가 무엇을 되돌렸는지"가 이벤트로 남아야 한다).
                 // 거부 이벤트(surface.close_denied)는 현행 그대로 — 소비자 계약 무변경.
-                if cs != sid {
+                if by_creator {
+                    daemon.bus.publish(
+                        "surface.close_by_creator",
+                        "surface",
+                        Some(sid),
+                        json!({"requested_surface": sid, "creator_surface": cs,
+                               "caller_pid": caller_pid, "cause": format!("{cause:?}")}),
+                    );
+                } else if cs != sid {
                     daemon.bus.publish(
                         "surface.close_rollback",
                         "surface",
@@ -7460,6 +7489,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     // surface_id 는 재발급되지 않지만(next_id 단조), 원장을 필요 이상으로
                     // 살려 두지 않는 것이 창작자 등급의 '창' 의미론과 맞다.
                     daemon.create_caller.lock().unwrap().remove(&sid);
+                    daemon.created_by.lock().unwrap().remove(&sid);
                     Reply::Single(ok_response(
                         &id,
                         json!({"surface_id": sid, "closed": true, "cause": format!("{cause:?}")}),
@@ -25246,6 +25276,56 @@ mod tests {
         );
     }
 
+    /// ★D19(1.1.8) 생성자 닫기 — surface.create 를 부른 pane(생성 기록)은 TTL 과 무관하게 자기가 만든 좌석을 닫을 수 있고
+    /// (OwnerClose · 감사 이벤트 surface.close_by_creator), 생성자가 아닌 pane 은 여전히 close_denied 다.
+    #[test]
+    fn d19_creator_may_close_created_surface_others_denied() {
+        let daemon = claim_daemon();
+        let master = make_surface(&daemon, Some("master"));
+        let other = make_surface(&daemon, Some("worker-2"));
+        let (master_pid, other_pid) = (993_901_u32, 993_902_u32);
+        bind_caller(&daemon, master_pid, master);
+        bind_caller(&daemon, other_pid, other);
+        let req = Request {
+            id: json!(1),
+            method: "surface.create".into(),
+            params: json!({"cmd": "sleep 30", "role": "worker-9", "rows": 24, "cols": 80}),
+        };
+        let Reply::Single(created) = dispatch(&daemon, req, Some(master_pid)) else { panic!("single") };
+        let child = created["result"]["surface_id"].as_u64().expect("생성 실패");
+        assert_eq!(daemon.created_by.lock().unwrap().get(&child).map(|e| e.0), Some(master), "생성 기록 = master pane");
+        // 생성 롤백 TTL 이 지났다고 가정(롤백 예외로 통과하지 않음을 분리) — 롤백 원장만 비운다.
+        daemon.create_owner.lock().unwrap().clear();
+        let mut rx = daemon.bus.subscribe();
+        let denied = close_surface_rpc(&daemon, child, Some(other_pid), None);
+        assert_eq!(denied["error"]["code"], json!("close_denied"), "생성자 아닌 pane: {denied}");
+        let ok = close_surface_rpc(&daemon, child, Some(master_pid), None);
+        assert_eq!(ok["ok"], json!(true), "생성자 닫기 거부: {ok}");
+        assert!(!daemon.surfaces.lock().unwrap().contains_key(&child));
+        assert!(daemon.created_by.lock().unwrap().get(&child).is_none(), "닫은 뒤 원장 정리");
+        let mut audited = false;
+        while let Ok(ev) = rx.try_recv() {
+            if ev["name"].as_str() == Some("surface.close_by_creator") {
+                audited = ev["payload"]["creator_surface"] == json!(master);
+            }
+        }
+        assert!(audited, "생성자 닫기 감사 이벤트 부재");
+    }
+
+    /// ★D19 시한 판정(순수) + 설정 키 — 기본 24h · 0/비숫자 = 기본(무기한 금지).
+    #[test]
+    fn d19_creator_close_ttl_table() {
+        let now = 1_000_000.0;
+        assert!(creator_close_allowed(Some((5, now - 10.0)), 5, now, 86_400.0));
+        assert!(!creator_close_allowed(Some((5, now - 86_401.0)), 5, now, 86_400.0), "시한 밖");
+        assert!(!creator_close_allowed(Some((6, now - 10.0)), 5, now, 86_400.0), "생성자 불일치");
+        assert!(!creator_close_allowed(None, 5, now, 86_400.0), "원장 부재");
+        assert_eq!(crate::state::creator_close_ttl_from(None), 86_400.0);
+        assert_eq!(crate::state::creator_close_ttl_from(Some("0")), 86_400.0, "0 = 무기한 금지 → 기본");
+        assert_eq!(crate::state::creator_close_ttl_from(Some("x")), 86_400.0);
+        assert_eq!(crate::state::creator_close_ttl_from(Some("3600")), 3_600.0);
+    }
+
     /// 대조군 ①: 자기 surface close는 통과 (cs == sid). 정상 종료 경로 박제.
     #[test]
     fn close_allows_self() {
@@ -25339,6 +25419,9 @@ mod tests {
 
     /// ⓑ 예외는 **cause=reap 한정**. 생성자라도 cause 미지정(=OwnerClose)이면 여전히 거부다 —
     /// OwnerClose 는 묘비를 심어 그 역할을 영구 폐역시키므로, 타 surface 에 대해선 절대 열지 않는다.
+    /// ★1.1.8 D19 조정(master 결정 A′ [master#8761726c] · 원장 1줄 · 시험 이름 유지): 「원장(생성 기록) 있는 생성자 =
+    /// OwnerClose 허용(묘비 · 감사 이벤트 surface.close_by_creator) · 원장 없는 pane = 거부」 로 기대값을 바꾼다.
+    /// 지침 MASTER_DIRECTIVE §8 「close-surface(자기/생성자 한정)」 문면에 코드를 맞춘 것이다(윈 실측 25초 우회 해소).
     #[test]
     fn close_denies_creator_owner_close() {
         let daemon = claim_daemon();
@@ -25346,17 +25429,26 @@ mod tests {
         let creator_pid = 993_302_u32;
         bind_caller(&daemon, creator_pid, creator);
 
+        // 원장 없는 pane(생성 기록 없음 = 남이 만든 좌석과 같다) → 여전히 거부.
+        let foreign = make_surface(&daemon, Some("worker-5"));
+        let denied = close_surface_rpc(&daemon, foreign, Some(creator_pid), None);
+        assert_eq!(denied["error"]["code"], json!("close_denied"), "원장 없는 좌석 OwnerClose: {denied}");
+        assert!(daemon.surfaces.lock().unwrap().contains_key(&foreign));
+
         let child = create_from_pane(&daemon, creator_pid, Some("worker"));
+        let mut rx = daemon.bus.subscribe();
         let resp = close_surface_rpc(&daemon, child, Some(creator_pid), None);
-        assert_eq!(
-            resp["ok"], json!(false),
-            "생성자의 OwnerClose 가 통과했다 = 예외가 cause 를 무시한다 (응답: {resp})"
-        );
-        assert_eq!(resp["error"]["code"], json!("close_denied"));
+        assert_eq!(resp["ok"], json!(true), "원장 있는 생성자의 OwnerClose 거부 (응답: {resp})");
+        assert!(!daemon.surfaces.lock().unwrap().contains_key(&child), "허용됐는데 surface 가 남았다");
         assert!(
-            daemon.surfaces.lock().unwrap().contains_key(&child),
-            "거부됐는데 surface 가 닫혔다"
+            daemon.tombstones.lock().unwrap().contains("worker"),
+            "OwnerClose 는 묘비를 남긴다(의도된 폐역)"
         );
+        let mut audited = false;
+        while let Ok(ev) = rx.try_recv() {
+            audited |= ev["name"].as_str() == Some("surface.close_by_creator");
+        }
+        assert!(audited, "생성자 닫기 감사 이벤트 부재");
     }
 
     /// ⓒ 기존 위협모델 불변식 박제: **남이 만든** surface 는 cause="reap" 을 붙여도 거부다.
@@ -25401,6 +25493,13 @@ mod tests {
             let mut owners = daemon.create_owner.lock().unwrap();
             let entry = owners.get_mut(&child).expect("create_owner entry");
             entry.1 = crate::state::now_epoch() - crate::state::CREATE_IDEM_TTL_SECS - 1.0;
+        }
+        // ★1.1.8 D19 조정(master 결정 A′ · 원장 1줄): 생성자 권한 시한이 롤백 TTL 에서 생성자 닫기 시한(기본 24h ·
+        //   state::creator_close_ttl_secs)으로 늘었다 — 「만료 후 거부」 취지는 그 새 시한으로 잰다.
+        {
+            let mut by = daemon.created_by.lock().unwrap();
+            let entry = by.get_mut(&child).expect("created_by entry");
+            entry.1 = crate::state::now_epoch() - crate::state::creator_close_ttl_secs() - 1.0;
         }
 
         let resp = close_surface_rpc(&daemon, child, Some(creator_pid), Some("reap"));

@@ -12181,7 +12181,8 @@ exit 0
     fn j2_install_update_records_before_download_and_clears_only_on_err() {
         let src = include_str!("main.rs");
         let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
-        let at = prod.find("async fn install_update(").expect("install_update 소실");
+        // ★과도기(1.1.8 U4 가 install_update 경로 삭제 시 이 핀도 삭제 · DECISION-TABLE §0 14 각주) — B7 뒤 install_update 는 맥/그 밖 분기기라 원작자 본문(J2·WU)은 install_update_plugin 에 있다(master#e83a1719 A).
+        let at = prod.find("async fn install_update_plugin(").expect("install_update_plugin 소실");
         let end = at + prod[at..].find("\n}\n").expect("fn 끝");
         let body = &prod[at..end];
         let write = body.find("write_update_attempt_at(").expect("시도 기록 쓰기가 install_update 에 없다");
@@ -12287,7 +12288,15 @@ exit 0
     /// 종전 경로(노브 `0`)와 맥·리눅스 꼬리(번들 무결성 검사·drain·핸드오프·재시작)는 그대로다 — 설치기 실행·종료 호출은 `install_update` 에 없다(전부 윈도우 분기 함수 안).
     #[test]
     fn wu_install_update_has_a_checked_windows_branch_and_keeps_the_old_path() {
-        let body = wu_seg("async fn install_update(");
+        // ★과도기(1.1.8 U4 가 install_update 경로 삭제 시 이 핀도 삭제 · DECISION-TABLE §0 14 각주) — B7 뒤 install_update 는 맥/그 밖 분기기라 원작자 본문(J2·WU)은 install_update_plugin 에 있다(master#e83a1719 A).
+        // 분기기: 맥 = install_update_darwin(B7) · 그 밖 = install_update_plugin — 윈도우는 아래 본문으로 간다.
+        let disp = wu_code(wu_seg("async fn install_update("));
+        let (mac, plug) = (
+            disp.find("if cfg!(target_os = \"macos\") {\n        return install_update_darwin(app, force).await;\n    }").expect("분기기: 맥 = install_update_darwin 소실"),
+            disp.find("install_update_plugin(app, force).await").expect("분기기: 그 밖 = install_update_plugin 소실"),
+        );
+        assert!(mac < plug, "분기기 순서: 맥 갈래가 먼저 돌려준 뒤 그 밖 = 플러그인 경로");
+        let body = wu_seg("async fn install_update_plugin(");
         let code = wu_code(body);
         let branch = "    #[cfg(windows)]\n    if update_checked_launch_from_env(cys::env_compat(\"CYS_UPDATE_CHECKED_LAUNCH\").as_deref()) {\n        return install_update_checked_windows(&app, &update, &attempt_path, verify_on).await;\n    }\n";
         let b = code.find(branch).expect("윈도우 분기(노브 → install_update_checked_windows 호출 → 곧바로 돌려줌)가 소실됐거나 모양이 바뀌었다");
@@ -12311,8 +12320,6 @@ exit 0
         for token in [
             ".download_and_install(",
             "return Err(e.to_string());",
-            "#[cfg(target_os = \"macos\")]\n    if let Some(msg) = bundle_integrity_guidance() {",
-            "return Err(msg);",
             "sealed_sidecar_cys(&[\"drain\"]).status()",
             "std::fs::write(pending_restore_path(), \"\")",
             "stop_running_daemon().await;",
@@ -12322,6 +12329,9 @@ exit 0
             pos = at + token.len();
         }
         assert!(!tail.contains("update_checked_launch_from_env"), "종전 경로 안에 윈도우 분기 노브가 섞였다");
+        // 맥 번들 무결성 검사는 B7 로 install_update_darwin(9-b)에 있다 — 이 본문(맥에서 안 도는 경로)에 남기면 영원히 안 도는 코드다.
+        assert!(!code.contains("bundle_integrity_guidance"), "맥 무결성 검사가 플러그인 경로에 남았다(B7 = 맥 경로 몫)");
+        assert!(wu_code(wu_seg("async fn install_update_darwin(")).contains("bundle_integrity_guidance_at(&target)"), "맥 무결성 검사가 install_update_darwin 에 없다");
     }
 
     /// ★WU 배선 핀(윈도우 분기 함수): 받기(`download`) → exe 판정 → 같은 임시 경로 쓰기 → 같은 인자 → 띄우기 → (성공한 뒤에만) 종료 준비·종료.
@@ -12477,7 +12487,8 @@ exit 0
     fn r1fua_checked_launch_command_reads_the_same_knob_as_the_windows_branch() {
         let knob = "cys::env_compat(\"CYS_UPDATE_CHECKED_LAUNCH\").as_deref()";
         assert_eq!(wu_code(wu_prod()).matches(knob).count(), 2, "노브를 읽는 곳이 둘(install_update 의 윈도우 분기 · update_checked_launch_enabled)이 아니다");
-        let install = wu_code(wu_seg("async fn install_update("));
+        // ★과도기(1.1.8 U4 가 install_update 경로 삭제 시 이 핀도 삭제 · DECISION-TABLE §0 14 각주) — B7 뒤 install_update 는 맥/그 밖 분기기라 원작자 본문(J2·WU)은 install_update_plugin 에 있다(master#e83a1719 A).
+        let install = wu_code(wu_seg("async fn install_update_plugin("));
         assert_eq!(install.matches(knob).count(), 1, "실제 선택(install_update)이 노브를 읽지 않는다");
         assert!(
             install.contains(&format!("if update_checked_launch_from_env({knob}) {{")),
@@ -12587,7 +12598,8 @@ exit 0
         );
         assert!(!code[settle..end].contains("restamp_update_attempt_at"), "막혔을 때의 정리 클로저에 다시 쓰기가 있다 — 막힌 실행의 기록을 되살린다");
         // 처음 기록과 같은 from·to 식을 쓴다(현재 버전 = CARGO_PKG_VERSION · 받은 버전 = update.version) · 맥/리눅스 경로는 이 기능을 모른다
-        let base = wu_code(wu_seg("async fn install_update("));
+        // ★과도기(1.1.8 U4 가 install_update 경로 삭제 시 이 핀도 삭제 · DECISION-TABLE §0 14 각주) — B7 뒤 install_update 는 맥/그 밖 분기기라 원작자 본문(J2·WU)은 install_update_plugin 에 있다(master#e83a1719 A).
+        let base = wu_code(wu_seg("async fn install_update_plugin("));
         assert!(base.contains("env!(\"CARGO_PKG_VERSION\"),") && base.contains("&update.version,"), "처음 기록의 from·to 식이 바뀌었다");
         assert!(!base.contains("restamp_update_attempt_at"), "install_update(맥·리눅스 · 노브 0 의 종전 경로)에 다시 쓰기가 섞였다");
         // 제품 코드 전체에서 정의 1 + 호출 1

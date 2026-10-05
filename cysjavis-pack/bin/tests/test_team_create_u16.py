@@ -105,7 +105,10 @@ def make_env(home):
                 "CYS_DEPT_NO_MASTER": "1",
                 "PATH": os.path.join(home, ".local", "bin") + os.pathsep + env.get("PATH", "")})
     for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_NO_AUTOSTART", "CYS_DEPT_ROTATE",
-              "CYS_DEPT_CATALOG", "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT", "CYS_DEPT_CWD"):
+              "CYS_DEPT_CATALOG", "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT", "CYS_DEPT_CWD",
+              # ★1.1.8 병합: 우리 cys-dept(dbg-D3 F1)는 CYS_CYS_BIN·CYS_CYSD_BIN 을 PATH 보다 먼저 쓴다 — 러너 env 에
+              #   남으면 PATH 선두 스텁(cysd spawn 계수)을 건너뛰고 실 바이너리를 가짜 HOME 에 띄운다(계수 0 · 120s 대기).
+              "CYS_CYS_BIN", "CYS_CYSD_BIN"):
         env.pop(k, None)
     return env
 

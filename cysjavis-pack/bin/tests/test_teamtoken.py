@@ -92,8 +92,21 @@ def live_pack(text=None, name="pack"):
     return d
 
 
+# ★1.1.8 휴면(D-TEAM · master#36f48cf7): 제품 지침은 §4-A(대화 승인 토큰 절차) 노출을 끊었다 — 이 기계는 휴면으로 남고
+#   스위치(CYS_ENABLE_TEAM_FLOW)를 켜 되살릴 때 넣을 원작자 원문을 시험 고정물로 둔다. 라이브 지침에 §4-A-2 앵커가 없으면
+#   고정물을 덧붙여 원래 단언(질문 게이트·문구 표 정합)을 그대로 잰다(앵커가 있으면 지침 그대로 — 고정물 무시).
+DORMANT_4A = os.path.join(SELF, "fixtures", "dormant_team_flow_master_4a.md")
+
+
+def _with_dormant_4a(text):
+    if "4-A-2. 생성 집행(토큰 경로)" in text:
+        return text
+    with open(DORMANT_4A, encoding="utf-8") as f:
+        return text.rstrip("\n") + "\n\n" + f.read()
+
+
 with open(SHIPPED_DIRECTIVE, encoding="utf-8") as _f:
-    SHIPPED_TEXT = _f.read()
+    SHIPPED_TEXT = _with_dormant_4a(_f.read())
 BASE_PACK = live_pack(SHIPPED_TEXT)
 
 RESULTS = {}      # suite -> [(id, ok, detail)]
@@ -1368,7 +1381,7 @@ DIRECTIVE = os.path.join(os.path.dirname(BIN), "directives", "MASTER_DIRECTIVE.m
 
 def _directive():
     with open(DIRECTIVE, encoding="utf-8") as f:
-        return f.read()
+        return _with_dormant_4a(f.read())     # 1.1.8 휴면: 위 DORMANT_4A 주석
 
 
 def _message_table(text):

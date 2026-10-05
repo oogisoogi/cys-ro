@@ -855,7 +855,7 @@ def _ps_cpu_lines():
         #   stdout 이 아예 없어서 소비자는 '내부 오류'로 읽는다(formation 은 재시도 후 자원 판정
         #   없이 진행). ps 출력의 pid·pcpu 열은 ASCII 라 대체문자가 파싱을 바꾸지 않는다.
         p = subprocess.run(["ps", "-axo", "pid,pcpu,command"], capture_output=True,
-                           text=True, errors="replace", timeout=10)
+                           text=True, errors="replace", timeout=10, **NOWIN)
     except FileNotFoundError:
         return None, "absent"            # Windows 기본 — 이 플랫폼엔 이 축이 없다
     except (subprocess.SubprocessError, OSError, ValueError):

@@ -37,6 +37,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21 · 1.1.8 병합 census ⓒ(iv) 등재)
 import tempfile
 import time
 
@@ -2237,7 +2238,7 @@ def cmd_hook_prompt(a):
     opened = [r for r in reqs if r.get("state") == "proposed"]
     if base and opened and prompt.strip():
         mach, why = _prompt_is_machine(prompt)
-        if mach is not True:
+        if mach is False:   # 📌7ⓐ(1.1.8): 판독 불가(None)는 사람 답으로 기록하지 않는다(fail-open 제거 · 되묻기로 떨어짐)
             r = max(opened, key=lambda x: x.get("created_at") or 0)
             atomic_write_json(ack_path(r["id"]), {"at": now(), "session": sid, "origin": why,
                                                   "prompt_sha256": sha256_text(prompt),

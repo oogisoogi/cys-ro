@@ -349,7 +349,12 @@ class HookDegradation(_HookEnv):
     def test_python_missing_asymmetry(self):
         """★reviewer=fail-closed(exit 2) · CSO=강등(exit 0) — 비대칭이 코드에 살아 있는가."""
         d = self._nopython_bin()
-        env = {"PATH": str(d), "CYS_PY": ""}
+        # ★1.1.8 병합(P-CLT 우리 유지): 맥 해소기는 PATH 밖의 앱 번들 파이썬(/Applications/cysr.app …)과
+        #   고정 절대경로까지 찾는다 — 그 기계에서 "python 부재"를 만들려면 고정 경로 접두(CYS_TEST_SYSROOT ·
+        #   _lib.sh 시험 전용 노브)를 빈 트리로 옮겨야 한다. 운영 동작은 그대로(번들이 있으면 부재가 아니다).
+        sysroot = self.root / "nopy-sysroot"
+        sysroot.mkdir(exist_ok=True)
+        env = {"PATH": str(d), "CYS_PY": "", "CYS_TEST_SYSROOT": str(sysroot)}
         rev = self.run_hook("Edit", {"file_path": "/x/a.rs"}, CYS_ROLE="reviewer-codex", **env)
         self.assertEqual(rev.rc, 2, "reviewer 가 fail-closed 가 아니다: rc=%d %r" % (rev.rc, rev.err))
         cso = self.run_hook("CronCreate", {}, CYS_ROLE="cso", **env)

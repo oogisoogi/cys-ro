@@ -4816,7 +4816,7 @@ class Preflight:
             # ★부트 창 예산(R1 minor): 이 축은 WARN-only 이고 데몬이 기동 중이면 상한까지
             #   끌려간다 — 판정 품질을 떨어뜨리지 않는 선에서 짧게 잡는다(15s→6s).
             r = subprocess.run([cys, "status", "--json"], capture_output=True,
-                               text=True, timeout=6, env=_no_autostart_env())
+                               text=True, timeout=6, env=_no_autostart_env(), **NOWIN)
         except (OSError, subprocess.SubprocessError) as e:
             return None, "`cys status --json` 조회 실패(%s) — 판정 불능" % e
         if r.returncode != 0:
@@ -5936,7 +5936,7 @@ class Preflight:
         try:
             # WARN-only 축이라 부트 창에서 오래 붙잡지 않는다(15s→6s · R1 minor).
             r = subprocess.run([cys, "gate-corpus", "--json"], capture_output=True,
-                               text=True, timeout=6)
+                               text=True, timeout=6, **NOWIN)
         except (OSError, subprocess.SubprocessError) as e:
             self.add(cid, SKIP, "cys gate-corpus 호출 불가(%s)" % e, unmeasured=True)
             return
@@ -5975,7 +5975,7 @@ class Preflight:
         claude = shutil.which("claude")
         if claude:
             try:
-                v = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=8)
+                v = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=8, **NOWIN)
                 if v.returncode == 0:
                     m = re.search(r"\d+\.\d+\.\d+", v.stdout or "")
                     live = m.group(0) if m else (v.stdout or "").strip()
@@ -7843,7 +7843,7 @@ def _trusted_exact(data, cwd_key):
 def _run_capture(cmd, timeout=15):
     """subprocess 러너 — (rc, stdout, stderr). 예외도 rc 127 로 정규화(판정 불가 → 호출자가 None 으로 접는다)."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:  # noqa: BLE001 — 러너는 예외를 올리지 않는다
         return 127, "", "runner error: %s" % e

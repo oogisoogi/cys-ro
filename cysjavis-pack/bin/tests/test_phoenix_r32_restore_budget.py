@@ -222,6 +222,10 @@ def run_scenario(name, restore_script, status_rows0=None, roles=None, topo_entri
                                  "agent_alive": True})
             return SimpleNamespace(returncode=0, stdout=json.dumps({"daemon": {"started_at": 1},
                                                                     "surfaces": rows}), stderr="")
+        if verb == "restore" and args[1:] == ("--help",):
+            # ★1.1.8 병합: run_restore 가 스폰 전에 `cys restore --help` 능력 토큰(항목별 --cwd)을 1회 잰다
+            #   (restore_supports_per_entry_cwd · 읽기 전용 탐침). 스폰 호출이 아니므로 상한 기록에 넣지 않는다.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if verb == "restore":
             state["restore_calls"].append(timeout)
             rc = restore_script(len(state["restore_calls"]), state, write_topo)
@@ -282,6 +286,9 @@ def t_run_restore():
             wt([entry(r) for r in ROLES8[:7]])
             return 1
         st["rows"]["w8"] = [row()]
+        # ★1.1.8 병합: 빈 좌석(seat=empty)은 부활로 세지 않는다(v115 A4 · 905 A2) — 2회차 restore 가 w7 빈 좌석에
+        #   in-seat 연결로 에이전트를 앉힌 결과를 모델한다(이 축의 관심 = 2회차 상한이 침식된 topology 로 다시 센 2단위).
+        st["rows"]["w7"] = [row()]
         return 0
     s = run_scenario("partial", partial)
     check("⑥ 비멈춤 재시도는 침식된 topology 로 다시 센다(8단위 → w7 빈 좌석 2단위 = %ds)" % o(2),
@@ -473,7 +480,8 @@ def t_source_pins():
     check("⑧ spawn_production 이 `cys restore` 한 호출 동안만 무출력 상한을 켜고 finally 에서 되돌린다(리뷰 F1)",
           "restore_stall_window_s()" in body and "_CYS_STALL_S = stall" in body
           and "_CYS_STALL_S = prev_stall" in body)
-    cbody = src[src.index("def cys(*args, socket=None, timeout=25):"):src.index("def get_boot_epoch(")]
+    # ★1.1.8 병합: cys() 서명에 선택 키워드 owner(=None · 기본은 `reinject` 동사로 판정)가 붙었다 — 몸통 절단 기준은 접두로.
+    cbody = src[src.index("def cys(*args, socket=None, timeout=25"):src.index("def get_boot_epoch(")]
     check("⑧ cys() 는 무출력 상한이 상한보다 작을 때만 진행 감시 실행기를 쓴다(그 밖 호출·1단위는 종전 경로)",
           "_run_capture_progress(cmd, env, timeout, stall)" in cbody and "stall < timeout" in cbody)
     labels = [p[0] for p in B.parity_pairs()]

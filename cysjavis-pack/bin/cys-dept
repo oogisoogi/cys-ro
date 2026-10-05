@@ -573,6 +573,8 @@ reg_count(){ reg_init; python3 -c "$reg_read_py" "$REG" count | tr -d '\r'; }
 #   Windows python 이 FileNotFoundError 로 죽고, 파이프 소비자(rotate 등재 게이트)·reg_count 캡처
 #   ("부서 수" 산정·down 의 강등 판정)가 전부 빈 값이 됐다(win 잠복 결함).
 reg_names(){ reg_init; python3 -c "$reg_read_py" "$REG" names | tr -d '\r'; }
+# 1.1.8 병합: 읽기 전용 판독(reg_init 0 — 부재 레지스트리를 만들지 않는다) · cwd verb 전용(원작자 읽기 전용 계약 · pipefail 로 12 전파)
+reg_names_ro(){ python3 -c "$reg_read_py" "$REG" names | tr -d '\r'; }
 
 # ★A2(SURVEY B3): 등재(SOT=depts.json)에 없는데 **소켓 디렉터리만** 남은 부서를 stderr 로 고지한다.
 #   정상 teardown 은 상태 디렉터리를 TRASH_ROOT 로 격리하므로 이 형상은 **비정상 종료 잔재**다.
@@ -3431,7 +3433,9 @@ EOF
         echo "usage: cys-dept cwd <name>" >&2
         exit 2 ;;
     esac
-    _reg_names="$(reg_names)" || exit 3
+    # ★1.1.8 병합: 우리 reg_names 는 reg_init 을 거쳐 부재 레지스트리를 만든다 — 읽기 전용 계약(위 주석 · 원작자
+    #   test_trust_seed t5·6g)을 지키려고 이 verb 는 초기화 없이 판독만 한다(부재 = 빈 목록 → 미등재 exit 3 · 판독 실패 = exit 3).
+    _reg_names="$(reg_names_ro)" || exit 3
     if ! grep -Fxq -- "$name" <<<"$_reg_names"; then
       echo "[cys-dept] cwd: 미등재 부서 '$name'" >&2; exit 3
     fi

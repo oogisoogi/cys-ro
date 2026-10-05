@@ -985,7 +985,7 @@ def _run_capture_progress(cmd, env, timeout, stall_s, poll_s=1.0):
 
     try:
         try:
-            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=of, stderr=ef, env=env)
+            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=of, stderr=ef, env=env, **NOWIN)
         except (FileNotFoundError, OSError) as e:
             r.returncode = 127
             r.stderr = "cys 실행 불가(%s: %s) cmd=%r" % (type(e).__name__, e, cmd)

@@ -86,6 +86,11 @@ def harness(m, root, st):
     m.master_seat_cwd = lambda s, entries=None: None
     m.seat_fresh_cwd = lambda role, c, mc, log_fn=None: c
     m.fresh_awaken = lambda *a, **k: "awaken-stub"
+    # ★1.1.8 병합: 원작자 F-1(0.14.31)·R3b — 이 시나리오의 전제는 「세션핀 재개 가능(S1)」이다. 임시 팩엔 세션 파일도
+    #   agents.json 도 없어 F-1 이 fresh 예상(좌석결속 관측 grace) · resume 모드 unknown(VERIFIED 금지)으로 번진다 —
+    #   이 축과 무관하므로 출하 어댑터(효력 있는 resume_arg)·세션 실재를 대역으로 명시한다(F-1 은 원작자 f1 검체가 잰다).
+    m.fresh_expected = lambda e: (False, "")
+    m.resume_arg_effect = lambda agent: ("effective", "")
 
     def _cys(*args, socket=None, timeout=25):
         if args and args[0] == "close-surface":
@@ -95,7 +100,7 @@ def harness(m, root, st):
         return _R(1, "", "stub cys")
     m.cys = _cys
 
-    def _restore(s, roles, include_master=False, cwd=None):
+    def _restore(s, roles, include_master=False, cwd=None, **_kw):  # ★1.1.8: units·hang_suspected(원작자 R3-2)
         calls["restore"] += 1
         (st.get("on_restore") or (lambda: None))()
         return {"rc": 0, "out": "ok"}

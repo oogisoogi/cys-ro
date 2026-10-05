@@ -10,7 +10,7 @@
   U2 cys(owner=False·기본) → 자식 env 에 CYS_OWNER_TOKEN 없음(조회 동사엔 안 싣는다 · 부모 env 누출도 없음)
   U3 토큰 파일 부재 → 싣지 않음(빈 값 금지)
   S1 stage_reinject · S2 stage_g2_ack → 둘 다 토큰을 싣는다(실제 주입 경로)
-  M 뮤턴트 2(변이 적용 선-assert 동반): M1 env 대입 제거 · M2 stage_reinject 의 owner=True 제거 → 적색이어야 한다
+  M 뮤턴트 2(변이 적용 선-assert 동반): M1 env 대입 제거 · M2 reinject 동사 판정 제거(1.1.8 병합 — 호출부 owner=True 키워드 대신 cys() 가 동사로 판정) → 적색이어야 한다
 
 실행: python3 cysjavis-pack/bin/tests/test_phoenix_v115_owner_token.py → 종료 토큰 PHOENIX-V115-OWNER-TOKEN-OK
 """
@@ -103,8 +103,11 @@ def main():
 
     mutants = [
         ("M1 env 대입 제거", '            env["CYS_OWNER_TOKEN"] = tok\n', '            pass\n'),
-        ("M2 stage_reinject owner=True 제거",
-         '            socket=socket, timeout=12, owner=True)', '            socket=socket, timeout=12)'),
+        # ★1.1.8 병합(X-OWNER): 호출부 owner=True 키워드는 사라졌다 — 원작자 검체들이 cys() 를 고정 서명 대역으로
+        #   갈아 끼우므로 cys() 가 owner 미지정(None)일 때 `reinject` 동사로 판정한다. 그 판정을 끄는 변이가 M2 다
+        #   (S1·S2 실제 주입 경로가 토큰을 잃어야 KILLED).
+        ("M2 reinject 동사 판정 제거(owner 기본=False)",
+         '        owner = bool(args) and str(args[0]) == "reinject"\n', '        owner = False\n'),
     ]
     for name, a, b in mutants:
         n = src.count(a)

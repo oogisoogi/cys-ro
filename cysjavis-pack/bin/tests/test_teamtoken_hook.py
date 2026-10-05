@@ -72,6 +72,20 @@ APPROVE = "그래 만들어"
 APPROVE_2 = "응 만들어"
 REDIRECT = 'command -v cys_lane_redirect >/dev/null 2>&1 && cys_lane_redirect "$@"'
 
+# ★1.1.8 휴면(D-TEAM · master 결정 1 「휴면으로 통일」): 배포 MASTER_DIRECTIVE 는 §4-A(팀 만들기 — 대화 승인 토큰)
+#   노출을 끊었다 → `ask` 가 directive_stale 로 닫힌다(휴면의 정상 동작 · fail-closed). 이 검체는 그 기계가 **켜졌을 때**의
+#   훅 배선을 재므로 실험실 지침 사본에만 원작자 v0.14.43 §4-A 원문(test_teamtoken 과 같은 고정물)을 덧붙여 스위치를 켠다.
+#   라이브 지침에 앵커가 다시 들어오면(휴면 해제) 덧붙이지 않는다.
+DORMANT_4A = os.path.join(SELF, "fixtures", "dormant_team_flow_master_4a.md")
+
+
+def _with_dormant_4a(text):
+    if "4-A-2. 생성 집행(토큰 경로)" in text:
+        return text
+    with open(DORMANT_4A, encoding="utf-8") as f:
+        return text.rstrip("\n") + "\n\n" + f.read()
+
+
 RESULTS = []
 
 
@@ -164,8 +178,11 @@ class Lab(object):
         self.bin = binp
         # 라이브 지침(리뷰 N1) — `ask` 는 이 좌석이 읽는 지침이 대화 승인 판(§4-A-2)일 때만 질문을 연다.
         os.makedirs(os.path.join(self.pack, "directives"), exist_ok=True)
-        shutil.copy(os.path.join(PACK, "directives", "MASTER_DIRECTIVE.md"),
-                    os.path.join(self.pack, "directives", "MASTER_DIRECTIVE.md"))
+        with open(os.path.join(PACK, "directives", "MASTER_DIRECTIVE.md"), encoding="utf-8") as f:
+            _md = _with_dormant_4a(f.read())
+        with open(os.path.join(self.pack, "directives", "MASTER_DIRECTIVE.md"), "w", encoding="utf-8",
+                  newline="\n") as f:
+            f.write(_md)
         w(os.path.join(self.stub, "cys"), STUB_CYS, 0o755)
         # 인터프리터 계수 래퍼 — 발급 경로가 python 을 몇 번 띄웠는지 실측한다.
         self.pylog = os.path.join(self.d, "py.log")

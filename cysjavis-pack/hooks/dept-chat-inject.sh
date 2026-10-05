@@ -51,6 +51,7 @@ _H="${0%/*}"; [ "$_H" = "$0" ] && _H="."
 . "$_H/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \
   || { echo "[cys-hook] _lib.sh 소실 — 훅 강등(dept-chat-inject)" >&2; exit 0; }
+command -v cys_lane_redirect >/dev/null 2>&1 && cys_lane_redirect "$@"
 
 T="$_H/../bin/javis_dept_request.py"
 [ -f "$T" ] || T="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_dept_request.py"

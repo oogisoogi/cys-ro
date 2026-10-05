@@ -91,7 +91,7 @@ def scenario_axes(m, root, sink=None):
     m.master_seat_cwd = lambda s, entries=None: None
     m.seat_fresh_cwd = lambda role, c, mc, log_fn=None: c
     m.fresh_awaken = lambda *a, **k: "awaken-stub"
-    m.spawn_production = lambda s, roles, include_master=False, cwd=None: (
+    m.spawn_production = lambda s, roles, include_master=False, cwd=None, **_kw: (
         calls.__setitem__("restore", calls["restore"] + 1) or {"rc": 0, "out": "ok"})
     m.spawn_fresh_production = lambda s, role, agent, cwd=None: (
         calls.__setitem__("fresh", calls["fresh"] + 1) or {"rc": 0, "out": "launched"})

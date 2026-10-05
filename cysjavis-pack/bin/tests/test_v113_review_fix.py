@@ -160,7 +160,9 @@ class TestW4ReserveLockFailClosed(unittest.TestCase):
                     sys.modules[k] = v
 
     def test_allocate_lock_failure_exits_11(self):
-        self.assertEqual(self._run(_lock_block("  allocate)\n", "print(name)\nfinally: _ulk(lf)")), 11)
+        # 1.1.8 병합: 원작자가 `allocate)` 갈래 본문을 allocate_dept() 함수로 뺐다 — 함수 머리부터 찾는다(핀 목적 불변).
+        start = "\nallocate_dept(){\n" if "\nallocate_dept(){\n" in open(DEPT, encoding="utf-8").read() else "  allocate)\n"
+        self.assertEqual(self._run(_lock_block(start, "print(name)\nfinally: _ulk(lf)")), 11)
 
     def test_create_lock_failure_exits_11(self):
         self.assertEqual(self._run(_lock_block("res=$(reg_init; CYS_GRACE=", 'print("NEW "+name)')), 11)

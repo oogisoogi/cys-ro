@@ -80,6 +80,8 @@ import shutil
 import subprocess
 import sys
 sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
+# 윈도우 콘솔 창 숨김(캡처 호출 전용 · test_nowin_captured_spawns 규칙 · 1.1.8 병합 X-NOWIN = 우리)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 import tempfile
 
 EXIT_OK, EXIT_TARGET, EXIT_ARGS = 0, 1, 2
@@ -239,7 +241,7 @@ def _capgate_eligibility(pack, timeout=6):
         else:
             try:
                 r = subprocess.run([cys, "status", "--json"], capture_output=True, text=True,
-                                   timeout=timeout, env=no_autostart_env())
+                                   timeout=timeout, env=no_autostart_env(), **NOWIN)
                 doc = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
                 ar = doc.get("alert_route") if isinstance(doc, dict) else None
                 ok_alert = isinstance(ar, dict) and ar.get("enabled") is True

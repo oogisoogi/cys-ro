@@ -710,7 +710,7 @@ def cmd_drain(a):
                 # ★(0.14.31 · 성찰 Q9) **바이트**로 받는다 — `text=True` 는 로캘(cp949 등)로
                 #   디코딩하다 `UnicodeDecodeError` 를 `run()` 안에서 올렸고, 그것은 아래 except 에
                 #   잡히지 않아 drain 이 죽었다(전송은 이미 성공 → pending 잔존 → 재전송 = 중복).
-                cp = subprocess.run(cmd, check=True, timeout=15, capture_output=True)
+                cp = subprocess.run(cmd, check=True, timeout=15, capture_output=True, **NOWIN)
                 if _load_failcount().get(target):
                     _bump_failcount(target, reset=True)  # 성공 = 연속실패 해소
             except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:

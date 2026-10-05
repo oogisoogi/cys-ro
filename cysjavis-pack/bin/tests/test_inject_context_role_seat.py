@@ -131,15 +131,23 @@ def run_hook(tmp, seats, cys_mode, role_env=None, cys_present=True):
 # ─────────────────── ⑨~⑮ U13 착수 게이트 하네스(0.14.41 · WP-C1) ───────────────────
 # 종전 복원 신호(lead 좌석의 바이트 동일 기준 — 문자열 그대로 핀한다).
 LEGACY_CLEAR = "▶ 작업 계속(source=clear): 위 작업기억 이어서 진행.\n"
-LEGACY_STARTUP = ("▶ 복원 모드(source=startup): RECOVERY.md 절차 실행 → G2 실측 대조(git·pane·server) → "
-                  "배달 원장 다이제스트(BOOT_SNAPSHOT.md 있으면 그것 · 귀속 판별은 MASTER_DIRECTIVE '귀속 판별' "
-                  "절(절이 없으면 constitution 병합 대기 — cys pack-merge 승인 필요)) → 미해결 게이트부터 재개.\n")
+# ★1.1.8 병합: lead startup 문안 = 우리 T6 I-2(오너 확정 정책 「대화는 자동 복원 · 이어서 하라는 지시는 주입하지
+#   않는다」 · TICKET=restore-impl-A2-2 · 우리 test_t6_injection_policy E2~E4 가 같은 문안을 핀). 원작자 0.14.40
+#   문안(… → 미해결 게이트부터 재개)은 우리 정책이 대체했으므로 lead 「종전 문안」은 T6 문안이다. 12c 기준 커밋도
+#   같은 순간에 올린다(아래 BASE_REF 갱신 규칙).
+LEGACY_STARTUP = ("▶ 복원 모드(source=startup): 상태만 복원하고 대기 — RECOVERY.md 절차로 상태를 읽고 G2 실측 대조"
+                  "(git·pane·server)·배달 원장 다이제스트(BOOT_SNAPSHOT.md 있으면 그것 · 귀속 판별은 MASTER_DIRECTIVE "
+                  "'귀속 판별' 절(절이 없으면 constitution 병합 대기 — cys pack-merge 승인 필요))까지만 수행한다. "
+                  "이어서 할 일은 사용자(또는 임무 게이트)의 지시 뒤에 — 임무 게이트: next-action 이 exit 0(오너가 이 "
+                  "세션에 임무 지정)이면 그 임무를 이어가고, exit 3(임무 미지정)이면 대기 중인 작업을 보고만 하고 멈춘다.\n")
 LEGACY_COMPACT = "▶ 압축 직후(source=compact): 작업기억 보충 완료. 진행 중 작업 계속.\n"
 SELF_START = ("이어서 진행", "미해결 게이트부터 재개")
 GATE_MARK = "착수 게이트"
 LIB = os.path.join(os.path.dirname(HOOK), "_lib.sh")
 REPO = os.path.normpath(os.path.join(SELF, "..", "..", ".."))
 BASE_REF = "126cfdd0"          # v0.14.40 — U13 이전 트리(lead 바이트 동일의 기준)
+# ★1.1.8 병합: 기준 트리의 lead startup|resume 한 줄만 우리 T6 I-2 문안(오너 확정 정책)으로 갈아 끼우고 대조한다
+#   (old_hooks · T6_OVERLAY). 그 밖의 바이트는 원작자 기준 그대로 — "U13 이 lead 출력을 바꾸지 않았다"는 단언 유지.
 # ★리뷰1 I-5: 12c 는 BASE_REF 와 **영구** 대조한다(만료 조건 없음). ci-branch job1 은 얕은
 #   체크아웃이라 `git show BASE_REF:...` 가 실패해 12c 가 SKIP 되고(§402 — 정직한 출력이지만
 #   그 레인에서는 집행되지 않는다), 로컬에서는 이후 lead(master·cso*) 출력을 **정당하게**
@@ -238,10 +246,26 @@ def old_hooks(root):
             return None
         if r.returncode != 0 or not r.stdout:
             return None
+        data = r.stdout
+        if name == "inject-context.sh":
+            data = t6_overlay(data)
         with open(os.path.join(d, name), "wb") as f:
-            f.write(r.stdout)
+            f.write(data)
         os.chmod(os.path.join(d, name), 0o755)
     return os.path.join(d, "inject-context.sh")
+
+
+def t6_overlay(data):
+    """기준 트리 lead startup|resume 줄 → 현 훅의 T6 줄(우리 정책 오버레이 · 1.1.8 병합). 줄이 정확히 1개씩일 때만
+    바꾸고, 아니면 원본 그대로 둔다(그러면 12c 가 정직하게 적색 — 조용히 통과하지 않는다)."""
+    with open(HOOK, "rb") as f:
+        cur = f.read().decode("utf-8")
+    new = [l for l in cur.split("\n") if l.lstrip().startswith("startup|resume)") and "상태만 복원하고 대기" in l]
+    text = data.decode("utf-8")
+    old = [l for l in text.split("\n") if l.lstrip().startswith("startup|resume)") and "미해결 게이트부터 재개" in l]
+    if len(new) != 1 or len(old) != 1:
+        return data
+    return text.replace(old[0], new[0]).encode("utf-8")
 
 
 tmp = tempfile.mkdtemp(prefix="ic-roleseat-")

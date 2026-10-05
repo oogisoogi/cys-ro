@@ -81,6 +81,10 @@ def scenario(name):
                              "registered_session_id": sid, "awakened_at": now}]
                 statuses.append((state["status_count"], state["checks"], copy.deepcopy(rows)))
                 stdout = json.dumps({"daemon": {"started_at": now}, "surfaces": rows})
+            elif verb == "restore" and args == ("restore", "--help"):
+                # ★1.1.8 병합(우리 1.1.7): 스폰 전 `cys restore --help` 능력 토큰 탐침(restore_supports_per_entry_cwd ·
+                #   읽기 전용) — 토큰 없는 도움말 = 구 계약(전역 --cwd)으로 물러선다. 스폰 호출이 아니다.
+                stdout = "Usage: cys restore"
             elif verb == "restore":
                 assert args == ("restore",)
                 state["alive"] = True
@@ -117,14 +121,19 @@ def scenario(name):
         rr = journal["roles"]["worker-1"]
         events = journal["events"]
         verbs = [verb for verb, args, socket, timeout in calls]
+        # ★1.1.8 병합: 스폰 restore(인자 없음)만 센다 — `restore --help`(능력 탐침)·`list`(A3 ps 축의 좌석 셸 pid 조회)는
+        #   우리 1.1.7 의 읽기 전용 관측 호출이다(파괴 동사 아님 · 아래 non-destructive 단언이 그대로 지킨다).
+        spawn_idx = [i for i, (verb, args, socket, timeout) in enumerate(calls) if verb == "restore" and not args]
+        read_only_probes = {"list"}
         reobserve = [e for e in events if e["stage"] == "verify" and e["status"] == "reobserve"]
         check(name + " production backend", result["backend"] == "production(cys restore)"
               and result["target_roles"] == ["worker-1"])
-        check(name + " exactly one restore", verbs.count("restore") == 1)
+        check(name + " exactly one restore", len(spawn_idx) == 1
+              and all(args in ((), ("--help",)) for verb, args, socket, timeout in calls if verb == "restore"))
         check(name + " non-destructive CLI", not set(verbs) & {"close-surface", "kill", "reclaim"})
-        check(name + " CLI protocol", set(verbs) == {"status", "restore", "reinject"}
+        check(name + " CLI protocol", set(verbs) - read_only_probes == {"status", "restore", "reinject"}
               and all(socket == socket_path for verb, args, socket, timeout in calls)
-              and verbs.index("restore") < verbs.index("reinject"))
+              and spawn_idx and spawn_idx[0] < verbs.index("reinject"))
         check(name + " preserves spawn inventory", rr["fresh_pre_sids"] == ["old"]
               and all(s["roles"]["worker-1"]["fresh_pre_sids"] == ["old"] for s in snapshots)
               and os.path.exists(os.path.join(project_dir, "new1.jsonl")))

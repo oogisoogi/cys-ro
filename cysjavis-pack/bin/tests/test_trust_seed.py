@@ -2256,7 +2256,10 @@ class DeptLaunchWiring(unittest.TestCase):
         for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_ACCOUNT_DIR", "CYS_NO_AUTOSTART",
                   "CYS_DEPT_ROTATE", "CYS_DEPT_CATALOG", "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT",
                   "CYS_DEPT_SEED_CREDS", "CYS_DEPT_CWD", "CLAUDE_CONFIG_DIR", "CYS_SURFACE_ID",
-                  "CYS_SURFACE_REF", "CYS_SEAT_TOKEN", "LOCALAPPDATA", "XDG_STATE_HOME"):
+                  "CYS_SURFACE_REF", "CYS_SEAT_TOKEN", "LOCALAPPDATA", "XDG_STATE_HOME",
+                  # 1.1.8 병합(우리 dbg-D3 #F1: cys-dept 가 CYS_CYS_BIN·CYS_CYSD_BIN 을 1순위로 쓴다) — 좌석·러너 env 에 남으면
+                  #   스텁 대신 실 cys 를 불러 가짜 HOME 에 데몬이 뜨고 launch 가 120s 를 넘긴다(test_dept_b11_lock:45 선례).
+                  "CYS_CYS_BIN", "CYS_CYSD_BIN"):
             env.pop(k, None)
         env.update(extra)
         return env

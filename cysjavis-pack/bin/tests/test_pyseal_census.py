@@ -244,6 +244,13 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   자기가 검사할 대상을 오염시켜 '추가 파일' 오탐을 만든다(SEAL-1 과 같은 계급).
     ".github/workflows/release.yml",
     ".github/workflows/windows-build.yml",
+    # ★2026-09-22 통합(0.14.39 · WP-D-cli autopilot self-test) 등재. **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도 강제점도 **아니다**. 니들은 이 모듈의 자기검체(`--self-test`)가 쓰는 **밀폐
+    #   env 한 줄**(`"PYTHONDONTWRITEBYTECODE": "1"`)이다 — javis_wakeup 배달 멱등키 전제를 셸 스텁
+    #   `cys` 로 재는 구간이라 `os.environ` 을 상속하지 않는 env 를 손으로 조립하고, 그 자리에서 봉인을
+    #   **벗기지 않고 상속 방향으로** 다시 건다(test_lane_redirect.py·test_role_authority_shell.py 와 같은 계급).
+    #   프로덕션 경로(틱·escalate)는 python 자식을 띄우지 않으므로 강제점 계수에 들어가지 않는다.
+    "cysjavis-pack/bin/javis_cycle_autopilot.py",
     # ★2026-09-08 등재(TICKET=cys-fork-rebase-v0.14.30 · 유입 커밋 = 피닉스 S1 인코딩 독립성 스모크).
     #   **봉인 점검 결과(등재 = 이 선언)**: 이것은 **새 python 진입점이자 강제점이 맞다** —
     #   `subprocess.run([sys.executable, __file__, "--case", …])` 로 자기 자신을 자식으로 띄우고,
@@ -252,13 +259,6 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   PYTHONIOENCODING=cp949)로 도는데, 그 상태에서 __pycache__ 를 쓰면 팩 트리에 로케일
     #   의존 산물이 남아 SEAL-1(.pyc 번들 오염) 과 같은 계급의 오염이 된다.
     "cysjavis-pack/bin/javis_phoenix_encoding_smoke.py",
-    # ★2026-09-22 통합(0.14.39 · WP-D-cli autopilot self-test) 등재. **봉인 점검 결과(등재 = 이 선언)**:
-    #   새 python 진입점도 강제점도 **아니다**. 니들은 이 모듈의 자기검체(`--self-test`)가 쓰는 **밀폐
-    #   env 한 줄**(`"PYTHONDONTWRITEBYTECODE": "1"`)이다 — javis_wakeup 배달 멱등키 전제를 셸 스텁
-    #   `cys` 로 재는 구간이라 `os.environ` 을 상속하지 않는 env 를 손으로 조립하고, 그 자리에서 봉인을
-    #   **벗기지 않고 상속 방향으로** 다시 건다(test_lane_redirect.py·test_role_authority_shell.py 와 같은 계급).
-    #   프로덕션 경로(틱·escalate)는 python 자식을 띄우지 않으므로 강제점 계수에 들어가지 않는다.
-    "cysjavis-pack/bin/javis_cycle_autopilot.py",
     # ★2026-09-08 P6 등재(0.14.31 · 역할 해소 단일 소유 모듈 신설). **봉인 점검 결과(등재 = 이 선언)**:
     #   새 python 진입점도, 강제점도 **아니다**. 이 모듈이 띄우는 자식은 Rust 바이너리 `cys` 하나뿐이고
     #   (`surface-role` 조회), 그 자식 env 는 부모 것을 그대로 복사해 넘긴다 — 즉 봉인을 **벗기지도
@@ -578,6 +578,8 @@ BUNDLED_RESOLVER_RE = re.compile(r'(?<![A-Za-z0-9_])bundled_python3\(')
 BUNDLED_RESOLVER_FILES = (  # 2026-09-27 실측 · 정렬 key=str · 추가 = "봉인을 확인했다" 는 선언
     "src/bin/cysd/boot_supervisor.rs",  # run_ensure_team — tokio 빌더 `.env(cys::ENV_PY_NO_BYTECODE, …)` 직봉인
     "src/bin/cysd/main.rs",             # 정의처 + auto-restore(python_command 경유 spawn) · office-bridge(직봉인)
+    "src/bin/cysd/state.rs",            # ★1.1.8 병합 등재(우리 1.1.7 좌석 exec 전 배선 · javis_preflight.py --wire-seat) — python_command 팩토리
+                                        #   (봉인 점검: 해소 결과를 `cys::python_command(&python)` 로만 띄운다 · 원작자 census 가 우리 판을 처음 봄)
     "src/bin/cysd/teamtoken.rs",        # ★0.14.42 javis_teamtoken.py 판정 자식 — python_command 팩토리
 )
 SEAL_MEANS = ("python_command(", "ENV_PY_NO_BYTECODE")

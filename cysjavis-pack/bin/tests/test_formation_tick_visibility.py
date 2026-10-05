@@ -100,7 +100,9 @@ def main():
         expected = {
             "_doc": "파생 캐시 — 복원 정본 아님(정본=depts.json)",
             "state": "complete", "kind": "complete", "socket": sock,
-            "detail": "라이브 로스터 이미 완결(5역할 생존) — 신규 기동 0 · 자원 게이트 무관",
+            # 1.1.8 병합: 우리 기본 함대 = 3석(master·cso·worker · 09-10 결정 · DS-1) — 역할 수는 REQUIRED_ROLES 에서 센다
+            #   (원작자 원문 「5역할」 고정 → 바이트 비교의 목적(정상 경로의 종전 JSON 바이트 보존)은 그대로).
+            "detail": "라이브 로스터 이미 완결(%d역할 생존) — 신규 기동 0 · 자원 게이트 무관" % len(roles),
             "roles_booted": sorted(roles), "updated_at": "2001-02-03T04:05:06", "updated_epoch": 1000.0,
         }
         check("3a 정상 complete는 last_tick·빈 선택 키를 넣지 않는다",

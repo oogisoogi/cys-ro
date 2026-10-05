@@ -795,6 +795,13 @@ fi
 _SS_BULK=$(echo; cat "$D"; _ss_bulk)
 printf '%s\n' "$_SS_HEAD"
 _SS_N=$(( $(_ss_chars "$_SS_HEAD") + $(_ss_chars "$_SS_BULK") ))
+if [ "$_SS_N" -lt "$RESUME_INJECT_CAP" ]; then
+  printf '%s\n' "$_SS_BULK"
+else
+  [ "$HOOK_SRC" = "resume" ] || _ss_toc startup
+  echo
+  echo "■ 원문 생략(${_SS_WHAT} ${_SS_N}자 ≥ 상한 ${RESUME_INJECT_CAP}자) — 디렉티브·로컬 지침·soul·메모리 색인은 위 목차 경로에서 Read 하라."
+fi
 # ── ★U16(0.14.41) 팀 소개(참고 정보) BEGIN — 부서 레인 전용 · TEAM.md 가 있을 때만 ─────────────────
 # 무엇: 대화로 만든 팀(`cys-dept` allocate --team-spec-b64 · 오너 확인 창 뒤)의 이름·하는 일(TEAM.md)을
 #   soul.md·기억 색인 **뒤**에 참고 정보로 붙인다. SessionStart 는 /clear 뒤에도 다시 불리므로 팀 맥락이
@@ -807,8 +814,9 @@ _SS_N=$(( $(_ss_chars "$_SS_HEAD") + $(_ss_chars "$_SS_BULK") ))
 #   ⓔ 착수 규칙 문장은 넣지 않는다(역할별 착수 문구는 U13 단일 원본 소관) — '참고 정보·우선하지 않음'만.
 # 레인 판정: 팩 폴더 이름 접두 `pack-dept-`(cysd 기동 시 레인↔팩 검사와 같은 규약 · 외부 프로세스 0).
 #   `/`·`\` 두 구분자를 모두 벗겨 MSYS(`/c/…`)·네이티브(`C:\…`) 표기 어느 쪽이든 같은 답을 낸다.
-# ★1.1.8 병합(우리 9,000자 상한+목차 유지 · 정책 §2-B): 팀 소개를 먼저 변수로 만든다(TEAM.md 없으면 빈 값 = 출력 바이트 불변).
-#   머리+본문+팀 소개 합계가 상한 미만일 때만 본문 뒤에 붙이고, 넘으면 원문 경로 1줄만 남긴다(10,000자 절단 방지).
+# ★1.1.8 병합(우리 9,000자 상한+목차 유지 · 정책 §2-B): 본문(또는 생략 고지)은 이 블록 **앞**에서 이미 나갔다 — 이 블록은
+#   팀 소개만 다룬다(원작자 B6 「블록 = 파일 끝 exit 0 직전」 유지). 팀 소개를 변수로 만들고(TEAM.md 없으면 빈 값 = 출력
+#   바이트 불변) 머리+본문+팀 소개 합계가 상한 미만일 때만 싣고, 넘으면 원문 경로 1줄만 남긴다(10,000자 절단 방지).
 #   ★master·CEO 좌석은 위 조립기 분기에서 이미 끝났다 — 그 좌석의 팀 소개는 이 블록이 싣지 않는다(병합 보고 ⑤).
 _ss_team() {
 (
@@ -825,19 +833,15 @@ _ss_team() {
 ) 2>/dev/null || true
 }
 _SS_TEAM=$(_ss_team)
-# ── ★U16(0.14.41) 팀 소개(참고 정보) END
-if [ "$_SS_N" -lt "$RESUME_INJECT_CAP" ]; then
-  printf '%s\n' "$_SS_BULK"
-  if [ -n "${_SS_TEAM:-}" ] && [ $(( _SS_N + $(_ss_chars "${_SS_TEAM:-}") )) -lt "$RESUME_INJECT_CAP" ]; then
+if [ -n "${_SS_TEAM:-}" ]; then
+  if [ "$_SS_N" -lt "$RESUME_INJECT_CAP" ] && [ $(( _SS_N + $(_ss_chars "${_SS_TEAM:-}") )) -lt "$RESUME_INJECT_CAP" ]; then
     printf '%s\n' "${_SS_TEAM:-}"
-  elif [ -n "${_SS_TEAM:-}" ]; then
+  elif [ "$_SS_N" -lt "$RESUME_INJECT_CAP" ]; then
     echo
     printf '■ 팀 소개(참고 정보) 생략(출력 상한 %s자) — 원문: %s\n' "$RESUME_INJECT_CAP" "$JARVIS_DIR/TEAM.md"
+  else
+    printf '■ 팀 소개(참고 정보)도 생략 — 원문: %s\n' "$JARVIS_DIR/TEAM.md"
   fi
-else
-  [ "$HOOK_SRC" = "resume" ] || _ss_toc startup
-  echo
-  echo "■ 원문 생략(${_SS_WHAT} ${_SS_N}자 ≥ 상한 ${RESUME_INJECT_CAP}자) — 디렉티브·로컬 지침·soul·메모리 색인은 위 목차 경로에서 Read 하라."
-  [ -n "${_SS_TEAM:-}" ] && printf '■ 팀 소개(참고 정보)도 생략 — 원문: %s\n' "$JARVIS_DIR/TEAM.md"
 fi
+# ── ★U16(0.14.41) 팀 소개(참고 정보) END
 exit 0

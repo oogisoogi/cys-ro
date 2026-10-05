@@ -55,6 +55,10 @@ tmp = tempfile.mkdtemp(prefix="t6-e-")
 try:
     env = base_env(tmp)
     env["CYS_PACK_DIR"] = os.path.join(tmp, "nopack")
+    # ★1.1.8 병합(원작자 U13 수용): 복원 문안은 좌석 역할로 갈린다 — lead(master·cso*)는 T6 문안 · member·역할
+    #   미상은 U13 착수 게이트 1줄(_lib.sh cys_start_gate_note · 그 문안도 자율 착수 0). T6 정책 문안의 주인은
+    #   lead 좌석이므로 lead(master)로 잰다(역할 env 없음 = 미상 → 게이트 문안이라 이 핀의 대상이 아니다).
+    env["CYS_ROLE"] = "master"
     proj = os.path.join(tmp, "proj")
     os.makedirs(proj, exist_ok=True)
     outs = {}

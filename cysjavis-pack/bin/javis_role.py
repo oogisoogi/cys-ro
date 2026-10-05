@@ -92,6 +92,9 @@ import sys
 import tempfile
 import time
 
+# 윈도우 콘솔 창 숨김(캡처 호출 전용 · test_nowin_captured_spawns 규칙 · 1.1.8 병합 X-NOWIN = 우리)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 __all__ = ["resolve_role", "resolve_role_detail", "reset_cache", "surface_id",
            "is_authoritative", "is_authoritative_none", "fail_backoff_active",
            "QUERY_TIMEOUT_S", "CACHE_TTL_S", "FAIL_BACKOFF_S"]
@@ -626,7 +629,7 @@ def _query_daemon():
     try:
         p = subprocess.run([exe, "surface-role"], capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
-                           timeout=QUERY_TIMEOUT_S, env=env)
+                           timeout=QUERY_TIMEOUT_S, env=env, **NOWIN)
     except Exception:
         # FileNotFoundError(cys 부재) · TimeoutExpired · PermissionError … 전부 판정 불가.
         return _failed()

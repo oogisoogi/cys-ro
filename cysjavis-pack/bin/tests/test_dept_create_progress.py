@@ -22,6 +22,12 @@
 목 sleep 은 no-op 이라 목 cysd 가 소켓을 열지 않는 실패 시나리오의 12초+12초 대기가 수 초로 줄고, 핑 횟수는 목 cys 가 센다.
 함수 단위 핀은 cys-dept 에서 함수 정의를 **그대로 떼어** bash 로 평가한다(사본 금지 — test_dept_name_guard.SockLenDiag 와 같은 관례).
 
+★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e · 2026-10-06 확정): 우리 cys-dept 는 원작자의 스폰 뒤 대기(`ready_wait` + 노브 경고 + `ready_fail_note`)
+  대신 **우리 대기**를 쓴다 — 사전 검사 = `alive`(핑 1회) · 스폰 뒤 = `boot_wait`(소켓 응답이면 0 · 데몬 pid 사망/진행 정지 CYS_DEPT_BOOT_STALL_S 면 조기 실패 ·
+  상한 CYS_DEPT_BOOT_MAX_S) · 실패 = `boot_fail_teardown`(고아 회수 → 등재 회수) + `[cys-dept] ERROR: <이름> 데몬 기동 실패` + `sock_len_diag`.
+  그래서 원작자 노브가 스폰 뒤 대기를 바꾼다는 흐름 단언은 '해당 없음(부재 증명)' 단언으로 바꿨다(삭제·skip 없음). 함수 단위 핀(ready_wait·dept_ready_secs·
+  dept_ready_knob_warn·ready_fail_note — 정의는 남아 있다)과 유예(dept_reserve_grace)·재기록(reg_restamp)·표지(@stage)는 우리 코드가 실제로 하는 그대로 잰다.
+
     CYS_PACK_DIR="$(mktemp -d)" python3 cysjavis-pack/bin/tests/test_dept_create_progress.py
 돌연변이 검증용: CYS_DEPT_UNDER_TEST=<변이본 경로> — 제품 대신 그 스크립트를 대상으로 같은 핀을 돌린다(옆 파일은 변이본 폴더에 둔다).
 """
@@ -504,14 +510,14 @@ class KnobWarnFlow(unittest.TestCase):
         return [l for l in err.splitlines() if "CYS_DEPT_READY_SECS=" in l and "WARN" in l]
 
     def test_invalid_knob_warns_once_in_each_waiting_verb(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 우리 스폰 뒤 대기(boot_wait)는 CYS_DEPT_READY_SECS 를 읽지 않으므로 세 동사 흐름에서 노브 경고는 '해당 없음' = 0줄(부재 증명) · 흐름·stdout 계약은 그대로.
         for args in (("allocate",), ("create", "k1"), ("launch", "a")):
             with self.subTest(args[0]):
                 sb, (rc, out, err) = self.flow(args, "300")
                 self.assertEqual(rc, 0, out + err[-800:])
                 w = self.warns(err)
-                self.assertEqual(len(w), 1, "무효 노브 경고가 정확히 1줄이어야 한다:\n" + err[-1200:])
-                self.assertRegex(w[0], self.WARN_RE)
-                self.assertNotIn("READY_SECS", out, "경고가 stdout 으로 샜다(부서 이름·종전 stdout 계약 오염)")
+                self.assertEqual(w, [], "해당 없음: 우리 흐름(boot_wait)은 노브를 읽지 않는다 — 노브 경고가 나면 원작자 대기 배선이 되살아난 것이다:\n" + err[-1200:])
+                self.assertNotIn("READY_SECS", out + err, "노브 문구가 출력에 나왔다(우리 흐름엔 노브가 없다 · stdout 계약 오염 포함)")
                 if args[0] != "launch":
                     self.assertEqual(last_line(out), "dept-1")
 
@@ -528,17 +534,19 @@ class KnobWarnFlow(unittest.TestCase):
         self.assertEqual(self.warns(err), [], "기다리지 않았는데 노브 경고가 났다(경고는 스폰 뒤 대기 직전의 것이다)")
 
     def test_invalid_knob_failure_flow_keeps_budget_12_and_warns_before_the_failure_line(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 실패 흐름에도 노브 경고·'대기 예산 12초' 꼬리는 '해당 없음'(부재 증명). 실패 사유는 우리 boot_wait 의 사유 줄이 실패 줄 **앞**에 짧게 낸다.
         sb = Sandbox(STUB_CYSD_MODE="dead", CYS_DEPT_READY_SECS="300")
         self.addCleanup(sb.cleanup)
         rc, out, err = sb.run("allocate")
         self.assertEqual(rc, 1)
-        self.assertEqual(len(self.warns(err)), 1)
+        self.assertEqual(self.warns(err), [], "해당 없음: 우리 실패 흐름엔 노브 경고가 없다:\n" + err[-800:])
         lines = err.splitlines()
-        wi = next(i for i, l in enumerate(lines) if "CYS_DEPT_READY_SECS=" in l and "WARN" in l)
         fi = next(i for i, l in enumerate(lines) if "데몬 기동 실패" in l)
-        self.assertLess(wi, fi, "경고가 실패 줄보다 앞에 있어야 한다(실패 문구 앞 300자에 사유가 보이도록 짧게 앞에)")
-        self.assertIn("대기 예산 12초", lines[fi], "무효 노브(300)는 12 로 읽혀 예산 12초로 적힌다")
-        self.assertLess(len(lines[wi]), 130, "경고 줄이 길어 실패 사유를 300자 밖으로 밀어낸다")
+        self.assertEqual(lines[fi], OLD_PREFIX % "dept-1", "우리 실패 줄은 접두 그대로 한 줄이다(대기 예산 꼬리 없음): %r" % lines[fi])
+        ri = next((i for i, l in enumerate(lines) if BOOT_DIED in l), None)
+        self.assertIsNotNone(ri, "우리 boot_wait 의 조기 실패 사유 줄(데몬 사망)이 없다:\n" + err[-800:])
+        self.assertLess(ri, fi, "사유 줄이 실패 줄보다 앞에 있어야 한다(실패 문구 앞 300자에 사유가 보이도록)")
+        self.assertLess(len(lines[ri].encode("utf-8")), 300, "사유 줄이 길어 실패 줄을 300자 밖으로 밀어낸다")
 
 
 class ReadyFailNote(unittest.TestCase):
@@ -935,6 +943,20 @@ OLD_PREFIX = "[cys-dept] ERROR: %s 데몬 기동 실패"
 NOTE_TAIL = "/cysd.log · 느린 디스크라면 CYS_DEPT_READY_SECS=60 처럼 대기 예산을 늘릴 수 있다)"
 # R2F-PK(S4 m4): 꼬리의 숫자는 둘이다 — `대기 예산 N초`(노브 · 공칭 상한) + `실제 약 M초`(이번 스폰 뒤 대기의 $SECONDS 차이). 종전 `소켓 대기 N초` 의 N 은 노브 값이지 경과가 아니었다.
 NOTE_HEAD = re.compile(r" \(대기 예산 (\d+)초 · 실제 약 (\d+)초 · 로그: ")
+# ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 우리 boot_wait 가 데몬 pid 사망으로 조기 실패할 때 내는 사유 줄의 고정 부분(stderr · 실패 줄 앞).
+#   목 cysd(STUB_CYSD_MODE=dead)는 소켓 없이 즉시 끝나므로 이 사유(진행 정지·상한 초과 아님)가 결정론으로 먼저 온다.
+BOOT_DIED = "이 기동 중 종료했다 — 진행 신호: "
+# 원작자 실패 꼬리의 낱말들 — 우리 실패 출력에는 하나도 없어야 한다(해당 없음 부재 증명).
+UPSTREAM_NOTE_TOKENS = ("대기 예산", "실제 약", "CYS_DEPT_READY_SECS", "소켓 대기")
+
+
+def assert_ours_boot_failure(tc, err, name, fail_text):
+    """우리 실패 계약: 사유 줄(boot_wait · stderr) → 실패 줄(`fail_text` 스트림에 접두 그대로 정확히 1줄 · 꼬리 없음) 순서 · 원작자 꼬리 낱말 0."""
+    hits = [l for l in fail_text.splitlines() if l.startswith(OLD_PREFIX % name)]
+    tc.assertEqual(hits, [OLD_PREFIX % name], "실패 줄은 접두 그대로 정확히 1줄이어야 한다(대기 예산 꼬리 없음):\n%s" % fail_text[-1500:])
+    tc.assertIn(BOOT_DIED, err, "우리 boot_wait 의 조기 실패 사유(데몬 사망)가 stderr 에 없다:\n%s" % err[-1500:])
+    for tok in UPSTREAM_NOTE_TOKENS:
+        tc.assertNotIn(tok, err + fail_text, "해당 없음: 원작자 실패 꼬리 낱말(%r)이 우리 출력에 나왔다" % tok)
 
 
 def note_budget(tc, note, want):
@@ -947,7 +969,9 @@ def note_budget(tc, note, want):
 
 
 class WaitFailure(unittest.TestCase):
-    """목 cysd 가 소켓을 열지 않는다(STUB_CYSD_MODE=dead) → 사전 검사 120회 + 스폰 뒤 대기 W회 모두 실패."""
+    """목 cysd 가 소켓을 열지 않는다(STUB_CYSD_MODE=dead) → 사전 검사 120회 + 스폰 뒤 대기 W회 모두 실패.
+    ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e): 우리 판에서는 사전 검사 alive 1회 실패 → 스폰 → boot_wait 가 데몬 pid 사망을 보고 조기 실패 →
+    boot_fail_teardown(고아 회수 → 등재 회수) → 접두 그대로의 실패 줄 + sock_len_diag 다."""
 
     @classmethod
     def setUpClass(cls):
@@ -975,16 +999,17 @@ class WaitFailure(unittest.TestCase):
         return hits[0][len(pre):]
 
     def test_allocate_failure_message_prefix_note_stream_exit(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 실패 줄은 접두 그대로(꼬리 = '해당 없음') · 사유는 boot_wait 의 앞 줄 · 스트림(stderr)·종료 코드(1)·스폰 로그 실재는 그대로 잰다.
         b = self.box["alloc"]
         self.assertEqual(b["rc"], 1, "종료 코드(1) 계약")
         self.assertNotIn("데몬 기동 실패", b["out"], "allocate 의 실패 줄은 종전대로 stderr 다(stdout 오염 금지)")
         note = self.note_of(b["err"], "dept-1")
-        note_budget(self, note, "12")
-        self.assertTrue(note.endswith(NOTE_TAIL), "꼬리 문구: %r" % note)
-        self.assertIn("로그: %s/cysd.log" % b["sb"].logdir("dept-1"), note, "로그 경로가 실제 스폰 리다이렉트 대상과 다르다")
+        self.assertEqual(note, "", "해당 없음: 우리 실패 줄엔 원작자 꼬리(대기 예산·실제 약·로그 안내)가 없다: %r" % note)
+        assert_ours_boot_failure(self, b["err"], "dept-1", b["err"])
+        assert_order(self, b["err"], ["@stage wait", BOOT_DIED, OLD_PREFIX % "dept-1"])
         self.assertTrue(os.path.isfile(os.path.join(b["sb"].logdir("dept-1"), "cysd.log")), "스폰이 그 로그 파일을 실제로 만들지 않았다")
-        # 접두는 줄머리에 그대로(기존 문구 보존)
-        self.assertIn("\n" + OLD_PREFIX % "dept-1" + " (", "\n" + b["err"])
+        # 접두는 줄머리에 그대로(기존 문구 보존) — 우리 줄은 접두 그 자체로 끝난다
+        self.assertIn("\n" + OLD_PREFIX % "dept-1" + "\n", "\n" + b["err"])
 
     def test_allocate_failure_stages_stop_at_wait_and_registry_reclaimed(self):
         b = self.box["alloc"]
@@ -994,44 +1019,48 @@ class WaitFailure(unittest.TestCase):
         self.assertEqual(last_line(b["out"]), "", "실패 경로 stdout 은 비어 있다")
 
     def test_allocate_budget_default_pings(self):
-        # 핑 총수 = 사전 검사 120(고정) + 스폰 뒤 W + 번호 점유 확인(파이썬) 소수 회. W=120(기본 = 종전과 같음)
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 원작자 '사전 검사 120 + 스폰 뒤 120' 핑 예산은 '해당 없음': 사전 검사는 alive 1회 · 스폰 뒤는 데몬 pid 사망을 보고 조기 실패한다.
+        #   (스폰 뒤 핑 수는 목 cysd 가 끝나기까지의 시간에 달려 결정론이 아니다 — 원작자 예산 합계(240)에 못 미친다는 것과 조기 실패 사유로 판정한다)
         b = self.box["alloc"]
-        self.assertIn(b["pings"] - 120, (120, 121, 122, 123), "총 핑 %d — 기본에서 사전 검사 120 + 스폰 뒤 120 이 아니다" % b["pings"])
+        self.assertEqual(b["rc"], 1)
+        self.assertIn(BOOT_DIED, b["err"], "우리 스폰 뒤 대기는 데몬 사망을 보고 조기 실패해야 한다:\n" + b["err"][-800:])
+        self.assertLess(b["pings"], 240, "총 핑 %d — 원작자 예산(사전 검사 120 + 스폰 뒤 120)을 다 쓰고 있다(우리 alive·boot_wait 가 아니다)" % b["pings"])
 
     def test_allocate_budget_follows_knob_and_precheck_stays_fixed(self):
-        # 노브 30 → W=300. 사전 검사까지 노브를 따르면(돌연변이 M1) 총수가 300 + 300 이 된다 → 아래 범위를 벗어난다.
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 노브 30 이 스폰 뒤 대기를 300핑으로 늘리는 원작자 동작은 '해당 없음': 노브를 줘도 기본과 같은 조기 실패·같은 실패 줄이다(부재 증명).
         b = self.box["alloc30"]
         self.assertEqual(b["rc"], 1)
         note = self.note_of(b["err"], "dept-1")
-        note_budget(self, note, "30")
-        self.assertIn(b["pings"] - 300, (120, 121, 122, 123), "총 핑 %d — 사전 검사(120 고정) + 스폰 뒤 300 이 아니다" % b["pings"])
+        self.assertEqual(note, "", "해당 없음: 노브 30 이어도 실패 줄에 '대기 예산 30초' 꼬리가 없다: %r" % note)
+        assert_ours_boot_failure(self, b["err"], "dept-1", b["err"])
+        self.assertLess(b["pings"], 300, "총 핑 %d — 노브 30 이 스폰 뒤 대기를 늘렸다(우리 boot_wait 는 노브를 읽지 않는다)" % b["pings"])
+        self.assertEqual(stages(b["err"]), stages(self.box["alloc"]["err"]), "노브가 실패 흐름의 표지를 바꿨다")
 
     def test_create_failure_message_stage_reclaim(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 꼬리는 '해당 없음'(접두 그대로) · 표지·NEW 예약 회수(boot_fail_teardown 의 등재 원복)·stderr 스트림은 우리 코드 그대로 잰다.
         b = self.box["create"]
         self.assertEqual(b["rc"], 1)
         note = self.note_of(b["err"], "dept-1")
-        note_budget(self, note, "12")
-        self.assertTrue(note.endswith(NOTE_TAIL), note)
-        self.assertIn("로그: %s/cysd.log" % b["sb"].logdir("dept-1"), note)
+        self.assertEqual(note, "", "해당 없음: 우리 실패 줄엔 원작자 꼬리가 없다: %r" % note)
+        assert_ours_boot_failure(self, b["err"], "dept-1", b["err"])
+        self.assertTrue(b["spawned"], "스폰 분기인데 cysd 로그 리다이렉트가 만들어지지 않았다")
         self.assertNotIn("데몬 기동 실패", b["out"], "create 의 실패 줄은 종전대로 stderr 다")
         self.assertEqual(stages(b["err"]), ["reserve", "probe", "spawn", "wait"])
         self.assertEqual(b["reg"], {}, "NEW 실패인데 등재가 남았다(예약 회수 종전 동작)")
 
     def test_launch_failure_keeps_stdout_stream_and_has_no_stage(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — launch 실패 줄은 종전대로 stdout 1줄 · 원작자 R2F-PK m7 의 stderr 복사본(`_lf` — ready_fail_note 꼬리)은 '해당 없음'(우리 실패 경로엔 없다) ·
+        #   대신 우리 boot_wait 의 사유 줄이 stderr 에 1줄 있다(앱이 stderr 만 올려도 실패 사유가 보인다).
         b = self.box["launch"]
         self.assertEqual(b["rc"], 1)
         pre = OLD_PREFIX % "a"
         out_hits = [l for l in b["out"].splitlines() if l.startswith(pre)]
         self.assertEqual(len(out_hits), 1, "launch 의 실패 줄은 종전대로 **stdout** 이다:\nout=%s\nerr=%s" % (b["out"], b["err"][-600:]))
-        note = out_hits[0][len(pre):]
-        note_budget(self, note, "12")
-        self.assertTrue(note.endswith(NOTE_TAIL), note)
-        self.assertIn("로그: %s/cysd.log" % b["sb"].logdir("a"), note)
-        # ★R2F-PK(S4 m7): 앱은 launch·rotate 실패에서 stderr 만 화면에 올린다 → 같은 꼬리를 stderr 에도 **정확히 1줄** 더 낸다(가산 — 위 stdout 줄·순서·그 핀은 그대로).
-        #   종전 단언(`stderr 에 없다`)은 stdout 줄이 stderr 로 '옮겨 갔다(스트림 변경)'를 막으려던 것이다 — 이제 stdout 줄은 그대로 있는 채 같은 줄의 **복사본**이 stderr 에 한 번 있다:
-        #   (이름을 바꾸지 않고 단언만 새 계약으로 바꿨다 — 약화가 아니라 '양쪽에 정확히 한 번씩'으로 더 엄격하다)
+        assert_ours_boot_failure(self, b["err"], "a", b["out"])
         err_hits = [l for l in b["err"].splitlines() if l.startswith(pre)]
-        self.assertEqual(err_hits, out_hits, "launch 실패 꼬리가 stderr 에 stdout 줄과 같은 꼴로 정확히 1줄 있어야 한다:\nerr=%s" % b["err"][-800:])
+        self.assertEqual(err_hits, [], "해당 없음: 우리 launch 는 실패 줄 복사본을 stderr 에 내지 않는다(복사본 = 원작자 _lf 배선):\nerr=%s" % b["err"][-800:])
+        self.assertEqual(len([l for l in b["err"].splitlines() if BOOT_DIED in l]), 1, "launch 실패 사유 줄이 stderr 에 정확히 1줄이어야 한다:\n" + b["err"][-800:])
+        self.assertTrue(b["spawned"], "스폰 분기인데 cysd 로그 리다이렉트가 만들어지지 않았다")
         self.assertNotIn("@stage", b["out"] + b["err"], "launch 는 무변경 동사 — 표지를 내면 안 된다")
         self.assertEqual(b["reg"], {}, "launch 실패 뒤 등재 회수(종전 동작)")
 
@@ -1046,20 +1075,24 @@ class SlowDaemonKnob(unittest.TestCase):
         return sb, sb.run("allocate")
 
     def test_default_budget_misses_the_slow_daemon_as_before(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 이 시나리오의 데몬은 소켓 없이 **죽는다**(dead) — 우리 boot_wait 는 핑 횟수가 아니라 pid 생사로 판정해 300번째 핑을 기다리지 않고 조기 실패한다(예산 꼬리 = 해당 없음).
         sb, (rc, out, err) = self.run_alloc()
         self.assertEqual(rc, 1, err[-600:])
-        self.assertRegex(err, r" \(대기 예산 12초 · 실제 약 \d+초 · 로그: ")
+        assert_ours_boot_failure(self, err, "dept-1", err)
         self.assertEqual(stages(err), ["reserve", "probe", "spawn", "wait"])
-        self.assertEqual(sb.read_reg(), {}, "실패 뒤 등재 회수(종전 동작)")
-        self.assertLess(sb.ping_count(), 300, "기본 예산은 종전(사전 검사 120 + 스폰 뒤 120)이어야 한다")
+        self.assertEqual(sb.read_reg(), {}, "실패 뒤 등재 회수(boot_fail_teardown · 종전 동작)")
+        self.assertLess(sb.ping_count(), 300, "죽은 데몬을 300번째 핑까지 기다렸다(우리 boot_wait 는 pid 사망에서 멈춘다)")
 
     def test_knob_30_catches_the_slow_daemon(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 노브 30 이 스폰 뒤 대기를 300핑까지 늘려 '느린 데몬'을 잡는 원작자 동작은 '해당 없음': 우리 판에서는 노브를 줘도 기본과 같은 결과(조기 실패)다(부재 증명).
+        #   우리 쪽의 느린 디스크 대책은 노브가 아니라 boot_wait 의 진행 인지 대기(CYS_DEPT_BOOT_MAX_S·CYS_DEPT_BOOT_STALL_S)다.
         sb, (rc, out, err) = self.run_alloc(CYS_DEPT_READY_SECS="30")
-        self.assertEqual(rc, 0, err[-800:])
-        self.assertEqual(stages(err), ["reserve", "probe", "spawn", "wait", "up", "done"])
-        self.assertEqual(last_line(out), "dept-1")
-        self.assertGreaterEqual(sb.ping_count(), 300, "스폰 뒤 대기가 종전 상한(120)을 넘어 300 번째 핑까지 갔어야 한다")
-        self.assertIn("dept-1", sb.read_reg())
+        self.assertEqual(rc, 1, "해당 없음: 노브 30 이 우리 대기를 바꿔 죽은 데몬을 '잡았다':\n" + err[-800:])
+        assert_ours_boot_failure(self, err, "dept-1", err)
+        self.assertEqual(stages(err), ["reserve", "probe", "spawn", "wait"], "노브가 표지 흐름을 바꿨다(up·done 이 나면 안 된다)")
+        self.assertEqual(last_line(out), "", "실패 경로 stdout 은 비어 있다")
+        self.assertLess(sb.ping_count(), 300, "노브 30 이 스폰 뒤 대기를 300번째 핑까지 늘렸다(우리 boot_wait 는 노브를 읽지 않는다)")
+        self.assertEqual(sb.read_reg(), {}, "실패 뒤 등재 회수(boot_fail_teardown)")
 
 
 class LaunchHasNoStage(unittest.TestCase):
@@ -1104,17 +1137,20 @@ class RestampFlow(unittest.TestCase):
         return sb
 
     def assert_single_restamp_between_precheck_and_wait(self, sb, first_extra=0):
-        """핑 번호 해석: [번호 점유 확인 핑(예약 전 · 값 없음 또는 시드 값)] + 사전 검사 120핑(예약 값 r0) + 스폰 뒤 대기 핑(재기록 값 r1) — 값은 정확히 r0 → r1 한 번."""
+        """핑 번호 해석: [번호 점유 확인 핑(예약 전 · 값 없음 또는 시드 값)] + 사전 검사 핑(예약 값 r0) + 스폰 뒤 대기 핑(재기록 값 r1) — 값은 정확히 r0 → r1 한 번."""
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 우리 사전 검사는 alive **1핑**(원작자 ready 120핑 아님) · 재기록(reg_restamp)은 우리 코드에도 그 1핑 바로 뒤 · 스폰 직전에 있다.
+        #   r0 → r1 의 간격은 사전 검사가 1핑이라 원작자 판(120핑 뒤)보다 짧다 — '0.05초 이상' 여유 대신 '뒤의 시각'(엄격한 >)으로 순서만 판정한다.
         runs = runs_of(sb)
         vals = stamped(runs)
         self.assertEqual(len(vals), 2 + first_extra, "예약 시각이 바뀐 구간이 %d 개여야 한다(r0 → r1 한 번의 재기록): %r" % (2 + first_extra, runs))
         (a0, b0, r0), (a1, b1, r1) = vals[-2], vals[-1]
-        self.assertEqual(b0 - a0 + 1, 120, "사전 검사 120핑 동안 예약 시각이 그대로여야 한다(재기록이 사전 검사 **전**이나 도중에 일어났다): %r" % runs)
-        self.assertEqual(a1, b0 + 1, "재기록은 사전 검사 마지막 핑 **바로 뒤**(= 스폰 직전)에 일어나야 한다: %r" % runs)
-        self.assertGreater(float(r1), float(r0) + 0.05, "재기록한 시각이 사전 검사를 지난 뒤의 시각이어야 한다: r0=%s r1=%s" % (r0, r1))
+        self.assertEqual(b0 - a0 + 1, 1, "사전 검사(alive 1핑) 동안 예약 시각이 그대로여야 한다(재기록이 사전 검사 **전**에 일어났거나 사전 검사가 1핑이 아니다): %r" % runs)
+        self.assertEqual(a1, b0 + 1, "재기록은 사전 검사 핑 **바로 뒤**(= 스폰 직전)에 일어나야 한다: %r" % runs)
+        self.assertGreater(float(r1), float(r0), "재기록한 시각이 사전 검사를 지난 뒤의 시각이어야 한다: r0=%s r1=%s" % (r0, r1))
         return float(r0), float(r1)
 
     def test_create_new_restamps_exactly_once_right_before_spawn(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 사전 검사 = alive 1핑이라 재기록 판정 도우미가 '1핑 뒤 · 스폰 직전'으로 잰다(우리 reg_restamp 위치 그대로).
         sb = self.new_sb(STUB_PING_OK_FROM=UP_AT_PING)
         sb.write_reg({})
         rc, out, err = sb.run("create", "k1")
@@ -1125,6 +1161,7 @@ class RestampFlow(unittest.TestCase):
         self.assertEqual([l for l in err.splitlines() if "재기록" in l], [], "성공한 재기록은 아무것도 내지 않는다(기본 경로 출력 무변경)")
 
     def test_create_reuse_dead_restamps_exactly_once_right_before_spawn(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 사전 검사 = alive 1핑이라 재기록 판정 도우미가 '1핑 뒤 · 스폰 직전'으로 잰다(우리 reg_restamp 위치 그대로).
         sb = self.new_sb(STUB_PING_OK_FROM=UP_AT_PING)
         sb.seed_entry("dept-1", "m1", age=100)   # 소켓 없음 + 유예(25초) 밖 → REUSE_DEAD(재기동)
         rc, out, err = sb.run("create", "k1")
@@ -1136,15 +1173,18 @@ class RestampFlow(unittest.TestCase):
         self.assert_single_restamp_between_precheck_and_wait(sb, first_extra=1)
 
     def test_allocate_reservation_carries_reserved_at_and_restamps_once(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 사전 검사 = alive 1핑이라 재기록 판정 도우미가 '1핑 뒤 · 스폰 직전'으로 잰다(우리 reg_restamp 위치 그대로).
         sb = self.new_sb(STUB_PING_OK_FROM=UP_AT_PING)
         rc, out, err = sb.run("allocate")
         self.assertEqual(rc, 0, err[-800:])
         r0, r1 = self.assert_single_restamp_between_precheck_and_wait(sb)
         ent = sb.read_reg()["dept-1"]
         self.assertEqual(ent["reserved_at"], r1, "allocate 의 예약에도 reserved_at(가산 키)이 있고 재기록된 값이 남는다")
-        self.assertEqual(sorted(ent), ["account_dir", "cwd", "pack_dir", "reserved_at", "role", "socket"], "allocate 등재의 키는 종전 + reserved_at 하나뿐이다")
+        # ★우리 판 B11(세대 ID `gen` — 번호 재사용 시 닫기 대조 · test_dept_b11_lock 이 핀)이 이 예약에 더 찍힌다 — 원작자 목록에 그 우리 가산 키를 더해 정확히 잰다.
+        self.assertEqual(sorted(ent), ["account_dir", "cwd", "gen", "pack_dir", "reserved_at", "role", "socket"], "allocate 등재의 키는 종전 + reserved_at + 우리 gen 뿐이다")
 
     def test_allocate_team_proposal_restamps_once_for_its_own_proposal(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 사전 검사 = alive 1핑이라 재기록 판정 도우미가 '1핑 뒤 · 스폰 직전'으로 잰다(우리 reg_restamp 위치 그대로).
         import base64
         spec = {"v": 1, "id": "tp-20261003-0042", "display": "영상편집팀", "purpose": "유튜브 영상을 편집한다."}
         b64 = base64.urlsafe_b64encode(json.dumps(spec, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -1314,9 +1354,13 @@ class RestampUnit(unittest.TestCase):
         self.assertIn("읽지 못했다", err)
 
     def test_missing_registry_is_not_created(self):
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 우리 reg_init 은 부재한 목록 파일을 빈 목록(`{"depts":{}}`)으로 씨앗한다(원작자 reg_init = mkdir 만) — reg_restamp 가 그것을 먼저 부르므로
+        #   파일은 생기지만 **등재는 새로 만들지 않는다**(재기록 계약의 본뜻) · ABSENT 경고 1줄 · 종료 코드 0 을 우리 코드 그대로 잰다.
         rc, out, err = self.restamp("d1", "create", "m")
         self.assertEqual((rc, out), (0, "rc=0\n"))
-        self.assertFalse(os.path.exists(self.reg), "재기록이 등재 파일을 새로 만들었다")
+        self.assertEqual(json.loads(self.raw().decode("utf-8")), {"depts": {}}, "재기록이 빈 목록 씨앗 말고 등재를 만들었다(등재를 새로 만들면 안 된다)")
+        self.assertEqual(len([l for l in err.splitlines() if "WARN" in l]), 1, err)
+        self.assertIn("이미 없다", err)
 
     def test_lock_failure_is_best_effort(self):
         self.put({"d1": {"mission_key": "m", "reserved_at": self.OLD}})
@@ -1510,15 +1554,18 @@ class DefaultPathOutput(unittest.TestCase):
 
     def test_launch_failure_only_adds_the_stderr_copy(self):
         # 실패 흐름: stdout 은 종전 그대로(실패 줄 1줄 + 종전 줄), stderr 만 같은 꼬리가 한 줄 늘었다(R2F-PK · S4 m7). 새 문구 중 stdout 에 나오는 것은 실패 줄의 꼬리뿐이다.
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — stderr 복사본(원작자 m7)은 '해당 없음': 우리 실패 줄은 stdout 1줄뿐이고 stderr 에는 boot_wait 사유 줄 1줄 · 이 판의 새 문구는 어디에도 없다.
         sb = Sandbox(STUB_CYSD_MODE="dead")
         self.addCleanup(sb.cleanup)
         rc, out, err = sb.run("launch", "a")
         self.assertEqual(rc, 1)
         out_lines = [l for l in out.splitlines() if "데몬 기동 실패" in l]
         err_lines = [l for l in err.splitlines() if "데몬 기동 실패" in l]
-        self.assertEqual((len(out_lines), len(err_lines)), (1, 1))
-        self.assertEqual(out_lines, err_lines)
-        self.assertEqual([l for l in out.splitlines() if "재기록" in l or "reserved_at" in l], [])
+        self.assertEqual((len(out_lines), len(err_lines)), (1, 0), "해당 없음: 우리 launch 실패 줄은 stdout 에만 1줄이다(stderr 복사본 없음)")
+        self.assertEqual(out_lines, [OLD_PREFIX % "a"], "우리 실패 줄은 접두 그대로다(꼬리 없음)")
+        self.assertEqual(len([l for l in err.splitlines() if BOOT_DIED in l]), 1, "stderr 에 우리 boot_wait 사유 줄이 정확히 1줄 있어야 한다:\n" + err[-800:])
+        for tok in self.NEW_TOKENS:
+            self.assertNotIn(tok, err + out, "launch 실패 출력에 이 판의 새 문구(%r)가 나왔다(우리 판엔 꼬리·재기록이 없다)" % tok)
 
 
 # ════════════════════════════════════════════════════════════════════════════════════
@@ -1530,32 +1577,35 @@ class Census(unittest.TestCase):
         cls.src = _read(DEPT)
         cls.code = code_lines(cls.src)
 
+    # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 스폰 뒤 대기 3곳의 우리 배선(boot_wait → 실패 시 boot_fail_teardown → 접두 실패 줄 → sock_len_diag).
+    POST_RE = r'\bboot_wait "\$sock" "\$pack" "\$(_dpid|_dept_spawn_pid)" \|\|'
+
     def test_precheck_sites_are_ready_and_postspawn_sites_are_ready_wait(self):
-        pre = [l for l in self.code if re.search(r'\bif ready "\$sock"', l)]
-        self.assertEqual(len(pre), 3, "사전 검사 3곳(launch·allocate·create)은 `ready` 여야 한다: %r" % pre)
-        post = [l for l in self.code if re.search(r'\bready_wait "\$sock" \|\|', l)]
-        self.assertEqual(len(post), 3, "스폰 뒤 대기 3곳은 `ready_wait` 여야 한다: %r" % post)
-        stale = [l for l in self.code if re.search(r'(^|[^_\w])ready "\$sock" \|\|', l)]
-        self.assertEqual(stale, [], "스폰 뒤 대기에 노브를 안 타는 `ready` 가 남았다: %r" % stale)
-        self.assertEqual(len([l for l in self.code if re.search(r'(^|[^_\w])ready "\$', l)]), 3, "`ready` 호출은 사전 검사 3곳뿐이어야 한다")
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 사전 검사 3곳 = `alive`(핑 1회 · P-PROBE) · 스폰 뒤 3곳 = `boot_wait`(P-WAIT) · `ready`·`ready_wait` 호출 = '해당 없음' 0곳(부재 증명).
+        pre = [l for l in self.code if re.search(r'\bif alive "\$sock"; then', l)]
+        self.assertEqual(len(pre), 3, "사전 검사 3곳(launch·allocate·create)은 `alive`(핑 1회) 여야 한다: %r" % pre)
+        post = [l for l in self.code if re.search(self.POST_RE, l)]
+        self.assertEqual(len(post), 3, "스폰 뒤 대기 3곳은 우리 `boot_wait` 여야 한다: %r" % post)
+        self.assertEqual([l for l in self.code if re.search(r'\bready_wait "\$', l)], [], "해당 없음: 원작자 ready_wait 호출이 되살아났다")
+        self.assertEqual([l for l in self.code if re.search(r'(^|[^_\w])ready "\$', l)], [], "해당 없음: `ready`(120회 헛대기) 호출이 되살아났다 — 사전 검사는 alive 1회다")
         for l in post:
             self.assertIn("데몬 기동 실패", l)
-            self.assertIn("ready_fail_note", l)
+            self.assertIn("boot_fail_teardown", l, "실패 = 고아 회수 + 등재 회수 한 묶음(boot_fail_teardown)이 같은 줄에 있어야 한다")
+            self.assertNotIn("ready_fail_note", l, "해당 없음: 원작자 실패 꼬리가 우리 실패 줄에 배선됐다")
             self.assertIn("sock_len_diag", l, "K2-07 census(test_dept_name_guard)와 같은 줄 배선")
 
     def test_failure_lines_keep_prefix_and_per_line_streams(self):
-        post = [l for l in self.code if re.search(r'\bready_wait "\$sock" \|\|', l)]
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 우리 실패 줄 원문(스트림: launch stdout · allocate/create stderr)과 teardown 선행(create 는 NEW 만 등재 회수 `$_rr`) · 원작자 꼬리/복사본(`_lf`) = 해당 없음.
+        post = [l for l in self.code if re.search(self.POST_RE, l)]
         self.assertEqual(len(post), 3)
         # 파일 순서 = launch(stdout) · allocate(stderr) · create(stderr) — 스트림은 각 줄 종전 그대로
-        self.assertIn('echo "[cys-dept] ERROR: $name 데몬 기동 실패$(ready_fail_note "$name")"; sock_len_diag "$sock"; exit 1; }', post[0])
-        self.assertIn('echo "[cys-dept] ERROR: $name 데몬 기동 실패$(ready_fail_note "$name")" >&2; sock_len_diag "$sock"; exit 1; }', post[1])
-        self.assertIn('echo "[cys-dept] ERROR: $name 데몬 기동 실패$(ready_fail_note "$name")" >&2; sock_len_diag "$sock"; exit 1; }', post[2])
-        self.assertIn('reg_remove "$name" || exit $?; echo', post[0])
-        self.assertIn('reg_remove "$name" || exit $?; echo', post[1])
-        self.assertIn('then reg_remove "$name" || exit $?; fi; echo', post[2])
-        # R2F-PK(S4 m7): launch 줄만 같은 꼬리를 stderr 에도 한 줄 더 낸다(stdout 줄·순서·위 핀은 그대로 — 복사본은 `reg_remove` **앞**에 있다). allocate·create 는 이미 stderr 라 복사본이 없다.
-        self.assertIn('_lf="$(ready_fail_note "$name")"; echo "[cys-dept] ERROR: $name 데몬 기동 실패${_lf}" >&2; reg_remove', post[0])
-        self.assertNotIn("_lf", post[1] + post[2], "allocate·create 의 실패 줄은 이미 stderr 다 — 복사본을 더하면 같은 줄이 두 번 난다")
+        self.assertIn('{ boot_fail_teardown "$name" "$_dpid" "$sock" 1 || true; echo "[cys-dept] ERROR: $name 데몬 기동 실패"; sock_len_diag "$sock"; exit 1; }', post[0])
+        self.assertIn('{ boot_fail_teardown "$name" "$_dept_spawn_pid" "$sock" 1 || true; echo "[cys-dept] ERROR: $name 데몬 기동 실패" >&2; sock_len_diag "$sock"; exit 1; }', post[1])
+        self.assertIn('{ boot_fail_teardown "$name" "$_dept_spawn_pid" "$sock" "$_rr" || true; echo "[cys-dept] ERROR: $name 데몬 기동 실패" >&2; sock_len_diag "$sock"; exit 1; }', post[2])
+        for l in post:
+            self.assertEqual(l.count("데몬 기동 실패"), 1, "실패 줄은 한 번만 낸다(복사본 없음): %r" % l)
+            self.assertNotIn("_lf", l, "해당 없음: 원작자 stderr 복사본(_lf) 배선이 들어왔다")
+            self.assertNotIn("ready_fail_note", l)
 
     def test_ready_definition_unchanged(self):
         self.assertIn('ready(){ local s="$1" i; for i in $(seq 1 120); do CYS_SOCKET="$s" "$CYS" ping >/dev/null 2>&1 && return 0; sleep 0.1; done; return 1; }',
@@ -1637,12 +1687,13 @@ class Census(unittest.TestCase):
     def test_knob_warn_is_called_only_at_the_three_wait_sites_and_ready_wait_stays_self_contained(self):
         # 경고(dept_ready_knob_warn)는 스폰 뒤 대기의 호출 지점 세 곳이 `ready_wait` 직전에 부른다. `ready_wait` 자신은 dept_ready_secs 만 쓰는 자기완결·무소음이다 —
         #   기존 횟수 핀 검체(ReadyBudget)가 ready·ready_wait·dept_ready_secs 세 함수만 떼어 돌리고 무효 노브에서도 stderr 가 비어 있음을 못박기 때문이다(무수정 통과 계약).
+        # ★1.1.8 P-WAIT/P-PROBE = 우리(master#0565035e) — 경고 함수 정의는 남지만(함수 단위 핀 ReadyKnobWarn) 흐름의 호출 지점은 '해당 없음' 0곳 · 우리 boot_wait 는 노브를 읽지 않는다(부재 증명).
         self.assertEqual(self.src.count("\ndept_ready_knob_warn(){"), 1)
-        calls = [i for i, l in enumerate(self.code) if re.match(r"dept_ready_knob_warn(\s|$)", l.strip())]
-        self.assertEqual(len(calls), 3, "경고 호출 지점은 launch·allocate·create 세 곳이어야 한다: %r" % [self.code[i] for i in calls])
-        for i in calls:
-            nxt = next(l for l in self.code[i + 1:] if l.strip())
-            self.assertRegex(nxt, r'\bready_wait "\$sock" \|\|', "경고는 스폰 뒤 대기(ready_wait) 직전이어야 한다: %r" % nxt)
+        calls = [i for i, l in enumerate(self.code) if re.search(r"(^|[;&|{(]\s*)dept_ready_knob_warn(\s|;|$)", l.strip())]
+        self.assertEqual(calls, [], "해당 없음: 노브 경고 호출이 흐름에 배선됐다(우리 스폰 뒤 대기는 boot_wait — 노브 무관): %r" % [self.code[i] for i in calls])
+        bw = "\n".join(l for l in func_text(self.src, "boot_wait").splitlines() if not l.lstrip().startswith("#"))
+        for tok in ("CYS_DEPT_READY_SECS", "dept_ready_secs", "dept_ready_knob_warn", "ready_wait"):
+            self.assertNotIn(tok, bw, "해당 없음: 우리 boot_wait 가 원작자 노브/대기(%s)에 기댄다" % tok)
         rw = "\n".join(l for l in func_text(self.src, "ready_wait").splitlines() if not l.lstrip().startswith("#"))
         self.assertNotIn("dept_ready_knob_warn", rw, "ready_wait 가 경고 함수에 기대면 기존 횟수 핀이 그 함수를 떼어 오지 않아 깨진다")
         self.assertNotIn(">&2", rw, "ready_wait 는 무소음이어야 한다")

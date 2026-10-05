@@ -1,3 +1,5 @@
+# ★§0 델타 v2 (03:2x · CTX 약 59% = 매듭) — v1 이후: D13 b2374dc7(awaken status 레인 표기) 끝 · D23 triage(코드 무변경): release.yml 은 PACK_MIN_BINARY=1.1.7 로 `cys pack-manifest --min-binary-version` 을 넘기지만 `cys pack-manifest` 기본값은 `min_binary_version=""`(src/bin/cys.rs:30183 시험 핀 · :24041 기록) → 윈 디스크의 manifest 는 릴리스 산출이 아니라 **설치기/로컬 emit 이 인자 없이 만든 것**으로 추정(윈 실기: 그 파일의 생성 경로·mtime·`source` 필드 회신) · 맥 ~/.cys/pack 에는 pack-manifest.json 자체가 없음(실측) → 스큐 가드가 맥·윈 모두 이 파일에 기대지 않는지 Rust 쪽(w1) 확인 필요. 남은 일 = v1 §2 에서 D13·D23 뺀 나머지.
+
 # HANDOFF — 1.1.8 W 결함 묶음 ② 팩 python·훅·부서 (TICKET=cysr-118-w2-pack · surface:1285 · 가지 w2/pack-118)
 
 > 브리프 = master#64aeea16(10-06 02:26) + 추가 master#4888ba40(CI phoenix) · #b7b758e6(CI T9) · #8e8a26d6(D16 스윕 처방·D15=A) · #0565035e(CI create_progress) · #6757d42c(M5 코퍼스 모양) · #2a338f43(D3·D2·D13 이관).

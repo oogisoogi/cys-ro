@@ -19026,6 +19026,8 @@ fn run_launch_agent_opts(
         let r = request(
             "surface.create",
             json!({"cwd": cwd, "title": workflow_title(role, agent, &cwd), "role": role,
+                   // ★D17(1.1.8): 제목 판정 전용 어댑터 이름(데몬 initial_title 만 읽는다 · agent_meta 무접촉).
+                   "title_agent": agent,
                    "rows": 40, "cols": 140, "idempotency_key": idem, "env": env_obj,
                    // ★SEAT: launch-agent 는 '이 역할의 노드를 실제로 띄우겠다'는 명시 의사다 —
                    // 보유자가 빈 좌석(agent 없는 셸)이면 승계를 요청한다. 데몬이 그 좌석이 정말
@@ -46381,6 +46383,22 @@ mod team_token_cli_tests {
             Command::Feed { action: FeedAction::Reply { team_token, .. } } => assert!(team_token.is_none()),
             _ => panic!("feed reply 파싱 실패"),
         }
+    }
+
+    /// ★D17·D25(1.1.8) 배선 핀 — launch-agent 의 surface.create 가 제목 판정용 `title_agent` 를 싣고,
+    /// 기동 줄은 render_launch 전에 좌석 기동 설정 인자(apply_seat_settings_arg)를 붙인다.
+    #[test]
+    fn d17_d25_launch_wiring_pins() {
+        let src = include_str!("cys.rs");
+        let la = src.find("fn run_launch_agent_opts(").expect("run_launch_agent_opts");
+        let la_body = &src[la..la + src[la..].find("\n}\n").unwrap()];
+        let r = la_body.find("\"surface.create\"").expect("surface.create");
+        assert!(la_body[r..].contains("\"title_agent\": agent"), "D17: launch-agent 페이로드에 title_agent 없음");
+        let b = src.find("fn boot_agent_on_surface(").unwrap();
+        let b_body = &src[b..b + src[b..].find("\n}\n").unwrap()];
+        let a = b_body.find("apply_seat_settings_arg(&mut cmd, role, agent)").expect("D25: 기동 설정 인자 배선 없음");
+        let rl = b_body.find("render_launch(&cmd, &env_pairs)").unwrap();
+        assert!(a < rl, "D25: 기동 설정 인자가 기동 줄 렌더 뒤");
     }
 
     /// ★D25(1.1.8) 기동 인자 부착 제외 경로 — 비claude 어댑터·사용자 cmd 에 --settings 가 이미 있으면 cmd 바이트 무변경

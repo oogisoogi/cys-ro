@@ -5738,7 +5738,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     //   지은 제목인지 정확 재구성으로 대조 — 특성을 짓는 데는 안 쓴다).
                     {
                         let role_now = s.role.lock().unwrap().clone();
-                        let agent_now = s.agent_meta.lock().unwrap().as_ref().map(|a| a.0.clone());
+                        // ★D17(1.1.8): launch-agent 는 agent_meta 를 생성 때 쓰지 않으므로(빈 좌석 판정 보존) 제목 판정용
+                        //   `title_agent` 를 따로 싣는다 — 이 자리 외 소비자 0.
+                        let agent_now = s.agent_meta.lock().unwrap().as_ref().map(|a| a.0.clone())
+                            .or_else(|| param_str(&params, "title_agent").filter(|a| !a.trim().is_empty()));
                         let mut title_now = s.title.lock().unwrap();
                         if let Some(next) = crate::panetitle::initial_title(
                             s.id,

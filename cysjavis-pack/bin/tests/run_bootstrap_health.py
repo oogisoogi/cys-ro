@@ -4317,8 +4317,8 @@ def h_win_12():
     판별(_lib.sh 단일 소유처)이다. 이 검체는 System32 **의미론 스텁**(timeout·gtimeout 둘 다
     인자 즉시 rc=1)을 PATH 선두에 두어 그 함정을 전 플랫폼에서 결정론 재현하고(모듈 헤더의
     스텁 목 규약 — Windows 실기에서는 스텁이 안 잡혀도 System32 실물이 같은 함정이라 판정
-    동일), PreCompact 모조 stdin 으로 save-state.sh 를 돌려 **exit 0 AND fixture _round 에
-    BOOT_SNAPSHOT.md 실재**를 단언한다. 마스터 게이트 조건은 CYS_ROLE=master env
+    동일), PreCompact 모조 stdin 으로 save-state.sh 를 돌려 **exit 0 AND 정본 자리(1.1.8 D14 = 레인 팩
+    round/ · 격리 팩 사본)에 BOOT_SNAPSHOT.md 실재**를 단언한다. 마스터 게이트 조건은 CYS_ROLE=master env
     (javis_snapshot.is_master ①신호)로 충족한다 — 플랫폼 무관 판정."""
     with tempfile.TemporaryDirectory() as tmp:
         proj = os.path.join(tmp, "proj")
@@ -4327,16 +4327,27 @@ def h_win_12():
         stub = "#!/bin/sh\necho 'ERROR: Invalid argument/option - --version' >&2\nexit 1\n"
         _w(os.path.join(binp, "timeout"), stub)
         _w(os.path.join(binp, "gtimeout"), stub)
-        # 실물 팩(javis_snapshot.py)을 소비하되 상태는 tmp 로 격리(하네스 계약: 사용자 HOME 불가침).
+        # ★1.1.8 W2 D14(fda3906f): lead 좌석(master)의 작업기억·BOOT_SNAPSHOT 정본 = **레인 팩 round/**
+        #   (cys_session_state_path) — 옛 자리(<cwd>/_round)가 아니다. 종전처럼 CYS_PACK_DIR=저장소 팩 실물을 주면
+        #   스냅샷이 **checkout 안**(cysjavis-pack/round)에 쓰이고 이 검체는 옛 자리를 봐 「미생성」으로 오판했다
+        #   (윈 CI run 37370138533 — 함정 자체는 통과: 스냅샷은 생성됐다). 팩 사본(tests 제외)을 tmp 에 두어
+        #   상태를 격리하고, 정본 자리에서 단언한다 + 저장소 팩 round/ 무접촉 단언.
+        pack = os.path.join(tmp, "pack")
+        shutil.copytree(PACK_DIR, pack, ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc",
+                                                                     "BOOT_SNAPSHOT.md", ".state_log"))
+        repo_snap = os.path.join(PACK_DIR, "round", "BOOT_SNAPSHOT.md")
+        repo_before = os.path.exists(repo_snap) and os.path.getmtime(repo_snap)
         env = _base_env({"HOME": os.path.join(tmp, "home"),
-                         "CYS_PACK_DIR": PACK_DIR,
+                         "CYS_PACK_DIR": pack,
                          "CYS_STATE_DIR": os.path.join(tmp, "state"),
                          "CYS_ROLE": "master",
                          "PATH": binp + os.pathsep + os.environ.get("PATH", "")})
         payload = json.dumps({"source": "clear", "cwd": proj, "hook_event_name": "PreCompact"})
-        r = _run([BASH, _hook("save-state.sh")], input=payload, env=env)
+        r = _run([BASH, os.path.join(pack, "hooks", "save-state.sh")], input=payload, env=env)
         need(r.returncode == 0, "save-state exit=%d stderr=%r" % (r.returncode, r.stderr[-300:]))
-        snap = os.path.join(proj, "_round", "BOOT_SNAPSHOT.md")
+        need((os.path.exists(repo_snap) and os.path.getmtime(repo_snap)) == repo_before,
+             "저장소 팩 round/ 에 BOOT_SNAPSHOT.md 가 쓰였다(격리 붕괴)")
+        snap = os.path.join(pack, "round", "BOOT_SNAPSHOT.md")
         need(os.path.isfile(snap),
              "System32 timeout 함정에서 BOOT_SNAPSHOT.md 미생성 — cys_timeout_run GNU 판별 회귀")
         need("BOOT_SNAPSHOT" in _read(snap), "스냅샷 본문 판독 불가: %r" % _read(snap)[:120])

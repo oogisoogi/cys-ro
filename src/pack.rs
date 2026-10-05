@@ -1979,6 +1979,11 @@ fn existing_file_mode(_path: &Path) -> Option<u32> {
 /// 설치한 그대로인가(=사용자 비수정)"를 판정하는 유일한 근거다.
 pub const INSTALL_MANIFEST: &str = ".install-manifest.json";
 const PACK_VERSION_FILE: &str = ".pack-version";
+/// ★W-a(1.1.8 · D1 triage 파생) 내장 팩 설치 지문 — 비트랜잭션(내장) 설치가 쓴 항목 집합의 sha256(`pack_items_sha256`).
+/// 같은 판 번호로 다시 빌드한 바이너리(시험 기기 교체)는 `.pack-version` 이 같아 부트 스윕이 「판 같음 = 스킵」으로 닫혀
+/// 팩이 옛 내용에 정체했다(윈 10-02 실측: cys-dept 수리 전 166,425B 그대로 → WinError 193). 판이 같을 때 이 지문이
+/// 바이너리의 내장 팩 해시와 다르면 스윕한다. 지문 부재(옛 설치 · pack-update 트랜잭션 적용분) = 종전대로 스킵.
+const PACK_EMBED_HASH_FILE: &str = ".pack-embed-hash";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // free/pro 채널 상태 계약 (DESIGN-free-pro-distribution.md v6 §3·§5)
@@ -3034,6 +3039,12 @@ pub fn remote_is_newer(remote: &str, disk: &str) -> bool {
 ///   매니페스트 부재 = false = **스윕(치유) 실행**. 게이트는 "확실히 최신"일 때만 닫힌다.
 /// - 매니페스트는 존재 stat만 검사한다 — 깊은 파싱 검증은 doctor 소관(매 부트 파싱 = 비용 재유입).
 pub fn pack_current_in(dir: &Path, binary_version: &str) -> bool {
+    pack_current_in_with(dir, binary_version, None)
+}
+
+/// [`pack_current_in`] + ★W-a 같은 판 지문 대조 — `embed_hash` 가 `Some` 이고 디스크 판 == 바이너리 판이면 `.pack-embed-hash`
+/// 가 그 값과 같을 때만 「최신」. 지문 파일 부재 = 종전대로 최신(옛 설치 호환). 디스크 판 > 바이너리 판 = 지문 무관 최신.
+pub fn pack_current_in_with(dir: &Path, binary_version: &str, embed_hash: Option<&str>) -> bool {
     if !dir.join(INSTALL_MANIFEST).exists() {
         return false;
     }
@@ -3041,7 +3052,11 @@ pub fn pack_current_in(dir: &Path, binary_version: &str) -> bool {
         return false;
     };
     match (parse_semver(disk.trim()), parse_semver(binary_version)) {
-        (Some(d), Some(b)) => d >= b,
+        (Some(d), Some(b)) if d > b => true,
+        (Some(d), Some(b)) if d == b => match (embed_hash, std::fs::read_to_string(dir.join(PACK_EMBED_HASH_FILE))) {
+            (Some(want), Ok(got)) => got.trim() == want,
+            _ => true,
+        },
         _ => false,
     }
 }
@@ -3050,7 +3065,7 @@ pub fn pack_current_in(dir: &Path, binary_version: &str) -> bool {
 /// ★게이트는 반드시 **부트 호출부**에 두고 install() 내부에 넣지 마라 — 내부에 넣으면 수동
 /// `cys init-pack`·pack-update·pack-downgrade(치유의 정식 경로)까지 게이트되어 치유가 불구가 된다.
 pub fn pack_current_for(binary_version: &str) -> bool {
-    pack_current_in(&pack_dir(), binary_version)
+    pack_current_in_with(&pack_dir(), binary_version, Some(embedded_pack_hash_ref()))
 }
 
 /// 원자적 파일 쓰기(§7-⑤): 같은 디렉터리 temp 파일에 쓰고 fsync → rename으로 원자 교체 →
@@ -4434,6 +4449,10 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     if !transactional {
         match write_atomic(&dir.join(PACK_VERSION_FILE), target_version.as_bytes()) {
             Ok(()) => {
+                // ★W-a: 내장 설치 지문 — 같은 판 재빌드 교체를 부트 스윕이 알아보게(best-effort · 실패 = 지문 부재 = 종전 동작).
+                if let Err(e) = write_atomic(&dir.join(PACK_EMBED_HASH_FILE), pack_items_sha256(&items).as_bytes()) {
+                    eprintln!("[init-pack] 팩 지문 기록 실패({e}) — 같은 판 재빌드 감지만 꺼진다(설치는 유효)");
+                }
                 if let PackStateRead::Valid(mut st) = read_pack_state(&dir) {
                     if st.channel == "free" && st.base_version != target_version {
                         st.base_version = target_version.to_string();
@@ -4901,6 +4920,9 @@ where
         let _ = rollback_journal();
         return Err(format!(".pack-version 커밋 실패(rollback 완료): {e}"));
     }
+    // ★W-a: 트랜잭션(원격 팩) 적용분은 내장 팩이 아니다 — 내장 지문을 지운다(부재 = 같은 판에서 종전대로 스킵 · 원격 팩을
+    //   내장 팩으로 덮는 스윕을 만들지 않는다).
+    let _ = std::fs::remove_file(dir.join(PACK_EMBED_HASH_FILE));
     // ⑤ post-commit(record_accepted) — 커밋은 이미 유효. 실패 = loud + false 반환(침묵 포장 금지).
     let post_commit_ok = match post_commit() {
         Ok(()) => true,
@@ -5814,6 +5836,15 @@ mod tests {
         // ⑦ 마커 손상(비semver) → 스윕(fail-open 치유)
         std::fs::write(td.join(PACK_VERSION_FILE), "garbage").unwrap();
         assert!(!pack_current_in(&td, "0.12.51"), "마커 손상 = 스윕");
+        // ★W-a(1.1.8): 같은 판 + 내장 지문 대조 — 지문 다름 = 스윕 · 같음 = 스킵 · 지문 부재 = 스킵(옛 설치 호환) · 디스크 전진 = 지문 무관 스킵.
+        std::fs::write(td.join(PACK_VERSION_FILE), "0.12.51").unwrap();
+        assert!(pack_current_in_with(&td, "0.12.51", Some("H-NEW")), "지문 부재 = 종전대로 스킵");
+        std::fs::write(td.join(PACK_EMBED_HASH_FILE), "H-OLD\n").unwrap();
+        assert!(!pack_current_in_with(&td, "0.12.51", Some("H-NEW")), "같은 판 재빌드(지문 다름) = 스윕");
+        assert!(pack_current_in_with(&td, "0.12.51", Some("H-OLD")), "지문 같음 = 스킵");
+        assert!(pack_current_in_with(&td, "0.12.51", None), "지문 미지정 호출 = 종전 판정");
+        std::fs::write(td.join(PACK_VERSION_FILE), "0.12.52").unwrap();
+        assert!(pack_current_in_with(&td, "0.12.51", Some("H-NEW")), "디스크 전진 = 지문 무관 스킵");
 
         let _ = std::fs::remove_dir_all(&td);
     }
@@ -6394,6 +6425,8 @@ mod tests {
         // 실제 install 이 플랜과 같은 행동을 하는지 대조.
         install(false, None).expect("install 실패");
         let read = |rel: &str| std::fs::read_to_string(td.join(rel)).unwrap();
+        // ★W-a: 내장 설치는 지문 = 바이너리 내장 팩 해시를 남긴다(같은 판 재빌드 감지의 입력).
+        assert_eq!(read(PACK_EMBED_HASH_FILE), embedded_pack_hash(), "W-a 내장 설치 지문");
         assert_eq!(read("soul.md"), "USER-SOUL");
         assert!(td.join("soul.md.new").exists());
         assert!(td.join("alerts-config.json.user").exists());

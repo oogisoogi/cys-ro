@@ -65,14 +65,6 @@ enum Command {
     },
     /// List surfaces
     List,
-    /// ★D5(1.1.8) 부서 상태 읽기 전용 조회 — 본부 pane 에서 부서 좌석·상태 폴더를 본다(기동·autostart 0 · 닫힌 부서 거절)
-    DeptStatus {
-        /// 부서 이름(depts.json 키 · 예: dept-1)
-        name: String,
-        /// JSON 한 줄로 출력
-        #[arg(long)]
-        json: bool,
-    },
     /// Inject text into a surface's stdin (no trailing newline; follow with send-key Return)
     Send {
         #[arg(long)]
@@ -957,6 +949,16 @@ enum DaemonAction {
     Uninstall,
     /// 등록·가동 상태 확인
     Status,
+    /// ★D5(1.1.8) 부서 데몬 상태 읽기 전용 조회 — 좌석·상태 폴더(기동·autostart 0 · 닫힌 부서 거절 exit 3).
+    /// (최상위 동사로 두지 않은 이유: 최상위 Command 에 인자를 늘리면 clap 파생 코드가 커져 기본 2MB 시험 스레드의
+    ///  j3 시험이 스택 넘침 — 실측. 하위 동사 enum 은 파싱 코드가 따로라 무영향)
+    DeptStatus {
+        /// 부서 이름(depts.json 키 · 예: dept-1)
+        name: String,
+        /// JSON 한 줄로 출력
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5352,10 +5354,7 @@ fn run(command: Command) -> i32 {
             .map(|r| println!("{}", r["surface_ref"].as_str().unwrap_or("?")))
         }
 
-        Command::DeptStatus { name, json: as_json } => {
-            let code = run_dept_status(&name, as_json);
-            std::process::exit(code);
-        }
+        // ★D5: 본문은 줄 밖 함수로(이 거대 match 의 디버그 스택 프레임을 키우지 않는다 — j3 시험이 기본 스레드 스택에서 이 fn 을 돈다).
 
         Command::List => request("surface.list", json!({})).map(|r| {
             for s in r["surfaces"].as_array().cloned().unwrap_or_default() {
@@ -15398,7 +15397,7 @@ fn dept_status_precheck(name: &str, reg: cys::DeptRegistration) -> Result<Option
     }
 }
 
-/// `cys dept-status <이름>` — 부서 소켓(레지스트리의 socket 칸 ‖ OS 규약 이름)으로 **autostart 없이** 접속해
+/// `cys daemon dept-status <이름>` — 부서 소켓(레지스트리의 socket 칸 ‖ OS 규약 이름)으로 **autostart 없이** 접속해
 /// `surface.list` 만 읽는다. 종전 경로(`CYS_SOCKET=<부서> cys list`)는 연결 실패 시 autostart 를 시도해 레인↔팩 가드에
 /// 막혔고(윈 실측: 부서 데몬 live 인데 조회 불가), 본부의 CEO 가 부서 좌석을 스스로 확증할 길이 없었다.
 /// exit: 0 = 조회됨 · 2 = 형식/연결 실패(부서 데몬 미가동 포함) · 3 = 닫힌 부서.
@@ -19214,6 +19213,10 @@ fn run_launch_agent_opts(
 // plist 포맷·경로·LABEL은 `cys::launchd`(앱 자동등록과 단일 소스) 위임 — 드리프트 방지.
 
 fn run_daemon_cmd(action: DaemonAction) -> i32 {
+    // ★D5: OS 무관 읽기 전용 조회 — 아래 OS 별 등록 관리 분기 앞에서 끝낸다.
+    if let DaemonAction::DeptStatus { name, json } = &action {
+        return run_dept_status(name, *json);
+    }
     let result: Result<(), String> = (|| {
         #[cfg(target_os = "macos")]
         {
@@ -19322,6 +19325,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("launchd 등록 해제 완료 (데몬 정지됨 — 세션도 함께 종료)");
                     Ok(())
                 }
+                DaemonAction::DeptStatus { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let path = cys::launchd::plist_path();
                     let registered = path.exists();
@@ -19400,6 +19404,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("작업 스케줄러 등록 해제 완료");
                     Ok(())
                 }
+                DaemonAction::DeptStatus { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let registered = cys::hidden_command("schtasks")
                         .args(["/Query", "/TN", TASK])
@@ -46499,8 +46504,8 @@ mod team_token_cli_tests {
         assert!(dept_status_precheck("dept-1", cys::DeptRegistration::Unknown).unwrap().is_some());
         assert_eq!(dept_status_precheck("../x", cys::DeptRegistration::Registered).unwrap_err().0, 2);
         assert_eq!(dept_status_precheck("", cys::DeptRegistration::Registered).unwrap_err().0, 2);
-        let c = Cli::try_parse_from(["cys", "dept-status", "dept-1", "--json"]).expect("dept-status 파싱");
-        assert!(matches!(c.command, Command::DeptStatus { ref name, json: true } if name == "dept-1"));
+        let c = Cli::try_parse_from(["cys", "daemon", "dept-status", "dept-1", "--json"]).expect("daemon dept-status 파싱");
+        assert!(matches!(c.command, Command::Daemon { action: DaemonAction::DeptStatus { ref name, json: true } } if name == "dept-1"));
     }
 
     /// ★D5 연결 실패 = exit 2 · autostart 0(없는 부서 소켓으로 조회해도 데몬을 띄우지 않는다 — request_on 은 연결만 한다).

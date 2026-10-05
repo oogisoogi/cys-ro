@@ -1,3 +1,11 @@
+# ★§0 델타 — 후임 리드(수리 2차)는 이것부터 (01:1x · master#c6a9de68 · 앞 좌석 CTX ≈58%에서 매듭)
+1. **master 결정 6(수리 2차 입력)** — DECISIONS-PENDING-118.md 끝 절 [master#c6a9de68]:
+   ① ★DS-1 의무 역할 출처를 우리 편성 정본(3석)에 결속 + 시험 기대값 동반(≈58) — **첫 항목** ② ★B(a) 사용량 = 창 밖 보고만 강등(501edcf2 의 전체 순위를 좁혀라 · D6-1 시험 그대로 초록이어야) ③ B(b) 휴면 스위치 env 유지 + 문서 1줄 ④ X2-R 우리 installingUpdate 가드를 SAC 사전 검사까지 ⑤ UNW ≈80 ui 시험 = 휴면 스위치 켠 상태에서만 도는 격리 묶음(삭제·skip 0) + BACKLOG 「휴면-on CI 레인 = 1.1.9」 1줄 ⑥ X18 = 우리 팩 지침 정본 우선 · 원작자 변경분은 diff 로 BACKLOG 행.
+2. **남은 Rust 6**(ctest3.log · 격리 env): drain_verify 흔들림(→ src/submit_probe.rs 마커 오독 수리 후보) · approval r2f_dm(accounts 시험 이음매) · d6_1 2(②로 풀릴 것) · state inject_track_handoff_pending(새 · K17 거부 모드의 S21 표식 상승과 관련 추정) · b3_status = **원작자 결함 행**(원작자판도 적색 · 고치지 말고 분리 기록).
+3. **갈래 D 결과(c0a66a3b)**: 대상 팩 32→10 — 결정 대기 3(test_cso_directive_rev = X18 · test_core_inject = MASTER_CORE/CEO_CORE 요약 해시 재작성 · test_teamtoken D8/D11 = 휴면 지침 문면) · 원작자판도 적색 4(dept_create_progress = X-WAIT · dept_name_guard = X-J4 · dept_team_token = 새 빌드 + CYS_ENABLE_TEAM_FLOW=1 로 재측정 필요 · session_start_hook = 「지침 전문 읽기」 줄) · 환경 3(phoenix c6_reap·e2e_replacement·w2_untomb — 격리 HOME 이 길어 소켓 104자 초과 → 짧은 HOME 이면 초록). ⚠팩 시험 전체 재측정은 아직(1회 ≈33분).
+4. **함정**: ⓐ 서브에이전트 ≤3 동시(master) · 서브 Bash 에 rm·sh -c/bash -c 꼴 금지(D24 분류기 확인창 → 좌석 교착 → 재기동 · 22:2x 실사고) ⓑ 시험 env 에 CYS_CYS_BIN 이 새면 원작자 시험의 가짜 cys 대신 실 디버그 데몬이 떠 120초 정체 + 고아 데몬(앞 좌석 103+18 정리 · 전부 격리 HOME 확인 후 kill) — 측정 뒤 `pgrep -f cys-118-merge/target/debug/cysd` 로 고아 확인 ⓒ 격리 래퍼 TMPDIR/HOME 은 짧게(소켓 SUN_LEN 103) ⓓ 같은 파일 두 서브 동시 쓰기 금지(갈래 = 파일 소유로 나눔) ⓔ 서브는 git 쓰기 금지 · 리드가 갈래별 커밋 ⓕ 판번 1.1.7 유지(TK-G) · push 0.
+5. **진행 판정 계수**: 해소 53분(서브 7기) · 컴파일 5분37초 · 수리 1차 = ui 23분 · Rust B 45분 · 데몬 A 52분 · 팩 D 55분(10분 조기 매듭).
+
 # HANDOFF — 1.1.8 병합 리드 (surface:1275 · TICKET=cysr-118-merge-lead) · 갱신 2026-10-05 22:41:36
 
 ## 상태

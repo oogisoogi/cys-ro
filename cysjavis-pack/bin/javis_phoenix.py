@@ -2611,7 +2611,7 @@ def spawn_fresh_production(socket, role, agent, cwd=None):
     return {"rc": r.returncode, "out": (r.stdout or r.stderr or "").strip()[:400]}
 
 
-def spawn_in_seat_production(socket, include_master=False, cwd=None):
+def spawn_in_seat_production(socket, include_master=False, cwd=None, units=None):
     """★R4-3 빈 좌석 재사용(prod): `cys restore --no-resume` — 역할의 좌석이 이미 있고 비어 있으면(seat=empty)
     cys restore 가 **새 surface 를 만들지 않고 그 좌석에 직접** 에이전트를 기동한다(cys.rs run_restore 의
     in-seat 연결 · 기존 경로 재사용 — 새 부활 엔진 아님). fresh 강등 단계에서 부르므로 --no-resume(세션핀
@@ -2622,8 +2622,12 @@ def spawn_in_seat_production(socket, include_master=False, cwd=None):
         args.append("--include-master")
     if cwd:
         args += ["--cwd", cwd]
-    r = cys(*args, socket=socket, timeout=90)
-    return {"rc": r.returncode, "out": (r.stdout or r.stderr or "").strip()[:400]}
+    # ★(1.1.8 병합 · master#114e0c71 6번) 상한 = R3-2 파생값(restore_spawn_timeout_s · 기동 단위 수 비례 · 하한 90) — 원작자 고정 90 미채택.
+    #   `cys restore --no-resume` 도 죽은 역할을 **순차**로 세우므로 spawn_production 과 같은 산식이다(고정 90 = 좌석 여럿이면 부트 도중 SIGKILL).
+    #   units = 호출부가 세는 기동 대상 역할 수(None·0 이면 1단위 = 하한 쪽).
+    budget, why = restore_spawn_timeout_s(units or 1)
+    r = cys(*args, socket=socket, timeout=budget)
+    return {"rc": r.returncode, "out": (r.stdout or r.stderr or "").strip()[:400], "timeout_s": budget, "timeout_why": why}
 
 
 def spawn_surrogate(socket, role, observed_sid, attempt=0, mode="resume"):
@@ -3480,7 +3484,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 _empties = {_r: _v for _r, _v in _empties.items() if _r in need}
             if _empties:
                 _res = spawn_in_seat_production(socket, include_master=include_master or "master" in _empties,
-                                                cwd=restore_cwd)
+                                                cwd=restore_cwd, units=len(need))
                 jevent(j, "*", "spawn", "in_seat_attempt",
                        "빈 좌석 재사용 시도 %s · %s" % (_empties, json.dumps(_res, ensure_ascii=False)))
                 # 채택 규칙: ⓐ빈 좌석이 점유로 바뀜(재사용) ⓑ시도 전에 없던 좌석이 점유로 떠 있음(cys restore 는

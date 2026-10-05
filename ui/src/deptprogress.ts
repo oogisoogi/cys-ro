@@ -17,10 +17,10 @@
 // ★(성찰 2회차 R2F-UI · A2 B-1 / A3 M1) 안내의 문구는 **설치 여부에 기대지 않는다** — 편성 도구는 설치된 프로그램(claude·agy·codex)의 역할만 띄우고(javis_formation.py ROLE_CLI ·
 //   미설치 역할은 건너뛰어 정상 종결 partial·pending-cli) 문서대로 설치한 PC 는 claude 하나라 3자리가 정상인데, 종전 문구는 "부서장·CSO·워커·리뷰어가 차례로 켜집니다" 를 15분 동안 단정하고
 //   경고색 「확인 필요」 로 끝났다. 이제 켜는 중 문구는 '설치된 프로그램의 자리' 로 조건을 달고, 모든 문구의 자리 수는 **붙은 의무 역할 수**(탭의 칸 수가 아니다)로 통일하며,
-//   15분 상한은 경고가 아닌 일반 알림(「15분 경과」)이다. 좌석 목록을 못 받는 팀은 따로 말한다(「팀 데몬이 응답하지 않습니다」 — 경고).
+//   15분 상한은 「15분이 지났어요」 — (1.1.8 DS-1 · master#114e0c71 ⑨) 우리 3석은 전부 claude 라 경고다. 좌석 목록을 못 받는 팀은 따로 말한다(「팀 데몬이 응답하지 않습니다」 — 경고).
 //   ※ 설치 여부를 '알고' 말하는 문구(N<5 문안)는 이 모듈에 없다 — 그 조회의 출처(`cys agent-detect` 오라클)가 편성 도구의 설치 판정(`javis_cli_probe.probe_cli` — 로그인셸 `command -v`)과 다르다(R2F-UI WORKLOG §A).
 //   ★(후속 · 정체 판정 — A2 B-1 최소 수정안 2) 설치 여부를 모르는 채로도 닫을 수 있는 한 가지: 부서장 자리는 붙어 있는데(M ≥ 1) 전부가 안 됐고(M < 의무 역할 수) 붙은 의무 역할 수가 **3분 동안 늘지 않으면**(0.14.42 원작자 5석 기준의 사례 = claude 만 깐 PC · 1.1.8 DS-1 우리 3석은 전부 claude 라 그 PC 도 다 붙는다 — 정체는 이제 고장 신호에 가깝다)
-//   그 사실을 한 번 알리고 「켜는 중」 갱신을 접는다(deptFormationStalled · 「팀원 켜기 — 자리가 더 붙지 않습니다」 — 일반 알림). 새 타이머·새 RPC 없음 — 3초 틱이 받는 목록의 자리 수만 쓴다.
+//   그 사실을 한 번 알리고 「켜는 중」 갱신을 접는다(deptFormationStalled · 「팀원 켜기 — 자리가 더 늘지 않아요」 — 경고 · 1.1.8 master#114e0c71 ⑨). 새 타이머·새 RPC 없음 — 3초 틱이 받는 목록의 자리 수만 쓴다.
 // ★이벤트 payload·좌석 목록은 **신뢰할 수 없는 데이터**다 — 단계 키는 정규식으로 거르고, 역할은 문자열만 본다.
 //   렌더는 main.ts 가 텍스트 노드·stickyToast 로만 한다(HTML 삽입 없음).
 // ★이 안내는 **표시 전용**이다 — 어떤 명령도 보내지 않는다.
@@ -37,7 +37,7 @@ import { DEPT_SEAT_ROLES } from "./deptcreate";
 export const DEPT_TYPICAL_SECS = 30;
 /** '평소보다 오래' 로 바꾸는 배수 — `DEPT_TYPICAL_SECS × DEPT_SLOW_FACTOR` = 90초부터. */
 export const DEPT_SLOW_FACTOR = 3;
-/** 팀원 부팅 안내의 상한(초) — 15분. 닿으면 주기 갱신을 멈추고, 그때까지 의무 역할 전부가 다 안 붙었으면 「15분 경과」(일반 알림)를 한 번 알린다(무한 갱신 금지). */
+/** 팀원 부팅 안내의 상한(초) — 15분. 닿으면 주기 갱신을 멈추고, 그때까지 의무 역할 전부가 다 안 붙었으면 「15분이 지났어요」(경고)를 한 번 알린다(무한 갱신 금지). */
 export const DEPT_FORMATION_CAP_SECS = 900;
 /** 팀원 부팅 안내 토스트 id 의 접두 — id 는 `dept-formation:<소켓>` 이다(탭마다 하나 · 같은 id 는 갱신된다). */
 export const DEPT_FORMATION_TOAST_PREFIX = "dept-formation:";
@@ -76,9 +76,9 @@ const STAGE_PREFIX = "[cys-dept] @stage ";
 const STAGE_KEY = /^[a-z0-9_-]{1,32}$/;
 
 /**
- * 팀원 부팅 안내의 상태 — booting(켜는 중 · 주기 갱신) · seated(의무 역할 자리가 모두 붙음 · 한 번) · check(15분 상한까지 다 안 붙음 — 일반 알림 · 한 번) ·
+ * 팀원 부팅 안내의 상태 — booting(켜는 중 · 주기 갱신) · seated(의무 역할 자리가 모두 붙음 · 한 번) · check(15분 상한까지 다 안 붙음 — 경고 · 한 번) ·
  * silent(15분 상한인데 그 팀의 좌석 목록을 최근 60초 안에 받지 못함 — 경고 · 한 번) ·
- * stall(자리가 3분 동안 더 붙지 않음 — 일반 알림 · 한 번 · 이 알림 뒤에는 「켜는 중」 갱신과 15분 상한의 「15분 경과」 가 없다).
+ * stall(자리가 3분 동안 더 붙지 않음 — 경고 · 한 번 · 이 알림 뒤에는 「켜는 중」 갱신과 15분 상한의 알림이 없다).
  */
 export type DeptFormationState = "booting" | "seated" | "check" | "silent" | "stall";
 
@@ -249,10 +249,11 @@ export function deptFormationVerdict(roles: unknown, elapsedSec: number): { verd
  * 팀원 부팅 안내의 제목·본문(경과는 분 단위 — formatDeptMinutes). **설치 여부를 모르는 채로 말한다** — 설치된 프로그램(1.1.8 DS-1 우리 3석 = claude)의 자리만 붙는다는 조건을 달고, 자리 수는 모두 `seats`(붙은 의무 역할 수)다.
  *  · booting(기본): 「팀원을 켜는 중」 — 설치된 프로그램의 자리가 차례로 붙는다는 것·최대 자리 수·보통 시간(5분 안팎 — 이 맥 실측 1회 약 5분)·붙은 자리 수·경과.
  *  · seated: 「팀 자리가 모두 붙었습니다」 — 의무 역할 전부가 모두 붙은 것까지만 말한다('준비 완료'라고 단정하지 않는다 — 에이전트가 실제로 떴는지는 화면이 모른다) + 걸린 시간.
- *  · check: 「팀원 켜기 — 15분 경과」 — **경고가 아닌 일반 알림**. 15분 상한까지 전부가 다 안 붙었다 — 붙은 자리 수와 '설치하지 않은 프로그램의 자리는 생기지 않는다'는 사실, 그 밖이면 확인할 곳(Control Center).
+ *  · check: 「팀원 켜기 — 15분이 지났어요」 — **경고**(1.1.8 DS-1 · master#114e0c71 ⑨). 15분 상한까지 전부가 다 안 붙었다 — 우리 3석은 전부 claude 라 정상 종결이 아니라 고장 신호다.
+ *    왕초보 말투로 붙은 자리 수(N자리 중 M자리)와 할 일 하나(자비스를 다시 열기)만 말한다(전문 설명·공포 낱말 0).
  *  · silent: 「팀 데몬이 응답하지 않습니다 — 확인 필요」 — **경고**. 좌석 목록을 받지 못했다(그 팀이 켜졌는지 화면이 모른다) + 확인할 곳 + 경과.
- *  · stall: 「팀원 켜기 — 자리가 더 붙지 않습니다」 — **경고가 아닌 일반 알림**. 붙은 의무 역할 수가 3분(DEPT_FORMATION_STALL_SECS 에서 파생) 동안 늘지 않았다 — 붙은 자리 수·경과와
- *    '설치하지 않은 프로그램의 자리는 생기지 않는다'는 사실, 더 붙어야 한다면 확인할 곳(Control Center).
+ *  · stall: 「팀원 켜기 — 자리가 더 늘지 않아요」 — **경고**(1.1.8 DS-1 · master#114e0c71 ⑨). 붙은 의무 역할 수가 3분(DEPT_FORMATION_STALL_SECS 에서 파생) 동안 늘지 않았다 —
+ *    check 와 구별되게 「3분 동안 더 늘지 않았다」를 말하고, 붙은 자리 수와 할 일 하나(자비스를 다시 열기)로 끝낸다.
  * seats·elapsedSec 는 음수·NaN 이면 0, 소수는 내림. 모르는 상태 값은 booting 으로 접는다(던지지 않는다).
  */
 export function deptFormationText(o: { seats: number; elapsedSec: number; state?: DeptFormationState }): { title: string; body: string } {
@@ -263,8 +264,8 @@ export function deptFormationText(o: { seats: number; elapsedSec: number; state?
       return { title: "팀 자리가 모두 붙었습니다", body: `자리 ${DEPT_SEAT_ROLES.length}개가 모두 붙었습니다 · 걸린 시간 ${formatDeptMinutes(sec)}` };
     case "check":
       return {
-        title: `팀원 켜기 — ${Math.floor(DEPT_FORMATION_CAP_SECS / 60)}분 경과`,
-        body: `붙은 자리 ${seats}개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`,
+        title: `팀원 켜기 — ${Math.floor(DEPT_FORMATION_CAP_SECS / 60)}분이 지났어요`,
+        body: `${Math.floor(DEPT_FORMATION_CAP_SECS / 60)}분이 지났는데 자리가 다 안 붙었어요(${DEPT_SEAT_ROLES.length}자리 중 ${seats}자리) — 자비스를 다시 열어 주세요`,
       };
     case "silent":
       return {
@@ -273,10 +274,8 @@ export function deptFormationText(o: { seats: number; elapsedSec: number; state?
       };
     case "stall":
       return {
-        title: "팀원 켜기 — 자리가 더 붙지 않습니다",
-        body:
-          `${Math.floor(DEPT_FORMATION_STALL_SECS / 60)}분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 ${seats}개 · 경과 ${formatDeptMinutes(sec)}. ` +
-          "설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요",
+        title: "팀원 켜기 — 자리가 더 늘지 않아요",
+        body: `${Math.floor(DEPT_FORMATION_STALL_SECS / 60)}분 동안 자리가 더 늘지 않았어요(${DEPT_SEAT_ROLES.length}자리 중 ${seats}자리) — 자비스를 다시 열어 주세요`,
       };
     default:
       return {
@@ -287,18 +286,18 @@ export function deptFormationText(o: { seats: number; elapsedSec: number; state?
 }
 
 /**
- * 팀원 부팅 안내의 **알림 등급** — silent(팀 데몬 무응답)만 경고 종류(watchdog)이고 그 밖은 일반 알림(feed)이다.
- * 15분 경과(check)와 자리 정체(stall)는 설치하지 않은 프로그램 때문일 수 있어(그 자리는 생기지 않는 것이 정상) 경고가 아니다 — 종전에는 15분 문구도 경고색이었다(정상 종결에 경고).
+ * 팀원 부팅 안내의 **알림 등급** — silent(팀 데몬 무응답)·check(15분 상한)·stall(자리 정체)은 경고 종류(watchdog)이고 booting·seated 는 일반 알림(feed)이다.
+ * (1.1.8 DS-1 · master#114e0c71 ⑨) 우리 편성 3석은 전부 claude 라 다 안 붙은 채 멈추는 것은 정상 종결이 아니라 고장 신호다 — 종전(원작자 5석)의 「설치하지 않은 프로그램 때문일 수 있어 일반 알림」 전제를 걷었다.
  * 모르는 상태·생략은 feed 로 접는다.
  */
 export function deptFormationNoticeKind(state: DeptFormationState | undefined): "watchdog" | "feed" {
   switch (state) {
     case "silent":
+    case "check":
+    case "stall":
       return "watchdog";
     case "booting":
     case "seated":
-    case "check":
-    case "stall":
     default:
       return "feed";
   }

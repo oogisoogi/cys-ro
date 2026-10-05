@@ -112,7 +112,7 @@ def harness(m, root, st):
         return {"rc": 0, "out": "launched"}
     m.spawn_fresh_production = _fresh
 
-    def _inseat(s, include_master=False, cwd=None):
+    def _inseat(s, include_master=False, cwd=None, units=None):  # (1.1.8 병합) units = R3-2 파생 상한 재료
         calls["inseat"] += 1
         (st.get("on_inseat") or (lambda: None))()
         return {"rc": 0, "out": "in-seat"}

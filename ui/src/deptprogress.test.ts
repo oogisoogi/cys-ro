@@ -16,6 +16,8 @@
 //     순수 판정(deptFormationStalled)은 경계(179.999초 아직 · 180초부터)·자리 수 조건(0 과 3 은 아님)·모르는 입력(false)을, 문구는 「3분」 이 상수에서 파생되는 것을 이 파일이 지킨다(점검 배선은 deptprogresswiring.test.ts).
 //   · ★후속(정체 판정 — A2 B-1 최소 수정안 2): claude 만 깐 PC 는 3자리에서 더 늘지 않는데 「켜는 중」 이 15분까지 갱신됐다. 부서장 자리가 붙어 있고(M ≥ 1) 셋이 안 됐고(M < 3 · 1.1.8 DS-1 이전 원작자 5석 기준은 M < 5) 붙은 수가 180초 이상 늘지 않으면
 //     「팀원 켜기 — 자리가 더 붙지 않습니다」(일반 알림)를 한 번 알리고 갱신을 접는다 — 순수 판정(deptFormationStalled)·문구·등급·상수(180초 · 문구의 「3분」 은 상수에서 파생)를 이 파일이 지킨다(배선은 deptprogresswiring.test.ts).
+//   · ★(1.1.8 DS-1 · master#114e0c71 ⑨) 우리 3석은 전부 claude 라 check(15분)·stall(정체)은 고장 신호다 — 둘 다 **경고**(watchdog) 등급이고, 문구는 왕초보 말투로
+//     「15분이 지났어요」·「자리가 더 늘지 않아요」 + 「(3자리 중 M자리) — 자비스를 다시 열어 주세요」(「설치하지 않은 프로그램」 전제·Control Center 안내 삭제). 위 「일반 알림」 서술은 그 이전 이력이다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
@@ -332,10 +334,10 @@ describe("진행 id·이벤트 payload", () => {
 describe("deptFormationText — 5상태(booting · seated · check · silent · stall) — 설치 여부를 모르는 채 말한다", () => {
   const BOOT = (seats: number, elapsed: string): string =>
     `설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 ${seats} · 경과 ${elapsed}`;
-  const CHECK = (seats: number): string => `붙은 자리 ${seats}개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요`;
+  // (1.1.8 DS-1 · master#114e0c71 ⑨) check·stall 은 왕초보 말투 · 「설치하지 않은 프로그램」 전제 삭제 · 할 일 하나(자비스를 다시 열기)로 끝난다 · 경고 등급
+  const CHECK = (seats: number): string => `15분이 지났는데 자리가 다 안 붙었어요(3자리 중 ${seats}자리) — 자비스를 다시 열어 주세요`;
   const SILENT = (elapsed: string): string => `좌석 목록을 받지 못했습니다 — Control Center 에서 팀 상태를 확인하세요 · 경과 ${elapsed}`;
-  const STALL = (seats: number, elapsed: string): string =>
-    `3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 ${seats}개 · 경과 ${elapsed}. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요`;
+  const STALL = (seats: number): string => `3분 동안 자리가 더 늘지 않았어요(3자리 중 ${seats}자리) — 자비스를 다시 열어 주세요`;
   const STATES: DeptFormationState[] = ["booting", "seated", "check", "silent", "stall"];
 
   it("booting(기본) — 제목 「팀원을 켜는 중」 · 본문 「설치된 프로그램(claude)의 자리가 차례로 붙습니다(최대 3자리 · 보통 5분 안팎) · 붙은 자리 M · 경과 T」 — M = 붙은 의무 역할 수", () => {
@@ -359,11 +361,11 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
     expect(deptFormationText({ seats: 3, elapsedSec: 30, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분 미만");
     expect(deptFormationText({ seats: 3, elapsedSec: 60, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분");
   });
-  it("★check(설치 여부를 모르는 15분 상한) — 제목 「팀원 켜기 — 15분 경과」 · 본문 「붙은 자리 M개 — 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 그 밖이면 Control Center 에서 자리 상태를 확인하세요」", () => {
-    expect(deptFormationText({ seats: 2, elapsedSec: 900, state: "check" })).toEqual({ title: "팀원 켜기 — 15분 경과", body: CHECK(2) });
+  it("★check(15분 상한 · 다 안 붙음) — 제목 「팀원 켜기 — 15분이 지났어요」 · 본문 「15분이 지났는데 자리가 다 안 붙었어요(3자리 중 M자리) — 자비스를 다시 열어 주세요」", () => {
+    expect(deptFormationText({ seats: 2, elapsedSec: 900, state: "check" })).toEqual({ title: "팀원 켜기 — 15분이 지났어요", body: CHECK(2) });
     expect(deptFormationText({ seats: 0, elapsedSec: 905, state: "check" }).body).toBe(CHECK(0));
     expect(deptFormationText({ seats: 1, elapsedSec: 905, state: "check" }).body).toBe(CHECK(1)); // CLI 가 하나도 없는 PC — 부서장 자리 1개만 붙는다(윈도우 11 러너 실측)
-    // ★옛 제목 「확인 필요」 는 이 문구에 없다 — 설치하지 않은 프로그램의 자리가 안 생기는 것은 정상 종결이다(편성 도구도 일반 알림으로 알린다)
+    // ★옛 제목 「확인 필요」 는 이 문구에 없다 — 왕초보 말투(공포 낱말 0 · 아래 공포 낱말 시험이 전수로 본다)
     expect(deptFormationText({ seats: 3, elapsedSec: 900, state: "check" }).title.includes("확인 필요")).toBe(false);
     // 경과는 제목이 '15분' 으로 말하고 본문에는 따로 싣지 않는다 — 상태가 check 이면 경과 입력과 무관하게 같은 문구
     expect(deptFormationText({ seats: 3, elapsedSec: 5000, state: "check" })).toEqual(deptFormationText({ seats: 3, elapsedSec: 900, state: "check" }));
@@ -373,18 +375,30 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
     expect(deptFormationText({ seats: 4, elapsedSec: 1000, state: "silent" }).body).toBe(SILENT("16분")); // 자리 수는 말하지 않는다 — 목록을 못 받았다
     expect(deptFormationText({ seats: 4, elapsedSec: 1000, state: "silent" }).body.includes("자리")).toBe(false);
   });
-  it("★stall(자리가 3분 동안 더 붙지 않음) — 제목 「팀원 켜기 — 자리가 더 붙지 않습니다」 · 본문 「3분 동안 자리가 더 붙지 않았습니다 — 붙은 자리 M개 · 경과 T. 설치하지 않은 프로그램(claude)의 자리는 생기지 않습니다. 더 붙어야 한다면 Control Center 에서 자리 상태를 확인하세요」", () => {
-    expect(deptFormationText({ seats: 2, elapsedSec: 280, state: "stall" })).toEqual({ title: "팀원 켜기 — 자리가 더 붙지 않습니다", body: STALL(2, "4분") });
-    expect(deptFormationText({ seats: 1, elapsedSec: 200, state: "stall" }).body).toBe(STALL(1, "3분")); // 부서장 자리 1개만(CLI 0개) — 경과도 분 단위 내림
-    expect(deptFormationText({ seats: 2, elapsedSec: 885, state: "stall" }).body).toBe(STALL(2, "14분"));
-    // 자리 수는 '붙은 의무 역할 수' 이고 경과는 분 단위 — 문구에 초 단위가 없다
+  it("★stall(자리가 3분 동안 더 붙지 않음) — 제목 「팀원 켜기 — 자리가 더 늘지 않아요」 · 본문 「3분 동안 자리가 더 늘지 않았어요(3자리 중 M자리) — 자비스를 다시 열어 주세요」 — 경과는 싣지 않는다(전문 설명 0)", () => {
+    expect(deptFormationText({ seats: 2, elapsedSec: 280, state: "stall" })).toEqual({ title: "팀원 켜기 — 자리가 더 늘지 않아요", body: STALL(2) });
+    expect(deptFormationText({ seats: 1, elapsedSec: 200, state: "stall" }).body).toBe(STALL(1)); // 부서장 자리 1개만
+    expect(deptFormationText({ seats: 2, elapsedSec: 885, state: "stall" })).toEqual(deptFormationText({ seats: 2, elapsedSec: 280, state: "stall" })); // 경과 입력과 무관
+    // 자리 수는 '붙은 의무 역할 수' — 문구에 초 단위가 없다
     expect(deptFormationText({ seats: 3, elapsedSec: 280, state: "stall" }).body.includes("초")).toBe(false);
-    // 경고 문구(「확인 필요」)가 아니다 — 설치하지 않은 프로그램의 자리가 안 생기는 것은 정상 종결이다
     expect(deptFormationText({ seats: 3, elapsedSec: 280, state: "stall" }).title.includes("확인 필요")).toBe(false);
+    // check 와 구별된다(정체 = 3분 동안 안 늘었음 · check = 15분 상한) — 둘 다 같은 할 일 하나로 끝난다
+    const st = deptFormationText({ seats: 2, elapsedSec: 280, state: "stall" });
+    const ck = deptFormationText({ seats: 2, elapsedSec: 900, state: "check" });
+    expect(st.title === ck.title || st.body === ck.body).toBe(false);
+    for (const t of [st, ck]) expect(t.body.endsWith(" — 자비스를 다시 열어 주세요")).toBe(true);
+  });
+  it("★(1.1.8 DS-1 · master#114e0c71 ⑨) check·stall 문구 — 「설치하지 않은 프로그램」 전제·전문 용어·공포 낱말(오류·실패·위험·고장·확인 필요)이 없다", () => {
+    for (const state of ["check", "stall"] as DeptFormationState[])
+      for (const seats of [0, 1, 2]) {
+        const t = deptFormationText({ seats, elapsedSec: 300, state });
+        for (const bad of ["설치하지 않은", "설치 안 한", "프로그램", "claude", "Control Center", "오류", "실패", "위험", "고장", "확인 필요"])
+          expect({ state, 낱말: bad, 있음: (t.title + t.body).includes(bad) }).toEqual({ state, 낱말: bad, 있음: false });
+      }
   });
   it("★문구의 「3분」 은 DEPT_FORMATION_STALL_SECS 에서 파생한다(15분 문구와 같은 방식) — 상수를 바꾸면 문구가 따라가고, 소스에 「3분 동안」 을 박지 않는다", () => {
     const m = deptFormationText({ seats: 3, elapsedSec: 280, state: "stall" }).body;
-    expect(m.startsWith(`${DEPT_FORMATION_STALL_SECS / 60}분 동안 자리가 더 붙지 않았습니다`)).toBe(true);
+    expect(m.startsWith(`${DEPT_FORMATION_STALL_SECS / 60}분 동안 자리가 더 늘지 않았어요`)).toBe(true);
     const code = read("./deptprogress.ts")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .split("\n")
@@ -414,8 +428,8 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
     expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "seated" }).body).toBe("자리 3개가 모두 붙었습니다 · 걸린 시간 1분 미만");
     expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "check" }).body).toBe(CHECK(0));
     expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "silent" }).body).toBe(SILENT("1분 미만"));
-    expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "stall" }).body).toBe(STALL(0, "1분 미만"));
-    expect(deptFormationText({ seats: 1e9, elapsedSec: 0, state: "stall" }).body).toBe(STALL(999, "1분 미만"));
+    expect(deptFormationText({ seats: Number.NaN, elapsedSec: Number.NaN, state: "stall" }).body).toBe(STALL(0));
+    expect(deptFormationText({ seats: 1e9, elapsedSec: 0, state: "stall" }).body).toBe(STALL(999));
     expect(deptFormationText({ seats: 2.9, elapsedSec: 125.9 }).body).toBe(BOOT(2, "2분"));
     expect(deptFormationText({ seats: 1e9, elapsedSec: 0 }).body).toBe(BOOT(999, "1분 미만"));
     expect(deptFormationText({ seats: 1e9, elapsedSec: 0, state: "check" }).body).toBe(CHECK(999));
@@ -434,7 +448,7 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
           for (const old of ["부서장·CSO·워커·리뷰어가 차례로 켜집니다", "지금 ", "아직 ", "자리입니다"]) {
             expect({ state, seats, sec, 옛: old, 있음: (t.title + t.body).includes(old) }).toEqual({ state, seats, sec, 옛: old, 있음: false });
           }
-          expect(t.title).not.toBe("팀원 켜기 — 확인 필요"); // 옛 경고 제목(15분 상한은 이제 일반 알림 「15분 경과」)
+          expect(t.title).not.toBe("팀원 켜기 — 확인 필요"); // 옛 경고 제목(15분 상한은 이제 「15분이 지났어요」)
         }
     // 제품 소스(문구 모듈과 배선)에도 옛 문구·옛 템플릿이 없다 — 주석을 걷은 코드 줄만 본다
     const code = (rel: string): string =>
@@ -451,11 +465,12 @@ describe("deptFormationText — 5상태(booting · seated · check · silent · 
   });
 });
 
-describe("deptFormationNoticeKind — 알림 등급(silent 만 경고 · 15분 경과는 일반 알림)", () => {
-  it("★silent → watchdog(경고) · booting·seated·check·stall·상태 생략 → feed(일반 알림) — 15분 경과(check)와 자리 정체(stall)는 설치하지 않은 프로그램 때문일 수 있어 경고가 아니다", () => {
-    expect(deptFormationNoticeKind("silent")).toBe("watchdog");
-    expect(deptFormationNoticeKind("stall")).toBe("feed"); // 후속(정체 판정): 경고가 아닌 일반 알림
-    for (const st of ["booting", "seated", "check", "stall", undefined] as (DeptFormationState | undefined)[])
+// (1.1.8 DS-1 · master#114e0c71 ⑨) 우리 3석은 전부 claude — 다 안 붙은 채 멈추는 것(check·stall)은 고장 신호라 silent 와 같은 경고 종류다(종전: 일반 알림).
+describe("deptFormationNoticeKind — 알림 등급(silent·check·stall 은 경고 · booting·seated 는 일반 알림)", () => {
+  it("★silent·check·stall → watchdog(경고) · booting·seated·상태 생략 → feed(일반 알림)", () => {
+    for (const st of ["silent", "check", "stall"] as DeptFormationState[])
+      expect({ 상태: st, 등급: deptFormationNoticeKind(st) }).toEqual({ 상태: st, 등급: "watchdog" });
+    for (const st of ["booting", "seated", undefined] as (DeptFormationState | undefined)[])
       expect({ 상태: String(st), 등급: deptFormationNoticeKind(st) }).toEqual({ 상태: String(st), 등급: "feed" });
   });
   it("모르는 값은 던지지 않고 feed 로 접는다", () => {

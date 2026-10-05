@@ -806,6 +806,7 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
         calls.push(`checkForUpdate:${String(silent)}`);
       },
       IS_MACOS: !o.isWindows,
+      IS_WINDOWS: !!o.isWindows, // (1.1.8 X2-W) 윈도우 문안 분기
       // 우리 판 진행 중 표식(설치 호출 동안만 · 모듈 수준 let 의 대역) · 그 안내 문안
       installingUpdate: false,
       INSTALL_BUSY_NAME: "새 앱 받는 중",
@@ -933,23 +934,26 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     expect(cmds(off)).toEqual(["smart_app_control", "update_checked_launch_enabled", "install_update"]);
   });
 
-  it("★R1F-UA(S3 note 14) 확인 창 본문: 윈도우에서만 실제 순서(다운로드·서명 검증 뒤 설치 프로그램 실행 · 이 앱은 닫힘)를 적는다 · 맥·리눅스 문안은 종전과 바이트 동일", async () => {
+  // (1.1.8 병합 X2-W · master#114e0c71 「사실 쪽」) 우리 윈도우 설치 경로에는 drain·핸드오프가 없다(실측 = src-tauri/src/main.rs install_update_checked_windows ·
+  //   받기→설치기 실행→cleanup_before_exit→process::exit(0)) → 윈도우 방법 절은 원작자 문면 · 제목·틀·설치 사이트 줄은 우리 판(X2) · 맥은 우리 종전 문안 바이트 동일.
+  const OUR_WIN_TAIL =
+    "다운로드·서명 검증 뒤 설치 프로그램을 실행합니다(이 앱은 닫히고, 설치가 끝나면 다시 시작됩니다). 부서·노드는 재시작 후 자동 복원됩니다(대화 기억 포함). 저장하지 않은 마지막 입력은 빠질 수 있습니다.";
+  const OUR_WIN_BODY = (v: string): string =>
+    `새 앱 ${v} 을 설치합니다. ${OUR_WIN_TAIL}\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr`;
+  it("★R1F-UA(S3 note 14) 확인 창 본문: 윈도우에서만 실제 순서(다운로드·서명 검증 뒤 설치 프로그램 실행 · 이 앱은 닫힘)를 적는다 · 맥 문안은 종전과 바이트 동일", async () => {
     const win = await runPrompt({ sac: "off", isWindows: true });
-    expect(win.modal[0]).toEqual(["새 본체 버전 0.14.43 — 패치 설치", WIN_BODY("0.14.43"), "설치"]);
-    const mac = await runPrompt({ sac: "off" }); // IS_WINDOWS = false
-    expect(mac.modal[0]).toEqual(["새 본체 버전 0.14.43 — 패치 설치", BASE_BODY("0.14.43"), "설치"]);
-    // 윈도우 본문에는 drain·핸드오프 서술이 없다 · 맥 본문에는 종전 서술이 그대로 있다
+    expect(win.modal[0]).toEqual([OUR_TITLE("0.14.43"), OUR_WIN_BODY("0.14.43"), "설치"]);
+    const mac = await runPrompt({ sac: "off" }); // IS_WINDOWS = false · IS_MACOS = true
+    expect(mac.modal[0]).toEqual([OUR_TITLE("0.14.43"), OUR_BODY("0.14.43"), "설치"]);
+    // 윈도우 본문에는 drain·저장 서술이 없다(그 경로에 drain 이 없다) · 맥 본문에는 설치 프로그램 서술이 없다
     const w = String(win.modal[0]?.[1]);
-    for (const x of ["저장(drain)", "교체하고 앱을 재시작합니다"]) expect({ 낱말: x, 윈도우: w.includes(x) }).toEqual({ 낱말: x, 윈도우: false });
+    for (const x of ["저장(drain)", "대화를 저장하고", "교체하고 앱을 재시작합니다"]) expect({ 낱말: x, 윈도우: w.includes(x) }).toEqual({ 낱말: x, 윈도우: false });
     expect(w.includes("다운로드·서명 검증 뒤 설치 프로그램을 실행합니다(이 앱은 닫히고, 설치가 끝나면 다시 시작됩니다)")).toBe(true);
     const m = String(mac.modal[0]?.[1]);
-    expect(m.includes("저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 재시작합니다")).toBe(true);
     expect(m.includes("설치 프로그램")).toBe(false);
-    // 두 본문은 방법 절 하나만 다르다 — 뒤 문장("부서·노드는 … 손실될 수 있습니다 … 지금 설치하시겠습니까 …")은 같다
-    expect(BASE_BODY("0.14.43").replace("저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 재시작합니다", "다운로드·서명 검증 뒤 설치 프로그램을 실행합니다(이 앱은 닫히고, 설치가 끝나면 다시 시작됩니다)")).toBe(WIN_BODY("0.14.43"));
     // 윈도우 + 스마트 앱 컨트롤 켜짐 + 확인 실행 꺼짐: 본문 끝에 (나) 문단이 붙는다(두 변경이 함께 간다)
     const both = await runPrompt({ sac: "on", checked: false, isWindows: true });
-    expect(both.modal[0]?.[1]).toBe(WIN_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT_UNCHECKED);
+    expect(both.modal[0]?.[1]).toBe(OUR_WIN_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT_UNCHECKED);
   });
 
   it("사용자가 거절하면(아니오) 설치하지 않는다 — 스마트 앱 컨트롤·노브 조회는 설치를 막지도 부르지도 않는다", async () => {

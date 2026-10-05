@@ -95,7 +95,7 @@ def scenario(src, tmp, tag, roles, tomb_on_restore=None, tomb_on_fresh=None, emp
         return {"rc": 1 if out else 0, "out": out}
     m.spawn_production = _restore
 
-    def _in_seat(s, include_master=False, cwd=None):
+    def _in_seat(s, include_master=False, cwd=None, units=None):  # (1.1.8 병합) units = R3-2 파생 상한 재료
         calls["in_seat"] += 1
         return {"rc": 1, "out": "stub"}
     m.spawn_in_seat_production = _in_seat

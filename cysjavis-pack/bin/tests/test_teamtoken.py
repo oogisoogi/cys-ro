@@ -112,6 +112,19 @@ BASE_PACK = live_pack(SHIPPED_TEXT)
 RESULTS = {}      # suite -> [(id, ok, detail)]
 
 
+# (1.1.8 병합 · master#114e0c71 4번 = ⓑ 휴면-on 레인 · UNW 원칙) 원작자 팀 흐름(D-TEAM)은 휴면이라 출하 지침이 그 절(§4-A-2 앵커·
+#   CEO 서문 토큰 예외)을 품지 않는다 — 그 문면을 핀하는 D8·D11 은 휴면 스위치를 켠 레인(CYS_ENABLE_TEAM_FLOW=1 · src/lib.rs dormant 와
+#   같은 술어)에서만 돈다. 꺼진 레인에서는 계수하지 않고 [LANE] 한 줄을 남긴다(삭제 아님 · BACKLOG-118 B1·B2).
+DORMANT_TEAM_LANE = os.environ.get("CYS_ENABLE_TEAM_FLOW", "").strip() == "1"
+
+
+def check_dormant(suite, cid, cond, detail=""):
+    if not DORMANT_TEAM_LANE:
+        print("[LANE] %s %s — 휴면-on 레인(CYS_ENABLE_TEAM_FLOW=1)에서만 판정" % (suite, cid))
+        return True
+    return check(suite, cid, cond, detail)
+
+
 def check(suite, cid, cond, detail=""):
     RESULTS.setdefault(suite, []).append((cid, bool(cond), detail))
     print("[%s] %s %s%s" % ("PASS" if cond else "FAIL", suite, cid, (" — " + detail) if detail else ""))
@@ -1435,7 +1448,7 @@ def suite_directive():
     with open(ceo, encoding="utf-8") as f:
         ceo_text = f.read()
     anchor = getattr(tt, "DIRECTIVE_ANCHOR", None)
-    check("D", "D8(N1) 출하 지침(MASTER·CEO_TEMPLATE)이 ask 게이트 앵커를 품는다 — 없으면 전 기계에서 대화 승인이 조용히 닫힌다",
+    check_dormant("D", "D8(N1) 출하 지침(MASTER·CEO_TEMPLATE)이 ask 게이트 앵커를 품는다 — 없으면 전 기계에서 대화 승인이 조용히 닫힌다",
           bool(anchor) and anchor in text and anchor in ceo_text, repr(anchor))
     # ★(fatal-fix F1 · ROLE-01 · ROLE-1 · R3-O1 · R4-N5 · F4 · F6 · X-R4-1 · R4-N2) 대표가 턴 안에서 편성·각성을 기다리지
     #   않는다(회신 적체 방지) · ① 도구 제한시간 · 각성 지시 받는 쪽 규칙 · 재요청 1회 · 첫 팀 지침 교체는 턴 뒤.
@@ -1481,7 +1494,7 @@ def suite_directive():
           "timeout 600000" in step1 and "백그라운드로 돌리거나" in step1 and "cys reinject --role master" in step1,
           step1[:200])
     ceo_head = ceo_text[:ceo_text.index("# [본문 — 표준 MASTER 운영 계약 전문]")]
-    check("D", "D11(F5) CEO 합성 서문이 토큰 생성 예외를 반영한다('집행은 CSO·GUI 경유' 단독 문구 아님)",
+    check_dormant("D", "D11(F5) CEO 합성 서문이 토큰 생성 예외를 반영한다('집행은 CSO·GUI 경유' 단독 문구 아님)",
           "(집행은 CSO·GUI 경유)" not in ceo_head and "§4-A-2 대화 승인 토큰 예외" in ceo_head)
     check("D", "D7(RR1-SEC-B) '직접 호출은 출처 확인으로 거부·기록된다'는 단정 금지 — 형식대로 흉내 낸 입력은 통과하고 "
                "via=hook 으로 남는다고 적는다 · not_hook_caller 재시도 금지 · 출력 안 하는 hook_payload_invalid 는 표에서 뺀다",

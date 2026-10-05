@@ -11,6 +11,10 @@ import { describe, it, expect } from "bun:test";
 // (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
 const itDormant = it.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
+import { windowView } from "./usagebar";
+import { usedPctOf } from "./wsusage";
+// 게이지 실행 시험용(deptprogresswiring.test.ts 와 같은 손 선언 — 의존성 0)
+declare const Bun: { Transpiler: new (o: { loader: "ts" }) => { transformSync(code: string): string } };
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf-8");
 const stripComments = (s: string): string =>
@@ -366,12 +370,64 @@ describe("0.14.43 UI1 — Control Center Live 계정 섹션·KPI 배선", () => 
     // 종전 'N분 전 관측' 배지는 유지
     expect(b.includes("분 전 관측")).toBe(true);
   });
-  itDormant("게이지는 windowView 규칙(리셋 지남 → 폭 0·'리셋됨'·경고색 없음) — 종전 sevClass(used, 70, 90) 직접 판정을 쓰지 않는다", () => {
+  // (1.1.8 · master#114e0c71 ⑧) CC 계정 게이지에 windowView 를 배선했다 — 휴면 레인에서 일반 레인으로 되돌림
+  it("게이지는 windowView 규칙(리셋 지남 → 폭 0·'리셋됨'·경고색 없음) — 종전 sevClass(used, 70, 90) 직접 판정을 쓰지 않는다", () => {
     const b = fnBody("renderAccounts");
     expect(b.includes("windowView(a, lab, nowSec)")).toBe(true);
     expect(b.includes('v.state === "ok" ?')).toBe(true);
     expect(b.includes("sevClass(")).toBe(false);
     expect(b.includes("ccEsc(v.text)") && b.includes("ccEsc(v.resetText)")).toBe(true);
+  });
+  // (1.1.8 · master#114e0c71 ⑧) 게이지 함수를 실제로 돌린다 — 리셋 지난 창 = 폭 0·「리셋됨」·경고색 없음 / 살아 있는 창 = 종전(폭·숫자·ccReset·임계색) / 죽은 창 = 사유 우선
+  describe("CC 계정 게이지 실행 — 리셋 지남 규칙 · 살아 있는 창은 종전 · 죽은 창·미관측 불변", () => {
+    const NOW = 1_800_000_000;
+    const gaugeSrc = (() => {
+      const i = code.indexOf("const gauge = (a: any, lab: string, observedAt: number) => {");
+      expect(i).toBeGreaterThan(0);
+      const end = code.indexOf("\n      };", i);
+      return code.slice(i, end + "\n      };".length);
+    })();
+    const esc = (s: string) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const ccReset = (label: string, epoch: number | null) => (epoch ? `R(${label},${epoch})` : "");
+    const js = new Bun.Transpiler({ loader: "ts" }).transformSync(`${gaugeSrc}\nreturn gauge;`);
+    const gauge = new Function("windowView", "usedPctOf", "ccEsc", "ccReset", "windowStaleText", "nowSec", js)(
+      windowView,
+      usedPctOf,
+      esc,
+      ccReset,
+      (reason: string | null) => `STALE(${reason})`,
+      NOW,
+    ) as (a: unknown, lab: string, observedAt: number) => string;
+    const row = (w: Record<string, unknown>) => ({ rate: [{ label: "5h", ...w }] });
+    it("리셋이 이미 지난 창(옛 95%) → 채움 없음(폭 0) · 「리셋됨」 · 「재관측 대기」 · 경고색(warn/crit) 없음", () => {
+      const h = gauge(row({ used_pct: 95, resets_at: NOW - 1 }), "5h", NOW);
+      expect(h.includes("cc-tbar-fill")).toBe(false);
+      expect(h.includes('<span class="cc-tbar-pct">리셋됨</span>')).toBe(true);
+      expect(h.includes('<span class="cc-tbar-reset">재관측 대기</span>')).toBe(true);
+      expect(/\b(warn|crit)\b/.test(h)).toBe(false);
+      expect(h.includes("95%")).toBe(false);
+    });
+    it("살아 있는 창 → 종전 그대로(폭 = 값 · 「N%」 · ccReset 리셋 시각 · 70/90 임계색)", () => {
+      const r = NOW + 3600;
+      expect(gauge(row({ used_pct: 95, resets_at: r }), "5h", NOW)).toBe(
+        `<div class="cc-tbar"><span class="cc-tbar-lab">5h</span><span class="cc-tbar-track"><span class="cc-tbar-fill crit" style="width:95%"></span></span><span class="cc-tbar-pct">95%</span><span class="cc-tbar-reset">R(5h,${r})</span></div>`,
+      );
+      expect(gauge(row({ used_pct: 72, resets_at: r }), "5h", NOW).includes('class="cc-tbar-fill warn" style="width:72%"')).toBe(true);
+      expect(gauge(row({ used_pct: 12, resets_at: null }), "5h", NOW).includes('class="cc-tbar-fill " style="width:12%"')).toBe(true);
+      expect(gauge(row({ used_pct: 12, resets_at: null }), "5h", NOW).includes('<span class="cc-tbar-reset"></span>')).toBe(true);
+    });
+    it("모델 스코프 게이지(「7d·모델」)도 같은 규칙 — 리셋 지남이면 「리셋됨」 · 살아 있으면 값", () => {
+      const scoped = (resets_at: number) => ({ rate: [{ model: "Fable", used_pct: 91, resets_at, label: "7d·Fable" }] });
+      expect(gauge(scoped(NOW - 10), "7d·Fable", NOW).includes(">리셋됨<")).toBe(true);
+      expect(gauge(scoped(NOW + 10), "7d·Fable", NOW).includes('class="cc-tbar-fill crit" style="width:91%"')).toBe(true);
+    });
+    it("죽은 창(stale) = 사유 우선(리셋 지났어도 「—」+사유 · .dead) · 미관측(null·창 없음) = 「—」", () => {
+      const dead = gauge(row({ used_pct: 95, resets_at: NOW - 1, stale: true, stale_reason: "x" }), "5h", NOW);
+      expect(dead.startsWith('<div class="cc-tbar dead">')).toBe(true);
+      expect(dead.includes('<span class="cc-tbar-pct">—</span>') && dead.includes("STALE(x)")).toBe(true);
+      for (const a of [row({ used_pct: null, resets_at: null }), { rate: [] }, {}])
+        expect(gauge(a, "5h", NOW)).toBe('<div class="cc-tbar"><span class="cc-tbar-lab">5h</span><span class="cc-tbar-track"></span><span class="cc-tbar-pct">—</span><span class="cc-tbar-reset"></span></div>');
+    });
   });
   it("행 흐림 — 오래된 관측(30분 초과·스냅샷)·숨긴 계정 → .dim", () => {
     const b = fnBody("renderAccounts");

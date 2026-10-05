@@ -785,11 +785,18 @@ fi
 #   모델에 닿지 않았다(장기기억 hook-output-over-10k-chars-becomes-2k-preview). 이제 머리(첫 턴 규율·각성 헤더)는
 #   언제나 · 원문 블록은 합계가 상한 미만일 때만 · 넘으면 목차(원문 경로)와 생략 고지. launch-agent 좌석의 지침
 #   전문은 compose_directive 붙여넣기(사용자 프롬프트 = 저장 안 됨)가 따로 싣는다.
+# ★(1.1.8 병합 · master#114e0c71 5번 · 원작자 0.14.42 R2NC-F2) 지침 전문 읽기 안내 1줄 — 각성 헤더 바로 뒤(미리보기 창 앞 2,000자 안 ·
+#   지침 본문 앞). 우리 머리 줄(첫 턴 규율·드레인 규칙·각성 헤더)은 이 줄보다 앞이라 창 안 손실 0. 조건 = 「전문이 이 대화에 이미
+#   있으면 다시 읽지 않는다」(launch-agent·사이클은 전문을 첫 제출로 붙여 넣는다 · 22b). master 는 위 요지 조립기 분기라 여기 오지 않는다.
+#   경로 줄은 printf(G8 — macOS /bin/sh xpg_echo 가 윈도우 백슬래시 경로를 먹는다).
+_ss_read_guide() {
+  printf '■ 이 출력이 길어 앞부분 미리보기만 보이고(나머지는 파일로 빠짐) 역할 지침 전문이 이 대화에 따로 없으면, 지침 전문 %s 과 %s 를 Read 도구로 끝까지(offset·limit 로 나눠) 읽은 뒤에 행동하라 — 전문이 이 대화에 이미 있으면(부트·사이클은 CLI 가 붙여 넣는다) 다시 읽지 않는다(같은 지침 중복 적재 금지) · 지침 없이 추측으로 움직이지 않는다.\n' "$(cys_native_path "$D" 2>/dev/null || printf '%s' "$D")" "$(cys_native_path "$JARVIS_DIR/soul.md" 2>/dev/null || printf '%s' "$JARVIS_DIR/soul.md")"
+}
 if [ "$HOOK_SRC" = "resume" ]; then
-  _SS_HEAD=$(_ss_rules; echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE) — 복원(resume)"; _ss_toc resume)
+  _SS_HEAD=$(_ss_rules; echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE) — 복원(resume)"; _ss_read_guide; _ss_toc resume)
   _SS_WHAT="복원 주입"
 else
-  _SS_HEAD=$(_ss_rules; echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE)")
+  _SS_HEAD=$(_ss_rules; echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE)"; _ss_read_guide)
   _SS_WHAT="각성 주입"
 fi
 _SS_BULK=$(echo; cat "$D"; _ss_bulk)

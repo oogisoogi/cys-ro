@@ -80,7 +80,7 @@ def scenario(src, tmp, tag, seat_after, out_after):
         st["live"] = {"master": [dict(seat_after)]}
         return {"rc": 0 if "기동 실패" not in out_after else 1, "out": out_after}
     m.spawn_production = _restore
-    m.spawn_in_seat_production = lambda s, include_master=False, cwd=None: {"rc": 1, "out": "stub"}
+    m.spawn_in_seat_production = lambda s, include_master=False, cwd=None, units=None: {"rc": 1, "out": "stub"}  # (1.1.8 병합) units
 
     def _fresh(s, role, agent, cwd=None):
         calls["fresh"] += 1

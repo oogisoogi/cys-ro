@@ -492,6 +492,32 @@ def t_source_pins():
           and d.get("RESTORE_UNIT_WORST_S") == B.restore_unit_worst_s())
 
 
+# ── ⑩ (1.1.8 병합 · master#114e0c71 6번) 빈 좌석 재사용 `cys restore --no-resume` 도 R3-2 파생 상한 — 원작자 고정 90 미채택 ──
+def t_in_seat_derived():
+    seen = {}
+    orig_cys = m.cys
+
+    def fake(*args, **kw):
+        seen["timeout"] = kw.get("timeout")
+        seen["args"] = args
+        return SimpleNamespace(returncode=0, stdout="restore 완료", stderr="", stderr_raw="")
+    try:
+        m.cys = fake
+        r = m.spawn_in_seat_production("s", units=8)
+        check("⑩ 빈 좌석 재사용: cys() timeout == 8단위 파생(고정 90 아님) · 반환에 실림 · --no-resume",
+              seen["timeout"] == B.cys_restore_outer_s(8) and seen["timeout"] > 90
+              and r["timeout_s"] == seen["timeout"] and "--no-resume" in seen["args"])
+        m.spawn_in_seat_production("s")
+        check("⑩ units 미지정 → 1단위 파생(하한 90 이상)", seen["timeout"] == max(90, B.cys_restore_outer_s(1)))
+    finally:
+        m.cys = orig_cys
+    src = open(PH, encoding="utf-8").read()
+    body = src[src.index("def spawn_in_seat_production("):src.index("def spawn_surrogate(")]
+    call = src[src.index("_res = spawn_in_seat_production("):][:240]
+    check("⑩ 소스: 고정 timeout=90 없음 · restore_spawn_timeout_s 사용 · 호출부가 units=len(need) 를 넘긴다",
+          "timeout=90" not in body and "restore_spawn_timeout_s(" in body and "units=len(need)" in call)
+
+
 def main():
     _results.clear()
     _clean_env()
@@ -502,7 +528,7 @@ def main():
     m.HOME = iso_home
     try:
         for t in (t_units, t_budget, t_knob, t_budget_missing, t_spawn_and_heartbeat, t_run_restore,
-                  t_rust_pins, t_source_pins, t_stall_window, t_stall):
+                  t_rust_pins, t_source_pins, t_stall_window, t_stall, t_in_seat_derived):
             try:
                 t()
             except Exception as e:  # 검체 자체의 예외도 적색으로 센다(조용한 통과 금지)

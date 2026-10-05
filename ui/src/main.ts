@@ -167,6 +167,7 @@ import {
   aggSeatRates,
   sanitizeHiddenKeys,
   USAGE_HIDDEN_MAX,
+  windowView,
 } from "./usagebar";
 import { starvedNotice, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
 import { installerLaunchFailure, INSTALLER_LAUNCH_FAILED_TOAST_ID, planUpdateAttemptReport, sacPreflightText, UPDATE_FAILED_TOAST_ID } from "./updatenotice"; // 0.14.43 J2 업데이트 미설치 알림(순수 문구·판정 해석·토스트 id)·설치 전 스마트 앱 컨트롤 고지 · WU 설치 파일 실행 차단 알림
@@ -945,7 +946,8 @@ function ccAcctMax(label: string): { used: number; reset: number | null; acct: s
 // 계정 Rate Limit 섹션 — 전 조직 병합 계정을 provider·라벨·plan·5h/7d 게이지·리셋·관측 뱃지로 렌더.
 // ★0.14.43: 별명(alias)·'● 사용 중'·'이전 로그인'·'오래됨' 배지 · 오래된 관측(30분 초과·스냅샷)과 숨긴 계정은 흐리게 ·
 //   행마다 숨기기/보이기 단추(뷰어별 · 클릭은 호스트 위임 리스너).
-// (1.1.8 합성) 게이지는 **우리 판**(5h·7d + 모델 스코프 「7d·모델」 + 데몬 stale 판정 「—」·사유)을 그대로 쓴다 — 원작자 windowView 게이지는 받지 않았다.
+// (1.1.8 합성) 게이지는 **우리 판**(5h·7d + 모델 스코프 「7d·모델」 + 데몬 stale 판정 「—」·사유)에 원작자 windowView 의 「리셋 지남」 규칙만 얹는다
+//   (master#114e0c71 ⑧ — 리셋이 지난 창의 옛 사용률을 경고색으로 그리던 결함 수리).
 function renderAccounts() {
   const host = document.getElementById("cc-accounts");
   if (!host) return;
@@ -964,30 +966,35 @@ function renderAccounts() {
       const hiddenNow = usageHidden.has(key);
       const old = isOldObservation(a, nowSec);
       const plan = a.plan ? `<span class="cc-acct-plan">${ccEsc(String(a.plan))}</span>` : "";
-      // 게이지 — rate limit 임계(70/90)로 sevClass. cc-tbar 재사용.
-      // ★데몬이 죽었다고 판정한 창(stale:true)은 채움·숫자를 그리지 않고 「—」+사유(회색) — 사이드바와 같은 규율.
-      // r = 창 1개(없으면 undefined) · observedAt = 그 창의 관측 시각(stale 사유 문구용).
-      const gauge = (lab: string, r: any, observedAt: number) => {
+      // 게이지 — windowView 규칙(원작자 · 사이드바 판정과 같은 선 70/90): 리셋 지남 → 폭 0·「리셋됨」·「재관측 대기」·경고색 없음
+      //   · 살아 있는 창 → 종전 그대로(폭·숫자·ccReset 리셋 시각 — 색만 windowView 의 sev). cc-tbar 재사용.
+      // ★데몬이 죽었다고 판정한 창(stale:true)은 채움·숫자를 그리지 않고 「—」+사유(회색) — 사이드바와 같은 규율(windowView 보다 먼저).
+      // a = 창을 담은 행(rate 창은 계정 행 그대로 · 스코프 게이지는 그 창 하나를 rate 로 감싼 행) · observedAt = 그 창의 관측 시각(stale 사유 문구용).
+      const gauge = (a: any, lab: string, observedAt: number) => {
+        let r: any = (a.rate ?? []).find((x: any) => x && x.label === lab);
         // (D4 #18) 미관측 = 창 없음(「—」) · 0% 게이지 아님. (opus 결함 5) 데몬이 죽었다고 판정한 창은 그대로 둔다 — 사유 표시가 우선.
         if (r && r.stale !== true && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined;
         const dead = !!r && r.stale === true;
         const used = r ? Math.round(Number(r.used_pct)) : 0;
+        const v = windowView(a, lab, nowSec);
+        const live = !!r && !dead; // 값이 있는 창(미관측·죽은 창 아님) — 여기서만 windowView 의 판정(ok/리셋됨)을 쓴다
         const reset = dead
           ? ccEsc(windowStaleText(r.stale_reason ?? null, observedAt, Date.now() / 1000))
-          : r && r.resets_at != null
-            ? ccReset(lab, r.resets_at)
-            : "";
-        const fill = r && !dead ? `<span class="cc-tbar-fill ${sevClass(used, 70, 90)}" style="width:${Math.min(100, used)}%"></span>` : "";
-        return `<div class="cc-tbar${dead ? " dead" : ""}"><span class="cc-tbar-lab">${ccEsc(lab)}</span><span class="cc-tbar-track">${fill}</span><span class="cc-tbar-pct">${r && !dead ? used + "%" : "—"}</span><span class="cc-tbar-reset">${reset}</span></div>`;
+          : !live
+            ? ""
+            : v.state === "ok" ? (r.resets_at != null ? ccReset(lab, r.resets_at) : "") : ccEsc(v.resetText);
+        const fill = live && v.state === "ok" ? `<span class="cc-tbar-fill ${v.sev}" style="width:${v.pct ?? 0}%"></span>` : "";
+        const pct = !live ? "—" : v.state === "ok" ? used + "%" : ccEsc(v.text);
+        return `<div class="cc-tbar${dead ? " dead" : ""}"><span class="cc-tbar-lab">${ccEsc(lab)}</span><span class="cc-tbar-track">${fill}</span><span class="cc-tbar-pct">${pct}</span><span class="cc-tbar-reset">${reset}</span></div>`;
       };
       // 5h·7d는 늘 두 줄(없으면 「—」 — 없다/죽었다 구분은 rate 창에만) + 모델 스코프 게이지(「7d·Fable」)는
       // 서버가 준 것만 그린다(TICKET=usage-two-accounts · 박사님 09-19 「클로드 방식대로 5h/7d/fable만」).
       // ★스코프 게이지는 자기 관측 시각(g.updated_at)을 쓴다 — 계정 updated_at(rate 슬롯)과 별개다.
       const gauges =
-        ["5h", "7d"].map((lab) => gauge(lab, (a.rate ?? []).find((x: any) => x.label === lab), Number(a.updated_at) || 0)).join("") +
+        ["5h", "7d"].map((lab) => gauge(a, lab, Number(a.updated_at) || 0)).join("") +
         (a.scoped ?? [])
           .filter((g: any) => g && typeof g.model === "string" && g.model)
-          .map((g: any) => gauge(`7d·${g.model}`, g, Number(g.updated_at) || 0))
+          .map((g: any) => gauge({ rate: [{ ...g, label: `7d·${g.model}` }] }, `7d·${g.model}`, Number(g.updated_at) || 0))
           .join("");
       // 계정의 창(rate + 스코프 게이지)이 전부 죽었으면 행을 흐린다 — 숨기지 않는다(숨기면 「없다」와 「죽었다」가 구분 안 된다).
       const wins: any[] = [...(a.rate ?? []), ...(a.scoped ?? [])];
@@ -7122,7 +7129,12 @@ async function promptBinaryPatch() {
   const tail = IS_MACOS
     ? `받은 파일이 진짜인지 확인한 뒤 앱을 바꿉니다. 바꾸기가 끝나면 다시 켤지 한 번 더 여쭙고, ` +
       `다시 켜면 부서와 창, 대화가 돌아옵니다.`
-    : `받은 파일이 진짜인지 확인한 뒤 앱을 바꾸고 다시 켭니다. 재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.`;
+    : IS_WINDOWS
+      ? // ★(1.1.8 병합 X2-W · master#114e0c71 「사실 쪽」) 윈도우 분기에는 drain·핸드오프가 없다 — install_update_checked_windows 는 받기→설치기 실행→
+        //   cleanup_before_exit→process::exit(0) 이고(src-tauri/src/main.rs install_update_checked_windows), 대체 경로도 플러그인이 설치 중 프로세스를 끝내
+        //   drain 단계에 닿지 않는다. 그래서 원작자 R1F-UA(S3 note 14) 윈도우 문면을 쓴다(「미저장분」 한 구절만 우리 D4#14 쉬운 말로). 맥·그 밖(리눅스 = drain 을 지난다)은 종전 문안.
+        `다운로드·서명 검증 뒤 설치 프로그램을 실행합니다(이 앱은 닫히고, 설치가 끝나면 다시 시작됩니다). 부서·노드는 재시작 후 자동 복원됩니다(대화 기억 포함). 저장하지 않은 마지막 입력은 빠질 수 있습니다.`
+      : `받은 파일이 진짜인지 확인한 뒤 앱을 바꾸고 다시 켭니다. 재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.`;
   // ★(0.14.43 · J2) 설치 전 사실 고지 — Windows 스마트 앱 컨트롤이 켜져 있으면 코드 서명도 평판도 없는 설치 파일의 실행이 막히고, 막히면 업데이트는 설치되지 않은 채
   //   이 앱이 닫히지 않고 그 사실을 알린다(WU — 아래 catch). **켜짐일 때만** 확인 창 본문 끝에 한 문단을 붙인다 — 설치를 막지는 않는다(계속할지는 사용자가 정한다).
   //   조회는 정보일 뿐이라 실패·시간 초과는 '문단 없음'으로 접는다(T_SAC 상한 + catch). 문단이 없으면 본문은 종전과 바이트 동일하다.

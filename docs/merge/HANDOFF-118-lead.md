@@ -1,3 +1,18 @@
+# ★§0 델타 v4 (02:2x · master#eece9156 수리 2차 수용) — 「W 결함 묶음」 후임 입력 · 이 가지(merge/v0.14.43 · 머리 = 이 커밋) 위에서 바로 이어 갈 때 필요한 것만
+1. **격리 래퍼**(실 ~/.cys·/Applications 쓰기 0 · EVIDENCE-118 §8): `docs/merge/work/isoenv-lead2.sh` 를 새 세션 스크래치패드로 복사하고 `SB=` 한 줄을 그 경로/sb 로 고쳐 쓴다. TMPDIR 은 짧게 유지(`/private/tmp/claude-501/s118/t` · 소켓 SUN_LEN 103). 팩 측정용은 HOME 도 짧아야 한다 → `/private/tmp/claude-501/s118/pk/isoenv.sh`(SB=/private/tmp/claude-501/s118/pk/sb) 를 쓰거나 같은 꼴로 만든다.
+2. **빌드·시험 정확 명령**(cwd = 작업트리 루트 · W=래퍼 경로):
+   - 빌드: `$W cargo build -q -p cys-terminal`
+   - Rust 전체: `$W cargo test -p cys-terminal --lib --bins` (≈13분 · lib 763/0 · cys 577/0 · cysd 2449/1) · 필터: `$W cargo test -q -p cys-terminal --bin cysd -- <필터>`(lib = `--lib` · cys = `--bin cys`)
+   - ui: `cd ui && $W /Users/oogisoogi/.bun/bin/bun test`(6초 · 2807/0 · 레인 81) · 타입: `$W /Users/oogisoogi/.bun/bin/bunx tsc -p tsconfig.check.json`(0) — ui/node_modules = ~/axdev/.wt/cys-117-lead/ui/node_modules 심볼릭 링크(커밋 금지)
+   - 팩 전체: `python3 /private/tmp/claude-501/s118/pk/packtests.py <작업트리> "" -<태그>`(≈28분 · 결과 json 은 그 폴더) · 일부: 둘째 인자 = 시험 이름 목록 파일. ⚠측정 산출을 저장소 안(docs/merge/work 포함)에 두지 마라 — test_pyseal_census 스캔이 집어 적색이 된다.
+   - 팩 단일: `$W env CYS_PACK_DIR=<빈 임시 폴더> python3 cysjavis-pack/bin/tests/<시험>.py`
+3. **휴면-on 레인 켜는 법**(기본 CI 미실행 · BACKLOG B1·B4): ui `CYS_UI_DORMANT_LANE=1`(81건) · 팩 teamtoken D8·D11 `CYS_ENABLE_TEAM_FLOW=1` · 팩 session_start_hook 22·22b master `CYS_DORMANT_LANE=1` — 래퍼 뒤 `env <변수>=1` 로 붙인다. 지금 켜면 그 항목만 적색이 정상(실측).
+4. **남은 흔들림 1**: cysd `return_absorb_tests::b_claimed_cross_socket_modal_pair_return_absorbed`(원작자 · 전체 실행 부하 때 `no_agent … bare shell` 전제 실패 · 직전 전체 실행·모듈 3회 초록). 같은 성질로 고친 선례 = state `inject_track_handoff_pending_until_an_arm_ends`(0fdbfa84 · 시간 창 여유). trust_seed(팩)도 전체 실행 때만 적색 1회.
+5. **격리 HOME 디버그 데몬 정리법**: 원작자 test_dept_create_progress·test_dept_team_token 이 1회 8~16개를 남긴다. `pgrep -f cys-118-merge/target/debug/cysd` → 각 pid `ps -E -o command= -p <pid>` 에 `HOME=/private/tmp/claude-501/s118/` 가 있는 것만 kill(실 데몬 무접촉 확인 후) → 0 재확인.
+6. **CSO 래칫 7B 주의**: CSO_DIRECTIVE.md 57,361B / 상한 57,368B(래칫 완화 금지). 다음 CSO 수정은 같은 절 압축이 먼저다 — 압축 전/후 대조표 docs/merge/work/x18-upstream-diff.md §6 · 디렉티브 수정 규율(합성기 확인 + doc-contract + 변경 줄범위 3줄).
+7. **팩 환경 적색 8**(원작자 v0.14.43·우리 v1.1.7 기준판 모두 적색 · 손대지 않음): run_bootstrap_health(시간 초과) · test_bootstrap_chain · test_dept_doctrine_v1 · test_dept_ticket_deficit_zero · test_dept_ticket_request · test_lane_isolation_v1 · test_preflight_phase1_checks · test_verify_gate. 원작자 자체 4: test_dept_create_progress(시간 초과) · test_dept_name_guard · test_dept_team_token(시험 CLI 데몬 소켓 미기동 · 휴면 스위치 무관) · test_session_start_hook 18e.
+8. 원장·결정: 리드 원장 docs/merge/work/ledger-fix2-lead.tsv · 결정 = DECISIONS-PENDING-118.md + DECISION-TABLE-118 §0(15행) · 판번 1.1.7 유지(TK-G) · push 0(master 집행).
+
 # ★§0 델타 v3 (01:56 · CTX 48%) — master#114e0c71 결정 9 반영 중
 1. 커밋: 0fdbfa84(inject_track 시험 여유) · 3747431a(결정 ②~⑨ 전부). 미커밋 = X18 서브 작업 중(CSO_DIRECTIVE.md · test_cso_directive_rev.py · x18-upstream-diff.md §6) + docs/merge/MERGE-RECORD-118.md(초안) · RESOLUTION-LEDGER-118.md(생성기 docs/merge/work/mkledger.py · 재실행 후 커밋) · BACKLOG-118 B3 행.
 2. 현재 계수: Rust lib 763/0 · cys 577/0 · cysd 2449/1(원작자 return_absorb 부하 흔들림 · 모듈 3회 초록) · ui 2807/0 · 레인 81 · tsc 0.

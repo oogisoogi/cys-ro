@@ -166,6 +166,11 @@ UNREGISTERED_OK["test_cysd_dispatch_storm_e2e"] = (
     "FATAL-1(0.14.42) 로컬 수용 검체 — debug cysd 빌드·실데몬·soft 256·동시 영속 연결 500·10s 폭주 필요"
     "(ci-branch 에 cargo build 0건 · pack-release 는 cys 만 빌드) · CI 몫은 cysd fatal1_admission_tests 가 "
     "cargo test --bin cysd 에서 잰다")
+# ★cysr 1.1.8 ci-green — 환경 결손 검체. 로직은 로컬 12/12 초록(PyYAML 경로를 붙였을 때)이지만 `import yaml` 이
+#   필수이고 CI 의 파이썬에는 PyYAML 이 없다(scripts/tests/test_ci_branch_cysd_step.py:8 · 깨끗 env 실측 ModuleNotFoundError).
+UNREGISTERED_OK["test_release_trigger_split"] = (
+    "cysr 1.1.8 — PyYAML 의존 · CI 파이썬 미보유(깨끗 env 실측 ModuleNotFoundError · PyYAML 있으면 12/12) · "
+    "stdlib 파서 전환 = 1.1.9 백로그(BACKLOG-118) · 전환 커밋이 3레인 등재와 함께 이 항목을 지운다")
 
 SB, SE = "LANE-GATE-SELF-BEGIN", "LANE-GATE-SELF-END"
 
@@ -436,9 +441,11 @@ if "pack-artifacts" not in rel:
     die("release.yml 에 pack-artifacts 잡이 없다 — 대응할 태그 레인이 사라졌다")
 rel_set, rel_text = loop_tokens(rel["pack-artifacts"][0], "release:pack-artifacts")
 
-ISO = 'CYS_PACK_DIR="$(mktemp -d)" python3'
+# 격리 꼴 = `mktemp -d` 단독(구) 또는 57c7345a(09-24 flake ⑶) 이후의 `mktemp -d "$CYS_TMP/p.XXXXXX"` — 고정 문자열이면
+#   루프 꼴이 바뀔 때 격리가 살아 있어도 붉어진다(1.1.8 ci-green 에서 3단계에 가려져 있다 드러남).
+ISO = r'CYS_PACK_DIR="\$\(mktemp -d( "\$CYS_TMP/p\.XXXXXX")?\)" python3'
 for label, body in (("ci-branch:%s" % ubu[0], ci[ubu[0]][0]), ("release:pack-artifacts", rel["pack-artifacts"][0])):
-    if not any(ISO in l for l in body):
+    if not any(re.search(ISO, l) for l in body):
         print("::error::%s 의 팩 루프에 env 격리 `%s` 가 없다 — 같은 루프가 아니다(라이브 상태 "
               "오염 방향)." % (label, ISO), file=sys.stderr)
         raise SystemExit(1)
@@ -740,4 +747,16 @@ t = t.replace(a, "  ubuntu-pack-suite:\n    runs-on: macos-latest\n", 1)
 open(p, "w", encoding="utf-8", newline="").write(t)
 PYM
   ub_expect 1 "우분투 잡 소멸(runs-on 을 macos 로)" "태그 전 리눅스 관문이 사라졌다"
+  # ③격리 소거 — 우분투 루프의 `CYS_PACK_DIR="$(mktemp -d …)"` 접두를 지워 맨 python3 로 돌게 한다(라이브 상태 오염 방향).
+  #   ISO 가 정규식이 된 뒤 그 정규식이 격리 누락을 실제로 잡는지 재는 음성 대조다(1.1.8 ci-green).
+  mut_reset; python3 - "$MUT_ROOT/.github/workflows/ci-branch.yml" <<'PYM'
+import sys
+p = sys.argv[1]; t = open(p, encoding="utf-8").read()
+a = 'if ! CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f"; then'
+j = t.index("  ubuntu-pack-suite:")            # 우분투 잡 **안**에서만 자른다
+assert t.count(a, j) == 1, "변이 앵커 부재(우분투 루프 격리 실행 줄)"
+t = t[:j] + t[j:].replace(a, 'if ! python3 "$f"; then', 1)
+open(p, "w", encoding="utf-8", newline="").write(t)
+PYM
+  ub_expect 1 "격리 소거(우분투 루프 CYS_PACK_DIR 접두 제거)" "env 격리"
 fi

@@ -556,7 +556,8 @@ jobs:
                    test_report_ctx_axis test_formation_tick_visibility \
                    test_resource_gate_boot_anchor test_ctx_divergence \
                    test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
-                   test_dept_schedule_seed \
+                   test_dept_schedule_seed test_ctx_relay \
+                   test_dept_b11_lock test_hook_timing test_seat_folders test_t6_injection_policy test_v113_review_fix \
                    test_lane_redirect \
                    test_dept_notice_lane test_team_create_u16 \
                    test_teamtoken test_teamtoken_hook test_dept_team_token \
@@ -832,6 +833,20 @@ jobs:
           f="scripts/tests/test_mac_cli_alias_link.py"
           [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
           python3 "$f"
+
+      # (cysr 1.1.8 ci-green · D3 역방향 축 편입) 앱 업데이터 자산 생성기 3종 + 키 브리지 기입 도구 시험 — 그 전 0레인 실행.
+      #   ci-branch 와 같은 커밋에 동시 편입 · pack-release 미편입 사유 = ci-branch 레인 대조 ALLOWED.
+      #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(위 별칭 스텝과 같은 관례).
+      - name: 업데이터 자산 생성기·키 브리지 (scripts/tests 4종 · macOS 전용)
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in test_darwin_asset_name_alignment test_darwin_update_row test_darwin_updater_tarball test_key_bridge_install; do
+            f="scripts/tests/$t.py"
+            [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+            python3 "$f"
+          done
 
       - name: Import Developer ID into ephemeral keychain (macOS 전용)
         if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'
@@ -1496,7 +1511,8 @@ jobs:
                    test_report_ctx_axis test_formation_tick_visibility \
                    test_resource_gate_boot_anchor test_ctx_divergence \
                    test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
-                   test_dept_schedule_seed \
+                   test_dept_schedule_seed test_ctx_relay \
+                   test_dept_b11_lock test_hook_timing test_seat_folders test_t6_injection_policy test_v113_review_fix \
                    test_lane_redirect \
                    test_dept_notice_lane test_team_create_u16 \
                    test_teamtoken test_teamtoken_hook test_dept_team_token \

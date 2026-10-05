@@ -5875,6 +5875,10 @@ class Preflight:
         #   master·판정기가 읽지 않는 옛 자리였다(윈 실측: 정본과 다른 파일을 대조).
         import javis_session as _jsess   # 형제 모듈 — 모듈 머리 _SELF_DIR 가드 뒤
         docs = [_jsess.session_state_path(pack=pack_dir())]
+        # ★(1.1.8 윈 CI T3-c03 회귀 · master#53919d55): 아래 **상대 경로 해석 루트**(프로젝트 + doc_sot_roots.txt)는
+        #   SESSION_STATE 자리와 별개라 그대로 둔다 — D14 가 SESSION_STATE 줄과 함께 이 대입까지 지워 상대 경로 토큰
+        #   하나에 NameError → preflight 전체가 JSON 없이 죽었다(C03 등 전 검사 「미발화」).
+        root = os.environ.get("JAVIS_ROOT") or os.getcwd()
         ddir = os.path.join(pack_dir(), "directives")
         if os.path.isdir(ddir):
             docs += [os.path.join(ddir, f) for f in sorted(os.listdir(ddir))

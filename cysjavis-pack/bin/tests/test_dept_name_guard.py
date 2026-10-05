@@ -413,7 +413,13 @@ def _dept_py_block(header):
     """cys-dept 안 `header` 가 든 줄에서 시작하는 인용 heredoc(<<'PY' … PY) 파이썬 본문을 그대로 떼어 낸다."""
     src = open(DEPT, encoding="utf-8").read()
     i = src.index(header)
-    j = src.index("<<'PY'\n", i) + len("<<'PY'\n")
+    # ★1.1.8(원작자 v0.14.43 1b40379c 「레지스트리 판독 fail-closed」): reg_* 머리 줄이 `<<'PY' || return $?` 처럼
+    #   heredoc 표지 뒤에 꼬리를 단다 — 종전 `<<'PY'\n` 탐색은 그 줄을 건너뛰어 **다음 함수의 블록**(reg_fence_close ·
+    #   인자 3개)을 떼어 와 「expected 3, got 2」로 죽었다. 표지는 머리 줄 안에서 찾고 본문은 그 줄 끝 다음부터다.
+    eol = src.index("\n", i)
+    m = src.index("<<'PY'", i)
+    assert m < eol, "머리 줄(%r)에 <<'PY' 가 없다 — 다른 블록을 떼어 오지 않는다" % header
+    j = eol + 1
     k = src.index("\nPY\n", j)
     return src[j:k + 1]
 
@@ -433,7 +439,8 @@ class WinLockFailure(unittest.TestCase):
     }
     CONTROLS = {                                  # 이미 exit 11 인 선례(흉내가 실제로 잠금 실패를 만드는지 대조)
         "reg_fence_close(){": ["keep1", ""],
-        "name=$(reg_init; python3 - \"$REG\" <<'PY'": [],                          # allocate 예약
+        # ★1.1.8: 원작자 03bbe37c(allocate --team-spec-b64)가 머리에 선택 인자 4개를 더했다(빈 값 = 종전 동작).
+        "name=$(reg_init; python3 - \"$REG\" \"$TEAM_B64\"": [],                     # allocate 예약
         "res=$(reg_init; CYS_GRACE=": ["k9", "/tmp/nowhere-k9", "/tmp/nowhere-acct"],  # create 예약
     }
 

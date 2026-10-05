@@ -5,10 +5,6 @@
 //! (수용 기록·잠금·저널·보류 로그·install_id)은 상태 폴더([`state_dir`]) 아래에만 쓴다. 시험은 `CYS_UPDATE_STATE_DIR`
 //! 로 격리한다(실 `~/.cys` 쓰기 0).
 
-pub mod clock;
-pub mod errors;
-pub mod feed;
-pub mod keys;
-pub mod url;
+pub mod buildinfo;
 
 pub use errors::{ErrCode, UpdateErr};

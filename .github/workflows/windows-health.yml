@@ -331,6 +331,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★(1.1.8 CI · 필터 폐쇄 계약) 같은 계급의 필터형 실행 — 0매치 초록 차단(D5 스텝의 cargo_filter_count 와
+          #   같은 규율 · 스텝이 달라 함수를 다시 정의한다 · 게이트 핀은 스텝 단위로 선행 호출을 요구한다).
+          cargo_filter_count() {
+            local list="${RUNNER_TEMP:-/tmp}/cargo-filter-list.txt" n rc
+            if CYS_PACK_DIR="$(mktemp -d)" cargo test "$@" -- --list > "$list" 2>&1; then rc=0; else rc=$?; fi
+            if [ "$rc" -ne 0 ]; then
+              cat "$list"
+              echo "::error::cargo test $* -- --list 실패(rc=$rc) — 필터를 셀 수 없으면 실행도 근거가 없다(fail-closed)"
+              exit 1
+            fi
+            n=$(grep -c ': test$' "$list" || true)
+            if [ "${n:-0}" -lt 1 ]; then
+              tail -20 "$list"
+              echo "::error::cargo test $* 필터에 걸리는 테스트가 0건 — 필터 이름이 바뀌었다(돌지 않는 초록 금지)"
+              exit 1
+            fi
+            echo "[filter-count] cargo test $* → ${n}건"
+          }
+          cargo_filter_count --bin cys reinject_guard_record_roundtrip
           out="$(CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys reinject_guard_record_roundtrip -- --test-threads=1 2>&1)" || { echo "$out"; exit 1; }
           echo "$out" | tail -5
           echo "$out" | grep -q 'test result: ok. 1 passed' || { echo "::error::reinject 가드 왕복 시험이 1건 실행되지 않았다(이름 불일치·필터 0건)"; exit 1; }
@@ -363,6 +382,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★(1.1.8 CI · 필터 폐쇄 계약) 같은 계급의 필터형 실행 — 0매치 초록 차단(D5 스텝의 cargo_filter_count 와
+          #   같은 규율 · 스텝이 달라 함수를 다시 정의한다 · 게이트 핀은 스텝 단위로 선행 호출을 요구한다).
+          cargo_filter_count() {
+            local list="${RUNNER_TEMP:-/tmp}/cargo-filter-list.txt" n rc
+            if CYS_PACK_DIR="$(mktemp -d)" cargo test "$@" -- --list > "$list" 2>&1; then rc=0; else rc=$?; fi
+            if [ "$rc" -ne 0 ]; then
+              cat "$list"
+              echo "::error::cargo test $* -- --list 실패(rc=$rc) — 필터를 셀 수 없으면 실행도 근거가 없다(fail-closed)"
+              exit 1
+            fi
+            n=$(grep -c ': test$' "$list" || true)
+            if [ "${n:-0}" -lt 1 ]; then
+              tail -20 "$list"
+              echo "::error::cargo test $* 필터에 걸리는 테스트가 0건 — 필터 이름이 바뀌었다(돌지 않는 초록 금지)"
+              exit 1
+            fi
+            echo "[filter-count] cargo test $* → ${n}건"
+          }
+          cargo_filter_count --lib win_std_inherit_tests::
           out="$(CYS_PACK_DIR="$(mktemp -d)" cargo test --lib win_std_inherit_tests:: -- --test-threads=1 2>&1)"
           echo "$out"
           # 필터 0매치도 초록이라 실행 계수를 단언한다(대조군·수리·가운데 = 3).

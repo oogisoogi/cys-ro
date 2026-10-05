@@ -625,9 +625,15 @@ shutil.rmtree(tmp)
 # ★(0.14.42 · R2NC-F2) Claude Code 는 1만 자 넘는 훅 출력을 파일로 빼고 앞부분(약 2천 자) 미리보기만 모델에게 준다 — 역할 지침은
 #   전부 그보다 길다. 그래서 '앞부분만 보이면 지침 전문을 Read 로 끝까지 읽어라' 줄이 **미리보기 창 안(머리)** 에, 지침 본문 **앞**에
 #   있어야 한다(수동 /clear·compact·resume 에서 좌석이 지침 없이 앉지 않게). RED(HEAD 1b614e47): 그 줄이 없다.
+# (1.1.8 병합 · master#f0e81041 · DECISION-TABLE-118 §0 15행) master 좌석은 우리 요지 조립기(hooks/core_inject.py) 경로라 이 줄을 싣지 않는다
+#   (설계 충돌 — 매 시작 MASTER_DIRECTIVE 전문 재독). master 케이스는 휴면-on 레인(CYS_DORMANT_LANE=1)에서만 판정한다 · 비master 는 기본 레인.
+_T22_DORMANT_ON = os.environ.get("CYS_DORMANT_LANE", "").strip() == "1"
 tmp = tempfile.mkdtemp(prefix="hook-t22-")
 env = setup(tmp, "ok")
 for _role, _body in (("master", "DIRECTIVE-BODY-MASTER"), ("worker", "DIRECTIVE-BODY-WORKER")):
+    if _role == "master" and not _T22_DORMANT_ON:
+        print("[LANE] 22·22b master — 휴면-on 레인(CYS_DORMANT_LANE=1)에서만 판정(설계 충돌 · DECISION-TABLE-118 §0 15행)")
+        continue
     code, out, _ = run_hook(env, role=_role)
     _i = out.find("Read 도구로 끝까지")
     _j = out.find(_body)

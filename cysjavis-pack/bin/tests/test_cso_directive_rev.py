@@ -387,9 +387,12 @@ SAFETY_CLAUSES = {
         ("§2 상호참조", "이 집행은 §1-1 접두 목록 **안**의 사전 승인 절차이며 §1-2 ⑦ 의 경계 안이다 — 네 조건 중 하나라도\n"
                    "  결측·판정 불능이면 §1-2 ④ 의 보류로 떨어지고, 사이클 밖의 회생 행동(키 입력·kill·재기동)은 언제나\n"
                    "  §1-2 를 따른다."),
-        ("선조치 범위", "**선조치의 범위 = §1-1 접두 목록 안의 행동뿐이다** — 목록 밖 명령은 시스템 위기라도 보류 + 승인이며\n"
-                   "  (대체 명령·재시도로 우회하지 않는다), 승인 주체인 master 자신이 고장 대상일 때의 유일한 출구는\n"
-                   "  §1-2(오너 채널)다."),
+        # ★(1.1.8 병합 X18 · 우리 판 정본 · 의식적 재핀) 원작자 §4 의 「선조치 범위」 문단은 래칫 상한(57,368B) 때문에
+        #   미수용 — 같은 안전 의미(목록 밖 명령 = 보류 + 승인 · 대체 명령·재시도 우회 금지 · master 고장 시 §1-2 가
+        #   유일 출구)는 우리 §1 표 머리의 「§1-1 게이트 안에서 읽는다」 문장이 진다 → 그 문면으로 핀한다.
+        #   잔여: '시스템 위기라도' 한정어는 §5-1 정지 경계에만 있다(docs/merge/work/x18-upstream-diff.md).
+        ("선조치 범위", "접두 목록 밖 명령은 **보류 + master 에 TTL 승인 요청 + 기록**이다(대체 명령·재시도로 우회 금지 ·\n"
+                   "승인 주체인 master 자신이 고장 대상이면 §1-2 의 오너 채널이 유일한 출구다)."),
         # ★(0.14.42 · ROLE-G1) master 는 cycle-agent 를 백그라운드로 돌린다 — 턴이 비어 보여도 다른 좌석을
         #   clear·재주입하는 중일 수 있으므로 CSO 의 안전지점에 '사이클 진행 중 아님' 이 들어간다.
         # ★(게이트 수정 1회차 GR2-1·ROLE-G1 · 의식적 재핀) 보류는 **데몬 밖의 동기 1콜**(`ctx_guard.job` 없는 quiescing 좌석 · master 의
@@ -1750,12 +1753,21 @@ def sync_occurs_once(text: str) -> bool:
 
 
 def section_body(text: str, heading: str) -> str:
-    """지정한 제목 접두부터 다음 2단계 제목 직전까지 본문을 추출한다."""
+    """지정한 제목 접두부터 다음 2단계 제목 직전까지 본문을 추출한다.
+
+    ★(1.1.8 병합 X18 · 우리 판 정본) 코드 펜스(```) **안**의 `## ` 줄은 제목이 아니다 — 우리 MASTER §9 의
+    「오너용 3절(복원 카드)」 예시 블록(```markdown … ## 완료 …```)에서 절이 잘려 같은 절의 WP-6 인계 문장을
+    절 밖으로 읽던 거짓 적색(판정 함수가 '펜스 안 제목 없음' 을 전제)."""
     lines = text.splitlines()
     start = next(i for i, line in enumerate(lines)
                  if line == heading or line.startswith(heading + " "))
-    end = next((i for i in range(start + 1, len(lines))
-                if lines[i].startswith("## ")), len(lines))
+    end, in_fence = len(lines), False
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and lines[i].startswith("## "):
+            end = i
+            break
     return "\n".join(lines[start + 1:end])
 
 

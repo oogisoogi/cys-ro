@@ -1742,6 +1742,8 @@ pub fn execute_quarantine(
     }
     // defaults 도메인은 cfprefsd 캐시가 있어 파일 격리만으론 안 지워진다 — 병행 삭제.
     // ★v115-restore(B6): 대상은 루트가 지정한다(live = macOS 앱 도메인 · 시험 루트 = None = 실행 안 함).
+    // (1.1.8 병합) 원작자 창 정책 점검(spawn_policy_tests)이 요구하는 맥 전용 가둠 — 원작자 판도 같은 자리를 #[cfg(macos)] 로 가뒀다.
+    #[cfg(target_os = "macos")]
     if let Some(domain) = roots.defaults_domain {
         let _ = std::process::Command::new("defaults").args(["delete", domain]).output();
     }

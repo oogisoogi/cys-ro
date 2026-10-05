@@ -675,7 +675,15 @@ pub fn capture_supported() -> bool {
     cfg!(target_os = "macos")
 }
 
+/// 맥 밖에서는 캡처를 지원하지 않는다(capture_supported() == false 와 같은 뜻).
+/// (1.1.8 병합) 원작자 창 정책 점검(spawn_policy_tests)이 맥 전용 스폰을 #[cfg] 로 가두길 요구 — 함수째 OS 로 가른다.
+#[cfg(not(target_os = "macos"))]
+pub fn capture_into(_outbox: &Path, _id: &str) -> Result<Value, String> {
+    Err("capture_unsupported".into())
+}
+
 /// 지금 화면(주 모니터)을 사진 한 장으로 초안에 넣는다. 창을 가린 뒤 부르는 것은 UI 몫이다.
+#[cfg(target_os = "macos")]
 pub fn capture_into(outbox: &Path, id: &str) -> Result<Value, String> {
     if !capture_supported() {
         return Err("capture_unsupported".into());

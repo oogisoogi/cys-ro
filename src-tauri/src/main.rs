@@ -9607,7 +9607,8 @@ mod tests {
         let f = &body[a..end];
         let v = f.find("cys::team_spec::validate(").expect("lib 검증 부재");
         let m = f.find("cys::team_spec::match_pending(").expect("생성 직전 feed 대조 부재(TOCTOU)");
-        let sp = f.find("spawn_blocking").expect("spawn 부재");
+        // ★1.1.8 T1(병합 잠정 · RESOLUTION-LEDGER H9 · DECISIONS-PENDING T1 · 원작자 배선 시험은 우리 동작 기준으로 수정 = DECISION-TABLE-118 §5-6): 실행 = 우리 `run_dept_tool`(맥 = 본부 데몬 대행 `dept.run` · v114-dept-fd) — 원작자 `spawn_blocking` 자리.
+        let sp = f.find("run_dept_tool(").expect("spawn 부재(실행 = run_dept_tool)");
         assert!(v < sp && m < sp, "검증·대조가 스폰보다 뒤에 있다");
         assert!(f.contains("\"--team-spec-b64\""), "allocate 인자 부재");
         assert!(f.contains("cys::team_spec::to_b64("), "b64 인코더(lib SOT) 우회");
@@ -9628,7 +9629,8 @@ mod tests {
         let a = body.find("async fn allocate_dept_daemon(").expect("allocate_dept_daemon 소실");
         let end = a + body[a..].find("\n}\n").expect("함수 끝");
         let f = &body[a..end];
-        let sp = f.find("spawn_blocking").expect("spawn 부재");
+        // ★1.1.8 T1(병합 잠정 · RESOLUTION-LEDGER H9 · DECISIONS-PENDING T1 · 원작자 배선 시험은 우리 동작 기준으로 수정 = DECISION-TABLE-118 §5-6): 실행 = 우리 `run_dept_tool`(맥 = 본부 데몬 대행 `dept.run` · v114-dept-fd) — 원작자 `spawn_blocking` 자리.
+        let sp = f.find("run_dept_tool(").expect("spawn 부재(실행 = run_dept_tool)");
         let cap = f
             .find("dept_tool_supports_team_spec(")
             .expect("스폰 전 능력 확인 부재(REVIEW1 M-1 ① — 팩이 구버전이면 여기서 막아야 한다)");
@@ -10183,7 +10185,10 @@ exit 0
     #[test]
     fn gu_allocate_dept_daemon_judgement_code_is_untouched_and_the_child_runs_through_run_dept_child() {
         let f = gu_prod_fn("async fn allocate_dept_daemon(");
-        let marker = "    if !out.status.success() {\n        let stderr = String::from_utf8_lossy(&out.stderr).to_string();";
+        // ★1.1.8 T1(병합 잠정 · RESOLUTION-LEDGER H9 · DECISIONS-PENDING T1 · 원작자 배선 시험은 우리 동작 기준으로 수정 = DECISION-TABLE-118 §5-6): 판정 구간은 우리 실행 결과(`DeptToolOut` — ok·code·stdout·stderr 문자열)를 읽는다 · 표지 제거는 실패 문구에서 한 번.
+        //   지문 재측정 사유 = 실행 경로가 run_dept_tool 이라 구간의 입력 꼴이 다르다(의미 = 원작자와 같음: 종료 코드 해석·stdout 마지막 줄·레지스트리 사후 조건).
+        //   원작자 값(44줄 · 0x2154_c645_6b63_5470)을 같은 알고리즘으로 원작자 v0.14.43 소스에서 재현 확인한 뒤 우리 구간을 쟀다(45줄 · `let name = out` / `.stdout` 한 줄 차이).
+        let marker = "    if !out.ok {\n        let stderr = strip_stage_lines(&out.stderr);";
         let at = f.find(marker).expect("판정 구간 시작 소실");
         let judged_all = gu_code_only(&f[at..]);
         // ★R2F-UI(A3 n1): 응답 객체에 가산 키 `spawned` 를 싣는 블록(함수 맨 끝 · 3줄)은 판정 코드가 아니다 — 그 블록을 **걷고** 종전 44줄·종전 지문을 그대로 잰다(지문을 새로 재서 값을 갈아 끼우지 않는다 —
@@ -10191,15 +10196,15 @@ exit 0
         let additive = "    if let (Some(obj), Some(spawned)) = (info.as_object_mut(), stage_seen.spawned()) {\n        obj.insert(\"spawned\".into(), json!(spawned));\n    }\n";
         assert_eq!(judged_all.matches(additive).count(), 1, "가산 블록(spawned)이 하나가 아니다 — 판정 구간 밖에서 가산이어야 한다:\n{judged_all}");
         let judged = judged_all.replacen(additive, "", 1);
-        assert_eq!(judged.lines().count(), 44, "판정 구간의 코드 줄 수가 달라졌다 — 판정 코드를 건드렸다:\n{judged}");
+        assert_eq!(judged.lines().count(), 45, "판정 구간의 코드 줄 수가 달라졌다 — 판정 코드를 건드렸다:\n{judged}");
         assert_eq!(
             gu_fnv1a64(&judged),
-            0x2154_c645_6b63_5470,
+            0x949d_d691_1afd_cdff,
             "allocate_dept_daemon 의 판정 코드(종료 코드 해석·stdout 마지막 줄·dept-create:<code>:<stderr>·레지스트리 사후 조건)가 바뀌었다 — 티켓은 이 구간을 한 줄도 바꾸지 않는다:\n{judged}"
         );
         // 판정 구간의 핵심 줄은 문자열로도 박아 둔다(실패 시 어느 줄이 사라졌는지 바로 보이게).
         for needle in [
-            "let code = out.status.code().unwrap_or(-1);",
+            "let code = out.code.unwrap_or(-1);",
             "return Err(format!(\"dept-create:{code}:{stderr}\"));",
             "return Err(stderr);",
             ".filter(|l| !l.trim().is_empty())",
@@ -10213,30 +10218,24 @@ exit 0
         let code = gu_code_only(&f);
         // 새 인자 · 실행 경로
         assert!(code.contains("progress_id: Option<String>,"), "progress_id 인자 소실");
-        assert!(code.contains("run_dept_child(cmd, streaming, move |key: &str| {"), "자식 실행이 run_dept_child 를 지나지 않는다");
-        assert!(!code.contains(".output()"), "allocate_dept_daemon 이 직접 cmd.output() 을 부른다 — 종전 판 호출은 run_dept_child_plain 안에만 있어야 한다");
-        assert!(!code.contains("strip_stage_lines("), "표지 제거가 호출부에서 한 번 더 일어난다 — 공통 실행기(run_dept_child) 뒤에서 한 번이어야 한다");
-        assert!(code.contains("\"dept-create-progress\""), "진행 이벤트 이름 소실");
-        assert!(code.contains("json!({\"id\": emit_id, \"stage\": key})"), "진행 이벤트 payload 모양({{id, stage}}) 소실");
-        assert!(
-            code.contains("dept_create_stream_from_env(std::env::var(\"CYS_DEPT_CREATE_STREAM\").ok().as_deref())"),
-            "되돌리기 노브를 읽지 않는다"
-        );
-        assert!(code.contains("progress_id.is_some() &&"), "진행 id 가 없을 때 종전 경로로 가는 조건 소실");
-        // 명령줄 조립은 종전 그대로 — 순서까지.
+        // ★1.1.8 T1(병합 잠정 · RESOLUTION-LEDGER H9 · DECISIONS-PENDING T1 · 원작자 배선 시험은 우리 동작 기준으로 수정 = DECISION-TABLE-118 §5-6): 자식 실행 = 우리 run_dept_tool(맥 dept.run 대행 · 윈 직접 — 명령줄 조립·대행은 v114 핀이 본다) ·
+        //   원작자 실시간 스트리밍(run_dept_child · dept-create-progress 이벤트 · CYS_DEPT_CREATE_STREAM 노브)은 이 경로에 배선하지 않았다 ·
+        //   progress_id 는 UI 계약 인자로만 받는다 · 표지 제거는 실패 문구 한 곳.
+        assert!(!code.contains("run_dept_child("), "T1: allocate_dept_daemon 이 run_dept_child 를 부른다 — 실행은 run_dept_tool 이다");
+        assert!(!code.contains(".output()"), "allocate_dept_daemon 이 직접 cmd.output() 을 부른다 — 실행은 run_dept_tool 안에만 있어야 한다");
+        assert_eq!(code.matches("strip_stage_lines(").count(), 1, "표지 제거가 실패 문구 한 곳이 아니다");
+        assert!(!code.contains("dept-create-progress"), "T1: 실시간 진행 이벤트는 이 경로에 배선하지 않았다");
+        assert!(code.contains("let _ = &progress_id;"), "progress_id 는 UI 계약 인자로 받기만 한다");
+        // 실행 갈래(카탈로그 create · 레거시 allocate · 팀 제안 allocate --team-spec-b64)는 각각 한 번 — 순서까지.
         let order = [
-            "let mut cmd = std::process::Command::new(\"bash\");",
-            "inject_runtime_path(&mut cmd);",
-            "cmd.arg(&tool);",
-            "cmd.arg(\"create\").arg(k);",
-            "cmd.arg(\"allocate\");",
-            "cmd.arg(\"--team-spec-b64\").arg(b);",
-            "no_console(&mut cmd);",
-            "run_dept_child(cmd, streaming,",
+            "run_dept_tool(\"create\", vec![k.clone()])",
+            "run_dept_tool(\"allocate\", Vec::new())",
+            "run_dept_tool(\"allocate\", vec![\"--team-spec-b64\".to_string(), b.clone()])",
         ];
         let mut last = 0usize;
         for n in order {
-            let i = code[last..].find(n).unwrap_or_else(|| panic!("명령줄 조립 줄이 없거나 순서가 바뀌었다: {n}")) + last;
+            assert_eq!(code.matches(n).count(), 1, "실행 갈래가 한 번이 아니다: {n}");
+            let i = code[last..].find(n).unwrap_or_else(|| panic!("실행 갈래가 없거나 순서가 바뀌었다: {n}")) + last;
             last = i + n.len();
         }
         // 표지 제거는 공통 실행기 안에서 정확히 한 번.
@@ -12439,7 +12438,9 @@ exit 0
             "tauri-plugin-updater 가 2.10.1 이 아니다 — WU 의 플러그인 대조표(임시 경로·인자·호출)를 새 버전 소스로 다시 맞춰 보라(티켓 WU 의 조사로는 2.11.0 부터 상류가 반환값을 직접 본다)"
         );
         let conf = include_str!("../tauri.conf.json");
-        assert!(conf.contains("\"productName\": \"cys\""), "productName 이 cys 가 아니다 — 임시 설치 폴더·파일 이름이 달라진다(플러그인도 같은 이름을 쓴다)");
+        // ★cysr 개명(84f16d80 · TICKET=cysr-product-rename · master#12256173 · RESOLUTION-LEDGER tauri.conf UU 1 「productName(cysr) 우리 유지」): 앱 이름 = cysr.
+        //   이 핀의 불변식(새 경로와 플러그인이 같은 이름)은 그대로다 — 새 경로도 플러그인처럼 `app.package_info().name` 을 쓴다.
+        assert!(conf.contains("\"productName\": \"cysr\""), "productName 이 cysr 가 아니다 — 임시 설치 폴더·파일 이름이 달라진다(플러그인도 같은 이름을 쓴다)");
     }
 
     // ───────── ★(0.14.43 · R1F-UA) 성찰 1회차 수정 — 확인 실행 노브를 화면이 알게 한다 · J2 보류 창의 기준 시각 · 플러그인 설정 가정 ─────────
@@ -17593,12 +17594,16 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
     #[test]
     fn r2fui_allocate_dept_daemon_wires_the_stage_memory_into_the_response_additively() {
         let f = gu_code_only(&gu_prod_fn("async fn allocate_dept_daemon("));
-        assert!(f.contains("let stage_seen = std::sync::Arc::new(DeptStageSeen::default());"), "표지 기억 객체를 만들지 않는다");
-        assert!(f.contains("stage_seen_cb.note(key);"), "표지 콜백이 기억하지 않는다");
-        let cb = f.find("run_dept_child(cmd, streaming, move |key: &str| {").expect("콜백 소실");
-        let note = f.find("stage_seen_cb.note(key);").expect("note 소실");
-        let emit = f.find("emit_app.emit(\"dept-create-progress\"").expect("이벤트 소실");
-        assert!(cb < note && note < emit, "기억은 콜백 안(이벤트 전)이어야 한다");
+        // ★1.1.8 T1(병합 잠정 · RESOLUTION-LEDGER H9 · DECISIONS-PENDING T1 · 원작자 배선 시험은 우리 동작 기준으로 수정 = DECISION-TABLE-118 §5-6): 실행 = run_dept_tool(dept.run 응답은 끝난 뒤 한 번에 온다) → 기억은 실행 **뒤** stderr 의 단계 표지에서 ·
+        //   실시간 진행 이벤트(dept-create-progress)는 이 경로에 배선하지 않았다.
+        assert!(f.contains("let stage_seen = DeptStageSeen::default();"), "표지 기억 객체를 만들지 않는다");
+        let run = f.find("run_dept_tool(").expect("실행 소실");
+        let scan = f
+            .find("for l in out.stderr.lines() {\n        if let Some(k) = parse_dept_stage_line(l) {\n            stage_seen.note(k);")
+            .expect("표지 기억이 실행 결과 stderr 의 단계 표지를 읽지 않는다");
+        let judge = f.find("if !out.ok {").expect("판정 소실");
+        assert!(run < scan && scan < judge, "기억은 실행 뒤 · 판정 앞이어야 한다");
+        assert!(!f.contains("dept-create-progress"), "T1: 실시간 진행 이벤트는 이 경로에 배선하지 않았다");
         let tail = "    if let (Some(obj), Some(spawned)) = (info.as_object_mut(), stage_seen.spawned()) {\n        obj.insert(\"spawned\".into(), json!(spawned));\n    }\n    Ok(info)";
         assert!(f.ends_with(tail), "응답의 `spawned` 가산 블록이 함수 맨 끝(Ok(info) 바로 앞)에 있지 않다:\n{}", &f[f.len().saturating_sub(300)..]);
         assert_eq!(f.matches("\"spawned\"").count(), 1, "spawned 키를 싣는 곳은 한 곳이다");

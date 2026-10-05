@@ -166,6 +166,11 @@ UNREGISTERED_OK["test_cysd_dispatch_storm_e2e"] = (
     "FATAL-1(0.14.42) 로컬 수용 검체 — debug cysd 빌드·실데몬·soft 256·동시 영속 연결 500·10s 폭주 필요"
     "(ci-branch 에 cargo build 0건 · pack-release 는 cys 만 빌드) · CI 몫은 cysd fatal1_admission_tests 가 "
     "cargo test --bin cysd 에서 잰다")
+# ★cysr 1.1.8 ci-green — 환경 결손 검체. 로직은 로컬 12/12 초록(PyYAML 경로를 붙였을 때)이지만 `import yaml` 이
+#   필수이고 CI 의 파이썬에는 PyYAML 이 없다(scripts/tests/test_ci_branch_cysd_step.py:8 · 깨끗 env 실측 ModuleNotFoundError).
+UNREGISTERED_OK["test_release_trigger_split"] = (
+    "cysr 1.1.8 — PyYAML 의존 · CI 파이썬 미보유(깨끗 env 실측 ModuleNotFoundError · PyYAML 있으면 12/12) · "
+    "stdlib 파서 전환 = 1.1.9 백로그(BACKLOG-118) · 전환 커밋이 3레인 등재와 함께 이 항목을 지운다")
 
 SB, SE = "LANE-GATE-SELF-BEGIN", "LANE-GATE-SELF-END"
 

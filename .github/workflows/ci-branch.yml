@@ -331,6 +331,17 @@ jobs:
                   "1.1.7 통합(int/117) 편입 전에는 0레인 실행이었다.",
               ),
           }
+          # (cysr 1.1.8 ci-green · D3 역방향 축 편입) scripts/tests 4종 — test_mac_cli_alias_link 와 같은 계급의 2레인 편입.
+          _UPD = ("cysr 1.1.8 ci-green(D3 역방향 축이 잡은 0레인 검체 편입) — scripts/tests/ 스위트(팩 스위트 아님). "
+                  "대상 = 앱 업데이터 자산 생성기(make-update-manifest.sh · make-darwin-update-row.py · "
+                  "make-darwin-updater-tarball.sh)와 운영자 수동 기입 도구 key-bridge-install.py 다. 생성기는 배송 팩 "
+                  "tar 에 실리지 않고 앱 발행(latest.json 맥 행 · 구판 맥 tar) 쪽 도구이며, 키 브리지는 어느 레인도 "
+                  "실행하지 않는다(pack-release 는 그 결과물 trusted-keys.json 을 싣기만 한다). pack-release 는 팩만 "
+                  "서명·배송해 이 도구들을 실행할 일이 없다(편입하면 근거 없는 목록). "
+                  "ci-branch = 브랜치 조기 경보 · release = 앱 발행 직전 증명의 2레인 편입.")
+          for _n in ("test_darwin_asset_name_alignment", "test_darwin_update_row",
+                     "test_darwin_updater_tarball", "test_key_bridge_install"):
+              ALLOWED[_n] = ({"ci-branch", "release"}, _UPD)
           # (2026-08-12 편입 완료: test_bootstrap_chain 을 3레인 전부에 배선 — 위계 폴백의 유일
           #  회귀 핀 세트가 CI 0회 실행이던 격차를 봉합. ALLOWED 예외도 함께 제거 — 대칭이 정본.)
 
@@ -979,6 +990,7 @@ jobs:
                    test_resource_gate_boot_anchor test_ctx_divergence \
                    test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
                    test_dept_schedule_seed test_ctx_relay \
+                   test_dept_b11_lock test_hook_timing test_seat_folders test_t6_injection_policy test_v113_review_fix \
                    test_lane_redirect \
                    test_dept_notice_lane test_team_create_u16 \
                    test_teamtoken test_teamtoken_hook test_dept_team_token \
@@ -1204,6 +1216,19 @@ jobs:
           f="scripts/tests/test_mac_cli_alias_link.py"
           [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
           python3 "$f"
+
+      # (cysr 1.1.8 ci-green · D3 역방향 축 편입) 앱 업데이터 자산 생성기 3종 + 키 브리지 기입 도구 시험 — 그 전 0레인 실행.
+      #   release 맥 레그와 동시 편입 · pack-release 미편입 사유는 위 '팩 스위트 레인 대조' ALLOWED 등재 참조. stdlib · 네트워크 0.
+      - name: 업데이터 자산 생성기·키 브리지 (scripts/tests 4종 · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in test_darwin_asset_name_alignment test_darwin_update_row test_darwin_updater_tarball test_key_bridge_install; do
+            f="scripts/tests/$t.py"
+            [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+            echo "== $t (mac) =="
+            python3 "$f"
+          done
 
       # ★todo **스캔 집합** 2언어 파리티(설계 §14 S18 · W14). 위 파서 파리티와 **다른 표면**이다:
       #   그쪽은 "같은 파일을 같게 판정하는가", 여기는 "**애초에 같은 파일을 보는가**"를 묻는다.
@@ -1768,6 +1793,7 @@ jobs:
                    test_resource_gate_boot_anchor test_ctx_divergence \
                    test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
                    test_dept_schedule_seed test_ctx_relay \
+                   test_dept_b11_lock test_hook_timing test_seat_folders test_t6_injection_policy test_v113_review_fix \
                    test_lane_redirect \
                    test_dept_notice_lane test_team_create_u16 \
                    test_teamtoken test_teamtoken_hook test_dept_team_token \

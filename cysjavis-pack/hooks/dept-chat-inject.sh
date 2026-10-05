@@ -66,6 +66,7 @@ OUT=$(printf '%s' "$HOOK_IN" | cys_timeout_run 4 "$CYS_PY" "$(cys_native_path "$
 RC=$?
 if [ "$RC" -ne 0 ]; then
   echo "[cys-hook] 부서 대화 주입 실패(rc=$RC) — 주입 생략(dept-chat-inject)" >&2
+  cys_hook_fail dept-chat-inject "$RC" javis_dept_request:hook-prompt   # ★D9-b 파일 기록
   exit 0
 fi
 [ -n "$OUT" ] && printf '%s\n' "$OUT"

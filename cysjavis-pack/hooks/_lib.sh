@@ -526,6 +526,32 @@ _cys_hook_timing_end() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5-a′. 훅 실패 기록 (★D9-b · 1.1.8 — 윈 실측: 훅 오류 로그가 없어 rc 127 을 사후 판정할 수 없었다)
+# ─────────────────────────────────────────────────────────────────────────────
+# 훅은 계약상 언제나 exit 0 이라 안쪽 실패(rc≠0)가 화면 고지 한 줄로만 남고 파일에는 없었다. 실패 한 건마다
+# `<상태 dir>/hook-errors.log` 에 **한 줄**(UTC 시각 · 훅 · 역할 · surface · rc · 사유 · 해석기 · PATH 판정)을 남긴다.
+# PATH 판정 = `command -v` 셸 내장만 쓴다(cys·cat 이 보이는가 · PATH 앞 160자) — PATH 가 깨진 순간(D10 「cat: command
+# not found」)에도 기록이 남게 date·wc·mkdir 은 있으면 쓰고 없으면 건너뛴다. 쓰기 실패 전부 삼킴 · stdout 무출력 ·
+# 256KB 넘으면 `.1` 로 한 번 돌린다(hook-timing.log 와 같은 규칙).
+cys_hook_fail() {
+  _cys_hf_f="${CYS_STATE_DIR:-$HOME/.cys/state}/hook-errors.log"
+  _cys_hf_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || _cys_hf_ts=""
+  [ -n "$_cys_hf_ts" ] || _cys_hf_ts="시각불명(date 없음)"
+  _cys_hf_cys=no; command -v cys >/dev/null 2>&1 && _cys_hf_cys=yes
+  _cys_hf_cat=no; command -v cat >/dev/null 2>&1 && _cys_hf_cat=yes
+  _cys_hf_path="${PATH:-}"
+  [ "${#_cys_hf_path}" -le 160 ] 2>/dev/null || _cys_hf_path="$(printf '%.160s' "$_cys_hf_path")…"
+  {
+    [ -d "$(dirname "$_cys_hf_f" 2>/dev/null)" ] || mkdir -p "$(dirname "$_cys_hf_f")"
+    if [ -f "$_cys_hf_f" ] && [ "$(wc -c < "$_cys_hf_f")" -gt 262144 ]; then mv -f "$_cys_hf_f" "$_cys_hf_f.1"; fi
+    printf '%s %s role=%s surface=%s rc=%s why=%s py=%s cys=%s cat=%s path=%s\n' "$_cys_hf_ts" "${1:-?}" \
+      "${CYS_ROLE:-?}" "${CYS_SURFACE_ID:-?}" "${2:-?}" "${3:--}" "${CYS_PY:-미해소}" \
+      "$_cys_hf_cys" "$_cys_hf_cat" "$_cys_hf_path" >> "$_cys_hf_f"
+  } >/dev/null 2>&1
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5-b. 데드라인 실행기 (A5 훅면 — 판정 호출의 hang 차단)
 # ─────────────────────────────────────────────────────────────────────────────
 # `cys surface-role` 같은 **판정 조회**가 데몬 미응답으로 행 걸면 훅이 사용자 프롬프트를

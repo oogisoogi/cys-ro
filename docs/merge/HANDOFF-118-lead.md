@@ -23,3 +23,17 @@
 - 격리 래퍼 = scratchpad isoenv.sh(TMPDIR 짧게) · 팩 시험기 = scratchpad packtests.py <WT> [이름목록] [태그].
 - 분류표 = scratchpad rust-red-classified.tsv · ui-red-classified.txt · pack-red-classified.tsv.
 - ui/node_modules = cys-117-lead 의 node_modules 심볼릭 링크(커밋 금지 · info/exclude 등록).
+
+## 갱신 00:57 (수리 1차 · 리드 CTX ≈56%)
+- 커밋 사슬: c08489e7 merge → 17f40a9c(C ui) → 501edcf2(B 사용량·CLI·팩 Rust) → 414dc2d4(리드 cfg 2) → 642a10af(A 데몬 입력 계층) → e7e2092f(리드 alert_route). push 0.
+- Rust 전체(격리 · ctest3.log): lib 762/0 · cys 576/1 · cysd 2,445/5 = **128 → 6**. 남은 6:
+  · tests::drain_verify_delivery_failed_on_wedge — 흔들림(TMPDIR·pid 길이로 마커 `>` 가 줄머리에 떨어져 프롬프트로 오독 · 실화면도 같은 오독 가능 → src/submit_probe.rs 후보)
+  · approval r2f_dm — accounts.rs seed_known_ignores_antigravity_dir 가 HOME 만 돌림 → 이음매(with_store_root/test_home::set)로
+  · d6_probe_tests d6_1_mixed_statusline… · d6_1_dead_statusline… — 갈래 B 📌5 「전체 순위(OAuth 우선)」 와 우리 D6-1 시험 충돌 · B 결정 필요 (a) 전체 순위 = 패널 최대 ~4분 지연 vs 창 밖 보고만 강등(1줄)
+  · handlers b3_status_polling — 원작자판도 적색(손대지 않음)
+  · state inject_track_handoff_pending_until_an_arm_ends — 새 적색(K17 거부 모드가 S21 표식을 올리게 바꾼 것과 관련 추정 · 미확인)
+- ui(17f40a9c 뒤): tsc 0 · bun 91 실패 = 결정 필요 묶음(DECISIONS 「수리 1차」 절: DS-1 · X2-R · X2-W · UNW ≈80 · cysr 문구).
+- 팩: 갈래 D(fix-pack) 진행 중 — 끝나면 커밋(파일 = cysjavis-pack/ · 지침 제외) · 미커밋 팩 변경이 작업트리에 있음.
+- 결정 대기(master): X18 CSO 지침 3자 모순 · B(a) 사용량 순위 범위 · B(b) 휴면 스위치 env(CYS_ENABLE_TEAM_FLOW / CYS_ENABLE_AGY_LANE) 유지 · DS-1 · X2-R · UNW 처리 방식.
+- 다음 리드가 할 일: D 결과 커밋 → 팩 전체 재측정(packtests.py) → 남은 Rust 6 · 위 결정 반영 → 원장 RESOLUTION-LEDGER-118.md(서브 원장 합본 + `git diff v1.1.7..HEAD --stat` · `git diff up/v0.14.43..HEAD --stat`) · MERGE-RECORD-118.md(정책 §0-2 6항: 소요·충돌 파일·리뷰·CI·회귀) → 【확인요청】.
+- 정리 대상: 스크래치패드 기준판 작업트리 wt-up43 · wt-117 → `git worktree remove --force <경로>`(리드 직접 · 서브 금지).

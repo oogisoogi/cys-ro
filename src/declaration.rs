@@ -50,10 +50,61 @@ pub const DECL_ROLE_MASTER: &str = "master";
 /// 경로가 바뀌면 여기서 빌드가 깨진다(사본 분화의 재발 경로를 컴파일러가 막는다).
 pub const DETECT_CORPUS_JSON: &str = include_str!("../cysjavis-pack/bin/tests/fixtures/detect-corpus.json");
 
-// ── 어휘(python 동일 철자) ─────────────────────────────────────────────────────────
-const SUBJECT: &str = r"(?:너는|넌|너가|네가|니가|당신은|당신이|너)";
-const MASTER: &str = r"(?:마스터|master)";
-const TERM: &str = r"(?:다|야|이다|입니다|임|이야|여|로 *각성|로 *승격|가 *되|가 *돼|가 *된)";
+// ── 어휘 — ★M5(1.1.8 · master 결정 [master#0ac871b1] · w2 2cac92b1d1) 공용 코퍼스 `vocab` 절이 **단일 원본**이다 ─────
+// 하드코딩 0: SUBJECT·MASTER·TERM·decl_en·decl_extra 전부를 `DETECT_CORPUS_JSON`(include_str = 컴파일 타임 고정)의 vocab 절에서
+// 읽는다. python `javis_detect.py` 도 같은 절을 읽는다(그쪽은 fixture 부재 시 내장 사본 폴백 · 여기는 컴파일에 박혀 부재가 없다).
+// vocab 패턴 = python re 와 Rust regex 의 공통 부분집합(look-around 0 · decl_extra 공백은 `\s` 만 — 아래 [`py_space`] 치환).
+// 형식 위반은 시험(`m5_vocab_*`)이 잡는다 — 그래서 런타임 `expect` 는 도달 불가 경로다.
+struct Vocab {
+    subject: String,
+    master: String,
+    term: String,
+    decl_en: String,
+    decl_extra: Vec<String>,
+}
+
+fn vocab() -> &'static Vocab {
+    static V: OnceLock<Vocab> = OnceLock::new();
+    V.get_or_init(|| {
+        let c: serde_json::Value = serde_json::from_str(DETECT_CORPUS_JSON).expect("detect-corpus.json 판독 불가");
+        let v = &c["vocab"];
+        let s = |k: &str| v[k].as_str().unwrap_or_else(|| panic!("vocab.{k} 부재")).to_string();
+        Vocab {
+            subject: s("subject"),
+            master: s("master"),
+            term: s("term"),
+            decl_en: s("decl_en"),
+            decl_extra: v["decl_extra"]
+                .as_array()
+                .expect("vocab.decl_extra 부재")
+                .iter()
+                .map(|p| p.as_str().expect("vocab.decl_extra 원소").to_string())
+                .collect(),
+        }
+    })
+}
+
+/// vocab 패턴의 `\s` 를 python `\s` 와 같은 29 코드포인트 클래스로 바꾼다(문자 클래스 안 `[\s,]` 도 — Rust regex 는 중첩
+/// 클래스 `[[…],]` 를 합집합으로 읽는다). 이스케이프된 역슬래시(`\\s`)는 건드리지 않는다.
+fn py_space(p: &str) -> String {
+    let mut out = String::with_capacity(p.len() + 64);
+    let mut it = p.chars().peekable();
+    while let Some(ch) = it.next() {
+        if ch == '\\' {
+            match it.next() {
+                Some('s') => out.push_str(&format!("[{PY_SPACE_CLASS}]")),
+                Some(n) => {
+                    out.push('\\');
+                    out.push(n);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
 
 /// python `\s` 와 **정확히 같은 29 코드포인트**의 정규식 문자 클래스 본문.
 ///
@@ -110,6 +161,8 @@ impl Axis {
 pub enum Lang {
     Ko,
     En,
+    /// ★M5 명령형·역할 부여 꼴(vocab.decl_extra) — python 후보 라벨 "extra".
+    Extra,
 }
 
 impl Lang {
@@ -117,6 +170,7 @@ impl Lang {
         match self {
             Lang::Ko => "ko",
             Lang::En => "en",
+            Lang::Extra => "extra",
         }
     }
 }
@@ -241,8 +295,10 @@ impl Flat {
 fn decl_ko() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
+        let v = vocab();
         Regex::new(&format!(
-            "(?i){SUBJECT}.{{0,{FILLER_MAX}}}{MASTER}.{{0,{TERM_GAP_MAX}}}{TERM}"
+            "(?i){}.{{0,{FILLER_MAX}}}{}.{{0,{TERM_GAP_MAX}}}{}",
+            v.subject, v.master, v.term
         ))
         .expect("DECL_KO 컴파일 실패")
     })
@@ -250,12 +306,23 @@ fn decl_ko() -> &'static Regex {
 
 fn decl_en() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(&format!("(?i){}", py_space(&vocab().decl_en))).expect("DECL_EN 컴파일 실패"))
+}
+
+/// ★M5 명령형·역할 부여 꼴(vocab.decl_extra · OR · 대소문자 무시). python `DECL_EXTRA` 와 같은 합성.
+fn decl_extra() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        let s = format!("[{PY_SPACE_CLASS}]");
-        Regex::new(&format!(
-            "(?i)you{s}+are{s}+(?:the{s}+|our{s}+|now{s}+)*master"
-        ))
-        .expect("DECL_EN 컴파일 실패")
+        let alts: Vec<String> = vocab().decl_extra.iter().map(|p| format!("(?:{})", py_space(p))).collect();
+        Regex::new(&format!("(?i){}", alts.join("|"))).expect("DECL_EXTRA 컴파일 실패")
+    })
+}
+
+/// ★M5 금지 꼬리(python `NEG_TAIL` · vocab 밖 코드 규칙) — 선언 끝 **직후**에서만 맞춘다(python `match(flat, end, hi)`).
+fn neg_tail_rx() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(&py_space(r"^\s*(?:주\s*)?(?:지\s*(?:마|말)|말아|말고|마라)")).expect("NEG_TAIL 컴파일 실패")
     })
 }
 
@@ -263,7 +330,8 @@ fn neg_rx() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(&format!(
-            "(?i){MASTER}[^가-힣A-Za-z]{{0,{NEG_GAP_MAX}}}(?:가|는|를)?[^가-힣A-Za-z]{{0,{NEG_GAP_MAX}}}(?:아니|아냐|말고)"
+            "(?i){}[^가-힣A-Za-z]{{0,{NEG_GAP_MAX}}}(?:가|는|를)?[^가-힣A-Za-z]{{0,{NEG_GAP_MAX}}}(?:아니|아냐|말고)",
+            vocab().master
         ))
         .expect("NEG 컴파일 실패")
     })
@@ -284,7 +352,8 @@ fn question_rx() -> &'static Regex {
 /// 소유자는 이 모듈이고 소비자에게 필요한 것은 판정뿐이다. 정규식을 내보내면 소비자가 자기
 /// 플래그를 붙여 부르기 시작하고, 그 순간 판정이 두 벌로 갈린다.
 pub fn is_declaration_clause(clause: &str) -> bool {
-    decl_ko().is_match(clause) || decl_en().is_match(clause)
+    // ★M5: 세 패턴 OR(python DECL_KO = 본대 ∪ decl_extra · mission_gate 파리티 — 「마스터 역할 맡아줘」 단독 프롬프트가 임무로 분류되지 않게).
+    decl_ko().is_match(clause) || decl_en().is_match(clause) || decl_extra().is_match(clause)
 }
 
 /// 이 절이 **질의·인용절**인가(`QUESTION`). python `extract_mission` ②.
@@ -553,6 +622,12 @@ fn suppression(f: &Flat, lo: usize, hi: usize, start: usize, end: usize) -> Opti
     if let Some(m) = neg_rx().find(&clause) {
         return Some((Axis::Neg, m.as_str().to_string()));
     }
+    // ★M5(python D16-M5 NEG_TAIL): 선언 끝 직후(절 끝까지)의 금지 꼬리 — 「…해 주지 마」·「…해 말아」 = 하지 말라는 말.
+    if end < hi {
+        if let Some(m) = neg_tail_rx().find(&f.slice(end, hi)) {
+            return Some((Axis::Neg, m.as_str().trim_matches(is_py_space).to_string()));
+        }
+    }
     let pre = f.slice(lo, start);
     if let Some(m) = question_rx().find(&pre) {
         return Some((Axis::Pre, m.as_str().to_string()));
@@ -585,6 +660,10 @@ pub fn detect_with_window(prompt: &str, window_chars: usize) -> Verdict {
     }
     for m in decl_en().find_iter(&f.flat_s) {
         cands.push((f.c(m.start()), f.c(m.end()), m.as_str().to_string(), Lang::En));
+    }
+    // ★M5: decl_extra 후보도 같은 목록 · 같은 억제(명령형이라고 억제 면제 없음) · 본대와 따로 찾는다(겹침 후보 소실 방지).
+    for m in decl_extra().find_iter(&f.flat_s) {
+        cands.push((f.c(m.start()), f.c(m.end()), m.as_str().to_string(), Lang::Extra));
     }
     cands.sort_by_key(|t| (t.0, t.1));
     if cands.is_empty() {
@@ -662,8 +741,9 @@ mod tests {
         let fire = c["fire"].as_array().expect("fire 배열 부재");
         let skip = c["skip"].as_array().expect("skip 배열 부재");
         // 규모 핀 — python self-test 가 출력하는 수와 같아야 한다(코퍼스가 조용히 줄면 잡힌다).
-        assert_eq!(fire.len(), 53, "FIRE 코퍼스 규모가 바뀌었다");
-        assert_eq!(skip.len(), 49, "SKIP 코퍼스 규모가 바뀌었다");
+        // ★M5(1.1.8 · w2 2cac92b1d1): 명령형·역할 부여 꼴 + 금지 꼬리 사례 편입 → 83/91.
+        assert_eq!(fire.len(), 83, "FIRE 코퍼스 규모가 바뀌었다");
+        assert_eq!(skip.len(), 91, "SKIP 코퍼스 규모가 바뀌었다");
 
         let mut fails: Vec<String> = Vec::new();
         for it in fire {
@@ -703,6 +783,53 @@ mod tests {
             }
         }
         assert!(fails.is_empty(), "코퍼스 파리티 이탈 {}건:\n  - {}", fails.len(), fails.join("\n  - "));
+    }
+
+    /// vocab 절 sha256(serde_json 정규 직렬화) 앞 16자 — 절 변경 = 핀 갱신(w2 2cac92b1d1 기준).
+    const M5_VOCAB_SHA256_HEAD: &str = "7c305ceed028e3c3";
+
+    /// ★M5 하드코딩 0 증명 — 정규식을 지은 어휘(vocab())의 sha256 == 코퍼스 vocab 절의 sha256(같은 정규화 직렬화) ·
+    /// vocab 절 자체의 sha256 핀(절이 바뀌면 python self-test 와 함께 이 핀을 고친다 = 변경이 리뷰에 보인다).
+    #[test]
+    fn m5_vocab_is_the_only_source_and_hash_pinned() {
+        use sha2::{Digest, Sha256};
+        let c = corpus();
+        let from_corpus = serde_json::to_string(&c["vocab"]).unwrap();
+        let v = vocab();
+        let used = serde_json::to_string(&serde_json::json!({
+            "subject": v.subject, "master": v.master, "term": v.term,
+            "decl_en": v.decl_en, "decl_extra": v.decl_extra,
+        }))
+        .unwrap();
+        let h = |s: &str| -> String { Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect() };
+        assert_eq!(h(&used), h(&from_corpus), "정규식 어휘 ≠ 코퍼스 vocab 절(하드코딩 잔존·필드 누락)");
+        assert_eq!(&h(&from_corpus)[..16], M5_VOCAB_SHA256_HEAD, "vocab 절이 바뀌었다 — python self-test 와 함께 핀 갱신");
+        // 공통 부분집합 린트(python self-test 와 같은 규칙): look-around 0 · decl_extra 리터럴 공백 0.
+        for p in [&v.subject, &v.master, &v.term, &v.decl_en].into_iter().chain(v.decl_extra.iter()) {
+            for la in ["(?=", "(?!", "(?<=", "(?<!"] {
+                assert!(!p.contains(la), "look-around(Rust 미지원): {p}");
+            }
+        }
+        for p in &v.decl_extra {
+            assert!(!p.chars().any(is_py_space), "decl_extra 리터럴 공백(\\s 로만): {p}");
+        }
+        // 모든 vocab 패턴이 Rust 에서 컴파일된다(강제 초기화).
+        let _ = (decl_ko(), decl_en(), decl_extra(), neg_rx(), neg_tail_rx());
+    }
+
+    /// ★M5 명령형 대표 사례 + 금지 꼬리 + 절 술어(mission_gate 파리티) — 코퍼스 밖 회귀 핀 몇 개.
+    #[test]
+    fn m5_imperative_forms_and_neg_tail() {
+        assert!(detect("마스터 역할 맡아줘").fire());
+        assert!(detect("act as master").fire());
+        assert!(detect("Claude, act as the master").fire());
+        assert!(!detect("he wants to be the master").fire(), "머리가 아닌 영어 명령형 = 무발화(안전 방향)");
+        let v = detect("네가 마스터 해 주지 마");
+        assert!(!v.fire(), "금지 꼬리 = 억제: {v:?}");
+        assert!(matches!(v, Verdict::Suppressed { axis: Axis::Neg, .. }), "{v:?}");
+        assert!(is_declaration_clause("마스터 역할 맡아줘"), "mission_gate 가 이 절을 임무에서 뺀다");
+        assert_eq!(py_space(r"a\sb"), format!("a[{PY_SPACE_CLASS}]b"));
+        assert_eq!(py_space(r"a\\sb"), r"a\\sb", "이스케이프된 역슬래시는 그대로");
     }
 
     /// ★축 진단 파리티 — reason 문자열이 아니라 **기계 필드**(axis·marker)로 검증한다.

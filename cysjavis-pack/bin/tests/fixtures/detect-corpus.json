@@ -5,8 +5,28 @@
     "소비자: javis_detect.py --self-test (부재 시 내장 리터럴 폴백 · 존재하는데 불량이면 hard fail).",
     "불변식: 이 파일은 javis_detect.py 내장 FIRE_CORPUS/SKIP_CORPUS 의 상위집합이어야 한다(self-test 가 검사).",
     "확장 규칙: 새 케이스는 여기 먼저 넣는다. 사본 금지 — tests/test_role_bootstrap_hook.py·run_bootstrap_health.py 의 잔존 리터럴은 후속 티켓에서 이 파일로 수렴 예정.",
-    "lookahead 축(2026-09-04 W-A A3 편입 · 원본 impl/W-B/lookahead-pins.json · W-B B1-a ea859a7): 종전 93건은 '면서' lookahead 를 무조건 참으로 바꿔도 **전부 초록**이었다(mutation M2 생존 — 코퍼스가 그 축을 안 보고 있었다). 편입한 12건이 그 축을 가른다. expected 는 python javis_detect.detect() 실측이고, Rust 측 src/declaration.rs LOOKAHEAD_PINS 가 같은 12건을 박제한다."
+    "lookahead 축(2026-09-04 W-A A3 편입 · 원본 impl/W-B/lookahead-pins.json · W-B B1-a ea859a7): 종전 93건은 '면서' lookahead 를 무조건 참으로 바꿔도 **전부 초록**이었다(mutation M2 생존 — 코퍼스가 그 축을 안 보고 있었다). 편입한 12건이 그 축을 가른다. expected 는 python javis_detect.detect() 실측이고, Rust 측 src/declaration.rs LOOKAHEAD_PINS 가 같은 12건을 박제한다.",
+    "vocab 절(2026-10-06 M5 · master 결정): 선언 어휘(subject·master·term·decl_en·decl_extra)의 단일 원본. javis_detect.py 가 런타임에 읽고(부재·불량 시 같은 값의 내장 사본 폴백 — 내장==이 절은 self-test hard fail 로 강제), Rust src/declaration.rs 도 같은 절을 읽는다. 패턴 규약 = python re ∩ Rust regex: look-around 금지(\\b·^ 허용) · decl_extra 공백은 \\s 로만 · decl_extra 는 OR·대소문자 무시. decl_extra 매치도 기존 억제(부정·pre·인용 감쌈·인용 전달)를 그대로 통과한다. 'why' 가 [M5 …] 로 시작하는 fire/skip 케이스가 이 절의 변형별 양방향 핀이다."
   ],
+  "vocab": {
+    "subject": "(?:너는|넌|너가|네가|니가|당신은|당신이|너)",
+    "master": "(?:마스터|master)",
+    "term": "(?:다|야|이다|입니다|임|이야|여|로 *각성|로 *승격|가 *되|가 *돼|가 *된)",
+    "decl_en": "you\\s+are\\s+(?:the\\s+|our\\s+|now\\s+)*master",
+    "decl_extra": [
+      "마스터\\s*역할(?:을|를)?\\s*(?:맡아|해)(?:\\s*(?:줘요|줘|주세요|주십시오|주라)|라)\\b",
+      "마스터\\s*역할(?:을|를)?\\s*(?:맡으|하)(?:세요|십시오|라)\\b",
+      "마스터를\\s*(?:맡아(?:\\s*(?:줘요|줘|주세요|주십시오|주라)|라)|맡으(?:세요|십시오|라))\\b",
+      "마스터\\s*(?:역할로|로서|로)\\s*일(?:해(?:\\s*(?:줘요|줘|주세요|주십시오|주라)|라)|하(?:세요|십시오|라))\\b",
+      "마스터가?\\s*(?:(?:되어|돼)(?:\\s*(?:줘요|줘|주세요|주십시오|주라)|라)|되(?:세요|십시오|라))\\b",
+      "(?:너는|넌|너가|네가|니가|당신은|당신이|너)\\s*(?:이제부터|지금부터|오늘부터|앞으로|이제|지금)?\\s*마스터\\s*(?:역할(?:을|를)?\\s*|를\\s*)?(?:해|하라|해라|맡아|맡아라|해\\s*줘|맡아\\s*줘)\\b",
+      "^\\s*(?:(?:please|now|ok|okay|so|then|alright|just|hey|hi|from\\s+now\\s+on)\\b[\\s,]*|[a-z가-힣]+\\s*,\\s*)*(?:act|serve)\\s+as\\s+(?:the\\s+|our\\s+)?master\\b",
+      "^\\s*(?:(?:please|now|ok|okay|so|then|alright|just|hey|hi|from\\s+now\\s+on)\\b[\\s,]*|[a-z가-힣]+\\s*,\\s*)*be\\s+(?:the\\s+|our\\s+)?master\\b",
+      "^\\s*(?:(?:please|now|ok|okay|so|then|alright|just|hey|hi|from\\s+now\\s+on)\\b[\\s,]*|[a-z가-힣]+\\s*,\\s*)*(?:take|play)\\s+(?:on\\s+)?(?:the\\s+)?master\\s+role\\b",
+      "\\byou(?:'ll|’ll|\\s+will|\\s+shall|\\s+are\\s+going\\s+to|\\s+must|\\s+should)\\s+(?:be|act\\s+as|serve\\s+as)\\s+(?:the\\s+|our\\s+)?master\\b",
+      "\\byou(?:'ll|’ll|\\s+will|\\s+shall|\\s+are\\s+going\\s+to|\\s+must|\\s+should)\\s+(?:take|play)\\s+(?:on\\s+)?the\\s+master\\s+role\\b"
+    ]
+  },
   "fire": [
     {
       "text": "너는 마스터다",
@@ -219,6 +239,126 @@
     {
       "text": "너는 마스터다라니",
       "why": "[lookahead] 라니 뒤 한글 어절 없음"
+    },
+    {
+      "text": "마스터 역할 맡아줘",
+      "why": "[M5 KO-1] 역할 + 맡아 + 요청 어미"
+    },
+    {
+      "text": "마스터 역할을 맡아 주세요",
+      "why": "[M5 KO-1] 목적격·존대 요청"
+    },
+    {
+      "text": "지금부터 마스터 역할 해줘. 오늘 보고서 정리해",
+      "why": "[M5 KO-1] 역할 해줘 + 후속 임무 절"
+    },
+    {
+      "text": "마스터 역할 맡으세요",
+      "why": "[M5 KO-2] 존대 명령"
+    },
+    {
+      "text": "마스터 역할 하라",
+      "why": "[M5 KO-2] 하라체"
+    },
+    {
+      "text": "마스터를 맡아줘",
+      "why": "[M5 KO-3] 를 + 맡아줘"
+    },
+    {
+      "text": "마스터를 맡아 주세요",
+      "why": "[M5 KO-3] 를 + 맡아 주세요"
+    },
+    {
+      "text": "마스터로 일해 줘",
+      "why": "[M5 KO-4] 로 + 일해 줘"
+    },
+    {
+      "text": "마스터로서 일해주세요",
+      "why": "[M5 KO-4] 로서 + 일해주세요"
+    },
+    {
+      "text": "마스터 역할로 일해라",
+      "why": "[M5 KO-4] 역할로 + 일해라"
+    },
+    {
+      "text": "마스터가 되어 줘",
+      "why": "[M5 KO-5] 가 + 되어 줘"
+    },
+    {
+      "text": "마스터 돼라",
+      "why": "[M5 KO-5] 무조사 + 돼라"
+    },
+    {
+      "text": "네가 마스터 해",
+      "why": "[M5 KO-6] 2인칭 주어 + 단독 반말 해"
+    },
+    {
+      "text": "니가 마스터 해줘",
+      "why": "[M5 KO-6] 구어 주어 + 해줘"
+    },
+    {
+      "text": "너 마스터 하라",
+      "why": "[M5 KO-6] 단독 너 + 하라"
+    },
+    {
+      "text": "이제부터 너 마스터야",
+      "why": "[M5 확인] 부사 선행 + 단독 너 + 야 — 종전 본대가 이미 발화(회귀 핀)"
+    },
+    {
+      "text": "act as master",
+      "why": "[M5 EN-1] 머리 명령형 act as"
+    },
+    {
+      "text": "Please act as the master",
+      "why": "[M5 EN-1] please lead + the"
+    },
+    {
+      "text": "Claude, act as master and boot the team",
+      "why": "[M5 EN-1] 호격 lead + 후속 지시"
+    },
+    {
+      "text": "be the master",
+      "why": "[M5 EN-2] 머리 명령형 be"
+    },
+    {
+      "text": "ok, be the master",
+      "why": "[M5 EN-2] ok lead"
+    },
+    {
+      "text": "please be our master",
+      "why": "[M5 EN-2] please + our"
+    },
+    {
+      "text": "클로드, be the master",
+      "why": "[M5 EN-2] 한글 호격 lead"
+    },
+    {
+      "text": "take the master role",
+      "why": "[M5 EN-3] 머리 명령형 take role"
+    },
+    {
+      "text": "take on the master role",
+      "why": "[M5 EN-3] take on"
+    },
+    {
+      "text": "you'll be the master",
+      "why": "[M5 EN-4] you'll be"
+    },
+    {
+      "text": "You will be our master",
+      "why": "[M5 EN-4] you will + our(대소문자 무시)"
+    },
+    {
+      "text": "you are going to be the master",
+      "why": "[M5 EN-4] are going to"
+    },
+    {
+      "text": "you'll take the master role",
+      "why": "[M5 EN-5] you'll take role"
+    },
+    {
+      "text": "you will take on the master role",
+      "why": "[M5 EN-5] you will take on"
     }
   ],
   "skip": [
@@ -466,6 +606,216 @@
       "text": "너는 마스터다라니 무슨 소리야",
       "why": "[lookahead] 라니 반문 인용",
       "marker": "라니"
+    },
+    {
+      "text": "마스터 역할 맡아줘서 고마워",
+      "why": "[M5 KO-1] 어절 미종결(맡아줘+서) = 감사 — \\b 비매치",
+      "marker": null
+    },
+    {
+      "text": "마스터 역할 맡아줘 라고 하지 마",
+      "why": "[M5 KO-1] 인용 전달(축ⓒ)",
+      "marker": "라고"
+    },
+    {
+      "text": "마스터 역할 맡아줘?",
+      "why": "[M5 KO-1] 인접 에코 의문(축ⓒ)",
+      "marker": "?"
+    },
+    {
+      "text": "마스터 역할이 뭐야?",
+      "why": "[M5 KO-1] 역할에 대한 질문 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "마스터 역할 하라고 했잖아",
+      "why": "[M5 KO-2] 전달(하라+고) — \\b 비매치",
+      "marker": null
+    },
+    {
+      "text": "\"마스터 역할 맡으세요\" 라는 문구",
+      "why": "[M5 KO-2] 인용 감쌈(축ⓑ)",
+      "marker": "\""
+    },
+    {
+      "text": "마스터를 맡을 사람 있어?",
+      "why": "[M5 KO-3] 관형형 맡을 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "마스터를 맡아 달라고 하더라",
+      "why": "[M5 KO-3] 전달(달라고) — 비매치",
+      "marker": null
+    },
+    {
+      "text": "기본 브랜치를 마스터로 해줘",
+      "why": "[M5 KO-4] git 지시 '마스터로 해' — 어휘에서 제외",
+      "marker": null
+    },
+    {
+      "text": "마스터로 일하지 마",
+      "why": "[M5 KO-4] 부정 명령(지-형) — 비매치",
+      "marker": null
+    },
+    {
+      "text": "워커가 마스터가 되라고 했다",
+      "why": "[M5 KO-5] 3인칭 전달(되라+고) — 비매치",
+      "marker": null
+    },
+    {
+      "text": "마스터가 되어줘야 해",
+      "why": "[M5 KO-5] 줘+야 미종결 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "네가 마스터 하지 마",
+      "why": "[M5 KO-6] 부정 명령(지-형) — 비매치",
+      "marker": null
+    },
+    {
+      "text": "너 마스터 해제해",
+      "why": "[M5 KO-6] 해+제 미종결(해제) — 비매치",
+      "marker": null
+    },
+    {
+      "text": "네가 마스터 해?",
+      "why": "[M5 KO-6] 인접 에코 의문(축ⓒ)",
+      "marker": "?"
+    },
+    {
+      "text": "마스터 하지 마",
+      "why": "[M5 KO] 부정 명령 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "그 사람이 마스터야",
+      "why": "[M5 KO] 3인칭 서술 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "마스터 페인 확인해",
+      "why": "[M5 KO] 페인 지칭 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "마스터 역할을 하는 페인은 1번이야",
+      "why": "[M5 KO] 관형형 하는 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "\"마스터 역할 맡아줘\"가 무슨 뜻이야",
+      "why": "[M5 KO] 인용 감쌈(축ⓑ)",
+      "marker": "\""
+    },
+    {
+      "text": "'마스터 역할 맡아줘' 같은 말은 하지 마",
+      "why": "[M5 KO] 인용 감쌈(축ⓑ)",
+      "marker": "'"
+    },
+    {
+      "text": "the node can act as master for replication",
+      "why": "[M5 EN-1] 3인칭 — 머리 앵커 비매치",
+      "marker": null
+    },
+    {
+      "text": "Please don't act as master",
+      "why": "[M5 EN-1] 부정 — lead 어휘 밖 비매치",
+      "marker": null
+    },
+    {
+      "text": "'act as master' 가 무슨 뜻이야",
+      "why": "[M5 EN-1] 인용 — 머리 앵커 비매치",
+      "marker": null
+    },
+    {
+      "text": "don't be the master",
+      "why": "[M5 EN-2] 부정 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "he wants to be the master",
+      "why": "[M5 EN-2] 내포절 to be — 머리 앵커 비매치",
+      "marker": null
+    },
+    {
+      "text": "be the master? what does that mean",
+      "why": "[M5 EN-2] 인접 에코 의문(축ⓒ)",
+      "marker": "?"
+    },
+    {
+      "text": "he will take the master role",
+      "why": "[M5 EN-3] 3인칭 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "don't take the master role",
+      "why": "[M5 EN-3] 부정 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "you won't be the master",
+      "why": "[M5 EN-4] 부정 축약 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "you will not be the master",
+      "why": "[M5 EN-4] 부정 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "you'll be the master?",
+      "why": "[M5 EN-4] 인접 에코 의문(축ⓒ)",
+      "marker": "?"
+    },
+    {
+      "text": "you won't take the master role",
+      "why": "[M5 EN-5] 부정 축약 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "you'll take the master role?",
+      "why": "[M5 EN-5] 인접 에코 의문(축ⓒ)",
+      "marker": "?"
+    },
+    {
+      "text": "merge to master",
+      "why": "[M5 EN] git 지시 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "git push origin master",
+      "why": "[M5 EN] git 지시 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "master 브랜치로 머지해",
+      "why": "[M5 EN] 브랜치 지칭 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "master's degree",
+      "why": "[M5 EN] 학위 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "what does the master do?",
+      "why": "[M5 EN] 질문 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "I'll be the master",
+      "why": "[M5 EN] 1인칭 — 비매치",
+      "marker": null
+    },
+    {
+      "text": "네가 마스터 해 주지 마",
+      "why": "[M5 KO 금지 꼬리] 명령형 뒤 「주지 마」 — 억제(neg)",
+      "marker": "주지 마"
+    },
+    {
+      "text": "마스터 역할 맡아줘 말고 그냥 둬",
+      "why": "[M5 KO 금지 꼬리] 명령형 뒤 「말고」 — 억제(neg)",
+      "marker": "말고"
     }
   ]
 }

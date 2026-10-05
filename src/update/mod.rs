@@ -14,6 +14,7 @@ pub mod hold;
 pub mod journal;
 pub mod keys;
 pub mod lock;
+pub mod packgate;
 pub mod sched;
 pub mod url;
 pub mod win;

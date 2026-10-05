@@ -80,6 +80,14 @@ pub(crate) fn default_channel() -> String {
 /// 서명 파이프라인(bundle-prep.sh·release.yml)이 digest 기입을 시작한 뒤 이 epoch가 도래한다.
 pub const DIGEST_REQUIRED_EPOCH: i64 = 1_785_542_400;
 
+/// ★D23(1.1.8 · AUTO-UPDATE-118 §3-8 · 📌9 「팩 매니페스트 전체 cutover」): 이 시각(2026-11-01T00:00:00Z) **이후** 서명된
+/// manifest 는 `min_binary_version` 이 비었거나 파싱 불가면 서명 검증 단계에서 거부한다(수동 `pack-update` 포함).
+/// 종전 `version_gates` 는 빈 값 = 「제약 없음 = Apply」라 하한 없는 팩이 아무 바이너리에나 들어갔다(윈 참가자 PC 실측
+/// `min_binary_version = ""` · win-reply ④). 옛 서명본은 epoch 로 하위 호환(DIGEST_REQUIRED_EPOCH 와 같은 꼴).
+/// 서명 파이프라인 두 레인(release.yml `PACK_MIN_BINARY` · pack-release.yml 정책 파생)은 이미 값을 채운다 —
+/// 빈 값은 앱 번들에 동봉되는 **서명 없는** 사본(`scripts/bundle-prep.sh` 의 `cys pack-manifest` 인자 누락)뿐이다.
+pub const MIN_BINARY_REQUIRED_EPOCH: i64 = 1_793_491_200;
+
 /// 마지막으로 수용한 팩 기록(~/.cys/.pack-accepted.json) — replay 단조 게이트의 기준선.
 /// channel·pro_revision은 #[serde(default)] = 구 포맷 파일이 free/0으로 판독(v4 §3 마이그레이션
 /// 명세 — 미지 필드 무시·구 파일 하위호환).
@@ -193,6 +201,15 @@ pub fn verify_with_keyring(
             "digest 부재: signed_at {} >= cutover {DIGEST_REQUIRED_EPOCH} manifest는 \
              tar.gz digest 필수(하위호환 fail-open 차단)",
             m.signed_at
+        ));
+    }
+
+    // ⓒ'' D23 cutover — cutover 이후 서명본은 min_binary_version 필수·파싱 가능(빈 값 = 「제약 없음」 fail-open 차단).
+    if m.signed_at >= MIN_BINARY_REQUIRED_EPOCH && crate::pack::parse_semver(&m.min_binary_version).is_none() {
+        return Err(format!(
+            "min_binary_version 부재/파싱불가({:?}): signed_at {} >= cutover {MIN_BINARY_REQUIRED_EPOCH} manifest는 \
+             하한 필수(D23 · update.pack_min_binary_empty)",
+            m.min_binary_version, m.signed_at
         ));
     }
 
@@ -437,6 +454,39 @@ mod tests {
         assert!(!boot.not_after.is_empty(), "not_after 부재(fail-closed 위반)");
         // 부트스트랩 pubkey는 실제 minisign 공개키로 로드 가능해야 한다(형식 검증).
         load_public_key(&boot.pubkey).expect("부트스트랩 pubkey 로드 실패");
+    }
+
+    /// D23(AUTO-UPDATE-118 §3-8): cutover 이후 서명 + 빈·파싱 불가 min_binary = 거부 · 이전 서명본 = 하위 호환 · 값 있으면 통과.
+    #[test]
+    fn min_binary_required_after_d23_cutover() {
+        let (pk, sign) = gen_key_and_signer();
+        let kr = keyring_with("K", &pk, "2099-01-01T00:00:00Z", &[]);
+        let at = MIN_BINARY_REQUIRED_EPOCH + 10;
+        let mk = |mb: &str, signed_at: i64| {
+            serde_json::json!({"pack_version": "1.1.9", "min_binary_version": mb, "key_id": "K",
+                "signed_at": signed_at, "expires_at": signed_at + 100, "digest": "ab".repeat(32), "files": {}})
+            .to_string()
+            .into_bytes()
+        };
+        for (mb, ok) in [("", false), ("  ", false), ("abc", false), ("1.1.8", true)] {
+            let acc = tmp_accepted(&format!("d23-{}", mb.trim().len()));
+            let _ = std::fs::remove_file(&acc);
+            let m = mk(mb, at);
+            let r = verify_with_keyring(&m, sign(&m).as_bytes(), at + 1, &acc, &kr);
+            assert_eq!(r.is_ok(), ok, "{mb:?} → {r:?}");
+            if !ok {
+                assert!(r.unwrap_err().contains("D23"));
+            }
+        }
+        // cutover 이전 서명본 = 빈 값이어도 통과(하위 호환)
+        let acc = tmp_accepted("d23-old");
+        let _ = std::fs::remove_file(&acc);
+        let before = MIN_BINARY_REQUIRED_EPOCH - 1000;
+        let m = mk("", before);
+        verify_with_keyring(&m, sign(&m).as_bytes(), before + 1, &acc, &kr).expect("옛 서명본 하위 호환");
+        let _ = std::fs::remove_file(&acc);
+        // 키링 미변경 키 K 사용 — 시험 손잡이는 이 파일의 다른 시험과 같다.
+        let _ = DIGEST_REQUIRED_EPOCH;
     }
 
     /// 1.1.8 갱신 키 체계(AUTO-UPDATE-118 §4-1): 키링에 갱신 용도 키(`purpose` = root·release·feed·win-asset)가

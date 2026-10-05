@@ -112,6 +112,11 @@ def scenario(name):
             return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
         m.cys = fake_cys
+        # ★CI ubuntu-pack-suite 적색(287 발견 · master#4888ba40): A3 ps 축(_ps_table)이 **실 호스트 ps 표**를 읽어,
+        #   fake `cys list` 의 좌석 셸 pid=7 이 리눅스 러너에선 커널 스레드(kworker)로 잡혀 자손 claude 없음 → 'dead'
+        #   → S2~S5 VERIFIED_FRESH 불가(맥은 pid 7 이 표에 없어 'unknown' 이라 우연히 초록). 고정물을 결정론으로 —
+        #   좌석 셸 pid 7 아래 claude 자손 1(제품 코드 무변경).
+        m._ps_table = lambda: {7: (1, "-zsh"), 4242: (7, "node /opt/claude-code/cli.js --resume")}
         m.time.sleep = lambda seconds: sleeps.append(seconds)
         m._emit_evt = lambda *args, **kwargs: None  # production emitter shells out
         result = m.run_restore(socket_path, ticket=ticket, stub=False,

@@ -36,6 +36,30 @@ case "${OSTYPE:-}" in
     fi ;;
 esac
 
+# ★D4·D9-b(1.1.8 · 윈 실측 2026-10-05): 윈 Git Bash 에는 `python3` 가 없거나 Microsoft Store 별칭(WindowsApps · 실행하면
+#   스토어 안내 + rc 9009)뿐인 기계가 흔하다 — 이 도구의 `python3` 호출 50여 곳(heredoc 판정·등재 쓰기)이 그때 전부
+#   실패해 `cys-dept list` 조차 못 돌았다(CEO 가 부서를 독립 검증할 길 0). 윈 셸에서만 해석기를 한 번 정해 `python3`
+#   이름을 그쪽으로 돌린다(셸 함수 = PATH 보다 먼저 · 하위 `$( … )` 에도 상속). 순서 = 유효한 CYS_PY(데몬이 싣는
+#   동봉 python) → WindowsApps 밖의 python3·python·py → (그것뿐이면) WindowsApps 쪽. 맥·리눅스 = 무변경.
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    _cys_dept_py=""
+    if [ -n "${CYS_PY:-}" ] && { [ -x "${CYS_PY}" ] || command -v "${CYS_PY}" >/dev/null 2>&1; }; then
+      _cys_dept_py="$CYS_PY"
+    else
+      for _c in python3 python py; do
+        _p="$(command -v "$_c" 2>/dev/null)" || continue
+        case "$_p" in */WindowsApps/*|*\\WindowsApps\\*) [ -n "${_cys_dept_py_store:-}" ] || _cys_dept_py_store="$_p"; continue ;; esac
+        _cys_dept_py="$_p"; break
+      done
+      [ -n "$_cys_dept_py" ] || _cys_dept_py="${_cys_dept_py_store:-}"
+    fi
+    if [ -n "$_cys_dept_py" ]; then
+      export CYS_PY="$_cys_dept_py"
+      python3(){ "$_cys_dept_py" "$@"; }
+    fi ;;
+esac
+
 REG="${CYS_DEPTS_JSON:-$HOME/.cys/depts.json}"
 PACK_DEFAULT="$HOME/.cys/pack"
 # RC-6: 폴백 경로 가드 — command -v 우선(Windows는 RC-5 runtime PATH로 cysd.exe/cys.exe 해소).
@@ -1441,7 +1465,7 @@ seed_trust_acct(){
     return 0
   fi
   rc=0
-  out="$(env -u CYS_SOCKET python3 "$pf" --seed-trust --config "$acct" --cwd "$cwd" 2>&1)" || rc=$?
+  out="$(env -u CYS_SOCKET "${_cys_dept_py:-python3}" "$pf" --seed-trust --config "$acct" --cwd "$cwd" 2>&1)" || rc=$?
   if [ "$rc" = 0 ]; then
     echo "[cys-dept] ${out##*$'\n'}" >&2
   else
@@ -2035,7 +2059,7 @@ dept_issue_ceo_ticket(){
     echo "[cys-dept] $name 유효 CEO 티켓 기존재 — 재발급 생략(멱등·TTL 리셋 방지)" >&2
     return 0
   fi
-  if out="$(env -u CYS_SOCKET python3 "$bs" issue-ticket --dept "$name" 2>&1)"; then
+  if out="$(env -u CYS_SOCKET "${_cys_dept_py:-python3}" "$bs" issue-ticket --dept "$name" 2>&1)"; then
     if [ "$spawned" = "1" ]; then
       echo "[cys-dept] $name CEO 티켓 발급 완료 — 부서장이 뜨면 팀(cso·워커·리뷰어)이 자동 기동된다(24h TTL·1회성·소비는 부서장 부트)" >&2
     else
@@ -2751,7 +2775,7 @@ PY
       # ★계정 격리: 데몬을 CYS_ACCOUNT_DIR(fork dir)와 함께 spawn (create와 동형).
       if _cys_detach_ok; then
         # ★fatal-fix X-R4-1: 대화 승인 토큰 경로 — 호출자(대표의 Bash 도구) 프로세스 그룹 밖 새 세션에서 띄운다(pid 불변 exec).
-        CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" env -u CYS_ROLE -u CYS_SURFACE_ID -u CYS_SURFACE_REF -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE nohup python3 -c "$_CYS_SETSID_PY" "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &
+        CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" env -u CYS_ROLE -u CYS_SURFACE_ID -u CYS_SURFACE_REF -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE nohup "${_cys_dept_py:-python3}" -c "$_CYS_SETSID_PY" "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &
       else
       CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" env -u CYS_ROLE -u CYS_SURFACE_ID -u CYS_SURFACE_REF -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE nohup "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &
       fi

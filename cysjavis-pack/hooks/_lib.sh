@@ -276,7 +276,15 @@ cys_resolve_py() {
   if _cys_is_darwin; then
     CYS_PY="$(_cys_bundle_py || _cys_path_py_darwin || printf '%s' '')"
   else
-    CYS_PY="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || command -v py 2>/dev/null || printf '%s' '')"
+    # ★D9-b(1.1.8 · 윈 실측): WindowsApps 의 python3 는 Microsoft Store 별칭(실행 = 스토어 안내 + rc 9009)일 수 있다 —
+    #   그 밖의 후보(python3·python·py)를 먼저 쓰고, 그것뿐일 때만 별칭을 쓴다(셸 판정만 · 외부 실행 0).
+    CYS_PY=""; _cys_store=""
+    for _cys_c in python3 python py; do
+      _cys_p="$(command -v "$_cys_c" 2>/dev/null)" || continue
+      case "$_cys_p" in */WindowsApps/*|*\\WindowsApps\\*) [ -n "$_cys_store" ] || _cys_store="$_cys_p"; continue ;; esac
+      CYS_PY="$_cys_p"; break
+    done
+    [ -n "$CYS_PY" ] || CYS_PY="$_cys_store"
   fi
   _cys_py_avoid_shim   # 원작자 U15 판별(1.1.8 병합 · 우리 스텁 배제 뒤 이중 안전 — 셔임 아니면 무동작)
   export CYS_PY

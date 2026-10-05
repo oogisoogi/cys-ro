@@ -795,6 +795,14 @@ class RotatePostKillRegistryCorruption(Base):
                          "판독 불가를 '미등재'로 오판 — 판독 불가는 미등재가 아니다(K8)")
         self.assertIn("kill 이후이므로 재기동 진행(반파괴 차단)", err,
                       "kill 이후 진행 고지 부재(침묵한 강등 금지)")
+        # ⓓ(1.1.8 · master#83744f83 조건 1) stderr 는 호출자가 버릴 수 있다 — 부서 로그 폴더에 한 줄이 남는다(첫 관용 1회).
+        rdl = os.path.join(os.path.dirname(sock), "rotate-degraded.log")
+        self.assertTrue(os.path.exists(rdl), "목록 판독 실패 재기동의 파일 기록 부재(조용한 성공 금지)")
+        with open(rdl, encoding="utf-8") as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("d1 목록 판독 실패 상태로 재기동", lines[0])
+        self.assertIn("최종 rc 12", lines[0])
 
         # ⓒ 원본 바이트 보존 — 손상 파일에 아무것도 쓰이지 않는다.
         with open(self.env["CYS_DEPTS_JSON"], "rb") as f:

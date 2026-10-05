@@ -1645,7 +1645,8 @@ class TestChatHook(Base):
 
     def test_fable_m3_human_axis_without_dept_vocabulary(self):
         """M3: 부서·팀 낱말 없는 요청 턴에도 훅 생존 표지가 서서 human_axis 가 참이다(마스터 자기 확인 봉쇄)."""
-        self.assertFalse(self._python_ran("교안 준비 맡길 조직 하나 새로 꾸려 줘"))
+        # ★D16-M2/M3(1.1.8): 「조직」은 이제 부서 어휘다(안내 폭 넓힘) — 「어휘 없는 턴」 표본을 어휘 밖 문장으로 바꾼다(단언 불변).
+        self.assertFalse(self._python_ran("교안 준비 맡길 사람들 좀 모아 줘"))
         rc, o = self.propose("교안준비")
         self.assertTrue(self.req(o["request"]).get("human_axis"), "어휘 없는 턴에서 사람 확인 축이 꺼졌다")
         rc, o2 = self.run_cmd("confirm", o["request"])

@@ -256,6 +256,9 @@ pub fn routable(name: &str) -> bool {
                 | "context.threshold"
                 | "queue.starved"
                 | "queue.depth_high"
+                // (1.1.8 병합 · 우리 ⑧) 큐 WAL 보존 불가로 쓰기를 막았다는 버스 경보 — 우리 설계는 「오류 응답 대신 버스 경보」라
+                //   CSO 가 받아야 사람이 안다(state.rs unpreservable_queue_wal 시험).
+                | "queue.persist_blocked"
         )
         || name.starts_with("watchdog.")
         || name.starts_with(ALERT_ENGINE_PREFIX)

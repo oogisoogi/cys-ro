@@ -222,6 +222,48 @@ STATE_DIR = state_dir()
 # ★base 레인 boot-last(§0 산문·GUI·테스트가 읽는 역사적 경로) — 비-base 레인은 `lane_state_path`
 #   가 `boot-last-<lane>.json` 으로 분리한다(G15).
 BOOT_LAST = os.path.join(STATE_DIR, "boot-last.json")
+
+# ★D7(1.1.8 · 윈 실측 boot-last ①preflight detail 이 정확히 2000자 · `[FAIL]` 행 0 · WARN 3 만 남음): 단계 상세는
+#   끝 2000자만 남겼다 — preflight 는 FAIL 행이 앞쪽(검사 순서)에 찍히므로 꼬리 절단이 정확히 그것을 지웠다.
+#   이제 넘칠 때 **FAIL 행과 판정 줄은 절단에서 뺀다**(먼저 보존 · 그 몫 상한 6000자) + 종전 꼬리 2000자.
+DETAIL_TAIL_CAP = 2000
+DETAIL_KEEP_CAP = 6000
+_DETAIL_KEEP_LINE = re.compile(r"^\s*(\[FAIL\]|preflight(\[[^\]]*\])?:)")
+
+
+def _clip_detail(text, cap=DETAIL_TAIL_CAP, keep_cap=DETAIL_KEEP_CAP):
+    t = (text or "").strip()
+    if len(t) <= cap:
+        return t
+    keep = [ln for ln in t.splitlines() if _DETAIL_KEEP_LINE.match(ln)]
+    if not keep:
+        return t[-cap:]
+    kept = "\n".join(keep)
+    if len(kept) > keep_cap:
+        kept = kept[:keep_cap] + "…(보존 줄 %d자 상한)" % keep_cap
+    return "[절단 · FAIL·판정 줄 %d건 먼저 보존]\n%s\n…(중략 · 아래는 끝 %d자)…\n%s" % (len(keep), kept, cap, t[-cap:])
+
+
+def _preflight_outcome(code, out):
+    """★D8: preflight 비치명 실패를 결과 기록에 남길 판정 — (state, 판정 줄, FAIL 행 목록).
+    판정 줄 = 출력의 마지막 `preflight: …` 줄(요약 줄은 항상 마지막 줄 — preflight 계약)."""
+    lines = (out or "").splitlines()
+    verdict = next((ln.strip() for ln in reversed(lines) if ln.strip().startswith("preflight:")), None)
+    fails = [ln.strip()[:300] for ln in lines if ln.strip().startswith("[FAIL]")][:40]
+    state = "not_ready" if (verdict and "NOT READY" in verdict) else "error"
+    return state, verdict or ("preflight rc=%s · 판정 줄 없음(시간 초과·충돌 등)" % code), fails
+
+
+def _degraded_fields(data):
+    """★D8(1.1.8 · 윈 실측: preflight NOT READY(FAIL 4)인데 result = ok·completed·exit 0 → 부서가 「준비 안 됨」 상태로
+    running 보고 · [부서가동] 문구에도 없음): 종료 상태값(completed 등)과 exit 는 **바꾸지 않는다** — preflight 비치명은
+    의도된 계약(adv#1)이고 `completed_degraded` 는 러너(cys boot-run) 전용 값이라 이 스크립트가 내지 않는다(파리티 ·
+    상단 종료 계약). 대신 완료 결과·최종 JSON 에 `degraded`·`preflight` 를 **가산**해 소비자(부서 가동 보고)가 싣게 한다."""
+    st = data.get("preflight_state")
+    if st not in ("not_ready", "error"):
+        return {}
+    return {"degraded": ["preflight_%s" % st], "preflight": data.get("preflight_verdict"),
+            "preflight_fail_rows": data.get("preflight_fail_rows") or []}
 # ⑤ bounded retry — 무한 대기 금지(자원 거버넌스). env 오버라이드는 테스트 하네스 전용.
 # ★예산 확대(2026-07-15 적대검증 adv#4): 냉시작 claude는 모델 로드+MCP init로 30초 내
 # agent_alive/set-status ack가 안 나 check가 조기 실패(팀은 아직 뜨는 중)했다. 노드 기동은 비동기라
@@ -1211,7 +1253,7 @@ class _Log:
         ★측정 실패를 침묵시키지 않는다: 미등록 라벨·순서 역행을 레코드에 상태로 남기고 stderr 로도
           알린다(부트는 계속 — 진단 계측이 부트를 죽이면 안 된다).
         """
-        rec = {"step": name + suffix, "exit": code, "detail": detail.strip()[-2000:]}
+        rec = {"step": name + suffix, "exit": code, "detail": _clip_detail(detail)}
         idx = STEP_INDEX.get(name)
         if idx is None:
             rec["step_unregistered"] = True
@@ -1246,6 +1288,9 @@ class _Log:
         """
         if kw.get("ok") is True:
             (self.data.get("retry") or {}).pop(self.surface, None)
+            # ★D8: 정상 완주(completed·team_complete·solo_awakening)에 preflight 비치명 실패 표기를 가산한다 —
+            #   종료 상태값·exit 는 그대로(호출 줄 불변 · 골든 생산 호출부 핀 보존).
+            kw = dict(_degraded_fields(self.data), **kw)
         self.data["result"] = self._attributed(dict(kw))
         self._persist()
 
@@ -3148,6 +3193,8 @@ def _cmd_run_chain(log):
         code, out = _run([py, preflight, "--fix"], timeout=300)
         log.step(STEP.PREFLIGHT, code, out)
         if code != 0:
+            (log.data["preflight_state"], log.data["preflight_verdict"],
+             log.data["preflight_fail_rows"]) = _preflight_outcome(code, out)
             _progress("⚠ preflight 잔여 FAIL(비치명) — 팀 부팅 계속·진짜 게이트는 ⑤ check. 상세 boot-last.json")
     else:
         # ★(0.14.41 U4 C2 ④) rc 0 · 비치명 계약은 그대로다. 다만 boot-last 최종 요약의
@@ -3374,7 +3421,7 @@ def _cmd_run_chain(log):
                            "solo_awakening": False, "team_complete": True, "dept": dept,
                            "ticket_requested": False, "ticket_request_detail": deficit_why_now,
                            "steps": [(s["step"], s["exit"]) for s in log.data["steps"]],
-                           "lane": log.lane, "boot_last": log.path}
+                           "lane": log.lane, "boot_last": log.path, **_degraded_fields(log.data)}
                 log.result(ok=True, state="team_complete", solo_awakening=False,
                            team_complete=True, reason=deficit_why_now,
                            ticket_requested=False, exit=EXIT_OK)
@@ -3427,6 +3474,7 @@ def _cmd_run_chain(log):
                        "lane": log.lane, "boot_last": log.path}
             # ★A7 채널 보존: solo_awakening 은 **성공** 경로이므로 stdout 최종 JSON 을 유지한다
             #   (session-start 산문 계약 "완료 선언은 최종 JSON 인용 시에만"의 소비 대상).
+            summary.update(_degraded_fields(log.data))
             log.result(ok=True, state="solo_awakening", solo_awakening=True, reason=why,
                        ticket_requested=requested, exit=EXIT_OK)
             print(json.dumps(summary, ensure_ascii=False))
@@ -3717,7 +3765,7 @@ def _cmd_run_chain(log):
     # ⑧ 기계 요약 — master는 이 JSON을 인용해 '기동 완료'를 보고한다(다른 근거 인용 금지)
     summary = {"ok": True, "marker": marker_note, "hooks_effective": _hooks_effective(PACK),
                "steps": [(s["step"], s["exit"]) for s in log.data["steps"]],
-               "lane": log.lane, "boot_last": log.path}
+               "lane": log.lane, "boot_last": log.path, **_degraded_fields(log.data)}
     # ★A7 채널 보존: 완주는 stdout 최종 JSON(구 산문 계약의 유일한 인용 근거)이다.
     log.result(ok=True, state="completed", exit=EXIT_OK)
     print(json.dumps(summary, ensure_ascii=False))

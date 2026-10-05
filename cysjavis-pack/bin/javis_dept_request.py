@@ -1019,6 +1019,27 @@ FAIL_SAY = {
 }
 
 
+def dept_preflight_note(name, reg=None):
+    """★D8(1.1.8 · 윈 실측): 부서 부트의 자기 점검(preflight)이 「준비 안 됨」으로 끝나도 가동 보고에 그 사실이 없었다
+    (CEO 1차 보고 누락 → CSO 상신으로 보완). 부서 레인 boot-last 의 result.degraded(javis_bootstrap 가산 필드)를 읽어
+    한 문장을 덧붙인다. 못 읽으면 빈 문자열 — 근거 없이 「준비 안 됨」도 「정상」도 말하지 않는다."""
+    if not name:
+        return ""
+    try:
+        import javis_lane
+        sock = ((reg or {}).get(name) or {}).get("socket") or dept_sock(name)
+        with open(javis_lane.lane_state_path("boot_last", sock), encoding="utf-8") as f:
+            res = (json.load(f) or {}).get("result") or {}
+    except Exception:
+        return ""
+    if not isinstance(res, dict) or not res.get("degraded"):
+        return ""
+    m = re.search(r"FAIL (\d+)", str(res.get("preflight") or ""))
+    what = "준비 안 됨(점검 실패 %s건)" % m.group(1) if m else "준비 안 됨"
+    return (" 다만 부서 자기 점검(preflight)이 「%s」으로 끝났습니다 — 가동은 됐지만 일부 기능이 불완전할 수 있습니다. "
+            "부서장에게 「자기 점검 실패 항목을 고쳐 줘」라고 말씀하시면 됩니다." % what)
+
+
 def say_for(row, r, name, x, reg=None, cat=None):
     disp = (r or {}).get("display") or (display_of(name, (reg or {}).get(name), cat) if name else "?")
     if r and r.get("kind") == "close":
@@ -1074,6 +1095,7 @@ def say_for(row, r, name, x, reg=None, cat=None):
         s = ("「%s」이 가동 중입니다. 왼쪽 부서 화면에서 부서장에게 직접 말씀하셔도 됩니다." % disp)
         if x.get("P") == "unknown":
             s += " 부서 화면에 확인 창이 떠 있으면 안내대로 진행해 주십시오."
+        s += dept_preflight_note(name, reg)
         return s
     return "「%s」의 상태를 확인하지 못했습니다. 잠시 뒤 다시 여쭈어 주세요." % disp
 

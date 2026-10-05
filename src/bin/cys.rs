@@ -65,6 +65,14 @@ enum Command {
     },
     /// List surfaces
     List,
+    /// ★D5(1.1.8) 부서 상태 읽기 전용 조회 — 본부 pane 에서 부서 좌석·상태 폴더를 본다(기동·autostart 0 · 닫힌 부서 거절)
+    DeptStatus {
+        /// 부서 이름(depts.json 키 · 예: dept-1)
+        name: String,
+        /// JSON 한 줄로 출력
+        #[arg(long)]
+        json: bool,
+    },
     /// Inject text into a surface's stdin (no trailing newline; follow with send-key Return)
     Send {
         #[arg(long)]
@@ -5342,6 +5350,11 @@ fn run(command: Command) -> i32 {
                        "rows": rows, "cols": cols}),
             )
             .map(|r| println!("{}", r["surface_ref"].as_str().unwrap_or("?")))
+        }
+
+        Command::DeptStatus { name, json: as_json } => {
+            let code = run_dept_status(&name, as_json);
+            std::process::exit(code);
         }
 
         Command::List => request("surface.list", json!({})).map(|r| {
@@ -15365,6 +15378,83 @@ fn apply_seat_settings_arg(cmd: &mut String, role: &str, agent: &str) {
     match written {
         Ok(()) => cmd.push_str(&cys::seat_settings_arg(&path, cfg!(windows))),
         Err(e) => eprintln!("[launch-agent] 좌석 기동 설정 파일 쓰기 실패({}: {e}) — --settings 없이 기동(RC 감시는 유지)", path.display()),
+    }
+}
+
+/// ★D5(1.1.8 · 윈 결함 보고 D5) 부서 상태 읽기 전용 조회의 사전 판정(순수) — 이름 형식 · 레지스트리 상태.
+/// 닫힌 부서(레지스트리에 없음) = 거절(exit 3 · 조회가 기동·부활을 부르지 않게 — D21 과 같은 방향).
+/// 레지스트리 판독 불가 = 진행하되 경고(판정 불가는 닫힘의 근거가 아니다 — `DeptRegistration::Unknown` doc).
+fn dept_status_precheck(name: &str, reg: cys::DeptRegistration) -> Result<Option<String>, (i32, String)> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err((2, format!("부서 이름 형식이 아니다: {name:?}(영숫자·-·_ 만)")));
+    }
+    match reg {
+        cys::DeptRegistration::Deregistered => Err((
+            3,
+            format!("닫힌 부서다(depts.json 에 {name} 없음) — 조회만 하며 기동하지 않는다. 다시 열려면 cys-dept 의 명시 명령을 쓴다"),
+        )),
+        cys::DeptRegistration::Unknown => Ok(Some("부서 레지스트리(depts.json)를 읽지 못했다 — 등록 여부 미확인 상태로 조회만 한다".into())),
+        _ => Ok(None),
+    }
+}
+
+/// `cys dept-status <이름>` — 부서 소켓(레지스트리의 socket 칸 ‖ OS 규약 이름)으로 **autostart 없이** 접속해
+/// `surface.list` 만 읽는다. 종전 경로(`CYS_SOCKET=<부서> cys list`)는 연결 실패 시 autostart 를 시도해 레인↔팩 가드에
+/// 막혔고(윈 실측: 부서 데몬 live 인데 조회 불가), 본부의 CEO 가 부서 좌석을 스스로 확증할 길이 없었다.
+/// exit: 0 = 조회됨 · 2 = 형식/연결 실패(부서 데몬 미가동 포함) · 3 = 닫힌 부서.
+fn run_dept_status(name: &str, as_json: bool) -> i32 {
+    let reg_path = std::env::var("CYS_DEPTS_JSON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| cys::home_dir().join(".cys/depts.json"));
+    let reg: Option<Value> = std::fs::read_to_string(&reg_path)
+        .ok()
+        .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok());
+    let sock = reg
+        .as_ref()
+        .and_then(|r| r["depts"][name]["socket"].as_str().map(std::path::PathBuf::from))
+        .unwrap_or_else(|| cys::dept_socket_path(name));
+    let warn = match dept_status_precheck(name, cys::dept_registration(&sock)) {
+        Ok(w) => w,
+        Err((code, msg)) => {
+            eprintln!("error: {msg}");
+            return code;
+        }
+    };
+    if let Some(w) = &warn {
+        eprintln!("[dept-status] {w}");
+    }
+    let state_dir = cys::daemon_state_dir(&sock);
+    match request_on(&sock, "surface.list", json!({})) {
+        Ok(r) => {
+            let seats = r["surfaces"].as_array().cloned().unwrap_or_default();
+            if as_json {
+                println!(
+                    "{}",
+                    json!({"dept": name, "socket": sock.display().to_string(),
+                           "state_dir": state_dir.display().to_string(), "surfaces": seats})
+                );
+            } else {
+                println!("부서 {name} · 소켓 {} · 상태 폴더 {}", sock.display(), state_dir.display());
+                for s in &seats {
+                    println!(
+                        "{}\trole={}\texited={}\t{}",
+                        s["surface_ref"].as_str().unwrap_or("?"),
+                        s["role"].as_str().unwrap_or("-"),
+                        s["exited"].as_bool().unwrap_or(false),
+                        s["title"].as_str().unwrap_or("")
+                    );
+                }
+                println!("(좌석 {}개 · 읽기 전용 조회 · 기동 0)", seats.len());
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!(
+                "error: 부서 {name} 데몬에 연결하지 못했다({e}) — 조회는 기동하지 않는다(autostart 0). 상태 폴더 = {} · 기동은 cys-dept launch {name}",
+                state_dir.display()
+            );
+            2
+        }
     }
 }
 
@@ -46399,6 +46489,30 @@ mod team_token_cli_tests {
         let a = b_body.find("apply_seat_settings_arg(&mut cmd, role, agent)").expect("D25: 기동 설정 인자 배선 없음");
         let rl = b_body.find("render_launch(&cmd, &env_pairs)").unwrap();
         assert!(a < rl, "D25: 기동 설정 인자가 기동 줄 렌더 뒤");
+    }
+
+    /// ★D5(1.1.8) 부서 상태 조회 사전 판정 — 닫힌 부서 = exit 3 거절(기동 0) · 판독 불가 = 경고 뒤 조회 · 형식 오류 = 2.
+    #[test]
+    fn d5_dept_status_precheck_table() {
+        assert_eq!(dept_status_precheck("dept-1", cys::DeptRegistration::Registered), Ok(None));
+        assert_eq!(dept_status_precheck("dept-1", cys::DeptRegistration::Deregistered).unwrap_err().0, 3);
+        assert!(dept_status_precheck("dept-1", cys::DeptRegistration::Unknown).unwrap().is_some());
+        assert_eq!(dept_status_precheck("../x", cys::DeptRegistration::Registered).unwrap_err().0, 2);
+        assert_eq!(dept_status_precheck("", cys::DeptRegistration::Registered).unwrap_err().0, 2);
+        let c = Cli::try_parse_from(["cys", "dept-status", "dept-1", "--json"]).expect("dept-status 파싱");
+        assert!(matches!(c.command, Command::DeptStatus { ref name, json: true } if name == "dept-1"));
+    }
+
+    /// ★D5 연결 실패 = exit 2 · autostart 0(없는 부서 소켓으로 조회해도 데몬을 띄우지 않는다 — request_on 은 연결만 한다).
+    #[test]
+    fn d5_dept_status_connect_failure_never_autostarts() {
+        let src = include_str!("cys.rs");
+        let f = src.find("fn run_dept_status(").unwrap();
+        let body = &src[f..f + src[f..].find("\n}\n").unwrap()];
+        assert!(body.contains("request_on(&sock, \"surface.list\""), "읽기 전용 단일 RPC");
+        assert!(!body.contains("request(") || body.matches("request(").count() == body.matches("request_on(").count(),
+                "autostart 하는 request() 경로 금지");
+        assert!(!body.contains("ensure_daemon"), "기동 경로 호출 금지");
     }
 
     /// ★D25(1.1.8) 기동 인자 부착 제외 경로 — 비claude 어댑터·사용자 cmd 에 --settings 가 이미 있으면 cmd 바이트 무변경

@@ -11,7 +11,7 @@ const main = read("./main.ts");
 const html = read("../index.html");
 const css = read("./style.css");
 const modalSrc = read("./feedbackmodal.ts");
-const pureSrc = read("./feedback.ts");
+const pureSrc = read("./feedback_u6.ts"); // (1.1.8 병합 X17) 원작자 U6 순수 모듈은 feedback_u6.ts(우리 feedback.ts 와 이름 충돌 · 휴면)
 const guardSrc = read("./modalguard.ts");
 const flowSrc = read("./feedbackflow.ts");
 const mainRs = read("../../src-tauri/src/main.rs");
@@ -124,7 +124,21 @@ describe("② pane 드롭 리스너 첫 줄 가드", () => {
       .split("\n")
       .map((l) => l.trim())
       .find((l) => l.length > 0);
-    expect(firstStmt).toBe("if (feedbackOverlayOpen(document)) return;");
+    // (1.1.8 병합 X17 · U6 휴면) 원작자 가드는 원작자 작성 창(.feedback-overlay — 창 안 드롭 = 첨부)이 떠 있을 때의 오배달을 막는다.
+    //   우리 피드백 창(main.ts openFeedbackModal · 2단계)은 드롭 첨부가 없고 전체 덮개 .modal-overlay 를 쓴다 — 드롭 목적지는
+    //   paneAtPointStrict(elementFromPoint → closest(".pane"))만 쓰므로 덮개 위 드롭은 pane 에 닿지 않는다(같은 목적 · 우리 배선 기준).
+    expect(firstStmt).toBe("setOsDropTarget(undefined);");
+    const body = stripComments(main.slice(a, main.indexOf("\n  });\n", a)));
+    expect(body).toContain("const rt = paneAtPointStrict(p.position);");
+    expect(body.split("injectPathsToPane(").length - 1).toBe(1);
+    expect(body.indexOf("if (!rt) {")).toBeLessThan(body.indexOf("void injectPathsToPane(rt, paths);"));
+    const sa = main.indexOf("function paneAtPointStrict(");
+    expect(sa).toBeGreaterThan(0);
+    const strict = stripComments(main.slice(sa, main.indexOf("\n}\n", sa)));
+    expect(strict).toContain("document.elementFromPoint(css.x, css.y)");
+    expect(strict).toContain('closest(".pane")');
+    expect(/\.modal-overlay \{\s*position: fixed; inset: 0;/.test(css.replace(/\/\*[\s\S]*?\*\//g, ""))).toBe(true); // 덮개가 pane 을 가린다
+    expect(main).toContain('ov.className = "modal-overlay";'); // 우리 피드백 창도 그 덮개를 쓴다
   });
 });
 
@@ -206,7 +220,7 @@ describe("④ 피드백 창 수명 — 리스너는 finally 에서 반드시 걷
 
 describe("⑤ 새 모듈 위생", () => {
   const mods: [string, string][] = [
-    ["feedback.ts", pureSrc],
+    ["feedback_u6.ts", pureSrc],
     ["modalguard.ts", guardSrc],
     ["feedbackmodal.ts", modalSrc],
     ["feedbackflow.ts", flowSrc],
@@ -269,18 +283,40 @@ describe("⑤ 새 모듈 위생", () => {
   });
 });
 
+// (1.1.8 병합 X17·T2) src-tauri/src/feedback.rs = 우리 본체(2단계 업로드 · 등록된 명령) + 원작자 1단계 판 `pub mod u6_local_bundle { … }`(휴면 · 명령 미등록).
+//   원작자 단언(1단계 판의 계약)은 그 하위 모듈에 그대로 걸고, 우리 본체에는 같은 목적(등록 누락 0 · 윈도우 검은 창 0)을 우리 배선 기준으로 건다.
+const U6_HEAD = "pub mod u6_local_bundle {";
+const ourRsRaw = fbRs.slice(0, Math.max(0, fbRs.indexOf(U6_HEAD)));
+const u6RsRaw = fbRs.slice(Math.max(0, fbRs.indexOf(U6_HEAD)));
+const cmdsOf = (src: string): string[] => [...src.matchAll(/#\[tauri::command\]\s*(?:pub(?:\(crate\))? )?(?:async )?fn ([a-z_]+)/g)].map((m) => m[1]);
+
 describe("⑥ Rust 배선 — 등록·창 정책·전송 부재", () => {
-  const rs = stripComments(fbRs);
-  const cmdNames = [...fbRs.matchAll(/#\[tauri::command\]\s*(?:pub(?:\(crate\))? )?(?:async )?fn ([a-z_]+)/g)].map((m) => m[1]);
+  const rs = stripComments(u6RsRaw);
+  const cmdNames = cmdsOf(u6RsRaw);
   it("feedback.rs 의 모든 커맨드가 invoke_handler 에 등재된다(누락 = 런타임 'command not found')", () => {
+    expect(fbRs.includes(U6_HEAD)).toBe(true);
+    // 우리 본체(살아 있는 명령) — 전부 등재
+    const ours = cmdsOf(ourRsRaw);
+    expect(ours.length).toBeGreaterThan(5);
+    for (const n of ours) {
+      expect(n.startsWith("feedback_")).toBe(true);
+      expect(`${n}:${mainRs.includes(`feedback::${n},`)}`).toBe(`${n}:true`);
+    }
+    // 원작자 1단계 판(휴면 · T2) — 명령이 있어도 등재하지 않는다(이름 충돌 feedback_submit·feedback_discard 포함 · 배선은 박사님 게이트)
     expect(cmdNames.length).toBeGreaterThan(5);
     for (const n of cmdNames) {
       expect(n.startsWith("feedback_")).toBe(true);
-      expect(`${n}:${mainRs.includes(`feedback::${n},`)}`).toBe(`${n}:true`);
+      expect(`${n}:${mainRs.includes(`feedback::u6_local_bundle::${n}`)}`).toBe(`${n}:false`);
     }
     expect(/^mod feedback;/m.test(mainRs)).toBe(true);
   });
   it("자식 프로세스를 만드는 함수는 전부 창 정책(no_console)을 건다 — 윈도우 검은 창 0", () => {
+    // 우리 본체: 창 정책은 cys::SpawnPolicy(spawn_policy — Windows 콘솔 정책 포함) 경유 · 맥 전용 screencapture 는 윈도우에서 돌지 않는다(capture_supported 가 먼저 거른다).
+    for (const c of stripComments(ourRsRaw).split(/\n(?=(?:pub(?:\(crate\))? )?(?:async )?fn )/)) {
+      if (!c.includes("Command::new(")) continue;
+      const ok = c.includes("spawn_policy(") || (c.includes('Command::new("/usr/sbin/screencapture")') && c.includes("capture_supported()"));
+      expect(`${c.slice(0, 60)}:${ok}`).toBe(`${c.slice(0, 60)}:true`);
+    }
     const chunks = rs.split(/\n(?=(?:pub(?:\(crate\))? )?(?:async )?fn )/);
     let spawners = 0;
     for (const c of chunks) {
@@ -291,6 +327,7 @@ describe("⑥ Rust 배선 — 등록·창 정책·전송 부재", () => {
     }
     expect(spawners).toBeGreaterThan(0);
   });
+  // (1.1.8 병합) 이 단언은 원작자 1단계 판(u6_local_bundle) 에 건다 — 우리 본체는 2단계(서버 업로드 · cys-feedback-menu)라 전송이 설계다.
   it("서버 전송 없음(2단계 전까지) — curl·http·데몬 소켓 호출 0", () => {
     for (const bad of ['"curl"', "reqwest", "http://", "https://", "rpc_on(", "connect_to(", "send_text", "cmd.exe", '"cmd"', "rundll32"]) {
       expect(`${bad}:${rs.includes(bad)}`).toBe(`${bad}:false`);

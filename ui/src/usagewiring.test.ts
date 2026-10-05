@@ -321,10 +321,13 @@ describe("0.14.43 UI1 — 숨김 저장소(main.ts 만 · try/catch 안 · 값 �
     expect(code.includes("sanitizeHiddenKeys(JSON.parse(")).toBe(true);
     expect(fnBody("toggleUsageAcctHidden")).toContain("USAGE_HIDDEN_MAX");
   });
-  it("usageHidden 선언은 첫 최상위 renderUsageBar() 호출보다 앞(TDZ 면 renderUsageBar 가 catch 로 삼켜 패널이 빈 채로 남는다)", () => {
+  // (1.1.8 병합 U1 사이드바 미배선 · X9) 우리 판에는 원작자 사이드바 renderUsageBar 최상위 호출이 없다 — 숨김 목록을 읽는 최상위 배선은
+  //   Control Center 계정 표의 클릭 위임(ccAcctHost) 하나다. TDZ 방어의 목적(선언이 첫 최상위 사용보다 앞)을 그 배선 기준으로 단언한다.
+  it("usageHidden 선언은 첫 최상위 사용(CC 계정 표 클릭 위임)보다 앞(TDZ 면 그 배선이 던진다) · 사이드바 renderUsageBar 최상위 호출은 없다(U1 미배선)", () => {
     const decl = code.indexOf("let usageHidden:");
-    const firstTop = code.indexOf("\nrenderUsageBar();");
-    expect({ 선언: decl >= 0, 선언이_먼저: decl >= 0 && decl < firstTop }).toEqual({ 선언: true, 선언이_먼저: true });
+    const firstTop = code.indexOf('\nconst ccAcctHost = document.getElementById("cc-accounts");');
+    expect({ 선언: decl >= 0, 선언이_먼저: decl >= 0 && firstTop > 0 && decl < firstTop }).toEqual({ 선언: true, 선언이_먼저: true });
+    expect(code.includes("\nrenderUsageBar();")).toBe(false);
   });
   it("usagebar.ts 에는 저장소 접근 표면이 0 — 숨김 목록은 main.ts 가 읽어 인자로 넘긴다", () => {
     expect(read("./usagebar.ts").includes("localStorage")).toBe(false); // 주석 포함 원문 기준(티켓 문면: `localStorage` 문자열 0)
@@ -337,7 +340,8 @@ describe("0.14.43 UI1 — 숨김 저장소(main.ts 만 · try/catch 안 · 값 �
 describe("0.14.43 UI1 — Control Center Live 계정 섹션·KPI 배선", () => {
   it("KPI 후보는 순수 함수 kpiCandidates 로 거른다(숨김 목록 포함) — 계정을 직접 순회해 최댓값을 고르지 않는다", () => {
     const b = fnBody("ccAcctMax");
-    expect(b.includes("for (const a of kpiCandidates(ccAccounts, label, Date.now() / 1000, usageHidden)) {")).toBe(true);
+    // (1.1.8 합성) 후보 판정은 원작자 kpiCandidates · 창 판정은 우리(stale) — 행 타입에 stale 칸이 없어 any[] 로 읽는다
+    expect(b.includes("for (const a of kpiCandidates(ccAccounts, label, Date.now() / 1000, usageHidden) as any[]) {")).toBe(true);
     expect(/of ccAccounts\b/.test(b)).toBe(false);
   });
   it("후보가 없으면 null — renderLiveBody 는 null 을 종전 '없음' 경로(ccAggRate 폴백 → 0%)로 그린다(경로 불변 핀)", () => {
@@ -369,7 +373,8 @@ describe("0.14.43 UI1 — Control Center Live 계정 섹션·KPI 배선", () => 
   });
   it("행 흐림 — 오래된 관측(30분 초과·스냅샷)·숨긴 계정 → .dim", () => {
     const b = fnBody("renderAccounts");
-    expect(b.includes('class="cc-acct-row${old || hiddenNow ? " dim" : ""}"')).toBe(true);
+    // (1.1.8 합성) 우리 판은 창이 전부 죽은 계정의 .dead(데몬 stale 판정)를 앞에 함께 싣는다 — 흐림 조건(old || hiddenNow)은 그대로
+    expect(b.includes('class="cc-acct-row${allDead ? " dead" : ""}${old || hiddenNow ? " dim" : ""}"')).toBe(true);
   });
   it("숨기기/보이기 단추(.cc-acct-hide · data-acct-key) — 키는 ccEsc · 문구는 숨김 상태에 따라", () => {
     const b = fnBody("renderAccounts");
@@ -382,8 +387,11 @@ describe("0.14.43 UI1 — Control Center Live 계정 섹션·KPI 배선", () => 
     const i = code.indexOf('ccAcctHost.addEventListener("click"');
     expect(i).toBeGreaterThan(0);
     const h = code.slice(i, code.indexOf("\n  });", i));
-    for (const needle of ['.closest(".cc-acct-hide")', 'getAttribute("data-acct-key")', "toggleUsageAcctHidden(key);", "renderAccounts();", "renderUsageBar();", "void refreshControlCenter();"])
+    // (1.1.8 병합 X9 · master#36f48cf7 ⑤) 사이드바 사용량 패널(우리 wsusage)은 숨김을 보지 않는다 — 사이드바를 다시 그리는 호출(renderUsageBar)은 없다
+    for (const needle of ['.closest(".cc-acct-hide")', 'getAttribute("data-acct-key")', "toggleUsageAcctHidden(key);", "renderAccounts();", "void refreshControlCenter();"])
       expect({ 핸들러: needle, 있음: h.includes(needle) }).toEqual({ 핸들러: needle, 있음: true });
+    expect(h.includes("renderUsageBar(")).toBe(false);
+    expect(h.includes("renderSidebarUsage(")).toBe(false);
     expect(h.includes("refreshAccountsShared")).toBe(false); // 조회 호출 지점 핀(사이드바 틱·CC 두 곳뿐)을 건드리지 않는다
   });
   it("renderAccounts 의 데이터 보간은 ccEsc — 별명·이메일·키·source_error·plan 은 로컬 파일·IPC 에서 온다", () => {
@@ -452,13 +460,15 @@ describe("0.14.43 UI2 — Control Center KPI 전 좌석 폴백 배선(ccAggRate 
 
 // ═════════ 성찰 1회차 R1F-UB (S2 m-4 · m-1 ⓑ) — Control Center 계정 행의 문구·배지 배선 ═════════
 describe("R1F-UB(S2 m-4) — 숨기기 단추 툴팁은 사실대로 말한다(동작은 그대로 · 문구만)", () => {
-  const HIDE_TIP = "사이드바 사용량 패널과 위 KPI 의 계정 후보에서 이 계정을 뺍니다(계정 후보가 하나도 남지 않으면 KPI 는 좌석 값으로 표시됩니다)";
-  const SHOW_TIP = "사이드바 사용량 패널과 위 KPI 에 이 계정을 다시 넣습니다";
+  // (1.1.8 병합 X9 · master#36f48cf7 ⑤) 숨기기는 사이드바 패널(우리 wsusage)에 적용하지 않는다 — 툴팁은 실제로 바뀌는 곳(위 KPI)만 말한다(사실대로 · 목적 동일).
+  const HIDE_TIP = "위 KPI 의 계정 후보에서 이 계정을 뺍니다(계정 후보가 하나도 남지 않으면 KPI 는 좌석 값으로 표시됩니다)";
+  const SHOW_TIP = "위 KPI 에 이 계정을 다시 넣습니다";
   it("★숨기기 툴팁 전문 — 후보에서 뺀다는 것과 후보가 비면 좌석 값으로 간다는 것을 함께 적는다 · 옛 문구('위 KPI 에서 이 계정을 뺍니다')는 없다", () => {
     const b = fnBody("renderAccounts");
     expect(b.includes(`"${HIDE_TIP}"`)).toBe(true);
     expect(b.includes("위 KPI 에서 이 계정을 뺍니다")).toBe(false);
     expect(b.includes("이 표에는 흐리게 남습니다")).toBe(false);
+    expect(b.includes("사이드바 사용량 패널")).toBe(false); // X9 — 사이드바는 숨김과 무관하니 그렇게 말하지 않는다
   });
   it("보이기 툴팁은 종전 그대로 · 두 문구는 숨김 상태(hiddenNow)로 갈린다", () => {
     const b = fnBody("renderAccounts");

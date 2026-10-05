@@ -474,7 +474,10 @@ describe("배선 핀 — main.ts", () => {
     expect(ns(row).includes(ns("} else if (selfReport) {"))).toBe(false);
     expect(ns(row).includes(ns("const trust = selfReport"))).toBe(false);
     const tasks = ns(sliceBody("function renderTasks(", "\nfunction taskRow("));
-    expect(tasks.includes(ns("taskSeatIsWorking(s, taskSeatView(s, tNow, HOLLOW_GRACE_UI))"))).toBe(true);
+    // (1.1.8 병합 X6 = 겹침은 우리) 부서 머리의 「작업중」 계수는 우리 appearance.nodeWorking(낡은 자기보고 불신 · 단일 출처)을 쓴다 —
+    //   원작자 taskSeatIsWorking(taskSeatView) 는 CC 행에만. 「한 화면 두 규칙」 위험은 결정표 X6 에 기록돼 있다.
+    expect(tasks.includes(ns("surfaces.filter((s) => nodeWorking(s.status, s.idle_secs, s.exited)).length"))).toBe(true);
+    expect(tasks.includes("taskSeatIsWorking(")).toBe(false); // 한 머리에 두 판정이 섞이지 않는다
   });
   test("새 pane·입양 직후 신호를 1회 당겨 온다(회색 깜빡임 차단 · 리뷰1 #6)", () => {
     const ns1 = sliceBody("async function newSurface(", "\n}\n");

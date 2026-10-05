@@ -67,11 +67,11 @@ export function updatePlan(i: UpdateInputs): UpdatePlan {
     };
   }
   if (!i.binCheckFailed && !i.packCheckFailed) {
-    // ★U9(0.14.41 · 의도적 계약 변경): '0' → '✓'. 둥근 알약 '0'이 알림 개수로 읽혀 "숫자가 떠 있는데
-    // 눌러 보면 최신"의 한 뿌리가 됐다. '확인 전'(숨김/…)과 '확인됐고 0건'(✓)의 구별(2026-07-03 지시 목적)은 유지.
+    // (1.1.8 병합 X2 = 우리 업데이트 UX) 원작자 U9 '0' → '✓' 변경은 자동 병합으로 들어왔으나 받지 않는다 — 우리 배지 '0'
+    // (2026-07-03 지시: '확인 전'(숨김)과 '확인됐고 대기 0건'('0')의 구별) 그대로. 우리 updatebutton.test.ts 가 핀한다.
     return {
       kind: "none",
-      badge: "✓",
+      badge: "0",
       ok: true,
       title: "최신 버전 — 대기 중인 업데이트 없음",
       toastMsg: "",

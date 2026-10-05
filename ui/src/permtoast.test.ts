@@ -4,6 +4,7 @@
 // 남기고 있었다(ui/src/main.ts). 개칭 뒤에도 옛 문구가 조용히 재발하지 않게 핀으로 고정한다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
+import { PRIVACY_APP_NAME, permWarningToast } from "./folderaccess";
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
@@ -12,11 +13,22 @@ describe("TCC 폴더 접근 토스트", () => {
     expect(main).not.toContain("cys를 허용한 뒤");
   });
 
-  it("perm-warning 리스너가 'cysr을 허용한 뒤' 를 말한다", () => {
+  // (1.1.8 병합 X8 합성) 리스너 문구는 원작자 folderaccess.permWarningToast 로 옮겨 갔다 — 앱 이름은 PRIVACY_APP_NAME
+  // 한 곳(우리 브랜드 오버레이 "cysr"). 단언 목적(토스트 본문이 개칭 뒤 이름 cysr 을 말한다)은 그 출처에서 핀한다.
+  it("perm-warning 리스너가 'cysr' 을 허용 대상으로 말한다(permWarningToast · PRIVACY_APP_NAME)", () => {
     const idx = main.indexOf('listen("perm-warning"');
     expect(idx).toBeGreaterThan(-1);
     const block = main.slice(idx, main.indexOf("});", idx));
-    expect(block).toContain("cysr을 허용한 뒤 앱을 재시작하세요");
+    expect(block).toContain("showPermWarning(e.payload)");
+    const sp = main.indexOf("const showPermWarning = (payload: unknown): void => {");
+    expect(sp).toBeGreaterThan(-1);
+    expect(main.slice(sp, main.indexOf("\n  };\n", sp))).toContain("permWarningToast(((payload ?? {}) as { folder?: unknown }).folder)");
+    expect(PRIVACY_APP_NAME).toBe("cysr");
+    for (const folder of ["Desktop", "Documents", "Elsewhere"]) {
+      const t = permWarningToast(folder);
+      expect(t?.detail).toContain("「cysr」");
+      expect(t?.detail).not.toContain("「cys」");
+    }
   });
 });
 

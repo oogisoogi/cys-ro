@@ -176,8 +176,9 @@ describe("★R2F-UI(A3 m1) 코드가 아예 없는 payload(0.14.42 데몬) — �
     expect(starvedHumanNeeded("wait", "input_pending")).toBe(false);
     expect(starvedHumanNeeded("phantom_count", "busy")).toBe(true);
   });
-  it("접두 목록(STARVED_LEGACY_CALM_PREFIXES)은 정확히 9개 — 데몬 wait 7 + approval_pending + paused · 서로 겹치지 않는다(어느 접두도 다른 접두의 접두가 아니다)", () => {
-    expect([...STARVED_LEGACY_CALM_PREFIXES].sort()).toEqual(["approval_pending", "busy", "delivery_interval", "human_typing", "paused", "prompt_not_ready", "queue_paused", "quiescing", "settle"]);
+  // (1.1.8 병합) 데몬 REMEDY_WAIT_PREFIXES 가 우리 좌석 보류 사유 2종(seat_unknown·seat_no_agent · v115r3-d7)을 wait 로 더했다(governance.rs) — 목록도 따라간다(9 → 11).
+  it("접두 목록(STARVED_LEGACY_CALM_PREFIXES)은 정확히 11개 — 데몬 wait 9(원작자 7 + 우리 좌석 보류 2) + approval_pending + paused · 서로 겹치지 않는다(어느 접두도 다른 접두의 접두가 아니다)", () => {
+    expect([...STARVED_LEGACY_CALM_PREFIXES].sort()).toEqual(["approval_pending", "busy", "delivery_interval", "human_typing", "paused", "prompt_not_ready", "queue_paused", "quiescing", "seat_no_agent", "seat_unknown", "settle"]);
     for (const a of STARVED_LEGACY_CALM_PREFIXES) for (const b of STARVED_LEGACY_CALM_PREFIXES) if (a !== b) expect({ a, b, 겹침: b.startsWith(a) }).toEqual({ a, b, 겹침: false });
   });
   it("조치 문구·제목·id 는 종전 그대로다 — 사유가 calm 이어도 상세는 `막힘 사유: …` 이고 토스트는 뜬다(OS 배너만 없다)", () => {
@@ -743,8 +744,11 @@ describe("main.ts 배선 — 풀림(queue.delivered)·좌석 종료가 토스트
     const iExit = handler.indexOf('} else if (name === "surface.exited" || name === "surface.closed" || name === "surface.reaped") {');
     expect(iExit).toBeGreaterThan(0);
     const iDismiss = handler.indexOf("dismissStarvedToast(event.socket_slug, sid);", iExit);
-    const iGuard = handler.indexOf("if (event.socket_slug && !sock) return;", iExit);
-    const iRemove = handler.indexOf('removeDeadPane(Number(sid), sock, name !== "surface.closed" && !isClosingSid(Number(sid), sock));', iExit);
+    // (1.1.8 병합 X1 = 우리 배치 · cys-117-exitedpane-b1) 우리 분기의 조기 return 은 eventSock 판정(src.ok) · 제거는 src.socket —
+    // 원작자 앵커(sock 조기 return · isClosingSid 인자)를 우리 줄로 재조준(「거둠이 조기 return·제거보다 앞」 목적 그대로).
+    const iGuard = handler.indexOf("if (!src.ok) {", iExit);
+    const iRemove = handler.indexOf("removeDeadPane(Number(sid), src.socket);", iExit);
+    expect({ 조기_return: iGuard > iExit, 제거: iRemove > iExit }).toEqual({ 조기_return: true, 제거: true });
     expect({ 거둠: iDismiss > iExit, 조기_return_앞: iDismiss < iGuard, 제거_앞: iDismiss < iRemove }).toEqual({ 거둠: true, 조기_return_앞: true, 제거_앞: true });
   });
   it("dismissStarvedToast 는 starvednotice 가 정한 id 로 기존 dismissToast 를 부른다(id 모양의 진실원은 한 곳)", () => {

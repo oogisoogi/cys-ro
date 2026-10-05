@@ -470,10 +470,10 @@ describe("배선 핀 — main.ts · 승인 전환", () => {
 });
 
 describe("style.css", () => {
-  test("회색 '조회 불가' 배지·행 클래스", () => {
-    expect(/\.cc-alert-badge\.unknown\s*\{/.test(css)).toBe(true);
+  // (1.1.8 병합 X7 = 헤더 경보 배지 미표시(박사님 09-15) · 스트립 판정은 원작자) 우리에겐 헤더 배지가 없다 — '조회 불가'의
+  // 회색 표시는 스트립 행(.cc-alert-row.unknown)이 맡는다. 배지 규칙은 없어야 한다(우리 brandbadge.test 와 같은 사실).
+  test("회색 '조회 불가' 행 클래스(헤더 배지는 우리 결정으로 없음)", () => {
     expect(/\.cc-alert-row\.unknown\s*\{/.test(css)).toBe(true);
-    // [hidden] 짝 규칙은 이미 있다(보존 확인 — display 명시 셀렉터에 hidden 을 쓰는 규약).
-    expect(/\.cc-alert-badge\[hidden\]\s*\{\s*display:\s*none/.test(css)).toBe(true);
+    expect(css.includes(".cc-alert-badge")).toBe(false);
   });
 });

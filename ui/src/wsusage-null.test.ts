@@ -1,6 +1,7 @@
 // wsusage-null.test.ts — used_pct null(미관측)은 0% 게이지가 아니다(D4 #18 · 원본 = 115 디버그 하위조사 B agentB-tests) · TICKET=v116-ui-close-r2.
 import { expect, test } from "bun:test";
 import { accountRates, aggregateRates, scopedRates } from "./wsusage";
+import { aggSeatRates } from "./usagebar";
 
 const now = 1_000_000;
 test("accountRates: used_pct null 은 0% 행이 되면 안 된다(미관측 ≠ 0%)", () => {
@@ -52,8 +53,19 @@ test("창 머리 배지(renderUsage): 미관측 창을 걸러 낸 목록으로 �
   expect(f.includes("const rates = (u.rate ?? []).filter((w) => Number.isFinite(usedPctOf(w.used_pct)));")).toBe(true);
   expect(f.includes("for (const w of u.rate ?? [])")).toBe(false);
 });
+// (1.1.8 병합 X11 = 원작자 aggSeatRates · usagebar.ts) 문자열 핀을 새 출처로 옮긴다 — 목적(미관측 null 창은 합산 후보가 아니다)은
+// 실제 집계 함수에 null 창을 넣어 행동으로 단언한다.
 test("Control Center 합산(ccAggRate): 미관측 창은 후보가 아니다", () => {
-  expect(fnBody("function ccAggRate(").includes("if (!Number.isFinite(usedPctOf(w.used_pct))) continue;")).toBe(true);
+  expect(fnBody("function ccAggRate(").includes("return aggSeatRates(fleet, Date.now() / 1000);")).toBe(true);
+  const agg = aggSeatRates(
+    [
+      { usage: { rate: [{ label: "5h", used_pct: null, resets_at: null }, { label: "7d", used_pct: undefined, resets_at: null }] } },
+      { usage: { rate: [{ label: "5h", used_pct: 12, resets_at: null }] } },
+    ],
+    now,
+  );
+  expect(agg["5h"]).toEqual({ used: 12, reset: null }); // null 이 0% 후보로 끼지 않는다(관측값 12 그대로)
+  expect("7d" in agg).toBe(false); // 미관측만 있는 창은 행 자체가 없다(0% 행 금지)
 });
 test("Control Center 최고 사용 계정(ccAcctMax): usedPctOf 로 읽는다", () => {
   const f = fnBody("function ccAcctMax(");

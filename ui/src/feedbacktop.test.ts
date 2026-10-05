@@ -35,7 +35,11 @@ describe("피드백 단추 = 상단 메뉴바 맨 앞", () => {
   });
 
   it("크기를 줄이는 규칙 0 — 글자·여백은 상단 단추 공통(#topbar button)을 그대로 쓴다", () => {
-    const rules = [...css.matchAll(/([^{}]*#btn-feedback[^{}]*)\{([^}]*)\}/g)].map((m) => m[2]);
+    // (1.1.8 병합 X17) 원작자 휴면 사이드바 단추 규칙은 원작자 슬롯(#wsbar-feedback-slot — 우리 DOM 에 없음) 안으로 좁혔다 — 상단바 단추에 닿는 규칙만 센다.
+    const rules = [...css.matchAll(/([^{}]*#btn-feedback[^{}]*)\{([^}]*)\}/g)].filter((m) => !m[1].includes("#wsbar-feedback-slot")).map((m) => m[2]);
+    expect(html.includes('id="wsbar-feedback-slot"')).toBe(false); // 그 슬롯은 우리 화면에 없다(좁힌 규칙이 상단바에 닿을 길 0)
+    // 원작자 규칙이 슬롯 밖(맨 #btn-feedback)으로 새면 상단바 단추가 상단바 폭으로 늘어난다(width calc(100% - 16px)) — 맨 셀렉터 규칙 0
+    expect(/(^|[},])\s*#btn-feedback\s*[{:]/m.test(css.replace(/\/\*[\s\S]*?\*\//g, ""))).toBe(false);
     expect(rules.length).toBeGreaterThan(0); // 강조 규칙은 있다
     for (const r of rules) expect(/font-size|padding|font:|height|transform/.test(r)).toBe(false);
     expect(/#ws-feedback\s*\{/.test(css)).toBe(false); // 사이드바 시절 규칙(작은 회색 글자)은 지웠다

@@ -136,7 +136,8 @@ describe("deriveUpdateView — 대표 상태", () => {
     expect(v.badge.text).toBe("↻");
     expect(v.actions).toEqual(["pack-install", "bin-install"]);
     expect(v.silentToast?.title).toBe("↻ 무중단 팩 + 새 본체");
-    expect(v.silentToast?.msg).toContain("무중단 적용(재시작 없음)");
+    // (1.1.8 병합 X2 = 우리 updateplan 문안 · D4 #13 사람 말) 「종전 문구(updatePlan)」 = 우리 updatePlan 의 toastMsg — 우리 문안으로 단언.
+    expect(v.silentToast?.msg).toContain("재시작 없이 적용됩니다");
   });
 
   test("본체만 → ! · 본체 버튼만 · 팩 최신 행", () => {

@@ -471,19 +471,18 @@ describe("main.ts 배선 — 기동 pull(bundle_integrity 바로 뒤 · fire-and
 
   it("★확인 창 본문: 문단이 없으면 종전과 바이트 동일 · 있으면 맨 끝에 한 줄 띄우고 붙는다 · 설치를 막지 않는다(`if (!ok) return;` 그대로)", () => {
     const b = fnBody("promptBinaryPatch");
-    // 본문 조각이 그대로 있다 — 제목 · 맥 방법 절(종전 문장 그대로) · 윈도우 방법 절(R1F-UA) · 뒤 문장(종전 그대로)
+    // (1.1.8 병합 X2 = 우리 설치 확인 창 + J2/WU 이식) 본문 조각 = 우리 판 — 제목 · 맥 방법 절 · 뒤 문장. 윈도우 방법 절의 사실(drain 유무)은
+    //   결정표 X2 「사실 대조 필요」 — 그 단언은 아래 실행 검체 「R1F-UA(S3 note 14)」 가 적색으로 남겨 상신한다(여기서는 구조만 본다).
     for (const piece of [
-      "`새 본체 버전 ${v} — 패치 설치`",
-      '"저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 재시작합니다"',
-      '"다운로드·서명 검증 뒤 설치 프로그램을 실행합니다(이 앱은 닫히고, 설치가 끝나면 다시 시작됩니다)"',
-      "`새 본체(앱) ${v}을 패치 방식으로 설치합니다: ${how}. ` +",
-      "`부서·노드는 재시작 후 자동 복원됩니다(대화 기억 포함). 마지막 미저장분은 손실될 수 ` +",
-      "`있습니다.\\n\\n지금 설치하시겠습니까? (수동 설치는 홈페이지 www.cysinsight.com)` +",
+      "`새 앱 ${v} 설치`",
+      "`받은 파일이 진짜인지 확인한 뒤 앱을 바꿉니다. 바꾸기가 끝나면 다시 켤지 한 번 더 여쭙고, ` +",
+      "`새 앱 ${v} 을 설치합니다. ${tail}` +",
+      "`\\n\\n지금 설치하시겠습니까?\\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr` +",
     ])
       expect({ 조각: piece, 있음: b.includes(piece) }).toEqual({ 조각: piece, 있음: true });
-    // OS 판정은 이 파일이 이미 쓰는 IS_WINDOWS 다 — 새 판정 방법을 만들지 않았다
-    expect(b.includes("const how = IS_WINDOWS")).toBe(true);
-    expect(/const IS_WINDOWS = \/Windows\/i\.test\(navigator\.userAgent\);/.test(code)).toBe(true);
+    // OS 판정은 이 파일이 이미 쓰는 IS_MACOS 다(우리 B7·B15 — 맥과 윈의 마지막 한 걸음) — 새 판정 방법을 만들지 않았다
+    expect(b.includes("const tail = IS_MACOS")).toBe(true);
+    expect(/const IS_MACOS = isMacUserAgent\(navigator\.userAgent\);/.test(code)).toBe(true);
     // 덧붙임 식: 실제 소스 조각을 꺼내 실행해 두 경우를 잰다(문자열 핀을 우회하는 변형 차단)
     const a = b.indexOf("(sacNote ? ");
     expect(a).toBeGreaterThan(0);
@@ -729,7 +728,16 @@ describe("main.ts 실행 — pullUpdateAttemptReport 를 대역 위에서 돌린
 });
 
 describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 위에서 돌린다(본문 바이트 동일 · 조회 실패·초과에도 창은 열린다)", () => {
-  /** 이 변경 전의 확인 창 본문(리터럴) — '문단이 없으면 종전과 바이트 동일'의 기준(맥·리눅스). */
+  // (1.1.8 병합 X2 = 우리 설치 확인 창 + J2/WU 이식) 이 실행 검체는 **우리 판** promptBinaryPatch 본문을 돈다 — 기준 본문·제목·실패 토스트·재확인 경로를 우리 것으로.
+  //   원작자 R1F-UA(S3 note 8) 재진입 표식(promptBinaryPatchBusy · notifyBinaryPatchBusy)과 윈도우 방법 절(S3 note 14)은 우리 판에 없다 — 그 검체들은 적색으로 남겨 상신한다(결정 필요).
+  const OUR_TITLE = (v: string): string => `새 앱 ${v} 설치`;
+  /** 우리 판 확인 창 본문(맥 — IS_MACOS) — '문단이 없으면 종전과 바이트 동일'의 기준. */
+  const OUR_BODY = (v: string): string =>
+    `새 앱 ${v} 을 설치합니다. 받은 파일이 진짜인지 확인한 뒤 앱을 바꿉니다. 바꾸기가 끝나면 다시 켤지 한 번 더 여쭙고, ` +
+    `다시 켜면 부서와 창, 대화가 돌아옵니다.\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr`;
+  /** 우리 판 설치 실패(그 꼴이 아닌 오류) 토스트 — D4#14 사람 말 본문 + 원문 칸. */
+  const OUR_FAIL_TOAST = (raw: string): unknown[] => ["health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, raw];
+  /** 원작자 판 확인 창 본문(리터럴 · 참고용 — 우리 판에는 없다) — '문단이 없으면 종전과 바이트 동일'의 기준(맥·리눅스). */
   const BASE_BODY = (v: string): string =>
     `새 본체(앱) ${v}을 패치 방식으로 설치합니다: 저장(drain) 신호 후 다운로드·서명 검증·교체하고 앱을 ` +
     `재시작합니다. 부서·노드는 재시작 후 자동 복원됩니다(대화 기억 포함). 마지막 미저장분은 손실될 수 ` +
@@ -783,19 +791,25 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     };
     const deps = {
       daemonActionBlocked: (): boolean => !!o.blocked,
-      binActionable: (): { version: string } | null => (o.noBin ? null : { version: "0.14.43" }),
-      updState: {},
-      openUpdatePanel: (): void => {
-        calls.push("openUpdatePanel");
+      // (1.1.8 병합 · 우리 판 자유 변수) 설치할 본체 = updateAvailable · 없으면 checkForUpdate(false) 로 다시 확인 · 맥/윈 판정 = IS_MACOS(윈 = false)
+      updateAvailable: o.noBin ? null : { version: "0.14.43" },
+      checkForUpdate: async (silent: boolean): Promise<void> => {
+        calls.push(`checkForUpdate:${String(silent)}`);
       },
-      refreshUpdateState: async (): Promise<void> => {
-        calls.push("refreshUpdateState");
+      IS_MACOS: !o.isWindows,
+      // 우리 판 진행 중 표식(설치 호출 동안만 · 모듈 수준 let 의 대역) · 그 안내 문안
+      installingUpdate: false,
+      INSTALL_BUSY_NAME: "새 앱 받는 중",
+      INSTALL_BUSY_DETAIL: "새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요.",
+      // 원작자 판 재진입 표식의 자리(우리 판 본문은 이 이름을 쓰지 않는다 — R1F-UA(S3 note 8) 재진입 검체가 적색으로 남아 상신되는 자리 · 타입 검사용 선언)
+      promptBinaryPatchBusy: undefined as boolean | undefined,
+      restartPendingVersion: null,
+      restartAfterUpdate: (v: string): void => {
+        calls.push(`restartAfterUpdate:${v}`);
       },
-      // ★R1F-UA: 새 자유 변수 — OS 판정(IS_WINDOWS)과 진행 중 표식(모듈 수준 let 의 대역 · 함수가 이 속성을 올리고 내린다)
-      IS_WINDOWS: !!o.isWindows,
-      promptBinaryPatchBusy: false,
       invoke: (cmd: string, args?: unknown): Promise<unknown> => {
         invokes.push([cmd, args]);
+        if (cmd === "app_version") return Promise.resolve("0.14.42"); // 우리 판은 현재 버전을 이 조회로 읽는다(원작자 판 = updAppVersion 캐시)
         if (cmd === "smart_app_control") {
           if (o.sacHangs) return never(); // 영영 안 끝나는 조회
           if (o.sacDeferred) return new Promise<unknown>((res) => (gates.sac = res));
@@ -843,12 +857,7 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     const strip: [string, string] = ["let sacNote: string | null = null;", "let sacNote = null;"];
     expect({ 걷을_표기: strip[0], 존재: js.includes(strip[0]) }).toEqual({ 걷을_표기: strip[0], 존재: true });
     js = js.replace(strip[0], strip[1]);
-    // ★R2F-UI(A3 m4): 이미 진행 중일 때 부르는 안내 함수도 **실제 본문**을 같은 범위에 연다(대역이 아니다 — toast 는 아래 deps 의 기록기다)
-    let busyFn = fnBodyOf("notifyBinaryPatchBusy") + "\n}";
-    const busyType = "function notifyBinaryPatchBusy(): void {";
-    expect({ 걷을_표기: busyType, 존재: busyFn.includes(busyType) }).toEqual({ 걷을_표기: busyType, 존재: true });
-    busyFn = busyFn.replace(busyType, "function notifyBinaryPatchBusy() {");
-    js = `${busyFn}\n${js}`;
+    // (1.1.8 병합) 원작자 판의 안내 함수 notifyBinaryPatchBusy 는 우리 판에 없다(우리 = INSTALL_BUSY 토스트 · 설치 호출 동안만) — 함께 열지 않는다.
     const fn = new Function("deps", `with (deps) {\n${js}\nreturn promptBinaryPatch;\n}`)(deps) as () => Promise<void>;
     return { fn, deps, calls, modal, invokes, toasts, dismissed, caps, stickies, gates };
   }
@@ -862,8 +871,8 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
   it("★켜짐(on): 확인 창 본문 맨 끝에 한 줄 띄우고 문단이 붙는다 — 제목·확인 라벨은 그대로 · 두 조회(스마트 앱 컨트롤 → 확인 실행 노브) 모두 상한은 T_SAC", async () => {
     const r = await runPrompt({ sac: "on" });
     expect(r.modal.length).toBe(1);
-    expect(r.modal[0]).toEqual(["새 본체 버전 0.14.43 — 패치 설치", BASE_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT, "설치"]);
-    expect(r.modal[0]?.[1]).toBe(BASE_BODY("0.14.43") + "\n\n" + sacPreflightText("on"));
+    expect(r.modal[0]).toEqual([OUR_TITLE("0.14.43"), OUR_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT, "설치"]);
+    expect(r.modal[0]?.[1]).toBe(OUR_BODY("0.14.43") + "\n\n" + sacPreflightText("on"));
     expect(r.caps).toEqual([4242, 4242]);
     expect(r.invokes[0]).toEqual(["smart_app_control", undefined]);
     expect(r.invokes[1]).toEqual(["update_checked_launch_enabled", undefined]);
@@ -875,8 +884,8 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
   it("★켜짐이 아니면(off·eval·null·모르는 값·문자열 아님) 본문은 종전과 바이트 동일 · 확인 실행 노브는 묻지도 않는다", async () => {
     for (const sac of ["off", "eval", null, undefined, "", "weird", "ON", 1, true, { on: true }]) {
       const r = await runPrompt({ sac });
-      expect({ sac, 본문: r.modal[0]?.[1] }).toEqual({ sac, 본문: BASE_BODY("0.14.43") });
-      expect(r.modal[0]?.[0]).toBe("새 본체 버전 0.14.43 — 패치 설치");
+      expect({ sac, 본문: r.modal[0]?.[1] }).toEqual({ sac, 본문: OUR_BODY("0.14.43") });
+      expect(r.modal[0]?.[0]).toBe(OUR_TITLE("0.14.43"));
       expect(r.modal[0]?.[2]).toBe("설치");
       expect({ sac, 호출: cmds(r) }).toEqual({ sac, 호출: ["smart_app_control", "install_update"] });
       expect(r.caps).toEqual([4242]);
@@ -887,7 +896,7 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     for (const o of [{ sacRejects: true }, { sacHangs: true }] as Opts[]) {
       const r = await runPrompt(o);
       expect(r.modal.length).toBe(1);
-      expect(r.modal[0]?.[1]).toBe(BASE_BODY("0.14.43"));
+      expect(r.modal[0]?.[1]).toBe(OUR_BODY("0.14.43"));
       expect(r.caps).toEqual([4242]); // 상한(rpcT) 아래에서 불렀다 — 실패한 조회 뒤에는 노브를 묻지 않는다
       expect(cmds(r)).toEqual(["smart_app_control", "install_update"]);
       expect(r.invokes[r.invokes.length - 1]).toEqual(["install_update", { force: true }]); // 사용자가 확인하면 설치는 진행
@@ -896,18 +905,18 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
 
   it("★R1F-UA(가)/(나) 선택: 확인 실행이 꺼져 있다고 답하면(정확히 false) (나) · 켜져 있다·모르는 응답·거부·상한 초과는 전부 (가)(= 켜짐으로 본다)", async () => {
     const off = await runPrompt({ sac: "on", checked: false });
-    expect(off.modal[0]?.[1]).toBe(BASE_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT_UNCHECKED);
+    expect(off.modal[0]?.[1]).toBe(OUR_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT_UNCHECKED);
     expect(off.modal.length).toBe(1);
     expect(off.caps).toEqual([4242, 4242]);
     for (const checked of [true, null, undefined, "false", 0, "", { enabled: false }, []]) {
       const r = await runPrompt({ sac: "on", checked });
-      expect({ checked, 본문: r.modal[0]?.[1] }).toEqual({ checked, 본문: BASE_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT });
+      expect({ checked, 본문: r.modal[0]?.[1] }).toEqual({ checked, 본문: OUR_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT });
     }
     // 조회 실패·시간 초과: 문단 자체를 없애지 않고 기본값(켜짐) 판 — 창은 열리고 설치는 진행된다
     for (const o of [{ checkedRejects: true }, { checkedHangs: true }] as Opts[]) {
       const r = await runPrompt({ sac: "on", ...o });
       expect(r.modal.length).toBe(1);
-      expect(r.modal[0]?.[1]).toBe(BASE_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT);
+      expect(r.modal[0]?.[1]).toBe(OUR_BODY("0.14.43") + "\n\n" + SAC_PREFLIGHT);
       expect(r.caps).toEqual([4242, 4242]); // 둘 다 같은 상한 아래에서 불렀다
       expect(r.invokes[r.invokes.length - 1]).toEqual(["install_update", { force: true }]);
     }
@@ -940,21 +949,23 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     expect(cmds(r)).toEqual(["smart_app_control", "update_checked_launch_enabled"]);
   });
 
-  it("데몬 작업 차단 중이면 아무것도 하지 않고 · 설치할 본체가 없으면 패널을 열 뿐 조회도 창도 없다(종전 거동)", async () => {
+  // (1.1.8 병합 X2) 우리 판: 설치할 본체가 없으면 업데이트 패널(원작자 U9) 대신 다시 확인(checkForUpdate(false) — 확인 결과를 사람에게 보인다).
+  it("데몬 작업 차단 중이면 아무것도 하지 않고 · 설치할 본체가 없으면 다시 확인할 뿐 조회도 창도 없다(종전 거동)", async () => {
     const b = await runPrompt({ blocked: true, sac: "on" });
-    expect({ 호출: b.invokes.length, 창: b.modal.length }).toEqual({ 호출: 0, 창: 0 });
+    expect({ 호출: b.invokes.length, 창: b.modal.length, 확인: b.calls }).toEqual({ 호출: 0, 창: 0, 확인: [] });
     const n = await runPrompt({ noBin: true, sac: "on" });
     expect({ 호출: n.invokes.length, 창: n.modal.length, 패널: n.calls }).toEqual({
       호출: 0,
       창: 0,
-      패널: ["openUpdatePanel", "refreshUpdateState"],
+      패널: ["checkForUpdate:false"],
     });
   });
 
-  it("설치 호출이 실패하면 종전처럼 진행 토스트를 내리고 '패치 설치 실패' 토스트를 낸다", async () => {
+  // (1.1.8 병합 X2·D4#14) 우리 판 실패 토스트 = 「앱 업데이트 설치 실패」 + 사람 말 본문 + 원문 칸(String(e)).
+  it("설치 호출이 실패하면 종전처럼 진행 토스트를 내리고 '앱 업데이트 설치 실패' 토스트를 낸다(원문은 「자세히」 칸)", async () => {
     const r = await runPrompt({ sac: "off", installRejects: true });
     expect(r.dismissed).toEqual(["upd-bin"]);
-    expect(r.toasts).toEqual([["health", "패치 설치 실패", "install boom"]]);
+    expect(r.toasts).toEqual([OUR_FAIL_TOAST("install boom")]);
     expect(r.stickies).toEqual([]); // 종전 오류에는 지속 알림이 없다(WU 는 그 꼴일 때만)
   });
 
@@ -1030,10 +1041,11 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
       ["4551 차단", { sac: "on", installError: "installer_launch_failed:4551:5" }],
       ["설치 성공", { sac: "off" }],
     ];
+    // (1.1.8 병합) 우리 판의 표식 = installingUpdate(설치 호출 동안) — 어떤 갈래로 끝나도 내려가는 계약은 같다.
     for (const [label, o] of cases) {
       const h = makePrompt(o);
       await h.fn();
-      expect({ label, 표식: h.deps.promptBinaryPatchBusy }).toEqual({ label, 표식: false });
+      expect({ label, 표식: h.deps.installingUpdate }).toEqual({ label, 표식: false });
     }
     // 확인 창이 던져도(예외) 표식은 내려가고 예외는 삼키지 않는다 — 다시 불러도 열린다(표식이 남아 있지 않다)
     const t = makePrompt({ sac: "off", modalThrows: true });
@@ -1046,7 +1058,7 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
       }
     };
     expect(await thrown()).toBe("modal boom");
-    expect(t.deps.promptBinaryPatchBusy).toBe(false);
+    expect(t.deps.installingUpdate).toBe(false);
     expect(await thrown()).toBe("modal boom");
     expect(t.modal.length).toBe(2);
   });
@@ -1064,10 +1076,10 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     expect(title).toBe("설치 파일 실행이 차단되었습니다");
     expect(body).toBe(installerLaunchFailure("installer_launch_failed:4551:5", "0.14.42", "0.14.43")?.body ?? "(문구 없음)");
     expect(body.includes("새 버전(0.14.43)")).toBe(true); // 새 버전 = 확인 창이 보인 버전(ba.version)
-    expect(body.includes("지금 버전(0.14.42)")).toBe(true); // 현재 버전 = updAppVersion
+    expect(body.includes("지금 버전(0.14.42)")).toBe(true); // 현재 버전 = 우리 판 app_version 조회(원작자 판 = updAppVersion)
     expect(body.includes("닫히지 않았습니다")).toBe(true);
-    // 설치 요청은 한 번만 갔고(재시도 없음) 앱 종료를 흉내 내는 호출도 없다
-    expect(cmds(r)).toEqual(["smart_app_control", "update_checked_launch_enabled", "install_update"]);
+    // 설치 요청은 한 번만 갔고(재시도 없음) 앱 종료를 흉내 내는 호출도 없다 — (1.1.8 병합) 우리 판은 현재 버전을 app_version 조회로 읽는다(읽기 전용)
+    expect(cmds(r)).toEqual(["smart_app_control", "update_checked_launch_enabled", "install_update", "app_version"]);
   });
 
   it("★다른 코드도 사람 말 지속 알림(5 · 2 · 225 · 1223 · 그 밖) — 종전 토스트는 없다", async () => {
@@ -1083,7 +1095,7 @@ describe("main.ts 실행 — promptBinaryPatch 의 설치 전 고지를 대역 �
     for (const e of ["live_sessions:2", "Network error: timeout", "signature verification failed", "no update available", "installer_launch_failed:4551", new Error("installer_launch_failed:4551:5"), ""]) {
       const r = await runPrompt({ sac: "off", installError: e });
       const raw = String(e);
-      expect({ e: raw, 지속: r.stickies.length, 토스트: r.toasts }).toEqual({ e: raw, 지속: 0, 토스트: [["health", "패치 설치 실패", raw]] });
+      expect({ e: raw, 지속: r.stickies.length, 토스트: r.toasts }).toEqual({ e: raw, 지속: 0, 토스트: [OUR_FAIL_TOAST(raw)] });
       expect(r.dismissed).toEqual(["upd-bin"]);
     }
   });
@@ -1345,17 +1357,19 @@ describe("main.ts 배선(WU) — promptBinaryPatch 의 catch 한 곳", () => {
     expect(catchAt).toBeGreaterThan(body.indexOf('await invoke("install_update", { force: true });'));
     const c = body.slice(catchAt);
     const dismiss = c.indexOf('dismissToast("upd-bin");');
-    const call = c.indexOf("installerLaunchFailure(String(e), updAppVersion, v)");
+    // (1.1.8 병합 X2·D4#14) 우리 판: 현재 버전 = app_version 조회(cur) · 그 꼴이 아닌 오류 = 사람 말 토스트 + 원문 칸
+    const call = c.indexOf("installerLaunchFailure(String(e), cur, v)");
+    expect(c.indexOf('const cur = String((await invoke("app_version").catch(() => "")) ?? "");')).toBeGreaterThan(c.indexOf('dismissToast("upd-bin");'));
     const sticky = c.indexOf('stickyToast(INSTALLER_LAUNCH_FAILED_TOAST_ID, "health", lf.title, lf.body)');
-    const legacy = c.indexOf('toast("health", "패치 설치 실패", String(e))');
+    const legacy = c.indexOf('toast("health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, String(e))');
     expect(dismiss).toBeGreaterThanOrEqual(0);
     expect(call).toBeGreaterThan(dismiss);
     expect(sticky).toBeGreaterThan(call);
     expect(legacy).toBeGreaterThan(sticky);
     expect(c.includes("if (lf) stickyToast(")).toBe(true);
     expect(/else\s+toast\(/.test(c)).toBe(true);
-    // 현재 버전은 확인 창이 쓰는 캐시(updAppVersion), 새 버전은 확인 창이 보인 값(v)
-    expect(body.includes("const v = ba.version;")).toBe(true);
+    // 새 버전은 확인 창이 보인 값(v — 우리 판 updateAvailable.version)
+    expect(body.includes("const v = updateAvailable.version;")).toBe(true);
     expect(c.includes("innerHTML")).toBe(false);
   });
 
@@ -1369,7 +1383,8 @@ describe("main.ts 배선(WU) — promptBinaryPatch 의 catch 한 곳", () => {
 
   it("자동 테스트 경로(install_update 호출 둘째 곳)는 건드리지 않았다 — 종전 catch 그대로", () => {
     expect(count(code, 'invoke("install_update"')).toBe(2);
-    expect(code.includes('toast("health", "자동 테스트 패치 실패", String(e));')).toBe(true);
+    // (1.1.8 병합 D4#14) 우리 판 자동 테스트 경로 문구 = 사람 말 본문 + 원문 칸
+    expect(code.includes('toast("health", "자동 테스트 패치 실패", "시험용 자동 설치를 마치지 못했습니다.", undefined, String(e));')).toBe(true);
   });
 });
 

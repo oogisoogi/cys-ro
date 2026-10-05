@@ -56,7 +56,7 @@ export const STARVED_CALM_CODES: readonly string[] = ["approval", "paused", "wai
  * ★(성찰 2회차 R2F-UI · A3 m1) 구버전 데몬(0.14.42 — payload 에 `remedy_code` 가 **아예 없다**)의 막힘 사유(`blocked_by`) 가운데 **스스로 풀리거나 사람 조치가 아닌** 것의 접두.
  * 코드가 없던 시절에는 모든 막힘이 '모르면 알린다'로 OS 배너까지 나가, 업데이트 직후 세션을 살려 둔 사용자가 워커가 10분 넘게 일할 때마다(좌석당 5분 간격) 배너를 받았다 —
  * 새 데몬은 같은 사유를 calm 코드(wait·approval·paused)로 내 배너를 내지 않는다. 이 접두에 걸리면 토스트만 낸다(새 데몬의 calm 3종과 같은 뜻).
- * 구성 = 데몬 `REMEDY_WAIT_PREFIXES`(wait 7종 — busy·delivery_interval·settle·quiescing·prompt_not_ready·human_typing·queue_paused) + `approval_pending`(approval) + `paused`(일시정지 — kill-switch 동결).
+ * 구성 = 데몬 `REMEDY_WAIT_PREFIXES`(wait 9종 — busy·delivery_interval·settle·quiescing·prompt_not_ready·human_typing·queue_paused·seat_unknown·seat_no_agent) + `approval_pending`(approval) + `paused`(일시정지 — kill-switch 동결).
  * 데몬 소스를 읽는 어휘 핀(starvednotice.test.ts)이 이 목록을 묶는다 — 데몬이 wait 접두를 더하면 이 목록도 따라가야 한다. 코드가 **있는** payload 에는 쓰지 않는다(코드가 있으면 코드로만 가른다).
  */
 export const STARVED_LEGACY_CALM_PREFIXES: readonly string[] = [
@@ -67,6 +67,9 @@ export const STARVED_LEGACY_CALM_PREFIXES: readonly string[] = [
   "prompt_not_ready",
   "human_typing",
   "queue_paused",
+  // (1.1.8 병합) 우리 좌석 보류 사유 2종(v115r3-d7 — 생성 직후 첫 틱 전 · 부서 좌석 부팅 유예) — 데몬 REMEDY_WAIT_PREFIXES 를 따라간다(스스로 풀리는 보류 = 토스트만)
+  "seat_unknown",
+  "seat_no_agent",
   "approval_pending",
   "paused",
 ];

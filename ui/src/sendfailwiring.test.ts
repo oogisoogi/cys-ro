@@ -68,7 +68,8 @@ describe("N7 핀 ② injectRawToPane(경로 삽입) — 실패는 '삽입 실패
     expect(tryAt).toBeLessThan(sendAt);
     expect(catchAt).toBeGreaterThan(sendAt);
     const handler = body.slice(catchAt);
-    expect(handler.includes('toast("watchdog", "삽입 실패", String(e));')).toBe(true);
+    // (1.1.8 병합 X13 = 우리) 우리 D4#14: 본문은 사람 말 · 원문 String(e) 는 「자세히」 칸(5번째 인자)으로 — 같은 '삽입 실패' 토스트.
+    expect(handler.includes('toast("watchdog", "삽입 실패", "경로를 창의 입력칸에 넣지 못했습니다. 창을 한 번 누른 뒤 다시 시도해 주세요.", undefined, String(e));')).toBe(true);
     // UI 가 조립한 문안이다 — 기계 문안 표식은 그대로(R5 불변식)
     expect(body.includes("machineOrigin: true")).toBe(true);
   });

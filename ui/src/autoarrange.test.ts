@@ -734,7 +734,8 @@ describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수"
       expect(/a: ws\.tree, b:/.test(b)).toBe(false);
     });
   }
-  it("replaceNode 호출은 창 옮기기 두 함수(movePane·transferCrossDept)에만 남는다 — 열기·닫기 경로 0", () => {
+  // (1.1.8 병합 X12 = 원작자 WP-4) 전출 확인 대기가 원작자 새 함수 awaitHandoffAck 로 갈라져 나왔다 — 같은 창 옮기기(전출) 경로라 허용 목록에 더한다.
+  it("replaceNode 호출은 창 옮기기 함수(movePane·transferCrossDept·전출 확인 awaitHandoffAck)에만 남는다 — 열기·닫기 경로 0", () => {
     const calls = [...code(main).matchAll(/replaceNode\(/g)].map((m) => m.index!);
     const inside = (head: string) => {
       const i = code(main).indexOf(head);
@@ -744,9 +745,11 @@ describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수"
     const def = inside("function replaceNode(");
     const mv = inside("function movePane(");
     const tx = inside("async function transferCrossDept(");
-    const stray = calls.filter((k) => !def(k) && !mv(k) && !tx(k));
+    const ack = inside("async function awaitHandoffAck(");
+    const stray = calls.filter((k) => !def(k) && !mv(k) && !tx(k) && !ack(k));
     expect(stray).toEqual([]);
     expect(calls.filter((k) => mv(k) || tx(k)).length).toBeGreaterThan(0); // 대상 밖 경로는 그대로(무접촉)
+    expect(code(main).indexOf("async function awaitHandoffAck(")).toBeGreaterThan(0); // 허용 함수가 실재(사라지면 허용이 공허해진다)
   });
   it("열기 경로에 0.5 래퍼(`a: ws.tree`)가 한 곳도 없다", () => {
     expect(/a: ws\.tree\b/.test(code(main))).toBe(false);

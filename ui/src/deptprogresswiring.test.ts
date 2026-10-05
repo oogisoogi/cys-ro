@@ -301,7 +301,10 @@ describe("main.ts 소스 핀 — 이벤트·점검 배선(새 setInterval 0 · �
     expect(CODE.split("setInterval(refreshPaneTitles, 3000);").length - 1).toBe(1); // 기존 3초 틱은 그대로 하나
     // ★총수 핀: v0.14.42 기준 main.ts 의 `setInterval(` 은 9곳이었고, 이 티켓이 더한 것은 renderDeptPending 의 엘리먼트 수명 타이머 1곳(= 10)뿐이다.
     //   다른 티켓이 합법적으로 타이머를 더하면 이 수를 올리면서 사유를 남긴다 — 팀원 부팅 안내용 새 타이머가 슬쩍 들어오는 길을 막는 핀이다.
-    expect(CODE.split("setInterval(").length - 1).toBe(10);
+    // (1.1.8 병합) 우리 판 main.ts 는 피드백 2단계 보관함 재시도 타이머(setInterval(() => void invoke("feedback_flush")…) 1곳이 더 있다(우리 cys-feedback-menu) — 10 → 11.
+    //   팀원 부팅 안내용 타이머가 아니다(아래 정규식 핀이 그것을 따로 막는다).
+    expect(CODE.includes('setInterval(() => void invoke("feedback_flush").catch(() => {}), FEEDBACK_FLUSH_MS);')).toBe(true);
+    expect(CODE.split("setInterval(").length - 1).toBe(11);
     // 어디에 있든 setInterval 의 첫 인자가 팀원 부팅 안내 함수면 금지
     expect(/setInterval\([^;]{0,120}(checkDeptFormationNotices|showDeptFormation|noteToastClosedByUser|deptFormation)/.test(CODE)).toBe(false);
     // 새 코드가 쓰는 setTimeout 은 renderIdleWorkspace 의 일회성 하나뿐(60초 창이 끝날 때 문구를 한 번 고친다)
@@ -328,10 +331,15 @@ describe("main.ts 소스 핀 — 이벤트·점검 배선(새 setInterval 0 · �
     expect(rpc).toBeGreaterThan(0);
     expect(rec).toBeGreaterThan(rpc); // 목록을 **받은 뒤에만** 적는다(받지 못하면 이 줄에 닿지 않는다)
     expect(rec).toBeGreaterThan(f.indexOf("if (!claimFlight(flightKey)) continue;")); // 진행 중 요청으로 건너뛴 소켓도 기록 없음
-    expect(rec).toBeLessThan(f.indexOf("pruneHoleUntil();")); // 소켓 루프 안
+    // (1.1.8 병합 X1 = 우리 배치) 원작자 앵커 pruneHoleUntil()(U2 구멍 정리)은 우리 판에 없다 — 소켓 루프가 끝난 직후의 우리 줄(캐시 갱신)로 재조준.
+    const loopEnd = f.indexOf("for (const [k, v] of socketRows) lastSurfacesBySocket.set(k, v);");
+    expect(loopEnd).toBeGreaterThan(0);
+    expect(rec).toBeLessThan(loopEnd); // 소켓 루프 안
     expect(f.split("seatRolesTick.set(").length - 1).toBe(1);
     expect((f.match(/invoke\("list_surfaces"/g) ?? []).length).toBe(1); // 새 RPC 0 — 종전 호출 하나가 어차피 받는 결과를 쓴다
-    expect(f.split("invoke(").length - 1).toBe(1); // 이 함수의 invoke 는 그 하나뿐
+    // (1.1.8 병합) 우리 판에는 빈 자리표 회수(v111-restore ③ · 우리 손대지 않은 자리표만)의 close_surface 1곳이 더 있다 — 판정 입력용 RPC 가 아니다.
+    expect(f.split("invoke(").length - 1).toBe(2); // 이 함수의 invoke 는 list_surfaces 하나 + 우리 자리표 회수 하나뿐
+    expect(f.split('invoke("close_surface", { socket: ws.socket, surfaceId: sid })').length - 1).toBe(1);
   });
   it("★onDaemonEvent 의 feed.item.created 분기에는 팀원 안내 배선이 없다(S4 B1) — 편성 도구의 feed 는 본부 데몬 소속이라 화면이 부서 탭과 대응시킬 수 없다 · 그 함수·판정 도우미도 없다 · 일반 알림(ℹ 알림)은 종전 그대로", () => {
     const i = CODE.indexOf('if (name === "feed.item.created") {');
@@ -1207,10 +1215,13 @@ describe("팀원 부팅 안내 — 실제 본문 실행(showDeptFormation · che
     return { clock, calls, dismissed, stickyToasts, workspaces, fns, newTeam };
   }
 
-  it("collectSids(실제 본문) — 구멍(음수 sid)은 자리 수에 안 센다", () => {
+  // (1.1.8 병합 X1 = 우리 균등 배치 · master#36f48cf7 ④) 원작자 U2 「역할 칸 구멍(음수 sid)」은 우리 배치(formation autoArrange)에 없다 —
+  //   우리 트리에는 구멍이 생기지 않으므로 collectSids 는 트리의 모든 칸을 센다. 단언 목적(자리 수 = 실제 좌석 칸)은 우리 동작 기준으로 핀한다.
+  it("collectSids(실제 본문) — 우리 배치에는 구멍(음수 sid)이 없다: 트리의 칸 수 그대로 센다", () => {
     const { fns } = setup();
-    expect(fns.collectSids(treeOf(3, 2))).toEqual([1, 2, 3]);
+    expect(fns.collectSids(treeOf(3))).toEqual([1, 2, 3]);
     expect(fns.collectSids(null)).toEqual([]);
+    expect(SRC.includes("sid: -")).toBe(false); // 구멍 칸을 만드는 코드가 main.ts 에 없다
   });
 
   // ★R2F-UI: 본문이 새 문안이다(종전 「부서장·CSO·워커·리뷰어가 차례로 켜집니다 … 지금 0자리」) — 첫 안내는 목록을 받기 전이라 붙은 자리 0.
@@ -2078,7 +2089,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
     const wsBase: Record<string, unknown> = { id: 0, name: "본부", tree: tree(1) };
     const wsDept: Record<string, unknown> = { id: 1, name: "dept-1", socket: SOCK, pending: false, createdAt: T0, tree: tree(3) };
     const workspaces = [wsBase, wsDept];
-    const rt = { usageEl: {}, roleEl: {}, titleEl: { isContentEditable: false, textContent: "" } };
+    const rt = { usageEl: {}, roleEl: {}, titleEl: { isContentEditable: false, textContent: "", title: "", style: {}, dataset: {} } };
     const nothing = (): void => undefined;
     const deps: Record<string, unknown> = {
       // ── refreshPaneTitles 가 읽는 모듈 상태·도우미(실제 순수 함수는 실제 것을 쓴다)
@@ -2115,6 +2126,15 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       deptFormationVerdict: DP.deptFormationVerdict,
       deptLiveRoles: DP.deptLiveRoles,
       formationTrack: new WeakMap<object, unknown>(), // ★R2F-UI: 그 팀 좌석 목록을 마지막으로 받은 때의 기록(모듈 수준 WeakMap 의 대역)
+      // ── (1.1.8 병합 · X1 = 우리 배치) 우리 판 refreshPaneTitles 의 자유 변수 대역 — 이 검체가 보는 축(팀원 안내 판정)과 무관한 우리 배선(B17 옛 자리 스윕 ·
+      //    새 부서 감지 M7① · 자동 정렬 역할 표 · 빈 자리표 회수 · 표시 번호 · 본부 판정 · 사이드바 사용량 패널)은 무동작으로 둔다(파일 머리 주석: 「새 외부 이름 → 대역 갱신」).
+      exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
+      openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
+      displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
+      surfaceWorking: () => false, titleColorRole: false, roleDotColor: () => null, paneTitleText: (sid: number) => String(sid), ruleTitleOf: () => null,
+      placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false,
+      hqMasterSids: null, renderWsTabs: nothing, current: () => null,
+      lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
     };
     const { fns, scope } = loadWith(["collectSids", "showDeptFormation", "checkDeptFormationNotices", "noteToastClosedByUser", "refreshPaneTitles"], deps);
     // 첫 안내(addDeptWorkspace 성공 직후 한 번)
@@ -2365,7 +2385,8 @@ describe("★S4 m3 — 실제 토스트 기계(stickyToast · addToastCloseButto
       formationTrack: new WeakMap<object, unknown>(), // ★R2F-UI: 그 팀 좌석 목록을 마지막으로 받은 때의 기록(모듈 수준 WeakMap 의 대역)
     };
     const fns = load(
-      ["collectSids", "showDeptFormation", "checkDeptFormationNotices", "noteToastClosedByUser", "stickyToast", "dismissToast", "addToastCloseButton"],
+      // (1.1.8 병합) 우리 stickyToast 는 원문 「자세히」 칸(setToastRaw · D4#14)을 함께 고친다 — 실제 본문을 같이 연다(raw 없음 = 칸 없음).
+      ["collectSids", "showDeptFormation", "checkDeptFormationNotices", "noteToastClosedByUser", "stickyToast", "dismissToast", "addToastCloseButton", "setToastRaw"],
       deps,
     );
     const ws: Record<string, unknown> = { id: 1, name: "dept-1", tree: null, socket: SOCK, pending: false, createdAt: T0 };
@@ -2526,7 +2547,8 @@ describe("★S4 n1 — 「팀 직접 만들기」 실패 알림은 지속 알림
     expect(STICKY_TTL_MS).toBeGreaterThanOrEqual(7 * VOLATILE_TTL_MS);
     const st = fnText("stickyToast", true);
     expect(st).toContain("addToastCloseButton(el, id);"); // 닫기 버튼
-    expect(st).toContain("recordAlarm(category, name, detail, id);"); // 같은 id 는 이력에서 합쳐진다
+    // (1.1.8 병합) 우리 stickyToast 는 원문 칸(raw · D4#14)을 이력에도 싣는다 — 같은 id 합침은 그대로.
+    expect(st).toContain("recordAlarm(category, name, detail, id, raw);"); // 같은 id 는 이력에서 합쳐진다
   });
   it("★배선 핀: launchDept 의 일반 실패 분기가 stickyToast(\"dept-create-failed\", \"watchdog\", \"팀 만들기 실패\", msg) 하나 — 같은 분기에 일반 toast 가 남아 있지 않다 · 다른 호출 경로(팔레트·메뉴의 .catch)는 이번 범위가 아니다", () => {
     const f = fnText("launchDept", true);

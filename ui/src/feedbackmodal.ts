@@ -28,7 +28,7 @@ import {
   shouldConfirmDiscard,
   submitBlockReason,
   validateAttachment,
-} from "./feedback";
+} from "./feedback_u6";
 import { discardDraftAfter, makeEscHandler, makeFocusReclaimer, openBundleForMail, scopedListener } from "./feedbackflow";
 import { baseName } from "./ftdrop";
 import { isTopModalLayer, modalLayerOpen } from "./modalguard";

@@ -197,24 +197,16 @@ fn feeds_alerts(source: &str) -> bool {
     source != OUTSIDE_SOURCE
 }
 
-/// ★1.1.8 📌5(master 결정 · DECISION-TABLE-118 §0 10행 · REVIEW-D ⓒ): 계정 **표시값** 우선순위 —
-/// OAuth 서버 조회(3) > 좌석 상태줄·rollout·어댑터(2) > cys 창 밖 보고(1) > 부트 예열·발견(0).
-/// 낮은 순위 관측은 **더 높은 순위의 표시값이 아직 신선한 동안**([`fresh_limit_secs`]) 표시를 바꾸지 못한다 — 그래야
-/// 박사님 지정 사이드바 패널과 master 토큰 리미트 게이트(`cys usage-accounts --json` 의 `rate[]`)에 창 밖 값이 섞이지 않는다.
-/// 높은 순위가 낡으면(한도 초과) 다음 순위가 표시를 넘겨받는다(값 없음보다 낫다 · 종전 최신 승자와 같은 동작).
-/// 경보 입력([`note_alert_input`])·스냅샷 영속은 이 순위와 무관하다(표시 전용 규칙).
-fn display_rank(source: &str) -> u8 {
-    match source {
-        "oauth" => 3,
-        OUTSIDE_SOURCE => 1,
-        "" | "snapshot" => 0,
-        _ => 2,
-    }
-}
-
-/// 지금 표시값(`cur_source`·`cur_at`)이 들어온 관측(`source`)보다 순위가 높고 아직 신선한가 — 참이면 표시 갱신을 보류한다.
+/// ★1.1.8 📌5(master 결정 · DECISION-TABLE-118 §0 10행 · REVIEW-D ⓒ) — 범위 = B(a) **창 밖 보고만 강등**
+/// (master#c6a9de68 10-06 00:57 · 전체 순위(OAuth > 좌석)는 두지 않는다 — OAuth·좌석·rollout·어댑터끼리는 종전 최신 승자 ·
+/// D6-1 창 라벨 단위 병합 그대로). cys 창 밖 보고([`OUTSIDE_SOURCE`])는 **창 밖이 아닌 신선한 표시값**([`fresh_limit_secs`])을
+/// 덮지 못한다 — 그래야 박사님 지정 사이드바 패널과 master 토큰 리미트 게이트(`cys usage-accounts --json` 의 `rate[]`)에
+/// 창 밖 값이 섞이지 않는다. 그 표시값이 낡으면(한도 초과) 창 밖 값이라도 표시한다(값 없음보다 낫다 · 종전 동작).
+/// 부트 예열·발견(`""`·`snapshot`) 표시값은 창 밖 값을 막지 않는다. 경보 입력([`note_alert_input`])·스냅샷 영속은 이 규칙과 무관하다(표시 전용).
 fn display_outranked(cur_source: &str, cur_at: f64, source: &str, now: f64) -> bool {
-    display_rank(cur_source) > display_rank(source) && now - cur_at <= fresh_limit_secs(cur_source)
+    source == OUTSIDE_SOURCE
+        && !matches!(cur_source, OUTSIDE_SOURCE | "" | "snapshot")
+        && now - cur_at <= fresh_limit_secs(cur_source)
 }
 
 /// 경보 입력 갱신(창 밖이 아닌 출처만 · 경보 입력끼리 최신 승자 — 값·라벨을 함께 바꾼다). 호출자가 accounts 락을 잡고 있다.
@@ -747,7 +739,7 @@ fn note_resolved(daemon: &Arc<Daemon>, resolved: Resolution, rate: &[RateWindow]
         //   (1.1.8 합성) 경보는 원작자 B3 의 별도 경보 입력(note_alert_input)이 맡는다 — 표시 병합과 독립.
         let accepted: Vec<bool> = if now >= view.updated_at {
             let (merged, accepted) = merge_rate_windows(&view.rate, view.updated_at, rate, now);
-            // ★1.1.8 📌5: 표시 우선순위(OAuth > 좌석 > 창 밖) — 더 높은 순위의 신선한 표시값은 낮은 순위 관측이 덮지 못한다.
+            // ★1.1.8 📌5 B(a): 창 밖 보고는 창 밖이 아닌 신선한 표시값을 덮지 못한다(그 밖 출처끼리는 최신 승자).
             //   (스냅샷 영속 판정 `accepted` 는 그대로 — 예측 표본은 analytics::rate_series 가 창 밖을 걸러 쓴다.)
             let outranked = display_outranked(&view.source, view.updated_at, source, now);
             if !outranked && accepted.iter().any(|a| *a) {
@@ -6889,6 +6881,8 @@ mod tests {
         let fake_home = tmp("seed-antigravity-dir");
         std::fs::create_dir_all(fake_home.join(".antigravity")).unwrap();
         std::env::set_var("HOME", &fake_home);
+        // (1.1.8 병합 · R2F-DM 핀) 윈도우 dirs::home_dir() 은 HOME 을 안 본다 — account_home() 스레드 이음매도 함께 건다.
+        let _h = test_home::set(&fake_home);
 
         let daemon = test_daemon();
         seed_known(&daemon);
@@ -6915,6 +6909,8 @@ mod tests {
         let prev_home = std::env::var("HOME").ok();
         let fake_home = tmp("seed-antigravity-snapshot");
         std::env::set_var("HOME", &fake_home);
+        // (1.1.8 병합 · R2F-DM 핀) 윈도우 dirs::home_dir() 은 HOME 을 안 본다 — account_home() 스레드 이음매도 함께 건다.
+        let _h = test_home::set(&fake_home);
 
         let daemon = test_daemon();
         let now = crate::state::now_epoch();
@@ -7059,7 +7055,8 @@ mod tests {
     /// ★1.1.8 📌5: 표시 우선순위 OAuth > 좌석 상태줄 > 창 밖 보고 — 높은 순위가 신선한 동안 낮은 순위는 표시를 못 바꾸고,
     /// 낡으면(원천별 신선 한도 초과) 다음 순위가 넘겨받는다. 경보 입력은 순위와 무관(창 밖 = 언제나 제외).
     #[test]
-    fn display_priority_oauth_over_seat_over_outside() {
+    fn display_priority_outside_report_demoted_only() {
+        // ★1.1.8 📌5 B(a)(master#c6a9de68): 창 밖 보고만 강등 — OAuth·좌석끼리는 종전 최신 승자.
         let d = crate::state::Daemon::new(std::env::temp_dir().join(format!("cys-acct-prio-{}.sock", std::process::id())));
         let now = 1_000_000.0;
         let root = std::env::temp_dir().join(format!("cys-acct-prio-{}", std::process::id()));
@@ -7076,23 +7073,25 @@ mod tests {
             (v.source.clone(), v.rate[0].used_pct)
         };
         note_rate(&d, "claude", &sf, &w(40.0), "oauth", now);
+        // OAuth 와 좌석은 순위가 없다 — 더 새 좌석 값이 표시를 넘겨받는다(종전 최신 승자 · 전체 순위 미적용).
         note_rate(&d, "claude", &sf, &w(41.0), "statusline", now + 10.0);
-        assert_eq!(shown(&d), ("oauth".to_string(), 40.0), "신선한 OAuth 를 좌석 값이 덮었다");
+        assert_eq!(shown(&d), ("statusline".to_string(), 41.0), "B(a) 범위 밖 — 좌석 값이 OAuth 뒤에 막혔다");
+        note_rate(&d, "claude", &sf, &w(42.0), "oauth", now + 15.0);
+        assert_eq!(shown(&d), ("oauth".to_string(), 42.0), "B(a) 범위 밖 — OAuth 값이 좌석 뒤에 막혔다");
+        // 신선한 OAuth 는 창 밖 값이 못 덮는다.
         note_rate(&d, "claude", &sf, &w(5.0), OUTSIDE_SOURCE, now + 20.0);
-        assert_eq!(shown(&d), ("oauth".to_string(), 40.0), "신선한 OAuth 를 창 밖 값이 덮었다");
-        // OAuth 가 낡으면(240초 초과) 좌석이 넘겨받는다.
-        note_rate(&d, "claude", &sf, &w(45.0), "statusline", now + FRESH_LIMIT_OAUTH_SECS + 1.0);
-        assert_eq!(shown(&d), ("statusline".to_string(), 45.0), "낡은 OAuth 가 좌석 값을 막았다");
+        assert_eq!(shown(&d), ("oauth".to_string(), 42.0), "신선한 OAuth 를 창 밖 값이 덮었다");
         // 신선한 좌석 값은 창 밖 값이 못 덮는다 · 좌석이 낡으면(120초 초과) 창 밖 값이라도 표시한다.
-        let t_seat = now + FRESH_LIMIT_OAUTH_SECS + 1.0;
+        let t_seat = now + 30.0;
+        note_rate(&d, "claude", &sf, &w(45.0), "statusline", t_seat);
         note_rate(&d, "claude", &sf, &w(6.0), OUTSIDE_SOURCE, t_seat + 30.0);
         assert_eq!(shown(&d), ("statusline".to_string(), 45.0), "신선한 좌석 값을 창 밖 값이 덮었다");
         note_rate(&d, "claude", &sf, &w(7.0), OUTSIDE_SOURCE, t_seat + FRESH_LIMIT_STATUSLINE_SECS + 1.0);
         assert_eq!(shown(&d), (OUTSIDE_SOURCE.to_string(), 7.0), "낡은 좌석 값 뒤의 창 밖 값을 표시하지 않았다");
-        // 같은 순위·높은 순위는 언제나 넘겨받는다(최신 승자).
+        // 창 밖 표시값 뒤에는 어느 출처든 넘겨받는다(최신 승자).
         note_rate(&d, "claude", &sf, &w(50.0), "oauth", t_seat + 200.0);
         assert_eq!(shown(&d), ("oauth".to_string(), 50.0));
-        // 경보 입력에는 창 밖 값이 들어가지 않는다(순위와 무관).
+        // 경보 입력에는 창 밖 값이 들어가지 않는다(표시 규칙과 무관).
         assert!(d.accounts.lock().unwrap().alert_inputs.get(&key).map_or(true, |i| i.rate.iter().all(|r| r.used_pct != 7.0)));
         let _ = std::fs::remove_dir_all(&root);
     }

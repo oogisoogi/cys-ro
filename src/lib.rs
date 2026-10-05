@@ -2668,6 +2668,7 @@ pub fn inject_claude_effort_env(env_pairs: &mut Vec<(String, String)>, agent: &s
 /// 켜는 법(운영) = 데몬 기동 env `CYS_ENABLE_TEAM_FLOW=1` / `CYS_ENABLE_AGY_LANE=1`(기본 = 둘 다 꺼짐 · 값은 프로세스
 /// 수명 동안 고정). 시험은 [`dormant::force_for_thread`] 로 **그 스레드에서만** 켠다(병렬 시험 간 간섭 0 — 우리
 /// usage-noagy 회귀 시험은 꺼진 채 · 원작자 agy·팀 시험은 켠 채로 같은 프로세스에서 동시에 돈다).
+/// (master#c6a9de68 B(b) 10-06 확정: 이 env 스위치 방식 유지 · 기본 off · ui 의 휴면 기능 배선 시험은 `CYS_UI_DORMANT_LANE=1` 레인 — docs/merge/BACKLOG-118.md.)
 pub mod dormant {
     use std::cell::Cell;
 

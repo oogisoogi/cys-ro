@@ -35,6 +35,13 @@ pub fn input_region_anchored(screen: &str) -> (&str, bool) {
     } else {
         screen.rfind("\n> ").map(|i| i + 1)
     };
+    // ★(1.1.8 병합 · drain_verify 흔들림) 마지막 입력 박스(`╭`)가 아직 닫히지 않은(`╰` 없음) 자리의 줄머리 `> ` 는
+    // 새 프롬프트가 아니라 박스 안에서 접혀 내려온 **입력 내용**이다(긴 경로·`-->` 가 접히는 자리에 따라 생긴다) —
+    // 앵커로 치면 그 앞의 잔류 입력을 영역에서 잘라 미제출을 「제출」로 오독한다. 박스가 닫힌 뒤의 `> ` 는 종전대로 앵커다.
+    let prompt = prompt.filter(|&p| match box_top {
+        Some(b) if b < p => screen[b..p].contains('╰'),
+        _ => true,
+    });
     let chevron = screen.rfind(CHEVRON_ANCHOR);
     match box_top.into_iter().chain(prompt).chain(chevron).max() {
         Some(i) => (&screen[i..], true),
@@ -124,6 +131,16 @@ mod tests {
         // 대조군: 같은 표지가 입력창 **위**(이미 보낸 대화)에만 있으면 제출이다.
         let sent = format!("> [Pasted text #1 +214 lines]\n● 처리 중\n{}", claude_screen(""));
         assert_eq!(submit_probe(&sent, LINE).0, SubmitProbe::Submitted);
+    }
+
+    #[test]
+    fn wrapped_prompt_like_line_inside_an_open_box_is_content_not_an_anchor() {
+        // 박스 안 잔류 입력이 접히며 줄머리에 `> ` 가 떨어졌다 — sentinel 은 그 줄 **앞**에 있다.
+        let wedged = format!("위\n╭──────╮\n│ (미제출)\n<!-- cys-checkpoint: {LINE} 1 --\n> 저장하라\n╰──────╯\n  ? for shortcuts\n");
+        assert_eq!(submit_probe(&wedged, LINE).0, SubmitProbe::NotSubmitted);
+        // 대조군: 박스가 닫힌 **뒤**의 `> ` 줄은 종전대로 새 프롬프트(앵커)다.
+        let after = format!("위\n╭──────╮\n│ {LINE}\n╰──────╯\n> \n");
+        assert_eq!(submit_probe(&after, LINE), (SubmitProbe::Submitted, false));
     }
 
     #[test]

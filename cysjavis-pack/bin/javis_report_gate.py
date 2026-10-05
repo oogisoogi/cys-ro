@@ -169,6 +169,8 @@ VERDICT_WARN, VERDICT_DELTA, VERDICT_QUIET, VERDICT_NOCHG = "WARN", "DELTA", "QU
 
 # ── 층2 채널 라우팅 정책표(데이터가 정한다 · if 체인 금지) ─────────────────────
 SEV_INFO, SEV_WARN, SEV_CRIT = "info", "warn", "critical"
+# ★D2(1.1.8): 윈 = 데몬 소켓이 named pipe → deadman·영수증 회수(AF_UNIX)가 구조적으로 해당 없음.
+DEADMAN_STRUCTURALLY_NA = os.name == "nt" or getattr(socket, "AF_UNIX", None) is None
 CH_LEDGER, CH_EVT, CH_BADGE, CH_PUSH = "ledger", "evt", "badge", "push"
 
 #   trigger → (severity, channels). `_route_warn` 은 이 필드만 집행한다.
@@ -2147,7 +2149,10 @@ class Gate:
             for b in mi_badges:
                 self._badge(b["key"], b["severity"], b["message"], b["detail"])
         else:
-            reasons.append("deadman_poll_unavailable")
+            # ★D2(1.1.8 · 윈 실측): 윈은 데몬 소켓이 named pipe 라 AF_UNIX 회수가 **구조적으로** 불가 — 고장이 아니라
+            #   설계된 강등이다. 매 주기 「unavailable」 경고 소음 대신 「해당 없음」으로 적는다(판정·강등 동작 불변).
+            reasons.append("deadman_poll_not_applicable:windows" if DEADMAN_STRUCTURALLY_NA
+                           else "deadman_poll_unavailable")
         #   P3 시스템 데드락(last_output 완전 배제)
         t_ok, tasks, t_err = self._tasks()
         dl, dl_reason = build_deadlock_warning(report, tasks if t_ok else None, now_epoch)
@@ -2336,9 +2341,15 @@ class Gate:
                 #     at-least-once 를 고수하면 TTL 마다 영구 재발화가 된다. 배지로 드러내고
                 #     at-most-once 로 내린다(침묵도 폭주도 아닌 제3의 길).
                 reasons.append("ack_unavailable_downgrade:%s" % trigger)
-                self._badge("ack-unavailable", SEV_WARN,
-                            "queue.delivered 영수증 회수 불가 — critical 전달을 at-most-once 로 강등",
-                            {"trigger": trigger})
+                if DEADMAN_STRUCTURALLY_NA:
+                    # ★D2: 윈 = 해당 없음(설계된 강등) — 상시 WARN 배지 소음 제거 · 강등 자체는 그대로
+                    self._badge("ack-unavailable", SEV_INFO,
+                                "해당 없음(윈 named pipe) — critical 전달은 설계대로 at-most-once",
+                                {"trigger": trigger, "platform": "windows"})
+                else:
+                    self._badge("ack-unavailable", SEV_WARN,
+                                "queue.delivered 영수증 회수 불가 — critical 전달을 at-most-once 로 강등",
+                                {"trigger": trigger})
             seen_mark(self.state_dir, key, now_epoch, state=SEEN_STATE_DELIVERED, wakeup_id=wid)
             edge_fire(counters, "push_edge", key, now_epoch)
         self._push_log.append({"trigger": trigger, "severity": severity, "target": target,

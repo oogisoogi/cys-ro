@@ -311,22 +311,39 @@ def describe(res):
 
 
 # ───────────────────────── CLI ─────────────────────────
+def _lane_of(path):
+    """기록 파일 이름(`<소켓 또는 base>__<역할>.json`)에서 레인 표지 — 소켓 경로를 정규화한 꼴 그대로."""
+    stem = os.path.basename(path)[:-len(".json")]
+    return stem.rsplit("__", 1)[0] if "__" in stem else "?"
+
+
 def cmd_status(a):
+    """★D13(1.1.8 · 윈 실측): 종전 출력은 **어느 레인(데몬)의 기록인지** 없이 좌석 번호만 내서, 본부 pane 에서 부른
+    결과(master surface:2 · cso 3 · worker 5)가 본부 번호(103~105)와도 부서 번호(9~11)와도 달라 귀속을 판정할 수 없었다
+    (좌석 번호는 데몬마다 별개 · 기록은 레인별 파일로 남아 지난 세대도 섞인다). 이제 줄마다 레인을 싣고, 호출 좌석의
+    레인(CYS_SOCKET · 없으면 base)과 같은 줄에 표지를 붙인다. JSON 은 각 행에 `lane`·`this_lane` 을 더한다(가산)."""
     d = _state_dir()
+    here = re.sub(r"[^A-Za-z0-9_.-]", "_", "%s" % (os.environ.get("CYS_SOCKET") or "base"))
     rows = []
     for p in sorted(glob.glob(os.path.join(d, "*.json"))):
         try:
             with open(p, encoding="utf-8") as f:
-                rows.append(json.load(f))
+                r = json.load(f)
         except (OSError, ValueError):
             continue
+        if isinstance(r, dict):
+            lane = _lane_of(p)
+            r = dict(r, lane=lane, this_lane=(here.endswith(lane) or lane.endswith(here)))
+            rows.append(r)
     if a.role:
         rows = [r for r in rows if r.get("role") == a.role]
     if a.json:
         print(json.dumps(rows, ensure_ascii=False))
     else:
+        print("# 호출 레인 = %s (좌석 번호는 데몬마다 별개 — 같은 레인 줄만 이 화면의 번호다)" % here)
         for r in rows:
-            print("%s\t%s\t%s\t%s" % (r.get("role"), r.get("surface"), r.get("awaken"), r.get("at")))
+            print("%s\t%s\t%s\t%s\t레인=%s%s" % (r.get("role"), r.get("surface"), r.get("awaken"), r.get("at"),
+                                               r.get("lane"), " ◀ 이 레인" if r.get("this_lane") else ""))
     return 1 if any(r.get("awaken") == AWAKEN_UNCONFIRMED for r in rows) else 0
 
 

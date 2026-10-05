@@ -15,7 +15,8 @@
   T6 같은 토큰 재실행 → 데몬 token_consumed + inspect(같은 좌석·created) → **새 팀 0** · 같은 이름 · exit 0
   T7 재실행인데 settle 이 빠진 상태(consumed) → 멱등 보고 + settle created 재시도
   T8 재실행인데 다른 좌석(same_seat=false) → exit 7(보고도 하지 않는다)
-  T9 생성 실패(cap 초과 exit 8) → exit 8 그대로 + settle failed --code 8 · 등재 0
+  T9 생성 실패(부서 목록 판독 실패 exit 12 · v113 으로 cap 8 폐지) → exit 12 그대로 + settle failed --code 12 · 등재 무변경
+     + 폐지된 CYS_DEPT_CAP=0 은 생성을 막지 않는다
   T10 데몬 통과 응답의 명세가 제안 id 와 어긋남 → 만들지 않음(exit 7) + settle failed
   T11 인자 과다 → exit 2 · 데몬에 묻기 전(소비 0)
   T12 env 주입 — 외부에서 export 한 `_CYS_TT_*` 는 관문 통과로 읽히지 않는다(위조 토큰 · 카탈로그 create 둘 다)
@@ -293,16 +294,31 @@ class T8RerunOtherSeat(Base):
 
 
 class T9CreateFails(Base):
+    # ★1.1.8(CI ubuntu-pack-suite T9 · 287 발견 · master#b7b758e6): 원작자 판은 `CYS_DEPT_CAP=0` → exit 8 을 실패
+    #   경로로 썼다. 우리 cys-dept 는 v113 오너 결정(2026-09-21 「안전망 8 제거 · 자원 게이트만」 · allocate 의
+    #   고정 상한 삭제)으로 그 노브를 읽지 않아 rc=0 이 난다 — 노브를 되살리지 않고, **실재하는** allocate 실패
+    #   경로로 같은 계약(rc 그대로 전파 + settle failed --code <rc> + 등재 무변경 + §10 실패 문구)을 잰다.
+    #   쓰는 경로 = 부서 목록 판독 실패(exit 12 · 「등록 부서를 지키려고 아무것도 바꾸지 않았습니다」).
     def test_create_failure_passes_rc_and_settles_failed(self):
-        rc, out, err = self.run_dept("create", "--team-token", TOKEN, TT_CONSUME_OUT=consume_ok(), TT_CONSUME_RC=0,
-                                     CYS_DEPT_CAP=0)
-        self.assertEqual(rc, 8, "cap 초과 rc 가 전파되지 않았다: rc=%s err=%s" % (rc, err[-800:]))
-        self.assertEqual(read_reg(self.env), {}, "실패했는데 등재가 남았다")
+        bad = '{"depts": ["손상"]}'
+        with open(self.env["CYS_DEPTS_JSON"], "w", encoding="utf-8") as f:
+            f.write(bad)
+        rc, out, err = self.run_dept("create", "--team-token", TOKEN, TT_CONSUME_OUT=consume_ok(), TT_CONSUME_RC=0)
+        self.assertEqual(rc, 12, "생성 실패 rc 가 전파되지 않았다: rc=%s err=%s" % (rc, err[-800:]))
+        with open(self.env["CYS_DEPTS_JSON"], encoding="utf-8") as f:
+            self.assertEqual(f.read(), bad, "실패했는데 부서 목록이 바뀌었다")
         settles = self.tt_calls("settle")
         self.assertEqual(len(settles), 1, settles)
         self.assertIn("--outcome failed", settles[0])
-        self.assertIn("--code 8", settles[0])
+        self.assertIn("--code 12", settles[0])
         self.assertIn("제안은 그대로 남아 있습니다", err, "§10 생성 실패 문구 꼬리가 없다")
+
+    def test_dept_cap_knob_stays_retired(self):
+        """v113 결정 고정: 옛 노브 CYS_DEPT_CAP=0 은 생성을 막지 않는다(상한 판정 = 자원 게이트뿐)."""
+        rc, out, err = self.run_dept("create", "--team-token", TOKEN, TT_CONSUME_OUT=consume_ok(), TT_CONSUME_RC=0,
+                                     CYS_DEPT_CAP=0)
+        self.assertEqual(rc, 0, "폐지된 고정 상한 노브가 생성을 막았다: rc=%s err=%s" % (rc, err[-800:]))
+        self.assertEqual(len(read_reg(self.env)), 1)
 
 
 class T10Inconsistent(Base):

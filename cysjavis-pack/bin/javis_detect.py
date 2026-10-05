@@ -180,18 +180,136 @@ CLAUSE_BOUNDARY = ".!?;…。！？\n\r"
 # ★과확장 금지: `네`·`당신` **단독**은 넣지 않는다("네 마스터 브랜치"·"당신 마스터키" 오발화).
 #   교착사(는/가/이)까지 포함한 형태만 주어로 인정한다. 단독 `너`는 구 계약 보존(맨 뒤 —
 #   정규식 대안은 앞에서부터 시도되므로 긴 형태가 먼저 매치된다).
-SUBJECT = r"(?:너는|넌|너가|네가|니가|당신은|당신이|너)"
-MASTER = r"(?:마스터|master)"
-# 종결: 서술격·명령형·'로 각성/승격'·'가 되/돼/된'
-TERM = r"(?:다|야|이다|입니다|임|이야|여|로 *각성|로 *승격|가 *되|가 *돼|가 *된)"
+# 종결(term): 서술격·명령형·'로 각성/승격'·'가 되/돼/된'
+#
+# ─── M5 (2026-10-06) 선언 어휘 = corpus 단일 원본(vocab 절) + 자연어 명령·역할 부여형 ─────
+# 문제(오너 원칙 2026-10-05 「사용자 명령을 고정 예시 단어로 제한하면 자유로운 표현이 막힌다
+#   — 자연어 맥락으로 해석하라」): 선언은 '주어+≤15자+마스터+종결어미' 서술형과 영어
+#   'you are … master' 한 형만 잡았다. 「마스터 역할 맡아줘」「네가 마스터 해」「마스터로 일해
+#   줘」 "act as master" "be the master" "you'll be the master" "take the master role" 은 전부
+#   미발화 = 팀이 **조용히** 안 뜬다(오너 눈에 보이는 결함).
+# 해법: 명령·역할 부여형을 decl_extra 어휘로 추가한다. ★넓히는 방향이 안전한 근거와 한계:
+#   오발화(평범한 대화에서 팀 부트·세션 재개방)가 무발화보다 나쁘므로, 새 형태는 전부 **청자를
+#   향한 요청 어미가 필수**(줘·주세요·라·세요 — 맡아/해 단독 반말은 2인칭 주어가 있을 때만)이고,
+#   한국어 어절 끝은 `\b` 로 닫는다(맡아줘**서** 고마워·해**제**해·되라**고** 했다 = 비매치 —
+#   한글 음절은 두 엔진 모두 단어 문자라 음절이 이어지면 경계가 아니다). 부정 명령(하지 마·
+#   맡지 마)은 지-형이라 구조적으로 비매치, 의문·인용·전달은 기존 억제 3축이 그대로 덮는다
+#   (decl_extra 매치도 같은 _suppression 을 통과한다). 3인칭 언급(「그 사람이 마스터야」·
+#   「마스터 페인 확인해」·"merge to master"·"to be the master")은 형태상 비매치다 — 영어
+#   명령형(act as·be·take role)은 `^`(프롬프트 머리 + 호격·please 류 lead) 앵커로 "he wants to
+#   be the master" 같은 내포절을 배제한다(머리가 아닌 명령형은 무발화 = 안전 방향 감수).
+# ★단일 원본(master 결정 2026-10-06): 어휘는 `tests/fixtures/detect-corpus.json` 의 "vocab"
+#   절이 정본이고, Rust 사본(src/declaration.rs)도 같은 절을 읽는다. 그래서 vocab 패턴은 python
+#   re 와 Rust regex 의 **공통 부분집합**만 쓴다: ⑴ look-around 금지(`\b`·`^` 는 두 엔진 모두의
+#   기본 단정이라 허용) ⑵ decl_extra 공백은 `\s` 로만(Rust 가 python `\s` 29 코드포인트로 치환)
+#   ⑶ decl_extra 는 OR·대소문자 무시. (subject·term 은 종전 문자열 **그대로** 옮겼다 — term 의
+#   ' *' 리터럴 공백은 종전 값 보존.) self-test 가 ⑴⑵와 내장 사본 일치를 검사한다.
+# ★폴백(종전 corpus 폴백과 동형): fixture 부재(tests/ 미동봉 배포 팩)·판독 불가·스키마 위반이면
+#   아래 내장 사본으로 동작한다 — 훅 hot path 에서 감지기가 죽는 것보다 같은 값의 내장 사본이
+#   낫고, 내장 사본 == vocab 절은 self-test 가 hard fail 로 강제한다(드리프트 = 측정 실패).
+_VOCAB_EMBEDDED = {
+    "subject": r"(?:너는|넌|너가|네가|니가|당신은|당신이|너)",
+    "master": r"(?:마스터|master)",
+    "term": r"(?:다|야|이다|입니다|임|이야|여|로 *각성|로 *승격|가 *되|가 *돼|가 *된)",
+    "decl_en": r"you\s+are\s+(?:the\s+|our\s+|now\s+)*master",
+    "decl_extra": [
+        # KO-1 역할 + 맡아/해 + 요청 어미(필수): 마스터 역할 맡아줘 · 마스터 역할을 해 주세요
+        r"마스터\s*역할(?:을|를)?\s*(?:맡아|해)(?:\s*(?:줘요|줘|주세요|주십시오|주라)|라)\b",
+        # KO-2 역할 + 존대·하라체: 마스터 역할 맡으세요 · 마스터 역할 하라
+        r"마스터\s*역할(?:을|를)?\s*(?:맡으|하)(?:세요|십시오|라)\b",
+        # KO-3 를 + 맡아(요청 어미 필수): 마스터를 맡아줘 — '를 해'는 제외("기준을 마스터를 해")
+        r"마스터를\s*(?:맡아(?:\s*(?:줘요|줘|주세요|주십시오|주라)|라)|맡으(?:세요|십시오|라))\b",
+        # KO-4 로/로서/역할로 + 일해(요청 어미 필수): 마스터로 일해 줘 — '로 해'는 제외
+        #   ("기본 브랜치를 마스터로 해줘" = git 지시)
+        r"마스터\s*(?:역할로|로서|로)\s*일(?:해(?:\s*(?:줘요|줘|주세요|주십시오|주라)|라)|하(?:세요|십시오|라))\b",
+        # KO-5 (가) + 되어/돼(요청 어미 필수): 마스터가 되어 줘 · 마스터 돼라
+        r"마스터가?\s*(?:(?:되어|돼)(?:\s*(?:줘요|줘|주세요|주십시오|주라)|라)|되(?:세요|십시오|라))\b",
+        # KO-6 2인칭 주어 + 마스터 + 해/하라/맡아(단독 반말 허용 — 주어가 청자를 특정한다):
+        #   네가 마스터 해 · 니가 마스터 해줘 · 너 마스터 하라
+        r"(?:너는|넌|너가|네가|니가|당신은|당신이|너)\s*(?:이제부터|지금부터|오늘부터|앞으로|이제|지금)?\s*마스터\s*(?:역할(?:을|를)?\s*|를\s*)?(?:해|하라|해라|맡아|맡아라|해\s*줘|맡아\s*줘)\b",
+        # EN-1 머리 명령형 act/serve as: act as master · Claude, act as the master
+        r"^\s*(?:(?:please|now|ok|okay|so|then|alright|just|hey|hi|from\s+now\s+on)\b[\s,]*|[a-z가-힣]+\s*,\s*)*(?:act|serve)\s+as\s+(?:the\s+|our\s+)?master\b",
+        # EN-2 머리 명령형 be: be the master · please be our master
+        r"^\s*(?:(?:please|now|ok|okay|so|then|alright|just|hey|hi|from\s+now\s+on)\b[\s,]*|[a-z가-힣]+\s*,\s*)*be\s+(?:the\s+|our\s+)?master\b",
+        # EN-3 머리 명령형 take/play role: take the master role · take on the master role
+        r"^\s*(?:(?:please|now|ok|okay|so|then|alright|just|hey|hi|from\s+now\s+on)\b[\s,]*|[a-z가-힣]+\s*,\s*)*(?:take|play)\s+(?:on\s+)?(?:the\s+)?master\s+role\b",
+        # EN-4 you + 미래·의무 조동사 + be/act as/serve as: you'll be the master · you will be our master
+        r"\byou(?:'ll|’ll|\s+will|\s+shall|\s+are\s+going\s+to|\s+must|\s+should)\s+(?:be|act\s+as|serve\s+as)\s+(?:the\s+|our\s+)?master\b",
+        # EN-5 you + 조동사 + take/play role: you'll take the master role
+        r"\byou(?:'ll|’ll|\s+will|\s+shall|\s+are\s+going\s+to|\s+must|\s+should)\s+(?:take|play)\s+(?:on\s+)?the\s+master\s+role\b",
+    ],
+}
+_VOCAB_KEYS_STR = ("subject", "master", "term", "decl_en")
+# 공통 부분집합 위반 표지(self-test 린트): look-around 4종. `\b`·`^` 는 허용(위 주석).
+_LOOKAROUND = ("(?=", "(?!", "(?<=", "(?<!")
 
-DECL_KO = re.compile(SUBJECT + r".{0,%d}" % FILLER_MAX + MASTER
-                     + r".{0,%d}" % TERM_GAP_MAX + TERM, re.IGNORECASE)
-DECL_EN = re.compile(r"you\s+are\s+(?:the\s+|our\s+|now\s+)*master", re.IGNORECASE)
+
+def _corpus_fixture_path():
+    """corpus 단일 원본의 위치 — 팩 상대 고정 경로(레인 이동에도 함께 움직인다)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "tests", "fixtures", "detect-corpus.json")
+
+
+def _vocab_problem(v):
+    """vocab dict 스키마·컴파일 검사. 문제 문자열 또는 None(정상)."""
+    if not isinstance(v, dict):
+        return "vocab 이 객체가 아니다"
+    for k in _VOCAB_KEYS_STR:
+        if not isinstance(v.get(k), str) or not v[k]:
+            return "vocab.%s 는 비어있지 않은 문자열이어야 한다" % k
+    ex = v.get("decl_extra")
+    if not isinstance(ex, list) or not all(isinstance(p, str) and p for p in ex):
+        return "vocab.decl_extra 는 비어있지 않은 문자열 배열이어야 한다"
+    for p in [v[k] for k in _VOCAB_KEYS_STR] + ex:
+        try:
+            re.compile(p)
+        except re.error as e:
+            return "vocab 패턴 컴파일 실패 %r: %s" % (p, e)
+    return None
+
+
+def _load_vocab():
+    """반환 (vocab, source_label, err). err 가 있으면 vocab 은 내장 사본(폴백)이다.
+
+    ★런타임은 폴백, self-test 는 hard fail — 분기 근거는 위 '폴백' 주석."""
+    path = _corpus_fixture_path()
+    if not os.path.isfile(path):
+        return (_VOCAB_EMBEDDED, "내장 사본(fixture 부재 폴백)", None)
+    try:
+        with open(path, "rb") as f:
+            v = json.loads(f.read().decode("utf-8")).get("vocab")
+    except Exception as e:
+        return (_VOCAB_EMBEDDED, "내장 사본(폴백)", "fixture vocab 판독 불가 %s: %s" % (path, e))
+    prob = _vocab_problem(v)
+    if prob:
+        return (_VOCAB_EMBEDDED, "내장 사본(폴백)", "fixture %s: %s" % (path, prob))
+    return (v, "fixture %s" % path, None)
+
+
+VOCAB, VOCAB_SOURCE, VOCAB_ERR = _load_vocab()
+
+SUBJECT = VOCAB["subject"]
+MASTER = VOCAB["master"]
+TERM = VOCAB["term"]
+
+# 서술형 선언 본대(종전 DECL_KO 와 같은 값) — 감지 후보 수집은 이것과 DECL_EXTRA 를 **따로**
+# 돌린다(합집합 1개로 finditer 하면 겹치는 후보가 비중첩 규칙에 먹혀 사라진다).
+_DECL_KO_CORE = re.compile(SUBJECT + r".{0,%d}" % FILLER_MAX + MASTER
+                           + r".{0,%d}" % TERM_GAP_MAX + TERM, re.IGNORECASE)
+DECL_EN = re.compile(VOCAB["decl_en"], re.IGNORECASE)
+DECL_EXTRA = re.compile("|".join("(?:%s)" % p for p in VOCAB["decl_extra"]), re.IGNORECASE)
+# ★mission 공유 계약: javis_mission.extract_mission 은 `DECL_KO.search(c) or DECL_EN.search(c)`
+#   로 **선언절**을 임무 본문에서 뺀다. M5 명령형이 여기 안 들어가면 「마스터 역할 맡아줘」
+#   단독 프롬프트가 '오너가 지정한 임무'로 분류돼 자율 착수한다(임무 게이트 우회). 그래서
+#   DECL_KO 는 본대 ∪ decl_extra 합집합으로 내보낸다(mission 무수정 — 이름 계약 보존).
+DECL_KO = re.compile("(?:%s)|%s" % (_DECL_KO_CORE.pattern, DECL_EXTRA.pattern), re.IGNORECASE)
 
 # 부정 인접 억제(adv#7): 선언 자리 자체가 부정인 경우 — "너는 마스터가 아니다/말고".
 NEG = re.compile(MASTER + r"[^가-힣A-Za-z]{0,%d}(?:가|는|를)?[^가-힣A-Za-z]{0,%d}"
                  r"(?:아니|아냐|말고)" % (NEG_GAP_MAX, NEG_GAP_MAX), re.IGNORECASE)
+
+# ★D16-M5: 명령형 선언 직후의 금지 꼬리(주지 마 · 지 마 · 지 말아 · 말아 · 마라) — look-around 없이 match(pos) 로만 쓴다.
+NEG_TAIL = re.compile(r"\s*(?:주\s*)?(?:지\s*(?:마|말)|말아|말고|마라)")
 
 # 의문·인용 어휘(adv#8 유래 · 구 셸 grep 과 동일 — 어휘 확장은 별 결함).
 # ★공유 계약(W-A2): javis_mission.extract_mission 이 이 컴파일 정규식을 속성으로 소비해
@@ -432,9 +550,14 @@ def _clause_bounds(raw, start, end):
 
 
 def _matches(flat):
-    """선언 후보 전량(한국어·영문)을 시작 오프셋 순으로 반환."""
-    found = [(m.start(), m.end(), m.group(0), "ko") for m in DECL_KO.finditer(flat)]
+    """선언 후보 전량(한국어·영문·M5 명령형)을 시작 오프셋 순으로 반환.
+
+    ★M5: decl_extra 후보도 같은 목록에 들어가 **같은 _suppression**(부정·pre·인용 감쌈·인용
+    전달)을 통과한다 — 명령형이라고 억제 면제가 없다. 본대와 따로 finditer 하는 이유는
+    _DECL_KO_CORE 주석(겹침 후보 소실 방지)."""
+    found = [(m.start(), m.end(), m.group(0), "ko") for m in _DECL_KO_CORE.finditer(flat)]
     found += [(m.start(), m.end(), m.group(0), "en") for m in DECL_EN.finditer(flat)]
+    found += [(m.start(), m.end(), m.group(0), "extra") for m in DECL_EXTRA.finditer(flat)]
     found.sort(key=lambda t: (t[0], t[1]))
     return found
 
@@ -496,6 +619,12 @@ def _suppression(flat, lo, hi, start, end):
     if neg:
         return ("neg", neg.group(0),
                 "선언 인접 부정 — 절 내 부정 표현 %r" % neg.group(0))
+    # ★D16-M5(1.1.8): 명령형 꼴(decl_extra — 「네가 마스터 해」)은 바로 뒤의 금지 꼬리(「…해 주지 마」·「…해 말아」)가
+    #   뜻을 뒤집는다 — 선언 끝 직후 인접창에서만 본다(Rust 사본도 같은 규칙 필요 · 285 이관 목록).
+    tail = NEG_TAIL.match(flat, end, hi)
+    if tail:
+        return ("neg", tail.group(0).strip(),
+                "선언 직후 금지 꼬리 %r — 하지 말라는 말이지 선언 아님" % tail.group(0).strip())
     pre = flat[lo:start]
     # ⓐ pre — 선언보다 **앞**의 의문·인용 마커만 억제한다. 어휘는 QUESTION 그대로(mission 공유).
     #   종전엔 절 전체를 뒤져 선언 **뒤** 후속 질문의 어휘('무엇'·'의미'·절 꼬리 '?')까지 억제
@@ -724,12 +853,6 @@ AXIS_PINS = (
 )
 
 
-def _corpus_fixture_path():
-    """corpus 단일 원본의 위치 — 팩 상대 고정 경로(레인 이동에도 함께 움직인다)."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "tests", "fixtures", "detect-corpus.json")
-
-
 def _load_corpus():
     """corpus 적재. 반환 (source_label, fire_items, skip_items, err).
 
@@ -787,6 +910,19 @@ def cmd_self_test():
         print("javis_detect self-test FAIL: corpus %s" % err, file=sys.stderr)
         return 1
     fails = []
+    # ★M5 vocab 단일 원본 계약: 런타임은 vocab 불량 시 내장 사본으로 폴백하지만(훅 hot path 보호),
+    #   self-test 는 그 폴백을 통과로 접지 않는다 — fixture 가 있는데 vocab 이 불량·부재이거나
+    #   내장 사본과 다르면 FAIL(어느 한쪽만 고치는 드리프트 = Rust·python 분화의 재발 경로).
+    if VOCAB_ERR:
+        fails.append("vocab 적재 실패(내장 사본 폴백 중): %s" % VOCAB_ERR)
+    elif VOCAB is not _VOCAB_EMBEDDED and VOCAB != _VOCAB_EMBEDDED:
+        fails.append("vocab 드리프트: fixture vocab ≠ 내장 _VOCAB_EMBEDDED (%s)" % VOCAB_SOURCE)
+    for p in [VOCAB[k] for k in _VOCAB_KEYS_STR] + list(VOCAB["decl_extra"]):
+        if any(la in p for la in _LOOKAROUND):
+            fails.append("vocab 공통 부분집합 위반(look-around — Rust regex 미지원): %r" % p)
+    for p in VOCAB["decl_extra"]:
+        if re.search(r"\s", p):
+            fails.append("vocab.decl_extra 리터럴 공백(\\s 로만 쓸 것 — Rust 치환 규약): %r" % p)
     for it in fire_items:
         v = detect(it["text"])
         if not v["fire"]:

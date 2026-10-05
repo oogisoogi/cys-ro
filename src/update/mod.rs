@@ -6,5 +6,7 @@
 //! 로 격리한다(실 `~/.cys` 쓰기 0).
 
 pub mod buildinfo;
+pub mod gates;
+pub mod sched;
 
 pub use errors::{ErrCode, UpdateErr};

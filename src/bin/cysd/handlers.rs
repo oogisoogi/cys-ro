@@ -10245,6 +10245,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         "live_cwd": live_cwd,
                         "exited": s.exited.load(Ordering::Relaxed),
                         "idle_secs": s.last_output.lock().unwrap().elapsed().as_secs(),
+                        // ★1.1.8 U1(AUTO-UPDATE-118 §3-4 N2): 이 좌석의 마지막 사람 입력 뒤 경과(초) · 사람 입력 0 = null.
+                        //   자동 갱신 게이트 「사람이 쓰고 있다」의 좌석 쪽 계기(읽기 전용 가산 키).
+                        "human_idle_secs": s.last_human_input.lock().unwrap().map(|t| t.elapsed().as_secs()),
                         "queue_depth": s.pending_queue.lock().unwrap().len(),
                         "queue_paused": queue_paused,
                         // ★(0.14.43 · C5) 가산 키 3개(막힘 없으면 null) — 조치 코드는 아래 `remedy_todo` 가 가드 해제 뒤 채운다.

@@ -15,7 +15,7 @@
   2026-08-29) — 이 파일이 그 census 다.
 
 census 정의(CEO 승인 · 표는 전부 grep 실측값으로 고정 — 추정 0 · 초판 2026-09-03 · ⓐ 확장 2026-09-04):
-  ⓐ 강제점 집합 — 비주석 코드의 강제/정의 **17점(패턴 18줄)** 을 파일별 **정확 개수**로 고정.
+  ⓐ 강제점 집합 — 비주석 코드의 강제/정의 **18점(패턴 19줄)** 을 파일별 **정확 개수**로 고정.
      0 = 봉인 소실(SEAL-1 재발 경로). 초과도 FAIL 이다 — 중복 강제는 무해하지만 "어느 지점이 정본인가"가
      흐려진다(늘렸으면 봉인을 확인하고 이 표에 등재하라).
      ★2026-09-04 갱신(A6 후속 · **11점 12줄 → 17점 18줄** · 추가 6줄 = 6점) — 사유: 초판 표가 강제점
@@ -34,6 +34,11 @@ census 정의(CEO 승인 · 표는 전부 grep 실측값으로 고정 — 추정
           층1·층2·층3 이 **동시에** 죽는다(값 규약 근거 src/lib.rs:95-96). cargo 측 핀
           (src/lib.rs:2503 `assert!(!PY_NO_BYTECODE_ON.is_empty(), …)`)은 잡지만, 이 census 의 존재
           이유가 바로 "cargo 를 안 도는 팩 레인"이라 같은 계급의 구멍이었다.
+     ★2026-09-27 갱신(0.14.42 발행 준비 · **17점 18줄 → 18점 19줄**) — 0.14.42 가 새로 만든 번들 python
+       기동 지점 `src/bin/cysd/teamtoken.rs`(데몬이 팩 `javis_teamtoken.py` 를 대화 승인 토큰 판정마다 띄우는 자식)의
+       봉인은 `python_command` 팩토리 호출 **한 줄뿐**이다. 그 줄을 `Command::new(&interp)` 처럼 이름에 "py" 가 없는
+       변수로 바꾸면(변조 M6 실증) ⓒ(iii) 탐지 규약("py"/"python" 이름 휴리스틱)과 src/lib.rs 핀이 **둘 다** 못 보고
+       census 가 초록(`PYSEAL-CENSUS-OK`/exit 0)이었다 → 그 줄을 강제점으로 등재하고 ⓒ(v) 를 신설했다.
      (표가 세는 것은 줄 번호가 아니라 **비주석 줄의 개수**다 — 주석의 행번호는 2026-09-04 grep 재실측.)
   ⓑ 참조 파일 집합 — `PYTHONDONTWRITEBYTECODE`/`ENV_PY_NO_BYTECODE` 를 언급하는 파일 **18개 목록** 고정
      (2026-09-04 W-A A2: 17→18 · 훅 런처/본체 분할 검체 등재 — 등재 사유는 목록 주석 참조)
@@ -53,6 +58,14 @@ census 정의(CEO 승인 · 표는 전부 grep 실측값으로 고정 — 추정
           인자에 "py" 또는 줄에 "python" · `//` 줄 제외 · vendor/target 제외 · ASCII 소문자화)을 **그대로
           미러**해 {cys.rs 1 · boot_supervisor 1 · cysd/main 2 · tauri/main 4} 를 2언어로 핀 — cargo 를
           안 도는 레인에서도 같은 값이 같은 순간에 깨진다.
+     (iv) SEAL-1 층4 — bin/*.py 직속 파일의 첫 형제 import 앞에 `sys.dont_write_bytecode = True`
+          필수. 외부 호출자의 환경과 무관하게 팩 내부 캐시 쓰기를 막는다(+ 소비 파일 하한 30).
+     (v)  ★2026-09-27 신설(0.14.42) 번들 python **해소** 소비 파일 — Rust 비주석 코드에서 `bundled_python3(`
+          (cysd 의 번들 인터프리터 절대경로 해소)를 부르는 파일 집합을 **양방향 고정**하고, 각 파일이 비주석
+          코드에 봉인 수단(`python_command(` 팩토리 또는 `ENV_PY_NO_BYTECODE` 직봉인)을 **실제로** 갖는지 본다.
+          (iii) 이 스폰 줄의 **이름**을 보는 것과 달리 이것은 "번들 인터프리터를 손에 쥔 파일" 을 본다 —
+          해소 결과를 이름에 "py" 가 없는 변수로 넘겨 직스폰해도 그 파일의 봉인 수단이 0 이면 잡힌다.
+          신규 소비 파일 = FAIL(봉인을 점검한 뒤 BUNDLED_RESOLVER_FILES 에 등재) · 소멸 = FAIL.
 
 종료 코드(run_bootstrap_health 규약과 동형): 0 = 전부 측정·통과(말미 `PYSEAL-CENSUS-OK`) ·
 1 = FAIL 1건 이상 · 2 = UNMEASURED(레포 루트에 src/lib.rs 부재 = 팩 단독 설치 — **측정 불능은 통과가
@@ -119,7 +132,7 @@ def _rel(path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ⓐ 강제점 집합 — 17점(패턴 18줄) · 비주석 코드 · 파일별 정확 개수 (행번호는 2026-09-04 실측)
+# ⓐ 강제점 집합 — 18점(패턴 19줄) · 비주석 코드 · 파일별 정확 개수 (행번호는 2026-09-04 실측 · teamtoken.rs 는 2026-09-27)
 #   mode "sub"  = 비주석 줄 가운데 패턴을 **부분 문자열**로 포함하는 줄 수
 #   mode "line" = 비주석 줄 가운데 패턴과 **줄 전체가 정확히 같은** 줄 수(들여쓰기·조건 분기 안으로
 #                 들어가면 "무조건 헤드 export" 계약이 깨진 것이므로 FAIL 이 맞다 — H-PYSEAL-1 과 동형)
@@ -158,6 +171,14 @@ ENFORCEMENT = (
         ("sub", ".env(cys::ENV_PY_NO_BYTECODE, cys::PY_NO_BYTECODE_ON)", 1),            # office-bridge tokio 직봉인(:1653)
         ("line", "    cys::seal_python_bytecode_in_process();", 1),                      # ★층3 호출부 — cysd main 선두(:1089)
                                                                                         #   (`#[tokio::main]`→async_main 인 이유)
+    )),
+    ("src/bin/cysd/teamtoken.rs", "//", (
+        ("sub", "let mut cmd = cys::python_command(python());", 1),                     # ★0.14.42 대화 승인 토큰 판정 자식
+                                                                                        #   (javis_teamtoken.py · run_with :195) —
+                                                                                        #   이 파일의 유일한 봉인이 팩토리 호출이다.
+                                                                                        #   직스폰으로 바꾸면 번들 python 이 매 판정
+                                                                                        #   마다 캐시를 쓸 수 있다(2026-09-27 등재 ·
+                                                                                        #   변조 M6 은 ⓒ(iii) 를 빠져나갔다).
     )),
     ("src-tauri/src/main.rs", "//", (
         ("sub", "cmd.env(cys::ENV_PY_NO_BYTECODE, cys::PY_NO_BYTECODE_ON);", 1),        # inject_runtime_path(:4092)
@@ -231,6 +252,19 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   PYTHONIOENCODING=cp949)로 도는데, 그 상태에서 __pycache__ 를 쓰면 팩 트리에 로케일
     #   의존 산물이 남아 SEAL-1(.pyc 번들 오염) 과 같은 계급의 오염이 된다.
     "cysjavis-pack/bin/javis_phoenix_encoding_smoke.py",
+    # ★2026-09-22 통합(0.14.39 · WP-D-cli autopilot self-test) 등재. **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도 강제점도 **아니다**. 니들은 이 모듈의 자기검체(`--self-test`)가 쓰는 **밀폐
+    #   env 한 줄**(`"PYTHONDONTWRITEBYTECODE": "1"`)이다 — javis_wakeup 배달 멱등키 전제를 셸 스텁
+    #   `cys` 로 재는 구간이라 `os.environ` 을 상속하지 않는 env 를 손으로 조립하고, 그 자리에서 봉인을
+    #   **벗기지 않고 상속 방향으로** 다시 건다(test_lane_redirect.py·test_role_authority_shell.py 와 같은 계급).
+    #   프로덕션 경로(틱·escalate)는 python 자식을 띄우지 않으므로 강제점 계수에 들어가지 않는다.
+    "cysjavis-pack/bin/javis_cycle_autopilot.py",
+    # ★2026-09-08 P6 등재(0.14.31 · 역할 해소 단일 소유 모듈 신설). **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도, 강제점도 **아니다**. 이 모듈이 띄우는 자식은 Rust 바이너리 `cys` 하나뿐이고
+    #   (`surface-role` 조회), 그 자식 env 는 부모 것을 그대로 복사해 넘긴다 — 즉 봉인을 **벗기지도
+    #   새로 걸지도 않는다**(벗겼다면 그것이 SEAL-1 재발이고, 새로 걸었다면 강제점으로 세야 한다).
+    #   니들 보유 사유는 그 사실을 적어 둔 주석 1줄이다(성격 표기이지 누락이 아니다).
+    "cysjavis-pack/bin/javis_role.py",
     "cysjavis-pack/bin/tests/run_bootstrap_health.py",
     # ★2026-09-23 등재(TICKET=v115r4-dbg · 유입 = 995 검출 시험 D11·F5). **봉인 점검 결과(등재 = 이 선언)**:
     #   둘 다 **새 python 진입점이자 강제점이 맞다** — 자식(D11 = `sys.executable -c` 로 preflight C28 러너 ·
@@ -244,7 +278,44 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   따라서 새 python 진입점도 강제점도 아니다. 니들을 보유하는 이유는 단 하나, 프리루드의
     #   봉인(SEAL-1)이 훅 본체까지 **상속되는지 관측**하기 때문이다(PRELUDE-1b).
     "cysjavis-pack/bin/tests/test_hook_launcher_split.py",
+    # ★2026-09-21 WP-B-hooks 등재 — 레인 가드 위임(R안)·표식·C83 검체. **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도 강제점도 **아니다**. 이 검체가 띄우는 것은 `sh <훅>`(훅이 `$CYS_PY` 로 python 을
+    #   exec 하는 능력 게이트 포함)과 `sys.executable` 로 도는 `javis_mission.py status --json` 뿐이고,
+    #   그 env 는 `os.environ` 을 **상속하지 않는 밀폐 env** 라 봉인을 검체가 직접 실어야 한다 — 니들은
+    #   그 밀폐 env 한 줄(`"PYTHONDONTWRITEBYTECODE": "1"`)이다(test_role_authority_shell 과 같은 계급 ·
+    #   벗기지 않고 상속 방향으로 건다). 실험실 팩(hooks/·bin/*.py 사본)에 `.pyc` 가 남으면 그 사본이
+    #   tempfile 과 함께 사라지므로 봉인 관측 축은 아니다.
+    "cysjavis-pack/bin/tests/test_lane_redirect.py",
     "cysjavis-pack/bin/tests/test_org_audit.py",
+    # ★2026-09-08 통합 단계 등재(오너 참고1 · CONTRACTS §B-11 "음성 검체 1개 추가").
+    #   **봉인 점검 결과(등재 = 이 선언)**: 새 python 진입점도 강제점도 **아니다** — 이 파일은
+    #   봉인을 *강제*하는 게 아니라 봉인이 실제로 듣는지를 **관측**한다(데몬이 주입하는 env 를
+    #   재현해 인터프리터를 한 번 돌리고 트리에 `.pyc` 가 0개임을 재는다). 니들 보유 이유는 그
+    #   env 이름·값을 실제로 싸서 돌려야 하기 때문이다. ba 축은 이 census 의 ⓐ·ⓒ(iii) 와 같은
+    #   사실을 **정적이 아니라 실행으로** 재는 짝이다(정적 핀만 있을 때 남는 계급 — "env 를 실었다"와
+    #   "실었는데 인터프리터가 무시한다"의 차이 — 을 닫는다).
+    "cysjavis-pack/bin/tests/test_pyseal_negative_specimen.py",
+    # ★2026-09-15 WP6-6 등재 — 부트 유예 앵커 검체(0.14.31 감사 · 17bb59d 로 CI 이름 루프 5곳 등재 뒤
+    #   이 census 가 신규 검출). **봉인 점검 결과(등재 = 이 선언)**: 강제점 **아니다** — env 를 걸거나
+    #   벗기는 코드 줄이 0이다. 이 검체가 스폰하는 것은 가짜 `cys` 스텁(`#!/bin/sh`)과 게이트 자기호출
+    #   (`sys.executable` = 검체를 띄운 그 인터프리터 · env 는 `os.environ` 복사 + override 라 봉인이
+    #   **상속**된다 — 벗기지도 새로 걸지도 않음)뿐이라 번들 python 의 새 진입점도 아니다. 니들 보유는
+    #   docstring 의 실행 규약 예시 1줄(`… PYTHONDONTWRITEBYTECODE=1 \ python3 …`)뿐이다(성격 표기이지
+    #   누락이 아니다 — 지우면 검체 실행 규약 안내가 사라질 뿐 봉인은 그대로다).
+    "cysjavis-pack/bin/tests/test_resource_gate_boot_anchor.py",
+    # ★2026-09-08 P6 등재 — 셸 역할 권위·단일소유 가드 검체. **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도 강제점도 아니다. 이 검체가 스폰하는 것은 `sh`/`bash`/`cys-dept`(bash)와
+    #   가짜 `cys` 스텁(sh)뿐이다. 니들은 **밀폐 env 를 짜는 한 줄**에 있다 — 검체가 띄우는 셸이
+    #   번들 python 을 물었을 때 그 자식이 캐시를 쓰지 않도록 상속시키는 것이라 봉인 방향이 옳다.
+    "cysjavis-pack/bin/tests/test_role_authority_shell.py",
+    # ★2026-09-08 P6 수렴 등재 — 독립 판정관 회귀 핀. **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도 강제점도 아니다. 이 검체가 스폰하는 것은 `bash`(게이트 훅)·`sh`(슬러그
+    #   대조)·`cys-dept`(bash)와 가짜 `cys` 스텁(sh)뿐이고, 파이썬은 **자기 프로세스 안에서**
+    #   `javis_role`/`javis_org`/`javis_snapshot` 을 import 해 쓴다(자식 python 0).
+    #   니들은 `cys-dept` 를 `env -i` 로 띄울 때 짜는 **밀폐 env 한 줄**에 있다 — 그 셸이 번들
+    #   python 을 물었을 때 자식이 `__pycache__` 를 쓰지 않도록 상속시키는 것이라 봉인 방향이 옳다
+    #   (빼면 검체가 팩 트리를 오염시킨다 = SEAL-1 과 같은 계급).
+    "cysjavis-pack/bin/tests/test_role_authority_triage.py",
     "cysjavis-pack/hooks/_lib.sh",
     "docs/RELEASE.md",
     # ★2026-09-04 W-C 등재 — 사용자 대면 릴리스 노트. **봉인 점검 결과**: 진입점도 강제점도
@@ -256,6 +327,13 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     "scripts/deploy_gate.py",
     "scripts/installer-app/install-core.sh",
     "scripts/precompile-bundled-python.sh",
+    # ★2026-09-26 등재(0.14.42 · 11b8ddd9 FATAL-1 이 넣은 검체 — 그 뒤 이 census 가 5개 CI 팩 루프에서 적색이었다.
+    #   6371f8bd 기준에서도 같은 FAIL 1건이므로 R3 가 만든 적색이 아니다). **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도 제품 강제점도 **아니다**. 이 검체가 띄우는 것은 샌드박스 cysd(Rust)·트립와이어 `cys`
+    #   스텁(sh)·`/bin/ps` 뿐이고, 니들은 그 샌드박스 env 를 짜는 한 줄(`PYTHONDONTWRITEBYTECODE="1"`)이다 —
+    #   `os.environ` 복사본 위에 봉인을 **상속 방향으로** 다시 건다(cysd 가 팩 python 을 띄워도 캐시를 쓰지 않게 ·
+    #   test_lane_redirect·test_role_authority_shell 과 같은 계급). 벗기는 줄은 0이다.
+    "scripts/tests/test_cysd_dispatch_storm_e2e.py",
     "scripts/verify-gatekeeper-user-path.sh",
     "src-tauri/src/main.rs",
     "src/app_bundle.rs",
@@ -457,6 +535,86 @@ def check_rust_spawn():
                                 "(한쪽만 올리면 2언어 미러가 깨진 채 초록/적색이 갈린다)"))
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ⓒ(iv) SEAL-1 층4 — 팩 밖 호출자의 환경과 무관하게 첫 형제 import 전에 캐시 쓰기 차단
+# ═══════════════════════════════════════════════════════════════════════════
+SIBLING_IMPORT_RE = re.compile(
+    r'^\s*(?:import|from)\s+javis_\w+|import_module\(\s*["\']javis_|spec_from_file_location\(')
+SEAL4_ASSIGN_RE = re.compile(r'^\s*sys\.dont_write_bytecode\s*=\s*True\s*(?:#.*)?$')
+SEAL4_CONSUMER_FLOOR = 30  # 2026-09-21 실측 33 — 술어 붕괴로 소비 파일이 0이 되는 공허 통과 차단
+
+
+def check_seal4():
+    bin_dir = os.path.join(ROOT, "cysjavis-pack", "bin")
+    if not os.path.isdir(bin_dir):
+        check("ⓒ(iv) SEAL-1 층4 bin 디렉토리", False,
+              "%s 부재 — 측정 불능은 통과가 아니다" % bin_dir)
+        return
+    consumers, unsealed = [], []
+    # 직속 *.py 만 순회하므로 tests/ 와 그 아래 검체는 소비 파일에 들어가지 않는다.
+    for name in sorted(os.listdir(bin_dir), key=str):
+        path = os.path.join(bin_dir, name)
+        if not name.endswith(".py") or not os.path.isfile(path):
+            continue
+        code = _code_lines(_read_text(path), "#")
+        first_import = next((i for i, line in code if SIBLING_IMPORT_RE.search(line)), None)
+        if first_import is None:
+            continue
+        consumers.append(name)
+        if not any(i < first_import and SEAL4_ASSIGN_RE.match(line) for i, line in code):
+            unsealed.append("%s:%d" % (name, first_import))
+    check("ⓒ(iv) SEAL-1 층4 소비 파일 하한 %d" % SEAL4_CONSUMER_FLOOR,
+          len(consumers) >= SEAL4_CONSUMER_FLOOR, "실측 %d" % len(consumers))
+    check("ⓒ(iv) SEAL-1 층4 첫 형제 import 전 봉인", not unsealed,
+          "소비 파일 %d · 위반 %d %s — 행번호는 첫 형제 import 위치" % (
+              len(consumers), len(unsealed), unsealed))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⓒ(v) 번들 python 해소 소비 파일 — `bundled_python3(` 를 부르는 Rust 파일은 봉인 수단을 코드로 갖는다
+#   (2026-09-27 신설 · 0.14.42 teamtoken 자식 · 변조 M6 = 해소 결과를 `interp` 로 받아 직스폰 → 종전 census 초록)
+# ═══════════════════════════════════════════════════════════════════════════
+BUNDLED_RESOLVER_RE = re.compile(r'(?<![A-Za-z0-9_])bundled_python3\(')
+BUNDLED_RESOLVER_FILES = (  # 2026-09-27 실측 · 정렬 key=str · 추가 = "봉인을 확인했다" 는 선언
+    "src/bin/cysd/boot_supervisor.rs",  # run_ensure_team — tokio 빌더 `.env(cys::ENV_PY_NO_BYTECODE, …)` 직봉인
+    "src/bin/cysd/main.rs",             # 정의처 + auto-restore(python_command 경유 spawn) · office-bridge(직봉인)
+    "src/bin/cysd/teamtoken.rs",        # ★0.14.42 javis_teamtoken.py 판정 자식 — python_command 팩토리
+)
+SEAL_MEANS = ("python_command(", "ENV_PY_NO_BYTECODE")
+
+
+def check_bundled_resolver():
+    want = list(BUNDLED_RESOLVER_FILES)
+    check("ⓒ(v) 핀 목록 정렬·중복 없음(%d)" % len(want), want == sorted(set(want), key=str),
+          "BUNDLED_RESOLVER_FILES 는 key=str 정렬·유일해야 diff 가 결정론이다")
+    found = {}
+    for base in (("src",), ("src-tauri", "src")):
+        for dp, dns, fns in os.walk(os.path.join(ROOT, *base)):
+            dns[:] = sorted((d for d in dns if d not in ("vendor", "target")), key=str)
+            for fn in sorted(fns, key=str):
+                if not fn.endswith(".rs"):
+                    continue
+                path = os.path.join(dp, fn)
+                code = [l for _i, l in _code_lines(_read_text(path), "//")]
+                if any(BUNDLED_RESOLVER_RE.search(l) for l in code):
+                    found[_rel(path)] = code
+    added = sorted(set(found) - set(want), key=str)
+    removed = sorted(set(want) - set(found), key=str)
+    detail = "실측 %d" % len(found)
+    if added:
+        detail += (" · 신규 %s → 그 파일이 번들 인터프리터를 새로 띄우는지 확인하고, 스폰을 python_command 팩토리 "
+                   "또는 .env(cys::ENV_PY_NO_BYTECODE, cys::PY_NO_BYTECODE_ON) 로 봉인한 뒤 등재하라" % added)
+    if removed:
+        detail += " · 소멸 %s → 해소 지점이 옮겨졌는지 확인한 뒤 목록에서 내려라" % removed
+    check("ⓒ(v) 번들 python 해소 소비 파일 %d개 고정" % len(want), not added and not removed, detail)
+    unsealed = sorted((rel for rel, code in found.items()
+                       if not any(m in l for l in code for m in SEAL_MEANS)), key=str)
+    check("ⓒ(v) 해소 소비 파일 전수 봉인 수단 보유", not unsealed,
+          ("봉인 수단 0 %s — 번들 python 을 해소해 놓고 팩토리·직봉인 어느 쪽도 코드에 없다(이름 휴리스틱 ⓒ(iii) 가 "
+           "못 보는 직스폰 = SEAL-1 재발 경로)" % unsealed) if unsealed
+          else "소비 파일 %d개 전부 봉인 수단 보유" % len(found))
+
+
 def main():
     lib_rs = os.path.join(ROOT, "src", "lib.rs")
     if not os.path.isfile(lib_rs):
@@ -469,6 +627,8 @@ def main():
     check_hooks()
     check_bin()
     check_rust_spawn()
+    check_seal4()
+    check_bundled_resolver()
     if fails:
         print("FAILED %d: %s" % (len(fails), "; ".join(fails)))
         return 1

@@ -554,7 +554,7 @@ mod tests {
         assert!(wake_master(&d, "k", w.id, "배달 기록 시험"));
         let id = master.pending_queue.lock().unwrap().front().unwrap().id.clone();
         assert_eq!(delivered_at_for_test(&id), None);
-        let got = crate::governance::deliver_head_locked(&d, &master, true, false, None, None);
+        let got = crate::governance::deliver_head_locked(&d, &master, true, false, None, None, None, None);
         assert!(got.is_some(), "강제 배달이 인계하지 못했다");
         assert!(delivered_at_for_test(&id).is_some(), "배달이 기록되지 않았다 — 제출 실측이 영영 안 돈다");
     }

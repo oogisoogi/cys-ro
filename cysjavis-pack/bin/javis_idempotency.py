@@ -20,6 +20,7 @@ import ast
 import os
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 from unittest import mock
 
 
@@ -42,6 +43,14 @@ OBSERVE_VERBS = frozenset({          # 부작용 없음 — 관찰 경로 허용
     # ③실측: 3회 연속 실행 후 ~/.cys 쓰기 0(대조군 동일). cmd_check 관찰 경로의 정당한 호출
     # (어댑터 감지 단일 오라클 · javis_orchestra.py:225).
     "agent-detect",
+    # ★(0.14.31 · WP-1 H-2 · CONTRACTS §C) 'gate-corpus' — 첫기동 관문 코퍼스 보고(신설).
+    # 읽기 전용 실측 근거(3중): ①Rust 구현 run_gate_corpus(cys.rs)는 resolve_gate_corpus →
+    # first_run_gates::report_json → println 뿐 — 데몬 RPC·서브프로세스·send_key·파일 쓰기 0
+    # (소스 핀 gate_corpus_verb_is_a_daemon_free_subprocess_free_observation_source_pin 이 집행).
+    # ②실측 2026-09-08: `CYS_SOCKET=/nonexistent/nope.sock cys gate-corpus --json` 이 exit 0
+    # (데몬 무의존). ③버전을 스스로 재지 않는다 — `--detected-version` 을 호출부가 넣는다.
+    # 소비자: preflight C82.gate-corpus-drift(팩 레인).
+    "gate-corpus",
 })
 MUTATE_VERBS = frozenset({           # 상태 변경 — repair/실행 의도 뒤에서만
     "new-surface", "send", "send-key", "set-status",
@@ -50,8 +59,25 @@ MUTATE_VERBS = frozenset({           # 상태 변경 — repair/실행 의도 �
     "reinject", "watch", "attest", "daemon", "resize", "close-surface",
     "run", "kill", "add-health-rule", "feed", "learn", "init-pack",
     "skill", "persona", "schedule", "claim-role", "launch-agent", "boot",
+    # ★(0.14.31 · CONTRACTS B-6) reclaim-role(WP-4 · 데몬 역할 재결합 RPC) 은 상태 변경.
+    "reclaim-role",
+    # ★(0.14.41 · U16) team-propose — 승인 피드에 '팀 만들기 제안' 항목을 만든다(상태 변경).
+    "team-propose",
     # 'new-split' 부재 — 실제 cys CLI 에 없음(cmux 잔재·CLAUDE.md 치환표상 폐기 verb).
 })
+
+# ★(0.14.31 · WP-5 · CONTRACTS B-6) 서브동사 세분 분류 — `queue` 동사는 OBSERVE 이지만 그 아래
+# revive/drop/clear/deliver 는 상태 변경(만료 항목 재활성·폐기·큐 인멸·강제 배달)이다. verb 단위
+# 분류만 있으면 `cys queue drop <id>` 가 관찰 경로를 통과한다. (verb, subverb) 쌍이 verb 분류보다
+# **우선**한다. 목록 밖 서브동사(`queue <unknown>`)는 fail-closed(unknown → 관찰 경로 거부).
+MUTATE_SUBVERBS = frozenset({
+    ("queue", "revive"), ("queue", "drop"), ("queue", "clear"), ("queue", "deliver"),
+})
+OBSERVE_SUBVERBS = frozenset({
+    ("queue", "list"),
+})
+# 서브동사를 갖는 verb 집합 — 이 verb 는 서브동사 없이는 분류하지 않는다(clap 도 서브커맨드 필수).
+SUBVERB_REQUIRED = frozenset({"queue"})
 
 # 현재 cys 표면에 존재하나 멱등 분류가 모호해 의도적으로 미분류로 둔 verb(정직한 미커버).
 # 분류 미정이라도 self-test 표면 커버리지가 RED 되지 않게 하되, default-deny 로 관찰 경로에선
@@ -72,11 +98,54 @@ def classify_cys_verb(argv):
     verb = _extract_verb(argv)
     if verb is None:
         return "unknown"
+    if verb in SUBVERB_REQUIRED:
+        sub = _extract_subverb(argv)
+        if sub is None:
+            return "unknown"                 # `cys queue` 단독 — clap 도 거부(fail-closed)
+        if (verb, sub) in MUTATE_SUBVERBS:
+            return "mutate"
+        if (verb, sub) in OBSERVE_SUBVERBS:
+            return "observe"
+        return "unknown"                     # 미지 서브동사 — 관찰 경로 거부(default-deny)
     if verb in OBSERVE_VERBS:
         return "observe"
     if verb in MUTATE_VERBS:
         return "mutate"
     return "unknown"
+
+
+def _is_cys_binary(first):
+    """argv[0] 이 cys 바이너리인가 — Windows(Git Bash) 의 `cys.exe`·`cys.cmd` 도 cys 다."""
+    # 구분자 두 종류 모두에서 마지막 토큰 — macOS/Linux 파이썬은 백슬래시를 구분자로 보지 않아
+    # Windows 경로(`C:\\...\\cys.exe`)의 basename 이 전체 경로가 된다(self-test 는 macOS CI 에서도 돈다).
+    base = str(first).replace("\\", "/").rsplit("/", 1)[-1]
+    low = base.lower()
+    for ext in (".exe", ".cmd", ".bat"):
+        if low.endswith(ext):
+            low = low[: -len(ext)]
+            break
+    return low == "cys"
+
+
+def _extract_subverb(argv):
+    """`cys <verb> <subverb> …` 에서 서브동사(verb 다음 첫 비옵션 토큰)를 추출. 없으면 None."""
+    if not argv or not _is_cys_binary(argv[0]):
+        return None
+    i, seen_verb = 1, False
+    while i < len(argv):
+        tok = str(argv[i])
+        if tok == "--socket":
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        if not seen_verb:
+            seen_verb = True
+            i += 1
+            continue
+        return tok
+    return None
 
 
 def _extract_verb(argv):
@@ -87,8 +156,7 @@ def _extract_verb(argv):
     cys 호출이 아니면(예: yt-dlp·python) None."""
     if not argv:
         return None
-    first = os.path.basename(str(argv[0]))
-    if first != "cys":
+    if not _is_cys_binary(argv[0]):        # ★(0.14.31) Windows Git Bash `cys.exe` 도 cys 다
         return None
     i = 1
     while i < len(argv):
@@ -385,7 +453,33 @@ def _invariants():
         "미등록 verb 가 관찰 경로 통과(default-deny 위반)"
     assert is_observe_only(["cys", "status", "--json"]), "status 가 observe 가 아님"
     assert not is_observe_only(["cys", "launch-agent"]), "launch-agent 가 거부 안 됨"
+    # ★(0.14.31 · 리뷰 R1) CONTRACTS §C 등재 동사는 **직접** 단언한다.
+    #   표면 커버리지(아래)는 이 등재를 집행하지 못한다: 등재를 지우면 그 동사는 uncovered 로
+    #   옮겨 가 "COVERED with drift" 로 **통과**하기 때문이다(fail-closed 라 안전하되 회귀는 무성).
+    #   계약으로 약속한 분류는 계약이 깨질 때 붉어져야 한다.
+    assert classify_cys_verb(["cys", "gate-corpus", "--json"]) == "observe", \
+        "gate-corpus 가 observe 가 아님(CONTRACTS §C · preflight C82 의 관찰 경로 호출이 막힌다)"
+    assert is_observe_only(["cys", "gate-corpus", "--detected-version", "2.1.263"]), \
+        "gate-corpus 가 관찰 경로를 통과하지 못함"
     assert _extract_verb(["yt-dlp", "--dump-json"]) is None, "cys 아닌 호출이 verb 로 추출됨"
+    # ★(0.14.31 · WP-5 · B-6) 서브동사 세분 — queue list 만 observe, revive/drop/clear/deliver 는 mutate.
+    assert is_observe_only(["cys", "queue", "list", "--surface", "surface:3"]), "queue list 가 observe 가 아님"
+    assert is_observe_only(["/usr/local/bin/cys", "--socket", "/x", "queue", "list", "--json"]), \
+        "전역 옵션 뒤 queue list 가 observe 가 아님"
+    for sub in ("revive", "drop", "clear", "deliver"):
+        assert classify_cys_verb(["cys", "queue", sub, "q1.2"]) == "mutate", \
+            "queue %s 가 mutate 가 아님" % sub
+        assert not is_observe_only(["cys", "queue", sub, "q1.2"]), "queue %s 가 관찰 경로 통과" % sub
+    assert classify_cys_verb(["cys", "queue"]) == "unknown", "서브동사 없는 queue 가 분류됨"
+    assert classify_cys_verb(["cys", "queue", "purge"]) == "unknown", "미지 서브동사가 분류됨(default-deny)"
+    assert MUTATE_SUBVERBS & OBSERVE_SUBVERBS == frozenset(), "서브동사 분류 충돌"
+    # Windows Git Bash 형상 — `cys.exe`·`cys.cmd`·백슬래시 경로도 cys 호출이다.
+    # ★(리뷰 R5) 경로는 **개인 프로필이 아닌** 더미로 쓴다 — `C:\Users\<이름>` 형상은 H-SECRET-1
+    #   (산 트리 개인정보 스캔 · 발행 fail-closed)이 잡는다. 재는 것은 백슬래시·`.exe` 처리이지
+    #   프로필 경로가 아니다(WP-5 가 남긴 적색 1건 · 이 레인 소유 파일이라 여기서 닫는다).
+    assert is_observe_only(["D:\\opt\\cys\\bin\\cys.exe", "queue", "list"]), "cys.exe queue list 가 observe 가 아님"
+    assert classify_cys_verb(["cys.cmd", "queue", "drop", "q1.2"]) == "mutate", "cys.cmd queue drop 가 mutate 가 아님"
+    assert classify_cys_verb(["cys", "reclaim-role", "--auto"]) == "mutate", "reclaim-role 이 mutate 가 아님"
     # 면제 상한(계약 형해화 차단).
     assert len(SELF_HEAL_EXEMPT) <= 3, "SELF_HEAL_EXEMPT 무한 확장(계약 형해화)"
     # 표면 커버리지(과장 차단): cys actions ⊆ OBSERVE ∪ MUTATE ∪ UNCLASSIFIED_ALLOWED.

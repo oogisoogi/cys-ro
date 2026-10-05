@@ -14,6 +14,10 @@ pub struct EventBus {
     tx: broadcast::Sender<Value>,
     /// seq 영속 파일 — 데몬 재시작 후에도 구독자 커서(after_seq)가 단조 증가를 유지한다.
     persist_path: Option<PathBuf>,
+    /// ★(0.14.31 · 리뷰 R2) 이 세대가 물려받은 seq 바닥 = 부팅 시 읽은 **예약 상한**.
+    /// 블록 예약(256)이라 그 아래 구간에는 **발행되지 않은 seq 가 섞여 있다** — 그것을 유실로
+    /// 세면 재생 갭 보고가 허위가 된다. 이번 세대가 실제로 발행한 것은 전부 이 값 **초과**다.
+    generation_floor: u64,
 }
 
 struct Inner {
@@ -23,10 +27,11 @@ struct Inner {
     persist_hwm: u64,
 }
 
+/// 이벤트 `timestamp` 의 원천 — `state::now_epoch` 과 같은 마이크로초 해상도다([`crate::state::epoch_secs_us`] · R2F-DM 2차 B1).
 fn now_epoch() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
+        .map(crate::state::epoch_secs_us)
         .unwrap_or(0.0)
 }
 
@@ -46,7 +51,13 @@ impl EventBus {
             }),
             tx,
             persist_path,
+            generation_floor: start_seq,
         }
+    }
+
+    /// 이 데몬 세대의 seq 바닥(그 이하는 이전 세대이거나 **미사용 예약**이다).
+    pub fn generation_floor(&self) -> u64 {
+        self.generation_floor
     }
 
     pub fn publish(&self, name: &str, category: &str, surface_id: Option<u64>, payload: Value) {

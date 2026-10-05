@@ -1,3 +1,20 @@
+/* ★층서(z-index) 토큰 표 — 문서 루트에 뜨는 층은 **여기 한 곳**에서 이름으로 정한다(2026-09-23 수리).
+   결함의 형태는 "두 값이 서로를 모른 채 따로 정해졌다"였다: 확인 창 1000·토스트 99 가 Control Center 1500
+   뒤에 깔려, 승인 Feed 카드의 [확인 창 열기]가 '무반응'으로 보였다(창은 열려 있었다). 새 층은 숫자를 새로
+   고르지 말고 이 표에서 **관계를 보고** 끼운다. 순서·참조는 stacking.test.ts 가 못박는다(값이 아니라 관계).
+   패널 자기 쌓임 맥락 안의 국소 순서(#cc-header·#cc-tabs 2 등)는 이 표의 대상이 아니다. */
+:root {
+  --z-pane-overlay:      5;  /* 작업 영역 안의 겹침 — 분할선 히트존(.divider)·사이드바 폭 핸들(#wsbar-drag) */
+  --z-ctx-menu:       1000;  /* 컨텍스트 메뉴·팝오버(#ctx-menu·#theme-pop) */
+  --z-drop-indicator: 1200;  /* 사이드바 순서 바꾸기 삽입선(pointer-events:none) */
+  --z-cc-panel:       1500;  /* Control Center 풀 패널(불투명 · 상단바 아래 전체 덮개) */
+  --z-palette:        1600;  /* ⌘K 팔레트 */
+  --z-toast-under-modal: 1650; /* 확인 창 밖의 창(입력·업데이트·피드백 — 위쪽에 조작부)이 떠 있는 동안의 토스트 — 그 창 밑·Control Center 위 */
+  --z-modal:          1700;  /* 확인·입력·업데이트·피드백 창(.modal-overlay) — 모든 패널 위 */
+  --z-toast:          1800;  /* 안내·실패 토스트 — 확인 창보다도 위(확인 창이 떠 있으면 위로 비켜 선다 — #toasts 회피 규칙) */
+  --z-drop-hint:      1999;  /* pane 드롭 위치 힌트(pointer-events:none) — 고스트 바로 아래 */
+  --z-drag-ghost:     2000;  /* 드래그 미리보기(pointer-events:none · 일시) */
+}
 :root {
   --bg: #0d1117;
   --bar: #161b22;
@@ -60,6 +77,14 @@ html, body {
   padding: 4px 12px; cursor: pointer; font-size: calc(12px * var(--ui-chrome-scale));
 }
 #topbar button:hover { border-color: var(--accent); }
+/* 아이콘 버튼(New·Split·Close·Files) — 글자 대신 16px 인라인 SVG(index.html). 정사각에 가까운 28×26으로
+   글자 버튼(≈25px)과 높이를 맞추고, svg 는 stroke=currentColor 라 위 #topbar button 의 color(var(--text))를
+   그대로 따른다(--text 는 배경 테마 커스텀과 무관한 크롬 고정색 — applyBgColor 가 건드리지 않음). hover 는 위 규칙 상속. */
+#topbar button.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 26px; padding: 0; flex: none; line-height: 0;
+}
+#topbar button.icon-btn svg { width: 16px; height: 16px; display: block; pointer-events: none; }
 .badge {
   display: inline-block; min-width: 16px; padding: 0 4px;
   border-radius: 8px; background: var(--error); color: #fff;
@@ -69,6 +94,15 @@ html, body {
 .badge[hidden] { display: none; }
 /* 업데이트 배지 "0"(최신 확인) — 경고색 대신 중립(확인 완료·대기 0건의 안심 신호) */
 .badge.ok { background: #21262d; color: #8b949e; border: 1px solid var(--border); }
+/* ★짝 규칙(Directive · 아래 #cc-panel 주석과 같은 함정): 위 .badge 의 display:inline-block 이 HTML hidden
+   (UA [hidden]{display:none} · 명시도 열세)을 이겨, 코드가 badge.hidden=true 를 해도 화면에 남았다(첫 커밋부터).
+   그래서 Control Center 옆 빨간 0(승인 대기 0건)이 늘 보였고, Update 옆 '!'·'↻'가 확인 전·팩 설치 뒤에도 남아
+   "숫자가 떠 있는데 눌러 보면 최신"이 됐다(U9 · 0.14.41). 이 짝으로 세 배지(update·cc-pending·feed 탭)의
+   숨김이 코드 의도대로 작동한다 — 승인 대기 0건이면 빨간 0 이 사라지는 것이 의도다. 핀: hiddenpair.test.ts */
+.badge[hidden] { display: none; }
+/* 업데이트 배지 '?'(최신 여부 확인 불가 — 확인 실패·팩 정보 해석 불가·설치된 팩 상태 불명) — 빨강(조치 필요)도
+   회색(최신)도 아닌 주황 중립. 눌러서 창의 사유를 읽게 한다(U9 · 0.14.41). */
+.badge.warn { background: rgba(210,153,34,.15); color: var(--warn); border: 1px solid rgba(210,153,34,.45); }
 
 /* workspace sidebar — 좌측 별도 섹션·항목 가독성(제목 bold + 서브라인 dim) */
 #wsbar {
@@ -80,7 +114,7 @@ html, body {
 }
 #wsbar-drag {
   flex: none; width: 5px; cursor: col-resize; margin-left: -2px;
-  background: transparent; z-index: 5;
+  background: transparent; z-index: var(--z-pane-overlay);
 }
 #wsbar-drag:hover, body.wsbar-resizing #wsbar-drag { background: rgba(88,166,255,.35); }
 body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select: none; }
@@ -333,6 +367,10 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-dot.working { background: var(--ok); }
 .ws-dot.idle { background: var(--warn); }
 .ws-dot.error { background: var(--error); }
+/* ★0.14.41(U12·U4-A5①) 회색 '미확인' — 신호 없음·3×주기 넘게 낡음(초록 금지) · ○ 빈 자리 — 역할 이름표만 남은 셸
+   (빨간 사망 점과 섞지 않는다 · 크기 불변을 위해 inset 테두리). 판정은 seatsig.ts. */
+.ws-dot.unknown { background: #6e7681; }
+.ws-dot.hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--warn); }
 .ws-tab .ws-sub .sev-warn { color: var(--warn); }
 .ws-tab .ws-sub .sev-crit { color: var(--error); }
 /* 제목과 같은 행에 있는 칸이라 제목 비율을 따라간다(초판 11 → 11 × 20/13 = 16.92 ≈ 17px) */
@@ -355,6 +393,10 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
   padding: 0 2px;
 }
 #btn-ws-new:hover { color: var(--accent); }
+
+/* (1.1.8) 원작자 사이드바 바닥 꼬리(#wsbar-foot · U1 사용량 · U6 피드백 슬롯 · U17 전문가용) 규칙은 받지 않았다 — 우리 #ws-usage·#ws-expert 유지.
+   확인 창 본문의 공백 없는 긴 경로(윈도우 작업 폴더 등)가 가로로 넘치지 않게 — 모든 모달에 무해(원작자 규칙 수용). */
+.modal p { overflow-wrap: anywhere; }
 
 /* 06: 워크스페이스 그룹 헤더·body (기존 .ws-tab 변수·팔레트 재사용)
    ★글자 크기는 목록(.ws-tab)과 같은 축(--wsbar-font)에 맨다 — 오너 지시 2026-08-11 ⑶의
@@ -388,12 +430,12 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-tab.ws-dragging, .ws-group.ws-dragging { opacity: .4; }
 .ws-drop-indicator {
   position: fixed; height: 2px; background: var(--accent);
-  border-radius: 1px; z-index: 1200; pointer-events: none; /* 히트테스트 방해 차단 */
+  border-radius: 1px; z-index: var(--z-drop-indicator); pointer-events: none; /* 히트테스트 방해 차단 */
 }
 body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: none; }
 
 #ctx-menu {
-  position: fixed; z-index: 1000; min-width: 120px;
+  position: fixed; z-index: var(--z-ctx-menu); min-width: 120px;
   background: var(--bar); border: 1px solid var(--border); border-radius: 6px;
   padding: 4px; box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
   font-size: 12px;
@@ -406,7 +448,7 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 
 /* 배경 테마 팝오버 — btn-theme 하단. ctx-menu 톤(--bar/--border) 재사용. */
 #theme-pop {
-  position: fixed; z-index: 1000;
+  position: fixed; z-index: var(--z-ctx-menu);
   display: flex; flex-direction: column; gap: 8px;
   padding: 10px; min-width: 160px;
   background: var(--bar); border: 1px solid var(--border); border-radius: 8px;
@@ -445,7 +487,7 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
      거슬리지 않게. hover/drag 시 accent로 드러나 리사이즈 조작성 유지. (오너 2026-07-02: 완전
      비가시에서 한 단계 올림 — "아주 옅은 실선을 넣어서 시각적 구별은 가능하게") */
   flex: 0 0 1px; background: #151a21;
-  position: relative; z-index: 5;
+  position: relative; z-index: var(--z-pane-overlay);
 }
 /* 시각은 1px, 잡는 영역은 ±3px — 보이지 않는 히트존으로 리사이즈 조작성 보존 */
 .divider::before { content: ""; position: absolute; inset: 0; }
@@ -482,7 +524,7 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 
 /* ───────── T6 Control Center (전용 풀 패널 — 외장 Streamlit 대시보드의 네이티브 이식) ───────── */
 #cc-panel {
-  position: fixed; inset: 39px 0 0 0; z-index: 1500;
+  position: fixed; inset: 39px 0 0 0; z-index: var(--z-cc-panel);
   background: #0a0a0a; color: #e2e8f0; overflow-y: auto;
   font-family: -apple-system, "Pretendard Variable", system-ui, sans-serif;
 }
@@ -554,6 +596,8 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 .cc-dot.idle { background: #64748b; }
 .cc-dot.error { background: #ef4444; animation: cc-blink 1.4s infinite; }
 .cc-dot.offline { background: #1e293b; }
+/* ★0.14.41(U12 · 리뷰1 #2) CC Tasks 행의 빈 자리 — 사이드바 .ws-dot.hollow 와 같은 노란 테두리 원(빨간 사망 점과 섞지 않는다). */
+.cc-dot.hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--warn); }
 @keyframes cc-blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 .cc-fleet-state { font-size: 12px; color: #94a3b8; min-width: 46px; }
 .cc-tbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
@@ -619,11 +663,13 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 .cc-fail-badge.crit { background: rgba(239,68,68,.18); color: #ef4444; }
 .cc-agent-roles { font-size: 11px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
 /* E6 경보 — Live 스트립(헤더 개수 배지는 2026-09-15 제거 · TICKET=cysr-brand-version ⓔ) */
+/* ★0.14.41(U4-A5②) 경보 조회 불가 스트립 행(.cc-alert-row.unknown)은 아래 규칙 — 헤더 배지는 계속 없다. */
 .cc-alerts:empty { display: none; }
 .cc-alerts { display: flex; flex-direction: column; gap: 6px; }
 .cc-alert-row { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 10px; font-size: 13px;
   border: 1px solid rgba(245,158,11,.35); background: rgba(245,158,11,.08); color: #fcd34d; }
 .cc-alert-row.crit { border-color: rgba(239,68,68,.45); background: rgba(239,68,68,.10); color: #fca5a5; }
+.cc-alert-row.unknown { border-color: rgba(110,118,129,.45); background: rgba(110,118,129,.10); color: #8b949e; }
 .cc-alert-icon { flex: none; }
 .cc-alert-msg { font-weight: 600; }
 /* E4 세션 타임라인 탭 */
@@ -679,12 +725,12 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 .pane .pane-title { cursor: grab; }
 
 #drag-ghost {
-  position: fixed; z-index: 2000; pointer-events: none;
+  position: fixed; z-index: var(--z-drag-ghost); pointer-events: none;
   padding: 3px 10px; font-size: 11px; border-radius: 6px;
   background: var(--accent); color: #fff; opacity: .9; white-space: nowrap;
 }
 #drop-hint {
-  position: fixed; z-index: 1999; pointer-events: none;
+  position: fixed; z-index: var(--z-drop-hint); pointer-events: none;
   background: rgba(47, 129, 247, .25); border: 2px solid var(--accent);
   border-radius: 4px;
 }
@@ -716,6 +762,8 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
 }
 .ft-row:hover { background: #21262d; }
 .ft-row.dir { color: #79b8ff; }
+/* ★(0.14.41 · U18) macOS 폴더 접근 권한으로 막힌 폴더 — 빈 폴더처럼 보이지 않게 경고색 한 줄(표시 전용) */
+.ft-row.ft-blocked { color: #d29922; white-space: normal; }
 /* 승인 Feed — Control Center 탭으로 편입(독립 패널 폐기) */
 #cc-feed-items { display: flex; flex-direction: column; gap: 8px; }
 .feed-item {
@@ -748,13 +796,33 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
    그 뒤에 뜬 경보(「Claude Code CLI가 없습니다」·「❌ 에이전트 사망」)가 카드 뒤에 깔려 안 보였다(VM 실물 2회).
    경보는 어떤 알림 카드에도 가려지면 안 된다. 확인 창(1000)·Control Center(1500)·팔레트(1600)보다는 아래 그대로. */
 #toasts {
+  /* ★z var(--z-toast)(2026-09-23 수리): 안내·실패 토스트는 어떤 패널·확인 창보다 위다. 종전 99 는
+     #cc-panel(1500) 뒤라, Control Center 를 열어 둔 채 난 실패·안내가 전부 화면에서 사라졌다(알람 탭에는
+     남지만 사용자는 '아무 반응 없음'만 본다 — 팀 제안 카드 연타 때 busy 안내 6건이 그렇게 묻혔다). */
   position: fixed; right: 12px; bottom: 12px;
-  display: flex; flex-direction: column; gap: 8px; z-index: 950;
+  display: flex; flex-direction: column; gap: 8px; z-index: var(--z-toast);
   /* (v116-ui-close · Fable 2R) 60vh → 40vh: 복원 카드(오른쪽 위)와 세로 높이를 나눠 가진다 — 둘 다 길어져도 만나지
-     않게(카드 max-height 가 이 40vh 를 빼고 잡는다 · 두 값은 짝이다). 넘친 알림은 이 칸 안에서 스크롤된다. */
+     않게(카드 max-height 가 이 40vh 를 빼고 잡는다 · 두 값은 짝이다). 넘친 알림은 이 칸 안에서 스크롤된다.
+     (1.1.8) z 는 원작자 층서 토큰(--z-toast)을 쓴다 — 우리 950(복원 카드 900 위)보다 높아 그 관계도 그대로 성립. */
   max-height: 40vh; overflow-y: auto; overflow-x: hidden;
   padding: 2px; scrollbar-width: thin;
 }
+/* ★토스트 회피(2026-09-23): 토스트는 확인 창 위라, 오른쪽 아래에 그대로 두면 창 폭이 약 1324px 보다 좁을 때
+   (확인 창 오른쪽 끝 W/2+230 > 토스트 왼쪽 끝 W−432) 확인 창 버튼을 덮어 [만들기] 클릭을 가로챈다.
+   확인 창이 떠 있는 동안은 위로 비켜 놓고 높이를 화면 가운데 위(50vh−16px)까지로 묶는다 — 확인 창은 세로
+   가운데 정렬이고 버튼 줄은 언제나 창의 아래쪽 절반, 곧 화면 가운데보다 아래에 있다(넘치면 목록이 스크롤).
+   두 규칙은 결과가 같다: :has() 를 못 읽는 WebView 는 main.ts(syncModalOpenClass)가 거는 body.modal-open 으로
+   같은 결과를 낸다. ★한 선택자 목록으로 합치지 말 것 — :has() 를 모르는 엔진은 목록 전체를 버린다. */
+body:has(.modal-overlay) #toasts { bottom: auto; top: 56px; max-height: calc(50vh - 72px); }
+body.modal-open #toasts { bottom: auto; top: 56px; max-height: calc(50vh - 72px); }
+/* ★(0.14.42 리뷰 F2) 위 회피는 창의 아래쪽 절반만 지킨다 — 피드백·입력·업데이트·삭제 확인 창처럼 **위쪽**에 조작부
+   (닫기 ×·입력칸)가 있는 창은 좁은 창(1024×700 실측)에서 토스트가 그 조작부를 덮어 클릭을 가로챘다. 그래서 위에
+   남는 것은 확인 창(confirmModal · .confirm-overlay — 본문 + 아래 버튼 줄뿐)일 때뿐이고, 그 밖의 창이 하나라도
+   떠 있으면 토스트는 창 **밑**(Control Center 위)으로 내려 어둡게 비친다(feedbackmodal.ts "토스트는 창 밑" 계약과
+   같은 방향 · 창이 닫히면 제자리). 폴백 표지 body.toast-under-modal 은 main.ts syncModalOpenClass 가 건다 — 역시
+   한 선택자 목록으로 합치지 말 것. */
+body:has(.modal-overlay:not(.confirm-overlay)) #toasts { z-index: var(--z-toast-under-modal); }
+body.toast-under-modal #toasts { z-index: var(--z-toast-under-modal); }
 .toast {
   position: relative;
   max-width: 420px; padding: 10px 28px 10px 12px; border-radius: 8px;
@@ -801,7 +869,10 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
 
 /* 업데이트 확인 모달 */
 .modal-overlay {
-  position: fixed; inset: 0; z-index: 1000;
+  /* ★z var(--z-modal)(2026-09-23 수리): #cc-panel·.palette-overlay 위. 종전 1000 은 Control Center 패널
+     (불투명 · inset 39px 0 0 0) 뒤에 깔려, 승인 Feed 카드에서 연 확인 창이 화면에 보이지 않았다 = 클릭
+     무반응처럼 보이는 조용한 실패. 확인 창은 모든 패널 위가 계약이다(코드 쪽 짝: main.ts keepModalAboveOpenPanels). */
+  position: fixed; inset: 0; z-index: var(--z-modal);
   background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center;
 }
 .modal {
@@ -820,13 +891,92 @@ body.pane-dragging .pane .pane-title { cursor: grabbing; }
 /* ★D3a(purge-safety 2026-07-16): 비활성이 활성과 픽셀 동일해 "눌러도 무반응"으로 오인되던 실사고 —
    #btn-ws-dept:disabled(위 113행)와 동일 관용구로 모달 버튼 전체에 비활성 시각화. */
 .modal-btns button:disabled { opacity: .5; cursor: default; }
+/* U9 업데이트 상태 창(Update 클릭) — 본체·팩 두 행(현재→새 버전·실패 사유) + 마지막 확인 시각. .modal 재사용.
+   글자색은 상태 톤(최신 초록 · 설치 가능 빨강 · 불명 주황 · 미확인 회색). 행 레이아웃은 2열 격자. */
+.modal.upd-panel { min-width: min(440px, 92vw); max-width: min(560px, 92vw); }
+.modal .upd-headline { margin: 0 0 12px; font-weight: 600; white-space: normal; }
+.modal .upd-headline.ok { color: var(--ok); }
+.modal .upd-headline.alert { color: var(--error); }
+.modal .upd-headline.warn { color: var(--warn); }
+/* 리뷰1 F3: 미확인·확인 중('아직 확인 전'·'확인 중…')은 '최신'(ok=초록)과 다른 색이어야 한다. */
+.modal .upd-headline.muted { color: #8b949e; }
+.upd-rows { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0 0 10px; font-size: 13px; line-height: 1.5; }
+.upd-row { display: contents; }
+.upd-k { color: #8b949e; white-space: nowrap; }
+.upd-v { overflow-wrap: anywhere; }
+.upd-row.ok .upd-v { color: var(--ok); }
+.upd-row.alert .upd-v { color: var(--error); }
+.upd-row.warn .upd-v { color: var(--warn); }
+.upd-row.muted .upd-v { color: #8b949e; }
+.modal .upd-meta { margin: 0 0 14px; font-size: 11px; color: #8b949e; white-space: normal; }
 /* 완전삭제 확인 입력의 불일치 실시간 힌트(modal-trust 계열 경고색·빈 상태 높이 예약) */
 .modal-hint { font-size: 11px; color: #f59e0b; margin: 6px 0 0; min-height: 14px; }
 
+/* ★U6(0.14.41) 피드백 보내기 — 사이드바 바닥 단추(#wsbar-feedback-slot 안 · 공용 칸 #wsbar-foot 의 배치·
+   높이 규칙은 A2 소유라 여기서 건드리지 않는다)와 작성 창. 창은 .modal-overlay 기본층(var(--z-modal))을 그대로 쓴다
+   — 위에 뜨는 확인 창·자동 모달이 창 밑에 깔리지 않게(반박 D4). .feedback-overlay 에 z-index 를 주지 말 것. */
+#btn-feedback {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  width: calc(100% - 16px); margin: 6px 8px; padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--border); background: transparent; color: #8b949e; cursor: pointer;
+  font-family: inherit; font-size: calc(12px * var(--wsbar-font, 1)); text-align: left;
+}
+#btn-feedback:hover { color: var(--text); background: #1c2128; }
+#btn-feedback svg { flex: none; width: calc(14px * var(--wsbar-font, 1)); height: calc(14px * var(--wsbar-font, 1)); }
+#btn-feedback span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feedback-modal {
+  width: min(560px, calc(100vw - 32px)); max-width: 560px;
+  max-height: calc(100vh - 48px); overflow-y: auto;
+}
+/* 짝 규칙: 이 창 안에서 display 를 명시한 요소(.fb-confirm·.modal-btns 등)도 hidden 이면 사라진다. */
+.feedback-modal [hidden] { display: none !important; }
+.feedback-modal p { margin: 0 0 8px; font-size: 12px; line-height: 1.55; }
+.fb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.fb-head h3 { margin: 0; }
+.fb-x, .fb-att-x {
+  background: none; border: none; color: #8b949e; cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 6px;
+}
+.fb-x:hover, .fb-att-x:hover { color: var(--text); }
+.fb-desc { min-height: 110px; }
+.fb-drop { margin: 10px 0 6px; padding: 10px; border: 1px dashed rgba(255,255,255,.18); border-radius: 8px; }
+.fb-drop.over { border-color: var(--accent); background: rgba(47,129,247,.08); }
+.fb-drop-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: #94a3b8; }
+.fb-drop-hint { flex: 1; min-width: 180px; }
+.fb-btn {
+  padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--canvas-text); cursor: pointer; font-size: 12px; font-family: inherit;
+}
+.fb-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.fb-list li { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.fb-att-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fb-att-size { flex: none; color: #8b949e; }
+.feedback-modal p.fb-tip, .feedback-modal p.fb-size-note { font-size: 11px; color: #94a3b8; }
+.feedback-modal p.fb-warn { font-size: 11px; color: #f59e0b; }
+.fb-diag-row { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; margin: 4px 0 6px; }
+.fb-diag-pre {
+  max-height: 180px; overflow: auto; margin: 6px 0; padding: 8px; border-radius: 6px;
+  background: rgba(255,255,255,.04); font-size: 11px; white-space: pre-wrap; word-break: break-all;
+}
+.fb-privacy { margin: 8px 0; font-size: 11px; color: #94a3b8; }
+.fb-privacy summary { cursor: pointer; }
+.feedback-modal p.fb-privacy-body { margin: 6px 0 0; font-size: 11px; color: #94a3b8; }
+.fb-confirm {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; padding: 8px 10px;
+  border: 1px solid rgba(245,158,11,.30); border-radius: 6px; background: rgba(245,158,11,.06); font-size: 12px;
+}
+.fb-confirm span { flex: 1; min-width: 160px; }
+.feedback-modal p.fb-status { min-height: 16px; margin: 8px 0 0; }
+.fb-status.ok { color: var(--ok); }
+.fb-status.error { color: var(--error); }
+.fb-done-btns { flex-wrap: wrap; }
+.fb-copy-buf { position: absolute; left: -9999px; width: 1px; height: 1px; }
+
 /* 07 Command Palette (⌘K) — modal-overlay + ctx-menu 패턴 합성 */
 .palette-overlay {
-  /* z 1600: #cc-panel(1500) 위 — modal/ctx-menu(1000)도 위. #drag-ghost(2000)는 pointer-events:none 일시 프리뷰라 무관. confirm은 close 후 호출. */
-  position: fixed; inset: 0; z-index: 1600;
+  /* var(--z-palette): #cc-panel·ctx-menu 위, 확인 창(.modal-overlay) 아래. #drag-ghost 는 pointer-events:none 일시 프리뷰라 무관.
+     (2026-09-23) 종전에는 확인 창(1000)이 팔레트 아래라 "confirm 은 팔레트 close 후 호출"로 피했지만 그 우회는 CC 패널을
+     덮지 못했다 — 이제 층서로 확인 창이 둘 다의 위다. 액션 실행 전에 팔레트를 닫는 것은 UX 로 유지한다. */
+  position: fixed; inset: 0; z-index: var(--z-palette);
   background: rgba(0,0,0,.45); display: flex; align-items: flex-start; justify-content: center;
 }
 .palette {
@@ -952,6 +1102,9 @@ body.cc-glance #cc-view-feed .feed-item button { font-size: 16px; padding: 10px 
   animation: cc-sweep 0.9s linear infinite;
 }
 .dept-pending-msg { font-size: 13px; opacity: 0.8; }
+/* ★0.14.43(GU) 대기 화면의 단계 줄('지금: …') — 주 문구보다 한 단계 약하게. 비어 있으면(구 팩 · 단계 표지 전) 자리를 차지하지 않는다(:empty). */
+.dept-pending-stage { font-size: 12px; opacity: 0.65; margin-top: 6px; }
+.dept-pending-stage:empty { margin-top: 0; }
 /* 확보 못 한 부서 탭의 '지금 켜기' — 모달 버튼과 같은 관용구(비활성 시각화 포함).
    ★종전에는 이 상태가 아무것도 그리지 않는 백지였다(2026-09-17 성찰 3회). */
 .dept-idle-btn {
@@ -996,6 +1149,11 @@ body.cc-office #cc-view-office { flex: 1; min-height: 0; }
 /* 죽은 창·죽은 계정(데몬 stale 판정) — 사이드바 .wsu-rate.dead 와 같은 규율 */
 .cc-tbar.dead .cc-tbar-pct, .cc-tbar.dead .cc-tbar-reset { color: #64748b; }
 .cc-acct-row.dead { opacity: .5; }
+/* ★0.14.43 계정 행 — '● 사용 중' 배지(.on · 게이지와 같은 초록) · 오래된 관측(30분 초과·스냅샷)·숨긴 계정은 행 전체 흐림 · 숨기기/보이기 단추 */
+.cc-acct-badge.on { background: rgba(34,197,94,.16); color: #22c55e; }
+.cc-acct-row.dim { opacity: .55; }
+.cc-acct-hide { flex: none; margin-left: auto; font-size: 10px; padding: 1px 8px; border-radius: 8px; border: 1px solid rgba(148,163,184,.3); background: none; color: #94a3b8; cursor: pointer; }
+.cc-acct-hide:hover { color: #e2e8f0; border-color: rgba(226,232,240,.5); }
 #btn-cc-acct-redact { background: none; border: none; cursor: pointer; font-size: 12px; opacity: .5; padding: 0 4px; }
 #btn-cc-acct-redact.active { opacity: 1; }
 

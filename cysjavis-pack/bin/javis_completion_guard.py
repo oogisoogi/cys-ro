@@ -142,6 +142,7 @@ import re
 import signal
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import threading
 import time
 import uuid
@@ -325,8 +326,58 @@ def _surface_id():
 
 
 def _role():
-    """emit agent 필드 — env 파생(CYS_ROLE·데몬 주입 — javis_bootstrap :502 관례)."""
-    return os.environ.get("CYS_ROLE") or ("surface:%s" % (_surface_id() or "unknown"))
+    """emit `agent` 귀속 라벨 — **데몬 권위 우선**, env 폴백(0.14.31 P6 · 감사 codex E).
+
+    종전에는 `CYS_ROLE` env 만 읽었다. 승계(claim-role·takeover) 뒤 그 env 는 낡은 채로 남으므로
+    이벤트가 **옛 신원으로 귀속**됐다(원장·라운드 판독이 그 라벨로 행위자를 센다).
+    해소는 `javis_role`(디스크 캐시 60s · 프로세스 메모 1회 · 실패 백오프 30s)이 하므로 이 훅의
+    한 런에서 데몬 왕복은 **최대 1회 · 최대 2초**다(Stop 자체 데드라인 50s 안에서 유계).
+
+    ★실패 방향: 해소가 어떤 이유로든 답을 못 주면 **종전 표현식 그대로**
+      (`os.environ.get("CYS_ROLE") or "surface:<id>"`)다. **빈 라벨은 만들지 않는다** —
+      진단 식별자가 사라지면 이벤트가 누구 것인지 말할 수 없게 된다(codex R1). 예외는 여기서
+      삼킨다: 라벨 하나 때문에 Stop 판정이 fail-open 으로 끝나면 그것이 더 큰 손실이다.
+
+    ★R1 교정 두 가지(reviewer-codex):
+      ① 종전 코드는 해소기가 **env 폴백**으로 낸 값도 그대로 라벨로 썼다 — 그러면
+         `CYS_ROLE=" cso "` 가 조용히 `"cso"` 로 바뀌는 등 '판정 불가면 종전 그대로'라는
+         약속이 라벨 층에서 거짓이 됐다. 지금은 **권위 있는 출처일 때만** 해소기 답을 쓴다.
+      ② 권위 있는 무역할의 주소 라벨은 해소기의 **정규 신원**(`javis_role.surface_id()` ·
+         `JAVIS_SURFACE_ID`·`surface:<n>` 접두까지 Rust 규칙대로 해석)으로 만든다.
+         이 파일의 지역 `_surface_id()` 는 JAVIS_ 키를 모르고 구두점을 지워
+         `surface:unknown`·`surface:surface12` 같은 틀린 라벨을 냈다.
+    """
+    # ★0.14.31 성찰 G15(minor): 주소 라벨은 **두 갈래 모두** 해소기의 정규 신원으로 만든다.
+    #   종전은 권위 갈래만 `javis_role.surface_id()` 를 썼고 폴백 갈래는 지역 `_surface_id()` 라
+    #   `CYS_SURFACE_ID="surface:12"` 가 `surface:12` / `surface:surface12`, `"007"` 이 `surface:7` /
+    #   `surface:007` 로 갈렸다 — **데몬이 답했는지에 따라 같은 좌석이 두 행위자**로 원장에 남았다
+    #   (원장·라운드 판독이 이 라벨로 행위자를 센다). 지역 파서는 그 실패 시의 마지막 폴백이다.
+    _fallback = _canonical_surface_label()
+    try:
+        import javis_role as _rm
+        role, src = _rm.resolve_role_detail()
+        if _rm.is_authoritative(src):
+            if role:
+                return role
+            # 데몬이 '역할 없음'을 확정했다 — 그 자리에 stale env 를 되살리면 이 함수가 고치려는
+            # 바로 그 오귀속이 남는다. 주소로 귀속한다(라벨은 비지 않는다).
+            return _fallback
+    except Exception:
+        pass
+    return os.environ.get("CYS_ROLE") or _fallback
+
+
+def _canonical_surface_label():
+    """`surface:<정규 신원>` — 해소기(`javis_role.surface_id()` · JAVIS_/AITERM_ 키·`surface:` 접두·
+    선두 0 을 Rust 규칙대로 해석)를 먼저 쓰고, 그 모듈이 없거나 신원을 못 내면 지역 `_surface_id()`,
+    그것도 비면 `unknown`(라벨은 비지 않는다 — 진단 식별자가 사라지면 누구 것인지 말할 수 없다)."""
+    sid = ""
+    try:
+        import javis_role as _rm
+        sid = _rm.surface_id() or ""
+    except Exception:
+        sid = ""
+    return "surface:%s" % (sid or _surface_id() or "unknown")
 
 
 def _esc_n():

@@ -46,6 +46,7 @@ import re
 import signal
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import threading
 import time
 
@@ -90,6 +91,13 @@ except ImportError:  # Windows
                 os.lseek(fd, pos, os.SEEK_SET)
 
     fcntl = _FcntlShim()
+
+# ★U5(0.14.41) — 캡처 호출 창 정책: verifier 는 **빈 dict**(창 정책 없음)이 정답이다.
+#   verifier 워처는 `cys new-surface` pane(ConPTY) 안에서 포그라운드로 돈다 — 그 자식은 pane 의
+#   콘솔을 물려받아 창이 뜨지 않고, ConPTY 쪽 자식에 CREATE_NO_WINDOW 를 거는 것은 금지다(검은 pane ·
+#   22ff28f6). 이 이름은 CONTRACT BLOCK 의 run() 이 쓰므로 **지우면 안 된다**(NameError → rc 127 →
+#   fail-closed). autopilot 은 pane 밖 1분 잡이라 nt 에서 NOWIN 을 건다(그쪽 주석 · H-WIN-13).
+_CAPTURE_SPAWN_KW = {}
 
 # ═══════════════════════ CONTRACT BLOCK v1 START ═══════════════════════
 # ★이 블록은 javis_cycle_autopilot.py / javis_cycle_verifier.py 에 **바이트 동일**하게 존재한다.
@@ -162,7 +170,10 @@ LOG_MAX_BYTES = 4096
 HEARTBEAT_MAX_AGE = 90.0      # 게이트6 — 검증자 워처 생존 판정 창
 HEARTBEAT_TOUCH_SECS = 30.0   # 워처 touch 주기
 STAGE2_WINDOW = 120.0         # cys cycle-agent --timeout 기본값 = 검증자 신선도 기준선 폭
-CYCLE_AGENT_TIMEOUT = 120     # --timeout (예산표: 120*2 + settle 75 + 검증 <= 510s)
+CYCLE_AGENT_TIMEOUT = 120     # --timeout (단계당 · 1콜 전체는 단일 전체 시한 570s 로 잘림 — 점유 대기 포함 · 데몬 응답 가정 · cys.rs CycleBudget)
+#   ★사전 턴 확인이 --timeout 한 벌, 재주입 직전 유휴 대기가 CLEAR_VERIFY_SECS(75) 한 벌을 더 쓴다.
+#   재주입 직전 유휴 대기로 quiescing 유지 구간도 길어진다.
+#   LEASE_TTL(900) 안이며, 인계는 'lease 갱신 없음 + pid 사망' 둘 다일 때만이라 산 실행은 뺏기지 않는다.
 VERIFIER_ROLE = "cycle-verifier"
 CYS = "cys"
 RUN_TIMEOUT = 25.0
@@ -202,6 +213,7 @@ def new_cycle_id():
 def run(cmd, timeout=RUN_TIMEOUT, stdin_text=None):
     """subprocess 러너 — (rc, stdout, stderr). 예외도 rc!=0 로 정규화(fail-soft)."""
     try:
+        # 창 정책은 블록 밖 `_CAPTURE_SPAWN_KW`(파일별 정의 — autopilot=nt NOWIN · verifier=빈 dict).
         p = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=timeout, input=stdin_text, **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""

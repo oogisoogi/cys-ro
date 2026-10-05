@@ -7,9 +7,32 @@
 . "$(dirname "$0")/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \
   || { echo "[cys-hook] _lib.sh 소실 — 훅 강등(session-start)" >&2; exit 0; }
+command -v cys_lane_redirect >/dev/null 2>&1 && cys_lane_redirect "$@"
 
 JARVIS_DIR="${CYS_PACK_DIR:-$HOME/.cys/pack}"
-[ -d "$JARVIS_DIR" ] || exit 0
+# ── ★(0.14.41 U4 C2 ①) 역할 지침 미주입 **사실 고지** ─────────────────────────────────────
+# 역할이 확정된 좌석인데 지침을 못 읽으면 종전엔 한 글자 없이 exit 0 이었다 — /clear·compact 뒤
+# 좌석이 지침 없이 앉고 모델은 그 사실조차 모른다(치명위험 ③ 바보 좌석). 이제 stdout(=모델
+# 컨텍스트)에 **사실만** 남긴다. exit 0 은 그대로다(훅 비0 은 세션 시작 오류로 번질 수 있다).
+#   · 보고 지시·push 를 하지 않는다: clear 주기마다 전 좌석이 같은 보고를 밀면 약한 ① 폭주 경로가
+#     되고, master 좌석에게 "보고하라"는 자기 참조다(반박 D8-b·c).
+#   · stderr 에 쓰지 않는다: 종료코드 0 훅의 stderr 는 사람에게도 모델에게도 보이지 않는다(R13).
+#   · 경로 줄은 printf 만(G8 — macOS /bin/sh 의 xpg_echo 가 윈도우 백슬래시 경로를 먹는다).
+cys_ss_directive_absent() {   # $1=지침 위치 · $2=사유
+  printf '■ 고지: 역할 지침을 주입하지 못했다(CYS_ROLE=%s) — 이 세션은 역할 지침 없이 시작됐다.\n' "${CYS_ROLE:-}"
+  printf '  지침 위치: %s (%s)\n' "$1" "$2"
+  echo "  팩 설치 상태는 preflight C01(팩 폴더)·C02(지침 4종)가 판정한다."
+}
+if [ ! -d "$JARVIS_DIR" ]; then
+  # 팩 폴더 부재(부서 팩 결손·재설치 중 — 레인 가드는 레인 팩이 없으면 그냥 통과시킨다). 고지는
+  # **cys pane 안 + 지침 역할군**일 때만: 밖(일반 터미널)·무역할 세션은 종전대로 침묵이 안전선이다.
+  if command -v cys_have_surface >/dev/null 2>&1 && cys_have_surface; then
+    case "${CYS_ROLE:-}" in
+      master|worker*|cso*|reviewer*) cys_ss_directive_absent "$JARVIS_DIR" "팩 폴더 없음" ;;
+    esac
+  fi
+  exit 0
+fi
 # cys 터미널 surface 안에서만 발동 (cysd가 CYS_SURFACE_ID를 주입한다).
 # 밖(외부·일반 터미널)에서 cys 환경선언을 주입하면 역혼란 — 침묵이 안전선.
 # ★게이트 술어는 프리루드 단일 소유(cys_require_surface) — role-bootstrap.sh와 동일 규약(A2).
@@ -31,12 +54,47 @@ if [ ! -t 0 ]; then
   IFS= read -r HOOK_IN || true
 fi
 if [ -n "$HOOK_IN" ] && command -v cys >/dev/null 2>&1 && [ -n "$CYS_PY" ]; then
-  TP=$(printf '%s\n' "$HOOK_IN" | "$CYS_PY" -c 'import sys,json
+  # readline 한정 — stdin 전량 소비로 같은 stdin을 보는 후속 처리를 굶기지 않는다
+  # (hook 입력 JSON은 단일 라인)
+  # ★R3-1(0.14.42) 같은 한 줄에서 `source` 도 읽는다 — `<source>|<transcript_path>` 한 줄(source 는 알려진 값만,
+  #   아니면 빈 값). 경로 쪽 꼬리는 종전 `print(transcript_path)` 와 같은 바이트다(첫 `|` 뒤 전부 = 경로).
+  #   transcript_path 가 null 이면 빈 값 → 호출 0(종전은 문자열 "None" 으로 불러 데몬이 거부했다).
+  #   /clear 면 데몬이 resume 핀을 새 세션으로 바꾼다(좌석 최상위 claude 로 증명될 때만 — 판정은 데몬).
+  #   clear 가 아닌 SessionStart 는 종전 호출 그대로다(바이트 동일).
+  #   clear 호출의 실패 처리(실패 방향 = 종전 동작, 핀은 옛 대화로 남는다):
+  #   · 상한 10s(`cys_timeout_run` · 타임아웃 rc 124). 종전 단일 호출은 RPC 무진행 상한 40s 가 전부였다 — 이 훅의
+  #     뒤 단계(역할 예산 12s·--version 3s·claim 2s)와 합쳐 SessionStart 상한(30s) 안에 들게 한다.
+  #   · `CYS_NO_AUTOSTART=1` — 역할 조회 블록과 같은 규약(세션 시작 훅이 내려간 데몬을 되살리지 않는다).
+  #   · 플래그 없이 다시 부르는 것은 **rc 2 일 때만**: 옛 cys 가 `--source` 를 모르면 clap 사용 오류 rc 2 다.
+  #     요청 실패(데몬 오류·거부·데몬 부재)는 rc 1, 타임아웃은 124 — 그때 다시 부르면 같은 대기를 한 번 더 할 뿐이다.
+  #     rc 2 의 다른 원천(autostart 거절 · EXIT_AUTOSTART_REFUSED)은 즉시 끝나므로 재호출도 즉시 끝난다.
+  #   · rc 는 호출 바로 다음 줄에서 한 번만 읽는다(사이에 낀 명령이 `$?` 의 주인이 된다).
+  #   ★(0.14.42 · WIN-1) 말미 `tr -d '\r'` — 네이티브 Windows python 은 파이프에도 \r\n 을 쓴다(inject-context.sh:27
+  #   규약 · 실기 run 31404860883). 없으면 경로 꼬리에 CR 이 붙어 데몬이 invalid_params 로 거부하고(재핀 도달 0), null 경로도
+  #   빈 값이 아니라 "\r" 이 되어 호출 0 계약이 깨진다. 판정 rc 를 쓰지 않는 줄이라 rc 규율과 무관하다.
+  SS=$(printf '%s\n' "$HOOK_IN" | "$CYS_PY" -c 'import sys,json
 try:
-    print(json.loads(sys.stdin.readline()).get("transcript_path",""))
+    d=json.loads(sys.stdin.readline())
+    s=d.get("source")
+    s=s if s in ("startup","resume","clear","compact") else ""
+    print(s+"|"+str(d.get("transcript_path") or ""))
 except Exception:
-    print("")' 2>/dev/null)
-  [ -n "$TP" ] && cys usage-register --transcript "$TP" >/dev/null 2>&1
+    print("")' 2>/dev/null | tr -d '\r')
+  SS_SRC=${SS%%|*}
+  TP=${SS#*|}
+  if [ -n "$TP" ]; then
+    if [ "$SS_SRC" = clear ]; then
+      ( CYS_NO_AUTOSTART=1; export CYS_NO_AUTOSTART
+        cys_timeout_run 10 cys usage-register --transcript "$TP" --source clear </dev/null >/dev/null 2>&1 )
+      CYS_UR_RC=$?
+      if [ "$CYS_UR_RC" -eq 2 ]; then
+        ( CYS_NO_AUTOSTART=1; export CYS_NO_AUTOSTART
+          cys_timeout_run 10 cys usage-register --transcript "$TP" </dev/null >/dev/null 2>&1 )
+      fi
+    else
+      cys usage-register --transcript "$TP" >/dev/null 2>&1
+    fi
+  fi
 fi
 
 # ── G8: 부트 브리지 안내 명령을 **실행 가능한 문자열**로 조립 ──
@@ -46,6 +104,235 @@ fi
 # cys_native_path(cygpath 가드)+cys_shquote로 unix 무변경·Windows 실행가능을 동시에 만족한다.
 BOOT_PY="$JARVIS_DIR/bin/javis_bootstrap.py"
 BOOT_CMD="$(cys_shquote "${CYS_PY:-python3}") $(cys_shquote "$(cys_native_path "$BOOT_PY")")"
+
+# ── ★(0.14.31 · WP-4 · 감사 에러 2) 데몬 권위 역할 조회 — 자동 복구 + stale 각성 강등 ───────
+# 데몬을 재시작하거나 사람이 손으로 pane 을 띄우면, 죽은 에이전트의 **빈 셸 좌석**이 역할 주소를
+# 그대로 쥔 채 남는다. 역할은 '있는데' 그 자리에 아무도 없고, 새 pane 은 지침 없이 앉는다
+# (치명위험 ③ 바보 좌석 · `--to <role>` 배달은 빈 셸로 사라진다).
+# 반대 방향의 짝도 있다: 그 승계가 **일어난 뒤** 전임자 셸에는 `CYS_ROLE` 이 그대로 남아 있어,
+# 그 pane 에서 claude 를 다시 띄우면 같은 역할 지침이 또 주입된다 — 두 세션이 같은 역할이라고
+# 믿는다(적대검증 R1 major).
+#
+# 그래서 디렉티브 선택 **앞**에서 데몬에게 두 번 묻는다 — `CYS_ROLE` 이 비어 있든 아니든:
+#   ① `cys surface-role` — **판정 가능성** 프로브다. exit 2 = 데몬 미응답·응답 파손(판정 불가)이고,
+#      그때는 아무 것도 하지 않는다(모르는 상태에서 역할을 옮기지도, 내리지도 않는다). 이 명령의
+#      *출력*은 채택하지 않는다 — 그 값은 자기신고 `CYS_SURFACE_ID` 로 고른 항목이라 신원 증거가
+#      아니다.
+#   ② `cys reclaim-role --auto` — **데몬이 발신 pid 로 인증한** 좌석 기준의 판정이다. stdout 3줄:
+#      `role=<name|>` · `reason=<code>` · `env_role=<self|other_live|other_exited|vacant|unknown>`.
+#
+# 채택 규칙(★R2 개정 — **데몬의 답이 이긴다**):
+#   ⓐ **채택**: `role=<name>` 이 오면 `CYS_ROLE` 의 유무·값과 **무관하게** 그 역할로 각성한다
+#      (비었으면 복구 · 다르면 교정). 종전처럼 `CYS_ROLE` 이 빈 경우로 한정하면, 데몬이 이미
+#      결합을 커밋했거나(reason=bound) 이 좌석이 정당하게 다른 이름(worker-2)을 쥔 경우에
+#      **stale env 가 권위를 이긴다** — 정본 §8("CYS_ROLE 을 권위로 쓰지 않는다") 위반이고
+#      두 리뷰어가 실행으로 재현한 blocking 이다.
+#   ⓑ **강등**: `role=` 이 **비어 있고**(데몬이 이 좌석을 무역할로 판정했고) 그와 동시에
+#      `env_role=other_live` — 즉 신고한 `CYS_ROLE` 을 **지금 다른 살아있는 좌석**이 쥐고 있을
+#      때만. 지침을 주입하지 않고 인계 안내 후 종료한다(master|cso 재대조의 self-demote 와 같은
+#      문안 규약). ★두 조건을 AND 로 묶는다 — 어느 한쪽만으로 내리면 경합 한 번에 살아 있는
+#      좌석이 지침을 잃는다(치명위험 ③). 강등은 **모순의 증거**가 둘 다 있을 때만이다.
+#
+# 실패는 전부 한 방향이다 — **무결합 · 무강등 · 종전 경로**. 구 데몬·미응답·타임아웃·후보 모호는
+# 모두 `role=` + `env_role=unknown` 이고, 그러면 이 블록은 아무 것도 하지 않은 것과 같다(무회귀).
+# Windows(Git Bash): `ps`·`flock` 없음 · `timeout` 은 System32 함정이 있어 `cys_timeout_run`
+# (GNU 판별 후 python 폴백)만 쓴다. 데드라인은 CLI 내부 두 왕복 합(10s)보다 **크게** 잡는다 —
+# 밖에서 먼저 죽이면 "데몬은 결합했는데 훅은 그 사실을 못 들은" 상태가 된다.
+# ★경로 표기: `$PWD`·`$CLAUDE_CONFIG_DIR` 은 Git Bash 에서 MSYS 표기(`/c/…`)인데 데몬은 네이티브
+#   (`C:\…`)를 기록한다 — 원문 그대로 넘기면 두 축이 **항상** 어긋나 Windows 의 모든 호출이
+#   무결합이 된다(WP-4 가 그 플랫폼에 배포되지 않는다). 팩이 이미 쓰는 `cys_native_path`
+#   (cygpath 가드 · unix 는 무변환)로 접어서 넘긴다(`_lib.sh` 의 CYS_STATE_DIR 과 같은 이유).
+# ★두 왕복 합에 **하나의 예산**(0.14.31 성찰 G8 · major): 종전은 surface-role 5s + reclaim-role
+#   12s 가 각자 데드라인이라 데몬 의존 합계가 17s 였고, SessionStart 는 preflight `HOOK_TIMEOUT_S`
+#   표에 항목이 없어 플랫폼 기본(30s)이 천장이었다. 부트 폭풍(N pane 동시 기동 → 한 데몬이 2N
+#   왕복을 직렬화)에서는 훅 전체가 취소되고 취소의 귀결은 **지침 미주입** — 이 훅이 막으려던
+#   바보 좌석을 전 pane 동시에 만든다. 그래서 두 왕복이 예산 하나(12s = 종전 reclaim 단독 몫)를
+#   나눠 쓴다: surface-role 프로브 뒤 경과를 재서 남은 예산을 reclaim 데드라인으로 준다.
+#   ★바닥(10s)은 CLI 내부 총예산(`run_reclaim_role` — 1차 7.5s + 조정 2.5s)이다. 그 아래로
+#     깎아 밖에서 먼저 죽이면 "데몬은 결합했는데 훅은 못 들은" 상태(치명위험 ③)가 되므로,
+#     남은 예산이 바닥에 못 미치면 reclaim 을 **건너뛴다**(무채택·무강등·종전 경로 — 이 블록의
+#     선언된 실패 방향). 느린 데몬에서 자동 복구를 한 번 놓치는 것이 전 pane 지침 소실보다 낫다.
+#   ★`date +%s` 실패(0)면 경과를 0 으로 본다 — 시계를 못 읽었다고 복구를 끄지 않는다.
+CYS_SS_ROLE_BUDGET_S=12
+CYS_SS_RECLAIM_MIN_S=10
+CYS_DEMOTE_ROLE=""
+if [ -n "${CYS_SURFACE_ID:-}" ] && [ -n "${PWD:-}" ] && command -v cys >/dev/null 2>&1; then
+  CYS_SS_T0="$(date +%s 2>/dev/null || printf '0')"
+  case "$CYS_SS_T0" in ''|*[!0-9]*) CYS_SS_T0=0 ;; esac
+  # ★`CYS_NO_AUTOSTART=1`(0.14.31 성찰 G5 · 봉인된 형제 `_lib.sh:768` 과 같은 형태):
+  #   소켓이 없으면 `cys` 는 autostart 경로에서 형제 `cysd` 를 detached 로 스폰한 뒤 폴링한다 —
+  #   밖의 데드라인이 죽여도 **스폰은 이미 일어났다**. 운영자가 의도적으로 내린 데몬이
+  #   세션 시작 훅 하나로 되살아나서는 안 된다(역할을 묻는 행위가 데몬을 낳지 않는다).
+  ( CYS_NO_AUTOSTART=1; export CYS_NO_AUTOSTART
+    cys_timeout_run 5 cys surface-role </dev/null >/dev/null 2>&1 )
+  CYS_SR_RC=$?
+  CYS_SS_T1="$(date +%s 2>/dev/null || printf '0')"
+  case "$CYS_SS_T1" in ''|*[!0-9]*) CYS_SS_T1=0 ;; esac
+  CYS_SS_ELAPSED=0
+  if [ "$CYS_SS_T0" -gt 0 ] && [ "$CYS_SS_T1" -ge "$CYS_SS_T0" ]; then
+    CYS_SS_ELAPSED=$((CYS_SS_T1 - CYS_SS_T0))
+  fi
+  CYS_SS_RECLAIM_DEADLINE=$((CYS_SS_ROLE_BUDGET_S - CYS_SS_ELAPSED))
+  # rc 2 = 판정 불가(데몬 미응답·응답 파손) · rc 124 = 데드라인 초과(hang). 둘 다 "모른다"이므로
+  # 조회를 시도하지 않는다 — 두 번째 왕복으로 훅을 또 12초 붙잡지도 않는다(사람의 프롬프트 앞이다).
+  if [ "$CYS_SR_RC" -eq 2 ] || [ "$CYS_SR_RC" -eq 124 ]; then
+    if [ -z "$CYS_ROLE" ]; then
+      echo "■ 고지: 역할 판정 불가(데몬 미응답·응답 파손·데드라인) — 자동 역할 복구를 건너뛴다."
+    fi
+  else
+    # ★(독립 재유도 · codex major #7) **종료 코드를 파이프 밖에서 받는다.** 종전은
+    #   `$(cmd | tr -d '\r')` 라 파이프 마지막 단계(`tr`)의 rc 가 잡혀 reclaim 명령의 실패가
+    #   구조적으로 보이지 않았다 — 소켓이 끊겨 에러 문면이 나와도 '정상 응답'과 같은 값이 됐다.
+    #   판정은 리다이렉트 뒤 `rc=$?` 하나로만 뜨고, `\r` 제거는 그 뒤에 따로 한다.
+    if [ "$CYS_SS_RECLAIM_DEADLINE" -lt "$CYS_SS_RECLAIM_MIN_S" ]; then
+      # 예산 밖 = **판정 없음**(아래 ⓒ invalid_reply 경로 그대로: 무채택·무강등). 데몬을 죽이지도
+      # 커밋 도중에 끊지도 않는다 — 다음 SessionStart(/clear·compact)가 다시 시도한다.
+      CYS_RECLAIM_OUT=""
+      CYS_RECLAIM_RC=124
+      if [ -z "$CYS_ROLE" ]; then
+        echo "■ 고지: 데몬 응답이 느려 역할 자동 복구를 건너뛴다(역할 조회 예산 ${CYS_SS_ROLE_BUDGET_S}s 중 ${CYS_SS_ELAPSED}s 소진 · reclaim 최소 ${CYS_SS_RECLAIM_MIN_S}s 미확보) — 다음 세션 시작에서 다시 시도한다."
+      fi
+    else
+    CYS_RECLAIM_OUT="$( CYS_NO_AUTOSTART=1; export CYS_NO_AUTOSTART
+      cys_timeout_run "$CYS_SS_RECLAIM_DEADLINE" cys reclaim-role --auto \
+      --config "$(cys_native_path "${CLAUDE_CONFIG_DIR:-}")" \
+      --cwd "$(cys_native_path "$PWD")" \
+      --env-role "${CYS_ROLE:-}" </dev/null 2>/dev/null )"
+    CYS_RECLAIM_RC=$?
+    fi
+    CYS_RECLAIM_OUT="$(printf '%s\n' "$CYS_RECLAIM_OUT" | tr -d '\r')"
+    CYS_RC_L1="$(printf '%s\n' "$CYS_RECLAIM_OUT" | sed -n 1p)"
+    CYS_RC_L2="$(printf '%s\n' "$CYS_RECLAIM_OUT" | sed -n 2p)"
+    CYS_RC_L3="$(printf '%s\n' "$CYS_RECLAIM_OUT" | sed -n 3p)"
+    # ★(수렴 R2) 넷째 줄 `detail=` 은 **사유 코드가 아니라 진단 축**이다. 사유 어휘를 늘리지
+    #   않고 "같은 무결합인데 처방이 다른" 경우만 가른다. 구 바이너리는 이 줄을 내지 않으므로
+    #   빈 값이 되고 종전과 완전히 같아진다(스큐 안전).
+    CYS_RC_L4="$(printf '%s\n' "$CYS_RECLAIM_OUT" | sed -n 4p)"
+    # ── ★(독립 재유도 · codex major #7) 응답을 **세 갈래로** 가른다 ────────────────────
+    #   종전에는 셋이 한 값(`CYS_RECLAIMED=""`)으로 접혔다:
+    #     ⓐ `valid_empty`  — 첫 줄이 **정확히** `role=` (데몬이 판정해서 '무역할'이라고 답함)
+    #     ⓑ `valid_role`   — 첫 줄이 `role=<역할명>` 이고 형식 가드를 통과
+    #     ⓒ `invalid_reply`— 첫 줄이 계약 형식이 아니거나 · 역할명이 형식 가드 탈락이거나 ·
+    #                        명령 자체가 비0 으로 끝났다(소켓 끊김·깨진 출력·부분 출력)
+    #   ⓒ 를 ⓐ 로 읽으면 `env_role=other_live` 와 만나 **강등**으로 떨어진다 — 데몬이 방금
+    #   결합해 준 좌석까지 지침 0 으로 만드는 경로다(치명위험 ③ 바보 좌석). 손상된 응답은
+    #   '판정 없음'이지 '무역할 판정'이 아니다. ⓒ 에서는 사유·env_role 도 신뢰하지 않는다
+    #   (같은 손상된 출력에서 온 줄이다) → 종전 경로 그대로: 무채택·무강등·무고지.
+    CYS_RC_KIND="invalid_reply"
+    if [ "$CYS_RECLAIM_RC" -eq 0 ]; then
+      case "$CYS_RC_L1" in
+        role=) CYS_RC_KIND="valid_empty" ;;
+        role=*)
+          # 형식 가드: 데몬 유래 값이지만 이 뒤로 `case` 매칭·파일 경로 조립에 들어가므로
+          # 역할명 문자집합([a-zA-Z0-9_-])을 벗어나면 **채택하지 않는다**(GUI srcRole 가드와
+          # 같은 규율). 탈락은 '무역할'이 아니라 손상이다.
+          case "${CYS_RC_L1#role=}" in
+            *[!a-zA-Z0-9_-]*) CYS_RC_KIND="invalid_reply" ;;
+            *)                CYS_RC_KIND="valid_role" ;;
+          esac
+          ;;
+        *) CYS_RC_KIND="invalid_reply" ;;
+      esac
+    fi
+    CYS_RECLAIMED=""
+    CYS_RC_REASON=""
+    CYS_RC_DETAIL=""
+    CYS_ENV_ROLE_STATE="unknown"
+    if [ "$CYS_RC_KIND" != "invalid_reply" ]; then
+      if [ "$CYS_RC_KIND" = "valid_role" ]; then
+        CYS_RECLAIMED="${CYS_RC_L1#role=}"
+      fi
+      case "$CYS_RC_L2" in
+        reason=*) CYS_RC_REASON="${CYS_RC_L2#reason=}" ;;
+      esac
+      case "$CYS_RC_L3" in
+        env_role=*) CYS_ENV_ROLE_STATE="${CYS_RC_L3#env_role=}" ;;
+      esac
+      case "$CYS_RC_L4" in
+        detail=*) CYS_RC_DETAIL="${CYS_RC_L4#detail=}" ;;
+      esac
+    fi
+    # ── ★(0.14.31 · 리뷰 R2 · blocking ×2) 채택 규칙: **데몬의 답이 이긴다** ──────────────
+    # 종전 규칙은 `role=` 을 `CYS_ROLE` 이 **비어 있을 때만** 채택하고, 그렇지 않으면
+    # `env_role=other_live` 하나만 보고 강등했다. 두 리뷰어가 각각 그 규칙의 반례를 실행으로
+    # 재현했다(2026-09-08):
+    #   ① 데몬이 `role=cso/reason=bound` 로 **결합을 커밋**했는데(그 커밋은 `CYS_ROLE` 을 보지
+    #      않는다 — `reclaim_commit`), 훅은 `CYS_ROLE=worker` 가 비어 있지 않다는 이유로 그 답을
+    #      버리고 **worker 지침**을 주입했다. 데몬과 세션이 서로 다른 역할을 믿는다.
+    #   ② worker 중복제거로 이 좌석이 정당하게 `worker-2` 를 쥐고 있고(`CYS_ROLE=worker` 는
+    #      stale), 데몬이 `role=worker-2/env_role=other_live` 로 답했는데, 훅은 그 답을 버리고
+    #      `other_live` 만 보고 **강등**했다 — 살아 있는 역할 좌석이 지침 0(치명위험 ③).
+    # 그래서 규칙을 하나로 접는다: **`role=` 이 비어 있지 않으면 그것이 이 좌석의 역할이다.**
+    #   ⓐ 채택 — `CYS_ROLE` 이 비었으면 복구, 값이 다르면 **교정**(둘 다 데몬 권위 채택이다).
+    #   ⓑ 강등 — `role=` 이 **비어 있고**(데몬이 "이 좌석은 무역할"이라고 답했고) 신고한
+    #      `CYS_ROLE` 을 **다른 살아있는 좌석**이 쥐었을 때(`env_role=other_live`)만.
+    #      두 조건을 AND 로 묶는 이유: 어느 한쪽만으로 내리면 경합 한 번에 정당한 좌석이
+    #      지침을 잃는다(적대검증 R1 에서 이미 확인한 방향).
+    # 실패는 여전히 한 방향이다 — 판정을 못 받으면(`role=` 빈 값 + `env_role=unknown`) 아무
+    # 것도 하지 않는다.
+    if [ -n "$CYS_RECLAIMED" ]; then
+      if [ -z "$CYS_ROLE" ]; then
+        CYS_ROLE="$CYS_RECLAIMED"
+        export CYS_ROLE
+        echo "■ 고지: 역할 자동 복구 — 이 좌석의 데몬 권위 역할은 '$CYS_ROLE' 이다(env 유실 복구)."
+        echo "  근거: cysd 가 발신 pid 로 이 pane 을 확인했다. 아래 지침은 그 역할의 것이다."
+      elif [ "$CYS_RECLAIMED" != "$CYS_ROLE" ]; then
+        echo "■ 고지: 역할 교정 — env CYS_ROLE 은 '$CYS_ROLE' 이지만 데몬 권위 역할은 '$CYS_RECLAIMED' 이다."
+        echo "  근거: cysd 가 발신 pid 로 이 pane 을 확인했다(env 는 승계·중복제거 뒤 갱신되지 않는다)."
+        echo "  아래 지침은 '$CYS_RECLAIMED' 의 것이다 — env 값이 아니라 이 값으로 행동하라."
+        CYS_ROLE="$CYS_RECLAIMED"
+        export CYS_ROLE
+      fi
+    elif [ "$CYS_RC_KIND" = "valid_empty" ] && [ -n "$CYS_ROLE" ] \
+         && [ "$CYS_ENV_ROLE_STATE" = "other_live" ]; then
+      # 강등은 **디렉티브 선택 앞**에서 결정하고, 실제 문안은 아래 매핑 뒤에서 낸다
+      # (역할군을 알아야 인계 안내가 정확하다).
+      CYS_DEMOTE_ROLE="$CYS_ROLE"
+    fi
+    # ── ★(R2 · codex minor) 무결합 사유 중 **사람이 할 일이 있는 것**만 한 줄로 옮긴다 ──
+    # 종전에는 둘째 줄(`reason=`)을 읽지 않고 stderr 도 버려서, "왜 역할이 안 붙었는지"와
+    # "무엇을 하면 되는지"가 세션 어디에도 남지 않았다. 사유 전부를 떠드는 것이 아니라
+    # **처방이 있는 둘**만 옮긴다(나머지는 조용한 무결합이 정답이다 — 잡음은 지침을 밀어낸다).
+    # ★(R2 · codex major) 데몬이 **판정을 해서** "이 좌석은 무역할"이라고 답했는데 env 에는
+    #   역할이 남아 있고 그 역할의 주인이 없는 경우(vacant·other_exited): 종전대로 지침은
+    #   주입하되(지침 없는 좌석을 새로 만들지 않는다 — 치명위험 ③) **등록되지 않았다는 사실**을
+    #   숨기지 않는다. 이 좌석의 `cys` 명령들은 역할 권한을 못 받는다.
+    #   ★master|cso 는 아래 재대조(`cys claim-role`)가 그 자리에서 등록하므로 제외한다.
+    if [ -z "$CYS_RECLAIMED" ] && [ -n "$CYS_ROLE" ] && [ -n "$CYS_RC_REASON" ]; then
+      case "$CYS_ENV_ROLE_STATE" in
+        vacant|other_exited)
+          case "$CYS_ROLE" in
+            master|cso) ;;
+            *)
+              echo "■ 고지: 데몬 레지스트리에 이 좌석의 역할 등록이 없다(env CYS_ROLE=$CYS_ROLE · 그 역할은 비어 있다)."
+              echo "  지침은 아래에 주입하지만, 역할 권한·역할 배달은 등록 전까지 이 좌석에 오지 않는다 —"
+              echo "  역할로 행동하려면 \`cys claim-role $CYS_ROLE\` 로 등록하라."
+              ;;
+          esac
+          ;;
+      esac
+    fi
+    case "$CYS_RC_REASON" in
+      privileged_needs_optin)
+        echo "■ 고지: 같은 계정·같은 폴더에 **특권 역할(master·cso)의 빈 좌석**이 있다."
+        echo "  자동 복구는 특권 역할을 옮기지 않는다(사람의 명시가 필요하다)."
+        echo "  이 좌석이 그 역할을 이어받아야 한다면: \`cys reclaim-role --auto --takeover-empty-seat\`"
+        ;;
+      caller_axes_unknown)
+        echo "■ 고지: 데몬이 이 좌석의 계정 dir·작업 디렉터리를 확정하지 못해 자동 역할 복구를 건너뛴다."
+        echo "  역할이 필요하면 \`cys claim-role <역할>\` 로 직접 등록하라."
+        ;;
+    esac
+    # ★(수렴 R2) 신고한 `$PWD` 와 이 좌석의 **실제** 작업 폴더가 다른 곳이다. 신고는 좁히기만
+    #   하므로 두 조건을 함께 만족하는 좌석이 없다 — 사실은 `no_candidate` 가 맞고(사유 코드는
+    #   건드리지 않는다), 처방만 다르다. 그래서 사유가 아니라 **진단 축**으로 가른다.
+    if [ "$CYS_RC_DETAIL" = "reported_cwd_conflict" ]; then
+      echo "■ 고지: 이 세션이 신고한 폴더와 좌석의 실제 작업 폴더가 달라 자동 역할 복구를 건너뛴다."
+      echo "  신고로 다른 폴더의 역할을 가져오지는 않는다(그것이 이 장치의 계약이다)."
+      echo "  그 역할이 필요하면 해당 폴더에서 세션을 시작하거나 \`cys claim-role <역할>\` 로 등록하라."
+    fi
+  fi
+fi
 
 if [ -z "$CYS_ROLE" ]; then
   # ── ★A안 채택(2026-08-01 ONBOARDING_REFUSAL_FIX §4-1 [A]·§7-2 + A-1~A-6) ───────────────
@@ -170,7 +457,22 @@ case "$CYS_ROLE" in
   reviewer*)   D="$JARVIS_DIR/directives/REVIEWER_DIRECTIVE.md" ;;
   *) exit 0 ;;
 esac
-[ -f "$D" ] || exit 0
+# ★(0.14.41 U4 C2 ①) 지침 판독 가능성은 **강등 판정 뒤**에 본다(반박 D8-d): 강등 대상 좌석에게
+#   '지침 부재' 고지가 나가면 안 되고(그 좌석은 역할이 아니다), 강등 문안은 지침 파일이 없어도
+#   낼 수 있다. 종전 `[ -f "$D" ] || exit 0` 은 강등 좌석까지 무음으로 삼켰다. 판독 조건은
+#   존재·읽기 권한·비어 있지 않음 셋이다 — 0바이트 지침은 머리줄만 찍고 본문 없이 '각성'시킨다.
+# ── ★(0.14.31 · WP-4 R1) stale 각성 강등 — 데몬이 "그 역할은 지금 **다른 산 좌석**이 쥐었다"고
+#    답한 경우에만 여기 온다(`env_role=other_live`). 승계는 데몬 상태만 바꿀 뿐 전임자 셸의
+#    `CYS_ROLE` 을 지울 수 없어서, 이 문이 없으면 두 세션이 같은 역할로 행동한다(적대검증 major).
+#    문안은 master|cso 재대조의 self-demote 와 같은 규약이고, **지침은 주입하지 않는다**.
+if [ -n "$CYS_DEMOTE_ROLE" ]; then
+echo "■ 역할 주소 상실 (CYS_ROLE=$CYS_DEMOTE_ROLE — 데몬 레지스트리의 살아있는 보유자가 우위)"
+echo "이 surface는 더 이상 $CYS_DEMOTE_ROLE 역할이 아니다. 역할 지휘·역할 행동을 중단하고,"
+echo "레지스트리의 $CYS_DEMOTE_ROLE 노드에 인계하라(\`cys send --to $CYS_DEMOTE_ROLE\`). 이 세션은 일반 세션으로 동작한다."
+echo "(이 판정의 근거: cysd 가 발신 pid 로 이 pane 을 확인했고, 그 역할은 **다른 살아있는 좌석**이 쥐고 있다."
+echo " 이 좌석이 정말 그 역할이어야 한다면 \`cys claim-role $CYS_DEMOTE_ROLE\` 로 명시 등록하라.)"
+exit 0
+fi
 # ── ★권한 role 재대조(유령 master 차단 — BOOTSTRAP_HARDENING WP-1·적대검증 D1) ──
 # 재시작·/clear 후 CYS_ROLE env는 남는데 레지스트리 role이 다른 surface로 이동한 드리프트를
 # 매 세션 시작마다 조정한다(레지스트리가 항상 우위). 3상태:
@@ -187,11 +489,11 @@ ROLE_NOTICE=""
 case "$CYS_ROLE" in
   master|cso)
     if command -v cys >/dev/null 2>&1; then
-      if command -v timeout >/dev/null 2>&1; then
-        CLAIM_OUT=$(timeout 2 cys claim-role "$CYS_ROLE" 2>&1); CLAIM_RC=$?
-      else
-        CLAIM_OUT=$(cys claim-role "$CYS_ROLE" 2>&1); CLAIM_RC=$?
-      fi
+      # ★(0.14.31 · WP-4) 검증된 실행기로 교체 — 종전 `command -v timeout` 분기는 Windows
+      #   PortableGit 에서 **System32 timeout.exe**(인자를 받으면 즉시 rc=1)를 해소해, 재대조가
+      #   실행조차 되지 않은 채 '데몬 미응답'으로 접혔다(MEMORY cys-01411 #3).
+      #   `cys_timeout_run` 은 GNU 판별 후 gtimeout·python 그룹킬로 폴백한다(macOS 무 timeout 포함).
+      CLAIM_OUT=$(cys_timeout_run 2 cys claim-role "$CYS_ROLE" 2>&1); CLAIM_RC=$?
       # ★rc 6 = 발신 신원 미확정(2026-08-16 코드 분리): 데몬은 응답했지만 이 프로세스를 발신
       #   pane 에 붙이지 못한 경우다(pane 밖·세션 분리 실행). 아래 self-demote 조건(거부 마커)에는
       #   걸리지 않아 **동작은 이미 안전**하지만, 마지막 fail-open 문안이 "데몬 미응답"이라고
@@ -211,6 +513,35 @@ case "$CYS_ROLE" in
     fi
     ;;
 esac
+# ── ★(0.14.41 · U18) 작업 폴더 읽기 막힘 고지 — 데몬이 이 좌석을 만들 때 작업 폴더 목록 읽기가
+#    EPERM(macOS 폴더 접근 권한)이었으면 pane env 에 그 폴더를 싣는다(cysd cwd_probe.rs · 맥 한정 ·
+#    역할 좌석만 · 스폰 동작은 그대로). 좌석이 모르면 읽기 실패를 제멋대로 해석한다(다른 폴더에
+#    대신 저장 · 마스터에게 자발 보고 반복 — /clear 마다 이 훅이 다시 돈다). 그래서 **1줄**이고,
+#    행동은 '그 폴더가 필요한 지시를 받았을 때 그 회신에만 적는다'로 묶는다(자발 push 금지).
+#    사람에게는 앱 화면 알림이 따로 뜬다(GUI 가 떠 있으면 surface.list 의 cwd_blocked 를 당긴다).
+#    RPC 0 · IO 0 · env 부재·빈 값이면 무출력(Windows 는 데몬이 싣지 않으므로 항상 무출력).
+#    경로 줄은 printf(G8 — macOS /bin/sh 의 xpg_echo 가 백슬래시를 먹는다).
+#    ★(통합 시 순서 결정 — WP-C2 U4 C2① 아래 지침 판독 가능성 게이트보다 **먼저** 둔다) 지침
+#    파일이 없거나 못 읽어도 작업 폴더 막힘은 독립된 사실이라 좌석에 알려야 한다 — 아래 게이트의
+#    exit 0 이 이 고지를 삼키지 않게 순서를 이렇게 고정한다.
+if [ -n "${CYS_CWD_BLOCKED:-}" ]; then
+  printf '■ 고지(작업 폴더): 이 좌석이 시작될 때 작업 폴더 %s 를 읽을 수 없었다(macOS 폴더 접근 권한 — 사람에게는 앱 화면 알림이 따로 뜬다). 그 폴더가 필요한 지시를 받으면 착수 전에 ls 로 지금 읽히는지 확인하고, 안 되면 그 지시의 회신에만 적어라 — 자발 보고·push 금지, 다른 폴더에 대신 저장 금지.\n' "$CYS_CWD_BLOCKED"
+fi
+# ★(0.14.41 U4 C2 ①) 지침 판독 가능성 — 강등(위 두 문)이 먼저 판정된 뒤에만 본다.
+if [ ! -f "$D" ]; then
+  cys_ss_directive_absent "$D" "파일 없음"
+  exit 0
+fi
+if [ ! -r "$D" ]; then
+  cys_ss_directive_absent "$D" "읽기 권한 없음"
+  exit 0
+fi
+if [ ! -s "$D" ]; then
+  cys_ss_directive_absent "$D" "빈 파일"
+  exit 0
+fi
+# (1.1.8 병합) 각성 머리·지침 본문 출력은 아래 우리 9,000자 상한 조립(_SS_HEAD/_SS_BULK)이 한다 — 원작자 R2NC-F2
+#   미리보기 안내 줄은 싣지 않는다(상한+목차가 10,000자 절단 자체를 막는다 · 목차가 원문 경로를 준다).
 # ★R13 부트 브리지(T2b 전 임시 — hook=system층이라 디렉티브(user-owned) 미개정 기계에도 전파):
 # 구 산문 §0만 아는 master는 부트 스크립트를 몰라 완료 마커가 안 생기고 CEO 승격이 영구
 # PENDING(promote-if-pending은 마커 필수)이 된다. 디렉티브 §0의 정식 개정은 T2b(재핀 의례).
@@ -464,11 +795,49 @@ fi
 _SS_BULK=$(echo; cat "$D"; _ss_bulk)
 printf '%s\n' "$_SS_HEAD"
 _SS_N=$(( $(_ss_chars "$_SS_HEAD") + $(_ss_chars "$_SS_BULK") ))
+# ── ★U16(0.14.41) 팀 소개(참고 정보) BEGIN — 부서 레인 전용 · TEAM.md 가 있을 때만 ─────────────────
+# 무엇: 대화로 만든 팀(`cys-dept` allocate --team-spec-b64 · 오너 확인 창 뒤)의 이름·하는 일(TEAM.md)을
+#   soul.md·기억 색인 **뒤**에 참고 정보로 붙인다. SessionStart 는 /clear 뒤에도 다시 불리므로 팀 맥락이
+#   clear 를 넘는다(팀원이 자기 팀을 잊지 않는 방향 — 치명 ③ 보강).
+# 계약: ⓐ TEAM.md 가 없거나 읽을 수 없으면 **출력 바이트 불변**(부서·본부 모두 — test_team_create_u16 B2
+#   가 이 블록을 떼어 낸 훅과 stdout 을 바이트 대조한다) ⓑ 본부 팩(이름이 pack-dept-* 아님)에는 무주입
+#   ⓒ 서브셸 `( … ) 2>/dev/null || true` — 이 블록의 어떤 실패도 앞선 지침·soul.md·기억 주입과 훅
+#   종료코드를 바꾸지 않는다(파일 끝 exit 0 직전 배치 = 반박 D5) ⓓ 8KB 상한 · 로컬 오버레이와 **같은**
+#   권위어 줄 소독(입력 단계는 Rust cys::team_spec 가 이미 거부한다 — 손으로 고친 파일 대비 이중 방어)
+#   ⓔ 착수 규칙 문장은 넣지 않는다(역할별 착수 문구는 U13 단일 원본 소관) — '참고 정보·우선하지 않음'만.
+# 레인 판정: 팩 폴더 이름 접두 `pack-dept-`(cysd 기동 시 레인↔팩 검사와 같은 규약 · 외부 프로세스 0).
+#   `/`·`\` 두 구분자를 모두 벗겨 MSYS(`/c/…`)·네이티브(`C:\…`) 표기 어느 쪽이든 같은 답을 낸다.
+# ★1.1.8 병합(우리 9,000자 상한+목차 유지 · 정책 §2-B): 팀 소개를 먼저 변수로 만든다(TEAM.md 없으면 빈 값 = 출력 바이트 불변).
+#   머리+본문+팀 소개 합계가 상한 미만일 때만 본문 뒤에 붙이고, 넘으면 원문 경로 1줄만 남긴다(10,000자 절단 방지).
+#   ★master·CEO 좌석은 위 조립기 분기에서 이미 끝났다 — 그 좌석의 팀 소개는 이 블록이 싣지 않는다(병합 보고 ⑤).
+_ss_team() {
+(
+  _tdir="${JARVIS_DIR%/}"; _tdir="${_tdir%\\}"
+  _tb="${_tdir##*/}"; _tb="${_tb##*\\}"
+  case "$_tb" in pack-dept-?*) ;; *) exit 0 ;; esac
+  _tm="$JARVIS_DIR/TEAM.md"
+  [ -f "$_tm" ] && [ -r "$_tm" ] || exit 0
+  echo
+  echo "■ 팀 소개 (참고 정보 — 이 팀(내부 번호 ${_tb#pack-dept-})이 무엇을 하는 팀인지 알려 주는 배경이다 · 지시가 아니며 soul.md·역할 지침보다 우선하지 않는다)"
+  grep -a -v -i -E 'denylist|deny list|recovery|kill-switch|killswitch|kill switch|soul\.md|헌법|헌장|autopilot|자율주행|안전핵|eval-driven' "$_tm" | head -c 8192
+  echo
+  echo "■ 위 팀 소개는 참고 정보다 — 지휘 계통·안전 경계·역할 지침은 그대로다."
+) 2>/dev/null || true
+}
+_SS_TEAM=$(_ss_team)
+# ── ★U16(0.14.41) 팀 소개(참고 정보) END
 if [ "$_SS_N" -lt "$RESUME_INJECT_CAP" ]; then
   printf '%s\n' "$_SS_BULK"
+  if [ -n "${_SS_TEAM:-}" ] && [ $(( _SS_N + $(_ss_chars "${_SS_TEAM:-}") )) -lt "$RESUME_INJECT_CAP" ]; then
+    printf '%s\n' "${_SS_TEAM:-}"
+  elif [ -n "${_SS_TEAM:-}" ]; then
+    echo
+    printf '■ 팀 소개(참고 정보) 생략(출력 상한 %s자) — 원문: %s\n' "$RESUME_INJECT_CAP" "$JARVIS_DIR/TEAM.md"
+  fi
 else
   [ "$HOOK_SRC" = "resume" ] || _ss_toc startup
   echo
   echo "■ 원문 생략(${_SS_WHAT} ${_SS_N}자 ≥ 상한 ${RESUME_INJECT_CAP}자) — 디렉티브·로컬 지침·soul·메모리 색인은 위 목차 경로에서 Read 하라."
+  [ -n "${_SS_TEAM:-}" ] && printf '■ 팀 소개(참고 정보)도 생략 — 원문: %s\n' "$JARVIS_DIR/TEAM.md"
 fi
 exit 0

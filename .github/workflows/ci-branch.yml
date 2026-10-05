@@ -9,6 +9,8 @@ name: ci-branch
 #   원 레인의 나머지 스텝(bundle-prep·cargo check --workspace·능력 파리티 7종·C03 전핀·
 #   bun UI 잡·Windows 잡)은 이 브랜치의 범위가 아니어서 **의도적으로 가져오지 않았다**.
 #   그것들을 나중에 편입할 때는 아래 레인 대조 게이트의 ALLOWED 도 함께 갱신해야 한다.
+#   ★(0.14.41 · U4 C4-⑧) 그중 **bun UI 잡**은 잡5 `ui-check` 로 편입했다 — UI 회귀 테스트가 태그
+#     레인에서만 돌아 UI 회귀가 **태그(불변) 뒤에야** 드러났고, 타입체크는 어느 레인에서도 돌지 않았다.
 # ★W8(2026-08-16 · v4-repair): 이 레인에 세 가지를 추가했다 —
 #   ①신설 팩 스위트 3종(부서 이름검증·C03 상태기계·핀 패리티)을 3완전 레인 **동시** 등재
 #     (대칭 = 정본 · ALLOWED 등재 불요 — 2026-08-12 부트체인 편입과 같은 형태)
@@ -78,6 +80,16 @@ jobs:
       #      비대칭으로 잡혀 ALLOWED 가 근거 없는 목록으로 썩는다. 그래서 아래 SUBSET_LANES 라는
       #      **방향성 있는 약한 계약**으로 편입한다(⊆ 검사 + 필수 보유 검사). 완전 레인이 아닌
       #      워크플로우는 앞으로도 이쪽에 등재하라.
+      #   ★A2 등재(2026-09-11 · v0.14.33 · "새 레인이 생기면 여기 먼저 등재하라" 의 이행): 이 파일에
+      #      **우분투 잡 `ubuntu-pack-suite`** 가 생겼다 — 태그 레인 `pack-artifacts` 의 파이썬 팩 루프를
+      #      문면 그대로 도는 **태그 전 리눅스 관문**이다(잡4 머리말 참조). LANES 에는 넣지 않는다:
+      #      새 **워크플로우**가 아니라 이미 등재된 ci-branch.yml 안의 새 **잡**이고, LANES 는 파일 단위라
+      #      넣을 자리가 없다.
+      #      ⚠그래서 이 게이트는 그 잡을 **따로 보지 못한다**(한계 2 의 실제 사례 1호) — 같은 파일 안
+      #      macOS 잡과 우분투 잡이 같은 이름을 쓰므로 "어느 잡이 도는가" 는 여기서 구분되지 않고,
+      #      우분투 잡의 루프가 태그 레인과 갈려도 비대칭 0 = 초록이다. 그 축은 **별도 기계**가 잰다:
+      #      `scripts/lane-parity-rehearsal.sh` 5단계(두 `for t in` 토큰 집합의 정확한 일치 · env 격리
+      #      동일성 · 변이 대조 2종 = 토큰 1개 제거 · 우분투 잡 소멸). 그 잡을 고칠 때는 5단계를 함께 돌려라.
       #   요약: 이건 **복제된 목록의 드리프트 조기 경보**이지 커버리지 증명이 아니다.
       # LANE-GATE-SELF-BEGIN
       - name: 팩 스위트 레인 대조 (ci-branch ⇔ release ⇔ pack-release 드리프트 차단 + windows-build 부분 레인 계약)
@@ -85,7 +97,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import re, sys
+          import os, re, sys
+
+          # ★D9(반성 라운드 2026-09-10): 레인 파일의 **루트**를 env 로 바꿀 수 있다 — 예행 도구의 자기 검체가
+          #   워크플로 사본에 변이(`if: false` · 이름 삭제 · 가드 삭제)를 넣고 이 게이트가 붉어지는지 잰다.
+          #   CI 에서는 미설정(= 리포 루트). 판정 로직은 루트와 무관하다.
+          ROOT = os.environ.get("LANE_GATE_ROOT", ".")
+
+          def _read(path):
+              return open(os.path.join(ROOT, path), encoding="utf-8").read()
 
           # 팩 테스트를 실행하는 **모든** 레인. 여기 없는 워크플로우는 대조 밖이다(한계 6).
           LANES = {
@@ -115,6 +135,101 @@ jobs:
               ),
           }
 
+          # ★D9(반성 라운드 2026-09-10): 완전 레인의 **정당한 레그 고정**. 종전 '무조건 실행' 검사는
+          #   SUBSET_LANES 루프 **안에만** 있어 완전 레인의 조건부 스텝을 보지 않았는데, 이번 판에
+          #   완전 레인 첫 조건부 스텝(release.yml WP-7 leg1 · `if: matrix.target == …`)이 생겼다 —
+          #   정당한 레그 고정과 `if: false` 로 스위트를 조용히 끄는 것이 **같은 초록**이었다.
+          #   값 = {레인: {조건 원문(공백 정리): 사유}}. 등재된 조건만 통과하고, 등재 없는 조건은
+          #   실패다(ALLOWED 와 같은 마찰). 조건 원문은 `if:` 뒤 문자열과 **정확히** 같아야 한다.
+          ALLOWED_STEP_CONDITIONS = {
+              "release": {
+                  "matrix.target == 'aarch64-apple-darwin'":
+                      "build 잡은 3레그 매트릭스(arm64 · x86_64 크로스 · windows)다 — 팩 스위트는 레그와 "
+                      "무관한 순수 python 검체라 arm64 한 레그에 고정해 예산을 지킨다. 같은 스위트는 "
+                      "pack-artifacts 잡(ubuntu · 무조건)에서 한 번 더 돈다. `if: false` 류 소거와 이 "
+                      "고정을 가르는 근거는 이 문장이다.",
+                  "matrix.platform == 'macos-latest'":
+                      "macOS 발행 게이트 도구(scripts/tests test_release_postprocess_gate)의 소비 지점이 "
+                      "macOS 레그뿐이다 — 그 레그 밖에서는 도구가 실행될 일이 없다(ALLOWED 의 같은 항목 "
+                      "참조). windows 레그에서 돌리면 근거 없는 실행이 된다.",
+                  "matrix.platform == 'windows-latest'":
+                      "Windows CRT 게이트 도구(scripts/tests test_verify_win_crt)의 소비 지점이 windows "
+                      "레그의 업로드 전 CRT 게이트뿐이다(ALLOWED 의 같은 항목 참조) — 도구 증명을 소비 "
+                      "직전 레그에 고정한다. ★이 항목은 D9 검사 첫 실행이 잡아낸 것이다(등재 전 실측).",
+              },
+          }
+
+          # ★D4(반성 라운드 2026-09-10): 팩 스위트 이름이 아닌 **명령 토큰**의 존재 + 무조건 실행 계약.
+          #   `cargo test --bin cysd` 가 브랜치 CI 에 없었다 — release.yml 태그 레인의 레그 고정 스텝
+          #   안에만 있어 0.14.31 최대 신설 표면(alert_route.rs · governance/state/delivery 큐 생명주기)의
+          #   단위 검체 1,228종이 브랜치 push 에서 0회 실행이었고 컴파일 실패조차 안 잡혔다. 값 =
+          #   {레인: {토큰: 사유}}. 토큰은 주석·SELF 표식 밖의 코드 줄에 있어야 하고 그 스텝은 등재된
+          #   레그 고정 외의 조건이 없어야 한다.
+          # ★U4 C4-⑧(2026-09-23): UI 회귀(`cd ui && bun test`)·타입체크(`tsc -p tsconfig.check.json`)를
+          #   등재한다. 전자는 태그 레인에서만 돌던 것을 브랜치 잡5(ui-check)에도 세운 **쌍**이라 두 레인
+          #   모두에 핀한다(한쪽이 조용히 빠지면 그 레인의 초록이 거짓 신호) — pack-release 는 UI 를 빌드하지
+          #   않으므로 등재 대상이 아니다. 음성 대조는 예행 도구 자기 검체 2 의 변이 ⑤~⑦.
+          # ★U4 C4 리뷰1 MAJOR-1 수정(2026-09-23): 타입체크 토큰을 `tsc -p tsconfig.check.json`(그대로)
+          #   대신 `typescript@7.0.2 tsc -p tsconfig.check.json`(실행 줄에만 있는 형태)로 둔다.
+          #   code_lines() 는 주석만 지우고 `- name:` 줄은 그대로 코드 줄로 세므로, 토큰이 아래 ui-check
+          #   스텝 이름(`UI 타입체크 (tsc -p tsconfig.check.json · typescript 7.0.2 고정 · 설치 후)`) 문면에도
+          #   들어 있으면 실행 줄을 지워도(스텝 이름은 그대로) 게이트가 "필수 명령이 있다"고 오판한다
+          #   (실측: rc=0 · review1-gate-mutA-tsc-runline-only.log). 새 토큰은 실행 줄
+          #   `bunx -p typescript@7.0.2 tsc -p tsconfig.check.json` 에만 있고 스텝 이름에는 없다
+          #   (이름은 `typescript 7.0.2`— `@` 없이 · 어순도 다르다). 예행 도구 변이 ⑦ 도 같은 라운드에서
+          #   실행 줄 1개만 지우는 모양으로 고쳤다(release 변이 ⑤ 와 같은 형태).
+          MUST_RUN_TOKENS = {
+              "ci-branch": {
+                  "cargo test --bin cysd":
+                      "데몬 단위 검체(alert_route·governance·state·delivery)의 브랜치 조기 경보. 태그 push "
+                      "에서 처음 붉어지면 pack-artifacts 미실행 → 팩 자산 0 → 발행 0 이다.",
+                  "cd ui && bun test":
+                      "UI 회귀(한글 IME 리듀서·드래그·마우스 필터 등 27파일)의 브랜치 조기 경보. 없으면 UI "
+                      "회귀가 태그(불변 · 버전 소모) 뒤 build 레그에서야 드러난다.",
+                  "typescript@7.0.2 tsc -p tsconfig.check.json":
+                      "UI 타입체크 — `bun build` 는 트랜스파일만 해 타입을 보지 않는다(ui/tsconfig.check.json "
+                      "_why). 이 줄이 빠지면 타입 오류는 어느 레인에서도 드러나지 않는다. 토큰이 "
+                      "`typescript@7.0.2 tsc -p tsconfig.check.json` 인 것은 실행 줄에만 있고 스텝 이름에는 "
+                      "없게 하기 위해서다(위 리뷰1 MAJOR-1 주석 참조) — 단순 `tsc -p tsconfig.check.json` "
+                      "이면 스텝 이름 문면만으로도 '있음' 판정이 나 실행 줄 소거를 놓친다.",
+                  # ★R2F-PK(성찰 2회차 · A4 n6): 1회차가 더한 두 스텝(IOReport 링크 게이트 · hwmon 검체 좁힘)은 이 목록에 없어, 누가 스텝을 지우거나 `if: false` 를 달아도 붉어지지 않았다.
+                  #   두 토큰 모두 **실행 줄에만** 있고 스텝 이름에는 없다(위 MAJOR-1 교훈 — 이름에도 있으면 실행 줄 소거를 놓친다). 첫째 토큰은 `cargo test --bin cysd -- … --skip hwmon::` 접두를
+                  #   통째로 적지 않는다(예행 도구 자기 검체 2 의 변이 앵커가 그 접두의 파일 내 등장 횟수를 1 로 요구한다).
+                  "--skip hwmon::tests::snapshot_has_all_sections":
+                      "hwmon 검체의 브랜치 조기 경보 — E2 가 더한 hwmon 검체 15건(맥 기준)은 `hwmon::` 모듈 전체 skip 때문에 CI 어느 레인에서도 한 번도 안 돌았다. 1회차(R1F-PK)가 깨질 검체 "
+                      "하나(`snapshot_has_all_sections` — 가상 러너 GPU 부재)로 좁혀 돌린다. 이 skip 이 사라지거나(모듈 전체로 되돌림 · 지움) 그 스텝이 꺼지면 15건이 다시 조용히 CI 밖이거나 "
+                      "가상 러너에서 레인이 붉다.",
+                  "bash scripts/check-no-ioreport-link.sh target/debug/cysd":
+                      "IOReport 강링크 **산출물** 게이트(otool -L) — 소스 핀(lib `e2_cysd_hwmon_source_has_no_ioreport_strong_link`)은 소스의 모양만 본다. 이 스텝이 지워지거나 `if: false` 가 "
+                      "달리면 dlopen 지연 로딩으로 바꾼 E2 의 회귀(그 dylib 이 없는 맥에서 데몬이 main 에 닿기 전에 죽음 = 전 pane 사망)를 **산출물로** 잡는 자리가 브랜치에서 사라진다.",
+              },
+              "release": {
+                  "cd ui && bun test":
+                      "UI 회귀 게이트(발행 직전 최종선) — 브랜치 ui-check 와 쌍이다. 빠지면 브랜치 초록만 "
+                      "믿고 태그한 빌드가 UI 회귀를 싣고 나간다.",
+                  # ★R2F-PK(A4 n6): 릴리스 맥 레그의 같은 게이트(업로드 전 · `.app` 안 cysd) — 태그 레인에서 처음 도는 스텝이라 지워져도 브랜치 초록이 알려 주지 못한다. 이 스텝의 `if` 는
+                  #   `matrix.platform == 'macos-latest'` 한 가지뿐이고 아래 ALLOWED_STEP_CONDITIONS 에 이미 등재돼 있다(그 밖의 조건·`if: false` 는 붉다).
+                  'bash scripts/check-no-ioreport-link.sh "$SRC/macos/cys.app/Contents/MacOS/cysd"':
+                      "IOReport 강링크 산출물 게이트(릴리스 맥 레그 · 업로드 전) — 브랜치 ci-branch 의 같은 게이트와 쌍이다. 빠지면 출하되는 `.app` 안 cysd 가 IOReport 를 강링크해도 업로드가 일어난다.",
+              },
+          }
+
+          # ★D10(반성 라운드 2026-09-10): 필터형 cargo 게이트의 '측정 ≥1' 폐쇄. windows-health.yml 의
+          #   `cargo test --lib <모듈>::` / `--bin <bin> <필터>` 는 Windows 실기에서 ConPTY 문면 검체가
+          #   도는 **유일한** 자리인데 cargo 필터는 0매치도 초록이라 모듈 경로가 바뀌면 조용한 초록으로
+          #   되돌아간다. 실행 줄마다 같은 스텝 **앞**에 `cargo_filter_count <같은 인자>` 호출이 있어야
+          #   한다(그 함수가 `-- --list` 로 세어 0 이면 붉힌다 · 함수 이름이 두 파일 사이의 계약이다).
+          FILTERED_CARGO_GUARD = {"windows-health": ".github/workflows/windows-health.yml"}
+          # ★R2F-PK(A4 n6): 위 폐쇄는 '**있는** 필터형 실행 줄마다 가드가 선행하는가'만 봤다 — 실행 줄 **자체**를 지워도(예 hwmon 전용 스텝 삭제) 남은 줄이 있으면 초록이었다.
+          #   반드시 있어야 할 필터형 실행(인자 = FILTER_RUN_RE 가 뽑는 `--lib|--bin <크레이트> <필터>`)을 등재한다. 없으면 붉다.
+          FILTERED_CARGO_REQUIRED = {
+              "windows-health": {
+                  "--bin cysd hwmon::":
+                      "윈도우 실기에서 hwmon 검체(특히 맥에서는 컴파일되지 않는 비 macOS 스텁 `e2_non_macos_stub_reports_platform`)가 도는 **유일하게 보증된** 자리 — cysd 전량 스텝은 비차단이고 "
+                      "이름순 실행이 그 앞 검체에서 멈추거나(1회차 두 런) 실패가 쌓여(bd0a0ca3 런 195건) hwmon 에 닿는다고 말할 수 없다.",
+              },
+          }
+
           # 레인별 "빠지면 무엇이 거짓말이 되는가" — 에러 메시지에 붙여 편입 방향을 지시한다.
           HINT = {
               "ci-branch":    "브랜치 초록이 거짓 신호가 된다(R4 계급)",
@@ -130,15 +245,21 @@ jobs:
           ALLOWED = {
               "test_phoenix_": (
                   {"release"},
-                  "release 전용(`test_phoenix_*.py` 글롭 · 실측 13종 · 2026-07-29). "
-                  "**팩 배송과 무관해서가 아니다** — 대상 javis_phoenix.py 는 팩에 실려 나간다. "
-                  "실제 이유는 하네스 의존이다: release.yml build 잡은 `cargo build --bin cys "
-                  "--bin cysd` 로 실 데몬을 만들고 PHOENIX_HARNESS_CYSD 로 kill→재기동 host-level "
-                  "e2e 를 돌린다. 팩-only 레인은 manifest emit 용 `cys` 만 빌드해 cysd 가 없고, "
-                  "ci-branch 는 그 예산(수 분)을 안 쓴다. 13종 중 cysd 를 실제로 요구하는 것은 3종"
-                  "(c6_reap·e2e_replacement·w2_untomb_fullcycle)뿐이라 나머지는 원리상 이식 "
-                  "가능하다 — 즉 이것은 **잔여 격차**이지 정당한 무관함이 아니다. 팩 레인 예산이 "
-                  "허용되면 밀폐 부분집합부터 편입하라. 글롭이라 토큰이 접두사로만 잡힌다.",
+                  "release 전용 글롭(`test_phoenix_*.py`)이 남긴 접두 토큰. 파일은 실측 15종"
+                  "(2026-09-08 14:46 KST 계수) 이고, 그 중 **fresh_honest·f1_production_path 2종은 "
+                  "이제 3완전 레인에 이름으로 등재돼 있다**(0.14.31 통합 · stdlib 밀폐라 cysd 하네스 "
+                  "불요 — 아래 팩 스위트 루프 참조). 이 접두 토큰이 여전히 release 에만 있는 것은 "
+                  "**나머지 13종** 때문이다. **팩 배송과 무관해서가 아니다** — 대상 javis_phoenix.py "
+                  "는 팩에 실려 나간다. 실제 이유는 하네스 의존이다: release.yml build 잡은 "
+                  "`cargo build --bin cys --bin cysd` 로 실 데몬을 만들고 PHOENIX_HARNESS_CYSD 로 "
+                  "kill→재기동 host-level e2e 를 돌린다. 팩-only 레인은 manifest emit 용 `cys` 만 "
+                  "빌드해 cysd 가 없고, ci-branch 는 그 예산(수 분)을 안 쓴다. 13종 중 cysd 를 실제로 "
+                  "요구하는 것은 3종(c6_reap·e2e_replacement·w2_untomb_fullcycle)뿐이라 나머지는 "
+                  "원리상 이식 가능하다 — 즉 이것은 **잔여 격차**이지 정당한 무관함이 아니다. 팩 레인 "
+                  "예산이 허용되면 밀폐 부분집합부터 편입하라. "
+                  "⚠이 접두 글롭은 **새 phoenix 파일을 자동으로 면제한다**(추출 정규식이 `*` 앞에서 "
+                  "끊겨 토큰이 접두사로만 잡힌다) — 새 파일이 밀폐 검체라면 위 2종처럼 3레인에 "
+                  "**이름으로** 등재하라. 글롭에 맡기면 그 파일은 조용히 release 전용이 된다.",
               ),
               "test_version_sot_mutation": (
                   {"ci-branch", "release"},
@@ -160,6 +281,23 @@ jobs:
                   "근거 없는 목록이 된다(test_verify_win_crt 와 같은 계급의 정당한 비대칭). "
                   "ci-branch = 브랜치 조기 경보 · release = 그 게이트를 발행 차단 근거로 신뢰하기 "
                   "직전 증명의 2레인 편입.",
+              ),
+              # ★R2F-PK(성찰 2회차 · A4 m2): IOReport 게이트 스크립트의 **음성 대조** — 가짜 otool 로 exit 0/1/2 세 갈래를 잰다. 브랜치 CI 한 레인만 등재한다(release.yml 은 이번 티켓에서
+              #   고치지 않았다).
+              "test_check_no_ioreport_link": (
+                  {"ci-branch"},
+                  "scripts/tests/ 스위트(팩 스위트 아님 · R2F-PK 2회차 편입). 대상 scripts/check-no-ioreport-link.sh 는 배송 팩 tar 에 실리지 않고, 소비 지점은 ci-branch 맥 레인의 "
+                  "`cargo build --bin cysd` 뒤 게이트와 release 맥 레그의 업로드 전 게이트다. 이 검체는 그 스크립트의 세 갈래(통과 0 · 링크 발견 1 · 판정 불가 2 — 맥인데 otool 없음 포함)를 "
+                  "가짜 otool 로 재는 것이라 브랜치 조기 경보(ci-branch)에 먼저 싣는다. release 레인 편입은 발행 레인 변경이라 이번 티켓 범위 밖이다(편입하려면 release.yml 의 같은 게이트 "
+                  "스텝 옆에 한 스텝을 더하고 이 항목의 레인 집합을 {ci-branch, release} 로 고친다). pack-release 는 이 도구를 실행하지도 싣지도 않아 편입하면 근거 없는 목록이 된다.",
+              ),
+              # ★R2F-PK 2차(성찰 2회차): 맥 데몬 검체 스텝(`--bin cysd`)의 **음성 대조** — 그 스텝의 run 본문을 떼어 가짜 cargo 로 종료 코드 전달과 실패 annotation 을 잰다. 브랜치 CI 한 레인만 등재한다.
+              "test_ci_branch_cysd_step": (
+                  {"ci-branch"},
+                  "scripts/tests/ 스위트(팩 스위트 아님 · R2F-PK 2차 편입). 대상은 배송물이 아니라 **이 파일(ci-branch.yml)의 맥 데몬 검체 스텝 본문**이다 — 그 스텝이 실패 때 검체 이름을 annotation 으로 "
+                  "내고 cargo 와 같은 종료 코드로 끝나는지(파이프가 실패를 삼키지 않는지)를 가짜 cargo 로 잰다. release·pack-release 에는 그 본문이 없다(release 의 데몬 검체는 phoenix 로직 게이트 스텝의 "
+                  "한 줄이고 이번 티켓에서 고치지 않았다 · pack-release 는 데몬 검체를 돌리지 않는다) — 편입하면 잴 대상이 없는 근거 없는 목록이 된다. release 의 그 줄에 같은 판독을 얹는다면 그때 "
+                  "이 검체의 대상과 이 항목의 레인 집합을 함께 넓힌다.",
               ),
                             "test_verify_win_crt": (
                   {"ci-branch", "release"},
@@ -202,7 +340,7 @@ jobs:
 
           def names(path):
               try:
-                  raw = open(path, encoding="utf-8").read().splitlines()
+                  raw = _read(path).splitlines()
               except OSError as e:
                   print(f"::error::레인 파일을 읽지 못함: {path} ({e})", file=sys.stderr)
                   sys.exit(1)
@@ -271,6 +409,8 @@ jobs:
           # 이름이 등장하는 **스텝 자체가 조건부인지** 본다. 이 게이트는 텍스트만 읽으므로
           # `if: false` 로 스텝을 죽여도 이름은 그대로 남아 초록을 유지한다(리뷰어2 실증).
           # 필수 스위트는 무조건 실행돼야 하므로, 그 스텝에 step-level `if:` 가 있으면 실패시킨다.
+          # ★D9: 이 검사는 종전 **부분 레인 한정**이었다(호출이 SUBSET_LANES 루프 안에만). 이제 완전
+          #   레인에도 돌리되 정당한 레그 고정은 ALLOWED_STEP_CONDITIONS 등재로 통과시킨다(아래).
           #
           # ★스텝 경계는 `- name:` 이 아니라 **`steps:` 블록의 리스트 항목**으로 잡는다.
           #   `name` 은 GitHub Actions 에서 **필수가 아니고** 키 순서도 자유다 — 초안은 `- name:` 을
@@ -372,7 +512,7 @@ jobs:
               return out
 
           def step_conditions(path, token):
-              lines = open(path, encoding="utf-8").read().splitlines()
+              lines = _read(path).splitlines()
               ranges = _step_ranges(lines, path)
               found = []
               for i, raw in enumerate(lines):
@@ -435,9 +575,149 @@ jobs:
                     "등재하라('팩 레인이라 생략'은 이유가 아니다).", file=sys.stderr)
               sys.exit(1)
 
-          print("[레인 대조] 비대칭 0 — 3완전 레인 목록 일치(허용 항목 제외) · 부분 레인 계약 충족")
+          # ── 완전 레인 무조건 실행 검사(D9) + 필수 명령 토큰(D4) ──
+          def code_lines(path):
+              """SELF 표식 밖 · 주석 제거 후의 코드 줄(`names()` 와 같은 시야)."""
+              out, skipping = [], False
+              for line in _read(path).splitlines():
+                  if SELF_BEGIN in line:
+                      skipping = True; continue
+                  if SELF_END in line:
+                      skipping = False; continue
+                  if skipping:
+                      continue
+                  out.append(re.sub(r"#.*$", "", line))
+              return out
+
+          cond_err, used_conds = [], {lane: set() for lane in LANES}
+          for lane, path in LANES.items():
+              allowed = ALLOWED_STEP_CONDITIONS.get(lane, {})
+              for n in sorted(sets[lane]):
+                  for cond in step_conditions(path, n):
+                      if cond in allowed:
+                          used_conds[lane].add(cond)
+                          continue
+                      cond_err.append(f"{lane}: 스위트 '{n}' 의 스텝이 **등재되지 않은** 조건부다(`if: {cond}`) — "
+                                      f"정당한 레그 고정이면 ALLOWED_STEP_CONDITIONS[{lane!r}] 에 조건 원문과 "
+                                      f"사유를 등재하고, 아니면 조건을 걷어내라(텍스트 게이트는 스텝이 실제로 "
+                                      f"도는지 모른다 · `if: false` 와 구별할 길이 이 등재뿐이다)")
+              for tok, why in MUST_RUN_TOKENS.get(lane, {}).items():
+                  if not any(tok in line for line in code_lines(path)):
+                      cond_err.append(f"{lane}: 필수 명령 '{tok}' 이 {path} 의 코드 줄에 없다 — {why}")
+                      continue
+                  for cond in step_conditions(path, tok):
+                      if cond in allowed:
+                          used_conds[lane].add(cond)
+                          continue
+                      cond_err.append(f"{lane}: 필수 명령 '{tok}' 의 스텝이 등재되지 않은 조건부다(`if: {cond}`) — {why}")
+          for lane, allowed in ALLOWED_STEP_CONDITIONS.items():
+              for cond in sorted(set(allowed) - used_conds[lane]):
+                  print(f"::warning::ALLOWED_STEP_CONDITIONS[{lane!r}] 의 '{cond}' 가 어느 스위트에도 "
+                        f"쓰이지 않는다 — 등재를 지워라(목록이 썩는다)")
+
+          # ── 필터형 cargo 게이트의 '측정 ≥1' 폐쇄 핀(D10) ──
+          FILTER_RUN_RE = re.compile(r"cargo test\s+((?:--lib|--bin\s+\S+)\s+\S+)\s+--\s")
+          for lane, path in FILTERED_CARGO_GUARD.items():
+              lines = _read(path).splitlines()
+              runs = 0
+              seen_args = set()
+              for start, end, *_rest in _step_ranges(lines, path):
+                  for i in range(start, end):
+                      code = re.sub(r"#.*$", "", lines[i])
+                      m = FILTER_RUN_RE.search(code)
+                      if not m or "--list" in code:
+                          continue
+                      runs += 1
+                      args = re.sub(r"\s+", " ", m.group(1)).strip()
+                      seen_args.add(args)
+                      guard = re.compile(r"^\s*cargo_filter_count\s+" + r"\s+".join(map(re.escape, args.split(" "))) + r"\s*$")
+                      if not any(guard.match(re.sub(r"#.*$", "", lines[j])) for j in range(start, i)):
+                          cond_err.append(f"{lane}: {path}:{i + 1} `cargo test {args} -- …` 앞에 같은 스텝의 "
+                                          f"`cargo_filter_count {args}` 가 없다 — cargo 필터는 0매치도 초록이라 "
+                                          f"모듈 경로가 바뀌면 이 게이트는 조용한 초록이 된다(돌지 않는 초록 금지)")
+              if runs == 0:
+                  cond_err.append(f"{lane}: {path} 에 필터형 `cargo test` 실행 줄이 0건 — 핀이 잴 대상이 없다"
+                                  f"(정규식·파일 구조가 바뀐 신호 · fail-closed)")
+              else:
+                  req = FILTERED_CARGO_REQUIRED.get(lane, {})
+                  for need, why in req.items():
+                      if need not in seen_args:
+                          cond_err.append(f"{lane}: 필수 필터형 실행 `cargo test {need} -- …` 이 {path} 에 없다 — {why}")
+                  print(f"[필터 폐쇄] {lane}: 필터형 실행 {runs}건 · 전건 cargo_filter_count 선행 · 필수 필터 "
+                        f"{len([n for n in req if n in seen_args])}/{len(req)} 보유")
+
+          if cond_err:
+              print("::error::무조건 실행·필수 명령·필터 폐쇄 계약 위반.", file=sys.stderr)
+              for m in cond_err:
+                  print(f"::error::  {m}", file=sys.stderr)
+              sys.exit(1)
+
+          print("[레인 대조] 비대칭 0 — 3완전 레인 목록 일치(허용 항목 제외) · 부분 레인 계약 충족 · "
+                "완전 레인 조건부 스텝 전건 등재 · 필수 명령 무조건 · 필터 폐쇄 선행")
           PY
       # LANE-GATE-SELF-END
+
+      # ★D3(반성 라운드 2026-09-10): 위 게이트는 '이름이 세 레인에 다 있는가' 만 본다 — 세 레인
+      #   **모두**에 없는 파일은 union 밖이라 비대칭 0 으로 초록이었다(수용 검체 4종이 그렇게 0회
+      #   실행이었고 전체로는 34종). 역방향 축(파일→등재)은 scripts/lane-parity-rehearsal.sh 3단계에
+      #   있고 여기서 그 예행 도구를 게이트로 **승격**한다 — `--strict` 는 머지 대기 0 을 요구하고,
+      #   `--self-test` 는 임시 디렉터리의 미등재 파일 하나를 실제로 잡는지 재는 음성 대조다(통과
+      #   대조만 있으면 "다 허용해서 초록" 으로도 만족된다). 1단계는 위 게이트 파이썬을 원본에서
+      #   추출해 다시 돌리므로(로직 복제 0) 이 스텝이 위 스텝을 대체하지는 않는다 — 위 스텝은
+      #   `::error::` 위치가 이 파일 자신이라 판독이 빠르고, 이 스텝은 예행 도구 자체가 CI 에서
+      #   깨지지 않았음을 증명한다. stdlib 만 쓰므로 setup-python 앞이어도 된다(1초 안쪽).
+      #   ★`if:` 를 달지 않는다(돌지 않는 초록 금지).
+      - name: 레인 예행 도구 — 역방향 축(파일→등재) + 자기 검체 (D3)
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/lane-parity-rehearsal.sh --strict
+          bash scripts/lane-parity-rehearsal.sh --self-test
+
+      # ★★팩 콘텐츠 발행 hard-gate 를 **브랜치 레인에도** 건다 (2026-09-23 · v0.14.40 릴리스 수리).
+      #   **왜 지금 생기는가 — 커버리지 공백의 실측 사고**: `scripts/scan-pack-secrets.sh` 는 여태
+      #   태그 레인(release.yml:1126·1546)과 팩-only 레인(pack-release.yml:153·539)에만 걸려 있었고
+      #   **브랜치 레인에는 없었다**. 그래서 v0.14.39 는 태그 전 브랜치 CI 가 전부 초록이었는데도
+      #   태그 레인 `pack-artifacts` 잡 step[9]("Scan pack content (pre-build hard-gate)")에서 죽었다 —
+      #   `cysjavis-pack/bin/tests/test_resource_gate.py:43` 의 D-11 픽스처에 든 `@` 를 이메일로
+      #   오인한 것이다. build 3잡(공증 포함 · 약 40분)은 이미 success 였고 draft 릴리스에 자산이
+      #   9/12 만 올라간 채 멈췄다. **태그는 불변**이라 그 실패는 버전 범프로만 회복된다 — 즉
+      #   이 게이트가 브랜치에서 1초에 알려줬을 것을, 태그 레인이 40분 뒤에 비가역으로 알려줬다.
+      #   이것이 이 리포가 반복해 당하는 '레인 하나를 빼먹음'(위 레인 대조 스텝 머리말)의 또 다른 판본이고,
+      #   그 스텝은 **팩 검체 이름 집합**만 대조하므로 이 종류의 비대칭(게이트 스크립트 자체의 누락)은
+      #   원리적으로 보지 못한다.
+      #   호출 형태는 release.yml:1126 과 **한 글자도 다르지 않게** 유지한다(같은 게이트가 두 레인에서
+      #   다르게 도는 것이 곧 드리프트다). 비0 = 잡 실패 = 브랜치 초록 부인.
+      #   위치 근거: 레인 대조 게이트 바로 뒤 · setup-python/Rust **앞**. 이 스크립트는 git·grep·bash 만
+      #   쓰므로 툴체인 설치를 기다릴 이유가 없고, 앞 스텝과 같은 '1초 안에 알 수 있어야 한다' 예산에 든다.
+      #   ⚠정직한 한계: 정적 패턴 매칭이라 난독화·신종 토큰·이미지 내 텍스트는 못 잡는다(스크립트 머리말).
+      #   그리고 이 스텝은 **오탐도 그대로 빨강**이다 — 그게 fail-closed 의 값이다. 걸리면 스캐너를
+      #   완화하지 말고 팩 콘텐츠 쪽을 placeholder 규약으로 정규화하라.
+      - name: 팩 콘텐츠 발행 hard-gate (태그 레인과 동일 호출 · 브랜치 선행)
+        run: bash scripts/scan-pack-secrets.sh
+
+      # ★(0.14.31 통합 · CONTRACTS E-4 ②) 이 잡의 python3 를 3.12 로 **고정**한다.
+      #   종전엔 이 잡만 setup-python 이 없어 러너 이미지 기본 python3 를 썼다 — 잡2
+      #   (boot-health-full)·windows-health.yml 은 이미 3.12 다. 즉 세 잡이 서로 다른
+      #   인터프리터로 같은 팩 스위트를 돌고 있었고, 그 차이는 **이미지가 갱신될 때마다
+      #   말없이 바뀐다**.
+      #   왜 지금 고치는가: 신설 test_trust_seed 의 LiveProcess 군은 자기 인터프리터가
+      #   `ps -E` 에 env 를 노출할 때만 실행되고, 아니면 **정직 skip** 한다
+      #   (`_env_visible_for_python_child` — darwin `ps -E` 는 Apple 플랫폼 바이너리의 env 를
+      #   숨긴다). 그 전제를 러너 이미지에 맡기면 "라이브 claude 가 있는데 신뢰 시드를
+      #   써버리는" 회귀의 검체가 **아무 신호 없이 빠질 수 있다** — 이 리포가 반복해 당한
+      #   '안 도는 검체는 게이트가 아니다' 의 조용한 판본이다. 인터프리터를 고정해 그
+      #   전제를 이미지 종속에서 빼낸다.
+      #   ⚠정직한 한계: 3.12 러너에서 그 군이 실제로 실행되는지는 **GitHub 러너에서 미확인**
+      #     이다(로컬 실측은 brew 3.14.7=전건 실행 · Apple 3.9.6=LiveProcess 실행 · 둘 다
+      #     skip 아님). 여기서 얻는 것은 '실행된다'는 보증이 아니라 **재현 가능한 전제**다.
+      #   위치: 레인 대조 게이트 **뒤** — 그 게이트는 stdlib(re·sys) 만 쓰고 "비대칭은 1초
+      #   안에 알 수 있어야 한다"는 배치 근거(위 스텝 머리말)를 setup-python 설치 시간이
+      #   깨서는 안 된다. 그 아래 모든 python 스텝은 이 3.12 를 쓴다.
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       # 2언어 파리티 하네스가 rustc 를 단독 호출한다(크레이트 의존 0 불변식의 기계 증명).
       - name: Setup Rust
@@ -594,6 +874,75 @@ jobs:
           #   본부 훅 보존 · 체크아웃 안 .probe 사본 팩 · 실측 2s) · test_dbg_d3_f4_answer_classifier(원작 dbg-D3 ·
           #   F4 「네」 분류기 표본 51 · 실측 1s 미만) 동반 편입.
           #   + test_dbg_d3_f5_dept_intent(원작 dbg-D3 · F5 부서 이름 꼴 의도 판정 · 실측 1s 미만) 동반 편입.
+          # ★0.14.31 audit 통합(2026-09-08 · CONTRACTS B-9 · E-4 ①): 두 레인(Rust fix/0.14.31-audit ·
+          #   Pack wp/0.14.31-pack)이 bc01f43 이후 신설한 팩 검체 **16종**을 3완전 레인에 **같은
+          #   커밋으로** 등재한다. 레인 워커가 각자 자기 레인에만 넣으면 ci-branch.yml 의 '팩 스위트
+          #   레인 대조' 게이트가 비대칭으로 적색이 되므로(B-9), 등재는 통합 단계 1회다 — 레인 워커는
+          #   신규 파일 목록만 인계했다.
+          #   WP-2 test_trust_seed(폴더 신뢰 사전 주입) · WP-3A test_capgate_registration·
+          #   test_capgate_hook_shell(능력 게이트 등록조건·셸 배선) · WP-3C test_cso_directive_rev ·
+          #   P6 test_role_authority·test_role_authority_shell(역할 해소 데몬 권위 · 단조 거부)·
+          #   test_role_authority_triage(독립 판정관 회귀 핀 — 2026-09-08 통합에서 **추가 등재**:
+          #   머지 후 신규 파일 대조에서 이 1종만 3레인 어디에도 없었다) ·
+          #   WP-6 test_round_stop_reason · WP-7 test_resource_gate·test_resource_gate_fleet_cpu·
+          #   test_inject_context_role_seat · WP-1 test_carry_unproven_scope·
+          #   test_wakeup_durable_receipt·test_wakeup_park_failure · phoenix 2종.
+          #   ★test_resource_gate 는 신설이 아니라 **이관**이다 — 종전 `cysjavis-pack/tests/` 에 있어
+          #     3레인이 이름으로 열거하는 `bin/tests/` 밖이었고 그래서 **0레인 실행**이었다(480235d 가
+          #     깬 스위트가 이것인데 그때 CI 는 녹색이었다). 이관 = 등재 대상 편입.
+          #   ★phoenix 2종(test_phoenix_fresh_honest·test_phoenix_f1_production_path)은 ci-branch.yml
+          #     레인 대조 게이트의 ALLOWED `test_phoenix_` 글롭 면제에서 **빼낸다** — stdlib 만 쓰는
+          #     밀폐 검체라 그 면제의 사유(cysd 하네스 의존)에 해당하지 않는다. 나머지 13종은 그대로
+          #     release 전용이라 글롭 토큰 `test_phoenix_` 자체는 ALLOWED 에 남는다(추출 정규식이
+          #     `test_phoenix_fresh_honest` 를 통째로 한 토큰으로 잡으므로 접두 토큰과 섞이지 않는다 — 실측).
+          #   전부 격리 HOME/PATH 스텁 하네스(라이브 데몬·~/.cys·~/.local/state 무접촉).
+          #   실측 2026-09-08 14:4x KST · macOS arm64 · python 3.14.7 · **루프와 같은 env(CYS_PACK_DIR
+          #   만 주입)** 로 당시 15종 전건 rc=0: round_stop_reason 41s · role_authority_shell 24s ·
+          #   trust_seed 17s(258 테스트) · role_authority 11s · capgate_hook_shell 10s ·
+          #   capgate_registration 9s · inject_context_role_seat 8s · 나머지 8종 합계 ≤4s → 약 123s.
+          #   검체 문서가 권하는 JAVIS_ROOT 는 검체가 스스로 임시로 덮으므로 루프 주입 불요(실측).
+          #   ★16종째 test_role_authority_triage 는 통합 단계 실측(2026-09-08 18:45 KST · macOS arm64 ·
+          #     python 3.14.7 · CYS_PACK_DIR·JAVIS_ROOT·CYS_PROBE_RUNS 임시 주입): **rc=0 · 4s**.
+          #   ✅**Pack 레인 10종은 2026-09-08 통합 머지(76a83ff)로 전부 도착했다**(종전 ⚠ 해소).
+          #     머지 전에는 루프의 `[ -f ]` 단언이 그 10종에 붉었다(의도된 상태였다). 레인 대조
+          #     게이트는 **토큰 집합** 대조라 그때도 통과했다. 머지 뒤 검증: `scripts/lane-parity-rehearsal.sh --strict`
+          #     — ①레인 대조 파이썬을 ci-branch.yml 원본에서 추출해 그대로 돌리고(로직 복제 0)
+          #       ②등재 이름의 파일 존재를 PENDING(머지 대기) 목록과 대조한다.
+          #   ★(0.14.31 성찰 반영 통합 2026-09-10) **13종 추가 등재** — 8개 병렬 레인이 만든 신규
+          #     검체다. 등재는 통합 단계 1회라는 이 블록의 규율(B-9) 그대로: 레인 워커는 파일만
+          #     인계했고 등재를 하지 않았으므로, 머지 직후 이 13종은 **0레인 실행**이었다
+          #     (`lane-parity-rehearsal.sh` 는 등재→파일 방향만 보므로 그 상태로도 적색이 아니다 —
+          #     즉 자동으로는 잡히지 않는 격차다).
+          #     pack-trust-preflight 5종: test_capgate_remeasure_order · test_phoenix_p10_lease_split ·
+          #       test_preflight_only_dispatch · test_preflight_settings_fifo · test_trust_seed_reflect
+          #     pack-rounds-gate 8종: test_refl_axis_labels · test_refl_fleet_argv_owner ·
+          #       test_refl_fleet_latch_gen · test_refl_inject_context_role_canon ·
+          #       test_refl_round_lock_ownership · test_refl_rsi_state_ownership ·
+          #       test_refl_stagnation_budget_ledger · test_refl_wakeup_expiry_attribution
+          #     실측 2026-09-10 · macOS arm64 · 루프와 같은 env(CYS_PACK_DIR·JAVIS_ROOT·
+          #     CYS_PROBE_RUNS 임시 주입) · 13종 전건 rc=0 · 합계 약 27s
+          #     (settings_fifo 10s · inject_context_role_canon 7s · round_lock_ownership 7s ·
+          #     trust_seed_reflect 2s · axis_labels 1s · 나머지 8종 <1s).
+          #   ★WP-6(2026-09-15) 4종 추가 등재 — test_report_ctx_axis(WP6-2 실측 ctx 축) ·
+          #     test_formation_tick_visibility(WP6-5 심박 흔적) · test_resource_gate_boot_anchor
+          #     (WP6-6 부트 유예 내용 앵커 · ⑧ 은 AF_UNIX 부재 시 자체 SKIP) · test_ctx_divergence
+          #     (WP6-3 괴리 임계). 실측 2026-09-15 · macOS arm64 · python 3.14.7 · 루프와 같은 env
+          #     (CYS_PACK_DIR 임시 + 격리 HOME/CYS_STATE_DIR) · 4종 전건 rc=0 · 합계 약 4s.
+          #   ★R3-2(0.14.42) 1종 추가 등재 — test_phoenix_r32_restore_budget(phoenix `cys restore` 상한 =
+          #     기동 단위 수 비례 · 행 의심 90 · 롤백 노브 · cys.rs 구조 핀). stdlib·데몬 불요 밀폐 검체라
+          #     ALLOWED `test_phoenix_` 글롭 면제(release 전용)에 맡기지 않고 3완전 레인에 이름으로 싣는다.
+          #     실측 2026-09-25 · macOS arm64 · python 3.9.6·3.14.7 · CYS_PACK_DIR 임시 · rc=0 · 약 2s.
+          #   ★R3-4(0.14.42) 1종 추가 등재 — test_hook_r34(프롬프트 훅 ⑥ 완료 감지·능력 프로브 양성 캐시·입력 GC 게이트 ·
+          #     도구 훅 빠른 길). 임시 디렉터리·스텁 cys·호출 기록 래퍼만 쓰는 밀폐 검체다(데몬 불요 · 라이브 무접촉).
+          #     test_hook_launcher_split 옆 5곳(ci-branch mac·ubuntu · pack-release · release 2곳)에 싣는다. Windows 레인은
+          #     없다 — 검체의 (msys) 행은 가짜 cygpath 모사일 뿐 플랫폼 증명이 아니다.
+          #     실측 2026-09-25 15:56 PDT · macOS arm64 · python 3.14.7 · 격리 HOME · CYS_PACK_DIR 임시 · 최종(C4) 검체
+          #     39행 rc=0 · 약 12s(시한 행이 느린 자식 4s 를 1s 시한으로 자르는 lab 들이 대부분을 쓴다).
+          #   ★R3-1(0.14.42 · 리뷰 F1) 1종 추가 등재 — test_session_start_r31(SessionStart 훅의 `<source>|<경로>` 파싱과
+          #     clear/비clear 두 갈래의 usage-register 인자 전체 · rc 2 재호출 · 10s 상한 · null/깨진 입력 호출 0). 종전 커밋
+          #     핀(cys.rs 문자열 존재·순서)은 파싱 변이(`TP=${SS#*|}` → `TP=${SS%%|*}`)에 초록이었다 — 이 검체는 적색 43행.
+          #     임시 팩(레포 hooks/ 사본)·격리 HOME·스텁 cys 만 쓰는 밀폐 검체(데몬 불요 · 라이브 무접촉) · test_hook_r34 옆 5곳.
+          #     실측 2026-09-26 00:5x PDT · macOS arm64 · python 3.14.7 · sh·dash·bash 46행 rc=0 · 약 24s(10s 상한 행 1회 포함).
           for t in test_report_ghost test_hud_bridge_skew test_todo_shared_constants test_todo_stamp \
                    test_import_guard test_radio test_scrub test_bootstrap_chain test_snapshot \
                    test_dept_name_guard test_preflight_c03_states test_content_pins_parity \
@@ -606,10 +955,34 @@ jobs:
                    test_py_resolver_clt_stub test_v115_dept test_ceo_pending_gate \
                    test_preflight_c62_c68_ledger \
                    test_runtime_seal test_preflight_c80_runtime_seal test_runtime_manifest_parity \
-                   test_check_ack_addr_gate test_hook_launcher_split test_mission_origin_parity \
+                   test_check_ack_addr_gate test_hook_launcher_split test_hook_r34 test_session_start_r31 test_mission_origin_parity \
                    test_bootlast_golden_lock_parity test_bootv2_doc_contract test_pyseal_census \
+                   test_pyseal_negative_specimen \
                    test_preflight_hook_body test_preflight_win_hook_launcher \
                    test_preflight_npm_prefix test_learn_digest_queue \
+                   test_trust_seed test_capgate_registration test_capgate_hook_shell \
+                   test_cso_directive_rev test_role_authority test_role_authority_shell \
+                   test_role_authority_triage \
+                   test_round_stop_reason test_resource_gate test_resource_gate_fleet_cpu \
+                   test_inject_context_role_seat test_carry_unproven_scope \
+                   test_wakeup_durable_receipt test_wakeup_park_failure \
+                   test_capgate_remeasure_order test_phoenix_p10_lease_split \
+                   test_preflight_only_dispatch test_preflight_settings_fifo \
+                   test_trust_seed_reflect \
+                   test_refl_axis_labels test_refl_fleet_argv_owner test_refl_fleet_latch_gen \
+                   test_refl_inject_context_role_canon test_refl_round_lock_ownership \
+                   test_refl_rsi_state_ownership test_refl_stagnation_budget_ledger \
+                   test_refl_wakeup_expiry_attribution \
+                   test_phoenix_fresh_honest test_phoenix_f1_production_path \
+                   test_phoenix_r32_restore_budget \
+                   test_report_ctx_axis test_formation_tick_visibility \
+                   test_resource_gate_boot_anchor test_ctx_divergence \
+                   test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
+                   test_dept_schedule_seed \
+                   test_lane_redirect \
+                   test_dept_notice_lane test_team_create_u16 \
+                   test_teamtoken test_teamtoken_hook test_dept_team_token \
+                   test_dept_create_progress \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
@@ -634,6 +1007,26 @@ jobs:
           [ -f "$g" ] || { echo "감지기 누락: $g (git add 누락 의심)" >&2; exit 1; }
           echo "== javis_detect --self-test (mac) =="
           CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$g" --self-test
+          # ★WP-D(2026-09-22 · v0.14.39 · 감사 major ①): 컨텍스트 사이클 autopilot·verifier self-test 가
+          #   3레인 어디에서도 0회 실행이었다(직전 보고 "이미 팩 스위트 진입점" 은 '서브커맨드 존재' 와
+          #   '레인 등재' 의 혼동). 봉인 대상: 게이트5 held_noop 분류·지수 쿨다운·구조적 보류 상한 ·
+          #   HELD_RCS↔러스트 84/85 이음매 · CONTRACT BLOCK v1 바이트 동일성(verifier) · held 통지 유한화
+          #   (tick 무통지 — javis_wakeup 멱등키 배달 후 소멸 전제 핀 [18-b]). 실측 0.1s · 격리 HOME 필수
+          #   (라이브 ~/.cys 접촉 금지) · 셸 스텁 cys 만 스폰(데몬 무접촉). 3완전 레인 동시·대칭 등재 —
+          #   self-test 는 `test_` 토큰이 아니라 레인 대조 게이트 시야 밖이다(대칭은 이 주석이 지킨다).
+          for c in javis_cycle_autopilot javis_cycle_verifier; do
+            g="cysjavis-pack/bin/$c.py"
+            [ -f "$g" ] || { echo "사이클 스크립트 누락: $g (git add 누락 의심)" >&2; exit 1; }
+            echo "== $c self-test (mac) =="
+            if ! env -u CYS_SOCKET -u CYS_GATE_LANE_SOCKET -u CYS_ROLE -u CYS_SURFACE_ID \
+                   HOME="$(mktemp -d)" CYS_PACK_DIR="$(mktemp -d)" CYS_STATE_DIR="$(mktemp -d)" \
+                   JAVIS_ROOT="$(mktemp -d)" python3 "$g" self-test > "/tmp/wpd-$c.log" 2>&1; then
+              tail -40 "/tmp/wpd-$c.log"
+              echo "::error:: $c self-test 실패 — 컨텍스트 사이클 autopilot/verifier 회귀(WP-D)." >&2
+              exit 1
+            fi
+            tail -3 "/tmp/wpd-$c.log"
+          done
           # ★W-CI2(2026-08-21): Wave 2 좌석 래치 회귀 핀 test_seat_latch_negation 편입(위 루프
           #   말미 · 실측 0.007s·19케이스 · 순수 픽스처·서브프로세스 0·라이브 무접촉) — 리뷰어
           #   2기 공통 지적: 이 핀이 어느 CI 레인에서도 0회 실행이었다. 봉인 대상은 awakened_at
@@ -680,7 +1073,7 @@ jobs:
           CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
           trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           rc=0
-          for t in test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root; do
+          for t in test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root test_cysd_accept_emfile; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== $t (mac) =="
@@ -691,6 +1084,79 @@ jobs:
               echo "::error::$t rc=$r (IG-35 1단계 — 적색이면 좁히지 말고 그대로 보고한다)"
               rc=$r
             fi
+          done
+          exit $rc
+
+      # ★WP-7 R3(0.14.31 · 독립 재유도 지적 2·5): **안 도는 검체는 게이트가 아니다** 의 재발.
+      #   `cysjavis-pack/tests/` → `cysjavis-pack/bin/tests/` 이동은 됐는데 등재가 없어
+      #   test_resource_gate·test_resource_gate_fleet_cpu·test_inject_context_role_seat 세 스위트와
+      #   `javis_resource_gate.py --self-test` 가 **3레인 전부에서 0회 실행**이었다. 그 사각 안에
+      #   WP-7 이 R1·R2·R3 에서 고친 것들(함대CPU 소유권·보류 상한 래치·부트 유예·역할 좌석 강등)의
+      #   핀이 전부 들어 있다 — 다음 회귀는 초록으로 지나간다.
+      #   ★기존 목록에 이름만 덧붙이지 않고 **전용 스텝**으로 둔 이유(codex): 같은 꼬리 줄을 여러
+      #     레인 워커가 동시에 고치면 통합에서 충돌한다. 스텝 단위면 삽입 지점이 서로 다르다.
+      #   ★밀폐: 검체마다 임시 CYS_PACK_DIR·CYS_STATE_DIR·JAVIS_ROOT + 소켓/역할/soul env 제거
+      #     (`env -u`). 라이브 데몬·오너 홈 무접촉 — 훅 검체는 자기 HOME 도 임시로 고정한다.
+      #   ★`if:` 를 달지 않는다(돌지 않는 초록 금지) · 파일 부재와 비정상 종료는 그대로 실패다.
+      #   실측(로컬): 네 검체 합 약 1.6s + self-test 0.2s.
+      - name: 팩 검체 — 자원 게이트·함대CPU·역할 좌석 (WP-7 R3 3레인 등재 · macOS)
+        shell: bash
+        run: |
+          set -u
+          # ★R2(수렴 · 리뷰 minor): GitHub 의 `shell: bash` 는 `bash --noprofile --norc -eo pipefail`
+          #   이다 — `-e` 때문에 **첫 실패 검체에서 스텝이 즉시 끝난다**: `r=$?` · `tail` 로그 꼬리 ·
+          #   `::error::` 주석 · 나머지 검체 · 마지막 `exit $rc` 집계가 하나도 실행되지 않는다.
+          #   레인은 여전히 적색(fail-closed)이지만 이 스텝이 존재하는 이유인 **진단**이 사라진다.
+          #   `if <명령>; then …; else r=$?; fi` 는 그 명령에 한해 `-e` 를 끈다(POSIX 셸 규약).
+          rc=0
+          for t in test_resource_gate test_resource_gate_fleet_cpu \
+                   test_inject_context_role_seat test_wp7_gate_triage; do
+            f="cysjavis-pack/bin/tests/$t.py"
+            [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+            echo "== $t (mac) =="
+            if env -u CYS_SOCKET -u CYS_GATE_LANE_SOCKET -u CYS_SOUL -u CYS_ROLE \
+                   CYS_PACK_DIR="$(mktemp -d)" CYS_STATE_DIR="$(mktemp -d)" \
+                   JAVIS_ROOT="$(mktemp -d)" python3 "$f" > "/tmp/wp7-$t.log" 2>&1
+            then r=0; else r=$?; fi
+            tail -60 "/tmp/wp7-$t.log"
+            [ $r -eq 0 ] || { echo "::error::$t rc=$r (WP-7 자원 게이트 회귀)"; rc=$r; }
+          done
+          g="cysjavis-pack/bin/javis_resource_gate.py"
+          [ -f "$g" ] || { echo "게이트 누락: $g (git add 누락 의심)" >&2; exit 1; }
+          echo "== javis_resource_gate --self-test (mac) =="
+          if env -u CYS_SOCKET -u CYS_GATE_LANE_SOCKET -u CYS_ROLE \
+                 CYS_PACK_DIR="$(mktemp -d)" CYS_STATE_DIR="$(mktemp -d)" \
+                 python3 "$g" --self-test > /tmp/wp7-selftest.log 2>&1
+          then r=0; else r=$?; fi
+          tail -20 /tmp/wp7-selftest.log
+          [ $r -eq 0 ] || { echo "::error::javis_resource_gate --self-test rc=$r"; rc=$r; }
+          exit $rc
+
+      # ★D3(반성 라운드 2026-09-10 · fix-plan directives-ci-release): 수용 검체 4종이 **3레인 전부에서
+      #   0회 실행**이었다 — WP-4 test_session_start_hook(+317 · session-start.sh 의 `reclaim-role --auto`
+      #   배선 수용) · WP-7 test_formation_gate_label(+33 · javis_formation 의 fleet_cpu_ratio 라벨 소비) ·
+      #   WP-6 test_review_prompt_verdict_path(리뷰 판정 경로) · P6 test_dept_teardown_atomicity(+17 ·
+      #   상속 env 회귀). 세 레인 **모두**에 없으면 레인 대조 게이트의 union 에 들어오지 않아 비대칭 0 으로
+      #   초록이었다 — 반례: session-start.sh 의 reclaim-role 배선을 되돌려도 3레인 전부 초록. 역방향 축
+      #   (파일→등재)은 이제 scripts/lane-parity-rehearsal.sh 3단계가 잰다.
+      #   실측(로컬 · 아래와 같은 격리 env · 2026-09-10): 14s · 0s · 1s · 4s · 전건 rc=0.
+      #   전용 스텝·격리 env·`if:` 없음(레그 고정 제외)의 근거는 위 WP-7 스텝과 같다.
+      - name: 팩 검체 — 수용 검체 4종 (D3 3레인 등재 · macOS)
+        shell: bash
+        run: |
+          set -u
+          rc=0
+          for t in test_session_start_hook test_formation_gate_label \
+                   test_review_prompt_verdict_path test_dept_teardown_atomicity; do
+            f="cysjavis-pack/bin/tests/$t.py"
+            [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+            echo "== $t =="
+            if env -u CYS_SOCKET -u CYS_GATE_LANE_SOCKET -u CYS_SOUL -u CYS_ROLE \
+                   CYS_PACK_DIR="$(mktemp -d)" CYS_STATE_DIR="$(mktemp -d)" \
+                   JAVIS_ROOT="$(mktemp -d)" python3 "$f" > "/tmp/d3-$t.log" 2>&1
+            then r=0; else r=$?; fi
+            tail -60 "/tmp/d3-$t.log"
+            [ $r -eq 0 ] || { echo "::error::$t rc=$r (D3 수용 검체 회귀)"; rc=$r; }
           done
           exit $rc
 
@@ -866,6 +1332,119 @@ jobs:
           echo "::notice title=cys-rehearsal 로그 꼬리::$(tail -5 "$LOG" | tr '\n' ' | ')"
           exit 0
 
+      # ★D4(반성 라운드 2026-09-10): `cargo test --bin cysd` 가 브랜치 CI 에 **없었다** — release.yml
+      #   태그 레인의 `if: matrix.target == 'aarch64-apple-darwin'` 스텝 안에만 있어, 0.14.31 최대
+      #   신설 표면(alert_route.rs 전량 · governance/state/delivery 의 WP-5 큐 생명주기)의 단위 검체
+      #   1,228종이 브랜치 push 에서 0회 실행이고 **컴파일 실패조차** 안 잡혔다. 그 적색은 태그 push
+      #   에서 처음 보이는데 그 시점엔 pack-artifacts 미실행 → 팩 자산 0 → 발행 0 이다(release.yml
+      #   이 그 인과를 스스로 적었다). skip 은 release.yml 의 hwmon 모듈 전체 skip 선례(가상 러너 GPU
+      #   부재 · 테스트 삭제 금지)를 **깨질 검체 하나로 좁혀** 쓴다(아래 R1F-PK 단락). 격리·직렬화 근거는
+      #   위 리허설 스텝과 같다.
+      #   ★`if:` 를 달지 않는다 — 위 레인 대조 게이트의 MUST_RUN_TOKENS 가 이 토큰의 존재와 무조건
+      #   실행을 핀한다(D9). 예산: 로컬 실측 2026-09-10(콜드 빌드 포함) 1226 passed · 0 failed ·
+      #   2 filtered(hwmon) · 137s — 러너 캐시 히트 시 더 짧다.
+      #   ★(0.14.43 성찰 R1F-PK · S3 minor 7) hwmon **모듈 전체** skip 을 깨질 검체 하나의 정확한 이름
+      #   (`hwmon::tests::snapshot_has_all_sections`)으로 좁혔다. 종전에는 E2 가 더한 검체 15건(맥 기준)이 CI 어느
+      #   레인에서도 한 번도 돌지 않았다. 깨질 것으로 가린 하나는 GPU 코어 수·활용률·NPU 코어 수를 실기로 단언하는
+      #   그 검체다(가상 러너 실증: v0.12.21 릴리스 런 28792111282). 나머지 15건의 단언은 센서 유무와 무관(순수 함수·
+      #   소스 핀·실패 사유 판정)하거나 `CYS_HW_STRICT` 일 때만 켜진다 — 코드 읽기 근거이고 가상 러너 실측은 아직 없다
+      #   (로컬 맥 실기 16/16 통과). **이 좁힘 탓에 이 스텝이 붉어지면 이 한 줄을 되돌려라**(테스트 삭제 금지).
+      #   release.yml 의 skip 은 그대로다(발행 레인은 건드리지 않는다).
+      #   ★(0.14.43 성찰 2회차 R2F-PK 2차 · 2026-10-05) **실패하면 검체 이름을 annotation 으로 낸다.** 종전의 이 스텝은 붉어도 annotation 이 러너의 "Process completed with exit code 101" 한 줄뿐이었다.
+      #   잡 로그는 인증 없이 읽히지 않는다(익명으로 읽히는 실패 사유 채널은 annotation 뿐이다 — scripts/pre-tag-ci-check.py 머리말) → 러너에서만 흔들리는 검체는 **이름조차 알 수 없었다**
+      #   (실발생 2026-10-04: 커밋 2d9aea4e 의 런 37198280229 · 잡 111424543389 가 이 스텝에서 exit 101 — `src/` 가 한 글자도 다르지 않은 앞 커밋 bd0a0ca3 의 같은 스텝은 통과했다).
+      #   그래서 cargo 출력을 `tee` 로 로그 파일에도 받고, 실패(rc≠0)일 때만 ①판정 한 줄(실패 검체 이름 · 하네스 이상은 따로 구분) ②로그 꼬리 20줄을 `::error` 로 낸 뒤 **같은 rc 로** 끝낸다.
+      #   · **차단 의미·실행 명령은 그대로다.** 판정은 cargo 의 종료 코드 하나다 — rc 0 이면 로그에 FAILED 가 보여도 통과이고 덧붙는 줄도 없다(종전과 같은 출력). `continue-on-error`·`if:` 를 달지 않는다.
+      #   · rc 는 파이프에 삼켜지지 않게 `PIPESTATUS[0]` 으로 직독하고 `-e` 는 파이프 **앞에서** 끈다 — 켜 둔 채면 cargo 가 비0 일 때 파이프 직후 그 자리에서 스텝이 끝나 판독 코드가 도달 불가다
+      #     (windows-health 의 cysd 스텝이 U4 C4-① 에서 겪은 형태). 그 뒤로 `-e` 를 다시 켜지 않는다 — 판독 명령 하나가 실패해도 스크립트는 끝까지 가고 맨 끝의 `exit "$rc"` 가 종료 코드를 정한다.
+      #   · annotation 은 **많아야 두 줄이고 판정(이름) 줄이 먼저다.** 실측(R2F-PK 1차 · 커밋 bd0a0ca3 의 windows-health 런 37185687205 익명 조회): 그 런의 cysd 스텝 본문은 실패 때 error 를 22줄
+      #     (머리 1 · 꼬리 20 · 판정 1) 내는데 조회에 남은 것은 앞 10줄(머리 1 · 꼬리 9)이었고 맨 뒤 판정 줄은 없었다 — 스텝당 error annotation 은 앞 10개만 남는 것으로 보인다. 그래서 꼬리는
+      #     줄마다가 아니라 `%0A` 로 이은 **한 줄**로 낸다(windows-health 판독 스텝의 esc 와 같은 방식).
+      #   · 판독 도구는 `LC_ALL=C`·`grep -a` 로 돈다 — 맥의 sed·tr·sort·awk 는 UTF-8 로케일에서 깨진 바이트 하나에 멈추고 grep 은 NUL 하나에 "Binary file … matches" 만 낸다(로컬 맥 실측).
+      #     실패한 검체가 터미널 바이트를 찍었다는 이유로 이름·꼬리가 사라지면 안 된다. 맥의 bash 3.2 도 UTF-8 로케일에서는 `$이름` 바로 뒤 한글의 첫 바이트를 변수 이름에 붙여 읽는데
+      #     (unbound variable · 로컬 맥 실측) `LC_ALL=C` 뒤로는 그 함정도 없다 — 이 줄을 지우지 마라.
+      #   · 한계: 러너가 스텝을 잘라 내면(취소·잡 타임아웃) 판독 코드는 돌지 않는다 — 그때 남는 것은 `tee` 가 흘린 러너 로그뿐이다(익명으로는 읽히지 않는다).
+      - name: cargo test --bin cysd (데몬 단위 검체 · 브랜치 레인 편입 · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 로그는 판독 전용이다(판정은 아래 rc 하나). 낡은 로그를 읽지 않게 먼저 지운다.
+          LOG="${RUNNER_TEMP:-/tmp}/cysd-mac.log"
+          rm -f "$LOG"
+          # ★여기서 -e 를 끈다(위 머리 주석) — 아래 파이프가 비0 이어도 rc 를 받아 판독까지 간다.
+          set +e
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cysd -- --test-threads=1 --skip hwmon::tests::snapshot_has_all_sections 2>&1 | tee "$LOG"
+          rc="${PIPESTATUS[0]}"
+          if [ "$rc" -eq 0 ]; then exit 0; fi
+          # ── 여기부터는 실패(rc≠0)일 때만 돈다 — 판독은 종료 코드를 바꾸지 않는다 ──
+          export LC_ALL=C
+          esc() { sed -e 's/%/%25/g' | tr -d '\r' | awk 'BEGIN{ORS="%0A"}{print}' | sed -e 's/%0A$//'; }
+          # cargo 출력이 줄 중간에서 끊겼어도 아래 `::error` 가 줄 머리에 오게 한다(줄 머리가 아니면 러너가 명령으로 읽지 않는다).
+          echo
+          if [ ! -s "$LOG" ]; then
+            echo "::error title=cysd-mac 측정 실패::rc=$rc 인데 로그가 없거나 비어 있다 — cargo 가 한 줄도 내지 못했거나 로그 파일을 쓰지 못했다. '실패한 테스트 없음' 이 아니다"
+            exit "$rc"
+          fi
+          summary="$(grep -a -E '^test result:' "$LOG" | tail -1)"
+          failed="$(printf '%s' "$summary" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+')"
+          names="$(awk '/^failures:$/{f=1;next} f&&/^    [a-zA-Z_]/{print $1} f&&/^$/{f=0}' "$LOG" | sort -u | head -20 | tr '\n' ' ')"
+          if [ -z "$summary" ]; then
+            echo "::error title=cysd-mac 측정 실패::rc=$rc 인데 'test result' 요약이 없다 — 컴파일 실패이거나 하네스가 요약 전에 죽었다. '실패한 테스트 없음' 이 아니다"
+          elif [ "${failed:-0}" -eq 0 ]; then
+            echo "::error title=cysd-mac 측정 실패::rc=$rc 인데 failed=0 이다 — 개별 테스트 실패가 아니라 하네스 이상이다(101=러스트 패닉)"
+          else
+            more=""
+            if [ "$failed" -gt 20 ]; then more="… (이름순 앞 20개만 — 전체는 잡 로그에 있다)"; fi
+            printf '%s\n' "::error title=cysd-mac 테스트 실패::failed=$failed — ${names:-(이름을 읽지 못했다 — 아래 로그 꼬리를 보라) }$more"
+          fi
+          printf '%s\n' "::error title=cysd-mac 로그::$(tail -20 "$LOG" | esc)"
+          exit "$rc"
+
+      # ★R2F-PK 2차(성찰 2회차 · 2026-10-05): 위 데몬 검체 스텝의 **음성 대조**. 그 스텝의 `run:` 본문을 이 파일에서 그대로 떼어 가짜 `cargo`(PATH 맨 앞)로 돌려 잰다 — 성공(rc 0 · 덧붙는 줄 0 · 출력 그대로) ·
+      #   테스트 실패(같은 rc · 이름이 든 판정 줄이 먼저 · 꼬리 한 줄) · 하네스 이상(요약 없음 / failed=0 / 로그 없음) · rc 0 인데 로그에 FAILED(통과) · 종료 코드가 그대로 나가는가(1·3·101·137·255) ·
+      #   깨진 바이트·NUL·줄바꿈 없이 끝난 출력 · 낡은 로그 · 이름 목록을 못 읽은 경우 · 실행 인자 · `continue-on-error`·`if:` 부재.
+      #   왜 필요한가: 위 스텝은 파이프(`| tee`)와 rc 직독을 얻었다 — 그 배선이 한 줄만 틀어져도 **데몬 검체가 붉은데 스텝은 초록**이 된다(통과만 보이는 게이트는 늘 초록인 검사와 구별되지 않는다).
+      #   레인 대조 게이트는 실행 줄의 존재와 `if:` 만 핀한다 — 종료 코드 전달과 `continue-on-error` 는 그 사정거리 밖이고 이 검체가 그 몫을 진다.
+      #   밀폐: 임시 폴더의 가짜 cargo 와 시스템 도구(/usr/bin·/bin)만 쓴다(진짜 cargo·네트워크 무접촉 · 로컬 맥 실측 약 2초). pack-release·release 미편입 사유는 위 레인 대조 게이트의
+      #   ALLOWED("test_ci_branch_cysd_step") 등재 참조. ★`if:` 를 달지 않는다(돌지 않는 초록 금지). 데몬 검체 스텝 **뒤**에 둔다 — 앞에 두면 이 검체가 붉을 때 데몬 검체가 건너뛰어진다.
+      - name: 맥 데몬 검체 스텝의 실패 판독 음성 대조 (가짜 cargo · 종료 코드·annotation · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_ci_branch_cysd_step.py"
+          [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          echo "== test_ci_branch_cysd_step (mac) =="
+          python3 "$f"
+
+      # ★(0.14.43 성찰 R1F-PK · S3 minor 8) IOReport 강링크 **산출물** 게이트. E2 가 `hwmon.rs` 의 IOReport 강링크를 dlopen 지연
+      #   로딩으로 바꿨다(그 dylib 이 없는 맥에서 데몬이 뜨지 못하던 문제). 소스 핀(lib `e2_cysd_hwmon_source_has_no_ioreport_strong_link`)은
+      #   소스의 모양만 보지만 진짜 판정자는 산출물이다 — 이 스텝이 제품 cysd 를 만들어 `otool -L` 에 IOReport 가 없음을 확인한다
+      #   (scripts/check-no-ioreport-link.sh). 이 잡에는 제품 cysd 빌드가 없다(앞 스텝은 테스트 하네스 바이너리) → 여기서 한 번 만든다.
+      #   앞 스텝이 의존 크레이트와 lib 를 같은 개발 프로파일로 이미 컴파일했으므로 늘어나는 것은 cysd 비테스트 빌드뿐이다.
+      #   검사 경로: 이 잡은 호스트 네이티브(macos-latest · 타깃 트리플 지정 없음 · 유니버설 아님)라 `target/debug/cysd` 하나다.
+      #   (릴리스 레인은 레그별 — aarch64·x86_64 크로스 — `.app` 안 cysd 를 본다.) 개발 프로파일도 같은 링크 속성을 적용받는다.
+      #   ★`if:` 를 달지 않는다(돌지 않는 초록 금지) — 레인 대조 게이트의 MUST_RUN_TOKENS 가 이 실행 줄의 존재와 무조건 실행을 핀한다(R2F-PK · A4 n6). 스크립트는 맥이 아니면 '건너뜀'(통과)이지만
+      #   **맥인데 otool 이 없으면 판정 불가(exit 2)** 다(R2F-PK · A4 m2 — 종전에는 이것도 건너뜀이었다). 이 잡은 macOS 전용이라 건너뜀은 일어나지 않는다.
+      - name: cysd 산출물 IOReport 링크 게이트 (otool -L · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --bin cysd
+          bash scripts/check-no-ioreport-link.sh target/debug/cysd
+
+      # ★R2F-PK(성찰 2회차 · A4 m2): 위 게이트 스크립트의 **음성 대조** — 가짜 `otool`(PATH 맨 앞)로 종료 코드 0(통과)·1(IOReport 링크 발견)·2(판정 불가 — 맥인데 otool 없음 포함) 세 갈래를 잰다.
+      #   종전에는 CI 가 통과 갈래만 돌았다(실패 갈래를 재는 검체는 증거 폴더의 일회성 도구뿐이었다) — awk 패턴 한 글자가 바뀌어 늘 통과하게 돼도 붉어지는 곳이 없었다(이 저장소의 교리 "통과만 보이는 게이트는
+      #   늘 초록인 검사와 구별되지 않는다"). 밀폐: 임시 폴더의 가짜 uname·otool 과 도구 링크만 쓰고 PATH 를 그 폴더 하나로 한정한다(실측 약 2초 · 라이브 무접촉). pack-release·release 미편입 사유는 위
+      #   레인 대조 게이트의 ALLOWED("test_check_no_ioreport_link") 등재 참조. ★`if:` 를 달지 않는다(돌지 않는 초록 금지).
+      - name: IOReport 링크 게이트 스크립트 음성 대조 (가짜 otool · 0/1/2 · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_check_no_ioreport_link.py"
+          [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          echo "== test_check_no_ioreport_link (mac) =="
+          python3 "$f"
+
       # ★T6(v2 §12 이월 · merge3 CI 편입): cargo test --lib 완전 레인(macOS). 병합 엔진
       #   (merge3 golden 15종)과 pack 판정·실행부 스위트가 **브랜치 push 마다** 도는 유일한
       #   완전 --lib 레인이다 — release.yml 은 태그 시점(Windows 레그는 필터 3종), 여기는 조기
@@ -919,6 +1498,24 @@ jobs:
           touch "src-tauri/binaries/cys-$triple" "src-tauri/binaries/cysd-$triple" \
                 src-tauri/resources/pack.tar.gz src-tauri/resources/pack-manifest.json
           CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test -p cys-app --bins -- --test-threads=1
+
+      # ★윈도우 교차 타입체크(2026-09-11 · v0.14.34 윈도우 빌드 파손 재발 방지 · W-2-e/P1 · CEO 승인).
+      #   왜: 이 레인은 macOS 만 컴파일해 윈도우 cfg 파손(v0.14.34 — src-tauri/src/main.rs 의 유닉스 전용
+      #   dev/ino 가 cfg 밖)을 원리적으로 못 봤다. 태그 전 점검(docs/RELEASE.md §0-C · scripts/pre-tag-ci-check.py)이
+      #   같은 SHA 의 ci-branch 초록을 태그 조건으로 요구하므로, 여기 얹으면 윈도우 컴파일이 사람의 규율이 아니라
+      #   기계로 태그 전에 집행된다. 윈도우 러너 불요 — 맥에서 x86_64-pc-windows-msvc cfg 로 cargo check 한다
+      #   (네이티브 산출물 우회 4곳은 스크립트 머리말).
+      #   ★실패 = 잡 실패(경고로 흘리지 않는다) · 조용한 skip 없음: 스크립트 exit 2(판정 불가 — 타깃·도구 부재·
+      #     우회 실패·cys-app 미검사)도 실패다. `if:`·continue-on-error 를 달지 않는다(돌지 않는 초록 금지).
+      #   ⚠정직한 한계: 타입체크·린트만 증명한다 — 링크·NSIS·런타임은 windows-build·release 레인 몫이다.
+      #     이 스텝이 GitHub 러너에서 실제로 도는지는 이 스텝을 담은 커밋의 첫 push 에서 처음 확인된다
+      #     (작성 시점 실측은 로컬 macOS 뿐).
+      - name: 윈도우 교차 타입체크 (scripts/win-typecheck.sh · cys-app 전체 · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-pc-windows-msvc
+          sh scripts/win-typecheck.sh
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 잡2 — 부트스트랩 건강성 러너 **전량**(macos-latest · 2026-08-24 M4)
@@ -1073,3 +1670,162 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/tests/nsis-template/check.py
+  # 잡4 — ubuntu: **태그 레인 `pack-artifacts`(ubuntu-latest)의 파이썬 팩 루프를 그대로** 돌린다.
+  # ★A2(2026-09-11 · v0.14.33 · 이 레인이 없어서 일어난 일): v0.14.32 태그런의 `pack-artifacts`
+  #   잡이 `test_trust_seed` 7건으로 죽었다 — 원인은 `javis_preflight.py` 리눅스 `/proc` 갈래의
+  #   잠복 비대칭(environ EACCES 를 전부 미해결로 계상)이었고, **리눅스에서 그 검체가 돌아본 것이
+  #   그때가 처음**이었다. 브랜치 CI 3잡이 전부 macOS 라 `/proc`·`renameat2`·리눅스 권한 갈래는
+  #   태그를 밀기 전까지 0회 실행이었다. 재태그는 금지(release-pipeline-map §10-10)이므로 그
+  #   적색의 대가는 **버전 하나를 버리는 것**이다(0.14.31 → 0.14.32 → 0.14.33 이 그 값이다).
+  #   이 잡의 명제는 하나다: **태그를 밀기 전에 우분투에서 같은 루프가 돈다.**
+  # ★"같은 루프" 의 정의 = release.yml `pack-artifacts` 의 `for t in … done` 블록을 **문면까지
+  #   그대로** 복사한다(토큰 집합·파일 존재 단언·env 격리 `CYS_PACK_DIR="$(mktemp -d)"` 동일).
+  #   두 블록의 diff 가 0 이어야 드리프트가 눈에 보인다 — 그래서 에러 문면의 '서명 전 차단' 도
+  #   고치지 않았다(그 문장은 태그 레인의 결과다 · 이 레인에서의 결과는 '태그 전 차단' 이고,
+  #   그 차이를 말하는 자리가 이 주석이다). 동일성은 손이 아니라 기계가 지킨다 —
+  #   `scripts/lane-parity-rehearsal.sh` 5단계가 두 토큰 집합의 **정확한 일치**를 잰다.
+  # ★범위(정직): 이 잡은 파이썬 루프만이다. `pack-artifacts` 의 2언어 파리티(rustc)·시크릿 스캔·
+  #   cargo 빌드·tar·서명은 여기서 돌지 않는다(그 표면은 이미 잡1·태그 레인이 잰다). 그래도
+  #   0.14.32 를 죽인 표면은 정확히 이 루프였다.
+  # ★`if:` 없음 · `continue-on-error` 없음 — 돌지 않는 초록도, 붉어도 통과하는 초록도 금지.
+  ubuntu-pack-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # 잡1·잡2·windows-health·release pack-artifacts 와 같은 핀(CONTRACTS E-4 ②). 러너 이미지
+      # 기본 python3 로 돌면 같은 스위트를 레인마다 다른 인터프리터로 재는 셈이고, 그 차이는
+      # 이미지 갱신 때 말없이 바뀐다.
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ★전제 실측(stageA §6-4 가 "측정하지 못한 것" 으로 남긴 바로 그 값). 위 결함의 기전 설명은
+      #   `kernel.yama.ptrace_scope` 와 `/proc/<pid>/environ` 권한에 기대고 있었는데 러너의 실값을
+      #   아무도 재지 않았다. 여기서 1회 찍는다 — 이 스텝은 **진단**이라 판정하지 않는다(항상 0).
+      #   판정은 아래 루프가 한다. 관측 함수는 생산 코드 그 자체를 부른다(모사 금지).
+      - name: 리눅스 프로세스 관측 전제 실측 (진단 · 판정 아님)
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "uid=$(id -u) · ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo '판독 불가')"
+          python3 - <<'PY'
+          import importlib.util, os, tempfile
+          spec = importlib.util.spec_from_file_location("pf", "cysjavis-pack/bin/javis_preflight.py")
+          pf = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(pf)
+          cnt, detail = pf._count_claude_procfs(os.path.join(tempfile.mkdtemp(), "no-such-config"))
+          print("[/proc 관측] count=%r · %s" % (cnt, detail))
+          print("[/proc 관측] 기대: count=0(검증된 음성) — None 이면 시드가 거부되고 팩 루프가 붉어진다")
+          PY
+          exit 0
+
+      - name: 팩 검체 — release pack-artifacts 파이썬 루프 그대로 (태그 전 우분투 관문)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ★v116-flake-pty ⑶(우리 1.1.6 · 57c7345a)와 같은 임시 루트 — release.yml pack-artifacts 루프와 문면 동일을
+          #   지키려고 그 스텝의 CYS_TMP 정의·EXIT trap 을 그대로 옮긴다(1.1.8 편입 합성).
+          CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
+          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
+          echo "== [pack][ubuntu] release.yml pack-artifacts 와 동일 토큰 집합 · 동일 env 격리 =="
+          for t in test_todo_decl test_todo_stamp test_report_ghost test_hud_bridge_skew \
+                   test_report_gate test_todo_shared_constants test_import_guard test_radio test_scrub \
+                   test_bootstrap_chain test_snapshot \
+                   test_role_bootstrap_hook test_seat_latch_negation \
+                   test_hud_bridge_backoff test_preflight_c11b_seal test_wakeup_liveness \
+                   test_session_start_hook \
+                   test_core_inject \
+                   test_event_inject \
+                   test_phoenix_g2_ack_only \
+                   test_py_resolver_clt_stub test_v115_dept \
+                   test_preflight_c62_c68_ledger \
+                   test_runtime_seal test_preflight_c80_runtime_seal test_runtime_manifest_parity \
+                   test_check_ack_addr_gate test_hook_launcher_split test_hook_r34 test_session_start_r31 test_mission_origin_parity \
+                   test_bootlast_golden_lock_parity test_bootv2_doc_contract test_pyseal_census \
+                   test_pyseal_negative_specimen \
+                   test_sandbox_state_isolation test_settings_torn_write test_state_snapshot_root test_cysd_accept_emfile \
+                   test_preflight_hook_body test_preflight_win_hook_launcher \
+                   test_preflight_npm_prefix test_learn_digest_queue \
+                   test_trust_seed test_capgate_registration test_capgate_hook_shell \
+                   test_cso_directive_rev test_role_authority test_role_authority_shell \
+                   test_role_authority_triage \
+                   test_round_stop_reason test_resource_gate test_resource_gate_fleet_cpu \
+                   test_inject_context_role_seat test_carry_unproven_scope \
+                   test_wakeup_durable_receipt test_wakeup_park_failure \
+                   test_capgate_remeasure_order test_phoenix_p10_lease_split \
+                   test_preflight_only_dispatch test_preflight_settings_fifo \
+                   test_trust_seed_reflect \
+                   test_refl_axis_labels test_refl_fleet_argv_owner test_refl_fleet_latch_gen \
+                   test_refl_inject_context_role_canon test_refl_round_lock_ownership \
+                   test_refl_rsi_state_ownership test_refl_stagnation_budget_ledger \
+                   test_refl_wakeup_expiry_attribution \
+                   test_phoenix_fresh_honest test_phoenix_f1_production_path \
+                   test_phoenix_r32_restore_budget \
+                   test_report_ctx_axis test_formation_tick_visibility \
+                   test_resource_gate_boot_anchor test_ctx_divergence \
+                   test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
+                   test_dept_schedule_seed \
+                   test_lane_redirect \
+                   test_dept_notice_lane test_team_create_u16 \
+                   test_teamtoken test_teamtoken_hook test_dept_team_token \
+                   test_dept_create_progress \
+                   test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn; do
+            f="cysjavis-pack/bin/tests/$t.py"
+            [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+            echo "== [pack] declared-state test: $t =="
+            if ! CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f"; then
+              echo "::error::[pack] 선언·유령집계 게이트 실패($t) — 배송 팩 회귀. 서명 전 차단." >&2
+              exit 1
+            fi
+          done
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 잡5 — UI 회귀 테스트 + 타입체크 (macos-latest · 0.14.41 U4 C4-⑧ · 2026-09-23)
+  #
+  # ★무엇이 결함이었나: `cd ui && bun test`(IME 리듀서·드래그·마우스 필터 등 27파일 995건)는
+  #   **태그 레인(release.yml build 3레그)에서만** 돌았다 — 브랜치 CI 는 UI 를 전혀 재지 않아 UI 회귀가
+  #   태그(불변 · 버전 소모)를 민 뒤에야 드러났다. 타입체크(`ui/tsconfig.check.json` · `bun build` 는
+  #   타입을 보지 않는다)는 **어느 레인에서도** 돌지 않았다(재현 명령만 있고 배선이 없었다).
+  # ★조건을 태그 레인과 맞춘다: bun test 는 **node_modules 없이** 돈다(release.yml 의 bun test 스텝은
+  #   `bun install` 전에 돈다 — build.sh 의 install 은 그 뒤 tauri beforeBuildCommand 에서 온다).
+  #   로컬 실측 2026-09-23(bun 1.4.0): install 전·후 모두 995 pass / 0 fail.
+  # ★타입체크는 설치 **뒤**에 돈다 — 설치 없이는 @xterm·@tauri 타입 부재로 8건(TS2307 3 · TS7006 5)이
+  #   상시 적색이다(실측). `bun install --frozen-lockfile` 은 bun.lock 을 바꾸지 않는다(오프라인 빌드
+  #   계약의 lockfile 은 그대로 · 설치 산출 node_modules 는 .gitignore). 설치 후 오류 **0**(실측) 이므로
+  #   설계 조건('실측 0 이면 고정 버전으로 편입')대로 **차단**으로 편입한다.
+  # ★typescript 버전 고정(typescript@7.0.2): 무고정 `bunx tsc` 는 신판 배포 시점에 판정이 **조용히**
+  #   바뀐다(반박 보고 §3-8). 올릴 때는 이 한 줄과 로컬 실측을 함께 바꾼다.
+  # ★별도 잡인 이유: 잡1 은 set -e 사슬이라 앞 스텝이 붉으면 UI 는 아예 재지 않게 된다(잡2 머리말 ⓐ).
+  #   우분투가 아니라 macOS 인 이유: 태그 레인의 bun test 가 도는 러너(macos-latest)와 같게 — 그리고
+  #   레인 예행 도구 5단계가 ci-branch 의 우분투 잡을 **정확히 1개**로 요구한다(2개면 판별 불가 exit 3).
+  # ★`if:` 없음 · `continue-on-error` 없음. 다만 두 안전장치의 계급은 다르다(U4 C4 리뷰1 NOTE 반영):
+  #   `if:`(스텝·잡 수준 조건)는 레인 대조 게이트 MUST_RUN_TOKENS 가 실행 줄의 존재와 함께 **핀한다**
+  #   (등재되지 않은 조건이 붙으면 게이트가 붉어진다). `continue-on-error` 는 그 핀의 사정거리 **밖**이다
+  #   (게이트는 텍스트만 읽고 실행 결과 흡수는 보지 않는다 — 반박 F3 잡 수준 전수 스캔은 설계 §2 제외 ·
+  #   보류). 이 줄이 없는 것은 사람이 지키는 불변식이지, 게이트가 강제하는 불변식이 아니다.
+  ui-check:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: UI 회귀 테스트 (bun test · 태그 레인과 같은 조건 = node_modules 없이)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ui && bun test
+
+      - name: UI 타입체크 (tsc -p tsconfig.check.json · typescript 7.0.2 고정 · 설치 후)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ui
+          bun install --frozen-lockfile
+          bunx -p typescript@7.0.2 tsc -v
+          bunx -p typescript@7.0.2 tsc -p tsconfig.check.json

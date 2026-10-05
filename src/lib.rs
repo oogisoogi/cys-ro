@@ -5,6 +5,9 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub mod action_catalog;
+/// agy(Antigravity CLI) 상태줄 자동 연결(0.14.42 · 오너 승인 2026-09-24) — 설정 칸이 비었거나 없을 때만 넣고,
+/// 사용자 설정은 덮지 않으며, 표지 달린 cys 연결만 뺀다. 윈도우는 자동 연결 끔(안내만).
+pub mod agy_statusline;
 pub mod factory_reset;
 /// 앱 번들 완본 검증 + 원자 교체 계약(ATOMIC-1) — 2026-08-01 "손상되었기 때문에 열 수 없습니다" 사고의
 /// 재발 차단. SEAL-1(아래 `ENV_PY_NO_BYTECODE`)이 **번들이 스스로 봉인을 깨는 것**을 막는다면,
@@ -25,8 +28,15 @@ pub mod inject_guard;
 /// python(`javis_lane`) 셋이 같은 규칙을 써야 하고, 사본이 갈리면 층1 판정이 조용히 무력화된다.
 pub mod lane;
 pub mod license;
+/// U15(0.14.41) — 개발자 도구(CLT) 없는 맥의 `/usr/bin/python3` 셔임 회피 SOT. 판정은 파일 존재만
+/// 보고(셔임 실행 0), 소비자 셋(스폰 env ⑦ · 부트 감독 자식 PATH · 회수 자식 PATH)이 같은 한 판정을
+/// 거친다 — CLT 있는 맥·윈도우·리눅스는 출력이 종전과 바이트 동일하다(조건부 쌍 규율).
+pub mod macos_devtools;
 pub mod merge3;
 pub mod pack;
+/// 괄호 붙여넣기 울타리 살균·봉투(0.14.42 · 설계 C D1) — 본문 안 `ESC[201~`(C1 형 포함)·끝 미완성
+/// 이스케이프가 봉투를 조기에 닫는 결함의 단일 정의처(cysd 주입 writer·큐 다이제스트·CLI inject_text 공용).
+pub mod paste_fence;
 /// 프로필 인증 전제 판정기(U-17) — "이 프로필로 좌석을 만들면 로그인 관문 앞에 서는가".
 /// 시드(U-19)는 로그인 화면을 **지우므로** 판정이 시드보다 먼저 있어야 한다. 판정은 순수함수
 /// 하나(`profile_gate::classify`)가 소유하고, `auth_class` 8값 중 `unknown` 은 **통과가 아니다**.
@@ -41,10 +51,15 @@ pub mod restore_mark;
 /// 와 같은 규칙이며 두 구현이 골든 표 `cysjavis-pack/templates/seat-layout.json` 을 공유한다.
 pub mod seat;
 pub mod submit_probe;
+pub mod agent_markers;
 pub mod packsig;
 pub mod overrides;
 pub mod todo_decl;
 pub mod todo_scan;
+/// ★U16(0.14.41) 말로 팀 만들기 — 팀 제안(feed kind `team-create-request`)의 스키마·검증·코덱·
+/// 데몬 잠금 정책 단일 정의처(cysd·cys CLI·cys-app 공용 · 사고 방지 층 — 머리말의 정직한 한계 참조).
+pub mod team_spec;
+pub mod update_launch;
 pub mod wire;
 #[cfg(target_os = "macos")]
 pub mod launchd;
@@ -265,6 +280,13 @@ pub const NO_AUTOSTART_ON: &str = "1";
 const WIN_CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 /// Windows `CREATE_NO_WINDOW` — 콘솔 자식에게 새 콘솔 창을 할당하지 않는다.
 /// 콘솔 없는 프로세스(cysd·cys-app)가 콘솔 자식을 낳을 때 빈 검은 창이 뜨는 실사고(2026-07-10) 차단.
+///
+/// ★스폰 규칙(U5 · 0.14.41 · Microsoft conhost `srvinit.cpp`/`IoDispatchers.cpp` 근거):
+/// ① 콘솔 없는 cysd·cys-app 이 **직접** 낳는 콘솔 자식(루트)에는 반드시 등급(→ 이 flag)을 건다 —
+///    누락은 `spawn_policy_tests::consoleless_spawns_carry_window_policy` 가 적색으로 잡는다.
+/// ② 그 아래 자손은 손대지 않는다 — 숨은 콘솔을 물려받아 창이 없다.
+/// ③ `DETACHED_PROCESS`·`CREATE_NEW_CONSOLE` 는 어느 층에서도 쓰지 않는다(자손이 매번 새 창을 받는다).
+/// ④ ConPTY(pane) 자식에는 **절대 걸지 않는다** — 검은 pane(22ff28f6 · `conpty_children_never_get_create_no_window`).
 #[cfg(windows)]
 const WIN_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Windows `CREATE_BREAKAWAY_FROM_JOB` — 자식을 **부모가 속한 Job 밖**에서 만든다.
@@ -489,6 +511,19 @@ pub fn env_compat(primary: &str) -> Option<String> {
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
 }
 
+/// 선두 UTF-8 BOM(U+FEFF) **1개**를 벗긴다 — JSON 파일 판독기의 공용 전처리(C3-c · 2026-09-17 3라운드).
+///
+/// 왜 공용인가: `serde_json` 은 선두 U+FEFF 를 문법 오류로 거부하고, 한국어 Windows 편집기("UTF-8(BOM)")가
+/// 저장한 `depts.json`·`dept-catalog.json` 은 BOM 을 단다. 2라운드까지 GUI(src-tauri) 만 벗기고 CLI 판독기
+/// (cys.rs drain_verify_targets · run_fleet)는 원문을 그대로 넣어, 같은 파일이 GUI 에는 보이고 CLI 집계·검증에서는
+/// 부서가 빠졌다(codex minor). 판독기마다 사본을 두면 다시 갈리므로 구현은 여기 하나다.
+///
+/// 값 안의 U+FEFF 와 두 번째 이후의 BOM 은 데이터로 보존한다(선두 1개만). 입력이 `&str` 인 것은 의도다 —
+/// 무효 UTF-8(cp949 저장)은 `read_to_string` 단계에서 InvalidData 로 걸리며 그 처리는 호출측 정책이다.
+pub fn strip_utf8_bom(s: &str) -> &str {
+    s.strip_prefix('\u{FEFF}').unwrap_or(s)
+}
+
 /// Wire protocol: one JSON object per line (NDJSON), request/response with id echo.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
@@ -507,12 +542,17 @@ pub fn err_response(id: &Value, code: &str, message: &str) -> Value {
     serde_json::json!({"id": id, "ok": false, "error": {"code": code, "message": message}})
 }
 
-/// Default socket path: ~/.local/state/cys/cys.sock (unix),
-/// \\.\pipe\cys (windows). Overridable via CYS_SOCKET (legacy JAVIS_/AITERM_ honored).
+/// 접속 소켓 경로 — CYS_SOCKET(레거시 JAVIS_/AITERM_ 포함)이 우선이며, 없으면 기본 경로다.
 pub fn socket_path() -> PathBuf {
     if let Some(p) = env_compat(ENV_SOCKET) {
         return PathBuf::from(p);
     }
+    default_socket_path()
+}
+
+/// 소켓 override 환경변수를 보지 않는 기본 경로(순수 계산).
+/// unix 는 ~/.local/state/cys/cys.sock, windows 는 \\.\pipe\cys 규약을 그대로 따른다.
+pub fn default_socket_path() -> PathBuf {
     #[cfg(windows)]
     {
         PathBuf::from(r"\\.\pipe\cys")
@@ -820,14 +860,49 @@ pub fn wait_named_pipe(path: &Path, timeout: std::time::Duration) -> bool {
 /// 조용히 죽는다(RC1 문자열 계약 드리프트). 그래서 상수로 못박고 양쪽이 이것만 쓴다.
 pub const ERR_TYPING_GUARD: &str = "typing_guard";
 pub const MSG_TYPING_GUARD: &str = "human is typing in this pane; retry later or use --queued";
-
-/// ★④(1.1.7 · 원작자 D-12 초안 게이트의 우리 판) 초안 게이트 거부 표지 — 응답 문면
-/// `MSG_TYPING_GUARD [draft_gate:<사유>]` 의 꼬리. 코드는 `ERR_TYPING_GUARD` 를 그대로 쓴다
-/// (설치된 CLI 의 `--queued` 1회 폴백이 문면 접두로 판정하므로 접두를 바꾸지 않는다).
+/// 직접 send 초안 거부의 사유 태그 — 기존 타이핑 가드 메시지 접두 뒤에 붙인다.
 pub const DRAFT_GATE_TAG: &str = "draft_gate";
-/// ★④ 취소·편집 키(C-u·C-c·화살표·글자 키 등) 거부 문면 — 이 키들은 큐에 실을 수 없어 「--queued」 처방이 거짓이다.
+/// ★(0.14.43 · C5 · RQFIX I-8) 유령 계수 처방 — 데몬이 직접 send 거부 응답·강제 배달 거부 문구의 **맨 끝**에 덧붙이고(앞 문구·접두·태그의 위치·바이트는 불변),
+/// `cys` CLI 가 `--queued` 폴백 안내 뒤에 같은 문자열로 stderr 처방 줄을 찍는다. 두 크레이트가 **이 한 정의처**만 쓴다(리터럴을 따로 들면 문구를 다듬는 순간
+/// CLI 의 처방 줄이 조용히 죽는다 — 위 `MSG_TYPING_GUARD` 와 같은 RC1 계약). 사람이 하는 일이다(기계가 Ctrl-U 를 보내는 경로는 없다).
+pub const GHOST_CTRL_U_SUFFIX: &str = " — 입력줄이 비어 보이면 유령 계수다: 그 창에서 사람이 Ctrl-U 한 번";
+/// D-12 CancelKey(원시 Ctrl-U/Ctrl-C) 거부 문구 — `MSG_TYPING_GUARD` 와 달리 `--queued` 를
+/// 안내하지 않는다: 취소 키는 텍스트 큐에 실을 수 없어(send_key queued 는 Return/Enter 한정)
+/// 그 처방은 존재하지 않는 경로를 가리킨다(수정 라운드 3 · 감사 minor). 코드는 `ERR_TYPING_GUARD` 를 유지한다.
 pub const MSG_DRAFT_GATE_CANCEL_KEY: &str =
-    "human draft in this pane; key refused (the owner must submit or clear the draft)";
+    "human draft in this pane; cancel key refused (it would erase the draft) — wait for the human or let them clear the line";
+
+/// ★(0.14.42 · S21-SETTLE) 직접 send D-12 거부의 **정착 증명** 태그 — 거부 문구 끝에 ` [settle:<ms>]` 로 붙는다.
+///
+/// 뜻: "이 거부의 원인은 진행 중인 **기계 제출**(writer 에 넘긴 제출 CR · 방금 쓴 CR 의 분리 창 · 짝 Return 을
+/// 기다리는 새 기계 본문)이고, 약 `<ms>` 뒤 줄이 빈다". 데몬은 쓰기 0 이 확정된 명시 거부(원장·PTY 인계보다 앞 ·
+/// 또는 input_gate 안 쓰기 전)에만 붙인다. 사람 초안·모달·타이핑 가드에는 붙이지 않는다.
+/// 신 CLI(`cys send`)는 이 태그가 있을 때만 예산 안에서 같은 본문을 다시 보내고, 없으면 종전처럼 곧바로
+/// `--queued` 로 1회 전환한다. 구 CLI 는 거부 문구를 `contains(MSG_TYPING_GUARD)` 로만 보므로 종전 폴백 그대로다.
+/// 생산자(cysd handlers)와 소비자(cys)가 이 상수·아래 두 함수만 쓴다(문자열 계약 드리프트 방지 — RC1).
+pub const SEND_SETTLE_TAG: &str = "settle";
+
+/// 정착 증명 접미(` [settle:<ms>]`) — 생산자 단일 정의처.
+pub fn send_settle_suffix(hint_ms: u64) -> String {
+    format!(" [{SEND_SETTLE_TAG}:{hint_ms}]")
+}
+
+/// 거부 문구에서 정착 힌트(ms)를 읽는다(순수 · 소비자 단일 정의처). D-12 태그(`[draft_gate:…]`)와 정착 태그가
+/// **둘 다** 있을 때만 `Some` — 그 밖의 거부(전송 오류·ACL·큐 만석·태그 없는 타이핑 가드)는 `None`(재시도 0회).
+pub fn send_settle_hint_ms(msg: &str) -> Option<u64> {
+    if !msg.contains(&format!("[{DRAFT_GATE_TAG}:")) {
+        return None;
+    }
+    let key = format!("[{SEND_SETTLE_TAG}:");
+    let rest = &msg[msg.rfind(&key)? + key.len()..];
+    rest[..rest.find(']')?].trim().parse().ok()
+}
+
+/// 정착 재시도·증명 끔 스위치 값인가(순수) — `0`·`false`·`off`(대소문자·앞뒤 공백 무시). 데몬·CLI 공용
+/// (env `CYS_SEND_SETTLE`). 결측·그 밖의 값은 켬이다.
+pub fn send_settle_env_off(v: Option<&str>) -> bool {
+    v.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"))
+}
 
 /// `cys boot` 가 **무스폰 skip**(다른 boot 가 락 보유)을 낼 때의 종료코드 — EX_TEMPFAIL(75).
 ///
@@ -921,7 +996,7 @@ pub fn gate_pending_axis_effective_from(
     close_env: Option<&str>,
     axis_env: Option<&str>,
 ) -> bool {
-    !gate_axes_from(master_env, None, None, None, close_env, axis_env, None).gate_pending_close
+    !gate_axes_from(master_env, None, None, None, close_env, axis_env, None, None).gate_pending_close
 }
 
 /// **축 노브 하나만** 보는 순수 코어 — `"0"` 만 끈다.
@@ -1111,6 +1186,16 @@ pub struct GateAxes {
     /// 사람이 조합을 기억해야 한다(BLOCK-3 이 그 값을 치렀다). 새 축은 태어날 때 마스터에
     /// 접는다 — `CYS_BOOT_GATES=0` 하나로 이 판정기도 함께 종전(차단 없음)으로 돌아간다.
     pub profile_gate_observe_only: bool,
+    /// ★(H2-B · 수렴 R2) 관문 **확인 경계의 버전 대조**가 관측 전용으로 강등됐는가
+    /// (= 버전을 보지 않던 종전 · [`inject_guard::confirm_denied`] 의 축 ⑤).
+    ///
+    /// 이 축이 여기 있는 이유(reviewer-claude major · codex blocking 재기): 이 축의 보류는
+    /// **재실측 전 기계의 기본 상태**다. 마스터를 눌러도 이 축만 엄격하게 남으면
+    /// ⓐ Return 은 끝내 안 나가고 ⓑ readiness 는 legacy 라 관문 화면을 Ready 라 하고
+    /// ⓒ 주입 가드는 강등돼 디렉티브가 신뢰 모달로 들어가고 ⓓ `gate_pending_close` 가 좌석을
+    /// 닫는다 — 문서화된 롤백 손잡이 하나로 §7 봉인표의 '전 pane 사망' 이 재현된다.
+    /// **엄격화와 보류는 한 몸**(BLOCK-4)이라, 이 축도 예외가 아니다.
+    pub version_pin_legacy: bool,
 }
 
 /// ★판정 축의 **순수 접기 함수**(진리표 대상). env 는 하나도 읽지 않는다.
@@ -1128,6 +1213,7 @@ pub fn gate_axes_from(
     close_env: Option<&str>,
     axis_env: Option<&str>,
     profile_gate_env: Option<&str>,
+    version_pin_env: Option<&str>,
 ) -> GateAxes {
     // 보류 장치가 꺼졌는가 = 마스터 ∨ 강등 스위치 ∨ 축 스위치.
     let holding_off = boot_gates_master_off_from(master_env)
@@ -1139,6 +1225,7 @@ pub fn gate_axes_from(
         gate_pending_close: holding_off,
         profile_gate_observe_only: holding_off
             || profile_gate::observe_only_from(profile_gate_env),
+        version_pin_legacy: holding_off || inject_guard::version_pin_legacy_from(version_pin_env),
     }
 }
 
@@ -1152,6 +1239,7 @@ pub fn gate_axes() -> GateAxes {
         std::env::var(ENV_GATE_PENDING_CLOSE).ok().as_deref(),
         std::env::var(ENV_GATE_PENDING).ok().as_deref(),
         std::env::var(profile_gate::ENV_OBSERVE_ONLY).ok().as_deref(),
+        std::env::var(inject_guard::ENV_VERSION_PIN).ok().as_deref(),
     )
 }
 
@@ -1887,6 +1975,13 @@ pub fn windows_runtime_damage_notice(missing: &[String]) -> Option<String> {
 ///    ★Windows 실기 검증은 이 커밋 범위 밖이다(mac 개발기에서 실기 재현 불가). 여기서
 ///    증명된 것은 ⓐ경로 선택 규약 ⓑ불가침 계약 ⓒ타 플랫폼 미주입 셋뿐이고, 실제 훅이 뜨는가는
 ///    `feat/**` 브랜치 windows-health 잡과 실기 재현의 몫이다 — 과장하지 않는다.
+/// ⑦ CYS_PY + CYS_PY_ORIGIN(U15 · 0.14.41 · **macOS·CLT 부재 전용 조건부 쌍**): 개발자 도구(CLT) 없는
+///    맥에서 좌석은 `zsh -l` 이라 path_helper 가 `/usr/bin` 을 동봉 runtime 앞으로 되돌리고, 훅이 PATH 첫
+///    `python3` = 셔임(설치 창 + 비0)을 불렀다. 판정은 [`macos_devtools::clt_absent_bundled_python`] 하나
+///    (macOS ∧ 롤백 아님 ∧ 동봉 python3 실재 ∧ CLT python3 부재 — 셔임 실행 0, stat 만)이고, 사용자
+///    프로세스 env 에 `CYS_PY` 가 있으면 덮지 않는다. 훅 프리루드 `cys_resolve_py` 첫 갈래가 미리 설정된
+///    값을 존중하므로 이 한 쌍으로 좌석 훅 전체가 동봉 python 을 쓴다. 마커는 `cys-dept` 헤더가 소비한다.
+///    ⑤·⑥ 과 같이 조건 미충족이면 아무것도 얹지 않는다 — CLT 있는 맥·윈도우·리눅스는 **바이트 동일**.
 ///
 /// ★T-0147-7 W1a(A17): 이 함수는 `schedule.rs` 의 private fn 이었다. **pane 스폰 경로
 ///   (state.rs)에는 같은 backfill 이 없어** Windows 에서 pane 속 훅·python 이 `$HOME` 붕괴로
@@ -1900,6 +1995,34 @@ pub fn spawn_env_pairs(
     current_path: &str,
     home: Option<&str>,
     userprofile: Option<&str>,
+) -> Vec<(String, String)> {
+    // ⑦ 의 판정(macOS·CLT 부재·동봉 실재·사용자 무설정)만 여기서 실측(디스크 stat + 프로세스 env
+    // 판독)하고, 나머지 전부는 [`spawn_env_pairs_with`] 가 순수하게 조립한다 — 리뷰1 MAJOR-1(⑦ 배선
+    // 핀이 호스트 판정에 갇혀 CI 의 어느 레인에서도 양성 갈래를 돌리지 못했다)에 대응해, 그 순수 틈이
+    // 가짜 판정을 주입받아 호스트와 무관하게 배선을 잴 수 있게 만들었다(테스트는 macos_devtools.rs
+    // `spawn_env_pairs_with_wires_seventh_pair_regardless_of_host` 참고).
+    spawn_env_pairs_with(
+        exe_dir,
+        current_path,
+        home,
+        userprofile,
+        macos_devtools::clt_absent_bundled_python(exe_dir).as_deref(),
+        std::env::var_os(macos_devtools::ENV_CYS_PY).is_some(),
+    )
+}
+
+/// [`spawn_env_pairs`] 의 순수 조립부 — ⑦ 의 CLT-부재 판정(`clt_absent_bundled`)과 사용자 `CYS_PY`
+/// 존재 여부(`user_has_cys_py`)를 **인자로 받는다**(디스크 stat·프로세스 env 판독은 호출부의 몫이다).
+/// 운영 경로는 항상 [`spawn_env_pairs`] 를 거쳐 실제 호스트로 이 값들을 채운다 — 이 함수를 직접
+/// 부르는 것은 테스트뿐이고, 그 목적은 가짜 판정(`Some(..)`)을 주입해 **어느 호스트에서든** ⑦ 배선을
+/// 잴 수 있게 하는 것이다(호스트가 어떻든 결과가 같아야 하는 순수 함수라 회귀 위험이 없다).
+pub fn spawn_env_pairs_with(
+    exe_dir: &Path,
+    current_path: &str,
+    home: Option<&str>,
+    userprofile: Option<&str>,
+    clt_absent_bundled: Option<&Path>,
+    user_has_cys_py: bool,
 ) -> Vec<(String, String)> {
     let mut env = Vec::new();
     if let Some(newp) = runtime_prefixed_path(exe_dir, current_path) {
@@ -1947,6 +2070,9 @@ pub fn spawn_env_pairs(
         &npm_config_prefix_verdict_from_process(exe_dir),
         boot_gates_master_off_from(std::env::var(ENV_BOOT_GATES).ok().as_deref()),
     );
+    // ⑦ U15(0.14.41): CLT 없는 맥에서만 동봉 python 을 훅에 명시한다(판정·롤백은 단일 판정이 소유 ·
+    //    비-macOS 는 디스크 stat 0 으로 None). 조건 미충족 = 쌍 0개 = 종전과 바이트 동일.
+    macos_devtools::inject_cys_py_for(&mut env, clt_absent_bundled, user_has_cys_py);
     env
 }
 
@@ -3354,6 +3480,75 @@ mod tests {
     }
 
 
+    /// ★(0.14.42 · S21-SETTLE) 정착 증명 문자열 계약 — 생산(접미)·소비(파서)·끔 스위치 판정이 한 곳에서 맞물린다.
+    #[test]
+    fn s21_send_settle_tag_roundtrip_and_env_off() {
+        let msg = format!(
+            "{} [{}:submit_settling]{}",
+            super::MSG_TYPING_GUARD,
+            super::DRAFT_GATE_TAG,
+            super::send_settle_suffix(137)
+        );
+        assert!(msg.ends_with(" [settle:137]"), "{msg}");
+        assert_eq!(super::send_settle_hint_ms(&msg), Some(137));
+        // 뒤에 다른 안내가 붙어도 읽는다(send_key 별칭 안내 자리).
+        assert_eq!(super::send_settle_hint_ms(&format!("{msg} (key hint)")), Some(137));
+        // D-12 태그 없는 문구의 settle 은 증명이 아니다(다른 거부·본문 인용 오인 차단).
+        assert_eq!(super::send_settle_hint_ms("human is typing [settle:5]"), None);
+        // 증명 없는 D-12 거부 · 깨진 값 · 결측.
+        assert_eq!(super::send_settle_hint_ms(&format!("x [{}:pending_input]", super::DRAFT_GATE_TAG)), None);
+        assert_eq!(super::send_settle_hint_ms("x [draft_gate:screen_occupied] [settle:abc]"), None);
+        assert_eq!(super::send_settle_hint_ms("x [draft_gate:screen_occupied] [settle:12"), None);
+        for off in ["0", "false", "OFF", " off "] {
+            assert!(super::send_settle_env_off(Some(off)), "{off}");
+        }
+        for on in [None, Some("1"), Some("on"), Some(""), Some("no")] {
+            assert!(!super::send_settle_env_off(on), "{on:?}");
+        }
+    }
+
+    /// 소켓 환경변수 변경은 --test-threads=1 로 직렬 실행하며, 실패해도 원래 값을 복원한다.
+    #[test]
+    fn d06_lib_default_socket_path_is_absolute_and_env_free() {
+        struct RestoreSocketEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreSocketEnv {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var(super::ENV_SOCKET, value),
+                    None => std::env::remove_var(super::ENV_SOCKET),
+                }
+            }
+        }
+        let _restore = RestoreSocketEnv(std::env::var_os(super::ENV_SOCKET));
+        let expected = super::default_socket_path();
+        assert!(expected.is_absolute(), "기본 소켓은 절대경로여야 한다: {expected:?}");
+        #[cfg(unix)]
+        assert!(expected.ends_with("cys/cys.sock"), "unix 기본 소켓 규약: {expected:?}");
+        for value in ["False", "./x.sock", "/h/isolated/cys.sock", ""] {
+            std::env::set_var(super::ENV_SOCKET, value);
+            assert_eq!(super::default_socket_path(), expected, "CYS_SOCKET={value:?} 를 보지 않아야 한다");
+        }
+    }
+
+    /// ★C3-c(2026-09-17 3라운드) 공용 BOM 전처리 핀 — 선두 1개만 벗기고 나머지 바이트는 그대로.
+    /// (src-tauri 의 k2_03 핀과 같은 표본 — 그쪽은 이제 이 함수를 쓰므로 표본이 갈리면 여기서 먼저 red.)
+    #[test]
+    fn strip_utf8_bom_strips_exactly_one_leading_bom() {
+        let bom = "\u{FEFF}{\"depts\":{\"dept-1\":{\"display_name\":\"영업부\"}}}";
+        assert!(serde_json::from_str::<serde_json::Value>(bom).is_err(), "serde 가 BOM 을 받아들인다면 헬퍼 필요성을 재검토");
+        let v: serde_json::Value = serde_json::from_str(super::strip_utf8_bom(bom)).expect("BOM 을 벗기면 파싱된다");
+        assert_eq!(v["depts"]["dept-1"]["display_name"], "영업부");
+        assert_eq!(super::strip_utf8_bom("{}"), "{}", "BOM 없는 입력은 그대로");
+        assert_eq!(super::strip_utf8_bom(""), "");
+        assert_eq!(super::strip_utf8_bom("\u{FEFF}"), "", "BOM 만 있으면 빈 문자열");
+        assert_eq!(super::strip_utf8_bom("a\u{FEFF}b"), "a\u{FEFF}b", "값 안의 U+FEFF 는 보존");
+        assert_eq!(super::strip_utf8_bom("\u{FEFF}\u{FEFF}x"), "\u{FEFF}x", "선두 1개만 벗긴다(그 뒤는 데이터)");
+        // 수명: 반환 슬라이스는 입력을 빌린다(복사 없음) — 긴 파일에서도 비용 0.
+        let owned = String::from("\u{FEFF}{}");
+        let s: &str = super::strip_utf8_bom(&owned);
+        assert_eq!(s.as_ptr(), owned.as_ptr().wrapping_add(3), "BOM 3바이트 뒤를 가리키는 빌림이어야 한다");
+    }
+
     // ── ★(U-10) 좌석 제4 등급 `gate_pending` 축: 롤백 킬스위치 + wire 술어 순수 코어 ──
     //   env 를 만지는 래퍼가 아니라 **순수 코어**를 잰다(cargo test 는 스레드 병렬이라
     //   env 변조 테스트는 형제 테스트를 오염시킨다 — d5 판독기 핀과 같은 분리 이유).
@@ -3453,6 +3648,10 @@ mod tests {
     /// ★(U-17) 축이 여섯에서 일곱으로 늘었다 — 핀을 **지우지 않고 이사**시켰다: 기존 세 축
     /// 단언은 그대로 두고 `profile_gate_observe_only` 를 같은 AND 사슬에 **추가**한다.
     /// 새 축만 엄격하게 남으면 마스터 스위치가 다시 거짓말이 되기 때문이다(완화가 아니라 강화).
+    ///
+    /// ★(0.14.31 · 수렴 R2) 여덟 번째 축 `version_pin_legacy`(확인 경계의 버전 대조)도 같은
+    /// 사슬에 **추가**한다. 이 축을 빠뜨린 판이 정확히 reviewer-claude major/codex blocking
+    /// 재기의 형상이었다: 마스터를 눌러도 버전 축만 엄격해 Return 이 0발인 채 좌석이 close 됐다.
     #[test]
     fn strict_judgment_and_immediate_close_is_unreachable_in_every_env_combination() {
         const VALS: [Option<&str>; 5] = [None, Some(""), Some("0"), Some("1"), Some("true")];
@@ -3464,18 +3663,20 @@ mod tests {
                         for c in VALS {
                             for a in VALS {
                                 for p in VALS {
-                                let ax = super::gate_axes_from(m, r, g, t, c, a, p);
+                                for vp in VALS {
+                                let ax = super::gate_axes_from(m, r, g, t, c, a, p, vp);
                                 if ax.gate_pending_close {
                                     close_seen += 1;
                                     assert!(
                                         ax.readiness_legacy
                                             && ax.inject_guard_off
                                             && ax.trust_legacy
-                                            && ax.profile_gate_observe_only,
+                                            && ax.profile_gate_observe_only
+                                            && ax.version_pin_legacy,
                                         "★재난④ 조합: 보류가 close 로 강등됐는데 판정 축이 \
                                          엄격하게 남았다 — master={m:?} readiness={r:?} \
                                          guard={g:?} trust={t:?} close={c:?} axis={a:?} \
-                                         profile={p:?} → {ax:?}"
+                                         profile={p:?} version_pin={vp:?} → {ax:?}"
                                     );
                                 }
                                 if super::boot_gates_master_off_from(m) {
@@ -3485,9 +3686,11 @@ mod tests {
                                             && ax.inject_guard_off
                                             && ax.trust_legacy
                                             && ax.gate_pending_close
-                                            && ax.profile_gate_observe_only,
+                                            && ax.profile_gate_observe_only
+                                            && ax.version_pin_legacy,
                                         "마스터 스위치가 전 축을 되돌리지 못했다 → {ax:?}"
                                     );
+                                }
                                 }
                                 }
                             }
@@ -3513,9 +3716,9 @@ mod tests {
             "계측 무효: 구 조립에서 '엄격 + 즉시 close' 가 성립하지 않는다면 BLOCK-4 서사가 틀린 것"
         );
         // 지금 조립은 같은 입력에서 판정도 함께 종전으로 푼다.
-        let ax = super::gate_axes_from(None, None, None, None, None, Some("0"), None);
+        let ax = super::gate_axes_from(None, None, None, None, None, Some("0"), None, None);
         assert!(ax.gate_pending_close && ax.readiness_legacy && ax.inject_guard_off
-                    && ax.profile_gate_observe_only,
+                    && ax.profile_gate_observe_only && ax.version_pin_legacy,
                 "축 스위치 단독이 여전히 엄격 판정을 남긴다 → {ax:?}");
     }
 
@@ -3524,7 +3727,7 @@ mod tests {
     #[test]
     fn master_switch_alone_restores_the_previous_behavior_on_every_axis() {
         // ① `CYS_READINESS_V1=1` 단독 — ready 는 나지만 주입 가드가 그대로다(= 여전히 rc 78).
-        let only_v1 = super::gate_axes_from(None, Some("1"), None, None, None, None, None);
+        let only_v1 = super::gate_axes_from(None, Some("1"), None, None, None, None, None, None);
         assert!(only_v1.readiness_legacy);
         assert!(
             !only_v1.inject_guard_off,
@@ -3532,14 +3735,14 @@ mod tests {
              이 대조군이 마스터 스위치의 존재 이유다"
         );
         // ② `CYS_INJECT_GATE_GUARD=0` 단독 — 가드만 열리고 판정은 엄격(관문 화면은 보류).
-        let only_guard = super::gate_axes_from(None, None, Some("0"), None, None, None, None);
+        let only_guard = super::gate_axes_from(None, None, Some("0"), None, None, None, None, None);
         assert!(only_guard.inject_guard_off && !only_guard.readiness_legacy);
         // ③ 리뷰어가 찾은 '종전 복귀의 유일한 조합' — 사람이 둘을 동시에 기억해야 했다.
-        let both = super::gate_axes_from(None, Some("1"), Some("0"), None, None, None, None);
+        let both = super::gate_axes_from(None, Some("1"), Some("0"), None, None, None, None, None);
         assert!(both.readiness_legacy && both.inject_guard_off);
         assert!(!both.gate_pending_close, "노브 둘이 보류 귀결까지 바꾸면 축 경계가 무너진다");
         // ④ ★마스터 하나 = 네 축 전부 종전.
-        let master = super::gate_axes_from(Some("0"), None, None, None, None, None, None);
+        let master = super::gate_axes_from(Some("0"), None, None, None, None, None, None, None);
         assert_eq!(
             master,
             super::GateAxes {
@@ -3548,6 +3751,7 @@ mod tests {
                 trust_legacy: true,
                 gate_pending_close: true,
                 profile_gate_observe_only: true,
+                version_pin_legacy: true,
             },
             "마스터 스위치가 '하나를 끄면 전부 복귀' 계약을 지키지 못한다"
         );
@@ -3573,8 +3777,9 @@ mod tests {
         assert_eq!(r.matches(FOLD).count(), 1, "readiness 축이 상위 접기값을 소비하지 않는다");
         assert_eq!(
             g.matches(FOLD).count(),
-            2,
-            "inject_guard 의 두 축(가드·신뢰) 중 하나가 상위 접기값을 소비하지 않는다"
+            3,
+            "inject_guard 의 세 축(가드·신뢰·버전 핀) 중 하나가 상위 접기값을 소비하지 않는다 \
+             — 하나라도 빠지면 마스터를 눌러도 그 축만 엄격하게 남는다(수렴 R2 회귀)"
         );
         assert_eq!(
             pg.matches(FOLD).count(),
@@ -3586,6 +3791,7 @@ mod tests {
         assert_eq!(r.matches("std::env::var(ENV_V1)").count(), 1);
         assert_eq!(g.matches("std::env::var(ENV_GUARD_OFF)").count(), 1);
         assert_eq!(g.matches("std::env::var(ENV_TRUST_V1)").count(), 1);
+        assert_eq!(g.matches("std::env::var(ENV_VERSION_PIN)").count(), 1);
         assert_eq!(pg.matches("std::env::var(ENV_OBSERVE_ONLY)").count(), 1);
     }
 
@@ -3623,7 +3829,7 @@ mod tests {
         for m in VALS {
             for c in VALS {
                 for a in VALS {
-                    let ax = super::gate_axes_from(m, None, None, None, c, a, None);
+                    let ax = super::gate_axes_from(m, None, None, None, c, a, None, None);
                     assert_eq!(
                         on(m, c, a),
                         !ax.gate_pending_close,
@@ -3665,6 +3871,146 @@ mod tests {
                 "게이트 exit 공간을 침범했다 — 헤더 표와 충돌");
         assert_ne!(super::EXIT_GATE_PENDING, super::EXIT_BOOT_BUSY, "형제 sysexits 값과 충돌");
         assert_eq!(super::ENV_GATE_PENDING_CLOSE, "CYS_GATE_PENDING_CLOSE");
+    }
+
+    /// ★(0.14.43 · E2 · 통합 9 · 성찰 R1F-PK) 데몬(`src/bin/cysd/*.rs` 전부)과 저장소의 빌드 스크립트(`build.rs`)에 IOReport **강링크**(link 속성으로 묶기)가
+    /// 다시 들어오지 않는다 — CI 가시판 핀. 비공개 dylib(IOReport)을 링크 속성으로 묶으면 그 라이브러리가 사라진 macOS 에서 데몬이 **뜨지 않는다**(dyld 가 기동 전에 실패).
+    /// E2 는 이를 지연 로딩(dlopen)으로 바꿨고, 같은 핀이 `hwmon.rs` 안(`e2_source_has_no_ioreport_strong_link`)에도 있다. 그러나 태그 레인(release.yml)은
+    /// `--skip hwmon::` 으로 그 모듈 전체를 건너뛰어 **거기서는 돌지 않는다**(브랜치 CI·윈도우 헬스는 성찰 R1F-PK 부터 깨질 검체 하나 — `snapshot_has_all_sections` — 만
+    /// 건너뛴다). 안 도는 핀은 게이트가 아니다 → 같은 로직을 skip 에 걸리지 않는 이 자리에 둔다(`cargo test --lib` 가 도는 레인).
+    ///
+    /// 넓힌 범위(S3 minor 8): ① `hwmon.rs` 하나가 아니라 `src/bin/cysd/` 의 `.rs` **전부**(새 파일 포함 — 디렉터리를 실행 시점에 훑는다) ② `#[link(…)]` 뿐 아니라
+    /// `cfg_attr(…, link(…))` 꼴 ③ 빌드 스크립트의 `cargo:rustc-link-lib`·`rustc-link-arg` + IOReport. 판정자가 **스캐너 자신**이라, 실제 소스를 보기 전에 합성한
+    /// 양성(잡아야 한다)·음성(잡으면 안 된다) 입력으로 스캐너가 정말 가르는지 먼저 확인한다(계측 유효성 — 측정 불능은 통과가 아니다).
+    /// 이 핀은 소스의 **모양**만 본다(조각으로 이어 붙인 `rustc-link-lib` 문자열·의존 크레이트가 들여온 링크는 못 본다) — 진짜 최종 판정자는 산출물이고,
+    /// `scripts/check-no-ioreport-link.sh`(`otool -L`)가 브랜치 CI 맥 레인과 릴리스 맥 레그에서 cysd 바이너리를 직접 본다.
+    /// 금지 문자열은 조각으로 이어 붙인다 — `git grep` 으로 강링크를 찾는 사람에게 이 핀이 가짜 양성으로 잡히지 않게 한다(스캔 대상에 이 파일은 없어 자기참조는 없다).
+    #[test]
+    fn e2_cysd_hwmon_source_has_no_ioreport_strong_link() {
+        // ── 스캐너(순수 함수) ──
+        // link 속성의 인자 문자열을 전부 돌려준다 — `#[link(…)]` 와 `cfg_attr(…, link(…))` 둘 다. 공백·줄바꿈을 지운 뒤 `link(` 를 찾되 앞 글자가 `[`·`,`·`(` 인
+        // 속성 문맥만 센다(`symlink(`·`read_link(` 같은 식별자 꼬리는 제외). 인자는 첫 `)` 까지다(`name = "…", kind = "…"` 에는 중첩 괄호가 없다).
+        fn link_attr_args(src: &str) -> Vec<String> {
+            let squashed: String = src.split_whitespace().collect();
+            let (mut out, mut from) = (Vec::new(), 0);
+            while let Some(i) = squashed[from..].find("link(") {
+                let at = from + i;
+                from = at + "link(".len();
+                if !matches!(squashed[..at].chars().next_back(), Some('[' | ',' | '(')) {
+                    continue;
+                }
+                let end = squashed[from..].find(')').map_or(squashed.len(), |e| from + e);
+                out.push(squashed[from..end].to_string());
+            }
+            out
+        }
+        // 그중 IOReport(대소문자 무시 — `target` 은 소문자)를 묶는 것만.
+        fn naming(args: &[String], target: &str) -> Vec<String> {
+            args.iter().filter(|a| a.to_ascii_lowercase().contains(target)).cloned().collect()
+        }
+        // 빌드 스크립트: 링크 지시(`rustc-link-lib`·`rustc-link-arg`)와 IOReport 가 **함께** 있으면 위반(어느 줄에 있든 — 변수에 담아 쓰는 꼴도 잡는다).
+        // 주석(`//`)은 걷는다: 설명문이 두 낱말을 같이 적어도 지시가 아니다(`build.rs` 의 링크 지시 줄에는 문자열 속 `//` 가 없다).
+        fn build_script_hits(src: &str, target: &str) -> Vec<&'static str> {
+            let code = src.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n").to_ascii_lowercase();
+            let mut hits = Vec::new();
+            if code.contains(target) {
+                for directive in ["rustc-link-lib", "rustc-link-arg"] {
+                    if code.contains(directive) {
+                        hits.push(directive);
+                    }
+                }
+            }
+            hits
+        }
+
+        let io = ["IO", "Report"].concat();
+        let target = io.to_ascii_lowercase();
+
+        // ── 계측 유효성: 합성 입력으로 스캐너가 실제로 가르는지(양성 6 · 음성 3 · build.rs 양성 4 · 음성 3) ──
+        let bad_attrs = [
+            format!("#[link(name = \"{io}\", kind = \"dylib\")]\nextern \"C\" {{}}\n"),
+            format!("#[link(\n    kind = \"dylib\",\n    name = \"{io}\"\n)]\nextern \"C\" {{}}\n"), // 인자 순서·줄바꿈
+            format!("#[link(name = \"{target}\")]\nextern \"C\" {{}}\n"),                            // 대소문자
+            format!("#[link(name = \"{io}\", kind = \"framework\")]\nextern \"C\" {{}}\n"),
+            format!("#[cfg_attr(target_os = \"macos\", link(name = \"{io}\", kind = \"dylib\"))]\nextern \"C\" {{}}\n"), // cfg_attr
+            format!("#[cfg_attr(all(target_os = \"macos\", target_arch = \"aarch64\"), link(name = \"{io}\"))]\nextern \"C\" {{}}\n"),
+        ];
+        for s in &bad_attrs {
+            assert!(!naming(&link_attr_args(s), &target).is_empty(), "스캐너가 IOReport 강링크 변형을 못 잡는다(핀 무력화): {s}");
+        }
+        let good_attrs = [
+            "#[link(name = \"CoreFoundation\", kind = \"framework\")]\nextern \"C\" {}\n".to_string(),
+            format!("std::os::unix::fs::symlink(\"{io}\", \"x\").ok();\n"),
+            format!("// {io}CopyAllChannels 는 dlsym 으로 찾는다\nlet name = c\"{io}CopyAllChannels\";\n"),
+        ];
+        for s in &good_attrs {
+            assert!(naming(&link_attr_args(s), &target).is_empty(), "스캐너가 무해한 입력을 강링크로 오판한다: {s}");
+        }
+        assert_eq!(link_attr_args(&good_attrs[0]), ["name=\"CoreFoundation\",kind=\"framework\""], "스캐너가 link 속성을 읽지 못한다");
+        let bad_build = [
+            format!("println!(\"cargo:rustc-link-lib=dylib={io}\");"),
+            format!("println!(\"cargo:rustc-link-lib=framework={io}\");"),
+            format!("println!(\"cargo:rustc-link-arg=-l{io}\");"),
+            format!("let lib = \"{target}\";\nprintln!(\"cargo:rustc-link-lib={{lib}}\");"), // 변수에 담아 쓰는 꼴
+        ];
+        for s in &bad_build {
+            assert!(!build_script_hits(s, &target).is_empty(), "스캐너가 build.rs 의 IOReport 링크 지시를 못 잡는다(핀 무력화): {s}");
+        }
+        let good_build = [
+            "println!(\"cargo:rustc-link-lib=dylib=z\");".to_string(),
+            format!("// cargo:rustc-link-lib 는 {io} 에 쓰지 않는다\nprintln!(\"cargo:rerun-if-changed=build.rs\");"),
+            format!("println!(\"cargo:rustc-env=PROBE={io}\");"),
+        ];
+        for s in &good_build {
+            assert!(build_script_hits(s, &target).is_empty(), "스캐너가 무해한 build.rs 를 강링크로 오판한다: {s}");
+        }
+
+        // ── 실제 소스: `src/bin/cysd/` 의 `.rs` 전부 + 저장소 `build.rs`(있다면) ──
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    rs_files(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        // 돌연변이 검증용 루트 — `CYS_E2_PIN_ROOT` 가 있으면 그 디렉터리(`src/bin/cysd/` 와 `build.rs` 의 변이 사본이 든 곳)를 훑는다(레인 대조 게이트의 `LANE_GATE_ROOT` 와 같은
+        // 관례: 변이를 넣어도 이 핀이 붉어지는지 재는 데 쓴다). CI 에서는 미설정 = 이 크레이트 루트다. 빈 디렉터리를 가리켜도 아래 계측 유효성 단언이 막는다(핀을 끌 수 없다).
+        let root_buf = std::env::var_os("CYS_E2_PIN_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let root = root_buf.as_path();
+        let mut files = Vec::new();
+        rs_files(&root.join("src").join("bin").join("cysd"), &mut files);
+        files.sort();
+        assert!(
+            files.len() >= 10 && files.iter().any(|p| p.ends_with("hwmon.rs")),
+            "cysd 소스 스캔 실패(files={}) — 측정 불능은 통과가 아니다",
+            files.len()
+        );
+        let (mut seen, mut hwmon_has_corefoundation) = (0, false);
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{} 를 읽지 못했다: {e}", f.display()));
+            let args = link_attr_args(&src);
+            seen += args.len();
+            if f.ends_with("hwmon.rs") {
+                hwmon_has_corefoundation = args.iter().any(|a| a.contains("CoreFoundation"));
+            }
+            let bad = naming(&args, &target);
+            assert!(bad.is_empty(), "{} 의 link 속성이 IOReport 를 묶는다(강링크 재발): {bad:?}", f.display());
+        }
+        // 계측 유효성 — CoreFoundation 의 link 속성은 hwmon.rs 에 남아 있어야 한다(스캐너가 실제 소스의 속성을 읽고 있다는 증거).
+        assert!(seen >= 1 && hwmon_has_corefoundation, "link 속성 스캐너가 실제 소스에서 아무것도 읽지 못했다(seen={seen})");
+        let build_rs = root.join("build.rs");
+        if build_rs.exists() {
+            let src = std::fs::read_to_string(&build_rs).unwrap_or_else(|e| panic!("build.rs 를 읽지 못했다: {e}"));
+            assert!(src.contains("fn main"), "build.rs 판독이 이상하다(측정 불능)");
+            let hits = build_script_hits(&src, &target);
+            assert!(hits.is_empty(), "build.rs 가 링크 지시({hits:?})와 IOReport 를 함께 담는다 — 강링크 재발");
+        }
     }
     use super::*;
 
@@ -5771,9 +6117,15 @@ mod spawn_policy_tests {
     /// 리터럴로 요구하므로 어떤 형태로든 손으로 관리하는 목록이 남는다(= 같은 결함원).
     /// 수집기가 눈이 머는 경로는 [`spawn_scan_collects_the_whole_src_tree`] 가 막는다.
     fn spawn_scan_files() -> Vec<(String, String)> {
+        rs_files_under("src")
+    }
+
+    /// 매니페스트 기준 `rel_dir` 아래 `*.rs` 전량(상대경로 `/` 구분 · 정렬). `spawn_scan_files`
+    /// 의 수집기를 그대로 일반화했다 — U5 census 가 `src-tauri/src`(cys-app)까지 같은 규율로 모은다.
+    fn rs_files_under(rel_dir: &str) -> Vec<(String, String)> {
         let manifest = env!("CARGO_MANIFEST_DIR");
         let mut out: Vec<(String, String)> = Vec::new();
-        let mut stack = vec![std::path::Path::new(manifest).join("src")];
+        let mut stack = vec![std::path::Path::new(manifest).join(rel_dir)];
         while let Some(dir) = stack.pop() {
             let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
                 panic!("스캔 대상 디렉터리를 읽지 못했다 {}: {e}", dir.display())
@@ -6511,6 +6863,1418 @@ mod spawn_policy_tests {
             out.stdout.is_empty(),
             "Survivor 자식이 stdout 을 물려받았다 — 부모 파이프를 쥐면 부모 종료가 지연된다: {:?}",
             String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ★U5(0.14.41 · 윈도우 "1분마다 검은 창") — 콘솔 없는 바이너리의 콘솔 자식 창 정책 census
+    // ════════════════════════════════════════════════════════════════════════
+    //
+    // 규칙(Microsoft conhost 소스 `srvinit.cpp`·`IoDispatchers.cpp` 근거 · 조사 보고서 §1):
+    //   콘솔 없는 프로세스(GUI 서브시스템 cysd · cys-app)가 콘솔 프로그램을 flag 없이 띄우면
+    //   **새 콘솔이 할당되어 창이 번쩍인다**. `CREATE_NO_WINDOW` 로 띄운 자식은 창 없는 숨은
+    //   콘솔을 받고, 그 자손은 그 숨은 콘솔을 물려받는다 → 창 정책은 **루트(직계 자식)에만** 건다.
+    //   ConPTY(pane) 자식은 대상이 아니다 — 거기에 NO_WINDOW 를 걸면 검은 pane(④ · 22ff28f6).
+    //
+    // 기존 U-7 핀(`no_bypass_child_separation_in_production`)은 flag 를 **직접 거는 것**만 막고
+    // **빠뜨린 것**은 초록으로 통과시켰다 — accounts.rs cmd 어댑터(`cmd /C` · 주기 반복)가 정확히
+    // 그렇게 통과했다. 이 census 는 반대 방향(누락)을 잡는다: 콘솔 없는 두 바이너리와 공용 lib 의
+    // 모든 `Command::new(` 가 ⓐ 창 정책을 걸었거나 ⓑ 윈도우 프로덕션 빌드에서 도달 불가(cfg)거나
+    // ⓒ GUI 대상(explorer)이어야 한다. 판정은 주석·문자열을 지운 사본에서 한다(주석 속 언급 무시).
+
+    /// 식별자 바이트인가(ASCII 한정 — 이 저장소 코드 식별자는 ASCII 다).
+    fn is_ident_byte(c: u8) -> bool {
+        c.is_ascii_alphanumeric() || c == b'_'
+    }
+
+    fn utf8_len(first: u8) -> usize {
+        match first {
+            0x00..=0x7F => 1,
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            _ => 4,
+        }
+    }
+
+    /// 주석·문자열·문자 리터럴 **내용**을 공백으로 지운 **같은 길이** 사본(줄바꿈 보존).
+    /// 바이트 오프셋이 원본과 같으므로 판정은 사본에서, 리터럴 판독은 원본에서 한다.
+    fn mask_code(src: &str) -> String {
+        fn blank(o: &mut [u8], from: usize, to: usize) {
+            for x in &mut o[from..to] {
+                if *x != b'\n' {
+                    *x = b' ';
+                }
+            }
+        }
+        let b = src.as_bytes();
+        let n = b.len();
+        let mut o = b.to_vec();
+        let mut i = 0usize;
+        while i < n {
+            let c = b[i];
+            if c == b'/' && i + 1 < n && b[i + 1] == b'/' {
+                let e = b[i..].iter().position(|&x| x == b'\n').map_or(n, |p| i + p);
+                blank(&mut o, i, e);
+                i = e;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && b[i + 1] == b'*' {
+                let (mut d, mut j) = (1usize, i + 2);
+                while j < n && d > 0 {
+                    if b[j] == b'/' && j + 1 < n && b[j + 1] == b'*' {
+                        d += 1;
+                        j += 2;
+                    } else if b[j] == b'*' && j + 1 < n && b[j + 1] == b'/' {
+                        d -= 1;
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                blank(&mut o, i, j);
+                i = j;
+                continue;
+            }
+            // raw 문자열 r"…" / r#"…"# / br"…" — `r` 이 식별자의 일부가 아닐 때만.
+            let raw = c == b'r'
+                && (i == 0
+                    || !is_ident_byte(b[i - 1])
+                    || (b[i - 1] == b'b' && (i < 2 || !is_ident_byte(b[i - 2]))));
+            if raw {
+                let mut j = i + 1;
+                let mut h = 0usize;
+                while j < n && b[j] == b'#' {
+                    h += 1;
+                    j += 1;
+                }
+                if j < n && b[j] == b'"' {
+                    let mut k = j + 1;
+                    while k < n
+                        && !(b[k] == b'"'
+                            && b.len() >= k + 1 + h
+                            && b[k + 1..k + 1 + h].iter().all(|&x| x == b'#'))
+                    {
+                        k += 1;
+                    }
+                    blank(&mut o, j + 1, k.min(n));
+                    i = (k + 1 + h).min(n);
+                    continue;
+                }
+            }
+            if c == b'"' {
+                let mut j = i + 1;
+                while j < n && b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                let j = j.min(n);
+                blank(&mut o, i + 1, j);
+                i = j + 1;
+                continue;
+            }
+            if c == b'\'' && i + 1 < n {
+                if b[i + 1] == b'\\' {
+                    let mut j = i + 3;
+                    while j < n && b[j] != b'\'' {
+                        j += 1;
+                    }
+                    let j = j.min(n);
+                    blank(&mut o, i + 1, j);
+                    i = j + 1;
+                    continue;
+                }
+                let len = utf8_len(b[i + 1]);
+                if i + 1 + len < n && b[i + 1 + len] == b'\'' {
+                    blank(&mut o, i + 1, i + 1 + len);
+                    i += 2 + len;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        String::from_utf8(o).expect("마스킹은 UTF-8 경계를 보존한다(바이트 단위 공백 치환)")
+    }
+
+    fn skip_ws(b: &[u8], mut k: usize) -> usize {
+        while k < b.len() && b[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        k
+    }
+
+    fn skip_ws_back(b: &[u8], mut k: usize) -> usize {
+        while k > 0 && b[k - 1].is_ascii_whitespace() {
+            k -= 1;
+        }
+        k
+    }
+
+    /// `b[i] == open` 에서 짝 닫힘의 인덱스(마스킹된 사본 기준 — 문자열 속 괄호는 이미 없다).
+    fn match_fwd(b: &[u8], i: usize, open: u8, close: u8) -> Option<usize> {
+        let mut d = 0usize;
+        for (k, &c) in b.iter().enumerate().skip(i) {
+            if c == open {
+                d += 1;
+            } else if c == close {
+                d = d.checked_sub(1)?;
+                if d == 0 {
+                    return Some(k);
+                }
+            }
+        }
+        None
+    }
+
+    /// `b[j] == close` 에서 거꾸로 짝 열림의 인덱스.
+    fn match_back(b: &[u8], j: usize, open: u8, close: u8) -> Option<usize> {
+        let mut d = 0usize;
+        for k in (0..=j).rev() {
+            let c = b[k];
+            if c == close {
+                d += 1;
+            } else if c == open {
+                d = d.checked_sub(1)?;
+                if d == 0 {
+                    return Some(k);
+                }
+            }
+        }
+        None
+    }
+
+    /// `at` 을 감싸는 가장 안쪽 `{ … }` 의 (열림, 닫힘).
+    fn enclosing_block(b: &[u8], at: usize) -> Option<(usize, usize)> {
+        let mut d = 0usize;
+        for k in (0..at).rev() {
+            match b[k] {
+                b'}' => d += 1,
+                b'{' => {
+                    if d == 0 {
+                        return Some((k, match_fwd(b, k, b'{', b'}')?));
+                    }
+                    d -= 1;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// 괄호 깊이 0 의 쉼표로 자른다(cfg 술어 인자 분해용).
+    fn split_top_commas(s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut d = 0i32;
+        let mut cur = String::new();
+        for ch in s.chars() {
+            match ch {
+                '(' => {
+                    d += 1;
+                    cur.push(ch);
+                }
+                ')' => {
+                    d -= 1;
+                    cur.push(ch);
+                }
+                ',' if d == 0 => {
+                    out.push(std::mem::take(&mut cur));
+                }
+                _ => cur.push(ch),
+            }
+        }
+        out.push(cur);
+        out.into_iter()
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    }
+
+    /// cfg 술어를 **윈도우 프로덕션 빌드** 기준으로 평가한다 — Some(참/거짓), 모르면 None.
+    /// 모르는 술어(`debug_assertions`·`feature` 등)는 None 이라 **가둔 것으로 치지 않는다**(안전측).
+    fn cfg_on_windows_prod(p: &str) -> Option<bool> {
+        let p = p.trim();
+        for (head, kind) in [("not(", 0u8), ("any(", 1), ("all(", 2)] {
+            if let Some(rest) = p.strip_prefix(head) {
+                let inner = rest.strip_suffix(')')?;
+                let vals: Vec<Option<bool>> =
+                    split_top_commas(inner).iter().map(|x| cfg_on_windows_prod(x)).collect();
+                return match kind {
+                    0 => {
+                        if vals.len() != 1 {
+                            return None;
+                        }
+                        vals[0].map(|v| !v)
+                    }
+                    1 => {
+                        if vals.contains(&Some(true)) {
+                            Some(true)
+                        } else if vals.iter().all(|v| *v == Some(false)) {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => {
+                        if vals.contains(&Some(false)) {
+                            Some(false)
+                        } else if vals.iter().all(|v| *v == Some(true)) {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    }
+                };
+            }
+        }
+        match p {
+            "windows" => return Some(true),
+            "unix" | "test" => return Some(false),
+            _ => {}
+        }
+        let (k, v) = p.split_once('=')?;
+        let v = v.trim().trim_matches('"');
+        match k.trim() {
+            "target_os" | "target_family" => Some(v == "windows"),
+            _ => None,
+        }
+    }
+
+    /// cfg 로 가둔 소스 구간 `[start, end)` 와 그 술어.
+    #[derive(Debug, Clone)]
+    struct CfgGate {
+        start: usize,
+        end: usize,
+        pred: String,
+    }
+
+    /// `#[cfg(..)]` 가 붙은 항목·문장의 끝(배타). `let` 문장은 `;` 까지, 그 외는 첫 블록의 끝이나
+    /// `;`·`,`(깊이 0) 중 먼저 오는 곳까지. 감싸는 괄호가 먼저 닫히면 거기서 끝낸다.
+    fn cfg_item_end(b: &[u8], m: &str, q: usize) -> usize {
+        let is_let = m[q..].starts_with("let ");
+        // 항목(fn·impl·mod·struct…)의 머리에는 괄호로 세지 않는 제네릭 `<A, B>` 의 쉼표가 있다 —
+        // 항목이면 쉼표에서 끊지 않는다(끊으면 `-> Result<(), E>` 의 쉼표에서 구간이 잘린다).
+        let head_end = m[q..].find(['{', ';']).map_or(m.len(), |p| q + p);
+        let head = &m[q..head_end];
+        let is_item = head.contains("fn ")
+            || ["impl", "mod ", "struct ", "enum ", "trait ", "union ", "use ", "const ", "static ", "type "]
+                .iter()
+                .any(|k| head.trim_start_matches("pub(crate) ").trim_start_matches("pub ").starts_with(k));
+        let mut d = 0i64;
+        let mut k = q;
+        while k < b.len() {
+            match b[k] {
+                b'(' | b'[' => d += 1,
+                b')' | b']' | b'}' => {
+                    if d == 0 {
+                        return k;
+                    }
+                    d -= 1;
+                }
+                b'{' => {
+                    if d == 0 && !is_let {
+                        return match_fwd(b, k, b'{', b'}').map_or(b.len(), |e| e + 1);
+                    }
+                    d += 1;
+                }
+                b';' if d == 0 => return k + 1,
+                // `let` 문장은 `;` 에서만 끝난다(위 문서 주석과 일치) — 깊이 0 쉼표로 끊으면
+                // `let r: Result<(), String> = …` 의 제네릭 쉼표에서 가둠 구간이 잘려 census 가
+                // 오탐한다(리뷰1 M1). `let f = |a, b| …` 의 클로저 인자 쉼표도 같은 이유로 보존한다.
+                b',' if d == 0 && !is_item && !is_let => return k + 1,
+                _ => {}
+            }
+            k += 1;
+        }
+        b.len()
+    }
+
+    /// 한 파일의 cfg 가둠 구간 전부 — `#![cfg]`(파일 전체) · `#[cfg]`(항목·문장·블록) ·
+    /// `if cfg!(X) { }`(then 블록) · 그 `else { }` · `if cfg!(X) { return … }`(조기 반환 → 감싸는
+    /// 블록의 나머지). 이 저장소의 실제 면제 지점은 **문장 단위**(`#[cfg(target_os="macos")] let r = …`)
+    /// 와 `cfg!()` 분기라 함수 단위 cfg 만 보면 면제 근거를 확인하지 못한다(반박 D3).
+    fn collect_cfg_gates(src: &str, m: &str) -> Vec<CfgGate> {
+        let b = m.as_bytes();
+        let mut gates = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = m[from..].find("#![cfg(") {
+            let at = from + rel;
+            from = at + 1;
+            let po = at + "#![cfg".len();
+            if let Some(pc) = match_fwd(b, po, b'(', b')') {
+                gates.push(CfgGate { start: 0, end: b.len(), pred: src[po + 1..pc].to_string() });
+            }
+        }
+        from = 0;
+        while let Some(rel) = m[from..].find("#[cfg(") {
+            let at = from + rel;
+            from = at + 1;
+            let po = at + "#[cfg".len();
+            let Some(pc) = match_fwd(b, po, b'(', b')') else { continue };
+            let mut q = skip_ws(b, pc + 1);
+            if b.get(q) != Some(&b']') {
+                continue;
+            }
+            q = skip_ws(b, q + 1);
+            while m[q..].starts_with("#[") {
+                let Some(e) = match_fwd(b, q + 1, b'[', b']') else { break };
+                q = skip_ws(b, e + 1);
+            }
+            gates.push(CfgGate { start: q, end: cfg_item_end(b, m, q), pred: src[po + 1..pc].to_string() });
+        }
+        from = 0;
+        while let Some(rel) = m[from..].find("cfg!(") {
+            let at = from + rel;
+            from = at + 1;
+            if at > 0 && is_ident_byte(b[at - 1]) {
+                continue;
+            }
+            let po = at + "cfg!".len();
+            let Some(pc) = match_fwd(b, po, b'(', b')') else { continue };
+            let pred = src[po + 1..pc].trim().to_string();
+            let mut k = skip_ws_back(b, at);
+            let neg = k > 0 && b[k - 1] == b'!';
+            if neg {
+                k = skip_ws_back(b, k - 1);
+            }
+            if !(k >= 2 && &m[k - 2..k] == "if" && (k == 2 || !is_ident_byte(b[k - 3]))) {
+                continue;
+            }
+            let if_at = k - 2;
+            let q = skip_ws(b, pc + 1);
+            if b.get(q) != Some(&b'{') {
+                continue; // `cfg!(X) && …` 같은 복합 조건은 가둠으로 치지 않는다(안전측)
+            }
+            let Some(then_end) = match_fwd(b, q, b'{', b'}') else { continue };
+            let eff = if neg { format!("not({pred})") } else { pred };
+            gates.push(CfgGate { start: q, end: then_end + 1, pred: eff.clone() });
+            let r = skip_ws(b, then_end + 1);
+            if m[r..].starts_with("else") && !b.get(r + 4).is_some_and(|c| is_ident_byte(*c)) {
+                let s = skip_ws(b, r + 4);
+                if b.get(s) == Some(&b'{') {
+                    if let Some(ee) = match_fwd(b, s, b'{', b'}') {
+                        gates.push(CfgGate { start: s, end: ee + 1, pred: format!("not({eff})") });
+                    }
+                }
+                continue;
+            }
+            // 조기 반환: `if cfg!(X) { return …; }` 뒤의 나머지 블록은 not(X) 에서만 돈다.
+            // `else if` 의 분기나 식 위치의 if 는 제외(문장 위치의 if 만).
+            let before = skip_ws_back(b, if_at);
+            let stmt_pos = before == 0 || matches!(b[before - 1], b';' | b'{' | b'}');
+            let then_body = m[q + 1..then_end].trim_start();
+            // `return` 뒤가 식별자 바이트(`return_noop()` 같은 함수 호출)면 조기 반환이 아니다(리뷰1 M13).
+            let is_real_return = then_body.strip_prefix("return").is_some_and(|rest| {
+                rest.as_bytes().first().is_none_or(|c| !is_ident_byte(*c))
+            });
+            if stmt_pos && is_real_return {
+                if let Some((_bo, bc)) = enclosing_block(b, if_at) {
+                    gates.push(CfgGate { start: then_end + 1, end: bc, pred: format!("not({eff})") });
+                }
+            }
+        }
+        gates
+    }
+
+    /// 한 스폰 지점의 판정.
+    #[derive(Debug, Clone, PartialEq)]
+    enum SpawnVerdict {
+        /// `#[cfg(test)]` 안 — 출하되지 않는다.
+        TestOnly,
+        /// 윈도우 프로덕션 빌드에서 도달 불가(술어 동봉).
+        Gated(String),
+        /// GUI 서브시스템 대상(`explorer`) — 콘솔을 할당하지 않는다.
+        GuiTarget,
+        /// 창 정책이 걸렸다(어떤 수단으로).
+        Policy(String),
+        /// 빌더를 돌려주는 팩토리 — 호출부가 정책 책임을 진다(호출부를 따로 판정한다).
+        Factory(String),
+        /// 창 정책 누락 · 판독 불가 · 불인정 등급.
+        Violation(String),
+    }
+
+    /// `spawn_policy(..)` 인자의 등급 판정 — `ConsoleScoped` 는 Windows flag 0 이라 불인정(반박 D2).
+    fn grade_verdict(args: &str) -> SpawnVerdict {
+        if args.contains("ConsoleScoped") {
+            return SpawnVerdict::Violation(
+                "ConsoleScoped 등급은 Windows flag 0 — 콘솔 없는 부모의 창 정책으로 인정하지 않는다"
+                    .into(),
+            );
+        }
+        for g in ["Attached", "GroupScoped", "Survivor"] {
+            if args.contains(&format!("ChildLifetime::{g}")) {
+                return SpawnVerdict::Policy(format!("spawn_policy({g})"));
+            }
+        }
+        SpawnVerdict::Violation(format!(
+            "spawn_policy 등급을 판독할 수 없다(`{}`) — 리터럴 등급(Attached·GroupScoped·Survivor)을 써라",
+            args.trim()
+        ))
+    }
+
+    /// `.method(` 의 점(`dot`)에서 거꾸로 메서드 체인을 거슬러 **수신자 변수**를 찾는다.
+    /// 체인 뿌리가 함수 호출·경로(`Command::new(..)`)면 None(익명 — 전진 체인 판정의 몫).
+    fn chain_root(m: &str, dot: usize) -> Option<String> {
+        let b = m.as_bytes();
+        let mut k = dot;
+        loop {
+            let mut j = skip_ws_back(b, k);
+            if j == 0 {
+                return None;
+            }
+            if b[j - 1] == b'?' {
+                j -= 1;
+            }
+            let mut called = false;
+            if b[j - 1] == b')' {
+                j = match_back(b, j - 1, b'(', b')')?;
+                called = true;
+            }
+            let e = j;
+            let mut s = j;
+            while s > 0 && is_ident_byte(b[s - 1]) {
+                s -= 1;
+            }
+            if s == e {
+                return None;
+            }
+            let p = skip_ws_back(b, s);
+            if p > 0 && b[p - 1] == b'.' && !(p > 1 && b[p - 2] == b'.') {
+                k = p - 1;
+                continue;
+            }
+            if called || (p > 1 && &m[p - 2..p] == "::") {
+                return None;
+            }
+            return Some(m[s..e].to_string());
+        }
+    }
+
+    /// 한 파일의 판정 문맥 — 원본 · 마스킹 사본 · 이 파일에서 **근거가 확인된** 창 정책 래퍼.
+    struct SrcCtx<'a> {
+        src: &'a str,
+        m: &'a str,
+        wrappers: &'a [String],
+    }
+
+    /// `(PARAM: &mut …Command)` 한 개짜리 인자 목록이면 PARAM.
+    fn wrapper_param(params: &str) -> Option<String> {
+        let p = params.trim().trim_end_matches(',');
+        if p.contains(',') {
+            return None;
+        }
+        let (n, t) = p.split_once(':')?;
+        let t = t.trim();
+        if t.starts_with("&mut") && t.ends_with("Command") {
+            Some(n.trim().trim_start_matches("mut ").trim().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// 창 정책 래퍼 = `&mut …Command` 하나를 받아 **그 인자에** 창 정책을 거는 fn·클로저(같은 파일).
+    /// 이름이 아니라 **몸통으로** 인정한다(반박 D2 — 이름만 그럴듯한 래퍼 불인정): 몸통에서 그 인자에
+    /// `hide_console`·`spawn_policy(등급)`·이미 인정된 래퍼 호출이 있거나, 그 인자에
+    /// `creation_flags(` 를 걸고 몸통에 `CREATE_NO_WINDOW` 값(0x0800_0000)이 있어야 한다.
+    fn derive_policy_wrappers(src: &str, m: &str) -> Vec<String> {
+        let b = m.as_bytes();
+        let mut cands: Vec<(String, String, usize, usize)> = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = m[from..].find("fn ") {
+            let at = from + rel;
+            from = at + 3;
+            if at > 0 && is_ident_byte(b[at - 1]) {
+                continue;
+            }
+            let s = skip_ws(b, at + 3);
+            let mut e = s;
+            while e < b.len() && is_ident_byte(b[e]) {
+                e += 1;
+            }
+            let po = skip_ws(b, e);
+            if s == e || b.get(po) != Some(&b'(') {
+                continue;
+            }
+            let Some(pc) = match_fwd(b, po, b'(', b')') else { continue };
+            let Some(param) = wrapper_param(&m[po + 1..pc]) else { continue };
+            let Some(bo) = m[pc..].find(['{', ';']).map(|p| pc + p) else { continue };
+            if b[bo] != b'{' {
+                continue;
+            }
+            let Some(bc) = match_fwd(b, bo, b'{', b'}') else { continue };
+            cands.push((m[s..e].to_string(), param, bo, bc));
+        }
+        from = 0;
+        while let Some(rel) = m[from..].find("let ") {
+            let at = from + rel;
+            from = at + 4;
+            if at > 0 && is_ident_byte(b[at - 1]) {
+                continue;
+            }
+            let mut s = skip_ws(b, at + 4);
+            if m[s..].starts_with("mut ") {
+                s = skip_ws(b, s + 4);
+            }
+            let mut e = s;
+            while e < b.len() && is_ident_byte(b[e]) {
+                e += 1;
+            }
+            let eq = skip_ws(b, e);
+            if s == e || b.get(eq) != Some(&b'=') {
+                continue;
+            }
+            let p1 = skip_ws(b, eq + 1);
+            if b.get(p1) != Some(&b'|') {
+                continue;
+            }
+            let Some(p2) = m[p1 + 1..].find('|').map(|p| p1 + 1 + p) else { continue };
+            let Some(param) = wrapper_param(&m[p1 + 1..p2]) else { continue };
+            let bo = skip_ws(b, p2 + 1);
+            if b.get(bo) != Some(&b'{') {
+                continue;
+            }
+            let Some(bc) = match_fwd(b, bo, b'{', b'}') else { continue };
+            cands.push((m[s..e].to_string(), param, bo, bc));
+        }
+        let mut ok: Vec<String> = Vec::new();
+        loop {
+            let mut grew = false;
+            for (name, param, bo, bc) in &cands {
+                if ok.contains(name) {
+                    continue;
+                }
+                let cx = SrcCtx { src, m, wrappers: &ok };
+                let via_policy =
+                    matches!(policy_for_binding(&cx, param, *bo, *bc), Some(SpawnVerdict::Policy(_)));
+                let direct = {
+                    let body = &src[*bo..*bc];
+                    let mut hit = false;
+                    let mut f = *bo;
+                    while let Some(rel) = m[f..*bc].find(".creation_flags(") {
+                        let dot = f + rel;
+                        f = dot + 1;
+                        if chain_root(m, dot).as_deref() == Some(param.as_str()) {
+                            hit = true;
+                        }
+                    }
+                    hit && (body.contains("0x0800_0000") || body.contains("0x08000000"))
+                };
+                if via_policy || direct {
+                    ok.push(name.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        ok.sort();
+        ok
+    }
+
+    /// 변수 `name` 에 `[from, to)` 안에서 창 정책이 걸리는가 — `name.….hide_console()` ·
+    /// `name.….spawn_policy(등급)` · `no_console(&mut name)` · `apply_env(&mut name)`.
+    fn policy_for_binding(cx: &SrcCtx, name: &str, from: usize, to: usize) -> Option<SpawnVerdict> {
+        let (src, m) = (cx.src, cx.m);
+        let b = m.as_bytes();
+        for tok in [".hide_console(", ".spawn_policy("] {
+            let mut f = from;
+            while let Some(rel) = m[f..to].find(tok) {
+                let dot = f + rel;
+                f = dot + 1;
+                if chain_root(m, dot).as_deref() != Some(name) {
+                    continue;
+                }
+                if tok == ".hide_console(" {
+                    return Some(SpawnVerdict::Policy("hide_console".into()));
+                }
+                let po = dot + tok.len() - 1;
+                let pc = match_fwd(b, po, b'(', b')')?;
+                return Some(grade_verdict(&src[po + 1..pc]));
+            }
+        }
+        for w in cx.wrappers {
+            let tok = format!("{w}(");
+            let mut f = from;
+            while let Some(rel) = m[f..to].find(tok.as_str()) {
+                let at = f + rel;
+                f = at + 1;
+                if at > 0 && (is_ident_byte(b[at - 1]) || b[at - 1] == b'.') {
+                    continue;
+                }
+                let po = at + tok.len() - 1;
+                let Some(pc) = match_fwd(b, po, b'(', b')') else { continue };
+                let arg = src[po + 1..pc].trim();
+                if arg == format!("&mut {name}") || arg == name {
+                    return Some(SpawnVerdict::Policy(w.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// `start` 바로 앞이 `let [mut] NAME =` 이면 NAME.
+    fn let_binding_before(m: &str, start: usize) -> Option<String> {
+        let b = m.as_bytes();
+        let k = skip_ws_back(b, start);
+        if k == 0 || b[k - 1] != b'=' || (k >= 2 && matches!(b[k - 2], b'=' | b'!' | b'<' | b'>')) {
+            return None;
+        }
+        let e = skip_ws_back(b, k - 1);
+        let mut s = e;
+        while s > 0 && is_ident_byte(b[s - 1]) {
+            s -= 1;
+        }
+        if s == e {
+            return None;
+        }
+        let name = m[s..e].to_string();
+        let mut p = skip_ws_back(b, s);
+        if p >= 3 && &m[p - 3..p] == "mut" && (p == 3 || !is_ident_byte(b[p - 4])) {
+            p = skip_ws_back(b, p - 3);
+        }
+        if p >= 3 && &m[p - 3..p] == "let" && (p == 3 || !is_ident_byte(b[p - 4])) {
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    /// 블록 `{bo … bc}` 의 꼬리 식이 정확히 `name` 인가(블록 값으로 빌더가 흘러나간다).
+    fn block_tail_is(m: &str, bo: usize, bc: usize, name: &str) -> bool {
+        let inner = m[bo + 1..bc].trim_end();
+        let Some(head) = inner.strip_suffix(name) else { return false };
+        let head = head.trim_end();
+        head.is_empty() || head.ends_with(';') || head.ends_with('}') || head.ends_with('{')
+    }
+
+    /// 블록 `{bo … bc}` 의 값(빌더)이 어디로 가는가 — fn 몸통이면 팩토리, `let X = { … }` 면 X 추적.
+    fn follow_block_value(cx: &SrcCtx, bo: usize, bc: usize, depth: usize) -> SpawnVerdict {
+        let m = cx.m;
+        // fn 몸통? — bo 앞의 머리(직전 `{`·`}`·`;` 이후)에 `fn ` 이 있다.
+        let head_start = m[..bo].rfind(['{', '}', ';']).map_or(0, |p| p + 1);
+        let head = &m[head_start..bo];
+        if let Some(fp) = head.find("fn ") {
+            let name: String = head[fp + 3..]
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let ret = head.split("->").nth(1).unwrap_or("");
+            if ret.contains("Command") && !name.is_empty() {
+                return SpawnVerdict::Factory(name);
+            }
+            return SpawnVerdict::Violation(format!(
+                "빌더가 fn `{name}` 의 꼬리로 나가지만 반환형이 Command 가 아니다 — 흐름 판독 불가"
+            ));
+        }
+        if let Some(outer) = let_binding_before(m, bo) {
+            return follow_binding(cx, &outer, bo, bc + 1, depth + 1);
+        }
+        SpawnVerdict::Violation("빌더가 블록 값으로 나가는데 받는 쪽을 판독할 수 없다".into())
+    }
+
+    /// 변수 `name`(스폰 지점 `site` 에서 묶임)의 창 정책을 `from` 이후 감싸는 블록 끝까지 찾는다.
+    fn follow_binding(cx: &SrcCtx, name: &str, site: usize, from: usize, depth: usize) -> SpawnVerdict {
+        let m = cx.m;
+        if depth > 4 {
+            return SpawnVerdict::Violation("빌더 재결속이 너무 깊다 — 흐름 판독 불가".into());
+        }
+        let b = m.as_bytes();
+        let (bo, bc) = enclosing_block(b, site).unwrap_or((0, b.len()));
+        if let Some(v) = policy_for_binding(cx, name, from, bc) {
+            return v;
+        }
+        if bc < b.len() && block_tail_is(m, bo, bc, name) {
+            return follow_block_value(cx, bo, bc, depth);
+        }
+        SpawnVerdict::Violation(format!("변수 `{name}` 에 창 정책(hide_console·spawn_policy·no_console)이 걸리지 않는다"))
+    }
+
+    /// 스폰 지점 하나를 판정한다 — `start` = 경로 시작(`std::process::Command::new(` 의 `s`),
+    /// `open` = 호출 괄호 `(` 위치.
+    fn classify_spawn(cx: &SrcCtx, gates: &[CfgGate], start: usize, open: usize) -> SpawnVerdict {
+        let (src, m) = (cx.src, cx.m);
+        let b = m.as_bytes();
+        let mut gated: Option<String> = None;
+        for g in gates.iter().filter(|g| g.start <= start && start < g.end) {
+            if g.pred.trim() == "test" {
+                return SpawnVerdict::TestOnly;
+            }
+            if cfg_on_windows_prod(&g.pred) == Some(false) {
+                gated = Some(g.pred.trim().to_string());
+            }
+        }
+        if let Some(p) = gated {
+            return SpawnVerdict::Gated(p);
+        }
+        let Some(close) = match_fwd(b, open, b'(', b')') else {
+            return SpawnVerdict::Violation("호출 괄호가 닫히지 않는다 — 판독 불가".into());
+        };
+        if src[open + 1..close].trim() == "\"explorer\"" {
+            return SpawnVerdict::GuiTarget;
+        }
+        // ① 전진 체인 — 종결(output/spawn/status) 전에 정책이 오는가.
+        let mut k = close + 1;
+        loop {
+            k = skip_ws(b, k);
+            if k < b.len() && b[k] == b'?' {
+                k += 1;
+                continue;
+            }
+            if k >= b.len() || b[k] != b'.' || b.get(k + 1) == Some(&b'.') {
+                break;
+            }
+            let s = skip_ws(b, k + 1);
+            let mut e = s;
+            while e < b.len() && is_ident_byte(b[e]) {
+                e += 1;
+            }
+            if s == e {
+                break;
+            }
+            let p = skip_ws(b, e);
+            if b.get(p) != Some(&b'(') {
+                k = e; // `.await` · 필드 접근
+                continue;
+            }
+            let Some(pe) = match_fwd(b, p, b'(', b')') else { break };
+            match &m[s..e] {
+                "hide_console" => return SpawnVerdict::Policy("hide_console".into()),
+                "spawn_policy" => return grade_verdict(&src[p + 1..pe]),
+                "output" | "spawn" | "status" => {
+                    return SpawnVerdict::Violation(
+                        "익명 체인이 창 정책 없이 실행된다(hide_console/spawn_policy 부재)".into(),
+                    )
+                }
+                _ => {}
+            }
+            k = pe + 1;
+        }
+        // ② 변수에 묶였다 → 그 변수의 후속 문장에서 정책을 찾는다.
+        if let Some(name) = let_binding_before(m, start) {
+            return follow_binding(cx, &name, start, k, 0);
+        }
+        // ③ 블록 꼬리 식 → 블록 값의 행방을 따른다(팩토리 등).
+        if b.get(skip_ws(b, k)) == Some(&b'}') {
+            if let Some((bo, bc)) = enclosing_block(b, start) {
+                return follow_block_value(cx, bo, bc, 0);
+            }
+        }
+        SpawnVerdict::Violation("빌더 흐름을 판독할 수 없다(변수 결속·실행·반환 어느 것도 아님)".into())
+    }
+
+    /// `needle`(`Command::new(` 또는 `팩토리(`) 호출 지점 — (경로 시작, 여는 괄호). 정의(`fn `)는 제외.
+    fn call_sites(m: &str, needle: &str) -> Vec<(usize, usize)> {
+        let b = m.as_bytes();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = m[from..].find(needle) {
+            let at = from + rel;
+            from = at + 1;
+            if at > 0 && is_ident_byte(b[at - 1]) {
+                continue;
+            }
+            let ws = skip_ws_back(b, at);
+            if ws >= 2 && &m[ws - 2..ws] == "fn" && (ws == 2 || !is_ident_byte(b[ws - 3])) {
+                continue;
+            }
+            let mut start = at;
+            while start >= 2 && &m[start - 2..start] == "::" {
+                let mut j = start - 2;
+                while j > 0 && is_ident_byte(b[j - 1]) {
+                    j -= 1;
+                }
+                if j == start - 2 {
+                    break;
+                }
+                start = j;
+            }
+            out.push((start, at + needle.len() - 1));
+        }
+        out
+    }
+
+    fn line_of(src: &str, at: usize) -> usize {
+        src[..at].bytes().filter(|&c| c == b'\n').count() + 1
+    }
+
+    /// census 결과 한 줄.
+    #[derive(Debug, Clone)]
+    struct SpawnSite {
+        file: String,
+        line: usize,
+        callee: String,
+        verdict: SpawnVerdict,
+    }
+
+    /// 파일 묶음 전체 census — `Command::new(` 와, 판정 중 발견된 **팩토리의 호출부**까지 판정한다.
+    fn consoleless_census(files: &[(String, String)]) -> Vec<SpawnSite> {
+        let prepared: Vec<(String, String, String, Vec<CfgGate>, Vec<String>)> = files
+            .iter()
+            .map(|(n, s)| {
+                let m = mask_code(s);
+                let g = collect_cfg_gates(s, &m);
+                let w = derive_policy_wrappers(s, &m);
+                (n.clone(), s.clone(), m, g, w)
+            })
+            .collect();
+        let mut out: Vec<SpawnSite> = Vec::new();
+        let mut needles: Vec<String> = vec!["Command::new(".to_string()];
+        let mut done: Vec<String> = Vec::new();
+        while let Some(needle) = needles.pop() {
+            if done.contains(&needle) || done.len() > 8 {
+                continue;
+            }
+            done.push(needle.clone());
+            for (name, src, m, gates, wrappers) in &prepared {
+                let cx = SrcCtx { src, m, wrappers };
+                for (start, open) in call_sites(m, &needle) {
+                    let verdict = classify_spawn(&cx, gates, start, open);
+                    if let SpawnVerdict::Factory(f) = &verdict {
+                        let nd = format!("{f}(");
+                        if !done.contains(&nd) && !needles.contains(&nd) {
+                            needles.push(nd);
+                        }
+                    }
+                    out.push(SpawnSite {
+                        file: name.clone(),
+                        line: line_of(src, start),
+                        callee: needle.trim_end_matches('(').to_string(),
+                        verdict,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// census 판정 대상 = 콘솔 없는 두 바이너리(cysd = `src/bin/cysd/**` · cys-app = `src-tauri/src/**`)
+    /// 와 그 공용 lib(`src/*.rs`). **`src/bin/cys.rs` 는 제외**한다 — 콘솔 CLI 라 자식이 부모 콘솔을
+    /// 물려받고(pane 이면 ConPTY), `run_scoped`(`ConsoleScoped`)는 사용자 명령 출력을 가리지 않으려
+    /// 창 정책을 **일부러 걸지 않는다**(`ChildLifetime::ConsoleScoped` 문서).
+    fn consoleless_scan_files() -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> =
+            spawn_scan_files().into_iter().filter(|(n, _)| n != "src/bin/cys.rs").collect();
+        out.extend(rs_files_under("src-tauri/src"));
+        out.sort();
+        out
+    }
+
+    /// ★U5 m1(리뷰1): `Command` 별칭(`use … Command as X` · `type X = …Command`)을 금지한다.
+    /// census 의 바늘은 `Command::new(` 리터럴이라 별칭 뒤(`X::new(`)에 숨은 스폰은 보지 못한다
+    /// (리뷰1 M12 재현 — 별칭을 바늘에 추가하는 대신, 별칭 자체를 census 대상에서 금지해 닫는다).
+    fn forbidden_command_aliases(files: &[(String, String)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (name, src) in files {
+            let m = mask_code(src);
+            let b = m.as_bytes();
+            // `use … Command as X` (import alias) — 온전한 단어 `Command` 뒤에 ` as ` 가 오면 별칭이다.
+            for (at, _) in m.match_indices("Command") {
+                if at > 0 && is_ident_byte(b[at - 1]) {
+                    continue; // `CommandBuilder` 등 접두 단어는 제외
+                }
+                let after = at + "Command".len();
+                if b.get(after).is_some_and(|c| is_ident_byte(*c)) {
+                    continue;
+                }
+                if m[after..].trim_start().starts_with("as ") {
+                    out.push(format!(
+                        "{name}:{} `Command as` 별칭 — census 바늘이 이 별칭 뒤 스폰을 보지 못한다",
+                        line_of(src, at)
+                    ));
+                }
+            }
+            // `type X = …Command;` (타입 별칭)
+            let mut from = 0usize;
+            while let Some(rel) = m[from..].find("type ") {
+                let at = from + rel;
+                from = at + 1;
+                if at > 0 && is_ident_byte(b[at - 1]) {
+                    continue;
+                }
+                let Some(semi_rel) = m[at..].find(';') else { continue };
+                let stmt = &m[at..at + semi_rel];
+                let Some(eq) = stmt.find('=') else { continue };
+                let rhs = stmt[eq + 1..].trim();
+                if rhs == "Command" || rhs.ends_with("::Command") {
+                    out.push(format!(
+                        "{name}:{} `type … = …Command` 별칭 — census 바늘이 이 별칭 뒤 스폰을 보지 못한다",
+                        line_of(src, at)
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// ★U5 핵심 핀: 콘솔 없는 cysd·cys-app(과 공용 lib)의 모든 `Command::new(` 는 창 정책을 걸었거나,
+    /// 윈도우 프로덕션 빌드에서 도달 불가(cfg)거나, GUI 대상(explorer)이다.
+    ///
+    /// 이 핀이 없던 동안 `accounts.rs` cmd 어댑터(`cmd /C` · `interval_secs` 주기 반복 · 부서 데몬마다)가
+    /// 창 정책 없이 통과했다 — U-7 핀은 flag 를 **직접 거는 것**만 막고 **빠뜨린 것**은 초록이었다.
+    #[test]
+    fn consoleless_spawns_carry_window_policy() {
+        let files = consoleless_scan_files();
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        for must in [
+            "src-tauri/src/main.rs",
+            "src/bin/cysd/accounts.rs",
+            "src/bin/cysd/schedule.rs",
+            "src/bin/cysd/usage.rs",
+            "src/lib.rs",
+        ] {
+            assert!(names.contains(&must), "census 가 {must} 를 보지 못한다 — 시야가 먼 초록은 근거가 아니다");
+        }
+        assert!(!names.contains(&"src/bin/cys.rs"), "콘솔 CLI(cys.rs)가 대상에 섞였다 — ConsoleScoped 계약과 충돌");
+        let aliases = forbidden_command_aliases(&files);
+        assert!(
+            aliases.is_empty(),
+            "census 대상 파일에 `Command` 별칭이 있다 — census 바늘(`Command::new(`)이 별칭 뒤 스폰을 보지 \
+             못해 창 정책 누락이 조용히 통과한다(리뷰1 M12). `std::process::Command` 를 직접 쓰거나 \
+             hide_console/no_console 래퍼로 감싸라:\n{}",
+            aliases.join("\n")
+        );
+        let sites = consoleless_census(&files);
+        let bad: Vec<String> = sites
+            .iter()
+            .filter_map(|s| match &s.verdict {
+                SpawnVerdict::Violation(why) => Some(format!("  {}:{} [{}] {why}", s.file, s.line, s.callee)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "콘솔 없는 cysd·cys-app 의 콘솔 자식에 창 정책이 없다 — 윈도우에서 스폰마다 검은 콘솔 창이 \
+             번쩍인다(주기 스폰이면 매 주기 · 부서 데몬 수만큼). 등급(ChildLifetime Attached·GroupScoped·\
+             Survivor)을 정해 spawn_policy 를 걸거나(cysd 는 hide_console = Attached 별칭 · cys-app 은 \
+             no_console), 맥·유닉스 전용이면 #[cfg]/cfg!() 로 가둬라. 등급과 hide_console 병용 금지 · \
+             ConsoleScoped 불인정(Windows flag 0) · ConPTY(CommandBuilder) 자식은 대상 아님(NO_WINDOW = 검은 pane).\n{}",
+            bad.join("\n")
+        );
+        // 계측 타당성 — 아무것도 안 보고 초록이 되는 길을 막는다(실측 기준 정책 39 · 가둠 27 · 2026-09-23).
+        let n = |f: fn(&SpawnVerdict) -> bool| sites.iter().filter(|s| f(&s.verdict)).count();
+        let policy = n(|v| matches!(v, SpawnVerdict::Policy(_)));
+        let gated = n(|v| matches!(v, SpawnVerdict::Gated(_)));
+        assert!(policy >= 30, "창 정책 판정 {policy}건 — 스폰 수확이 눈이 멀었다");
+        assert!(gated >= 15, "cfg 가둠 판정 {gated}건 — 가둠 인식이 눈이 멀었다");
+        assert!(
+            sites.iter().any(|s| s.verdict == SpawnVerdict::Factory("python_command".into())),
+            "lib.rs `python_command` 를 팩토리로 인식하지 못한다 — 그 호출부(동봉 python 직스폰)가 판정 밖이다"
+        );
+        assert!(
+            sites.iter().filter(|s| s.callee == "python_command").count() >= 2,
+            "팩토리 호출부(cysd main.rs phoenix self-test · auto-restore)를 따라가지 못한다"
+        );
+        assert!(
+            sites.iter().filter(|s| s.file == "src/bin/cysd/accounts.rs").count() >= 2,
+            "accounts.rs cmd 어댑터 두 분기를 판정하지 못했다(U5 결함 지점 시야 소실)"
+        );
+        // `hide_console` 을 창 정책으로 인정하는 근거 = 그 별칭이 `Attached`(CREATE_NO_WINDOW) 위임이다.
+        let mut alias_defs = 0usize;
+        for (name, src) in &files {
+            let m = mask_code(src);
+            let b = m.as_bytes();
+            for (at, _) in m.match_indices("fn hide_console(") {
+                let bo = m[at..].find('{').map(|p| at + p).expect("hide_console 정의에 몸통이 없다");
+                let bc = match_fwd(b, bo, b'{', b'}').expect("hide_console 몸통이 닫히지 않는다");
+                let body = &m[bo..bc];
+                assert!(
+                    body.contains("ChildLifetime::Attached") && !body.contains("ConsoleScoped"),
+                    "{name}: hide_console 별칭이 Attached 위임이 아니다 — census 가 hide_console 을 창 정책으로 \
+                     인정하는 근거가 사라졌다: {body}"
+                );
+                alias_defs += 1;
+            }
+        }
+        assert!(alias_defs >= 2, "hide_console 별칭 정의(std·tokio)를 {alias_defs}건밖에 못 봤다");
+    }
+
+    /// 합성 소스 한 조각을 census 에 넣어 판정 목록을 돌려준다.
+    fn census_of(src: &str) -> Vec<SpawnVerdict> {
+        consoleless_census(&[("<합성>".to_string(), src.to_string())])
+            .into_iter()
+            .map(|s| s.verdict)
+            .collect()
+    }
+
+    fn is_violation(v: &SpawnVerdict) -> bool {
+        matches!(v, SpawnVerdict::Violation(_))
+    }
+
+    /// ★계측기 자기검증 — census 가 **실제로 탐지하는지**를 합성 표본과 실물 변조본으로 잰다.
+    /// 수리 후 트리에는 위반이 0 이라, 탐지기가 통째로 고장 나 있어도 위 핀은 초록이다(그 침묵을 여기서 깬다).
+    #[test]
+    fn consoleless_census_detectors_actually_detect() {
+        // ⓐ 익명 체인이 정책 없이 실행 → 적발
+        let a = census_of("fn f() {\n    let _ = std::process::Command::new(\"cmd\").args([\"/C\", x]).output();\n}\n");
+        assert_eq!(a.len(), 1, "ⓐ 지점 수: {a:?}");
+        assert!(is_violation(&a[0]), "ⓐ 누락을 못 잡는다: {a:?}");
+        // ⓑ 같은 체인에 hide_console → 통과
+        let b = census_of(
+            "fn f() {\n    let _ = tokio::process::Command::new(\"cmd\").args([\"/C\", x]).hide_console().output();\n}\n",
+        );
+        assert_eq!(b, vec![SpawnVerdict::Policy("hide_console".into())], "ⓑ: {b:?}");
+        // ⓒ 문장 단위 cfg(macOS · 비 macOS·비 윈도우) → 가둠(반박 D3 — 실제 면제 지점의 형태)
+        let c = census_of(
+            "fn f() {\n    #[cfg(target_os = \"macos\")]\n    let r = std::process::Command::new(\"open\").arg(p).spawn();\n    \
+             #[cfg(not(any(target_os = \"macos\", target_os = \"windows\")))]\n    \
+             let r = std::process::Command::new(\"xdg-open\").arg(p).spawn();\n}\n",
+        );
+        assert!(c.len() == 2 && c.iter().all(|v| matches!(v, SpawnVerdict::Gated(_))), "ⓒ 문장 단위 cfg: {c:?}");
+        // ⓓ 함수 단위 cfg + 반환형 제네릭 쉼표(`Result<(), E>`) — 가둠이 함수 끝까지 유지
+        let d = census_of(
+            "#[cfg(unix)]\npub fn g(a: &str) -> Result<(), E> {\n    let x = 1;\n    \
+             let out = std::process::Command::new(\"cp\").arg(a).output();\n}\n",
+        );
+        assert!(d.len() == 1 && matches!(d[0], SpawnVerdict::Gated(_)), "ⓓ 함수 cfg: {d:?}");
+        // ⓔ ConPTY 빌더(CommandBuilder)는 창 정책 대상이 아니다(검사 제외 — NO_WINDOW 는 검은 pane)
+        assert!(census_of("fn f() { let c = portable_pty::CommandBuilder::new(\"bash\"); }\n").is_empty(), "ⓔ");
+        // ⓕ ConsoleScoped 등급은 불인정(Windows flag 0 · 반박 D2)
+        let f = census_of(
+            "fn f() {\n    let mut cmd = std::process::Command::new(\"x\");\n    \
+             cmd.spawn_policy(cys::ChildLifetime::ConsoleScoped);\n    cmd.spawn();\n}\n",
+        );
+        assert!(is_violation(&f[0]) && format!("{f:?}").contains("ConsoleScoped"), "ⓕ: {f:?}");
+        // ⓖ 변수 결속 + 후속 문장의 hide_console(메서드 체인 경유) → 통과
+        let g = census_of(
+            "fn f() {\n    let mut c = tokio::process::Command::new(shell);\n    \
+             c.arg(flag).arg(command).hide_console();\n    c.output();\n}\n",
+        );
+        assert_eq!(g, vec![SpawnVerdict::Policy("hide_console".into())], "ⓖ: {g:?}");
+        // ⓗ 래퍼는 이름이 아니라 몸통으로 인정 — 진짜 래퍼 통과 · 이름만 같은 가짜 래퍼 적발 · 래퍼를 부르는 클로저 통과
+        let real = "fn no_console(cmd: &mut std::process::Command) {\n    #[cfg(windows)]\n    {\n        \
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;\n        cmd.creation_flags(CREATE_NO_WINDOW);\n    }\n}\n\
+                    fn f() {\n    let mut c = std::process::Command::new(\"bash\");\n    no_console(&mut c);\n    c.output();\n}\n";
+        assert_eq!(census_of(real), vec![SpawnVerdict::Policy("no_console".into())], "ⓗ 진짜 래퍼");
+        let fake = "fn no_console(cmd: &mut std::process::Command) {\n    let _ = cmd;\n}\n\
+                    fn f() {\n    let mut c = std::process::Command::new(\"bash\");\n    no_console(&mut c);\n    c.output();\n}\n";
+        assert!(is_violation(&census_of(fake)[0]), "ⓗ 몸통에 정책이 없는 가짜 래퍼를 인정했다");
+        let chained = "fn inner(cmd: &mut std::process::Command) {\n    cmd.spawn_policy(crate::ChildLifetime::Attached);\n}\n\
+                       fn f() {\n    let apply = |cmd: &mut std::process::Command| {\n        cmd.env(\"A\", \"1\");\n        \
+                       inner(cmd);\n    };\n    let mut c = std::process::Command::new(\"tool\");\n    apply(&mut c);\n    c.output();\n}\n";
+        assert_eq!(census_of(chained), vec![SpawnVerdict::Policy("apply".into())], "ⓗ 래퍼를 부르는 클로저");
+        // ⓘ 조기 반환 가둠: `if cfg!(windows) { return … }` 뒤는 윈도우 도달 불가(usage.rs lsof 형태)
+        let i = census_of(
+            "fn f() -> Option<u8> {\n    if cfg!(windows) {\n        return None;\n    }\n    \
+             let out = std::process::Command::new(\"lsof\").output().ok()?;\n    None\n}\n",
+        );
+        assert!(matches!(i[0], SpawnVerdict::Gated(_)), "ⓘ 조기 반환: {i:?}");
+        // …반환이 아닌 cfg! 블록 뒤는 가둠이 아니다(안전측)
+        let i2 = census_of(
+            "fn f() -> Option<u8> {\n    if cfg!(windows) {\n        log();\n    }\n    \
+             let out = std::process::Command::new(\"lsof\").output().ok()?;\n    None\n}\n",
+        );
+        assert!(is_violation(&i2[0]), "ⓘ 반환 없는 cfg! 블록 뒤를 가둠으로 오판: {i2:?}");
+        // …`return_noop()` 처럼 `return` 으로 시작하는 함수 **호출**은 조기 반환이 아니다(리뷰1 M13).
+        let i3 = census_of(
+            "fn f() {\n    if cfg!(windows) {\n        return_noop();\n    }\n    \
+             let out = std::process::Command::new(\"lsof\").output();\n}\n",
+        );
+        assert!(is_violation(&i3[0]), "ⓘ `return_noop()` 호출을 조기 반환으로 오인해 가둠 처리했다: {i3:?}");
+        // ⓣ 제네릭 반환형이 있는 타입 표기 `let` 문장의 cfg 가둠(리뷰1 M1 · WP-D open_privacy_settings 형태) —
+        // `Result<(), String>` 의 제네릭 쉼표를 문장 끝으로 오판하면 안 된다.
+        let t = census_of(
+            "fn f() {\n    #[cfg(target_os = \"macos\")]\n    let r: Result<(), String> = \
+             std::process::Command::new(\"/usr/bin/open\").arg(p).spawn().map(|_| ()).map_err(|e| e.to_string());\n}\n",
+        );
+        assert!(t.len() == 1 && matches!(t[0], SpawnVerdict::Gated(_)), "ⓣ 타입 표기 let 문장의 cfg 가둠: {t:?}");
+        // …클로저 인자 쉼표(`|a, b|`)도 같은 이유로 문장 끝으로 오판하면 안 된다.
+        let t2 = census_of(
+            "fn f() {\n    #[cfg(target_os = \"macos\")]\n    let r = {\n        let apply = |a, b| a + b;\n        \
+             std::process::Command::new(\"open\").arg(apply(1, 2).to_string()).spawn()\n    };\n}\n",
+        );
+        assert!(t2.len() == 1 && matches!(t2[0], SpawnVerdict::Gated(_)), "ⓣ 클로저 인자 쉼표의 cfg 가둠: {t2:?}");
+        // ── 별칭 금지(리뷰1 M12) — `Command as` 별칭 임포트·`type` 별칭은 census 대상 파일에서 금지된다.
+        let alias_import = forbidden_command_aliases(&[(
+            "<합성>".to_string(),
+            "use std::process::Command as TCmd;\nfn f() {\n    let _ = TCmd::new(\"cmd\").output();\n}\n"
+                .to_string(),
+        )]);
+        assert_eq!(alias_import.len(), 1, "`Command as` 별칭 임포트를 놓쳤다: {alias_import:?}");
+        let alias_type = forbidden_command_aliases(&[(
+            "<합성>".to_string(),
+            "type TCmd = std::process::Command;\nfn f() {\n    let _ = TCmd::new(\"cmd\").output();\n}\n"
+                .to_string(),
+        )]);
+        assert_eq!(alias_type.len(), 1, "`type … = …Command` 별칭을 놓쳤다: {alias_type:?}");
+        assert!(
+            forbidden_command_aliases(&[(
+                "<합성>".to_string(),
+                "fn f(cmd: &mut std::process::Command) { let _ = cmd; }\n".to_string()
+            )])
+            .is_empty(),
+            "`Command` 를 언급만 하는 정상 코드를 별칭으로 오판했다"
+        );
+        // ⓙ `if cfg!(windows) {A} else {B}` — B 는 가둠, A 는 판정 대상(accounts.rs 형태)
+        let j = census_of(
+            "fn f() {\n    let fut = if cfg!(windows) {\n        tokio::process::Command::new(\"cmd\").args([\"/C\", c]).output()\n    \
+             } else {\n        tokio::process::Command::new(\"sh\").args([\"-c\", c]).output()\n    };\n}\n",
+        );
+        assert!(is_violation(&j[0]) && matches!(j[1], SpawnVerdict::Gated(_)), "ⓙ: {j:?}");
+        // ⓚ 블록 값 재결속(channels.rs 형태) — 바깥 변수의 등급 선언까지 따라간다
+        let k = census_of(
+            "fn f() {\n    #[cfg(windows)]\n    let mut cmd = {\n        let mut c = std::process::Command::new(\"cmd\");\n        \
+             c.arg(\"/C\");\n        c\n    };\n    cmd.spawn_policy(cys::ChildLifetime::GroupScoped);\n    cmd.spawn();\n}\n",
+        );
+        assert_eq!(k, vec![SpawnVerdict::Policy("spawn_policy(GroupScoped)".into())], "ⓚ: {k:?}");
+        // ⓛ 팩토리 — 정의는 Factory, 정책 없는 호출부는 적발, 정책 있는 호출부는 통과
+        let l = census_of(
+            "pub fn mk<S: AsRef<str>>(p: S) -> std::process::Command {\n    let mut c = std::process::Command::new(p);\n    \
+             c.env(\"A\", \"1\");\n    c\n}\nfn bad() {\n    let _ = mk(\"py\").arg(\"x\").output();\n}\n\
+             fn good() {\n    let _ = cys::mk(\"py\").arg(\"x\").hide_console().output();\n}\n",
+        );
+        assert_eq!(l.len(), 3, "ⓛ 팩토리 호출부를 따라가지 못한다: {l:?}");
+        assert_eq!(l[0], SpawnVerdict::Factory("mk".into()), "ⓛ: {l:?}");
+        assert_eq!(l.iter().filter(|v| is_violation(v)).count(), 1, "ⓛ: {l:?}");
+        // ⓜ 주석·문자열·raw 문자열 속 언급은 스폰이 아니다
+        assert!(
+            census_of(
+                "// std::process::Command::new(\"x\").output()\nconst S: &str = \"Command::new(\\\"x\\\").output()\";\n\
+                 const R: &str = r#\"Command::new(\"y\")\"#;\n"
+            )
+            .is_empty(),
+            "ⓜ 주석·문자열을 코드로 읽는다"
+        );
+        // ⓝ explorer = GUI 서브시스템 대상(콘솔 할당 없음)
+        assert_eq!(
+            census_of("fn f() {\n    let r = std::process::Command::new(\"explorer\").arg(p).spawn();\n}\n"),
+            vec![SpawnVerdict::GuiTarget],
+            "ⓝ"
+        );
+        // ⓞ 테스트 모듈은 출하되지 않는다
+        assert_eq!(
+            census_of("#[cfg(test)]\nmod t {\n    fn x() { let _ = std::process::Command::new(\"x\").output(); }\n}\n"),
+            vec![SpawnVerdict::TestOnly],
+            "ⓞ"
+        );
+        // ⓟ 윈도우 전용 cfg 는 가둠이 아니다(바로 그 플랫폼이다)
+        assert!(
+            is_violation(&census_of("fn f() {\n    #[cfg(windows)]\n    let r = std::process::Command::new(\"cmd\").arg(x).spawn();\n}\n")[0]),
+            "ⓟ"
+        );
+        // ⓠ 모르는 술어(debug_assertions)는 가둠으로 치지 않는다(안전측)
+        assert!(
+            is_violation(&census_of("fn f() {\n    #[cfg(debug_assertions)]\n    let r = std::process::Command::new(\"x\").spawn();\n}\n")[0]),
+            "ⓠ"
+        );
+        // ⓡ 변수 등급(리터럴 아님)은 판독 불가 → 적발
+        assert!(
+            is_violation(&census_of("fn f(level: L) {\n    let mut c = std::process::Command::new(\"x\");\n    c.spawn_policy(level);\n    c.spawn();\n}\n")[0]),
+            "ⓡ"
+        );
+        // ⓢ 다른 변수에 건 정책은 이 변수의 정책이 아니다
+        assert!(
+            is_violation(&census_of("fn f() {\n    let mut c = std::process::Command::new(\"x\");\n    other.hide_console();\n    c.spawn();\n}\n")[0]),
+            "ⓢ"
+        );
+        // ── 변조 대조(실물) — 실제 파일에서 정책 하나를 지우면 **정확히 그 1건**이 적색이어야 한다.
+        let files = consoleless_scan_files();
+        let get = |n: &str| {
+            files
+                .iter()
+                .find(|(f, _)| f == n)
+                .map(|(_, s)| s.clone())
+                .unwrap_or_else(|| panic!("{n} 를 읽지 못했다"))
+        };
+        for (file, from, to, label) in [
+            (
+                "src/bin/cysd/accounts.rs",
+                ".args([\"/C\", &cmd]).hide_console().output()",
+                ".args([\"/C\", &cmd]).output()",
+                "U5 cmd 어댑터 창 정책 제거",
+            ),
+            (
+                "src/bin/cysd/schedule.rs",
+                "c.arg(flag).arg(command).hide_console();",
+                "c.arg(flag).arg(command);",
+                "1분 tick 루트(fire_command) 창 정책 제거",
+            ),
+            (
+                "src/bin/cysd/channels.rs",
+                "cmd.spawn_policy(cys::ChildLifetime::GroupScoped);",
+                "cmd.spawn_policy(cys::ChildLifetime::ConsoleScoped);",
+                "채널 브리지 등급을 ConsoleScoped(flag 0)로 강등",
+            ),
+        ] {
+            let orig = get(file);
+            assert_eq!(
+                orig.matches(from).count(),
+                1,
+                "{label}: 변조 앵커가 {file} 에 정확히 1건 있어야 한다(수리가 되돌려졌거나 형태가 바뀌었다 — \
+                 형태가 바뀌었으면 이 앵커도 함께 옮겨라)"
+            );
+            let viol = |src: String| {
+                consoleless_census(&[(file.to_string(), src)])
+                    .into_iter()
+                    .filter(|s| matches!(s.verdict, SpawnVerdict::Violation(_)))
+                    .map(|s| format!("{}:{} {:?}", s.file, s.line, s.verdict))
+                    .collect::<Vec<_>>()
+            };
+            assert!(viol(orig.clone()).is_empty(), "{label}: 원본이 이미 적색이다");
+            let bad = viol(orig.replacen(from, to, 1));
+            assert_eq!(bad.len(), 1, "{label}: 변조본 적발 {}건(기대 1) — 실물 형태 앞에서 census 가 눈이 멀었다: {bad:?}", bad.len());
+        }
+    }
+
+    /// hex 토큰이 **creation-flag 문맥**에 있는가(리뷰1 m5) — ① `creation_flags(` 호출의 인자 안이거나
+    /// ② `const`/`static` 정의문의 좌변 이름에 `PROCESS`·`CONSOLE` 이 들어간 플래그 상수 선언 안.
+    /// 문맥 밖의 hex(예: `FILE_ATTRIBUTE_DIRECTORY = 0x00000010`)는 무관한 Win32 상수라 걸지 않는다.
+    fn hex_in_creation_flag_context(m: &str, at: usize) -> bool {
+        let b = m.as_bytes();
+        let mut from = 0usize;
+        while let Some(rel) = m[from..].find("creation_flags(") {
+            let call_at = from + rel;
+            from = call_at + 1;
+            if call_at > 0 && is_ident_byte(b[call_at - 1]) {
+                continue;
+            }
+            let po = call_at + "creation_flags".len();
+            if let Some(pc) = match_fwd(b, po, b'(', b')') {
+                if po <= at && at < pc {
+                    return true;
+                }
+            }
+        }
+        let stmt_start = m[..at].rfind([';', '{', '}']).map_or(0, |p| p + 1);
+        let stmt_end = m[at..].find(';').map_or(m.len(), |p| at + p + 1);
+        let stmt = m[stmt_start..stmt_end].trim_start();
+        let is_flag_const = (stmt.starts_with("const ")
+            || stmt.starts_with("pub const ")
+            || stmt.starts_with("static ")
+            || stmt.starts_with("pub static "))
+            && (stmt.contains("PROCESS") || stmt.contains("CONSOLE"));
+        is_flag_const
+    }
+
+    /// 콘솔을 **떼어 내는** 생성 flag(자손 전부가 번쩍이게 만든다)가 프로덕션에 0건인가 — 코드 안(주석·문자열
+    /// 제외)의 `DETACHED_PROCESS`·`CREATE_NEW_CONSOLE` 이름과, **creation-flag 문맥**의 그 값 hex 표기
+    /// (리뷰1 m5 — 문맥 없이 전역으로 걸면 무관한 미래 Win32 상수와 충돌한다).
+    fn detaching_flag_hits(src: &str) -> Vec<String> {
+        let m = mask_code(src);
+        let gates = collect_cfg_gates(src, &m);
+        let hidden = |at: usize| gates.iter().any(|g| g.start <= at && at < g.end && g.pred.trim() == "test");
+        let mut out = Vec::new();
+        for tok in ["DETACHED_PROCESS", "CREATE_NEW_CONSOLE"] {
+            for (at, _) in m.match_indices(tok) {
+                if hidden(at) {
+                    continue;
+                }
+                out.push(format!("{}행 `{tok}`", line_of(src, at)));
+            }
+        }
+        for tok in ["0x0000_0008", "0x00000008", "0x0000_0010", "0x00000010"] {
+            for (at, _) in m.match_indices(tok) {
+                if hidden(at) || !hex_in_creation_flag_context(&m, at) {
+                    continue;
+                }
+                out.push(format!("{}행 `{tok}`(creation flag 문맥)", line_of(src, at)));
+            }
+        }
+        out
+    }
+
+    /// ★U5 T3: 어느 층에서도 `DETACHED_PROCESS`·`CREATE_NEW_CONSOLE` 를 쓰지 않는다.
+    /// `CREATE_NO_WINDOW` 로 띄운 자식의 자손은 숨은 콘솔을 **물려받아** 창이 없다(루트만 숨기면 된다).
+    /// 반대로 DETACHED 로 띄운 자식은 콘솔이 없어서, 그 **손자들이 매번 새 콘솔 창을 받는다**(번쩍임의 증폭기).
+    #[test]
+    fn no_console_detaching_flags_in_production() {
+        // 계측 자기검증 — 코드는 잡고, 주석·테스트 모듈은 놓는다.
+        assert_eq!(detaching_flag_hits("fn f(c: &mut C) { c.creation_flags(DETACHED_PROCESS); }\n").len(), 1);
+        assert_eq!(detaching_flag_hits("fn f(c: &mut C) { c.creation_flags(0x0000_0010); }\n").len(), 1);
+        assert!(detaching_flag_hits("// DETACHED_PROCESS 는 금지\nconst S: &str = \"CREATE_NEW_CONSOLE\";\n").is_empty());
+        assert!(detaching_flag_hits("#[cfg(test)]\nmod t {\n    const X: u32 = DETACHED_PROCESS;\n}\n").is_empty());
+        // 리뷰1 m5: PROCESS/CONSOLE 계열 상수 정의의 hex 는 문맥으로 잡는다 …
+        assert_eq!(
+            detaching_flag_hits("const HIDDEN_PROCESS_FLAG: u32 = 0x0000_0008;\n").len(),
+            1,
+            "PROCESS 계열 상수 정의 문맥의 hex 를 놓쳤다"
+        );
+        // …그러나 creation-flag 문맥도 PROCESS/CONSOLE 이름도 아닌 무관한 Win32 상수는 오탐하지 않는다
+        // (리뷰1 예시: FILE_ATTRIBUTE_DIRECTORY = 0x00000010).
+        assert!(
+            detaching_flag_hits("const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;\n").is_empty(),
+            "무관한 Win32 상수(FILE_ATTRIBUTE_DIRECTORY)를 콘솔 분리 flag 로 오판했다"
+        );
+        assert!(
+            detaching_flag_hits("fn f() { let flags = 0x0000_0008; let _ = flags; }\n").is_empty(),
+            "creation_flags(·PROCESS/CONSOLE 상수 어느 문맥도 아닌 bare hex 를 오판했다"
+        );
+        let mut files = spawn_scan_files();
+        files.extend(rs_files_under("src-tauri/src"));
+        assert!(files.iter().any(|(n, _)| n == "src/bin/cys.rs"), "콘솔 CLI 도 이 금지의 대상이다(시야 확인)");
+        for (name, src) in &files {
+            let hits = detaching_flag_hits(src);
+            assert!(
+                hits.is_empty(),
+                "{name}: 콘솔 분리 flag — 그 자식의 자손마다 새 콘솔 창이 번쩍인다. 창을 숨기려면 \
+                 ChildLifetime 등급(Attached = CREATE_NO_WINDOW)을 써라: {hits:?}"
+            );
+        }
+    }
+
+    /// ★U5 T4 · ④ 회귀 핀: ConPTY(pane) 자식에는 `CREATE_NO_WINDOW` 를 **절대** 걸지 않는다.
+    ///
+    /// 056a2ea5 가 "Win11 검은 창 flash 차단" 이라며 이 flag 를 넣었고, 자식이 pseudoconsole 대신 숨은
+    /// 콘솔에 붙어 셸 출력이 pane 에 영영 닿지 않는 **검은 pane** 이 됐다(22ff28f6 원복). 그런데
+    /// `Cargo.toml` 의 벤더링 주석은 원복 뒤에도 "CREATE_NO_WINDOW 추가"라고 적혀 있었다 — "검은 창"을
+    /// 쫓는 사람을 정확히 ④ 회귀로 이끄는 함정(반박 D5). 코드와 주석을 함께 잠근다.
+    #[test]
+    fn conpty_children_never_get_create_no_window() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let pc = std::fs::read_to_string(root.join("vendor/portable-pty/src/win/psuedocon.rs"))
+            .expect("psuedocon.rs 를 읽지 못했다 — 측정 불능은 통과가 아니다");
+        let m = mask_code(&pc);
+        let b = m.as_bytes();
+        let calls: Vec<usize> = m
+            .match_indices("CreateProcessW(")
+            .map(|(at, _)| at)
+            .filter(|&at| at == 0 || !is_ident_byte(b[at - 1]))
+            .collect();
+        assert_eq!(calls.len(), 1, "ConPTY 자식 생성 호출(CreateProcessW)이 {}건 — 핀이 볼 대상을 잃었다", calls.len());
+        let po = calls[0] + "CreateProcessW".len();
+        let pe = match_fwd(b, po, b'(', b')').expect("CreateProcessW 인자가 닫히지 않는다");
+        let args = &m[po..pe];
+        assert!(
+            args.contains("EXTENDED_STARTUPINFO_PRESENT"),
+            "pseudoconsole 첨부 flag 소실 — 핀이 엉뚱한 호출을 보고 있다: {args}"
+        );
+        for bad in ["CREATE_NO_WINDOW", "0x0800_0000", "0x08000000", "DETACHED_PROCESS", "CREATE_NEW_CONSOLE"] {
+            assert!(
+                !args.contains(bad),
+                "ConPTY 자식 생성 flag 에 `{bad}` — 자식이 pseudoconsole 대신 다른 콘솔에 붙어 **검은 pane**(④ · 22ff28f6)"
+            );
+        }
+        assert!(
+            !m.contains("CREATE_NO_WINDOW"),
+            "psuedocon.rs 코드에 CREATE_NO_WINDOW 가 들어왔다(주석 밖) — 재유입의 첫 걸음이다(④ 검은 pane)"
+        );
+        let cargo = std::fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml 을 읽지 못했다");
+        let dep = cargo.find("portable-pty = ").expect("portable-pty 의존성 줄 소실");
+        let comment: String = cargo[..dep]
+            .lines()
+            .rev()
+            .take_while(|l| l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !comment.contains("CREATE_NO_WINDOW 추가") && !comment.contains("flash 차단"),
+            "Cargo.toml portable-pty 주석이 여전히 'ConPTY 자식에 CREATE_NO_WINDOW 추가'를 설계 의도로 적는다 — \
+             코드(22ff28f6 원복)와 정반대라 ④ 검은 pane 회귀로 이끈다:\n{comment}"
+        );
+        assert!(
+            comment.contains("CREATE_NO_WINDOW 금지"),
+            "Cargo.toml portable-pty 주석에 ConPTY 자식 CREATE_NO_WINDOW 금지 문구가 없다:\n{comment}"
+        );
+        // 리뷰1 m2: 바로 위 블록만 보면 다른 곳(예: 워크스페이스 `exclude` 옆 주석)에 같은 함정 문구가
+        // 남아도 놓친다 — Cargo.toml 전체 주석 줄에서 "flash 수정"·"flash 차단"·"CREATE_NO_WINDOW 추가"
+        // 를 금지한다(실제로 3행에 "flash 수정 패치"가 남아 있었다 — "flash 차단"만 보던 위 검사를 통과했다).
+        let stray: Vec<&str> = cargo
+            .lines()
+            .filter(|l| l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("flash 수정") || l.contains("flash 차단") || l.contains("CREATE_NO_WINDOW 추가"))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "Cargo.toml 주석에 ConPTY 'CREATE_NO_WINDOW 추가/flash 수정·차단' 함정 문구가 남아 있다 — \
+             검은 창을 쫓는 사람을 ④ 검은 pane 회귀로 이끈다: {stray:?}"
         );
     }
 }

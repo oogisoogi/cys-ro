@@ -1,6 +1,7 @@
 [workspace]
 members = ["src-tauri"]
-# 벤더링된 portable-pty(ConPTY 창 flash 수정 패치)는 워크스페이스 멤버가 아니라 path 의존이다.
+# 벤더링된 portable-pty(ConPTY pane 자식 생성)는 워크스페이스 멤버가 아니라 path 의존이다.
+#   ConPTY 자식에 CREATE_NO_WINDOW 금지 — 29행 참조.
 exclude = ["vendor/portable-pty"]
 
 [package]
@@ -26,12 +27,20 @@ path = "src/bin/cys.rs"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# ★벤더링 + 패치: ConPTY 자식 생성에 CREATE_NO_WINDOW 추가(Win11 검은 창 flash 차단). vendor/portable-pty/ 참조.
+# ★벤더링: ConPTY 자식 생성 flag 는 upstream 0.9.0 과 같다(EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT).
+#   ConPTY 자식에 CREATE_NO_WINDOW 금지 — 056a2ea5 가 넣었다가 자식이 pseudoconsole 대신 숨은 콘솔에 붙어
+#   셸 출력이 pane 에 닿지 않는 검은 pane 이 되어 22ff28f6 에서 원복했다. 창 번쩍임(U5)은 콘솔 없는 cysd·cys-app 이
+#   띄우는 **비 ConPTY** 자식의 문제다(lib.rs census). 재추가는 spawn_policy_tests 가 막는다. vendor/portable-pty/ 참조.
 portable-pty = { path = "vendor/portable-pty" }
 vt100 = "0.15"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
-sysinfo = "0.33"
+# ★FATAL-1(0.14.42 WP-transport 리뷰): 기본 feature 의 `multithread`(rayon 전역 풀)를 끈다 — 나머지 기본
+#   feature(component·disk·network·system·user)는 그대로다(윈도우 `windows` 크레이트 feature 집합 무변).
+#   multithread 는 요청마다 rayon 작업을 전역 풀에 넣고, join 대기 중인 워커가 **다른 요청의** 작업을 훔쳐
+#   같은 스택에 중첩 실행한다 — 동시 surface.list ≈350 에서 2MiB 워커 스택이 넘쳐 cysd 가 SIGABRT(전 pane 사망,
+#   debug 실측 rc=-6). 호출 스레드에서 순차로 돌면 중첩 자체가 없다. 핀: cysd `fatal1_admission_tests`.
+sysinfo = { version = "0.33", default-features = false, features = ["component", "disk", "network", "system", "user"] }
 strip-ansi-escapes = "0.2"
 dirs = "6"
 libc = "0.2"
@@ -72,6 +81,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security_Cryptography",  # R-CLI-1: BCryptGenRandom(CNG CSPRNG) — 브리지 토큰 예측가능 폴백 제거
     "Win32_System_Registry",    # ★stale PATH: RegGetValueW(HKLM/HKCU Environment\Path 신선 재합성)
     "Win32_System_IO",          # ★U-6: CancelIoEx — named pipe 동기 ReadFile 을 밖에서 깨우는 유일 수단
+    # ★(0.14.31 · WP-4) LockFileEx/UnlockFile — phoenix restore.lease(msvcrt byte0 락)와
+    #   **같은 바이트 범위**를 비차단으로 잡아 부활과 역할 재결합의 동시 진행을 막는다.
+    "Win32_Storage_FileSystem",
 ] }
 
 # Windows 전용(호스트 게이트): cys.exe·cysd.exe(순수 Rust CLI)에 PE 버전리소스·매니페스트·아이콘을

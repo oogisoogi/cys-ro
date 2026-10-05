@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import time
 
 
@@ -90,7 +91,7 @@ def _resolve_slug_from_socket():
         return "main"   # 본부 기본(CYS_SOCKET 미설정 노드 = 본부)
     reg = os.environ.get("CYS_DEPTS_JSON") or os.path.expanduser("~/.cys/depts.json")
     try:
-        with open(reg, encoding="utf-8") as f:
+        with open(reg, encoding="utf-8-sig") as f:
             depts = (json.load(f) or {}).get("depts") or {}
     except (OSError, ValueError):
         return None

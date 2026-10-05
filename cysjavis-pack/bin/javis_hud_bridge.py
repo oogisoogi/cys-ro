@@ -64,6 +64,8 @@ REVIEW_KEEP = 10            # world.review.items 최신 유지 건수
 # ---------------------------------------------------------------- 판정 (§5)
 HOOK_ACTIVE_WINDOW = 30.0      # 최근 30s 내 도구 훅 → active
 SELF_REPORT_FRESH = 300.0      # 자기보고 신선 기준
+# Rust cys.rs `CTX_SELF_REPORT_MAX_AGE_SECS` · TS ctxpick.ts · Py javis_report.py 와 같은 값 — 바꿀 때 네 자리 함께
+CTX_SELF_REPORT_MAX_AGE_S = 300
 IDLE_WAITING = 300
 IDLE_DROWSY = 3600
 STATE_MAP = {"working": "active", "waiting": "waiting", "quiescing": "quiescing"}
@@ -102,13 +104,37 @@ def compute_activity(hook_count_60s, lines_per_sec):
 
 
 def pick_ctx(node):
-    """ctx% 선택: 실측(usage.ctx_pct·statusline) > 자기보고(status.context_pct)."""
+    """ctx% 선택: 사망 게이트 → 실측(usage.ctx_pct·statusline) > 신선한 자기보고(status.context_pct).
+
+    ★실측 축의 낡음(0.14.31 감사 정정): 데몬(cysd usage.rs)이 낡은 실측을 None 으로 지우는 범위는
+      **휴리스틱 매핑뿐**이다 — `mapping_is_fresh` 는 등록 매핑(SessionStart 등록 = 통상의 claude 경로)의
+      나이를 보지 않고, `idle_stale_transition` 은 source=="statusline" 을 건드리지 않으며, `collect_tick`
+      은 exited·agent_meta 없는 좌석을 건너뛴다 → 등록·statusline·종료 좌석의 ctx_pct 는 마지막 값에
+      **동결**된 채 실린다. 실측에 300s 나이 게이트를 걸지 않는다(idle 이어도 산 좌석의 실측은 정확 ·
+      master 결정).
+    ★사망 게이트(성찰 2회 수정 · javis_report.pick_node_ctx / Rust ctx_cell / TS pickCtx 와 같은 규칙):
+      `exited is True`(pane 종료 · state.rs reader EOF) 또는 `agent_alive is False`(워치독 관측 사망 확정)
+      면 None(판정 불가) — 죽은 좌석의 동결 실측이 `ctx_critical`(_node_view · ctx >= 90)·"/clear 임박"
+      (office3d) 을 올리지 않는다. judge_presence 의 dead 판정과 같은 두 축이라 presence=dead 인 노드의
+      ctx 는 항상 None. None/부재(구버전 데몬 키 없음·미관측)·exited False·agent_alive True 는 게이트를
+      **열지 않는다** — null 을 사망으로 접으면 미관측 좌석 전부가 판정 불가가 된다.
+    ★실패 방향: 못 재면 None(HUD 는 빈 칸/`?` — 값으로 위장하지 않는다). 사망 게이트가 틀리면 '산 좌석의
+      ctx 가 빈 칸'(경보 누락) 쪽으로 무너지지, 죽은 좌석이 경보를 울리는 쪽으로는 무너지지 않는다.
+      잔여 한계: 한 번도 관측되지 않은 채(agent_alive None) 죽은 좌석과 사망 뒤 워치독 틱 전의 창은
+      잡히지 않는다(의도).
+    """
+    # 사망 게이트 — 실패 방향: 산 좌석을 죽었다고 오판하면 ctx 빈 칸(경보 누락) 쪽으로 무너진다.
+    if node.get("exited") is True or node.get("agent_alive") is False:
+        return None
     u = node.get("usage") or {}
     if isinstance(u.get("ctx_pct"), (int, float)):
         return u["ctx_pct"]
     st = node.get("status") or {}
-    if isinstance(st.get("context_pct"), (int, float)):
+    age = st.get("age_secs")
+    if (isinstance(st.get("context_pct"), (int, float)) and isinstance(age, int)
+            and age <= CTX_SELF_REPORT_MAX_AGE_S):
         return st["context_pct"]
+    # 실패 방향: 못 재면 None(HUD는 빈 칸/`?` — 값으로 위장하지 않음).
     return None
 
 
@@ -252,6 +278,52 @@ def node_key(s):
     실운영에선 merge_fleet 가 매 스냅샷에서 _full_key 를 부여하므로 항상 정식 키가 반환된다.
     """
     return s.get("_full_key") or s.get("surface_ref")
+
+
+_SEAT_NUM = re.compile(r"\+?[0-9]+")      # 좌석 번호 문자열 — ASCII 숫자만(파이썬 isdigit/int 의 유니코드 숫자 배제)
+_U64_MAX = (1 << 64) - 1
+_U64_MAX_DIGITS = len(str(_U64_MAX))      # 20 — 선행 0 을 뺀 자릿수가 이보다 길면 u64 를 넘는다(좌석 번호일 수 없다)
+
+
+def injected_from_key(slug, raw):
+    """`surface.input_injected` 의 `from` → 소스 좌석의 정식 노드 키. **좌석이 아니면 None**(= HUD 의 '외부').
+
+    ★(0.14.43 · J3) 데몬은 pane 밖 CLI 의 발신 표기로 `from` 에 좌석 번호가 아닌 **표시용 라벨 문자열**
+    (`cli:send`·`cli:inject`·`cli:drain`·`cli:<사용자값>`)을 싣는다. 종전 `f"{slug}@surface:{from}"` 은 `from`
+    이 좌석 번호임을 전제해 `main@surface:cli:send` 라는 **없는 노드 키**를 만들었고, HUD 틱 문구가 '외부' 대신
+    그 문자열이 됐다. 좌석 판별은 데몬(`cys::parse_surface_ref` — 앞뒤 공백 제거 · 선택적 `surface:` 접두 · u64)과
+    같다: JSON 정수 · `"surface:N"` · `"N"` 만 좌석이다. 불리언(파이썬에서 int 의 하위형)·실수·음수·None·빈 문자열·
+    그 밖의 문자열(라벨)은 전부 None 이다.
+
+    ⚠스큐 안전(ADR-2): 구버전 데몬의 `from`(좌석 정수)은 종전과 **같은 키**를 낸다 — 라벨을 모르는 데몬도 무해하다.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        n = raw
+    elif isinstance(raw, str):
+        t = raw.strip()
+        if t.startswith("surface:"):
+            t = t[len("surface:"):]
+        if not _SEAT_NUM.fullmatch(t):
+            return None
+        # ★(0.14.43 · R1F-PK · S3 minor 1) 숫자 문자열 하나가 구독 스레드를 죽이지 못한다 — 파이썬 `int()` 는 4300자리를 넘는 십진
+        #   문자열에 `ValueError` 를 낸다(종전엔 이 예외가 `_reader` 밖으로 나가 이벤트 구독 스레드가 끝나고 다시 뜨지 않았다).
+        #   선행 0 을 뺀 자릿수가 u64 최대값(20자리)을 넘으면 `int()` 를 부르기 전에 '좌석 아님' 으로 거른다 — 데몬(`parse_surface_ref`)도
+        #   오버플로로 실패하는 값이다. 선행 0 은 값이 아니라 길이일 뿐이라 벗긴 뒤 변환한다(데몬의 u64 파싱은 `007` 도 7 로 받는다).
+        #   `try` 는 그래도 남겨 둔 방어선이다 — 이 함수는 어떤 입력에도 예외를 내지 않는다.
+        digits = t.lstrip("+").lstrip("0")
+        if len(digits) > _U64_MAX_DIGITS:
+            return None
+        try:
+            n = int(digits or "0")
+        except ValueError:
+            return None
+    else:
+        return None
+    if not 0 <= n <= _U64_MAX:
+        return None
+    return "%s@surface:%d" % (slug, n)
 
 
 # ------------------------------------------------------------------ 월드
@@ -887,10 +959,10 @@ def route_event(ev, world, coal, slug="main", now=None):
             fx["flag"] = flag   # 달 라벨이 없으면 키 자체를 만들지 않는다(구버전 프레임과 동형)
         frames.append(fx)
     elif name == "surface.input_injected":
-        # from 은 동일 데몬 내 소스 surface → 같은 slug 로 정식화.
+        # from 은 동일 데몬 내 소스 surface → 같은 slug 로 정식화. ★(0.14.43 · J3) 좌석이 아닌 발신 라벨
+        # (`cli:send` …)은 노드 키가 아니다 — None(= '외부') 으로 둔다(injected_from_key).
         frames.append({"t": "fx", "kind": "doc", "to": key,
-                       "from": f"{slug}@surface:{p.get('from')}" if p.get("from") is not None
-                               else None,
+                       "from": injected_from_key(slug, p.get("from")),
                        "bytes": p.get("bytes")})
     elif name == "queue.enqueued":
         frames.append({"t": "fx", "kind": "queue", "to": key, "depth": p.get("depth")})
@@ -1529,6 +1601,7 @@ class SubscriptionSupervisor:
                     ["events", "--reconnect", "--cursor-file", cursor]
         backoff = None    # W2: 직전에 잔 대기(초) — None = 첫 재수립(지수 백오프 상태)
         last_note = None  # W2: 같은 사유 연속 재종료는 1회만 로그(반복 억제)
+        last_evt_err = None  # R1F-PK: 이벤트 처리 예외도 같은 형이 연속이면 첫 1회만 로그(이벤트 폭주 시 로그 폭주 억제)
         while not stop.is_set():
             born = time.monotonic()
             proc = subprocess.Popen(args_base, stdout=subprocess.PIPE,
@@ -1538,20 +1611,39 @@ class SubscriptionSupervisor:
                 for line in proc.stdout:
                     if stop.is_set():
                         break
+                    # ★(0.14.43 · R1F-PK · S3 minor 1) 이벤트 **한 건**의 처리 예외가 구독 스레드를 죽이지 못한다 — 종전엔 이 자리에 `except` 가
+                    #   없어 예외 하나가 `_reader` 밖으로 나가면 스레드가 끝났고, `reconcile_targets` 는 스레드 생존을 보지 않아 다시 띄우지도
+                    #   않았다(그 구독의 HUD 표시가 영구히 멎는다). 그 이벤트만 건너뛰고 다음 줄을 처리한다.
+                    #   삼키는 것은 `Exception` 계열뿐이다 — KeyboardInterrupt·SystemExit(BaseException)은 그대로 통과한다. 종료 신호(`stop` ·
+                    #   위 break)와 자식 EOF(for 문 끝) 와 읽기 단계의 예외(for 문 머리)는 이 try 밖이라 종전 그대로다.
                     try:
-                        ev = json.loads(line)
-                    except ValueError:
-                        continue
-                    if ev.get("type") != "event":
-                        continue
-                    self.world.seq = max(self.world.seq, ev.get("seq") or 0)
-                    frames, want_poke = route_event(ev, self.world, self.coal, slug)
-                    for fr in frames:
-                        self.hub.publish(fr)
-                        if fr.get("t") in ("fx", "dog"):   # D4 강아지 fx 도 /history 리플레이 포함
-                            archive_fx(ev.get("timestamp"), fr)
-                    if want_poke:
-                        self.poke.set()
+                        try:
+                            ev = json.loads(line)
+                        except ValueError:
+                            continue
+                        if ev.get("type") != "event":
+                            continue
+                        self.world.seq = max(self.world.seq, ev.get("seq") or 0)
+                        frames, want_poke = route_event(ev, self.world, self.coal, slug)
+                        for fr in frames:
+                            self.hub.publish(fr)
+                            if fr.get("t") in ("fx", "dog"):   # D4 강아지 fx 도 /history 리플레이 포함
+                                archive_fx(ev.get("timestamp"), fr)
+                        if want_poke:
+                            self.poke.set()
+                    except Exception as e:
+                        # 삼킨 사실은 기존 로그 방식(stderr 한 줄)으로 남긴다 — 같은 예외 형이 연속이면 첫 1회만. 로그 쓰기 자체가
+                        # 실패해도(stderr 닫힘 등) 그것이 구독을 죽이지 못하게 가둔다.
+                        sig = type(e).__name__
+                        if sig != last_evt_err:
+                            last_evt_err = sig
+                            try:
+                                sys.stderr.write(
+                                    "[hud-bridge] 이벤트 처리 예외 — 그 이벤트만 건너뜀 (sub=%s %s: %s) — 같은 예외 연속분은 로그 생략\n"
+                                    % (slug, sig, " ".join(str(e).split())[:120]))
+                                sys.stderr.flush()
+                            except Exception:
+                                pass
             finally:
                 try:
                     proc.terminate()

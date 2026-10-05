@@ -117,8 +117,32 @@ shutil.rmtree(tmp)
 src = open(DEPT, encoding="utf-8").read()
 check("W1 launch 배선", src.count("dept_tombstone_remove \"$name\"") >= 3,
       "count=%d(launch/allocate/create)" % src.count("dept_tombstone_remove \"$name\""))
-check("W2 rotate 가드(export)", "CYS_DEPT_ROTATE=1 bash \"$0\" launch" in src)
-check("W3 helper rotate 가드", '[ "${CYS_DEPT_ROTATE:-}" = "1" ] && return 0' in src)
+# ★재핀(0.14.31 P6 R1 · 기전 변경): rotate 재귀 표식이 **상속되는 env → 비상속 argv** 로 바뀌었다.
+#   핀의 의도("rotate 재귀에서 묘비를 건드리지 않는 배선이 소실되지 않았는가")는 그대로이고
+#   그 배선의 **표현**만 갈아탄다. 근거(라이브 실측 2026-09-08 05:2x): dept-2 cysd(pid 2634)와
+#   그 좌석 3기(4147/5087/7981)가 `CYS_DEPT_ROTATE=1` 을 상속하고 있어서, 종전 표식은 그 부서의
+#   모든 pane 에서 이 가드와 단일소유 게이트를 **영구히 껐다**(정본 §3-4 "게이트를 끄는 노브 없음").
+# ★성찰 P1 재핀(blocking · 2026-09-10 · **기전 변경**): 재기동은 이제 **자식 프로세스가 아니라 같은 프로세스 안**이다.
+#   종전 `bash "$0" launch "$name" --rotate` 는 프리루드·단일소유 게이트를 처음부터 다시 돌았고, 자기 부서를 rotate 하는
+#   CSO(stale env=master · 실제 역할=cso)는 부모가 데몬 권위로 통과한 뒤 **그 데몬을 죽였으므로** 자식이 권위를 잃고
+#   env 절(master≠cso)에서 exit 7 로 끝났다 — 부서가 내려간 채 등재만 남는 반파괴다. 인가는 파괴 전에 끝났으니 그 인가
+#   아래에서 생애주기를 완결한다. 핀의 의도("rotate 재귀에서 묘비를 건드리지 않는 배선이 소실되지 않았는가")는 그대로고
+#   표현만 갈아탄다: 비상속 표식 `_CYS_ROTATE_SELF` 는 서브셸 지역이라 자식 cysd·좌석에 새지 않는다.
+check("W2 rotate 재기동은 프로세스 내부 호출(argv 표식 → 서브셸 지역 표식)",
+      '( _CYS_ROTATE_SELF=1; launch_dept "$name" )' in src and "launch_dept(){" in src)
+_src_code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))   # 주석 속 인용은 반례가 아니다
+check("W2b ★자식 재exec 부활 금지(권위 상실 축)", 'bash "$0" launch' not in _src_code)
+check("W3 helper rotate 가드", '[ "${_CYS_ROTATE_SELF:-}" = "1" ] && return 0' in src)
+# ★반례(신설): 상속되는 표식으로 되돌아가면 즉시 적색.
+check("W3b ★상속 env 표식 부활 금지", "CYS_DEPT_ROTATE=1 bash" not in src)
+check("W3c ★게이트가 상속 env 를 다시 읽지 않는다",
+      '[ "${CYS_DEPT_ROTATE:-}" = "1" ]' not in src)
+# ★이미 샌 라이브 값 회수 — cysd 스폰 전부가 그 변수를 벗긴다.
+#   (0.14.42 fatal-fix X-R4-1 재핀: 토큰 경로 allocate 의 새 세션 스폰 줄이 하나 늘어 5곳 — 스폰 줄 수와 벗기기 수가 같아야 한다)
+_spawn_lines = [l for l in src.splitlines() if 'nohup' in l and '"$CYSD"' in l and not l.lstrip().startswith("#")]
+check("W3d ★cysd 스폰 전부(5곳) CYS_DEPT_ROTATE 를 벗긴다",
+      src.count("-u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE") == len(_spawn_lines) == 5,
+      "count=%d spawn=%d" % (src.count("-u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE"), len(_spawn_lines)))
 check("W4 helper --remove", "--dept --remove" in src)
 check("W5 D8 파생 로직", "cys-dept-[^/]*" in src)
 # ★D-IMPL-2 대칭 핀: phoenix 묘비와 데몬 묘비는 set/remove가 항상 쌍으로 — 한쪽만 있으면
@@ -149,6 +173,10 @@ def precedes(block, first, second):
 
 # ★R7(적대검증 W1): down/down-sock 모두 묘비가 reg_remove보다 선행(set -e abort 시 등재+미묘비 창 봉쇄)
 _down = case_arm(src, "down")
+# (0.14.42 fatal-fix R4-N1 재핀) `down)` 갈래는 본체 함수 `down_dept` 를 부른다 — 토큰 경로 생성 실패 회수가 같은 본체를
+#   프로세스 안에서 부르기 위해 뗐다. 갈래가 위임하면 함수 본문에서 같은 순서를 잰다(핀 의도 불변).
+if 'down_dept "$@"' in _down:
+    _down = src.split("\ndown_dept(){", 1)[1].split("\n}\n", 1)[0]
 check("W8 down: 묘비 선기록", precedes(_down, 'dept_tombstone "$name"', 'reg_remove "$name"'))
 _ds = case_arm(src, "down-sock")
 check("W9 down-sock: 묘비 선기록(실행문 정박 — 주석 오매치 방지)",

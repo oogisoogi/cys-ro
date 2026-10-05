@@ -9,6 +9,12 @@
      **정상 상태**이므로 양측은 서로를 전제하면 안 된다
   ③ **온보딩 방어(설계 §6)** — 미선언은 경고가 아니라 정보다. 라벨만 달고 진행률(done/total)은
      사용자에게서 빼앗지 않는다
+  ④ ★(0.14.43 · J3) **발신 라벨은 노드 키가 아니다** — `surface.input_injected` 의 `from` 이 pane 밖 CLI 의
+     표시용 라벨(`cli:send` 등)이면 `…@surface:cli:send` 라는 없는 노드 키를 만들지 않고 '외부'(None)로 둔다.
+     좌석 번호(정수·`surface:N`·`N`)는 종전 키 그대로(스큐 안전)
+  ⑤ ★(0.14.43 · R1F-PK · S3 minor 1) **숫자 문자열 하나가 구독 스레드를 죽이지 못한다** — `from` 이 4300자리를 넘는 숫자 문자열이어도
+     `injected_from_key` 는 예외 없이 None(= '외부')을 낸다(파이썬 `int()` 의 자릿수 한도). 선행 0 은 길이일 뿐이라 데몬의 u64 파싱처럼 좌석이다.
+     (`_reader` 의 이벤트 단위 예외 격리는 test_hud_bridge_backoff.py 의 ReaderEventFaultIsolation)
 
 실행: python3 test_hud_bridge_skew.py   (unittest·파일 직접 실행 — 저장소 관례 준거)
 """
@@ -223,6 +229,157 @@ class OnboardingDefense(unittest.TestCase):
         w.merge_fleet(None, status({}))
         self.assertEqual(w.todo, {})
         self.assertEqual(w.snapshot()["todo"], {})
+
+
+_ABSENT = object()      # payload 에 `from` 키 자체가 없다(None 과 구분)
+
+
+def injected(frm=_ABSENT, sid=3, nbytes=42, verified=False):
+    """데몬 surface.input_injected 이벤트 1건 — `frm` 은 payload.from 그대로(좌석 번호 · `surface:N` · 라벨 · None)."""
+    payload = {"bytes": nbytes, "from_verified": verified}
+    if frm is not _ABSENT:
+        payload["from"] = frm
+    return {"name": "surface.input_injected", "timestamp": HB.time.time(), "surface_id": sid,
+            "payload": payload}
+
+
+class InjectedFromLabel(unittest.TestCase):
+    """★(0.14.43 · J3) 좌석이 아닌 발신 라벨을 **노드 키로 만들지 않는다**.
+
+    J3 부터 데몬은 pane 밖 CLI 의 `surface.input_injected.from` 에 표시용 라벨 문자열(`cli:send`·`cli:inject`·
+    `cli:drain`·`cli:<사용자값>`)을 싣는다. 종전 브리지는 `from` 이 좌석 번호라고 전제해 `main@surface:cli:send`
+    라는 없는 노드 키를 만들었고, HUD 틱 문구(`📄 <from> → <to> 배달`)가 '외부' 대신 그 문자열이 됐다.
+    """
+
+    SEATS = [
+        (7, "main@surface:7"),                 # 구버전 데몬 · 검증 신원 — JSON 정수(종전 키 그대로)
+        (0, "main@surface:0"),                 # 0 도 좌석 번호다(falsy 로 버리면 안 된다)
+        ("surface:7", "main@surface:7"),       # 좌석 자기신고 표기
+        ("7", "main@surface:7"),
+        (" 7 ", "main@surface:7"),             # 데몬 parse_surface_ref 는 앞뒤 공백을 지운다(라벨이 아니라 좌석)
+        ("surface:12", "main@surface:12"),
+    ]
+    NOT_SEATS = [
+        "cli:send", "cli:inject", "cli:drain", "cli:backup",     # J3 라벨 + 사용자값
+        "cli:7",                                                 # 숫자가 섞인 라벨 — 접두가 다르면 좌석이 아니다
+        "inject(typing_guard fallback)",                         # 사람용 표기(데몬 claimed_from_sid 주석의 예)
+        "", "   ", "surface:", "surface:abc", "7a", "-3", "+", "7.0",
+        "\u0667",                                               # 아랍-인도 숫자 7 — int() 는 받지만 데몬(Rust)은 좌석이 아니다
+        str(1 << 64),                                            # u64 초과 — 데몬 parse 가 실패한다
+        -3, 7.0, 7.5, 1 << 64,                                   # 음수 · 실수 · u64 초과 정수
+        None, True, False,                                       # None · 불리언(int 의 하위형 — surface:1/0 이 되면 안 된다)
+        [7], {"id": 7},
+    ]
+
+    def test_helper_truth_table(self):
+        for raw, want in self.SEATS:
+            self.assertEqual(HB.injected_from_key("main", raw), want, repr(raw))
+        for raw in self.NOT_SEATS:
+            self.assertIsNone(HB.injected_from_key("main", raw), repr(raw))
+
+    def test_dept_slug_scopes_the_key(self):
+        # P2-2 — 정식 키는 구독 부서 slug 로 스코프된다(동번호 부서 상호 오염 차단). 라벨은 어느 slug 에서도 None.
+        self.assertEqual(HB.injected_from_key("dept-a", 7), "dept-a@surface:7")
+        self.assertEqual(HB.injected_from_key("dept-a", "surface:7"), "dept-a@surface:7")
+        self.assertIsNone(HB.injected_from_key("dept-a", "cli:send"))
+
+    def test_event_frame_seat_from_keeps_the_canonical_key(self):
+        # 구버전 데몬(정수 from)·검증 좌석에서는 프레임이 개정 전과 **한 바이트도** 다르지 않다(ADR-2).
+        frames = route(HB.World(), injected(7))
+        self.assertEqual(frames, [{"t": "fx", "kind": "doc", "to": "main@surface:3",
+                                   "from": "main@surface:7", "bytes": 42}])
+        self.assertEqual(route(HB.World(), injected("surface:7", verified=False))[0]["from"],
+                         "main@surface:7")
+        # 부서 구독 — slug 가 키 앞에 붙는다.
+        fr = HB.route_event(injected(7), HB.World(), HB.Coalescer(), slug="dept-a")[0]
+        self.assertEqual((fr[0]["to"], fr[0]["from"]), ("dept-a@surface:3", "dept-a@surface:7"))
+
+    def test_event_frame_label_from_is_external_not_a_node_key(self):
+        # J3 라벨 4종 + 사용자값 — from 은 None(= '외부')이고, 어떤 필드에도 라벨 문자열이 새지 않는다.
+        for label in ("cli:send", "cli:inject", "cli:drain", "cli:backup"):
+            frames = route(HB.World(), injected(label))
+            self.assertEqual(frames, [{"t": "fx", "kind": "doc", "to": "main@surface:3",
+                                       "from": None, "bytes": 42}], label)
+            self.assertNotIn("cli:", repr(frames), label)
+        fr = HB.route_event(injected("cli:send"), HB.World(), HB.Coalescer(), slug="dept-a")[0]
+        self.assertIsNone(fr[0]["from"])
+
+    def test_event_frame_missing_or_null_from_is_external(self):
+        # from 키 부재(구버전 · 큐 경로) · null — 종전부터 '외부'다.
+        self.assertIsNone(route(HB.World(), injected())[0]["from"])
+        self.assertIsNone(route(HB.World(), injected(None))[0]["from"])
+        self.assertIsNone(route(HB.World(), injected(""))[0]["from"])
+        # 좌석이 아닌 형(불리언·실수)도 노드 키가 되지 않는다.
+        for raw in (True, False, 7.5):
+            self.assertIsNone(route(HB.World(), injected(raw))[0]["from"], repr(raw))
+
+
+class InjectedFromHostileInput(unittest.TestCase):
+    """★(0.14.43 · R1F-PK · S3 minor 1) 좌석 번호처럼 보이는 **아주 긴 숫자 문자열** 하나가 예외를 내지 못한다.
+
+    파이썬 `int()` 는 4300자리를 넘는 십진 문자열에 `ValueError` 를 낸다. 종전 `injected_from_key` 는 정규식 통과 직후 `int(t)` 를 그대로
+    불렀고(범위 검사는 그 뒤), 호출처 `_reader` 에는 `except` 가 없어 이벤트 하나가 이벤트 구독 스레드를 끝냈다 — 재기동도 없다.
+    데몬은 직접 전송의 `from` 을 검증 없이 싣는다(handlers.rs — 사용자 본인의 로컬 프로세스가 만든 요청이라 영향은 HUD 표시뿐).
+    """
+
+    # 좌석이 아니다 — 선행 0 을 뺀 자릿수가 u64 최대값(20자리)을 넘거나, u64 최대값 + 1 이다. 4300자리 한도 안팎(4299·4300·4301·5000)을 다 둔다.
+    OVERFLOW = [
+        "9" * 5000, "9" * 4301, "9" * 4300, "9" * 4299, "9" * 21, "1" + "0" * 20, str(1 << 64),
+        "surface:" + "9" * 5000, "+" + "9" * 5000, " \t" + "9" * 5000 + "\n ", "1" + "0" * 4999, "0" * 4000 + "9" * 21,
+    ]
+    # 좌석이다 — 선행 0 은 값이 아니라 길이일 뿐이다(데몬 `parse_surface_ref` 의 u64 파싱은 `0007` 도 7 로 받는다). 5000자리 0 채움도 같다.
+    PADDED_SEATS = [
+        ("0" * 5000 + "7", "main@surface:7"), ("surface:" + "0" * 5000 + "7", "main@surface:7"),
+        ("+" + "0" * 30 + "12", "main@surface:12"), ("0" * 5000, "main@surface:0"), ("+0", "main@surface:0"),
+        ("0007", "main@surface:7"), (str((1 << 64) - 1), "main@surface:%d" % ((1 << 64) - 1)),
+        ("0" * 4301 + str((1 << 64) - 1), "main@surface:%d" % ((1 << 64) - 1)),
+    ]
+    # 숫자 문자열이 아니거나 공백이 섞였다 — 좌석이 아니다(예외 없이 None).
+    NOT_NUMBERS = [
+        "abc", "-7", "\u22127", "\uff17", "1e3", "0x10", "7_0", "7 8", "7\n8", "7\t8", "surface: 7", "surface:surface:7", "surface:-7",
+        "surface:" + "9" * 20 + "x", "9" * 5000 + "x", "x" + "9" * 5000, "9" * 2500 + " " + "9" * 2500, "+-7", "++7", "+",
+    ]
+
+    def test_overflowing_digit_strings_are_external_and_never_raise(self):
+        for raw in self.OVERFLOW:
+            self.assertIsNone(HB.injected_from_key("main", raw), "%d자 입력(%r…)" % (len(raw), raw[:12]))
+
+    def test_zero_padded_long_numbers_are_seats_like_the_daemon_parse(self):
+        # 길이가 4300자리를 넘어도 값이 u64 안이면 좌석이다 — 길이로만 거르면(예: 64자 이상 일괄 거부) 데몬과 갈린다.
+        for raw, want in self.PADDED_SEATS:
+            self.assertEqual(HB.injected_from_key("main", raw), want, "%d자 입력(%r…)" % (len(raw), raw[:12]))
+
+    def test_non_numbers_and_mixed_whitespace_are_external_and_never_raise(self):
+        for raw in self.NOT_NUMBERS:
+            self.assertIsNone(HB.injected_from_key("main", raw), repr(raw[:30]))
+
+    def test_surrounding_whitespace_is_trimmed_like_the_daemon(self):
+        # 앞뒤 공백(스페이스·탭·개행)은 데몬 trim 과 같이 좌석 번호의 일부가 아니다. 안쪽 공백·접두 뒤 공백은 좌석이 아니다.
+        for raw in (" 7", "7 ", " \t7\n ", "surface:7 ", " surface:7"):
+            self.assertEqual(HB.injected_from_key("main", raw), "main@surface:7", repr(raw))
+        for raw in ("7 8", "surface: 7", "surface:\t7"):
+            self.assertIsNone(HB.injected_from_key("main", raw), repr(raw))
+
+    def test_huge_python_int_is_external_and_never_raises(self):
+        # JSON 정수 경로 — 4300자리 넘는 정수 리터럴은 json.loads 가 ValueError 로 그 줄을 버리지만(_reader 가 건너뜀), 파이썬 정수가 직접
+        # 들어와도(검체·다른 호출처) 예외 없이 범위 검사에서 걸린다.
+        for n in (10 ** 5000, 1 << 64, -(10 ** 5000), (1 << 64) - 1 + 1):
+            self.assertIsNone(HB.injected_from_key("main", n), "%d비트 정수" % n.bit_length())   # repr(n) 은 4300자리 한도에 걸린다
+        self.assertEqual(HB.injected_from_key("main", (1 << 64) - 1), "main@surface:%d" % ((1 << 64) - 1))
+
+    def test_slug_scoped_key_and_digit_limit_constant(self):
+        self.assertEqual(HB._U64_MAX_DIGITS, 20, "u64 최대값은 십진 20자리다")
+        self.assertEqual(HB.injected_from_key("dept-a", "0" * 5000 + "7"), "dept-a@surface:7")
+        self.assertIsNone(HB.injected_from_key("dept-a", "9" * 5000))
+
+    def test_event_frame_with_5000_digit_from_is_external(self):
+        # 이벤트 → 프레임 전체 경로(route_event) — 예외 없이 '외부'(None) 프레임이 나온다(종전엔 ValueError 가 route_event 밖으로 나갔다).
+        frames = route(HB.World(), injected("9" * 5000))
+        self.assertEqual(frames, [{"t": "fx", "kind": "doc", "to": "main@surface:3", "from": None, "bytes": 42}])
+        fr = HB.route_event(injected("9" * 5000), HB.World(), HB.Coalescer(), slug="dept-a")[0]
+        self.assertEqual(fr, [{"t": "fx", "kind": "doc", "to": "dept-a@surface:3", "from": None, "bytes": 42}])
+        # 같은 길이의 선행 0 좌석은 정상 키다.
+        self.assertEqual(route(HB.World(), injected("0" * 5000 + "7"))[0]["from"], "main@surface:7")
 
 
 if __name__ == "__main__":

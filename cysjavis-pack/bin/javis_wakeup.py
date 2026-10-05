@@ -41,6 +41,7 @@ import re
 import shutil
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import time
 import uuid
 
@@ -67,6 +68,10 @@ import javis_scrub  # ★G2: 원장 기록 직전 비밀 마스킹(같은 폴더
 ROOT = os.environ.get("JAVIS_ROOT") or os.getcwd()  # 개인경로 하드코딩 금지(pack scan gate) — env 또는 CWD(워크스페이스 루트에서 호출)
 WK_DIR = os.path.join(ROOT, "_round", "wakeups")
 PENDING_DIR = os.path.join(WK_DIR, "pending")
+# ★(0.14.31 · triage 2026-09-08 · codex major M10) 데몬이 `durable=false`(큐 WAL 저장 실패)로
+#   답한 배달의 **보관소**. pending 에서 빼되(다음 drain 이 다시 보내면 큐에 멱등 키가 없어
+#   중복 배달 = 폭주 ①) 버리지도 않는다 — 원본 레코드를 여기 남겨 사후 재투입이 가능하게 한다.
+UNCONFIRMED_DIR = os.path.join(WK_DIR, "unconfirmed")
 LEDGER = os.path.join(WK_DIR, "queue.jsonl")
 
 EXIT_OK, EXIT_USAGE, EXIT_EMPTY = 0, 2, 5
@@ -74,6 +79,10 @@ EXIT_OK, EXIT_USAGE, EXIT_EMPTY = 0, 2, 5
 #   정지 중 `drain --deliver` 가 자율 루프를 wake 로 재점화시키는 경로를 닫는다.
 #   exit 4 는 `cys gate-check` 의 paused 코드와 같은 의미로 맞춘다(호출부 분기 일관성).
 EXIT_PAUSED = 4
+# ★(0.14.31 · 성찰 Q4) enqueue 가 **수락 세대**(내구 미확정 표식 레코드)를 슬롯 밖으로 옮기지 못해
+#   새 요청을 성공으로 답할 수 없을 때. 호출자(report_gate)는 rc≠0 에 seen 을 되돌려 다음 주기에
+#   다시 온다 — 병합해 놓고 `coalesced` 로 답하면 그 요청은 drain 이 영구히 건너뛴다(무성 유실).
+EXIT_PARK_FAILED = 6
 PAUSED_BASENAME = "AUTOPILOT_PAUSED"
 # 팩 경로 env 키 목록·순서는 Rust 정본 `src/pack.rs::PACK_DIR_ENV_KEYS` 와 동일하다
 # (javis_orchestra·javis_report·javis_bootstrap 과 같은 목록 — 한 곳만 고치면 계약이 깨진다).
@@ -312,6 +321,29 @@ def cmd_enqueue(a):
                                 "idempotency_key": a.idempotency_key, "wakeup_id": cur["id"]})
                 print(json.dumps({"result": "suppressed", "id": cur["id"]}, ensure_ascii=False))
                 return EXIT_OK
+        if cur and cur.get(PARK_MARK):
+            # ★(0.14.31 · 성찰 Q4) 이 슬롯의 레코드는 이미 **수락된 세대**다 — 데몬이 exit 0 으로
+            #   받았고 내구만 미확정이며, 보관 이동이 실패해 표식만 남았다. 종전에는 후속 요청이
+            #   여기에 **병합**돼 `coalesced` 로 성공 처리됐는데 drain 은 표식 레코드를 영구히
+            #   건너뛴다 — 같은 (target, task) 채널의 모든 후속 wakeup 이 무성으로 유실됐다.
+            #   위의 멱등키 억제는 그대로 옳다(그 사건은 정말 수락됐다). 그 밖의 요청은 세대를
+            #   가른다: 수락 세대를 슬롯 밖으로 옮긴 뒤 새 레코드를 만든다. 옮기지 못하면 이
+            #   요청을 성공으로 답하지 않는다(rc≠0 → 호출자가 seen 을 되돌려 다음 주기에 다시 온다).
+            state, where = _split_accepted_generation(path, cur)
+            if state == "failed":
+                _ledger_append({"event": "enqueue_refused", "target": a.to, "task_key": a.task,
+                                "idempotency_key": a.idempotency_key,
+                                "blocked_by": cur["id"], "reason": a.reason,
+                                "why": "수락 세대(내구 미확정 표식)를 슬롯 밖으로 옮기지 못했다 — "
+                                       "병합하면 이 요청은 drain 이 영구히 건너뛴다(유실)"})
+                print(json.dumps({"result": "refused", "reason": "accepted_generation_stuck",
+                                  "blocked_by": cur["id"]}, ensure_ascii=False))
+                return EXIT_PARK_FAILED
+            _ledger_append({"event": "generation_split", "target": a.to, "task_key": a.task,
+                            "accepted_wakeup_id": cur["id"], "park_state": state,
+                            "moved_to": where})
+            cur = None
+        if cur:
             # 코얼레싱: 최신 reason으로 갱신, payload 얕은 병합, count 증가
             cur["coalesced_count"] = cur.get("coalesced_count", 0) + 1
             cur["reason"] = a.reason
@@ -349,7 +381,127 @@ def cmd_enqueue(a):
         return EXIT_OK
 
 
+def _as_text(blob):
+    """bytes → str(utf-8 · 치환) · str → 그대로 · None → ""."""
+    if blob is None:
+        return ""
+    if isinstance(blob, bytes):
+        return blob.decode("utf-8", errors="replace")
+    return blob
+
+
+def _echo_captured(cp):
+    """★(0.14.31 · 성찰 Q9) 캡처한 CLI 출력을 사람에게 흘려 준다 — **표시 오류를 배달 사실과
+    격리**한다. 종전에는 이 echo 가 `subprocess.run` 과 같은 try 안에 있었고 `UnicodeEncodeError`
+    (ValueError 계열)는 except 절에 잡히지 않아 drain 이 통째로 죽었다: `cys send --queued` 는
+    이미 성공했는데 pending 이 남아 다음 drain 이 **같은 wakeup 을 재전송**했다(Windows cp949
+    콘솔 · 데몬 응답의 `·`/한글). 여기서 실패하면 ASCII 한 줄만 남기고 계속 간다."""
+    for stream, blob in ((sys.stdout, getattr(cp, "stdout", None)),
+                         (sys.stderr, getattr(cp, "stderr", None))):
+        if not blob:
+            continue
+        try:
+            stream.write(_as_text(blob))
+            stream.flush()
+        except (UnicodeError, OSError, ValueError):
+            try:
+                sys.stderr.write("warn: captured cys output is not displayable on this console "
+                                 "(encoding) - delivery verdict unaffected\n")
+            except Exception:  # noqa: BLE001 — 표시는 부수 효과다
+                pass
+
+
+def _isolate_console_encoding():
+    """★(0.14.31 · 성찰 Q9) 콘솔이 UTF-8 이 아니어도(Windows cp949 · C 로캘) 한글·기호 출력이
+    프로세스를 죽이지 않게 한다 — 표시는 부수 효과이고 배달 사실은 원장·pending 파일이 말한다."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 # javis_snapshot 소비 — 리네임 시 동반 수정
+def _durable_verdict(cp):
+    """`cys send --queued` 출력에서 내구 표식을 읽는다 — True(내구) · False(미확정) · None(미상).
+
+    구 데몬·구 CLI 는 이 표식을 **아예 내지 않는다**(키 부재 = 스큐). 그때 `None` 을 돌려
+    종전 동작(삭제)을 유지한다 — '부재 ≠ 부정'. 표식이 있고 false 일 때만 보관 경로로 간다.
+    """
+    # ★(0.14.31 · 성찰 Q9) 응답은 **바이트**로 받는다(`text=True` 금지) — 로캘 디코딩은 여기서
+    #   `errors="replace"` 로 하며 판정 토큰은 ASCII 라 치환 문자에 영향받지 않는다. str 도 받는다
+    #   (javis_snapshot 등 구 호출부 호환).
+    out = _as_text(getattr(cp, "stdout", None))
+    err = _as_text(getattr(cp, "stderr", None))
+    blob = f"{out}\n{err}".lower()
+    if "durable=false" in blob:
+        return False
+    if "durable=true" in blob:
+        return True
+    return None
+
+
+# 수락됐으나 내구 미확정인 레코드의 표식(값 = 표식 시각). 이 키가 있으면 drain 은 그 레코드를
+# **재전송 대상에서 뺀다** — 큐에 멱등 키가 없어 재전송은 곧 중복 배달이기 때문이다(폭주 ①).
+PARK_MARK = "delivered_unconfirmed_at"
+
+
+def _park_unconfirmed(path, rec):
+    """내구 미확정 배달의 원본을 처리한다. 반환 = `(상태, 경로)`.
+
+    상태는 셋이며 **원장에 그대로 적힌다**(사실을 뭉개지 않는다):
+      · `"parked"`  — `unconfirmed/` 로 옮겼다(원본은 pending 에 없다).
+      · `"marked"`  — 이동은 실패했지만 원본에 [`PARK_MARK`] 를 영속화했다. pending 에 남되
+                      다음 drain 이 **재전송하지 않는다**.
+      · `"failed"`  — 표식조차 남기지 못했다(원본 파일 자체가 잡혀 있다). 다음 drain 이 같은
+                      digest 를 **재전송한다** — 그 사실을 숨기지 않고 그대로 적는다.
+
+    ★(0.14.31 · 수렴 R2 · reviewer-claude minor + reviewer-codex F2) 종전에는 ⓐ `os.makedirs` 가
+    try 밖이라 여기서 OSError 가 나면 `cmd_drain` 이 통째로 예외 종료했고(이미 `cys send --queued`
+    는 성공한 뒤다 → 다음 drain 이 같은 digest 를 재전송 = 중복 배달), ⓑ `os.replace` 실패 시
+    **원본 경로를 그대로 돌려주어** 원장에는 `delivered_unconfirmed{parked:<pending 경로>}` 가
+    남는데 파일은 여전히 pending 에 있었다(원장은 '보관했다'고 말하는데 실제로는 재전송 대기).
+    """
+    # 경로는 **호출 시점의** WK_DIR 에서 파생한다(검체 하네스가 WK_DIR 을 스크래치로 갈아끼운다).
+    try:
+        parked_dir = os.path.join(WK_DIR, "unconfirmed")
+        os.makedirs(parked_dir, exist_ok=True)
+        dest = os.path.join(parked_dir, f"{_safe(rec.get('id') or 'w')}.json")
+        os.replace(path, dest)
+        return ("parked", dest)
+    except OSError:
+        # 이동 실패는 삭제로 접지 않는다 — 원본을 그 자리에 두는 편이 유실보다 낫다.
+        # 대신 **재전송 대상에서 빼는 표식**을 영속화한다(그것이 실패해야 비로소 재전송 위험이다).
+        pass
+    try:
+        marked = dict(rec)
+        marked[PARK_MARK] = _now()
+        _write_json_atomic(path, marked)
+        return ("marked", path)
+    except OSError:
+        return ("failed", path)
+
+
+def _split_accepted_generation(path, rec):
+    """★(0.14.31 · 성찰 Q4) 수락 세대(표식 레코드)를 pending **슬롯** 밖으로 — `(상태, 경로)`.
+
+      ① 보관소(`unconfirmed/`)로 이동을 다시 시도한다(원래 가려던 곳 · 성공하면 `"parked"`).
+      ② 실패하면 **같은 디렉터리 안에서** 세대 접미 이름으로 비켜 세운다(`"sidestepped"`) —
+         디렉터리 내 rename 은 보관소의 makedirs/replace 실패와 독립이다. 표식은 그대로라
+         drain 은 여전히 건너뛰고 `list`/`cancel` 은 여전히 본다(사람이 처분할 수 있다).
+      ③ 그것도 실패하면 `"failed"` — 호출자는 새 요청을 **성공 처리하지 않는다**.
+    """
+    state, where = _park_unconfirmed(path, rec)
+    if state == "parked":
+        return state, where
+    try:
+        alt = f"{path[:-len('.json')]}.accepted-{uuid.uuid4().hex[:8]}.json"
+        os.replace(path, alt)
+        return "sidestepped", alt
+    except OSError:
+        return "failed", path
+
+
 def _iter_pending():
     if not os.path.isdir(PENDING_DIR):
         return []
@@ -514,7 +666,10 @@ def cmd_drain(a):
                               "evidence": evidence}, ensure_ascii=False))
             return EXIT_PAUSED
     fastfail_max = int(os.environ.get("JAVIS_FASTFAIL_MAX", "3"))
-    pending = _iter_pending()
+    # ★(0.14.31 · 수렴 R2 · reviewer-codex F2) 이미 수락됐으나 내구 미확정으로 표식된 레코드는
+    #   **재전송 대상이 아니다**. 큐에 멱등 키가 없어 재전송은 곧 중복 배달이다(정본 §7 위험 ①).
+    #   `cancel`·`list` 는 종전대로 이 레코드도 본다(사람이 처분할 수 있어야 한다).
+    pending = [(pp, rr) for pp, rr in _iter_pending() if not rr.get(PARK_MARK)]
     if a.target:
         pending = [(p, r) for p, r in pending if r["target"] == a.target]
     if not pending:
@@ -529,6 +684,7 @@ def cmd_drain(a):
         # 생존 판정은 **target 당 1회**(종전 pending 당 1회) — 판정 기준·강등 규칙은 그대로이고
         # 같은 target 을 같은 순간에 두 번 묻지 않을 뿐이다(`cys list` 호출도 N→1).
         alive = _target_alive(target)
+        durable = None  # 이 target 의 내구 표식(True·False·None=미상) — 그룹마다 새로 판정한다
         if alive == "dead":
             # zombie 가드: 죽은 대상에 배달/병합 유지 금지 → skipped로 종결(pending 제거)
             for path, rec in items:
@@ -545,7 +701,16 @@ def cmd_drain(a):
             if alive == "unknown":
                 print(f"warn: {target} 생존 미확인 상태로 배달 시도", file=sys.stderr)
             try:
-                subprocess.run(cmd, check=True, timeout=15)
+                # ★(triage 2026-09-08 · codex major M10) 출력을 **읽는다**. `cys send --queued` 는
+                #   데몬의 `durable:false`(큐 WAL 저장 실패)를 stdout 조각 `· durable=false` 와
+                #   stderr 경고로만 알리고 **exit 0** 이다(항목은 메모리 큐에 있고 다음 틱이 재시도
+                #   하므로 비0 은 중복 배달을 부른다 — CLI 쪽 설계는 타당하다). 종전에는 소비자가
+                #   반환코드만 보고 성공으로 처리해 원본 pending 을 즉시 지웠다: 데몬이 WAL 재시도
+                #   전에 죽으면 그 wakeup 은 **양쪽 어디에도 없다**(메시지 유실).
+                # ★(0.14.31 · 성찰 Q9) **바이트**로 받는다 — `text=True` 는 로캘(cp949 등)로
+                #   디코딩하다 `UnicodeDecodeError` 를 `run()` 안에서 올렸고, 그것은 아래 except 에
+                #   잡히지 않아 drain 이 죽었다(전송은 이미 성공 → pending 잔존 → 재전송 = 중복).
+                cp = subprocess.run(cmd, check=True, timeout=15, capture_output=True)
                 if _load_failcount().get(target):
                     _bump_failcount(target, reset=True)  # 성공 = 연속실패 해소
             except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
@@ -570,11 +735,44 @@ def cmd_drain(a):
                     print(f"deliver failed (pending 유지·연속 {streak}회): {rec['id']} — {e}",
                           file=sys.stderr)
                 continue
+            # ★(0.14.31 · 성찰 Q9) 수락·내구 판정을 **표시보다 먼저** 확정한다. 그 뒤의 echo 는
+            #   격리돼 있어 어떤 표시 오류도 아래의 pending 종결(삭제/보관)을 건너뛰게 하지 않는다.
+            durable = _durable_verdict(cp)
+            _echo_captured(cp)  # 캡처했으므로 사람이 보던 문면을 그대로 흘려 준다(관측 손실 0)
         else:
+            durable = None
             # digest 본문은 여러 줄이라 그대로 찍으면 DRYRUN 이 N 줄이 된다 — **표시만** 1줄로
             # 접는다(실제 배달 인자는 원문 그대로). W-id 는 전부 리터럴로 남는다.
             print("DRYRUN:", " ".join(cmd[:-1] + [cmd[-1].replace("\n", "\\n")]))
         for path, rec in items:
+            if a.deliver and durable is False:
+                # 내구 미확정 — 원본을 **보관**하고 원장에 사실을 남긴다(pending 에는 두지 않는다:
+                # 다음 drain 이 다시 보내면 큐에 멱등 키가 없어 중복 배달이 된다).
+                # ★(수렴 R2) 보관이 실패하면 그 사실을 `delivered_unconfirmed` 로 덮지 않는다 —
+                #   `park_failed` 로 갈라 적고, 재전송이 예정돼 있는지까지 한 줄에 남긴다.
+                state, parked = _park_unconfirmed(path, rec)
+                if state == "parked":
+                    _ledger_append({"event": "delivered_unconfirmed", "target": target,
+                                    "wakeup_id": rec["id"], "durable": False,
+                                    "queue_entry_id": None, "parked": parked,
+                                    "why": "데몬이 큐 WAL 저장에 실패했다(durable=false) — 데몬이 "
+                                           "재시도 전에 죽으면 이 wakeup 은 유실된다"})
+                    print(f"warn: 내구 미확정 배달 — 원본 보관: {rec['id']} → {parked}",
+                          file=sys.stderr)
+                else:
+                    retransmit = state == "failed"
+                    _ledger_append({"event": "park_failed", "target": target,
+                                    "wakeup_id": rec["id"], "durable": False,
+                                    "queue_entry_id": None, "pending": parked,
+                                    "park_state": state, "will_retransmit": retransmit,
+                                    "why": "보관 이동이 실패했다 — 원본은 pending 에 남아 있다"
+                                           + ("(표식 실패 · 다음 drain 이 재전송한다 = 중복 배달)"
+                                              if retransmit else
+                                              "(미확정 표식을 남겼다 · 재전송하지 않는다)")})
+                    print(f"warn: 내구 미확정 배달 — 보관 실패({state}): {rec['id']} → {parked}",
+                          file=sys.stderr)
+                delivered += 1
+                continue
             os.remove(path)
             _ledger_append({"event": "delivered" if a.deliver else "delivered_dryrun",
                             "target": target, "wakeup_id": rec["id"]})
@@ -624,6 +822,7 @@ def main(argv=None):
     c.set_defaults(fn=cmd_cancel)
 
     a = p.parse_args(argv)
+    _isolate_console_encoding()  # ★성찰 Q9 — 표시 오류가 배달 사실을 바꾸지 못하게
     return a.fn(a)
 
 

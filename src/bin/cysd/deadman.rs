@@ -7,7 +7,14 @@
 //!
 //! 안전 원칙:
 //! - **fail-closed**: 홀더 pid 미상(구 락파일)·프로세스명 검증 실패·판정 애매 = 어떤 개입도 없이 exit.
+//!   단, heartbeat **측정 불능**(파일 부재·미래 mtime = 시계 역행)은 '판정 애매' 가 아니라 **stale** 로
+//!   접힌다(`heartbeat_stale` — 수리 WP-2-A 유지). 그 칸에서 산 홀더를 지키는 것은 프로브 응답뿐이다.
 //! - **무손실**: 건강한 홀더는 버전이 낮아도 절대 인수하지 않는다(인수=PTY 전멸). 오직 dead일 때만.
+//!   **보증 범위 = 단발 2s 프로브(`PROBE_TIMEOUT` · main.rs `probe_holder` 1회)에 응답한 홀더**다.
+//!   응답 못 한 산 홀더는 heartbeat 신선도가 지키는데, 미래 mtime 은 그 증거를 통째로 버리므로
+//!   [단발 프로브 실패] × [미래 mtime] 창에서는 산 홀더도 회수 대상이다(정직 · `heartbeat_stale` 킬 창
+//!   주석). 살아서 tick 이 도는 데몬은 `HEARTBEAT_INTERVAL`(10s) 마다 `touch_heartbeat`(mtime=now) 하므로
+//!   미래 mtime 을 **10s 안에 스스로 해소**한다 — 그 창은 지속 상태가 아니라 한 틱 길이다.
 //! - **오살상 차단**: SIGTERM 전 pid의 프로세스명이 cysd인지 확인(pid 재사용 방어 — channels.rs MED-4 원칙).
 #![cfg(unix)]
 
@@ -40,12 +47,33 @@ pub fn touch_heartbeat(path: &Path) {
     let _ = std::fs::write(path, now.to_string());
 }
 
-/// heartbeat가 stale한가 — mtime이 now보다 threshold 이상 과거이면 true.
-/// 파일 부재·mtime 조회 실패 = stale로 간주(살아있는 데몬은 락 획득 직후 반드시 touch하므로
-/// 부재=비정상). 단, 데드맨은 [무응답 && stale] 교차조건이라, 방금 뜬 데몬은 probe 응답으로 걸러진다.
+/// heartbeat가 stale한가 — mtime이 now보다 threshold **초과** 과거이거나, **측정 불능**(파일 부재·
+/// mtime 조회 실패·미래 mtime = 시계 역행)이면 true.
+/// 파일 부재 = 비정상(살아있는 데몬은 락 획득 직후 반드시 touch). 미래 mtime 은 `elapsed()` 가 Err 라
+/// 조회 실패와 **같은 방향**(stale = fail-closed)으로 접는다. 단, 데드맨은 [무응답 && stale] 교차조건이라
+/// 방금 뜬 데몬은 probe 응답으로 걸러진다 — 그 보증 범위는 **단발 2s 프로브에 응답한 홀더**다.
+/// 살아서 tick 이 도는 데몬은 `HEARTBEAT_INTERVAL`(10s) 마다 touch(mtime=now) 하므로 미래 mtime 을
+/// 10s 안에 스스로 해소한다(미래 mtime 은 한 틱짜리 창이지 지속 상태가 아니다).
 pub fn heartbeat_stale(path: &Path, threshold: Duration) -> bool {
     match std::fs::metadata(path).and_then(|m| m.modified()) {
-        Ok(mtime) => mtime.elapsed().map(|e| e > threshold).unwrap_or(false),
+        // ★mtime 이 **미래**면 `elapsed()` 는 Err 다(시계 역행·미래 타임스탬프를 보존한 state 복원).
+        //   그 측정 실패도 아래 `Err(_) => true` 와 **같은 방향**(stale = fail-closed)으로 접는다 —
+        //   종전 `unwrap_or(false)` 는 이 칸만 fail-open 이라 독 코멘트("조회 실패 = stale")와
+        //   어긋났고, 무응답(hung) 홀더가 Healthy 로 읽혀 회수가 영영 안 됐다.
+        //   실패 방향: 못 재면 **stale 쪽**. 산 데몬은 `judge_holder` 가 `responded` 를 먼저 보므로
+        //   이 값이 true 여도 **응답하는 한** 오살되지 않는다(진리표 `Some(_) if responded => Healthy`
+        //   선행).
+        //   ★킬 창(정직 · 적대 리뷰 2026-09-15): 그 `responded` 는 main.rs 의 `probe_holder`
+        //   **단발 1회 · PROBE_TIMEOUT 2s** 값이다(재시도는 try_flock 에만 붙는다). 따라서 산 홀더가
+        //   SIGTERM→SIGKILL 대상이 되는 정확한 창은
+        //     [무응답 = 단발 2s 프로브 실패(부하·락 경합 등 일시 지연 포함)] × [미래 mtime]
+        //   이다. 종전(fail-open)에는 이 칸에서 신참이 그냥 exit 했으니, 이 수리는 "hung 홀더 영구
+        //   wedge" 를 없애는 대가로 "일시 무응답 산 홀더 오살" 가능성을 딱 이 창만큼 연다. 미래 mtime
+        //   은 heartbeat 신선도 증거를 통째로 버리므로(1초 전에 touch 했어도 stale) 이 창에서는 45s
+        //   임계가 보호를 못 하고 프로브 하나만 남는다. 로직은 그대로 둔다(WP-2-A 수리 유지 · §0-B ①).
+        //   다음 라운드로 미룬 완화 두 가지: ⓐ 회수 전 프로브 2차 시도, ⓑ "미래 skew > 임계" 만
+        //   stale 로 접기(임계 이하의 작은 역행은 신선으로 간주).
+        Ok(mtime) => mtime.elapsed().map(|e| e > threshold).unwrap_or(true),
         Err(_) => true,
     }
 }
@@ -299,6 +327,53 @@ mod tests {
         assert!(
             heartbeat_stale(&hb, Duration::ZERO),
             "임계 0이면 과거 mtime=stale"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// 시계 역행/미래 mtime = **측정 실패**이고, 측정 실패는 stale(fail-closed)로 접혀야 한다.
+    /// 이 칸이 fail-open 이면 무응답 홀더가 Healthy 로 읽혀 데드맨 회수가 영영 발화하지 않는다.
+    /// 변이 대조: `heartbeat_stale` 의 `unwrap_or(true)` 를 `unwrap_or(false)` 로 되돌리면
+    /// 이 검체는 반드시 붉어야 한다(양성 대조 단언이 발동 조건의 실재를 먼저 못박는다).
+    #[test]
+    fn heartbeat_future_mtime_is_stale_fail_closed() {
+        let d = tmp_dir();
+        let hb = heartbeat_path(&d);
+        touch_heartbeat(&hb);
+        let future = SystemTime::now() + Duration::from_secs(3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&hb)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(future))
+            .unwrap();
+        // ★양성 대조 — 발동 조건이 실제로 만들어졌는지 먼저 못박는다. 이게 없으면 파일시스템이
+        //   미래 mtime 을 거부하는 기계에서 이 검체가 **아무것도 재지 않고 초록**이 된다.
+        let mtime = std::fs::metadata(&hb).unwrap().modified().unwrap();
+        assert!(
+            mtime.elapsed().is_err(),
+            "미래 mtime 주입 실패 — 이 검체는 발동 조건을 못 만든다"
+        );
+
+        assert!(
+            heartbeat_stale(&hb, Duration::from_secs(45)),
+            "미래 mtime(측정 실패) = stale 이어야 한다(fail-closed)"
+        );
+        // 배선 핀: 이 값이 판정까지 실제로 흘러가 Dead 를 만든다(main.rs `let hb_stale =
+        // deadman::heartbeat_stale(` → `judge_holder` 경로 대응).
+        assert_eq!(
+            judge_holder(Some(9), false, heartbeat_stale(&hb, Duration::from_secs(45))),
+            HolderVerdict::Dead,
+            "무응답 + 미래 mtime 홀더는 Dead 여야 회수가 발화한다"
+        );
+        // 응답 홀더 무오살 핀: 같은 stale 값이라도 소켓에 응답하면 Healthy 다(진리표 선행 매치).
+        //   ★이 핀이 덮는 범위는 "응답한 홀더" 뿐이다 — `responded` 는 단발 2s 프로브 값이라,
+        //   [단발 프로브 실패] × [미래 mtime] 인 **산** 홀더는 이 단언이 아니라 바로 위 Dead 단언 쪽에
+        //   떨어진다(킬 창 · `heartbeat_stale` 의 `unwrap_or(true)` 주석 참조). "오살 없음" 이 아니다.
+        assert_eq!(
+            judge_holder(Some(9), true, heartbeat_stale(&hb, Duration::from_secs(45))),
+            HolderVerdict::Healthy,
+            "응답하는 홀더는 미래 mtime 이어도 오살되지 않는다"
         );
         std::fs::remove_dir_all(&d).ok();
     }

@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import time
 
 
@@ -47,6 +48,87 @@ except ImportError:                       # 구버전 팩 = 선언 미지원. �
 RE_DONE = re.compile(r"- \[[xX]\]")
 RE_OPEN = re.compile(r"- \[ \]")
 IDLE_ALERT_SECS = 300  # 절대지침 B3: idle 5분+ 즉시 조치 대상
+
+# ── CTX 축 선택 — 단일 정의(★WP6-2 · javis_report_gate 가 import 한다 · 중복 정의 금지) ──────
+# 정본 규칙은 javis_hud_bridge.pick_ctx 와 같다: 실측(usage.ctx_pct) > 자기보고(status.context_pct).
+# 자기보고는 **신선할 때만**(마지막 set-status 후 CTX_SELF_REPORT_MAX_AGE_S 이내) 보조 축이다 —
+# 값 자체에 유효기간이 없어 낡아도 그대로 남기 때문이다(handlers.rs status.set 은 상한만 자른다).
+# ⚠결측은 None 이지 0 이 아니다 — 0 으로 접으면 신고 없는 좌석(부팅 직후·죽은 좌석·agy)이
+#   "0%" 로 위장돼 60% 목록에서 조용히 빠진다.
+# ★실측 축의 낡음(0.14.31 감사 정정) — 데몬(cysd usage.rs)이 낡은 실측을 None 으로 지우는 범위는
+#   **휴리스틱 매핑뿐**이다: `mapping_is_fresh` 는 등록 매핑(heuristic=False · SessionStart 등록 = 통상의
+#   claude 경로)의 나이를 보지 않고, `idle_stale_transition` 은 source=="statusline" 을 건드리지 않으며,
+#   `collect_tick` 은 exited·agent_meta 없는 좌석을 건너뛴다 → 등록·statusline·종료 좌석의 usage_ctx_pct
+#   는 마지막 값에 **동결**된 채 실린다. 실측에 300s 나이 게이트를 걸지 **않는다** — idle 이어도 산 좌석의
+#   실측은 정확하고, 걸면 조용한 좌석 전부가 판정 불가가 돼 오경보가 된다(master 결정). 대신 페이로드의
+#   사망 신호 두 축으로 막는다(아래 pick_node_ctx docstring · live_nodes 가 싣는 `exited`·`agent_alive`).
+# ★실패 방향: 못 재면 목록에서 **빠진다**(경보 없음) — 0% 로 위장하지 않는다. `exited is True` 또는
+#   `agent_alive is False`(데몬 3상 · False = 워치독이 관측한 사망 확정)면 실측·자기보고가 있어도
+#   (None, "dead") — 동결값으로 60% 를 울리지 않는다. None(미관측·구버전 키 없음)·(exited False /
+#   agent_alive True) 는 게이트를 열지 않는다(null 은 "모른다"이지 "죽었다"가 아니다).
+# ★같은 수 300 이 네 언어에 흩어져 있다 — Rust(WP6-1 cys.rs CTX_SELF_REPORT_MAX_AGE_SECS) ·
+#   TS(ui/src/ctxpick.ts CTX_SELF_REPORT_MAX_AGE_SECS) · Py HUD(javis_hud_bridge.py CTX_SELF_REPORT_MAX_AGE_S) ·
+#   여기. 바꿀 때는 넷을 함께 고쳐라.
+CTX_SELF_REPORT_MAX_AGE_S = 300
+
+
+def pick_node_ctx(n):
+    """(pct, src) — 실측 > 자기보고(신선할 때만). 결측은 None 이며 0 이 아니다.
+
+    사망 게이트(0.14.31 감사 · 후속으로 대칭화): live_nodes 엔트리의 두 생존 축 — `exited`(pane 종료 ·
+    state.rs reader 가 EOF 에서 세운다) 와 `agent_alive`(governance 워치독 3상 · False = 관측된 사망 확정만)
+    — 중 하나라도 사망이면 (None, "dead"). 데몬 수집기는 죽은 좌석의 usage 를 지우지 않으므로 동결 실측을
+    산 값으로 읽지 않는다. 워치독은 exited 좌석을 건너뛰어 agent_alive 가 동결되므로 두 축을 다 봐야 한다
+    (Rust ctx_cell · TS pickCtx 와 같은 규칙). None(미관측·구버전 데몬 키 없음)은 "모른다"라 열지 않는다.
+    ⚠잔여 한계: 한 번도 관측되지 않은 채(agent_alive None) 죽은 좌석과 사망 뒤 워치독 틱 전의 창은 잡히지
+    않는다(의도 — null 을 사망으로 접으면 미관측 좌석 전부가 판정 불가가 된다).
+    """
+    if n.get("exited") is True or n.get("agent_alive") is False:
+        return None, "dead"
+    m = n.get("usage_ctx_pct")
+    if isinstance(m, (int, float)):
+        return m, "measured"
+    s = n.get("context_pct")
+    age = n.get("status_age_secs")
+    if isinstance(s, (int, float)) and isinstance(age, int) and age <= CTX_SELF_REPORT_MAX_AGE_S:
+        return s, "self"
+    return None, "none"
+
+
+# ── ★(0.14.42 · 통합 minor 정리 RV3L-7) clear 가드 v3 좌석의 컨텍스트 경보 = **가드의 미해결 통보**(한 벌 · 게이트가 import) ──
+# 데몬 clear 가드(cysd usage.rs `clear_guard`)는 사이클 뒤 잰 수준 R 위로 자란 뒤에만(가장자리·C 띠 예외) `context.threshold`
+# 를 내고, 그 통보가 사이클 표지 전(미해결)인 동안 좌석 행 `ctx_guard.phase == "awaiting"`(+ `fire_id` · `awaiting_since` ·
+# 비동기 작업 `job`)이다. 200K master·CEO 가 사이클 뒤 68~84% 에 머무는 것은 설계된 정상(막대 아래 · 통보 없음)이라, 가드
+# 좌석에 고정 60% 문구('⚠ 컨텍스트 60%+ … cycle-agent 집행 검토')를 띄우면 영구 경보가 되고 오너·CSO 를 `--fire` 없는 수동
+# cycle-agent(가드의 성장·stale 판정 우회 → 유휴 재주입 고리)로 이끈다. 그래서 가드 좌석(`ctx_guard` 가 dict)은 **미해결 통보가
+# 이 초 이상 집행되지 않을 때만** 알린다 — cycle-agent 1콜은 clear 전 몫이 390초(단일 전체 시한 570 − clear 뒤 180)라 제때
+# 집행된 통보는 그 안에 표지 켬(Awaiting 끝)에 닿고, 가드 자신의 시한은 1200초(그 뒤 잠정 보류 → 재통보)다. 가드 없는 구 데몬
+# 좌석(키 없음)은 종전 60% 판정 그대로다(하위호환). ★실패 방향: 가드 좌석의 수준 경보는 오너 feed(`context.level_measured` ·
+# `context.edge_return` · `context.clear_ineffective`)가 맡는다 — 이 보고는 '집행이 밀린 통보' 하나만 싣는다.
+CTX_FIRE_PENDING_ALERT_S = 600
+
+
+def ctx_alert_nodes(live_nodes):
+    """(legacy, pending) — 텍스트 보고·게이트 공용 판정(한 벌).
+
+    legacy = [(entry, pct, src)] — 가드 없는 좌석(구 데몬 · `ctx_guarded` 가 True 가 아님)의 종전 60% 판정(pick_node_ctx).
+    pending = [(entry, fire_id, age_s, pct, src)] — 가드 좌석의 미해결 통보가 CTX_FIRE_PENDING_ALERT_S 이상. 죽은 좌석
+    (exited True · agent_alive False)은 제외(사망은 death 축). 가드 좌석은 수준만으로는 경보하지 않는다.
+    """
+    legacy, pending = [], []
+    for n in live_nodes or []:
+        if n.get("ctx_guarded") is True:
+            if n.get("exited") is True or n.get("agent_alive") is False:
+                continue
+            fid, age = n.get("ctx_fire_pending"), n.get("ctx_fire_pending_age_s")
+            if isinstance(fid, str) and fid and isinstance(age, int) and age >= CTX_FIRE_PENDING_ALERT_S:
+                p, src = pick_node_ctx(n)
+                pending.append((n, fid, age, p, src))
+            continue
+        p, src = pick_node_ctx(n)
+        if p is not None and p >= 60:
+            legacy.append((n, p, src))
+    return legacy, pending
 
 # ── 유령 todo 차단 (2026-07-26 결함 · 공유 폴더 유산 파일이 현재 편대 모수로 유입) ──
 # 근거: cwd/_round 스캔은 "cwd의 _round는 현재 편대 소유"를 가정하나, 역사 있는 공유 프로젝트
@@ -799,9 +881,38 @@ def build_report(status, extra_dirs, now=None, sampled_at=None):
                 "context_pct": ag.get("context_pct"),
                 "idle_secs": idle_secs,
                 "agent_alive": s.get("agent_alive"),
+                # ★(0.14.31 후속) pane 종료 사실 — org.status `exited`(bool) 그대로, 구버전 데몬(키 없음)은 None.
+                #   pick_node_ctx 의 사망 게이트 한 축(다른 축은 agent_alive). 가산 키 · 기존 키·의미 무변.
+                #   시간파생이 아니라 gate BLACKLIST 에 넣지 않는다(좌석 종료는 실제 변화 = DELTA 정당).
+                "exited": s.get("exited") if isinstance(s.get("exited"), bool) else None,
                 "status_age_secs": age_secs if isinstance(age_secs, int) else None,
                 "usage_ctx_tokens": ctx_tokens if isinstance(ctx_tokens, int) else None,
+                # ★WP6-2 실측 축(정본) — javis_hud_bridge.pick_ctx 와 같은 규칙. 60% 판정은 이 값으로
+                #   한다(pick_node_ctx). 가산 키 — 기존 키·의미 무변(live_nodes 소비자가 gate 만이 아닐 수
+                #   있고, "비어 있으면 키를 넣지 않는다" 규율은 여기 적용되지 않는다: 이 엔트리는 종전부터
+                #   결측을 None 값으로 싣는 형태다). 미측정은 반드시 None 이다(0 으로 접지 않는다).
+                "usage_ctx_pct": us.get("ctx_pct") if isinstance(us.get("ctx_pct"), (int, float)) else None,
             }
+            # ★(0.14.42 · RV3L-7) clear 가드 v3 좌석 행 `ctx_guard`(새 데몬만 · 키 없음 = 구 데몬 = None) — 가산 키.
+            #   `ctx_guarded` True = 가드 판정 좌석 · `ctx_fire_pending` = 미해결 통보 id(phase awaiting 일 때만) ·
+            #   `ctx_fire_pending_age_s` = 그 경과(시간파생 — 게이트 BLACKLIST) · `ctx_fire_job` = 그 통보의 비동기 작업 상태.
+            #   결측은 None 이다(0·빈 문자열로 접지 않는다).
+            cg = s.get("ctx_guard")
+            cg = cg if isinstance(cg, dict) else None
+            pend = None
+            if cg is not None and cg.get("phase") == "awaiting" and isinstance(cg.get("fire_id"), str) and cg.get("fire_id"):
+                pend = cg.get("fire_id")
+            since = cg.get("awaiting_since") if cg is not None else None
+            age = None
+            if pend is not None and isinstance(since, (int, float)) and not isinstance(since, bool) and since == since \
+                    and since not in (float("inf"), float("-inf")):
+                age = int(max(0.0, now - since))
+            job = cg.get("job") if cg is not None and isinstance(cg.get("job"), dict) else None
+            entry["ctx_guarded"] = True if cg is not None else None
+            entry["ctx_fire_pending"] = pend
+            entry["ctx_fire_pending_age_s"] = age
+            entry["ctx_fire_job"] = (job.get("state") if pend is not None and job is not None
+                                     and job.get("fire_id") == pend and isinstance(job.get("state"), str) else None)
             live_nodes.append(entry)
             if isinstance(idle_secs, int) and idle_secs >= IDLE_ALERT_SECS and s.get("agent_alive"):
                 idle_nodes.append(entry)
@@ -973,10 +1084,23 @@ def render_text(rep):
         if rep["idle_nodes"]:
             roles = ", ".join(n["role"] for n in rep["idle_nodes"])
             lines.append("  • ⚠ idle 5분+ 노드: %s — read-screen 확인·재지시 필요" % roles)
-        high_ctx = [n for n in rep["live_nodes"]
-                    if isinstance(n.get("context_pct"), int) and n["context_pct"] >= 60]
+        # ★WP6-2 — 60% 판정은 pick_node_ctx 한 벌(실측 > 신선한 자기보고 · 결측 None). 출처를 같이 찍는다.
+        #   낡은 자기보고가 더 이상 60% 를 못 울리므로 경보가 **줄 수 있다** — 의도한 감소다.
+        # ★(0.14.42 · RV3L-7) clear 가드 좌석은 60% 가 아니라 가드의 미해결 통보(10분+)로만 — ctx_alert_nodes 한 벌.
+        high_ctx, pending_ctx = ctx_alert_nodes(rep["live_nodes"])
+        if pending_ctx:
+            roles = ", ".join(
+                "%s(fire=%s · %d분%s%s)" % (
+                    n["role"], fid, age // 60,
+                    "" if p is None else " · %d%% %s" % (p, "실측" if src == "measured" else "추정"),
+                    "" if not n.get("ctx_fire_job") else " · 비동기 작업 %s" % n.get("ctx_fire_job"))
+                for n, fid, age, p, src in pending_ctx)
+            lines.append("  • ⚠ clear 통보 미집행 %d분+ 노드(컨텍스트 가드 판정): %s — CSO 가 `cys cycle-agent --fire <fire> "
+                         "--detach` 로 집행(손 집행도 --fire 필수 · 가드가 이미 끝난 사이클이면 87 로 건너뛴다)"
+                         % (CTX_FIRE_PENDING_ALERT_S // 60, roles))
         if high_ctx:
-            roles = ", ".join("%s(%d%%)" % (n["role"], n["context_pct"]) for n in high_ctx)
+            roles = ", ".join("%s(%d%% %s)" % (n["role"], p, "실측" if src == "measured" else "추정")
+                              for n, p, src in high_ctx)
             lines.append("  • ⚠ 컨텍스트 60%%+ 노드: %s — cycle-agent 집행 검토" % roles)
     return "\n".join(lines)
 

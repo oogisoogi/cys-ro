@@ -11,7 +11,7 @@
 #
 # 한계(정직): 정적 패턴 매칭이다 — 난독화된 시크릿·신종 토큰 형식·이미지 내 텍스트는 못 잡는다.
 #            이는 회귀 방지 1차선이지 완전한 비밀유출 방어가 아니다(근본 한계 명문화).
-# exit 0=clean / 1=발견(차단) / 2=인자·환경 오류.
+# exit 0=clean / 1=발견(차단) / 2=인자·환경 오류 **또는 판정 불가**(아래 ⑥ · 원작자 U4 C4-⑤).
 #
 # ★2026-09-20 배치화(TICKET=v110-secret-scan · release run 35508900699 윈 레그 사고):
 #   종전은 **파일마다** grep·sed 를 약 14개 spawn 하는 루프였다(추적 1045파일 → 실측 17,426 spawn).
@@ -32,19 +32,46 @@
 #      내보내 `[ -f ]` 에서 조용히 빠졌다(파일 수에는 들어가 건너뛴 사실도 안 보였다). ⑶ `--all` 인데 0건 =
 #      측정 실패(exit 2). ⑷ 목록에 있는데 파일이 아닌 것 = exit 2. ⑸ grep 오류(rc≥2 — 읽기 거부 등) = exit 2
 #      (종전 `2>/dev/null || true` 가 삼켰다). 출력 계약(발견 줄 형식 · clean 줄)은 불변.
+#   ★1.1.8 편입(원작자 0.14.43 병합): 원작자 원판(아래 블록 · 7e363c59)과 효과가 같은 우리 판이라 우리 배치 구조를
+#     유지하고 원작자 잔여 두 갈래만 받았다 — ⓐ git 목록 명령 실패 = exit 2(staged 모드에서 `git diff --cached`
+#     실패가 0건 → 「대상 없음」 exit 0 으로 접히던 틈) ⓑ `--all` 인데 제외 뒤 실제로 연 파일 0건 = exit 2.
+#     ⚠차이(정직 · 우리 유지): 원작자는 `--all`/staged 목록의 작업 폴더 부재 항목을 건너뛰지만 우리는 ⑷ 대로 exit 2.
+# ★'못 본 것 = clean' 폐쇄(U4 C4-⑤ · 2026-09-23). 종전에는 아래 네 경로가 전부 `✓` exit 0 이었다:
+#   ① 비-git 작업 디렉터리 — `cd "$(git rev-parse …)" || exit 2` 가드가 **죽은 코드**였다(`cd ""` 는
+#      bash 에서 성공한다) → `--all` 이 `git ls-files` 실패 → 0건 → '✓ 스캔 대상 없음'.
+#   ② `--all` 대상 0건 — 형제 `scan-pack-secrets.sh` 는 같은 상황에서 exit 2 인데 이쪽만 초록(비대칭).
+#   ③ 명시 경로 모드의 부재 경로 — `[ -f ] || continue` 가 조용히 건너뛰고 clean.
+#   ④ 판독 실패 — `grep … 2>/dev/null … || true` 가 rc=2(읽기 실패·정규식 엔진 오류)까지 삼켰다.
+#   이제 넷 다 exit 2(판정 불가)다. staged 모드의 0건(스테이징 없음)만 정상 '대상 없음' 으로 남는다.
+#   검체: 부트 건강성 러너의 H-SECRET-2(5축 · 양성 대조 포함 · 러너 파일명을 여기 적지 않는다 —
+#   H-SECRET-1 ⓒ 가 이 파일에서 그 이름을 '스캐너 자기 면제' 로 읽는다).
 set -euo pipefail
 top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
-[ -n "$top" ] && cd "$top" || { echo "git repo 아님"; exit 2; }
+if [ -z "$top" ] || ! cd "$top"; then
+  echo "✗ secret-scan: git 저장소가 아니다 — 스캔 대상을 정할 수 없다(판정 불가 · exit 2)" >&2
+  exit 2
+fi
 
 # grep 의 rc: 0=찾음 · 1=없음 · 2↑=오류. 오류를 「없음」 으로 접으면 못 읽은 파일이 깨끗한 파일이 된다.
 grep_rc_ok() { [ "$1" -le 1 ] || { echo "✗ secret-scan: grep 오류(rc=$1 · $2) — 판정 불가(fail-closed)"; exit 2; }; }
 
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+list_file="$tmp/list"
+
 mode="${1:-staged}"
 files=()
+# ★목록은 NUL 구분(-z)으로 받는다 — 줄 단위는 비ASCII 경로를 `"…\355…"` 로 따옴표 인용해
+#   `[ -f ]` 가 거짓이 되고 그 파일이 **조용히** 빠진다(같은 계급). git 실패는 판정 불가다.
 case "$mode" in
-  --all)      while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z) ;;
-  --staged|staged|"") while IFS= read -r -d '' f; do files+=("$f"); done \
-                  < <(git diff --cached --name-only -z --diff-filter=ACM) ;;
+  --all)
+    git ls-files -z > "$list_file" \
+      || { echo "✗ secret-scan: git ls-files 실패 — 판정 불가(exit 2)" >&2; exit 2; } ;;
+  --staged|staged|"")
+    git diff --cached --name-only --diff-filter=ACM -z > "$list_file" \
+      || { echo "✗ secret-scan: git diff --cached 실패 — 판정 불가(exit 2)" >&2; exit 2; } ;;
+esac
+case "$mode" in
+  --all|--staged|staged|"") while IFS= read -r -d '' f; do files+=("$f"); done < "$list_file" ;;
   *)          files=("$@") ;;
 esac
 if [ "${#files[@]}" -eq 0 ]; then
@@ -66,9 +93,16 @@ dummy_user_re='/Users/('"$dummy_names"')(/|"|$)'
 # Windows 홈의 더미 판 — `C:\Users\x\…`·`C:\Users\x>`. 경계는 '이름 문자가 아닌 것'으로 본다
 # (뒤에 `\`·`>`·공백·따옴표 등 무엇이 오든 이름 자체가 더미면 통과).
 win_dummy_user_re='[A-Za-z]:\\+Users\\+('"$dummy_names"')([^A-Za-z0-9._-]|$)'
-# 이메일 허용(공개 연락처가 의도적으로 박힌 배포 문서만 — SECURITY.md 취약점 신고 연락처 포함)
-email_allow_re='^(README\.md|README\.en\.md|SECURITY\.md)$'
-email_fp_re='example\.(com|org|net)|noreply|@types/|@google/|@tauri|@scope|user@host|you@'
+# 이메일 허용 — ★성찰 A·B(minor): 종전에는 README·SECURITY·feedback.rs **파일 전체**를 이메일
+#   스캔에서 뺐다(`email_allow_re` 파일 단위 skip). FEEDBACK_TO 한 줄(28행)을 허용하려고
+#   1,439행짜리 feedback.rs(테스트 포함) 전체가 면제돼, 앞으로 그 파일에 실수로 들어오는
+#   다른 실주소(디버그 프린트·오타 픽스처 등)를 H-SECRET 게이트가 조용히 통과시킨다 — 파일
+#   단위 skip 자체가 오탐(false-negative) 확대 경로다. 네 파일 모두 **같은 공개 주소**
+#   (cysinsight@gmail.com — README·SECURITY 취약점 신고 연락처 = feedback.rs FEEDBACK_TO,
+#   feedbackwiring.test.ts 가 두 문서와 대조)뿐이므로, 파일을 통째로 빼는 대신 **그 주소 하나만**
+#   전역 오탐 목록(email_fp_re)에 올린다 — 이 네 파일을 포함해 저장소 어디서든 다른 실주소는
+#   그대로 잡힌다(허용 폭이 파일에서 리터럴 주소로 좁아졌다).
+email_fp_re='example\.(com|org|net)|noreply|@types/|@google/|@tauri|@scope|user@host|you@|cysinsight@gmail\.com'
 # 개인 계정 핸들 denylist(맨몸) — /Users·.claude- 접두 없이 계정키·설정값으로 박힌 개인 핸들도 차단한다.
 # 넓은 패턴 대신 '알려진 개인 핸들'만 명시 등재해 제네릭 영어단어 오탐을 배제한다(deny-by-default 유지).
 # ysfuture = 오너 개인 alias·이메일 prefix. 부분일치라 'claude-ysfuture'·'ysfuture@…'도 함께 걸린다.
@@ -96,7 +130,6 @@ rule5_re='sk-ant-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{10}|github_pat_[
 # 5) 개인 계정 핸들(맨몸 denylist) — 접두(/Users·.claude-) 없이 계정키로 박혀도 차단(규칙2 보강)
 rule6_re="$handle_deny_re"
 
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 findings="$tmp/findings"
 
 # ── 대상 목록 확정 ────────────────────────────────────────────────────────────
@@ -116,13 +149,15 @@ if [ -s "$tmp/missing" ]; then
   exit 2
 fi
 rc=0; grep -vE -e "$skip_re" "$tmp/exists" > "$tmp/flist" || rc=$?; grep_rc_ok "$rc" "제외 목록"
-# 규칙 3(이메일)만 파일 단위 허용목록이 있다 — 종전의 per-file `grep -qE "$email_allow_re"` 와 동치.
-rc=0; grep -vE -e "$email_allow_re" "$tmp/flist" > "$tmp/flist_email" || rc=$?; grep_rc_ok "$rc" "이메일 허용 목록"
+# 규칙 3(이메일)도 이제 다른 규칙과 같은 파일 목록을 본다 — 파일 단위 면제 없음(원작자 910cef8d · 1.1.8 편입).
+#   허용은 email_fp_re 의 주소 단위로만 한다(위 「이메일 허용」 주석).
 
 scan_files=(); n_scan=0
 while IFS= read -r f; do scan_files+=("$f"); n_scan=$((n_scan+1)); done < "$tmp/flist"
-mail_files=(); n_mail=0
-while IFS= read -r f; do mail_files+=("$f"); n_mail=$((n_mail+1)); done < "$tmp/flist_email"
+# ★(원작자 U4 C4-⑤ 잔여 · 1.1.8 편입) `--all` 인데 제외 뒤 실제로 열 파일이 0건 = 아무것도 안 본 것 — 판정 불가.
+if [ "$mode" = "--all" ] && [ "$n_scan" -eq 0 ]; then
+  echo "✗ secret-scan: --all 인데 실제로 연 파일 0건(목록 ${#files[@]}건 전부 제외) — 판정 불가(fail-closed)"; exit 2
+fi
 
 # ── 규칙별 배치 스캔 ──────────────────────────────────────────────────────────
 # 청크 상한: Windows CreateProcess 명령줄 32,767자 제약 때문에 전량을 한 번에 넘기지 않는다.
@@ -145,10 +180,8 @@ if [ "$n_scan" -gt 0 ]; then
   batch_grep "$tmp/raw2" "$rule2_re" "${scan_files[@]}"
   batch_grep "$tmp/raw3" "$rule3_re" "${scan_files[@]}"
   batch_grep "$tmp/raw5" "$rule5_re" "${scan_files[@]}"
+  batch_grep "$tmp/raw4" "$rule4_re" "${scan_files[@]}"
   batch_grep "$tmp/raw6" "$rule6_re" "${scan_files[@]}"
-fi
-if [ "$n_mail" -gt 0 ]; then
-  batch_grep "$tmp/raw4" "$rule4_re" "${mail_files[@]}"
 fi
 
 # ── 정렬 키 부여 + 필터 대상 분리 (awk = 구조 작업만) ────────────────────────

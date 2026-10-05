@@ -528,7 +528,7 @@ async fn send_input(
     // ★R5: 이 문안을 **UI 코드가 조립했는가**(전출 지시·재기동 명령·경로 삽입 = true) —
     // 사용자가 자판으로 친 실키(sendRaw/붙여넣기)는 false(미지정)다. 아래 본문 주석 참조.
     machine_origin: Option<bool>,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     // human=true: T3-13 타이핑 가드의 신호 — UI 키 입력을 '사람'으로 표시해
     // 원격 주입이 사람의 미완성 입력을 오염시키지 못하게 한다.
     // queued=true(전출 복원 주입 등 후속 지시)는 사람 타이핑이 아니므로 human=false —
@@ -592,12 +592,15 @@ async fn send_input(
             params["operator_token"] = json!(t);
         }
     }
-    // ★④(1.1.7 · 원작자 C-06 의 우리 판) 데몬 오류 **코드**를 UI 까지 올린다 — `rpc_on` 은 message 만 올려
-    //   초안 게이트 거부(code=typing_guard · message 꼬리 `[draft_gate:…]`)와 다른 실패를 UI 가 가를 수 없었다.
-    //   형식 = 「{code}: {message}」(코드가 없으면 message 만) — 기존 소비부는 문자열을 그대로 보이기만 한다.
+    // ★④(1.1.7 · 원작자 C-06 의 우리 판) + 원작자 0.14.31 성찰 C1 · 0.14.39 성찰2 major 합성:
+    //   ⑴ 데몬 오류 **코드**를 UI 까지 올린다 — `rpc_on` 은 message 만 올려 초안 게이트 거부(code=typing_guard ·
+    //   message 꼬리 `[draft_gate:…]`)와 다른 실패를 UI 가 가를 수 없었다(원작자 restartInvokeFailureReason 도 같은 축).
+    //   형식 = 「{code}: {message}」(코드가 없으면 message 만 — send_input_error_text).
+    //   ⑵ 성공 응답은 **그대로** 돌려준다(원작자 C1) — queued 적재 응답의 `queue_entry_id`·`durable` 을 버리면 GUI 가
+    //   내구 미확정 인계 뒤 원본을 닫아 인계를 잃을 수 있다(ui/src/transfer.ts `parseEnqueueReceipt`).
     let resp = rpc_full(&sock, "surface.send_text", params).await?;
     if resp["ok"].as_bool() == Some(true) {
-        return Ok(());
+        return Ok(resp["result"].clone());
     }
     Err(send_input_error_text(&resp))
 }
@@ -2195,12 +2198,16 @@ fn run_capture_with_timeout_in(
     ));
     let sink = std::fs::File::create(&out_path)
         .map_err(|e| format!("{program} 출력 임시파일 생성 실패({}): {e}", out_path.display()))?;
-    let spawned = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(sink))
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(std::process::Stdio::null());
+    // ★U5(0.14.41): 호출자가 지금은 macOS 전용이지만, 콘솔 없는 cys-app 의 콘솔 자식은 예외 없이
+    // 창 정책을 건다(lib.rs census `consoleless_spawns_carry_window_policy`). 비 Windows 무동작.
+    no_console(&mut command);
+    let spawned = command.spawn();
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
@@ -3349,6 +3356,279 @@ fn last_app_version_path() -> std::path::PathBuf {
     cys::home_dir().join(".cys/.last-app-version")
 }
 
+/// ★(0.14.43 · J2) 업데이트 '시도 기록' 경로 — 인앱 업데이트가 설치기를 띄우기 **직전**에 쓰고, 다시 뜬 앱의
+/// `update_attempt_report` 가 한 번 읽어 판정한다. 윈도우에서는 업데이터 플러그인이 설치기를 `ShellExecuteW` 로 띄운
+/// 뒤 반환값을 버리고 `std::process::exit(0)` 하므로, 설치기가 막혀도(스마트 앱 컨트롤 등) 앱은 이미 종료돼 있고
+/// `install_update` 의 그 아래 코드(검증·핸드오프)는 실행되지 않는다 — 이 파일이 '설치하려 했다'는 유일한 흔적이다.
+/// pending_restore_path 와 같은 ~/.cys 아래에 둔다(두 프로세스 공유).
+fn update_attempt_path() -> std::path::PathBuf {
+    cys::home_dir().join(".cys/.update-attempt.json")
+}
+
+/// 시도 기록 파일의 내용 — `{"from": 설치 직전 버전, "to": 설치하려던 버전, "at": 유닉스 초}`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct UpdateAttempt {
+    from: String,
+    to: String,
+    at: u64,
+}
+
+/// 기록 나이가 이 값(초) 미만이면 판정을 미룬다 — 설치기가 아직 도는 중일 수 있어 성급한 오보를 피한다.
+const UPDATE_ATTEMPT_MIN_AGE_SECS: u64 = 90;
+
+/// 재시작 뒤 1회 판정 결과 — 부작용 없는 순수 값(기록 파일 처리는 `update_attempt_report_at` 이 한다).
+#[derive(Debug, PartialEq, Eq)]
+enum AttemptVerdict {
+    /// 기록 없음(또는 판독 실패로 지워졌다) — 침묵.
+    None,
+    /// 알릴 것이 없다 — 현재 버전 ≠ 기록의 from: 새 버전이 깔렸거나 그 사이 다른 버전을 손으로 깔았다.
+    Moot,
+    /// 현재 버전 == from 인데 기록이 너무 젊다 — 설치기가 아직 도는 중일 수 있다. `wait_secs` 뒤에 다시 본다.
+    TooYoung { wait_secs: u64 },
+    /// 현재 버전 == from 이고 충분히 지났다 — 업데이트가 설치되지 않았다.
+    Failed { from: String, to: String, at: u64 },
+}
+
+/// ★(성찰 2회차 R2F-UI · A4 n1) 앱의 되돌리기 노브(`CYS_UPDATE_VERIFY` · `CYS_UPDATE_CHECKED_LAUNCH` · `CYS_DEPT_CREATE_STREAM`) 값 해석 **하나** — **앞뒤 공백을 걷은 값이 `0`** 이면 끈다(데몬의 다른 노브와 같은 규칙).
+/// 종전은 정확히 `"0"` 만 꺼서, 윈도우 cmd 의 `set X=0 && …` 가 값 끝에 붙이는 공백(`"0 "`)이면 되돌리기 손잡이가 듣지 않았다. 셋은 모두 이 함수의 부정이다(검체가 셋의 본문을 같은 식으로 묶는다).
+fn knob_turned_off(v: Option<&str>) -> bool {
+    v.map(str::trim) == Some("0")
+}
+
+/// `CYS_UPDATE_VERIFY` 해석(되돌리기 노브) — 앞뒤 공백을 걷은 값이 `"0"` 이면 끈다(그 밖의 값·빈 값·미설정은 켬 — `knob_turned_off`). 끄면 `install_update` 는
+/// 시도 기록을 쓰지 않고 `update_attempt_report` 는 늘 null 을 돌려준다(이 기능이 없던 때와 같은 거동).
+fn update_verify_from_env(v: Option<&str>) -> bool {
+    !knob_turned_off(v)
+}
+
+/// ★(0.14.43 · WU) `CYS_UPDATE_CHECKED_LAUNCH` 해석(되돌리기 노브) — 앞뒤 공백을 걷은 값이 `"0"` 이면 끈다(그 밖의 값·빈 값·미설정은 켬 — `knob_turned_off`). 끄면 윈도우 `install_update` 는
+/// 종전 경로(업데이터 플러그인의 `download_and_install` 그대로 — 설치기를 띄운 뒤 반환값을 보지 않고 곧바로 종료)를 쓴다. 읽는 곳은
+/// `install_update` 한 곳이다. 맥·리눅스는 이 노브를 보지 않는다(분기 자체가 컴파일되지 않는다).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn update_checked_launch_from_env(v: Option<&str>) -> bool {
+    !knob_turned_off(v)
+}
+
+/// ★(0.14.43 · WU) 설치기 실행 결과의 처리 정책(윈도우 `install_update` 분기가 쓴다 · 부작용 없는 순수 함수 — 시험은 맥에서도 돈다):
+/// 띄웠으면(`Ok`) 아무것도 하지 않고 `Ok` 를 돌려주고(그 뒤의 종료는 호출부 몫이다), 막혔으면(`Err`) `on_failed`(임시 설치 파일 정리·시도 기록 삭제)만
+/// 한 번 하고 `installer_launch_failed:<코드>:<반환값>` 오류 문자열을 돌려준다. **어느 쪽도 여기서 프로세스를 끝내지 않는다.**
+#[cfg_attr(not(windows), allow(dead_code))]
+fn settle_launch(launched: Result<(), cys::update_launch::LaunchError>, on_failed: impl FnOnce()) -> Result<(), String> {
+    match launched {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            on_failed();
+            Err(e.to_string())
+        }
+    }
+}
+
+/// 시도 기록 판정 — 부작용 없는 순수 함수(검체 대상). `now - at` 은 `saturating_sub` 라 시계가 거꾸로 간 기록(at > now)은
+/// 나이 0 으로 본다(→ TooYoung). 판독 실패는 호출부(`read_update_attempt_at`)가 기록을 지우고 `None` 으로 접는다.
+fn decide_update_attempt(attempt: Option<&UpdateAttempt>, current: &str, now: u64) -> AttemptVerdict {
+    let Some(a) = attempt else {
+        return AttemptVerdict::None;
+    };
+    if current != a.from {
+        return AttemptVerdict::Moot;
+    }
+    let age = now.saturating_sub(a.at);
+    if age < UPDATE_ATTEMPT_MIN_AGE_SECS {
+        return AttemptVerdict::TooYoung {
+            wait_secs: UPDATE_ATTEMPT_MIN_AGE_SECS - age,
+        };
+    }
+    AttemptVerdict::Failed {
+        from: a.from.clone(),
+        to: a.to.clone(),
+        at: a.at,
+    }
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 시도 기록 쓰기(최선 노력 — 호출부는 실패를 무시하고 설치를 계속한다. 이 기록이 업데이트를 막아서는 안 된다).
+fn write_update_attempt_at(path: &std::path::Path, from: &str, to: &str, at: u64) -> std::io::Result<()> {
+    let rec = UpdateAttempt {
+        from: from.to_string(),
+        to: to.to_string(),
+        at,
+    };
+    let json = serde_json::to_string(&rec).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(path, json)
+}
+
+/// ★(0.14.43 · R1F-UA · S3 minor 2) 설치기가 **뜬 직후** 시도 기록의 기준 시각(`at`)을 `now` 로 다시 쓴다 — 최선 노력(실패는 무시한다: 이 기록이 설치를 막아서는 안 된다).
+/// 처음 기록은 **받기 전**에 찍힌다(`install_update`) — 느린 회선에서는 설치기가 뜰 때 판정 보류 창(`UPDATE_ATTEMPT_MIN_AGE_SECS` · 90초)이 이미 지나 있어, 설치기가 도는 동안
+/// 사용자가 구 앱을 다시 열면(설치기가 첫 단계에서 GUI 를 끝내므로 "꺼졌네" 하고 다시 여는 경우) 설치가 진행 중인데도 "설치되지 않았습니다"가 뜬다.
+/// 창의 기준을 '설치기가 뜬 시각'으로 옮긴다(`from`·`to` 는 처음 기록과 같은 값을 받는다). `verify_on` 이 꺼져 있으면(`CYS_UPDATE_VERIFY=0`) 아무것도 쓰지 않는다 —
+/// 처음에도 쓰지 않았으니 이 노브가 기록을 되살려서는 안 된다.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn restamp_update_attempt_at(verify_on: bool, path: &std::path::Path, from: &str, to: &str, now: u64) {
+    if verify_on {
+        let _ = write_update_attempt_at(path, from, to, now);
+    }
+}
+
+/// 시도 기록 삭제(최선 노력 · 없어도 무해).
+fn clear_update_attempt_at(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// 시도 기록 읽기 — 파일이 없으면 None. **내용이 깨졌으면**(깨진 JSON·필드 누락·UTF-8 아님) 기록을 지우고 None(침묵 — 읽지 못한
+/// 기록으로 오보하지 않고, 같은 깨진 파일을 다음 기동에도 되풀이해 읽지 않는다). 내용이 아니라 **읽기 자체**가 일시적으로 실패하면
+/// (다른 프로그램이 잠근 파일·권한) None 만 돌려주고 기록은 남긴다 — 멀쩡한 기록을 일시 오류 때문에 지우지 않고 다음 기동에 다시 본다.
+fn read_update_attempt_at(path: &std::path::Path) -> Option<UpdateAttempt> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            clear_update_attempt_at(path); // UTF-8 이 아니다 = 깨진 내용
+            return None;
+        }
+        Err(_) => return None, // 일시적 읽기 오류 — 지우지 않는다
+    };
+    match serde_json::from_str::<UpdateAttempt>(&text) {
+        Ok(a) => Some(a),
+        Err(_) => {
+            clear_update_attempt_at(path);
+            None
+        }
+    }
+}
+
+/// 재시작 뒤 1회 보고(`update_attempt_report` 의 몸통 — 경로·시각·OS·SAC 조회를 인자로 받아 검체가 임시 디렉터리 위에서 돈다).
+///  · None → null · Moot → 기록 삭제 후 null
+///  · TooYoung → 기록 **유지** · `{"pending": true, "wait_secs": N}`
+///  · Failed → 기록 **삭제**(1회만 알린다 — 재시도·반복 알림 없음) · `{"failed": true, "from", "to", "at", "os", "sac"}`
+/// `sac`(스마트 앱 컨트롤 조회 — 윈도우에서는 `reg query` 1회)는 **Failed 일 때만** 부른다.
+fn update_attempt_report_at(
+    path: &std::path::Path,
+    current: &str,
+    now: u64,
+    os: &str,
+    sac: impl FnOnce() -> Option<&'static str>,
+) -> Option<Value> {
+    let attempt = read_update_attempt_at(path);
+    match decide_update_attempt(attempt.as_ref(), current, now) {
+        AttemptVerdict::None => None,
+        AttemptVerdict::Moot => {
+            clear_update_attempt_at(path);
+            None
+        }
+        AttemptVerdict::TooYoung { wait_secs } => Some(json!({"pending": true, "wait_secs": wait_secs})),
+        AttemptVerdict::Failed { from, to, at } => {
+            let report = json!({"failed": true, "from": from, "to": to, "at": at, "os": os, "sac": sac()});
+            clear_update_attempt_at(path);
+            Some(report)
+        }
+    }
+}
+
+/// `reg query` 출력에서 스마트 앱 컨트롤 상태를 읽는다 — `VerifiedAndReputablePolicyState    REG_DWORD    0x1` 꼴의 줄을 찾아
+/// `0x0` → "off" · `0x1` → "on" · `0x2` → "eval"(평가 모드) · 그 밖·줄 없음 → None. 값 이름은 대소문자를 가리지 않고 칸 사이의
+/// 공백은 가변이다. 순수 함수(검체 대상 — 양쪽 OS 에서 컴파일된다).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_sac_state(reg_stdout: &str) -> Option<&'static str> {
+    for line in reg_stdout.lines() {
+        let mut cols = line.split_whitespace();
+        let (Some(name), Some(kind), Some(value)) = (cols.next(), cols.next(), cols.next()) else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("VerifiedAndReputablePolicyState") || !kind.eq_ignore_ascii_case("REG_DWORD") {
+            continue;
+        }
+        let hex = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X"))?;
+        return match u32::from_str_radix(hex, 16).ok()? {
+            0 => Some("off"),
+            1 => Some("on"),
+            2 => Some("eval"),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// 이 PC 의 Windows 스마트 앱 컨트롤 상태 — "on" | "off" | "eval" | None(판정 불가·윈도우 아님). 읽기 전용 · 최선 노력.
+/// 플랫폼 갈라짐은 **본문 안**에 둔다(`bundle_integrity` 와 같은 형태 — 최상위 cfg 로 아이템을 지우지 않는다).
+/// `reg.exe` 는 콘솔 창이 번쩍이지 않게 `no_console` 을 건다. 실패·비 0 종료는 None(침묵 — 모르면 말하지 않는다).
+fn smart_app_control_state() -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        let reg = std::env::var_os("SystemRoot")
+            .map(|r| std::path::PathBuf::from(r).join("System32").join("reg.exe"))
+            .unwrap_or_else(|| std::path::PathBuf::from("reg.exe"));
+        let mut cmd = std::process::Command::new(reg);
+        cmd.args([
+            "query",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy",
+            "/v",
+            "VerifiedAndReputablePolicyState",
+        ]);
+        no_console(&mut cmd);
+        let out = cmd.output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        return parse_sac_state(&String::from_utf8_lossy(&out.stdout));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// ★(0.14.43 · J2) 재시작 뒤 1회 판정 pull — 기동 때 UI 가 부른다(emit 이 listen 등록 전에 유실되는 것을 pull 로 회수하는
+/// 저장소 관례). 응답: null(알릴 것 없음) · `{"pending": true, "wait_secs": N}`(설치기가 아직 도는 중일 수 있다 — 기록 유지)
+/// · `{"failed": true, "from", "to", "at", "os", "sac"}`(설치되지 않았다 — 기록은 이 호출이 지웠다: 1회만 알린다).
+/// `CYS_UPDATE_VERIFY=0` 이면 늘 null. 판독·조회 실패는 전부 null — 이 기능 때문에 부팅이나 업데이트가 막히지 않는다.
+#[tauri::command]
+async fn update_attempt_report() -> Option<Value> {
+    if !update_verify_from_env(cys::env_compat("CYS_UPDATE_VERIFY").as_deref()) {
+        return None;
+    }
+    tokio::task::spawn_blocking(|| {
+        update_attempt_report_at(
+            &update_attempt_path(),
+            env!("CARGO_PKG_VERSION"),
+            unix_now_secs(),
+            std::env::consts::OS,
+            smart_app_control_state,
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// ★(0.14.43 · J2) 이 PC 의 스마트 앱 컨트롤 상태 pull — 패치 설치 확인 창이 열리기 전에 UI 가 부른다. "on" | "off" | "eval" | null.
+/// 윈도우가 아니면 프로세스를 띄우지 않고 곧바로 null. 읽기 전용 · 실패는 null.
+#[tauri::command]
+async fn smart_app_control() -> Option<String> {
+    tokio::task::spawn_blocking(smart_app_control_state)
+        .await
+        .ok()
+        .flatten()
+        .map(str::to_string)
+}
+
+/// ★(0.14.43 · R1F-UA) 윈도우 `install_update` 가 '확인 실행'(설치기를 띄운 결과를 보고, 막혔으면 앱을 닫지 않고 알린다 — `CYS_UPDATE_CHECKED_LAUNCH`)을 쓰는지의 순수 판정.
+/// 그 노브는 윈도우만 본다(맥·리눅스는 분기 자체가 컴파일되지 않는다) — 그 밖 OS 는 늘 `true`(기본값). 노브 값의 해석은 `update_checked_launch_from_env` 하나다.
+fn update_checked_launch_enabled_for(is_windows: bool, v: Option<&str>) -> bool {
+    !is_windows || update_checked_launch_from_env(v)
+}
+
+/// ★(0.14.43 · R1F-UA) 확인 실행이 켜져 있는지 pull — 패치 설치 확인 창이 스마트 앱 컨트롤 안내 문단의 판을 고르려고 UI 가 부른다(스마트 앱 컨트롤이 **켜짐**일 때만 부른다 — 윈도우뿐).
+/// 꺼져 있으면(`CYS_UPDATE_CHECKED_LAUNCH=0`) 막혀도 앱이 알림 없이 닫히므로 문단이 그 사실을 말한다. 읽기 전용 · 노브를 읽는 식은 `install_update` 의 윈도우 분기와 같다.
+/// 등록은 `smart_app_control` 과 같다 — `generate_handler!` 한 곳(별도 권한·capability 항목 없음: 앱 자체 명령은 `capabilities/default.json` 에 적지 않고 `tauri_build::build()` 기본값으로 열린다).
+#[tauri::command]
+async fn update_checked_launch_enabled() -> bool {
+    update_checked_launch_enabled_for(cfg!(windows), cys::env_compat("CYS_UPDATE_CHECKED_LAUNCH").as_deref())
+}
+
 /// GUI 온보딩 완료 마커 — "이 GUI가 이 바이너리 버전에서 온보딩(팩+hook(+win: schtasks))을
 /// **성공** 완료했는가". writer는 GUI 온보딩 성공 경로 단 하나다 — CLI autostart·잔존 schtasks·
 /// ONLOGON 등 어떤 순서로 cysd가 먼저 돌아도 이 마커를 선점할 수 없다(0.12.52 cys-neo 회귀 시정:
@@ -3360,10 +3640,607 @@ fn gui_onboarded_path() -> std::path::PathBuf {
     cys::home_dir().join(".cys/.gui-onboarded")
 }
 
-/// GUI 온보딩 실행 여부 — 부작용 없는 순수 판정(단위테스트 대상). 마커 내용이 현재 바이너리
-/// 버전과 정확히 일치할 때만 스킵. 부재·불일치·읽기 실패 = 실행(fail-open — 치유 방향).
-fn needs_gui_onboard(marker: Option<&str>, current_version: &str) -> bool {
-    marker.map(str::trim) != Some(current_version)
+/// GUI 온보딩 실행 여부 — 부작용 없는 순수 판정(단위테스트 대상). 마커 내용이 현재 바이너리 버전과 정확히
+/// 일치하고 **온보딩의 결과(각성 훅)가 실제로 있을 때만** 스킵. 부재·불일치·읽기 실패·훅 부재·판정 불가 = 실행
+/// 대상(fail-open — 치유 방향). 판정 불가(W-4-a)를 실제로 몇 번 돌릴지는 `plan_gui_onboard` 가 정한다(W-4-b).
+/// ★W-3-a(2026-09-11 · reviewer-codex R3-B1): 마커는 '온보딩이 한 번 성공했다'는 기록일 뿐 지금 훅이 있다는
+/// 증거가 아니다. 완전 초기화와 늦게 끝난 온보딩이 어떤 순서로 겹쳐도 — 초기화 뒤에 마커가 다시 써지거나,
+/// 초기화가 목록을 뽑은 뒤 마커가 생겨 격리를 피하거나 — 남는 것은 '마커는 맞고 훅은 없는' 상태이고, 그 상태는
+/// 다음 기동에 온보딩을 다시 돌려 스스로 치유된다. 쓰는 순서를 락 없이 맞추려던 래치(W-2 A4)는 경쟁이 남아
+/// 버렸다 — 경쟁을 이기려 하지 않고 결과를 무해하게 만든다. 이 기능과 무관하게 이미 있던 '훅만 사후 유실
+/// (마커 무결)' 상태도 같은 길로 치유된다(종전엔 doctor --fix·버전 전이에 미뤘다).
+fn needs_gui_onboard(marker: Option<&str>, current_version: &str, presence: &HookPresence) -> bool {
+    *presence != HookPresence::Installed || marker.map(str::trim) != Some(current_version)
+}
+
+/// ★W-4-a(2026-09-11 · reviewer-codex R4-M1): 각성 훅 관측 3상태 — 대상 settings 하나에도, 한 기동의 집계에도 쓴다.
+///  · `Installed` — 등재가 있다(command 축 · `hook_registered_in`).
+///  · `Missing` — 등재가 없고 온보딩이 **고칠 수 있다**(파일·등재 부재 · 팩 훅 스크립트 부재).
+///  · `Undeterminable(사유)` — init-pack 의 병합기(`cys::pack::merge_desired_hooks`)가 **계약상 거부하는** 대상(손상 JSON·
+///    읽기 불가·등재 없는 symlink·형식 불일치)이라 온보딩을 몇 번 돌려도 상태가 바뀌지 않는다. 22b59ff 는 이것을 '없음'으로
+///    보고 매 GUI 실행마다 온보딩을 돌렸다(R4-M1). ★절대 `Installed` 로 뭉개지 않는다 — 모든 오류를 '설치됨'으로 보면 훅 없는
+///    영구 반쪽(R3-B1)이 조용히 돌아온다. 대신 시도 횟수를 제한하고(W-4-b) 상한에서 어느 파일이 왜 문제인지 보인다(W-4-c).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HookPresence {
+    Installed,
+    Missing,
+    Undeterminable(String),
+}
+
+/// 대상 settings 하나의 3상태 — `merge_desired_hooks` 가 거부하는 조건을 **같은 순서**로 본다(symlink → 읽기 → 파싱 →
+/// 루트 형식 → 추가할 자리의 형식). 등재가 이미 있으면 symlink 를 따라 읽었어도 `Installed` 다(Claude Code 는 링크를 따라
+/// 읽는다 — 병합기가 거부하는 것은 쓰기뿐이다). 빈 파일·파일 부재는 병합기가 새로 쓰므로 `Missing`.
+fn classify_hook_settings(settings: &std::path::Path, pack: &std::path::Path) -> HookPresence {
+    let is_link = std::fs::symlink_metadata(settings)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    let root: serde_json::Value = match std::fs::read_to_string(settings) {
+        Ok(s) if s.trim().is_empty() => json!({}),
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(v) => v,
+            Err(e) => return HookPresence::Undeterminable(format!("JSON 형식이 깨져 있습니다({e})")),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !is_link => return HookPresence::Missing,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return HookPresence::Undeterminable("가리키는 파일이 없는 링크(심볼릭 링크)입니다".into())
+        }
+        Err(e) => return HookPresence::Undeterminable(format!("파일을 읽을 수 없습니다({e})")),
+    };
+    let unregistered: Vec<&cys::pack::DesiredHook> = cys::pack::AWAKENING_HOOKS
+        .iter()
+        .filter(|h| !cys::pack::hook_registered_in(&root, h.event, &cys::pack::hook_command_for(pack, h.script)))
+        .collect();
+    if unregistered.is_empty() {
+        return HookPresence::Installed;
+    }
+    if is_link {
+        return HookPresence::Undeterminable("다른 파일을 가리키는 링크(심볼릭 링크)라 cys 가 고쳐 쓰지 않습니다".into());
+    }
+    let Some(obj) = root.as_object() else {
+        return HookPresence::Undeterminable("맨 바깥이 JSON 객체({ … })가 아닙니다".into());
+    };
+    if let Some(hooks) = obj.get("hooks") {
+        if !hooks.is_object() {
+            return HookPresence::Undeterminable("\"hooks\" 항목이 JSON 객체가 아닙니다".into());
+        }
+        if let Some(h) = unregistered.iter().find(|h| hooks.get(h.event).is_some_and(|v| !v.is_array())) {
+            return HookPresence::Undeterminable(format!("\"hooks.{}\" 항목이 배열이 아닙니다", h.event));
+        }
+    }
+    HookPresence::Missing
+}
+
+/// 한 기동의 관측 — 팩 훅 스크립트 실재 + 대상 settings 별 3상태(W-4-a). 부서 팩은 대상이 없다(= `Installed`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HookObservation {
+    scripts_missing: bool,
+    targets: Vec<(std::path::PathBuf, HookPresence)>,
+}
+
+impl HookObservation {
+    /// 집계 3상태. 고칠 수 있는 부재(훅 스크립트·등재 누락)가 하나라도 있으면 `Missing` — 이번 온보딩이 그것을 고치므로
+    /// 시도 상한에 세지 않는다(판정 불가 프로필 하나 때문에 다른 프로필의 복구까지 멈추면 그 프로필이 조용한 영구 반쪽이
+    /// 된다). 고칠 것이 없고 판정 불가만 남으면 `Undeterminable`, 아무것도 없으면 `Installed`.
+    fn presence(&self) -> HookPresence {
+        if self.scripts_missing || self.targets.iter().any(|(_, s)| *s == HookPresence::Missing) {
+            return HookPresence::Missing;
+        }
+        match self.undeterminable_reason() {
+            Some(why) => HookPresence::Undeterminable(why),
+            None => HookPresence::Installed,
+        }
+    }
+
+    /// 판정 불가 대상 전부의 `<경로> — <사유>` — 시도 기록의 '같은 상태' 열쇠이자 상한 안내의 본문.
+    fn undeterminable_reason(&self) -> Option<String> {
+        let parts: Vec<String> = self
+            .targets
+            .iter()
+            .filter_map(|(p, s)| match s {
+                HookPresence::Undeterminable(why) => Some(format!("{} — {why}", p.display())),
+                _ => None,
+            })
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
+/// ★W-3-a: GUI 온보딩의 결과가 **실제로 있는가** — `cys init-pack`(src/bin/cys.rs run_init_pack)이 등록하는
+/// 것과 같은 대상·명령·집합을 본다: 홈 직하 개인 Claude 프로필(`~/.claude`·`~/.claude-*`) settings.json 전부
+/// (프로필이 하나도 없으면 init-pack 이 만드는 `~/.claude/settings.json`)에 각성 훅(`cys::pack::AWAKENING_HOOKS`)이
+/// 이 팩을 가리키는 명령 그대로 등재돼 있고, 그 훅 스크립트 파일이 팩에 있어야 '설치됨'이다. 부서 팩은 init-pack 이
+/// 개인 프로필에 훅을 쓰지 않으므로 판정 대상이 아니다(설치됨으로 본다).
+/// 등재는 command 축만 본다(`hook_registered_in` — `cys doctor`·부트 경고와 같은 관측 술어): timeout 만 달라진
+/// 설치를 '없음'으로 보면 매 기동 온보딩이 돈다.
+/// 비용(부팅마다 1회): 홈 디렉터리 목록 1회 + 프로필마다 lstat 1회·작은 JSON 읽기 + 훅 스크립트 stat 2회.
+/// ★W-4-a: 결과는 '있다/없다'가 아니라 3상태 관측(`HookObservation` · 대상별 분류 = `classify_hook_settings`)이다.
+fn observe_gui_hooks_under(home: &std::path::Path, pack: &std::path::Path) -> HookObservation {
+    if cys::pack::dept_scope_of(pack).is_some() {
+        return HookObservation { scripts_missing: false, targets: Vec::new() };
+    }
+    let scripts_missing = !cys::pack::AWAKENING_HOOKS
+        .iter()
+        .all(|h| pack.join("hooks").join(h.script).is_file());
+    let mut targets: Vec<std::path::PathBuf> = cys::pack::personal_profile_dirs_under(home)
+        .into_iter()
+        .map(|d| d.join("settings.json"))
+        .collect();
+    if targets.is_empty() {
+        targets.push(home.join(".claude/settings.json"));
+    }
+    let targets = targets
+        .into_iter()
+        .map(|settings| {
+            let state = classify_hook_settings(&settings, pack);
+            (settings, state)
+        })
+        .collect();
+    HookObservation { scripts_missing, targets }
+}
+
+fn observe_gui_hooks() -> HookObservation {
+    observe_gui_hooks_under(&cys::home_dir(), &cys::pack::pack_dir())
+}
+
+/// ★W-4-b: 판정 불가(`Undeterminable`)일 때 온보딩을 실제로 돌리는 상한 — 같은 앱 버전·같은 사유가 이어지는 동안.
+/// N=2 근거: ① 판정 불가 대상은 온보딩의 병합기가 계약상 거부하므로 재시도가 고칠 수 있는 것은 **일시 조건**뿐이다
+/// (다른 프로그램이 그 파일을 막 다시 쓰는 순간 반쪽을 읽음·잠깐의 권한 문제) — 그런 조건은 다음 실행 한 번이면
+/// 드러난다 ② 시도마다 init-pack 전체(팩 반영 + 훅 등록 · Windows 는 자동 시작 등록까지)가 돌아 앱이 늦게 뜬다 —
+/// 고칠 수 없는 시도는 사용자가 치르는 비용일 뿐이다 ③ 상한에서 안내가 뜬다(W-4-c) — 2 면 두 번째 실행에 원인과
+/// 처방을 본다(3 이면 이유 모르는 느린 실행을 한 번 더 겪는다).
+const GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS: u32 = 2;
+
+/// 한 기동의 온보딩 계획(W-4-b).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiOnboardPlan {
+    /// 할 일 없음 — 훅 있음 + 현재 버전 마커.
+    Skip,
+    /// 온보딩 — 신선·업그레이드·고칠 수 있는 부재(종전 그대로 · 상한 없음).
+    Run,
+    /// 판정 불가 상태의 n번째 시도(n ≤ 상한) — 실제로 돌기 **직전에** 기록한다(도중에 죽어도 센다).
+    RunCounted(u32),
+    /// 상한 도달 — 더 시도하지 않는다. ★`Installed` 로 치는 것이 아니다: 마커를 쓰지 않고, 매 기동 다시 관측하고,
+    /// 안내를 띄운다. 파일이 고쳐지면(사유가 바뀌거나 판정 불가가 사라지면) 기록이 초기화돼 다시 시도한다.
+    /// ★W-5: 시도 기록을 읽거나 남길 수 없을 때도 이것이다 — 몇 번 시도했는지 기억할 수 없으면 반복하지 않는다.
+    Capped,
+}
+
+/// 순수 판정 — `needs` 는 `needs_gui_onboard`, `prior_attempts` 는 같은 버전·같은 사유로 이미 한 시도 수.
+fn plan_gui_onboard(needs: bool, presence: &HookPresence, prior_attempts: u32) -> GuiOnboardPlan {
+    if !needs {
+        return GuiOnboardPlan::Skip;
+    }
+    match presence {
+        HookPresence::Undeterminable(_) if prior_attempts >= GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS => {
+            GuiOnboardPlan::Capped
+        }
+        HookPresence::Undeterminable(_) => GuiOnboardPlan::RunCounted(prior_attempts + 1),
+        _ => GuiOnboardPlan::Run,
+    }
+}
+
+/// ★W-4-b: 판정 불가 시도 기록 — 마커(`.gui-onboarded`) 옆 별도 파일 `{"version","reason","attempts"}`. 마커는 '성공'만
+/// 기록하므로(질문이 다르다) 섞지 않는다. writer 는 setup 의 `record_gui_onboard_attempt` 하나다. 완전 초기화 인벤토리
+/// (src/factory_reset.rs CYS_BASE_EXACT)에 마커와 나란히 올라 있다 — 미등록 파일은 초기화가 '오너 파일'로 보존한다.
+fn gui_onboard_attempts_path() -> std::path::PathBuf {
+    cys::home_dir().join(".cys/.gui-onboard-attempts")
+}
+
+/// 기록된 시도 수 — **같은 앱 버전·같은 사유**일 때만 이어 센다. 버전이 바뀌면(새 온보딩 코드·새 팩) 또는 사유가 바뀌면
+/// (파일이 달라졌다) 0 — 상태가 바뀌면 초기화. 기록 부재·손상 내용도 0 — 이번 시도 직전에 새 기록으로 덮으므로 상한은 여전히
+/// 걸린다(덮지 못하면 그 기동은 `Capped` — W-5-a). 읽기 자체가 실패한 기록은 여기 오지 않는다(W-5-c · `gui_onboard_plan_under`).
+fn prior_gui_onboard_attempts(record: Option<&str>, version: &str, reason: &str) -> u32 {
+    let Some(v) = record.and_then(|s| serde_json::from_str::<Value>(s).ok()) else {
+        return 0;
+    };
+    if v["version"].as_str() != Some(version) || v["reason"].as_str() != Some(reason) {
+        return 0;
+    }
+    v["attempts"].as_u64().map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// 한 기동의 계획(읽기만 — 기록 갱신은 실제 시도 직전의 `record_gui_onboard_attempt`). 반환 = (계획, 시도 기록을 기억할 수 없는 사유).
+/// ★W-5-b/c: 기록은 판정 불가일 때만 읽는다. **부재**는 신선 기계·첫 판정 불가의 정상 상태라 0 부터 센다. 그 밖의 읽기 실패는
+/// 몇 번 시도했는지 모른다는 뜻이다 — 0 으로 읽으면 매 기동이 첫 시도가 되어 상한이 오지 않는다(de6ef66 의 `.ok()`). 기억할 수
+/// 없으면 반복하지 않는다: `Capped` + 사유(상한 안내에 실린다). `Installed` 로 치는 것이 아니다.
+fn gui_onboard_plan_under(
+    seen: &HookObservation,
+    marker: Option<&str>,
+    attempts_path: &std::path::Path,
+    version: &str,
+) -> (GuiOnboardPlan, Option<String>) {
+    let presence = seen.presence();
+    let prior = match &presence {
+        HookPresence::Undeterminable(why) => match std::fs::read_to_string(attempts_path) {
+            Ok(record) => prior_gui_onboard_attempts(Some(&record), version, why),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => {
+                eprintln!("[cys-app] onboarding attempts record unreadable — 이번 기동은 시도하지 않는다: {e}");
+                return (
+                    GuiOnboardPlan::Capped,
+                    Some(format!("시도 기록을 읽을 수 없어({} — {e})", attempts_path.display())),
+                );
+            }
+        },
+        _ => 0,
+    };
+    (plan_gui_onboard(needs_gui_onboard(marker, version, &presence), &presence, prior), None)
+}
+
+/// 시도 기록 갱신 — 판정 불가 대상이 없으면 지운다(상태가 바뀌었다 = 초기화) · `RunCounted(n)` 이면 n 을 쓴다. 반환 = 이 기동이
+/// 실제로 따를 (계획, 시도 기록을 기억할 수 없는 사유) — 들어온 그대로, 또는 아래 W-5-a.
+/// ★W-5-a(R5-M1): `RunCounted(n)` 을 남기지 못하면 그 기동은 `Capped`(시도 안 함) + 사유다. 상한은 이 기록에만 기대므로, 남기지
+/// 못한 채 시도하면 다음 기동이 또 첫 시도로 읽어 상한이 영영 오지 않는다(de6ef66: 5기동 5시도·안내 0). 기억할 수 없으면 반복하지
+/// 않는다 — `Installed` 로 치는 것이 아니다(마커 미기록 · 매 기동 재관측 · 안내). 부모 폴더 부재는 실패가 아니다(W-5-b — 팩이
+/// ~/.cys 밖이면 신선 기계에 ~/.cys 가 아직 없다): 만들고 쓴다.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn record_gui_onboard_attempt(
+    attempts_path: &std::path::Path,
+    version: &str,
+    seen: &HookObservation,
+    plan: GuiOnboardPlan,
+    unrecorded: Option<String>,
+) -> (GuiOnboardPlan, Option<String>) {
+    match (seen.undeterminable_reason(), plan) {
+        (None, _) => {
+            let _ = std::fs::remove_file(attempts_path);
+        }
+        (Some(why), GuiOnboardPlan::RunCounted(n)) => {
+            let body = json!({"version": version, "reason": why, "attempts": n}).to_string();
+            let written = attempts_path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(attempts_path, body));
+            if let Err(e) = written {
+                eprintln!("[cys-app] onboarding attempts record write failed — 이번 기동은 시도하지 않는다: {e}");
+                return (
+                    GuiOnboardPlan::Capped,
+                    Some(format!("시도 기록을 남길 수 없어({} — {e})", attempts_path.display())),
+                );
+            }
+        }
+        _ => {}
+    }
+    (plan, unrecorded)
+}
+
+/// ★W-4-c/d: 한 기동의 온보딩 결과 중 사용자에게 보여야 하는 것(순수 — 단위 테스트 대상). `(kind, 본문)`.
+///  · "capped" — 판정 불가로 시도 상한에 닿았다(방금이 마지막 시도였거나 이미 상한 · 또는 시도 기록을 기억할 수 없어
+///    멈췄다 — W-5 `unrecorded`). 어느 파일이 왜 문제인지·무엇을 하면 되는지. 상한인 동안 **매 기동** 띄운다(한 번 띄우고
+///    조용해지면 그것이 조용한 영구 반쪽이다).
+///  · "restored" — 온보딩을 마친 적이 있는데(마커 있음) 등재가 빠져 있던 settings 에 이번 기동이 훅을 다시 넣었다.
+///    사용자가 손으로 지운 것을 되살렸을 수 있으므로 조용히 하지 않는다(영속 끄기는 이번 범위 밖 — 백로그).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn gui_onboard_notices(
+    plan: GuiOnboardPlan,
+    before: &HookObservation,
+    after: &HookObservation,
+    had_marker: bool,
+    unrecorded: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    let at_cap = match plan {
+        GuiOnboardPlan::Capped => true,
+        GuiOnboardPlan::RunCounted(n) => n >= GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS,
+        _ => false,
+    };
+    if let (true, Some(why)) = (at_cap, after.undeterminable_reason()) {
+        let message = match unrecorded {
+            // ★W-5: 시도 기록을 기억할 수 없어 멈췄다 — 몇 번 시도했는지는 모르므로 적지 않고, 그 사실(`unrecorded`)을 적는다.
+            Some(u) => format!(
+                "Claude 설정 파일에 cys 연결 설정(훅)을 넣을 수 없는 상태인데 {u} 자동 복구를 반복하지 않고 멈췄습니다. \
+                 문제 파일: {why}. 이 파일을 고치거나 지운 뒤 앱을 다시 여세요."
+            ),
+            None => format!(
+                "Claude 설정 파일에 cys 연결 설정(훅)을 넣지 못해 자동 복구를 멈췄습니다({}번 시도). 문제 파일: {why}. \
+                 이 파일을 고치거나 지운 뒤 앱을 다시 여세요.",
+                GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS
+            ),
+        };
+        out.push(("capped", message));
+    }
+    if had_marker {
+        let restored: Vec<String> = before
+            .targets
+            .iter()
+            .filter(|(p, s)| {
+                *s == HookPresence::Missing
+                    && after.targets.iter().any(|(q, t)| q == p && *t == HookPresence::Installed)
+            })
+            .map(|(p, _)| p.display().to_string())
+            .collect();
+        if !restored.is_empty() {
+            out.push((
+                "restored",
+                format!(
+                    "Claude 설정 파일에 빠져 있던 cys 연결 설정(훅)을 다시 넣었습니다: {}. 직접 지우셨다면 앱을 열 때 다시 \
+                     들어갑니다(끄는 설정은 아직 없습니다).",
+                    restored.join(", ")
+                ),
+            ));
+        }
+    }
+    out
+}
+
+/// ★W-4-c/d: 온보딩 안내 저장소 — 프런트는 부팅 뒤(재설치 안내창이 닫힌 뒤)에야 listen 을 걸어서, 그 전에 나간 emit 은
+/// 유실된다(emit-before-listen — bundle-damaged 의 F3 격차와 같은 기제). 그래서 **먼저 여기 쌓고 emit** 하고, 프런트는
+/// listen 을 건 **직후** `onboard_notices` 로 한 번 당긴다(같은 kind = 같은 토스트 id 라 둘 다 와도 한 줄).
+static ONBOARD_NOTICES: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
+
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn push_onboard_notice(app: &AppHandle, kind: &'static str, message: String) {
+    if let Ok(mut v) = ONBOARD_NOTICES.lock() {
+        v.retain(|(k, _)| *k != kind);
+        v.push((kind, message.clone()));
+    }
+    let _ = app.emit("onboard-notice", json!({"kind": kind, "message": message}));
+}
+
+/// ★U15(0.14.41) 개발자 도구(CLT) 없는 맥 안내의 onboard-notice kind — 프런트 `showOnboardNotice` 가 **같은
+/// 문자열**로 분기한다(배선 3자 핀 `devtools_notice_is_wired_backend_setup_and_frontend`).
+///
+/// 채널 선택: 재설치 채널(bundle-damaged)이 아니다 — 고장이 아니라 **환경 안내**다. 기존 onboard-notice 는
+/// "먼저 쌓고 emit + 프런트 listen 직후 pull" 이라 emit-before-listen 유실이 구조적으로 없다(봉인 자가진단의
+/// pull 백스톱과 같은 틀 · 반박 D-3: 데몬이 UI 보다 먼저 뜨는 cysd 에 두면 1회성 알림이 유실된다).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const DEVTOOLS_NOTICE_KIND: &str = "devtools-missing";
+
+/// 버전당 1회 스로틀 마커 — `~/.cys/state/devtools-notice-<version>`(봉인 자가진단 마커와 같은 자리·같은 규약:
+/// 업데이트되면 새 번들이므로 다시 본다).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn devtools_notice_marker() -> std::path::PathBuf {
+    cys::home_dir()
+        .join(".cys/state")
+        .join(format!("devtools-notice-{}", env!("CARGO_PKG_VERSION")))
+}
+
+/// 안내를 낼 차례인가(순수 — 회귀 핀 대상). macOS 이고 이 버전에서 아직 알리지 않았고 CLT 도구가 빠졌을 때만
+/// 안내문. 문구는 lib 정본(`macos_devtools::devtools_missing_notice`) 그대로다(사본 금지).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn devtools_notice_due(
+    os: &str,
+    already_shown: bool,
+    python_present: bool,
+    git_present: bool,
+) -> Option<String> {
+    if os != "macos" || already_shown {
+        return None;
+    }
+    cys::macos_devtools::devtools_missing_notice(python_present, git_present)
+}
+
+/// setup(macOS 블록)에서 부른다 — 판정은 파일 stat 몇 번(셔임 실행 0)이라 부트 무차단이다. 마커 쓰기는
+/// best-effort(실패해도 다음 기동에 한 번 더 알릴 뿐 — 무해). 에이전트 큐(`cys send`)로는 보내지 않는다(①폭주 무관).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn maybe_push_devtools_notice(handle: &AppHandle) {
+    let marker = devtools_notice_marker();
+    let Some(msg) = devtools_notice_due(
+        std::env::consts::OS,
+        marker.exists(),
+        cys::macos_devtools::clt_tool_present("python3"),
+        cys::macos_devtools::clt_tool_present("git"),
+    ) else {
+        return;
+    };
+    push_onboard_notice(handle, DEVTOOLS_NOTICE_KIND, msg);
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&marker, "shown");
+}
+
+/// 프런트 pull — 이번 기동에 쌓인 온보딩 안내(없으면 빈 목록).
+#[tauri::command]
+fn onboard_notices() -> Vec<Value> {
+    ONBOARD_NOTICES
+        .lock()
+        .map(|v| v.iter().map(|(k, m)| json!({"kind": k, "message": m})).collect())
+        .unwrap_or_default()
+}
+
+/// ★(0.14.41 · U14) macOS 폴더 접근 경고 저장소 — 온보딩 안내(ONBOARD_NOTICES)와 **같은 기제**를
+/// 같은 이유로 쓴다. 평소 재시작에서 백엔드 점검(`nudge_folder_permissions`)은 daemon-ready 직후
+/// 수 ms 안에 끝나고, 프런트는 await 사슬을 한참 지나서야 `perm-warning` 을 listen 한다 — 맨 emit 은
+/// 그 사이에 사라졌다(emit-before-listen · phase1 U14 반박 §1-2). 그래서 **먼저 쌓고 emit** 하고,
+/// 프런트는 listen 직후 `perm_warnings` 로 한 번 당긴다(같은 폴더 = 같은 토스트 id 라 둘 다 와도 한 장).
+/// 폴더당 1건(중복 제거) — 기동 1회 점검이라 커질 수 없다.
+/// ⚠ 기존 `onboard-notice` 경로에 태우지 않는다: 그 프런트 처리기는 capped/restored 두 kind 만
+/// 그리고 나머지를 버린다(반박 U18 R6 — 태우면 경고가 0건이 된다).
+static PERM_WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn push_perm_warning(app: &AppHandle, folder: &str) {
+    if let Ok(mut v) = PERM_WARNINGS.lock() {
+        stash_perm_warning(&mut v, folder);
+    }
+    let _ = app.emit("perm-warning", json!({"folder": folder}));
+}
+
+/// 폴더당 1건 — 같은 폴더는 최신 1건으로 바꿔 넣는다(순수 · 테스트 핀).
+fn stash_perm_warning(v: &mut Vec<String>, folder: &str) {
+    v.retain(|f| f != folder);
+    v.push(folder.to_string());
+}
+
+/// 프런트 pull — 이번 기동에 쌓인 폴더 접근 경고(비-macOS 는 항상 빈 목록).
+#[tauri::command]
+fn perm_warnings() -> Vec<Value> {
+    PERM_WARNINGS.lock().map(|v| perm_warnings_from(&v)).unwrap_or_default()
+}
+
+/// `perm_warnings()` 의 pull 본체(순수) — 저장소 내용을 `[{folder}]` 모양으로 옮긴다.
+/// 리뷰1 m1: `perm_warnings()` 자체는 락 해제만 하고 이 함수에 위임한다 — U14 R5(유실 방지)의
+/// 핵심인 "저장된 경고가 실제로 나온다"를 여기서 직접 잰다(예전엔 `take(0)` 뮤테이션이
+/// cys-app 138/138·permwiring 9/9 를 모두 통과했다 — 무검체).
+fn perm_warnings_from(v: &[String]) -> Vec<Value> {
+    v.iter().map(|f| json!({"folder": f})).collect()
+}
+
+/// ★(0.14.41 · U14) 시스템 설정 화면 고정 URL 표(순수 · 모든 OS 컴파일). UI 는 target 이름만 넘기고
+/// URL 을 만들 수 없다 — 기존 `open_url` 화이트리스트(https 전용)와 별개의 닫힌 목록이다.
+/// 전체 디스크 접근 앵커는 넣지 않는다: 이 기계의 설정 확장에서 문자열이 확인되지 않았고(조사 §2-3),
+/// 자율 에이전트 앱에 권할 권한도 아니다(반박 D2 — 매뉴얼의 최후 수단으로만).
+fn privacy_settings_url(target: &str) -> Option<&'static str> {
+    match target {
+        "files" => Some("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"),
+        "login" => Some("x-apple.systempreferences:com.apple.LoginItems-Settings.extension"),
+        _ => None,
+    }
+}
+
+/// 시스템 설정의 해당 화면을 연다(macOS 전용 — 그 밖은 Err). `/usr/bin/open` 절대경로(PATH 무의존)
+/// · 클릭 1회 = 실행 1회 · 자식은 별도 스레드가 거둔다(좀비 0).
+#[tauri::command]
+fn open_privacy_settings(target: String) -> Result<(), String> {
+    let url = privacy_settings_url(&target).ok_or_else(|| format!("unknown target: {target}"))?;
+    #[cfg(target_os = "macos")]
+    let r: Result<(), String> = std::process::Command::new("/usr/bin/open")
+        .arg(url)
+        .spawn()
+        .map(|mut child| {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        })
+        .map_err(|e| e.to_string());
+    #[cfg(not(target_os = "macos"))]
+    let r: Result<(), String> = {
+        let _ = url;
+        Err("macOS 전용".to_string())
+    };
+    r
+}
+
+/// ★재설치 감지 마커 — "이 사용자 데이터를 마지막으로 본 **설치본**이 무엇인가". 앱 번들을 지웠다
+/// 다시 깔면 번들이 새로 생성돼 이 스탬프가 달라진다. `.gui-onboarded`(버전 질문)·`.last-app-version`
+/// (복원 필요 질문)과 **질문도 작성자도 다르다 — 통합 금지**(위 마커들의 분리 교리와 동일 계열).
+/// 이 파일의 writer 는 아래 `fresh_start_ack` 단 하나다(사용자가 선택을 마친 순간에만 전진).
+fn install_identity_path() -> std::path::PathBuf {
+    cys::home_dir().join(".cys/.install-identity")
+}
+
+/// 현재 실행 중인 앱 **설치본의 신원** — `"<장치>:<inode>|<버전>"`.
+///
+/// ★리뷰 실측 반증(reviewer-codex): 처음엔 번들 **생성시각(birthtime)** 을 썼으나, 같은 tar 를 서로
+/// 다른 시각에 새 디렉터리로 풀어도 생성시각이 같았다 — "다시 설치하면 반드시 달라진다"는 가정이
+/// 성립하지 않았다(설치본이 아카이브의 시각을 그대로 들고 온다). `(장치, inode)` 로 바꾼다: 새로
+/// 복사된 번들은 **다른 파일 객체**이므로 inode 가 달라진다. inode 재사용으로 같아질 수는 있으나
+/// 그 결과는 "묻지 않음"(= 종전 동작)이라 안전한 방향이다.
+///
+/// 버전을 같은 문자열에 박제하는 이유: 업그레이드도 번들을 교체하므로 신원만 보면 정상 업데이트를
+/// 재설치로 오탐한다. `.pending-restore` 마커로 가르려던 첫 설계는 그 마커가 ①번들 교체 뒤
+/// best-effort 작성 ②복원 성공 시 제거 ③수동 업그레이드엔 부재 — 셋 다 오탐을 만들어 폐기했다.
+///
+/// **엄격 설치 경로가 아니면 `None`** — 개발 빌드(`cargo tauri dev`)와 **App Translocation**
+/// (Gatekeeper 가 앱을 무작위 읽기전용 경로에서 실행)에서 경로·inode 가 매 실행 달라져 매번 묻게
+/// 되는 것을 막는다. 판정 불능은 언제나 "묻지 않음"으로 닫힌다.
+fn current_install_stamp() -> Option<String> {
+    install_stamp_for(
+        &std::env::current_exe().ok()?,
+        &cys::home_dir(),
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// 위 함수의 테스트 가능한 심장 — `current_exe()`·홈·버전을 주입받는다. 실제 설치 경로
+/// (`/Applications/cys.app/Contents/MacOS/<exe>`)가 통과하는지 테스트로 **고정**해, 훗날 경로
+/// 판정이 바뀌어 이 기능이 **조용히 죽는 것**(늘 `None` → 영영 안 물음)을 막는다.
+///
+/// ★W-1(2026-09-11 · v0.14.34 태그 레인 windows-latest 컴파일 실패 — E0433 `unix` · E0599 `dev`/`ino`):
+/// `(dev, ino)` 는 유닉스 전용 API 인데 cfg 없이 불러 Windows 빌드가 죽었다. 아이템은 모든 플랫폼에
+/// 두고 **본문 안에서** 가른다(`same_file_ident` 형태 · BLOCK-B 계약). 유닉스 밖은 `None`(= 묻지 않음):
+///  · 판정 대상은 macOS 앱 번들이다. 위 경로 게이트는 `…/cys.app/Contents/MacOS` 만 통과시키므로
+///    Windows 설치 경로에서는 원래부터 여기서 `None` 이었다 — dev/ino 줄은 Windows 에서 닿지 않는 코드였다.
+///  · Windows 의 대응 신원(`volume_serial_number`·`file_index`)은 stable 에 없다(`windows_by_handle` 불안정).
+///  · 판정 불능을 "묻지 않음"으로 닫는 것은 이 기능의 교리(미탐 = 종전 동작 · 오탐 = 데이터 격리)와 같은 방향이다.
+fn install_stamp_for(
+    exe: &std::path::Path,
+    home: &std::path::Path,
+    version: &str,
+) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let macos_dir = exe.parent()?;
+        if !strict_install_bundle_ok(macos_dir, home) {
+            return None;
+        }
+        let bundle = macos_dir.parent()?.parent()?;
+        let md = std::fs::metadata(bundle).ok()?;
+        return Some(format!("{}:{}|{version}", md.dev(), md.ino()));
+    }
+    #[cfg(not(unix))]
+    {
+        // 유닉스 밖에는 번들 신원을 잴 stable API 가 없다 → 판정 불능 = 묻지 않음(위 교리).
+        let _ = (exe, home, version);
+        return None;
+    }
+}
+
+/// `"<신원>|<버전>"` → (신원, 버전). 버전 구분자가 없으면 구형식(신원만).
+fn split_install_stamp(s: &str) -> (&str, Option<&str>) {
+    match s.trim().rsplit_once('|') {
+        Some((ident, ver)) => (ident, Some(ver)),
+        None => (s.trim(), None),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FreshStartPrompt {
+    /// 묻지 않는다(최초 설치·개발 빌드·같은 설치본).
+    Skip,
+    /// 스탬프만 기록하고 넘어간다 — 도입 전 설치본·업그레이드는 **심문하지 않는다**.
+    Seed,
+    /// 재설치로 보인다 — 이전 데이터 처리를 묻는다.
+    Ask,
+}
+
+/// "이전 데이터를 어떻게 할지 물어볼 것인가" — 부작용 없는 순수 판정(단위테스트 대상).
+///
+/// 설계 원칙: **오탐(업데이트를 재설치로 오인)은 데이터 격리를 부르므로 치명적이고, 미탐(재설치를
+/// 못 알아봄)은 종전 동작(그대로 복원)일 뿐이다.** 그래서 모든 모호한 경우는 묻지 않는 쪽으로 닫는다.
+///
+///  · 이전 데이터 없음 / 스탬프 판정 불능        → Skip  (최초 설치·개발 빌드)
+///  · 기록 없음                                  → Seed  (이 기능 도입 전 설치본 — 소급 심문 금지)
+///  · 기록 == 현재                               → Skip  (같은 설치본을 계속 쓰는 중)
+///  · 신원 변경 + 버전 동일                      → Ask   (같은 버전인데 번들만 교체 = 재설치)
+///  · 신원 변경 + 버전 변경                      → Seed  (업그레이드 — 인앱·수동 모두. 묻지 않는다)
+///
+/// ★W-2 결정 B(2026-09-11 · reviewer-codex R-1 BLOCKER 1): '최근 휴지통 흔적'(~/.Trash 의 cys*.app mtime)
+/// 신호를 **버렸다.** ①mtime 은 휴지통에 넣은 시각이 아니다(옮겨도 보존된다) — 오래된 앱을 기록 이후에
+/// 버리면 놓치고 ②이름만 보므로 무관한 cys-*.app 사본 하나로 정상 업그레이드가 Ask 로 오탐됐다(데이터
+/// 격리 쪽 오류) ③~/.Trash 는 macOS 전체 디스크 접근(TCC) 보호 대상이라 권한 없는 프로세스의 읽기는
+/// EPERM 으로 조용히 꺼진다 — 기계마다 판정이 달라지는 신호였다. 그래서 "지우고 **새 버전**을 받은" 경우는
+/// 미탐(= 종전 동작)으로 둔다. 같은 버전을 덮어써 고친 설치(수리용 덮어쓰기)는 여전히 Ask 다 — 안전한 쪽
+/// 오탐이고, 기본 선택이 "이어서 사용하기"이며, [새로 시작]도 부팅 뒤 문구 확인을 거친다(결정 A).
+fn decide_fresh_start_prompt(
+    prior_data_exists: bool,
+    recorded: Option<&str>,
+    current: Option<&str>,
+) -> FreshStartPrompt {
+    if !prior_data_exists {
+        return FreshStartPrompt::Skip;
+    }
+    let Some(current) = current else {
+        return FreshStartPrompt::Skip;
+    };
+    let Some(recorded) = recorded else {
+        return FreshStartPrompt::Seed;
+    };
+    if recorded.trim() == current {
+        return FreshStartPrompt::Skip;
+    }
+    let (_, rec_ver) = split_install_stamp(recorded);
+    let (_, cur_ver) = split_install_stamp(current);
+    match (rec_ver, cur_ver) {
+        // 같은 버전인데 번들이 다른 파일 객체 = 지웠다 다시 깔았다(또는 같은 버전 덮어쓰기)
+        (Some(r), Some(c)) if r == c => FreshStartPrompt::Ask,
+        // 버전이 다르다 = 업그레이드(지우고 새 버전을 받은 경우와 구별할 신호가 없다 — 결정 B) ·
+        // 구형식·손상 기록 = 알 수 없다 → 둘 다 안전한 쪽(Seed)으로 닫는다.
+        _ => FreshStartPrompt::Seed,
+    }
 }
 
 /// ★v116-app-firstrun: 이 앱 기동 **전에** 이 기기에서 GUI 온보딩이 끝난 적이 있는가(.gui-onboarded 존재).
@@ -3473,6 +4350,8 @@ fn decide_pending_update(
 ///     init-pack 실패 시 마커·스탬프를 보존하고 복원을 보류해, 노드가 구 디렉티브로 조용히 각성하는
 ///     침묵 실패를 막는다(적대검증 fatal). restore는 멱등(run_restore).
 fn maybe_apply_pending_update(app: &AppHandle) {
+    // ★W-2 결정 A: 팩 반영(init-pack)이 도는 동안 초기화 관문을 닫는다 — setup 밖 호출(rotate_daemon)도 같은 관문.
+    let _boot_guard = BootWorkGuard::enter();
     let marker = pending_restore_path();
     let stamp_path = last_app_version_path();
     let current = env!("CARGO_PKG_VERSION");
@@ -3650,7 +4529,8 @@ async fn probe_folder_permissions(app: &AppHandle) -> Vec<&'static str> {
             .await
             .unwrap_or(false);
             if denied {
-                let _ = app.emit("perm-warning", json!({"folder": folder}));
+                // ★(원작자 0.14.41 · U14) 쌓고 나서 쏜다(PERM_WARNINGS doc) — 맨 emit 은 평소 재시작에서 유실됐다.
+                push_perm_warning(app, folder);
                 denied_folders.push(folder);
             }
         }
@@ -3724,7 +4604,11 @@ fn dept_restore_action(
 }
 
 fn spawn_org_restore(app: AppHandle) {
+    // ★W-2 (결정 A): 조직 복원이 도는 동안 초기화 관문을 닫는다 — 초기화가 방금 죽인 부서 데몬을 복원이
+    // 되살리는 경합 차단(spawn 전에 무장 · 태스크가 끝나면 Drop).
+    let boot_guard = BootWorkGuard::enter();
     tauri::async_runtime::spawn(async move {
+        let _boot_guard = boot_guard;
         let _ = app.emit("restore-progress", json!({"phase": "start"}));
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
         // ★v113-restore: 첫 실행이 실패면 대기 후 1회 재실행 — 실패 알림은 재실행까지 실패일 때만.
@@ -3763,16 +4647,22 @@ fn spawn_org_restore(app: AppHandle) {
         // 부서 순회 — 등록 부서(depts.json)만 대상(유령 부서 재-launch 차단).
         let mut ok = 0usize;
         let mut fail = 0usize;
-        let reg_read = list_depts();
-        let depts_unreadable = reg_read.as_ref().err().cloned(); // done 알림에 싣는다(Fable R2 A — skip 은 UI 가 안 듣는다)
-        if let Err(e) = &reg_read {
-            // ①(Fable R1 #3) 부서 목록을 못 읽으면 부서 복원 전체를 건너뛴 사실을 알린다(종전: 조용히 ok=0·fail=0).
-            let _ = app.emit(
-                "restore-progress",
-                json!({"phase": "skip", "detail": format!("부서 목록을 읽지 못해 부서 복원을 건너뜀 — {e}")}),
-            );
-        }
-        if let Ok(reg) = reg_read {
+        // ①(Fable R1 #3) + 원작자 D5-b(같은 결함 · 1.1.8 병합 합성): 부서 목록을 못 읽으면 부서 복원 전체를 건너뛴 사실을
+        //   skip 이벤트로 알리고(종전: 조용히 ok=0·fail=0) 그 사유를 done/error 알림에도 싣는다(Fable R2 A — skip 은 UI 가 안 듣는다).
+        //   판독 실패 = 무변경(원본 보존 · 다음 기동 재시도).
+        let mut depts_unreadable: Option<String> = None;
+        let reg = match list_depts() {
+            Ok(reg) => reg,
+            Err(e) => {
+                let _ = app.emit(
+                    "restore-progress",
+                    json!({"phase": "skip", "detail": format!("부서 목록(depts.json)을 읽지 못해 부서 복원을 전건 보류(원본 보존 · 다음 기동 재시도) — {e}")}),
+                );
+                depts_unreadable = Some(e);
+                json!({ "depts": {} })
+            }
+        };
+        {
             if let Some(depts) = reg.get("depts").and_then(|d| d.as_object()) {
                 for (name, meta) in depts {
                     let sock = meta
@@ -3794,12 +4684,14 @@ fn spawn_org_restore(app: AppHandle) {
                     if action == DeptRestoreAction::Tombstoned {
                         let mut detail = "삭제-의도 묘비 — 재기동 제외".to_string();
                         if alive {
-                            let _ = stop_dept_daemon_by_socket(
+                            // ★D1(원작자 0.14.37 4라운드): teardown 이 비0 rc(우리 번호 rc 12 = 레지스트리 판독 실패 · kill 0)를
+                            // Err 로 준다 — 실패 사유를 skip 이벤트 detail 에 싣는다. 재프로브(★R4 D-IMPL-4)는 그대로
+                            // 유지한다: Ok 라도 실제 사망은 소켓으로 확인해야 하고, Err 라도 이미 죽었을 수 있다.
+                            let stop_err = stop_dept_daemon_by_socket(
                                 sock.to_string_lossy().to_string(),
                             )
-                            .await;
-                            // ★R4(D-IMPL-4): teardown 함수는 실패를 삼키므로(무조건 Ok) 재프로브로
-                            // 결과를 가시화 — 여전히 생존이면 WARN 라벨(차회 부팅 재시도가 수렴 경로).
+                            .await
+                            .err();
                             let still = tokio::time::timeout(
                                 std::time::Duration::from_secs(2),
                                 rpc_oneshot(&sock, "system.identify", json!({})),
@@ -3808,7 +4700,10 @@ fn spawn_org_restore(app: AppHandle) {
                             .map(|r| r.is_ok())
                             .unwrap_or(false);
                             detail = if still {
-                                "삭제-의도 묘비 — teardown 미확정(WARN·차회 시작 시 재시도)".into()
+                                format!(
+                                    "삭제-의도 묘비 — teardown 미확정(WARN·차회 시작 시 재시도){}",
+                                    stop_err.map(|e| format!(" · {e}")).unwrap_or_default()
+                                )
                             } else {
                                 "삭제-의도 묘비 — 잔존 데몬 정리 완료".into()
                             };
@@ -4030,15 +4925,54 @@ async fn usage_accounts_all() -> Result<Value, String> {
             }
         }
     }
+    let resps = fanout_usage_accounts(targets, Duration::from_secs(2)).await;
+    Ok(json!({"accounts": merge_account_rows(&resps)}))
+}
+
+/// 소켓마다 `usage.accounts` 를 **동시에** 묻는다(소켓당 상한은 그대로 · 0.14.42 RC6).
+/// 종전엔 순차라 무응답 부서 N개가 N×2초만큼 전체를 늦췄고, JS 상한(T_ACCT)을 넘기면 부분 성공까지 버려져
+/// 그 부서에서만 관측되는 계정이 '관측 없음'으로 떨어졌다. 결과 순서는 targets 순서(본부 먼저) 그대로다.
+/// 실패·시간 초과 소켓은 건너뛴다(종전과 같음 — 병합은 받은 것만).
+async fn fanout_usage_accounts(
+    targets: Vec<std::path::PathBuf>,
+    per_socket: std::time::Duration,
+) -> Vec<Value> {
+    let handles: Vec<_> = targets
+        .into_iter()
+        .map(|sock| {
+            tauri::async_runtime::spawn(async move {
+                tokio::time::timeout(per_socket, rpc_oneshot(&sock, "usage.accounts", json!({})))
+                    .await
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for h in handles {
+        if let Ok(Ok(Ok(resp))) = h.await {
+            out.push(resp);
+        }
+    }
+    out
+}
+
+/// usage_accounts_all 병합(순수 — 핀). 키 (provider, account_id) · updated_at 큰 쪽 승 · profiles 합집합.
+/// ★source_error(관측 경로 고장 코드): 승자가 **관측 전**(updated_at 없음)이고 자기 오류가 없으면 다른 데몬의
+/// 오류를 이어받는다 — 본부(좌석 없음 · 오류 없음)가 먼저 오면 부서 agy 의 거부 코드가 묻혔다. 관측된 승자에는
+/// 남의 오류를 덧씌우지 않는다.
+/// ★0.14.43 가산 키 셋(구버전 데몬은 키가 없다 — `current_profiles` 는 신 데몬이 이번에 읽지 못한 폴더가 낀 행에서도 없다 · UI 가 키 부재·null·빈 배열을 다르게 읽으므로 병합은 셋을 뭉개지 않는다):
+///  · current_profiles(지금 이 계정으로 로그인된 설정 폴더): 승자와 무관하게 합집합(정렬·중복 제거 — profiles 와 같은 방식).
+///    어느 응답에도 이 키(배열)가 없으면(전부 구버전 **또는 신 데몬이 이번에 읽지 못한 폴더가 낀 행** — 신 데몬도 그런 행에서는 키를 뺀다: accounts.rs `current_profiles_for`) 결과에도 만들지 않는다 —
+///    UI 는 '키 없음 → profiles 폴백', '빈 배열 → 이전 로그인'으로 읽는다. 일부 응답에만 있으면 있는 것들의 합집합(★키 없는 신 데몬 행 + 빈 배열 신 데몬 행 → 빈 배열 — 지금의 사양이고 문서가 그렇게 적었다 · 검체
+///    `r2fui_merge_new_daemon_missing_key_plus_new_daemon_empty_array_is_empty_array`). 배열이 아닌 값은 키 없음으로 본다.
+///  · in_use: 승자 값이 아니라 같은 계정 행 전체로 정한다 — 하나라도 true → true · 아니면 하나라도 null/키 부재 → null ·
+///    전부 false → false. 병합이 일어난 행은 전부 키 부재여도 null 이다(UI 는 null·키 없음을 같게 읽는다 · 데몬이 하나뿐이라
+///    병합할 것이 없는 행은 그대로).
+///  · alias: 승자의 값이 비어 있으면(null·키 부재·빈 문자열·문자열 아님) 다른 행의 비어 있지 않은 값을 이어받는다.
+///  · rate·rate_observed_at·updated_at·source 등 그 밖 키는 종전대로 승자(updated_at 큰 쪽) 값 그대로다.
+fn merge_account_rows(resps: &[Value]) -> Vec<Value> {
     let mut merged: std::collections::HashMap<(String, String), Value> =
         std::collections::HashMap::new();
-    for sock in targets {
-        let call = tokio::time::timeout(
-            Duration::from_secs(2),
-            rpc_oneshot(&sock, "usage.accounts", json!({})),
-        )
-        .await;
-        let Ok(Ok(resp)) = call else { continue };
+    for resp in resps {
         for a in resp["accounts"].as_array().into_iter().flatten() {
             let key = (
                 a["provider"].as_str().unwrap_or("").to_string(),
@@ -4074,11 +5008,59 @@ async fn usage_accounts_all() -> Result<Value, String> {
                         .collect();
                     profs.sort();
                     profs.dedup();
+                    // ★0.14.43 current_profiles 합집합 — profiles 와 같은 방식이되 배열로 온 응답이 하나라도 있을 때만 만든다
+                    let (cur_cp, new_cp) = (cur["current_profiles"].as_array(), a["current_profiles"].as_array());
+                    let cprofs = (cur_cp.is_some() || new_cp.is_some()).then(|| {
+                        let mut v: Vec<String> = cur_cp
+                            .into_iter()
+                            .flatten()
+                            .chain(new_cp.into_iter().flatten())
+                            .filter_map(|p| p.as_str().map(String::from))
+                            .collect();
+                        v.sort();
+                        v.dedup();
+                        v
+                    });
+                    // ★0.14.43 in_use: true > (null · 키 부재 · 그 밖) > false — 두 행 가운데 큰 쪽(승자 값이 아니다)
+                    let use_rank = |v: &Value| match v {
+                        Value::Bool(true) => 2u8,
+                        Value::Bool(false) => 0,
+                        _ => 1,
+                    };
+                    let in_use = match use_rank(&cur["in_use"]).max(use_rank(&a["in_use"])) {
+                        2 => json!(true),
+                        0 => json!(false),
+                        _ => Value::Null,
+                    };
+                    // ★0.14.43 alias: 승자의 값이 비어 있으면 진 쪽의 비어 있지 않은 값을 이어받는다
+                    let alias_of = |v: &Value| v["alias"].as_str().filter(|t| !t.is_empty()).map(String::from);
+                    let alias = if new_ts > cur_ts {
+                        alias_of(a).or_else(|| alias_of(&*cur))
+                    } else {
+                        alias_of(&*cur).or_else(|| alias_of(a))
+                    };
+                    let carried = [cur["source_error"].clone(), a["source_error"].clone()]
+                        .into_iter()
+                        .find(|e| e.as_str().map_or(false, |t| !t.is_empty()));
                     if new_ts > cur_ts {
                         *cur = a.clone();
                     }
                     cur["profiles"] = json!(profs);
                     cur["scoped"] = keep_scoped;
+                    if let Some(v) = cprofs {
+                        cur["current_profiles"] = json!(v);
+                    }
+                    cur["in_use"] = in_use;
+                    if let Some(t) = alias {
+                        cur["alias"] = json!(t);
+                    }
+                    let unobserved = cur["updated_at"].as_f64().map_or(true, |t| t <= 0.0);
+                    let own_err = cur["source_error"].as_str().map_or(false, |t| !t.is_empty());
+                    if unobserved && !own_err {
+                        if let Some(e) = carried {
+                            cur["source_error"] = e;
+                        }
+                    }
                 }
             }
         }
@@ -4088,7 +5070,7 @@ async fn usage_accounts_all() -> Result<Value, String> {
         (x["provider"].as_str().unwrap_or(""), x["label"].as_str().unwrap_or(""))
             .cmp(&(y["provider"].as_str().unwrap_or(""), y["label"].as_str().unwrap_or("")))
     });
-    Ok(json!({"accounts": accounts}))
+    accounts
 }
 
 /// D5/SB-6: 산출물 회수 결정론 위치(~/.cys/_round/skill-out) — make_ticket output_format과 정합.
@@ -4212,8 +5194,17 @@ async fn feed_reply(request_id: String, decision: String) -> Result<(), String> 
         rpc_full(&default_socket(), "feed.reply", params).await
     }
     let mut resp = call(&request_id, &decision).await?;
+    // ★REVIEW1 m4: `owner_gui_required` 도 같은 좁은 창(토큰 회전 경합)에서 난다 — 팀 제안
+    // 해소는 operator token 전용(team_spec::reply_allowed)이라, 첫 호출의 파일 읽기와 데몬
+    // 재시작(토큰 회전)이 겹치면 방금 읽은 토큰이 이미 낡아 이 코드로 떨어진다. 그대로 두면
+    // "팀은 만들었으나 제안 정리 실패" 로만 보여 오너가 재시도 필요성을 모른다(팀 생성 자체는
+    // allocate 가 이미 끝낸 뒤라 이 재시도는 순수 해소 재시도이고, allocate 를 다시 부르지
+    // 않는다 — 멱등 우려 없음).
     if resp["ok"].as_bool() != Some(true)
-        && resp["error"]["code"].as_str() == Some("self_approval_denied")
+        && matches!(
+            resp["error"]["code"].as_str(),
+            Some("self_approval_denied") | Some("owner_gui_required")
+        )
     {
         // 첫 호출의 파일 읽기와 데몬 재시작(토큰 회전)이 겹친 좁은 창 — 신선 재독으로 1회만 재시도.
         resp = call(&request_id, &decision).await?;
@@ -4398,7 +5389,7 @@ fn onboard_init_pack(cys: &std::path::Path) -> bool {
 /// Windows 첫 기동 온보딩(RC-1) — 순정 Windows엔 hook 자동등록 경로가 없어 "너는 마스터다"
 /// 부트스트랩(SessionStart hook)이 미발동했다(T1 증상①).
 /// ① `onboard_init_pack`: 팩 + Claude hook 등록(멱등).
-/// ② `cys daemon install`: 기존 schtasks ONLOGON 자동기동 등록 재사용(cys.rs:3139·/F 멱등).
+/// ② `cys daemon install`: 기존 schtasks ONLOGON 자동기동 등록 재사용(cys.rs `run_daemon_cmd` 의 `schtasks /Create /XML … /F` — 멱등).
 #[cfg(windows)]
 fn maybe_windows_onboard() -> bool {
     let cys = resolve_sidecar("cys.exe");
@@ -4841,19 +5832,84 @@ async fn launch_dept_daemon(app: AppHandle, name: String) -> Result<Value, Strin
 /// lowest-unused 재사용 + 멀티창 충돌0을 보장한다. stdout 마지막 줄이 확정 name(dept-N).
 /// ＋부서 자동화(패치5): `catalog_key`=Some(k) → `cys-dept create <k>`(카탈로그 기반 부서명·계정·미션·각성),
 /// None → `cys-dept allocate`(레거시 무변경). create 경로는 레지스트리에서 display_name 을 조회해 반환한다.
+///
+/// ★U16(0.14.41) `team_spec`=Some — 오너가 팀 제안 카드의 확인 창에서 [만들기]를 누른 팀(이름·하는 일).
+///   새 생성 경로가 아니다: 같은 `cys-dept allocate` 에 인자 하나(`--team-spec-b64`)를 더할 뿐이다.
+///   ① catalog_key 와 동시 지정 거부 ② lib `cys::team_spec::validate`(한도·제어문자·권위어)
+///   ③ **생성 직전 대조** — 기본 데몬 feed.list 에서 같은 id 가 아직 pending 이고 본문이 오너가 본 것과
+///      같은가(확인 창이 떠 있는 동안 제안이 거둬지거나 바뀌었으면 만들지 않는다 — TOCTOU · fail-closed)
+///   ④ 인자는 URL-safe b64(ASCII) — 한글이 argv·코드페이지·MSYS 경로 변환을 지나지 않는다.
+///   ⑤ **REVIEW1 M-1 — 팩 버전 어긋남 fail-closed**: 스폰 **전** `dept_tool_supports_team_spec` 으로
+///      설치된 cys-dept 가 이 인자를 아는지 정적 확인(구버전이면 거부) · 스폰 **뒤**
+///      `dept_team_proposal_id(name) == spec.id` 로 레지스트리가 실제로 이 제안으로 등재됐는지
+///      대조(아니면 실패 — 팩이 조용히 "보통 팀"을 만든 것을 성공으로 보고하지 않는다). 표시명
+///      폴백은 이 사후 조건을 통과했을 때만 쓴다.
+///   실패는 카탈로그 경로와 같은 `dept-create:<code>:` 형식(UI 가 사유를 분류해 보인다).
+///   feed 응답(allow)은 여기서 하지 않는다 — UI 가 **생성 성공 뒤에만** 보낸다(실패 시 카드 pending 유지).
+///
+/// ★0.14.43(GU) 진행 표시: `progress_id`=Some 이면 자식을 **스트리밍**으로 돌린다 — cys-dept 가 stderr 에 내는 단계 표지 한 줄
+///   (`[cys-dept] @stage <키>`)을 읽는 즉시 'dept-create-progress' 이벤트 `{id, stage}` 로 올린다(화면의 대기 문구용 · 표시 전용 · 어떤 명령도 아니다).
+///   None 이면 종전과 같다(이벤트 없음). **종료 코드 해석·stdout 마지막 줄=부서 이름·`dept-create:<code>:<stderr>`·레지스트리 사후 조건은 한 줄도 바꾸지 않았다** —
+///   바뀐 것은 자식 실행 방식(`run_dept_child` — 종전 `cmd.output()` 과 같은 `Output`)뿐이다. 실패 메시지의 stderr 에서는 표지 줄을 뺀다
+///   (화면은 stderr 의 앞 300자만 보이므로 표지 5~6줄이 실패 사유를 밀어내지 않게 — `strip_stage_lines` · 스트리밍 판·종전 판 양쪽).
+///   되돌리기 노브 `CYS_DEPT_CREATE_STREAM=0` = 종전 `cmd.output()` 경로(`dept_create_stream_from_env`).
+/// ★R2F-UI(A3 n1) 응답 객체의 가산 키 `spawned`(불리언) — 이 호출이 데몬을 띄웠는가(`spawn` 표지를 읽었는가). 표지를 하나도 읽지 못했으면(구 팩·스트리밍 끔·진행 id 없음) 키가 **없다**(`DeptStageSeen`).
+///   화면은 그 값이 있으면 그것으로 '새로 만든 팀' 표지를 세우고, 없으면 종전 식(이벤트가 채운 pendingSpawned·pendingStage)을 쓴다 — 이벤트와 응답의 도착 순서에 기대지 않는다.
 #[tauri::command]
-async fn allocate_dept_daemon(app: AppHandle, catalog_key: Option<String>) -> Result<Value, String> {
-    // ＋부서 자동화: 카탈로그 키 기반 create(stdout 마지막 줄=name) · None = 레거시 allocate(번호만 발급).
-    let out = match &catalog_key {
-        Some(k) => run_dept_tool("create", vec![k.clone()]).await?,
-        None => run_dept_tool("allocate", Vec::new()).await?,
+async fn allocate_dept_daemon(
+    app: AppHandle,
+    catalog_key: Option<String>,
+    team_spec: Option<cys::team_spec::TeamSpec>,
+    progress_id: Option<String>,
+) -> Result<Value, String> {
+    let team_b64 = match &team_spec {
+        None => None,
+        Some(spec) => {
+            if catalog_key.is_some() {
+                return Err("dept-create:2:catalog_key 와 team_spec 은 함께 쓸 수 없다".into());
+            }
+            cys::team_spec::validate(spec).map_err(|e| format!("dept-create:2:{e}"))?;
+            // ★REVIEW1 M-1 ①(스폰 전 능력 확인·fail-closed): 앱과 설치된 팩이 어긋나면(팩이
+            //   구버전) cys-dept 가 `--team-spec-b64` 를 모른 채 인자를 무시하고 rc=0 으로
+            //   "보통 팀"을 만든다 — 팀 소개·셋-부재 번호 보호가 조용히 빠지고 Tauri 가 성공으로
+            //   잘못 읽는다(fail-open). 부작용 0 인 정적 확인으로 여기서 먼저 막는다.
+            dept_tool_supports_team_spec(&dept_tool()).map_err(|e| {
+                format!(
+                    "dept-create:2:팩이 구버전이라 팀 제안을 만들 수 없다({e}) — 앱을 다시 시작해 팩을 갱신하라"
+                )
+            })?;
+            let list = rpc("feed.list", json!({"status": null}))
+                .await
+                .map_err(|e| format!("dept-create:1:팀 제안을 확인하지 못했다(기본 데몬 응답 없음): {e}"))?;
+            cys::team_spec::match_pending(&list, spec).map_err(|e| format!("dept-create:2:{e}"))?;
+            Some(cys::team_spec::to_b64(spec))
+        }
     };
+    // ★1.1.8 병합 잠정(T2 · 결정 대기): 실행 경로 = 우리 `run_dept_tool`(맥 = 본부 데몬 대행 `dept.run` — v114-dept-fd
+    //   폴더 권한 사슬 · 윈 = 직접 실행). 원작자 GU 의 실시간 스트리밍(`run_dept_child` · 'dept-create-progress' 이벤트)은
+    //   이 경로에 배선하지 않았다 — `dept.run` 응답은 끝난 뒤 한 번에 오므로 진행 이벤트를 낼 자리가 없다(화면은 경과 문구로
+    //   대기). 단계 표지는 끝난 뒤 stderr 에서 읽어 응답의 `spawned` 근거로만 쓰고(`DeptStageSeen`), 실패 메시지에서는 뺀다
+    //   (`strip_stage_lines` — 화면은 앞 300자만 보인다). `progress_id` 는 계약(UI invoke 인자)만 받는다.
+    let _ = &progress_id;
+    // ＋부서 자동화: 카탈로그 키 기반 create(stdout 마지막 줄=name) · None = 레거시 allocate(번호만 발급).
+    let out = match (&catalog_key, &team_b64) {
+        (Some(k), _) => run_dept_tool("create", vec![k.clone()]).await?,
+        (None, None) => run_dept_tool("allocate", Vec::new()).await?,
+        // ★U16(원작자 · 휴면 — UI 미배선): 팀 제안이면 인자 하나만 더한다(없으면 레거시 바이트 무변경).
+        (None, Some(b)) => run_dept_tool("allocate", vec!["--team-spec-b64".to_string(), b.clone()]).await?,
+    };
+    let stage_seen = DeptStageSeen::default();
+    for l in out.stderr.lines() {
+        if let Some(k) = parse_dept_stage_line(l) {
+            stage_seen.note(k);
+        }
+    }
     if !out.ok {
-        let stderr = out.stderr.clone();
+        let stderr = strip_stage_lines(&out.stderr);
         // ＋부서 자동화(gemini R2 ①): create 경로는 exit code 를 'dept-create:<code>:<stderr>' 로 GUI 에 전달해
         //   보안 분기를 가능케 한다 — exit5(account dir 미존재)=계정누수 → 레거시 폴백 절대 금지(하드 에러)·
         //   exit4(키 부재)=에러·exit3(카탈로그 부재)=레거시 허용. 레거시 allocate(None) 경로는 평문 stderr 유지.
-        if catalog_key.is_some() {
+        if catalog_key.is_some() || team_spec.is_some() {
             let code = out.code.unwrap_or(-1);
             return Err(format!("dept-create:{code}:{stderr}"));
         }
@@ -4877,42 +5933,367 @@ async fn allocate_dept_daemon(app: AppHandle, catalog_key: Option<String>) -> Re
         obj.insert("socket".into(), json!(sock.to_string_lossy()));
         obj.insert("socket_slug".into(), json!(sock_slug(&sock)));
         obj.insert("name".into(), json!(name));
-        // ＋부서 자동화: create 경로면 레지스트리(cys-dept reg_set_meta 가 기록)에서 display_name 조회 →
-        // 탭 표시명. create stdout 은 name only(cys-dept 코어 재구현 금지)이므로 depts.json 이 표시명 진실원.
-        if catalog_key.is_some() {
+        if let Some(spec) = &team_spec {
+            // ★REVIEW1 M-1 ②(사후 조건·fail-closed): 레지스트리의 name 항목이 **이** 제안
+            //   (team_proposal_id == spec.id)으로 만들어졌다는 표지가 없으면 실패로 판정한다.
+            //   ①의 정적 확인을 지나쳤더라도(예: 팩이 새 문자열은 갖고 있으나 다른 이유로
+            //   등재를 안 한 경우) 여기서 다시 막는다 — 표시명 폴백은 검증을 통과했을 때만
+            //   쓴다(폴백이 실패를 가리는 것을 반박 M-1 이 지적했다).
+            match dept_team_proposal_id(&name) {
+                Some(tpid) if tpid == spec.id => {
+                    // ★U16: cys-dept 가 예약과 같은 원자 기록으로 display_name 을 등재한다 —
+                    //   판독 실패 시 오너가 확인 창에서 본 이름으로 대신한다(같은 값).
+                    let disp = dept_display_name(&name).unwrap_or_else(|| spec.display.clone());
+                    obj.insert("display_name".into(), json!(disp));
+                }
+                _ => {
+                    return Err(format!(
+                        "dept-create:2:팀 '{name}' 이 이 제안으로 만들어지지 않았다(레지스트리에 team_proposal_id 표지가 없다) — 팩이 구버전일 수 있다. 앱을 다시 시작해 팩을 갱신하라"
+                    ));
+                }
+            }
+        } else if catalog_key.is_some() {
+            // ＋부서 자동화: create 경로면 레지스트리(cys-dept reg_set_meta 가 기록)에서 display_name 조회 →
+            // 탭 표시명. create stdout 은 name only(cys-dept 코어 재구현 금지)이므로 depts.json 이 표시명 진실원.
             if let Some(disp) = dept_display_name(&name) {
                 obj.insert("display_name".into(), json!(disp));
             }
         }
     }
+    // ★R2F-UI(A3 n1 · 가산 키): 이 호출이 데몬을 띄웠는가(`spawn` 표지를 읽었는가) — 화면이 '새로 만든 팀' 표지를 세울지 정하는 근거다. 표지를 한 번도 못 읽었으면(None) 키를 싣지 않는다(화면은 종전 식으로 판정).
+    if let (Some(obj), Some(spawned)) = (info.as_object_mut(), stage_seen.spawned()) {
+        obj.insert("spawned".into(), json!(spawned));
+    }
     Ok(info)
 }
 
-/// 부서 workspace 닫기 = 부서 데몬 teardown. cys-dept down에 일임(SIGTERM·소켓 정리·레지스트리·CEO 강등).
-#[tauri::command]
-async fn stop_dept_daemon(name: String) -> Result<(), String> {
+/// ★(성찰 2회차 R2F-UI · A3 n1) `allocate_dept_daemon` 이 읽은 **단계 표지의 기억** — 응답 객체의 `spawned` 의 근거.
+/// 화면은 종전에 응답이 도착한 순간의 `pendingSpawned`·`pendingStage`(이벤트가 채운 값)를 봤다. 이벤트는 `eval` 로, 명령 응답은 다른 통로(사용자 정의 프로토콜·채널)로 가서 두 통로 사이의 순서가
+/// 보장되지 않는다 — 표지가 `done` 하나뿐인 갈래(멱등 반환)에서 응답이 이벤트를 앞지르면 '표지 없음 = 구 팩' 으로 읽혀 기존 팀에 새 팀 안내가 떴다. 백엔드는 표지를 읽는 쪽이라 **그 자리에서 기억**하면 순서 의존이 사라진다.
+/// 기록은 두 비트 — `any`(표지를 하나라도 읽었다) · `spawn`(`spawn` 표지를 읽었다). 콜백은 stderr 판독 스레드에서, 읽기는 자식이 끝나 그 스레드가 join 된 뒤 호출 스레드에서 한다.
+#[derive(Default)]
+struct DeptStageSeen {
+    any: std::sync::atomic::AtomicBool,
+    spawn: std::sync::atomic::AtomicBool,
+}
+
+impl DeptStageSeen {
+    /// 단계 표지 하나를 읽었다(콜백이 부른다).
+    fn note(&self, key: &str) {
+        self.any.store(true, std::sync::atomic::Ordering::SeqCst);
+        if key == "spawn" {
+            self.spawn.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// 응답에 싣는 값 — `Some(true)` = `spawn` 표지를 읽었다(이 호출이 데몬을 띄웠다) · `Some(false)` = 다른 표지만 읽었다(기존 팀을 돌려받았다: create 의 REUSE_UP·REUSE_BOOTING · allocate 의 멱등 반환 · 이미 가동 중인 데몬 재사용) ·
+    /// `None` = 표지를 하나도 읽지 못했다(진행 표지를 내지 않는 구 팩 · 스트리밍 끔(`CYS_DEPT_CREATE_STREAM=0`) · 진행 id 없음 — 콜백이 불리지 않는다) → 키를 싣지 않는다. 이 경우 화면의 종전 식은
+    /// '표지를 한 번도 못 받았으면 새 팀으로 본다(현행 유지)' 이고, `false` 를 싣는 것은 그 규칙을 뒤집는 것이다.
+    fn spawned(&self) -> Option<bool> {
+        self.any.load(std::sync::atomic::Ordering::SeqCst).then(|| self.spawn.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+// ───────── ★0.14.43(GU) 「팀 직접 만들기」 진행 표시 — cys-dept 단계 표지(`@stage`)의 스트리밍 판독 ─────────
+//
+// cys-dept 는 팀을 만드는 동안 stderr 에 `[cys-dept] @stage <키>` 한 줄씩을 낸다(키 7종 — 팩 `dept_stage` · reserve probe spawn wait up seat done).
+// 종전 `cmd.output()` 은 자식이 끝날 때까지 아무것도 돌려주지 않아 화면이 25~30초(느린 PC 는 1분+) 동안 경과·단계를 말할 수 없었다. 스트리밍 판은
+// stderr 를 **별도 스레드**가 줄 단위로 읽으며 표지 줄이면 콜백(= 'dept-create-progress' 이벤트)을 부르고, 본 스레드는 stdout 을 모으며 종료를 기다린다.
+// 결과는 종전 `Output` 과 같은 세 값(status·stdout·stderr)이라 호출부의 판정 코드는 한 줄도 달라지지 않는다.
+//
+// ★교착·행 방지 4항(스트리밍으로 바꾸면서 새로 생기는 위험 — 각각 아래 코드에 표지가 있다):
+//   (a) stdin 은 **명시적으로** null — `output()` 은 암묵으로 그렇게 했지만 `spawn()` 의 기본은 상속이다(`run_dept_child_streaming_with`).
+//   (b) stderr 는 **EOF 까지 끝까지** 읽는다 — 디코드 오류·콜백 실패(패닉 포함)가 나도 멈추지 않는다. `lines()` 는 UTF-8 이 아니면 Err 로 끊기므로
+//       쓰지 않고 `read_until(b'\n')` + `from_utf8_lossy` 로 읽는다(윈도우 cp949 출력)(`pump_dept_stderr`).
+//   (c) stdout 과 stderr 를 한 스레드에서 차례로 읽지 않는다 — 한쪽 파이프가 차면(64KiB 안팎) 자식이 멈추고 이쪽은 다른 파이프의 EOF 를 기다린다
+//       (`run_dept_child_streaming_with`: stderr = 전용 스레드 · stdout = 본 스레드).
+//   (d) 스레드 `join` 이 패닉이면 빈 stderr 로 접는다 — **status 는 그대로**다(실패를 성공으로 바꾸지 않는다)(`run_dept_child_streaming_with`).
+
+/// 팩의 단계 표지 한 줄 → 키. `[cys-dept] @stage <key>` 꼴이면 key(영소문자·숫자·`_`·`-` · 1~32자), 아니면 None.
+/// 줄 끝의 `\n`·`\r\n` 은 한 번씩 견딘다(윈도우 출력). 접두는 대소문자·공백까지 정확히 맞아야 한다 — ui/src/deptprogress.ts `parseDeptStageLine` 과 같은 규칙이다
+/// (같은 입력 벡터를 두 검체가 함께 잰다).
+fn parse_dept_stage_line(line: &str) -> Option<&str> {
+    let s = line.strip_suffix('\n').unwrap_or(line);
+    let s = s.strip_suffix('\r').unwrap_or(s);
+    let key = s.strip_prefix("[cys-dept] @stage ")?;
+    if (1..=32).contains(&key.len()) && key.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-')) {
+        Some(key)
+    } else {
+        None
+    }
+}
+
+/// stderr 에서 단계 표지 줄만 뺀다 — 나머지 바이트·순서·줄바꿈(CRLF 포함)은 그대로. 실패 메시지(`dept-create:<code>:<stderr>`)에 넣는 stderr 에 쓴다:
+/// 화면(ui/src/teamproposal.ts `teamCreateErrorText`)은 stderr 의 **앞 300자만** 보이므로 표지 5~6줄이 앞자리를 차지하면 정작 실패 사유(대기 예산·실제 경과 초·로그 경로·노브 안내)가 잘려 나간다.
+fn strip_stage_lines(stderr: &str) -> String {
+    let mut out = String::with_capacity(stderr.len());
+    for seg in stderr.split_inclusive('\n') {
+        if parse_dept_stage_line(seg).is_none() {
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
+/// 되돌리기 노브 `CYS_DEPT_CREATE_STREAM` — 앞뒤 공백을 걷은 값이 `0` 이면 종전 `cmd.output()` 경로(false), 그 밖(미설정·빈 값·다른 값)은 스트리밍(true — `knob_turned_off`).
+fn dept_create_stream_from_env(v: Option<&str>) -> bool {
+    !knob_turned_off(v)
+}
+
+/// (b) stderr 를 EOF 까지 줄 단위로 읽는다 — 전량을 모아 돌려주고, 표지 줄이면 콜백을 부른다. **어떤 줄도 읽기를 멈추게 하지 않는다**: `lines()` 가 아니라
+/// `read_until(b'\n')` 로 바이트를 받고 `from_utf8_lossy` 로 판정하므로 UTF-8 이 아닌 바이트가 섞여도 끝까지 읽고, 콜백의 패닉도 가둔다(이벤트 전달 실패가
+/// 읽기를 끊으면 파이프가 차서 자식이 멈춘다). 진짜 읽기 오류(EOF 가 아닌 Err)는 더 읽을 수 없으니 지금까지 모은 것을 돌려준다 — 이 함수가 끝나면 파이프가 닫혀
+/// 자식은 멈추는 대신 쓰기 오류를 받는다.
+fn pump_dept_stderr<R: std::io::Read>(reader: R, mut on_stage: impl FnMut(&str)) -> Vec<u8> {
+    use std::io::BufRead as _;
+    let mut br = std::io::BufReader::new(reader);
+    let mut all: Vec<u8> = Vec::new();
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        line.clear();
+        match br.read_until(b'\n', &mut line) {
+            Ok(0) => break, // EOF — 자식이 stderr 를 닫았다
+            Ok(_) => {
+                all.extend_from_slice(&line);
+                let text = String::from_utf8_lossy(&line);
+                if let Some(key) = parse_dept_stage_line(&text) {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_stage(key)));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                all.extend_from_slice(&line);
+                break;
+            }
+        }
+    }
+    all
+}
+
+/// 종전 판 — `cmd.output()` 그대로(노브 `CYS_DEPT_CREATE_STREAM=0` · 진행 id 가 없을 때).
+fn run_dept_child_plain(mut cmd: std::process::Command) -> std::io::Result<std::process::Output> {
+    cmd.output()
+}
+
+/// 스트리밍 판의 본체 — stderr 를 읽는 함수(`pump`)를 주입받는다(검체가 패닉하는 판독기로 (d) 를 잰다). 종전 `output()` 과 같은 `Output` 을 돌려준다.
+fn run_dept_child_streaming_with<F>(mut cmd: std::process::Command, pump: F) -> std::io::Result<std::process::Output>
+where
+    F: FnOnce(std::process::ChildStderr) -> Vec<u8> + Send + 'static,
+{
+    // (a) stdin 은 명시적으로 null — `output()` 은 암묵으로 그렇게 했지만 `spawn()` 의 기본은 상속이다(자식이 입력을 기다리며 매달릴 수 있다).
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // (c) stderr 는 **별도 스레드**가 읽고 stdout 은 이 스레드가 읽는다 — 한 스레드가 두 파이프를 차례로 읽으면 한쪽이 차서 자식이 멈추고, 그 순간 이쪽은
+    //   다른 파이프의 EOF 를 기다려 서로 영원히 기다린다. 스레드는 **자식을 띄우기 전에** 만든다: 못 만들면 자식이 아직 없으니 종전 판으로 되돌아가면 되고,
+    //   만든 뒤 자식 기동이 실패해도 채널을 닫으면 스레드가 곧바로 끝난다(반쯤 만든 팀을 죽이는 일이 없다).
+    let (tx, rx) = std::sync::mpsc::channel::<std::process::ChildStderr>();
+    let reader = match std::thread::Builder::new().name("dept-create-stderr".into()).spawn(move || match rx.recv() {
+        Ok(pipe) => pump(pipe),
+        Err(_) => Vec::new(),
+    }) {
+        Ok(h) => h,
+        Err(_) => return cmd.output(),
+    };
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            drop(tx);
+            let _ = reader.join();
+            return Err(e);
+        }
+    };
+    if let Some(pipe) = child.stderr.take() {
+        let _ = tx.send(pipe);
+    }
+    drop(tx);
+    // 본 스레드: stdout 을 EOF 까지 모으고 종료를 기다린다(stdin 은 위에서 null · stderr 는 전용 스레드가 가져갔다 → 이쪽은 파이프 하나만 읽으므로 교착이 없다).
+    let waited = child.wait_with_output();
+    // (d) 스레드 join 이 패닉이면 빈 stderr 로 접는다 — status 는 그대로다(실패를 성공으로 바꾸지 않는다).
+    let stderr = reader.join().unwrap_or_default();
+    let done = waited?;
+    Ok(std::process::Output { status: done.status, stdout: done.stdout, stderr })
+}
+
+/// 스트리밍 판 — stderr 의 표지 줄마다 `on_stage(키)` 를 부른다(전용 스레드에서 · 이 함수가 돌아오기 전에 스레드는 끝난다).
+fn run_dept_child_streaming(
+    cmd: std::process::Command,
+    on_stage: impl FnMut(&str) + Send + 'static,
+) -> std::io::Result<std::process::Output> {
+    run_dept_child_streaming_with(cmd, move |pipe| pump_dept_stderr(pipe, on_stage))
+}
+
+/// 팀 만들기 자식 실행기 — 스트리밍 판(`stream`=true)과 종전 판(false)이 같은 세 값(status·stdout·stderr)을 낸다. 어느 판이든 stderr 에서는 표지 줄을 **여기서 한 번** 뺀다
+/// (실패 메시지가 앞 300자 안에 사유를 담도록 — `strip_stage_lines`). 종전 판에서는 콜백이 불리지 않는다.
+fn run_dept_child(
+    cmd: std::process::Command,
+    stream: bool,
+    on_stage: impl FnMut(&str) + Send + 'static,
+) -> std::io::Result<std::process::Output> {
+    let mut out = if stream {
+        run_dept_child_streaming(cmd, on_stage)?
+    } else {
+        run_dept_child_plain(cmd)?
+    };
+    out.stderr = strip_stage_lines(&String::from_utf8_lossy(&out.stderr)).into_bytes();
+    Ok(out)
+}
+
+/// ★REVIEW1 M-1 ①: cys-dept 파일이 팀 제안 인자(`--team-spec-b64`)를 아는지 정적으로 확인한다
+/// (부작용 0 · spawn 없음). 구버전 cys-dept 에는 이 리터럴이 없어 인자를 조용히 무시하고
+/// rc=0 으로 "보통 팀"을 만든다(fail-open) — 그 사고를 스폰 이전에 막는 가벼운 결정론 게이트다.
+fn dept_tool_supports_team_spec(tool: &std::path::Path) -> Result<(), String> {
+    let src = std::fs::read_to_string(tool).map_err(|e| format!("cys-dept 판독 실패: {e}"))?;
+    if src.contains("--team-spec-b64") {
+        Ok(())
+    } else {
+        Err("설치된 cys-dept 에 팀 제안 지원(--team-spec-b64)이 없다".into())
+    }
+}
+
+/// ★REVIEW1 M-1 ②: 레지스트리에서 이 부서가 어느 팀 제안(team_proposal_id)으로 만들어졌는지
+/// 조회 — 사후 조건 확인용(dept_display_name 과 같은 판독 규약: 부재는 None).
+fn dept_team_proposal_id(name: &str) -> Option<String> {
+    let v = read_json_or_empty("depts.json", &depts_registry_path(), json!({ "depts": {} })).ok()?;
+    v.get("depts")?
+        .get(name)?
+        .get("team_proposal_id")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// ★D1(2026-09-17 4라운드 · codex 2차 ③ · 부트체인 must_fix B): `cys-dept down`/`down-sock` 의 **결과를 전달**하는 단일 실행기.
+///
+/// 무엇이 깨져 있었나: 두 stop 커맨드가 `let _ = …; Ok(())` 로 spawn 실패·JoinError·비0 status 를 전부 버렸다. 팩이
+/// `down` 을 "레지스트리 판독 먼저(실패 시 rc 12 — 우리 번호 · 원작자 원판 10 · kill 0 · 등재 제거 0)" 로 바꾼 뒤에는 이 폐기가 곧 **무음 좀비**다 —
+/// GUI 는 탭을 이미 지웠고 성공으로 알며, 데몬·등재는 그대로 남고, UI 의 `.catch(e => toast)` 는 발화한 적이 없었다
+/// (그 문구 "부활은 차단됨(삭제 의도 기록됨)" 도 rc 12 에서는 거짓). 이제 `Err("cys-dept down(-sock) rc=<n>: <stderr>")` 로
+/// 사실을 돌려주고, 삼킬지는 호출측이 이유를 적고 정한다(spawn_org_restore 는 재프로브와 함께 detail 에 싣는다).
+async fn run_dept_teardown(verb: &'static str, arg: String) -> Result<(), String> {
     let tool = dept_tool();
-    let _ = tokio::task::spawn_blocking(move || {
+    let out = tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new("bash");
         inject_runtime_path(&mut cmd); // RC-5: 동봉 runtime(bash.exe) PATH 주입
-        cmd.arg(&tool).arg("down").arg(&name);
+        cmd.arg(&tool).arg(verb).arg(&arg);
         no_console(&mut cmd);
         cmd.output()
     })
-    .await;
+    .await
+    .map_err(|e| format!("cys-dept {verb} join: {e}"))?
+    .map_err(|e| format!("cys-dept {verb} spawn: {e}"))?;
+    if !out.status.success() {
+        let rc = out
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!("cys-dept {verb} rc={rc}: {stderr}"));
+    }
     Ok(())
 }
 
+/// 부서 workspace 닫기 = 부서 데몬 teardown. cys-dept down에 일임(SIGTERM·소켓 정리·레지스트리·CEO 강등).
+/// ★D1: 비0 rc·spawn·join 실패는 Err(run_dept_teardown) — rc 12(우리 번호 · 원작자 원판 10) = 레지스트리 판독 실패로
+/// **종료 완료 미확인**(이미 종료됐을 수 있다: 사전 조회뿐 아니라 kill·소켓 정리·묘비 **뒤**의 reg_remove 재판독에서도 12 가 난다).
+#[tauri::command]
+async fn stop_dept_daemon(name: String) -> Result<(), String> {
+    run_dept_teardown("down", name).await
+}
+
+/// ★K2-03(2026-09-17 한글 사용자명 감사): 선두 UTF-8 BOM(U+FEFF)을 벗긴다. 한국어 Windows 편집기("UTF-8(BOM)")로
+/// 손질한 dept-catalog.json 은 BOM 을 달고 오는데 `serde_json` 은 그것을 문법 오류로 거부한다(src/bin/cys.rs
+/// read_hook_input 과 같은 결함 부류 · 그쪽 주석 참조). 판독 단일 지점에서만 벗기고 값 안의 바이트는 건드리지 않는다.
+/// ★3라운드(C3-c): 구현은 lib 공용 `cys::strip_utf8_bom` 하나다 — CLI 판독기(cys.rs drain_verify_targets · run_fleet)와
+/// 이 GUI 가 같은 함수를 쓴다(사본 금지 · 한쪽만 BOM-blind 로 갈리면 같은 파일이 GUI 엔 보이고 CLI 집계에선 빠진다).
+use cys::strip_utf8_bom;
+
+/// ★K2-03: 레지스트리/카탈로그 판독 실패를 **가시화**한다. 종전엔 `read_to_string` 의 Err(cp949 저장 = InvalidData 등)를
+/// 무음으로 빈 값에 접어, 팝업이 레거시만 보여도 원인을 알 길이 없었다. 부재(NotFound)는 정상 상태(아직 부서 없음)라
+/// 호출측이 이 함수를 부르지 않는다(read_json_or_empty 의 분기). ★3라운드: 세 판독 지점(list_depts · dept_display_name ·
+/// read_dept_catalog)이 전부 read_json_or_empty 를 지나므로 경고는 세 지점에서 빠짐없이 난다 — 2라운드까지는
+/// dept_display_name 만 `.ok()?` 로 침묵했다. Windows GUI(no_console)에선 stderr 가 보이지 않을 수 있다(2라운드 B-6 한계 유지).
+fn warn_json_read_err(what: &str, path: &std::path::Path, e: &dyn std::fmt::Display) {
+    let reason = e.to_string();
+    if !json_read_warn_first(path, &reason) {
+        return; // 같은 (경로, 사유) 는 이미 알렸다 — 복구(read_json_or_empty Ok)되면 json_read_warn_reset 이 지운다
+    }
+    eprintln!(
+        "[cys-app] {what} 판독 실패({}) — 호출측에 Err 로 전달(빈 값 대체 아님). UTF-8 로 저장됐는지 확인(BOM 은 허용): {reason}",
+        path.display()
+    );
+}
+
+/// ★D5-a(2026-09-17 4라운드 · 성찰 1회 minor): 판독 실패 경고의 **(경로, 사유) 단위 1회 dedupe**. 컨트롤센터가 5초마다
+/// `usage_accounts_all` → `list_depts` 를 부르므로, 레지스트리가 손상돼 있는 동안 같은 경고가 5초마다 stderr 에 쌓였다
+/// (기능 영향 0 · 로그 누적). 첫 발생만 알리고, 그 경로가 다시 정상 판독되면(`json_read_warn_reset`) 기억을 지워 다음
+/// 손상은 다시 알린다 — 사유가 바뀌면(cp949 → 절단) 별개로 알린다.
+static JSON_READ_WARNED: std::sync::OnceLock<Mutex<std::collections::HashSet<(String, String)>>> =
+    std::sync::OnceLock::new();
+
+fn json_read_warned() -> &'static Mutex<std::collections::HashSet<(String, String)>> {
+    JSON_READ_WARNED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 처음 보는 (경로, 사유) 면 true(= 알려라), 이미 알린 것이면 false.
+fn json_read_warn_first(path: &std::path::Path, reason: &str) -> bool {
+    let key = (path.display().to_string(), reason.to_string());
+    match json_read_warned().lock() {
+        Ok(mut set) => set.insert(key),
+        Err(_) => true, // 락 오염이면 dedupe 를 포기하고 알린다(경고 누락보다 반복이 낫다)
+    }
+}
+
+/// 그 경로의 판독이 정상으로 돌아왔다 — 그 경로의 기억을 전부 지운다(다음 손상은 다시 알린다).
+fn json_read_warn_reset(path: &std::path::Path) {
+    let p = path.display().to_string();
+    if let Ok(mut set) = json_read_warned().lock() {
+        set.retain(|(kp, _)| *kp != p);
+    }
+}
+
+/// ★C2(2026-09-17 3라운드 · 부트체인 must_fix): JSON 파일 판독의 **단일 정책** — 부재(NotFound)만 `Ok(빈 값)`, 그 외
+/// 판독 실패(InvalidData = cp949/UTF-16 저장 · 권한 · 손상 JSON)는 `Err(사유)`.
+///
+/// 무엇이 깨져 있었나: 종전엔 모든 실패가 `Ok(빈 값)` 이라 UI 복원(main.ts)이 '못 읽음'을 '부서 0' 으로 읽어, 죽은 부서
+/// 탭을 미등재 유령으로 **드롭하고 저장본에서 지웠다**(레지스트리는 멀쩡한데 화면에서 부서가 사라진다). Err 면 UI 는
+/// `registered=null`(전부 보존 · 드롭 0) · '지금 켜기'는 사유에 '판독 실패' 명시 · ＋부서 팝업은 필터 없이 전체 제시 +
+/// 카탈로그 실패 토스트 — 전부 보수 경로다. Rust 내부 호출자(org_fleet · ensure_dept_forwarders · spawn_org_restore ·
+/// usage_accounts_all · dept_count 2곳)는 모두 `if let Ok`/`.ok()` 라 Err = 건너뜀(종전 serde 오류와 같은 형태 · 파괴 없음).
+fn read_json_or_empty(what: &str, path: &std::path::Path, empty: Value) -> Result<Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::from_str::<Value>(strip_utf8_bom(&s))
+            .map(|v| {
+                json_read_warn_reset(path); // ★D5-a: 정상 판독 = 복구 — 경고 dedupe 기억을 지운다
+                v
+            })
+            .map_err(|e| {
+                warn_json_read_err(what, path, &e);
+                format!("{what} JSON 형식 오류({}): {e}", path.display())
+            }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(empty),
+        Err(e) => {
+            warn_json_read_err(what, path, &e);
+            Err(format!("{what} 판독 실패({}): {e}", path.display()))
+        }
+    }
+}
+
+/// 부서 레지스트리(depts.json) 경로 — cys-dept 와 같은 규약(CYS_DEPTS_JSON 또는 $HOME/.cys/depts.json).
+fn depts_registry_path() -> std::path::PathBuf {
+    std::env::var("CYS_DEPTS_JSON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| cys::home_dir().join(".cys/depts.json"))
+}
+
 /// 부서 레지스트리(depts.json) 조회 — restore가 등록된 부서(진실원)와 대조해 죽은 socket의 유령 ws를
-/// 무비판 재-launch하지 않게 한다(옛 테스트 잔재·삭제된 부서 차단). 부재 시 빈 depts.
+/// 무비판 재-launch하지 않게 한다(옛 테스트 잔재·삭제된 부서 차단). 부재 시 빈 depts · **판독 실패는 Err**(C2 · 위 정책).
+/// ★D4: socket 필드가 없는 정상 등재에는 canonical `dept_socket_path(name)` 을 채워 돌려준다(아래 fill_canonical_dept_sockets).
 #[tauri::command]
 fn list_depts() -> Result<Value, String> {
-    let reg = std::env::var("CYS_DEPTS_JSON")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            cys::home_dir().join(".cys/depts.json")
-        });
-    list_depts_at(&reg)
+    let mut reg = read_json_or_empty("depts.json", &depts_registry_path(), json!({ "depts": {} }))?;
+    fill_canonical_dept_sockets(&mut reg);
+    Ok(reg)
 }
 
 /// ①(Fable R1 #3) 부서 수 — 판독 실패면 (None, Some(사유)). 목록은 읽혔는데 depts 칸이 없으면 0(종전과 같음).
@@ -4926,25 +6307,40 @@ fn dept_count_or_unreadable() -> (Option<usize>, Option<String>) {
 /// ①(TICKET=cysr-117-impl-lead · MUST-DO-117 ①) 파일 **없음**만 빈 목록 · 읽기 오류(권한·백신 잠금)는
 /// Err — 종전엔 읽기 오류도 `Ok(빈 목록)` 이라 소비처가 「부서 0」 으로 읽었다. 앞머리 BOM 은 떼고 읽는다
 /// (cys-dept 의 utf-8-sig 판독과 같은 규칙).
+/// ★1.1.8 병합: 원작자 K2-03/C2 단일 판독기(`read_json_or_empty` — 같은 세 규칙 + 경고 dedupe)와 같은 결함의 두
+/// 구현이라 판독은 그 하나로 모았다(`list_depts` 와 같은 판독기 — 이 함수는 경로를 주입하는 시험 입구). 정책은 그대로:
+/// 없음 = 빈 목록 · BOM = 읽음 · 읽기 오류·해석 실패 = Err(무변경).
 fn list_depts_at(reg: &std::path::Path) -> Result<Value, String> {
-    match std::fs::read_to_string(reg) {
-        Ok(s) => serde_json::from_str::<Value>(s.strip_prefix('\u{feff}').unwrap_or(&s))
-            .map_err(|e| format!("부서 목록({}) 해석 실패: {e}", reg.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({ "depts": {} })),
-        Err(e) => Err(format!("부서 목록({}) 읽기 실패: {e}", reg.display())),
+    read_json_or_empty("depts.json", reg, json!({ "depts": {} }))
+}
+
+/// ★D4(2026-09-17 4라운드 · codex 2차 ⑦): socket 필드가 **없거나 빈** 정상 등재에 canonical `dept_socket_path(name)` 을 채운다.
+///
+/// 무엇이 깨져 있었나: `{depts:{"dept-1":{display_name:"영업부"}}}` 같은 등재(표시명만 · socket 없음)에서 UI 의 `registered`
+/// (등재 socket 집합)·`displayBySocket`(새 탭 원천)이 비어, 저장된 canonical 소켓이 죽어 있으면 그 탭을 '미등재 유령'으로
+/// 드롭했다. Rust 복원기(spawn_org_restore · usage_accounts_all)는 같은 항목에 `unwrap_or_else(|| dept_socket_path(name))`
+/// 폴백을 이미 갖고 있어 두 소비자의 해석이 갈렸다 — 채움을 list_depts 한 곳에 두어 GUI·Rust 가 같은 등재를 본다.
+/// 값이 있는 socket 은 건드리지 않는다(레거시 파일경로형·다른 HOME 의 등재를 canonical 로 덮으면 그쪽이 유령이 된다).
+fn fill_canonical_dept_sockets(reg: &mut Value) {
+    let Some(depts) = reg.get_mut("depts").and_then(|d| d.as_object_mut()) else { return };
+    for (name, meta) in depts.iter_mut() {
+        let Some(obj) = meta.as_object_mut() else { continue };
+        let has_socket = obj
+            .get("socket")
+            .and_then(|s| s.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !has_socket {
+            obj.insert("socket".into(), json!(dept_socket_path(name).to_string_lossy()));
+        }
     }
 }
 
 /// 부서 레지스트리(depts.json)에서 표시명 조회 — cys-dept reg_set_meta 가 기록한 display_name.
-/// create stdout 은 name only 이므로 표시명의 진실원은 레지스트리다. 부재/오류 시 None(=name 폴백).
+/// create stdout 은 name only 이므로 표시명의 진실원은 레지스트리다. 부재/오류 시 None(=name 폴백 · 반환 정책 무변경).
+/// ★3라운드: 종전 `.ok()?` 는 판독 실패를 침묵했다 — 이제 read_json_or_empty 가 경고를 낸 뒤 None 으로 접는다.
 fn dept_display_name(name: &str) -> Option<String> {
-    let reg = std::env::var("CYS_DEPTS_JSON")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            cys::home_dir().join(".cys/depts.json")
-        });
-    let s = std::fs::read_to_string(&reg).ok()?;
-    let v: Value = serde_json::from_str(&s).ok()?;
+    let v = read_json_or_empty("depts.json", &depts_registry_path(), json!({ "depts": {} })).ok()?;
     v.get("depts")?
         .get(name)?
         .get("display_name")?
@@ -4953,19 +6349,14 @@ fn dept_display_name(name: &str) -> Option<String> {
 }
 
 /// 부서 카탈로그(dept-catalog.json) 조회 — ＋부서 선택 팝업용. cys-dept 와 동일 경로 규약
-/// (CYS_DEPT_CATALOG 또는 $HOME/.cys/dept-catalog.json). 부재/손상 시 빈 departments 반환(팝업=레거시 폴백).
+/// (CYS_DEPT_CATALOG 또는 $HOME/.cys/dept-catalog.json). 부재 시 빈 departments(팝업=레거시 폴백) ·
+/// **판독 실패(손상·인코딩)는 Err**(C2 — UI 가 사유 토스트 뒤 레거시로 진행).
 #[tauri::command]
 fn read_dept_catalog() -> Result<Value, String> {
     let cat = std::env::var("CYS_DEPT_CATALOG")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            cys::home_dir()
-                .join(".cys/dept-catalog.json")
-        });
-    match std::fs::read_to_string(&cat) {
-        Ok(s) => serde_json::from_str::<Value>(&s).map_err(|e| e.to_string()),
-        Err(_) => Ok(json!({ "departments": {} })),
-    }
+        .unwrap_or_else(|_| cys::home_dir().join(".cys/dept-catalog.json"));
+    read_json_or_empty("dept-catalog.json", &cat, json!({ "departments": {} }))
 }
 
 /// ★WP-3(BOOTSTRAP_HARDENING): 소켓 문자열에서 부서명 파생 — cys-dept-<name> 슬러그
@@ -4980,9 +6371,18 @@ fn dept_name_from_socket(sock: &str) -> Option<String> {
 /// ★WP-3 의도 선기록: 부서 삭제 클릭의 **제1행위** — base 데몬에 dept 묘비를 기록한다(견고
 /// writer=데몬 RPC·topology.json 영속). 이후의 teardown(bash→python 체인·reg_remove)이 무음
 /// 실패해도 리바이버(spawn_org_restore·프론트 복원)가 이 묘비를 게이트로 읽어 부활을 차단한다.
+/// ★G3-b(2026-09-17 10라운드 · codex 5차 ④): `name` 은 **프론트가 해소한 부서명**이다(등재 키 우선 —
+/// ui/src/deptlabel.ts deptLaunchName). 종전에는 이 함수가 소켓 파서로만 이름을 뽑았는데, 등재 키가
+/// `dept-2` 이고 저장 소켓이 `\\.\pipe\cys-dept-DEPT-2`(named pipe 는 대소문자 무구분 = 같은 파이프)면
+/// **기록자는 `DEPT-2`, 복원 판독기는 `dept-2`** 를 봐서 삭제 의도가 유실됐다(지운 부서가 되살아난다).
+/// 기록자와 판독기가 같은 식별자를 쓰게 인자로 받는다. 미지정·공백이면 종전대로 소켓에서 파생한다
+/// (계약 후퇴 없음 — 구 프론트·다른 호출자도 그대로 동작한다).
 #[tauri::command]
-async fn dept_tombstone_by_socket(socket: String) -> Result<Value, String> {
-    let name = dept_name_from_socket(&socket)
+async fn dept_tombstone_by_socket(socket: String, name: Option<String>) -> Result<Value, String> {
+    let name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .or_else(|| dept_name_from_socket(&socket))
         .ok_or_else(|| format!("부서명 파생 실패(비표준 소켓): {socket}"))?;
     rpc_oneshot(&cys::socket_path(), "dept_tombstone.set", json!({"name": name})).await
 }
@@ -5019,12 +6419,16 @@ async fn start_master(app: AppHandle) -> Result<(), String> {
     //   주입하는데, 관문 창에 붙여넣는 순간 그 Return 이 실측상 면책 창의 `No, exit` 을 눌러
     //   마스터를 종료시킨다. 좌석은 이미 보존됐으니(닫지 않았다) 사람이 그 pane 에서 관문을
     //   통과시키면 그대로 쓴다 — 사용자에게는 그 처방만 올린다.
+    //   ★0.14.41 U7(WP-C1 · 반박 M1): 2.1.261+ 는 폴더신뢰 창도 기본 선택이 `No, exit` 다 — 처방이 두 창을
+    //   함께 경고한다(문안만 · 코퍼스·자동확인 무접촉 · 핀 = tests::u7_gate_pending_prescriptions_…).
     if out.status.code() == Some(cys::EXIT_GATE_PENDING) {
         return Err(format!(
             "마스터 pane 은 떴고 프로세스도 살아 있으나 **첫기동 관문**에 갇혀 있습니다(pane 은 \
              닫지 않았습니다). 그 pane 에서 관문을 1회 통과시킨 뒤 다시 시작하세요 — 순서는 \
-             테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내이고, ★면책 창의 기본 \
-             선택은 `No, exit` 이라 그대로 Enter 를 누르면 종료됩니다(아래 방향키 1회 뒤 Enter).\n{}",
+             테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내이고, ★폴더신뢰(2.1.261+)·면책 \
+             창 **둘 다** 기본 선택이 `No, exit` 이라 그대로 Enter 를 누르면 종료됩니다(아래 방향키 1회 뒤 Enter). \
+             버전을 모르면 라벨로 확인하세요: `Yes, I trust this folder`/`Yes, I accept` 위에 커서를 두고 \
+             Enter — `No, exit` 위에서는 Enter 금지.\n{}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
@@ -5492,8 +6896,10 @@ async fn start_dept_master(app: AppHandle, socket: String) -> Result<(), String>
     if out.status.code() == Some(cys::EXIT_GATE_PENDING) {
         return Err(format!(
             "부서장 pane 은 떴고 프로세스도 살아 있으나 **첫기동 관문**에 갇혀 있습니다(pane 은 \
-             닫지 않았습니다). 그 pane 에서 관문을 1회 통과시킨 뒤 다시 시작하세요 — ★면책 창의 \
-             기본 선택은 `No, exit` 이라 그대로 Enter 를 누르면 종료됩니다(아래 방향키 1회 뒤 Enter).\n{}",
+             닫지 않았습니다). 그 pane 에서 관문을 1회 통과시킨 뒤 다시 시작하세요 — ★폴더신뢰(2.1.261+)·면책 \
+             창 **둘 다** 기본 선택이 `No, exit` 이라 그대로 Enter 를 누르면 종료됩니다(아래 방향키 1회 뒤 Enter). \
+             버전을 모르면 라벨로 확인하세요: `Yes, I trust this folder`/`Yes, I accept` 위에 커서를 두고 \
+             Enter — `No, exit` 위에서는 Enter 금지.\n{}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
@@ -5511,18 +6917,10 @@ async fn start_dept_master(app: AppHandle, socket: String) -> Result<(), String>
 
 /// 부서 데몬 teardown(socket 기준) — ws 이름 변경(rename)으로 name→socket 매핑이 끊겨도 정확히 종료.
 /// cys-dept down-sock에 일임(레지스트리 역인덱스로 부서명 해석 후 teardown).
+/// ★D1: 비0 rc·spawn·join 실패는 Err(run_dept_teardown) — UI 탭 닫기 핸들러의 catch 가 사실 문구로 알린다.
 #[tauri::command]
 async fn stop_dept_daemon_by_socket(socket: String) -> Result<(), String> {
-    let tool = dept_tool();
-    let _ = tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("bash");
-        inject_runtime_path(&mut cmd); // RC-5: 동봉 runtime(bash.exe) PATH 주입
-        cmd.arg(&tool).arg("down-sock").arg(&socket);
-        no_console(&mut cmd);
-        cmd.output()
-    })
-    .await;
-    Ok(())
+    run_dept_teardown("down-sock", socket).await
 }
 
 /// ★기능2(2026-07-15): 부서 완전 폐역(purge) — teardown을 넘어 대화기억(state·transcripts.db)까지
@@ -5615,6 +7013,138 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
     }))
 }
 
+/// ★재설치 첫 기동 심문 — "앱을 지웠다 다시 깔았는데 이전 데이터가 그대로 남아 있다"를 감지해
+/// 프런트에 알린다. 초보 사용자의 삭제·재설치 의식은 **깨끗해졌다는 기대**를 동반하는데, 데이터가
+/// 앱 번들 밖(~/.cys·~/.local/state)에 있어 실제로는 전부 복원된다 — 그 어긋남을 여기서 닫는다.
+/// Ask 판정은 쓰기 0 — 기록은 사용자가 고른 뒤 `fresh_start_ack` 이 한다(Seed 만 여기서 조용히 기록).
+/// ★W-2 결정 A: 이 심문은 **묻기만** 한다. [깨끗하게 새로 시작]은 부팅이 끝난 뒤 기존 초기화 경로
+/// (프런트 factoryResetFlow → `factory_reset_execute` — 부팅 관문·문구 확인)로 넘어간다.
+#[tauri::command]
+fn fresh_start_check() -> Value {
+    let prior_data_exists = cys::pack::pack_dir().join(".pack-version").exists()
+        || cys::home_dir().join(".cys/depts.json").exists();
+    let recorded = std::fs::read_to_string(install_identity_path()).ok();
+    let current = current_install_stamp();
+    let verdict =
+        decide_fresh_start_prompt(prior_data_exists, recorded.as_deref(), current.as_deref());
+    // Seed 는 물어볼 일이 아니라 **조용히 기록만** 한다(이 기능 도입 전 설치본 소급 심문 금지).
+    if verdict == FreshStartPrompt::Seed {
+        if let Some(cur) = current.as_deref() {
+            let _ = std::fs::write(install_identity_path(), cur);
+        }
+    }
+    json!({ "ask": verdict == FreshStartPrompt::Ask })
+}
+
+/// 사용자가 선택을 마쳤다 — 현재 설치본을 "이 데이터를 본 설치본"으로 기록해 다음 기동에서 다시
+/// 묻지 않게 한다. 두 선택 모두 고른 **즉시** 부른다. [깨끗하게 새로 시작]을 골라도 초기화는 부팅 뒤
+/// 문구 확인을 거쳐야 실행되므로(W-2 결정 A) 먼저 기록해도 그 확인을 건너뛰지 않는다 — 초기화가
+/// 성공하면 이 기록 파일도 함께 격리된다(src/factory_reset.rs CYS_BASE_EXACT `.install-identity`).
+/// ★W-2 결정 C(reviewer-codex R-1 MAJOR 4): 기록하지 못했으면 **실패로** 돌려준다. 종전에는 스탬프
+/// 판정 불능을 Ok 로 접고 프런트도 오류를 삼켜, 사용자가 골랐는데도 다음 기동에 같은 질문이 반복됐다.
+#[tauri::command]
+fn fresh_start_ack() -> Result<(), String> {
+    record_install_identity(&install_identity_path(), current_install_stamp().as_deref())
+}
+
+/// `fresh_start_ack` 의 테스트 가능한 심장 — 기록 경로·스탬프를 주입받는다. 스탬프를 잴 수 없거나 쓰기가
+/// 실패하면 Err(사유) — 기록하지 못한 것을 성공으로 위장하지 않는다.
+fn record_install_identity(path: &std::path::Path, stamp: Option<&str>) -> Result<(), String> {
+    let Some(stamp) = stamp else {
+        return Err(
+            "이 설치본의 신원을 잴 수 없어 선택을 기록하지 못했습니다(앱이 정규 설치 위치 밖에서 실행 중일 수 있습니다)"
+                .into(),
+        );
+    };
+    std::fs::write(path, stamp)
+        .map_err(|e| format!("선택 기록 파일을 쓰지 못했습니다({}): {e}", path.display()))
+}
+
+/// ★W-2 결정 A(2026-09-11 · reviewer-codex R-1 BLOCKER 2): **파괴적 작업(완전 초기화)을 부팅 기계와 동시에
+/// 돌리지 않는다.** 실사고 기제: GUI 온보딩의 init-pack 이 훅을 등록한 뒤 `.gui-onboarded` 를 쓰기 **전에**
+/// 초기화가 팩·훅을 걷어내면, 늦게 재개된 온보딩이 마커=현재버전을 기록해 다음 기동이 온보딩을 건너뛴다 =
+/// 훅 없는 영구 반쪽 상태. 업데이트 뒤 조직 복원(spawn_org_restore)도 초기화와 겹치면 방금 죽인 부서 데몬을
+/// 되살린다. 그래서 부팅 태스크(setup 전체 — 데몬 기동·GUI 온보딩·업데이트 팩 반영)·업데이트 팩 반영
+/// (maybe_apply_pending_update)·조직 복원이 도는 동안 이 카운터가 0 보다 크고, `factory_reset_execute` 는
+/// 그동안 데몬을 건드리기 **전에** 거부한다. 프런트는 `reset_gate_status` 로 관문이 열리기를 기다렸다가 기존
+/// 초기화 확인 창을 연다.
+static BOOT_WORK_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// 가장 최근 부팅 작업이 시작된 시각(`boot_clock_ms` 기준) — 아래 fail-open 상한의 기준점.
+static BOOT_WORK_LAST_START_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// ★CEO 조건 (가)(2026-09-11) — 이 관문은 **반드시 언젠가 열린다(fail-open)**. 여는 길은 둘이다:
+///   ① 부팅 작업이 끝나면(정상 종료·조기 return·에러·패닉 되감기) 가드 Drop 이 카운터를 내린다(RAII).
+///   ② 끝나지 않는 부팅 작업(사이드카 무응답 등으로 멈춤)이 남아 있어도, **마지막 부팅 작업이 시작된 지 이
+///      시간이 지나면** 카운터와 무관하게 연다.
+/// 왜 fail-open 인가: 관문이 닫힌 채 굳으면 툴바 [완전 초기화]가 **영구 잠김**이 된다. 완전 초기화는 부팅이
+/// 망가진 기계의 복구 수단이기도 해서, 영구 잠김은 이 관문이 막으려던 경쟁(부팅과 겹친 초기화)보다 나쁘다.
+/// 10분 = 정상 부팅의 가장 긴 경로(setup 의 데몬 재시도 20회×15초 ≈ 5분 + 온보딩·팩 반영·조직 복원)에 여유를
+/// 둔 값. 상한 뒤에 여는 초기화도 문구 타이핑 확인을 그대로 거친다. 그 틈에 늦게 끝난 온보딩이 초기화 뒤에
+/// 완료 마커를 남겨도, 다음 기동의 `needs_gui_onboard` 가 훅 실재를 확인해 온보딩을 다시 돈다(W-3-a — 쓰는
+/// 순서를 맞추는 대신 결과를 무해하게 만든다).
+const BOOT_GATE_FAIL_OPEN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// 프로세스 안 단조 시계(ms) — 벽시계 조정에 흔들리지 않는 fail-open 기준.
+fn boot_clock_ms() -> u64 {
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// 부팅 작업 1건의 수명 — 만들 때 +1, Drop(조기 return·패닉 되감기 포함)에 −1.
+struct BootWorkGuard;
+
+impl BootWorkGuard {
+    fn enter() -> Self {
+        // 시각을 먼저 적는다 — 카운터 증가를 본 쪽이 옛 시각으로 상한 경과를 오판하지 않게.
+        BOOT_WORK_LAST_START_MS.store(boot_clock_ms(), std::sync::atomic::Ordering::SeqCst);
+        BOOT_WORK_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        BootWorkGuard
+    }
+}
+
+impl Drop for BootWorkGuard {
+    fn drop(&mut self) {
+        BOOT_WORK_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// (진행 중인 부팅 작업 수, 마지막 부팅 작업이 시작된 뒤 지난 시간)
+fn boot_gate_snapshot() -> (usize, std::time::Duration) {
+    let n = BOOT_WORK_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst);
+    let since =
+        boot_clock_ms().saturating_sub(BOOT_WORK_LAST_START_MS.load(std::sync::atomic::Ordering::SeqCst));
+    (n, std::time::Duration::from_millis(since))
+}
+
+/// 거부 안내의 머리 문구 — ★CEO 조건 (나): 프런트(ui/src/resetconfirm.ts `BOOT_GATE_REFUSAL_LEAD`)가 이 머리로
+/// 알아보고 '완전 초기화 실패'가 아니라 '잠시 후 다시' 안내로 띄운다(두 값은 배선 핀이 같은지 잰다).
+const BOOT_GATE_REFUSAL_LEAD: &str = "앱 시작을 마무리하는 중입니다";
+
+/// 순수 판정(단위테스트 대상) — 부팅 작업이 남아 있고 fail-open 상한 전이면 초기화를 시작하지 않는다(안내 문구).
+fn reset_blocked_by_boot(in_flight: usize, since_last_start: std::time::Duration) -> Option<String> {
+    (in_flight > 0 && since_last_start < BOOT_GATE_FAIL_OPEN).then(|| {
+        format!(
+            "{BOOT_GATE_REFUSAL_LEAD} — 레이아웃·조직 복원 같은 시작 작업이 끝나면 완전 초기화를 쓸 수 있습니다. 잠시 후 다시 시도해 주세요(아무것도 바뀌지 않았습니다)."
+        )
+    })
+}
+
+fn boot_gate_refusal() -> Option<String> {
+    let (n, since) = boot_gate_snapshot();
+    reset_blocked_by_boot(n, since)
+}
+
+/// 프런트 폴링용(쓰기 0) — 부팅 뒤로 미룬 [깨끗하게 새로 시작]과 툴바 초기화가 확인 창을 열어도 되는지 본다.
+/// `boot_gate_closed` 는 fail-open 상한까지 반영한 판정이다(프런트는 이 값을 그대로 쓴다).
+#[tauri::command]
+fn reset_gate_status() -> Value {
+    let (n, since) = boot_gate_snapshot();
+    json!({
+        "boot_work_in_flight": n,
+        "boot_gate_closed": reset_blocked_by_boot(n, since).is_some(),
+    })
+}
+
 /// ★완전 초기화(팩토리 리셋) 프리뷰 — 읽기 전용(쓰기 0). 코어·인벤토리는 CLI `cys factory-reset`
 /// 과 동일한 `cys::factory_reset`(DESIGN-factory-reset.md) — GUI 는 표시·확인만 담당한다.
 /// 라이선스·미등록 파일(오너 배치 *.env 등) 보존이 코어 계약이라 GUI 가 따로 지킬 것이 없다.
@@ -5624,7 +7154,12 @@ fn dept_purge_preview_by_socket(socket: String) -> Result<Value, String> {
 /// 또 `fn` 이라 대용량 재귀 stat 동안 창이 굳었다 — 실행 커맨드와 같은 `spawn_blocking` 으로.
 #[tauri::command]
 async fn factory_reset_preview() -> Result<Value, String> {
-    let live_sessions = live_session_count().await.unwrap_or(0);
+    // ★W-1-b(원작자 2026-09-11): 조회 실패를 0 으로 접은 값만 넘기면 "없다"와 "못 셌다"가 구별되지 않는다 —
+    // 재설치 심문 모달은 셀 수 없었으면 '확인하지 못했다'고 고지한다(ui/src/resetconfirm.ts
+    // `freshStartLiveNotice`). 그래서 측정 성공 여부를 따로 넘긴다. 표시값은 종전과 같다.
+    let live = live_session_count().await;
+    let live_sessions_known = live.is_ok();
+    let live_sessions = live.unwrap_or(0);
     // ①(TICKET=cysr-117-impl-lead · Fable R1 #3) 판독 실패 = 부서 수 미상(null) + 사유 — 0 으로 접으면
     //   「마지막 부서 → CEO 강등」 을 잘못 고지하고 초기화 미리보기가 「부서 0」 으로 보인다.
     let (dept_count, depts_unreadable) = dept_count_or_unreadable();
@@ -5655,6 +7190,7 @@ async fn factory_reset_preview() -> Result<Value, String> {
             "strip_profiles": plan.strip_settings.len(),
             "report_only": plan.report_only,
             "live_sessions": live_sessions,
+            "live_sessions_known": live_sessions_known,
             "dept_count": dept_count,
             "depts_unreadable": depts_unreadable,
             "trash_root_ready": plan.trash_root_ready.is_ok(),
@@ -5686,6 +7222,12 @@ async fn factory_reset_execute(
             "cys surface 안에서 기동된 앱에서는 완전 초기화를 실행할 수 없다 — 앱을 독립 실행하라"
                 .into(),
         );
+    }
+    // ★W-2 결정 A: 부팅 기계(데몬 기동·온보딩·업데이트 반영·조직 복원)가 도는 동안은 거부한다 — 데몬을
+    // 건드리기 **전**에. 부팅과 겹친 초기화는 훅 없는 영구 반쪽 상태를 남긴다(BOOT_WORK_IN_FLIGHT 주석).
+    // 거부는 '잠시 후 다시' 안내다(아무것도 바꾸지 않았다) · 관문은 fail-open 상한 뒤 반드시 열린다.
+    if let Some(why) = boot_gate_refusal() {
+        return Err(why);
     }
     tokio::task::spawn_blocking(move || {
         let roots =
@@ -6525,27 +8067,32 @@ fn default_pack_manifest_url() -> String {
 }
 
 /// 무중단 팩 업데이트 가용성 확인(DESIGN §7-④ 3축 게이트) — 원격 pack-manifest.json만 경량
-/// 페치(curl)해 디스크 `.pack-version` 및 실행 바이너리 버전과 비교한다. ★pack.tar.gz·서명은
-/// 받지 않는다(폴링 비용 최소화) — 실제 다운로드·서명검증·원자적 반영·reinject는
+/// 페치(curl)해 디스크 `.pack-version`·`.pack-state.json` 및 실행 바이너리 버전과 비교한다.
+/// ★pack.tar.gz·서명은 받지 않는다(폴링 비용 최소화) — 실제 다운로드·서명검증·원자적 반영·reinject는
 /// install_pack_update(사이드카 cys pack-update)가 전담한다(불가침).
-/// 반환(★3상태 — UI가 'transient 장애'와 '확인된 no-update'를 구분해 fail-safe 상태보존):
-///   - Ok(Some({pack_version, manifest_url, min_binary_version, binary_too_old}))
-///       → 확인된 새 팩 있음. binary_too_old=false=무중단 가능(install_pack_update 경로) /
-///         true=min_binary_version > 실행 바이너리 = 무중단 거부, 바이너리(재시작) 경로 안내.
-///   - Ok(None)  → ① 정상 no-update(원격을 받아·파싱해 비교했고 디스크보다 새것이 아님) 또는
-///                 ② 미서명/필수필드 부재 manifest의 fail-closed 거부(보안 경계 — 받았으나 신뢰 불가,
-///                 설치 안 함). UI는 이때만 packUpdateAvailable을 해제한다(확인된 '새 팩 없음').
-///   - Err(..)   → ★일시 fetch 장애(spawn/join·curl 실행·HTTP 비정상). UI의 기존 catch가
-///                 packCheckFailed=true로 잡아 마지막 검증 상태를 보존하고 토스트는 띄우지 않는다
-///                 (silent 폴링). '확인된 no-update'와 섞지 않는 게 핵심 — 일시 장애로
-///                 packUpdateAvailable이 소거돼 배지가 사라지는 것을 막는다.
+/// 반환(★U9 · 0.14.41 계약 확장 — 종전 3상태의 Ok(None)을 **타입 있는 status** 로 쪼갰다):
+///   - Ok({status, pack_version, disk_version, min_binary_version, manifest_url, binary_too_old, reason?, detail?})
+///       status = available | none | binary-too-old | channel-refused | manifest-unreadable | disk-unknown
+///       · available      확인된 새 팩 · 무중단 가능(install_pack_update 경로)
+///       · none           원격을 받아·해석해 비교했고 디스크보다 새것이 아님 = **유일한 '팩 최신'**
+///       · binary-too-old min_binary_version > 실행 바이너리 = 무중단 거부, 본체 업데이트 안내
+///       · channel-refused pro 설치에 공개(free) 번들 — CLI 가 [pack-channel-refused] 로 거부할 것
+///       · manifest-unreadable 받았으나 해석 불가(필수 필드 부재·HTML 응답 등) — 설치 안 함(보안 경계
+///                        불변)이되 **'최신'이라 말하지 않는다**. ★의도적 계약 변경: 종전 Ok(None)
+///                        (codex R2 #1 "재시도해도 동일 = 확정 거부")은 '거부'로서는 옳았으나 UI 가 그것을
+///                        '확인된 새 팩 없음'으로 읽어 "최신 버전입니다"를 띄웠다(U9 R4).
+///       · disk-unknown   디스크 팩 상태 불명(reason: pack-version-missing | pack-version-unreadable |
+///                        pack-state-corrupt | pack-state-mismatch) — CLI 는 no-op 또는 typed 거부.
+///   - Err(..) → ★일시 fetch 장애(spawn/join·curl 실행·HTTP 비정상)만. UI 는 실패로 기록하고 직전 검증
+///               상태를 '직전 확인 기준'으로만 보존한다('최신' 단정 금지).
+/// 판정 순서는 CLI(cys.rs pack_update_from_dir)와 같다 — classify_pack_check 주석·파리티 테스트 참조.
 #[tauri::command]
-async fn check_pack_update(manifest_url: Option<String>) -> Result<Option<Value>, String> {
+async fn check_pack_update(manifest_url: Option<String>) -> Result<Value, String> {
     let url = manifest_url.unwrap_or_else(default_pack_manifest_url);
     // 경량 페치: manifest JSON만 stdout으로. blocking 풀에서 실행(install_pack_update curl 패턴 동형).
     let fetch_url = url.clone();
-    // ★transient 실패(spawn/join·curl 실행·HTTP 비정상)는 Err로 돌린다 — UI catch가 상태보존(silent).
-    //   Ok(None)으로 접으면 '확인된 no-update'와 구분 불가 → 일시 장애에 배지 소거(codex R2 #1).
+    // ★transient 실패(spawn/join·curl 실행·HTTP 비정상)는 Err로 돌린다 — UI 가 '실패'로 기록.
+    //   none 으로 접으면 '확인된 no-update'와 구분 불가 → 일시 장애에 '최신' 오표시(codex R2 #1).
     let joined = tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new("curl");
         cmd.args(["-fsSL", &fetch_url]);
@@ -6561,28 +8108,160 @@ async fn check_pack_update(manifest_url: Option<String>) -> Result<Option<Value>
         Ok(Err(e)) => return Err(format!("curl 실행 실패: {e}")),
         Err(e) => return Err(format!("curl join 실패: {e}")),
     };
-    // 미서명/필수필드 부재 manifest = packsig PackManifest 역직렬화 fail-closed(거부) = 보안 경계.
-    //   받았으나 신뢰 불가 → '새 팩 없음'으로 취급(Ok(None), 설치 안 함). fetch 장애(Err·상태보존)와
-    //   달리 재시도해도 동일하므로 unknown이 아닌 확정 거부 — UI는 packUpdateAvailable을 해제한다.
-    let manifest: cys::packsig::PackManifest = match serde_json::from_slice(&out.stdout) {
-        Ok(m) => m,
-        Err(_) => return Ok(None),
-    };
-    let disk = std::fs::read_to_string(cys::pack::pack_dir().join(".pack-version"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    // 축1 반영 판정: remote가 디스크보다 strictly-newer 여야. ★여기서 false면 '확인된 no-update' = Ok(None).
-    if !cys::pack::remote_is_newer(&manifest.pack_version, &disk) {
-        return Ok(None);
+    // 디스크 판독은 **읽기만** 한다(.pack-version · .pack-state.json) — 쓰기·자가치유는 CLI/부트 몫.
+    let dir = cys::pack::pack_dir();
+    let disk = std::fs::read_to_string(dir.join(".pack-version"));
+    let state = cys::pack::read_pack_state(&dir);
+    Ok(classify_pack_check(&out.stdout, disk, state, env!("CARGO_PKG_VERSION")).to_json(&url))
+}
+
+/// check_pack_update 의 판정 결과(fetch 이후 · 순수 · 단위테스트 대상).
+#[derive(Debug, Clone, PartialEq)]
+enum PackCheck {
+    Available { version: String, disk: String, min_binary: String },
+    None { version: String, disk: String },
+    BinaryTooOld { version: String, disk: String, min_binary: String },
+    ChannelRefused { version: String, disk: String },
+    ManifestUnreadable { detail: String },
+    DiskUnknown { reason: &'static str, detail: String, version: String },
+}
+
+impl PackCheck {
+    fn to_json(&self, manifest_url: &str) -> Value {
+        match self {
+            PackCheck::Available { version, disk, min_binary } => json!({
+                "status": "available", "pack_version": version, "disk_version": disk,
+                "min_binary_version": min_binary, "manifest_url": manifest_url, "binary_too_old": false,
+            }),
+            PackCheck::None { version, disk } => json!({
+                "status": "none", "pack_version": version, "disk_version": disk,
+                "manifest_url": manifest_url,
+            }),
+            PackCheck::BinaryTooOld { version, disk, min_binary } => json!({
+                "status": "binary-too-old", "pack_version": version, "disk_version": disk,
+                "min_binary_version": min_binary, "manifest_url": manifest_url, "binary_too_old": true,
+            }),
+            PackCheck::ChannelRefused { version, disk } => json!({
+                "status": "channel-refused", "pack_version": version, "disk_version": disk,
+                "manifest_url": manifest_url, "reason": "pack-channel-refused",
+            }),
+            PackCheck::ManifestUnreadable { detail } => json!({
+                "status": "manifest-unreadable", "detail": detail, "manifest_url": manifest_url,
+            }),
+            PackCheck::DiskUnknown { reason, detail, version } => json!({
+                "status": "disk-unknown", "reason": reason, "detail": detail,
+                "pack_version": version, "manifest_url": manifest_url,
+            }),
+        }
     }
-    // 축2 호환 게이트: min_binary_version ≤ 실행 바이너리(env CARGO_PKG_VERSION = 단일 버전선).
-    let binary_too_old = pack_binary_too_old(&manifest.min_binary_version, env!("CARGO_PKG_VERSION"));
-    Ok(Some(json!({
-        "pack_version": manifest.pack_version,
-        "min_binary_version": manifest.min_binary_version,
-        "manifest_url": url,
-        "binary_too_old": binary_too_old,
-    })))
+}
+
+/// 진단 문구 상한 — 원격 본문(HTML 등)이 그대로 창에 쏟아지지 않게 글자 수로 자른다(char 경계 안전).
+fn clip_detail(s: &str, max_chars: usize) -> String {
+    let mut out: String = s.chars().take(max_chars).collect();
+    if s.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
+}
+
+/// check_pack_update 판정(순수). ★설치 경계(반영 순서)는 CLI `pack_update_from_dir`(cys.rs)와
+/// 같다 — CLI 코드는 옮기지 않고(③ 자가치유 경로 리팩터 금지 · 반박 D2) lib 공개 부품
+/// (read_pack_state·remote_is_newer_tuple·parse_semver)과 기존 pack_binary_too_old 로 같은
+/// 순서를 밟는다:
+///   ① 매니페스트 해석(PackManifest serde · fail-closed)      실패 → manifest-unreadable
+///   ② .pack-state.json: 손상 → disk-unknown(pack-state-corrupt) · base≠.pack-version → (pack-state-mismatch)
+///   ③ (표시 정직화 · GUI 전용) .pack-version 부재/해석 불가 → disk-unknown · remote pack_version 해석
+///      불가 → manifest-unreadable. CLI 는 여기서 UpToDate(no-op)로 끝나므로 '설치 안 함'은 같고,
+///      GUI 만 그것을 '최신'이라 부르지 않는다(U9 R4 · 반박 D3).
+///   ④ (base semver, pro_revision) 튜플 strictly-newer 아님 → none
+///   ⑤ 채널 전이: 디스크 pro ∧ 번들 free ∧ **공개 base 가 디스크 base 보다 strictly-newer** →
+///      channel-refused(★GUI 전용 재배치 — 리뷰1 F1). CLI 는 버전을 보지 않고 항상 거부하지만
+///      (③ 자가치유 리팩터 금지로 그 순서는 그대로 둔다 — 설치 경계 무변경, 눌러도 CLI 가 거부하는
+///      점은 같다), GUI 의 '표시'만 여기로 옮긴다: 공개 팩이 디스크(pro) 보다 새것이 아니면 ④에서
+///      이미 none 으로 끝나므로 pro 사용자에게 "업데이트가 있다"는 거짓 경보(오너 재현 증상)가 사라진다.
+///   ⑥ min_binary_version > 실행 바이너리 → binary-too-old
+///   ⑦ available
+fn classify_pack_check(
+    manifest_bytes: &[u8],
+    disk: std::io::Result<String>,
+    state: cys::pack::PackStateRead,
+    running: &str,
+) -> PackCheck {
+    let manifest: cys::packsig::PackManifest = match serde_json::from_slice(manifest_bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            return PackCheck::ManifestUnreadable { detail: clip_detail(&e.to_string(), 160) };
+        }
+    };
+    let (disk_version, disk_err) = match disk {
+        Ok(s) => (s.trim().to_string(), None),
+        Err(e) => (String::new(), Some(e.kind())),
+    };
+    let (disk_channel, disk_rev) = match state {
+        cys::pack::PackStateRead::Absent => ("free".to_string(), 0u32),
+        cys::pack::PackStateRead::Corrupt(e) => {
+            return PackCheck::DiskUnknown {
+                reason: "pack-state-corrupt",
+                detail: clip_detail(&e, 160),
+                version: manifest.pack_version,
+            };
+        }
+        cys::pack::PackStateRead::Valid(st) => {
+            if st.base_version != disk_version {
+                return PackCheck::DiskUnknown {
+                    reason: "pack-state-mismatch",
+                    detail: clip_detail(
+                        &format!("state.base {:?} ≠ .pack-version {:?}", st.base_version, disk_version),
+                        160,
+                    ),
+                    version: manifest.pack_version,
+                };
+            }
+            (st.channel, st.pro_revision)
+        }
+    };
+    if cys::pack::parse_semver(&disk_version).is_none() {
+        let reason = match disk_err {
+            Some(std::io::ErrorKind::NotFound) => "pack-version-missing",
+            _ => "pack-version-unreadable",
+        };
+        let detail = match disk_err {
+            Some(k) if k != std::io::ErrorKind::NotFound => format!("{k:?}"),
+            Some(_) => String::new(),
+            None => clip_detail(&format!("{disk_version:?}"), 60),
+        };
+        return PackCheck::DiskUnknown { reason, detail, version: manifest.pack_version };
+    }
+    if cys::pack::parse_semver(&manifest.pack_version).is_none() {
+        return PackCheck::ManifestUnreadable {
+            detail: clip_detail(&format!("pack_version 해석 불가: {:?}", manifest.pack_version), 160),
+        };
+    }
+    if !cys::pack::remote_is_newer_tuple(
+        (&manifest.pack_version, manifest.pro_revision),
+        (&disk_version, disk_rev),
+    ) {
+        // 공개 base 가 디스크(pro) base 보다 새것이 아니면 채널이 갈려도 '표시할 업데이트' 자체가
+        // 없다(리뷰1 F1) — pro 사용자에게 거짓 경보를 만들지 않는다. 설치 경계는 원래 여기서도
+        // none(설치 버튼 없음)이었으므로 행동은 무변경.
+        return PackCheck::None { version: manifest.pack_version, disk: disk_version };
+    }
+    if disk_channel == "pro" && manifest.channel == "free" {
+        return PackCheck::ChannelRefused { version: manifest.pack_version, disk: disk_version };
+    }
+    if pack_binary_too_old(&manifest.min_binary_version, running) {
+        return PackCheck::BinaryTooOld {
+            version: manifest.pack_version,
+            disk: disk_version,
+            min_binary: manifest.min_binary_version,
+        };
+    }
+    PackCheck::Available {
+        version: manifest.pack_version,
+        disk: disk_version,
+        min_binary: manifest.min_binary_version,
+    }
 }
 
 /// 무중단 호환 게이트(DESIGN §7-④ 축2) 순수 판정 — min_binary_version > 실행 바이너리면 true(무중단
@@ -6642,7 +8321,30 @@ async fn install_update_plugin(app: AppHandle, force: bool) -> Result<(), String
             .ok_or("no update available")?,
     };
     let _ = app.emit("update-progress", json!({"phase": "download"}));
-    update
+    // ★(0.14.43 · J2) 설치 직전 시도 기록. 윈도우에서 `download_and_install` 은 설치기를 띄운 뒤 반환값을 버리고 프로세스를
+    //   끝내므로(tauri-plugin-updater 2.10.1) 설치기가 차단돼도(스마트 앱 컨트롤 등) 이 아래 코드는 실행되지 않는다 —
+    //   다시 뜬 앱의 `update_attempt_report` 가 이 기록으로 '설치되지 않았다'를 한 번 알린다. 최선 노력이다: 쓰기 실패는
+    //   무시하고 설치를 계속한다(이 기록이 업데이트를 막아서는 안 된다). `CYS_UPDATE_VERIFY=0` 이면 쓰지 않는다.
+    let attempt_path = update_attempt_path();
+    let verify_on = update_verify_from_env(cys::env_compat("CYS_UPDATE_VERIFY").as_deref());
+    if verify_on {
+        let _ = write_update_attempt_at(
+            &attempt_path,
+            env!("CARGO_PKG_VERSION"),
+            &update.version,
+            unix_now_secs(),
+        );
+    }
+    // ★(0.14.43 · WU) 윈도우: 설치기를 띄운 **결과를 본다**. 플러그인의 설치는 `ShellExecuteW` 반환값을 보지 않고 곧바로 프로세스를 끝내므로 앱 제어 정책
+    //   (스마트 앱 컨트롤 등)이 서명 없는 설치 파일을 막으면 앱이 말없이 꺼지고 구버전이 남았다. 아래 분기는 같은 임시 경로·같은 인자·같은 호출로 설치기를
+    //   띄우되, 막혔으면(반환값 32 이하) 앱을 닫지 않고 오류(`installer_launch_failed:<코드>:<반환값>`)를 돌려주고 시도 기록을 지운다(설치기가 뜨지 않았으니
+    //   재시작 뒤 알림이 필요 없다). 성공하면 종전과 같이 곧바로 종료한다 — 그때 시도 기록은 남는다(기준 시각만 설치기가 뜬 직후로 다시 쓴다 · 설치기가 뜬 뒤의 실패는 재시작 뒤 판정이 맡는다).
+    //   `CYS_UPDATE_CHECKED_LAUNCH=0` 이면 이 분기를 건너뛰고 종전 경로(바로 아래)를 그대로 쓴다. 맥·리눅스는 이 분기가 컴파일되지 않는다.
+    #[cfg(windows)]
+    if update_checked_launch_from_env(cys::env_compat("CYS_UPDATE_CHECKED_LAUNCH").as_deref()) {
+        return install_update_checked_windows(&app, &update, &attempt_path, verify_on).await;
+    }
+    if let Err(e) = update
         .download_and_install(
             |chunk, total| {
                 let _ = app.emit(
@@ -6653,7 +8355,14 @@ async fn install_update_plugin(app: AppHandle, force: bool) -> Result<(), String
             || {},
         )
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        // 다운로드·서명 검증 실패 등 — 설치기가 뜨지 않았다(오류는 아래로 돌려줘 화면에 이미 뜬다). 기록을 지운다.
+        // Ok 면 그대로 둔다: 재시작(맥·리눅스) 또는 설치기 종료(윈도우) 뒤 다시 뜬 앱이 판정한다.
+        if verify_on {
+            clear_update_attempt_at(&attempt_path);
+        }
+        return Err(e.to_string());
+    }
     // 2-b) ★설치 후 검증(ATOMIC-1 계약 ④의 대체 집행 · 2026-08-01 실사고).
     //   교체를 수행한 주체는 tauri-plugin-updater 이고 우리는 그 내부를 못 고친다. 실측된 결함:
     //   ⓐ `rename(현재 .app → TempDir)` 후 최종 rename 이 실패해도 **되돌리는 코드가 없다**
@@ -6689,6 +8398,88 @@ async fn install_update_plugin(app: AppHandle, force: bool) -> Result<(), String
     // 등록돼 있어 restart()의 신 프로세스가 구 프로세스의 인스턴스 락과 레이스할 수 있다(신 인스턴스가
     // 죽어가는 구 인스턴스로 포워딩 후 종료 → 앱 미복귀). 이 경로를 되살릴 때 반드시 실기기 검증하라.
     app.restart();
+}
+
+/// ★(0.14.43 · WU) 윈도우 인앱 업데이트 — 설치기를 띄우고 **그 결과를 본다**(`install_update` 의 윈도우 분기 · `CYS_UPDATE_CHECKED_LAUNCH` 기본 켬).
+///
+/// 종전(업데이터 플러그인 2.10.1 의 `download_and_install`)은 `ShellExecuteW` 반환값을 버리고 곧바로 `std::process::exit(0)` 해서, 앱 제어 정책이 설치 파일
+/// 실행을 막으면(오류 4551 · 반환값 5) 앱이 말없이 꺼지고 구버전이 남았다. 이 함수는 **같은 일**을 한다 — 받기·서명 검증(플러그인의 `download`) → 같은
+/// 임시 경로·파일명에 쓰기 → 같은 인자 문자열 → 같은 `ShellExecuteW` 호출 → 성공하면 같은 시점에 종료 — 다만 **실행 실패(반환값 32 이하)를 보면 앱을 닫지
+/// 않고** 임시 설치 파일과 시도 기록을 지운 뒤 `Err("installer_launch_failed:<코드>:<반환값>")` 을 돌려준다. 플러그인과의 대조표(`파일:줄`)는
+/// `_evidence/impl-0.14.43-20261003/WU/WORKLOG.md`.
+///  · 받은 바이트가 exe 가 아니면(zip·MSI 등 예상 밖 형식) 플러그인의 `install` 에 맡긴다(동작 불변).
+///  · 성공한 **뒤에만** `cleanup_before_exit()` 를 부르고 종료한다. 플러그인 기본 훅은 설치기를 띄우기 **앞에** 불렀다 — 이 훅은 트레이 아이콘·리소스 표를 비우고
+///    윈도우에서는 모든 창을 숨기므로, 실패했을 때 앱이 창만 숨은 채 남지 않게 순서만 옮겼다.
+///  · 설치기가 뜨기 전에 실패하는 모든 갈래는 같은 일을 한다: 시도 기록을 지우고(`verify_on` 일 때) 오류를 돌려준다. 설치기가 **뜬 뒤**에는 기록을 지우지 않는다(기준 시각만 그 직후로 다시 쓴다).
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn install_update_checked_windows(
+    app: &AppHandle,
+    update: &tauri_plugin_updater::Update,
+    attempt_path: &std::path::Path,
+    verify_on: bool,
+) -> Result<(), String> {
+    // 플랫폼 갈라짐은 **본문 안**에 둔다(BLOCK-B: 최상위 cfg 로 아이템을 지우지 않는다 — `no_console` 형태). 호출부(`install_update` 의 `#[cfg(windows)]` 분기)는
+    // 윈도우에서만 컴파일되므로 맥·리눅스의 아래 갈래는 닿지 않는다.
+    #[cfg(windows)]
+    {
+        let forget = || {
+            if verify_on {
+                clear_update_attempt_at(attempt_path);
+            }
+        };
+        // 받기 + 서명 검증은 플러그인의 `download` 가 한다 — 실패는 종전과 같은 Err(시도 기록 삭제).
+        let bytes = match update
+            .download(
+                |chunk, total| {
+                    let _ = app.emit(
+                        "update-progress",
+                        json!({"phase": "download", "chunk": chunk, "total": total}),
+                    );
+                },
+                || {},
+            )
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                forget();
+                return Err(e.to_string());
+            }
+        };
+        if !cys::update_launch::looks_like_exe(&bytes) {
+            // 예상 밖 형식(zip·MSI 등) — 종전 경로: 플러그인의 `install` 이 처리한다(성공하면 플러그인이 프로세스를 끝낸다).
+            if let Err(e) = update.install(&bytes) {
+                forget();
+                return Err(e.to_string());
+            }
+            return Ok(());
+        }
+        // exe — 플러그인과 같은 임시 경로·파일명(`%TEMP%\<앱>-<새버전>-updater-<난수>\<앱>-<새버전>-installer.exe`)에 쓴다. 앱 이름은 플러그인이 쓰는 값
+        // 그대로(`package_info().name`)다.
+        let file = match cys::update_launch::write_installer(&std::env::temp_dir(), &app.package_info().name, &update.version, &bytes) {
+            Ok(f) => f,
+            Err(e) => {
+                forget();
+                return Err(e.to_string());
+            }
+        };
+        let current_args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        let params = cys::update_launch::nsis_update_params(&current_args);
+        settle_launch(cys::update_launch::launch_installer(&file, &params), || {
+            cys::update_launch::remove_installer(&file);
+            forget();
+        })?;
+        // ★(R1F-UA · S3 minor 2) 설치기가 떴다 — J2 판정 보류 창(90초)의 기준 시각을 지금(설치기가 뜬 시각)으로 다시 쓴다. 최선 노력이고(실패 무시) 이 한 줄 말고 성공 경로는 종전과 같다.
+        restamp_update_attempt_at(verify_on, attempt_path, env!("CARGO_PKG_VERSION"), &update.version, unix_now_secs());
+        // 여기부터는 설치기가 **떴을 때만** 도달한다 — 종전과 같은 시점에 종료한다.
+        app.cleanup_before_exit();
+        std::process::exit(0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, update, attempt_path, verify_on);
+        Err("install_update_checked_windows 는 윈도우 전용이다(맥·리눅스는 종전 경로)".to_string())
+    }
 }
 
 /// 데몬 세대교체(업데이트 없이) — Windows rename-swap 후 lame-duck 스큐(구 데몬 + 새 앱)의
@@ -6838,14 +8629,58 @@ async fn install_pack_update(
         );
         return Err(format!("pack-update 실패: {stderr}"));
     }
+    // ★U9(0.14.41): CLI 가 반영 없이 끝났으면(UpToDate · no-op · exit 0) "완료"라고 말하지 않는다.
+    //   종전에는 exit 0 이면 무조건 pack-updated → "✅ 팩 업데이트 완료"였다(보고서 R5). CLI UpToDate 는
+    //   디스크 판독 실패에서도 나오므로 uptodate_confirmed(disk_parse=ok ∧ disk ≥ remote)일 때만
+    //   '이미 적용됨', 아니면 '상태 불명'으로 보낸다. 토큰이 없으면(구 사이드카) 종전 경로 그대로.
+    if let Some(tok) = parse_pack_update_outcome(&stdout) {
+        if tok.gate == "up-to-date" {
+            let confirmed = uptodate_confirmed(&tok);
+            let _ = app.emit(
+                "pack-uptodate",
+                json!({
+                    "confirmed": confirmed,
+                    "disk_version": tok.disk,
+                    "remote_version": tok.remote,
+                }),
+            );
+            return Ok(tok.disk);
+        }
+    }
     // ★디스크 반영 성공(success 또는 degraded) — .pack-version을 읽어 새 팩 버전으로 브로드캐스트(§2-②/§7-③).
     //   read_board_catalog가 pack_dir의 정적 파일을 읽는 것과 동일 SOT(pack_dir).
     let pack_version = std::fs::read_to_string(cys::pack::pack_dir().join(".pack-version"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     // 사이드카 구조화 출력에서 reinject failed/deferred 집계 — 라이브 미각성을 사용자에게 경고.
-    let (failed, deferred) = parse_reinject_counts(&stdout);
-    if failed > 0 || deferred > 0 {
+    // ★U4-B2③ 3상 판독: 재주입 자체를 못 한 스킵을 (0,0)=완전 성공으로 읽지 않는다.
+    let reinject = parse_reinject_result(&stdout);
+    let (failed, deferred) = match &reinject {
+        ReinjectResult::Measured { failed, deferred } => (*failed, *deferred),
+        ReinjectResult::Skipped { .. } | ReinjectResult::Absent => (0, 0),
+    };
+    let reinject_skipped = matches!(reinject, ReinjectResult::Skipped { .. });
+    if let ReinjectResult::Skipped { reason } = &reinject {
+        let _ = app.emit(
+            "update-warning",
+            json!({
+                "phase": "pack-update",
+                "pack_version": pack_version,
+                "reinject_skipped": true,
+                "reinject_skip_reason": reason,
+                // ★review1 m2 FIX: "다시 업데이트하면 재주입됩니다"는 사실과 다르다 — 같은 버전으로
+                // 다시 pack-update 하면 UpToDate no-op(§7-①)이라 재주입 단계 자체에 오지 않고, 이
+                // Err 팔은 pending 도 영속하지 않아(run_pack_update reinject 자체 실패 팔) "다음에
+                // 자동 재시도"도 성립하지 않는다. 실제 회복 경로는 데몬 재기동(재기동 시 격리 config
+                // 멱등 재병합) 또는 각 노드의 다음 /clear 때 최신 지침이 다시 주입되는 것뿐이다.
+                "message": format!(
+                    "디스크 팩은 {pack_version} 로 갱신됐으나 라이브 노드 재주입을 하지 못했습니다(데몬 응답 없음: \
+                     {reason}) — 떠 있는 노드는 이전 지침으로 동작 중입니다(라이브 무중단 유지, 재시작 안 함). \
+                     데몬 상태를 점검해 재기동하거나, 각 노드가 다음 /clear 때 새 지침을 받습니다."
+                ),
+            }),
+        );
+    } else if failed > 0 || deferred > 0 {
         // ★성공으로만 포장 금지 — 디스크는 갱신됐으나 라이브 노드 일부 미각성/보류를 경고한다.
         //   (app.restart는 여전히 미호출 — 무중단 불변식 유지.)
         let _ = app.emit(
@@ -6868,30 +8703,123 @@ async fn install_pack_update(
             "pack_version": pack_version,
             "reinject_failed": failed,
             "reinject_deferred": deferred,
+            "reinject_skipped": reinject_skipped,
         }),
     );
     Ok(pack_version)
 }
 
-/// 사이드카(cys pack-update) stdout에서 `PACK_UPDATE_RESULT … failed=N deferred=N` 토큰을 파싱해
-/// (failed, deferred)를 돌려준다. 토큰 부재(구버전 사이드카·reinject 스킵 등)면 (0,0) — 보수적.
-/// 사람용 메시지와 독립한 안정 토큰(REINJECT_RESULT_PREFIX)만 신뢰한다.
-fn parse_reinject_counts(stdout: &str) -> (u64, u64) {
+/// `cys pack-update` 의 no-op 결과 줄(`PACK_UPDATE_OUTCOME …` · 계약 = cys::pack::PACK_UPDATE_OUTCOME_PREFIX).
+#[derive(Debug, Clone, PartialEq)]
+struct PackUpdateOutcomeToken {
+    gate: String,
+    remote: String,
+    disk: String,
+    disk_parse_ok: bool,
+}
+
+/// 사이드카 stdout 에서 결과 줄을 찾는다(줄마다 trim — CRLF 안전). 없으면 None(구 사이드카 = 종전 경로).
+/// gate 가 비어 있으면 형식 불명으로 보고 None(보수적 — 종전 경로).
+fn parse_pack_update_outcome(stdout: &str) -> Option<PackUpdateOutcomeToken> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix(cys::pack::PACK_UPDATE_OUTCOME_PREFIX) else { continue };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            continue; // 접두사만 같은 다른 토큰(PACK_UPDATE_OUTCOMEX…) 배제
+        }
+        let mut t = PackUpdateOutcomeToken {
+            gate: String::new(),
+            remote: String::new(),
+            disk: String::new(),
+            disk_parse_ok: false,
+        };
+        for kv in rest.split_whitespace() {
+            match kv.split_once('=') {
+                Some(("gate", v)) => t.gate = v.to_string(),
+                Some(("remote", v)) => t.remote = v.to_string(),
+                Some(("disk", v)) => t.disk = v.to_string(),
+                Some(("disk_parse", v)) => t.disk_parse_ok = v == "ok",
+                _ => {}
+            }
+        }
+        return if t.gate.is_empty() { None } else { Some(t) };
+    }
+    None
+}
+
+/// "이미 적용됨"이라고 말해도 되는가 — disk_parse=ok ∧ 두 버전 모두 해석 ∧ disk ≥ remote.
+/// 그 밖(디스크 판독 실패·원격 해석 불가)은 '팩 상태 불명'(반박 D3 — 같은 종류의 거짓 안심 차단).
+fn uptodate_confirmed(t: &PackUpdateOutcomeToken) -> bool {
+    if t.gate != "up-to-date" || !t.disk_parse_ok {
+        return false;
+    }
+    match (cys::pack::parse_semver(&t.disk), cys::pack::parse_semver(&t.remote)) {
+        (Some(d), Some(r)) => d >= r,
+        _ => false,
+    }
+}
+
+/// ★U4-B2③ 사이드카 결과 토큰의 3상 판독.
+/// `Measured` = 재주입을 실제로 돌고 센 결과 · `Skipped` = 재주입 자체를 못 했다(데몬 RPC 실패 등 —
+/// 디스크 팩만 바뀌고 라이브 노드는 옛 지침) · `Absent` = 토큰 없음(이미 최신 no-op 등 재주입 단계 미도달).
+/// ★통합 시 정정(0.14.41 A4↔B2): WP-A4 는 이 함수의 구판(`parse_reinject_counts` 튜플 반환)을 그대로
+/// 두고 있었지만, WP-B2(review1 m9 FIX)가 이미 이 함수를 3상 `ReinjectResult` 로 승격하고 프로덕션
+/// 호출부(6732행대)를 옮겼다 — 그 판을 그대로 쓴다. 구 시그니처를 부르는 회귀 핀은 6683행대의
+/// `#[cfg(test)] fn parse_reinject_counts`(B2 신설, `parse_reinject_result` 위임)가 대신한다.
+#[derive(Debug, PartialEq)]
+enum ReinjectResult {
+    Measured { failed: u64, deferred: u64 },
+    Skipped { reason: String },
+    Absent,
+}
+
+/// 사람용 메시지와 독립한 안정 토큰(REINJECT_RESULT_PREFIX)만 신뢰한다. `reinject=skipped` 가
+/// 있으면 수치와 무관하게 스킵이다(구 CLI 는 이 키를 찍지 않으므로 종전 판독과 충돌하지 않는다).
+/// 노드 카운트 `skipped=N`(해시 동일로 건너뛴 노드 수)과 키가 다르다 — 혼동 금지.
+fn parse_reinject_result(stdout: &str) -> ReinjectResult {
     for line in stdout.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix(cys::pack::REINJECT_RESULT_PREFIX) {
             let (mut failed, mut deferred) = (0u64, 0u64);
+            let mut skipped = false;
+            let mut reason = String::from("unknown");
             for tok in rest.split_whitespace() {
                 if let Some(v) = tok.strip_prefix("failed=") {
                     failed = v.parse().unwrap_or(0);
                 } else if let Some(v) = tok.strip_prefix("deferred=") {
                     deferred = v.parse().unwrap_or(0);
+                } else if tok == "reinject=skipped" {
+                    skipped = true;
+                } else if let Some(v) = tok.strip_prefix("reason=") {
+                    if !v.is_empty() {
+                        // 표시용 — 길이 상한(외부 문자열 방어).
+                        reason = v.chars().take(64).collect();
+                    }
                 }
             }
-            return (failed, deferred);
+            if skipped {
+                return ReinjectResult::Skipped { reason };
+            }
+            return ReinjectResult::Measured { failed, deferred };
         }
     }
-    (0, 0)
+    ReinjectResult::Absent
+}
+
+/// 사이드카(cys pack-update) stdout에서 `PACK_UPDATE_RESULT … failed=N deferred=N` 토큰을 파싱해
+/// (failed, deferred)를 돌려준다. 토큰 부재(구버전 사이드카·reinject 스킵 등)면 (0,0) — 보수적.
+/// 사람용 메시지와 독립한 안정 토큰(REINJECT_RESULT_PREFIX)만 신뢰한다.
+/// (U4-B2③) 3상 판독의 수치 투영 — 스킵·부재는 수치가 아니므로 (0,0). 스킵 여부는
+/// `parse_reinject_result` 가 따로 말한다(이 함수만 보고 '완전 성공'을 판정하지 마라).
+/// ★review1 m9 FIX: U4-B2③ 이후 프로덕션 호출부는 `parse_reinject_result` 로 옮겨갔고, 이 함수는
+/// 이제 회귀 핀(`parse_reinject_counts_reads_structured_token`)만 부른다 — 테스트 전용으로 이관해
+/// (윈도우뿐 아니라) **모든 플랫폼**의 비테스트 빌드에서 나던 dead_code 경고를 없앤다(거동 무변경).
+#[cfg(test)]
+fn parse_reinject_counts(stdout: &str) -> (u64, u64) {
+    match parse_reinject_result(stdout) {
+        ReinjectResult::Measured { failed, deferred } => (failed, deferred),
+        ReinjectResult::Skipped { .. } | ReinjectResult::Absent => (0, 0),
+    }
 }
 
 /// `ledger.list` 응답에서 scoped 프로세스 pid만 추린다.
@@ -7021,6 +8949,9 @@ fn main() {
             read_text_head,
             home_dir_path,
             open_url,
+            // ★U6(원작자 0.14.41) 피드백 1단계 명령 12개는 1.1.8 병합에서 **등록하지 않는다**(휴면 · 결정 대기 T3) —
+            //   화면에 배선된 판은 위 우리 「피드백」 명령(2단계 업로드 · D-19 동등 = 우리 유지)이고, 원작자 코드·시험은
+            //   feedback.rs 의 하위 모듈 `u6_local_bundle` 에 명령 표지 없이 보존돼 있다(같은 이름 feedback_submit·feedback_discard 충돌).
             send_key,
             read_board_catalog,
             make_ticket,
@@ -7035,6 +8966,10 @@ fn main() {
             live_session_count,
             install_update,
             restart_after_update,
+            // ★(0.14.43 · J2) 업데이트 미설치 알림 — 재시작 뒤 1회 판정 pull · 스마트 앱 컨트롤 상태 pull · 확인 실행 노브 pull(R1F-UA — 전부 읽기 전용).
+            update_attempt_report,
+            smart_app_control,
+            update_checked_launch_enabled,
             autotest_patch_install,
             rotate_daemon,
             drain_verify,
@@ -7045,6 +8980,9 @@ fn main() {
             stop_dept_daemon_by_socket,
             purge_dept_daemon_by_socket,
             dept_purge_preview_by_socket,
+            fresh_start_check,
+            fresh_start_ack,
+            reset_gate_status,
             factory_reset_preview,
             factory_reset_execute,
             factory_reset_quit_app,
@@ -7060,6 +8998,9 @@ fn main() {
             boot_verdict,
             // ATOMIC-1 짝: 설치본이 '반쪽 번들'인지 기동 시 스스로 확인해 복구 절차를 준다.
             bundle_integrity,
+            onboard_notices,
+            perm_warnings,
+            open_privacy_settings,
             // INST-1(P4-4): claude CLI 미설치 온보딩 카드 pull(agent-detect 단일 오라클 소비).
             claude_missing_hint,
             // v116-app-firstrun(A-3): 새 설치 첫 실행의 폴더 권한 창 — 안내 먼저, 권한 창은 그 뒤.
@@ -7068,7 +9009,12 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            // ★W-2 결정 A: 부팅 태스크 수명 동안 초기화 관문(BOOT_WORK_IN_FLIGHT)을 닫는다. spawn **전에**
+            // 무장해 프런트가 커맨드를 부를 수 있게 되기 전부터 닫혀 있게 한다 — 조기 return(안전모드·데몬
+            // 기동 실패)도 Drop 이 연다.
+            let boot_guard = BootWorkGuard::enter();
             tauri::async_runtime::spawn(async move {
+                let _boot_guard = boot_guard;
                 // ★v116-app-firstrun: 「이 기동 전 GUI 온보딩 완료」를 **무엇보다 먼저** 한 번 잰다 — 아래 온보딩이
                 // .gui-onboarded 를 쓰기 전 값이어야 새 설치를 새 설치로 본다(복원 판정·폴더 권한 안내 공용).
                 #[allow(unused_variables)] // 맥 밖에는 아래 폴더 권한 분기가 없다(스냅숏 자체는 전 OS 필요)
@@ -7105,15 +9051,28 @@ fn main() {
                     // (advisory 전용 · 어떤 판정도 기동을 막지 않는다). 버전당 1회 스로틀,
                     // 단 파손 확인 시에는 고쳐질 때까지 매 기동 다시 본다(spawn_seal_selfdiag).
                     spawn_seal_selfdiag(handle.clone());
+                    // ★U15(0.14.41): 개발자 도구(CLT) 없는 맥 안내 — 버전당 1회 · onboard-notice 채널(pull 회수).
+                    //   stat 몇 번(셔임 실행 0)이라 부트를 기다리게 하지 않는다. CLT 가 있으면 아무 말도 없다.
+                    maybe_push_devtools_notice(&handle);
                 }
                 // ★온보딩 게이트(v4) — GUI 전용 완료 마커(.gui-onboarded) 기준. 팩 마커(.pack-version)
                 // 기준이던 v3는 CLI autostart·잔존 schtasks 등으로 cysd가 GUI보다 먼저 돈 머신에서
                 // 게이트가 선점돼 ~/.claude hook이 영구 미설치됐다(0.12.52 cys-neo 실사고 — "너는
                 // 마스터다" 부트스트랩 무력화). 이 마커는 GUI 온보딩 성공 경로만 기록하므로 프로세스
-                // 순서와 무관하게 신선 머신 온보딩이 보장된다. 평시 부트 비용 = 마커 read 1회.
+                // 순서와 무관하게 신선 머신 온보딩이 보장된다. 평시 부트 비용 = 마커 read 1회 + 훅 실재 확인
+                // (홈 목록·작은 JSON 읽기·stat — W-3-a).
+                // ★W-4(R4-M1): 관측은 3상태 — 판정 불가(손상·읽기 불가·등재 없는 symlink 등)는 같은 버전·같은 사유 동안
+                // GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS 번까지만 실제로 돌리고(기록 = 마커 옆 .gui-onboard-attempts ·
+                // 실제 시도 직전에 쓴다), 상한에서는 멈추되 설치됨으로 치지 않는다(마커 미기록 · 매 기동 재관측 · 안내).
+                // ★W-5(R5-M1): 그 기록을 읽거나 남길 수 없으면 그 기동도 상한과 같다(Capped + 안내) — 기억할 수 없으면 반복하지
+                // 않는다. 둘째 값 = 그 사유(읽기 실패는 여기서 · 쓰기 실패는 아래 실제 시도 직전의 기록에서).
+                let onboard_marker = std::fs::read_to_string(gui_onboarded_path()).ok();
+                let onboard_seen = observe_gui_hooks();
                 #[allow(unused_variables)] // 온보딩 경로가 없는 OS(linux CI 등)에서만 미사용
-                let needs_onboard = needs_gui_onboard(
-                    std::fs::read_to_string(gui_onboarded_path()).ok().as_deref(),
+                let (onboard_plan, onboard_unrecorded) = gui_onboard_plan_under(
+                    &onboard_seen,
+                    onboard_marker.as_deref(),
+                    &gui_onboard_attempts_path(),
                     env!("CARGO_PKG_VERSION"),
                 );
                 #[cfg(target_os = "macos")]
@@ -7168,10 +9127,15 @@ fn main() {
                 }
                 if let Err(e) = result {
                     // ★P1-3: 리셋 중이면 원인이 다르다 — 처방도 달라야 한다.
+                    // ★리뷰1 m6: 로그인 항목·개발자 이름 서명자 줄은 macOS 「시스템 설정」 용어다 —
+                    //   윈도우에는 그 화면도 그 이름도 없다. `cfg!(target_os="macos")` 로 문구만
+                    //   가른다(윈도우 거동은 무변경 — 재시도 루프·이벤트 이름 동일).
                     let msg = if cys::factory_reset::reset_in_progress() {
                         "완전 초기화가 진행 중입니다 — 끝난 뒤 앱을 종료했다가 다시 실행하세요.".to_string()
+                    } else if cfg!(target_os = "macos") {
+                        format!("{e} — 데몬을 시작하지 못했습니다. 시스템 설정 → 일반 → 로그인 항목의 「백그라운드에서 허용」에서 「cys」와 개발자 이름 줄(「yoonsik choi」)을 모두 켠 뒤 앱을 다시 여세요.")
                     } else {
-                        format!("{e} — 데몬을 시작하지 못했습니다. 시스템 설정 → 일반 → 로그인 항목에서 cys 백그라운드 항목을 허용한 뒤 앱을 다시 여세요.")
+                        format!("{e} — 데몬을 시작하지 못했습니다. 앱을 다시 여세요.")
                     };
                     let _ = handle.emit("daemon-error", msg);
                     return;
@@ -7183,18 +9147,49 @@ fn main() {
                 // 게이트(needs_onboard·위 캡처): 마커 부재(신선·직전 실패)·버전 불일치에만 실행 —
                 // 평시 부트의 사이드카 스폰+전량 스윕+schtasks 재등록 비용 제거(Win11 이슈 실측).
                 // 마커는 온보딩 **성공** 시에만 기록 — hook 등록 실패(init-pack rc=1)도 재시도로 수렴.
-                // hook만 사후 유실된 상태(마커 무결)의 치유는 doctor --fix·버전 전이가 담당.
+                // hook만 사후 유실된 상태(마커 무결)는 needs_gui_onboard 의 훅 실재 확인이 다음 부트에 온보딩을
+                // 다시 돌려 치유한다(W-3-a · 종전엔 doctor --fix·버전 전이에 미뤘다).
+                // ★W-4-b: 판정 불가 시도는 **실제로 돌기 직전에** 센다(데몬이 못 떠 여기까지 못 오면 시도가 아니다).
+                // ★W-5-a: 이번 시도를 남기지 못하면 이 기동은 Capped 로 바뀐다 — 온보딩 여부는 반드시 기록 **뒤의** 계획으로 정한다.
+                #[cfg(any(windows, target_os = "macos"))]
+                let (onboard_plan, onboard_unrecorded) = record_gui_onboard_attempt(
+                    &gui_onboard_attempts_path(),
+                    env!("CARGO_PKG_VERSION"),
+                    &onboard_seen,
+                    onboard_plan,
+                    onboard_unrecorded,
+                );
+                #[allow(unused_variables)] // 온보딩 경로가 없는 OS(linux CI 등)에서만 미사용
+                let needs_onboard = matches!(onboard_plan, GuiOnboardPlan::Run | GuiOnboardPlan::RunCounted(_));
                 #[cfg(windows)]
-                if needs_onboard && maybe_windows_onboard() {
+                let onboarded = needs_onboard && maybe_windows_onboard();
+                #[cfg(windows)]
+                if onboarded {
                     if let Err(e) = std::fs::write(gui_onboarded_path(), env!("CARGO_PKG_VERSION")) {
                         eprintln!("[cys-app] onboarding marker write failed (다음 부트 재시도): {e}");
                     }
                 }
                 // RC-17(T5): macOS 첫 기동 온보딩(팩+hook) — Windows 대칭(동일 게이트). autostart는 위 launchd.
                 #[cfg(target_os = "macos")]
-                if needs_onboard && maybe_macos_onboard() {
+                let onboarded = needs_onboard && maybe_macos_onboard();
+                #[cfg(target_os = "macos")]
+                if onboarded {
                     if let Err(e) = std::fs::write(gui_onboarded_path(), env!("CARGO_PKG_VERSION")) {
                         eprintln!("[cys-app] onboarding marker write failed (다음 부트 재시도): {e}");
+                    }
+                }
+                // ★W-4-c/d: 결과를 보이게 — 상한 안내(어느 파일·왜·무엇을) · 빠진 훅을 다시 넣었다는 안내.
+                #[cfg(any(windows, target_os = "macos"))]
+                {
+                    let after = if needs_onboard { observe_gui_hooks() } else { onboard_seen.clone() };
+                    for (kind, message) in gui_onboard_notices(
+                        onboard_plan,
+                        &onboard_seen,
+                        &after,
+                        onboard_marker.is_some(),
+                        onboard_unrecorded.as_deref(),
+                    ) {
+                        push_onboard_notice(&handle, kind, message);
                     }
                 }
                 // 업데이트 재시작 시: 새 팩(새 기능) 반영 + 노드 자동복귀(마커가 있을 때만).
@@ -7267,7 +9262,8 @@ mod tests {
         std::fs::remove_file(&p).unwrap();
         std::fs::create_dir_all(&p).unwrap(); // 읽기 오류
         let e = list_depts_at(&p).expect_err("읽기 오류가 빈 목록으로 접혔다");
-        assert!(e.contains("읽기 실패"), "{e}");
+        // ★1.1.8 병합: 판독기가 원작자 단일 판독기(read_json_or_empty)로 모여 문면이 「판독 실패」다(정책 불변 — Err).
+        assert!(e.contains("판독 실패"), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -7580,6 +9576,940 @@ mod tests {
         assert!(latest_json_url().unwrap().ends_with("/latest.json"));
     }
 
+    /// ★K2-03(2026-09-17 한글 사용자명 감사) 회귀 핀: UTF-8 BOM 이 붙은 카탈로그/레지스트리를 판독한다.
+    /// 한국어 Windows 편집기의 "UTF-8(BOM)" 저장이 `serde_json` 에서 문법 오류였다 — 벗기면 파싱되고,
+    /// BOM 뒤의 바이트(한글 표시명 포함)와 값 안의 U+FEFF 는 건드리지 않는다.
+    #[test]
+    fn k2_03_bom_catalog_is_readable_and_bytes_after_bom_are_untouched() {
+        let bom = "\u{FEFF}{\"departments\":{\"sales-kr\":{\"display\":\"영업부(한국)\"}}}";
+        assert!(
+            serde_json::from_str::<Value>(bom).is_err(),
+            "serde 가 BOM 을 받아들인다면 이 핀의 전제가 바뀐 것이다 — 헬퍼 필요성을 재검토"
+        );
+        let v: Value = serde_json::from_str(strip_utf8_bom(bom)).expect("BOM 을 벗기면 파싱된다");
+        assert_eq!(v["departments"]["sales-kr"]["display"], "영업부(한국)");
+        assert_eq!(strip_utf8_bom("{}"), "{}", "BOM 없는 입력은 그대로");
+        assert_eq!(strip_utf8_bom(""), "");
+        assert_eq!(strip_utf8_bom("a\u{FEFF}b"), "a\u{FEFF}b", "값 안의 U+FEFF 는 보존");
+        assert_eq!(strip_utf8_bom("\u{FEFF}\u{FEFF}x"), "\u{FEFF}x", "선두 1개만 벗긴다(그 뒤는 데이터)");
+    }
+
+    /// ★U16(0.14.41) 배선 핀: 팀 제안 생성은 ①lib 검증 ②기본 데몬 feed.list 대조(match_pending)를
+    /// **스폰 전에** 끝내고 ③같은 `cys-dept allocate` 에 `--team-spec-b64` 하나만 더한다. 이 커맨드는
+    /// feed 응답을 하지 않는다(allow 는 UI 가 생성 성공 뒤에만 — 실패 시 카드 pending 유지).
+    #[test]
+    fn u16_team_spec_allocate_verifies_before_spawn() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let src = std::fs::read_to_string(&path).expect("main.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let a = body.find("async fn allocate_dept_daemon(").expect("allocate_dept_daemon 소실");
+        let end = a + body[a..].find("\n}\n").expect("함수 끝");
+        let f = &body[a..end];
+        let v = f.find("cys::team_spec::validate(").expect("lib 검증 부재");
+        let m = f.find("cys::team_spec::match_pending(").expect("생성 직전 feed 대조 부재(TOCTOU)");
+        let sp = f.find("spawn_blocking").expect("spawn 부재");
+        assert!(v < sp && m < sp, "검증·대조가 스폰보다 뒤에 있다");
+        assert!(f.contains("\"--team-spec-b64\""), "allocate 인자 부재");
+        assert!(f.contains("cys::team_spec::to_b64("), "b64 인코더(lib SOT) 우회");
+        assert!(!f.contains("feed.reply"), "생성 커맨드가 feed 응답까지 하면 실패 시 카드가 사라진다");
+        assert!(f.contains("catalog_key.is_some() || team_spec.is_some()"), "팀 경로 실패 코드 형식(dept-create:) 누락");
+    }
+
+    /// ★REVIEW1 M-1(major): 팩 버전 어긋남 fail-open 수리 배선 핀. 스폰 **전** 능력 확인
+    /// (`dept_tool_supports_team_spec`)과 스폰 **뒤** 사후 조건(`dept_team_proposal_id` ==
+    /// spec.id)이 둘 다 있어야, 구버전 cys-dept 가 `--team-spec-b64` 를 무시하고 rc=0 으로
+    /// "보통 팀"을 만들어도 이 함수가 성공으로 잘못 보고하지 않는다. 표시명 폴백도 사후 조건이
+    /// 통과했을 때만 쓴다(폴백이 실패를 가리는 것을 반박 M-1 이 지적했다).
+    #[test]
+    fn u16_m1_pack_version_skew_checked_before_and_after_spawn() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let src = std::fs::read_to_string(&path).expect("main.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let a = body.find("async fn allocate_dept_daemon(").expect("allocate_dept_daemon 소실");
+        let end = a + body[a..].find("\n}\n").expect("함수 끝");
+        let f = &body[a..end];
+        let sp = f.find("spawn_blocking").expect("spawn 부재");
+        let cap = f
+            .find("dept_tool_supports_team_spec(")
+            .expect("스폰 전 능력 확인 부재(REVIEW1 M-1 ① — 팩이 구버전이면 여기서 막아야 한다)");
+        assert!(cap < sp, "능력 확인이 스폰보다 뒤에 있다 — TOCTOU 로 무의미해진다");
+        let post = f
+            .find("dept_team_proposal_id(")
+            .expect("사후 조건 확인 부재(REVIEW1 M-1 ② — 등재의 team_proposal_id 대조가 없다)");
+        assert!(post > sp, "사후 조건은 스폰 **뒤** 등재를 봐야 하므로 스폰보다 앞이면 안 된다");
+        let post_seg = &f[post..];
+        assert!(post_seg.contains("tpid == spec.id"), "레지스트리 team_proposal_id 를 이 제안 id 와 대조하지 않는다");
+        assert!(
+            post_seg.find("dept_display_name(").map(|i| i < post_seg.find("_ =>").unwrap_or(usize::MAX)).unwrap_or(false),
+            "표시명 판독이 사후 조건 성공 분기 밖(폴백이 실패를 가릴 수 있다)"
+        );
+        assert!(
+            post_seg.contains("dept-create:2:"),
+            "사후 조건 실패가 dept-create: 형식 오류로 UI 에 전달되지 않는다"
+        );
+    }
+
+    // ───────── ★0.14.43(GU) 「팀 직접 만들기」 진행 표시 — 단계 표지 파서 · 표지 제거 · 스트리밍 실행기 검체 ─────────
+    //
+    // 규칙(티켓): 자식은 **임시 디렉터리의 셸 스크립트(`/bin/sh`)** 뿐이다 — 실제 cys-dept·cys·cysd 는 띄우지 않는다. 실행기 실측 검체는 unix 전용(`#[cfg(unix)]`)이고,
+    // 파서·표지 제거·판독기(`pump_dept_stderr` — 메모리 리더 위에서)·소스 핀은 모든 플랫폼에서 돈다. 교착을 재는 검체는 감시 스레드(`gu_within`)로 감싼다 —
+    // 멈추면 영원히 기다리지 않고 실패한다.
+
+    /// 단계 표지 파서의 입력 벡터 — **ui/src/deptprogress.test.ts 의 표와 같은 표**다(그 검체가 이 표를 소스에서 읽어 자기 표와 대조하고 `parseDeptStageLine` 으로도 돌린다
+    /// → 두 언어의 파서가 같은 입력에서 같은 답을 낸다). 형식 `[줄, 기대 키 | null]`(JSON). 표를 고치면 두 검체를 함께 고쳐야 한다.
+    const GU_STAGE_VECTORS: &str = r##"[
+ ["[cys-dept] @stage reserve", "reserve"],
+ ["[cys-dept] @stage probe", "probe"],
+ ["[cys-dept] @stage spawn", "spawn"],
+ ["[cys-dept] @stage wait", "wait"],
+ ["[cys-dept] @stage up", "up"],
+ ["[cys-dept] @stage seat", "seat"],
+ ["[cys-dept] @stage done", "done"],
+ ["[cys-dept] @stage reserve\n", "reserve"],
+ ["[cys-dept] @stage reserve\r\n", "reserve"],
+ ["[cys-dept] @stage reserve\r", "reserve"],
+ ["[cys-dept] @stage a1_b-2", "a1_b-2"],
+ ["[cys-dept] @stage -", "-"],
+ ["[cys-dept] @stage _", "_"],
+ ["[cys-dept] @stage 7", "7"],
+ ["[cys-dept] @stage abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwxyz012345"],
+ ["[cys-dept] @stage abcdefghijklmnopqrstuvwxyz0123456", null],
+ ["[cys-dept] @stage ", null],
+ ["[cys-dept] @stage", null],
+ ["[cys-dept] @stage reserve ", null],
+ ["[cys-dept] @stage  reserve", null],
+ ["[cys-dept] @stage re serve", null],
+ ["[cys-dept] @stage Reserve", null],
+ ["[cys-dept] @stage RESERVE", null],
+ ["[cys-dept] @stage 예약", null],
+ ["[cys-dept] @stage rés", null],
+ ["[cys-dept] @stage a.b", null],
+ ["[cys-dept] @stage a/b", null],
+ ["[cys-dept] @stage a\u0000b", null],
+ ["[cys-dept] @stage reserve\n\n", null],
+ ["[cys-dept] @stage reserve\r\r\n", null],
+ ["[cys-dept] @stage reserve extra", null],
+ ["[cys-dept] @stage=reserve", null],
+ ["[cys-dept] stage reserve", null],
+ ["cys-dept @stage reserve", null],
+ ["[cys-dept]  @stage reserve", null],
+ [" [cys-dept] @stage reserve", null],
+ ["x [cys-dept] @stage reserve", null],
+ ["[CYS-DEPT] @stage reserve", null],
+ ["[cys-dept] @STAGE reserve", null],
+ ["[cys-dept] allocate 완료", null],
+ ["", null],
+ ["\n", null]
+]"##;
+
+    /// 단계 표지 파서 — ts 와 같은 벡터표(위)를 그대로 돌린다. 키는 영소문자·숫자·`_`·`-` 1~32자만, 줄 끝의 `\n`·`\r\n`·`\r` 은 한 번만 견딘다.
+    #[test]
+    fn gu_parse_dept_stage_line_vectors_match_ts() {
+        let table: Vec<(String, Option<String>)> = serde_json::from_str::<Vec<(String, Option<String>)>>(GU_STAGE_VECTORS).expect("벡터표 JSON");
+        assert!(table.len() >= 35, "벡터표가 줄었다({}) — 두 언어가 같은 표를 잰다는 전제가 약해진다", table.len());
+        for (line, want) in &table {
+            assert_eq!(parse_dept_stage_line(line), want.as_deref(), "입력 {line:?}");
+        }
+        // 팩이 내는 7키는 전부 (줄바꿈 유무 무관) 그대로 나온다.
+        for key in ["reserve", "probe", "spawn", "wait", "up", "seat", "done"] {
+            assert_eq!(parse_dept_stage_line(&format!("[cys-dept] @stage {key}\n")), Some(key));
+        }
+    }
+
+    /// 표지 제거 — 표지 줄만 빠지고 나머지 바이트·순서·줄바꿈(CRLF 포함)은 그대로다. 마지막 줄이 줄바꿈 없는 표지여도 빠진다.
+    #[test]
+    fn gu_strip_stage_lines_removes_only_marker_lines_and_preserves_the_rest() {
+        let cases: &[(&str, &str)] = &[
+            ("", ""),
+            ("[cys-dept] @stage reserve\n", ""),
+            ("a\n[cys-dept] @stage reserve\nb\n", "a\nb\n"),
+            ("a\r\n[cys-dept] @stage reserve\r\nb\r\n", "a\r\nb\r\n"),
+            ("a\n[cys-dept] @stage done", "a\n"),
+            ("x\ny", "x\ny"),
+            ("no newline at all", "no newline at all"),
+            ("ERROR [cys-dept] @stage reserve\n", "ERROR [cys-dept] @stage reserve\n"),
+            (" [cys-dept] @stage reserve\n", " [cys-dept] @stage reserve\n"),
+            ("[cys-dept] @stage a\n[cys-dept] @stage b\n", ""),
+            ("\n\n[cys-dept] @stage x\n\n", "\n\n\n"),
+            ("[cys-dept] 예약 완료\n[cys-dept] @stage seat\n끝", "[cys-dept] 예약 완료\n끝"),
+            ("[cys-dept] @stage Reserve\n", "[cys-dept] @stage Reserve\n"),
+            ("[cys-dept] @stage \n", "[cys-dept] @stage \n"),
+            ("[cys-dept] @stage reserve\r\r\n", "[cys-dept] @stage reserve\r\r\n"),
+        ];
+        for (input, want) in cases {
+            let got = strip_stage_lines(input);
+            assert_eq!(&got, want, "입력 {input:?}");
+            assert_eq!(strip_stage_lines(&got), got, "두 번 걸러도 같아야 한다(멱등): {input:?}");
+        }
+        // 풀 조합 — 표지 아닌 조각은 전부(순서 그대로) 남고 표지 조각만 빠진다.
+        let pool = [
+            "[cys-dept] @stage reserve",
+            "[cys-dept] allocate 완료",
+            "plain",
+            "[cys-dept] @stage Done",
+            "",
+            "[cys-dept] ERROR: x 데몬 기동 실패 (대기 예산 12초 · 실제 약 13초)",
+            "[cys-dept] @stage up",
+        ];
+        let mut seed: u32 = 0x1234_5678;
+        for round in 0..200 {
+            let mut input = String::new();
+            let mut want = String::new();
+            for _ in 0..(1 + round % 9) {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let seg = pool[(seed as usize) % pool.len()];
+                let end = if seed & 0x100 == 0 { "\n" } else { "\r\n" };
+                let full = format!("{seg}{end}");
+                if parse_dept_stage_line(&full).is_none() {
+                    want.push_str(&full);
+                }
+                input.push_str(&full);
+            }
+            assert_eq!(strip_stage_lines(&input), want, "round {round}: {input:?}");
+        }
+    }
+
+    /// ★실패 사유가 화면의 앞 300자 안에 온전히 들어온다 — 표지 6줄 + 실패 줄(팩이 실제로 내는 꼬리 포함)로 된 stderr 를 실행기에 통과시킨 결과로
+    /// `dept-create:<code>:<stderr>`(allocate_dept_daemon 이 만드는 그 모양)를 짓고, 화면(ui/src/teamproposal.ts `teamCreateErrorText` — trim 한 뒤 **앞 300자**)이
+    /// 보는 만큼을 잘라 본다. 통제: 표지를 안 걷었다면 같은 입력은 사유가 잘린다(이 검체에 이빨이 있다).
+    #[cfg(unix)]
+    #[test]
+    fn gu_failure_reason_survives_the_first_300_chars_after_marker_strip() {
+        let reason = "[cys-dept] ERROR: dept-3 데몬 기동 실패 (대기 예산 12초 · 실제 약 28초 · 로그: /Users/user/very-long-dirs-example/Library/Caches/cys/state/cys-dept-dept-3/cysd.log · \
+                      느린 디스크라면 CYS_DEPT_READY_SECS=60 처럼 대기 예산을 늘릴 수 있다)";
+        let units = |s: &str| s.encode_utf16().count();
+        assert!(units(reason) <= 300, "전제: 사유 줄 자체는 300자 안이다({})", units(reason));
+        let mut body = String::new();
+        for k in ["reserve", "probe", "spawn", "wait", "up", "seat"] {
+            body.push_str(&format!("printf '%s\\n' '[cys-dept] @stage {k}' >&2\n"));
+        }
+        body.push_str(&format!("printf '%s\\n' '{reason}' >&2\nexit 3\n"));
+        let sc = GuScript::new(&body);
+        let direct = sc.cmd().output().expect("직접 실행");
+        let raw_msg = format!("dept-create:3:{}", String::from_utf8_lossy(&direct.stderr));
+        let cmd = sc.cmd();
+        let out = gu_within(30, move || run_dept_child(cmd, true, |_k: &str| {})).expect("실행");
+        let msg = format!("dept-create:{}:{}", out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr));
+        // 화면이 보는 만큼: 접두 `dept-create:<code>:` 뒤 본문을 trim → 앞 300 UTF-16 단위.
+        let screen = |m: &str| -> String {
+            let body = m.splitn(3, ':').nth(2).unwrap_or("").trim().to_string();
+            let u: Vec<u16> = body.encode_utf16().take(300).collect();
+            String::from_utf16_lossy(&u)
+        };
+        assert!(screen(&msg).contains(reason), "표지를 걷은 뒤에도 사유가 앞 300자에 온전히 안 들어온다: {:?}", screen(&msg));
+        assert!(!screen(&raw_msg).contains(reason), "통제 실패 — 표지를 안 걷은 입력이 이미 사유를 온전히 보이면 이 검체는 아무것도 증명하지 못한다");
+        assert!(!msg.contains("@stage"), "실패 메시지에 표지 줄이 남았다: {msg}");
+        assert_eq!(out.status.code(), Some(3), "종료 코드는 그대로여야 한다(판정 코드의 입력)");
+    }
+
+    /// 노브 파서 — 앞뒤 공백을 걷은 값이 `0` 이면 종전 경로(false)이고 그 밖(미설정·빈 값·다른 값)은 스트리밍(true)이다.
+    /// ★R2F-UI(A4 n1): 이 검체는 종전에 '정확히 `0` 만 끈다'(`" 0"`·`"0 "` 는 켬)를 핀했다 — 윈도우 cmd 의 `set X=0 && …` 는 값 끝에 공백을 붙여(`"0 "`) 되돌리기 손잡이가 듣지 않았다.
+    /// 새 규칙(앞뒤 공백을 걷은 값이 `0`)으로 고쳤다(이름 그대로 · 공백 낀 0 은 끔 쪽으로 옮기고 `00`·`0.0`·`-0` 은 여전히 켬).
+    #[test]
+    fn gu_dept_create_stream_knob_parser() {
+        assert!(dept_create_stream_from_env(None), "미설정 = 스트리밍(기본)");
+        for v in ["0", " 0", "0 ", " 0 ", "\t0\r\n"] {
+            assert!(!dept_create_stream_from_env(Some(v)), "{v:?} 는 종전 cmd.output() 경로(앞뒤 공백을 걷은 값이 `0`)");
+        }
+        for v in ["1", "", " ", "00", "0.0", "-0", "false", "off", "no", "true", "x"] {
+            assert!(dept_create_stream_from_env(Some(v)), "{v:?} 는 노브를 끄지 않는다(공백을 걷은 값이 `0` 일 때만 끈다)");
+        }
+    }
+
+    /// 한 바이트씩만 돌려주는 리더 — 줄이 여러 번의 읽기에 걸쳐 조립되는지 잰다.
+    struct GuOneByteReader<R: std::io::Read>(R);
+    impl<R: std::io::Read> std::io::Read for GuOneByteReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(1);
+            self.0.read(&mut buf[..n])
+        }
+    }
+
+    /// 중간에 읽기 오류를 내는 리더(앞의 바이트는 돌려준 뒤) — 오류 전까지 모은 것은 잃지 않는다.
+    struct GuFailingReader {
+        data: Vec<u8>,
+        pos: usize,
+    }
+    impl std::io::Read for GuFailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "gu: 읽기 오류"));
+            }
+            let n = buf.len().min(self.data.len() - self.pos).min(7);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    /// (b) 판독기 — UTF-8 이 아닌 바이트가 섞여도·줄이 여러 읽기에 걸쳐도·CRLF 여도·마지막 줄이 줄바꿈 없는 표지여도 **끝까지 읽고** 표지를 순서대로 알린다.
+    /// 돌연변이 M1(첫 디코드 오류에서 중단)이면 뒤의 표지와 바이트가 사라져 이 검체가 적색이 된다.
+    #[test]
+    fn gu_pump_reads_to_eof_through_invalid_utf8_and_reports_stages_in_order() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"[cys-dept] @stage reserve\n");
+        bytes.extend_from_slice(b"bad:\xff\xfe tail\n"); // UTF-8 아님
+        bytes.extend_from_slice(b"[cys-dept] @stage probe\r\n");
+        bytes.extend_from_slice("[cys-dept] 예약 완료(dept-7)\n".as_bytes());
+        bytes.extend_from_slice(b"\xc3\x28 broken pair\n"); // 잘린 2바이트 열
+        bytes.extend_from_slice(b"[cys-dept] @stage up\n");
+        bytes.extend_from_slice(b"[cys-dept] @stage done"); // 줄바꿈 없는 마지막 표지
+        let want_keys = vec!["reserve", "probe", "up", "done"];
+        for one_byte in [false, true] {
+            let keys = std::cell::RefCell::new(Vec::<String>::new());
+            let got = if one_byte {
+                pump_dept_stderr(GuOneByteReader(std::io::Cursor::new(bytes.clone())), |k: &str| keys.borrow_mut().push(k.to_string()))
+            } else {
+                pump_dept_stderr(std::io::Cursor::new(bytes.clone()), |k: &str| keys.borrow_mut().push(k.to_string()))
+            };
+            assert_eq!(got, bytes, "읽은 바이트가 입력과 다르다(one_byte={one_byte}) — 끝까지 읽지 못했거나 변형했다");
+            assert_eq!(*keys.borrow(), want_keys, "표지 순서(one_byte={one_byte})");
+        }
+        // 64KiB 를 넘는 입력도 전량(파이프 용량과 무관한 판독기 수준의 확인).
+        let mut big: Vec<u8> = Vec::new();
+        for i in 0..4000u32 {
+            big.extend_from_slice(format!("L{i:062}\n").as_bytes());
+            if i % 1000 == 0 {
+                big.extend_from_slice(b"[cys-dept] @stage wait\n");
+            }
+        }
+        let n = std::cell::Cell::new(0usize);
+        let got = pump_dept_stderr(std::io::Cursor::new(big.clone()), |_k: &str| n.set(n.get() + 1));
+        assert_eq!(got.len(), big.len());
+        assert_eq!(n.get(), 4);
+    }
+
+    /// 판독기 — 진짜 읽기 오류(EOF 가 아닌 Err)가 나도 그때까지 모은 바이트는 돌려준다(표지는 이미 알린 뒤다).
+    #[test]
+    fn gu_pump_returns_what_it_collected_when_the_reader_errors() {
+        let data = b"[cys-dept] @stage reserve\nsome text\n[cys-dept] @stage probe\npartial-without-newline".to_vec();
+        let keys = std::cell::RefCell::new(Vec::<String>::new());
+        let got = pump_dept_stderr(GuFailingReader { data: data.clone(), pos: 0 }, |k: &str| keys.borrow_mut().push(k.to_string()));
+        assert_eq!(got, data, "오류 전까지 읽은 바이트(미완 줄 포함)를 잃었다");
+        assert_eq!(*keys.borrow(), vec!["reserve", "probe"]);
+    }
+
+    /// 콜백이 패닉해도 읽기는 멈추지 않는다(이벤트 전달 실패가 읽기를 끊으면 파이프가 차서 자식이 멈춘다).
+    #[test]
+    fn gu_pump_survives_a_panicking_callback() {
+        let calls = std::cell::Cell::new(0usize);
+        let data = b"[cys-dept] @stage reserve\nmid\n[cys-dept] @stage probe\nend\n".to_vec();
+        let got = pump_dept_stderr(std::io::Cursor::new(data.clone()), |_k: &str| {
+            calls.set(calls.get() + 1);
+            panic!("gu: 콜백 패닉(검체)");
+        });
+        assert_eq!(got, data, "콜백 패닉 뒤에 읽기가 멈췄다");
+        assert_eq!(calls.get(), 2, "두 번째 표지까지 콜백이 불려야 한다");
+    }
+
+    /// 임시 셸 스크립트 한 개 — `/bin/sh <스크립트>` 로만 실행한다(실행 비트 불필요). 드롭하면 디렉터리를 지운다.
+    #[cfg(unix)]
+    struct GuScript {
+        dir: std::path::PathBuf,
+        path: std::path::PathBuf,
+    }
+    #[cfg(unix)]
+    impl GuScript {
+        fn new(body: &str) -> GuScript {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!("cys-gu-{}-{}-{}", std::process::id(), nanos, SEQ.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir_all(&dir).expect("임시 디렉터리");
+            let path = dir.join("run.sh");
+            std::fs::write(&path, body).expect("스크립트 쓰기");
+            GuScript { dir, path }
+        }
+        fn cmd(&self) -> std::process::Command {
+            let mut c = std::process::Command::new("/bin/sh");
+            c.arg(&self.path);
+            c
+        }
+    }
+    #[cfg(unix)]
+    impl Drop for GuScript {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// 감시 스레드 — `secs` 안에 안 끝나면 영원히 기다리지 않고 실패한다(교착 검체용).
+    #[cfg(unix)]
+    fn gu_within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(secs)) {
+            Ok(v) => v,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("{secs}초 안에 끝나지 않았다 — 교착 의심(스트리밍 실행기가 멈췄다)"),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("실행기 스레드가 패닉했다"),
+        }
+    }
+
+    /// 표지 키를 모으는 콜백 — (모은 목록 핸들, 콜백).
+    #[cfg(unix)]
+    fn gu_collector() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, impl FnMut(&str) + Send + 'static) {
+        let keys = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let k2 = keys.clone();
+        (keys, move |key: &str| k2.lock().unwrap().push(key.to_string()))
+    }
+
+    /// ★스트리밍 실행기 실측: stderr 에 표지 3줄 + 일반 줄, stdout 에 이름 1줄, 종료 코드 0/3 — `(status, stdout, stderr)` 가 `cmd.output()` 과 **같고**
+    /// 표지 콜백이 순서대로 3번 불린다.
+    #[cfg(unix)]
+    #[test]
+    fn gu_stream_matches_output_and_calls_back_in_order() {
+        for code in [0, 3] {
+            let sc = GuScript::new(&format!(
+                "printf '%s\\n' '[cys-dept] @stage reserve' >&2\n\
+                 echo '[cys-dept] 예약 완료(dept-7)' >&2\n\
+                 printf '%s\\n' '[cys-dept] @stage spawn' >&2\n\
+                 printf '%s\\n' '[cys-dept] @stage done' >&2\n\
+                 echo dept-7\n\
+                 exit {code}\n"
+            ));
+            let direct = sc.cmd().output().expect("직접 실행");
+            let (keys, cb) = gu_collector();
+            let cmd = sc.cmd();
+            let streamed = gu_within(30, move || run_dept_child_streaming(cmd, cb)).expect("스트리밍 실행");
+            assert_eq!(streamed.status, direct.status, "종료 상태(code={code})");
+            assert_eq!(streamed.status.code(), Some(code));
+            assert_eq!(streamed.stdout, direct.stdout, "stdout(code={code})");
+            assert_eq!(streamed.stdout, b"dept-7\n".to_vec());
+            assert_eq!(streamed.stderr, direct.stderr, "stderr(code={code}) — 표지 포함 원본이 output() 과 같아야 한다");
+            assert_eq!(*keys.lock().unwrap(), vec!["reserve", "spawn", "done"], "표지 콜백 순서(code={code})");
+        }
+    }
+
+    /// (c) stdout 과 stderr 를 **둘 다 파이프 용량(64KiB)보다 훨씬 많이** 쏟아도 멈추지 않는다 — 한 스레드가 두 파이프를 차례로 읽으면 여기서 교착한다.
+    #[cfg(unix)]
+    #[test]
+    fn gu_stream_does_not_hang_when_both_pipes_exceed_the_pipe_capacity() {
+        let sc = GuScript::new(
+            "i=0\n\
+             while [ $i -lt 3200 ]; do\n\
+               printf 'E%062d\\n' $i >&2\n\
+               printf 'O%062d\\n' $i\n\
+               i=$((i+1))\n\
+             done\n\
+             printf '%s\\n' '[cys-dept] @stage done' >&2\n\
+             echo dept-big\n\
+             exit 0\n",
+        );
+        let (keys, cb) = gu_collector();
+        let cmd = sc.cmd();
+        let out = gu_within(60, move || run_dept_child_streaming(cmd, cb)).expect("실행");
+        assert!(out.status.success());
+        assert_eq!(out.stderr.len(), 3200 * 64 + "[cys-dept] @stage done\n".len(), "stderr 전량");
+        assert_eq!(out.stdout.len(), 3200 * 64 + "dept-big\n".len(), "stdout 전량");
+        assert!(out.stdout.ends_with(b"dept-big\n"));
+        assert_eq!(*keys.lock().unwrap(), vec!["done"]);
+        // 같은 입력이 종전 판(output())과 같은 바이트를 낸다.
+        let direct = sc.cmd().output().expect("직접 실행");
+        assert_eq!(out.stdout, direct.stdout);
+        assert_eq!(out.stderr, direct.stderr);
+    }
+
+    /// (b) 실행기 수준 — UTF-8 이 아닌 바이트·여러 번에 걸쳐 쓴 줄·CRLF·줄바꿈 없는 마지막 표지가 섞여도 끝까지 읽고 `output()` 과 같은 바이트를 낸다.
+    #[cfg(unix)]
+    #[test]
+    fn gu_stream_reads_to_eof_through_non_utf8_bytes_and_split_writes() {
+        let sc = GuScript::new(
+            r#"printf '[cys-dept] @stage reserve\n' >&2
+printf 'bad:\377\376 tail\n' >&2
+printf '[cys-dept] @sta' >&2
+printf 'ge probe\n' >&2
+printf '[cys-dept] @stage up\r\n' >&2
+printf '[cys-dept] @stage done' >&2
+echo dept-8
+exit 0
+"#,
+        );
+        let direct = sc.cmd().output().expect("직접 실행");
+        let mut want: Vec<u8> = Vec::new();
+        want.extend_from_slice(b"[cys-dept] @stage reserve\n");
+        want.extend_from_slice(b"bad:\xff\xfe tail\n");
+        want.extend_from_slice(b"[cys-dept] @stage probe\n");
+        want.extend_from_slice(b"[cys-dept] @stage up\r\n");
+        want.extend_from_slice(b"[cys-dept] @stage done");
+        assert_eq!(direct.stderr, want, "전제: 스크립트가 낸 바이트");
+        let (keys, cb) = gu_collector();
+        let cmd = sc.cmd();
+        let out = gu_within(30, move || run_dept_child_streaming(cmd, cb)).expect("실행");
+        assert_eq!(out.stderr, want, "끝까지 읽지 못했다(디코드 오류에서 멈춘 것은 아닌가)");
+        assert_eq!(out.stdout, b"dept-8\n".to_vec());
+        assert_eq!(*keys.lock().unwrap(), vec!["reserve", "probe", "up", "done"]);
+    }
+
+    /// 콜백이 패닉해도 자식은 끝까지 쓰고 끝난다 — 읽기가 끊기지 않았다(전량 · 종료 상태 그대로).
+    #[cfg(unix)]
+    #[test]
+    fn gu_stream_survives_a_panicking_callback_end_to_end() {
+        let sc = GuScript::new(
+            "printf '%s\\n' '[cys-dept] @stage reserve' >&2\n\
+             printf '%s\\n' '[cys-dept] @stage probe' >&2\n\
+             echo 'tail line' >&2\n\
+             echo dept-9\n\
+             exit 3\n",
+        );
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c2 = calls.clone();
+        let cmd = sc.cmd();
+        let out = gu_within(30, move || {
+            run_dept_child_streaming(cmd, move |_k: &str| {
+                c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("gu: 콜백 패닉(검체)");
+            })
+        })
+        .expect("실행");
+        assert_eq!(out.status.code(), Some(3), "종료 상태가 바뀌었다");
+        assert_eq!(out.stdout, b"dept-9\n".to_vec());
+        assert_eq!(out.stderr, b"[cys-dept] @stage reserve\n[cys-dept] @stage probe\ntail line\n".to_vec());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// (d) 스레드 join 이 패닉이면 빈 stderr 로 접고 **status·stdout 은 그대로**다 — 실패를 성공으로(성공을 실패로) 바꾸지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn gu_stream_join_failure_folds_stderr_but_keeps_status_and_stdout() {
+        for code in [0, 3] {
+            let sc = GuScript::new(&format!("echo dept-9\nexit {code}\n"));
+            let cmd = sc.cmd();
+            let out = gu_within(30, move || {
+                run_dept_child_streaming_with(cmd, |_pipe: std::process::ChildStderr| -> Vec<u8> { panic!("gu: 판독 스레드 패닉(검체)") })
+            })
+            .expect("판독 스레드가 죽어도 실행기는 결과를 돌려준다");
+            assert_eq!(out.status.code(), Some(code), "join 실패가 종료 상태를 바꿨다");
+            assert_eq!(out.stdout, b"dept-9\n".to_vec());
+            assert!(out.stderr.is_empty(), "패닉한 판독 스레드의 stderr 는 빈 값으로 접어야 한다");
+        }
+    }
+
+    /// 자식을 못 띄우면(없는 프로그램) `output()` 과 같은 종류의 오류를 돌려주고, 미리 만든 판독 스레드가 남아 영원히 기다리지 않는다(채널이 닫혀 곧바로 끝난다).
+    #[cfg(unix)]
+    #[test]
+    fn gu_stream_spawn_failure_matches_output_and_does_not_leave_the_reader_waiting() {
+        let direct = std::process::Command::new("/nonexistent/gu-missing-cmd").output().expect_err("없는 프로그램은 실패해야 한다");
+        let (keys, cb) = gu_collector();
+        let e = gu_within(30, move || run_dept_child_streaming(std::process::Command::new("/nonexistent/gu-missing-cmd"), cb))
+            .expect_err("스트리밍 판도 실패해야 한다");
+        assert_eq!(e.kind(), direct.kind());
+        assert!(keys.lock().unwrap().is_empty());
+        // 공용 실행기도 같다(두 판 모두).
+        for stream in [true, false] {
+            let e2 = gu_within(30, move || run_dept_child(std::process::Command::new("/nonexistent/gu-missing-cmd"), stream, |_k: &str| {}))
+                .expect_err("실패해야 한다");
+            assert_eq!(e2.kind(), direct.kind(), "stream={stream}");
+        }
+    }
+
+    /// (a) stdin 은 null — 자식이 보는 표준 입력이 /dev/null 이다(상속이면 입력을 기다리며 매달릴 수 있다). ※ 하네스의 stdin 이 이미 /dev/null 이면
+    /// 상속과 구별되지 않는다 — 돌연변이 실측은 stdin 을 열린 파이프로 두고 돌렸다(WORKLOG).
+    #[cfg(unix)]
+    #[test]
+    fn gu_stream_child_stdin_is_null() {
+        let sc = GuScript::new("if [ /dev/null -ef /dev/stdin ]; then echo STDIN_NULL; else echo STDIN_OTHER; fi\n");
+        let cmd = sc.cmd();
+        let out = gu_within(30, move || run_dept_child_streaming(cmd, |_k: &str| {})).expect("실행");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "STDIN_NULL");
+    }
+
+    /// 공용 실행기 — 두 판 모두 stderr 에서 표지 줄을 걷고, 나머지 `(status, stdout, stderr)` 는 서로·`output()` 과 같다. 종전 판(노브 0)에서는 콜백이 불리지 않는다.
+    /// (돌연변이 M2 — 노브를 무시하고 항상 스트리밍 — 이면 종전 판에서 콜백이 불려 적색.)
+    #[cfg(unix)]
+    #[test]
+    fn gu_run_dept_child_strips_markers_in_both_paths_and_the_knob_off_path_makes_no_callbacks() {
+        let sc = GuScript::new(
+            "printf '%s\\n' '[cys-dept] @stage reserve' >&2\n\
+             echo '[cys-dept] 예약 완료(dept-7)' >&2\n\
+             printf '%s\\n' '[cys-dept] @stage spawn' >&2\n\
+             echo '[cys-dept] ERROR: dept-7 데몬 기동 실패' >&2\n\
+             printf '%s\\n' '[cys-dept] @stage done' >&2\n\
+             echo dept-7\n\
+             exit 3\n",
+        );
+        let direct = sc.cmd().output().expect("직접 실행");
+        let want_stderr = strip_stage_lines(&String::from_utf8_lossy(&direct.stderr));
+        assert_eq!(want_stderr, "[cys-dept] 예약 완료(dept-7)\n[cys-dept] ERROR: dept-7 데몬 기동 실패\n", "전제");
+        let (keys_on, cb_on) = gu_collector();
+        let cmd_on = sc.cmd();
+        let on = gu_within(30, move || run_dept_child(cmd_on, true, cb_on)).expect("스트리밍");
+        let (keys_off, cb_off) = gu_collector();
+        let cmd_off = sc.cmd();
+        let off = gu_within(30, move || run_dept_child(cmd_off, false, cb_off)).expect("종전");
+        for (name, o) in [("스트리밍", &on), ("종전", &off)] {
+            assert_eq!(o.status, direct.status, "{name} status");
+            assert_eq!(o.stdout, direct.stdout, "{name} stdout");
+            assert_eq!(String::from_utf8_lossy(&o.stderr), want_stderr, "{name} stderr — 표지 줄만 빠져야 한다");
+        }
+        assert_eq!(*keys_on.lock().unwrap(), vec!["reserve", "spawn", "done"]);
+        assert!(keys_off.lock().unwrap().is_empty(), "종전 판(노브 0)에서 표지 콜백이 불렸다 — 노브가 무시되고 있다");
+    }
+
+    /// 코드 줄만 남긴다 — 주석 줄(`//`)·빈 줄을 뺀 소스 조각(소스 핀이 주석 속 낱말에 속지 않게).
+    fn gu_code_only(src: &str) -> String {
+        src.lines()
+            .map(|l| l.trim_end())
+            .filter(|l| !l.is_empty() && !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 프로덕션 본문(테스트 모듈 앞)에서 `fn_head` 로 시작하는 최상위 함수의 소스(첫 `\n}\n` 까지).
+    fn gu_prod_fn(fn_head: &str) -> String {
+        let src = include_str!("main.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let a = body.find(fn_head).unwrap_or_else(|| panic!("`{fn_head}` 소실"));
+        let end = a + body[a..].find("\n}\n").expect("함수 끝");
+        body[a..end].to_string()
+    }
+
+    /// FNV-1a 64 — 판정 코드 구간의 지문(표준 라이브러리만).
+    fn gu_fnv1a64(text: &str) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in text.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    /// ★`allocate_dept_daemon` 의 **판정 코드는 한 글자도 바뀌지 않았다** — 종료 코드 해석(`dept-create:<code>:<stderr>`)·stdout 마지막 줄=부서 이름·레지스트리 사후 조건.
+    /// 구간 = `if !out.status.success() {` 부터 함수 끝 직전까지의 **코드 줄**(주석·빈 줄 제외) 44줄의 FNV-1a-64 지문(원본 HEAD 4e839e4b 계열 f7f3dbf7 에서 잰 값).
+    /// 이 구간을 일부러 고쳤다면 지문을 새로 잰 사유를 남기고 값을 갱신한다. 그리고 자식 실행은 `run_dept_child` 를 지나고(직접 `.output()` 없음) 표지 제거는 한 곳에서만 일어난다.
+    #[test]
+    fn gu_allocate_dept_daemon_judgement_code_is_untouched_and_the_child_runs_through_run_dept_child() {
+        let f = gu_prod_fn("async fn allocate_dept_daemon(");
+        let marker = "    if !out.status.success() {\n        let stderr = String::from_utf8_lossy(&out.stderr).to_string();";
+        let at = f.find(marker).expect("판정 구간 시작 소실");
+        let judged_all = gu_code_only(&f[at..]);
+        // ★R2F-UI(A3 n1): 응답 객체에 가산 키 `spawned` 를 싣는 블록(함수 맨 끝 · 3줄)은 판정 코드가 아니다 — 그 블록을 **걷고** 종전 44줄·종전 지문을 그대로 잰다(지문을 새로 재서 값을 갈아 끼우지 않는다 —
+        // 그러면 이 핀은 아무것도 지키지 않게 된다). 블록 자체는 r2fui_allocate_dept_daemon_wires_the_stage_memory_into_the_response_additively 가 따로 핀한다.
+        let additive = "    if let (Some(obj), Some(spawned)) = (info.as_object_mut(), stage_seen.spawned()) {\n        obj.insert(\"spawned\".into(), json!(spawned));\n    }\n";
+        assert_eq!(judged_all.matches(additive).count(), 1, "가산 블록(spawned)이 하나가 아니다 — 판정 구간 밖에서 가산이어야 한다:\n{judged_all}");
+        let judged = judged_all.replacen(additive, "", 1);
+        assert_eq!(judged.lines().count(), 44, "판정 구간의 코드 줄 수가 달라졌다 — 판정 코드를 건드렸다:\n{judged}");
+        assert_eq!(
+            gu_fnv1a64(&judged),
+            0x2154_c645_6b63_5470,
+            "allocate_dept_daemon 의 판정 코드(종료 코드 해석·stdout 마지막 줄·dept-create:<code>:<stderr>·레지스트리 사후 조건)가 바뀌었다 — 티켓은 이 구간을 한 줄도 바꾸지 않는다:\n{judged}"
+        );
+        // 판정 구간의 핵심 줄은 문자열로도 박아 둔다(실패 시 어느 줄이 사라졌는지 바로 보이게).
+        for needle in [
+            "let code = out.status.code().unwrap_or(-1);",
+            "return Err(format!(\"dept-create:{code}:{stderr}\"));",
+            "return Err(stderr);",
+            ".filter(|l| !l.trim().is_empty())",
+            ".last()",
+            "return Err(\"allocate: empty name\".into());",
+            "match dept_team_proposal_id(&name) {",
+            "Some(tpid) if tpid == spec.id => {",
+        ] {
+            assert!(judged.contains(needle), "판정 코드 줄 소실: {needle}");
+        }
+        let code = gu_code_only(&f);
+        // 새 인자 · 실행 경로
+        assert!(code.contains("progress_id: Option<String>,"), "progress_id 인자 소실");
+        assert!(code.contains("run_dept_child(cmd, streaming, move |key: &str| {"), "자식 실행이 run_dept_child 를 지나지 않는다");
+        assert!(!code.contains(".output()"), "allocate_dept_daemon 이 직접 cmd.output() 을 부른다 — 종전 판 호출은 run_dept_child_plain 안에만 있어야 한다");
+        assert!(!code.contains("strip_stage_lines("), "표지 제거가 호출부에서 한 번 더 일어난다 — 공통 실행기(run_dept_child) 뒤에서 한 번이어야 한다");
+        assert!(code.contains("\"dept-create-progress\""), "진행 이벤트 이름 소실");
+        assert!(code.contains("json!({\"id\": emit_id, \"stage\": key})"), "진행 이벤트 payload 모양({{id, stage}}) 소실");
+        assert!(
+            code.contains("dept_create_stream_from_env(std::env::var(\"CYS_DEPT_CREATE_STREAM\").ok().as_deref())"),
+            "되돌리기 노브를 읽지 않는다"
+        );
+        assert!(code.contains("progress_id.is_some() &&"), "진행 id 가 없을 때 종전 경로로 가는 조건 소실");
+        // 명령줄 조립은 종전 그대로 — 순서까지.
+        let order = [
+            "let mut cmd = std::process::Command::new(\"bash\");",
+            "inject_runtime_path(&mut cmd);",
+            "cmd.arg(&tool);",
+            "cmd.arg(\"create\").arg(k);",
+            "cmd.arg(\"allocate\");",
+            "cmd.arg(\"--team-spec-b64\").arg(b);",
+            "no_console(&mut cmd);",
+            "run_dept_child(cmd, streaming,",
+        ];
+        let mut last = 0usize;
+        for n in order {
+            let i = code[last..].find(n).unwrap_or_else(|| panic!("명령줄 조립 줄이 없거나 순서가 바뀌었다: {n}")) + last;
+            last = i + n.len();
+        }
+        // 표지 제거는 공통 실행기 안에서 정확히 한 번.
+        let prod = {
+            let src = include_str!("main.rs");
+            gu_code_only(&src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")])
+        };
+        assert_eq!(prod.matches("out.stderr = strip_stage_lines(").count(), 1, "표지 제거 지점이 하나가 아니다");
+        let rdc = gu_code_only(&gu_prod_fn("fn run_dept_child("));
+        assert!(rdc.contains("out.stderr = strip_stage_lines(&String::from_utf8_lossy(&out.stderr)).into_bytes();"));
+    }
+
+    /// ★교착·행 방지 4항이 코드에 남아 있다(소스 핀 — 행동 검체가 못 보는 변형을 막는다): (a) stdin 명시 null (b) stderr 는 read_until + lossy 로 EOF 까지(lines() 금지 ·
+    /// 엄격 디코드 금지 · EOF 에서만 break) (c) stderr 전용 스레드 · 판독은 자식 기동 전에 만든 스레드 안에서 · stdout 은 본 스레드의 wait_with_output (d) join 실패는 빈 stderr · status 보존.
+    #[test]
+    fn gu_streaming_runner_keeps_the_four_deadlock_guards() {
+        let run = gu_code_only(&gu_prod_fn("fn run_dept_child_streaming_with"));
+        // (a)
+        assert!(run.contains(".stdin(std::process::Stdio::null())"), "(a) stdin 명시 null 소실");
+        assert!(run.contains(".stdout(std::process::Stdio::piped())") && run.contains(".stderr(std::process::Stdio::piped())"), "두 파이프 설정 소실");
+        // (c)
+        let t = run.find("std::thread::Builder::new()").expect("(c) 전용 판독 스레드 소실");
+        let p = run.find("pump(pipe)").expect("(c) 판독 호출 소실");
+        let s = run.find("cmd.spawn()").expect("자식 기동 소실");
+        assert!(t < p && p < s, "(c) 판독은 자식 기동 **전에** 만든 스레드 안에서 돌아야 한다(순서: 스레드 → 판독 호출 → 기동)");
+        assert!(run.contains("child.wait_with_output()"), "(c) stdout 수집 + 종료 대기(본 스레드) 소실");
+        assert!(run.contains("child.stderr.take()"), "(c) stderr 파이프를 전용 스레드로 넘기지 않는다 — wait_with_output 이 두 파이프를 한 스레드에서 읽게 된다");
+        // (d)
+        assert!(run.contains("reader.join().unwrap_or_default()"), "(d) join 실패 → 빈 stderr 소실");
+        assert!(run.contains("status: done.status"), "(d) status 보존 소실");
+        assert!(!run.contains("done.status.success()") && !run.contains("unwrap_or(true)"), "(d) join 실패를 성공으로 바꾸는 줄이 생겼다");
+        // (b)
+        let pump = gu_code_only(&gu_prod_fn("fn pump_dept_stderr"));
+        assert!(pump.contains("read_until(b'\\n', &mut line)"), "(b) read_until 소실");
+        assert!(pump.contains("String::from_utf8_lossy(&line)"), "(b) lossy 디코드 소실");
+        assert!(!pump.replace("from_utf8_lossy", "").contains("from_utf8"), "(b) 엄격 디코드가 들어왔다 — 비 UTF-8 바이트에서 읽기가 끊긴다");
+        assert!(!pump.contains(".lines()"), "(b) lines() 가 들어왔다 — UTF-8 이 아니면 Err 로 끊긴다");
+        assert!(pump.contains("Ok(0) => break"), "(b) EOF 에서만 끝나야 한다");
+        assert!(pump.contains("catch_unwind"), "(b) 콜백 패닉을 가두는 줄 소실");
+        assert_eq!(pump.matches("break").count(), 2, "(b) break 는 EOF 와 진짜 읽기 오류 둘뿐이어야 한다(디코드·콜백 실패로 끊는 길 금지)");
+    }
+
+    /// ★REVIEW1 m4: feed_reply 재시도 조건 배선 핀. 팀 제안 해소는 operator token 전용(team_spec::
+    /// reply_allowed)이라 토큰 회전 경합에서 `self_approval_denied` 대신 `owner_gui_required` 를
+    /// 받는다 — 재시도 조건이 그 코드를 몰라 "팀은 만들었으나 제안 정리 실패"만 뜨던 결함의 수리.
+    #[test]
+    fn u16_m4_feed_reply_retries_owner_gui_required_too() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let src = std::fs::read_to_string(&path).expect("main.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let a = body.find("async fn feed_reply(").expect("feed_reply 소실");
+        let end = a + body[a..].find("\n}\n").expect("함수 끝");
+        let f = &body[a..end];
+        assert!(f.contains(r#"Some("self_approval_denied")"#), "기존 재시도 사유 소실");
+        assert!(f.contains(r#"Some("owner_gui_required")"#), "owner_gui_required 재시도 사유 부재(REVIEW1 m4)");
+    }
+
+    /// ★K2-03 배선 핀: 세 판독 지점(list_depts · dept_display_name · read_dept_catalog)이 전부 **단일 판독기**
+    /// read_json_or_empty 를 지나고, 그 판독기가 lib 공용 strip_utf8_bom 을 부른다(★3라운드 C2/C3-c 로 갱신).
+    /// 한 곳만 원시 `from_str(&s)`/`read_to_string(..).ok()?` 로 되돌아가면 같은 파일이 팝업에서는 보이고 복원에서는
+    /// 안 보이거나, 판독 실패가 다시 '부서 0' 으로 둔갑한다.
+    #[test]
+    fn k2_03_every_registry_reader_strips_the_bom() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let src = std::fs::read_to_string(&path).expect("main.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        for f in ["fn list_depts()", "fn dept_display_name(", "fn read_dept_catalog()"] {
+            let s = body.find(f).unwrap_or_else(|| panic!("`{f}` 소실"));
+            let seg: String = body[s..].chars().take(700).collect(); // 바이트 슬라이스 금지(한글 주석 경계 패닉)
+            assert!(seg.contains("read_json_or_empty("), "{f}: 단일 판독기를 우회하는 원시 판독으로 되돌아갔다");
+            assert!(!seg.contains("from_str"), "{f}: 원시 serde 판독이 되살아났다(BOM·Err 정책 이탈)");
+        }
+        let r = body.find("fn read_json_or_empty(").expect("read_json_or_empty 소실");
+        let seg: String = body[r..].chars().take(900).collect();
+        assert!(seg.contains("strip_utf8_bom("), "read_json_or_empty: BOM 을 벗기지 않는다");
+        assert!(seg.contains("ErrorKind::NotFound"), "read_json_or_empty: 부재/실패 분기가 사라졌다(C2)");
+        // 사본 금지: 이 파일에 strip_utf8_bom 의 **정의**가 다시 생기면 lib 와 갈린다.
+        assert!(!body.contains("fn strip_utf8_bom("), "strip_utf8_bom 사본이 되살아났다 — lib 공용 함수를 쓴다");
+        assert!(body.contains("use cys::strip_utf8_bom;"), "lib 공용 strip_utf8_bom 배선 소실");
+    }
+
+    /// ★C2(2026-09-17 3라운드 · 부트체인 must_fix) 판독 정책 경계 핀 — **부재만 빈 값**, 판독 실패는 Err.
+    ///   NotFound → Ok(빈 값) · InvalidData(cp949 바이트 = 무효 UTF-8) → Err · 손상 JSON → Err · BOM → Ok(정상 파싱).
+    /// 종전(전부 Ok(빈 값))이면 InvalidData 단언에서 red — UI 가 '못 읽음' 을 '부서 0' 으로 읽어 탭을 드롭하던 병인.
+    #[test]
+    fn k2_03_reader_policy_notfound_empty_invaliddata_err_bom_ok() {
+        let td = std::env::temp_dir().join(format!("cys-k2-03-policy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        let empty = json!({ "depts": {} });
+
+        // NotFound → Ok(빈 값)
+        let missing = td.join("nope.json");
+        assert_eq!(read_json_or_empty("depts.json", &missing, empty.clone()).unwrap(), empty);
+
+        // InvalidData: cp949 로 저장된 한글(무효 UTF-8) → Err(빈 값 아님)
+        let cp949 = td.join("cp949.json");
+        std::fs::write(&cp949, b"{\"depts\":{\"dept-1\":{\"display_name\":\"\xc8\xab\xb1\xe6\xb5\xbf\"}}}").unwrap();
+        let e = read_json_or_empty("depts.json", &cp949, empty.clone()).expect_err("cp949 파일이 빈 값으로 둔갑했다");
+        assert!(e.contains("판독 실패"), "사유 문면: {e}");
+
+        // 손상 JSON(절단) → Err
+        let broken = td.join("broken.json");
+        std::fs::write(&broken, "{\"depts\":{\"dept-1\":").unwrap();
+        let e = read_json_or_empty("depts.json", &broken, empty.clone()).expect_err("손상 JSON 이 빈 값으로 둔갑했다");
+        assert!(e.contains("JSON 형식 오류"), "사유 문면: {e}");
+
+        // BOM → Ok(정상 · BOM 뒤 한글 보존)
+        let bom = td.join("bom.json");
+        std::fs::write(&bom, "\u{FEFF}{\"depts\":{\"dept-1\":{\"display_name\":\"영업부\",\"socket\":\"/x/cys-dept-dept-1/cys.sock\"}}}").unwrap();
+        let v = read_json_or_empty("depts.json", &bom, empty.clone()).expect("BOM 파일이 거부됐다");
+        assert_eq!(v["depts"]["dept-1"]["display_name"], "영업부");
+
+        // 실제 커맨드 경계(env 경로 주입 · `--test-threads=1` 러너 전제): list_depts 도 같은 정책이다.
+        std::env::set_var("CYS_DEPTS_JSON", &cp949);
+        assert!(list_depts().is_err(), "list_depts: cp949 레지스트리가 Ok(부서 0) 으로 둔갑했다");
+        assert!(dept_display_name("dept-1").is_none(), "dept_display_name: 반환 정책은 None 폴백 그대로");
+        std::env::set_var("CYS_DEPTS_JSON", &missing);
+        assert_eq!(list_depts().unwrap(), empty, "list_depts: 부재는 빈 값");
+        std::env::set_var("CYS_DEPTS_JSON", &bom);
+        assert_eq!(dept_display_name("dept-1").as_deref(), Some("영업부"), "BOM 레지스트리의 표시명");
+        std::env::remove_var("CYS_DEPTS_JSON");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★D1(2026-09-17 4라운드 · codex 2차 ③) 회귀 핀: `cys-dept down`/`down-sock` 의 비0 rc 는 **Err** 다.
+    /// 목 cys-dept(rc 12 = 우리 판독 실패 번호 · 원작자 원판 10 + stderr 1줄)를 CYS_PACK_DIR/bin 에 두고 실제 커맨드를 부른다 — 종전 `let _ = …; Ok(())` 로
+    /// 되돌리면 첫 단언(expect_err)에서 red. rc 0 은 Ok, 도구 부재(bash 127)도 Err(spawn 실패 계열의 관측 가능 형태).
+    /// `--test-threads=1` 러너 전제(CYS_PACK_DIR 주입 · 끝나면 원복).
+    #[cfg(unix)]
+    #[test]
+    fn k2_03_d1_stop_dept_daemon_nonzero_rc_is_err_not_silent_ok() {
+        let td = std::env::temp_dir().join(format!("cys-k2-03-d1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        let bin = td.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tool = bin.join("cys-dept");
+        std::fs::write(
+            &tool,
+            "#!/bin/bash\necho \"[cys-dept] depts.json 판독 실패 — 원본 보존: mock ($1 $2)\" >&2\nexit 12\n",
+        )
+        .unwrap();
+        let prev = std::env::var("CYS_PACK_DIR").ok();
+        std::env::set_var("CYS_PACK_DIR", &td);
+        assert_eq!(dept_tool(), tool, "테스트 전제: dept_tool 이 목 cys-dept 를 가리킨다");
+
+        tauri::async_runtime::block_on(async {
+            let e = stop_dept_daemon("dept-1".into())
+                .await
+                .expect_err("rc 12 이 Ok(()) 로 둔갑했다 — 무음 좀비(탭 소실·데몬 생존) 경로 부활");
+            assert!(e.contains("cys-dept down rc=12"), "rc 가 문면에 없다: {e}");
+            assert!(e.contains("판독 실패") && e.contains("down dept-1"), "stderr 가 문면에 없다: {e}");
+            let e = stop_dept_daemon_by_socket("/x/cys-dept-dept-1/cys.sock".into())
+                .await
+                .expect_err("down-sock rc 12 이 Ok(()) 로 둔갑했다");
+            assert!(e.contains("cys-dept down-sock rc=12"), "{e}");
+            assert!(e.contains("down-sock /x/cys-dept-dept-1/cys.sock"), "{e}");
+
+            // rc 0 → Ok(정상 teardown 은 종전과 같다)
+            std::fs::write(&tool, "#!/bin/bash\nexit 0\n").unwrap();
+            assert!(stop_dept_daemon("dept-1".into()).await.is_ok());
+            assert!(stop_dept_daemon_by_socket("/x/cys-dept-dept-1/cys.sock".into()).await.is_ok());
+
+            // 도구 부재 → bash 127 → Err(무음 Ok 아님)
+            std::fs::remove_file(&tool).unwrap();
+            let e = stop_dept_daemon("dept-1".into()).await.expect_err("도구 부재가 Ok 로 둔갑했다");
+            assert!(e.contains("cys-dept down rc=127"), "{e}");
+        });
+
+        match prev {
+            Some(v) => std::env::set_var("CYS_PACK_DIR", v),
+            None => std::env::remove_var("CYS_PACK_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★D1/D5-b 배선 핀: spawn_org_restore 는 (a) teardown 의 Err 를 버리지 않고 detail 에 싣고(`let _ =` 폐기 부활 금지),
+    /// (b) list_depts Err 를 `if let Ok` 로 무음 skip 하지 않고 skip 이벤트로 emit 한다.
+    #[test]
+    fn k2_03_d1_d5b_org_restore_surfaces_teardown_err_and_registry_read_err() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let src = std::fs::read_to_string(&path).expect("main.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let s = body.find("fn spawn_org_restore(").expect("spawn_org_restore 소실");
+        let seg = &body[s..s + body[s..].find("\n}\n").unwrap()];
+        assert!(!seg.contains("let _ = stop_dept_daemon_by_socket("), "teardown 결과 폐기(`let _ =`)가 되살아났다");
+        assert!(seg.contains("stop_dept_daemon_by_socket(") && seg.contains(".err();"), "teardown Err 수집 배선 소실");
+        assert!(!seg.contains("if let Ok(reg) = list_depts()"), "list_depts Err 무음 skip 이 되살아났다");
+        let m = seg.find("match list_depts()").expect("list_depts Err 분기 소실");
+        let after = &seg[m..];
+        assert!(after.contains("Err(e) =>") && after.contains("\"phase\": \"skip\"") && after.contains("전건 보류"),
+            "list_depts Err 가 skip 이벤트로 emit 되지 않는다");
+        // stop 두 커맨드는 단일 실행기를 지나고, 그 실행기는 join·spawn·status 세 실패를 모두 Err 로 만든다.
+        for f in ["async fn stop_dept_daemon(", "async fn stop_dept_daemon_by_socket("] {
+            let i = body.find(f).unwrap_or_else(|| panic!("`{f}` 소실"));
+            let seg: String = body[i..].chars().take(300).collect();
+            assert!(seg.contains("run_dept_teardown("), "{f}: 단일 실행기를 우회한다");
+            assert!(!seg.contains("let _ ="), "{f}: 결과 폐기가 되살아났다");
+        }
+        let r = body.find("async fn run_dept_teardown(").expect("run_dept_teardown 소실");
+        let seg: String = body[r..].chars().take(1200).collect();
+        assert!(seg.contains("join:") && seg.contains("spawn:") && seg.contains("rc={rc}"), "세 실패 경로 중 하나가 Err 가 아니다");
+    }
+
+    /// ★D4(2026-09-17 4라운드 · codex 2차 ⑦) 회귀 핀: socket 필드가 없거나 빈 정상 등재에 list_depts 가 canonical
+    /// `dept_socket_path(name)` 을 채운다 — `{depts:{"dept-1":{display_name:"영업부"}}}` 가 UI 에서 registered 비어 탭을
+    /// 드롭하던 병인. 값이 있는 socket(레거시 파일경로형)은 건드리지 않고, 비객체 항목에서 패닉하지 않는다.
+    /// `--test-threads=1` 러너 전제(CYS_DEPTS_JSON 주입).
+    #[test]
+    fn k2_03_d4_list_depts_fills_canonical_socket_only_where_missing() {
+        let td = std::env::temp_dir().join(format!("cys-k2-03-d4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        let reg = td.join("depts.json");
+        std::fs::write(
+            &reg,
+            "{\"depts\":{\"dept-1\":{\"display_name\":\"영업부\"},\"dept-2\":{\"display_name\":\"x\",\"socket\":\"  \"},\
+             \"dept-3\":{\"socket\":\"C:\\\\Users\\\\x\\\\.local\\\\state\\\\cys-dept-dept-3\\\\cys.sock\"},\"bad\":null}}",
+        )
+        .unwrap();
+        let prev = std::env::var("CYS_DEPTS_JSON").ok();
+        std::env::set_var("CYS_DEPTS_JSON", &reg);
+        let v = list_depts().expect("정상 등재가 Err 로 둔갑했다");
+        let want1 = dept_socket_path("dept-1").to_string_lossy().to_string();
+        let want2 = dept_socket_path("dept-2").to_string_lossy().to_string();
+        assert_eq!(v["depts"]["dept-1"]["socket"], want1, "socket 없는 등재에 canonical 이 채워지지 않았다");
+        assert_eq!(v["depts"]["dept-1"]["display_name"], "영업부", "표시명은 보존");
+        assert_eq!(v["depts"]["dept-2"]["socket"], want2, "빈 socket 도 채운다");
+        assert_eq!(
+            v["depts"]["dept-3"]["socket"],
+            "C:\\Users\\x\\.local\\state\\cys-dept-dept-3\\cys.sock",
+            "값이 있는 socket(레거시)은 덮지 않는다"
+        );
+        assert!(v["depts"]["bad"].is_null(), "비객체 항목은 그대로(패닉 없음)");
+        assert!(want1.contains("cys-dept-dept-1"), "canonical 규약 확인: {want1}");
+        // 부재는 여전히 빈 값(채울 항목 없음) · 판독 실패는 여전히 Err(채움이 정책을 바꾸지 않는다).
+        std::env::set_var("CYS_DEPTS_JSON", td.join("nope.json"));
+        assert_eq!(list_depts().unwrap(), json!({ "depts": {} }));
+        std::fs::write(td.join("broken.json"), "{\"depts\":{").unwrap();
+        std::env::set_var("CYS_DEPTS_JSON", td.join("broken.json"));
+        assert!(list_depts().is_err());
+        match prev {
+            Some(p) => std::env::set_var("CYS_DEPTS_JSON", p),
+            None => std::env::remove_var("CYS_DEPTS_JSON"),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★D5-a(2026-09-17 4라운드) 핀: 판독 실패 경고는 (경로, 사유) 당 1회 — 5초 폴링(usage_accounts_all → list_depts)에서
+    /// 같은 경고가 반복되지 않는다. 사유가 바뀌면 다시 알리고, 정상 판독(reset)이 되면 같은 사유도 다시 알린다.
+    #[test]
+    fn k2_03_d5a_json_read_warn_dedupes_per_path_and_reason_until_recovery() {
+        let p = std::env::temp_dir().join(format!("cys-k2-03-d5a-{}.json", std::process::id()));
+        let q = std::env::temp_dir().join(format!("cys-k2-03-d5a-{}-other.json", std::process::id()));
+        json_read_warn_reset(&p);
+        json_read_warn_reset(&q);
+        assert!(json_read_warn_first(&p, "invalid utf-8"), "첫 발생은 알린다");
+        assert!(!json_read_warn_first(&p, "invalid utf-8"), "같은 (경로, 사유) 반복은 침묵");
+        assert!(!json_read_warn_first(&p, "invalid utf-8"));
+        assert!(json_read_warn_first(&p, "expected `,`"), "사유가 바뀌면 다시 알린다");
+        assert!(json_read_warn_first(&q, "invalid utf-8"), "다른 경로는 별개");
+        json_read_warn_reset(&p);
+        assert!(json_read_warn_first(&p, "invalid utf-8"), "복구 뒤 같은 사유는 다시 알린다");
+        assert!(!json_read_warn_first(&q, "invalid utf-8"), "다른 경로의 기억은 reset 대상이 아니다");
+        // 실제 판독기 경계: 정상 파일을 한 번 읽으면 그 경로의 기억이 지워진다.
+        std::fs::write(&p, "{}").unwrap();
+        assert!(read_json_or_empty("x", &p, json!({})).is_ok());
+        assert!(json_read_warn_first(&p, "expected `,`"), "정상 판독이 reset 을 부른다");
+        json_read_warn_reset(&p);
+        json_read_warn_reset(&q);
+        let _ = std::fs::remove_file(&p);
+    }
+
     /// ★SEAL-DIAG 스로틀 회귀 핀: **파손은 마커로 침묵시킬 수 없다.**
     /// 스로틀의 목적은 평시 `codesign --deep` 비용 절감이지 고장 은폐가 아니다 —
     /// 이 구분이 무너지면 첫 기동에 파손을 한 번 알리고 그 뒤로는 영원히 조용해진다.
@@ -7637,6 +10567,67 @@ mod tests {
             cys::app_bundle::seal_broken_notice(bundle, &culprits, true),
             "push(emit)와 pull(캐시) 문구가 갈라졌다 — 이원화 금지 계약 위반"
         );
+    }
+
+    /// ★U15(0.14.41) 개발자 도구(CLT) 없는 맥 안내의 **배선 3자 핀**(소스 대조 — 심볼 무의존).
+    ///
+    /// 새 알림 종류는 "백엔드가 쌓는다 → 프런트가 같은 문자열로 분기한다"가 **둘 다** 있어야 뜬다.
+    /// 한쪽만 있으면 알림이 **조용히 사라진다**(이 파일 SEAL-DIAG 주석이 경고한 바로 그 형태).
+    ///   ① 백엔드: 기존 `onboard-notice` 채널(push + `onboard_notices` pull)에 kind 로 싣는다 —
+    ///      재설치 채널(bundle-damaged)과 섞지 않는다(고장이 아니다).
+    ///   ② setup: macOS 블록에서 봉인 자가진단 뒤에 부른다(부트 무차단 · stat 만).
+    ///   ③ 프런트: `showOnboardNotice` 가 같은 kind 를 토스트로 낸다.
+    #[test]
+    fn devtools_notice_is_wired_backend_setup_and_frontend() {
+        let src = include_str!("main.rs");
+        // ★(통합 0.14.41 D — 교차 WP 결합 수리): 종전 `src.split("#[cfg(test)]").next()` 는 파일 안
+        //   **첫** "#[cfg(test)]" 에서 끊었다. WP-B2 가 독립 `#[cfg(test)] fn parse_reinject_counts`
+        //   (review1 m9 FIX)를 이 테스트 모듈보다 앞에 추가하면서, 그 지점에서 잘려 아래 `setup()`
+        //   호출부(6892행대)가 "프로덕션" 영역 밖으로 밀려나 이 핀이 거짓 FAIL 을 냈다. 이 파일의
+        //   다른 모든 소스 핀(:7076·:7193·:7645·:12104)이 쓰는 안전한 경계
+        //   `"#[cfg(test)]\nmod tests {"`(테스트 모듈 시작 그 자체)로 맞춘다 — 의미(=setup() 안의
+        //   실제 배선을 본다)는 그대로, 파일 앞쪽에 독립 `#[cfg(test)]` 함수가 몇 개 더 늘어도
+        //   깨지지 않는다.
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let kind = concat!("\"devtools", "-missing\"");
+        assert!(
+            prod.contains(&format!("const DEVTOOLS_NOTICE_KIND: &str = {kind};")),
+            "백엔드 kind 상수 부재 — 알림을 쌓는 쪽이 없다"
+        );
+        assert!(
+            prod.contains("push_onboard_notice(handle, DEVTOOLS_NOTICE_KIND,"),
+            "안내가 onboard-notice 채널(push + pull 회수)로 나가지 않는다"
+        );
+        let sd = prod.find("spawn_seal_selfdiag(handle.clone());").expect("setup 봉인 자가진단 호출 소실");
+        let dn = prod.find("maybe_push_devtools_notice(&handle);").expect("setup 에서 CLT 안내를 부르지 않는다");
+        assert!(sd < dn, "CLT 안내 호출이 macOS setup 블록(봉인 자가진단 뒤)에 있지 않다");
+        let ui = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/main.ts"),
+        )
+        .expect("ui/src/main.ts 를 읽지 못했다 — 측정 불능은 통과가 아니다");
+        assert!(
+            ui.contains(&format!("kind === {kind}")),
+            "프런트 showOnboardNotice 가 {kind} 를 모른다 — 백엔드가 쌓아도 알림이 조용히 사라진다"
+        );
+    }
+
+    /// ★U15 안내 판정 진리표 — macOS ∧ 이 버전 미고지 ∧ 도구 결손일 때만 · 문구는 lib 정본 그대로.
+    #[test]
+    fn devtools_notice_due_truth_table() {
+        let full = devtools_notice_due("macos", false, false, false).expect("CLT 없는 맥에 안내가 없다");
+        assert_eq!(
+            Some(full.clone()),
+            cys::macos_devtools::devtools_missing_notice(false, false),
+            "GUI 안내가 lib 정본 문구와 갈라졌다(사본 금지)"
+        );
+        assert_eq!(devtools_notice_due("macos", true, false, false), None, "버전당 1회 스로틀이 없다");
+        assert_eq!(devtools_notice_due("macos", false, true, true), None, "CLT 있는 맥에서 안내가 떴다");
+        for os in ["windows", "linux", ""] {
+            assert_eq!(devtools_notice_due(os, false, false, false), None, "{os} 에서 맥 안내가 떴다");
+        }
+        assert!(devtools_notice_marker()
+            .to_string_lossy()
+            .ends_with(&format!("devtools-notice-{}", env!("CARGO_PKG_VERSION"))));
     }
 
     /// ★SEAL-DIAG pull 캐시 회귀 핀 ②(F3 격차1): 합산은 **어느 파손 판정도 떨어뜨리지
@@ -7765,12 +10756,941 @@ mod tests {
     /// 때만 스킵. 부재(신선 머신·직전 실패)·구버전·손상 = 실행(fail-open 치유 방향). 이 판정이
     /// .pack-version 등 팩 상태를 일절 보지 않는 것이 요점 — cysd 선행이 게이트를 선점 못 한다.
     #[test]
+    fn install_stamp_is_alive_on_the_real_install_path_and_closed_elsewhere() {
+        use std::path::Path;
+        let home = Path::new("/Users/x");
+        // 실제 설치 경로는 **반드시** 통과해야 한다 — 여기가 막히면 기능이 조용히 죽는다.
+        assert!(strict_install_bundle_ok(
+            Path::new("/Applications/cys.app/Contents/MacOS"),
+            home
+        ));
+        assert!(strict_install_bundle_ok(
+            Path::new("/Users/x/Applications/cys.app/Contents/MacOS"),
+            home
+        ));
+        // 개발 빌드·App Translocation — 매 실행 경로가 달라지므로 반드시 막혀야 한다.
+        assert!(!strict_install_bundle_ok(
+            Path::new("/Users/x/dev/cys-t1/target/debug"),
+            home
+        ));
+        assert!(!strict_install_bundle_ok(
+            Path::new("/private/var/folders/ab/AppTranslocation/XYZ/d/cys.app/Contents/MacOS"),
+            home
+        ));
+        // 막힌 경로에서는 스탬프가 없다(= 묻지 않음).
+        assert_eq!(
+            install_stamp_for(Path::new("/tmp/cys-app"), home, "0.14.34"),
+            None
+        );
+        // 실제 디스크의 번들 모양 디렉터리로 dev:ino|버전 형식을 확인한다.
+        let tmp = std::env::temp_dir().join(format!("cys-stamp-{}", std::process::id()));
+        let macos = tmp.join("Applications/cys.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let got = install_stamp_for(&macos.join("cys-app"), &tmp, "0.14.34");
+        std::fs::remove_dir_all(&tmp).ok();
+        // ★W-1: 플랫폼별 계약을 둘 다 고정한다 — 유닉스는 번들 신원을 재고, 그 밖은 번들 모양이어도
+        // 판정하지 않는다(= 묻지 않음). 한쪽만 고정하면 다른 쪽이 조용히 바뀌어도 초록이다.
+        #[cfg(unix)]
+        {
+            let got = got.expect("유닉스에서 번들 모양 경로는 스탬프가 나와야 한다");
+            let (ident, ver) = split_install_stamp(&got);
+            assert_eq!(ver, Some("0.14.34"));
+            assert!(ident.contains(':') && ident.split(':').all(|p| p.parse::<u64>().is_ok()));
+        }
+        #[cfg(not(unix))]
+        {
+            assert_eq!(got, None, "유닉스 밖은 판정 불능 = 묻지 않음");
+        }
+    }
+
+    #[test]
+    fn fresh_start_asks_on_reinstall_but_never_on_a_plain_upgrade() {
+        use FreshStartPrompt::*;
+        let a1 = "16777232:100|0.14.33"; // 설치본 A, 버전 1
+        let b1 = "16777232:200|0.14.33"; // 설치본 B(다른 inode), 같은 버전 = 재설치(또는 같은 버전 덮어쓰기)
+        let b2 = "16777232:200|0.14.34"; // 설치본 B, 버전 2 = 업그레이드
+        // 물을 것이 없거나 판정 불능(개발 빌드·translocation) — 묻지 않는다
+        assert_eq!(decide_fresh_start_prompt(false, None, Some(a1)), Skip);
+        assert_eq!(decide_fresh_start_prompt(true, Some(a1), None), Skip);
+        // 도입 전 설치본 — 소급 심문 금지(기록만)
+        assert_eq!(decide_fresh_start_prompt(true, None, Some(a1)), Seed);
+        // 같은 설치본 계속 사용 — 매 기동 묻지 않는다
+        assert_eq!(decide_fresh_start_prompt(true, Some(a1), Some(a1)), Skip);
+        // ★핵심 경로 — 지웠다 같은 버전을 다시 깔았다. 같은 버전 '수리용 덮어쓰기'도 여기로 온다(결정 B 가
+        //   수용한 안전한 쪽 오탐: 기본 선택이 '이어서 사용하기'이고 [새로 시작]도 부팅 뒤 문구 확인을 거친다).
+        assert_eq!(decide_fresh_start_prompt(true, Some(a1), Some(b1)), Ask);
+        // ★업그레이드는 **언제나** 묻지 않는다 — 판정 입력에 휴지통·mtime 같은 외부 신호가 없으므로
+        //   reviewer-codex R-1 재현(무관한 cys-*.app 사본을 휴지통에 넣으면 업그레이드가 Ask)이 설 자리가 없다.
+        //   지우고 새 버전을 받은 경우도 여기로 온다 — 결정 B 의 의도된 미탐(= 종전 동작).
+        assert_eq!(decide_fresh_start_prompt(true, Some(a1), Some(b2)), Seed);
+        // 손상·구형식 기록은 업그레이드 여부를 알 수 없다 → 안전한 쪽
+        assert_eq!(decide_fresh_start_prompt(true, Some(" \n"), Some(a1)), Seed);
+        assert_eq!(decide_fresh_start_prompt(true, Some("16777232:100"), Some(b2)), Seed);
+    }
+
+    /// ★W-2 결정 C 회귀 핀(reviewer-codex R-1 MAJOR 4): 기록하지 못한 선택을 성공으로 보고하지 않는다.
+    #[test]
+    fn fresh_start_ack_never_reports_an_unrecorded_choice_as_success() {
+        let dir = std::env::temp_dir().join(format!("cys-ack-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".install-identity");
+        // 스탬프를 잴 수 없으면 기록하지 못한 것이다 — 종전처럼 Ok 로 접으면 질문이 매 기동 반복된다.
+        assert!(record_install_identity(&path, None).is_err());
+        assert!(!path.exists(), "실패 경로가 파일을 남기면 안 된다");
+        // 쓰기 실패(부모 디렉터리 부재)도 실패로 돌려준다.
+        assert!(record_install_identity(&dir.join("no-such-dir/.install-identity"), Some("1:2|0.14.34")).is_err());
+        // 성공은 실제로 기록됐을 때만.
+        record_install_identity(&path, Some("1:2|0.14.34")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1:2|0.14.34");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ★W-2 결정 A 회귀 핀(reviewer-codex R-1 BLOCKER 2): 부팅 작업이 하나라도 살아 있으면 초기화는 거부된다 —
+    /// 가드 수명이 곧 관문이다(중첩·조기 return·패닉 되감기 모두 Drop 으로 닫힌다).
+    #[test]
+    fn factory_reset_is_refused_while_boot_work_is_in_flight() {
+        use std::time::Duration;
+        assert_eq!(reset_blocked_by_boot(0, Duration::ZERO), None);
+        let why = reset_blocked_by_boot(1, Duration::ZERO).expect("부팅 작업이 남아 있으면 거부");
+        // CEO 조건 (나): 거부는 '고장'이 아니라 '잠시 후 다시' 안내다 — 프런트는 이 머리로 안내 토스트를 고른다.
+        assert!(why.starts_with(BOOT_GATE_REFUSAL_LEAD) && why.contains("잠시 후 다시"), "{why}");
+        // 같은 전역을 만지는 다른 테스트가 없더라도 **증감**만 본다(병렬 실행에 강건).
+        let base = boot_gate_snapshot().0;
+        {
+            let _setup = BootWorkGuard::enter();
+            let (n, since) = boot_gate_snapshot();
+            assert_eq!(n, base + 1);
+            assert!(since < BOOT_GATE_FAIL_OPEN, "방금 시작한 부팅 작업은 상한 안이다");
+            assert!(boot_gate_refusal().is_some());
+            {
+                // setup 안에서 업데이트 팩 반영·조직 복원이 겹친다
+                let _restore = BootWorkGuard::enter();
+                assert_eq!(boot_gate_snapshot().0, base + 2);
+            }
+            assert_eq!(boot_gate_snapshot().0, base + 1);
+        }
+        assert_eq!(boot_gate_snapshot().0, base);
+        // 패닉으로 끝난 부팅 작업도 관문을 영구히 닫아 두지 않는다(되감기 Drop).
+        let r = std::panic::catch_unwind(|| {
+            let _g = BootWorkGuard::enter();
+            panic!("W-2 결정 A 가드 되감기 검체 — 의도된 패닉");
+        });
+        assert!(r.is_err());
+        assert_eq!(boot_gate_snapshot().0, base);
+    }
+
+    /// ★CEO 조건 (가) 회귀 핀: 끝나지 않는 부팅 작업이 있어도 관문은 상한 뒤 **반드시** 열린다(fail-open) —
+    /// 닫힌 채 굳으면 툴바 [완전 초기화]가 영구 잠김이 된다.
+    #[test]
+    fn boot_gate_fails_open_after_the_cap_even_if_a_boot_task_never_ends() {
+        use std::time::Duration;
+        let cap = BOOT_GATE_FAIL_OPEN;
+        assert!(reset_blocked_by_boot(1, cap - Duration::from_millis(1)).is_some(), "상한 직전까지는 닫혀 있다");
+        assert_eq!(reset_blocked_by_boot(1, cap), None, "상한에서 연다");
+        assert_eq!(reset_blocked_by_boot(7, cap * 3), None, "멈춘 작업이 여럿이어도 연다");
+        // 상한은 정상 부팅의 가장 긴 경로(setup 데몬 재시도 20회×15초)보다 길어야 정상 부팅 중에 열리지 않는다.
+        assert!(cap > Duration::from_secs(20 * 15));
+    }
+
+    /// ★W-2 결정 A 배선 핀: 관문은 **실제 부팅 기계**에 무장돼 있어야 뜻이 있다(배선이 빠지면 관문은 늘 열려
+    /// 있고 위 가드 테스트는 초록인 채로 무의미해진다). 같은 파일의 factory_reset_execute 트립와이어와 같은
+    /// 방식으로 소스 구조를 잰다: setup·조직 복원은 spawn **전에**, 업데이트 팩 반영은 init-pack **전에** 가드를
+    /// 잡고, 초기화 실행은 데몬 정지 **전에** 관문을 본다. ★W-3-a: setup 의 온보딩 판정에는 훅 실재 확인이
+    /// 배선돼 있어야 한다(마커만 믿는 판정으로의 회귀 차단).
+    #[test]
+    fn boot_work_gate_is_armed_on_every_boot_task_and_checked_before_reset() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("main.rs 를 읽지 못했다({}): {e}", path.display()));
+        // 이 테스트 자신의 문자열에 걸리지 않도록 테스트 모듈 앞(본문)만 본다.
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let seg = |start: &str, end: &str| -> &str {
+            let s = body.find(start).unwrap_or_else(|| panic!("`{start}` 소실 — 배선 핀 재배선 필요"));
+            let rest = &body[s..];
+            &rest[..rest.find(end).unwrap_or(rest.len())]
+        };
+        let before = |seg: &str, first: &str, then: &str, what: &str| {
+            let a = seg.find(first).unwrap_or_else(|| panic!("{what}: `{first}` 없음"));
+            let b = seg.find(then).unwrap_or_else(|| panic!("{what}: `{then}` 없음"));
+            assert!(a < b, "{what}: `{first}` 가 `{then}` 보다 먼저 와야 한다");
+        };
+        let setup = seg(".setup(|app| {", ".run(tauri::generate_context!())");
+        before(setup, "BootWorkGuard::enter()", "tauri::async_runtime::spawn(", "setup 부팅 태스크");
+        let restore = seg("fn spawn_org_restore(", "\n}\n");
+        before(restore, "BootWorkGuard::enter()", "tauri::async_runtime::spawn(", "조직 복원");
+        let apply = seg("fn maybe_apply_pending_update(", "\n}\n");
+        before(apply, "BootWorkGuard::enter()", "sealed_sidecar_cys(", "업데이트 팩 반영");
+        let exec = seg("async fn factory_reset_execute(", "\n#[tauri::command]");
+        let gate = "boot_gate_refusal()";
+        before(exec, gate, "stop_daemons_and_unregister", "초기화 실행");
+        before(exec, gate, "spawn_blocking", "초기화 실행");
+        // ★W-3-a(R3-B1) + W-4-a: 온보딩 계획은 마커만이 아니라 실제 홈·팩의 훅 관측(3상태)을 입력으로 받는다.
+        assert!(
+            seg("let onboard_seen = ", ";").contains("observe_gui_hooks()")
+                && seg("let (onboard_plan, onboard_unrecorded) = gui_onboard_plan_under(", ");").contains("&onboard_seen")
+                && seg("fn observe_gui_hooks()", "\n}\n")
+                    .contains("observe_gui_hooks_under(&cys::home_dir(), &cys::pack::pack_dir())"),
+            "setup 의 온보딩 계획에 실제 홈·팩의 훅 관측이 빠졌다 — 마커만 믿는 판정으로 회귀(R3-B1)"
+        );
+        // ★W-4-b: 판정 불가 시도 기록은 실제 온보딩 직전에 쓴다(맥·윈도우 둘 다).
+        before(setup, "record_gui_onboard_attempt(", "maybe_macos_onboard()", "시도 기록 → macOS 온보딩");
+        before(setup, "record_gui_onboard_attempt(", "maybe_windows_onboard()", "시도 기록 → Windows 온보딩");
+        // ★W-5-a: 온보딩 여부는 시도 기록 **뒤의** 계획으로 정한다 — 기록을 남기지 못한 기동은 Capped 로 바뀌어 시도하지 않는다.
+        before(setup, "record_gui_onboard_attempt(", "let needs_onboard", "시도 기록 결과 → 온보딩 여부");
+        // ★W-4-c: 안내는 저장소에 먼저 쌓고 emit 한다 — 프런트의 listen 직후 pull 이 emit-before-listen 유실을 회수하는 전제.
+        before(seg("fn push_onboard_notice(", "\n}\n"), "v.push((kind", "app.emit(\"onboard-notice\"", "안내 저장 → emit");
+        // CEO 조건 (나): 프런트가 거부를 '잠시 후 다시'로 알아보는 머리 문구가 두 언어에서 같다.
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/resetconfirm.ts");
+        let ui_src = std::fs::read_to_string(&ui)
+            .unwrap_or_else(|e| panic!("resetconfirm.ts 를 읽지 못했다({}): {e}", ui.display()));
+        let want = format!("export const BOOT_GATE_REFUSAL_LEAD = \"{BOOT_GATE_REFUSAL_LEAD}\";");
+        assert!(ui_src.contains(&want), "프런트 거부 머리 문구가 백엔드와 다르다 — 기대: {want}");
+    }
+
+    #[test]
     fn needs_gui_onboard_only_skips_on_exact_version_match() {
-        assert!(needs_gui_onboard(None, "0.12.53"), "마커 부재 = 온보딩(신선·직전 실패)");
-        assert!(!needs_gui_onboard(Some("0.12.53"), "0.12.53"), "정확 일치 = 스킵");
-        assert!(!needs_gui_onboard(Some("0.12.53\n"), "0.12.53"), "개행 trim 후 일치 = 스킵");
-        assert!(needs_gui_onboard(Some("0.12.52"), "0.12.53"), "구버전 = 온보딩(업그레이드)");
-        assert!(needs_gui_onboard(Some("garbage"), "0.12.53"), "손상 = 온보딩(fail-open)");
+        let (yes, no) = (&HookPresence::Installed, &HookPresence::Missing);
+        assert!(needs_gui_onboard(None, "0.12.53", yes), "마커 부재 = 온보딩(신선·직전 실패)");
+        assert!(!needs_gui_onboard(Some("0.12.53"), "0.12.53", yes), "정확 일치 = 스킵");
+        assert!(!needs_gui_onboard(Some("0.12.53\n"), "0.12.53", yes), "개행 trim 후 일치 = 스킵");
+        assert!(needs_gui_onboard(Some("0.12.52"), "0.12.53", yes), "구버전 = 온보딩(업그레이드)");
+        assert!(needs_gui_onboard(Some("garbage"), "0.12.53", yes), "손상 = 온보딩(fail-open)");
+        // ★W-3-a: 마커가 맞아도 훅이 실제로 없으면 온보딩한다(마커 ≠ 실재).
+        assert!(needs_gui_onboard(Some("0.12.53"), "0.12.53", no), "마커 일치 + 훅 부재 = 온보딩(자가 치유)");
+        // ★W-4-a: 판정 불가도 설치됨이 아니다(몇 번 돌릴지는 plan_gui_onboard — 상한 뒤에도 '설치됨'으로 바뀌지 않는다).
+        let undet = HookPresence::Undeterminable("x".into());
+        assert!(needs_gui_onboard(Some("0.12.53"), "0.12.53", &undet), "마커 일치 + 판정 불가 = 설치됨 아님");
+    }
+
+    /// ★W-3-a: 온보딩 결과(각성 훅)의 실재 확인은 `cys init-pack` 이 등록하는 대상·명령과 같아야 한다 — 정상 설치는
+    /// '설치됨'(평시 부트에 온보딩이 돌지 않는다), 완전 초기화의 실제 훅 해제 뒤에는 '없음'.
+    #[test]
+    fn gui_hooks_installed_follows_what_init_pack_registers() {
+        let home = std::env::temp_dir().join(format!("cys-w3-hooks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let pack = home.join(".cys/pack");
+        assert!(!hooks_installed(&home, &pack), "팩 훅 스크립트 부재 = 설치 안 됨");
+        std::fs::create_dir_all(pack.join("hooks")).unwrap();
+        for h in cys::pack::AWAKENING_HOOKS.iter() {
+            std::fs::write(pack.join("hooks").join(h.script), "#!/bin/sh\n").unwrap();
+        }
+        // 프로필이 없으면 init-pack 이 만드는 ~/.claude/settings.json 이 대상이다 — 아직 없다.
+        assert!(!hooks_installed(&home, &pack), "등록 대상 settings.json 부재 = 설치 안 됨");
+        let main_settings = home.join(".claude/settings.json");
+        std::fs::create_dir_all(main_settings.parent().unwrap()).unwrap();
+        cys::pack::merge_desired_hooks(&main_settings, &pack, &cys::pack::AWAKENING_HOOKS).unwrap();
+        assert!(hooks_installed(&home, &pack), "init-pack 과 같은 등록 = 설치됨");
+        let cur = env!("CARGO_PKG_VERSION");
+        assert!(
+            !needs_gui_onboard(Some(cur), cur, &observe_gui_hooks_under(&home, &pack).presence()),
+            "정상 설치 + 현재 버전 마커 = 온보딩 안 함(평시 부트 비용 회귀 금지)"
+        );
+        // 프로필이 하나 더 생기면 init-pack 은 거기에도 등록한다 — 거기 없으면 설치 미완.
+        std::fs::create_dir_all(home.join(".claude-2")).unwrap();
+        assert!(!hooks_installed(&home, &pack), "새 프로필에 훅 없음 = 설치 미완");
+        cys::pack::merge_desired_hooks(&home.join(".claude-2/settings.json"), &pack, &cys::pack::AWAKENING_HOOKS)
+            .unwrap();
+        assert!(hooks_installed(&home, &pack));
+        // 완전 초기화가 쓰는 실제 훅 해제 함수가 걷어내면 '없음'.
+        cys::factory_reset::strip_cys_from_settings(&main_settings, &home.join(".cys")).unwrap();
+        assert!(!hooks_installed(&home, &pack), "초기화의 훅 해제 뒤 = 설치 안 됨");
+        // 부서 팩은 init-pack 이 개인 프로필에 훅을 쓰지 않는다 — 판정 대상 아님.
+        assert!(hooks_installed(&home, &home.join(".cys/pack-dept-x")));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// ★W-3 게이트 9 — reviewer-codex R3-B1 검체의 동형 픽스처: 온보딩이 init-pack 을 마쳐 훅이 등록된 상태.
+    fn b1_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let home = std::env::temp_dir().join(format!("cys-w3-b1{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let pack = home.join(".cys/pack");
+        std::fs::create_dir_all(pack.join("hooks")).unwrap();
+        for h in cys::pack::AWAKENING_HOOKS.iter() {
+            std::fs::write(pack.join("hooks").join(h.script), "#!/bin/sh\n").unwrap();
+        }
+        let settings = home.join(".claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        cys::pack::merge_desired_hooks(&settings, &pack, &cys::pack::AWAKENING_HOOKS).unwrap();
+        assert!(hooks_installed(&home, &pack), "검체 전제: 온보딩이 훅 등록까지 마쳤다");
+        let marker = home.join(".cys/.gui-onboarded");
+        (home, pack, settings, marker)
+    }
+
+    /// 두 검체의 끝 상태 판정 — '마커는 현재 버전 · 훅은 없음'. 마커만 믿던 판정(7f1cf1f 까지의 needs_gui_onboard)은
+    /// 다음 기동 온보딩을 건너뛴다(= 훅 없는 영구 반쪽 · 위험 ③). W-3-a 판정은 온보딩을 다시 돌린다(= 자가 치유).
+    fn b1_assert_end_state_heals(home: &std::path::Path, pack: &std::path::Path, marker: &std::path::Path, tag: &str) {
+        let cur = env!("CARGO_PKG_VERSION");
+        let value = std::fs::read_to_string(marker).unwrap();
+        assert_eq!(value.trim(), cur, "B1({tag}) 끝 상태: 현재 버전 마커");
+        assert!(!hooks_installed(home, pack), "B1({tag}) 끝 상태: 훅 없음");
+        let marker_only_would_skip = value.trim() == cur;
+        assert!(marker_only_would_skip, "B1({tag}) 반사실이 서지 않는다 — 검체가 위험 상태를 만들지 못했다");
+        assert!(
+            needs_gui_onboard(Some(&value), cur, &observe_gui_hooks_under(home, pack).presence()),
+            "B1({tag}) 끝 상태가 다음 기동에 치유되지 않는다"
+        );
+        println!(
+            "B1({tag}) 끝 상태: 마커={} · 훅 없음 · 마커만 믿던 판정=온보딩 건너뜀(위험 ③) · W-3-a 판정=온보딩(자가 치유)",
+            value.trim()
+        );
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// ★게이트 9-(a) R3-B1 (a) 동형: 온보딩이 init-pack 을 마치고 마커를 쓰기 직전에 멈춘 사이 완전 초기화가 마커를
+    /// 격리하고 훅을 걷어내고 팩을 격리한다 → 온보딩이 재개돼 현재 버전 마커를 다시 쓴다(A4 를 제거했으므로 가로막는
+    /// 래치가 없다). 초기화의 훅 해제는 실제 함수(strip_cys_from_settings), 격리는 rename 모형.
+    #[test]
+    fn b1_race_a_marker_rewritten_after_reset_heals_on_next_boot() {
+        let (home, pack, settings, marker) = b1_fixture("a");
+        std::fs::write(&marker, "0.14.33").unwrap(); // 업그레이드 온보딩 진행 중(옛 버전 마커)
+        let q = home.join("quarantine");
+        std::fs::create_dir_all(&q).unwrap();
+        std::fs::rename(&marker, q.join(".gui-onboarded")).unwrap();
+        cys::factory_reset::strip_cys_from_settings(&settings, &home.join(".cys")).unwrap();
+        std::fs::rename(&pack, q.join("pack")).unwrap();
+        std::fs::write(&marker, env!("CARGO_PKG_VERSION")).unwrap(); // setup 의 마커 기록과 같은 동작
+        b1_assert_end_state_heals(&home, &pack, &marker, "a");
+    }
+
+    /// ★게이트 9-(b) R3-B1 (b) 동형: 첫 온보딩 중(마커 없음) 초기화가 목록을 뽑아 계획을 세운 뒤 온보딩이 마커를 쓴다
+    /// → 초기화는 계획에 있는 것만 격리하고 훅을 걷어낸다 → 계획 밖 마커가 남는다.
+    #[test]
+    fn b1_race_b_marker_outside_reset_plan_heals_on_next_boot() {
+        let (home, pack, settings, marker) = b1_fixture("b");
+        let plan: Vec<std::path::PathBuf> = std::fs::read_dir(home.join(".cys"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert!(!plan.contains(&marker), "계획 수립 시점에는 마커가 없다");
+        std::fs::write(&marker, env!("CARGO_PKG_VERSION")).unwrap(); // 계획 수립 뒤 온보딩이 마커를 쓴다
+        let q = home.join("quarantine");
+        std::fs::create_dir_all(&q).unwrap();
+        for item in &plan {
+            std::fs::rename(item, q.join(item.file_name().unwrap())).unwrap();
+        }
+        cys::factory_reset::strip_cys_from_settings(&settings, &home.join(".cys")).unwrap();
+        assert!(marker.exists(), "계획 밖이라 격리되지 않은 마커");
+        b1_assert_end_state_heals(&home, &pack, &marker, "b");
+    }
+
+    /// ★W-4 공용 — 관측 집계가 `Installed` 인가(W-3 테스트의 '설치됨' 단언을 3상태 위에서 그대로 읽는다).
+    fn hooks_installed(home: &std::path::Path, pack: &std::path::Path) -> bool {
+        observe_gui_hooks_under(home, pack).presence() == HookPresence::Installed
+    }
+
+    fn w4_kind(p: &HookPresence) -> &'static str {
+        match p {
+            HookPresence::Installed => "Installed",
+            HookPresence::Missing => "Missing",
+            HookPresence::Undeterminable(_) => "Undeterminable",
+        }
+    }
+
+    /// ★W-4 공용 픽스처 — 팩 훅 스크립트만 갖춘 빈 홈(프로필·마커 없음 = 신선 머신).
+    fn w4_home(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let home = std::env::temp_dir().join(format!("cys-w4-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let pack = home.join(".cys/pack");
+        std::fs::create_dir_all(pack.join("hooks")).unwrap();
+        for h in cys::pack::AWAKENING_HOOKS.iter() {
+            std::fs::write(pack.join("hooks").join(h.script), "#!/bin/sh\n").unwrap();
+        }
+        (home, pack)
+    }
+
+    /// init-pack 의 훅 단계와 같은 일(src/bin/cys.rs run_init_pack — 대상 = 개인 프로필 전부 · 없으면 ~/.claude/settings.json ·
+    /// 대상마다 부모 폴더를 만들고 merge_desired_hooks · 하나라도 실패하면 rc=1). 팩 반영(install_staged)은 픽스처가 갖췄다.
+    fn w4_init_pack_hooks(home: &std::path::Path, pack: &std::path::Path) -> Result<(), String> {
+        let mut dirs = cys::pack::personal_profile_dirs_under(home);
+        if dirs.is_empty() {
+            dirs.push(home.join(".claude"));
+        }
+        let mut errs = Vec::new();
+        for d in dirs {
+            let _ = std::fs::create_dir_all(&d);
+            if let Err(e) = cys::pack::merge_desired_hooks(&d.join("settings.json"), pack, &cys::pack::AWAKENING_HOOKS) {
+                errs.push(e);
+            }
+        }
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(errs.join(" | "))
+        }
+    }
+
+    /// GUI 기동 한 번을 setup 과 같은 순서로 돈다: 마커 읽기 → 관측 → 계획 → (실제 시도 직전) 시도 기록(★W-5-a: 남기지 못하면 그
+    /// 기동은 Capped) → 기록 뒤의 계획으로 온보딩(= init-pack 훅 단계) → 성공이면 마커 → 재관측 → 안내. 반환 = (최종 계획, 기동 시
+    /// 관측 집계, 안내, 온보딩 결과(돌았을 때만)).
+    fn w4_boot(
+        home: &std::path::Path,
+        pack: &std::path::Path,
+    ) -> (GuiOnboardPlan, HookPresence, Vec<(&'static str, String)>, Option<Result<(), String>>) {
+        let cur = env!("CARGO_PKG_VERSION");
+        let marker_path = home.join(".cys/.gui-onboarded");
+        let attempts_path = home.join(".cys/.gui-onboard-attempts");
+        let marker = std::fs::read_to_string(&marker_path).ok();
+        let seen = observe_gui_hooks_under(home, pack);
+        let (plan, unrecorded) = gui_onboard_plan_under(&seen, marker.as_deref(), &attempts_path, cur);
+        let (plan, unrecorded) = record_gui_onboard_attempt(&attempts_path, cur, &seen, plan, unrecorded);
+        let needs = matches!(plan, GuiOnboardPlan::Run | GuiOnboardPlan::RunCounted(_));
+        let result = needs.then(|| w4_init_pack_hooks(home, pack));
+        if result == Some(Ok(())) {
+            std::fs::write(&marker_path, cur).unwrap();
+        }
+        let after = if needs { observe_gui_hooks_under(home, pack) } else { seen.clone() };
+        let notices = gui_onboard_notices(plan, &seen, &after, marker.is_some(), unrecorded.as_deref());
+        (plan, seen.presence(), notices, result)
+    }
+
+    /// ★W-4-b: 계획 진리표 + 시도 기록의 '같은 상태' 규칙(버전·사유가 같을 때만 이어 센다 · 손상·부재 = 0).
+    #[test]
+    fn w4_plan_and_attempt_record_rules() {
+        let undet = HookPresence::Undeterminable("a — b".into());
+        let max = GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS;
+        assert_eq!(plan_gui_onboard(false, &HookPresence::Installed, 0), GuiOnboardPlan::Skip);
+        assert_eq!(plan_gui_onboard(true, &HookPresence::Installed, 9), GuiOnboardPlan::Run, "업그레이드는 상한과 무관");
+        assert_eq!(plan_gui_onboard(true, &HookPresence::Missing, 9), GuiOnboardPlan::Run, "고칠 수 있는 부재는 상한과 무관");
+        assert_eq!(plan_gui_onboard(true, &undet, 0), GuiOnboardPlan::RunCounted(1));
+        assert_eq!(plan_gui_onboard(true, &undet, max - 1), GuiOnboardPlan::RunCounted(max));
+        assert_eq!(plan_gui_onboard(true, &undet, max), GuiOnboardPlan::Capped, "상한 = 멈춤");
+        assert_eq!(plan_gui_onboard(true, &undet, max + 7), GuiOnboardPlan::Capped);
+        let rec = r#"{"version":"1.0.0","reason":"a — b","attempts":2}"#;
+        assert_eq!(prior_gui_onboard_attempts(Some(rec), "1.0.0", "a — b"), 2);
+        assert_eq!(prior_gui_onboard_attempts(Some(rec), "1.0.1", "a — b"), 0, "버전이 바뀌면 초기화");
+        assert_eq!(prior_gui_onboard_attempts(Some(rec), "1.0.0", "a — c"), 0, "사유가 바뀌면 초기화");
+        assert_eq!(prior_gui_onboard_attempts(Some("{bad"), "1.0.0", "a — b"), 0, "손상 기록 = 0");
+        assert_eq!(prior_gui_onboard_attempts(None, "1.0.0", "a — b"), 0, "기록 없음 = 0");
+    }
+
+    /// ★W-4-a: 분류는 init-pack 의 병합기가 **실제로 하는 일**과 같다 — 표의 각 줄을 실제 `merge_desired_hooks` 로 확인한다:
+    /// `Missing` 이면 병합이 성공해 설치됨이 되고, `Undeterminable` 이면 병합이 거부한다(= 온보딩이 고칠 수 없는 상태).
+    #[cfg(unix)]
+    #[test]
+    fn w4_classification_matches_what_the_installer_does() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (home, pack) = w4_home("classify");
+        let reg = home.join("registered.json");
+        cys::pack::merge_desired_hooks(&reg, &pack, &cys::pack::AWAKENING_HOOKS).unwrap();
+        let write = |p: &std::path::Path, body: &str| std::fs::write(p, body).unwrap();
+        type Make<'a> = Box<dyn Fn(&std::path::Path) + 'a>;
+        let cases: Vec<(&str, Make<'_>, &str)> = vec![
+            ("파일 없음", Box::new(|_| {}), "Missing"),
+            ("빈 파일", Box::new(|p| write(p, "  \n")), "Missing"),
+            ("빈 객체", Box::new(|p| write(p, "{}")), "Missing"),
+            (
+                "다른 훅만",
+                Box::new(|p| write(p, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"x"}]}]}}"#)),
+                "Missing",
+            ),
+            ("등록됨", Box::new(|p| {
+                std::fs::copy(&reg, p).unwrap();
+            }), "Installed"),
+            ("손상 JSON", Box::new(|p| write(p, "{bad")), "Undeterminable"),
+            ("루트가 배열", Box::new(|p| write(p, "[]")), "Undeterminable"),
+            ("hooks 가 배열", Box::new(|p| write(p, r#"{"hooks":[]}"#)), "Undeterminable"),
+            ("hooks.SessionStart 가 객체", Box::new(|p| write(p, r#"{"hooks":{"SessionStart":{}}}"#)), "Undeterminable"),
+            ("읽기 불가", Box::new(|p| {
+                write(p, "{}");
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+            }), "Undeterminable"),
+            ("등재 없는 symlink", Box::new(|p| {
+                let d = p.with_extension("dest");
+                write(&d, "{}");
+                symlink(&d, p).unwrap();
+            }), "Undeterminable"),
+            ("대상 없는 symlink", Box::new(|p| symlink(p.with_extension("nowhere"), p).unwrap()), "Undeterminable"),
+            ("등재된 symlink", Box::new(|p| symlink(&reg, p).unwrap()), "Installed"),
+        ];
+        for (i, (name, make, want)) in cases.iter().enumerate() {
+            let dir = home.join(format!("case{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join("settings.json");
+            make(&p);
+            if *name == "읽기 불가" && std::fs::read_to_string(&p).is_ok() {
+                println!("w4 분류 {name}: 권한 000 이 읽기를 막지 못한다(root 실행) — 건너뜀");
+                continue;
+            }
+            let got = classify_hook_settings(&p, &pack);
+            assert_eq!(w4_kind(&got), *want, "{name}: {got:?}");
+            let merged = cys::pack::merge_desired_hooks(&p, &pack, &cys::pack::AWAKENING_HOOKS);
+            match *want {
+                "Missing" => {
+                    assert!(merged.is_ok(), "{name}: Missing 은 병합기가 고친다 — {merged:?}");
+                    assert_eq!(classify_hook_settings(&p, &pack), HookPresence::Installed, "{name}: 병합 뒤 설치됨");
+                }
+                "Undeterminable" => assert!(merged.is_err(), "{name}: Undeterminable 은 병합기가 거부한다 — {merged:?}"),
+                _ => {}
+            }
+            println!(
+                "w4 분류 {name}: {got:?} · 병합기 {}",
+                match &merged {
+                    Ok(_) => "성공".to_string(),
+                    Err(e) => format!("거부({e})"),
+                }
+            );
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// ★W-4-a 집계: 판정 불가 프로필 하나가 **다른 프로필의 복구를 막지 않는다** — 고칠 수 있는 부재가 있으면 그 기동은 세지
+    /// 않고 돌려서 고친다(Missing 우선). 고칠 것이 없어진 뒤부터 판정 불가 상한이 센다. 상한 뒤에 새 프로필이 생겨도 복구된다.
+    #[test]
+    fn w4_undeterminable_profile_does_not_block_repair_of_others() {
+        let (home, pack) = w4_home("mixed");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), "{bad").unwrap();
+        std::fs::create_dir_all(home.join(".claude-2")).unwrap();
+        let (p1, pr1, _, r1) = w4_boot(&home, &pack);
+        assert_eq!((p1, w4_kind(&pr1)), (GuiOnboardPlan::Run, "Missing"), "고칠 수 있는 부재가 있으면 세지 않고 돈다");
+        assert!(matches!(r1, Some(Err(_))), "손상 프로필은 여전히 거부 — {r1:?}");
+        assert_eq!(classify_hook_settings(&home.join(".claude-2/settings.json"), &pack), HookPresence::Installed, "다른 프로필은 이번 기동에 복구");
+        assert_eq!(w4_boot(&home, &pack).0, GuiOnboardPlan::RunCounted(1));
+        let (p3, _, n3, _) = w4_boot(&home, &pack);
+        assert_eq!(p3, GuiOnboardPlan::RunCounted(GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS));
+        assert!(n3.iter().any(|(k, _)| *k == "capped"), "상한 기동에 안내");
+        assert_eq!(w4_boot(&home, &pack).0, GuiOnboardPlan::Capped);
+        std::fs::create_dir_all(home.join(".claude-3")).unwrap();
+        assert_eq!(w4_boot(&home, &pack).0, GuiOnboardPlan::Run, "상한이어도 새로 생긴 부재는 고친다");
+        assert_eq!(classify_hook_settings(&home.join(".claude-3/settings.json"), &pack), HookPresence::Installed);
+        assert_eq!(w4_boot(&home, &pack).0, GuiOnboardPlan::Capped, "같은 사유는 다시 상한(시도 기록 유지)");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// ★게이트 12 — reviewer-codex R4-M1 검체(hooks-probe 동형): 온보딩을 마친 홈(마커 = 현재 버전 · 훅 등록)에서 개인 프로필
+    /// settings 를 ① 손상 JSON ② 읽기 불가 ③ 등재 없는 symlink 로 만든 뒤 5번 기동한다. 상한 없는 판정(22b59ff)이었다면 5번
+    /// 모두 온보딩한다(반사실 — 같은 관측으로 센다 · 리뷰어 hooks-probe.log 3/3 과 같은 기제). 이제: 실제 시도 = 상한 · 매 기동
+    /// 관측은 판정 불가(설치됨으로 뭉개지지 않음) · 상한 기동부터 매 기동 안내(문제 파일 경로 포함) · 파일을 고치면 기록이
+    /// 초기화돼 한 번 복구(등록이 살아 있으면 0회) 뒤 안정.
+    #[cfg(unix)]
+    #[test]
+    fn gate12_r4_m1_undeterminable_stops_within_cap_and_is_never_installed() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let cur = env!("CARGO_PKG_VERSION");
+        let max = GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS;
+        for scenario in ["corrupt", "unreadable", "symlink"] {
+            let (home, pack) = w4_home(&format!("g12-{scenario}"));
+            let (p0, _, n0, r0) = w4_boot(&home, &pack);
+            assert_eq!((p0, r0, n0.len()), (GuiOnboardPlan::Run, Some(Ok(())), 0), "{scenario}: 전제 — 신선 온보딩 성공·안내 없음");
+            assert_eq!(w4_boot(&home, &pack).0, GuiOnboardPlan::Skip, "{scenario}: 전제 — 평시 기동은 온보딩 안 함");
+            let settings = home.join(".claude/settings.json");
+            match scenario {
+                "corrupt" => std::fs::write(&settings, "{bad").unwrap(),
+                "unreadable" => std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o000)).unwrap(),
+                _ => {
+                    let dest = home.join("dotfile.json");
+                    std::fs::write(&dest, "{}").unwrap();
+                    std::fs::remove_file(&settings).unwrap();
+                    symlink(&dest, &settings).unwrap();
+                }
+            }
+            if scenario == "unreadable" && std::fs::read_to_string(&settings).is_ok() {
+                println!("gate12 unreadable: 권한 000 이 읽기를 막지 못한다(root 실행) — 이 검체는 판정 불가를 만들 수 없어 건너뜀");
+                std::fs::remove_dir_all(&home).ok();
+                continue;
+            }
+            let (mut attempts, mut old_attempts) = (0u32, 0u32);
+            for boot in 1..=5u32 {
+                let marker = std::fs::read_to_string(home.join(".cys/.gui-onboarded")).ok();
+                let (plan, presence, notices, result) = w4_boot(&home, &pack);
+                assert_eq!(w4_kind(&presence), "Undeterminable", "{scenario} boot={boot}: 판정 불가여야 한다 — {presence:?}");
+                assert_eq!(marker.as_deref().map(str::trim), Some(cur), "{scenario}: 마커는 현재 버전 그대로(= R4-M1 전제)");
+                old_attempts += u32::from(needs_gui_onboard(marker.as_deref(), cur, &presence));
+                if let Some(r) = &result {
+                    attempts += 1;
+                    assert!(r.is_err(), "{scenario} boot={boot}: 병합기가 거부해야 한다(검체가 고칠 수 없는 상태) — {r:?}");
+                }
+                let capped = notices.iter().find(|(k, _)| *k == "capped").map(|(_, m)| m.clone());
+                assert_eq!(capped.is_some(), boot >= max, "{scenario} boot={boot}: 상한 안내는 상한 기동부터 매 기동");
+                if let Some(m) = &capped {
+                    assert!(m.contains(&settings.display().to_string()), "{scenario}: 안내에 문제 파일 경로 — {m}");
+                }
+                println!(
+                    "gate12 {scenario} boot={boot} 관측={} 계획={plan:?} 시도={} installer={} 안내={}",
+                    w4_kind(&presence),
+                    if result.is_some() { "예" } else { "아니오" },
+                    result.as_ref().map_or("-".to_string(), |r| format!("{r:?}")),
+                    capped.as_deref().unwrap_or("-")
+                );
+            }
+            assert_eq!(attempts, max, "{scenario}: 5기동 중 실제 시도 = 상한 {max}");
+            assert_eq!(old_attempts, 5, "{scenario}: 반사실 — 상한 없는 판정(22b59ff)은 5기동 모두 온보딩");
+            println!("gate12 {scenario}: 실제 시도 {attempts}/5 (상한 {max}) · 상한 없는 판정(22b59ff 기제) {old_attempts}/5");
+            match scenario {
+                "corrupt" => std::fs::write(&settings, "{}").unwrap(),
+                "unreadable" => std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap(),
+                _ => std::fs::remove_file(&settings).unwrap(),
+            }
+            let (pf, _, nf, rf) = w4_boot(&home, &pack);
+            let want = if scenario == "unreadable" { GuiOnboardPlan::Skip } else { GuiOnboardPlan::Run };
+            assert_eq!(pf, want, "{scenario}: 고친 뒤 첫 기동 — 기록 초기화(등록이 살아 있으면 0회)");
+            assert!(rf.is_none() || rf == Some(Ok(())), "{scenario}: 고친 뒤 복구 성공 — {rf:?}");
+            assert!(!home.join(".cys/.gui-onboard-attempts").exists(), "{scenario}: 판정 불가가 사라지면 시도 기록 삭제");
+            assert!(hooks_installed(&home, &pack), "{scenario}: 고친 뒤 설치됨");
+            for _ in 0..2 {
+                assert_eq!(w4_boot(&home, &pack).0, GuiOnboardPlan::Skip, "{scenario}: 복구 뒤 안정");
+            }
+            println!(
+                "gate12 {scenario} 고친 뒤: 계획={pf:?} installer={rf:?} 안내={:?} → 이후 2기동 Skip",
+                nf.iter().map(|(k, _)| *k).collect::<Vec<_>>()
+            );
+            std::fs::remove_dir_all(&home).ok();
+        }
+    }
+
+    /// ★게이트 13 — 정상 경로 회귀 0(hooks-probe 동형): 온보딩을 마친 홈에서 ① settings 삭제 ② 초기화의 실제 훅 해제 함수로
+    /// 등재 제거(수동 삭제와 같은 끝 상태) → 다음 기동 1회 복구 + 복구 안내(W-4-d) 뒤 안정 ③ timeout 만 바뀐 등록 → 0회.
+    /// 정상 경로에는 시도 기록·상한 안내가 생기지 않는다.
+    #[test]
+    fn gate13_missing_and_manual_delete_recover_once_then_stable() {
+        for scenario in ["missing", "manual-delete", "timeout"] {
+            let (home, pack) = w4_home(&format!("g13-{scenario}"));
+            let (p0, _, n0, r0) = w4_boot(&home, &pack);
+            assert_eq!((p0, r0, n0.len()), (GuiOnboardPlan::Run, Some(Ok(())), 0), "{scenario}: 전제 — 신선 온보딩 성공·안내 없음");
+            let settings = home.join(".claude/settings.json");
+            match scenario {
+                "missing" => std::fs::remove_file(&settings).unwrap(),
+                "manual-delete" => {
+                    cys::factory_reset::strip_cys_from_settings(&settings, &home.join(".cys")).unwrap();
+                }
+                _ => {
+                    let mut v: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+                    for (_, e) in v["hooks"].as_object_mut().unwrap() {
+                        for m in e.as_array_mut().unwrap() {
+                            for h in m["hooks"].as_array_mut().unwrap() {
+                                h["timeout"] = serde_json::json!(1);
+                            }
+                        }
+                    }
+                    std::fs::write(&settings, v.to_string()).unwrap();
+                }
+            }
+            let mut attempts = 0;
+            for boot in 1..=4u32 {
+                let (plan, presence, notices, result) = w4_boot(&home, &pack);
+                if let Some(r) = &result {
+                    attempts += 1;
+                    assert!(r.is_ok(), "{scenario} boot={boot}: 복구 성공 — {r:?}");
+                }
+                let restored = notices.iter().find(|(k, _)| *k == "restored").map(|(_, m)| m.clone());
+                assert_eq!(restored.is_some(), boot == 1 && scenario != "timeout", "{scenario} boot={boot}: 복구 안내는 복구한 기동에만");
+                if let Some(m) = &restored {
+                    assert!(m.contains(&settings.display().to_string()), "{scenario}: 복구 안내에 파일 경로 — {m}");
+                }
+                assert!(notices.iter().all(|(k, _)| *k != "capped"), "{scenario}: 정상 경로에 상한 안내 없음");
+                println!(
+                    "gate13 {scenario} boot={boot} 관측={} 계획={plan:?} installer={} 안내={}",
+                    w4_kind(&presence),
+                    result.as_ref().map_or("-".to_string(), |r| format!("{r:?}")),
+                    restored.as_deref().unwrap_or("-")
+                );
+            }
+            let want = if scenario == "timeout" { 0 } else { 1 };
+            assert_eq!(attempts, want, "{scenario}: 실제 시도 수");
+            assert!(!home.join(".cys/.gui-onboard-attempts").exists(), "{scenario}: 정상 경로에 시도 기록 없음");
+            println!("gate13 {scenario}: 실제 시도 {attempts}회 → 이후 안정(Skip)");
+            std::fs::remove_dir_all(&home).ok();
+        }
+    }
+
+    // ── ★W-5(R5-M1): 시도 기록을 기억할 수 없으면 반복하지 않는다 — 게이트 14·15·16 ──
+
+    /// ★W-5 공용 — 온보딩을 마친 홈(마커 = 현재 버전 · 훅 등록)에서 개인 프로필 settings 를 손상(`{bad`)시킨다 = R4-M1·R5-M1 전제.
+    fn w5_corrupt_home(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let (home, pack) = w4_home(tag);
+        let (p0, _, n0, r0) = w4_boot(&home, &pack);
+        assert_eq!((p0, r0, n0.len()), (GuiOnboardPlan::Run, Some(Ok(())), 0), "{tag}: 전제 — 신선 온보딩 성공·안내 없음");
+        let settings = home.join(".claude/settings.json");
+        std::fs::write(&settings, "{bad").unwrap();
+        (home, pack, settings)
+    }
+
+    /// ★W-5 공용 — `n` 번 기동하며 기동마다 한 줄씩 찍고 (계획, 관측, 실제 시도 여부, 상한 안내) 를 돌려준다. 단언은 부른 쪽이 전 기동을
+    /// 다 돈 **뒤에** 한다 — 수정 전 트리(음성 대조)에서도 전 기동이 로그에 남는다.
+    fn w5_boots(
+        tag: &str,
+        home: &std::path::Path,
+        pack: &std::path::Path,
+        n: u32,
+    ) -> Vec<(GuiOnboardPlan, HookPresence, bool, Option<String>)> {
+        (1..=n)
+            .map(|boot| {
+                let (plan, presence, notices, result) = w4_boot(home, pack);
+                let capped = notices.iter().find(|(k, _)| *k == "capped").map(|(_, m)| m.clone());
+                println!(
+                    "{tag} boot={boot} 관측={} 계획={plan:?} 시도={} installer={} 안내={}",
+                    w4_kind(&presence),
+                    if result.is_some() { "예" } else { "아니오" },
+                    result.as_ref().map_or("-".to_string(), |r| format!("{r:?}")),
+                    capped.as_deref().unwrap_or("-")
+                );
+                (plan, presence, result.is_some(), capped)
+            })
+            .collect()
+    }
+
+    /// ★W-5 공용 — 기록을 기억할 수 없던 기동들의 단언: 매 기동 관측 = 판정 불가(설치됨으로 뭉개지 않음) · 계획 = `Capped`(`Skip` 아님 ·
+    /// 시도 안 함) · 매 기동 안내(그 사실 `fact` + 기록 파일 경로 + 문제 파일 경로).
+    #[cfg(unix)]
+    fn w5_assert_stopped_with_notice(
+        tag: &str,
+        boots: &[(GuiOnboardPlan, HookPresence, bool, Option<String>)],
+        fact: &str,
+        rec: &std::path::Path,
+        settings: &std::path::Path,
+    ) {
+        for (i, (plan, presence, attempted, capped)) in boots.iter().enumerate() {
+            let boot = i + 1;
+            assert_eq!(w4_kind(presence), "Undeterminable", "{tag} boot={boot}: 설치됨으로 뭉개지 않는다 — {presence:?}");
+            assert_eq!(*plan, GuiOnboardPlan::Capped, "{tag} boot={boot}: 기억할 수 없으면 그 기동에서 멈춘다(Skip 아님)");
+            assert!(!attempted, "{tag} boot={boot}: 기억할 수 없으면 반복하지 않는다");
+            let m = capped.as_deref().unwrap_or_else(|| panic!("{tag} boot={boot}: 매 기동 안내가 있어야 한다"));
+            assert!(m.contains(fact), "{tag} boot={boot}: 안내에 '{fact}' — {m}");
+            assert!(m.contains(&rec.display().to_string()), "{tag}: 안내에 기록 파일 경로 — {m}");
+            assert!(m.contains(&settings.display().to_string()), "{tag}: 안내에 문제 파일 경로 — {m}");
+        }
+    }
+
+    /// ★W-5 공용 — 기록을 다시 읽고 쓸 수 있게 된 뒤: 기록된 수 `prior` 부터 이어 세어 상한에서 멈춘다(종전 안내 — 시도 기록 사유 없음).
+    /// 그다음 settings 를 고치면 1회 복구 뒤 안정 · 기록 삭제.
+    #[cfg(unix)]
+    fn w5_assert_recovers(tag: &str, home: &std::path::Path, pack: &std::path::Path, settings: &std::path::Path, prior: u32) {
+        let max = GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS;
+        let resumed = w5_boots(&format!("{tag} 기록 복구 뒤"), home, pack, max - prior + 1);
+        for (i, (plan, _, attempted, capped)) in resumed.iter().enumerate() {
+            let n = prior + i as u32 + 1;
+            let want = if n <= max { GuiOnboardPlan::RunCounted(n) } else { GuiOnboardPlan::Capped };
+            assert_eq!((*plan, *attempted), (want, n <= max), "{tag}: 기록 복구 뒤 {n}번째 — 기록된 수부터 이어 센다");
+            assert_eq!(capped.is_some(), n >= max, "{tag}: 상한 안내는 상한 기동부터");
+            if let Some(m) = capped {
+                assert!(!m.contains("시도 기록을"), "{tag}: 기록이 되면 종전 안내 — {m}");
+            }
+        }
+        std::fs::write(settings, "{}").unwrap();
+        let (pf, _, nf, rf) = w4_boot(home, pack);
+        assert_eq!((pf, rf), (GuiOnboardPlan::Run, Some(Ok(()))), "{tag}: settings 를 고치면 1회 복구");
+        assert!(nf.iter().all(|(k, _)| *k != "capped"), "{tag}: 복구 기동에 상한 안내 없음");
+        assert_eq!(w4_boot(home, pack).0, GuiOnboardPlan::Skip, "{tag}: 복구 뒤 안정");
+        assert!(!home.join(".cys/.gui-onboard-attempts").exists(), "{tag}: 판정 불가가 사라지면 기록 삭제");
+        println!("{tag}: 기록 복구 뒤 {}번 더 시도하고 상한 · settings 복구 1회 → Skip", max - prior);
+    }
+
+    /// ★게이트 14 — R5-M1: 시도 기록을 **쓸 수 없으면**(0400) — 상한이 기록 쓰기 성공에 기대던 de6ef66 은 같은 버전·같은 사유인데
+    /// 5기동 모두 `RunCounted(1)` · 실제 시도 5/5 · 안내 0 이었다(쓰기 실패를 stderr 에만 쓰고 온보딩을 계속). 이제 쓰지 못한 기동은
+    /// 그 자리에서 `Capped`(시도 안 함) + 안내("시도 기록을 남길 수 없어…") · 관측 = 판정 불가(설치됨 아님).
+    /// 고친 뒤: 기록을 쓸 수 있게 되돌리면 기록된 수부터 이어 세어 상한에서 멈추고, settings 를 고치면 1회 복구 뒤 안정.
+    #[cfg(unix)]
+    fn gate14_case(scenario: &str, prior: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let tag = format!("gate14 {scenario}");
+        let (home, pack, settings) = w5_corrupt_home(&format!("g14-{scenario}"));
+        let rec = home.join(".cys/.gui-onboard-attempts");
+        if prior == 0 {
+            std::fs::write(&rec, "{}").unwrap();
+        } else {
+            let (p, _, _, r) = w4_boot(&home, &pack);
+            assert_eq!(p, GuiOnboardPlan::RunCounted(1), "{tag}: 전제 — 첫 판정 불가 기동은 기록을 남기고 시도");
+            assert!(matches!(r, Some(Err(_))), "{tag}: 전제 — 병합기 거부 {r:?}");
+        }
+        std::fs::set_permissions(&rec, std::fs::Permissions::from_mode(0o400)).unwrap();
+        if std::fs::OpenOptions::new().write(true).open(&rec).is_ok() {
+            println!("{tag}: 0400 이 쓰기를 막지 못한다(root 실행) — 쓰기 실패를 만들 수 없어 건너뜀");
+            std::fs::remove_dir_all(&home).ok();
+            return;
+        }
+        let boots = w5_boots(&tag, &home, &pack, 5);
+        let tried = boots.iter().filter(|b| b.2).count() as u32;
+        println!(
+            "{tag}: 0400 × 5기동 — 실제 시도 {tried}/5 · 누적 실제 시도 {} · 안내 {}/5",
+            prior + tried,
+            boots.iter().filter(|b| b.3.is_some()).count()
+        );
+        w5_assert_stopped_with_notice(&tag, &boots, "시도 기록을 남길 수 없어", &rec, &settings);
+        assert!(!hooks_installed(&home, &pack), "{tag}: 설치됨 아님");
+        std::fs::set_permissions(&rec, std::fs::Permissions::from_mode(0o600)).unwrap();
+        w5_assert_recovers(&tag, &home, &pack, &settings, prior);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 게이트 14 ① 리뷰어 원형(R5-M1 재현 그대로): 처음부터 `{}` · 0400. 기록은 실제 시도 **직전에** 쓰므로(W-4 순서) 첫 기동부터 시도 0.
+    #[cfg(unix)]
+    #[test]
+    fn gate14_unwritable_record_reviewer_r5m1() {
+        gate14_case("reviewer-r5m1", 0);
+    }
+
+    /// 게이트 14 ② 첫 판정 불가 기동은 기록을 정상으로 남기고 시도 → 그 뒤 0400 × 5기동: 실제 시도 1회에서 멈춘다.
+    #[cfg(unix)]
+    #[test]
+    fn gate14_unwritable_record_after_first_attempt() {
+        gate14_case("after-first", 1);
+    }
+
+    /// ★게이트 15 — 회귀 0(W-5-b): 기록 **부재**는 실패가 아니다 — 신선 기계·첫 판정 불가는 0 부터 센다. 부재를 실패로 읽어 첫 기동부터
+    /// `Capped` 가 되면 한 번도 고쳐 보지 못한다. 판정 불가 공용: 기록 없이 5기동 → 0 부터 세어 상한까지 시도하고 멈춘다 · 안내는
+    /// 상한 기동부터 종전 문구(시도 기록 사유 없음) · 기록이 생긴다.
+    fn gate15_counts_from_zero(tag: &str, home: &std::path::Path, pack: &std::path::Path, settings: &std::path::Path) {
+        let max = GUI_ONBOARD_MAX_UNDETERMINABLE_ATTEMPTS;
+        let rec = home.join(".cys/.gui-onboard-attempts");
+        assert!(!rec.exists(), "{tag}: 전제 — 기록 부재");
+        let boots = w5_boots(tag, home, pack, 5);
+        let tried = boots.iter().filter(|b| b.2).count() as u32;
+        println!("{tag}: 5기동 실제 시도 {tried}/5 (상한 {max}) · 안내 {}/5", boots.iter().filter(|b| b.3.is_some()).count());
+        for (i, (plan, presence, attempted, capped)) in boots.iter().enumerate() {
+            let n = i as u32 + 1;
+            let want = if n <= max { GuiOnboardPlan::RunCounted(n) } else { GuiOnboardPlan::Capped };
+            assert_eq!(w4_kind(presence), "Undeterminable", "{tag} boot={n}: {presence:?}");
+            assert_eq!((*plan, *attempted), (want, n <= max), "{tag} boot={n}: 부재는 0 부터 — 상한까지 시도");
+            assert_eq!(capped.is_some(), n >= max, "{tag} boot={n}: 상한 안내는 상한 기동부터");
+            if let Some(m) = capped {
+                assert!(!m.contains("시도 기록을") && m.contains(&settings.display().to_string()), "{tag}: 종전 안내 — {m}");
+            }
+        }
+        assert_eq!(tried, max, "{tag}: 실제 시도 = 상한");
+        assert!(rec.is_file(), "{tag}: 시도 기록이 생겼다");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 게이트 15 ① 신선 머신(마커·프로필·기록 없음): 1회 온보딩 성공 · 안내·기록 없음 → 이후 `Skip`.
+    #[test]
+    fn gate15_absent_record_fresh_machine() {
+        let (home, pack) = w4_home("g15-fresh");
+        let fresh = w5_boots("gate15 fresh", &home, &pack, 3);
+        let plans: Vec<GuiOnboardPlan> = fresh.iter().map(|b| b.0).collect();
+        assert_eq!(plans, [GuiOnboardPlan::Run, GuiOnboardPlan::Skip, GuiOnboardPlan::Skip], "gate15 fresh: 1회 온보딩 뒤 안정");
+        assert!(fresh.iter().all(|b| b.3.is_none()), "gate15 fresh: 상한 안내 없음");
+        assert!(hooks_installed(&home, &pack), "gate15 fresh: 설치됨");
+        assert!(!home.join(".cys/.gui-onboard-attempts").exists(), "gate15 fresh: 시도 기록 없음");
+        println!("gate15 fresh: 1회 온보딩 → Skip · 안내·시도 기록 없음");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 게이트 15 ② 판정 불가 + 기록 부재(= 게이트 12 손상 검체): 종전 그대로 상한까지 시도 · 안내는 종전 문구.
+    #[test]
+    fn gate15_absent_record_undeterminable() {
+        let (home, pack, settings) = w5_corrupt_home("g15-absent");
+        gate15_counts_from_zero("gate15 absent", &home, &pack, &settings);
+    }
+
+    /// 게이트 15 ③ 판정 불가 + 기록의 부모 폴더(~/.cys)까지 부재(팩이 ~/.cys 밖 — CYS_PACK_DIR): 폴더를 만들어 세고 상한까지.
+    #[test]
+    fn gate15_absent_record_no_parent_dir() {
+        let home = std::env::temp_dir().join(format!("cys-w5-g15-no-parent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let pack = home.join("alt-pack");
+        std::fs::create_dir_all(pack.join("hooks")).unwrap();
+        for h in cys::pack::AWAKENING_HOOKS.iter() {
+            std::fs::write(pack.join("hooks").join(h.script), "#!/bin/sh\n").unwrap();
+        }
+        let settings = home.join(".claude/settings.json");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(&settings, "{bad").unwrap();
+        assert!(!home.join(".cys").exists(), "gate15 no-parent: 전제 — 부모 폴더 부재");
+        gate15_counts_from_zero("gate15 no-parent", &home, &pack, &settings);
+    }
+
+    /// ★게이트 16 — 시도 기록을 **읽을 수 없으면**(부재 아님) 몇 번 시도했는지 모른다. de6ef66 은 이것을 0 으로 읽어(`.ok()`) 매 기동을
+    /// 첫 시도로 셌다 — 쓰기는 되는 0200 이면 기록을 매번 1 로 덮어 영영 상한에 못 닿는다. 이제 그 기동은 `Capped`(시도 안 함) +
+    /// 안내("시도 기록을 읽을 수 없어…") · 관측 = 판정 불가(설치됨 아님). 첫 판정 불가 기동은 기록을 정상으로 남기고 시도 → 그 뒤
+    /// 읽기 불가 × 5기동: 실제 시도 1회에서 멈춘다. 고친 뒤: 읽을 수 있게 되돌리면 기록된 수부터 이어 세어 상한에서 멈춘다.
+    #[cfg(unix)]
+    fn gate16_case(scenario: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let tag = format!("gate16 {scenario}");
+        let (home, pack, settings) = w5_corrupt_home(&format!("g16-{scenario}"));
+        let rec = home.join(".cys/.gui-onboard-attempts");
+        let (p, _, _, r) = w4_boot(&home, &pack);
+        assert_eq!(p, GuiOnboardPlan::RunCounted(1), "{tag}: 전제 — 첫 판정 불가 기동은 기록을 남기고 시도");
+        assert!(matches!(r, Some(Err(_))), "{tag}: 전제 — 병합기 거부 {r:?}");
+        match scenario {
+            "write-only" => std::fs::set_permissions(&rec, std::fs::Permissions::from_mode(0o200)).unwrap(),
+            "no-access" => std::fs::set_permissions(&rec, std::fs::Permissions::from_mode(0o000)).unwrap(),
+            _ => {
+                std::fs::remove_file(&rec).unwrap();
+                std::fs::create_dir(&rec).unwrap();
+            }
+        }
+        if std::fs::read_to_string(&rec).is_ok() {
+            println!("{tag}: 권한이 읽기를 막지 못한다(root 실행) — 읽기 실패를 만들 수 없어 건너뜀");
+            std::fs::remove_dir_all(&home).ok();
+            return;
+        }
+        let boots = w5_boots(&tag, &home, &pack, 5);
+        let tried = boots.iter().filter(|b| b.2).count();
+        println!(
+            "{tag}: 읽기 불가 × 5기동 — 실제 시도 {tried}/5 · 누적 실제 시도 {} · 안내 {}/5",
+            1 + tried,
+            boots.iter().filter(|b| b.3.is_some()).count()
+        );
+        w5_assert_stopped_with_notice(&tag, &boots, "시도 기록을 읽을 수 없어", &rec, &settings);
+        assert!(!hooks_installed(&home, &pack), "{tag}: 설치됨 아님");
+        let prior = if scenario == "is-dir" {
+            std::fs::remove_dir(&rec).unwrap();
+            0
+        } else {
+            std::fs::set_permissions(&rec, std::fs::Permissions::from_mode(0o600)).unwrap();
+            1
+        };
+        w5_assert_recovers(&tag, &home, &pack, &settings, prior);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 게이트 16 ① 0200 — 쓰기는 된다(읽기 실패만 떼어 본다: de6ef66 은 매번 1 로 덮어쓰며 영영 센다).
+    #[cfg(unix)]
+    #[test]
+    fn gate16_unreadable_record_write_only() {
+        gate16_case("write-only");
+    }
+
+    /// 게이트 16 ② 0000 — 읽기·쓰기 모두 막힘.
+    #[cfg(unix)]
+    #[test]
+    fn gate16_unreadable_record_no_access() {
+        gate16_case("no-access");
+    }
+
+    /// 게이트 16 ③ 기록 자리가 폴더 — 권한과 무관한 읽기 오류(폴더를 치우면 부재 = 0 부터).
+    #[cfg(unix)]
+    #[test]
+    fn gate16_unreadable_record_is_dir() {
+        gate16_case("is-dir");
+    }
+
+    /// 게이트 16 ④ 읽기 실패여도 **고칠 수 있는 부재**의 복구는 막지 않는다 — W-4 집계(고칠 수 있는 부재 우선)를 그대로 둔다: 기록은
+    /// 집계가 판정 불가일 때만 읽는다. 손상 프로필 + 새 프로필 + 읽기 불가 기록(0000) → 그 기동은 세지 않고 돌아 새 프로필을 고치고,
+    /// 고칠 것이 없어진 다음 기동부터 `Capped` + 안내(반복 안 함).
+    #[cfg(unix)]
+    #[test]
+    fn gate16_unreadable_record_does_not_block_repair_of_missing_profile() {
+        use std::os::unix::fs::PermissionsExt;
+        let (home, pack, _) = w5_corrupt_home("g16-mixed");
+        let rec = home.join(".cys/.gui-onboard-attempts");
+        std::fs::write(&rec, "{}").unwrap();
+        std::fs::set_permissions(&rec, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_to_string(&rec).is_ok() {
+            println!("gate16 mixed: 권한이 읽기를 막지 못한다(root 실행) — 건너뜀");
+            std::fs::remove_dir_all(&home).ok();
+            return;
+        }
+        std::fs::create_dir_all(home.join(".claude-2")).unwrap();
+        let first = w5_boots("gate16 mixed", &home, &pack, 1);
+        let (plan, presence, attempted, capped) = &first[0];
+        assert_eq!(
+            (w4_kind(presence), *plan, *attempted),
+            ("Missing", GuiOnboardPlan::Run, true),
+            "gate16 mixed: 고칠 수 있는 부재가 있으면 기록과 무관하게 세지 않고 돈다"
+        );
+        assert!(capped.is_none(), "gate16 mixed: 복구 기동에 상한 안내 없음");
+        let fixed = classify_hook_settings(&home.join(".claude-2/settings.json"), &pack);
+        assert_eq!(fixed, HookPresence::Installed, "gate16 mixed: 새 프로필은 이번 기동에 복구");
+        let next = w5_boots("gate16 mixed 다음 기동", &home, &pack, 1);
+        assert_eq!((next[0].0, next[0].2), (GuiOnboardPlan::Capped, false), "gate16 mixed: 고칠 것이 없어지면 반복하지 않는다");
+        let m = next[0].3.as_deref().unwrap_or_default();
+        assert!(m.contains("시도 기록을 읽을 수 없어"), "gate16 mixed: 안내 — {m}");
+        std::fs::set_permissions(&rec, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_dir_all(&home).ok();
     }
 
     #[test]
@@ -7972,6 +11892,811 @@ mod tests {
         assert!(canon.contains("current_boot_verdict() == BootPathVerdict::Canonical"), "정규 위치 판정 = setup 안전모드 게이트와 같은 판정기");
     }
 
+    // ── ★(0.14.43 · J2) 업데이트 미설치 알림 — 시도 기록 · 재시작 뒤 1회 판정 · 스마트 앱 컨트롤 ──────────────────
+    //
+    // 윈도우에서 설치기가 스마트 앱 컨트롤에 막혀도 인앱 업데이트는 침묵했다(플러그인이 설치기를 띄운 뒤 곧바로 앱을 끝낸다).
+    // 설치 직전에 남긴 기록을 다시 뜬 앱이 한 번 읽어 '설치되지 않았다'를 알린다. 아래 검체는 전부 임시 디렉터리 위에서 돈다
+    // (경로를 인자로 받는 내부 함수 — 실제 ~/.cys 는 읽지도 쓰지도 않는다).
+
+    fn j2_attempt(from: &str, to: &str, at: u64) -> UpdateAttempt {
+        UpdateAttempt {
+            from: from.into(),
+            to: to.into(),
+            at,
+        }
+    }
+
+    /// 검체마다 고유한 빈 임시 디렉터리(프로세스 번호 + 꼬리표) — 단언이 실패해 일찍 끝나도 Drop 이 지운다(임시 폴더에 쌓이지 않는다).
+    struct J2Tmp(std::path::PathBuf);
+    impl J2Tmp {
+        fn new(tag: &str) -> Self {
+            let d = std::env::temp_dir().join(format!("cys-j2-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            J2Tmp(d)
+        }
+    }
+    impl std::ops::Deref for J2Tmp {
+        type Target = std::path::PathBuf;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl Drop for J2Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// SAC 조회 대역 — 불린 횟수를 센다(레지스트리 읽기가 Failed 에서만, 정확히 1회임을 잰다).
+    fn j2_sac<'a>(
+        calls: &'a std::cell::Cell<u32>,
+        v: Option<&'static str>,
+    ) -> impl FnOnce() -> Option<&'static str> + 'a {
+        move || {
+            calls.set(calls.get() + 1);
+            v
+        }
+    }
+
+    #[test]
+    fn j2_decide_update_attempt_truth_table() {
+        let a = j2_attempt("0.14.42", "0.14.43", 1_000_000);
+        let none = AttemptVerdict::None;
+        // 기록 없음 → None(현재 버전·시각과 무관)
+        assert_eq!(decide_update_attempt(Option::None, "0.14.42", 1_000_100), none, "기록 없음");
+        // 새 버전이 깔렸다(current == to) → Moot — 알릴 것이 없다
+        assert_eq!(decide_update_attempt(Some(&a), "0.14.43", 1_000_100), AttemptVerdict::Moot, "current == to");
+        // 그 사이 제3의 버전을 손으로 깔았다 → Moot(위·아래 어느 쪽이든)
+        assert_eq!(decide_update_attempt(Some(&a), "0.14.41", 1_000_100), AttemptVerdict::Moot, "제3 버전(아래)");
+        assert_eq!(decide_update_attempt(Some(&a), "0.15.0", 1_000_100), AttemptVerdict::Moot, "제3 버전(위)");
+        // Moot 은 나이와 무관 — 아주 오래된 기록도 현재 ≠ from 이면 알릴 것이 없다(오보 금지)
+        assert_eq!(decide_update_attempt(Some(&a), "0.14.43", 1_000_000 + 100_000), AttemptVerdict::Moot, "오래돼도 Moot");
+        assert_eq!(decide_update_attempt(Some(&a), "0.14.43", 1_000_000), AttemptVerdict::Moot, "나이 0 이어도 Moot");
+        // current == from · 나이 10초 → 설치기가 아직 도는 중일 수 있다 → TooYoung{80}
+        assert_eq!(
+            decide_update_attempt(Some(&a), "0.14.42", 1_000_010),
+            AttemptVerdict::TooYoung { wait_secs: 80 },
+            "나이 10초"
+        );
+        assert_eq!(
+            decide_update_attempt(Some(&a), "0.14.42", 1_000_000),
+            AttemptVerdict::TooYoung { wait_secs: 90 },
+            "나이 0초"
+        );
+        // 경계: 89초는 아직 젊고(남은 1초) · 90초부터 Failed
+        assert_eq!(
+            decide_update_attempt(Some(&a), "0.14.42", 1_000_089),
+            AttemptVerdict::TooYoung { wait_secs: 1 },
+            "나이 89초"
+        );
+        let failed = AttemptVerdict::Failed {
+            from: "0.14.42".into(),
+            to: "0.14.43".into(),
+            at: 1_000_000,
+        };
+        assert_eq!(decide_update_attempt(Some(&a), "0.14.42", 1_000_090), failed, "나이 90초");
+        assert_eq!(decide_update_attempt(Some(&a), "0.14.42", 1_000_000 + 100_000), failed, "나이 10만 초");
+        // at 이 미래(시계 역행)는 나이 0 으로 본다 → TooYoung{90}
+        let future = j2_attempt("0.14.42", "0.14.43", 2_000_000);
+        assert_eq!(
+            decide_update_attempt(Some(&future), "0.14.42", 1_000_000),
+            AttemptVerdict::TooYoung { wait_secs: 90 },
+            "at 이 미래"
+        );
+        assert_eq!(UPDATE_ATTEMPT_MIN_AGE_SECS, 90, "판정 보류 창은 90초(문서·알림 문구와 같은 값)");
+    }
+
+    #[test]
+    fn j2_update_attempt_record_roundtrip_and_broken_records_are_dropped() {
+        let dir = J2Tmp::new("roundtrip");
+        let p = dir.join(".update-attempt.json");
+        assert_eq!(read_update_attempt_at(&p), Option::None, "파일 없음 = None");
+        write_update_attempt_at(&p, "0.14.42", "0.14.43", 1_760_000_000).unwrap();
+        assert_eq!(
+            read_update_attempt_at(&p),
+            Some(j2_attempt("0.14.42", "0.14.43", 1_760_000_000)),
+            "쓴 값을 그대로 읽는다"
+        );
+        assert!(p.exists(), "정상 기록은 읽어도 지우지 않는다(지우는 것은 판정 결과를 보는 보고 함수의 몫)");
+        let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(
+            on_disk,
+            json!({"from": "0.14.42", "to": "0.14.43", "at": 1_760_000_000u64}),
+            "파일 모양은 {{from,to,at}} 세 키"
+        );
+        // 판독 실패는 기록을 지우고 None — 침묵(오보 금지) · 같은 깨진 파일을 다음 기동에 되풀이해 읽지 않는다
+        let broken: [(&str, Vec<u8>); 7] = [
+            ("깨진 JSON", b"{not json".to_vec()),
+            ("빈 파일", Vec::new()),
+            ("필드 누락", br#"{"from":"0.14.42","to":"0.14.43"}"#.to_vec()),
+            ("at 타입 틀림", br#"{"from":"a","to":"b","at":"x"}"#.to_vec()),
+            ("at 음수", br#"{"from":"a","to":"b","at":-5}"#.to_vec()),
+            ("UTF-8 아님", vec![0xff, 0xfe, 0x00, 0x80]),
+            ("객체가 아님", b"[]".to_vec()),
+        ];
+        for (label, bytes) in broken {
+            std::fs::write(&p, &bytes).unwrap();
+            assert_eq!(read_update_attempt_at(&p), Option::None, "{label}: None");
+            assert!(!p.exists(), "{label}: 판독 실패 기록은 지운다");
+        }
+        // 내용이 아니라 읽기 자체가 실패하면(권한·잠금) 멀쩡한 기록을 지우지 않는다 — None 만 돌려주고 다음 기동에 다시 본다
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            write_update_attempt_at(&p, "0.14.42", "0.14.43", 7).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // 이 프로세스가 권한을 무시하는 사용자(root)면 읽혀 버리므로 그때는 이 대목을 건너뛴다(정상 기록 읽기와 같다)
+            if std::fs::read_to_string(&p).is_err() {
+                assert_eq!(read_update_attempt_at(&p), Option::None, "읽기 오류 = None");
+                assert!(p.exists(), "일시적 읽기 오류가 기록을 지웠다 — 멀쩡한 기록을 잃는다");
+            }
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(read_update_attempt_at(&p), Some(j2_attempt("0.14.42", "0.14.43", 7)), "권한을 돌려주면 같은 기록을 읽는다");
+        }
+        // 지울 파일이 없어도 무해
+        clear_update_attempt_at(&p);
+        // 쓰기 실패(상위 디렉터리 없음)는 오류로 돌려줄 뿐 패닉하지 않는다 — 호출부가 무시하고 설치를 계속한다
+        assert!(write_update_attempt_at(&dir.join("no-such-dir").join("x.json"), "a", "b", 1).is_err());
+    }
+
+    #[test]
+    fn j2_update_attempt_report_tells_once_and_keeps_young_records() {
+        let dir = J2Tmp::new("report");
+        let p = dir.join(".update-attempt.json");
+        let calls = std::cell::Cell::new(0u32);
+
+        // (a) 기록 없음 → null · SAC 조회 0회
+        assert_eq!(update_attempt_report_at(&p, "0.14.42", 1_000_500, "windows", j2_sac(&calls, Some("on"))), Option::None);
+        assert_eq!(calls.get(), 0, "기록 없음에서 레지스트리를 읽었다");
+
+        // (b) Failed → 보고 + 기록 삭제 — 1회만 알린다(두 번째 호출은 null)
+        write_update_attempt_at(&p, "0.14.42", "0.14.43", 1_000_000).unwrap();
+        let r = update_attempt_report_at(&p, "0.14.42", 1_000_120, "windows", j2_sac(&calls, Some("on"))).expect("Failed 보고");
+        assert_eq!(
+            r,
+            json!({"failed": true, "from": "0.14.42", "to": "0.14.43", "at": 1_000_000u64, "os": "windows", "sac": "on"}),
+            "Failed 보고의 키·값"
+        );
+        assert_eq!(r.as_object().unwrap().len(), 6, "키 집합은 정확히 6개");
+        assert_eq!(calls.get(), 1, "SAC 조회는 Failed 에서 정확히 1회");
+        assert!(!p.exists(), "Failed 보고 뒤 기록이 남아 있다 — 반복 알림");
+        assert_eq!(
+            update_attempt_report_at(&p, "0.14.42", 1_000_500, "windows", j2_sac(&calls, Some("on"))),
+            Option::None,
+            "두 번째 호출은 알릴 것이 없다(1회만)"
+        );
+        assert_eq!(calls.get(), 1, "두 번째 호출이 레지스트리를 또 읽었다");
+
+        // (c) SAC 를 읽지 못하면(None) 키는 있되 값은 null · os 는 그대로 싣는다
+        write_update_attempt_at(&p, "0.14.42", "0.14.43", 1_000_000).unwrap();
+        let r = update_attempt_report_at(&p, "0.14.42", 1_000_090, "macos", || Option::None).expect("Failed 보고");
+        assert_eq!(r["sac"], Value::Null);
+        assert_eq!(r["os"], "macos");
+        assert_eq!(r["failed"], true);
+        assert!(!p.exists());
+
+        // (d) TooYoung → 기록 **유지** · pending 보고 · SAC 조회 0회 — 시간이 지나 90초가 되면 그때 Failed
+        write_update_attempt_at(&p, "0.14.42", "0.14.43", 1_000_000).unwrap();
+        let before = std::fs::read_to_string(&p).unwrap();
+        let calls_before = calls.get();
+        let r = update_attempt_report_at(&p, "0.14.42", 1_000_010, "windows", j2_sac(&calls, Some("on"))).expect("pending 보고");
+        assert_eq!(r, json!({"pending": true, "wait_secs": 80u64}), "pending 보고의 키·값");
+        assert_eq!(r.as_object().unwrap().len(), 2, "pending 키 집합은 정확히 2개");
+        assert!(p.exists(), "TooYoung 에서 기록을 지웠다 — 곧 알려야 할 실패를 잃는다");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before, "TooYoung 은 기록을 건드리지 않는다");
+        assert_eq!(calls.get(), calls_before, "TooYoung 에서 레지스트리를 읽었다");
+        // 같은 시각에 또 불러도 같은 보고(멱등) — 그 사이 기록은 그대로
+        assert_eq!(
+            update_attempt_report_at(&p, "0.14.42", 1_000_010, "windows", j2_sac(&calls, Some("on"))),
+            Some(json!({"pending": true, "wait_secs": 80u64}))
+        );
+        // 나이가 90초가 되면 같은 기록이 Failed 로 보고되고 지워진다
+        let r = update_attempt_report_at(&p, "0.14.42", 1_000_090, "windows", j2_sac(&calls, Some("eval"))).expect("Failed 보고");
+        assert_eq!(r["failed"], true);
+        assert_eq!(r["sac"], "eval");
+        assert!(!p.exists());
+
+        // (e) Moot → 기록 삭제 후 null · SAC 조회 0회(새 버전이 깔렸다)
+        write_update_attempt_at(&p, "0.14.42", "0.14.43", 1_000_000).unwrap();
+        let calls_before = calls.get();
+        assert_eq!(update_attempt_report_at(&p, "0.14.43", 1_000_500, "windows", j2_sac(&calls, Some("on"))), Option::None);
+        assert!(!p.exists(), "Moot 기록이 남아 있다");
+        assert_eq!(calls.get(), calls_before, "Moot 에서 레지스트리를 읽었다");
+
+        // (f) 깨진 기록 → null + 삭제(침묵)
+        std::fs::write(&p, b"{broken").unwrap();
+        assert_eq!(update_attempt_report_at(&p, "0.14.42", 1_000_500, "windows", j2_sac(&calls, Some("on"))), Option::None);
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn j2_parse_sac_state_reads_reg_query_output() {
+        // 실제 `reg query` 출력의 모양 — 빈 줄 · 머리줄(키 경로) · 들여쓴 값 줄 · CRLF.
+        let head = "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy\r\n";
+        let sample = |hex: &str| format!("{head}    VerifiedAndReputablePolicyState    REG_DWORD    {hex}\r\n\r\n");
+        assert_eq!(parse_sac_state(&sample("0x0")), Some("off"));
+        assert_eq!(parse_sac_state(&sample("0x1")), Some("on"));
+        assert_eq!(parse_sac_state(&sample("0x2")), Some("eval"));
+        // LF 만 있는 출력 · 값 이름 대소문자 무시 · 칸 사이 공백 가변(탭 포함)
+        assert_eq!(
+            parse_sac_state("HKEY_LOCAL_MACHINE\\X\n    verifiedandreputablepolicystate\treg_dword\t0x1\n"),
+            Some("on")
+        );
+        assert_eq!(parse_sac_state("VERIFIEDANDREPUTABLEPOLICYSTATE REG_DWORD 0x2"), Some("eval"));
+        // 값 없음 · 빈 문자열 · 공백뿐
+        assert_eq!(
+            parse_sac_state("\r\nERROR: The system was unable to find the specified registry key or value.\r\n"),
+            Option::None
+        );
+        assert_eq!(parse_sac_state(""), Option::None);
+        assert_eq!(parse_sac_state("   \r\n\r\n"), Option::None);
+        // 엉뚱한 값 → None(모르는 값을 on/off 로 추측하지 않는다)
+        assert_eq!(parse_sac_state(&sample("0x7")), Option::None);
+        assert_eq!(parse_sac_state(&sample("0x")), Option::None);
+        assert_eq!(parse_sac_state(&sample("1")), Option::None, "0x 접두 없는 값은 읽지 않는다");
+        assert_eq!(
+            parse_sac_state("    VerifiedAndReputablePolicyState    REG_SZ    0x1\r\n"),
+            Option::None,
+            "REG_DWORD 가 아니면 읽지 않는다"
+        );
+        // 다른 값 이름의 줄은 무시한다(이름이 비슷해도 정확히 같아야 한다)
+        assert_eq!(
+            parse_sac_state("    VerifiedAndReputablePolicyStateX    REG_DWORD    0x1\r\n"),
+            Option::None
+        );
+        assert_eq!(parse_sac_state("    SomethingElse    REG_DWORD    0x1\r\n"), Option::None);
+        // 다른 줄이 앞에 있어도 해당 줄을 찾는다
+        assert_eq!(
+            parse_sac_state(&format!("{head}    Other    REG_DWORD    0x0\r\n    VerifiedAndReputablePolicyState    REG_DWORD    0x1\r\n")),
+            Some("on")
+        );
+    }
+
+    /// ★R2F-UI(A4 n1): 종전에는 '정확히 `"0"` 만 끈다'(`" 0"`·`"0 "` 는 켬)를 핀했다 — 윈도우 cmd 의 `set X=0 && …` 가 붙이는 값 끝 공백(`"0 "`)에 되돌리기 손잡이가 듣지 않았다.
+    /// 이제 앞뒤 공백을 걷은 값이 `"0"` 이면 끈다(이름 그대로 — 0 만 끈다는 뜻은 같다 · 공백 낀 0 은 끔 쪽으로 옮겼다).
+    #[test]
+    fn j2_update_verify_knob_only_zero_turns_it_off() {
+        assert!(update_verify_from_env(Option::None), "미설정 = 켬");
+        assert!(update_verify_from_env(Some("1")), "\"1\" = 켬");
+        assert!(!update_verify_from_env(Some("0")), "\"0\" = 끔");
+        assert!(update_verify_from_env(Some("")), "빈 값 = 켬");
+        for off in [" 0", "0 ", " 0 ", "\t0\r\n"] {
+            assert!(!update_verify_from_env(Some(off)), "{off:?} 는 앞뒤 공백을 걷으면 \"0\" 이므로 끔(윈도우 cmd `set X=0 && …`)");
+        }
+        for other in ["false", "off", "00", "no", " ", "0.0", "-0"] {
+            assert!(update_verify_from_env(Some(other)), "{other:?} 는 공백을 걷어도 \"0\" 이 아니므로 켬");
+        }
+    }
+
+    #[test]
+    fn j2_attempt_record_lives_beside_the_restore_marker() {
+        let p = update_attempt_path();
+        assert!(p.ends_with(".cys/.update-attempt.json"), "경로: {}", p.display());
+        assert_eq!(p.parent(), pending_restore_path().parent(), "복귀 마커와 같은 ~/.cys 아래(두 프로세스 공유)");
+    }
+
+    /// ★J2 배선 핀: 시도 기록은 `download_and_install` **앞**에 쓰이고(윈도우에서는 그 호출이 돌아오지 않는다), 지우는 곳은
+    /// `Err` 경로 한 곳뿐이다(`Ok` 면 그대로 둔다 — 재시작 뒤 판정). 쓰기 결과는 버린다(기록이 업데이트를 막아서는 안 된다).
+    #[test]
+    fn j2_install_update_records_before_download_and_clears_only_on_err() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let at = prod.find("async fn install_update(").expect("install_update 소실");
+        let end = at + prod[at..].find("\n}\n").expect("fn 끝");
+        let body = &prod[at..end];
+        let write = body.find("write_update_attempt_at(").expect("시도 기록 쓰기가 install_update 에 없다");
+        let download = body.find(".download_and_install(").expect("download_and_install 소실");
+        assert!(write < download, "시도 기록 쓰기가 download_and_install 보다 앞이어야 한다(윈도우에서는 그 호출이 돌아오지 않는다)");
+        assert!(
+            body.contains("let _ = write_update_attempt_at("),
+            "기록 쓰기 결과를 버려야 한다 — 쓰기 실패가 업데이트를 막으면 안 된다"
+        );
+        // 기록 인자: from = 지금 실행 중인 버전 · to = 받을 버전 · at = 지금 — 순서가 바뀌면 재시작 뒤 판정이 거꾸로 읽힌다
+        let call = &body[write..write + body[write..].find(");").expect("기록 호출 끝")];
+        let (cur, new_v, now) = (
+            call.find("env!(\"CARGO_PKG_VERSION\")").expect("from 인자(현재 버전) 소실"),
+            call.find("&update.version").expect("to 인자(받을 버전) 소실"),
+            call.find("unix_now_secs()").expect("at 인자(지금) 소실"),
+        );
+        assert!(cur < new_v && new_v < now, "기록 인자 순서는 (경로, from=현재 버전, to=받을 버전, at=지금) 이어야 한다: {call}");
+        assert!(call.contains("&attempt_path"), "기록 경로는 update_attempt_path() 에서 온 값이어야 한다: {call}");
+        assert!(body.contains("update_verify_from_env("), "CYS_UPDATE_VERIFY 노브가 설치 경로에 없다");
+        // 노브가 꺼지면 쓰기도 삭제도 건너뛴다 — 두 곳 모두 `if verify_on {` 바로 안쪽이어야 한다
+        assert!(
+            body.contains("if verify_on {\n        let _ = write_update_attempt_at("),
+            "기록 쓰기가 노브(verify_on) 분기 안에 있지 않다 — CYS_UPDATE_VERIFY=0 이 쓰기를 끄지 못한다"
+        );
+        assert!(
+            body.contains("if verify_on {\n            clear_update_attempt_at(&attempt_path);"),
+            "기록 삭제가 노브(verify_on) 분기 안에 있지 않다"
+        );
+        let err = body.find("if let Err(e) = update").expect("download_and_install 의 Err 분기 소실");
+        let clear = body.find("clear_update_attempt_at(").expect("Err 경로에 기록 삭제가 없다");
+        assert!(download < clear && err < clear, "기록 삭제는 download_and_install 의 Err 분기 안에 있어야 한다");
+        assert_eq!(
+            body.matches("clear_update_attempt_at(").count(),
+            1,
+            "삭제는 Err 경로 한 곳뿐이다 — Ok 면 기록을 그대로 둔다(재시작 뒤 판정)"
+        );
+        // Err 분기는 종전처럼 오류 문자열을 돌려준다(화면의 '패치 설치 실패' 토스트 경로 불변)
+        let tail = &body[clear..];
+        assert!(tail.contains("return Err(e.to_string());"), "Err 분기가 오류를 돌려주지 않는다");
+    }
+
+    // ───────── ★(0.14.43 · WU) 윈도우 인앱 업데이트 — 설치기를 띄운 결과를 본다(막히면 앱을 닫지 않고 알린다) ─────────
+
+    /// WU 소스 핀 공용 — 테스트 모듈 앞의 제품 코드(`#[cfg(windows)]` 몸통도 소스로는 보인다 — 맥에서 컴파일되지는 않으므로 실제 컴파일은 win-typecheck·윈도우 CI 가 본다).
+    fn wu_prod() -> &'static str {
+        let src = include_str!("main.rs");
+        &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")]
+    }
+
+    /// 함수 하나(시작 문구부터 그 함수의 끝 `\n}\n` 앞까지).
+    fn wu_seg(start: &str) -> &'static str {
+        let prod = wu_prod();
+        let at = prod.find(start).unwrap_or_else(|| panic!("`{start}` 소실"));
+        &prod[at..at + prod[at..].find("\n}\n").expect("fn 끝")]
+    }
+
+    /// 한 줄 전체가 `//` 주석인 줄을 걷는다 — 주석에만 적힌 낱말로 핀이 통과·적발되지 않게.
+    fn wu_code(s: &str) -> String {
+        s.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
+    }
+
+    /// ★R2F-UI(A4 n1): 종전에는 '정확히 `"0"` 만 끈다'(`" 0"`·`"0 "` 는 켬)를 핀했다 — 윈도우 전용 되돌리기 손잡이인데 윈도우 cmd 의 `set X=0 && …` 가 붙이는 값 끝 공백(`"0 "`)에 듣지 않았다.
+    /// 이제 앞뒤 공백을 걷은 값이 `"0"` 이면 끈다(이름 그대로 · 공백 낀 0 은 끔 쪽으로 옮겼다).
+    #[test]
+    fn wu_checked_launch_knob_only_zero_turns_it_off() {
+        assert!(update_checked_launch_from_env(Option::None), "미설정 = 켬");
+        assert!(update_checked_launch_from_env(Some("1")), "\"1\" = 켬");
+        assert!(!update_checked_launch_from_env(Some("0")), "\"0\" = 끔(종전 경로)");
+        assert!(update_checked_launch_from_env(Some("")), "빈 값 = 켬");
+        for off in [" 0", "0 ", " 0 ", "\t0\r\n"] {
+            assert!(!update_checked_launch_from_env(Some(off)), "{off:?} 는 앞뒤 공백을 걷으면 \"0\" 이므로 끔(윈도우 cmd `set X=0 && …`)");
+        }
+        for other in ["false", "off", "00", "no", "2", "true", " ", "0.0", "-0"] {
+            assert!(update_checked_launch_from_env(Some(other)), "{other:?} 는 공백을 걷어도 \"0\" 이 아니므로 켬");
+        }
+    }
+
+    /// 실행 결과 정책: 띄웠으면(Ok) 정리도 오류도 없고 · 막혔으면(Err) 정리를 정확히 한 번 하고 UI 가 파싱하는 꼴의 오류를 돌려준다.
+    /// (이 함수는 어느 쪽에서도 프로세스를 끝내지 않는다 — 끝낸다면 이 검체 자체가 죽는다.)
+    #[test]
+    fn wu_settle_launch_cleans_up_only_when_the_launch_failed() {
+        use cys::update_launch::LaunchError;
+        // ★행동 검체보다 **먼저** 소스를 본다 — 누가 `settle_launch` 안에서 프로세스를 끝내게 바꾸면 아래 호출이 이 검체 프로세스째 끝내 버려
+        //   (종료 코드 0 — `cargo test` 가 초록으로 읽는 조용한 조기 종료) 아무 검체도 보고하지 못한다. 그 호출에 닿기 전에 같은 핀을 여기서 먼저 건다.
+        let policy_src = wu_code(wu_seg("fn settle_launch("));
+        assert!(
+            !policy_src.contains("process::exit") && !policy_src.contains("cleanup_before_exit"),
+            "settle_launch 가 프로세스를 끝낸다 — 호출하면 이 검체 프로세스째 죽는다(조용한 조기 종료)"
+        );
+        let cleaned = std::cell::Cell::new(0u32);
+        assert_eq!(settle_launch(Ok(()), || cleaned.set(cleaned.get() + 1)), Ok(()));
+        assert_eq!(cleaned.get(), 0, "설치기가 떴는데 정리했다 — 뜬 설치기가 쓰는 파일을 지운다");
+        // 스마트 앱 컨트롤 실측값: 반환 5 · 오류 4551
+        let blocked = settle_launch(Err(LaunchError { shell_ret: 5, os_code: 4551 }), || cleaned.set(cleaned.get() + 1));
+        assert_eq!(blocked, Err("installer_launch_failed:4551:5".to_string()));
+        assert_eq!(cleaned.get(), 1, "막혔는데 정리를 하지 않았거나 두 번 했다");
+        let missing = settle_launch(Err(LaunchError { shell_ret: 2, os_code: 2 }), || cleaned.set(cleaned.get() + 1));
+        assert_eq!(missing, Err("installer_launch_failed:2:2".to_string()));
+        assert_eq!(cleaned.get(), 2);
+    }
+
+    /// ★WU 배선 핀(install_update): 윈도우 분기는 시도 기록 쓰기 **뒤** · 종전 경로(`download_and_install`) **앞**에 있고, 노브가 켜졌을 때만 들어가 곧바로 돌려준다.
+    /// 종전 경로(노브 `0`)와 맥·리눅스 꼬리(번들 무결성 검사·drain·핸드오프·재시작)는 그대로다 — 설치기 실행·종료 호출은 `install_update` 에 없다(전부 윈도우 분기 함수 안).
+    #[test]
+    fn wu_install_update_has_a_checked_windows_branch_and_keeps_the_old_path() {
+        let body = wu_seg("async fn install_update(");
+        let code = wu_code(body);
+        let branch = "    #[cfg(windows)]\n    if update_checked_launch_from_env(cys::env_compat(\"CYS_UPDATE_CHECKED_LAUNCH\").as_deref()) {\n        return install_update_checked_windows(&app, &update, &attempt_path, verify_on).await;\n    }\n";
+        let b = code.find(branch).expect("윈도우 분기(노브 → install_update_checked_windows 호출 → 곧바로 돌려줌)가 소실됐거나 모양이 바뀌었다");
+        let write = code.find("write_update_attempt_at(").expect("시도 기록 쓰기");
+        let old = code.find(".download_and_install(").expect("종전 경로(download_and_install) 소실 — 노브 0 이 돌아갈 곳이 없다");
+        assert!(write < b && b < old, "순서: 시도 기록 쓰기 < 윈도우 분기 < 종전 경로");
+        // 윈도우 분기는 정확히 한 곳 — 다른 cfg(windows) 갈래가 끼어들지 않았다
+        assert_eq!(code.matches("#[cfg(windows)]").count(), 1);
+        // 설치기 실행·종료·종료 준비는 이 함수에 없다(윈도우 분기 함수 안에만)
+        for banned in ["launch_installer", "process::exit", "cleanup_before_exit", "write_installer", "settle_launch"] {
+            assert!(!code.contains(banned), "install_update 본문에 `{banned}` — 윈도우 분기 함수 밖으로 새면 맥·리눅스 경로가 바뀐다");
+        }
+        // 노브는 정확히 두 곳에서만 읽는다(제품 코드 전체에서) — 실제 선택(이 함수의 윈도우 분기)과 화면에 알리는 보고(R1F-UA `update_checked_launch_enabled`).
+        // 두 식이 글자 그대로 같다는 핀은 `r1fua_checked_launch_command_reads_the_same_knob_as_the_windows_branch` 가 맡는다(종전 단언은 "한 곳" 이었다).
+        assert_eq!(wu_code(wu_prod()).matches("cys::env_compat(\"CYS_UPDATE_CHECKED_LAUNCH\")").count(), 2, "노브를 읽는 곳이 둘(실제 선택 · 화면 보고)이 아니다");
+        assert_eq!(code.matches("cys::env_compat(\"CYS_UPDATE_CHECKED_LAUNCH\")").count(), 1, "실제 선택은 이 함수의 윈도우 분기 한 곳이다");
+        // 종전 꼬리(맥·리눅스 경로 — 이 티켓은 한 글자도 바꾸지 않는다): 종전 경로 머리부터 순서와 핵심 호출이 그대로다
+        let start = code.find("    if let Err(e) = update\n        .download_and_install(").expect("종전 경로 머리 소실");
+        let tail = &code[start..];
+        let mut pos = 0usize;
+        for token in [
+            ".download_and_install(",
+            "return Err(e.to_string());",
+            "#[cfg(target_os = \"macos\")]\n    if let Some(msg) = bundle_integrity_guidance() {",
+            "return Err(msg);",
+            "sealed_sidecar_cys(&[\"drain\"]).status()",
+            "std::fs::write(pending_restore_path(), \"\")",
+            "stop_running_daemon().await;",
+            "app.restart();",
+        ] {
+            let at = tail[pos..].find(token).unwrap_or_else(|| panic!("종전 꼬리 토큰 소실 또는 순서 변경: {token}")) + pos;
+            pos = at + token.len();
+        }
+        assert!(!tail.contains("update_checked_launch_from_env"), "종전 경로 안에 윈도우 분기 노브가 섞였다");
+    }
+
+    /// ★WU 배선 핀(윈도우 분기 함수): 받기(`download`) → exe 판정 → 같은 임시 경로 쓰기 → 같은 인자 → 띄우기 → (성공한 뒤에만) 종료 준비·종료.
+    /// 종료 준비·종료는 `settle_launch(...)?;` **뒤에 한 번씩**만 있고 실패 쪽(정리 클로저)에는 없다 · 실패하는 모든 갈래는 시도 기록을 지운다.
+    #[test]
+    fn wu_windows_branch_exits_only_after_a_successful_launch() {
+        let prod = wu_prod();
+        let at = prod.find("async fn install_update_checked_windows(").expect("윈도우 분기 함수 소실");
+        // BLOCK-B: 최상위 cfg 로 아이템을 지우지 않는다 — 함수는 모든 플랫폼에 존재하고 갈라짐은 본문 안이다(`blockb_no_new_file_level_cfg_gated_items` 와 같은 규율)
+        assert!(prod[..at].ends_with("#[cfg_attr(not(windows), allow(dead_code))]\n"), "윈도우 분기 함수 앞에는 dead_code 허용 속성만 있어야 한다(최상위 cfg 금지)");
+        let code = wu_code(wu_seg("async fn install_update_checked_windows("));
+        assert!(code.contains("    #[cfg(windows)]\n    {\n"), "본문 안의 윈도우 갈래 소실");
+        let stub = &code[code.find("    #[cfg(not(windows))]\n    {\n").expect("본문 안의 비윈도우 갈래 소실")..];
+        for banned in ["launch_installer", "process::exit", "cleanup_before_exit", "write_installer", "download"] {
+            assert!(!stub.contains(banned), "비윈도우 갈래에 `{banned}` — 맥·리눅스는 설치기를 띄우지 않는다");
+        }
+        assert!(stub.contains("Err("), "비윈도우 갈래는 오류를 돌려준다(닿지 않는 갈래)");
+        let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+        let idx = |t: &str| code.find(t).unwrap_or_else(|| panic!("`{t}` 소실"));
+        let (dl, exe, wr, params, launch, settle, cleanup, exit) = (
+            idx(".download("),
+            idx("looks_like_exe(&bytes)"),
+            idx("write_installer("),
+            idx("nsis_update_params("),
+            idx("launch_installer(&file, &params)"),
+            idx("settle_launch("),
+            idx("app.cleanup_before_exit();"),
+            idx("std::process::exit(0)"),
+        );
+        assert!(dl < exe && exe < wr && wr < params && params < settle && settle < launch && launch < cleanup && cleanup < exit, "순서가 어긋났다: 받기 < exe 판정 < 쓰기 < 인자 < 띄우기 < 종료 준비 < 종료");
+        // 종료 준비·종료는 한 번씩, 둘 다 `settle_launch(...)?;` 문장 **뒤**에 있다 — 실패하면 `?` 가 먼저 돌려준다
+        assert_eq!(code.matches("cleanup_before_exit").count(), 1);
+        assert_eq!(code.matches("process::exit").count(), 1);
+        let end = settle + code[settle..].find("})?;").expect("settle_launch 문장 끝") + "})?;".len();
+        assert!(cleanup > end && exit > end, "종료 준비·종료가 `settle_launch(...)?;` 앞에 있다 — 실패해도 앱이 닫힌다");
+        let stmt = &code[settle..end];
+        for banned in ["cleanup_before_exit", "exit(", "return Ok"] {
+            assert!(!stmt.contains(banned), "실패 처리 클로저에 `{banned}` — 막혔을 때 종료하면 침묵 종료가 되살아난다");
+        }
+        assert!(stmt.contains("remove_installer(&file);") && stmt.contains("forget();"), "실패 처리는 임시 설치 파일 정리 + 시도 기록 삭제여야 한다");
+        // 플러그인과 같은 입력: 앱 이름 = package_info().name · 임시 루트 = temp_dir() · 인자 = 현재 실행 인자 [1..] · 새 버전 = update.version
+        assert!(code.contains("write_installer(&std::env::temp_dir(), &app.package_info().name, &update.version, &bytes)"), "임시 설치 파일 입력이 플러그인과 다르다");
+        assert!(!code.contains("\"cys\""), "앱 이름을 리터럴로 박았다 — 플러그인이 쓰는 package_info().name 이어야 한다");
+        assert!(code.contains("std::env::args_os().skip(1).collect()"), "현재 실행 인자 [1..] 가 아니다");
+        // 받기·서명 검증은 플러그인의 download — 진행 이벤트 모양은 종전과 같다
+        assert!(!code.contains("download_and_install"), "download_and_install 은 종전 경로(노브 0)에만 있다");
+        assert!(code.contains("json!({\"phase\": \"download\", \"chunk\": chunk, \"total\": total})"), "진행 이벤트 모양이 종전과 다르다");
+        assert!(code.contains("\"update-progress\""));
+        // 예상 밖 형식(zip·MSI)은 플러그인의 install 에 맡긴다(동작 불변)
+        assert!(code[exe..wr].contains("update.install(&bytes)"), "exe 가 아닌 형식(zip·MSI)은 플러그인의 install 에 맡겨야 한다");
+        assert!(code[..exe].ends_with("if !cys::update_launch::"), "exe 판정은 `if !…looks_like_exe(&bytes)` 로 비 exe 갈래를 열어야 한다");
+        // 설치기가 뜨기 전에 실패하는 모든 갈래(받기 · 설치 · 쓰기 · 실행)는 시도 기록을 지운다: forget 정의 1(노브 가드) + 호출 4
+        assert_eq!(code.matches("clear_update_attempt_at(").count(), 1, "시도 기록 삭제는 forget 클로저 한 곳이다");
+        assert!(norm(&code).contains("if verify_on { clear_update_attempt_at(attempt_path); }"), "삭제가 노브(verify_on) 분기 안에 있지 않다");
+        assert_eq!(code.matches("forget();").count(), 4, "실패 갈래(받기·비 exe 설치·쓰기·실행)마다 forget 이 있어야 한다");
+        assert_eq!(code.matches("return Err(e.to_string());").count(), 3, "설치기 실행 전 실패 갈래는 오류를 그대로 돌려준다(실행 실패는 settle_launch 의 `?`)");
+        // 핸드오프(drain·재시작)는 이 분기에 없다 — 윈도우에서는 설치기가 앱을 교체하고 그 뒤는 새 앱이 맡는다(종전과 같다)
+        for banned in ["drain", "restart", "stop_running_daemon", "pending_restore_path"] {
+            assert!(!code.contains(banned), "윈도우 분기에 `{banned}` — 종전 윈도우 경로에는 없던 동작이다");
+        }
+    }
+
+    /// ★WU: 순수 정책 함수(`settle_launch`)도 종료·종료 준비를 모른다 — 종료는 윈도우 분기 함수의 한 곳뿐이다.
+    #[test]
+    fn wu_settle_launch_never_exits() {
+        let code = wu_code(wu_seg("fn settle_launch("));
+        for banned in ["process::exit", "cleanup_before_exit", "restart", "app."] {
+            assert!(!code.contains(banned), "settle_launch 에 `{banned}`");
+        }
+        assert!(code.contains("on_failed();") && code.contains("Err(e.to_string())"));
+    }
+
+    /// ★WU: 새 모듈 `src/update_launch.rs` 는 std 만 쓰는 독립 파일이다(진짜 스마트 앱 컨트롤 러너에서 이 파일 하나를 단독 rustc 로 시험한다):
+    /// 외부 크레이트·`crate::`·windows-sys 0 · `use` 는 전부 `std` · 윈도우 API 는 `extern "system"` 직접 선언.
+    /// 그리고 이 변경이 기대는 사실 둘: 플러그인 2.10.1(대조표의 기준)에 고정돼 있다 · 앱 이름(`package_info().name`)은 productName `cys` 다.
+    #[test]
+    fn wu_update_launch_module_is_standalone_and_pinned_to_the_audited_plugin() {
+        let src = include_str!("../../src/update_launch.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("모듈 테스트 경계 소실")];
+        let code = wu_code(prod);
+        for banned in ["crate::", "super::", "extern crate", "windows_sys", "windows-sys", "serde", "tokio", "libc::", "tauri"] {
+            assert!(!code.contains(banned), "update_launch.rs 가 `{banned}` 에 기댄다 — std 만 쓰는 독립 모듈이어야 한다");
+        }
+        for line in code.lines().filter(|l| l.trim_start().starts_with("use ")) {
+            assert!(line.trim_start().starts_with("use std::"), "std 밖 import: {line}");
+        }
+        assert!(code.contains("extern \"system\"") && code.contains("#[link(name = \"shell32\")]"), "윈도우 API 직접 선언이 없다");
+        assert!(code.contains("#[cfg(windows)]\npub fn launch_installer("), "launch_installer 는 윈도우 전용이다");
+        // launch_installer: 호출 직전에 마지막 오류를 비우고 · ShellExecuteW 를 한 번 부르고 · **직후** 마지막 오류를 읽어 · `shell_result` 로 판정한다.
+        // 반환값을 버리고 Ok 를 돌려주면(상류 2.10.1 의 결함) 막힌 실행이 다시 침묵한다 — 맥에서 컴파일되지 않는 몸통이라 소스로 박는다.
+        let li = &code[code.find("pub fn launch_installer(").expect("launch_installer 소실")..];
+        let li = &li[..li.find("\n}\n").expect("launch_installer 끝")];
+        assert_eq!(li.matches("ShellExecuteW(").count(), 1, "ShellExecuteW 호출은 한 번이다");
+        let (set0, call, get, res) = (
+            li.find("sys::SetLastError(0)").expect("호출 전 마지막 오류 비우기 소실"),
+            li.find("sys::ShellExecuteW(").expect("ShellExecuteW 호출 소실"),
+            li.find("sys::GetLastError()").expect("호출 직후 마지막 오류 읽기 소실"),
+            li.find("shell_result(ret, last_error)").expect("판정(shell_result) 소실 — 반환값을 버리면 막힌 실행이 침묵한다"),
+        );
+        assert!(set0 < call && call < get && get < res, "순서: 오류 비우기 < 호출 < 직후 읽기 < 판정");
+        assert!(li.trim_end().ends_with("shell_result(ret, last_error)"), "launch_installer 의 값은 판정 결과여야 한다");
+        assert!(!li.contains("Ok(())"), "launch_installer 가 판정을 건너뛰고 Ok 를 돌려준다");
+        for banned in ["exit", "TerminateProcess", "ExitProcess"] {
+            assert!(!li.contains(banned), "launch_installer 에 `{banned}` — 이 함수는 프로세스를 끝내지 않는다(끝내는 것은 호출부)");
+        }
+        assert!(!code.contains("process::exit"), "update_launch.rs 에 프로세스 종료가 있다 — 종료는 호출부(윈도우 분기 함수) 한 곳뿐이다");
+        // 설치 파일 쓰기는 플러그인과 같은 열기 방식(새로 만들기 + 임시 속성)이다
+        assert!(code.contains("FILE_ATTRIBUTE_TEMPORARY: u32 = 0x0000_0100"), "임시 속성 상수 소실");
+        assert!(code.contains("o.custom_flags(FILE_ATTRIBUTE_TEMPORARY);"), "설치 파일을 임시 속성으로 만들지 않는다(플러그인의 tempfile 과 다르다)");
+        // 플러그인 버전 고정 — 올리면 이 검체가 붉어져 대조표(와 이 분기의 존속 여부)를 다시 보게 한다
+        let lock = include_str!("../../Cargo.lock");
+        assert!(
+            lock.contains("name = \"tauri-plugin-updater\"\nversion = \"2.10.1\"\n"),
+            "tauri-plugin-updater 가 2.10.1 이 아니다 — WU 의 플러그인 대조표(임시 경로·인자·호출)를 새 버전 소스로 다시 맞춰 보라(티켓 WU 의 조사로는 2.11.0 부터 상류가 반환값을 직접 본다)"
+        );
+        let conf = include_str!("../tauri.conf.json");
+        assert!(conf.contains("\"productName\": \"cys\""), "productName 이 cys 가 아니다 — 임시 설치 폴더·파일 이름이 달라진다(플러그인도 같은 이름을 쓴다)");
+    }
+
+    // ───────── ★(0.14.43 · R1F-UA) 성찰 1회차 수정 — 확인 실행 노브를 화면이 알게 한다 · J2 보류 창의 기준 시각 · 플러그인 설정 가정 ─────────
+
+    /// ★R1F-UA(S3 minor 4): 화면이 묻는 값. 윈도우만 노브(`CYS_UPDATE_CHECKED_LAUNCH`)를 본다 — 앞뒤 공백을 걷은 값이 `"0"` 이면 끈다(`update_checked_launch_from_env` 와 같은 규칙).
+    /// 맥·리눅스는 그 노브를 보지 않으므로(분기가 컴파일되지 않는다) 늘 `true`(기본값)다.
+    /// ★R2F-UI(A4 n1): 종전 단언은 '정확히 `"0"` 만 끈다'(`" 0"`·`"0 "` 는 켬)였다 — 실제 선택(`update_checked_launch_from_env`)이 공백 낀 0 을 끄게 바뀌었으니 화면에 알리는 값도 같은 해석이어야 한다(식 공유 — 아래 모든 값 대조).
+    #[test]
+    fn r1fua_checked_launch_enabled_reports_the_knob_on_windows_and_true_elsewhere() {
+        assert!(update_checked_launch_enabled_for(true, Option::None), "윈도우 미설정 = 켬");
+        assert!(update_checked_launch_enabled_for(true, Some("1")), "\"1\" = 켬");
+        assert!(update_checked_launch_enabled_for(true, Some("")), "빈 값 = 켬");
+        assert!(!update_checked_launch_enabled_for(true, Some("0")), "윈도우 \"0\" = 끔(종전 경로)");
+        for off in [" 0", "0 ", " 0 ", "\t0\r\n"] {
+            assert!(!update_checked_launch_enabled_for(true, Some(off)), "{off:?} 는 앞뒤 공백을 걷으면 \"0\" 이므로 끔(실제 선택과 같은 해석)");
+        }
+        for other in ["false", "off", "00", "no", "2", "true", " ", "0.0", "-0"] {
+            assert!(update_checked_launch_enabled_for(true, Some(other)), "{other:?} 는 공백을 걷어도 \"0\" 이 아니므로 켬");
+        }
+        for v in [Option::None, Some("0"), Some("1"), Some(""), Some("x"), Some(" 0"), Some("0 "), Some("\t0\r\n"), Some(" ")] {
+            assert!(update_checked_launch_enabled_for(false, v), "윈도우가 아니면 노브를 보지 않는다 — 늘 true: {v:?}");
+            assert_eq!(
+                update_checked_launch_enabled_for(true, v),
+                update_checked_launch_from_env(v),
+                "윈도우 판정은 노브 해석 함수와 모든 값에서 같다: {v:?}"
+            );
+        }
+    }
+
+    /// ★R1F-UA 배선 핀: 명령은 `#[tauri::command] async fn`(`smart_app_control` 과 같은 꼴)이고, 노브를 읽는 식이 `install_update` 윈도우 분기의 것과 **글자 그대로 같다** —
+    /// 화면에 알리는 값과 실제 선택이 갈라지지 않게. 노브를 읽는 곳은 정확히 둘(실제 선택 · 화면 보고)이다. 읽기 전용(쓰기·프로세스 생성·종료 없음).
+    /// (등재는 `j2_commands_are_registered_in_invoke_handler` 가 본다. 권한 파일에는 적지 않는다 — `capabilities/default.json` 에는 플러그인 권한 세트뿐이고 `smart_app_control` 도 거기 없다.)
+    #[test]
+    fn r1fua_checked_launch_command_reads_the_same_knob_as_the_windows_branch() {
+        let knob = "cys::env_compat(\"CYS_UPDATE_CHECKED_LAUNCH\").as_deref()";
+        assert_eq!(wu_code(wu_prod()).matches(knob).count(), 2, "노브를 읽는 곳이 둘(install_update 의 윈도우 분기 · update_checked_launch_enabled)이 아니다");
+        let install = wu_code(wu_seg("async fn install_update("));
+        assert_eq!(install.matches(knob).count(), 1, "실제 선택(install_update)이 노브를 읽지 않는다");
+        assert!(
+            install.contains(&format!("if update_checked_launch_from_env({knob}) {{")),
+            "실제 선택의 식이 바뀌었다 — 화면 보고와 같은 식이어야 한다"
+        );
+        assert!(
+            wu_prod().contains("#[tauri::command]\nasync fn update_checked_launch_enabled() -> bool {"),
+            "명령 정의가 `#[tauri::command]` + `async fn` 꼴이 아니다(smart_app_control 과 같은 꼴)"
+        );
+        let cmd = wu_code(wu_seg("async fn update_checked_launch_enabled("));
+        assert_eq!(cmd.matches(knob).count(), 1, "명령이 노브를 읽지 않는다");
+        assert!(
+            cmd.contains(&format!("update_checked_launch_enabled_for(cfg!(windows), {knob})")),
+            "명령이 (윈도우 여부, 노브 값)을 순수 판정에 넘기지 않는다: {cmd}"
+        );
+        for banned in ["set_var", "remove_var", "Command::new", "process::exit", "spawn", "write(", "cleanup_before_exit"] {
+            assert!(!cmd.contains(banned), "노브 보고 명령에 `{banned}` — 읽기 전용이어야 한다");
+        }
+        let pure = wu_code(wu_seg("fn update_checked_launch_enabled_for("));
+        assert!(
+            pure.contains("!is_windows || update_checked_launch_from_env(v)"),
+            "순수 판정이 (윈도우가 아니면 true · 윈도우면 노브 해석)이 아니다: {pure}"
+        );
+    }
+
+    /// ★R1F-UA(S3 minor 2): 설치기가 뜬 직후 기록을 다시 쓰면 판정 보류 창의 기준이 '받기 전'에서 '설치기가 뜬 시각'으로 옮겨진다 — 느린 회선(받는 데 200초)에서
+    /// 설치기가 도는 동안 구 앱을 다시 열어도 헛 알림이 뜨지 않는다. 같은 입력에서 다시 쓰지 않은 기록(수정 전 거동)은 이미 Failed 로 보고된다는 대조를 함께 건다.
+    #[test]
+    fn r1fua_restamp_moves_the_pending_window_to_the_installer_launch_time() {
+        let dir = J2Tmp::new("restamp");
+        let calls = std::cell::Cell::new(0u32);
+        let t0 = 1_000_000u64; // 처음 기록(받기 전)
+        let launched = t0 + 200; // 받는 데 200초가 걸린 뒤 설치기가 떴다
+        let reopened = launched + 50; // 설치기가 도는 중에 구 앱을 다시 열었다
+        // 대조(수정 전): 다시 쓰지 않으면 기록 나이가 250초라 이미 Failed — 설치가 진행 중인데도 헛 알림
+        let old = dir.join("old.json");
+        write_update_attempt_at(&old, "0.14.42", "0.14.43", t0).unwrap();
+        let r = update_attempt_report_at(&old, "0.14.42", reopened, "windows", j2_sac(&calls, Some("on"))).expect("보고");
+        assert_eq!(r["failed"], true, "대조 실패 — 다시 쓰기 전 기록은 헛 알림을 내는 결함 그대로여야 이 검체가 의미가 있다");
+        // 수정 후: 설치기가 뜬 직후 다시 쓴다 → 같은 시각에 열어도 아직 보류(남은 40초) · 기록 유지
+        let p = dir.join(".update-attempt.json");
+        write_update_attempt_at(&p, "0.14.42", "0.14.43", t0).unwrap();
+        restamp_update_attempt_at(true, &p, "0.14.42", "0.14.43", launched);
+        assert_eq!(
+            read_update_attempt_at(&p),
+            Some(j2_attempt("0.14.42", "0.14.43", launched)),
+            "from·to 는 그대로, at 만 설치기가 뜬 시각이어야 한다"
+        );
+        let calls_before = calls.get();
+        let r = update_attempt_report_at(&p, "0.14.42", reopened, "windows", j2_sac(&calls, Some("on"))).expect("pending 보고");
+        assert_eq!(r, json!({"pending": true, "wait_secs": 40u64}), "설치기가 뜬 지 50초 — 창(90초)의 남은 40초");
+        assert_eq!(calls.get(), calls_before, "보류 중에는 레지스트리를 읽지 않는다");
+        assert!(p.exists(), "보류 중에 기록을 지웠다 — 곧 알려야 할 실패를 잃는다");
+        // 경계: 89초는 아직 보류 · 90초부터 종전처럼 Failed(실패를 영영 숨기지 않는다) · 1회 보고 뒤 기록 삭제
+        assert_eq!(
+            update_attempt_report_at(&p, "0.14.42", launched + 89, "windows", j2_sac(&calls, Some("on"))),
+            Some(json!({"pending": true, "wait_secs": 1u64})),
+            "설치기가 뜬 지 89초"
+        );
+        let r = update_attempt_report_at(&p, "0.14.42", launched + 90, "windows", j2_sac(&calls, Some("on"))).expect("Failed 보고");
+        assert_eq!(r["failed"], true, "설치기가 뜬 지 90초가 지나면 종전처럼 Failed 로 보고된다");
+        assert_eq!(r["at"], launched, "보고의 at 은 다시 쓴 시각이다");
+        assert!(!p.exists(), "Failed 보고 뒤 기록이 남아 있다 — 반복 알림");
+    }
+
+    /// ★R1F-UA: 다시 쓰기는 노브(`CYS_UPDATE_VERIFY=0`)를 지키고(꺼지면 아무것도 쓰지 않는다) · 실패해도 설치를 막지 않는다(반환값이 없고 패닉하지 않는다).
+    #[test]
+    fn r1fua_restamp_respects_the_verify_knob_and_never_fails_the_install() {
+        let dir = J2Tmp::new("restamp-knob");
+        let p = dir.join(".update-attempt.json");
+        // 노브 꺼짐: 기록이 없으면 만들지 않고 · 있으면 건드리지 않는다
+        restamp_update_attempt_at(false, &p, "0.14.42", "0.14.43", 1_000_200);
+        assert!(!p.exists(), "노브가 꺼졌는데 기록을 만들었다 — CYS_UPDATE_VERIFY=0 이 기록을 되살린다");
+        write_update_attempt_at(&p, "0.14.42", "0.14.43", 1_000_000).unwrap();
+        let before = std::fs::read_to_string(&p).unwrap();
+        restamp_update_attempt_at(false, &p, "0.14.42", "0.14.43", 1_000_200);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before, "노브가 꺼졌는데 기록을 고쳐 썼다");
+        // 노브 켜짐: 기록이 없어도(처음 쓰기가 실패했던 경우) 지금 시각으로 쓴다 — 설치기가 뜬 뒤의 실패를 알릴 단서가 남는다
+        clear_update_attempt_at(&p);
+        restamp_update_attempt_at(true, &p, "0.14.42", "0.14.43", 1_000_200);
+        assert_eq!(read_update_attempt_at(&p), Some(j2_attempt("0.14.42", "0.14.43", 1_000_200)));
+        // 파일 모양은 처음 기록과 같다 — {from,to,at} 세 키
+        let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({"from": "0.14.42", "to": "0.14.43", "at": 1_000_200u64}));
+        // 쓰기 실패(상위 폴더 없음)는 패닉도 오류 전파도 없다 — 반환값이 없는 함수라 설치(종료)를 막을 방법이 없다
+        restamp_update_attempt_at(true, &dir.join("no-such-dir").join("x.json"), "a", "b", 1);
+        assert_eq!(read_update_attempt_at(&p), Some(j2_attempt("0.14.42", "0.14.43", 1_000_200)), "실패한 다시 쓰기가 다른 기록을 건드렸다");
+    }
+
+    /// ★R1F-UA 배선 핀(윈도우 분기 함수): 다시 쓰기는 `settle_launch(...)?;` **뒤** · `cleanup_before_exit` **앞**에 정확히 한 번이고, 둘 사이에는 이 한 줄뿐이다 —
+    /// 성공 경로의 순서·부작용은 이 한 줄 말고 바뀌지 않는다. 실패 처리 클로저·맥/리눅스 경로(`install_update`)에는 없다(막혔을 때 기록을 되살리면 안 된다).
+    #[test]
+    fn r1fua_windows_branch_restamps_exactly_once_after_a_successful_launch() {
+        let code = wu_code(wu_seg("async fn install_update_checked_windows("));
+        let call = "restamp_update_attempt_at(verify_on, attempt_path, env!(\"CARGO_PKG_VERSION\"), &update.version, unix_now_secs());";
+        assert_eq!(code.matches("restamp_update_attempt_at(").count(), 1, "윈도우 분기에서 기록을 다시 쓰는 곳이 정확히 한 곳이 아니다");
+        assert!(code.contains(call), "다시 쓰기 호출의 모양이 바뀌었다(노브 · 경로 · 현재 버전 · 받은 버전 · 지금 시각): 기대 `{call}`");
+        let settle = code.find("settle_launch(").expect("settle_launch 소실");
+        let end = settle + code[settle..].find("})?;").expect("settle_launch 문장 끝") + "})?;".len();
+        let cleanup = code.find("app.cleanup_before_exit();").expect("종료 준비 소실");
+        let at = code.find(call).unwrap();
+        assert!(end <= at && at < cleanup, "다시 쓰기가 `settle_launch(...)?;` 뒤 · 종료 준비 앞에 있지 않다");
+        assert_eq!(
+            code[end..cleanup].trim(),
+            call,
+            "settle_launch 와 종료 준비 사이에 이 한 줄 말고 다른 것이 끼었다 — 성공 경로의 순서·부작용이 바뀐다"
+        );
+        assert!(!code[settle..end].contains("restamp_update_attempt_at"), "막혔을 때의 정리 클로저에 다시 쓰기가 있다 — 막힌 실행의 기록을 되살린다");
+        // 처음 기록과 같은 from·to 식을 쓴다(현재 버전 = CARGO_PKG_VERSION · 받은 버전 = update.version) · 맥/리눅스 경로는 이 기능을 모른다
+        let base = wu_code(wu_seg("async fn install_update("));
+        assert!(base.contains("env!(\"CARGO_PKG_VERSION\"),") && base.contains("&update.version,"), "처음 기록의 from·to 식이 바뀌었다");
+        assert!(!base.contains("restamp_update_attempt_at"), "install_update(맥·리눅스 · 노브 0 의 종전 경로)에 다시 쓰기가 섞였다");
+        // 제품 코드 전체에서 정의 1 + 호출 1
+        assert_eq!(wu_code(wu_prod()).matches("restamp_update_attempt_at(").count(), 2, "다시 쓰기 함수의 정의·호출이 각각 하나가 아니다");
+    }
+
+    /// ★R1F-UA(S3 minor 6): 윈도우 확인 실행 경로(`update_launch.rs`)는 플러그인 설정이 **기본**이라고 가정한다 — 설치 방식 `/P /R`(Passive) · '추가 인자 없음'. 누가
+    /// `plugins.updater.windows`(`installMode`·`installerArgs`)를 설정에 넣거나 플러그인 `Builder::installer_arg(s)` 를 쓰면 플러그인 경로는 그 설정을 따르지만 새 경로는 조용히 무시한다 —
+    /// 이 검체가 붉어져 새 경로(`nsis_update_params`)도 함께 고치게 한다. 바로 위 검체(플러그인 버전·productName)와 같은 장르다.
+    #[test]
+    fn r1fua_updater_plugin_settings_assumed_by_the_checked_launch_path_are_pinned() {
+        // (1) 설정 파일 — `plugins.updater` 에 `windows` 키가 없다. 기본 설정에 updater 항목이 실제로 있어야(구조가 옮겨져 핀이 공허해지지 않게) 한다.
+        let base: Value = serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json 판독");
+        let win: Value = serde_json::from_str(include_str!("../tauri.windows.conf.json")).expect("tauri.windows.conf.json 판독");
+        assert!(
+            base.pointer("/plugins/updater/pubkey").is_some() && base.pointer("/plugins/updater/endpoints").is_some(),
+            "tauri.conf.json 의 plugins.updater(pubkey·endpoints)가 보이지 않는다 — 구조가 옮겨졌으면 이 핀도 따라가야 한다"
+        );
+        // 양성 대조 — 같은 판정이 `windows` 키가 있는 설정을 실제로 잡아낸다(핀이 공허하지 않다는 증거)
+        let has_windows_key = |c: &Value| c.pointer("/plugins/updater/windows").is_some();
+        assert!(has_windows_key(&json!({"plugins": {"updater": {"windows": {"installMode": "quiet"}}}})), "양성 대조 실패 — 판정이 `windows` 키를 못 본다");
+        assert!(has_windows_key(&json!({"plugins": {"updater": {"windows": {"installerArgs": ["/S"]}}}})), "양성 대조 실패 — installerArgs 도 `windows` 아래에 있다");
+        assert!(!has_windows_key(&json!({"plugins": {"updater": {"pubkey": "x", "endpoints": []}}})), "음성 대조 실패 — `windows` 키가 없는 설정을 있다고 한다");
+        for (name, conf) in [("tauri.conf.json", &base), ("tauri.windows.conf.json", &win)] {
+            assert!(
+                !has_windows_key(conf),
+                "{name} 의 plugins.updater 에 `windows`(installMode·installerArgs) 키가 생겼다 — 플러그인 경로는 따르지만 새 경로(update_launch.rs 의 `/P /R` · 추가 인자 없음)는 무시한다. nsis_update_params 를 함께 고쳐라"
+            );
+        }
+        // (2) 코드 — 플러그인 등록은 `Builder::new().build()` 꼴이고 설치 인자를 더하는 호출(`installer_arg`·`installer_args`·`clear_installer_args`)이 없다.
+        let prod = wu_code(wu_prod());
+        assert_eq!(
+            prod.matches("tauri_plugin_updater::Builder::new().build()").count(),
+            1,
+            "업데이터 플러그인 등록이 `Builder::new().build()` 꼴이 아니다 — 플러그인 설정이 바뀌면 새 경로(update_launch.rs)도 함께 고쳐라"
+        );
+        let feedback = wu_code(include_str!("feedback.rs"));
+        for (name, code) in [("main.rs", &prod), ("feedback.rs", &feedback)] {
+            assert!(
+                !code.contains("installer_arg"),
+                "{name} 에 `installer_arg*` 호출이 생겼다 — 플러그인 경로는 따르지만 새 경로는 무시한다. nsis_update_params 를 함께 고쳐라"
+            );
+        }
+        // (3) 새 경로가 가정하는 값 그대로 — 설정이 없을 때의 인자 문자열(현재 실행 인자 없음)
+        assert_eq!(cys::update_launch::nsis_update_params(&[]), "/P /R /UPDATE /ARGS");
+    }
+
+    /// ★J2 배선 핀: 세 명령(J2 의 둘 + R1F-UA 가 더한 확인 실행 노브 pull)이 invoke_handler 에 등재돼 있다(누락 = 런타임 'command not found' — UI 의 pull 은 조용히 실패한다).
+    #[test]
+    fn j2_commands_are_registered_in_invoke_handler() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let i = prod.find("tauri::generate_handler![").expect("invoke_handler 소실");
+        let reg = &prod[i..i + prod[i..].find("\n        ])").expect("핸들러 목록 끝")];
+        for name in ["update_attempt_report", "smart_app_control", "update_checked_launch_enabled"] {
+            assert!(
+                reg.lines().any(|l| l.trim() == format!("{name},")),
+                "{name} 이 invoke_handler 에 등재되지 않았다"
+            );
+        }
+    }
+
+    /// ★J2 경계 핀: 설치 후 핸드오프·재시작 후 판정 함수(`decide_pending_update`·`maybe_apply_pending_update`)는 이 기능을 모른다
+    /// (동작 한 줄도 바꾸지 않는다) · 명령 두 개는 모두 노브·읽기 전용 · `reg` 는 query 만, 콘솔 창은 억제.
+    #[test]
+    fn j2_boundaries_untouched_and_registry_access_is_read_only() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let seg = |start: &str| -> &str {
+            let s = prod.find(start).unwrap_or_else(|| panic!("`{start}` 소실"));
+            &prod[s..s + prod[s..].find("\n}\n").expect("fn 끝")]
+        };
+        for f in ["fn decide_pending_update(", "fn maybe_apply_pending_update("] {
+            let b = seg(f);
+            assert!(
+                !b.contains("update_attempt") && !b.contains("smart_app_control"),
+                "{f} 에 J2 가 섞였다 — 설치 후 판정 동작은 바뀌면 안 된다"
+            );
+        }
+        let report = seg("async fn update_attempt_report(");
+        let knob = report.find("update_verify_from_env(").expect("update_attempt_report 에 노브가 없다");
+        let spawn = report.find("spawn_blocking(").expect("blocking 풀 경유 소실");
+        assert!(knob < spawn, "노브가 꺼졌으면 어떤 작업도 하기 전에 null 이어야 한다");
+        // 보고 명령의 입력: 경로·현재 버전·지금·OS·SAC 조회 — 하나라도 다른 값으로 바뀌면 판정이 엉뚱한 곳을 본다
+        for want in [
+            "&update_attempt_path()",
+            "env!(\"CARGO_PKG_VERSION\")",
+            "unix_now_secs()",
+            "std::env::consts::OS",
+            "smart_app_control_state",
+        ] {
+            assert!(report.contains(want), "update_attempt_report 가 `{want}` 를 쓰지 않는다 — 판정 입력이 바뀌었다");
+        }
+        let app_cmd = seg("async fn smart_app_control(");
+        assert!(app_cmd.contains("smart_app_control_state"), "smart_app_control 이 상태 판독 함수를 쓰지 않는다");
+        let sac = seg("fn smart_app_control_state(");
+        assert!(sac.contains("VerifiedAndReputablePolicyState") && sac.contains("\"query\""), "reg query 대상 소실");
+        assert!(
+            sac.contains("r\"HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy\"") && sac.contains("\"/v\""),
+            "조회 대상 키 경로·값 지정(/v) 이 바뀌었다 — 스마트 앱 컨트롤 정책 키(CI\\Policy · VerifiedAndReputablePolicyState)"
+        );
+        assert!(sac.contains("no_console(&mut cmd)"), "reg.exe 호출에 no_console 이 없다 — 윈도우 콘솔 창이 번쩍인다");
+        for write_verb in ["\"add\"", "\"delete\"", "\"import\"", "\"save\"", "\"copy\"", "\"restore\""] {
+            assert!(!sac.contains(write_verb), "레지스트리 쓰기 동사 {write_verb} — 이 조회는 읽기 전용이다");
+        }
+        let cfg_at = sac.find("#[cfg(windows)]").expect("윈도우 분기(본문 안 cfg 블록) 소실");
+        let call_at = sac.find("Command::new(").expect("reg 호출 소실");
+        assert!(cfg_at < call_at, "reg 호출이 #[cfg(windows)] 블록 밖에 있다");
+    }
+
     // HUD-2: open_url 화이트리스트 — https·허용 도메인만 통과, 위장 host(userinfo/서브도메인 사칭) 차단.
     #[test]
     fn open_url_whitelist_blocks_spoofed_and_nonhttps() {
@@ -8024,6 +12749,82 @@ mod tests {
         );
     }
 
+    /// ★U4-B2③ 핀: 사이드카가 재주입을 **못 했다**고 적으면(`reinject=skipped`) 브리지는 그것을
+    /// 수치 (0,0) = '완전 성공'으로 읽지 않는다 — 3상 판독. 토큰 부재(이미 최신 no-op)는 종전대로 무경고.
+    #[test]
+    fn parse_reinject_result_distinguishes_skipped_from_success() {
+        assert_eq!(
+            parse_reinject_result(
+                "[pack-update] 팩 2.0.0 반영 완료\nPACK_UPDATE_RESULT pack_version=2.0.0 reinject=skipped reason=daemon_rpc_failed\n"
+            ),
+            ReinjectResult::Skipped { reason: "daemon_rpc_failed".into() }
+        );
+        assert_eq!(
+            parse_reinject_result("PACK_UPDATE_RESULT pack_version=2.0.0 injected=2 skipped=1 deferred=3 failed=4"),
+            ReinjectResult::Measured { failed: 4, deferred: 3 },
+            "노드 카운트 skipped=N 을 재주입 스킵으로 오독하면 안 된다"
+        );
+        assert_eq!(parse_reinject_result("[pack-update] 이미 최신 — 반영 0. no-op.\n"), ReinjectResult::Absent);
+        assert_eq!(parse_reinject_result(""), ReinjectResult::Absent);
+        // 사유 누락도 스킵이다(사유는 표시용일 뿐 판정 축이 아니다).
+        assert_eq!(
+            parse_reinject_result("PACK_UPDATE_RESULT pack_version=2.0.0 reinject=skipped"),
+            ReinjectResult::Skipped { reason: "unknown".into() }
+        );
+        // 기존 수치 판독기는 무회귀 — 스킵은 수치가 아니다(0,0).
+        assert_eq!(
+            parse_reinject_counts("PACK_UPDATE_RESULT pack_version=2.0.0 reinject=skipped reason=daemon_rpc_failed"),
+            (0, 0)
+        );
+    }
+
+    /// ★U4-B2③ 소스 핀: 스킵이면 `update-warning` 을 띄우고 `pack-updated` 에 `reinject_skipped` 를
+    /// 실어 완료 토스트가 '재주입 완료'로 단정하지 않게 한다. 종료코드 판정(degraded/실패)은 무변경.
+    ///
+    /// ★review1 M2 FIX #4(blocking): 종전 핀은 문자열 **존재**만 봤다 — `reinject_skipped` 필드명·
+    /// `ReinjectResult::Skipped` 변형명은 다른 줄(예: 6441행 `match &reinject { ... }`)에도 나타나므로,
+    /// 격리 사본 뮤테이션(review1 G4b)으로 ⓐ `reinject_skipped` 판정을 `matches!` 실계산 대신 고정값
+    /// `false` 로, ⓑ 스킵 갈래의 `update-warning` 이벤트명을 바꿔도 이 핀은 여전히 초록이었다(cys-app
+    /// 137/137 통과 — 공허 검체). 아래는 ⓐ `let reinject_skipped = matches!(...)` 가 고정값으로
+    /// 치환되지 않았는지, ⓑ `if let ReinjectResult::Skipped` 블록 **안에서** `update-warning` 이
+    /// 실제로 발화하는지를 블록 범위로 좁혀 확인한다.
+    #[test]
+    fn install_pack_update_warns_on_reinject_skip_source_pin() {
+        let src = include_str!("main.rs");
+        let at = src.find("async fn install_pack_update(").expect("install_pack_update 소실");
+        let end = at + src[at..].find("\n}\n").expect("fn 끝");
+        let body = &src[at..end];
+        assert!(body.contains("parse_reinject_result(&stdout)"), "3상 판독을 쓰지 않는다");
+        assert!(body.contains("ReinjectResult::Skipped"), "스킵 갈래가 없다");
+        assert!(body.contains("\"reinject_skipped\""), "pack-updated 에 스킵 표식이 없다");
+        assert!(
+            body.contains("out.status.code() == Some(cys::pack::EXIT_REINJECT_DEGRADED)"),
+            "종료코드 판정이 바뀌었다(범위 밖)"
+        );
+        // ⓐ reinject_skipped 판정이 실계산(matches!)이다 — 고정값으로 위장되지 않았는지.
+        assert!(
+            body.contains("let reinject_skipped = matches!(reinject, ReinjectResult::Skipped { .. });"),
+            "reinject_skipped 판정이 matches! 실계산이 아니게 됐다(고정값 회귀 — review1 G4b)"
+        );
+        // ⓑ if let Skipped 블록 범위로 좁혀 update-warning 발화를 확인(review1 G4b 재현 방지).
+        let skip_at = body
+            .find("if let ReinjectResult::Skipped { reason } = &reinject {")
+            .expect("스킵 갈래 조건 소실");
+        let skip_end = body[skip_at..]
+            .find("} else if failed > 0")
+            .map(|i| skip_at + i)
+            .expect("스킵 갈래 끝(else if failed) 경계 소실");
+        let skip_block = &body[skip_at..skip_end];
+        assert!(
+            skip_block.contains("\"update-warning\""),
+            "스킵 갈래 블록 안에서 update-warning 이벤트가 사라졌다(review1 G4b 회귀)"
+        );
+        assert!(
+            skip_block.contains("\"reinject_skipped\": true"),
+            "스킵 갈래의 reinject_skipped 표식이 상수 true 가 아니게 바뀌었다"
+        );
+    }
+
     // check_pack_update 호환 게이트(DESIGN §7-④ 축2): min_binary_version > 실행 바이너리 = 무중단 거부.
     #[test]
     fn pack_binary_too_old_gate() {
@@ -8039,6 +12840,308 @@ mod tests {
         // 파싱 실패 = 거부(보수적).
         assert!(pack_binary_too_old("not-a-version", "0.4.2"));
         assert!(pack_binary_too_old("0.5.0", "garbage"));
+    }
+
+    // ── U9(0.14.41) check_pack_update 타입 있는 판정 — '최신'은 확인이 실제로 성공했을 때만 ──
+    // 종전: 매니페스트 해석 실패·.pack-version 부재/손상을 전부 Ok(None)='새 팩 없음'으로 접어
+    // UI 가 '0'·"최신 버전입니다"를 띄웠다(보고서 R4). CLI 와 판정 순서도 달랐다(R7 — GUI 는 semver 만).
+    // 이 표들은 CLI(cys.rs pack_update_from_dir·version_gates)와 같은 순서·같은 결과를 요구한다.
+
+    fn u9_manifest(ver: &str, rev: u32, channel: &str, min: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "pack_version": ver, "pro_revision": rev, "channel": channel,
+            "min_binary_version": min, "key_id": "TESTKEY", "signed_at": 1, "expires_at": 2,
+            "digest": "", "files": {},
+        }))
+        .unwrap()
+    }
+
+    fn u9_disk(v: &str) -> std::io::Result<String> {
+        Ok(v.to_string())
+    }
+
+    fn u9_state(channel: &str, base: &str, rev: u32) -> cys::pack::PackStateRead {
+        cys::pack::PackStateRead::Valid(cys::pack::PackState {
+            channel: channel.to_string(),
+            base_version: base.to_string(),
+            pro_revision: rev,
+        })
+    }
+
+    #[test]
+    fn u9_classify_basic_three_outcomes_unchanged() {
+        use cys::pack::PackStateRead::Absent;
+        let m = u9_manifest("0.14.41", 0, "free", "0.14.31");
+        assert!(matches!(
+            classify_pack_check(&m, u9_disk("0.14.40\n"), Absent, "0.14.40"),
+            PackCheck::Available { .. }
+        ));
+        let same = u9_manifest("0.14.40", 0, "free", "0.14.31");
+        assert!(matches!(
+            classify_pack_check(&same, u9_disk("0.14.40"), Absent, "0.14.40"),
+            PackCheck::None { .. }
+        ));
+        let too_new = u9_manifest("0.14.41", 0, "free", "0.99.0");
+        assert!(matches!(
+            classify_pack_check(&too_new, u9_disk("0.14.40"), Absent, "0.14.40"),
+            PackCheck::BinaryTooOld { .. }
+        ));
+    }
+
+    #[test]
+    fn u9_classify_manifest_unreadable_is_not_latest() {
+        use cys::pack::PackStateRead::Absent;
+        // 캡티브 포털·사내 프록시가 HTTP 200 으로 HTML 을 돌려주는 경우(반박 R4 ⓑ) — '최신' 금지.
+        for body in [&b"<html>captive portal</html>"[..], &b"{}"[..], &b""[..]] {
+            let c = classify_pack_check(body, u9_disk("0.14.40"), Absent, "0.14.40");
+            assert!(matches!(c, PackCheck::ManifestUnreadable { .. }), "{body:?} → {c:?}");
+        }
+        // pack_version 자체가 해석 불가 — CLI 는 UpToDate(no-op)지만 GUI 는 '최신'이라 말하지 않는다.
+        let g = u9_manifest("garbage", 0, "free", "");
+        let c = classify_pack_check(&g, u9_disk("0.14.40"), Absent, "0.14.40");
+        assert!(matches!(c, PackCheck::ManifestUnreadable { .. }), "{c:?}");
+    }
+
+    #[test]
+    fn u9_classify_disk_unknown_is_not_latest() {
+        use cys::pack::PackStateRead::Absent;
+        let m = u9_manifest("0.14.40", 0, "free", "0.14.31");
+        let missing = classify_pack_check(
+            &m,
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            Absent,
+            "0.14.40",
+        );
+        assert_eq!(
+            missing,
+            PackCheck::DiskUnknown {
+                reason: "pack-version-missing",
+                detail: String::new(),
+                version: "0.14.40".into()
+            }
+        );
+        let unreadable = classify_pack_check(
+            &m,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            Absent,
+            "0.14.40",
+        );
+        assert!(
+            matches!(unreadable, PackCheck::DiskUnknown { reason: "pack-version-unreadable", .. }),
+            "{unreadable:?}"
+        );
+        for junk in ["", "  \n", "not-a-version"] {
+            let c = classify_pack_check(&m, u9_disk(junk), Absent, "0.14.40");
+            assert!(
+                matches!(c, PackCheck::DiskUnknown { reason: "pack-version-unreadable", .. }),
+                "{junk:?} → {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn u9_classify_follows_cli_state_and_channel_order() {
+        // GUI 표시 순서(classify_pack_check): state 손상 → base 불일치 → 튜플 → (튜플이 newer 일 때만)
+        // pro→free 거부 → min_binary. CLI(cys.rs pack_update_from_dir)는 튜플을 보지 않고 pro→free 를
+        // 항상 먼저 거부한다(그 순서는 리팩터하지 않는다 — 반박 D2 · 설치 경계 무변경). GUI 만 '표시'를
+        // 튜플 뒤로 옮긴다(리뷰1 F1 — 그렇지 않으면 pro 사용자가 늘 거짓 경보를 본다).
+        // 사유 이름은 CLI 의 typed 오류 태그와 같다(아래 소스 핀이 CLI 쪽 실존을 고정).
+        let newer = u9_manifest("0.14.41", 0, "free", "0.14.31");
+        let c = classify_pack_check(
+            &newer,
+            u9_disk("0.14.40"),
+            cys::pack::PackStateRead::Corrupt("파싱 실패".into()),
+            "0.14.40",
+        );
+        assert!(matches!(c, PackCheck::DiskUnknown { reason: "pack-state-corrupt", .. }), "{c:?}");
+        let c = classify_pack_check(&newer, u9_disk("0.14.40"), u9_state("free", "0.14.39", 0), "0.14.40");
+        assert!(matches!(c, PackCheck::DiskUnknown { reason: "pack-state-mismatch", .. }), "{c:?}");
+        // pro 설치 + 공개(free) 번들 + 공개 base 가 pro base 보다 strictly-newer → 채널 거부
+        // (설치 버튼을 띄우지 않는다 — 누르면 CLI 가 거부).
+        let c = classify_pack_check(&newer, u9_disk("0.14.40"), u9_state("pro", "0.14.40", 2), "0.14.40");
+        assert!(matches!(c, PackCheck::ChannelRefused { .. }), "{c:?}");
+        // 정상 free state(base 일치)는 종전처럼 판정된다.
+        let c = classify_pack_check(&newer, u9_disk("0.14.40"), u9_state("free", "0.14.40", 0), "0.14.40");
+        assert!(matches!(c, PackCheck::Available { .. }), "{c:?}");
+        // CLI 쪽 typed 태그 실존 — 이름이 갈라지면 여기서 red.
+        let cli = include_str!("../../src/bin/cys.rs");
+        for tag in ["[pack-state-corrupt]", "[pack-state-mismatch]", "[pack-channel-refused]"] {
+            assert!(cli.contains(tag), "CLI typed 태그 부재: {tag}");
+        }
+    }
+
+    /// ★리뷰1 F1 회귀 핀: pro 설치 + 공개(free) base 가 **같거나 더 낮음** → 채널 거부(빨간 !) 금지.
+    /// 되돌리면(채널 거부를 튜플 앞으로 되돌리거나, 튜플 결과를 무시) RED — pro 사용자에게
+    /// v0.14.40 에서 있던 중립 표시가 사라지고 오너가 신고한 증상(경보만 뜨고 설치할 게 없음)이
+    /// 재현된다는 뜻이다.
+    #[test]
+    fn u9_channel_refused_only_when_public_base_strictly_newer_than_pro_disk() {
+        let running = "0.14.40";
+        // pro base 0.14.40 rev2 × 공개 0.14.40(같음) → None(경보 없음), ChannelRefused 아님.
+        let same = u9_manifest("0.14.40", 0, "free", "");
+        let c = classify_pack_check(&same, u9_disk("0.14.40"), u9_state("pro", "0.14.40", 2), running);
+        assert!(matches!(c, PackCheck::None { .. }), "same-base 인데 채널 거부로 경보: {c:?}");
+        // pro base 0.14.40 rev2 × 공개 0.14.39(더 낮음) → None.
+        let older = u9_manifest("0.14.39", 0, "free", "");
+        let c = classify_pack_check(&older, u9_disk("0.14.40"), u9_state("pro", "0.14.40", 2), running);
+        assert!(matches!(c, PackCheck::None { .. }), "older 공개인데 채널 거부로 경보: {c:?}");
+        // pro base 0.14.40 rev0(free→pro 갓 전환) × 공개 0.14.40(같음) → 그래도 None.
+        let c = classify_pack_check(&same, u9_disk("0.14.40"), u9_state("pro", "0.14.40", 0), running);
+        assert!(matches!(c, PackCheck::None { .. }), "rev0 pro 인데 채널 거부로 경보: {c:?}");
+        // 대조군: 공개가 진짜 더 새것(0.14.41)이면 여전히 채널 거부(설치 버튼 없음 — 설치 경계 무변경).
+        let strictly_newer = u9_manifest("0.14.41", 0, "free", "");
+        let c = classify_pack_check(&strictly_newer, u9_disk("0.14.40"), u9_state("pro", "0.14.40", 2), running);
+        assert!(matches!(c, PackCheck::ChannelRefused { .. }), "진짜 newer 인데 경보가 사라짐: {c:?}");
+    }
+
+    /// cys.rs 의 version_gates 단위테스트 행(assert_eq!(version_gates(…), VersionGate::X))을 소스에서
+    /// 그대로 읽는다 — CLI 표가 바뀌면 이 파리티도 자동으로 따라간다(CLI 코드는 건드리지 않는다).
+    fn u9_cli_version_gate_rows() -> Vec<(String, u32, String, u32, String, String, String)> {
+        let src = include_str!("../../src/bin/cys.rs");
+        let mut rows = Vec::new();
+        for l in src.lines() {
+            let Some(rest) = l.trim().strip_prefix("assert_eq!(version_gates(") else { continue };
+            let p: Vec<&str> = rest.split('"').collect();
+            if p.len() < 9 {
+                continue;
+            }
+            let num = |s: &str| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>();
+            let gate = p[8].split("VersionGate::").nth(1).unwrap_or("").trim_end_matches(|c: char| !c.is_alphanumeric());
+            rows.push((
+                p[1].to_string(),
+                num(p[2]).expect("remote rev"),
+                p[3].to_string(),
+                num(p[4]).expect("disk rev"),
+                p[5].to_string(),
+                p[7].to_string(),
+                gate.to_string(),
+            ));
+        }
+        rows
+    }
+
+    #[test]
+    fn u9_classify_parity_with_cli_version_gates_table() {
+        let rows = u9_cli_version_gate_rows();
+        // 공허 방지: version_gates_three_axes(8) + pro_revision_tuple_transitions(5).
+        assert!(rows.len() >= 13, "CLI 표 파싱 행 수 부족: {}", rows.len());
+        for (rv, rrev, dv, drev, min, running, gate) in rows {
+            let pro = rrev > 0 || drev > 0;
+            let m = u9_manifest(&rv, rrev, if pro { "pro" } else { "free" }, &min);
+            let state = if drev > 0 {
+                u9_state("pro", &dv, drev)
+            } else {
+                cys::pack::PackStateRead::Absent
+            };
+            let c = classify_pack_check(&m, u9_disk(&dv), state, &running);
+            let ok = match gate.as_str() {
+                "Apply" => matches!(c, PackCheck::Available { .. }),
+                "BinaryTooOld" => matches!(c, PackCheck::BinaryTooOld { .. }),
+                // CLI UpToDate = 반영 없음. GUI 는 같은 '설치 안 함'이되, 해석 불가면 '최신'이라 말하지 않는다.
+                "UpToDate" if cys::pack::parse_semver(&rv).is_none() => {
+                    matches!(c, PackCheck::ManifestUnreadable { .. })
+                }
+                "UpToDate" => matches!(c, PackCheck::None { .. }),
+                other => panic!("모르는 CLI gate: {other}"),
+            };
+            assert!(ok, "파리티 불일치: remote=({rv},{rrev}) disk=({dv},{drev}) min={min:?} running={running} CLI={gate} GUI={c:?}");
+        }
+    }
+
+    #[test]
+    fn u9_install_pack_update_reports_uptodate_honestly() {
+        // 이미 적용된 팩(CLI UpToDate · exit 0)을 "✅ 팩 업데이트 완료"로 말하던 결함(R5)의 배선 핀:
+        // CLI 가 UpToDate 분기에서 안정 토큰 한 줄을 내고, 브리지가 그것을 읽어 pack-uptodate 로 보낸다.
+        let src = include_str!("main.rs");
+        let a = src.find("async fn install_pack_update(").expect("install_pack_update 부재");
+        let b = src[a..].find("\n}\n").map(|i| a + i).expect("함수 끝");
+        let body = &src[a..b];
+        assert!(body.contains("parse_pack_update_outcome("), "토큰 파싱 배선 부재");
+        assert!(body.contains("\"pack-uptodate\""), "pack-uptodate emit 부재");
+        // 리뷰1 F2(MR1 공허): "pack-uptodate" emit 실재만으로는 `let confirmed = uptodate_confirmed(&tok)`
+        // 를 `let confirmed = true`로 고정해도(디스크 판독 실패에서도 '이미 적용됨'이라는 거짓 안심 —
+        // D3 무력화) 살아남는다. 계산식과, 그 결과가 실제로 confirmed 필드로 들어가는지 둘 다 핀.
+        assert!(body.contains("let confirmed = uptodate_confirmed(&tok)"), "confirmed 계산 배선 부재");
+        assert!(body.contains("\"confirmed\": confirmed"), "confirmed 필드 배선 부재");
+        let cli = include_str!("../../src/bin/cys.rs");
+        let u = cli.find("VersionGate::UpToDate => {\n                println!(").expect("CLI UpToDate 분기");
+        let e = cli[u..].find("VersionGate::BinaryTooOld =>").map(|i| u + i).expect("CLI BinaryTooOld 분기");
+        let arm = &cli[u..e];
+        assert!(arm.contains("pack_update_uptodate_line("), "CLI UpToDate 분기에 결과 토큰 줄 부재");
+        assert!(arm.contains("return Ok(0);"), "CLI UpToDate 종료코드가 바뀌었다(0 유지 계약)");
+    }
+
+    #[test]
+    fn u9_parse_pack_update_outcome_token() {
+        // lib 가 만든 줄을 그대로 되읽는다(계약 왕복) — CRLF·앞뒤 사람용 줄 사이에서도.
+        let line = cys::pack::format_pack_update_outcome("up-to-date", "0.14.40", Some("0.14.40"));
+        let out = format!("[pack-update] 이미 최신 — 반영 0 (remote 0.14.40 ≤ 디스크). no-op.\r\n{line}\r\n");
+        let t = parse_pack_update_outcome(&out).expect("토큰");
+        assert_eq!(
+            t,
+            PackUpdateOutcomeToken {
+                gate: "up-to-date".into(),
+                remote: "0.14.40".into(),
+                disk: "0.14.40".into(),
+                disk_parse_ok: true
+            }
+        );
+        assert!(uptodate_confirmed(&t), "disk == remote · parse ok → 이미 적용됨");
+        // 디스크가 원격보다 앞섬(무중단으로 먼저 전진) → 이미 적용됨.
+        let ahead = cys::pack::format_pack_update_outcome("up-to-date", "0.14.40", Some("0.14.41"));
+        assert!(uptodate_confirmed(&parse_pack_update_outcome(&ahead).unwrap()));
+        // 디스크 판독 실패 → CLI 는 UpToDate 지만 '이미 적용됨' 금지(반박 D3).
+        for disk in [None, Some("garbage"), Some("")] {
+            let l = cys::pack::format_pack_update_outcome("up-to-date", "0.14.40", disk);
+            let t = parse_pack_update_outcome(&l).expect("토큰");
+            assert!(!uptodate_confirmed(&t), "{disk:?} → 거짓 안심");
+        }
+        // 원격 해석 불가(garbage) → '이미 적용됨' 금지.
+        let g = cys::pack::format_pack_update_outcome("up-to-date", "garbage", Some("0.14.40"));
+        assert!(!uptodate_confirmed(&parse_pack_update_outcome(&g).unwrap()));
+        // 토큰 부재(구 사이드카)·반영 경로의 RESULT 토큰만 있음 → None = 종전 pack-updated 경로.
+        assert_eq!(parse_pack_update_outcome("[pack-update] 팩 2.0.0 반영 완료\n"), None);
+        assert_eq!(
+            parse_pack_update_outcome("PACK_UPDATE_RESULT pack_version=2.0.0 injected=1 skipped=0 deferred=0 failed=0"),
+            None
+        );
+        assert_eq!(parse_pack_update_outcome("PACK_UPDATE_OUTCOMEX gate=up-to-date"), None);
+        assert_eq!(parse_pack_update_outcome("PACK_UPDATE_OUTCOME remote=1.0.0"), None, "gate 없음 = 형식 불명");
+    }
+
+    #[test]
+    fn u9_pack_check_json_status_contract() {
+        // UI(updatestate.ts packFromBackend)가 읽는 status 문자열 — 여기서 바뀌면 UI 는 '응답 형식 불명'이 된다.
+        let url = "https://example.invalid/pack-manifest.json";
+        let cases = [
+            (PackCheck::Available { version: "2".into(), disk: "1".into(), min_binary: "".into() }, "available"),
+            (PackCheck::None { version: "1".into(), disk: "1".into() }, "none"),
+            (PackCheck::BinaryTooOld { version: "2".into(), disk: "1".into(), min_binary: "9".into() }, "binary-too-old"),
+            (PackCheck::ChannelRefused { version: "2".into(), disk: "1".into() }, "channel-refused"),
+            (PackCheck::ManifestUnreadable { detail: "x".into() }, "manifest-unreadable"),
+            (
+                PackCheck::DiskUnknown { reason: "pack-version-missing", detail: "".into(), version: "1".into() },
+                "disk-unknown",
+            ),
+        ];
+        for (c, st) in cases {
+            let v = c.to_json(url);
+            assert_eq!(v["status"], st, "{c:?}");
+            assert_eq!(v["manifest_url"], url);
+        }
+        // UI 파서가 기대하는 핵심 필드.
+        let a = PackCheck::Available { version: "2".into(), disk: "1".into(), min_binary: "0.1".into() }.to_json(url);
+        assert_eq!(a["pack_version"], "2");
+        assert_eq!(a["disk_version"], "1");
+        assert_eq!(a["binary_too_old"], false);
+        let d = PackCheck::DiskUnknown { reason: "pack-state-corrupt", detail: "d".into(), version: "1".into() }
+            .to_json(url);
+        assert_eq!(d["reason"], "pack-state-corrupt");
+        // 진단 문구 상한(원격 HTML 이 창에 쏟아지지 않게) — 한글 char 경계 안전.
+        let long = "가".repeat(500);
+        let clipped = clip_detail(&long, 160);
+        assert_eq!(clipped.chars().count(), 161);
+        assert!(clipped.ends_with('…'));
     }
 
     // 회귀: windows 업데이트 핸드오프가 데몬을 taskkill /F로 하드킬하면 cysd의
@@ -8126,6 +13229,412 @@ mod tests {
             assert!(hung.is_err(), "무응답 소켓은 timeout(Elapsed)이어야 한다");
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 0.14.42 사용량 계정 병합·fan-out 재현 검체(수정 전 적색) ──────────────
+
+    /// 관측 경로 오류(source_error)는 **아직 관측되지 않은** 계정 행에서 어느 데몬이 냈든 살아남는다 —
+    /// 본부(오류 없음)와 부서(agy 거부)가 같은 antigravity 행을 내면 부서의 오류가 먼저 온 본부 행에 묻혔다.
+    #[test]
+    fn merge_account_rows_carries_source_error_for_unobserved_rows() {
+        let hq = json!({"accounts": [
+            {"provider": "antigravity", "account_id": "default", "label": "Antigravity (agy)",
+             "profiles": [".gemini/antigravity-cli"], "rate": [], "updated_at": null, "source": "", "source_error": null}
+        ]});
+        let dept = json!({"accounts": [
+            {"provider": "antigravity", "account_id": "default", "label": "Antigravity (agy)",
+             "profiles": [".gemini/antigravity-cli"], "rate": [], "updated_at": null, "source": "", "source_error": "agy_http_403"}
+        ]});
+        let m = merge_account_rows(&[hq.clone(), dept.clone()]);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0]["source_error"], "agy_http_403", "부서가 낸 경로 오류가 병합에서 사라졌다: {}", m[0]);
+        // 순서를 바꿔도 같다
+        assert_eq!(merge_account_rows(&[dept.clone(), hq.clone()])[0]["source_error"], "agy_http_403");
+        // 한 데몬이라도 신선 관측을 냈으면 그 행이 이기고, 남의 오류를 덧씌우지 않는다
+        let seen = json!({"accounts": [
+            {"provider": "antigravity", "account_id": "default", "label": "Antigravity (agy)",
+             "profiles": [".gemini/antigravity-cli"], "rate": [{"label": "5h", "used_pct": 10.0, "resets_at": null}],
+             "updated_at": 1000.0, "source": "agy-rpc", "source_error": null}
+        ]});
+        let m = merge_account_rows(&[dept.clone(), seen.clone()]);
+        assert_eq!(m[0]["source"], "agy-rpc");
+        assert!(m[0]["source_error"].is_null(), "관측된 행에 남의 오류가 붙었다: {}", m[0]);
+        // 서로 다른 계정은 접히지 않는다(키 = provider + account_id)
+        let two = json!({"accounts": [
+            {"provider": "claude", "account_id": "u-1", "label": "a", "profiles": [".claude-1"], "updated_at": null},
+            {"provider": "claude", "account_id": "u-2", "label": "b", "profiles": [".claude-2"], "updated_at": null}
+        ]});
+        assert_eq!(merge_account_rows(&[two]).len(), 2);
+    }
+
+    // ── 0.14.43 계정 병합 가산 키(current_profiles · in_use · alias) 검체 ──────────────
+    // 데몬 행의 새 키는 구버전 데몬에는 없다. UI 는 '키 부재'(구버전)·'null'(판정 불가)·'빈 배열'(이전 로그인)을 서로 다르게
+    // 읽으므로 병합은 이 셋을 뭉개지 않는다 — 없는 키를 지어내지도, 있는 값을 승자 값 하나로 덮지도 않는다.
+
+    /// 병합 검체용 claude 행 — 가산 키는 `extra`(객체)에 호출자가 넣은 것만 들어간다(구버전 행 = 가산 키 없음).
+    fn acct_merge_row(updated_at: f64, extra: Value) -> Value {
+        let mut row = json!({"provider": "claude", "account_id": "u-1", "label": "a@corp.example",
+            "profiles": [".claude-1"], "rate": [], "updated_at": updated_at, "source": "statusline"});
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            row[k.as_str()] = v.clone();
+        }
+        row
+    }
+
+    /// 데몬 하나의 `usage.accounts` 응답.
+    fn acct_merge_resp(rows: Vec<Value>) -> Value {
+        json!({"accounts": rows})
+    }
+
+    /// 세 응답(본부 + 부서 둘)의 입력 순서·관측 시각 배정 6가지.
+    fn acct_merge_perms3() -> [[usize; 3]; 6] {
+        [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+    }
+
+    /// current_profiles 는 승자(updated_at 큰 쪽)와 무관하게 응답 전체의 합집합이다(정렬·중복 제거 — profiles 와 같은 방식).
+    /// 본부는 좌석 폴더에, 부서는 개인 폴더·좌석 폴더에 로그인된 것으로 본다 — 승자 값 하나만 남기면 다른 데몬이 본 폴더가 사라진다.
+    #[test]
+    fn merge_account_rows_unions_current_profiles_whoever_wins() {
+        for (hq_ts, dept_ts) in [(100.0, 200.0), (200.0, 100.0)] {
+            let hq = acct_merge_resp(vec![acct_merge_row(hq_ts, json!({"current_profiles": [".cys/claude"]}))]);
+            let dept = acct_merge_resp(vec![acct_merge_row(
+                dept_ts,
+                json!({"current_profiles": [".cys/claude", ".claude-2", ".cys/claude"]}),
+            )]);
+            for resps in [[hq.clone(), dept.clone()], [dept.clone(), hq.clone()]] {
+                let m = merge_account_rows(&resps);
+                assert_eq!(m.len(), 1);
+                assert_eq!(
+                    m[0]["current_profiles"],
+                    json!([".claude-2", ".cys/claude"]),
+                    "hq_ts={hq_ts} dept_ts={dept_ts}: 승자와 무관하게 합집합·정렬·중복 제거여야 한다: {}",
+                    m[0]
+                );
+            }
+        }
+        // 본부 + 부서 둘 — 가운데 부서가 구버전이고 가장 새 관측(승자)이어도 앞뒤 응답의 폴더가 합쳐진다. 입력 순서 6가지 모두 같다
+        let rows = [
+            acct_merge_resp(vec![acct_merge_row(100.0, json!({"current_profiles": [".cys/claude"]}))]),
+            acct_merge_resp(vec![acct_merge_row(300.0, json!({}))]), // 구버전 · 승자
+            acct_merge_resp(vec![acct_merge_row(
+                200.0,
+                json!({"current_profiles": [".cys/claude-default-dept-1", ".claude-2"]}),
+            )]),
+        ];
+        for ord in acct_merge_perms3() {
+            let resps: Vec<Value> = ord.iter().map(|&i| rows[i].clone()).collect();
+            let m = merge_account_rows(&resps);
+            assert_eq!(
+                m[0]["current_profiles"],
+                json!([".claude-2", ".cys/claude", ".cys/claude-default-dept-1"]),
+                "입력 순서 {ord:?}: {}",
+                m[0]
+            );
+            assert_eq!(m[0]["updated_at"], json!(300.0), "승자는 가장 새 관측이다(종전 규칙)");
+        }
+        // 빈 배열도 '키 있음'이다 — 둘 다 빈 배열이면 빈 배열이 남는다(지금은 어느 폴더에도 로그인돼 있지 않은 이전 계정이라는 신호.
+        // 키를 지우면 UI 가 profiles 로 폴백해 옛 로그인 폴더를 '현재'로 되살린다). 한쪽만 비었으면 다른 쪽 값.
+        let empty = |ts: f64| acct_merge_resp(vec![acct_merge_row(ts, json!({"current_profiles": []}))]);
+        let m = merge_account_rows(&[empty(100.0), empty(200.0)]);
+        assert_eq!(m[0].get("current_profiles"), Some(&json!([])), "둘 다 빈 배열이면 빈 배열이 남아야 한다: {}", m[0]);
+        let one = acct_merge_resp(vec![acct_merge_row(50.0, json!({"current_profiles": [".claude-2"]}))]);
+        for resps in [[empty(100.0), one.clone()], [one.clone(), empty(100.0)]] {
+            assert_eq!(merge_account_rows(&resps)[0]["current_profiles"], json!([".claude-2"]));
+        }
+    }
+
+    /// 어느 응답에도 current_profiles 가 없으면(전부 구버전) 병합 결과에도 키를 만들지 않는다 — UI 는 키 부재를
+    /// '구버전 → profiles 폴백'으로, 빈 배열을 '이전 로그인'으로 읽는다. 없는 키를 빈 배열로 만들면 모든 claude 계정이 '이전 로그인'이 된다.
+    #[test]
+    fn merge_account_rows_makes_no_current_profiles_key_when_every_response_is_legacy() {
+        let legacy = |ts: f64, profs: Value| acct_merge_resp(vec![acct_merge_row(ts, json!({"profiles": profs}))]);
+        for (hq_ts, dept_ts) in [(100.0, 200.0), (200.0, 100.0)] {
+            let m = merge_account_rows(&[
+                legacy(hq_ts, json!([".cys/claude"])),
+                legacy(dept_ts, json!([".claude-2"])),
+            ]);
+            assert_eq!(m.len(), 1);
+            assert!(
+                m[0].get("current_profiles").is_none(),
+                "hq_ts={hq_ts}: 구버전끼리의 병합이 current_profiles 키를 만들었다: {}",
+                m[0]
+            );
+            // profiles 합집합은 종전 그대로
+            assert_eq!(m[0]["profiles"], json!([".claude-2", ".cys/claude"]));
+        }
+        // 세 응답 모두 구버전이어도 같다
+        let m = merge_account_rows(&[
+            legacy(100.0, json!([".cys/claude"])),
+            legacy(300.0, json!([".claude-2"])),
+            legacy(200.0, json!([".claude-3"])),
+        ]);
+        assert!(m[0].get("current_profiles").is_none(), "세 응답 병합이 키를 만들었다: {}", m[0]);
+        // 데몬이 하나뿐이면 병합할 것이 없다 — 행이 그대로다(구버전이면 가산 키가 계속 없다)
+        let solo = acct_merge_row(100.0, json!({}));
+        assert_eq!(merge_account_rows(&[acct_merge_resp(vec![solo.clone()])]), vec![solo]);
+        // 배열이 아닌 값(IPC 오염 null)은 키 없음으로 본다 — 병합이 배열을 지어내지 않는다
+        let bad = |ts: f64| acct_merge_resp(vec![acct_merge_row(ts, json!({"current_profiles": null}))]);
+        let m = merge_account_rows(&[bad(100.0), bad(200.0)]);
+        assert!(!m[0]["current_profiles"].is_array(), "배열이 아닌 값뿐인데 배열이 만들어졌다: {}", m[0]);
+    }
+
+    /// 일부 응답에만 current_profiles 가 있으면 있는 것들의 합집합 — 구버전 행이 승자(더 새 관측)여도 새 데몬이 본 폴더가 남는다.
+    /// 세 가산 키가 한 병합에서 함께 움직이는 실제 모양(새 본부 + 구버전 부서)도 같이 핀한다.
+    #[test]
+    fn merge_account_rows_takes_current_profiles_from_the_only_daemon_that_reports_it() {
+        for (new_ts, old_ts) in [(100.0, 200.0), (200.0, 100.0)] {
+            let new = acct_merge_resp(vec![acct_merge_row(new_ts, json!({"current_profiles": [".cys/claude"]}))]);
+            let old = acct_merge_resp(vec![acct_merge_row(old_ts, json!({}))]);
+            for resps in [[new.clone(), old.clone()], [old.clone(), new.clone()]] {
+                let m = merge_account_rows(&resps);
+                assert_eq!(
+                    m[0]["current_profiles"],
+                    json!([".cys/claude"]),
+                    "new_ts={new_ts} old_ts={old_ts}: 있는 쪽 값이 남아야 한다: {}",
+                    m[0]
+                );
+            }
+        }
+        // 배열이 아닌 값(null)을 보낸 응답은 키 없는 응답과 같다 — 배열을 보낸 쪽 값이 그대로
+        let weird = acct_merge_resp(vec![acct_merge_row(300.0, json!({"current_profiles": null}))]);
+        let real = acct_merge_resp(vec![acct_merge_row(100.0, json!({"current_profiles": [".claude-2"]}))]);
+        for resps in [[weird.clone(), real.clone()], [real.clone(), weird.clone()]] {
+            assert_eq!(merge_account_rows(&resps)[0]["current_profiles"], json!([".claude-2"]));
+        }
+        // 실제 모양: 새 본부(오래된 관측 · 현재 폴더 · 사용 중 · 별명) + 구버전 부서(새 관측 = 승자 · 가산 키 없음)
+        let hq = acct_merge_resp(vec![acct_merge_row(
+            100.0,
+            json!({"current_profiles": [".cys/claude"], "in_use": true, "alias": "업무용"}),
+        )]);
+        let dept = acct_merge_resp(vec![acct_merge_row(
+            200.0,
+            json!({"profiles": [".cys/claude-default-dept-1"], "source": "rollout"}),
+        )]);
+        for resps in [[hq.clone(), dept.clone()], [dept.clone(), hq.clone()]] {
+            let m = merge_account_rows(&resps);
+            assert_eq!(m.len(), 1);
+            assert_eq!(m[0]["source"], "rollout", "승자는 구버전 부서 행이다(종전 규칙): {}", m[0]);
+            assert_eq!(m[0]["current_profiles"], json!([".cys/claude"]));
+            assert_eq!(m[0]["in_use"], json!(true));
+            assert_eq!(m[0]["alias"], "업무용");
+            assert_eq!(m[0]["profiles"], json!([".claude-1", ".cys/claude-default-dept-1"]));
+        }
+    }
+
+    /// in_use 는 승자 값이 아니라 같은 계정 행 전체로 정한다 — 하나라도 true → true · 아니면 하나라도 null/키 부재 → null ·
+    /// 전부 false → false. 한 데몬이라도 '지금 쓰는 중'이라 하면 쓰는 중이고, 판정하지 못한 데몬(null · 구버전)이 있으면
+    /// 'false(미사용)'로 단정하지 않는다. 4 상태 × 4 상태 × 승자 두 방향 = 32가지를 표로 못박는다.
+    #[test]
+    fn merge_account_rows_in_use_is_any_true_then_unknown_then_all_false() {
+        let (t, f, n) = (json!(true), json!(false), Value::Null);
+        // 상태: true · false · null · 키 부재(구버전 데몬 = None)
+        let states: [(&str, Option<Value>); 4] =
+            [("true", Some(t.clone())), ("false", Some(f.clone())), ("null", Some(n.clone())), ("부재", None)];
+        // 기대표 — 행 = 본부 상태 · 열 = 부서 상태(위와 같은 순서)
+        let expect: [[Value; 4]; 4] = [
+            [t.clone(), t.clone(), t.clone(), t.clone()], // 본부 true
+            [t.clone(), f.clone(), n.clone(), n.clone()], // 본부 false
+            [t.clone(), n.clone(), n.clone(), n.clone()], // 본부 null
+            [t.clone(), n.clone(), n.clone(), n.clone()], // 본부 부재
+        ];
+        let mk = |ts: f64, v: &Option<Value>| {
+            let extra = match v {
+                Some(v) => json!({"in_use": v}),
+                None => json!({}),
+            };
+            acct_merge_resp(vec![acct_merge_row(ts, extra)])
+        };
+        for (i, (hn, hv)) in states.iter().enumerate() {
+            for (j, (dn, dv)) in states.iter().enumerate() {
+                // 승자(updated_at 큰 쪽)를 양쪽 다 시험한다 — 승자 값만 따르면 어느 한 방향에서 어긋난다
+                for (hq_ts, dept_ts) in [(100.0, 200.0), (200.0, 100.0)] {
+                    let m = merge_account_rows(&[mk(hq_ts, hv), mk(dept_ts, dv)]);
+                    assert_eq!(m.len(), 1);
+                    assert_eq!(
+                        m[0].get("in_use"),
+                        Some(&expect[i][j]),
+                        "본부={hn} 부서={dn} (hq_ts={hq_ts} dept_ts={dept_ts}): {}",
+                        m[0]
+                    );
+                }
+            }
+        }
+        // 세 응답(본부 + 부서 둘)도 같은 규칙 — 입력 순서(6가지)와 관측 시각 배정(6가지)에 무관하다
+        let st = |name: &str| -> Option<Value> {
+            match name {
+                "true" => Some(json!(true)),
+                "false" => Some(json!(false)),
+                "null" => Some(Value::Null),
+                _ => None,
+            }
+        };
+        let triples: [([&str; 3], Value); 6] = [
+            (["false", "false", "false"], json!(false)),
+            (["false", "false", "null"], Value::Null),
+            (["false", "false", "부재"], Value::Null),
+            (["false", "true", "false"], json!(true)),
+            (["null", "null", "false"], Value::Null),
+            (["null", "false", "true"], json!(true)),
+        ];
+        for (names, want) in &triples {
+            for ord in acct_merge_perms3() {
+                for tsord in acct_merge_perms3() {
+                    let resps: Vec<Value> =
+                        ord.iter().map(|&i| mk(100.0 * (tsord[i] + 1) as f64, &st(names[i]))).collect();
+                    let m = merge_account_rows(&resps);
+                    assert_eq!(
+                        m[0].get("in_use"),
+                        Some(want),
+                        "{names:?} 입력 순서 {ord:?} 시각 배정 {tsord:?}: {}",
+                        m[0]
+                    );
+                }
+            }
+        }
+        // bool 도 null 도 아닌 값(IPC 오염)은 판정 불가와 같다 — true 로도 false 로도 읽지 않는다
+        for junk in [json!("yes"), json!(1), json!([])] {
+            for (hq_ts, dept_ts) in [(100.0, 200.0), (200.0, 100.0)] {
+                let m = merge_account_rows(&[mk(hq_ts, &Some(json!(false))), mk(dept_ts, &Some(junk.clone()))]);
+                assert_eq!(m[0].get("in_use"), Some(&Value::Null), "false + {junk} (hq_ts={hq_ts}): {}", m[0]);
+                let m = merge_account_rows(&[mk(hq_ts, &Some(junk.clone())), mk(dept_ts, &Some(json!(true)))]);
+                assert_eq!(m[0].get("in_use"), Some(&json!(true)), "{junk} + true (hq_ts={hq_ts}): {}", m[0]);
+            }
+        }
+        // 데몬이 하나뿐이면 병합할 것이 없다 — 값(false)이든 키 부재든 행이 그대로다
+        let only_false = acct_merge_row(100.0, json!({"in_use": false}));
+        assert_eq!(merge_account_rows(&[acct_merge_resp(vec![only_false.clone()])]), vec![only_false]);
+    }
+
+    /// alias: 승자 행의 값이 비어 있으면(null · 키 부재 · 빈 문자열 · 문자열 아님) 다른 행의 비어 있지 않은 값을 이어받는다.
+    /// 승자에게 값이 있으면 그것이 이긴다(진 쪽의 다른 별명이 덮지 않는다) · 둘 다 비면 지어내지 않는다.
+    #[test]
+    fn merge_account_rows_alias_is_inherited_only_when_the_winner_has_none() {
+        // 승자(더 새 관측)의 별명이 빈 네 가지 모양 × 진 쪽이 별명을 가진 경우 — 입력 순서 둘 다
+        for (shape, extra) in [
+            ("null", json!({"alias": null})),
+            ("부재", json!({})),
+            ("빈 문자열", json!({"alias": ""})),
+            ("문자열 아님", json!({"alias": 7})),
+        ] {
+            let win = acct_merge_resp(vec![acct_merge_row(200.0, extra)]);
+            let lose = acct_merge_resp(vec![acct_merge_row(100.0, json!({"alias": "업무용"}))]);
+            for resps in [[win.clone(), lose.clone()], [lose.clone(), win.clone()]] {
+                let m = merge_account_rows(&resps);
+                assert_eq!(m[0]["alias"], "업무용", "승자 별명이 {shape}: 이어받지 못했다: {}", m[0]);
+                assert_eq!(m[0]["updated_at"], json!(200.0), "승자는 더 새 관측이다(종전 규칙)");
+            }
+        }
+        // 승자에게 별명이 있으면 그 값 — 진 쪽이 다른 별명을 가져도 덮지 않는다
+        let win = acct_merge_resp(vec![acct_merge_row(200.0, json!({"alias": "새 별명"}))]);
+        let lose = acct_merge_resp(vec![acct_merge_row(100.0, json!({"alias": "옛 별명"}))]);
+        for resps in [[win.clone(), lose.clone()], [lose.clone(), win.clone()]] {
+            assert_eq!(merge_account_rows(&resps)[0]["alias"], "새 별명");
+        }
+        // 승자만 별명이 있고 진 쪽은 비었으면 그대로
+        let bare = acct_merge_resp(vec![acct_merge_row(100.0, json!({"alias": null}))]);
+        for resps in [[win.clone(), bare.clone()], [bare.clone(), win.clone()]] {
+            assert_eq!(merge_account_rows(&resps)[0]["alias"], "새 별명");
+        }
+        // 둘 다 비어 있으면 지어내지 않는다 — 키 부재는 부재 그대로 · null 은 null 그대로
+        let none_a = acct_merge_resp(vec![acct_merge_row(100.0, json!({}))]);
+        let none_b = acct_merge_resp(vec![acct_merge_row(200.0, json!({}))]);
+        let m = merge_account_rows(&[none_a, none_b]);
+        assert!(m[0].get("alias").is_none(), "별명이 어디에도 없는데 키가 생겼다: {}", m[0]);
+        let nul = |ts: f64| acct_merge_resp(vec![acct_merge_row(ts, json!({"alias": null}))]);
+        let m = merge_account_rows(&[nul(100.0), nul(200.0)]);
+        assert_eq!(m[0].get("alias"), Some(&Value::Null), "별명이 없는데 값이 생겼다: {}", m[0]);
+        // 세 응답: 본부(별명 · 가장 오래된 관측) + 구버전 부서 둘(더 새 관측) — 승자가 두 번 바뀌어도 별명이 이어진다
+        let rows = [
+            acct_merge_resp(vec![acct_merge_row(100.0, json!({"alias": "업무용"}))]),
+            acct_merge_resp(vec![acct_merge_row(200.0, json!({}))]),
+            acct_merge_resp(vec![acct_merge_row(300.0, json!({"alias": ""}))]),
+        ];
+        for ord in acct_merge_perms3() {
+            let resps: Vec<Value> = ord.iter().map(|&i| rows[i].clone()).collect();
+            let m = merge_account_rows(&resps);
+            assert_eq!(m[0]["alias"], "업무용", "입력 순서 {ord:?}: {}", m[0]);
+            assert_eq!(m[0]["updated_at"], json!(300.0));
+        }
+    }
+
+    /// 승자(updated_at 큰 쪽)가 정하는 종전 키는 그대로 승자 행의 값이다 — rate · rate_observed_at · updated_at · source 를
+    /// 섞어 쓰지 않는다. 가산 규칙이 세 키(current_profiles · in_use · alias)만 건드린다는 핀.
+    #[test]
+    fn merge_account_rows_other_keys_still_follow_the_winner_row() {
+        let old = acct_merge_row(
+            100.0,
+            json!({"rate": [{"label": "5h", "used_pct": 10.0, "resets_at": 9000.0, "alert_eligible": false}],
+                   "rate_observed_at": 100.0, "source": "rollout", "plan": "pro",
+                   "current_profiles": [".claude-2"], "in_use": false, "alias": "예비"}),
+        );
+        let new = acct_merge_row(
+            200.0,
+            json!({"rate": [{"label": "5h", "used_pct": 40.0, "resets_at": 9500.0, "alert_eligible": true}],
+                   "rate_observed_at": 190.0, "source": "statusline", "plan": "max",
+                   "current_profiles": [".cys/claude"], "in_use": false, "alias": "업무용"}),
+        );
+        for rows in [[old.clone(), new.clone()], [new.clone(), old.clone()]] {
+            let resps: Vec<Value> = rows.iter().map(|r| acct_merge_resp(vec![r.clone()])).collect();
+            let m = merge_account_rows(&resps);
+            assert_eq!(m.len(), 1);
+            for k in ["rate", "rate_observed_at", "updated_at", "source", "plan"] {
+                assert_eq!(m[0][k], new[k], "{k} 는 승자(updated_at 200) 행의 값이어야 한다: {}", m[0]);
+            }
+            assert_eq!(m[0]["alias"], "업무용", "승자의 별명이 있으면 그것: {}", m[0]);
+            assert_eq!(m[0]["in_use"], json!(false), "둘 다 false 면 false: {}", m[0]);
+            assert_eq!(m[0]["current_profiles"], json!([".claude-2", ".cys/claude"]));
+        }
+    }
+
+    /// 부서 fan-out 은 소켓마다 상한을 두되 **동시에** 묻는다 — 순차면 무응답 부서 N개가 N×상한만큼 전체를 늦춘다.
+    #[cfg(unix)]
+    #[test]
+    fn usage_fanout_asks_every_socket_concurrently() {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        use tokio::net::UnixListener;
+        let dir = std::env::temp_dir().join(format!("cys-acct-fanout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok_sock = dir.join("ok.sock");
+        let hung: Vec<std::path::PathBuf> = (0..3).map(|i| dir.join(format!("hang{i}.sock"))).collect();
+        let elapsed = tauri::async_runtime::block_on(async {
+            let ok = UnixListener::bind(&ok_sock).unwrap();
+            tauri::async_runtime::spawn(async move {
+                if let Ok((mut s, _)) = ok.accept().await {
+                    let (r, mut w) = s.split();
+                    let mut br = BufReader::new(r);
+                    let mut l = String::new();
+                    let _ = br.read_line(&mut l).await;
+                    let _ = w
+                        .write_all(b"{\"ok\":true,\"result\":{\"accounts\":[{\"provider\":\"codex\",\"account_id\":\"default\"}]}}\n")
+                        .await;
+                    let _ = w.flush().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            });
+            for h in &hung {
+                let l = UnixListener::bind(h).unwrap();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok((_s, _)) = l.accept().await {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await; // bind 안정화
+            let mut targets = hung.clone();
+            targets.push(ok_sock.clone());
+            let t0 = std::time::Instant::now();
+            let resps = fanout_usage_accounts(targets, std::time::Duration::from_millis(400)).await;
+            let el = t0.elapsed();
+            assert_eq!(resps.len(), 1, "응답한 소켓의 결과만 남는다");
+            assert_eq!(resps[0]["accounts"][0]["provider"], "codex");
+            el
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            elapsed < std::time::Duration::from_millis(1000),
+            "무응답 3개가 순차로 상한을 누적했다: {elapsed:?} (병렬이면 ≈400ms, 순차면 ≥1200ms)"
+        );
     }
 
     // ── CLI PATH 설치 헬퍼 ──────────────────────────────────────────
@@ -11910,4 +17419,226 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         assert!(plist.contains("<key>RunAtLoad</key><true/>"));
     }
 
+    /// ★0.14.41 U7(WP-C1 · 반박 M1 · 온보딩 치명): GUI 가 올리는 관문 보류 처방(본부 마스터·부서장)은
+    /// **폴더신뢰(2.1.261+)와 면책 창 둘 다** 기본 선택이 `No, exit` 임을 경고해야 한다. 새 설치의 GUI 첫
+    /// 마스터가 바로 폴더신뢰 창을 만나는데, 종전 문안은 면책 창만 경고해 안내대로 Enter 를 누르면 마스터가
+    /// 죽었다. 문안만 바꾼다(동작 변경 0).
+    #[test]
+    fn u7_gate_pending_prescriptions_warn_folder_trust_and_disclaimer_both_no_exit() {
+        let src = include_str!("main.rs");
+        let body = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        for anchor in ["\"마스터 pane 은 떴고", "\"부서장 pane 은 떴고"] {
+            let i = body.find(anchor).unwrap_or_else(|| panic!("처방 앵커 소실: {anchor}"));
+            let seg = &body[i..i + body[i..].find(".trim()").expect("처방 끝 경계")];
+            // 소스의 줄 잇기(`\` + 개행 + 들여쓰기)는 문자열에서 사라진다 — 공백을 접어 실제 문안으로 잰다.
+            let flat = seg.replace("\\\n", "").split_whitespace().collect::<Vec<_>>().join(" ");
+            // ★리뷰1 I-6(minor · 문안 병기): 방향키 처방(2.1.261+ 전용) 옆에 라벨 기준 문장도 있어야
+            //   한다 — 사람은 자기 Claude 버전을 모르는 경우가 흔하다(동작 변경 0 · 병기만).
+            for tok in ["폴더신뢰(2.1.261+)", "면책", "둘 다", "No, exit", "아래 방향키 1회 뒤 Enter",
+                       "Yes, I trust this folder", "Yes, I accept"] {
+                assert!(flat.contains(tok), "{anchor} 처방에 {tok:?} 가 없다: {flat}");
+            }
+            // 구 단독 경고(면책 창만) 문장이 남지 않았다 — 바늘은 이어 붙여 만든다(자기 매치 방지).
+            let old = ["★면책 창의 기본", " 선택은 `No, exit` 이라"].concat();
+            assert!(!flat.contains(&old), "{anchor}: 면책 창 단독 경고가 남았다");
+        }
+    }
+
+    /// ★(0.14.41 · U14) 설정 열기 URL 은 **닫힌 표**다 — 고정 target 2개만 URL 을 얻고, 그 밖(임의
+    /// 스킴·경로·주입 문자열·대소문자 변형·전체 디스크 접근)은 전부 None 이다.
+    #[test]
+    fn privacy_settings_url_is_a_closed_table() {
+        for t in ["files", "login"] {
+            let u = privacy_settings_url(t).unwrap_or_else(|| panic!("{t} 가 표에 없다"));
+            assert!(u.starts_with("x-apple.systempreferences:com.apple."), "{u}");
+            assert!(!u.contains(' ') && !u.contains(';') && !u.contains('&'), "{u}");
+        }
+        for bad in ["", "fda", "FILES", "https://x", "files;rm -rf /", "files ", "../files", "login\n"] {
+            assert_eq!(privacy_settings_url(bad), None, "{bad:?} 가 URL 을 얻었다");
+        }
+    }
+
+    /// 모르는 target 은 **스폰 전에** 거부된다(모든 OS) — 테스트는 유효 target 을 부르지 않는다
+    /// (맥에서 실제 설정 창이 열린다).
+    #[test]
+    fn open_privacy_settings_rejects_unknown_target_before_spawn() {
+        let e = open_privacy_settings("https://evil.example".into()).unwrap_err();
+        assert!(e.contains("unknown target"), "{e}");
+    }
+
+    /// 경고 저장소는 폴더당 1건이다(emit 과 pull 이 겹쳐도, 점검이 두 번 돌아도 한 장).
+    #[test]
+    fn perm_warning_stash_dedupes_per_folder() {
+        let mut v = Vec::new();
+        stash_perm_warning(&mut v, "Desktop");
+        stash_perm_warning(&mut v, "Documents");
+        stash_perm_warning(&mut v, "Desktop");
+        assert_eq!(v, vec!["Documents".to_string(), "Desktop".to_string()]);
+    }
+
+    /// `perm_warnings()` 의 pull 본체(리뷰1 m1) — `[{folder}]` 모양을 잰다. 저장소 내용을
+    /// 무시하고 빈 목록을 돌려주는 `take(0)` 류 뮤테이션이 여기서 즉시 FAIL 한다.
+    #[test]
+    fn perm_warnings_from_returns_folder_shape() {
+        let v = vec!["Desktop".to_string(), "Documents".to_string()];
+        assert_eq!(
+            perm_warnings_from(&v),
+            vec![json!({"folder": "Desktop"}), json!({"folder": "Documents"})]
+        );
+        assert_eq!(perm_warnings_from(&[]), Vec::<Value>::new());
+    }
+
+    // ───────── ★(성찰 2회차 · R2F-UI) 앱 노브 셋의 공백(A4 n1) · 새 팀 표지의 응답 값 `spawned`(A3 n1) · 계정 병합의 키 부재(A2 m-1) ─────────
+
+    /// ★R2F-UI(A4 n1): 앱의 되돌리기 노브 셋(`CYS_UPDATE_VERIFY` · `CYS_UPDATE_CHECKED_LAUNCH` · `CYS_DEPT_CREATE_STREAM`)은 **같은 해석 하나**(`knob_turned_off` — 앞뒤 공백을 걷은 값이 `0`)를 쓴다.
+    /// 셋이 같은 값에서 같은 답을 내고, 셋의 본문은 그 함수의 부정이며, 제품 코드에 옛 식(`v != Some("0")`)이 남아 있지 않다 — 윈도우 cmd 의 `set X=0 && …` 가 값 끝에 공백을 붙여(`"0 "`)
+    /// 되돌리기 손잡이가 듣지 않던 것이 이 핀의 대상이다. 데몬의 다른 노브와 같은 규칙이다.
+    #[test]
+    fn r2fui_app_knob_parsers_share_one_trim_rule() {
+        let table: [Option<&str>; 16] = [
+            None,
+            Some(""),
+            Some(" "),
+            Some("0"),
+            Some(" 0"),
+            Some("0 "),
+            Some(" 0 "),
+            Some("\t0\r\n"),
+            Some("00"),
+            Some("0.0"),
+            Some("-0"),
+            Some("1"),
+            Some("false"),
+            Some("off"),
+            Some("x"),
+            Some("\u{ff10}"), // 전각 0 — 닮았지만 0 이 아니다
+        ];
+        for v in table {
+            let off = knob_turned_off(v);
+            assert_eq!(update_verify_from_env(v), !off, "CYS_UPDATE_VERIFY 해석이 공용 규칙과 다르다: {v:?}");
+            assert_eq!(update_checked_launch_from_env(v), !off, "CYS_UPDATE_CHECKED_LAUNCH 해석이 공용 규칙과 다르다: {v:?}");
+            assert_eq!(dept_create_stream_from_env(v), !off, "CYS_DEPT_CREATE_STREAM 해석이 공용 규칙과 다르다: {v:?}");
+        }
+        // 끄는 값은 앞뒤 공백을 걷은 `0` 뿐이다 — 옛 규칙과 갈라지는 것은 공백 낀 0 하나(윈도우 cmd `set X=0 && …`)
+        for v in [Some("0"), Some(" 0"), Some("0 "), Some(" 0 "), Some("\t0\r\n")] {
+            assert!(knob_turned_off(v), "{v:?} 는 끄는 값이어야 한다");
+        }
+        for v in [None, Some(""), Some(" "), Some("00"), Some("0.0"), Some("-0"), Some("1"), Some("false"), Some("off"), Some("x"), Some("\u{ff10}")] {
+            assert!(!knob_turned_off(v), "{v:?} 는 끄는 값이 아니다");
+        }
+        // 소스 핀 — 셋의 본문은 공용 함수의 부정 하나 · 옛 식이 제품 코드 어디에도 없다 · 공용 함수는 trim 으로 비교한다
+        for head in ["fn update_verify_from_env(", "fn update_checked_launch_from_env(", "fn dept_create_stream_from_env("] {
+            let body = wu_code(wu_seg(head));
+            assert!(body.contains("!knob_turned_off(v)"), "{head} 의 본문이 공용 규칙의 부정이 아니다:\n{body}");
+        }
+        assert_eq!(wu_code(wu_prod()).matches("v != Some(\"0\")").count(), 0, "옛 '정확히 0' 식이 제품 코드에 남았다");
+        let shared = wu_code(wu_seg("fn knob_turned_off("));
+        assert!(shared.contains("v.map(str::trim) == Some(\"0\")"), "공용 규칙이 앞뒤 공백을 걷어 `0` 과 비교하지 않는다:\n{shared}");
+    }
+
+    /// ★R2F-UI(A3 n1): `DeptStageSeen` — 응답의 `spawned` 가 되는 값. `spawn` 표지를 읽었으면 `Some(true)` · 다른 표지만 읽었으면 `Some(false)`(기존 팀을 돌려받은 호출) ·
+    /// **하나도 못 읽었으면 `None`**(구 팩·스트리밍 끔 — 키를 싣지 않아 화면이 종전 식으로 판정한다 · `false` 를 싣는 것은 '표지 없음 = 새 팀으로 본다'는 종전 규칙을 뒤집는다).
+    #[test]
+    fn r2fui_stage_seen_reports_spawned_only_when_a_marker_was_read() {
+        let run = |keys: &[&str]| {
+            let seen = DeptStageSeen::default();
+            for k in keys {
+                seen.note(k);
+            }
+            seen.spawned()
+        };
+        assert_eq!(run(&[]), None, "표지를 하나도 못 읽었는데 값이 생겼다");
+        // 새로 띄운 팀(create/allocate 신규): reserve → probe → spawn → wait → up → seat → done
+        assert_eq!(run(&["reserve", "probe", "spawn", "wait", "up", "seat", "done"]), Some(true));
+        // 기존 팀을 돌려받은 호출 — 재사용(reserve → probe → up → seat → done) · create 조기 반환(reserve → done) · allocate 멱등 반환(done 하나뿐)
+        assert_eq!(run(&["reserve", "probe", "up", "seat", "done"]), Some(false));
+        assert_eq!(run(&["reserve", "done"]), Some(false));
+        assert_eq!(run(&["done"]), Some(false), "done 하나뿐인 갈래(allocate 멱등 반환)가 '표지 없음' 으로 읽히면 안 된다 — 이것이 순서 의존의 원인이었다");
+        // 순서·반복에 무관하다 · 실패로 spawn 까지만 갔어도 spawn 은 읽은 것이다
+        assert_eq!(run(&["spawn"]), Some(true));
+        assert_eq!(run(&["done", "spawn"]), Some(true));
+        assert_eq!(run(&["spawn", "spawn", "done"]), Some(true));
+        // 이름이 닮은 키는 spawn 이 아니다(정확 일치만)
+        for near in ["Spawn", "SPAWN", "spawn ", " spawn", "spawned", "spawn-2", "respawn", ""] {
+            assert_eq!(run(&[near]), Some(false), "{near:?} 는 spawn 표지가 아니다(다른 표지로만 센다)");
+        }
+    }
+
+    /// ★R2F-UI(A3 n1): 실제 스트리밍 실행기를 지나는 `spawned` — 스크립트가 낸 표지가 콜백을 거쳐 `DeptStageSeen` 에 기억된다. 새 팀 · 기존 팀 · 표지 없음(구 팩) · 노브 끔(콜백이 안 불린다) 네 갈래.
+    #[cfg(unix)]
+    #[test]
+    fn r2fui_stage_seen_through_the_real_streaming_runner() {
+        let run = |script: &str, stream: bool| -> Option<bool> {
+            let sc = GuScript::new(script);
+            let seen = std::sync::Arc::new(DeptStageSeen::default());
+            let cb_seen = seen.clone();
+            let cmd = sc.cmd();
+            let out = gu_within(30, move || run_dept_child(cmd, stream, move |key: &str| cb_seen.note(key))).expect("실행");
+            assert!(out.status.success(), "스크립트가 실패했다");
+            seen.spawned()
+        };
+        let new_team = "printf '%s\\n' '[cys-dept] @stage reserve' '[cys-dept] @stage probe' '[cys-dept] @stage spawn' '[cys-dept] @stage wait' '[cys-dept] @stage up' '[cys-dept] @stage seat' '[cys-dept] @stage done' >&2\necho dept-1\n";
+        let reuse = "printf '%s\\n' '[cys-dept] @stage reserve' '[cys-dept] @stage probe' '[cys-dept] @stage up' '[cys-dept] @stage done' >&2\necho dept-1\n";
+        let done_only = "printf '%s\\n' '[cys-dept] @stage done' >&2\necho dept-1\n";
+        let old_pack = "echo '[cys-dept] 예약 완료(dept-1)' >&2\necho dept-1\n";
+        assert_eq!(run(new_team, true), Some(true), "새로 띄운 팀");
+        assert_eq!(run(reuse, true), Some(false), "기존 팀을 돌려받은 호출");
+        assert_eq!(run(done_only, true), Some(false), "done 하나뿐인 갈래");
+        assert_eq!(run(old_pack, true), None, "표지를 내지 않는 구 팩 — 키를 싣지 않는다");
+        assert_eq!(run(new_team, false), None, "노브 끔(CYS_DEPT_CREATE_STREAM=0 — 콜백이 불리지 않는다) — 키를 싣지 않는다(false 가 아니다)");
+    }
+
+    /// ★R2F-UI(A3 n1) 배선 핀: `allocate_dept_daemon` 은 표지 콜백 안에서 기억하고(`stage_seen_cb.note(key)`) 응답 객체에 **가산**으로 싣는다 — 기억은 객체 맨 끝(`Ok(info)` 바로 앞)의 한 블록이고
+    /// `None` 이면 싣지 않는다. 기존 키(socket·socket_slug·name·display_name)는 그대로다. 화면이 읽는 이름 `spawned` 가 양쪽에서 같다.
+    #[test]
+    fn r2fui_allocate_dept_daemon_wires_the_stage_memory_into_the_response_additively() {
+        let f = gu_code_only(&gu_prod_fn("async fn allocate_dept_daemon("));
+        assert!(f.contains("let stage_seen = std::sync::Arc::new(DeptStageSeen::default());"), "표지 기억 객체를 만들지 않는다");
+        assert!(f.contains("stage_seen_cb.note(key);"), "표지 콜백이 기억하지 않는다");
+        let cb = f.find("run_dept_child(cmd, streaming, move |key: &str| {").expect("콜백 소실");
+        let note = f.find("stage_seen_cb.note(key);").expect("note 소실");
+        let emit = f.find("emit_app.emit(\"dept-create-progress\"").expect("이벤트 소실");
+        assert!(cb < note && note < emit, "기억은 콜백 안(이벤트 전)이어야 한다");
+        let tail = "    if let (Some(obj), Some(spawned)) = (info.as_object_mut(), stage_seen.spawned()) {\n        obj.insert(\"spawned\".into(), json!(spawned));\n    }\n    Ok(info)";
+        assert!(f.ends_with(tail), "응답의 `spawned` 가산 블록이 함수 맨 끝(Ok(info) 바로 앞)에 있지 않다:\n{}", &f[f.len().saturating_sub(300)..]);
+        assert_eq!(f.matches("\"spawned\"").count(), 1, "spawned 키를 싣는 곳은 한 곳이다");
+        // 기존 응답 키는 그대로 — 가산이다
+        for key in ["\"socket\"", "\"socket_slug\"", "\"name\"", "\"display_name\""] {
+            assert!(f.contains(&format!("obj.insert({key}.into(),")), "기존 응답 키 {key} 가 사라졌다");
+        }
+        // 화면과 같은 이름
+        let ui = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/main.ts"))
+            .expect("ui/src/main.ts 를 읽지 못했다 — 측정 불능은 통과가 아니다");
+        assert!(ui.contains("spawned?: boolean;"), "화면의 응답 타입에 spawned 가 없다");
+        assert!(ui.contains("typeof info.spawned === \"boolean\" ? info.spawned :"), "화면이 응답의 spawned 를 1순위로 읽지 않는다");
+    }
+
+    /// ★R2F-UI(A2 m-1): '신 데몬 키 부재 + 신 데몬 빈 배열 → 빈 배열' — 지금의 사양을 박는다(문서가 그렇게 적었다). 신 데몬도 이번에 읽지 못한 폴더가 낀 행에서는 `current_profiles` 키를 뺀다
+    /// (accounts.rs `current_profiles_for`) — 키 부재가 곧 구버전 데몬은 아니다. 그 행이 다른 신 데몬의 빈 배열('어느 폴더에도 로그인돼 있지 않다')과 병합되면 결과는 **빈 배열**이다 —
+    /// 키 있는 쪽이 이기고, 키 없는 쪽을 '구버전이니 profiles 로 폴백하라'는 신호로 되살리지 않는다. 입력 순서 둘 × 승자(관측 시각) 둘 = 4가지 모두 같다.
+    #[test]
+    fn r2fui_merge_new_daemon_missing_key_plus_new_daemon_empty_array_is_empty_array() {
+        // 신 데몬 A — 읽지 못한 폴더가 낀 행: current_profiles 키가 없다(in_use 는 신 데몬이라 있다 · 판정 불가 null)
+        let missing = |ts: f64| acct_merge_resp(vec![acct_merge_row(ts, json!({"profiles": [".cys/claude"], "in_use": null}))]);
+        // 신 데몬 B — 이 계정이 지금 어느 폴더에도 로그인돼 있지 않다: 빈 배열(키는 있다)
+        let empty = |ts: f64| acct_merge_resp(vec![acct_merge_row(ts, json!({"profiles": [".claude-2"], "current_profiles": [], "in_use": false}))]);
+        for (a_ts, b_ts) in [(100.0, 200.0), (200.0, 100.0)] {
+            for resps in [[missing(a_ts), empty(b_ts)], [empty(b_ts), missing(a_ts)]] {
+                let m = merge_account_rows(&resps);
+                assert_eq!(m.len(), 1);
+                assert_eq!(
+                    m[0].get("current_profiles"),
+                    Some(&json!([])),
+                    "a_ts={a_ts} b_ts={b_ts}: 키 없는 신 데몬 행 + 빈 배열 신 데몬 행은 빈 배열이어야 한다(키를 지우면 UI 가 profiles 로 폴백해 옛 로그인 폴더를 '현재' 로 되살린다): {}",
+                    m[0]
+                );
+                // profiles 합집합·in_use(null 이 false 보다 우선 = 판정 불가)는 종전 규칙 그대로
+                assert_eq!(m[0]["profiles"], json!([".claude-2", ".cys/claude"]));
+                assert_eq!(m[0]["in_use"], Value::Null);
+            }
+        }
+        // 대조: 키 없는 행끼리(둘 다 읽지 못함·구버전)는 키를 만들지 않는다 — 위의 결과가 '키 부재 = 빈 배열' 로 뭉개진 것이 아니다
+        let m = merge_account_rows(&[missing(100.0), missing(200.0)]);
+        assert!(m[0].get("current_profiles").is_none(), "키 없는 행끼리의 병합이 키를 만들었다: {}", m[0]);
+    }
 }

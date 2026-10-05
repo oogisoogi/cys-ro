@@ -18,6 +18,9 @@
      ★낱말 grep(smartscreen/defender/…)은 **제거하지 않고 보조 축으로 AND** 유지한다
        (마커 껍데기만 남고 카피가 비는 사고 + 기존 루트 밴드 감시 축 보존).
   ⑥ SHA256SUMS.txt — 신버전 전수·구버전 0줄 + **실자산 바이트 해시 대조** (오너 지시 ⓑ)
+     ★2026-09-27(0.14.42 발행 준비): '전 자산' 을 **기준 목록 13종 전부 등재**로 기계화했다
+       (`expected_sums_names` — 버전 붙은 5종 + 무버전 8종 · 정본 scripts/release-verify.py 와 self-test 로
+       대조). 종전엔 배포 4종만 등재를 요구해 나머지 9종이 SUMS·서버에서 통째로 빠져도 PASS 였다.
   ⑧ 무버전 자산 버전 결속 — `latest.json` 의 version·플랫폼 URL 이 신버전을 가리키는지 +
      팩 미러 자기정합(pack-manifest.json 의 digest == 실제 pack.tar.gz 바이트).
      ★왜 필요한가(2026-09-04 W-C R2 ④): ⑥ 의 구버전 탐지 정규식은 'cys_<숫자>.<숫자>.<숫자>_' 라
@@ -36,10 +39,14 @@
        안내까지 지운다. 그 회귀는 ⓐ·ⓒ만으로는 통과해 버리므로 ⓑ 로 0건을 즉시 잡는다.
      ★⑤(다운로드 페이지 Defender 섹션)와 **다른 페이지·다른 축**이다 — 어느 쪽도 약화시키지 않는다.
 
-사용: python3 scripts/verify-release-remote.py 0.14.5 [이전버전]
-      (이전버전 생략 시 ① 은 건너뛴다)
-      python3 scripts/verify-release-remote.py --self-test   # ⑦ 집계 로직 셀프테스트(무접촉)
-종료코드: 0 = 전건 통과 · 1 = 하나라도 실패(발행 미완)
+사용: python3 scripts/verify-release-remote.py <신버전> <구버전>      # 정본 — 8축(①~⑧)
+      python3 scripts/verify-release-remote.py <신버전> --no-prev     # 구버전이 없을 때만(① SKIP 명시)
+      python3 scripts/verify-release-remote.py --self-test             # 판정·인자 셀프테스트(무접촉)
+      ★구버전 생략은 **--no-prev 로만** 허용한다(U4 C4-⑦ · 2026-09-23). 종전엔 구버전을 빼먹으면
+        ① 을 조용히 빼고 분모 8→7 로 "7/7 PASS" 를 냈는데, 그 분모가 오너 문서의 합격 문구와 같아
+        **빼먹은 실행이 합격으로 읽혔다**(구버전 문자열 잔존 = 홈페이지 옛 다운로드 링크 사고를 놓침).
+        이제 플래그 없는 생략은 원격 수신 **전에** exit 2 이고, --no-prev 실행은 요약 줄에 "①SKIP" 을 병기한다.
+종료코드: 0 = 전건 통과 · 1 = 하나라도 실패(발행 미완) · 2 = 인자 오류(원격 무접촉)
 """
 import hashlib
 import json
@@ -81,6 +88,63 @@ VERSIONLESS_ASSETS = ("cysr_aarch64.app.tar.gz", "cysr_aarch64.app.tar.gz.sig",
                       "cysr_x64.app.tar.gz", "cysr_x64.app.tar.gz.sig",
                       "latest.json", "pack.tar.gz",
                       "pack-manifest.json", "pack-manifest.json.minisig")
+
+
+# ⑥ 기준 목록 — 버전 붙은 5종(배포 4종 + NSIS 설치본 업데이터 서명). 무버전 8종(VERSIONLESS_ASSETS)과 합쳐
+#   release-postprocess.py 가 SUMS 에 싣는 '자기 자신을 뺀 전 자산' 13종이 된다(v0.14.41 SUMS 실측 13줄 일치).
+# ★자산 이름 cysr_ (우리 1.0.1 개명 · 1.1.8 편입 합성) — 구버전 탐지는 옛 이름(cys_)·새 이름(cysr_) 둘 다 센다.
+VERSIONED_ASSETS = ("cysr_{v}_aarch64.dmg", "cysr_{v}_x64.dmg", "cysr_{v}_x64-setup.exe",
+                    "cysr_{v}_x64-setup.exe.sig", "cysr_{v}_x64-setup.zip")
+OLD_VERSIONED_RE = re.compile(r"cysr?_\d+\.\d+\.\d+_")
+
+
+def expected_sums_names(ver):
+    """⑥ 가 SUMS 에 **전부** 있기를 요구하는 자산 이름 집합(순수)."""
+    return set(a.format(v=ver) for a in VERSIONED_ASSETS) | set(VERSIONLESS_ASSETS)
+
+
+def sums_coverage_verdict(lines, ver):
+    """⑥ 등재 판정 — 순수함수(네트워크 무접촉). lines = SHA256SUMS.txt 의 비지 않은 줄들.
+
+    통과 조건(AND): 줄이 있다 · 기준 13종이 **전부** 등재 · 구버전 버전 붙은 줄 0 · 형식 이상 줄 0.
+    해시가 실자산과 맞는지는 이 함수가 아니라 main 의 바이트 대조가 본다(여기는 목록만).
+    """
+    names, malformed = [], []
+    for l in lines:
+        p = l.split()
+        if len(p) == 2 and re.fullmatch(r"[0-9a-f]{64}", p[0]):
+            names.append(p[1])
+        else:
+            malformed.append(l[:60])
+    have = set(names)
+    missing = sorted(expected_sums_names(ver) - have)
+    old = sorted(n for n in names if OLD_VERSIONED_RE.search(n) and ("cysr_%s_" % ver) not in n)
+    newn = sum(1 for n in names if ("cysr_%s_" % ver) in n)
+    bad = []
+    if not lines:
+        bad.append("SUMS 비어 있음")
+    if missing:
+        bad.append("미등재 %d종 %s" % (len(missing), ", ".join(missing)))
+    if old:
+        bad.append("구버전 줄 %d %s" % (len(old), ", ".join(old)))
+    if malformed:
+        bad.append("형식 이상 줄 %d %s" % (len(malformed), malformed))
+    detail = "총 %d줄 · 신버전 %d · 구버전 %d · 기준 %d종 중 누락 %d" % (
+        len(lines), newn, len(old), len(expected_sums_names(ver)), len(missing))
+    return (not bad), (detail if not bad else detail + " — " + "; ".join(bad))
+
+
+def _load_release_verify():
+    """self-test 정본 대조용 — 같은 체크아웃의 scripts/release-verify.py 를 적재(없으면 None)."""
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "release-verify.py")
+    if not os.path.isfile(path):
+        return None
+    spec = importlib.util.spec_from_file_location("release_verify_for_remote", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def versionless_verdict(latest, manifest, pack_digest_ok, ver):
@@ -207,8 +271,8 @@ def self_test():
     def mk(ver, tag=None):
         tag = tag or ver
         return {"version": ver, "platforms": {
-            "darwin-aarch64": {"url": "https://example.invalid/releases/download/v%s/cys_aarch64.app.tar.gz" % tag},
-            "windows-x86_64": {"url": "https://example.invalid/releases/download/v%s/cys_%s_x64-setup.exe" % (tag, tag)}}}
+            "darwin-aarch64": {"url": "https://example.invalid/releases/download/v%s/cysr_aarch64.app.tar.gz" % tag},
+            "windows-x86_64": {"url": "https://example.invalid/releases/download/v%s/cysr_%s_x64-setup.exe" % (tag, tag)}}}
     man = {"pack_version": "0.14.31", "digest": "deadbeef"}   # 팩 버전은 본체와 달라도 정상이다
 
     v, d = versionless_verdict(mk(V), man, True, V)
@@ -228,19 +292,116 @@ def self_test():
     v, d = versionless_verdict(mk(OLD, OLD), man, True, V)
     ok("⑧ⓖ ★무버전 자산만 구버전인 형상은 반드시 실패", not v, d)
 
+    # ── ⑥ SUMS 전 자산 등재(누락 0) — 2026-09-27 0.14.42 발행 준비 (오너 체크리스트 ⓑ) ──
+    # 종전 ⑥ 은 SUMS 에 **배포 4종**만 등재를 요구했다(`for f in four`). 그래서 SUMS 에서
+    # `cys_<V>_x64-setup.exe.sig`·업데이터 tar.gz·latest.json·팩 3종 같은 나머지 9종이 통째로
+    # 빠져도(= 서버에 올리지도 SUMS 에 싣지도 않아도) '신버전 ≥4 · 구버전 0 · 등재된 것은 전부 해시
+    # 일치' 로 PASS 였다 — 'SUMS 신버전 **전 자산** 갱신·누락 0' 의 '전 자산' 이 기계로 재지지 않았다.
+    full = sorted(expected_sums_names(V))
+    ok("⑥ⓐ 기준 목록은 13종(release-postprocess 관례와 같다)", len(full) == 13, "%d종" % len(full))
+    v, d = sums_coverage_verdict(["%s  %s" % ("0" * 64, n) for n in full], V)
+    ok("⑥ⓑ 13종 전부 등재면 통과", v, d)
+    for drop in ("cysr_%s_x64-setup.exe.sig" % V, "cysr_aarch64.app.tar.gz", "latest.json",
+                 "pack-manifest.json.minisig"):
+        v, d = sums_coverage_verdict(["%s  %s" % ("0" * 64, n) for n in full if n != drop], V)
+        ok("⑥ⓒ ★%s 하나만 빠진 SUMS 는 실패(종전 판정 PASS)" % drop, not v and drop in d, d)
+    v, d = sums_coverage_verdict(["%s  %s" % ("0" * 64, n) for n in full]
+                                 + ["%s  cysr_%s_x64.dmg" % ("0" * 64, OLD)], V)
+    ok("⑥ⓓ 구버전 줄이 섞이면 실패", not v, d)
+    v, d = sums_coverage_verdict(["%s  %s" % ("0" * 64, n) for n in full]
+                                 + ["%s  cys_%s_x64.dmg" % ("0" * 64, OLD)], V)
+    ok("⑥ⓓ' 옛 이름(cys_) 구버전 줄이 섞여도 실패(우리 1.0.1 개명)", not v, d)
+    v, d = sums_coverage_verdict([], V)
+    ok("⑥ⓔ 빈 SUMS 는 통과가 아니라 실패", not v, d)
+    v, d = sums_coverage_verdict(["%s  %s" % ("0" * 64, n.replace(V, OLD)) for n in full], V)
+    ok("⑥ⓕ 버전 붙은 자산이 전부 구버전이면 실패", not v, d)
+    # 정본 대조 — 발행 전 관문(scripts/release-verify.py)의 기대 집합과 **같은 13종**인지 기계로 본다.
+    #   두 목록이 갈리면 '발행 전엔 통과 · 홈페이지 검증은 다른 기준' 이 된다(한쪽만 고치는 드리프트 차단).
+    rv = _load_release_verify()
+    if rv is None:
+        print("SKIP ⑥ⓖ scripts/release-verify.py 부재(체크아웃 밖 실행) — 정본 대조를 재지 않았다")
+    else:
+        upd = set(a.format(v=V) for a in rv.UPDATER_PLATFORMS.values())
+        canon = set(a.format(v=V) for a in rv.REQUIRED_ASSETS) | upd | set(a + ".sig" for a in upd)
+        ok("⑥ⓖ 기준 목록 = release-verify.py 정본(REQUIRED_ASSETS ∪ 업데이터 자산 ∪ 그 .sig)",
+           canon == set(full), "차집합 %s / %s" % (sorted(canon - set(full)), sorted(set(full) - canon)))
+
+    # ── 인자 계약: 구버전 생략은 명시 플래그로만 (U4 C4-⑦ · 2026-09-23) ──
+    # 종전엔 구버전을 빼먹으면 ① 을 조용히 빼고 분모 8→7 로 "7/7 PASS" 를 냈다 — 오너 문서의 합격
+    # 문구("7/7 PASS")와 정확히 일치해 **빼먹은 실행이 합격으로 읽혔다**(홈페이지 옛 링크 잔존 사고를 놓침).
+    # 여기서는 main() 을 실제로 부르되 네트워크 함수를 **트립와이어**로 바꿔, 인자 오류가 수신 **전에**
+    # exit 2 로 끝나는지 잰다(트립와이어가 울리면 = 인자 검사 없이 원격으로 나갔다 = 실패).
+    g = globals()
+    saved = {k: g[k] for k in ("get", "get_json", "clen", "code")}
+    calls = []
+
+    def _trip(*a, **k):
+        calls.append(a[:1])
+        raise RuntimeError("tripwire: 인자 검사 전에 원격 수신을 시도했다")
+    try:
+        for k in saved:
+            g[k] = _trip
+        for label, argv, want in (
+                ("⑨ⓐ 구버전 생략(플래그 없음)은 수신 전 exit 2", ["x", V], 2),
+                ("⑨ⓑ 구버전 + --no-prev 동시 지정은 모순 — 수신 전 exit 2", ["x", V, OLD, "--no-prev"], 2),
+                ("⑨ⓒ 모르는 플래그는 수신 전 exit 2", ["x", V, OLD, "--bogus"], 2),
+                ("⑨ⓓ 위치 인자 3개 이상은 수신 전 exit 2", ["x", V, OLD, "1.2.3"], 2)):
+            del calls[:]
+            try:
+                rc = main(argv)
+            except RuntimeError as e:
+                rc = "원격 수신 시도(%s)" % e
+            ok(label, rc == want and not calls, "rc=%r · 수신 시도 %d회" % (rc, len(calls)))
+        # 양성 대조 — 정상 인자(구버전 명시 · --no-prev 명시)는 인자 검사를 **통과**해 수신 단계로 간다.
+        for label, argv in (("⑨ⓔ 구버전 명시는 수신 단계로 진행", ["x", V, OLD]),
+                            ("⑨ⓕ --no-prev 명시는 수신 단계로 진행", ["x", V, "--no-prev"])):
+            del calls[:]
+            try:
+                rc = main(argv)
+            except RuntimeError:
+                rc = "tripwire"
+            ok(label, rc == "tripwire" and len(calls) == 1, "rc=%r · 수신 시도 %d회" % (rc, len(calls)))
+    finally:
+        g.update(saved)
+
     total = tally["pass"] + tally["fail"]
     print("\n=== self-test %d/%d PASS (실패 %d건) ===" % (tally["pass"], total, tally["fail"]))
     return 0 if tally["fail"] == 0 else 1
 
 
+def parse_args(argv):
+    """argv → (ver, prev, no_prev) 또는 문자열(인자 오류 사유). 순수함수 — 원격 무접촉."""
+    args = argv[1:]
+    flags = [a for a in args if a.startswith("--")]
+    pos = [a for a in args if not a.startswith("--")]
+    unknown = [f for f in flags if f != "--no-prev"]
+    if unknown:
+        return "모르는 플래그: %s" % " ".join(unknown)
+    no_prev = "--no-prev" in flags
+    if not pos:
+        return "신버전 인자가 없다"
+    if len(pos) > 2:
+        return "위치 인자는 <신버전> <구버전> 둘까지다(받은 것: %s)" % " ".join(pos)
+    ver = pos[0]
+    prev = pos[1] if len(pos) > 1 else None
+    if prev and no_prev:
+        return "구버전(%s)과 --no-prev 를 함께 줬다 — 모순이다(둘 중 하나만)" % prev
+    if not prev and not no_prev:
+        return ("구버전 인자가 없다 — ① 구버전 문자열 0 검사를 조용히 빼고 분모 7 로 합격처럼 보이는 "
+                "실행을 막는다. `<신버전> <구버전>` 으로 돌리거나, 구버전이 정말 없으면 --no-prev 를 명시하라")
+    return ver, prev, no_prev
+
+
 def main(argv):
     if "--self-test" in argv[1:]:
         return self_test()
-    if len(argv) < 2:
-        print(__doc__.strip(), file=sys.stderr)
+    parsed = parse_args(argv)
+    if isinstance(parsed, str):
+        print("✗ 인자 오류(원격 무접촉 · exit 2): %s\n" % parsed, file=sys.stderr)
+        doc = __doc__.strip()
+        print(doc[doc.find("사용:"):] if "사용:" in doc else doc, file=sys.stderr)
         return 2
-    ver = argv[1]
-    prev = argv[2] if len(argv) > 2 else None
+    ver, prev, no_prev = parsed
     four = ["cysr_%s_aarch64.dmg" % ver, "cysr_%s_x64.dmg" % ver,
             "cysr_%s_x64-setup.exe" % ver, "cysr_%s_x64-setup.zip" % ver]
 
@@ -254,7 +415,7 @@ def main(argv):
         n = main_html.count(prev)
         check("① 구버전 문자열 0 (%s)" % prev, n == 0, "발견 %d개" % n)
     else:
-        print("SKIP ① 구버전 미지정")
+        print("SKIP ① 구버전 미지정(--no-prev 명시) — 구버전 문자열 잔존은 이 실행에서 재지 않았다")
 
     # ② 신버전 9
     n = main_html.count(ver)
@@ -327,11 +488,9 @@ def main(argv):
     # ⑥ SHA256SUMS.txt
     sums = get("%s/downloads/SHA256SUMS.txt" % SITE)
     lines = [l for l in sums.splitlines() if l.strip()]
-    # 구버전 = 옛 이름(cys_)·새 이름(cysr_) 둘 다 센다 — 이름이 바뀐 판에서 옛 cys_ 줄이 남아도 잡힌다.
-    newn = sum(1 for l in lines if ("cysr_%s_" % ver) in l)
-    oldn = sum(1 for l in lines if re.search(r"cysr?_\d+\.\d+\.\d+_", l) and ("cysr_%s_" % ver) not in l)
-    ok6 = bool(lines) and newn >= 4 and oldn == 0
-    detail = "총 %d줄 · 신버전 %d · 구버전 %d" % (len(lines), newn, oldn)
+    # ★기준 13종 전부 등재(누락 0)·구버전 0·형식 이상 0 — sums_coverage_verdict(self-test ⑥ⓐ~ⓖ 로 고정).
+    #   구버전 = 옛 이름(cys_)·새 이름(cysr_) 둘 다 센다(OLD_VERSIONED_RE · 우리 1.0.1 개명 · 1.1.8 편입 합성).
+    ok6, detail = sums_coverage_verdict(lines, ver)
     # 실자산 바이트 해시 대조 — 표기만 갱신되고 바이트가 구버전인 사고 차단
     if ok6:
         want = {}
@@ -376,7 +535,15 @@ def main(argv):
     check("⑧ 무버전 자산 버전 결속(latest.json·팩 미러)", ok8, detail8)
 
     npass = sum(1 for r in results if r)
-    print("\n=== %d/%d PASS ===" % (npass, len(results)))
+    # ★U4 C4 리뷰1 MINOR-3 수정(2026-09-23): --no-prev 요약은 "N/N PASS" 형태로 쓰지 않는다.
+    #   오너 문서(저장소 밖)의 합격 문구가 정확히 "7/7 PASS" 라 --no-prev 실행(측정 7축)의 요약이
+    #   우연히 그 문구와 접두가 일치했다 — 인자 오류 메시지가 "구버전이 정말 없으면 --no-prev 를
+    #   명시하라"고 안내하므로, 이 플래그 한 개로 무플래그 생략(exit 2 로 막힌 그 경로)과 같은
+    #   오독이 재현될 수 있었다. 정상(구버전 포함) 실행만 "N/N PASS" 를 쓴다.
+    if no_prev:
+        print("\n=== ①SKIP · %d축 통과(8축 중) — 정본 합격 8/8 아님 ===" % npass)
+    else:
+        print("\n=== %d/%d PASS ===" % (npass, len(results)))
     return 0 if npass == len(results) else 1
 
 

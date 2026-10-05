@@ -9,6 +9,9 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+// ★(0.14.43 · RQFIX2 m-2) PTY master raw fd 캐시(`Surface::pty_master_fd`)는 unix 전용이다.
+#[cfg(unix)]
+use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::broadcast;
@@ -214,6 +217,168 @@ pub struct QueueEntry {
     /// enqueue 경로 태그: "send" | "send-key" | "governance-approval" (+ WAL 복원 합성값).
     #[serde(default)]
     pub origin: String,
+    // ─── ★(0.14.31 · WP-5 M) TTL·만료 회계 — 전부 `serde(default)`(WAL 신→구→신 왕복 무손실) ───
+    /// TTL(초). `None` = 데몬 기본(`CYS_QUEUE_TTL_SECS` · 기본 6h). `Some(0)` = 이 항목은 만료
+    /// 없음(명시 opt-out). 구 데몬이 WAL 을 다시 쓰면 이 키가 사라지고 → 재기동 시 `None`(기본)
+    /// 으로 되돌아와 만료가 **보존된 enqueued_at 기준으로 재계산**된다(정본 M: 무손실).
+    #[serde(default)]
+    pub ttl_secs: Option<u64>,
+    /// pause(kill-switch `daemon.paused` · 헬스 조치 `queue_paused_until`) 동안 이 항목이 기다린
+    /// 누적 초 — TTL 나이에서 **제외**한다(정지 중 흐른 시간은 항목의 잘못이 아니다).
+    #[serde(default)]
+    pub paused_total_secs: f64,
+    /// 만료 시각(epoch). `Some` 이면 이 항목은 `Surface::expired_queue` 소속이며 활성 큐
+    /// (`pending_queue`)에 있어서는 안 된다(§8 "만료 항목을 활성 큐 머리에 두지 않는다").
+    #[serde(default)]
+    pub expired_at: Option<f64>,
+    /// 마지막 `queue.revive` 시각(epoch) — TTL 시계의 기준점을 이 시각으로 옮긴다. 원
+    /// `enqueued_at` 은 보존한다(원장 `enqueued_at`·`wait_secs` 는 발신 시각 기준 사실이다).
+    #[serde(default)]
+    pub revived_at: Option<f64>,
+    /// 만료 통지(발신 surface 로 1줄)를 이미 했는가 — 재기동 후 WAL 복원분에 같은 통지가 다시
+    /// 나가지 않게 하는 항목 id 단위 멱등 표식.
+    #[serde(default)]
+    pub expired_notified: bool,
+    /// ★(0.14.31 · 리뷰 R1) `queue.expired` **이벤트**를 이미 발행했는가 — 통지 표식
+    /// (`expired_notified`)과 **분리된** 래치다.
+    ///
+    /// 왜 갈랐나: 종전에는 이벤트와 통지가 한 표식을 공유해, 발신 surface 의 활성 큐가 상한(100)에
+    /// 닿아 통지 enqueue 가 실패하면 표식이 서지 않았고 → 같은 항목의 `queue.expired` 가 **매 틱
+    /// (5s) 재발행**됐다(만료 100건이면 20 events/s 가 버스·`_events` 로그로 유출 — 적체 상태에서
+    /// 정확히 발화해 관측을 스스로 오염시킨다). 이벤트는 "이 항목이 만료됐다"는 **사실**이라 항목당
+    /// 1회면 족하고, 재시도 대상은 통지뿐이다.
+    #[serde(default)]
+    pub expired_event_sent: bool,
+}
+
+/// ★(0.14.31 · WP-5 M) 큐 항목 TTL 기본(초) = 6h. env `CYS_QUEUE_TTL_SECS` 가 덮는다
+/// (`queue_ttl_default_secs`). 0 = 만료 비활성(롤백 스위치 · 기본 켬).
+pub const QUEUE_TTL_DEFAULT_SECS: u64 = 6 * 3600;
+
+/// 데몬 기본 TTL 노브(`CYS_QUEUE_TTL_SECS` · 기본 [`QUEUE_TTL_DEFAULT_SECS`]). 큐 틱마다 1회 읽는다.
+pub fn queue_ttl_default_secs() -> u64 {
+    std::env::var("CYS_QUEUE_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(QUEUE_TTL_DEFAULT_SECS)
+}
+
+/// ★(0.14.31 · 리뷰 R1) `QueueEntry` → WAL 행(Value) — `persist_queue_state` 와
+/// `governance::park_expired_to_restored`(묘비 실패분의 데몬 보존소 이관)가 **같은 산식**을 쓴다
+/// (행 스키마가 두 벌이 되면 복원이 갈린다). `queue_entry_from_row` 의 역함수.
+///
+/// mid 병기는 구 데몬 롤백 호환(구 코드는 mid/surface_id/text/role 만 읽고 미지 키는 버린다).
+/// TTL 회계 키는 전부 additive 라, 구 데몬이 이 파일을 다시 쓰면 사라졌다가 신 데몬 재기동 시
+/// serde default 로 되살아난다(활성 항목의 만료는 보존된 `enqueued_at` 기준 재계산 = 무손실).
+pub fn queue_entry_row(surface_id: u64, role: &Option<String>, e: &QueueEntry) -> Value {
+    json!({
+        "mid": queue_mid(surface_id, &e.text), "id": e.id, "seq": e.seq,
+        "surface_id": surface_id, "role": role, "text": e.text,
+        "enqueued_at": e.enqueued_at, "from": e.from, "origin": e.origin,
+        "ttl_secs": e.ttl_secs, "paused_total_secs": e.paused_total_secs,
+        "expired_at": e.expired_at, "revived_at": e.revived_at,
+        "expired_notified": e.expired_notified,
+        // ★(0.14.31 · 리뷰 R1) 이벤트 래치 — 재기동이 만료 이벤트를 다시 쏘지 않게 관통한다.
+        "expired_event_sent": e.expired_event_sent,
+    })
+}
+
+/// ★(0.14.31 · WP-5 M) WAL 행(Value) → `QueueEntry` 되살림 — rehome 의 되살림 규칙과 같은 값
+/// (id=mid 폴백 · origin 부재 "wal-legacy" · TTL 5키 serde default). `queue.revive`/`queue.drop` 이
+/// 살아있는 surface 없는 복원분을 다룰 때 쓴다(원장 묘비·응답 재료).
+pub fn queue_entry_from_row(it: &Value) -> QueueEntry {
+    QueueEntry {
+        id: it
+            .get("id")
+            .and_then(|v| v.as_str())
+            .or_else(|| it.get("mid").and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        seq: it.get("seq").and_then(|v| v.as_u64()).unwrap_or(0),
+        text: it.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        enqueued_at: it
+            .get("enqueued_at")
+            .and_then(|v| v.as_f64())
+            .unwrap_or_else(now_epoch),
+        from: it.get("from").and_then(|v| v.as_str()).map(str::to_string),
+        origin: it
+            .get("origin")
+            .and_then(|v| v.as_str())
+            .unwrap_or("wal-legacy")
+            .to_string(),
+        ttl_secs: it.get("ttl_secs").and_then(|v| v.as_u64()),
+        paused_total_secs: it
+            .get("paused_total_secs")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        expired_at: it.get("expired_at").and_then(|v| v.as_f64()),
+        revived_at: it.get("revived_at").and_then(|v| v.as_f64()),
+        expired_notified: it
+            .get("expired_notified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        expired_event_sent: it
+            .get("expired_event_sent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    }
+}
+
+impl QueueEntry {
+    /// **순서 키** — 활성 큐 정렬 병합(`queue_merge_insert_pos` · rehome)의 시각 축. 재활성
+    /// (`revived_at`)된 항목은 재활성 시각이 순서 키다: 원 `enqueued_at` 로 정렬하면 재기동 rehome 이
+    /// 되살린 항목을 그 사이 들어온 신규 작업 **앞**으로 되돌린다(codex 설계 검토 Q6).
+    pub fn order_at(&self) -> f64 {
+        match self.revived_at {
+            Some(r) if r > self.enqueued_at => r,
+            _ => self.enqueued_at,
+        }
+    }
+}
+
+/// ★(0.14.31 · 성찰 Q3) WAL 행의 **마지막으로 영속된 생명주기 전이 시각** — `max(expired_at,
+/// revived_at)`. 둘 다 없으면 `f64::NEG_INFINITY`(= 전이를 겪은 적이 없다).
+///
+/// 이 값 하나가 "이 사본이 더 최근의 사실인가" 를 판정한다. 두 WAL 파일에 같은 id 가 남는 창은
+/// **목적지 먼저 쓰기**의 크래시 창뿐인데, 그 창에서 목적지 사본은 언제나 방금 찍은 전이 시각을
+/// 갖고 원본 사본은 그 이전 값을 갖는다 — 그래서 이 비교 하나로 만료 이동·revive 두 방향이
+/// 모두 옳게 갈린다(파일 우선순위 규칙이 필요 없다). NaN 은 비교에서 지므로 결과가 뒤집히지
+/// 않는다(`f64::max` 는 NaN 을 무시한다).
+pub fn queue_row_transition_at(it: &Value) -> f64 {
+    let ex = it.get("expired_at").and_then(|v| v.as_f64());
+    let rv = it.get("revived_at").and_then(|v| v.as_f64());
+    match (ex, rv) {
+        (None, None) => f64::NEG_INFINITY,
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (Some(a), Some(b)) => a.max(b),
+    }
+}
+
+/// 항목의 실효 TTL(초) — 항목 명시값 우선, 없으면 데몬 기본. 0 = 만료 없음.
+pub fn queue_entry_ttl_secs(e: &QueueEntry, default_ttl: u64) -> u64 {
+    e.ttl_secs.unwrap_or(default_ttl)
+}
+
+/// 항목의 **TTL 나이**(초) — 기준점 `max(enqueued_at, revived_at)` 이후 경과에서 pause 누적을
+/// 뺀 값. 역행(시계 스큐)은 0 클램프(측정 불능은 만료 방향으로 열리지 않는다 — fail-closed 는
+/// 여기서 "만료시키지 않음"이다: 만료는 배달 기회를 빼앗는 쪽이므로).
+pub fn queue_entry_ttl_age_secs(e: &QueueEntry, now: f64) -> f64 {
+    let anchor = match e.revived_at {
+        Some(r) if r > e.enqueued_at => r,
+        _ => e.enqueued_at,
+    };
+    (now - anchor - e.paused_total_secs.max(0.0)).max(0.0)
+}
+
+/// 순수 만료 판정 — 이미 만료 표식이 있는 항목은 다시 만료되지 않고, TTL 0 은 영원히 살며,
+/// 그 외는 TTL 나이가 TTL 이상일 때 만료다.
+pub fn queue_entry_expired(e: &QueueEntry, now: f64, default_ttl: u64) -> bool {
+    if e.expired_at.is_some() {
+        return false;
+    }
+    let ttl = queue_entry_ttl_secs(e, default_ttl);
+    ttl > 0 && queue_entry_ttl_age_secs(e, now) >= ttl as f64
 }
 
 // ─── ★G1(W2-B): 큐 이벤트 payload 단일 빌더 3종 ───────────────────────────────
@@ -325,10 +490,238 @@ pub fn parked_cap_split(
     (entries, evicted)
 }
 
+pub fn queue_dropped_payload(
+    reason: &str,
+    dropped: &[QueueEntry],
+    reclaim: Option<(u64, &str)>,
+) -> Value {
+    // ★(0.14.31 · 성찰 Q6) **W-id 에코 additive** — `queue.delivered`·`queue.expired` 와 같은 계약.
+    //
+    // 【무엇이 틀렸었나】 이 페이로드에는 `queue_entry_ids`(큐 항목 자신의 id)만 있었다. 소비자
+    //   (`javis_report_gate.py`)가 조인에 쓰는 유일한 키는 배달 원문에서 되읽은 **W-id**(`entry_ids`)
+    //   인데, 폐기 4사유 중 `expired_evicted` 만 M7 수리에서 덮였고 나머지 3종(`surface_closed` ·
+    //   `process_exited` · `cleared`)은 종결이 소비자에게 **도달하지 않았다**. 귀결은 그 W-id 가
+    //   영원히 `inflight` 로 남아 seen TTL 마다 낡은 wakeup_id 그대로 재enqueue 되는 것이다
+    //   (= wakeup 홍수 · M7 이 없애려던 병리의 재개방).
+    // 【명명 계약 준수】 `queue_entry_ids` 키명은 **그대로 둔다**(두 id 체계가 한 키명을 공유하면
+    //   disarm 조인이 오염된다 — 위 명명 계약 주석). `entry_ids` 는 W-id 에코 전용이다.
+    let entry_ids: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        for e in dropped {
+            for w in crate::governance::wakeup_entry_ids(&e.text) {
+                if !out.iter().any(|x| x == &w) {
+                    out.push(w);
+                }
+            }
+        }
+        out
+    };
+    let mut p = json!({
+        "reason": reason,
+        "count": dropped.len(),
+        "bytes": dropped.iter().map(|e| e.text.len()).sum::<usize>(),
+        "queue_entry_ids": dropped.iter().map(|e| e.id.clone()).collect::<Vec<String>>(),
+        "entry_ids": entry_ids,
+    });
+    if let Some((cleared_by, via)) = reclaim {
+        p["cleared_by"] = json!(cleared_by);
+        p["via"] = json!(via);
+    }
+    p
+}
+
+/// queue.enqueued payload — enqueue 3경로(handlers send/send-key·governance
+/// enqueue_master_wakeup)가 공유한다. 기존 키(bytes/depth/from · send-key는 key) 의미
+/// 불변, `queue_entry_id`/`seq`/`enqueued_at`은 additive — 수락 증거에 항목 조준점을
+/// 동봉해 발신자가 이후 배달·폐기 통지를 결정론으로 조인한다.
+pub fn queue_enqueued_payload(entry: &QueueEntry, depth: usize, from: Value, key: Option<&str>) -> Value {
+    let mut p = json!({
+        "bytes": entry.text.len(),
+        "depth": depth,
+        "from": from,
+        "queue_entry_id": entry.id,
+        "seq": entry.seq,
+        "enqueued_at": entry.enqueued_at,
+    });
+    if let Some(k) = key {
+        p["key"] = json!(k);
+    }
+    p
+}
+
+/// queue.delivered payload — 배달 영수증. 기존 키(bytes/remaining/entry_ids/surface_ref)
+/// 의미 완전 불변: `entry_ids`는 W-id 에코(원문 text 기준)이며 큐 항목 자신의 id는 별도 키
+/// `queue_entry_id`로만 실린다(위 명명 계약). additive: queue_entry_id/seq/enqueued_at/
+/// delivered_at/wait_secs/overdue/forced. wait_secs는 음수 클램프 0 — 시계 스큐·NTP 점프의
+/// 역행 방어이며 기아(결함 1) 실측 분포·단계형 임계(G1 2단 롤아웃)의 근거 필드다.
+/// ★G1(W2-D): overdue=단계형 완화(제한 배달)로 나간 건, forced=운영자 강제(queue.deliver·
+/// W2-E)로 나간 건 — 구분은 이벤트 층에서만 하고 배달 원장(delivery.rs) 스키마는 불변이다.
+pub fn queue_delivered_payload(
+    entry: &QueueEntry,
+    remaining: usize,
+    wakeup_ids: &[String],
+    surface_ref: &str,
+    delivered_at: f64,
+    overdue: bool,
+    forced: bool,
+    merged: &[String],
+) -> Value {
+    json!({
+        "bytes": entry.text.len(),
+        // ★B1(0.14.30): 이 배달에 **함께 실린** 항목 id 전량(머리 포함 · 단건이면 1개).
+        //   병합 배달(발신자별 다이제스트)에서 소비자가 "몇 건이 한 턴에 갔나" 를 알아야
+        //   버스트 감축을 사후 측정할 수 있다(수용 기준 ③ 버스트 0).
+        "merged_ids": merged,
+        "merged": merged.len(),
+        "remaining": remaining,
+        "entry_ids": wakeup_ids,
+        "surface_ref": surface_ref,
+        "queue_entry_id": entry.id,
+        "seq": entry.seq,
+        "enqueued_at": entry.enqueued_at,
+        "delivered_at": delivered_at,
+        "wait_secs": (delivered_at - entry.enqueued_at).max(0.0) as u64,
+        "overdue": overdue,
+        "forced": forced,
+    })
+}
+
+/// ★(0.14.43 · RQFIX I-1) 사유 파일(`queue-blocked.json`) 쓰기 실패의 억제 상태 — [`Daemon::queue_blocked_retry`].
+/// `retry_after` = 다음 재시도 가능 시각(없으면 즉시 가능) · `last_err` = 마지막으로 **로그를 찍은** (오류 문구, 시각).
+#[derive(Debug, Default)]
+pub struct QueueBlockedRetry {
+    pub retry_after: Option<Instant>,
+    pub last_err: Option<(String, Instant)>,
+}
+
+/// queue.starved hint 문구 계약(성찰 BLOCKER) — 이 시스템의 이벤트 실소비자는 LLM
+/// 에이전트다: hint 가 강제 배달 명령을 직접 지시하면 '경보 → 반사적 강제 드레인' 폭주
+/// 회로가 열린다. 문구는 **운영자(사람) 판단 전제**를 명시하고 자동 반응을 금지해야 하며,
+/// 이 상수의 문면은 아래 payload 핀 테스트가 고정한다(임의 수정 = 계약 변경).
+///
+/// ★(0.14.43 · C5 · RQFIX F7 · RQFIX2 n-2) 문면 정정 — 종전 문면("운영자 판단 하에 cys queue deliver 로 강제 배달 가능")은 틀린 안내였다: 강제 배달(`force_deliver_entry`)은
+/// **quiet(출력 정적) 대기와 사이클 창(quiescing) 보류만** 건너뛴다(사이클 창 보류는 큐 **틱 전용** 게이트라 `force_deliver_entry` 에 그 판정이 없다 — 실제로 읽어 확인했다).
+/// 일시정지·빈 좌석·사람 입력 직후·배달 최소 간격·초안·모달·승인·전체화면·작업 중 게이트는 면제하지 않는다(`prompt gate refused … 면제 불가` · 틱 배달과 같은 판정).
+/// 의미(운영자(사람) 판단 전제 · LLM 자동 반응 금지)는 그대로 두고 **조치는 `remedy` 를 보라** 고 가리킨다.
+/// 종전 문면은 [`QUEUE_STARVED_HINT_LEGACY`] 로 보존하고 env `CYS_QUEUE_STARVED_HINT_LEGACY=1` 이면 그것을 싣는다(롤백 노브 · [`starved_hint_for`]).
+pub const QUEUE_STARVED_HINT: &str = "큐 머리가 장기 대기 중(게이트에 막힘) — 조치는 remedy 참조. \
+     강제 배달(cys queue deliver)은 quiet 대기와 사이클 창 보류만 건너뛰고 일시정지·빈 좌석·사람 입력 직후·\
+     배달 최소 간격·초안·모달·승인·전체화면·작업 중 게이트는 면제하지 않는다(운영자(사람) 판단 전제). \
+     LLM 에이전트는 이 경보에 자동 반응(강제 배달·드레인) 금지";
+
+/// ★(0.14.43 · C5) 종전(0.14.42 이하) hint 문면 — 바이트 보존. `CYS_QUEUE_STARVED_HINT_LEGACY=1` 로 되돌릴 때만 쓴다.
+pub const QUEUE_STARVED_HINT_LEGACY: &str = "큐 머리가 장기 대기 중(게이트에 막힘) — 운영자(사람) \
+     판단 하에 cys queue deliver 로 강제 배달 가능. LLM 에이전트는 이 경보에 자동 반응(강제 \
+     배달·드레인) 금지";
+
+/// hint 문면 선택(순수) — `legacy` 면 종전 문면, 아니면 정정 문면. env 를 읽지 않는다(검체는 이 함수로 두 갈래를 고정한다).
+pub fn starved_hint_for(legacy: bool) -> &'static str {
+    if legacy {
+        QUEUE_STARVED_HINT_LEGACY
+    } else {
+        QUEUE_STARVED_HINT
+    }
+}
+
+/// env `CYS_QUEUE_STARVED_HINT_LEGACY` 값 해석(순수) — 앞뒤 공백을 무시한 `1` 만 종전 문면이다(그 밖·부재 = 정정 문면).
+pub fn starved_hint_legacy_from_env(v: Option<&str>) -> bool {
+    v.map(str::trim) == Some("1")
+}
+
+/// queue.starved payload — 기아 경보(신규 이벤트·G1 W2-D). depth_high(적체 **양** 경보)와
+/// 별도 축: depth 1이라도 머리가 오래 막혀 있으면 기아다. waited_secs 는 uptime 클램프
+/// (governance::queue_head_wait_secs) 값 — 부트 전 대기는 세지 않는다. 발행 전용
+/// 쿨다운(5분)은 governance 발행처가 관리한다.
+///
+/// ★(0.14.43 · C5) 가산 키 8개 — `pending_input_bytes`·`pending_input_human_bytes`·`draft_visible`·`ghost_after_cursor`·`parser_panics`·
+/// `input_model`(좌석 진단 스냅샷 = [`crate::governance::QueueBlockDiag`])과 `remedy_code`·`remedy`(무엇을 하면 풀리는가 —
+/// [`crate::governance::queue_remedy`]). 기존 키(`surface_ref`·`role`·`head_entry_id`·`waited_secs`·`depth`·`blocked_by`·`hint`)는
+/// 이름·의미 불변이다. `draft_visible`·`ghost_after_cursor` 는 관측 불능이면 `null`(결측은 값이 아니다).
+pub fn queue_starved_payload(
+    surface_ref: &str,
+    role: Option<String>,
+    head: &QueueEntry,
+    waited_secs: u64,
+    depth: usize,
+    blocked_by: &str,
+    diag: &crate::governance::QueueBlockDiag,
+) -> Value {
+    let (remedy_code, remedy) = crate::governance::queue_remedy(blocked_by, diag);
+    json!({
+        "surface_ref": surface_ref,
+        "role": role,
+        "head_entry_id": head.id,
+        "waited_secs": waited_secs,
+        "depth": depth,
+        "blocked_by": blocked_by,
+        "hint": starved_hint_for(starved_hint_legacy_from_env(
+            std::env::var("CYS_QUEUE_STARVED_HINT_LEGACY").ok().as_deref(),
+        )),
+        "pending_input_bytes": diag.pending_input_bytes,
+        "pending_input_human_bytes": diag.pending_input_human_bytes,
+        "draft_visible": diag.draft_visible,
+        "ghost_after_cursor": diag.ghost_after_cursor,
+        "parser_panics": diag.parser_panics,
+        "input_model": diag.input_model,
+        "remedy_code": remedy_code,
+        "remedy": remedy,
+    })
+}
+
+/// queue.rehomed payload — WAL 복원(restored_queue) 항목이 같은 role의 살아있는 surface
+/// pending_queue로 (enqueued_at, seq) 정렬 병합될 때 발행(신규 이벤트·G1 W2-C).
+/// `reordered=true`는 병합이 복원 항목을 대상 큐 기존 항목 **앞자리**에 넣어 기존 항목이
+/// 뒤로 밀렸음을 뜻한다 — 재정렬 발생 지점의 무음 금지(결함 3 순서 역전 봉인).
+/// `queue_entry_ids`는 병합 삽입 순서(= (enqueued_at, seq) 오름차순) 그대로다.
+pub fn queue_rehomed_payload(role: &str, rehomed: &[QueueEntry], reordered: bool) -> Value {
+    json!({
+        "count": rehomed.len(),
+        "queue_entry_ids": rehomed.iter().map(|e| e.id.clone()).collect::<Vec<String>>(),
+        "role": role,
+        "reordered": reordered,
+        // ★(0.14.31 · 성찰 Q7 · codex 설계 검토 #9) W-id 에코(additive · `queue.delivered` 와 같은
+        //   계약) — 소비자(report_gate)가 "아직 살아서 이동 중" 을 알고 inflight TTL 을 되감는다.
+        //   그러지 않으면 park 가 seen TTL(30분)을 넘길 때 같은 사건이 다시 enqueue 된다(중복).
+        "entry_ids": wakeup_entry_ids_union(rehomed),
+    })
+}
+
+/// 항목 본문들에서 되읽은 W-id 합집합(등장순 · 중복 제거) — `queue.dropped`·`queue.parked`·
+/// `queue.rehomed` 의 `entry_ids` 산식 하나.
+pub fn wakeup_entry_ids_union(entries: &[QueueEntry]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in entries {
+        for w in crate::governance::wakeup_entry_ids(&e.text) {
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+    }
+    out
+}
+
+/// ★(0.14.31 · 성찰 Q7) `queue.parked` payload — 역할 좌석의 종료(reap · 자력 종료)가 미배달 활성
+/// 항목을 **데몬 보존소(`restored_queue`)로 옮겼다**(폐기 아님). 같은 role 의 다음 좌석에 rehome 되어
+/// 순서대로 배달된다. `entry_ids` 는 W-id 에코(소비자의 inflight 되감기 · 종결 아님).
+pub fn queue_parked_payload(reason: &str, role: &str, surface_id: u64, parked: &[QueueEntry]) -> Value {
+    json!({
+        "reason": reason,
+        "role": role,
+        "surface_ref": cys::surface_ref(surface_id),
+        "count": parked.len(),
+        "queue_entry_ids": parked.iter().map(|e| e.id.clone()).collect::<Vec<String>>(),
+        "entry_ids": wakeup_entry_ids_union(parked),
+        "hint": "역할 좌석이 종료됐다 — 미배달 항목을 데몬 보존소로 옮겼다(폐기 아님). 같은 role 의 \
+                 새 좌석에 rehome 되어 순서대로 배달되며 `cys queue list` 에 보인다 · TTL 은 계속 흐른다",
+    })
+}
+
 /// `queue.parked` payload — 폐기가 아니라 **보류**임을 소비부가 구별할 수 있어야 한다.
 /// 키 규약은 `queue_dropped_payload` 와 같은 모양을 쓴다(count·bytes·queue_entry_ids) — 같은
 /// 사실을 두 표면이 다른 모양으로 내면 소비부가 이벤트마다 다른 것을 본다.
-pub fn queue_parked_payload(role: &str, from_surface: u64, parked: &[QueueEntry]) -> Value {
+/// ★1.1.8 병합(판정 갈림 S1): 원작자 `queue_parked_payload`(reason·surface_ref·entry_ids — 원작자 Q7 보존소 경로)와 이름이 겹쳐
+///   우리 D7⑵ 역할 주차 경로의 판을 `queue_role_parked_payload` 로 갈랐다(같은 `queue.parked` 이벤트 · 경로별 모양).
+pub fn queue_role_parked_payload(role: &str, from_surface: u64, parked: &[QueueEntry]) -> Value {
     json!({
         "role": role,
         "from_surface": from_surface,
@@ -475,125 +868,6 @@ pub fn surface_create_failed_payload(
     })
 }
 
-pub fn queue_dropped_payload(
-    reason: &str,
-    dropped: &[QueueEntry],
-    reclaim: Option<(u64, &str)>,
-) -> Value {
-    let mut p = json!({
-        "reason": reason,
-        "count": dropped.len(),
-        "bytes": dropped.iter().map(|e| e.text.len()).sum::<usize>(),
-        "queue_entry_ids": dropped.iter().map(|e| e.id.clone()).collect::<Vec<String>>(),
-    });
-    if let Some((cleared_by, via)) = reclaim {
-        p["cleared_by"] = json!(cleared_by);
-        p["via"] = json!(via);
-    }
-    p
-}
-
-/// queue.enqueued payload — enqueue 3경로(handlers send/send-key·governance
-/// enqueue_master_wakeup)가 공유한다. 기존 키(bytes/depth/from · send-key는 key) 의미
-/// 불변, `queue_entry_id`/`seq`/`enqueued_at`은 additive — 수락 증거에 항목 조준점을
-/// 동봉해 발신자가 이후 배달·폐기 통지를 결정론으로 조인한다.
-pub fn queue_enqueued_payload(entry: &QueueEntry, depth: usize, from: Value, key: Option<&str>) -> Value {
-    let mut p = json!({
-        "bytes": entry.text.len(),
-        "depth": depth,
-        "from": from,
-        "queue_entry_id": entry.id,
-        "seq": entry.seq,
-        "enqueued_at": entry.enqueued_at,
-    });
-    if let Some(k) = key {
-        p["key"] = json!(k);
-    }
-    p
-}
-
-/// queue.delivered payload — 배달 영수증. 기존 키(bytes/remaining/entry_ids/surface_ref)
-/// 의미 완전 불변: `entry_ids`는 W-id 에코(원문 text 기준)이며 큐 항목 자신의 id는 별도 키
-/// `queue_entry_id`로만 실린다(위 명명 계약). additive: queue_entry_id/seq/enqueued_at/
-/// delivered_at/wait_secs/overdue/forced. wait_secs는 음수 클램프 0 — 시계 스큐·NTP 점프의
-/// 역행 방어이며 기아(결함 1) 실측 분포·단계형 임계(G1 2단 롤아웃)의 근거 필드다.
-/// ★G1(W2-D): overdue=단계형 완화(제한 배달)로 나간 건, forced=운영자 강제(queue.deliver·
-/// W2-E)로 나간 건 — 구분은 이벤트 층에서만 하고 배달 원장(delivery.rs) 스키마는 불변이다.
-pub fn queue_delivered_payload(
-    entry: &QueueEntry,
-    remaining: usize,
-    wakeup_ids: &[String],
-    surface_ref: &str,
-    delivered_at: f64,
-    overdue: bool,
-    forced: bool,
-    merged: &[String],
-) -> Value {
-    json!({
-        "bytes": entry.text.len(),
-        // ★B1(0.14.30): 이 배달에 **함께 실린** 항목 id 전량(머리 포함 · 단건이면 1개).
-        //   병합 배달(발신자별 다이제스트)에서 소비자가 "몇 건이 한 턴에 갔나" 를 알아야
-        //   버스트 감축을 사후 측정할 수 있다(수용 기준 ③ 버스트 0).
-        "merged_ids": merged,
-        "merged": merged.len(),
-        "remaining": remaining,
-        "entry_ids": wakeup_ids,
-        "surface_ref": surface_ref,
-        "queue_entry_id": entry.id,
-        "seq": entry.seq,
-        "enqueued_at": entry.enqueued_at,
-        "delivered_at": delivered_at,
-        "wait_secs": (delivered_at - entry.enqueued_at).max(0.0) as u64,
-        "overdue": overdue,
-        "forced": forced,
-    })
-}
-
-/// queue.starved hint 문구 계약(성찰 BLOCKER) — 이 시스템의 이벤트 실소비자는 LLM
-/// 에이전트다: hint 가 강제 배달 명령을 직접 지시하면 '경보 → 반사적 강제 드레인' 폭주
-/// 회로가 열린다. 문구는 **운영자(사람) 판단 전제**를 명시하고 자동 반응을 금지해야 하며,
-/// 이 상수의 문면은 아래 payload 핀 테스트가 고정한다(임의 수정 = 계약 변경).
-pub const QUEUE_STARVED_HINT: &str = "큐 머리가 장기 대기 중(게이트에 막힘) — 운영자(사람) \
-     판단 하에 cys queue deliver 로 강제 배달 가능. LLM 에이전트는 이 경보에 자동 반응(강제 \
-     배달·드레인) 금지";
-
-/// queue.starved payload — 기아 경보(신규 이벤트·G1 W2-D). depth_high(적체 **양** 경보)와
-/// 별도 축: depth 1이라도 머리가 오래 막혀 있으면 기아다. waited_secs 는 uptime 클램프
-/// (governance::queue_head_wait_secs) 값 — 부트 전 대기는 세지 않는다. 발행 전용
-/// 쿨다운(5분)은 governance 발행처가 관리한다.
-pub fn queue_starved_payload(
-    surface_ref: &str,
-    role: Option<String>,
-    head: &QueueEntry,
-    waited_secs: u64,
-    depth: usize,
-    blocked_by: &str,
-) -> Value {
-    json!({
-        "surface_ref": surface_ref,
-        "role": role,
-        "head_entry_id": head.id,
-        "waited_secs": waited_secs,
-        "depth": depth,
-        "blocked_by": blocked_by,
-        "hint": QUEUE_STARVED_HINT,
-    })
-}
-
-/// queue.rehomed payload — WAL 복원(restored_queue) 항목이 같은 role의 살아있는 surface
-/// pending_queue로 (enqueued_at, seq) 정렬 병합될 때 발행(신규 이벤트·G1 W2-C).
-/// `reordered=true`는 병합이 복원 항목을 대상 큐 기존 항목 **앞자리**에 넣어 기존 항목이
-/// 뒤로 밀렸음을 뜻한다 — 재정렬 발생 지점의 무음 금지(결함 3 순서 역전 봉인).
-/// `queue_entry_ids`는 병합 삽입 순서(= (enqueued_at, seq) 오름차순) 그대로다.
-pub fn queue_rehomed_payload(role: &str, rehomed: &[QueueEntry], reordered: bool) -> Value {
-    json!({
-        "count": rehomed.len(),
-        "queue_entry_ids": rehomed.iter().map(|e| e.id.clone()).collect::<Vec<String>>(),
-        "role": role,
-        "reordered": reordered,
-    })
-}
-
 /// queue.migrated payload — 좌석 승계 시 구 좌석 pending_queue가 신 좌석 큐 **뒤에**
 /// append 이관될 때 발행(신규 이벤트·G1 W2-C). 병합 정책은 현행 append 유지 —
 /// 대상 큐 기존 항목이 앞서는 재정렬 가능 지점을 이벤트로 명시할 뿐이다(무음 승계 금지).
@@ -634,6 +908,83 @@ pub fn queue_reordered_payload(
     })
 }
 
+/// ★(0.14.31 · WP-5 M) queue.expired hint 문구 계약 — `QUEUE_STARVED_HINT` 와 같은 이유로
+/// **운영자(사람) 판단 전제 · LLM 자동 반응 금지**를 문면에 박는다: 이 이벤트·통지의 실소비자는
+/// LLM 에이전트이고, "만료됐으니 revive 해라"로 읽히면 만료→반사적 revive→재만료 폭주 회로가
+/// 열린다(부트 체인 ①폭주). 문면은 아래 payload 핀 테스트가 고정한다.
+pub const QUEUE_EXPIRED_HINT: &str = "큐 항목이 TTL 을 넘겨 만료됐다(활성 큐에서 제외 · 보존 중). \
+     운영자(사람) 판단 하에 cys queue revive <id> 로 재활성 또는 cys queue drop <id> 로 폐기. LLM \
+     에이전트는 이 통지에 자동 반응(revive·drop·재전송) 금지";
+
+/// queue.expired payload — 항목이 TTL 을 넘겨 활성 큐(`pending_queue`)에서 `expired_queue` 로
+/// 이동한 사실(신규 이벤트 · WP-5 M). `queue_entry_id` 가 `cys queue revive|drop` 의 조준점이다.
+/// `ttl_age_secs` 는 pause 누적을 뺀 TTL 나이(만료 판정에 실제로 쓰인 값), `wait_secs` 는 발신
+/// 이후 벽시계 경과(원장 `wait_secs` 와 같은 정의).
+pub fn queue_expired_payload(
+    surface_ref: &str,
+    role: Option<String>,
+    e: &QueueEntry,
+    now: f64,
+    default_ttl: u64,
+) -> Value {
+    json!({
+        "surface_ref": surface_ref,
+        "role": role,
+        "queue_entry_id": e.id,
+        "seq": e.seq,
+        "from": e.from,
+        "origin": e.origin,
+        "bytes": e.text.len(),
+        "preview": e.text.chars().take(80).collect::<String>(),
+        "enqueued_at": e.enqueued_at,
+        "expired_at": e.expired_at.unwrap_or(now),
+        "ttl_secs": queue_entry_ttl_secs(e, default_ttl),
+        "ttl_age_secs": queue_entry_ttl_age_secs(e, now) as u64,
+        "paused_total_secs": e.paused_total_secs as u64,
+        "wait_secs": (now - e.enqueued_at).max(0.0) as u64,
+        "hint": QUEUE_EXPIRED_HINT,
+    })
+}
+
+/// ★(0.14.31 · WP-5 M) queue.revived payload — 운영자 `queue.revive` 로 만료 항목이 활성 큐 **꼬리**로
+/// 되돌아간 사실(TTL 시계 재시작 · pause 크레딧 0). `already_active` 는 멱등 호출(이미 활성)이었음.
+pub fn queue_revived_payload(
+    surface_ref: Option<&str>,
+    e: &QueueEntry,
+    depth: usize,
+    already_active: bool,
+    by_surface: Option<u64>,
+) -> Value {
+    json!({
+        "surface_ref": surface_ref,
+        "queue_entry_id": e.id,
+        "seq": e.seq,
+        "revived_at": e.revived_at,
+        "enqueued_at": e.enqueued_at,
+        "depth": depth,
+        "already_active": already_active,
+        "by_surface": by_surface,
+    })
+}
+
+/// ★(0.14.31 · WP-5 B-2②) queue.input_pending_reset payload — 데몬이 센 미제출 입력 바이트
+/// (`pending_input_bytes`)가 화면 사실(커서행 빈 프롬프트 · 출력 정적 · 모달 없음)과 충분히
+/// 오래 모순돼 **stale 로 판정되어 0 으로 리셋**된 사실. 리셋 자체는 배달이 아니며(같은 틱에
+/// 배달하지 않는다), 이 이벤트는 그 리셋이 얼마나 자주 일어나는지 재는 관측 축이다.
+pub fn queue_input_pending_reset_payload(
+    surface_ref: &str,
+    role: Option<String>,
+    stale_bytes: u64,
+    stale_secs: u64,
+) -> Value {
+    json!({
+        "surface_ref": surface_ref,
+        "role": role,
+        "stale_bytes": stale_bytes,
+        "stale_secs": stale_secs,
+    })
+}
+
 /// (enqueued_at, seq) 기준 stable merge 삽입 위치 — 대상 큐에서 새 항목 `(at, seq)`보다
 /// **뒤(더 신규)인 첫 인덱스**를 반환한다(순수 판정자·G1 W2-C).
 /// - 동률은 기존/선삽입 항목 승(= stable — 같은 키의 복원 항목은 파일·seq 순서를 유지).
@@ -642,7 +993,8 @@ pub fn queue_reordered_payload(
 /// 반환값 == q.len()이면 순수 append(재정렬 없음), < q.len()이면 기존 항목이 뒤로 밀린다.
 pub(crate) fn queue_merge_insert_pos(q: &VecDeque<QueueEntry>, at: f64, seq: u64) -> usize {
     for (i, e) in q.iter().enumerate() {
-        let existing_is_newer = match e.enqueued_at.partial_cmp(&at) {
+        // ★(0.14.31 · WP-5) 기존 항목의 시각 축은 순서 키(`order_at` = revived_at ∨ enqueued_at).
+        let existing_is_newer = match e.order_at().partial_cmp(&at) {
             Some(std::cmp::Ordering::Greater) => true,
             Some(std::cmp::Ordering::Equal) => e.seq > seq,
             _ => false, // Less 또는 NaN — 기존 항목이 앞선다(보수적)
@@ -652,6 +1004,802 @@ pub(crate) fn queue_merge_insert_pos(q: &VecDeque<QueueEntry>, at: f64, seq: u64
         }
     }
     q.len()
+}
+
+/// ★(0.14.31 · 리뷰 R1 · codex blocking) 큐 배달의 **인계 가드** — "판정이 본 화면"과 "실제로
+/// 바이트가 나가는 순간" 사이를 잇는 유일한 축.
+///
+/// 【무엇이 틀렸었나】 `deliver_head_locked` 는 판정 뒤 원장 선기록(파일 append · 회전 · 느릴 수
+/// 있다)을 하고 나서 `try_send(Inject)` 했고, writer 는 세대를 보지 않았다. 그래서 원장 I/O 가
+/// 막히는 동안 모달이 다 그려져도 그 승인으로 본문+CR 이 나갔다(codex 리뷰 blocking).
+///
+/// 【핸드셰이크】 상태는 세 값뿐이다: 0 pending · 1 claimed(writer 가 쓴다) · 2 aborted(아무도
+/// 쓰지 않는다). 결판은 **CAS 로 단 한 번**만 나고, 진 쪽은 상대의 결정을 따른다.
+///   · writer: 요청을 집자마자 `output_gen != expect_gen` 이면 CAS(0→2) 를 시도하고, 이기면 **한
+///     바이트도 쓰지 않고** 버린다(Ctrl-U 선정리보다도 앞이라 화면 부작용 0). 세대가 같으면
+///     CAS(0→1) 로 **소유권을 먼저 집고** 쓴다 — 그 CAS 에 지면(호출부가 이미 중단시켰다)
+///     세대가 같아도 쓰지 않는다(codex 리뷰: "세대 load 와 CAS 는 한 원자 연산이 아니다").
+///   · 호출부: 인계 성공 뒤 락을 놓고 유계 대기([`INJECT_GUARD_WAIT_MS`])로 결판을 본다. 아직
+///     pending 이면 스스로 CAS(0→2)로 **중단**시킨다 — 종전 초안은 여기서 커밋(강제 주입)했으나
+///     그것은 "writer 가 적체된 동안 모달이 떠도 결국 꽂는다" 는 정확한 반례를 남긴다(codex 리뷰).
+///     오탐의 귀결은 **보류**여야 한다(§3-3). 항목은 큐로 되돌아가 다음 틱에 재시도된다.
+///
+/// 【한계 — 정직】 `claimed` 는 "writer 가 쓰기로 결정했다" 이지 "PTY 에 다 나갔다" 가 아니다.
+/// 본문·flush·400ms·CR 중 실패하면 writer 는 루프를 끊는다(PTY 닫힘 = 좌석 사망). 이는 종전
+/// (`try_send` 성공 = 배달)과 같은 계약이며 이 변경으로 나빠지지 않는다.
+/// ★(0.14.31 · 성찰 Q1·Q2) writer 가 첫 바이트 앞에서 부르는 **안전 탐침** — 반환 true =
+/// "지금 이 좌석에 큐 본문을 넣으면 안 된다".
+///
+/// 【종전 이름과 범위】 이 자리는 `ApprovalProbe` 였고 승인·관문 feed 만 다시 읽었다. 그런데
+/// 비-alt(B1) 경로는 `expect_gen=None`(세대 불변 미요구 — 그 계약은 의도적이다)이라 **화면 축이
+/// 통째로 없었고**, 남은 승인 feed 는 `check_approvals` 가 15초 주기로만 채운다. 즉 인계~쓰기
+/// (≤800ms) 사이에 **새로 그려진 모달**을 원리상 볼 수 없었다 — 그 창에 본문+Return 이 나갔다.
+/// 이제 탐침은 같은 자리에서 **현재 프레임의 화면**과 **pause** 까지 본다(생성자는
+/// `governance::inject_safety_probe` 하나 — 판정 분리 금지).
+///
+/// `Weak<Daemon>`·`Weak<Surface>` 를 담아 만들므로 순환 참조가 없고(채널에 실린 요청이 좌석·데몬을
+/// 살려 두지 않는다), 어느 쪽이든 이미 소멸했으면 **보수적으로 "막는다"** 를 답한다.
+///
+/// 왜 세대 카운터가 아니라 탐침인가: 승인·관문 pending 은 `feed_items` 여러 지점에서 바뀌고,
+/// 단조 카운터를 심으려면 그 전 지점을 빠짐없이 계측해야 한다(하나라도 빠지면 가드가 조용히
+/// 거짓 안심을 준다). 탐침은 **판정과 같은 함수**(`prompt_gate_verdict`·`no_marker_gate`·
+/// `approval_or_gate_pending`)를 그대로 부르므로 판정 분리가 생기지 않는다.
+///
+/// 【호출 규약 — 락】 writer 는 어떤 큐 락도 쥐지 않은 채 이것을 부른다. 탐침이 잡는 락
+/// (`queue_paused_until` · `feed_items` · `parser` · `last_output`)은 전부 리프이고 **차례로 잡았다
+/// 놓는다** — `pending_queue`/`input_gate` 를 향하는 역간선이 없어야 한다(그 규약을 깨면 배달
+/// 임계영역과 AB-BA 다 · codex 설계 검토 #1).
+pub type SafetyProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// ★(0.14.31 · 리뷰 R1 · codex blocking) 큐 배달의 **인계 가드** — "판정이 본 화면"과 "실제로
+/// 바이트가 나가는 순간" 사이를 잇는 유일한 축.
+///
+/// 【무엇이 틀렸었나】 `deliver_head_locked` 는 판정 뒤 원장 선기록(파일 append · 회전 · 느릴 수
+/// 있다)을 하고 나서 `try_send(Inject)` 했고, writer 는 세대를 보지 않았다. 그래서 원장 I/O 가
+/// 막히는 동안 모달이 다 그려져도 그 승인으로 본문+CR 이 나갔다(codex 리뷰 blocking).
+///
+/// 【두 축】 (0.14.31 · 리뷰 R2 · codex blocking B2)
+///   · **출력 세대**(`expect_gen`) — 정적(quiet) 기반 판정 경로만 요구한다. 비-alt(B1) 경로는
+///     `None` 이다: 그 계약이 스트리밍 중 배달을 허용하고, 불변을 요구하면 연속 출력 노드가
+///     영구 기아다(기아 #1).
+///   · **주입 안전**(`expect_approval` + [`SafetyProbe`]: pause · 승인·관문 · 현재 프레임의
+///     화면) — **모든 경로**가 요구한다(★성찰 Q1·Q2).
+///     §8("승인 대기 게이트는 어떤 경로에서도 면제되지 않는다"). 종전 가드에는 이 축이 없어서,
+///     writer 가 적체된 800ms 사이에 승인 feed 가 늘어도(출력 세대는 그대로) 본문이 나갔다.
+///
+/// 【핸드셰이크】 상태는 다섯이다: 0 pending · **4 claiming(writer 가 소유권을 집고 재검사 중)** ·
+/// 1 claimed(재검사까지 끝나 쓰기로 정했다) · 2 aborted(아무도 쓰지 않는다) · 3 acked(호출부가
+/// claimed 를 **수확**했다 = 되돌릴 수 없다).
+///   · writer: ⓐ 두 축을 읽어 하나라도 움직였으면 CAS(0→2)로 중단하고 **한 바이트도 쓰지 않는다**
+///     ⓑ 같으면 CAS(0→**4**)로 소유권을 집고 ⓒ **집은 뒤 다시 한 번** 두 축을 읽는다 — 그 사이에
+///     움직였으면 CAS(4→2)('늦은 중단'), 그대로면 CAS(4→1)로 확정한다.
+///   ★(triage 2026-09-08 · codex blocking) ⓑ가 종전에 `CLAIMED` 를 **곧바로** 세웠던 것이 결함이다:
+///     ⓒ의 재검사는 승인 탐침(데몬 락 + 스캔)이라 짧지 않은데, 그 창에서 호출부가 `CLAIMED` 를
+///     수확(`ACKED`)하면 늦은 중단 CAS 가 실패해 **승인·모달이 뜬 화면에도 본문+CR 이 나갔다**.
+///     `CLAIMING` 은 "안전 판정 완료 · 쓰기 권한 · 배달 보고" 를 분리한다 — 재검사가 끝나기
+///     전에는 아무도 수확하지 못하므로 늦은 중단이 항상 성립한다. 남는 창은 ⓒ의 마지막 탐침과
+///     첫 바이트 사이뿐이고(그 창은 어떤 설계로도 남는다 — 락을 쓰기까지 쥐지 않는 한),
+///     그 창의 귀결은 종전과 같다(노트 잔여).
+///   · 호출부: 인계 뒤 락을 놓고 유계 대기([`INJECT_GUARD_WAIT_MS`])로 결판을 본다. `CLAIMED` 를
+///     보면 CAS(1→3)로 **수확**하고 그 뒤부터 늦은 중단은 성립하지 않는다(수확한 배달은 반드시
+///     쓰인다 = 보고된 배달이 사라지지 않는다). 아직 pending **또는 claiming(재검사 중)** 이면
+///     스스로 CAS(0→2)·CAS(4→2)로 중단시킨다 — 반환 계약은 두 값(`CLAIMED`·`ABORTED`)뿐이다
+///     (`CLAIMING` 이 새면 호출부가 "ABORTED 가 아니다" 를 배달로 읽어 쓰이지도 않은 항목을 큐에서
+///     뺀다 · codex 치명 반례) —
+///     마감에서 커밋(강제 주입)하지 않는 이유는 "writer 가 적체된 동안 모달이 떠도 결국 꽂는다"
+///     는 정확한 반례 때문이다(codex 리뷰). 오탐의 귀결은 **보류**여야 한다(§3-3).
+///
+/// 【한계 — 정직】 `claimed`(수확됨)는 "writer 가 쓰기로 결정했다" 이지 "PTY 에 다 나갔다" 가
+/// 아니다. 본문·flush·400ms·CR 중 실패하면 writer 는 루프를 끊는다(PTY 닫힘 = 좌석 사망). 이는
+/// 종전(`try_send` 성공 = 배달)과 같은 계약이며 이 변경으로 나빠지지 않는다.
+pub struct InjectGuard {
+    /// 판정이 본 출력 세대(짝수 = 발행 완료). `None` = 이 경로는 출력 세대 불변을 요구하지 않는다.
+    pub expect_gen: Option<u64>,
+    /// 그 surface 의 `output_gen`(공유 카운터).
+    pub output_gen: Arc<AtomicU64>,
+    /// 판정이 본 승인·관문 pending 사실.
+    pub expect_approval: bool,
+    /// ★(성찰 Q1·Q2) 지금의 **주입 안전**(pause · 승인·관문 · 현재 프레임의 화면)을 다시 읽는
+    /// 탐침(`None` = 검체 전용 · 축 없음).
+    pub safety: Option<SafetyProbe>,
+    /// 0 = pending · 1 = claimed · 2 = aborted · 3 = acked(호출부가 claimed 를 수확했다).
+    pub state: AtomicU8,
+}
+
+impl std::fmt::Debug for InjectGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InjectGuard")
+            .field("expect_gen", &self.expect_gen)
+            .field("expect_approval", &self.expect_approval)
+            .field("state", &self.state.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+/// 가드 상태 상수 — 숫자를 코드 여기저기에 흩지 않는다.
+pub const INJECT_PENDING: u8 = 0;
+pub const INJECT_CLAIMED: u8 = 1;
+pub const INJECT_ABORTED: u8 = 2;
+/// 호출부가 `CLAIMED` 를 수확했다 — 이 뒤로 writer 의 늦은 중단은 성립하지 않는다.
+pub const INJECT_ACKED: u8 = 3;
+/// ★(0.14.31 · triage 2026-09-08 · codex blocking) **재검사 중** — writer 가 소유권을 집었으나
+/// 안전 재검사(승인 탐침)를 아직 끝내지 않았다. 이 상태는 **수확 대상이 아니다**(호출부는 계속
+/// 기다린다) — 그래야 "ACK 가 늦은 중단을 무력화한다" 는 결함이 자리 자체를 잃는다.
+/// 처분자·호출부는 이 상태를 `ABORTED` 로 되돌릴 수 있고, 그때 writer 의 확정 CAS 가 실패해
+/// **한 바이트도 쓰이지 않는다**(§3-3 보류 방향).
+pub const INJECT_CLAIMING: u8 = 4;
+
+/// 호출부가 writer 의 결판을 기다리는 상한(ms). writer 는 큐 배달 좌석에서 사실상 항상 유휴
+/// (배달 최소 간격 10s)라 평시 수십 µs 안에 결판난다. 값을 800 으로 둔 이유: writer 가 **직전
+/// 주입**을 처리 중이면 그 arm 은 본문 → `cr_delay_ms`(400) → CR 로 최대 ~0.5s 를 쓴다. 그보다
+/// 짧으면 정상적인 연속 쓰기마다 배달이 한 틱씩 미뤄진다(불필요한 지연). 그보다 길면 watchdog
+/// 틱이 surface 하나에 그만큼 묶인다 — 그래서 **틱 전체의 결판 예산**을 따로 둔다
+/// (`governance::QUEUE_TICK_SETTLE_BUDGET_MS` · 리뷰 R2 codex major).
+pub const INJECT_GUARD_WAIT_MS: u64 = 800;
+
+impl InjectGuard {
+    pub fn new(
+        expect_gen: Option<u64>,
+        output_gen: Arc<AtomicU64>,
+        expect_approval: bool,
+        safety: Option<SafetyProbe>,
+    ) -> Self {
+        Self {
+            expect_gen,
+            output_gen,
+            expect_approval,
+            safety,
+            state: AtomicU8::new(INJECT_PENDING),
+        }
+    }
+    /// 출력 세대가 판정 시점과 달라졌는가(락 없는 원자 읽기 — 호출부 대기 루프가 쓴다).
+    fn output_moved(&self) -> bool {
+        self.expect_gen.is_some_and(|g| self.output_gen.load(Ordering::Acquire) != g)
+    }
+    /// ★(0.14.31 · 성찰 Q1·Q2) **무거운 축** — 안전 탐침을 실제로 돌린다(pause · 승인·관문 ·
+    /// 현재 프레임의 화면). writer 스레드만 부르고, `claim_for_write` 에서 **정확히 한 번** 돈다
+    /// (`CLAIMING` 을 집은 뒤 · 확정 CAS 앞). 종전에는 소유권을 집기 **전에도** 한 번 돌아 좌석당
+    /// 2회였는데, `CLAIMING` 은 취소 가능한 상태라 앞의 무거운 검사는 안전에 기여하지 않으면서
+    /// writer 를 두 배로 묶었다(codex 설계 검토 #2·#6).
+    fn injection_blocked_now(&self) -> bool {
+        match &self.safety {
+            // 탐침을 **항상** 부른다(단락 평가로 관측을 건너뛰면 계측이 사라진다).
+            Some(p) => {
+                let now = p();
+                now || self.expect_approval
+            }
+            None => false,
+        }
+    }
+
+    /// 두 축 중 하나라도 **주입을 막는가**(안전 탐침 포함 — writer 만 쓴다).
+    ///
+    /// ★(0.14.31 · triage 2026-09-08 · codex blocking) 승인 축은 종전에 **변화**만 봤다
+    /// (`p() != expect_approval`). 그래서 판정 뒤 다시 읽은 "지금 승인 대기 중"(`expect_approval
+    /// == true`)이 **정상 기대값**으로 채택되면, 승인이 계속 대기 중이어도 축이 움직이지 않아
+    /// writer 가 본문+CR 을 그대로 썼다 — 승인 창에 Return 을 넣는 것이 정본 §8("승인 대기
+    /// 게이트는 어떤 경로에서도 면제되지 않는다")이 금지한 바로 그 동작이다.
+    ///
+    /// 지금은 **절대 거부**다: `지금 승인 대기 = 거부` ∨ `판정이 승인을 봤다 = 거부`
+    /// (= `now || expect_approval`). 두 번째 항이 남는 이유는 종전 핀 그대로다 — 판정이 본 재료가
+    /// 사라지는 것도 변화이고, 그 판정은 이미 무효다. 탐침이 없으면(`None` = 검체 전용) 이 축은
+    /// 없다(종전과 같다).
+    fn axes_moved(&self) -> bool {
+        self.output_moved() || self.injection_blocked_now()
+    }
+    /// writer 쪽 결판 — 반환 true = **내가 쓴다**.
+    pub fn claim_for_write(&self) -> bool {
+        // ★(0.14.31 · 성찰 Q1·Q2 · codex 설계 검토 #2) 값싼 축(락 없는 원자 읽기)만으로 먼저
+        //   거른다 — 이미 결판났거나 세대가 흘렀으면 무거운 안전 탐침(화면 복사·스캔 · 락 3개)을
+        //   돌 이유가 없다. 무거운 축은 아래 `CLAIMING` 구간에서 **한 번만** 돈다.
+        if self.output_moved() {
+            return match self.state.compare_exchange(
+                INJECT_PENDING,
+                INJECT_ABORTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => false, // 내가 중단시켰다 — 쓰지 않는다
+                // 호출부가 이미 결판냈다 — 그 결정을 따른다(수확된 CLAIMED 는 반드시 쓴다).
+                Err(cur) => cur == INJECT_CLAIMED || cur == INJECT_ACKED,
+            };
+        }
+        match self.state.compare_exchange(
+            INJECT_PENDING,
+            INJECT_CLAIMING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                // ★소유권을 집은 **뒤** 마지막 재확인. 이 구간의 상태는 `CLAIMING` 이라 호출부가
+                //   수확할 수 없다 = 늦은 중단이 언제나 성립한다(triage codex blocking).
+                //   여기가 안전 탐침의 **유일한** 호출 지점이다(성찰 Q1·Q2).
+                if self.axes_moved() {
+                    // 중단 확정. 그 사이 처분자가 먼저 `ABORTED` 로 바꿨어도 결론은 같다.
+                    let _ = self.state.compare_exchange(
+                        INJECT_CLAIMING,
+                        INJECT_ABORTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    return false;
+                }
+                // 재검사 통과 — 이제야 쓰기 확정을 **공개**한다. 그 사이 처분자·호출부가
+                // `ABORTED` 로 바꿨으면 그 결정을 따른다(주입 0 · 항목 보존).
+                self.state
+                    .compare_exchange(
+                        INJECT_CLAIMING,
+                        INJECT_CLAIMED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+            }
+            // 이미 수확·확정된 배달은 반드시 쓴다(보고된 배달이 사라지지 않는다 — 기존 핀).
+            Err(cur) => cur == INJECT_CLAIMED || cur == INJECT_ACKED,
+        }
+    }
+    /// ★(0.14.31 · 리뷰 R2 · codex blocking) **처분자의 취소** — 아직 아무도 결판내지 않았으면
+    /// 중단으로 확정한다. 반환 true = "이 인계는 한 바이트도 쓰지 않는다"(그러므로 항목을 처분해도
+    /// 된다). false = writer 가 이미 쓰기로 확정했다 → 그 항목은 **배달 중**이므로 처분하지 않는다
+    /// (폐기 통지 뒤 실제 주입 = 승인·빈 좌석 사고로 이어지는 방향이라 그쪽을 택하지 않는다).
+    pub fn abort_if_pending(&self) -> bool {
+        // ★(triage 2026-09-08) `CLAIMING`(writer 가 재검사 중)도 취소 대상이다 — 그 상태의 writer 는
+        //   아직 확정을 공개하지 않았고, 여기서 이기면 writer 의 확정 CAS 가 실패해 한 바이트도
+        //   나가지 않는다. 취소 창이 넓어지는 방향이고(= 처분이 더 자주 성립) 귀결은 보류다.
+        for from in [INJECT_PENDING, INJECT_CLAIMING] {
+            match self.state.compare_exchange(
+                from,
+                INJECT_ABORTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(cur) if cur == INJECT_ABORTED => return true,
+                Err(_) => continue,
+            }
+        }
+        self.state.load(Ordering::Acquire) == INJECT_ABORTED
+    }
+    /// `CLAIMED` 를 **수확**한다 — 성공하면 `INJECT_CLAIMED`, 그 사이 writer 가 늦게 중단했으면
+    /// 그 값(`INJECT_ABORTED`)을 돌려준다.
+    fn ack(&self) -> u8 {
+        match self.state.compare_exchange(
+            INJECT_CLAIMED,
+            INJECT_ACKED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => INJECT_CLAIMED,
+            Err(cur) => cur,
+        }
+    }
+    /// 호출부의 결판 대기 — 반환값은 `INJECT_CLAIMED`(writer 가 쓴다) 또는 `INJECT_ABORTED`.
+    ///
+    /// 두 가지 방식으로 끝난다.
+    ///   ① **빠른 중단**: 기다리는 동안 출력 세대가 움직이면 그 판정은 이미 무효다 — 더 기다리지
+    ///      않고 중단시킨다(writer 가 아직 요청을 집지도 않았을 수 있다). 승인 축은 여기서 보지
+    ///      않는다 — 그 축의 권위 판정은 **writer 가 첫 바이트 앞에서** 하고(락이 필요하다),
+    ///      이 루프는 락 없는 원자 읽기만 한다.
+    ///   ② **마감 중단**: writer 가 선행 요청(예: 다른 주입의 cr_delay 400ms)으로 늦으면 마감에서
+    ///      중단시킨다. 커밋하지 **않는** 이유: 그때 쓰기는 수백 ms 뒤에 일어나고 그 사이 화면이
+    ///      바뀌어도 아무도 다시 보지 않는다(codex 리뷰의 정확한 반례). 항목은 큐에 남아 다음 틱에
+    ///      **다시 판정**되므로 유실이 아니라 지연이다(§3-3).
+    pub fn settle(&self, wait_ms: u64) -> u8 {
+        let deadline = Instant::now() + std::time::Duration::from_millis(wait_ms);
+        loop {
+            match self.state.load(Ordering::Acquire) {
+                INJECT_PENDING => {}
+                // ★(triage 2026-09-08) writer 가 재검사 중이다 — **아직 미결판**이므로 기다린다.
+                //   여기서 수확하면 늦은 중단이 무력화된다(그 결함의 자리다).
+                INJECT_CLAIMING => {}
+                INJECT_CLAIMED => return self.ack(),
+                // 이미 수확된 결판을 다시 물으면 같은 답을 준다(멱등 — 반환 계약은 두 값뿐이다).
+                INJECT_ACKED => return INJECT_CLAIMED,
+                other => return other,
+            }
+            if self.output_moved() {
+                break; // ① 판정이 본 프레임이 아니게 됐다 — 기다릴 이유가 없다
+            }
+            if Instant::now() >= deadline {
+                break; // ②
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // ★반환 계약은 **두 값뿐**이다(`CLAIMED` 또는 `ABORTED`) — 호출부는 "ABORTED 가 아니면
+        //   배달됐다" 로 읽고 큐에서 뺀다(`governance::deliver_head_locked`). `CLAIMING` 을 그대로
+        //   돌려주면 쓰이지도 않은 항목이 큐에서 사라진다(유실). 그래서 미결판 상태는 여기서
+        //   **중단으로 확정**하고, 그 사이 writer 가 확정을 공개했으면 그것을 수확한다.
+        loop {
+            match self.state.load(Ordering::Acquire) {
+                INJECT_PENDING => {
+                    if self
+                        .state
+                        .compare_exchange(
+                            INJECT_PENDING,
+                            INJECT_ABORTED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return INJECT_ABORTED;
+                    }
+                }
+                INJECT_CLAIMING => {
+                    if self
+                        .state
+                        .compare_exchange(
+                            INJECT_CLAIMING,
+                            INJECT_ABORTED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return INJECT_ABORTED;
+                    }
+                }
+                INJECT_CLAIMED => return self.ack(),
+                INJECT_ACKED => return INJECT_CLAIMED,
+                INJECT_ABORTED => return INJECT_ABORTED,
+                // 미지 상태는 **보류 방향**으로 접는다(주입 0 · 항목 보존).
+                _ => return INJECT_ABORTED,
+            }
+        }
+    }
+}
+
+/// ★(0.14.31 · 리뷰 R2 · codex blocking) 결판 대기 중인 인계의 **공유 예약**. 항목은 아직 활성
+/// 큐에 있고(persist·`queue.list` 가 그대로 본다), 이 레코드가 "그 항목들은 지금 인계 중" 을 알린다.
+#[derive(Debug)]
+pub struct InjectReservation {
+    /// 이번 인계에 실린 항목 id 들(병합분 포함).
+    pub ids: Vec<String>,
+    /// 그 인계의 가드 — 처분자가 이것으로 인계를 취소한다.
+    pub guard: Arc<InjectGuard>,
+}
+
+/// ★(0.14.42 · A2) 짝 Return 흡수 표의 종류 — 발급 사유가 곧 흡수 응답의 `absorb_kind` 다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReturnTicketKind {
+    /// 발신자의 `cys send` 본문이 큐로 **자동 전환**됐다(큐 Inject 가 CR 까지 제출한다) — 그 항목 id.
+    Pair { entry_id: String },
+    /// 남의 Return 이 이 발신자의 기계 본문을 **이미 제출했다**(가로채기 연쇄 차단용).
+    Compensation,
+}
+
+/// ★(0.14.42 · B) 짝 Return 흡수 표의 **키** — 발신자 신원 등급(설계 B · A2 표 구조 재사용).
+///
+/// 검증 신원(커널 peer pid → 이 데몬의 좌석)이 있으면 **그것만** 쓴다(`Verified`). 없을 때만 CLI 가 싣는
+/// 자기신고 `from`(CYS_SURFACE_ID)을 `Claimed` 로 쓴다 — 교차 소켓 발신자(HQ CEO → 부서장 등)는 이 데몬의
+/// 좌석이 아니라 검증 신원이 없기 때문이다. 두 변형은 **서로 다른 키**다: `Verified(n)` 과 `Claimed(n)` 은
+/// 서로의 표를 만들거나 쓰거나 지우지 않는다(로컬 좌석 n 과 원격 자기신고 n 의 우연한 번호 충돌 차단).
+/// 결측은 값이 아니다 — 키가 `None` 인 호출자는 발급·흡수·소거를 모두 건너뛴다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PairKey {
+    /// 커널 peer pid 로 해석된 로컬 좌석 id.
+    Verified(u64),
+    /// 검증 신원이 없는 호출자의 자기신고 좌석 id(다른 데몬의 번호일 수 있다).
+    Claimed(u64),
+}
+
+impl PairKey {
+    /// 좌석 번호(이벤트 `from` 표기용 — 등급은 [`PairKey::is_verified`] 로 따로 싣는다).
+    pub fn sid(self) -> u64 {
+        match self {
+            PairKey::Verified(x) | PairKey::Claimed(x) => x,
+        }
+    }
+
+    pub fn is_verified(self) -> bool {
+        matches!(self, PairKey::Verified(_))
+    }
+}
+
+/// ★(0.14.42 · B) 좌석당 흡수 표 상한 — `Claimed` 키는 식별 불가 호출자의 자기신고라 번호 공간이
+/// 열려 있다(검증 키는 좌석 수로 유계). 발급 때 만료 정리 뒤에도 넘치면 가장 오래된 표부터 퇴출한다.
+/// 퇴출된 표의 결과는 '흡수 안 됨'(종전 0.14.41 쓰기)이라 안전 방향이다.
+pub const RETURN_TICKETS_CAP: usize = 64;
+
+/// ★(0.14.42 · A2) 대상 좌석·발신자당 1장 · 1회용 흡수 표(휘발 — 영속·관측 채널 비대상).
+/// 흡수는 쓰기 1회를 **억제**만 한다(새 쓰기·적재 0). 표는 흡수 판정의 입력일 뿐이다.
+#[derive(Debug, Clone)]
+pub struct ReturnTicket {
+    pub kind: ReturnTicketKind,
+    /// 발급 시각(단조) — 나이 판정·CAS 소비의 식별자를 겸한다.
+    pub issued: Instant,
+}
+
+/// ★(0.14.42 · 설계 H 리뷰 F2·F3) writer 의 **Inject arm 진행 표식** — 이 좌석 화면 composer 의 글자가 데몬 자신의
+/// 붙여넣기일 수 있는 창(붙여넣기~CR 을 쓰는 중 ∨ 끝난 지 얼마 안 됨)을 판정자가 읽는다.
+///
+/// 【왜】 Inject 는 본문을 쓴 뒤 `cr_delay_ms`(400~500ms)가 지나야 CR 을 쓴다. 그 사이 다른 생산자가 H0 초안 축을
+/// 보면 **우리 자신의 붙여넣기**를 초안으로 오인한다 — CEO 자동결재 둘째 건이 첫 건 붙여넣기에 걸려 사람에게
+/// escalation 되던 결함(리뷰 F2 · 0.05~0.4s 간격 12/12). writer 는 단일 소비자라 뒤 Inject 가 앞 Inject 의 글자와
+/// 한 제출로 섞이지 않는다(종전 HEAD 도 연속 주입했다). 그래서 이 창의 화면 초안은 보류 근거가 아니다.
+///
+/// 쓰기 = writer 스레드 단독([`run_writer_loop_tracked`] 의 Inject arm 이 begin/end) — 예외 `handed_at`(채널 생산자 ·
+/// [`InjectTrack::note_handoff`]). 읽기 = H0 판정·채널 배달 간격.
+/// 휘발(재기동·재생성 좌석은 빈 채로 출발 = 종전 동작). 락: `done_at`·`handed_at` 은 leaf.
+#[derive(Debug, Default)]
+pub struct InjectTrack {
+    /// Inject arm 이 (선정리)·붙여넣기·cr_delay·CR 을 쓰는 중이다.
+    active: AtomicBool,
+    /// 마지막 Inject arm 이 끝난 단조 시각(성공·실패 무관 — 끝난 뒤에는 화면만 남는다).
+    done_at: Mutex<Option<Instant>>,
+    /// ★(0.14.42 · H3 간격 경쟁) 채널 생산자가 Inject 를 writer 에 **넘긴**(try_send 직전) 단조 시각 —
+    /// [`InjectTrack::handoff_pending`]. 채널 행 간격 전용이다(H0 자기 붙여넣기 귀속은 읽지 않는다 — 인계만 된 본문은 화면에 없다).
+    /// ★(R2F-DM 2차 · B2) 표식은 시각과 함께 **순번**을 든다([`HandoffSlot`]) — '같은 표식인가' 는 순번으로, 경과·선후는 시각으로 가린다.
+    handed_at: Mutex<HandoffSlot>,
+    /// ★(R3SH-1) 마지막 **기계 본문**(데몬 Inject · CLI 기계 send) — 제출 CR 뒤에도 남는다. [`MachineBody`] doc.
+    last_body: Mutex<Option<MachineBody>>,
+    /// ★(R1-F4) 지금 Inject arm 이 시작된 단조 시각 — writer 가 쓰기에 막혀(stdin 을 읽지 않는 에이전트 · PTY 입력 버퍼 포화)
+    /// `active` 가 내려오지 않는 것을 판정자가 가려낸다([`InjectTrack::stuck_over`]).
+    began_at: Mutex<Option<Instant>>,
+    /// ★(0.14.42 · S21-SETTLE) writer 에 넘겼으나 아직 소비하지 않은 **기계 제출 CR**(`WriteReq::SubmitAfterGap`) 수.
+    /// 올림 = 핸들러 send_key(input_gate 안 · 인계 직전) · 내림 = writer(소비 뒤) 또는 핸들러(인계 실패).
+    /// 원자 연산뿐이라 'input_gate 안에서는 pending_input leaf 만' 락 계약에 새 락을 더하지 않는다.
+    submit_pending: AtomicU64,
+    /// 마지막 제출 CR 을 writer 에 넘긴 정착 단조 ms([`settle_mono_ms`] · 0 = 없음) — 계수의 신선도 상한
+    /// (writer 가 PTY 닫힘으로 끝나 계수가 남아도 상한 뒤에는 '진행 중' 으로 보지 않는다).
+    submit_handed_ms: AtomicU64,
+    /// 마지막 제출 CR(`SubmitAfterGap` · Inject arm 의 끝 CR)을 PTY 에 **실제로 쓴** 정착 단조 ms(0 = 없음).
+    submit_written_ms: AtomicU64,
+    /// 지금 Inject arm 이 시작된 정착 단조 ms(0 = 없음) — `began_at` 의 원자 사본(게이트 안 판독용 · 신선도 상한).
+    inject_began_ms: AtomicU64,
+    /// ★(0.14.42 · 수정 2회차 F1 · 재개) 보류한 제출 CR — [`WithheldSubmit`]. 쓰기 = writer 의 보류 탐침(적중 시) · 소비·폐기 =
+    /// watchdog 틱의 재제출(`governance::resubmit_withheld_submits`). leaf 락(다른 락을 쥔 채 잡지 않는다).
+    withheld: Mutex<Option<WithheldSubmit>>,
+}
+
+/// ★(0.14.42 · 수정 2회차 F1 · 재개) 쓰지 않은(보류한) 제출 CR 의 기록 — 보류는 **버림이 아니라 미룸**이다. 창이 닫히고
+/// 입력줄이 그대로 그 기계 본문이면 데몬이 그 CR 을 한 번 다시 쓴다(`governance::resubmit_withheld_submits`).
+///
+/// ★(수정 4회차 R3C-1) 기록은 시계 둘을 든다 — 재제출 틱(watchdog 5초)이 직전 틱 뒤 경과([`Self::advance`])를 나눠 더한다.
+/// ⓐ `live_ms` = pause 가 아닌 대기 전부(외곽 상한 = 큐 TTL · 큐 항목의 pause 크레딧과 같은 규칙) · ⓑ `dialog_ms` = 지금
+/// 열려 있는 창(질문·선택 창 ∨ 승인 대기)을 **연달아** 본 시간(창 대기 상한 `governance::WITHHELD_SUBMIT_WAIT_CAP_SECS` 은
+/// 이것만 잰다 — 창이 닫힌 것을 보면 0). 종전(d59a1f5e)에는 상한이 보류 시각부터의 벽시계라 창이 곧 닫혀도 에이전트의 긴
+/// 작업·pause 동안 기록을 버렸다(실 claude LT2 · 작업이 끝난 뒤 본문 미제출 · CLI 는 OK).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WithheldSubmit {
+    /// 보류한 단조 시각(기록 식별 · 이벤트의 `withheld_ms_ago`).
+    pub(crate) at: Instant,
+    /// 보류 때 입력줄에 있던 마지막 기계 본문의 기록 시각([`MachineBody::at`]) — 그 뒤 새 기계 본문이 오면 기록은 낡았다.
+    pub(crate) body_at: Instant,
+    /// 보류한 Return 의 발신 좌석(이벤트 표기).
+    pub(crate) from: Option<u64>,
+    /// 재제출 틱이 이 기록을 마지막으로 잰 시각(생성 = `at`). pause 중 틱은 경과를 버리고 이 시각만 옮긴다(두 시계 정지).
+    pub(crate) seen_at: Instant,
+    /// pause 가 아닌 대기의 합(ms) — 외곽 상한(큐 TTL)이 재는 나이.
+    pub(crate) live_ms: u64,
+    /// 지금 열려 있는 창을 연달아 본 시간(ms) — 창이 닫힌 것을 본 틱에서 0(다음 창은 새 창).
+    pub(crate) dialog_ms: u64,
+    /// 직전 관측이 '창 열림'이었는가 — 보류 탐침 자체가 창 관측이라 생성 = true. 못 본 틱(사이클 창)은 false(사슬만 끊음).
+    pub(crate) dialog_open: bool,
+}
+
+impl WithheldSubmit {
+    /// 보류 탐침이 창을 본 순간의 기록 — 두 시계 0 · 창 열림.
+    pub(crate) fn new(at: Instant, body_at: Instant, from: Option<u64>) -> Self {
+        Self { at, body_at, from, seen_at: at, live_ms: 0, dialog_ms: 0, dialog_open: true }
+    }
+
+    /// ★(R3C-1) 순수 — 틱 1회의 경과를 잰다: `seen_at` 을 `now` 로 옮기고, pause 가 아니면 `live_ms` 에 더한다.
+    /// 반환 = 이번 틱이 창 시계에 넘길 경과(ms · pause 면 0 — pause 동안 두 시계는 멈춘다). `now` 가 `seen_at` 보다
+    /// 이르면(시계 역행) 0.
+    pub(crate) fn advance(&mut self, now: Instant, paused: bool) -> u64 {
+        let d = u64::try_from(now.saturating_duration_since(self.seen_at).as_millis()).unwrap_or(u64::MAX);
+        self.seen_at = self.seen_at.max(now);
+        if paused {
+            return 0;
+        }
+        self.live_ms = self.live_ms.saturating_add(d);
+        d
+    }
+
+    /// ★(R3C-1) 순수 — 이번 틱의 창 관측을 창 시계에 반영한다. `Some(true)` 열림(직전 관측도 열림이면 경과를 더한다) ·
+    /// `Some(false)` 닫힘(0 · 다음 창은 새 창) · `None` 못 봄(사슬만 끊는다 — 그 구간은 더하지도 0 으로 돌리지도 않는다).
+    pub(crate) fn observe_dialog(&mut self, open: Option<bool>, elapsed_ms: u64) {
+        match open {
+            Some(true) => {
+                if self.dialog_open {
+                    self.dialog_ms = self.dialog_ms.saturating_add(elapsed_ms);
+                }
+                self.dialog_open = true;
+            }
+            Some(false) => {
+                self.dialog_ms = 0;
+                self.dialog_open = false;
+            }
+            None => self.dialog_open = false,
+        }
+    }
+}
+
+/// ★(0.14.42 · S21-SETTLE) 좌석 제출 정착 판정의 단조 시계(ms) — 프로세스 기준점 경과 + 1(0 은 '없음' 표지).
+pub(crate) fn settle_mono_ms() -> u64 {
+    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// ★(0.14.42 · S21-SETTLE) 한 좌석의 제출 정착 관측(원자 판독 1회분) — [`InjectTrack::submit_settle_obs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct SubmitSettleObs {
+    /// writer 에 넘긴 제출 CR 이 아직 안 쓰였거나(신선도 상한 안) Inject arm 이 붙여넣기~CR 을 쓰는 중(상한 안)이다.
+    pub inflight: bool,
+    /// writer 대기 제출 CR 수(신선도 상한 밖이면 0 으로 본다).
+    pub pending: u64,
+    /// 마지막 제출 CR 을 넘긴 뒤 경과 ms(없으면 None).
+    pub handed_age_ms: Option<u64>,
+    /// 마지막 제출 CR 을 PTY 에 쓴 뒤 경과 ms(없으면 None).
+    pub since_written_ms: Option<u64>,
+}
+
+/// ★(0.14.42 · R3SH-1) 좌석 입력줄에 마지막으로 쓴 **기계 본문**의 기록 — H0 기계 잔여 입증의 둘째 근거.
+///
+/// 【왜】 owner 각인([`Surface::pending_input_owner`])은 입력 **세대**에 묶인다. 기계가 CR 까지 보냈는데 TUI 가 제출하지
+/// 않으면(자동완성·슬래시 팝업이 Enter 를 먹음 · 부하 중 CR 유실 · 큐 Inject 의 CR 삼킴) CR 이 계수를 0 으로 되돌리며 세대를
+/// 올려 각인이 결측이 된다 — 그 잔여는 "출처 불명 화면 초안"이 되어 H0 가 사람 초안(Draft)으로 봤고, H2 우회·큐
+/// `input_pending` 이 heartbeat·wakeup·report_gate 를 무기한 멈췄다(③ · pre-H 는 첫 heartbeat 병합 제출로 스스로 풀렸다).
+/// 이 기록은 세대와 무관하게 남아, 화면 입력줄이 **그 본문으로만** 설명되고 그 뒤 사람 손이 닿지 않았음을 입증한다.
+///
+/// 쓰기 = writer Inject arm(데몬 자신 · `owner` 없음)과 핸들러 CLI 기계 send(잔여 귀속 등급이 있을 때만 — GUI 삽입·사람
+/// 자기신고는 기록하지 않는다). 휘발(재기동 = 빈 채 출발 = 종전 판정).
+#[derive(Debug, Clone)]
+pub struct MachineBody {
+    /// 정규화 본문(제어문자 → 공백 · 공백 압축 · 양끝 정리 · 뒤쪽 [`MACHINE_BODY_KEEP_CHARS`] 자).
+    pub norm: String,
+    /// CLI 기계 send 의 발신자 등급(데몬 Inject 는 결측).
+    pub owner: Option<crate::governance::InputOwner>,
+    /// 기록 단조 시각 — 이보다 **뒤의** 사람 입력은 잔여 입증을 깬다.
+    pub at: Instant,
+}
+
+/// 기계 본문 기록이 보존하는 뒤쪽 글자 수 — 화면 커서행은 본문의 꼬리만 보인다(긴 본문은 연속행이라 관측 불능).
+pub const MACHINE_BODY_KEEP_CHARS: usize = 4096;
+
+/// 화면·본문 대조용 정규화 — 괄호붙여넣기 표식 제거 · 제어문자 → 공백 · 공백 압축 · 양끝 정리.
+pub fn normalize_input_text(s: &str) -> String {
+    let s = s.replace("\x1b[200~", " ").replace("\x1b[201~", " ");
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = true;
+    for ch in s.chars() {
+        let c = if ch.is_control() { ' ' } else { ch };
+        if c.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    let t = out.trim_end();
+    let n = t.chars().count();
+    if n > MACHINE_BODY_KEEP_CHARS {
+        t.chars().skip(n - MACHINE_BODY_KEEP_CHARS).collect()
+    } else {
+        t.to_string()
+    }
+}
+
+impl InjectTrack {
+    /// writer 전용 — Inject arm 의 첫 바이트 앞.
+    pub(crate) fn begin(&self) {
+        *self.began_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        self.inject_began_ms.store(settle_mono_ms(), Ordering::Release);
+        self.active.store(true, Ordering::Release);
+    }
+
+    /// ★(0.14.42 · S21-SETTLE) 핸들러 전용 — 기계 제출 CR(`SubmitAfterGap`)을 writer 에 넘기기 **직전**.
+    /// input_gate 안에서 부른다(원자 연산뿐 — 락 계약 무변경). 인계에 실패하면 [`Self::submit_hand_failed`].
+    pub(crate) fn submit_handed(&self) {
+        self.submit_handed_ms.store(settle_mono_ms(), Ordering::Release);
+        self.submit_pending.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// 핸들러 전용 — 넘기려던 제출 CR 이 채널 포화·writer 종료로 인계되지 않았다(계수 되돌림 · 0 아래로 안 내려감).
+    pub(crate) fn submit_hand_failed(&self) {
+        let _ = self
+            .submit_pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1)));
+    }
+
+    /// writer 전용 — 제출 CR arm 을 소비했다. `written` = PTY 쓰기 성공(그때만 '쓴 시각'을 찍는다 — 실패한 write 를
+    /// 기준 삼으면 화면에 없는 CR 때문에 다음 본문이 늦춰진다 · B2′ 기준점 규율과 같다).
+    pub(crate) fn submit_consumed(&self, written: bool) {
+        if written {
+            self.submit_written_ms.store(settle_mono_ms(), Ordering::Release);
+        }
+        self.submit_hand_failed();
+    }
+
+    /// writer 전용 — Inject arm 이 끝 CR 까지 썼다(큐 배달·clear_first 등 원자 주입도 기계 제출이다).
+    pub(crate) fn submit_written(&self) {
+        self.submit_written_ms.store(settle_mono_ms(), Ordering::Release);
+    }
+
+    /// ★(0.14.42 · S21-SETTLE) 제출 정착 관측 — 원자 판독뿐(input_gate 안에서 불러도 새 락 0).
+    /// `inflight_max_ms` = '진행 중' 신선도 상한(writer 가 PTY 닫힘으로 끝나 계수가 남거나 막힌 Inject 가 `active` 를
+    /// 내리지 못해도 상한 뒤에는 진행 중으로 보지 않는다 — 실패 방향은 종전 판정).
+    pub(crate) fn submit_settle_obs(&self, now_ms: u64, inflight_max_ms: u64) -> SubmitSettleObs {
+        let age = |x: u64| (x != 0).then(|| now_ms.saturating_sub(x));
+        let handed_age_ms = age(self.submit_handed_ms.load(Ordering::Acquire));
+        let pending = match handed_age_ms {
+            Some(a) if a <= inflight_max_ms => self.submit_pending.load(Ordering::Acquire),
+            _ => 0,
+        };
+        let inject_live = self.active.load(Ordering::Acquire)
+            && age(self.inject_began_ms.load(Ordering::Acquire)).is_some_and(|a| a <= inflight_max_ms);
+        SubmitSettleObs {
+            inflight: pending > 0 || inject_live,
+            pending,
+            handed_age_ms,
+            since_written_ms: age(self.submit_written_ms.load(Ordering::Acquire)),
+        }
+    }
+
+    /// ★(R1-F4) Inject arm 이 `over` 보다 오래 쓰는 중인가 — writer 가 막혔다(정상 arm 은 붙여넣기 + cr_delay ≤ 1s 안팎).
+    pub(crate) fn stuck_over(&self, over: std::time::Duration) -> bool {
+        self.active.load(Ordering::Acquire)
+            && self
+                .began_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some_and(|t| t.elapsed() > over)
+    }
+
+    /// 검체 전용 — Inject arm 시작 시각을 과거로 옮긴다(막힌 writer 재현). 소비 검체(h3_stuck_…)가 cfg(unix) 라 같은 게이트.
+    #[cfg(all(test, unix))]
+    pub(crate) fn backdate_begin(&self, by: std::time::Duration) {
+        *self.began_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() - by);
+    }
+
+    /// writer 전용 — Inject arm 의 마지막 바이트(CR) 뒤. `done_at` 을 먼저 찍고 `active` 를 내린다
+    /// (`active == false` 를 본 판정자는 새 `done_at` 을 본다).
+    pub(crate) fn end(&self) {
+        *self.done_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        self.active.store(false, Ordering::Release);
+    }
+
+    /// ★(R3SH-1) 기계 본문 기록 — writer Inject arm(첫 바이트 앞)과 핸들러 CLI 기계 send 가 부른다.
+    pub(crate) fn note_body(&self, text: &str, owner: Option<crate::governance::InputOwner>) {
+        let norm = normalize_input_text(text);
+        *self.last_body.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(MachineBody { norm, owner, at: Instant::now() });
+    }
+
+    /// ★(R3SH-1) 마지막 기계 본문 기록(없으면 None).
+    pub(crate) fn last_body(&self) -> Option<MachineBody> {
+        self.last_body.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// ★(F1 · 재개) 보류 탐침 전용 — 보류 기록(덮어쓰기: 가장 최근 보류가 입력줄의 현재 사실이다).
+    pub(crate) fn note_withheld(&self, w: WithheldSubmit) {
+        *self.withheld.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
+    }
+
+    /// ★(F1 · 재개) 보류 기록(없으면 None).
+    pub(crate) fn withheld(&self) -> Option<WithheldSubmit> {
+        *self.withheld.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// ★(F1 · 재개) 그 기록(`at`)이 아직 남아 있을 때만 지운다 — 그 사이 새 보류가 섰으면 건드리지 않는다. 지웠으면 true.
+    pub(crate) fn clear_withheld_if(&self, at: Instant) -> bool {
+        self.take_withheld_if(at).is_some()
+    }
+
+    /// ★(R3C-1) [`Self::clear_withheld_if`] 와 같되 지운 기록(시계 포함)을 돌려준다(버림 이벤트의 표기용).
+    pub(crate) fn take_withheld_if(&self, at: Instant) -> Option<WithheldSubmit> {
+        let mut g = self.withheld.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_some_and(|w| w.at == at) {
+            g.take()
+        } else {
+            None
+        }
+    }
+
+    /// ★(R3C-1) 그 기록(`at`)이 아직 남아 있을 때만 고친다(재제출 틱의 시계 갱신) — 고친 뒤 값. 새 보류가 섰거나 지워졌으면 None.
+    pub(crate) fn update_withheld_if(&self, at: Instant, f: impl FnOnce(&mut WithheldSubmit)) -> Option<WithheldSubmit> {
+        let mut g = self.withheld.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_mut() {
+            Some(w) if w.at == at => {
+                f(w);
+                Some(*w)
+            }
+            _ => None,
+        }
+    }
+
+    /// 지금 Inject arm 이 쓰는 중이거나, 마지막 arm 이 끝난 지 `within` 이 안 됐는가.
+    pub(crate) fn busy_within(&self, within: std::time::Duration) -> bool {
+        self.active.load(Ordering::Acquire)
+            || self
+                .done_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some_and(|t| t.elapsed() < within)
+    }
+
+    /// ★(0.14.42 · H3 간격 경쟁 — 발행 준비 발견) 생산자 전용 — Inject 를 writer 에 넘기기(`try_send`) **직전**에 부른다.
+    ///
+    /// 【왜】 [`Self::busy_within`] 은 writer 가 arm 을 **시작한**(`begin`) 뒤부터만 참이다. 생산자가 넘긴 뒤 writer 가 집기 전
+    /// (선행 쓰기 적체 · 스레드 깨움 지연)에 다음 판정이 돌면 거짓이라, 채널 뒤 행이 앞 행 CR 에 간격 0 으로 붙고 그 판정은 앞
+    /// 행을 쓰기도 전의 화면을 본 것이 된다(S41 HG1 계급 · 검체 `h3_flush_rejudges_…` 간헐 적색). 넘긴 시각을 남겨 그 창을 메운다.
+    /// 【왜 넘기기 전인가】 넘긴 뒤에 찍으면 부하 중 writer 가 그 arm 을 먼저 끝낼 수 있다 — 끝난 arm 뒤의 표식은 영영 풀리지
+    /// 않는 '대기'가 된다. 인계에 실패하면 [`Self::undo_handoff`] 로 되돌린다.
+    pub(crate) fn note_handoff(&self) -> HandoffMark {
+        self.note_handoff_at(Instant::now())
+    }
+
+    /// [`Self::note_handoff`] 의 본체 — 넘긴 시각을 인자로 받는다. 운영 경로는 언제나 `Instant::now()` 이고, 검체는 **같은 시각을 두 번** 넣어 윈도우의 100ns 눈금
+    /// 겹침을 결정론으로 재현한다(운영 경로가 지나는 바로 이 함수를 잰다 — 검체용 사본이 아니다). 순번은 표식 락 안에서 매긴다(같은 락 = 표식이 덮인 순서 그대로).
+    fn note_handoff_at(&self, at: Instant) -> HandoffMark {
+        let mut g = self.handed_at.lock().unwrap_or_else(|e| e.into_inner());
+        g.issued += 1;
+        let mine = HandoffStamp { at, seq: g.issued };
+        let prev = g.cur.replace(mine);
+        HandoffMark { prev, mine }
+    }
+
+    /// 생산자 전용 — [`Self::note_handoff`] 뒤 인계(`try_send`)가 실패했다(채널 포화·writer 종료). 그 사이 다른 인계가 표식을
+    /// 덮었으면 건드리지 않는다.
+    /// ★(R2F-DM 2차 · B2) '내 표식이 아직 서 있는가' 는 **순번**으로 가린다 — 시각 값이 같은 다른 인계의 표식(윈도우 `Instant` 100ns 눈금)을 지우지 않는다.
+    pub(crate) fn undo_handoff(&self, m: HandoffMark) {
+        let mut g = self.handed_at.lock().unwrap_or_else(|e| e.into_inner());
+        if g.cur.is_some_and(|c| c.seq == m.mine.seq) {
+            g.cur = m.prev;
+        }
+    }
+
+    /// 마지막 인계 뒤 **어떤 Inject arm 도 끝나지 않았으면** 그 인계의 경과 — 넘긴 Inject 가 대기열에 있거나 쓰는 중이다.
+    /// 끝난 arm 이 인계보다 뒤면(`done_at ≥ handed_at`) None: 간격은 종전 [`Self::busy_within`] 이 `done_at` 으로 잰다.
+    /// 판독 순서 = 인계 → 끝남(writer `end` 는 `done_at` 을 찍고 `active` 를 내린다) — 이 판정이 None 이면 호출부의
+    /// `busy_within` 이 이어받는다(빈틈 0). 원자 스냅숏은 아니다(leaf 락 둘).
+    ///
+    /// 실패 방향 = 보류(지연): 표식이 풀리지 않는 경우는 writer 가 끝내 그 arm 을 쓰지 못한 때뿐이다(막힘 · 종료). 호출부는
+    /// 경과가 막힘 문턱을 넘으면 막힌 writer 로 본다(채널 `CHANNEL_WRITER_STUCK_SECS` → `WriterBusy` · 15s sweep).
+    pub(crate) fn handoff_pending(&self) -> Option<std::time::Duration> {
+        let handed = self.handed_at.lock().unwrap_or_else(|e| e.into_inner()).cur?.at;
+        let done = *self.done_at.lock().unwrap_or_else(|e| e.into_inner());
+        done.map_or(true, |d| d < handed).then(|| handed.elapsed())
+    }
+
+    /// 검체 전용 — 인계 시각을 과거로 옮긴다(writer 가 오래 집지 못한 인계 재현). 소비 검체(h3_handoff_stuck_…)가 cfg(unix) 라 같은 게이트.
+    #[cfg(all(test, unix))]
+    pub(crate) fn backdate_handoff(&self, by: std::time::Duration) {
+        if let Some(t) = self.handed_at.lock().unwrap_or_else(|e| e.into_inner()).cur.as_mut() {
+            t.at -= by;
+        }
+    }
+}
+
+/// ★(R2F-DM 2차 · 성찰 2회차 B2) 인계 표식 한 건 — 넘긴 단조 시각(`at` · 경과·선후 판정 전용)과 **순번**(`seq` · '같은 표식인가' 판정 전용).
+///
+/// 【왜 순번인가】 종전에는 표식의 동일성을 `Instant` 값으로 가렸다([`InjectTrack::undo_handoff`] 의 "그 사이 다른 인계가 표식을 덮었으면 건드리지 않는다").
+/// 윈도우 `Instant` 는 100ns 눈금이라 연달아 찍은 두 표식이 **같은 값**을 받을 수 있고(윈도우 러너 실측 — 검체 `inject_track_handoff_pending_until_an_arm_ends` 의 ④),
+/// 그때 앞 인계의 되돌림이 뒤 인계의 표식을 지운다. 시각은 '언제' 이지 '무엇' 이 아니다 — 동일성은 표식 락 안에서 매기는 단조 증가 순번으로 가린다.
+/// 시간 판정([`InjectTrack::handoff_pending`] 의 경과 · `done_at` 과의 선후)은 종전대로 `at` 만 읽는다(동작 불변).
+#[derive(Debug, Clone, Copy)]
+struct HandoffStamp {
+    at: Instant,
+    seq: u64,
+}
+
+/// [`InjectTrack`] 의 `handed_at` 락이 지키는 것 — 지금 서 있는 표식과, 이 좌석에서 지금까지 매긴 순번의 수(단조 증가 — 되돌려도 줄지 않는다 = 한 번 쓴 순번은 다시 쓰지 않는다).
+#[derive(Debug, Default)]
+struct HandoffSlot {
+    cur: Option<HandoffStamp>,
+    issued: u64,
+}
+
+/// [`InjectTrack::note_handoff`] 의 되돌림 증표(인계 실패 시 [`InjectTrack::undo_handoff`]) — 덮기 전의 표식과 내 표식(각각 시각 + 순번).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HandoffMark {
+    prev: Option<HandoffStamp>,
+    mine: HandoffStamp,
 }
 
 /// PTY 쓰기 요청 — surface별 전용 writer 스레드가 순서대로 소비한다.
@@ -665,6 +1813,12 @@ pub enum WriteReq {
         text: String,
         cr_delay_ms: u64,
         clear_first: bool,
+        /// ★(0.14.31 · 리뷰 R1 · codex blocking) **인계 가드** — `None` 이면 종전 동작 그대로다.
+        /// 정적(quiet) 기반 판정으로 열린 배달(alt-screen 양성 유휴 · 마커 없는 quiet 폴백)만
+        /// 건다: 그 경로는 애초에 "판정이 본 출력 세대가 그대로일 것"을 요구하므로 writer 가
+        /// 같은 조건을 **쓰기 직전에** 한 번 더 볼 수 있다. 비-alt 경로는 세대 불변을 요구하지
+        /// 않는 계약(스트리밍 중 주입 허용 · 기아 #1 의 수리)이라 가드를 걸지 않는다.
+        guard: Option<Arc<InjectGuard>>,
     },
     /// ★B2(0.14.24) delay_ms 만큼 **먼저 기다렸다가** 그대로 쓰기 — 프로그램이 본문을 꽂은
     /// 직후 곧바로 도착한 제출 CR 을 최소 간격 뒤로 밀어내는 전용 변형이다.
@@ -676,6 +1830,13 @@ pub enum WriteReq {
     /// Claude CLI 가 paste 로 삼켜 미제출" — src-tauri/src/main.rs:489). Anthropic 자체 주입
     /// 코드는 bracketed paste 뒤 `\r` 을 10ms 지연 별도 전송하고, 이 저장소의 큐 경로
     /// (`Inject`)는 이미 cr_delay_ms(400)를 둔다 — 직접 경로에만 간격이 없었다.
+    ///
+    /// ★정정(0.14.42 · 설계 C D6 · 벤치 S49 = 실제 claude 2.1.281 TUI · 각 조건 10회): 위 2.1.239 의 s_r=800
+    /// 서술은 현행과 맞지 않는다. 한 번 쓰기에 CR 을 동봉한 울타리 없는 키런은 48자 10/10 제출 · 64·799·801·
+    /// 4000자 0/10 제출(삼킴)이라 **동봉 문턱은 49~63자**다. 분리 CR 은 τ=0 에서도 10/10(키런·울타리 둘 다),
+    /// 울타리 + CR 은 동봉·τ 0/10/50/150/400ms 전부 10/10, 801·4000자 울타리도 10/10 이다. 조각 사이 인위 간격
+    /// 300/400ms 조건의 울타리 없는 1200자는 조건마다 9/10 온전(2/20 앞 1022자 소실) · 울타리 20/20 온전이다.
+    /// 실경로 S20 ko1200 은 울타리 없이 200/200 온전했다. 이 변형(DataAfter)의 계약은 무변경이다.
     ///
     /// 왜 writer 에서 자는가: writer 는 **단일 소비자**라 여기서 sleep 하면 뒤따르는 WriteReq
     /// 는 그동안 채널에 머문다 = 순서가 구조적으로 보존된다(Inject 의 cr_delay_ms 와 같은
@@ -714,7 +1875,16 @@ pub enum WriteReq {
     /// 사이의 **시간**이 아니다. 그래서 적체 경로에서 최소 간격 보장이 통째로 붕괴했다.
     /// 기준을 enqueue 시각이 아니라 **writer 실기록 시각**으로 옮겨야 그 경로가 닫힌다.
     /// `last_program_write` 가 None(이 writer 가 아직 프로그램 본문을 쓴 적 없음)이면 즉시 쓴다.
-    SubmitAfterGap { bytes: Vec<u8>, min_gap_ms: u64 },
+    SubmitAfterGap {
+        bytes: Vec<u8>,
+        min_gap_ms: u64,
+        /// ★(0.14.42 · 수정 2회차 F1) **제출 CR 보류 탐침** — writer 가 최소 간격을 잔 **뒤 · 쓰기 직전** 한 번 부른다.
+        /// `true` = 이 CR 을 쓰지 않는다(인계 뒤 질문·선택 창이 전경이 됐다 — 쓰면 그 창의 기본 선택지를 누른다).
+        /// `None` = 종전 동작(검체·윈도우·셸 좌석·권위 Return·킬 스위치·보이는 창에 대한 승인 Return). 생성자는
+        /// `governance::submit_cr_withhold_probe` 하나다(규칙·귀결은 그 doc). 보류한 CR 은 표식상 '소비 · 미기록'이고
+        /// 최소 간격 기준점(`last_program_write`)도 찍지 않는다 — 화면에 없는 바이트를 기준 삼지 않는다(B2′ 규율).
+        withhold: Option<SafetyProbe>,
+    },
 }
 
 /// 청크 경계 상태: 미완성 ESC/UTF-8 꼬리·\r 덮어쓰기·진행 중 라인
@@ -791,6 +1961,33 @@ pub struct BootAck {
     pub generation: u32,
 }
 
+/// ★(0.14.42 · clear 가드 v3) 사이클 단일 비행 점유 — `surface.cycle_claim` 이 기록한다(`Surface::cycle_claim`).
+#[derive(Debug, Clone)]
+pub struct CycleClaim {
+    /// 점유한 집행자(`cys cycle-agent`)의 peer pid — None = 미상(생존 판정 불가 → 상한만).
+    pub pid: Option<u32>,
+    /// 점유 시각(epoch 초) — **표시 전용**(좌석 행 `ctx_guard.claim.since` · busy 응답). 판정에 쓰지 않는다.
+    pub since: f64,
+    /// ★(게이트 수정 1회차 R1R3-1·R4W-1) 점유 시각 — 데몬 **단조** 초(`usage::ctx_guard_now` · 가드와 같은 시계). 상한 판정은 이것으로만.
+    pub mono: f64,
+    /// 집행 중인 통보(`context.threshold` 의 `fire_id`) — 없으면 수동 사이클.
+    pub fire_id: Option<String>,
+}
+
+/// 사이클 점유 상한(초) — cycle-agent 한 사이클(단일 전체 시한 570초 · 약 9.5분)보다 넉넉하게. 넘긴 점유는 버린다(점유가 굳어 사이클이 영구히
+/// 막히는 ② 방향 차단 · 산 집행자의 긴 사이클이면 중복 집행 1회로만 틀린다). **단조 초**다 — 집행자의 시한(`Instant`)과 가드 시계가
+/// 절전 중 멈추므로 상한도 같은 시계로 재야 한다(종전 벽시계는 20분 넘는 절전 뒤 수집기 틱이 산 집행자의 점유를 버려 재배달 →
+/// 같은 좌석 이중 사이클 · 게이트 수정 1회차 R1R3-1·R4W-1).
+pub const CYCLE_CLAIM_MAX_SECS: f64 = 1200.0;
+
+impl CycleClaim {
+    /// 죽은 점유 — 점유자 pid 가 죽었거나 상한([`CYCLE_CLAIM_MAX_SECS`])을 넘겼다. `mono_now` = 데몬 **단조** 초(`usage::ctx_guard_now`)
+    /// — 벽시계는 입력이 아니다(절전 뒤에도 산 집행자의 점유를 나이로 버리지 않는다). 게으르게 버린다.
+    pub fn expired(&self, mono_now: f64) -> bool {
+        self.pid.is_some_and(|p| !pid_alive(p)) || mono_now - self.mono > CYCLE_CLAIM_MAX_SECS
+    }
+}
+
 pub struct Surface {
     pub id: u64,
     /// (B5 · §2-8) 이 좌석에 arm 된 부트 논스 — arm 은 `boot.arm_nonce` RPC 로만 일어난다.
@@ -803,6 +2000,16 @@ pub struct Surface {
     pub cwd: String,
     pub pid: u32,
     pub created_at: f64,
+    /// ★(0.14.31 · 독립 재유도 · codex major #10) 좌석 생성의 **단조 시각** — 경과는 이 값으로만
+    /// 잰다(`created_at` 은 보고·영속 전용). `Daemon.started_instant` 가 이미 세운 규약과 같다.
+    ///
+    /// 왜 필요한가: 신생 좌석 유예(`reclaim::NEW_SEAT_GRACE_SECS`)는 `now_epoch() - created_at`
+    /// 이라 **벽시계가 앞으로 뛰면 즉시 사라진다**. 실무 트리거는 NTP 스텝보다 **랩톱 절전/복귀**
+    /// 다: macOS 의 `Instant`(mach_absolute_time)는 절전 중 멈추지만 벽시계는 그만큼 뛴다 →
+    /// 방금 기동한 좌석이 "305초 된 빈 좌석"으로 보여 역할을 빼앗긴다(치명위험 ③).
+    /// 반대로 시계가 **뒤로** 밀리면 벽시계 나이가 음수가 되는데, 그 방향은 유예가 길어지는
+    /// 쪽(보류)이라 안전하다. 판정은 두 나이의 **작은 쪽**을 쓴다(§reclaim::is_candidate).
+    pub created_instant: std::time::Instant,
     /// RC-3 잔여(T2.1): 이 surface가 create_surface_with_env로 **env 주입**되어 생성됐는가.
     /// Windows node-recover가 기존 pane 재사용 전, pane env에 CLAUDE_CONFIG_DIR 등이 실려있는지
     /// (=순수 cmd 재기동이 안전한지) 판정하는 근거. env 미주입 pane(수동·구세션) 재사용 시 fail-closed.
@@ -837,6 +2044,18 @@ pub struct Surface {
     ingest: Mutex<IngestState>,
     pub out_tx: broadcast::Sender<Vec<u8>>,
     pub last_output: Mutex<Instant>,
+    /// ★(0.14.31 · WP-1 H-1 · 리뷰 R1) **출력 세대** — reader 가 청크 하나를 발행하는 동안 홀수, 발행이 끝나면
+    /// 짝수(seqlock 부호). `surface.read_text` 의 `quiet_secs` 는 화면/스크롤백 스냅샷 앞뒤로 이 값을 읽어
+    /// 세대가 홀수였거나 달라졌으면 관측을 **버린다**(`quiet_secs = 0.0` — 출력이 흐르는 중). 스탬프
+    /// (`last_output`)·파서 반영·스크롤백 ingest 가 모두 홀수 창 안에서 일어나므로 "화면 X ∧ q초 정적" 이
+    /// 한 관측이 된다 — 종전에는 스탬프를 파서 반영 **뒤**에 찍고 핸들러가 스탬프를 먼저 읽어, 그 사이에
+    /// 도착한 청크가 '새 화면 + 오래된 quiet' 로 Boot Valve 를 열 수 있었다(codex BLOCK). 쓰기 주체는
+    /// surface 당 reader 스레드 하나다(홀/짝 불변의 전제).
+    /// ★(0.14.31 · 리뷰 R1 · codex blocking) `Arc` 인 이유: **writer 스레드**가 `WriteReq::Inject`
+    /// 의 인계 가드([`InjectGuard`])에서 같은 카운터를 읽어야 한다(판정이 본 프레임이 아직 그
+    /// 프레임인지 — 판정과 실제 PTY 쓰기 사이의 창). Surface 를 통째로 넘기면 writer 요청이
+    /// Surface 를 살려 두는 참조 순환이 생기므로 카운터만 공유한다.
+    pub output_gen: Arc<AtomicU64>,
     pub idle_notified: AtomicBool,
     /// recall 영속용 직전 라인 (연속 중복 스킵 — TUI 리드로우 노이즈 억제)
     last_recall_line: Mutex<String>,
@@ -845,6 +2064,12 @@ pub struct Surface {
     pub pending_queue: Mutex<std::collections::VecDeque<QueueEntry>>,
     /// T1-1 자기보고 상태 (`status.set` RPC)
     pub agent_status: Mutex<Option<AgentStatus>>,
+    /// ★(0.14.42 · R2NC-F3 · R3SH-4) quiescing 을 세운 호출자 `(peer pid, 그때의 updated_at, 그때의 데몬 단조 초)` — cycle-agent 가
+    /// /clear~RESUME 창에서 죽으면(SIGTERM·Bash 도구 시한·SIGKILL) 해제 호출이 영영 오지 않는다. 데몬이 이 pid 의 사망을 보면 즉시 푼다
+    /// (`governance::effective_quiescing_since`). 휘발 · pid 미상(peer pid 결측)이면 None = 종전 상한(600s)만.
+    /// ★(게이트 수정 1회차 · R1R3-1 과 같은 부류) 셋째 값 = 표지를 세운 **단조** 시각 — 그 창의 나이(보류 상한 600s)를 단조 시계로 잰다
+    /// (`governance::quiescing_since_and_age` · 절전으로 벽시계만 뛰어 산 사이클 창이 '고아'로 보여 창 안에 큐 항목이 나가던 것).
+    pub quiesce_owner: Mutex<Option<(u32, f64, f64)>>,
     /// T2-5 에이전트 메타: launch-agent가 등록한 (agent 이름, 실행 바이너리)
     pub agent_meta: Mutex<Option<(String, String)>>,
     /// T2-5 사망 감지 상태머신: 자식 트리에서 agent 바이너리를 처음 본 뒤 사라지면 발화
@@ -854,20 +2079,61 @@ pub struct Surface {
     pub last_human_input: Mutex<Option<Instant>>,
     /// ★B1(0.14.30): 이 pane 에 쓰였으나 **제출(CR)·선정리(Ctrl-U/Ctrl-C)를 아직 보지 못한**
     /// 입력 바이트 수. 큐 배달의 '입력줄 점유' 1차 축이다(화면 무의존 결정론 신호 —
-    /// `governance::pending_input_after` 가 전이 규칙, `governance::input_line_state` 가 소비자).
+    /// `governance::pending_input_step` 가 전이 규칙, `governance::input_line_state` 가 소비자).
     /// 휘발이므로 재기동 직후엔 0 이고, 그때는 화면 축(커서 앞 텍스트)이 2차로 판정한다.
+    /// v2(0.14.39): 봉투 제외 · 봉투 안 개행 가산 · 봉투 밖 순수 자동응답 면제 · 표식 절단 이월 — 규칙은 governance::pending_input_step 하나.
+    /// v3(0.14.43 · RQFIX · R1F-IN): 봉투 밖 단독 Esc·BS/DEL 비계수는 **좌석 표식 [`Surface::lone_key_exempt`] 가 참이고 전경이 에이전트 그룹인 좌석**(살아 있는 에이전트 TUI)에서만 —
+    /// 표식이 거짓(맨 셸·죽은 에이전트·마커 없는 어댑터·표식 쓰기 전)이거나 전경이 에이전트 그룹이 아니면 v2 규칙으로 센다([`Surface::pending_input_model`]).
     pub pending_input_bytes: AtomicU64,
-    /// ★⑭(1.1.7): 입력 **쓰기 세대** — `pending_input_bytes` 를 바꾸는 쓰기(사람 키·프로그램 본문·
-    /// 큐 Inject)마다 1 씩 오른다. 고착 계수 해제(`governance::maybe_release_stale_pending_input`)가
-    /// 「관측하는 동안 아무도 이 줄에 안 썼다」를 이 값으로 확인한다(원작자 `input_gen` 의 우리 판).
+    /// 미제출 입력 상태기계의 surface 별 상태. count 의 SOT 는 미러 atomic `pending_input_bytes`
+    /// (락 없는 읽기 소비자·테스트 픽스처 직접 store 호환) · 나머지 필드의 SOT 는 이 Mutex.
+    pub pending_input: Mutex<crate::governance::PendingInputState>,
+    /// ★(0.14.43 · RQFIX B-1 · RQFIX2 m-1·m-2 · R1F-IN ⓑ) **좌석 틱 표식** — "마지막 watchdog 틱이 이 좌석에 **엄격 증거로 살아 있는 마커 에이전트**가 있다고 판정했다"
+    /// (`liveness == AliveStrict` ∧ 어댑터가 프롬프트 마커 선언 ∧ 전역 모델 V3). **이 표식만으로 V3 가 적용되지는 않는다** — 실제 적용은
+    /// 이 표식 ∧ **계수 시점의 PTY 전경 프로세스 그룹이 틱이 적어 둔 에이전트 그룹**(`tcgetpgrp(master)` == [`Surface::agent_fg_pgid`] > 0 · unix)이다([`Surface::pending_input_model`]).
+    /// [`Surface::apply_pending_input`] 이 그 판정으로 계수 모델을 고른다 — V3(봉투 밖 단독 Esc·BS/DEL 비계수) · 그 밖은 V2(종전 · 길이만큼 계수).
+    ///
+    /// **단일 writer = `governance::check_agent_death`**(watchdog 틱 · 좌석마다 에이전트 생존을 이미 판정하는 상태머신 — 사망 상태머신은 광의 일치도 생존으로 보는 `alive` 로 돌고,
+    /// 표식은 **엄격 증거**만 받는다 · 쓰는 자리는 `governance::sync_lone_key_exempt` 하나이고 `agent_fg_pgid` 도 거기서 함께 쓴다). 맨 셸(`agent_meta` 없음)·종료 좌석·죽은 에이전트·광의 일치(미증명 포함)뿐인 좌석·마커 없는 어댑터는 거짓.
+    /// 맨 셸 줄 편집기(zsh·readline 계열)는 단독 ESC 를 Meta 조합의 첫 바이트로 받아 **다음 키를 무기한 기다린다**(화면에는 아무것도 없다) —
+    /// 그 좌석에서 v3 로 0 을 세면 큐 본문(`ESC[200~…`)이 그 접두와 합쳐져 붙여넣기 봉투가 깨진다(B-1 실측). 정규 모드 tty(`cat`·`read`·`sudo`)에서는
+    /// `^[`·`^H` 가 글자로도 남는다.
+    ///
+    /// **왜 전경을 직접 보나**: 프로세스 표는 '에이전트 프로세스가 있다' 까지만 안다. 중지된 에이전트(Ctrl-Z · 중지 상태로 표에 남는다)·사망 직후 다음 틱까지의 창·에이전트는 배경이고 셸 프롬프트나
+    /// 중첩 셸(`poetry shell`·손으로 친 `zsh`)이 전경인 좌석에서는 표식이 참인데 키를 받는 것은 줄 편집기다. 그 구분은 커널에 물으면 계수 시점에 즉시 안다 — ★R1F-IN: 판정은
+    /// "전경 ≠ 뿌리 셸 그룹"(중첩 셸의 프롬프트도 '작업'으로 읽혔다)이 아니라 **"전경 == 틱이 적어 둔 엄격 일치 에이전트 프로세스의 그룹"** 이다.
+    ///
+    /// **실패 방향**: 표식이 거짓인 동안(좌석 등록 직후 첫 틱 전 · 어댑터 프로브 미도달)·에이전트 그룹을 모를 때(틱 전 · 0)·전경을 모를 때(시스템 콜 실패 · 자식 종료)는 V2 = 0.14.42 동작(보수 · fail-closed).
+    /// 휘발(재기동 직후 false)이며 영속하지 않는다. 읽기는 원자 두 번과 시스템 콜 한 번(락 없음) — `input_gate` 안에서는 `pending_input` leaf 만 잡는다는 계약을 건드리지 않는다.
+    ///
+    /// **남는 한계(정직)**: ① 닫힘 — 전경이 '에이전트가 아닌 다른 프로그램'(중첩 셸 프롬프트·다른 작업)인 좌석은 V2 다(전경이 엄격 일치한 에이전트 프로세스의 그룹일 때만 V3).
+    /// ② 엄격 매처가 에이전트로 오인하는 프로그램(`man claude` 등 — 토큰 basename 일치)이 전경 그룹에 있으면 에이전트로 읽는다(그대로).
+    /// ③ 새 한계 — 에이전트가 키 읽기를 멈춘 때(종료 중·멈춤)부터 다음 틱(주기 5초 + 틱 소요)까지의 창: 그 사이 누른 사람 단독 Esc 는 0 으로 세어진다. 에이전트가 그 Esc 를 읽지 못한 채 전경에서
+    /// 사라지면 틱이 `tcgetpgrp`(커널 사실)로 알아채 계수 1(사람 몫 1)로 되돌린다(`input.esc_recounted` · [`Surface::esc_exempt_pgid`]). 되돌리기 전에 셸이 그 Esc 를 읽고 비권위 주입이 끼어드는 것이 이 창의 위험이다.
+    /// ④ 뿌리 프로세스가 셸이 아니라 에이전트 자신인 좌석·작업 제어가 없는 셸(에이전트가 뿌리 셸과 같은 그룹)은 전경 = 뿌리 그룹이라 V2(보수).
+    /// ⑤ 윈도우: 전경 판정이 없다 — 틱 표식만(기본 V2 라 표식이 늘 거짓이고, 명시 `v3` 옵트인은 종전 뜻 그대로). 되돌리기도 없다(전경을 물을 수 없다 — 면제 표식이 서지 않는다).
+    pub lone_key_exempt: AtomicBool,
+    /// ★(0.14.43 · RQFIX2 m-2) PTY master 의 raw fd — **좌석 생성 때 원자로 캐시**한다(unix · 모르면 −1). 입력 경로(`apply_pending_input` → `pending_input_model`)가 전경 프로세스 그룹을
+    /// `tcgetpgrp` 로 묻기 위한 것이다 — `master` Mutex 를 입력 경로에서 잡지 않는다(`input_gate` 안에서는 `pending_input` leaf 만 잡는다는 계약 유지).
+    /// 좌석이 살아 있는 동안 `master` 도 이 구조체 안에서 살아 있으므로 fd 는 유효하다(자식이 죽어도 master 는 남는다 — 그때 `tcgetpgrp` 는 실패 → V2).
+    #[cfg(unix)]
+    pub pty_master_fd: AtomicI32,
+    /// ★(0.14.43 · R1F-IN ⓑ) 이 좌석 PTY 의 전경 프로세스 그룹이 **"엄격 일치한 에이전트 프로세스(`cmdline_matches_agent_exec`)의 그룹"** 이면 그 그룹 id, 아니면 0(unix).
+    /// 단일 writer = `governance::sync_lone_key_exempt`(watchdog 틱 · 좌석마다 매 틱 — 종료 좌석·맨 셸·엄격 증거 없음·시스템 콜 실패·전경이 뿌리 셸 그룹이면 0). 틱이 엄격 일치한 자손 pid 들의 `getpgid` 집합 P 와
+    /// `tcgetpgrp(pty_master_fd)` 를 비교해 `fg ∈ P` 일 때만 `fg` 를 적는다. 읽는 곳: 계수 시점의 V3 판정([`Surface::pending_input_model`] — 지금의 `tcgetpgrp` 와 같을 때만 · "면제해도 되는가"의 판정).
+    /// ★되돌리기(`esc_exempt_pgid`)는 이 값을 쓰지 않는다 — 프로세스 표 판독이 한 틱 비는 것만으로 살아 있는 에이전트 좌석에 헛 계수를 세우지 않으려고 커널 사실(전경 그룹)만 본다. 락 없음 · 휘발(0 = 틱 전).
+    #[cfg(unix)]
+    pub agent_fg_pgid: AtomicI32,
+    /// ★(0.14.43 · R1F-IN ⓐ) **잠정 Esc 면제 표식의 원자 미러**(unix) — V3 로 면제한 **사람의 단독 Esc** 가 마지막 리셋 뒤에 있었다면 **면제 당시의 PTY 전경(에이전트) 그룹 번호**, 없으면 0.
+    /// 진실은 leaf 상태 `PendingInputState::esc_exempt_pgid` 이고 이것은 틱이 락 없이 미리 보는 용도다 — 쓰는 곳은 모두 `pending_input` leaf 를 쥔 채다(`apply_pending_input` · `clear_pending_input` ·
+    /// `take_esc_exempt` · `restore_esc_exempt` · `recount_exempted_esc` · 스케줄 인계 계상 `schedule::inject_on`). 틱은 이 값이 0 이 아닌 좌석에서만 지금의 전경 그룹을 커널에 물어(`tcgetpgrp`) 면제 당시의
+    /// 그룹이 아니면 되돌린다(`governance::esc_recount_due`). 휘발.
+    #[cfg(unix)]
+    pub esc_exempt_pgid: AtomicI32,
+    /// ★(0.14.31 · WP-5 B-2②) `pending_input_bytes` 의 **변이 세대** — 모든 쓰기(`set_pending_input`)
+    /// 마다 +1. stale 리셋 판정이 "같은 바이트 수" 가 아니라 "같은 세대" 를 본다: 옛 초안을 제출하고
+    /// 같은 길이의 새 초안을 친 ABA 를 바이트 수는 구분하지 못한다(codex 설계 검토 Q4).
     pub input_gen: AtomicU64,
-    /// ★④(1.1.7): `pending_input_bytes` 중 **사람 경로**(send_text human=true ∧ ¬machine_origin ∧
-    /// 자동 응답 아님)로 들어온 바이트 — 초안 게이트(`governance::draft_gate`)의 Return·C-u 축.
-    /// 전이 = `governance::human_pending_after`(항상 ≤ pending_input_bytes 로 읽는다).
-    pub pending_input_human_bytes: AtomicU64,
-    /// ★⑭(1.1.7): 고착 계수 관측 스탬프 (계수, 쓰기 세대, 첫 관측 시각). 화면이 빈 입력창인데 계수만
-    /// >0 인 모순을 처음 본 틱에 찍고, 같은 (계수, 세대) 로 창 이상 지속돼야 해제한다.
-    pub pending_input_stale: Mutex<Option<(u64, u64, Instant)>>,
     /// ★R1-blocking-2 입력줄 게이트 — **직접 write 경로와 큐 Inject 경로의 상호배제**.
     ///
     /// 왜 필요한가(codex 감사 실측): `surface.send_text` 는 writer 에 Program 을 넣은 **뒤**
@@ -875,9 +2141,20 @@ pub struct Surface {
     /// 판정해 Inject 를 넣으면 **두 본문이 한 제출로 합쳐진다**(오너 임무 게이트가
     /// `delivery_concatenated`·`delivery_substring` 이상징후를 실제로 발행한 축).
     ///
-    /// 락 순서 계약: `pending_queue` → `input_gate`. 직접 write 경로는 이 락 **하나만** 잡고
-    /// 그 안에서 다른 락을 잡지 않는다(사이클 없음).
+    /// 락 순서 계약: `pending_queue` → `input_gate`. 직접 write 경로(`send_text`·`send_key`)는 이 락을 잡은 채 **`pending_input`(leaf)과 원자·`try_send` 만** 쓰고
+    /// 그 밖의 락(`pending_queue` 포함)을 이 락 안에서 새로 잡지 않는다 — 순서는 `input_gate` → `pending_input` 하나뿐이다(역순 금지 · 사이클 없음).
+    /// ★(R2F-DM · 성찰 2회차 A1 n-12 ⓐ) 종전 문장 "이 락 **하나만** 잡고 그 안에서 다른 락을 잡지 않는다" 는 leaf 접점(`apply_pending_input`·`set_pending_input` — 이번 판이 더 늘렸다)이 생긴 뒤로 사실이 아니었다.
     pub input_gate: std::sync::Mutex<()>,
+    /// ★(0.14.42 · A2) 짝 Return 흡수 표 — 발신자 키([`PairKey`] · B) → 표(대상·발신자당 1장 · 덮어쓰기 ·
+    /// 상한 [`RETURN_TICKETS_CAP`]).
+    ///
+    /// 발급: `surface.send_text` queued 팔(`absorb_return` · 발신자 키 있음(검증 ∨ 자기신고 — B) · ttl>0 ·
+    /// 끝 CR/LF 아님) 과 `surface.send_key` 쓰기 뒤 정산(남의 기계 본문을 제출했을 때 그 주인에게 보상 표 —
+    /// 주인은 검증 신원만: `Surface::pending_owner`).
+    /// 소거: 직접 send 성공(D2) · send_key 쓰기 뒤 정산(D4) · 흡수 소비(CAS) · 발급 때 만료 정리.
+    /// **락 계약: 단독 leaf** — 다른 락을 쥔 채 잡지 않고(`input_gate`·`pending_queue` 안 금지),
+    /// 이 락을 쥔 채 다른 락도 잡지 않는다. poison 은 `into_inner` 로 넘긴다(HashMap 연산뿐).
+    pub return_tickets: Mutex<HashMap<PairKey, ReturnTicket>>,
     /// ★B1(0.14.30): 큐 배달이 **마지막으로 막힌 사유와 시각**(reason, epoch). 배달 성공 시
     /// 지운다. `queue.list` 가 이 값을 노출해 운영자가 "왜 안 가나" 를 화면 폴링 없이 안다
     /// (경보는 쿨다운·임계가 있어 매 틱 사유를 말해 주지 않는다 — 이 필드가 상시 사실이다).
@@ -896,8 +2173,37 @@ pub struct Surface {
     pub agent_dead_since: Mutex<Option<f64>>,
     /// T4-17 헬스 조치: 이 시각까지 queued 배달 일시정지 (직접 send는 통과)
     pub queue_paused_until: Mutex<Option<Instant>>,
+    /// ★(0.14.31 · WP-5 M) **만료 큐** — TTL 을 넘긴 항목의 보존소. 활성 큐(`pending_queue`)와
+    /// 별개의 VecDeque 라 (a) 만료 항목이 활성 큐 머리를 막지 않고(§8) (b) enqueue 상한 100
+    /// (`pending_queue.len()`) 회계에서 제외된다. 상한 `governance::QUEUE_EXPIRED_CAP` 초과분은
+    /// 가장 오래된 것부터 원장 기록(`expired_evicted`) 후 폐기한다. 소비: `queue.list
+    /// include_expired` · `queue.revive`(→ pending 꼬리) · `queue.drop` · 종료 drain(원장 `expired`).
+    /// 락 순서: `pending_queue` → `expired_queue`(둘 다 잡을 때만 · leaf 취급).
+    pub expired_queue: Mutex<std::collections::VecDeque<QueueEntry>>,
+    /// ★(0.14.31 · 리뷰 R2 · codex blocking) **인계 예약** — 인계 가드(`InjectGuard`)가 붙은 배달은
+    /// writer 의 결판(`settle`)이 날 때까지 항목을 큐에 **그대로 둔다**(종전에는 미리 pop 해서
+    /// persist·close·`queue.list` 어디에도 없는 창이 생겼다 = 그 창의 크래시는 유실).
+    ///
+    /// 그래서 그 창 동안 **다른 처분자**(`queue.clear`·좌석 종료 drain·TTL 스윕·`queue.drop`)가 같은
+    /// 항목을 가져갈 수 있다 — 그러면 "폐기 통지 후 실제 주입" 이 된다(codex 반례). 예약은 그 조정
+    /// 지점이다: 처분자는 [`Surface::cancel_inject_reservation`] 으로 **먼저 인계를 취소**하고,
+    /// 취소에 실패한(=writer 가 이미 쓰기로 확정한) 항목만 처분 대상에서 뺀다.
+    /// 같은 좌석의 이중 인계도 이것이 막는다(`pending_queue` 락 안에서 검사·설정).
+    /// 락 순서: `pending_queue` → (`input_gate`) → `inject_reservation`(leaf).
+    pub inject_reservation: Mutex<Option<InjectReservation>>,
+    /// ★(0.14.31 · WP-5 폭주 완충) 이 surface 의 **마지막 큐 배달 시각** — 틱·overdue·강제·
+    /// rehome 어느 경로든 `deliver_head_locked` 가 인계에 성공한 순간 찍는다(같은 시계). 호출부
+    /// 게이트가 `governance::queue_min_interval_secs()`(기본 10s) 미만이면 배달을 보류한다.
+    pub last_queue_delivery_at: Mutex<Option<Instant>>,
+    /// ★(0.14.31 · WP-5 B-2②) `pending_input_bytes` **stale 관측** — (그때 본 바이트 수, 그때의
+    /// `input_gen`, 처음 모순을 본 시각). 화면은 커서행 빈 프롬프트·출력 정적·모달 없음인데 계수만
+    /// >0 인 상태가 **같은 세대**로 임계 이상 지속되면 계수를 stale 로 보고 0 으로 리셋한다(dept-1
+    /// cso 75분 `input_pending` 고착의 수리). 세대가 바뀌면 관측을 다시 시작한다(in-flight 입력 보호).
+    pub pending_input_stale: Mutex<Option<(u64, u64, Instant)>>,
     /// T4-17 에코 제외: 마지막 원격 주입 시각 (주입 직후 에코 라인은 룰 매칭 제외)
     pub last_injected: Mutex<Option<Instant>>,
+    /// ★(0.14.42 · 설계 H 리뷰 F2·F3) writer 의 Inject arm 진행 표식 — [`InjectTrack`] doc. writer 스레드와 공유한다.
+    pub inject_track: Arc<InjectTrack>,
     /// ★좌석 점유 캐시(SEAT-1): watchdog 틱이 커널 사실(자손 프로세스 유무)로 갱신하는 단일 SOT.
     /// 0=Unknown(미판정·프로브 실패) 1=Occupied(자손 존재=쓰이는 중) 2=Empty(셸 단독=빈 좌석).
     /// **왜 캐시인가**: 판정 재료(전 프로세스 표)는 watchdog이 이미 매 틱 refresh 한다 — RPC 경로가
@@ -929,6 +2235,13 @@ pub struct Surface {
     pub observed_usage: Mutex<Option<crate::usage::ObservedUsage>>,
     /// T5 세션 트랜스크립트 등록 (`usage.register` — SessionStart hook의 결정론 매핑)
     pub registered_transcript: Mutex<Option<String>>,
+    /// ★R3-1(0.14.42 · 리뷰 F3) /clear 재핀 연속성(ⓐ)의 기준 — 마지막 등록 중 **좌석 최상위 claude 의 훅이 아니라고
+    /// 증명된 것**(조상 사슬에 에이전트 2개 이상 = 중첩 헬퍼, 또는 에이전트 1개인데 SessionStart 훅 밖 = 도구 셸의 직접
+    /// 호출)을 건너뛴 등록 경로. `registered_transcript`(사용량 귀속 · 종전 그대로 매 등록 덮어씀)와 달리 좌석 안
+    /// `claude -p` 헬퍼의 startup 등록이 이 값을 옮기지 못한다 — 종전엔 헬퍼가 한 번만 돌아도 좌석의 진짜 /clear 가
+    /// `discontinuous` 로 거부돼 재기동 때까지 재핀이 꺼졌다. None 이면 판정은 직전 `registered_transcript` 로 읽는다
+    /// (종전 의미). 판독 불가(윈도우 등)·비 claude 좌석·익명 발신·킬스위치 꺼짐은 종전처럼 매 등록이 옮긴다. 영속 비대상.
+    pub repin_anchor: Mutex<Option<String>>,
     /// (4) resume 핀용 agent transcript session_id — analytics.rs의 회계 session_id와 무관(별개 개념).
     /// usage 수집기가 transcript 발견 시 1회 stash(is_none 가드)·topology에 영속해 정확한 세션 재개.
     pub agent_session_id: Mutex<Option<String>>,
@@ -938,14 +2251,37 @@ pub struct Surface {
     /// 정확히 재개한다. discover 스캔은 ~/.cys/claude를 못 보므로 config_dir 권위는 오직 이 결정론 기록이다.
     /// restore로 재생성될 땐 topology 원값을 그대로 주입(재해소 금지 — 데몬 env 변동 시 오염 방지).
     pub claude_config_dir: Mutex<Option<String>>,
+    /// ★(0.14.31 · WP-4 R2 · codex blocking) 위 `claude_config_dir` 의 **출처가 데몬인가**.
+    ///
+    /// `true` = 이 좌석의 값은 데몬이 자기 env 로 결정론 해소한 것이고(`resolve_claude_config_dir`)
+    /// 호출자 env 가 그 값을 덮지 않았다 → **실제 실행 환경과 같다고 말할 수 있다**.
+    /// `false` = `surface.create` 가 `claude_config_dir` 을 지정했거나(restore 경로) 호출자 env 가
+    /// `CLAUDE_CONFIG_DIR` 를 **다른 값으로** 실었다 → 기록과 실행이 갈릴 수 있다.
+    ///
+    /// **왜 필요한가**: `role.reclaim_auto` 는 "이 좌석의 계정 dir"을 인증 축으로 쓴다. 그런데
+    /// 기록값을 호출자가 정할 수 있으면(`{claude_config_dir:A, env:{CLAUDE_CONFIG_DIR:B}}`)
+    /// **A 로 기록되고 B 로 도는 좌석**을 만들어 A 의 역할·큐를 가져갈 수 있다 — 데몬 안에
+    /// 있다는 것만으로는 인증 근거가 못 된다(codex 적대검증 R2). reclaim 은 이 표식이 `false` 인
+    /// 좌석을 **호출자로 인정하지 않는다**(축 미확정 → 무결합). 후보 쪽에는 요구하지 않는다:
+    /// restore 로 태어난 좌석(정당한 override)이 죽었을 때 그 역할을 영영 못 되찾게 되고,
+    /// 그것이 바로 이 WP 가 고치려는 상태이기 때문이다.
+    pub config_dir_trusted: bool,
     /// ⑪ pack-reinject 추적 마커 — 마지막 주입 pack_version·directive_hash. 단일 write path는
     /// `reinject.mark` RPC(주입 성공 직후 컨트롤러만 호출). topology 영속·restore 복원으로
     /// 재기동을 견딘다. None=미주입(첫 pack-update에서 1회 주입). agent_session_id와 동일 위치 init.
     pub pack_reinject: Mutex<Option<PackReinject>>,
-    /// context.threshold 에지 게이트 — 자기보고(status.set)·관측(usage.rs) **공유**.
-    /// true=발화 가능(임계 미만 관측됨). 분리하면 같은 교차에 두 경로가 각각 발화해
-    /// master/CSO가 cycle-agent를 이중 집행한다. swap(false)가 원자적 1회 발화를 보장.
-    pub ctx_threshold_armed: AtomicBool,
+    /// ★(0.14.42 · clear 가드 v3) context.threshold 판정 상태기계 — 자기보고(status.set)·관측(usage.rs)·statusline
+    /// (usage.report) 세 경로가 **공유**하는 좌석당 하나(분리하면 같은 교차에 두 경로가 각각 발화해 master/CSO가 cycle-agent를
+    /// 이중 집행한다). 입력은 게이트(`handlers::maybe_fire_context_threshold`)·사이클 표지(`surface.quiesce` ·
+    /// `governance::release_quiescing`)·수집기 틱·단일 비행 질의(`surface.cycle_claim`)뿐이다. 말단 락(안에서 다른 락을 잡지
+    /// 않는다 · 발행은 놓은 뒤) · 휘발(데몬 재기동 = 새 세대 — 첫 교차는 기본 임계에서 1회 발화).
+    pub ctx_loop_guard: Mutex<crate::usage::clear_guard::ClearGuard>,
+    /// ★(0.14.42 · clear 가드 v3) 사이클 단일 비행 점유(`surface.cycle_claim`) — `cys cycle-agent` 가 0단계에서 잡고 끝날 때
+    /// 놓는다. 산 점유가 있으면 다른 집행은 busy(cycle-agent 가 --fire 면 점유자 종료를 기다렸다 다시 묻고 · 그래도 진행 중이면
+    /// rc 88 — '이미 처리됨'(87 = stale)과 다르다). 죽은 pid·[`CYCLE_CLAIM_MAX_SECS`] 를 넘긴 점유는 게으르게 버린다. 휘발 ·
+    /// 말단 락(가드 락보다 먼저 잡는다 · 가드 락을 쥔 채 잡지 않는다). ★(RR2-ROLE-2) 좌석 상태 JSON `ctx_guard.claim` 으로 보이고,
+    /// 점유가 끝났는데(해제 · 죽음) 그 통보가 미해결이면 데몬이 같은 통보를 한 번 재배달한다(`usage::ctx_guard_claim_ended`).
+    pub cycle_claim: Mutex<Option<CycleClaim>>,
     /// (B2) OSC 9/99/777 알림 스캐너 carry — reader 스레드 전용(단일 스레드 접근이라 Mutex면 충분).
     /// strip 전 raw chunk를 누적해 완성 OSC 시퀀스만 추출한다(화면 렌더/strip 경로와 독립).
     pub osc_carry: Mutex<Vec<u8>>,
@@ -1001,6 +2337,11 @@ pub struct Surface {
     /// org.status **양쪽 동일 키**(`alt_screen` — 동형성 핀 handlers.rs) + launch-agent 의
     /// mac claude fullscreen WARN(D5 env 방어층 우회 관측). additive bool — 구 소비자 무영향.
     pub alt_screen: AtomicBool,
+    /// ★(0.14.42 · 설계 C D5′) 이 pane 의 앱이 지금 **괄호 붙여넣기 모드(DECSET 2004)** 를 켜 두었는가.
+    /// 단일 write path = reader 스레드의 [`mirror_screen_modes`](파서 락 임계영역 안 · `alt_screen` 과 같은 자리).
+    /// 소비 = 직접 경로 울타리 판정(handlers `direct_fence_mode` 의 마지막 클로저) — 핸들러가 파서 락을 새로
+    /// 잡지 않게 하는 원자 미러다. 파서 패닉 재초기화 시 fresh 파서의 false 가 들어가 원문(종전)으로 폴백한다.
+    pub bracketed_paste: AtomicBool,
     /// ★(U-10) **좌석 제4 등급** `gate_pending` — 프로세스는 살아 있으나 **첫기동 관문**
     /// (테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내)에 갇혀 **입력을 받을 수
     /// 없는** 좌석. `None` = 이 축에 대해 말할 것이 없음(= 종전 판정) · `Some(_)` = 보류.
@@ -1030,6 +2371,14 @@ pub struct Surface {
     /// ★v116-num: 대응표의 이 좌석 행이 **이 좌석이 쓴 행**인가. INSERT 가 `pk_conflict` 로 실패했으면
     /// false — 이미 있던 남의 행을 닫기 UPDATE 로 덮어 그 번호의 막힘을 일찍 풀지 않는다(Fable 5R).
     pub(crate) numbers_row_owned: bool,
+    /// ★(0.14.41 · U18) 이 좌석이 생성될 때 작업 폴더 목록 읽기가 **EPERM**(macOS 폴더 접근 권한)
+    /// 이었는가. `None` = 막힘 아님 **또는 관측 안 함**(비-mac · 역할 없는 pane · 시한 초과 · 롤백
+    /// 스위치) — '모름'과 '안 막힘'을 가르지 않는다(소비자는 알림 여부만 정한다).
+    /// 단일 write path = `create_surface_with_env` 의 관측 1회(생성 후 불변 · 영속·하이드레이션 없음 —
+    /// 재기동하면 다시 잰다). 소비 = `surface.list`·`org.status` **양쪽 동일 키** `cwd_blocked`
+    /// (동형성 핀) → GUI 폴더별 고정 토스트. **스폰 동작은 이 값과 무관하다**(cwd 대체 없음).
+    /// 판정·상한·롤백 규약은 `cwd_probe.rs` 머리말이 정본이다.
+    pub cwd_blocked: Option<crate::cwd_probe::CwdBlocked>,
 }
 
 /// ★v116-num(T-NUM): 보이는 번호 재사용 건너뛰기 창 W = 24시간(박사님 결정 · 설계 §0).
@@ -1256,9 +2605,320 @@ pub struct GatePending {
     /// 화면 꼬리 근거 발췌(사람이 읽는 진단 전용 — **판정에 쓰지 않는다**).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// ★(0.14.31 · 리뷰 R2) 채택 시 전문 디렉티브 뒤에 이어 보낼 **복원 연속 지시**([RESTORE]/[RECOVER]). 보류를
+    /// 만든 발신자(restore·node-recover 경유 기동)가 첫 표식과 함께 싣고, `cys boot` 의 재관측 채택
+    /// (`cys.rs::gate_pending_adopt`)이 해제 전에 읽는다. `followup` 없는 재표식(다음 관문)은 기존 값을 **보존**
+    /// 한다. 판정에 쓰지 않는다(additive · wire 술어는 여전히 "object 인가").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub followup: Option<String>,
+}
+
+/// ★(0.14.43 · R1F-IN ⓐ) [`Surface::recount_exempted_esc`](틱의 잠정 Esc 면제 되돌리기 · unix)의 결과.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscRecount {
+    /// `input_gate` 가 바빠 이번 틱은 건너뛴다 — 아무것도 바꾸지 않았다(표식이 남으므로 다음 틱이 같은 판정으로 다시 한다).
+    Busy,
+    /// 되돌릴 이유가 없다 — 표식이 없거나(그 사이 리셋·인계가 내렸다) 지금 전경 그룹이 면제 당시 그룹 그대로다. 아무것도 바꾸지 않았다.
+    NotDue,
+    /// 표식만 내렸다 — 계수가 이미 0 이 아니라 그대로 둔다(이벤트 없음). `from` = 면제 당시의 그룹.
+    Lowered { from: i32 },
+    /// 계수 0 → 1(사람 몫 1)로 올리고 표식을 내렸다(이벤트 1건). `from` = 면제 당시의 그룹.
+    Raised { from: i32 },
 }
 
 impl Surface {
+    /// ★(0.14.31 · 리뷰 R2 · codex blocking) 결판 대기 중인 인계를 **취소**한다(처분자 전용).
+    ///
+    /// 반환 = **취소하지 못한** 항목 id 들(= writer 가 이미 쓰기로 확정 = 지금 배달 중). 호출부는
+    /// 그 id 를 처분 대상에서 빼고 나머지만 drain/폐기/이동한다. 취소에 성공하면 배달 경로가
+    /// `ABORTED` 를 보고 스스로 롤백하며 예약을 해제한다(여기서 해제하지 않는 이유 — 그 사이 새
+    /// 인계가 시작되면 롤백이 남의 상태를 되돌린다).
+    ///
+    /// 호출 규약: `pending_queue` 락을 쥔 채 부른다(예약 생성이 그 락 안이라 창이 없다).
+    pub fn cancel_inject_reservation(&self) -> Vec<String> {
+        let slot = self.inject_reservation.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_ref() {
+            None => Vec::new(),
+            Some(r) if r.guard.abort_if_pending() => Vec::new(),
+            Some(r) => r.ids.clone(),
+        }
+    }
+
+    /// ★(0.14.31 · 성찰 Q13) **조준 취소** — 예약이 `ids` 중 하나라도 겨누고 있을 때만 중단한다.
+    ///
+    /// 반환 = 지금 인계 중(= 처분 금지)인 항목 id 들. 교집합이 없으면 예약을 **건드리지 않고** 그
+    /// id 들을 그대로 돌려준다(호출자는 그것을 처분 대상에서 뺀다 — 그 항목은 남의 인계다).
+    /// 교집합이 있으면 [`Self::cancel_inject_reservation`] 과 같다. 종전에는 무관한 항목 Y 의
+    /// drop·매 틱 만료 스윕이 진행 중인 X 의 인계를 통째로 끊어, 방향은 안전이었으나 영수증 없는
+    /// 원장 선기록(§9 sha 대조 잡음)과 운영자의 `Raced` 재시도가 쌓였다.
+    ///
+    /// 호출 규약: `pending_queue` 락을 쥔 채 부른다(형제 함수와 같다).
+    pub fn cancel_inject_reservation_targeting(&self, ids: &[String]) -> Vec<String> {
+        let slot = self.inject_reservation.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_ref() {
+            None => Vec::new(),
+            Some(r) if !r.ids.iter().any(|k| ids.iter().any(|t| t == k)) => r.ids.clone(),
+            Some(r) if r.guard.abort_if_pending() => Vec::new(),
+            Some(r) => r.ids.clone(),
+        }
+    }
+
+    /// ★(0.14.31 · 성찰 Q2) `pending_queue` 락을 **여기서 잡고** 취소한다(예약 생성이 그 락
+    /// 안이라 창이 없다). 반환 = 취소하지 못한 항목 수(= writer 가 이미 쓰기로 확정 = 배달 중).
+    /// 호출자는 다른 좌석 락을 쥐지 않은 채 불러야 한다(락 순서 규약).
+    pub fn cancel_inject_reservation_locked(&self) -> usize {
+        let _q = self.pending_queue.lock().unwrap_or_else(|e| e.into_inner());
+        self.cancel_inject_reservation().len()
+    }
+
+    /// 지금 인계 예약이 걸려 있는가(같은 좌석의 이중 인계 차단 · 배달 임계영역 전용).
+    pub fn inject_reserved(&self) -> bool {
+        self.inject_reservation.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+    /// ★(0.14.31 · WP-5 B-2②) `pending_input_bytes` 의 **유일한 쓰기 API** — 값을 쓰고 변이 세대
+    /// (`input_gen`)를 올린다. 직접 `store` 하면 세대가 멈춰 stale 리셋이 ABA 를 놓친다(테스트 픽스처
+    /// 조립은 예외). 호출자는 `input_gate` 안에서 부르는 것이 규약이다(handlers send_text/send_key ·
+    /// governance 배달 임계영역 · stale 리셋).
+    /// count 만 바꾸는 경로(큐 Inject·롤백)용 — 붙여넣기 상태는 건드리지 않는다.
+    pub fn set_pending_input(&self, bytes: u64) {
+        self.pending_input_bytes.store(bytes, Ordering::Relaxed);
+        self.input_gen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// ★(0.14.43 · RQFIX B-1 · RQFIX2 m-2 · R1F-IN ⓑ) 이 좌석에 **지금 이 순간 적용되는** 미제출 입력 계수 모델 — V3 는 **[`Surface::lone_key_exempt`](엄격 증거로 살아 있는 마커 에이전트) ∧
+    /// 지금 PTY 의 전경 프로세스 그룹 == 틱이 적어 둔 에이전트 그룹([`Surface::agent_fg_pgid`])** 일 때만, 그 밖은 V2. `apply_pending_input` 과 진단(`queue_block_diag` 의 `input_model`)이 이 한 곳을 읽는다.
+    /// 틱 표식이 거짓이거나 에이전트 그룹이 0 이면 시스템 콜 없이 곧바로 V2 다(원자 읽기뿐). 둘 다 참일 때만 `tcgetpgrp` 한 번으로 묻는다(락 없음).
+    pub fn pending_input_model(&self) -> crate::governance::PendingInputModel {
+        self.pending_input_model_with_fg().0
+    }
+
+    /// [`Surface::pending_input_model`] 의 본체 — `(모델, 그 판정에 실제로 쓴 에이전트 전경 그룹)`. V3 면 그룹 번호(unix · `tcgetpgrp` 값 == `agent_fg_pgid` > 0 · 비-unix 는 모르므로 0), V2 면 0.
+    /// ★전경은 **한 번만** 읽는다 — `apply_pending_input` 이 사람의 단독 Esc 를 면제할 때 적는 표식 값과 모델 판정에 쓴 값이 같아야 한다.
+    fn pending_input_model_with_fg(&self) -> (crate::governance::PendingInputModel, i32) {
+        use crate::governance::PendingInputModel::{V2, V3};
+        if !self.lone_key_exempt.load(Ordering::Relaxed) {
+            return (V2, 0);
+        }
+        self.v3_foreground_group_now().map_or((V2, 0), |fg| (V3, fg))
+    }
+
+    /// 지금 이 좌석 PTY 의 전경 프로세스 그룹(unix) — `tcgetpgrp(캐시한 master fd)`. fd 가 없거나(< 0)·시스템 콜이 실패하면(반환 ≤ 0) `None`. 락 없음 · `master` Mutex 를 잡지 않는다.
+    /// raw fd 를 읽는 곳은 이 함수 하나다(계수 시점 판정과 틱의 에이전트 그룹 판정·되돌리기가 같은 읽기를 쓴다).
+    #[cfg(unix)]
+    pub fn foreground_pgid_now(&self) -> Option<i32> {
+        let fd = self.pty_master_fd.load(Ordering::Relaxed);
+        (fd >= 0).then(|| unsafe { libc::tcgetpgrp(fd) }).filter(|p| *p > 0)
+    }
+
+    /// 지금 이 좌석 PTY 의 전경 프로세스 그룹이 **틱이 적어 둔 에이전트 그룹**이면 그 그룹 번호(unix) — [`Surface::agent_fg_pgid`] 가 0 이면 시스템 콜 없이 `None`(V2).
+    /// 아니면 `tcgetpgrp` 결과를 순수 판정 [`crate::governance::foreground_is_agent`] 에 넘긴다 — 시스템 콜이 실패하면(반환 ≤ 0) `None`(V2). 락 없음.
+    #[cfg(unix)]
+    fn v3_foreground_group_now(&self) -> Option<i32> {
+        let agent = self.agent_fg_pgid.load(Ordering::Relaxed);
+        if agent <= 0 {
+            return None;
+        }
+        crate::governance::foreground_is_agent(self.foreground_pgid_now(), agent).then_some(agent)
+    }
+
+    /// 윈도우 등 비-unix: 전경 판정을 건너뛴다(틱 표식만 — 기본 V2 라 표식이 늘 거짓이고, 명시 `v3` 옵트인은 종전 뜻 그대로 · 그룹 번호는 모른다 = 0). 컴파일 분기는 `cfg` 다(런타임 `cfg!` 안에 unix API 금지).
+    #[cfg(not(unix))]
+    fn v3_foreground_group_now(&self) -> Option<i32> {
+        Some(0)
+    }
+
+    /// 청크 1개를 상태기계에 적용하고 미러·세대를 갱신한다. 새 상태를 돌려준다.
+    /// 호출자는 `input_gate` 안에서 부르는 것이 규약이다(handlers send_text/send_key ·
+    /// governance 배달 임계영역 · stale 리셋).
+    /// 계수 모델은 **좌석 표식 ∧ 계수 시점의 전경**으로 고른다([`Surface::pending_input_model`] — 전역 노브가 아니다). 시스템 콜은 `pending_input` leaf 를 잡기 **전**에 끝낸다.
+    pub fn apply_pending_input(
+        &self,
+        chunk: &[u8],
+        origin: crate::governance::InputOrigin,
+    ) -> crate::governance::PendingInputState {
+        // ★(R1F-IN ⓐ) 전경은 한 번만 읽는다 — 모델 판정에 쓴 값(`fg_used`)이 곧 아래 면제 표식에 적는 값이다. 시스템 콜은 `pending_input` leaf 를 잡기 **전**에 끝낸다.
+        let (model, fg_used) = self.pending_input_model_with_fg();
+        let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+        st.count = self.pending_input_bytes.load(Ordering::Relaxed); // 미러가 count 의 SOT
+        // count 만 바꾸는 경로(큐 Inject·롤백 `set_pending_input`)가 지나간 뒤 불변식 human ≤ count 를 복원 — human 은 D-12 Return 게이트 축이라 stale 하면 자기 본문 제출이 거부된다.
+        st.human = st.human.min(st.count);
+        let mut next = crate::governance::pending_input_step_model(
+            &st,
+            chunk,
+            origin,
+            std::time::Instant::now(),
+            model,
+        );
+        // ★(R1F-IN ⓐ) 스텝이 "이번 청크에서 사람의 단독 Esc 를 V3 로 면제했다"고 표지했다(순수 — 전경을 모른다) → 그 판정에 쓴 전경(에이전트 그룹)을 표식으로 적는다.
+        //   비-unix 는 전경을 몰라 0(= 표식 없음 · 되돌리기 없음). 임시 표지 값은 저장 상태에 남지 않는다.
+        if next.esc_exempt_pgid == crate::governance::ESC_EXEMPT_PGID_PENDING {
+            next.esc_exempt_pgid = fg_used;
+        }
+        *st = next.clone();
+        // 원자 미러 — leaf 를 쥔 채 쓴다(진실 = leaf 상태).
+        #[cfg(unix)]
+        self.esc_exempt_pgid.store(next.esc_exempt_pgid, Ordering::Relaxed);
+        drop(st);
+        self.set_pending_input(next.count);
+        next
+    }
+
+    /// 줄이 비워지고 제출된 사실(clear_first 원자 주입 · stale 리셋)을 반영 — 상태 전부 초기화 + 미러 0 + 세대 +1.
+    /// 호출자는 `input_gate` 안에서 부르는 것이 규약이다(handlers send_text/send_key ·
+    /// governance 배달 임계영역 · stale 리셋).
+    pub fn clear_pending_input(&self) {
+        {
+            let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            *st = Default::default(); // 잠정 Esc 면제 표식(esc_exempt_pgid)도 Default(0)로 내려간다 — 미러는 leaf 를 쥔 채 맞춘다.
+            #[cfg(unix)]
+            self.esc_exempt_pgid.store(0, Ordering::Relaxed);
+        }
+        self.set_pending_input(0);
+    }
+
+    /// ★(0.14.43 · R1F-IN ⓐ) 줄이 **제출됐다고 계상**하는 큐 인계(`governance::deliver_head_locked`)가 잠정 Esc 면제 표식을 내리고 **직전 값**(면제 당시의 그룹 번호 · 없으면 0)을 돌려준다 —
+    /// 롤백이 그 값을 복원한다. `clear_pending_input` 과 달리 나머지 leaf 상태(사람 몫·봉투·소유자)는 건드리지 않는다(큐 인계가 `set_pending_input(0)` 만 하던 종전 계상 그대로).
+    /// 호출자는 `input_gate` 안에서 부른다(규약) — `pending_input` leaf 만 잡는다.
+    pub fn take_esc_exempt(&self) -> i32 {
+        let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+        let was = std::mem::replace(&mut st.esc_exempt_pgid, 0);
+        #[cfg(unix)]
+        self.esc_exempt_pgid.store(0, Ordering::Relaxed);
+        was
+    }
+
+    /// ★(0.14.43 · R1F-IN ⓐ) [`Surface::take_esc_exempt`] 의 역 — 인계 롤백(쓰이지 않은 배달)이 직전에 서 있던 표식(`pgid` > 0)을 되살린다. 0 이면 아무것도 하지 않는다. 호출자는 `input_gate` 안에서 부른다.
+    pub fn restore_esc_exempt(&self, pgid: i32) {
+        if pgid <= 0 {
+            return;
+        }
+        let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+        st.esc_exempt_pgid = pgid;
+        #[cfg(unix)]
+        self.esc_exempt_pgid.store(pgid, Ordering::Relaxed);
+    }
+
+    /// ★(0.14.43 · R1F-IN ⓐ) **틱의 되돌리기**(unix) — V3 로 면제한 사람의 단독 Esc(표식 `esc_exempt_pgid`)가 서 있는데 지금의 전경 그룹(`fg_now`)이 면제 당시의 그룹이 아니면 그 면제를 거둔다:
+    /// 계수가 0 이면 `count = 1 · human = 1`(0.14.42 의 유령 계수 1 — 사람이 그 창에서 Ctrl-U 로 비운다), 이미 0 이 아니면 계수는 그대로 두고 표식만 내린다. 가산 정정뿐이다(감산 없음).
+    /// 락: `input_gate` 는 **`try_lock` 으로만** 잡는다(바쁘면 [`EscRecount::Busy`] — 워치독이 직접 send·큐 배달의 게이트 보유를 기다리지 않는다 · 표식이 남으므로 다음 틱에 다시 한다) →
+    /// `pending_input` leaf(기존 stale 리셋·배달 임계영역과 같은 순서). 되돌릴 이유는 **leaf 의 진실로 다시 판정**한다(틱이 미러를 본 뒤 리셋·인계가 내렸거나 새 Esc 가 지금 전경 그룹 밑에서 다시 면제됐을 수 있다).
+    /// 미러·세대는 `set_pending_input` 으로 갱신한다(세대가 올라 소유자 각인은 자동 무효). 이벤트는 호출자가 락 밖에서 낸다.
+    #[cfg(unix)]
+    pub fn recount_exempted_esc(&self, fg_now: i32) -> EscRecount {
+        let gate = match self.input_gate.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::WouldBlock) => return EscRecount::Busy,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        };
+        let (from, raised) = {
+            let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            let from = st.esc_exempt_pgid;
+            if !crate::governance::esc_recount_due(from, Some(fg_now)) {
+                // 되돌릴 이유가 없다(표식 없음 · 지금 전경 그룹 그대로) — 아무것도 바꾸지 않는다(낡은 미러만 맞춘다).
+                self.esc_exempt_pgid.store(from, Ordering::Relaxed);
+                return EscRecount::NotDue;
+            }
+            st.esc_exempt_pgid = 0;
+            self.esc_exempt_pgid.store(0, Ordering::Relaxed);
+            if self.pending_input_bytes.load(Ordering::Relaxed) > 0 {
+                (from, false) // 이미 계수가 있다 — 그대로 둔다(표식만 내렸다).
+            } else {
+                st.count = 1;
+                st.human = 1;
+                (from, true)
+            }
+        };
+        if raised {
+            self.set_pending_input(1);
+        }
+        drop(gate);
+        if raised {
+            EscRecount::Raised { from }
+        } else {
+            EscRecount::Lowered { from }
+        }
+    }
+
+    /// ★(0.14.42 · A2 D0) 방금 적용한 기계 본문의 **검증** 소유자를 지금 세대로 각인한다
+    /// ([`Surface::mark_pending_input_owner`] 의 `Verified` 판).
+    pub fn mark_pending_owner(&self, sender: u64) {
+        self.mark_pending_input_owner(crate::governance::InputOwner::Verified(sender));
+    }
+
+    /// ★(0.14.42 · A2 D0 · 리뷰 RR1-F1-XSOCK · RV1-CS-F1-CLAIMED) 방금 적용한 기계 본문의 소유자(발신자 등급)를
+    /// **지금 세대**로 각인한다. 호출 규약: `input_gate` 안, `apply_pending_input` 직후(그 사이 다른 변이가 없어야
+    /// 세대가 맞다). pending_input leaf 만 잡는다 — 'input_gate 안에서는 pending_input leaf 만' 계약 그대로다.
+    pub fn mark_pending_input_owner(&self, owner: crate::governance::InputOwner) {
+        let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+        st.owner = Some((owner, self.input_gen.load(Ordering::Acquire)));
+    }
+
+    /// ★(0.14.42 · A2 D0) 입력줄 본문의 **유효한 검증** 소유자 — 각인 세대가 현재 세대와 같고 등급이 `Verified`
+    /// 일 때만 Some. 소비자는 짝 Return 흡수의 보상 표 판정이다(보상 표의 주인은 검증 신원뿐 · 설계 B 무변경 —
+    /// `Claimed`·`Unattributed` 각인은 여기서 결측이다). 그 뒤 어떤 변이(제출·사람 키·다른 키·큐 Inject·stale
+    /// 리셋)든 세대를 올리므로 결측이 된다(결측은 값이 아니다 — 소유자 불명은 어떤 표도 만들거나 유지하지 않는다).
+    pub fn pending_owner(&self) -> Option<u64> {
+        match self.pending_input_owner()? {
+            crate::governance::InputOwner::Verified(sid) => Some(sid),
+            _ => None,
+        }
+    }
+
+    /// ★(0.14.42 · 리뷰 RR1-F1-XSOCK · RV1-CS-F1-CLAIMED) 입력줄 본문의 **유효한** 소유자(전 등급) — 각인 세대가
+    /// 현재 세대와 같을 때만 Some. 소비자는 H0 기계 잔여 귀속(`governance::draft_machine_owned`) 하나다.
+    pub fn pending_input_owner(&self) -> Option<crate::governance::InputOwner> {
+        let st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+        st.owner
+            .filter(|&(_, gen)| gen == self.input_gen.load(Ordering::Acquire))
+            .map(|(owner, _)| owner)
+    }
+
+    /// ★(0.14.42 · A2) 흡수 표 발급(덮어쓰기) — 발급 때마다 만료분(나이 ≥ ttl)을 정리한다.
+    /// ★(B) 정리 뒤에도 [`RETURN_TICKETS_CAP`] 을 넘으면 가장 오래된 표부터 퇴출한다(방금 넣은 표는 가장
+    /// 새것이라 남는다). 단독 leaf 락(다른 락을 쥔 채 부르지 않는다).
+    pub fn issue_return_ticket(&self, sender: PairKey, kind: ReturnTicketKind, ttl: std::time::Duration) {
+        let now = Instant::now();
+        let mut m = self.return_tickets.lock().unwrap_or_else(|e| e.into_inner());
+        m.retain(|_, t| now.saturating_duration_since(t.issued) < ttl);
+        m.insert(sender, ReturnTicket { kind, issued: now });
+        while m.len() > RETURN_TICKETS_CAP {
+            let Some(oldest) = m
+                .iter()
+                .filter(|(k, _)| **k != sender)
+                .min_by_key(|(_, t)| t.issued)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            m.remove(&oldest);
+        }
+    }
+
+    /// 발신자의 표 사본(판정 재료) — 없으면 None.
+    pub fn peek_return_ticket(&self, sender: PairKey) -> Option<ReturnTicket> {
+        self.return_tickets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&sender)
+            .cloned()
+    }
+
+    /// 표 소비 CAS — 발급 시각이 `issued` 와 같을 때만 꺼낸다(그 사이 재발급·소비된 표는 건드리지 않는다).
+    pub fn take_return_ticket(&self, sender: PairKey, issued: Instant) -> Option<ReturnTicket> {
+        let mut m = self.return_tickets.lock().unwrap_or_else(|e| e.into_inner());
+        if m.get(&sender).is_some_and(|t| t.issued == issued) {
+            m.remove(&sender)
+        } else {
+            None
+        }
+    }
+
+    /// 발신자의 표 소거(없으면 무동작).
+    pub fn clear_return_ticket(&self, sender: PairKey) {
+        self.return_tickets.lock().unwrap_or_else(|e| e.into_inner()).remove(&sender);
+    }
+
     /// ★(U-10) `gate_pending` 축의 **유일한 직렬화 지점**. `surface.list`·`org.status`·
     /// `persist_topology` 셋이 이 함수만 부른다 — 세 곳이 각자 `json!` 하면 그 순간
     /// 키·형·킬스위치가 갈린다(이 저장소가 반복해서 맞은 사본 드리프트).
@@ -1488,6 +3148,60 @@ impl Config {
                 .unwrap_or(false),
         }
     }
+}
+
+/// 계정 dir 을 **실제로 정하는** 호출자 env 키 — 이 둘 중 하나라도 데몬 해소값과 다르면
+/// "기록 = 실제 실행"이 아니다.
+///   · `CLAUDE_CONFIG_DIR` — claude 가 직접 읽는 값.
+///   · `CYS_ACCOUNT_DIR`  — [`cys::resolve_claude_config_dir`] 의 **1순위**이고, agents.json 의
+///     `${CYS_ACCOUNT_DIR:-…}` 가 그 값으로 전개돼 `CLAUDE_CONFIG_DIR` 이 된다.
+const ACCOUNT_DIR_ENV_KEYS: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CYS_ACCOUNT_DIR"];
+
+/// 기본 계정 dir 의 **뿌리**를 갈아끼우는 키 — `resolve_claude_config_dir()` 의 폴백은
+/// `home_dir()/.cys/claude` 이고, agents.json 의 `${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}` 도
+/// 좌석 셸의 `$HOME` 으로 전개된다. 위 두 키가 없어도 이 키 하나로 계정이 갈릴 수 있다.
+const HOME_ENV_KEYS: [&str; 2] = ["HOME", "USERPROFILE"];
+
+/// 호출자 env 오버레이가 **계정 dir 을 갈아끼우지 않았는가** — `Surface.config_dir_trusted` 의 판정.
+///
+/// ★(0.14.31 · 독립 재유도 · codex blocking #2) 종전 판은 `k == "CLAUDE_CONFIG_DIR"` **정확
+/// 일치** 하나만 보고, 없으면 신뢰했다. 그 판정은 두 방향으로 뚫린다:
+///   ⓐ **다른 키** — `CYS_ACCOUNT_DIR` 은 검사 대상이 아닌데 계정 dir 해소의 1순위다.
+///      `surface.create` 는 호출자 env 에서 `CYS_SEAT_TOKEN` 하나만 거르고, 이 함수의 호출부는
+///      데몬이 넣은 `CYS_ACCOUNT_DIR` **뒤에** 호출자 env 를 덮어쓴다 → 기록은 데몬 계정 A,
+///      실제 실행은 B 인 좌석이 `config_dir_trusted=true` 로 남는다. reclaim 은 그 좌석을 A 의
+///      신뢰된 호출자로 인정한다(부서 계정 경계의 조용한 면제).
+///   ⓑ **대소문자** — Windows 의 env 생성기가 키를 소문자로 접는다
+///      (`vendor/portable-pty/src/cmdbuilder.rs` `EnvEntry::map_key`). 그 플랫폼에서
+///      `claude_config_dir` 는 곧 `CLAUDE_CONFIG_DIR` 인데 정확 일치 검사에는 걸리지 않는다.
+///
+/// 그래서 ① 두 키를 **모두** 보고 ② 비교는 **모든 호스트에서 ASCII 대소문자 무시**하며
+/// (unix 에서 비용 0 이고, 소문자 키를 정당하게 쓰는 호출 경로는 이 저장소에 없다)
+/// ③ 같은 키가 여러 표기로 오면 **그 전부가** 데몬 해소값과 같아야 한다.
+///
+/// ★③ 을 "마지막 값 승"으로 두면 안 된다(codex 설계비평 #6): unix 의 builder 는 대소문자를
+/// 접지 않으므로 `CLAUDE_CONFIG_DIR=/foreign` 뒤에 `claude_config_dir=/trusted` 를 얹으면
+/// **검사만 통과하고 실행 환경에서는 `/foreign` 이 이긴다**. 어느 호스트의 접기 규칙을
+/// 흉내내든 그 규칙과 어긋나는 순간 우회가 생기므로, 표기가 무엇이든 **하나라도 다르면
+/// 거짓**으로 접는다(과잉 차단은 무결합 = 안전 방향이다).
+/// 그리고 계정 dir 의 **뿌리**인 홈(`HOME`·`USERPROFILE`)도 같은 규율로 본다 — 두 키가 없어도
+/// `$HOME/.cys/claude` 전개가 달라지면 실제 계정이 갈린다(codex 설계비평 #7).
+/// 값이 데몬 값과 다르면 — 빈 문자열(=미설정 취급으로 기본값에 떨어지는 신고)이라도 —
+/// 표식을 세우지 않는다. 모르면 서지 않는 것이 이 표식의 계약이다(fail-closed).
+pub fn caller_env_keeps_config_dir(env: &[(String, String)], daemon_resolved: &str) -> bool {
+    env.iter().all(|(k, v)| {
+        if ACCOUNT_DIR_ENV_KEYS.iter().any(|key| k.eq_ignore_ascii_case(key)) {
+            // 값이 데몬 해소값과 같을 때만 통과한다. 빈 문자열(=미설정 취급으로 기본값에
+            // 떨어지는 신고)도 '같지 않으면 거짓'이다 — 그 신고가 정말 무해한지는 좌석의
+            // 실행 환경 전체를 봐야 알 수 있고, 여기서 우리는 그것을 모른다(fail-closed).
+            return v == daemon_resolved;
+        }
+        if let Some(key) = HOME_ENV_KEYS.iter().find(|key| k.eq_ignore_ascii_case(key)) {
+            // 홈은 **데몬 자신의 값**과 대조한다(계정 dir 이 아니라 그 뿌리다).
+            return std::env::var(key).ok().as_deref() == Some(v.as_str());
+        }
+        true
+    })
 }
 
 /// LANG 결정: 데몬 env → (macOS) 시스템 사용자 로케일 → en_US.UTF-8.
@@ -2234,6 +3948,22 @@ mod dsr_tests {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PauseInfo {
+    pub since: f64,
+    /// 빈 문자열은 사유가 아니다 — 결측은 None 으로 남긴다.
+    /// 실패 방향: 결측 메타데이터는 JSON 키를 생략하며 kill-switch 동결은 유지한다.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// 설정자 — dispatch 의 caller_pid 와 그 pid 가 속한 좌석(있으면).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_surface: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_role: Option<String>,
+}
+
 pub struct Daemon {
     pub surfaces: Mutex<HashMap<u64, Arc<Surface>>>,
     pub next_id: AtomicU64,
@@ -2250,7 +3980,11 @@ pub struct Daemon {
     pub health_suppressed: Mutex<HashMap<(String, &'static str), u64>>,
     /// T4-15 kill-switch: pause 중에는 큐 배달·스케줄 발화가 동결된다 (직접 send는 통과)
     pub paused: AtomicBool,
-    pub pause_info: Mutex<Option<(f64, String)>>, // (since, reason)
+    pub pause_info: Mutex<Option<PauseInfo>>,
+    /// ★(성찰 2회 · 2/3) `persist_pause` 직렬화 락(`queue_persist_lock` 관례 동형) — `write_json_atomic`
+    ///   의 tmp 이름이 고정(`.autopilot.json.tmp`)이라 pause/resume 핸들러가 동시에 영속하면 tmp 를
+    ///   서로 덮어 찢어진 파일이 rename 될 수 있다. 실패 방향: 락 아래 마지막 쓰기가 최신 상태다.
+    pub pause_persist_lock: Mutex<()>,
     /// T3-9 todo 워치: path → (done, total, mtime)
     pub todo_progress: Mutex<HashMap<String, (u64, u64, f64)>>,
     /// C2 선언 판정 캐시(Declared State): path → (mtime, verdict 케밥 문자열, 선언 owner).
@@ -2276,6 +4010,17 @@ pub struct Daemon {
     /// 두면 히트 경로가 caller_cache를 쥔 채 surfaces를 잡는 신설 락쌍이 생겨 기각됨).
     /// 재기동 간 혼동 없음(카운터·캐시 모두 데몬 인메모리 동수명). u64 오버플로 비실재.
     pub caller_gen: AtomicU64,
+    /// ★(0.14.42 · clear 가드 수정 6회차 V42R-1) 데몬이 띄운 사이클 1콜(`cys cycle-agent --detach` 의 자식) pid → 요청 좌석.
+    /// 발신자 해소(`handlers::walk_caller_ancestry`)가 조상 추적 0홉에서 이 표를 좌석 pid 와 같이 본다 — 그 자식의 모든 RPC(ACL ·
+    /// 권위 주입의 타이핑 가드 면제 · 점유·표지 소유)가 요청 좌석(CSO)이 손으로 부른 1콜과 같은 신원이다. 등록은 자식이 첫 RPC 를
+    /// 내기 전(stdin `go` 신호 전) · 해제는 자식을 거둔 직후(`cycle_jobs::monitor`). 말단 락.
+    pub delegated_callers: Mutex<HashMap<u32, u64>>,
+    /// ★(0.14.42 · clear 가드 수정 6회차 V42R-1) 비동기 사이클 작업표(`cycle_jobs`) — 진행·대기·최근 끝난 작업. 말단 락.
+    pub cycle_jobs: Mutex<crate::cycle_jobs::CycleJobs>,
+    /// ★(0.14.42 · clear 가드 수정 6회차 V42R-1) 좌석별 주입 잠금(`surface.inject_lock`) — 좌석 번호 → (점유자 peer pid · 시각 = 데몬 **단조**
+    /// 초 · 게이트 수정 1회차 R1R3-1 — 15초 상한이 절전으로 뛴 벽시계에 풀리지 않게).
+    /// cycle-agent 의 검증자 좌석 `[CYCLE-VERIFY]` 붙여넣기~Return 을 좌석당 하나씩(동시 비동기 사이클의 요청 합체 차단). 말단 락.
+    pub inject_locks: Mutex<HashMap<u64, (Option<u32>, f64)>>,
     /// (E-c) idempotencyKey → (surface_id, epoch초). 클라이언트 재시도가 같은 key면 기존 surface
     /// 재반환(추가 spawn 0). TTL(CREATE_IDEM_TTL_SECS) 만료 엔트리는 조회 시 lazy 제거.
     pub create_idem: Mutex<HashMap<String, (u64, f64)>>,
@@ -2304,6 +4049,19 @@ pub struct Daemon {
     /// 되살릴 의미가 없고, topology 스키마를 넓히면 조작 표면만 늘어난다. TTL은 create 재시도
     /// 창과 동일한 CREATE_IDEM_TTL_SECS를 재사용하고 만료분은 insert 시 lazy GC 한다.
     pub create_owner: Mutex<HashMap<u64, (u64, f64)>>,
+    /// ★(0.14.31 · WP-4 R2 · codex major) **재결합 시도 취소 원장** — `attempt_id` → 취소 epoch.
+    ///
+    /// 왜 필요한가: `role.reclaim_auto` 의 왕복이 클라이언트 예산 안에 끝나지 않으면 CLI 는
+    /// 읽기 전용 `reconcile` 로 권위 답을 확인하고 **무결합으로 끝난다**. 그런데 디스패치는
+    /// 취소되지 않으므로 그 뒤 원 요청이 재개해 커밋할 수 있다 — 벽시계가 뒤로 점프하면
+    /// `deadline_epoch` 검사마저 통과한다(리뷰 R2). 그때 훅은 이미 "역할 없음"으로 진행했고
+    /// 데몬만 역할·큐를 옮긴다(치명위험 ③ 그 자체).
+    ///
+    /// 그래서 CLI 는 요청마다 고유 `attempt_id` 를 붙이고, 포기할 때 `reconcile` 에
+    /// `cancel_attempt` 로 그 id 를 실어 보낸다. `reclaim_commit` 은 **임계영역 안에서** 이
+    /// 집합을 보고 취소된 시도면 아무것도 바꾸지 않는다(펜싱). 유계 유지는 insert 시 lazy GC
+    /// (`CREATE_IDEM_TTL_SECS` 재사용 — 어떤 시도도 그보다 오래 살지 않는다).
+    pub reclaim_cancelled: Mutex<HashMap<String, f64>>,
     /// ★결함8(2026-08-22 부트 실사고) **창작자 원장** — 새 surface_id →
     /// (`surface.create` 를 호출한 **프로세스** pid, 그 시점 pid 의 start_time, 기록 epoch초).
     ///
@@ -2363,6 +4121,11 @@ pub struct Daemon {
     pub tombstones_rev: std::sync::atomic::AtomicU64,
     /// persist_topology 가 rev 증가 판정에 쓰는 '직전 영속 묘비 집합'(정렬본). 시드=기동 시 disk 묘비.
     pub last_persisted_tombstones: Mutex<Vec<String>>,
+    /// ★R3-1c(0.14.42): persist_topology 직렬화 락 — 스냅샷→rev→원자 쓰기를 한 줄로 세운다(같은 임시 파일
+    /// 공유로 인한 찢김·순서 역전 차단). persist_topology 만 잡고, 그 안에서 surfaces·좌석 필드·묘비 락을
+    /// 잡는다(락 순서: topology_write → surfaces → 좌석 필드). 다른 곳에서 잡지 않는다.
+    /// static 이 아니라 데몬 필드인 이유: 운영 데몬은 하나라 전역과 같고, 검체의 격리 데몬끼리는 줄 세우지 않는다.
+    pub topology_write: Mutex<()>,
     /// 적대검증 벡터-9 방어심화: master role이 현재 보유 surface로 (재)claim된 epoch초.
     /// master surface가 죽는 윈도우에 다른 노드가 claim_role("master")로 합법 승계 → 즉시
     /// approval.sign으로 위험명령을 정당 서명할 수 있다. 이 값으로 갓 승계한 master의 서명을
@@ -2397,6 +4160,14 @@ pub struct Daemon {
     ///   ③ rehome — rehome_restored_queue의 Value→QueueEntry 되살림(필드 관통)
     ///   ④ queue.list restored 노출 — handlers.rs "queue.list"의 restored 행(신규 열 결손 방지)
     pub restored_queue: Mutex<Vec<serde_json::Value>>,
+    /// ★(0.14.31 · WP-5 M) **만료 복원분** — `queue-expired.json`(활성 WAL 과 **다른 파일**)에서
+    /// 살아난 만료 항목(Value 통짜). 왜 파일을 가르는가: 만료 항목을 `queue-state.json` 에 함께
+    /// 두면 **구 데몬(롤백)** 이 `expired_at` 을 모른 채 활성 큐로 rehome 해 배달한다(codex 설계
+    /// 검토 #11 — 신 데몬이 만료시킨 항목을 구 데몬이 되살려 배달하는 경로). 구 데몬은 이 파일을
+    /// 읽지 않으므로 만료 항목은 그에게 보이지 않는다. rehome 은 같은 role 의 살아있는 surface
+    /// `expired_queue` 로 옮긴다(활성 큐 금지 · §8). `queue.revive`/`queue.drop` 은 여기 남은
+    /// 항목도 id 로 조준할 수 있다(살아있는 surface 없이도 관리 가능).
+    pub restored_expired: Mutex<Vec<serde_json::Value>>,
     /// ★G1(W2-A): QueueEntry.seq 발급 카운터 — boot 내 단조. 시드 = WAL(load_queue_state)
     /// 복원 항목들의 max(seq)+1(WAL 부재 시 1). 발급 단일 지점 = next_queue_entry.
     /// EventBus seq와 분리 — 이벤트 발행과 enqueue는 1:1이 아니고, '살아있는 항목 대비 단조'는
@@ -2412,18 +4183,65 @@ pub struct Daemon {
     pub queue_wal_write_blocked: AtomicBool,
     /// ⑧ 쓰기 금지 경보를 이미 냈는지(데몬 수명당 1회 — 저장 호출마다 반복하지 않는다).
     pub queue_wal_block_reported: AtomicBool,
-    /// ★S3(TICKET=cys-phoenix-s3-master-persist): `persist_topology` 직렬화 락
-    /// (`feed_persist_lock`·`queue_persist_lock` 관례 동형). 그 함수는 이제 **직전 영속본을 읽어**
-    /// 살아있지 않은 역할을 보존하므로 read-modify-write 가 됐다 — 두 호출이 겹치면 한쪽이 읽은
-    /// 뒤 다른 쪽이 쓴 보존분을 덮어 되돌릴 수 있다. 호출부가 여럿(handlers·state·watchdog)이라
-    /// 함수 자신이 직렬화를 소유한다.
-    pub topology_persist_lock: Mutex<()>,
+    /// ★(0.14.31 · 리뷰 R5 · codex major) **직전에 `queue-expired.json` 에 실제로 쓴 id 집합.**
+    ///
+    /// 두 파일을 각각 원자 치환하는 것만으로는 **두 치환 사이의 크래시**가 항목을 지운다 —
+    /// 활성→만료 이동에서 활성 파일이 먼저 그것을 잃고 만료 파일이 아직 그것을 얻지 못한 창이다.
+    /// 수리는 **목적지 먼저**다([`Daemon::persist_queue_state`]): 만료 파일을 먼저 쓰고 활성 파일을
+    /// 나중에 쓴다. 그러면 반대 방향(만료→활성 `queue revive`)이 같은 이유로 깨지므로, 만료 파일을
+    /// 쓸 때 **이번에 활성으로 돌아간 항목을 한 벌 남겨 둔다**(중복은 복구 가능 · 유실은 아니다).
+    /// 그 "남길 대상" 을 알려면 **직전에 만료 파일에 무엇이 있었는지**를 알아야 하고, 이 집합이
+    /// 그 기억이다(시작 시 디스크 만료 파일에서 시드).
+    pub queue_expired_persisted: Mutex<std::collections::HashSet<String>>,
+    /// ★(0.14.31 · WP-5 M) 직전 큐 틱(`governance::queue_expiry_pass`) 시각(epoch) — pause 누적
+    /// (`QueueEntry::paused_total_secs`)의 델타 시계. `None` = 아직 틱 없음(첫 틱 델타 0). 틱 간
+    /// 실제 경과로 재므로 틱 주기가 바뀌거나 늘어져도 누적이 틀어지지 않는다.
+    pub queue_tick_at: Mutex<Option<f64>>,
+    /// ★(0.14.31 · 리뷰 R1 · codex blocking) **큐 WAL 미영속 표식** — `persist_queue_state` 의
+    /// 어느 단계든 실패하면 선다. watchdog 틱(`governance::deliver_queued` 머리)이 이 표식을 보고
+    /// **큐 변경이 없어도** 재시도한다.
+    ///
+    /// 【무엇이 틀렸었나】 enqueue 는 `persist_queue_state()` 를 부른 뒤 곧바로 `queued:true` 를
+    /// 돌려준다. 그런데 그 안에서 `queue-expired.json` 치환이 실패하면 활성 파일은 **쓰이지 않고**
+    /// 조용히 돌아왔고, 그 뒤로 큐 변경이 없으면 재시도할 기회가 영영 오지 않았다 — 데몬이 죽으면
+    /// 승인된 메시지가 사라진다(일시적 공유 위반·권한 오류만으로 유실). 표식 + 틱 재시도는
+    /// 유실 창을 "실패 후 다음 틱(≤5s) 안의 크래시" 로 줄이고, 응답에는 `durable` 로 사실을 싣는다.
+    pub queue_persist_dirty: AtomicBool,
+    /// ★(0.14.43 · C5) `queue-blocked.json`(막힘 사유 영속 파일 — `queue-state.json` 과 같은 폴더) **마지막 기록의 서명**
+    /// (좌석·사유·사유 시작 시각 — `governance::queue_blocked_sig`). `None` = 이 부트에서 아직 쓰지 않았다(첫 큐 틱이 1회 쓴다 —
+    /// 막힌 좌석이 없으면 빈 목록: 낡은 파일이 '지금 막힘' 으로 읽히지 않게). 기록은 큐 틱(단일 watchdog 흐름)에서만 한다.
+    pub queue_blocked_sig: Mutex<Option<String>>,
+    /// ★(0.14.43 · C5) 사유 파일 **강제 기록 요청** — 기아 경보(`queue.starved`)를 낸 틱·쓰기 실패 뒤에 선다. 큐 틱 끝이 소비한다.
+    pub queue_blocked_dirty: AtomicBool,
+    /// ★(0.14.43 · RQFIX I-1) 사유 파일 **쓰기 실패 억제 상태** — 실패하면 다음 재시도를 60초 뒤로 미루고(그 사이 틱은 좌석 진단·기록·로그를 하지 않는다) 마지막 실패 로그의
+    /// (오류 문구, 시각)을 기억해 같은 오류를 60초 안에 다시 찍지 않는다. 성공하면 비운다. **leaf 락**(잡은 채 다른 락을 잡지 않는다 · 큐 틱 단일 흐름에서만 쓴다).
+    pub queue_blocked_retry: Mutex<QueueBlockedRetry>,
+    /// ★(0.14.43 · RQFIX I-9) 이 부트에서 사유 파일의 **이전 세대 보존**(`queue-blocked.prev.json`)을 이미 시도했는가 — 부트당 한 번(첫 기록 직전).
+    pub queue_blocked_prev_rotated: AtomicBool,
+    /// ★(0.14.31 · 독립 판정 triage X4) **부팅이 큐 WAL 을 온전히 복원하지 못했다.**
+    /// `queue_wal_durable`(=마지막 쓰기가 디스크에 닿았는가)과 **다른 사실**이다: 이 비트는
+    /// "지금 메모리에 있는 큐가 재기동 이전의 전부인가" 를 말한다. false 로 시작하지 않고
+    /// 부팅 판독에서 정해지며, 이후의 성공적인 쓰기가 지우지 않는다(그 쓰기는 복원하지 못한
+    /// 내용을 되살리지 못한다). 소비자: `alert_route` 의 인계 조정 — 큐에 없다는 관측을
+    /// "큐가 소비했다" 로 읽는 판단을 이 비트가 막는다.
+    pub queue_restore_incomplete: AtomicBool,
+    /// ★(0.14.31 · 수렴 R2 · triage X4 잔여) **판독하지 못했는데 옆으로 치우지도 못한 WAL 이름.**
+    /// `queue_restore_incomplete` 는 살아남은 인계 사본을 지키지만 **읽지 못한 WAL 자체**는
+    /// 지키지 못한다: 보존이 실패한 뒤에도 `persist_queue_state` 는 30초마다 그 이름 위에
+    /// (비었거나 부분 복원된) 메모리 큐를 원자 치환했고, 그 순간 마지막 사본이 사라졌다.
+    /// 이 집합이 비어야 그 이름에 대한 쓰기가 허용된다 — 매 영속이 보존을 다시 시도한다.
+    pub queue_wal_unpreserved: Mutex<std::collections::BTreeSet<&'static str>>,
     pub config: Config,
     pub socket_path: PathBuf,
     pub started_at: f64,
     /// ★v116-pack(R-B1 P2-b): 이 데몬의 콜드부트 자동 복원 단계(`crate::AUTO_RESTORE_*` · writer = main.rs 단독).
     /// org.status `daemon.auto_restore` 로 노출 — 편성이 복원과 같은 순간 좌석을 세우지 않게 기다리는 근거.
     pub auto_restore_phase: AtomicU8,
+    /// ★(0.14.31 · 리뷰 R1 · codex major) **단조 기동 기준점**. `started_at`(epoch)은 벽시계라
+    /// NTP 보정·수동 시각 변경에 앞뒤로 뛴다 — 경과시간 창(부트 유예·쿨다운·시간당 상한)을
+    /// epoch 차로 재면 "두 시간 앞으로 보정" 한 번에 상한 창이 통째 비고, "하루 뒤로 보정" 은
+    /// 300초 유예를 하루로 늘린다. 경과는 이 `Instant` 로만 잰다(epoch 는 보고·영속 전용).
+    pub started_instant: std::time::Instant,
     /// 세션 트랜스크립트 FTS 영속 채널 (전용 writer 스레드)
     pub recall_tx: Mutex<std::sync::mpsc::Sender<crate::recall::LineRecord>>,
     /// T6 Control Center 소비 트래커 (claude 메시지 누적 — 오늘·최근창·12h 스파크라인).
@@ -2442,6 +4260,14 @@ pub struct Daemon {
     /// ★surface 저장소와 분리한 이유: 이들에겐 surface_id가 없다. 유령 surface를 만들어 끼우면
     /// 페인 목록·입양·ACL이 전부 그것을 실재하는 창으로 취급한다(없는 창에 보내려 든다).
     pub named: Mutex<crate::named::NamedState>,
+    /// ★0.14.43(B3 · R1F-US): 좌석 설정 폴더 **현재 신원**의 60초 하한 캐시(폴더 → (확인 시각, 신원 상태)) — 좌석 신원 표(`accounts::seat_identity_view`)가 쓴다.
+    /// status 폴링·계정 조회(RPC 의 읽기-통과)가 같은 폴더를 초 단위로 다시 stat 하지 않게 한다. **경보 틱(워치독)은 이 캐시를 읽기만 한다** — 신원 파일을 열지도 stat 하지도
+    /// 않는다(`accounts::seat_identity_view_cached`). 채우는 것은 상태줄 보고(`usage.report` 귀속 경로)와 RPC 의 읽기-통과 조회다. **말단 락** — 조회·기록 때만 순간 잡고 그 안에서 다른 락을
+    /// 잡지 않는다(파일 IO 는 이 락을 쥐지 않은 채). `accounts` 와 겹쳐 쥐지 않는다.
+    pub seat_ident_cache: Mutex<crate::accounts::SeatIdentCache>,
+    /// ★0.14.43(B3): 경보 틱이 **직전 틱에 신선도 규칙으로 빠뜨려 `fired` 에 붙들어 둔** 경보 키 — `usage.alert_resolved{reason:"stale"}` 를 처음 빠질 때
+    /// 한 번만 내기 위한 표식(`governance::check_alerts_with`). 단일 writer(워치독 틱) · 말단 락.
+    pub alert_stale_held: Mutex<std::collections::HashSet<String>>,
     /// CC v2 WS-C: learn.status assets(기억·스킬·directives fs 스캔) 60s 캐시 — (계산 시각, 값).
     pub learn_assets_cache: Mutex<Option<(f64, serde_json::Value)>>,
     /// CC v2 WS-C: canonical 학습 상태(~/.cys/state/learn) 쓰기 직렬화 — 데몬 단일 writer 불변식.
@@ -2487,6 +4313,13 @@ pub struct Daemon {
     /// 실행 ≤1" 이지 "전역 1" 이 아니므로, 레인을 키로 두면 그 불변식을 자료구조가 지고
     /// 서로 다른 레인의 동시 진행도 정직하게 표현된다.
     pub boot_run_active: Mutex<std::collections::HashMap<String, BootRunActive>>,
+    /// ★(0.14.31 · WP-3 B) 데몬 alert → CSO inbox 라우터의 상태(쿨다운·시간당 상한·미해결 집합).
+    ///
+    /// **전용 락이다** — 큐 계열 락 순서 규약(restored_queue → surfaces → pending_queue) **밖**에
+    /// 있고, 이 락을 쥔 채 다른 락을 잡지 않는다(그래서 어떤 락쌍도 만들지 않는다). 반대 방향도
+    /// 금지: pending_queue·surfaces 가드를 쥔 채 이 락을 잡지 마라(`org.status` 는 surfaces 가드를
+    /// 놓은 뒤에 잡는다). 자세한 계약은 [`crate::alert_route`] 모듈 주석.
+    pub alert_route: Mutex<crate::alert_route::RouteState>,
     /// (B3-2R ⑥·④ⓓ) fence 된 런의 원장 — **회수하지 못한 고아**의 목록이다(무kill 계약).
     /// 길이가 곧 admission 상한의 분모다. 유계는 감독자가 [`crate::boot_supervisor`] 에서 건다.
     pub boot_fenced: Mutex<Vec<FencedRun>>,
@@ -2608,11 +4441,564 @@ impl Drop for RestoreRootGuard {
 
 /// 단일 pid의 현재 start_time(초)만 조회 — pid 재사용 식별(캐시 히트·restore-root 재검증)용
 /// 경량 lookup. (T6에서 handlers.rs→state.rs로 이동해 게이트·caller_cache가 단일 구현을 공유한다.)
+///
+/// ★(D-2 · 0.14.42) macOS 는 pid 단위 경량 판독(`peer_start_time_fast` — PROC_PIDTBSDINFO 1회),
+/// 그 밖의 OS 와 노브 `CYS_PROC_PROBE_FAST=0` 은 종전 sysinfo 판독(`peer_start_time_legacy`).
+/// 기록 쪽(워크·auto-restore restore_root 등록·record_create_caller)과 비교 쪽(캐시 히트 가드·
+/// creator_matches·restore-root 게이트)이 한 데몬 수명 안에서 **같은 판독기**를 쓴다(노브는
+/// 기동 때 고정). 두 판독기의 값은 같은 커널 필드(pbi_start_tvsec)다.
 pub(crate) fn peer_start_time(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        if proc_probe_fast_enabled() {
+            return peer_start_time_fast(pid);
+        }
+    }
+    peer_start_time_legacy(pid)
+}
+
+/// 종전 판독기(전 OS) — sysinfo `ProcessesToUpdate::Some` 단일 pid 새로고침.
+pub(crate) fn peer_start_time_legacy(pid: u32) -> Option<u64> {
     let mut sys = sysinfo::System::new();
     let p = sysinfo::Pid::from_u32(pid);
     sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[p]), true);
     sys.process(p).map(|proc| proc.start_time())
+}
+
+/// macOS 경량 판독기 — `proc_brief` 의 start_time(부재·좀비 = None, 타 사용자 = Some(0) · legacy 와 같다).
+#[cfg(target_os = "macos")]
+pub(crate) fn peer_start_time_fast(pid: u32) -> Option<u64> {
+    proc_brief(pid).map(|b| b.start_time)
+}
+
+/// ★(D-1a · 0.14.42 WP-transport) 호출자 신원 워크용 **pid 단위 경량 판독** — macOS 전용.
+///
+/// 종전 워크는 새 pid 요청마다 `sysinfo::System::new() + refresh_processes(All)` 로 **전 프로세스
+/// 표**를 읽었다(proc_listallpids 3회 + rayon 병렬 전 pid × 여러 syscall · 실측 CPU 41~58ms/회).
+/// 워크가 실제로 쓰는 값은 ≤32개 pid 의 parent·start_time 뿐이고 둘 다 `PROC_PIDTBSDINFO` 한 번
+/// (`pbi_ppid`·`pbi_start_tvsec`)에서 나온다. 그래서 조상 깊이만큼만 pid 단위 syscall 을 부른다.
+///
+/// 존재 판정식은 sysinfo 0.33.1 `create_new_process`(macos/process.rs:349-392)와 **같다**
+/// (`decide_brief` · 8칸 진리표 검체가 박제). Windows·Linux 는 legacy(sysinfo) 경로 그대로다.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ProcBrief {
+    /// 부모 pid — `pbi_ppid == 0` 이면 None(sysinfo `get_parent` 와 같다). 타 사용자(bsd 판독
+    /// 불가) 프로세스도 None.
+    pub(crate) parent: Option<u32>,
+    /// `pbi_start_tvsec`(epoch 초) — pid 재사용 식별자. 타 사용자 프로세스는 0(sysinfo 와 같다).
+    pub(crate) start_time: u64,
+}
+
+/// 존재·필드 **순수 판정**(sysinfo `create_new_process` 와 같은 식).
+/// · bsd=Some: pidpath 성공 ∨ KERN_PROCARGS2 성공이면 존재, 아니면 부재(좀비·권한 없음).
+/// · bsd=None(타 사용자·권한 없음): pidpath 성공이면 존재(parent None · start 0), 아니면 부재.
+///   이 분기에서는 KERN_PROCARGS2 를 부르지 않는다(sysinfo 도 부르지 않는다).
+/// OR 의 평가 순서는 sysinfo(procargs2 먼저)와 다르다 — pidpath 가 더 싸서 먼저 본다. 값은
+/// 교환법칙으로 같고, 차이는 µs 단위 판독 시각뿐이다(스냅샷 경주와 같은 부류).
+#[cfg(target_os = "macos")]
+pub(crate) fn decide_brief(
+    bsd: Option<(u32, u64)>,
+    pidpath_ok: bool,
+    procargs2_ok: impl FnOnce() -> bool,
+) -> Option<ProcBrief> {
+    match bsd {
+        Some((ppid, start_time)) => {
+            if pidpath_ok || procargs2_ok() {
+                Some(ProcBrief { parent: (ppid != 0).then_some(ppid), start_time })
+            } else {
+                None
+            }
+        }
+        None => pidpath_ok.then_some(ProcBrief { parent: None, start_time: 0 }),
+    }
+}
+
+/// pid 하나의 (parent, start_time) — 부재·좀비·판독 불가는 None. syscall 은 최대 4회
+/// (bsdinfo 1 · pidpath 1 · pidpath 실패 시에만 KERN_PROCARGS2 크기·본문 2).
+/// unwrap·인덱싱·락·스레드 없음. 음수로 캐스트되는 pid 는 syscall 실패 → None.
+#[cfg(target_os = "macos")]
+pub(crate) fn proc_brief(pid: u32) -> Option<ProcBrief> {
+    let cpid = pid as libc::c_int;
+    // ① PROC_PIDTBSDINFO — 0 초기화한 proc_bsdinfo 에 **정확한 크기**를 넘기고, 반환값이 그 크기일
+    //    때만 유효(sysinfo get_bsd_info 와 같다).
+    // SAFETY: proc_bsdinfo 는 정수·c_char 배열뿐이라 0 비트 패턴이 유효하다. 커널은 buffersize
+    // (= 구조체 크기) 이하만 쓴다. 포인터는 이 스택 지역 변수를 가리키고 호출 동안 살아 있다.
+    let bsd = unsafe {
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let n = libc::proc_pidinfo(
+            cpid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
+            size,
+        );
+        (n == size).then_some((info.pbi_ppid, info.pbi_start_tvsec))
+    };
+    // ② proc_pidpath — 고정 스택 버퍼(PROC_PIDPATHINFO_MAXSIZE=4096), 반환 >0 이면 성공.
+    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: 버퍼 길이를 그대로 bufsize 로 넘긴다 — 커널은 그 이하만 쓴다. 내용은 읽지 않는다.
+    let pidpath_ok = unsafe {
+        libc::proc_pidpath(cpid, path.as_mut_ptr() as *mut libc::c_void, path.len() as u32) > 0
+    };
+    decide_brief(bsd, pidpath_ok, || procargs2_ok(cpid))
+}
+
+/// ③ KERN_PROCARGS2 폴백(bsd=Some ∧ pidpath 실패일 때만 호출된다) — 크기 조회 뒤 **커널이 알려준
+/// 크기**의 0 초기화 힙 버퍼(len=sz, set_len 없음)로 본문을 조회하고, 성공 ∧ sz>0 이면 true.
+/// 버퍼 내용은 읽지 않는다(sysinfo get_process_infos 의 성공 조건과 같다).
+#[cfg(target_os = "macos")]
+fn procargs2_ok(cpid: libc::c_int) -> bool {
+    let mut mib: [libc::c_int; 3] = [libc::CTL_KERN, libc::KERN_PROCARGS2, cpid];
+    let mut size: libc::size_t = 0;
+    // SAFETY: oldp=null 크기 조회 — 커널은 size 에만 쓴다. 이어 len==size 인 Vec 을 넘기고
+    // oldlenp 에 같은 size 를 준다 — 커널은 그 이하만 쓰고 실제 길이를 size 에 돌려준다.
+    unsafe {
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) == -1
+        {
+            return false;
+        }
+        let mut buf = vec![0u8; size];
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) == -1
+        {
+            return false;
+        }
+    }
+    size > 0
+}
+
+/// ★(perf R3-6 · 0.14.42) pid 하나의 **지금** 작업 디렉터리 — macOS 전용 pid 단위 경량 판독(`proc_brief` 와
+/// 같은 계열 · 같은 노브). surface.list · org.status · 좌석 회수 호출자 축의 `live_cwd` 가 이것을 쓴다
+/// (handlers.rs `live_cwds`).
+///
+/// sysinfo 0.33.1 의 cwd 조회(`get_cwd_root` → `convert_node_path_info` → `cstr_to_rust_with_size`,
+/// macos/process.rs:430-465 · unix/utils.rs:10-35)와 **같은 syscall · 같은 변환**이다:
+/// `PROC_PIDVNODEPATHINFO` 반환 < 1 이면 None · `pvi_cdir` 의 `vst_dev == 0` 이면 None ·
+/// `vip_path`(MAXPATHLEN 바이트) 안에서 첫 NUL 까지 · UTF-8 이 아니면 None.
+/// 다른 점은 전 프로세스 표(`proc_listallpids`)와 좌석 argv·env 전체(`KERN_PROCARGS2`)를 읽지 않는다는
+/// 것이다. 그래서 두 번째 `proc_listallpids` 가 추정치 이상을 채우면 표 전체가 비던 sysinfo 경합
+/// (get_proc_list None → 전 좌석 cwd 결측)도 없다.
+/// 실패 방향: 부재 · 좀비 · 타 사용자 · 비 UTF-8 은 None('모름') — sysinfo 와 같은 방향이다.
+/// unwrap·인덱싱·락·스레드 없음. i32 를 넘는 pid 는 `try_from` 실패 → None.
+#[cfg(target_os = "macos")]
+pub(crate) fn proc_cwd(pid: u32) -> Option<String> {
+    let cpid = libc::c_int::try_from(pid).ok()?;
+    // SAFETY: proc_vnodepathinfo 는 정수·c_char 배열뿐이라 0 비트 패턴이 유효하다. 커널은 buffersize
+    // (= 구조체 크기) 이하만 쓴다. 포인터는 이 스택 지역 변수를 가리키고 호출 동안 살아 있다.
+    let vpi = unsafe {
+        let mut vpi: libc::proc_vnodepathinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+        let n = libc::proc_pidinfo(
+            cpid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            &mut vpi as *mut libc::proc_vnodepathinfo as *mut libc::c_void,
+            size,
+        );
+        if n < 1 {
+            return None;
+        }
+        vpi
+    };
+    let node = &vpi.pvi_cdir;
+    if node.vip_vi.vi_stat.vst_dev == 0 {
+        return None;
+    }
+    // libc 는 MAXPATHLEN(1024) 경로를 `[[c_char; 32]; 32]` 로 선언한다 — 평탄화해 첫 NUL 까지.
+    let raw: Vec<u8> = node
+        .vip_path
+        .iter()
+        .flatten()
+        .map(|c| *c as u8)
+        .take_while(|b| *b != 0)
+        .collect();
+    String::from_utf8(raw).ok()
+}
+
+/// 노브(순수) — `CYS_PROC_PROBE_FAST` 값이 정확히 "0" 일 때만 legacy(sysinfo) 판독으로 돌아간다.
+/// ''·'false'·'off' 는 fast 를 유지한다(끄는 값은 하나뿐 — reap_exited_enabled 관례).
+/// 범위(macOS 경량 판독 전부 · 한 손잡이): 호출자 신원 워크(`proc_brief`) · start_time 판독
+/// (`peer_start_time`) · 좌석 셸 cwd(`proc_cwd` — perf R3-6). 끄면 셋 다 종전 sysinfo 경로로 돌아간다.
+#[cfg(target_os = "macos")]
+pub(crate) fn proc_probe_fast_enabled_from(v: Option<&str>) -> bool {
+    v.map_or(true, |v| v != "0")
+}
+
+/// 노브 판독 — 호출할 때마다 env 를 읽는다(하우스 관례). 실행 중 데몬의 env 를 바꿀 수단은 없으므로
+/// 운영 의미는 **기동 때 정해지는 선택**이다(적용 = cysd 재기동).
+#[cfg(target_os = "macos")]
+pub(crate) fn proc_probe_fast_enabled() -> bool {
+    proc_probe_fast_enabled_from(std::env::var("CYS_PROC_PROBE_FAST").ok().as_deref())
+}
+
+/// ★(D-1a 검체) pid 단위 경량 판독 `proc_brief` 가 sysinfo(legacy) 와 **같은 존재·필드 판정**을
+/// 내는지 잰다. macOS 전용(fast 판독기가 macOS 에만 있다) — 모듈 전체를 안쪽 cfg 로 가둔다.
+#[cfg(test)]
+mod proc_brief_tests {
+    #![cfg(target_os = "macos")]
+    use super::*;
+    use std::cell::Cell;
+    use std::collections::BTreeSet;
+
+    /// sysinfo 0.33.1 `create_new_process`(macos/process.rs:349-392)의 존재·필드 식 **사본 오라클**.
+    /// bsd=Some → procargs2 ∨ pidpath 면 존재(parent=ppid≠0, start=pbi_start_tvsec),
+    /// bsd=None → pidpath 면 존재(parent None · start 0), 아니면 부재.
+    fn sysinfo_model(bsd: Option<(u32, u64)>, pidpath: bool, procargs2: bool) -> Option<ProcBrief> {
+        match bsd {
+            None => {
+                if pidpath {
+                    Some(ProcBrief { parent: None, start_time: 0 })
+                } else {
+                    None
+                }
+            }
+            Some((ppid, st)) => {
+                if procargs2 || pidpath {
+                    Some(ProcBrief {
+                        parent: if ppid == 0 { None } else { Some(ppid) },
+                        start_time: st,
+                    })
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// T7 — (bsd None/Some)×(pidpath)×(procargs2) 8칸 전부가 오라클과 같다. bsd=None 이면
+    /// procargs2 클로저를 **부르지 않는다**(타 사용자 프로세스에 KERN_PROCARGS2 를 치지 않음).
+    #[test]
+    fn decide_brief_matches_sysinfo_model_8_cells() {
+        let mut cells = 0;
+        for bsd in [None, Some((42u32, 1_700_000_123u64)), Some((0u32, 1_700_000_456u64))] {
+            for pidpath in [false, true] {
+                for procargs2 in [false, true] {
+                    let calls = Cell::new(0u32);
+                    let got = decide_brief(bsd, pidpath, || {
+                        calls.set(calls.get() + 1);
+                        procargs2
+                    });
+                    let want = sysinfo_model(bsd, pidpath, procargs2);
+                    assert_eq!(
+                        got, want,
+                        "진리표 불일치: bsd={bsd:?} pidpath={pidpath} procargs2={procargs2}"
+                    );
+                    if bsd.is_none() {
+                        assert_eq!(calls.get(), 0, "bsd=None 인데 KERN_PROCARGS2 를 불렀다");
+                    }
+                    if bsd.is_some() && pidpath {
+                        assert_eq!(calls.get(), 0, "pidpath 성공인데 procargs2 폴백을 불렀다(비용 회귀)");
+                    }
+                    cells += 1;
+                }
+            }
+        }
+        assert_eq!(cells, 12, "칸 수(8칸 + ppid=0 변형 4칸)");
+        // 명시 단언 두 칸(검토 지적 1)
+        assert_eq!(decide_brief(None, false, || true), None, "(bsd None·pidpath 실패·procargs2 성공)=None");
+        assert_eq!(
+            decide_brief(Some((7, 99)), false, || true),
+            Some(ProcBrief { parent: Some(7), start_time: 99 }),
+            "(bsd Some·pidpath 실패·procargs2 성공)=Some"
+        );
+    }
+
+    /// T5 — 노브 진리표. 끄는 값은 "0" 하나뿐이다(''·'false'·'off' 는 fast 유지). 전역 env 무접촉.
+    #[test]
+    fn proc_probe_fast_enabled_from_truth_table() {
+        for (v, want) in [
+            (None, true),
+            (Some("1"), true),
+            (Some("0"), false),
+            (Some(""), true),
+            (Some("false"), true),
+            (Some("off"), true),
+        ] {
+            assert_eq!(proc_probe_fast_enabled_from(v), want, "CYS_PROC_PROBE_FAST={v:?}");
+        }
+    }
+
+    fn legacy_snapshot() -> sysinfo::System {
+        for _ in 0..5 {
+            let mut s = sysinfo::System::new();
+            s.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            // get_proc_list None(두 번째 proc_listallpids 가 추정치 이상)이면 표 전체가 빈다 — 공허 통과 금지.
+            if !s.processes().is_empty() {
+                return s;
+            }
+        }
+        panic!("legacy(sysinfo All) 스냅샷이 5회 연속 비었다 — 비교 불가(red)");
+    }
+
+    fn legacy_brief(sys: &sysinfo::System, pid: u32) -> Option<ProcBrief> {
+        sys.process(sysinfo::Pid::from_u32(pid)).map(|p| ProcBrief {
+            parent: p.parent().map(|x| x.as_u32()),
+            start_time: p.start_time(),
+        })
+    }
+
+    /// sysinfo `ProcessesToUpdate::Some` 단일 pid 판독 — 캐시 히트 가드가 쓰던 경로의 사본.
+    fn sysinfo_some_brief(pid: u32) -> Option<ProcBrief> {
+        let mut sys = sysinfo::System::new();
+        let p = sysinfo::Pid::from_u32(pid);
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[p]), true);
+        legacy_brief(&sys, pid)
+    }
+
+    #[derive(Default, Debug)]
+    struct Tally {
+        some_real: usize,
+        some_zero: usize,
+        none_none: usize,
+        mismatched: Vec<u32>,
+        self_in_real: bool,
+    }
+
+    fn compare(pids: &BTreeSet<u32>, snap: &sysinfo::System, reader: impl Fn(u32) -> Option<ProcBrief>) -> Tally {
+        let me = std::process::id();
+        let mut t = Tally::default();
+        for &pid in pids {
+            let fast = reader(pid);
+            let legacy = legacy_brief(snap, pid);
+            match (fast, legacy) {
+                (Some(a), Some(b)) if a == b => {
+                    if a.start_time == 0 {
+                        t.some_zero += 1;
+                    } else {
+                        t.some_real += 1;
+                        if pid == me {
+                            t.self_in_real = true;
+                        }
+                    }
+                }
+                (None, None) => t.none_none += 1,
+                _ => t.mismatched.push(pid),
+            }
+        }
+        t
+    }
+
+    /// T1 — 실측 차분 게이트. 대상 = sysinfo All 스냅샷의 전 pid + 0..99999 의 97 간격 부재 표본 + 자기 pid.
+    /// 일치를 Some==Some(실제 start)·Some==Some(start 0)·None==None 으로 **나눠** 센다(결측은 값이 아니다).
+    /// 1차 불일치는 새 스냅샷으로 재관측해 경주(생성·종료)를 배제하고, **안정 불일치 0** 이어야 한다.
+    #[test]
+    fn proc_brief_equals_sysinfo_for_every_pid() {
+        let snap = legacy_snapshot();
+        let me = std::process::id();
+        let mut pids: BTreeSet<u32> = snap.processes().keys().map(|p| p.as_u32()).collect();
+        pids.extend((0..99_999u32).step_by(97));
+        pids.insert(me);
+
+        let t = compare(&pids, &snap, proc_brief);
+        assert!(t.some_real > 0, "Some==Some(실제 start) 가 0건 — 공허한 통과: {t:?}");
+        assert!(t.self_in_real, "자기 pid 가 Some==Some(실제 start) 에 없다: {t:?}");
+
+        // 음성 대조 — '항상 None' 판독기에 같은 비교기를 돌리면 반드시 불일치가 나와야 한다.
+        let neg = compare(&pids, &snap, |_| None);
+        assert!(!neg.mismatched.is_empty(), "음성 대조(항상 None)가 불일치 0 — 비교기가 무력하다");
+
+        // 재관측 2회 — 두 번 다 불일치인 pid 만 안정 불일치로 센다(경주 배제).
+        let mut stable: BTreeSet<u32> = t.mismatched.iter().copied().collect();
+        for _ in 0..2 {
+            if stable.is_empty() {
+                break;
+            }
+            let snap2 = legacy_snapshot();
+            let again = compare(&stable, &snap2, proc_brief);
+            stable = again.mismatched.into_iter().collect();
+        }
+        let detail: Vec<(u32, Option<ProcBrief>, Option<ProcBrief>)> = stable
+            .iter()
+            .map(|&p| (p, proc_brief(p), legacy_brief(&legacy_snapshot(), p)))
+            .collect();
+        eprintln!(
+            "T1 계수: pid {} · Some==Some(실제 start) {} · Some==Some(start 0) {} · None==None {} · 1차 불일치 {} · 안정 불일치 {}",
+            pids.len(),
+            t.some_real,
+            t.some_zero,
+            t.none_none,
+            t.mismatched.len(),
+            stable.len()
+        );
+        assert!(stable.is_empty(), "proc_brief 와 sysinfo 가 안정적으로 어긋난다: {detail:?}");
+    }
+
+    /// sysinfo `ProcessesToUpdate::Some` + cwd(Always) 관측 — surface.list 가 쓰던 경로의 **사본 오라클**.
+    /// `must` 의 pid 가 전부 잡힐 때까지 최대 5회 다시 뜬다. get_proc_list 가 None(두 번째
+    /// proc_listallpids 가 추정치 이상)이면 표 전체가 비어 무고한 적색이 나기 때문이다(legacy_snapshot 과
+    /// 같은 이유). 5회 모두 놓치면 비교 불가로 적색이다 — 빈 오라클로 통과하는 길은 없다.
+    fn sysinfo_cwd_oracle(pids: &[u32], must: &[u32]) -> std::collections::HashMap<u32, String> {
+        let sp: Vec<sysinfo::Pid> = pids.iter().map(|p| sysinfo::Pid::from_u32(*p)).collect();
+        for _ in 0..5 {
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::Some(&sp),
+                false,
+                sysinfo::ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always),
+            );
+            let m: std::collections::HashMap<u32, String> = pids
+                .iter()
+                .filter_map(|&p| {
+                    sys.process(sysinfo::Pid::from_u32(p))
+                        .and_then(|x| x.cwd())
+                        .map(|c| (p, c.display().to_string()))
+                })
+                .collect();
+            if must.iter().all(|p| m.contains_key(p)) {
+                return m;
+            }
+        }
+        panic!("sysinfo cwd 오라클이 5회 연속 살아 있는 자식을 놓쳤다 — 비교 불가(red)");
+    }
+
+    /// T9(perf R3-6) — `proc_cwd` 가 sysinfo cwd 관측과 **pid 마다 같은 값**을 낸다. 살아 있는 자식 셋
+    /// (서로 다른 cwd) · 거둔 자식(부재) · pid 0·1(커널·launchd — 판독 불가) · pid_max 밖 ·
+    /// i32 를 넘는 pid 를 섞는다. Some==Some 과 None==None 을 **나눠** 센다(결측은 값이 아니다).
+    /// 자식 셋은 반드시 Some==Some 이어야 하고, 음성 대조('항상 None' 판독기)는 반드시 어긋나야 한다.
+    #[test]
+    fn proc_cwd_equals_sysinfo_cwd() {
+        struct Kids(Vec<std::process::Child>);
+        impl Drop for Kids {
+            fn drop(&mut self) {
+                for k in self.0.iter_mut() {
+                    let _ = k.kill();
+                    let _ = k.wait();
+                }
+            }
+        }
+        let base = std::env::temp_dir().join(format!("cys-r36-proccwd-{}", std::process::id()));
+        let mut kids = Kids(Vec::new());
+        let mut want = Vec::new();
+        for i in 0..3 {
+            let d = base.join(format!("seat-{i}"));
+            std::fs::create_dir_all(&d).unwrap();
+            want.push(std::fs::canonicalize(&d).unwrap());
+            kids.0.push(
+                std::process::Command::new("/bin/sleep")
+                    .arg("30")
+                    .current_dir(&d)
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+        let mut dead = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let dead_pid = dead.id();
+        dead.wait().unwrap();
+        let live: Vec<u32> = kids.0.iter().map(|k| k.id()).collect();
+        let mut pids = live.clone();
+        pids.extend([dead_pid, 0, 1, 4_000_000, u32::MAX]);
+        let oracle = sysinfo_cwd_oracle(&pids, &live);
+        let got: std::collections::HashMap<u32, String> =
+            pids.iter().filter_map(|&p| proc_cwd(p).map(|c| (p, c))).collect();
+        drop(kids);
+        let _ = std::fs::remove_dir_all(&base);
+
+        let (mut some_eq, mut none_eq, mut bad) = (0usize, 0usize, Vec::new());
+        for &p in &pids {
+            match (got.get(&p), oracle.get(&p)) {
+                (Some(a), Some(b)) if a == b => some_eq += 1,
+                (None, None) => none_eq += 1,
+                (a, b) => bad.push((p, a.cloned(), b.cloned())),
+            }
+        }
+        eprintln!("T9 계수: pid {} · Some==Some {some_eq} · None==None {none_eq} · 불일치 {}", pids.len(), bad.len());
+        assert!(bad.is_empty(), "proc_cwd 와 sysinfo cwd 가 갈렸다: {bad:?}");
+        for (i, p) in live.iter().enumerate() {
+            assert_eq!(
+                got.get(p).map(std::path::PathBuf::from),
+                Some(want[i].clone()),
+                "살아 있는 자식 {i} 의 cwd 를 못 잡았다(공허한 초록 방지)"
+            );
+        }
+        // pid 0·1 은 실행 권한(root 여부)에 따라 판독 가능성이 달라서 오라클 일치로만 본다.
+        // 있을 수 없는 pid(pid_max 밖 · i32 초과)와 거둔 자식은 값이 없어야 한다.
+        for p in [dead_pid, 4_000_000, u32::MAX] {
+            assert!(!got.contains_key(&p), "있을 수 없는 pid {p} 에 값이 나왔다");
+        }
+        // 음성 대조 — '항상 None' 판독기는 같은 비교기에서 반드시 어긋난다(자식 셋 이상).
+        let neg = pids.iter().filter(|p| oracle.contains_key(p)).count();
+        assert!(neg >= 3, "음성 대조가 무력하다(오라클 Some {neg}건)");
+    }
+
+    /// T8(D-2) — spawn 직후(sleep 없이) 즉시 판독해도 fast·legacy 모두 Some 이고 값이 같다.
+    /// main.rs auto-restore 의 restore_root 등록(sleep 없는 3회 재시도)과 등가인 조건이다 — fast 는
+    /// proc_listallpids 에 기대지 않고, Command::spawn 이 반환될 때 자식은 이미 커널에 있다.
+    #[test]
+    fn spawn_immediate_start_time_is_some() {
+        struct Reap(u32);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                // SAFETY: 이 검체가 띄운 자식 pid 에만 SIGKILL 후 회수한다(패턴 kill 없음).
+                unsafe {
+                    libc::kill(self.0 as libc::pid_t, libc::SIGKILL);
+                    let mut st: libc::c_int = 0;
+                    libc::waitpid(self.0 as libc::pid_t, &mut st, 0);
+                }
+            }
+        }
+        for i in 0..20 {
+            let child = std::process::Command::new("/bin/sleep").arg("30").spawn().expect("spawn sleep");
+            let pid = child.id();
+            std::mem::forget(child);
+            let _reap = Reap(pid);
+            let fast = peer_start_time_fast(pid);
+            let legacy = peer_start_time_legacy(pid);
+            let routed = peer_start_time(pid);
+            assert!(fast.is_some_and(|s| s > 0), "#{i}: spawn 직후 fast 판독이 None/0: {fast:?}");
+            assert_eq!(fast, legacy, "#{i}: spawn 직후 fast 와 legacy 가 다르다");
+            assert_eq!(routed, fast, "#{i}: 공개 경로(peer_start_time)가 판독기 값과 다르다");
+        }
+    }
+
+    /// T1z — 좀비는 두 판독기 모두에서 같게(이 맥에서는 부재 None) 보인다. waitid(WNOWAIT) 로 종료를
+    /// **확정**한 뒤(회수하지 않은 채) 판독하고, 판독 뒤 waitpid(WNOHANG)==pid 로 '판독 시점에 좀비였음'
+    /// 을 확인하며 회수한다. 고정 sleep·SZOMB 폴링을 쓰지 않는다(이 맥의 좀비는 raw bsd 가 None 이라
+    /// SZOMB 폴링은 영영 성립하지 않는다).
+    #[test]
+    fn zombie_is_absent_in_both_readers() {
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn /bin/sh");
+        let pid = child.id();
+        std::mem::forget(child); // std Child 의 wait 를 쓰지 않는다 — 회수는 아래 waitpid 가 한다.
+        // SAFETY: siginfo_t 는 정수 필드뿐이라 0 초기화가 유효하다. waitid 는 이 프로세스의 자식 pid 에만
+        // 쓰며 WNOWAIT 라 회수하지 않는다(좀비 유지).
+        let rc = unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT)
+        };
+        assert_eq!(rc, 0, "waitid(WEXITED|WNOWAIT) 실패 — 종료 확정 불가");
+
+        let fast = proc_brief(pid);
+        let all = legacy_brief(&legacy_snapshot(), pid);
+        let some = sysinfo_some_brief(pid);
+
+        // SAFETY: 자식 pid 1개를 WNOHANG 으로 회수한다(블록 없음).
+        let reaped = unsafe {
+            let mut st: libc::c_int = 0;
+            libc::waitpid(pid as libc::pid_t, &mut st, libc::WNOHANG)
+        };
+        assert_eq!(reaped as u32, pid, "판독 시점에 좀비가 아니었다(남이 회수) — 검체 무효");
+        eprintln!("T1z 좀비 판독: fast={fast:?} all={all:?} some={some:?}");
+        assert_eq!(fast, all, "좀비: fast 와 sysinfo All 이 다르다");
+        assert_eq!(fast, some, "좀비: fast 와 sysinfo Some 이 다르다");
+    }
 }
 
 /// T6 Control Center 소비 트래커 — in-memory(재시작 리셋, 가동시간 의미론과 동일).
@@ -2747,10 +5133,116 @@ pub fn is_daemon_issued(request_id: &str) -> bool {
     request_id.starts_with(DAEMON_REQ_PREFIX)
 }
 
+/// ★U10(0.14.41) **정보성 알림 kind 허용목록** — 대기자·결정권자가 없는 안내문(발행자가 결정을 기다리지 않는다).
+///
+/// 소비자 둘: ①재시작 정리([`reconcile_restored_feed`])의 TTL 만료 대상 ②UI 토스트 제목 분류
+/// (사본: `ui/src/feedclass.ts` `NOTICE_FEED_KINDS` — `feedclass.test.ts` 가 이 리터럴과 대조한다).
+/// ★여기 없는 kind(`permission`·`approval`·`first_run_gate`·`cycle-verify`·`learn_proposal`·`mission-set`·
+/// `ceo-promote-request` …)는 **결정성**으로 취급한다 — 모르면 결정 대기로 남기는 쪽이 안전하다(추측 금지).
+pub const NOTICE_FEED_KINDS: &[&str] = &[
+    "hook-missing",
+    "bootstrap-fail",
+    "warn",
+    "error",
+    "formation",
+    "ceo-notice",
+];
+/// 정보성 kind 접두(javis_formation `_STATE_FEED_KIND` 의 `formation-complete|partial|pending|failed`).
+pub const NOTICE_FEED_KIND_PREFIXES: &[&str] = &["formation-"];
+
+/// 이 kind 가 정보성 알림인가(순수).
+pub fn is_notice_feed_kind(kind: &str) -> bool {
+    NOTICE_FEED_KINDS.contains(&kind) || NOTICE_FEED_KIND_PREFIXES.iter().any(|p| kind.starts_with(p))
+}
+
+/// 재시작 정리 결정 — 데몬 발행 화면 감지 항목(옛 세대 PTY 는 데몬과 함께 죽었다).
+pub const FEED_RESTART_STALE_DECISION: &str = "stale-restart";
+/// 재시작 정리 결정 — TTL 을 넘긴 정보성 알림.
+pub const FEED_NOTICE_EXPIRED_DECISION: &str = "expired-notice";
+/// 정보성 알림 TTL 기본값(초) — `CYS_FEED_NOTICE_TTL_SECS` 로 조정 · `0` = 만료 끔(롤백 손잡이).
+pub const FEED_NOTICE_TTL_DEFAULT_SECS: u64 = 86_400;
+
+/// `CYS_FEED_NOTICE_TTL_SECS` 값 해석(순수) — 부재·해석 불가 = 기본값(24h) · `0` = 끔.
+pub fn feed_notice_ttl_from(raw: Option<&str>) -> u64 {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(FEED_NOTICE_TTL_DEFAULT_SECS)
+}
+
+/// 재시작 정리 집계(로그 1줄용).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RestoredFeedReconcile {
+    pub stale_restart: usize,
+    pub expired_notice: usize,
+}
+
+/// ★U10(0.14.41 · D3a/D4) **복원 직후·서빙 전** feed 재시작 정리(순수 · 패닉 0 · allow 0).
+///
+/// 규칙(pending 항목만 · 그 밖 불변 · 결정은 두 비허가 사유뿐):
+///  ① 데몬 발행(`is_daemon_issued`) + kind ∈ {approval, first_run_gate} → resolved / [`FEED_RESTART_STALE_DECISION`].
+///     근거: 화면 감지 항목이 가리키는 옛 PTY 는 데몬과 함께 죽었고, 새 데몬의 surface 번호는 옛 번호와 맞지
+///     않아(transcripts.db 최대값+1 부터) 살아 있는 surface 순회 정리(stale-clear·gate-window-closed)에 영영 안
+///     걸린다 → 재시작마다 '승인 방치' 재발화(RC4-c)·번호 겹침 시 큐 주입 가드 오차단(RC4-e). 화면에 창이 남은
+///     새 좌석은 다음 스캔에서 **새 번호로** 다시 감지된다(정당한 승인 요청의 소실 0).
+///  ② 정보성 kind([`is_notice_feed_kind`]) + 나이 > TTL(초 · 0=끔) → resolved / [`FEED_NOTICE_EXPIRED_DECISION`].
+///     나이는 두 시각이 **유한**하고 created_at ≤ now 일 때만 잰다(시계 역행·비유한 값 = 만료 아님 = 보존).
+///  ③ 그 밖(결정성 kind · 클라이언트 발행 approval · 데몬 발행 learn_proposal …) = **무접촉**(추측 금지).
+/// 해소 시각은 now 가 유한할 때만 기록한다(JSON 직렬화 불가 값 방지). unwrap 0 · 인덱싱 0.
+pub fn reconcile_restored_feed(
+    items: &mut [FeedItem],
+    now: f64,
+    notice_ttl_secs: u64,
+) -> RestoredFeedReconcile {
+    let mut rep = RestoredFeedReconcile::default();
+    for it in items.iter_mut() {
+        if it.status != "pending" {
+            continue;
+        }
+        let orphan_screen_item = is_daemon_issued(&it.request_id)
+            && (it.kind == "approval" || it.kind == crate::governance::GATE_FEED_KIND);
+        let expired_notice = !orphan_screen_item
+            && notice_ttl_secs > 0
+            && is_notice_feed_kind(&it.kind)
+            && now.is_finite()
+            && it.created_at.is_finite()
+            && it.created_at <= now
+            && (now - it.created_at) > notice_ttl_secs as f64;
+        let decision = if orphan_screen_item {
+            rep.stale_restart += 1;
+            FEED_RESTART_STALE_DECISION
+        } else if expired_notice {
+            rep.expired_notice += 1;
+            FEED_NOTICE_EXPIRED_DECISION
+        } else {
+            continue;
+        };
+        it.status = "resolved".into();
+        it.decision = Some(decision.to_string());
+        it.resolved_at = if now.is_finite() { Some(now) } else { None };
+    }
+    rep
+}
+
+/// ★(R2F-DM 2차 · 성찰 2회차 B1) 데몬 벽시계의 **해상도 = 마이크로초**(내림) — 유닉스 기원 뒤 경과(`Duration`) → epoch 초(`f64`).
+///
+/// 【왜】 윈도우 `SystemTime` 은 100ns(리눅스는 1ns) 해상도라 `as_secs_f64()` 가 유효숫자 17자리 값을 낸다. `serde_json` 의 기본 파서는 `significand as f64 / 10^k`
+/// (두 번 반올림)라 그런 값의 약 10 % 를 같은 값으로 돌려주지 못한다 — 저장·와이어를 한 번 지난 시각이 원래 값과 1ulp 어긋난다(승인 서명 불일치
+/// [`crate::approval::quantize_epoch_us`] · 윈도우 러너의 큐 WAL 왕복 검체 둘이 이 뿌리다). 맥은 벽시계가 1µs 라 **시각**에서는 이 계급이 통째로 없다.
+/// 생산자마다 따로 막는 대신 **원천에서** 윈도우·리눅스를 맥과 같은 해상도로 맞춘다. (0.14.43 K1 의 ABI 거짓 양성도 같은 파서 한계지만 그쪽은 시각이 아닌 17자리 부동소수 —
+/// 경과·차 — 도 실리는 와이어 프레임의 일이라 맥에서도 났고, 프레임마다 스스로 재파싱해 가르는 K1 이 그대로 맡는다. 이 함수는 그 판정을 바꾸지 않는다.)
+/// 【값】 `N = d.as_micros()`(N < 2^53 — 서기 2255 년까지 `f64` 로 정확)를 10^6 으로 **한 번** 나눈다 = `N / 10^6` 에 가장 가까운 `f64` = 유효숫자 16자리 이하 →
+/// 기본 파서의 빠른 길(정수 유효수 ÷ 10^k 한 번)이 같은 값을 돌려준다. **내림**이라 입력보다 큰(미래) 시각을 만들지 않는다. 마이크로초 눈금의 입력(맥)은
+/// `as_secs_f64()` 와 비트까지 같다(검체가 2만 값으로 잰다).
+/// 【범위】 '지금'(벽시계)의 원천만 맞춘다 — 그 값에 분모가 2의 거듭제곱이 아닌 소수(0.1 등)를 더한 파생값·파일 mtime·바깥에서 들어온 시각은 여전히 17자리일 수 있다
+/// (맥에서도 같다 · 이 함수가 새로 만든 성질이 아니다). 승인 쪽의 [`crate::approval::quantize_epoch_us`] 는 그대로 둔다(안전 게이트의 이중 방어).
+pub(crate) fn epoch_secs_us(d: std::time::Duration) -> f64 {
+    d.as_micros() as f64 / 1e6
+}
+
+/// 지금(벽시계)의 epoch 초 — 해상도는 마이크로초다([`epoch_secs_us`] · 맥의 시계와 같은 눈금 · 윈도우·리눅스의 100ns·1ns 는 내린다).
 pub fn now_epoch() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
+        .map(epoch_secs_us)
         .unwrap_or(0.0)
 }
 
@@ -2892,6 +5384,158 @@ pub fn pipe_slug(socket_path: &std::path::Path) -> String {
         .collect()
 }
 
+/// ★(R2F-DM · 윈도우 시험 격리) 이 소켓 경로가 **이름 있는 파이프**(`\\.\pipe\<이름>`)를 가리키는가 — 순수 문자열 판정(전 OS 컴파일 · 맥에서 검체로 잰다).
+/// 구분자는 `/`·`\` 를 같게 보고 대소문자를 가리지 않는다. `\\` 로 시작하고 장치·서버 이름(`.`·`?`·호스트) **바로 다음 성분이 `pipe`** 일 때만 파이프다 —
+/// `C:\…\cysd.sock` · `\\?\C:\…\cysd.sock`(길이 확장 파일 경로) · `\\서버\공유\…` · `/tmp/x/cysd.sock` 는 파일 시스템 경로다.
+/// 소비처는 [`state_dir`] 의 **윈도우 시험 빌드 분기**(`cfg(windows)` ∧ `cfg(test)`) 하나다 — 제품 빌드에는 이 함수가 없다.
+#[cfg(test)]
+pub(crate) fn is_pipe_name_path(socket_path: &std::path::Path) -> bool {
+    let s = socket_path.to_string_lossy().replace('/', "\\");
+    let Some(rest) = s.strip_prefix("\\\\") else {
+        return false;
+    };
+    let mut parts = rest.split('\\');
+    let _device_or_server = parts.next();
+    parts.next().is_some_and(|c| c.eq_ignore_ascii_case("pipe"))
+}
+
+/// ★(R2F-DM · 윈도우 시험 격리) 윈도우 **시험 빌드**의 상태 폴더 판정(순수 — 맥에서 검체로 잰다): 소켓이 파이프 이름이 아니라 파일 시스템 경로이면 유닉스와 같은 식(그 부모 폴더 · 부모가 없으면 `.`)으로
+/// `Some`, 파이프 이름이면 `None`(= 제품 식으로 내려간다). [`state_dir`] 의 `cfg(windows)` ∧ `cfg(test)` 분기가 이 함수 하나를 부른다 — 제품 빌드에는 없다.
+#[cfg(test)]
+pub(crate) fn fs_socket_state_dir(socket_path: &std::path::Path) -> Option<PathBuf> {
+    (!is_pipe_name_path(socket_path)).then(|| {
+        socket_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    })
+}
+
+/// ★(R2F-DM 2차 · 성찰 2회차 B3-b) **검체 끝정리 전용** — 검체가 만든 임시 폴더를 지운다.
+///
+/// 유닉스는 종전의 `std::fs::remove_dir_all(..).unwrap()` 과 같은 엄격함(실패하면 패닉)이다. 윈도우는 열린 핸들이 남은 파일을 지울 수 없어(`os error 32` · 공유 위반 —
+/// 윈도우 러너 진단 잡 37201047193 의 4건: 데몬을 놓은 직후·좌석을 닫은 직후의 상태 폴더 · 누가 쥐고 있었는지는 재지 않았다) 약 2초 다시 시도한 뒤 남은 실패를 **무시**한다 — 끝정리 실패는 그 검체가 재는 것이 아니고 임시 폴더는 러너가 치운다.
+/// ★**끝정리 자리에만** 쓴다. 삭제가 검체의 한 단계인 곳('실패 주입 해제' · 지운 뒤 없음을 단언하는 곳)에는 쓰지 않는다 — 거기서는 삭제 실패가 곧 검체의 실패여야 한다.
+#[cfg(test)]
+pub(crate) fn test_rm_rf(path: &std::path::Path) {
+    let res = test_rm_rf_policy(
+        cfg!(unix),
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_millis(100),
+        || std::fs::remove_dir_all(path),
+    );
+    if let Err(e) = res {
+        panic!("검체 끝정리 실패({}): {e}", path.display());
+    }
+}
+
+/// [`test_rm_rf`] 의 판정(순수 — 삭제 동작과 시한을 인자로 받는다 · 맥에서 윈도우 갈래를 잰다). 반환 `Ok(시도 횟수)`.
+/// `strict`(유닉스) = 한 번 시도하고 실패를 그대로 돌려준다(호출부가 패닉). 아니면(윈도우) 이미 없는 폴더는 성공으로 보고, 그 밖의 실패는 `budget` 동안 `pause` 간격으로
+/// 다시 시도한 뒤 무시한다(`Ok`).
+#[cfg(test)]
+pub(crate) fn test_rm_rf_policy(
+    strict: bool,
+    budget: std::time::Duration,
+    pause: std::time::Duration,
+    mut remove: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<u32> {
+    let t0 = Instant::now();
+    let mut tries = 0u32;
+    loop {
+        tries += 1;
+        match remove() {
+            Ok(()) => return Ok(tries),
+            Err(e) if strict => return Err(e),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(tries),
+            Err(_) if t0.elapsed() >= budget => return Ok(tries),
+            Err(_) => std::thread::sleep(pause),
+        }
+    }
+}
+
+/// ★(R2F-DM 2차 · 성찰 2회차 B3-e) **검체 전용** — 좌석의 PTY 출력이 끼어들지 않은 관측을 얻을 때까지 `attempt` 를 (유한 번) 되풀이한다.
+///
+/// 【왜】 화면을 파서에 직접 그린 뒤 곧바로 판정을 재는 검체는 "그 사이 좌석이 아무것도 내지 않는다"를 전제한다. 유닉스 좌석(`sleep 30`)은 그 전제가 언제나 참이지만
+/// 윈도우에서는 좌석이 뜬 직후에도 PTY 출력이 온다(ConPTY 의 초기화 출력으로 본다 — 그 내용·시각은 재지 않았다). reader 가 그 청크를 반영하는 **도중**(출력 세대 홀수)이나 직후에 판정이 돌면 제품은 옳게도 '출력 중'·'관측 불능'이라
+/// 답하고(`prompt_gate_verdict` 의 `frame_published` · `quiet_secs_consistent` 의 0.0 · `input_line_visibility` 의 `(None, None)`), 다른 사유를 기대한 검체가 붉어진다
+/// (윈도우 러너 진단 잡 37201047193 의 4건 · 맥에서 발행 중 프레임(세대 홀수)을 주어 네 건 모두 같은 메시지로 재현했다). 그 전제를 **잠(시각)으로 맞추지 않고 출력 세대로 증명**한다: 시도 앞뒤의 `output_gen` 이 **같고 짝수**면 그 창에서 reader 는 아무것도
+/// 반영하지 않았다(reader 는 [홀수 → `last_output` 스탬프 → 파서 반영 → 짝수] 순서다 — 소스 핀 `output_generation_bracket_source_pin`). 그런 시도의 결과만 돌려주고,
+/// 아니면 잠깐(시도마다 길어진다) 쉬었다가 다시 한다. 유닉스에서는 첫 시도가 그대로 통과한다(검체의 뜻과 단언은 그대로다).
+///
+/// `attempt` 에는 **전제 설정(화면 그리기·시각 되감기)부터 관측까지**를 담고 단언은 담지 않는다 — 단언은 돌려받은 값으로 호출부가 한다(끼어든 시도의 값으로 단언하지 않는다).
+/// 끝내 조용한 창을 얻지 못하면(좌석이 계속 출력한다) 패닉한다 — 전제가 서지 않은 것을 통과로 접지 않는다.
+#[cfg(test)]
+pub(crate) fn test_until_no_pty_output<T>(s: &Surface, what: &str, attempt: impl FnMut() -> T) -> T {
+    const MAX_TRIES: u32 = 60;
+    match test_until_quiet_window(|| s.output_gen.load(Ordering::Acquire), MAX_TRIES, 25, attempt) {
+        Ok(v) => v,
+        Err(tries) => panic!("{what}: 전제 불성립 — 좌석 PTY 출력이 {tries}회 시도 내내 관측 창에 끼어들었다(좌석이 계속 출력한다)"),
+    }
+}
+
+/// [`test_until_no_pty_output`] 의 코어(순수 — 세대 판독과 시한을 인자로 받는다). `Ok(값)` = 조용한 창에서 얻은 결과 · `Err(시도 횟수)` = 끝내 얻지 못했다.
+/// 시도 사이의 쉼은 `pause_step_ms × min(시도 번호, 12)` 밀리초다(0 이면 쉬지 않는다 — 검체용).
+#[cfg(test)]
+pub(crate) fn test_until_quiet_window<T>(
+    read_gen: impl Fn() -> u64,
+    max_tries: u32,
+    pause_step_ms: u64,
+    mut attempt: impl FnMut() -> T,
+) -> Result<T, u32> {
+    for i in 0..max_tries {
+        let before = read_gen();
+        let out = attempt();
+        let after = read_gen();
+        if test_pty_window_quiet(before, after) {
+            return Ok(out);
+        }
+        if pause_step_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(pause_step_ms * u64::from(i.min(11) + 1)));
+        }
+    }
+    Err(max_tries)
+}
+
+/// [`test_until_quiet_window`] 의 판정(순수) — 관측 창 앞뒤의 출력 세대가 **같고 짝수**일 때만 조용한 창이다(홀수 = 발행 중 · 다름 = 그 사이 청크가 반영됐다).
+#[cfg(test)]
+pub(crate) fn test_pty_window_quiet(gen_before: u64, gen_after: u64) -> bool {
+    gen_before % 2 == 0 && gen_before == gen_after
+}
+
+/// ★(R2F-DM 2차 · B3-e) [`test_until_no_pty_output`] 의 짝 — **성공이 좌석에 쓰는 일**인 단계(큐 배달: 그 에코가 출력 세대를 움직이므로 '조용한 창' 으로는 성공을 가릴 수 없다)에 쓴다.
+/// `attempt` 가 참(해냈다)을 돌려주면 그대로 참이다. 거짓이면 — 그 시도의 관측 창에 좌석 출력이 끼어들었을 때만(윈도우 ConPTY 의 기동 출력) 다시 하고, 조용한 창에서의 거짓은 그대로 거짓이다.
+/// ★유닉스에서는 다시 하지 않는다(한 번 = 종전 검체와 같다): 유닉스 좌석(`sleep 30`)은 스스로 출력하지 않으므로 끼어든 출력은 제품이 좌석에 쓴 것뿐이고, 그것을 재시도로 덮으면
+/// '좌석에 쓰고도 큐에서 빼지 않은' 결함을 가릴 수 있다.
+#[cfg(test)]
+pub(crate) fn test_done_or_no_pty_output(s: &Surface, attempt: impl FnMut() -> bool) -> bool {
+    test_done_or_quiet_window(|| s.output_gen.load(Ordering::Acquire), cfg!(unix), 60, 25, attempt)
+}
+
+/// [`test_done_or_no_pty_output`] 의 코어(순수 — 세대 판독·엄격 여부·시한을 인자로 받는다 · 맥에서 윈도우 갈래를 잰다).
+#[cfg(test)]
+pub(crate) fn test_done_or_quiet_window(
+    read_gen: impl Fn() -> u64,
+    single_try: bool,
+    max_tries: u32,
+    pause_step_ms: u64,
+    mut attempt: impl FnMut() -> bool,
+) -> bool {
+    for i in 0..max_tries {
+        let before = read_gen();
+        if attempt() {
+            return true;
+        }
+        let after = read_gen();
+        if single_try || test_pty_window_quiet(before, after) {
+            return false;
+        }
+        if pause_step_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(pause_step_ms * u64::from(i.min(11) + 1)));
+        }
+    }
+    false
+}
+
 /// 영속 상태 디렉터리 — 소켓과 같은 곳 (unix). Windows는 LOCALAPPDATA 하위.
 /// RC-13: Windows에서 부서 데몬마다 pipe명 슬러그로 **고유 디렉토리**를 파생해 transcripts.db·feed.jsonl
 /// 격리를 보장한다(구: 모든 부서가 단일 %LOCALAPPDATA%\cys 공유 → SQLite 락 경합·부서간 오염).
@@ -2899,6 +5543,13 @@ pub fn pipe_slug(socket_path: &std::path::Path) -> String {
 pub fn state_dir(socket_path: &std::path::Path) -> PathBuf {
     #[cfg(windows)]
     {
+        // ★(R2F-DM · 시험 빌드 전용) 소켓이 이름 있는 파이프가 아니라 **파일 시스템 경로**이면 유닉스처럼 그 부모 폴더가 상태 폴더다 — 검체는 임시 폴더마다
+        //   같은 파일 이름(`cysd.sock`)을 쓰는데, 아래 슬러그 식은 마지막 성분만 보므로 이 문장이 없으면 모든 검체가 `%LOCALAPPDATA%\cys\cysdsock` 한 곳을 나눠 쓴다
+        //   (윈도우 데몬 검체 196 실패의 다수 · 실측). 제품 빌드(`not(test)`)에는 이 문장이 컴파일되지 않는다 — 아래 식은 한 글자도 바꾸지 않았다.
+        #[cfg(test)]
+        if let Some(dir) = fs_socket_state_dir(socket_path) {
+            return dir;
+        }
         let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
         let root = PathBuf::from(base).join("cys");
         let slug = pipe_slug(socket_path);
@@ -3083,35 +5734,6 @@ fn queue_mid(sid: u64, text: &str) -> String {
     format!("q{h:016x}")
 }
 
-/// ⑩(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑩ · 원작자 c357b67b 의 pause 부분 재구현) 비상 정지 복원.
-/// 파일 부재 = 정지 아님(첫 기동). **있는데** 읽기·해석이 안 되거나 `paused` 가 불리언이 아니면
-/// 정지 유지로 접는다 — 비상 정지는 풀리는 쪽으로 틀리면 안 된다(종전: None = 정지가 풀린 채 부팅).
-/// `{"paused": false}` 만 명시 해제로 본다.
-fn restore_pause_state(dir: &std::path::Path) -> Option<(f64, String)> {
-    let held = |why: &str| {
-        Some((
-            now_epoch(),
-            format!("autopilot.json {why} — 안전을 위해 정지를 유지합니다(`cys resume` 으로 해제)"),
-        ))
-    };
-    let content = match std::fs::read_to_string(dir.join("autopilot.json")) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => return held(&format!("읽기 실패({e})")),
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return held("해석 실패");
-    };
-    match v["paused"].as_bool() {
-        Some(true) => Some((
-            v["since"].as_f64().unwrap_or_else(now_epoch),
-            v["reason"].as_str().unwrap_or("").to_string(),
-        )),
-        Some(false) => None,
-        None => held("paused 칸 손상"),
-    }
-}
-
 /// ⑧(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑧ · 원작자 1d757cd8·2e43a2bf 의 우리 판 재구현)
 /// queue-state.json 이 있는데 읽기·해석이 안 되면 `load_queue_state` 는 빈 큐로 시작하고, 다음
 /// `persist_queue_state` 가 그 원본을 덮는다 — 미배달 지시가 흔적 없이 사라진다. 그래서 부팅 때
@@ -3173,12 +5795,49 @@ fn guard_unreadable_queue_wal(dir: &std::path::Path) -> bool {
 ///
 /// ★비타입 감사 지점 ①(§Daemon::restored_queue) — QueueEntry 스키마 변경 시 여기의
 /// 레거시 합성이 전 항목에 신 필드를 보장해야 하류(rehome·queue.list)가 결손 없이 읽는다.
-fn load_queue_state(dir: &std::path::Path) -> Vec<serde_json::Value> {
+fn load_queue_state(dir: &std::path::Path) -> QueueWalRead {
+    load_queue_file(dir, "queue-state.json")
+}
+
+/// 큐 WAL 한 파일의 판독 결과 — **행 목록과 "끝까지 이해했는가" 를 함께** 돌려준다.
+///
+/// ★(0.14.31 · 독립 판정 triage X4) 종전에는 `Vec` 하나였고 읽기 실패·JSON 파손이
+/// **빈 큐와 같은 모양**이었다. 그 모양을 하류(`alert_route::reconcile_restored_admissions`)가
+/// "큐가 이미 소비했다" 로 읽어 보관된 경보를 지웠다 — 배달·만료·폐기 어느 것도 확인되지 않은
+/// 채로. 결측은 값이 아니다: 부재(NotFound)와 판독 실패를 여기서 가른다.
+pub(crate) struct QueueWalRead {
+    pub(crate) rows: Vec<serde_json::Value>,
+    /// 파일이 **있었는데** 그 내용을 온전히 복원하지 못했다(읽기 실패 · JSON 파손 ·
+    /// 신원 불능 행 건너뜀). 부재는 `false` 다 — 없는 파일은 잃은 것이 없다.
+    pub(crate) incomplete: bool,
+    /// 파일을 **한 줄도 해석하지 못했다**(읽기 실패 · JSON 파손). 이때만 원본을 옆으로 보존한다 —
+    /// 파싱에 성공한 파일은 해석 가능한 내용이 전부 메모리에 있으므로 다음 영속이 그것을 되쓴다.
+    pub(crate) unreadable: bool,
+}
+
+/// ★(0.14.31 · WP-5 M) 큐 WAL 파일 판독 본체 — 활성(`queue-state.json`)·만료(`queue-expired.json`)
+/// 두 파일이 같은 합성·dedup 규칙을 탄다(규칙 세목은 `load_queue_state` doc).
+fn load_queue_file(dir: &std::path::Path, name: &str) -> QueueWalRead {
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let restored_at = now_epoch();
-    if let Ok(content) = std::fs::read_to_string(dir.join("queue-state.json")) {
-        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+    let mut incomplete = false;
+    let mut unreadable = false;
+    // ★부재와 실패를 가른다(triage X4). NotFound 만 "잃은 것 없음" 이고, 권한·EISDIR·I/O
+    //   오류와 JSON 파손은 **파일이 있는데 못 읽은 것**이라 하류가 빈 큐로 읽으면 안 된다.
+    let content = match std::fs::read_to_string(dir.join(name)) {
+        Ok(c) => Some(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!("[cysd] 큐 WAL '{name}' 판독 실패({e}) — 빈 큐로 읽지 않는다(복원 불완전 표시)");
+            incomplete = true;
+            unreadable = true;
+            None
+        }
+    };
+    if let Some(content) = content {
+        match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+            Ok(arr) => {
             for (pos, mut it) in arr.into_iter().enumerate() {
                 let mid = it.get("mid").and_then(|v| v.as_str()).map(str::to_string);
                 let key = it
@@ -3187,7 +5846,9 @@ fn load_queue_state(dir: &std::path::Path) -> Vec<serde_json::Value> {
                     .map(str::to_string)
                     .or_else(|| mid.clone());
                 let Some(key) = key else {
-                    continue; // id·mid 둘 다 없음 — 신원 불능 항목은 복원하지 않는다
+                    // 신원 불능 항목은 복원하지 않는다 — 그러나 **버렸다는 사실**은 남긴다.
+                    incomplete = true;
+                    continue;
                 };
                 if !seen.insert(key) {
                     continue; // 이중 replay dedup — 파일 첫 등장 항목 승
@@ -3207,9 +5868,77 @@ fn load_queue_state(dir: &std::path::Path) -> Vec<serde_json::Value> {
                 }
                 out.push(it);
             }
+            }
+            Err(e) => {
+                eprintln!("[cysd] 큐 WAL '{name}' 파싱 실패({e}) — 빈 큐로 읽지 않는다(복원 불완전 표시)");
+                incomplete = true;
+                unreadable = true;
+            }
         }
     }
-    out
+    QueueWalRead { rows: out, incomplete, unreadable }
+}
+
+/// 판독하지 못한 큐 WAL 을 **유일한 이름으로 옆에 치운다**(원본 보존).
+///
+/// ★자기치유 전소 차단: 판독 실패 뒤에도 `persist_queue_state` 는 30초마다 그 이름 위에
+/// 메모리(=비어 있거나 부분 복원된) 큐를 원자 치환한다 — 그 순간 못 읽은 원본의 마지막 사본이
+/// 사라진다. 치우기에 실패하면 아무것도 하지 않는다(원본을 건드리지 않는 쪽으로 틀린다).
+/// 반환: **치웠는가**(치울 것이 없던 경우도 성공). `false` 는 "판독하지 못한 원본이 그 이름
+/// 그대로 남아 있다" 는 뜻이고, 그 동안 그 이름에 대한 쓰기는 [`Daemon::wal_write_blocked`] 가
+/// 거절한다 — 보존 실패를 로그 한 줄로 흘려보내면 뒤이은 성공적인 영속이 원본을 덮는다.
+fn preserve_unreadable_queue_wal(dir: &std::path::Path, name: &str) -> bool {
+    let src = dir.join(name);
+    if !src.exists() {
+        return true; // 치울 것이 없다 = 덮어쓸 원본도 없다
+    }
+    let base = format!("{name}.corrupt-{}-{}", now_epoch() as u64, std::process::id());
+    let mut target = dir.join(&base);
+    for n in 1..64u32 {
+        if !target.exists() {
+            break;
+        }
+        target = dir.join(format!("{base}.{n}"));
+    }
+    if target.exists() {
+        eprintln!("[cysd] 큐 WAL '{name}' 보존 실패(격리 이름이 모두 선점됨) — 원본 무접촉");
+        return false;
+    }
+    match std::fs::rename(&src, &target) {
+        Ok(()) => {
+            eprintln!(
+                "[cysd] 큐 WAL '{name}' 을 판독하지 못해 '{}' 로 보존했다 — 다음 영속이 원본을 덮지 않는다",
+                target.display()
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!("[cysd] 큐 WAL '{name}' 보존 실패({e}) — 원본 무접촉(그 이름에 대한 쓰기를 거절한다)");
+            false
+        }
+    }
+}
+
+/// ★(0.14.31 · 수렴 R2 · triage X4 잔여) **보존하지 못한 WAL 위에는 쓰지 않는다.**
+///
+/// 판정: 그 이름이 아직 미보존 집합에 있으면 **먼저 보존을 다시 시도**하고(외부 핸들이 닫힌
+/// 뒤라면 여기서 성공한다), 그래도 못 치우면 사유를 돌려준다 → 호출부가 그 치환을 거절한다.
+/// 순수 판정으로 뽑아 두어 검체가 데몬 없이도 같은 자리를 잰다.
+fn wal_write_verdict(
+    unpreserved: &mut std::collections::BTreeSet<&'static str>,
+    dir: &std::path::Path,
+    name: &'static str,
+) -> Option<String> {
+    if !unpreserved.contains(name) {
+        return None;
+    }
+    if preserve_unreadable_queue_wal(dir, name) {
+        unpreserved.remove(name);
+        return None;
+    }
+    Some(format!(
+        "판독하지 못한 큐 WAL '{name}' 을 아직 옆으로 치우지 못했다 — 그 위에 (복원하지 못한) 메모리 큐를 쓰지 않는다"
+    ))
 }
 
 impl Daemon {
@@ -3222,6 +5951,11 @@ impl Daemon {
         let feed_path = dir.join("feed.jsonl");
         if let Ok(content) = std::fs::read_to_string(&feed_path) {
             let mut by_id: HashMap<String, FeedItem> = HashMap::new();
+            // ★U10(0.14.41): 파싱 불가 줄(찢긴 append·구조가 다른 레코드)은 **원문 그대로 보존**한다 — 재시작
+            //   정리가 도는 이 재기록이 해석하지 못한 기록을 지우지 않는다(추측 금지 · 판독자 python 은 줄 단위
+            //   try/except 라 무해). 유계: 가장 최근 FEED_UNPARSED_KEEP 줄만(손상 누적의 상한).
+            const FEED_UNPARSED_KEEP: usize = 200;
+            let mut unparsed: Vec<&str> = Vec::new();
             for line in content.lines() {
                 if let Ok(item) = serde_json::from_str::<FeedItem>(line) {
                     match by_id.get(&item.request_id) {
@@ -3230,7 +5964,12 @@ impl Daemon {
                             by_id.insert(item.request_id.clone(), item);
                         }
                     }
+                } else if !line.trim().is_empty() {
+                    unparsed.push(line);
                 }
+            }
+            if unparsed.len() > FEED_UNPARSED_KEEP {
+                unparsed.drain(..unparsed.len() - FEED_UNPARSED_KEEP);
             }
             restored = by_id.into_values().collect();
             restored.sort_by(|a, b| {
@@ -3238,6 +5977,19 @@ impl Daemon {
                     .partial_cmp(&b.created_at)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+            // ★U10(0.14.41 · D3a/D4): 서빙 전 재시작 정리 — 이벤트 0(구독자 없음)·allow 0·순수 함수.
+            //   아래 보존 한도·압축 재기록 **전에** 적용해 정리 결과가 디스크에도 남는다(다음 기동 멱등).
+            let rec = reconcile_restored_feed(
+                &mut restored,
+                now_epoch(),
+                feed_notice_ttl_from(std::env::var("CYS_FEED_NOTICE_TTL_SECS").ok().as_deref()),
+            );
+            if rec != RestoredFeedReconcile::default() {
+                eprintln!(
+                    "[cysd] feed 재시작 정리: 고아 화면감지 {}건(stale-restart) · 만료 알림 {}건(expired-notice) — 서빙 전·allow 0",
+                    rec.stale_restart, rec.expired_notice
+                );
+            }
             // 보존 한도: pending 전부 + 종결 항목 최근 1000건 (메모리·디스크 무한 누적 차단)
             const FEED_RETAIN: usize = 1000;
             let resolved_count = restored.iter().filter(|i| i.status != "pending").count();
@@ -3256,6 +6008,13 @@ impl Daemon {
             let tmp = dir.join("feed.jsonl.tmp");
             if let Ok(mut f) = std::fs::File::create(&tmp) {
                 let mut ok = true;
+                // ★U10: 보존한 파싱 불가 줄을 **먼저** 쓴다 — 뒤따르는 정상 레코드가 last-wins 로 우선한다.
+                for raw in &unparsed {
+                    if writeln!(f, "{raw}").is_err() {
+                        ok = false;
+                        break;
+                    }
+                }
                 for item in &restored {
                     if let Ok(line) = serde_json::to_string(item) {
                         if writeln!(f, "{line}").is_err() {
@@ -3270,8 +6029,47 @@ impl Daemon {
             }
         }
         // T4-15 kill-switch 상태 복원 — 재부팅 후에도 pause는 유지된다 (명시 resume까지)
-        // ⑩(TICKET=cysr-117-impl-lead) 판독·해석 실패 = 정지 유지(종전: None = 정지가 풀린 채 부팅).
-        let pause_restored: Option<(f64, String)> = restore_pause_state(&dir);
+        // ★(성찰 2회 · 2/3) **손상 = fail-closed.** 종전에는 읽기·파싱 실패가 `.ok()` 로 접혀
+        //   paused=false 가 됐다 — 부분 쓰기(비원자 `fs::write` 시절)·빈 파일·손상이 kill-switch 를
+        //   조용히 풀었다(fail-open). 이제 파일이 **존재하는데** 읽을 수 없거나 JSON 이 아니거나
+        //   `paused` 불리언이 없으면 동결 유지(reason·설정자 None · since=now) + stderr 1줄.
+        //   부재(NotFound)만 "동결 없음" 이고, 명시 `{"paused":false}` 도 동결 없음이다.
+        //   실패 방향: 손상이면 **동결 쪽** — 운영자가 `cys resume` 으로 해제하면 `persist_pause` 가
+        //   완본을 다시 써 손상이 지워진다. 영속은 `write_json_atomic` 이라 새 손상은 생기지 않는다.
+        let corrupt_pause = |what: &str| -> Option<PauseInfo> {
+            eprintln!("[cysd] autopilot.json 손상 — 동결 유지 · cys resume 로 해제 ({what})");
+            Some(PauseInfo {
+                since: now_epoch(),
+                reason: None,
+                actor_pid: None,
+                actor_surface: None,
+                actor_role: None,
+            })
+        };
+        let pause_restored: Option<PauseInfo> =
+            match std::fs::read_to_string(dir.join("autopilot.json")) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => corrupt_pause(&format!("읽기 실패: {e}")),
+                Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+                    Err(e) => corrupt_pause(&format!("JSON 파싱 실패: {e}")),
+                    Ok(v) => match v["paused"].as_bool() {
+                        None => corrupt_pause("paused 불리언 부재"),
+                        Some(false) => None,
+                        Some(true) => Some(PauseInfo {
+                            since: v["since"].as_f64().unwrap_or_else(now_epoch),
+                            // 실패 방향: 구 포맷의 빈 사유·읽을 수 없는 설정자는 결측으로 복원하고
+                            // pause 는 유지한다.
+                            reason: v["reason"]
+                                .as_str()
+                                .map(|r| r.trim().to_string())
+                                .filter(|r| !r.is_empty()),
+                            actor_pid: v["actor_pid"].as_u64().and_then(|p| u32::try_from(p).ok()),
+                            actor_surface: v["actor_surface"].as_u64(),
+                            actor_role: v["actor_role"].as_str().map(str::to_string),
+                        }),
+                    },
+                },
+            };
         // ★GUI 오퍼레이터 승인(오너 2026-07-15): 오퍼레이터 토큰 발급 — 소켓 listen 전(new 내부)에
         // 기동마다 재발급·덮어쓰기해 파일=메모리 정합을 데몬 재시작(churn)에도 유지한다. GUI(Tauri)가
         // 이 파일을 매 호출 신선 재독해 feed.reply에 첨부. 실패는 비치명(로그만) — 부트체인 차단 금지.
@@ -3294,9 +6092,88 @@ impl Daemon {
         // 재기동 후 발급 seq가 살아있는 복원 항목과 절대 겹치지 않는다.
         // ⑧ 판독 불능 WAL = 원본 보존 사본 먼저 · 사본 실패면 쓰기 금지(load 는 종전대로 빈 복원).
         let queue_wal_blocked = guard_unreadable_queue_wal(&dir);
-        let restored_qentries = load_queue_state(&dir);
+        // ★1.1.8 병합(판정 갈림 S2): 우리 ⑧ 원본 보존 사본·쓰기 금지 위에 원작자 판독 결과 구조(QueueWalRead)·두 파일 보존을 그대로 받는다.
+        let active_wal = load_queue_state(&dir);
+        // ★(0.14.31 · WP-5 M) 만료 복원분은 별 파일(queue-expired.json · 구 데몬 비가시). 시드는
+        //   두 집합의 max(seq)+1 — 만료 항목 id 와도 겹치지 않아야 revive 후 pop-by-id 가 안전하다.
+        let expired_wal = load_queue_file(&dir, "queue-expired.json");
+        // ★(triage X4) 판독 불완전은 **하나의 사실**로 모아 데몬 수명 내내 남긴다. "마지막 쓰기가
+        //   성공했는가"(`queue_wal_durable`)와 다른 축이다 — 뒤이은 성공적인 쓰기가 "부팅이 전
+        //   내용을 복원하지 못했다" 는 사실을 지우면 안 된다.
+        let queue_restore_incomplete = active_wal.incomplete || expired_wal.incomplete;
+        // 보존(옆으로 치우기)은 **한 줄도 해석하지 못한** 파일에만 한다 — 파싱에 성공한 파일은
+        // 해석 가능한 내용이 전부 메모리에 있고 다음 영속이 그것을 되쓴다.
+        let mut queue_wal_unpreserved: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
+        if active_wal.unreadable && !preserve_unreadable_queue_wal(&dir, "queue-state.json") {
+            queue_wal_unpreserved.insert("queue-state.json");
+        }
+        if expired_wal.unreadable && !preserve_unreadable_queue_wal(&dir, "queue-expired.json") {
+            queue_wal_unpreserved.insert("queue-expired.json");
+        }
+        let mut restored_qentries = active_wal.rows;
+        let mut restored_expired = expired_wal.rows;
+        // ★(0.14.31 · 성찰 Q3) **파일 간 dedup 은 파일이 아니라 '영속된 전이 시각' 으로 푼다.**
+        //
+        // 【무엇이 틀렸었나】 종전 규칙은 "활성이 이긴다" 였고, 그 근거는 "활성→만료 창의 중복도
+        //   `rehome_restored_queue` 가 TTL 을 재계산해 만료 큐로 되돌린다" 였다. 그 재계산은 **지금
+        //   시각 기준**이라 두 경우에 확정된 만료를 취소한다: ⓐ 시계 역행(NTP 스텝백)으로 지금이
+        //   만료 시각보다 앞서면 TTL 나이가 다시 짧아지고 ⓑ `CYS_QUEUE_TTL_SECS` 를 올리면 그
+        //   항목은 더 이상 만료가 아니다. 두 경우 모두 만료가 **취소**되고, `revived_at` 이 없으니
+        //   `order_at()` 은 원 `enqueued_at`(가장 오래됨)이라 `queue_merge_insert_pos` 가 그것을
+        //   **활성 큐 머리**에 꽂는다 — §8("만료 항목을 활성 큐 머리에 두지 않는다") 정면 위반이고,
+        //   하필 재기동 직후(부트체인 최취약 창)에 6시간+ 묵은 지시가 최우선으로 배달된다.
+        //
+        // 【지금】 같은 id 가 두 파일에 있으면 `max(expired_at, revived_at)` 이 **큰** 사본이 이긴다.
+        //   두 크래시 창이 방향까지 정확히 갈린다: 만료 이동 창에서는 만료 사본의 `expired_at` 이
+        //   최신이고(만료 승), revive 창에서는 활성 사본의 `revived_at` 이 최신이다(활성 승).
+        //   후속 revive 증거가 없는 확정 만료는 그대로 보존된다. 동률·양쪽 다 부재는 종전대로
+        //   활성 승(무회귀 방향 — 그런 사본은 애초에 만료 전이를 겪은 적이 없다).
+        //   원장 `v=1` 유지 — 새 키를 만들지 않고 **이미 영속돼 있던** 두 시각만 읽는다.
+        // 만료 파일의 **디스크 현재 내용**이 목적지-먼저 쓰기의 기억이다(dedup **전** 집합이어야
+        // 다음 persist 가 "직전에 만료 파일에 무엇을 남겼는지" 를 정확히 안다).
+        let expired_persisted_seed: std::collections::HashSet<String> = restored_expired
+            .iter()
+            .filter_map(|it| it.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        {
+            let live: std::collections::HashMap<&str, f64> = restored_qentries
+                .iter()
+                .filter_map(|it| {
+                    it.get("id")
+                        .and_then(|v| v.as_str())
+                        .map(|id| (id, queue_row_transition_at(it)))
+                })
+                .collect();
+            // 만료 사본이 이긴 id — 그만큼 활성 사본에서 뺀다(두 파일 어디에도 없는 상태는 만들지
+            // 않는다: 한쪽이 반드시 이긴다).
+            let mut expired_wins: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            restored_expired.retain(|it| {
+                let Some(id) = it.get("id").and_then(|v| v.as_str()) else {
+                    return true; // id 없는 행은 dedup 대상이 아니다(그대로 둔다)
+                };
+                let Some(&live_at) = live.get(id) else {
+                    return true; // 활성 사본이 없다 — 충돌이 아니다
+                };
+                if queue_row_transition_at(it) > live_at {
+                    expired_wins.insert(id.to_string());
+                    true
+                } else {
+                    false // 동률 포함 활성 승(종전 동작)
+                }
+            });
+            if !expired_wins.is_empty() {
+                restored_qentries.retain(|it| {
+                    !it.get("id")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|id| expired_wins.contains(id))
+                });
+            }
+        }
         let queue_seq_seed = restored_qentries
             .iter()
+            .chain(restored_expired.iter())
             .filter_map(|it| it.get("seq").and_then(|v| v.as_u64()))
             .max()
             .map(|m| m.saturating_add(1))
@@ -3328,13 +6205,18 @@ impl Daemon {
             health_suppressed: Mutex::new(HashMap::new()),
             paused: AtomicBool::new(pause_restored.is_some()),
             pause_info: Mutex::new(pause_restored),
+            pause_persist_lock: Mutex::new(()),
             todo_progress: Mutex::new(HashMap::new()),
             todo_verdict: Mutex::new(HashMap::new()),
             caller_cache: Mutex::new(HashMap::new()),
             caller_gen: AtomicU64::new(0),
+            delegated_callers: Mutex::new(HashMap::new()),
+            cycle_jobs: Mutex::new(crate::cycle_jobs::CycleJobs::default()),
+            inject_locks: Mutex::new(HashMap::new()),
             create_idem: Mutex::new(HashMap::new()),
             parked_queues: Mutex::new(HashMap::new()),
             create_owner: Mutex::new(HashMap::new()),
+            reclaim_cancelled: Mutex::new(HashMap::new()),
             create_caller: Mutex::new(HashMap::new()),
             ledger: Mutex::new(HashMap::new()),
             roles: Mutex::new(HashMap::new()),
@@ -3353,6 +6235,7 @@ impl Daemon {
                 v.sort();
                 v
             }),
+            topology_write: Mutex::new(()),
             // 벡터-9 방어심화: 기동 시 master 미승계 → None (첫 claim_role("master")에서 기록).
             master_claimed_at: Mutex::new(None),
             feed_items: Mutex::new(restored),
@@ -3360,16 +6243,26 @@ impl Daemon {
             operator_token,
             feed_persist_lock: Mutex::new(()),
             restored_queue: Mutex::new(restored_qentries),
+            restored_expired: Mutex::new(restored_expired),
             queue_seq: AtomicU64::new(queue_seq_seed),
             queue_persist_lock: Mutex::new(()),
             queue_wal_write_blocked: AtomicBool::new(queue_wal_blocked),
             queue_wal_block_reported: AtomicBool::new(false),
-            topology_persist_lock: Mutex::new(()),
+            queue_expired_persisted: Mutex::new(expired_persisted_seed),
+            queue_tick_at: Mutex::new(None),
+            queue_persist_dirty: AtomicBool::new(false),
+            queue_blocked_sig: Mutex::new(None),
+            queue_blocked_dirty: AtomicBool::new(false),
+            queue_blocked_retry: Mutex::new(QueueBlockedRetry::default()),
+            queue_blocked_prev_rotated: AtomicBool::new(false),
+            queue_restore_incomplete: AtomicBool::new(queue_restore_incomplete),
+            queue_wal_unpreserved: Mutex::new(queue_wal_unpreserved),
             config: Config::from_env(),
             recall_tx: Mutex::new(crate::recall::spawn_writer(socket_path.clone())),
             socket_path,
             started_at: now_epoch(),
             auto_restore_phase: AtomicU8::new(crate::AUTO_RESTORE_OFF),
+            started_instant: Instant::now(),
             consumption: Mutex::new(Consumption::default()),
             analytics: Mutex::new(analytics_conn),
             channels: Mutex::new(channels_conn),
@@ -3380,6 +6273,8 @@ impl Daemon {
             //   있다가 필요할 때 말하는 노드라, 데몬이 한 번 재기동하면 다음 발화까지 행 자체가 없다.
             //   (복원본은 관측 시각을 함께 들고 오므로 낡았으면 낡은 대로 stale 표시된다.)
             named: Mutex::new(named_restored),
+            seat_ident_cache: Mutex::new(Default::default()),
+            alert_stale_held: Mutex::new(Default::default()),
             learn_assets_cache: Mutex::new(None),
             learn_write: Mutex::new(()),
             restore_roots: Mutex::new(Vec::new()),
@@ -3389,6 +6284,8 @@ impl Daemon {
             supervisor_alive: AtomicBool::new(false),
             boot_run_active: Mutex::new(std::collections::HashMap::new()),
             boot_fenced: Mutex::new(Vec::new()),
+            // ★(0.14.31 · WP-3 B) enabled 는 alert_route::spawn 이 실제로 태스크를 열 때만 true.
+            alert_route: Mutex::new(Default::default()),
         });
         // 재시작에도 오늘 소비/비용/모델믹스/스파크라인 보존 — 최근 12h usage_records 리플레이.
         crate::analytics::seed_consumption(&daemon);
@@ -3561,9 +6458,11 @@ impl Daemon {
     /// 사라졌을 때 stale 일괄 종결용. 락 해제 후 resolve_feed_item을 개별 호출한다
     /// (데몬 재시작으로 in-memory 추적을 잃은 고아 pending도 이 경로로 청소된다).
     pub fn pending_daemon_approvals(&self, surface_id: u64) -> Vec<String> {
+        // ★(0.14.31 · 리뷰 R2) poison 관용 — 인계 가드 탐침이 **writer 스레드**에서 부른다(위 doc
+        //   `pending_gate_items` 와 같은 근거 · 읽기 전용 순회).
         self.feed_items
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|i| {
                 i.status == "pending"
@@ -3713,6 +6612,13 @@ impl Daemon {
             enqueued_at: now_epoch(),
             from,
             origin: origin.to_string(),
+            // ★(0.14.31 · WP-5 M) 신규 항목은 데몬 기본 TTL·pause 0·미만료·미통지로 출발.
+            ttl_secs: None,
+            paused_total_secs: 0.0,
+            expired_at: None,
+            revived_at: None,
+            expired_notified: false,
+            expired_event_sent: false,
         }
     }
 
@@ -3723,6 +6629,10 @@ impl Daemon {
     /// enqueued_at, from, origin}. mid 병기는 구 데몬 롤백 시에도 파일이 읽히게 하는
     /// 하위호환(구 코드는 mid/surface_id/text/role만 읽고 미지 키 무시).
     /// ★락 순서 주의: 호출자는 어떤 pending_queue 락도 쥐지 않은 상태여야 한다(재진입 데드락 방지).
+    ///
+    /// ★(0.14.31 · 리뷰 R1(R6회차) · codex major) 스냅샷(좌석 큐 + 복원 두 컬렉션)은 **한 임계영역**
+    /// 에서 뜬다 — 가드를 나눠 잡으면 그 사이의 `queue revive`·`rehome_restored_queue` 가 항목을 두
+    /// 스냅샷 어디에도 남기지 않는다(그 파일 치환 + 크래시 = 영속된 메시지 유실).
     pub fn persist_queue_state(&self) {
         // ★G1(W2-A): 전용 직렬화 락(feed_persist_lock 관례 동형) — watchdog 스레드·tokio
         // 핸들러 동시 호출 시 고정 tmp명(.queue-state.json.tmp) 공유로 인한 파손 차단.
@@ -3743,42 +6653,214 @@ impl Daemon {
             return;
         }
         let mut entries: Vec<serde_json::Value> = Vec::new();
+        // ★(0.14.31 · WP-5 M) 만료 항목은 **다른 파일**(queue-expired.json)로 — 구 데몬(롤백)이
+        //   활성 WAL 만 읽고 만료분을 활성 큐로 되살려 배달하는 경로를 파일 경계로 차단한다.
+        let mut expired_entries: Vec<serde_json::Value> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let row = |s: &Surface, role: &Option<String>, e: &QueueEntry| queue_entry_row(s.id, role, e);
+        // ★(0.14.31 · 리뷰 R1(R6회차) · codex major) **스냅샷 전 구간이 한 임계영역이다.**
+        //   ① 두 복원 컬렉션을 따로 잡으면 그 사이의 `queue revive`(만료→활성)가 항목을 두 스냅샷
+        //      어디에도 남기지 않는다.
+        //   ② 복원 가드를 surfaces **뒤**에 잡으면 `rehome_restored_queue`(복원→좌석 pending_queue)가
+        //      그 사이에 끼어들어 같은 유실을 만든다(codex R6 반례: surfaces 순회에는 아직 없고,
+        //      복원 순회에는 이미 없다). 그래서 **복원 → surfaces → pending → expired** 순서로 전부
+        //      쥔 채 스냅샷을 끝낸다 — 전역 락 순서 계약(restored_queue → surfaces → pending_queue)과
+        //      같은 방향이라 AB-BA 가 없다(rehome·queue.list 도 이 순서다). 파일 I/O 는 가드를 놓은
+        //      뒤에 한다(락 밖 I/O 관례).
         {
+            let restored = self.restored_queue.lock().unwrap();
+            let restored_expired = self.restored_expired.lock().unwrap();
             let surfaces = self.surfaces.lock().unwrap();
             for s in surfaces.values() {
                 // ★Phase 5 ①c: 재배달 재타겟 키로 role을 함께 기록한다. surface_id는 재기동 시
                 // 소멸하므로(재사용 없음), WAL 생존 메시지를 재기동 후 같은 role의 새 surface로
                 // 배달하려면 role 앵커가 필요하다.
                 let role = s.role.lock().unwrap().clone();
+                // 락 순서 pending → expired.
                 let q = s.pending_queue.lock().unwrap();
+                let x = s.expired_queue.lock().unwrap();
                 for e in q.iter() {
                     if seen.insert(e.id.clone()) {
-                        entries.push(json!({
-                            "mid": queue_mid(s.id, &e.text), "id": e.id, "seq": e.seq,
-                            "surface_id": s.id, "role": role, "text": e.text,
-                            "enqueued_at": e.enqueued_at, "from": e.from, "origin": e.origin,
-                        }));
+                        entries.push(row(s, &role, e));
+                    }
+                }
+                for e in x.iter() {
+                    if seen.insert(e.id.clone()) {
+                        expired_entries.push(row(s, &role, e));
                     }
                 }
             }
+            drop(surfaces);
+            Self::snapshot_restored(&restored, &restored_expired, &mut entries, &mut expired_entries, &mut seen);
         }
-        for it in self.restored_queue.lock().unwrap().iter() {
-            // ★비타입 감사 지점 ②(§restored_queue): 잔존 복원분은 Value 통짜 복제라 신 필드가
-            // 자동 보존된다 — 필드별 재조립로 바꾸면 결손 위험이 생기니 통짜 복제를 유지하라.
-            // dedup 키 = id 우선(load가 전 항목에 합성)·방어적 mid 폴백.
-            let key = it
-                .get("id")
+        // (아래 주석은 위 `snapshot_restored` 호출의 근거다 — 함수 정의는 이 파일 하단.)
+        // ★(0.14.31 · 리뷰 R1(R6회차) · codex major) 두 복원 컬렉션은 **한 스냅샷**이어야 한다.
+        //   종전에는 `restored_queue` 락을 잡아 순회하고 **놓은 뒤** `restored_expired` 를 잡았다.
+        //   그 사이에 `queue revive`(governance::revive_queue_entry — 같은 두 락을 같은 순서로 잡고
+        //   항목을 만료→활성으로 옮긴다)가 끼어들면 항목 E 가 **두 스냅샷 어디에도 없다**: 활성은
+        //   이동 전(비어 있음)에 떴고 만료는 이동 후(빠져 있음)에 떴기 때문이다. 그 스냅샷이 두 파일을
+        //   치환하면 E 는 디스크에서 사라지고, 다음 크래시는 그것을 영구 유실로 만든다.
+        //   두 락을 **같은 순서(restored_queue → restored_expired)로 동시 보유**하면 revive 는 스냅샷
+        //   앞이나 뒤로 밀린다(어느 쪽이든 E 는 정확히 한 컬렉션에 있다). 락 순서 계약(전역:
+        //   restored_queue → surfaces → pending_queue)은 지킨다 — 위 surfaces 블록은 이미 닫혔다.
+        // ── ★(0.14.31 · 리뷰 R5 · codex major) **목적지 먼저 · 원본 나중** ─────────────────
+        //
+        // 【무엇이 틀렸었나】 두 파일을 각각 원자 치환하는 것은 **한 파일의** 원자성일 뿐 두 파일
+        //   **사이**의 원자성이 아니다. 종전 순서(활성 → 만료)에서 활성→만료 이동은
+        //   ① 활성 파일이 항목을 잃고 ② 만료 파일이 그것을 얻는다 — ①과 ② 사이에 데몬이 죽으면
+        //   그 항목은 **어느 파일에도 없다**(만료 통지도 본문도 남기지 않으므로 revive·replay 로
+        //   되살릴 수 없다 · codex R5 major).
+        //
+        // 【수리】 순서를 뒤집어 **목적지(만료 파일)를 먼저** 쓴다. 그러면 활성→만료 창의 크래시는
+        //   항목을 **두 파일 모두**에 남긴다(중복은 복구 가능 · 유실이 아니다 — 부트체인 규율 §3-3).
+        //   뒤집으면 반대 방향(만료→활성 `queue revive`)이 같은 이유로 깨지므로, 만료 파일을 쓸 때
+        //   **이번에 활성으로 돌아간 항목**([`Daemon::queue_expired_persisted`] ∩ 지금 활성)을 한 벌
+        //   더 실어 둔다(carry). 활성 파일이 그것을 얻은 뒤에야(③) 만료 파일에서 지운다.
+        //   carry 가 비면 ③ 은 ① 과 같은 내용이므로 **쓰지 않는다**(정상 경로의 I/O 는 종전과 같은 2회).
+        //
+        // 【읽는 쪽의 계약】 두 파일에 같은 id 가 있으면 **활성이 이긴다**(`Daemon::new` 의 파일 간
+        //   dedup). 활성→만료 창의 중복은 그때 활성으로 살아나지만 `rehome_restored_queue` 가 복원
+        //   시점 TTL 재계산으로 만료 큐에 되돌린다(§8 준수). 만료→활성 창의 중복은 활성이 정답이다.
+        //
+        // 【쓰기 실패(리뷰 R1(R6회차) · codex major)】 종전에는 세 write 의 `Result` 를 전부 버려서
+        //   ①이 실패해도 ②가 활성 파일을 치환했고(만료 이동분이 어느 파일에도 없다), ②가 실패해도
+        //   ③이 만료 파일에서 carry 를 지웠다(revive 분이 어느 파일에도 없다). 지금은 **각 단계가 앞
+        //   단계의 성공을 조건**으로 한다 — 실패하면 원본·carry 를 그대로 두고 중단한다(다음 persist 가
+        //   같은 스냅샷을 다시 쓴다). 캐시(`queue_expired_persisted`)도 **성공한 치환에서만** 갱신한다.
+        //   여전히 이 단위에서 바꾸지 않는 것: 실패의 호출부 전파·전원 단절 내구성·enqueue 응답 시점
+        //   (내구성 계약 재설계 · 노트 §14-2 잔여 · 백로그 ⑪). 실패는 침묵하지 않는다 — 경고 이벤트.
+        let carry: Vec<serde_json::Value> = {
+            let persisted = self.queue_expired_persisted.lock().unwrap_or_else(|e| e.into_inner());
+            if persisted.is_empty() {
+                Vec::new()
+            } else {
+                entries
+                    .iter()
+                    .filter(|it| {
+                        it.get("id")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|id| persisted.contains(id))
+                    })
+                    .cloned()
+                    .collect()
+            }
+        };
+        let write_file = |name: &'static str, rows: &Vec<serde_json::Value>| -> Result<(), String> {
+            // ★(수렴 R2 · triage X4 잔여) 보존하지 못한 판독 불능 WAL 위에는 **쓰지 않는다**.
+            //   보존을 먼저 다시 시도하고(핸들이 닫혔으면 여기서 성공한다), 그래도 못 치우면
+            //   이 치환을 거절한다 — 그 파일이 그 사실들의 마지막 사본이다.
+            {
+                let mut set = self
+                    .queue_wal_unpreserved
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(why) = wal_write_verdict(&mut set, &dir, name) {
+                    return Err(why);
+                }
+            }
+            let content = serde_json::to_string(rows).map_err(|e| format!("{name} 직렬화 실패: {e}"))?;
+            crate::governance::write_json_atomic(&dir, name, &content)
+                .map_err(|e| format!("{name} 원자 치환 실패: {e}"))
+        };
+        let warn = |stage: &'static str, why: String| {
+            // ★(0.14.31 · 리뷰 R1) 재시도 표식 — 다음 틱이 큐 변경 없이도 다시 쓴다(위 필드 doc).
+            self.queue_persist_dirty.store(true, Ordering::Release);
+            // 침묵 금지 — 어느 단계에서 멈췄는지가 곧 "디스크에 무엇이 남아 있는가" 다.
+            eprintln!("[queue] 영속 중단({stage}) — {why} · 원본 보존(다음 틱 재시도)");
+            self.bus.publish(
+                "queue.persist_failed",
+                "queue",
+                None,
+                json!({"stage": stage, "error": why,
+                       "hint": "큐 WAL 치환 실패 — 항목은 직전 파일에 그대로 있다(유실 아님). \
+                                디스크 여유·권한을 점검하라"}),
+            );
+        };
+        // 캐시(`queue_expired_persisted`)는 **만료 파일에 마지막으로 성공적으로 쓴 id 집합**이다.
+        // ★(리뷰 R1(R6회차) · codex major) "전 단계 성공에만 갱신" 은 틀렸다 — ③이 실패한 뒤 캐시가
+        //   직전(더 작은) 집합으로 남으면, 그때 만료 파일에 실제로 있는 항목이 다음 회차의 carry 계산
+        //   에서 빠져 "①만 성공 + ② 실패 + 크래시" 로 유실된다(codex 의 유실표). 각 성공한 치환 뒤에
+        //   **그 파일의 내용**으로 갱신한다.
+        let ids = |rows: &Vec<serde_json::Value>| -> std::collections::HashSet<String> {
+            rows.iter()
+                .filter_map(|it| it.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                .collect()
+        };
+        let remember = |rows: &Vec<serde_json::Value>| {
+            *self
+                .queue_expired_persisted
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = ids(rows);
+        };
+        // ① 목적지 먼저(+ revive carry).
+        let mut first = expired_entries.clone();
+        first.extend(carry.iter().cloned());
+        if let Err(e) = write_file("queue-expired.json", &first) {
+            // 활성 파일을 **건드리지 않는다** — 만료 이동분이 목적지에 없는 채 원본에서 지워지면
+            // 그것이 곧 유실이다(순서를 뒤집은 이유 그 자체).
+            warn("expired-first", e);
+            return;
+        }
+        remember(&first); // 만료 파일이 지금 가진 것 = expired ∪ carry
+        // ② 활성 파일.
+        if let Err(e) = write_file("queue-state.json", &entries) {
+            // carry 정리(③)를 하지 않는다 — 활성 파일이 아직 revive 분을 얻지 못했다.
+            warn("active", e);
+            return;
+        }
+        // ③ carry 정리(활성 파일이 이미 그것을 가졌다).
+        if !carry.is_empty() {
+            if let Err(e) = write_file("queue-expired.json", &expired_entries) {
+                // 만료 파일에 중복이 남는다(활성에도 있는 항목) — 유실이 아니라 중복이고, 읽는 쪽
+                // dedup 이 처리한다: carry 는 정의상 **되살린** 항목이라 활성 사본의 `revived_at` 이
+                // 만료 사본의 `expired_at` 보다 최신이고, 전이 시각 규칙(★성찰 Q3)이 활성을 고른다.
+                // 캐시를 갱신하지 않으므로 다음 persist 가 같은 carry 를
+                // 다시 계산해 재시도하고, carry 가 비면 ①이 곧 정상 내용이라 자기치유된다.
+                warn("carry-cleanup", e);
+                return; // 캐시는 ①의 내용(expired ∪ carry) 그대로 — 다음 회차가 같은 carry 를 다시 쓴다
+            }
+        }
+        remember(&expired_entries); // ③ 성공 = carry 가 빠진 내용이 파일에 남았다
+        // 세 단계가 전부 성공했다 — 디스크가 메모리와 같다.
+        self.queue_persist_dirty.store(false, Ordering::Release);
+    }
+
+    /// 큐 WAL 이 **디스크에 반영됐는가**(마지막 `persist_queue_state` 가 끝까지 성공했는가).
+    /// enqueue 응답의 `durable` 과 watchdog 재시도 판정이 같은 사실을 읽는다.
+    pub fn queue_wal_durable(&self) -> bool {
+        !self.queue_persist_dirty.load(Ordering::Acquire)
+    }
+
+    /// 복원 두 컬렉션의 스냅샷을 한 임계영역 안에서 뜬다(가드는 호출부가 쥐고 있다 — 이 함수는
+    /// 순수 복사만 한다). ★비타입 감사 지점 ②(§restored_queue): 잔존 복원분은 Value **통짜 복제**라
+    /// 신 필드가 자동 보존된다 — 필드별 재조립으로 바꾸면 결손 위험이 생기니 통짜 복제를 유지하라.
+    /// dedup 키 = id 우선(load 가 전 항목에 합성)·방어적 mid 폴백.
+    fn snapshot_restored(
+        restored: &[serde_json::Value],
+        restored_expired: &[serde_json::Value],
+        entries: &mut Vec<serde_json::Value>,
+        expired_entries: &mut Vec<serde_json::Value>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        let key = |it: &serde_json::Value| -> Option<String> {
+            it.get("id")
                 .and_then(|v| v.as_str())
-                .or_else(|| it.get("mid").and_then(|v| v.as_str()));
-            if let Some(k) = key {
-                if seen.insert(k.to_string()) {
+                .or_else(|| it.get("mid").and_then(|v| v.as_str()))
+                .map(str::to_string)
+        };
+        for it in restored {
+            if let Some(k) = key(it) {
+                if seen.insert(k) {
                     entries.push(it.clone());
                 }
             }
         }
-        if let Ok(content) = serde_json::to_string(&entries) {
-            let _ = crate::governance::write_json_atomic(&dir, "queue-state.json", &content);
+        for it in restored_expired {
+            if let Some(k) = key(it) {
+                if seen.insert(k) {
+                    expired_entries.push(it.clone());
+                }
+            }
         }
     }
 
@@ -3797,9 +6879,13 @@ impl Daemon {
         // (target_sid, role, 병합 삽입 순서의 항목들, reordered) — 락 밖 발행용 수집.
         let mut rehomed_events: Vec<(u64, String, Vec<QueueEntry>, bool)> = Vec::new();
         let mut rehomed = 0usize;
+        // ★(0.14.31 · WP-5 M) 복원 시점 만료 분류의 재료 — 틱 노브 1회 읽기.
+        let now = now_epoch();
+        let default_ttl = queue_ttl_default_secs();
         {
             let mut restored = self.restored_queue.lock().unwrap();
-            if restored.is_empty() {
+            let mut restored_expired = self.restored_expired.lock().unwrap();
+            if restored.is_empty() && restored_expired.is_empty() {
                 return 0;
             }
             // role → 살아있는(미exit) surface 매핑
@@ -3813,51 +6899,65 @@ impl Daemon {
                 }
             }
             // 1단: 이관 대상 분리 — role 매칭 항목을 QueueEntry로 되살려 role별 배치로 모은다.
-            // ★비타입 감사 지점 ③(§restored_queue): WAL 원값(id/seq/enqueued_at/from/origin)을
-            // 보존 승계한다 — id는 load_queue_state가 전 항목에 합성 보장(방어적 mid 폴백).
-            // origin 부재(레거시)는 "wal-legacy"로 표기 — 없는 정보를 지어내지 않되
-            // 복원 경유 사실은 관측 가능하게 남긴다.
+            // 되살림 규칙(id=mid 폴백 · origin 부재 "wal-legacy" · TTL 회계 5키 serde default)은
+            // 공용 함수 [`queue_entry_from_row`] 하나가 소유한다(★성찰 Q15 — 비타입 감사 지점 ③
+            // 소멸: 이 자리의 바이트 동일 복제를 그 함수 호출로 교체했다).
             let mut batches: Vec<(String, Vec<QueueEntry>)> = Vec::new();
-            restored.retain(|it| {
+            // ★(0.14.31 · WP-5 M) 만료 배치 — expired_queue 행선(활성 큐 금지 · §8). 세 출처:
+            //   ⓐ queue-expired.json 복원분(expired_at 보유) ⓑ 활성 복원분 중 복원 시점에 이미
+            //   TTL 을 넘긴 것(구 데몬이 다시 쓴 WAL 은 회계 키가 없어 enqueued_at 기준 재계산 —
+            //   정본 M "재기동 시 보존 시각 기준 재계산") ⓒ 활성 복원분에 expired_at 이 남은 것
+            //   (방어적 — 정상 경로에서는 나오지 않는다).
+            let mut expired_batches: Vec<(String, Vec<QueueEntry>)> = Vec::new();
+            let mut keep_or_take = |it: &serde_json::Value,
+                                    batches: &mut Vec<(String, Vec<QueueEntry>)>,
+                                    expired_batches: &mut Vec<(String, Vec<QueueEntry>)>,
+                                    force_expired: bool|
+             -> bool {
                 let Some(role) = it.get("role").and_then(|v| v.as_str()) else {
                     return true; // role 미기록 — 보존(정직)
                 };
                 if !role_surface.contains_key(role) {
                     return true; // role 무매칭 — 보존(재기동 더 기다림)
                 }
-                let entry = QueueEntry {
-                    id: it
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| it.get("mid").and_then(|v| v.as_str()))
-                        .unwrap_or("")
-                        .to_string(),
-                    seq: it.get("seq").and_then(|v| v.as_u64()).unwrap_or(0),
-                    text: it.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    enqueued_at: it
-                        .get("enqueued_at")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or_else(now_epoch),
-                    from: it.get("from").and_then(|v| v.as_str()).map(str::to_string),
-                    origin: it
-                        .get("origin")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("wal-legacy")
-                        .to_string(),
-                };
+                // ★(0.14.31 · 성찰 Q15) 종전에는 여기에 `queue_entry_from_row` 의 **바이트 동일
+                //   복제**가 인라인돼 있었고, 주석 세 개("★비타입 감사 지점 ①②③")가 그 결합을
+                //   스스로 자백했다. `QueueEntry` 에 필드를 더하면 세 곳을 동시에 고쳐야 했고,
+                //   하필 빠뜨리기 쉬운 이 세 번째가 **복원분이 배달 경로로 들어가는 유일한 통로**
+                //   였다(값 산식의 갈림은 컴파일러가 잡지 못한다). 지금은 공용 함수 하나다 —
+                //   감사 지점 ③은 소멸했다(현재 값 동일 → 동작 무변경).
+                let mut entry = queue_entry_from_row(it);
+                let expired_now = entry.expired_at.is_none()
+                    && queue_entry_expired(&entry, now, default_ttl);
+                if force_expired || entry.expired_at.is_some() || expired_now {
+                    if entry.expired_at.is_none() {
+                        entry.expired_at = Some(now); // 복원 시점 만료 — 활성 큐에 들어가지 않는다
+                    }
+                    match expired_batches.iter_mut().find(|(r, _)| r == role) {
+                        Some((_, v)) => v.push(entry),
+                        None => expired_batches.push((role.to_string(), vec![entry])),
+                    }
+                    rehomed += 1;
+                    return false;
+                }
                 match batches.iter_mut().find(|(r, _)| r == role) {
                     Some((_, v)) => v.push(entry),
                     None => batches.push((role.to_string(), vec![entry])),
                 }
                 rehomed += 1;
                 false // restored_queue에서 제거(pending_queue로 이관)
-            });
-            // 2단: 배치를 (enqueued_at, seq) 오름차순 정렬 후 대상 큐에 stable merge 삽입.
+            };
+            restored.retain(|it| keep_or_take(it, &mut batches, &mut expired_batches, false));
+            restored_expired
+                .retain(|it| keep_or_take(it, &mut batches, &mut expired_batches, true));
+            // 2단: 배치를 (order_at, seq) 오름차순 정렬 후 대상 큐에 stable merge 삽입.
             // 배치 내 정렬은 stable — 동률 키는 WAL 파일 등장순(=push 순서)을 유지한다.
+            // ★(0.14.31 · WP-5) 시각 축은 순서 키(`order_at` = revived_at ∨ enqueued_at) — 재활성
+            //   항목이 재기동 rehome 으로 그 사이 들어온 신규 작업 앞에 되돌아가지 않는다(codex Q6).
             for (role, mut batch) in batches {
                 batch.sort_by(|a, b| {
-                    a.enqueued_at
-                        .partial_cmp(&b.enqueued_at)
+                    a.order_at()
+                        .partial_cmp(&b.order_at())
                         .unwrap_or(std::cmp::Ordering::Equal)
                         .then(a.seq.cmp(&b.seq))
                 });
@@ -3866,7 +6966,7 @@ impl Daemon {
                 {
                     let mut q = surf.pending_queue.lock().unwrap();
                     for entry in &batch {
-                        let pos = queue_merge_insert_pos(&q, entry.enqueued_at, entry.seq);
+                        let pos = queue_merge_insert_pos(&q, entry.order_at(), entry.seq);
                         if pos < q.len() {
                             reordered = true; // 기존 항목이 복원 항목 뒤로 밀림
                         }
@@ -3874,6 +6974,28 @@ impl Daemon {
                     }
                 }
                 rehomed_events.push((surf.id, role, batch, reordered));
+            }
+            // ★(0.14.31 · WP-5 M) 만료 복원분 → 대상 surface 의 expired_queue(등장순 · id 중복 배제).
+            //   상한 초과 회계(묘비·폐기)는 governance::queue_expiry_pass 가 같은 틱에서 집행한다.
+            // ★(0.14.31 · 성찰 Q12) 만료 큐도 **순서 키(`order_at`)로 정렬 병합**한다. 종전에는 파일
+            //   등장순으로 push_back 해서 "앞 = 가장 오래된 것" 이라는 좌석 상한 집행의 전제가 rehome
+            //   뒤에 거짓이 됐다(가장 최근 만료분을 먼저 버렸다 = M9 가 복원 경로에서 고친 정책
+            //   역전의 부활). 축출 후보 선정 자체도 이제 `order_at` 키의 순수 함수 하나가 한다.
+            for (role, mut batch) in expired_batches {
+                batch.sort_by(|a, b| {
+                    a.order_at()
+                        .partial_cmp(&b.order_at())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(a.seq.cmp(&b.seq))
+                });
+                let surf = &role_surface[&role];
+                let mut x = surf.expired_queue.lock().unwrap();
+                for entry in batch {
+                    if !x.iter().any(|e| e.id == entry.id) {
+                        let pos = queue_merge_insert_pos(&x, entry.order_at(), entry.seq);
+                        x.insert(pos, entry);
+                    }
+                }
             }
         }
         // 발행은 restored_queue·pending_queue 락 전부 해제 후(락 밖 I/O 관례 — bus는 leaf지만
@@ -3950,6 +7072,16 @@ impl Daemon {
                 self.numbers_alarm("write_io", Some(id), Some(&e));
             }
         }
+        // ★(0.14.31 · WP-4 R2 · codex blocking) 계정 dir 의 **값과 그 출처**를 함께 확정한다.
+        //   데몬이 스스로 해소했고(오버라이드 없음) 호출자 env 가 그 값을 다른 값으로 덮지
+        //   않았을 때만 "기록 = 실제 실행"이라고 말할 수 있다. 그 표식이 없으면 reclaim 의
+        //   인증 축이 **호출자가 정한 문자열**이 된다(§Surface.config_dir_trusted).
+        let daemon_resolved = cys::resolve_claude_config_dir();
+        let resolved_config_dir = claude_config_dir_override
+            .clone()
+            .unwrap_or_else(|| daemon_resolved.clone());
+        let config_dir_trusted =
+            claude_config_dir_override.is_none() && caller_env_keeps_config_dir(env, &daemon_resolved);
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -4071,6 +7203,30 @@ impl Daemon {
         //   master 좌석(부모 = cysd 직접 · VM 실측)까지 전부 덮는다. 좌석 토큰 주입 **앞**이다(배선
         //   자식에 비밀을 넘기지 않는다). 실패해도 기동은 계속된다(이벤트 1줄).
         wire_seat_profile_before_exec(self, &builder, id, env);
+        // ★(0.14.41 · U18) 작업 폴더 읽기 관측 — **맥 한정 · 역할 좌석만 · 스폰 동작 불변**.
+        // · 자리: 호출자 env 오버레이 **뒤**(호출자·상속 env 가 이 키를 위조·잔존시키지 못하게 먼저
+        //   걷는다 — 부서 데몬이 막힌 좌석 안에서 떴다면 그 env 를 물려받았을 수 있다), 스폰 **앞**
+        //   (env 는 스폰 전에만 실린다). 이 함수의 유일한 프로덕션 호출부(handlers surface.create)는
+        //   락 미보유 구간이고 spawn_blocking 위다 — 최대 `CWD_PROBE_TIMEOUT` 기다려도 데몬은 멈추지 않는다.
+        // · 결과는 사실 기록 + env 1쌍뿐이다. 시한 초과·패닉·스레드 실패는 None(= 종전과 동일).
+        // · 비-mac 은 이 블록 전체가 상수 거짓 분기다(IO 0 · env 조작 0 — Windows 스폰 경로 무변경).
+        let cwd_blocked = if cfg!(target_os = "macos") {
+            builder.env_remove(crate::cwd_probe::ENV_CWD_BLOCKED);
+            let observed = crate::cwd_probe::observe(role.as_deref(), &cwd_str);
+            if let Some(b) = &observed {
+                builder.env(crate::cwd_probe::ENV_CWD_BLOCKED, &b.path);
+                eprintln!(
+                    "cysd: 좌석 작업 폴더 읽기 막힘(role={} · {}) — EPERM(macOS 폴더 접근 권한) · \
+                     스폰은 그대로 · 좌석 env {} 와 surface.list cwd_blocked 로 알린다",
+                    role.as_deref().unwrap_or("-"),
+                    b.path,
+                    crate::cwd_probe::ENV_CWD_BLOCKED
+                );
+            }
+            observed
+        } else {
+            None
+        };
         // ★(P1) 좌석 토큰 주입 — 데몬 발급 비밀을 pane PTY env 로만 배달한다(§Surface.seat_token).
         // · 주입 위치 계약: **호출자 지정 env 오버레이 이후**(바로 위 루프 다음) — surface.create
         //   arm 이 호출자 env 의 CYS_SEAT_TOKEN 키를 제거하지만(이중 방어 1층 — handlers.rs),
@@ -4133,12 +7289,17 @@ impl Daemon {
         // 좀비 writer 스레드와 그 fd를 즉시 회수한다.
         let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<WriteReq>(128);
         let writer_stop = Arc::new(AtomicBool::new(false));
+        let inject_track = Arc::new(InjectTrack::default());
         {
             let writer = writer;
             let stop = Arc::clone(&writer_stop);
-            std::thread::spawn(move || run_writer_loop(writer, write_rx, stop));
+            let track = Arc::clone(&inject_track);
+            std::thread::spawn(move || run_writer_loop_tracked(writer, write_rx, stop, Some(track)));
         }
 
+        // ★(0.14.43 · RQFIX2 m-2) PTY master raw fd 캐시(unix) — master 를 Mutex 로 옮기기 전에 읽는다. 모르면 −1(= 전경 판정 불능 → V2).
+        #[cfg(unix)]
+        let pty_master_fd = pair.master.as_raw_fd().unwrap_or(-1);
         let surface = Arc::new(Surface {
             id,
             title: Mutex::new(title.unwrap_or_else(|| format!("surface {id}"))),
@@ -4147,6 +7308,8 @@ impl Daemon {
             cwd: cwd_str,
             pid,
             created_at: now_epoch(),
+            // 경과 측정 전용(§Surface.created_instant) — 벽시계 보정과 절전/복귀에 면역이다.
+            created_instant: std::time::Instant::now(),
             // (B5 · §2-8) 부트 논스·ack — arm 전에는 둘 다 None 이고, arm 은 explicit RPC 로만
             // 일어난다(A19-1 · 자동 arm 은 B4-R 러너와 함께 온다).
             boot_nonce: Mutex::new(None),
@@ -4201,10 +7364,12 @@ impl Daemon {
             }),
             out_tx,
             last_output: Mutex::new(Instant::now()),
+            output_gen: Arc::new(AtomicU64::new(0)),
             idle_notified: AtomicBool::new(false),
             last_recall_line: Mutex::new(String::new()),
             pending_queue: Mutex::new(std::collections::VecDeque::new()),
             agent_status: Mutex::new(None),
+            quiesce_owner: Mutex::new(None),
             // ★SEAT-1: 신생 좌석은 Unknown(0)에서 출발한다 — 첫 watchdog 틱이 커널 사실로 확정한다.
             // Unknown의 소비 규약은 "현행 동작 유지"다(§소비처: 큐=배달·승계=거부) — 판정 미도달이
             // 새로운 실패를 만들지 않는다.
@@ -4226,27 +7391,43 @@ impl Daemon {
             last_cmd_ack: Mutex::new(None),
             last_human_input: Mutex::new(None),
             pending_input_bytes: AtomicU64::new(0),
+            pending_input: Mutex::new(Default::default()),
+            // ★(0.14.43 · RQFIX B-1) 신생 좌석은 거짓(v2 = 종전 동작) — 첫 watchdog 틱의 생존·마커 판정이 확정한다.
+            lone_key_exempt: AtomicBool::new(false),
+            #[cfg(unix)]
+            pty_master_fd: AtomicI32::new(pty_master_fd),
+            // ★(R1F-IN) ⓑ 에이전트 전경 그룹은 틱 전이라 0(= V2) · ⓐ 신생 좌석은 면제한 Esc 가 없다(0).
+            #[cfg(unix)]
+            agent_fg_pgid: AtomicI32::new(0),
+            #[cfg(unix)]
+            esc_exempt_pgid: AtomicI32::new(0),
             input_gen: AtomicU64::new(0),
-            pending_input_human_bytes: AtomicU64::new(0),
-            pending_input_stale: Mutex::new(None),
             input_gate: std::sync::Mutex::new(()),
+            // ★(0.14.42 · A2) 흡수 표는 휘발 — 재기동·재생성 좌석은 빈 채로 출발(= 종전 동작).
+            return_tickets: Mutex::new(HashMap::new()),
             queue_blocked: Mutex::new(None),
             line_count: AtomicU64::new(0),
             last_line_at: Mutex::new(None),
             agent_dead_since: Mutex::new(None),
             queue_paused_until: Mutex::new(None),
+            // ★(0.14.31 · WP-5) 만료 큐·배달 간격 시계·stale 입력 관측 — 전부 빈 채로 출발.
+            expired_queue: Mutex::new(std::collections::VecDeque::new()),
+            inject_reservation: Mutex::new(None),
+            last_queue_delivery_at: Mutex::new(None),
+            pending_input_stale: Mutex::new(None),
             last_injected: Mutex::new(None),
+            inject_track,
             observed_usage: Mutex::new(None),
             registered_transcript: Mutex::new(None),
+            repin_anchor: Mutex::new(None),
             agent_session_id: Mutex::new(None),
             // (W1) restore가 넘긴 원값이 있으면 그대로 고정(재해소 금지 — 데몬 env 변동 시 오염 방지),
             // 없으면(신규 기동) 이 데몬 프로세스 env로 결정론 해소(pane 셸이 실제 해소할 값과 일치).
-            claude_config_dir: Mutex::new(Some(
-                claude_config_dir_override
-                    .unwrap_or_else(cys::resolve_claude_config_dir),
-            )),
+            claude_config_dir: Mutex::new(Some(resolved_config_dir)),
+            config_dir_trusted,
             pack_reinject: Mutex::new(None),
-            ctx_threshold_armed: AtomicBool::new(true),
+            ctx_loop_guard: Mutex::new(crate::usage::clear_guard::ClearGuard::default()),
+            cycle_claim: Mutex::new(None),
             // 능력 가드: 생성 시 역할에서 도출(reviewer-*=read/search, full=worker/master/cso,
             // 그 외 deny-by-default none). claim_role이 역할 전이 시 동기 재도출한다.
             caps: Mutex::new(crate::caps::Caps::for_role(role.as_deref())),
@@ -4261,11 +7442,14 @@ impl Daemon {
             directive_verified: Mutex::new(None),
             // (W4 · D5) 신생 pane 은 primary screen 에서 출발 — 첫 청크 반영 시 reader 가 갱신.
             alt_screen: AtomicBool::new(false),
+            bracketed_paste: AtomicBool::new(false),
             // ★(U-10) 관문 보류는 항상 None 으로 시작한다 — 생성 시점엔 관문 관측 자체가 없다.
             //   restore 하이드레이션도 하지 않는다(필드 doc 의 A1 라이브락 사유).
             gate_pending: Mutex::new(None),
             display_no: spawn_guard.grant.display_no,
             numbers_row_owned: spawn_guard.grant.row_owned,
+            // ★(0.14.41 · U18) 생성 시 관측 1회의 결과(불변) — 위 관측 블록 참조.
+            cwd_blocked,
         });
 
         // ★W2a: 이 create가 실제 등록한(dedup 후) 역할 — 아래에서 묘비 해제에 쓴다.
@@ -4364,6 +7548,14 @@ impl Daemon {
                             eprintln!("[debug] surface {} read {n} bytes", surf.id);
                         }
                         let chunk = &buf[..n];
+                        // ★(0.14.31 · H-1 · 리뷰 R1) 출력 세대 **홀수** = 발행 시작. 스탬프(`last_output`)는
+                        //   파서 반영·스크롤백 ingest 보다 **앞**에 찍는다 — `surface.read_text` 는 스냅샷 뒤에
+                        //   스탬프를 읽고 세대가 이 창과 겹치면 관측을 버리므로, 스냅샷에 보이는 바이트는
+                        //   전부 그 스탬프 이전에 도착한 것이다(화면·quiet 한 관측). 발행 끝(짝수)은 아래
+                        //   `ingest_output` 뒤에서 올린다. 사람 입력·주입 자체는 여기 오지 않지만 그 **PTY
+                        //   에코**는 출력이라 스탬프를 움직인다(보수 방향 — 주입 직후 밸브가 더 기다린다).
+                        surf.output_gen.fetch_add(1, Ordering::AcqRel);
+                        *surf.last_output.lock().unwrap() = Instant::now();
                         // DSR cursor-position query: a real terminal must answer, or
                         // ConPTY(Windows)가 응답을 기다리며 입출력 펌프를 멈춘다.
                         // ★G5-④: 경계 분할 carry + 질의 '수' 계상은 순수 함수 단일 정의처
@@ -4404,8 +7596,8 @@ impl Daemon {
                             // (W4 · D5) alt_screen 관측 — 파서 락 임계영역 안에서 스냅샷을 떠
                             // 청크 반영과 원자 정합. 패닉 재초기화 경로도 fresh 파서의 false 를
                             // 그대로 반영한다(별도 분기 불요 — 화면 스냅샷 소실과 동일 의미론).
-                            surf.alt_screen
-                                .store(parser.screen().alternate_screen(), Ordering::Relaxed);
+                            // ★(0.14.42 · 설계 C D5′) 괄호 붙여넣기 모드(2004)도 같은 자리·같은 규칙.
+                            mirror_screen_modes(&surf, parser.screen());
                             // 원시 바이트 broadcast는 파서 반영·패닉 여부와 무관하게 항상 수행한다.
                             // (파서 락 임계영역 내 send — run_attach 구독/스냅샷과의 직렬화 불변식 유지.)
                             let _ = surf.out_tx.send(attach_payload);
@@ -4441,7 +7633,7 @@ impl Daemon {
                             }
                         }
                         dsr_tail = new_tail;
-                        *surf.last_output.lock().unwrap() = Instant::now();
+                        // (스탬프는 청크 처리 **머리**로 이사했다 — 위 output_gen 주석 · 리뷰 R1.)
                         surf.idle_notified.store(false, Ordering::Relaxed);
                         // (B2-c) OSC 9/99/777 알림 스캔 — strip 전 raw chunk 사용. parser 락
                         // 임계영역(위 :876-902) 밖이라 attach 중복배달 불변식과 직교한다.
@@ -4477,6 +7669,8 @@ impl Daemon {
                             }
                         }
                         daemon.ingest_output(&surf, chunk);
+                        // ★(리뷰 R1) 출력 세대 **짝수** = 이 청크의 발행(파서·스크롤백) 끝.
+                        surf.output_gen.fetch_add(1, Ordering::AcqRel);
                     }
                 }
             }
@@ -4496,6 +7690,9 @@ impl Daemon {
                     let _ = child.try_wait();
                 }
             }
+            // ★1.1.8 병합(판정 갈림 S1 · 잠정 = 우리 D7⑵): 원작자 Q7 은 같은 자리에서 역할 좌석의 활성 큐를 데몬 보존소
+            //   (`restored_queue` · `governance::park_active_to_restored`)로 옮긴다. 잠정으로 우리 역할 주차(`parked_queues` →
+            //   claim_role 상속)를 유지하고, 원작자의 인계 중 항목 보존(`drain_active_except_inflight`)·원장 묘비·만료 큐 처분은 받는다.
             // 미배달 큐 처분 — queued:true 응답을 받은 발신자의 무음 메시지 유실 차단
             // (★G1(W2-B): payload는 폐기 3발행처 공용 빌더 — 스키마 단일 소유).
             //
@@ -4505,7 +7702,7 @@ impl Daemon {
             //   종료가 먼저 와서 이관될 자리가 없었다. 역할 이름으로 주차해 두면 같은 역할을
             //   새로 받는 좌석이 상속한다(`handlers::inherit_parked_queue`).
             //   역할 없는 스크래치 pane 은 종전대로 폐기다 — 물려받을 주체가 정의되지 않는다.
-            let dropped: Vec<QueueEntry> = surf.pending_queue.lock().unwrap().drain(..).collect();
+            let dropped: Vec<QueueEntry> = crate::governance::drain_active_except_inflight(&surf);
             let exiting_role = surf.role.lock().unwrap().clone();
             if !dropped.is_empty() {
                 match exiting_role.as_deref() {
@@ -4536,11 +7733,13 @@ impl Daemon {
                                 "queue.parked",
                                 "queue",
                                 Some(surf.id),
-                                queue_parked_payload(role, surf.id, &parked),
+                                queue_role_parked_payload(role, surf.id, &parked),
                             );
                         }
                     }
                     _ => {
+                        // ★(원작자 0.14.31 · 리뷰 R2) 원장 묘비 먼저(최선 노력 · 배치).
+                        crate::governance::record_active_drain(&daemon, surf.id, &dropped, "process_exited");
                         daemon.bus.publish(
                             "queue.dropped",
                             "queue",
@@ -4549,6 +7748,14 @@ impl Daemon {
                         );
                     }
                 }
+            }
+            // ★(0.14.31 · WP-5 M) 만료 큐 drain — "삭제 없음" 약속은 **원장 기록**으로 정의한다:
+            //   항목마다 원장에 `expired` 사유 레코드를 남긴 뒤 폐기(queue.dropped reason "expired").
+            crate::governance::discard_expired_queue(&daemon, &surf, "expired");
+            // ★(0.14.31 · 리뷰 R1 · codex blocking) 묘비 실패분은 데몬 보존소로 — 이 좌석은 곧
+            //   reap(close_surface)으로 맵에서 빠지고, 그때 이 큐는 어디에서도 도달할 수 없다.
+            if crate::governance::park_expired_to_restored(&daemon, &surf) > 0 {
+                daemon.persist_queue_state();
             }
             // ★B3 #19: 자력 종료(셸 EOF)한 좌석이 **역할을 쥐고 있었다는 사실**을 이 시점에
             //   싣는다(additive — 기존 키 불변). 종전 페이로드에는 role 이 없어 "어느 역할
@@ -4799,6 +8006,23 @@ impl Daemon {
                             *surface.queue_paused_until.lock().unwrap() = Some(
                                 Instant::now() + std::time::Duration::from_secs(rule.pause_secs),
                             );
+                            // ★(0.14.31 · 성찰 Q2) 전이 순간의 **미확정 예약을 끊는다** — 그러지
+                            //   않으면 헬스가 "이 좌석은 지금 위험하다" 고 판단한 바로 그 순간
+                            //   결판을 기다리던 배달이 그대로 나간다(리더 스레드가 세운 pause 는
+                            //   판정 **이후**라 그 배달을 못 막는다 · 성찰 Q2 사슬).
+                            //   `queue_paused_until` 락은 위 줄에서 이미 놓았다(락 순서 규약).
+                            let still = surface.cancel_inject_reservation_locked();
+                            if still > 0 {
+                                self.bus.publish(
+                                    "queue.inject_uncancellable",
+                                    "queue",
+                                    Some(surface_id),
+                                    json!({"reason": "health_pause_queue", "rule": rule.name,
+                                           "entries": still,
+                                           "hint": "pause 전이 시점에 writer 가 이미 쓰기로 확정한 \
+                                                    배달이 있다 — 그 항목은 나간다(다음 배달부터 정지)"}),
+                                );
+                            }
                             self.bus.publish(
                                 "health.action",
                                 "health",
@@ -4813,23 +8037,82 @@ impl Daemon {
         }
     }
 
-    /// T4-15 pause 상태 영속 — 데몬 재시작 후에도 kill-switch가 유지된다.
+    /// ★(0.14.31 · 성찰 Q2) **미확정 인계 일괄 취소** — pause 전이가 부른다. 반환 = 취소하지
+    /// **못한**(= writer 가 이미 쓰기로 확정한) 좌석 수.
     ///
-    /// ⑩(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑩) 원자 저장(tmp 이름 매번 다름 — pause·resume 이
-    /// 겹쳐도 반쪽 파일 0) + 결과를 돌려준다. 종전엔 비원자 `fs::write` 결과를 버리고 늘 「정지됨」 응답.
+    /// pause 의 계약은 "응답을 손에 쥔 뒤 큐 주입 0" 이다. 그런데 pause 시점에 이미 인계돼
+    /// 결판을 기다리는 예약이 있으면, 그 좌석은 pause 와 무관하게 쓴다(가드의 축은 writer 가
+    /// **첫 바이트 앞에서** 보는 것이고, 그때 pause 를 보게 하는 것이 안전 탐침의 ⓐ축이지만
+    /// writer 가 이미 `CLAIMED` 를 공개한 뒤라면 그 결정은 되돌릴 수 없다 — 수확된 배달은 반드시
+    /// 쓰인다는 계약 때문이다). 그래서 전이 순간에 **아직 확정되지 않은** 예약을 능동으로 끊는다.
+    ///
+    /// 락 규약: `surfaces` → 좌석별 `pending_queue`(전역 순서 그대로). 호출자는 `queue_paused_until`
+    /// 같은 리프 락을 **쥐지 않은 채** 불러야 한다(쥔 채 부르면 배달 임계영역과 AB-BA 다 ·
+    /// codex 설계 검토 #1).
+    ///
+    /// 【남는 창 — 정직】 이미 `CLAIMED`/`ACKED` 인 쓰기는 끊지 못한다. 그 좌석 수를 돌려주므로
+    /// 호출자는 "완전히 0 이 아니다" 를 말할 수 있다. 진짜 fence(본문+CR 완료 대기)는 writer 층의
+    /// 별도 추적이 필요하다(백로그 · codex 설계 검토 #4).
+    /// ★(0.14.31 · 성찰 Q2) kill-switch **전이의 유일한 진입점** — 플래그를 세우고, 켜는 방향이면
+    /// 그 순간의 미확정 인계를 끊는다. 반환 = 끊지 못한(이미 쓰기로 확정된) 좌석 수(끄는 방향은 0).
+    /// `handlers::system.pause` 가 `paused.store(true)` 대신 이것을 불러야 pause 응답을 손에 쥔
+    /// 뒤의 주입 0 이 성립한다(store 만 하면 결판 대기 중인 배달이 그대로 나간다). 영속
+    /// (`persist_pause`)은 종전대로 호출자 책임이다(이 함수는 I/O 를 하지 않는다).
+    pub fn set_paused(&self, on: bool) -> usize {
+        self.paused.store(on, Ordering::SeqCst);
+        if on {
+            self.cancel_unsettled_injects()
+        } else {
+            0
+        }
+    }
+
+    pub fn cancel_unsettled_injects(&self) -> usize {
+        let surfaces: Vec<Arc<Surface>> = self
+            .surfaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        let mut still_writing = 0usize;
+        for s in surfaces {
+            // 예약 생성이 `pending_queue` 안이므로 같은 락 아래에서 취소해야 창이 없다.
+            let _q = s.pending_queue.lock().unwrap_or_else(|e| e.into_inner());
+            if !s.cancel_inject_reservation().is_empty() {
+                still_writing += 1;
+            }
+        }
+        still_writing
+    }
+
+    /// T4-15 pause 상태 영속 — 데몬 재시작 후에도 kill-switch가 유지된다.
+    /// ★(성찰 2회 · 2/3) **원자 교체**(`governance::write_json_atomic`: tmp 쓰기 → fsync → rename →
+    ///   dir fsync). 종전 `fs::write` 는 truncate 후 쓰기라 그 사이 크래시가 빈 파일·부분 파일을
+    ///   남겼고, 복원이 그것을 paused=false 로 접었다(fail-open). 이제 디스크에는 옛 완본 아니면 새
+    ///   완본만 있다. 실패 방향: 쓰기 실패면 옛 완본이 남는다(stderr 1줄) — 재시작은 직전 상태를
+    ///   복원한다(새 상태 소실은 있어도 손상은 없다). 직렬화: `pause_persist_lock`(tmp 이름 고정).
+    /// ⑩(우리 1.1.7 · 791b600c) 결과를 돌려준다 — 저장 실패를 pause·resume 응답이 `persist_failed` 로 알린다(fail-closed 보고).
     pub fn persist_pause(&self) -> std::io::Result<()> {
+        let _serial = self.pause_persist_lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = state_dir(&self.socket_path);
         let info = self.pause_info.lock().unwrap().clone();
         let v = match (
             self.paused.load(Ordering::Relaxed),
             info,
         ) {
-            (true, Some((since, reason))) => {
-                json!({"paused": true, "since": since, "reason": reason})
+            (true, Some(p)) => {
+                // PauseInfo 의 결측 키 생략은 org.status·system.gate_check 와 같은 포맷이다.
+                let mut v = json!(p);
+                v["paused"] = json!(true);
+                v
             }
             _ => json!({"paused": false}),
         };
-        cys::atomic_write_bytes(&dir.join("autopilot.json"), v.to_string().as_bytes())
+        crate::governance::write_json_atomic(&dir, "autopilot.json", &v.to_string()).map_err(|e| {
+            eprintln!("[cysd] autopilot.json 영속 실패({e}) — 디스크에는 직전 완본이 남는다");
+            e
+        })
     }
 
     pub fn get_surface(&self, id: u64) -> Option<Arc<Surface>> {
@@ -4872,16 +8155,67 @@ pub(crate) fn cr_gap_delay_ms(
     (elapsed_ms < gap).then(|| (gap - elapsed_ms) as u64)
 }
 
+/// ★(0.14.42 · 설계 C D5′) 화면 모드 미러 — reader 가 **파서 락 임계영역 안**에서 청크 반영 직후 부른다.
+/// `alt_screen`(W4 · D5)과 `bracketed_paste`(2004 · 직접 경로 울타리 판정) 두 원자를 같은 스냅샷에서 쓴다.
+/// 패닉 재초기화 뒤에는 fresh 파서의 false 가 들어간다(울타리 판정은 원문 = 종전 쪽으로 접힌다).
+pub(crate) fn mirror_screen_modes(surf: &Surface, screen: &vt100::Screen) {
+    surf.alt_screen.store(screen.alternate_screen(), Ordering::Relaxed);
+    surf.bracketed_paste.store(screen.bracketed_paste(), Ordering::Relaxed);
+}
+
+/// `WriteReq::Inject` 의 바이트 시퀀스 — (선정리 Ctrl-U → settle) → bracketed paste → cr_delay →
+/// CR. 종전 arm 본문 그대로이며, 인계 가드(`InjectGuard`)를 arm 머리에 넣기 위해 함수로만 뺐다
+/// (한 arm = 원자 · 다른 WriteReq 끼어듦 없음이라는 계약은 호출부가 그대로 지킨다).
+fn inject_write<W: Write>(
+    writer: &mut W,
+    text: &str,
+    cr_delay_ms: u64,
+    clear_first: bool,
+) -> std::io::Result<()> {
+    if clear_first {
+        // Ctrl-U(0x15) 선정리 → settle: 잔존 미제출 텍스트를 지우고 TUI가 처리할 짬을 준다.
+        // paste·CR과 같은 arm에 묶여 다른 주입이 끼어들 수 없다(원자). 키 의미 게이트는
+        // 호출자(send_text)가 agent 등록 pane으로 제한한다(TUI별 Ctrl-U 의미 상이).
+        writer.write_all(b"\x15")?;
+        writer.flush()?;
+        std::thread::sleep(std::time::Duration::from_millis(clear_settle_ms()));
+    }
+    // ★(0.14.42 · 설계 C D2) 백스톱 — Inject 생산자 전부(큐 다이제스트·clear_first·CEO·스케줄·채널·부트 통보·
+    //   승계 고지 등)를 한 곳에서 덮는다. 본문 안 표지(`ESC[201~`·C1 형)와 끝 미완성 이스케이프가 봉투를 조기에
+    //   닫아 뒤 글자가 키 입력(줄바꿈=제출 · ESC=취소)이 되던 결함을 막는다. 표지가 없고 끝이 완결인 본문은
+    //   종전 `format!("\x1b[200~{text}\x1b[201~")` 과 **바이트가 같다**(`/clear` 포함 — 무clear 무변경).
+    writer.write_all(cys::paste_fence::wrap(text).as_bytes())?;
+    writer.flush()?;
+    std::thread::sleep(std::time::Duration::from_millis(cr_delay_ms));
+    writer.write_all(b"\r")?;
+    writer.flush()
+}
+
 /// (테스트 가시성) `delivery` 모듈의 race 봉쇄 실증이 이 루프를 직접 구동한다 —
 /// "원장 기록이 PTY write 보다 앞선다"는 불변식은 **실제 writer 루프**로만 증명된다.
 ///
 /// ★B2′ writer 로컬 상태 `last_program_write`: 이 루프가 **실제로** 프로그램 본문을 PTY 에
 /// 쓴 마지막 시각. 최소 간격의 기준점은 반드시 이 값이어야 한다(핸들러의 enqueue 시각이
 /// 기준이면 writer 적체 구간에서 간격이 0 으로 붕괴한다 — codex 감사 R1).
+// 프로덕션 좌석은 표식판([`run_writer_loop_tracked`])을 쓴다 — 이 판은 검체(delivery race 실증·writer 누수 가드) 전용이다.
+// `#[cfg(test)]` 가 아니라 allow 인 이유: 이 파일의 '프로덕션 영역' 소스 핀 앵커(첫 `#[cfg(test)]`)를 앞당기지 않는다.
+#[allow(dead_code)]
 pub(crate) fn run_writer_loop<W: Write>(
+    writer: W,
+    write_rx: std::sync::mpsc::Receiver<WriteReq>,
+    stop: Arc<AtomicBool>,
+) {
+    run_writer_loop_tracked(writer, write_rx, stop, None)
+}
+
+/// [`run_writer_loop`] 에 Inject arm 진행 표식([`InjectTrack`])을 붙인 판 — 프로덕션 좌석이 쓴다. 표식은 arm 의
+/// 첫 바이트 앞에서 세우고 마지막 바이트(CR) 뒤에 내린다(인계 가드가 포기한 요청은 세우지 않는다 = 한 바이트도 안 씀).
+/// 바이트·순서·지연은 [`run_writer_loop`] 와 같다(표식은 원자·leaf 락 쓰기뿐).
+pub(crate) fn run_writer_loop_tracked<W: Write>(
     mut writer: W,
     write_rx: std::sync::mpsc::Receiver<WriteReq>,
     stop: Arc<AtomicBool>,
+    track: Option<Arc<InjectTrack>>,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
     let mut last_program_write: Option<std::time::Instant> = None;
@@ -4916,11 +8250,20 @@ pub(crate) fn run_writer_loop<W: Write>(
             }
             // ★B2′: 제출 CR — 잔여를 **여기서, 소비 시점에** 계산한다. 이 계산이 핸들러에
             // 있으면 적체 구간에서 간격이 붕괴한다(codex 감사 R1 · SubmitAfterGap doc 참조).
-            WriteReq::SubmitAfterGap { bytes, min_gap_ms } => {
+            WriteReq::SubmitAfterGap { bytes, min_gap_ms, withhold } => {
                 if let Some(delay) =
                     cr_gap_delay_ms(last_program_write.map(|t| t.elapsed()), min_gap_ms)
                 {
                     std::thread::sleep(std::time::Duration::from_millis(delay));
+                }
+                // ★(0.14.42 · 수정 2회차 F1) 제출 CR 보류 — 간격을 잔 **뒤**(쓰기 직전) 화면을 다시 본다. 인계~쓰기 사이에
+                //   뜬 질문·선택 창에 CR 을 쓰면 기본 선택지를 누른다(오승인). 보류면 한 바이트도 쓰지 않고 기준점·쓴 시각을
+                //   찍지 않는다 — 대기 계수만 내린다(분리 보류가 영구화되지 않는다). writer 는 막지 않는다(사람 키가 창을 푼다).
+                if withhold.as_ref().is_some_and(|p| p()) {
+                    if let Some(t) = &track {
+                        t.submit_consumed(false);
+                    }
+                    continue;
                 }
                 let r = writer.write_all(&bytes).and_then(|_| writer.flush());
                 // ★B2″(agy 감사 R2-②): 쓴 CR **자신도** 기준점이 된다. 그러지 않으면 연속
@@ -4930,10 +8273,17 @@ pub(crate) fn run_writer_loop<W: Write>(
                 if r.is_ok() {
                     last_program_write = Some(std::time::Instant::now());
                 }
+                // ★(0.14.42 · S21-SETTLE) 제출 정착 표식 — 대기 계수 내림 + (성공 시) 쓴 시각. 핸들러가 이것으로
+                //   '대기 CR 뒤에 다음 본문을 붙이지 않는다'(분리 보류)를 판정한다. 원자 쓰기뿐.
+                if let Some(t) = &track {
+                    t.submit_consumed(r.is_ok());
+                }
                 r
             }
-            // ★precut ㉮(codex 1R BLOCK) 거부 요청의 제출 키 — 최소 간격 대기 **뒤**, 쓰기 직전에 창을 다시 본다.
-            //   창이 떠 있으면 쓰지 않는다(기준점도 안 찍는다 — 화면에 없는 바이트를 기준 삼지 않는 규율).
+            // ★precut ㉮(우리 1.1.7 · codex 1R BLOCK) 거부 요청(`refuse_on_approval`)의 제출 키 — 최소 간격 대기 **뒤**, 쓰기
+            //   직전에 창을 다시 본다. 창이 떠 있으면 쓰지 않는다(기준점도 안 찍는다 — 화면에 없는 바이트를 기준 삼지 않는 규율).
+            //   ★1.1.8 병합(판정 갈림 H7 · 원작자대로): 핸들러가 S21 인계 표식(`submit_handed`)을 올리지 않는 변형이라 여기서도
+            //   표식을 소비하지 않는다(`track` 무접촉).
             WriteReq::SubmitGuarded { bytes, min_gap_ms, refuse_now } => {
                 if let Some(delay) =
                     cr_gap_delay_ms(last_program_write.map(|t| t.elapsed()), min_gap_ms)
@@ -4954,22 +8304,31 @@ pub(crate) fn run_writer_loop<W: Write>(
                 text,
                 cr_delay_ms,
                 clear_first,
-            } => (if clear_first {
-                // Ctrl-U(0x15) 선정리 → settle: 잔존 미제출 텍스트를 지우고 TUI가 처리할 짬을 준다.
-                // paste·CR과 같은 arm에 묶여 다른 주입이 끼어들 수 없다(원자). 키 의미 게이트는
-                // 호출자(send_text)가 agent 등록 pane으로 제한한다(TUI별 Ctrl-U 의미 상이).
-                writer
-                    .write_all(b"\x15")
-                    .and_then(|_| writer.flush())
-                    .map(|_| std::thread::sleep(std::time::Duration::from_millis(clear_settle_ms())))
-            } else {
-                Ok(())
-            })
-            .and_then(|_| writer.write_all(format!("\x1b[200~{text}\x1b[201~").as_bytes()))
-            .and_then(|_| writer.flush())
-            .map(|_| std::thread::sleep(std::time::Duration::from_millis(cr_delay_ms)))
-            .and_then(|_| writer.write_all(b"\r"))
-            .and_then(|_| writer.flush()),
+                guard,
+            } => {
+                // ★(0.14.31 · 리뷰 R1 · codex blocking) 인계 가드 — **첫 바이트 앞**에서 결판.
+                //   Ctrl-U 선정리보다도 앞이므로, 포기한 요청은 화면에 어떤 흔적도 남기지 않는다.
+                //   가드가 없으면(None) 종전 동작 그대로다.
+                // 소유권을 집지 못하면(세대가 흘렀거나 호출부가 이미 중단시켰다) **쓰지 않는다**.
+                if guard.as_ref().is_some_and(|g| !g.claim_for_write()) {
+                    continue;
+                }
+                // ★(0.14.42 · 설계 H 리뷰 F2·F3) 붙여넣기~CR 창을 판정자에게 알린다(InjectTrack doc).
+                // ★(R3SH-1) 본문도 기록한다 — CR 이 삼켜져 남은 잔여가 데몬 자신의 것임을 입증하는 근거(MachineBody doc).
+                if let Some(t) = &track {
+                    t.note_body(&text, None);
+                    t.begin();
+                }
+                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first);
+                if let Some(t) = &track {
+                    // ★(0.14.42 · S21-SETTLE) 끝 CR 까지 썼으면 제출 CR 을 쓴 시각이다(분리 보류의 기준점).
+                    if r.is_ok() {
+                        t.submit_written();
+                    }
+                    t.end();
+                }
+                r
+            }
             // ★B2″(agy 감사 R2-①): Inject 는 기준점을 **찍지 않는다**. 이 arm 은 자체
             // cr_delay_ms(기본 400)를 두고 본문→CR 까지 원자로 보내므로, 뒤따라 오는 제출
             // Return 은 이미 ≥400ms 떨어져 있다 = 최소 간격(150ms)이 보호할 것이 없다.
@@ -5529,6 +8888,51 @@ mod tests {
         // 코드와 무관한 적색이 난다(lib.rs 의 전용 시험이 그 축의 정본이다).
     }
 
+    /// ★(독립 재유도 · codex blocking #2 · 설계비평 #6·#7) 계정 dir 인증 표식의 **진리표**.
+    ///
+    /// 이 표식이 서면 reclaim 은 그 좌석을 "계정 A 의 신뢰된 호출자"로 인정한다. 그러므로 표식은
+    /// **호출자 env 로 뒤집을 수 없어야** 한다. 아래 음성 대조가 각각 닫는 우회:
+    ///   ⓐ `CYS_ACCOUNT_DIR` — 계정 해소의 1순위(정확 키 검사가 못 보던 축).
+    ///   ⓑ 대소문자만 다른 키 — Windows 의 env 생성기가 소문자로 접어 하나로 만든다.
+    ///   ⓒ **순서 우회** — `CLAUDE_CONFIG_DIR=/foreign` 뒤에 `claude_config_dir=<정상>` 을 얹어
+    ///      "마지막 값"만 보는 검사를 속이는 형상. unix builder 는 두 키를 **둘 다** 남기므로
+    ///      실행 환경에서는 `/foreign` 이 이긴다 → 하나라도 다르면 거짓이어야 한다.
+    ///   ⓓ 홈 치환 — 위 두 키가 없어도 `$HOME/.cys/claude` 전개가 달라지면 계정이 갈린다.
+    #[test]
+    fn caller_env_cannot_forge_the_config_dir_trust_flag() {
+        const OK: &str = "/tmp/cys-trust-account";
+        const OTHER: &str = "/tmp/cys-trust-other";
+        let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+        // 기준선: 오염 없는 오버레이·같은 값 신고는 신뢰된다(이 검사가 기능을 죽이지 않는다).
+        assert!(caller_env_keeps_config_dir(&[], OK));
+        assert!(caller_env_keeps_config_dir(&[pair("CLAUDE_CONFIG_DIR", OK)], OK));
+        assert!(caller_env_keeps_config_dir(&[pair("CYS_ACCOUNT_DIR", OK)], OK));
+        assert!(
+            caller_env_keeps_config_dir(&[pair("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1")], OK),
+            "무관한 env 키가 표식을 죽였다 — launch-agent 의 D5 벨트가 통째로 무결합이 된다"
+        );
+        // ⓐ·ⓑ·ⓒ·ⓓ 음성 대조.
+        for (label, env) in [
+            ("ⓐ CYS_ACCOUNT_DIR 갈아끼우기", vec![pair("CYS_ACCOUNT_DIR", OTHER)]),
+            ("ⓑ 소문자 키", vec![pair("claude_config_dir", OTHER)]),
+            ("ⓑ' 소문자 계정 키", vec![pair("cys_account_dir", OTHER)]),
+            (
+                "ⓒ 순서 우회(대문자 오염 + 소문자 정상)",
+                vec![pair("CLAUDE_CONFIG_DIR", OTHER), pair("claude_config_dir", OK)],
+            ),
+            (
+                "ⓒ' 순서 우회(역순)",
+                vec![pair("claude_config_dir", OK), pair("CLAUDE_CONFIG_DIR", OTHER)],
+            ),
+            ("ⓓ 홈 치환", vec![pair("HOME", "/tmp/cys-trust-elsewhere")]),
+            // 빈 문자열 = '미설정 취급' 신고. 실제로 무해한지는 좌석의 실행 환경 전체를 봐야
+            // 알 수 있고 여기서는 모른다 → 표식을 세우지 않는다(fail-closed).
+            ("빈 값 신고", vec![pair("CYS_ACCOUNT_DIR", "")]),
+        ] {
+            assert!(!caller_env_keeps_config_dir(&env, OK), "{label} 가 표식을 통과했다");
+        }
+    }
+
     // ── pid_alive: 생존 판정 단일 정의처(channels·deadman 위임 대상)의 unix 계약 핀 ──
     // windows arm(OpenProcess+WaitForSingleObject)은 이 호스트에서 컴파일 불가 — 정책 계약은
     // doc comment(ACCESS_DENIED=alive·WAIT_FAILED=alive 개입 금지 방향)이 정본.
@@ -6008,6 +9412,97 @@ mod tests {
         );
     }
 
+    /// ★(0.14.42 · 설계 C D5′ · T9) 화면 모드 미러 — ① 헬퍼: 2004h → true · 2004l → false · 1049 전환에도
+    /// 유지 · alt_screen 동시 미러 ② 파서 패닉 재초기화 뒤 false ③ 실제 reader: 좌석이 `ESC[?2004h` 를 찍으면
+    /// 2 초 안에 `surface.bracketed_paste` 가 true.
+    #[test]
+    #[cfg_attr(not(unix), ignore = "좌석 명령이 POSIX 셸 문법")]
+    fn c_mirror_screen_modes_tracks_bracketed_paste() {
+        let dir = std::env::temp_dir().join(format!("cys-c-mirror-{}-{}", std::process::id(), now_epoch() as u64));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("printf '\\033[?2004h'; sleep 30".into()), None, None, 24, 80)
+            .expect("surface");
+        // ③ 실제 reader(2 s 폴링).
+        let dl = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < dl && !s.bracketed_paste.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(s.bracketed_paste.load(Ordering::Relaxed), "reader 가 2004h 를 미러해야 한다");
+        let _ = s.child.lock().unwrap().kill();
+        // ① 헬퍼 직접.
+        let mut p = vt100::Parser::new(24, 80, SCROLLBACK_LINES);
+        p.process(b"\x1b[?2004h");
+        mirror_screen_modes(&s, p.screen());
+        assert!(s.bracketed_paste.load(Ordering::Relaxed));
+        assert!(!s.alt_screen.load(Ordering::Relaxed));
+        p.process(b"\x1b[?1049h");
+        mirror_screen_modes(&s, p.screen());
+        assert!(s.bracketed_paste.load(Ordering::Relaxed), "1049 전환에도 2004 유지");
+        assert!(s.alt_screen.load(Ordering::Relaxed), "alt_screen 동시 미러");
+        p.process(b"\x1b[?2004l");
+        mirror_screen_modes(&s, p.screen());
+        assert!(!s.bracketed_paste.load(Ordering::Relaxed), "2004l → false");
+        // ② 패닉 재초기화 뒤 false(fresh 파서).
+        let mut q = vt100::Parser::new(10, 26, SCROLLBACK_LINES);
+        process_chunk_isolated(&mut q, b"\x1b[?2004h", 0);
+        mirror_screen_modes(&s, q.screen());
+        assert!(s.bracketed_paste.load(Ordering::Relaxed));
+        process_chunk_isolated(&mut q, b"\x1b[1;25H", 0);
+        process_chunk_isolated(&mut q, "\u{ac00}".as_bytes(), 0);
+        q.set_size(10, 25);
+        let (_, panicked) = process_chunk_isolated(&mut q, b"\x1b[1;25Ha", 0);
+        assert!(panicked, "전제: row.rs:89 패닉 재현");
+        mirror_screen_modes(&s, q.screen());
+        assert!(!s.bracketed_paste.load(Ordering::Relaxed), "재초기화 → false → 원문(종전) 폴백");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★(0.14.42 · 설계 C D2 · T2/T3) Inject 백스톱 — 본문 안 CLOSE(`ESC[201~`)·C1 CLOSE·끝 미완성
+    /// 이스케이프가 봉투를 조기에 닫지 않는다. 적색(수정 전): CLOSE 2개(본문 것이 봉투를 먼저 닫는다).
+    /// 회귀 핀(전후 녹색): 표지 없는 본문은 종전 바이트 그대로(`/clear` 와 같은 꼴).
+    #[test]
+    fn c_inject_backstop_sanitizes_fence_markers_in_body() {
+        use std::sync::mpsc::sync_channel;
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let run = |text: &str| -> Vec<u8> {
+            let buf = Arc::new(Mutex::new(Vec::new()));
+            let (tx, rx) = sync_channel::<WriteReq>(2);
+            let stop = Arc::new(AtomicBool::new(false));
+            let w = SharedBuf(Arc::clone(&buf));
+            let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
+            tx.send(WriteReq::Inject { text: text.into(), cr_delay_ms: 0, clear_first: false, guard: None })
+                .unwrap();
+            drop(tx);
+            handle.join().ok();
+            let out = buf.lock().unwrap().clone();
+            out
+        };
+        let count = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).filter(|w| *w == needle).count();
+        // T3 회귀 핀: 표지 없는 본문 = 종전 바이트.
+        assert_eq!(run("hi"), b"\x1b[200~hi\x1b[201~\r".to_vec());
+        assert_eq!(run("/clear"), b"\x1b[200~/clear\x1b[201~\r".to_vec());
+        // T2 적색→녹색: 본문 안 CLOSE · C1 CLOSE · 끝 미완성 이스케이프.
+        for body in ["M1\x1b[201~M2\nM3", "X1\u{9b}201~X2\nX3", "tail\x1b[1"] {
+            let out = run(body);
+            assert_eq!(count(&out, b"\x1b[200~"), 1, "OPEN 1개: {body:?} → {:?}", String::from_utf8_lossy(&out));
+            assert_eq!(count(&out, b"\x1b[201~"), 1, "CLOSE 1개(본문 것이 봉투를 먼저 닫으면 2개): {body:?}");
+            assert_eq!(count(&out, "\u{9b}201~".as_bytes()), 0, "C1 CLOSE 0: {body:?}");
+            assert!(out.ends_with(b"\x1b[201~\r"), "CLOSE 는 제출 CR 바로 앞 하나뿐: {body:?}");
+        }
+        assert_eq!(run("tail\x1b[1"), b"\x1b[200~tail\x1b[201~\r".to_vec(), "끝 미완성 이스케이프 절단");
+    }
+
     /// 불변식 박제: clear_first Inject은 한 writer arm에서 Ctrl-U(선정리)→bracketed paste→CR을
     /// 순서대로 한 단위로 쓴다. 다른 WriteReq가 끼어들 수 없고(원자), 부분 전달(clear만/text만)이
     /// 구조적으로 불가능함을 바이트 순서로 검증한다.
@@ -6033,6 +9528,7 @@ mod tests {
             text: "hi".into(),
             cr_delay_ms: 0,
             clear_first: true,
+            guard: None,
         })
         .unwrap();
         drop(tx); // Disconnected → 루프 종료
@@ -6079,6 +9575,7 @@ mod tests {
             text: "hi".into(),
             cr_delay_ms: 0,
             clear_first: true,
+            guard: None,
         })
         .unwrap();
         tx.send(WriteReq::Data(b"X".to_vec())).unwrap();
@@ -6123,6 +9620,7 @@ mod tests {
             text: "hi".into(),
             cr_delay_ms: 0,
             clear_first: false,
+            guard: None,
         })
         .unwrap();
         drop(tx);
@@ -6305,6 +9803,47 @@ mod tests {
         }
     }
 
+    /// ★(0.14.42 · 수정 2회차 F1) 제출 CR 보류 탐침 — 간격을 잔 **뒤** 부르고, `true` 면 CR 한 바이트도 쓰지 않는다
+    /// (뒤 요청은 순서대로 계속 나간다 = writer 를 막지 않는다). 표식: 대기 계수는 내리고 쓴 시각은 찍지 않는다. `false`·
+    /// `None` 은 종전 바이트. 탐침은 CR 1개당 정확히 한 번 불린다(이벤트 발행 1건의 전제).
+    #[test]
+    fn f1_submit_cr_withhold_probe_skips_only_the_cr() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::mpsc::sync_channel;
+        let run = |withhold: Option<SafetyProbe>| {
+            let log: WriteLog = Arc::new(Mutex::new(Vec::new()));
+            let (tx, rx) = sync_channel::<WriteReq>(8);
+            let stop = Arc::new(AtomicBool::new(false));
+            let track = Arc::new(InjectTrack::default());
+            let w = TimedBuf::new(&log);
+            let t2 = Arc::clone(&track);
+            let handle = std::thread::spawn(move || run_writer_loop_tracked(w, rx, stop, Some(t2)));
+            tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
+            track.submit_handed();
+            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: 30, withhold }).unwrap();
+            tx.send(WriteReq::Data(b"k".to_vec())).unwrap();
+            drop(tx);
+            handle.join().ok();
+            let flat: Vec<u8> = log.lock().unwrap().iter().flat_map(|(_, b)| b.clone()).collect();
+            (flat, track.submit_settle_obs(settle_mono_ms(), 2000))
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c2 = Arc::clone(&calls);
+        let (out, obs) = run(Some(Arc::new(move || {
+            c2.fetch_add(1, Ordering::SeqCst);
+            true
+        })));
+        assert_eq!(out, b"BODYk".to_vec(), "보류면 CR 만 빠지고 뒤 요청은 나간다: {:?}", String::from_utf8_lossy(&out));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "탐침은 CR 1개당 한 번");
+        assert!(!obs.inflight && obs.pending == 0, "보류한 CR 도 소비로 센다(분리 보류 영구화 0): {obs:?}");
+        assert_eq!(obs.since_written_ms, None, "쓰지 않은 CR 은 쓴 시각이 없다: {obs:?}");
+        let (out, obs) = run(Some(Arc::new(|| false)));
+        assert_eq!(out, b"BODY\rk".to_vec(), "탐침 false 는 종전 바이트");
+        assert!(obs.since_written_ms.is_some(), "{obs:?}");
+        let (out, _) = run(None);
+        assert_eq!(out, b"BODY\rk".to_vec(), "탐침 없음은 종전 바이트");
+    }
+
     #[test]
     fn submit_after_gap_measures_from_actual_write_not_handler_enqueue() {
         use std::sync::mpsc::sync_channel;
@@ -6323,7 +9862,7 @@ mod tests {
         tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
         // ③ 200ms 뒤 제출 CR — 핸들러 시계로는 본문 enqueue 후 이미 150ms 초과다.
         std::thread::sleep(std::time::Duration::from_millis(200));
-        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS })
+        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
             .unwrap();
         drop(tx);
         handle.join().ok();
@@ -6408,10 +9947,10 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let w = TimedBuf::new(&log);
         let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
-        tx.send(WriteReq::Inject { text: "hi".into(), cr_delay_ms: 0, clear_first: false })
+        tx.send(WriteReq::Inject { text: "hi".into(), cr_delay_ms: 0, clear_first: false, guard: None })
             .unwrap();
         let t_enqueue = std::time::Instant::now();
-        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS })
+        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
             .unwrap();
         drop(tx);
         handle.join().ok();
@@ -6440,7 +9979,7 @@ mod tests {
         let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
         tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
         for _ in 0..2 {
-            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS })
+            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
                 .unwrap();
         }
         drop(tx);
@@ -6485,7 +10024,7 @@ mod tests {
         // 사람 키(Data)는 기준점을 찍지 않는다 — Program 이 아니므로 여전히 '본문 없음'이다.
         tx.send(WriteReq::Data(b"typed".to_vec())).unwrap();
         let t0 = std::time::Instant::now();
-        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS })
+        tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
             .unwrap();
         drop(tx);
         handle.join().ok();
@@ -6515,7 +10054,7 @@ mod tests {
             let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
             tx.send(WriteReq::Program(b"BODY".to_vec())).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS })
+            tx.send(WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: GAP_MS, withhold: None })
                 .unwrap();
             drop(tx);
             handle.join().ok();
@@ -6547,6 +10086,7 @@ mod tests {
         tx.send(WriteReq::SubmitAfterGap {
             bytes: b"\r".to_vec(),
             min_gap_ms: OVERWAIT_GAP_MS,
+            withhold: None,
         })
         .unwrap();
         drop(tx);
@@ -6559,6 +10099,49 @@ mod tests {
             "이미 {OVERWAIT_GAP_MS}ms 가 지났는데 CR 이 또 {took:?} 늦춰졌다 — 하한이어야 할 \
              간격이 상한처럼 동작한다(모든 제출이 매번 느려진다)"
         );
+    }
+
+    /// ★(0.14.42 · H3 간격 경쟁) 인계 표식의 생애 — 실제 표식판 writer 루프로 잰다. ① 넘긴 뒤 writer 가 집기 전(선행 쓰기
+    /// 적체)에는 `busy_within` 이 거짓이어도(종전 빈틈) `handoff_pending` 이 참 ② arm 이 끝 CR 을 쓰면 풀리고 간격은
+    /// 종전 `done_at` 이 잰다 ③ 인계 실패 되돌림 ④ 되돌림은 뒤에 덮은 표식을 건드리지 않는다 ⑤ 표식은 `active` 를
+    /// 세우지 않는다(H0 자기 붙여넣기 귀속 무변경).
+    #[test]
+    fn inject_track_handoff_pending_until_an_arm_ends() {
+        use std::sync::mpsc::sync_channel;
+        let ms = std::time::Duration::from_millis;
+        let track = Arc::new(InjectTrack::default());
+        assert!(track.handoff_pending().is_none(), "빈 좌석");
+        let (tx, rx) = sync_channel::<WriteReq>(8);
+        let stop = Arc::new(AtomicBool::new(false));
+        let t2 = Arc::clone(&track);
+        let handle = std::thread::spawn(move || run_writer_loop_tracked(std::io::sink(), rx, stop, Some(t2)));
+        tx.send(WriteReq::DataAfter { bytes: Vec::new(), delay_ms: 300 }).unwrap();
+        std::thread::sleep(ms(50));
+        let _mark = track.note_handoff();
+        tx.send(WriteReq::Inject { text: "행".into(), cr_delay_ms: 100, clear_first: false, guard: None })
+            .unwrap();
+        std::thread::sleep(ms(50));
+        assert!(!track.busy_within(ms(1000)), "전제: writer 가 아직 집지 않았다(begin 전 — 종전 판정의 빈틈)");
+        assert!(track.handoff_pending().is_some(), "넘겼으나 writer 가 집기 전인 창을 비웠다");
+        assert!(!track.stuck_over(ms(0)), "인계 표식이 active 를 세웠다(H0 자기 붙여넣기 귀속 오염)");
+        let t0 = std::time::Instant::now();
+        while track.handoff_pending().is_some() && t0.elapsed() < ms(3000) {
+            std::thread::sleep(ms(10));
+        }
+        assert!(track.handoff_pending().is_none(), "arm 이 끝났는데 인계 대기가 풀리지 않았다");
+        assert!(track.busy_within(ms(1000)), "끝난 직후 간격은 done_at 이 잰다(빈틈 0)");
+        // ③ 인계 실패 되돌림 — 종전 표식(이미 끝난 인계)으로 돌아간다.
+        let m = track.note_handoff();
+        assert!(track.handoff_pending().is_some());
+        track.undo_handoff(m);
+        assert!(track.handoff_pending().is_none(), "인계 실패인데 대기가 남았다(다음 행이 막힌다)");
+        // ④ 되돌림 사이에 다른 인계가 덮었으면 그 표식을 지우지 않는다.
+        let stale = track.note_handoff();
+        let _newer = track.note_handoff();
+        track.undo_handoff(stale);
+        assert!(track.handoff_pending().is_some(), "뒤 인계의 표식을 앞 인계의 되돌림이 지웠다");
+        drop(tx);
+        handle.join().ok();
     }
 
     /// ★B2 계약 박제 ②(0.14.24): writer 는 **단일 소비자**라 DataAfter 가 자는 동안 뒤따라
@@ -7673,6 +11256,34 @@ mod tests {
         dir.join("cysd.sock")
     }
 
+    #[test]
+    fn wp5_stale_pending_input_human_is_clamped_after_count_only_reset() {
+        use crate::governance::InputOrigin;
+
+        let sock = isolated_sock("wp5-stale-pending-human");
+        let daemon = Daemon::new(sock.clone());
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("surface 생성");
+        {
+            let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+            let human = s.apply_pending_input(b"abc", InputOrigin::Human);
+            assert_eq!((human.count, human.human), (3, 3));
+
+            // 큐 Inject·롤백처럼 미러의 count 만 초기화한 뒤 Machine 입력을 적용한다.
+            s.set_pending_input(0);
+            let machine = s.apply_pending_input(b"x", InputOrigin::Machine);
+            assert_eq!((machine.count, machine.human), (1, 0));
+            assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 1);
+            let stored = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!((stored.count, stored.human), (1, 0));
+        }
+        crate::governance::close_surface(&daemon, s.id, crate::governance::CloseCause::OwnerClose)
+            .expect("surface 종료 및 자식 프로세스 회수");
+        // ★(R2F-DM 2차 · B3-b) 끝정리 — 유닉스는 종전처럼 엄격(실패 = 패닉) · 윈도우는 공유 위반(os error 32)을 잠깐 다시 시도한 뒤 무시한다(이 검체는 데몬을 쥔 채 지운다).
+        test_rm_rf(sock.parent().unwrap());
+    }
+
     fn sample_feed_item(id: &str, body: String) -> FeedItem {
         FeedItem {
             request_id: id.into(),
@@ -8062,7 +11673,7 @@ mod tests {
                 {"mid":"qaaa","surface_id":3,"text":"첫 메시지","role":"master"}]"#,
         )
         .unwrap();
-        let out = load_queue_state(&dir);
+        let out = load_queue_state(&dir).rows;
         assert_eq!(out.len(), 2, "mid dedup — 파일 첫 등장 승");
         assert_eq!(out[0]["id"], json!("qaaa"), "id=mid 재사용(재기동 간 안정)");
         assert_eq!(out[1]["id"], json!("qbbb"));
@@ -8095,7 +11706,7 @@ mod tests {
             .collect();
         std::fs::write(dir.join("queue-state.json"), serde_json::to_string(&arr).unwrap())
             .unwrap();
-        let out = load_queue_state(&dir);
+        let out = load_queue_state(&dir).rows;
         assert_eq!(out.len(), 12);
         for (i, it) in out.iter().enumerate() {
             assert_eq!(
@@ -8120,46 +11731,9 @@ mod tests {
             r#"[{"surface_id":3,"text":"신원 없음"},{"mid":"qok","surface_id":3,"text":"정상"}]"#,
         )
         .unwrap();
-        let out = load_queue_state(&dir);
+        let out = load_queue_state(&dir).rows;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["id"], json!("qok"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// ⑩(TICKET=cysr-117-impl-lead) 비상 정지 복원 진리표 — 부재·명시 false 만 해제, 손상 3형상·읽기
-    /// 거부는 정지 유지. 종전 `.ok()…filter(paused==true)` 로 되돌리면 손상 행이 None 이 되어 적색.
-    // 윈도 state_dir 은 %LOCALAPPDATA% 아래라 픽스처 폴더와 다르다(Fable R2 C) — POSIX 에서만.
-    #[cfg(unix)]
-    #[test]
-    fn pause_restore_fails_closed_on_unreadable_or_corrupt_state() {
-        let dir = queue_wal_dir("pause");
-        let p = dir.join("autopilot.json");
-        assert!(restore_pause_state(&dir).is_none(), "부재 = 정지 아님");
-        std::fs::write(&p, r#"{"paused":false}"#).unwrap();
-        assert!(restore_pause_state(&dir).is_none(), "명시 해제");
-        std::fs::write(&p, r#"{"paused":true,"since":12.5,"reason":"owner"}"#).unwrap();
-        assert_eq!(restore_pause_state(&dir), Some((12.5, "owner".to_string())));
-        for (tag, bytes) in [
-            ("bom", &b"\xEF\xBB\xBF{\"paused\":true}"[..]),
-            ("trunc", &b"{\"paused\":tr"[..]),
-            ("nonbool", &b"{\"paused\":\"yes\"}"[..]),
-        ] {
-            std::fs::write(&p, bytes).unwrap();
-            let r = restore_pause_state(&dir).unwrap_or_else(|| panic!("{tag}: 정지가 풀린 채 부팅"));
-            assert!(r.1.contains("정지를 유지"), "{tag}: {}", r.1);
-        }
-        // 읽기 거부(디렉터리) 도 정지 유지.
-        std::fs::remove_file(&p).unwrap();
-        std::fs::create_dir_all(&p).unwrap();
-        assert!(restore_pause_state(&dir).is_some(), "읽기 거부 = 정지 유지");
-        // 데몬 부팅 경로도 같은 판정을 쓴다.
-        let daemon = Daemon::new(dir.join("cysd.sock"));
-        assert!(daemon.paused.load(Ordering::SeqCst), "부팅 = 정지");
-        // 저장 실패(대상이 디렉터리) 는 오류로 돌아온다(종전: 결과 버림).
-        assert!(daemon.persist_pause().is_err(), "저장 실패가 삼켜졌다");
-        std::fs::remove_dir_all(&p).unwrap();
-        assert!(daemon.persist_pause().is_ok());
-        assert_eq!(restore_pause_state(&dir).map(|v| v.0 > 0.0), Some(true), "원자 저장 왕복");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -8290,7 +11864,7 @@ mod tests {
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         s.pending_queue.lock().unwrap().push_back(e.clone());
         daemon.persist_queue_state();
-        let out = load_queue_state(&dir);
+        let out = load_queue_state(&dir).rows;
         assert_eq!(out.len(), 2, "라이브 1 + restored 1");
         let live = out
             .iter()
@@ -8364,6 +11938,12 @@ mod tests {
             enqueued_at,
             from: None,
             origin: "send".to_string(),
+            ttl_secs: None,
+            paused_total_secs: 0.0,
+            expired_at: None,
+            revived_at: None,
+            expired_notified: false,
+            expired_event_sent: false,
         }
     }
 
@@ -8398,8 +11978,11 @@ mod tests {
         let dir = queue_wal_dir("w2c-merge");
         std::fs::write(
             dir.join("queue-state.json"),
-            r#"[{"id":"qold.2","seq":2,"surface_id":9,"role":"w2c-merge","text":"재기동 전 2","enqueued_at":200.0,"origin":"send"},
-                {"id":"qold.1","seq":1,"surface_id":9,"role":"w2c-merge","text":"재기동 전 1","enqueued_at":100.0,"origin":"send"}]"#,
+            // ★(0.14.31 · WP-5 M) 픽스처 보정: enqueued_at 100/200(1970년)은 기본 TTL 6h 로는 복원
+            //   시점에 만료돼 만료 큐로 간다(정본 M "재기동 시 보존 시각 기준 재계산"). 이 핀은
+            //   정렬 병합만 재므로 항목별 `ttl_secs:0`(만료 없음 · 명시 opt-out)으로 고정한다.
+            r#"[{"id":"qold.2","seq":2,"surface_id":9,"role":"w2c-merge","text":"재기동 전 2","enqueued_at":200.0,"origin":"send","ttl_secs":0},
+                {"id":"qold.1","seq":1,"surface_id":9,"role":"w2c-merge","text":"재기동 전 1","enqueued_at":100.0,"origin":"send","ttl_secs":0}]"#,
         )
         .unwrap();
         let daemon = Daemon::new(dir.join("cysd.sock"));
@@ -8438,9 +12021,20 @@ mod tests {
         );
         assert_eq!(ev["payload"]["role"], json!("w2c-merge"));
         assert_eq!(ev["payload"]["reordered"], json!(true), "기존 라이브 항목이 뒤로 밀림");
+        // ★(0.14.31 · 성찰 Q7) `entry_ids` 는 additive **W-id 에코**다 — 소비자(report_gate)가
+        //   "폐기가 아니라 아직 살아서 이동 중" 을 알고 inflight 의 TTL 창을 되감는 조인 키다
+        //   (그러지 않으면 park·rehome 이 seen TTL 을 넘길 때 같은 사건이 다시 enqueue 된다).
+        //   명명 계약(성찰 BLOCKER)이 금지하는 것은 **키명 재사용** — 큐 항목 id 를 이 키에 싣는
+        //   것 — 이지 키의 존재가 아니다. 이 배치의 본문에는 W-id 가 없으므로 에코는 빈 배열이고,
+        //   큐 항목 id 는 어느 것도 여기 들어오지 않는다.
+        let echo = ev["payload"]["entry_ids"]
+            .as_array()
+            .cloned()
+            .expect("W-id 에코 키가 없다 — 소비자가 inflight 를 되감지 못한다");
+        assert!(echo.is_empty(), "W-id 없는 본문인데 에코가 비어 있지 않다: {echo:?}");
         assert!(
-            ev["payload"].get("entry_ids").is_none(),
-            "entry_ids 키명은 W-id 에코 전용 — 재사용 금지(성찰 BLOCKER)"
+            !echo.iter().any(|v| v == "qold.1" || v == "qold.2"),
+            "entry_ids 키명 재사용 금지(성찰 BLOCKER) — 큐 항목 id 가 W-id 에코 키에 실렸다"
         );
         {
             let mut child = s.child.lock().unwrap();
@@ -8457,8 +12051,10 @@ mod tests {
         let dir = queue_wal_dir("w2c-empty");
         std::fs::write(
             dir.join("queue-state.json"),
-            r#"[{"id":"qe.2","seq":2,"surface_id":9,"role":"w2c-empty","text":"둘","enqueued_at":200.0,"origin":"send"},
-                {"id":"qe.1","seq":1,"surface_id":9,"role":"w2c-empty","text":"하나","enqueued_at":100.0,"origin":"send"}]"#,
+            // ★(0.14.31 · WP-5 M) 픽스처 보정: 1970년 enqueued_at 은 기본 TTL 로 복원 시점 만료 —
+            //   정렬 핀이므로 `ttl_secs:0`(명시 opt-out)으로 만료 축을 끈다(위 merge 핀과 동일).
+            r#"[{"id":"qe.2","seq":2,"surface_id":9,"role":"w2c-empty","text":"둘","enqueued_at":200.0,"origin":"send","ttl_secs":0},
+                {"id":"qe.1","seq":1,"surface_id":9,"role":"w2c-empty","text":"하나","enqueued_at":100.0,"origin":"send","ttl_secs":0}]"#,
         )
         .unwrap();
         let daemon = Daemon::new(dir.join("cysd.sock"));
@@ -8498,7 +12094,25 @@ mod tests {
         assert_eq!(p["queue_entry_ids"], json!(["qr.1", "qr.2"]), "병합 삽입 순서 보존");
         assert_eq!(p["role"], json!("worker"));
         assert_eq!(p["reordered"], json!(true));
-        assert!(p.get("entry_ids").is_none(), "entry_ids 키명 재사용 금지(성찰 BLOCKER)");
+        // ★(0.14.31 · 성찰 Q7) `entry_ids` = additive **W-id 에코**(소비자의 inflight TTL 되감기).
+        //   명명 계약(성찰 BLOCKER)은 **키명 재사용** 금지다 — 아래 두 단언이 그것을 집행한다:
+        //   본문에 W-id 가 없으면 빈 배열이고, 있으면 그 W-id 만 담는다(큐 항목 id 는 절대 아니다).
+        assert_eq!(p["entry_ids"], json!([]), "W-id 없는 본문의 에코가 빈 배열이 아니다");
+        let mut wa = w2c_entry("qr.3", 3, 30.0);
+        wa.text = "[wakeup W-0000abc123] 지시".into();
+        let mut wb = w2c_entry("qr.4", 4, 40.0);
+        wb.text = "[wakeup W-0000abc123] 중복 · [wakeup W-0000def456] 둘째".into();
+        let pw = queue_rehomed_payload("worker", &[wa, wb], false);
+        assert_eq!(
+            pw["entry_ids"],
+            json!(["W-0000abc123", "W-0000def456"]),
+            "W-id 에코가 등장순·중복 제거가 아니다"
+        );
+        assert_eq!(
+            pw["queue_entry_ids"],
+            json!(["qr.3", "qr.4"]),
+            "두 id 체계가 한 키에 섞였다(성찰 BLOCKER)"
+        );
 
         let m = queue_migrated_payload(3, 7, "master", &batch);
         assert_eq!(m["from_surface"], json!(3));
@@ -8536,6 +12150,12 @@ mod tests {
             enqueued_at,
             from: Some("surface:1".to_string()),
             origin: "send".to_string(),
+            ttl_secs: None,
+            paused_total_secs: 0.0,
+            expired_at: None,
+            revived_at: None,
+            expired_notified: false,
+            expired_event_sent: false,
         }
     }
 
@@ -8569,6 +12189,12 @@ mod tests {
                     enqueued_at: 0.0,
                     from: None,
                     origin: "test".into(),
+                    ttl_secs: None,
+                    paused_total_secs: 0.0,
+                    expired_at: None,
+                    revived_at: None,
+                    expired_notified: false,
+                    expired_event_sent: false,
                 })
                 .collect()
         };
@@ -8608,9 +12234,17 @@ mod tests {
                 json!(["qa.1", "qa.2"]),
                 "additive queue_entry_ids — 큐 순서 보존"
             );
-            assert!(
-                p.get("entry_ids").is_none(),
-                "entry_ids 키명은 W-id 에코 전용(javis_report_gate disarm 조인 키) — 재사용 금지"
+            // ★(0.14.31 · 성찰 Q6) `entry_ids` 는 **W-id 에코 전용**이다 — 두 id 체계가 한 키명을
+            //   공유하면 disarm 조인이 오염된다. 이 검체의 본문에는 W-id 가 없으므로 **빈 배열**이고,
+            //   무엇보다 `queue_entry_ids` 와 **같지 않아야** 한다(키명 재사용 금지의 실체).
+            assert_eq!(
+                p["entry_ids"],
+                json!([] as [&str; 0]),
+                "W-id 가 없는 본문인데 entry_ids 에 무언가 실렸다 — 조인 키 오염"
+            );
+            assert_ne!(
+                p["entry_ids"], p["queue_entry_ids"],
+                "entry_ids 에 큐 항목 id 가 실렸다 — javis_report_gate disarm 조인이 오염된다"
             );
             assert!(
                 p.get("cleared_by").is_none() && p.get("via").is_none(),
@@ -8621,6 +12255,24 @@ mod tests {
         let empty = queue_dropped_payload("cleared", &[], None);
         assert_eq!(empty["count"], json!(0));
         assert_eq!(empty["queue_entry_ids"], json!([] as [&str; 0]));
+        assert_eq!(empty["entry_ids"], json!([] as [&str; 0]));
+        // ★(0.14.31 · 성찰 Q6) 본문에 W-id 가 실려 있으면 **등장 순서 보존 · 중복 제거**로 에코한다
+        //   (`queue.delivered`·`queue.expired` 와 같은 산식 — `governance::wakeup_entry_ids`).
+        let with_wid = vec![
+            w2b_entry("qb.1", 1, "[wakeup W-a1b2c3] 보고 요망", 10.0),
+            w2b_entry("qb.2", 2, "[wakeup W-a1b2c3] 중복 · [wakeup W-ff00] 둘째", 20.0),
+        ];
+        let echoed = queue_dropped_payload("surface_closed", &with_wid, None);
+        assert_eq!(
+            echoed["entry_ids"],
+            json!(["W-a1b2c3", "W-ff00"]),
+            "폐기 통지에 W-id 에코가 없다/틀렸다 — 소비자에게 종결이 도달하지 않아 TTL 마다 재enqueue 된다"
+        );
+        assert_eq!(
+            echoed["queue_entry_ids"],
+            json!(["qb.1", "qb.2"]),
+            "queue_entry_ids 의미가 바뀌었다(두 체계 혼선)"
+        );
         // ★G4(W4-C) exited_reclaim 예외 경유: cleared_by/via 두 키만 additive — 기존 키 불변.
         let reclaimed = queue_dropped_payload("cleared", &dropped, Some((7, "exited_reclaim")));
         assert_eq!(reclaimed["reason"], json!("cleared"), "reclaim 경유도 기존 키 reason 불변");
@@ -8707,6 +12359,7 @@ mod tests {
     #[test]
     fn queue_starved_payload_pins_schema_and_operator_only_hint() {
         let head = w2b_entry("qs.3", 3, "오래 기다린 머리", 50.0);
+        let diag = c5_diag(None);
         let p = queue_starved_payload(
             "surface:7",
             Some("worker".into()),
@@ -8714,6 +12367,7 @@ mod tests {
             700,
             2,
             "busy(출력 중)",
+            &diag,
         );
         assert_eq!(p["surface_ref"], json!("surface:7"));
         assert_eq!(p["role"], json!("worker"));
@@ -8721,13 +12375,13 @@ mod tests {
         assert_eq!(p["waited_secs"], json!(700));
         assert_eq!(p["depth"], json!(2));
         assert_eq!(p["blocked_by"], json!("busy(출력 중)"));
-        assert_eq!(p["hint"], json!(QUEUE_STARVED_HINT), "hint 문구 = 상수 계약 그대로");
+        assert_eq!(p["hint"], json!(expected_starved_hint_for_env()), "hint 문구 = env 가 고른 상수 계약 그대로(LEGACY env 에서도 같은 사슬)");
         // 문구 계약의 핵심 2요소: ①운영자(사람) 판단 명시 ②자동 반응 금지 명시.
         assert!(QUEUE_STARVED_HINT.contains("운영자(사람) 판단"), "사람 판단 전제 명시");
         assert!(QUEUE_STARVED_HINT.contains("자동 반응"), "자동 반응 금지 명시");
         assert!(QUEUE_STARVED_HINT.contains("금지"), "금지 문면 존재");
         // role 없는 맨 셸 = null (depth_high 의 role 직렬화 관례와 동형).
-        let p2 = queue_starved_payload("surface:8", None, &head, 700, 1, "queue_paused(헬스 조치)");
+        let p2 = queue_starved_payload("surface:8", None, &head, 700, 1, "queue_paused(헬스 조치)", &diag);
         assert_eq!(p2["role"], json!(null));
     }
 
@@ -8839,6 +12493,1547 @@ mod tests {
             .unwrap()
             .as_secs();
         assert!(lm <= start, "링크 생성 시각({lm}) 이 좌석 시작 시각({start}) 보다 늦다");
+    }
+
+    // ─── ★(0.14.43 · C5) queue.starved 진단 필드·remedy·hint 정정 핀 ───────────────────────────────
+
+    /// 진단 스냅샷 픽스처 — 계수 1(사람 1) · 커서 뒤 고스트 있음 · v3. 커서 뒤 판독을 바꾸려면 `c5_diag_ga`.
+    fn c5_diag(draft_visible: Option<bool>) -> crate::governance::QueueBlockDiag {
+        c5_diag_ga(draft_visible, Some(true))
+    }
+
+    fn c5_diag_ga(draft_visible: Option<bool>, ghost_after_cursor: Option<bool>) -> crate::governance::QueueBlockDiag {
+        crate::governance::QueueBlockDiag {
+            pending_input_bytes: 1,
+            pending_input_human_bytes: 1,
+            draft_visible,
+            ghost_after_cursor,
+            parser_panics: 0,
+            paused: false,
+            kill_switch: false,
+            input_model: "v3",
+        }
+    }
+
+    /// ★(RQFIX I-11) payload 의 `hint` 가 **이 프로세스의 env** 가 고르는 문면이다 — `CYS_QUEUE_STARVED_HINT_LEGACY=1` 로 돌려도 이 기대값이 따라간다(제품과 같은 순수 함수 사슬).
+    /// 두 문면 자체의 바이트 고정은 `c5_starved_hint_corrected_text_and_legacy_branch` 가 env 없이 잰다.
+    fn expected_starved_hint_for_env() -> &'static str {
+        starved_hint_for(starved_hint_legacy_from_env(std::env::var("CYS_QUEUE_STARVED_HINT_LEGACY").ok().as_deref()))
+    }
+
+    /// 가산 키 8개가 payload 에 실리고(값 = 진단 스냅샷 · remedy = 순수 표) 기존 키 7개는 이름·의미가 그대로다.
+    /// 관측 불능(`draft_visible = None`)은 `null` 이다 — 결측은 값이 아니다(false 로 접지 않는다).
+    #[test]
+    fn c5_starved_payload_adds_diag_and_remedy_keys_and_keeps_old_keys() {
+        let head = w2b_entry("qs.9", 9, "머리", 50.0);
+        let blocked = crate::governance::BLOCKED_INPUT_PENDING;
+        let p = queue_starved_payload("surface:5", Some("cso".into()), &head, 4200, 3, blocked, &c5_diag_ga(Some(false), Some(false)));
+        // 기존 키 7개 — 이름·값 불변.
+        assert_eq!(p["surface_ref"], json!("surface:5"));
+        assert_eq!(p["role"], json!("cso"));
+        assert_eq!(p["head_entry_id"], json!("qs.9"));
+        assert_eq!(p["waited_secs"], json!(4200));
+        assert_eq!(p["depth"], json!(3));
+        assert_eq!(p["blocked_by"], json!(blocked));
+        assert_eq!(p["hint"], json!(expected_starved_hint_for_env()));
+        // 가산 키 8개.
+        assert_eq!(p["pending_input_bytes"], json!(1));
+        assert_eq!(p["pending_input_human_bytes"], json!(1));
+        assert_eq!(p["draft_visible"], json!(false));
+        assert_eq!(p["ghost_after_cursor"], json!(false));
+        assert_eq!(p["parser_panics"], json!(0));
+        assert_eq!(p["input_model"], json!("v3"));
+        assert_eq!(p["remedy_code"], json!("phantom_count"), "사람 계수 1 + 입력줄 빈 화면 + 커서 뒤 글자 없음 = 유령 계수(★RQFIX 개명)");
+        let remedy = p["remedy"].as_str().expect("remedy 문장");
+        assert!(remedy.contains("Ctrl-U"), "유령 계수 처방: {remedy}");
+        assert!(remedy.ends_with(crate::governance::REMEDY_LLM_SUFFIX), "자동 조치 금지 접미: {remedy}");
+        assert_eq!(p.as_object().unwrap().len(), 15, "기존 7 + 가산 8 — 그 밖의 키가 새면 계약 변경이다: {p}");
+        // 커서 뒤에 글자가 있으면(회색 제안인지 직접 쓴 글인지 모른다) 유령 단정이 아니라 `after_cursor_text`(표 7행) — 사람이 화면을 보고 가린다.
+        let p_after = queue_starved_payload("surface:5", Some("cso".into()), &head, 4200, 3, blocked, &c5_diag_ga(Some(false), Some(true)));
+        assert_eq!(p_after["remedy_code"], json!("after_cursor_text"));
+        assert_eq!(p_after["ghost_after_cursor"], json!(true));
+        // 관측 불능 = null(false 로 접지 않는다) — 계수가 있고 화면을 못 읽었으니 표 9행(`input_pending_unknown`)이다.
+        let p_none = queue_starved_payload("surface:5", None, &head, 4200, 3, blocked, &c5_diag(None));
+        assert!(p_none["draft_visible"].is_null(), "관측 불능은 null: {p_none}");
+        assert_eq!(p_none["remedy_code"], json!("input_pending_unknown"));
+        let mut paused = c5_diag(Some(true));
+        paused.paused = true;
+        let p_paused = queue_starved_payload("surface:5", None, &head, 4200, 3, blocked, &paused);
+        assert_eq!(p_paused["remedy_code"], json!("paused"), "동결은 어느 사유보다 앞선다");
+    }
+
+    /// hint 문면 정정 — 종전 문면의 "강제 배달 가능" 오류를 고치되 의미(운영자(사람) 판단 전제 · LLM 자동 반응 금지)는 유지하고,
+    /// 종전 문면은 LEGACY 로 바이트 보존한다. env 를 건드리지 않는다(`starved_hint_for` · `starved_hint_legacy_from_env` 순수 함수).
+    #[test]
+    fn c5_starved_hint_corrected_text_and_legacy_branch() {
+        assert_eq!(starved_hint_for(false), QUEUE_STARVED_HINT);
+        assert_eq!(starved_hint_for(true), QUEUE_STARVED_HINT_LEGACY);
+        assert_ne!(QUEUE_STARVED_HINT, QUEUE_STARVED_HINT_LEGACY);
+        // 정정 문면: 조치는 remedy 를 가리키고, 강제 배달이 면제하지 않는 게이트를 말하며, 의미(사람 판단·자동 반응 금지)는 유지한다.
+        // ★(RQFIX F7 · RQFIX2 n-2) 강제 배달이 건너뛰는 것은 **quiet 대기와 사이클 창(quiescing) 보류뿐**이다 — 일시정지·빈 좌석·사람 입력 직후·배달 최소 간격도 면제하지 않는다
+        //   (종전 정정 문면은 '간격 대기' 를 건너뛴다고 잘못 말했고, 첫 정정 문면은 사이클 창 보류도 건너뛴다는 사실을 빼먹었다 — `force_deliver_entry` 에 그 판정이 없다).
+        for must in [
+            "조치는 remedy 참조",
+            "quiet 대기와 사이클 창 보류만 건너뛰고",
+            "일시정지·빈 좌석·사람 입력 직후·배달 최소 간격",
+            "초안·모달·승인·전체화면·작업 중 게이트는 면제하지 않는다",
+            "운영자(사람) 판단",
+            "자동 반응",
+            "금지",
+        ] {
+            assert!(QUEUE_STARVED_HINT.contains(must), "정정 문면에 {must:?} 가 있어야 한다: {QUEUE_STARVED_HINT}");
+        }
+        assert!(!QUEUE_STARVED_HINT.contains("강제 배달 가능"), "틀린 안내('강제 배달 가능')가 남았다");
+        assert!(!QUEUE_STARVED_HINT.contains("quiet·간격"), "간격 대기를 건너뛴다는 틀린 주장이 남았다(F7)");
+        assert!(!QUEUE_STARVED_HINT.contains("quiet 대기만"), "사이클 창 보류를 빼먹은 첫 정정 문면이 남았다(n-2)");
+        assert_eq!(
+            QUEUE_STARVED_HINT,
+            "큐 머리가 장기 대기 중(게이트에 막힘) — 조치는 remedy 참조. 강제 배달(cys queue deliver)은 quiet 대기와 사이클 창 보류만 건너뛰고 \
+             일시정지·빈 좌석·사람 입력 직후·배달 최소 간격·초안·모달·승인·전체화면·작업 중 게이트는 면제하지 않는다(운영자(사람) 판단 전제). \
+             LLM 에이전트는 이 경보에 자동 반응(강제 배달·드레인) 금지",
+            "정정 문면 바이트 고정"
+        );
+        // 종전 문면 바이트 보존(롤백 노브가 되돌리는 값).
+        assert_eq!(
+            QUEUE_STARVED_HINT_LEGACY,
+            "큐 머리가 장기 대기 중(게이트에 막힘) — 운영자(사람) 판단 하에 cys queue deliver 로 강제 배달 가능. LLM 에이전트는 이 경보에 \
+             자동 반응(강제 배달·드레인) 금지",
+            "LEGACY 문면은 종전 바이트 그대로"
+        );
+        // env 해석 — 공백을 무시한 `1` 만 종전 문면이다.
+        for (v, want) in [
+            (Some("1"), true),
+            (Some(" 1 "), true),
+            (None, false),
+            (Some("0"), false),
+            (Some(""), false),
+            (Some("true"), false),
+            (Some("11"), false),
+        ] {
+            assert_eq!(starved_hint_legacy_from_env(v), want, "{v:?}");
+        }
+    }
+
+    // ═══════════ ★(0.14.31 · WP-5) TTL 순수 규칙·WAL 왕복·만료 파일 분리·순서 키 검체(wp5_*) ═══════════
+
+    /// ★WP-5: TTL 경계·pause·revive·시계 역행을 잘못 합치면 만료 면제 항목까지 폐기된다.
+    #[test]
+    fn wp5_queue_entry_expired_pure_rules() {
+        assert_eq!(QUEUE_TTL_DEFAULT_SECS, 21600, "기본 TTL은 6시간");
+        let mut e = w2c_entry("wp5-pure", 1, 100.0);
+        assert_eq!(
+            queue_entry_ttl_secs(&e, QUEUE_TTL_DEFAULT_SECS),
+            21600,
+            "None은 기본 TTL 승계"
+        );
+        assert!(
+            !queue_entry_expired(&e, 21699.0, 21600),
+            "TTL 직전에는 살아 있다"
+        );
+        assert!(queue_entry_expired(&e, 21700.0, 21600), "TTL 경계부터 만료");
+        e.ttl_secs = Some(0);
+        assert_eq!(
+            queue_entry_ttl_secs(&e, 21600),
+            0,
+            "명시 0을 기본값으로 치환하지 않는다"
+        );
+        assert!(
+            !queue_entry_expired(&e, 1_000_000.0, 21600),
+            "명시 0은 만료 면제"
+        );
+        e.ttl_secs = Some(10);
+        e.paused_total_secs = 5.0;
+        assert_eq!(
+            queue_entry_ttl_age_secs(&e, 114.0),
+            9.0,
+            "pause 5초는 TTL 나이에서 제외"
+        );
+        assert!(
+            !queue_entry_expired(&e, 114.0, 21600),
+            "실제 대기 14초여도 TTL 나이는 9초"
+        );
+        assert!(
+            queue_entry_expired(&e, 115.0, 21600),
+            "pause를 뺀 10초 경계는 만료"
+        );
+        e.paused_total_secs = 0.0;
+        e.revived_at = Some(200.0);
+        assert_eq!(e.enqueued_at, 100.0, "revive는 원 발신 시각을 보존");
+        assert_eq!(
+            queue_entry_ttl_age_secs(&e, 209.0),
+            9.0,
+            "revived_at으로 TTL 기준 이동"
+        );
+        assert!(
+            !queue_entry_expired(&e, 209.0, 21600),
+            "원 발신 시각으로 재만료시키지 않는다"
+        );
+        assert!(
+            queue_entry_expired(&e, 210.0, 21600),
+            "revive 이후에도 TTL 경계는 적용"
+        );
+        e.expired_at = Some(210.0);
+        assert!(
+            !queue_entry_expired(&e, 999.0, 21600),
+            "이미 만료된 항목에 중복 만료 금지"
+        );
+        e.expired_at = None;
+        e.revived_at = None;
+        assert_eq!(
+            queue_entry_ttl_age_secs(&e, 99.0),
+            0.0,
+            "시계 역행은 0으로 클램프"
+        );
+        assert!(
+            !queue_entry_expired(&e, 99.0, 21600),
+            "미래 발신 시각을 만료로 해석하지 않는다"
+        );
+    }
+
+    /// ★WP-5: 구 데몬이 신규 5키를 지워도 보존된 발신 시각으로 7시간 항목을 만료시켜야 한다.
+    #[test]
+    fn wp5_wal_roundtrip_new_old_new_recomputes_expiry() {
+        assert_eq!(
+            queue_ttl_default_secs(),
+            21600,
+            "이 검체는 CYS_QUEUE_TTL_SECS 미설정/21600에서 실행"
+        );
+        let _ledger = crate::delivery::tests::isolate_state_dir("wp5-wal-roundtrip");
+        let dir = queue_wal_dir("wp5-roundtrip");
+        let daemon_a = Daemon::new(dir.join("cysd.sock"));
+        let a = daemon_a
+            .create_surface(
+                None,
+                Some("sleep 30".into()),
+                None,
+                Some("r".into()),
+                24,
+                80,
+            )
+            .expect("A surface 생성");
+        daemon_a.surfaces.lock().unwrap().insert(a.id, a.clone());
+        let now = now_epoch();
+        let old = w2c_entry("wp5-old", 41, now - 7.0 * 3600.0);
+        let fresh = w2c_entry("wp5-fresh", 42, now);
+        a.pending_queue
+            .lock()
+            .unwrap()
+            .extend([old.clone(), fresh.clone()]);
+        daemon_a.persist_queue_state();
+        let path = dir.join("queue-state.json");
+        let mut rows: Value = serde_json::from_slice(&std::fs::read(&path).expect("신 WAL 읽기"))
+            .expect("신 WAL 배열 파싱");
+        assert_eq!(
+            rows.as_array().expect("WAL 배열").len(),
+            2,
+            "활성 2건을 먼저 기록"
+        );
+        for row in rows.as_array_mut().expect("WAL 배열") {
+            let obj = row.as_object_mut().expect("WAL 객체");
+            for key in [
+                "ttl_secs",
+                "paused_total_secs",
+                "expired_at",
+                "revived_at",
+                "expired_notified",
+            ] {
+                assert!(obj.contains_key(key), "신 WAL 필드 누락: {key}");
+                obj.remove(key);
+            }
+        }
+        std::fs::write(&path, serde_json::to_vec(&rows).expect("구 WAL 직렬화"))
+            .expect("구 데몬 재기록 모사");
+        let expired_path = dir.join("queue-expired.json");
+        if expired_path.exists() {
+            std::fs::remove_file(expired_path).expect("구 데몬은 만료 WAL을 보존하지 않음");
+        }
+        let daemon_b = Daemon::new(dir.join("cysd.sock"));
+        assert!(
+            daemon_b.queue_seq.load(Ordering::SeqCst) > old.seq.max(fresh.seq),
+            "복원 시드가 두 seq보다 커야 한다"
+        );
+        let b = daemon_b
+            .create_surface(
+                None,
+                Some("sleep 30".into()),
+                None,
+                Some("r".into()),
+                24,
+                80,
+            )
+            .expect("B surface 생성");
+        daemon_b.surfaces.lock().unwrap().insert(b.id, b.clone());
+        daemon_b.rehome_restored_queue();
+        let active = b.pending_queue.lock().unwrap().clone();
+        let expired = b.expired_queue.lock().unwrap().clone();
+        for s in [&a, &b] {
+            let mut child = s.child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            active.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            vec![fresh.id.as_str()],
+            "구 WAL 왕복 후 오래된 항목이 활성 큐에 유입되면 안 된다"
+        );
+        assert_eq!(expired.len(), 1, "7시간 항목만 만료 복원");
+        assert_eq!(expired[0].id, old.id, "만료된 항목의 안정 ID 보존");
+        assert!(
+            expired[0].expired_at.is_some(),
+            "신규 키가 사라졌어도 만료 시각 재계산"
+        );
+        assert_eq!(
+            expired[0].enqueued_at, old.enqueued_at,
+            "원 발신 시각을 복원 시각으로 덮지 않는다"
+        );
+        assert_eq!(
+            expired[0].ttl_secs, None,
+            "구 WAL의 TTL 키 부재는 기본값 승계"
+        );
+    }
+
+
+    /// ★(0.14.31 · 리뷰 R1 · codex blocking) **실제 구 데몬 왕복** — 구 데몬은 `queue-expired.json`
+    /// 을 *지우지 않는다*. 그 파일의 존재조차 모르므로 **손대지 않고 남긴다**.
+    ///
+    /// 종전 검체는 신 필드를 손으로 지우고 만료 사이드카를 **삭제**했다(구 데몬이 하지 않을 일).
+    /// 그래서 "만료분이 사이드카에 그대로 남아 신 데몬으로 돌아온다" 는 실제 경로가 한 번도
+    /// 검증되지 않았다. 여기서는 ⓐ 활성 파일만 구 형식으로 재기록하고 ⓑ 사이드카는 그대로 둔 뒤
+    /// ⓒ 신 데몬으로 다시 열어, 비기본 TTL·revive·pause 회계와 **두 래치**가 어디까지 살아남는지
+    /// 사실대로 고정한다.
+    #[test]
+    fn wp5_r1_old_daemon_roundtrip_leaves_the_expired_sidecar_intact() {
+        let _ledger = crate::delivery::tests::isolate_state_dir("wp5-r1-sidecar");
+        let dir = queue_wal_dir("wp5-r1-sidecar");
+        let daemon_a = Daemon::new(dir.join("cysd.sock"));
+        let a = daemon_a
+            .create_surface(None, Some("sleep 30".into()), None, Some("r".into()), 24, 80)
+            .expect("A surface");
+        daemon_a.surfaces.lock().unwrap().insert(a.id, a.clone());
+        let now = now_epoch();
+        // 활성 — 비기본 회계(개별 TTL·pause 크레딧·revive 시각)를 전부 채운다.
+        let mut active = w2c_entry("wp5-r1-active", 71, now - 600.0);
+        active.ttl_secs = Some(9_000);
+        active.paused_total_secs = 42.0;
+        active.revived_at = Some(now - 300.0);
+        // 만료 — 통지·이벤트 래치가 선 채로 사이드카에 있다(재기동이 그것을 다시 쏘면 안 된다).
+        let mut expired = w2c_entry("wp5-r1-expired", 72, now - 9.0 * 3600.0);
+        expired.expired_at = Some(now - 3600.0);
+        expired.expired_notified = true;
+        expired.expired_event_sent = true;
+        expired.ttl_secs = Some(60);
+        a.pending_queue.lock().unwrap().push_back(active.clone());
+        a.expired_queue.lock().unwrap().push_back(expired.clone());
+        daemon_a.persist_queue_state();
+        let active_path = dir.join("queue-state.json");
+        let sidecar_path = dir.join("queue-expired.json");
+        let sidecar_before = std::fs::read_to_string(&sidecar_path).expect("사이드카 기록");
+        // ── 구 데몬(0.14.30) 모사: 활성 WAL 만 자기 스키마로 다시 쓴다. 사이드카는 **무접촉**.
+        let mut rows: Value = serde_json::from_str(
+            &std::fs::read_to_string(&active_path).expect("활성 WAL"),
+        )
+        .expect("배열");
+        for row in rows.as_array_mut().expect("배열") {
+            let obj = row.as_object_mut().expect("객체");
+            for key in [
+                "ttl_secs",
+                "paused_total_secs",
+                "expired_at",
+                "revived_at",
+                "expired_notified",
+                "expired_event_sent",
+            ] {
+                assert!(obj.contains_key(key), "신 WAL 필드 누락: {key}");
+                obj.remove(key); // 구 데몬은 모르는 키를 버리고 다시 쓴다
+            }
+        }
+        std::fs::write(&active_path, serde_json::to_vec(&rows).expect("직렬화")).expect("구 재기록");
+        assert_eq!(
+            std::fs::read_to_string(&sidecar_path).expect("사이드카"),
+            sidecar_before,
+            "구 데몬은 이 파일을 모른다 — 검체가 대신 지우면 실제 경로를 재지 못한다"
+        );
+        // ── 신 데몬으로 복귀.
+        let daemon_b = Daemon::new(dir.join("cysd.sock"));
+        let restored_expired = daemon_b.restored_expired.lock().unwrap().clone();
+        let row = restored_expired
+            .iter()
+            .find(|it| it["id"].as_str() == Some(expired.id.as_str()))
+            .expect("사이드카의 만료 항목이 복원되지 않았다");
+        assert_eq!(row["expired_notified"], json!(true), "통지 표식이 왕복에서 사라졌다(중복 통지)");
+        assert_eq!(
+            row["expired_event_sent"],
+            json!(true),
+            "이벤트 래치가 왕복에서 사라졌다 — 재기동마다 같은 항목의 queue.expired 가 다시 나간다"
+        );
+        assert_eq!(row["ttl_secs"], json!(60), "사이드카는 개별 TTL 을 그대로 보존한다");
+        assert_eq!(row["text"], json!(expired.text), "본문 보존");
+        // 활성분: 구 데몬이 지운 키는 기본값으로 돌아오고(문서화된 손실) 발신 시각은 보존된다.
+        let b = daemon_b
+            .create_surface(None, Some("sleep 30".into()), None, Some("r".into()), 24, 80)
+            .expect("B surface");
+        daemon_b.surfaces.lock().unwrap().insert(b.id, b.clone());
+        daemon_b.rehome_restored_queue();
+        let q = b.pending_queue.lock().unwrap().clone();
+        let x = b.expired_queue.lock().unwrap().clone();
+        for s in [&a, &b] {
+            let mut child = s.child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let got = q.iter().find(|e| e.id == active.id).expect("활성 항목이 사라졌다");
+        assert_eq!(got.enqueued_at, active.enqueued_at, "원 발신 시각은 보존된다");
+        assert_eq!(got.ttl_secs, None, "구 왕복에서 개별 TTL 은 기본으로 돌아온다(문서화된 잔여)");
+        assert_eq!(got.paused_total_secs, 0.0, "pause 크레딧도 기본으로 돌아온다");
+        assert!(got.revived_at.is_none(), "revive 시각도 기본으로 돌아온다");
+        let xe = x.iter().find(|e| e.id == expired.id).expect("만료분이 재홈되지 않았다");
+        assert!(xe.expired_notified && xe.expired_event_sent, "재홈이 래치를 잃었다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★(0.14.31 · 리뷰 R1 · codex blocking) **인계 가드의 결판 규칙** — writer 는 자기가 CAS 에
+    /// 이겼을 때만 쓰고, 호출부가 이미 커밋했으면 세대가 흘렀어도 쓴다(보고된 배달은 반드시 나간다).
+    #[test]
+    fn wp5_r1_inject_guard_writer_skips_only_when_it_wins_the_race() {
+        use std::sync::mpsc::sync_channel;
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // ⓐ 세대가 흘렀다 → writer 가 중단시키고 **한 바이트도** 쓰지 않는다.
+        let gen = Arc::new(AtomicU64::new(4));
+        let guard = Arc::new(InjectGuard::new(Some(4), gen.clone(), false, None));
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = sync_channel::<WriteReq>(2);
+        let stop = Arc::new(AtomicBool::new(false));
+        let w = SharedBuf(Arc::clone(&buf));
+        let handle = std::thread::spawn(move || run_writer_loop(w, rx, stop));
+        gen.store(6, Ordering::Release); // 판정 이후 청크가 흘렀다(모달이 그려졌을 수 있다)
+        tx.send(WriteReq::Inject {
+            text: "큐 본문".into(),
+            cr_delay_ms: 0,
+            clear_first: true,
+            guard: Some(guard.clone()),
+        })
+        .unwrap();
+        drop(tx);
+        handle.join().ok();
+        assert!(
+            buf.lock().unwrap().is_empty(),
+            "세대가 흘렀는데 본문·Ctrl-U·CR 중 하나라도 나갔다: {:?}",
+            String::from_utf8_lossy(&buf.lock().unwrap())
+        );
+        assert_eq!(guard.state.load(Ordering::Acquire), INJECT_ABORTED);
+        assert_eq!(guard.settle(0), INJECT_ABORTED, "결판은 한 번이고 뒤집히지 않는다");
+
+        // ⓑ 호출부가 먼저 커밋했다(그 배달은 이미 '배달됨' 으로 보고됐다) → 세대가 흘렀어도 쓴다.
+        let gen2 = Arc::new(AtomicU64::new(10));
+        let g2 = Arc::new(InjectGuard::new(Some(10), gen2.clone(), false, None));
+        assert!(g2
+            .state
+            .compare_exchange(INJECT_PENDING, INJECT_CLAIMED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok());
+        gen2.store(12, Ordering::Release);
+        let buf2: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let (tx2, rx2) = sync_channel::<WriteReq>(2);
+        let stop2 = Arc::new(AtomicBool::new(false));
+        let w2 = SharedBuf(Arc::clone(&buf2));
+        let h2 = std::thread::spawn(move || run_writer_loop(w2, rx2, stop2));
+        tx2.send(WriteReq::Inject {
+            text: "확정된 본문".into(),
+            cr_delay_ms: 0,
+            clear_first: false,
+            guard: Some(g2),
+        })
+        .unwrap();
+        drop(tx2);
+        h2.join().ok();
+        let out = String::from_utf8_lossy(&buf2.lock().unwrap()).to_string();
+        assert!(
+            out.contains("확정된 본문") && out.ends_with('\r'),
+            "호출부가 커밋한 배달이 나가지 않았다(보고된 배달의 유실): {out:?}"
+        );
+
+        // ⓒ 세대가 그대로면 종전과 똑같이 나간다(가드가 상시 닫히면 기아다).
+        let gen3 = Arc::new(AtomicU64::new(2));
+        let g3 = Arc::new(InjectGuard::new(Some(2), gen3.clone(), false, None));
+        let buf3: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let (tx3, rx3) = sync_channel::<WriteReq>(2);
+        let stop3 = Arc::new(AtomicBool::new(false));
+        let w3 = SharedBuf(Arc::clone(&buf3));
+        let h3 = std::thread::spawn(move || run_writer_loop(w3, rx3, stop3));
+        tx3.send(WriteReq::Inject {
+            text: "정상 배달".into(),
+            cr_delay_ms: 0,
+            clear_first: false,
+            guard: Some(g3.clone()),
+        })
+        .unwrap();
+        drop(tx3);
+        h3.join().ok();
+        assert_eq!(g3.state.load(Ordering::Acquire), INJECT_CLAIMED);
+        assert!(String::from_utf8_lossy(&buf3.lock().unwrap()).contains("정상 배달"));
+    }
+
+    // ─── ★(리뷰 R1) codex(gpt-6-astra) 위임 검체 — `InjectGuard` 상태기계(결판 1회·불가역·
+    //     writer/호출부 승패·커밋 후 세대 변화·실스레드 경합 128회). 초안 검토 후 수정 0 으로 통합.
+
+    #[test]
+    fn wp5_r1_cx_inject_settlement_never_reverses() {
+        use super::{InjectGuard, INJECT_ABORTED, INJECT_CLAIMED, INJECT_PENDING};
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
+
+        for terminal in [INJECT_CLAIMED, INJECT_ABORTED] {
+            let generation = Arc::new(AtomicU64::new(4));
+            let guard = InjectGuard::new(Some(4), Arc::clone(&generation), false, None);
+            assert_eq!(
+                guard.state.compare_exchange(
+                    INJECT_PENDING,
+                    terminal,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                ),
+                Ok(INJECT_PENDING),
+                "새 가드가 pending이 아니어서 단일 결판 검체를 구성할 수 없다"
+            );
+            // ★(0.14.31 · 리뷰 R2 · codex blocking B2) `CLAIMED` 를 호출부가 **수확**하면 저장 상태는
+            //   `INJECT_ACKED` 가 된다(그 뒤 writer 의 늦은 중단은 성립하지 않는다 = 보고된 배달은
+            //   반드시 쓰인다). 반환값 계약은 불변이다 — settle 은 계속 `CLAIMED`/`ABORTED` 만 준다.
+            let stored = if terminal == INJECT_CLAIMED { super::INJECT_ACKED } else { INJECT_ABORTED };
+            for next_generation in [4, 6, 8] {
+                generation.store(next_generation, Ordering::Release);
+                assert_eq!(
+                    (guard.settle(0), guard.state.load(Ordering::Acquire)),
+                    (terminal, stored),
+                    "반복 settle 또는 세대 변경이 이미 확정된 결판을 뒤집었다"
+                );
+            }
+        }
+    }
+
+    /// ★(0.14.31 · 리뷰 R2 · codex blocking B2) **가드는 승인·관문 대기도 지고, 그 축은 경로를
+    /// 가리지 않는다.**
+    ///
+    /// 종전 가드 필드는 `expect_gen`/`output_gen`/`state` 뿐이었다 — writer 가 적체된 800ms 사이에
+    /// 승인 feed 가 늘어도(출력 세대는 그대로) 본문이 그대로 나갔다. 게다가 가드는 **정적 경로에만**
+    /// 붙어서 비-alt 요청은 애초에 아무 재확인도 없었다(codex 반례 ①③).
+    /// 지금은 ⓐ 승인 축이 별도 세대 카운터가 아니라 **판정과 같은 술어를 다시 읽는 탐침**이고
+    /// ⓑ 출력 세대는 `Option`(비-alt 는 `None`)이라 **모든 경로가 승인 축을 진다**.
+    ///
+    /// ★(0.14.31 · 성찰 Q1 · 핀 정정) 이 탐침은 이제 `SafetyProbe` 다 — 반환 true 의 뜻은 "승인
+    /// 대기 중" 이 아니라 "**지금 이 좌석에 넣으면 안 된다**"(pause · 승인·관문 · 현재 프레임의
+    /// 화면). 아래 ⓑ 가 "탐침 false → 쓴다" 를 핀하는 것은 그대로 옳지만, 종전 문면("승인이
+    /// 없으면 쓴다")은 비-alt 경로에서 **화면을 보지 않아도 된다** 로 읽혔고 그것이 Q1 의 구멍
+    /// (완성된 모달 위에 본문+Return)을 '성공해야 한다' 로 고정하고 있었다. 화면 축의 실검체는
+    /// `governance::reflect_queue_tests::q1_writer_safety_probe_sees_a_modal_drawn_after_the_verdict`.
+    #[test]
+    fn wp5_r2_inject_guard_carries_the_approval_axis_on_every_path() {
+        use super::{InjectGuard, INJECT_ABORTED, INJECT_CLAIMED};
+        use std::sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
+        };
+        // 주입 차단 사실(승인·화면·pause 어느 것이든)을 흉내내는 안전 탐침 — 판정 시점 false,
+        // 그 뒤 true 로 바뀐다.
+        let flipped = Arc::new(AtomicBool::new(false));
+        let probe = {
+            let f = flipped.clone();
+            Arc::new(move || f.load(Ordering::Acquire)) as super::SafetyProbe
+        };
+        // ⓐ 비-alt 경로(expect_gen=None · 출력 세대 불변을 요구하지 않는다)도 승인이 뜨면 중단한다.
+        let gen = Arc::new(AtomicU64::new(7)); // 홀짝·값 무관 — 이 경로는 세대를 보지 않는다
+        let g = InjectGuard::new(None, gen.clone(), false, Some(probe.clone()));
+        flipped.store(true, Ordering::Release);
+        assert!(!g.claim_for_write(), "비-alt 인계가 승인 대기를 통과했다(§8 면제 없음)");
+        assert_eq!(g.state.load(Ordering::Acquire), INJECT_ABORTED);
+        // ⓑ 같은 경로에서 승인이 그대로면 정상적으로 쓴다(축이 상시 닫히지 않는다).
+        flipped.store(false, Ordering::Release);
+        let g2 = InjectGuard::new(None, gen.clone(), false, Some(probe.clone()));
+        assert!(g2.claim_for_write(), "승인이 없는데 비-alt 인계가 막혔다(기아)");
+        assert_eq!(g2.settle(0), INJECT_CLAIMED);
+        // ⓒ 판정이 '승인 있음' 을 본 상태에서 승인이 **사라지는** 것도 변화다 — 그 판정도 무효다.
+        flipped.store(true, Ordering::Release);
+        let g3 = InjectGuard::new(Some(4), Arc::new(AtomicU64::new(4)), true, Some(probe.clone()));
+        flipped.store(false, Ordering::Release);
+        assert!(!g3.claim_for_write(), "판정 재료가 바뀌었는데 그대로 썼다");
+        // ⓓ 출력 세대 축은 종전대로 — alt 경로는 세대가 흐르면 중단한다.
+        let gen4 = Arc::new(AtomicU64::new(4));
+        let g4 = InjectGuard::new(Some(4), gen4.clone(), false, Some(probe.clone()));
+        gen4.store(6, Ordering::Release);
+        assert!(!g4.claim_for_write(), "정적 판정 경로가 흐른 세대로 썼다");
+    }
+
+    /// ★(0.14.31 · 리뷰 R2 · codex B6ⓒ) **신 데이터 → 구 판독기.** 종전 검체는 구 데이터를 손으로
+    /// 만들어 신 판독기에 먹였다(방향이 반대다). 여기서는 **0.14.31 이 실제로 쓴 두 파일**을 두고
+    /// 0.14.30 이 하던 일(활성 WAL 만 읽고 모르는 키는 버린다)을 그대로 흉내내, 만료 항목이 구
+    /// 데몬의 활성 큐로 **되살아나지 않음**을 본다(파일 분리의 존재 이유).
+    /// 구 바이너리 실행 자체는 이번 라운드 범위 밖이다(별 리비전 빌드 필요 · 노트 not-tested).
+    #[test]
+    fn wp5_r2_new_wal_is_safe_for_an_old_reader() {
+        let td = std::env::temp_dir().join(format!(
+            "cys-wp5r2-oldreader-{}-{}",
+            std::process::id(),
+            now_epoch() as u64
+        ));
+        std::fs::create_dir_all(&td).expect("temp");
+        let sock = td.join("cys.sock");
+        let daemon = Daemon::new(sock.clone());
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("좌석");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        let active = daemon.next_queue_entry("활성 본문".into(), None, "test");
+        let active_id = active.id.clone();
+        s.pending_queue.lock().unwrap().push_back(active);
+        let mut expired = daemon.next_queue_entry("만료 본문".into(), None, "test");
+        expired.expired_at = Some(now_epoch());
+        let expired_id = expired.id.clone();
+        s.expired_queue.lock().unwrap().push_back(expired);
+        daemon.persist_queue_state();
+        let dir = state_dir(&sock);
+        // 구 판독기: `queue-state.json` 하나만 읽고, 모르는 키(ttl_secs·expired_at…)는 무시한다.
+        let raw = std::fs::read_to_string(dir.join("queue-state.json")).expect("활성 WAL");
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&raw).expect("JSON 배열");
+        let ids: Vec<String> = rows
+            .iter()
+            .filter_map(|r| r.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        assert!(ids.iter().any(|i| i == &active_id), "구 판독기가 활성 항목을 잃었다");
+        assert!(
+            !ids.iter().any(|i| i == &expired_id),
+            "만료 항목이 활성 WAL 에 실렸다 — 구 데몬(롤백)이 그것을 되살려 배달한다"
+        );
+        assert!(
+            dir.join("queue-expired.json").exists(),
+            "만료 사이드카가 없다 — 만료 항목이 어디에도 남지 않았다(유실)"
+        );
+        // 구 판독기가 필수로 보던 키는 전부 그대로다(스키마 파괴 없음).
+        for k in ["id", "text", "surface_id", "enqueued_at", "seq", "origin"] {
+            assert!(rows[0].get(k).is_some(), "구 판독기 필수 키 {k} 가 사라졌다");
+        }
+    }
+
+    #[test]
+    fn wp5_r1_cx_inject_writer_abort_is_seen_by_caller() {
+        use super::{InjectGuard, INJECT_ABORTED};
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
+
+        let generation = Arc::new(AtomicU64::new(4));
+        let guard = InjectGuard::new(Some(4), Arc::clone(&generation), false, None);
+        generation.store(6, Ordering::Release);
+        let writes = guard.claim_for_write();
+        assert_eq!(
+            (writes, guard.settle(0)),
+            (false, INJECT_ABORTED),
+            "세대 불일치로 writer가 먼저 중단했는데 호출부와 쓰기 여부가 일치하지 않는다"
+        );
+    }
+
+    #[test]
+    fn wp5_r1_cx_inject_caller_abort_prevents_writer_claim() {
+        use super::{InjectGuard, INJECT_ABORTED};
+        use std::sync::{atomic::AtomicU64, Arc};
+
+        let guard = InjectGuard::new(Some(4), Arc::new(AtomicU64::new(4)), false, None);
+        // 0ms는 마감 분기를 즉시 선택한다. 경과 시간이나 스레드 스케줄링을 재지 않는다.
+        let settled = guard.settle(0);
+        let writes = guard.claim_for_write();
+        assert_eq!(
+            (settled, writes),
+            (INJECT_ABORTED, false),
+            "호출부가 먼저 마감 중단한 항목을 같은 세대의 writer가 다시 쓰기로 결정했다"
+        );
+    }
+
+    #[test]
+    fn wp5_r1_cx_inject_committed_claim_survives_generation_change() {
+        use super::{InjectGuard, INJECT_CLAIMED, INJECT_PENDING};
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
+
+        let generation = Arc::new(AtomicU64::new(4));
+        let guard = InjectGuard::new(Some(4), Arc::clone(&generation), false, None);
+        // 현재 settle은 커밋하지 않는다. 이미 보고된 claimed 상태를 CAS로 구성한다.
+        assert_eq!(
+            guard.state.compare_exchange(
+                INJECT_PENDING,
+                INJECT_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire
+            ),
+            Ok(INJECT_PENDING),
+            "이미 보고된 배달을 나타내는 claimed 상태를 구성하지 못했다"
+        );
+        generation.store(6, Ordering::Release);
+        assert!(
+            guard.claim_for_write(),
+            "이미 claimed로 보고한 배달을 세대 변경 때문에 writer가 누락시켰다"
+        );
+    }
+
+    #[test]
+    fn wp5_r1_cx_inject_settle_aborts_changed_generation() {
+        use super::{InjectGuard, INJECT_ABORTED};
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
+
+        let generation = Arc::new(AtomicU64::new(4));
+        let guard = InjectGuard::new(Some(4), Arc::clone(&generation), false, None);
+        generation.store(6, Ordering::Release);
+        // 긴 유한 마감을 주되 시간 단언은 하지 않는다. 진입 전에 세대 변경을 확정한다.
+        assert_eq!(
+            (guard.settle(1_000), guard.state.load(Ordering::Acquire)),
+            (INJECT_ABORTED, INJECT_ABORTED),
+            "세대가 바뀐 pending 가드를 settle이 aborted로 확정하지 않았다"
+        );
+    }
+
+    /// ★[triage · codex blocking] **가드는 "지금 승인 대기 중" 을 정상 기대값으로 채택하면 안 된다.**
+    ///
+    /// `governance::deliver_head_locked` 는 마지막 게이트 **뒤에** `approval_or_gate_pending` 을 한 번 더
+    /// 읽어 그 값을 `expect_approval` 로 심는다. 그 사이(게이트 통과 ↔ 가드 생성)에 승인 feed 가
+    /// 생기면 기대값이 `true` 로 굳고, `axes_moved()` 는 `p() != expect_approval` 만 보므로 승인이
+    /// **계속 대기 중이어도** writer 가 본문+CR 을 그대로 쓴다 — 승인 창에 Return 을 넣는 것이
+    /// 정본 §8("승인 대기 게이트는 어떤 경로에서도 면제되지 않는다")이 금지한 바로 그 동작이다.
+    #[test]
+    fn triage_wp5_guard_must_not_adopt_a_pending_approval_as_its_expectation() {
+        use super::{InjectGuard, SafetyProbe};
+        use std::sync::{atomic::AtomicU64, Arc};
+
+        let probe: SafetyProbe = Arc::new(|| true); // 승인은 계속 대기 중이다
+        let guard = InjectGuard::new(None, Arc::new(AtomicU64::new(4)), true, Some(probe));
+        assert!(
+            !guard.claim_for_write(),
+            "승인이 대기 중인데 writer 가 쓰기로 확정했다 — 기대값 true 가 승인 축을 통째로 면제한다"
+        );
+    }
+
+    /// ★[triage · codex blocking] **호출부의 ACK 가 writer 의 안전 재검사를 무력화한다.**
+    ///
+    /// `claim_for_write` 는 `PENDING→CLAIMED` CAS 로 소유권을 **공개한 뒤** 승인·세대를 다시 본다.
+    /// 그 두 번째 관측은 승인 탐침(데몬 락)을 부르므로 짧지 않고, 그 창에서 호출부의 `settle` 이
+    /// CLAIMED 를 수확(`ACKED`)하면 늦은 중단 CAS 가 실패해 **바뀐 판정 재료를 보고도 쓴다**.
+    /// 재검사가 끝나기 전에는 성공을 수확할 수 없어야 한다(쓰기 권한과 배달 보고의 분리).
+    ///
+    /// ★(0.14.31 · 성찰 Q1·Q2 · 의도적 재핀) 무거운 안전 탐침은 이제 **정확히 한 번**, `CLAIMING`
+    /// 을 집은 뒤에만 돈다(종전 2회 — 소유권을 집기 전의 1회는 취소 가능한 상태라 안전에 기여하지
+    /// 않으면서 writer 를 두 배로 묶었다). 그래서 이 검체의 핀은 "두 번 돌았다" → "**한 번**, 그리고
+    /// 그 한 번은 `CLAIMING` 안에서" 로 바뀐다. 재는 성질은 그대로다: 탐침이 도는 동안 호출부의
+    /// 수확(`CLAIMED→ACKED`)이 **성립할 수 없고**, 탐침이 막으면 writer 는 쓰지 않는다.
+    #[test]
+    fn triage_wp5_ack_must_not_defeat_the_writer_late_abort() {
+        use super::{InjectGuard, SafetyProbe, INJECT_ACKED, INJECT_CLAIMED, INJECT_PENDING};
+        use std::sync::{
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+            Arc, OnceLock, Weak,
+        };
+
+        let slot: Arc<OnceLock<Weak<InjectGuard>>> = Arc::new(OnceLock::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (s2, c2) = (Arc::clone(&slot), Arc::clone(&calls));
+        // 탐침이 도는 **그 창**에서 호출부가 CLAIMED 를 수확하려 시도하고, 그 사이 승인·모달이
+        // 떴다 — 를 재현한다(스레드 타이밍에 기대지 않는다). 탐침 안에서 상태가 `CLAIMING` 인지도
+        // 함께 잰다: 그것이 "수확이 성립할 수 없다" 의 실체다.
+        let probe: SafetyProbe = Arc::new(move || {
+            let n = c2.fetch_add(1, Ordering::AcqRel);
+            if let Some(g) = s2.get().and_then(Weak::upgrade) {
+                assert_eq!(
+                    g.state.load(Ordering::Acquire),
+                    super::INJECT_CLAIMING,
+                    "탐침 {n}회차가 CLAIMING 밖에서 돌았다 — 소유권을 집기 전의 무거운 검사가 되살아났다"
+                );
+                // 호출부(watchdog)의 수확 — settle 이 CLAIMED 를 보고 ACKED 로 굳히려 한다.
+                let acked = g
+                    .state
+                    .compare_exchange(INJECT_CLAIMED, INJECT_ACKED, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok();
+                assert!(!acked, "재검사 중에 호출부가 CLAIMED 를 수확했다");
+            }
+            true // 그 사이 승인·모달이 떴다
+        });
+        let guard =
+            Arc::new(InjectGuard::new(None, Arc::new(AtomicU64::new(4)), false, Some(probe)));
+        let _ = slot.set(Arc::downgrade(&guard));
+        assert_eq!(guard.state.load(Ordering::Acquire), INJECT_PENDING, "전제: 미결판");
+        let writes = guard.claim_for_write();
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "안전 탐침은 CLAIMING 안에서 정확히 한 번 돈다(성찰 Q1·Q2 재핀)"
+        );
+        assert!(
+            !writes,
+            "호출부가 CLAIMED 를 수확한 뒤에는 승인이 떠도 writer 가 그대로 쓴다 — 안전 재검사가 죽는다"
+        );
+        assert_eq!(
+            guard.state.load(Ordering::Acquire),
+            super::INJECT_ABORTED,
+            "막힌 인계가 ABORTED 로 확정되지 않았다 — 호출부가 항목을 빼 버린다(유실)"
+        );
+    }
+
+    #[test]
+    fn wp5_r1_cx_inject_concurrent_write_and_queue_decisions_agree() {
+        use super::{InjectGuard, INJECT_ABORTED, INJECT_CLAIMED};
+        use std::sync::{atomic::AtomicU64, Arc, Barrier};
+
+        // 반복마다 실제 두 스레드가 경쟁한다. 특정 승자나 양쪽 승자의 출현 횟수는 요구하지 않는다.
+        // 버퍼와 큐는 호출 계약의 모형이며 실제 PTY 쓰기나 rollback 구현을 검증하지 않는다.
+        for round in 0..128 {
+            let guard = Arc::new(InjectGuard::new(Some(4), Arc::new(AtomicU64::new(4)), false, None));
+            let start = Arc::new(Barrier::new(2));
+            let writer_guard = Arc::clone(&guard);
+            let writer_start = Arc::clone(&start);
+            let writer = std::thread::spawn(move || {
+                let mut output = Vec::new();
+                writer_start.wait();
+                if writer_guard.claim_for_write() {
+                    output.push("본문");
+                }
+                output
+            });
+            let caller = std::thread::spawn(move || {
+                let mut queue = vec!["항목"];
+                start.wait();
+                let settled = guard.settle(0);
+                if settled == INJECT_CLAIMED {
+                    queue.clear();
+                }
+                (settled, queue)
+            });
+            let output = writer.join().expect("writer 경쟁 스레드가 패닉했다");
+            let (settled, queue) = caller.join().expect("호출부 경쟁 스레드가 패닉했다");
+            assert!(
+                matches!(
+                    (settled, output.as_slice(), queue.as_slice()),
+                    (INJECT_CLAIMED, ["본문"], []) | (INJECT_ABORTED, [], ["항목"])
+                ),
+                "경쟁 {round}회차에서 쓰기와 큐 처분이 섞이거나 결판이 pending으로 남았다: 상태={settled}, 출력={output:?}, 큐={queue:?}"
+            );
+        }
+    }
+
+    /// ★(0.14.31 · 리뷰 R5 · codex major) **두 파일 커밋 사이의 크래시가 항목을 지우지 않는다.**
+    ///
+    /// 【무엇을 재는가】 종전 순서(활성 → 만료)에서 활성→만료 이동은 ① 활성 파일이 항목을 잃고
+    /// ② 만료 파일이 그것을 얻는다 — ①과 ② 사이의 크래시는 **어느 파일에도 없는** 상태를 남겼다.
+    /// 지금은 **목적지 먼저**라 그 창의 디스크 상태가 "두 파일 모두" 이고, 읽는 쪽은 dedup 으로
+    /// 그것을 정확히 한 벌로 되살린다(유실 0 · 중복 0).
+    ///
+    /// ★(0.14.31 · 성찰 Q3) dedup 의 **승자 규칙이 바뀌었다** — 종전 "활성이 이긴다" 에서
+    /// "`max(expired_at, revived_at)` 이 큰 사본이 이긴다" 로. 종전 규칙의 안전 논거는 "활성으로
+    /// 되살아나도 rehome 이 TTL 을 재계산해 만료로 되돌린다" 였는데, 그 재계산은 **지금 시각**
+    /// 기준이라 시계 역행·TTL 상향에서 확정된 만료를 취소하고 그 항목을 활성 큐 **머리**에
+    /// 꽂았다(§8 위반). 그래서 아래 ⓑ 의 기대값이 (활성 1 · 만료 0) → (활성 0 · 만료 1) 로
+    /// 바뀐다 — 이 검체가 재는 불변식(유실 0 · 중복 0 · 한 벌)은 그대로다.
+    #[test]
+    fn wp5_r5_crash_between_queue_file_replacements_never_drops_an_entry() {
+        // ── ⓐ 쓰기 순서: 만료 파일이 활성 파일보다 **먼저** 치환된다(소스 핀 · 이동 방향 무관).
+        let src = include_str!("state.rs");
+        let body = {
+            let i = src.find("pub fn persist_queue_state(&self)").expect("persist 본체");
+            let rest = &src[i..];
+            let end = rest.find("\n    }\n").expect("persist 본체 끝");
+            &rest[..end]
+        };
+        let first_expired = body
+            .find("write_file(\"queue-expired.json\", &first)")
+            .expect("만료 파일 선행 쓰기가 사라졌다");
+        let then_active = body
+            .find("write_file(\"queue-state.json\", &entries)")
+            .expect("활성 파일 쓰기가 사라졌다");
+        assert!(
+            first_expired < then_active,
+            "활성 파일이 만료 파일보다 먼저 치환된다 — 활성→만료 이동의 유실 창이 되돌아왔다"
+        );
+        // ★(0.14.31 · 리뷰 R1(R6회차) · codex major) **각 단계는 앞 단계의 성공에 조건**이다.
+        //   `let _ =` 로 결과를 버리면 ①이 실패해도 ②가 활성 파일을 치환한다(그 항목은 어느 파일에도
+        //   없다) — 순서를 뒤집은 이유 자체가 무효가 된다.
+        assert!(
+            !body.contains("let _ = crate::governance::write_json_atomic"),
+            "쓰기 결과를 버리는 형태가 되돌아왔다(실패해도 다음 단계가 진행된다)"
+        );
+        let guard = body
+            .find("if let Err(e) = write_file(\"queue-expired.json\", &first)")
+            .expect("① 실패 분기가 없다");
+        assert!(guard < then_active && body[guard..then_active].contains("return;"),
+                "① 실패에도 활성 파일 치환으로 넘어간다(유실 창)");
+        // ★(리뷰 R1(R6회차) · codex major 유실표) 캐시는 **트랜잭션 성공**이 아니라 **만료 파일의 현재
+        //   내용**을 기억한다. ①이 성공했는데 캐시가 직전(더 작은) 집합으로 남으면, 그 파일에 실제로
+        //   있는 항목이 다음 회차 carry 에서 빠지고 ①이 그것을 덮어써 유실이 된다. 그래서 성공한 치환
+        //   **직후마다** 그 내용으로 갱신한다(①→first · ③→expired_entries). 이 성질은 "③ 실패" 를
+        //   프로세스 안에서 주입할 수단이 없어(같은 경로를 ①도 쓴다) 소스로 핀한다 — 파일 시드 경로는
+        //   위 ⓒ 시나리오가 재기동 회귀로 재고, 상태 불변식은 ⓑ 가 잰다.
+        let remember_first = body.find("remember(&first);").expect("① 성공 뒤 캐시 갱신이 없다");
+        let remember_final = body
+            .find("remember(&expired_entries);")
+            .expect("③ 성공 뒤 캐시 갱신이 없다");
+        assert!(
+            then_active > remember_first && remember_first > guard,
+            "①의 캐시 갱신이 ① 성공 직후·② 앞이 아니다(파일과 기억이 어긋난다)"
+        );
+        assert!(remember_final > then_active, "③의 캐시 갱신이 ③ 뒤가 아니다");
+        // ── ⓑ 크래시 잔상(두 파일 모두에 같은 id)에서 유실 0 · 중복 0.
+        let _ledger = crate::delivery::tests::isolate_state_dir("wp5-r5-crash-wal");
+        let dir = queue_wal_dir("wp5-r5-crash");
+        let live = w2c_entry("wp5-r5-inflight", 91, now_epoch()); // 아직 TTL 안 지남
+        let row = |e: &QueueEntry, expired_at: Option<f64>| {
+            json!({"mid": queue_mid(1, &e.text), "id": e.id, "seq": e.seq, "surface_id": 1,
+                   "role": "r", "text": e.text, "enqueued_at": e.enqueued_at,
+                   "from": e.from, "origin": e.origin, "ttl_secs": e.ttl_secs,
+                   "paused_total_secs": 0.0, "expired_at": expired_at,
+                   "revived_at": null, "expired_notified": false})
+        };
+        std::fs::write(
+            dir.join("queue-state.json"),
+            serde_json::to_string(&json!([row(&live, None)])).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("queue-expired.json"),
+            serde_json::to_string(&json!([row(&live, Some(live.enqueued_at + 1.0))])).unwrap(),
+        )
+        .unwrap();
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let act = daemon.restored_queue.lock().unwrap().len();
+        let exp = daemon.restored_expired.lock().unwrap().len();
+        assert_eq!(
+            act + exp,
+            1,
+            "크래시 잔상이 한 벌로 정리되지 않았다(유실 또는 이중 배달) — dedup 결손"
+        );
+        // ★(성찰 Q3) 이 잔상은 **활성→만료 이동**의 크래시다: 목적지(만료 파일)가 `expired_at` 을
+        //   방금 찍었고 원본(활성 파일)은 그 앞 사본이다. 그러므로 만료 사본이 최신 사실이다.
+        assert_eq!(
+            (act, exp),
+            (0, 1),
+            "확정된 만료가 활성으로 되살아났다 — 시계 역행·TTL 상향이면 그대로 활성 큐 머리 배달이다(§8)"
+        );
+        // ── ⓒ 계측 타당성: **종전 순서**의 크래시 잔상(두 파일 모두 비어 있음)은 그대로 유실이다.
+        //     이 대조군이 없으면 위 단언은 '원래 안 나는 일' 을 확인하는 공허한 검사가 된다.
+        let dir2 = queue_wal_dir("wp5-r5-crash-old");
+        std::fs::write(dir2.join("queue-state.json"), "[]").unwrap();
+        std::fs::write(dir2.join("queue-expired.json"), "[]").unwrap();
+        let lost = Daemon::new(dir2.join("cysd.sock"));
+        assert_eq!(
+            (
+                lost.restored_queue.lock().unwrap().len(),
+                lost.restored_expired.lock().unwrap().len()
+            ),
+            (0, 0),
+            "대조군 전제 붕괴"
+        );
+    }
+
+    /// ★(0.14.31 · 리뷰 R5 · codex major) **revive(만료→활성) 방향도 목적지 먼저다.**
+    ///
+    /// 목적지-먼저 순서를 그냥 뒤집으면 반대 방향이 같은 이유로 깨진다 — 그래서 만료 파일을 쓸 때
+    /// "직전에 만료 파일에 있었는데 지금은 활성인" 항목을 한 벌 남기고(carry), 활성 파일이 그것을
+    /// 얻은 **뒤에** 만료 파일에서 지운다. 최종 상태에 중복이 남지 않는 것까지 잰다.
+    #[test]
+    fn wp5_r5_revive_keeps_a_copy_until_the_active_file_has_it() {
+        let _ledger = crate::delivery::tests::isolate_state_dir("wp5-r5-revive-wal");
+        let dir = queue_wal_dir("wp5-r5-revive");
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("r".into()), 24, 80)
+            .expect("surface 생성");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        // 직전 persist 가 만료 파일에 남긴 것으로 가정한다(= carry 대상 판정의 기억).
+        let e = w2c_entry("wp5-r5-revived", 92, now_epoch());
+        daemon
+            .queue_expired_persisted
+            .lock()
+            .unwrap()
+            .insert(e.id.clone());
+        s.pending_queue.lock().unwrap().push_back(e.clone()); // revive 완료 상태(활성)
+        daemon.persist_queue_state();
+        let active: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("queue-state.json")).unwrap()).unwrap();
+        let expired: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("queue-expired.json")).unwrap()).unwrap();
+        assert_eq!(active.as_array().unwrap().len(), 1, "활성 파일이 재활성 항목을 못 받았다");
+        assert_eq!(
+            expired,
+            json!([]),
+            "carry 정리(③)가 안 돼 만료 파일에 사본이 영구히 남는다"
+        );
+        assert!(
+            !daemon
+                .queue_expired_persisted
+                .lock()
+                .unwrap()
+                .contains(&e.id),
+            "다음 persist 의 기억이 갱신되지 않았다(carry 가 매번 되살아난다)"
+        );
+    }
+
+    /// ★(0.14.31 · 리뷰 R1(R6회차) · codex major) **목적지 쓰기가 실패하면 원본을 지우지 않는다.**
+    ///
+    /// 종전에는 세 write 의 `Result` 를 전부 버려서, ①(만료 파일)이 실패해도 ②(활성 파일)가 그 항목
+    /// **없이** 치환됐고(만료 이동분이 어느 파일에도 없다) ②가 실패해도 ③이 만료 파일에서 carry 를
+    /// 지웠다(revive 분이 어느 파일에도 없다). 실패 주입은 목적지 경로를 **디렉터리로 만들어** 원자
+    /// 치환(rename)을 실패시킨다(POSIX·Windows 공통으로 실패한다).
+    #[test]
+    fn r6_failed_destination_write_never_deletes_the_source_copy() {
+        let _ledger = crate::delivery::tests::isolate_state_dir("r6-persist-fail-wal");
+        let dir = queue_wal_dir("r6-persist-fail");
+        let e = w2c_entry("r6-persist-fail-entry", 93, now_epoch());
+        let row = |expired_at: Option<f64>| {
+            json!({"mid": queue_mid(1, &e.text), "id": e.id, "seq": e.seq, "surface_id": 1,
+                   "role": "r", "text": e.text, "enqueued_at": e.enqueued_at,
+                   "from": e.from, "origin": e.origin, "ttl_secs": e.ttl_secs,
+                   "paused_total_secs": 0.0, "expired_at": expired_at,
+                   "revived_at": null, "expired_notified": false})
+        };
+        let read = |name: &str| -> Value {
+            serde_json::from_slice(&std::fs::read(dir.join(name)).expect(name)).unwrap()
+        };
+        let has_entry = |v: &Value| -> bool {
+            v.as_array()
+                .is_some_and(|a| a.iter().any(|it| it["id"].as_str() == Some(e.id.as_str())))
+        };
+        let block_path = |name: &str| {
+            let p = dir.join(name);
+            let _ = std::fs::remove_file(&p);
+            std::fs::create_dir_all(&p).expect("실패 주입용 디렉터리");
+        };
+        let unblock_path = |name: &str| {
+            let _ = std::fs::remove_dir_all(dir.join(name));
+        };
+
+        // ── ⓐ ① 실패(만료 파일) — 활성 파일을 **건드리지 않는다**(활성→만료 이동의 유실 창).
+        std::fs::write(dir.join("queue-state.json"), serde_json::to_string(&json!([row(None)])).unwrap())
+            .unwrap();
+        std::fs::write(dir.join("queue-expired.json"), "[]").unwrap();
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        assert_eq!(daemon.restored_queue.lock().unwrap().len(), 1, "전제: 활성 복원 1건");
+        // 만료 이동을 흉내낸다(활성에서 빠지고 만료로 들어간다) — 성공했다면 활성 파일은 비게 된다.
+        let moved = daemon.restored_queue.lock().unwrap().pop().expect("항목");
+        daemon.restored_expired.lock().unwrap().push(moved);
+        block_path("queue-expired.json");
+        daemon.persist_queue_state();
+        assert!(
+            has_entry(&read("queue-state.json")),
+            "목적지 쓰기가 실패했는데 활성 파일이 항목 없이 치환됐다 — 그 항목은 어느 파일에도 없다"
+        );
+        unblock_path("queue-expired.json");
+        daemon.persist_queue_state(); // 회복 — 다음 틱이 같은 스냅샷을 그대로 다시 쓴다
+        assert!(has_entry(&read("queue-expired.json")), "회복 뒤에도 만료 파일이 항목을 못 받았다");
+
+        // ── ⓑ ② 실패(활성 파일) — carry 정리(③)를 하지 않고 캐시도 갱신하지 않는다(revive 유실 창).
+        let dir2 = queue_wal_dir("r6-persist-fail-2");
+        std::fs::write(dir2.join("queue-state.json"), "[]").unwrap();
+        std::fs::write(
+            dir2.join("queue-expired.json"),
+            serde_json::to_string(&json!([row(Some(e.enqueued_at + 1.0))])).unwrap(),
+        )
+        .unwrap();
+        let d2 = Daemon::new(dir2.join("cysd.sock"));
+        assert!(
+            d2.queue_expired_persisted.lock().unwrap().contains(&e.id),
+            "전제: 직전 만료 파일 id 집합이 디스크에서 시드되지 않았다(carry 판정 불능)"
+        );
+        // revive — 만료 → 활성(복원분 경로).
+        let revived = d2.restored_expired.lock().unwrap().pop().expect("항목");
+        d2.restored_queue.lock().unwrap().push(revived);
+        let p2 = dir2.join("queue-state.json");
+        std::fs::remove_file(&p2).unwrap();
+        std::fs::create_dir_all(&p2).unwrap();
+        d2.persist_queue_state();
+        let expired2: Value =
+            serde_json::from_slice(&std::fs::read(dir2.join("queue-expired.json")).unwrap()).unwrap();
+        assert!(
+            has_entry(&expired2),
+            "활성 파일 쓰기가 실패했는데 carry 사본이 만료 파일에서 지워졌다 — revive 유실"
+        );
+        assert!(
+            d2.queue_expired_persisted.lock().unwrap().contains(&e.id),
+            "실패한 치환으로 캐시가 갱신됐다 — 다음 persist 의 carry 계산이 끊긴다"
+        );
+        let _ = std::fs::remove_dir_all(&p2);
+        d2.persist_queue_state();
+        let active2: Value =
+            serde_json::from_slice(&std::fs::read(dir2.join("queue-state.json")).unwrap()).unwrap();
+        assert!(has_entry(&active2), "회복 뒤 활성 파일이 revive 항목을 못 받았다");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(dir2.join("queue-expired.json")).unwrap())
+                .unwrap(),
+            json!([]),
+            "회복 뒤에도 만료 파일에 carry 사본이 남았다(자기치유 실패)"
+        );
+        assert!(
+            d2.queue_expired_persisted.lock().unwrap().is_empty(),
+            "캐시가 만료 파일의 실제 내용과 어긋난다(③ 성공 뒤에는 carry 가 빠진 집합이어야 한다)"
+        );
+
+        // ── ⓒ codex R6 유실표 — **캐시는 트랜잭션이 아니라 파일 내용을 기억해야 한다.**
+        //    "③ 실패로 만료 파일에 E 가 남았는데 캐시는 직전(작은) 집합" 이면, 다음 회차의 carry 가
+        //    E 를 빠뜨리고 ①이 그 파일을 덮어써 E 가 어느 파일에도 없게 된다(② 실패·크래시로 확정).
+        let dir3 = queue_wal_dir("r6-persist-fail-3");
+        let other = w2c_entry("r6-persist-fail-other", 95, now_epoch());
+        let row_of = |e: &QueueEntry, expired_at: Option<f64>| {
+            json!({"mid": queue_mid(1, &e.text), "id": e.id, "seq": e.seq, "surface_id": 1,
+                   "role": null, "text": e.text, "enqueued_at": e.enqueued_at,
+                   "from": e.from, "origin": e.origin, "ttl_secs": e.ttl_secs,
+                   "paused_total_secs": 0.0, "expired_at": expired_at,
+                   "revived_at": null, "expired_notified": false})
+        };
+        // ③ 실패 직후의 디스크·메모리 상태를 그대로 세운다: 활성=[R] · 만료=[E, R] · 캐시=①이 쓴 것.
+        std::fs::write(
+            dir3.join("queue-state.json"),
+            serde_json::to_string(&json!([row_of(&other, None)])).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir3.join("queue-expired.json"),
+            serde_json::to_string(&json!([row_of(&e, Some(e.enqueued_at + 1.0)), row_of(&other, None)]))
+                .unwrap(),
+        )
+        .unwrap();
+        let d3 = Daemon::new(dir3.join("cysd.sock"));
+        // 복원 dedup(전이 시각 우선 · ★성찰 Q3)으로 R 은 활성(두 사본 다 전이 없음 = 동률 → 활성),
+        // E 는 만료(만료 사본만 expired_at 보유)에 있다. 여기서 E 를 revive 한다(메모리).
+        let revived_e = {
+            let mut rx = d3.restored_expired.lock().unwrap();
+            let pos = rx
+                .iter()
+                .position(|it| it["id"].as_str() == Some(e.id.as_str()))
+                .expect("만료 복원분에 E 가 없다");
+            rx.remove(pos)
+        };
+        d3.restored_queue.lock().unwrap().push(revived_e);
+        // ② 를 실패시킨다 — carry 가 만료 파일에 그대로 남아야 유실이 없다.
+        let p3 = dir3.join("queue-state.json");
+        std::fs::remove_file(&p3).unwrap();
+        std::fs::create_dir_all(&p3).unwrap();
+        d3.persist_queue_state();
+        let expired3: Value =
+            serde_json::from_slice(&std::fs::read(dir3.join("queue-expired.json")).unwrap()).unwrap();
+        let ids3: Vec<&str> = expired3
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|it| it["id"].as_str())
+            .collect();
+        assert!(
+            ids3.contains(&e.id.as_str()) && ids3.contains(&other.id.as_str()),
+            "캐시가 만료 파일의 내용을 기억하지 못해 carry 가 항목을 빠뜨렸다 — 그 항목은 어느 파일에도 \
+             없다(codex R6 유실표): {ids3:?}"
+        );
+        let _ = std::fs::remove_dir_all(&p3);
+    }
+
+    /// ★(0.14.31 · 리뷰 R1(R6회차) · codex major) **두 복원 컬렉션은 한 스냅샷이다** — 그 사이에
+    /// 끼어든 `queue revive` 가 항목을 두 파일 어디에서도 지우지 못한다.
+    #[test]
+    fn r6_revive_between_the_two_restored_snapshots_never_disappears() {
+        // ⓐ 소스 핀 — 두 락을 **같은 임계영역**에서 잡는다(순서는 전역 계약 restored_queue → expired).
+        let src = include_str!("state.rs");
+        let body = {
+            let i = src.find("pub fn persist_queue_state(&self)").expect("persist 본체");
+            let rest = &src[i..];
+            let end = rest.find("\n    }\n").expect("persist 본체 끝");
+            &rest[..end]
+        };
+        let ra = body
+            .find("let restored = self.restored_queue.lock().unwrap();")
+            .expect("복원 활성 가드가 사라졌다");
+        let rx = body
+            .find("let restored_expired = self.restored_expired.lock().unwrap();")
+            .expect("복원 만료 가드가 사라졌다");
+        let surfaces = body
+            .find("let surfaces = self.surfaces.lock().unwrap();")
+            .expect("좌석 가드가 사라졌다");
+        let snap = body.find("Self::snapshot_restored(").expect("복원 스냅샷 호출");
+        assert!(ra < rx, "락 순서가 뒤집혔다(전역 계약: restored_queue → restored_expired)");
+        assert!(
+            rx < surfaces && surfaces < snap,
+            "복원 가드가 좌석 순회를 감싸지 않는다 — 그 사이 rehome(복원→좌석 큐)이 항목을 지운다"
+        );
+        assert_eq!(
+            body.matches("self.restored_queue.lock()").count(),
+            1,
+            "복원 활성 가드를 두 번 잡는다(스냅샷이 한 임계영역이 아니다)"
+        );
+        assert_eq!(
+            body.matches("self.restored_expired.lock()").count(),
+            1,
+            "복원 만료 가드를 두 번 잡는다(스냅샷이 한 임계영역이 아니다)"
+        );
+        // ⓑ 인터리빙 — revive(만료→활성)와 persist 를 겹쳐 돌린다. 매 스냅샷마다 두 파일의
+        //    **합집합**에 항목이 있어야 한다(둘 다에 있어도 좋다 — 중복은 유실이 아니다).
+        let _ledger = crate::delivery::tests::isolate_state_dir("r6-restored-race-wal");
+        let dir = queue_wal_dir("r6-restored-race");
+        let e = w2c_entry("r6-restored-race-entry", 94, now_epoch());
+        let row = json!({"mid": queue_mid(1, &e.text), "id": e.id, "seq": e.seq, "surface_id": 1,
+                         "role": null, "text": e.text, "enqueued_at": e.enqueued_at,
+                         "from": e.from, "origin": e.origin, "ttl_secs": e.ttl_secs,
+                         "paused_total_secs": 0.0, "expired_at": e.enqueued_at + 1.0,
+                         "revived_at": null, "expired_notified": true});
+        std::fs::write(dir.join("queue-state.json"), "[]").unwrap();
+        std::fs::write(dir.join("queue-expired.json"), serde_json::to_string(&json!([row])).unwrap())
+            .unwrap();
+        let daemon = std::sync::Arc::new(Daemon::new(dir.join("cysd.sock")));
+        assert_eq!(daemon.restored_expired.lock().unwrap().len(), 1, "전제: 만료 복원 1건");
+        let id = e.id.clone();
+        let mover = std::sync::Arc::clone(&daemon);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_t = std::sync::Arc::clone(&stop);
+        let t = std::thread::spawn(move || {
+            while !stop_t.load(std::sync::atomic::Ordering::Relaxed) {
+                // 만료 → 활성: 실제 경로(`revive_queue_entry`)를 그대로 쓴다.
+                let _ = crate::governance::revive_queue_entry(&mover, &id, None, now_epoch());
+                // 활성 → 만료: 되돌린다(같은 락 순서 · 다음 회차 재료).
+                let mut ra = mover.restored_queue.lock().unwrap();
+                let mut rx = mover.restored_expired.lock().unwrap();
+                if let Some(it) = ra.pop() {
+                    rx.push(it);
+                }
+            }
+        });
+        for i in 0..60 {
+            daemon.persist_queue_state();
+            let active: Value =
+                serde_json::from_slice(&std::fs::read(dir.join("queue-state.json")).unwrap()).unwrap();
+            let expired: Value =
+                serde_json::from_slice(&std::fs::read(dir.join("queue-expired.json")).unwrap()).unwrap();
+            let seen = [&active, &expired].iter().any(|v| {
+                v.as_array()
+                    .is_some_and(|a| a.iter().any(|it| it["id"].as_str() == Some(e.id.as_str())))
+            });
+            assert!(seen, "{i}번째 스냅샷에서 항목이 두 파일 어디에도 없다(revive 인터리빙 유실)");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        t.join().expect("이동 스레드");
+
+        // ⓒ codex R6 반례 — **rehome(복원 → 좌석 pending_queue)** 도 같은 창이다. persist 가 좌석
+        //    순회를 먼저 닫고 복원 가드를 나중에 잡으면, 그 사이의 rehome 은 항목을 좌석 순회에도
+        //    (아직 없다) 복원 순회에도(이미 없다) 남기지 않는다.
+        let dir2 = queue_wal_dir("r6-restored-race-rehome");
+        let e2 = w2c_entry("r6-rehome-race-entry", 95, now_epoch());
+        let row2 = json!({"mid": queue_mid(1, &e2.text), "id": e2.id, "seq": e2.seq, "surface_id": 1,
+                          "role": "r", "text": e2.text, "enqueued_at": e2.enqueued_at,
+                          "from": e2.from, "origin": e2.origin, "ttl_secs": e2.ttl_secs,
+                          "paused_total_secs": 0.0, "expired_at": null,
+                          "revived_at": null, "expired_notified": false});
+        std::fs::write(dir2.join("queue-state.json"), serde_json::to_string(&json!([row2])).unwrap())
+            .unwrap();
+        std::fs::write(dir2.join("queue-expired.json"), "[]").unwrap();
+        let d2 = std::sync::Arc::new(Daemon::new(dir2.join("cysd.sock")));
+        let seat = d2
+            .create_surface(None, Some("sleep 30".into()), None, Some("r".into()), 24, 80)
+            .expect("surface 생성");
+        d2.surfaces.lock().unwrap().insert(seat.id, seat.clone());
+        assert_eq!(d2.restored_queue.lock().unwrap().len(), 1, "전제: 복원 활성 1건");
+        let mover2 = std::sync::Arc::clone(&d2);
+        let seat2 = seat.clone();
+        let id2 = e2.id.clone();
+        let stop2 = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2_t = std::sync::Arc::clone(&stop2);
+        let row_back = row2.clone();
+        let t2 = std::thread::spawn(move || {
+            while !stop2_t.load(std::sync::atomic::Ordering::Relaxed) {
+                mover2.rehome_restored_queue(); // 복원 → 좌석 큐(실제 경로)
+                // 되돌린다(락 순서 restored_queue → pending_queue · 전역 계약과 같은 방향).
+                let mut ra = mover2.restored_queue.lock().unwrap();
+                let mut q = seat2.pending_queue.lock().unwrap();
+                if let Some(pos) = q.iter().position(|it| it.id == id2) {
+                    q.remove(pos);
+                    ra.push(row_back.clone());
+                }
+            }
+        });
+        for i in 0..60 {
+            d2.persist_queue_state();
+            let active: Value =
+                serde_json::from_slice(&std::fs::read(dir2.join("queue-state.json")).unwrap()).unwrap();
+            let expired: Value =
+                serde_json::from_slice(&std::fs::read(dir2.join("queue-expired.json")).unwrap()).unwrap();
+            let seen = [&active, &expired].iter().any(|v| {
+                v.as_array()
+                    .is_some_and(|a| a.iter().any(|it| it["id"].as_str() == Some(e2.id.as_str())))
+            });
+            assert!(seen, "{i}번째 스냅샷에서 항목이 두 파일 어디에도 없다(rehome 인터리빙 유실)");
+        }
+        stop2.store(true, std::sync::atomic::Ordering::Relaxed);
+        t2.join().expect("rehome 스레드");
+        let _ = seat.child.lock().unwrap().kill(); // 검체 좌석 정리(래퍼 프로세스 회수)
+    }
+
+    /// ★WP-5: 만료 행을 활성 WAL에 섞으면 롤백한 구 데몬이 폐기 대기 본문을 다시 배달한다.
+    #[test]
+    fn wp5_expired_rows_persist_in_separate_file_invisible_to_old_daemon() {
+        let _ledger = crate::delivery::tests::isolate_state_dir("wp5-expired-wal");
+        let dir = queue_wal_dir("wp5-expired");
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(
+                None,
+                Some("sleep 30".into()),
+                None,
+                Some("r".into()),
+                24,
+                80,
+            )
+            .expect("surface 생성");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        let mut e = w2c_entry("wp5-expired-only", 73, now_epoch());
+        e.expired_at = Some(e.enqueued_at + 1.0);
+        e.expired_notified = true;
+        s.expired_queue.lock().unwrap().push_back(e.clone());
+        daemon.persist_queue_state();
+        let active: Value = serde_json::from_slice(
+            &std::fs::read(dir.join("queue-state.json")).expect("활성 WAL 읽기"),
+        )
+        .expect("활성 JSON");
+        let expired: Value = serde_json::from_slice(
+            &std::fs::read(dir.join("queue-expired.json")).expect("만료 WAL 읽기"),
+        )
+        .expect("만료 JSON");
+        assert_eq!(active, json!([]), "만료 항목은 활성 WAL에서 완전히 제외");
+        assert_eq!(
+            expired.as_array().expect("만료 배열").len(),
+            1,
+            "별도 WAL에 만료 1건"
+        );
+        assert_eq!(expired[0]["id"], json!(e.id), "만료 WAL에 원 ID 보존");
+        assert_eq!(
+            expired[0]["expired_at"],
+            json!(e.expired_at),
+            "만료 표식 영속화"
+        );
+        assert!(
+            load_queue_state(&dir).rows.is_empty(),
+            "구 데몬 reader는 만료 파일을 읽지 않는다"
+        );
+        let restored = Daemon::new(dir.join("cysd.sock"));
+        assert_eq!(
+            restored.restored_expired.lock().unwrap().len(),
+            1,
+            "신 데몬은 별도 만료 WAL 복원"
+        );
+        let target = restored
+            .create_surface(
+                None,
+                Some("sleep 30".into()),
+                None,
+                Some("r".into()),
+                24,
+                80,
+            )
+            .expect("복원 surface 생성");
+        restored
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(target.id, target.clone());
+        restored.rehome_restored_queue();
+        let q = target.pending_queue.lock().unwrap().clone();
+        let x = target.expired_queue.lock().unwrap().clone();
+        for surface in [&s, &target] {
+            let mut child = surface.child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(q.is_empty(), "만료 복원분의 활성 큐 재진입 금지");
+        assert_eq!(x.len(), 1, "만료 큐에 정확히 1건 이관");
+        assert_eq!(x[0].id, e.id, "원 ID 이관");
+        assert_eq!(x[0].expired_at, e.expired_at, "원 만료 시각 승계");
+        assert!(
+            x[0].expired_notified,
+            "재기동 후 중복 통지를 막는 표식 승계"
+        );
+        assert!(
+            restored.restored_expired.lock().unwrap().is_empty(),
+            "이관한 행은 복원 대기에서 제거"
+        );
+    }
+
+    /// ★WP-5: revive 시각을 무시한 rehome은 되살린 A를 신규 C 앞에 끼워 넣어 순서를 역전한다.
+    #[test]
+    fn wp5_rehome_orders_revived_entry_by_revived_at() {
+        let _ledger = crate::delivery::tests::isolate_state_dir("wp5-rehome-order");
+        let dir = queue_wal_dir("wp5-order");
+        let now = now_epoch();
+        // epoch 200인 B가 기본 TTL로 만료되지 않도록 순서 검체는 명시적 TTL 면제.
+        let rows = json!([
+            {"id":"A", "seq":1, "role":"r", "surface_id":999, "text":"A", "enqueued_at":100.0, "revived_at":now-1.0, "ttl_secs":0},
+            {"id":"B", "seq":2, "role":"r", "surface_id":999, "text":"B", "enqueued_at":200.0, "ttl_secs":0}
+        ]);
+        std::fs::write(
+            dir.join("queue-state.json"),
+            serde_json::to_vec(&rows).expect("정렬 WAL 직렬화"),
+        )
+        .expect("정렬 WAL 기록");
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(
+                None,
+                Some("sleep 30".into()),
+                None,
+                Some("r".into()),
+                24,
+                80,
+            )
+            .expect("surface 생성");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        let mut c = w2c_entry("C", 3, now - 5.0);
+        c.ttl_secs = Some(0);
+        s.pending_queue.lock().unwrap().push_back(c);
+        daemon.rehome_restored_queue();
+        let q = s.pending_queue.lock().unwrap().clone();
+        {
+            let mut child = s.child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            q.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            vec!["B", "C", "A"],
+            "order_at: B(200) < C(now-5) < A(now-1)"
+        );
+        assert_eq!(
+            q[2].enqueued_at, 100.0,
+            "순서 보정을 위해 원 발신 시각을 덮지 않는다"
+        );
+        assert_eq!(
+            q[2].order_at(),
+            now - 1.0,
+            "A의 정렬 기준은 마지막 revive 시각"
+        );
+    }
+
+    /// ★WP-5: 만료 이벤트의 사람 판단·자동 반응 금지 힌트나 회계 키 누락은 소비자의 오판을 부른다.
+    #[test]
+    fn wp5_expired_payload_pins_hint_and_keys() {
+        let text = "가".repeat(81);
+        let mut e = w2b_entry("wp5-payload", 9, &text, 100.0);
+        e.from = Some("surface:2".into());
+        e.origin = "send".into();
+        e.ttl_secs = Some(10);
+        e.paused_total_secs = 5.0;
+        e.revived_at = Some(150.0);
+        e.expired_at = Some(165.0);
+        let p = queue_expired_payload("surface:7", Some("worker".into()), &e, 170.0, 21600);
+        let expected = json!({
+            "surface_ref":"surface:7", "role":"worker", "queue_entry_id":"wp5-payload", "seq":9,
+            "from":"surface:2", "origin":"send", "bytes":243, "preview":"가".repeat(80),
+            "enqueued_at":100.0, "expired_at":165.0, "ttl_secs":10, "ttl_age_secs":15,
+            "paused_total_secs":5, "wait_secs":70, "hint":QUEUE_EXPIRED_HINT
+        });
+        for (key, value) in expected.as_object().expect("기대 payload 객체") {
+            assert_eq!(p.get(key), Some(value), "만료 payload 키/값 계약: {key}");
+        }
+        for phrase in ["운영자(사람) 판단", "자동 반응", "금지"] {
+            assert!(
+                QUEUE_EXPIRED_HINT.contains(phrase),
+                "운영자 전용 경고 필수 문구 누락: {phrase}"
+            );
+        }
+        e.expired_at = None;
+        e.ttl_secs = None;
+        let fallback = queue_expired_payload("surface:7", None, &e, 170.0, 21600);
+        assert_eq!(
+            fallback["expired_at"],
+            json!(170.0),
+            "표식 부재 시 이벤트 시각 사용"
+        );
+        assert_eq!(
+            fallback["ttl_secs"],
+            json!(21600),
+            "명시 TTL 부재 시 기본값 노출"
+        );
+        assert_eq!(
+            fallback.get("role"),
+            Some(&Value::Null),
+            "역할 미상도 키는 보존"
+        );
+    }
+
+    /// ★(수렴 R2 · triage X4 잔여) **보존에 실패한 WAL 위에는 다음 영속이 쓰지 못한다.**
+    ///
+    /// 종전 보존은 실패해도 로그 한 줄만 남기고 성공 여부를 돌려주지 않았다 — 그 뒤
+    /// `persist_queue_state` 가 그 이름 위에 (복원하지 못한) 메모리 큐를 원자 치환하면
+    /// 판독하지 못한 원본의 마지막 사본이 사라진다. 막는 방향: **치우기 전에는 쓰지 않는다**.
+    #[cfg(unix)]
+    #[test]
+    fn converge_x4_unpreserved_wal_refuses_the_next_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "cys-converge-walblock-{}-{}",
+            std::process::id(),
+            now_epoch() as u64
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("queue-state.json");
+        std::fs::write(&src, "판독하지 못한 원본").unwrap();
+        // 치우기(rename)를 실패시킨다 — 디렉터리 쓰기 권한을 뗀다.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(dir.join(".probe"), "x").is_ok() {
+            // root 등으로 권한이 무의미한 환경 — 전제가 서지 않으면 재기 자체를 하지 않는다.
+            let _ = std::fs::remove_file(dir.join(".probe"));
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let mut set: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::from(["queue-state.json"]);
+        assert!(
+            wal_write_verdict(&mut set, &dir, "queue-state.json").is_some(),
+            "치우지 못한 WAL 위에 쓰기를 허용했다 — 그 치환이 마지막 사본을 지운다"
+        );
+        // 외부 핸들이 닫힌 뒤: 같은 자리가 보존을 **다시 시도**해 성공하고, 그때 쓰기가 열린다.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            wal_write_verdict(&mut set, &dir, "queue-state.json").is_none(),
+            "치운 뒤에도 쓰기를 막는다(영구 정지)"
+        );
+        assert!(!src.exists(), "보존했다면서 원본이 그 이름 그대로 남아 있다");
+        let kept = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .any(|e| std::fs::read_to_string(e.path())
+                .map(|c| c.contains("판독하지 못한 원본"))
+                .unwrap_or(false));
+        assert!(kept, "치웠다면서 바이트가 사라졌다");
+        // 음성 대조: 미보존 집합에 없는 이름은 처음부터 막지 않는다(결측형을 값으로 읽지 않는다).
+        assert!(wal_write_verdict(&mut set, &dir, "queue-expired.json").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // ── 소스 핀: **영속 경로가 그 판정을 실제로 거친다**(판정만 두고 배선을 잊으면 무효다).
+        let src = include_str!("state.rs");
+        let body = {
+            let i = src.find("pub fn persist_queue_state(&self)").expect("persist 본체");
+            let rest = &src[i..];
+            let end = rest.find("\n    }\n").expect("persist 본체 끝");
+            &rest[..end]
+        };
+        let gate = body.find("wal_write_verdict").expect("영속의 쓰기 경로가 보존 판정을 거치지 않는다");
+        let serialize = body.find("serde_json::to_string(rows)").expect("직렬화 지점");
+        assert!(
+            gate < serialize,
+            "보존 판정이 직렬화·치환 뒤에 온다 — 그 순서로는 원본이 이미 덮인다"
+        );
     }
 }
 
@@ -9552,5 +14747,981 @@ mod v116_num_tests {
             .unwrap();
         assert_eq!(closed_at, None, "남의 행을 닫기 UPDATE 로 덮지 않는다");
         close_all(&d);
+    }
+}
+
+/// ★(0.14.31 · 성찰 반영 라운드 · daemon-queue) 이 라운드가 세운 큐 생명주기 계약의 검체.
+/// 파일 **끝**에 모은 이유는 병합 충돌의 국소화 하나뿐이다(여러 영역이 같은 파일을 병렬로 고친다).
+#[cfg(test)]
+mod reflect_queue_tests {
+    use super::*;
+
+    /// 한 번 쓰고 버리는 상태 디렉터리 + 그 안의 소켓 경로(unix 에서 `state_dir` = 소켓의 부모).
+    fn scratch_state_dir(tag: &str) -> std::path::PathBuf {
+        let td = std::env::temp_dir().join(format!(
+            "cys-reflectq-{tag}-{}-{}",
+            std::process::id(),
+            (now_epoch() * 1000.0) as u64
+        ));
+        std::fs::create_dir_all(&td).expect("스크래치 상태 디렉터리");
+        td
+    }
+
+    fn write_rows(dir: &std::path::Path, name: &str, rows: &[serde_json::Value]) {
+        std::fs::write(dir.join(name), serde_json::to_string(&rows).expect("직렬화"))
+            .expect("WAL 기록");
+    }
+
+    /// ★(0.14.31 · 성찰 Q3) **WAL 이중 사본의 dedup 은 확정된 만료를 취소하지 않는다.**
+    ///
+    /// 목적지-먼저 쓰기의 크래시 창은 같은 id 를 두 파일에 남긴다(유실 대신 중복 — 의도된 안전
+    /// 방향). 종전 규칙은 "활성이 이긴다" 였고, 그 안전 논거는 "rehome 이 복원 시점에 TTL 을
+    /// 재계산해 만료로 되돌린다" 였다. 그 재계산은 **지금 시각** 기준이라, 시계가 역행했거나
+    /// TTL 이 올라가면 만료가 **취소**된다. 그리고 `revived_at` 이 없으니 `order_at()` 은 원
+    /// `enqueued_at`(가장 오래됨) → 병합 삽입이 그것을 **활성 큐 머리**에 꽂는다 = §8 위반이자
+    /// 재기동 직후(부트체인 최취약 창)에 6시간+ 묵은 지시가 최우선 배달이다.
+    ///
+    /// ⓐ 시계 역행(만료 시각이 '지금' 보다 앞선다) ⓑ TTL 상향(항목 TTL 이 나이보다 크다) 두 축
+    /// 모두에서 만료 사본이 이겨야 한다. ⓒ 반대 방향(revive 창)은 활성이 이겨야 한다 —
+    /// 이 수정이 revive 를 뒤집지 않는다는 음성 대조다.
+    #[test]
+    fn q3_wal_duplicate_resolves_by_persisted_transition_time_not_by_file() {
+        let now = now_epoch();
+        // ⓐ+ⓑ 확정 만료 사본이 있고, 활성 사본은 '지금' 기준으로는 만료가 아니다.
+        //     (enqueued_at = now-20900 · ttl 21600 → 나이 20900 < 21600 = 만료 아님.
+        //      expired_at = now+700 = 그 항목이 실제로 만료된 시각이 '지금' 보다 미래다 = 시계 역행.
+        //      TTL 상향 축도 같은 술어 상태로 수렴한다 — `queue_entry_expired` 가 거짓이 되는 것이
+        //      두 축의 공통 귀결이기 때문이다. 그래서 한 검체가 둘을 함께 핀한다.)
+        let active_row = json!({
+            "mid": "m-q3", "id": "q3-rollback", "seq": 7, "surface_id": 3, "role": "worker",
+            "text": "6시간 묵은 지시", "enqueued_at": now - 20_900.0, "from": "surface:9",
+            "origin": "send", "ttl_secs": 21_600u64, "paused_total_secs": 0.0,
+            "expired_at": serde_json::Value::Null, "revived_at": serde_json::Value::Null,
+            "expired_notified": false, "expired_event_sent": false,
+        });
+        let mut expired_row = active_row.clone();
+        expired_row["expired_at"] = json!(now + 700.0);
+        // ⓒ revive 창의 중복 — 활성 사본이 `revived_at` 으로 더 최근이다.
+        let revived_active = json!({
+            "mid": "m-q3b", "id": "q3-revived", "seq": 8, "surface_id": 3, "role": "worker",
+            "text": "운영자가 되살린 지시", "enqueued_at": now - 30_000.0, "from": "surface:9",
+            "origin": "send", "ttl_secs": 0u64, "paused_total_secs": 0.0,
+            "expired_at": serde_json::Value::Null, "revived_at": now - 5.0,
+            "expired_notified": false, "expired_event_sent": false,
+        });
+        let mut revived_expired = revived_active.clone();
+        revived_expired["revived_at"] = serde_json::Value::Null;
+        revived_expired["expired_at"] = json!(now - 60.0);
+
+        let dir = scratch_state_dir("q3");
+        write_rows(&dir, "queue-state.json", &[active_row, revived_active]);
+        write_rows(&dir, "queue-expired.json", &[expired_row, revived_expired]);
+        let daemon = Daemon::new(dir.join("cys.sock"));
+
+        let live_ids: Vec<String> = daemon
+            .restored_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|it| it.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        let exp_ids: Vec<String> = daemon
+            .restored_expired
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|it| it.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        assert!(
+            !live_ids.iter().any(|i| i == "q3-rollback"),
+            "확정 만료가 활성 복원분으로 되살아났다 — 시계 역행/TTL 상향이 만료를 취소했다(§8 위반)"
+        );
+        assert!(
+            exp_ids.iter().any(|i| i == "q3-rollback"),
+            "확정 만료 사본이 어디에도 없다(유실) — dedup 은 한쪽을 반드시 남겨야 한다"
+        );
+        assert!(
+            live_ids.iter().any(|i| i == "q3-revived"),
+            "revive 창의 중복에서 활성 사본이 졌다 — 이 수정이 revive 방향을 뒤집었다"
+        );
+        assert!(
+            !exp_ids.iter().any(|i| i == "q3-revived"),
+            "되살린 항목이 만료 사본으로도 남았다 — 같은 id 가 양쪽에 있으면 중복 배달이다"
+        );
+
+        // 배달 경로까지: role 좌석이 살아 있어도 확정 만료는 활성 큐에 들어가지 않는다.
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("좌석");
+        *s.role.lock().unwrap() = Some("worker".into());
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        daemon.rehome_restored_queue();
+        let active: Vec<String> = s
+            .pending_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        let expired: Vec<String> = s
+            .expired_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        assert!(
+            !active.iter().any(|i| i == "q3-rollback"),
+            "확정 만료가 rehome 을 거쳐 활성 큐에 들어갔다(머리 배달 = 부트체인 사고)"
+        );
+        assert!(
+            expired.iter().any(|i| i == "q3-rollback"),
+            "확정 만료가 좌석 만료 큐에도 없다 — 도달 불가(유실)"
+        );
+        assert!(
+            active.iter().any(|i| i == "q3-revived"),
+            "되살린 항목이 배달 경로에 오지 못했다"
+        );
+        let _ = crate::governance::close_surface(&daemon, s.id, crate::governance::CloseCause::OwnerClose);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 전이 시각 판정자의 진리표 — 결측은 값이 아니다(전이를 겪은 적 없음 = 언제나 진다).
+    #[test]
+    fn q3_transition_at_truth_table() {
+        assert_eq!(queue_row_transition_at(&json!({})), f64::NEG_INFINITY);
+        assert_eq!(queue_row_transition_at(&json!({"expired_at": 10.0})), 10.0);
+        assert_eq!(queue_row_transition_at(&json!({"revived_at": 20.0})), 20.0);
+        assert_eq!(
+            queue_row_transition_at(&json!({"expired_at": 10.0, "revived_at": 20.0})),
+            20.0
+        );
+        assert_eq!(
+            queue_row_transition_at(&json!({"expired_at": 30.0, "revived_at": 20.0})),
+            30.0
+        );
+        // null 은 부재와 같다(구 데몬이 다시 쓴 WAL 은 이 키를 null 로 남긴다).
+        assert_eq!(
+            queue_row_transition_at(&json!({"expired_at": serde_json::Value::Null})),
+            f64::NEG_INFINITY
+        );
+    }
+}
+
+/// ★U10(0.14.41) 켤 때마다 승인 알림 누적 — 재시작 정리 회귀 핀.
+#[cfg(test)]
+mod u10_feed_restart_tests {
+    use super::*;
+
+    /// 테스트 전용 고유 소켓 — unix 는 부모 dir, windows 는 슬러그(LOCALAPPDATA/cys/<slug>)가 고유해진다.
+    fn scratch_sock(tag: &str) -> (PathBuf, PathBuf) {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let td = std::env::temp_dir().join(format!("cys-u10-{tag}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&td).unwrap();
+        let sock = td.join(format!("u10{tag}{}x{n}.sock", std::process::id()));
+        let _ = std::fs::create_dir_all(state_dir(&sock));
+        (td, sock)
+    }
+
+    fn cleanup(td: &std::path::Path, sock: &std::path::Path) {
+        let sd = state_dir(sock);
+        if sd != td {
+            let _ = std::fs::remove_dir_all(&sd);
+        }
+        let _ = std::fs::remove_dir_all(td);
+    }
+
+    fn item(rid: &str, kind: &str, status: &str, created_at: f64) -> FeedItem {
+        // created_at 은 JSON 으로 표현할 수 없는 값(NaN·±inf)도 속성 검사에 넣으므로 필드에 직접 쓴다.
+        let mut it: FeedItem = serde_json::from_value(json!({
+            "request_id": rid, "kind": kind, "title": format!("t-{rid}"), "body": "b",
+            "surface_id": 7, "status": status, "decision": null,
+            "created_at": 0.0, "resolved_at": null
+        }))
+        .expect("FeedItem");
+        it.created_at = created_at;
+        it
+    }
+
+    fn find<'a>(items: &'a [FeedItem], rid: &str) -> &'a FeedItem {
+        items.iter().find(|i| i.request_id == rid).unwrap_or_else(|| panic!("항목 소실: {rid}"))
+    }
+
+    /// RC4-a/c/e: 데몬 발행 화면 감지 항목(approval·first_run_gate)은 재시작 뒤 옛 surface 를 가리키는
+    /// 고아다 → 서빙 전 stale-restart 로 닫힌다(재시작마다 '승인 방치' 재발화·겹친 번호 큐 차단 제거).
+    /// 데몬 발행이어도 결정 대기(learn_proposal)는 그대로 둔다.
+    #[test]
+    fn u10_restart_closes_orphan_daemon_approval_and_gate() {
+        let (td, sock) = scratch_sock("orphan");
+        {
+            let d1 = Daemon::new(sock.clone());
+            d1.push_feed_notification("approval", "claude 승인 대기 감지 (surface:7)", "b", Some(7));
+            d1.push_feed_notification(crate::governance::GATE_FEED_KIND, "관문 감지 (surface:8)", "b", Some(8));
+            d1.push_feed_notification("learn_proposal", "[RSI 학습 추천] 막힘", "b", Some(9));
+        }
+        let d2 = Daemon::new(sock.clone());
+        let items = d2.feed_items.lock().unwrap().clone();
+        let by_kind = |k: &str| items.iter().find(|i| i.kind == k).cloned().expect(k);
+        for k in ["approval", crate::governance::GATE_FEED_KIND] {
+            let it = by_kind(k);
+            assert_eq!(it.status, "resolved", "{k} 고아가 재시작 뒤에도 pending");
+            assert_eq!(it.decision.as_deref(), Some(FEED_RESTART_STALE_DECISION), "{k}");
+        }
+        assert_eq!(by_kind("learn_proposal").status, "pending", "결정 대기(learn_proposal)를 닫았다");
+        assert!(items.iter().all(|i| i.decision.as_deref() != Some("allow")), "자동 종결이 allow 를 만들었다");
+        drop(d2);
+        // 영속: 압축 재기록이 정리 결과를 디스크에 남긴다(3번째 기동도 같은 사실).
+        let d3 = Daemon::new(sock.clone());
+        let pend: Vec<String> = d3
+            .feed_items
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| i.status == "pending")
+            .map(|i| i.kind.clone())
+            .collect();
+        assert_eq!(pend, vec!["learn_proposal".to_string()]);
+        drop(d3);
+        cleanup(&td, &sock);
+    }
+
+    /// D4: 정보성 kind(허용목록)만 TTL(24h) 초과 시 expired-notice · 결정성 kind·신선 항목·종결 항목 불변.
+    #[test]
+    fn u10_restart_expires_only_allowlisted_old_notices() {
+        let (td, sock) = scratch_sock("ttl");
+        let now = now_epoch();
+        let old = now - 2.0 * 86_400.0;
+        let lines: Vec<FeedItem> = vec![
+            item("r-hm-old", "hook-missing", "pending", old),
+            item("r-bf-old", "bootstrap-fail", "pending", old),
+            item("r-fp-old", "formation-partial", "pending", old),
+            item("r-ceo-old", "ceo-notice", "pending", old),
+            item("r-warn-old", "warn", "pending", old),
+            item("r-perm-old", "permission", "pending", old),
+            item("r-ms-old", "mission-set", "pending", old),
+            item("r-cv-old", "cycle-verify", "pending", old),
+            item("r-cpr-old", "ceo-promote-request", "pending", old),
+            item("r-hm-fresh", "hook-missing", "pending", now - 60.0),
+            item("r-hm-done", "hook-missing", "resolved", old),
+        ];
+        let feed = state_dir(&sock).join("feed.jsonl");
+        let body: String = lines
+            .iter()
+            .map(|i| serde_json::to_string(i).unwrap() + "\n")
+            .collect();
+        std::fs::write(&feed, body).unwrap();
+        let d = Daemon::new(sock.clone());
+        let items = d.feed_items.lock().unwrap().clone();
+        for rid in ["r-hm-old", "r-bf-old", "r-fp-old", "r-ceo-old", "r-warn-old"] {
+            let it = find(&items, rid);
+            assert_eq!(it.status, "resolved", "{rid} 가 만료되지 않았다");
+            assert_eq!(it.decision.as_deref(), Some(FEED_NOTICE_EXPIRED_DECISION), "{rid}");
+        }
+        for rid in ["r-perm-old", "r-ms-old", "r-cv-old", "r-cpr-old", "r-hm-fresh"] {
+            let it = find(&items, rid);
+            assert_eq!(it.status, "pending", "{rid} 를 닫았다(결정성 kind 또는 신선 항목)");
+            assert_eq!(it.decision, None, "{rid}");
+        }
+        let done = find(&items, "r-hm-done");
+        assert_eq!((done.status.as_str(), done.decision.as_deref()), ("resolved", None), "종결 항목을 바꿨다");
+        drop(d);
+        cleanup(&td, &sock);
+    }
+
+    /// 손상 줄(찢긴 append·구조가 다른 레코드)이 섞인 feed.jsonl — 패닉 0 · 정상 항목은 정리 · 파싱 불가 줄은
+    /// 원문 그대로 보존(재시작 정리의 재기록이 해석 못 한 기록을 지우지 않는다) · 재기동해도 같은 결과(멱등).
+    #[test]
+    fn u10_restart_with_corrupt_lines_preserves_them_and_still_reconciles() {
+        let (td, sock) = scratch_sock("corrupt");
+        let feed = state_dir(&sock).join("feed.jsonl");
+        let good = serde_json::to_string(&item("daemon-5-0", "approval", "pending", now_epoch())).unwrap();
+        let torn = r#"{"request_id":"daemon-5-1","kind":"approval","status":"pend"#;
+        let alien = r#"{"hello":"world"}"#;
+        let bin = "\u{1}garbage \u{FFFD}";
+        std::fs::write(&feed, format!("{torn}\n{good}\n\n{alien}\n{bin}\n")).unwrap();
+        for round in 0..2 {
+            let d = Daemon::new(sock.clone());
+            let items = d.feed_items.lock().unwrap().clone();
+            assert_eq!(items.len(), 1, "round {round}");
+            assert_eq!(items[0].decision.as_deref(), Some(FEED_RESTART_STALE_DECISION), "round {round}");
+            drop(d);
+            let disk = std::fs::read_to_string(&feed).unwrap();
+            for raw in [torn, alien, bin] {
+                assert_eq!(disk.matches(raw).count(), 1, "round {round}: 파싱 불가 줄 보존 실패/중복: {raw:?}");
+            }
+            assert!(!disk.contains("\n\n"), "빈 줄은 보존 대상이 아니다");
+        }
+        cleanup(&td, &sock);
+    }
+
+    /// 순수부 계약 — 결정 테이블 + 멱등 + TTL 0 = 끔.
+    #[test]
+    fn u10_reconcile_decision_table() {
+        let now = 1_900_000_000.0;
+        let old = now - 90_000.0;
+        let mut v = vec![
+            item("daemon-1-0", "approval", "pending", now),
+            item("daemon-1-1", crate::governance::GATE_FEED_KIND, "pending", now),
+            item("client-approval", "approval", "pending", old), // 클라이언트 발행 approval 은 대상 아님
+            item("daemon-1-2", "learn_proposal", "pending", old),
+            item("daemon-1-3", "warn", "pending", old),
+            item("r-f", "formation", "pending", old),
+            item("r-fx", "formationX", "pending", old), // 접두 규칙은 'formation-' 뿐
+            item("r-future", "hook-missing", "pending", now + 99_999.0), // 시계 역행 = 만료 아님
+        ];
+        let rep = reconcile_restored_feed(&mut v, now, FEED_NOTICE_TTL_DEFAULT_SECS);
+        let dec = |rid: &str| find(&v, rid).decision.clone();
+        assert_eq!(dec("daemon-1-0").as_deref(), Some(FEED_RESTART_STALE_DECISION));
+        assert_eq!(dec("daemon-1-1").as_deref(), Some(FEED_RESTART_STALE_DECISION));
+        assert_eq!(dec("client-approval"), None);
+        assert_eq!(dec("daemon-1-2"), None);
+        assert_eq!(dec("daemon-1-3").as_deref(), Some(FEED_NOTICE_EXPIRED_DECISION));
+        assert_eq!(dec("r-f").as_deref(), Some(FEED_NOTICE_EXPIRED_DECISION));
+        assert_eq!(dec("r-fx"), None);
+        assert_eq!(dec("r-future"), None);
+        assert_eq!(rep, RestoredFeedReconcile { stale_restart: 2, expired_notice: 2 });
+        assert!(v.iter().filter(|i| i.decision.is_some()).all(|i| i.status == "resolved" && i.resolved_at == Some(now)));
+        // 멱등: 두 번째 적용은 아무것도 바꾸지 않는다.
+        let snap = serde_json::to_string(&v).unwrap();
+        assert_eq!(reconcile_restored_feed(&mut v, now, FEED_NOTICE_TTL_DEFAULT_SECS), RestoredFeedReconcile::default());
+        assert_eq!(serde_json::to_string(&v).unwrap(), snap);
+        // TTL 0 = 만료 끔(재시작 고아 정리는 유지).
+        let mut w = vec![item("r-hm", "hook-missing", "pending", 0.0), item("daemon-9-9", "approval", "pending", 0.0)];
+        let rep0 = reconcile_restored_feed(&mut w, now, 0);
+        assert_eq!(rep0, RestoredFeedReconcile { stale_restart: 1, expired_notice: 0 });
+        assert_eq!(w[0].status, "pending");
+    }
+
+    #[test]
+    fn u10_notice_kind_allowlist_and_ttl_env() {
+        for k in ["hook-missing", "bootstrap-fail", "warn", "error", "formation", "ceo-notice",
+                  "formation-complete", "formation-partial", "formation-pending", "formation-failed"] {
+            assert!(is_notice_feed_kind(k), "{k}");
+        }
+        for k in ["permission", "approval", "first_run_gate", "cycle-verify", "learn_proposal",
+                  "mission-set", "ceo-promote-request", "question", "", "formationX", "Hook-Missing"] {
+            assert!(!is_notice_feed_kind(k), "{k}");
+        }
+        assert_eq!(feed_notice_ttl_from(None), 86_400);
+        assert_eq!(feed_notice_ttl_from(Some("0")), 0);
+        assert_eq!(feed_notice_ttl_from(Some(" 3600 ")), 3600);
+        assert_eq!(feed_notice_ttl_from(Some("abc")), 86_400);
+        assert_eq!(feed_notice_ttl_from(Some("-5")), 86_400);
+    }
+
+    /// ★속성 검사(오너 지시: 어떤 입력에도 패닉 없음) — 결정론 의사난수(xorshift64*)로 20,000 벡터.
+    /// 불변식: ①패닉 0 ②길이·순서 보존 ③pending 이 아니던 항목 불변 ④바뀐 항목은 resolved + 두 정리 결정 중
+    /// 하나 ⑤allow 산출 0 ⑥집계 = 바뀐 수 ⑦멱등.
+    #[test]
+    fn u10_reconcile_property_never_panics_never_allows() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                self.0 = x;
+                x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+            }
+            fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
+                &xs[(self.next() % xs.len() as u64) as usize]
+            }
+        }
+        let kinds = [
+            "approval", "first_run_gate", "hook-missing", "bootstrap-fail", "warn", "error",
+            "formation", "formation-", "formation-failed", "ceo-notice", "permission", "cycle-verify",
+            "learn_proposal", "mission-set", "", "승인", "APPROVAL", "formation\u{0}", "hook-missing ",
+        ];
+        let statuses = ["pending", "resolved", "timeout", "", "PENDING", "pending ", "대기"];
+        let rids = ["daemon-", "daemon-1-2", "daemon-\u{FFFF}", "d", "", "req-1", "DAEMON-1", "daemon"];
+        let floats = [
+            0.0, -0.0, 1.0, -1.0, 1.7e9, 1.9e9, 1e300, -1e300, f64::MAX, f64::MIN, f64::MIN_POSITIVE,
+            f64::EPSILON, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 86_400.0, 86_401.0,
+        ];
+        let ttls = [0u64, 1, 60, 86_400, u64::MAX, u64::MAX / 2];
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..20_000 {
+            let n = (rng.next() % 12) as usize;
+            let mut v: Vec<FeedItem> = (0..n)
+                .map(|i| {
+                    let mut it = item(rng.pick(&rids), rng.pick(&kinds), rng.pick(&statuses), *rng.pick(&floats));
+                    it.request_id = format!("{}{i}", it.request_id);
+                    if rng.next() % 3 == 0 {
+                        it.decision = Some((*rng.pick(&["allow", "deny", "x"])).to_string());
+                    }
+                    it
+                })
+                .collect();
+            let now = *rng.pick(&floats);
+            let ttl = *rng.pick(&ttls);
+            let before: Vec<(String, String, Option<String>, String)> = v
+                .iter()
+                .map(|i| (i.request_id.clone(), i.status.clone(), i.decision.clone(), format!("{i:?}")))
+                .collect();
+            let rep = reconcile_restored_feed(&mut v, now, ttl);
+            assert_eq!(v.len(), before.len(), "길이 변경");
+            let mut changed = 0usize;
+            for (it, (rid, st, dec, dbg)) in v.iter().zip(before.iter()) {
+                assert_eq!(&it.request_id, rid, "순서·식별자 변경");
+                if st != "pending" {
+                    assert_eq!(&format!("{it:?}"), dbg, "pending 이 아닌 항목을 바꿨다");
+                    continue;
+                }
+                if it.decision != *dec || it.status != *st {
+                    changed += 1;
+                    assert_eq!(it.status, "resolved");
+                    let d = it.decision.as_deref().unwrap_or("");
+                    assert!(
+                        d == FEED_RESTART_STALE_DECISION || d == FEED_NOTICE_EXPIRED_DECISION,
+                        "허용되지 않은 자동 결정: {d}"
+                    );
+                }
+                assert!(
+                    it.decision.as_deref() != Some("allow") || dec.as_deref() == Some("allow"),
+                    "자동 정리가 allow 를 만들었다"
+                );
+            }
+            assert_eq!(rep.stale_restart + rep.expired_notice, changed, "집계 불일치");
+            let snap = format!("{v:?}");
+            assert_eq!(reconcile_restored_feed(&mut v, now, ttl), RestoredFeedReconcile::default(), "멱등 위반");
+            assert_eq!(format!("{v:?}"), snap, "멱등 위반(내용)");
+        }
+    }
+}
+
+/// ★(R2F-DM · 성찰 2회차 A4 M1 · A5 M1) 윈도우 데몬 검체 격리 — `state_dir` 의 **시험 빌드 전용** 윈도우 분기.
+///
+/// 배경: 윈도우의 `state_dir` 는 소켓 경로의 **마지막 성분**만 슬러그로 삼아 `%LOCALAPPDATA%\cys\<슬러그>` 를 만든다. 검체는 임시 폴더마다 같은 파일 이름(`cysd.sock` · `cys.sock`)을 쓰므로
+/// 윈도우에서는 모든 검체가 `…\cys\cysdsock` 한 곳을 나눠 써서 서로를 오염시켰다(진단 잡 `37188821194` — 1680 통과 · 196 실패 가운데 다수). 제품 동작은 바꾸지 않는다: 시험 빌드에서
+/// 소켓이 **파일 시스템 경로**일 때만 유닉스처럼 그 부모 폴더를 쓴다. 맥에서는 `cfg(windows)` 분기가 컴파일되지 않으므로 판정을 순수 함수 둘([`is_pipe_name_path`] · [`fs_socket_state_dir`])로 빼
+/// 맥에서도 재고, 제품 갈래는 **원문 핀**으로 한 글자도 안 바뀌었음을 고정한다.
+#[cfg(test)]
+mod r2f_dm_state_dir_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// 윈도우 갈래의 **제품 식**(시험 분기를 뺀 나머지) — v0.14.43 성찰 1회차 수정판(`bd0a0ca3`)의 원문 그대로다.
+    const WINDOWS_PRODUCT_BODY: &str = "        let base = std::env::var(\"LOCALAPPDATA\").unwrap_or_else(|_| \".\".into());\n        let root = PathBuf::from(base).join(\"cys\");\n        let slug = pipe_slug(socket_path);\n        if slug.is_empty() || slug == \"cys\" {\n            root // 기본 데몬 — 기존 경로 유지(호환)\n        } else {\n            root.join(slug) // 부서 데몬 — 슬러그별 격리 디렉토리\n        }\n    }\n";
+    /// 윈도우 아닌 갈래의 식 — 원문 그대로.
+    const UNIX_PRODUCT_BODY: &str = "        socket_path\n            .parent()\n            .map(|p| p.to_path_buf())\n            .unwrap_or_else(|| PathBuf::from(\".\"))\n    }";
+    /// 시험 분기 한 덩이의 머리 주석 첫 줄과 끝 줄(원문에서 이 구간만 걷어 내면 제품 식이 남는다).
+    const TEST_BRANCH_HEAD: &str = "        // ★(R2F-DM · 시험 빌드 전용)";
+    const TEST_BRANCH_STMT: &str = "        #[cfg(test)]\n        if let Some(dir) = fs_socket_state_dir(socket_path) {\n            return dir;\n        }\n";
+
+    /// `state_dir` 함수 원문(문서 주석 제외 · `pub fn state_dir(` 부터 첫 `\n}\n` 앞까지). 바늘은 조각으로 이어 이 파일의 이 줄이 자기 자신에 걸리지 않게 한다.
+    fn state_dir_src() -> &'static str {
+        let src = include_str!("state.rs");
+        let head = concat!("pub fn state_", "dir(socket_path: &std::path::Path) -> PathBuf {");
+        let i = src.find(head).expect("state_dir 본문 소실");
+        let rest = &src[i..];
+        &rest[..rest.find("\n}\n").expect("state_dir 끝")]
+    }
+
+    /// 두 갈래로 가른다 — (함수 머리 ~ `#[cfg(windows)]` 블록 안, `#[cfg(not(windows))]` 블록 안).
+    fn split_branches(f: &str) -> (&str, &str) {
+        let (win, unix) = f.split_once("    #[cfg(not(windows))]\n    {\n").expect("cfg(not(windows)) 갈래 소실");
+        let win_body = win.split_once("    #[cfg(windows)]\n    {\n").expect("cfg(windows) 갈래 소실").1;
+        (win_body, unix)
+    }
+
+    /// [순수] 파이프 이름 판정 진리표 — 파이프(구분자 `/`·`\` 무관 · 대소문자 무관 · 장치/서버 이름 무관)와 파일 시스템 경로를 가른다.
+    /// 이 표는 어느 OS 에서든 같은 값이어야 한다(문자열만 본다) — 맥 레인이 윈도우 경로 모양의 판정을 잡는다.
+    #[test]
+    fn r2f_dm_is_pipe_name_path_truth_table() {
+        for p in [
+            r"\\.\pipe\cys",
+            r"\\.\pipe\cys-dept-3",
+            r"\\.\pipe\cys-dept-dept-3",
+            r"\\.\PIPE\cys",
+            r"//./pipe/cys",
+            r"\\?\pipe\cys",
+            r"\\server\pipe\cys",
+            r"\\.\pipe\a\b",
+            r"\\.\pipe",
+        ] {
+            assert!(is_pipe_name_path(Path::new(p)), "파이프 이름이어야 한다: {p}");
+        }
+        for p in [
+            r"C:\Users\runner\AppData\Local\Temp\cys-x\cysd.sock",
+            r"C:/Users/x/cysd.sock",
+            r"\\?\C:\Users\x\cysd.sock",
+            r"\\server\share\pipe\cysd.sock",
+            r"\\.\pip\cys",
+            r"\pipe\cys",
+            "/tmp/x/cysd.sock",
+            "/tmp/pipe/cysd.sock",
+            "cysd.sock",
+            r"\\",
+            r"\\.",
+            "",
+        ] {
+            assert!(!is_pipe_name_path(Path::new(p)), "파일 시스템 경로여야 한다: {p}");
+        }
+        // 제품이 실제로 만드는 이름(lib.rs `default_socket_path`·`dept_socket_path` 의 윈도우 갈래)은 모두 파이프다.
+        for name in ["", "dept-3", "future"] {
+            let p = if name.is_empty() { r"\\.\pipe\cys".to_string() } else { format!(r"\\.\pipe\cys-dept-{name}") };
+            assert!(is_pipe_name_path(Path::new(&p)), "{p}");
+        }
+    }
+
+    /// [순수] 윈도우 시험 분기가 내는 폴더 — 파일 시스템 경로는 **유닉스 `state_dir` 와 같은 폴더**(그 부모)이고, 같은 파일 이름이라도 부모가 다르면 서로 다른 폴더다(슬러그 식의 결함이 없다).
+    /// 파이프 이름은 `None` — 제품 식으로 내려가 슬러그 폴더가 된다. 맥에서 `state_dir` 는 이 분기를 타지 않으므로 두 값이 같다는 것이 곧 "윈도우 시험 빌드도 유닉스와 같다"는 증거다.
+    #[test]
+    fn r2f_dm_fs_socket_state_dir_is_the_parent_and_pipes_fall_through() {
+        let a = Path::new("/tmp/cys-r2f-a/cysd.sock");
+        let b = Path::new("/tmp/cys-r2f-b/cysd.sock");
+        assert_eq!(fs_socket_state_dir(a), Some(PathBuf::from("/tmp/cys-r2f-a")));
+        assert_eq!(fs_socket_state_dir(b), Some(PathBuf::from("/tmp/cys-r2f-b")));
+        assert_ne!(fs_socket_state_dir(a), fs_socket_state_dir(b), "같은 파일 이름 `cysd.sock` 이어도 부모가 다르면 상태 폴더가 달라야 한다(윈도우 슬러그 식은 둘을 같은 폴더로 접었다)");
+        // 윈도우 시험 빌드의 판정 == 유닉스 제품 식(이 호스트의 `state_dir`) — 같은 입력에 같은 폴더.
+        #[cfg(not(windows))]
+        for p in [a, b, Path::new("cysd.sock"), Path::new("/cysd.sock"), Path::new("rel/dir/cys.sock")] {
+            assert_eq!(fs_socket_state_dir(p), Some(state_dir(p)), "{}", p.display());
+        }
+        // 부모가 없는 경로(빈 경로)는 `.` — 유닉스 식의 `unwrap_or_else(|| ".")` 와 같다.
+        assert!(Path::new("").parent().is_none(), "전제: 빈 경로는 부모가 없다");
+        assert_eq!(fs_socket_state_dir(Path::new("")), Some(PathBuf::from(".")));
+        // 파이프 이름은 내려간다 — 시험 빌드도 파이프에는 제품 식(`%LOCALAPPDATA%\cys[\<슬러그>]`)을 쓴다.
+        for p in [r"\\.\pipe\cys", r"\\.\pipe\cys-dept-1", r"//./pipe/cys-dept-2"] {
+            assert_eq!(fs_socket_state_dir(Path::new(p)), None, "{p}");
+        }
+        // 슬러그 결함의 재현: 마지막 성분만 보는 `pipe_slug` 는 두 FS 소켓에 같은 값을 낸다 — 그래서 시험 분기가 필요했다.
+        assert_eq!(pipe_slug(a), pipe_slug(b));
+        assert_eq!(pipe_slug(a), "cysdsock");
+    }
+
+    /// [소스 핀] **제품 동작 불변** — ① `cfg(windows)` 갈래의 제품 식(시험 분기를 걷은 나머지)이 성찰 1회차 수정판의 원문과 바이트 같다 ② `cfg(not(windows))` 갈래는 원문 그대로이고 시험 분기가 없다
+    /// ③ `#[cfg(test)]` 는 이 함수 안에 **정확히 한 곳**이고 `cfg(windows)` 갈래 안에만 있다 ④ 그 분기는 순수 함수 하나를 부른다. 제품 식을 건드리거나 시험 분기를 유닉스 갈래·함수 밖으로 옮기면 적색이다.
+    #[test]
+    fn r2f_dm_state_dir_product_branches_are_byte_identical_and_test_branch_lives_only_in_windows() {
+        let f = state_dir_src();
+        let (win, unix) = split_branches(f);
+        assert_eq!(f.matches("#[cfg(test)]").count(), 1, "state_dir 안의 `#[cfg(test)]` 는 정확히 한 곳(윈도우 갈래의 시험 분기)이어야 한다");
+        assert!(win.contains(TEST_BRANCH_STMT), "윈도우 갈래에 시험 분기(순수 함수 호출)가 없다 — 있어야 윈도우 시험 검체가 한 상태 폴더를 나눠 쓰지 않는다");
+        assert!(!unix.contains("cfg(test)") && !unix.contains("fs_socket_state_dir") && !unix.contains("is_pipe_name_path"), "시험 분기가 윈도우 아닌 갈래에 있다");
+        let t0 = win.find(TEST_BRANCH_HEAD).expect("시험 분기 머리 주석");
+        let t1 = win.find(TEST_BRANCH_STMT).expect("시험 분기 문장") + TEST_BRANCH_STMT.len();
+        assert!(t0 < t1, "시험 분기: 머리 주석이 문장보다 앞이어야 한다");
+        let product_windows = format!("{}{}", &win[..t0], &win[t1..]);
+        assert_eq!(product_windows, WINDOWS_PRODUCT_BODY, "윈도우 갈래의 제품 식이 바뀌었다(시험 분기를 걷어도 원문과 달라야 안 된다)");
+        assert_eq!(unix, UNIX_PRODUCT_BODY, "윈도우 아닌 갈래의 식이 바뀌었다");
+        // 시험 분기가 소비하는 두 함수는 시험 빌드에서만 존재한다(제품 빌드에 새 코드가 없다).
+        let src = include_str!("state.rs");
+        for head in [concat!("pub(crate) fn is_pipe_name", "_path("), concat!("pub(crate) fn fs_socket_state", "_dir(")] {
+            let i = src.find(head).unwrap_or_else(|| panic!("{head} 소실"));
+            assert!(src[..i].trim_end().ends_with("#[cfg(test)]"), "{head} 는 `#[cfg(test)]` 여야 한다 — 제품 빌드에 새 함수가 생기면 안 된다");
+        }
+    }
+}
+
+/// ★(R2F-DM 2차 · 성찰 2회차) 윈도우 재측정 잔여 15건 — 제품 수정 둘(B1 벽시계 해상도 [`epoch_secs_us`] · B2 인계 표식의 동일성 [`InjectTrack::note_handoff`])과
+/// 검체 도우미 둘(끝정리 [`test_rm_rf`] · 조용한 관측 창 [`test_until_no_pty_output`])의 검체. 윈도우 시계·눈금은 맥에서 결정론 격자·이음매로 모사한다.
+#[cfg(test)]
+mod r2f_dm2_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// 결정론 시각 격자 — 고정 시작(2026-10-04 근방) · 고정 보폭(7,919,113 칸) · 칸 크기 `unit_ns`(100 = 윈도우 `SystemTime` · 1 = 리눅스 `clock_gettime` · 1000 = 맥).
+    /// 승인 검체(`approval::tests::r2f_grid_epoch`)와 같은 격자를 `Duration` 으로 돌려준다(이쪽 함수의 입력이 `Duration` 이다).
+    fn grid(unit_ns: u64, i: u64) -> Duration {
+        let total_ns: u128 = 1_791_102_000u128 * 1_000_000_000 + (i as u128) * 7_919_113u128 * (unit_ns as u128);
+        Duration::new((total_ns / 1_000_000_000) as u64, (total_ns % 1_000_000_000) as u32)
+    }
+
+    /// `x` 를 JSON 으로 쓰고 읽는다 — 데몬이 실제로 타는 두 판독 길(`from_str::<f64>` · `from_str::<Value>` → `as_f64`)과 쓴 문자열.
+    fn json_roundtrip(x: f64) -> (f64, f64, String) {
+        let text = serde_json::to_string(&x).expect("직렬화");
+        let via_f64: f64 = serde_json::from_str(&text).expect("f64 판독");
+        let via_value = serde_json::from_str::<Value>(&text).expect("Value 판독").as_f64().expect("수치");
+        (via_f64, via_value, text)
+    }
+
+    /// 두 길 가운데 하나라도 `to_bits()` 까지 같지 않으면 참.
+    fn lossy(x: f64) -> bool {
+        let (a, b, _) = json_roundtrip(x);
+        a.to_bits() != x.to_bits() || b.to_bits() != x.to_bits()
+    }
+
+    /// ① [순수 · 진리표] 100ns(윈도우)·1ns(리눅스) 입력은 마이크로초로 **내려가고**(소수 6자리 이하 · 입력보다 크지 않다), 마이크로초 눈금의 입력(맥)은 `as_secs_f64()` 와 비트까지 같다.
+    /// 첫 두 값은 윈도우 러너 원문(진단 잡 37201047193)의 그 시각이다 — `queue_seq_seeds_…`(#14)의 `1791116826.7416139` · `wp5_r2_expired_notice_…`(#4)의 `1791116349.2647007`.
+    #[test]
+    fn r2f_dm2_epoch_secs_us_truth_table() {
+        let us = |secs: u64, nanos: u32| epoch_secs_us(Duration::new(secs, nanos));
+        assert_eq!(us(1_791_116_826, 741_613_900).to_bits(), 1791116826.741613_f64.to_bits(), "#14 의 원시 시각(100ns 눈금)");
+        assert_eq!(us(1_791_116_349, 264_700_700).to_bits(), 1791116349.2647_f64.to_bits(), "#4 의 원시 시각(100ns 눈금)");
+        // 1ns 입력 — **내림**이다(반올림이면 …614 가 되어 입력보다 큰 시각이 생긴다).
+        assert_eq!(us(1_791_116_826, 741_613_999).to_bits(), 1791116826.741613_f64.to_bits());
+        assert_eq!(us(1_791_116_826, 741_613_001).to_bits(), 1791116826.741613_f64.to_bits());
+        // 마이크로초 아래만 다른 입력은 같은 값이고, 다음 마이크로초는 더 큰 값이다.
+        assert_eq!(us(1_791_116_826, 741_613_000).to_bits(), us(1_791_116_826, 741_613_999).to_bits());
+        assert!(us(1_791_116_826, 741_614_000) > us(1_791_116_826, 741_613_999));
+        assert_eq!(us(0, 0).to_bits(), 0.0f64.to_bits());
+        assert_eq!(us(0, 999).to_bits(), 0.0f64.to_bits());
+        // 마이크로초 눈금의 입력(맥의 시계)은 그대로다 — 종전 식(`as_secs_f64()`)과 비트까지 같다.
+        for (s, n) in [(1_791_116_826u64, 741_613_000u32), (1_791_116_826, 0), (1_791_116_826, 999_999_000), (1_791_116_826, 1_000), (1, 500_000_000), (0, 0)] {
+            let d = Duration::new(s, n);
+            assert_eq!(epoch_secs_us(d).to_bits(), d.as_secs_f64().to_bits(), "{s}.{n:09}: 마이크로초 눈금의 입력이 바뀌었다");
+        }
+        // 소수 6자리 이하 · 입력보다 크지 않다 · 값은 정확히 '마이크로초 내림'이다.
+        for (s, n) in [
+            (1_791_116_826u64, 741_613_900u32),
+            (1_791_116_349, 264_700_700),
+            (1_791_116_826, 741_613_999),
+            (1_791_116_826, 999_999_999),
+            (1_791_116_826, 1),
+            (1_791_116_826, 99),
+        ] {
+            let d = Duration::new(s, n);
+            let v = epoch_secs_us(d);
+            let text = format!("{v}");
+            let frac = text.split_once('.').map_or(0, |(_, f)| f.len());
+            assert!(frac <= 6, "{s}.{n:09} → {text}: 소수 {frac}자리(기대 ≤ 6)");
+            assert!(v <= d.as_secs_f64(), "{s}.{n:09} → {text}: 입력보다 크다(미래 시각)");
+            assert_eq!((v * 1e6).round() as u128, d.as_micros(), "{s}.{n:09} → {text}: 마이크로초 내림값이 아니다");
+        }
+    }
+
+    /// ② 100ns 격자·1ns 격자 각 20,000 값 — [`epoch_secs_us`] 의 값은 **두 판독 길 모두 비트까지 정확히** 돌아온다(불일치 0) · 유효숫자 16자리 이하 · 입력보다 크지 않다 · 정확히 마이크로초 내림.
+    /// 그 값에 정수 초를 더하고 뺀 파생 시각(큐 항목의 `지금 − 60` · TTL 합)도 같다(#4 가 재는 값). 맥 격자(1µs) 20,000 값은 종전 식과 비트까지 같다(맥은 값 불변).
+    /// 공허 방지: 같은 격자의 **원시** 값(`as_secs_f64()`)은 기본 파서에서 1,000건 이상 어긋난다 — 함수가 항등(원시 값 그대로)이면 아래 단언이 붉다.
+    #[test]
+    fn r2f_dm2_epoch_secs_us_survives_the_default_json_parser_on_the_100ns_and_1ns_grids() {
+        for (label, unit) in [("100ns(윈도우 시계)", 100u64), ("1ns(리눅스 시계)", 1u64)] {
+            let (mut raw_lossy, mut us_lossy, mut derived_lossy, mut future, mut not_floor) = (0u32, 0u32, 0u32, 0u32, 0u32);
+            let (mut max_digits, mut max_shift) = (0usize, 0f64);
+            let mut first_bad: Option<Duration> = None;
+            for i in 0..20_000u64 {
+                let d = grid(unit, i);
+                let raw = d.as_secs_f64();
+                if lossy(raw) {
+                    raw_lossy += 1;
+                }
+                let v = epoch_secs_us(d);
+                if lossy(v) {
+                    us_lossy += 1;
+                    first_bad.get_or_insert(d);
+                }
+                if v > raw {
+                    future += 1;
+                }
+                if (v * 1e6).round() as u128 != d.as_micros() {
+                    not_floor += 1;
+                }
+                max_shift = max_shift.max(raw - v);
+                let (_, _, text) = json_roundtrip(v);
+                max_digits = max_digits.max(text.bytes().filter(u8::is_ascii_digit).count());
+                for off in [-60.0, 1.0, 60.0, 3_600.0] {
+                    if lossy(v + off) {
+                        derived_lossy += 1;
+                        first_bad.get_or_insert(d);
+                    }
+                }
+            }
+            assert!(
+                raw_lossy >= 1_000,
+                "{label}: 원시 값이 기본 파서에서 {raw_lossy}/20000 건만 어긋난다 — 이 검체의 전제가 사라졌다(`serde_json` 의 `float_roundtrip` 이 켜졌나? 0.14.43 K1 검체도 함께 점검하라)"
+            );
+            assert_eq!(
+                (us_lossy, derived_lossy, future, not_floor),
+                (0, 0, 0, 0),
+                "{label}: 마이크로초 시각이 JSON 왕복에서 바뀌었거나(지금 {us_lossy}건 · 정수 초 파생 {derived_lossy}건) 입력보다 크거나({future}건) 내림값이 아니다({not_floor}건) · 첫 불일치 입력 {first_bad:?}"
+            );
+            assert!(max_digits <= 16, "{label}: 값의 유효숫자가 {max_digits}자리다(기대 ≤ 16)");
+            // 정확 산술이면 < 1µs 지만 두 값이 각각 가장 가까운 `f64`(칸 약 2.4e-7 초)로 가므로 차는 1µs + 한 칸까지 간다.
+            assert!(max_shift < 1.25e-6, "{label}: 내림이 값을 {max_shift:e} 초 옮겼다(기대 < 1µs + f64 한 칸)");
+        }
+        for i in 0..20_000u64 {
+            let d = grid(1_000, i);
+            assert_eq!(epoch_secs_us(d).to_bits(), d.as_secs_f64().to_bits(), "1µs(맥 시계) 격자 i={i}: 값이 종전 식과 다르다 — 맥에서 시각이 바뀐다");
+        }
+    }
+
+    /// 함수 원문 — `head` 부터 첫 `\n}\n` 앞까지(문서 주석 제외).
+    fn fn_src<'a>(src: &'a str, head: &str) -> &'a str {
+        let i = src.find(head).unwrap_or_else(|| panic!("`{head}` 소실"));
+        let rest = &src[i..];
+        &rest[..rest.find("\n}\n").unwrap_or_else(|| panic!("`{head}` 의 끝을 찾지 못했다"))]
+    }
+
+    /// ③ [소스 핀] 데몬의 두 `now_epoch`(state · events) 본문이 벽시계를 [`epoch_secs_us`] 로 읽는다 — 원시 `as_secs_f64()` 로 되돌리면 붉다(맥의 시계는 1µs 라 동작 검체로는 그 회귀가 보이지 않는다).
+    /// 그 함수의 식(마이크로초 정수 ÷ 10^6 한 번)과, 데몬 소스 전체에서 `now_epoch` 정의가 이 둘뿐임(세 번째 사본이 원시 시계를 들고 생기지 않는다)도 함께 박는다. 바늘은 조각으로 이어 이 줄이 자기 자신에 걸리지 않게 한다.
+    #[test]
+    fn r2f_dm2_both_now_epoch_bodies_read_the_clock_through_epoch_secs_us_source_pin() {
+        let st = include_str!("state.rs");
+        let ev = include_str!("events.rs");
+        let bodies = [
+            ("state", fn_src(st, concat!("\npub fn now_", "epoch() -> f64 {")), concat!(".map(epoch_secs", "_us)")),
+            ("events", fn_src(ev, concat!("\nfn now_", "epoch() -> f64 {")), concat!(".map(crate::state::epoch_secs", "_us)")),
+        ];
+        for (name, body, call) in bodies {
+            assert!(
+                body.contains("std::time::SystemTime::now()") && body.contains(".duration_since(std::time::UNIX_EPOCH)"),
+                "{name}::now_epoch 가 벽시계(`SystemTime::now()` − `UNIX_EPOCH`)를 읽지 않는다:\n{body}"
+            );
+            assert!(body.contains(call), "{name}::now_epoch 가 `epoch_secs_us` 로 초를 만들지 않는다 — 윈도우·리눅스 시각이 다시 17자리가 된다:\n{body}");
+            assert!(!body.contains(concat!("as_secs", "_f64")), "{name}::now_epoch 가 원시 `as_secs_f64()` 를 쓴다 — 윈도우·리눅스 시각이 다시 17자리가 된다:\n{body}");
+        }
+        let f = fn_src(st, concat!("\npub(crate) fn epoch_secs", "_us(d: std::time::Duration) -> f64 {"));
+        assert!(f.contains(concat!("d.as_micros() as f64 ", "/ 1e6")), "`epoch_secs_us` 의 식이 바뀌었다(마이크로초 정수를 10^6 으로 한 번 나눈다):\n{f}");
+        // 데몬 소스 전체(디렉터리 스캔 · 주석 줄 제외)에서 `now_epoch` 정의는 state·events 한 곳씩뿐이다.
+        let needle = concat!("fn now_", "epoch(");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/cysd");
+        let mut defs: Vec<(String, usize)> = Vec::new();
+        let mut scanned = 0usize;
+        for e in std::fs::read_dir(&dir).expect("cysd 소스 디렉터리") {
+            let file = e.expect("항목").file_name().to_string_lossy().to_string();
+            if !file.ends_with(".rs") {
+                continue;
+            }
+            scanned += 1;
+            let text = std::fs::read_to_string(dir.join(&file)).expect("소스 읽기");
+            let n: usize = text.lines().filter(|l| !l.trim_start().starts_with("//")).map(|l| l.matches(needle).count()).sum();
+            if n > 0 {
+                defs.push((file, n));
+            }
+        }
+        defs.sort();
+        assert!(scanned >= 20, "데몬 소스 스캔이 공허하다({scanned}개)");
+        assert_eq!(
+            defs,
+            vec![("events.rs".to_string(), 1), ("state.rs".to_string(), 1)],
+            "데몬의 `now_epoch` 정의처가 바뀌었다 — 새 사본은 `epoch_secs_us` 를 쓰고 이 핀의 목록에 넣어라"
+        );
+    }
+
+    /// ★(B2) 인계 표식의 동일성은 **순번**이다 — 같은 `Instant` 를 받은 두 표식을 가른다(윈도우 `Instant` 는 100ns 눈금이라 연달아 찍은 두 표식이 같은 값을 받을 수 있다 ·
+    /// 윈도우 러너 실측: 진단 잡 37201047193 의 `inject_track_handoff_pending_until_an_arm_ends` ④ "뒤 인계의 표식을 앞 인계의 되돌림이 지웠다"). 같은 시각을 두 번 넣어 결정론으로 재현한다.
+    /// 시간 판정(`handoff_pending` 의 경과 · 끝난 arm 과의 선후)은 종전대로 넘긴 시각만 본다.
+    #[test]
+    fn r2f_dm2_handoff_marks_with_the_same_instant_are_told_apart_by_sequence() {
+        let t = Instant::now();
+        // ① 같은 시각의 두 표식 — 앞 인계의 되돌림은 뒤 인계의 표식을 지우지 않는다.
+        let track = InjectTrack::default();
+        let stale = track.note_handoff_at(t);
+        let newer = track.note_handoff_at(t);
+        track.undo_handoff(stale);
+        assert!(track.handoff_pending().is_some(), "같은 시각을 받은 뒤 인계의 표식을 앞 인계의 되돌림이 지웠다(동일성을 시각 값으로 가렸다)");
+        // ② 뒤 인계를 되돌리면 그 앞의 표식(stale — 아직 어떤 arm 도 끝나지 않았다)으로 돌아간다 — 종전 계약 그대로.
+        track.undo_handoff(newer);
+        assert!(track.handoff_pending().is_some(), "뒤 인계를 되돌렸는데 앞 인계의 표식이 복원되지 않았다");
+        // ③ 그 표식도 되돌리면 빈 좌석이다.
+        track.undo_handoff(stale);
+        assert!(track.handoff_pending().is_none(), "남은 표식을 되돌렸는데 대기가 남았다");
+        // ④ 순번은 다시 쓰이지 않는다 — 되돌린 표식의 증표를 한 번 더 내밀어도(같은 시각의) 새 표식을 지우지 못한다.
+        let track = InjectTrack::default();
+        let first = track.note_handoff_at(t);
+        track.undo_handoff(first);
+        let _second = track.note_handoff_at(t);
+        track.undo_handoff(first);
+        assert!(track.handoff_pending().is_some(), "이미 되돌린 표식의 증표가 같은 시각의 새 표식을 지웠다(순번이 재사용됐다)");
+        // ⑤ 시간 판정은 종전대로 넘긴 시각만 본다: 끝난 arm 이 인계보다 뒤이거나 같으면 대기가 아니고, 그 뒤 시각의 인계는 다시 대기다.
+        let track = InjectTrack::default();
+        let _m = track.note_handoff_at(t);
+        track.end();
+        assert!(track.handoff_pending().is_none(), "arm 이 끝났는데(done_at ≥ handed_at) 인계 대기가 남았다");
+        let _later = track.note_handoff_at(Instant::now() + Duration::from_secs(1));
+        assert!(track.handoff_pending().is_some(), "끝난 arm 보다 뒤 시각의 인계가 대기로 보이지 않는다");
+        // ⑥ 경과는 넘긴 시각부터다(과거 시각으로 넘긴 표식 — 부팅 직후라 뺄 수 없으면 건너뛴다).
+        if let Some(past) = Instant::now().checked_sub(Duration::from_secs(5)) {
+            let track = InjectTrack::default();
+            let _m = track.note_handoff_at(past);
+            assert!(track.handoff_pending().is_some_and(|age| age >= Duration::from_secs(5)), "인계의 경과가 넘긴 시각부터가 아니다");
+        }
+    }
+
+    /// ★(B3-b) 끝정리 도우미의 판정 — 유닉스(엄격)는 한 번 시도하고 실패를 그대로 돌려주고(이미 없는 폴더도 실패다 — 종전 `.unwrap()` 과 같다), 윈도우(느슨)는 다시 시도한 뒤 무시한다.
+    /// 맥에서 두 갈래를 모두 잰다(삭제 동작을 인자로 받는다). 실제 폴더는 이 호스트의 갈래로 지워진다.
+    #[test]
+    fn r2f_dm2_test_rm_rf_policy_is_strict_on_unix_and_retries_then_ignores_elsewhere() {
+        use std::io::{Error, ErrorKind};
+        let busy = || Error::from_raw_os_error(32);
+        let (long, none) = (Duration::from_secs(5), Duration::ZERO);
+        // 엄격(유닉스): 한 번 · 실패는 실패.
+        let mut n = 0u32;
+        let r = test_rm_rf_policy(true, long, none, || {
+            n += 1;
+            Err(busy())
+        });
+        assert!(r.is_err() && n == 1, "유닉스: 삭제 실패를 삼켰거나 다시 시도했다({r:?} · {n}회)");
+        let mut n = 0u32;
+        let r = test_rm_rf_policy(true, long, none, || {
+            n += 1;
+            Err(Error::from(ErrorKind::NotFound))
+        });
+        assert!(r.is_err() && n == 1, "유닉스: 없는 폴더의 끝정리는 종전처럼 실패여야 한다({r:?})");
+        assert_eq!(test_rm_rf_policy(true, long, none, || Ok(())).ok(), Some(1));
+        // 느슨(윈도우): 성공할 때까지 다시 시도한다 · 이미 없으면 성공.
+        let mut n = 0u32;
+        let r = test_rm_rf_policy(false, long, none, || {
+            n += 1;
+            if n < 3 {
+                Err(busy())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(r.ok(), Some(3), "윈도우: 공유 위반이 풀린 뒤의 재시도가 성공으로 끝나지 않았다");
+        assert_eq!(test_rm_rf_policy(false, long, none, || Err(Error::from(ErrorKind::NotFound))).ok(), Some(1));
+        // 시한이 지나면 남은 실패를 무시한다(시한 0 = 첫 실패에서 그만둔다) · 시한 안에서는 여러 번 시도한다.
+        let mut n = 0u32;
+        let r = test_rm_rf_policy(false, none, none, || {
+            n += 1;
+            Err(busy())
+        });
+        assert_eq!((r.ok(), n), (Some(1), 1), "윈도우: 시한이 지났는데 실패를 돌려줬거나 계속 시도했다");
+        // (시한은 넉넉히 300ms — 부하로 이 스레드가 잠깐 밀려도 두 번째 시도가 시한 안에 든다.)
+        let mut n = 0u32;
+        let r = test_rm_rf_policy(false, Duration::from_millis(300), Duration::from_millis(10), || {
+            n += 1;
+            Err(busy())
+        });
+        assert!(r.is_ok() && n >= 2, "윈도우: 시한 안에서 다시 시도하지 않았다({n}회)");
+        // 실제 폴더(이 호스트의 갈래) — 유닉스에서는 하위 폴더·파일까지 지워진다.
+        let dir = std::env::temp_dir().join(format!("cys-r2f2-rmrf-{}-{}", std::process::id(), now_epoch().to_bits()));
+        std::fs::create_dir_all(dir.join("a/b")).expect("임시 폴더");
+        std::fs::write(dir.join("a/b/f.txt"), "x").expect("임시 파일");
+        test_rm_rf(&dir);
+        // 유닉스(엄격)에서는 반드시 지워졌다. 윈도우(느슨)에서는 지워지지 않아도 이 도우미의 실패가 아니다 — 여기서 '없음' 을 단언하면 도우미가 덮으려는 바로 그 흔들림을 이 검체가 되살린다.
+        if cfg!(unix) {
+            assert!(!dir.exists(), "끝정리 뒤에도 폴더가 남았다");
+        }
+        // 소스 핀: 운영 도우미는 '유닉스인가'를 엄격 인자로 넘기고 실패하면 패닉한다(유닉스의 엄격함을 조용히 풀지 못하게).
+        let f = fn_src(include_str!("state.rs"), concat!("\npub(crate) fn test_rm", "_rf(path: &std::path::Path) {"));
+        assert!(f.contains("cfg!(unix),") && f.contains("panic!("), "`test_rm_rf` 가 유닉스에서 엄격하지 않다:\n{f}");
+    }
+
+    /// ★(B3-e) 조용한 관측 창의 판정과 재시도 코어 — 관측 창 앞뒤의 출력 세대가 **같고 짝수**일 때만 그 시도의 값을 돌려준다(끼어든 시도의 값으로 단언하지 않는다).
+    /// 조용한 좌석(유닉스의 `sleep 30`)에서는 첫 시도가 그대로 통과하고, 끝내 조용해지지 않으면 통과로 접지 않는다(`Err`).
+    #[test]
+    fn r2f_dm2_quiet_window_rule_and_retry_core() {
+        for (before, after, want) in [(0u64, 0u64, true), (2, 2, true), (1, 1, false), (3, 3, false), (2, 3, false), (2, 4, false), (3, 4, false)] {
+            assert_eq!(test_pty_window_quiet(before, after), want, "({before}, {after})");
+        }
+        // 창 안에서 청크 하나가 통째로 반영된 시도(짝수 → 다른 짝수) 셋은 버리고, 네 번째(조용한 창)의 값만 돌려준다.
+        let gen = AtomicU64::new(0);
+        let mut calls = 0u32;
+        let got = test_until_quiet_window(
+            || gen.load(Ordering::Acquire),
+            10,
+            0,
+            || {
+                calls += 1;
+                if calls <= 3 {
+                    gen.fetch_add(2, Ordering::AcqRel);
+                }
+                calls
+            },
+        );
+        assert_eq!(got, Ok(4), "끼어든 시도의 값을 돌려줬다");
+        // 발행 중(홀수)으로 시작한 창은 세대가 그대로여도 버린다.
+        let gen = AtomicU64::new(1);
+        let mut calls = 0u32;
+        let got = test_until_quiet_window(
+            || gen.load(Ordering::Acquire),
+            10,
+            0,
+            || {
+                calls += 1;
+                if calls == 2 {
+                    gen.store(2, Ordering::Release);
+                }
+                calls
+            },
+        );
+        assert_eq!(got, Ok(3), "발행 중(홀수)이거나 창 안에서 세대가 바뀐 시도의 값을 돌려줬다");
+        // 끝내 조용해지지 않으면 `Err(시도 횟수)` — 전제가 서지 않은 것을 통과로 접지 않는다.
+        let gen = AtomicU64::new(0);
+        let mut calls = 0u32;
+        let got = test_until_quiet_window(
+            || gen.load(Ordering::Acquire),
+            5,
+            0,
+            || {
+                calls += 1;
+                gen.fetch_add(2, Ordering::AcqRel);
+                calls
+            },
+        );
+        assert_eq!((got, calls), (Err(5), 5));
+        // 조용한 좌석에서는 첫 시도가 그대로 통과한다(쉼 없음 · 한 번만 부른다).
+        let gen = AtomicU64::new(8);
+        let mut calls = 0u32;
+        let got = test_until_quiet_window(
+            || gen.load(Ordering::Acquire),
+            5,
+            25,
+            || {
+                calls += 1;
+                "값"
+            },
+        );
+        assert_eq!((got, calls), (Ok("값"), 1));
+
+        // 짝(성공이 좌석에 쓰는 단계 — 큐 배달): 참이면 곧바로 참 · 거짓이면 창에 출력이 끼어든 시도만 다시 한다 · 조용한 창의 거짓은 그대로 거짓 · 유닉스(엄격)는 한 번뿐이다.
+        let gen = AtomicU64::new(0);
+        let mut calls = 0u32;
+        let done = test_done_or_quiet_window(
+            || gen.load(Ordering::Acquire),
+            false,
+            10,
+            0,
+            || {
+                calls += 1;
+                if calls <= 2 {
+                    gen.fetch_add(2, Ordering::AcqRel);
+                    false
+                } else {
+                    true
+                }
+            },
+        );
+        assert_eq!((done, calls), (true, 3), "윈도우 갈래: 출력이 끼어 보류된 두 시도 뒤 세 번째의 성공을 돌려줘야 한다");
+        let gen = AtomicU64::new(0);
+        let mut calls = 0u32;
+        let done = test_done_or_quiet_window(
+            || gen.load(Ordering::Acquire),
+            false,
+            10,
+            0,
+            || {
+                calls += 1;
+                false
+            },
+        );
+        assert_eq!((done, calls), (false, 1), "조용한 창에서의 실패를 다시 시도했다(전제가 선 실패는 그대로 실패다)");
+        let gen = AtomicU64::new(0);
+        let mut calls = 0u32;
+        let done = test_done_or_quiet_window(
+            || gen.load(Ordering::Acquire),
+            true,
+            10,
+            0,
+            || {
+                calls += 1;
+                gen.fetch_add(2, Ordering::AcqRel);
+                false
+            },
+        );
+        assert_eq!((done, calls), (false, 1), "유닉스(엄격): 한 번뿐이어야 한다 — 재시도가 '쓰고도 빼지 않은' 결함을 가린다");
+        let gen = AtomicU64::new(0);
+        let mut calls = 0u32;
+        let done = test_done_or_quiet_window(
+            || gen.load(Ordering::Acquire),
+            false,
+            4,
+            0,
+            || {
+                calls += 1;
+                gen.fetch_add(2, Ordering::AcqRel);
+                false
+            },
+        );
+        assert_eq!((done, calls), (false, 4), "끝내 조용해지지 않으면 실패다(시도 상한)");
+        let f = fn_src(include_str!("state.rs"), concat!("\npub(crate) fn test_done_or_no_pty", "_output(s: &Surface, attempt: impl FnMut() -> bool) -> bool {"));
+        assert!(f.contains("cfg!(unix), 60, 25, attempt"), "`test_done_or_no_pty_output` 이 유닉스에서 한 번뿐이 아니다:\n{f}");
     }
 }

@@ -362,12 +362,12 @@ cys 코어가 직접 만들어 보낸 기계 통지**다. 사람이 손으로 �
   불필요). 사람이 그 pane에 타이핑 중이면 직접 send가 **기본 3초간** 차단된다(타이핑 가드,
   `CYS_TYPING_GUARD_SECS`로 조정) — 그때도 `--queued`가 안전하다. 이미 직접 send한 텍스트의
   Return만 가드에 막혔으면 `cys send-key --queued ... Return`(Return 한정 큐잉)을 쓴다.
-  대상행 큐가 적체되면 데몬이 `queue.depth_high`(기본 depth 5+)를 발행한다 — 수신 시 해당
+  대상행 큐가 적체되면 데몬이 `queue.depth_high`(기본 depth 5+)를 발행한다 — 수신 시
   노드를 read-screen으로 점검하라. 큐 **머리**가 임계 이상 막혀 있으면 `queue.starved`
-  (기아 · `CYS_QUEUE_STARVE_ALERT_SECS` 기본 0=비활성 · depth_high와 별도 축)가 발행된다 —
-  대응은 원인 해소(연속 출력·사람 입력·queue pause)다. **★강제 배달 `cys queue deliver`는
-  사람 운영자 전용 — LLM 에이전트(master·CEO·CSO 포함)는 자동 강제배달 금지·사람 판단에
-  맡긴다.**
+  (기아 · `CYS_QUEUE_STARVE_ALERT_SECS` 기본 600초 · depth_high와 별도 축)가 발행된다 —
+  요약의 `remedy=<코드>`(처방 코드 · 없으면 `blocked_by`)는 사람에게 그대로 전달한다. **★LLM
+  에이전트(master·CEO·CSO 포함)는 자동 조치(강제 배달 `cys queue deliver`·드레인·키 주입·동결
+  해제·항목 삭제) 금지 — 사람 운영자 전용(depth_high 와 겹쳐도).**
 - **위임 티켓 — task-prompt 의무 (work management 앵커 1·강조 의무 / 눈대중 금지)**:
   워커에게 task를 위임하는 프롬프트는 반드시
   `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" task-prompt --task "<T>"
@@ -492,7 +492,9 @@ task-prompt가 자동 수행 — 위임할 때마다 절대 강조한다).
    reward-hack의 문이 된다. 라운드 종결 방식은 **keep-or-discard**다(계약 §7-6): 잠근 기준을
    통과한 변경만 keep하고 미달 변경은 discard한다 — 판정은 자기채점이 아니라 §10의
    producer≠evaluator 원칙대로 외부 리뷰어 verdict로만 한다.
-8. **(5-8)** 종료: 다음 **셋 중 먼저 온 것**이 종결 사유다.
+8. **(5-8)** 종료: 다음 **넷(ⓐ~ⓓ) 중 먼저 온 것**이 종결 사유다 — 여기에 §9 의 정체 종결 도구
+   판정 `stopped_stagnation` 이 **더해진다**(열거를 밀어내지 않는다 · 그 축을 내는 도구가 없는
+   버전이면 §9 는 휴면이고 종결은 ⓐ~ⓓ 로만 한다).
    ⓐ **잠근 합격 기준의 미달 항목 0**(외부 리뷰어 판정) ⓑ **3라운드** 상한 도달
    ⓒ ★**LOW 잔존 종결**: 그 라운드에서 **새로 발견된 `blocking`·`major` 결함이 0건**이고 잔여가
    **`minor`**(문구·서술·표기 정합)뿐이면, 그 minor 들을 **일괄 수정 목록으로 묶어 넘기고 라운드를
@@ -620,6 +622,16 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
   한 줄을 둔다 — 집계기는 파일명·경로·수정시각이 아니라 이 선언으로 귀속을 판정하므로(공유
   디렉터리에 남은 지난 시대 파일의 진행% 유입 차단), 레인·스테이지 종결 시 `status=retired`로
   갱신한다. 선언 없는 파일도 그대로 동작한다(하위호환).
+- **정체 종결의 백로그 인계(WP-6)**: `javis_orchestra.py round-status` 가 `stop_reason=stopped_stagnation`
+  을 내면 **stopped_stagnation은 종결이며 minor는 백로그 목록으로 인계**한다 — 잔여 minor 를 이 절의 todo
+  영속본(`MASTER_TODO.md` 백로그 항목)으로 옮기고 라운드를 잇지 않는다. §7 (5-8) 의 종결 경로에 **더해지는
+  도구 판정**이며 종결 ≠ 합격이다(verdict·keep-or-discard 규칙 그대로) · 그 상태의 **새 라운드**
+  `round-log` 는 도구가 거부하며(**이미 기록된 라운드의 완결·재평가 기록은 계속 가능** — 도구가 교착을
+  만들지 않는다) 명시 재개는 `--override "<사유>"` 로 기록한다. **도구 선행 확인**: 이 조항은 그 축을 내는
+  도구가 있을 때만 발동한다 — `javis_orchestra.py round-status --help` 에 `stop_reason`(그리고 `round-log`
+  에 `--override`)이 없는 버전이면 이 절은 **휴면**이고 종결은 (5-8) 의 ⓐ~ⓒ 로만 한다. 없는 기능을 있다고
+  가정해 종결을 선언하지 마라.
+  **task 표기는 신원이다(0.14.31)**: 장부는 `--task` 원문의 sha256 로 귀속되므로 같은 라운드를 이어 쓰려면 **표기를 그대로** 써야 한다 — 슬러그가 겹치는 다른 표기(`WP6/정체` vs `WP6 정체`)로 쓰면 도구가 exit 2 로 거부한다(남의 장부에 행을 섞어 게이트를 우회하던 길을 닫았다). `round-log` 의 exit 는 0=기록 · 1=기록+기계검증 실패 · 2=**행 없음**(거부) · 3=정체 종결 · 5=**기록 여부 불확정**(쓰기 오류+되읽기 실패 — 눈으로 확인하고 다시 기록하라)이며, 0 이 아니면 어느 값이든 자동 착수 금지다.
 
 ## 10. 자기개선 루프 (RSI — 기억·스킬로 실체화)
 - **기억 검색**: 과거 작업·결정·실패의 기억은 `cys recall "<검색어>" [--role --days]` —
@@ -641,7 +653,8 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
   조정)를 수치 비교해 `context.threshold` 이벤트를 push한다 — "무거워진 것 같다"는 감(感)은
   트리거가 아니다.
 - 이벤트 수신 시 master는 해당 노드에 `cys cycle-agent`를 집행한다: 저장 지시 → 저장 파일
-  결정론 검증(mtime+sha256) → 2-phase handshake → clear → 디렉티브 재주입·재개 포인터.
+  결정론 검증(mtime+sha256) → 2-phase handshake → clear → 디렉티브 재주입·재개 포인터. **발화 번호를 넘긴다** — `context.threshold` 의 `fire=<id>`(payload `fire_id`)를 `cys cycle-agent --fire <id>` 로 넘기고, exit **87 = 그 통보 뒤 사이클이 이미 끝남**(송신 0건)은 재집행하지 않는다. exit **88 = 다른 집행자(CSO·autopilot)의 사이클이 진행 중**(송신 0건 · cycle-agent 가 단일 전체 시한이 남기는 만큼 — 기본 최대 30초 — 끝나기를 기다린 뒤다)은 이미 처리됨이 **아니다** — 그러나 곧바로 재집행하거나 턴 안에서 기다리지 않는다(점유는 저장 지시 전 0단계에 잡혀 `quiescing` 으로는 진행 여부를 판정할 수 없다 · 좌석 행 `ctx_guard.claim` 이 점유다). 그 사이클이 clear 전에 끝나면 데몬이 같은 통보를 **한 번 재배달**한다(`context.threshold` · 같은 `fire=` · `redelivery`) — 재배달을 받으면 같은 `--fire` 로 집행한다(데몬이 판정한다 — 끝났으면 87 · 아직 점유 중이면 88). `context.clear_ineffective`·`context.level_measured`·`context.edge_return` 는 오너 관측 feed 이지 clear 개시 신호가 아니다(개시 신호는 `context.threshold` 하나 — 데몬 clear 가드가 사이클 뒤 잰 수준 위로 자란 뒤에만 낸다 · 가장자리·C 띠 복귀 예외).
+  **`--detach` 로 부른다**: `cys cycle-agent --role <역할> --fire <경보의 fire=> --detach` 1콜은 곧바로 rc 89(접수)로 돌아오고 데몬이 끝까지 붙든다(신원 = 너 · 좌석당 단일 비행 — 네가 clear 돼도 끊기지 않는다 · 일반 좌석은 동시 2 · master·CEO·CSO 좌석은 따로 칸이 있어 워커 사이클 뒤에서 기다리지 않는다 — CSO 좌석 사이클도 이 1콜이다(CSO 는 너만 clear 한다)). 결과는 `[cycle-result] … rc=N` 으로 네 큐에 한 번 온다 — 그 rc 로 판정하고(0·86 완료 · 87·88 위와 같다 · 그 밖은 실패 — 결과 불명 = 재집행 금지 · 관측으로 확인), 그 전에는 대상에 메시지를 보내거나 같은 대상의 사이클을 다시 시작하지 않는다. detach 사이클은 CSO 의 clear 통보(6단계 ②)의 보류 사유가 아니다 — 곧바로 준비한다. 데몬이 `--detach` 를 모르면(rc 1) `--detach` 없이 **백그라운드로 실행한다**(`run_in_background: true`) — 전경 대기 금지(단일 전체 시한 570초 동안 네 턴이 멈춘다). 그 백그라운드 1콜 중 clear 통보에는 '사이클 진행 중(대상·시작 시각)'으로 회신하고 끝난 뒤 준비한다. 백그라운드 실행이 없는 CLI 만 예외로 도구 timeout 600000 전경 실행.
   **저장 없이 clear 금지는 코드가 강제한다.**
 - **★master 컨텍스트 clear = CSO 주도 "주인 대리" 핸드셰이크 (제품 기본 절차 · 오너가 바꾸지
   않는 한 적용)**:
@@ -651,7 +664,7 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
   guard.sh가 막지 못한다 → **이 규칙 자체가 유일한 안전장치**다. `/clear`는 SESSION_STATE가 충실한
   스냅샷일 때만 가역(낡으면 비가역 데이터 손실)이므로 검증 단계는 불가침이다. **6단계**:
   1. **자기보고(유지)**: master는 작업 단위마다 `cys set-status --context`로 60% 자기보고 — 데몬이
-     `context.threshold`를 CSO에 결정론 발화. (개시권만 CSO로 넘기고 숫자 자기보고는 master가 계속한다.)
+     `context.threshold`를 CSO에 결정론 발화 — CSO 는 경보의 `fire=<id>` 를 보관해 4단계에 넘긴다. (개시권만 CSO로 넘기고 숫자 자기보고는 master가 계속한다.)
   2. **CSO 시점 판단·통보(개시 주체 = CSO)**: CSO가 시점을 판단(60% 신호 + 안전지점 = 게이트/커밋
      중간 아님·오너 실시간 입력 중 아님)하여 master에 "[CSO·주인 대신] clear 시점 — 세션 재개
      준비하라"를 통보한다.
@@ -659,15 +672,27 @@ Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 mast
      ②MASTER_TODO 갱신 ③진행 중 작업 로컬 커밋(push 금지 — denylist) ④checksum 산출 → CSO에
      "clear 준비 완료(SAVED+checksum)"를 push한다.
   4. **CSO 검증→집행(주인 대신)**: CSO가 SESSION_STATE를 재독·검증(checksum 대조·최신 mtime —
-     자연어 신뢰 금지·결정론) 후 `cys cycle-agent --role master --verifier worker`(CSO 자신은 검증자 불가 — 호출자==검증자 교착 · exit 82)로 master surface에
+     자연어 신뢰 금지·결정론) 후 `cys cycle-agent --role master --verifier worker --fire <경보의 fire=> --detach`(CSO 자신은 검증자 불가 — 호출자==검증자 교착 · exit 82)로 master surface에
      `/clear`+Enter를 주인 대신 집행한다(surface는 role 주소로 해소·하드코딩 금지·master role 확인 후·
      `--force-no-verify` 평시 금지).
+     호출 예: `cys cycle-agent --role <산출자역할> --verifier worker --fire <경보의 fire=>` (`--fire` 가 있어야 데몬이 그 통보 뒤 사이클이 이미 끝났는지 판정한다 — 같은 경보의 재배달·끝난 사이클 뒤의 핸드셰이크 완료가 방금 복원된 master 를 다시 clear 하지 않는다). 규칙 4:
+     ①검증자 기본은 worker 다. ★CSO 를 검증자로 지정하지 마라 — role-capability-gate 의 feed 허용
+     동사에 reply 가 없어 구조적으로 판정을 낼 수 없다.
+     ②★호출자 ≠ 검증자. 자기가 호출하면서 자기를 검증자로 지정하면 동기 호출 중 블록돼 자기 inbox 의
+     handshake 에 응답할 시점이 없다(2026-09-17 1회차 교착). 도구가 fail-closed 로 거부한다.
+     ③산출자 ≠ 검증자(producer≠evaluator).
+     ④산출자가 worker 인 경우 검증자는 ★다른 좌석을 지정한다 — 리뷰어 좌석 등, feed reply 권한 실측을 선행한다.
   5. **master 자동복구**: `/clear` 직후 SessionStart:clear hook이 SESSION_STATE·RECOVERY를 주입 →
      master는 즉시 자율 복구(RECOVERY 프로토콜·G2 실측 대조)하고 미해결 지점부터 재개한다.
   6. **🔴 무응답 정책(제품 기본 절차 = 독립검증 후 조건부 집행)**: master가 통보 후
      타임아웃(cycle-agent 기본 120s) 내 ack를 못 보내면(비대·hang) CSO가 SESSION_STATE를 **독립
-     검증**(checksum + 최신 mtime) — ①신선(미저장 작업 없음 확정) → cycle-agent로 clear 집행(손실0)
-     ②낡음(미저장 위험) → clear 금지·오너께 escalation. 무한 대기·맹목 force-clear 없음
+     검증**(checksum + 최신 mtime) — ①**저장 기준선이 신선함**이 확정되면 cycle-agent로 clear 집행을
+     **시도**한다. checksum·mtime은 **저장된 파일의 상태만** 증명하므로 '미저장 작업 없음'도 **'손실
+     0'도 단언하지 마라**(그 단언은 이 증명의 범위 밖이다 — CSO_DIRECTIVE §1-2 ⑦ 과 같은 문면).
+     또 `cys cycle-agent`는 **호출 시점에 새 기준선**을 잡고 **호출 이후의 파일 갱신**을 저장 증거로
+     요구하므로, 저장 지시를 받지 못하는 hang에서는 `저장 검증 실패 … clear 미실행`이 종착점이고
+     그때의 출구는 오너 채널 상신뿐이다 — 미실행을 '집행됨'으로 적지 마라 ②신선 확정 불가·낡음
+     (미저장 위험) → clear 금지·오너께 escalation. 무한 대기·맹목 force-clear 없음
      (eval-driven 독립 재유도 원칙과 정합). **CSO 부재 / AUTOPILOT_PAUSED / 오너 실시간 입력 중 =
      clear 보류.** 상세 [[feedback_autonomous_pilot_mandate]].
 

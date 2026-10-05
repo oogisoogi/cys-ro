@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   classifyPendingFeed,
   CYCLE_VERIFY_NOTE,
   CYCLE_VERIFY_DISMISS_TITLE,
+  feedCreatedToastTitle,
+  FEED_TOAST_APPROVAL_TITLE,
+  FEED_TOAST_NOTICE_TITLE,
+  NOTICE_FEED_KIND_PREFIXES,
+  NOTICE_FEED_KINDS,
 } from "./feedclass";
 
 describe("classifyPendingFeed — pending 조작면 분류(패널·팔레트 공용 단일 술어)", () => {
@@ -42,6 +48,15 @@ describe("classifyPendingFeed — pending 조작면 분류(패널·팔레트 공
     ).toBe("standard");
   });
 
+  // ★U16(0.14.41) 팀 만들기 제안: 일반 Allow 는 생성 없이 카드를 소각하는 기만 버튼이다 —
+  //  전용 분류로 내려 카드(확인 창 열기·만들지 않기)만 남기고 팔레트 승인 대상에서도 뺀다.
+  test("★team-create-request 는 'team-create' — 부가 신호와 무관", () => {
+    expect(classifyPendingFeed({ kind: "team-create-request", request_id: "tp-1" })).toBe("team-create");
+    expect(
+      classifyPendingFeed({ kind: "team-create-request", request_id: "tp-1", daemon_issued: false }),
+    ).toBe("team-create");
+  });
+
   test("특례 보존: ceo-promote-request 등 다른 kind 는 standard(Allow 경로 유지)", () => {
     expect(classifyPendingFeed({ kind: "ceo-promote-request", request_id: "r3" })).toBe("standard");
     expect(classifyPendingFeed({ kind: "learn_proposal", request_id: "r4" })).toBe("standard");
@@ -58,5 +73,45 @@ describe("cycle-verify 안내 문구 — 문자열 핀(기만·무고지 금지)
     expect(CYCLE_VERIFY_DISMISS_TITLE).toContain("판정이 아닙니다");
     expect(CYCLE_VERIFY_DISMISS_TITLE).toContain("dismissed");
     expect(CYCLE_VERIFY_DISMISS_TITLE).toContain("안전 중단");
+  });
+});
+
+// ★U10(0.14.41) 토스트 제목 분리 — 정보성 kind 는 'ℹ 알림', 그 밖(승인·결정성·미지)은 '📥 승인 요청'.
+describe("feedCreatedToastTitle — 정보성 알림 vs 승인 요청", () => {
+  test("정보성 kind(허용목록·formation-* 접두) → ℹ 알림", () => {
+    for (const k of ["hook-missing", "bootstrap-fail", "warn", "error", "formation", "ceo-notice",
+                     "formation-complete", "formation-partial", "formation-pending", "formation-failed"]) {
+      expect(feedCreatedToastTitle(k)).toBe(FEED_TOAST_NOTICE_TITLE);
+    }
+  });
+  test("승인·결정성·미지 kind → 📥 승인 요청(모르면 승인 쪽)", () => {
+    for (const k of ["permission", "approval", "first_run_gate", "cycle-verify", "learn_proposal",
+                     "mission-set", "ceo-promote-request", "question", "", "formationX", "Hook-Missing",
+                     undefined, null, 7]) {
+      expect(feedCreatedToastTitle(k)).toBe(FEED_TOAST_APPROVAL_TITLE);
+    }
+  });
+  test("데몬 정본(state.rs NOTICE_FEED_KINDS·PREFIXES)과 사본이 같다", () => {
+    const rs = readFileSync(new URL("../../src/bin/cysd/state.rs", import.meta.url), "utf-8");
+    const grab = (name: string): string[] => {
+      const m = rs.match(new RegExp("pub const " + name + ": &\\[&str\\] = &\\[([^\\]]*)\\]"));
+      expect(m).not.toBeNull();
+      return Array.from((m as RegExpMatchArray)[1].matchAll(/"([^"]*)"/g), (x) => x[1]);
+    };
+    expect([...grab("NOTICE_FEED_KINDS")].sort()).toEqual([...NOTICE_FEED_KINDS].sort());
+    expect([...grab("NOTICE_FEED_KIND_PREFIXES")].sort()).toEqual([...NOTICE_FEED_KIND_PREFIXES].sort());
+  });
+  test("main.ts 배선 — feed.item.created 토스트가 분류 함수를 쓴다(고정 '📥 승인 요청' 리터럴 제거)", () => {
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
+    const at = main.indexOf('if (name === "feed.item.created") {');
+    expect(at).toBeGreaterThan(0);
+    // ★통합(WP-E U16): team-create-request 특례 분기가 앞에 끼어들어 고정폭(400자) 창이
+    // feedCreatedToastTitle 호출을 놓쳤다 — teamproposal.test.ts 와 같은 경계(refreshFeed() 직전
+    // 까지 이 블록 전체)로 넓힌다(취지 불변: 분류 함수 사용 + 고정 리터럴 재도입 금지).
+    const end = main.indexOf("refreshFeed();", at);
+    expect(end).toBeGreaterThan(at);
+    const branch = main.slice(at, end);
+    expect(branch).toContain("feedCreatedToastTitle(payload.kind)");
+    expect(branch).not.toContain('"📥 승인 요청"');
   });
 });

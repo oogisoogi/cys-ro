@@ -1,6 +1,8 @@
 //! T7 E6 경보 엔진 — 임계값·반복실패 경보의 순수 평가기 + 설정 로딩.
 //! governance.rs watchdog가 에지 디바운스로 발화(능동 경보)하고, control.alerts RPC가 같은
-//! 평가기로 현재 상태(UI 배지)를 노출한다 — 단일 진실원으로 둘이 갈라지지 않게.
+//! 평가기(`evaluate`)로 현재 상태(UI 배지)를 노출한다 — **평가기가 하나**라 판정 규칙이 갈라지지 않는다.
+//! ★(R2F-DM · 성찰 2회차 A1 n-12 ⓑ) 다만 **입력 스냅샷은 같지 않다**: 워치독은 캐시 전용 스냅샷(`snapshot_cached_with_stale` · IO 0 · 신원 캐시가 데워지기 전에는 '판정 불가 = 사용 중'),
+//! `control.alerts` 는 읽기-통과 스냅샷(`snapshot` · 신원 파일을 읽는다)을 쓴다 — 캐시가 데워질 때까지 두 입력이 다를 수 있다(R1F-US M-1). "단일 진실원" 은 평가기에 대한 말이지 입력에 대한 말이 아니다.
 //! ★자동응답 금지(governance 교리): 감지·격상(이벤트)만, cycle/clear/budget 판단은 master의 몫.
 //! 데이터 소스: 노드 rate(observed_usage) + 7d usage_records(비용·토큰) + 7d events(반복실패).
 
@@ -88,11 +90,45 @@ pub struct GateBadge {
     pub detail: Value,
 }
 
+/// ★0.14.43(B3): 경보 입력 한 건의 **관측 메타** — 경보 `detail`·요약에 실려 CSO 가 "이 값이 얼마나 오래된 것인가"를 읽는다.
+/// 값 자체는 `Snapshot::rates`/`account_rates` 가 나르고, 이것은 같은 `(역할|라벨, 창)` 키의 곁가지다(없으면 detail 에 가산 키가 안 붙는다).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateMeta {
+    /// 이 값이 새로 생산된 시각(epoch 초 · 0.0 = 모름).
+    pub observed_at: f64,
+    /// 관측 나이(초 · 음수 없음). `observed_at` 이 0.0 이면 의미 없다(detail 에는 null).
+    pub age_secs: f64,
+    /// 이 값이 지금 쓰이는 계정의 것인가 — true/false/None(판정 불가).
+    pub in_use: Option<bool>,
+    pub resets_at: Option<f64>,
+    /// 리셋까지 남은 초(`resets_at − now` · 음수 가능). `resets_at` 이 epoch 초로 보이지 않거나 없으면 None.
+    pub reset_in_secs: Option<f64>,
+    /// 같은 리셋 창의 최댓값을 더 쥐는 시간(초 — `accounts::PEAK_HOLD_SECS` 잔여). 계정 축에서 `peak_at` 이 있을 때만.
+    pub held_secs: Option<f64>,
+}
+
+impl RateMeta {
+    /// 경보 `detail` 에 가산할 키 — 기존 detail 키는 건드리지 않는다. 시각·나이는 정수 초(나이는 내림), 모르면 null.
+    fn add_to(&self, detail: &mut Value) {
+        let known = self.observed_at.is_finite() && self.observed_at > 0.0;
+        let secs = |x: f64| if x.is_finite() && x >= 0.0 { json!(x as u64) } else { Value::Null };
+        detail["observed_at"] = if known { json!(self.observed_at) } else { Value::Null };
+        detail["age_secs"] = if known { secs(self.age_secs) } else { Value::Null };
+        detail["in_use"] = self.in_use.map_or(Value::Null, Value::Bool);
+        detail["reset_in_secs"] = match self.reset_in_secs {
+            Some(r) if r.is_finite() => json!(r as i64),
+            _ => Value::Null,
+        };
+        detail["held_secs"] = self.held_secs.map_or(Value::Null, secs);
+    }
+}
+
 /// 평가 입력 스냅샷 — 호출부(watchdog/RPC)가 락 잡고 수집(평가기는 락 무관·순수).
 #[derive(Default)]
 pub struct Snapshot {
-    pub rates: Vec<(String, String, f64)>,        // (role, label, used_pct)
-    /// CC v2 WS-A: 계정 단위 rate — (계정 라벨, 창, used_pct). 관측된 계정만.
+    /// (role, label, used_pct) — ★R1F-US(m-6): 스냅샷(`snapshot_*`)이 만든 것은 같은 키 (역할, 창)당 **하나**다 — 값이 가장 큰 입력(같은 값이면 관측 나이가 작은 쪽). 값과 `rate_meta` 가 같은 입력의 것이어야 한다.
+    pub rates: Vec<(String, String, f64)>,
+    /// CC v2 WS-A: 계정 단위 rate — (계정 라벨, 창, used_pct). 관측된 계정만. ★R1F-US(m-6): 스냅샷이 만든 것은 같은 키 (라벨, 창)당 하나(값이 가장 큰 입력).
     pub account_rates: Vec<(String, String, f64)>,
     pub weekly_cost_usd: f64,
     pub weekly_tokens: u64,
@@ -100,6 +136,16 @@ pub struct Snapshot {
     /// ★T-0147-2 A8: 델타게이트 배지(파일 oracle) + 데몬 게이트 신호(state 외부 oracle).
     /// 가산 필드 — `..Snapshot::default()` 호출부는 빈 벡터를 받아 무회귀다.
     pub gate_badges: Vec<GateBadge>,
+    /// ★0.14.43(B3) 가산 필드(Default 로 비어 무회귀): 계정 축 경보 입력의 관측 메타 — 키 (계정 라벨, 창).
+    pub account_meta: HashMap<(String, String), RateMeta>,
+    /// ★0.14.43(B3) 좌석 축 경보 입력의 관측 메타 — 키 (역할, 창 라벨).
+    pub rate_meta: HashMap<(String, String), RateMeta>,
+    /// ★0.14.43(B3) **신선도 규칙이 입력에서 뺀** 창의 경보 키(`account_rate:{라벨}:{창}` · `rate_limit:{역할}:{창}`) — 리셋 전인데도 '지금 쓰이지 않고 관측이
+    /// 30분(노브)을 넘은' 값이다. 임계 판정은 `evaluate` 의 몫이라 임계 미만 창도 섞일 수 있다(발화한 적 없는 키는 틱의 `fired.retain` 이 어차피 버린다).
+    /// 틱(`governance::check_alerts_with`)이 이 키를 `fired` 에 붙들어 둔다 — 다시 적격이 돼도 REMIND 안에는 재발행하지 않게(깜빡임 금지).
+    /// ★R1F-US(m-6·b): 워치독 틱 판([`snapshot_cached_with_stale`])은 **임계 이상**인 창(경보 입력이었다면 `evaluate` 가 경보로 냈을 값)의 키만 싣는다 — 임계 미만의 낡은 창이 같은 키를 쓰는 다른 좌석·계정의
+    /// 발화 키를 붙들어 새 교차가 30분 늦게 나가는 일이 없다. RPC 판([`snapshot`]·[`snapshot_with_stale`])은 이 필드를 쓰지 않으므로 임계로 좁히지 않는다(전부 싣는다).
+    pub stale_suppressed: Vec<String>,
 }
 
 /// 단일 경보.
@@ -129,24 +175,33 @@ pub fn evaluate(snap: &Snapshot, cfg: &AlertConfig) -> Vec<Alert> {
     // 1. rate limit (노드 5h/7d 쿼터)
     for (role, label, pct) in &snap.rates {
         if *pct >= cfg.rate_limit_pct {
+            let mut detail = json!({"role": role, "label": label, "used_pct": pct});
+            // ★0.14.43(B3): 관측 메타가 있으면 가산 키(observed_at·age_secs·in_use·reset_in_secs·held_secs) — 기존 detail 키는 불변.
+            if let Some(m) = snap.rate_meta.get(&(role.clone(), label.clone())) {
+                m.add_to(&mut detail);
+            }
             out.push(Alert {
                 kind: "rate_limit".into(),
                 key: format!("rate_limit:{role}:{label}"),
                 severity: if *pct >= 95.0 { "crit" } else { "warn" }.into(),
                 message: format!("{role} {label} rate {:.0}%", pct),
-                detail: json!({"role": role, "label": label, "used_pct": pct}),
+                detail,
             });
         }
     }
     // 1b. CC v2: 계정 단위 rate (에지 디바운스 키 = 계정 라벨 — 같은 계정 다중 노드 중복발화 0)
     for (label, win, pct) in &snap.account_rates {
         if *pct >= cfg.account_warn_pct {
+            let mut detail = json!({"account": label, "win": win, "used_pct": pct});
+            if let Some(m) = snap.account_meta.get(&(label.clone(), win.clone())) {
+                m.add_to(&mut detail);
+            }
             out.push(Alert {
                 kind: "account_rate".into(),
                 key: format!("account_rate:{label}:{win}"),
                 severity: if *pct >= cfg.account_crit_pct { "crit" } else { "warn" }.into(),
                 message: format!("계정 {label} {win} rate {:.0}%", pct),
-                detail: json!({"account": label, "win": win, "used_pct": pct}),
+                detail,
             });
         }
     }
@@ -377,18 +432,90 @@ pub fn gate_signal_badges(now: f64) -> Vec<GateBadge> {
 
 /// 데몬에서 평가 스냅샷 수집 — 노드 rate(in-memory) + 7d usage_records/events(analytics).
 /// 락 순서: surfaces → (해제) → analytics. consumption 미사용(교착 회피).
+/// ★0.14.43(B3) 신선도 규칙: 좌석 신원 표를 **한 번** 만들어 좌석 축·계정 축이 함께 쓴다 — 락 순서 surfaces(복사만) → 해제 → 신원 표(캐시) →
+/// surfaces(좌석 rate 수집 — 파일 IO 없음) → 해제 → accounts(메모리 연산뿐) → 해제 → analytics. 겹쳐 쥐는 락 쌍이 새로 생기지 않는다.
+/// ★R1F-US(M-1): **이 판은 RPC 경로(`control.alerts`)용 읽기-통과**다 — 신원 표가 캐시 미스일 때 신원 파일을 확인한다(폴더별 60초 하한 · 미스 때 IO 전에 선점). **워치독(경보 틱)은 이 함수를 부르지 않는다** —
+/// 스냅샷이 신원 파일을 열면 그 디스크가 응답하지 않을 때 같은 틱의 큐 배달·사망 감지·데드맨 점검이 함께 설 수 있다(오너 절대 기준 ③ — 코드 경로로 본 것이고 멈춘 디스크로 실측하지는 않았다).
+/// 워치독은 [`snapshot_cached_with_stale`](캐시 전용 · IO 0)을 쓴다.
 pub fn snapshot(daemon: &Arc<Daemon>, now: f64) -> Snapshot {
-    let mut rates = Vec::new();
+    snapshot_with_stale(daemon, now, crate::accounts::account_alert_stale_secs())
+}
+
+/// [`snapshot`] 의 시험 이음매 — 신선도 규칙의 나이 상한(초)을 인자로 받는다(`0` = 규칙 끔 = 0.14.42 동작에 **가깝지만 같지는 않다** — 좌석별 경보에서 리셋 시각이 없는 창의 생사를 갱신 시각이 아니라 값을 실제로 관측한 시각으로 따지고,
+/// `usage.alert_resolved` 의 `cleared` 가 난다 · `USER-MANUAL.md` 노브 표·릴리스 노트 §4 · R2F-DM 성찰 2회차 A5 m11). 환경변수를 건드리지 않고(병렬 검체가 서로 오염되지 않게)
+/// 노브 값별 시나리오를 돌린다. 운영은 [`snapshot`] 이 노브 값(`CYS_ACCOUNT_ALERT_STALE_SECS`)을 넘긴다. 락 순서 등 본체 계약은 [`snapshot`] 의 문서와 같다(읽기-통과 신원 표).
+pub fn snapshot_with_stale(daemon: &Arc<Daemon>, now: f64, stale_secs: f64) -> Snapshot {
+    let view = crate::accounts::seat_identity_view_at(daemon, now);
+    snapshot_from_view(daemon, now, stale_secs, &view, None)
+}
+
+/// ★R1F-US(M-1) **워치독 틱 전용** 스냅샷 — 신원 표를 **캐시 전용**으로 만든다([`crate::accounts::seat_identity_view_cached`] · IO 0 · stat 0: 항목이 있으면 만료됐어도 마지막 값 · 없으면 None = 판정 불가 = 사용 중 —
+/// 실패 방향은 경보 유지 = 0.14.42 동작). 캐시는 상태줄 보고와 RPC 의 읽기-통과 조회가 채운다. 락 순서·본체 계약은 [`snapshot`] 과 같다(본체 [`snapshot_from_view`]).
+/// ★R1F-US(m-6·b): `cfg` 는 붙들 키를 **임계로 좁히는** 데만 쓴다 — 신선도 규칙으로 빠진 창 가운데 **임계 이상**(`evaluate` 가 경보로 냈을 값)인 것의 키만 `stale_suppressed` 에 싣는다. 임계 미만의 낡은 창이 같은 키를
+/// 쓰는 다른 좌석·계정의 발화 키를 붙들어 새 교차가 30분 늦게 나가는 일을 없앤다(0.14.42 는 즉시).
+pub fn snapshot_cached_with_stale(daemon: &Arc<Daemon>, now: f64, stale_secs: f64, cfg: &AlertConfig) -> Snapshot {
+    let view = crate::accounts::seat_identity_view_cached(daemon);
+    snapshot_from_view(daemon, now, stale_secs, &view, Some(cfg))
+}
+
+/// 스냅샷 본체 — 신원 표(`view`)는 **부른 쪽이** 만들어 넘긴다(읽기-통과판은 파일 IO 가 있으므로 surfaces 락을 잡기 전에). 이 본체는 신원 표를 만들지 않는다(락 순서·IO 위치의 계약).
+/// `hold` = 붙들 키를 임계로 좁힐 설정(None = 좁히지 않는다). ★R1F-US(m-6·a): 같은 키의 입력이 둘 이상이면 **값이 가장 큰 입력 하나**를 쥐고 그 입력의 메타를 싣는다(발행되는 경보의 값과 `age=`·`in_use=`·`reset=` 이 같은 입력의 것).
+fn snapshot_from_view(daemon: &Arc<Daemon>, now: f64, stale_secs: f64, view: &crate::accounts::SeatIdentityView, hold: Option<&AlertConfig>) -> Snapshot {
+    let mut seat_best: HashMap<(String, String), (f64, RateMeta)> = HashMap::new();
+    let mut stale_suppressed: Vec<String> = Vec::new();
     {
         let surfaces = daemon.surfaces.lock().unwrap();
-        for s in surfaces.values() {
+        // 좌석 id 순으로 훑는다 — 같은 값·같은 나이의 입력이 겹칠 때 어느 입력이 남는지가 `HashMap` 순서에 달리지 않는다.
+        let mut seats: Vec<&Arc<crate::state::Surface>> = surfaces.values().collect();
+        seats.sort_by_key(|s| s.id);
+        for s in seats {
             if s.exited.load(Ordering::Relaxed) {
                 continue;
             }
             let role = s.role.lock().unwrap().clone().unwrap_or_else(|| "?".into());
             if let Some(u) = s.observed_usage.lock().unwrap().as_ref() {
+                // ★fatal-fix N1: agy 좌석(agent gemini)의 쿼터는 **계정 하나**의 사실이다 — 좌석마다 싣으면 좌석 N개가 같은
+                //   쿼터로 키 2N개를 만들어 CSO 시간당 경보 예산을 잠식했다(좌석 3개 → 키 8개). 같은 사실은 계정 축
+                //   (`account_rate:Antigravity (agy)`)이 덮는다. 좌석 배지 표시는 그대로다(경보 입력에서만 뺀다).
+                if u.agent == "gemini" {
+                    continue;
+                }
+                // ★0.14.43(B3): rate 의 관측 시각은 `rate_observed_at`(새로 생산된 시각 · 이월되는 값) — `updated_at` 은 transcript 이월에도 now 로 찍혀 rate 의 나이가
+                //   아니다. 모르면(0) 종전처럼 `updated_at` 으로 창의 생사만 보고 나이 판정은 하지 않는다(적격).
+                let known_at = u.rate_observed_at.is_finite() && u.rate_observed_at > 0.0;
+                let live_at = if known_at { u.rate_observed_at } else { u.updated_at };
+                let age = if known_at { (now - u.rate_observed_at).max(0.0) } else { 0.0 };
+                let in_use = crate::accounts::seat_in_use_tri(
+                    u.rate_account.as_deref(),
+                    view.current_for(s.id),
+                    true,
+                    u.agent == "claude",
+                );
                 for w in &u.rate {
-                    rates.push((role.clone(), w.label.clone(), w.used_pct));
+                    // ★fatal-fix R3-2: 리셋이 지난 창은 경보 근거가 아니다(UI '리셋됨'과 같은 규칙).
+                    if !crate::usage::rate_window_live(w, live_at, now) {
+                        continue;
+                    }
+                    if !crate::accounts::alert_eligible(true, in_use, age, stale_secs) {
+                        // 신선도 규칙으로만 빠진 창 — 틱이 이 키를 `fired` 에 붙들어 깜빡임(재발행)을 막는다. ★R1F-US(m-6·b): 틱 판은 임계 이상인 창만 붙든다.
+                        if hold.is_none_or(|c| w.used_pct >= c.rate_limit_pct) {
+                            stale_suppressed.push(format!("rate_limit:{role}:{}", w.label));
+                        }
+                        continue;
+                    }
+                    keep_best(
+                        &mut seat_best,
+                        (role.clone(), w.label.clone()),
+                        w.used_pct,
+                        RateMeta {
+                            observed_at: if known_at { u.rate_observed_at } else { 0.0 },
+                            age_secs: age,
+                            in_use,
+                            resets_at: w.resets_at,
+                            reset_in_secs: reset_in_secs(w.resets_at, now),
+                            held_secs: None,
+                        },
+                    );
                 }
             }
         }
@@ -422,7 +549,39 @@ pub fn snapshot(daemon: &Arc<Daemon>, now: f64) -> Snapshot {
             None => (0.0, 0, Vec::new()),
         }
     };
-    let account_rates = crate::accounts::alert_rates(daemon);
+    // ★0.14.43(B3): 계정 축 — 적격 행만 입력이 되고, 신선도 규칙으로 빠진 창은 `stale_suppressed` 로 따로 안다.
+    let mut account_best: HashMap<(String, String), (f64, RateMeta)> = HashMap::new();
+    for r in crate::accounts::alert_rates_with(daemon, view, now, stale_secs) {
+        if !r.eligible {
+            // ★R1F-US(m-6·b): 틱 판은 임계 이상인 창만 붙든다.
+            if hold.is_none_or(|c| r.used_pct >= c.account_warn_pct) {
+                stale_suppressed.push(format!("account_rate:{}:{}", r.label, r.win));
+            }
+            continue;
+        }
+        keep_best(
+            &mut account_best,
+            (r.label.clone(), r.win.clone()),
+            r.used_pct,
+            RateMeta {
+                observed_at: r.observed_at,
+                age_secs: r.age_secs,
+                in_use: r.in_use,
+                resets_at: r.resets_at,
+                reset_in_secs: reset_in_secs(r.resets_at, now),
+                held_secs: r.held_secs,
+            },
+        );
+    }
+    stale_suppressed.sort();
+    stale_suppressed.dedup();
+    // 같은 키의 입력은 하나로 접혔다(값이 가장 큰 입력) — 키 오름차순으로 낸다(결정론).
+    let mut rates: Vec<(String, String, f64)> = seat_best.iter().map(|((r, l), (p, _))| (r.clone(), l.clone(), *p)).collect();
+    rates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    let rate_meta: HashMap<(String, String), RateMeta> = seat_best.into_iter().map(|(k, (_, m))| (k, m)).collect();
+    let mut account_rates: Vec<(String, String, f64)> = account_best.iter().map(|((l, w), (p, _))| (l.clone(), w.clone(), *p)).collect();
+    account_rates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    let account_meta: HashMap<(String, String), RateMeta> = account_best.into_iter().map(|(k, (_, m))| (k, m)).collect();
     // ★T-0147-2 A8 + N6b: 두 oracle 을 합친다 —
     //   파일 oracle(레인별 badges.json) = 게이트가 state 를 쓸 수 있을 때의 정상 경로,
     //   state 외부 oracle(gate_signal_badges) = 바로 그 state 를 못 쓸 때의 유일한 경로.
@@ -430,7 +589,42 @@ pub fn snapshot(daemon: &Arc<Daemon>, now: f64) -> Snapshot {
     let mut gate_badges = collect_gate_badges(&crate::state::state_dir(&daemon.socket_path), now);
     gate_badges.extend(gate_signal_badges(now));
     gate_badges.sort_by(|a, b| a.key.cmp(&b.key));
-    Snapshot { rates, account_rates, weekly_cost_usd, weekly_tokens, tool_failures, gate_badges }
+    Snapshot {
+        rates,
+        account_rates,
+        weekly_cost_usd,
+        weekly_tokens,
+        tool_failures,
+        gate_badges,
+        account_meta,
+        rate_meta,
+        stale_suppressed,
+    }
+}
+
+/// 리셋까지 남은 초 — `resets_at` 이 epoch 초로 보일 때만(상대 초 등 다른 단위의 값에서 의미 없는 음수를 만들지 않는다).
+fn reset_in_secs(resets_at: Option<f64>, now: f64) -> Option<f64> {
+    resets_at.filter(|r| r.is_finite() && *r >= 1.0e9).map(|r| r - now)
+}
+
+/// ★R1F-US(m-6·a) 같은 키의 입력이 둘 이상이면(같은 역할명·역할 없음(`?`) 좌석 여럿 · 같은 이메일의 두 계정) **값(사용률)이 가장 큰 입력**을 쥐고 그 입력의 메타를 함께 쥔다 — 발행되는 경보의 값과 메타(`age=`·`in_use=`·`reset=`)가
+/// 같은 입력의 것이어야 한다(종전엔 나이가 가장 작은 입력의 메타를 쥐어 "3시간 전 99%" 가 `age=5` 로 나갈 수 있었다). 같은 값이면 관측 나이가 작은 쪽. (`evaluate` 는 키당 경보 하나로 나가므로 입력도 키당 하나면 된다.)
+fn keep_best(map: &mut HashMap<(String, String), (f64, RateMeta)>, key: (String, String), pct: f64, meta: RateMeta) {
+    use std::collections::hash_map::Entry;
+    match map.entry(key) {
+        Entry::Vacant(v) => {
+            v.insert((pct, meta));
+        }
+        Entry::Occupied(mut o) => {
+            let better = {
+                let (cur_pct, cur_meta) = o.get();
+                pct > *cur_pct || (pct == *cur_pct && meta.age_secs < cur_meta.age_secs)
+            };
+            if better {
+                o.insert((pct, meta));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +663,8 @@ mod tests {
             ],
             // ★T-0147-2 A8 가산 필드 — 이 핀은 기존 3축(rate·budget·failure) 전용이라 배지 없음.
             gate_badges: Vec::new(),
+            // ★0.14.43(B3) 가산 필드(관측 메타·신선도 억제 키)는 비어 있다 — 이 핀의 입력 모양은 종전 그대로다(구조체 리터럴에 기본값 꼬리만 붙였다).
+            ..Snapshot::default()
         };
         let alerts = evaluate(&snap, &cfg);
         let keys: Vec<&str> = alerts.iter().map(|a| a.key.as_str()).collect();
@@ -491,6 +687,76 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted);
+    }
+
+    /// 락 순서 배선 핀(소스): 스냅샷은 신원 표(읽기-통과는 파일 IO 가 있다 · 락 없이)를 surfaces 락을 잡기 **전에** 만들고, 계정 축 입력(accounts 락)은 surfaces 락을 놓은 뒤에 읽는다.
+    /// ★R1F-US: 스냅샷이 두 진입점(`snapshot_with_stale` 읽기-통과 · `snapshot_cached_with_stale` 캐시 전용)과 본체(`snapshot_from_view`)로 갈렸다 — 두 진입점이 각자 신원 표를 만든 **뒤에** 본체를 부르고,
+    /// 본체는 신원 표를 인자로만 받는다(안에서 만들지 않는다). 계약(신원 표 → surfaces → accounts 순서)은 같다.
+    #[test]
+    fn b3_snapshot_builds_the_identity_view_before_taking_the_surfaces_lock() {
+        let src = include_str!("alerts.rs");
+        let func = |head: &str| -> String {
+            let body = src.split(head).nth(1).unwrap_or_else(|| panic!("{head} 소실"));
+            body[..body.find("\n}\n").unwrap_or_else(|| panic!("{head} 끝"))].to_string()
+        };
+        for head in ["pub fn snapshot_with_stale(", "pub fn snapshot_cached_with_stale("] {
+            let entry = func(head);
+            let view = entry.find("seat_identity_view").unwrap_or_else(|| panic!("{head}: 신원 표 호출"));
+            let call = entry.find("snapshot_from_view(").unwrap_or_else(|| panic!("{head}: 본체 호출"));
+            assert!(view < call, "{head}: 신원 표가 본체(surfaces 락을 잡는다) 호출 뒤에 만들어진다(파일 IO 가 락 안)");
+            assert!(!entry.contains("daemon.surfaces.lock()"), "{head}: 진입점이 surfaces 락을 직접 쥔다");
+        }
+        let body = func("fn snapshot_from_view(");
+        assert!(!body.contains("seat_identity_view"), "본체가 신원 표를 직접 만든다(surfaces 락 안의 파일 IO 위험)");
+        let surfaces = body.find("daemon.surfaces.lock()").expect("surfaces 락");
+        let accounts = body.find("alert_rates_with(").expect("계정 축 입력");
+        let block_end = body[surfaces..].find("\n    }\n").map(|i| surfaces + i).expect("surfaces 블록 끝");
+        assert!(block_end < accounts, "계정 축 입력(accounts 락)이 surfaces 락을 쥔 채 읽힌다");
+    }
+
+    // ═════════ ★0.14.43(B3) evaluate — 관측 메타가 detail 에 가산 키로 실린다(기존 키·문구·심각도 불변) ═════════
+    #[test]
+    fn b3_evaluate_adds_observation_meta_to_detail_and_keeps_the_old_keys() {
+        let cfg = AlertConfig::default();
+        let mut snap = Snapshot {
+            rates: vec![("worker".into(), "5h".into(), 97.0)],
+            account_rates: vec![("a@b.c".into(), "5h".into(), 99.0)],
+            ..Snapshot::default()
+        };
+        let by = |v: &[Alert], k: &str| v.iter().find(|a| a.key == k).cloned().unwrap_or_else(|| panic!("키 {k} 없음: {v:?}"));
+        // 메타 없음 → detail 은 종전 그대로(가산 키 0)
+        let plain = evaluate(&snap, &cfg);
+        assert_eq!(by(&plain, "account_rate:a@b.c:5h").detail, json!({"account": "a@b.c", "win": "5h", "used_pct": 99.0}));
+        assert_eq!(by(&plain, "rate_limit:worker:5h").detail, json!({"role": "worker", "label": "5h", "used_pct": 97.0}));
+        // 메타 있음 — 정수 초(나이는 내림) · 음수 리셋 가능 · 모르는 값은 null
+        snap.account_meta.insert(
+            ("a@b.c".into(), "5h".into()),
+            RateMeta { observed_at: 1_000_000.5, age_secs: 1801.9, in_use: Some(false), resets_at: Some(1_005_400.0), reset_in_secs: Some(-5.0), held_secs: Some(12.7) },
+        );
+        snap.rate_meta.insert(
+            ("worker".into(), "5h".into()),
+            RateMeta { observed_at: 0.0, age_secs: 0.0, in_use: None, resets_at: None, reset_in_secs: None, held_secs: None },
+        );
+        let rich = evaluate(&snap, &cfg);
+        let acct = by(&rich, "account_rate:a@b.c:5h");
+        let d = &acct.detail;
+        assert_eq!((d["account"].clone(), d["win"].clone(), d["used_pct"].clone()), (json!("a@b.c"), json!("5h"), json!(99.0)), "기존 detail 키가 바뀌었다");
+        assert_eq!(d["observed_at"], json!(1_000_000.5));
+        assert_eq!(d["age_secs"], json!(1801));
+        assert_eq!(d["in_use"], json!(false));
+        assert_eq!(d["reset_in_secs"], json!(-5));
+        assert_eq!(d["held_secs"], json!(12));
+        assert_eq!((acct.severity.as_str(), acct.message.as_str()), ("crit", "계정 a@b.c 5h rate 99%"), "심각도·문구 불변");
+        let seat = by(&rich, "rate_limit:worker:5h").detail;
+        for k in ["observed_at", "age_secs", "in_use", "reset_in_secs", "held_secs"] {
+            assert!(seat[k].is_null(), "모르는 값 {k} 은 null 이어야 한다: {seat}");
+        }
+        assert_eq!((seat["role"].clone(), seat["label"].clone(), seat["used_pct"].clone()), (json!("worker"), json!("5h"), json!(97.0)));
+        // 다른 키의 메타는 붙지 않는다(키 정확 일치)
+        snap.rate_meta.clear();
+        snap.account_meta.clear();
+        snap.account_meta.insert(("a@b.c".into(), "7d".into()), RateMeta { observed_at: 5.0, age_secs: 1.0, in_use: Some(true), resets_at: None, reset_in_secs: None, held_secs: None });
+        assert_eq!(by(&evaluate(&snap, &cfg), "account_rate:a@b.c:5h").detail, json!({"account": "a@b.c", "win": "5h", "used_pct": 99.0}));
     }
 
     #[test]

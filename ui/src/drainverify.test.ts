@@ -11,6 +11,7 @@ import {
   continuityNotice,
   mergeRetry,
   restoringRetryKeys,
+  drainVerifyUnresponsiveLines,
 } from "./drainverify";
 
 describe("classifyDrainVerifyFallback — drain_verify 폴백 사유 분기", () => {
@@ -219,5 +220,25 @@ describe("v113-restore B3 배선 — ↻ 흐름이 건너뛴 자리만 재저장
     expect(again).toBeGreaterThan(keys);
     expect(merge).toBeGreaterThan(again);
     expect(restart).toBeGreaterThan(merge);
+  });
+});
+
+describe("drainVerifyUnresponsiveLines — U4-B2② 응답 없는 데몬 표기", () => {
+  it("unresponsive 만 사유로 나열하고 down(데몬 없음)은 제외한다", () => {
+    const lines = drainVerifyUnresponsiveLines([
+      { dept: "gone", department: "없는 부서", kind: "down", detail: "connect: No such file" },
+      { dept: "hung", department: "무응답 부서", kind: "unresponsive", detail: "rpc_timeout: org.status" },
+    ]);
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain("무응답 부서");
+    expect(lines[0]).toContain("응답 없음");
+    expect(lines.join("\n")).not.toContain("없는 부서");
+  });
+  it("표시명이 없으면 부서 키로 적는다", () => {
+    expect(drainVerifyUnresponsiveLines([{ dept: "d7", kind: "unresponsive" }])[0]).toContain("d7");
+  });
+  it("필드 부재(구버전 cys)·빈 목록은 빈 결과 — 종전 문구 무변경", () => {
+    expect(drainVerifyUnresponsiveLines(undefined)).toEqual([]);
+    expect(drainVerifyUnresponsiveLines([])).toEqual([]);
   });
 });

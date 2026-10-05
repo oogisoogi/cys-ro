@@ -5,7 +5,8 @@
 exit: 0=성공 1=위반/실패 2=입출력 3=권한(CSO아님) 4=대상없음
 (org-audit 동사: 0=수렴 1=미수렴 2=입출력 — read-only 파생 집계·영속 0 · T10/P3-3)
 """
-import argparse, json, os, sys, hashlib, subprocess, tempfile, tarfile, time, shutil
+import argparse, json, os, sys, hashlib, subprocess, tempfile, tarfile, time, shutil, unicodedata
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 
 
 # Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
@@ -73,6 +74,20 @@ except ImportError:  # Windows
         except OSError:
             pass
 
+# ★형제 모듈 경로 가드(tests/test_import_guard.py 계약 · 선례 javis_bootstrap.py:127):
+#   Windows 번들 파이썬(embeddable)은 스크립트 폴더를 sys.path 에 넣지 않는다.
+_SELF_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SELF_DIR not in sys.path:
+    sys.path.append(_SELF_DIR)
+
+# 역할 해소 단일 소유(0.14.31 P6). import 실패는 이 도구를 죽이지 않는다 — 구 팩·부서 팩에
+# 아직 이 모듈이 없을 수 있고(`build.rs` 는 git 추적 파일만 임베드), 그때는 **종전 env 판정**만
+# 남는다(강등의 방향이 '더 허용'이 아니라 '현행 유지'라는 것이 이 배선의 요점이다).
+try:
+    import javis_role as _role_mod
+except Exception:
+    _role_mod = None
+
 HOME = os.path.expanduser("~")
 CATALOG = os.environ.get("CYS_DEPT_CATALOG", f"{HOME}/.cys/dept-catalog.json")
 DEPTS = os.environ.get("CYS_DEPTS_JSON", f"{HOME}/.cys/depts.json")
@@ -86,7 +101,10 @@ def load_json(path, default=None):
     if not os.path.exists(path):
         if default is not None: return default
         raise FileNotFoundError(path)
-    with open(path, encoding="utf-8") as f:
+    # ★K2-03(2026-09-17 한글 사용자명 감사): utf-8-sig — 한국어 Windows 편집기("UTF-8(BOM)")로 저장한 카탈로그/매니페스트의
+    #   선두 U+FEFF 를 받아들인다(strict utf-8 은 JSONDecodeError "Unexpected UTF-8 BOM" — 감사 §5-(e) 재현은 cys-dept 쪽이지만
+    #   같은 파일(dept-catalog.json)을 catalog_upsert 가 여기로 읽는다). BOM 없는 파일엔 동일 동작 · cp949 는 여전히 거부.
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 def sha256_text(s): return hashlib.sha256(s.encode("utf-8")).hexdigest()
@@ -94,9 +112,97 @@ def sha256_file(path):
     with open(path, "rb") as f: return hashlib.sha256(f.read()).hexdigest()
 
 def require_cso():
-    if os.environ.get("CYS_ROLE") != "cso":
-        sys.stderr.write("[javis_org] ★CSO 전용: apply/destroy는 CYS_ROLE=cso에서만(부서 mutation 단일소유). CSO에 위임하라.\n")
+    """부서 mutation 단일소유 게이트 — **단조 거부**(monotone deny) 합성(0.14.31 P6).
+
+    ★I5 수렴(판정관 T3a·T3b · 2026-09-08): 여기에 **ⓓ 통과 절**이 붙는다 — 데몬이 권위 있게
+      `cso` 라고 답하면 stale `CYS_ROLE` 이 그것을 뒤집지 못한다(정본 §8 의 표적 그 자체였다).
+      새 허용의 근거는 **살아 있는 데몬의 직접 응답**(`SOURCE_DAEMON`)뿐이다: 디스크 캐시는
+      같은 uid 의 아무 프로세스나 쓸 수 있어서 그것을 통과 근거로 삼으면 위조 한 줄이
+      lifecycle mutation 을 연다(codex 설계 비평 (g)). 캐시가 `cso` 라고 말하고 env 가 stale 이면
+      `confirm_role_detail()` 로 **디스크를 건너뛰고 한 번 더 직접** 묻는다 — 그래야 첫 호출은
+      허용되고 60초 안의 둘째 호출은 캐시 때문에 거부되는 판정 요동이 생기지 않는다.
+      자식 프리미티브(`cys-dept`)도 **같은 규칙**으로 같은 커밋에서 바꾼다 — 부모만 열면
+      `destroy_dept` 가 자식 거부 rc 를 만나 정리 경로가 새로 도달 가능해진다(codex (f)).
+
+    ★왜 '데몬 답으로 갈아끼우기'가 아니라 '거부만 추가'였는가(codex R1 적대 검토 · 종전 판):
+      이 함수가 허용한 뒤 하위 프리미티브 `cys-dept down` 이 **자기 env 판정으로 거부**하면,
+      `destroy_dept` 는 그 실패를 삼키지 않으면서도 pack/workdir 격리는 best-effort 로
+      **계속 진행한다**(:511-524). 즉 '부모 허용 + 자식 거부' = 살아 있는 부서의 팩·작업 폴더가
+      이동되는 **반파괴(half-op)** 다. 그래서 이 층은 종전보다 **더 허용하지 않는다**:
+        ⓐ 데몬이 권위 있게 비-cso 역할을 말하면 → 거부(승계 후 stale env 로 mutation 하던 길을 닫는다)
+        ⓑ 데몬이 권위 있게 '역할 없음'을 말하는데 env 가 역할을 주장하면 → 거부(같은 이유)
+        ⓒ 판정 불가·주소 없음 → **종전 그대로** `CYS_ROLE == "cso"` 만 본다
+      새 허용 경로가 없으므로 '부모 허용 + 자식 거부' 조합은 이 변경으로 늘지 않는다.
+    """
+    why = ""
+    granted = False
+    if _role_mod is not None:
+        try:
+            role, src = _role_mod.resolve_role_detail()
+            if _role_mod.is_authoritative_none(src):
+                if (os.environ.get("CYS_ROLE") or "").strip():
+                    why = ("데몬이 이 좌석에 역할이 없다고 답했다(env CYS_ROLE=%s 는 stale). "
+                           % (os.environ.get("CYS_ROLE") or "").strip()[:32])
+            elif _role_mod.is_authoritative(src):
+                if role != "cso":
+                    why = "데몬 권위 역할=%s (env 가 아니라 데몬이 신원의 정본이다). " % role[:32]
+                elif src == _role_mod.SOURCE_DAEMON:
+                    granted = True                          # ⓓ 데몬이 **방금** cso 라고 답했다
+                elif os.environ.get("CYS_ROLE") == "cso":
+                    granted = True                          # 종전 판정이 이미 허용 — 새 허용 아님
+                else:
+                    # 캐시만으로는 stale env 를 뒤집지 못한다 — 디스크를 건너뛰고 직접 확인한다.
+                    role2, src2 = _role_mod.confirm_role_detail()
+                    if src2 == _role_mod.SOURCE_DAEMON and role2 == "cso":
+                        granted = True
+                    elif _role_mod.is_authoritative(src2) and role2 != "cso":
+                        why = ("데몬 권위 역할=%s (env 가 아니라 데몬이 신원의 정본이다). "
+                               % (role2 or "-")[:32])
+            elif (os.environ.get("CYS_ROLE") or "").strip() == "cso":
+                # ★수렴 R2(blocking · reviewer-codex): 권위 있는 답이 **없다**는 것은 조회가
+                #   실패했거나 `.fail` 백오프가 조회를 **지웠다**는 뜻이다. 그 상태에서 stale env
+                #   하나로 통과시키면 같은 uid 가 쓸 수 있는 표식 한 줄이 판정을 바꾼다(codex
+                #   실측: `HOME=/tmp/h:x` · 신선한 `.fail` → 조회 0회 → ('cso','env-cys-role') →
+                #   통과. 같은 입력에서 base 는 그 신원을 표현하지 못해 매번 물었고 데몬이
+                #   `worker` 라 exit 3 이었다). 그래서 **env 로 통과하기 전에 살아 있는 데몬이
+                #   반박하지 않는다는 것을 한 번 확인한다** — 디스크 캐시·디스크 백오프를 건너뛴다.
+                #   데몬이 정말 죽어 있으면 이 확인도 실패하고 그때는 종전대로 env 로 통과한다
+                #   (회귀 0 · 복구 경로 보존 · 프로세스 안 표식이 2s 중복 대기를 막는다).
+                role2, src2 = _role_mod.confirm_role_detail()
+                if _role_mod.is_authoritative_none(src2):
+                    why = ("데몬이 이 좌석에 역할이 없다고 답했다(env CYS_ROLE=cso 는 stale). ")
+                elif _role_mod.is_authoritative(src2) and role2 != "cso":
+                    why = ("데몬 권위 역할=%s (env 가 아니라 데몬이 신원의 정본이다). "
+                           % (role2 or "-")[:32])
+        except Exception:
+            why = ""      # 해소 실패가 이 게이트를 **열지도 닫지도** 않는다 — 아래 종전 판정으로.
+            granted = False
+    if granted:
+        return
+    if why or os.environ.get("CYS_ROLE") != "cso":
+        sys.stderr.write("[javis_org] ★CSO 전용: apply/destroy는 CYS_ROLE=cso에서만(부서 mutation 단일소유). %sCSO에 위임하라.\n" % why)
         sys.exit(3)
+
+def _dept_key_ok(key):
+    """카탈로그 key 의 부서명 규약 판정 — 정본은 cys-dept::dept_name_ok, 파이썬 재수출은 javis_bootstrap.dept_name_ok
+    (단일 출처·사본 금지 — 두 소스의 정규식은 javis_bootstrap self-test 가 대조한다). 형제 모듈은 _audit_formation_mod 와
+    같은 지연 로드. ★P2(2026-09-17 부트체인 감사): 정본 미로드도 거부(False) — create 이전에
+    apply_manifest 가 write_mission/ensure_dirs 로 key 기반 경로를 쓰므로 v_schema 에서 fail-closed 한다.
+    ★알려진 부작용(2라운드 검증 적발): javis_bootstrap 은 import 시 sys.stdout/stderr 를 utf-8(errors=replace) 로
+    reconfigure 한다(그 파일 R3 주석 — 직접 실행 cp949 콘솔의 UnicodeEncodeError 방어). 제품 경로(cys-dept
+    PYTHONUTF8=1 · GUI inject_runtime_path ENV_PY_UTF8 · 좌석 env 주입)에선 이미 UTF-8 이라 무변경이고, PYTHONUTF8 없이
+    cp949 콘솔에서 직접 `javis_org.py apply` 를 칠 때만 한글 출력 바이트가 UTF-8 로 바뀐다(크래시 대신 mojibake —
+    javis_bootstrap 과 같은 선택). v_schema 가 key 를 볼 때만 로드되므로 status/list 계열은 영향 없음."""
+    try:
+        d = os.path.dirname(os.path.abspath(__file__))
+        if d not in sys.path:
+            sys.path.insert(0, d)
+        import javis_bootstrap
+        return bool(javis_bootstrap.dept_name_ok(key))
+    except Exception as e:
+        sys.stderr.write("[javis_org] 부서명 검증기 로드 실패 — key 거부: %s: %s\n"
+                         % (type(e).__name__, " ".join(str(e).splitlines())))
+        return False
 
 def v_schema(m):
     errs = []
@@ -113,6 +219,11 @@ def v_schema(m):
     for i, d in enumerate(m.get("departments") or []):
         for f in ("key", "display", "account", "cwd", "mission_md", "source_quote"):
             if not d.get(f): errs.append(f"departments[{i}].{f} 누락")
+        # ★K2-04(2026-09-17 한글 사용자명 감사): key 는 `cys-dept create <key>` 의 부서명 인자(acctdir 접미·소켓·미션 경로 합성)라
+        #   cys-dept validate_dept_name 의 ASCII 화이트리스트가 적용된다. 한글 key('영업부')는 apply 단계에서 exit 2
+        #   "부적격 부서명" 으로 늦게 터지고 GUI 엔 "부서 런칭 실패" 로만 보였다 — 여기서 조기 진단한다(한글은 display 에).
+        if d.get("key") and not _dept_key_ok(d["key"]):
+            errs.append(f"departments[{i}].key 부적격({d['key']!r}) — key 는 영문·숫자·'_'·'-' 만(최대 40자 · 한글 등 표시명은 display 에)")
     for i, t in enumerate(m.get("tasks") or []):
         for f in ("dept", "task", "scope", "source_quote"):
             if not t.get(f): errs.append(f"tasks[{i}].{f} 누락")
@@ -158,7 +269,12 @@ def backfill_mission_key(depts_path, key, mission_key, display=None):
         reg = load_json(depts_path, {"depts":{}})
         for name, e in reg.get("depts", {}).items():
             cwd_base = os.path.basename(expand(e.get("cwd","")).rstrip("/"))
-            if cwd_base == display or cwd_base == key:  # 한글 display 1차·영문 key 레거시 2차
+            # ★K2-06(2026-09-17 한글 사용자명 감사): macOS 에서 등재 cwd 는 커널 표기(NFD)일 수 있다 — cys-dept
+            #   resolve_dept_cwd → `pwd -P` 가 NFD 를 돌려주는 것을 실측(Finder/Cocoa 생성 한글 폴더 = NFD). manifest
+            #   display 는 NFC 타이핑이라 바이트 정확일치가 실패해 backfill 이 누락됐다. **비교만** 양변 NFC 로 접는다
+            #   (등재값은 정규화하지 않는다 — claude 신뢰 키는 저장 표기가 정본 · javis_preflight claude_project_key R5).
+            nfc = lambda s: unicodedata.normalize("NFC", s)
+            if (display and nfc(cwd_base) == nfc(display)) or nfc(cwd_base) == nfc(key):  # 한글 display 1차·영문 key 레거시 2차
                 if not e.get("mission_key"):
                     e["mission_key"] = mission_key
         _atomic_write(depts_path, reg)
@@ -584,11 +700,36 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
     r = subprocess.run(down_cmd, capture_output=True, text=True,
                        env={**os.environ, "CYS_TRASH_STAMP": ts, "CYS_DEPT_EXPECT_GEN": expect_gen or ""}, **NOWIN)
     actions.append(("down", r.returncode))
+    # ★B11: 울타리 거부(9 세대 불일치 · 10 다른 닫기 진행 중 · 11 잠금 실패) = teardown 이 시작되지 않았다 —
+    #   pack·workdir 격리도 하지 않는다(그 번호의 지금 부서는 남의 것이다).
+    # ★0.14.31 P6 R1 (두 리뷰어 blocking): 거부 또는 종료 완료 미확인 시 격리를 중단한다.
+    #   `cys-dept down` 의 아래 rc는 종료 완료의 근거가 될 수 없다 —
+    #     7 = 단일소유 강제 거부(env 절 또는 데몬 권위 절 · cys-dept 가드)
+    #     2 = 인자 검증 거부(미지 플래그·인자 과다·이름 없음 — 전부 teardown **이전**)
+    #    12 = 레지스트리 판독 실패(원본 보존) — 사전 조회 또는 kill·소켓 정리·묘비 뒤
+    #         reg_remove 재판독에서도 발생하므로 이미 종료됐을 수 있다.
+    #         (1.1.8 병합: 우리 번호 12 — 원작자 원판은 10 · 우리 10 은 위 울타리 「닫는 중」)
+    #   그런데도 아래 3)4)가 pack/workdir 을 격리하면 **살아 있는 부서의 팩·작업 폴더를 옮기는**
+    #   반파괴(half-op)가 된다. 부모(require_cso)와 자식(cysd_role_gate)은 이제 각자 시각에
+    #   데몬에 묻기 때문에 '부모 허용 + 자식 거부' 조합이 실제로 생길 수 있다(워크디렉터리
+    #   tar.gz 가 60s 를 넘으면 캐시 TTL 을 가로지른다). 그래서 **격리 이전에 멈춘다**.
+    #   ★스냅샷(tar.gz)은 이미 만들어졌을 수 있으나 그것은 비파괴 백업이라 되돌릴 것이 없다.
+    #   ★그 밖의 비0(예: 3 = teardown 은 끝났고 state 격리만 실패)은 종전 계약대로
+    #   best-effort 격리를 계속한다(사용자 회수 표면 최대화 · 기존 핀 불변).
     if r.returncode in (9, 10, 11):
-        # ★B11: 울타리 거부(9 세대 불일치 · 10 다른 닫기 진행 중 · 11 잠금 실패) = teardown 이 시작되지 않았다 —
-        #   pack·workdir 격리도 하지 않는다(그 번호의 지금 부서는 남의 것이다).
         sys.stderr.write("[destroy] %s: cys-dept down 울타리 거부(rc=%d) — 격리 없이 중단 · %s\n"
                          % (name, r.returncode, (r.stderr or "").strip()[:300]))
+        return actions
+    if r.returncode in (2, 7, 12):
+        reason = (
+            "레지스트리 판독 실패로 종료 완료 미확인 — 이미 종료됐을 수 있음"
+            "(kill·소켓 정리·묘비가 선행됐을 수 있다) · 레지스트리 복구 후 down 재시도"
+            if r.returncode == 12 else "조작을 **거부**했다 — 부서는 살아 있다"
+        )
+        sys.stderr.write(
+            "[destroy] %s: cys-dept down(rc=%d) — %s. "
+            "pack/workdir 격리를 하지 않고 중단한다(반파괴 방지). %s\n"
+            % (name, r.returncode, reason, (r.stderr or "").strip()[:300]))
         return actions
     # ★F1(reviewer1): down 실패(특히 --purge-state의 state 격리 실패=exit 3)를 삼키지 않는다 —
     #   사유를 stderr로 정직 보고하고 최종 exit는 cmd_destroy가 비0으로 판정한다. 부분 실패라도
@@ -836,6 +977,76 @@ def self_test():
     r4 = json.load(open(dpath))
     chk("backfill-hangul-no-bleed", r4["depts"]["d4"].get("mission_key") != "future-research",
         "한글 display 부분문자열(구미래연구부) 오탐")
+    # --- K2-06(2026-09-17 한글 사용자명 감사): macOS NFD 등재 cwd ↔ NFC display 정확일치 회귀 핀 ---
+    _nfd = unicodedata.normalize("NFD", "미래연구부")
+    assert _nfd != "미래연구부" and len(_nfd.encode()) > len("미래연구부".encode())  # 픽스처 자체가 NFD 인지(핀 무효화 방지)
+    json.dump({"depts":{"d5":{"cwd":"$HOME/Desktop/CYSjavis/"+_nfd,"socket":"s5"}}}, open(dpath,"w"))
+    backfill_mission_key(dpath, "future-research", "future-research", "미래연구부")
+    r5 = json.load(open(dpath))
+    chk("backfill-nfd-cwd", r5["depts"]["d5"].get("mission_key") == "future-research",
+        "NFD 등재 cwd(커널 표기)가 NFC display 와 불일치로 backfill 누락(K2-06 회귀)")
+    json.dump({"depts":{"d6":{"cwd":"","socket":"s6"}}}, open(dpath,"w"))
+    backfill_mission_key(dpath, "future-research", "future-research", None)
+    chk("backfill-empty-cwd-no-match", not json.load(open(dpath))["depts"]["d6"].get("mission_key"),
+        "빈 cwd 가 display=None 과 매칭(정규화 도입 회귀)")
+    # --- K2-04: 카탈로그 key 한글 → v_schema 조기 진단(cys-dept validate_dept_name 과 같은 집합 · 정본 javis_bootstrap) ---
+    m_ko = {**m_ok, "departments":[{**good_dept, "key":"영업부"}]}
+    chk("schema-key-hangul", any(".key 부적격" in e for e in v_schema(m_ko)),
+        "한글 key 가 v_schema 를 통과 — cys-dept create 에서 exit 2 로 늦게 터진다(K2-04)")
+    chk("schema-key-hangul-only", [e for e in v_schema(m_ko) if ".key" not in e] == [], "key 진단이 다른 필드를 오염")
+    m_key_ok = {**m_ok, "departments":[{**good_dept, "key":"Sales_KR-2"}]}
+    chk("schema-key-ascii", v_schema(m_key_ok) == [], f"정형 key 오탐: {v_schema(m_key_ok)}")
+    chk("schema-key-display-hangul-ok", v_schema(m_ok) == [], "한글 display 가 key 진단에 걸림(표시명은 한글 허용)")
+    # --- P2(2026-09-17 부트체인 감사): 검증기 import 실패는 경로 쓰기 전 schema/apply 거부 ---
+    from contextlib import redirect_stderr, redirect_stdout
+    from io import StringIO
+    from unittest.mock import patch
+    # 정상 입력 대조를 먼저 세운다. 검증기만 fail-open 으로 바꾸면 apply 진입까지 도달해야
+    # 아래 no-write 핀이 red 가 된다(무관한 문서/quote 오류로 rc=1 이 되는 공허한 통과 방지).
+    validator_doc = os.path.join(td, "validator-design.md")
+    with open(validator_doc, "w", encoding="utf-8") as f:
+        f.write(doc)
+    validator_manifest = {**m_key_ok,
+        "source": {"design_doc": validator_doc, "design_doc_sha256": sha256_text(doc)},
+        "departments": [{**m_key_ok["departments"][0], "source_quote": d_ok["source_quote"]}]}
+    validator_catalog = {"accounts": cat["accounts"],
+                         "departments": {"Sales_KR-2": validator_manifest["departments"][0]}}
+    chk("apply-validator-positive-control", validate_manifest(
+        validator_manifest, doc_text=doc, catalog=validator_catalog) == [],
+        "검증기 정상일 때도 apply 입력이 거부되어 no-write 핀이 공허함")
+    validator_input = os.path.join(td, "selftest-import-failure.json")
+    def validator_load(path, default=None):
+        # CATALOG 는 객체형 departments, 매니페스트는 배열형 departments 이다. 경로를
+        # 구분해야 fail-open 변이가 AttributeError 대신 의도한 chk 로 실패한다.
+        if path == validator_input: return validator_manifest
+        if path == CATALOG: return validator_catalog
+        raise AssertionError("예상 밖 self-test JSON 경로: %s" % path)
+    diag = StringIO()
+    with patch.dict(sys.modules, {"javis_bootstrap": None}), redirect_stderr(diag):
+        chk("schema-key-validator-missing", not _dept_key_ok("Sales_KR-2"),
+            "검증기 import 실패인데 key 허용(fail-open)")
+        chk("schema-validator-missing", any(".key 부적격" in e for e in v_schema(m_key_ok)),
+            "검증기 import 실패가 v_schema 를 통과")
+        lines = diag.getvalue().splitlines()
+        chk("schema-validator-diagnostic", len(lines) == 2 and all(
+            "[javis_org] 부서명 검증기 로드 실패 — key 거부:" in line for line in lines),
+            "검증기 실패 사유가 호출당 stderr 1줄로 진단되지 않음")
+        # 권한/입력만 밀폐 주입하고 실제 validate_manifest → v_schema 순서는 유지한다.
+        with patch.object(sys.modules[__name__], "require_cso"), \
+             patch.object(sys.modules[__name__], "load_json", side_effect=validator_load), \
+             patch.object(sys.modules[__name__], "apply_manifest", return_value=[]) as apply_mock, \
+             redirect_stdout(StringIO()):
+            rc = cmd_apply(validator_input)
+        chk("apply-validator-missing-no-write", rc == 1 and not apply_mock.called,
+            "검증기 import 실패 뒤 write_mission/ensure_dirs 를 실행하는 apply_manifest 진입")
+    # --- K2-03: UTF-8 BOM 카탈로그(한국어 Windows 편집기 'UTF-8(BOM)' 저장) 판독 ---
+    bpath = os.path.join(td, "bom-catalog.json")
+    with open(bpath, "wb") as f:
+        f.write(b"\xef\xbb\xbf" + json.dumps({"departments":{"sales-kr":{"display":"영업부(한국)"}}}, ensure_ascii=False).encode("utf-8"))
+    try:
+        chk("load-json-bom", load_json(bpath)["departments"]["sales-kr"]["display"] == "영업부(한국)", "BOM 카탈로그 내용 불일치")
+    except Exception as e:
+        chk("load-json-bom", False, f"BOM 카탈로그 판독 실패(K2-03 회귀): {e}")
     # --- R3-2: catalog display/cwd drift 거부 (기존 key 재할당 위장 차단) ---
     cat_drift = {"accounts":{"cysinsight":"x"},
                  "departments":{"future-research":{"display":"미래연구부","account":"cysinsight","cwd":"$HOME/Desktop/CYSjavis/미래연구부"}}}
@@ -912,6 +1123,43 @@ def self_test():
         os.listdir = _real_ld
     chk("snap-exc-none", snapped is None, "읽기불가 예외인데 None 아님(traceback 전파 결함 재발)")
     chk("snap-exc-clean", not [f for f in _real_ld(td) if f.startswith("denytest-")], "실패 부분 tar 잔존")
+    # --- R6/S2: down rc=12(판독 실패 · 1.1.8 병합: 우리 번호 — 원작자 원판 10) 은 종료 완료 미확인(종료 후 판독 실패도 가능) — 격리 0 ---
+    # HOME/등재/팩/작업물 전부 td 내부. OS별 실행파일 형식에 기대지 않도록 CYS_DEPT_BIN 의
+    # 자식 결과만 목으로 주입하며, 스냅샷과 격리는 실제 함수로 관측한다.
+    refuse_home = os.path.join(td, "destroy-refuse-home")
+    refuse_name = "registry-refusal"
+    refuse_pack = os.path.join(refuse_home, ".cys", "pack-dept-" + refuse_name)
+    refuse_work = os.path.join(refuse_home, "workdir")
+    refuse_trash = os.path.join(refuse_home, ".local", "state", "cys-trash")
+    for p in (refuse_pack, refuse_work): os.makedirs(p, exist_ok=True)
+    refuse_reg = os.path.join(refuse_home, "depts.json")
+    with open(refuse_reg, "w", encoding="utf-8") as f:
+        json.dump({"depts": {refuse_name: {"cwd": refuse_work, "workdir_owned": True}}}, f)
+    with open(refuse_reg, "rb") as f: refuse_bytes = f.read()
+    refuse_bin = os.path.join(refuse_home, "cys-dept-mock")
+    with open(refuse_bin, "w", encoding="utf-8") as f: f.write("CYS_DEPT_BIN self-test fixture\n")
+    refuse_cmd = [refuse_bin, "down", refuse_name]
+    refuse_diag = StringIO()
+    with patch.multiple(sys.modules[__name__], HOME=refuse_home, DEPTS=refuse_reg,
+                        TRASH_ROOT=refuse_trash), \
+         patch.object(sys.modules[__name__], "require_cso"), \
+         patch.dict(os.environ, {"CYS_DEPT_BIN": refuse_bin}), \
+         patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+             refuse_cmd, 12, "", "registry read refused")) as down_mock, \
+         patch.object(sys.modules[__name__], "_quarantine", wraps=_quarantine) as quarantine_mock, \
+         redirect_stderr(refuse_diag):
+        refuse_actions = destroy_dept(refuse_name, None, purge=True, purge_workdir=True)
+    with open(refuse_reg, "rb") as f: refuse_after = f.read()
+    chk("destroy-registry-read-refusal-no-quarantine",
+        down_mock.call_count == 1 and down_mock.call_args[0][0] == refuse_cmd
+        and ("down", 12) in refuse_actions and any(a[0] == "snapshot" for a in refuse_actions)
+        and not quarantine_mock.called and os.path.isdir(refuse_pack) and os.path.isdir(refuse_work)
+        and not os.path.exists(refuse_trash) and refuse_after == refuse_bytes
+        and "레지스트리 판독 실패로 종료 완료 미확인 — 이미 종료됐을 수 있음" in refuse_diag.getvalue()
+        and "kill·소켓 정리·묘비가 선행됐을 수 있다" in refuse_diag.getvalue()
+        and "레지스트리 복구 후 down 재시도" in refuse_diag.getvalue()
+        and "부서는 살아 있다" not in refuse_diag.getvalue(),
+        "down rc=12 에서 pack/workdir 격리 또는 원본 변경·거부 사유 누락: %r" % refuse_actions)
     print(json.dumps({"self_test": "ok" if not failures else "fail",
                       "failures": failures}, ensure_ascii=False))
     return 1 if failures else 0

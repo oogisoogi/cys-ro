@@ -66,6 +66,9 @@ pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs bu
   (플래그·서브커맨드)을 추가하고 팩이 그것을 지시하면, 다음 pack 태그 전에 하한을 그 버전으로
   올려라.** 손대야 할 곳은 **두 곳(레인마다 하나)** 이다:
   - 본체 레인 — `.github/workflows/release.yml` 의 `PACK_MIN_BINARY`
+  - **이 문서 §0-A 2단계의 리터럴** — 위 두 값과 같은 커밋에서 갱신한다(2026-09-17 추가: 실제로
+    0.14.29 로 굳어 두 레인(0.14.31)보다 낮았다. 바로 그 아래 "수기 리터럴 금지" 경고가 막으려던
+    스큐를 이 문장 자신이 들고 있었다)
   - 팩-온리 레인 — `.github/workflows/pack-release.yml` 의 `PACK_MIN_BINARY_OVERRIDE`
     (비면 정책 스크립트 값 `0.12.48` 이 쓰인다)
 
@@ -174,6 +177,67 @@ replay 로 거부한다(`src/packsig.rs` ⓔ). 벤더 팩을 받은 기계는 �
 > 실재하는지 CI 가 단언하고, 없으면 빌드를 실패**시킨다. 설치 훅의 신선도 판정이
 > `GetDLLVersion` 오라클(fail-closed = unverified)이라, 크로스 빌드 회귀로 버전 리소스가
 > 빠진 채 발행되면 **모든 기계의 설치가 exit 4 로 떨어지기 때문**이다.
+
+## 0-C. 태그 전 사전 게이트 (2026-09-11 · v0.14.34 윈도우 빌드 파손 재발 방지 — **4종 전부 rc=0 필수**)
+
+> ★왜: v0.14.34 는 브랜치 push(10:49:46Z) **58초 뒤** 태그됐다(10:50:44Z). 같은 커밋 88c1ca2 의 브랜치
+> `windows-build` 는 11:00:31Z 에 failure 였고(윈도우에서만 나는 컴파일 오류 3건 — `src-tauri/src/main.rs` 의
+> 유닉스 전용 dev/ino 가 cfg 밖), 태그 레인은 브랜치 런의 결과를 보지 않는다. macOS 레인(`ci-branch`)은 윈도우
+> cfg 를 컴파일하지 않고, `windows-health` 는 루트 크레이트만 컴파일해 cys-app 파손을 원리적으로 못 본다.
+> 그래서 파손본이 태그됐고 태그 레인의 윈도우 빌드에서야 드러났다.
+
+> ★왜 4번째가 생겼나(2026-09-23 · v0.14.40 릴리스 수리): v0.14.39 는 위 3종이 전부 rc=0 이고 브랜치 CI 도
+> 초록이었는데 **태그 레인에서 죽었다**. `pack-artifacts` 잡의 step[9] `Scan pack content (pre-build hard-gate)`
+> = `scripts/scan-pack-secrets.sh` 가 팩 검체의 `@` 한 글자(ChatGPT.app 의 Codex MCP 플러그인 설정 키)를
+> 이메일로 오인해 비0 로 끝났다. 그 게이트는 그때까지 **태그 레인과 팩-only 레인에만** 있었고 브랜치 레인에는
+> 없었다 — 즉 태그 전에는 원리적으로 알 수 없는 실패였다. 공증까지 마친 build 3잡(약 40분)이 성공한 뒤였고,
+> draft 릴리스에 자산이 9/12 만 올라간 채 멈췄으며 **태그는 불변**이라 버전 범프(0.14.40)로만 회복됐다.
+> 그래서 ① 같은 스텝을 `ci-branch.yml` 의 macOS 잡에 편입하고(그러면 3번 점검이 이 결과를 태그 조건으로 묶는다)
+> ② 로컬에서도 태그 전에 직접 돌리도록 여기 4번으로 등재한다.
+
+태그(`git tag`) 직전, **태그할 커밋에서** 아래 4종이 모두 rc=0 이어야 한다. 하나라도 아니면 태그하지 않는다.
+
+1. **버전 SOT 8곳** — `sh scripts/version-check.sh vX.Y.Z` (§0).
+2. **★윈도우 교차 타입체크** — `sh scripts/win-typecheck.sh` (로컬 · 이 맥 실측 콜드 약 3분 / 웜 수 초~십수 초).
+   - rc: 0 = 통과 · 1 = 윈도우 컴파일 오류(태그 금지) · 2 = 판정 불가(타깃·도구 부재·우회 실패 — **통과 아님**).
+   - 증명하는 것: cys-app 전체(bin·bin test + 의존 cys-terminal lib)가 `x86_64-pc-windows-msvc` cfg 로 타입체크·린트 통과.
+   - 증명하지 않는 것: 링크·NSIS 번들·런타임 — 그건 `windows-build`·`release` 레인(윈도우 실기) 몫이다.
+   - 사전: `rustup target add x86_64-pc-windows-msvc` (스크립트는 자동 설치하지 않고 rc=2 로 알린다).
+   - 같은 스크립트가 `ci-branch.yml` 의 macOS 잡에서도 돈다(실패 = 잡 실패) — 아래 3번이 그 결과를 태그 조건으로 묶는다.
+3. **★같은 SHA 의 브랜치 CI 초록** — `python3 scripts/pre-tag-ci-check.py --wait 60`
+   - 태그할 SHA(기본 HEAD)에서 필수 워크플로 **셋** — `ci-branch` · `windows-build (feasibility)` · `windows-health (H-WIN 실기)` —
+     이 **모두 success** 여야 한다(0.14.43 부터 `windows-health` 포함 — 태그 레인의 `windows-health-gate` 가 같은 SHA 의
+     windows-health 완주 런을 요구하므로, 이 워크플로를 안 보면 4종이 rc=0 이어도 태그 레인이 죽는다).
+     진행 중·런 없음·실패·취소는 전부 rc=1(태그 금지), 네트워크·API 한도는 rc=2(판정 불가 — 통과 아님).
+   - **gh 불필요**: 공개 저장소의 Actions 런·잡 목록은 인증 없이 조회된다(익명 한도 시간당 60회).
+     `--wait N` 은 진행 중인 런을 60초 간격으로 최대 N분 기다리고, 실패한 런은 잡·스텝·annotation 을 보여 준다.
+     `ci-branch` 의 macOS 데몬 시험 단계가 붉으면 annotation 첫 줄이 `failed=N — <실패한 시험 이름…>` 이다(이름순 최대 20개 ·
+     이 도구는 앞 200자를 보인다). `rc=<코드> 인데 'test result' 요약이 없다` 또는 `rc=<코드> 인데 failed=0 이다` 로 시작하면
+     개별 시험 실패가 아니라 컴파일 실패·하네스 이상이다.
+   - **성공한 런도 눈으로 확인한다**(0.14.43): 이 도구는 success 인 런의 failure·warning annotation 제목을 요약해 보여 준다
+     (`주의: 성공(success)한 런이지만 failure·warning annotation 이 있다 …` — 종료 코드는 바뀌지 않는다). `windows-health` 의
+     데몬 전량 시험과 hwmon 전용 단계는 비차단(`continue-on-error`)이라 실패·절단도 런 결론이 success 다 — 그 사실은 이 요약에만
+     보인다(아래 체크리스트 「Windows 데몬 단위 검체의 상태」).
+   - 알려진 차이: 태그 레인은 같은 SHA 의 완주 런 **전부**가 success 여야 하지만 이 점검은 워크플로마다 **가장 최근 런**만 본다 —
+     같은 SHA 에 `windows-health` 런이 둘 이상(별도 dispatch)이고 옛 런이 붉으면 여기서는 초록·태그 레인에서는 적색이다
+     (같은 런의 재실행은 해당 없음 · 스크립트 머리 주석).
+   - 순서: 브랜치를 먼저 push → 세 워크플로가 끝날 때까지(약 45분 — `ci-branch` 런이 실측 42~45분이다) 기다림 → 이 점검 rc=0 →
+     그다음에 태그. **58초 태그 금지** — 태그 레인은 브랜치 CI 결과를 기다려 주지 않는다.
+   - `windows-health` 잡에는 0.14.43 부터 화면 검체 `cd ui && bun test` 가 **차단** 단계로 들어 있다(Windows 에서의 첫 실행이
+     태그가 되지 않게 — 붉으면 `windows-health` 가 붉고 태그 레인이 막힌다). 잡 시간은 평상 약 14.5분이고, 데몬 전량 단계가
+     다시 30분 상한까지 멈추는 이론 최악이 44.3분으로 태그 레인 게이트의 45분 안이다(스텝·상한을 더하면 `windows-health.yml`
+     의 시간 표를 다시 계산한다).
+4. **★팩 콘텐츠 발행 hard-gate** — `bash scripts/scan-pack-secrets.sh` (rc=0 = `OK`).
+   - 증명하는 것: git-추적 `cysjavis-pack` 전 트리에 개인 홈경로(`/Users/<실유저>`·`/home/<user>`)·이메일·
+     키/토큰 형태의 문자열이 **없다**. 그 트리는 build.rs 가 `cys` 바이너리에 통째로 임베드하고
+     `pack.tar.gz` 로도 배송되므로, 여기서 못 막으면 발행 뒤에는 회수할 수 없다.
+   - rc: 0 = clean · 1 = 발견(`file:line` 출력 — 태그 금지) · 2 = 환경 오류(git 리포 아님 · 인덱스 부재 — **통과 아님**).
+   - **걸렸을 때 스캐너를 완화하지 마라**(fail-closed 유지). 팩 콘텐츠 쪽을 placeholder 규약으로 정규화한다 —
+     홈경로는 `/Users/x/`, 이메일로 읽히는 `@` 는 `_at_`(v0.14.40 의 D-11 픽스처 선례) 또는 제거.
+     허용 목록(`ph_re`·`email_allow_re`) 확장은 **오너 결정 사항**이지 워커의 회피 수단이 아니다.
+   - 같은 스크립트가 태그 레인(`release.yml:1126`·`:1546`)·팩-only 레인(`pack-release.yml:153`·`:539`)과
+     **브랜치 레인**(`ci-branch.yml` macOS 잡 · 2026-09-23 편입)에서 같은 호출 형태로 돈다(실패 = 잡 실패) —
+     위 3번이 그 브랜치 결과를 태그 조건으로 묶으므로, 이 4번은 push 전에 미리 아는 로컬 사본이다.
 
 ## 1. macOS 빌드 (DMG + 앱 번들 + 업데이트 아티팩트)
 
@@ -339,6 +403,24 @@ bash scripts/release-gate-gatekeeper.sh <DMG | .app>
     빌드 시점 러너 산출물 검사다. 이 게이트는 업로드 **전**(release.yml)과 발행 후처리
     (`scripts/release-postprocess.py` 가 draft 백업 DMG = **발행될 실물 바이트**에 재실행)에서
     돌므로 발행 전 마지막 지점이다.
+- ★**⑨ gktool 실평가 축 — 2026-09-08 신설(오너 참고2)**: ①~⑧ 의 Gatekeeper 판정은 전부
+  `spctl` **한 도구**에 걸려 있었다. `gktool scan <app>` 은 사용자가 앱을 **처음 열 때** 도는
+  스캔 경로(‘Verifying…’ 캐시 예열)를 CLI 로 부르는, spctl 과 다른 축이다. 격리를 붙인 **설치
+  모사 사본**에 ④ 바로 뒤에서 돌고, **rc≠0 이면 그대로 FAIL(업로드 금지)** 이다.
+  · **판정은 rc 다 — 판정문 문자열이 아니다.** 실측 3형(2026-09-08): 격리 없음 → rc 0
+    "allowed by system policy" · 격리+공증(정상 발행물) → rc 0 "would be allowed but the user
+    still needs to approve it on first launch" · 격리+미서명 → **rc 70**. 문자열로 "allowed" 를
+    찾으면 정상형을 FAIL 로 오판한다.
+  · **격리 없는 대상의 rc 0 은 공허**라 PASS 로 세지 않는다(같은 미서명 앱이 격리 전 rc 0,
+    후 rc 70 — 격리가 없으면 첫-실행 재검증 경로 자체가 안 돈다).
+  · **도구 부재만 SKIP**(사유 1줄 · `GKTOOL_AXIS=absent` 로 요약 승격)이다. 부재를 exit 2 로
+    닫지 않는 이유는 gktool 이 비교적 새 도구여서 구 러너를 통째로 멈추기 때문이고, 그 경우
+    판정 범위는 ①~⑧ 로 **종전과 정확히 같아질 뿐 넓어지지 않는다**.
+  · **로컬 드라이런**: `bash scripts/release-gate-gatekeeper.sh --gktool-only <.app>` — 대상을
+    복사도 수정도 하지 않고(설치본 읽기 전용) ⑨ 만 돈다. 진단 전용이라 발행 경로가 이 플래그를
+    싣지 않음은 `test_release_postprocess_gate.py` 의 핀이 지킨다.
+  · **우리 포크(1.1.8 편입)**: ⑨ 도 Gatekeeper 평가라 공증을 전제한다 — 자체서명(`cys-local`) 레인에서는
+    ③④ 와 같은 사유로 **SKIP 으로 센다**(`SKIP=3` · `GATE_SKIPPED=3` · `LaneAxisTests` 핀). 공증 레인에서는 위 그대로다.
   · **평가식 근거** — `spctl(8)`: "-t open to assess the opening of documents".
   · **실측(2026-09-03 · macOS 27.0 · assessments enabled)** — v0.14.29 DMG 2종(aarch64·x64)
     격리 사본: `stapler validate` rc=0 · `spctl -t open --context context:primary-signature`
@@ -363,6 +445,35 @@ bash scripts/release-gate-gatekeeper.sh <DMG | .app>
 > 인증서가 없을 때(개발용): env 없이 `bun x @tauri-apps/cli build` → ad-hoc 빌드. 이 빌드는
 > **다른 맥 전송 시 "손상됨"**이 뜨므로, 받은 맥에서 `xattr -dr com.apple.quarantine
 > /Applications/cys.app` 로만 우회 가능(배포용 아님).
+
+#### ★업로드 차단 게이트 — cysd 의 비공개 라이브러리 링크 검사 `scripts/check-no-ioreport-link.sh` (0.14.43 신설 · release.yml 이 업로드 전 자동 실행)
+
+Control Center 의 NPU 전력(W)은 macOS 비공개 라이브러리(`libIOReport.dylib`)에서 읽는다. 데몬이 그 라이브러리를
+**강하게 링크**하면(링크 속성 — 프로세스가 시작될 때 운영체제가 찾는다) 그 라이브러리나 함수가 없는 macOS 에서 데몬이
+시작하자마자 죽고 모든 좌석이 함께 닫힌다. 0.14.43 은 이것을 처음 읽을 때 여는 `dlopen` 지연 로딩으로 바꿨다
+(`docs/RELEASE_NOTES_0.14.43.md` §7-2). 이 게이트는 소스의 모양(소스 핀)이 아니라 **출하되는 cysd 바이너리**의
+`otool -L` 에 그 라이브러리가 다시 들어오지 않았는지를 본다 — 빌드 스크립트·링커 인자·의존 크레이트 어디서 들어와도
+산출물에는 그대로 나오기 때문이다.
+
+```sh
+bash scripts/check-no-ioreport-link.sh <cysd 바이너리 경로>
+#   exit 0=통과(IOReport 링크 없음) 또는 맥이 아닌 러너에서의 건너뜀 · 1=FAIL(IOReport 링크 발견 — 업로드 금지) · 2=판정 불가(통과 아님)
+```
+
+- **어디서 도는가**: `release.yml` 의 macOS 두 레그가 서명·공증 스텝 **뒤**, Gatekeeper 게이트와 tauri-action 업로드 **앞**에서
+  자기 레그의 `.app` 안 cysd(`<번들 기준>/macos/cys.app/Contents/MacOS/cysd`)에 돌린다 — `if: matrix.platform == 'macos-latest'`
+  라 Windows 레그에서는 돌지 않는다. 붉으면 업로드가 일어나지 않는다(서명·공증은 로드 명령을 바꾸지 않으므로 서명 뒤에 봐도
+  같은 판정이라는 것이 워크플로 주석의 판단이다). 브랜치 CI(`ci-branch.yml` 의 macOS 레인)가 같은 스크립트를 push 마다 먼저
+  돌린다(`cargo build --bin cysd` 로 만든 `target/debug/cysd`) — 릴리스 레그는 최종 백스톱이다.
+- **판정**: `otool -L` 출력의 의존 라이브러리 줄(탭 들여쓰기 — 첫 줄과 fat 바이너리의 `(architecture …):` 머리는 제외)에
+  `IOReport`(대소문자 무시)가 있으면 exit 1 이고, 그 줄을 출력하므로 어느 라이브러리가 들어왔는지 로그에서 바로 보인다.
+- **exit 2 는 통과가 아니다** — 인자 누락 · 파일 없음 · **macOS 인데 `otool` 이 없음**(건너뜀이 아니다 — 재지 못한 것이다) ·
+  `otool` 실패 · 의존 라이브러리 줄 0건(Mach-O 가 아니거나 출력 형식이 바뀜)은 측정 불능이라 PASS 로 세지 않고 잡을 붉힌다.
+  건너뜀(exit 0)은 macOS 가 아닌 러너뿐이다. 세 갈래(0/1/2)는 음성 대조 검체 `scripts/tests/test_check_no_ioreport_link.py`
+  (12건 — 브랜치 CI 의 macOS 레인이 매 push 돌린다)가 잰다. 전체 목록의 정본은 스크립트 머리 주석의 '종료' 항이다.
+- **보지 못하는 것**: 로드 명령(`LC_LOAD_DYLIB`·약한/재수출/지연 로드)만 본다 — `dlopen` 으로 런타임에 여는 것은 의도된
+  방식이라 나오지 않고, 정적 라이브러리로 섞어 넣는 경우는 대상이 아니다. 이 스크립트는 macOS 에서만 판정한다. 공증된 DMG 의
+  데몬이 실제로 NPU 전력을 읽는지는 아래 체크리스트의 별도 행이다.
 
 ### ★비기술자(청중) 배포 전 게이트 체크리스트 (D6 제품 모드)
 오너 대표 산출물을 제3자에게 패키징해 내보내기 전, 아래를 **모두** 확인한다.
@@ -449,6 +560,7 @@ git push -u origin main
 `latest.json`을 **항상 최신 릴리스에 포함**해야 updater가 찾습니다(endpoint가 `/releases/latest/`).
 
 ```sh
+# ★태그 전 사전 게이트 4종 rc=0 필수 — §0-C (version-check · win-typecheck · pre-tag-ci-check · scan-pack-secrets)
 # 태그
 git tag -a v0.2.0 -m "cys 0.2.0 — 자비스 네이티브 기능 19건 + zero-setup 온보딩 + 자동 업데이트"
 
@@ -483,6 +595,9 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
 - [ ] 신규 머신 시뮬레이션: 빈 HOME에서 `cys list` → 데몬 자동기동 + pack 자동설치 확인
 - [ ] DMG에서 설치 → 앱 실행 → `cys status` 동작
 - [ ] 버전 문자열 **8곳(수동 6 + `Cargo.lock` 2패키지)** 일치 — `sh scripts/version-check.sh vX.Y.Z` rc=0
+- [ ] **★태그 전 사전 게이트 4종 rc=0 — §0-C** (version-check · `sh scripts/win-typecheck.sh` ·
+      `python3 scripts/pre-tag-ci-check.py --wait 60` = 같은 SHA 의 ci-branch·windows-build·windows-health success ·
+      `bash scripts/scan-pack-secrets.sh` = 팩 콘텐츠 clean)
       (범프 후 `cargo` 가 lock 을 다시 쓰게 하고 그 결과를
       범프 커밋에 함께 담아라. 손편집 금지 · S23)
 - [ ] **★★실사용자 경로 게이트 — DMG 2종 전부 exit 0 (2026-08-01 신설 · 필수 · 생략 불가)**
@@ -592,6 +707,9 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
             ```sh
             # 정본 = 기계 검사. 6항목 전부를 한 번에 돌린다(⑤ 포함).
             python3 scripts/verify-release-remote.py <신버전> <구버전>
+            #   ★구버전은 필수다(0.14.41 · U4 C4-⑦) — 빼면 원격 수신 전에 exit 2. 종전엔 ① 을 조용히
+            #     빼고 분모 7 로 'N/7 PASS' 를 냈다. 두 인자를 준 정상 실행의 합격은 **8/8 PASS** 다.
+            #     구버전이 정말 없을 때만 `--no-prev` 를 명시한다(요약 줄에 ①SKIP 병기).
 
             # 손으로 볼 때(참고용) — 대상은 루트가 아니라 /downloads/ 다.
             curl -s https://www.cysinsight.com/downloads/ \
@@ -620,6 +738,16 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
             curl -sO "$B/SHA256SUMS.txt" && shasum -a 256 -c SHA256SUMS.txt
             ```
             **4줄 전건 OK** 여야 한다. 1건이라도 FAILED 면 미완이다.
+            ★2026-09-27(0.14.42 발행 준비) — 위 손 명령은 배포 4종만 본다. **정본인 기계 검사**
+            (`verify-release-remote.py` ⑥)는 이제 SUMS 에 **기준 13종 전부**(버전 붙은 5종 =
+            aarch64.dmg·x64.dmg·x64-setup.exe·x64-setup.exe.sig·x64-setup.zip + 무버전 8종 =
+            업데이터 tar.gz 2·.sig 2·latest.json·pack.tar.gz·pack-manifest.json·.minisig)의 등재를
+            요구한다 — 종전엔 나머지 9종이 SUMS·서버에서 통째로 빠져도 ⑥ 이 PASS 였다(오너 지시 ⓑ
+            '전 자산 · 누락 0' 의 기계화). 기준 목록은 발행 전 관문 `release-verify.py` 의 정본과
+            같은지 `--self-test` ⑥ⓖ 가 대조한다.
+            ⚠**우리 포크(1.1.8 편입 시점)**: 위 13종은 원작자 발행 형상(DMG 2종 상시)이다. 우리 발행은 DMG 를 만들지 않고
+            맥 레인이 선택(배포 zip — `release-verify.py` `MAC_ASSETS`)이라 이 기준이 우리 정본과 어긋난다(`--self-test` ⑥ⓖ
+            적색 실측). 결정 전까지 이 ⑥ 판정을 우리 발행의 합격 근거로 쓰지 않는다(1.1.8 병합 판정 갈림 목록의 결정 대기 항목).
 
       ⚠**이 6항목이 보지 않는 것 — 2026-08-01 사고의 정확한 사각지대**: 여기서 자산을 받는
       수단은 `curl` 이다. **`curl` 로 받은 파일에는 `com.apple.quarantine` 이 붙지 않는다.**
@@ -655,6 +783,38 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
             성공(rc 0 · `registered:` 출력)해야 한다. CI 는 토큰 **배달**까지만 관측하고
             (위 ② 분절), 체인 단절 실조건은 실기 claude 세션에서만 재현된다.
             판정: 종전 rc 6 재현 조건에서 rc 0. PASS 전까지 '실기 미검증' 유지.
+- [ ] **★공증된 DMG 실기 — 상태: 실기 미검증 (0.14.43 E2 · 바이너리 릴리스 발행 뒤)** ⚠원작자 공증 레인 항목이다 — 우리 포크는 공증 DMG 를 발행하지 않는다(자체서명 맥 레인에서는 같은 확인을 설치된 앱의 cysd 로 한다). 공증된 DMG 의 cysd 에서 `control.hw` 의 `npu.status` 가 `ok` 인가(강화 런타임에서 시스템 dylib dlopen — 실패해도 데몬은 뜬다: `unavailable` + `reason`).
+- [ ] **★Windows 데몬 단위 검체의 상태 — 상태: 비차단 유지 · 처음 완주한 실패 196건 분류·수리 완료 · 시점 의존 검체의 흔들림 남음 · 가족 밖 실패 1건의 원문 미확보 (0.14.43 · 바이너리 릴리스 발행 전)**
+      `windows-health.yml` 의 `cargo test --bin cysd` 단계(Windows 실기)는 `continue-on-error: true` 인 **비차단**이다 — 그 단계·잡·런이
+      초록이어도 Windows 에서 전 검체가 통과했다는 뜻이 아니다(실패·절단도 conclusion 은 success 로 찍힌다). 발행 전에 바로 뒤의 판독
+      스텝(annotation · STEP_SUMMARY)에서 실패 검체 이름 목록을 읽고 원인을 분류한다: 제품 결함 / 검체의 유닉스 가정 / 러너 환경.
+      제품 결함이 하나라도 있으면 릴리스 노트의 알려진 한계에 적고, 직전 런에 없던 새 실패가 생겼는지 대조한다.
+      **0.14.43 의 경과**(릴리스 노트 §14): 이 단계는 이번 판 이전부터 한 검체에서 멈춘 채 30분 상한에 끊겼고, 그 검체를 건너뛰자 처음
+      완주해 1680 통과 · 196 실패 · 3 무시였다(진단 실행 `37188821194` · 건강성 잡은 1681 · 195 · 3). 196건 분류: 상태 폴더 공유 154 ·
+      경로 구분자 3 · `HOME` 전제 2 · 유닉스 전제 35 · 제품 결함 2건(원인 1 — 승인 서명 · 고침). 수리 뒤(커밋 `2bf75a12`) 같은 명령의
+      세 실행: 진단 `37249118071` **1853 통과 · 0 실패 · 47 무시** / 건강성 잡 `37249110248` 1851 · 2 · 47 / 진단 반복 `37250481491`
+      1852 · 1 · 47. 코드 최종 커밋 `f83c9bf6` 의 건강성 잡 `37253140723` 은 1852 · 1 · 47. 네 실행의 실패 0 · 2 · 1 · 1건은 모두 다른
+      검체다. 앞의 세 실행의 셋은 좌석을 만든 직후 곧바로 배달·판정을 재는 시점 의존 검체다
+      (`b1_gate_delivers_at_prompt_boundary_while_output_streams` · `b1_merge_delivers_same_sender_burst_in_one_turn` ·
+      `j3_queued_send_from_cli_label_reaches_entry_digest_header_and_ledger`). **넷째 실행의 하나는 그 가족 밖의 첫 사례다** —
+      `schedule::tests::schedule_writers_serialize_under_the_lock_and_no_add_is_lost`(스케줄 파일 잠금 아래 동시 쓰기 검체 ·
+      이번 판이 건드리지 않은 코드). 건강성 잡은 실패한 이름만 남겨 **패닉 메시지를 확보하지 못했다** — 아래 규칙(가족 밖 실패는
+      원문을 본다)의 대상이다. 무시 47 = Windows 전용 사유 44(제출 정착 22 ·
+      Windows 기본 H 마스크 17 · reader EOF 3 · POSIX 셸 2) + 종전부터의 3. **대조할 기대값은 1853 통과 · 0 실패 · 47 무시**이고,
+      위 세 검체 가족 밖에서 실패가 나오면 흔들림으로 넘기지 말고 원문을 본다. 3회 연속 초록에 닿지 못했으므로 차단 승격
+      (`continue-on-error` 제거)은 다음 판이다 — 그때 이 행의 상태를 갱신한다. reader EOF 3건은 Windows 에서 좌석 종료를
+      알지 못하는 한계다(릴리스 노트 §13-9 — 이번 판은 고치지 않았다).
+- [ ] **★Windows 업데이트 시도 기록의 '기준 시각 다시 쓰기' 실기 — 상태: 실기 미검증 (0.14.43 · 릴리스 노트 §13-4 의 '실측하지 못한 것'과 같은 항목)**
+      설치 파일이 뜬 직후 `~/.cys/.update-attempt.json` 의 `at` 을 그 시각으로 다시 쓰는 동작(느린 회선에서 받는 시간 때문에 설치기가
+      도는 중인데 알림이 일찍 뜨는 일을 줄이려는 것)은 실제 Windows 에서 확인하지 못했다. 실기 판정: Windows 실기에서 [본체 패치 설치] 로
+      업데이트하는 동안 ① 설치기가 도는 중에 기록의 `at` 이 설치 파일이 뜬 시각(받기 시작보다 늦음)인지 ② 설치가 끝나고 앱이 다시 열린 뒤
+      기록이 알림 없이 지워지는지(성공 경로) ③ 설치 파일 실행을 막았을 때(스마트 앱 컨트롤 켬 등) 알림이 즉시 뜨는지 본다.
+      PASS 전까지 '실기 미검증' 을 유지한다.
+- [ ] **★Windows x64 네이티브 · Home 판 실측 — 상태: 미실측 (0.14.43)**
+      Windows 11 실측은 GitHub Actions 러너(ARM64 의 x64 에뮬레이션 · Enterprise 판)에서만 했다(릴리스 노트 §5 · §6-1 · §13-3 · §13-4).
+      x64 네이티브 PC 와 Home 판에서 같은 값·같은 동작이 나오는지 모른다 — 확인할 것: 「팀 직접 만들기」의 사전 검사·예약부터 소켓까지
+      걸리는 시간(`CYS_DEPT_READY_SECS` 와 기본 대기 상향 판단의 근거), 스마트 앱 컨트롤이 켜진 PC 의 업데이트 차단 알림, 제보
+      환경(Home 판)의 CodeIntegrity 이벤트 3033·3077. PASS 전까지 '미실측' 을 유지한다.
 - [ ] **★codex ready_marker 라이브 재주입 왕복 실증 — 상태: 실기 미검증 (P0-6 측정 선행
       게이트 잔여 분절 · 2026-08-26 등재)**
 

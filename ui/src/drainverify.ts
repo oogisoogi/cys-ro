@@ -122,3 +122,21 @@ export function mergeRetry<R extends { all_saved: boolean; total: number; summar
   for (const n of nodes) summary[n.outcome] = (summary[n.outcome] ?? 0) + 1;
   return { ...first, nodes, summary, all_saved: nodes.length > 0 && nodes.every((n) => n.outcome === "saved") };
 }
+
+// ★U4-B2②(0.14.41): drain --verify 보고서의 도달 불가 데몬(`unreachable`).
+//   kind="down"         = 연결 자체 실패(데몬 없음 — 저장할 노드도 없다) → 사유로 나열하지 않는다(정보성).
+//   kind="unresponsive" = 연결은 됐는데 응답 없음 — 그 안의 노드는 저장 신호를 못 받았다 → 사유로 나열.
+// 구버전 cys(필드 부재)는 빈 목록 — 종전 문구 그대로.
+export type DrainUnreachable = {
+  dept: string;
+  department?: string;
+  socket?: string;
+  kind: string;
+  detail?: string;
+};
+
+export function drainVerifyUnresponsiveLines(unreachable: DrainUnreachable[] | undefined): string[] {
+  return (unreachable ?? [])
+    .filter((u) => u.kind === "unresponsive")
+    .map((u) => `• ${u.department || u.dept}: 데몬 응답 없음(연결은 됐으나 무응답) — 그 안의 노드는 저장 신호를 받지 못했습니다`);
+}

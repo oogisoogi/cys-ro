@@ -1694,6 +1694,30 @@ fn path_with_exe_dir_first(exe_dir: &Path, current: Option<std::ffi::OsString>) 
     std::env::join_paths(parts).unwrap_or_else(|_| exe_dir.as_os_str().to_os_string())
 }
 
+/// ★(U15 · 0.14.41 · 반박 M3·M4) 부트 체인 자식 PATH.
+///
+/// 데몬 env PATH 는 launchd plist 값이라 동봉 runtime 이 없다(`…:/usr/bin:/bin:…` 실측). 부트 python 자체는
+/// 동봉 절대경로라 안전하지만 그 **자손**(`bash cys-dept promote-if-pending` 의 `python3 -` heredoc ·
+/// `cys boot` 회수 · `["python3", …]` 리터럴)은 PATH 로 `python3` 를 풀어, 개발자 도구(CLT) 없는 맥에서
+/// 마스터 부트마다 셔임(설치 창 + 비0)을 불렀다. 그 기계에서만 `py_dir`(동봉 python 디렉터리)를 exe_dir
+/// **바로 뒤**에 둔다(python 만 — 동봉 git 은 올리지 않는다: GIT_EXEC_PATH 결함 RC5 · 설계 §2 Phase B 제외).
+/// `py_dir == None`(윈도우·리눅스·CLT 있는 맥·롤백)이면 [`path_with_exe_dir_first`] 와 **바이트 동일**하다.
+fn boot_child_path(
+    exe_dir: &Path,
+    py_dir: Option<&Path>,
+    current: Option<std::ffi::OsString>,
+) -> std::ffi::OsString {
+    let Some(py) = py_dir else {
+        return path_with_exe_dir_first(exe_dir, current);
+    };
+    let mut parts: Vec<PathBuf> = vec![exe_dir.to_path_buf(), py.to_path_buf()];
+    if let Some(cur) = current.as_ref() {
+        parts.extend(std::env::split_paths(cur));
+    }
+    // join 실패(성분에 분리자 — 동봉 경로에선 비실재)는 종전 규칙으로 접는다: 'cys 해소 보장' 이 우선이다.
+    std::env::join_paths(parts).unwrap_or_else(|_| path_with_exe_dir_first(exe_dir, current))
+}
+
 /// boot-supervisor.log 의 **경로 규약 단일 소유자**(★R2 note — 사본 금지).
 ///
 /// 스풀의 부모 = 데몬 상태 디렉터리(`state_dir(socket)` — unix 는 소켓의 부모, Windows 는
@@ -1791,7 +1815,13 @@ fn run_ensure_team(
         // SEAL-1: 번들 python 이 `.pyc` 를 쓰면 코드서명 봉인이 깨진다.
         .env(cys::ENV_PY_NO_BYTECODE, cys::PY_NO_BYTECODE_ON)
         // ★(P2 · R3-P2-1/ANCHOR-1 ④) PATH 선두 = 데몬 exe_dir — bare "cys" 해소 보장.
-        .env("PATH", path_with_exe_dir_first(&exe_dir, std::env::var_os("PATH")))
+        // ★(U15 · 0.14.41) CLT 없는 맥에서만 그 바로 뒤에 동봉 python 디렉터리(자손의 `python3` 셔임 회피).
+        //   판정은 lib 단일 판정 — 그 밖의 기계는 종전과 바이트 동일(boot_child_path 주석).
+        .env("PATH", boot_child_path(
+            &exe_dir,
+            cys::macos_devtools::clt_absent_bundled_python(&exe_dir).as_deref().and_then(Path::parent),
+            std::env::var_os("PATH"),
+        ))
         .stdin(std::process::Stdio::null());
     // ── ★(R2 · 2026-08-26) provenance 상속 절단 — **주지 않기로 한 값 = 없는 값** ──────────
     // 【무엇이 틀렸었는가】 아래 주입은 **조건부**인데, 조건이 거짓일 때 상속값을 지우지 않았다.
@@ -1909,6 +1939,10 @@ struct SupState {
     /// 재사용(넘치면 새 키에 침묵 — 유계가 통보보다 앞이다. 다만 그 침묵은 아래
     /// `notify_capped_reported` 로 **1회 가청화**한다 — R2 note).
     no_spawn_notified: std::collections::HashSet<String>,
+    /// ★(0.14.42 · R3SH-3) 순간 축(사람 입력 30s · quiescing · pause)에 걸려 **미룬** pane 통보 줄 — 다음 틱들이 다시 본다
+    /// (유계 [`MAX_DEFERRED_PANE_NOTICES`] · 수명 [`PANE_NOTICE_DEFER_SECS`]). 종전에는 래치를 먼저 세운 뒤 한 번 보고
+    /// 보류면 버려, 선언 직후 사람 입력 창에 한 번 걸린 인텐트의 pane 통보가 영구히 사라졌다(frontdoor 약속 파기).
+    deferred_pane: Vec<DeferredPaneNotice>,
     /// (R2 note) 통보 래치 상한 도달을 이미 알렸는가 — 1회성(`budget_pressure_reported` 동형).
     notify_capped_reported: bool,
     /// (B3-2R ④ⓓ) 전역 상한 정지 통보 래치 — 감독자 수명 1회.
@@ -1988,6 +2022,104 @@ fn no_spawn_reason(why: &str) -> &'static str {
     }
 }
 
+/// ★(0.14.42 · R3SH-3) 미룬 pane 통보 줄 1건.
+struct DeferredPaneNotice {
+    intent: String,
+    sid: u64,
+    why: String,
+    text: String,
+    until: std::time::Instant,
+}
+
+/// ★(R3SH-3) 미룬 pane 통보의 수명(초) — 인텐트 수명(30분) 안에서 사람 입력·사이클 창이 풀리기를 기다리는 몫.
+const PANE_NOTICE_DEFER_SECS: u64 = 600;
+/// ★(R3SH-3) 미룬 pane 통보 상한 — 넘치면 종전처럼 생략(feed 는 이미 남았다 · 유계가 통보보다 앞).
+const MAX_DEFERRED_PANE_NOTICES: usize = 16;
+
+/// ★(R3SH-3) pane 통보 줄의 하드축 판정(공용 H0 · 노브에서 supervisor 를 빼면 None = 종전 동작).
+fn pane_notice_hold(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) -> Option<crate::governance::MachineHold> {
+    if !crate::governance::machine_hold_enabled(crate::governance::MachineInjector::Supervisor) {
+        return None;
+    }
+    let axes = crate::governance::MachineHoldAxes {
+        pause: true,
+        quiescing: true,
+        human: true,
+        modal: true,
+        draft: true,
+        human_window_secs: crate::governance::queue_human_quiet_secs(),
+        ..crate::governance::MachineHoldAxes::NONE
+    };
+    crate::governance::machine_direct_hold(daemon, s, axes)
+}
+
+/// ★(R3SH-3) 순간 축인가 — 기다리면 스스로 풀린다(사람 입력 창 · 사이클 창 · kill-switch 해제). 모달·초안은 주입하지 않는
+/// 것이 설계 H5 의 목적이라 미루지 않고 생략한다.
+fn pane_hold_is_transient(h: crate::governance::MachineHold) -> bool {
+    use crate::governance::MachineHold as H;
+    matches!(h, H::HumanActive | H::Quiescing | H::Paused)
+}
+
+/// pane 통보 줄 1건 쓰기 — ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — dispatch_one 과 같은 순서).
+fn pane_notice_line(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>, text: String) {
+    // ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — seat_inject_guarded 안에서 지킨다).
+    // ★v115-restore(A3): 좌석 입력 주입 단일 입구(빈 에이전트 좌석 = 타이핑 대신 큐 보류).
+    // 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
+    // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
+    let _ = crate::governance::seat_inject_guarded(
+        daemon,
+        s,
+        &text,
+        120,
+        crate::delivery::Origin::Supervisor,
+        None,
+        "boot_supervisor.no_spawn",
+    );
+}
+
+/// ★(0.14.42 · R3SH-3) 미룬 pane 통보를 이번 틱에 다시 본다 — 순간 축이 풀렸으면 쓰고, 여전히 순간 축이면 수명 안에서
+/// 계속 미루고, 모달·초안이 되었거나 수명이 지났거나 좌석이 사라졌으면 생략 사실을 남긴다. 틱 pane 예산을 같이 쓴다.
+fn retry_deferred_pane_notices(daemon: &Arc<Daemon>, st: &mut SupState, pane_budget: &mut usize) {
+    if st.deferred_pane.is_empty() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    for d in std::mem::take(&mut st.deferred_pane) {
+        let live = daemon.get_surface(d.sid).filter(|s| !s.exited.load(Ordering::Relaxed));
+        let Some(s) = live else {
+            publish(
+                daemon,
+                "boot_supervisor.pane_notice_skipped",
+                json!({"intent": d.intent, "reason": "surface_gone", "surface_id": d.sid, "why": d.why,
+                       "note": "미뤄 둔 pane 통보 줄의 좌석이 사라졌다 — feed(bootstrap-fail)는 이미 남았다"}),
+            );
+            continue;
+        };
+        match pane_notice_hold(daemon, &s) {
+            None if *pane_budget > 0 => {
+                *pane_budget -= 1;
+                publish(
+                    daemon,
+                    "boot_supervisor.pane_notice_delivered_late",
+                    json!({"intent": d.intent, "surface_id": d.sid, "why": d.why}),
+                );
+                pane_notice_line(daemon, &s, d.text);
+            }
+            None => st.deferred_pane.push(d),
+            Some(h) if pane_hold_is_transient(h) && now < d.until => st.deferred_pane.push(d),
+            Some(h) => {
+                let reason = if pane_hold_is_transient(h) { "defer_expired" } else { h.axis() };
+                publish(
+                    daemon,
+                    "boot_supervisor.pane_notice_skipped",
+                    json!({"intent": d.intent, "reason": reason, "surface_id": d.sid, "why": d.why,
+                           "note": "미뤄 둔 pane 통보 줄을 끝내 쓰지 못했다(모달·초안이거나 수명 초과) — feed(bootstrap-fail)는 이미 남았다"}),
+                );
+            }
+        }
+    }
+}
+
 /// (P2 · 오너 결정 ⑧c → ★R2 확장) **무스폰 loud 종착** — "버스 이벤트만"은 마스터가 아직
 /// 태어나지 않은 시점의 방송이라 청중이 0 인 조용한 포기다(WDSI 좀비 18회의 교훈: 정지 조건 +
 /// **가시성**). 채널 3개: ①기존 버스 이벤트(호출부의 `dispatch_failed`/`intent_retired` —
@@ -2047,19 +2179,45 @@ fn notify_no_spawn(
     if let Some(sid) = it.surface_id {
         if let Some(s) = daemon.get_surface(sid) {
             if !s.exited.load(Ordering::Relaxed) {
-                // ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — seat_inject_guarded 안에서 지킨다).
-                // ★v115-restore(A3): 좌석 입력 주입 단일 입구(빈 에이전트 좌석 = 타이핑 대신 큐 보류).
-                // 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
-                // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
-                let _ = crate::governance::seat_inject_guarded(
-                    daemon,
-                    &s,
-                    &text,
-                    120,
-                    crate::delivery::Origin::Supervisor,
-                    None,
-                    "boot_supervisor.no_spawn",
-                );
+                // ★(0.14.42 · 설계 H5) pane 줄 앞에서 선언 좌석의 하드축을 **1회** 본다(공용 판정 H0). 축: pause ·
+                //   quiescing · 사람 입력 30s · 모달 · 화면 초안. 보류면 원장 기록과 주입을 **모두** 하지 않고 사실만
+                //   남긴다(`pane_notice_skipped` · 인텐트 래치가 이미 있어 1회). feed 는 위에서 무조건 나갔다 — 잃는 것은
+                //   pane 한 줄뿐이다. 큐는 쓰지 않는다(주 청중이 Windows 다 — ConPTY 판정 Unknown 이면 큐에서 무음 만료될
+                //   수 있었다). Windows 기본 마스크는 draft 를 끈다(모달 오탐이면 통보 줄만 빠진다 · feed 유지).
+                //   부트 체인 본체(dispatch_one → launch-agent)는 무변경이다. 노브에서 supervisor 를 빼면 종전 동작.
+                //   ★(0.14.42 · R3SH-3) 순간 축(사람 입력 30s · quiescing · pause)은 **생략하지 않고 미룬다** — 인텐트 래치가
+                //   이미 서 있어 여기서 버리면 영구 소실이다(선언 프롬프트 직후의 즉시 실패는 사람 입력 창과 겹치기 쉽다).
+                //   다음 틱들이 [`retry_deferred_pane_notices`] 로 다시 본다(유계 · 수명 10분). 모달·초안은 종전대로 생략.
+                if let Some(h) = pane_notice_hold(daemon, &s) {
+                    if pane_hold_is_transient(h) && st.deferred_pane.len() < MAX_DEFERRED_PANE_NOTICES {
+                        st.deferred_pane.push(DeferredPaneNotice {
+                            intent: it.id.clone(),
+                            sid,
+                            why: why.to_string(),
+                            text,
+                            until: std::time::Instant::now()
+                                + std::time::Duration::from_secs(PANE_NOTICE_DEFER_SECS),
+                        });
+                        publish(
+                            daemon,
+                            "boot_supervisor.pane_notice_deferred",
+                            json!({"intent": it.id, "reason": h.axis(), "surface_id": sid, "why": why,
+                                   "defer_secs": PANE_NOTICE_DEFER_SECS,
+                                   "note": "선언 좌석이 순간 축(사람 입력·사이클·pause)이라 pane 통보 줄을 미뤘다 — 풀리면 쓴다 \
+                                            · feed(bootstrap-fail)는 이미 남았다"}),
+                        );
+                        return;
+                    }
+                    publish(
+                        daemon,
+                        "boot_supervisor.pane_notice_skipped",
+                        json!({"intent": it.id, "reason": h.axis(), "surface_id": sid, "why": why,
+                               "note": "선언 좌석이 하드축(모달·초안 — 또는 미룸 상한 초과)이라 pane 통보 줄을 생략했다 \
+                                        — feed(bootstrap-fail)는 이미 남았다"}),
+                    );
+                    return;
+                }
+                pane_notice_line(daemon, &s, text);
             }
         }
     }
@@ -2428,6 +2586,8 @@ fn tick_in(
     //   주입 홍수를 맞는 것을 막는다. feed·이벤트는 이 예산과 무관하게 나가고, 폐기(삭제)도
     //   무관하게 계속한다 — 잘리는 것은 홍수 채널 하나뿐이다.
     let mut pane_notices = MAX_RETIRE_NOTIFY_PER_TICK;
+    // ★(R3SH-3) 앞 틱들에서 순간 축으로 미룬 pane 통보를 먼저 본다(같은 틱 예산).
+    retry_deferred_pane_notices(daemon, st, &mut pane_notices);
     for it in &scan.intents {
         // ★재스냅샷은 디스패치 예산 **앞**이다: 스위치를 내린 사람은 즉시 롤백을 기대하는데,
         //   예산에 걸려 뒤로 밀리면 그 기대가 틱 수만큼 늦어진다. 스캔 상한(64)이 이미 유계다.
@@ -5451,6 +5611,61 @@ mod tests {
         );
     }
 
+    /// ★(U15 · 0.14.41) CLT 있는 맥·윈도우·리눅스(= py_dir None)의 부트 자식 PATH 는 종전과 **바이트 동일**.
+    #[test]
+    fn boot_child_path_is_byte_identical_without_bundled_python() {
+        let exe = std::env::temp_dir().join("cys_bsup_exedir");
+        for cur in [
+            Some(std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap()),
+            Some(std::ffi::OsString::new()),
+            None,
+        ] {
+            assert_eq!(
+                boot_child_path(&exe, None, cur.clone()),
+                path_with_exe_dir_first(&exe, cur.clone()),
+                "동봉 python 디렉터리가 없는데 부트 자식 PATH 가 종전과 달라졌다(바이트 동일 계약): {cur:?}"
+            );
+        }
+    }
+
+    /// ★(U15 · 0.14.41 · 반박 M3) CLT 없는 맥 — 동봉 python 디렉터리가 exe_dir **바로 뒤**(= launchd PATH 의
+    /// /usr/bin 앞)에 온다. 그래야 체인 자손(`bash cys-dept` heredoc `python3 -` · `cys boot` 회수 · 리터럴
+    /// `python3` 인자)이 셔임(설치 창 + 비0)이 아니라 동봉본으로 풀린다. 나머지 순서는 보존한다.
+    #[test]
+    fn boot_child_path_puts_bundled_python_right_after_exe_dir() {
+        let exe = std::env::temp_dir().join("cys_bsup_exedir");
+        let py = Path::new("/App/cys.app/Contents/Resources/runtime/python/bin");
+        let old = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+        let parts: Vec<PathBuf> =
+            std::env::split_paths(&boot_child_path(&exe, Some(py), Some(old))).collect();
+        assert_eq!(
+            parts,
+            vec![exe.clone(), py.to_path_buf(), PathBuf::from("/usr/bin"), PathBuf::from("/bin")],
+            "동봉 python 이 exe_dir 바로 뒤에 오지 않거나 기존 순서가 깨졌다"
+        );
+        // PATH 부재(최소 env 데몬)에서도 exe_dir·동봉 python 두 조각은 남는다.
+        let alone: Vec<PathBuf> = std::env::split_paths(&boot_child_path(&exe, Some(py), None)).collect();
+        assert_eq!(alone, vec![exe, py.to_path_buf()]);
+    }
+
+    /// ★(U15) 생산 배선 소스 핀 — run_ensure_team 이 자식 PATH 를 `boot_child_path` 로 만들고, 그 python
+    /// 디렉터리를 lib 단일 판정(`clt_absent_bundled_python`)에서 받는다(판정 사본 금지 · 조건부 쌍 규율).
+    #[test]
+    fn run_ensure_team_wires_boot_child_path_through_single_verdict() {
+        let src = include_str!("boot_supervisor.rs");
+        let prod = src.split("#[cfg(test)]").next().expect("프로덕션 구간 분리 실패");
+        let i = prod.find("fn run_ensure_team(").expect("run_ensure_team 소실");
+        let body = &prod[i..prod[i..].find("\n}\n").map(|e| i + e).unwrap_or(prod.len())];
+        assert!(
+            body.contains(".env(\"PATH\", boot_child_path("),
+            "부트 자식 PATH 가 boot_child_path 를 거치지 않는다 — CLT 없는 맥에서 체인 자손이 셔임을 부른다"
+        );
+        assert!(
+            body.contains("macos_devtools::clt_absent_bundled_python("),
+            "동봉 python 디렉터리를 lib 단일 판정 밖에서 정한다(판정 사본 = 조건 드리프트)"
+        );
+    }
+
     /// boot-supervisor.log 회전 1겹 — 상한 초과에서만 `.1` 로 밀린다.
     #[test]
     fn log_rotation_is_one_layer_and_cap_gated() {
@@ -5717,13 +5932,14 @@ mod tests {
         //   도 pane 주입 전에 같은 유래(Origin::Supervisor)로 원장 선기록해야 하므로 지정 지점이
         //   dispatch_one + notify_no_spawn **정확히 2곳**이 됐다. 여전히 닫힌 집합 단언이다 —
         //   제3 지점 유입은 이 핀이 계속 적색으로 잡는다(구현 갈라짐 차단 목적 불변).
+        // ★(R3SH-3) 통보 줄 쓰기는 `pane_notice_line` 하나로 모였다(즉시·미룬 재시도 공용) — 지정 지점은 여전히 2곳.
         assert_eq!(
             prod.matches("crate::delivery::Origin::Supervisor").count(),
             2,
-            "감독자 원장 유래 지정 지점은 정확히 2곳(dispatch_one·notify_no_spawn)이어야 한다"
+            "감독자 원장 유래 지정 지점은 정확히 2곳(dispatch_one·pane_notice_line)이어야 한다"
         );
-        // notify_no_spawn 쪽도 순서 불변식이 같다 — 원장 기록이 주입(try_send)보다 앞.
-        let nat = prod.find("fn notify_no_spawn(").expect("notify_no_spawn 소실");
+        // 통보 줄 쪽도 순서 불변식이 같다 — 원장 기록이 주입(try_send)보다 앞.
+        let nat = prod.find("fn pane_notice_line(").expect("pane_notice_line 소실");
         let nbody = &prod[nat..];
         // ★v115-restore(A3 · 핀 재조준): 소진 통보는 단일 입구 seat_inject_guarded 로 간다 — 원장 선기록 순서는
         //   그 입구가 지킨다(governance queue_delivery_single_helper_shared_by_tick_and_rpc 가 입구 몸통을 단언).
@@ -5897,5 +6113,140 @@ mod tests {
             destructive_hits(&commented).is_empty(),
             "주석 문장을 위반으로 읽었다 — 다음 사람이 설명을 지우거나 핀을 완화하게 된다"
         );
+    }
+
+    // ═══════════ ★(0.14.42 · 설계 H5) 부트 감독자 무스폰 통보 — 하드축이면 pane 줄만 생략(feed 는 무조건) ═══════════
+
+    fn h5_seat(d: &Arc<Daemon>, screen: &str) -> Arc<crate::state::Surface> {
+        let s = d
+            .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
+            .expect("선언 좌석");
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "/usr/local/bin/claude".into()));
+        d.surfaces.lock().unwrap().insert(s.id, s.clone());
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        crate::governance::h_paint(&s, screen);
+        s
+    }
+
+    fn h5_feed_fails(d: &Arc<Daemon>) -> usize {
+        d.feed_items.lock().unwrap().iter().filter(|i| i.kind == "bootstrap-fail").count()
+    }
+
+    fn h5_skipped(d: &Arc<Daemon>) -> Vec<serde_json::Value> {
+        d.bus
+            .tail(200)
+            .into_iter()
+            .filter(|ev| ev["name"] == serde_json::json!("boot_supervisor.pane_notice_skipped"))
+            .collect()
+    }
+
+    /// [H5] 선언 좌석이 승인 창이면 통보의 pane 줄(원장 기록 + 주입)을 모두 생략하고 `pane_notice_skipped{intent,reason}`
+    /// 를 낸다 — feed 는 그 앞에서 무조건 나간다. 인텐트 래치로 1회. RED(HEAD): 모달에 주입(원장 1).
+    #[test]
+    fn h5_notice_skipped_on_modal_pane() {
+        let d = tmp_daemon("h5-modal");
+        let s = h5_seat(&d, cys::first_run_gates::fixtures::LIVE_PERMISSION_PROMPT);
+        let mut it = intent("h5-modal-1");
+        it.surface_id = Some(s.id);
+        let mut st = SupState::default();
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        notify_no_spawn(&d, &mut st, &it, "schema_mismatch", &mut budget);
+        notify_no_spawn(&d, &mut st, &it, "schema_mismatch", &mut budget); // 래치 — 두 번째는 무동작
+        assert_eq!(h5_feed_fails(&d), 1, "feed 통보는 무조건 1건");
+        assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 0, "모달 좌석에 통보를 주입했다");
+        let sk = h5_skipped(&d);
+        assert_eq!(sk.len(), 1, "pane_notice_skipped 는 인텐트당 1회");
+        assert_eq!(sk[0]["payload"]["intent"], serde_json::json!("h5-modal-1"));
+        assert_eq!(sk[0]["payload"]["reason"], serde_json::json!("modal"));
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// ★(R3SH-3) 선언 직후 사람 입력 창(30s)에 **한 번** 걸린 인텐트의 pane 통보는 사라지지 않는다 — 미뤘다가 창이 풀린 틱에
+    /// 1회 쓴다(`pane_notice_deferred` → `pane_notice_delivered_late`). 모달이 되면 생략. RED(HEAD 1b614e47): 래치가 먼저 서서
+    /// 두 번째 호출은 무동작 · 원장 0 영구.
+    #[test]
+    fn h5_transient_hold_defers_then_delivers_pane_notice() {
+        let d = tmp_daemon("h5-defer");
+        let s = h5_seat(&d, crate::governance::H_IDLE_SCREEN);
+        *s.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let mut it = intent("h5-defer-1");
+        it.surface_id = Some(s.id);
+        let mut st = SupState::default();
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        notify_no_spawn(&d, &mut st, &it, "claim_stale", &mut budget);
+        assert_eq!(h5_feed_fails(&d), 1, "feed 통보는 무조건 1건");
+        assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 0, "사람 입력 창에 통보를 주입했다");
+        assert_eq!(st.deferred_pane.len(), 1, "순간 축에 걸린 pane 통보를 미루지 않고 버렸다(영구 소실)");
+        // 다음 틱 — 아직 창 안이면 계속 미룬다.
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        retry_deferred_pane_notices(&d, &mut st, &mut budget);
+        assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 0);
+        assert_eq!(st.deferred_pane.len(), 1);
+        // 사람 입력 창이 지났다 — 1회 쓴다.
+        *s.last_human_input.lock().unwrap() = None;
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        retry_deferred_pane_notices(&d, &mut st, &mut budget);
+        assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 1, "창이 풀렸는데 통보가 나가지 않았다");
+        assert!(st.deferred_pane.is_empty());
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        retry_deferred_pane_notices(&d, &mut st, &mut budget);
+        assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 1, "통보가 중복됐다");
+        // 음성 대조 — 미룬 사이 모달이 떴으면 쓰지 않고 생략.
+        let s2 = h5_seat(&d, crate::governance::H_IDLE_SCREEN);
+        *s2.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let mut it2 = intent("h5-defer-2");
+        it2.surface_id = Some(s2.id);
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        notify_no_spawn(&d, &mut st, &it2, "claim_stale", &mut budget);
+        *s2.last_human_input.lock().unwrap() = None;
+        crate::governance::h_paint(&s2, cys::first_run_gates::fixtures::LIVE_PERMISSION_PROMPT);
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        retry_deferred_pane_notices(&d, &mut st, &mut budget);
+        assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 1, "모달 좌석에 미룬 통보를 주입했다");
+        assert!(st.deferred_pane.is_empty());
+        assert!(h5_skipped(&d).iter().any(|e| e["payload"]["intent"] == "h5-defer-2"), "생략 사실이 드러나지 않았다");
+        let _ = s.child.lock().unwrap().kill();
+        let _ = s2.child.lock().unwrap().kill();
+    }
+
+    /// [H5 핀] 유휴 좌석(ConPTY 전사 형상 포함)에는 통보가 종전 바이트 그대로 나간다(원장 = 종전 문안).
+    #[test]
+    fn h5_clean_pane_bytes_identical() {
+        let d = tmp_daemon("h5-clean");
+        let conpty_idle = "────────────────────                                                           \r\n❯                                                                              \x1b[2;3H";
+        for (i, screen) in [crate::governance::H_IDLE_SCREEN, conpty_idle].iter().enumerate() {
+            let s = h5_seat(&d, screen);
+            let mut it = intent(&format!("h5-clean-{i}"));
+            it.surface_id = Some(s.id);
+            let mut st = SupState::default();
+            let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+            notify_no_spawn(&d, &mut st, &it, "schema_mismatch", &mut budget);
+            let want = format!(
+                "[cys-supervisor] 팀이 이 선언으로 뜨지 않았다(intent={} why=schema_mismatch) — {}. 재선언이 재개 신호다. 근거: boot-supervisor.log · boot-last",
+                it.id,
+                no_spawn_reason("schema_mismatch")
+            );
+            let led = std::fs::read_to_string(crate::delivery::ledger_path(&d.socket_path)).unwrap_or_default();
+            assert!(led.contains(&crate::delivery::digest_text(&want)), "#{i}: 통보 문안이 종전과 다르다");
+            assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), i + 1, "#{i}: 유휴 좌석에 통보가 나가지 않았다");
+            let _ = s.child.lock().unwrap().kill();
+        }
+        assert!(h5_skipped(&d).is_empty());
+    }
+
+    /// [노브] `CYS_MACHINE_INJECT_HOLD` 에서 supervisor 를 빼면 HEAD 동작(모달 좌석에도 통보 주입).
+    #[test]
+    fn h5_knob_off_is_head_identical() {
+        let d = tmp_daemon("h5-knob");
+        let _k = crate::governance::HKnobGuard::set(&[("CYS_MACHINE_INJECT_HOLD", "schedule,channel,ceo,takeover")]);
+        let s = h5_seat(&d, cys::first_run_gates::fixtures::LIVE_PERMISSION_PROMPT);
+        let mut it = intent("h5-knob-1");
+        it.surface_id = Some(s.id);
+        let mut st = SupState::default();
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        notify_no_spawn(&d, &mut st, &it, "schema_mismatch", &mut budget);
+        assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 1);
+        assert!(h5_skipped(&d).is_empty());
+        let _ = s.child.lock().unwrap().kill();
     }
 }

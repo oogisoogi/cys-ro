@@ -6,7 +6,25 @@
 // GUI 앱과 동일하게 릴리스에서 windows subsystem 으로 빌드해 콘솔을 원천 제거한다(디버그는 콘솔 유지).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// ★(0.14.43 · R1F-IN m-1) 데몬 전역 로그 매크로 — 표준 `eprintln!`·`eprint!` 는 stderr 쓰기가 실패하면(디스크 가득·닫힌 파이프) **패닉**한다. 이 데몬의 stderr 는 로그 파일이고,
+//   워치독 틱 안의 로그 한 줄이 패닉하면 그 틱의 나머지 검사(사망 감지·데드맨·승인 스캔)를 버린다(적대 검증 S1 m-1 실측 P5 · 표준 매크로는 종료 코드 101, 아래 매크로는 정상 종료).
+//   같은 이름을 크레이트 전역으로 가려 쓰기 실패를 무시한다 — 호출처(약 170곳)는 고치지 않는다(그대로 이 매크로로 풀린다). 로그는 부가 정보라 실패해도 계속 돈다.
+//   ★반드시 **첫 모듈 선언보다 앞**에 둔다(macro_rules 의 텍스트 범위 — 뒤에 선언한 모듈 전부에 적용된다). 핀: `eprintln_guard_tests`.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 mod accounts;
+mod alert_route;
 mod alerts;
 mod analytics;
 mod approval;
@@ -16,22 +34,34 @@ mod caps;
 mod channels;
 mod classifier;
 mod cost;
+mod cwd_probe;
+mod cycle_jobs;
 mod deadman;
 mod delivery;
 mod events;
+// ★E(0.14.42) fd soft 한도 자체 상향 — 모듈은 파일 단위 unix 게이트(윈도우에서는 빈 모듈).
+mod fdlimit;
 mod governance;
 mod handlers;
 mod hwmon;
 mod named;
 mod panetitle;
 mod recall;
+mod reclaim;
 mod schedule;
 mod severity;
 mod skillrun;
 mod state;
+mod teamtoken;
 mod undo;
 mod usage;
 mod watch_wake;
+// ★U16(0.14.41) 팀 만들기 제안 데몬 잠금 핀 — 테스트 전용 모듈(프로덕션 코드 0).
+// 선언은 파일 맨 끝(다른 테스트 전용(cfg-gated) 모듈들 뒤)에 있다 — REVIEW1 B-1: 부트스트랩
+// 건강성 러너(run_bootstrap_health.py _rs_prod())는 파일에서 그 cfg 속성 문자열이 처음
+// 나타나는 지점 뒤를 전부 잘라 프로덕션 창으로 본다. 그 속성이 맨 위에 있으면
+// boot_supervisor::spawn( 호출이 그 창에서 사라져 H-TICK-ALIVE(감독자 기동 지점 검체)가
+// 오탐 실패한다. 그래서 이 주석에도 그 속성 문자열을 그대로 적지 않는다.
 
 use cys::Request;
 use handlers::Reply;
@@ -1083,12 +1113,73 @@ fn scrub_claude_session_env() {
     }
 }
 
+/// cysd 명령줄 판정(순수 · argv[0] 제외).
+#[derive(Debug, PartialEq, Eq)]
+enum CysdCli {
+    Run,
+    Version,
+    Help,
+    Unknown(String),
+}
+
+fn parse_cysd_args<I: IntoIterator<Item = String>>(args: I) -> CysdCli {
+    let mut args = args.into_iter();
+    let Some(first) = args.next() else {
+        return CysdCli::Run;
+    };
+    let command = match first.as_str() {
+        "--version" | "-V" => CysdCli::Version,
+        "--help" | "-h" => CysdCli::Help,
+        _ => return CysdCli::Unknown(first),
+    };
+    match args.next() {
+        Some(extra) => CysdCli::Unknown(extra),
+        None => command,
+    }
+}
+
+/// `cysd <version> (build <id>)` 한 줄.
+fn cysd_version_line() -> String {
+    format!("cysd {} (build {})", env!("CARGO_PKG_VERSION"), cys::pack::build_id())
+}
+
+/// usage 본문 — `usage: cysd [--version|-V|--help|-h]` 로 시작하고 무인자만 데몬을 기동한다.
+fn cysd_usage() -> String {
+    concat!(
+        "usage: cysd [--version|-V|--help|-h]\n",
+        "  cysd            데몬을 기동한다(무인자만 기동 · 소켓은 CYS_SOCKET · 팩은 CYS_PACK_DIR)\n",
+        "  --version, -V   버전과 빌드 ID 를 stdout 에 내고 exit 0\n",
+        "  --help, -h      이 도움말 · exit 0\n",
+        "  그 밖의 인자    usage 를 stderr 에 내고 exit 2 — 데몬은 기동하지 않는다\n",
+    )
+    .to_string()
+}
+
+/// 종전에는 `src/bin/cysd/**` 에 `env::args` 가 없어 `cysd --version` 도 데몬을 기동했다
+/// (1차 검증 샌드박스 실사고). 인자를 먼저 판정하고 무인자만 데몬을 기동한다.
+///
 /// ★SEAL-1 층3 배선 지점(sync main). `#[tokio::main]` 은 `async_main` 으로 내려가 있고, 여기서
 /// **런타임(=워커 스레드)이 만들어지기 전에** 프로세스 env 를 봉인한다 — `set_var` 는 프로세스
 /// 전역이라 스레드가 살아 있는 동안 쓰면 경합한다(lib.rs `seal_python_bytecode_in_process` 계약).
 /// 이 한 줄로 데몬의 **모든** 자손이 덮인다: pane(층2 가 이미 명시 주입) + 층1·층2 가 닿지 않는
 /// 임의 명령 경로 — `channels::spawn_bridge`(사용자 bridge_cmd)·`accounts` cmd 어댑터(주기 폴링).
 fn main() {
+    match parse_cysd_args(std::env::args().skip(1)) {
+        CysdCli::Version => {
+            println!("{}", cysd_version_line());
+            std::process::exit(0);
+        }
+        CysdCli::Help => {
+            print!("{}", cysd_usage());
+            std::process::exit(0);
+        }
+        CysdCli::Unknown(a) => {
+            eprintln!("cysd: unknown argument '{a}'");
+            eprint!("{}", cysd_usage());
+            std::process::exit(2);
+        }
+        CysdCli::Run => {}
+    }
     cys::seal_python_bytecode_in_process();
     async_main();
 }
@@ -1172,6 +1263,17 @@ async fn async_main() {
         }
         lock
     };
+
+    // ★E(0.14.42 WP-transport) fd soft 한도 자체 상향(RLIMIT_NOFILE → min(8192, hard,
+    // kern.maxfilesperproc) · never-lower · hard 불변). 위치 계약: 시작 락 획득 **뒤**(패자는 위에서
+    // 이미 exit — 패자 부수효과는 종전대로 mkdir/chmod 뿐, crashloop 로그 dedupe 보존)이고, pack
+    // 복구·Daemon::new·리스너·모든 pane/자식 스폰보다 **앞**이다(자식이 올린 soft 를 상속).
+    // 실패는 경고 한 줄 뒤 상속값으로 계속(부트 중단 0). 롤백: ~/.cys/nofile-raise-off · CYS_NOFILE_RAISE=0.
+    #[cfg(unix)]
+    {
+        let fd_limit = fdlimit::raise();
+        eprintln!("{}", fdlimit::log_line(&fd_limit));
+    }
 
     // windows: named pipe first-instance 선점 = 데몬 싱글턴 가드. 조기에 first 인스턴스를 만들어
     // accept_loop 로 넘겨 재사용한다(probe-후-close-재open 레이스 없이 그대로 리스너 풀에 편입).
@@ -1303,6 +1405,12 @@ async fn async_main() {
     //   팩 배달로는 built-in 잡을 갱신할 수 없으므로 코드가 upsert 한다(부재 생성·구버전 갱신·중복 0). 스케줄러 기동 전.
     schedule::ensure_builtin_jobs();
     schedule::spawn_scheduler(Arc::clone(&daemon));
+    // ★(0.14.31 · WP-3 B) 데몬 alert → CSO inbox 라우터. **별도 구독 태스크**다(EventBus publish
+    //   안의 동기 콜백 금지 — publish 는 inner 락을 쥔 채 broadcast 한다). 스케줄러 뒤·채널 재조정
+    //   앞이 자리다: 60분 점검 잡(ensure_builtin_jobs)이 먼저 등록돼 있어야 하고, 채널 재조정이
+    //   내는 부트 이벤트는 어차피 300s 유예 창에서 보류로 간다.
+    //   ★롤백: `CYS_ALERT_ROUTE=0` → 이 태스크가 뜨지 않는다(status 의 alert_route.enabled=false).
+    alert_route::spawn(Arc::clone(&daemon));
     usage::spawn_usage_collector(Arc::clone(&daemon));
     usage::spawn_agy_collector(Arc::clone(&daemon));
     // CC v2 WS-A: 계정 발견(프로필 스캔)+스냅샷 예열 — 관측 전에도 전 계정이 CC에 보인다.
@@ -1321,6 +1429,8 @@ async fn async_main() {
     // 불사조 복원 프로토콜의 "채널 재조정" 단계. 그 다음 주기 sweep(재배달·타임아웃·재스폰) 등록.
     channels::reconcile(&daemon);
     channels::spawn_channel_sweep(Arc::clone(&daemon));
+    // ★(0.14.42 · R4-01) 입장 게이트 포화 관측 — ping·하트비트가 초록인 채 전 RPC 가 서는 사각을 이벤트·feed 로 드러낸다.
+    spawn_dispatch_gate_watch(Arc::clone(&daemon));
     // 셧다운 경로: 원장은 메모리 전용이라 데몬이 죽으면 scoped 프로세스를 아무도 회수하지
     // 못한다 — SIGTERM/SIGINT 때 scoped 그룹을 전부 정리한 뒤 종료한다.
     #[cfg(unix)]
@@ -1394,8 +1504,164 @@ fn shutdown_cleanup(daemon: &Arc<Daemon>, reason: &str) {
     let _ = std::fs::remove_file(&daemon.socket_path);
 }
 
+/// ★F / G-01 rev2(0.14.42 WP-transport) unix accept 오류 분류·표본 로그.
+///
+/// 종전 Err arm 은 `eprintln!("accept error: {e}")` 한 줄뿐이었다 — 분류·sleep·카운터가 없었다.
+/// · macOS 에서 fd 고갈(EMFILE)은 accept 가 대기 연결 1개를 꺼내 **버린다**(실측: EMFILE×5 → EAGAIN,
+///   클라이언트 5/5 EOF, backlog 잔류 0). 즉시 재시도해도 오류 수는 도착 수를 넘지 않는 자기 제한
+///   루프라 핫스핀이 아니다. 여기서 sleep 하면 backlog 배출이 초당 1/backoff 로 묶여 ECONNREFUSED 가
+///   생기고(200 버스트 거절 55 실측) CLI 자동 기동·sibling 스폰·데드맨 회수(④) 경로가 새로 열린다 →
+///   **macOS 는 연결을 소비하는 errno 에 sleep 하지 않는다**(배출 속도 종전과 같음).
+/// · listener 가 쓸 수 없는 상태의 errno(EBADF·ENOTSOCK·EINVAL·EOPNOTSUPP·errno 없음)는 같은 오류가
+///   끝없이 반복되는 진짜 핫스핀이다 — 어느 OS 든 짧게 잔다(배출은 원래 0 이라 클라이언트 결과 불변).
+/// · 비macOS(Linux: EMFILE 에도 연결이 큐에 남아 스핀)는 모든 오류에 짧게 잔다.
+/// · EAGAIN/EWOULDBLOCK 은 tokio 가 WouldBlock 으로 흡수(clear_readiness)해 여기 도달하지 않는다.
+/// · 오류마다 쓰던 로그는 **표본화**한다(연속열 시작·errno 변경 ≥1s, 그 외 60s, 회복 1줄, 억제 건수
+///   병기) — 무회전 stderr 가 디스크를 채우면 `eprintln!` 이 패닉하고(실측 rc=101) 이 루프는 main
+///   태스크라 곧 데몬 사망(전 pane)이다. 쓰기는 실패를 무시하는 `writeln!` 이다.
+#[cfg(unix)]
+const UNIX_ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(10);
+/// 연결을 소비하는 errno 가 자기 제한인 OS(= sleep 하지 않는 OS). 테스트는 두 분기를 모두 주입해 잰다.
+#[cfg(unix)]
+const ACCEPT_ERROR_SELF_LIMITING_OS: bool = cfg!(target_os = "macos");
+/// 표본 로그: 연속열 시작·errno 변경은 직전 줄에서 이만큼 지나야 기록한다.
+#[cfg(unix)]
+const ACCEPT_LOG_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(1);
+/// 표본 로그: 실패가 이어지는 동안 적어도 이 간격마다 1줄(지금도 실패 중인가를 읽을 수 있게).
+#[cfg(unix)]
+const ACCEPT_LOG_MAX_GAP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// accept 오류 뒤 재시도 전 지연(순수). 실패 방향: **미분류 errno 는 즉시 재시도**(종전 거동)로
+/// 접는다 — 소비형 errno 를 잘못 재우면 ECONNREFUSED·자동 기동 연쇄가 새로 생기기 때문이다(대가:
+/// 반복형 미분류 errno 는 종전처럼 스핀하되 로그는 표본화된다).
+#[cfg(unix)]
+fn accept_error_retry_delay(raw: Option<i32>, self_limiting_os: bool) -> std::time::Duration {
+    let listener_fatal = match raw {
+        None => true,
+        Some(e) => {
+            e == libc::EBADF || e == libc::ENOTSOCK || e == libc::EINVAL || e == libc::EOPNOTSUPP
+        }
+    };
+    if self_limiting_os && !listener_fatal {
+        std::time::Duration::ZERO
+    } else {
+        UNIX_ACCEPT_ERROR_BACKOFF
+    }
+}
+
+/// accept 루프 Err arm 의 재시도 지연 — **실상수 배선의 단일 지점**(★CS-1 · 리뷰 변이 MUT-A).
+/// 게이트 켬 = `accept_error_retry_delay(raw, ACCEPT_ERROR_SELF_LIMITING_OS)`, 끔(롤백 노브) = 즉시 재시도.
+/// 종전에는 이 결정이 루프 본문에 인라인이라 인자를 상수 `false` 로 바꾼 변이(macOS 에서 EMFILE 마다
+/// 10ms sleep → backlog 배출이 초당 100 으로 묶여 ECONNREFUSED·자동 기동 연쇄 = ④ 경로)가 단위 검체
+/// 12건을 모두 통과했다. 이제 T13 이 실상수로 이 함수를 재고 T12 가 루프의 호출 문자열을 핀한다.
+#[cfg(unix)]
+fn accept_err_arm_delay(gate_on: bool, raw: Option<i32>) -> std::time::Duration {
+    if gate_on {
+        accept_error_retry_delay(raw, ACCEPT_ERROR_SELF_LIMITING_OS)
+    } else {
+        std::time::Duration::ZERO
+    }
+}
+
+/// 표본 로그 게이트(순수 · 시각 주입). 산술 패닉 없음 — u64 는 saturating, 시간은
+/// saturating_duration_since(시계 역행 허용), Instant+Duration 연산을 쓰지 않는다.
+/// 줄 수 상한(임의 구간 W): 2·(⌊W/1s⌋+1) + ⌊W/60s⌋.
+#[cfg(unix)]
+#[derive(Debug, Default)]
+struct AcceptLogGate {
+    streak: u64,
+    streak_started: Option<std::time::Instant>,
+    announced: bool,
+    notice: bool,
+    last_errno: Option<i32>,
+    last_line: Option<std::time::Instant>,
+    suppressed: u64,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcceptLogLine {
+    /// 연속 `streak` 번째 오류 · 직전 기록 이후 억제 `suppressed` 건.
+    Error { streak: u64, suppressed: u64 },
+    /// 연속 `errors` 건 오류 뒤 첫 수락 · 연속열 경과 · 직전 기록 이후 억제 건.
+    Recovered { errors: u64, elapsed: std::time::Duration, suppressed: u64 },
+}
+
+#[cfg(unix)]
+impl AcceptLogGate {
+    fn on_error(&mut self, raw: Option<i32>, now: std::time::Instant) -> Option<AcceptLogLine> {
+        self.streak = self.streak.saturating_add(1);
+        if self.streak == 1 {
+            self.streak_started = Some(now);
+            self.announced = false;
+            self.notice = true;
+        }
+        if raw != self.last_errno {
+            self.notice = true; // 기록될 때까지 유지(sticky)
+        }
+        self.last_errno = raw;
+        let write = match self.last_line {
+            None => true,
+            Some(t) => {
+                let d = now.saturating_duration_since(t);
+                d >= ACCEPT_LOG_MAX_GAP || (self.notice && d >= ACCEPT_LOG_MIN_GAP)
+            }
+        };
+        if !write {
+            self.suppressed = self.suppressed.saturating_add(1);
+            return None;
+        }
+        let line = AcceptLogLine::Error { streak: self.streak, suppressed: self.suppressed };
+        self.suppressed = 0;
+        self.announced = true;
+        self.notice = false;
+        self.last_line = Some(now);
+        Some(line)
+    }
+
+    fn streak_open(&self) -> bool {
+        self.streak > 0
+    }
+
+    /// 연속열을 닫는다. 기록된(announced) 연속열만 회복 1줄 — 기록되지 않은 연속열의 오류는 이미
+    /// 억제 건수에 들어 있어 다음 줄로 이월된다.
+    fn on_success(&mut self, now: std::time::Instant) -> Option<AcceptLogLine> {
+        if self.streak == 0 {
+            return None;
+        }
+        let errors = self.streak;
+        let elapsed = self
+            .streak_started
+            .map_or(std::time::Duration::ZERO, |t| now.saturating_duration_since(t));
+        self.streak = 0;
+        self.streak_started = None;
+        if !self.announced {
+            return None;
+        }
+        self.announced = false;
+        let line = AcceptLogLine::Recovered { errors, elapsed, suppressed: self.suppressed };
+        self.suppressed = 0;
+        self.last_line = Some(now);
+        Some(line)
+    }
+}
+
+/// 롤백 노브 판정(순수) — 값이 u64 로 0 이면(`0`·` 0 `·`00`) 종전 정책, 그 밖(미설정 포함)은 게이트 켬.
+/// 불리언이라 노브로 sleep 을 늘려 ④ 증폭 경로를 다시 여는 것이 구조적으로 불가능하다.
+#[cfg(unix)]
+fn parse_accept_error_gate(raw: Option<&str>) -> bool {
+    !matches!(raw.map(|v| v.trim().parse::<u64>()), Some(Ok(0)))
+}
+
+/// `CYS_ACCEPT_ERROR_GATE` — accept 루프 진입 때 1회 읽는다(데몬 env 는 수명 동안 불변).
+#[cfg(unix)]
+fn accept_error_gate_enabled() -> bool {
+    parse_accept_error_gate(cys::env_compat("CYS_ACCEPT_ERROR_GATE").as_deref())
+}
+
 #[cfg(unix)]
 async fn accept_loop(daemon: Arc<Daemon>, socket_path: &std::path::Path) {
+    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
     // ★W1: startup 락 획득·heartbeat spawn·상태 디렉터리 선생성은 부트 부수효과보다 먼저 실행돼야
     // 하므로 main()으로 전진했다(경쟁 패자가 부수효과 실행 전 즉사). 락 파일 핸들은 main 스코프에서
@@ -1424,9 +1690,23 @@ async fn accept_loop(daemon: Arc<Daemon>, socket_path: &std::path::Path) {
     //   (한쪽만 배선되던 미배선 결함 봉인). state_dir 은 함수 내부에서 canonical 매핑으로 재계산.
     post_listen_boot(socket_path, &daemon);
 
+    // ★F / G-01 rev2: 오류 분류·표본 로그. 노브는 여기서 1회(0 = 종전 정책: 즉시 재시도·매 오류 로그).
+    let gate_on = accept_error_gate_enabled();
+    let mut log_gate = AcceptLogGate::default();
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
+                if gate_on && log_gate.streak_open() {
+                    if let Some(AcceptLogLine::Recovered { errors, elapsed, suppressed }) =
+                        log_gate.on_success(std::time::Instant::now())
+                    {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "accept recovered: 연속 {errors}건 오류 뒤 수락 재개 ({}ms · 억제 {suppressed}건)",
+                            elapsed.as_millis()
+                        );
+                    }
+                }
                 // T1-3 발신자 신원: 커널이 보증하는 peer pid (자기신고 from의 검증 토대)
                 let caller_pid = peer_pid(&stream);
                 let daemon = Arc::clone(&daemon);
@@ -1434,7 +1714,24 @@ async fn accept_loop(daemon: Arc<Daemon>, socket_path: &std::path::Path) {
                     handle_connection(daemon, Box::new(stream) as Stream, caller_pid).await;
                 });
             }
-            Err(e) => eprintln!("accept error: {e}"),
+            Err(e) => {
+                // 로그 쓰기 실패는 무시한다(`eprintln!` 은 실패 시 패닉 → 이 루프는 main 태스크 → 데몬 사망).
+                let delay = accept_err_arm_delay(gate_on, e.raw_os_error());
+                if !gate_on {
+                    let _ = writeln!(std::io::stderr(), "accept error: {e}");
+                } else if let Some(AcceptLogLine::Error { streak, suppressed }) =
+                    log_gate.on_error(e.raw_os_error(), std::time::Instant::now())
+                {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "accept error: {e} (연속 {streak}건째 · 직전 기록 이후 억제 {suppressed}건 · {}ms 후 재시도 · 표본: 연속열 시작·errno 변경 ≥1s, 그 외 60s)",
+                        delay.as_millis()
+                    );
+                }
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+            }
         }
     }
 }
@@ -2391,7 +2688,7 @@ fn peer_pid(stream: &tokio::net::UnixStream) -> Option<u32> {
 /// 100% CPU로 spin하지 않도록 두는 backoff. mio `ConnectNamedPipe`는 정상 대기는
 /// WouldBlock(→tokio가 await)으로, 진짜 OS 오류는 즉시 Err로 반환하므로(connecting 플래그도
 /// 즉시 해제 → self-throttle 없음), 오류 분기는 ①로그 ②인스턴스 재생성 ③이 짧은 sleep로
-/// 회생해야 Unix arm(accept err→다음 await)·tokio 표준 루프(?로 전파)와 대칭이 된다.
+/// 회생해야 Unix arm(errno 분류 뒤 즉시 재시도 또는 짧은 sleep, UNIX_ACCEPT_ERROR_BACKOFF)·tokio 표준 루프(?로 전파)와 대칭이 된다.
 /// (Windows arm은 이 호스트에서 컴파일/실행 불가하므로, 정책 값을 모듈 최상위로 빼
 ///  비-Windows 테스트가 'spin 방지=non-zero backoff' 불변을 박제하게 한다.)
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -2556,7 +2853,7 @@ async fn pipe_listener(
             Err(e) => {
                 // connect()가 즉시 Err를 반환하면(broken 핸들 등) 같은 인스턴스에 곧장
                 // 재시도해도 같은 Err가 무한 반복돼 100% CPU spin이 된다(mio가 connecting
-                // 플래그를 즉시 해제해 self-throttle도 없음). Unix arm(accept err→다음 await)·
+                // 플래그를 즉시 해제해 self-throttle도 없음). Unix arm(errno 분류 뒤 즉시 재시도 또는 짧은 sleep, UNIX_ACCEPT_ERROR_BACKOFF)·
                 // tokio 표준 루프(?로 전파)와 대칭이 되도록: ①로그 ②인스턴스 재생성 ③짧은 backoff.
                 eprintln!("accept error: {e}");
                 server = recreate_pipe_instance(&pipe_name).await;
@@ -2720,8 +3017,188 @@ fn parse_first_line_cap(raw: Option<&str>) -> Option<std::time::Duration> {
     }
 }
 
+/// ★R3-5(S09 (c) · P2-final G-03 ①) **단발 응답 프레임**의 무진행 쓰기 상한(초).
+///
+/// 【고친 것】 `write_line` 은 `write_all(..).await; flush().await` 로 **시간 무계**였다. 요청 1줄을 보내고
+/// 응답을 읽지 않는 클라이언트(멈춘·SIGSTOP 된·교착한 프로세스)가 있으면 커널 송신 버퍼(unix 8 KB)가 찬 뒤
+/// 연결 태스크가 영구히 쓰기에서 기다린다 — 태스크·fd·응답 버퍼가 클라이언트가 닫을 때까지 회수되지 않는다
+/// (S09 (c): 64 연결 60 s 해제 0).
+///
+/// 【축 = 무진행(idle)이지 총 기한이 아니다】 커널이 **이 시간 동안 한 바이트도 받지 않을 때만** 끊는다.
+/// 느리지만 읽고 있는 소비자(큰 read_text 를 느린 파이프로 받는 경우)는 몇 분이 걸려도 끊지 않는다.
+/// 클라이언트 `RpcDeadline`(cys.rs)과 모양(진행마다 재장전)은 같지만 **방향이 반대**다 — 그쪽은 '서버가 안
+/// 보내는' 무진행, 이쪽은 '클라이언트가 안 읽는' 무진행을 잰다. 한 연결에서 두 조건은 동시에 성립하지 않으므로
+/// 두 상수 사이에 대소 제약은 없다(서로 핀하지 않는다).
+///
+/// 【값 30】 ① 값은 "정상 클라이언트가 응답 **도중** N 초 넘게 읽지 않는 경로가 있는가" 하나로 정한다 —
+/// 트리 안의 소비자(cys CLI `read_frame_line` · GUI `rpc_once` · 팩 `javis_report_gate`/`deploy_gate` ·
+/// deadman `probe_holder`)는 요청을 쓴 직후 응답을 끝까지 읽는다. 그런 경로는 없다.
+/// ② 문제 연결의 해제 시한은 첫 줄 상한([`FIRST_LINE_IDLE_SECS`] = 60 s · S09 (c) 창도 60 s)과 **한 계약**이다.
+/// 무수신 연결의 해제 시각 = dispatch 완료 + 버퍼 채움 + 이 상한이므로 dispatch·채움 여유를 ≥ 10 s 남겨야
+/// 60 s 안에 든다(검체 `write_stall_default_leaves_release_margin` 이 핀). 30 이면 여유 30 s — 부하로
+/// dispatch 가 늘어나도 창을 넘지 않는 여유를 **구조적으로** 둔다. ③ 비교(S09 실측): herdr 무수신 절단
+/// 9–10 s · cmux-tui 3–4 s — 우리는 정상 판독자 보호 쪽으로 여유를 더 둔다.
+///
+/// 【범위 = 단발 응답만】 `events.stream`·`surface.attach` 스트림은 면제다(클라이언트 `RPC_STREAMING_METHODS`
+/// 면제와 대칭). attach 를 끊으면 GUI 가 재attach 없이 `[surface exited]` 를 그린다(G-08) — 좌석이 살아
+/// 있는데 pane 이 죽어 보인다. ★알려진 잔여: **전혀 읽지 않는** 스트림 소비자는 `run_event_stream`·
+/// `run_attach` 의 쓰기에서 영구히 멈춘다 — 그동안 `rx.recv()` 가 다시 poll 되지 않으므로 Lagged·
+/// slow_consumer 분기에도 닿지 않고, 그 태스크·fd 는 소비자가 닫을 때까지 남는다. 버스·PTY 는 막히지
+/// 않고(tokio broadcast 는 송신자를 막지 않는다) 메모리 영향은 실측상 작다(무수신 attach 16개: fd 만 증가 ·
+/// RSS 는 소비자 0 대조군과 같음). 스트림 쪽 회수는 GUI 재attach 가 생긴 뒤의 별도 과제다.
+///
+/// 【플랫폼】 unix(macOS·Linux): 위 그대로. Windows: 같은 코드가 컴파일된다(cfg(windows) 변경 0). mio
+/// `NamedPipe::write` 는 쓰기 1건을 내부 버퍼로 통째로 받아 즉시 완료하므로 **단발·비파이프라인** 응답의
+/// 거동 변화는 0 이다. 다만 앞선 overlapped write 가 끝나지 않았으면 다음 쓰기가 WouldBlock 이라, 요청을
+/// 여러 개 보내고 읽지 않는 클라이언트는 두 번째 응답에서 종전의 영구 대기 대신 이 상한에 절단된다(무해).
+/// 거꾸로 요청 1개·큰 응답을 읽지 않는 연결은 mio 내부 버퍼와 파이프 인스턴스를 여전히 클라이언트 수명
+/// 동안 쥔다 — 이 상한은 그것을 풀지 않는다(S09 (c) 열위 해소는 **unix 한정**).
+///
+/// 【실패 방향】 상한 만료 = 그 연결만 닫는다(부분 프레임이 이미 나갔으므로 오류 줄을 덧쓰지 않는다 —
+/// 덧쓰면 두 프레임이 한 줄로 붙는다). macOS: 상대는 개행 없는 꼬리 뒤 EOF 를 본다. Linux: 서버 수신 큐에
+/// 읽지 않은 바이트가 남아 있으면(파이프라이닝 · 절단 탐지용 프로브 바이트) 커널이 EOF 대신 ECONNRESET 을
+/// 줄 수 있다. cys CLI 는 `RpcIoFail::Eof`(ECONNRESET 이면 `Io`) — 자동 재시도 없음 · '비멱등 명령은 재시도
+/// 전 상태 확인' 문안. GUI 풀은 파싱 오류 뒤 다음 호출의 BeforeSend 재연결. 데몬·다른 연결·좌석 무접촉.
+/// 롤백: `CYS_CONN_WRITE_STALL_SECS=0`(개정 전 무한 대기).
+const WRITE_STALL_SECS: u64 = 30;
+
+/// 노브 **하한**(초). 양수 1~9 는 여기로 접는다 — 부하 높은 호스트에서 잠깐 스케줄되지 못한 정상 판독자가
+/// 잘리면 `cys status --json` 등이 Eof 를 받아 orchestra check·부트 readiness 가 흔들린다. `0`(해제)은 그대로다.
+const WRITE_STALL_MIN_SECS: u64 = 10;
+
+/// 노브 상한(초 · 1일) — 첫 줄 상한과 같은 이유(거대값 → Instant 가산 오버플로 경로 차단 · 0 이 곧 무제한).
+const WRITE_STALL_MAX_SECS: u64 = 86_400;
+
+/// 롤백 스위치 — `CYS_CONN_WRITE_STALL_SECS=0` 이면 해제, 양수면 그 값(초 · [10, 86400] 로 클램프),
+/// 그 밖(비숫자·음수·빈 값)은 기본값.
+fn write_stall_timeout() -> Option<std::time::Duration> {
+    parse_write_stall_cap(cys::env_compat("CYS_CONN_WRITE_STALL_SECS").as_deref())
+}
+
+/// 순수 판정부(env 무접촉 · 진리표가 박제). 불변식: 반환값은 언제나 `Instant` 에 더할 수 있다.
+fn parse_write_stall_cap(raw: Option<&str>) -> Option<std::time::Duration> {
+    match raw.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(0) => None,
+        Some(v) => Some(std::time::Duration::from_secs(
+            v.clamp(WRITE_STALL_MIN_SECS, WRITE_STALL_MAX_SECS),
+        )),
+        None => Some(std::time::Duration::from_secs(WRITE_STALL_SECS)),
+    }
+}
+
+/// ★FATAL-1(0.14.42 WP-transport 리뷰 · G-09 의 dispatch 몫) — 동시에 **실행 중인** dispatch 상한.
+///
+/// 【무엇을 대체하나】 launchd·GUI 기동의 soft 256 은 연결 수를 묶어 동시 dispatch 를 약 240 으로
+/// 막는 **사실상의 입장 상한**이었다. E(fd soft 자체 상향)가 그것을 없앴고, 그 뒤 상한은 tokio 블로킹
+/// 풀 기본 512 뿐이었다 — 동시 surface.list ≈350 에서 데몬이 SIGABRT(전 pane 사망)했다(리뷰 실측).
+/// 근본 원인(sysinfo rayon 중첩 스틸)은 Cargo.toml 에서 끊었고, 이 상한은 **명시적 입장 제어**로 그
+/// 자리를 잇는다.
+///
+/// 【값 128】 ① 종전 사실상 상한은 **연결 수**(≈240 · 유휴 영속 연결·이벤트 스트림·attach·pty fd 까지
+/// 셌다)였고 넘친 연결은 EOF/EPIPE 로 버려졌다. 이 상한은 **실행 중인 dispatch 수**만 묶고 넘친 요청은
+/// 기다리게 한다 — 이벤트 스트림·attach·FeedWait 대기는 dispatch 가 끝난 뒤라 허가를 쥐지 않는다.
+/// ② 블로킹 풀 512 의 1/4 — RPC 폭주가 풀을 포화시켜 다른 블로킹 작업을 굶기지 않는다. ③ 리뷰가 관측한
+/// 가장 낮은 크래시 동시 수(rayon 이 살아 있던 legacy 신원 워크 K=200)보다 낮다 — 참고치이며, 이 상한
+/// 단독으로 크래시를 막는다고 증명하지는 않았다(근본 차단은 multithread 제거다). ④ 정상 운용(좌석
+/// 수십·훅 호출 ms 단위)은 이 수에 닿지 않는다 — 닿아도 **거절이 아니라 대기**다.
+///
+/// 【실패 방향】 초과분은 FIFO 로 **기다린다**(typed busy 응답 없음) — 거절은 클라이언트 재시도·자동
+/// 기동·sibling 스폰(④ 증폭) 경로를 새로 연다. 세마포어는 닫지 않으므로 `acquire` 실패는 도달 불가이고,
+/// 도달하더라도 **허가 없이 진행**(fail-open = 종전 거동)한다 — 게이트 고장이 전 RPC 불통이 되면 안 된다.
+const DISPATCH_INFLIGHT_MAX: usize = 128;
+static DISPATCH_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DISPATCH_INFLIGHT_MAX);
+
+/// ★(0.14.42 · R4-01) 게이트 포화 관측 주기(초)와 경보 문턱(연속 포화 초).
+const DISPATCH_GATE_WATCH_SECS: u64 = 5;
+const DISPATCH_GATE_SATURATED_ALERT_SECS: u64 = 30;
+
+/// ★(0.14.42 · R4-01) 포화 판정(순수) — 틱마다 `available == 0` 이면 연속 포화 초를 늘리고, 아니면 0. 반환 `(새 연속 초, 이번에
+/// 경보를 낼 것인가, 이번에 회복을 알릴 것인가)`. 경보는 문턱을 **처음** 넘은 틱에 1회, 회복은 경보 뒤 첫 비포화 틱에 1회.
+fn dispatch_gate_watch_step(saturated_secs: u64, alerted: bool, available: usize, tick_secs: u64) -> (u64, bool, bool) {
+    if available == 0 {
+        let next = saturated_secs.saturating_add(tick_secs);
+        (next, !alerted && next >= DISPATCH_GATE_SATURATED_ALERT_SECS, false)
+    } else {
+        (0, false, alerted)
+    }
+}
+
+/// ★(0.14.42 · R4-01) 입장 게이트([`DISPATCH_INFLIGHT_MAX`]) 포화 관측 태스크. 무기한 멈춘 핸들러가 허가를 전부 쥐면 ping 을 뺀
+/// 모든 RPC(GUI 키 입력·훅·CLI)가 대기하는데, ping·하트비트·데드맨은 초록이라 자동 회복도 진단도 되지 않았다(④ 관측 사각).
+/// 연속 [`DISPATCH_GATE_SATURATED_ALERT_SECS`] 포화면 `dispatch.saturated` 이벤트 + feed(kind=`error` — 정보성 알림 kind · 승인 요청으로 보이지 않게) 1회, 풀리면
+/// `dispatch.recovered` 1회. 발행뿐(자동 조치 없음 — 회수는 운영자 판단).
+fn spawn_dispatch_gate_watch(daemon: Arc<Daemon>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(DISPATCH_GATE_WATCH_SECS));
+        let (mut sat, mut alerted) = (0u64, false);
+        loop {
+            tick.tick().await;
+            let available = DISPATCH_GATE.available_permits();
+            let (next, alert, recovered) = dispatch_gate_watch_step(sat, alerted, available, DISPATCH_GATE_WATCH_SECS);
+            sat = next;
+            if alert {
+                alerted = true;
+                let body = format!(
+                    "데몬 RPC 입장 게이트가 {next}초째 포화(동시 실행 {DISPATCH_INFLIGHT_MAX}건 전부 점유)다 — ping 은 응답하지만 \
+                     키 입력·훅·CLI 요청이 대기 중이다. 멈춘 요청(느린 파일시스템 경로 등)을 의심하라."
+                );
+                daemon.bus.publish(
+                    "dispatch.saturated",
+                    "system",
+                    None,
+                    serde_json::json!({"inflight_max": DISPATCH_INFLIGHT_MAX, "saturated_secs": next, "note": body}),
+                );
+                daemon.push_feed_notification("error", "데몬 요청 처리 포화", &body, None);
+            }
+            if recovered {
+                alerted = false;
+                daemon.bus.publish(
+                    "dispatch.recovered",
+                    "system",
+                    None,
+                    serde_json::json!({"inflight_max": DISPATCH_INFLIGHT_MAX, "available": available}),
+                );
+            }
+        }
+    });
+}
+
+/// 입장 면제 — 생존 프로브(`system.ping`) 하나뿐. 핸들러가 즉답(`"pong"`)이라 블로킹 스레드를
+/// 마이크로초만 쓴다. 폭주 중에도 데드맨 `probe_holder`·CLI 생존 확인이 줄 뒤에 서지 않게 해
+/// '살아 있는데 hung 으로 오판 → 회수'(④) 경로를 막는다. 판정은 정확 일치(대소문자·공백 변형 불인정).
+fn dispatch_admission_exempt(method: &str) -> bool {
+    method == "system.ping"
+}
+
+/// 동기 작업 `f` 를 블로킹 풀에서 돌리되, 면제가 아니면 `gate` 허가를 쥔 **동안만** 돌린다.
+/// 허가는 블로킹 클로저 안으로 옮겨져 그 작업이 끝나는 순간 풀린다 — 기다리던 연결 태스크가 도중에
+/// 사라져도 허가가 작업보다 먼저 풀리지 않는다(상한이 새지 않는다).
+async fn run_admitted<T, F>(
+    gate: &'static tokio::sync::Semaphore,
+    exempt: bool,
+    f: F,
+) -> Result<T, tokio::task::JoinError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let permit = if exempt { None } else { gate.acquire().await.ok() };
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+}
+
 async fn handle_connection(daemon: Arc<Daemon>, stream: Stream, caller_pid: Option<u32>) {
-    handle_connection_capped(daemon, stream, caller_pid, first_line_idle_timeout()).await
+    handle_connection_capped(
+        daemon,
+        stream,
+        caller_pid,
+        first_line_idle_timeout(),
+        write_stall_timeout(),
+    )
+    .await
 }
 
 /// `handle_connection` 의 본체 — 첫 줄 상한을 인자로 받는다(테스트가 짧은 상한으로 실제 경로를
@@ -2731,6 +3208,7 @@ async fn handle_connection_capped(
     stream: Stream,
     caller_pid: Option<u32>,
     first_line_cap: Option<std::time::Duration>,
+    write_stall_cap: Option<std::time::Duration>,
 ) {
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
@@ -2775,16 +3253,43 @@ async fn handle_connection_capped(
             Err(e) => {
                 let resp =
                     cys::err_response(&serde_json::Value::Null, "parse_error", &e.to_string());
-                if write_line(&mut write_half, &resp).await.is_err() {
+                if let Err(e) = write_reply_line(&mut write_half, resp, write_stall_cap).await {
+                    note_write_stall(&e);
                     return;
                 }
                 continue;
             }
         };
 
-        match handlers::dispatch(&daemon, req, caller_pid) {
+        // ★(0.14.31 · 리뷰 R2 · claude minor) dispatch 는 **동기**다 — 파일 I/O·락·그리고 이제는
+        //   큐 배달의 인계 결판 대기(최대 800ms)까지 그 안에서 돈다. 커넥션 태스크에서 그대로
+        //   부르면 그 시간만큼 tokio 워커 하나가 통째로 묶인다(운영자 `queue.deliver` 1회가
+        //   0.8s). `spawn_blocking` 은 그 일을 블로킹 풀로 옮긴다 — 이 커넥션 안의 순서는
+        //   `await` 로 그대로 직렬이고(요청 하나씩), 다른 커넥션·이벤트 스트림은 막히지 않는다.
+        let dispatched = {
+            let d = daemon.clone();
+            // ★(성찰 A15) `req` 는 클로저로 **이동**한다 — 패닉 응답이 그 id 를 잃으면 클라이언트는
+            //   어느 요청이 실패했는지 모른다(파이프라인 호출자는 응답을 id 로 짝짓는다). 미리 복사.
+            let req_id = req.id.clone();
+            // ★FATAL-1: 입장 게이트 — 동시 실행 dispatch ≤ DISPATCH_INFLIGHT_MAX(초과분은 대기 · 거절 없음).
+            let exempt = dispatch_admission_exempt(&req.method);
+            match run_admitted(&DISPATCH_GATE, exempt, move || handlers::dispatch(&d, req, caller_pid))
+                .await
+            {
+                Ok(r) => r,
+                // 블로킹 태스크 패닉 — 커넥션을 조용히 끊지 않고 사실을 답한다(종전에는 프로세스
+                // 전체가 그 패닉을 안았다 · 이 변경으로 나빠지지 않는다).
+                Err(e) => handlers::Reply::Single(cys::err_response(
+                    &req_id,
+                    "internal_error",
+                    &format!("dispatch task failed: {e}"),
+                )),
+            }
+        };
+        match dispatched {
             Reply::Single(resp) => {
-                if write_line(&mut write_half, &resp).await.is_err() {
+                if let Err(e) = write_reply_line(&mut write_half, resp, write_stall_cap).await {
+                    note_write_stall(&e);
                     return;
                 }
             }
@@ -2887,7 +3392,8 @@ async fn handle_connection_capped(
                         }
                     }
                 };
-                if write_line(&mut write_half, &resp).await.is_err() {
+                if let Err(e) = write_reply_line(&mut write_half, resp, write_stall_cap).await {
+                    note_write_stall(&e);
                     return;
                 }
             }
@@ -2954,7 +3460,8 @@ async fn handle_connection_capped(
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 };
-                if write_line(&mut write_half, &resp).await.is_err() {
+                if let Err(e) = write_reply_line(&mut write_half, resp, write_stall_cap).await {
+                    note_write_stall(&e);
                     return;
                 }
             }
@@ -2966,39 +3473,227 @@ async fn handle_connection_capped(
 /// 통과시켜 round-trip 동일성(선언==실제 직렬화)을 검증하고 `_flen`/`_pv`를 additive하게
 /// 부착한다(top-level `ok`/`result`는 보존 → 구 디코더 호환). 위반은 T1-3 `Severity`로
 /// 사상해 fail-loud 기록한다(Drift/LenMismatch=Critical 격리, VersionSkew=Recoverable).
+/// ★(0.14.43 · K1) 부동소수 표기 정밀도 차(`FloatInexact`)만이면 Recoverable 이고 **로그 없이** 카운터만 올린다
+/// (진짜 `Drift` 는 카운터 + 프로세스 전역 60초 1줄 — [`abi_note`]).
 /// 검증 실패가 응답 자체를 삼켜 클라이언트를 무기한 대기시키지 않도록, 기록 후 legacy 직렬화로
 /// 폴백해 한 줄은 항상 내보낸다(가용성 보존 — 격리 판정은 Severity 로그가 담당).
 fn abi_severity(e: &cys::wire::AbiError) -> severity::Severity {
     match e {
         cys::wire::AbiError::Drift | cys::wire::AbiError::LenMismatch => severity::Severity::Critical,
-        cys::wire::AbiError::VersionSkew { .. } => severity::Severity::Recoverable,
+        // ★(0.14.43 · K1) 부동소수 표기 정밀도 차는 무결성 위반이 아니다(구조·키·문자열·정수는 동일) → Recoverable.
+        cys::wire::AbiError::FloatInexact | cys::wire::AbiError::VersionSkew { .. } => severity::Severity::Recoverable,
     }
 }
 
-async fn write_line<W: AsyncWrite + Unpin>(
-    w: &mut W,
+/// ★(0.14.43 · K1) ABI 자기검증이 **부동소수 표기 정밀도 차만으로** 걸러 legacy 직렬화로 폴백한 프레임 누적(프로세스 전역).
+/// 로그는 없다 — `org.status.daemon.abi_float_inexact_total` 로만 보인다(부동소수가 실리는 한 평시에도 값에 따라 늘어나는 정상 신호).
+static ABI_FLOAT_INEXACT_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// ★(0.14.43 · K1) **진짜** ABI 불일치(구조·키·문자열·정수·비객체 …)로 폴백한 프레임 누적(프로세스 전역) —
+/// `org.status.daemon.abi_drift_total`. 0 이 아니면 와이어 결함이다(로그는 [`ABI_DRIFT_LOG_MIN_GAP`] 에 1줄).
+static ABI_DRIFT_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 진짜 Drift 로그의 프로세스 전역 최소 간격 — 폭주 차단(종전: 폴백마다 1줄 → 라이브 데몬 로그의 약 98%).
+const ABI_DRIFT_LOG_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(60);
+/// 진짜 Drift 로그 게이트(프로세스 전역 1개).
+static ABI_DRIFT_LOG: AbiDriftLog = AbiDriftLog::new();
+
+/// `org.status.daemon.abi_float_inexact_total` — 부동소수 표기 정밀도 차로만 폴백한 프레임 누적(이 프로세스).
+fn abi_float_inexact_total() -> u64 {
+    ABI_FLOAT_INEXACT_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `org.status.daemon.abi_drift_total` — 진짜 ABI 불일치로 폴백한 프레임 누적(이 프로세스).
+fn abi_drift_total() -> u64 {
+    ABI_DRIFT_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 순수: 지금 진짜 Drift 로그를 한 줄 낼 차례인가 — 한 번도 안 냈거나(`last == None`) 마지막 로그 뒤
+/// [`ABI_DRIFT_LOG_MIN_GAP`] 이상 지났을 때. `now < last`(시계 역행)는 아직 아님(`saturating` — 패닉 없음).
+fn drift_log_due(now: std::time::Instant, last: Option<std::time::Instant>) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.saturating_duration_since(t) >= ABI_DRIFT_LOG_MIN_GAP,
+    }
+}
+
+/// 진짜 Drift 로그 게이트 — 마지막으로 찍은 시각과 그 뒤 억제한 건수.
+struct AbiDriftLog {
+    last: std::sync::Mutex<Option<std::time::Instant>>,
+    suppressed: std::sync::atomic::AtomicU64,
+}
+
+impl AbiDriftLog {
+    const fn new() -> Self {
+        Self {
+            last: std::sync::Mutex::new(None),
+            suppressed: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Drift 한 건을 센다: 지금 찍을 차례면 `Some(그 사이 억제한 건수)`(억제 건수는 0 으로 되돌린다), 아니면 `None`(억제 +1).
+    /// 락은 시각 판정·갱신에만 짧게 잡는다(I/O·await 없음 · 중독돼도 그대로 쓴다 — 패닉 없음). 동시 호출에서도 승자는 하나다.
+    fn take_due(&self, now: impl FnOnce() -> std::time::Instant) -> Option<u64> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let due = {
+            let mut last = self.last.lock().unwrap_or_else(|p| p.into_inner());
+            let now = now();
+            let due = drift_log_due(now, *last);
+            if due {
+                *last = Some(now);
+            }
+            due
+        };
+        if due {
+            Some(self.suppressed.swap(0, Relaxed))
+        } else {
+            self.suppressed.fetch_add(1, Relaxed);
+            None
+        }
+    }
+}
+
+/// 진짜 Drift 로그 한 줄 — 종전 문구 앞부분(`[cysd] ABI producer self-verify critical (Drift) — falling back to legacy serialization`)은
+/// 그대로(운영자 grep 호환)이고 뒤에 억제 건수만 붙인다.
+fn abi_drift_log_line(e: &cys::wire::AbiError, suppressed: u64) -> String {
+    format!(
+        "[cysd] ABI producer self-verify {} ({:?}) — falling back to legacy serialization (suppressed {suppressed} since last)",
+        abi_severity(e).as_str(),
+        e
+    )
+}
+
+/// ABI 자기검증 실패 한 건의 기록 — 계수하고, **지금 찍어야 할 로그 한 줄**이 있으면 돌려준다(출력은 호출자 몫 — 테스트가 줄 수를 센다).
+/// `FloatInexact` 는 카운터만 올리고 로그는 **없다**. 그 밖(`Drift` …)은 `drift` 카운터를 올리고 `gate` 가 허락할 때만 한 줄.
+/// 시각(`now`)은 로그 판정이 필요한 Drift 갈래에서만 잰다(정상 프레임·부동소수 갈래는 시계를 읽지 않는다).
+fn abi_note(
+    e: &cys::wire::AbiError,
+    now: impl FnOnce() -> std::time::Instant,
+    float_inexact: &std::sync::atomic::AtomicU64,
+    drift: &std::sync::atomic::AtomicU64,
+    gate: &AbiDriftLog,
+) -> Option<String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    if matches!(e, cys::wire::AbiError::FloatInexact) {
+        float_inexact.fetch_add(1, Relaxed);
+        return None;
+    }
+    drift.fetch_add(1, Relaxed);
+    gate.take_due(now).map(|suppressed| abi_drift_log_line(e, suppressed))
+}
+
+/// 응답 `Value` → 전송 프레임(개행 포함) — 응답 상한·ABI 자기검증을 거친다(종전 `write_line` 앞부분 그대로).
+/// ★(0.14.43 · K1) 계수·로그는 `abi_note` 한 곳에서 결정한다(전역 카운터·60초 1줄 게이트·stderr 출력). 로그 쓰기 실패
+/// (EPIPE·ENOSPC)는 무시한다 — `eprintln!` 은 그때 패닉하는데 모든 응답이 이 함수를 지나므로 로그 때문에 연결이 죽으면
+/// 안 된다(`note_write_stall` 과 같은 관례).
+fn frame_line(value: &serde_json::Value) -> String {
+    frame_line_with(
+        value,
+        std::time::Instant::now,
+        &ABI_FLOAT_INEXACT_TOTAL,
+        &ABI_DRIFT_TOTAL,
+        &ABI_DRIFT_LOG,
+        &mut |line| {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "{line}");
+        },
+    )
+}
+
+/// [`frame_line`] 의 본체 — 시계·카운터·게이트·로그 출력구를 주입받는다(테스트가 격리 상태로 바이트·카운터·줄 수를 잰다).
+fn frame_line_with(
     value: &serde_json::Value,
-) -> std::io::Result<()> {
+    now: impl FnOnce() -> std::time::Instant,
+    float_inexact: &std::sync::atomic::AtomicU64,
+    drift: &std::sync::atomic::AtomicU64,
+    gate: &AbiDriftLog,
+    emit: &mut dyn FnMut(&str),
+) -> String {
     // T4-5A(==T5-6 strand-3, ONE guard): 단일 RPC 응답 바이트 상한. cap 초과 시 fail-loud
     // 트렁케이트 sentinel로 치환(컨텍스트/메모리 폭주 차단). 직교 가드 — watchdog와 별개 책임.
     let capped = cys::wire::cap_response(value);
     let value: &serde_json::Value = capped.as_ref().unwrap_or(value);
-    let line = match cys::wire::frame_response(value) {
+    match cys::wire::frame_response(value) {
         Ok(framed) => framed,
         Err(e) => {
-            let sev = abi_severity(&e);
-            eprintln!(
-                "[cysd] ABI producer self-verify {} ({:?}) — falling back to legacy serialization",
-                sev.as_str(),
-                e
-            );
+            if let Some(line) = abi_note(&e, now, float_inexact, drift, gate) {
+                emit(&line);
+            }
+            // legacy 직렬화 폴백 — `Drift`·`FloatInexact` 모두 종전 Drift 폴백과 바이트 동일(메타 `_flen`/`_pv` 없음 →
+            // 구 클라이언트도 무검증 수용).
             let mut body = serde_json::to_string(value).unwrap_or_default();
             body.push('\n');
             body
         }
-    };
+    }
+}
+
+/// 한 줄 쓰기(무기한) — 스트림(`events.stream`·`surface.attach`) 전용. 단발 응답은 [`write_reply_line`].
+async fn write_line<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
+    let line = frame_line(value);
     w.write_all(line.as_bytes()).await?;
     w.flush().await
+}
+
+/// ★R3-5 단발 응답 한 프레임 쓰기 — `stall` 동안 커널이 **한 바이트도** 받지 않으면 `TimedOut`.
+/// 진행(부분 쓰기)이 있을 때마다 상한을 새로 건다(무진행 축 — [`WRITE_STALL_SECS`] 주석).
+/// `value` 를 **소유**로 받아 프레임을 만든 즉시 버린다 — 멈춘 연결이 응답 `Value` 와 프레임 문자열을
+/// 둘 다 쥐지 않게(멈춘 연결당 점유가 프레임 하나로 준다).
+/// `None` = 종전 `write_line` 과 바이트·거동 동일(롤백). 만료 뒤 호출자는 **아무것도 더 쓰지 않고** 닫는다.
+async fn write_reply_line<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    value: serde_json::Value,
+    stall: Option<std::time::Duration>,
+) -> std::io::Result<()> {
+    let line = frame_line(&value);
+    drop(value);
+    let Some(stall) = stall else {
+        w.write_all(line.as_bytes()).await?;
+        return w.flush().await;
+    };
+    let total = line.len();
+    let mut rest = line.as_bytes();
+    let stalled = |sent: usize| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("write stalled {}s ({sent}/{total} bytes sent)", stall.as_secs()),
+        )
+    };
+    while !rest.is_empty() {
+        let n = match tokio::time::timeout(stall, w.write(rest)).await {
+            Ok(r) => r?,
+            Err(_) => return Err(stalled(total - rest.len())),
+        };
+        if n == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        rest = &rest[n..];
+    }
+    match tokio::time::timeout(stall, w.flush()).await {
+        Ok(r) => r,
+        Err(_) => Err(stalled(total)),
+    }
+}
+
+/// 쓰기 상한으로 닫은 연결의 흔적 — 처음 3회와 그 뒤 2의 거듭제곱 번째만 남긴다(로그 폭주 차단).
+/// 상한 만료(`TimedOut`) 외의 쓰기 실패(EPIPE 등 = 상대가 먼저 닫음)는 종전대로 조용히 끝낸다.
+/// 로그 쓰기 실패는 무시한다(`eprintln!` 은 stderr 쓰기 실패(EPIPE·ENOSPC) 시 패닉 — accept 루프와 같은
+/// 관례. 이 경로는 상대가 유발하므로 디스크가 찬 호스트에서 패닉을 만들지 않는다).
+static WRITE_STALL_CLOSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn note_write_stall(e: &std::io::Error) {
+    use std::io::Write as _;
+    if e.kind() != std::io::ErrorKind::TimedOut {
+        return;
+    }
+    let n = WRITE_STALL_CLOSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n <= 3 || n.is_power_of_two() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "[cysd] write-stall: 응답을 읽지 않는 연결을 닫았다 — {e} · 누적 {n}회 \
+             (해제 CYS_CONN_WRITE_STALL_SECS=0)"
+        );
+    }
 }
 
 /// Push channel: replay missed events, then forward live events until the client disconnects.
@@ -3289,6 +3984,353 @@ mod abi_severity_tests {
             local_pv: cys::wire::PROTO_PV
         })
         .is_critical());
+    }
+
+    /// ★(0.14.43 · K1) 부동소수 표기 정밀도 차(`FloatInexact`)는 무결성 위반이 아니다 → Recoverable(격리 안 함).
+    /// 진짜 불일치(`Drift`·`LenMismatch`)는 Critical 그대로. 적색(돌연변이 M5 = FloatInexact → Critical): 첫 단언이 깨진다.
+    #[test]
+    fn k1_float_inexact_is_not_critical_while_drift_still_is() {
+        let fi = super::abi_severity(&cys::wire::AbiError::FloatInexact);
+        assert_eq!(fi, Severity::Recoverable);
+        assert!(!fi.is_critical(), "FloatInexact 는 critical 이 아니다");
+        assert!(super::abi_severity(&cys::wire::AbiError::Drift).is_critical(), "Drift 는 critical");
+        assert!(super::abi_severity(&cys::wire::AbiError::LenMismatch).is_critical(), "LenMismatch 는 critical");
+    }
+}
+
+/// ★(0.14.43 · K1) ABI producer 자기검증의 부동소수 거짓 양성 — `frame_line` 의 판정·계수·로그·와이어 바이트 핀.
+///
+/// 증상(라이브 0.14.42): 데몬 로그의 약 98% 가 `ABI producer self-verify critical (Drift) — falling back to legacy serialization`
+/// 한 줄이었다. 원인: serde_json 기본 기능의 부동소수 재파싱이 best-effort 라 17자리 f64 가 1ulp 어긋나 `Drift` 로 잡힌다.
+/// 수리: 판정만 가른다(`FloatInexact` = 로그 없이 카운터만 · 진짜 `Drift` = 카운터 + 프로세스 전역 60초 1줄). **와이어 바이트는
+/// 종전과 같다**(`float_roundtrip` 을 켜지 않는다 — 켜면 구 클라이언트가 부동소수 프레임에서 `LenMismatch` 로 값에 따라 간헐 실패한다).
+/// 적색(수정 전 = 어긋나면 로그 한 줄·카운터 없음): `k1_frame_line_float_inexact_*`. 돌연변이: M4(FloatInexact 도 로그) ·
+/// M6(로그 게이트 항상 허용) · M7(폴백 바이트 변경) · M11(억제 건수 미초기화) · M12(float 카운터 미증가) · M14(전역 배선 뒤바뀜).
+#[cfg(test)]
+mod abi_frame_tests {
+    use super::{
+        abi_drift_log_line, abi_drift_total, abi_float_inexact_total, drift_log_due, frame_line, frame_line_with,
+        AbiDriftLog, ABI_DRIFT_LOG_MIN_GAP,
+    };
+    use cys::wire::AbiError;
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::time::{Duration, Instant};
+
+    /// 종전 로그 문구의 앞부분 — 운영자 grep 호환(바꾸지 않는다).
+    const LEGACY_PREFIX: &str =
+        "[cysd] ABI producer self-verify critical (Drift) — falling back to legacy serialization";
+
+    /// 이 빌드에서 round-trip 이 어긋나는 f64 하나 — 결정론 벡터 `92.2547419781119086`(최단 표기 `92.25474197811191` 이 1ulp 어긋남)를
+    /// 먼저 쓰고, 어긋나지 않으면 `1.0 + k*EPSILON`(k < 2000) 후보에서 첫 값을 쓴다. 둘 다 없으면 계측 무효(패닉).
+    pub(crate) fn inexact_frame() -> Value {
+        fn frame(x: f64) -> Value {
+            json!({"id": 1, "ok": true, "result": {"used_pct": x}})
+        }
+        fn reparse_differs(v: &Value) -> bool {
+            let back: Value = serde_json::from_str(&serde_json::to_string(v).unwrap()).unwrap();
+            back != *v
+        }
+        let brief = frame(92.2547419781119086_f64);
+        if reparse_differs(&brief) {
+            return brief;
+        }
+        (0..2000u32)
+            .map(|k| frame(1.0 + f64::from(k) * f64::EPSILON))
+            .find(reparse_differs)
+            .expect("계측 무효 — 이 빌드의 serde_json 은 재파싱이 어긋나는 f64 를 만들지 못한다(float_roundtrip 이 켜졌나?)")
+    }
+
+    /// `frame_line_with` 를 격리 상태(로컬 카운터·게이트·시계)로 돌려 (프레임, 찍힌 로그 줄들) 을 얻는다.
+    fn run(value: &Value, now: Instant, f: &AtomicU64, d: &AtomicU64, gate: &AbiDriftLog) -> (String, Vec<String>) {
+        let mut lines: Vec<String> = Vec::new();
+        let out = frame_line_with(value, move || now, f, d, gate, &mut |l| lines.push(l.to_string()));
+        (out, lines)
+    }
+
+    /// ★와이어 바이트 동일 핀 — 부동소수 정밀도 차(`FloatInexact`)로 폴백한 프레임은 종전 `Drift` 폴백이 내보내던 바이트
+    /// (`serde_json::to_string(value) + "\n"`)와 **한 바이트도 다르지 않다**(`_flen`·`_pv` 없음 → 구 클라이언트는 무검증 수용).
+    /// 그리고: float 카운터 +1 · drift 카운터 0 · 로그 0줄(몇 번을 반복해도) · 로그 게이트 무접촉.
+    #[test]
+    fn k1_frame_line_float_inexact_fallback_is_byte_identical_counts_and_never_logs() {
+        let v = inexact_frame();
+        let (f, d, gate) = (AtomicU64::new(0), AtomicU64::new(0), AbiDriftLog::new());
+        let t0 = Instant::now();
+        let legacy = format!("{}\n", serde_json::to_string(&v).unwrap());
+
+        let (out, lines) = run(&v, t0, &f, &d, &gate);
+        assert_eq!(out, legacy, "폴백 바이트가 종전 Drift 폴백과 다르다");
+        assert!(!out.contains("_flen") && !out.contains("_pv"), "폴백 프레임에 메타가 붙었다: {out}");
+        assert_eq!((f.load(Relaxed), d.load(Relaxed)), (1, 0), "FloatInexact 는 float 카운터만 +1");
+        assert!(lines.is_empty(), "FloatInexact 는 로그 0줄: {lines:?}");
+
+        for i in 1..1000u64 {
+            let (out, lines) = run(&v, t0 + Duration::from_secs(i), &f, &d, &gate);
+            assert_eq!(out, legacy);
+            assert!(lines.is_empty(), "반복 {i}회째 로그가 나왔다: {lines:?}");
+        }
+        assert_eq!((f.load(Relaxed), d.load(Relaxed)), (1000, 0));
+        assert_eq!(gate.suppressed.load(Relaxed), 0, "로그 게이트는 FloatInexact 에 무접촉");
+        assert!(gate.last.lock().unwrap().is_none(), "로그 게이트가 시각을 기록했다");
+    }
+
+    /// ★와이어 바이트 동일 핀(Ok 경로) — 검증을 통과한 프레임은 종전과 한 바이트도 다르지 않다(메타 `_flen`·`_pv` 부착) ·
+    /// 카운터 0 · 로그 0줄. (리터럴은 wire.rs `k1_wire_bytes_ok_path_golden` 과 같다.)
+    #[test]
+    fn k1_frame_line_ok_path_bytes_unchanged_and_silent() {
+        let v = json!({"id": 1, "ok": true, "result": {"used_pct": 92.5, "rows": [1, 2, 3]}});
+        let (f, d, gate) = (AtomicU64::new(0), AtomicU64::new(0), AbiDriftLog::new());
+        let (out, lines) = run(&v, Instant::now(), &f, &d, &gate);
+        assert_eq!(
+            out,
+            "{\"_flen\":32,\"_pv\":1,\"id\":1,\"ok\":true,\"result\":{\"rows\":[1,2,3],\"used_pct\":92.5}}\n"
+        );
+        assert_eq!((f.load(Relaxed), d.load(Relaxed)), (0, 0));
+        assert!(lines.is_empty(), "정상 프레임에 로그가 나왔다: {lines:?}");
+    }
+
+    /// 진짜 Drift(비-객체 응답 = 와이어 계약 위반)는 여전히 Drift — 폴백 바이트는 종전과 같고, drift 카운터가 매번 오르며,
+    /// 로그는 **프로세스 전역 60초에 1줄**이고 억제한 건수를 함께 찍는다(`… (suppressed N since last)`).
+    /// 적색(돌연변이 M6 = 게이트 항상 허용): 2번째 호출에서 줄이 또 나와 깨진다.
+    #[test]
+    fn k1_frame_line_real_drift_counts_and_logs_once_per_minute_with_suppressed_count() {
+        let v = json!([1, 2, 3]);
+        let (f, d, gate) = (AtomicU64::new(0), AtomicU64::new(0), AbiDriftLog::new());
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+
+        let (out, lines) = run(&v, at(0), &f, &d, &gate);
+        assert_eq!(out, "[1,2,3]\n", "Drift 폴백 바이트 불변(메타 없음)");
+        assert_eq!((f.load(Relaxed), d.load(Relaxed)), (0, 1));
+        assert_eq!(lines, vec![format!("{LEGACY_PREFIX} (suppressed 0 since last)")], "첫 Drift 는 바로 한 줄");
+
+        for s in [1, 2, 3, 4, 5, 59] {
+            let (out, lines) = run(&v, at(s), &f, &d, &gate);
+            assert_eq!(out, "[1,2,3]\n");
+            assert!(lines.is_empty(), "{s}초: 60초 안에는 찍지 않는다: {lines:?}");
+        }
+        assert_eq!(d.load(Relaxed), 7, "억제해도 센다");
+
+        let (_, lines) = run(&v, at(60), &f, &d, &gate);
+        assert_eq!(lines, vec![format!("{LEGACY_PREFIX} (suppressed 6 since last)")], "60초째: 한 줄 + 그 사이 억제 6건");
+        let (_, lines) = run(&v, at(61), &f, &d, &gate);
+        assert!(lines.is_empty());
+        let (_, lines) = run(&v, at(120), &f, &d, &gate);
+        assert_eq!(lines, vec![format!("{LEGACY_PREFIX} (suppressed 1 since last)")], "120초째: 직전 로그(60초) 뒤 억제는 61초의 1건");
+        assert_eq!((f.load(Relaxed), d.load(Relaxed)), (0, 10), "float 카운터는 Drift 에 무접촉");
+    }
+
+    /// 로그 상한 판정(순수) 진리표 — 한 번도 안 냈으면 항상 낼 차례 · 직전 로그 뒤 정확히 60초부터 · 시계 역행은 아직 아님.
+    #[test]
+    fn k1_drift_log_due_truth_table() {
+        let t = Instant::now();
+        assert!(drift_log_due(t, None), "한 번도 안 냈으면 낼 차례");
+        assert!(!drift_log_due(t, Some(t)), "같은 순간은 아직");
+        assert!(!drift_log_due(t + Duration::from_secs(1), Some(t)));
+        assert!(!drift_log_due(t + ABI_DRIFT_LOG_MIN_GAP - Duration::from_millis(1), Some(t)), "59.999초는 아직");
+        assert!(drift_log_due(t + ABI_DRIFT_LOG_MIN_GAP, Some(t)), "정확히 60초부터");
+        assert!(drift_log_due(t + ABI_DRIFT_LOG_MIN_GAP + Duration::from_secs(1), Some(t)));
+        assert!(!drift_log_due(t, Some(t + Duration::from_secs(5))), "시계 역행(now < last)은 아직 — 패닉 없음");
+        assert_eq!(ABI_DRIFT_LOG_MIN_GAP, Duration::from_secs(60), "상한은 60초 1줄");
+    }
+
+    /// 동시 호출에서도 한 창에 승자는 하나이고, 승자가 보고한 억제 건수 + 남은 억제 건수 = 승자를 뺀 전 호출 — 하나도 잃지 않는다.
+    #[test]
+    fn k1_drift_log_gate_admits_exactly_one_per_window_under_contention() {
+        const THREADS: u64 = 8;
+        const CALLS: u64 = 500;
+        let gate = AbiDriftLog::new();
+        let t0 = Instant::now();
+        let (winners, reported) = (AtomicU64::new(0), AtomicU64::new(0));
+        std::thread::scope(|s| {
+            for _ in 0..THREADS {
+                s.spawn(|| {
+                    for _ in 0..CALLS {
+                        if let Some(n) = gate.take_due(move || t0) {
+                            winners.fetch_add(1, Relaxed);
+                            reported.fetch_add(n, Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(winners.load(Relaxed), 1, "한 창에 로그 승자는 정확히 하나");
+        assert_eq!(
+            reported.load(Relaxed) + gate.suppressed.load(Relaxed),
+            THREADS * CALLS - 1,
+            "억제 건수를 잃었다"
+        );
+    }
+
+    /// 로그 문구 핀 — 종전 문구의 앞부분은 한 글자도 바뀌지 않는다(운영자 grep 호환) · 뒤에 억제 건수만 붙는다.
+    #[test]
+    fn k1_drift_log_line_keeps_legacy_prefix_and_appends_suppressed_count() {
+        assert_eq!(abi_drift_log_line(&AbiError::Drift, 0), format!("{LEGACY_PREFIX} (suppressed 0 since last)"));
+        assert_eq!(abi_drift_log_line(&AbiError::Drift, 41), format!("{LEGACY_PREFIX} (suppressed 41 since last)"));
+        assert!(abi_drift_log_line(&AbiError::Drift, 7).starts_with(LEGACY_PREFIX));
+    }
+
+    /// 실제 전역 카운터 경로 — `frame_line`(운영 진입점)이 부동소수 정밀도 차 프레임을 종전 Drift 폴백과 같은 바이트로 내보내고
+    /// 전역 `ABI_FLOAT_INEXACT_TOTAL` 을 올린다(로그 출력은 FloatInexact 갈래에 없다). 병렬 검체도 올리므로 `>` 로 잰다(단조).
+    #[test]
+    fn k1_frame_line_real_globals_count_float_inexact_with_identical_bytes() {
+        let v = inexact_frame();
+        let before = abi_float_inexact_total();
+        let out = frame_line(&v);
+        assert_eq!(out, format!("{}\n", serde_json::to_string(&v).unwrap()));
+        assert!(abi_float_inexact_total() > before, "frame_line 이 전역 float 카운터를 올리지 않았다");
+        let _ = abi_drift_total(); // 접근자 실재(org.status 가 읽는다)
+    }
+
+    /// 배선 소스 핀 — `frame_line` 은 전역 카운터·게이트·시계를 `frame_line_with` 에 물리고, 어느 쪽 본문에도 `eprintln!`/`println!` 이
+    /// 없다(출력은 `emit` 한 곳 — 로그 쓰기 실패가 패닉이 되지 않게 `let _ = writeln!(stderr)`). 이 배선이 소실되면 위 격리 검체는
+    /// 초록인 채로 운영 진입점만 죽는다.
+    #[test]
+    fn k1_frame_line_wires_the_global_state_and_has_no_panicking_print() {
+        let src = include_str!("main.rs");
+        let start = src.find("\nfn frame_line(value: &serde_json::Value) -> String {").expect("frame_line 소실");
+        let mid = start + src[start..].find("\nfn frame_line_with(").expect("frame_line_with 소실");
+        let end = mid + src[mid..].find("\n}\n").expect("frame_line_with 끝");
+        let (wrapper, body) = (&src[start..mid], &src[mid..end]);
+        for must in ["&ABI_FLOAT_INEXACT_TOTAL", "&ABI_DRIFT_TOTAL", "&ABI_DRIFT_LOG", "std::time::Instant::now"] {
+            assert!(wrapper.contains(must), "frame_line 이 {must} 를 물리지 않는다");
+        }
+        assert!(wrapper.contains("let _ = writeln!(std::io::stderr()"), "로그 쓰기 실패를 무시하지 않는다");
+        for (name, text) in [("frame_line", wrapper), ("frame_line_with", body)] {
+            assert!(!text.contains("eprintln!") && !text.contains("println!"), "{name} 에 패닉 가능한 print 가 있다");
+        }
+        assert_eq!(body.matches("emit(").count(), 1, "로그 출력구는 한 곳");
+        assert_eq!(body.matches("abi_note(").count(), 1, "계수·로그 판정은 abi_note 한 곳");
+    }
+}
+
+#[cfg(test)]
+mod eprintln_guard_tests {
+    //! ★(0.14.43 · R1F-IN m-1) 데몬 전역 로그 매크로 핀 — 파일 맨 위의 `eprintln!`·`eprint!` 가림 매크로는 stderr 쓰기가 실패해도(디스크 가득·닫힌 파이프) 패닉하지 않는다.
+    //! 표준 매크로는 그때 패닉하고, 워치독 틱 안의 로그 한 줄이 그 틱의 나머지 검사(사망 감지·데드맨·승인 스캔)를 버린다(적대 검증 S1 m-1 실측 P5).
+
+    /// 소스 핀 — ① 매크로 정의가 **첫 `mod` 선언보다 앞**이다(macro_rules 의 텍스트 범위 — 뒤에 선언한 모듈 전부에 적용된다) ② 쓰기 실패를 버린다(`let _ = writeln!`/`write!`) ③ cysd 소스 어디에도
+    /// 표준 경로(`std::` 접두) 호출이 없다 — 경로 호출은 이 매크로를 우회해 그대로 패닉한다(바늘은 조각으로 만들어 이 파일에 그 문자열이 남지 않게 한다).
+    #[test]
+    fn global_eprintln_macro_is_defined_before_the_first_mod_and_nothing_bypasses_it() {
+        let src = include_str!("main.rs");
+        let mac = src.find("macro_rules! eprintln {").expect("eprintln 가림 매크로 소실");
+        let macp = src.find("macro_rules! eprint {").expect("eprint 가림 매크로 소실");
+        let first_mod = src.find("\nmod ").expect("첫 mod 선언");
+        assert!(mac < first_mod && macp < first_mod, "매크로 정의가 첫 `mod` 선언보다 앞이어야 모든 모듈에 적용된다");
+        // ★(R2F-DM · 성찰 2회차 A1 m-1 ⓒ) `\nmod ` 만 찾으면 `pub mod x;` · `pub(crate) mod x;` · 속성 뒤 `mod x;` 꼴로 매크로 **앞**에 더한 모듈은 첫 `mod` 가 아니라서 위 단언을 지나간다 —
+        //   그 모듈 안의 `eprintln!` 는 가림 매크로가 아니라 표준 매크로로 풀려 stderr 쓰기 실패에서 패닉한다. 매크로 정의 **앞 구간**의 주석 아닌 줄에 `mod` 선언이 없음을 단언한다.
+        fn declares_mod(line: &str) -> bool {
+            let mut t = line.trim_start();
+            if t.starts_with("//") {
+                return false;
+            }
+            // 같은 줄의 속성 접두(`#[…]` · `#![…]`)를 걷는다.
+            while t.starts_with("#[") || t.starts_with("#![") {
+                match t.find(']') {
+                    Some(i) => t = t[i + 1..].trim_start(),
+                    None => return false,
+                }
+            }
+            // 가시성 접두 — `pub` · `pub(crate)` · `pub(super)` · `pub(in path)`.
+            if let Some(r) = t.strip_prefix("pub") {
+                let r = r.trim_start();
+                t = match r.strip_prefix('(') {
+                    Some(inner) => match inner.find(')') {
+                        Some(i) => inner[i + 1..].trim_start(),
+                        None => return false,
+                    },
+                    None => r,
+                };
+            }
+            t.starts_with("mod ")
+        }
+        // 탐지기 생존 증명(합성) — 선언 꼴은 적발하고, 주석·비슷한 낱말은 놓아준다.
+        for yes in ["mod x;", "pub mod x;", "pub(crate) mod x;", "pub(super) mod x {", "pub(in crate::a) mod x;", "#[cfg(test)] mod x;", "#[path = \"a.rs\"] pub mod x;", "    mod x;"] {
+            assert!(declares_mod(yes), "탐지기가 선언을 놓친다: {yes}");
+        }
+        for no in ["// mod x;", "//! pub mod x;", "/// pub mod x;", "let modes = 1;", "fn mod_x() {}", "mod_name!();", "use a::mod_b;", "pub fn model() {}", "pub model();", "", "#![cfg_attr(not(debug_assertions), windows_subsystem = \"windows\")]"] {
+            assert!(!declares_mod(no), "탐지기가 선언이 아닌 줄을 적발한다: {no:?}");
+        }
+        let before_macros = &src[..mac.min(macp)];
+        for (i, l) in before_macros.lines().enumerate() {
+            assert!(!declares_mod(l), "매크로 정의 앞 {}번째 줄에 `mod` 선언이 있다 — 그 모듈은 가림 매크로의 범위 밖이다: {l:?}", i + 1);
+        }
+        let def = &src[mac..first_mod];
+        assert!(def.contains("let _ = writeln!(std::io::stderr(), $($arg)*);"), "eprintln 은 쓰기 실패를 버린다");
+        assert!(def.contains("let _ = write!(std::io::stderr(), $($arg)*);"), "eprint 도 같은 꼴이다");
+        let needles = [format!("{}{}", "std::", "eprintln!"), format!("{}{}", "std::", "eprint!")];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/cysd");
+        let mut scanned = 0;
+        for entry in std::fs::read_dir(&dir).expect("cysd 소스 디렉터리") {
+            let path = entry.expect("디렉터리 항목").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("소스 읽기");
+            scanned += 1;
+            for n in &needles {
+                // `::std::…` 접두 호출도 부분 문자열로 걸린다.
+                assert!(
+                    !text.contains(n.as_str()),
+                    "{} 에 표준 경로 호출 `{n}` 이 있다 — 가림 매크로를 우회해 stderr 쓰기 실패에서 패닉한다",
+                    path.display()
+                );
+            }
+        }
+        assert!(scanned >= 20, "cysd 소스 스캔이 공허하다({scanned}개)");
+    }
+
+    /// 자식 전용 탐침의 표식 env — 부모 검체가 같은 하네스를 다시 띄울 때만 켠다.
+    const EPRINTLN_CHILD_ENV: &str = "CYS_EPRINTLN_CHILD_PROBE";
+
+    /// 자식 전용 탐침 — 표식이 없으면(일반 전량 실행) 즉시 통과한다. 부모 검체가 stderr 를 **닫힌 파이프**로 주고 같은 하네스를 `--exact` 로 다시 띄워 이 줄을 읽는다(`v3_current_child_probe` 와 같은 기법).
+    /// 측정 유효성: 맨 쓰기(`writeln!(stderr)`)가 실제로 실패해야(= EPIPE) 이 탐침이 의미가 있다 — 그 값도 함께 찍는다.
+    #[test]
+    fn eprintln_child_probe() {
+        if std::env::var_os(EPRINTLN_CHILD_ENV).is_none() {
+            return;
+        }
+        use std::io::Write as _;
+        let raw_write_failed = writeln!(std::io::stderr(), "raw").is_err();
+        let macros = std::panic::catch_unwind(|| {
+            eprintln!("probe {}", 1);
+            eprint!("probe {}", 2);
+            eprintln!();
+        });
+        println!("@@EPRINT raw_write_failed={raw_write_failed} macros_ok={}", macros.is_ok());
+    }
+
+    /// 행동 핀(unix) — stderr 가 닫힌 파이프인 프로세스에서 가림 매크로(`eprintln!`·`eprint!` · 인자 없는 꼴 포함)는 패닉하지 않는다. 같은 프로세스의 맨 쓰기는 실패한다(측정 유효성).
+    /// 매크로를 지우면(표준 매크로로 돌아가면) 자식이 패닉을 잡아 `macros_ok=false` 가 되어 이 검체가 적색이다.
+    #[cfg(unix)]
+    #[test]
+    fn eprintln_macros_survive_a_broken_stderr() {
+        use std::os::fd::FromRawFd as _;
+        if std::env::var_os(EPRINTLN_CHILD_ENV).is_some() {
+            return;
+        }
+        let exe = std::env::current_exe().expect("current_exe");
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe 생성");
+        unsafe { libc::close(fds[0]) }; // 읽는 쪽을 닫는다 → 쓰기는 EPIPE(러스트 런타임은 SIGPIPE 를 무시한다)
+        let broken = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[1]) };
+        let out = std::process::Command::new(&exe)
+            .args(["--exact", "eprintln_guard_tests::eprintln_child_probe", "--nocapture", "--test-threads=1"])
+            .env(EPRINTLN_CHILD_ENV, "1")
+            .stderr(std::process::Stdio::from(broken))
+            .output()
+            .expect("자식 하네스 실행");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let line = stdout
+            .lines()
+            .find_map(|l| l.find("@@EPRINT ").map(|i| l[i + "@@EPRINT ".len()..].trim().to_string()))
+            .unwrap_or_else(|| panic!("자식 검체 줄 누락(결측은 값이 아니다) — rc={:?}\nstdout:\n{stdout}", out.status.code()));
+        assert_eq!(
+            line, "raw_write_failed=true macros_ok=true",
+            "닫힌 파이프에서 가림 매크로가 패닉했거나(macros_ok=false) 탐침이 stderr 를 닫지 못했다(raw_write_failed=false)"
+        );
+        assert!(out.status.success(), "자식 하네스가 비정상 종료했다: {:?}", out.status.code());
     }
 }
 
@@ -3627,6 +4669,456 @@ mod pipe_security_tests {
     }
 }
 
+/// ★F / G-01 rev2 — unix accept 오류 분류(재시도 지연)·표본 로그 게이트·롤백 노브·루프 소스핀.
+#[cfg(all(test, unix))]
+mod unix_accept_error_gate_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// T1 — 백오프는 0 < b ≤ 20ms. 0 이면 Linux·listener_fatal 스핀, 크면 불필요한 지연.
+    #[test]
+    fn accept_error_backoff_small_nonzero() {
+        assert!(UNIX_ACCEPT_ERROR_BACKOFF > Duration::ZERO);
+        assert!(UNIX_ACCEPT_ERROR_BACKOFF <= Duration::from_millis(20));
+    }
+
+    /// T2 — macOS(자기 제한 OS)에서 연결을 **소비하는** errno 와 미분류 errno 는 즉시 재시도.
+    #[test]
+    fn macos_self_limiting_errnos_retry_immediately() {
+        assert_eq!(ACCEPT_ERROR_SELF_LIMITING_OS, cfg!(target_os = "macos"));
+        // EAGAIN/EWOULDBLOCK 은 tokio 가 흡수해(WouldBlock → clear_readiness) 여기 도달하지 않는다 —
+        // 도달하더라도 즉시 재시도(종전 흐름)여야 한다.
+        for e in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ECONNABORTED,
+            libc::ENOMEM,
+            libc::ENOBUFS,
+            libc::EINTR,
+            libc::EAGAIN,
+            9999,
+        ] {
+            assert_eq!(
+                accept_error_retry_delay(Some(e), true),
+                Duration::ZERO,
+                "errno {e}: 재우면 backlog 배출이 1/backoff 로 묶여 ECONNREFUSED → 자동 기동 → \
+                 sibling → 데드맨 회수(④) 경로가 새로 열린다"
+            );
+        }
+    }
+
+    /// T3 — listener 가 쓸 수 없는 상태의 errno(+ errno 없음)는 어느 OS 든 백오프.
+    #[test]
+    fn listener_fatal_errnos_back_off_on_every_os() {
+        for self_limiting in [true, false] {
+            for raw in [
+                Some(libc::EBADF),
+                Some(libc::ENOTSOCK),
+                Some(libc::EINVAL),
+                Some(libc::EOPNOTSUPP),
+                None,
+            ] {
+                assert_eq!(
+                    accept_error_retry_delay(raw, self_limiting),
+                    UNIX_ACCEPT_ERROR_BACKOFF,
+                    "raw={raw:?} self_limiting={self_limiting}: 쓸 수 없는 listener 는 스핀을 막아야 한다"
+                );
+            }
+        }
+    }
+
+    /// T4 — 비macOS(자기 제한 아님)는 모든 errno 백오프(Linux EMFILE 은 연결이 큐에 남아 스핀한다).
+    #[test]
+    fn non_macos_all_errnos_back_off() {
+        for e in [libc::EMFILE, libc::ENFILE, libc::ECONNABORTED, 9999] {
+            assert_eq!(accept_error_retry_delay(Some(e), false), UNIX_ACCEPT_ERROR_BACKOFF, "errno {e}");
+        }
+    }
+
+    fn err_line(streak: u64, suppressed: u64) -> Option<AcceptLogLine> {
+        Some(AcceptLogLine::Error { streak, suppressed })
+    }
+
+    /// T5 — 같은 순간 1000회: 첫 줄 1개(streak 1 · 억제 0)뿐, 나머지 999 는 억제로 센다.
+    #[test]
+    fn log_gate_first_error_then_silent() {
+        let mut g = AcceptLogGate::default();
+        let t0 = Instant::now();
+        let mut lines = Vec::new();
+        for _ in 0..1000 {
+            if let Some(l) = g.on_error(Some(libc::EMFILE), t0) {
+                lines.push(l);
+            }
+        }
+        assert_eq!(lines, vec![AcceptLogLine::Error { streak: 1, suppressed: 0 }]);
+        assert_eq!(g.suppressed, 999);
+    }
+
+    /// T6 — 성공 없이 같은 errno 를 1s 간격으로 181회: t=0·60·120·180 에 4줄, 뒤 3줄은 억제 59.
+    #[test]
+    fn log_gate_floor_every_60s() {
+        let mut g = AcceptLogGate::default();
+        let t0 = Instant::now();
+        let mut lines = Vec::new();
+        for i in 0..=180u64 {
+            if let Some(l) = g.on_error(Some(libc::EMFILE), t0 + Duration::from_secs(i)) {
+                lines.push((i, l));
+            }
+        }
+        assert_eq!(
+            lines,
+            vec![
+                (0, AcceptLogLine::Error { streak: 1, suppressed: 0 }),
+                (60, AcceptLogLine::Error { streak: 61, suppressed: 59 }),
+                (120, AcceptLogLine::Error { streak: 121, suppressed: 59 }),
+                (180, AcceptLogLine::Error { streak: 181, suppressed: 59 }),
+            ]
+        );
+    }
+
+    /// T7 — errno 변경은 notice 로 **유지**되어 1s 가 지나면 기록된다.
+    #[test]
+    fn log_gate_errno_change_sticky() {
+        let mut g = AcceptLogGate::default();
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+        assert_eq!(g.on_error(Some(libc::EMFILE), ms(0)), err_line(1, 0));
+        assert_eq!(g.on_error(Some(libc::ENFILE), ms(500)), None, "errno 변경이어도 1s 안은 억제");
+        assert_eq!(g.on_error(Some(libc::EMFILE), ms(900)), None);
+        assert_eq!(g.on_error(Some(libc::EMFILE), ms(1000)), err_line(4, 2), "notice 가 유지돼 1s 에 기록");
+        assert_eq!(g.on_error(Some(libc::ENFILE), ms(30_000)), err_line(5, 0), "errno 변경 ≥1s → 즉시 기록");
+    }
+
+    /// T8 — 오류 뒤 성공 = 회복 1줄 · 오류 없는 성공 = 없음 · 0.999s 안 1000회 번갈아 = 정확히 2줄 ·
+    /// 10s 100Hz 번갈아 = 상한 2·(10+1) 이하.
+    #[test]
+    fn log_gate_recovery_pairs_and_bound() {
+        let t0 = Instant::now();
+        let mut g = AcceptLogGate::default();
+        assert!(!g.streak_open());
+        assert_eq!(g.on_success(t0), None, "오류 없는 성공은 줄이 없다");
+        assert_eq!(g.on_error(Some(libc::EMFILE), t0), err_line(1, 0));
+        assert!(g.streak_open());
+        assert_eq!(
+            g.on_success(t0 + Duration::from_millis(250)),
+            Some(AcceptLogLine::Recovered { errors: 1, elapsed: Duration::from_millis(250), suppressed: 0 })
+        );
+        assert!(!g.streak_open());
+
+        let mut g = AcceptLogGate::default();
+        let mut n = 0;
+        for i in 0..1000u64 {
+            let t = t0 + Duration::from_micros(i * 999);
+            if i % 2 == 0 {
+                n += g.on_error(Some(libc::EMFILE), t).is_some() as usize;
+            } else {
+                n += g.on_success(t).is_some() as usize;
+            }
+        }
+        assert_eq!(n, 2, "0.999s 안 번갈아 1000회는 오류 1줄 + 회복 1줄");
+
+        let mut g = AcceptLogGate::default();
+        let mut n = 0;
+        for i in 0..1000u64 {
+            let t = t0 + Duration::from_millis(i * 10);
+            if i % 2 == 0 {
+                n += g.on_error(Some(libc::EMFILE), t).is_some() as usize;
+            } else {
+                n += g.on_success(t).is_some() as usize;
+            }
+        }
+        assert!(n <= 2 * (10 + 1), "10s 100Hz 번갈아 {n} 줄 — 상한 2·(⌊W⌋+1)+⌊W/60⌋ 위반");
+        assert!(n >= 2, "기록이 아예 없다 — 게이트가 진단을 지운다");
+    }
+
+    /// T9 — 기록되지 않은(announced 아님) 연속열은 회복 줄이 없고, 그 억제 건수는 다음 줄로 이월된다.
+    #[test]
+    fn log_gate_unannounced_streak_carries_suppressed() {
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+        let mut g = AcceptLogGate::default();
+        assert_eq!(g.on_error(Some(libc::EMFILE), ms(0)), err_line(1, 0));
+        assert!(g.on_success(ms(100)).is_some(), "announced 연속열의 회복 줄");
+        assert_eq!(g.on_error(Some(libc::EMFILE), ms(200)), None, "직전 줄 1s 안 — 억제");
+        assert_eq!(g.on_success(ms(300)), None, "announced 아닌 연속열은 회복 줄이 없다");
+        assert_eq!(g.on_error(Some(libc::EMFILE), ms(2000)), err_line(1, 1), "억제 1건이 다음 줄로 이월");
+    }
+
+    /// T10 — u64 포화·시계 역행에서도 패닉 없음(debug 빌드 산술 검사 포함).
+    #[test]
+    fn log_gate_saturates_and_tolerates_clock_skew() {
+        let now = Instant::now();
+        let mut g = AcceptLogGate {
+            streak: u64::MAX - 1,
+            suppressed: u64::MAX,
+            last_line: Some(now),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let _ = g.on_error(Some(libc::EMFILE), now);
+        }
+        assert_eq!(g.streak, u64::MAX);
+        assert_eq!(g.suppressed, u64::MAX);
+        // 시계 역행: now < last_line
+        let mut g = AcceptLogGate { last_line: Some(now + Duration::from_secs(5)), ..Default::default() };
+        let _ = g.on_error(Some(libc::EMFILE), now);
+        let _ = g.on_error(Some(libc::ENFILE), now);
+        let _ = g.on_success(now);
+        let mut g = AcceptLogGate { streak: 3, streak_started: Some(now + Duration::from_secs(9)), announced: true, ..Default::default() };
+        assert!(matches!(g.on_success(now), Some(AcceptLogLine::Recovered { elapsed, .. }) if elapsed == Duration::ZERO));
+    }
+
+    /// T11 — 롤백 노브 진리표: '0' 계열(u64 로 0)만 종전 정책, 나머지는 게이트 켬.
+    #[test]
+    fn parse_accept_error_gate_truth_table() {
+        for v in [None, Some("1"), Some("abc"), Some("-1"), Some("")] {
+            assert!(parse_accept_error_gate(v), "{v:?} 는 게이트 켬");
+        }
+        for v in ["0", " 0 ", "00"] {
+            assert!(!parse_accept_error_gate(Some(v)), "{v:?} 는 종전 정책");
+        }
+    }
+
+    /// T13 — ★CS-1: Err arm 지연을 **실상수**(`ACCEPT_ERROR_SELF_LIMITING_OS`)로 잰다. 순수 함수 검체(T2~T4)는
+    /// 인자를 주입하므로 호출부 배선이 상수 `false` 로 바뀌어도 초록이었다(리뷰 변이 MUT-A · 12/12 통과).
+    /// macOS: 게이트 켬 + 소비형·미분류 errno = 즉시 재시도(0) · listener_fatal = 백오프. 비macOS: 게이트 켬 =
+    /// 모든 errno 백오프. 롤백 노브(게이트 끔) = 어느 OS 든 즉시 재시도(종전 정책).
+    #[test]
+    fn err_arm_delay_uses_real_os_constant() {
+        let consuming = [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ECONNABORTED,
+            libc::ENOMEM,
+            libc::ENOBUFS,
+            libc::EINTR,
+            9999,
+        ];
+        for e in consuming {
+            let want = if cfg!(target_os = "macos") { Duration::ZERO } else { UNIX_ACCEPT_ERROR_BACKOFF };
+            assert_eq!(
+                accept_err_arm_delay(true, Some(e)),
+                want,
+                "errno {e}: macOS 에서 재우면 backlog 배출이 1/backoff 로 묶여 ECONNREFUSED → 자동 기동 → \
+                 sibling → 데드맨 회수(④) 경로가 열린다"
+            );
+            assert_eq!(accept_err_arm_delay(false, Some(e)), Duration::ZERO, "errno {e}: 노브 끔 = 종전 즉시 재시도");
+        }
+        for raw in [Some(libc::EBADF), Some(libc::ENOTSOCK), Some(libc::EINVAL), Some(libc::EOPNOTSUPP), None] {
+            assert_eq!(accept_err_arm_delay(true, raw), UNIX_ACCEPT_ERROR_BACKOFF, "raw={raw:?}: listener_fatal 은 백오프");
+        }
+    }
+
+    /// T12 — unix accept 루프 본문 소스핀: 루프 안에 exit·panic·eprintln·unwrap·expect 가 없고
+    /// 분류 지연·sleep·게이트 on_error/on_success 가 있다. 노브 판독은 루프 **앞**(1회).
+    #[test]
+    fn unix_accept_loop_body_pinned() {
+        let src = include_str!("main.rs");
+        let sig = concat!("async fn accept_loop(daemon: Arc<Daemon>, ", "socket_path: &std::path::Path) {");
+        let start = src.find(sig).expect("unix accept_loop 시그니처");
+        let rest = &src[start..];
+        let loop_at = rest.find("\n    loop {").expect("accept 루프");
+        let head = &rest[..loop_at];
+        let end = rest[loop_at..].find("\n}").expect("함수 끝") + loop_at;
+        let body = &rest[loop_at..end];
+        assert!(
+            head.contains(concat!("accept_error_gate_", "enabled()")),
+            "노브 판독이 루프 앞에 없다(연결마다 읽거나 누락)"
+        );
+        for banned in [
+            concat!("process::", "exit"),
+            concat!("panic", "!("),
+            concat!("eprint", "ln!("),
+            concat!(".unw", "rap()"),
+            concat!(".exp", "ect("),
+        ] {
+            assert!(!body.contains(banned), "accept 루프 안에 `{banned}` — main 태스크 패닉·종료 = 전 pane 사망");
+        }
+        for needed in [
+            concat!("accept_err_arm_", "delay("),
+            concat!("tokio::time::", "sleep("),
+            concat!("on_", "error("),
+            concat!("on_", "success("),
+        ] {
+            assert!(body.contains(needed), "accept 루프에 `{needed}` 가 없다");
+        }
+        // ★CS-1(리뷰 변이 MUT-A): Err arm 의 지연 결정은 **실상수를 쓰는 헬퍼 한 곳**을 거친다.
+        //   종전 핀은 부분 문자열 `accept_error_retry_delay(` 의 존재만 봐서, 호출부 인자를 상수
+        //   `false` 로 바꾼 변이(macOS 에서 EMFILE 마다 10ms sleep = 금지된 거동)가 초록이었다.
+        let call = concat!("accept_err_arm_delay(", "gate_on, e.raw_os_error())");
+        assert!(body.contains(call), "accept 루프 Err arm 이 `{call}` 를 거치지 않는다");
+        assert!(
+            !body.contains(concat!("accept_error_retry_", "delay(")),
+            "accept 루프가 분류 함수를 직접 부른다 — 인자(자기 제한 OS 여부)가 핀 밖으로 샌다"
+        );
+        let helper_sig = concat!("fn accept_err_arm_", "delay(gate_on: bool, raw: Option<i32>)");
+        let h_at = src.find(helper_sig).expect("Err arm 지연 헬퍼 시그니처");
+        let h_end = src[h_at..].find("\n}").expect("헬퍼 끝") + h_at;
+        let helper = &src[h_at..h_end];
+        let wired = concat!("accept_error_retry_delay(raw, ", "ACCEPT_ERROR_SELF_LIMITING_OS)");
+        assert!(helper.contains(wired), "헬퍼가 실상수 `ACCEPT_ERROR_SELF_LIMITING_OS` 로 분류하지 않는다");
+    }
+}
+
+/// ★FATAL-1(0.14.42 WP-transport 리뷰) — E 가 없앤 '사실상의 입장 상한'(soft 256)의 대체 장치 2겹.
+///   (b) 근본: sysinfo `multithread`(rayon 전역 풀) 제거 — 요청마다 rayon 작업이 전역 풀에 들어가
+///       join 대기 중인 워커가 다른 요청의 작업을 훔쳐 같은 스택에 중첩 실행하다 2MiB 워커 스택이
+///       넘쳐 데몬이 SIGABRT(전 pane 사망)했다. 호출 스레드에서 순차로 돌면 중첩 자체가 없다.
+///   (a) 상한: dispatch 동시 실행을 `DISPATCH_INFLIGHT_MAX` 로 묶는다(초과분은 거절이 아니라 대기).
+#[cfg(test)]
+mod fatal1_admission_tests {
+    use super::*;
+
+    /// (b) 선언 핀 — Cargo.toml 이 sysinfo 기본 feature 를 끄고 multithread 를 켜지 않으며,
+    /// 해석된 그래프(Cargo.lock)의 sysinfo 가 rayon 에 의존하지 않는다(다른 크레이트의 feature
+    /// 통합으로 되살아나도 여기서 적색). 실패 방향: 판독 실패(항목 부재)는 계측 무효 = 적색.
+    #[test]
+    fn sysinfo_has_no_rayon_multithread() {
+        let toml = include_str!("../../../Cargo.toml");
+        let decl = toml
+            .lines()
+            .find(|l| l.trim_start().starts_with("sysinfo ") || l.trim_start().starts_with("sysinfo="))
+            .expect("Cargo.toml 에 sysinfo 선언이 없다 — 계측 무효");
+        assert!(
+            decl.contains("default-features = false"),
+            "sysinfo 기본 feature(= multithread 포함)가 켜져 있다: {decl}"
+        );
+        assert!(!decl.contains("multithread"), "sysinfo multithread 를 명시로 켰다: {decl}");
+        let lock = include_str!("../../../Cargo.lock");
+        let blocks: Vec<&str> = lock
+            .split("[[package]]")
+            .filter(|b| b.contains("\nname = \"sysinfo\"\n"))
+            .collect();
+        assert!(!blocks.is_empty(), "Cargo.lock 에 sysinfo 항목이 없다 — 계측 무효");
+        for b in blocks {
+            assert!(
+                !b.contains("\"rayon\""),
+                "해석된 sysinfo 가 rayon 에 의존한다(multithread 부활 — 중첩 스틸 스택 오버플로 경로): {b}"
+            );
+        }
+    }
+
+    /// (a) 배선 핀 — 연결 핸들러의 dispatch 는 입장 게이트를 거친다(직접 spawn_blocking 금지).
+    #[test]
+    fn dispatch_goes_through_admission_gate() {
+        let src = include_str!("main.rs");
+        let sig = concat!("async fn handle_connection_", "capped(");
+        let at = src.find(sig).expect("handle_connection_capped 시그니처");
+        let end = src[at..].find("\n}\n").expect("함수 끝") + at;
+        let body = &src[at..end];
+        assert!(
+            body.contains(concat!("run_admitted(&DISPATCH_", "GATE, exempt,")),
+            "dispatch 가 입장 게이트(DISPATCH_GATE)를 거치지 않는다"
+        );
+        assert!(
+            !body.contains(concat!("spawn_blocking(move || ", "handlers::dispatch")),
+            "게이트 밖 직접 spawn_blocking(dispatch) 이 남아 있다"
+        );
+    }
+
+    /// (a) 값 핀 — 상한은 정상 운용을 조르지 않을 만큼 크고(≥32), 블로킹 풀(tokio 기본 512)의 절반
+    /// 이하라 RPC 폭주가 풀을 포화시키지 못한다. 면제는 `system.ping` 정확 일치 하나뿐.
+    #[test]
+    fn admission_cap_bounds_and_exemption_truth_table() {
+        assert!((32..=256).contains(&DISPATCH_INFLIGHT_MAX), "상한 {DISPATCH_INFLIGHT_MAX}");
+        assert!(dispatch_admission_exempt("system.ping"));
+        for m in ["surface.list", "org.status", "surface.reap", "system.ping ", "System.ping", "", "system.pingx"] {
+            assert!(!dispatch_admission_exempt(m), "{m:?} 는 면제가 아니다");
+        }
+    }
+
+    /// ★(R4-01) 게이트 포화 관측 판정 — 연속 포화가 문턱(30s)에 처음 닿은 틱에 경보 1회 · 계속 포화면 재경보 없음 ·
+    /// 풀리면 회복 1회 · 포화가 끊기면 계수 0. 배선은 부트 경로에 1곳(소스 핀).
+    #[test]
+    fn dispatch_gate_watch_alerts_once_then_recovers() {
+        let t = DISPATCH_GATE_WATCH_SECS;
+        let (mut sat, mut alerted) = (0u64, false);
+        let mut alerts = 0;
+        for _ in 0..(DISPATCH_GATE_SATURATED_ALERT_SECS / t + 5) {
+            let (n, a, r) = dispatch_gate_watch_step(sat, alerted, 0, t);
+            sat = n;
+            assert!(!r);
+            if a {
+                alerts += 1;
+                alerted = true;
+            }
+        }
+        assert_eq!(alerts, 1, "포화 경보는 에피소드당 1회");
+        let (n, a, r) = dispatch_gate_watch_step(sat, alerted, 3, t);
+        assert_eq!((n, a, r), (0, false, true), "풀리면 회복 1회 · 계수 0");
+        let (n, a, _) = dispatch_gate_watch_step(0, false, 0, t);
+        assert!(!a && n == t, "짧은 포화는 경보가 아니다");
+        let src = include_str!("main.rs");
+        let body = &src[..src.find("#[cfg(test)]").expect("테스트 앵커")];
+        assert_eq!(body.matches("spawn_dispatch_gate_watch(Arc::clone(&daemon));").count(), 1, "포화 관측 태스크 배선 소실");
+    }
+
+    fn leak_gate(n: usize) -> &'static tokio::sync::Semaphore {
+        Box::leak(Box::new(tokio::sync::Semaphore::new(n)))
+    }
+
+    /// (a) 거동 — 상한의 10배를 한꺼번에 넣어도 동시 실행은 상한을 넘지 않고(허가는 블로킹 작업이 끝날
+    /// 때까지 쥔다), 상한까지는 실제로 병렬이며(직렬화로 조이지 않는다), 전부 완료된다(거절 0).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn admission_gate_bounds_concurrency_without_rejecting() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        const CAP: usize = 4;
+        const N: usize = CAP * 10;
+        let gate = leak_gate(CAP);
+        let now = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut hs = Vec::new();
+        for i in 0..N {
+            let (now, peak) = (Arc::clone(&now), Arc::clone(&peak));
+            hs.push(tokio::spawn(async move {
+                run_admitted(gate, false, move || {
+                    let cur = now.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(cur, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                    now.fetch_sub(1, Ordering::SeqCst);
+                    i
+                })
+                .await
+            }));
+        }
+        let mut done = 0;
+        for h in hs {
+            let r = tokio::time::timeout(std::time::Duration::from_secs(30), h)
+                .await
+                .expect("게이트 대기가 끝나지 않는다(교착)")
+                .expect("연결 태스크 패닉");
+            assert!(r.is_ok(), "블로킹 작업 실패");
+            done += 1;
+        }
+        assert_eq!(done, N, "거절·유실 없이 전부 완료");
+        let p = peak.load(Ordering::SeqCst);
+        assert!(p <= CAP, "동시 실행 {p} > 상한 {CAP}");
+        assert!(p >= 2, "동시 실행 최대 {p} — 상한 안에서도 직렬화됐다");
+        assert_eq!(gate.available_permits(), CAP, "허가 누수");
+    }
+
+    /// (a) 거동 — 허가가 모두 잡힌 동안: 면제(`system.ping`)는 즉시 돌고, 비면제는 **거절되지 않고**
+    /// 기다리다 허가가 풀리면 돈다(typed busy 없음 · 우회 없음).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saturated_gate_lets_ping_through_and_queues_others() {
+        let gate = leak_gate(2);
+        let held = gate.acquire_many(2).await.expect("세마포어는 닫히지 않는다");
+        let pinged = tokio::time::timeout(std::time::Duration::from_secs(5), run_admitted(gate, true, || 7u8))
+            .await
+            .expect("포화 중 면제(ping)가 줄 뒤에 섰다");
+        assert_eq!(pinged.expect("블로킹 작업"), 7);
+        let queued = tokio::spawn(run_admitted(gate, false, || 8u8));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!queued.is_finished(), "포화 중 비면제가 게이트를 우회했다");
+        drop(held);
+        let r = tokio::time::timeout(std::time::Duration::from_secs(5), queued)
+            .await
+            .expect("허가 반환 뒤에도 대기가 풀리지 않는다")
+            .expect("태스크");
+        assert_eq!(r.expect("블로킹 작업"), 8);
+    }
+}
+
 #[cfg(test)]
 mod auto_restore_tests {
     use super::{
@@ -3698,7 +5190,8 @@ mod auto_restore_tests {
         std::fs::create_dir_all(&dir).unwrap();
         match decide_auto_restore(&dir, false, &dir, "/usr/bin:/bin", "sock:test") {
             AutoRestore::Ready { args, .. } => {
-                assert!(args[0].ends_with("bin/javis_phoenix.py"), "폴백 후보 경로: {}", args[0]);
+                // ★(R2F-DM · ⓑ) 윈도우는 `Path::join` 이 `\` 를 넣어 `…\bin\javis_phoenix.py` 로 나온다 — 구분자에 무관하게 비교한다(제품 출력은 그대로).
+                assert!(args[0].replace('\\', "/").ends_with("bin/javis_phoenix.py"), "폴백 후보 경로: {}", args[0]);
                 // args = [phoenix, "--socket", <sock>, "restore", "--auto"] — W6/E1 소켓 명시 전달.
                 assert_eq!(args[1], "--socket");
                 assert_eq!(&args[3..], &["restore".to_string(), "--auto".to_string()]);
@@ -4336,6 +5829,7 @@ mod first_line_idle_tests {
             server,
             None,
             Some(Duration::from_millis(300)),
+            None, // 쓰기 무진행 상한 해제 — 첫 줄 축만 시험
         ));
         // 클라이언트를 살려 둔 채(= EOF 를 주지 않는다) 아무것도 쓰지 않는다.
         let finished = tokio::time::timeout(Duration::from_secs(5), conn).await;
@@ -4360,6 +5854,7 @@ mod first_line_idle_tests {
             server,
             None,
             None, // 상한 해제 = 개정 전 거동
+            None, // 쓰기 무진행 상한 해제 — 첫 줄 축만 시험
         ));
         let still_running = tokio::time::timeout(Duration::from_millis(700), conn).await;
         assert!(
@@ -4384,6 +5879,7 @@ mod first_line_idle_tests {
             server,
             None,
             Some(Duration::from_millis(200)),
+            None, // 쓰기 무진행 상한 해제 — 첫 줄 축만 시험
         ));
         let mut client = BufReader::new(client);
         let ping = b"{\"id\":1,\"method\":\"system.ping\",\"params\":{}}\n";
@@ -4431,6 +5927,7 @@ mod first_line_idle_tests {
             server,
             None,
             Some(Duration::from_millis(300)),
+            None, // 쓰기 무진행 상한 해제 — 첫 줄 축만 시험
         ));
         let mut client = client;
         // 개행 1바이트만 보내고 침묵한다(EOF 도 주지 않는다).
@@ -4459,6 +5956,7 @@ mod first_line_idle_tests {
             server,
             None,
             Some(Duration::from_millis(400)),
+            None, // 쓰기 무진행 상한 해제 — 첫 줄 축만 시험
         ));
         let mut client = client;
         // 상한(400ms)보다 짧은 주기로 빈 줄을 흘린다 — 상대 상한이면 영원히 살아남는다.
@@ -4497,6 +5995,7 @@ mod first_line_idle_tests {
             server,
             None,
             Some(Duration::from_millis(600)),
+            None, // 쓰기 무진행 상한 해제 — 첫 줄 축만 시험
         ));
         let mut client = BufReader::new(client);
         let ping = b"{\"id\":1,\"method\":\"system.ping\",\"params\":{}}\n";
@@ -4520,6 +6019,348 @@ mod first_line_idle_tests {
             .expect("두 번째 응답이 오지 않았다 — 첫 줄 상한이 확립 연결까지 끊었다")
             .unwrap();
         assert!(got > 0 && second.contains("\"ok\":true"), "유휴 뒤 왕복 실패: {second}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// ★R3-5(S09 (c) · P2-final G-03 ①) 단발 응답의 **무진행 쓰기 상한** 검체.
+/// 적색(개정 전 = 쓰기 무기한): `non_reading_client_connection_is_reclaimed`(Reply::Single) ·
+/// `non_reading_client_of_parse_errors_is_reclaimed`(parse_error) · `single_reply_sites_all_carry_the_write_stall`
+/// (4곳 전수 소스 핀 — FeedWait·WaitFor 는 좌석·승인 대기가 있어야 거동 재현이 되므로 소스로 박제한다).
+/// 비회귀: 느리지만 진행하는 소비자·스트림 면제·확립 연결 유휴(첫 줄 검체가 이미 박제).
+#[cfg(test)]
+mod write_stall_tests {
+    use super::{
+        handle_connection_capped, parse_write_stall_cap, Stream, FIRST_LINE_IDLE_SECS,
+        WRITE_STALL_MAX_SECS, WRITE_STALL_MIN_SECS, WRITE_STALL_SECS,
+    };
+    use crate::state::Daemon;
+    use serde_json::json;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    const PING: &[u8] = b"{\"id\":1,\"method\":\"system.ping\",\"params\":{}}\n";
+
+    fn temp_daemon(tag: &str) -> (std::path::PathBuf, Arc<Daemon>) {
+        let dir = std::env::temp_dir().join(format!(
+            "cys-r35-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = Daemon::new(dir.join("cysd.sock"));
+        (dir, d)
+    }
+
+    /// 응답을 읽지 않는 클라이언트를 흉내 낸다 — `line` 을 서버가 막을 때까지 되풀이해 쓰고
+    /// 읽기 쪽은 건드리지 않는다. 쓰기 절반은 반환해 EOF 를 주지 않는다(소유권 유지).
+    fn pump_without_reading(
+        wr: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        line: &'static [u8],
+    ) -> tokio::task::JoinHandle<tokio::io::WriteHalf<tokio::io::DuplexStream>> {
+        tokio::spawn(async move {
+            let mut wr = wr;
+            for _ in 0..100_000 {
+                if wr.write_all(line).await.is_err() {
+                    break; // 서버가 닫았다
+                }
+            }
+            wr
+        })
+    }
+
+    /// 회수 뒤 상대가 본 바이트 = 완결 프레임들 + (있으면) 개행 없는 꼬리. 꼬리는 같은 응답의 접두여야
+    /// 한다(상한 뒤 아무것도 덧쓰지 않는다 = 두 프레임이 한 줄로 붙지 않는다). 완결 프레임 목록을 돌려준다.
+    fn frames_then_prefix_tail(all: &[u8]) -> Vec<serde_json::Value> {
+        let text = String::from_utf8_lossy(all).into_owned();
+        let mut parts: Vec<&str> = text.split('\n').collect();
+        let tail = parts.pop().unwrap_or("");
+        assert!(!parts.is_empty(), "버퍼를 채운 완결 응답이 하나도 없다 — 계측 무효");
+        assert!(
+            parts[0].starts_with(tail),
+            "개행 없는 꼬리가 같은 응답의 접두가 아니다(상한 뒤 덧쓰기): {tail:?}"
+        );
+        parts
+            .iter()
+            .map(|l| serde_json::from_str(l).expect("완결 프레임이 JSON 이 아니다"))
+            .collect()
+    }
+
+    /// 롤백 노브 진리표(순수 판정부 · env 무접촉).
+    #[test]
+    fn write_stall_cap_rollback_knob() {
+        let dflt = Some(Duration::from_secs(WRITE_STALL_SECS));
+        assert_eq!(parse_write_stall_cap(None), dflt);
+        assert_eq!(parse_write_stall_cap(Some("0")), None, "0 = 해제(개정 전 무한 대기)");
+        assert_eq!(parse_write_stall_cap(Some(" 17 ")), Some(Duration::from_secs(17)));
+        // 하한: 양수 1~9 는 10 으로 접는다(부하 호스트에서 정상 판독자 오절단 차단). 10 은 그대로.
+        for low in ["1", "5", "9", " 10 "] {
+            assert_eq!(
+                parse_write_stall_cap(Some(low)),
+                Some(Duration::from_secs(WRITE_STALL_MIN_SECS)),
+                "{low:?} → 하한"
+            );
+        }
+        for bad in ["nope", "-5", "", " ", "1.5", "99999999999999999999999"] {
+            assert_eq!(parse_write_stall_cap(Some(bad)), dflt, "{bad:?} → 기본값");
+        }
+        for giant in ["86401", "18446744073709551615"] {
+            let got = parse_write_stall_cap(Some(giant));
+            assert_eq!(got, Some(Duration::from_secs(WRITE_STALL_MAX_SECS)), "{giant} 클램프");
+            // 불변식: 반환값은 Instant 에 더할 수 있다(오버플로 패닉 도달 불가).
+            let _ = tokio::time::Instant::now() + got.unwrap();
+        }
+    }
+
+    /// 값 핀 — 문제 연결의 해제 시한은 하나다. 무수신 연결의 해제 시각(= dispatch 완료 + 버퍼 채움 + 이 상한)이
+    /// 무언 연결의 해제 시한(첫 줄 상한 60 s · S09 (c) 창)을 넘지 않도록 dispatch·채움 여유 ≥ 10 s 를 남긴다.
+    /// 그리고 하한(10) ≤ 기본값 ≤ 상한. (클라이언트 무진행 상한과는 방향이 반대라 결합하지 않는다.)
+    #[test]
+    fn write_stall_default_leaves_release_margin() {
+        const DISPATCH_FILL_MARGIN_SECS: u64 = 10;
+        assert!(
+            (..=FIRST_LINE_IDLE_SECS).contains(&(WRITE_STALL_SECS + DISPATCH_FILL_MARGIN_SECS)),
+            "쓰기 상한 {WRITE_STALL_SECS}s + 여유 {DISPATCH_FILL_MARGIN_SECS}s > 해제 시한 {FIRST_LINE_IDLE_SECS}s"
+        );
+        assert!(
+            (WRITE_STALL_MIN_SECS..=WRITE_STALL_MAX_SECS).contains(&WRITE_STALL_SECS),
+            "기본값 {WRITE_STALL_SECS} 이 [하한, 상한] 밖"
+        );
+        assert!((10..=WRITE_STALL_SECS).contains(&WRITE_STALL_MIN_SECS), "하한 {WRITE_STALL_MIN_SECS}");
+    }
+
+    /// ★적색 검체(S09 (c) 축소판 · Reply::Single): 요청만 쓰고 응답을 읽지 않는 클라이언트 — 버퍼가 찬 뒤
+    /// 상한 안에 연결이 회수되고, 상대는 완결 프레임들 + (있으면) 개행 없는 꼬리 뒤 EOF 를 본다.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_reading_client_connection_is_reclaimed() {
+        let (dir, daemon) = temp_daemon("noread");
+        let (client, server) = tokio::io::duplex(1024);
+        let server: Stream = Box::new(server);
+        let conn = tokio::spawn(handle_connection_capped(
+            Arc::clone(&daemon),
+            server,
+            None,
+            None,
+            Some(Duration::from_millis(300)),
+        ));
+        let (mut rd, wr) = tokio::io::split(client);
+        let pump = pump_without_reading(wr, PING);
+        let finished = tokio::time::timeout(Duration::from_secs(10), conn).await;
+        assert!(
+            finished.is_ok(),
+            "응답을 읽지 않는 연결이 회수되지 않았다(단발 응답 쓰기 무기한 — S09 (c))"
+        );
+        let mut all = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), rd.read_to_end(&mut all))
+            .await
+            .expect("회수 뒤 EOF 가 오지 않았다")
+            .unwrap();
+        for v in frames_then_prefix_tail(&all) {
+            assert_eq!(v["ok"], json!(true), "완결 프레임: {v}");
+        }
+        pump.abort();
+        let _ = pump.await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★적색 검체(parse_error 경로): 비JSON 줄만 흘리고 응답을 읽지 않는 클라이언트 — 줄마다 parse_error
+    /// 응답이 나가고, 버퍼가 차면 그 쓰기도 상한 안에 연결을 회수한다(dispatch 를 거치지 않는 쓰기 자리).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_reading_client_of_parse_errors_is_reclaimed() {
+        let (dir, daemon) = temp_daemon("noread-parse");
+        let (client, server) = tokio::io::duplex(1024);
+        let server: Stream = Box::new(server);
+        let conn = tokio::spawn(handle_connection_capped(
+            Arc::clone(&daemon),
+            server,
+            None,
+            None,
+            Some(Duration::from_millis(300)),
+        ));
+        let (mut rd, wr) = tokio::io::split(client);
+        let pump = pump_without_reading(wr, b"not-json\n");
+        let finished = tokio::time::timeout(Duration::from_secs(10), conn).await;
+        assert!(
+            finished.is_ok(),
+            "비JSON 줄에 대한 parse_error 응답을 읽지 않는 연결이 회수되지 않았다(parse_error 쓰기 무기한)"
+        );
+        let mut all = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), rd.read_to_end(&mut all))
+            .await
+            .expect("회수 뒤 EOF 가 오지 않았다")
+            .unwrap();
+        for v in frames_then_prefix_tail(&all) {
+            assert_eq!(v["error"]["code"], json!("parse_error"), "완결 프레임: {v}");
+        }
+        pump.abort();
+        let _ = pump.await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★계측 타당성(negation): 상한을 끄면(노브 0 = 개정 전) 같은 연결이 회수되지 않는다.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_reading_client_persists_without_the_cap_instrument_validity() {
+        let (dir, daemon) = temp_daemon("noread-nocap");
+        let (client, server) = tokio::io::duplex(1024);
+        let server: Stream = Box::new(server);
+        let conn = tokio::spawn(handle_connection_capped(
+            Arc::clone(&daemon),
+            server,
+            None,
+            None,
+            None,
+        ));
+        let (_rd, wr) = tokio::io::split(client);
+        let pump = pump_without_reading(wr, PING);
+        let still = tokio::time::timeout(Duration::from_millis(1500), conn).await;
+        assert!(still.is_err(), "상한이 없는데도 회수됐다 — 위 적색 검체가 상한을 시험하지 못한다");
+        pump.abort();
+        let _ = pump.await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★비회귀(핵심 안전): **느리지만 읽고 있는** 소비자는 끊지 않는다 — 상한은 총 기한이 아니라
+    /// 무진행 기한이다. 한 프레임을 상한(300ms)의 수 배에 걸쳐 4바이트씩 읽어도 완결 수신되고,
+    /// 연결은 다음 요청도 받는다. (총 기한으로 구현하면 적색 — 변이로 확인.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_but_progressing_reader_is_not_cut() {
+        let (dir, daemon) = temp_daemon("slowread");
+        let cap = Duration::from_millis(300);
+        let (client, server) = tokio::io::duplex(16);
+        let server: Stream = Box::new(server);
+        let _conn = tokio::spawn(handle_connection_capped(
+            Arc::clone(&daemon),
+            server,
+            None,
+            None,
+            Some(cap),
+        ));
+        let (mut rd, mut wr) = tokio::io::split(client);
+        wr.write_all(PING).await.unwrap();
+        let t0 = Instant::now();
+        let mut line = Vec::new();
+        let mut b = [0u8; 4];
+        loop {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let n = tokio::time::timeout(Duration::from_secs(5), rd.read(&mut b))
+                .await
+                .expect("읽기 정체")
+                .unwrap();
+            assert!(n > 0, "느린 소비자가 EOF 를 받았다(진행 중 절단): {:?}", String::from_utf8_lossy(&line));
+            line.extend_from_slice(&b[..n]);
+            if line.ends_with(b"\n") {
+                break;
+            }
+        }
+        let took = t0.elapsed();
+        assert!(took >= cap * 2, "프레임이 상한의 2배보다 빨리 끝났다({took:?}) — 계측 무효");
+        let v: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!(v["ok"], json!(true));
+        // 연결은 살아 있다 — 두 번째 왕복.
+        wr.write_all(PING).await.unwrap();
+        let mut rd = BufReader::new(rd);
+        let mut second = String::new();
+        tokio::time::timeout(Duration::from_secs(5), rd.read_line(&mut second))
+            .await
+            .expect("두 번째 응답 없음")
+            .unwrap();
+        assert!(second.contains("\"ok\":true"), "두 번째 왕복 실패: {second}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 함수 본문 구간(시그니처 ~ 열 0 의 닫는 괄호) — 소스 핀 공용. `marker` 가 구간 안에 있어야 한다
+    /// (경계를 잘못 잘랐으면 계측 무효로 적색 — 조용한 통과 차단).
+    fn fn_body<'a>(src: &'a str, sig: &str, marker: &str) -> &'a str {
+        let at = src.find(sig).unwrap_or_else(|| panic!("{sig} 시그니처 — 계측 무효"));
+        let end = src[at..].find("\n}\n").expect("함수 끝") + at;
+        let body = &src[at..end];
+        assert!(body.contains(marker), "{sig} 구간에 {marker} 가 없다 — 함수 경계 계측 무효");
+        body
+    }
+
+    /// ★배선 핀(4곳 전수): 단발 응답 쓰기(parse_error · Single · FeedWait · WaitFor)는 전부 상한을 거친다.
+    /// 한 곳이라도 무기한 `write_line` 으로 되돌리면 적색(거동 검체는 parse_error·Single 두 곳만 싸게 재현된다).
+    #[test]
+    fn single_reply_sites_all_carry_the_write_stall() {
+        let src = include_str!("main.rs");
+        let body = fn_body(src, concat!("async fn handle_connection_", "capped("), "Reply::WaitFor {");
+        for arm in ["\"parse_error\"", "Reply::Single(resp)", "Reply::FeedWait {", "Reply::WaitFor {"] {
+            assert!(body.contains(arm), "{arm} 가 본문에 없다 — 계측 무효");
+        }
+        assert_eq!(
+            body.matches(concat!("write_line(&mut ", "write_half")).count(),
+            0,
+            "단발 응답 자리에 무기한 write_line 이 남아 있다"
+        );
+        assert_eq!(
+            body.matches(concat!("write_reply_", "line(")).count(),
+            4,
+            "단발 응답 쓰기 자리 4곳(parse_error·Single·FeedWait·WaitFor)이 모두 상한을 거치지 않는다"
+        );
+    }
+
+    /// ★스트림 면제 소스 핀(attach 는 좌석이 있어야 거동 시험이 되므로 소스로 박제한다):
+    /// `run_attach`·`run_event_stream` 본문은 단발 응답용 상한 쓰기를 쓰지 않는다. attach 를 끊으면 GUI 가
+    /// 재attach 없이 `[surface exited]` 를 그린다(G-08 · src-tauri `start_surface_stream`) — 이 핀을 풀려면
+    /// GUI 재attach 가 먼저다. (쓰기 상한과 무관한 timeout 은 막지 않는다 — 금지어는 하나뿐이다.)
+    #[test]
+    fn stream_paths_do_not_carry_the_write_stall() {
+        let src = include_str!("main.rs");
+        for (sig, marker) in [
+            (concat!("async fn run_", "attach<"), "contents_formatted"),
+            (concat!("async fn run_", "event_stream<"), "slow_consumer"),
+        ] {
+            let body = fn_body(src, sig, marker);
+            assert!(
+                !body.contains(concat!("write_reply", "_line")),
+                "{sig} 본문에 write_reply_line — 스트림 면제 위반"
+            );
+        }
+    }
+
+    /// ★스트림 면제 핀: `events.stream` 은 무진행 상한을 받지 않는다(클라이언트 `RPC_STREAMING_METHODS`
+    /// 면제와 대칭). replay 로 버퍼를 넘치게 한 뒤 상한의 수 배를 읽지 않아도 연결은 살아 있고, 다시 읽으면
+    /// 온전한 프레임이 이어진다.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn event_stream_is_exempt_from_write_stall() {
+        let (dir, daemon) = temp_daemon("evexempt");
+        for i in 0..300 {
+            daemon.bus.publish("r35.test", "test", None, json!({"i": i, "pad": "x".repeat(80)}));
+        }
+        let (client, server) = tokio::io::duplex(256);
+        let server: Stream = Box::new(server);
+        let mut conn = tokio::spawn(handle_connection_capped(
+            Arc::clone(&daemon),
+            server,
+            None,
+            None,
+            Some(Duration::from_millis(200)),
+        ));
+        let (rd, mut wr) = tokio::io::split(client);
+        wr.write_all(b"{\"id\":1,\"method\":\"events.stream\",\"params\":{\"after_seq\":0}}\n")
+            .await
+            .unwrap();
+        let still = tokio::time::timeout(Duration::from_millis(1200), &mut conn).await;
+        assert!(still.is_err(), "읽지 않는 events.stream 구독이 쓰기 상한으로 끊겼다(스트림 면제 위반)");
+        let mut rd = BufReader::new(rd);
+        let mut n_events = 0;
+        for _ in 0..50 {
+            let mut l = String::new();
+            tokio::time::timeout(Duration::from_secs(5), rd.read_line(&mut l))
+                .await
+                .expect("재개 뒤 프레임 없음")
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_str(l.trim()).expect("프레임 훼손");
+            if v["type"] == json!("event") {
+                n_events += 1;
+            }
+        }
+        assert!(n_events > 0, "replay 이벤트가 오지 않았다 — 계측 무효");
+        conn.abort();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -5850,6 +7691,132 @@ mod update_leftover_sweep_tests {
     }
 }
 
+#[cfg(test)]
+mod cysd_args_tests {
+    use super::*;
+
+    #[test]
+    fn cysd_args_no_args_runs() {
+        assert_eq!(parse_cysd_args(Vec::<String>::new()), CysdCli::Run);
+    }
+
+    #[test]
+    fn cysd_args_version_flags() {
+        for flag in ["--version", "-V"] {
+            assert_eq!(parse_cysd_args([flag.to_string()]), CysdCli::Version, "{flag}");
+        }
+    }
+
+    #[test]
+    fn cysd_args_help_flags() {
+        for flag in ["--help", "-h"] {
+            assert_eq!(parse_cysd_args([flag.to_string()]), CysdCli::Help, "{flag}");
+        }
+    }
+
+    #[test]
+    fn cysd_args_unknown_is_rejected() {
+        for (args, unknown) in [
+            (vec!["--socket", "x"], "--socket"),
+            (vec!["foo"], "foo"),
+            (vec!["--version", "extra"], "extra"),
+        ] {
+            assert_eq!(
+                parse_cysd_args(args.into_iter().map(str::to_string)),
+                CysdCli::Unknown(unknown.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn cysd_args_version_line_has_version_and_build_id() {
+        let line = cysd_version_line();
+        assert!(line.starts_with("cysd "), "버전 출력 접두 누락: {line:?}");
+        assert!(line.contains(env!("CARGO_PKG_VERSION")), "패키지 버전 누락: {line:?}");
+        assert!(line.contains(cys::pack::build_id()), "빌드 ID 누락: {line:?}");
+    }
+
+    #[test]
+    fn cysd_args_usage_mentions_flags_and_daemon_start() {
+        let usage = cysd_usage();
+        assert!(
+            usage.lines().next().is_some_and(|line| line.starts_with("usage:")),
+            "usage 첫 줄 누락: {usage:?}"
+        );
+        for expected in ["--version", "--help", "cysd"] {
+            assert!(usage.contains(expected), "usage에 {expected} 누락: {usage:?}");
+        }
+    }
+
+    #[test]
+    fn cysd_args_main_dispatches_before_daemon_start_source_pin() {
+        let src = include_str!("main.rs");
+        let start = src.find("\nfn main() {").expect("main 함수 앵커") + "\nfn main() {".len();
+        let tail = &src[start..];
+        let end = ["\nfn ", "\n#[tokio::main]"]
+            .iter()
+            .filter_map(|boundary| tail.find(*boundary))
+            .min()
+            .expect("main 함수 다음 경계");
+        let body = &tail[..end];
+        let parse = body.find("parse_cysd_args(").expect("데몬 기동 전 인자 판정 누락");
+        let daemon = body.find("async_main()").expect("데몬 기동 호출 누락");
+        assert!(parse < daemon, "인자 판정이 데몬 기동보다 늦다");
+        assert!(body.contains("std::process::exit(2)"), "잘못된 인자의 종료 코드 2 누락");
+        assert!(body.contains("std::process::exit(0)"), "조회 인자의 종료 코드 0 누락");
+    }
+
+    /// ★E(0.14.42) P1 — fd 한도 상향의 **위치 계약**: 시작 락 획득 뒤(패자 무부수효과·dedupe 보존),
+    /// pack 저널 복구·Daemon::new 앞(모든 pane·자식·리스너가 올린 soft 를 상속).
+    #[test]
+    fn fd_limit_raise_is_wired_after_startup_lock_before_boot_side_effects_source_pin() {
+        let src = include_str!("main.rs");
+        let after = src
+            .split_once("\nasync fn async_main() {")
+            .expect("async_main 함수 앵커")
+            .1;
+        let body = &after[..after.find("\n}\n").expect("async_main 끝")];
+        let raise = body.find("fdlimit::raise()").expect("fd 한도 상향 배선 누락");
+        let lock = body.find("acquire_startup_lock(").expect("시작 락 앵커");
+        let journal = body.find("recover_pack_journal").expect("pack 저널 복구 앵커");
+        let daemon = body.find("Daemon::new(").expect("Daemon::new 앵커");
+        assert!(lock < raise, "fd 한도 상향이 시작 락보다 앞이다 — 락 패자에게 부수효과가 생긴다");
+        assert!(raise < journal && raise < daemon, "fd 한도 상향이 부트 부수효과보다 늦다");
+        assert_eq!(body.matches("fdlimit::raise()").count(), 1, "상향 호출은 정확히 1곳");
+    }
+
+    #[test]
+    fn cysd_args_startup_marker_stays_first_in_async_main_source_pin() {
+        let src = include_str!("main.rs");
+        let body = src
+            .split_once("\nasync fn async_main() {")
+            .expect("async_main 함수 앵커")
+            .1;
+        let first_log = body.split_once("eprintln!(").expect("기동 로그 누락").1.trim_start();
+        assert!(first_log.starts_with("\"[cysd] v{} {}\""), "첫 기동 로그의 릴리스 게이트 마커 변경");
+    }
+}
+
+// ★U16(0.14.41) 팀 만들기 제안 데몬 잠금 핀 — 테스트 전용 모듈(프로덕션 코드 0).
+// 파일 맨 끝에 둔다(REVIEW1 B-1) — 부트스트랩 건강성 러너가 첫 #[cfg(test)] 뒤를
+// "프로덕션 창"에서 제외하므로, 이 선언이 앞쪽에 있으면 boot_supervisor::spawn(
+// 호출이 안 보여 H-TICK-ALIVE가 오탐 실패한다.
+#[cfg(test)]
+mod team_gate_tests;
+
+// ★0.14.42 P5 대화 승인 1회용 팀 생성 토큰 — 데몬 집행 핀(테스트 전용 · 파일 끝 규약은 위 U16 과 같다).
+#[cfg(test)]
+mod team_token_tests;
+
+// ★A2(0.14.42 · WP-delivery) 짝 Return 흡수 RPC 회귀 핀 — 테스트 전용 모듈(프로덕션 코드 0).
+// team_gate_tests 와 같은 이유로 파일 맨 끝에 둔다(부트스트랩 건강성 러너의 첫 #[cfg(test)] 앵커).
+#[cfg(test)]
+mod return_absorb_tests;
+
+// ★(0.14.42 · S21-SETTLE) 직접 send 제출 정착(분리 보류·정착 증명) RPC 회귀 핀 — 테스트 전용 모듈(프로덕션 코드 0).
+// team_gate_tests 와 같은 이유로 파일 맨 끝에 둔다(부트스트랩 건강성 러너의 첫 #[cfg(test)] 앵커).
+#[cfg(test)]
+mod send_settle_tests;
 // ⚠시험 모듈 선언은 파일 끝에 둔다 — 소스 핀(H-TICK-ALIVE 등)이 첫 `#[cfg(test)]` 뒤를 잘라 프로덕션을 본다.
 // D6 정밀 디버깅 검출 시험(TICKET=dbg-D6 · 시험 전용) — 선언 줄에 꼬리 주석 금지(spawn_policy_tests 절단기가 `;` 로 끝나야 단일 항목으로 분류).
 #[cfg(test)]

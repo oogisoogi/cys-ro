@@ -101,6 +101,13 @@
 //! 일치도 `chars > len(prompt)` 조건에서 레코드를 통째로 건너뛴다 → 층1 전건 미스 → 무라벨이면
 //! 층2도 통과 → 게이트 개방.
 //!
+//! ★(0.14.42 · 설계 C D5′ 하위 경우 신고) 직접 경로도 이제 **일부 본문을 울타리로 감싼다** — 살아 있고 2004 가
+//! 켜진 claude 좌석에 보내는 ⓐ 안쪽 CR 본문(크기 무관 · S34 CRLF 제출 분할 수리)과 ⓑ 1000 B 이상 CR 없는
+//! 평문(handlers `direct_fence_mode`). 그 본문은 행마다가 아니라 **Return 1회에 1회** 제출된다(데몬 계수도 봉투
+//! 안 LF 를 제출로 치지 않는다). 999 B 이하 CR 없는 본문·끝 CR 뿐인 본문·셸·타 어댑터·2004 꺼짐·킬 스위치는
+//! 종전 그대로 행 분할이다 — 문턱 앞뒤로 제출 단위가 갈린다. 조각 기록은 그대로 남긴다(불변식 ③: 애매하면
+//! 기록 · 전문 레코드가 단일 제출과 맞으므로 층1 판정은 큐 경로와 같다).
+//!
 //! 근본 교정은 **원장이 '실제로 무엇이 제출되는가'를 반영하는 것**이다(층1 의 전제). 그래서
 //! `record` 는 전문 레코드에 더해 **제출 단위(개행 분할) 조각**을 각각 한 줄씩 남긴다
 //! (`part`·`parent` 필드 · 전문 레코드에는 `units` = 조각 수). 판정 규칙은 하나도 늘지 않는다 —
@@ -114,6 +121,11 @@
 //!   **관측(원장)을 현실에 맞추는 쪽**을 택했다. (`Inject` 분기는 이미 bracketed paste 라 한 덩어리로
 //!   제출되지만, 앱이 그 모드를 안 켰으면 거기서도 쪼개진다 — 그래서 조각은 **경로를 가리지 않고**
 //!   남긴다. 불변식 ③: 애매하면 기록한다.)
+//!   ★(0.14.42 · 설계 C D5′) **부분 채택**: 종전 반대 근거 셋이 해소된 범위에서만 직접 경로를 감싼다 —
+//!   ① 모드는 reader 가 파서에서 2004 를 원자 미러(`Surface::bracketed_paste`)로 관측하고, 꺼져 있으면 감싸지
+//!   않는다 ② 셸 pane 은 좌석 술어(claude 어댑터 ∧ 에이전트 좌석 ∧ 생존 관측)로 빠진다(여러 줄 즉시 실행 보존)
+//!   ③ 실기는 Claude(S49 2.1.281: 울타리 + 분리·동봉 CR 전부 10/10 제출)로 검증했다. codex·gemini·grok 은
+//!   실측 뒤 별도 결재다. 킬 스위치: `CYS_DIRECT_PASTE_FENCE=0` · 상태 디렉터리 `direct-paste-fence-off`.
 //!
 //! ## 판독자(python) 와의 계약
 //! `javis_mission.py` 가 같은 정규화·같은 해시·같은 경로 규약을 구현한다. 양쪽 규칙이 갈리면
@@ -225,6 +237,19 @@ pub enum Origin {
     /// `SeatTakeover` 와 같은 성격이다: 사용자에게 **보여 주려고** pane 에 밀어 넣는 기계
     /// 문장이므로 원장에 근거가 있어야 한다. 없으면 임무 게이트가 이 주석을 오너 임무로 읽는다.
     EnvAdvisory,
+    /// ★(0.14.31 · WP-5 L) 큐 배달 **영수증** — 선기록(`Queue`) 뒤 writer `try_send` 성공 시각을
+    /// 남기는 **별도 줄**. `sha256` 은 본문 해시가 **아니라** `queue-receipt:<id>` 의 해시다:
+    /// 판독자(javis_mission)가 sha 로 색인하므로 본문 해시를 다시 쓰면 선기록 레코드(조각·
+    /// `parts_capped` 포함)를 이 줄이 덮어 조각 상한 경고를 지운다(codex 설계 검토 Q8). origin 도
+    /// `queue` 와 다르게 두어 origin 별 계수(javis_snapshot)가 배달을 이중 계수하지 않는다.
+    QueueReceipt,
+    /// ★(0.14.31 · WP-5 M) 큐 항목 **묘비** — 만료 drain(`expired`)·만료 큐 상한 축출
+    /// (`expired_evicted`)·운영자 폐기(`dropped`)로 항목이 **배달 없이** 큐에서 사라지는 사실.
+    /// "삭제 없음" 약속은 이 기록으로 정의된다: append 가 실패하면 항목은 폐기되지 않는다.
+    /// `sha256` 은 본문 해시가 아니라 `queue-tombstone:<id>:<reason>` 의 해시다 — 본문 해시를 쓰면
+    /// 배달된 적 없는 문장이 원장 대조에서 '기계 배달' 로 읽혀 오너 임무를 가린다. 본문 조각
+    /// (preview) 도 싣지 않는다(`text_sha256`·`chars` 만 — 감사용).
+    QueueTombstone,
 }
 
 impl Origin {
@@ -240,8 +265,414 @@ impl Origin {
             Origin::GuiAuto => "gui_auto",
             Origin::Supervisor => "supervisor",
             Origin::EnvAdvisory => "env_advisory",
+            Origin::QueueReceipt => "queue_receipt",
+            Origin::QueueTombstone => "queue_tombstone",
         }
     }
+}
+
+/// ★(0.14.31 · WP-5 L) 큐 배달 영수증 줄 — `deliver_head_locked` 가 writer 인계(`try_send`)에
+/// **성공한 직후** 남긴다. 선기록(origin=queue · `ts_epoch`=기록 시각)과 이 줄(`delivered_at`=
+/// 인계 시각)이 **분리**돼 있어 "기록됐으나 인계되지 못한" 배달(다음 틱 재시도)과 실제 인계를
+/// 원장만으로 가른다. 인계 뒤 이 줄을 쓰기 전에 데몬이 죽으면 그 배달은 '인계 불명' 으로 남는다
+/// (정직한 결손 — 사후 재구성하지 않는다).
+///
+/// 판독자 호환: `v`=1 · `surface`·`ts_epoch`·`sha256` 필수 키 보유(javis_mission 은 sha 로 색인하나
+/// 이 sha 는 어떤 프롬프트와도 일치하지 않는다) · origin `queue_receipt`(계수 분리).
+/// 실패는 `delivery.record_failed` 로 드러낸다(배달은 이미 일어났으므로 되돌릴 수 없다).
+pub fn record_queue_receipt(
+    daemon: &crate::state::Daemon,
+    surface_id: u64,
+    queue_entry_id: &str,
+    queue_seq: u64,
+    body_sha256: &str,
+    recorded_at: f64,
+    delivered_at: f64,
+    from_surface: Option<u64>,
+    extra: &Value,
+) -> bool {
+    let mut rec = json!({
+        "v": LEDGER_SCHEMA,
+        "surface": surface_id.to_string(),
+        "ts_epoch": delivered_at,
+        "ts": iso_utc(delivered_at),
+        "sha256": digest_normalized(&format!("queue-receipt:{queue_entry_id}")),
+        "origin": Origin::QueueReceipt.as_str(),
+        "from": from_surface.map(|s| s.to_string()),
+        "kind": "receipt",
+        "queue_entry_id": queue_entry_id,
+        "queue_seq": queue_seq,
+        "body_sha256": body_sha256,
+        "recorded_at": recorded_at,
+        "delivered_at": delivered_at,
+    });
+    if let (Some(add), Some(dst)) = (extra.as_object(), rec.as_object_mut()) {
+        for (k, v) in add {
+            dst.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    append_side_record(daemon, surface_id, Origin::QueueReceipt, &rec)
+}
+
+/// ★(0.14.31 · WP-5 M) 큐 항목 묘비 줄 — 만료·축출·폐기로 항목이 배달 없이 큐를 떠나기 **직전**
+/// 남긴다. 반환 `false` 면 호출자는 항목을 **폐기하지 않는다**(원장 없는 삭제 금지).
+/// 본문 해시는 `text_sha256`(감사용 · 색인 키 아님)에만 싣고 본문 조각은 싣지 않는다.
+///
+/// ★(0.14.31 · 수렴 R2 · reviewer-codex F3①) 이 경로는 **배치에 위임**한다. 종전에는 자체
+/// `queue_tombstone_row` + `append_side_record` 라서 배치 전용으로 삽입되던 내구성 표기
+/// (`dir_sync_capable`)를 통째로 우회했다 — Windows 에서 '경로당 1회' 고지가 이미 소비된 뒤의
+/// 단건 `queue.drop` 은 삭제되고, 고지도 억제되고, 그 묘비에 표기도 없어 **사실이 어디에도 남지
+/// 않았다**. 두 경로가 같은 줄·같은 관측을 쓰면 그 갈림이 원리상 없다(판정 분리 금지).
+pub fn record_queue_tombstone(
+    daemon: &crate::state::Daemon,
+    surface_id: u64,
+    entry: &crate::state::QueueEntry,
+    reason: &str,
+    at: f64,
+) -> bool {
+    record_queue_tombstones(daemon, surface_id, std::slice::from_ref(entry), reason, at)
+}
+
+/// 묘비 한 줄의 산식(단건·배치 공용 — 두 경로가 다른 줄을 쓰면 원장 소비자가 갈린다).
+fn queue_tombstone_row(
+    surface_id: u64,
+    entry: &crate::state::QueueEntry,
+    reason: &str,
+    at: f64,
+) -> Value {
+    let (from_surface, from_label) = split_queue_from(entry.from.as_deref());
+    json!({
+        "v": LEDGER_SCHEMA,
+        "surface": surface_id.to_string(),
+        "ts_epoch": at,
+        "ts": iso_utc(at),
+        "sha256": digest_normalized(&format!("queue-tombstone:{}:{reason}", entry.id)),
+        "origin": Origin::QueueTombstone.as_str(),
+        "from": from_surface.map(|s| s.to_string()),
+        "from_label": from_label,
+        "kind": "tombstone",
+        "reason": reason,
+        "queue_entry_id": entry.id,
+        "queue_seq": entry.seq,
+        "queue_origin": entry.origin,
+        "enqueued_at": entry.enqueued_at,
+        "expired_at": entry.expired_at,
+        "revived_at": entry.revived_at,
+        "paused_total_secs": entry.paused_total_secs,
+        "wait_secs": (at - entry.enqueued_at).max(0.0),
+        "chars": entry.text.chars().count(),
+        "text_sha256": digest_text(&entry.text),
+        "units": 0,
+    })
+}
+
+/// ★(0.14.31 · 리뷰 R2 · codex blocking/major) 묘비 **배치 기록** — 여러 항목을 한 번의 append +
+/// 한 번의 fsync 로 남긴다. 반환 true = 전부 기록됐다(부분 기록 없음 = 호출자가 그 묶음을 통째로
+/// 폐기해도 된다).
+///
+/// 【왜 배치인가】 종전에는 항목마다 `record_queue_tombstone` 을 불렀고 그 하나하나가 `sync_data`
+/// 였다. 좌석 종료 drain(최대 100건)·만료 상한 축출(틱당 20건 × 좌석 수)이 그 산식이면 한 틱에
+/// 수천 회 fsync 가 나 watchdog 이 원장 I/O 에 묶인다(codex 지적: "한 틱에 2,000회 묘비 sync").
+///
+/// 【부분 실패】 append 는 한 번의 write 이므로 "일부만 기록" 이 원리상 없다(짧은 쓰기는
+/// `write_all` 이 오류로 돌려주고, 그때 반환은 false 라 아무것도 폐기하지 않는다). 즉 삭제 허가는
+/// **전부 아니면 전무**다 — 이것이 항목별 기록보다 판정이 단순하고 안전하다.
+pub fn record_queue_tombstones(
+    daemon: &crate::state::Daemon,
+    surface_id: u64,
+    entries: &[crate::state::QueueEntry],
+    reason: &str,
+    at: f64,
+) -> bool {
+    if entries.is_empty() {
+        return true;
+    }
+    // ★(0.14.31 · triage 2026-09-08 · codex) 묘비 줄에 **디렉터리 내구화 능력**을 싣는다 —
+    //   삭제 허가의 근거가 되는 줄이므로, 그 줄이 담긴 파일 이름 자체가 내구화되지 못하는
+    //   환경이면 사후 대조에서 그것을 읽을 수 있어야 한다(침묵 금지).
+    // ★(0.14.31 · 수렴 R2 · reviewer-claude minor) 관측을 **디렉터리 생성 뒤**로 옮긴다. 종전에는
+    //   `append_side_records` 의 `create_dir_all` **앞**에서 쟀기 때문에, 설치 직후 첫 묘비 배치는
+    //   디렉터리가 아직 없어 open 이 실패하고 모든 줄에 false 가 실렸다 — 같은 호출의 `sync_dir` 은
+    //   성공하는데도(거짓 음성). 삭제 판정에는 영향이 없고 사후 대조 문면만 틀리던 결함이다.
+    // ★(0.14.31 · 수렴 R2 · reviewer-codex F3②) 이름을 `dir_synced` → `dir_sync_capable` 로 고친다.
+    //   이 값은 **쓰기 전 능력 관측**이지 '완료된 sync' 가 아니다 — 완료 여부는 이 함수의 반환값이
+    //   말한다(실패면 false 이고 아무것도 지우지 않는다). 예비 open 결과를 완료로 라벨하지 않는다.
+    let p = ledger_path(&daemon.socket_path);
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d); // 실패는 아래 append 가 같은 사유로 다시 낸다
+    }
+    let dir_sync_capable = p.parent().map(dir_sync_supported).unwrap_or(false);
+    let recs: Vec<Value> = entries
+        .iter()
+        .map(|e| {
+            let mut r = queue_tombstone_row(surface_id, e, reason, at);
+            if let Some(o) = r.as_object_mut() {
+                o.insert("dir_sync_capable".into(), Value::Bool(dir_sync_capable));
+            }
+            r
+        })
+        .collect();
+    append_side_records(daemon, surface_id, Origin::QueueTombstone, &recs)
+}
+
+/// `QueueEntry.from` 분해 — surface ref 계약(`surface:N`)이면 `from`(정수 문자열) 로, 그 밖의
+/// 임의 문자열은 `from_label` 로(§8 "원장 `from` 에 임의 문자열을 넣지 않는다").
+pub fn split_queue_from(from: Option<&str>) -> (Option<u64>, Option<String>) {
+    match from {
+        None => (None, None),
+        Some(s) => match cys::parse_surface_ref(s) {
+            Some(n) => (Some(n), None),
+            None => (None, Some(s.to_string())),
+        },
+    }
+}
+
+/// 영수증·묘비 공용 append — 회전 검사 + 1줄 append + 실패 시 `delivery.record_failed` 발행.
+fn append_side_record(
+    daemon: &crate::state::Daemon,
+    surface_id: u64,
+    origin: Origin,
+    rec: &Value,
+) -> bool {
+    append_side_records(daemon, surface_id, origin, std::slice::from_ref(rec))
+}
+
+/// 영수증·묘비 공용 **내구** append(배치) — 회전 검사 + N줄 한 번의 write + 한 번의 fsync +
+/// (회전·신규 생성 시) 디렉터리 fsync. 실패면 `delivery.record_failed` 발행 후 false.
+///
+/// ★(0.14.31 · 리뷰 R2 · codex blocking) **디렉터리 내구화**가 여기 있는 이유. 종전에는 파일만
+/// `sync_data` 했다 — 그런데 회전(rename) 직후의 첫 묘비는 **새 파일**에 들어가고, 그 파일의
+/// 디렉터리 엔트리가 내구화되지 않으면 전원 단절 뒤 파일 자체가 사라진다. 그러면 "묘비를 남겼으니
+/// 지워도 된다" 는 전제가 무너져 큐에도 원장에도 없는 항목이 생긴다(codex 반례).
+/// Windows 는 디렉터리 핸들을 열어 flush 할 수 없으므로 이 축이 **없다** — 종전과 같은 보장이며
+/// (0.14.30 과 동일) 노트에 잔여로 명기한다. 방향은 같다: 실패는 false 이고 아무것도 지우지 않는다.
+fn append_side_records(
+    daemon: &crate::state::Daemon,
+    surface_id: u64,
+    origin: Origin,
+    recs: &[Value],
+) -> bool {
+    if recs.is_empty() {
+        return true;
+    }
+    let p = ledger_path(&daemon.socket_path);
+    let fail = |why: String| -> bool {
+        daemon.bus.publish(
+            "delivery.record_failed",
+            "system",
+            Some(surface_id),
+            json!({"origin": origin.as_str(), "path": p.display().to_string(), "error": why}),
+        );
+        false
+    };
+    if let Some(d) = p.parent() {
+        if let Err(e) = std::fs::create_dir_all(d) {
+            return fail(format!("상태 디렉터리 생성 실패: {e}"));
+        }
+    }
+    // ★(0.14.31 · 리뷰 R2 · codex blocking) 회전과 append 를 **한 임계영역**에서 한다 — 종전에는
+    //   두 스레드가 동시에 `rename` 해 한 세대의 원장이 통째로 사라질 수 있었다(직렬화 없음).
+    let _lk = ledger_lock();
+    rotate_if_needed(&p);
+    match append_lines_opt(&p, recs, true) {
+        // ★(0.14.31 · 리뷰 R2 · codex B5) 디렉터리 sync 는 **조건 없이** 한다. "회전했거나 새로
+        //   만들었을 때만" 으로 좁히면, 비내구 경로(일반 배달 원장)가 먼저 회전·생성해 둔 뒤 첫
+        //   묘비가 '기존 파일' 로 판정돼 그 엔트리가 영영 내구화되지 않는다(codex 반례). 값은
+        //   fsync 한 번이고, 이 경로는 영수증(≥10s 간격)·묘비(배치 1회)뿐이라 유계다.
+        Outcome::Recorded | Outcome::Blank => match p.parent().map(sync_dir) {
+            Some(Err(DirSyncMiss::Failed(e))) => fail(format!("원장 디렉터리 sync 실패: {e}")),
+            // ★(triage 2026-09-08) 불가 환경은 삭제를 막지 않는다(가용성) — 대신 **그 사실을
+            //   이벤트로 낸다**. 이 배치의 id 를 함께 실어 사후 대조가 가능하게 한다(침묵 금지).
+            // ★경로당 **1회만** 낸다. Windows 는 이 축이 상시 없어서(디렉터리 핸들 flush 불가)
+            //   매 묘비 배치마다 같은 사실을 발행하면 이벤트 링이 그것으로 찬다 — 사실은 묘비 줄의
+            //   `dir_sync_capable:false` 에 매 줄 실려 있고, 이 이벤트는 '이 설치에서 그 축이
+            //   없다' 는 1회 고지다(침묵 금지의 최소치).
+            // ★(수렴 R2 · reviewer-codex F3) 이 접기가 성립하는 전제는 **`Unsupported` 가 능력
+            //   부재일 때만 나온다**는 것이다 — EMFILE·EIO 같은 운영 오류는 `sync_dir` 이 `Failed`
+            //   로 갈라 돌려주고 그쪽은 접히지 않는다(삭제도 막는다).
+            Some(Err(m @ DirSyncMiss::Unsupported(_))) if dir_sync_notice_first(&p) => {
+                daemon.bus.publish(
+                    "delivery.dir_sync_unsupported",
+                    "system",
+                    Some(surface_id),
+                    json!({
+                        "origin": origin.as_str(),
+                        "path": p.display().to_string(),
+                        "why": m.to_string(),
+                        "queue_entry_ids": recs
+                            .iter()
+                            .filter_map(|r| r["queue_entry_id"].as_str())
+                            .collect::<Vec<_>>(),
+                        "hint": "파일은 fsync 했으나 디렉터리 엔트리는 내구화하지 못했다 — \
+                                 이 줄들은 묘비에 dir_sync_capable:false 로도 실려 있다",
+                    }),
+                );
+                true
+            }
+            _ => true,
+        },
+        Outcome::Failed(why) => fail(why),
+    }
+}
+
+/// 원장 파일 경로에 대한 프로세스 전역 직렬화 락(회전 경합 차단). 원장은 한 파일이고 append 는
+/// 짧다 — 이 락이 만드는 대기는 fsync 한 번 수준이며, 그 대가로 회전이 원자가 된다.
+fn ledger_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// ★(0.14.31 · triage 2026-09-08 · codex) 디렉터리 내구화의 **3값** — `Ok(())` = Durable.
+///
+/// 종전에는 `File::open` 실패를 전부 `Ok(())` 로 접었다(= 성공). 가용성 논거 자체는 타당하다
+/// (핸들을 못 여는 환경에서 실패로 치면 묘비가 영영 성공하지 못해 만료 큐가 무한히 자란다).
+/// 틀린 것은 **그 사실을 성공과 구별하지 않은 것**이다 — 호출부는 반환값을 "삭제해도 된다" 로
+/// 소비하므로, 쓰기·탐색만 되고 읽기가 막힌 디렉터리(0o333)에서는 이름이 내구화되지 않은 채
+/// 삭제가 허가되고 전원 단절 시 항목과 묘비가 함께 사라진다. 지금은 갈라서 돌려준다:
+/// `Unsupported` 는 삭제를 막지 않되 **침묵하지 않고**(이벤트로 드러난다), `Failed` 는 막는다.
+#[derive(Debug)]
+pub(crate) enum DirSyncMiss {
+    /// 디렉터리 핸들을 열 수 없다 — 이 축이 없는 환경(종전 0.14.30 과 같은 보장).
+    Unsupported(String),
+    /// 열었는데 fsync 가 실패했다 — 진짜 내구성 실패(삭제 불허 · 항목 보존).
+    Failed(String),
+}
+
+impl std::fmt::Display for DirSyncMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DirSyncMiss::Unsupported(e) => write!(f, "디렉터리 핸들 불가: {e}"),
+            DirSyncMiss::Failed(e) => write!(f, "디렉터리 fsync 실패: {e}"),
+        }
+    }
+}
+
+/// 이 경로에 대해 "디렉터리 내구화 축 없음" 을 **아직 고지하지 않았는가**(고지하면 참을 돌려주고
+/// 그 경로를 기억한다 — 프로세스 수명 동안 1회).
+fn dir_sync_notice_first(p: &Path) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(p.to_path_buf())
+}
+
+/// 이 디렉터리에 **핸들을 열 수 있는가**(= 내구화 축이 존재하는가). fsync 는 하지 않는다 —
+/// 묘비 줄의 `dir_synced` 표기용 사전 관측이다.
+#[cfg(unix)]
+fn dir_sync_supported(d: &Path) -> bool {
+    std::fs::File::open(d).is_ok()
+}
+
+#[cfg(not(unix))]
+fn dir_sync_supported(_d: &Path) -> bool {
+    false
+}
+
+/// ★(0.14.31 · 수렴 R2 · reviewer-codex F4) 디렉터리 fsync 의 **관측 가능한 seam**.
+///
+/// 【왜 함수 하나를 더 두는가】 F4 는 "제품 코드의 open 성공 분기를 `Ok(_f) => Ok(())` 로 바꾸는
+/// 변이가 내구성 검체를 그대로 통과한다" 는 지적이었다 — 권한 검체는 손대지 않은 EACCES 분기에서
+/// 오류를 받고, 평범한 readback 은 flush 된 데이터와 캐시된 데이터를 구분하지 못하기 때문이다.
+/// 그래서 **fsync 를 실제로 불렀는가**를 잴 수 있는 자리를 만든다: 그 변이는 이 함수를 거치지
+/// 않으므로 시도 계수가 늘지 않고, 검체
+/// [`dir_sync_is_attempted_and_its_failure_blocks_deletion`] 이 그 자리에서 실패한다.
+/// 계수·주입은 **스레드 로컬**이라 병렬 러너에서 다른 검체와 섞이지 않는다.
+#[cfg(test)]
+pub(crate) mod dir_sync_probe {
+    use std::cell::Cell;
+    thread_local! {
+        static ATTEMPTS: Cell<u64> = const { Cell::new(0) };
+        static REAL_ERRS: Cell<u64> = const { Cell::new(0) };
+        static FAULT: Cell<bool> = const { Cell::new(false) };
+    }
+    /// ★(0.14.31 · 성찰 Q10) **실제 `sync_all()` 이 반환한 뒤** 불린다 — 계수가 호출 앞에 있으면
+    /// 호출만 상수로 치운 변이가 계수를 그대로 통과한다. `real_err` 는 그 반환이 정말 실패였는지
+    /// (주입이 아니라)를 나눈다.
+    pub(crate) fn note_call(real_err: bool) {
+        ATTEMPTS.with(|c| c.set(c.get().saturating_add(1)));
+        if real_err {
+            REAL_ERRS.with(|c| c.set(c.get().saturating_add(1)));
+        }
+    }
+    pub(crate) fn attempts() -> u64 {
+        ATTEMPTS.with(Cell::get)
+    }
+    /// 주입이 아닌 **실제 syscall** 이 실패한 횟수.
+    pub(crate) fn real_errors() -> u64 {
+        REAL_ERRS.with(Cell::get)
+    }
+    pub(crate) fn fault_armed() -> bool {
+        FAULT.with(Cell::get)
+    }
+    /// 디렉터리 fsync 실패 주입(RAII — 스코프를 벗어나면 패닉에도 반드시 풀린다).
+    pub(crate) struct Fault;
+    impl Fault {
+        pub(crate) fn arm() -> Self {
+            FAULT.with(|c| c.set(true));
+            Self
+        }
+    }
+    impl Drop for Fault {
+        fn drop(&mut self) {
+            FAULT.with(|c| c.set(false));
+        }
+    }
+}
+
+/// 열린 디렉터리 핸들의 실제 fsync — 시도 사실이 여기서 관측된다(위 `dir_sync_probe` 참조).
+///
+/// ★(0.14.31 · 성찰 Q10) **실제 syscall 이 언제나 먼저 돈다.** 관측(계수)도 실패 주입도 그
+/// **반환값에** 붙는다. 종전에는 둘 다 `f.sync_all()` **앞**에 있어서, 그 한 줄만 성공 상수로
+/// 치환하는 변이가 계수도 주입 분기도 그대로 통과했다 — F4 가 세운 seam 이 '호출했다' 가 아니라
+/// '이 함수에 들어왔다' 만 재고 있었다. 지금은 계수가 반환 뒤에 서고, 동기화가 원리상 불가능한
+/// fd 를 물린 검체([`tests::dir_sync_seam_makes_the_real_syscall_not_just_the_probe`])가 그 변이를
+/// 죽인다(변이는 그 fd 에서도 `Ok` 를 낸다). 주입은 실제 호출 **뒤** 결과만 갈아끼우므로
+/// '실패했을 때 무엇을 하는가' 축은 종전과 같다.
+#[cfg(unix)]
+fn fsync_dir_handle(f: &std::fs::File) -> std::io::Result<()> {
+    let real = f.sync_all();
+    #[cfg(test)]
+    {
+        dir_sync_probe::note_call(real.is_err());
+        if dir_sync_probe::fault_armed() {
+            return Err(std::io::Error::other("주입: 디렉터리 fsync 실패"));
+        }
+    }
+    real
+}
+
+/// 이 open 실패가 **능력 부재**인가(= 이 환경에는 디렉터리 내구화 축이 없다), 아니면 운영 오류인가.
+///
+/// ★(0.14.31 · 수렴 R2 · reviewer-codex F3②) 종전에는 open 실패를 **전부** `Unsupported` 로 접었다.
+/// 그러면 EMFILE(fd 고갈)·EIO 같은 **일시 운영 오류**가 '축 없음' 으로 분류되고, 경로당 1회 고지가
+/// 이미 소비된 뒤라면 조용히 삭제가 허가된다 — 줄은 `dir_sync_capable:true` 를 주장하는데 실제로는
+/// sync 가 없었던 상태다. 능력 부재는 권한·미지원뿐이고, 나머지는 `Failed`(삭제 불허 · 항목 보존 ·
+/// 다음 틱 재시도)로 간다.
+#[cfg(unix)]
+fn dir_sync_capability_absent(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+    )
+}
+
+/// 디렉터리 엔트리 내구화(unix). `Ok(())` 는 **실제로 fsync 했다**는 뜻뿐이다.
+#[cfg(unix)]
+fn sync_dir(d: &Path) -> Result<(), DirSyncMiss> {
+    match std::fs::File::open(d) {
+        Ok(f) => fsync_dir_handle(&f).map_err(|e| DirSyncMiss::Failed(e.to_string())),
+        Err(e) if dir_sync_capability_absent(&e) => Err(DirSyncMiss::Unsupported(e.to_string())),
+        Err(e) => Err(DirSyncMiss::Failed(e.to_string())),
+    }
+}
+
+/// Windows: 디렉터리 핸들 open 이 불가하므로 축 자체가 없다 — **`Unsupported`** 다(종전 동작
+/// 유지: 삭제를 막지 않는다). 종전에는 이것이 `Ok` 여서 "내구화했다" 와 구별되지 않았다.
+#[cfg(not(unix))]
+fn sync_dir(_d: &Path) -> Result<(), DirSyncMiss> {
+    Err(DirSyncMiss::Unsupported("windows: 디렉터리 핸들 flush 불가".into()))
 }
 
 /// `record` 의 결과 — 종전 `bool` 은 "공백이라 안 씀"과 "쓰려다 실패"를 같은 false 로 뭉쳐서
@@ -414,6 +845,9 @@ pub fn write_boot_sentinel(socket_path: &Path) -> Outcome {
             return Outcome::Failed(format!("상태 디렉터리 생성 실패: {e}"));
         }
     }
+    // ★(0.14.31 · 리뷰 R2 · codex blocking) 회전 직렬화 — 두 스레드의 동시 rename 은 한 세대의
+    //   원장을 통째로 날린다(`.jsonl.1` 이 두 번 덮인다).
+    let _lk = ledger_lock();
     rotate_if_needed(&p);
     let epoch = crate::state::now_epoch();
     let rec = json!({
@@ -435,13 +869,43 @@ pub fn write_boot_sentinel(socket_path: &Path) -> Outcome {
 /// 원장 파일에 JSON 1줄 append(공통부). append 모드 단일 write — O_APPEND 라 여러 스레드가
 /// 붙어도 라인이 섞이지 않는다(PIPE_BUF 이하 · 레코드는 수백 바이트).
 fn append_line(p: &Path, rec: &Value) -> Outcome {
-    append_lines(p, std::slice::from_ref(rec))
+    append_lines_opt(p, std::slice::from_ref(rec), false)
 }
 
 /// 여러 레코드를 **한 번 열어** append 한다(R6 조각 기록용). 파일 열기는 1회지만 write 는
 /// `APPEND_CHUNK_BYTES` 이하로 끊는다 — 한 번에 수십 KB 를 쓰면 O_APPEND 원자성이 깨져
 /// 동시 기록자와 줄이 섞일 수 있기 때문이다(섞인 줄은 판독자에서 `ledger_bad_lines`).
 fn append_lines(p: &Path, recs: &[Value]) -> Outcome {
+    append_lines_opt(p, recs, false)
+}
+
+/// 원장 파일의 **마지막 바이트가 개행인가**(빈 파일은 참). 읽지 못하면 거짓으로 접는다 —
+/// 그때 대가는 빈 줄 하나이고, 반대로 접으면 판독 불가한 줄이 생긴다(비대칭이 분명하다).
+fn ledger_tail_is_newline(p: &Path, f: &std::fs::File) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = match f.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return false,
+    };
+    if len == 0 {
+        return true;
+    }
+    // append 핸들은 읽기 권한이 없다 — 별도 읽기 핸들로 꼬리 1바이트만 본다.
+    let mut rf = match std::fs::File::open(p) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    if rf.seek(SeekFrom::Start(len - 1)).is_err() {
+        return false;
+    }
+    let mut b = [0u8; 1];
+    match rf.read_exact(&mut b) {
+        Ok(()) => b[0] == b'\n',
+        Err(_) => false,
+    }
+}
+
+fn append_lines_opt(p: &Path, recs: &[Value], durable: bool) -> Outcome {
     if recs.is_empty() {
         return Outcome::Recorded;
     }
@@ -449,7 +913,18 @@ fn append_lines(p: &Path, recs: &[Value]) -> Outcome {
         Ok(f) => f,
         Err(e) => return Outcome::Failed(format!("원장 open 실패({}): {e}", p.display())),
     };
+    // ★(0.14.31 · triage 2026-09-08 · codex blocking) **경계 복구.** `write_all` 은 짧은 쓰기
+    //   (ENOSPC·EIO)에서 **이미 쓴 바이트를 되돌리지 않는다** — 즉 직전 시도가 줄 중간에서
+    //   끊겼을 수 있다. 그 조각에 다음 줄을 이어 붙이면 첫 줄이 `부분 JSON + 완전 JSON` 이 되어
+    //   **판독 불가**가 되는데, 반환은 성공이라 호출부가 그 배치를 지운다("원장 없는 삭제는
+    //   하지 않는다" 는 불변이 그 항목에서 깨진다 · 종전 doc 의 "append 는 한 번의 write 이므로
+    //   부분 기록이 원리상 없다" 는 사실오류였다). 그래서 꼬리가 개행이 아니면 **개행을 먼저**
+    //   쓴다. 빈 줄은 모든 판독기가 건너뛰므로(줄 단위 JSON) 무해하고, 읽지 못하는 경우에도
+    //   개행을 쓰는 쪽으로 접는다(이어붙임보다 빈 줄이 싸다).
     let mut buf = String::new();
+    if !ledger_tail_is_newline(p, &f) {
+        buf.push('\n');
+    }
     for rec in recs {
         let mut line = rec.to_string();
         line.push('\n');
@@ -461,10 +936,15 @@ fn append_lines(p: &Path, recs: &[Value]) -> Outcome {
         }
         buf.push_str(&line);
     }
-    match f.write_all(buf.as_bytes()).and_then(|_| f.flush()) {
-        Ok(()) => Outcome::Recorded,
-        Err(e) => Outcome::Failed(format!("원장 write 실패: {e}")),
+    if let Err(e) = f.write_all(buf.as_bytes()).and_then(|_| f.flush()) {
+        return Outcome::Failed(format!("원장 write 실패: {e}"));
     }
+    if durable {
+        if let Err(e) = f.sync_data() {
+            return Outcome::Failed(format!("원장 sync 실패: {e}"));
+        }
+    }
+    Outcome::Recorded
 }
 
 /// ★R6 — 이 텍스트가 pane 에 **몇 번에 나눠 제출되는가**(정규화된 제출 단위 목록).
@@ -494,12 +974,13 @@ pub fn submit_units(text: &str) -> Vec<String> {
 
 /// 크기 상한 초과 시 1세대 회전. 실패는 무시(회전 실패가 기록을 막으면 판별이 열린다 —
 /// 원장 부재는 곧 게이트 개방 방향이므로, 회전보다 기록 지속이 우선이다).
-fn rotate_if_needed(p: &Path) {
+fn rotate_if_needed(p: &Path) -> bool {
     if let Ok(m) = std::fs::metadata(p) {
         if m.len() > LEDGER_MAX_BYTES {
-            let _ = std::fs::rename(p, p.with_extension("jsonl.1"));
+            return std::fs::rename(p, p.with_extension("jsonl.1")).is_ok();
         }
     }
+    false
 }
 
 /// ★주입 **직전** 호출 — 배달 사실을 원장에 append 한다.
@@ -612,6 +1093,9 @@ pub fn record_full_with(
             return blank(Outcome::Failed(format!("상태 디렉터리 생성 실패: {e}")));
         }
     }
+    // ★(0.14.31 · 리뷰 R2 · codex blocking) 회전 직렬화 — 두 스레드의 동시 rename 은 한 세대의
+    //   원장을 통째로 날린다(`.jsonl.1` 이 두 번 덮인다).
+    let _lk = ledger_lock();
     rotate_if_needed(&p);
     let epoch = crate::state::now_epoch();
     let preview: String = norm.chars().take(PREVIEW_CHARS).collect();
@@ -1246,6 +1730,414 @@ pub(crate) mod tests {
             let d = ledger_path(Path::new("/Users/x/.local/state/cys-dept-a/cys.sock"));
             assert_ne!(d, p, "부서 레인은 base 원장과 분리된다");
         });
+    }
+
+    /// ★(0.14.31 · 리뷰 R2 · codex blocking B5/B6ⓑ) **회전 뒤 첫 묘비도 원장에 남는다(행위 검증).**
+    ///
+    /// 종전 검체는 소스 문자열만 봤다 — `sync_data` 를 실행되지 않는 분기로 옮겨도 통과했다.
+    /// 여기서는 상한을 넘긴 원장에 실제로 묘비를 써서 ⓐ회전본(`.jsonl.1`)이 생기고 ⓑ **새 파일**에서
+    /// 그 줄이 다시 읽히고 ⓒ 여러 건을 **한 번의 append** 로 남긴 배치도 같은 성질을 갖는지 본다.
+    /// (fsync·디렉터리 fsync 의 실행 자체는 단위 검체로 관측할 수 없다 — 그 축은 소스핀 + 실패
+    ///  주입으로만 지킨다. 전원 단절 실증은 not-tested 다.)
+    #[test]
+    fn wp5_r2_tombstone_after_rotation_is_readable_from_the_new_ledger() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.local/state/cys/cys.sock");
+            let daemon = crate::state::Daemon::new(sock.to_path_buf());
+            let p = ledger_path(sock);
+            let mk = |id: &str, text: &str| crate::state::QueueEntry {
+                id: id.into(),
+                seq: 1,
+                text: text.into(),
+                enqueued_at: crate::state::now_epoch() - 10.0,
+                from: Some("surface:3".into()),
+                origin: "send".into(),
+                ttl_secs: None,
+                paused_total_secs: 0.0,
+                expired_at: Some(crate::state::now_epoch()),
+                revived_at: None,
+                expired_notified: false,
+                expired_event_sent: false,
+            };
+            std::fs::create_dir_all(p.parent().unwrap()).expect("상태 디렉터리");
+            // 상한을 넘긴 원장(회전 조건) — 한 줄이 아주 긴 JSON 이어도 상관없다(크기만 본다).
+            let filler = format!("{}\n", "x".repeat(4096));
+            {
+                use std::io::Write;
+                let mut f = std::fs::File::create(&p).expect("원장 생성");
+                for _ in 0..((LEDGER_MAX_BYTES / 4096) + 2) {
+                    f.write_all(filler.as_bytes()).expect("채움");
+                }
+            }
+            let entry = mk("wp5-r2-rot", "회전 직후 묘비");
+            assert!(record_queue_tombstone(&daemon, 9, &entry, "dropped", 1.0), "회전 뒤 묘비 실패");
+            assert!(p.with_extension("jsonl.1").exists(), "회전본이 생기지 않았다");
+            let body = std::fs::read_to_string(&p).expect("새 원장");
+            let rec: Value = body
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .find(|r: &Value| r["queue_entry_id"] == "wp5-r2-rot")
+                .expect("새 파일에서 묘비 줄을 못 읽었다");
+            assert_eq!(rec["origin"], "queue_tombstone");
+            // ⓒ 배치 — 3건이 한 번의 append 로 들어가고 전부 읽힌다(전부 아니면 전무).
+            let batch: Vec<crate::state::QueueEntry> = (0..3)
+                .map(|i| mk(&format!("wp5-r2-batch{i}"), &format!("배치 {i}")))
+                .collect();
+            assert!(record_queue_tombstones(&daemon, 9, &batch, "expired", 2.0), "배치 묘비 실패");
+            let body2 = std::fs::read_to_string(&p).expect("원장");
+            for i in 0..3 {
+                assert!(
+                    body2.contains(&format!("wp5-r2-batch{i}")),
+                    "배치 묘비 {i} 가 원장에 없다"
+                );
+            }
+            // ⓓ 실패 주입 — 기록 불능이면 배치 전체가 false 다(부분 삭제 허가 없음).
+            std::fs::remove_file(&p).ok();
+            std::fs::create_dir_all(&p).expect("경로를 디렉터리로 — 기록 불능 주입");
+            assert!(
+                !record_queue_tombstones(&daemon, 9, &batch, "expired", 3.0),
+                "기록 불능인데 폐기를 허가했다"
+            );
+        });
+    }
+
+    /// ★[triage · codex blocking(재유도 severity=minor)] **디렉터리를 열지 못한 것은 내구화 성공이 아니다.**
+    ///
+    /// `sync_dir` 은 `File::open` 오류를 전부 `Ok(())` 로 접는다(가용성 논거: 핸들을 못 여는 파일
+    /// 시스템에서 묘비가 영영 성공하지 못하면 만료 큐가 무한히 자란다 — 그 논거 자체는 타당하다).
+    /// 그러나 반환값의 의미는 호출부에서 **"삭제해도 된다"** 로 소비된다. 쓰기·탐색은 되는데 읽기가
+    /// 막힌 디렉터리(0o333)에서 새 원장 파일을 만들면 그 이름이 내구화되지 않은 채 삭제가 허가되고,
+    /// 전원 단절 시 항목과 묘비가 함께 사라진다. 최소 요구: 내구화하지 못했다는 사실이 성공과
+    /// 구별돼야 한다(불가 플랫폼의 보장은 별도로 정의).
+    #[cfg(unix)]
+    #[test]
+    fn triage_wp5_dir_sync_that_cannot_open_must_not_be_reported_as_durable() {
+        use std::os::unix::fs::PermissionsExt;
+        with_state_dir(|td| {
+            let d = td.join("triage-unreadable");
+            std::fs::create_dir_all(&d).expect("디렉터리");
+            let mut perm = std::fs::metadata(&d).expect("메타").permissions();
+            perm.set_mode(0o333); // 쓰기·탐색 가능 · 읽기 불가 → open 은 EACCES
+            std::fs::set_permissions(&d, perm).expect("권한");
+            let bypasses = std::fs::File::open(&d).is_ok();
+            let verdict = sync_dir(&d);
+            let mut perm = std::fs::metadata(&d).expect("메타").permissions();
+            perm.set_mode(0o755);
+            let _ = std::fs::set_permissions(&d, perm);
+            if bypasses {
+                eprintln!("SKIP: 이 실행 주체는 디렉터리 권한을 우회한다(root) — 축을 잴 수 없다");
+                return;
+            }
+            assert!(
+                verdict.is_err(),
+                "디렉터리 핸들을 열지 못했는데 내구화 성공을 반환했다 — 호출부는 그것을 삭제 허가로 읽는다"
+            );
+        });
+    }
+
+    /// ★[수렴 R2 · reviewer-codex F4] **디렉터리 sync 는 실제로 시도되고, 그 실패는 삭제를 막는다.**
+    ///
+    /// 종전 검체는 둘 다 이 축을 재지 못했다 — 권한 검체(0o333)는 손대지 않은 **open 실패** 분기를
+    /// 태우고, 내구성 출처 단언은 문자열 존재만 본다. 그래서 "open 성공 분기를 `Ok(_f) => Ok(())` 로
+    /// 바꾸는" 내구화 제거 변이가 초록을 그대로 받았다(평범한 readback 은 flush 된 데이터와 캐시된
+    /// 데이터를 구분하지 못한다). 여기서는 seam(`fsync_dir_handle`)으로 둘을 직접 잰다:
+    ///   ① 성공 배치가 디렉터리 fsync 를 **실제로 불렀는가**(그 변이는 계수가 0 이라 여기서 죽는다)
+    ///   ② 그 fsync 가 실패하면 반환이 false 인가(= 호출자가 아무것도 지우지 않는다)
+    #[cfg(unix)]
+    #[test]
+    fn dir_sync_is_attempted_and_its_failure_blocks_deletion() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.local/state/cys/cys.sock");
+            let daemon = crate::state::Daemon::new(sock.to_path_buf());
+            let mk = |id: &str| crate::state::QueueEntry {
+                id: id.into(),
+                seq: 1,
+                text: "본문".into(),
+                enqueued_at: crate::state::now_epoch() - 10.0,
+                from: Some("surface:3".into()),
+                origin: "send".into(),
+                ttl_secs: None,
+                paused_total_secs: 0.0,
+                expired_at: Some(crate::state::now_epoch()),
+                revived_at: None,
+                expired_notified: false,
+                expired_event_sent: false,
+            };
+            // ① 시도 — 성공 배치는 디렉터리 fsync 를 반드시 거친다.
+            let before = dir_sync_probe::attempts();
+            assert!(
+                record_queue_tombstones(&daemon, 11, &[mk("f4-ok")], "expired", 5.0),
+                "정상 경로가 묘비 기록에 실패했다(검체 전제)"
+            );
+            assert!(
+                dir_sync_probe::attempts() > before,
+                "묘비 배치가 디렉터리 fsync 를 한 번도 시도하지 않았다 — \
+                 내구화 제거 변이(Ok(_f) => Ok(()))가 이 자리에서 잡히지 않는다"
+            );
+            // 같은 줄이 능력 관측을 싣는다(사후 대조 문면 · 단건 경로도 배치에 위임하므로 동일).
+            let p = ledger_path(sock);
+            let body = std::fs::read_to_string(&p).expect("원장");
+            let row: serde_json::Value = body
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .find(|r: &serde_json::Value| r["queue_entry_id"] == "f4-ok")
+                .expect("묘비 줄");
+            assert!(row.get("dir_sync_capable").is_some(), "묘비 줄에 내구화 능력 표기가 없다");
+            // ② 실패 — 디렉터리 fsync 가 실패하면 폐기를 허가하지 않는다.
+            {
+                let _fault = dir_sync_probe::Fault::arm();
+                let armed = dir_sync_probe::attempts();
+                assert!(
+                    !record_queue_tombstones(&daemon, 11, &[mk("f4-fail")], "expired", 6.0),
+                    "디렉터리 fsync 가 실패했는데 폐기를 허가했다(전원 단절이 삭제만 남긴다)"
+                );
+                assert!(dir_sync_probe::attempts() > armed, "주입 경로가 seam 을 거치지 않았다");
+            }
+            // 주입 해제 뒤에는 다시 성공한다(RAII 가 실제로 풀렸는가 · 다른 검체 오염 방지).
+            assert!(record_queue_tombstones(&daemon, 11, &[mk("f4-after")], "expired", 7.0));
+        });
+    }
+
+    /// ★(0.14.31 · 성찰 Q10) **seam 이 재는 것은 "실제 fsync 를 불렀다" 이지 "이 함수에 들어왔다"
+    /// 가 아니다.**
+    ///
+    /// 【무엇이 틀렸었나】 F4 가 세운 seam 은 계수와 실패 주입을 `f.sync_all()` **앞**에 두었다.
+    /// 그래서 그 한 줄만 성공 상수(`Ok(())`)로 치환하는 내구화 제거 변이가 시도 계수도(늘어난다)
+    /// 주입 분기도(그대로 산다) 통과했다 — 위 검체 ①②는 둘 다 초록을 받는다. 원장 줄은
+    /// `dir_sync_capable:true` 를 주장하는데 디렉터리 엔트리는 어디에도 flush 되지 않은 상태이고,
+    /// 그 상태에서 전원이 끊기면 **삭제만 남고 묘비는 사라진다**(이 축이 지키려던 바로 그 손실).
+    ///
+    /// 【무엇으로 잡는가】 동기화가 **원리상 불가능한 fd**(소켓 쌍의 한쪽)를 seam 에 물린다.
+    /// 실제 syscall 이 돌면 반드시 `Err` 이고(macOS EBADF · Linux EINVAL — 어느 쪽이든 오류),
+    /// 호출을 지운 변이는 `Ok` 를 낸다. 계수는 반환 **뒤에** 서므로 "실패도 실제 호출의 것"임을
+    /// `real_errors()` 로 함께 잰다(주입은 이 검체에서 무장하지 않는다).
+    ///
+    /// 대조군: 같은 seam 에 **진짜 디렉터리**를 물리면 성공한다 — 위 단언이 "무엇을 줘도 Err" 로
+    /// 만족되는 눈먼 계측기가 아님을 고정한다.
+    #[cfg(unix)]
+    #[test]
+    fn dir_sync_seam_makes_the_real_syscall_not_just_the_probe() {
+        use std::os::unix::io::{FromRawFd, IntoRawFd};
+        with_state_dir(|dir| {
+            assert!(!dir_sync_probe::fault_armed(), "검체 전제: 주입이 무장돼 있지 않다");
+            let (a, _b) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+            // SAFETY: `into_raw_fd` 로 소유권을 넘겨받은 fd 하나뿐이고, File 이 drop 에서 닫는다.
+            let sock = unsafe { std::fs::File::from_raw_fd(a.into_raw_fd()) };
+            let calls = dir_sync_probe::attempts();
+            let real_errs = dir_sync_probe::real_errors();
+            assert!(
+                fsync_dir_handle(&sock).is_err(),
+                "동기화할 수 없는 fd 인데 성공을 반환했다 — 실제 fsync 호출이 없다\
+                 (내구화 제거 변이가 seam 을 통과한다)"
+            );
+            assert_eq!(
+                dir_sync_probe::attempts(),
+                calls + 1,
+                "seam 계수가 실제 호출 뒤에 서지 않는다"
+            );
+            assert_eq!(
+                dir_sync_probe::real_errors(),
+                real_errs + 1,
+                "실패가 실제 syscall 의 것이 아니다(주입·조기 return 이 대신했다)"
+            );
+            // 대조군 — 진짜 디렉터리는 성공한다(계측기가 눈멀지 않았다).
+            let d = std::fs::File::open(dir).expect("상태 디렉터리 핸들");
+            assert!(
+                fsync_dir_handle(&d).is_ok(),
+                "정상 디렉터리 fsync 가 실패했다 — 이 검체의 계측기가 고장났다"
+            );
+            assert_eq!(
+                dir_sync_probe::real_errors(),
+                real_errs + 1,
+                "성공 호출이 실패 계수를 늘렸다"
+            );
+        });
+    }
+
+    /// ★[수렴 R2 · reviewer-codex F3①] **단건 묘비도 배치와 같은 줄을 쓴다.**
+    ///
+    /// 종전에는 `record_queue_tombstone`(단건)이 자체 경로라 배치 전용 내구성 표기를 통째로
+    /// 우회했다 — Windows 에서 '경로당 1회' 고지가 이미 소비된 뒤의 단건 `queue.drop` 은 삭제되고,
+    /// 고지도 억제되고, 묘비에 표기도 없어 사실이 어디에도 남지 않았다.
+    #[test]
+    fn single_and_batch_tombstones_carry_the_same_durability_field() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.local/state/cys/cys.sock");
+            let daemon = crate::state::Daemon::new(sock.to_path_buf());
+            let mk = |id: &str| crate::state::QueueEntry {
+                id: id.into(),
+                seq: 1,
+                text: "본문".into(),
+                enqueued_at: crate::state::now_epoch() - 10.0,
+                from: Some("surface:3".into()),
+                origin: "send".into(),
+                ttl_secs: None,
+                paused_total_secs: 0.0,
+                expired_at: Some(crate::state::now_epoch()),
+                revived_at: None,
+                expired_notified: false,
+                expired_event_sent: false,
+            };
+            assert!(record_queue_tombstone(&daemon, 12, &mk("f3-single"), "dropped", 5.0));
+            assert!(record_queue_tombstones(&daemon, 12, &[mk("f3-batch")], "expired", 6.0));
+            let body = std::fs::read_to_string(ledger_path(sock)).expect("원장");
+            let rows: Vec<serde_json::Value> =
+                body.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+            for id in ["f3-single", "f3-batch"] {
+                let r = rows
+                    .iter()
+                    .find(|r| r["queue_entry_id"] == id)
+                    .unwrap_or_else(|| panic!("묘비 줄 없음: {id}"));
+                assert!(
+                    r["dir_sync_capable"].is_boolean(),
+                    "{id}: 내구성 표기가 없다 — 단건과 배치가 다른 줄을 쓴다"
+                );
+                assert_eq!(r["origin"], "queue_tombstone", "{id}: origin 이 갈렸다");
+            }
+        });
+    }
+
+    /// ★[triage · codex blocking] **부분 쓰기 뒤의 재시도는 읽을 수 없는 묘비로 삭제를 허가한다.**
+    ///
+    /// `record_queue_tombstones` 의 doc 은 "append 는 한 번의 write 이므로 '일부만 기록' 이 원리상
+    /// 없다" 고 적었지만 `write_all` 은 **이미 쓴 바이트를 되돌리지 않는다**(ENOSPC·EIO 는 접두를
+    /// 남기고 Err 를 돌려준다). 다음 호출은 그 접두에 이어 붙으므로 첫 줄이
+    /// `A의 부분 JSON + A의 완전 JSON` 이 되어 **파싱 불가**다. 그런데 반환은 `true` 라 호출부는
+    /// A·B 를 모두 지운다 — "원장 없는 삭제는 하지 않는다" 는 불변이 A 에서 깨진다.
+    /// 이 검체는 실패한 append 가 남긴 상태(꼬리에 개행 없는 조각)를 그대로 조립해 재시도한다.
+    #[test]
+    fn triage_wp5_partial_ledger_line_must_not_authorize_deletion() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.local/state/cys/cys.sock");
+            let daemon = crate::state::Daemon::new(sock.to_path_buf());
+            let mk = |id: &str, text: &str| crate::state::QueueEntry {
+                id: id.into(),
+                seq: 1,
+                text: text.into(),
+                enqueued_at: crate::state::now_epoch() - 10.0,
+                from: Some("surface:3".into()),
+                origin: "send".into(),
+                ttl_secs: None,
+                paused_total_secs: 0.0,
+                expired_at: Some(crate::state::now_epoch()),
+                revived_at: None,
+                expired_notified: false,
+                expired_event_sent: false,
+            };
+            let batch = vec![mk("triage-tomb-a", "A 본문"), mk("triage-tomb-b", "B 본문")];
+            let p = ledger_path(sock);
+            std::fs::create_dir_all(p.parent().unwrap()).expect("상태 디렉터리");
+            // 직전 시도가 A 의 행 중간에서 실패했다 — 접두는 파일에 남아 있다(개행 없음).
+            {
+                use std::io::Write;
+                let partial = queue_tombstone_row(9, &batch[0], "expired_evicted", 1.0).to_string();
+                let cut = partial.len() / 2;
+                let mut f = std::fs::File::create(&p).expect("원장 생성");
+                f.write_all(partial[..cut].as_bytes()).expect("부분 쓰기 모사");
+            }
+            // 공간이 회복돼 재시도한다 — 반환 true = 호출부는 A·B 를 지운다.
+            assert!(
+                record_queue_tombstones(&daemon, 9, &batch, "expired_evicted", 2.0),
+                "전제: 재시도 append 는 성공한다"
+            );
+            let body = std::fs::read_to_string(&p).expect("원장");
+            let readable: Vec<String> = body
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter_map(|r| r["queue_entry_id"].as_str().map(String::from))
+                .collect();
+            for e in &batch {
+                assert!(
+                    readable.contains(&e.id),
+                    "삭제를 허가했는데 {}의 묘비가 판독 불가다(첫 줄이 '부분 JSON + 완전 JSON') — \
+                     원장 대조에서 그 항목은 흔적 없이 사라진 것으로 보인다",
+                    e.id
+                );
+            }
+        });
+    }
+
+    /// ★(0.14.31 · 리뷰 R1 · codex blocking) **묘비·영수증은 내구 append 다.**
+    ///
+    /// 묘비의 `true` 는 "이 항목을 지워도 된다" 는 **유일한 근거**이고, 그 삭제는 곧바로 WAL 원자
+    /// 치환(fsync 동반)으로 내구화된다. 원장이 페이지 캐시에만 있으면 전원 단절이 삭제만 남기고
+    /// 근거를 잃는다(항목도 없고 기록도 없다). 여기서 재는 것:
+    ///   ⓐ 기록 불능(경로가 디렉터리)이면 `false` — 호출부는 항목을 폐기하지 않는다.
+    ///   ⓑ 성공이면 그 줄이 **디스크에서 즉시 읽힌다**.
+    ///   ⓒ 소스핀 — 부수 레코드 경로가 내구 append(`sync_data`)를 쓴다(fsync 자체는 단위 검체로
+    ///      관측할 수 없다 · 전원 단절 실증은 not-tested 로 남긴다).
+    #[test]
+    fn wp5_r1_side_records_use_a_durable_append() {
+        with_state_dir(|_td| {
+            let sock = Path::new("/Users/x/.local/state/cys/cys.sock");
+            let daemon = crate::state::Daemon::new(sock.to_path_buf());
+            let entry = crate::state::QueueEntry {
+                id: "wp5-r1-tomb".into(),
+                seq: 5,
+                text: "[보고] 묘비 본문".into(),
+                enqueued_at: crate::state::now_epoch() - 10.0,
+                from: Some("surface:3".into()),
+                origin: "send".into(),
+                ttl_secs: None,
+                paused_total_secs: 0.0,
+                expired_at: Some(crate::state::now_epoch()),
+                revived_at: None,
+                expired_notified: false,
+                expired_event_sent: false,
+            };
+            // ⓐ 기록 불능 — 원장 경로를 디렉터리로 막는다(POSIX·Windows 공통 실패).
+            let p = ledger_path(sock);
+            if let Some(d) = p.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            std::fs::create_dir_all(&p).expect("실패 주입용 디렉터리");
+            assert!(
+                !record_queue_tombstone(&daemon, 7, &entry, "dropped", crate::state::now_epoch()),
+                "기록에 실패했는데 성공을 돌려줬다 — 원장 없는 삭제가 열린다"
+            );
+            assert!(
+                daemon.bus.tail(10).into_iter().any(|e| e["name"] == "delivery.record_failed"),
+                "실패가 침묵했다"
+            );
+            std::fs::remove_dir_all(&p).expect("실패 주입 해제");
+            // ⓑ 성공 — 줄이 디스크에서 읽힌다.
+            assert!(record_queue_tombstone(
+                &daemon,
+                7,
+                &entry,
+                "dropped",
+                crate::state::now_epoch()
+            ));
+            let body = std::fs::read_to_string(&p).expect("원장");
+            let rec: serde_json::Value = body
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .find(|r: &serde_json::Value| r["queue_entry_id"] == "wp5-r1-tomb")
+                .expect("묘비 줄");
+            assert_eq!(rec["origin"], "queue_tombstone");
+            assert_eq!(rec["reason"], "dropped");
+        });
+        // ⓒ 소스핀 — 부수 레코드는 내구 경로를 쓴다.
+        let src = include_str!("delivery.rs");
+        let prod = &src[..src.find("pub(crate) mod tests").expect("테스트 모듈 앵커")];
+        let side = {
+            let i = prod.find("fn append_side_records(").expect("부수 레코드 writer");
+            &prod[i..]
+        };
+        assert!(
+            side.contains("append_lines_opt(&p, recs, true)"),
+            "영수증·묘비가 비내구 append 로 돌아갔다(전원 단절이 삭제만 남긴다)"
+        );
+        // ★(0.14.31 · 리뷰 R2 · codex blocking) 회전·신규 생성 시 **디렉터리 엔트리**까지 내구화한다.
+        assert!(
+            side.contains("p.parent().map(sync_dir)"),
+            "디렉터리 fsync 축이 사라졌거나 조건부로 좁혀졌다(비내구 경로가 먼저 만든 파일이 구멍)"
+        );
+        assert!(side.contains("ledger_lock()"), "회전·append 직렬화가 사라졌다(동시 rename)");
+        assert!(
+            prod.contains("f.sync_data()"),
+            "내구 append 가 sync_data 를 부르지 않는다"
+        );
     }
 
     #[test]

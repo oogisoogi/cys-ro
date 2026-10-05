@@ -25,6 +25,8 @@ import json
 import os
 import subprocess
 import sys
+import atexit
+import shutil
 import tempfile
 import time
 
@@ -51,11 +53,31 @@ def _assert_no_new(start):
     assert not new, "이 테스트에서 %d건 실패: %s" % (len(new), new)
 
 
+# ★0.14.31 P6 밀폐 보강: is_master() 가 역할을 **데몬에 묻는다**(javis_role). 하네스가 그대로면
+#   개발 기계의 **라이브 데몬**에 물어보게 되어 검체가 비결정이 된다(그리고 좌석 형상에 따라
+#   판정이 갈린다). 두 축을 함께 막는다 — ⓐ `CYS_BIN` 을 없는 절대경로로(= 조회 판정 불가 →
+#   종전 env 판정) ⓑ 전용 `TMPDIR`(= 라이브 역할 캐시가 폴백에 끼어들지 않게).
+#   단언은 한 줄도 바꾸지 않는다.
+_SEAL_TMP = tempfile.mkdtemp(prefix="snapshot-seal-")
+# ★R1(리뷰어 minor): 검체 1회당 tmp 디렉터리 1개가 영구히 남던 것을 종료 시 정리한다.
+atexit.register(shutil.rmtree, _SEAL_TMP, True)
+_ABSENT_CYS = os.path.join(_SEAL_TMP, "cys-absent-in-test")
+
+
 def run(args, extra=None):
     env = dict(os.environ)
-    for k in ("CYS_ROLE", "CYS_SURFACE_ID", "AITERM_SURFACE_ID", "CYS_MISSION",
+    for k in ("CYS_ROLE", "CYS_SURFACE_ID", "AITERM_SURFACE_ID", "JAVIS_SURFACE_ID",
+              "CYS_SURFACE_ROLE", "CYS_MISSION",
               "CYS_SOCKET", "JAVIS_ROOT", "CYS_STATE_DIR"):
         env.pop(k, None)
+    env["CYS_BIN"] = _ABSENT_CYS
+    # ★0.14.31 성찰 G10: 관측 훅은 **살아 있는 백오프**(이전 프로세스가 남긴 신선한 `.fail`) 안에서
+    #   생성을 보류한다(데몬 사망 중 매 훅 2s 타임아웃 반복 차단 · 생산 skip 이 선언된 실패 방향).
+    #   이 하네스는 `cys` 부재로 매 호출이 조회 실패이므로, 호출들이 TMPDIR 을 공유하면 첫 호출의
+    #   표식이 뒤 호출들을 보류시켜 단언과 무관한 이유로 파일이 없게 된다. 호출마다 밀폐 TMPDIR 을
+    #   주어 "판정 불가 → 종전 env 판정" 이라는 이 검체의 전제를 **호출 단위**로 유지한다(백오프
+    #   보류 자체는 test_role_authority G10-1~6 이 잰다). 단언은 한 줄도 바꾸지 않는다.
+    env["TMPDIR"] = tempfile.mkdtemp(prefix="run-", dir=_SEAL_TMP)
     if extra:
         env.update(extra)
     r = subprocess.run([sys.executable, MOD] + args, capture_output=True, text=True,
@@ -177,6 +199,68 @@ def test_ledger_fixture():
         check("fixture[sentinel 미계수]", "boot=" not in body, body[:160])
         check("fixture[24h 전 레인 2건]", "24h 전 레인: 2건" in body, body[:160])
         check("fixture[preview 노출]", "워커 위임 본문" in body, body[:160])
+    _assert_no_new(_s)
+
+
+def test_bookkeeping_origins_are_not_deliveries():
+    """★(0.14.31 · WP-5 리뷰 R1 · codex major) 회계 줄(영수증·묘비)은 **배달이 아니다.**
+
+    0.14.31 데몬은 큐 배달마다 영수증(`queue_receipt`)을, 배달 없이 큐를 떠난 항목마다 묘비
+    (`queue_tombstone`)를 같은 원장에 남긴다. 종전 판독은 sentinel·조각만 걸러 이 두 줄을
+    **배달로 셌다** — 배달 1건 + 그 영수증 + 폐기 1건이 '3배달' 로 보고되고 `from` 별 발신 계수와
+    최근 이력까지 오염된다. 계수에서 빼되 사실은 버리지 않는다(별도 줄로 보고)."""
+    _s = len(fails)
+    with tempfile.TemporaryDirectory() as td:
+        _ws, rd, state = make_ws(td)
+        with open(os.path.join(state, "delivery-base.jsonl"), "w", encoding="utf-8") as f:
+            f.write(drec("큐 배달 본문", surface="2", origin="queue", frm="1"))
+            f.write(drec("queue-receipt:q1", surface="2", origin="queue_receipt", frm="1",
+                         kind="receipt", queue_entry_id="q1"))
+            f.write(drec("queue-tombstone:q2:expired", surface="2", origin="queue_tombstone",
+                         frm="1", kind="tombstone", reason="expired", queue_entry_id="q2"))
+        env = {"CYS_ROLE": "master", "CYS_STATE_DIR": state, "CYS_SURFACE_ID": "1"}
+        rc, _o, _e = run(["generate", "--round-dir", rd], env)
+        body = open(os.path.join(rd, "BOOT_SNAPSHOT.md"), encoding="utf-8").read()
+        check("회계[rc=0]", rc == 0, "rc=%s" % rc)
+        check("회계[배달 1건만 계수]", "24h 전 레인: 1건" in body, body[:200])
+        check("회계[origin 표에 회계 줄 없음]",
+              "queue_receipt=" not in body.split("- 회계 줄")[0]
+              and "queue_tombstone=" not in body.split("- 회계 줄")[0], body[:240])
+        check("회계[별도 줄로 보고]",
+              "회계 줄(배달 아님)" in body and "queue_receipt=1" in body
+              and "queue_tombstone=1" in body, body[:240])
+        check("회계[내 발신 계수 오염 없음]", "내 발신(from=1): 1건" in body, body[:240])
+        check("회계[origin 표 queue=1]", "queue=1" in body, body[:200])
+    _assert_no_new(_s)
+
+
+def test_layer1_count_excludes_bookkeeping():
+    """★(0.14.31 · WP-5 리뷰 R2 · 양 리뷰어) **층1 대조 계수도** 회계 줄을 세지 않는다.
+
+    R1 은 `_delivery_records`(전 레인 표시용)만 걸렀고, 같은 보고 줄의 `len(matches)` 는
+    `javis_mission.read_delivery` 가 준 sha 색인 그대로였다. 1배달 = 3줄(선기록+영수증+묘비)이라
+    "내 pane 앞 배달: 3건 · 24h 전 레인: 1건" 이라는 **자기모순**이 그대로 남았다.
+    여기서는 세 줄을 전부 **내 pane(surface=1)** 앞으로 두고 두 계수가 같은 1건인지 본다."""
+    _s = len(fails)
+    with tempfile.TemporaryDirectory() as td:
+        _ws, rd, state = make_ws(td)
+        with open(os.path.join(state, "delivery-base.jsonl"), "w", encoding="utf-8") as f:
+            f.write(drec("내 pane 큐 배달 본문", surface="1", origin="queue", frm="2"))
+            f.write(drec("queue-receipt:q9", surface="1", origin="queue_receipt", frm="2",
+                         kind="receipt", queue_entry_id="q9"))
+            f.write(drec("queue-tombstone:q8:dropped", surface="1", origin="queue_tombstone",
+                         frm="2", kind="tombstone", reason="dropped", queue_entry_id="q8"))
+        env = {"CYS_ROLE": "master", "CYS_STATE_DIR": state, "CYS_SURFACE_ID": "1"}
+        rc, _o, _e = run(["generate", "--round-dir", rd], env)
+        body = open(os.path.join(rd, "BOOT_SNAPSHOT.md"), encoding="utf-8").read()
+        check("층1[rc=0]", rc == 0, "rc=%s" % rc)
+        check("층1[내 pane 앞 배달 1건]", "내 pane 앞 배달): 1건" in body, body[:400])
+        check("층1[3건으로 부풀지 않음]", "내 pane 앞 배달): 3건" not in body, body[:400])
+        check("층1[두 계수가 같은 기준]", "24h 전 레인: 1건" in body, body[:400])
+        check("층1[회계 줄은 별도로 보고]",
+              "회계 줄(배달 아님)" in body and "queue_receipt=1" in body
+              and "queue_tombstone=1" in body, body[:400])
+        check("층1[층1 색인에서 뺀 회계 줄 수도 보고]", "내 pane 앞 2건" in body, body[:400])
     _assert_no_new(_s)
 
 
@@ -326,6 +410,8 @@ def test_ascii_stdout():
 
 def main():
     for fn in (test_gate, test_cap, test_atomic_idempotent, test_ledger_fixture,
+               test_bookkeeping_origins_are_not_deliveries,
+               test_layer1_count_excludes_bookkeeping,
                test_readonly, test_sanitize, test_sanitize_bypass, test_stale_tmp_sweep,
                test_symbol_pins, test_ascii_stdout):
         try:
@@ -339,6 +425,7 @@ def main():
             print("  -", f)
         sys.exit(1)
     print("PASS: 게이트 4상 + 캡/마커 + 원자성·멱등 + 원장 fixture(정규화 동일) 판독 + "
+          "회계 줄(영수증·묘비) 배달 미계수 + "
           "읽기 전용 + 위생(격리·마스킹) + 우회 벡터 4종(NFD·ZWSP·개행·영문) 격리 + "
           "스테일 tmp 스윕 + 심볼 핀 + ASCII stdout 전건 통과")
 

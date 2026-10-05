@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import time
 import unicodedata
 
@@ -49,6 +50,15 @@ TRUNC_MARKER = "\n…(캡 절단)\n"
 SECTION_MARKER = "\n…(섹션 캡)"
 # 섹션별 개별 캡(bytes) — 전체 캡과 동시 적용(설계 B-1). 합계가 총캡 미만이 되게 배분.
 SECTION_CAPS = {"tasks": 700, "wakeups": 700, "delivery": 1800, "gate": 300}
+
+
+def _role_mod():
+    """javis_role import(역할 해소 단일 소유자 · 0.14.31 P6). 부재는 종전 env 판정으로 강등."""
+    try:
+        import javis_role
+        return javis_role
+    except Exception:
+        return None
 
 
 def _mission_mod():
@@ -161,7 +171,86 @@ def is_master():
 
     env CYS_ROLE=="master" OR (surface id 비어있지 않고 임무 대장 레코드 surface 와 일치).
     surface 판독은 javis_mission._surface(신·구 env 통일 규약), 대장 판독은 read_ledger
-    재사용. 대장 부재·판독 불가 = 불통과(fail-quiet)."""
+    재사용. 대장 부재·판독 불가 = 불통과(fail-quiet).
+
+    ★0.14.31 P6 — 데몬 권위 선행(**단조 거부**): 데몬이 이 좌석의 역할을 **권위 있게 다른
+      역할로** 답하면 env 절도 대장 절도 보지 않고 즉시 불통과다. 종전에는 승계로 role 이 옮겨간
+      뒤에도 stale `CYS_ROLE=master` 하나로 스냅샷 생산이 계속됐고, 설령 그 절을 고쳐도
+      **대장 일치 절이 다시 master 를 허용**했다(codex R1 반례). 실패 방향은 '생산 skip(exit 0)' —
+      좌석 사망이 아니라 관측 1건의 보류다(§3-3).
+      판정 불가·주소 없음은 종전 경로 그대로다(새 거부를 만들지 않는다).
+
+    ★R2(blocking · reviewer-codex): 종전에는 **권위 있는 '역할 없음'** 을 데몬 절에서 일부러
+      빼 놓고 그 아래 `CYS_ROLE=master` 절과 대장 절이 통과시켰다 — 정본 §8("`CYS_ROLE` env 를
+      권위로 쓰지 않는다 — 승계 후 stale")의 표적 그 자체가 살아 있었다는 뜻이다. 데몬이
+      **확정적으로** '이 좌석에는 역할이 없다'고 답한 것은 판정 불가가 아니라 사실이므로,
+      그 답 앞에서는 stale env 도 stale 대장도 마스터 권한을 되살리지 못한다. 실패 방향은
+      여전히 '생산 skip(exit 0)' 이다(§3-3 · 좌석 사망이 아니다). 검체 8i-1~8i-4."""
+    _rm = _role_mod()
+    if _rm is not None:
+        # ★0.14.31 성찰 G10(major): 데몬 사망 중 **매 훅 프로세스**가 직접 확인(`confirm_role_detail`
+        #   — 디스크 `.fail` 을 일부러 무시한다)으로 2s 타임아웃을 반복했다(Stop/PreCompact/
+        #   SessionStart 핫패스에서 매 턴 2s · base 는 30s 에 한 번). 관측 스냅샷은 살아 있는
+        #   백오프 안에서 **보류**한다(생산 skip = 이 함수의 선언된 실패 방향 · 좌석 사망 아님).
+        #   ★백오프는 **해소 전에** 잰다(codex 설계 비평 · blocking): 이 프로세스의 첫 실패가
+        #     만든 표식으로 자기 자신을 보류하면 8h("판정 불가 → 종전 env 절 통과")가 깨진다.
+        #     이전 프로세스가 남긴 **살아 있는** 백오프만 보류 근거다(그래서 술어는 프로세스
+        #     안 표식 `_LIVE_FAIL_MONO` 를 보지 않는다 — 그 표식으로 아끼는 타임아웃은 0 이고
+        #     판정만 뒤집는다 · codex 설계 비평 minor).
+        #   ★정직: 이 값은 **호출 시점의 스냅샷**이다 — 재는 순간 유효했던 표식이 아래 확인
+        #     지점에 닿기 전에 만료되면 한 번 더 보류한다(거부 방향 · 다음 훅이 재시도한다).
+        #   ★헬퍼 실패(구 javis_role · 예외)는 '백오프 아님' — 종전 확인 경로를 그대로 탄다.
+        #     아래 `except Exception: pass` 뒤의 env/대장 폴백으로 새지 않는다.
+        #   ★정직: 보류는 두 확인 지점에만 걸린다. 캐시 master + env master(종전 허용)와
+        #     대장 일치 절은 종전 그대로다(새 허용도 새 거부도 아니다).
+        _backoff = False
+        try:
+            _fba = getattr(_rm, "fail_backoff_active", None)
+            _backoff = bool(_fba()) if _fba is not None else False
+        except Exception:
+            _backoff = False
+        try:
+            _role, _src = _rm.resolve_role_detail()
+            if _rm.is_authoritative_none(_src):
+                return False, "daemon knows no role for this seat"
+            if _rm.is_authoritative(_src):
+                if _role.strip().lower() != "master":
+                    return False, "daemon role is not master"
+                # ★I5 수렴(판정관 T3e): 데몬이 권위 있게 master 라고 답하면 **그 답이 결정한다** —
+                #   stale env 도 stale 대장도 그것을 뒤집지 못한다(정본 §8 의 표적). 새 허용의
+                #   근거는 살아 있는 데몬의 직접 응답뿐이다(디스크 캐시는 같은 uid 가 위조할 수
+                #   있으므로 통과 근거가 아니다 · codex 설계 비평 (g)).
+                if _src == _rm.SOURCE_DAEMON:
+                    return True, "daemon role is master"
+                if (os.environ.get("CYS_ROLE", "") or "").strip().lower() == "master":
+                    return True, "env CYS_ROLE=master"      # 종전 판정이 이미 허용 — 새 허용 아님
+                if _backoff:
+                    return False, "daemon query in backoff - snapshot deferred"
+                _role2, _src2 = _rm.confirm_role_detail()
+                if _src2 == _rm.SOURCE_DAEMON and _role2.strip().lower() == "master":
+                    return True, "daemon role is master (confirmed)"
+                # ★수렴 R2(minor · reviewer-claude — 판정은 종전과 같고 **사유 문면만** 세운다):
+                #   확인 답이 '권위 있는 무역할' 일 때도 아래 절이 이미 False 를 냈다
+                #   (`is_authoritative("daemon-none")` 이 참이고 ""≠master). 다만 사유가
+                #   'not master' 로 나가 형제 게이트(org·cys-dept)와 어긋났다 — 전용 절로 세운다.
+                if _rm.is_authoritative_none(_src2):
+                    return False, "daemon knows no role for this seat"
+                if _rm.is_authoritative(_src2) and _role2.strip().lower() != "master":
+                    return False, "daemon role is not master"
+            elif (os.environ.get("CYS_ROLE", "") or "").strip().lower() == "master":
+                # ★수렴 R2(blocking 형제 조항 · org 와 같은 규율): 권위 있는 답이 없을 때
+                #   stale env 로 통과하기 전에 **살아 있는 데몬이 반박하지 않는지** 한 번 본다
+                #   (디스크 캐시·디스크 백오프를 건너뛴다). 데몬이 죽어 있으면 종전대로 통과한다.
+                #   ★G10: 살아 있는 백오프 안에서는 묻지 않고 보류한다(위 머리주석).
+                if _backoff:
+                    return False, "daemon query in backoff - snapshot deferred"
+                _role2, _src2 = _rm.confirm_role_detail()
+                if _rm.is_authoritative_none(_src2):
+                    return False, "daemon knows no role for this seat"
+                if _rm.is_authoritative(_src2) and _role2.strip().lower() != "master":
+                    return False, "daemon role is not master"
+        except Exception:
+            pass          # 해소 실패는 이 게이트를 열지도 닫지도 않는다
     if (os.environ.get("CYS_ROLE", "") or "").strip().lower() == "master":
         return True, "env CYS_ROLE=master"
     jm = _mission_mod()
@@ -191,22 +280,32 @@ def _fmt_epoch(ts):
         return "-"
 
 
+# ★(0.14.31 · WP-5 리뷰 R1 · codex major) **배달이 아닌 회계 줄**의 origin.
+# 0.14.31 데몬은 큐 배달마다 영수증(`queue_receipt`)을, 배달 없이 큐를 떠난 항목마다 묘비
+# (`queue_tombstone`)를 같은 원장에 남긴다. 이것들을 배달로 세면 "1배달 + 영수증 + 폐기 1건" 이
+# **3배달**로 보고되고 `from` 별 발신 계수와 최근 이력까지 오염된다(codex 리뷰). 계수에서 빼되
+# 사실은 버리지 않는다 — 아래 `_section_delivery` 가 별도 줄로 보고한다.
+LEDGER_BOOKKEEPING_ORIGINS = ("queue_receipt", "queue_tombstone")
+
+
 def _delivery_records(jm, now):
-    """(recs|None, err) — 원장 '표시용' 열람(24h 창). 파일 판독 규칙(크기 상한·손상 판정)은
+    """(recs|None, meta, err) — 원장 '표시용' 열람(24h 창). 파일 판독 규칙(크기 상한·손상 판정)은
     javis_mission._read_ledger_lines, 경로는 delivery_ledger_path, 스키마 필터는
     SCHEMA_VERSION 을 **재사용**한다. 기계/오너 '판정'은 여기서 하지 않는다(read_delivery
-    소유) — 이 함수는 레코드를 접거나 버리는 판정 없이 사실을 나열만 한다."""
+    소유) — 이 함수는 레코드를 접거나 버리는 판정 없이 사실을 나열만 한다.
+
+    `meta` = 배달이 아닌 회계 줄(영수증·묘비)의 origin별 계수(별도 보고용)."""
     p = jm.delivery_ledger_path()
     if not p:
-        return None, "ledger path unavailable"
+        return None, {}, "ledger path unavailable"
     lines = []
     for cand in (p + ".1", p):           # 회전 세대(.1) → 본 파일 순(read_delivery 동일 규약)
         if os.path.exists(cand) and not os.path.isdir(cand):
             ls, err = jm._read_ledger_lines(cand)
             if err:
-                return None, "unreadable"
+                return None, {}, "unreadable"
             lines.extend(ls or [])
-    out = []
+    out, meta = [], {}
     for ln in lines:
         ln = ln.strip()
         if not ln:
@@ -227,9 +326,13 @@ def _delivery_records(jm, now):
             continue
         if now - ts > DIGEST_WINDOW_S:
             continue
+        origin = str(rec.get("origin") or "-")
+        if origin in LEDGER_BOOKKEEPING_ORIGINS:
+            meta[origin] = meta.get(origin, 0) + 1
+            continue                     # 회계 줄 — 배달이 아니다(위 상수 doc)
         out.append(rec)
     out.sort(key=lambda r: (r.get("ts_epoch") or 0))
-    return out, None
+    return out, meta, None
 
 
 def _section_delivery():
@@ -252,19 +355,33 @@ def _section_delivery():
     if status == jm.LEDGER_ABSENT:
         lines.append("- 원장 부재(기계 배달 이력 없음 — 정상일 수 있음)")
         return lines
-    stale = sum(1 for m in matches.values() if isinstance(m, dict) and m.get("stale"))
-    recs, err = _delivery_records(jm, now)
+    # ★(0.14.31 · 리뷰 R2 · 양 리뷰어) 층1 대조 계수에서도 **회계 줄을 뺀다.** `_delivery_records`
+    # 는 걸렀는데 같은 줄에 찍히는 `len(matches)` 는 `javis_mission.read_delivery` 가 준 sha 색인
+    # 그대로였다 — 1배달 = 3줄(선기록+영수증+묘비)이라 "내 pane 앞 배달: 3건 · 24h 전 레인: 1건"
+    # 이라는 자기모순이 남았다. 색인 자체는 건드리지 않는다(임무 게이트의 권위 · 합성 sha 는 제출
+    # 프롬프트와 결코 일치하지 않아 판정에 무해하다) — 보고 계수만 같은 기준으로 맞춘다.
+    deliveries = {k: m for k, m in matches.items()
+                  if not (isinstance(m, dict)
+                          and str(m.get("origin") or "") in LEDGER_BOOKKEEPING_ORIGINS)}
+    book1 = len(matches) - len(deliveries)
+    stale = sum(1 for m in deliveries.values() if isinstance(m, dict) and m.get("stale"))
+    recs, meta, err = _delivery_records(jm, now)
     if recs is None:
-        lines.append("- 표시용 열람 실패(%s) · 층1 대조(내 pane 앞): %d건" % (err, len(matches)))
+        lines.append("- 표시용 열람 실패(%s) · 층1 대조(내 pane 앞): %d건" % (err, len(deliveries)))
         return lines
     by_origin = {}
     for r in recs:
         k = str(r.get("origin") or "-")
         by_origin[k] = by_origin.get(k, 0) + 1
     lines.append("- 층1 대조(내 pane 앞 배달): %d건(창 밖 %d) · 24h 전 레인: %d건"
-                 % (len(matches), stale, len(recs)))
+                 % (len(deliveries), stale, len(recs)))
     lines.append("- origin별: %s" % (" · ".join("%s=%d" % (k, by_origin[k])
                                                 for k in sorted(by_origin)) or "없음"))
+    if meta or book1:
+        # 배달 계수 밖의 회계 줄(0.14.31+) — 영수증=인계 확인, 묘비=배달 없이 큐를 떠난 항목.
+        # `내 pane 앞 N건` 은 층1 색인에서 뺀 회계 줄 수다(두 계수가 같은 기준임을 보이는 값).
+        lines.append("- 회계 줄(배달 아님): %s · 내 pane 앞 %d건"
+                     % (" · ".join("%s=%d" % (k, meta[k]) for k in sorted(meta)) or "없음", book1))
     for r in recs[-5:]:
         lines.append("- %s surface=%s origin=%s from=%s \"%s\""
                      % (_fmt_epoch(r.get("ts_epoch")), _clip(r.get("surface"), 12),
@@ -474,12 +591,32 @@ def cmd_is_master(argv):
     return 0 if ok else 1
 
 
+_ST_SEAL = [None]
+
+
 def _st_env(extra=None):
-    """self-test 밀폐 env — ambient 역할·surface·레인·상태 경로를 전부 걷어낸다."""
+    """self-test 밀폐 env — ambient 역할·surface·레인·상태 경로를 전부 걷어낸다.
+
+    ★0.14.31 P6: `is_master()` 가 역할을 데몬에 묻게 됐다 — 하네스가 그대로면 **라이브 데몬**에
+      물어 비결정이 된다. `CYS_BIN` 을 없는 절대경로로(조회 판정 불가 → 종전 env 판정) ·
+      전용 `TMPDIR`(라이브 역할 캐시 차단). 단언은 바뀌지 않는다.
+    """
+    import tempfile as _tf
+    if _ST_SEAL[0] is None:
+        _ST_SEAL[0] = _tf.mkdtemp(prefix="snapshot-st-seal-")
+        # ★R1(리뷰어 minor): 이 디렉터리는 종전에 **한 번도 지워지지 않았다** —
+        #   `javis_snapshot --self-test`(= `javis_preflight --self-test` 가 구동한다)를
+        #   돌릴 때마다 tmp 에 한 개씩 쌓였다. 프로세스 종료 시 정리한다.
+        import atexit as _ax
+        import shutil as _sh
+        _ax.register(_sh.rmtree, _ST_SEAL[0], True)
     env = dict(os.environ)
-    for k in ("CYS_ROLE", "CYS_SURFACE_ID", "AITERM_SURFACE_ID", "CYS_MISSION",
+    for k in ("CYS_ROLE", "CYS_SURFACE_ID", "AITERM_SURFACE_ID", "JAVIS_SURFACE_ID",
+              "CYS_SURFACE_ROLE", "CYS_MISSION",
               "CYS_SOCKET", "JAVIS_ROOT", "CYS_STATE_DIR"):
         env.pop(k, None)
+    env["CYS_BIN"] = os.path.join(_ST_SEAL[0], "cys-absent-in-test")
+    env["TMPDIR"] = _ST_SEAL[0]
     if extra:
         env.update(extra)
     return env

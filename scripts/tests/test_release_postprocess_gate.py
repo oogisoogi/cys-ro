@@ -33,6 +33,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -414,7 +415,9 @@ class DiagnoseFlagAbsencePins(unittest.TestCase):
     순간 빨개진다. 게이트 스크립트가 아무리 옳아도 발행 경로가 진단 플래그를 실으면
     degraded 가 도로 rc=0 이 된다 — 문자열 층위에서 못박는다(F2 수리 2026-08-20)."""
 
-    DIAG_FLAGS = ("--diagnose-degraded-ok", "--seal2-only")
+    #   --gktool-only 편입(2026-09-08): 이걸 발행 경로가 실으면 ⑨ 만 돌고 ①~⑧ 이 통째로
+    #   건너뛰어진다 — --seal2-only·--runtime-manifest-only 와 정확히 같은 계급의 우회다.
+    DIAG_FLAGS = ("--diagnose-degraded-ok", "--seal2-only", "--gktool-only")
 
     def test_13_postprocess_source_carries_no_diagnose_flag(self):
         with open(_RP_PATH, encoding="utf-8") as fh:
@@ -432,6 +435,33 @@ class DiagnoseFlagAbsencePins(unittest.TestCase):
         for flag in self.DIAG_FLAGS:
             self.assertNotIn(flag, yml,
                              "release.yml 이 진단 전용 플래그를 실었다: %s" % flag)
+
+    def test_14b_every_workflow_carries_no_bypass_flag(self):
+        """★스캔 대상을 **전 워크플로**로 넓힌다(2026-09-17 · 성찰 지적 PP-3).
+
+        종전 핀의 실제 대상은 release.yml 하나뿐이었다. 그런데 게이트를 발행 차단 근거로
+        소비하는 자동 경로는 그 뒤로 늘었다(release-postprocess.yml). '금지'가 새 경로에
+        대해서는 주석 한 줄로만 지켜지고 있었다는 뜻이다 — 새 워크플로가 추가될 때마다
+        사람이 기억해야 하는 금지는 언젠가 잊힌다. 그래서 대상을 열거하지 않고 훑는다.
+
+        `--unsafe-skip-gatekeeper` 도 함께 본다: 종전 어느 검체도 워크플로에서 그 플래그의
+        부재를 보지 않았다(release-postprocess.py 소스에서 인자 파싱 존재만 확인했다).
+        """
+        wf_dir = os.path.join(_HERE, "..", "..", ".github", "workflows")
+        names = sorted(n for n in os.listdir(wf_dir) if n.endswith((".yml", ".yaml")))
+        self.assertTrue(names, "워크플로 디렉터리가 비었다 — 이 핀이 아무것도 지키지 않는다")
+        banned = tuple(self.DIAG_FLAGS) + ("--unsafe-skip-gatekeeper",)
+        for name in names:
+            with open(os.path.join(wf_dir, name), encoding="utf-8") as fh:
+                body = fh.read()
+            # 주석에서의 **금지 고지**는 허용한다 — 실제로 스크립트에 실렸는지만 본다.
+            code = "\n".join(
+                ln for ln in body.splitlines() if not ln.lstrip().startswith("#")
+            )
+            for flag in banned:
+                self.assertNotIn(
+                    flag, code,
+                    "%s 가 게이트 우회 플래그를 실었다: %s" % (name, flag))
 
 
 class Seal2UniversalCheckTests(unittest.TestCase):
@@ -774,7 +804,8 @@ class LaneAxisTests(unittest.TestCase):
                       "판정 줄에서 SKIP 계수가 빠졌다")
         self.assertIn("GATE_SKIPPED=$SKIP_N", src, "기계 요약에서 SKIP 계수가 빠졌다")
         # 제외에는 사유가 붙어야 한다 — 사유 없는 skip 은 미탐과 구별되지 않는다.
-        for axis in ("③ stapler validate", "④ spctl --assess --type execute"):
+        # (1.1.8 편입 합성) 원작자 ⑨ gktool 첫-실행 스캔도 Gatekeeper 평가라 자체서명 레인에서 같은 사유로 SKIP 한다.
+        for axis in ("③ stapler validate", "④ spctl --assess --type execute", "⑨ gktool 실평가"):
             i = src.index('skipped "%s($APP_NAME)"' % axis)
             line = src[i:src.index("\n", i)]
             self.assertIn("자체서명 레인 = 대상 아님", line, "제외 사유가 없다: %r" % line)
@@ -809,12 +840,14 @@ class LaneAxisTests(unittest.TestCase):
             _rc, out = self._run(app, "--lane", "self-signed")
             self.assertIn("SKIP ③ stapler validate", out, out[-1500:])
             self.assertIn("SKIP ④ spctl --assess --type execute", out, out[-1500:])
+            # (1.1.8 편입 합성) ⑨ gktool 도 같은 레인 사유로 SKIP — 3축 계수.
+            self.assertIn("SKIP ⑨ gktool 실평가", out, out[-1500:])
             self.assertIn("PASS=", out)
-            self.assertIn("SKIP=2", out, "제외 2축이 계수되지 않았다\n%s" % out[-1500:])
-            self.assertIn("GATE_LANE=self-signed GATE_SKIPPED=2", out, out[-1500:])
+            self.assertIn("SKIP=3", out, "제외 3축이 계수되지 않았다\n%s" % out[-1500:])
+            self.assertIn("GATE_LANE=self-signed GATE_SKIPPED=3", out, out[-1500:])
             # 제외를 PASS 로 세면 안 된다 — 안 돈 축이 통과로 집계되는 것이 이 절의 금지선이다.
             self.assertEqual([ln for ln in out.splitlines()
-                              if ln.startswith(("PASS ③", "PASS ④"))], [])
+                              if ln.startswith(("PASS ③", "PASS ④", "PASS ⑨", "FAIL ⑨"))], [])
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS 도구 필요")
     def test_54_forcing_notarized_lane_kills_the_same_app(self):
@@ -849,6 +882,133 @@ class LaneAxisTests(unittest.TestCase):
             rc, out = self._run(app, "--lane", "auto")
             self.assertIn("GATE_LANE=notarized", out, out[-1500:])
             self.assertNotEqual(rc, 0)
+class GktoolAxisTests(unittest.TestCase):
+    """⑨ gktool 실평가 축(오너 참고2 · CONTRACTS §B-12 · 신설 2026-09-08)의 계약을 박제한다.
+
+    이 축이 없던 동안 게이트의 Gatekeeper 판정은 전부 `spctl` 한 도구에 걸려 있었다
+    (release-pipeline-map §7 "gktool 은 어디에도 배선되지 않았다"). `gktool scan` 은 사용자가
+    앱을 **처음 열 때** 도는 스캔 경로를 부르므로 spctl 과 다른 축이다.
+
+    여기서 못박는 것 넷:
+      ① 발행 경로가 fail-hard 다 — 게이트 rc 를 삼키는 배선(continue-on-error·rc 무시)이 없다.
+      ② 도구 부재는 **SKIP 이되 무음이 아니다**(사유 1줄) · 그 외 비영 rc 는 FAIL 이다.
+      ③ 격리 없는 대상의 allowed 는 공허다 — 발행 모드에서 통과로 세지 않는다.
+      ④ CI 가 ⑨ 라인을 요약으로 승격한다(gktool 없는 초록과 있는 초록의 구분).
+    """
+
+    def _src(self):
+        with open(_GATE_SH, encoding="utf-8") as fh:
+            return fh.read()
+
+    # ── (a) 소스 계약 — 플랫폼 무관 ──────────────────────────────────────
+    def test_26_axis_runs_after_spctl_on_quarantined_copy(self):
+        """⑨ 는 ④ 뒤, **설치 모사 사본($APP)** 을 대상으로 돈다.
+
+        원본(APP_SRC)을 대상으로 하면 격리가 없어 평가가 공허해지고(아래 test_28 의 근거),
+        ④ 앞으로 올라가면 spctl 판정 없이 gktool 만 본 실행이 생긴다."""
+        src = self._src()
+        call = 'gktool_check "$APP" "$APP_NAME" "$QAPP"'
+        # 먼저 호출 실재를 단언한다 — index() 로 바로 가면 호출이 바뀌었을 때 ValueError 로
+        # 죽어 "무엇이 왜 틀렸는가"가 로그에서 사라진다(적색이긴 하나 진단이 아니다).
+        # assertIn 이 아니라 assertTrue 인 이유: 실패 시 컨테이너(40KB 셸 스크립트) 전문이
+        # 로그에 덤프돼 진단이 묻힌다. 여기서 필요한 것은 사실 한 줄이다.
+        self.assertTrue(call in src,
+                        "⑨ 호출(%s)이 사라졌거나 대상이 격리 사본($APP)이 아니다 — "
+                        "원본($APP_SRC)을 재면 격리가 없어 평가가 공허하다" % call)
+        i_spctl = src.index('SPCTL_OUT="$(spctl --assess --type execute')
+        i_gk = src.index(call)
+        self.assertLess(i_spctl, i_gk, "⑨ 가 ④ 앞으로 올라갔다")
+        # 루프 대상은 사본($APP)이지 원본($APP_SRC)이 아니다 — 문자열이 아니라 인자 자체가 계약.
+        self.assertNotIn('gktool_check "$APP_SRC"', src,
+                         "⑨ 가 격리 없는 원본을 평가한다 — 첫-실행 경로를 재지 않는다")
+
+    def test_27_absent_tool_skips_loudly_and_other_axes_stay_closed(self):
+        """도구 부재 = SKIP(사유 1줄) · 그 외 비영 rc = FAIL(bad → FAIL_N → exit 1)."""
+        src = self._src()
+        self.assertIn('SKIP ⑨ gktool 실평가($name) — gktool 부재', src,
+                      "도구 부재를 무음으로 넘긴다 — 측정 0회가 로그에서 사라진다")
+        self.assertIn('bad "⑨ gktool scan($name)" "rc=$rc', src,
+                      "비영 rc 를 bad 로 세지 않으면 이 축은 fail-hard 가 아니다")
+        # 부재 판정의 유일한 근거는 해소 실패다 — env 로 부재를 강제하는 주입점이 있으면
+        # 그것이 곧 우회 벡터다(CYS_GATE_FORCE_DEGRADED 가 degraded '방향으로만' 열린 것과 같은 규율).
+        self.assertNotIn("CYS_GATE_FORCE_NO_GKTOOL", src,
+                         "도구 부재를 env 로 강제하는 주입점 = ⑨ 우회 벡터")
+
+    def test_28_missing_quarantine_is_vacuous_not_pass(self):
+        """격리 없는 대상의 rc=0 은 공허다 — 발행 모드에서 PASS 로 세지 않는다.
+
+        실측 근거(2026-09-08): 같은 미서명 합성 앱이 격리 부착 **전** rc=0(allowed by system
+        policy), **후** rc=70. 격리가 빠지면 gktool 은 첫-실행 재검증 경로를 아예 돌지 않는다."""
+        src = self._src()
+        i_guard = src.index('quarantine 부재로 평가가 공허하다')
+        i_ok = src.index('ok "⑨ gktool scan($name)"')
+        self.assertLess(i_guard, i_ok, "격리 부재 폐쇄가 PASS 분기 뒤로 밀렸다")
+
+    # ── (b) CI 배선 — 플랫폼 무관 ────────────────────────────────────────
+    def test_29_release_yml_gate_step_is_fail_hard_and_promotes_axis(self):
+        """release.yml 게이트 스텝: rc 전파(fail-hard) + ⑨ 라인 요약 승격."""
+        with open(_RELEASE_YML, encoding="utf-8") as fh:
+            yml = fh.read()
+        self.assertIn("release-gate-gatekeeper.sh", yml,
+                      "게이트 스텝이 사라졌다 — 무검증 발행 경로")
+        # 스텝 블록만 잘라 본다(파일 전역 금지어로 만들면 무관한 스텝의 정당한 사용까지 막는다).
+        i = yml.index("bash scripts/release-gate-gatekeeper.sh")
+        head = yml.rindex("      - name:", 0, i)
+        nxt = yml.find("\n      - name:", i)
+        block = yml[head:nxt if nxt != -1 else len(yml)]
+        # 블록 절단이 성립했는지 먼저 본다 — 경계를 못 찾아 파일 끝까지 삼켰다면 아래 단언은
+        # 이 스텝이 아니라 남은 워크플로 전체를 재는 것이라 의미가 다르다(측정 대상 확인).
+        self.assertIn("release-gate-gatekeeper.sh", block, "스텝 블록 절단 실패")
+        # 키는 **스텝 들여쓰기(8칸) 라인**으로만 판정한다 — 주석·run 스칼라 본문 속 같은 낱말을
+        # 잡으면 거짓 적색이 되고, 반대로 전역 검색은 무관한 스텝의 정당한 사용까지 막는다.
+        self.assertIsNone(re.search(r"(?m)^ {8}continue-on-error:", block),
+                          "게이트 스텝이 continue-on-error 로 rc 를 삼킨다 — 발행 차단이 무력화된다")
+        self.assertIn('[ "$rc" -eq 0 ] || exit "$rc"', block,
+                      "게이트 rc 를 스텝 밖으로 전파하지 않는다 — 실패해도 잡이 계속 간다")
+        self.assertIn("grep -E '^(PASS|FAIL|SKIP) ⑨' \"$GLOG\"", yml,
+                      "⑨ 라인 요약 승격 배선이 없다")
+        self.assertIn("grep -E '^GKTOOL_AXIS=' \"$GLOG\"", yml,
+                      "GKTOOL_AXIS 요약 승격 배선이 없다 — gktool 없는 초록이 증적에서 안 보인다")
+
+    # ── (c) 음성 대조 — darwin + gktool 실재 한정 ─────────────────────────
+    @unittest.skipUnless(sys.platform == "darwin", "gktool 은 macOS 도구다")
+    def test_30_unsigned_quarantined_app_fails_gktool_axis(self):
+        """격리 부착 미서명 앱이 ⑨ 에서 FAIL 하고 비영 종료한다(vacuous pass 차단).
+
+        이 대조가 없으면 ⑨ 는 '항상 초록인 검사'일 수 있다 — DmgAxisTests 의 ⑦ 음성 대조와
+        같은 근거다. 호출은 --gktool-only(진단 · macOS 마운트 도구 불요)."""
+        import shutil as _sh
+        gk = _sh.which("gktool") or ("/usr/bin/gktool" if os.path.exists("/usr/bin/gktool") else "")
+        if not gk:
+            self.skipTest("gktool 부재 — 이 기계에서는 ⑨ 자체가 SKIP 계약이다")
+        with tempfile.TemporaryDirectory() as td:
+            app = os.path.join(td, "FakeNeg.app")
+            os.makedirs(os.path.join(app, "Contents", "MacOS"))
+            exe = os.path.join(app, "Contents", "MacOS", "FakeNeg")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(exe, 0o755)
+            with open(os.path.join(app, "Contents", "Info.plist"), "w", encoding="utf-8") as fh:
+                fh.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                         '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                         '<plist version="1.0"><dict>'
+                         '<key>CFBundleExecutable</key><string>FakeNeg</string>'
+                         '<key>CFBundleIdentifier</key><string>com.example.fakeneg</string>'
+                         '<key>CFBundleName</key><string>FakeNeg</string>'
+                         '<key>CFBundlePackageType</key><string>APPL</string>'
+                         '</dict></plist>\n')
+            q = subprocess.run(["xattr", "-w", "com.apple.quarantine",
+                                "0083;6a000000;CI;00000000-0000-0000-0000-000000000000", app],
+                               capture_output=True, text=True)
+            if q.returncode != 0:
+                self.skipTest("xattr -w 실패 — 격리 부착 불가: %s" % (q.stderr or "")[:200])
+            p = subprocess.run(["bash", _GATE_SH, "--gktool-only", app],
+                               capture_output=True, text=True)
+            out = p.stdout + p.stderr
+            self.assertIn("FAIL ⑨", out, out[-2000:])
+            self.assertNotEqual(p.returncode, 0,
+                                "격리 부착 미서명 앱이 ⑨ 를 통과했다(rc=0)\n%s" % out[-2000:])
 
 
 class RuntimeManifestAxisTests(unittest.TestCase):

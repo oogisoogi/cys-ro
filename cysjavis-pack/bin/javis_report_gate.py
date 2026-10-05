@@ -45,11 +45,13 @@ CLI:
 
 import argparse
 import json
+import math
 import os
 import re
 import socket
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import time
 
 
@@ -80,10 +82,36 @@ try:
     import javis_boot_node as _bn
 except Exception as _e:                       # noqa: BLE001
     _bn, _BOOTNODE_IMPORT_ERR = None, str(_e)[:120]
+#   javis_report.pick_node_ctx : ★WP6-2 CTX 축 선택(실측 > 신선한 자기보고 · 결측 None) — 정의는
+#     산출기에 **한 벌만** 두고 여기서는 소비만 한다(60% 판정선이 소비처마다 갈리던 결함의 재발 금지).
+#     부재(팩 부분갱신 스큐)는 판정 불가 = 컨텍스트 경보 **없음**이며 대장 reasons 에
+#     `report_module_missing` 으로 드러난다(조용한 접힘 금지 · 0% 위장 금지).
+_REPORT_IMPORT_ERR = None
+try:
+    from javis_report import pick_node_ctx as _pick_node_ctx, CTX_SELF_REPORT_MAX_AGE_S
+except Exception as _e:                       # noqa: BLE001
+    _pick_node_ctx, _REPORT_IMPORT_ERR = None, str(_e)[:120]
+    CTX_SELF_REPORT_MAX_AGE_S = None  # 실패 방향: 측정 수단 부재 → 두 CTX 축 모두 판정 안 함.
+#   javis_report.ctx_alert_nodes : ★(0.14.42 · RV3L-7) clear 가드 좌석은 60% 가 아니라 가드의 미해결 통보로 — 판정 한 벌.
+#     따로 import 한다: 부분갱신 스큐(구 보고 모듈 · 이 이름 없음)면 None 이고 아래 extract_warnings 가 종전 60% 판정으로
+#     떨어진다(pick_node_ctx 는 그대로 살아 있다 — 한 이름의 부재가 CTX 축 전체를 끄지 않는다).
+try:
+    from javis_report import ctx_alert_nodes as _ctx_alert_nodes, CTX_FIRE_PENDING_ALERT_S as _CTX_FIRE_PENDING_ALERT_S
+except Exception:                             # noqa: BLE001
+    _ctx_alert_nodes, _CTX_FIRE_PENDING_ALERT_S = None, None
 
 # javis_report.py IDLE_ALERT_SECS와 동일(절대지침 B3: idle 5분+). 자기보고가 아닌 데몬 실측
 # idle_secs로만 판정한다(memory: stale self-report 함정). 여기 재정의(수집 실패 시에도 상수 필요).
 IDLE_ALERT_SECS = 300
+ENV_ANOMALIES = []  # javis_mission 관례: (코드, 사유), 대장 reasons·badge로 가청화.
+try:
+    CTX_DIVERGENCE_ALERT_PCT = float(os.environ.get("CYS_CTX_DIVERGENCE_PCT", "8"))
+    if not math.isfinite(CTX_DIVERGENCE_ALERT_PCT) or CTX_DIVERGENCE_ALERT_PCT <= 0:
+        raise ValueError("threshold must be finite and positive")
+except (TypeError, ValueError, OverflowError):
+    CTX_DIVERGENCE_ALERT_PCT = 8.0
+    ENV_ANOMALIES.append(("ctx_divergence_env_invalid",
+                          "CYS_CTX_DIVERGENCE_PCT must be finite and positive; using 8.0"))
 CYCLE_MINUTES_DEFAULT = 5      # schedule every_minutes=5
 STALL_CYCLES_DEFAULT = 6       # 6주기=30분 무진행 → stall 승격(DESIGN 미결 기본값)
 QUIET_CYCLES_DEFAULT = 12      # 12주기=60분 QUIET → 세션 주차 후보(P2·CSO 집행)
@@ -100,6 +128,16 @@ DEATH_DEBOUNCE_SECS = 300            # 노드 사망 push 디바운스(설계 �
 DEADLOCK_IDLE_SECS = 1800            # P3: 미배정 티켓 미checkout·set-status age 임계(30분)
 SETSTATUS_STALE_SECS = 900           # §2-C 2차 증거 ②: set-status age > 15분
 SEEN_TTL_SECS = 1800                 # A6′ seen-store TTL(=critical 재enqueue 상한 = TTL당 1)
+# ★성찰 R4 N8 — **재시도 억제 TTL** 과 **미완료 사건의 ID 보존**은 다른 축이다.
+#   종전엔 둘이 한 레코드의 수명에 묶여 있어서, 승인 대기 6시간 동안 30분마다 seen 이 GC 되고
+#   새 wakeup ID 가 만들어졌고, 데몬 큐 TTL(기본 6h)이 지나 도착한 **최초 항목의** `queue.expired`
+#   가 현재 레코드의 ID 와 달라 아무것도 종결시키지 못했다 → 같은 사건이 TTL 마다 재enqueue 됐다.
+#   그래서 미종결 wakeup id 는 억제 TTL 과 **별도로** 이 상한까지 레코드에 남는다.
+SEEN_PENDING_KEEP_SECS = 8 * 3600    # 데몬 큐 TTL(6h)보다 길다 — 만료 통지가 도착할 때까지 산다
+# 상한은 **시간이 먼저 걸리게** 잡는다: 억제 TTL 30분마다 최대 1건이 늘고 보존이 8시간이므로
+# 살아 있는 항목은 16건을 넘을 수 없다. 24 는 그 위의 폭주 방어일 뿐이고, 이 순서를 뒤집으면
+# (예: 8) **가장 오래된 id 가 먼저 밀려나** 6시간 뒤 도착하는 최초 만료 통지가 다시 미아가 된다.
+SEEN_PENDING_MAX = 24                # 한 키가 기억하는 미종결 id 상한(무한 성장 차단)
 BADGE_SCHEMA_VERSION = 1             # badges.json — 데몬 alerts.rs `node_liveness` 가 소비
 EVENT_POLL_TIMEOUT = 1.5             # queue.delivered/master.deadman/master.idle 회수 상한(초)
 # ── G2 W3-C: master.idle 소비(데몬 v2 침묵/사망 축 분리의 게이트측 짝) ─────────
@@ -120,6 +158,11 @@ BLACKLIST_KEYS = frozenset({
     "idle_secs", "age_secs", "ts", "timestamp", "collected_at", "generated_at",
     "now", "uptime_secs", "last_seen", "seen_at", "mtime", "updated_at",
     "sampled_at", "status_age_secs", "usage_ctx_tokens",
+    # ★WP6-2: `usage_ctx_pct` 는 `usage_ctx_tokens` 의 백분율 파생값이라 같은 이유로 제외한다
+    #   (60% 판정은 정규화 '전' 원문 live_nodes 에서 하므로 감지 능력은 손실되지 않는다).
+    "usage_ctx_pct",
+    # ★(0.14.42 · RV3L-7) 미해결 통보 경과 초 — 시간파생(같은 통보면 매 주기 증가). 통보 id(`ctx_fire_pending`)는 diff 대상이다.
+    "ctx_fire_pending_age_s",
 })
 
 VERDICT_WARN, VERDICT_DELTA, VERDICT_QUIET, VERDICT_NOCHG = "WARN", "DELTA", "QUIET", "NOCHG"
@@ -404,6 +447,23 @@ def last_ledger(state_dir):
 # **severity 상승은 TTL 우회**: key 자체에 severity 를 포함하므로 상위 severity 는 별도 키가
 # 되어 하위 seen 에 억제되지 않는다(gemini ISSUE-4 수용의 구조적 구현).
 SEEN_STATE_CLAIMED, SEEN_STATE_INFLIGHT, SEEN_STATE_DELIVERED = "claimed", "inflight", "delivered"
+# ★(0.14.31 · WP-5 리뷰 R1 · codex major) 데몬이 그 항목을 **TTL 만료**로 큐에서 뺐다
+# (`queue.expired`). 배달이 아니므로 delivered 로 세지 않지만, 종결이므로 inflight 로도
+# 남기지 않는다 — 종전에는 만료된 critical wakeup 이 inflight 로 영원히 남아 seen TTL 마다
+# 재enqueue 됐고, 그 재enqueue 가 또 만료되며 만료 통지까지 반복 생산했다(적체 자기증식).
+SEEN_STATE_EXPIRED = "expired"
+# ★(0.14.31 · 성찰 Q6) 데몬이 그 항목을 **폐기**했다(`queue.dropped`). 사유는 넷이다:
+# `expired_evicted`(만료 큐 상한 축출) · `surface_closed`(좌석 종료) · `process_exited`
+# (자력 종료) · `cleared`(운영자 queue.clear). 종전에는 `expired_evicted` 만 `queue.expired`
+# 로도 함께 나가 종결이 도달했고 나머지 셋은 **아무 종결 신호도 도달하지 않았다** — 그
+# W-id 는 영원히 inflight 로 남아 seen TTL 마다 낡은 wakeup_id 그대로 재enqueue 됐다
+# (wakeup 홍수). 만료와 같은 급의 종결이되 **배달이 아니다**(delivered 계수 불변).
+SEEN_STATE_DROPPED = "dropped"
+# ★(0.14.31 · 성찰 Q7 · codex 설계 검토 #9) 데몬이 그 항목을 **보존·이동**했다 — 종결이 아니다.
+#   `queue.parked`(역할 좌석 종료 → 데몬 보존소) · `queue.rehomed`(보존소 → 같은 role 의 새 좌석).
+#   inflight 를 풀지 않고 **TTL 창만 되감는다**(`first_ts=now`): park 가 seen TTL(30분)을 넘겨도
+#   원본이 살아 있는데 같은 사건을 다시 enqueue 하지 않는다(중복 배달 차단). 조인 키는 `entry_ids`.
+SEEN_HOLD_EVENTS = ("queue.parked", "queue.rehomed")
 
 
 def _safe_key(key):
@@ -423,6 +483,53 @@ def seen_key(trigger, subject, severity):
     return "%s:%s:%s" % (trigger, subject or "-", severity)
 
 
+def seen_pending_live(rec, now, keep=SEEN_PENDING_KEEP_SECS):
+    """레코드의 **미종결 wakeup id** 중 아직 살아 있는 것들(순수 · N8).
+    항목 = `{"id": <wakeup_id>, "ts": <enqueue epoch>}`. 형상이 아니거나 상한을 넘긴 것은 뺀다."""
+    out = []
+    for it in (rec.get("pending") or []) if isinstance(rec, dict) else []:
+        if not isinstance(it, dict):
+            continue
+        wid, ts = it.get("id"), it.get("ts")
+        if not wid or not isinstance(ts, (int, float)):
+            continue
+        if (now - ts) >= keep:
+            continue
+        out.append({"id": wid, "ts": ts})
+    return out[-SEEN_PENDING_MAX:]
+
+
+def seen_pending_add(state_dir, key, wid, now):
+    """이 키로 enqueue 된 wakeup id 를 **미종결 목록**에 올린다(N8) → 갱신된 레코드.
+    ★왜 `wakeup_id` 한 칸으로 부족한가: 억제 TTL(30분)이 만료돼 재선점이 일어나면 그 칸은 새
+      id 로 덮이는데, 데몬 큐 TTL(6h)은 그보다 훨씬 길어 **최초 항목의 만료 통지**가 그 뒤에 온다.
+      그때 귀속할 자리가 없으면 종결이 영영 안 되고 같은 사건이 TTL 마다 다시 나간다."""
+    path = seen_path(state_dir, key)
+    rec = _load_json(path, None)
+    if not isinstance(rec, dict):
+        rec = {"key": key, "first_ts": now}
+    live = seen_pending_live(rec, now)
+    if wid and not any(it["id"] == wid for it in live):
+        live.append({"id": wid, "ts": now})
+    rec["pending"] = live[-SEEN_PENDING_MAX:]
+    rec["last_ts"] = now
+    _seen_write(path, rec)
+    return rec
+
+
+def seen_pending_settle(state_dir, key, wid, now, **fields):
+    """미종결 목록에서 `wid` 를 빼고 나머지 필드를 갱신한다(N8) → 갱신된 레코드."""
+    path = seen_path(state_dir, key)
+    rec = _load_json(path, None)
+    if not isinstance(rec, dict):
+        rec = {"key": key, "first_ts": now}
+    rec["pending"] = [it for it in seen_pending_live(rec, now) if it["id"] != wid]
+    rec.update(fields)
+    rec["last_ts"] = now
+    _seen_write(path, rec)
+    return rec
+
+
 def seen_claim(state_dir, key, severity, now, ttl=SEEN_TTL_SECS):
     """(claimed, record) — 이번 실행이 이 키의 유일 발행자인가.
 
@@ -439,6 +546,8 @@ def seen_claim(state_dir, key, severity, now, ttl=SEEN_TTL_SECS):
     os.makedirs(seen_dir(state_dir), exist_ok=True)
     path = seen_path(state_dir, key)
     rec = _load_json(path, None)
+    # ★N8: 재선점이 일어나도 **미종결 id 는 이월한다** — 억제 TTL 과 귀속 수명은 다른 축이다.
+    carry = seen_pending_live(rec, now) if isinstance(rec, dict) else []
     if isinstance(rec, dict):
         first = rec.get("first_ts")
         expired = not isinstance(first, (int, float)) or (now - first) >= ttl
@@ -463,7 +572,7 @@ def seen_claim(state_dir, key, severity, now, ttl=SEEN_TTL_SECS):
         return False, {}                            # 기록 불능 = 발화 보류(보수적)
     os.close(fd)
     rec = {"key": key, "severity": severity, "first_ts": now, "last_ts": now,
-           "state": SEEN_STATE_CLAIMED, "wakeup_id": None}
+           "state": SEEN_STATE_CLAIMED, "wakeup_id": None, "pending": carry}
     _seen_write(path, rec)
     return True, rec
 
@@ -503,16 +612,30 @@ def seen_iter(state_dir):
 
 
 def seen_gc(state_dir, now, ttl=SEEN_TTL_SECS):
-    """매 run 만료분 삭제 — 무한 성장 차단. 반환=삭제 건수."""
+    """매 run 만료분 삭제 — 무한 성장 차단. 반환=삭제 건수.
+
+    ★성찰 R4 N8: 억제 TTL 이 지났어도 **미종결 wakeup id 가 남아 있으면 지우지 않는다** — 그
+      레코드가 사라지면 데몬 큐 TTL(6h) 뒤에 오는 `queue.expired` 를 귀속시킬 자리가 없어져
+      최초 사건이 영영 종결되지 않고 같은 사건이 seen TTL 마다 재enqueue 된다. 대신 상한을 넘긴
+      항목만 솎아 내고 슬림하게 다시 쓴다(억제는 그대로 풀린다 — `first_ts` 를 손대지 않으므로
+      `seen_claim` 은 재선점을 허용한다). 미종결이 없으면 종전대로 삭제한다."""
     removed = 0
     for rec in seen_iter(state_dir):
         first = rec.get("first_ts")
-        if not isinstance(first, (int, float)) or (now - first) >= ttl:
-            try:
-                os.unlink(seen_path(state_dir, rec["key"]))
-                removed += 1
-            except OSError:
-                pass
+        if isinstance(first, (int, float)) and (now - first) < ttl:
+            continue
+        live = seen_pending_live(rec, now)
+        path = seen_path(state_dir, rec["key"])
+        if live:
+            if live != (rec.get("pending") or []):
+                rec["pending"] = live
+                _seen_write(path, rec)
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            pass
     return removed
 
 
@@ -806,12 +929,54 @@ def apply_policy(w):
     return w
 
 
+def ctx_divergence(nodes, stats=None):
+    """신선한 두 축의 괴리 관측. stats는 비교/신선도/결측/사망/모듈 부재 계수."""
+    diverged = []
+    if stats is None:
+        stats = {}
+    stats.update(compared=0, skipped_stale=0, skipped_missing=0,
+                 skipped_dead=0, skipped_missing_module=0)
+    # 실패 방향: 측정 수단 부재 → 비교 안 함 + 계수·대장 report_module_missing으로 가청화.
+    if _pick_node_ctx is None:
+        stats["skipped_missing_module"] = len(nodes or [])
+        return diverged
+    for n in nodes or []:
+        # 실패 방향: 확정 사망 → 동결값 비교 제외 + skipped_dead(미관측 None은 사망 아님).
+        if n.get("exited") is True or n.get("agent_alive") is False:
+            stats["skipped_dead"] += 1
+            continue
+        m, s = n.get("usage_ctx_pct"), n.get("context_pct")
+        # 실패 방향: 한 축이라도 결측이면 괴리 판정 대상이 아니다(경보 없음 · 0으로 접지 않음).
+        if any(not isinstance(v, (int, float)) or isinstance(v, bool)
+               or not math.isfinite(v) for v in (m, s)):
+            stats["skipped_missing"] += 1
+            continue
+        age = n.get("status_age_secs")
+        # 실패 방향: 신선도 미상·낡음 → 비교 제외(경보 없음 · skipped_stale로 표면화).
+        if (not isinstance(age, (int, float)) or isinstance(age, bool)
+                or not math.isfinite(age) or age > CTX_SELF_REPORT_MAX_AGE_S):
+            stats["skipped_stale"] += 1
+            continue
+        stats["compared"] += 1
+        signed = float(s) - float(m)
+        if abs(signed) > CTX_DIVERGENCE_ALERT_PCT:
+            diverged.append({"role": n.get("role", "?"), "diff": abs(signed),
+                             "signed_diff": signed, "measured": m, "reported": s})
+    return diverged
+
+
+def _fmt_ctx_divergence(row):
+    return (f"{row['role']}: 자기보고 {row['reported']:g} vs 실측 {row['measured']:g}"
+            f" = {row['signed_diff']:+g}")
+
+
 # ── EVT payload 매핑 표(계약 SOT: _round/EVENT_CONTRACT.md · javis_event.SCHEMA) ──
 #   idle    → agent.silent {agent, silent_minutes, level=critical}
 #   feed    → approval.needed {agent, task, summary}
 #   stall   → agent.silent {agent, silent_minutes, level=critical}
 #   master_idle → agent.silent {agent, silent_minutes, level=critical} (격상층만 — 정보층은 EVT 0)
 #   context → EVT 매핑 없음(계약에 ctx 타입 부재) → 대장 전용
+#   ctx_divergence → EVT 매핑 없음 → 대장+badge
 #   collect → EVT 매핑 없음 → 대장+badge
 #   DELTA   → task_progress {task, stage, [pct]}
 #   날짜변경 → briefing {counts:{running,inbox,approvals,alerts}}
@@ -894,17 +1059,40 @@ def extract_warnings(report, counters=None, now=0, edge_cooldown=EDGE_COOLDOWN_S
                 "stamp": stamp,
             }))
 
-    high = [n for n in (report.get("live_nodes") or [])
-            if isinstance(n.get("context_pct"), int) and n["context_pct"] >= 60]
-    if high:
-        roles = ",".join("%s(%d%%)" % (n.get("role", "?"), n["context_pct"]) for n in high)
+    # ★WP6-2 — 60% 판정선은 javis_report.pick_node_ctx 한 벌(실측 > 신선한 자기보고 · 결측 None).
+    #   낡은 자기보고가 더 이상 60% 를 못 울리므로 경보가 **줄 수 있다** — 의도한 감소다(회귀 아님).
+    #   헬퍼 부재는 판정 불가 = 경보 없음(위 import 주석 · reasons `report_module_missing`).
+    # ★(0.14.42 · RV3L-7) clear 가드 좌석(새 데몬)은 60% 가 아니라 가드의 미해결 통보(CTX_FIRE_PENDING_ALERT_S+)로만 —
+    #   javis_report.ctx_alert_nodes 한 벌. 그 이름이 없는 구 보고 모듈(스큐)이면 종전 60% 판정 그대로.
+    high, pend = [], []
+    if _pick_node_ctx is not None:
+        if _ctx_alert_nodes is not None:
+            high, pend = _ctx_alert_nodes(report.get("live_nodes") or [])
+        else:
+            for n in (report.get("live_nodes") or []):
+                p, src = _pick_node_ctx(n)
+                if p is not None and p >= 60:
+                    high.append((n, p, src))
+    if high or pend:
+        parts, reasons_ = [], []
+        if high:
+            roles = ",".join("%s(%d%% %s)" % (n.get("role", "?"), p, "실측" if src == "measured" else "추정")
+                             for n, p, src in high)
+            parts.append("%s 컨텍스트 60%%+ — cycle-agent 집행 검토" % roles)
+            reasons_.append("ctx_60:%s" % roles)
+        if pend:
+            proles = ",".join("%s(fire=%s · %d분)" % (n.get("role", "?"), fid, age // 60) for n, fid, age, _p, _s in pend)
+            parts.append("%s clear 통보 미집행 %d분+ — CSO 집행 확인(`cys cycle-agent --fire <fire> --detach` · "
+                         "손 집행도 --fire 필수)" % (proles, _CTX_FIRE_PENDING_ALERT_S // 60))
+            reasons_.append("ctx_fire_pending:%s" % proles)
         warns.append(apply_policy({
             "trigger": "context",
             "task": "gate-context",
-            "reason": "ctx_60:%s" % roles,
-            "wake_body": "[gate] context: %s 컨텍스트 60%%+ — cycle-agent 집행 검토.%s" % (roles, tail),
+            "reason": " ".join(reasons_),
+            "wake_body": "[gate] context: %s.%s" % (" · ".join(parts), tail),
             "evt_type": None, "evt_fields": None,
-            "idem": "gate-context-%s" % ",".join(n.get("role", "?") for n in high),
+            "idem": "gate-context-%s" % ",".join([n.get("role", "?") for n, _p, _s in high]
+                                                 + [n.get("role", "?") for n, _f, _a, _p, _s in pend]),
         }))
     feed = report.get("feed_pending")
     if isinstance(feed, int) and feed > 0:
@@ -1544,6 +1732,10 @@ class Gate:
         self._push_log = []          # 이번 실행에서 실제로 큐에 넣은 push(대장·검증용)
         self._events = []            # 이번 실행에서 회수한 데몬 이벤트(1회 폴링 결과)
         self._ack_ok = False         # 영수증 회수 가능 여부(critical 티어 판정 입력)
+        # ★성찰 R4 N9: 만료로 폐기된 **미배달 critical** 의 목록. `_reconcile_inflight` 는
+        #   `_judge_and_route`(배지 배열을 새로 만든다)보다 **먼저** 돌기 때문에, 사실만 여기
+        #   담아 두고 배지·사유는 판정 쪽에서 낸다(그러지 않으면 배지가 그 자리에서 지워진다).
+        self._expired_undelivered = []
 
     # ── 최종 stdout 1줄: schedule.command_done 텔레메트리에 실린다(데드맨 1차 강화·P0 확정) ──
     #    ★W5 N6b: `gate_signal=<name>` 토큰은 **state 를 못 쓰는 상황의 유일한 출구**다.
@@ -1595,6 +1787,8 @@ class Gate:
         """층4 — 판정에 쓴 **실측값**의 영속 수용처. BLACKLIST(diff 제외)와 역할이 다르다:
         diff 에서 빼는 것은 오탐 DELTA 방지이고, 여기 남기는 것은 사후 추적성 확보다."""
         ms = measurements(report)
+        ctx_stats = {}
+        diverged = ctx_divergence(report.get("live_nodes"), ctx_stats)
         try:
             _write_json_atomic(self.measure_path, {
                 "schema_version": SCHEMA_VERSION,
@@ -1602,9 +1796,13 @@ class Gate:
                 "sampled_at": report.get("sampled_at"),
                 "measure_source": report.get("measure_source"),
                 "records": [ms[k] for k in sorted(ms)],
+                # report --json 산출기는 별도 파일. 게이트 관측 JSON에 매 주기 보존한다.
+                "ctx_divergence": diverged,
+                "ctx_divergence_stats": ctx_stats,
             })
         except OSError:
             pass
+        return diverged
 
     def _load_cursor(self):
         c = _load_json(self.cursor_path, None)
@@ -1730,7 +1928,9 @@ class Gate:
             return
         try:
             ok, events, latest = fn(self._load_cursor(),
-                                    ["queue.delivered", "master.deadman", "master.idle"])
+                                    ["queue.delivered", "queue.expired", "queue.dropped",
+                                     *SEEN_HOLD_EVENTS,
+                                     "master.deadman", "master.idle"])
         except Exception:                       # noqa: BLE001 — 관측 실패가 판정을 죽이지 않는다
             return
         self._ack_ok = bool(ok)
@@ -1754,22 +1954,74 @@ class Gate:
         at-least-once 가 완결된다). 영수증이 없으면 아무것도 하지 않는다 — TTL 만료 시
         `seen_claim` 이 재선점을 허용해 **TTL당 1회**의 재enqueue 가 일어난다(C1·C3 oracle).
         """
-        pend = [r for r in seen_iter(self.state_dir)
-                if r.get("state") == SEEN_STATE_INFLIGHT and r.get("wakeup_id")]
+        self._expired_undelivered = []
+        # ★성찰 R4 N8: 귀속 대상은 '지금 inflight 인 레코드' 가 아니라 **미종결 wakeup id 를 가진
+        #   레코드** 다. 억제 TTL(30분)이 지나 재선점이 일어나면 `wakeup_id` 칸은 새 id 로 덮이는데,
+        #   데몬 큐 TTL(6h)로 만료된 **최초 항목**의 통지는 그 뒤에 온다 — 그때 종결시킬 자리가
+        #   없으면 최초 사건이 영영 열린 채로 남아 같은 사건이 TTL 마다 다시 나간다.
+        #   (구 레코드 호환: `pending` 이 없으면 종전 `wakeup_id` 한 칸을 그 목록으로 본다.)
+        pend = []
+        for r in seen_iter(self.state_dir):
+            ids = [it["id"] for it in seen_pending_live(r, now_epoch)]
+            if not ids and r.get("state") == SEEN_STATE_INFLIGHT and r.get("wakeup_id"):
+                ids = [r["wakeup_id"]]
+            if ids:
+                pend.append((r, ids))
         if not pend or not self._ack_ok:
             return
-        acked = set()
+        acked, expired, dropped, held = set(), set(), set(), set()
+        # ★(0.14.31 · 성찰 Q6) 종결은 셋이다 — 배달·만료·**폐기**. 조인 키는 셋 다 `entry_ids`
+        #   (배달 원문에서 되읽은 W-id)이고, 그것이 이 상태머신의 유일한 조인 키다.
+        # ★(0.14.31 · 성찰 Q7) **보존·이동**(`SEEN_HOLD_EVENTS`)은 종결이 아니라 "아직 살아 있다" 다.
+        _bucket = {"queue.delivered": acked, "queue.expired": expired, "queue.dropped": dropped}
+        for name in SEEN_HOLD_EVENTS:
+            _bucket[name] = held
         for ev in self._events:
-            if ev.get("name") != "queue.delivered":
+            name = ev.get("name")
+            if name not in _bucket:
                 continue
             payload = ev.get("payload") or {}
             for i in payload.get("entry_ids") or []:
-                acked.add(i)
-        for rec in pend:
-            if rec.get("wakeup_id") in acked:
-                seen_mark(self.state_dir, rec["key"], now_epoch,
-                          state=SEEN_STATE_DELIVERED)
-                edge_fire(counters, "push_edge", rec["key"], now_epoch)
+                _bucket[name].add(i)
+        for rec, ids in pend:
+            for wid in ids:
+                if wid in acked:
+                    seen_pending_settle(self.state_dir, rec["key"], wid, now_epoch,
+                                        state=SEEN_STATE_DELIVERED)
+                    edge_fire(counters, "push_edge", rec["key"], now_epoch)
+                elif wid in dropped:
+                    # ★(0.14.31 · 성찰 Q6) 데몬이 그 항목을 폐기했다(좌석 종료·자력 종료·clear·
+                    #   만료 축출). 배달이 아니므로 delivered 로 세지 않지만 **종결**이므로 미종결
+                    #   목록에서 푼다 — 그러지 않으면 seen TTL 마다 같은 wakeup_id 가 재enqueue
+                    #   된다. 조건이 여전하면 다음 주기의 **새 관측**이 새 wakeup 을 만든다.
+                    seen_pending_settle(self.state_dir, rec["key"], wid, now_epoch,
+                                        state=SEEN_STATE_DROPPED)
+                    edge_fire(counters, "push_edge", rec["key"], now_epoch)
+                elif wid in expired:
+                    # ★(0.14.31 · WP-5 리뷰 R1 · codex major) 데몬이 TTL 로 그 항목을 뺐다 —
+                    #   **배달이 아니다**(delivered 계수 불변). 종결이므로 inflight 는 푼다.
+                    # ★성찰 R4 N9: 그러나 **엣지 무장은 풀지 않는다**. 종전엔 배달과 똑같이
+                    #   `edge_fire` 를 불렀는데, 그 결과가 셋이었다:
+                    #     ⓐ 재통보 간격이 seen TTL(1800s)에서 쿨다운(7200s)으로 4배 늘고,
+                    #     ⓑ `cooldown` 기본값이 0 인 트리거는 **영구 침묵**이 된다(재무장은
+                    #        '이번 주기에 없는 키' 에만 일어나는데, 조건이 지속되면 키는 계속 있다),
+                    #     ⓒ 만료 갈래가 badge·evt·ledger 어느 것도 남기지 않아 "critical 이 미배달로
+                    #        폐기됐다" 를 함대가 관측할 수 없다.
+                    #   억제 상한은 이미 seen TTL 이 준다(`state=expired` 는 TTL 까지 재선점을 막는다).
+                    #   그래서 무장은 그대로 두고, 대신 **관측 가능하게** 만든다(아래 배지·계수).
+                    seen_pending_settle(self.state_dir, rec["key"], wid, now_epoch,
+                                        state=SEEN_STATE_EXPIRED)
+                    counters["expired_undelivered"] = \
+                        (counters.get("expired_undelivered") or 0) + 1
+                    self._expired_undelivered.append(
+                        {"key": rec["key"], "wakeup_id": wid,
+                         "severity": rec.get("severity") or SEV_WARN})
+                elif wid in held:
+                    # ★(0.14.31 · 성찰 Q7) 데몬이 그 항목을 보존·이동했다(역할 좌석 종료 → 보존소 →
+                    #   같은 role 의 새 좌석). 종결이 아니므로 미종결 목록은 그대로 두고 **TTL 창만
+                    #   되감는다** — 그러지 않으면 park 가 30분을 넘길 때 `seen_claim` 이 만료로 보고
+                    #   같은 사건을 다시 enqueue 한다(원본이 살아 있는데 중복 배달).
+                    seen_mark(self.state_dir, rec["key"], now_epoch, first_ts=now_epoch)
 
     def _judge_and_route(self, shadow, counters):
         now_epoch = self.now_epoch_fn()
@@ -1779,10 +2031,26 @@ class Gate:
 
         ok, report, err = self.runner.collect_report()
         reasons = []
+        # ★성찰 R4 N9: 만료로 폐기된 미배달 critical 을 **관측 가능하게** 낸다. 종전 만료 갈래는
+        #   badge·evt·ledger 어느 것도 남기지 않아, 함대는 "critical 이 아무도 읽지 않은 채 버려졌다"
+        #   를 알 방법이 없었다(배달 계수는 그대로라 대장만 보면 정상으로 보인다).
+        for _ex in (self._expired_undelivered or []):
+            reasons.append("expired_undelivered:%s" % _ex["key"])
+            self._badge("queue-expired-undelivered", SEV_WARN,
+                        "critical wakeup 이 배달되지 않은 채 큐 TTL 로 폐기됐다 — 수신 좌석 점검",
+                        {"key": _ex["key"], "wakeup_id": _ex["wakeup_id"],
+                         "severity": _ex["severity"]})
+        self._expired_undelivered = []
         if _LOCK_IMPORT_ERR:
             reasons.append("lock_module_missing")
         if _BOOTNODE_IMPORT_ERR:
             reasons.append("bootnode_module_missing")
+        if _REPORT_IMPORT_ERR:                # ★WP6-2 — CTX 헬퍼 부재 = 컨텍스트 경보 판정 불가
+            reasons.append("report_module_missing")
+        # 무효 환경설정은 판정을 WARN으로 바꾸거나 push하지 않고 관측 채널에만 남긴다.
+        for code, why in ENV_ANOMALIES:
+            reasons.append(code)
+            self._badge(code, SEV_WARN, why, {"threshold": CTX_DIVERGENCE_ALERT_PCT})
 
         # 수집 실패 = **대장+배지**(설계 §1-B N6a: push 0, 정상 state ledger `collect_fail`).
         # 종전에는 여기서 WARN push 가 나갔다 — 데몬이 잠깐 없을 때마다 master 를 두드리던 경로다.
@@ -1796,15 +2064,24 @@ class Gate:
             delivered = self._route_warn(warns, shadow, reasons, counters, now_epoch, set())
             self._flush_badges()
             ledger_append(self.state_dir, {"ts": now_iso, "ts_epoch": now_epoch,
-                                           "verdict": VERDICT_WARN, "reasons": [w["reason"] for w in warns],
+                                           "verdict": VERDICT_WARN, "reasons": reasons + [w["reason"] for w in warns],
                                            "delta_fields": [], "delivered": delivered,
                                            "consecutive_nochg": counters.get("consecutive_nochg", 0),
                                            "consecutive_quiet": counters.get("consecutive_quiet", 0),
                                            "lane": lane_id(self.state_dir), "shadow": shadow})
-            self._summary(VERDICT_WARN, delivered, [w["reason"] for w in warns])
+            self._summary(VERDICT_WARN, delivered, reasons + [w["reason"] for w in warns])
             return report
 
-        self._write_measurement(report)
+        diverged = self._write_measurement(report)
+        # 실패 방향: 측정 수단 부재 → 관측도 생략(위 reasons·관측 JSON 계수로 가청화).
+        if _pick_node_ctx is not None:
+            # 지속 괴리는 관측이다. WARN·quiet 카운터·DELTA 라우팅을 바꾸지 않고 매 주기 보존한다.
+            for row in diverged:
+                detail = _fmt_ctx_divergence(row)
+                reasons.append("ctx_divergence:%s" % detail)
+                self._badge("gate-ctx-divergence-%s" % row["role"], SEV_WARN,
+                            "[gate] 컨텍스트 괴리: %s" % detail,
+                            dict(row, trigger="ctx_divergence", stamp={}))
         new_snap = normalize(report)
         old_snap = self._load_snapshot()
 
@@ -1838,10 +2115,10 @@ class Gate:
                 self._write_counters(counters)
                 self._flush_badges()
                 ledger_append(self.state_dir, {"ts": now_iso, "ts_epoch": now_epoch,
-                                               "verdict": "GAP", "reasons": ["interval>3cycles"],
+                                               "verdict": "GAP", "reasons": reasons + ["interval>3cycles"],
                                                "delta_fields": [], "delivered": "none",
                                                "lane": lane_id(self.state_dir), "shadow": shadow})
-                self._summary("GAP", "none", ["interval>3cycles"])
+                self._summary("GAP", "none", reasons + ["interval>3cycles"])
                 return report
 
         if not report.get("status_available"):
@@ -2050,6 +2327,9 @@ class Gate:
         if tier == TIER_AT_LEAST_ONCE and ack_capable:
             #   critical = queue.delivered 영수증 수신 후에만 disarm(§8 R2-C3).
             seen_mark(self.state_dir, key, now_epoch, state=SEEN_STATE_INFLIGHT, wakeup_id=wid)
+            #   ★N8: 억제 TTL 과 별개로 **미종결 id** 를 남긴다 — 재선점이 `wakeup_id` 칸을 덮어도
+            #        데몬 큐 TTL(6h) 뒤에 오는 만료 통지가 원 사건에 귀속된다.
+            seen_pending_add(self.state_dir, key, wid, now_epoch)
         else:
             if tier == TIER_AT_LEAST_ONCE:
                 #   ★loud 강등: 영수증 회수가 구조적으로 불가한 환경(named pipe·소켓 부재)에서

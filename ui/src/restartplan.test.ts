@@ -1,28 +1,370 @@
+// GUI 재기동 주입의 초안 보호·기계 잔여 정리·배선 계약 (bun test — DOM/Tauri 불요).
 import { describe, expect, test } from "bun:test";
-import { restartRetryPlan } from "./restartplan";
+import { readFileSync } from "node:fs";
+import { planRestartInject, restartInvokeFailureReason } from "./restartplan";
 
-// 데몬 문면 정본 = src/lib.rs MSG_TYPING_GUARD + handlers.rs draft_gate_denied_response 꼬리.
-const GUARD = "human is typing in this pane; retry later or use --queued";
+const cmd = "cys launch-agent --role worker --agent claude";
+const plain = { mode: "plain", data: cmd + "\n", clearFirst: false };
+const clearFirst = { mode: "clear_first", data: cmd, clearFirst: true };
 
-describe("restartRetryPlan (④ 1.1.7)", () => {
-  test("기계 잔여(pending_input) 거부 → clear_first 1회 재시도 · 개행 없음", () => {
-    const p = restartRetryPlan("claude --continue", `typing_guard: ${GUARD} [draft_gate:pending_input]`);
-    expect(p).toEqual({ data: "claude --continue", clearFirst: true });
+describe("재기동 주입 — 계수에 따라 제출 방식을 고르고 사람 초안을 보호한다", () => {
+  test("전체·사람 계수가 0이면 종전처럼 개행을 붙여 보낸다", () => {
+    expect(planRestartInject(cmd, {
+      pending_input_bytes: 0, pending_input_human_bytes: 0,
+    })).toEqual(plain);
   });
-  test("Error 객체로 와도 같다", () => {
-    const p = restartRetryPlan("x", new Error(`typing_guard: ${GUARD} [draft_gate:pending_input]`));
-    expect(p?.clearFirst).toBe(true);
+
+  test("구 데몬이 두 키를 보고하지 않으면 종전 방식으로 보낸다", () => {
+    expect(planRestartInject(cmd, {})).toEqual(plain);
   });
-  test("사람 초안·화면 점유·일반 타이핑 가드·무관 실패는 재시도하지 않는다", () => {
-    for (const e of [
-      `typing_guard: ${GUARD} [draft_gate:human_draft]`,
-      `typing_guard: ${GUARD} [draft_gate:screen_occupied]`,
-      `typing_guard: ${GUARD}`,
-      "acl_denied: sender not allowed",
-      "",
-      undefined,
-    ]) {
-      expect(restartRetryPlan("x", e)).toBeNull();
+
+  test("전체 계수가 null이거나 부재하고 사람 계수가 0이면 종전 방식으로 보낸다", () => {
+    for (const pending of [null, undefined]) {
+      expect(planRestartInject(cmd, {
+        pending_input_bytes: pending, pending_input_human_bytes: 0,
+      })).toEqual(plain);
+      expect(planRestartInject(cmd, {
+        pending_input_bytes: pending, pending_input_human_bytes: null,
+      })).toEqual(plain);
     }
+  });
+
+  test("기계 잔여만 있으면 먼저 정리하고 본문에 개행을 붙이지 않는다", () => {
+    expect(planRestartInject(cmd, {
+      pending_input_bytes: 24, pending_input_human_bytes: 0,
+    })).toEqual(clearFirst);
+  });
+
+  for (const human of [null, undefined]) {
+    test(`전체 잔여가 있고 사람 계수가 ${String(human)}이면 정리 후 데몬의 사람 축 재검사를 받는다`, () => {
+      expect(planRestartInject(cmd, {
+        pending_input_bytes: 24, pending_input_human_bytes: human,
+      })).toEqual(clearFirst);
+    });
+  }
+
+  for (const pending of [24, 0, null, undefined]) {
+    test(`사람 초안이 있으면 전체 계수 ${String(pending)}보다 우선해 보류하고 재시도를 안내한다`, () => {
+      const plan = planRestartInject(cmd, {
+        pending_input_bytes: pending, pending_input_human_bytes: 3,
+      });
+      expect(plan.mode).toBe("refuse");
+      if (plan.mode !== "refuse") throw new Error("사람 초안이 있으면 재기동을 보류해야 한다");
+      for (const word of ["초안", "제출", "삭제", "재시도"]) {
+        expect(plan.reason).toContain(word);
+      }
+    });
+  }
+
+  // ★(0.14.43 · C5) 유령 계수 처방 — 계수는 남았는데 입력줄이 비어 보이면 사람이 그 창에서 Ctrl-U 한 번이면 풀린다.
+  test("사람 초안 보류 문구 끝에 유령 계수 처방(그 창을 클릭하고 Ctrl-U 한 번)을 덧붙인다 — 앞 문구는 그대로", () => {
+    const plan = planRestartInject(cmd, { pending_input_bytes: 3, pending_input_human_bytes: 3 });
+    if (plan.mode !== "refuse") throw new Error("사람 초안이 있으면 재기동을 보류해야 한다");
+    const legacy = "사람이 작성 중인 초안이 있습니다. 초안을 제출하거나 삭제한 뒤 재시도하세요.";
+    const hint = "입력줄이 비어 보이면 그 창을 클릭하고 Ctrl-U 를 한 번 누르세요.";
+    expect(plan.reason).toBe(`${legacy} ${hint}`);
+    expect(plan.reason.startsWith(legacy)).toBe(true);
+    expect(plan.reason.endsWith(hint)).toBe(true);
+    // 사람이 하는 일이다 — 기계가 키를 보낸다는 문면이 아니다.
+    expect(plan.reason).toContain("누르세요");
+    expect(plan.reason).not.toContain("자동");
+  });
+
+  test("보류가 아닌 계획(계수 0 · 기계 잔여만)에는 처방 문구가 없다", () => {
+    for (const obs of [
+      { pending_input_bytes: 0, pending_input_human_bytes: 0 },
+      { pending_input_bytes: 24, pending_input_human_bytes: 0 },
+      {},
+    ]) {
+      const plan = planRestartInject(cmd, obs);
+      expect(plan.mode).not.toBe("refuse");
+      expect(JSON.stringify(plan)).not.toContain("Ctrl-U");
+    }
+  });
+
+  const invalidCounts = [
+    { label: "음수", value: -1 },
+    { label: "숫자가 아닌 값", value: NaN },
+    { label: "양의 무한대", value: Infinity },
+    { label: "음의 무한대", value: -Infinity },
+    { label: "양수 문자열", value: "24" },
+    { label: "영 문자열", value: "0" },
+    { label: "빈 문자열", value: "" },
+    { label: "불리언", value: true },
+    { label: "객체", value: {} },
+    { label: "배열", value: [24] },
+  ];
+  for (const { label, value } of invalidCounts) {
+    test(`${label} 계수는 숫자로 강제 변환하지 않고 0으로 접는다`, () => {
+      // org.status 런타임 응답이 타입 계약을 어긴 경우도 순수 함수에서 방어한다.
+      for (const obs of [
+        { pending_input_bytes: value, pending_input_human_bytes: 0 },
+        { pending_input_bytes: 0, pending_input_human_bytes: value },
+        { pending_input_bytes: value, pending_input_human_bytes: value },
+      ]) {
+        expect(planRestartInject(cmd, obs as unknown as Parameters<typeof planRestartInject>[1])).toEqual(plain);
+      }
+    });
+  }
+});
+
+const src = readFileSync(new URL("./main.ts", import.meta.url), "utf-8");
+// droppoint.test.ts 관례: 주석에만 적힌 함수명으로 배선 검체가 통과하지 않게 한다.
+const code = src
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .split("\n")
+  .map((line) => line.trimStart().startsWith("//") ? "" : line.replace(/\s\/\/.*$/, ""))
+  .join("\n");
+
+function functionSlice(name: string): string {
+  const start = code.indexOf(`function ${name}(`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = code.indexOf("\n}\n", start);
+  expect(end).toBeGreaterThan(start);
+  return code.slice(start, end + 3);
+}
+
+describe("재기동 배선 — 순수 주입 계획이 실제 UI 전송을 결정한다", () => {
+  test("재기동은 순수 모듈의 계획을 쓰고 명령에 개행을 직접 붙여 넘기지 않는다", () => {
+    const body = functionSlice("restartNode");
+    expect(/import\s*\{[^}]*\bplanRestartInject\b[^}]*\}\s*from\s*["']\.\/restartplan["']/.test(code)).toBe(true);
+    expect(/planRestartInject\(\s*cmd\s*,\s*target\s*\)/.test(body)).toBe(true);
+    expect(/data\s*:\s*cmd\s*\+\s*["']\\n["']/.test(body)).toBe(false);
+  });
+
+  test("보류 계획은 watchdog 토스트를 표시하고 전송 전에 반환한다", () => {
+    const body = functionSlice("restartNode");
+    const refusal = body.match(/if\s*\(plan\.mode\s*===\s*"refuse"\)\s*\{([\s\S]*?)\}/);
+    expect(refusal !== null).toBe(true);
+    if (!refusal) throw new Error("보류 분기가 있어야 한다");
+    expect(refusal[1]).toContain('toast("watchdog", "재기동 보류", plan.reason)');
+    expect(refusal[1]).toContain("return;");
+    expect(body.indexOf(refusal[0])).toBeLessThan(body.indexOf('invoke("send_input"'));
+  });
+
+  test("계획의 본문과 정리 여부를 같은 대상에 기계 문안으로 보낸다", () => {
+    const body = functionSlice("restartNode");
+    const send = body.slice(body.indexOf('invoke("send_input"'));
+    for (const field of [
+      "socket: socket ?? null", "surfaceId: target.surface_id",
+      "data: plan.data", "clearFirst: plan.clearFirst", "machineOrigin: true",
+    ]) {
+      expect(send).toContain(field);
+    }
+  });
+
+  test("대상 좌석 점프는 기존처럼 전송을 준비하기 전에 수행한다", () => {
+    const body = functionSlice("restartNode");
+    const jump = body.indexOf("jumpToSurface(target.surface_id, socket)");
+    expect(jump).toBeGreaterThanOrEqual(0);
+    expect(jump).toBeLessThan(body.indexOf("planRestartInject("));
+  });
+});
+
+// ★(0.14.39 · 적대 major ②ⓑ) 데몬 거부의 무음 실패 금지 — 사유 번역과 배선.
+// 프로덕션 문면(정의처): src/bin/cysd/handlers.rs:4303-4308 (code=clear_first_unsupported)
+const PROD_CLEAR_FIRST_UNSUPPORTED =
+  "clear_first_unsupported: clear_first requires a launch-agent-registered pane (Ctrl-U semantics vary by TUI)";
+// 정의처: src/lib.rs:633-634 — ERR_TYPING_GUARD + MSG_TYPING_GUARD
+const PROD_TYPING_GUARD = "typing_guard: human is typing in this pane; retry later or use --queued";
+// 정의처: src/bin/cysd/handlers.rs:2241-2246 draft_gate_denied_response — code 는 typing_guard, message 에 [draft_gate:…] 태그
+const PROD_DRAFT_GATE =
+  "typing_guard: human is typing in this pane; retry later or use --queued [draft_gate:pending_input]";
+
+describe("재기동 실패 — 데몬 거부를 한국어 처방으로 낸다", () => {
+  for (const { label, error, reason } of [
+    {
+      label: "clear_first 미지원 좌석은 Ctrl-U 후 재시도를 안내한다",
+      error: PROD_CLEAR_FIRST_UNSUPPORTED,
+      reason: "이 좌석은 launch-agent 등록이 없어 자동 정리를 못 합니다 — 해당 pane 에서 Ctrl-U 후 재시도",
+    },
+    {
+      label: "초안 게이트 거부는 typing_guard보다 우선해 초안 제출·삭제를 안내한다",
+      error: PROD_DRAFT_GATE,
+      reason: "대상 입력줄에 미제출 입력이 있어 보류했습니다 — 해당 pane 에서 초안을 제출·삭제한 뒤 재시도",
+    },
+    {
+      label: "타이핑 가드 거부는 잠시 뒤 재시도를 안내한다",
+      error: PROD_TYPING_GUARD,
+      reason: "대상 pane 에 사람 입력이 감지돼 보류했습니다 — 잠시 뒤 재시도",
+    },
+  ]) {
+    for (const withCode of [true, false]) {
+      test(`${label} — ${withCode ? "코드 포함" : "코드가 유실된 message만"}`, () => {
+        const text = withCode ? error : error.slice(error.indexOf(": ") + 2);
+        for (const err of [text, new Error(text)]) {
+          expect(restartInvokeFailureReason(err)).toBe(reason);
+        }
+      });
+    }
+  }
+
+  test("send_input은 rpc_full로 데몬 오류 코드를 UI까지 보존한다", () => {
+    const rust = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf-8");
+    const start = rust.indexOf("async fn send_input(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = rust.indexOf("\n}", start);
+    expect(end).toBeGreaterThan(start);
+    const body = rust.slice(start, end + 2)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => line.trimStart().startsWith("//") ? "" : line.replace(/\s\/\/.*$/, ""))
+      .join("\n");
+    if (!body.includes("rpc_full(") || body.includes("rpc_on(")) {
+      throw new Error("send_input 이 rpc_on 으로 되돌아갔다 — error.code 가 유실돼 번역이 다시 vacuous 가 된다");
+    }
+  });
+
+  // ★(0.14.39 라운드3 · 부트체인 notice) 위 PROD_* 는 손으로 옮긴 리터럴이다 — 정의처가 바뀌면
+  //   번역표는 그대로 통과하면서 실제 문면과 어긋나 **사유 축이 조용히 죽는다**(거부가 원문으로
+  //   떨어져 사람이 처방을 못 본다). 러스트 정의처를 읽어 대조해 그 무음 실패를 막는다.
+  test("거부 문면의 정의처(러스트 상수·리터럴)와 검체가 어긋나지 않는다", () => {
+    const lib = readFileSync(new URL("../../src/lib.rs", import.meta.url), "utf-8");
+    const constOf = (name: string): string => {
+      const line = lib.split("\n").find((l) => l.trimStart().startsWith(`pub const ${name}: &str = "`));
+      if (!line) throw new Error(`src/lib.rs 에 ${name} 정의가 없다 — 문면 축의 정의처가 사라졌다`);
+      return line.slice(line.indexOf('"') + 1, line.lastIndexOf('"'));
+    };
+    const errTyping = constOf("ERR_TYPING_GUARD");
+    const msgTyping = constOf("MSG_TYPING_GUARD");
+    const draftTag = constOf("DRAFT_GATE_TAG");
+    expect(PROD_TYPING_GUARD).toBe(`${errTyping}: ${msgTyping}`);
+    // draft_gate_denied_response: `{MSG_TYPING_GUARD} [{DRAFT_GATE_TAG}:{why}]` · code 는 ERR_TYPING_GUARD.
+    expect(PROD_DRAFT_GATE).toBe(`${errTyping}: ${msgTyping} [${draftTag}:pending_input]`);
+    const handlers = readFileSync(new URL("../../src/bin/cysd/handlers.rs", import.meta.url), "utf-8");
+    const [code, message] = PROD_CLEAR_FIRST_UNSUPPORTED.split(/: (.+)/);
+    if (!handlers.includes(`"${code}"`) || !handlers.includes(`"${message}"`)) {
+      throw new Error(
+        `handlers.rs 의 clear_first 거부 문면이 검체와 다르다 — 번역이 vacuous 가 된다: ${PROD_CLEAR_FIRST_UNSUPPORTED}`,
+      );
+    }
+  });
+
+  test("번역표에 없는 오류는 삼키지 않고 원문을 싣는다", () => {
+    expect(restartInvokeFailureReason(new Error("daemon unreachable"))).toBe("daemon unreachable");
+    expect(restartInvokeFailureReason("  socket closed  ")).toBe("socket closed");
+    for (const empty of ["", "   ", null, undefined]) {
+      expect(restartInvokeFailureReason(empty)).toBe("알 수 없는 오류");
+    }
+  });
+
+  test("재기동 전송은 try/catch 안에 있고 실패를 토스트로 낸다", () => {
+    const body = functionSlice("restartNode");
+    const tryAt = body.indexOf("try {");
+    const sendAt = body.indexOf('invoke("send_input"');
+    const catchAt = body.indexOf("} catch (");
+    expect(tryAt).toBeGreaterThanOrEqual(0);
+    expect(tryAt).toBeLessThan(sendAt);
+    expect(catchAt).toBeGreaterThan(sendAt);
+    const handler = body.slice(catchAt);
+    expect(handler).toContain("restartInvokeFailureReason(");
+    expect(handler).toContain('toast("watchdog", "재기동 실패"');
+  });
+
+  test("팔레트 액션 실행도 감싸여 무음으로 죽지 않는다", () => {
+    const runAt = code.indexOf("const run = async (it: PaletteItem)");
+    expect(runAt).toBeGreaterThanOrEqual(0);
+    const body = code.slice(runAt, code.indexOf("\n  };\n", runAt) + 5);
+    expect(body).toContain("try {");
+    expect(body).toContain("await it.action();");
+    expect(body).toContain("catch");
+    expect(body).toContain("restartInvokeFailureReason(");
+  });
+});
+
+// ★(0.14.43 · RQFIX F12 · I6 감사 N1) 데몬 거부 세 갈래 번역 — 모달 · 정착 창 · 유령 계수 처방. 셋 다 문면에 `draft_gate` 가 붙어 있어 일반 초안 게이트 분기보다 **앞**에서 잡아야 한다.
+// 거부 문면은 손으로 옮긴 리터럴이 아니라 **데몬 소스의 상수·리터럴에서 조립**한다 — 상수가 바뀌면 이 검체가 적색이 된다(번역이 조용히 죽지 않는다).
+describe("재기동 실패 — 데몬 거부 세 갈래(모달·정착 창·유령 계수 처방) 번역", () => {
+  const lib = readFileSync(new URL("../../src/lib.rs", import.meta.url), "utf-8");
+  const governance = readFileSync(new URL("../../src/bin/cysd/governance.rs", import.meta.url), "utf-8");
+  const handlers = readFileSync(new URL("../../src/bin/cysd/handlers.rs", import.meta.url), "utf-8");
+  const constOf = (name: string): string => {
+    const line = lib.split("\n").find((l) => l.trimStart().startsWith(`pub const ${name}: &str = "`));
+    if (!line) throw new Error(`src/lib.rs 에 ${name} 정의가 없다 — 거부 문면의 정의처가 사라졌다`);
+    return line.slice(line.indexOf('"') + 1, line.lastIndexOf('"'));
+  };
+  // 사유 태그 `[draft_gate:<why>]` 의 why 문자열 — governance.rs `DraftGateDenied::as_str()` 의 리터럴.
+  const whyOf = (variant: string): string => {
+    const m = governance.match(new RegExp(`Self::${variant}(?: \\{ \\.\\. \\})? => "([a-z_]+)"`));
+    if (!m) throw new Error(`governance.rs DraftGateDenied::as_str() 에 ${variant} 가 없다`);
+    return m[1];
+  };
+  const errTyping = constOf("ERR_TYPING_GUARD");
+  const msgTyping = constOf("MSG_TYPING_GUARD");
+  const draftTag = constOf("DRAFT_GATE_TAG");
+  const settleTag = constOf("SEND_SETTLE_TAG");
+  const ghostSuffix = constOf("GHOST_CTRL_U_SUFFIX");
+  const MODAL = `${errTyping}: ${msgTyping} [${draftTag}:${whyOf("Modal")}]`;
+  const SETTLE = `${errTyping}: ${msgTyping} [${draftTag}:${whyOf("SubmitSettling")}] [${settleTag}:120]`;
+  const GHOST = `${errTyping}: ${msgTyping} [${draftTag}:${whyOf("PendingInput")}]${ghostSuffix}`;
+  const MODAL_REASON = "질문·선택 창이 떠 있어 보류했습니다 — 그 창을 먼저 처리한 뒤 재시도";
+  const SETTLE_REASON = "직전 제출이 처리되는 중이라 보류했습니다 — 잠시 뒤 다시 시도";
+  const GHOST_REASON =
+    "입력줄에 미제출 입력이 있다고 계수돼 보류했습니다 — 입력줄이 비어 보이면 그 창을 클릭하고 Ctrl-U 를 한 번 누른 뒤 재시도(글이 있으면 제출하거나 지운다)";
+
+  for (const { label, error, reason } of [
+    { label: "모달 태그 → 그 창을 먼저 처리", error: MODAL, reason: MODAL_REASON },
+    { label: "정착 창 태그(제출 처리 중) → 잠시 뒤 재시도", error: SETTLE, reason: SETTLE_REASON },
+    { label: "유령 처방 접미 → 입력줄이 비어 보이면 Ctrl-U", error: GHOST, reason: GHOST_REASON },
+  ]) {
+    for (const withCode of [true, false]) {
+      test(`${label} — ${withCode ? "코드 포함" : "코드가 유실된 message만"}`, () => {
+        const text = withCode ? error : error.slice(error.indexOf(": ") + 2);
+        for (const err of [text, new Error(text)]) {
+          expect(restartInvokeFailureReason(err)).toBe(reason);
+        }
+      });
+    }
+  }
+
+  test("정착 증명 태그만 있는 거부(사유 태그 없음)와 사유 태그만 있는 거부(증명 없음)도 정착 창으로 번역한다", () => {
+    expect(restartInvokeFailureReason(`${errTyping}: ${msgTyping} [${draftTag}:pending_input] [${settleTag}:80]`)).toBe(SETTLE_REASON);
+    expect(restartInvokeFailureReason(`${errTyping}: ${msgTyping} [${draftTag}:${whyOf("SubmitSettling")}]`)).toBe(SETTLE_REASON);
+  });
+
+  test("세 갈래는 일반 초안 게이트 분기보다 앞이다 — 일반 분기 문구로 덮이지 않는다", () => {
+    const generic = restartInvokeFailureReason(`${errTyping}: ${msgTyping} [${draftTag}:pending_input]`);
+    expect(generic).toBe("대상 입력줄에 미제출 입력이 있어 보류했습니다 — 해당 pane 에서 초안을 제출·삭제한 뒤 재시도");
+    for (const e of [MODAL, SETTLE, GHOST]) {
+      expect(restartInvokeFailureReason(e)).not.toBe(generic);
+      expect(e).toContain(draftTag); // 세 문면 모두 일반 분기의 조건(`draft_gate`)도 만족한다 — 앞에서 잡지 않으면 덮인다
+    }
+    // 소스 순서 핀: 번역기 안에서 세 갈래 조건이 일반 분기 조건보다 먼저 나온다.
+    const src = readFileSync(new URL("./restartplan.ts", import.meta.url), "utf-8");
+    const body = src.slice(src.indexOf("export function restartInvokeFailureReason"));
+    const generalAt = body.indexOf('text.includes("draft_gate") || text.includes("pending_input")');
+    expect(generalAt).toBeGreaterThan(0);
+    for (const cond of ['text.includes("draft_gate:modal")', 'text.includes("[settle:")', 'text.includes("입력줄이 비어 보이면 유령 계수다")']) {
+      const at = body.indexOf(cond);
+      expect({ cond, at: at >= 0 }).toEqual({ cond, at: true });
+      expect(at).toBeLessThan(generalAt);
+    }
+  });
+
+  test("번역 조건 구절이 데몬 소스의 실제 문면 안에 있다 — 상수가 바뀌면 이 검체가 적색이다", () => {
+    // 모달: `[draft_gate:modal]` — 번역기 조건 `draft_gate:modal` 이 DRAFT_GATE_TAG + `:` + DraftGateDenied::Modal 의 as_str() 와 같다.
+    expect(`${draftTag}:${whyOf("Modal")}`).toBe("draft_gate:modal");
+    // 정착 창: ` [settle:<ms>]` · 사유 `submit_settling` — 번역기 조건 `[settle:` 과 `draft_gate:submit_settling`.
+    expect(`[${settleTag}:`).toBe("[settle:");
+    expect(`${draftTag}:${whyOf("SubmitSettling")}`).toBe("draft_gate:submit_settling");
+    // 유령 처방: 번역기 조건 구절이 접미 상수 안에 있다(접미는 `cys` CLI 도 같은 상수로 stderr 처방을 찍는다 · I-8).
+    expect(ghostSuffix).toContain("입력줄이 비어 보이면 유령 계수다");
+    expect(ghostSuffix).toContain("Ctrl-U");
+    // 데몬이 실제로 모달 거부를 이 사유 이름으로 만든다(handlers 가 DraftGateDenied::Modal 을 응답으로 낸다).
+    expect(handlers).toContain("DraftGateDenied::Modal");
+    // 데몬 쪽 접미 정의처가 lib.rs 하나다 — governance.rs 는 재노출만 하고 리터럴을 따로 두지 않는다.
+    expect(governance).toContain("pub(crate) use cys::GHOST_CTRL_U_SUFFIX;");
+    expect(governance.match(/pub(\(crate\))? const GHOST_CTRL_U_SUFFIX/g)).toBeNull();
+  });
+
+  test("종전 갈래는 그대로다 — 초안 게이트 일반 · 타이핑 가드 · clear_first 미지원 · 원문 보존", () => {
+    expect(restartInvokeFailureReason(PROD_DRAFT_GATE)).toBe(
+      "대상 입력줄에 미제출 입력이 있어 보류했습니다 — 해당 pane 에서 초안을 제출·삭제한 뒤 재시도",
+    );
+    expect(restartInvokeFailureReason(PROD_TYPING_GUARD)).toBe("대상 pane 에 사람 입력이 감지돼 보류했습니다 — 잠시 뒤 재시도");
+    expect(restartInvokeFailureReason(PROD_CLEAR_FIRST_UNSUPPORTED)).toBe(
+      "이 좌석은 launch-agent 등록이 없어 자동 정리를 못 합니다 — 해당 pane 에서 Ctrl-U 후 재시도",
+    );
+    expect(restartInvokeFailureReason("daemon unreachable")).toBe("daemon unreachable");
   });
 });

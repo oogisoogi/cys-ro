@@ -114,6 +114,7 @@ import os
 import re
 import subprocess
 import sys
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import tempfile
 import time
 
@@ -288,6 +289,61 @@ PING_RETRY_TOTAL_S = max(0.0, float(os.environ.get(
 # (창이 시간으로만 닫히므로 횟수는 간격이 유일하게 유계화한다 — 앵커 ① 폭주 방지).
 PING_RETRY_INTERVAL_S = max(0.05, float(os.environ.get(
     "CYS_BOOT_PING_RETRY_INTERVAL_S", str(_budget_leaf("CYS_PING_RETRY_INTERVAL_S", 3)))))
+
+# ── ④′ 부하 재확인 예산(U11 · 오너 2026-09-23 "30초 간격으로 최대 3분 재확인") ──
+# ★왜: 자원 게이트가 우리 프로그램 CPU 합(fleet_cpu_ratio)으로 hard 를 내면 종전엔 **한 번 재고**
+#   exit 9 로 팀 기동을 포기했다. CPU 스파이크(첫 실행·인덱싱)는 1~2분이면 내려가는데, 그 한 번에
+#   걸리면 사람이 선언을 다시 쳐야 했다. 그래서 **그 축 하나만** 벽시계 상한 안에서 다시 잰다.
+# ★상한이지 하한이 아니다: javis_budget 의 LEAF_FLOORS 는 '냉시작 실측 하한 · 감액 금지 · env 는
+#   올리기만' 이다. 오너의 3분은 **상한**("최대 3분")이라 성격이 반대다 — 그래서 여기 정책 상수로
+#   두고 env 는 **줄이기만** 한다(min(env, 상한)). 늘릴 수 있으면 그만큼 레인 싱글플라이트 락을
+#   쥐어 그 사이 재선언이 전부 exit 11 로 접힌다(치명 앵커 ③ 자가치유 봉쇄 방향).
+# ★최악 벽시계 = TOTAL + 마지막 게이트 1회 상한(RPC_SLACK_S×3) (+ 다른 축으로 바뀐 회차에서만
+#   `cys list` 교차확인 1회). 재측정 회차 수 = int(TOTAL/INTERVAL + 1e-9)(부동소수 함정 제거 —
+#   파이썬 `0.3 // 0.05 == 5.0`).
+# ★롤백·테스트 손잡이: `CYS_BOOT_RESOURCE_RECHECK_TOTAL_S=0` → 종전 1회 판정 그대로.
+RESOURCE_RECHECK_TOTAL_CAP_S = 180.0
+RESOURCE_RECHECK_INTERVAL_CAP_S = 30.0
+RESOURCE_RECHECK_INTERVAL_FLOOR_S = 0.05     # 0 간격 = 게이트 스폰 폭주(앵커 ①) — 하한
+
+
+def _env_capped_seconds(name, cap, floor=0.0):
+    """env 초 값 → [floor, cap]. 미설정·빈 값·비수치·nan·inf 는 cap(=기본값) — **줄이기만** 허용.
+    부트 경로의 모듈 최상위라 어떤 입력에도 던지지 않는다(크래시 = 팀 0)."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return cap
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return cap
+    if v != v or v in (float("inf"), float("-inf")):
+        return cap
+    return max(floor, min(v, cap))
+
+
+RESOURCE_RECHECK_TOTAL_S = _env_capped_seconds(
+    "CYS_BOOT_RESOURCE_RECHECK_TOTAL_S", RESOURCE_RECHECK_TOTAL_CAP_S, 0.0)
+RESOURCE_RECHECK_INTERVAL_S = _env_capped_seconds(
+    "CYS_BOOT_RESOURCE_RECHECK_INTERVAL_S", RESOURCE_RECHECK_INTERVAL_CAP_S,
+    RESOURCE_RECHECK_INTERVAL_FLOOR_S)
+
+
+def _recheck_rounds(total, interval):
+    """U11 재확인 최대 회차 수 = int(TOTAL/INTERVAL + 1e-9)(부동소수 함정 제거).
+
+    ★리뷰1(2026-09-23) MU13 방어: `+1e-9` 를 지우고 `//`(내림 나눗셈)로 바꿔도 테스트 값
+      1.5/0.5 는 딱 나누어떨어져(둘 다 3) 구분되지 않았다. 파이썬에서 `0.3/0.05` 는 부동소수
+      표현상 5.999999999999999 라 `int(0.3/0.05)`(=`//` 취지)는 **5** 가 나오지만, 실제 의도한
+      회차 수는 **6** 이다 — `+1e-9` 가 그 경계를 밀어 올린다. self-test 가 `(0.3, 0.05) == 6`
+      을 직접 단언해 이 상수를 핀한다(아래 `--self-test`)."""
+    if interval <= 0:
+        return 0
+    return int(total / interval + 1e-9)
+# 재확인 대상 축 — **fleet_cpu_ratio 단일**. 게이트의 CPU_GRACE_AXES 에는 load_ratio 도 있지만 그
+# 축은 0.14.31 부터 hard 가 없어(soft 전용) 여기 넣으면 사문 멤버가 된다. servers·nodes·context·
+# formation_budget 은 기다려도 풀리지 않는 개수/자기보고 축이라 3분을 버리지 않는다(즉시 exit 9).
+RESOURCE_RECHECK_AXES = ("fleet_cpu_ratio",)
 
 # ── ③ 선행 claim 결박 신선도의 시간 기준(P0-1 — CLM-2 라이브락 절단) ──
 # ★런 시작 시각 1회 캡처: 결박 나이(_pre_age)의 기준점이다. 종전엔 **소비 시각**(time.time())
@@ -474,15 +530,83 @@ BOOT_FATAL_OUTCOMES = ("failed", "missing")
 # 제3 상태의 outcome 값(정본 = Rust `cys::GATE_PENDING_KEY`).
 BOOT_GATE_PENDING_OUTCOME = "gate_pending"
 
+# ★관문 기본 포커스 경고 — 사람용 처방 4곳(아래 기본·사유별 2종·부서장 폴백)의 **단일 문장**.
+#   0.14.41 U7(WP-C1 · 반박 M1 · 온보딩 치명): 2.1.261+ 는 **폴더신뢰 창도** 선택지가 `[No, exit, Yes, I trust
+#   this folder]` 이고 기본 포커스가 `No, exit` 다(cancelFirst · focus=cancel — 조사 U7 §1.4 바이너리 판독).
+#   종전 문안은 면책 창만 경고해서, 첫기동 순서(… 폴더신뢰 → 면책 …)대로 폴더신뢰 창에서 Return 을 누르면 좌석이
+#   죽었다(새 설치의 첫 마스터가 바로 이 창을 만난다). 바꾸는 것은 **문안뿐**이다 — 코퍼스(approval_patterns.
+#   trust-prompt · MEASURED_ON · default_index)는 무접촉(설계 §3 U7 금지선: 바꾸면 Return 자동확인이 다시 무장된다).
+#   ★리뷰1 I-6(minor · 문안 병기 · 동작 변경 0): 방향키 처방은 2.1.261+ 위치 기준이다. 2.1.241~260 은
+#   순서가 반대(`1. Yes, I trust this folder` 가 포커스)라 그대로 따르면 좌석이 죽는다 — 라벨 기준
+#   문장을 추가한다(방향키 처방은 지우지 않는다).
+_GATE_FOCUS_WARNING = ("★폴더신뢰(2.1.261+)·면책 창 **둘 다** 기본 포커스가 `No, exit` 이므로 그대로 "
+                       "Return 하면 노드가 종료된다(아래 방향키 1회 뒤 Return). 버전을 모르면 라벨로 "
+                       "확인하라: `Yes, I trust this folder`/`Yes, I accept` 위에 커서를 두고 Return — "
+                       "`No, exit` 위에서는 Return 금지")
+
 # 관문 보류 처방 문안(단일 출처) — launch-agent 소비부(U-11)와 **같은 사실을 같은 말로** 낸다.
-# ★면책 창 경고를 반드시 동봉한다: 실측상 기본 포커스가 `No, exit` 이라 그대로 Return 하면
+# ★기본 포커스 경고를 반드시 동봉한다: 실측상 기본 포커스가 `No, exit` 이라 그대로 Return 하면
 #   좌석이 죽는다(2026-07-29 실사고 형태 · e2e 오라클 H-FAKE-2 가 rc 1 로 박제한 그 축).
 _GATE_PENDING_PRESCRIPTION = (
     "→ 그 pane 에서 첫기동 관문(테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내)을 "
-    "1회 통과시켜라. ★면책 창의 기본 포커스는 `No, exit` 이므로 그대로 Return 하면 노드가 "
-    "종료된다(아래 방향키 1회 뒤 Return). 좌석과 프로세스는 살아 있으므로 **회수·재기동·kill 은 "
+    "1회 통과시켜라. " + _GATE_FOCUS_WARNING + ". 좌석과 프로세스는 살아 있으므로 **회수·재기동·kill 은 "
     "하지 마라** — 재부트가 스폰 없이 그 좌석을 채택한다."
 )
+
+# ★(0.14.31 · 리뷰 R5 · codex minor) **사유별 처방** — 생산자(`cys.rs`)가 typed outcome 에 싣는
+#   구조화 사유(`gate_reason`)로 고른다. 종전엔 outcome=gate_pending **전건**에 위 문안(관문을
+#   1회 통과시켜라)이 나갔고, 그래서 "관문은 이미 통과했는데 표식만 못 읽은" 좌석에도 사람이
+#   이미 통과한 관문을 다시 통과시키라는 지시가 갔다(생산자가 R4 에서 고친 모순의 하류 절반).
+#   ★문안을 파싱하지 않는다 — 필드만 본다. 필드가 없으면(구 CLI) 종전 문안으로 폴백한다.
+GATE_REASON_ADOPT_UNREAD = "adopt-list-unread"
+GATE_REASON_RECHECK_UNOBSERVED = "recheck-unobserved"
+# ★(0.14.31 · 리뷰 R6) 네 번째 값 — 화면은 읽었고 관문 서명도 없었지만 **대기 프롬프트 레이아웃
+#   증거가 없어** 채택을 보류한 자리(생산자: cys.rs `GATE_REASON_CARRY_UNPROVEN`). '관문 상주 확인'
+#   과 섞으면 "이미 통과했을 수도 있는 관문을 다시 통과시켜라" 가 나가고, '화면 미관측' 과 섞으면
+#   "읽지 못했다" 는 거짓이 된다 — 사실이 다르면 처방도 다르다.
+GATE_REASON_CARRY_UNPROVEN = "carry-unproven"
+_GATE_REASON_PRESCRIPTION = {
+    GATE_REASON_ADOPT_UNREAD: (
+        "→ 그 좌석의 첫기동 관문은 **이미 통과**했다 — 데몬이 표식(`surface.list`)을 돌려주지 "
+        "못해 채택만 미뤄졌다. **사람 조치 없음**: 데몬 응답이 회복되면 다음 부트가 스폰 없이 "
+        "같은 좌석을 채택한다(복원 연속 지시는 표식에 그대로 있다). 회수·재기동·kill 은 하지 마라."
+    ),
+    GATE_REASON_RECHECK_UNOBSERVED: (
+        "→ 관문이 아직 떠 있는지 **관측하지 못했다**(화면 읽기 실패). 먼저 `cys read-screen "
+        "--surface <ref>` 로 화면을 1회 확인하라 — 관문이 있으면 통과시키고(" + _GATE_FOCUS_WARNING
+        + "), 없으면 재부트가 스폰 없이 그 "
+        "좌석을 채택한다. 좌석과 프로세스는 살아 있으므로 회수·재기동·kill 은 하지 마라."
+    ),
+    GATE_REASON_CARRY_UNPROVEN: (
+        "→ 관문 통과 여부가 **미확정**이다: 화면은 읽었고 관문 문면도 없었지만, 그 화면이 입력창"
+        "(입력 상자 괘선·상태줄·어댑터 플레이스홀더)이라는 **양성 증거가 없다** — 선택지 라벨이 "
+        "아직 안 그려진 관문일 수 있어 주입 0 · 키 0 으로 보류했다. ⓐ먼저 `cys read-screen "
+        "--surface <ref>` 로 화면을 1회 확인하라 — 관문이면 통과시킨다(" + _GATE_FOCUS_WARNING
+        + "). ⓑ화면이 **정상 입력창인데도** 다음 부트가 "
+        "같은 판정을 내면 그 레이아웃은 이 축의 양성 어휘 밖이다 — 마지막 수단이 "
+        "`CYS_BOOT_GATES=0 cys boot` 이다. ★그러나 이것은 **좌석 1개짜리 손잡이가 아니다**: "
+        "`cys boot` 은 로스터 전체를 돌고 이 스위치는 **그 부트의 모든 좌석**에서 관문·모달 거부를 "
+        "함께 끈다(종전 판정에서는 첫기동 관문 6종이 전부 ready 다). 다른 좌석이 진짜 관문에 앉아 "
+        "있으면 그 좌석에도 디렉티브 + Return 이 나가고 그 창의 기본 포커스는 `No, exit` 이다 = "
+        "좌석 사망. 그러므로 쓰기 전에 **모든 좌석**을 `cys read-screen` 으로 1회씩 확인해 관문에 "
+        "앉은 좌석이 0 임을 보고, 그 뒤에만 1회 채택용으로 쓰라(종전 판정 복귀 · 그 부트에서만 "
+        "유효). 좌석과 프로세스는 살아 있으므로 회수·재기동·kill 은 하지 마라."
+    ),
+}
+
+
+def _gate_pending_prescriptions(gated):
+    """보류 역할 목록 → **사유별 처방 문장들**(등장 순 · 중복 제거).
+
+    ★왜 역할별인가: 한 부트에 '진짜 관문 상주' 와 '채택 미룸' 이 섞일 수 있고, 그때 한 문장만
+      내면 둘 중 하나는 반드시 거짓 지시가 된다. 구 CLI(필드 없음)는 종전 문안 하나로 접힌다."""
+    out = []
+    for r in gated:
+        reason = r.get("gate_reason") if isinstance(r, dict) else None
+        line = _GATE_REASON_PRESCRIPTION.get(reason, _GATE_PENDING_PRESCRIPTION)
+        if line not in out:
+            out.append(line)
+    return out or [_GATE_PENDING_PRESCRIPTION]
 
 # claim 출력이 **정당거부**임을 확정하는 마커(데몬 문구 — hooks/session-start.sh 의 self-demote
 # 대조 지점과 동일 어휘. 종전 주석은 `session-start.sh:101` 을 가리켰으나 실제 대조는 그 아래
@@ -832,6 +956,12 @@ _STEP_DEFS = (
     ("LANE_PACK_NOTIFY", "⓪lane-pack-notify"),
     ("PREFLIGHT", "①preflight"),
     ("PING", "②ping"),
+    # ★성찰 P7: 능력 게이트 표적 재측정(`--only C28`)은 ② **뒤**다. `unknown` 의 지배적 원인이
+    #   `cys status --json` 무응답인데 ① 에서 다시 재면 같은 국면·같은 입력을 다시 재는 것이라
+    #   수렴 경로가 없다(매 부트 unknown → 표식 → 다음 부트 ① 에서 다시 unknown · 로그는 매번 rc 0).
+    #   선언 순서 = 실행 순서 계약이므로 PING 과 CLAIM_ROLE 사이에 선언한다.
+    ("PREFLIGHT_CAPGATE", "②′preflight-capgate"),
+
     ("CLAIM_ROLE", "③claim-role"),
     ("CLAIM_ROLE_CONTEXT", "③claim-role-context"),
     # ★위계 폴백(2026-08 현장 결함 3호 · 오너 결정 D1ⓐ/D2/D3): base 레인에서 살아있는 master 가
@@ -1096,6 +1226,16 @@ class _Log:
         self.data["steps"].append(rec)
         self._persist()
 
+    def progress(self, info):
+        """진행 표시(U11 · ④′ 부하 재확인) — boot-last **최상위** `progress` 를 갱신한다.
+
+        ★result 는 건드리지 않는다: §0-A 판독 규약의 `result.state` 는 닫힌 집합이고(진행 중 =
+          `running`), 대기 중이라는 사실을 새 state 로 만들면 모든 판독자의 분기표가 갈린다.
+          그래서 진행은 옆 필드로만 싣는다 — 판독자는 `result.state == running` 이면 `progress`
+          를 보고 "기다리는 중(스폰 0)"을 알 수 있다. 쓰기 실패는 `_persist` 가 흡수한다."""
+        self.data["progress"] = dict(info or {})
+        self._persist()
+
     def result(self, **kw):
         """단계 성공/강등 경로의 result 기록(귀속 자동 첨부).
 
@@ -1175,9 +1315,12 @@ class _Log:
         #      (CS-3 보고=실측). 'none(...)' 이면 비제로 exit·boot-last가 최종 증거다.
         # ★키는 STEP 상수다(리터럴 금지) — 라벨이 바뀌면 힌트가 조용히 안 붙는 드리프트를 차단한다.
         hint = {STEP.CLAIM_ROLE: "다른 pane이 이미 master입니다(조직당 master 1명). 새 부서장을 세우려면 "
-                                 "GUI ＋부서(부서 워크스페이스 추가)를 쓰거나, base 레인(unix)에서 오너가 "
-                                 "직접 타이핑한 선언(훅 발화)으로 재선언하세요 — 그 경로만 부서 자동 생성으로 "
-                                 "이어집니다.",
+                                 "앱 안 두 길이 있습니다 — 기존 대표(master)에게 말로 부탁해 "
+                                 "`cys team-propose` 로 제안하게 하거나, 오너가 GUI '전문가용 › 팀 직접 "
+                                 "만들기'로 직접 만드는 것(둘 다 오너 승인이 있어야 생성됩니다 — 제안은 "
+                                 "대화 승인 1회용 토큰 또는 앱 확인 창, 직접 만들기는 앱 확인 창). "
+                                 "이와 별개로, base 레인(unix)에서 오너가 직접 타이핑한 마스터 선언"
+                                 "(훅 발화)은 확인 창 없이 부서를 자동으로 만듭니다.",
                 STEP.DEPT_FB_GUARD: "부서 자동 생성의 전제(살아있는 master)가 확인되지 않아 만들지 "
                                     "않았습니다 — 역할 등록이 '신원 미확정'으로 거부됐을 가능성이 "
                                     "큽니다(세션 배선). `cys list` 의 role 열을 확인하고, pane 안에서 "
@@ -1742,7 +1885,8 @@ def _dept_fallback(log, claim_out):
     if os.environ.get("CYS_DECL_ORIGIN") != "hook-human":
         log.step(STEP.DEPT_FB, 1, "선언 유래 미보증(CYS_DECL_ORIGIN≠hook-human — 직접 실행 경로) "
                                   "— 폴백 비적용(폭주 봉인 ⓑ). 부서 창설은 오너 타이핑 선언(훅 발화)"
-                                  "·GUI ＋부서·cys-dept allocate 로만.")
+                                  "·대표의 `cys team-propose`(오너 확인 창)·GUI '전문가용 › 팀 직접 "
+                                  "만들기'·cys-dept allocate 로만.")
         return None
     if not _is_base_socket():
         return None  # 부서 레인의 master 충돌은 부서 내부 문제 — 부서 안에 부서를 만들지 않는다
@@ -1879,9 +2023,8 @@ def _dept_fallback(log, claim_out):
             return log.fail(STEP.DEPT_FB_MASTER, code,
                             "부서장 pane 은 떴고 프로세스도 살아 있으나 **첫기동 관문**에 갇혀 있다"
                             "(%s · 좌석은 닫지 않았다). 그 pane 에서 관문을 1회 통과시킨 뒤 재시도하라 —"
-                            " ★면책 창의 기본 포커스는 `No, exit` 이므로 그대로 Return 하면 노드가"
-                            " 종료된다(아래 방향키 1회 뒤 Return).\n%s%s"
-                            % (name, out[-800:], err[-800:]),
+                            " %s.\n%s%s"
+                            % (name, _GATE_FOCUS_WARNING, out[-800:], err[-800:]),
                             EXIT_BOOT, ok=None, state="dept_fallback_gate_pending")
         if code != 0:
             return log.fail(STEP.DEPT_FB_MASTER, code,
@@ -1918,8 +2061,10 @@ def _dept_fallback(log, claim_out):
             "새 부서 %(d)s 를 생성하고 부서장(claude)을 기동했습니다%(m)s. 팀 스폰 exit=%(b)s · "
             "생존 판정 exit=%(c)s(0=전원 생존·부서장 체인이 결손을 자가치유). 첫 부서 생성 시 기존 "
             "master 는 CEO 규약으로 자동 승격됩니다(cys-dept). 이 pane 은 역할 없는 일반 세션으로 "
-            "유지됩니다 — 부서장 대화는 부서 워크스페이스 pane(GUI 탭이 없으면 ＋부서 버튼의 부서 "
-            "선택에서 %(d)s 를 여세요) 또는 `CYS_SOCKET=%(s)s cys send --to master` 를 쓰세요."
+            "유지됩니다 — 부서장 대화는 부서 워크스페이스 pane(GUI 에 %(d)s 탭이 아직 없으면 앱을 "
+            "다시 시작하면 자동으로 나타납니다 — 새 부서는 대표의 `cys team-propose` "
+            "제안이나 오너의 GUI '전문가용 › 팀 직접 만들기'로도 만들 수 있습니다) 또는 "
+            "`CYS_SOCKET=%(s)s cys send --to master` 를 쓰세요."
             % {"d": name, "m": (" (%s)" % sref if sref else ""), "b": boot_exit,
                "c": check_exit, "s": sock})
     channel = _notify_loud("부서 자동 생성: %s (마스터 선언 폴백)" % name, note)
@@ -2356,9 +2501,16 @@ def _boot_gate_pending_verdict(code, out):
     who = ", ".join("%s=%s%s" % (r.get("role"), r.get("outcome"),
                                  (" [" + r["reason"] + "]") if r.get("reason") else "")
                     for r in gated) or "(--json 소비 불가 — exit %s 로 판정)" % code
-    return ("의무 역할 첫기동 관문 보류(exit %s): %s\n"
+    # ★(리뷰 R5 · codex minor) 처방은 **역할별 구조화 사유**를 따라간다(문안 파싱 0 · 구 CLI 폴백 유지).
+    #   `human_action_required` 가 전부 False 면 사람에게 시킬 것이 없다는 사실 자체를 머리줄에 적는다.
+    presc = "\n  ".join(_gate_pending_prescriptions(gated))
+    acts = [r.get("human_action_required") for r in gated if isinstance(r, dict)]
+    no_action = bool(acts) and all(a is False for a in acts)
+    head = ("의무 역할 첫기동 관문 보류(exit %s)%s: %s" %
+            (code, " · **사람 조치 없음**(전건 채택 미룸·관측 실패)" if no_action else "", who))
+    return ("%s\n"
             "  ★좌석과 에이전트 프로세스는 **살아 있다** — 실패가 아니므로 회수·파괴하지 않는다.\n"
-            "  %s\n%s" % (code, who, _GATE_PENDING_PRESCRIPTION, out))
+            "  %s\n%s" % (head, presc, out))
 
 
 def _fatal_detail(bad, out):
@@ -2377,78 +2529,231 @@ def _fatal_detail(bad, out):
     return "의무(Fatal) 역할 기동 실패: %s\n%s" % (detail, out)
 
 
-# ★cysr-102 A2(2026-09-17): hard_block 을 한 번의 측정으로 확정하지 않는다 — 유계 재측정.
-#   load1 은 1분 지수평균이라 설치·첫 기동 직후의 일시 스파이크가 그대로 hard 로 읽힌다
-#   (run6 실측: load_ratio 3.11 → 5분 뒤 0.79 · 연수 실기 맥 09-17 자식 자리 240s 미형성 유력 원인).
-#   hard-block 이고 **hard 트립이 전부 load_ratio 일 때만**(master 판정 r2 · 2026-09-17) RESOURCE_GATE_RECHECK_S
-#   간격으로 최대 RESOURCE_GATE_RECHECKS 회 다시 잰다 — servers·nodes 등 기다려도 안 풀리는 사유나 load 와의
-#   복합이면 종전대로 즉시 차단(escalation 지연 0).
-#   그 사이 hard 가 아니게 되면 그 판정으로 진행하고, 끝까지 hard 면 종전 경로(exit 9·CEO escalation).
-#   상한 고정(무한 대기 0 · 최악 추가 대기 = 30s×6 = 180s). 게이트 스크립트·exit 계약 무접촉.
-RESOURCE_GATE_RECHECKS = 6
-RESOURCE_GATE_RECHECK_METRICS = ("load_ratio",)   # 시간이 지나면 풀리는 사유(1분 평균)만
+def _recheck_windows_host():
+    """이 부트가 **Windows 호스트** 위인가 — `javis_resource_gate._is_windows_host` 와 같은 규칙.
+
+    ★사본인 이유: 게이트 모듈은 javis_preflight(1만 행)를 끌어온다. 부트 경로에서 그 import 가
+      실패하면 새 크래시 지점이 된다. 규칙이 갈리지 않았다는 보증은 검체
+      `test_bootstrap_resource_recheck` i12(env 5조합 대조)가 진다.
+    ★U11 재확인 루프의 **구조적 무진입** 근거다(반박 D-h): 현 게이트는 윈도우에서 fleet_cpu hard 를
+      낼 수 없지만(ps 부재·MSYS ps 미지원 → absent/unsupported), 그 간접 사실 하나에만 기대면
+      다른 항목이 윈도우 측정을 바꾸는 순간 루프가 켜지고 매 회차 콘솔 자식이 뜬다(U5 계열)."""
+    if os.name == "nt":
+        return True
+    if sys.platform in ("msys", "cygwin"):
+        return True
+    if not os.environ.get("MSYSTEM"):
+        return False
+    return any(os.environ.get(k) for k in ("WINDIR", "SYSTEMROOT")) \
+        or os.environ.get("OS", "").lower() == "windows_nt"
 
 
-def _hard_is_transient_load(gate_json):
-    """순수 판정: hard 트립이 1개 이상이고 **전부** 재측정 대상 지표(load_ratio)인가. 복합·미상 = False."""
-    hard = [t for t in ((gate_json or {}).get("trips") or []) if isinstance(t, dict) and t.get("level") == "hard"]
-    return bool(hard) and all(t.get("metric") in RESOURCE_GATE_RECHECK_METRICS for t in hard)
+def _hard_trips_fleet_only(gate_json):
+    """순수: 게이트 JSON 의 hard 트립이 **하나 이상이고 전부** 재확인 축(fleet_cpu)인가."""
+    if not isinstance(gate_json, dict):
+        return False
+    trips = gate_json.get("trips")
+    if not isinstance(trips, list):
+        return False
+    hard = [t for t in trips if isinstance(t, dict) and t.get("level") == "hard"]
+    return bool(hard) and all(t.get("metric") in RESOURCE_RECHECK_AXES for t in hard)
 
 
-def _recheck_interval_s(raw, default=30.0):
-    """재측정 간격(초). env CYS_BOOT_RESOURCE_RECHECK_S 는 **간격만** 바꾼다(CYS_BOOT_CHECK_INTERVAL_S 선례 ·
-    subprocess 시험의 실 대기 제거용) — 회수 상한(RESOURCE_GATE_RECHECKS)은 env 로 못 바꾼다.
-    파싱 불가·음수·비유한 = 기본값(조용히 0 이 되어 재측정이 무의미해지는 것을 막는다)."""
-    try:
-        v = float(raw)
-    except (TypeError, ValueError):
-        return default
-    return v if 0 <= v < float("inf") else default
+def _resource_recheckable(verdict, gate_json, windows=None):
+    """순수: 이 게이트 판정이 **기다리면 풀릴 수 있는 부하**인가(U11 재확인 진입 조건).
+
+    전부 참이어야 한다 — ① verdict == hard-block ② 비윈도우 호스트 ③ hard 트립이 전부 fleet_cpu
+    ④ fleet_cpu 가 **실제로 재어졌다**(`measured.fleet_cpu_reason == "ok"` — override·absent·
+    unsupported·측정 실패는 부하 사실이 아니다). 축을 모르는 hard(JSON 파싱 실패)는 부하라고
+    단정할 근거가 없으므로 False(종전대로 즉시 exit 9).
+    ★soft 는 절대 재확인하지 않는다: 윈도우 게이트는 getloadavg 부재로 **항상 soft** 라, soft 를
+      재확인하면 윈도우 부트가 매번 3분 늦어진다(치명 회귀). `windows` 는 테스트 주입용."""
+    if verdict != "hard-block":
+        return False
+    if windows is None:
+        windows = _recheck_windows_host()
+    if windows:
+        return False
+    if not _hard_trips_fleet_only(gate_json):
+        return False
+    measured = gate_json.get("measured")
+    return isinstance(measured, dict) and measured.get("fleet_cpu_reason") == "ok"
 
 
-RESOURCE_GATE_RECHECK_S = _recheck_interval_s(os.environ.get("CYS_BOOT_RESOURCE_RECHECK_S", "30"))
-_resource_gate_sleep = time.sleep   # 시험 주입점(실 대기 제거) — 운영 경로는 time.sleep
+def _gate_fleet_value(gate_json):
+    """게이트 JSON 의 fleet_cpu_ratio(소수 셋째 자리) — 없으면 None. 추이 기록용(판정 입력 아님)."""
+    m = gate_json.get("measured") if isinstance(gate_json, dict) else None
+    v = m.get("fleet_cpu_ratio") if isinstance(m, dict) else None
+    return round(float(v), 3) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
-def _measure_resource_gate(py, gate):
-    """게이트 1회 측정 → (code, verdict, why, out, gate_json). 부작용 = 게이트 subprocess(+exit 2 면 cys list)뿐."""
-    # ★A13 잠복 경로 차단(착수 전 재검증 산물): 종전 호출은 `_run`(stdout+stderr **병합**)의
-    #   병합 텍스트를 json.loads 에 넣었다. 게이트가 stderr 를 한 줄이라도 흘리는 날(파이썬 경고·
-    #   미래 진단 로그) 파싱이 깨져 `gate_json=None` 이 되고, exit 2 + json None 은
-    #   nodes 과계수 무효화(hard-overcount)를 성립 불가로 만들어 **건강한 기계를 hard-block(exit 9)**
-    #   시킨다. 실측으로 재현 가능한 인접 결함이므로(원 메커니즘 판정은 기각) 채널을 분리한다:
-    #   **계약 채널은 stdout 뿐**이고 stderr 는 진단으로만 남긴다.
+def _measure_resource_gate(py, gate, recheck=False):
+    """게이트 1회 측정 → (code, gate_json, verdict, why, out). 최초 측정은 종전 본문 그대로다.
+
+    ★A13 잠복 경로 차단(착수 전 재검증 산물): 종전 호출은 `_run`(stdout+stderr **병합**)의
+      병합 텍스트를 json.loads 에 넣었다. 게이트가 stderr 를 한 줄이라도 흘리는 날(파이썬 경고·
+      미래 진단 로그) 파싱이 깨져 `gate_json=None` 이 되고, exit 2 + json None 은
+      nodes 과계수 무효화(hard-overcount)를 성립 불가로 만들어 **건강한 기계를 hard-block(exit 9)**
+      시킨다. 실측으로 재현 가능한 인접 결함이므로(원 메커니즘 판정은 기각) 채널을 분리한다:
+      **계약 채널은 stdout 뿐**이고 stderr 는 진단으로만 남긴다.
+    ★(U11) recheck=True(재확인 회차): hard 트립이 fleet_cpu 단독이면 `cys list` 교차확인을
+      생략한다 — 그 교차확인은 **nodes 단독 hard 의 과계수 판정 전용**이라 fleet 단독 판정의
+      입력이 아니다. 회차마다 붙이면 최악 +15s 씩 쌓여 3분 상한이 깨진다(반박 D-a)."""
     code, gout, gerr = _run_split([py, gate, "check", "--json"],
                                   timeout=_budget_leaf("RPC_SLACK_S", 10) * 3)
     try:
         gate_json = json.loads((gout or "").strip())
     except (ValueError, TypeError):
         gate_json = None
-    live = _live_node_count() if code == 2 else None
+    live = None
+    if code == 2 and not (recheck and _hard_trips_fleet_only(gate_json)):
+        live = _live_node_count()
     verdict, why = _resource_gate_decision(code, gate_json, live)
     out = (gout or "") + (("\n[stderr] " + gerr.strip()) if (gerr or "").strip() else "")
-    return code, verdict, why, out, gate_json
+    return code, gate_json, verdict, why, out
+
+
+def _fmt_trail(trail):
+    return "→".join("?" if v is None else ("%.2f" % v) for v in trail) or "?"
+
+
+def _resource_wait(py, gate, log, t0, first, sleeper=None, clock=None):
+    """④′ 부하 재확인 루프(U11) — 관측만 반복한다(스폰 0 · 큐 0 · Feed 0).
+
+    t0 = 최초 측정 **직전**의 monotonic 시각. k 번째 재측정은 **t0 + k×INTERVAL** 에 예정한다
+    (절대 스케줄 — '측정 뒤 INTERVAL 잠' 이면 느린 게이트만큼 일정이 밀린다). 벽시계 마감
+    t0+TOTAL 을 넘기면 남은 회차가 있어도 멈춘다(B17 카운트 회계 금지 · javis_budget 교리) —
+    그래서 최악 = TOTAL + 진입한 마지막 측정 1회다.
+    이탈: 재확인 조건이 깨지면(해소·soft·다른 축 hard·측정 불능) 그 회차의 판정을 그대로 돌려준다.
+    회차마다 boot-last `progress` 와 stderr 진행 1줄을 남긴다(사람·master 가 '멈춤'으로 오인하지
+    않게 · 반박 D-c). 알림은 여기서 **하지 않는다** — 최종 판정의 분기가 1회만 낸다.
+    반환: ((code, gate_json, verdict, why, out), wait_info)."""
+    sleeper = sleeper or time.sleep
+    clock = clock or time.monotonic
+    total, interval = RESOURCE_RECHECK_TOTAL_S, RESOURCE_RECHECK_INTERVAL_S
+    n_max = _recheck_rounds(total, interval)
+    deadline = t0 + total
+    cur = first
+    trail = [_gate_fleet_value(first[1])]
+    checks = 1
+    outcome = "exhausted"
+    for k in range(1, n_max + 1):
+        now = clock()
+        if now >= deadline:
+            break                                   # 벽시계 마감이 횟수보다 우선
+        due = min(t0 + k * interval, deadline)
+        wait_s = max(0.0, due - now)
+        info = {"phase": "resource_wait", "state": "waiting", "checks": checks,
+                "next_check": checks + 1, "of": n_max + 1, "interval_s": interval,
+                "total_s": total, "next_in_s": round(wait_s, 1),
+                "until_epoch": round(time.time() + (deadline - now), 1), "trail": list(trail),
+                "note": "부하 재확인 대기 중 — 스폰·큐·알림 0. 손으로 팀을 기동하지 말고 결과를 기다려라."}
+        log.progress(info)
+        _progress("④′ 컴퓨터가 잠시 바쁩니다(우리 프로그램 CPU %s · 기준 1.00=전 코어 100%%) — "
+                  "%.0f초 뒤 다시 확인(%d/%d · 최대 %.0f초 · 그동안 팀 기동 0)"
+                  % (_fmt_trail(trail[-1:]), wait_s, checks + 1, n_max + 1, total))
+        if wait_s > 0:
+            sleeper(wait_s)
+        cur = _measure_resource_gate(py, gate, recheck=True)
+        checks += 1
+        trail.append(_gate_fleet_value(cur[1]))
+        log.step(STEP.RESOURCE_GATE, cur[0], "재확인 %d/%d · verdict=%s · %s\n%s"
+                 % (checks, n_max + 1, cur[2], cur[3], cur[4]), suffix="#%d" % checks)
+        if not _resource_recheckable(cur[2], cur[1]):
+            outcome = "resolved" if cur[2] in ("allow", "soft") else "changed"
+            break
+    info = {"phase": "resource_wait", "state": "done", "outcome": outcome, "checks": checks,
+            "of": n_max + 1,
+            "interval_s": interval, "total_s": total,
+            "waited_s": round(max(0.0, clock() - t0), 1), "trail": trail,
+            "final_verdict": cur[2]}
+    log.progress(info)
+    return cur, info
+
+
+def _fleet_hard_prescription(gate_json, wait):
+    """fleet_cpu hard 의 사람용 처방(Feed 본문) — **살아 있는 좌석을 닫게 만들지 않는다**.
+
+    ★종전 문안 "자원 정리(서버 kill·/clear·노드 회수)" 는 fleet_cpu 원인일 때 틀린 처방이었고
+      (서버·clear 는 이 축과 무관), '노드 회수'·게이트의 '위 프로세스를 회수하면 풀린다' 는 CPU 상위
+      기여자 = **살아 있는 에이전트 좌석**을 죽이라는 뜻으로 읽힐 수 있다(치명 위험 ④ 방향 · 반박
+      D-g). 부하는 기다리면 내려간다 — 처방은 '기다렸다가 재선언' 하나다."""
+    measured = gate_json.get("measured") if isinstance(gate_json, dict) else None
+    top = (measured or {}).get("fleet_cpu_top") if isinstance(measured, dict) else None
+    tops = ", ".join("pid %s %s %.0f%%" % (r.get("pid"), r.get("exe") or "?",
+                                           float(r.get("pcpu") or 0.0))
+                     for r in (top or [])[:3] if isinstance(r, dict)) or "(상위 프로세스 미수집)"
+    if wait:
+        head = ("컴퓨터가 계속 바빠 팀 기동을 멈췄습니다 — %.0f초 동안 %.0f초 간격으로 %d회 확인했지만 "
+                "우리 프로그램 CPU 사용이 기준(전 코어 100%%)을 넘었습니다(추이 %s)."
+                % (wait.get("waited_s") or 0, wait.get("interval_s") or 0,
+                   wait.get("checks") or 0, _fmt_trail(wait.get("trail") or [])))
+    else:
+        head = ("컴퓨터가 바빠 팀 기동을 멈췄습니다 — 우리 프로그램 CPU 사용이 기준(전 코어 100%%)을 "
+                "넘었습니다(%s)." % _fmt_trail([_gate_fleet_value(gate_json)]))
+    return (head + " CPU 를 많이 쓰는 우리 프로세스: %s. ★살아 있는 좌석(마스터·팀원 창)은 닫지 "
+            "마세요 — 닫아도 부하가 곧바로 줄지 않고 팀만 잃습니다. 무거운 작업이 끝나 컴퓨터가 "
+            "한가해지면 마스터 창에 '너는 마스터다'를 다시 입력하세요(이미 떠 있는 자리는 그대로 "
+            "둡니다)." % tops)
+
+
+def _post_wait_master_check(log, wait):
+    """대기(U11)를 거친 뒤 ④ 진입 **직전** master 결속 재확인 — None=계속 / EXIT_CLAIM_DENIED=중단.
+
+    ★왜(반박 D-e): 종전 ③→④ 창은 수 초였다. 재확인이 그 창을 최대 수 분으로 늘리므로, 그 사이
+      master 창이 닫히면 ④ 가 **지휘자 없는 팀**을 띄운다. 판정은 ③ claim 과 **같은 기준**
+      (`_live_master_from_status` — roles 의 master 보유 surface 가 exited 가 아닌가)을 쓴다.
+    ★세 갈래:
+      · 살아 있는 master 가 **있다**(자기든 다른 창이든) → 계속. 다른 창으로 옮겨진 경우도 계속인
+        이유: 그 창의 선언은 이 런이 락을 쥔 동안 exit 11 로 접혔다 — 여기서 멈추면 그 선언의 팀은
+        아무도 띄우지 않는다.
+      · **없다**(판독 성공 · master 보유자 0) → 스폰 0 · result `declined`(exit 7 — "이 surface 는
+        master 가 아님", 새 state 0) · reason=master_gone · 알림 1회.
+      · 판독 불가(데몬 무응답·스키마 불일치) → 종전 동작 그대로 계속(재확인은 추가 안전장치일 뿐
+        — 측정 실패로 팀 기동을 새로 막지 않는다)."""
+    live, why = _live_master_from_status(_cys_status_json(), exclude_sid=None)
+    if live is False:
+        detail = ("대기 뒤 master 결속 재확인: %s — 부하 대기(%s초) 사이 master 좌석이 사라졌다. "
+                  "지휘자 없는 팀을 띄우지 않는다(스폰 0)." % (why, wait.get("waited_s")))
+        log.step(STEP.RESOURCE_GATE, EXIT_CLAIM_DENIED, detail, suffix="#bind")
+        _progress("✗ ④′ " + detail)
+        notified = _notify_loud(
+            "부하 대기 뒤 팀 기동 생략(마스터 자리 없음)",
+            "부하가 내려가기를 기다리는 동안(%s초) 마스터 창이 닫혀 팀을 띄우지 않았습니다. "
+            "살아 있는 좌석은 그대로 둡니다. 마스터 창을 열고 '너는 마스터다'를 입력하면 팀이 "
+            "기동됩니다." % wait.get("waited_s"))
+        log.step(STEP.RESOURCE_GATE_NOTIFY, 0, "알림 채널: %s" % notified)
+        log.result(ok=None, state="declined", failed_step="resource-gate", reason="master_gone",
+                   exit=EXIT_CLAIM_DENIED, resource_wait=wait)
+        return EXIT_CLAIM_DENIED
+    log.step(STEP.RESOURCE_GATE, 0,
+             "대기 뒤 master 결속 재확인: %s — 팀 기동 계속"
+             % (why if live else "판정 불가(%s) — 종전 동작대로 계속" % why), suffix="#bind")
+    return None
 
 
 def _run_resource_gate(py, log):
     """결손>0 확정 후의 자원 사전 게이트(호출부가 결손 0이면 이 함수를 호출하지 않는다).
-    반환: None=진행 / 9=hard-block(재측정 RESOURCE_GATE_RECHECKS 회 뒤에도 hard · 팀 기동 0·CEO escalation)."""
+    반환: None=진행 / 9=hard-block(팀 기동 0·CEO escalation) /
+          7=(U11) 부하 대기 뒤 master 좌석 부재(팀 기동 0 · 지휘자 없는 팀 방지)."""
     gate = os.path.join(PACK, "bin", "javis_resource_gate.py")
     if not os.path.isfile(gate):
         log.step(STEP.RESOURCE_GATE_ABSENT, 0, "결손>0이나 resource_gate 부재 — 게이트 생략(계속)")
         return None
-    code, verdict, why, out, gate_json = _measure_resource_gate(py, gate)
+    t0 = time.monotonic()
+    code, gate_json, verdict, why, out = _measure_resource_gate(py, gate)
     log.step(STEP.RESOURCE_GATE, code, "결손>0 · verdict=%s · %s\n%s" % (verdict, why, out))
-    recheck = 0
-    while (verdict == "hard-block" and _hard_is_transient_load(gate_json)
-           and recheck < RESOURCE_GATE_RECHECKS):
-        recheck += 1
-        _progress("⏳ 자원 hard_block — %ds 뒤 재측정 %d/%d(load1 은 1분 평균 · 일시 스파이크 소멸 대기): %s"
-                  % (RESOURCE_GATE_RECHECK_S, recheck, RESOURCE_GATE_RECHECKS, why))
-        _resource_gate_sleep(RESOURCE_GATE_RECHECK_S)
-        code, verdict, why, out, gate_json = _measure_resource_gate(py, gate)
-        log.step(STEP.RESOURCE_GATE, code, "재측정 %d/%d · verdict=%s · %s\n%s"
-                 % (recheck, RESOURCE_GATE_RECHECKS, verdict, why, out), suffix="#%d" % (recheck + 1))
+    # ★U11 — 부하(fleet_cpu 단독 hard)만 벽시계 상한 안에서 다시 잰다. 그 밖(soft·다른 축 hard·
+    #   측정 불능·윈도우)은 종전 1회 판정 그대로다(TOTAL=0 롤백도 같은 길).
+    wait = None
+    if RESOURCE_RECHECK_TOTAL_S > 0 and _resource_recheckable(verdict, gate_json):
+        (code, gate_json, verdict, why, out), wait = _resource_wait(
+            py, gate, log, t0, (code, gate_json, verdict, why, out))
+        if verdict != "hard-block":
+            # 이어서 ④ 로 간다 — 그 전에 결속 재확인(중단이면 알림 1회는 그 안에서 끝났다).
+            bind_rc = _post_wait_master_check(log, wait)
+            if bind_rc is not None:
+                return bind_rc
     if verdict in ("usage-error", "unknown-exit"):
         # ★조용한 allow 금지 — 측정 실패는 시끄럽게(loud) 남기고 진행한다(fail-open 제거).
         _progress("⚠ 자원 게이트 측정 실패(%s) — 자원 판정 없이 진행: %s" % (verdict, why))
@@ -2456,11 +2761,16 @@ def _run_resource_gate(py, log):
         return None
     if verdict == "hard-block":
         _progress("✗ 자원 hard_block — 팀 기동 0·CEO escalation: " + why)
-        notified = _notify_loud("자원 hard_block(부트 중단)",
-                                "%s. 자원 정리(서버 kill·/clear·노드 회수) 후 재선언하라." % why)
+        if _hard_trips_fleet_only(gate_json):
+            notified = _notify_loud("컴퓨터가 계속 바빠 팀 기동을 멈췄습니다",
+                                    _fleet_hard_prescription(gate_json, wait))
+        else:
+            notified = _notify_loud("자원 hard_block(부트 중단)",
+                                    "%s. 자원 정리(서버 kill·/clear·노드 회수) 후 재선언하라." % why)
         log.step(STEP.RESOURCE_GATE_NOTIFY, 0, "알림 채널: %s" % notified)
+        extra = {"resource_wait": wait} if wait else {}
         log.result(ok=False, state="failed", failed_step="resource-gate",
-                   exit=EXIT_RESOURCE_HARD)
+                   exit=EXIT_RESOURCE_HARD, **extra)
         return EXIT_RESOURCE_HARD
     if verdict == "hard-overcount":
         _progress("⚠ 자원 nodes hard(과계수 결함으로 판단) — cys list 교차확인 후 1회 경고·진행: " + why)
@@ -2710,8 +3020,46 @@ def cmd_run():
             log.finish(exit_code if exit_code is not None else 1)
 
 
+# ★성찰 P16: 미해소 능력 게이트 표식의 **경로와 판독 의미**는 preflight 가 정본이다.
+#   종전엔 바로 위 주석이 "정본은 `javis_preflight.capgate_unresolved_path()`" 라고 적어 두고도
+#   리터럴 경로 + `os.path.exists` 를 썼다 — ⓐ 파일명·디렉터리를 옮기면 부트 체인이 **경고 0**
+#   으로 "fast path 로 preflight 영구 생략" 으로 되돌아가고 ⓑ `capgate_unresolved()` 가 문서화한
+#   '판독 실패·조회 실패는 미해소' 3값 의미가 한 값으로 접혔다.
+CAPGATE_UNRESOLVED_REL = os.path.join("state", "capgate-unresolved.json")   # 폴백 전용 사본
+
+
+def _capgate_unresolved_state(pack):
+    """(미해소?, 표식 경로) — 판정 정본은 `javis_preflight.capgate_unresolved()`.
+
+    import 실패(구 팩·부서 팩 결손·스큐)는 부트를 죽이지 않는다 — 공유 상수 경로로 강등하되
+    **같은 방향**을 지킨다: 증명된 부재만 '해소됨' 이고, 있는데 못 읽으면 미해소다.
+    """
+    try:
+        import javis_preflight as _pf
+        return bool(_pf.capgate_unresolved(pack)[0]), _pf.capgate_unresolved_path(pack)
+    except Exception:                       # noqa: BLE001 — 지혈이 새 크래시 지점이 되면 안 된다
+        path = os.path.join(pack, CAPGATE_UNRESOLVED_REL)
+        try:
+            os.lstat(path)
+            return True, path
+        except FileNotFoundError:
+            return False, path
+        except OSError:
+            return True, path               # 조회 실패는 '없다' 가 아니다(막는 방향)
+
+
+def _hooks_effective(pack):
+    """최근 레인 가드 조기 종료가 없는가 — None=미측정(공용 판독 실패)."""
+    try:
+        import javis_preflight as _pf
+        return not _pf.lane_guard_tripped(pack)[0]
+    except Exception:                       # 진단 필드가 부트의 종료 코드를 바꾸지 않는다
+        return None
+
+
 def _cmd_run_chain(log):
     """부트 단계 체인(①~⑧) — 종료 기록은 호출자(cmd_run)의 try/finally 가 소유한다."""
+
     py = sys.executable or "python3"
 
     # ★불량 레인 가드(R1-LOW-2): 빈 부서명(cys-dept-/ — suffix 없음) 소켓은 base도 부서도 아닌
@@ -2772,17 +3120,41 @@ def _cmd_run_chain(log):
     _marker = _read_json(lane_state_path("marker")) or {}
     _marker_fresh = (_marker.get("pack_version") == _pack_version()
                      and _marker.get("pack_version") not in (None, "unknown"))
-    if _marker_fresh:
+    # ★triage T11(2026-09-08) 소비 축: fast path 는 **미해소 능력 게이트 표식**을 AND 로 본다.
+    #   preflight C28 의 `unknown`(데몬 미기동·표 판독 실패 등)은 등록도 해제도 하지 않는데,
+    #   fast path 가 preflight 자체를 생략하면 그 팩 버전 내내 재측정 기회가 없다 — 게이트가
+    #   미등록인 채 조용히 굳고 두 번째 부팅부터는 경고조차 사라진다(봉인표 ② 방향).
+    #   표식이 있으면 **전량 재실행이 아니라 C28 만** 짧게 다시 돈다(데몬을 기다리는 재시도
+    #   루프는 넣지 않는다 — 부트 지연·큐 적체를 만들지 않는 것이 이 축의 전제다).
+    #   표식의 생성·삭제·판독 정본은 `javis_preflight.capgate_unresolved()` 다(성찰 P16 — 종전
+    #   리터럴 경로 + `os.path.exists` 는 ⓐ 파일명이 옮겨지면 **조용히** fast path 영구 생략으로
+    #   되돌아가고 ⓑ '판독 실패는 미해소' 라는 3값 의미를 한 값으로 접었다).
+    # ★성찰 P7: 재측정 자체는 여기서 **하지 않는다** — ② ping 성공 뒤로 미룬다(아래 참조).
+    _cap_unresolved, _cap_mark = _capgate_unresolved_state(PACK)
+    _cap_remeasure = None
+    if _marker_fresh and not _cap_unresolved:
         log.step(STEP.PREFLIGHT, 0,
                  "레인 마커(%s)가 현재 pack_version — preflight 생략(fast path)"
                  % lane_state_path("marker"))
+    elif _marker_fresh and os.path.isfile(preflight):
+        _cap_remeasure = preflight
+        log.step(STEP.PREFLIGHT, 0,
+                 "레인 마커는 신선하지만 능력 게이트 미해소 표식(%s) — C28 표적 재측정을 ② ping "
+                 "성공 뒤로 미룬다(성찰 P7: 무응답 데몬이 unknown 의 지배적 원인이라 ① 에서 다시 "
+                 "재면 같은 입력을 다시 재는 것이다)" % _cap_mark)
     elif os.path.isfile(preflight):
+
         _progress("① preflight --fix 실행 중(최대 300s · 비치명 — FAIL이어도 팀 부팅 계속)…")
         code, out = _run([py, preflight, "--fix"], timeout=300)
         log.step(STEP.PREFLIGHT, code, out)
         if code != 0:
             _progress("⚠ preflight 잔여 FAIL(비치명) — 팀 부팅 계속·진짜 게이트는 ⑤ check. 상세 boot-last.json")
     else:
+        # ★(0.14.41 U4 C2 ④) rc 0 · 비치명 계약은 그대로다. 다만 boot-last 최종 요약의
+        #   `steps: [(step, exit)]` 튜플만 보면 '부재 생략'과 '통과'가 같은 0 으로 보이므로, 기계
+        #   필드(preflight_state)와 사람용 ⚠ 한 줄로 **드러낸다**(판정은 바꾸지 않는다).
+        log.data["preflight_state"] = "absent"
+        _progress("⚠ ① preflight 스크립트 부재(%s) — 팩 불완전 가능 · 부트는 계속(비치명)" % preflight)
         log.step(STEP.PREFLIGHT, 0, "preflight 부재 — 생략(팩 불완전 가능·계속)")
 
     # ② 데몬 생존 — 이후 ③의 비정상 exit를 '거부'로 해석하는 전제(데몬 생존 보증)
@@ -2826,6 +3198,20 @@ def _cmd_run_chain(log):
                         "cys ping 유계 재시도 소진 — %d회 시도·총 %.1fs 대기(창 상한 %.0fs)에도 "
                         "데몬 무응답(마지막 rc=%s).\n%s"
                         % (ping_attempts, _ping_waited, PING_RETRY_TOTAL_S, code, out), EXIT_PING)
+
+    # ②′ 능력 게이트 표적 재측정(성찰 P7) — **데몬 생존이 확인된 뒤**에만 돈다.
+    #   ① 에서 돌던 종전 배치는 `unknown` 을 만든 그 국면에서 그대로 다시 재는 것이라, 재시도가
+    #   새 정보를 얻지 못했다(게이트는 영원히 미등록이고 부트 로그는 매번 rc 0 = 봉인표 ③ 의
+    #   다른 얼굴). 비치명·90s 상한은 그대로다 — 여기서 실패해도 부트는 계속한다.
+    if _cap_remeasure:
+        _progress("②′ 능력 게이트 판정 불능 표식 — 데몬 생존 확인 뒤 C28 재측정 중(최대 90s · 비치명)…")
+        _cap_rc, _cap_out = _run([py, _cap_remeasure, "--fix", "--only", "C28.self-correction"],
+                                 timeout=90)
+        _cap_after, _ = _capgate_unresolved_state(PACK)
+        log.step(STEP.PREFLIGHT_CAPGATE, _cap_rc,
+                 "미해소 표식(%s) C28 표적 재측정(② ping 성공 뒤) — 표식 %s: %s"
+                 % (_cap_mark, "잔존" if _cap_after else "해소", _cap_out))
+
 
     # ③ claim-role master — 거부=exit 7(유령 master 차단: 이 surface는 master가 아니다)
     # ★SEAT(2026-07-17 실사고): 보유자가 '빈 좌석'(role 만 쥔 agent 없는 셸 — cys-dept 가 부서 생성 시
@@ -2917,9 +3303,12 @@ def _cmd_run_chain(log):
             if fb is not None:
                 return fb
             msg = ("이 surface는 master가 아님(claim 거부). 살아있는 master가 레지스트리에 존재한다 — "
-                   "선언을 중단하고 기존 master에 인계하라. 새 부서장을 세우려는 의도였다면: GUI "
-                   "＋부서(부서 워크스페이스 추가)를 쓰거나, base 레인 unix 에서 **오너가 직접 타이핑한** "
-                   "선언(훅 발화 경로)으로 재선언하라 — 그 경로만 부서 자동 생성으로 이어진다"
+                   "선언을 중단하고 기존 master에 인계하라. 새 부서장을 세우려는 의도였다면 앱 안 두 "
+                   "길이 있다: 기존 대표(master)에게 말로 부탁해 `cys team-propose` 로 제안하게 "
+                   "하거나, 오너가 GUI '전문가용 › 팀 직접 만들기'로 직접 만드는 것(둘 다 오너 승인이 "
+                   "있어야 생성된다 — 제안은 대화 승인 1회용 토큰 또는 앱 확인 창, 직접 만들기는 앱 확인 "
+                   "창). 이와 별개로, base 레인 unix 에서 **오너가 직접 타이핑한** "
+                   "선언(훅 발화 경로)은 확인 창 없이 부서 자동 생성으로 이어진다"
                    "(직접 실행·기계 배달 선언은 폭주 봉인 ⓑ로 비적용).\n%s" % out)
             # ★ok=None(CS-2⑩): 정당거부는 '이 레인의 부트가 깨졌다'가 아니다 — 공유 boot-last 의
             #   ok:true(건강한 master 의 완주 기록)를 ok:false 로 덮으면 §0 이 churn 한다.
@@ -3053,7 +3442,9 @@ def _cmd_run_chain(log):
     if has_deficit:
         gate_rc = _run_resource_gate(py, log)
         if gate_rc is not None:
-            return gate_rc  # EXIT_RESOURCE_HARD(9) = 자원 hard_block(팀 기동 0·escalation)
+            # EXIT_RESOURCE_HARD(9) = 자원 hard_block(팀 기동 0·escalation) ·
+            # EXIT_CLAIM_DENIED(7) = (U11) 부하 대기 뒤 master 좌석 부재(팀 기동 0)
+            return gate_rc
 
         # ④ 기본 함대 기동 — 결손>0에서만 호출(결손 0=스폰 경로 미진입)
         boot_budget = _budget_derived("cys_boot_outer_s", 300)
@@ -3324,7 +3715,7 @@ def _cmd_run_chain(log):
                      "base 팩 cys-dept 부재 — 신호 생략(집행 틱이 base 부활 시 자가 치유)")
 
     # ⑧ 기계 요약 — master는 이 JSON을 인용해 '기동 완료'를 보고한다(다른 근거 인용 금지)
-    summary = {"ok": True, "marker": marker_note,
+    summary = {"ok": True, "marker": marker_note, "hooks_effective": _hooks_effective(PACK),
                "steps": [(s["step"], s["exit"]) for s in log.data["steps"]],
                "lane": log.lane, "boot_last": log.path}
     # ★A7 채널 보존: 완주는 stdout 최종 JSON(구 산문 계약의 유일한 인용 근거)이다.
@@ -3478,6 +3869,28 @@ def cmd_self_test():
                            {"metric": "servers", "level": "hard", "value": 5}],
                  "measured": {"nodes_hard_effective": 18}}
         assert _resource_gate_decision(2, mixed, 5)[0] == "hard-block", "복합 hard가 과계수로 오무효화"
+        # ★U11: 부하 재확인 진입 조건(순수) — fleet 단독 hard · 비윈도우 · 측정 성공일 때만.
+        fleet_hard = {"trips": [{"metric": "fleet_cpu_ratio", "level": "hard", "value": 1.3}],
+                      "measured": {"fleet_cpu_reason": "ok", "fleet_cpu_ratio": 1.3}}
+        assert _resource_recheckable("hard-block", fleet_hard, windows=False), "U11 fleet 단독 미진입"
+        assert not _resource_recheckable("hard-block", fleet_hard, windows=True), \
+            "U11 윈도우 호스트에서 재확인 진입(구조적 무진입 붕괴)"
+        assert not _resource_recheckable("soft", fleet_hard, windows=False), "U11 soft 재확인(윈도우 상시 soft)"
+        assert not _resource_recheckable("hard-block", srv_hard, windows=False), "U11 servers 재확인"
+        assert not _resource_recheckable("hard-block", mixed, windows=False), "U11 복합 hard 재확인"
+        assert not _resource_recheckable("hard-block", None, windows=False), "U11 축 미상 재확인"
+        assert RESOURCE_RECHECK_TOTAL_S <= RESOURCE_RECHECK_TOTAL_CAP_S \
+            and RESOURCE_RECHECK_INTERVAL_S <= RESOURCE_RECHECK_INTERVAL_CAP_S \
+            and RESOURCE_RECHECK_INTERVAL_S >= RESOURCE_RECHECK_INTERVAL_FLOOR_S, \
+            "U11 재확인 예산이 오너 상한(180s·30s)/간격 하한을 벗어났다"
+        # ★리뷰1 MU13 방어: `_recheck_rounds` 의 `+1e-9` 부동소수 보정을 직접 핀한다.
+        #   `0.3/0.05` 는 파이썬에서 5.999999999999999 이므로 보정 없이 `//`(또는 `int()`)만
+        #   쓰면 5 가 나온다 — 의도한 값 6 과 다르다(테스트값 1.5/0.5 는 둘 다 3 이라 못 가른다).
+        assert _recheck_rounds(0.3, 0.05) == 6, \
+            "U11 재확인 회차 수 부동소수 함정 회귀(0.3/0.05 는 int()/// 로는 5 — +1e-9 보정 소실)"
+        assert _recheck_rounds(1.5, 0.5) == 3, "U11 재확인 회차 수(정수배 케이스) 회귀"
+        assert _recheck_rounds(180.0, 30.0) == 6, "U11 재확인 회차 수(기본 예산) 회귀"
+        assert _recheck_rounds(1.0, 0.0) == 0, "U11 재확인 회차 수: 간격 0 은 0 회차(0 나눗셈 방지)"
         # ★A13(W2): 미지 exit 의 fail-open 제거 — 'allow' 로 접히지 않고 타입으로 분리된다.
         assert _resource_gate_decision(3, None, None)[0] == "unknown-exit", \
             "미지 exit 이 여전히 allow 로 접힘(fail-open 잔존 — 판정불가↔allow 융합)"
@@ -3569,6 +3982,27 @@ def cmd_self_test():
         # ⓔ 선언 순서 = 실행 순서: 보류 단계는 busy 뒤·Degrade 앞이다.
         assert (STEP_INDEX[STEP.BOOT_BUSY] < STEP_INDEX[STEP.BOOT_GATE_PENDING]
                 < STEP_INDEX[STEP.BOOT_DEGRADE]), "④ 보류 단계 선언 순서 이탈"
+        # ⓕ ★0.14.41 U7(WP-C1 · 반박 M1 · 온보딩 치명): 2.1.261+ 는 **폴더신뢰 창도** 기본 포커스가
+        #   `No, exit` 다(첫기동 GUI 마스터가 바로 이 창을 만난다). 종전 문안은 면책 창만 경고해 사람이
+        #   안내대로 폴더신뢰 창에서 Enter 를 누르면 좌석이 죽었다. 사람용 처방 4곳이 **같은 한 문장**
+        #   (`_GATE_FOCUS_WARNING`)을 싣는지, 그리고 구 단독 경고가 남지 않았는지 잰다(동작 변경 0 · 문안만).
+        # ★리뷰1 I-6(minor · 문안 병기): 방향키 처방(2.1.261+ 전용) 옆에 라벨 기준 문장도 있어야
+        #   한다 — 사람은 자기 Claude 버전을 모르는 경우가 흔하다(동작 변경 0 · 병기만).
+        for _tok in ("폴더신뢰(2.1.261+)", "면책", "둘 다", "No, exit", "아래 방향키 1회 뒤 Return",
+                    "Yes, I trust this folder", "Yes, I accept"):
+            assert _tok in _GATE_FOCUS_WARNING, "관문 기본 포커스 경고 문안에 %r 가 없다" % _tok
+        for _lbl, _txt in (("관문 보류 기본", _GATE_PENDING_PRESCRIPTION),
+                           ("화면 미관측", _GATE_REASON_PRESCRIPTION[GATE_REASON_RECHECK_UNOBSERVED]),
+                           ("입력창 증거 부재", _GATE_REASON_PRESCRIPTION[GATE_REASON_CARRY_UNPROVEN])):
+            assert _GATE_FOCUS_WARNING in _txt, "%s 처방이 폴더신뢰·면책 공통 경고를 싣지 않는다" % _lbl
+        # 부서장 폴백 보류 처방은 함수 안의 인라인 문안이라 소스로 잰다. ★바늘은 이어 붙여 만든다 —
+        #   리터럴 그대로 쓰면 이 검사문 자신이 매치돼 항진명제가 된다(계측 타당성).
+        with open(os.path.abspath(__file__), encoding="utf-8") as _f:
+            _src_u7 = _f.read()
+        assert ("% (name, " + "_GATE_FOCUS_WARNING") in _src_u7, \
+            "부서장 폴백 보류 처방이 공통 경고 상수를 싣지 않는다"
+        assert _src_u7.count("★면책 창의 기본 포커스는 " + "`No, exit` 이므로") == 0, \
+            "면책 창 단독 경고(폴더신뢰 누락 문안)가 남았다"
 
         # ── t4′: 러너 `cys boot-run` exit 파리티(부트 v2 명세 §4 · BUILD_PLAN A4) ──
         # ★무엇을 막는가: 명세가 러너 종료 대수에 13·14·15 를 새로 얹었는데 python 쪽에는 그

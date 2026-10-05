@@ -14,6 +14,44 @@ pub const EXIT_REINJECT_DEGRADED: i32 = 3;
 /// run_pack_update가 reinject 집계를 stdout에 구조화 출력할 때 쓰는 줄 접두사. 호출자(Tauri
 /// 브리지)가 failed/deferred를 정확히 파싱하도록 사람용 메시지와 별개의 안정 토큰으로 둔다.
 pub const REINJECT_RESULT_PREFIX: &str = "PACK_UPDATE_RESULT";
+/// `cys pack-update` 가 **반영하지 않고 끝난 판정**(UpToDate · no-op · exit 0)을 호출자에게 알리는 줄
+/// 접두사(U9 · 0.14.41). 종전에는 no-op 도 exit 0 이라 GUI 브리지가 "✅ 팩 업데이트 완료"라고 말했다.
+/// 형식(ASCII 한 줄 · 공백 구분 · CRLF 안전하게 trim 파싱):
+///   `PACK_UPDATE_OUTCOME gate=up-to-date remote=<manifest pack_version> disk=<.pack-version> disk_parse=ok|fail`
+/// CLI UpToDate 는 "원격 ≤ 디스크"뿐 아니라 **디스크 판독 실패**(parse 실패 = fail-CLOSED)에서도 나오므로
+/// disk·disk_parse 를 함께 싣는다 — 호출자는 disk_parse=ok ∧ disk ≥ remote 일 때만 "이미 적용됨"이라 말한다.
+pub const PACK_UPDATE_OUTCOME_PREFIX: &str = "PACK_UPDATE_OUTCOME";
+
+/// 토큰 값 정규화 — 공백·비ASCII 가 섞이면 줄 파싱이 깨지므로 안전 문자만 그대로, 빈 값은 `-`, 그 외 `?`.
+fn outcome_token_value(v: &str) -> String {
+    let v = v.trim();
+    if v.is_empty() {
+        "-".to_string()
+    } else if v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_')) {
+        v.to_string()
+    } else {
+        "?".to_string()
+    }
+}
+
+/// PACK_UPDATE_OUTCOME 한 줄을 만든다(순수). `disk_raw` = `.pack-version` 원문(읽기 실패면 None).
+pub fn format_pack_update_outcome(gate: &str, remote: &str, disk_raw: Option<&str>) -> String {
+    let disk = disk_raw.map(str::trim).unwrap_or("");
+    let disk_parse = if parse_semver(disk).is_some() { "ok" } else { "fail" };
+    format!(
+        "{PACK_UPDATE_OUTCOME_PREFIX} gate={} remote={} disk={} disk_parse={disk_parse}",
+        outcome_token_value(gate),
+        outcome_token_value(remote),
+        outcome_token_value(disk),
+    )
+}
+
+/// `cys pack-update` UpToDate 분기가 찍는 결과 줄 — 디스크 `.pack-version` 을 **지금** 읽어 싣는다
+/// (판정에 쓴 값과 같은 파일 · pack_update_from_dir 와 같은 pack_dir()). 읽기만 하고 쓰지 않는다.
+pub fn pack_update_uptodate_line(remote: &str) -> String {
+    let disk = std::fs::read_to_string(pack_dir().join(PACK_VERSION_FILE)).ok();
+    format_pack_update_outcome("up-to-date", remote, disk.as_deref())
+}
 
 // cysjavis-pack의 git-추적 전체 트리는 build.rs가 `git ls-files cysjavis-pack` 소싱으로
 // 컴파일 타임 자동 임베드한다(PACK_ALL — README·directives·bin·hooks·schemas·skills 등 전체). 새
@@ -39,10 +77,36 @@ pub fn build_id() -> &'static str {
 
 /// 임베드 팩 매니페스트 해시 — PACK_ALL(rel+content, build.rs 가 이미 정렬)을 sha256 스트리밍 해시.
 /// 같은 소스로 빌드된 cys·cysd 는 동일 값(둘 다 동일 PACK_ALL 임베드). 팩 내용이 다르면 값이 갈린다.
+///
+/// ★(0.14.42 · perf R3-6) **프로세스당 1회** 계산하고 재사용한다(`embedded_pack_hash_ref`). 입력 PACK_ALL 은
+/// 컴파일 타임 상수라 값이 프로세스 수명 동안 바뀔 수 없다(결과 불변). 종전에는 org.status 가 불릴
+/// 때마다 임베드 팩 전체를 소프트웨어 SHA-256 으로 다시 해시했다(aarch64 는 sha2 `asm` 피처 없이
+/// 가속이 꺼진다). 실측 수치와 측정 시각·기준 sha 는 이 변경의 커밋 메시지에 있다 — 팩 크기가
+/// 바뀌면 낡는 수치를 코드에 두지 않는다. 새 프로세스마다 한 번은 계산하므로 `cys phoenix-identity`
+/// 같은 1회성 CLI 경로의 비용은 그대로다. 핀: `embedded_pack_hash_is_memoized_and_unchanged`.
 pub fn embedded_pack_hash() -> String {
+    embedded_pack_hash_ref().to_owned()
+}
+
+/// 메모 본체 — 첫 호출 때만 계산해 프로세스 수명 동안 보관한 값의 참조. 기동 때 미리 계산하지
+/// 않는다(부트 체인에 비용을 얹지 않는다). 동시에 여러 스레드가 첫 호출을 하면 한 스레드만
+/// 계산하고 나머지는 그 결과를 기다린다(`OnceLock`).
+///
+/// ★(0.14.42 통합 검증) `PACK_ALL` 은 `const` 라 참조하는 코드 생성 단위마다 팩 전체가 따로 실릴 수 있다.
+/// 해시 루프를 `get_or_init` 의 제네릭 클로저 안에 두면 release 바이너리에 팩 사본이 하나 더 생긴다(실측 +≈11MB ·
+/// 핀 `embedded_pack_hash_memo_closure_does_not_touch_pack_all`). 그래서 참조는 이 비제네릭 본체에서 뜨고 클로저는
+/// 슬라이스만 받는다 — 값·메모 동작은 그대로다.
+fn embedded_pack_hash_ref() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let items: &'static [(&'static str, &'static str)] = PACK_ALL;
+    HASH.get_or_init(|| pack_items_sha256(items)).as_str()
+}
+
+/// 임베드 팩 해시 계산부(rel\0content\0 스트리밍 SHA-256) — `embedded_pack_hash_ref` 의 메모 안에서만 부른다.
+fn pack_items_sha256(items: &[(&str, &str)]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    for (rel, content) in PACK_ALL.iter() {
+    for (rel, content) in items {
         h.update(rel.as_bytes());
         h.update(b"\0");
         h.update(content.as_bytes());
@@ -113,6 +177,103 @@ pub fn pack_dir() -> PathBuf {
     {
         home_default_pack_dir()
     }
+}
+
+/// 레인 가드 조기 종료 표식(`<pack>/state/lane-guard-tripped`)의 상대 경로.
+/// 정의처 동형: `cysjavis-pack/bin/javis_preflight.py` LANE_GUARD_TRIPPED_REL.
+pub const LANE_GUARD_TRIPPED_REL: &str = "state/lane-guard-tripped";
+/// 표식 신선도 창(초). 정의처 동형: 같은 파일 LANE_GUARD_RECENT_S.
+pub const LANE_GUARD_RECENT_SECS: u64 = 24 * 3600;
+
+/// 이 레인(팩)의 훅이 **무발화 조기 종료**한 적이 있는가.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneGuardTrip {
+    /// 표식의 `reason=` (absent·unreadable·no-redirect-line·already-redirected).
+    pub reason: String,
+    /// 표식의 `script=` (session-start.sh 등). 결측이면 빈 문자열.
+    pub script: String,
+    /// 표식이 있지만 판독 불가 — 결측은 값이 아니므로 **참(보수)**으로 접는다.
+    pub unreadable: bool,
+}
+
+/// 파이썬 `lane_guard_tripped`의 `(recent, info)`를 같은 3분기로 판정한다.
+/// 파일의 증명된 부재와 mtime 기준 24시간을 넘은 표식만 `None`이다.
+/// 판독 불가(권한·비정규 파일·mtime 없음)는 `Some`의 `unreadable: true`로 막는다.
+/// 본문은 Python `_read_text_tolerant`처럼 UTF-8 손상 바이트를 대체해 읽는다.
+pub fn lane_guard_tripped(pack_dir: &Path) -> Option<LaneGuardTrip> {
+    lane_guard_tripped_at(pack_dir, std::time::SystemTime::now())
+}
+
+/// 현재 시각만 주입해 신선도 경계와 시계 역전을 결정론적으로 검증한다.
+fn lane_guard_tripped_at(pack_dir: &Path, now: std::time::SystemTime) -> Option<LaneGuardTrip> {
+    use std::io::Read;
+
+    let path = pack_dir.join(LANE_GUARD_TRIPPED_REL);
+    let unreadable = || Some(LaneGuardTrip {
+        reason: String::new(),
+        script: String::new(),
+        unreadable: true,
+    });
+    // Python `_lexists_strict`와 동형: 끊어진 심링크도 존재하며, 조회 실패는 부재가 아니다.
+    if let Err(error) = std::fs::symlink_metadata(&path) {
+        let absent = matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ) || path.as_os_str().as_encoded_bytes().contains(&0);
+        #[cfg(unix)]
+        let absent = absent
+            || error.raw_os_error().is_some_and(|code| {
+                [libc::ENOENT, libc::ENOTDIR, libc::ELOOP, libc::ENAMETOOLONG].contains(&code)
+            });
+        return if absent { None } else { unreadable() };
+    }
+
+    // Python `_open_unblocking_ro`와 같은 O_NONBLOCK + 열린 fd 정규파일 확인:
+    // writer 없는 FIFO와 lstat/open 사이 FIFO 교체도 cycle-agent를 멈추지 못한다.
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(_) => return unreadable(),
+    };
+    match file.metadata() {
+        Ok(metadata) if metadata.is_file() => {}
+        _ => return unreadable(),
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return unreadable();
+    }
+    let mtime = match std::fs::metadata(&path).and_then(|metadata| metadata.modified()) {
+        Ok(mtime) => mtime,
+        Err(_) => return unreadable(),
+    };
+    let age = now.duration_since(mtime).unwrap_or_default();
+    if age > std::time::Duration::from_secs(LANE_GUARD_RECENT_SECS) {
+        return None;
+    }
+
+    let mut trip = LaneGuardTrip {
+        reason: String::new(),
+        script: String::new(),
+        unreadable: false,
+    };
+    for line in String::from_utf8_lossy(&bytes).lines() {
+        let Some((key, value)) = line.split_once('=') else { continue };
+        match key {
+            "reason" => trip.reason = value.to_owned(),
+            "script" => trip.script = value.to_owned(),
+            // Python의 나머지 인정 키도 읽되 현재 공개 결과에는 두 필드만 노출한다.
+            "hook_root" | "lane_root" | "surface" | "ts" => {}
+            _ => {}
+        }
+    }
+    Some(trip)
 }
 
 /// 소켓 경로 → 그 레인의 팩 경로(결정론 유도 · G34).
@@ -616,6 +777,95 @@ pub fn hook_registered_in(root: &serde_json::Value, event: &str, desired: &str) 
     hook_registered_with_timeout_in(root, event, desired, None)
 }
 
+/// ★U10(0.14.41) **관측 전용** hook 명령 비교 정규화(순수).
+///
+/// ★집행 경로(`merge_desired_hooks`·`verify_desired_hooks_registered`)에는 **절대 쓰지 않는다** —
+/// 그쪽은 바이트 동등이 계약이다(느슨한 매칭이 '이미 있음'과 '없음'을 뒤섞으면 재등록이 중복 append
+/// 폭주 방향으로 간다: 위 `hook_registered_in` 주석). 이 함수의 소비자는 기동 경고
+/// (`cys launch-agent` 의 각성 훅 미등록 판정) 하나다.
+///
+/// 규칙(양쪽 문자열에 똑같이 적용 — 결정론):
+///  ① 따옴표(`"`·`'`) 제거 ② `\` → `/` ③ 공백열 1칸으로 · 앞뒤 공백 제거
+///  ④(windows 규칙만) 토큰 머리의 `//?/`(= `\\?\` 확장 경로 접두) 제거 · 토큰 머리의 MSYS 드라이브
+///    `/c/…` → `c:/…` · 전체 소문자(NTFS 경로·`bash` 모두 대소문자 무시).
+/// 윈도우 표기가 섞이는 근거: 쓰는 쪽(`hook_command_for` = `C:/…` · preflight `_cys_hook_cmd`)과 부서 팩 값이
+/// 오는 쪽(cys-dept `$HOME` = Git Bash `/c/…` → MSYS 변환)이 다를 수 있다 — 저장소는 이미 `/c/rest` ↔ `C:/rest`
+/// 를 같은 등록으로 인정한다(`hooks/_lib.sh cys_lane_registered`). 유닉스 규칙은 ①~③만(대소문자 구분 유지).
+pub fn normalize_hook_command_for_compare(cmd: &str, windows_rules: bool) -> String {
+    let unquoted: String = cmd
+        .chars()
+        .filter(|c| *c != '"' && *c != '\'')
+        .map(|c| if c == '\\' { '/' } else { c })
+        .collect();
+    let tokens = unquoted.split_whitespace().map(|tok| {
+        if !windows_rules {
+            return tok.to_string();
+        }
+        let tok = tok.strip_prefix("//?/").unwrap_or(tok);
+        let b = tok.as_bytes();
+        let t = if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+            format!("{}:{}", &tok[1..2], &tok[2..])
+        } else {
+            tok.to_string()
+        };
+        t.to_lowercase()
+    });
+    tokens.collect::<Vec<_>>().join(" ")
+}
+
+/// settings.json 의 특정 이벤트에 desired 명령이 **표기 정규화 후** 등록돼 있는가(관측 전용·순수).
+/// command 축 단독(timeout 미고려) — [`hook_registered_in`] 과 같은 축이고 비교만 정규화한다.
+pub fn hook_registered_normalized_in(
+    root: &serde_json::Value,
+    event: &str,
+    desired: &str,
+    windows_rules: bool,
+) -> bool {
+    let want = normalize_hook_command_for_compare(desired, windows_rules);
+    root.get("hooks")
+        .and_then(|h| h.get(event))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().any(|m| {
+                m.get("hooks")
+                    .and_then(|v| v.as_array())
+                    .map(|hs| {
+                        hs.iter().any(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|c| normalize_hook_command_for_compare(c, windows_rules) == want)
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// ★U10(0.14.41) 각성 훅 누락 목록 — **레인 팩 하나**를 기대값으로 삼는다(관측 전용·순수).
+///
+/// 합집합(본부 팩 ∪ 레인 팩)을 쓰지 않는 이유: 부서 계정 settings 에 본부 팩 훅이 교차 등록된 경우를
+/// '등록됨' 으로 통과시키면 레인 가드 위임 실패(훅이 조용히 조기 종료하는 형상)가 가려진다(U10 반박 DD1).
+pub fn awakening_hooks_missing_in(
+    root: &serde_json::Value,
+    lane_pack: &Path,
+    windows_rules: bool,
+) -> Vec<&'static str> {
+    AWAKENING_HOOKS
+        .iter()
+        .filter(|h| {
+            !hook_registered_normalized_in(
+                root,
+                h.event,
+                &hook_command_for(lane_pack, h.script),
+                windows_rules,
+            )
+        })
+        .map(|h| h.script)
+        .collect()
+}
+
 /// **불일치 엔트리 교체 경로**(U-21) — 이미 등록된 우리 hook 객체의 `timeout` 만 선언값으로 올린다.
 ///
 /// 안전 계약(오살 금지 — 이 함수가 이 단위에서 가장 위험한 코드다):
@@ -1014,6 +1264,45 @@ pub fn merge_awakening_hooks_into_personal_profiles() -> Vec<(String, Vec<String
     out
 }
 
+/// ★0.14.42 agy(Antigravity CLI) 상태줄 자동 연결 — 설치·팩 병합 때 한 번 조정한다(계약 전문: `crate::agy_statusline`).
+///
+/// 개인 프로필 훅 병합([`merge_awakening_hooks_into_personal_profiles`])과 **같은 계층·같은 게이트**다:
+///  · 테스트 빌드 무동작 · `CYS_NO_PERSONAL_HOOK_MERGE=1`(E2E 하네스의 개인 설정 무접촉 약속) 무동작
+///  · **base 팩 전용** — 부서·임시·테스트 팩(`CYS_PACK_DIR` 지정)에서 도는 설치는 `~/.gemini` 를 건드리지 않는다
+///    (CONTRIBUTING: 팩 변수만 격리하고 HOME 을 두고 온 E2E 가 라이브 프로필에 죽은 훅을 쌓은 사고의 같은 방어).
+/// 노브가 꺼져 있으면(`CYS_AGY_STATUSLINE=0` · `~/.cys/agy-statusline-off`) cys 가 넣은(표지 달린) 연결만 뺀다.
+/// best-effort — 무엇이 실패해도 팩 설치는 유효하고 설정 파일은 그대로다(실패 방향 = 쓰지 않음 · 로그 1줄).
+pub fn reconcile_agy_statusline_at_install() {
+    use crate::agy_statusline as agy;
+    if cfg!(test) {
+        return; // 테스트 빌드는 실 HOME 을 절대 만지지 않는다
+    }
+    if std::env::var("CYS_NO_PERSONAL_HOOK_MERGE").map(|v| v == "1").unwrap_or(false) {
+        return;
+    }
+    let pack = pack_dir();
+    if pack != home_default_pack_dir() {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let settings = agy::settings_path_under(&home);
+    let record = pack.join(agy::RECORD_REL);
+    let off_file = home.join(".cys").join(agy::OFF_FILE);
+    let outcome = if agy::knob_off(crate::env_compat(agy::ENV_KNOB).as_deref(), off_file.exists()) {
+        agy::unlink(&settings, Some(&record), agy::Backup::Beside)
+    } else {
+        agy::ensure_linked(
+            &agy::Ctx { settings: &settings, pack_dir: &pack, record: &record, windows: cfg!(windows) },
+            false,
+        )
+    };
+    if let Some(line) = agy::describe(&outcome, &settings) {
+        eprintln!("[pack] agy 상태줄: {line}");
+    }
+}
+
 /// SessionStart hook 등록 명령을 OS별로 조립하는 **공용 함수**(RC-2 · 순수 함수·회귀 핀).
 /// Windows: 바닐라 셸(cmd/PowerShell)은 `.sh`를 인터프리터 없이 못 실행하고 "open with" 대화상자를
 ///   띄운다(anthropics/claude-code #21847·#24097). Claude Code가 Windows에서 찾는 인터프리터는
@@ -1198,6 +1487,12 @@ fn setup_isolated_config_dir(install_hooks: bool) {
         SeedOutcome::Disabled | SeedOutcome::NothingToDo => {}
         other => eprintln!("[pack] 첫기동 관문 시드: {other:?}"),
     }
+    // ★0.14.42 agy 상태줄 자동 연결(오너 승인 2026-09-24) — 첫기동 시드처럼 `install_hooks` 조기 return **위**다.
+    //   GUI 인앱 업데이트는 항상 `--no-install-hook` 으로 내려오므로 아래에 두면 업데이트로 올라온 사용자에게 영영
+    //   닿지 않는다(U-19 와 같은 도달성). 이것은 Claude 훅이 아니고, 그 플래그가 막으려는 두 가지(정상 `.bak-cys`
+    //   클로버 · 활성 프로필 재직렬화)를 하지 않는다: 칸이 비었을 때 **한 번** 외과 수술로 한 칸만 쓰고, 그 뒤로는
+    //   무동작이다(연결 기록). 자기 노브(`CYS_AGY_STATUSLINE=0` · `~/.cys/agy-statusline-off`)가 따로 있다.
+    reconcile_agy_statusline_at_install();
     if !install_hooks {
         // ★G3(--no-install-hook 일관성): 종전엔 이 플래그가 ~/.claude 대상만 막고 격리 config dir
         // 훅 병합(아래)은 그대로 돌았다 — 훅 억제를 요청한 운영자에게 훅이 몰래 등록되는 비일관.
@@ -4670,6 +4965,379 @@ pub(crate) static PACK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 mod tests {
     use super::*;
 
+    /// ★(0.14.42 · perf R3-6) 임베드 팩 해시 **메모 핀**. PACK_ALL 은 컴파일 타임 상수라 값이 프로세스 수명
+    /// 동안 바뀌지 않는다.
+    /// ① 값: 종전 계산(여기 오라클)과 같다.
+    /// ② 결정론: 두 번 받은 참조가 **같은 버퍼**다(`ptr::eq`). 호출마다 다시 계산하면 새 `String` 이라
+    ///   주소가 갈린다. 부하·SHA 가속 유무와 무관하게 판별된다.
+    /// ③ 보조(수정 전 적색 증거용): 공개 함수 5회 중 최소 소요가 오라클 계산 소요의 1/10 미만이다.
+    ///   절대 임계(ms)를 두지 않는다 — SHA 가속이 켜지거나 팩이 작아져도 비율은 판별력을 잃지 않는다.
+    /// 운영 구간에 `#[cfg(test)]` 계수기를 두지 않는 이유: 소스 핀들이 `find("#[cfg(test)]")` 로
+    /// 운영 구간을 자른다.
+    #[test]
+    fn embedded_pack_hash_is_memoized_and_unchanged() {
+        use sha2::{Digest, Sha256};
+        let t = std::time::Instant::now();
+        let mut h = Sha256::new();
+        let mut bytes = 0usize;
+        for (rel, content) in PACK_ALL.iter() {
+            h.update(rel.as_bytes());
+            h.update(b"\0");
+            h.update(content.as_bytes());
+            h.update(b"\0");
+            bytes += rel.len() + content.len() + 2;
+        }
+        let oracle = format!("{:x}", h.finalize());
+        let oracle_cost = t.elapsed();
+        assert!(bytes > 0, "PACK_ALL 이 비었다 — 비교가 공허하다");
+        assert_eq!(embedded_pack_hash(), oracle, "임베드 팩 해시 값이 종전 계산과 갈렸다");
+        let a = embedded_pack_hash_ref();
+        let b = embedded_pack_hash_ref();
+        assert_eq!(a, oracle.as_str());
+        assert!(std::ptr::eq(a, b), "embedded_pack_hash_ref 가 호출마다 새 값을 만든다(메모 아님)");
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            let v = embedded_pack_hash();
+            best = best.min(t.elapsed());
+            assert_eq!(v, oracle);
+        }
+        assert!(
+            best * 10 < oracle_cost,
+            "embedded_pack_hash 가 호출마다 재계산된다: 5회 중 최소 {best:?} · 오라클 1회 {oracle_cost:?} (해시 입력 {bytes} B)"
+        );
+    }
+
+    /// ★(0.14.42 통합 검증) 임베드 팩 **사본 수** 핀. `PACK_ALL` 은 build.rs 가 만든 `const` 라 그것을 참조하는
+    /// 코드 생성 단위(CGU)마다 팩 전체(≈10MB 문자열)가 따로 실릴 수 있다. 메모 해시 루프를 `OnceLock::get_or_init`
+    /// 의 제네릭 클로저 안에 두면 그 단형화가 다른 CGU 로 가서 release 바이너리에 팩 사본이 하나 더 생겼다
+    /// (실측 2026-09-26 · a02aa79c 전후 release `cys` 30,183,808 → 41,148,624 B · 팩 문장 출현 2 → 3회 · cysd 도 +11MB).
+    /// 그래서 `PACK_ALL` 참조는 비제네릭 메모 본체에서 한 번 뜨고, 클로저에는 슬라이스만 넘긴다 — 그 **모양**을 핀한다.
+    /// (사본 수 자체는 release 산출물 측정으로만 보인다 — 이 핀은 그 회귀를 되부르는 소스 모양을 막는다.)
+    #[test]
+    fn embedded_pack_hash_memo_closure_does_not_touch_pack_all() {
+        let src = include_str!("pack.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").expect("테스트 모듈 경계")];
+        let i = prod.find("fn embedded_pack_hash_ref()").expect("메모 본체 소실");
+        let body = &prod[i..i + prod[i..].find("\n}\n").expect("메모 본체 끝")];
+        let c = body.find(".get_or_init(").expect("OnceLock 메모 소실");
+        assert!(
+            !body[c..].contains("PACK_ALL"),
+            "메모 클로저가 PACK_ALL 을 직접 참조한다 — release 바이너리에 임베드 팩 사본이 하나 더 실린다(+≈11MB/바이너리)"
+        );
+        assert!(body[..c].contains("PACK_ALL"), "메모 본체가 PACK_ALL 을 비제네릭 위치에서 참조하지 않는다");
+    }
+
+    // ── ★U10(0.14.41) 각성 훅 경고 — 레인 팩 단독 기대값 · 표기 정규화(관측 전용) ─────────────
+    fn u10_settings(cmds: &[(&str, &str)]) -> serde_json::Value {
+        let mut hooks = serde_json::Map::new();
+        for (event, cmd) in cmds {
+            let arr = hooks
+                .entry(event.to_string())
+                .or_insert_with(|| serde_json::json!([]));
+            arr.as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({"hooks": [{"type": "command", "command": cmd}]}));
+        }
+        serde_json::json!({ "hooks": hooks })
+    }
+
+    /// 부서 계정 settings 에 부서 팩 훅이 정상 등록 → 레인(부서) 팩 기대값으로 누락 0 (U10 RC2 오탐 제거).
+    #[test]
+    fn u10_awakening_missing_dept_lane_registered_is_clean() {
+        let dept = Path::new("/h/.cys/pack-dept-a");
+        let s = u10_settings(&[
+            ("SessionStart", &hook_command_for(dept, "session-start.sh")),
+            ("UserPromptSubmit", &hook_command_for(dept, "role-bootstrap.sh")),
+        ]);
+        assert!(awakening_hooks_missing_in(&s, dept, cfg!(windows)).is_empty());
+    }
+
+    /// 합집합 금지 — 본부 팩 훅만 교차 등록된 부서 settings 는 부서 레인 기대값에서 **둘 다 누락**이다.
+    #[test]
+    fn u10_awakening_missing_has_no_union_with_hq_pack() {
+        let hq = Path::new("/h/.cys/pack");
+        let dept = Path::new("/h/.cys/pack-dept-a");
+        let s = u10_settings(&[
+            ("SessionStart", &hook_command_for(hq, "session-start.sh")),
+            ("UserPromptSubmit", &hook_command_for(hq, "role-bootstrap.sh")),
+        ]);
+        assert_eq!(
+            awakening_hooks_missing_in(&s, dept, cfg!(windows)),
+            vec!["session-start.sh", "role-bootstrap.sh"],
+            "본부 팩 훅이 부서 레인에서 '등록됨' 으로 통과했다(합집합 금지 위반)"
+        );
+        // 대칭: 본부 레인 기대값에서는 등록됨.
+        assert!(awakening_hooks_missing_in(&s, hq, cfg!(windows)).is_empty());
+    }
+
+    /// 윈도우 규칙: 드라이브 대소문자·역슬래시·MSYS(`/c/`)·`\\?\` 접두·따옴표 차이를 같은 경로로 본다.
+    #[test]
+    fn u10_hook_compare_windows_forms_are_equal() {
+        // ★경로의 사용자명은 secret-scan 더미(`user`)만 쓴다(개인경로 오탐 차단 — scripts/secret-scan.sh dummy_names).
+        let want = r#"bash "C:/Users/user/.cys/pack-dept-a/hooks/session-start.sh""#;
+        for got in [
+            r#"bash "c:\Users\user\.cys\pack-dept-a\hooks\session-start.sh""#,
+            r#"bash "/c/Users/user/.cys/pack-dept-a/hooks/session-start.sh""#,
+            r#"bash "\\?\C:\Users\user\.cys\pack-dept-a\hooks\session-start.sh""#,
+            r#"bash C:/Users/user/.cys/pack-dept-a/hooks/session-start.sh"#,
+            r#"BASH  "c:/USERS/user/.CYS/pack-dept-a/HOOKS/session-start.sh""#,
+        ] {
+            assert_eq!(
+                normalize_hook_command_for_compare(got, true),
+                normalize_hook_command_for_compare(want, true),
+                "윈도우 표기 차이를 다른 명령으로 읽었다: {got}"
+            );
+            let s = u10_settings(&[("SessionStart", got)]);
+            assert!(hook_registered_normalized_in(&s, "SessionStart", want, true), "{got}");
+        }
+        // 공백 포함 경로(따옴표 필수 형상)도 같은 규칙.
+        assert_eq!(
+            normalize_hook_command_for_compare(r#"bash "/c/Users/user/My Docs/.cys/pack/hooks/a.sh""#, true),
+            normalize_hook_command_for_compare(r#"bash "C:\Users\user\my docs\.cys\pack\hooks\a.sh""#, true),
+        );
+    }
+
+    /// 정규화가 **다른 명령을 같게 만들지 않는다**(느슨함의 상한) · 유닉스 규칙은 대소문자·MSYS 무변환.
+    #[test]
+    fn u10_hook_compare_does_not_merge_distinct_commands() {
+        let w = |s: &str| normalize_hook_command_for_compare(s, true);
+        assert_ne!(
+            w(r#"bash "C:/Users/user/.cys/pack-dept-a/hooks/session-start.sh""#),
+            w(r#"bash "C:/Users/user/.cys/pack/hooks/session-start.sh""#),
+            "다른 팩"
+        );
+        assert_ne!(
+            w(r#"bash "C:/Users/user/.cys/pack/hooks/session-start.sh""#),
+            w(r#"bash "C:/Users/user/.cys/pack/hooks/role-bootstrap.sh""#),
+            "다른 스크립트"
+        );
+        assert_ne!(
+            w(r#"bash "C:/p/hooks/a.sh""#),
+            w(r#"bash "D:/p/hooks/a.sh""#),
+            "다른 드라이브"
+        );
+        let u = |s: &str| normalize_hook_command_for_compare(s, false);
+        assert_ne!(u("sh /Users/user/.cys/Pack/hooks/a.sh"), u("sh /Users/user/.cys/pack/hooks/a.sh"), "유닉스는 대소문자 구분");
+        assert_ne!(u("sh /c/x/hooks/a.sh"), u("sh c:/x/hooks/a.sh"), "유닉스는 MSYS 변환 없음");
+        // 빈 문자열·이상 입력에서 패닉 0.
+        for odd in ["", " ", "\"", "\\\\?\\", "/c", "/", "//?/", "bash \"\""] {
+            let _ = w(odd);
+            let _ = u(odd);
+        }
+    }
+
+    /// U9(0.14.41): pack-update no-op 결과 토큰 — GUI 브리지(src-tauri parse_pack_update_outcome)와의 계약.
+    #[test]
+    fn pack_update_outcome_token_format() {
+        assert_eq!(
+            format_pack_update_outcome("up-to-date", "0.14.40", Some("0.14.40\n")),
+            "PACK_UPDATE_OUTCOME gate=up-to-date remote=0.14.40 disk=0.14.40 disk_parse=ok"
+        );
+        // 디스크 판독 실패·빈 값·해석 불가 — CLI 는 UpToDate 지만 호출자가 '이미 적용됨'이라 말하면 안 된다.
+        assert_eq!(
+            format_pack_update_outcome("up-to-date", "0.14.40", None),
+            "PACK_UPDATE_OUTCOME gate=up-to-date remote=0.14.40 disk=- disk_parse=fail"
+        );
+        assert_eq!(
+            format_pack_update_outcome("up-to-date", "0.14.40", Some("garbage")),
+            "PACK_UPDATE_OUTCOME gate=up-to-date remote=0.14.40 disk=garbage disk_parse=fail"
+        );
+        // 공백·비ASCII·BOM 이 섞인 값은 한 토큰으로 유지한다(줄 파싱 보호).
+        let l = format_pack_update_outcome("up-to-date", "0.14.40", Some("\u{feff}0.14.40 x"));
+        assert_eq!(l, "PACK_UPDATE_OUTCOME gate=up-to-date remote=0.14.40 disk=? disk_parse=fail");
+        assert!(l.is_ascii());
+        assert_eq!(l.split_whitespace().count(), 5);
+    }
+
+    /// ★리뷰1 F2(MR3 공허) — `pack_update_outcome_token_format`은 포맷 함수(`format_pack_update_outcome`)
+    /// 만 본다. 실제로 디스크를 읽는 `pack_update_uptodate_line`은 어떤 lib 테스트도 부르지 않아서,
+    /// 그 함수가 엉뚱한 파일을 읽거나(`.pack-state.json` 등) 항상 판독 실패를 반환해도 전 테스트가
+    /// 녹색이었다. 임시 CYS_PACK_DIR 에 `.pack-version`을 직접 써 두고 그 값이 그대로 실리는지 본다
+    /// (판정에 쓴 것과 같은 파일 · 같은 pack_dir()).
+    #[test]
+    fn pack_update_uptodate_line_reads_live_disk_pack_version() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let td = std::env::temp_dir().join(format!("cys-pack-uptodate-line-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        let _env = EnvGuard::set("CYS_PACK_DIR", td.to_str().unwrap());
+
+        // ① .pack-version 이 아직 없음 → 판독 실패(disk=- disk_parse=fail). 엉뚱한 파일을 읽어도
+        //    이 값으로 우연히 맞을 수 있으므로 ②·③ 대조가 핵심이다.
+        let line0 = pack_update_uptodate_line("0.14.41");
+        assert_eq!(line0, "PACK_UPDATE_OUTCOME gate=up-to-date remote=0.14.41 disk=- disk_parse=fail");
+
+        // ② .pack-version 에 쓴 값이 그대로 실린다 — 다른 파일을 읽으면(MR3) 여기서 불일치.
+        std::fs::write(td.join(PACK_VERSION_FILE), "0.14.40").unwrap();
+        let line1 = pack_update_uptodate_line("0.14.41");
+        assert_eq!(line1, "PACK_UPDATE_OUTCOME gate=up-to-date remote=0.14.41 disk=0.14.40 disk_parse=ok");
+
+        // ③ 다시 쓰면(CRLF 포함) 캐시된 옛 값이 아니라 **지금** 디스크 값을 다시 읽는다.
+        std::fs::write(td.join(PACK_VERSION_FILE), "0.14.42\r\n").unwrap();
+        let line2 = pack_update_uptodate_line("0.14.41");
+        assert_eq!(line2, "PACK_UPDATE_OUTCOME gate=up-to-date remote=0.14.41 disk=0.14.42 disk_parse=ok");
+
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★(0.14.39 라운드3 · 성찰2 notice) 레인 가드 표식의 경로·신선도 창은 러스트/파이썬 **사본 2벌**이다.
+    /// 드리프트하면 `cys cycle-agent` 와 `javis_preflight` 가 서로 다른 레인 상태를 보고,
+    /// 그 방향은 디렉티브 0회 주입(치명) 또는 상시 이중 주입(컨텍스트 급등) 어느 쪽으로도 갈 수 있다.
+    #[test]
+    fn lane_guard_constants_match_javis_preflight() {
+        let preflight = include_str!("../cysjavis-pack/bin/javis_preflight.py");
+        let rel = preflight
+            .lines()
+            .find_map(|line| line.strip_prefix("LANE_GUARD_TRIPPED_REL = "))
+            .expect("파이썬 LANE_GUARD_TRIPPED_REL 줄 시작 정의");
+        assert_eq!(
+            rel.trim(),
+            "os.path.join(\"state\", \"lane-guard-tripped\")",
+            "표식 상대경로의 교차 언어 계약이 깨졌다(러스트: {LANE_GUARD_TRIPPED_REL})"
+        );
+        assert_eq!(
+            LANE_GUARD_TRIPPED_REL,
+            "state/lane-guard-tripped",
+            "러스트 쪽 상수가 파이썬 os.path.join 조합과 다르다"
+        );
+        let recent = preflight
+            .lines()
+            .find_map(|line| line.strip_prefix("LANE_GUARD_RECENT_S = "))
+            .expect("파이썬 LANE_GUARD_RECENT_S 줄 시작 정의");
+        let secs: u64 = recent
+            .trim()
+            .split('*')
+            .map(|term| term.trim().parse::<u64>().expect("정수 리터럴 곱"))
+            .product();
+        assert_eq!(secs, LANE_GUARD_RECENT_SECS, "표식 신선도 창(24h)의 교차 언어 계약이 깨졌다");
+    }
+
+    /// 레인 표식 검체마다 라이브 팩과 무관한 고유 임시 디렉터리를 만든다.
+    fn lane_guard_test_pack(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pack = std::env::temp_dir().join(format!(
+            "cys-lane-guard-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(pack.join("state")).unwrap();
+        pack
+    }
+
+    /// 증명된 표식 부재만 레인 가드 무발화 기록 없음으로 판정한다.
+    #[test]
+    fn lane_guard_tripped_absent_marker_is_none() {
+        let pack = lane_guard_test_pack("absent");
+        assert_eq!(lane_guard_tripped(&pack), None);
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
+    /// 방금 쓴 absent 표식은 판독 가능한 최근 조기 종료 기록이다.
+    #[test]
+    fn lane_guard_tripped_recent_marker_preserves_reason() {
+        let pack = lane_guard_test_pack("recent");
+        std::fs::write(pack.join(LANE_GUARD_TRIPPED_REL), "reason=absent\n").unwrap();
+        let trip = lane_guard_tripped(&pack).expect("최근 표식을 부재로 접었다");
+        assert_eq!(trip.reason, "absent");
+        assert_eq!(trip.script, "");
+        assert!(!trip.unreadable);
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
+    /// mtime보다 25시간 뒤를 관측하면 낡은 표식은 오늘의 발화 판정에서 제외한다.
+    #[test]
+    fn lane_guard_tripped_stale_marker_is_none() {
+        let pack = lane_guard_test_pack("stale");
+        let marker = pack.join(LANE_GUARD_TRIPPED_REL);
+        std::fs::write(&marker, "reason=absent\n").unwrap();
+        let mtime = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        let now = mtime + std::time::Duration::from_secs(25 * 3600);
+        assert_eq!(lane_guard_tripped_at(&pack, now), None);
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
+    /// 위임 줄 부재의 사유와 SessionStart 스크립트를 원문 그대로 읽는다.
+    #[test]
+    fn lane_guard_tripped_parses_reason_and_script() {
+        let pack = lane_guard_test_pack("fields");
+        std::fs::write(
+            pack.join(LANE_GUARD_TRIPPED_REL),
+            "hook_root=/old\nlane_root=/lane\nreason=no-redirect-line\nscript=session-start.sh\nsurface=claude\nts=0\n",
+        )
+        .unwrap();
+        let trip = lane_guard_tripped(&pack).unwrap();
+        assert_eq!(trip.reason, "no-redirect-line");
+        assert_eq!(trip.script, "session-start.sh");
+        assert!(!trip.unreadable);
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
+    /// 표식이 디렉터리여서 판독 불가하면 낡은 mtime으로도 무발화 기록을 지우지 않는다.
+    #[test]
+    fn lane_guard_tripped_unreadable_marker_is_conservative() {
+        let pack = lane_guard_test_pack("unreadable");
+        let marker = pack.join(LANE_GUARD_TRIPPED_REL);
+        std::fs::create_dir(&marker).unwrap();
+        let mtime = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        let trip = lane_guard_tripped_at(&pack, mtime + std::time::Duration::from_secs(25 * 3600))
+            .expect("판독 불가를 부재나 낡은 표식으로 접었다");
+        assert!(trip.unreadable);
+        assert_eq!(trip.reason, "");
+        assert_eq!(trip.script, "");
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
+    /// 신선도는 정확히 24시간까지 포함하며 미래 mtime의 음수 나이는 0으로 접는다.
+    #[test]
+    fn lane_guard_tripped_recent_window_includes_boundary_and_future() {
+        let pack = lane_guard_test_pack("clock");
+        let marker = pack.join(LANE_GUARD_TRIPPED_REL);
+        std::fs::write(&marker, "reason=already-redirected\n").unwrap();
+        let mtime = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        assert!(lane_guard_tripped_at(
+            &pack,
+            mtime + std::time::Duration::from_secs(LANE_GUARD_RECENT_SECS)
+        )
+        .is_some());
+        assert!(lane_guard_tripped_at(&pack, mtime - std::time::Duration::from_secs(1)).is_some());
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
+    /// 빈 사유도 표식이며 미지 키는 무시하고 Python처럼 UTF-8 손상 바이트를 대체한다.
+    #[test]
+    fn lane_guard_tripped_empty_reason_and_lossy_text_remain_observed() {
+        let pack = lane_guard_test_pack("text");
+        std::fs::write(
+            pack.join(LANE_GUARD_TRIPPED_REL),
+            b"unknown=absent\n reason=not-a-key\nreason=\nscript=session-\xff.sh\n",
+        )
+        .unwrap();
+        let trip = lane_guard_tripped(&pack).unwrap();
+        assert_eq!(trip.reason, "");
+        assert_eq!(trip.script, "session-\u{fffd}.sh");
+        assert!(!trip.unreadable);
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
+    /// 끊어진 심링크와 writer 없는 FIFO는 부재로 접거나 무한 대기하지 않고 판독 불가로 막는다.
+    #[cfg(unix)]
+    #[test]
+    fn lane_guard_tripped_dangling_link_and_fifo_are_unreadable() {
+        use std::os::unix::ffi::OsStrExt;
+        let pack = lane_guard_test_pack("nonregular");
+        let marker = pack.join(LANE_GUARD_TRIPPED_REL);
+        std::os::unix::fs::symlink(pack.join("missing"), &marker).unwrap();
+        assert!(lane_guard_tripped(&pack).unwrap().unreadable);
+        std::fs::remove_file(&marker).unwrap();
+        let fifo = std::ffi::CString::new(marker.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(lane_guard_tripped(&pack).unwrap().unreadable);
+        std::fs::remove_dir_all(pack).unwrap();
+    }
+
     /// 역할 → 디렉티브 파일명만 검증 (pack_dir 절대경로는 env 의존이라 비교하지 않음).
     fn dir_file(role: &str) -> Option<String> {
         role_directive_path(role)
@@ -5551,6 +6219,77 @@ mod tests {
         assert!(load_merge_pending(&td).get(user_b).is_none(), "채택 후 원장 소거");
 
         let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// D-04 ③: 옛 vendor agents.json 은 팩 갱신 시 보존되고, 마커만 읽기 시점에 승격된다.
+    #[test]
+    fn d04_pack_update_keeps_user_owned_agents_json_and_runtime_promotes_stale_marker() {
+        use crate::agent_markers::{marker_candidates, promote_stale_vendor_defaults};
+        use serde_json::json;
+
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("cys-pack-d04-marker-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let td = root.join("pack-dept-1");
+        std::fs::create_dir_all(&td).unwrap();
+        let _env = set_pack_env(&td, td.join("cysclaude"));
+        // set_pack_env 는 경로만 격리한다. install 은 basename 으로 Dept 를 판정하며,
+        // 부서 스코프도 설치를 막지 않고 agents.json 의 User 소유권을 그대로 유지한다.
+        assert_eq!(pack_scope_of(&pack_dir()), PackScope::Dept);
+        assert_eq!(ownership_scoped("agents.json", PackScope::Dept), Ownership::User);
+
+        let embedded = PACK_ALL.iter().find(|(rel, _)| *rel == "agents.json")
+            .map(|(_, content)| *content).expect("팩에 agents.json 부재");
+        let embed: serde_json::Value = serde_json::from_str(embedded).unwrap();
+        let mut stale = embed.clone();
+        stale["codex"]["prompt_marker"] = json!("›");
+        stale["gemini"].as_object_mut().unwrap().remove("prompt_marker");
+        let old_vendor = serde_json::to_string_pretty(&stale).unwrap();
+        std::fs::write(td.join("agents.json"), &old_vendor).unwrap();
+        // 0.14.38 설치 형상 + 설치 당시 해시: 사용자가 수정하지 않은 옛 vendor 본이다.
+        let manifest = json!({"agents.json": content_hash(&old_vendor)});
+        std::fs::write(td.join(INSTALL_MANIFEST), manifest.to_string()).unwrap();
+
+        install(false, None).expect("install 실패");
+        let read = |rel: &str| std::fs::read(td.join(rel)).unwrap();
+        assert_eq!(read("agents.json"), old_vendor.as_bytes(), "옛 vendor 본도 user-owned 로 보존");
+        assert_eq!(read("agents.json.new"), embedded.as_bytes(), ".new = 임베드 신버전");
+        let pending = load_merge_pending(&td);
+        assert_eq!(pending.get("agents.json").and_then(|e| e["kind"].as_str()), Some("new-pending"));
+        assert_eq!(pending.get("agents.json").and_then(|e| e["side"].as_str()), Some("agents.json.new"));
+        assert_eq!(embed["codex"]["prompt_marker"], json!(["›", "»"]));
+        assert_eq!(embed["gemini"]["prompt_marker"], json!([">"]));
+
+        // 디스크 우선 읽기: 설치가 보존한 옛 codex 기본값은 메모리에서만 승격한다.
+        let disk: serde_json::Value = serde_json::from_slice(&read("agents.json")).unwrap();
+        let mut spec = disk["codex"].clone();
+        assert_eq!(
+            promote_stale_vendor_defaults("codex", &mut spec, Some(&embed["codex"])),
+            vec!["prompt_marker"]
+        );
+        assert_eq!(spec["prompt_marker"], json!(["›", "»"]));
+        // gemini 는 키 부재 → 후보 없음 → 데몬 merged_prompt_marker 순서상 임베드로 폴백.
+        assert!(disk["gemini"].get("prompt_marker").is_none());
+        assert!(marker_candidates(disk["gemini"].get("prompt_marker")).is_empty());
+        assert_eq!(marker_candidates(embed["gemini"].get("prompt_marker")), vec![">"]);
+        let mut custom = disk["codex"].clone();
+        custom["prompt_marker"] = json!("▶");
+        let custom_before = custom.clone();
+        assert!(
+            promote_stale_vendor_defaults("codex", &mut custom, Some(&embed["codex"])).is_empty()
+        );
+        assert_eq!(custom, custom_before, "사용자 커스텀은 승격하지 않는다");
+
+        // 재설치도 디스크·병치본·new-pending 항목을 보존하고 원장을 중복 계상하지 않는다.
+        install(false, None).expect("재실행 실패");
+        assert_eq!(read("agents.json"), old_vendor.as_bytes());
+        assert_eq!(read("agents.json.new"), embedded.as_bytes());
+        let pending_after = load_merge_pending(&td);
+        assert_eq!(pending_after.get("agents.json").and_then(|e| e["kind"].as_str()), Some("new-pending"));
+        assert_eq!(pending_after.get("agents.json"), pending.get("agents.json"));
+        assert_eq!(pending_after.len(), pending.len(), "원장 항목 수 불변");
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// ★플랜=실제 무드리프트(④): plan_install 분류가 같은 픽스처의 install 실행 결과와 일치.

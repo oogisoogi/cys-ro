@@ -117,7 +117,24 @@ jobs:
           #   그것은 결함이 존재할 수 없는 환경에서의 초록이라 증거가치가 0이다 — 정확히
           #   이 파일 머리말이 말하는 "돌지 않는 초록". `.gitattributes` 봉인이 Windows 러너의
           #   실제 체크아웃 바이트를 LF 로 만드는지는 이 레인만이 실측할 수 있다.
-          WIN_SPECIMENS="H-WIN-1,H-WIN-2,H-WIN-3,H-WIN-4,H-WIN-5,H-WIN-6,H-WIN-7,H-WIN-8,H-WIN-9,H-WIN-10,H-WIN-11,H-WIN-12,H-CONC-1,H-CONC-3,H-DETECT-10,H-MISSION-1,H-IDENT-1,H-CYCLE-1,H-PACK-CRLF"
+          # ★H-WIN-13·H-WIN-14 편입(2026-09-23 · 0.14.41 U7·U13 · WP-C1): 폴더 신뢰 키는 Claude 가 **슬래시 표기**만
+          #   읽는데 cys 의 Windows 분기(nt)는 역슬래시였다 — trust 검체가 이 레인에 0건이라 그 분기가 실기에서
+          #   한 번도 돈 적이 없던 것이 잠복 원인이다(반박 M7). H-WIN-14 는 SessionStart 복원 신호의 역할 분기
+          #   (팀원 중립·부서장 작업기억 비주입)를 Git Bash 실기로 잰다(POSIX 전용 스위트가 닿지 않는 자리).
+          # ★H-WIN-15 편입(2026-09-23 · 0.14.41 U11 · WP-C2, 통합 시 H-WIN-13→H-WIN-15 재번호 —
+          #   WP-C1 이 먼저 병합돼 H-WIN-13 을 선점했다): ④′ 부하 재확인 루프(30초 간격·최대 3분)가
+          #   Windows 에서 **구조적으로 켜지지 않음**을 실기에서 확인한다 — 호스트 판정 가드가 실제로
+          #   물리는지와, 실제 게이트 형상(measure_errors·fleet_cpu_reason)을 detail 에 박제한다.
+          # ★H-CLT-2 편입(2026-09-23 · 0.14.41 WP-C3 · U15): 개발자 도구(CLT) 없는 맥의 셔임 회피 논리가 공유
+          #   훅 `_lib.sh` 에 들어갔다. 새 논리는 전부 `case $OSTYPE in darwin*` 안이라는 것 — Git Bash 실기에서
+          #   CYS_PY 해소값이 종전 규칙(PATH 첫 python3→python→py)과 같고 셔임 분류·폴백 제거 조건이 거짓임 —
+          #   을 이 레인만 실측할 수 있다(맥 러너의 msys 모의는 OSTYPE 주입일 뿐 플랫폼 증명이 아니다).
+          # ★H-WIN-16 편입(2026-09-23 · 0.14.41 U5 "1분마다 검은 창" · WP-B3, 통합 시 H-WIN-13→H-WIN-16
+          #   재번호 — H-WIN-13/14/15 가 이미 선점됨): 1분 builtin 잡 사슬(cycle-autopilot tick)의 캡처
+          #   호출에 CREATE_NO_WINDOW 를 걸었다. 그 대가로 **윈도우 실기에서** 실스폰 tick 이 gate-check
+          #   rc=0 으로 kill-switch 를 통과하고 status 파싱까지 가는지(② 무clear 방지) · stdin 왕복 · verifier
+          #   (pane 거주) 무 NOWIN 을 잰다. NOWIN 이 실제로 걸리는 플랫폼은 여기뿐이다(맥은 비-NOWIN 대조).
+          WIN_SPECIMENS="H-WIN-1,H-WIN-2,H-WIN-3,H-WIN-4,H-WIN-5,H-WIN-6,H-WIN-7,H-WIN-8,H-WIN-9,H-WIN-10,H-WIN-11,H-WIN-12,H-WIN-13,H-WIN-14,H-WIN-15,H-WIN-16,H-CONC-1,H-CONC-3,H-DETECT-10,H-MISSION-1,H-IDENT-1,H-CYCLE-1,H-PACK-CRLF,H-CLT-2"
           echo "== H-WIN 실기: $WIN_SPECIMENS =="
           # ★단일 실행 + rc 포획으로 교체(2026-09-04 실사고). 종전엔 bare 실행이 먼저 돌아
           #   `set -euo pipefail` 아래에서 스텝을 **즉사**시켰고, 검체별 사유를 찍는 아래 블록은
@@ -197,12 +214,70 @@ jobs:
       - name: Rust 툴체인 (factory-reset Windows 계약 검증용)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: cargo test --lib factory_reset (Windows 실기)
+      - name: cargo test --lib factory_reset + readiness + inject_guard + first_run_gates + update_launch (Windows 실기)
         shell: bash
         run: |
           set -euo pipefail
+          # ★D10(반성 라운드 2026-09-10): '측정 ≥1' 폐쇄. cargo 필터는 **0매치도 초록**이라 모듈 경로가
+          #   바뀌면(리팩터링 · 모듈 이동) 이 잡은 아무것도 안 돌리고 초록으로 되돌아간다 — 이 파일의
+          #   다른 게이트와 ci-branch 의 `names()` 0건 fail-closed 가 쓰는 규율의 반대였다. 실행 전에
+          #   `-- --list` 로 세어 0 이면 붉힌다. 함수 이름 `cargo_filter_count` 는 ci-branch 레인 대조
+          #   게이트의 FILTERED_CARGO_GUARD 핀과의 **계약**이다(실행 줄마다 같은 인자의 선행 호출 요구).
+          #   판정은 리다이렉트 뒤 `$?` 하나로 잰다(파이프 꼬리 rc 금지).
+          cargo_filter_count() {
+            local list="${RUNNER_TEMP:-/tmp}/cargo-filter-list.txt" n rc
+            if CYS_PACK_DIR="$(mktemp -d)" cargo test "$@" -- --list > "$list" 2>&1; then rc=0; else rc=$?; fi
+            if [ "$rc" -ne 0 ]; then
+              cat "$list"
+              echo "::error::cargo test $* -- --list 실패(rc=$rc) — 필터를 셀 수 없으면 실행도 근거가 없다(fail-closed)"
+              exit 1
+            fi
+            n=$(grep -c ': test$' "$list" || true)
+            if [ "${n:-0}" -lt 1 ]; then
+              tail -20 "$list"
+              echo "::error::cargo test $* 필터에 걸리는 테스트가 0건 — 모듈 경로가 바뀌었다(돌지 않는 초록 금지)"
+              exit 1
+            fi
+            echo "[filter-count] cargo test $* → ${n}건"
+          }
           # CYS_PACK_DIR 임시 격리 — W0-a 봉인(테스트가 라이브 ~/.cys/pack 접촉 금지) 충족.
+          cargo_filter_count --lib factory_reset::
           CYS_PACK_DIR="$(mktemp -d)" cargo test --lib factory_reset:: -- --test-threads=1
+          # ★(0.14.31 · WP-1 H-1 · CONTRACTS B-8) 관문·모달 판정부(`readiness::`)와 주입 가드
+          #   (`inject_guard::`)의 검체를 Windows 실기에서 **차단 게이트**로 돈다. 종전엔 lib 필터가
+          #   `factory_reset::` 하나라 ConPTY 문면 검체(H-WIN 5종 · readiness::tests)가 Windows 에서
+          #   한 번도 실행되지 않았다 — 녹색은 증거가 아니다(정본 §8). 순수 진리표라 PTY 불요.
+          #   ⚠이 두 줄에 `if:`/continue-on-error 를 달지 마라(잡 머리말의 '돌지 않는 초록 금지').
+          # ★(0.14.31 · 리뷰 R1b · W1) `readiness::` 필터에는 **실행 계측** 1건이 들어 있다 —
+          #   `pty_idle_shell_emits_no_bytes_within_valve_quiet_window`: 이 러너의 ConPTY 에 cmd.exe 를
+          #   띄워 정착 뒤 4.0s 유휴 바이트가 0 임(+ 창 뒤 명령 응답으로 펌프 생존 재증명)을 잰다. Boot
+          #   Valve 창(`quiet_secs ≥ 3`)이 Windows 전송층에서 도달 가능한지의 유일한 실기 근거다. 실패하면
+          #   밸브 단독 경로 좌석이 영구 보류(GatePending)라는 뜻이니 초록 여부가 아니라 스텝 로그의
+          #   `[pty-idle-probe] … idle_bytes=` 줄을 릴리스 노트에 병기하라(녹색은 증거가 아니다 · 정본 §8).
+          #   범위: PTY/ConPTY 전송층만이다 — ink(claude 렌더러)의 Windows 유휴 거동은 릴리스 게이트의
+          #   격리 config dir 라이브 부트 계측이 따로 본다.
+          cargo_filter_count --lib readiness::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib readiness:: -- --test-threads=1 --nocapture
+          cargo_filter_count --lib inject_guard::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib inject_guard:: -- --test-threads=1
+          # ★(0.14.31 성찰 R3·R4 · 통합 2026-09-10) 넷째 모듈 `first_run_gates::` 편입.
+          #   이 잡의 lib 필터는 종전 셋(factory_reset·readiness·inject_guard)뿐이라, 이번 판이
+          #   세운 두 검체군이 Windows 실기에서 **한 번도 돌지 않았다**:
+          #     R3 = 공백만 남은 needle(접힌 렌더에서 관문 문면이 공백으로 뭉개지는 축),
+          #     R4 = 접힌 배너의 버전 판독(줄바꿈이 배너를 가르는 축).
+          #   둘 다 ConPTY 접힘·렌더 축이고 Windows 가 정확히 그 축의 기계다 — mac 에서만
+          #   초록인 검체는 그 축의 증거가 아니다(정본 §8). 순수 판정자라 PTY 불요.
+          #   D10 '측정 ≥1 폐쇄' 와 한 스텝으로 묶어 0매치 초록도 차단한다.
+          cargo_filter_count --lib first_run_gates::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib first_run_gates:: -- --test-threads=1
+          # ★(0.14.43 · WU) 다섯째 모듈 `update_launch::` 편입 — 윈도우 인앱 업데이트가 설치 파일을 띄우는 호출(`ShellExecuteW` 반환값 판정)과
+          #   그 인자·임시 경로 계약이다. 순수 검체(인자 이스케이프·분류표·실패 판정·임시 파일 쓰기)는 mac 에서도 돌지만, 이 모듈의 **윈도우 전용 검체는
+          #   하나**다(실제 `ShellExecuteW` 로 `cmd.exe /c exit 0` 실행 성공) — Windows 실기에서만 돌고, mac 초록은 그 축의 증거가 아니다(정본 §8).
+          #   실패 판정(반환 5·오류 4551 등)은 순수 검체가 전 OS 에서 잰다: `ShellExecuteW` 는 대상 파일이 없으면 모달 오류 창을 띄워(`SEE_MASK_FLAG_NO_UI` 없음)
+          #   대화형 세션인 CI 러너에서 멈추므로 실패 경로는 실제 API 로 돌리지 않는다. 필터가 0 매치(모듈 경로 변경)면 `cargo_filter_count` 가 붉힌다.
+          #   이 두 줄에도 `if:` 를 달지 마라.
+          cargo_filter_count --lib update_launch::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib update_launch:: -- --test-threads=1
 
       # ★D5 env 게이트의 Windows 파이프라인 실기 검증 (v0.14 품질 라인 · 적대검증 2R major 수리).
       #
@@ -228,6 +303,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★D10: 같은 계급의 필터형 실행 — 0매치 초록 차단(위 스텝의 cargo_filter_count 와 같은 규율 ·
+          #   스텝이 달라 함수를 다시 정의한다 · 게이트 핀은 스텝 단위로 선행 호출을 요구한다).
+          cargo_filter_count() {
+            local list="${RUNNER_TEMP:-/tmp}/cargo-filter-list.txt" n rc
+            if CYS_PACK_DIR="$(mktemp -d)" cargo test "$@" -- --list > "$list" 2>&1; then rc=0; else rc=$?; fi
+            if [ "$rc" -ne 0 ]; then
+              cat "$list"
+              echo "::error::cargo test $* -- --list 실패(rc=$rc) — 필터를 셀 수 없으면 실행도 근거가 없다(fail-closed)"
+              exit 1
+            fi
+            n=$(grep -c ': test$' "$list" || true)
+            if [ "${n:-0}" -lt 1 ]; then
+              tail -20 "$list"
+              echo "::error::cargo test $* 필터에 걸리는 테스트가 0건 — 필터 이름이 바뀌었다(돌지 않는 초록 금지)"
+              exit 1
+            fi
+            echo "[filter-count] cargo test $* → ${n}건"
+          }
+          cargo_filter_count --bin cys d5_env_injection
           CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys d5_env_injection -- --test-threads=1
 
       # ★(1.1.7 precut-fix2 · 10-02 윈 실기 진단) reinject 폭주 가드 기록이 **윈 파이프 소켓에서** 실제로 써지고 읽히는가.
@@ -294,13 +388,37 @@ jobs:
       #   ⚠ **영구 면제가 아니다.** 완주(초록)가 관측되면 continue-on-error 를 **제거**하고
       #      차단 게이트로 승격하라.
       #   근거: IG-31 · run 33939844471 이 30.1분 절단 · 그 판독이 익명 REST 로 불가(로그 403).
+      # ★(0.14.41 · U4 C4-①) **실발생 기록**: v0.14.40 태그 런 35823637490 에서 이 스텝이 30분 08초 돌고
+      #   (상한 30분) 잘렸는데 스텝·잡·런 모두 success 였고 릴리스 보고서는 "실패 스텝 0" 이라 적었다 —
+      #   위 '판독 함정' 이 그대로 실현됐다. 그래서 결과를 **다음 스텝(판독)** 이 annotation·STEP_SUMMARY
+      #   로 드러낸다(프로세스가 달라 절단에도 돈다 · ci-branch 'cys 리허설 실패 판독' 과 같은 분리 패턴).
+      #   ★차단 승격은 하지 않는다(설계 §3 U4 C4-① · 절단 원인 = 검체 수 vs hang vs ConPTY 종료 지연 미판명).
+      #   continue-on-error·timeout-minutes 는 **그대로**다 — 잡 55분·release windows-health-gate 45분 상한과
+      #   얽히므로 원인 판명 전에는 건드리지 않는다(반박 §3-3).
+      #   ⚠ 명령에 축 필터가 **없다**(전량 `--bin cysd`) — 위 '★범위는 축 필터로 시작한다' 는 약속과 명령이
+      #     어긋난 상태다. 필터 도입은 차단 승격과 한 묶음의 별도 결정이다(판독 스텝 요약이 그 근거 자료다).
+      #   ★(R1F-PK 후속 · 2026-10-04) 절단 지점이 특정됐다 — 앞의 두 런(9650334f·bde5e557)이 `attach_race_tests::…` 에서 멈췄다(아래 run 의 주석). 그 검체만 이 스텝에서 건너뛰어 뒤 검체의 도달 범위를 본다.
+      #   ★(R2F-PK · 2026-10-04) 그 skip 의 결과가 나왔다 — 커밋 bd0a0ca3 의 런(37185687205): 이 스텝이 **끝까지 돌았다**(9분 13초) · 1681 통과 · 195 실패 · 3 무시, 런은 초록(비차단).
+      #   "멈춘다 · hwmon 에 닿지 못한다"는 앞 두 커밋의 사실이었고 지금 서술은 아래 run 의 주석이 정본이다.
       - name: cargo test --bin cysd 감독자 축 (Windows 실기 · IG-31 · 비차단 A10 1단계)
+        id: cysd_win
         continue-on-error: true
         timeout-minutes: 30
         shell: bash
         run: |
+          # ★-e 를 명시적으로 끈다(U4 C4-①). GitHub `shell: bash` 는 `bash -eo pipefail` 로 돌고
+          #   `set -uo pipefail` 은 -e 를 끄지 않는다 — 종전엔 cargo 가 비0 이면 파이프 직후 그 자리에서
+          #   스텝이 끝나 아래 `::error` 판독 코드가 **도달 불가**였다(위 '-e 를 빼고 rc 를 잡은 뒤' 의도와
+          #   코드의 불일치 · 로컬 하네스 실측: rc 101 인데 주석 0줄). 판정(스텝 rc)은 그대로다.
+          set +e
           set -uo pipefail
-          LOG="$(mktemp)"
+          # 스텝 사이 전달용 **고정 경로**(다음 '판독' 스텝이 읽는다 — mktemp 값은 스텝을 넘지 못한다).
+          #   rc 파일은 cargo 가 **끝났을 때만** 생긴다 — 그 부재가 곧 '절단(강제 종료)' 의 표지다.
+          CYSD_DIR="${RUNNER_TEMP:-/tmp}/cysd-win"
+          rm -rf "$CYSD_DIR"
+          mkdir -p "$CYSD_DIR"
+          date +%s > "$CYSD_DIR/start"
+          LOG="$CYSD_DIR/cargo.log"
           # ★절단 대비 트랩 — ★★실측으로 **발동하지 않았다**(run 33944971633 · 30.1분 절단 ·
           #   주석은 GitHub 자체 "timed out after 30 minutes" 한 줄뿐 · 아래 on_cut 산출 0건).
           #   기전 추정: GitHub 의 타임아웃은 프로세스(그룹)를 강하게 죽이고, bash 트랩은 **명령
@@ -323,8 +441,36 @@ jobs:
           #   줄이 증거로 남는다. rc 는 파이프에 삼켜지지 않게 PIPESTATUS[0] 으로 직독한다.
           # ★--nocapture: --test-threads=1 이라 libtest 가 검체명을 실행 **전에** 찍는다 —
           #   멈춘 검체 이름이 마지막 줄에 남는다(그게 없으면 hang 위치를 영영 모른다).
-          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cysd -- --test-threads=1 --nocapture --skip hwmon:: 2>&1 | tee "$LOG"
+          # ★(0.14.43 성찰 R1F-PK · S3 minor 7) hwmon **모듈 전체** skip 을 깨질 검체 하나의 정확한 이름으로 좁혔다(release.yml 의 skip 은 그대로).
+          #   남긴 skip = `hwmon::tests::snapshot_has_all_sections`: 윈도우에서는 GPU·NPU 단언이 컴파일되지 않지만(맥 전용 cfg) 코어 열거(PDH 카운터)가 이 러너에서
+          #   0개를 내는지는 재 본 적이 없다 — 확신이 없는 검체는 skip 에 남긴다.
+          # ★(R2F-PK · 성찰 2회차 · A4 M1 의 주석 몫) **이 스텝은 이제 끝까지 돈다 — 그리고 195건이 붉다.** 앞 두 런(37175872869 = 9650334f · 37182205898 = bde5e557)은 `--test-threads=1` 이름순 실행이
+          #   `attach_race_tests::process_and_send_are_atomic_under_parser_lock_no_dup_delivery` 에서 멈춘 채 30분 상한에 닿았다(그 뒤 이름의 모듈 — governance · handlers · hwmon · schedule · state … — 은 윈도우 CI 에서
+          #   한 번도 돈 적이 없었다). 그 검체를 이 스텝에서만 건너뛰자(아래 명령의 두 번째 `--skip`) **bd0a0ca3 의 런(37185687205 · 잡 14.0분)에서 처음 완주**했다:
+          #     · 이 스텝 552초(9분 13초 — 빌드 포함 · 테스트 473.67초) · 결과 **1681 통과 · 195 실패 · 3 무시 · 2 걸러짐** · 판독 annotation `cysd-win 완주·실패(비차단)` · 런·잡은 초록(비차단).
+          #     · hwmon 전용 스텝(아래 · 이 스텝이 이미 빌드해 둔 하네스를 쓰는 **실행만** 2초): **5 통과 · 0 실패**(`e2_non_macos_stub_reports_platform` 의 첫 실행 포함).
+          #     · 6차 진단 런(37188821194 · 같은 명령 · `windows-latest`)은 660초에 **1680 통과 · 196 실패** — 한 건 더 붉다(흔들림 또는 격리 의존).
+          #   195건의 지배적 원인은 제품이 아니라 **검체 격리가 윈도우에서 성립하지 않는 구조**로 보인다(진단 런 원문: 검체들이 한 상태 폴더를 공유 — 소켓 파일 이름이 같아 윈도우의 `state_dir()` 슬러그가 같다 · 경로 구분자가 박힌
+          #   기대값). 다만 196건 전부의 분류와 격리 수리(R2F-DM 몫) 전에는 **'윈도우에서 데몬 검체가 검증했다'고 말하지 않는다** — 그래서 이 스텝은 계속 **비차단**이고 그 뜻은 '실패 195건을 알고도 초록'이다.
+          #   그 사실의 유일한 채널은 아래 판독 스텝의 annotation 이다(런 결론은 success) — `scripts/pre-tag-ci-check.py` 가 성공한 런의 failure·warning annotation 제목을 요약해 태그 전에 사람 눈에 올린다.
+          #   `attach_race_tests::process_and_send_…` 의 skip 은 그대로 둔다 — 그 검체가 윈도우에서 멈추는 **원인은 여전히 미조사**다(skip 은 뒤 검체의 가시화이지 삭제가 아니다 · 맥 레인 ci-branch·release 에서는 그대로 돈다).
+          #   멈춤이 다시 나오면(= 판독 스텝의 '절단') 같은 방식으로 한 건씩 드러낸다 — 시간 예산은 아래 hwmon 스텝 머리 주석의 표(전량 스텝이 다시 30분 상한에 닿는 최악 포함)가 정본이다. 30분 상한·비차단은 그대로다.
+          # ★(R2F-DM · 성찰 2회차 수리 뒤 재측정 · 2026-10-05) **위 문단의 '195건이 붉다'는 bd0a0ca3 시점의 사실이다 — 196건의 분류와 수리가 끝났다.**
+          #   분류(6차 진단 런의 196건): 상태 폴더 공유 154 · 경로 구분자 3 · `HOME` 전제 2 · 유닉스 전제 35 · 제품 결함 2(원인 1건 — 승인 서명이 JSON 저장 뒤 깨짐 · 윈도우 100ns 시계).
+          #   수리: 시험 빌드 전용 `state_dir` 분기(제품 식 불변) · 승인 시각 양자화와 데몬 시각 원천의 마이크로초 통일 · 인계 표식 순번 · 윈도우에서 뜻이 없는 검체 44건은 `ignore`+사유
+          #   (집합 핀 `r2f_dm_windows_ignore_attributes_are_exactly_the_decided_set_of_44` — 새 `ignore` 는 그 목록을 고쳐야 붉지 않다).
+          #   재측정(같은 명령): 커밋 5c4b2ac2 = 진단 37201047193 `1835 통과 · 15 실패 · 44 무시` / 이 스텝 37201027633 `1841 · 9 · 44`
+          #     → 커밋 2bf75a12 = 진단 37249118071 **`1853 통과 · 0 실패 · 47 무시`** / 이 스텝 37249110248 `1851 · 2 · 47` / 진단 반복 37250481491 `1852 · 1 · 47`.
+          #   **남은 것 = 시점 의존 검체 가족의 흔들림.** 2bf75a12 의 세 실행에서 실패가 0 · 2 · 1 건이고 매번 다른 검체다(`b1_gate_delivers_at_prompt_boundary_while_output_streams` ·
+          #   `b1_merge_delivers_same_sender_burst_in_one_turn` · `j3_queued_send_from_cli_label_reaches_entry_digest_header_and_ledger`). 셋 다 좌석을 만든 직후 화면을 그리거나 큐를 넣고 곧바로 배달·판정을 재는 꼴이다 —
+          #   그 사이에 좌석 출력(윈도우 ConPTY 의 기동 출력으로 본다)이 끼면 제품이 옳게도 '출력 중'으로 보류해 붉어진다. 같은 꼴로 붉었던 4건은 검체를 결정론으로 고쳤고(`state::test_until_no_pty_output` — 그 뒤 세 실행 모두 통과)
+          #   나머지는 손대지 않았다 → **'3회 연속 초록'에 닿지 못했으므로 차단 승격은 아직 하지 않는다**(비차단 유지 · 사실의 채널은 여전히 아래 판독 annotation 과 `scripts/pre-tag-ci-check.py` 의 요약이다).
+          #   승격의 남은 일 = 그 가족의 좌석 픽스처가 조용한 관측 창을 보장하게 하는 것(다음 판 · 검체 수십 건). 이 스텝의 실패가 **그 가족 밖**에서 나오면 흔들림으로 넘기지 말고 원문을 보라.
+          #   `attach_race_tests::process_and_send_…` 가 멈추는 원인의 후보도 생겼다: 그 검체의 관측자 루프는 좌석의 종료 래치(`exited`)를 상한 없이 기다리는데, 이 러너에서는 좌석 프로세스가 끝나거나 죽어도 reader 가
+          #   EOF 를 보지 못했다(같은 뿌리의 검체 3건 — 10~15초 대기 · 두 실행 모두 · 지금은 `ignore`+사유). 인과는 코드로 읽은 것이고 따로 실험하지 않았다 — skip 은 그대로 둔다.
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cysd -- --test-threads=1 --nocapture --skip hwmon::tests::snapshot_has_all_sections --skip attach_race_tests::process_and_send_are_atomic_under_parser_lock_no_dup_delivery 2>&1 | tee "$LOG"
           rc="${PIPESTATUS[0]}"
+          echo "$rc" > "$CYSD_DIR/rc"
           [ "$rc" -eq 0 ] && exit 0
           echo "::error title=cysd-win 실패::rc=$rc — 아래 꼬리 20줄이 원문이다"
           tail -20 "$LOG" | sed 's/^/::error title=cysd-win 로그::/'
@@ -339,6 +485,265 @@ jobs:
             echo "::error title=cysd-win 테스트 실패::failed=$failed — $names"
           fi
           exit "$rc"
+
+      # ★cysd 스텝 결과 판독(0.14.41 · U4 C4-① · 설계 §3 "드러내기 · 차단 승격 없음").
+      #   위 스텝은 continue-on-error 라 실패·**절단**도 스텝·잡·런 conclusion 이 success 다(v0.14.40 실발생).
+      #   이 스텝은 그 **진짜 결과**를 네 갈래로 가려 annotation(익명 REST 로 읽히는 유일한 채널)과
+      #   GITHUB_STEP_SUMMARY(런 페이지 요약) 두 곳에 남긴다:
+      #     완주·통과(notice) · 완주·실패(error) · 절단 = rc 표지 없음(error · 경과·마지막으로 시작한 검체) ·
+      #     미실행 = 앞 스텝 실패로 skipped(warning).
+      #   ★판정 근거는 outcome 하나가 아니다 — 타임아웃 스텝의 outcome 이 failure 인지 cancelled 인지에
+      #     기대지 않도록 **rc 표지 파일의 유무**(cargo 가 끝났을 때만 생김)를 주 신호로 쓴다.
+      #   ★이 스텝은 **자기가 실패하지 않는다**(exit 0 · `-e` 끔) — 판독자가 죽어 잡을 붉히면 '드러내기만'
+      #     이 차단으로 바뀐다. 파일·환경이 없으면 '측정 불가' 로 적고 끝낸다.
+      #   ★`if: always()` = 앞 스텝이 어떻게 끝났든(절단 포함) 돈다. 잡 수준 조건이 아니다(H-WIN-11 규율).
+      #   ★`continue-on-error: true` 는 **보고자 안전띠**다(게이트 관용이 아니다): 이 스텝은 판정을 하지 않는
+      #     보고 전용이고, Windows Git Bash 에서의 첫 실행은 로컬에서 재현할 수 없다(하네스는 macOS bash).
+      #     보고자가 뜻밖의 이유(파싱·러너 이상)로 죽어도 잡 판정이 **이 변경 전과 한 글자도 다르지 않게**
+      #     — 즉 release windows-health-gate 가 새 차단원을 얻지 않게 — 한다. 그 경우에도 스텝 자체는 빨간
+      #     스텝으로 런 페이지에 남는다(조용히 사라지지 않는다).
+      #   ★U4 C4 리뷰1 MINOR-2 수정(2026-09-23): `timeout-minutes: 2`. `continue-on-error` 는 스텝
+      #     **실패**만 흡수하고 **멈춤**은 흡수하지 않는다 — 판독자가 뜻밖에 걸리면 잡 상한(55분)까지
+      #     소비하고, 그러면 잡 자체가 failure 로 끝나 release windows-health-gate 가 BAD 가 된다(반박
+      #     §3-3 이 지적한 타임아웃 결합이 판독 스텝 쪽에 그대로 남는 경로). 이 판독 스텝은 파일 읽기·
+      #     문자열 가공뿐 입력 대기·네트워크가 없어 2분이면 넉넉하다.
+      - name: cysd-win 결과 판독 (비차단 · annotation + STEP_SUMMARY · 절단 표지)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          CYSD_OUTCOME: ${{ steps.cysd_win.outcome }}
+          CYSD_CONCLUSION: ${{ steps.cysd_win.conclusion }}
+        run: |
+          set +e
+          D="${RUNNER_TEMP:-/tmp}/cysd-win"
+          LOG="$D/cargo.log"
+          SUM="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          outcome="${CYSD_OUTCOME:-unknown}"
+          start="$(cat "$D/start" 2>/dev/null)"
+          rc="$(cat "$D/rc" 2>/dev/null)"
+          if [ -n "$start" ]; then
+            el_s=$(( $(date +%s) - start ))
+            el="$(( el_s / 60 ))분 $(( el_s % 60 ))초"
+          else
+            el="측정 불가(시작 표지 없음)"
+          fi
+          summary=""; failed=""; passed=""; names=""; last=""
+          if [ -f "$LOG" ]; then
+            summary="$(grep -E '^test result:' "$LOG" | tail -1)"
+            passed="$(printf '%s' "$summary" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')"
+            failed="$(printf '%s' "$summary" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+')"
+            names="$(awk '/^failures:$/{f=1;next} f&&/^    [a-zA-Z_]/{print $1} f&&/^$/{f=0}' "$LOG" | sort -u | head -20 | tr '\n' ' ')"
+            # --test-threads=1 --nocapture: libtest 가 검체명을 실행 **전에** 찍는다 → 마지막 'test X ...' = 멈춘 자리
+            last="$(grep -E '^test [^ ]+ \.\.\.' "$LOG" | tail -1 | sed -E 's/^test ([^ ]+) \.\.\..*/\1/')"
+          fi
+          if [ "$outcome" = "skipped" ]; then
+            kind="미실행"; level="warning"
+            msg="앞 스텝 실패로 cysd 스텝이 건너뛰어졌다 — 이 런의 cysd Windows 검체는 무측정이다(통과 아님)"
+          elif [ "$rc" = "0" ]; then
+            kind="완주·통과"; level="notice"
+            msg="rc=0 · ${summary:-요약 없음} · 경과 ${el} — 차단 승격(continue-on-error 제거) 판단의 근거 1회"
+          elif [ -n "$rc" ]; then
+            kind="완주·실패"; level="error"
+            msg="rc=${rc} · failed=${failed:-?} passed=${passed:-?} · 경과 ${el} · 실패 검체: ${names:-없음(하네스 이상 · 101=러스트 패닉 가능)} — 비차단이라 런은 초록이다"
+          elif [ "$outcome" = "success" ]; then
+            kind="판정 불가"; level="error"
+            msg="outcome=success 인데 rc 표지가 없다 — 스텝 구조가 바뀌었거나 표지 쓰기가 실패했다(통과로 읽지 마라)"
+          else
+            kind="절단"; level="error"
+            msg="rc 표지 없음(cargo 가 끝나기 전에 종료) · outcome=${outcome} · 경과 ${el}(상한 30분) · 마지막으로 시작한 검체: ${last:-판독 불가} — 비차단이라 런은 초록이다"
+          fi
+          # 워크플로 명령 이스케이프(% · CR · LF) — 로그에서 온 문자열이 주석을 깨지 않게.
+          esc() { printf '%s' "$1" | sed -e 's/%/%25/g' | tr -d '\r' | awk 'BEGIN{ORS="%0A"}{print}' | sed -e 's/%0A$//'; }
+          echo "::${level} title=cysd-win ${kind}(비차단)::$(esc "$msg")"
+          if [ "$level" != "notice" ] && [ -f "$LOG" ]; then
+            echo "::${level} title=cysd-win 로그 꼬리(비차단)::$(esc "$(tail -8 "$LOG")")"
+          fi
+          {
+            echo "### cysd Windows 실기 (IG-31 · 비차단) — ${kind}"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "|---|---|"
+            echo "| 스텝 outcome / conclusion | ${outcome} / ${CYSD_CONCLUSION:-?} — continue-on-error 라 실패·절단도 conclusion 은 success |"
+            echo "| cargo rc | ${rc:-없음(rc 표지 없음 — 미실행이거나 끝나기 전에 종료됨)} |"
+            echo "| 경과 | ${el} (스텝 상한 30분) |"
+            echo "| test result | ${summary:-없음} |"
+            echo "| 실패 검체 | ${names:-없음} |"
+            echo "| 마지막으로 시작한 검체 | ${last:-없음} |"
+            echo ""
+            echo "> 이 스텝은 **비차단**이다. 잡·런이 초록이어도 판정이 '완주·통과' 가 아니면 cysd Windows 검체는 통과가 아니다 — 초록을 셀 때 종류를 병기하라."
+          } >> "$SUM" 2>/dev/null
+          exit 0
+
+      # ★(0.14.43 성찰 R1F-PK 후속 · master 지시 · 브랜치 CI 실측) hwmon 전용 스텝. 위 cysd 전량 스텝은 `--test-threads=1` 이름순 실행이 `attach_race_tests::…` 에서 멈춘 채
+      #   30분 상한에 닿아(앞 두 런 37175872869·37182205898 — bd0a0ca3 에서는 그 검체를 건너뛰어 완주했다 · 위 전량 스텝 주석) 그 뒤 이름의 모듈 — hwmon 포함 — 에 **닿지 못했다**. 지금도 이 스텝이
+      #   hwmon 검체의 **유일하게 보증된** 자리다(전량 스텝은 비차단이고 다시 멈추거나 195건이 쌓여도 초록이다 — 레인 대조 게이트의 FILTERED_CARGO_REQUIRED 가 이 스텝의 실행 줄을 핀한다).
+      #   E2 가 더한 hwmon 검체(특히 맥에서는 컴파일되지 않는 비 macOS
+      #   스텁 `e2_non_macos_stub_reports_platform`)가 Windows 에서 도는 길은 그래서 이 별개 스텝뿐이다. 필터 `hwmon::` 에서 `snapshot_has_all_sections` 하나만 건너뛴다 — 윈도우에서는
+      #   GPU·NPU 단언이 컴파일되지 않지만 코어 열거(PDH)가 이 러너에서 0개를 내는지 재 본 적이 없어 확신이 없다(확신 없는 검체는 skip 에 남긴다). 나머지 5건(순수 함수 2 · 소스 핀 1 ·
+      #   스냅샷 계약 2)은 센서와 무관하며(코드 읽기 근거) 이 러너에서 **처음** 돈다.
+      # ★위치(뒤)·제한시간(6분)의 근거 — 실측(익명 API · 런의 스텝 시각). 한도: 잡 `timeout-minutes: 55` · release `windows-health-gate` 폴링 상한 45분(2700초 — 같은 SHA 의 완주 런이 이미 있으면 기다리지 않고 판정한다).
+      #   ┌ 평상(R2F-PK · bd0a0ca3 런 37185687205 실측): 잡 14.0분 = 앞 8스텝 4.65분(279초 = 체크아웃 13 · H-WIN 건강성 84 · Rust 툴체인 20 · lib 필터 119 · D5 41 …) + cysd 전량 스텝 9.2분(552초 — **완주**)
+      #   │   + 판독 1초 + 이 hwmon 스텝 2초 + 판독 0초 + 업로드 2초. 맨 뒤의 UI 스텝(아래 `cd ui && bun test`)이 약 0.5분을 더한다 → 약 14.5분.
+      #   └ 전량 스텝이 **다시 멈출 때**(30분 상한에 닿는 최악 — 1회차 두 런이 실제로 그랬다: 잡 33.9분(9650334f)·35.0분(bde5e557) = 앞 8스텝 3.7·4.8분 + 전량 스텝 30.1분(상한)): 35.0분 + 이 스텝의 실행분
+      #       (실측 2초 · 하네스가 없는 예외까지 덮는 상한 6분) + UI 스텝(setup-bun 약 0.3분 + 상한 3분) → **이론 최악 35.0 + 6 + 0.3 + 3 = 44.3분 < 45분**(여유 0.7분 · 잡 상한 55분에는 10.7분) · 실측에 기댄 현실적 최악은
+      #       35.0 + 0.1 + 0.5 ≈ 36분(두 한도에 각 19분·9분 여유). 어느 쪽이든 release 게이트의 45분 안이다. 한도를 건드리는 변경(스텝·상한 추가)은 이 표를 다시 계산하라.
+      #   · 뒤에 두면: 위 스텝이 `--bin cysd` 테스트 하네스를 이미 빌드해 둔 상태라 이 스텝은 거의 **실행만**(실측 2초 · 5건)이다.
+      #   · 앞에 두면: 이 스텝이 테스트 빌드를 먹어 제한시간이 빌드를 덮어야 한다(예 12분) — 위 스텝은 빌드 시간을 되찾아도 어차피 상한까지 돌므로 합이 그만큼 늘고, 같은 최악 가정이면
+      #     4.8 + 12 + 30.1 ≈ 47분 > 45분이다(release 게이트가 '측정 불능'으로 적색).
+      #   · 6분의 근거: `cargo test --bin cys D5` 스텝(앞 스텝 · 0.6~0.7분)이 보이듯 이 러너의 `--bin` 테스트 빌드는 1분 안팎이라, 하네스가 없는 예외(위 스텝이 빌드 도중 잘린 경우)에도 빌드+실행을 덮는다.
+      # ★비차단(`continue-on-error: true`) — 윈도우에서 한 번도 돈 적이 없는 검체라 처음부터 잡을 붉히지 않는다(위 cysd 스텝과 같은 이유 · 같은 A10 1단계). 결과(통과·실패 수 · 실패 검체 이름)는
+      #   바로 다음 판독 스텝이 annotation·STEP_SUMMARY 로 드러낸다. 완주·통과가 관측되면 차단 승격(continue-on-error 제거)을 검토한다 — 영구 면제가 아니다.
+      # ★D10 '측정 ≥1' 폐쇄 — 필터형 실행이라 `cargo_filter_count`(함수 이름·같은 인자의 선행 호출)가 레인 게이트와의 계약이다. 이 스텝은 비차단이라 그 실패를 표지 파일로 남겨
+      #   판독 스텝이 '필터 실패'(= 무측정)로 읽게 한다.
+      #   ⚠이 스텝에 `if:` 조건을 달지 마라(잡 머리말의 '돌지 않는 초록 금지'와 같은 근거). 앞 스텝이 실패하면 `skipped` 로 남고 판독 스텝이 '미실행'으로 적는다.
+      - name: cargo test --bin cysd hwmon 검체 (Windows 실기 · 비차단 · 위 전량 스텝과 별개)
+        id: hwmon_win
+        continue-on-error: true
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          # 스텝 사이 전달용 고정 경로(다음 '판독' 스텝이 읽는다 · 위 cysd 스텝과 같은 방식). rc 파일은 cargo 가 **끝났을 때만** 생긴다.
+          HW_DIR="${RUNNER_TEMP:-/tmp}/hwmon-win"
+          rm -rf "$HW_DIR"
+          mkdir -p "$HW_DIR"
+          date +%s > "$HW_DIR/start"
+          LOG="$HW_DIR/cargo.log"
+          cargo_filter_count() {
+            local list="$HW_DIR/list.txt" n rc
+            if CYS_PACK_DIR="$(mktemp -d)" cargo test "$@" -- --list > "$list" 2>&1; then rc=0; else rc=$?; fi
+            if [ "$rc" -ne 0 ]; then
+              cat "$list"
+              echo "listing-rc=$rc" > "$HW_DIR/filter_fail"
+              echo "::error title=hwmon-win 필터 실패::cargo test $* -- --list 실패(rc=$rc) — 필터를 셀 수 없으면 실행도 근거가 없다(fail-closed)"
+              exit 1
+            fi
+            n=$(grep -c ': test$' "$list" || true)
+            if [ "${n:-0}" -lt 1 ]; then
+              tail -20 "$list"
+              echo "matched=0" > "$HW_DIR/filter_fail"
+              echo "::error title=hwmon-win 필터 0건::cargo test $* 필터에 걸리는 테스트가 0건 — 모듈 경로가 바뀌었다(돌지 않는 초록 금지)"
+              exit 1
+            fi
+            echo "$n" > "$HW_DIR/listed"
+            echo "[filter-count] cargo test $* → ${n}건"
+          }
+          cargo_filter_count --bin cysd hwmon::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cysd hwmon:: -- --test-threads=1 --nocapture --skip hwmon::tests::snapshot_has_all_sections 2>&1 | tee "$LOG"
+          rc="${PIPESTATUS[0]}"
+          echo "$rc" > "$HW_DIR/rc"
+          [ "$rc" -eq 0 ] && exit 0
+          echo "::error title=hwmon-win 실패::rc=$rc — 아래 꼬리 20줄이 원문이다"
+          tail -20 "$LOG" | sed 's/^/::error title=hwmon-win 로그::/'
+          exit "$rc"
+
+      # ★hwmon 스텝 결과 판독(비차단 · 위 cysd 판독 스텝과 같은 구조). 위 스텝은 continue-on-error 라 실패·절단도 conclusion 이 success 다 — 이 스텝이 **진짜 결과**를 일곱 갈래로 가려
+      #   annotation(익명 REST 로 읽히는 유일한 채널)과 STEP_SUMMARY 에 남긴다: 완주·통과(notice) · 완주·실패(error — 통과·실패 수와 실패 검체 이름) · 통과 0건(error — rc=0 이어도 돈 검체가 없으면 무측정) ·
+      #   필터 실패(error — 0건·목록 실패 = 무측정) · 절단(error — rc 표지 없음 · 마지막으로 시작한 검체) · 판정 불가(error) · 미실행(warning — 앞 스텝 실패로 skipped). 자기가 실패하지 않는다(`exit 0` · `-e` 끔) · `timeout-minutes: 2` 는
+      #   위 판독 스텝과 같은 이유(멈춤은 continue-on-error 가 흡수하지 않는다 — 잡 상한·release 게이트와 얽힌다).
+      - name: hwmon-win 결과 판독 (비차단 · annotation + STEP_SUMMARY)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          HW_OUTCOME: ${{ steps.hwmon_win.outcome }}
+          HW_CONCLUSION: ${{ steps.hwmon_win.conclusion }}
+        run: |
+          set +e
+          D="${RUNNER_TEMP:-/tmp}/hwmon-win"
+          LOG="$D/cargo.log"
+          SUM="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          outcome="${HW_OUTCOME:-unknown}"
+          start="$(cat "$D/start" 2>/dev/null)"
+          rc="$(cat "$D/rc" 2>/dev/null)"
+          ff="$(cat "$D/filter_fail" 2>/dev/null)"
+          listed="$(cat "$D/listed" 2>/dev/null)"
+          if [ -n "$start" ]; then
+            el_s=$(( $(date +%s) - start ))
+            el="$(( el_s / 60 ))분 $(( el_s % 60 ))초"
+          else
+            el="측정 불가(시작 표지 없음)"
+          fi
+          summary=""; failed=""; passed=""; names=""; last=""; matched=""
+          if [ -f "$LOG" ]; then
+            summary="$(grep -E '^test result:' "$LOG" | tail -1)"
+            passed="$(printf '%s' "$summary" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')"
+            failed="$(printf '%s' "$summary" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+')"
+            names="$(awk '/^failures:$/{f=1;next} f&&/^    [a-zA-Z_]/{print $1} f&&/^$/{f=0}' "$LOG" | sort -u | head -20 | tr '\n' ' ')"
+            # --test-threads=1 --nocapture: libtest 가 검체명을 실행 **전에** 찍는다 → 마지막 'test X ...' = 멈춘 자리
+            last="$(grep -E '^test [^ ]+ \.\.\.' "$LOG" | tail -1 | sed -E 's/^test ([^ ]+) \.\.\..*/\1/')"
+          fi
+          # 필터 `hwmon::` 에 걸린 검체 이름(건너뛴 것 포함 — 실행 대상은 이 중 skip 1건을 뺀 것). 윈도우에서 **처음** 도는 검체의 이름을 기록으로 남긴다.
+          if [ -f "$D/list.txt" ]; then
+            matched="$(grep -E ': test$' "$D/list.txt" | sed -E 's/: test$//; s/^hwmon::tests:://' | tr '\n' ' ')"
+          fi
+          if [ "$outcome" = "skipped" ]; then
+            kind="미실행"; level="warning"
+            msg="앞 스텝 실패로 hwmon 스텝이 건너뛰어졌다 — 이 런의 hwmon Windows 검체는 무측정이다(통과 아님)"
+          elif [ -n "$ff" ]; then
+            kind="필터 실패"; level="error"
+            msg="${ff} — hwmon:: 에 걸리는 검체를 세지 못했거나 0건이다(빌드 실패·모듈 경로 변경) · 이 런의 hwmon Windows 검체는 무측정이다(통과 아님)"
+          elif [ "$rc" = "0" ] && [ "${passed:-0}" -lt 1 ]; then
+            kind="통과 0건"; level="error"
+            msg="rc=0 인데 통과한 검체가 0건이다(${summary:-요약 없음}) — 필터·skip 으로 실행된 검체가 없다(무측정 · 통과 아님)"
+          elif [ "$rc" = "0" ]; then
+            kind="완주·통과"; level="notice"
+            msg="rc=0 · passed=${passed:-?} failed=${failed:-0} · ${summary:-요약 없음} · 경과 ${el} · 필터에 걸린 검체 ${listed:-?}건(그중 snapshot_has_all_sections 는 skip): ${matched:-목록 없음} — 윈도우에서 처음 도는 검체의 첫 통과 기록(차단 승격 판단의 근거 1회)"
+          elif [ -n "$rc" ]; then
+            kind="완주·실패"; level="error"
+            msg="rc=${rc} · failed=${failed:-?} passed=${passed:-?} · 경과 ${el} · 실패 검체: ${names:-없음(하네스 이상 · 101=러스트 패닉 가능)} — 비차단이라 런은 초록이다"
+          elif [ "$outcome" = "success" ]; then
+            kind="판정 불가"; level="error"
+            msg="outcome=success 인데 rc 표지가 없다 — 스텝 구조가 바뀌었거나 표지 쓰기가 실패했다(통과로 읽지 마라)"
+          else
+            kind="절단"; level="error"
+            msg="rc 표지 없음(cargo 가 끝나기 전에 종료) · outcome=${outcome} · 경과 ${el}(상한 6분) · 마지막으로 시작한 검체: ${last:-판독 불가} — 비차단이라 런은 초록이다"
+          fi
+          # 워크플로 명령 이스케이프(% · CR · LF) — 로그에서 온 문자열이 주석을 깨지 않게.
+          esc() { printf '%s' "$1" | sed -e 's/%/%25/g' | tr -d '\r' | awk 'BEGIN{ORS="%0A"}{print}' | sed -e 's/%0A$//'; }
+          echo "::${level} title=hwmon-win ${kind}(비차단)::$(esc "$msg")"
+          if [ "$level" != "notice" ] && [ -f "$LOG" ]; then
+            echo "::${level} title=hwmon-win 로그 꼬리(비차단)::$(esc "$(tail -8 "$LOG")")"
+          fi
+          {
+            echo "### hwmon Windows 실기 (비차단) — ${kind}"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "|---|---|"
+            echo "| 스텝 outcome / conclusion | ${outcome} / ${HW_CONCLUSION:-?} — continue-on-error 라 실패·절단도 conclusion 은 success |"
+            echo "| cargo rc | ${rc:-없음(rc 표지 없음 — 미실행·필터 실패이거나 끝나기 전에 종료됨)} |"
+            echo "| 경과 | ${el} (스텝 상한 6분) |"
+            echo "| test result | ${summary:-없음} |"
+            echo "| 통과 / 실패 수 | ${passed:-?} / ${failed:-?} |"
+            echo "| 실패 검체 | ${names:-없음} |"
+            echo "| 필터 hwmon:: 에 걸린 검체(${listed:-?}건) | ${matched:-없음} |"
+            echo "| 마지막으로 시작한 검체 | ${last:-없음} |"
+            echo ""
+            echo "> 이 스텝은 **비차단**이다. 잡·런이 초록이어도 판정이 '완주·통과' 가 아니면 hwmon Windows 검체는 통과가 아니다 — 초록을 셀 때 종류를 병기하라."
+          } >> "$SUM" 2>/dev/null
+          exit 0
+
+      # ★R2F-PK(성찰 2회차 · A4 m5): **화면 검체가 태그 전에 윈도우에서 한 번도 돌지 않는다** — 브랜치 ui-check 는 macOS 뿐이고(ci-branch 잡5), `release.yml` 의 `cd ui && bun test`(윈도우 레그 포함 · `if` 없음)가 첫
+      #   윈도우 실행이라 이번 판이 더한 검체 파일(deptprogress · deptprogressseats · deptprogresswiring · sendfailwiring · starvednotice · updatenotice)과 크게 늘어난 기존 검체(usagebar · usagewiring · restartplan · toastttl)의
+      #   윈도우 첫 실행이 **태그**다 — 거기서 붉으면 태그(불변 · 버전 소모)가 소모된다. 그래서 같은 명령을 이 잡에서 **차단**으로 먼저 돈다(윈도우 전용으로 깨질 구조는 정적으로 찾지 못했다 — 다른 레인 파일을 `import.meta.url` 로
+      #   읽는 방식은 기존 검체와 같고 읽히는 파일은 `.gitattributes` 로 LF 고정이다. 그래도 붉으면 태그 전에 알고 고친다).
+      # · 맨 **뒤**에 둔 까닭: 위 cargo 스텝들(비차단 전량·hwmon 포함)과 그 판독이 이 스텝 때문에 건너뛰어지지 않는다(앞 스텝이 실패하면 뒤 스텝은 `if: always()` 가 없는 한 건너뛴다 — 이 스텝이 붉어도 진단은 이미 다 나온 뒤다).
+      # · bun 설치는 이 저장소의 다른 워크플로가 쓰는 방식 그대로다(`oven-sh/setup-bun@v2` — release.yml · ci-branch ui-check · windows-build). 명령 `cd ui && bun test` 도 release.yml 과 같다(node_modules 없이 — 설치 전 조건).
+      # · 시간: 로컬 맥 실측 2138 통과 · 55파일 · 0.52초. 윈도우는 수 초~수십 초로 본다[추정 — 윈도우 실측 전]. 상한 3분은 그 수십 배다. 잡 총 시간 계산은 위 hwmon 스텝 머리 주석의 표(평상 약 14.5분 · 이론 최악 44.3분 < release 게이트 45분).
+      # ★`if:` 를 달지 마라(잡 머리말의 '돌지 않는 초록 금지') · `continue-on-error` 도 달지 않는다(이 스텝은 **차단**이다 — 붉으면 windows-health 가 붉고 release `windows-health-gate` 가 태그 레인을 막는다).
+      - name: Setup Bun (화면 검체용)
+        uses: oven-sh/setup-bun@v2
+
+      - name: UI 회귀 테스트 (bun test · Windows 실기 · 차단 · release.yml 과 같은 명령)
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ui && bun test
 
       - name: 결과 업로드 (기계 판독 JSON)
         if: always()

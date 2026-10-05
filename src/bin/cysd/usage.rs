@@ -1580,6 +1580,10 @@ fn collect_for(
 
     // ── 증분 read + 파싱 (마지막 유효 관측이 승리) ──
     let lines = read_new_lines(state);
+    // ★D25(1.1.8) 기동 뒤 RC 감시 — 같은 새 줄에서 remote_session_change 를 본다(claude 좌석만 · rc_guard doc).
+    if cys::is_claude_seat(agent, bin) && !lines.is_empty() {
+        crate::rc_guard::observe_lines(daemon, s, &lines);
+    }
     if lines.is_empty() {
         // ★R1-blocking-1: 신규 줄이 없어도 **낡은 매핑은 값을 비운다**. 세션 교체 후 옛 파일에는
         //   줄이 붙지 않으므로 여기서 그냥 반환하면 이전 numeric snapshot 이 무기한 남는다

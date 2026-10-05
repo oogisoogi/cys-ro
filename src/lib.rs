@@ -2655,6 +2655,89 @@ pub fn inject_claude_effort_env(env_pairs: &mut Vec<(String, String)>, agent: &s
     env_pairs.push((ENV_CLAUDE_EFFORT_LEVEL.to_string(), CLAUDE_SEAT_EFFORT.to_string()));
 }
 
+/// ★D25·D24ⓒ(1.1.8 · master 결정 [master#7f82e8c4] ①② = A · [master#99924a73] 두 키 + 허용 역할) **claude 좌석 기동 설정**
+/// (순수) — `claude --settings <파일>` 로 실을 JSON. 전역 사용자 설정값에 기대지 않고 좌석 기동 인자로 강제한다(윈 1.1.7 실측:
+/// 전역 `remoteControlAtStartup=true` 하나로 cso·worker 까지 RC 가 켜져 폰에 노출됐다 · 규칙 = 폰 노출 master 1기).
+/// * RC 끄기 두 키 — `remoteControlAtStartup:false` + `disableRemoteControl:true`(claude 설정 스키마의 restrictive 병합 키 =
+///   어느 출처든 true 면 이긴다 → 사용자 전역값과 무관 · 좌석 안 /remote-control 토글도 막힘). 대상 = RC 허용 역할
+///   (`rc_allowed` · 정책 `rc_allowed_roles` · 기본 `["master"]`) **밖**의 좌석 전부 + 부서 데몬 좌석 전부(부서 = RC 0).
+///   ⇒ 워커에서 RC 를 켜려면 `~/.cys/policy.json` 의 `rc_allowed_roles` 에 그 역할명을 넣고 좌석을 재기동한다.
+/// * `permissions.allow` — `~/.cys/policy.json` 의 `seat_permissions_allow`(문자열 배열 · 기본 없음 = 1.1.8 기본 목록 0).
+/// 둘 다 해당 없으면 빈 객체 — 호출자는 인자를 붙이지 않는다(종전 바이트).
+pub fn claude_seat_settings(role: &str, dept_socket: bool, policy_allow: &[String], rc_allowed: &[String]) -> serde_json::Value {
+    let mut v = serde_json::Map::new();
+    if !rc_allowed_for(role, dept_socket, rc_allowed) {
+        v.insert("remoteControlAtStartup".into(), serde_json::Value::Bool(false));
+        v.insert("disableRemoteControl".into(), serde_json::Value::Bool(true));
+    }
+    if !policy_allow.is_empty() {
+        v.insert("permissions".into(), serde_json::json!({ "allow": policy_allow }));
+    }
+    serde_json::Value::Object(v)
+}
+
+/// 이 좌석이 RC 를 켜도 되는가(순수) — 부서 데몬 좌석 = 아니오 · 그 밖은 역할명이 허용 목록에 있을 때만.
+/// 기동 인자(위)와 기동 뒤 검사(cysd rc 감시)가 같은 술어를 쓴다.
+pub fn rc_allowed_for(role: &str, dept_socket: bool, rc_allowed: &[String]) -> bool {
+    !dept_socket && rc_allowed.iter().any(|r| r == role)
+}
+
+/// `~/.cys/policy.json` 의 `rc_allowed_roles` — 파일·키 부재·형식 오류 = `["master"]`(설치 기본값).
+pub fn rc_allowed_roles() -> Vec<String> {
+    rc_allowed_roles_from(&std::fs::read_to_string(home_dir().join(".cys").join("policy.json")).unwrap_or_default())
+}
+
+/// [`rc_allowed_roles`] 의 순수 판. 키가 배열이면 그 배열이 정본(빈 배열 = 아무도 허용 안 함).
+pub fn rc_allowed_roles_from(text: &str) -> Vec<String> {
+    match serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v.get("rc_allowed_roles").cloned()) {
+        Some(serde_json::Value::Array(a)) => a
+            .into_iter()
+            .filter_map(|x| x.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from))
+            .collect(),
+        _ => vec!["master".to_string()],
+    }
+}
+
+/// `~/.cys/policy.json` 의 `seat_permissions_allow`(D24ⓒ) — 파일·키 부재·형식 오류 = 빈 목록(넓히지 않는 쪽).
+/// 문자열이 아닌 원소·빈 문자열은 버린다.
+pub fn seat_policy_permissions_allow() -> Vec<String> {
+    seat_policy_permissions_allow_from(&std::fs::read_to_string(home_dir().join(".cys").join("policy.json")).unwrap_or_default())
+}
+
+/// [`seat_policy_permissions_allow`] 의 순수 판(정책 파일 본문 → 목록).
+pub fn seat_policy_permissions_allow_from(text: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("seat_permissions_allow").and_then(|a| a.as_array()).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|x| x.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from))
+        .collect()
+}
+
+/// 사용자 agents.json `cmd` 에 이미 `--settings` 가 있는가 — 있으면 둘째 인자를 붙이지 않는다(두 인자 병합 방식
+/// 미실측 · master 결정: 그때는 기동 뒤 검사·끄기만 · 안전 쪽).
+pub fn cmd_has_settings_flag(cmd: &str) -> bool {
+    cmd.split_whitespace().any(|w| w == "--settings" || w.starts_with("--settings="))
+}
+
+/// 좌석 기동 설정 파일 자리 — `~/.cys/seat-settings/<역할>.json`(역할명은 파일 안전 문자만). 파일로 넘기는 이유:
+/// 윈 PowerShell 5.1 은 네이티브 프로그램 인자 안의 큰따옴표를 벗겨 인라인 JSON 이 깨진다 — 경로는 OS 무관하게 안전하다.
+pub fn seat_settings_path(role: &str) -> PathBuf {
+    let safe: String = role.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    home_dir().join(".cys").join("seat-settings").join(format!("{}.json", if safe.is_empty() { "seat" } else { &safe }))
+}
+
+/// 기동 줄에 붙일 꼬리(순수) — unix = 홑따옴표(경로 안 `'` 은 `'\''`) · windows = 큰따옴표.
+pub fn seat_settings_arg(path: &Path, windows: bool) -> String {
+    let p = path.to_string_lossy();
+    if windows {
+        format!(" --settings \"{p}\"")
+    } else {
+        format!(" --settings '{}'", p.replace('\'', "'\\''"))
+    }
+}
+
 /// ★1.1.8 휴면 스위치(master D-TEAM·C4 결정 · judge 집행 조건 ① [master#cd9e534c]) — 원작자에게서 받은 코드
 /// 가운데 **우리 판에서 켜지 않는** 기능 2개를 데몬·CLI 가 같은 술어로 판정한다. 제거가 아니라 휴면이다(코드·원작자
 /// 시험 유지 — 제거는 박사님 게이트 ⓔ).
@@ -4936,6 +5019,40 @@ mod tests {
     ///   ⓑ `ensure_ascii=false`(한글이 `\uXXXX` 로 escape 되지 않는다)
     ///   ⓒ **말미 개행**
     /// 하나라도 갈리면 같은 상태를 두 구현이 서로 다른 파일로 낳고, boot-last 골든 대조가 깨진다.
+    /// ★D25·D24ⓒ(1.1.8 · [master#99924a73] 시험) 허용 목록 밖 역할 = 두 키 존재 · 안 역할 = 키 0 · 부서 좌석 = 언제나 두 키.
+    #[test]
+    fn d25_claude_seat_settings_table() {
+        let allowed = vec!["master".to_string(), "worker-5".to_string()];
+        let off = serde_json::json!({"remoteControlAtStartup": false, "disableRemoteControl": true});
+        for role in ["worker", "worker-2", "cso", "reviewer-codex"] {
+            assert_eq!(claude_seat_settings(role, false, &[], &allowed), off, "{role}: 허용 목록 밖 = 두 키");
+        }
+        assert_eq!(claude_seat_settings("master", false, &[], &allowed), serde_json::json!({}), "master = 키 0");
+        assert_eq!(claude_seat_settings("worker-5", false, &[], &allowed), serde_json::json!({}), "relay(허용 목록) = 키 0");
+        assert_eq!(claude_seat_settings("master", true, &[], &allowed), off, "부서 데몬 좌석 = RC 0");
+        let allow = vec!["Bash(ls:*)".to_string()];
+        assert_eq!(
+            claude_seat_settings("master", false, &allow, &allowed),
+            serde_json::json!({"permissions": {"allow": ["Bash(ls:*)"]}}),
+            "정책 allow 목록은 역할 무관하게 실린다"
+        );
+        // 정책 파일 해석
+        assert_eq!(rc_allowed_roles_from(""), vec!["master".to_string()], "부재 = 설치 기본값");
+        assert_eq!(rc_allowed_roles_from("{bad"), vec!["master".to_string()]);
+        assert_eq!(rc_allowed_roles_from(r#"{"rc_allowed_roles":["master","worker-5"," "]}"#), allowed);
+        assert!(rc_allowed_roles_from(r#"{"rc_allowed_roles":[]}"#).is_empty(), "빈 배열 = 아무도 허용 안 함");
+        assert!(seat_policy_permissions_allow_from("").is_empty(), "1.1.8 기본 목록 0");
+        assert_eq!(seat_policy_permissions_allow_from(r#"{"seat_permissions_allow":["Bash(ls:*)",3,""]}"#), allow);
+        assert!(cmd_has_settings_flag("claude --settings /x.json"));
+        assert!(cmd_has_settings_flag("claude --settings=/x.json"));
+        assert!(!cmd_has_settings_flag("claude --dangerously-skip-permissions"));
+        assert_eq!(seat_settings_arg(Path::new("/h/.cys/seat-settings/worker.json"), false), " --settings '/h/.cys/seat-settings/worker.json'");
+        assert_eq!(seat_settings_arg(Path::new("/h/it's/w.json"), false), " --settings '/h/it'\\''s/w.json'");
+        assert_eq!(seat_settings_arg(Path::new(r"C:\Users\A B\.cys\seat-settings\worker.json"), true), r#" --settings "C:\Users\A B\.cys\seat-settings\worker.json""#);
+        assert!(seat_settings_path("worker-2").ends_with("seat-settings/worker-2.json"));
+        assert!(seat_settings_path("../x").ends_with("seat-settings/x.json"), "역할명 경로 탈출 차단");
+    }
+
     #[test]
     fn atomic_write_json_bytes_match_python_javis_lock() {
         let td = std::env::temp_dir().join(format!("cys-atomic-{}", std::process::id()));

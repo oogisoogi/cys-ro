@@ -15341,6 +15341,33 @@ fn resume_guard_yields_to_followup(directive: String, effective_resume: bool, fo
     }
 }
 
+/// ★D25·D24ⓒ(1.1.8 · master 결정 [master#7f82e8c4] · [master#99924a73]) claude 좌석이면 기동 설정을 파일로 쓰고
+/// `--settings <파일>` 를 cmd 끝에 붙인다. 내용 = `cys::claude_seat_settings`(빈 객체면 붙이지 않음 = 종전 바이트).
+/// 파일 쓰기 실패 = 붙이지 않고 경고 1줄(기동은 막지 않는다 · 기동 뒤 rc 감시가 남는다).
+fn apply_seat_settings_arg(cmd: &mut String, role: &str, agent: &str) {
+    if !cys::is_claude_seat(agent, extract_bin(cmd, agent)) || cys::cmd_has_settings_flag(cmd) {
+        return;
+    }
+    let settings = cys::claude_seat_settings(
+        role,
+        cys::is_dept_socket(&cys::socket_path()),
+        &cys::seat_policy_permissions_allow(),
+        &cys::rc_allowed_roles(),
+    );
+    if settings.as_object().is_some_and(|o| o.is_empty()) {
+        return;
+    }
+    let path = cys::seat_settings_path(role);
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|_| cys::atomic_write_json(&path, &settings));
+    match written {
+        Ok(()) => cmd.push_str(&cys::seat_settings_arg(&path, cfg!(windows))),
+        Err(e) => eprintln!("[launch-agent] 좌석 기동 설정 파일 쓰기 실패({}: {e}) — --settings 없이 기동(RC 감시는 유지)", path.display()),
+    }
+}
+
 /// launch-agent(새 surface)와 node-recover(기존 surface 재기동)가 공유한다.
 fn boot_agent_on_surface(
     sid: u64,
@@ -15435,6 +15462,9 @@ fn boot_agent_on_surface(
     cys::inject_claude_prompt_suggestion_default(&mut env_pairs, extract_bin(&cmd, agent));
     // ★v116-seat N-4: Claude 좌석 effort = env(키 부재 시에만 high) — lib `inject_claude_effort_env` doc.
     cys::inject_claude_effort_env(&mut env_pairs, agent, extract_bin(&cmd, agent));
+    // ★D25·D24ⓒ(1.1.8): claude 좌석 기동 설정 파일(RC 끄기 두 키 · 정책 allow 목록) — 사용자 cmd 에 --settings 가
+    //   이미 있으면 붙이지 않는다(병합 방식 미실측 · 기동 뒤 cysd rc 감시만 동작).
+    apply_seat_settings_arg(&mut cmd, role, agent);
     let (send, _send_env) = render_launch(&cmd, &env_pairs);
     // ★(W2 · B4) **기동 send 직전 line_count 스냅샷** — readiness 판정의 시간 귀속 기준선.
     //
@@ -46346,6 +46376,21 @@ mod team_token_cli_tests {
         match c.command {
             Command::Feed { action: FeedAction::Reply { team_token, .. } } => assert!(team_token.is_none()),
             _ => panic!("feed reply 파싱 실패"),
+        }
+    }
+
+    /// ★D25(1.1.8) 기동 인자 부착 제외 경로 — 비claude 어댑터·사용자 cmd 에 --settings 가 이미 있으면 cmd 바이트 무변경
+    /// (master 결정: 그때는 기동 뒤 감시만). 부착 경로의 내용 결정표는 lib `d25_claude_seat_settings_table`.
+    #[test]
+    fn d25_seat_settings_arg_skips_non_claude_and_user_settings() {
+        for (cmd, agent) in [
+            ("codex --yolo", "codex"),
+            ("claude --dangerously-skip-permissions --settings /mine.json", "claude"),
+            ("claude --settings=/mine.json", "claude"),
+        ] {
+            let mut c = cmd.to_string();
+            apply_seat_settings_arg(&mut c, "worker-2", agent);
+            assert_eq!(c, cmd, "{agent}: 무변경");
         }
     }
 

@@ -614,6 +614,14 @@ $ROLE_NOTICE}"
     exit 0
   fi
   echo "[cys-hook] 요지 조립기 실패(rc=$CI_RC) — CORE-MIN·부트 브리지 폴백(session-start)" >&2
+  # ★D9-b(1.1.8): rc 127 은 「실행해 보니 명령 없음」만이 아니라 **실행 전 기본값**(해석기 미해소·조립기 부재)이기도 하다 —
+  #   사유를 갈라 화면 고지와 hook-errors.log 에 남긴다(윈 10-02·10-03 rc=127 이 어느 쪽이었는지 판정 불가였던 공백).
+  if [ -z "$CYS_PY" ]; then CI_WHY="python 해석기 미해소(실행 안 함)"
+  elif [ ! -f "$CI" ]; then CI_WHY="조립기 파일 없음(실행 안 함)"
+  elif [ "$CI_RC" -eq 124 ]; then CI_WHY="5초 초과"
+  elif [ "$CI_RC" -eq 0 ]; then CI_WHY="출력 없음"
+  else CI_WHY="조립기 실행 실패"; fi
+  cys_hook_fail session-start "$CI_RC" "core_inject:$CI_WHY"
   DD="$(dirname "$D")"
   if [ -f "$DD/CORE-MIN.md" ]; then
     head -c 6000 "$DD/CORE-MIN.md"
@@ -625,7 +633,7 @@ $ROLE_NOTICE}"
     done
   fi
   echo
-  printf '■ 고지: 요지 조립기(hooks/core_inject.py)가 실패해 CORE-MIN·부트 브리지만 싣는다(rc=%s). 정본: %s\n' "$CI_RC" "$D"
+  printf '■ 고지: 요지 조립기(hooks/core_inject.py)가 실패해 CORE-MIN·부트 브리지만 싣는다(rc=%s · %s · 기록 = hook-errors.log). 정본: %s\n' "$CI_RC" "$CI_WHY" "$D"
   _ss_drain_rules
   [ -n "$ROLE_NOTICE" ] && printf '%s\n' "$ROLE_NOTICE"
   echo "■ CYSJavis 역할 각성 (CYS_ROLE=$CYS_ROLE · 폴백)"

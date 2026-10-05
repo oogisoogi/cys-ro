@@ -294,6 +294,7 @@ if [ "$ROLE_RC" -ne 0 ]; then
   # cannot-judge: 데몬 미응답(124=데드라인 초과)·cys 부재(127) 등. 발화하지 않는다 —
   # 남의 pane에서 마스터 부트를 터뜨리는 것이 판정 보류보다 나쁘다(fail-closed).
   echo "[cys-hook] role-bootstrap: surface-role 판정 불가(rc=$ROLE_RC) — 무발화(fail-closed)" >&2
+  cys_hook_fail role-bootstrap "$ROLE_RC" surface-role   # ★D9-b 파일 기록
   CYS_UNJUDGED_RC="$ROLE_RC"
 else
 MYROLE="$(printf '%s' "$MYROLE_RAW" | head -1 | tr -d '[:space:]')"
@@ -638,6 +639,7 @@ case "$DETECT_RC" in
   1|3) exit 0 ;;                                 # 선언 없음 / 억제(로그는 감지기가 남겼다)
   *)
     echo "[cys-hook] role-bootstrap: 감지기 판정 불가(rc=$DETECT_RC) — 무발화. verdict=$DETECT_VERDICT" >&2
+    cys_hook_fail role-bootstrap "$DETECT_RC" javis_detect:hook-gate   # ★D9-b 파일 기록
     if _maybe_declaration; then
       _notify_bg "부트스트랩 판정 불가(감지 실패)" \
         "javis_detect.py가 프롬프트를 판정하지 못했습니다(rc=$DETECT_RC). 팀 기동이 발화되지 않았습니다."

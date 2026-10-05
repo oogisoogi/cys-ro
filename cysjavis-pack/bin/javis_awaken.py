@@ -51,6 +51,13 @@ AWAKEN_CONFIRMED = "confirmed"
 AWAKEN_UNCONFIRMED = "unconfirmed"
 FIRST_WAIT_S = 1.5
 RETRY_WAITS_S = (3, 5, 8)
+# ★D6(1.1.8 · 윈 실측 263행 지침 2회 311·312초 멈춤 — 사람 Return 1회로 풀림): 기본 창(1.5+3+5+8 = 17.5초)이
+#   길이·기동 지연과 무관하게 고정이라, 긴 붙여넣기·느린 콜드스타트에서 Return 이 TUI 준비 전에 다 소진됐다.
+#   기본 창이 끝났는데 입력줄에 붙여넣기 접힘(「[Pasted text」)이 **아직 보이면** 이 대기로 Return 을 더 보낸다
+#   (입력줄 실측 = 연장 여부만 정한다 · 각성 판정은 여전히 세션 jsonl).
+EXTEND_WAITS_S = (13, 21)
+PASTED_FOLD_MARK = "[Pasted text"   # src/submit_probe.rs PASTED_FOLD_MARK 와 같은 글자
+FOLD_TAIL_LINES = 12                # 화면 끝 몇 줄을 입력줄 영역으로 보나(입력창 + 상태줄)
 # 파일시스템 mtime 의 거칠기 흡수(초) — **파일 후보**에만 쓴다. 레코드 시각은 since 이후만 센다
 # (같은 좌석을 빠르게 재시작하면 직전 세션의 마지막 레코드가 이 여유 안에 들 수 있다 · agy 1R #1).
 SINCE_SLACK_S = 2.0
@@ -169,11 +176,16 @@ def _candidate_files(cwd, since, dirs):
     return found
 
 
-def measure(cwd, since, dirs=None):
+def measure(cwd, since, dirs=None, session_file=None):
     """이번 스폰(since) 이후 그 cwd 세션에 제출된 user 레코드 수.
-    반환 {"user": n, "files": [...], "source": "slug"|"cwd-scan"|"none"}."""
+    반환 {"user": n, "files": [...], "source": "seat"|"slug"|"cwd-scan"|"none"}.
+    ★D6: session_file(데몬이 아는 **그 좌석의** 세션 파일)이 있으면 그 파일만 잰다 — cwd 폴더 훑기는 같은 cwd 를 쓰는
+      다른 좌석(스폰한 부모·형제)의 새 user 레코드(도구 결과 포함)를 자식의 제출로 셀 수 있다(거짓 「확인」 → Return 생략)."""
     dirs = config_dirs() if dirs is None else dirs
-    files = _candidate_files(cwd, since, dirs)
+    if session_file and os.path.isfile(session_file):
+        files = [(session_file, "seat")]
+    else:
+        files = _candidate_files(cwd, since, dirs)
     # 레코드 시각은 밀리초 단위로 잘려 기록된다 — since 도 밀리초로 내려야 같은 순간이 「이전」이 되지 않는다.
     rec_floor = int(since * 1000) / 1000.0
     users = 0
@@ -223,6 +235,37 @@ def surface_row(runner, surface=None, role=None):
                     "pid": int(pid) if pid.isdigit() else None,
                     "cwd": cols[-1] if len(cols) > 1 and "=" not in cols[-1] else None}
     return None
+
+
+def seat_session_file(runner, surface, since):
+    """★D6: `cys status --json` 좌석 행의 usage.session_file — 이번 스폰 이후 갱신된 값만(지난 세대 값 배제).
+    못 읽으면 None(= 종전 cwd 훑기로 폴백)."""
+    rc, out = runner(["status", "--json"])
+    if rc != 0:
+        return None
+    try:
+        rows = (json.loads(out or "{}") or {}).get("surfaces") or []
+    except (ValueError, AttributeError):
+        return None
+    for r in rows:
+        if not isinstance(r, dict) or r.get("surface_ref") != surface:
+            continue
+        u = r.get("usage") if isinstance(r.get("usage"), dict) else {}
+        f, up = u.get("session_file"), u.get("updated_at")
+        if isinstance(f, str) and f and isinstance(up, (int, float)) and up >= since - SINCE_SLACK_S:
+            return f
+        return None
+    return None
+
+
+def input_has_fold(runner, surface):
+    """★D6: 화면 끝(입력줄 영역)에 붙여넣기 접힘 표지가 남아 있는가 — 제출 안 된 긴 붙여넣기의 실측 흔적.
+    못 읽으면 False(연장하지 않는다 = 종전 거동)."""
+    rc, out = runner(["read-screen", "--surface", surface])
+    if rc != 0 or not out:
+        return False
+    tail = [ln for ln in out.splitlines() if ln.strip()][-FOLD_TAIL_LINES:]
+    return any(PASTED_FOLD_MARK in ln for ln in tail)
 
 
 def send_return(runner, surface):
@@ -279,21 +322,31 @@ def ensure_awake(role, surface, cwd, since, runner, pid=None, may_return=True, s
       안전은 may_return(방금 launch 한 새 프로세스 = 이전 대화 0)이 진다."""
     sleep = sleep or _sleep
     sleep(first_wait)
-    m = measure(cwd, since, dirs)
+    sf = seat_session_file(runner, surface, since)
+    m = measure(cwd, since, dirs, sf)
     returns = 0
+    fold_seen = None
     if m["user"] == 0 and may_return:
-        for w in waits:
+        plan = list(waits)
+        while returns < len(plan):
             send_return(runner, surface)
+            sleep(plan[returns])
             returns += 1
-            sleep(w)
-            m = measure(cwd, since, dirs)
+            sf = sf or seat_session_file(runner, surface, since)
+            m = measure(cwd, since, dirs, sf)
             if m["user"] > 0:
                 break
+            if returns == len(plan) and fold_seen is None:
+                # ★D6: 기본 창 소진 — 입력줄에 접힌 붙여넣기가 아직 있으면(제출 안 된 지침 실측) 창을 한 번 늘린다.
+                fold_seen = input_has_fold(runner, surface)
+                if fold_seen:
+                    plan += list(EXTEND_WAITS_S)
     awaken = AWAKEN_CONFIRMED if m["user"] > 0 else AWAKEN_UNCONFIRMED
     result = {
         "role": role, "surface": surface, "pid": pid, "cwd": cwd, "since": since,
         "awaken": awaken, "returns_sent": returns, "may_return": bool(may_return),
-        "evidence": {"user_records": m["user"], "jsonl": m["files"], "source": m["source"]},
+        "evidence": {"user_records": m["user"], "jsonl": m["files"], "source": m["source"],
+                     "fold_seen": fold_seen},
         "at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     result["reported"] = False
@@ -311,22 +364,39 @@ def describe(res):
 
 
 # ───────────────────────── CLI ─────────────────────────
+def _lane_of(path):
+    """기록 파일 이름(`<소켓 또는 base>__<역할>.json`)에서 레인 표지 — 소켓 경로를 정규화한 꼴 그대로."""
+    stem = os.path.basename(path)[:-len(".json")]
+    return stem.rsplit("__", 1)[0] if "__" in stem else "?"
+
+
 def cmd_status(a):
+    """★D13(1.1.8 · 윈 실측): 종전 출력은 **어느 레인(데몬)의 기록인지** 없이 좌석 번호만 내서, 본부 pane 에서 부른
+    결과(master surface:2 · cso 3 · worker 5)가 본부 번호(103~105)와도 부서 번호(9~11)와도 달라 귀속을 판정할 수 없었다
+    (좌석 번호는 데몬마다 별개 · 기록은 레인별 파일로 남아 지난 세대도 섞인다). 이제 줄마다 레인을 싣고, 호출 좌석의
+    레인(CYS_SOCKET · 없으면 base)과 같은 줄에 표지를 붙인다. JSON 은 각 행에 `lane`·`this_lane` 을 더한다(가산)."""
     d = _state_dir()
+    here = re.sub(r"[^A-Za-z0-9_.-]", "_", "%s" % (os.environ.get("CYS_SOCKET") or "base"))
     rows = []
     for p in sorted(glob.glob(os.path.join(d, "*.json"))):
         try:
             with open(p, encoding="utf-8") as f:
-                rows.append(json.load(f))
+                r = json.load(f)
         except (OSError, ValueError):
             continue
+        if isinstance(r, dict):
+            lane = _lane_of(p)
+            r = dict(r, lane=lane, this_lane=(here.endswith(lane) or lane.endswith(here)))
+            rows.append(r)
     if a.role:
         rows = [r for r in rows if r.get("role") == a.role]
     if a.json:
         print(json.dumps(rows, ensure_ascii=False))
     else:
+        print("# 호출 레인 = %s (좌석 번호는 데몬마다 별개 — 같은 레인 줄만 이 화면의 번호다)" % here)
         for r in rows:
-            print("%s\t%s\t%s\t%s" % (r.get("role"), r.get("surface"), r.get("awaken"), r.get("at")))
+            print("%s\t%s\t%s\t%s\t레인=%s%s" % (r.get("role"), r.get("surface"), r.get("awaken"), r.get("at"),
+                                               r.get("lane"), " ◀ 이 레인" if r.get("this_lane") else ""))
     return 1 if any(r.get("awaken") == AWAKEN_UNCONFIRMED for r in rows) else 0
 
 

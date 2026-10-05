@@ -50,6 +50,7 @@ EV_OUT=$(printf '%s' "$HOOK_IN" | cys_timeout_run 5 "$CYS_PY" "$(cys_native_path
 EV_RC=$?
 if [ "$EV_RC" -ne 0 ]; then
   echo "[cys-hook] 사건 주입 조립기 실패(rc=$EV_RC) — 주입 생략(directive-event-inject)" >&2
+  cys_hook_fail directive-event-inject "$EV_RC" core_inject:event   # ★D9-b 파일 기록
   exit 0
 fi
 [ -n "$EV_OUT" ] && printf '%s\n' "$EV_OUT"

@@ -36,6 +36,30 @@ case "${OSTYPE:-}" in
     fi ;;
 esac
 
+# ★D4·D9-b(1.1.8 · 윈 실측 2026-10-05): 윈 Git Bash 에는 `python3` 가 없거나 Microsoft Store 별칭(WindowsApps · 실행하면
+#   스토어 안내 + rc 9009)뿐인 기계가 흔하다 — 이 도구의 `python3` 호출 50여 곳(heredoc 판정·등재 쓰기)이 그때 전부
+#   실패해 `cys-dept list` 조차 못 돌았다(CEO 가 부서를 독립 검증할 길 0). 윈 셸에서만 해석기를 한 번 정해 `python3`
+#   이름을 그쪽으로 돌린다(셸 함수 = PATH 보다 먼저 · 하위 `$( … )` 에도 상속). 순서 = 유효한 CYS_PY(데몬이 싣는
+#   동봉 python) → WindowsApps 밖의 python3·python·py → (그것뿐이면) WindowsApps 쪽. 맥·리눅스 = 무변경.
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    _cys_dept_py=""
+    if [ -n "${CYS_PY:-}" ] && { [ -x "${CYS_PY}" ] || command -v "${CYS_PY}" >/dev/null 2>&1; }; then
+      _cys_dept_py="$CYS_PY"
+    else
+      for _c in python3 python py; do
+        _p="$(command -v "$_c" 2>/dev/null)" || continue
+        case "$_p" in */WindowsApps/*|*\\WindowsApps\\*) [ -n "${_cys_dept_py_store:-}" ] || _cys_dept_py_store="$_p"; continue ;; esac
+        _cys_dept_py="$_p"; break
+      done
+      [ -n "$_cys_dept_py" ] || _cys_dept_py="${_cys_dept_py_store:-}"
+    fi
+    if [ -n "$_cys_dept_py" ]; then
+      export CYS_PY="$_cys_dept_py"
+      python3(){ "$_cys_dept_py" "$@"; }
+    fi ;;
+esac
+
 REG="${CYS_DEPTS_JSON:-$HOME/.cys/depts.json}"
 PACK_DEFAULT="$HOME/.cys/pack"
 # RC-6: 폴백 경로 가드 — command -v 우선(Windows는 RC-5 runtime PATH로 cysd.exe/cys.exe 해소).
@@ -122,6 +146,17 @@ dept_tombstone(){
   ph="${CYS_PACK_DIR:-$PACK_DEFAULT}/bin/javis_phoenix.py"
   [ -f "$ph" ] || return 0
   python3 "$ph" tombstone "$1" --dept >/dev/null 2>&1 || true
+}
+# ★D21(1.1.8): 본부 데몬 묘비 판독 — `<본부 상태 폴더>/dept_tombstones.json`(governance persist_dept_tombstones ·
+#   javis_formation._dept_tombstones 와 같은 자리: 윈 = %LOCALAPPDATA%\cys · 그 밖 = ~/.local/state/cys).
+#   파이썬 없이(윈 python3 PATH 가정 회피 · D4) 따옴표 포함 전문 일치로만 본다 — 파일 없음·판독 실패 = 묘비 아님(종전 동작).
+dept_tombstoned(){
+  local f
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) f="${LOCALAPPDATA:-$HOME/AppData/Local}/cys/dept_tombstones.json" ;;
+    *) f="$HOME/.local/state/cys/dept_tombstones.json" ;;
+  esac
+  [ -f "$f" ] && grep -Fq -- "\"$1\"" "$f" 2>/dev/null
 }
 # ★재생성 묘비 해소(BOOTSTRAP_HARDENING WP-3·R6ⓒ): 삭제된 동명 부서를 다시 만들면 묘비를 해제해야
 # 새 부서가 피닉스 보호집합에 재편입된다(미해소=삭제→재생성 부서가 보호 영구 제외되는 역전 결함).
@@ -1437,7 +1472,7 @@ seed_trust_acct(){
     return 0
   fi
   rc=0
-  out="$(env -u CYS_SOCKET python3 "$pf" --seed-trust --config "$acct" --cwd "$cwd" 2>&1)" || rc=$?
+  out="$(env -u CYS_SOCKET "${_cys_dept_py:-python3}" "$pf" --seed-trust --config "$acct" --cwd "$cwd" 2>&1)" || rc=$?
   if [ "$rc" = 0 ]; then
     echo "[cys-dept] ${out##*$'\n'}" >&2
   else
@@ -2031,7 +2066,7 @@ dept_issue_ceo_ticket(){
     echo "[cys-dept] $name 유효 CEO 티켓 기존재 — 재발급 생략(멱등·TTL 리셋 방지)" >&2
     return 0
   fi
-  if out="$(env -u CYS_SOCKET python3 "$bs" issue-ticket --dept "$name" 2>&1)"; then
+  if out="$(env -u CYS_SOCKET "${_cys_dept_py:-python3}" "$bs" issue-ticket --dept "$name" 2>&1)"; then
     if [ "$spawned" = "1" ]; then
       echo "[cys-dept] $name CEO 티켓 발급 완료 — 부서장이 뜨면 팀(cso·워커·리뷰어)이 자동 기동된다(24h TTL·1회성·소비는 부서장 부트)" >&2
     else
@@ -2749,7 +2784,7 @@ PY
       # ★계정 격리: 데몬을 CYS_ACCOUNT_DIR(fork dir)와 함께 spawn (create와 동형).
       if _cys_detach_ok; then
         # ★fatal-fix X-R4-1: 대화 승인 토큰 경로 — 호출자(대표의 Bash 도구) 프로세스 그룹 밖 새 세션에서 띄운다(pid 불변 exec).
-        CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" env -u CYS_ROLE -u CYS_SURFACE_ID -u CYS_SURFACE_REF -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE nohup python3 -c "$_CYS_SETSID_PY" "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &
+        CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" env -u CYS_ROLE -u CYS_SURFACE_ID -u CYS_SURFACE_REF -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE nohup "${_cys_dept_py:-python3}" -c "$_CYS_SETSID_PY" "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &
       else
       CYS_SOCKET="$sock" CYS_PACK_DIR="$pack" CYS_ACCOUNT_DIR="$acctdir" env -u CYS_ROLE -u CYS_SURFACE_ID -u CYS_SURFACE_REF -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE nohup "$CYSD" >"$(dept_logdir "$name")/cysd.log" 2>&1 &
       fi
@@ -3483,6 +3518,15 @@ EOF
     if ! grep -Fxq -- "$name" <<<"$_reg_names" \
        && [ ! -e "$(dept_state "$name")" ] && [ ! -e "$(dept_pack "$name")" ]; then
       validate_dept_name "$name" "<name> -- <cmd>" "비실존 부서 — verb 오타 의심. 신규 생성은 launch/create, 목록은 list."
+      export CYS_NO_AUTOSTART=1
+    fi
+    # ★D21(1.1.8 · 윈 실측 2026-10-05 18:13): **닫힌 부서**(본부 묘비에 있고 등재에 없음)에 읽기 명령
+    #   (`cys-dept dept-1 -- cys list`)을 보내면 state/pack 폴더가 남아 있다는 이유로 위 조건을 통과해 하류 cys 가
+    #   부서 cysd 를 **자동 기동**했다(읽기에 쓰기 부작용 · 닫기 의도 위반). 묘비 부서는 폴더 잔존과 무관하게 데몬을
+    #   다시 켜지 않는다 — 명령은 그대로 돌되(잔재 정리·doctor 경로 보존) 데몬이 필요한 질의는 「연결 불가」로 끝난다.
+    #   다시 쓰려면 생성 동사(launch/create)로 연다(성공 경로가 묘비를 해소한다).
+    if ! grep -Fxq -- "$name" <<<"$_reg_names" && dept_tombstoned "$name"; then
+      echo "[cys-dept] '$name' 은 닫힌 부서다(묘비) — 데몬을 다시 켜지 않는다(다시 쓰려면 cys-dept launch $name)" >&2
       export CYS_NO_AUTOSTART=1
     fi
     # ★0.14.31 P6 R2(major · reviewer-claude): 소켓만 갈고 **호출 좌석의 surface 신원**을 그대로

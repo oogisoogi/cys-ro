@@ -393,6 +393,13 @@ def pack_dir():
     return os.path.join(os.path.expanduser("~"), ".cys/pack")
 
 
+def session_state_path():
+    """★D14(1.1.8): SESSION_STATE 정본 = javis_session.session_state_path 한 곳(레인 팩 round/).
+    next-action·gate-status·셀프테스트가 같은 함수를 지나 훅·preflight·스냅샷과 갈리지 않는다."""
+    import javis_session as _jsess   # 형제 모듈 — 위 _SELF_DIR 가드 뒤
+    return _jsess.session_state_path(pack=pack_dir())
+
+
 def _cys_status_timeout_s():
     """cys_status 서브프로세스 상한 — javis_budget leaf `CYS_STATUS_TIMEOUT_S` 파생(W-A4).
 
@@ -4497,7 +4504,7 @@ def cmd_gate_status(args):
         return 2
     # 보조 결정론(차단 아님): SESSION_STATE가 장부 마지막 기록보다 오래됐으면 "갱신" 요건
     # 미이행 가능성 경고 — 갱신은 전환 직전 수행이 규약이므로 순서상 이후일 수 있어 경고만.
-    ss = os.path.join(pack_dir(), "round", "SESSION_STATE.md")
+    ss = session_state_path()
     try:
         if os.path.getmtime(ss) < os.path.getmtime(p):
             print("[gate-status] 주의: SESSION_STATE.md가 라운드 장부보다 오래됨 — 전환 전 "
@@ -4697,7 +4704,7 @@ def cmd_next_action(args):
     # SESSION_STATE 다 — 산출자가 자기 산출물로 착수 권한을 발급하는 자기인가였다. 오너가 임무를
     # 주지 않은 부팅에서 **이전 세션 잔무 큐**를 집어 무한 작업에 들어간 실사고의 직접 원인이다.
     # 이전 세션 잔무는 **보고 대상**이지 자동 착수 대상이 아니다.
-    p = os.path.join(pack_dir(), "round", "SESSION_STATE.md")
+    p = session_state_path()
     try:
         text = open(p, encoding="utf-8", errors="replace").read()
     except OSError:
@@ -5346,7 +5353,7 @@ def cmd_self_test(args):
         assert extract_next_action(ss_res) is None, \
             "예약 블록(복원 포인터)이 다음 액션으로 반환 — 빈 큐가 자율 착수로 오판(T1 회귀)"
         # 팩 동봉 템플릿 실물로도 확인한다(문서와 코드가 같이 늙지 않게 · 부재 시 건너뜀)
-        _tpl = os.path.join(pack_dir(), "round", "SESSION_STATE.md")
+        _tpl = session_state_path()
         if os.path.isfile(_tpl):
             _t = open(_tpl, encoding="utf-8", errors="replace").read()
             if "1. (없음)" in _t:

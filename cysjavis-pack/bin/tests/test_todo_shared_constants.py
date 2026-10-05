@@ -85,6 +85,11 @@ class PackDirEnvKeys(unittest.TestCase):
     def test_python_implementations_agree(self):
         self.assertEqual(RP.PACK_DIR_ENV_KEYS, ORC.PACK_DIR_ENV_KEYS)
         self.assertEqual(RP.PACK_DIR_ENV_KEYS, ST.PACK_DIR_ENV_KEYS)
+        # ★D14(1.1.8): SESSION_STATE 정본 해소(javis_session.session_state_path)도 같은 목록 —
+        #   갈리면 판정기·훅·스냅샷이 다른 팩의 작업기억을 본다.
+        import javis_session as JSESS
+        self.assertEqual(RP.PACK_DIR_ENV_KEYS, JSESS.PACK_DIR_ENV_KEYS,
+                         "javis_session 팩 env 목록이 갈렸다 — SESSION_STATE 정본 분열(D14)")
         # ★A11(T-0147-7 W3): 부트 체인 2구현도 같은 목록을 갖는다. 실측 분열은 4/3/2/1 이었고,
         #   그 '1' 이 **javis_bootstrap**(CYS_PACK_DIR 단독)·'3' 이 **javis_preflight**
         #   (AITERM_PACK_DIR 누락)였다 — 레거시 env 기계에서 부트가 검사·기동하는 팩이 갈렸다.

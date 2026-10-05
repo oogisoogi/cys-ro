@@ -52,6 +52,7 @@ if [ "$BG_RC" -eq 0 ]; then
   exit 0
 fi
 echo "[cys-hook] 배경층 조립기 실패(rc=$BG_RC) — 배경층 생략(inject-background)" >&2
+cys_hook_fail inject-background "$BG_RC" core_inject:background   # ★D9-b 파일 기록
 # G8 동형: 경로가 든 줄은 printf — macOS /bin/sh 의 xpg_echo 가 백슬래시를 먹는다.
 printf '■ 배경층 생략(조립기 rc=%s) — 필요하면 직접 읽어라: soul %s · 메모리 색인 %s · 로컬 오버레이 %s\n' \
   "$BG_RC" "$SOUL" "$M" "$LD"

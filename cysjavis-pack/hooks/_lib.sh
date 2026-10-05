@@ -276,7 +276,15 @@ cys_resolve_py() {
   if _cys_is_darwin; then
     CYS_PY="$(_cys_bundle_py || _cys_path_py_darwin || printf '%s' '')"
   else
-    CYS_PY="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || command -v py 2>/dev/null || printf '%s' '')"
+    # ★D9-b(1.1.8 · 윈 실측): WindowsApps 의 python3 는 Microsoft Store 별칭(실행 = 스토어 안내 + rc 9009)일 수 있다 —
+    #   그 밖의 후보(python3·python·py)를 먼저 쓰고, 그것뿐일 때만 별칭을 쓴다(셸 판정만 · 외부 실행 0).
+    CYS_PY=""; _cys_store=""
+    for _cys_c in python3 python py; do
+      _cys_p="$(command -v "$_cys_c" 2>/dev/null)" || continue
+      case "$_cys_p" in */WindowsApps/*|*\\WindowsApps\\*) [ -n "$_cys_store" ] || _cys_store="$_cys_p"; continue ;; esac
+      CYS_PY="$_cys_p"; break
+    done
+    [ -n "$CYS_PY" ] || CYS_PY="$_cys_store"
   fi
   _cys_py_avoid_shim   # 원작자 U15 판별(1.1.8 병합 · 우리 스텁 배제 뒤 이중 안전 — 셔임 아니면 무동작)
   export CYS_PY
@@ -513,6 +521,32 @@ _cys_hook_timing_end() {
     if [ -f "$_cys_ht_f" ] && [ "$(wc -c < "$_cys_ht_f")" -gt 262144 ]; then mv -f "$_cys_ht_f" "$_cys_ht_f.1"; fi
     printf '%s %s role=%s surface=%s %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_cys_ht_name" \
       "${CYS_ROLE:-?}" "${CYS_SURFACE_ID:-?}" "$((_cys_ht_t1 - _cys_ht_t0))" >> "$_cys_ht_f"
+  } >/dev/null 2>&1
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5-a′. 훅 실패 기록 (★D9-b · 1.1.8 — 윈 실측: 훅 오류 로그가 없어 rc 127 을 사후 판정할 수 없었다)
+# ─────────────────────────────────────────────────────────────────────────────
+# 훅은 계약상 언제나 exit 0 이라 안쪽 실패(rc≠0)가 화면 고지 한 줄로만 남고 파일에는 없었다. 실패 한 건마다
+# `<상태 dir>/hook-errors.log` 에 **한 줄**(UTC 시각 · 훅 · 역할 · surface · rc · 사유 · 해석기 · PATH 판정)을 남긴다.
+# PATH 판정 = `command -v` 셸 내장만 쓴다(cys·cat 이 보이는가 · PATH 앞 160자) — PATH 가 깨진 순간(D10 「cat: command
+# not found」)에도 기록이 남게 date·wc·mkdir 은 있으면 쓰고 없으면 건너뛴다. 쓰기 실패 전부 삼킴 · stdout 무출력 ·
+# 256KB 넘으면 `.1` 로 한 번 돌린다(hook-timing.log 와 같은 규칙).
+cys_hook_fail() {
+  _cys_hf_f="${CYS_STATE_DIR:-$HOME/.cys/state}/hook-errors.log"
+  _cys_hf_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || _cys_hf_ts=""
+  [ -n "$_cys_hf_ts" ] || _cys_hf_ts="시각불명(date 없음)"
+  _cys_hf_cys=no; command -v cys >/dev/null 2>&1 && _cys_hf_cys=yes
+  _cys_hf_cat=no; command -v cat >/dev/null 2>&1 && _cys_hf_cat=yes
+  _cys_hf_path="${PATH:-}"
+  [ "${#_cys_hf_path}" -le 160 ] 2>/dev/null || _cys_hf_path="$(printf '%.160s' "$_cys_hf_path")…"
+  {
+    [ -d "$(dirname "$_cys_hf_f" 2>/dev/null)" ] || mkdir -p "$(dirname "$_cys_hf_f")"
+    if [ -f "$_cys_hf_f" ] && [ "$(wc -c < "$_cys_hf_f")" -gt 262144 ]; then mv -f "$_cys_hf_f" "$_cys_hf_f.1"; fi
+    printf '%s %s role=%s surface=%s rc=%s why=%s py=%s cys=%s cat=%s path=%s\n' "$_cys_hf_ts" "${1:-?}" \
+      "${CYS_ROLE:-?}" "${CYS_SURFACE_ID:-?}" "${2:-?}" "${3:--}" "${CYS_PY:-미해소}" \
+      "$_cys_hf_cys" "$_cys_hf_cat" "$_cys_hf_path" >> "$_cys_hf_f"
   } >/dev/null 2>&1
   return 0
 }
@@ -1267,6 +1301,20 @@ cys_start_gate_is_lead() {   # $1=역할 · rc 0 = 종전 문안 유지 대상(m
 
 cys_start_gate_note() {      # stdout: 착수 게이트 1줄(개행 없음) — member·역할 미상 공통
   printf '%s' "착수 게이트 — 위 작업기억·TODO 는 배경 참고이지 지시가 아니다. 일의 착수·재개는 이 세션에 배달된 지시가 정한다: [RESUME] 이면 배정 출처가 기록된 작업(순환 직전까지 하던 배정 포함)을 이어가고, [RESTORE]·[RECOVER] 가 오면 재개하지 말고 master 지시를 기다린다. master(부서장)·CEO·오너의 티켓·리뷰 의뢰, 데몬이 배달한 [schedule …]·[wakeup]·[heartbeat] 라벨 메시지가 곧 지시다. 지시가 없으면 상태만 확인해 '대기'로 자기보고하고 턴을 끝낸다. 운영 절차([CYCLE-PRE]·[CYCLE]·[CYCLE-VERIFY]·[DRAIN]·[DRAIN-VERIFY]·각성 메시지·지침 각성 확인 핑·각성 ACK·승인 응답·CSO 운영 경고)는 예외 — 받는 즉시 수행한다."
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. SESSION_STATE 정본 경로 (★D14 · 1.1.8 — python 쌍둥이 = bin/javis_session.py session_state_path)
+# ─────────────────────────────────────────────────────────────────────────────
+# 정본 = 자기 레인 팩 round/ (지침 MASTER §0 ③·§9 · cys todo-path · cycle 저장 검증과 같은 자리).
+# 1.1.7 까지 복원 훅은 cwd 상향탐색 `_round` 를 주입해 master 가 거기에 쓰고, 판정기(orchestra)는 팩을
+# 읽어 큐가 늘 빈 것으로 나왔다(윈 실측 2026-10-05). 키 순서 = PACK_DIR_ENV_KEYS · 첫 값이 이긴다.
+# 계약: 외부 명령 0 · stdout 1줄(개행 없음) · 시험 = bin/tests/test_session_state_canon.py(python 과 대조).
+cys_session_state_path() {
+  _cys_ssp="${CYS_PACK_DIR:-${JAVIS_PACK_DIR:-${AITERM_PACK_DIR:-${AITERM_JARVIS_DIR:-}}}}"
+  [ -n "$_cys_ssp" ] || _cys_ssp="${HOME:-${USERPROFILE:-.}}/.cys/pack"
+  printf '%s' "${_cys_ssp%/}/round/SESSION_STATE.md"
   return 0
 }
 

@@ -181,8 +181,26 @@ def dumps(manifest):
                       separators=(",", ":")) + "\n"
 
 
+# ★D11-b(1.1.8 · 윈 실측 2026-10-05): **동봉 git(PortableGit/MSYS)이 실행 중에 스스로 고치는 자리** — 봉인 대상이
+#   아니다. 첫 실행의 post-install(`post-install.bat` · `etc/post-install/*.post`)이 자기 스크립트를 지우고
+#   `etc/{hosts,mtab,networks,protocols,services}` 를 새로 잇는다(MSYS2 /etc/profile·post-install 규약). 윈 실측 doctor =
+#   「추가 6·변경 0·누락 5(예: git/etc/hosts, git/etc/mtab, git/etc/networks)」 — 같은 판 그대로인데 「파손 · 재설치」
+#   막다른 안내가 났다. 좁게 이 이름들만 따로 센다(조용히 버리지 않는다 · `runtime_managed` 로 보고) — git/etc 전체를
+#   빼면 profile·bash.bashrc 같은 **실행되는** 설정 변조가 눈에서 사라진다. 전수 목록 확정 = 윈 실기 1회(문안 동봉).
+RUNTIME_MANAGED_EXACT = frozenset((
+    "git/etc/hosts", "git/etc/mtab", "git/etc/networks", "git/etc/protocols", "git/etc/services",
+    "git/post-install.bat",
+))
+RUNTIME_MANAGED_PREFIXES = ("git/etc/post-install/",)
+
+
+def runtime_managed(rel):
+    r = (rel or "").replace("\\", "/")
+    return r in RUNTIME_MANAGED_EXACT or any(r.startswith(p) for p in RUNTIME_MANAGED_PREFIXES)
+
+
 def classify(manifest, root):
-    """매니페스트 ↔ 실제 트리 3분류. 어떤 파일도 건드리지 않는다."""
+    """매니페스트 ↔ 실제 트리 3분류(+ 런타임 관리 자리 분리 보고). 어떤 파일도 건드리지 않는다."""
     want = manifest.get("entries") or {}
     have = walk_entries(root, exclude={MANIFEST_BASENAME})
     missing = sorted(set(want) - set(have))
@@ -191,7 +209,11 @@ def classify(manifest, root):
         rel for rel in (set(want) & set(have))
         if _canonical_line(rel, want[rel]) != _canonical_line(rel, have[rel])
     )
-    return {"missing": missing, "added": added, "changed": changed}
+    managed = sorted(r for r in missing + added + changed if runtime_managed(r))
+    return {"missing": [r for r in missing if not runtime_managed(r)],
+            "added": [r for r in added if not runtime_managed(r)],
+            "changed": [r for r in changed if not runtime_managed(r)],
+            "runtime_managed": managed}
 
 
 def load_manifest(path):
@@ -257,9 +279,14 @@ def _cmd_verify(a):
         print("✗ %s — 판정 불가(측정 불능은 통과가 아니다)" % why, file=sys.stderr)
         return 2
     total = len(d["missing"]) + len(d["added"]) + len(d["changed"])
+    if d.get("runtime_managed") and not a.json:
+        print("ℹ 동봉 git 이 실행 중에 고치는 자리 %d건은 봉인 대조에서 뺐다(파손 아님): %s"
+              % (len(d["runtime_managed"]), ", ".join(d["runtime_managed"][:a.max_list])))
     if a.json:
-        print(json.dumps({"ok": total == 0, "counts": {k: len(v) for k, v in d.items()},
-                          **{k: v[:a.max_list] for k, v in d.items()}},
+        core = {k: d[k] for k in ("missing", "added", "changed")}
+        print(json.dumps({"ok": total == 0, "counts": {k: len(v) for k, v in core.items()},
+                          "runtime_managed": d.get("runtime_managed", [])[:a.max_list],
+                          **{k: v[:a.max_list] for k, v in core.items()}},
                          ensure_ascii=False, sort_keys=True))
     else:
         if total == 0:

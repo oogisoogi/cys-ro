@@ -112,6 +112,29 @@ class RuntimeSealTests(unittest.TestCase):
                 out = {}
         return p.returncode, out
 
+    # ── ★D11-b(1.1.8): 동봉 git 이 실행 중에 고치는 자리는 파손이 아니다(좁게 · 분리 보고) ──
+    def test_d11b_runtime_managed_git_etc_is_not_damage(self):
+        etc = os.path.join(self.root, "git", "etc")
+        _write(os.path.join(etc, "post-install", "03-mtab.post"), b"post", 0o644)
+        _write(os.path.join(self.root, "git", "post-install.bat"), b"@echo off", 0o644)
+        self.assertEqual(0, self._emit())
+        # post-install 이 돈 뒤의 모양: 자기 스크립트 삭제 + MSYS 링크 생성
+        os.unlink(os.path.join(etc, "post-install", "03-mtab.post"))
+        os.unlink(os.path.join(self.root, "git", "post-install.bat"))
+        for n in ("hosts", "mtab", "networks", "protocols", "services"):
+            _write(os.path.join(etc, n), b"msys", 0o644)
+        rc, d = self._verify()
+        self.assertEqual(0, rc, "동봉 git 런타임 관리 자리를 파손으로 판정했다: %r" % d)
+        self.assertEqual({"added": 0, "changed": 0, "missing": 0}, d["counts"])
+        self.assertEqual(7, len(d["runtime_managed"]), d)
+
+    def test_d11b_other_git_etc_changes_still_count(self):
+        """좁게 뺀다 — 실행되는 설정(git/etc/profile)의 추가·변조는 여전히 파손이다."""
+        _write(os.path.join(self.root, "git", "etc", "profile"), b"evil", 0o644)
+        rc, d = self._verify()
+        self.assertEqual(1, rc, d)
+        self.assertIn("git/etc/profile", d["added"])
+
     # ── ① 무결 ─────────────────────────────────────────────────────────
     def test_clean_tree_matches(self):
         rc, d = self._verify()

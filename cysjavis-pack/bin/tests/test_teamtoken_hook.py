@@ -551,6 +551,41 @@ def suite_voice():
     check("V", "V-4 다른 좌석의 '그래 만들어' → 발급 0 · 무출력(그 좌석엔 제안도 질문도 없다)",
           not lab4.events("token_issued") and not r4.lines, r4.lines)
 
+    # V-5(1.1.8 M4 · 오너 원칙 2026-10-05) 목록 밖 자유 표현 동의 「그렇게 하죠」 → 질문은 열린 채 뜻 판정 대기 · 고지 1줄이
+    #     좌석에게 answer 호출을 지시한다(승인처럼 들리지 않아도 알린다) → 좌석 answer yes(원문 그대로) → 훅 세션 증거를 승계한 토큰.
+    lab5 = Lab("v5")
+    lab5.seed()
+    lab5.ask()
+    free = "그렇게 하죠"
+    r5 = lab5.hook(free, stub_rc=0)
+    ctx5 = ctx_of(r5.lines[0]) if r5.lines else ""
+    st5 = lab5.status()
+    check("V", "V-5a 자유 표현 동의 → 발급 0 · 질문 열림(answer_pending) · 고지 1줄 = 뜻 판정 지시(answer --meaning · 원문 파일)",
+          not lab5.events("token_issued") and len(lab5.events("answer_pending")) == 1
+          and not lab5.events("ask_closed") and st5.get("code") == "answer_pending" and len(r5.lines) == 1
+          and "answer_pending" in (ctx5 or "") and "answer --meaning" in (ctx5 or "")
+          and "--answer-file" in (ctx5 or ""), (ctx5 or "")[:240])
+    af = os.path.join(lab5.d, "answer.txt")
+    w(af, free + "\n")
+    a5 = lab5.py("import json, javis_teamtoken as t\nprint(json.dumps(t.answer(sys.argv[1], sys.argv[2])))",
+                 "yes", af)
+    iss5 = lab5.events("token_issued")
+    check("V", "V-5b 좌석 answer yes(원문 그대로) → 토큰 1 · 훅 세션 증거 승계(via=hook·sess-p4-test) · meaning_by=model",
+          a5.get("code") == "token_issued" and len(iss5) == 1 and iss5[0].get("via") == "hook"
+          and iss5[0].get("hook_session") == "sess-p4-test" and iss5[0].get("meaning_by") == "model",
+          "%s %r" % (a5.get("code"), iss5[:1]))
+
+    # V-6 음성 대조: 같은 문장이 기계 배달이면 출처 검사가 먼저 막는다 — 대기 기록 0 · 승인처럼 들리지 않으니 고지 0.
+    lab6 = Lab("v6")
+    lab6.seed()
+    lab6.ask()
+    lab6.deliver(free)
+    r6 = lab6.hook(free, stub_rc=6)
+    check("V", "V-6 기계 배달 「그렇게 하죠」 → machine_origin · 대기 기록 0 · 고지 0 · 질문은 awaiting_answer",
+          not lab6.events("answer_pending") and not r6.lines
+          and any(x.get("code") == "machine_origin" for x in lab6.events("issue_refused"))
+          and lab6.status().get("code") == "awaiting_answer", "lines=%r" % r6.lines)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # O — stdout 계약(JSON 1줄 또는 무출력)

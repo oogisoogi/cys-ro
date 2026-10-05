@@ -201,10 +201,29 @@ else
     PREV="$DIR"
     DIR=$(dirname "$DIR")
   done
+  # ---------- ★D14(1.1.8): lead 좌석(master·cso*)의 작업기억 정본 = 레인 팩 round/ ----------
+  # 윈 실측(2026-10-05): 이 상향탐색이 master 에게 `install-jarvis/_round` 를 보여 줘 master 가 거기에 쓰고,
+  #   판정기(orchestra next-action·gate-status)와 CSO 검증은 지침대로 팩 round/ 를 읽어 큐가 늘 비었다.
+  #   lead 좌석은 정본(cys_session_state_path — python 쌍둥이 javis_session.py)만 싣는다. 옛 자리에 기록이
+  #   있으면(위 루프·ACTIVE_PROJECT) 정본이 설치 골격일 때만 정본으로 복사한다(백업 · 옛 파일 무접촉 · 삭제 0)
+  #   — 결과는 1줄로 알린다. member·역할 미상 좌석은 종전 그대로(프로젝트 `_round` 는 그 프로젝트의 기억이다).
+  if [ "$_IC_GATE" = "lead" ] && command -v cys_session_state_path >/dev/null 2>&1; then
+    _IC_CANON="$(cys_session_state_path)"
+    if [ -n "$STATE" ] || [ -f "$ROOT/_round/ACTIVE_PROJECT" ]; then
+      _IC_SESS_PY="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_session.py"
+      if [ -f "$_IC_SESS_PY" ]; then
+        _IC_ADOPT="$(cys_timeout_run 10 "$CYS_PY" "$(cys_native_path "$_IC_SESS_PY")" adopt --say --apply \
+          --cwd "$(cys_native_path "${CWD:-$HOME}")" --root "$(cys_native_path "$ROOT")" 2>/dev/null | tr -d '\r')"
+        [ -n "$_IC_ADOPT" ] && OUT="${OUT}$(printf '%s' "$_IC_ADOPT" | sed 's/\\/\\\\/g')\n"
+      fi
+    fi
+    STATE=""; STATE_DIR=""
+    if [ -f "$_IC_CANON" ]; then STATE="$_IC_CANON"; STATE_DIR="$(dirname "$_IC_CANON")"; fi
+  fi
 fi
-# fallback: 루트 ACTIVE_PROJECT 포인터
+# fallback: 루트 ACTIVE_PROJECT 포인터 (★D14: lead 좌석은 정본만 — 옛 자리로 떨어지지 않는다)
 USED_FALLBACK=""
-if [ -z "$STATE" ] && [ -z "$DEPT_CTX" ] && [ -f "$ROOT/_round/ACTIVE_PROJECT" ]; then
+if [ -z "$STATE" ] && [ -z "$DEPT_CTX" ] && [ -z "${_IC_CANON:-}" ] && [ -f "$ROOT/_round/ACTIVE_PROJECT" ]; then
   AP=$(head -1 "$ROOT/_round/ACTIVE_PROJECT" 2>/dev/null)
   if [ -n "$AP" ] && [ -f "$AP/_round/SESSION_STATE.md" ]; then STATE="$AP/_round/SESSION_STATE.md"; STATE_DIR="$AP"; USED_FALLBACK=1; fi
 fi
@@ -220,7 +239,7 @@ if [ -n "$STATE" ]; then
   # ★멀티-워크스페이스 혼동 방어: 작업기억을 '현재 폴더'가 아닌 곳에서 가져왔으면 자동 경고
   if [ -n "$USED_FALLBACK" ]; then
     OUT="${OUT}⚠ 이 기억은 현재 폴더에서 못 찾아 ACTIVE_PROJECT fallback($(_esc "$STATE_DIR"))으로 가져왔다. 이 프로젝트 고유 기억이 아닐 수 있음 — 다른 프로젝트면 현재 폴더에 _round/SESSION_STATE.md를 먼저 만들 것.\n"
-  elif [ -n "$CWD" ] && [ -n "$STATE_DIR" ] && [ "$STATE_DIR" != "$CWD" ]; then
+  elif [ -z "${_IC_CANON:-}" ] && [ -n "$CWD" ] && [ -n "$STATE_DIR" ] && [ "$STATE_DIR" != "$CWD" ]; then
     OUT="${OUT}⚠ 이 기억은 현재 폴더($(_esc "$CWD"))가 아니라 상위($(_esc "$STATE_DIR"))에서 가져왔다. 이 프로젝트 고유 작업기억이 아닐 수 있음 — 다른 프로젝트면 현재 폴더에 _round/SESSION_STATE.md를 먼저 만들 것(멀티-워크스페이스 혼동 방지).\n"
   fi
   # ★⑤ 고정 헤더 발췌 주입(외부 메모리 아키텍처 접목): 작업기억이 비대하면 첫 화면을
@@ -235,6 +254,8 @@ if [ -n "$STATE" ]; then
   fi
 elif [ -n "$DEPT_STATE_WITHHELD" ]; then
   OUT="${OUT}■ 부서장 작업기억(SESSION_STATE)은 master 소관이라 이 좌석에 싣지 않는다 — 네 작업 목록이 아니다(필요하면 읽기만: $(_esc "$DEPT_STATE_WITHHELD")). 네 일은 자기 TODO(cys todo-path)와 이 세션에 배달된 지시가 정한다.\n\n"
+elif [ -n "${_IC_CANON:-}" ]; then
+  OUT="${OUT}■ 작업기억 미발견(정본 $(_esc "$_IC_CANON") 없음) — 임의 추정 금지. 첫 기록은 이 정본 경로에 쓴다.\n\n"
 else
   OUT="${OUT}■ 작업기억 미발견 — 임의 추정 금지. 활성 프로젝트를 지정하라.\n\n"
 fi

@@ -41,6 +41,12 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
+# ★번들 파이썬(Windows embeddable ._pth) 형제 모듈 import 가드 — javis_orchestra.py 와 같은 꼴(append).
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
+_SELF_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SELF_DIR not in sys.path:
+    sys.path.append(_SELF_DIR)
+
 # ★S1ⓒ 표준 스트림 인코딩 독립화(TICKET=cys-phoenix-korean-windows · 형제 스윕).
 #   피닉스가 이 스크립트를 실행하고 그 출력을 읽는다 — 로케일 코덱(cp949 등)에 묶이면 한국어 Windows 에서
 #   로그 한 줄의 비-ASCII 에 UnicodeEncodeError 로 죽어 부활 체인을 함께 끊는다.
@@ -216,7 +222,16 @@ def default_sources(home=HOME, state_root=None, depts_json=None, windows=None, l
     # ★PREP #3: 해소는 project_round_dir() 한 곳 — 데몬 잡(cwd `/`·JAVIS_ROOT 없음)에서 `/_round`
     #   로 떨어져 5세대+ 누락되던 경로를 `<pack>/round` 폴백으로 닫는다(사유·순서는 그 docstring).
     proj_round = project_round_dir()
-    srcs.append(os.path.join(proj_round, "SESSION_STATE.md"))
+    # ★D14(1.1.8): SESSION_STATE 는 정본(javis_session.session_state_path · 레인 팩 round/)을 먼저 담는다.
+    #   종전엔 JAVIS_ROOT 가 있으면 `<JAVIS_ROOT>/_round` 만 담아, 정본(판정기·CSO 가 읽는 파일)이 세대
+    #   보관에서 빠질 수 있었다. 옛 자리에 다른 파일이 실재하면 그것도 함께 담는다(보관은 손실 쪽이 아니다).
+    import javis_session as _jsess   # 형제 모듈 — 모듈 머리 _SELF_DIR 가드 뒤
+    canon_ss = _jsess.session_state_path()
+    srcs.append(canon_ss)
+    legacy_ss = os.path.join(proj_round, "SESSION_STATE.md")
+    if os.path.normcase(os.path.abspath(legacy_ss)) != os.path.normcase(os.path.abspath(canon_ss)) \
+            and os.path.isfile(legacy_ss):
+        srcs.append(legacy_ss)
     # D-07: 종전엔 glob 0건이 조용한 0이라 phoenix 세대에서 노드 TODO 누락이 보이지 않았다.
     todo_pattern = os.path.join(proj_round, "*_TODO.md")
     srcs.extend(sorted(_glob.glob(todo_pattern)) or [todo_pattern])

@@ -2370,7 +2370,9 @@ launch_dept(){   # $1=name
     #   제외로 통과).
     validate_dept_name "$name" "launch <name>"
     # ①(Fable R2 E) 판독 실패 = 폴더도 만들지 않는다(12 로 끝난 뒤 빈 부서 폴더가 남으면 passthrough 가 「기존 부서」 로 본다).
-    reg_check || exit $?
+    #   ★1.1.8 병합 해소: rotate 재기동(kill 이후 · _CYS_ROTATE_SELF=1)은 폴더가 이미 있으니 그 우려가 없다 — 원작자 J4
+    #   관용(rot_reg_degraded · rc 12 한정)으로 감싸 재기동을 진행한다. 일반 launch 는 종전대로 12 로 끝난다.
+    reg_check || { _rc=$?; rot_reg_degraded "$_rc" "진입 판독 확인(rotate · 폴더 기존)" || exit "$_rc"; }
     reject_slug_collision "$name"
     sock="$(dept_sock "$name")"; pack="$(dept_pack "$name")"
     mkdir -p "$(dept_logdir "$name")" "$pack/directives"
@@ -3218,8 +3220,10 @@ PY
     reg_check || exit $?
     graceful_kill "$pid"
     rm -f "$sock" "$sock.lock" 2>/dev/null || true
-    # ①(Fable R1 #5 · R2 B) kill 뒤 판독 실패 = 12 · 이 시점엔 데몬이 이미 죽었으므로 「무변경」 이 아니라 그 사실을 말한다.
-    reg_check 2>/dev/null || { _rc=$?; echo "[cys-dept] $name 데몬은 종료됨 · 부서 목록을 읽을 수 없어 재기동 보류 — 목록을 고친 뒤 cys-dept launch $name 으로 재기동하라" >&2; exit $_rc; }
+    # ★1.1.8 병합 해소(name_guard J4·J5 적색 8 중 5): 여기 있던 우리 1.1.7 줄(Fable R2 B · kill 뒤 판독 실패 = 「재기동 보류」
+    #   exit 12)은 원작자 648cf68e(J4 · kill 이후 재기동 보장)와 병합에서 함께 남아 아래 원작자 갈래(판독 불가 = 재기동 진행)를
+    #   죽은 코드로 만들었다 → 데몬은 죽고 등재만 남는 반파괴. 원작자 갈래를 채택한다 — kill **전** 판독 확인(위 reg_check ·
+    #   우리 1.1.7)은 그대로이고, kill 뒤엔 쓰기가 여전히 rc 12 로 거절되므로 손상 원본은 보존되며 최종 rc 도 12 다.
     # ★필수2(A·리뷰) TOCTOU 재확인: kill·rm 도중 CSO down(reg_remove+dept_tombstone)이 레이스로 끼어들어
     # 폐기됐으면 launch(부활) 금지 — 사전 게이트 이후 창을 최소화하려 launch 직전에 한 번 더 확인(미등재→exit 8).
     # ★J4(2026-09-18 · 마스터 결재 (b)): **이 확인은 kill·rm 이 끝난 뒤**다(바로 위 두 줄). 그래서

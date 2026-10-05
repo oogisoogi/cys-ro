@@ -329,16 +329,66 @@ def _fmt_ts(epoch):
         return str(epoch)
 
 
+# ★D15(1.1.8 · 윈 결함 보고 2026-10-05): 이상징후 **출처** — 관측 시각·좌석·프롬프트 해시 앞자리.
+#   종전 저장 항목은 code·detail 둘뿐이라, 대장에서 재생된 이상이 「지금 내 프롬프트에서 난 재발」인지
+#   「다른 좌석이 전에 남긴 기록의 재생」인지 보고 안에서 판독할 근거가 없었다(실측 오보 1건 · CSO 103 이
+#   master 105 의 08:58 기록을 「1건 재발」로 보고). 한 프로세스 = 훅 1회 = 프롬프트 1개라 관측 시각은
+#   프로세스 시작 시각 하나로 박는다(같은 실행 안의 중복 제거가 흔들리지 않게).
+_OBS_EPOCH = time.time()
+_OBS_PROMPT_SHA = [None]          # _record_step 이 프롬프트를 받으면 채운다(앞 12자)
+# 프롬프트 유래 코드 — 그 프롬프트에서 1회만 관측된다. 같은 문구라도 **다른 시각의 관측은 다른 사건**이라
+#   중복 제거 키에 관측 시각을 넣는다(종전 (code,detail) 키는 동일 문구의 진짜 재발을 조용히 합쳤다).
+#   상태 유래(원장·env)는 매 판독마다 재관측되므로 종전 키 그대로(시각을 넣으면 매 프롬프트 1건씩 쌓여
+#   ANOMALY_KEEP 50 을 밀어내 진짜 흔적을 지운다).
+PROMPT_ANOMALY_CODES = frozenset(("delivery_out_of_window", "delivery_concatenated", "delivery_substring",
+                                  "delivery_anchor_capped", "delivery_prompt_within_delivery"))
+
+
+def _anomaly_key(item):
+    code = item.get("code")
+    if code in PROMPT_ANOMALY_CODES:
+        return (code, item.get("detail"), item.get("ts"))
+    return (code, item.get("detail"))
+
+
+def _obs_ts():
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(_OBS_EPOCH))
+
+
 def collected_anomalies():
-    """지금까지 관측된 이상징후 [(코드, 사유), …] — 중복 제거·순서 보존."""
+    """지금까지 관측된 이상징후 [{code, detail, ts, surface, prompt_sha}, …] — 중복 제거·순서 보존.
+    ★D15: 출처 3필드(관측 시각·좌석·프롬프트 해시 앞자리 — 프롬프트 없는 판독이면 null)."""
     seen, out = set(), []
+    try:
+        surface = _surface()
+    except Exception:
+        surface = ""
     for code, why in list(ENV_ANOMALIES) + list(_ANOMALY_SINK):
-        key = (code, why)
+        item = {"code": code, "detail": why, "ts": _obs_ts(), "surface": surface,
+                "prompt_sha": _OBS_PROMPT_SHA[0]}
+        key = _anomaly_key(item)
         if key in seen:
             continue
         seen.add(key)
-        out.append({"code": code, "detail": why})
+        out.append(item)
     return out
+
+
+def anomaly_line(a):
+    """보고 1줄 — ★D15: 대장에서 재생된 것은 「재생(기록 시각·좌석)」, 지금 관측한 것은 그대로.
+    출처 필드가 없는 옛 기록은 그 사실을 적는다(「알 수 없음」을 「지금」으로 오인하지 않게)."""
+    head = "★이상징후(%s): %s" % (a.get("code"), a.get("detail"))
+    if a.get("replay"):
+        if a.get("ts") or a.get("surface"):
+            where = "재생(기록 시각 %s · 좌석 %s%s)" % (
+                a.get("ts") or "?", a.get("surface") or "?",
+                (" · 프롬프트 %s" % a["prompt_sha"]) if a.get("prompt_sha") else "")
+        else:
+            where = "재생(관측 시각·좌석 기록 없음 — 옛 판이 남긴 기록 · 지금 난 일이 아니다)"
+        return "%s — %s · 오너에게 보고하라(은폐 금지)" % (head, where)
+    where = "지금 관측(%s · 좌석 %s%s)" % (a.get("ts") or "?", a.get("surface") or "?",
+                                        (" · 프롬프트 %s" % a["prompt_sha"]) if a.get("prompt_sha") else "")
+    return "%s — %s · 오너에게 보고하라(은폐 금지)" % (head, where)
 
 DELIVERY_WINDOW_MIN_S = 600        # 10분 — 이보다 짧은 창은 층1 무력화와 사실상 동치
 DELIVERY_WINDOW_MAX_S = 604800     # 7일 — 이 이상은 의미가 없고 산술만 커진다
@@ -1743,10 +1793,17 @@ MISSION_TTL_S = _env_bounded("CYS_MISSION_TTL_S", 43200,
 def _merge_anomalies(recorded):
     """대장에 박힌 이상징후 + 지금 관측된 이상징후(중복 제거). 판정에는 영향 없다 — 보고용."""
     out, seen = [], set()
-    for item in list(recorded or []) + collected_anomalies():
+    now = collected_anomalies()
+    for item in list(recorded or []):
         if not isinstance(item, dict):
             item = {"code": "unknown", "detail": str(item)}
-        key = (item.get("code"), item.get("detail"))
+        key = _anomaly_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(item, replay=True))     # ★D15: 대장 기록 = 재생(보고용 표지 · 영속하지 않는다)
+    for item in now:
+        key = _anomaly_key(item)
         if key in seen:
             continue
         seen.add(key)
@@ -1862,8 +1919,7 @@ ANOMALY_KEEP = 50
 def _stderr_anomalies():
     """관측된 이상징후를 stderr 로 드러낸다(은폐 금지 규약 · 판정은 바꾸지 않는다)."""
     for a in collected_anomalies():
-        sys.stderr.write("[mission] ★이상징후(%s): %s — 오너에게 보고하라(은폐 금지)\n"
-                         % (a.get("code"), a.get("detail")))
+        sys.stderr.write("[mission] %s\n" % anomaly_line(a))
 
 
 def _persist_anomalies(ledger_status=None):
@@ -1908,7 +1964,8 @@ def _persist_anomalies(ledger_status=None):
     for item in list(rec.get("anomalies") or []) + anomalies:
         if not isinstance(item, dict):
             item = {"code": "unknown", "detail": str(item)}
-        key = (item.get("code"), item.get("detail"))
+        item = {k: v for k, v in item.items() if k != "replay"}
+        key = _anomaly_key(item)                  # ★D15: 프롬프트 유래는 관측 시각까지 키
         if key in seen:
             continue
         seen.add(key)
@@ -2022,6 +2079,8 @@ def _record_step(parsed):
         return EXIT_UNREADABLE
     if not isinstance(prompt, str) or not prompt.strip():
         return gate()[0]
+    # ★D15: 이 실행에서 관측되는 이상징후의 출처(프롬프트 해시 앞 12자 — 원문은 싣지 않는다)
+    _OBS_PROMPT_SHA[0] = hashlib.sha256(prompt.encode("utf-8", "replace")).hexdigest()[:12]
     # ── ★기계 유래 배제(T1 적대검증 FAIL 봉합 · R1 원장 승격) — 다른 무엇보다 **먼저** ──────
     # 자기 예약 wake(`[wakeup] …`)·노드 완료 push(`[worker-1 완료] …`)·훅 알림은 오너 채널이
     # 아니다. 대장을 **읽지도 쓰지도 않고** 그대로 둔다:
@@ -2114,8 +2173,7 @@ def cmd_status(argv):
         #   차단할 수 없는 조작(원장 절단·회전 밀어내기·env 창 축소)의 유일한 무기가 이 흔적이다.
         #   master 는 이 줄이 나오면 오너에게 보고해야 한다 — 은폐는 규약 위반이다.
         for a in v.get("anomalies") or []:
-            print("[mission] ★이상징후(%s): %s — 오너에게 보고하라(은폐 금지)"
-                  % (a.get("code"), a.get("detail")), file=sys.stderr)
+            print("[mission] %s" % anomaly_line(a), file=sys.stderr)
     return rc
 
 

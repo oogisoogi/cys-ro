@@ -42,6 +42,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 # ★번들 파이썬(Windows embeddable ._pth) 형제 모듈 import 가드 — javis_orchestra.py 와 같은 꼴(append).
+sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SELF_DIR not in sys.path:
     sys.path.append(_SELF_DIR)

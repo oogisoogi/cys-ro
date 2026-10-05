@@ -4442,6 +4442,10 @@ def h_win_14():
                         input=json.dumps({"source": source, "cwd": proj}))
 
         legacy_clear = "▶ 작업 계속(source=clear): 위 작업기억 이어서 진행."
+        # ★1.1.8 병합: lead startup 「종전 문안」 = 우리 T6 I-2(오너 확정 정책 · TICKET=restore-impl-A2-2) — 원작자
+        #   0.14.40 문안(… → 미해결 게이트부터 재개)을 우리 정책이 대체했다(POSIX 짝 test_inject_context_role_seat
+        #   LEGACY_STARTUP · test_t6_injection_policy E3 와 같은 문안).
+        legacy_startup = "상태만 복원하고 대기 — RECOVERY.md 절차로 상태를 읽고"
         for role, src in (("worker", "clear"), ("reviewer-codex", "startup"), ("worker-2", "resume")):
             r = run(role, src, nopack)
             need(r.returncode == 0, "%s/%s exit=%d %r" % (role, src, r.returncode, r.stderr[-200:]))
@@ -4450,7 +4454,7 @@ def h_win_14():
                  "%s/%s 에 자율 착수 문안이 남았다" % (role, src))
             need("HUB-GATE-MARKER" in r.stdout, "%s/%s 본부 작업기억 본문이 사라졌다(설계: 대체는 부서만)" % (role, src))
         notes.append("팀원 3역할 중립")
-        for role, src, want in (("master", "clear", legacy_clear), ("cso", "startup", "미해결 게이트부터 재개.")):
+        for role, src, want in (("master", "clear", legacy_clear), ("cso", "startup", legacy_startup)):
             r = run(role, src, nopack)
             need(want in r.stdout and "착수 게이트" not in r.stdout, "lead %s/%s 종전 문안 변경: %r"
                  % (role, src, r.stdout[-300:]))

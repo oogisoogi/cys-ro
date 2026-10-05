@@ -18391,6 +18391,7 @@ fn hook_record_mission(
         ledger_status,
         &decision.anomalies,
         Some(prompt.chars().count()),
+        Some(prompt), // ★D15: 이상징후 출처(프롬프트 해시 앞 12자 · 원문은 싣지 않는다)
     ) {
         if let Err(e) = cys::atomic_write_json(mission_p, &rec) {
             notes.push(format!("대장 쓰기 실패({e}) — 판정 무영향"));

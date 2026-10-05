@@ -1891,16 +1891,80 @@ pub fn extract_mission(prompt: &str) -> MissionExtract {
 /// 대장에 보존하는 이상징후 최대 개수(python `ANOMALY_KEEP`). 오래된 것부터 밀려난다.
 pub const ANOMALY_KEEP: usize = 50;
 
-/// 대장 레코드의 이상징후 1건. python 은 `{"code":…, "detail":…}` dict 다.
+/// 대장 레코드의 이상징후 1건. python 은 `{"code":…, "detail":…, "ts":…, "surface":…, "prompt_sha":…}` dict 다.
+///
+/// ★D15(1.1.8 · 윈 결함 보고 10-05 · python 판 w2 1c8dc7ce 와 필드명·키 규칙 동일): **출처 3필드** — 관측 시각(`ts` ·
+/// 로컬 `%Y-%m-%dT%H:%M:%S%z`)·좌석(`surface`)·프롬프트 해시 앞 12자(`prompt_sha` · 원문은 싣지 않는다). 종전엔
+/// code·detail 둘뿐이라 대장에서 재생된 이상이 「지금 난 재발」인지 「다른 좌석의 옛 기록」인지 판독할 근거가 없었다
+/// (실측 오보 1건). 옛 판이 남긴 기록(필드 없음)은 `None` 으로 읽고, `None` 은 쓰지 않는다(옛 바이트 보존 ·
+/// python 의 null 과 판독상 같다) — 있으면 그대로 왕복한다(조용히 떨어뜨리지 않는다 · 시험 d15_*).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Anomaly {
     pub code: String,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_sha: Option<String>,
 }
 
 impl Anomaly {
     pub fn new(code: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { code: code.into(), detail: detail.into() }
+        Self { code: code.into(), detail: detail.into(), ts: None, surface: None, prompt_sha: None }
+    }
+}
+
+/// ★D15 프롬프트 유래 코드(python `PROMPT_ANOMALY_CODES` 와 같은 집합) — 그 프롬프트에서 1회만 관측되므로 같은
+/// 문구라도 **다른 시각의 관측은 다른 사건**이다 → 중복 제거 키에 관측 시각을 넣는다. 상태 유래(원장·env)는 매
+/// 판독마다 재관측되므로 종전 키 `(code, detail)` 그대로(시각을 넣으면 매 프롬프트 1건씩 쌓여 ANOMALY_KEEP 을 밀어낸다).
+pub const PROMPT_ANOMALY_CODES: [&str; 5] = [
+    "delivery_out_of_window",
+    "delivery_concatenated",
+    "delivery_substring",
+    "delivery_anchor_capped",
+    "delivery_prompt_within_delivery",
+];
+
+/// ★D15 중복 제거 키(python `_anomaly_key`) — 프롬프트 유래 = `(code, detail, ts)` · 그 밖 = `(code, detail, None)`.
+pub fn anomaly_key(a: &Anomaly) -> (String, String, Option<String>) {
+    let ts = PROMPT_ANOMALY_CODES.contains(&a.code.as_str()).then(|| a.ts.clone()).flatten();
+    (a.code.clone(), a.detail.clone(), ts)
+}
+
+/// ★D15 이번 관측의 출처 — 한 훅 실행 = 프롬프트 1개라 관측 시각·좌석·프롬프트 해시는 실행당 하나다.
+#[derive(Debug, Clone, Default)]
+pub struct ObsProvenance {
+    pub ts: Option<String>,
+    pub surface: Option<String>,
+    pub prompt_sha: Option<String>,
+}
+
+impl ObsProvenance {
+    /// 훅 기록 경로용 — 관측 시각 = `now`(로컬 표기) · 좌석 · 프롬프트 원문의 sha256 앞 12자(python 과 같은 입력 =
+    /// UTF-8 원문 · 정규화 전).
+    pub fn for_prompt(now: f64, surface: &str, prompt: Option<&str>) -> Self {
+        use sha2::{Digest, Sha256};
+        let ts = local_ts(now);
+        Self {
+            ts: (!ts.is_empty()).then_some(ts),
+            surface: Some(surface.to_string()),
+            prompt_sha: prompt.map(|p| {
+                let h = Sha256::digest(p.as_bytes());
+                h.iter().take(6).map(|b| format!("{b:02x}")).collect()
+            }),
+        }
+    }
+
+    fn stamp(&self, code: &str, detail: &str) -> Anomaly {
+        Anomaly {
+            code: code.to_string(),
+            detail: detail.to_string(),
+            ts: self.ts.clone(),
+            surface: self.surface.clone(),
+            prompt_sha: self.prompt_sha.clone(),
+        }
     }
 }
 
@@ -2024,6 +2088,25 @@ pub fn build_record(
     }
 }
 
+/// [`build_record`] + ★D15 관측 출처 각인(기록 경로 [`apply_plan`] 이 쓴다).
+#[allow(clippy::too_many_arguments)]
+fn build_record_with(
+    mission: Option<&str>,
+    source: &str,
+    reason: &str,
+    surface: &str,
+    now: f64,
+    boot_epoch: Option<f64>,
+    ledger_status: Option<LedgerStatus>,
+    anomalies: &[(String, String)],
+    prompt_chars: Option<usize>,
+    prov: &ObsProvenance,
+) -> LedgerRecord {
+    let mut r = build_record(mission, source, reason, surface, now, boot_epoch, ledger_status, &[], prompt_chars);
+    r.anomalies = merge_anomalies_with(&[], anomalies, prov);
+    r
+}
+
 /// python `time.strftime("%Y-%m-%dT%H:%M:%S%z")` 미러 — **로컬 시각 + 오프셋**.
 ///
 /// 사람용 표기다(판정은 `ts_epoch` 로만 한다). 로컬 타임존에 의존하는 것은 python 과 같은
@@ -2038,14 +2121,20 @@ fn local_ts(now: f64) -> String {
 }
 
 /// 대장에 박힌 이상징후 + 지금 관측된 것(python `_persist_anomalies` 의 병합부).
-/// 키는 `(code, detail)` 이고 **순서를 보존**하며, 상한 초과 시 **오래된 것부터** 밀린다.
+/// 키는 [`anomaly_key`](★D15 — 프롬프트 유래는 관측 시각까지) 이고 **순서를 보존**하며, 상한 초과 시 **오래된 것부터** 밀린다.
+/// 출처 없는 관측(시험·구 호출부) = 출처 필드 None.
 pub fn merge_anomalies(recorded: &[Anomaly], observed: &[(String, String)]) -> Vec<Anomaly> {
+    merge_anomalies_with(recorded, observed, &ObsProvenance::default())
+}
+
+/// [`merge_anomalies`] + ★D15 관측 출처 각인 — 대장 기록(재생분)의 출처는 **그대로** 두고 이번 관측에만 붙인다.
+pub fn merge_anomalies_with(recorded: &[Anomaly], observed: &[(String, String)], prov: &ObsProvenance) -> Vec<Anomaly> {
     let mut all: Vec<Anomaly> = recorded.to_vec();
-    all.extend(observed.iter().map(|(c, d)| Anomaly::new(c, d)));
-    let mut seen: Vec<(String, String)> = Vec::new();
+    all.extend(observed.iter().map(|(c, d)| prov.stamp(c, d)));
+    let mut seen: Vec<(String, String, Option<String>)> = Vec::new();
     let mut out: Vec<Anomaly> = Vec::new();
     for a in all {
-        let key = (a.code.clone(), a.detail.clone());
+        let key = anomaly_key(&a);
         if seen.contains(&key) {
             continue;
         }
@@ -2266,7 +2355,10 @@ pub fn apply_plan(
     ledger_status: LedgerStatus,
     anomalies: &[(String, String)],
     prompt_chars: Option<usize>,
+    // ★D15: 이번 관측의 프롬프트 원문(해시 앞자리만 각인 · None = 프롬프트 없는 판독).
+    prompt: Option<&str>,
 ) -> Option<LedgerRecord> {
+    let prov = ObsProvenance::for_prompt(now, surface, prompt);
     match plan {
         LedgerPlan::Nothing => None,
         LedgerPlan::AnomaliesOnly => {
@@ -2290,7 +2382,7 @@ pub fn apply_plan(
                         &[],
                         None,
                     );
-                    r.anomalies = merge_anomalies(&[], anomalies);
+                    r.anomalies = merge_anomalies_with(&[], anomalies, &prov);
                     Some(r)
                 }
                 LedgerRead::Ok(rec) => {
@@ -2298,12 +2390,12 @@ pub fn apply_plan(
                     //   `boot_epoch`·`surface`·`ledger_status` 가 게이트 판정의 입력이고,
                     //   여기서 한 글자라도 갈리면 흔적 기록이 권한 조작으로 둔갑한다.
                     let mut out = (**rec).clone();
-                    out.anomalies = merge_anomalies(&rec.anomalies, anomalies);
+                    out.anomalies = merge_anomalies_with(&rec.anomalies, anomalies, &prov);
                     Some(out)
                 }
             }
         }
-        LedgerPlan::Write { mission, source, reason } => Some(build_record(
+        LedgerPlan::Write { mission, source, reason } => Some(build_record_with(
             mission.as_deref(),
             source,
             reason,
@@ -2313,6 +2405,7 @@ pub fn apply_plan(
             Some(ledger_status),
             anomalies,
             prompt_chars,
+            &prov,
         )),
     }
 }
@@ -3070,7 +3163,7 @@ mod tests {
     #[test]
     fn apply_plan_writes_nothing_in_the_quiet_path_and_never_overwrites_a_damaged_ledger() {
         let a = |plan: &LedgerPlan, led: &LedgerRead, an: &[(String, String)]| {
-            apply_plan(plan, led, "101", 1_700_000_100.0, None, LedgerStatus::Absent, an, None)
+            apply_plan(plan, led, "101", 1_700_000_100.0, None, LedgerStatus::Absent, an, None, None)
         };
         // 이상징후 0 → 무쓰기.
         assert!(
@@ -3106,6 +3199,7 @@ mod tests {
             LedgerStatus::Unreadable,    // ← 다른 원장 상태를 넘겨도
             &an,
             Some(1234),
+            None,
         )
         .expect("흔적 병합이 아무것도 안 냈다");
         let LedgerRead::Ok(b) = &before else { unreachable!() };
@@ -3173,6 +3267,57 @@ mod tests {
     }
 
     /// ★H-MISSION-R5-i: 이상징후 병합의 중복 제거·순서·상한.
+    /// ★D15(1.1.8) 출처 3필드 — python 판(w2 1c8dc7ce)이 쓴 대장 줄을 읽고 다시 써도 ts·surface·prompt_sha 가
+    /// 떨어지지 않는다(serde 왕복) · 옛 판 기록(필드 없음)은 None 으로 읽고 다시 쓸 때 키를 만들지 않는다(옛 바이트 보존).
+    #[test]
+    fn d15_anomaly_provenance_round_trips_and_old_records_stay_byte_shaped() {
+        let py = r#"{"code":"delivery_substring","detail":"d","ts":"2026-10-06T02:54:11+0900","surface":"105","prompt_sha":"0123456789ab"}"#;
+        let a: Anomaly = serde_json::from_str(py).unwrap();
+        assert_eq!(a.ts.as_deref(), Some("2026-10-06T02:54:11+0900"));
+        assert_eq!(a.surface.as_deref(), Some("105"));
+        assert_eq!(a.prompt_sha.as_deref(), Some("0123456789ab"));
+        let back: serde_json::Value = serde_json::to_value(&a).unwrap();
+        assert_eq!(back, serde_json::from_str::<serde_json::Value>(py).unwrap(), "왕복에서 출처 필드 소실");
+        let pynull: Anomaly = serde_json::from_str(r#"{"code":"x","detail":"y","ts":"t","surface":"1","prompt_sha":null}"#).unwrap();
+        assert_eq!(pynull.prompt_sha, None, "python null = None");
+        let old: Anomaly = serde_json::from_str(r#"{"code":"x","detail":"y"}"#).unwrap();
+        assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"code":"x","detail":"y"}"#, "옛 기록 = 옛 모양 그대로");
+    }
+
+    /// ★D15 중복 키 — 프롬프트 유래 5코드는 (code,detail,ts) · 상태 유래는 (code,detail). 대장 재생분의 출처는 보존하고
+    /// 이번 관측에만 출처를 각인한다 · 프롬프트 해시 = 원문 sha256 앞 12자(python 과 같은 입력).
+    #[test]
+    fn d15_dedup_key_and_provenance_stamping() {
+        let prov = ObsProvenance { ts: Some("T2".into()), surface: Some("7".into()), prompt_sha: Some("abc".into()) };
+        let mut prior = Anomaly::new("delivery_substring", "same");
+        prior.ts = Some("T1".into());
+        prior.surface = Some("5".into());
+        let mut prior_state = Anomaly::new("ledger_bad_lines", "s");
+        prior_state.ts = Some("T1".into());
+        let obs = vec![
+            ("delivery_substring".to_string(), "same".to_string()),   // 다른 시각 = 다른 사건 → 남는다
+            ("ledger_bad_lines".to_string(), "s".to_string()),        // 상태 유래 같은 문구 = 하나로 합친다
+        ];
+        let m = merge_anomalies_with(&[prior.clone(), prior_state.clone()], &obs, &prov);
+        assert_eq!(m.len(), 3, "{m:?}");
+        assert_eq!(m[0], prior, "재생분 출처 보존(T1·좌석 5)");
+        assert_eq!(m[1], prior_state);
+        assert_eq!((m[2].ts.as_deref(), m[2].surface.as_deref(), m[2].prompt_sha.as_deref()), (Some("T2"), Some("7"), Some("abc")));
+        // 같은 실행 안 같은 관측은 하나(같은 ts).
+        let twice = merge_anomalies_with(&[], &[obs[0].clone(), obs[0].clone()], &prov);
+        assert_eq!(twice.len(), 1);
+        for c in PROMPT_ANOMALY_CODES {
+            assert!(is_registered_anomaly(c), "프롬프트 유래 코드 미등재: {c}");
+        }
+        let p = ObsProvenance::for_prompt(1_700_000_000.0, "9", Some("안녕 world"));
+        use sha2::{Digest, Sha256};
+        let want: String = Sha256::digest("안녕 world".as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect();
+        assert_eq!(p.prompt_sha.as_deref(), Some(want.as_str()));
+        assert_eq!(want.len(), 12);
+        assert_eq!(p.surface.as_deref(), Some("9"));
+        assert!(ObsProvenance::for_prompt(1_700_000_000.0, "9", None).prompt_sha.is_none(), "프롬프트 없는 판독 = null");
+    }
+
     #[test]
     fn merge_anomalies_dedups_preserves_order_and_drops_oldest() {
         let rec: Vec<Anomaly> = vec![Anomaly::new("a", "1"), Anomaly::new("b", "2")];

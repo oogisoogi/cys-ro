@@ -10,6 +10,7 @@ pub mod check;
 pub mod cli;
 pub mod clock;
 pub mod errors;
+pub mod failures;
 pub mod feed;
 pub mod gates;
 pub mod hold;

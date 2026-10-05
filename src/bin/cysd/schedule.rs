@@ -4300,6 +4300,9 @@ mod tests {
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         // ★(리뷰 R2) 목적지 적격성은 **에이전트 등록**을 요구한다(빈 셸은 대상이 아니다).
         *s.agent_meta.lock().unwrap() = Some(("claude".into(), "/usr/local/bin/claude".into()));
+        // ★w3-ci(1.1.8): 로그인 셸(`-lc`)이 프로파일을 도는 찰나는 뿌리 = 셸 · 자식 0 이라 빈 셸 가드(no_agent)가 먼저 답한다
+        //   (run 37362054744 · 느린 프로파일 격리 재현 = 같은 단언·같은 줄). 이 좌석은 「산 sleep 30」 모형이므로 명령이 뜰 때까지 기다린다.
+        crate::governance::test_wait_seat_runs(&s, "sleep", &["30"]);
         let depth = || s.pending_queue.lock().unwrap().len();
 
         // ① 직접 주입 분기 — 큐에는 아무것도 남지 않는다(§8 "스케줄 push 는 큐를 우회한다").

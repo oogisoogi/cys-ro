@@ -16838,6 +16838,9 @@ mod tests {
         let s = daemon
             .create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
             .expect("create surface");
+        // ★w3-ci(1.1.8): 로그인 셸(`-lc`)이 프로파일을 도는 찰나는 뿌리 = 셸 · 자식 0 이라 빈 셸 가드(no_agent)가 먼저 답한다
+        //   (run 37362054744 · 느린 프로파일 격리 재현 = 같은 단언·같은 줄). 이 좌석은 「산 sleep 30」 모형이므로 명령이 뜰 때까지 기다린다.
+        crate::governance::test_wait_seat_runs(&s, "sleep", &["30"]);
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         bind_caller(daemon, pid, s.id);
         s
@@ -28890,6 +28893,9 @@ mod tests {
             .expect("ceo surface");
         *ceo.agent_meta.lock().unwrap() = Some(("claude".into(), "/bin/claude".into()));
         ceo.seat_cache.store(1, Ordering::Relaxed);
+        // ★w3-ci(1.1.8): 로그인 셸(`-lc`)이 프로파일을 도는 찰나는 뿌리 = 셸 · 자식 0 이라 빈 셸 가드(no_agent)가 먼저 답한다
+        //   (run 37362054744 · 느린 프로파일 격리 재현 = 같은 단언·같은 줄). 이 좌석은 「산 sleep 30」 모형이므로 명령이 뜰 때까지 기다린다.
+        crate::governance::test_wait_seat_runs(&ceo, "sleep", &["30"]);
         daemon.surfaces.lock().unwrap().insert(ceo.id, ceo.clone());
         daemon.roles.lock().unwrap().insert("ceo".into(), ceo.id);
         let item = crate::state::FeedItem {

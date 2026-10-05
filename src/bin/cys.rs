@@ -2677,6 +2677,11 @@ enum FeedAction {
         /// ★1.1.8 휴면: 숨김 인자(도움말 비노출) · 휴면 스위치가 꺼져 있으면 토큰이 실린 결재는 보내지 않고 거부한다.
         #[arg(long = "team-token", allow_hyphen_values = true, hide = true)]
         team_token: Option<String>,
+        /// ★D24ⓐ(1.1.8) pane 밖 오퍼레이터(외부 터미널의 master 등) 결재 — 대상 데몬의 operator.token 을 읽어 싣는다.
+        /// 데몬은 **pane 무귀속 호출자** 또는 master·cso 좌석일 때만 인정한다(워커 pane 안에서는 무효).
+        /// 데몬 감지 승인 창 항목이면 창이 아직 떠 있고 선택 줄이 「1. Yes」일 때 데몬이 그 창에 Return(allow)/Esc(deny)를 넣는다.
+        #[arg(long)]
+        operator: bool,
     },
 }
 
@@ -6580,7 +6585,7 @@ fn run_feed(action: FeedAction) -> i32 {
             }
             0
         }),
-        FeedAction::Reply { request_id, decision, reason, team_token } => {
+        FeedAction::Reply { request_id, decision, reason, team_token, operator } => {
             // ★1.1.8 휴면: 토큰이 실린 결재는 팀 토큰 갈래가 켜졌을 때만 보낸다(꺼짐 = 보내지 않고 거부 · 인가 없음).
             if team_token.is_some() && !cys::dormant::team_flow_enabled() {
                 return team_flow_dormant_refusal("feed reply --team-token", 1);
@@ -6591,8 +6596,23 @@ fn run_feed(action: FeedAction) -> i32 {
             if let Some(t) = team_token {
                 params["team_token"] = json!(t);
             }
-            request("feed.reply", params).map(|_| {
-                println!("OK");
+            // ★D24ⓐ: 명시 플래그일 때만 싣는다(종전 바이트 무변경 · 자동 첨부 0). 토큰 파일이 없으면 실패를 알린다.
+            if operator {
+                match owner_token_for_socket(&cys::socket_path()) {
+                    Some(t) => params["operator_token"] = json!(t),
+                    None => {
+                        eprintln!("error: --operator — 데몬 operator.token 을 읽지 못했다(데몬 미기동 또는 다른 계정)");
+                        return 1;
+                    }
+                }
+            }
+            request("feed.reply", params).map(|r| {
+                // 데몬 감지 승인 항목이면 창을 눌렀는지 함께 알린다(actuated = null → 기록만).
+                match r.get("actuated") {
+                    Some(Value::String(k)) => println!("OK (창에 {k} 입력)"),
+                    Some(Value::Null) => println!("OK (결정 기록만 — 창 키 입력 없음 · 오퍼레이터 자격 아님)"),
+                    _ => println!("OK"),
+                }
                 0
             })
         }
@@ -46325,6 +46345,21 @@ mod team_token_cli_tests {
         let c = Cli::try_parse_from(["cys", "feed", "reply", "tp-1-00ab", "allow"]).expect("종전 호출형");
         match c.command {
             Command::Feed { action: FeedAction::Reply { team_token, .. } } => assert!(team_token.is_none()),
+            _ => panic!("feed reply 파싱 실패"),
+        }
+    }
+
+    /// ★D24ⓐ(1.1.8) `feed reply --operator` — 명시 플래그일 때만 참(종전 호출형 = 거짓 · 자동 첨부 0).
+    #[test]
+    fn d24_feed_reply_operator_flag_is_opt_in() {
+        let c = Cli::try_parse_from(["cys", "feed", "reply", "daemon-1-0", "allow", "--operator"]).expect("--operator");
+        match c.command {
+            Command::Feed { action: FeedAction::Reply { operator, .. } } => assert!(operator),
+            _ => panic!("feed reply 파싱 실패"),
+        }
+        let c = Cli::try_parse_from(["cys", "feed", "reply", "daemon-1-0", "allow"]).expect("종전 호출형");
+        match c.command {
+            Command::Feed { action: FeedAction::Reply { operator, .. } } => assert!(!operator),
             _ => panic!("feed reply 파싱 실패"),
         }
     }

@@ -2357,6 +2357,15 @@ fn check_caps_gate(
     ))
 }
 
+/// ★D24ⓐ(1.1.8) 호출 좌석이 **오퍼레이터 역할**(master·cso — 무인 교착 해소 집행자 · master 결정 [master#7f82e8c4])인가.
+/// 부서 데몬의 master 도 그 데몬 안에서는 master 다. 워커·리뷰어·무귀속(None) = false.
+fn seat_is_operator(daemon: &Daemon, caller_sid: Option<u64>) -> bool {
+    caller_sid
+        .and_then(|sid| daemon.get_surface(sid))
+        .and_then(|s| s.role.lock().unwrap().clone())
+        .is_some_and(|r| r == "master" || r == "cso")
+}
+
 /// ★R4 — 요청에 붙은 `operator_token` 이 **이 데몬이 기동 시 발급한 값**과 일치하는가.
 ///
 /// 이것이 데몬이 "발신 주체가 오퍼레이터(사람) GUI 세션이다"를 스스로 아는 유일한 근거다
@@ -8774,7 +8783,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             // ②already-resolved를 구분(resolve_feed_item은 둘 다 None)하고, 자기승인 판정용 발행자
             // pid/pgid를 캡처한다.
             // ★0.14.42 R7: 팀 제안이면 **현재 본문**도 함께 캡처한다(토큰 본문 결박 대조 · 데몬 메모리가 정본).
-            let (pub_pid, pub_pgid, pub_sid, team_item, team_body) = {
+            // ★D24ⓐ(1.1.8): 데몬 감지 승인 항목이면 그 좌석 번호도 캡처한다(오퍼레이터 결정의 실제 집행 대상).
+            let (pub_pid, pub_pgid, pub_sid, team_item, team_body, screen_item_sid) = {
                 let items = daemon.feed_items.lock().unwrap();
                 match items.iter().find(|i| i.request_id == request_id) {
                     None => {
@@ -8799,6 +8809,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                             item.publisher_surface,
                             team,
                             if team { item.body.clone() } else { String::new() },
+                            (item.kind == "approval" && crate::state::is_daemon_issued(&item.request_id))
+                                .then_some(item.surface_id)
+                                .flatten(),
                         )
                     }
                 }
@@ -8823,10 +8836,14 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             // 고친 "통과하면 안 되는 승인이 통과되던" 결함이 재발한다. 두 키의 의미 구분은
             // `caller_is_owner`·`PARAM_OWNER_TOKEN` 주석에 있다.
             // (회귀 핀: owner_token_does_not_exempt_feed_reply_self_approval)
+            // ★D24ⓐ(1.1.8): 토큰은 **pane 무귀속 호출자**(GUI · pane 밖 CLI `--operator`) 또는 **오퍼레이터 역할 좌석**
+            //   (master·cso)에서만 인정한다 — 워커 pane 안 프로세스(그 서브에이전트 포함)가 같은 UID 로 토큰 파일을 읽어
+            //   실어도 자기승인 가드를 열지 못한다(`caller_is_owner` 의 「토큰 ∧ pane 무귀속」 과 같은 축 · GUI 는 무귀속이라 무변경).
             let operator_ok = param_str(&params, "operator_token")
                 .zip(daemon.operator_token.as_deref())
                 .map(|(t, d)| !d.is_empty() && t == d)
-                .unwrap_or(false);
+                .unwrap_or(false)
+                && (caller_sid.is_none() || seat_is_operator(daemon, caller_sid));
             // ★0.14.42 R7(설계 §11): 대화 승인 **1회용 생성 토큰** — `allow` 전용 · 데몬이 검증한다.
             //   `team_token` 인자가 실려 왔을 때만 토큰 경로를 시도한다(없으면 아래 종전 판정 그대로 =
             //   owner_gui_required). 검증 실패는 뭉뚱그리지 않고 P3 사유 코드를 그대로 돌려준다(무안내
@@ -8897,6 +8914,48 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                      ③정책 파일(deny_self_approve OFF)로 게이트 해제",
                 ));
             }
+            // ★D24ⓐ(1.1.8 · BACKLOG D24) 데몬 감지 승인 창 집행 — 종전엔 결정만 기록하고 창은 안 눌러 좌석이 영구
+            //   대기했다(10-05 22:2x). 자격 = operator token(위 operator_ok) ∨ 오퍼레이터 역할 좌석(master·cso) · 대상 좌석
+            //   자신은 제외 · allow/deny 만. 창이 아직 화면에 있고 선택 줄이 「1. Yes」일 때만 Return/Esc(아니면 키 0).
+            //   창이 이미 사라졌으면 항목을 stale-cleared 로 닫고 그 사실을 돌려준다(누를 것이 없다 · 키 0).
+            let mut actuated: Option<&'static str> = None;
+            if let Some(item_sid) = screen_item_sid {
+                if matches!(decision.as_str(), "allow" | "deny")
+                    && caller_sid != Some(item_sid)
+                    && (operator_ok || seat_is_operator(daemon, caller_sid))
+                {
+                    match crate::governance::actuate_screen_approval(daemon, item_sid, decision == "allow") {
+                        Ok(key) => {
+                            actuated = Some(key);
+                            daemon.bus.publish(
+                                "approval.actuated",
+                                "feed",
+                                Some(item_sid),
+                                json!({"request_id": request_id, "decision": decision, "key": key,
+                                       "caller_surface": caller_sid, "via_operator_token": operator_ok}),
+                            );
+                        }
+                        Err("gone") => {
+                            daemon.resolve_feed_item(&request_id, "stale-cleared");
+                            return Reply::Single(err_response(
+                                &id,
+                                "approval_screen_gone",
+                                "승인 창이 이미 화면에 없다 — 키를 넣지 않았고 항목은 stale-cleared 로 닫았다",
+                            ));
+                        }
+                        Err(why) => {
+                            return Reply::Single(err_response(
+                                &id,
+                                "approval_actuation_refused",
+                                &format!(
+                                    "승인 창 모양이 집행 조건(선택 줄 = 「1. Yes」 하나)과 달라 키를 넣지 않았다({why}) — \
+                                     좌석 화면을 직접 확인하라(cys read-screen)"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
             // W3.3 --reason: 결재 사유(한글·공백은 CLI가 단일 인용 인코딩). 감사에 기록된다.
             let reason = param_str(&params, "reason");
             // 위임: persist·waiter wake·feed.item.resolved 발행 + W3.5 감사 append를
@@ -8919,6 +8978,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         record_approval_deny(daemon, pub_sid);
                     }
                     let mut result = json!({"request_id": request_id, "decision": decision});
+                    if screen_item_sid.is_some() {
+                        // ★D24ⓐ: 데몬 감지 항목은 창을 실제로 눌렀는지를 돌려준다(null = 기록만 · 자격 없는 호출자).
+                        result["actuated"] = json!(actuated);
+                    }
                     // ★0.14.42 R7: 해소 성공 뒤에만 allow 권한을 닫는다(1회). 닫기 실패는 해소를 되돌리지
                     //   않는다 — 두 번째 해소는 위 precheck 가 `item already resolved` 로 막는다(멱등).
                     if let (true, Some(t)) = (token_ok, team_token.as_deref()) {
@@ -18542,6 +18605,138 @@ mod tests {
         assert_eq!(*draft_before, (0, 0, 0), "계수와 독립적인 화면 축 검체");
         d12_assert_denied(draft, "screen_occupied");
         assert_eq!(*draft_after, (0, 0, 0), "화면 초안 거부도 계수 불변");
+    }
+
+    /// ★D24ⓐ(1.1.8) 시험 좌석 — 입력 바이트를 파일로 받는 PTY(`cat > 파일`) 위에 허락 창 화면을 그린다.
+    /// 반환 = (좌석, 입력 기록 파일). `painted=false` 면 빈 화면(창이 사라진 뒤).
+    fn d24_seat(
+        daemon: &Arc<Daemon>,
+        dir: &std::path::Path,
+        tag: &str,
+        pid: u32,
+        painted: bool,
+    ) -> (Arc<crate::state::Surface>, std::path::PathBuf) {
+        let sink = dir.join(format!("d24-{tag}.bytes"));
+        let s = daemon
+            .create_surface(None, Some(format!("stty raw -echo; cat > '{}'", sink.display())), None, Some("worker-1".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        bind_caller(daemon, pid, s.id);
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        std::thread::sleep(std::time::Duration::from_millis(300)); // 셸이 stty 를 끝내고 cat 이 뜰 시간
+        let mut parser = s.parser.lock().unwrap();
+        parser.process(b"\x1b[2J\x1b[H");
+        if painted {
+            let modal = cys::first_run_gates::fixtures::LIVE_PERMISSION_PROMPT.replace('\n', "\r\n");
+            parser.process(modal.as_bytes());
+            parser.process(b"\x1b[4;1H"); // 커서 = 「❯ 1. Yes」 행(claude 선택 창의 실제 커서 자리)
+        }
+        (s.clone(), sink)
+    }
+
+    /// 기대 바이트가 있으면 도착할 때까지(≤2초) 기다리고, 없으면 0.5초 뒤 그대로 읽는다(늦게 도착하는 키까지 잡는 창).
+    fn d24_sink_bytes(sink: &std::path::Path, expect_nonempty: bool) -> Vec<u8> {
+        let rounds = if expect_nonempty { 40 } else { 10 };
+        for _ in 0..rounds {
+            let b = std::fs::read(sink).unwrap_or_default();
+            if expect_nonempty && !b.is_empty() {
+                return b;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        std::fs::read(sink).unwrap_or_default()
+    }
+
+    fn d24_item(daemon: &Arc<Daemon>, sid: u64) -> String {
+        daemon.push_feed_notification(
+            "approval",
+            &format!("claude 승인 대기 감지 (surface:{sid})"),
+            "Do you want to proceed?",
+            Some(sid),
+        );
+        daemon.pending_daemon_approvals(sid).pop().expect("데몬 감지 항목")
+    }
+
+    /// ★D24ⓐ 결정표 — 오퍼레이터(master·cso 좌석 · pane 무귀속 operator token)의 allow/deny 는 창에 Return/Esc 를 넣고,
+    /// 자격 없는 호출자(다른 워커 · 워커 pane 안 operator token)는 결정만 기록한다(키 0). 대상 좌석 자신은 집행 자격 없음.
+    #[test]
+    fn d24_operator_reply_actuates_screen_approval_others_record_only() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d24-actuate", r#"{"default":"allow","rules":[]}"#);
+        let tok = daemon.operator_token.clone().expect("operator.token 발급 전제");
+        let pid = 999_840;
+        let master = v7_pane(&daemon, "master", pid);
+        let cso = v7_pane(&daemon, "cso", pid + 1);
+        let other = v7_pane(&daemon, "worker-2", pid + 2);
+        let _ = (&master, &cso, &other);
+        // (호출 pid, 추가 인자, decision, 기대 actuated, 기대 바이트)
+        let cases: Vec<(u32, Value, &str, Value, &[u8])> = vec![
+            (pid, json!({}), "allow", json!("return"), b"\r"),
+            (pid + 1, json!({}), "deny", json!("escape"), b"\x1b"),
+            (pid + 50, json!({"operator_token": tok}), "allow", json!("return"), b"\r"), // pane 밖 CLI --operator
+            (pid + 2, json!({}), "allow", Value::Null, b""),                          // 다른 워커 = 기록만
+            (pid + 2, json!({"operator_token": tok}), "allow", Value::Null, b""),    // 워커 pane 안 토큰 = 무효
+        ];
+        let mut seen = Vec::new();
+        for (i, (caller, extra, decision, want, want_bytes)) in cases.into_iter().enumerate() {
+            let (seat, sink) = d24_seat(&daemon, &dir, &format!("c{i}"), pid + 100 + i as u32, true);
+            let rid = d24_item(&daemon, seat.id);
+            let mut params = json!({"request_id": rid, "decision": decision});
+            params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let resp = d12_rpc(&daemon, caller, "feed.reply", params);
+            let got = d24_sink_bytes(&sink, !want_bytes.is_empty());
+            seen.push((i, resp, want, got, want_bytes.to_vec()));
+        }
+        // 대상 좌석 자신의 allow = 집행 자격 없음 · 키 0.
+        let (seat, sink) = d24_seat(&daemon, &dir, "self", pid + 200, true);
+        let rid = d24_item(&daemon, seat.id);
+        let selfr = d12_rpc(&daemon, pid + 200, "feed.reply", json!({"request_id": rid, "decision": "allow"}));
+        let self_bytes = d24_sink_bytes(&sink, false);
+        d12_cleanup(&daemon, &dir);
+
+        for (i, resp, want, got, want_bytes) in seen {
+            assert_eq!(resp["ok"], json!(true), "경우 {i}: {resp}");
+            assert_eq!(resp["result"]["actuated"], want, "경우 {i}: {resp}");
+            assert_eq!(got, want_bytes, "경우 {i}: 창에 들어간 바이트");
+        }
+        // 데몬 감지 항목은 발행자가 데몬이라 종전 판정(자기승인 아님 · 기록만)이 그대로다 — 집행 자격만 없다(키 0).
+        assert_eq!(selfr["result"]["actuated"], Value::Null, "대상 좌석 자신은 집행 자격 없음: {selfr}");
+        assert!(self_bytes.is_empty(), "대상 좌석 자기 reply = 키 0");
+    }
+
+    /// ★D24ⓐ 창이 이미 사라진 뒤의 오퍼레이터 reply → 키 0 · `approval_screen_gone` · 항목 stale-cleared(master 결정 시험).
+    /// 선택 줄이 「1. Yes」가 아니면(사람이 2번으로 옮김) allow 를 넣지 않는다(`approval_actuation_refused` · 항목 유지).
+    #[test]
+    fn d24_operator_reply_after_screen_gone_or_cursor_moved_sends_no_key() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d24-gone", r#"{"default":"allow","rules":[]}"#);
+        let pid = 999_860;
+        let _master = v7_pane(&daemon, "master", pid);
+        let (seat, sink) = d24_seat(&daemon, &dir, "gone", pid + 1, false);
+        let rid = d24_item(&daemon, seat.id);
+        let gone = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid, "decision": "allow"}));
+        let gone_bytes = d24_sink_bytes(&sink, false);
+        let gone_status = daemon.feed_items.lock().unwrap().iter().find(|i| i.request_id == rid).map(|i| (i.status.clone(), i.decision.clone()));
+
+        let (seat2, sink2) = d24_seat(&daemon, &dir, "moved", pid + 2, true);
+        {
+            let mut p = seat2.parser.lock().unwrap();
+            // 선택 표시를 2번 줄로 옮긴 화면(사람이 화살표로 내림).
+            p.process(b"\x1b[4;1H\x1b[2K  1. Yes\x1b[5;1H\x1b[2K\xe2\x9d\xaf 2. Yes, and don't ask again for cargo commands\x1b[5;1H");
+        }
+        let rid2 = d24_item(&daemon, seat2.id);
+        let moved = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid2, "decision": "allow"}));
+        let moved_bytes = d24_sink_bytes(&sink2, false);
+        let moved_pending = daemon.pending_daemon_approvals(seat2.id).contains(&rid2);
+        d12_cleanup(&daemon, &dir);
+
+        assert_eq!(gone["ok"], json!(false), "{gone}");
+        assert_eq!(gone["error"]["code"], json!("approval_screen_gone"), "{gone}");
+        assert!(gone_bytes.is_empty(), "창이 사라진 뒤 = 키 0");
+        assert_eq!(gone_status, Some(("resolved".into(), Some("stale-cleared".into()))), "항목은 stale-cleared 로 닫힘");
+        assert_eq!(moved["error"]["code"], json!("approval_actuation_refused"), "{moved}");
+        assert!(moved_bytes.is_empty(), "선택 줄 ≠ 1. Yes = 키 0");
+        assert!(moved_pending, "거부 시 항목은 그대로 대기(사람이 본다)");
     }
 
     /// ★(0.14.41 · U8 P1 · 반박 X2) 질문·선택 창(모달)이 전경인 좌석에는 직접 **본문**을 쓰지 않는다 —

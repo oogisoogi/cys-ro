@@ -5074,7 +5074,8 @@ mod tests {
         assert!(!cmd_has_settings_flag("claude --dangerously-skip-permissions"));
         assert_eq!(seat_settings_arg(Path::new("/h/.cys/seat-settings/worker.json"), false), " --settings '/h/.cys/seat-settings/worker.json'");
         assert_eq!(seat_settings_arg(Path::new("/h/it's/w.json"), false), " --settings '/h/it'\\''s/w.json'");
-        assert_eq!(seat_settings_arg(Path::new(r"C:\Users\A B\.cys\seat-settings\worker.json"), true), r#" --settings "C:\Users\A B\.cys\seat-settings\worker.json""#);
+        // 공백 경로의 따옴표 보존이 시험 의도다 — 사용자명은 secret-scan WIN-PATH 더미 허용 목록(x)으로(공백은 폴더 쪽에).
+        assert_eq!(seat_settings_arg(Path::new(r"C:\Users\x\my dir\.cys\seat-settings\worker.json"), true), r#" --settings "C:\Users\x\my dir\.cys\seat-settings\worker.json""#);
         assert!(seat_settings_path("worker-2").ends_with("seat-settings/worker-2.json"));
         assert!(seat_settings_path("../x").ends_with("seat-settings/x.json"), "역할명 경로 탈출 차단");
     }

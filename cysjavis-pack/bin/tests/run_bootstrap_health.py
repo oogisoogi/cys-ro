@@ -4819,45 +4819,104 @@ _U5_NOWIN = 0x08000000          # Windows CREATE_NO_WINDOW
 
 
 def _u5_capture_spreads(path):
-    """(`**_CAPTURE_SPAWN_KW` 를 펼친 호출 목록, 위반 목록) — AST 로 판정(주석·문자열 무관).
+    """(러너 run·run_wakeup 안의 `**NOWIN` 펼침 줄 목록, 위반 목록) — AST 로 판정(주석·문자열 무관).
 
-    규칙: ① 펼침은 `subprocess.run(…, capture_output=True, …)` 에만 ② 어느 호출도 `creationflags=`
-    를 직접 쓰지 않는다(정책의 단일 출처는 모듈 상수 하나)."""
+    ★1.1.8 병합 · P-NOWIN 확정 = 우리 규칙([master#49d42b48]): ① 모든 subprocess.run/Popen/check_output/
+    call/check_call 호출이 `**NOWIN` 을 펼친다(누락 = 위반 · test_nowin_periodic_spawns ② 와 같은 규칙)
+    ② 어느 호출도 `creationflags=` 를 직접 쓰지 않는다(정책의 단일 출처는 모듈 상수 NOWIN 하나).
+    원작자 판(`_CAPTURE_SPAWN_KW` 를 캡처 전용 run 에만)은 기각됐다."""
     import ast
     tree = ast.parse(_read(path), filename=path)
     spreads, bad = [], []
+    base = os.path.basename(path)
+
+    def spreads_nowin(call):
+        return any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id == "NOWIN"
+                   for k in call.keywords)
+
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and fn.name in ("run", "run_wakeup"):
+            spreads.extend(n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and spreads_nowin(n))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        kws = node.keywords
-        if any(k.arg == "creationflags" for k in kws):
-            bad.append("%s:%d creationflags 직접 지정" % (os.path.basename(path), node.lineno))
-        if not any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id == "_CAPTURE_SPAWN_KW"
-                   for k in kws):
-            continue
-        spreads.append(node.lineno)
+        if any(k.arg == "creationflags" for k in node.keywords):
+            bad.append("%s:%d creationflags 직접 지정" % (base, node.lineno))
         f = node.func
-        is_run = (isinstance(f, ast.Attribute) and f.attr == "run"
-                  and isinstance(f.value, ast.Name) and f.value.id == "subprocess")
-        cap = any(k.arg == "capture_output" and isinstance(k.value, ast.Constant) and k.value.value is True
-                  for k in kws)
-        if not (is_run and cap):
-            bad.append("%s:%d 창 정책 펼침이 캡처 전용 subprocess.run 이 아닌 호출에 있다"
-                       % (os.path.basename(path), node.lineno))
-    return spreads, bad
+        is_spawn = (isinstance(f, ast.Attribute) and f.attr in ("run", "Popen", "check_output", "call", "check_call")
+                    and isinstance(f.value, ast.Name) and f.value.id == "subprocess")
+        if is_spawn and not spreads_nowin(node):
+            bad.append("%s:%d subprocess.%s 에 **NOWIN 누락" % (base, node.lineno, f.attr))
+    return sorted(spreads), bad
 
 
 # 팩 파이썬의 creationflags 사용 파일·개수 동결(주석 제외 코드 토큰 기준). 여기 없는 파일이 창 정책을 걸기
-# 시작하면 적색 — "파이썬 전역 NOWIN 금지"(설계 §3 U5)를 기계로 집행한다. 늘리려면 사유와 함께 여기서 올린다.
+# 시작하거나 개수가 바뀌면 적색 — 늘리려면 사유와 함께 여기서 올린다.
+# ★1.1.8 병합 · P-NOWIN 확정 = 우리 규칙([master#49d42b48] 10-06 · 원작자 「파이썬 전역 NOWIN 금지」 4파일 동결 기각):
+#   주기·캡처 스폰은 전건 `**NOWIN`(test_nowin_periodic_spawns · test_nowin_captured_spawns — 1.1.7 「1분마다 검은 창」
+#   수리). 그래서 이 표는 원작자 4파일이 아니라 **우리 실측 목록**이다(대개 파일마다 NOWIN 정의 1곳).
 _U5_PACK_CREATIONFLAGS = {
-    "javis_completion_guard.py": 1,    # CREATE_NEW_PROCESS_GROUP(창 정책 아님 · 트리 분리)
-    "javis_cycle_autopilot.py": 1,     # U5 캡처 전용 _CAPTURE_SPAWN_KW(nt NOWIN)
-    "javis_hud_bridge.py": 1,          # NOWIN(브리지 = cysd 가 숨겨 띄운 장수 프로세스 · 0.12.44~)
-    "javis_phoenix_win_smoke.py": 2,   # 윈도우 스모크 검체의 CREATE_NO_WINDOW
+    "check_timeline.py":                1,
+    "grill_gate.py":                    1,
+    "javis_actprobe.py":                1,
+    "javis_approval_queue.py":          1,
+    "javis_awaken.py":                  1,
+    "javis_backup.py":                  1,
+    "javis_boot_node.py":               1,
+    "javis_bootstrap.py":               1,
+    "javis_briefing.py":                1,
+    "javis_channel_watch.py":           1,
+    "javis_channels.py":                1,
+    "javis_checklist.py":               1,
+    "javis_cli_probe.py":               1,
+    "javis_compete.py":                 1,
+    "javis_completion_guard.py":        3,   # NOWIN 정의 + CREATE_NEW_PROCESS_GROUP 에 OR 로 합친 명시 키워드(창 정책 + 트리 분리)
+    "javis_ctx_relay.py":               1,
+    "javis_cycle_autopilot.py":         2,   # NOWIN + 원작자 _CAPTURE_SPAWN_KW 상수(선언만 · 미사용)
+    "javis_cycle_verifier.py":          1,
+    "javis_dept_request.py":            2,   # NOWIN 정의 + 분리 스폰의 명시 creationflags=flags
+    "javis_distill.py":                 1,
+    "javis_docsdiff.py":                1,
+    "javis_event.py":                   1,
+    "javis_fleet_report.py":            1,
+    "javis_formation.py":               1,
+    "javis_guard_register.py":          1,
+    "javis_hud_bridge.py":              1,   # NOWIN 원조 처방(0.12.44~)
+    "javis_idempotency.py":             1,
+    "javis_idle_audit.py":              1,
+    "javis_learn.py":                   1,
+    "javis_lock.py":                    1,
+    "javis_merge_check.py":             1,
+    "javis_mission.py":                 1,
+    "javis_orchestra.py":               1,
+    "javis_org.py":                     1,
+    "javis_orient_log.py":              1,
+    "javis_phoenix.py":                 1,
+    "javis_phoenix_encoding_smoke.py":  1,
+    "javis_phoenix_harness.py":         1,
+    "javis_phoenix_win_smoke.py":       3,   # 윈도우 스모크 검체의 CREATE_NO_WINDOW
+    "javis_preflight.py":               1,
+    "javis_radio.py":                   1,
+    "javis_reap_exited.py":             1,
+    "javis_report.py":                  1,
+    "javis_report_gate.py":             1,
+    "javis_resource_gate.py":           1,
+    "javis_role.py":                    1,
+    "javis_rsi.py":                     1,
+    "javis_serena_probe.py":            1,
+    "javis_snapshot.py":                1,
+    "javis_task.py":                    1,
+    "javis_txindex.py":                 1,
+    "javis_vibecheck.py":               1,
+    "javis_wakeup.py":                  1,
 }
 # 콘솔을 떼어 내거나 새로 여는 수단(자손이 매번 새 창을 받는다) — 팩 어디에도 0건이어야 한다.
 _U5_PACK_DETACH_PY = ("DETACHED_PROCESS", "CREATE_NEW_CONSOLE", "pythonw", "startfile", "0x00000008", "0x00000010")
 _U5_PACK_DETACH_SH = ("Start-Process", 'start ""', "//c start")
+# 분리 수단 토큰이 코드에 있으나 분리 실행이 아닌 자리(파일, 토큰) — 사유 필수.
+_U5_DETACH_EXEMPT = {
+    ("core_inject.py", "pythonw"): "인터프리터 이름 판별 정규식 PY_NAMES(우리 inject-T3) — 분리 실행 아님",
+}
 
 
 def _u5_py_code(src):
@@ -4887,7 +4946,7 @@ def _u5_pack_window_census():
         if c:
             counts[os.path.basename(f)] = c
         for tok in _U5_PACK_DETACH_PY:
-            if tok in code:
+            if tok in code and (os.path.basename(f), tok) not in _U5_DETACH_EXEMPT:
                 bad.append("%s: `%s`" % (os.path.basename(f), tok))
     shs = sorted(set(glob.glob(os.path.join(HOOKS_DIR, "**", "*.sh"), recursive=True)
                      + [p for p in glob.glob(os.path.join(BIN_DIR, "*")) if not p.endswith(".py")]))
@@ -4908,7 +4967,7 @@ def _u5_pack_window_census():
 
 
 @specimen("H-WIN-16", "W6",
-          "U5 1분 사슬 캡처 호출 창 정책 — NOWIN 은 캡처 전용 호출에만 · 실스폰 tick 이 gate-check rc=0 으로 "
+          "U5 1분 사슬 창 정책 — 우리 규칙(P-NOWIN 확정: 주기·캡처 스폰 전건 NOWIN) · 실스폰 tick 이 gate-check rc=0 으로 "
           "킬스위치를 통과(② 무clear 방지)",
           ["U5-WIN-FLASH"])
 def h_win_16():
@@ -4926,6 +4985,12 @@ def h_win_16():
     ③ 실스폰: 격리 env 로 **실제 tick** 을 돌려(CYS=스텁 CLI · CYS_AUTOPILOT_NO_SEND=1) 실제 run() 이
        gate-check 를 띄워 rc=0 으로 킬스위치를 통과하고 status 까지 나아가는지 본다. 윈도우 러너에서는
        이 스폰이 곧 NOWIN 스폰이다(맥에서는 같은 경로의 비-NOWIN 대조).
+    ★1.1.8 병합 재정의(P-NOWIN 확정 = 우리 규칙 · [master#49d42b48] · DECISION-TABLE-118 §0 16행): 위 ①과 ⑤(팩 전역
+      동결)는 원작자 「캡처 전용·파이썬 전역 NOWIN 금지」 판이다 — 우리 배포분(1.1.7)은 정반대(주기·캡처 스폰 전건
+      `**NOWIN` · verifier 포함)라 ①은 「autopilot run·run_wakeup 2 · verifier run 1 이 NOWIN 을 펼치고 두 파일의 모든
+      스폰이 NOWIN 을 펼친다 · 두 파일 NOWIN 값 = nt 에서만 CREATE_NO_WINDOW」로, ⑤ 동결표는 우리 실측 목록으로 잰다.
+      ②(계약 블록 짝)·③④(실스폰 tick·stdin 왕복·run_wakeup)는 그대로. ⚠verifier 를 윈에서 NOWIN 으로 띄우는 것이
+      pane(ConPTY) 거주 좌석에 해로운지(원작자 ① 주장)는 **미실측** — 윈 실기 대조 대상(W-NOWIN).
     ★한계(정직): 이 검체는 NOWIN 이 사슬을 **깨지 않음**을 증명한다. Win11+WT 대화형 세션에서 창이
       실제로 사라지는지는 CI 러너가 재지 못한다(conhost 위임은 대화형 세션 전제 — 반박 D4). 자식의
       GetConsoleWindow 값은 참고로만 기록한다(판정 아님)."""
@@ -4935,15 +5000,16 @@ def h_win_16():
     A = importlib.import_module("javis_cycle_autopilot")
     V = importlib.import_module("javis_cycle_verifier")
     want = {"creationflags": _U5_NOWIN} if os.name == "nt" else {}
-    need(getattr(A, "_CAPTURE_SPAWN_KW", None) == want,
-         "autopilot 캡처 창 정책 값 위반: %r (기대 %r · nt 에서만 NOWIN)" % (getattr(A, "_CAPTURE_SPAWN_KW", None), want))
-    need(getattr(V, "_CAPTURE_SPAWN_KW", "부재") == {},
-         "verifier 는 pane(ConPTY) 거주라 NOWIN 금지 — 빈 dict 여야 한다: %r" % (getattr(V, "_CAPTURE_SPAWN_KW", "부재"),))
+    # ★P-NOWIN 확정 = 우리 규칙: 두 파일 모두 NOWIN(nt 에서만 CREATE_NO_WINDOW) — run() 계약 블록이 바이트
+    #   동일하므로 두 파일이 같은 이름 NOWIN 을 블록 밖에 각자 정의해야 한다(빠지면 NameError → rc 127 → ② 무clear).
+    for mod, M in (("autopilot", A), ("verifier", V)):
+        need(getattr(M, "NOWIN", "부재") == want,
+             "%s 창 정책 NOWIN 값 위반: %r (기대 %r · nt 에서만 NOWIN)" % (mod, getattr(M, "NOWIN", "부재"), want))
     a_sp, a_bad = _u5_capture_spreads(os.path.join(BIN_DIR, "javis_cycle_autopilot.py"))
     v_sp, v_bad = _u5_capture_spreads(os.path.join(BIN_DIR, "javis_cycle_verifier.py"))
     need(not (a_bad or v_bad), "창 정책 범위 위반: %s" % (a_bad + v_bad))
-    need(len(a_sp) == 2, "autopilot 캡처 창 정책 펼침 %d곳(기대 2 = run · run_wakeup): 행 %s" % (len(a_sp), a_sp))
-    need(len(v_sp) == 1, "verifier 펼침 %d곳(기대 1 = 계약 블록 run — 블록 바이트 동일 짝): 행 %s" % (len(v_sp), v_sp))
+    need(len(a_sp) == 2, "autopilot 러너 NOWIN 펼침 %d곳(기대 2 = run · run_wakeup): 행 %s" % (len(a_sp), a_sp))
+    need(len(v_sp) == 1, "verifier 러너 NOWIN 펼침 %d곳(기대 1 = 계약 블록 run — 블록 바이트 동일 짝): 행 %s" % (len(v_sp), v_sp))
     # ③ 실스폰 tick — 격리 HOME·팩·상태·프로젝트(라이브 무접촉). CYS 를 python 인터프리터로 바꿔
     #   `python gate-check` · `python status --json` 이 cwd 의 스텁 스크립트를 실행하게 한다(.exe 없이
     #   윈도우 CreateProcess 가 찾을 수 있는 유일한 실행 파일이 인터프리터다).
@@ -4995,7 +5061,7 @@ def h_win_16():
         rc2, out2, err2 = A.run_wakeup([PY, "-c", "print('ok-u5')"])
         need(rc2 == 0 and out2.strip() == "ok-u5", "run_wakeup 실스폰 실패: rc=%r out=%r err=%r" % (rc2, out2, err2[-200:]))
         hw = sorted(set(re.findall(r"hwnd=(-?\d+)", calls)))
-    # ⑤ 팩 전역 규율 — creationflags 사용 파일·개수 동결 + 콘솔 분리 수단 0건(파이썬 전역 NOWIN 금지 집행).
+    # ⑤ 팩 전역 규율 — creationflags 사용 파일·개수 동결(우리 실측 목록 · P-NOWIN 확정) + 콘솔 분리 수단 0건.
     need(_u5_py_code("x = 1  # creationflags 는 주석\n").count("creationflags") == 0
          and _u5_py_code("kw = {'creationflags': 8}\n").count("creationflags") == 1,
          "계측 자기검증 실패: 주석/코드 구분이 틀렸다")
@@ -5006,7 +5072,7 @@ def h_win_16():
          "팩 creationflags 사용이 동결표를 벗어났다 — 실측 %s · 동결 %s. 창 정책은 콘솔 없는 부모가 낳는 **루트**"
          "에만 건다(자손은 숨은 콘솔 상속). 새 사용이면 캡처 전용인지 확인하고 사유와 함께 동결표를 올려라"
          % (counts, _U5_PACK_CREATIONFLAGS))
-    return ("범위(캡처 run 2 · verifier 0 NOWIN) · 실스폰 tick result=%s(gate-check rc=0 통과) · stdin 왕복 · "
+    return ("범위(우리 규칙 · 러너 NOWIN autopilot 2 · verifier 1 · 전 스폰 NOWIN) · 실스폰 tick result=%s(gate-check rc=0 통과) · stdin 왕복 · "
             "run_wakeup · 플랫폼=%s NOWIN=%s · 자식 GetConsoleWindow=%s(참고) · 팩 creationflags 동결 %d파일"
             "(판독 %d) · 분리 수단 0"
             % (verdict.get("result"), os.name, bool(want), ",".join(hw) or "-", len(counts), npy))

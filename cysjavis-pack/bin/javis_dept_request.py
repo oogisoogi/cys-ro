@@ -42,6 +42,11 @@ import tempfile
 import time
 
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+# ★D18(1.1.8 · 윈 실측 「crash dr-…-2f80 OSError: [WinError 6] 핸들이 잘못되었습니다」 · 같은 사건의 「notify 부서결과
+#   rc=127」): 스케줄 틱은 콘솔 없이 돈다 — 표준입력을 지정하지 않은 하위 프로세스 호출은 윈 파이썬이 **부모의 무효
+#   stdin 핸들을 복제**하다 WinError 6 으로 죽는다(만들기 경로 Popen 은 stdin=DEVNULL 이라 성공 · GUI 닫기는 콘솔 있는
+#   경로라 성공 · 대화 닫기 틱만 실패 — 보고된 갈림과 정확히 일치). 이 모듈의 subprocess.run 은 전부 stdin=DEVNULL 을
+#   싣는다(입력을 주는 호출 0 · 시험 = test_dept_tick_stdin 이 전수 핀).
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -567,7 +572,7 @@ def resource_check():
     gate = os.path.join(HERE, "javis_resource_gate.py")
     try:
         p = subprocess.run([sys.executable, gate, "check", "--json", "--formation-size", "3"],
-                           capture_output=True, text=True, timeout=60, **NOWIN)
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, **NOWIN)
         return json.loads(p.stdout)
     except Exception:
         return {"verdict": "unknown"}
@@ -949,7 +954,7 @@ def dept_status_json(sock):
     cys = _cys_bin()
     try:
         p = subprocess.run([cys, "--socket", sock, "status", "--json"], capture_output=True, text=True,
-                           timeout=5, env=dict(os.environ, CYS_NO_AUTOSTART="1"), **NOWIN)
+                           timeout=5, env=dict(os.environ, CYS_NO_AUTOSTART="1"), stdin=subprocess.DEVNULL, **NOWIN)
         if p.returncode != 0:
             return None
         d = json.loads(p.stdout)
@@ -1267,7 +1272,7 @@ def cmd_kickoff(a):
     # ★--queued 는 CR 을 포함해 배달한다 — Return 을 덧붙이지 않는다(이중 제출 · cys.rs 큐 배달 주석).
     try:
         p = subprocess.run([_cys_bin(), "--socket", sock, "send", "--queued", "--to", "master", body],
-                           capture_output=True, text=True, timeout=20, **NOWIN)
+                           capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL, **NOWIN)
     except subprocess.TimeoutExpired:
         atomic_write_json(kp, {"uncertain": True, "at": now()})   # 2R(codex F11): 전해졌는지 모른다 — 재발송 금지
         return _refuse("부서장에게 전해졌는지 확인하지 못했습니다. 그 부서 화면에서 첫 일이 도착했는지 봐 주세요.",
@@ -1393,10 +1398,11 @@ def _notify(r, tag):
     try:
         env = dict(os.environ)
         p = subprocess.run([_cys_bin(), "send", "--queued", "--to", "master", body], capture_output=True,
-                           text=True, timeout=20, env=env, **NOWIN)
+                           text=True, timeout=20, env=env, stdin=subprocess.DEVNULL, **NOWIN)
         rc = p.returncode
-    except Exception:
-        rc = 127
+    except Exception as e:
+        # ★D18: 예외를 rc=127(「명령 없음」으로 읽힌다)로만 적으면 원인이 사라진다 — 예외 이름을 함께 남긴다.
+        rc = "127(%s: %s)" % (type(e).__name__, str(e)[:120])
     _event(r, "notify %s rc=%s" % (tag, rc))
 
 
@@ -1749,14 +1755,14 @@ def _retry_tombstone_remove(name):
     env.pop("CYS_SOCKET", None)
     try:
         subprocess.run([cys, "tombstone", "--dept", "--remove", "--", name], capture_output=True, text=True,
-                       timeout=20, env=env, **NOWIN)
+                       timeout=20, env=env, stdin=subprocess.DEVNULL, **NOWIN)
     except Exception:
         pass
     ph = os.path.join(pack_default(), "bin", "javis_phoenix.py")
     if os.path.isfile(ph):
         try:
             subprocess.run([sys.executable, ph, "tombstone", name, "--dept", "--remove"], capture_output=True,
-                           text=True, timeout=20, **NOWIN)
+                           text=True, timeout=20, stdin=subprocess.DEVNULL, **NOWIN)
         except Exception:
             pass
     return name not in tombstones()
@@ -1902,7 +1908,7 @@ def _close_step(r):
         argv = [sys.executable, org, "destroy", "--dept", r["target"], "--purge", "--purge-state"]
         if r.get("gen"):
             argv += ["--expect-gen", r["gen"]]
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=CREATE_WAIT_SEC(), env=env, **NOWIN)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=CREATE_WAIT_SEC(), env=env, stdin=subprocess.DEVNULL, **NOWIN)
         rc = p.returncode
     except subprocess.TimeoutExpired:
         rc = 124

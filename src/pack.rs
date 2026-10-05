@@ -919,9 +919,12 @@ fn raise_hook_timeout_in(
 /// 경합은 막지 못한다. 그래서 **같은 이름의 같은 락 파일**로 직렬화한다.
 ///  · unix: `flock(LOCK_EX)` **블로킹**(보유 창 = 파일 1개 RMW · 수 ms) · 락 파일 열기 실패는
 ///    `None`(직렬화만 포기하고 작업은 진행 — 락 실패가 치유를 막으면 잔존 훅이 영구화된다).
-///  · windows: **미획득(None) — 감수 범위 명기**. python 백엔드가 msvcrt 바이트락이라 flock 과
-///    상호 배제가 성립하지 않는다(이종 락). 파손은 원자 교체가 차단하고 최악은 lost-update 로
-///    다음 preflight C28·부트 시드가 재수렴한다. 승격 조건은 `LockFileEx` 동형 배선이다.
+///  · windows: ★D27(1.1.8 · BACKLOG D27 · judge 📌7ⓓ) **`File::lock`(= `LockFileEx` 배타 · 전 범위) 블로킹**.
+///    종전엔 None(무잠금)이라 이 락에 기대는 승인 저장소(`approval::lock_records`)·⑰ 예약 공유 락이 윈에서
+///    프로세스 간 보호 0 이었다 — 본부·부서 데몬이 같은 approvals.json 을 덮어쓸 수 있었다. 전 범위 잠금은
+///    python `javis_lock` 의 msvcrt 바이트락(0번 바이트 1개)과 범위가 겹쳐 **서로 배제된다**(윈 바이트 범위 잠금 =
+///    겹치면 충돌). 같은 모듈의 서명 키 잠금(`approval.rs::lock_key_exclusive`)이 이미 쓰는 그 API 다.
+///    잠금은 핸들이 닫히면(프로세스 사망 포함) OS 가 푼다 — 부패 잠금 청소가 필요 없다.
 ///
 /// ★반환 핸들이 **살아 있는 동안만** 락이 선다(drop = 해제). 호출부는 RMW 가 끝날 때까지 이름
 /// 있는 바인딩으로 붙들어라 — `let _ = ...` 는 즉시 drop 이라 락이 아예 서지 않는다.
@@ -945,8 +948,14 @@ pub fn acquire_settings_lock(settings: &Path) -> Option<std::fs::File> {
     }
     #[cfg(not(unix))]
     {
-        let _ = settings;
-        None
+        let lock_path = PathBuf::from(format!("{}.cys-lock", settings.display()));
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        f.lock().ok()?;
+        Some(f)
     }
 }
 
@@ -10936,6 +10945,40 @@ mod tests {
     /// 오라클: 락을 **먼저 잡아 붙들고 있으면** 병합기는 해제 전에 끝날 수 없다. 같은 창에서
     /// 락을 안 잡는 RMW 를 먼저 재어 이 시간 오라클이 '락 없음'을 실제로 구별함을 보인다 —
     /// 구별 못 하는 오라클로 얻은 GREEN 은 아무것도 증명하지 않는다.
+    /// ★D27(1.1.8) 공용 락은 **모든 OS 에서** 잡힌다(윈 종전 = None) · 같은 락 아래 RMW 는 동시 쓰기에서 갱신 유실 0.
+    /// 스레드마다 락 파일을 따로 열어(= 프로세스 간과 같은 열린 파일 단위 잠금) 8×25 증가 → 정확히 200.
+    /// 음성 대조: 락 없이 같은 RMW 를 돌리면 유실이 나는지 먼저 본다(유실이 안 나면 오라클이 무효라 판정 생략이 아니라 실패).
+    #[test]
+    fn d27_settings_lock_serializes_rmw_on_every_os() {
+        let td = conc_dir("d27");
+        let f = td.join("approvals.json");
+        let run = |locked: bool| -> u64 {
+            std::fs::write(&f, "{\"n\":0}").unwrap();
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    let f = f.clone();
+                    std::thread::spawn(move || {
+                        for _ in 0..25 {
+                            let _g = if locked { Some(acquire_settings_lock(&f).expect("D27: 공용 락 미획득")) } else { None };
+                            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+                            let n = v["n"].as_u64().unwrap();
+                            std::thread::yield_now();
+                            write_atomic(&f, format!("{{\"n\":{}}}", n + 1).as_bytes()).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.join().unwrap();
+            }
+            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+            v["n"].as_u64().unwrap()
+        };
+        let naive = run(false);
+        assert!(naive < 200, "오라클 무효 — 락 없는 RMW 도 유실이 없었다({naive})");
+        assert_eq!(run(true), 200, "공용 락 아래 RMW 갱신 유실");
+    }
+
     #[test]
     fn h_conc_3_settings_writers_share_the_preflight_lock() {
         use std::time::{Duration, Instant};

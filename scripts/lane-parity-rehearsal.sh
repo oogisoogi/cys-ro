@@ -441,9 +441,11 @@ if "pack-artifacts" not in rel:
     die("release.yml 에 pack-artifacts 잡이 없다 — 대응할 태그 레인이 사라졌다")
 rel_set, rel_text = loop_tokens(rel["pack-artifacts"][0], "release:pack-artifacts")
 
-ISO = 'CYS_PACK_DIR="$(mktemp -d)" python3'
+# 격리 꼴 = `mktemp -d` 단독(구) 또는 57c7345a(09-24 flake ⑶) 이후의 `mktemp -d "$CYS_TMP/p.XXXXXX"` — 고정 문자열이면
+#   루프 꼴이 바뀔 때 격리가 살아 있어도 붉어진다(1.1.8 ci-green 에서 3단계에 가려져 있다 드러남).
+ISO = r'CYS_PACK_DIR="\$\(mktemp -d( "\$CYS_TMP/p\.XXXXXX")?\)" python3'
 for label, body in (("ci-branch:%s" % ubu[0], ci[ubu[0]][0]), ("release:pack-artifacts", rel["pack-artifacts"][0])):
-    if not any(ISO in l for l in body):
+    if not any(re.search(ISO, l) for l in body):
         print("::error::%s 의 팩 루프에 env 격리 `%s` 가 없다 — 같은 루프가 아니다(라이브 상태 "
               "오염 방향)." % (label, ISO), file=sys.stderr)
         raise SystemExit(1)
@@ -745,4 +747,16 @@ t = t.replace(a, "  ubuntu-pack-suite:\n    runs-on: macos-latest\n", 1)
 open(p, "w", encoding="utf-8", newline="").write(t)
 PYM
   ub_expect 1 "우분투 잡 소멸(runs-on 을 macos 로)" "태그 전 리눅스 관문이 사라졌다"
+  # ③격리 소거 — 우분투 루프의 `CYS_PACK_DIR="$(mktemp -d …)"` 접두를 지워 맨 python3 로 돌게 한다(라이브 상태 오염 방향).
+  #   ISO 가 정규식이 된 뒤 그 정규식이 격리 누락을 실제로 잡는지 재는 음성 대조다(1.1.8 ci-green).
+  mut_reset; python3 - "$MUT_ROOT/.github/workflows/ci-branch.yml" <<'PYM'
+import sys
+p = sys.argv[1]; t = open(p, encoding="utf-8").read()
+a = 'if ! CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$f"; then'
+j = t.index("  ubuntu-pack-suite:")            # 우분투 잡 **안**에서만 자른다
+assert t.count(a, j) == 1, "변이 앵커 부재(우분투 루프 격리 실행 줄)"
+t = t[:j] + t[j:].replace(a, 'if ! python3 "$f"; then', 1)
+open(p, "w", encoding="utf-8", newline="").write(t)
+PYM
+  ub_expect 1 "격리 소거(우분투 루프 CYS_PACK_DIR 접두 제거)" "env 격리"
 fi

@@ -1232,15 +1232,24 @@ class KeyBridgeGateTests(unittest.TestCase):
         self.assertIn("--updater-key-id", r.stderr)
 
     def test_kb9_prev_conf_without_pubkey_fails_closed(self):
+        # ★1.1.8 U3(설계 §5-3): updater 블록이 **있는데** pubkey 가 비면 = 손상 → 종전대로 거부.
+        #   블록 자체가 **없으면**(U4 가 지운 판이 직전 판) 기준 = A2 고정 key id — 서명 key id 가 A2 가 아니면 여전히 거부.
         build_fixture(self.root)
         with tempfile.TemporaryDirectory() as cd:
             conf = os.path.join(cd, "tauri.conf.json")
+            with open(conf, "w", encoding="utf-8") as fh:
+                json.dump({"plugins": {"updater": {"pubkey": ""}}}, fh)
+            r = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root,
+                                              "--prev-tauri-conf", conf, key_id=None)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("pubkey 가 없다", r.stderr)
             with open(conf, "w", encoding="utf-8") as fh:
                 json.dump({"plugins": {}}, fh)
             r = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root,
                                               "--prev-tauri-conf", conf, key_id=None)
             self.assertEqual(r.returncode, 1, r.stdout)
-            self.assertIn("pubkey 가 없다", r.stderr)
+            self.assertIn("A2 고정 key id 831CA9172204E93E", r.stderr)
+            self.assertIn("업데이터 서명 키 불일치", r.stderr)
 
 
 class PackSigningKeyGateTests(unittest.TestCase):

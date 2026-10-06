@@ -145,6 +145,10 @@ ROW_RE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9_.-]+)$")
 TOKEN_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # minisign key id 표기 — `.pub`·서명 주석에 찍히는 16자 대문자 hex(리틀엔디언 keynum 을 뒤집은 값).
 KEY_ID_RE = re.compile(r"^[0-9A-F]{16}$")
+# ★7-b 기준의 고정값(1.1.8 U3 · 설계 AUTO-UPDATE-118 §5-3 · §4-1 A2 행): 1.1.8 U4 가 앱 conf 의 plugins.updater 블록을
+#   지우면 「직전 판 conf 의 pubkey」라는 기준이 사라진다. 그 뒤 기준 = A2(윈 자산 키 · TAURI_SIGNING_PRIVATE_KEY) 고정 key id.
+#   A2 교체는 R 위임문(scripts/update/make-revocations.py --delegate win-asset:…) + 이 상수 갱신으로 한다.
+A2_KEY_ID = "831CA9172204E93E"
 
 # ★배포 원본 레포 — latest.json 의 url 결속(③)을 이 값으로 판정한다.
 #   ★2026-09-09 정정(TICKET=cys-release-first-publish): 종전 값은 벤더 `idoforgod/cys-terminal`
@@ -792,7 +796,15 @@ def key_id_from_tauri_conf(path):
             conf = json.load(fh)
     except (OSError, ValueError) as e:
         raise VerifyError("직전 판 tauri.conf.json 을 읽을 수 없다(%s): %s" % (path, e))
-    pub = ((conf.get("plugins") or {}).get("updater") or {}).get("pubkey") if isinstance(conf, dict) else None
+    if not isinstance(conf, dict):
+        raise VerifyError("직전 판 tauri.conf.json 이 객체가 아니다: %s" % path)
+    updater = (conf.get("plugins") or {}).get("updater")
+    if updater is None:
+        # ★U4 뒤(앱 updater 블록 삭제 판이 직전 판) — 기준 = A2 고정 key id(설계 §5-3). 블록이 **있는데** pubkey 가 비면
+        #   그것은 삭제가 아니라 손상이므로 아래에서 종전대로 거부한다.
+        print("7-b 기준: 직전 판 conf 에 plugins.updater 없음 → A2 고정 key id %s" % A2_KEY_ID, file=sys.stderr)
+        return A2_KEY_ID
+    pub = updater.get("pubkey") if isinstance(updater, dict) else None
     if not isinstance(pub, str) or not pub.strip():
         raise VerifyError("직전 판 tauri.conf.json 에 plugins.updater.pubkey 가 없다: %s" % path)
     return tauri_pubkey_key_id(pub, "직전 판 updater pubkey")

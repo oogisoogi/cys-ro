@@ -781,4 +781,28 @@ mod tests {
         assert!(rev >= 57, "rev 후퇴 없음(마지막 기록 rev {rev})");
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// ★3R F1 뮤테이션(결정론): 한 주체가 trusted 잠금 안에 있는 동안 다른 주체의 커밋은 **기다린다**(잠금 해제 뒤에야 끝남).
+    #[test]
+    fn f1_trusted_lock_excludes_second_writer() {
+        let d = tmp("f1x");
+        bump_trusted(&d, Some(1)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d2 = d.clone();
+        let holder = std::thread::spawn(move || {
+            with_trusted_lock(&d2, || {
+                tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(std::time::Instant::now())
+            })
+            .unwrap()
+        });
+        rx.recv().unwrap();
+        bump_trusted(&d, Some(2)).unwrap();
+        let second_done = std::time::Instant::now();
+        let released = holder.join().unwrap();
+        assert!(second_done >= released, "둘째 커밋이 잠금 해제 전에 끝남 = 배타 아님");
+        assert_eq!(read_trusted(&d).unwrap().last_trusted_time, Some(2));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

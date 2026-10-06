@@ -76,31 +76,45 @@ pub fn matches_asset(info: &BuildInfo, asset: &super::feed::Asset) -> bool {
 /// 갱신 상태 폴더 env(시험·격리 — §7-2).
 pub const ENV_STATE_DIR: &str = "CYS_UPDATE_STATE_DIR";
 
-/// 갱신 상태 폴더 — `CYS_UPDATE_STATE_DIR` > (맥·리눅스) `~/.cys/update` · (윈) `%LOCALAPPDATA%\cys-update`
+/// 갱신 상태 폴더 — (디버그·시험 빌드만) `CYS_UPDATE_STATE_DIR` > (맥·리눅스) `~/.cys/update` · (윈) `%LOCALAPPDATA%\cys-update`
 /// (설치·상태 폴더 밖 — 설치기가 덮는 자리와 갈라 둔다 · §3).
 ///
+/// ★1R B1: 출시 빌드는 env 덮어쓰기를 **읽지 않는다**(잠금·수용 기록·저널을 새 이름공간으로 우회하는 길 차단) · 운영 경로를
+/// 못 구하면(HOME·LOCALAPPDATA 없음·상대 경로) Err — `.` 로 물러서지 않는다(fail-closed).
 /// ★시험 빌드에서 env 가 없으면 panic(실 `~/.cys` 쓰기 0 봉인 — `pack::pack_dir` 와 같은 원칙).
-pub fn state_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os(ENV_STATE_DIR).filter(|v| !v.is_empty()) {
-        return PathBuf::from(v);
-    }
+pub fn state_dir() -> Result<PathBuf, String> {
     #[cfg(test)]
     {
-        panic!("U1 시험 격리 봉인 위반 — CYS_UPDATE_STATE_DIR 미설정 상태에서 update::state_dir() 호출");
+        if std::env::var_os(ENV_STATE_DIR).filter(|v| !v.is_empty()).is_none() {
+            panic!("U1 시험 격리 봉인 위반 — CYS_UPDATE_STATE_DIR 미설정 상태에서 update::state_dir() 호출");
+        }
     }
-    #[allow(unreachable_code)]
-    default_state_dir()
+    resolve_state_dir(
+        cfg!(debug_assertions),
+        cfg!(windows),
+        std::env::var_os(ENV_STATE_DIR),
+        dirs::home_dir(),
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+    )
 }
 
-fn default_state_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        base.join("cys-update")
+/// 순수 판정(시험 대상) — `debug` 가 거짓이면 env 를 무시한다.
+pub fn resolve_state_dir(
+    debug: bool,
+    windows: bool,
+    env: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if debug || super::mutant("B1") {
+        if let Some(v) = env.filter(|v| !v.is_empty()) {
+            return Ok(PathBuf::from(v));
+        }
     }
-    #[cfg(not(windows))]
-    {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".cys").join("update")
+    let base = if windows { local_app_data } else { home };
+    match base {
+        Some(b) if b.is_absolute() => Ok(if windows { b.join("cys-update") } else { b.join(".cys").join("update") }),
+        _ => Err("갱신 상태 폴더를 정할 수 없다(HOME/LOCALAPPDATA 없음·상대 경로) — 보류".into()),
     }
 }
 
@@ -229,6 +243,20 @@ mod tests {
     fn state_dir_honors_env() {
         let _k = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _l = crate::pack::EnvGuard::set(ENV_STATE_DIR, "/tmp/cys-u1-state");
-        assert_eq!(state_dir(), PathBuf::from("/tmp/cys-u1-state"));
+        assert_eq!(state_dir().unwrap(), PathBuf::from("/tmp/cys-u1-state"));
+    }
+
+    /// 1R B1 뮤테이션: 출시 빌드(debug=false)는 env 를 무시 · 운영 경로 없음 = Err(`.` 후퇴 0).
+    #[test]
+    fn b1_release_ignores_env_override_and_never_falls_back_to_dot() {
+        let abs = std::env::temp_dir(); // 이 기판에서 절대 경로인 값
+        let env = Some(std::ffi::OsString::from("attacker-ns"));
+        let home = Some(abs.clone());
+        assert_eq!(resolve_state_dir(false, false, env.clone(), home.clone(), None).unwrap(), abs.join(".cys").join("update"));
+        assert_eq!(resolve_state_dir(true, false, env.clone(), home.clone(), None).unwrap(), PathBuf::from("attacker-ns"));
+        assert_eq!(resolve_state_dir(false, true, None, None, Some(abs.clone())).unwrap(), abs.join("cys-update"));
+        assert!(resolve_state_dir(false, false, None, None, None).is_err());
+        assert!(resolve_state_dir(false, false, None, Some(PathBuf::from("rel")), None).is_err());
+        assert!(resolve_state_dir(false, true, None, Some(abs.clone()), None).is_err(), "윈은 LOCALAPPDATA 만");
     }
 }

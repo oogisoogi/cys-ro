@@ -49,15 +49,16 @@ fn sha256_hex(s: &str) -> String {
 impl HoldLog {
     /// 열기 — 개행 없는 꼬리(쓰다 끊김 = ACK 0)를 잘라내고 마지막 `hold_seq` 를 읽는다. 온전한 줄이 깨져 있으면 Err(fail-closed).
     pub fn open(dir: &Path) -> Result<HoldLog, String> {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        super::ensure_private_dir(dir)?;
         let path = dir.join(HOLD_FILE);
-        let mut f = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut o = std::fs::OpenOptions::new();
+        o.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        let mut f = o.open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
         let keep = match buf.iter().rposition(|&b| b == b'\n') {
@@ -136,7 +137,12 @@ pub fn last_seq_readonly(dir: &Path) -> Option<u64> {
     let keep = buf.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
     let mut last = 0;
     for line in buf[..keep].split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-        last = serde_json::from_slice::<HoldRecord>(line).ok()?.hold_seq;
+        let r = serde_json::from_slice::<HoldRecord>(line).ok()?;
+        // ★1R MAJOR(M7): 읽기 전용 경로도 본문 해시·엄격 단조를 본다 — 어긋나면 판정 불가(미배달 수 축소 차단).
+        if !super::mutant("M7") && (r.body_sha256 != sha256_hex(&r.body) || r.hold_seq <= last) {
+            return None;
+        }
+        last = r.hold_seq;
     }
     Some(last)
 }
@@ -226,6 +232,27 @@ mod tests {
         assert!(h.records_after(0).unwrap_err().contains("해시 불일치"));
         std::fs::write(&p, b"not json\n").unwrap();
         assert!(HoldLog::open(&d).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1R MAJOR(M7) 뮤테이션: 읽기 전용 판독도 단조 위반·본문 변조면 None(미배달 수를 줄여 N3 을 통과시키는 길 차단).
+    #[test]
+    fn m7_readonly_last_seq_validates_monotonic_and_hash() {
+        let d = tmp("m7");
+        let mut h = HoldLog::open(&d).unwrap();
+        for i in 0..3 {
+            h.append("u", "send", &format!("m{i}"), i).unwrap();
+        }
+        assert_eq!(last_seq_readonly(&d), Some(3));
+        // 마지막 줄 뒤에 낮은 seq 의 정상 JSON 을 덧붙임(축소 시도)
+        let low = HoldRecord { hold_seq: 1, target_surface_uuid: "u".into(), kind: "send".into(), body_sha256: sha256_hex("x"), body: "x".into(), received_at: 9 };
+        let mut f = std::fs::OpenOptions::new().append(true).open(d.join(HOLD_FILE)).unwrap();
+        f.write_all(format!("{}\n", serde_json::to_string(&low).unwrap()).as_bytes()).unwrap();
+        assert_eq!(last_seq_readonly(&d), None, "단조 위반 = 판정 불가");
+        let s = std::fs::read_to_string(d.join(HOLD_FILE)).unwrap();
+        let fixed: String = s.lines().take(3).map(|l| format!("{l}\n")).collect::<String>().replace("\"m2\"", "\"zz\"");
+        std::fs::write(d.join(HOLD_FILE), fixed).unwrap();
+        assert_eq!(last_seq_readonly(&d), None, "본문 변조 = 판정 불가");
         let _ = std::fs::remove_dir_all(&d);
     }
 

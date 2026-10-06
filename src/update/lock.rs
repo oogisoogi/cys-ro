@@ -51,6 +51,11 @@ pub struct Owner {
     pub epoch: u64,
     pub started_at: i64,
     pub boot_id: u64,
+    /// ★1R B6: 소유 프로세스 시작 시각(sysinfo · 초) — pid 재사용을 가른다.
+    pub start_time: u64,
+    /// ★1R B6: 놓을 때 잠금을 풀기 **전에** true 로 기록(묘비) — 「기록은 옛 소유자 · 잠금은 새 소유자」 창을 닫는다.
+    #[serde(default)]
+    pub released: bool,
 }
 
 impl Owner {
@@ -59,10 +64,10 @@ impl Owner {
     }
 }
 
-/// 잡은 잠금(drop = 해제 · 소유자 기록은 남긴다 — 다음 epoch 계산 재료 · 낡음은 잠금 상태로 판별).
+/// 잡은 잠금. drop = ① 소유자 기록에 묘비(`released:true`) 원자 쓰기 ② 그다음 잠금 해제(순서 고정 — B6).
 #[derive(Debug)]
 pub struct TxnGuard {
-    _file: File,
+    file: Option<File>,
     pub owner: Owner,
     dir: PathBuf,
 }
@@ -76,19 +81,33 @@ impl TxnGuard {
     }
 }
 
+impl Drop for TxnGuard {
+    fn drop(&mut self) {
+        let mut tomb = self.owner.clone();
+        tomb.released = true;
+        if let Ok(b) = serde_json::to_vec_pretty(&tomb) {
+            let _ = super::write_private(&self.dir.join(OWNER_FILE), &b);
+        }
+        if let Some(f) = self.file.take() {
+            let _ = f.unlock();
+        }
+    }
+}
+
 fn busy(d: impl Into<String>) -> UpdateErr {
     UpdateErr::new(ErrCode::TxnBusy, "lock", d)
 }
 
 fn open_lock(dir: &Path) -> Result<File, UpdateErr> {
-    std::fs::create_dir_all(dir).map_err(|e| busy(format!("상태 폴더: {e}")))?;
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(dir.join(LOCK_FILE))
-        .map_err(|e| busy(format!("잠금 파일: {e}")))
+    super::ensure_private_dir(dir).map_err(busy)?;
+    let mut o = OpenOptions::new();
+    o.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(dir.join(LOCK_FILE)).map_err(|e| busy(format!("잠금 파일: {e}")))
 }
 
 pub fn read_owner(dir: &Path) -> Option<Owner> {
@@ -121,35 +140,68 @@ pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
         Err(TryLockError::Error(e)) => return Err(busy(format!("잠금 시도: {e}"))),
     }
     let epoch = read_owner(dir).map(|o| o.epoch + 1).unwrap_or(1);
+    let pid = std::process::id();
     let o = Owner {
         owner: owner.to_string(),
-        pid: std::process::id(),
+        pid,
         txn_id: super::buildinfo::random_hex128().map_err(busy)?,
         epoch,
         started_at: super::clock::wall_now(),
         boot_id: super::clock::boot_id(),
+        start_time: pid_start_time(pid).unwrap_or(0),
+        released: false,
     };
     let bytes = serde_json::to_vec_pretty(&o).map_err(|e| busy(e.to_string()))?;
-    crate::pack::write_atomic(&dir.join(OWNER_FILE), &bytes).map_err(|e| busy(format!("소유자 기록: {e}")))?;
-    Ok(TxnGuard { _file: f, owner: o, dir: dir.to_path_buf() })
+    super::write_private(&dir.join(OWNER_FILE), &bytes).map_err(|e| busy(format!("소유자 기록: {e}")))?;
+    Ok(TxnGuard { file: Some(f), owner: o, dir: dir.to_path_buf() })
 }
 
-/// 위임 검증 3조건(①내용 일치 ②잠금 실재 ③조상). `is_ancestor(pid)` 는 호출부가 준다(실 구현 = [`pid_is_ancestor`]).
-pub fn verify_delegated(dir: &Path, token: &Token, is_ancestor: impl Fn(u32) -> Option<bool>) -> Result<Owner, UpdateErr> {
+/// 프로세스 판정 공급자(실 구현 = [`ProcProbe::real`] · 시험은 바꿔 끼운다).
+pub struct ProcProbe<'a> {
+    pub is_ancestor: &'a dyn Fn(u32) -> Option<bool>,
+    pub start_time: &'a dyn Fn(u32) -> Option<u64>,
+}
+
+impl ProcProbe<'static> {
+    pub fn real() -> ProcProbe<'static> {
+        ProcProbe { is_ancestor: &pid_is_ancestor, start_time: &pid_start_time }
+    }
+}
+
+/// 위임 검증(1R B6 · 순서 고정): ⓪ 인자 토큰 = env 토큰 → ① 소유자 기록 읽기(묘비 아님 · txn_id·epoch = 토큰) → ③ 소유 pid 가
+/// 조상 → ② 잠금 실재 → ①′ 소유자 기록 **다시 읽기** = 처음과 같음(그 사이 옛 소유자가 묘비를 쓰고 놓았거나 새 소유자가 기록을
+/// 바꿨으면 다름 — 기록은 「소유자 → 묘비 → 새 소유자」로만 바뀌므로 두 번 같으면 ② 시점의 잠금 주인 = 그 소유자) → ③′ 소유 pid 의
+/// 시작 시각 = 기록(죽은 소유자 pid 재사용 차단 · 윈 「PID + 생성 시각」). 하나라도 어긋나면 `txn_busy`.
+pub fn verify_delegated(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe) -> Result<Owner, UpdateErr> {
+    if env != Some(arg) && !super::mutant("B6") {
+        return Err(busy("⓪ --txn 인자 ≠ CYS_UPDATE_TXN"));
+    }
     let o = read_owner(dir).ok_or_else(|| busy("① 소유자 기록 없음"))?;
-    if o.txn_id != token.txn_id || o.epoch != token.epoch {
-        return Err(busy(format!("① 토큰 불일치 (epoch {} vs {})", token.epoch, o.epoch)));
+    if o.released {
+        return Err(busy("① 소유자가 이미 놓음(묘비)"));
+    }
+    if o.txn_id != arg.txn_id || o.epoch != arg.epoch {
+        return Err(busy(format!("① 토큰 불일치 (epoch {} vs {})", arg.epoch, o.epoch)));
+    }
+    match (probe.is_ancestor)(o.pid) {
+        Some(true) => {}
+        Some(false) => return Err(busy(format!("③ 소유 pid {} 가 조상 아님", o.pid))),
+        None => return Err(busy("③ 조상 판정 불가")),
     }
     match is_held(dir) {
         Some(true) => {}
         Some(false) => return Err(busy("② 잠금이 풀려 있음(낡은 토큰)")),
         None => return Err(busy("② 잠금 판정 불가")),
     }
-    match is_ancestor(o.pid) {
-        Some(true) => Ok(o),
-        Some(false) => Err(busy(format!("③ 소유 pid {} 가 조상 아님", o.pid))),
-        None => Err(busy("③ 조상 판정 불가")),
+    if !super::mutant("B6") {
+        if read_owner(dir).as_ref() != Some(&o) {
+            return Err(busy("①′ 소유자 기록이 검증 중 바뀜(넘겨주기 경합)"));
+        }
+        if (probe.start_time)(o.pid) != Some(o.start_time) {
+            return Err(busy(format!("③′ pid {} 시작 시각 불일치(재사용·사망)", o.pid)));
+        }
     }
+    Ok(o)
 }
 
 /// 참가 결과 — 직접 소유 · 위임 받음.
@@ -159,14 +211,17 @@ pub enum Participation {
     Delegated(Owner),
 }
 
-/// 참가자 입구: 토큰이 있으면 위임 검증(재잠금 0), 없으면 잠금을 잡는다.
-pub fn acquire_or_delegate(dir: &Path, owner: &str, token: Option<&str>) -> Result<Participation, UpdateErr> {
-    match token {
-        Some(t) => {
-            let tok = Token::parse(t).ok_or_else(|| busy("토큰 형식"))?;
-            verify_delegated(dir, &tok, pid_is_ancestor).map(Participation::Delegated)
+/// 참가자 입구: 토큰(인자 `--txn` · env `CYS_UPDATE_TXN`)이 하나라도 있으면 위임 검증(재잠금 0 · 둘이 같아야 함),
+/// 둘 다 없으면 잠금을 잡는다.
+pub fn acquire_or_delegate(dir: &Path, owner: &str, arg: Option<&str>, env: Option<&str>) -> Result<Participation, UpdateErr> {
+    match (arg, env) {
+        (None, None) => acquire(dir, owner).map(Participation::Owner),
+        (Some(a), e) => {
+            let tok = Token::parse(a).ok_or_else(|| busy("토큰 형식"))?;
+            let et = e.and_then(Token::parse);
+            verify_delegated(dir, &tok, et.as_ref(), &ProcProbe::real()).map(Participation::Delegated)
         }
-        None => acquire(dir, owner).map(Participation::Owner),
+        (None, Some(_)) => Err(busy("⓪ env 토큰만 있고 --txn 인자 없음")),
     }
 }
 
@@ -184,6 +239,15 @@ pub fn pid_is_ancestor(pid: u32) -> Option<bool> {
         cur = sys.process(p).and_then(|x| x.parent());
     }
     Some(false)
+}
+
+/// 프로세스 시작 시각(sysinfo · epoch 초) — 없는 pid = None.
+pub fn pid_start_time(pid: u32) -> Option<u64> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    let p = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing());
+    sys.process(p).map(|x| x.start_time())
 }
 
 #[cfg(test)]
@@ -222,29 +286,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    fn yes() -> ProcProbe<'static> {
+        ProcProbe { is_ancestor: &|_| Some(true), start_time: &|p| pid_start_time(p) }
+    }
+
     /// §7-1 「위임 토큰 3조건(내용 불일치·잠금 없음·조상 아님 → txn_busy) · 토큰 없는 자식 = 재잠금」.
     #[test]
-    fn delegation_three_conditions() {
+    fn delegation_conditions() {
         let d = tmp("deleg");
         let g = acquire(&d, "runner").unwrap();
         let tok = g.token();
-        // 전부 맞음
-        assert!(verify_delegated(&d, &tok, |_| Some(true)).is_ok());
-        // ① 내용 불일치(옛 epoch · 다른 txn_id)
+        assert!(verify_delegated(&d, &tok, Some(&tok), &yes()).is_ok());
         let old = Token { epoch: tok.epoch - 1, ..tok.clone() };
-        assert!(verify_delegated(&d, &old, |_| Some(true)).unwrap_err().detail.contains('①'));
+        assert!(verify_delegated(&d, &old, Some(&old), &yes()).unwrap_err().detail.contains('①'));
         let other = Token { txn_id: "f".repeat(32), ..tok.clone() };
-        assert!(verify_delegated(&d, &other, |_| Some(true)).unwrap_err().detail.contains('①'));
-        // ③ 조상 아님 · 판정 불가
-        assert!(verify_delegated(&d, &tok, |_| Some(false)).unwrap_err().detail.contains('③'));
-        assert!(verify_delegated(&d, &tok, |_| None).unwrap_err().detail.contains('③'));
-        // 토큰 없는 자식 = 재잠금 시도 → 잡혀 있으므로 txn_busy
-        assert_eq!(acquire_or_delegate(&d, "rotate", None).unwrap_err().code, ErrCode::TxnBusy);
-        // ② 잠금 풀림(소유자 죽음) — 기록은 남아도 낡은 토큰
+        assert!(verify_delegated(&d, &other, Some(&other), &yes()).unwrap_err().detail.contains('①'));
+        let no = ProcProbe { is_ancestor: &|_| Some(false), start_time: &|p| pid_start_time(p) };
+        assert!(verify_delegated(&d, &tok, Some(&tok), &no).unwrap_err().detail.contains('③'));
+        let unk = ProcProbe { is_ancestor: &|_| None, start_time: &|p| pid_start_time(p) };
+        assert!(verify_delegated(&d, &tok, Some(&tok), &unk).unwrap_err().detail.contains('③'));
+        assert_eq!(acquire_or_delegate(&d, "rotate", None, None).unwrap_err().code, ErrCode::TxnBusy);
         drop(g);
-        assert!(verify_delegated(&d, &tok, |_| Some(true)).unwrap_err().detail.contains('②'));
-        // 토큰 없는 호출은 이제 잡힌다
-        assert!(matches!(acquire_or_delegate(&d, "rotate", None).unwrap(), Participation::Owner(_)));
+        assert!(read_owner(&d).unwrap().released, "놓을 때 묘비");
+        assert!(verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap_err().detail.contains('①'), "묘비 = 옛 토큰 거부");
+        assert!(matches!(acquire_or_delegate(&d, "rotate", None, None).unwrap(), Participation::Owner(_)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1R B6 뮤테이션 ⓐ: 인자 토큰 ≠ env 토큰(또는 env 없음) = 거부.
+    #[test]
+    fn b6_arg_must_equal_env() {
+        let d = tmp("b6a");
+        let g = acquire(&d, "runner").unwrap();
+        let tok = g.token();
+        let other = Token { epoch: tok.epoch + 7, ..tok.clone() };
+        assert!(verify_delegated(&d, &tok, Some(&other), &yes()).unwrap_err().detail.contains('⓪'));
+        assert!(verify_delegated(&d, &tok, None, &yes()).unwrap_err().detail.contains('⓪'));
+        drop(g);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1R B6 뮤테이션 ⓑ: 검증 도중 소유자 기록이 바뀜(넘겨주기 경합) · 소유 pid 시작 시각 불일치(재사용) = 거부.
+    #[test]
+    fn b6_handover_race_and_pid_reuse_rejected() {
+        let d = tmp("b6b");
+        let g = acquire(&d, "runner").unwrap();
+        let tok = g.token();
+        let dd = d.clone();
+        // 조상 판정(①과 ② 사이) 중에 새 소유자가 기록을 바꾼 상황
+        let swap = move |_| {
+            let mut o = read_owner(&dd).unwrap();
+            o.txn_id = "b".repeat(32);
+            o.epoch += 1;
+            std::fs::write(dd.join(OWNER_FILE), serde_json::to_vec(&o).unwrap()).unwrap();
+            Some(true)
+        };
+        let racy = ProcProbe { is_ancestor: &swap, start_time: &|p| pid_start_time(p) };
+        assert!(verify_delegated(&d, &tok, Some(&tok), &racy).unwrap_err().detail.contains("①′"));
+        drop(g);
+        let g = acquire(&d, "runner").unwrap();
+        let tok = g.token();
+        let reused = ProcProbe { is_ancestor: &|_| Some(true), start_time: &|_| Some(1) };
+        assert!(verify_delegated(&d, &tok, Some(&tok), &reused).unwrap_err().detail.contains("③′"));
+        drop(g);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1R MAJOR(M3) 뮤테이션: 갱신 폴더 0700 · 잠금·소유자 파일 0600(유닉스).
+    #[cfg(unix)]
+    #[test]
+    fn m3_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("m3");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let g = acquire(&d, "runner").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&d), 0o700, "넓은 폴더 권한은 좁힌다");
+        assert_eq!(mode(&d.join(LOCK_FILE)), 0o600);
+        assert_eq!(mode(&d.join(OWNER_FILE)), 0o600);
+        drop(g);
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -1,9 +1,10 @@
 //! 갱신 저널 — 상태 전이표 · write-ahead · fsync · 사본 2 · 손상 = fail-closed(설계 AUTO-UPDATE-118 §3 · §3-10 · §3-11 ·
 //! 2R 신규 BLOCK 2·5 · 3R MINOR 2).
 //!
-//! - 자리 = `<상태 폴더>/journal.json` + `journal.prev.json`(직전 상태). 쓰기 순서: 지금 본 → prev 로 원자 복사 → 새 본을
-//!   원자 쓰기(임시 파일 → fsync → rename → 부모 폴더 fsync). 어느 순간 끊겨도 둘 중 하나는 온전하다. **둘 다** 못 읽을 때만
-//!   「저널 손상」(→ 좌석을 열지 않는다 · 재구성은 U2 복구기).
+//! - 자리 = `<상태 폴더>/journal.json` · `journal.prev.json` = **A/B 두 슬롯**(2판 · 1R B7). 쓸 때마다 `generation` +1 을
+//!   최신본이 **아닌** 슬롯에 원자 쓰기(임시 파일 → fsync → rename → 부모 폴더 fsync) · 읽기 = 온전한 것 중 generation 최대.
+//!   한 슬롯이라도 손상이면 `Degraded` — 손상본이 더 새것이었을 수 있으므로(예: S9 를 적고 교체까지 한 뒤 손상) 남은 본을
+//!   실행 근거로 쓰지 않고 실물 재대조(재구성)로 간다 · 둘 다 손상 = `Corrupt`(→ 좌석을 열지 않는다 · 재구성은 U2 복구기).
 //! - write-ahead: 다음 단계의 부작용 **전에** 그 단계 이름을 먼저 적는다. 상태 이름 = 「그 단계에 들어간다」.
 //! - 내용마다 `crc`(본문 sha256)를 실어 디스크 손상(파싱은 되나 값이 바뀐 것)도 손상으로 읽는다.
 //! - `(txn_id, epoch)` 펜싱: 다른 토큰의 전이는 거부(옛 소유자의 늦은 쓰기 차단).
@@ -154,6 +155,9 @@ pub struct PrevInstaller {
 pub struct Journal {
     pub txn_id: String,
     pub epoch: u64,
+    /// ★1R B7: 쓸 때마다 +1(두 슬롯 중 최신 판별 · 단조).
+    #[serde(default)]
+    pub generation: u64,
     pub state: State,
     #[serde(default)]
     pub release_seq: u64,
@@ -193,6 +197,7 @@ impl Journal {
         Journal {
             txn_id: txn_id.to_string(),
             epoch,
+            generation: 0,
             state: Locked,
             release_seq: 0,
             from_release_seq: 0,
@@ -236,10 +241,11 @@ impl Journal {
 pub enum ReadOutcome {
     /// 저널 없음(첫 갱신 전).
     Absent,
-    /// 정본(`journal.json`)이 온전하다.
+    /// 온전한 최신본(두 슬롯 중 generation 최대 · 다른 슬롯은 온전하거나 아직 없음).
     Ok(Journal),
-    /// 정본이 깨져 직전 사본으로 읽었다(그 상태의 부작용은 아직 시작되지 않았다 — write-ahead).
-    FromPrev(Journal),
+    /// ★1R B7: 한 슬롯이 **손상**(있으나 못 읽음) — 손상본이 더 새것이었는지 알 수 없다. 남은 본은 참고값일 뿐 그대로 실행하지
+    /// 않는다(복구 = 실물 재대조 · [`Recovery::Reconstruct`]) · 이 상태에서 쓰기 거부.
+    Degraded(Journal, String),
     /// 둘 다 못 읽음 = 손상(fail-closed).
     Corrupt(String),
 }
@@ -247,7 +253,7 @@ pub enum ReadOutcome {
 impl ReadOutcome {
     pub fn journal(&self) -> Option<&Journal> {
         match self {
-            ReadOutcome::Ok(j) | ReadOutcome::FromPrev(j) => Some(j),
+            ReadOutcome::Ok(j) | ReadOutcome::Degraded(j, _) => Some(j),
             _ => None,
         }
     }
@@ -261,26 +267,37 @@ fn parse(bytes: &[u8]) -> Result<Journal, String> {
     Ok(j)
 }
 
-pub fn read(dir: &Path) -> ReadOutcome {
-    let main = std::fs::read(dir.join(JOURNAL_FILE));
-    let prev = std::fs::read(dir.join(JOURNAL_PREV_FILE));
-    let nf = |r: &std::io::Result<Vec<u8>>| matches!(r, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
-    if nf(&main) && nf(&prev) {
-        return ReadOutcome::Absent;
+/// 슬롯 1개: None = 파일 없음 · Some(Ok) = 온전 · Some(Err) = 손상.
+fn slot(path: &Path) -> Option<Result<Journal, String>> {
+    match std::fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(Err(e.to_string())),
+        Ok(b) => Some(parse(&b)),
     }
-    let main_err = match main.as_deref().map_err(|e| e.to_string()).and_then(parse) {
-        Ok(j) => return ReadOutcome::Ok(j),
-        Err(e) => e,
-    };
-    match prev.as_deref().map_err(|e| e.to_string()).and_then(parse) {
-        Ok(j) => ReadOutcome::FromPrev(j),
-        Err(pe) => ReadOutcome::Corrupt(format!("journal.json: {main_err} · journal.prev.json: {pe}")),
+}
+
+pub fn read(dir: &Path) -> ReadOutcome {
+    let a = slot(&dir.join(JOURNAL_FILE));
+    let b = slot(&dir.join(JOURNAL_PREV_FILE));
+    match (a, b) {
+        (None, None) => ReadOutcome::Absent,
+        (Some(Ok(x)), Some(Ok(y))) => ReadOutcome::Ok(if x.generation >= y.generation { x } else { y }),
+        (Some(Ok(x)), None) | (None, Some(Ok(x))) => ReadOutcome::Ok(x),
+        (Some(Ok(x)), Some(Err(e))) | (Some(Err(e)), Some(Ok(x))) => {
+            if super::mutant("B7") {
+                ReadOutcome::Ok(x) // 수리 전 동작(살아남은 본을 그대로 믿음)
+            } else {
+                ReadOutcome::Degraded(x, e)
+            }
+        }
+        (Some(Err(e)), None) | (None, Some(Err(e))) => ReadOutcome::Corrupt(e),
+        (Some(Err(e1)), Some(Err(e2))) => ReadOutcome::Corrupt(format!("journal.json: {e1} · journal.prev.json: {e2}")),
     }
 }
 
 /// 원자 쓰기 + **부모 폴더 fsync 필수**(`pack::write_atomic` 은 폴더 fsync 를 최선 노력으로만 한다 — 저널은 필수).
 pub fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    crate::pack::write_atomic(path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::pack::write_atomic_mode(path, bytes, Some(0o600)).map_err(|e| format!("{}: {e}", path.display()))?;
     sync_dir(path.parent().ok_or("부모 없음")?)
 }
 
@@ -319,9 +336,9 @@ pub enum AdvanceErr {
 /// 새 트랜잭션(`to == Locked`)은 지금 저널이 없거나 종결일 때만 · 다른 전이는 같은 `(txn_id, epoch)` 일 때만.
 pub fn advance(dir: &Path, txn_id: &str, epoch: u64, to: State, update: impl FnOnce(&mut Journal)) -> Result<Journal, AdvanceErr> {
     let cur = match read(dir) {
-        ReadOutcome::Corrupt(e) => return Err(AdvanceErr::Corrupt(e)),
+        ReadOutcome::Corrupt(e) | ReadOutcome::Degraded(_, e) => return Err(AdvanceErr::Corrupt(e)),
         ReadOutcome::Absent => None,
-        ReadOutcome::Ok(j) | ReadOutcome::FromPrev(j) => Some(j),
+        ReadOutcome::Ok(j) => Some(j),
     };
     let from = cur.as_ref().map(|j| j.state);
     if !can_transition(from, to) {
@@ -344,15 +361,17 @@ pub fn advance(dir: &Path, txn_id: &str, epoch: u64, to: State, update: impl FnO
     next.boot_id = s.boot_id;
     next.mono_at_write = s.mono_ms;
     next.wall_at_write = s.wall;
+    next.generation = cur.as_ref().map(|c| c.generation + 1).unwrap_or(1);
     let next = next.sealed();
-    std::fs::create_dir_all(dir).map_err(|e| AdvanceErr::Io(e.to_string()))?;
-    // ① 지금 본 → prev(원자) ② 새 본(원자 + 폴더 fsync).
-    if let Some(c) = &cur {
-        let b = serde_json::to_vec_pretty(&c.clone().sealed()).map_err(|e| AdvanceErr::Io(e.to_string()))?;
-        durable_write(&dir.join(JOURNAL_PREV_FILE), &b).map_err(AdvanceErr::Io)?;
-    }
+    super::ensure_private_dir(dir).map_err(AdvanceErr::Io)?;
+    // ★1R B7: 최신본 슬롯은 **절대 덮지 않는다** — 새 generation 은 다른 슬롯(더 낡은 쪽·빈 쪽)에 원자 쓰기(+ 폴더 fsync).
+    //   끊기면 최신본은 그대로 남고, 새 슬롯은 옛 내용 그대로다(rename 원자).
+    let target = match slot(&dir.join(JOURNAL_FILE)) {
+        Some(Ok(a)) if Some(a.generation) == cur.as_ref().map(|c| c.generation) => JOURNAL_PREV_FILE,
+        _ => JOURNAL_FILE,
+    };
     let b = serde_json::to_vec_pretty(&next).map_err(|e| AdvanceErr::Io(e.to_string()))?;
-    durable_write(&dir.join(JOURNAL_FILE), &b).map_err(AdvanceErr::Io)?;
+    durable_write(&dir.join(target), &b).map_err(AdvanceErr::Io)?;
     Ok(next)
 }
 
@@ -391,7 +410,8 @@ pub fn recovery_for(read: &ReadOutcome, os: Os) -> Recovery {
     let j = match read {
         ReadOutcome::Absent => return Recovery::Nothing,
         ReadOutcome::Corrupt(_) => return Recovery::Reconstruct,
-        ReadOutcome::Ok(j) | ReadOutcome::FromPrev(j) => j,
+        ReadOutcome::Degraded(..) if !super::mutant("B7") => return Recovery::Reconstruct,
+        ReadOutcome::Ok(j) | ReadOutcome::Degraded(j, _) => j,
     };
     match j.state {
         s if s.is_terminal() => Recovery::Nothing,
@@ -468,61 +488,77 @@ mod tests {
         assert!(can_transition(Some(Swapped), Swapped), "같은 상태 재기록 = 멱등");
     }
 
-    /// write-ahead 순서 · 사본 2 · 펜싱.
+    /// A/B 슬롯 · generation 단조 · 최신본을 덮지 않음 · 펜싱.
     #[test]
-    fn advance_writes_prev_then_main_and_fences_old_tokens() {
+    fn advance_alternates_slots_with_monotonic_generation_and_fences_old_tokens() {
         let d = tmp("adv");
         assert_eq!(read(&d), ReadOutcome::Absent);
         let j = advance(&d, T, 1, Locked, |_| {}).unwrap();
-        assert_eq!(j.state, Locked);
-        assert!(!d.join(JOURNAL_PREV_FILE).exists(), "첫 기록엔 prev 없음");
-        advance(&d, T, 1, Fetched, |j| j.release_seq = 9).unwrap();
-        let prev: Journal = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_PREV_FILE)).unwrap()).unwrap();
-        assert_eq!(prev.state, Locked, "prev = 직전 상태");
+        assert_eq!((j.state, j.generation), (Locked, 1));
+        assert!(!d.join(JOURNAL_PREV_FILE).exists(), "첫 기록 = 한 슬롯");
+        let j2 = advance(&d, T, 1, Fetched, |j| j.release_seq = 9).unwrap();
+        assert_eq!(j2.generation, 2);
+        let a: Journal = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_FILE)).unwrap()).unwrap();
+        let b: Journal = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_PREV_FILE)).unwrap()).unwrap();
+        assert_eq!((a.generation, a.state, b.generation, b.state), (1, Locked, 2, Fetched), "최신본 슬롯을 덮지 않고 다른 슬롯에");
+        advance(&d, T, 1, Quiesced, |_| {}).unwrap();
+        let a: Journal = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_FILE)).unwrap()).unwrap();
+        assert_eq!((a.generation, a.state), (3, Quiesced), "다시 반대 슬롯");
         match read(&d) {
-            ReadOutcome::Ok(j) => assert_eq!((j.state, j.release_seq), (Fetched, 9)),
+            ReadOutcome::Ok(j) => assert_eq!((j.state, j.release_seq, j.generation), (Quiesced, 9, 3)),
             o => panic!("{o:?}"),
         }
         // 옛 epoch · 다른 txn = 거부
-        assert_eq!(advance(&d, T, 0, Quiesced, |_| {}).unwrap_err(), AdvanceErr::Fenced);
-        assert_eq!(advance(&d, &"f".repeat(32), 1, Quiesced, |_| {}).unwrap_err(), AdvanceErr::Fenced);
+        assert_eq!(advance(&d, T, 0, Drained, |_| {}).unwrap_err(), AdvanceErr::Fenced);
+        assert_eq!(advance(&d, &"f".repeat(32), 1, Drained, |_| {}).unwrap_err(), AdvanceErr::Fenced);
         // 금지 전이
         assert!(matches!(advance(&d, T, 1, Swapped, |_| {}).unwrap_err(), AdvanceErr::Illegal { .. }));
-        // 보류 정리 → 새 트랜잭션(다른 토큰 허용)
+        // 보류 정리 → 새 트랜잭션(다른 토큰 허용 · generation 은 계속 오른다)
         advance(&d, T, 1, Deferred, |_| {}).unwrap();
-        let j2 = advance(&d, &"a".repeat(32), 2, Locked, |_| {}).unwrap();
-        assert_eq!((j2.epoch, j2.release_seq), (2, 0), "새 트랜잭션 = 새 내용");
+        let j5 = advance(&d, &"a".repeat(32), 2, Locked, |_| {}).unwrap();
+        assert_eq!((j5.epoch, j5.release_seq, j5.generation), (2, 0, 5), "새 트랜잭션 = 새 내용 · generation 단조");
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// 사본 2 · 손상 = fail-closed(§7-1 「저널 사본 2 손상 → 좌석 0 · 재구성」).
+    /// 손상: 둘 다 = Corrupt · 하나 = Degraded(쓰기 거부 · 복구 = 재구성) · crc 로 값 변조 감지.
     #[test]
-    fn corruption_falls_back_to_prev_then_fails_closed() {
+    fn corruption_degrades_or_fails_closed() {
         let d = tmp("cor");
         advance(&d, T, 1, Locked, |_| {}).unwrap();
-        advance(&d, T, 1, Fetched, |_| {}).unwrap();
-        advance(&d, T, 1, Quiesced, |_| {}).unwrap();
-        // 정본 찢김 → prev 로(직전 상태 · 부작용 미시작)
-        std::fs::write(d.join(JOURNAL_FILE), b"{\"txn_id\":").unwrap();
-        match read(&d) {
-            ReadOutcome::FromPrev(j) => assert_eq!(j.state, Fetched),
-            o => panic!("{o:?}"),
-        }
-        // 정본 값 변조(파싱은 됨) = crc 불일치 = 손상 취급
-        advance(&d, T, 1, Quiesced, |_| {}).unwrap(); // 정본 복구 · prev = Fetched
-        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_FILE)).unwrap()).unwrap();
+        advance(&d, T, 1, Fetched, |_| {}).unwrap(); // prev 슬롯 = gen2
+        // 최신 슬롯 값 변조(파싱은 됨) = crc 불일치 = 손상 → Degraded
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_PREV_FILE)).unwrap()).unwrap();
         v["release_seq"] = serde_json::json!(999);
-        std::fs::write(d.join(JOURNAL_FILE), v.to_string()).unwrap();
-        assert!(matches!(read(&d), ReadOutcome::FromPrev(_)));
-        // 둘 다 손상 = Corrupt · 쓰기 거부 · 복구 = 재구성
-        std::fs::write(d.join(JOURNAL_PREV_FILE), b"garbage").unwrap();
+        std::fs::write(d.join(JOURNAL_PREV_FILE), v.to_string()).unwrap();
         let r = read(&d);
-        assert!(matches!(r, ReadOutcome::Corrupt(_)), "{r:?}");
+        assert!(matches!(r, ReadOutcome::Degraded(_, _)), "{r:?}");
         assert_eq!(recovery_for(&r, Os::Mac), Recovery::Reconstruct);
-        assert!(matches!(advance(&d, T, 1, Drained, |_| {}).unwrap_err(), AdvanceErr::Corrupt(_)));
-        // 정본만 없고 prev 있음 = prev
-        std::fs::remove_file(d.join(JOURNAL_FILE)).unwrap();
-        assert!(matches!(read(&d), ReadOutcome::Corrupt(_)), "prev 도 깨졌으면 여전히 손상");
+        assert!(matches!(advance(&d, T, 1, Quiesced, |_| {}).unwrap_err(), AdvanceErr::Corrupt(_)), "Degraded 에서 쓰기 거부");
+        // 둘 다 손상 = Corrupt
+        std::fs::write(d.join(JOURNAL_FILE), b"garbage").unwrap();
+        assert!(matches!(read(&d), ReadOutcome::Corrupt(_)));
+        // 남은 하나가 손상 · 다른 하나 없음 = Corrupt
+        std::fs::remove_file(d.join(JOURNAL_PREV_FILE)).unwrap();
+        assert!(matches!(read(&d), ReadOutcome::Corrupt(_)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1R B7 뮤테이션: S9(교체)를 적은 슬롯이 손상되고 S8b 슬롯만 남아도 「옛 바이너리로 기동」을 실행하지 않는다(재구성).
+    #[test]
+    fn b7_post_side_effect_slot_corruption_never_runs_prev() {
+        let d = tmp("b7");
+        for st in [Locked, Fetched, Quiesced, Drained, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped] {
+            advance(&d, T, 1, st, |_| {}).unwrap();
+        }
+        // 최신(S9 Swapped)이 든 슬롯을 찾아 손상
+        let latest_slot = [JOURNAL_FILE, JOURNAL_PREV_FILE]
+            .into_iter()
+            .find(|f| serde_json::from_slice::<Journal>(&std::fs::read(d.join(f)).unwrap()).unwrap().state == Swapped)
+            .unwrap();
+        std::fs::write(d.join(latest_slot), b"{torn").unwrap();
+        let r = read(&d);
+        assert_eq!(r.journal().map(|j| j.state), Some(CommitCheck), "남은 본 = S8b");
+        assert_eq!(recovery_for(&r, Os::Win), Recovery::Reconstruct, "S8b 를 믿고 옛 바이너리 기동 = 금지");
         let _ = std::fs::remove_dir_all(&d);
     }
 

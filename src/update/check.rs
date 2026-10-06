@@ -99,14 +99,24 @@ pub fn read_state(dir: &Path) -> Result<UpdState, String> {
     }
 }
 
-/// 수용한 폐기문 rev · 마지막 신뢰 시각(`trusted.json` `{revocations_rev, last_trusted_time}`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// 신뢰 앵커(`trusted.json`) — ★1R B3·H⑪: 마지막 수용 폐기문의 rev·원문 sha256·수용 시각(Stamp)과 마지막 신뢰 시각.
+/// 원문은 `revocations.accepted.json` + `.minisig` 로 따로 보존한다(피드 미도달 때 30일까지 대신 쓴다 · §4-1).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Trusted {
     #[serde(default)]
     pub revocations_rev: Option<u64>,
     #[serde(default)]
+    pub revocations_sha256: Option<String>,
+    #[serde(default)]
+    pub revocations_accepted_at: Option<clock::Stamp>,
+    #[serde(default)]
     pub last_trusted_time: Option<i64>,
 }
+
+pub const REV_COPY: &str = "revocations.accepted.json";
+pub const REV_COPY_SIG: &str = "revocations.accepted.json.minisig";
+/// 폐기문 대체본 수명(§4-1 「못 읽으면 마지막 수용본으로 판정하되 그 수용본이 30일 넘었으면 보류」).
+pub const REVOCATIONS_MAX_AGE_SECS: u64 = 30 * 86_400;
 
 pub fn read_trusted(dir: &Path) -> Result<Trusted, String> {
     match std::fs::read(dir.join("trusted.json")) {
@@ -116,25 +126,62 @@ pub fn read_trusted(dir: &Path) -> Result<Trusted, String> {
     }
 }
 
-/// 단조 앵커 기록(rev·신뢰 시각은 오르기만) — `update-verify --record` 만 부른다(`--check` 는 쓰지 않는다).
-pub fn bump_trusted(dir: &Path, rev: Option<u64>, signed_at: Option<i64>) -> Result<Trusted, String> {
-    let cur = read_trusted(dir)?;
-    let next = Trusted {
-        revocations_rev: match (cur.revocations_rev, rev) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (a, b) => a.or(b),
-        },
-        last_trusted_time: match (cur.last_trusted_time, signed_at) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (a, b) => a.or(b),
-        },
+fn write_trusted(dir: &Path, t: &Trusted) -> Result<(), String> {
+    let b = serde_json::to_vec_pretty(t).map_err(|e| e.to_string())?;
+    super::write_private(&dir.join("trusted.json"), &b)
+}
+
+/// 신뢰 시각 단조 상향(내려가지 않음).
+pub fn bump_trusted(dir: &Path, signed_at: Option<i64>) -> Result<Trusted, String> {
+    let mut t = read_trusted(dir)?;
+    let next = match (t.last_trusted_time, signed_at) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
     };
-    if next != cur {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let b = serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?;
-        crate::pack::write_atomic(&dir.join("trusted.json"), &b).map_err(|e| e.to_string())?;
+    if next != t.last_trusted_time {
+        t.last_trusted_time = next;
+        write_trusted(dir, &t)?;
     }
-    Ok(next)
+    Ok(t)
+}
+
+/// ★1R B3: R 검증을 통과한 폐기문을 **그 즉시** 내구 기록(원문·서명·sha256·rev·수용 Stamp) — 뒤 단계(봉투·본문) 실패와 무관.
+/// rev 후퇴 = 거부 · 같은 rev 인데 원문이 다름 = 거부(옛 기록 유지 · R 서명자 실수 신호) · 같은 원문 = 수용 시각만 새로.
+pub fn record_revocations(dir: &Path, bytes: &[u8], sig: &[u8], rev: u64, signed_at: i64) -> Result<Trusted, String> {
+    let mut t = read_trusted(dir)?;
+    let sha = super::feed::sha256_hex(bytes);
+    if let Some(cur) = t.revocations_rev {
+        if rev < cur {
+            return Err(format!("폐기문 rev 후퇴 {rev} < {cur}"));
+        }
+        if rev == cur && t.revocations_sha256.as_deref() != Some(sha.as_str()) {
+            return Err(format!("같은 폐기문 rev {rev} 다른 원문 — 기록 거부"));
+        }
+    }
+    super::write_private(&dir.join(REV_COPY), bytes)?;
+    super::write_private(&dir.join(REV_COPY_SIG), sig)?;
+    t.revocations_rev = Some(rev);
+    t.revocations_sha256 = Some(sha);
+    t.revocations_accepted_at = Some(clock::now_stamp());
+    t.last_trusted_time = Some(t.last_trusted_time.unwrap_or(i64::MIN).max(signed_at));
+    write_trusted(dir, &t)?;
+    Ok(t)
+}
+
+/// 피드 미도달 때의 폐기문 대체본 — 수용 뒤 30일 이내(낡음 타이머 = 시계 의심이면 낡음)·원문 sha256 = 기록일 때만.
+pub fn load_accepted_revocations(dir: &Path, now: &clock::Stamp, wall_suspect: bool) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let t = read_trusted(dir)?;
+    let at = t.revocations_accepted_at.ok_or("수용 폐기문 없음")?;
+    let age = clock::elapsed_for_staleness(&at, now, wall_suspect, t.last_trusted_time);
+    if age > REVOCATIONS_MAX_AGE_SECS && !super::mutant("B3") {
+        return Err(format!("수용 폐기문 30일 넘음({}일) — 보류", age / 86_400));
+    }
+    let b = std::fs::read(dir.join(REV_COPY)).map_err(|e| e.to_string())?;
+    let s = std::fs::read(dir.join(REV_COPY_SIG)).map_err(|e| e.to_string())?;
+    if t.revocations_sha256.as_deref() != Some(super::feed::sha256_hex(&b).as_str()) {
+        return Err("수용 폐기문 원문 sha256 불일치".into());
+    }
+    Ok((b, s))
 }
 
 pub fn accepted_path(dir: &Path, component: &str, channel: &str) -> std::path::PathBuf {
@@ -263,19 +310,28 @@ pub fn parse_hid_idle_secs(s: &str) -> Option<u64> {
 
 // ── 판정 ─────────────────────────────────────────────────────────────────────────────
 
-/// 피드 받기 + 검증(읽기 전용). Err = 미도달(조용히 끝 · daily 칸).
-pub fn fetch_and_verify(dir: &Path, channel: &str, now: i64) -> Result<(FeedOutcome, Option<i64>), String> {
+/// 피드 받기 + 검증(읽기 전용). Err = 미도달(조용히 끝 · daily 칸). 폐기문만 못 받으면 30일 이내 수용본으로 대신한다(§4-1).
+pub fn fetch_and_verify(dir: &Path, channel: &str, now: i64) -> Result<(FeedOutcome, Vec<Option<i64>>), String> {
     let base = net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
     let get = |rel: &str| net::fetch_feed_file(&base, rel).map_err(|e| format!("{rel}: {e:?}"));
     let env = get(&format!("cysr/{channel}.json"))?;
     let env_sig = get(&format!("cysr/{channel}.json.minisig"))?;
-    let rev = get("revocations.json")?;
-    let rev_sig = get("revocations.json.minisig")?;
-    let http_date = env.http_date.or(rev.http_date);
     let trusted = read_trusted(dir);
     let (accepted_rev, last_trusted) = match &trusted {
         Ok(t) => (t.revocations_rev, t.last_trusted_time),
         Err(_) => (None, None),
+    };
+    let mut dates = vec![env.http_date, env_sig.http_date];
+    let (rev_bytes, rev_sig) = match (get("revocations.json"), get("revocations.json.minisig")) {
+        (Ok(a), Ok(b)) => {
+            dates.push(a.http_date);
+            dates.push(b.http_date);
+            (a.bytes, b.bytes)
+        }
+        _ => {
+            let suspect = clock::clock_suspect_dates(now, last_trusted, &dates);
+            load_accepted_revocations(dir, &clock::now_stamp(), suspect).map_err(|e| format!("폐기문 미도달 · {e}"))?
+        }
     };
     let accepted: Result<Option<AcceptedFeed>, String> = match &trusted {
         Err(e) => Err(e.clone()),
@@ -288,10 +344,10 @@ pub fn fetch_and_verify(dir: &Path, channel: &str, now: i64) -> Result<(FeedOutc
         channel,
         envelope: &env.bytes,
         envelope_sig: &env_sig.bytes,
-        revocations: &rev.bytes,
-        revocations_sig: &rev_sig.bytes,
+        revocations: &rev_bytes,
+        revocations_sig: &rev_sig,
         now,
-        clock_suspect: clock::clock_suspect(now, last_trusted, http_date),
+        clock_suspect: clock::clock_suspect_dates(now, last_trusted, &dates),
         accepted,
         accepted_rev,
         keyring: &keyring,
@@ -299,11 +355,11 @@ pub fn fetch_and_verify(dir: &Path, channel: &str, now: i64) -> Result<(FeedOutc
         target: buildinfo::TARGET,
         rollout_bucket: bucket,
     };
-    Ok((feed::verify_feed(&inp), http_date))
+    Ok((feed::verify_feed(&inp), dates))
 }
 
 /// 게이트 사실 모으기(읽기 전용).
-pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, http_date: Option<i64>, now: i64, hooks: &Hooks) -> Facts {
+pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, http_dates: &[Option<i64>], now: i64, hooks: &Hooks) -> Facts {
     let cfg = read_config(dir);
     let trusted = read_trusted(dir).ok();
     let st = read_state(dir);
@@ -329,8 +385,8 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
         Some(then) => clock::elapsed_for_wait(
             then,
             &clock::now_stamp(),
-            clock::clock_suspect(now, trusted.and_then(|t| t.last_trusted_time), http_date),
-            trusted.and_then(|t| t.last_trusted_time),
+            clock::clock_suspect_dates(now, trusted.as_ref().and_then(|t| t.last_trusted_time), http_dates),
+            trusted.as_ref().and_then(|t| t.last_trusted_time),
         ),
     });
     let failure_blocks = match (&st, outcome.and_then(|o| o.release_seq)) {
@@ -354,7 +410,6 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
         last.saturating_sub(delivered)
     });
     Facts {
-        state_migration: outcome.and_then(|o| o.state_migration.clone()),
         auto_enabled: cfg.as_ref().ok().map(|c| c.auto),
         envelope_halt: outcome.map(|o| o.halt).unwrap_or(false),
         other_txn,
@@ -362,11 +417,11 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
         failure_blocks,
         installed_release_seq: Some(buildinfo::release_seq()),
         min_from_release_seq: outcome.and_then(|o| o.min_from_release_seq),
-        clock_suspect: Some(clock::clock_suspect(now, trusted.and_then(|t| t.last_trusted_time), http_date)),
+        clock_suspect: Some(clock::clock_suspect_dates(now, trusted.as_ref().and_then(|t| t.last_trusted_time), http_dates)),
         // N14: 복구기(LaunchAgent·로그온 작업) 등록·검증은 U2 — 이 판에는 등록이 없으므로 「미등록」(보류).
         recover_agent_ok: Some(false),
         power: power(),
-        sac_state: Some(super::win::sac_fact()),
+        sac_state: super::win::sac_fact(),
         holds_active: holds_active(dir, now),
         pending_approvals: (hooks.pending_approvals)(),
         publish_within_48h: sched.map(|s| s.publish_within_48h),
@@ -384,14 +439,14 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
 pub fn run_check(dir: &Path, pack_dir: &Path, hooks: &Hooks) -> (Value, i32) {
     let now = clock::wall_now();
     let cfg = read_config(dir).unwrap_or_default();
-    let (feed_json, outcome, http_date, rc) = match fetch_and_verify(dir, &cfg.channel, now) {
+    let (feed_json, outcome, dates, rc) = match fetch_and_verify(dir, &cfg.channel, now) {
         Ok((o, d)) => {
             let rc = o.verdict.rc();
             (o.to_json(), Some(o), d, rc)
         }
-        Err(e) => (json!({"verdict": "unreachable", "detail": e}), None, None, 3),
+        Err(e) => (json!({"verdict": "unreachable", "detail": e}), None, vec![], 3),
     };
-    let facts = gather_facts(dir, pack_dir, outcome.as_ref(), http_date, now, hooks);
+    let facts = gather_facts(dir, pack_dir, outcome.as_ref(), &dates, now, hooks);
     let report = gates::evaluate(&facts);
     let decision = match outcome.as_ref().map(|o| o.verdict) {
         Some(Verdict::Apply) if report.pass => "apply",
@@ -451,9 +506,32 @@ mod tests {
         assert_eq!(holds_active(&d, 100), Some(true));
         std::fs::write(d.join("holds.json"), b"x").unwrap();
         assert_eq!(holds_active(&d, 100), None);
-        // trusted 단조
-        assert_eq!(bump_trusted(&d, Some(3), Some(1000)).unwrap(), Trusted { revocations_rev: Some(3), last_trusted_time: Some(1000) });
-        assert_eq!(bump_trusted(&d, Some(2), Some(900)).unwrap(), Trusted { revocations_rev: Some(3), last_trusted_time: Some(1000) }, "내려가지 않음");
+        // 신뢰 시각 단조
+        assert_eq!(bump_trusted(&d, Some(1000)).unwrap().last_trusted_time, Some(1000));
+        assert_eq!(bump_trusted(&d, Some(900)).unwrap().last_trusted_time, Some(1000), "내려가지 않음");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1R B3 뮤테이션: 수용 폐기문 대체본 = 30일 이내 · 원문 sha256 일치일 때만 · 같은 rev 다른 원문 기록 거부 · rev 후퇴 거부.
+    #[test]
+    fn b3_revocations_copy_freshness_and_integrity() {
+        let d = tmp("b3");
+        let t = record_revocations(&d, b"rev-v3", b"sig", 3, 1_000).unwrap();
+        assert_eq!((t.revocations_rev, t.last_trusted_time), (Some(3), Some(1_000)));
+        let now = clock::now_stamp();
+        assert_eq!(load_accepted_revocations(&d, &now, false).unwrap().0, b"rev-v3");
+        assert!(record_revocations(&d, b"rev-v3-other", b"sig", 3, 1_000).is_err(), "같은 rev 다른 원문");
+        assert!(record_revocations(&d, b"rev-v2", b"sig", 2, 1_000).is_err(), "rev 후퇴");
+        // 수용 시각을 31일 전(다른 부팅)으로 — 낡음
+        let mut tr = read_trusted(&d).unwrap();
+        tr.revocations_accepted_at = Some(clock::Stamp { boot_id: now.boot_id + 1, mono_ms: 0, wall: now.wall - 31 * 86_400 });
+        std::fs::write(d.join("trusted.json"), serde_json::to_vec(&tr).unwrap()).unwrap();
+        assert!(load_accepted_revocations(&d, &now, false).unwrap_err().contains("30일"));
+        // 원문 변조 = 거부
+        tr.revocations_accepted_at = Some(now);
+        std::fs::write(d.join("trusted.json"), serde_json::to_vec(&tr).unwrap()).unwrap();
+        std::fs::write(d.join(REV_COPY), b"tampered").unwrap();
+        assert!(load_accepted_revocations(&d, &now, false).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -464,7 +542,8 @@ mod tests {
         let pack = d.join("pack");
         std::fs::create_dir_all(&pack).unwrap();
         let hooks = Hooks { seats: &|| None, pending_approvals: &|| Some(0) };
-        let f = gather_facts(&d, &pack, None, None, clock::wall_now(), &hooks);
+        let _ = &hooks;
+        let f = gather_facts(&d, &pack, None, &[], clock::wall_now(), &hooks);
         assert_eq!(f.recover_agent_ok, Some(false));
         assert_eq!(f.rollback_assets_ok, None);
         assert_eq!(f.other_txn, Some(false));

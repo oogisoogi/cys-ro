@@ -1,7 +1,8 @@
 //! 「하지 않는 조건」 판정(정책 §2 의 기계판) — 설계 AUTO-UPDATE-118 §3-4 게이트 N1~N14 · 1R BLOCK 15 · 📌14′·16.
 //!
 //! 순수 함수: 사실([`Facts`])은 호출부(`cys self-update --check`)가 모아 넘긴다. **모르는 사실(None) = 걸림(보류)**
-//! — fail-closed. 판정 순서 = 싼 것 먼저(설계 고정): SM(breaking 제외) → N9 → N10 → N8 → N11 → N13 → N14 → N6 → N12 →
+//! — fail-closed. 판정 순서 = 싼 것 먼저(설계 고정 · 1R MINOR: `state_migration:"breaking"` 제외는 게이트가 아니라 피드
+//! 판정 ⓛ 로 옮겼다 — 이 배열은 정본 순서 그대로): N9 → N10 → N8 → N11 → N13 → N14 → N6 → N12 →
 //! N5 → N4 → N3 → N1 → N2 → N7. 첫 보류가 `last_defer` 사유이고, 표시를 위해 나머지도 끝까지 평가해 둔다.
 //! 보류는 오류가 아니다(신호 없음 · daily 우편) — 예외 신호 3종: N12 `win_sac_on` · N13 `clock_suspect` ·
 //! N14 `recover_agent_missing`.
@@ -46,8 +47,6 @@ pub struct Power {
 /// 게이트 입력 — `None` = 모름(= 보류).
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Facts {
-    /// 릴리스 본문 `state_migration`.
-    pub state_migration: Option<String>,
     /// N9 — `update.auto` 설정(기본 ON) · 봉투 `halt`.
     pub auto_enabled: Option<bool>,
     pub envelope_halt: bool,
@@ -108,7 +107,7 @@ pub struct Report {
 }
 
 /// 판정 순서(설계 §3-4 고정) — 시험이 이 배열을 설계 문자열과 대조한다.
-pub const ORDER: [&str; 15] = ["SM", "N9", "N10", "N8", "N11", "N13", "N14", "N6", "N12", "N5", "N4", "N3", "N1", "N2", "N7"];
+pub const ORDER: [&str; 14] = ["N9", "N10", "N8", "N11", "N13", "N14", "N6", "N12", "N5", "N4", "N3", "N1", "N2", "N7"];
 
 fn chk(id: &'static str, v: Option<Result<(), String>>) -> Check {
     match v {
@@ -132,9 +131,6 @@ fn bool_gate(v: Option<bool>, msg: &str) -> Option<Result<(), String>> {
 /// 게이트 1칸 평가.
 fn eval_one(id: &str, f: &Facts) -> Check {
     match id {
-        "SM" => chk("SM", f.state_migration.as_deref().map(|s| {
-            if s == "breaking" { Err("state_migration=breaking — 링크 재설치 전용".into()) } else { Ok(()) }
-        })),
         "N9" => chk("N9", f.auto_enabled.map(|on| {
             if !on {
                 Err("사용자가 자동 갱신을 껐다".into())
@@ -172,9 +168,11 @@ fn eval_one(id: &str, f: &Facts) -> Check {
             }
         })),
         "N12" => with_signal(
+            // ★1R MAJOR(M2): 통과는 아는 안전 값(off·absent·n/a)뿐 — on/eval·미지 문자열 = 보류.
             chk("N12", f.sac_state.as_deref().map(|s| match s {
-                "on" | "eval" => Err(format!("스마트 앱 컨트롤 {s}")),
-                _ => Ok(()),
+                "off" | "absent" | "n/a" => Ok(()),
+                other if super::mutant("M2") && other != "on" && other != "eval" => Ok(()),
+                other => Err(format!("스마트 앱 컨트롤 {other}")),
             })),
             ErrCode::WinSacOn,
         ),
@@ -252,7 +250,6 @@ fn evaluate_ids(f: &Facts, ids: &[&str]) -> Report {
 #[cfg(test)]
 pub(crate) fn all_pass_facts() -> Facts {
     Facts {
-        state_migration: Some("none".into()),
         auto_enabled: Some(true),
         envelope_halt: false,
         other_txn: Some(false),
@@ -292,9 +289,8 @@ mod tests {
     #[test]
     fn order_is_design_fixed() {
         // 설계 §3-4 「판정 순서 = 싼 것 먼저(N9 → N10 → N8 → N11 → N13 → N14 → N6 → N12 → N5 → N4 → N3 → N1 → N2 → N7)」
-        // + `state_migration:"breaking"` 제외(맨 앞 SM).
         let design = "N9 → N10 → N8 → N11 → N13 → N14 → N6 → N12 → N5 → N4 → N3 → N1 → N2 → N7";
-        let want: Vec<&str> = std::iter::once("SM").chain(design.split('→').map(|s| s.trim())).collect();
+        let want: Vec<&str> = design.split('→').map(|s| s.trim()).collect();
         assert_eq!(ORDER.to_vec(), want);
         let r = evaluate(&all_pass_facts());
         assert!(r.pass, "{:?}", r.first_hold);
@@ -306,7 +302,6 @@ mod tests {
     fn each_gate_true_false() {
         type Mut = fn(&mut Facts);
         let cases: Vec<(&str, Mut)> = vec![
-            ("SM", |f| f.state_migration = Some("breaking".into())),
             ("N9", |f| f.auto_enabled = Some(false)),
             ("N9", |f| f.envelope_halt = true),
             ("N10", |f| f.other_txn = Some(true)),
@@ -319,6 +314,7 @@ mod tests {
             ("N6", |f| f.power = Some(Power { adapter: false, battery_pct: None })),
             ("N12", |f| f.sac_state = Some("on".into())),
             ("N12", |f| f.sac_state = Some("eval".into())),
+            ("N12", |f| f.sac_state = Some("garbage".into())), // 1R M2: 미지 값 = 보류
             ("N5", |f| f.holds_active = Some(true)),
             ("N5", |f| f.pending_approvals = Some(1)),
             ("N5", |f| f.publish_within_48h = Some(true)),
@@ -360,7 +356,6 @@ mod tests {
     fn unknown_fact_holds_each_gate() {
         type Mut = fn(&mut Facts);
         let cases: Vec<(&str, Mut)> = vec![
-            ("SM", |f| f.state_migration = None),
             ("N9", |f| f.auto_enabled = None),
             ("N10", |f| f.other_txn = None),
             ("N8", |f| f.since_last_update_secs = None),

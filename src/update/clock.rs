@@ -44,9 +44,19 @@ pub fn wall_now() -> i64 {
 
 /// 단조 밀리초(이 부팅 안에서만 의미).
 pub fn mono_ms() -> u64 {
+    // ★1R MAJOR(M4): 맥 = 설계 정본 그대로 `mach_continuous_time`(잠자는 동안 포함) × timebase.
     #[cfg(target_os = "macos")]
     {
-        mono_clock(libc::CLOCK_MONOTONIC)
+        extern "C" {
+            fn mach_continuous_time() -> u64;
+        }
+        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
+        // SAFETY: tb 는 유효한 지역 구조체 · mach_continuous_time 은 인자 없는 libSystem 조회.
+        let (rc, t) = unsafe { (libc::mach_timebase_info(&mut tb), mach_continuous_time()) };
+        if rc != 0 || tb.denom == 0 {
+            return 0;
+        }
+        ((t as u128 * tb.numer as u128 / tb.denom as u128) / 1_000_000) as u64
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -63,7 +73,7 @@ pub fn mono_ms() -> u64 {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn mono_clock(id: libc::clockid_t) -> u64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: ts 는 유효한 지역 변수.
@@ -87,6 +97,18 @@ pub fn clock_suspect(wall_now: i64, last_trusted: Option<i64>, http_date: Option
         }
     }
     false
+}
+
+/// N13 — **받은 모든 HTTPS 응답의 `Date`** 를 본다(1R MAJOR M4: 하나만 보면 다른 응답의 큰 시각 차가 숨는다).
+pub fn clock_suspect_dates(wall_now: i64, last_trusted: Option<i64>, dates: &[Option<i64>]) -> bool {
+    if clock_suspect(wall_now, last_trusted, None) {
+        return true;
+    }
+    let mut it = dates.iter().flatten();
+    if super::mutant("M4") {
+        return it.next().map(|d| clock_suspect(wall_now, None, Some(*d))).unwrap_or(false);
+    }
+    it.any(|d| clock_suspect(wall_now, None, Some(*d)))
 }
 
 /// 「기다림」 타이머의 경과(초). 같은 부팅 = 단조 차 · 재부팅 = `max(0, min(벽시계 경과, 서명 시각 기준 경과))` ·
@@ -168,6 +190,24 @@ mod tests {
         assert!(clock_suspect(10_000, None, Some(10_000 + 3_601)));
         assert!(clock_suspect(10_000, None, Some(10_000 - 3_601)));
         assert!(!clock_suspect(10_000, None, None));
+    }
+
+    /// ★1R M4 뮤테이션: 응답 4개 중 하나만 1시간 넘게 어긋나도 의심.
+    #[test]
+    fn m4_every_response_date_is_checked() {
+        let now = 1_000_000;
+        assert!(!clock_suspect_dates(now, None, &[Some(now), None, Some(now + 10)]));
+        assert!(clock_suspect_dates(now, None, &[Some(now), Some(now - 7200), None, Some(now)]));
+        assert!(clock_suspect_dates(now, Some(now + 400), &[]));
+    }
+
+    /// 맥 단조값 = mach_continuous_time 계열(잠 포함) — 같은 부팅 안에서 줄지 않고 벽시계와 같은 빠르기.
+    #[test]
+    fn mono_advances_like_wall() {
+        let a = mono_ms();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let b = mono_ms();
+        assert!(b >= a + 25 && b < a + 5_000, "{a} → {b}");
     }
 
     #[test]

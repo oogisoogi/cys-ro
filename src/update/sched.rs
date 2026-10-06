@@ -44,6 +44,24 @@ pub fn validate_job(job: &Value) -> Result<(), String> {
     }
 }
 
+/// ★1R MAJOR(M1): 구조 계약 — 뿌리 = 객체 · `jobs` = 배열 · 모든 잡 = 객체. 어긋나면 Err(이행 쓰기 0 · 사실 = 판정 불가).
+pub fn check_structure(root: &Value) -> Result<(), String> {
+    if super::mutant("M1") {
+        return Ok(());
+    }
+    let jobs = root
+        .as_object()
+        .ok_or("뿌리가 객체가 아님")?
+        .get("jobs")
+        .ok_or("jobs 칸 없음")?
+        .as_array()
+        .ok_or("jobs 가 배열이 아님")?;
+    if let Some(i) = jobs.iter().position(|j| !j.is_object()) {
+        return Err(format!("jobs[{i}] 가 객체가 아님"));
+    }
+    Ok(())
+}
+
 /// 이행 결과.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationReport {
@@ -70,6 +88,7 @@ pub fn migrate_schedule_file(path: &Path) -> Result<MigrationReport, String> {
         Err(e) => return Err(format!("① 읽기 {}: {e}", path.display())),
     };
     let mut root: Value = serde_json::from_slice(&raw).map_err(|e| format!("① 파싱 {}: {e}", path.display()))?;
+    check_structure(&root).map_err(|e| format!("① 구조 {}: {e}", path.display()))?;
     let mut rep = MigrationReport::default();
     // ② 원본 백업(이미 있으면 덮지 않음 — 첫 원본이 정본).
     let bak = backup_path(path);
@@ -191,7 +210,8 @@ pub fn schedule_facts(files: &[PathBuf], now_local: chrono::DateTime<chrono::Loc
             Err(_) => return None,
         };
         let root: Value = serde_json::from_slice(&raw).ok()?;
-        let Some(jobs) = root.get("jobs").and_then(|j| j.as_array()) else { continue };
+        check_structure(&root).ok()?;
+        let Some(jobs) = root.get("jobs").and_then(|j| j.as_array()) else { return None };
         for job in jobs {
             if validate_job(job).is_err() {
                 f.unflagged_jobs += 1;
@@ -295,6 +315,22 @@ mod tests {
         std::fs::write(d.join("bad.json"), b"{").unwrap();
         assert!(migrate_schedule_file(&d.join("bad.json")).is_err());
         assert!(!backup_path(&d.join("bad.json")).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1R MAJOR(M1) 뮤테이션: 구조 손상(`{}`·`{"jobs":"bad"}`·비객체 잡·배열 뿌리) = 사실 None · 이행 쓰기 0.
+    #[test]
+    fn m1_structure_damage_is_unknown_not_empty() {
+        let d = tmp("m1");
+        let pack = d.join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        let p = pack.join("schedule.json");
+        for bad in [json!({}), json!({"jobs": "bad"}), json!({"jobs": [1, {"id": "x"}]}), json!([{"id": "x"}])] {
+            std::fs::write(&p, bad.to_string()).unwrap();
+            assert_eq!(schedule_facts(&[p.clone()], at(2026, 10, 6, 10, 0)), None, "{bad}");
+            assert!(migrate_schedule_file(&p).is_err(), "{bad}");
+            assert!(!backup_path(&p).exists(), "구조 손상 = 백업·쓰기 0");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -3,6 +3,24 @@
 > 브리프 = [master#71f53d34](파일 정본 `~/axdev/master/briefs/2026-10-06-cysr-118-u2-runner.md`) · 설계 정본 = `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md`(4판 · U1 편입).
 > 가지 `u2/runner-118` off `e2515bb0` · 워커 = worker-2(계정2 · Opus) · 커밋 = `git log --oneline e2515bb0..HEAD`.
 
+## §0-3 3판 델타(정본 브리프 = ~/axdev/master/briefs/2026-10-07-cysr-118-u2-3r.md · 01:01 발신은 잘림 → 01:0x 재발신 master#617b774e · 착수 01:02)
+- **이월**: 2R = Fable(`docs/update/REVIEW-U2-fable-2r.md` · untracked · 커밋 제외) · BLOCK 3(N1~N3) · MAJOR 4(M1~M4) · MINOR 7(m1~m7). 📌 결정 = ⓔ U3 설치기 · ⓗ 러너 트랜잭션 안 팩 적용만.
+- **끝난 것(커밋 · 0dd4fb55 위)**:
+  - N1 bf59a37c = 위임 중첩 재진입(`CYS_UPDATE_TXN_DEPTH` · `lock::verify_delegated_at`) · 단위 시험 + 뮤턴트 U2-NEST · ★**u2-smoke ⑥ = 실 경로**(러너 잠금 소유 python → 실 `cys rotate --skip-drain --txn` → ④ `init-pack --txn` rc 0 · 음성 대조 = 깊이 전달 제거 빌드에서 rc 24 = ROTATE_RC_PACK 재현).
+  - N2 40a69be7 = V2 = `realops::hq_daemon_count`(본부 소켓 `system.identify.daemon_pid` 1개) · 시험 = 가짜 cysd 이름 프로세스 2개 + 본부 pid(6a1da528 에서 3초 폴링으로 안정화).
+  - N3 caaab5c7 = `realops::reconstruct_trees`(이번 시도 attempt.json txn 스냅샷만 · `snapshot::diff` 대조 → 일치 = 무변경 · 어긋남 = 데몬 정지 뒤 팩·사용자 트리만 · 상태 폴더·app-notify.json/.lock 무접촉 · 격리 키 reconstruct-<벽시계> = m4) · 시험 `reconstruct_compares_then_restores_only_mismatched_pack`(일치 무변경 · 어긋난 팩만 · 옛 시도 아님 · 정지 실패 = 복원 0).
+  - M1 d19674a0 = `is_held` 공유 탐침 + 러너 acquire 순간 막힘 재시도 · 시험 `probe_is_shared_and_runner_rides_out_transient_probe`.
+  - M2 c98fb2d9 = `prev_candidates` canonicalize 뒤 중복 제거 · 시험 `prev_candidates_dedupe_through_parent_symlink`.
+  - M3 64c8795f = stop_seats = 표지만 · cysd `surface.create` 가 같은 설치판 seq 에서 새 좌석만 거부 · 부팅 가드에서 제거 · 시험 `stop_seats_marker_blocks_new_seats_only_for_revoked_installed_seq`.
+  - m1·m2·m5 6a1da528(participate fail-open 축소 · build-info 실행 전 서명 핀 · realroots counsel/) · m4 = N3 커밋.
+- **남은 것(후임 · 순서대로)**:
+  1. **M4**(Fable 2R · 브리프 §2 「러너 트랜잭션 안 팩 적용 경로 1개를 실제로 구현」): 러너 S0 에서 팩 단독 판정(새 바이너리 없음 · 팩 매니페스트만 새것) → `realops::pack_txn_begin`(lib 에 있음 · 지금 호출부 = 시험뿐) → `pack-update --txn`(위임 · `RealOps::child` 가 --txn 붙임) → 성공 `pack_txn_end`(PACK_DONE) · 실패 = PACK_ROLLBACK → 복구 = `recover_pack(&j)`(사용자 트리 복원 포함 · 있음) + kill 행렬 2칸(PACK_APPLY 직전·직후). 팩 매니페스트 조회 = `cys pack-update --dry-run --json` 또는 피드의 팩 행(설계 §3-8 · `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md` 를 먼저 읽을 것).
+  2. **m3**(윈 시한 뒤 종료 실패 = 무기한 대기): 상한(10분) + 초과 = RB 금지 상태(`RbFailed` 직행 · 옛 설치기 동시 실행 0) + `update.win_installer_stuck` 신호 — 또는 반박 근거 1줄. **m6**·**m7** = HANDOFF §5/§2 에 「안 한 것·생략한 것」 1줄씩(설계 §3-11 재구성 ①② 미구현 · S8b 가 N3~N5·세대 토큰을 재지 않는 이유).
+  3. §7 표에 **2R 14행**(N1~N3·M1~M4·m1~m7) 추가 — 위 커밋 sha 그대로.
+  4. 전수: lib(기본 env) · cys/cysd/cys-app(`/private/tmp/claude-501/s118/u2/isoenv.sh` · app = `cargo test -p cys-app --bins`) · u2-smoke(13개 = ⑥ 포함) · u2-mutants(11 = U2-NEST 포함 · `U1_ISO=<isoenv.sh>`) · ★브리프는 **tsc·bun** 도 요구 — 이 트리엔 ui/node_modules·bun 없음 → lead 방식: `cp -cR ~/axdev/.wt/cys-118-u4/ui/node_modules ui/` · PATH 에 `$HOME/.bun/bin` · `(cd ui && bunx tsc -p tsconfig.check.json)` · `(cd ui && bun test)`(복사본 = 커밋 0). 전체를 `scripts/tests/u2-realroots.sh` 로 감싼다.
+  5. push = `/usr/bin/git push origin HEAD:fix/u2-runner-118`(번들 git 은 https 헬퍼 없음) → 3런(windows-build·windows-health·ci-branch) success 번호 → HANDOFF §4 「3판 전수/CI」 줄 → 【확인요청】(브리프 §3 형식).
+- **함정**: ① 새 시험이 부하(전수 병렬)에서 시각 의존이면 폴링으로(N2 실례). ② u2-smoke ⑥ 은 격리 데몬을 띄운다 — 끝에 `cys daemon stop` + pkill(스크립트에 있음). ③ `cargo` 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH`.
+
 ## §0-2 2판 델타(master#4c87d585 · #23c2f094 · #3f846d60 · 2026-10-06 · 다음 사람이 **이것부터** 읽을 것)
 - **범위**: 결정론 적색 3(윈 CI 2 + master 스냅샷 게이트 1) + codex 1R 18항(BLOCK 12 · MAJOR 5 · MINOR 1) + master 추가 지시 2건. 커밋 = `git log --oneline ad3d5eb5..HEAD`(17커밋 · 마지막 = 이 문서 · 코드 끝 = a36892cd).
 - **결정론 적색 3 → 42cd1562**: ⓐ secret-scan WIN-PATH(`win_task` 시험 경로 → `C:\x\a b\…`) · ⓑ① `tree_sha` 시험 심링크 단언을 `#[cfg(unix)]` 안으로 · ⓑ② 윈 `u1_facts_never_pass_gates` = `gather_facts → recover_agent_ok → win_task::our_folder` 가 `state_dir()` 를 **다시** 구하던 것 → 갱신 폴더를 호출자에서 내려받음(시험 env 심기 0 · 읽기는 install_id 를 만들지 않음) · ⓒ mac swap 시험 = 원인 확정(lead 대조 3 + 내 재현 3: `TMPDIR=/var/folders/…`·`/tmp/` = FAIL · 심링크 없는 경로 = 통과) — `/tmp`·`/var` 경로 성분 심링크를 `RENAME_NOFOLLOW_ANY` 가 ELOOP 로 거부. 1판 961/0 은 격리 래퍼(isoenv.sh)의 TMPDIR 가 심링크 없는 경로였던 탓 = **기본 환경 결정론 실패**였다(정정).

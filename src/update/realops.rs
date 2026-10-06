@@ -942,17 +942,18 @@ impl Ops for RealOps {
 
     fn pack_available(&mut self) -> Result<bool, Fail> {
         let exe = self.env.old_cys.clone();
-        // ★4판(codex·Fable 3R M4/M6): 자동 허용 계획만 rc 0(`--auto` · 차단·강제 치유·3-way·.new 병치 = 4) — 전엔 blocked 만 막았다.
-        let o = self.child(&exe, &PACK_PLAN_GATE_ARGS)?;
-        if !o.status.success() {
-            let why = String::from_utf8_lossy(&o.stdout).lines().last().unwrap_or_default().to_string();
-            return Err(fail(ErrCode::BuildInfoMismatch, "PACK", format!("pack-plan --auto rc {:?} {why}", o.status.code())));
-        }
+        // ★5판(codex 4R M4/M6-원격): 자동 허용 판정 = `pack-update` 가 검증·전개한 **원격 꾸러미**의 계획(아래 dry-run 안 · 위임 토큰이면).
+        //   4판의 `pack-plan --auto` 는 실행 바이너리의 내장 팩을 봐서 원격 heal/merge3/.new 를 못 막았다 — 팩 단독 경로에서는 부르지 않는다
+        //   (본체 교체의 S2·S9b 는 새 판 내장 팩이 곧 적용 대상이라 그대로 `pack-plan --auto`).
         // ★4판(Fable 3R M7): pack-update 가 매니페스트(+서명)만 먼저 받아 판 비교 — 이미 최신이면 꾸러미 내려받기 0 · 자동 경로(--txn)
         //   = D23 하한(빈 min_binary 거부)도 그 안에서.
         let url = pack_manifest_url();
         let o = self.child(&exe, &["pack-update", "--dry-run", "--manifest-url", &url])?;
         let out = String::from_utf8_lossy(&o.stdout).to_string();
+        // ★5판(codex 4R M4/M6-원격): 원격 꾸러미 계획이 자동 허용 밖 = 보류(사유 그대로)
+        if let Some(why) = pack_auto_hold(&String::from_utf8_lossy(&o.stderr)) {
+            return Err(fail(ErrCode::BuildInfoMismatch, "PACK", why));
+        }
         let r = parse_pack_dry_run(o.status.success(), &out, &String::from_utf8_lossy(&o.stderr))
             .ok_or_else(|| fail(ErrCode::RotateFailed, "PACK", format!("pack-update --dry-run rc {:?}", o.status.code())))?;
         self.pack_to = parse_pack_version(&out);
@@ -977,6 +978,8 @@ impl Ops for RealOps {
         let o = self.child(&exe, &["pack-update", "--manifest-url", &url])?;
         if o.status.success() {
             Ok(())
+        } else if let Some(why) = pack_auto_hold(&String::from_utf8_lossy(&o.stderr)) {
+            Err(fail(ErrCode::BuildInfoMismatch, "PACK_APPLY", why))
         } else {
             Err(fail(ErrCode::RotateFailed, "PACK_APPLY", format!("pack-update rc {:?}", o.status.code())))
         }
@@ -1169,6 +1172,11 @@ pub fn pack_manifest_url() -> String {
     } else {
         default
     }
+}
+
+/// `pack-update` stderr 의 원격 계획 자동 보류 줄(`pack-auto-hold: …`) — 사유.
+pub fn pack_auto_hold(stderr: &str) -> Option<String> {
+    stderr.lines().find_map(|l| l.split_once("pack-auto-hold:").map(|(_, w)| format!("팩 자동 보류:{}", w.trim_end())))
 }
 
 /// `pack-update --dry-run` 출력 판독(순수): Some(true) = 반영 가능 · Some(false) = 이미 최신·본체 대기(binary-too-old = 정상) · None = 실패.

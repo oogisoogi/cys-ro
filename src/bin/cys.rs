@@ -24723,6 +24723,29 @@ fn pack_update_from_dir(
     keyring: &cys::packsig::Keyring,
     do_apply: bool,
 ) -> Result<PackUpdateOutcome, String> {
+    // 자동 갱신 트랜잭션 안(위임 토큰)이면 원격 꾸러미의 실제 계획에 자동 허용 게이트를 건다.
+    let auto_plan = ROTATE_EXT.get().and_then(|e| e.txn.as_ref()).is_some();
+    pack_update_from_dir_gated(from_dir, staging, lock_path, accepted_path, now_unix, running_binary, keyring, do_apply, auto_plan)
+}
+
+/// `pack-update` 가 원격 계획을 자동 경로 밖이라 거부할 때 오류 머리(러너 `pack_available`·`pack_apply` 가 stderr 로 가른다).
+pub(crate) const PACK_AUTO_HOLD_TAG: &str = "pack-auto-hold:";
+
+/// [`pack_update_from_dir`] 본체. ★1.1.8 U2 5판(codex 4R M4/M6-원격): `auto_plan` = 검증·전개된 **원격 꾸러미**로 `plan_install` 을 세워
+/// [`pack_plan_auto_allowed`] 로 판정 — 거부 = Err(`pack-auto-hold: <사유>`) · 반영 0(dry-run·적용 공통 · 적용 직전에도 다시 봄 = dry-run
+/// 뒤 적용 사이 바뀜 차단). 4판까지는 `pack-plan --auto` 가 실행 바이너리의 **내장** 팩만 봐서 원격 heal/merge3/.new 가 자동 적용됐다.
+#[allow(clippy::too_many_arguments)]
+fn pack_update_from_dir_gated(
+    from_dir: &std::path::Path,
+    staging: &std::path::Path,
+    lock_path: &std::path::Path,
+    accepted_path: &std::path::Path,
+    now_unix: i64,
+    running_binary: &str,
+    keyring: &cys::packsig::Keyring,
+    do_apply: bool,
+    auto_plan: bool,
+) -> Result<PackUpdateOutcome, String> {
     let manifest_path = from_dir.join("pack-manifest.json");
     let sig_path = from_dir.join("pack-manifest.json.minisig");
     let tar_path = from_dir.join("pack.tar.gz");
@@ -24818,6 +24841,16 @@ fn pack_update_from_dir(
         &manifest.min_binary_version,
         running_binary,
     );
+
+    if gate == VersionGate::Apply && auto_plan {
+        let tree = collect_tree(staging)?;
+        let items: Vec<(&str, &str)> = tree.iter().map(|(r, c)| (r.as_str(), c.as_str())).collect();
+        let plan = cys::pack::plan_install(&pack_dir, &items, false, &manifest.pack_version);
+        if let Err(why) = pack_plan_auto_allowed(&plan) {
+            let _ = std::fs::remove_dir_all(staging);
+            return Err(format!("{PACK_AUTO_HOLD_TAG} 원격 팩 {} 계획 = 자동 허용 밖({why}) — 사람 몫(cys pack-plan · pack-update 수동)", manifest.pack_version));
+        }
+    }
 
     let mut written = 0;
     let mut kept = 0;
@@ -31179,6 +31212,53 @@ mod tests {
     }
 
     /// ★오프라인 통합: 서명된 테스트 팩을 --from 코어로 적용 → .pack-version·파일·accepted 반영.
+    /// ★1.1.8 U2 5판(codex 4R M4/M6-원격) 실 경로: 실 서명 원격 꾸러미(build_signed_pack) → 실 서명·digest 검증·전개 → **원격 계획**
+    /// (`plan_install` = install_into 와 같은 판정) → `pack_plan_auto_allowed`. ⓐ 사용자 수정 지침 + 원격이 그 지침을 바꿈(= `.new` 병치) →
+    /// 자동 경로 = `pack-auto-hold:` 거부 · 반영 0(do_apply 여도) ⓑ 같은 꾸러미 수동 경로 = 종전대로 반영(.new 병치) ⓒ 미수정 지침 = 자동 허용 ·
+    /// 반영. 4판까지 이 판정은 실행 바이너리 내장 팩만 봤다.
+    #[test]
+    fn pack_update_auto_gate_holds_remote_plan_outside_auto_policy() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let saved_cfg = std::env::var(cys::pack::ENV_CONFIG_DIR).ok();
+        let (pk, sign) = gen_signer();
+        let kr = test_keyring("TESTKEY", &pk);
+        let w = "directives/WORKER_DIRECTIVE.md";
+        let mut got = vec![];
+        for (case, user_edit, auto) in [("hold", true, true), ("manual", true, false), ("allow", false, true)] {
+            let td = std::env::temp_dir().join(format!("cys-pu-autogate-{case}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&td);
+            let pack_dir = td.join("pack");
+            std::fs::create_dir_all(&pack_dir).unwrap();
+            std::env::set_var(cys::pack::ENV_PACK_DIR, &pack_dir);
+            std::env::set_var(cys::pack::ENV_CONFIG_DIR, td.join("cysclaude"));
+            cys::pack::install_into(pack_dir.clone(), [(w, "W-OLD\n")], false, "1.0.0", false, false, cys::pack::PackScope::Base, None, None).unwrap();
+            if user_edit {
+                std::fs::write(pack_dir.join(w), "W-MINE\n").unwrap();
+            }
+            let from_dir = td.join("from");
+            std::fs::create_dir_all(&from_dir).unwrap();
+            build_signed_pack(&from_dir, &[(w, "W-NEW\n"), ("lib/x.py", "X\n")], "TESTKEY", "1.1.0", "0.4.1", 1000, 9_000_000_000, &sign);
+            let res = pack_update_from_dir_gated(&from_dir, &td.join("staging"), &td.join(".lock"), &td.join(".acc.json"), 5000, "0.4.1", &kr, true, auto);
+            let disk = std::fs::read_to_string(pack_dir.join(w)).unwrap();
+            let ver = std::fs::read_to_string(pack_dir.join(".pack-version")).unwrap_or_default();
+            got.push((case, res.map(|o| o.pack_version).map_err(|e| e.starts_with(PACK_AUTO_HOLD_TAG) && e.contains(".new 병치")), disk, ver.trim().to_string(), pack_dir.join("lib/x.py").exists()));
+            let _ = std::fs::remove_dir_all(&td);
+        }
+        match &saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        match &saved_cfg {
+            Some(v) => std::env::set_var(cys::pack::ENV_CONFIG_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_CONFIG_DIR),
+        }
+        assert_eq!(got[0], ("hold", Err(true), "W-MINE\n".to_string(), "1.0.0".into(), false), "자동 = 원격 계획 보류 · 반영 0");
+        assert_eq!(got[1], ("manual", Ok("1.1.0".to_string()), "W-MINE\n".to_string(), "1.1.0".into(), true), "수동 = 반영(.new 병치)");
+        assert_eq!(got[2], ("allow", Ok("1.1.0".to_string()), "W-NEW\n".to_string(), "1.1.0".into(), true), "미수정 = 자동 허용");
+        assert_eq!(cys::update::realops::pack_auto_hold("error: pack-auto-hold: 원격 팩 1.1.0 계획 = 자동 허용 밖(x)").as_deref(), Some("팩 자동 보류: 원격 팩 1.1.0 계획 = 자동 허용 밖(x)"));
+    }
+
     #[test]
     fn pack_update_from_dir_applies_signed_pack() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

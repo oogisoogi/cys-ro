@@ -293,6 +293,30 @@ jobs:
           cargo_filter_count --lib update::
           CYS_PACK_DIR="$(mktemp -d)" cargo test --lib update:: -- --test-threads=1
 
+      # ★(1.1.8 U5 · TICKET=cysr-118-u5-install-link) 설치 링크(bootstrap.ps1)의 자동 갱신 잠금 참가·위임 — **윈도우 실물 대조**.
+      #   무엇을 보는가: PowerShell 이 쥔 0번 바이트 잠금(FileStream.Lock = LockFile) ↔ cys 의 LockFileEx 전 범위 잠금이 서로 막는가 ·
+      #   PowerShell 이 적는 시작 시각(FILETIME 식) = cys 가 sysinfo 로 재는 값인가(③′) · 손으로 쓴 소유자 기록을 cys(serde)가 읽고 위임을
+      #   받는가(pack-plan --txn + env = rc ≠ 26) · 뮤테이션(env 누락 · 토큰 틀림 · 토큰 없음 · 시작 시각 틀림 = rc 26) · 남이 쥠 = busy ·
+      #   위임 자식 잠금 쥠 = busy + 직전 기록 복원 · 놓기 = 묘비 뒤 해제 · 위임 거부 → 놓고 한 번 더.
+      #   왜 여기: 맥 레인은 flock 이라 이 축(LockFileEx·FILETIME)을 원리적으로 못 가른다 — 윈 실기 노트북(267) 전에 CI 가 먼저 잰다.
+      #   코드 = scripts/tests/install-link-u5/u5-block.ps1 — ai-jarvis bootstrap.ps1 「자동 갱신 잠금」 절의 **바이트 그대로 사본**
+      #   (ai-jarvis tests/install-u5/sync-cys-contract.py --check 가 같음을 잰다 · 다르면 이 초록은 거짓). 5.1(설치 도우미가 도는 셸)과 7 둘 다.
+      #   ⚠이 스텝에 `if:`/continue-on-error 를 달지 마라(잡 머리말의 '돌지 않는 초록 금지').
+      - name: 설치 링크 자동 갱신 잠금 계약 (Windows 실기 · 1.1.8 U5 · PowerShell 잠금 ↔ cys 위임)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --bin cys
+          CYS_EXE="$(cygpath -w "$PWD/target/debug/cys.exe")"
+          T="$(cygpath -w "$PWD/scripts/tests/install-link-u5/u5-win-lock.ps1")"
+          H="$(cygpath -w "$PWD/scripts/tests/install-link-u5/u5-harness.ps1")"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$T" -Ps1 "$H" -Cys "$CYS_EXE" | tee "${RUNNER_TEMP:-/tmp}/u5-ps51.txt"
+          pwsh.exe -NoProfile -File "$T" -Ps1 "$H" -Cys "$CYS_EXE" | tee "${RUNNER_TEMP:-/tmp}/u5-ps7.txt"
+          # 실물 갈래가 돌았는가(real=0 이면 붉다 — 돌지 않는 초록 금지) · 둘 다 fail=0 · 판정 = ASCII 마지막 줄(콘솔 글자표 무관)
+          for f in u5-ps51 u5-ps7; do
+            grep -Eq '^U5-RESULT ok=[1-9][0-9]* fail=0 real=1' "${RUNNER_TEMP:-/tmp}/$f.txt" || { echo "::error::$f 판정 줄 불일치(실물 미실행 또는 FAIL)"; exit 1; }
+          done
+
       # ★D5 env 게이트의 Windows 파이프라인 실기 검증 (v0.14 품질 라인 · 적대검증 2R major 수리).
       #
       #   무엇을 보는가(2026-08-17 강등 반영): `cys::d5_gate_for_os` 는 **mac = 무조건 ·

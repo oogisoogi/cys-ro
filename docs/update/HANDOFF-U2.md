@@ -14,9 +14,9 @@
   - M3 64c8795f = stop_seats = 표지만 · cysd `surface.create` 가 같은 설치판 seq 에서 새 좌석만 거부 · 부팅 가드에서 제거 · 시험 `stop_seats_marker_blocks_new_seats_only_for_revoked_installed_seq`.
   - m1·m2·m5 6a1da528(participate fail-open 축소 · build-info 실행 전 서명 핀 · realroots counsel/) · m4 = N3 커밋.
 - **남은 것(후임 · 순서대로)**:
-  1. **M4**(Fable 2R · 브리프 §2 「러너 트랜잭션 안 팩 적용 경로 1개를 실제로 구현」): 러너 S0 에서 팩 단독 판정(새 바이너리 없음 · 팩 매니페스트만 새것) → `realops::pack_txn_begin`(lib 에 있음 · 지금 호출부 = 시험뿐) → `pack-update --txn`(위임 · `RealOps::child` 가 --txn 붙임) → 성공 `pack_txn_end`(PACK_DONE) · 실패 = PACK_ROLLBACK → 복구 = `recover_pack(&j)`(사용자 트리 복원 포함 · 있음) + kill 행렬 2칸(PACK_APPLY 직전·직후). 팩 매니페스트 조회 = `cys pack-update --dry-run --json` 또는 피드의 팩 행(설계 §3-8 · `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md` 를 먼저 읽을 것).
+  1. ~~M4~~ = 끝(3c9e585f · Runner::run_pack · kill 2칸). 아래는 당시 메모: 러너 S0 에서 팩 단독 판정(새 바이너리 없음 · 팩 매니페스트만 새것) → `realops::pack_txn_begin`(lib 에 있음 · 지금 호출부 = 시험뿐) → `pack-update --txn`(위임 · `RealOps::child` 가 --txn 붙임) → 성공 `pack_txn_end`(PACK_DONE) · 실패 = PACK_ROLLBACK → 복구 = `recover_pack(&j)`(사용자 트리 복원 포함 · 있음) + kill 행렬 2칸(PACK_APPLY 직전·직후). 팩 매니페스트 조회 = `cys pack-update --dry-run --json` 또는 피드의 팩 행(설계 §3-8 · `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md` 를 먼저 읽을 것).
   2. ~~m3·m6·m7~~ = 끝(m3 f790a91a · m6/m7 = §5 ⓘ · §2-14).
-  3. §7-2 표 = 14행 있음 · M4 행만 채울 것(⟨M4⟩ 자리).
+  3. §7-2 표 = 14행 완료.
   4. 전수: lib(기본 env) · cys/cysd/cys-app(`/private/tmp/claude-501/s118/u2/isoenv.sh` · app = `cargo test -p cys-app --bins`) · u2-smoke(13개 = ⑥ 포함) · u2-mutants(11 = U2-NEST 포함 · `U1_ISO=<isoenv.sh>`) · ★브리프는 **tsc·bun** 도 요구 — 이 트리엔 ui/node_modules·bun 없음 → lead 방식: `cp -cR ~/axdev/.wt/cys-118-u4/ui/node_modules ui/` · PATH 에 `$HOME/.bun/bin` · `(cd ui && bunx tsc -p tsconfig.check.json)` · `(cd ui && bun test)`(복사본 = 커밋 0). 전체를 `scripts/tests/u2-realroots.sh` 로 감싼다.
   5. push = `/usr/bin/git push origin HEAD:fix/u2-runner-118`(번들 git 은 https 헬퍼 없음) → 3런(windows-build·windows-health·ci-branch) success 번호 → HANDOFF §4 「3판 전수/CI」 줄 → 【확인요청】(브리프 §3 형식).
 - **함정**: ① 새 시험이 부하(전수 병렬)에서 시각 의존이면 폴링으로(N2 실례). ② u2-smoke ⑥ 은 격리 데몬을 띄운다 — 끝에 `cys daemon stop` + pkill(스크립트에 있음). ③ `cargo` 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH`.
@@ -156,7 +156,7 @@
 | M1 | MAJOR | is_held 배타 탐침 = 거짓 rc 26·거짓 busy·설치기 창 | 채택 | d19674a0 | 공유 탐침 + 재탐침 · 러너 acquire 순간 막힘 재시도 · `probe_is_shared_and_runner_rides_out_transient_probe` |
 | M2 | MAJOR | prev 후보 문자열 중복 제거 → 부모 심링크에서 RB_FAILED | 채택 | c98fb2d9 | canonicalize 뒤 중복 제거 · `prev_candidates_dedupe_through_parent_symlink` |
 | M3 | MAJOR | stop_seats = --skip-drain 전체 정지(설계 ③ 초과) | 채택 | 64c8795f | 표지만 · cysd `surface.create` 새 좌석만 거부 · 부팅·기존 좌석 유지 · `stop_seats_marker_blocks_new_seats_only_for_revoked_installed_seq` |
-| M4 | MAJOR | PACK_* 생산 쓰기 경로 0(§3-8 미구현) | ⟨M4⟩ | ⟨M4SHA⟩ | ⟨M4TEST⟩ |
+| M4 | MAJOR | PACK_* 생산 쓰기 경로 0(§3-8 미구현) | 채택 | 3c9e585f | `Runner::run_pack`·RealOps `pack_available/pack_prepare/pack_apply`·`auto::pack_only`(결정 uptodate + 게이트 통과) · `pack_only_update_journals_pack_states_and_recovers_from_kills`(kill@PACK_APPLY 2칸 포함) · `pack_dry_run_parse` · 실 피드 왕복 = 실기 몫 |
 | m1 | MINOR | participate Ok(None) 범위 넓음(fail-open) | 채택 | 6a1da528 | 폴더 생성 불가만 Ok(None) · 그 밖 Err |
 | m2 | MINOR | build-info 실행 전 서명 검증 없음(canonical·후보) | 채택 | 6a1da528 | `verify_signature_pin` 선행 · 실패 = 판독 불가/후보 제외 |
 | m3 | MINOR | 윈 시한 뒤 종료 실패 = 무기한 대기 | 채택 | f790a91a | 종료 확인 상한 10분 · 초과 = RollbackBlocked → RB_FAILED 직행 · `installer_stuck_goes_straight_to_rb_failed_without_rerunning_installer` |

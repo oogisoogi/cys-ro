@@ -435,6 +435,22 @@ pub fn recovery_for(read: &ReadOutcome, os: Os) -> Recovery {
     }
 }
 
+/// ★U2(§3-11 저널 손상 재구성 뒤): 실물 재구성이 **끝난 뒤에만** 부른다 — 손상 슬롯 둘을 `journal.corrupt.<벽시계>.json`·
+/// `.prev.json` 으로 옮겨 보존(지우지 않음)하고 새 트랜잭션 `Locked → Deferred` 를 두 슬롯에 정상 기록한다(read = Ok · 종결).
+/// 이 함수 밖에서 손상 저널 위 쓰기는 여전히 거부된다([`advance`] 의 `Corrupt`).
+pub fn write_reconstructed(dir: &Path, txn_id: &str, epoch: u64) -> Result<Journal, String> {
+    let wall = super::clock::now_stamp().wall;
+    for (f, tag) in [(JOURNAL_FILE, "json"), (JOURNAL_PREV_FILE, "prev.json")] {
+        let p = dir.join(f);
+        if p.exists() {
+            std::fs::rename(&p, dir.join(format!("journal.corrupt.{wall}.{tag}"))).map_err(|e| format!("{f} 보존: {e}"))?;
+        }
+    }
+    sync_dir(dir)?;
+    advance(dir, txn_id, epoch, Locked, |_| {}).map_err(|e| format!("{e:?}"))?;
+    advance(dir, txn_id, epoch, Deferred, |_| {}).map_err(|e| format!("{e:?}"))
+}
+
 pub fn journal_path(dir: &Path) -> PathBuf {
     dir.join(JOURNAL_FILE)
 }

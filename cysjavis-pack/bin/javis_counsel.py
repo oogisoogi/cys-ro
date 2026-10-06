@@ -574,10 +574,31 @@ def ensure_client(cfg=None, pack=None):
 
 
 # ── 틱 ─────────────────────────────────────────────────────────────────────
+def _read_state(cfg):
+    try:
+        with open(_counsel(cfg, STATE_FILE), encoding="utf-8") as f:
+            doc = json.load(f)
+        return doc if type(doc) is dict else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _daily_due(cfg, now=None):
+    """일일 사실이 필요한 판인가 — 꺼짐이면 아니다(doctor·좌석 조회 0) · 그날(06:00 KST 경계) 일일이 끝났고 pending 이 없으면 아니다.
+    ★날짜 경계 = 아고라 `counsel.day_of` 와 같은 선(KST 06:00) · 판정 재료 = state.json 의 `daily_day`·`daily_pending`(아고라가 쓴다)."""
+    if not auto_enabled(cfg):
+        return False
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    today = (now + datetime.timedelta(hours=9) - datetime.timedelta(hours=6)).date().isoformat()
+    st = _read_state(cfg)
+    return not (st.get("daily_day") == today and not st.get("daily_pending"))
+
+
 def tick(cfg=None):
     cfg = cfg or config_dir()
     ensure_client(cfg)
-    write_facts(cfg)
+    if _daily_due(cfg):
+        write_facts(cfg)
     agora = os.path.join(cfg, "lib", "bin", "agora")
     if not os.path.isfile(agora):
         log_event(cfg, "tick", result="no-client")

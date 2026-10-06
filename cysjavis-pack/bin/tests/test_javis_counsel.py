@@ -440,6 +440,25 @@ class EnsureClient(Base):
         subprocess.run([sys.executable, SCRIPT, "tick"], capture_output=True, env=env, timeout=120)
         self.assertEqual(json.loads(rd(self.lib("called.json")))["key"], "/elsewhere")
 
+    def test_daily_due_skips_facts_when_off_or_done(self):
+        """꺼짐 = doctor·좌석 조회 0 · 그날(06:00 KST) 일일이 끝났고 pending 없음 = 0 · pending 남음 = 다시 모은다."""
+        import datetime as _dt
+        now = _dt.datetime(2026, 10, 6, 0, 30, tzinfo=_dt.timezone.utc)     # = 09:30 KST → 2026-10-06
+        self.assertTrue(jc._daily_due(self.cfg, now))
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        st = os.path.join(self.cfg, "counsel", "state.json")
+        with open(st, "w") as f:
+            json.dump({"daily_day": "2026-10-06"}, f)
+        self.assertFalse(jc._daily_due(self.cfg, now))
+        self.assertTrue(jc._daily_due(self.cfg, _dt.datetime(2026, 10, 6, 21, 1, tzinfo=_dt.timezone.utc)))  # 06:01 KST 다음 날
+        self.assertFalse(jc._daily_due(self.cfg, _dt.datetime(2026, 10, 6, 20, 59, tzinfo=_dt.timezone.utc)))  # 05:59 KST = 아직 그날
+        with open(st, "w") as f:
+            json.dump({"daily_day": "2026-10-06", "daily_pending": {"doc": {}}}, f)
+        self.assertTrue(jc._daily_due(self.cfg, now))
+        with open(os.path.join(self.cfg, "config.json"), "w") as f:
+            json.dump({"counsel": {"auto": False}}, f)
+        self.assertFalse(jc._daily_due(self.cfg, now))
+
     def test_tick_without_client_logs_and_stops(self):
         empty = os.path.join(self.tmp, "emptybin")
         os.makedirs(empty)

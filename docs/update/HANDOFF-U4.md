@@ -7,6 +7,9 @@
 - ⚠U2 겹침: `src/update/win.rs` 의 시험 1건(`same_rules_as_app_original`)과 `src/lib.rs` 인구조사 1줄을 고쳤다(제품 코드 0) — U2 가 같은 파일을 고치면 병합 때 이 두 곳을 본다.
 - 표식: 【관측】 = 명령 출력으로 확인 · 【추정】 = 근거 있는 추론.
 
+## §0-4판 델타(master#741101b5 · Fable 3R = BLOCK 0 · MAJOR 1 · MINOR 2 → 3건 전부 채택 · 원문 = docs/update/REVIEW-U4-fable-3r.md · untracked)
+4판 커밋 `9de28606`(MAJOR-1 SECURITY.md:13 「Tauri updater signatures」 → 배포본 서명 + 우리 피드 minisign 두 겹을 데몬 자동 갱신이 설치 전 확인 · MINOR-1 INSTALL-Windows-KR.md:102 · GUIDE-clean-reset-KR.md:156·161 「업데이트」 → 「갱신」 · ★게이트 구조 = 화이트리스트 6종 폐기 → **README(한/영)가 링크하는 모든 .md 자동 수집**(현재 10) + docs/index.html · 공허 방지 = 알려진 6개 포함 단언 + 파일별 300자 하한 · 음성: 세 파일 각각 옛 판으로 되돌리면 2·1·1 fail) · `99030fcf`(MINOR-2 잠금 핀 결정론화 — 탐침이 300ms 유예 대신 시험의 `.cs-go` **신호**를 기다리고, 시험은 참가자가 서 있는 동안 `ACK_MUTEX.try_lock` · 새 fd `File::try_lock` **비차단 시도**로 두 잠금 보유를 직접 잰다 · 두 프로세스 시험은 부모 프로세스에서 자식이 쥔 `app-notify.lock` 을 시도 → WouldBlock 이어야 함 · `with_ack_lock` 의 시험 훅 `arrive` 삭제 · 주석 「반드시」 삭제 → §9-2 의 「300ms 유예」·「arrive」 서술은 3판 기록으로만 남는다) · `d278832d`(수집 경로 정규화 = URL 해석 · `node:path` 타입 부재 tsc 1건). 실측(격리 env · 01:11–01:13): cys-app **277/0/1** · updnotice 17/0 ×3(0.4s · 3판 2s) · M11(3 FAILED)·M11a(2)·M11b(3) 각 2회 적색 · 뮤턴트 **16/16 생존 0** · bun **2663/71/0** · tsc 0 · 윈 타입체크 오류 0(`File::try_lock` 포함) 【관측】. lib·cys·cysd 는 이 판 변경 0(`src/` 무접촉)이라 3판 측정값 유지.
+
 ## §0-3판 델타(브리프 2026-10-07-cysr-118-u4-3r · codex 2R = BLOCK 0 · MAJOR 2 · MINOR 1 → 3건 전부 채택 · 표 = §9-2)
 - 3판 커밋: `f2c3b0b1`(① 시험 결정론화 · 뮤턴트 M11a·M11b) · `cd29acf3`(② 공개 문서 6종) · (이 문서 — ③ §1 접점 표 ≤80자·한 줄 · §5 ⑦ 갱신 · §9-2).
 - ① 병렬 시험 2건(배리어 = `take_at` 직전) → **임계 구역 탐침**(`#[cfg(test)] cs_probe` · 장부 읽은 뒤·쓰기 전) 위 결정론 시험 3건 + 자식 진입점 1: 스레드 take×2(표시 정확히 2) · take→done(정확히 1 · 0 = 적색) · **두 프로세스**(시험 바이너리 `current_exe()` 재호출 · `U4_CS_CHILD_DIR`). updnotice 15 → **17**.

@@ -115,7 +115,7 @@ cys boot                                      # boot the standard node set (auto
 ## Architecture
 
 ```
-cys.app  Tauri desktop app: terminal UI (xterm.js — wheel scroll, drag-select, copy
+cysr.app Tauri desktop app: terminal UI (xterm.js — wheel scroll, drag-select, copy
          restored even over a TUI) + Control Center — a thin client of the daemon
 cysd     headless core daemon: NDJSON socket server (UDS / Windows named pipe),
          PTY (portable-pty: openpty / ConPTY), vt100 screen reconstruction, event bus,

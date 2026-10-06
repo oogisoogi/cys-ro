@@ -98,7 +98,7 @@ cys boot                                      # 표준 노드 세트 일괄 기�
 ## 구조
 
 ```
-cys.app  Tauri 데스크톱 앱: 터미널 UI(xterm.js, TUI 위에서도 휠 스크롤·드래그 선택·복사
+cysr.app Tauri 데스크톱 앱: 터미널 UI(xterm.js, TUI 위에서도 휠 스크롤·드래그 선택·복사
          기본 복원) + Control Center — 데몬의 thin client
 cysd     헤드리스 코어 데몬: NDJSON 소켓 서버(UDS / win named pipe), PTY(portable-pty:
          macOS openpty·Windows ConPTY), vt100 화면 재구성, 이벤트 버스, watchdog,

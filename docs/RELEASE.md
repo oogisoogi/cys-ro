@@ -1,6 +1,38 @@
 # 릴리스 절차 (cys 터미널)
 
-> **현행 표준 절차(2026-07 정정)**: 릴리스는 **release.yml 자동화**가 정본이다 —
+## ★현행 정본 — 우리 포크(cysr · `oogisoogi/cys-ro`) 발행 절차 (1.1.8 현행화 · 2026-10-07)
+
+> 이 문서의 아래 본문(§0-A 이하)은 **원작자(벤더)·0.14.x 시절 절차 기록이 섞여 있다.** 우리 포크의 발행은
+> **이 절이 정본**이다. 본문 중 **「원작자 레인」** 표시가 붙은 것 — DMG·Apple 공증·`www.cysinsight.com`
+> 홈페이지·`cys-terminal` 저장소 — 은 우리 포크가 **따르지 않는다**(리베이스 대조용 이력으로만 남긴다).
+
+| 항목 | 우리 포크 실물 | 근거(실측 출처) |
+|---|---|---|
+| 발행 저장소 | `oogisoogi/cys-ro` 의 GitHub 릴리스 | `.github/workflows/release.yml` `SRC_REPO` |
+| 맥 자산 | `cysr-macos-arm64-v<판>.zip` · `cysr-macos-x64-v<판>.zip` — zip 최상위 = **`cysr.app` 하나** · 자체서명(`cys-local`) · **Apple 공증 없음** · **로컬 빌드 + 손 업로드**(CI 맥 레그는 Apple 자격 없음으로 비발행) | `scripts/release-verify.py` `MAC_ASSETS` · `release.yml` build 매트릭스 x86 레그 주석 |
+| 윈 자산 | `cysr_<판>_x64-setup.exe`(+ 같은 파일을 담은 `cysr_<판>_x64-setup.zip`) — CI NSIS · Authenticode 미서명 | `scripts/release-verify.py` `REQUIRED_ASSETS` |
+| 받는 길 | 설치 사이트 <https://jarvis.godmeyou.kr/get> 의 한 줄(설치기가 위 자산을 판 핀·크기·지문으로 받는다) · 파일 직접 = 릴리스 페이지 | `ai-jarvis` `site/install/bootstrap.sh` · `bootstrap.ps1` 핀 |
+| 설치 자리 | 맥 `/Applications/cysr.app`(옛 이름 자리 `/Applications/cys.app` = 0.14.x·1.0.0·원작자 판 — 설치기가 비켜 둔다) · 윈 = 설치 폴더 안 실행 파일 이름은 그대로 `cys.exe`·`cysd.exe`·`cys-app.exe` | `bootstrap.sh` `CYS_FORK_APP`·`CYS_OLD_APP` · `bootstrap.ps1` `Test-CysDirHasBins` |
+
+**순서**(각 단계 실패 = 그 자리에서 멈춤 · 외부 발행 단계는 master 만):
+1. **판 번호·범프** — 판 규약 = `docs/RELEASE-ROLLBACK.md` §0. 버전 SOT 8곳 범프(아래 §0) + **태그 전 사전 게이트 4종 rc=0**(아래 §0-C).
+2. **저장소 변수 `CYSR_RELEASE_SEQ` = 보관소 최댓값 + 1**(첫 판 = 1) — 비거나 0 이면 `release.yml` 이 빌드 전에 멈춘다(`docs/update/HANDOFF-U3.md` §1 ③ 1번).
+3. **태그 push** → `release.yml` 이 **draft** 릴리스를 만든다(윈 NSIS · 팩 자산 · `latest.json`). 공개가 아니다.
+4. **맥 zip 2종 = 로컬 자체서명 빌드 → draft 에 손 업로드** — 경로 = `prep-mac-runtime.sh <triple>` → `precompile-bundled-python.sh` →
+   `tauri build --target <triple> --bundles app` → `dedup-git-core.sh` → `restore-runtime-symlinks.sh` →
+   `codesign --force --deep --sign cys-local` → `ditto -c -k --keepParent`(`scripts/build-macos-signed.sh` 의 비-Apple 단계와 같은 꼴).
+5. **후처리 → 검증 → 발행** — `release-postprocess.py`(`x64-setup.zip`·`SHA256SUMS.txt` · 맥 zip 2종 없으면 적색) →
+   `release-publish.yml` `dry_run=true`(기본 · 산출물 표) → 박사님 승인 뒤 master 가 `dry_run=false`(**비가역**).
+   발행 한 동작의 표와 **롤백** = `docs/RELEASE-ROLLBACK.md` §1~§3.
+6. **자동 갱신 게시(1.1.8~)** — 릴리스 본문 서명·보관소·봉투 = `docs/update/HANDOFF-U3.md` §1 ③ 순서. 폐기문은 **사건 때만** `docs/update/R-RITUAL.md`.
+7. **설치 사이트 핀 갱신** — `ai-jarvis` 의 `bootstrap.sh`·`bootstrap.ps1` 판·크기·sha256·CDHash 를 **발행된 자산에서 다시 재서** 넣는다(이 저장소 밖 · 별도 티켓).
+
+> ⚠옛 서술 주의: 아래 §0-A 의 「인앱 Update 버튼」·「홈페이지 다운로드 링크」, §4 의 「자동 업데이트 동작 요약」은
+> **옛 판의 동작 기록**이다 — 옛 인앱 갱신 화면은 1.1.8 에서 삭제됐고(U4), 본체 받는 길은 위 「받는 길」 하나다.
+
+---
+
+> **(원작자·0.14.x 시절) 표준 절차(2026-07 정정 · 이력)**: 릴리스는 **release.yml 자동화**가 정본이다 —
 > ①버전 범프(아래 §0 **8곳** = 수동 6 + `Cargo.lock` 2패키지)+`cargo build`(Cargo.lock 재생성)
 > +로컬 `bash scripts/secret-scan.sh --all` clean 확인
 > ②main push ③`git tag vX.Y.Z && git push origin vX.Y.Z`(태그=오너 직접·가드)
@@ -19,7 +51,7 @@
 > ★발행 한 동작의 경로와 **롤백 절차**는 `docs/RELEASE-ROLLBACK.md` 1쪽으로 분리했다
 > (2026-09-09 · 방아쇠 분리 · 맥 미포함 릴리스 특이사항 포함).
 
-## 0-A. 업데이트 발행 이원화 정책 (2026-07-12 오너 확정)
+## 0-A. 업데이트 발행 이원화 정책 (2026-07-12 오너 확정 · 원작자 레인 시절 기록 — 「홈페이지」 = 원작자 홈페이지 · 우리 받는 길 = 맨 위 정본 절)
 
 > **두 레인으로 발행한다.**
 > ① **팩-온리 패치 (기본)** — Rust/GUI 코드가 안 바뀐 릴리스는 pack 3종
@@ -239,7 +271,7 @@ replay 로 거부한다(`src/packsig.rs` ⓔ). 벤더 팩을 받은 기계는 �
      **브랜치 레인**(`ci-branch.yml` macOS 잡 · 2026-09-23 편입)에서 같은 호출 형태로 돈다(실패 = 잡 실패) —
      위 3번이 그 브랜치 결과를 태그 조건으로 묶으므로, 이 4번은 push 전에 미리 아는 로컬 사본이다.
 
-## 1. macOS 빌드 (DMG + 앱 번들 + 업데이트 아티팩트)
+## 1. macOS 빌드 (DMG + 앱 번들 + 업데이트 아티팩트) — 원작자 레인(DMG·Apple 공증) · 우리 맥 자산 = 맨 위 정본 절 4단계
 
 > **자동 업데이트가 켜져 있으므로(`createUpdaterArtifacts: true`) 빌드 시 서명 키가 필요합니다.**
 > 키 없이 빌드하면 `.app.tar.gz.sig`가 안 생기고 업데이트 manifest를 만들 수 없습니다.
@@ -475,7 +507,7 @@ bash scripts/check-no-ioreport-link.sh <cysd 바이너리 경로>
   방식이라 나오지 않고, 정적 라이브러리로 섞어 넣는 경우는 대상이 아니다. 이 스크립트는 macOS 에서만 판정한다. 공증된 DMG 의
   데몬이 실제로 NPU 전력을 읽는지는 아래 체크리스트의 별도 행이다.
 
-### ★비기술자(청중) 배포 전 게이트 체크리스트 (D6 제품 모드)
+### ★비기술자(청중) 배포 전 게이트 체크리스트 (D6 제품 모드) — 「공증 빌드」·「DMG」 두 줄은 원작자 레인 항목
 오너 대표 산출물을 제3자에게 패키징해 내보내기 전, 아래를 **모두** 확인한다.
 - [ ] **공증 빌드**(`spctl -a -vv cys.app` = accepted) — 미공증은 비기술자 배포 금지(다른 맥에서 "손상됨" 차단).
 - [ ] **실사용자 경로 게이트 exit 0** — `bash scripts/verify-gatekeeper-user-path.sh <DMG>`.
@@ -540,7 +572,7 @@ zip -j dist-win/cys-0.2.1-windows-arm64.zip target/aarch64-pc-windows-gnullvm/re
 Aarch64 확인) **실제 Windows에서 실행 검증은 불가**하다. 광범위 배포 전 Windows 머신에서
 스모크테스트(설치→`cys status`) 권장.
 
-## 3. GitHub 저장소 최초 설정 (1회)
+## 3. GitHub 저장소 최초 설정 (1회) — 원작자 레인 기록(우리 저장소 = `oogisoogi/cys-ro` · 이미 설정됨)
 
 자동 업데이트의 endpoint가 GitHub Releases이므로 **공개 repo가 있어야** 작동합니다.
 
@@ -555,7 +587,7 @@ gh repo create <OWNER>/cys-terminal --public --source . --remote origin
 git push -u origin main
 ```
 
-## 4. GitHub 릴리스
+## 4. GitHub 릴리스 — 원작자 레인 기록(DMG·MSI 예시 · 우리 순서 = 맨 위 정본 절)
 
 `latest.json`을 **항상 최신 릴리스에 포함**해야 updater가 찾습니다(endpoint가 `/releases/latest/`).
 
@@ -574,7 +606,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
   dist-win/cys-0.2.0-windows-x64.zip
 ```
 
-### 자동 업데이트 동작 요약 (사용자 입장)
+### 자동 업데이트 동작 요약 (사용자 입장) — 옛 판 동작 기록(옛 인앱 갱신 화면 = 1.1.8 에서 삭제)
 - 앱이 시작 시 + 6시간마다 `latest.json`을 조용히 확인 → 새 버전이면 상단 **Update** 버튼에 `!` 배지.
 - 버튼 클릭 → 세션이 0개면 자동 설치, 세션이 있으면 "N개 종료됩니다" 확인 후 설치.
 - 설치 = 새 `.app` 교체 + 구 데몬 SIGTERM + 앱 재시작(새 cysd 자동 기동). **재설치 불필요.**
@@ -600,7 +632,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
       `bash scripts/scan-pack-secrets.sh` = 팩 콘텐츠 clean)
       (범프 후 `cargo` 가 lock 을 다시 쓰게 하고 그 결과를
       범프 커밋에 함께 담아라. 손편집 금지 · S23)
-- [ ] **★★실사용자 경로 게이트 — DMG 2종 전부 exit 0 (2026-08-01 신설 · 필수 · 생략 불가)**
+- [ ] **★★실사용자 경로 게이트 — DMG 2종 전부 exit 0 (2026-08-01 신설 · 필수 · 생략 불가)** ⚠원작자 레인(DMG) 항목 — 우리 포크는 DMG 를 발행하지 않는다
 
       ```sh
       # 로컬 빌드 산출물 이름은 dist-mac/cys-<V>-macos-{arm64,x64}.dmg 다
@@ -626,7 +658,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
         유실 복구 등으로 재후처리할 때는 ⑤ SEAL-2 정적 검사가 구조적으로 FAIL 한다: 이미
         발행·검증된 과거 실물 바이트에 한해 `--unsafe-skip-gatekeeper` 로 우회한다
         (LOUD 경고 감수 · 신규 발행에는 절대 사용 금지).
-- [ ] **★메인 페이지(`/`) 원격 검증 — 6항목 전부 (S28 + 2026-07-29 오너 지시 ⓐⓑⓒ · 자동화 밖의 수동 게이트)**
+- [ ] **★메인 페이지(`/`) 원격 검증 — 6항목 전부 (S28 + 2026-07-29 오너 지시 ⓐⓑⓒ · 자동화 밖의 수동 게이트)** ⚠원작자 레인(원작자 홈페이지) 항목 — 우리 포크 대응 = 맨 위 정본 절 7단계(설치 사이트 핀)
 
       원 레인에서 이 격차의 형태는 "원격 검증기(`verify-release-remote.sh`)·조립기
       (`release-assemble.py`)가 `/downloads/` 만 보고 메인 페이지는 아예 보지 않는다"였다.

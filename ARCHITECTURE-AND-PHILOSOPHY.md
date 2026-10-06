@@ -179,7 +179,7 @@ CYSJavis 팩은 에이전트를 다섯 역할로 조직한다. 각 역할은 기
 ```
 ┌─────────────────────────────── 한 저장소, 한 배포 ───────────────────────────────┐
 │                                                                                │
-│  cys.app   Tauri 2 데스크톱 앱 — 터미널 UI(xterm.js) + Control Center.          │
+│  cysr.app  Tauri 2 데스크톱 앱 — 터미널 UI(xterm.js) + Control Center.          │
 │            데몬의 thin client. PTY를 소유하지 않으므로 앱이 죽어도 세션 생존.       │
 │                                                                                │
 │  cysd      헤드리스 코어 데몬 — NDJSON 소켓 서버(UDS / named pipe), PTY 소유      │

@@ -11903,7 +11903,7 @@ def _u19_seed_call_is_above_hook_return(body):
     if ret < 0:
         return False, "install_hooks 조기 return 을 못 찾았다"
     if seed > ret:
-        return False, "시드 호출이 조기 return **아래**에 있다(GUI 업데이트 사용자 미도달)"
+        return False, "시드 호출이 조기 return **아래**에 있다(판 변경 기동 사용자 미도달)"
     return True, "시드 호출 offset %d < 조기 return offset %d" % (seed, ret)
 
 
@@ -11912,8 +11912,8 @@ def _u19_seed_call_is_above_hook_return(body):
           ["C-4", "K-1"])
 def h_seed_u19():
     """U-19(2026-08-24): 첫기동 관문 시드는 **훅 병합과 다른 축**이다. 훅 억제 플래그
-    (`--no-install-hook`)로 함께 꺼지면, GUI 인앱 업데이트가 항상 그 플래그로 내려오므로
-    **업데이트 사용자 전원에게 영영 시드되지 않는다**(도달성 결함 — `agents.json` 값 수정이
+    (`--no-install-hook`)로 함께 꺼지면, GUI 의 판 변경 기동(새 판 설치 뒤 첫 기동 · 옛 인앱 갱신은 1.1.8 에서 삭제됨)이
+    항상 그 플래그로 내려오므로 **새 판으로 올라온 사용자 전원에게 영영 시드되지 않는다**(도달성 결함 — `agents.json` 값 수정이
     기존 기계에 안 닿는 K-1 과 같은 계열).
 
     ★그리고 V-h 실측(2026-08-24 · 2.1.241 · macOS)이 뒤집은 전제 하나를 함께 못박는다:
@@ -11986,12 +11986,12 @@ def h_seed_u19():
     need("FIRST_RUN_SEED_BACKUP" in pk, "파일 롤백 경로(.bak)가 없다")
     notes.append("롤백 마스터 접기 + 엄격 비교 + env 1지점 + .bak 경로")
 
-    # ⓔ GUI 결합 실측 — 인앱 업데이트가 여전히 --no-install-hook 인가(도달성 논거의 전제)
+    # ⓔ GUI 결합 실측 — 판 변경 기동이 여전히 --no-install-hook 인가(도달성 논거의 전제)
     gui = _repo_file(os.path.join("src-tauri", "src", "main.rs"))
     need('sealed_sidecar_cys(&["init-pack", "--no-install-hook"])' in gui,
-         "GUI 인앱 업데이트의 init-pack 호출 형태가 바뀌었다 — U-19 도달성 논거 재검토 필요")
+         "GUI 판 변경 기동의 init-pack 호출 형태가 바뀌었다 — U-19 도달성 논거 재검토 필요")
     need("U-19 도달성 앵커" in gui, "GUI 쪽 결합 앵커 주석이 사라졌다(다음 사람이 순서를 뒤집는다)")
-    notes.append("GUI 업데이트 경로 --no-install-hook 확인")
+    notes.append("GUI 판 변경 기동 경로 --no-install-hook 확인")
 
     # 계측 타당성 — 구 트리에는 시드 단계 자체가 없다
     old = _git_show(os.path.join("src", "pack.rs"))
@@ -12010,14 +12010,14 @@ def h_seed_u19():
     return " · ".join(notes) + " · 계측검증=%s" % calib
 
 
-# ── U-29 · 인앱 업데이트 경로 도달성 탐지기(M-09-a) ──────────────────────────
+# ── U-29 · 판 변경 기동 경로 도달성 탐지기(M-09-a) ──────────────────────────
 def _u29_retune_reaches_update_path(body):
     """`setup_isolated_config_dir` 본문에서 **timeout 재조정이 훅 억제 조기 return 앞**인가.
 
     ★탐지기 자신이 시험 대상이다 — 아래 검체가 합성 표본을 먹여 이 함수가 실제로 FIRE 하는지
       확인한다. 트리에 위반이 0이라 초록인 핀은 탐지기가 고장나도 초록이다(2026-07-23 '계측
       타당성 게이트' 교훈 · H-SEED-U19 와 같은 규약).
-    반환: (판정, 사유). 판정 True = 인앱 업데이트 사용자에게 도달한다.
+    반환: (판정, 사유). 판정 True = 판 변경 기동 사용자에게 도달한다.
     """
     ret = body.find("if !install_hooks {")
     if ret < 0:
@@ -12029,7 +12029,7 @@ def _u29_retune_reaches_update_path(body):
     if call < 0:
         return False, "timeout 재조정 호출이 없다"
     if call > end:
-        return False, "재조정 호출이 훅 억제 조기 return **뒤**에 있다(업데이트 사용자 미도달)"
+        return False, "재조정 호출이 훅 억제 조기 return **뒤**에 있다(판 변경 기동 사용자 미도달)"
     return True, "재조정 호출 offset %d ≤ 조기 return offset %d" % (call, end)
 
 
@@ -12053,12 +12053,12 @@ def _u29_ups_entries(settings_path, command):
 
 
 @specimen("H-TIMEOUT-U29", "W6",
-          "인앱 업데이트(--no-install-hook) 경로가 등록 timeout 을 재조정 — 설치는 하지 않는다",
+          "판 변경 기동(--no-install-hook) 경로가 등록 timeout 을 재조정 — 설치는 하지 않는다",
           ["M-09-a", "K-1", "U-21"])
 def h_timeout_u29():
     """M-09-a(2026-08-24 · 기준선 v0.14.24 ↔ 현재 격리 실주행 대조에서 나온 **유일한 악화 항목**):
 
-    GUI 인앱 업데이트는 항상 `cys init-pack --no-install-hook` 으로 내려온다. 그 플래그는 훅
+    GUI 판 변경 기동(옛 인앱 갱신은 1.1.8 에서 삭제됨)은 항상 `cys init-pack --no-install-hook` 으로 내려온다. 그 플래그는 훅
     병합을 통째로 건너뛰므로 **팩 파일은 새 훅으로 교체되는데 훅 *등록*(settings.json 의
     `timeout`)은 갱신되지 않았다.** 그런데 새 훅은 느려졌다(실측: python 기동 14→16회 · `cys`
     호출 3→4회 · 지연 1초에서 14.83→17.12초) — 즉 옛 하네스 기본 상한이 남은 기계는 **절단
@@ -12116,11 +12116,11 @@ def h_timeout_u29():
          "훅 억제 분기가 병합기를 부른다 — 재조정이 아니라 설치가 된다")
     notes.append("도달성 정상(%s) · 합성 표본 3종 통과 · 억제 분기에 병합기·프로필 0" % why)
 
-    # ⓒ GUI 결합 실측 — 인앱 업데이트가 여전히 그 플래그로 내려오는가(도달성 논거의 전제)
+    # ⓒ GUI 결합 실측 — 판 변경 기동이 여전히 그 플래그로 내려오는가(도달성 논거의 전제)
     gui = _repo_file(os.path.join("src-tauri", "src", "main.rs"))
     need('sealed_sidecar_cys(&["init-pack", "--no-install-hook"])' in gui,
-         "GUI 인앱 업데이트의 init-pack 호출 형태가 바뀌었다 — M-09-a 도달성 논거 재검토 필요")
-    notes.append("GUI 업데이트 경로 --no-install-hook 확인")
+         "GUI 판 변경 기동의 init-pack 호출 형태가 바뀌었다 — M-09-a 도달성 논거 재검토 필요")
+    notes.append("GUI 판 변경 기동 경로 --no-install-hook 확인")
 
     # ⓓ ★진짜 바이너리 실주행 — 구조 단언은 '쓰여 있다'까지만 증명한다.
     want = _u29_declared_ups_timeout()
@@ -12170,14 +12170,14 @@ def h_timeout_u29():
             personal_before = _read(personal)
             need(personal_before.strip(), "개인 프로필 대조군 파일이 비었다(계측 무효)")
 
-            # ③ ★인앱 업데이트 경로를 그대로 태운다.
+            # ③ ★판 변경 기동 경로를 그대로 태운다.
             r1 = _init(["--no-install-hook"])
             need(r1.returncode == 0,
                  "init-pack --no-install-hook 실패: %s" % (r1.stdout[-400:] + r1.stderr[-400:]))
             after, mine = _u29_ups_entries(sfile, ours)
             need(len(mine) == 1, "재조정이 엔트리를 추가·삭제했다(우리 훅 %d건)" % len(mine))
             need(mine[0].get("timeout") == want,
-                 "인앱 업데이트 경로가 등록 timeout 을 선언값(%s)으로 올리지 않았다: %r"
+                 "판 변경 기동 경로가 등록 timeout 을 선언값(%s)으로 올리지 않았다: %r"
                  % (want, mine[0]))
             need(len(after["hooks"]["UserPromptSubmit"]) == 2,
                  "같은 이벤트의 사용자 항목이 사라지거나 늘었다: %r" % after["hooks"]["UserPromptSubmit"])
@@ -12190,13 +12190,13 @@ def h_timeout_u29():
             need(_read(personal) == personal_before,
                  "--no-install-hook 인데 사용자 프로필이 변경됐다(불가침 계약 파괴)")
 
-            # ④ 멱등 — 두 번째 업데이트는 아무것도 쓰지 않는다(정상 백업 무접촉으로 실측).
+            # ④ 멱등 — 두 번째 판 변경 기동은 아무것도 쓰지 않는다(정상 백업 무접촉으로 실측).
             bak = sfile + ".bak-cys"
             _w(bak, '{"_sentinel":"keep"}', 0o644)
             r2 = _init(["--no-install-hook"])
             need(r2.returncode == 0, "init-pack 재실행 실패")
             need(_read(bak) == '{"_sentinel":"keep"}',
-                 "멱등 재실행이 정상 백업을 덮었다(매 업데이트 재직렬화 — 플래그가 막으려던 바로 그 일)")
+                 "멱등 재실행이 정상 백업을 덮었다(매 판 변경 기동 재직렬화 — 플래그가 막으려던 바로 그 일)")
 
             # ⑤ **설치는 하지 않는다** — 등록부가 없는 config dir 에는 파일을 만들지 않는다.
             fresh = os.path.join(tmp, "cfg-fresh")

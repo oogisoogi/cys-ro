@@ -236,17 +236,21 @@ pkill -x cys-app; pkill -x cysd; pkill -x cys
 # ④ 앱 삭제 (비밀번호를 물어보면 맥 로그인 비밀번호 입력)
 #    🚧 되돌릴 수 없습니다. 다만 다시 쓰고 싶으면 홈페이지에서 새로 받아 설치하면 됩니다.
 #    이름만 보고 지우지 않습니다 — 정말 이 앱의 번들일 때만 지웁니다(아래 두 검사).
+#    지금 판의 자리 = /Applications/cysr.app · 옛 이름 자리 = /Applications/cys.app(1.0.0 이전 판) — 둘 다 봅니다.
 sudo sh -c '
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
-A=/Applications/cys.app
-if [ ! -e "$A" ] && [ ! -L "$A" ]; then echo "없습니다(이미 지웠습니다): $A"; exit 0; fi
-if [ -L "$A" ]; then echo "중단: 그 자리는 바로가기입니다 — 직접 확인하세요: $A"; exit 1; fi
-ID=$(defaults read "$A/Contents/Info" CFBundleIdentifier 2>/dev/null || echo "")
-if [ "$ID" != "com.cysjavis.terminal" ]; then
-  echo "중단: 이 앱의 번들이 아닙니다(읽은 식별자: ${ID:-읽지 못함}) — Finder 로 직접 확인하세요: $A"
-  exit 1
-fi
-rm -rf "$A" && echo "지웠습니다: $A"
+rc=0
+for A in /Applications/cysr.app /Applications/cys.app; do
+  if [ ! -e "$A" ] && [ ! -L "$A" ]; then echo "없습니다(이미 지웠습니다): $A"; continue; fi
+  if [ -L "$A" ]; then echo "중단: 그 자리는 바로가기입니다 — 직접 확인하세요: $A"; rc=1; continue; fi
+  ID=$(defaults read "$A/Contents/Info" CFBundleIdentifier 2>/dev/null || echo "")
+  if [ "$ID" != "com.cysjavis.terminal" ]; then
+    echo "중단: 이 앱의 번들이 아닙니다(읽은 식별자: ${ID:-읽지 못함}) — Finder 로 직접 확인하세요: $A"
+    rc=1; continue
+  fi
+  rm -rf "$A" && echo "지웠습니다: $A"
+done
+exit $rc
 '
 
 # ⑤-A 먼저 통째로 꺼내 둡니다 — 아래 ⑤-B 가 지울 **바로 그 목록**을 그대로 복사합니다.
@@ -328,7 +332,7 @@ rm -rf ~/Library/WebKit/com.cysjavis.terminal ~/Library/Caches/com.cysjavis.term
 > - ①에서 "not found" 비슷한 말이 나와도 괜찮습니다(이미 꺼져 있다는 뜻).
 > - ③에서 아무 반응이 없어도 괜찮습니다(이미 종료됐다는 뜻).
 > - ④가 **"중단: 이 앱의 번들이 아닙니다"** 로 멈추면 억지로 지우지 마세요. 그 자리에 있는 것이
->   우리 앱이 아닐 수 있습니다. **Finder 로 응용 프로그램 폴더를 열어 `cys.app` 을 휴지통으로
+>   우리 앱이 아닐 수 있습니다. **Finder 로 응용 프로그램 폴더를 열어 그 앱(`cysr.app` 또는 옛 이름 `cys.app`)을 휴지통으로
 >   옮기는 것**이 가장 안전합니다(휴지통은 되돌릴 수 있습니다).
 > - ⚠ **`/usr/local/bin` 은 이 블록에 일부러 넣지 않았습니다.** 예전 판에는 여기에
 >   `sudo rm -f /usr/local/bin/cys /usr/local/bin/cysd` 한 줄이 있었는데, 그 줄은 그 자리에 있는
@@ -386,7 +390,7 @@ ls -l /usr/local/bin/cys /usr/local/bin/cysd /usr/local/bin/*.cys-backup-* 2>/de
   그 둘을 구분하지 못합니다(지우면 되돌릴 수 없습니다).
 
 **지우는 절차의 정본은 [docs/INSTALL.md](INSTALL.md) §B 의 "수동 해제" 블록 하나입니다.**
-그 블록은 ①그 자리가 바로가기(심볼릭 링크)인가 ②그 바로가기가 `cys.app` 안을 가리키는가 —
+그 블록은 ①그 자리가 바로가기(심볼릭 링크)인가 ②그 바로가기가 `cysr.app`(또는 옛 이름 `cys.app`) 안을 가리키는가 —
 **둘 다 통과할 때만** 지우고, 아니면 이유를 적고 건너뜁니다. 통째로 복사해 붙여 넣으세요.
 
 > 왜 그 블록을 이 문서에 베껴 두지 않았나: 같은 절차가 두 곳에 있으면 한쪽만 고쳐져 서로 다른 말을

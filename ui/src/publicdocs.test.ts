@@ -64,7 +64,8 @@ const STALE_INSTALL = [
   { name: "notariz", re: /notariz/gi },
   { name: "Install cys.app", re: /Install cys\.app/g },
   { name: "도우미", re: /도우미/g },
-  { name: "www.cysinsight.com(원작자 내려받기 자리)", re: /www\.cysinsight\.com/g },
+  // publish-docs-118(master#d93a6088 브리프 §2-4): www 만이 아니라 원작자 홈페이지·연락처 주소 전부(cysinsight.com · cysinsight@…)
+  { name: "cysinsight(원작자 홈페이지·연락처)", re: /cysinsight/gi },
 ];
 
 /** 지운 것들의 이름 — 앱 명령 · 환경 노브 · 기록 파일 · 단추/배지 id · 앱의 옛 서명 경로. */
@@ -154,6 +155,28 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
       const s = read(d);
       const hits = STALE_INSTALL.map(({ name, re }) => ({ name, n: (s.match(re) ?? []).length })).filter((h) => h.n > 0);
       expect({ d, 남은: hits }).toEqual({ d, 남은: [] });
+    }
+  });
+  // publish-docs-118(master#d93a6088 브리프 §2-1·§2-4): 1.0.1 부터 앱 이름 = cysr.app(zip 최상위 · 설치 자리 /Applications/cysr.app).
+  // 옛 이름 cys.app 은 「옛 자리 정리」 문맥에서만 — 같은 줄에 옛/old/legacy 표기가 있거나 cysr.app 과 나란히 적힌 줄만 허용한다.
+  it("앱 이름 = cysr.app — 옛 이름 cys.app 은 옛 자리 문맥(같은 줄 옛·old·legacy 또는 cysr.app 병기)에서만(공개 문서 전건)", () => {
+    for (const d of DOCS) {
+      const bad = read(d)
+        .split("\n")
+        .map((line, i) => ({ line: i + 1, text: line }))
+        .filter(({ text }) => /(^|[^a-z])cys\.app/.test(text) && !/cysr\.app|옛|\bold\b|legacy/i.test(text))
+        .map(({ line }) => line);
+      expect({ d, 현행_뜻_cys_app_줄: bad }).toEqual({ d, 현행_뜻_cys_app_줄: [] });
+    }
+  });
+  it("원작자 저장소(idoforgod/cys-terminal) 주소 = 출처 표기 줄에서만 — 받기·복제 안내 0(공개 문서 전건)", () => {
+    for (const d of DOCS) {
+      const bad = read(d)
+        .split("\n")
+        .map((line, i) => ({ line: i + 1, text: line }))
+        .filter(({ text }) => /idoforgod\/cys-terminal/i.test(text) && !/출발|started from/i.test(text))
+        .map(({ line }) => line);
+      expect({ d, 원작자_주소_줄: bad }).toEqual({ d, 원작자_주소_줄: [] });
     }
   });
   it("다운로드 버튼 폴백 = 표시 판의 실 자산(태그·파일명·판 결속 · codex 재서명 MINOR-1)", () => {

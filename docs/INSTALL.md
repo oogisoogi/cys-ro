@@ -1,6 +1,6 @@
 # cys 터미널 설치 가이드
 
-> cys는 **AI 조직(자비스)이 거주하는 터미널**입니다. 코어 데몬(cysd) + CLI(cys) + GUI 앱(cys.app)으로
+> cys는 **AI 조직(자비스)이 거주하는 터미널**입니다. 코어 데몬(cysd) + CLI(cys) + GUI 앱(cysr.app)으로
 > 구성되며, **받는 사람은 데몬을 따로 설치할 필요가 없습니다** — 앱·CLI가 자동으로 기동합니다.
 
 > **이 문서는 두 종류의 독자를 위해 명시 분리되어 있습니다.**
@@ -50,7 +50,7 @@
 
 기본 사용(ZIP/setup.exe 설치 → 앱 더블클릭)에는 git이 **필요 없습니다**. 다만 아래 기능을 쓰려면 git이 있어야 합니다:
 
-- **소스 기여·직접 빌드**: `git clone https://github.com/idoforgod/cys-terminal`
+- **소스 기여·직접 빌드**: `git clone https://github.com/oogisoogi/cys-ro`
 - **harness-creator 툴체인 자동 설치**: 부트 프리플라이트(`javis_preflight.py --fix`)가 git으로 자동 클론합니다.
 - **RSI 자기개선/자동 발행**: 라운드 산출물의 로컬 커밋·외부 push에 git을 씁니다.
 
@@ -78,7 +78,7 @@ git --version                 # 설치 확인 (사람·에이전트 공통)
 
 #### 받는 분(비기술자)께 — 1페이지 (D6 제품 모드 패키징)
 > 터미널을 한 번도 안 열어도 오너 대표 산출물(통찰보고서·문체 글)을 클릭으로 받을 수 있습니다.
-1. `cys.app`을 `Applications`로 드래그(설치 끝).
+1. `cysr.app`을 `Applications`로 드래그(설치 끝).
 2. 더블클릭 → 열림(자체서명 빌드라 첫 실행 경고가 뜨면 우클릭 → "열기"). **"손상되었기 때문에 열 수 없습니다"가 뜨면 아래 [macOS "손상되었기 때문에 열 수 없습니다" 해결](#macos-손상되었기-때문에-열-수-없습니다-해결)을 그대로 따라 하세요** — 원인이 두 가지(반쪽 설치 / 격리 표시)이고 처방이 다릅니다.
 3. 우상단 **Control Center → "스킬 보드"** 탭 → "통찰보고서 만들기" 클릭 → 본문 붙여넣기 → 미리보기 확인 → PDF를 받습니다.
 4. ⚠ 산출물은 **"AI 보조 생성 · 오너 검수 전"**입니다. 외부 공유 전 반드시 검수를 받으세요(과대약속 금지).
@@ -91,7 +91,7 @@ git --version                 # 설치 확인 (사람·에이전트 공통)
 
 #### 원인 ① 반쪽 설치 (가장 흔함 · 덮어쓰기로 설치한 경우)
 
-이미 설치된 `cys.app` **위에 덮어쓰기**로 새 버전을 설치하면, macOS의 앱 보호 기능(App Management)이
+이미 설치된 앱(`cysr.app` · 1.0.0 이전 판이면 옛 이름 `cys.app`) **위에 덮어쓰기**로 새 버전을 설치하면, macOS의 앱 보호 기능(App Management)이
 번들 안 일부 파일의 교체만 막습니다. 그런데 복사는 거기서 멈추지 않고 나머지 파일을 전부 바꿔 버려서,
 **새 파일과 옛 파일이 섞인 반쪽 앱**이 남습니다. 이 상태에서는 macOS가 앱으로 인식조차 못 해
 "손상되었기 때문에 열 수 없습니다"로 차단합니다. (앱이 스스로 이 상태를 감지하면 실행 시
@@ -101,7 +101,7 @@ git --version                 # 설치 확인 (사람·에이전트 공통)
 
 1. 실행 중인 cys를 완전히 종료합니다.
 2. 최신 설치파일(ZIP)을 내려받아 풉니다 — <https://github.com/oogisoogi/cys-ro/releases/latest> (가장 쉬운 길 = 자비스 사이트 <https://jarvis.godmeyou.kr/get> 의 설치 한 줄)
-3. **응용 프로그램 폴더의 기존 `cys.app`을 먼저 휴지통으로 옮깁니다.** ← 이 단계를 건너뛰지 마세요.
+3. **응용 프로그램 폴더의 기존 앱(`cysr.app` · 1.0.0 이전 판을 쓰셨다면 옛 이름 `cys.app`)을 먼저 휴지통으로 옮깁니다.** ← 이 단계를 건너뛰지 마세요.
 4. 풀어 나온 `cysr.app`을 `응용 프로그램(Applications)` 폴더로 옮깁니다.
 5. 옮긴 앱을 엽니다.
 
@@ -117,7 +117,7 @@ git --version                 # 설치 확인 (사람·에이전트 공통)
 터미널에서 한 번 실행한 뒤 다시 여세요:
 
 ```bash
-xattr -d com.apple.quarantine /Applications/cys.app
+xattr -d com.apple.quarantine /Applications/cysr.app
 ```
 
 그래도 안 되면 앱을 우클릭 → "열기"(또는 시스템 설정 → 개인정보 보호 및 보안 → 「그래도 열기」)로 한 번 허락하세요 —
@@ -129,7 +129,7 @@ CLI를 쓸 수 있다면 아래가 원인을 이름으로 알려줍니다:
 
 ```bash
 cys doctor            # app-seal 항목: 코드서명 봉인이 깨졌는지 + 어떤 파일 때문인지
-codesign --verify --strict --verbose /Applications/cys.app
+codesign --verify --strict --verbose /Applications/cysr.app
 ```
 
 `bundle format unrecognized, invalid, or unsuitable` 이 나오면 **원인 ①(반쪽 설치)** 입니다.
@@ -144,11 +144,11 @@ codesign --verify --strict --verbose /Applications/cys.app
 > 있습니다. 아래 순서로 다시 설치해 주세요. **설정과 대화기록은 지워지지 않습니다.**
 >
 > 1. 실행 중인 cys를 완전히 종료합니다.
-> 2. **응용 프로그램 폴더의 기존 cys.app을 휴지통으로 옮깁니다.** (덮어쓰기 ✗ · 먼저 지우기 ✓)
+> 2. **응용 프로그램 폴더의 기존 앱(cysr.app · 옛 판이면 cys.app)을 휴지통으로 옮깁니다.** (덮어쓰기 ✗ · 먼저 지우기 ✓)
 > 3. 내려받은 zip 을 풀어 나온 앱(cysr.app)을 응용 프로그램 폴더로 옮깁니다.
-> 4. 응용 프로그램 폴더의 cys.app을 엽니다.
+> 4. 응용 프로그램 폴더의 cysr.app을 엽니다.
 >
-> 그래도 열리지 않으면 터미널에 `xattr -d com.apple.quarantine /Applications/cys.app` 을 한 번
+> 그래도 열리지 않으면 터미널에 `xattr -d com.apple.quarantine /Applications/cysr.app` 을 한 번
 > 입력한 뒤 다시 열어 보세요.
 
 ### 🧑 B. CLI도 외부 터미널에서 쓰려면 (선택 · macOS)
@@ -205,7 +205,7 @@ codesign --verify --strict --verbose /Applications/cys.app
      `<원래 경로>.cys-backup-<숫자>` 로 옮겨 보관한 뒤 새 링크를 만듭니다. 백업된 경로는 결과
      알림에 나옵니다.
      - **실제 파일**(다른 도구가 설치한 바이너리)도, **다른 앱을 가리키던 심볼릭 링크**도
-       똑같이 백업합니다. 백업하지 않는 유일한 경우는 **이미 이 앱(cys.app) 자신을 가리키는
+       똑같이 백업합니다. 백업하지 않는 유일한 경우는 **이미 이 앱(cysr.app · 옛 이름 cys.app 포함) 자신을 가리키는
        링크**일 때입니다 — 그건 우리 것이라 그대로 덮어씁니다.
        (2026-08-25 이전 문서는 "다른 앱을 가리키던 링크는 백업 없이 새 링크로 바뀝니다"라고
        적었는데 **사실이 아니었습니다**. 지금 코드는 그 링크도 백업합니다. 문서 쪽이 틀렸던
@@ -285,7 +285,7 @@ codesign --verify --strict --verbose /Applications/cys.app
 # <원래 경로>.cys-backup-<epoch초> 로 옮긴 뒤 링크 ③이미 이 앱의 링크면 백업하지 않음(멱등)
 sudo sh -c '
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
-SRC=/Applications/cys.app/Contents/MacOS
+SRC=/Applications/cysr.app/Contents/MacOS
 DST=/usr/local/bin
 STAMP=$(date +%s)
 mkdir -p "$DST" || exit 1
@@ -296,7 +296,7 @@ for f in cys cysd cysr; do
     ours=no
     if [ -L "$d" ]; then
       case "$(readlink "$d")" in
-        */cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd) ours=yes ;;
+        */cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd|*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd) ours=yes ;;
       esac
     fi
     if [ "$ours" = no ]; then
@@ -329,7 +329,7 @@ done
   **"백업본을 손으로 되돌리기"** 3) 블록으로 하나씩 되돌리세요.
 - 같은 블록을 두 번 돌려도 백업이 쌓이지 않습니다 — 이미 이 앱을 가리키는 링크는 백업하지 않고
   링크만 다시 겁니다(멱등).
-- 이 블록은 `readlink` 가 돌려주는 **문자 그대로**의 경로가 `…/cys.app/Contents/MacOS/cys`(또는
+- 이 블록은 `readlink` 가 돌려주는 **문자 그대로**의 경로가 `…/cysr.app/Contents/MacOS/cys`(옛 이름 `…/cys.app/…` 포함 · 또는
   `cysd`)로 끝날 때만 "이 앱의 링크"로 봅니다. 손으로 만든 `…/MacOS//cys` 같은 변칙 표기는
   남의 것으로 보아 **백업**합니다 — 안전한 쪽으로 틀립니다(잃는 것은 없고 백업본이 하나 늘 뿐).
 
@@ -339,12 +339,12 @@ done
 
 ⚠ **수동 폴백으로 `sudo rm <두 경로>` 를 그냥 치지 마세요**(2026-08-25 이전 이 자리가 그랬습니다). `rm` 은
 그 자리에 있는 것이 우리 링크인지 **남의 실제 파일**인지 보지 않습니다. 버튼은 ①심볼릭 링크인가
-②그 링크가 `cys.app` 안을 가리키는가 **둘 다** 통과할 때만 지우는데, 2026-08-25 이전 이 자리에는
+②그 링크가 `cysr.app`(또는 옛 이름 `cys.app`) 안을 가리키는가 **둘 다** 통과할 때만 지우는데, 2026-08-25 이전 이 자리에는
 그 두 검사가 `ls -l` 로 눈으로 보라는 **말**로만 붙어 있었습니다. 아래 블록은 같은 두 검사를
 **명령 안에서** 합니다(GUI를 못 쓸 때만 · 통째로 복사).
 
 ```sh
-# 🧑 [HUMAN] 수동 해제 — 심볼릭 링크이고 그 대상이 cys.app 안일 때만 지웁니다(버튼과 같은 규칙)
+# 🧑 [HUMAN] 수동 해제 — 심볼릭 링크이고 그 대상이 cysr.app(또는 옛 이름 cys.app) 안일 때만 지웁니다(버튼과 같은 규칙)
 sudo sh -c '
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 for d in /usr/local/bin/cys /usr/local/bin/cysd /usr/local/bin/cysr; do
@@ -354,7 +354,7 @@ for d in /usr/local/bin/cys /usr/local/bin/cysd /usr/local/bin/cysr; do
     continue
   fi
   case "$(readlink "$d")" in
-    */cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd)
+    */cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd|*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd)
       rm -f "$d" && echo "지웠습니다: $d" ;;
     *) echo "건너뜁니다(다른 곳을 가리키는 링크입니다): $d" ;;
   esac
@@ -419,7 +419,7 @@ B=/usr/local/bin/cys.cys-backup-1756089600
 if [ ! -e "$B" ] && [ ! -L "$B" ]; then echo "중단: 백업본이 없습니다 — $B"; exit 1; fi
 if [ -L "$D" ]; then
   case "$(readlink "$D")" in
-    */cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd)
+    */cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd|*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd)
       rm -f "$D" && echo "이 앱의 링크를 지웠습니다: $D" ;;
     *) echo "중단: 그 자리는 다른 곳을 가리키는 링크입니다 — 직접 확인하세요: $D"; exit 1 ;;
   esac
@@ -454,7 +454,7 @@ rm -f "$B" && echo "지웠습니다: $B"
 > 형태였습니다. 지점이 아니라 계열로 닫습니다.)
 
 > ⚠ 3) 블록이 하는 검사가 **버튼과 같은 것**입니다 — 그 자리가 ①심볼릭 링크이고 ②그 링크가
-> `cys.app` 안을 가리킬 때만 지웁니다. 실제 파일이면 그것은 백업 대상이었던 **남의 파일**일 수
+> `cysr.app`(또는 옛 이름 `cys.app`) 안을 가리킬 때만 지웁니다. 실제 파일이면 그것은 백업 대상이었던 **남의 파일**일 수
 > 있으므로 지우지 않고 멈춥니다.
 > (2026-08-25 이전 이 자리는 `sudo rm /usr/local/bin/cys` 한 줄만 주고 "지우기 전에 `ls -l` 로
 > 심볼릭 링크인지 확인하세요" 라는 **말**을 옆에 붙였습니다. 확인이 사람 눈에만 맡겨져 있어서,
@@ -626,10 +626,10 @@ cys boot                                     # 설치된 CLI 자동 감지 → w
 # 🧑 [HUMAN] 상시 가동 해제 (가역)
 cys daemon uninstall                         # 상시 가동 해제(설치했다면)
 # 🧑 [HUMAN] macOS: 앱을 지우기 전에 Control Center 헤더의 "셸 cys 해제"를 먼저 누르면 심링크가 정리됩니다(§B).
-# 🧑 [HUMAN] macOS: Applications에서 cys.app 삭제 + /usr/local/bin/cys{,d} 심링크 제거
+# 🧑 [HUMAN] macOS: Applications에서 cysr.app(옛 판이면 cys.app) 삭제 + /usr/local/bin/cys{,d} 심링크 제거
 #            ↑ 손으로 지울 때는 §B "수동 해제" 블록을 쓰세요 — 맨 `rm <두 경로>` 는
 #              그 자리에 온 **남의 실제 파일**도 함께 지웁니다(그 블록은 우리 링크만 지웁니다)
-# 🧑 [HUMAN] Windows: 설정 → 앱 → 'cys' 제거(setup.exe가 등록한 언인스톨러 · PATH는 애초에 건드리지 않았으므로 정리할 것이 없습니다)
+# 🧑 [HUMAN] Windows: 설정 → 앱 → 'cysr'(옛 판이면 'cys') 제거(setup.exe가 등록한 언인스톨러 · PATH는 애초에 건드리지 않았으므로 정리할 것이 없습니다)
 # 🧑 [HUMAN] 🚧 [BOUNDARY INST-DENY-03] ⚠ 비가역 완전 삭제 — 워커 자율 실행 금지·정지·오너 보고
 #   되돌릴 수 없습니다. 장기기억·soul.md·설정도 함께 사라지므로 **먼저 백업**하세요.
 rm -rf ~/.cys ~/.local/state/cys             # pack·트랜스크립트·상태 완전 삭제(선택)

@@ -7,6 +7,12 @@
 - ⚠U2 겹침: `src/update/win.rs` 의 시험 1건(`same_rules_as_app_original`)과 `src/lib.rs` 인구조사 1줄을 고쳤다(제품 코드 0) — U2 가 같은 파일을 고치면 병합 때 이 두 곳을 본다.
 - 표식: 【관측】 = 명령 출력으로 확인 · 【추정】 = 근거 있는 추론.
 
+## §0-2판 델타(master#f69113b1 · codex 1R = BLOCK 1 · MAJOR 3 · MINOR 2 → 6건 전부 채택)
+- 2판 커밋: `084f45a7`(① 장부 경쟁 직렬화 · ⑤ release_seq · ⑥ notes_ko 80자 한 줄 · ③ 조건부 핀) · `c31138f0`(② 고정 안내 자동 소거 · ⑥ 화면 한 줄) · `2e39b8cd`(④ 공개 문서 현행만 + 게이트 시험) · (이 문서·뮤턴트 확장 커밋).
+- 뮤테이션 1판 10 + 2판 4(M11 잠금 없음 · M12 release_seq 무검사 · M13 역순 응답 적용 · M14 폴링 없음) = **14/14 적색**. 2판 잠금이 생기면서 1판 M7(기록 실패해도 표시)이 한 번 생존 → 「잠금은 잡히고 장부 쓰기만 실패」 반례 시험 추가 뒤 적색.
+- 표 6행 = §9.
+- 2판 맥 전수(23:04–23:19 · 격리 env · 코드·문서 최종본): **lib 899/0/1 · cys 584/0 · cysd 2461/0/7 · cys-app 275/0/1**(1판 270 + 신규 5 = release_seq · 병렬 2 · 장부 쓰기 실패 · macupdate 핀) · updnotice 15/0 · bun **2663 pass / 71 skip / 0 fail**(+ publicdocs 4 · updateresult 신규 4) · tsc 0 · 측정 뒤 u4 잔존 프로세스 0 【관측】.
+
 ## §0 한 문단 요약
 1.1.8 앱에서 「업데이트」 단추·배지·확인 창·6시간 폴링·updater 플러그인·팩 앱 입구·원작자 J2/WU(윈 시도 기록·확인 실행·스마트 앱 컨트롤 사전 검사)를 지웠다 — 앱이 갱신을 결정·집행하는 코드는 0이다(§5-1). 대신 데몬 러너(U2)가 `state.json` 에 남긴 결과를 **다음 앱 창에서 토스트 1개**로 알리고(§3-12 순서 ①~④ · 결과당 1회 · 중복 ≤1 · 롤백 실패만 하루 1회), 저널을 되살리지 못해 좌석이 0인 상태면 창 아래에 **닫히지 않는 안내 1줄**을 둔다(📌18). 앱은 `state.json` 을 읽기만 하고, 몇 번 보여 줬는지는 같은 폴더의 앱 전용 `app-notify.json` 에만 쓴다(파일당 쓰는 이 하나). 도움말 1줄(§5-4)을 매뉴얼·README·다운로드 페이지에 넣었다.
 
@@ -16,6 +22,8 @@
 | `<상태 폴더>/state.json` | 러너(U2) **만** | `last_result{result_id, kind, release_seq, version?, notes_ko?}` | `result_id` = 1~64자 `[A-Za-z0-9._:-]` · `kind` ∈ `ok` · `rollback_ok` · `rollback_failed` · `installed_revoked`(그 밖 = 무음) · `version` = 숫자 마디 1~4개(아니면 괄호째 생략) · `notes_ko` = 제어문자·줄 나눔(U+2028/9)·방향 바꿈(U+200E/F·U+061C·U+202A–E·U+2066–9) 하나라도 있으면 통째 거부 · 300자 상한 · 성공 알림에만 둘째 줄 |
 | 같은 파일 | 러너 | `seats_blocked{reason}` | `reason == "journal_unrecoverable"` 일 때만 📌18 고정 안내 · 그 밖·판독 불가 = 안내 없음 |
 | `<상태 폴더>/app-notify.json` | 앱 **만** | `pending_notification{result_id, shown_count}` · `last_notified_result_id` · `rollback_failed_last_shown_at`(유닉스 초) | 원자 쓰기 = 임시 파일 → fsync → rename → (유닉스) 폴더 fsync · 깨지면 빈 장부로 읽고 다음 쓰기가 통째로 바꾼다 |
+- **병합 때 삭제할 것(③ · 집행 = U2 병합 통합 커밋 master)**: ⑴ 파일 `src-tauri/src/macupdate.rs`(674줄 · 앱 쪽 옛 판정·교체 부품 — 라이브러리 `src/update/mac.rs`·`src/update/macupdate.rs` 가 대신함) ⑵ `src-tauri/src/main.rs` 19-22행 4줄(@`084f45a7` 실측 · 주석 2줄 `// ★(1.1.8 U4 · 설계 §5-1 「옮긴다」) …` · `//   U2 가 데몬 쪽(…)으로 옮긴다. …` · `#[allow(dead_code)]` · `mod macupdate;` — 18행은 앞 모듈의 주석이라 남긴다). 핀 `macupdate_lives_only_in_the_library_after_u2_merge`(main.rs 시험)가 라이브러리 `src/update/mac.rs` 실재 시 ⑴⑵ 부재를 요구하므로, 지우지 않고 병합하면 cys-app 시험이 적색이 된다(의도).
+- 앱 장부 잠금 파일 `app-notify.lock`(같은 상태 폴더 · 앱만 쓴다 · 내용 없음) — U2 가 상태 폴더 「전체 − 명시 제외」 스냅샷(§3-5)을 뜰 때 `app-notify.json`·`app-notify.lock` 을 사용자 파일로 볼지 제외할지 U2 판단(앱 장부라 롤백해도 무해 — 되돌아가면 알림이 최대 1번 더 뜰 뿐).
 - 상태 폴더 = `cys::update::buildinfo::state_dir()`(U1 · 맥 `~/.cys/update` · 윈 `%LOCALAPPDATA%\cys-update` · 디버그 빌드만 `CYS_UPDATE_STATE_DIR`).
 - `state.json` 을 못 읽으면(손상·권한) 앱은 아무것도 보여 주지 않는다(추측 금지) · 앱 장부 쓰기가 실패하면 토스트도 없다(② 없이 ③ 금지).
 - 📌18 의 「cysd 복구 대기 rc」 읽기(설계 §3-12 판정 줄)는 하지 않았다 — 앱은 `seats_blocked` 하나로 고른다(rc 는 U2 부팅 가드의 몫 · U2 가 복구 대기 때 `seats_blocked` 를 반드시 적어야 안내가 뜬다 = U2 확인 항목).
@@ -59,8 +67,10 @@
 - ① 실기 미확인: 토스트·고정 안내는 코드·단위 시험·소스 핀으로만 확인했다(실 앱 창에서 띄워 보지 않음 — 러너가 아직 `state.json` 을 쓰지 않는다 · U2 병합 뒤 실기 1회 권고).
 - ② 1.1.7 이하 → 1.1.8 길: 옛 앱의 「업데이트」 단추가 `latest.json`(§5-3 다리)을 읽는다 — 이 티켓은 앱 쪽 읽기만 지웠고 발행 쪽 다리(release.yml·pack-release.yml)는 무접촉(U3).
 - ③ H⑬(build-info `features` 정본 ID · V7): 앱은 features 를 읽지 않는다(갱신 결정 0) → 이 티켓 코드 0. 정본 ID 목록은 U2·master.
-- ④ `macupdate.rs` 는 호출부 0 인 채 남았다(U2 가 데몬 쪽으로 옮기는 중) — 병합 때 `mod macupdate;` 와 파일을 거두지 않으면 죽은 코드가 계속 남는다.
+- ④ `macupdate.rs` 는 호출부 0 인 채 남았다(U2 가 데몬 쪽으로 옮기는 중) — 2판: 병합 때 거두지 않으면 핀 `macupdate_lives_only_in_the_library_after_u2_merge` 가 적색이 된다(삭제 줄 = §1).
 - ⑤ `packsig.rs` 재현 시험 겨눔 변경 = U2 러너 A2 검증이 생길 때(§2 표 끝 행).
+- ⑦ (2판) 공개 문서 3종 밖에 같은 꼴 옛 서술이 남아 있다(이번 범위 밖 · 서브에이전트 보고 실측): `ARCHITECTURE-AND-PHILOSOPHY.md:274·318`(「Tauri updater 서명 … `!` 배지」) · `docs/INSTALL.md:676-677`(CYS_UPDATE_VERIFY·CYS_UPDATE_CHECKED_LAUNCH 행) · `docs/DESIGN-factory-reset.md:60`(`.update-attempt.json`) · `cysjavis-pack/bin/tests/run_bootstrap_health.py`(옛 「GUI 인앱 업데이트」 서술) — 정리 여부 = master.
+- ⑧ (2판) 📌18 폴링 = 60초 간격이라 seats_blocked 가 풀린 뒤 안내가 사라지기까지 최대 60초 · 상태 변경 이벤트가 생기면(U2) 그쪽으로 바꾸는 것이 낫다.
 - ⑥ 롤백 실패 「하루 1회」는 벽시계 24시간 간격이다(시계가 하루 넘게 뒤로 간 기록은 믿지 않고 다시 보여 준다 · 그보다 작은 뒤로 감은 기다린다).
 
 ## §6 소요 · 계수(실측)
@@ -96,3 +106,13 @@ sh scripts/win-typecheck.sh                # 오류 0
 - [x] 6. 시험: 단위 + 뮤테이션 + ui tsc/bun + 윈 타입체크 + 문구 grep · Rust 3묶음 = §3·§6
 - [x] 7. 커밋 묶음 · HANDOFF-U4 · 【확인요청】
 - 배선 사건: 스폰 때 role=worker-3 이 293(lms)과 겹쳐 `cys todo-path` 가 293 의 TODO 를 가리켰다 → 293 파일은 건드리지 않았고(읽기만) 내 TODO 는 별도 파일 → master 지시로 `cys claim-role worker-4` 재등록(21:25 · `cys list` surface:1296 role=worker-4).
+
+## §9 codex 1R 6건 처리표(채택 / 반박 — 근거 = 코드 줄 + 시험)
+| # | 등급 · 지적 | 판정 | 수정 sha · 코드 줄 | 시험(뮤턴트) |
+|---|---|---|---|---|
+| ① | BLOCK · 병렬 두 호출이 shown_count=0 을 함께 읽고 고정 PID 임시 파일을 서로 truncate → 합계 >2 | **채택** | `084f45a7` · `updnotice.rs:286` `with_ack_lock`(프로세스 안 뮤텍스 + `app-notify.lock` `File::lock`) · `take_at`·`done_at` 이 그 안에서 읽기→판정→쓰기 · `write_ack` 임시 파일 = pid·일련·나노초 + `create_new` | `parallel_takes_never_show_more_than_twice_and_keep_the_ledger_valid` · `parallel_take_and_done_keep_the_total_at_most_two` · `no_show_when_only_the_ledger_write_fails`(M11 · M7 적색) |
+| ② | MAJOR · 포커스 유지 중 seats_blocked 가 풀려도 안내가 남음 · 역순 응답이 덮어씀 | **채택** | `c31138f0` · `updateresult.ts:59` `latestOnly`(세대 번호) · `:55` `SEATS_NOTE_POLL_MS=60_000` · `main.ts:9114` setInterval · `applySeatsBlockedNote` | 「역순 응답 폐기」 · 「던진 조회 무변경」 · ★「포커스 유지 중 복구」 · 폴링 배선·하한 30초(M13 · M14 적색) |
+| ③ | MAJOR · 앱 macupdate 잔존 → 정상 병합이 두 구현을 남김 | **채택 · 집행 = U2 병합 통합 커밋(master)** | `084f45a7` · `main.rs` 시험 `macupdate_lives_only_in_the_library_after_u2_merge`(라이브러리 `src/update/mac.rs` 실재 시 앱 파일·선언 부재 요구 · 아니면 호출부 0) · 삭제 줄 = §1 | 두 조건 실측: 임시 `src/update/mac.rs` 생성 = 적색 · 제거 = 초록(#[ignore] 아님) |
+| ④ | MAJOR · 도움말 잔재(Tauri updater · 지운 env 2 · 지운 RPC · 없는 단추 · 「업데이트」 재사용) | **채택**(버전 기록 격리 아님 · 삭제) | `2e39b8cd` · README.md:53·466·509 · README.en.md:62·453·500 · USER-MANUAL 전반(env 2행·앱 명령 4항·증상 1행·실기 블록·한계 1항 삭제 · 나머지 「업데이트」→「갱신」) | `ui/src/publicdocs.test.ts` 4건(문서 4종 「업데이트」·「Update」 0 · 지운 이름 17종 0 · 도움말 1줄 존재 · 공허 방지) |
+| ⑤ | MINOR · release_seq 미검사 | **채택** | `084f45a7` · `updnotice.rs:193`(정수 ≥1 아니면 알림 0) | `release_seq_must_be_a_positive_integer`(누락·0·음수·문자열·소수·null)(M12 적색) |
+| ⑥ | MINOR · notes_ko 300자·둘째 줄 = 설계 이탈 | **채택** — 설계 §6-1 505행 「`notes_ko` 문자열 ≤80자 · 알림 1줄(제어문자 0 · 금지 어휘 0)」 | `084f45a7` · `updnotice.rs:152`(`cys::update::feed::check_notes_ko` 한 벌 재사용 + 화면용 줄 나눔·방향 바꿈 거부) · `:168` 같은 줄 잇기 · `c31138f0` 화면도 본문 줄바꿈 거부 | `notes_with_control_chars_are_refused_whole`(80 통과 · 81 거부 · 금지 어휘 5 · 줄바꿈 0 · 상한 = lib 상수 대조)(M5 적색) |

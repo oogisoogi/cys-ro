@@ -72,17 +72,17 @@ WHAT IS MODELED / NOT MODELED
   not modeled — added after the 1.0.1 pin (1.1.8 U3 · judged invariant-neutral · re-pinned in
              the SAME commit as this note · TICKET=cysr-118-u3-publish):
              * PREINSTALL ⓪-a `cys_txn_*` (auto-update lock token · design AUTO-UPDATE-118 §3-2 📌13′):
-               BEFORE the singleton mutex, if %LOCALAPPDATA%\\cys-update\\txn.lock is OS-locked the
-               installer proceeds only when /CYSTXN=<txn_id>:<epoch> is byte-equal to env
-               CYS_UPDATE_TXN and matches txn.owner.json; and /CYSTXN given while the lock is NOT
-               held (stale delegation) also refuses (2판 · codex 1R #13). Refusal = SetErrorLevel 6
-               + Quit — the same untouched-quit-by-construction class as exit 5 (no file of ours
-               touched yet; reads only the lock/owner files outside $INSTDIR and one env var). On a
-               match it sets CysTxnDelegated=1 and the singleton's "already exists" branch falls
-               through to cys_pre_single — i.e. the modeled machine then runs exactly as the
-               single-instance case the model already assumes. Neither branch reads or writes
-               cys/cysd/cys-app, the failure file or the markers, so I1/I3/I4 are unaffected; the
-               pin moved only because the PREINSTALL body gained these labels/tokens.
+               not part of THIS placement machine (it touches no canonical — its only terminals are
+               exit 6 / exit 5 / proceed, all before the first file op), so I1/I3/I4 are unaffected.
+               ★3판(codex 2R #13·#14): it IS modeled now, as its own decision tree `zero_a()` —
+               /CYSTXN none|match|tampered × CYS_UPDATE_TXN none|same|other × lock file absent|
+               unopenable|free|held × owner readable × runner releases the lock DURING the check ×
+               mutex none|runner|other — with invariants Z1–Z6 (delegation only with arg=env=owner and
+               a lock still held at the same-handle recheck · token present & not delegated ⇒ exit 6 ·
+               held/undecidable lock & no token ⇒ exit 6 · exit 5 only tokenless vs a foreign mutex ·
+               past a held mutex only when delegated · release-during-check never delegates).
+               The mirror is hand-kept like the rest of this file; GUARD_PIN forces a review on any
+               hook edit. Not a substitute for the Windows field run (docs/update/WIN-NSIS-0A-FIELD.md).
 
 INVARIANTS (mechanical form of hook R1/R3/R4 with the honest scopes of
 NSIS-CONTRACT §9 — the model refuses to over-claim):
@@ -145,7 +145,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "13452b196980530609c6e435da40c2fac475d806930cc3890c0e56ac2f13a012"
+GUARD_PIN = "36eb658e17c5b3f85f91a8381671c582f2eba06e2be688ae5dcbebafe1628d02"
 
 
 def hook_path():
@@ -1077,6 +1077,71 @@ DEFAULT_BUDGETS = (FAULT_BUDGET == 4 and INT_FAULT_CAP == 3
                    or (FAULT_BUDGET >= 4 and INT_FAULT_CAP >= 3))
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# PREINSTALL ⓪-a mirror (1.1.8 U3 3판 · codex 2R #13·#14 — the token gate is now
+# MODELED as its own decision tree; it touches no canonical, so it composes with
+# the placement model above only through its terminal: exit 6 / exit 5 / proceed)
+# ═════════════════════════════════════════════════════════════════════════════
+def zero_a(ch):
+    """Mirror of nsis-hooks.nsh ⓪-a + ⓪ (label order: probe → held/notheld → arg →
+    env → owner → recheck(same handle) → ok; then the singleton mutex)."""
+    t = {}
+    t["arg"] = ("none", "match", "tampered")[ch.choose(3)]        # /CYSTXN=
+    t["env"] = ("none", "same", "other")[ch.choose(3)]            # CYS_UPDATE_TXN
+    t["lockfile"] = bool(ch.choose(2))
+    t["openable"] = bool(ch.choose(2)) if t["lockfile"] else True  # CreateFileW
+    t["held1"] = bool(ch.choose(2)) if t["lockfile"] and t["openable"] else False
+    t["owner_ok"] = bool(ch.choose(2))                             # txn.owner.json readable
+    t["released_mid"] = bool(ch.choose(2)) if t["held1"] else False  # runner unlocks during check
+    t["mutex"] = ("none", "runner", "other")[ch.choose(3)]
+    argp, delegated, ex = t["arg"] != "none", False, None
+    if t["lockfile"] and not (t["openable"] and not t["held1"]):    # cys_txn_locked / IntPtrCmp -1 → held
+        if not argp or t["env"] != "same" or not t["owner_ok"] or t["arg"] != "match":
+            ex = 6
+        elif not t["openable"] or t["released_mid"]:                 # cys_txn_recheck
+            ex = 6
+        else:
+            delegated = True
+    elif argp:                                                       # cys_txn_notheld + /CYSTXN
+        ex = 6
+    if ex is None and t["mutex"] != "none" and not delegated:        # ⓪ singleton
+        ex = 5
+    t["delegated"], t["exit"] = delegated, (ex if ex is not None else "proceed")
+    return t
+
+
+def check_zero_a(t):
+    held_now = t["lockfile"] and t["held1"] and not t["released_mid"]
+    if t["delegated"] and not (t["arg"] == "match" and t["env"] == "same" and t["owner_ok"] and t["openable"]
+                               and t["held1"] and not t["released_mid"]):
+        raise Violation("Z1 delegated without arg=env=owner and a lock still held at recheck: %r" % t)
+    if t["arg"] != "none" and not t["delegated"] and t["exit"] != 6:
+        raise Violation("Z2 /CYSTXN present but not delegated must exit 6: %r" % t)
+    if (held_now or (t["lockfile"] and not t["openable"])) and t["arg"] == "none" and t["exit"] != 6:
+        raise Violation("Z3 runner lock held (or undecidable) and no token must exit 6: %r" % t)
+    if t["exit"] == 5 and (t["arg"] != "none" or t["mutex"] == "none" or held_now):
+        raise Violation("Z4 exit 5 only for a tokenless installer while another holds the mutex: %r" % t)
+    if t["exit"] == "proceed" and t["mutex"] != "none" and not t["delegated"]:
+        raise Violation("Z5 proceeding past a held mutex requires delegation: %r" % t)
+    if t["released_mid"] and t["delegated"]:
+        raise Violation("Z6 lock released during the check must not delegate (TOCTOU): %r" % t)
+
+
+def run_zero_a():
+    n, census = 0, {}
+    for t, _ in explore(zero_a):
+        n += 1
+        check_zero_a(t)
+        k = (t["exit"], t["delegated"])
+        census[k] = census.get(k, 0) + 1
+    if n < 260 or not census.get(("proceed", True)) or not census.get((6, False)) or not census.get((5, False)):
+        print("nsis-hook-model: FAIL — ⓪-a exploration collapsed (%d states · %r)" % (n, census), file=sys.stderr)
+        sys.exit(1)
+    print("  %-22s %7d states  [%s]" % ("zero-a token gate", n, " ".join(
+        "%s%s:%d" % (e, "+D" if d else "", c) for (e, d), c in sorted(census.items(), key=repr))))
+    return n
+
+
 def main():
     hook_guard()
     total = 0
@@ -1120,6 +1185,11 @@ def main():
                            zip(("U", "R", "N", "P"), (u, r, nu, rf)) if on)
             parts.append("%s%s:%d" % (ex, ("+" + toks) if toks else "", census[key]))
         print("  %-22s %7d states  [%s]" % (sc["name"], n_runs, " ".join(parts)))
+    try:
+        za = run_zero_a()
+    except Violation as v:
+        print("\nINVARIANT VIOLATION in zero-a token gate: %s" % v, file=sys.stderr)
+        sys.exit(1)
     print("nsis-hook-model: deep-lane coverage:")
     for k in sorted(cov):
         print("    %-38s %7d" % (k, cov[k]))
@@ -1140,6 +1210,7 @@ def main():
           "invariants I1/I3/I4 held in all of them, %d/%d deep-lane pins hit"
           % (total, len([p for p in COVERAGE_PINS if cov.get(p)]),
              len(COVERAGE_PINS)))
+    print("nsis-hook-model: OK — ⓪-a token gate %d states, Z1–Z6 held" % za)
 
 
 if __name__ == "__main__":

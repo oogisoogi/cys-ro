@@ -1439,6 +1439,13 @@ class TestSourcePins(unittest.TestCase):
         self.assertIn('StrCpy $CysTxnDelegated "1"', blk[ok + 1:ok + 3])
         self.assertTrue(cmp_ < ok)
         self.assertIn('StrCmp $CysTxnDelegated "1" cys_pre_single 0', s)
+        # ⑵′ 3판(2R #13 TOCTOU): 소유자 대조 → cys_txn_recheck(같은 핸들 LockFileEx 재시도) → 아직 잡혀 있을 때만 cys_txn_ok
+        rc = at("cys_txn_recheck:")
+        self.assertTrue(owner < rc < ok)
+        self.assertEqual(blk[rc + 1], "IntPtrCmp $CysTxnLk -1 cys_txn_refuse 0 0")
+        self.assertIn("LockFileEx(p $CysTxnLk", blk[rc + 2])
+        self.assertNotIn("Goto cys_txn_ok", "\n".join(blk[:rc]))
+        self.assertEqual([l for l in blk if l.endswith(" cys_txn_ok") or l.endswith(" cys_txn_ok 0")], ["Goto cys_txn_ok"])
         # ⑶ 조상 대조 = 러너 쪽(설계 §3-7 ④ 인용 주석)
         self.assertIn("설계 §3-7 ④", s[a:b])
 

@@ -587,6 +587,7 @@ Var CysTxnTmp
 Var CysTxnH
 Var CysTxnOv
 Var CysTxnArg
+Var CysTxnLk
 
 !macro NSIS_HOOK_PREINSTALL
   ; ⓪-a ★자동 갱신 잠금 토큰 (1.1.8 U3 · 설계 AUTO-UPDATE-118 §3-2 📌13′ · §3-7 · ⓪ 뮤텍스보다 먼저).
@@ -606,7 +607,9 @@ Var CysTxnArg
   ;         CREATE_SUSPENDED 로 만들고 이미지·파일 ID 를 대조한 뒤에만 재개하므로, 이 훅이 돈다는 것 자체가
   ;         「러너가 직접 만든 자식」이다(NSIS 에서 부모 pid 를 다시 재지 않는다 · 사람이 토큰을 베껴 띄운
   ;         설치기는 ⑵ 의 env 를 갖지 못한다).
-  ;      ⑷ 뮤텍스 수용은 ⑴⑵ 통과 뒤만 — CysTxnDelegated=1 은 cys_txn_ok 한 곳에서만 켜진다 → 아래 ⓪ 에서
+  ;      ⑵′ (3판 · 2R #13) 잠금 재확인 — ⑵ 대조 **뒤** 처음 쥔 핸들로 잠금을 다시 시도해 아직 잡혀 있을 때만(cys_txn_recheck)
+  ;         · 풀려 있으면 토큰이 맞아도 exit 6 · 판정 불가(잠금 파일 못 엶)는 위임 불가.
+  ;      ⑷ 뮤텍스 수용은 ⑴⑵⑵′ 통과 뒤만 — CysTxnDelegated=1 은 cys_txn_ok 한 곳에서만 켜진다 → 아래 ⓪ 에서
   ;         뮤텍스 「이미 있음」을 러너 보유(S7~S9b 동안 러너가 Global\cys-installer 를 쥔다 · 옛 1.1.7 이하
   ;         설치기 차단용)의 위임으로 받아들인다. 그 밖(토큰 없음 · 불일치)은 종전대로 exit 5.
   ;    · /CYSTXN 이 없고 잠금도 없으면 종전과 같다.
@@ -630,6 +633,7 @@ cys_txn_probe:
   IfFileExists "$LOCALAPPDATA\cys-update\txn.lock" 0 cys_txn_notheld
   System::Call 'kernel32::CreateFileW(w "$LOCALAPPDATA\cys-update\txn.lock", i 0xC0000000, i 7, p 0, i 3, i 0x80, p 0) p .s'
   Pop $CysTxnH
+  StrCpy $CysTxnLk $CysTxnH
   IntPtrCmp $CysTxnH -1 cys_txn_held 0 0
   System::Call '*(p 0, p 0, i 0, i 0, p 0) p .s'
   Pop $CysTxnOv
@@ -642,8 +646,8 @@ cys_txn_probe:
   System::Free $CysTxnOv
   Goto cys_txn_notheld
 cys_txn_locked:
-  System::Call 'kernel32::CloseHandle(p $CysTxnH)'
-  System::Free $CysTxnOv
+  ; ★3판(codex 2R #13 TOCTOU): 핸들·OVERLAPPED 를 대조가 끝날 때까지 쥔다 — 소유자 기록 대조 **뒤** 같은 핸들로 잠금을 다시 재
+  ;   「아직 잡혀 있음」일 때만 위임을 켠다(cys_txn_recheck). 잠금 파일을 못 연 판정 불가(핸들 -1)는 위임 불가(그대로 exit 6).
 cys_txn_held:
   StrCmp $CysTxnArg "1" 0 cys_txn_refuse
   StrCmp $CysTxnTok "" cys_txn_refuse
@@ -675,10 +679,27 @@ cys_txn_readdone:
   IfErrors cys_txn_refuse
   StrCmp $CysTxnH "" cys_txn_refuse
   ${WordFindS} "$CysTxnBuf" '"epoch":$CysTxnH,' "E+1{" $CysTxnTmp
-  IfErrors 0 cys_txn_ok
+  IfErrors 0 cys_txn_recheck
   ClearErrors
   ${WordFindS} "$CysTxnBuf" '"epoch":$CysTxnH}' "E+1{" $CysTxnTmp
-  IfErrors cys_txn_refuse cys_txn_ok
+  IfErrors cys_txn_refuse cys_txn_recheck
+cys_txn_recheck:
+  ; 소유자 기록·인자·env 가 다 맞았다 — 그 사이 러너가 잠금을 놓지 않았는지 쥐고 있던 핸들로 다시 잰다.
+  ;   $CysTxnH 는 위 토큰 쪼개기에 썼으므로 핸들은 $CysTxnOv 짝과 함께 $CysTxnLk 에 보관돼 있다.
+  IntPtrCmp $CysTxnLk -1 cys_txn_refuse 0 0
+  System::Call 'kernel32::LockFileEx(p $CysTxnLk, i 3, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  StrCmp $CysTxnTmp "0" cys_txn_still 0
+  System::Call 'kernel32::UnlockFileEx(p $CysTxnLk, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  System::Call 'kernel32::CloseHandle(p $CysTxnLk)'
+  System::Free $CysTxnOv
+  DetailPrint "cys: auto-update lock was released during the token check (stale delegation)"
+  Goto cys_txn_refuse
+cys_txn_still:
+  System::Call 'kernel32::CloseHandle(p $CysTxnLk)'
+  System::Free $CysTxnOv
+  Goto cys_txn_ok
 cys_txn_refuse:
   DetailPrint "cys: auto-update transaction in progress - quitting untouched (exit 6)"
   IfSilent cys_txn_quit 0

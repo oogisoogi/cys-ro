@@ -960,10 +960,10 @@ impl Ops for RealOps {
 
     fn pack_prepare(&mut self, j: &mut Journal) -> Step {
         let (digest, snap) = pack_user_snapshot(&self.env.update_dir, &j.txn_id, &self.env.cys_root).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
-        // ★4판(Fable 3R M8): 적용 전 팩 판(커밋 표지 `.pack-version`) — 복구가 「커밋됐나」를 이것과 비교한다.
-        let pre = std::fs::read_to_string(self.env.cys_root.join("pack").join(".pack-version")).unwrap_or_default();
+        // ★4판(Fable 3R M8) · ★5판(codex 4R M8-pro): 적용 전 팩 판 튜플(`.pack-version` + pro_revision) — 복구가 「커밋됐나」를 이것과 비교한다.
+        let pre = pack_commit_tuple(&self.env.cys_root.join("pack"));
         if let Some(parent) = snap.parent() {
-            super::journal::durable_write(&parent.join(PACK_PRE_VERSION), pre.trim().as_bytes()).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
+            super::journal::durable_write(&parent.join(PACK_PRE_VERSION), pre.as_bytes()).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
         }
         j.stage_tree_sha256 = digest;
         j.snapshot_dir = snap.to_string_lossy().to_string();
@@ -981,11 +981,17 @@ impl Ops for RealOps {
         }
     }
 
-    fn recover_pack(&mut self, j: &Journal) -> Step {
-        recover_pack_at(&self.env.update_dir, &self.env.cys_root, j)
+    fn recover_pack(&mut self, j: &Journal) -> Result<bool, Fail> {
+        let r = recover_pack_at(&self.env.update_dir, &self.env.cys_root, j);
+        // ★5판(codex 4R MINOR 8): 복구 결과 기록의 to_version = 지금 팩 판(전진 완료 = 새 판 · 되돌림 = 옛 판)
+        let now = std::fs::read_to_string(self.env.cys_root.join("pack").join(".pack-version")).map(|s| s.trim().to_string()).unwrap_or_default();
+        if self.pack_to.is_none() && !now.is_empty() {
+            self.pack_to = Some(now);
+        }
+        r
     }
 
-    fn reconstruct(&mut self, attempt: Option<&Attempt>) -> Result<bool, Fail> {
+    fn reconstruct(&mut self, attempt: &Attempt) -> Result<bool, Fail> {
         // §3-11 저널 손상 재구성: 정식 자리 실물이 설치판(옛) 또는 후보(새) 중 정확히 하나와 같으면 확정.
         // ★2판(codex 1R C13): ① 맥 = 번들 바이너리를 실행(build-info)하기 **전에** codesign 엄격 + DR 핀 · 새 판으로 판정되면 cdhash 까지
         //   (verify_bundle 3겹) ② 윈 = 수용 본문은 서명 재검증된 것만(load_installer_manifest = verify_installer_dir).
@@ -994,8 +1000,9 @@ impl Ops for RealOps {
         let rj = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
         let is_old = self.judge_canonical()?;
         self.recon_exe = Some(if is_old { self.env.old_cys.clone() } else { self.new_cys() });
-        let Some(snap) = attempt.and_then(|a| a.snapshot_dir.as_deref()).map(|d| PathBuf::from(d).join("cys")) else {
-            return Ok(false);
+        // ★5판(codex 4R N3″): 스냅샷 자리 없음 = S8 전(교체 0) — 옛 판이면 대조할 것 없음 · 새 판이면 모순(S9 는 S8 기록 뒤에만) = 사람 필요.
+        let Some(snap) = attempt.snapshot_dir.as_deref().map(|d| PathBuf::from(d).join("cys")) else {
+            return if is_old { Ok(false) } else { Err(rj("정식 자리 = 새 판인데 이번 시도 스냅샷 기록 없음".into())) };
         };
         let (old_cys, upd, root) = (self.env.old_cys.clone(), self.env.update_dir.clone(), self.env.cys_root.clone());
         let protected: &dyn Fn(&str) -> bool = if is_old { &reconstruct_protected } else { &reconstruct_protected_new };
@@ -1005,7 +1012,22 @@ impl Ops for RealOps {
 
     fn restart_after_reconstruct(&mut self) -> Step {
         let exe = self.recon_exe.clone().ok_or_else(|| fail(ErrCode::JournalCorrupt, "reconstruct", "판정 전 재기동"))?;
-        self.rotate(&exe, false)
+        self.rotate(&exe, false)?;
+        // ★5판(codex 4R M5): rotate rc 0 만 믿지 않는다 — 본부 소켓이 응답할 때까지(상한 안) 실측.
+        let until = std::time::Instant::now() + RESTART_ALIVE_WAIT;
+        loop {
+            if self.daemon_alive() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= until {
+                return Err(fail(ErrCode::JournalCorrupt, "reconstruct", "재기동 뒤 본부 데몬 응답 없음"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    fn daemon_alive(&mut self) -> bool {
+        (self.env.rpc)("system.identify", json!({})).ok().and_then(|v| v.get("daemon_pid").and_then(|p| p.as_u64())).map(|p| p > 0).unwrap_or(false)
     }
 
     fn record(&mut self, j: Option<&Journal>, kind: Kind, f: Option<&Fail>) {
@@ -1161,28 +1183,50 @@ pub fn parse_pack_dry_run(rc_ok: bool, stdout: &str, stderr: &str) -> Option<boo
     }
 }
 
+/// 재구성 뒤 재기동 생존 확인 상한.
+const RESTART_ALIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(if cfg!(test) { 2 } else { 20 });
+
 /// 팩 적용 전 판 기록 파일(`backup/pack-<txn>/pre-version`).
 pub const PACK_PRE_VERSION: &str = "pre-version";
 
 /// ★4판(Fable 3R M8): PACK_APPLY·PACK_ROLLBACK 복구 — ① 팩 저널 자가치유(`pack::recover_pack_journal` · 커밋됨 = 정리 · 미커밋 =
 /// 되돌림) ② 커밋 판정 = 지금 `.pack-version` ≠ 적용 전 판(`pre-version`) → **전진 완료**(사용자 트리 무접촉 — 새 팩이 RefreshUser 로
 /// 고친 지침을 옛 사본으로 되돌리면 영구 혼합 팩) ③ 아니면(되돌려짐·미적용) 사용자 트리 해시 대조·복원. 적용 전 판 기록이 없으면 ③(보수).
-pub fn recover_pack_at(update_dir: &Path, cys_root: &Path, j: &Journal) -> Step {
+/// ★5판(codex 4R M8-pro): 팩 저널 자가치유가 이제 저널의 **명시 커밋 기록**으로 전진/되돌림을 가르므로(같은 base 판 pro_revision 전진
+/// 포함), 그 뒤 판정은 (`.pack-version`, pro_revision) 튜플이 적용 전과 다른가다. Ok(true) = 전진 완료(사용자 트리 무접촉) · Ok(false) =
+/// 되돌림·미적용 → 사용자 트리 대조·복원 완료.
+pub fn recover_pack_at(update_dir: &Path, cys_root: &Path, j: &Journal) -> Result<bool, Fail> {
     crate::pack::recover_pack_journal().map(|_| ()).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))?;
     let snap = Path::new(&j.snapshot_dir);
     let pre = snap.parent().and_then(|p| std::fs::read_to_string(p.join(PACK_PRE_VERSION)).ok()).map(|s| s.trim().to_string());
-    let now = std::fs::read_to_string(cys_root.join("pack").join(".pack-version")).map(|s| s.trim().to_string()).unwrap_or_default();
+    let now = pack_commit_tuple(&cys_root.join("pack"));
     if pack_committed(pre.as_deref(), &now) && !super::mutant("U2-PACKCOMMIT") {
-        return Ok(());
+        return Ok(true);
     }
     // ★2판(codex 1R C14): 되돌려진 팩 = 사용자 트리 해시 대조·복원까지 성공해야 PACK_DONE.
     let q = super::snapshot::quarantine_dir(update_dir, &j.txn_id);
-    pack_user_tree_restore(cys_root, &j.stage_tree_sha256, snap, &q).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))
+    pack_user_tree_restore(cys_root, &j.stage_tree_sha256, snap, &q).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))?;
+    Ok(false)
 }
 
-/// 커밋 판정(순수): 적용 전 판 기록이 있고 지금 판이 비어 있지 않으며 다르면 커밋됨.
+/// 팩 커밋 튜플 `<.pack-version>#<pro_revision>`(`.pack-state.json` 없음 = 0 · 손상 = `?`) · 판 없음 = 빈 문자열.
+pub fn pack_commit_tuple(pack_dir: &Path) -> String {
+    let v = std::fs::read_to_string(pack_dir.join(".pack-version")).map(|s| s.trim().to_string()).unwrap_or_default();
+    if v.is_empty() {
+        return String::new();
+    }
+    let rev = match crate::pack::read_pack_state(pack_dir) {
+        crate::pack::PackStateRead::Valid(st) => st.pro_revision.to_string(),
+        crate::pack::PackStateRead::Absent => "0".into(),
+        crate::pack::PackStateRead::Corrupt(_) => "?".into(),
+    };
+    format!("{v}#{rev}")
+}
+
+/// 커밋 판정(순수): 적용 전 튜플 기록이 있고 지금 튜플이 판독 가능(비어 있지 않음 · 손상 `?` 아님)하며 다르면 커밋됨. 판독 불가 =
+/// 미커밋 쪽(사용자 트리 대조 — 저널 자가치유가 이미 팩 본문을 정리했다).
 pub fn pack_committed(pre: Option<&str>, now: &str) -> bool {
-    matches!(pre, Some(p) if !now.is_empty() && p != now)
+    matches!(pre, Some(p) if !now.is_empty() && !now.ends_with("#?") && p != now)
 }
 
 /// dry-run 출력의 새 팩 판(「팩 <판> 반영 가능」) — 결과 기록용(n1).
@@ -1430,7 +1474,8 @@ mod tests {
         p
     }
 
-    /// 재구성 종단 시험 틀: 격리 갱신 폴더·`~/.cys`·가짜 `cys`(인자를 기록하고 rc 0) · 상담소 = 격리.
+    /// 재구성 종단 시험 틀: 격리 갱신 폴더·`~/.cys`·가짜 `cys`(인자를 기록하고 rc 0) · 상담소 = 격리. ★5판: 본부 데몬 = `<d>/daemon.up`
+    /// 파일(있음 = 살아 있음 · 처음엔 있음) — 가짜 `cys rotate --stop-only` 가 지우고 `rotate`(재기동)가 만든다 · `system.identify` 가 그것을 본다.
     #[cfg(unix)]
     pub(crate) fn recon_rig(tag: &str) -> (PathBuf, PathBuf, PathBuf, RealOps) {
         use std::os::unix::fs::PermissionsExt;
@@ -1443,7 +1488,14 @@ mod tests {
         }
         std::fs::create_dir_all(&upd).unwrap();
         let log = d.join("calls.log");
-        let script = format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", log.display());
+        let up = d.join("daemon.up");
+        std::fs::write(&up, "1").unwrap();
+        let script = format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\ncase \"$*\" in\n  *--stop-only*) rm -f '{up}';;\n  rotate*) [ -e '{d}/restart.fail' ] && exit 1; touch '{up}';;\nesac\nexit 0\n",
+            log.display(),
+            up = up.display(),
+            d = d.display()
+        );
         let old_cys = d.join("old/cys");
         let new_cys = d.join("app/Contents/MacOS/cys");
         for exe in [&old_cys, &new_cys] {
@@ -1460,7 +1512,7 @@ mod tests {
             install_dir: d.join("state"),
             channel: "stable".into(),
             old_cys,
-            rpc: Box::new(|_, _| Err("데몬 없음".into())),
+            rpc: Box::new(move |_, _| if up.exists() { Ok(json!({"daemon_pid": 1})) } else { Err("데몬 없음".into()) }),
             settle_secs: 0,
             dry_run: false,
             counsel_dir: Some(d.join("counsel")),
@@ -1504,6 +1556,7 @@ mod tests {
             std::fs::write(root.join("pack/MASTER_DIRECTIVE.md"), "D2").unwrap();
             std::fs::write(root.join("local/me.md"), "clobbered").unwrap();
             std::fs::write(root.join("update/app-notify.json"), "N1").unwrap();
+            std::fs::remove_file(d.join("daemon.up")).unwrap(); // S7 에서 내린 본부 데몬
             corrupt_journal(&upd);
             let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
             rec.soft_kill = true;
@@ -1518,6 +1571,112 @@ mod tests {
             assert_eq!(std::fs::read_to_string(root.join("update/app-notify.json")).unwrap(), "N1", "{tag}: app-notify 무접촉");
             assert!(super::super::journal::read(&upd).journal().map(|j| j.state.is_terminal()).unwrap_or(false), "{tag}: 종결 저널");
             assert!(!upd.join(ATTEMPT_FILE).exists(), "{tag}: 시도 기록 삭제");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// S9 기록 뒤 죽은 실 러너(S8 = 실 스냅샷) — 재구성 시험 공통 앞단.
+    #[cfg(unix)]
+    fn killed_after_swap(upd: &Path, root: &Path) {
+        use super::super::runner::{tests::Sim, Fault, Outcome, Runner};
+        let mut sim = Sim::new(Os::Mac);
+        sim.real_snapshot = Some((root.to_path_buf(), super::super::snapshot::backup_root(upd).join("8-tnow")));
+        let mut r = Runner::new(upd, "0123456789abcdef0123456789abcdef", 1, &mut sim);
+        r.fault = Fault::parse("kill@S9_SWAPPED:after");
+        r.soft_kill = true;
+        assert!(matches!(r.run(), Outcome::Killed(..)));
+    }
+
+    /// ★5판(codex 4R BLOCK N3″) 종단: 이번 시도 기록이 ⓐ 없음 ⓑ 손상 ⓒ 남은 저널 슬롯 txn 과 불일치 — 셋 다 **재구성 불가**: 실
+    /// `Runner::recover`(실 RealOps) → 실행층 호출 0(정지·복원·재기동 0) · 손상 저널 그대로 = 부팅 가드 유지 · seats_blocked 기록 ·
+    /// 사용자 트리 무접촉(훼손 그대로 = 사람 몫). 뮤턴트 U2-ATTEMPTOPEN(4판 fail-open 재현) = ⓐ 적색.
+    #[cfg(unix)]
+    #[test]
+    fn reconstruct_fails_closed_when_this_attempt_is_missing_corrupt_or_foreign() {
+        use super::super::runner::{attempt_begin, boot_guard, Outcome, Runner, ATTEMPT_FILE};
+        for case in ["missing", "corrupt", "foreign"] {
+            let (d, upd, root, mut ops) = recon_rig(&format!("recon-fc-{case}"));
+            ops.judge_is_old = Some(true);
+            killed_after_swap(&upd, &root);
+            std::fs::write(root.join("local/me.md"), "clobbered").unwrap();
+            std::fs::remove_file(d.join("daemon.up")).unwrap();
+            match case {
+                "missing" => {
+                    std::fs::remove_file(upd.join(ATTEMPT_FILE)).unwrap();
+                    corrupt_journal(&upd);
+                }
+                "corrupt" => {
+                    std::fs::write(upd.join(ATTEMPT_FILE), b"{torn").unwrap();
+                    corrupt_journal(&upd);
+                }
+                _ => {
+                    // 한 슬롯만 손상(Degraded) — 남은 슬롯 txn(0123…) 이 기록 계보 밖
+                    attempt_begin(&upd, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+                    std::fs::write(upd.join(super::super::journal::JOURNAL_FILE), b"{torn").unwrap();
+                    assert!(matches!(super::super::journal::read(&upd), super::super::journal::ReadOutcome::Degraded(..)), "{case}");
+                }
+            }
+            let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+            rec.soft_kill = true;
+            let o = rec.recover();
+            assert!(matches!(&o, Outcome::SeatsBlocked(f) if f.detail.contains("이번 시도 기록")), "{case}: {o:?}");
+            assert!(boot_guard(&upd).map(|g| g.starts_with("journal_")).unwrap_or(false), "{case}: 부팅 가드 유지");
+            assert!(calls(&d).is_empty(), "{case}: 정지·재기동 0 {:?}", calls(&d));
+            assert_eq!(std::fs::read_to_string(root.join("local/me.md")).unwrap(), "clobbered", "{case}: 대조 원천 없음 = 복원 0");
+            let st = std::fs::read_to_string(upd.join("state.json")).unwrap_or_default();
+            assert!(st.contains("seats_blocked"), "{case}: seats_blocked 표지 {st}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// ★5판(codex 4R M5) 종단: 재기동 판정 = 데몬 생존 실측 · 종결은 재기동 확인 뒤. ⓐ 트리 일치 + S7 에서 이미 내린 데몬 → 정지 0 ·
+    /// 재기동 1 · 종결 ⓑ 재기동 실패 → seats_blocked · 저널 = 비종결 S7(부팅 가드 유지) · 다음 복구기 = S7 행(옛 바이너리 기동 뒤 보류)
+    /// ⓒ 트리 일치 + 데몬 살아 있음 → 호출 0 · 종결. 뮤턴트 U2-RESTART = ⓐ 적색.
+    #[cfg(unix)]
+    #[test]
+    fn reconstruct_restarts_by_daemon_liveness_and_keeps_guard_until_restarted() {
+        use super::super::journal::{read, State};
+        use super::super::runner::{boot_guard, Outcome, Runner};
+        for case in ["stopped", "restart-fails", "alive"] {
+            let (d, upd, root, mut ops) = recon_rig(&format!("recon-m5-{case}"));
+            ops.judge_is_old = Some(true);
+            killed_after_swap(&upd, &root);
+            if case != "alive" {
+                std::fs::remove_file(d.join("daemon.up")).unwrap();
+            }
+            if case == "restart-fails" {
+                std::fs::write(d.join("restart.fail"), "1").unwrap();
+            }
+            corrupt_journal(&upd);
+            let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+            rec.soft_kill = true;
+            let o = rec.recover();
+            let c = calls(&d);
+            assert!(c.iter().all(|l| !l.contains("--stop-only")), "{case}: 트리 일치 = 정지 0 {c:?}");
+            match case {
+                "stopped" => {
+                    assert_eq!(o, Outcome::Nothing, "{case}");
+                    assert_eq!(c.len(), 1, "{case}: 재기동 1 {c:?}");
+                    assert!(boot_guard(&upd).is_none() && read(&upd).journal().unwrap().state.is_terminal(), "{case}: 종결");
+                }
+                "restart-fails" => {
+                    assert!(matches!(o, Outcome::SeatsBlocked(_)), "{case}: {o:?}");
+                    assert_eq!(read(&upd).journal().unwrap().state, State::Stopped, "{case}: 비종결 S7");
+                    assert!(boot_guard(&upd).unwrap().starts_with("recover_pending"), "{case}: 부팅 가드 유지");
+                    assert!(std::fs::read_to_string(upd.join("state.json")).unwrap_or_default().contains("seats_blocked"));
+                    // 다음 복구기: S7 행 = 옛(정식 자리) 바이너리 기동 뒤 보류
+                    std::fs::remove_file(d.join("restart.fail")).unwrap();
+                    let mut rec = Runner::new(&upd, "abababababababababababababababab", 3, &mut ops);
+                    rec.soft_kill = true;
+                    assert!(matches!(rec.recover(), Outcome::Deferred(_)));
+                    assert!(boot_guard(&upd).is_none() && d.join("daemon.up").exists(), "{case}: 재시도 = 기동·종결");
+                }
+                _ => {
+                    assert_eq!(o, Outcome::Nothing, "{case}");
+                    assert!(c.is_empty(), "{case}: 호출 0 {c:?}");
+                    assert!(boot_guard(&upd).is_none(), "{case}");
+                }
+            }
             let _ = std::fs::remove_dir_all(&d);
         }
     }
@@ -1576,6 +1735,66 @@ mod tests {
         }
         assert!(pack_committed(Some("1.0.0"), "1.1.0") && !pack_committed(Some("1.0.0"), "1.0.0") && !pack_committed(None, "1.1.0") && !pack_committed(Some("1.0.0"), ""));
         assert_eq!(parse_pack_version("[pack-update] dry-run: 검증·게이트 통과(팩 1.2.3 반영 가능)").as_deref(), Some("1.2.3"));
+    }
+
+    /// ★5판(codex 4R M8-pro · Fable 4R n7) 종단: 같은 base 판의 pro_revision 전진(1.0.0/pro.1 → 1.0.0/pro.2) — 실 `Runner::run_pack`(실
+    /// RealOps · pack_prepare 사본·적용 전 튜플) → PACK_APPLY 뒤 위임 `pack-update` 가 **실 `apply_pack_transactional`**(실 `.pack-journal`)
+    /// 도중 죽음 → `Runner::recover` → 실 `recover_pack_at`(실 `recover_pack_journal` + 튜플 판정). 커밋 기록 전 사망(state) = 팩 되돌림 +
+    /// 사용자 트리 복원 · pro.1 · 결과 deferred · 커밋 기록 뒤 사망(commit) = 전진 완료 · pro.2 · 새 지침 유지 · 결과 pack_ok(to = 팩 판).
+    #[cfg(unix)]
+    #[test]
+    fn pack_recovery_pro_revision_advance_uses_commit_record_and_tuple() {
+        use super::super::runner::{Fault, Outcome, Runner};
+        use crate::pack::{PackState, PackStateRead};
+        use std::os::unix::fs::PermissionsExt;
+        let _l = crate::pack::PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pro = |rev: u32| PackState { channel: "pro".into(), base_version: "1.0.0".into(), pro_revision: rev };
+        for (at, committed) in [("state", false), ("commit", true)] {
+            let (d, upd, root, mut ops) = recon_rig(&format!("pack-pro-{at}"));
+            let pd = root.join("pack");
+            let _e = crate::pack::EnvGuard::set(crate::pack::ENV_PACK_DIR, &pd);
+            std::fs::write(pd.join(".pack-version"), "1.0.0").unwrap();
+            crate::pack::write_pack_state(&pd, &pro(1)).unwrap();
+            let script = format!(
+                "#!/bin/sh\necho \"$@\" >> '{log}'\ncase \"$*\" in\n  *'pack-update --dry-run'*) echo '[pack-update] dry-run: 검증·게이트 통과(팩 1.0.0 반영 가능)';;\nesac\nexit 0\n",
+                log = d.join("calls.log").display()
+            );
+            std::fs::write(&ops.env.old_cys, script).unwrap();
+            std::fs::set_permissions(&ops.env.old_cys, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut r = Runner::new(&upd, "0123456789abcdef0123456789abcdef", 1, &mut ops);
+            r.fault = Fault::parse("kill@PACK_APPLY:after");
+            r.soft_kill = true;
+            assert!(matches!(r.run_pack(), Outcome::Killed(..)), "{at}");
+            // 위임 pack-update 가 실 트랜잭션 도중 죽음(실 .pack-journal 잔존)
+            crate::pack::PACK_TXN_KILL.with(|k| k.set(Some(at)));
+            let a = crate::pack::apply_pack_transactional(&[("lib/x.py", "NEW")], "1.0.0", &pro(2), None, || Ok(()));
+            crate::pack::PACK_TXN_KILL.with(|k| k.set(None));
+            assert!(a.is_err() && crate::pack::pack_journal_dir().join("index.json").is_file(), "{at}: 실 팩 저널 잔존");
+            // 사용자 트리 변화: 커밋 = 새 팩이 갱신한 지침(RefreshUser 흉내 · 유지돼야 함) · 미커밋 = 도중 훼손(복원돼야 함)
+            std::fs::write(pd.join("MASTER_DIRECTIVE.md"), if committed { "REFRESHED" } else { "clobbered" }).unwrap();
+            let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+            rec.soft_kill = true;
+            assert_eq!(rec.recover(), Outcome::PackDone, "{at}");
+            let dir = std::fs::read_to_string(pd.join("MASTER_DIRECTIVE.md")).unwrap();
+            let body = std::fs::read_to_string(pd.join("lib/x.py")).unwrap();
+            let rev = match crate::pack::read_pack_state(&pd) {
+                PackStateRead::Valid(st) => st.pro_revision,
+                o => panic!("{at}: {o:?}"),
+            };
+            let st = std::fs::read_to_string(upd.join("state.json")).unwrap_or_default();
+            let counsel = std::fs::read_to_string(d.join("counsel/updates.jsonl")).unwrap_or_default();
+            drop(_e);
+            let _ = std::fs::remove_dir_all(&d);
+            assert!(!crate::pack::pack_journal_dir().exists() || !crate::pack::pack_journal_dir().join("index.json").exists(), "{at}: 팩 저널 정리");
+            if committed {
+                assert_eq!((body.as_str(), rev, dir.as_str()), ("NEW", 2, "REFRESHED"), "{at}: 전진 완료(사용자 트리 되돌림 0)");
+                assert!(counsel.contains("pack_ok") && counsel.contains("\"to\":\"1.0.0\""), "{at}: 결과 = pack_ok · to = 팩 판 {counsel}");
+            } else {
+                assert_eq!((body.as_str(), rev, dir.as_str()), ("v1", 1, "D1"), "{at}: 팩 되돌림 + 사용자 트리 복원(혼합 팩 0)");
+                assert!(st.contains("last_defer") && st.contains("되돌림") && !counsel.contains("pack_ok"), "{at}: 결과 = 보류(되돌림) {st}");
+            }
+        }
+        assert!(pack_committed(Some("1.0.0#1"), "1.0.0#2") && !pack_committed(Some("1.0.0#1"), "1.0.0#1") && !pack_committed(Some("1.0.0#1"), "1.0.0#?"));
     }
 
     /// ★4판(codex 3R N2 종단): RB_VERIFIED 에서 죽은 롤백을 복구기(`Runner::recover` · 실 RealOps · 윈 기판 표지)가 이어 → `start_old` →

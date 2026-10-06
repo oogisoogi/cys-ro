@@ -39,5 +39,9 @@ U2-ATTEMPT update::realops::tests::stale_attempt_from_previous_txn_is_never_a_re
 U2-PACKCOMMIT update::realops::tests::pack_recovery_keeps_committed_pack_and_restores_only_uncommitted
 U2-PACKGATE update::auto::tests::pack_route_uses_pack_only_gate_subset
 U2-RESTART update::realops::tests::corrupt_journal_recover_reconstructs_from_this_attempt_and_restarts_daemon
+U2-RESTART update::realops::tests::reconstruct_restarts_by_daemon_liveness_and_keeps_guard_until_restarted
+U2-ATTEMPTOPEN update::realops::tests::reconstruct_fails_closed_when_this_attempt_is_missing_corrupt_or_foreign
+U2-PACKPRO update::realops::tests::pack_recovery_pro_revision_advance_uses_commit_record_and_tuple
+U2-PACKPRO pack::tests::pro_revision_advance_kill_matrix_recovers_by_commit_record
 LIST
 exit $fail

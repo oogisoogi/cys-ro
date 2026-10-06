@@ -95,12 +95,17 @@ pub trait Ops {
     /// RB_RESTORED — 팩·사용자 트리·상태 폴더 파일 단위 복원.
     fn rb_restore(&mut self, j: &Journal) -> Step;
     /// PACK_APPLY·PACK_ROLLBACK 복구 — `pack::recover_pack_journal()` + 사용자 트리 해시 대조.
-    fn recover_pack(&mut self, j: &Journal) -> Step;
-    /// 저널 손상 — 실물 재구성(§3-11 1~3). `attempt` = **이번 시도**([`current_attempt`] · 저널 txn 계보와 묶인 `attempt.json`) — 없으면
-    /// 대조할 스냅샷 없음. Ok(true) = 데몬을 내리고 트리를 복원했다(→ 종결 저널 뒤 [`Ops::restart_after_reconstruct`]) · Ok(false) = 무변경.
-    fn reconstruct(&mut self, attempt: Option<&Attempt>) -> Result<bool, Fail>;
-    /// ★4판(Fable 3R M5): 재구성 복원 뒤 데몬 재기동 — 판정된 판의 `rotate --skip-drain --txn`(S10 과 같은 길 · 재등록·기동·팩 반영).
+    /// ★5판: Ok(true) = 커밋돼 있어 전진 완료 · Ok(false) = 되돌림(사용자 트리 대조·복원 완료).
+    fn recover_pack(&mut self, j: &Journal) -> Result<bool, Fail>;
+    /// 저널 손상 — 실물 재구성(§3-11 1~3). `attempt` = **이번 시도**([`current_attempt`] · 저널 txn 계보와 묶인 `attempt.json`).
+    /// ★5판(codex 4R N3″): 기록이 없거나 깨졌거나 남의 txn 이면 러너가 여기 오지 않는다(fail-closed). Ok(true) = 데몬을 내리고 트리를
+    /// 복원했다 · Ok(false) = 무변경.
+    fn reconstruct(&mut self, attempt: &Attempt) -> Result<bool, Fail>;
+    /// ★4판(Fable 3R M5): 재구성 뒤 데몬 재기동 — 판정된 판의 `rotate --skip-drain --txn`(S10 과 같은 길 · 재등록·기동·팩 반영).
+    /// ★5판(codex 4R M5): 데몬이 응답할 때까지 확인한다(응답 없음 = Err).
     fn restart_after_reconstruct(&mut self) -> Step;
+    /// ★5판(codex 4R M5): 본부 데몬이 지금 살아 응답하나(소켓 `system.identify` 실측) — 재구성 뒤 재기동 판정은 「복원했나」가 아니라 이것.
+    fn daemon_alive(&mut self) -> bool;
     /// ★3판(Fable 2R M4 · 설계 §3-8): 팩만 새 판인가 — `pack-plan` 게이트 + `pack-update --dry-run`. Ok(false) = 없음·본체 대기(binary-too-old).
     fn pack_available(&mut self) -> Result<bool, Fail>;
     /// PACK_APPLY 전: 사용자 트리 사본·해시를 저널 칸(`snapshot_dir`·`stage_tree_sha256`)에 채운다.
@@ -220,7 +225,9 @@ impl<'a, O: Ops> Runner<'a, O> {
     /// (옛 시도 기록을 덮는다) · 종결 전이 뒤 지운다 — 「이번 시도」 = 지금 저널 txn 계보뿐.
     fn enter(&mut self, to: State, f: impl FnOnce(&mut Journal)) -> Result<Journal, Stop> {
         self.hit(to, false)?;
-        if to == State::Locked && !super::mutant("U2-ATTEMPT") {
+        // ★5판(Fable 4R n8): 새 트랜잭션을 실제로 열 수 있을 때만(저널 없음·종결) 기록을 새로 쓴다 — 비종결 저널 위의 Locked 는
+        //   advance 가 거부하므로 그 전에 지난 시도의 기록(대조 원천)을 덮지 않는다.
+        if to == State::Locked && !super::mutant("U2-ATTEMPT") && fresh_txn_allowed(&self.dir) {
             attempt_begin(&self.dir, &self.txn_id).map_err(Stop::Journal)?;
         }
         let j = journal::advance(&self.dir, &self.txn_id, self.epoch, to, f).map_err(|e| Stop::Journal(format!("{e:?}")))?;
@@ -424,7 +431,7 @@ impl<'a, O: Ops> Runner<'a, O> {
             }
             Err(f) => {
                 let j = self.enter(State::PackRollback, |_| {})?;
-                if let Err(f2) = self.ops.recover_pack(&j) {
+                if let Err(f2) = self.ops.recover_pack(&j).map(|_| ()) {
                     // PACK_ROLLBACK 에 남긴다 — 부팅 가드 유지 · 복구기가 다시 시도
                     self.ops.record(Some(&j), Kind::RollbackFailed, Some(&f2));
                     return Ok(Outcome::RollbackFailed(f2));
@@ -443,6 +450,11 @@ impl<'a, O: Ops> Runner<'a, O> {
     pub fn recover(&mut self) -> Outcome {
         let mut read = journal::read(&self.dir);
         let rec = journal::recovery_for(&read, self.ops.os());
+        // ★5판(codex 4R M5): 재구성은 **호출자 잠금 토큰** 그대로 — 재기동하는 데몬의 부팅 판정(`boot_blocked` = 잠금 소유자 토큰 ==
+        //   저널 토큰)이 성립하려면 남은 손상 슬롯의 옛 토큰으로 바꾸면 안 된다.
+        if rec == Recovery::Reconstruct {
+            return self.reconstruct(&read);
+        }
         if matches!(&read, ReadOutcome::Ok(j) if !j.state.is_terminal()) && !super::mutant("U2-TAKEOVER") {
             let before = read.journal().map(|j| j.txn_id.clone()).unwrap_or_default();
             match journal::takeover(&self.dir, &self.txn_id, self.epoch) {
@@ -458,7 +470,6 @@ impl<'a, O: Ops> Runner<'a, O> {
         }
         let r = match (rec, read) {
             (Recovery::Nothing, _) => return Outcome::Nothing,
-            (Recovery::Reconstruct, read) => return self.reconstruct(&read),
             (rec, ReadOutcome::Ok(j)) => self.recover_from(rec, j),
             (_, other) => return Outcome::JournalRefused(format!("{other:?}")),
         };
@@ -511,48 +522,66 @@ impl<'a, O: Ops> Runner<'a, O> {
             }
             Recovery::ResumeRollback(_) => self.rollback_from(j, Fail::new(ErrCode::RotateFailed, "recover", "롤백 이어하기")),
             Recovery::RecoverPack => {
-                if let Err(f) = self.ops.recover_pack(&j) {
-                    return Ok(Outcome::RollbackFailed(f));
-                }
+                // ★5판(codex 4R MINOR 8): 정상 실행과 같은 결과 계약 — 실패 = rollback_failed(팩 판 to_version) · 성공 = pack_ok.
+                let committed = match self.ops.recover_pack(&j) {
+                    Ok(c) => c,
+                    Err(f) => {
+                        self.ops.record(Some(&j), Kind::RollbackFailed, Some(&f));
+                        return Ok(Outcome::RollbackFailed(f));
+                    }
+                };
                 let j = if j.state == State::PackApply { self.enter(State::PackRollback, |_| {})? } else { j };
                 let _ = j;
                 let j = self.enter(State::PackDone, |_| {})?;
                 pack_backup_cleanup(&j);
+                if committed {
+                    self.ops.record(Some(&j), Kind::PackOk, None);
+                } else {
+                    self.ops.record(Some(&j), Kind::Deferred, Some(&Fail::new(ErrCode::RotateFailed, "PACK", "팩 적용 중단 — 되돌림·사용자 트리 대조 완료")));
+                }
                 Ok(Outcome::PackDone)
             }
             Recovery::Nothing | Recovery::Reconstruct => Ok(Outcome::Nothing),
         }
     }
 
-    /// ★4판: ① 이번 시도 = [`current_attempt`](저널 txn 계보와 묶인 것만 · 옛 시도 0) ② 실물 판정·트리 대조 ③ 종결 저널(부팅 가드 풀림)
-    /// ④ 복원으로 데몬을 내렸으면 같은 판으로 재기동(Fable 3R M5 · 실패 = 좌석 0 기록 · 사람·앱 기동 몫).
+    /// ★4판·★5판: ① 이번 시도 = [`current_attempt`] — 부재·손상·txn 불일치 = **재구성 불가**(codex 4R N3″ · fail-closed: 손상 저널
+    /// 그대로 = 부팅 가드 유지 · seats_blocked · 사람 필요 1줄) ② 실물 판정·트리 대조 ③ 저널을 **비종결 S7(STOPPED)** 로 다시 쓴다(부팅 가드
+    /// 유지 · 잠금 소유자 토큰 = 저널 토큰이라 이 복구기가 띄우는 데몬만 통과) ④ 데몬 생존 실측 — 죽어 있으면(복원으로 내렸든 S7·S8 에서
+    /// 이미 내렸든) 판정된 판으로 재기동 · 실패 = S7 그대로(가드 유지 · 다음 복구기 = 옛 바이너리 기동) + seats_blocked ⑤ 그 뒤에만 종결.
     fn reconstruct(&mut self, read: &ReadOutcome) -> Outcome {
-        let attempt = current_attempt(&self.dir, read);
-        let r = if super::mutant("U2-RECON") { Ok(false) } else { self.ops.reconstruct(attempt.as_ref()) };
-        match r {
-            Ok(stopped) => match journal::write_reconstructed(&self.dir, &self.txn_id_or_new(), self.epoch) {
-                Ok(j) => {
-                    attempt_end(&self.dir);
-                    if stopped && !super::mutant("U2-RESTART") {
-                        if let Err(f) = self.ops.restart_after_reconstruct() {
-                            eprintln!("[update] 재구성 뒤 데몬 재기동 실패: {} — 좌석 0(앱을 열면 다시 기동)", f.detail);
-                            self.ops.record(Some(&j), Kind::SeatsBlocked, Some(&f));
-                            return Outcome::SeatsBlocked(f);
-                        }
-                    }
-                    self.ops.record(Some(&j), Kind::JournalCorrupt, Some(&Fail::new(ErrCode::JournalCorrupt, "reconstruct", "재구성 성공")));
-                    Outcome::Nothing
-                }
-                Err(e) => {
-                    let f = Fail::new(ErrCode::JournalCorrupt, "reconstruct", e);
-                    self.ops.record(None, Kind::SeatsBlocked, Some(&f));
-                    Outcome::SeatsBlocked(f)
-                }
-            },
-            Err(f) => {
-                self.ops.record(None, Kind::SeatsBlocked, Some(&f));
-                Outcome::SeatsBlocked(f)
+        let blocked = |ops: &mut O, f: Fail| {
+            eprintln!("[update] 사람 필요 — 저널 손상 재구성 불가: {} (부팅 가드 유지 · 좌석 0)", f.detail);
+            ops.record(None, Kind::SeatsBlocked, Some(&f));
+            Outcome::SeatsBlocked(f)
+        };
+        let attempt = match current_attempt(&self.dir, read) {
+            AttemptView::Ok(a) => a,
+            _ if super::mutant("U2-ATTEMPTOPEN") => Attempt::default(),
+            v => return blocked(self.ops, Fail::new(ErrCode::JournalCorrupt, "reconstruct", format!("이번 시도 기록 {}", v.why()))),
+        };
+        if let Err(f) = if super::mutant("U2-RECON") { Ok(false) } else { self.ops.reconstruct(&attempt) } {
+            return blocked(self.ops, f);
+        }
+        let tok = self.txn_id_or_new();
+        self.txn_id = tok;
+        let j = match journal::write_reconstructed_pending(&self.dir, &self.txn_id, self.epoch) {
+            Ok(j) => j,
+            Err(e) => return blocked(self.ops, Fail::new(ErrCode::JournalCorrupt, "reconstruct", e)),
+        };
+        if !self.ops.daemon_alive() && !super::mutant("U2-RESTART") {
+            if let Err(f) = self.ops.restart_after_reconstruct() {
+                eprintln!("[update] 사람 필요 — 재구성 뒤 데몬 재기동 실패: {} (저널 S7 유지 = 부팅 가드 · 좌석 0)", f.detail);
+                self.ops.record(Some(&j), Kind::SeatsBlocked, Some(&f));
+                return Outcome::SeatsBlocked(f);
             }
+        }
+        match self.enter(State::Deferred, |_| {}) {
+            Ok(j) => {
+                self.ops.record(Some(&j), Kind::JournalCorrupt, Some(&Fail::new(ErrCode::JournalCorrupt, "reconstruct", "재구성 성공")));
+                Outcome::Nothing
+            }
+            Err(s) => Self::stop_to_outcome(s),
         }
     }
 
@@ -605,6 +634,9 @@ pub struct Attempt {
     pub snapshot_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<serde_json::Value>,
+    /// ★5판(codex 4R N3″): 종결 표지 — 삭제가 실패했을 때의 대체(종결된 시도는 대조 원천이 아니다).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
 }
 
 impl Attempt {
@@ -614,7 +646,16 @@ impl Attempt {
 }
 
 fn attempt_read(dir: &Path) -> Option<Attempt> {
-    super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE)
+    super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).filter(|a| !a.ended)
+}
+
+/// 새 트랜잭션(Locked)을 열 수 있나 — 저널 없음·종결([`journal::advance`] 의 Locked 규칙과 같은 술어).
+fn fresh_txn_allowed(dir: &Path) -> bool {
+    match journal::read(dir) {
+        ReadOutcome::Absent => true,
+        ReadOutcome::Ok(j) => j.state.is_terminal(),
+        _ => false,
+    }
 }
 
 fn attempt_write(dir: &Path, a: &Attempt) -> Result<(), String> {
@@ -623,7 +664,7 @@ fn attempt_write(dir: &Path, a: &Attempt) -> Result<(), String> {
 
 /// S1(저널 Locked 보다 먼저): 이 txn 으로 새로 쓴다 — 지난 시도의 기록(스냅샷 자리 포함)은 여기서 사라진다.
 pub fn attempt_begin(dir: &Path, txn: &str) -> Result<(), String> {
-    attempt_write(dir, &Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None })
+    attempt_write(dir, &Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false })
 }
 
 /// 복구기 인수: 기록이 그 저널 txn 계보면 새 토큰을 잇는다 · 아니면(낡은 기록) 새 토큰만의 빈 기록(스냅샷 없음 = 대조 원천 0).
@@ -635,7 +676,7 @@ pub fn attempt_takeover(dir: &Path, old_txn: &str, new_txn: &str) {
             }
             a
         }
-        _ => Attempt { txn_id: new_txn.into(), lineage: vec![new_txn.into()], snapshot_dir: None, baseline: None },
+        _ => Attempt { txn_id: new_txn.into(), lineage: vec![new_txn.into()], snapshot_dir: None, baseline: None, ended: false },
     };
     let _ = attempt_write(dir, &a);
 }
@@ -649,23 +690,71 @@ pub fn attempt_note_snapshot(dir: &Path, txn: &str, snapshot_dir: &str) -> Resul
 
 /// S5b: 기준선 B0 를 이번 시도 기록에 더한다(기록이 없거나 남의 것이면 이 txn 으로 새로).
 pub fn attempt_set_baseline(dir: &Path, txn: &str, baseline: serde_json::Value) -> Result<(), String> {
-    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).unwrap_or(Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None });
+    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).unwrap_or(Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false });
     a.baseline = Some(baseline);
     attempt_write(dir, &a)
 }
 
-/// 종결: 지운다(종결 뒤 손상된 저널이 지난 시도의 스냅샷으로 되돌려지지 않게).
+/// 종결: 지운다(종결 뒤 손상된 저널이 지난 시도의 스냅샷으로 되돌려지지 않게). ★5판(codex 4R N3″): 삭제 + 폴더 fsync · 삭제가 실패하면
+/// 종결 표지(`ended`)를 원자 쓰기로 남긴다 — 둘 다 실패하면 1줄 남긴다(그 기록은 다음 S1 이 덮는다).
 pub fn attempt_end(dir: &Path) {
-    let _ = std::fs::remove_file(dir.join(ATTEMPT_FILE));
+    let p = dir.join(ATTEMPT_FILE);
+    let removed = match std::fs::remove_file(&p) {
+        Ok(()) => journal::sync_dir(dir).is_ok(),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    if removed {
+        return;
+    }
+    let mut a = super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).unwrap_or_default();
+    a.ended = true;
+    if let Err(e) = attempt_write(dir, &a) {
+        eprintln!("[update] attempt.json 종결 기록 실패: {e}");
+    }
+}
+
+/// [`current_attempt`] 의 판정 — Ok 만 재구성 원천이다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttemptView {
+    Ok(Attempt),
+    /// 파일 없음(또는 종결 표지).
+    Missing,
+    /// 있으나 못 읽음.
+    Corrupt(String),
+    /// 남은 저널 슬롯의 txn 이 기록 계보 밖.
+    Mismatch(String),
+}
+
+impl AttemptView {
+    pub fn why(&self) -> String {
+        match self {
+            AttemptView::Ok(_) => "정상".into(),
+            AttemptView::Missing => "부재".into(),
+            AttemptView::Corrupt(e) => format!("손상({e})"),
+            AttemptView::Mismatch(t) => format!("저널 txn {t} 불일치"),
+        }
+    }
 }
 
 /// 재구성이 쓸 「이번 시도」: 기록이 있고 · 남은 저널 슬롯(Degraded)이 있으면 그 txn 이 기록 계보 안일 때만. 저널 전체 손상(Corrupt) =
-/// 기록의 수명(S1 앞 생성 · 종결 뒤 삭제)이 묶음을 보증한다.
-pub fn current_attempt(dir: &Path, read: &ReadOutcome) -> Option<Attempt> {
-    let a = attempt_read(dir)?;
+/// 기록의 수명(S1 앞 생성 · 종결 뒤 삭제+fsync 또는 종결 표지)이 묶음을 보증한다. ★5판(codex 4R N3″): 부재·손상·불일치를 갈라 돌려준다
+/// — 러너는 Ok 가 아니면 재구성하지 않는다(fail-closed).
+pub fn current_attempt(dir: &Path, read: &ReadOutcome) -> AttemptView {
+    let raw = match std::fs::read(dir.join(ATTEMPT_FILE)) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AttemptView::Missing,
+        Err(e) => return AttemptView::Corrupt(e.to_string()),
+    };
+    let a: Attempt = match serde_json::from_slice(&raw) {
+        Ok(a) => a,
+        Err(e) => return AttemptView::Corrupt(e.to_string()),
+    };
+    if a.ended || a.txn_id.is_empty() {
+        return AttemptView::Missing;
+    }
     match read {
-        ReadOutcome::Degraded(j, _) | ReadOutcome::Ok(j) if !a.owns(&j.txn_id) => None,
-        _ => Some(a),
+        ReadOutcome::Degraded(j, _) | ReadOutcome::Ok(j) if !a.owns(&j.txn_id) => AttemptView::Mismatch(j.txn_id.clone()),
+        _ => AttemptView::Ok(a),
     }
 }
 
@@ -683,7 +772,7 @@ pub fn boot_guard(dir: &Path) -> Option<String> {
 
 /// cysd 가 실제로 쓰는 판정: [`boot_guard`] 가 「복구 대기」여도 **트랜잭션 잠금이 지금 잡혀 있으면**(살아 있는 러너·복구기가 이끄는 중 —
 /// S10 의 `rotate --skip-drain` 이 바로 그 데몬을 띄운다) 허용한다. 잠금이 풀린 비종결 저널(죽은 러너) = 막는다(복구기가 먼저).
-/// 저널 손상은 잠금과 무관하게 막는다(재구성 뒤 [`journal::write_reconstructed`] 가 종결 저널을 쓴 다음에만 열린다).
+/// 저널 손상은 잠금과 무관하게 막는다(재구성이 [`journal::write_reconstructed_pending`] 으로 정상 S7 저널을 쓴 다음에만 이 잠금 규칙으로 열린다).
 /// ★2판(codex 1R C3): 「누군가 잠금을 쥠」 만으론 열지 않는다 — 지금 소유자 기록의 `(txn_id, epoch)` = 저널 토큰 · 묘비 아님 · 소유자 =
 /// 러너/복구기 계보(`runner`·`recover`) · 그 pid 의 시작 시각 = 기록값(재사용·사망 아님)일 때만. 토큰 없는 수동 rotate 가 S9 뒤 새 잠금을
 /// 잡고 cysd 를 띄워도 저널 소유자가 아니라 막힌다.
@@ -918,10 +1007,10 @@ pub(crate) mod tests {
             self.pack_applied += 1;
             Ok(())
         }
-        fn recover_pack(&mut self, _: &Journal) -> Step {
-            self.f("recover_pack")
+        fn recover_pack(&mut self, _: &Journal) -> Result<bool, Fail> {
+            self.f("recover_pack").map(|_| false)
         }
-        fn reconstruct(&mut self, _: Option<&Attempt>) -> Result<bool, Fail> {
+        fn reconstruct(&mut self, _: &Attempt) -> Result<bool, Fail> {
             if self.reconstruct_ok {
                 Ok(false)
             } else {
@@ -932,6 +1021,9 @@ pub(crate) mod tests {
             self.f("restart")?;
             self.daemon = Some(if self.canonical_new { "new" } else { "old" });
             Ok(())
+        }
+        fn daemon_alive(&mut self) -> bool {
+            self.daemon.is_some()
         }
         fn record(&mut self, _: Option<&Journal>, kind: Kind, _: Option<&Fail>) {
             self.records.push(kind);
@@ -1200,6 +1292,11 @@ pub(crate) mod tests {
         std::fs::write(d.join(journal::JOURNAL_PREV_FILE), b"{broken").unwrap();
         assert!(boot_guard(&d).unwrap().starts_with("journal_corrupt"));
         let mut s = Sim::new(Os::Mac);
+        // ★5판(codex 4R N3″): 이번 시도 기록 없음 = 재구성 불가(fail-closed · 실행층 호출 0)
+        assert!(matches!(recover(&d, &mut s), Outcome::SeatsBlocked(f) if f.detail.contains("부재")));
+        assert!(boot_guard(&d).unwrap().starts_with("journal_corrupt"), "기록 없음 = 손상 저널 그대로");
+        s.records.clear();
+        attempt_begin(&d, "0000000000000000000000000000000a").unwrap();
         s.reconstruct_ok = false;
         assert!(matches!(recover(&d, &mut s), Outcome::SeatsBlocked(_)));
         assert!(boot_guard(&d).is_some(), "재구성 실패 = 좌석 0 유지");

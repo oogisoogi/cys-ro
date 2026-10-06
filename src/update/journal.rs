@@ -457,10 +457,12 @@ pub fn recovery_for(read: &ReadOutcome, os: Os) -> Recovery {
     }
 }
 
-/// ★U2(§3-11 저널 손상 재구성 뒤): 실물 재구성이 **끝난 뒤에만** 부른다 — 손상 슬롯 둘을 `journal.corrupt.<벽시계>.json`·
-/// `.prev.json` 으로 옮겨 보존(지우지 않음)하고 새 트랜잭션 `Locked → Deferred` 를 두 슬롯에 정상 기록한다(read = Ok · 종결).
-/// 이 함수 밖에서 손상 저널 위 쓰기는 여전히 거부된다([`advance`] 의 `Corrupt`).
-pub fn write_reconstructed(dir: &Path, txn_id: &str, epoch: u64) -> Result<Journal, String> {
+/// ★5판(codex 4R M5): 재구성 **트리 단계 뒤 · 데몬 재기동 전** — 손상 슬롯 둘을 `journal.corrupt.<벽시계>.json`·`.prev.json` 으로 옮겨 보존(지우지 않음)하고 새 트랜잭션을
+/// `Locked → Stopped(S7)` 로 적는다(비종결 = 부팅 가드 유지 · 잠금 소유자 토큰 = 이 저널 토큰이라 [`super::runner::boot_blocked`] 는 이
+/// 복구기가 띄우는 데몬만 통과). 재기동이 확인된 뒤에만 호출자가 `Stopped → Deferred` 로 종결한다 · 그 사이에 죽으면 다음 복구기 =
+/// S7 행(옛 바이너리 기동 뒤 보류). 이 함수 밖에서 손상 저널 위 쓰기는 여전히 거부된다([`advance`] 의 `Corrupt`).
+/// `Locked → Stopped` 는 일반 전이표에 없다 — 이 함수만 쓴다(재구성 = 실물 판정이 S2~S6 을 대신한다).
+pub fn write_reconstructed_pending(dir: &Path, txn_id: &str, epoch: u64) -> Result<Journal, String> {
     let wall = super::clock::now_stamp().wall;
     for (f, tag) in [(JOURNAL_FILE, "json"), (JOURNAL_PREV_FILE, "prev.json")] {
         let p = dir.join(f);
@@ -469,8 +471,10 @@ pub fn write_reconstructed(dir: &Path, txn_id: &str, epoch: u64) -> Result<Journ
         }
     }
     sync_dir(dir)?;
-    advance(dir, txn_id, epoch, Locked, |_| {}).map_err(|e| format!("{e:?}"))?;
-    advance(dir, txn_id, epoch, Deferred, |_| {}).map_err(|e| format!("{e:?}"))
+    let cur = advance(dir, txn_id, epoch, Locked, |_| {}).map_err(|e| format!("{e:?}"))?;
+    let mut next = cur.clone();
+    next.state = Stopped;
+    commit_next(dir, Some(&cur), next).map_err(|e| format!("{e:?}"))
 }
 
 pub fn journal_path(dir: &Path) -> PathBuf {

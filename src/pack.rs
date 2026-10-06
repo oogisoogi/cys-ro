@@ -4696,6 +4696,29 @@ pub fn install_staged(
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PACK_JOURNAL_DIR: &str = ".pack-journal";
+/// ★U2 5판(codex 4R M8-pro): 팩 저널의 **명시 커밋 기록**(`.pack-journal/commit.json` = `{target_version, pro_revision}`).
+/// 같은 base 판의 pro_revision 전진(1.0.0/pro.1 → 1.0.0/pro.2)은 `.pack-version` 이 적용 전후로 같아 「판 문자열 == 목표」 판정이
+/// 커밋을 가르지 못한다 — 이 기록이 있으면 커밋(전진 완료) · 없으면 미커밋(되돌림). 이 기록을 쓰는 저널은 인덱스에 `explicit_commit`.
+const PACK_JOURNAL_COMMIT: &str = "commit.json";
+
+/// 시험 전용 결함 주입(프로세스 사망 흉내 = 그 자리에서 Err · 되돌림 없이 반환): `journal`(저널 뒤) · `install`(파일 반영 뒤) ·
+/// `state`(.pack-state.json 뒤) · `commit`(커밋 기록 뒤) · `version`(.pack-version 뒤 · 저널 삭제 전).
+#[cfg(test)]
+thread_local! {
+    pub static PACK_TXN_KILL: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+fn pack_txn_killed(at: &'static str) -> bool {
+    #[cfg(test)]
+    {
+        PACK_TXN_KILL.with(|k| k.get() == Some(at))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = at;
+        false
+    }
+}
 
 /// 백업 저널 디렉터리(~/.cys/.pack-journal) — pack_dir 형제(staging·lock·accepted와 동일 루트).
 pub fn pack_journal_dir() -> PathBuf {
@@ -4718,6 +4741,9 @@ struct JournalIndex {
     /// recovery는 디스크 `.pack-version`이 이 값과 같은지로 커밋 완료를 판정한다.
     target_version: String,
     entries: Vec<JournalEntry>,
+    /// ★U2 5판: true = 커밋 판정은 [`PACK_JOURNAL_COMMIT`] 기록 유무(판 문자열 대조 아님) · false = 옛 판 저널(종전 판정).
+    #[serde(default)]
+    explicit_commit: bool,
 }
 
 /// apply 전 backup journal 작성: backup_set의 각 파일 기존 bytes를 저널에 복사(+fsync)하고
@@ -4753,6 +4779,7 @@ fn write_journal(
     let index = JournalIndex {
         target_version: target_version.to_string(),
         entries,
+        explicit_commit: true,
     };
     let json =
         serde_json::to_vec_pretty(&index).map_err(|e| format!("journal 인덱스 직렬화 실패: {e}"))?;
@@ -4831,6 +4858,20 @@ pub fn recover_pack_journal() -> Result<bool, String> {
     let disk_version = std::fs::read_to_string(pack_dir().join(PACK_VERSION_FILE))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    if index.explicit_commit && !crate::update::mutant("U2-PACKPRO") {
+        // ★U2 5판(M8-pro): 커밋 기록 있음 = 커밋됨 → 전진 완료(.pack-version 을 목표로 맞추고 저널 정리 · 롤백 금지) · 없음 = 미커밋 →
+        //   롤백(같은 base 판의 pro_revision 전진에서도 판 문자열은 같으니 그것으로 가르지 않는다).
+        if jdir.join(PACK_JOURNAL_COMMIT).is_file() {
+            if disk_version != index.target_version {
+                write_atomic(&pack_dir().join(PACK_VERSION_FILE), index.target_version.as_bytes())
+                    .map_err(|e| format!(".pack-version 전진 완료 실패: {e}"))?;
+            }
+            let _ = std::fs::remove_dir_all(&jdir);
+        } else {
+            rollback_journal()?;
+        }
+        return Ok(true);
+    }
     if !disk_version.is_empty() && disk_version == index.target_version {
         // 커밋 성공(.pack-version == target) → 저널 정리만(롤백 금지).
         let _ = std::fs::remove_dir_all(&jdir);
@@ -4900,6 +4941,9 @@ where
     backup_set.insert(MERGE_PENDING_FILE.to_string());
     // ★MERGE_AUDIT_FILE 은 의도적 비등재 — append-only 감사 원장은 rollback 을 생존한다(G3-축3).
     write_journal(target_version, &backup_set)?;
+    if pack_txn_killed("journal") {
+        return Err("PACK_TXN_KILL journal".into());
+    }
     // ② 파일 반영(transactional=true) — .pack-version은 여기서 쓰지 않고(④에서 commit marker로),
     //    .install-manifest.json write 실패는 fail-closed로 Err가 되어 아래 rollback을 탄다.
     let (written, kept) =
@@ -4910,15 +4954,36 @@ where
                 return Err(format!("파일 반영 실패(rollback 완료): {e}"));
             }
         };
+    if pack_txn_killed("install") {
+        return Err("PACK_TXN_KILL install".into());
+    }
     // ③ `.pack-state.json` 기록 — journal 백업 대상이므로 실패 시 rollback으로 전체 복원.
     if let Err(e) = write_pack_state(&dir, state) {
         let _ = rollback_journal();
         return Err(format!("state 기록 실패(rollback 완료): {e}"));
     }
-    // ④ .pack-version = 마지막 hard commit marker(결과 검사 — best-effort 금지).
+    if pack_txn_killed("state") {
+        return Err("PACK_TXN_KILL state".into());
+    }
+    // ③b ★U2 5판(M8-pro): 커밋 지점 = 저널의 커밋 기록(원자 쓰기) — 이 뒤 사망 = 복구가 전진 완료 · 앞 = 롤백.
+    let commit_rec = serde_json::json!({"target_version": target_version, "pro_revision": state.pro_revision});
+    if let Err(e) = write_atomic(&pack_journal_dir().join(PACK_JOURNAL_COMMIT), commit_rec.to_string().as_bytes()) {
+        let _ = rollback_journal();
+        return Err(format!("커밋 기록 실패(rollback 완료): {e}"));
+    }
+    if pack_txn_killed("commit") {
+        return Err("PACK_TXN_KILL commit".into());
+    }
+    // ④ .pack-version(결과 검사 — best-effort 금지). 실패 = 커밋 기록을 먼저 철회한 뒤 rollback(철회 실패 = 다음 복구가 전진 완료).
     if let Err(e) = write_atomic(&dir.join(PACK_VERSION_FILE), target_version.as_bytes()) {
+        if let Err(e2) = std::fs::remove_file(pack_journal_dir().join(PACK_JOURNAL_COMMIT)) {
+            return Err(format!(".pack-version 쓰기 실패({e}) · 커밋 기록 철회 실패({e2}) — 다음 복구가 전진 완료"));
+        }
         let _ = rollback_journal();
         return Err(format!(".pack-version 커밋 실패(rollback 완료): {e}"));
+    }
+    if pack_txn_killed("version") {
+        return Err("PACK_TXN_KILL version".into());
     }
     // ★W-a: 트랜잭션(원격 팩) 적용분은 내장 팩이 아니다 — 내장 지문을 지운다(부재 = 같은 판에서 종전대로 스킵 · 원격 팩을
     //   내장 팩으로 덮는 스윕을 만들지 않는다).
@@ -9595,6 +9660,40 @@ mod tests {
         assert_eq!(soul, "NEW-SOUL", "파일 반영은 유지돼야 함");
         assert!(!stale_exists, "prune 결과도 유지돼야 함");
         assert!(!journal_exists, "커밋 성공 경로 — 저널 정리돼야 함");
+    }
+
+    /// ★U2 5판(codex 4R M8-pro · Fable 4R n7): 같은 base 판의 pro_revision 전진(1.0.0/pro.1 → 1.0.0/pro.2 · `.pack-version` 은 전후
+    /// 같다) kill 행렬 — **실 `apply_pack_transactional` 이 만든 실 `.pack-journal`** 위에서 각 사망 지점 뒤 `recover_pack_journal`:
+    /// 커밋 기록 전(journal·install·state) = 롤백(옛 본문 · pro.1) · 뒤(commit·version) = 전진 완료(새 본문 · pro.2 · .pack-version 목표).
+    /// 옛 판 판정(판 문자열 == 목표 = 커밋)이었다면 앞 셋이 「커밋」으로 오인돼 혼합 팩이 남는다.
+    #[test]
+    fn pro_revision_advance_kill_matrix_recovers_by_commit_record() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let pro = |rev: u32| PackState { channel: "pro".into(), base_version: "1.0.0".into(), pro_revision: rev };
+        for (at, committed) in [("journal", false), ("install", false), ("state", false), ("commit", true), ("version", true)] {
+            let (base, pd, _env) = txn_prestate(&format!("pro-{at}"), &[("README.md", "OLD-SOUL")], "1.0.0");
+            write_pack_state(&pd, &pro(1)).unwrap();
+            PACK_TXN_KILL.with(|k| k.set(Some(at)));
+            let r = apply_pack_transactional(&[("README.md", "NEW-SOUL"), ("new.txt", "N")], "1.0.0", &pro(2), None, || Ok(()));
+            PACK_TXN_KILL.with(|k| k.set(None));
+            assert!(r.unwrap_err().contains("PACK_TXN_KILL"), "{at}");
+            assert!(pack_journal_dir().join("index.json").is_file(), "{at}: 실 저널 잔존");
+            assert_eq!(std::fs::read_to_string(pd.join(PACK_VERSION_FILE)).unwrap().trim(), "1.0.0", "{at}: 판 문자열은 전후 같음");
+            assert_eq!(recover_pack_journal(), Ok(true), "{at}");
+            let soul = std::fs::read_to_string(pd.join("README.md")).unwrap();
+            let rev = match read_pack_state(&pd) {
+                PackStateRead::Valid(st) => st.pro_revision,
+                other => panic!("{at}: {other:?}"),
+            };
+            let (new_exists, journal_exists) = (pd.join("new.txt").exists(), pack_journal_dir().exists());
+            let _ = std::fs::remove_dir_all(&base);
+            assert!(!journal_exists, "{at}: 저널 정리");
+            if committed {
+                assert_eq!((soul.as_str(), rev, new_exists), ("NEW-SOUL", 2, true), "{at}: 전진 완료");
+            } else {
+                assert_eq!((soul.as_str(), rev, new_exists), ("OLD-SOUL", 1, false), "{at}: 롤백(혼합 팩 0)");
+            }
+        }
     }
 
     /// orphan 저널 recovery: 디스크 .pack-version != 저널 target(미커밋)이면 rollback으로

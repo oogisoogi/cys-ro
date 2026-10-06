@@ -817,15 +817,37 @@ class Fingerprint(Base):
 
 
 class TickCap(Base):
-    """⑨ 한 판 상한 540초 — agora 몫 = 540 − 경과(바닥 30) · 넘으면 프로세스 그룹째 끝내고 로그."""
+    """⑨ 한 판 상한 540초 — agora 몫 = 540 − 경과 · 남은 몫 < 30 = 안 띄움(no_time) · 넘으면 프로세스 그룹째 끝내고 로그."""
 
     put = EnsureClient.put
     lib = EnsureClient.lib
 
     def test_timeout_budget(self):
         self.assertEqual(jc.TICK_CAP_S, 540)
-        self.assertEqual([jc.agora_timeout(e) for e in (0, 0.4, 100, 509, 510, 511, 900)],
-                         [540, 539, 440, 31, 30, 30, 30])
+        table = {0: 540, 0.4: 539, 100: 440, 509: 31, 510: 30, 510.5: None, 511: None, 539: None, 540: None,
+                 590: None, 900: None}
+        self.assertEqual({e: jc.agora_timeout(e) for e in table}, table)
+        for e in [x / 10 for x in range(0, 6001, 7)]:
+            t = jc.agora_timeout(e)
+            if t is not None:
+                self.assertLessEqual(e + t, jc.TICK_CAP_S, e)      # ★한 판 총합 ≤ 540
+                self.assertGreaterEqual(t, jc.AGORA_MIN_TIMEOUT_S, e)
+
+    def test_no_time_skips_agora(self):
+        """남은 몫 < 30초 = agora 를 띄우지 않는다 · tick.log `no_time`."""
+        self.put(_zip([("bin/agora", EnsureClient.AGORA)]))
+        empty = os.path.join(self.tmp, "emptybin")
+        os.makedirs(empty)
+        old = jc.TICK_CAP_S
+        jc.TICK_CAP_S = 29                                        # 경과 ≈ 0 → 남은 몫 29 = 511초 경과와 같은 자리
+        try:
+            with envset(PATH=empty, CYS_CYS_BIN=None):
+                self.assertEqual(jc.tick(), "no_time")
+        finally:
+            jc.TICK_CAP_S = old
+        self.assertFalse(os.path.exists(self.lib("called.json")), "남은 몫이 없는데 agora 를 띄웠다")
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        self.assertEqual((ev[-1]["event"], ev[-1]["result"]), ("tick", "no_time"))
 
     @unittest.skipIf(os.name == "nt", "POSIX 프로세스 그룹(윈은 taskkill /T 실기)")
     def test_timeout_kills_group(self):
@@ -838,7 +860,7 @@ class TickCap(Base):
         empty = os.path.join(self.tmp, "emptybin")
         os.makedirs(empty)
         old = (jc.TICK_CAP_S, jc.AGORA_MIN_TIMEOUT_S)
-        jc.TICK_CAP_S, jc.AGORA_MIN_TIMEOUT_S = 2, 2
+        jc.TICK_CAP_S, jc.AGORA_MIN_TIMEOUT_S = 3, 1
         try:
             with envset(PATH=empty, CYS_CYS_BIN=None):
                 t0 = time.monotonic()
@@ -860,8 +882,8 @@ class TickCap(Base):
         self.assertFalse(alive(grand), "손자(같은 그룹)가 살아 있다 — 그룹째 끝내지 않았다")
         self.assertFalse(alive(child))
         ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
-        self.assertEqual((ev[-1]["event"], ev[-1]["result"], ev[-1]["killed"], ev[-1]["timeout_s"]),
-                         ("tick", "timeout", "killpg", 2))
+        self.assertEqual((ev[-1]["event"], ev[-1]["result"], ev[-1]["killed"]), ("tick", "timeout", "killpg"))
+        self.assertIn(ev[-1]["timeout_s"], (1, 2, 3))
 
 
 RACE_MOVER = r'''

@@ -59,7 +59,7 @@ LOCK_RETRY_S = 0.05
 DOCTOR_TIMEOUT_S = 60
 CLI_TIMEOUT_S = 20
 TICK_CAP_S = 540                       # 한 판 전체 상한 — cysd command 잡 600초 안쪽(cysd 는 시간 초과 자식을 안 죽인다)
-AGORA_MIN_TIMEOUT_S = 30               # agora 에 남은 몫(540 − 경과)의 바닥
+AGORA_MIN_TIMEOUT_S = 30               # 남은 몫이 이보다 작으면 agora 를 띄우지 않는다(no_time) — 바닥으로 늘리지 않는다
 INSTALL_LOCK = "lib.install.lock"      # <설정> 옆 파일 · 존재 판정 ~ 게시까지 한 손
 INSTALL_LOCK_WAIT_S = 60.0
 KNOWN_FILE = "agora-client-known.txt"  # 자동 교체해도 되는 옛 판 지문 표(`<판본> <트리 지문>`)
@@ -816,8 +816,12 @@ def _daily_due(cfg, now=None):
 
 
 def agora_timeout(elapsed):
-    """agora 에 줄 시간 = 한 판 상한(540초) − 지금까지 쓴 시간 · 바닥 30초."""
-    return max(AGORA_MIN_TIMEOUT_S, int(TICK_CAP_S - elapsed))
+    """agora 에 줄 시간(정수 초) = 한 판 상한(540초) − 지금까지 쓴 시간(내림) · 남은 몫 < 30초면 None(띄우지 않는다).
+    ★리뷰 3R ⑦ — 옛 「바닥 30초」는 남은 몫보다 크게 줘서 한 판이 540초를 넘었다 · 경과 + 반환값 ≤ 540 이 불변식."""
+    remaining = int(TICK_CAP_S - elapsed)
+    if remaining < AGORA_MIN_TIMEOUT_S:
+        return None
+    return remaining
 
 
 def _kill_group(proc):
@@ -862,7 +866,11 @@ def tick(cfg=None):
     if not env.get("AGORA_SIGNING_KEY") and os.path.isfile(key):
         env["AGORA_SIGNING_KEY"] = key
     argv = [sys.executable, agora, "counsel", "auto", "--facts", _counsel(cfg, FACTS_FILE)]
-    timeout = agora_timeout(time.monotonic() - t0)
+    elapsed = time.monotonic() - t0
+    timeout = agora_timeout(elapsed)
+    if timeout is None:
+        log_event(cfg, "tick", result="no_time", elapsed_s=int(elapsed))
+        return "no_time"
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=env, start_new_session=(os.name != "nt"), **NOWIN)

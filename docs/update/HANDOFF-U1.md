@@ -5,6 +5,12 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(다음 사람이 먼저 읽을 것)
+- ★★★★★★**5판 끝(14:xx · 지시 = [master#576fd04d] 13:23 + 보충 [master#f5c7a2f9] · 윈 러너 실행 레인 첫 가동 적색 18 → 윈 전용 수리)** — 반영표 = §9-3:
+  - **커밋**: eb5797ba(보안 기술자 의미 판정 `sd_is_private` + 토큰 사용자 SID) · 00effb2e(나의 SDDL 약어 LA/LG/SY) · 이 문서 커밋. 미러 가지 `fix/u1-autoupdate-118` push 2회(허락 · 이 티켓 한정) · 본 가지 push 0.
+  - **윈 러너**: 37412486729(ebef73a2 · master) 적 18 → 37413779986(eb5797ba) 적(소유자 `O:LA`) → **37414260455(00effb2e) `update::` 스텝 success** · 런 전체 = **success**(04:33–05:10 UTC · 차단 스텝 전부 초록) · 윈 `update::` **123 passed / 0 failed**(맥 126 = 유닉스 전용 권한 시험 3 `m3_private_permissions`·`m3_existing_wide_lock_file_rejected`·`f4_child_lock_open_failure_restores_owner` 차이).
+  - **맥(격리 · 00effb2e)**: `scripts/tests/u1-mutants.sh` **35/35 OK**(13:54–14:02) · lib **898/0**(1 ignored · 350초) · 윈 타입체크 오류 0 · cys·cysd·cys-app = 5판이 `src/update/mod.rs` 윈 분기·순수 함수만 바꿔 재실행 0(정직).
+  - **정직**: 마스터 가설 ②(LockFileEx 의미 차이)는 증거 없음 — 18건 전부(TxnBusy 포함) 같은 「DACL 불일치」 문구였고 판정 규칙 수리 뒤 잠금 시험 전부 초록(잠금 코드 변경 0).
+  - **환경 함정(이 기계)**: PATH 첫 git = `/Applications/cys.app/…/runtime/git/bin/git`(exec-path `//libexec/git-core` 깨짐 → `git push` = 「remote-https 없음」) — push 는 `/opt/homebrew/bin/git` 로.
 - ★★★★★**4판 끝(13:1x · 지시 = [master#9112a952] 12:47 · 3R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-fable-3r.md` · 수렴 예 · BLOCK 0)** — 산출 = 【확인요청】 4판(4R 없음 · master 정독+게이트) · 반영표 = §9-2 · BACKLOG F5~F11 = §6:
   - **커밋**: 40fa1e9c(F1 trusted 잠금 · F2 첫 판 탐침 · F3 windows-health update:: 스텝 · F4 복원) · 192262f0(F1 결정론 뮤테이션 시험) · 이 문서 커밋. push 0.
   - **시험(격리)**: 40fa1e9c 기준 lib **897/0**(1 ignored · 302초) · 192262f0 뒤 `update::` **126/0** · `scripts/tests/u1-mutants.sh` **35/35 OK**(13:03–13:09 · 가드 31 + 소스 변이 patch 4) · 윈 타입체크 오류 0(12:56–13:01). cys·cysd·cys-app = 4판이 `src/update/{check,cli,feed,lock}.rs` 안만 바꿔 3판 수치 유지(재실행 0 — 정직).
@@ -254,4 +260,13 @@
 | F4(MINOR) | `acquire` 거절 분기 하나로 — 자식 잠금 파일 열기 실패(권한 불일치 등)도 직전 소유자 기록 복원 + 잠금 놓음 | `lock::f4_child_lock_open_failure_restores_owner` | 녹 |
 | F5~F11 | 다음 판 BACKLOG(§6 1줄) | — | 지시대로 0 |
 | F12 | 정본 편입 = master | — | — |
+
+## §9-3 윈 러너 반영표(5판 · [master#576fd04d] · 첫 실행 레인 = windows-health run 37412486729 · 로그 = `~/axdev/master/reports/cysr-118-plan/WIN-CI-U1-ebef73a2-win-health-37412486729.log`)
+| 런 | 커밋 | 결과 | 뿌리(실측 문구) | 처방 |
+|---|---|---|---|---|
+| 37412486729 | ebef73a2 | `update::` 적 18(check 6 · cli 2 · hold 5 · lock 5) | 전부 「갱신 파일 DACL 불일치 … `D:(A;;FA;;;OW)(A;;FA;;;SY)`」 — 보호 DACL 로 만든 폴더 안 파일은 생성 때 ACE 를 복사받되 **상속 표지(ID)가 붙지 않는다**(부모에 SE_DACL_AUTO_INHERITED 없음) → 옛 규칙(「보호(P) 또는 전부 ID」)이 이미 비공개인 파일을 거부 · TxnBusy·rc 3 은 같은 오류를 감싼 것 | 판정을 SDDL 문자열 모양이 아니라 **의미**로: `sd_is_private(sddl, me)` — 소유자 ∈ {나, BA, SY} ∧ 허용 ACE 주체 ⊆ {OW, SY, BA, 나} ∧ 거부 ACE 무관 ∧ NULL DACL·개체 ACE 거부 · 표지 무관 · **물려받은 ACE 도 같은 규칙**(보충 지시의 「상속 ACE 무시」 는 물려받은 Everyone 을 통과시키므로 따르지 않음 — 표지만 무시) · 소유자도 읽음(`OWNER_SECURITY_INFORMATION`) · 나 = 토큰 TokenUser SID 문자열 |
+| 37413779986 | eb5797ba | `update::` 적(폴더 판정) | 「갱신 폴더 DACL 불일치 … `O:LAD:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)` · 나 = S-1-5-21-…-**500**」 — 러너 계정 = 내장 Administrator(RID 500) · SDDL 이 이 기계의 그 계정을 약어 `LA` 로 적음 | 나의 약어(RID 500 = LA · 501 = LG · S-1-5-18 = SY)도 나로 인정 |
+| 37414260455 | 00effb2e | **`update::` 스텝 success**(04:35–04:37) · 런 전체 = **success**(04:33–05:10 UTC · 차단 스텝 전부 초록) · 윈 `update::` **123 passed / 0 failed**(맥 126 = 유닉스 전용 권한 시험 3 `m3_private_permissions`·`m3_existing_wide_lock_file_rejected`·`f4_child_lock_open_failure_restores_owner` 차이) | — | — |
+
+시험(순수 · 맥에서도 돎) `update::tests::sd_private_rule` = 러너 실측 두 꼴(`O:<나>D:(A;;FA;;;OW)(A;;FA;;;SY)` · `O:LAD:P(…)`) · 로컬 꼴(보호 폴더 · 상속 표지 · 사용자 프로필 상속) 통과 / Everyone·물려받은 Users·인증 사용자·남의 SID·남이 소유자·NULL DACL·개체 ACE·소유자 칸 없음·RID 500 아닌 나의 LA 거부. 유닉스 동작 변경 0(윈 분기와 순수 함수만).
 

@@ -1415,6 +1415,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// 이름이 `cysd` 인 오래 사는 가짜 프로세스용 바이너리 — `/bin/sleep` 사본은 플랫폼 서명이라 이 맥에서 실행 즉시 SIGKILL(rc 137 · 3판 V2
+    /// 시험은 좀비의 이름을 보고 통과하던 경주였다) → 사본을 ad-hoc 재서명한다.
+    #[cfg(unix)]
+    pub(crate) fn fake_cysd_bin(dir: &Path) -> PathBuf {
+        let p = dir.join("cysd");
+        let _ = std::fs::remove_file(&p);
+        std::fs::copy("/bin/sleep", &p).unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let o = std::process::Command::new("/usr/bin/codesign").args(["-s", "-", "-f"]).arg(&p).output().unwrap();
+            assert!(o.status.success(), "ad-hoc 재서명 실패");
+        }
+        p
+    }
+
     /// 재구성 종단 시험 틀: 격리 갱신 폴더·`~/.cys`·가짜 `cys`(인자를 기록하고 rc 0) · 상담소 = 격리.
     #[cfg(unix)]
     pub(crate) fn recon_rig(tag: &str) -> (PathBuf, PathBuf, PathBuf, RealOps) {
@@ -1563,6 +1578,84 @@ mod tests {
         assert_eq!(parse_pack_version("[pack-update] dry-run: 검증·게이트 통과(팩 1.2.3 반영 가능)").as_deref(), Some("1.2.3"));
     }
 
+    /// ★4판(codex 3R N2 종단): RB_VERIFIED 에서 죽은 롤백을 복구기(`Runner::recover` · 실 RealOps · 윈 기판 표지)가 이어 → `start_old` →
+    /// **실 `post_verify`**(본부 소켓 `system.identify.daemon_pid` RPC → `hq_daemon_count` → V2) → RB_DONE. 이 사용자에게 `cysd` 이름 프로세스가
+    /// 셋(본부 + 부서 둘)이어도 통과 · 본부 pid 가 cysd 가 아니면 V2 실패 → RB_FAILED.
+    #[cfg(unix)]
+    #[test]
+    fn rb_verified_recovery_runs_real_post_verify_v2_against_hq_daemon_only() {
+        use super::super::runner::{attempt_set_baseline, tests::Sim, Fault, Outcome, Runner};
+        use std::os::unix::fs::PermissionsExt;
+        let bi = super::super::buildinfo::build_info();
+        let fake = std::env::temp_dir().join(format!("cys-u2-n2e-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fake);
+        std::fs::create_dir_all(&fake).unwrap();
+        fake_cysd_bin(&fake);
+        let mut daemons: Vec<std::process::Child> = (0..3).map(|_| std::process::Command::new(fake.join("cysd")).arg("60").spawn().unwrap()).collect();
+        let mut other = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        for _ in 0..60 {
+            if daemons.iter().all(|k| hq_daemon_count(&json!({"daemon_pid": k.id()})) == 1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(daemons.iter().all(|k| hq_daemon_count(&json!({"daemon_pid": k.id()})) == 1), "가짜 cysd 3개가 살아 있어야 시험이 성립");
+        for (hq_pid, want_ok, tag) in [(daemons[0].id(), true, "n2e-hq"), (other.id(), false, "n2e-notcysd")] {
+            let (d, upd, root, mut ops) = recon_rig(tag);
+            ops.env.os = Os::Win;
+            std::fs::create_dir_all(&ops.env.install_dir).unwrap();
+            std::fs::write(ops.env.install_dir.join("cys.exe"), b"EXE").unwrap();
+            let mark = super::super::snapshot::sha256_file(&ops.env.install_dir.join("cys.exe")).unwrap().0;
+            let script = format!(
+                "#!/bin/sh\necho \"$@\" >> '{log}'\ncase \"$1\" in\n  build-info) echo '{bi}';;\n  doctor) echo '{{\"checks\":[]}}';;\nesac\nexit 0\n",
+                log = d.join("calls.log").display(),
+                bi = json!({"release_seq": bi.release_seq, "build_id": bi.build_id, "target": bi.target, "features": bi.features})
+            );
+            std::fs::write(&ops.env.old_cys, script).unwrap();
+            std::fs::set_permissions(&ops.env.old_cys, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let build_id = bi.build_id.clone();
+            ops.env.rpc = Box::new(move |m, _| match m {
+                "system.identify" => Ok(json!({"daemon_pid": hq_pid, "build_id": build_id})),
+                "system.ping" => Ok(json!({})),
+                "org.status" => Ok(json!({"surfaces": []})),
+                "schedule.status" => Ok(json!({"jobs": []})),
+                other => Err(format!("rpc {other}")),
+            });
+            // 러너: V3 실패 → 롤백 → RB_VERIFIED 기록 직후 죽음
+            let mut sim = Sim::new(Os::Win);
+            let mut r = Runner::new(&upd, "0123456789abcdef0123456789abcdef", 1, &mut sim);
+            r.fault = Fault::parse("verify_v3,kill@RB_VERIFIED:after");
+            r.soft_kill = true;
+            assert!(matches!(r.run(), Outcome::Killed(..)), "{tag}");
+            let b0 = Baseline {
+                user: verify::collect_user_tree(&root).unwrap(),
+                features: bi.features.iter().cloned().collect(),
+                pack: ops.pack_id(),
+                platform_mark: mark.clone(),
+                ..Default::default()
+            };
+            attempt_set_baseline(&upd, "0123456789abcdef0123456789abcdef", json!(b0)).unwrap();
+            let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+            rec.soft_kill = true;
+            let o = rec.recover();
+            let st = super::super::journal::read(&upd).journal().unwrap().state;
+            if want_ok {
+                assert!(matches!(o, Outcome::RolledBack(_)), "{tag}: {o:?}");
+                assert_eq!(st, super::super::journal::State::RbDone, "{tag}");
+            } else {
+                assert!(matches!(&o, Outcome::RollbackFailed(f) if f.step == "V2"), "{tag}: 본부 pid 가 cysd 아님 = V2 실패 {o:?}");
+                assert_eq!(st, super::super::journal::State::RbFailed, "{tag}");
+            }
+            assert!(calls(&d).iter().any(|c| c.starts_with("rotate --skip-drain")), "{tag}: start_old 실행");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+        for k in daemons.iter_mut().chain(std::iter::once(&mut other)) {
+            let _ = k.kill();
+            let _ = k.wait();
+        }
+        let _ = std::fs::remove_dir_all(&fake);
+    }
+
     /// ★4판(codex 3R N3′ 반례): 지난 시도(told)의 기록·스냅샷이 남은 채 새 시도가 S3 에서 죽고 저널이 손상 → 복구기는 지난 시도의 옛
     /// 스냅샷으로 되돌리지 **않는다**(이번 시도 = S1 에 새로 쓴 기록 · 스냅샷 전) — 복원 0 · 정지 0. 뮤턴트 U2-ATTEMPT(S1 기록 생략) = 적색.
     #[cfg(unix)]
@@ -1677,8 +1770,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("cys-u2-v2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let fake = d.join("cysd");
-        std::fs::copy("/bin/sleep", &fake).unwrap();
+        let fake = fake_cysd_bin(&d);
         let mut kids: Vec<std::process::Child> = (0..2).map(|_| std::process::Command::new(&fake).arg("30").spawn().unwrap()).collect();
         // 부하 중엔 exec 직후 이름이 늦게 보인다(전수 병렬 1회 적색) — 3초까지 기다린다
         let mut n = 0;

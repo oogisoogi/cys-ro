@@ -371,6 +371,23 @@ mod tests {
         f(&d)
     }
 
+    /// ★1.1.8 U2 4판(codex 3R M3 dispatch): 설치판 stop_seats 표지 = **실 RPC dispatch** 의 `surface.create` 가 거부(새 좌석 0 · 오류 코드
+    /// `update.installed_revoked_stop_seats`) — 3판 시험은 `seats_stopped()` 판정까지만 봤다.
+    #[test]
+    fn surface_create_dispatch_refuses_new_seat_under_stop_seats_marker() {
+        with_dir("stopseats", |dir| {
+            let sock = dir.join("d");
+            std::fs::create_dir_all(&sock).unwrap();
+            let daemon = Daemon::new(sock.join("cysd.sock"));
+            let seq = cys::update::buildinfo::release_seq();
+            quiesce::write_json(dir, cys::update::runner::SEATS_STOP_FILE, &json!({"release_seq": seq, "at": 1})).unwrap();
+            let req = cys::Request { id: json!(1), method: "surface.create".into(), params: json!({"command": "sleep 30"}) };
+            let crate::handlers::Reply::Single(r) = crate::handlers::dispatch(&daemon, req, None) else { panic!("single") };
+            assert!(r.to_string().contains("update.installed_revoked_stop_seats"), "{r}");
+            assert!(daemon.surfaces.lock().unwrap().is_empty(), "새 좌석 0");
+        });
+    }
+
     #[test]
     fn quiesce_requires_owner_token_holds_sends_and_replays_after_release() {
         with_dir("q", |dir| {

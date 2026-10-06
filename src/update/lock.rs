@@ -400,7 +400,12 @@ pub fn participate(dir: &Path, owner: &str, arg: Option<&str>, env: Option<&str>
     let _ = owner; // 공유 참가자는 소유자 기록을 쓰지 않는다(설치기·부팅 가드가 보는 txn.lock·txn.owner.json 무접촉)
     // ★2판 C1(개정): 참가자 공유 잠금을 **먼저** 쥐고 txn.lock 을 본다 — 러너는 txn.lock 을 먼저 쥐고 참가자 잠금을 본다(양방향 원자).
     // ★3판(Fable 2R m1): 평소대로(참가 0) = 갱신 폴더를 만들 수조차 없을 때만 · 권한 불일치 등 그 밖 = Err(조용한 fail-open 0)
-    if super::ensure_private_dir(dir).is_err() {
+    // ★4판(codex 3R m1): 이미 있는 폴더의 소유자·권한(윈 DACL) 불일치 = Err(조용히 참가 없이 진행하지 않는다) · 폴더가 없고 만들 수도 없을 때만 Ok(None)
+    let existed = dir.exists();
+    if let Err(e) = super::ensure_private_dir(dir) {
+        if existed && !super::mutant("U2-PRIVDIR") {
+            return Err(busy(format!("갱신 폴더 소유자·권한 불일치: {e}")));
+        }
         return Ok(None);
     }
     let part = open_lock_file(dir, PART_LOCK_FILE)?;
@@ -639,6 +644,30 @@ mod tests {
         assert!(verify_delegated_at(&d, &tok, Some(&tok), &no, 2).is_err(), "중첩이어도 조상 검증");
         drop((init_pack, rotate, parent));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★4판(codex 3R m1): 참가 fail-open 범위 — 폴더가 없고 만들 수도 없음 = Ok(None)(평소대로) · 이미 있는데 소유자 전용으로 고칠 수 없음
+    /// (맥 = 불변 플래그로 chmod 실패를 재현 · 실기기 = 다른 소유자·DACL) = Err(rc 26). 뮤턴트 U2-PRIVDIR.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn participate_refuses_existing_dir_with_wrong_mode_but_passes_uncreatable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("privdir");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let c = std::ffi::CString::new(d.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: 널종단 경로 · 플래그만 바꾼다(끝에 되돌림).
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_IMMUTABLE as _) }, 0);
+        let r = participate(&d, "pack-plan", None, None);
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), 0) }, 0);
+        assert!(r.is_err(), "기존 폴더 권한 고칠 수 없음 = 거부(조용한 fail-open 0)");
+        let ro = tmp("privdir-ro");
+        std::fs::create_dir_all(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(matches!(participate(&ro.join("sub"), "pack-plan", None, None), Ok(None)), "만들 수 없음 = 평소대로");
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&ro);
     }
 
     /// ★4판(codex 3R MINOR 승격): 같은 rotate 자손이 중첩 명령 둘을 동시에 띄우면 — 깊이 1 형제 둘 중 하나는 busy · 놓으면 다음이

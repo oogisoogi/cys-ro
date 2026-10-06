@@ -342,7 +342,14 @@ fn enumerate_text(en: &feed::Enumerated) -> (String, i32) {
             problems.push(format!("후보 자신({seq}) 판정 {}", o.verdict.as_str()));
         }
     }
-    if !en.results.iter().any(|(s, _)| *s < en.release_seq) {
+    // ★3판(U3 Fable 3R MAJOR-2 · [master#450449c8]): 첫 판(release_seq 1 · min_from 0)은 출발 seq 가 없다 — 열거 = 「후보 자신
+    //   uptodate 1행」 이면 통과(그렇지 않으면 첫 봉투가 영원히 거부돼 전 기기가 7일 뒤 daily 미도달). 2 이상은 종전대로 거부.
+    let first_release = en.release_seq == 1
+        && en.results.len() == 1
+        && en.results[0].0 == 1
+        && en.results[0].1.verdict == Verdict::Uptodate
+        && !super::mutant("SEQ1");
+    if !first_release && !en.results.iter().any(|(s, _)| *s < en.release_seq) {
         rc = rc.max(2);
         problems.push(format!("허용 출발 seq 없음(min_from {} ≥ 후보 {})", en.min_from_release_seq, en.release_seq));
     }
@@ -573,6 +580,34 @@ mod tests {
             let row = format!("{{\"installed_release_seq\":{seq},\"outcome\":{single}}}");
             assert!(text.contains(&row), "출발 {seq} 행 바이트 = 단일 판정 바이트");
         }
+    }
+
+    /// ★3판 SEQ1(U3 Fable 3R MAJOR-2): 첫 판 seq 1 봉투(min_from 0) = 열거 「후보 uptodate 1행」 으로 통과(rc 0) · 단일 판정(설치 1) 도
+    /// 같은 uptodate · 바이트 동일 · seq 2 이상 + 허용 출발 seq 없음은 종전대로 거부(본문 서식 N3 에서).
+    #[test]
+    fn seq1_first_release_enumerates_as_single_uptodate_row() {
+        use super::super::feed::fixture::*;
+        use super::super::keys::testkit::Keys;
+        let k = Keys::new();
+        let kr = k.keyring();
+        let mut b = body_json(&k, 1);
+        b["min_from_release_seq"] = 0.into();
+        let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+        let en = feed::verify_feed_enumerate(&input(&s, &kr, 0)).unwrap();
+        let (text, rc) = enumerate_text(&en);
+        assert_eq!(rc, 0, "{text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["verdict"], "ok");
+        let rows = v["results"].as_array().unwrap();
+        assert_eq!((rows.len(), rows[0]["installed_release_seq"].as_u64(), rows[0]["outcome"]["verdict"].as_str()), (1, Some(1), Some("uptodate")));
+        let single = feed::verify_feed(&input(&s, &kr, 1));
+        assert_eq!(single.verdict, Verdict::Uptodate, "단일 판정 = 같은 의미");
+        assert!(text.contains(&feed::render_outcome(&single)));
+        // seq 2 · min_from 1 = 출발 1 이 있으므로 종전 판정(apply + uptodate) · seq 2 · min_from 2 = 본문 거부(N3)
+        let mut b = body_json(&k, 2);
+        b["min_from_release_seq"] = 2.into();
+        let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+        assert_eq!(feed::verify_feed_enumerate(&input(&s, &kr, 0)).unwrap_err().step, "ⓖ");
     }
 
     #[test]

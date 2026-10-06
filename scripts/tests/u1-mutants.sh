@@ -54,6 +54,7 @@ N4 update::feed::tests::revoked_releases_and_installed_revoked
 N4c update::check::tests::n4c_stop_seats_is_forced_decision
 N5 update::keys::tests::n5_r_key_expiry_uses_trusted_time
 N5r update::check::tests::n5r_suspect_record_keeps_trusted_time
+SEQ1 update::cli::tests::seq1_first_release_enumerates_as_single_uptodate_row
 LIST
 
 # ② 소스 변이 patch(이름 시험)

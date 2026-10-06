@@ -446,14 +446,11 @@ node's self-approval. Repeated-risk commands are passed by signing once with
 - `cys send --queued` = **followup**: delivered one item per beat once the target has
   been quiet for 3+ seconds.
 
-## Updates — dual channel + zero-downtime
+## Getting new versions — auto update (1.1.8+)
 
-| Badge | Channel | How |
-|---|---|---|
-| `!` | App (binary) | Tauri updater signature verify → session guard → install/restart → pack applied + nodes auto-return |
-| `↻` | Pack (OS) | **Zero-downtime** — minisign verify → atomic transaction → live-node re-injection. No restart; sessions and daemon survive |
+cysr updates itself while it is idle (plugged in, or battery above half). To turn this off, tell Jarvis "turn off auto update". To update right away, paste the one-line install link again.
 
-Checked quietly at startup and every 6 hours. If a "disk has the new version, process is
+From 1.1.8 the app has no Update button or badge; the result is shown as one notice line the next time you open the app window. If a "disk has the new version, process is
 the old daemon" skew remains after reinstall, it resolves via a badge-click handover or
 idle auto-handover (when there are 0 live sessions — lossless). Diagnose/repair with
 `cys doctor [--fix]`; self-diagnose the installed build's code-signing seal with

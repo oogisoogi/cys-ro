@@ -111,7 +111,12 @@ pub fn auto_spawn(json_out: bool) -> i32 {
         return 3;
     }
     let Ok(cur) = std::env::current_exe() else { return 3 };
-    let agent = super::launch::ensure_recover_agent(&dir, &cur);
+    // ★2판(codex 1R C18): 복구기 등록 실패·러너 기동 실패 = 형식 있는 0 아닌 rc(스케줄러가 성공으로 적고 6시간 미루던 길 차단).
+    //   복구기 없이 러너를 띄우지 않는다(러너도 N14 로 보류할 뿐 — 실패를 지금 드러낸다).
+    if let Err(e) = super::launch::ensure_recover_agent(&dir, &cur) {
+        print(json_out, &json!({"spawned": false, "code": "update.recover_agent_failed", "detail": e}), "spawned=false (recover agent)");
+        return RC_RECOVER_AGENT;
+    }
     let runner = match super::launch::ensure_runner_copy(&dir, &cur) {
         Ok(r) => r,
         Err(e) => {
@@ -120,10 +125,20 @@ pub fn auto_spawn(json_out: bool) -> i32 {
         }
     };
     let r = super::launch::spawn_runner(&dir, &runner, &["self-update", "--run"]);
-    let v = json!({"spawned": r.is_ok(), "runner": runner, "recover_agent": agent.err(), "detail": r.err()});
+    let ok = r.is_ok();
+    let v = json!({"spawned": ok, "runner": runner, "detail": r.err(), "code": if ok { Value::Null } else { json!("update.spawn_failed") }});
     print(json_out, &v, &format!("spawned={}", v["spawned"]));
-    0
+    if ok {
+        0
+    } else {
+        RC_SPAWN
+    }
 }
+
+/// `--auto --spawn` rc(★2판 C18): 복구기 등록 실패.
+pub const RC_RECOVER_AGENT: i32 = 4;
+/// `--auto --spawn` rc(★2판 C18): 러너 기동 실패.
+pub const RC_SPAWN: i32 = 5;
 
 /// 러너 · 복구기 공통: 비종결 저널이면 복구부터(잠금 = 복구기 몫 · 잡혀 있으면 조용히 끝).
 fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
@@ -250,14 +265,21 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     }
 }
 
+/// ★2판(codex 1R C15): 대조 매니페스트 = **지금 설치판**(build-info release_seq) 것만 — 후보 기록은 그 판과 seq 가 같을 때만 쓰고
+/// (B→A 롤백 뒤 남은 B 후보로 A 설치본을 재던 거짓 진단 차단) 아니면 `installers\<설치판 seq>\release.json`.
+pub fn pick_payload_manifest(dir: &std::path::Path, installed_seq: u64) -> Option<Vec<super::feed::PayloadEntry>> {
+    super::quiesce::read_json::<Candidate>(dir, CANDIDATE_FILE)
+        .filter(|c| c.release_seq == installed_seq && c.asset.release_seq == installed_seq)
+        .and_then(|c| c.asset.payload_manifest)
+        .filter(|m| !m.is_empty())
+        .or_else(|| super::realops::load_installer_manifest(&dir.join("installers").join(installed_seq.to_string())))
+}
+
 /// `--verify-payload --json`(윈 S9b 진단): 설치 폴더 = 지금 판 매니페스트 전수 대조(후보가 있으면 그 판 · 없으면 설치판 본문).
 pub fn verify_payload(json_out: bool) -> i32 {
     let Ok(dir) = super::buildinfo::state_dir() else { return 3 };
     let install = install_dir();
-    let manifest = super::quiesce::read_json::<Candidate>(&dir, CANDIDATE_FILE)
-        .and_then(|c| c.asset.payload_manifest)
-        .filter(|m| !m.is_empty())
-        .or_else(|| super::realops::load_installer_manifest(&dir.join("installers").join(super::buildinfo::release_seq().to_string())));
+    let manifest = pick_payload_manifest(&dir, super::buildinfo::release_seq());
     let Some(m) = manifest else {
         print(json_out, &json!({"ok": false, "detail": "대조할 매니페스트 없음"}), "ok=false (no manifest)");
         return 3;
@@ -269,5 +291,29 @@ pub fn verify_payload(json_out: bool) -> i32 {
         0
     } else {
         2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★2판 C15: B→A 롤백 뒤 남은 B 후보(seq 9)로 A 설치본(seq 8)을 재지 않는다 — 설치판 seq 의 본문만.
+    #[test]
+    fn verify_payload_uses_installed_release_manifest_only() {
+        let d = std::env::temp_dir().join(format!("cys-u2-vp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("installers/8")).unwrap();
+        let row = |p: &str| json!([{"path": p, "size": 1, "sha256": "a".repeat(64)}]);
+        let asset: super::super::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0,
+            "target": super::super::buildinfo::TARGET, "release_seq": 9, "payload_manifest": row("B.exe")})).unwrap();
+        let c = Candidate { asset, version: "B".into(), release_seq: 9, installed_revoked: false, notes_ko: None };
+        super::super::quiesce::write_json(&d, CANDIDATE_FILE, &c).unwrap();
+        let rel = json!({"assets": [{"target": super::super::buildinfo::TARGET, "payload_manifest": row("A.exe")}]});
+        std::fs::write(d.join("installers/8/release.json"), rel.to_string()).unwrap();
+        assert_eq!(pick_payload_manifest(&d, 8).unwrap()[0].path, "A.exe", "롤백 뒤 = 설치판 A 본문");
+        assert_eq!(pick_payload_manifest(&d, 9).unwrap()[0].path, "B.exe", "후보 = 설치판일 때만");
+        assert!(pick_payload_manifest(&d, 7).is_none());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

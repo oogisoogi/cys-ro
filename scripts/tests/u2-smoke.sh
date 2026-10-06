@@ -3,7 +3,7 @@
 #   ① cysd 부팅 가드: 비종결 저널(S7) + 잠금 없음 → rc 75(좌석·상태 파일 생성 0) · 같은 저널 + 살아 있는 잠금 → 가드 통과
 #   ② 저널 두 슬롯 손상 + 재구성 불가 → `self-update --recover` rc 2 · state.json seats_blocked · 부팅 가드 유지
 #   ③ `self-update --verify-payload` 매니페스트 없음 → rc 3
-#   ④ `self-update --auto --spawn` → 러너 사본·복구기 plist(격리 폴더)·install_id 생성 · 러너가 떠서(피드 file:// 부재 = 미도달) 끝남
+#   ④ `self-update --auto --spawn` → (★2판 C18) 복구기 등록 실패 = rc 4 · 정상 = 러너 사본·복구기 plist(격리 폴더)·install_id 생성 · 러너가 떠서(피드 file:// 부재 = 미도달) 끝남
 #   ⑤ `rotate --stop-only --skip-drain`: 다른 소유자가 잠금을 쥐면 rc 26(txn_busy) · 잠금 없으면 0
 # 사용: scripts/tests/u2-smoke.sh   (cargo build --bin cys --bin cysd 뒤 · target/debug 바이너리를 쓴다) · exit 0 = 전건 OK
 set -u
@@ -80,7 +80,11 @@ rm -f "$UPD"/journal*.json
 # ③ verify-payload
 iso "$CYS" self-update --verify-payload --json >"$SB/vp.log" 2>&1; rc=$?
 [ $rc -eq 3 ] && ok "③ --verify-payload 매니페스트 없음 = rc 3" || bad "③ rc=$rc"
-# ④ auto spawn
+# ④ auto spawn — ★2판 C18: 복구기 등록 실패(LaunchAgents 자리가 파일) = rc 4 · 러너 안 띄움
+: > "$SB/agentsfile"
+iso /usr/bin/env CYS_UPDATE_LAUNCHAGENTS_DIR="$SB/agentsfile" "$CYS" self-update --auto --spawn --json >"$SB/auto0.log" 2>&1; rc=$?
+[ $rc -eq 4 ] && grep -q 'update.recover_agent_failed' "$SB/auto0.log" && ! pgrep -f "$UPD/runner/cys self-update --run" >/dev/null \
+  && ok "④ 복구기 등록 실패 = rc 4(update.recover_agent_failed) · 러너 기동 0" || bad "④ 복구기 실패 rc=$rc $(head -c 200 "$SB/auto0.log")"
 iso "$CYS" self-update --auto --spawn --json >"$SB/auto.log" 2>&1; rc=$?
 if [ $rc -eq 0 ] && grep -q '"spawned":true' "$SB/auto.log" && [ -x "$UPD/runner/cys" ] && [ -s "$UPD/install_id" ] \
    && grep -q 'self-update' "$SB/agents/com.cysjavis.cysr-update-recover.plist" && cmp -s "$UPD/runner/cys" "$CYS"; then

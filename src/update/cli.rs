@@ -78,6 +78,21 @@ enum UpdCmd {
         recover: bool,
         #[arg(long = "verify-payload")]
         verify_payload: bool,
+        /// (설치 링크 · U5) 저널 판정만 — {journal: none|ok|degraded|corrupt, state, terminal, lock_held} · 쓰기·잠금 0
+        #[arg(long = "journal-state")]
+        journal_state: bool,
+        /// (설치 링크 · U5 · 윈 롤백 자산 §3-7 ②) 방금 깐 설치기 + 보관소 본문을 `installers/<이 판 seq>/` 에 놓는다(호출자가 txn.lock 을 쥔 채)
+        #[arg(long = "preserve-installer")]
+        preserve_installer: bool,
+        /// `--preserve-installer` 의 설치기 경로
+        #[arg(long)]
+        setup: Option<PathBuf>,
+        /// `--preserve-installer` 의 A2 서명 파일(없으면 본문 행 `a2_sig_url` 에서 받는다)
+        #[arg(long = "setup-sig")]
+        setup_sig: Option<PathBuf>,
+        /// (시험 빌드 전용) 이 판 대신 쓸 release_seq
+        #[arg(long, hide = true)]
+        seq: Option<u64>,
         /// (디버그 빌드 전용 · 시험) 팩 단독 갱신 1회 — 본체 판정 없이 `auto::pack_only`(실 pack-plan --auto · pack-update) 경로.
         #[arg(long = "pack-only", hide = true)]
         pack_only: bool,
@@ -183,6 +198,27 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             let hold = v["gates"]["first_hold"]["id"].as_str().unwrap_or("-").to_string();
             print(json, &v, &format!("decision={} feed={} first_hold={hold} (교체 0 · 판정만)", v["decision"], v["feed"]["verdict"]));
             rc
+        }
+        // ★U5(설치 링크 입구 2): 판정·보존은 집행 동사와 섞지 않는다(섞으면 거부 rc 2).
+        UpdCmd::SelfUpdate { check: false, journal_state: true, preserve_installer: false, auto: false, spawn: false, run: false, recover: false, verify_payload: false, pack_only: false, json, .. } => {
+            let Ok(dir) = buildinfo::state_dir() else {
+                print(json, &serde_json::json!({"journal": "undetermined", "detail": "state_dir"}), "journal=undetermined");
+                return 3;
+            };
+            let v = super::install_link::journal_state(&dir);
+            print(json, &v, &format!("journal={} state={} terminal={}", v["journal"], v["state"], v["terminal"]));
+            0
+        }
+        UpdCmd::SelfUpdate { check: false, journal_state: false, preserve_installer: true, auto: false, spawn: false, run: false, recover: false, verify_payload: false, pack_only: false, setup, setup_sig, seq, json } => {
+            let Some(setup) = setup else {
+                eprintln!("cys self-update --preserve-installer: --setup <설치기> 필요");
+                return 2;
+            };
+            super::install_link::run_preserve(&setup, setup_sig.as_deref(), seq, json)
+        }
+        UpdCmd::SelfUpdate { journal_state: true, .. } | UpdCmd::SelfUpdate { preserve_installer: true, .. } => {
+            eprintln!("cys self-update: --journal-state · --preserve-installer 는 다른 동작과 함께 못 쓴다");
+            2
         }
         // ★1.1.8 U2(AUTO-UPDATE-118 §3-1·§3-11·§7-3): 집행 동사 — 하나만 고른다(섞으면 거부 rc 2).
         UpdCmd::SelfUpdate { check: false, pack_only: true, json, .. } => {

@@ -634,10 +634,14 @@ class Fingerprint(Base):
         os.makedirs(d)
         jc._extract(data, d)
         self.assertEqual(jc.zip_fingerprint(data), jc.tree_fingerprint(d))
-        rows = "".join(sorted("%s\t%s\n" % (n, hashlib.sha256(b.encode()).hexdigest())
-                              for n, b in [("bin/agora", self.OLD[0][1]), ("agora/__init__.py", "v=13\n"),
-                                           ("agora/cli.py", "x = 2\n"), ("README.md", "old\n")]))
-        self.assertEqual(jc.tree_fingerprint(d), hashlib.sha256(rows.encode("utf-8")).hexdigest(), "지문 정의(문자 그대로)")
+        rows = ["f\t%s\t%s\n" % (n, hashlib.sha256(b.encode()).hexdigest())
+                for n, b in [("bin/agora", self.OLD[0][1]), ("agora/__init__.py", "v=13\n"),
+                             ("agora/cli.py", "x = 2\n"), ("README.md", "old\n")]]
+        rows += ["d\tagora\t-\n", "d\tbin\t-\n", "d\tdir\t-\n"]      # 파일 경로에서 나온 폴더 + 명시 빈 폴더
+        self.assertEqual(jc.tree_fingerprint(d), hashlib.sha256("".join(sorted(rows)).encode("utf-8")).hexdigest(),
+                         "지문 산식 v2(문자 그대로)")
+        self.assertEqual(jc.FP_FORMULA, "v2")
+        self.assertEqual(jc.tree_scan(d)[1], ["dir/"], "빈 폴더 = 이상 목록")
 
     def test_bundled_blob_fp_equals_unpacked_and_pin_parses(self):
         real = os.path.join(os.path.dirname(BIN), "install")
@@ -649,9 +653,8 @@ class Fingerprint(Base):
         os.makedirs(d)
         jc._extract(data, d)
         fp = jc.zip_fingerprint(data)
-        self.assertEqual(fp, jc.tree_fingerprint(d))
-        if pin["fp"] is not None:
-            self.assertEqual(pin["fp"], fp, "핀 넷째 칸 ≠ 동봉 zip 지문")
+        self.assertEqual(jc.tree_scan(d), (fp, []), "동봉 zip 을 푼 트리 = 같은 지문 · 링크·빈 폴더 0")
+        # ★핀 넷째 칸 값 자체는 대조하지 않는다 — 0.1.14 재빌드 때 부모가 다시 쓴다(아래 RealBundlePin 이 실행 때 잰 값으로 본다).
 
     def test_known_file_rows(self):
         known = jc._read_known(os.path.dirname(BIN))
@@ -675,6 +678,8 @@ class Fingerprint(Base):
             f.write("%s %s\n" % (line, "0" * 64))
         self.assertEqual(jc.ensure_client(), "refused", "넷째 칸이 zip 지문과 다르면 거부")
         self.assertFalse(os.path.exists(self.lib()))
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        self.assertEqual((ev[-1]["why"], ev[-1]["formula"]), ("pin_fingerprint_mismatch", "v2"))
         with open(os.path.join(d, "agora-client.pin"), "w") as f:
             f.write("%s %s\n" % (line, fp))
         self.assertEqual(jc.ensure_client(), "installed")
@@ -735,6 +740,94 @@ class Fingerprint(Base):
         self.assertEqual(jc.ensure_client(), "foreign")
         self.assertTrue(os.path.exists(self.lib("mine.txt")))
 
+    def _odd_tree_untouched(self, make_odd, why="symlink, special file or empty dir"):
+        """알려진 옛 판 트리에 이상 항목 하나 = 교체 0 · 같음 0 · 불가침 + 로그."""
+        old = _zip(self.OLD)
+        self.unpack_like_invite(old)
+        self.known(("0.1.13", jc.zip_fingerprint(old)))
+        make_odd()
+        snap = sorted(os.listdir(self.lib()))
+        self.put(_zip(self.NEW))
+        self.assertEqual(jc.ensure_client(), "foreign")
+        self.assertEqual(sorted(os.listdir(self.lib())), snap)
+        self.assertFalse(os.path.exists(self.lib(".pin")))
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        self.assertEqual((ev[-1]["result"], ev[-1]["why"]), ("foreign", why))
+        return ev[-1]
+
+    def test_empty_dir_in_tree_is_foreign(self):
+        """★v1 은 빈 폴더가 지문에 안 보여 알려진 옛 판으로 보고 교체했다 — v2 = 지문도 다르고 이상 항목으로 불가침."""
+        ev = self._odd_tree_untouched(lambda: os.makedirs(self.lib("agora", "empty")))
+        self.assertEqual(ev["odd"], ["agora/empty/"])
+        self.assertTrue(os.path.isdir(self.lib("agora", "empty")))
+        shutil.rmtree(self.lib("agora", "empty"))
+        self.assertEqual(jc.ensure_client(), "replaced", "빈 폴더를 치우면 다시 알려진 옛 판")
+
+    def test_empty_pycache_is_not_odd(self):
+        old = _zip(self.OLD)
+        self.unpack_like_invite(old)
+        os.makedirs(self.lib("agora", "__pycache__"))
+        self.assertEqual(jc.tree_scan(self.lib()), (jc.zip_fingerprint(old), []))
+
+    @unittest.skipIf(os.name == "nt", "심볼릭 링크 만들기 = 윈 개발자 모드·관리자 권한(POSIX 전용 검체)")
+    def test_symlink_in_tree_is_foreign(self):
+        ev = self._odd_tree_untouched(lambda: os.symlink("cli.py", self.lib("agora", "link.py")))
+        self.assertEqual(ev["odd"], ["agora/link.py"])
+        self.assertTrue(os.path.islink(self.lib("agora", "link.py")))
+        # 폴더 링크도(따라가지 않는다)
+        os.remove(self.lib("agora", "link.py"))
+        target = os.path.join(self.tmp, "outside")
+        os.makedirs(target)
+        os.symlink(target, self.lib("agora", "dirlink"))
+        self.assertEqual(jc.ensure_client(), "foreign")
+        self.assertEqual(jc.tree_scan(self.lib())[1], ["agora/dirlink"])
+        # 종류 칸 = l(문자 그대로 · o 로 뭉개지 않는다)
+        d = os.path.join(self.tmp, "kinds")
+        os.makedirs(d)
+        with open(os.path.join(d, "a"), "wb") as f:
+            f.write(b"A")
+        os.symlink("a", os.path.join(d, "b"))
+        rows = "f\ta\t%s\nl\tb\t-\n" % hashlib.sha256(b"A").hexdigest()
+        self.assertEqual(jc.tree_scan(d), (hashlib.sha256(rows.encode()).hexdigest(), ["b"]))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO = POSIX 전용")
+    def test_fifo_in_tree_is_foreign(self):
+        ev = self._odd_tree_untouched(lambda: os.mkfifo(self.lib("bin", "pipe")))
+        self.assertEqual(ev["odd"], ["bin/pipe"])
+
+    def test_bundled_zip_with_empty_dir_refused(self):
+        self.put(_zip(self.NEW + [("empty/", "")]))
+        self.assertEqual(jc.ensure_client(), "refused")
+        self.assertFalse(os.path.exists(self.lib()))
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        self.assertEqual(ev[-1]["why"], "bundled zip makes irregular tree")
+
+    def test_real_bundle_pin_fingerprint_checked_at_runtime(self):
+        """실 동봉 zip — 넷째 칸 = 실행 때 잰 v2 지문이면 설치 · v1 산식 값(옛 핀 꼴)이면 pin_fingerprint_mismatch 로 거부."""
+        real = os.path.join(os.path.dirname(BIN), "install")
+        pin = jc._read_pin(os.path.dirname(BIN))
+        blob = "agora-client-%s.zip.b64" % pin["ver"]
+        data = jc._blob_bytes(os.path.join(real, blob), pin)
+        os.makedirs(os.path.join(self.pack, "install"))
+        shutil.copy(os.path.join(real, blob), os.path.join(self.pack, "install", blob))
+        v1_rows = {}
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for info in zf.infolist():
+                if not info.is_dir():
+                    v1_rows[info.filename] = hashlib.sha256(zf.read(info)).hexdigest()
+        v1 = hashlib.sha256("".join(sorted("%s\t%s\n" % kv for kv in v1_rows.items())).encode()).hexdigest()
+        head = "%s %s %d" % (pin["ver"], pin["sha"], pin["size"])
+        pin_path = os.path.join(self.pack, "install", "agora-client.pin")
+        with open(pin_path, "w", newline="\n") as f:
+            f.write("%s %s\n" % (head, v1))
+        self.assertNotEqual(v1, jc.zip_fingerprint(data))
+        self.assertEqual(jc.ensure_client(), "refused")
+        self.assertFalse(os.path.exists(self.lib()))
+        with open(pin_path, "w", newline="\n") as f:
+            f.write("%s %s\n" % (head, jc.zip_fingerprint(data)))
+        self.assertEqual(jc.ensure_client(), "installed")
+        self.assertEqual(jc.ensure_client(), "same")
+
     def test_lib_not_directory_untouched(self):
         self.put(_zip(self.NEW))
         os.makedirs(self.cfg)
@@ -742,6 +835,8 @@ class Fingerprint(Base):
             f.write("file")
         self.assertEqual(jc.ensure_client(), "foreign")
         os.remove(self.lib())
+        if os.name == "nt":
+            return                                      # 심볼릭 링크 = 윈 권한 필요(아래 반쪽은 POSIX 만)
         target = os.path.join(self.tmp, "elsewhere")
         os.makedirs(target)
         os.symlink(target, self.lib())

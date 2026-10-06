@@ -525,7 +525,8 @@ def write_facts(cfg=None, now=None):
 # ── 동봉 클라이언트 설치 ───────────────────────────────────────────────────────
 def _read_pin(pack):
     """핀 한 줄 `<판본> <zip sha256> <zip 바이트> [<트리 지문>]` → dict · 없음/형식 밖 = None.
-    ★3칸(옛 꼴)도 받는다 — 그때 지문은 None 이고 동봉 zip 에서 실행 때 잰다."""
+    ★3칸(옛 꼴)도 받는다 — 그때 지문은 None 이고 동봉 zip 에서 실행 때 잰다.
+    ★넷째 칸 = 지문 산식 v2 값이어야 한다 — 동봉 zip 의 v2 지문과 다르면 설치 거부(`pin_fingerprint_mismatch` · fail-closed)."""
     line = _first_line(os.path.join(pack, "install", "agora-client.pin"))
     if not line:
         return None
@@ -561,15 +562,24 @@ def _safe_parts(name):
     return parts
 
 
-# ── 트리 지문 — 「같은 판인가」는 `.pin` 글자가 아니라 **설치된 트리 내용**으로 판다 ─────────────
-# 지문 = sha256( 정렬한 줄 `<posix 상대경로>\t<파일 바이트 sha256 hex>\n` 의 UTF-8 ) · 대상 = 일반 파일 전부
-# · 뺌 = 맨 위 `.pin`(우리 표식) · `__pycache__/` 아래 · `*.pyc`(실행만 해도 생기는 것 — 사람 손이 아니다).
-def _fp_skip(parts):
-    return parts == [".pin"] or "__pycache__" in parts or parts[-1].endswith(".pyc")
+# ── 트리 지문 v2 — 「같은 판인가」는 `.pin` 글자가 아니라 **설치된 트리 내용**으로 판다 ─────────────
+# 지문 = sha256( 정렬한 줄 `<종류>\t<posix 상대경로>\t<sha256 hex 또는 ->\n` 의 UTF-8 ) · ★지문 산식 v2(리뷰 3R ⑤)
+#   종류 = f(일반 파일 · sha = 바이트 sha256) · d(폴더 · 빈 폴더 포함 · `-`) · l(심볼릭 링크 · `-`) · o(그 밖 = 장치·파이프·
+#   윈 정션 · `-`) — v1 은 경로+파일만 봐서 빈 폴더·링크가 지문에 안 보였다.
+#   뺌 = 맨 위 `.pin`(일반 파일 · 우리 표식) · `__pycache__` 폴더와 그 안 전부 · `*.pyc` 일반 파일(실행만 해도 생긴다).
+# ★설치된 트리에 l·o·빈 폴더가 하나라도 있으면 지문과 무관하게 「모르는 트리」(불가침 + 로그) — 우리 zip 은 만들지 않는다.
+FP_FORMULA = "v2"
+
+
+def _fp_skip(parts, kind):
+    if "__pycache__" in parts[:-1] or (kind == "d" and parts[-1] == "__pycache__"):
+        return True
+    return kind == "f" and (parts == [".pin"] or parts[-1].endswith(".pyc"))
 
 
 def _fp_digest(rows):
-    text = "".join(sorted("%s\t%s\n" % (rel, h) for rel, h in rows.items()))
+    """rows = {상대경로: (종류, sha 또는 "-")}."""
+    text = "".join(sorted("%s\t%s\t%s\n" % (k, rel, h) for rel, (k, h) in rows.items()))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -581,32 +591,66 @@ def _sha_file(path):
     return h.hexdigest()
 
 
-def tree_fingerprint(root):
-    """폴더 트리 지문(링크는 따라가지 않는다 · 일반 파일 아닌 것은 빼서 지문이 달라진다 = 고친 트리)."""
-    rows = {}
-    for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x != "__pycache__"]
-        for name in files:
-            p = os.path.join(d, name)
-            if not stat.S_ISREG(os.lstat(p).st_mode):
+def _kind(entry):
+    """os.DirEntry → f·d·l·o(링크는 따라가지 않는다 · 윈 정션 = o)."""
+    if entry.is_symlink():
+        return "l"
+    is_junction = getattr(entry, "is_junction", None)
+    if is_junction is not None and is_junction():
+        return "o"
+    if entry.is_dir(follow_symlinks=False):
+        return "d"
+    if stat.S_ISREG(entry.stat(follow_symlinks=False).st_mode):
+        return "f"
+    return "o"
+
+
+def tree_scan(root):
+    """(지문, 이상 목록) — 이상 = l·o 항목과 빈 폴더의 상대경로(뺌 대상 제외 · 최대 8개)."""
+    rows, odd = {}, []
+
+    def walk(d, prefix):
+        with os.scandir(d) as it:
+            entries = list(it)
+        if prefix and not entries:
+            odd.append("/".join(prefix) + "/")
+        for e in entries:
+            parts = prefix + [e.name]
+            k = _kind(e)
+            if _fp_skip(parts, k):
                 continue
-            rel = os.path.relpath(p, root).replace(os.sep, "/")
-            if not _fp_skip(rel.split("/")):
-                rows[rel] = _sha_file(p)
-    return _fp_digest(rows)
+            rel = "/".join(parts)
+            if k in ("l", "o"):
+                odd.append(rel)
+            rows[rel] = (k, _sha_file(e.path) if k == "f" else "-")
+            if k == "d":
+                walk(e.path, parts)
+    walk(root, [])
+    return _fp_digest(rows), sorted(odd)[:8]
+
+
+def tree_fingerprint(root):
+    return tree_scan(root)[0]
 
 
 def zip_fingerprint(data):
-    """zip 항목으로 잰 지문 — 그 zip 을 `_extract` 로 푼 트리의 `tree_fingerprint` 와 같다(같은 이름은 뒤 항목이 이긴다)."""
+    """zip 항목으로 잰 지문 — 그 zip 을 `_extract` 로 푼 트리의 `tree_fingerprint` 와 같다(같은 이름은 뒤 항목이 이긴다).
+    폴더 = 명시 폴더 항목 + **모든** 항목(뺄 파일 포함 — 풀면 그 폴더는 생긴다)의 상위 경로."""
     rows = {}
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for info in zf.infolist():
             parts = _safe_parts(info.filename)
             if parts is None:
                 raise ValueError("zip-slip:%s" % info.filename[:80])
-            if not parts or info.is_dir() or _fp_skip(parts):
+            if not parts:
                 continue
-            rows["/".join(parts)] = hashlib.sha256(zf.read(info)).hexdigest()
+            dirs = [parts[:i] for i in range(1, len(parts) if not info.is_dir() else len(parts) + 1)]
+            for dp in dirs:
+                if not _fp_skip(dp, "d"):
+                    rows["/".join(dp)] = ("d", "-")
+            if info.is_dir() or _fp_skip(parts, "f"):
+                continue
+            rows["/".join(parts)] = ("f", hashlib.sha256(zf.read(info)).hexdigest())
     return _fp_digest(rows)
 
 
@@ -735,39 +779,38 @@ def _ensure_locked(cfg, pack, pin, blob):
     ver = pin["ver"]
     lib = os.path.join(cfg, "lib")
     _sweep(cfg)
-    data = None
-    want = pin["fp"]
-    if want is None:                       # 3칸 핀 — 지문을 동봉 zip 에서 잰다
-        data = _blob_bytes(blob, pin)
-        if data is None:
-            return _refused(cfg, ver, "pin mismatch")
-        want = zip_fingerprint(data)
+    # ★동봉 zip 을 먼저 검증한다(리뷰 3R ⑤ · fail-closed): sha·바이트 = 핀 · 핀 넷째 칸 = 그 zip 의 v2 지문(3칸 옛 꼴 = zip 에서 잰다).
+    data = _blob_bytes(blob, pin)
+    if data is None:
+        return _refused(cfg, ver, "pin mismatch")
+    want = zip_fingerprint(data)
+    if pin["fp"] is not None and pin["fp"] != want:
+        return _refused(cfg, ver, "pin_fingerprint_mismatch", formula=FP_FORMULA, pin_fp=pin["fp"][:16], zip_fp=want[:16])
     replace_from = None
     if os.path.lexists(lib):
         if os.path.islink(lib) or not os.path.isdir(lib):
             log_event(cfg, "ensure-client", result="foreign", why="lib is not a directory", want=ver)
             return "foreign"
-        have = tree_fingerprint(lib)
+        have, odd = tree_scan(lib)
+        if odd:                            # 링크·특수 파일·빈 폴더 = 우리가 깐 트리가 아니다
+            log_event(cfg, "ensure-client", result="foreign", why="symlink, special file or empty dir", want=ver,
+                      odd=odd)
+            return "foreign"
         if have == want:
             return "same"
         replace_from = _read_known(pack).get(have)
         if replace_from is None:
             log_event(cfg, "ensure-client", result="foreign", why="modified or unknown client", want=ver,
-                      have_fp=have[:16])
+                      have_fp=have[:16], formula=FP_FORMULA)
             return "foreign"
-    if data is None:
-        data = _blob_bytes(blob, pin)
-        if data is None:
-            return _refused(cfg, ver, "pin mismatch")
-    if zip_fingerprint(data) != want:
-        return _refused(cfg, ver, "pin fingerprint mismatch")
     tmp = os.path.join(cfg, "lib.tmp-%s" % secrets.token_hex(4))
     old = None
     try:
         os.makedirs(tmp)
         _extract(data, tmp)
-        if tree_fingerprint(tmp) != want:
-            raise ValueError("unpacked fingerprint mismatch")
+        got, odd = tree_scan(tmp)
+        if got != want or odd:             # 빈 폴더를 만드는 zip 도 거부(깔면 다음 판이 「모르는 트리」로 본다)
+            raise ValueError("unpacked fingerprint mismatch" if got != want else "bundled zip makes irregular tree")
         with open(os.path.join(tmp, ".pin"), "w", encoding="utf-8", newline="\n") as f:
             f.write("%s %s %d %s\n" % (ver, pin["sha"], pin["size"], want))
         if replace_from is not None:       # 옛 판은 옆으로 → 새 판 게시 → 옛 판 삭제(사이에 끊기면 lib 없음 = 다음 판이 새로 깐다)

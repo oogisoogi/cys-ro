@@ -23,6 +23,17 @@ pub const OWNER_FILE: &str = "txn.owner.json";
 /// ★2R B6/H⑥: 위임 자식 잠금 — 위임 받은 자식이 작업 끝까지 쥔다(부모가 죽어 `txn.lock` 이 풀려도 새 트랜잭션은 이것이 풀릴 때까지
 /// 못 연다). 자식은 한 번에 하나(러너는 자식을 차례로 부른다).
 pub const CHILD_LOCK_FILE: &str = "txn.child.lock";
+
+/// ★4판(codex 3R MINOR 승격): 중첩 위임 깊이별 자식 잠금(`txn.child.lock.<깊이>` · 깊이 1..=[`MAX_NEST`]) — 같은 깊이 형제는 서로 막는다.
+pub const MAX_NEST: u32 = 4;
+
+pub fn child_lock_name(depth: u32) -> String {
+    if depth == 0 {
+        CHILD_LOCK_FILE.to_string()
+    } else {
+        format!("{CHILD_LOCK_FILE}.{depth}")
+    }
+}
 /// ★2판(C1 개정 · 윈 CI T8): 토큰 없는 CLI 참가자(rotate·init-pack·pack-update·pack-plan)의 **공유** 잠금 — 여럿이 함께 쥘 수 있고,
 /// 러너·복구기([`acquire`])는 이것이 쥐어져 있으면 트랜잭션을 열지 않는다. 설치기(⓪-a)가 보는 `txn.lock` 은 건드리지 않는다
 /// (짧은 팩 명령이 설치기 「갱신 중」 창을 띄우던 회귀 차단).
@@ -201,16 +212,23 @@ pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
             let _ = f.unlock();
             busy(why)
         };
-        let child = match open_lock_file(dir, CHILD_LOCK_FILE) {
-            Ok(c) => c,
-            Err(e) => return Err(refuse(format!("자식 잠금 파일: {}", e.detail))),
-        };
-        match child.try_lock() {
-            Ok(()) => {
-                let _ = child.unlock();
+        // ★4판: 깊이 0 + 중첩 깊이별 자식 잠금 전부(부모 위임 자식이 죽어도 손자가 살아 있으면 새 트랜잭션을 열지 않는다)
+        for depth in 0..=MAX_NEST {
+            let name = child_lock_name(depth);
+            if depth > 0 && !dir.join(&name).exists() {
+                continue;
             }
-            Err(TryLockError::WouldBlock) => return Err(refuse("위임 자식이 아직 작업 중(자식 잠금)".into())),
-            Err(TryLockError::Error(e)) => return Err(refuse(format!("자식 잠금 시도: {e}"))),
+            let child = match open_lock_file(dir, &name) {
+                Ok(c) => c,
+                Err(e) => return Err(refuse(format!("자식 잠금 파일: {}", e.detail))),
+            };
+            match child.try_lock() {
+                Ok(()) => {
+                    let _ = child.unlock();
+                }
+                Err(TryLockError::WouldBlock) => return Err(refuse(format!("위임 자식이 아직 작업 중(자식 잠금 {name})"))),
+                Err(TryLockError::Error(e)) => return Err(refuse(format!("자식 잠금 시도: {e}"))),
+            }
         }
         // ★2판 C1: 토큰 없는 CLI 참가자(공유 잠금)가 일하는 중이면 열지 않는다 — 순서 = 소유자 기록·txn.lock 을 **먼저** 쥐고 본다
         //   (그 뒤 공유 잠금을 잡는 참가자는 txn.lock 이 잡힌 것을 보고 물러난다 · 양방향 원자).
@@ -266,18 +284,33 @@ impl Drop for DelegatedGuard {
 pub const ENV_TXN_DEPTH: &str = "CYS_UPDATE_TXN_DEPTH";
 
 pub fn verify_delegated(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe) -> Result<DelegatedGuard, UpdateErr> {
-    verify_delegated_at(dir, arg, env, probe, false)
+    verify_delegated_at(dir, arg, env, probe, 0)
 }
 
-/// `nested` = 이 프로세스가 위임 자식의 자식(깊이 ≥1 · [`ENV_TXN_DEPTH`]).
-pub fn verify_delegated_at(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe, nested: bool) -> Result<DelegatedGuard, UpdateErr> {
+/// `depth` = 이 프로세스의 위임 깊이([`ENV_TXN_DEPTH`] · 0 = 러너의 직접 자식).
+pub fn verify_delegated_at(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe, depth: u32) -> Result<DelegatedGuard, UpdateErr> {
     if env != Some(arg) && !super::mutant("B6") {
         return Err(busy("⓪ --txn 인자 ≠ CYS_UPDATE_TXN"));
     }
-    if nested && !super::mutant("U2-NEST") {
-        // 부모 위임 자식이 자식 잠금을 쥔 채 우리를 띄웠다 — 사슬 검증만(소유 pid = 조상 · 토큰 · 잠금 생존 · 시작 시각)
+    if depth > MAX_NEST {
+        return Err(busy(format!("위임 깊이 {depth} > {MAX_NEST}")));
+    }
+    if depth >= 1 && !super::mutant("U2-NEST") {
+        // 부모 위임 자식이 깊이 0 자식 잠금을 쥔 채 우리를 띄웠다 — 그 잠금은 재진입(안 잡음)하되 ★4판(codex 3R): **같은 깊이 형제**는
+        //   깊이별 잠금으로 서로 막는다(전엔 잠금 0 = 형제 둘 다 통과). 사슬 검증(소유 pid = 조상 · 토큰 · 잠금 생존 · 시작 시각)은 그대로.
+        let file = if super::mutant("U2-NESTSIB") {
+            None
+        } else {
+            let f = open_lock_file(dir, &child_lock_name(depth))?;
+            match f.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => return Err(busy(format!("같은 깊이({depth}) 위임 형제가 작업 중"))),
+                Err(TryLockError::Error(e)) => return Err(busy(format!("깊이 {depth} 자식 잠금 시도: {e}"))),
+            }
+            Some(f)
+        };
         let owner = verify_owner_chain(dir, arg, probe)?;
-        return Ok(DelegatedGuard { file: None, owner });
+        return Ok(DelegatedGuard { file, owner });
     }
     // 자식 잠금을 먼저 잡고(다른 위임 자식 = busy) 아래 검증을 한다 — 검증 실패면 guard drop 으로 놓인다.
     let child = open_lock_file(dir, CHILD_LOCK_FILE)?;
@@ -350,8 +383,8 @@ pub fn acquire_or_delegate(dir: &Path, owner: &str, arg: Option<&str>, env: Opti
         (Some(a), e) => {
             let tok = Token::parse(a).ok_or_else(|| busy("토큰 형식"))?;
             let et = e.and_then(Token::parse);
-            let nested = std::env::var(ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) >= 1;
-            verify_delegated_at(dir, &tok, et.as_ref(), &ProcProbe::real(), nested).map(Participation::Delegated)
+            let depth = std::env::var(ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            verify_delegated_at(dir, &tok, et.as_ref(), &ProcProbe::real(), depth).map(Participation::Delegated)
         }
         (None, Some(_)) => Err(busy("⓪ env 토큰만 있고 --txn 인자 없음")),
     }
@@ -599,12 +632,37 @@ mod tests {
         let tok = parent.token();
         let rotate = verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap();
         assert!(verify_delegated(&d, &tok, Some(&tok), &yes()).is_err(), "깊이 0 형제 = 자식 잠금 busy");
-        let init_pack = verify_delegated_at(&d, &tok, Some(&tok), &yes(), true).expect("깊이 1 = 재진입");
+        let init_pack = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).expect("깊이 1 = 재진입");
         let bad = Token { epoch: tok.epoch + 1, ..tok.clone() };
-        assert!(verify_delegated_at(&d, &bad, Some(&bad), &yes(), true).is_err(), "중첩이어도 토큰 검증");
+        assert!(verify_delegated_at(&d, &bad, Some(&bad), &yes(), 2).is_err(), "중첩이어도 토큰 검증");
         let no = ProcProbe { is_ancestor: &|_| Some(false), start_time: &|p| pid_start_time(p) };
-        assert!(verify_delegated_at(&d, &tok, Some(&tok), &no, true).is_err(), "중첩이어도 조상 검증");
+        assert!(verify_delegated_at(&d, &tok, Some(&tok), &no, 2).is_err(), "중첩이어도 조상 검증");
         drop((init_pack, rotate, parent));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★4판(codex 3R MINOR 승격): 같은 rotate 자손이 중첩 명령 둘을 동시에 띄우면 — 깊이 1 형제 둘 중 하나는 busy · 놓으면 다음이
+    /// 들어온다 · 깊이 2 는 깊이 1 과 별개 · 손자가 깊이 잠금을 쥔 동안 부모 위임 자식이 죽어도 새 러너 acquire = 거부. 뮤턴트 U2-NESTSIB.
+    #[test]
+    fn nested_siblings_at_same_depth_exclude_each_other() {
+        let d = tmp("nestsib");
+        let parent = acquire(&d, "runner").unwrap();
+        let tok = parent.token();
+        let rotate = verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap();
+        let a = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).expect("깊이 1 첫째");
+        let e = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).unwrap_err();
+        assert!(e.detail.contains("같은 깊이"), "깊이 1 형제 = busy: {}", e.detail);
+        let deeper = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 2).expect("깊이 2 = 별개 잠금");
+        assert!(verify_delegated_at(&d, &tok, Some(&tok), &yes(), MAX_NEST + 1).is_err(), "깊이 상한");
+        drop(deeper);
+        drop(a);
+        let b = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).expect("첫째가 놓으면 형제 진입");
+        drop(rotate);
+        drop(parent);
+        let e = acquire(&d, "other").unwrap_err();
+        assert!(e.detail.contains("txn.child.lock.1"), "손자 생존 = 새 트랜잭션 거부: {}", e.detail);
+        drop(b);
+        assert!(acquire(&d, "other").is_ok());
         let _ = std::fs::remove_dir_all(&d);
     }
 

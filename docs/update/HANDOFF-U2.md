@@ -3,6 +3,29 @@
 > 브리프 = [master#71f53d34](파일 정본 `~/axdev/master/briefs/2026-10-06-cysr-118-u2-runner.md`) · 설계 정본 = `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md`(4판 · U1 편입).
 > 가지 `u2/runner-118` off `e2515bb0` · 워커 = worker-2(계정2 · Opus) · 커밋 = `git log --oneline e2515bb0..HEAD`.
 
+## §0-5 5판 델타(마지막 수리 판 · 정본 브리프 = ~/axdev/master/briefs/2026-10-07-cysr-118-u2-5r.md · 순환 재개 줄 master#076fe54a · 추가 1줄 master#a589549f · 착수 05:12)
+- **이월**: 4판 검수 = codex 4R(BLOCK 1 N3″ · MAJOR 3 M4/M6-원격·M8-pro·M5 · MINOR 4) · Fable 4R(BLOCK 0 · MAJOR 1 M9 · MINOR 3 n7~n9) · 원문 = `docs/update/REVIEW-U2-{codex,fable}-4r.md`(info/exclude · 커밋 불가).
+- **끝난 것(커밋 · 431d5d66 위)**:
+  - **N3″ · M5 · M8-pro · n8 · RecoverPack 결과** 599561ed = `current_attempt` → `AttemptView`(Ok·부재·손상·txn 불일치) — Ok 아니면 **재구성 0**(손상 저널 그대로 = 부팅 가드 유지 · seats_blocked · 「사람 필요」 1줄 · fail-closed) · 새 판인데 스냅샷 기록 없음 = Err · `attempt_end` = 삭제 + 폴더 fsync(실패 = `ended` 표지 원자 쓰기) · **M5** = 트리 단계 뒤 `write_reconstructed_pending`(손상 슬롯 보존 → Locked → **비종결 S7** · 호출자 잠금 토큰 그대로) → `daemon_alive`(본부 `system.identify` 실측)가 거짓이면 판정된 판으로 재기동 + 응답 폴링 → **그 뒤에만** Deferred 종결 · 재기동 실패 = S7 유지(부팅 가드) + seats_blocked · 다음 복구기 = S7 행(정식 자리 바이너리 기동 뒤 보류) · **M8-pro** = 팩 저널 **명시 커밋 기록**(`.pack-journal/commit.json` · 인덱스 `explicit_commit` · 있음 = 전진 완료 · 없음 = 롤백 · 옛 인덱스 = 종전 판정) + U2 판정 = (`.pack-version`, pro_revision) 튜플 · **n8** = 저널 없음·종결일 때만 `attempt_begin` · **codex MINOR 8** = RecoverPack 결과 기록(전진 = pack_ok · 되돌림 = deferred · 실패 = rollback_failed · to = 팩 판).
+  - **M9** d4428aa3 = `UserTree.pristine`(디스크 해시 == 그 팩 설치 매니페스트 해시 = 사용자 미수정 · B0 에 기록 · 요약 해시 제외) · V5 = 수정본은 바이트 동일 · 미수정본은 바이트 동일 또는 갱신 뒤 새 매니페스트와 일치 · ★**실 경로에서 드러난 두 번째 결함**: 팩 안 `.pristine/**`(벤더 3-way 병합 기준 사본 · init-pack 이 매 신판으로 갱신)이 지침 이름이라 사용자 트리로 수집 → 지침이 바뀐 모든 릴리스에서 **수정 여부와 무관하게** V5 「.pristine/… 바뀜」 → 사용자 트리·`is_user_path` 에서 제외 · N3′ 새 판 재구성 = 기준선 pristine ∩ 지금 pristine 은 되돌리지 않음(`refreshed_user_files`).
+  - **M4/M6-원격 · n9** 56eb36b9 = `pack_update_from_dir_gated(auto_plan)` — 위임 토큰이면 검증·전개된 **원격 꾸러미**로 `plan_install` → `pack_plan_auto_allowed` · 거부 = `pack-auto-hold: …`(dry-run·적용 공통 · 반영 0) · 러너 `pack_available`/`pack_apply` 가 그 줄을 보류 사유로 · 팩 단독 경로의 내장 팩 `pack-plan --auto` 호출 삭제 · smoke ⑦ 주석(n9).
+  - **MINOR · 스모크** 5f186a02 = 팩 공간 사실(전개 × 2 + 사용자 사본 + 예약 2 GiB · `pack_space_verdict`) · 사본 정리 실패 1줄 + 다음 `pack_prepare` 재삭제(`pack_backup_sweep`) · smoke ⑥ 좌석 셸 env 단언(N4) · ★master#a589549f = smoke 가 실행마다 debug cysd 1개를 고아로 남김(4판 실행분 **7** 실측) → trap EXIT 로 **이 실행이 띄운 cysd 만**(시작 env 의 격리 소켓 + 이 작업트리 cysd 경로 · pkill 금지) 종료 + `/tmp/u2s.*` 삭제 + 「잔존 cysd 0」 단언 · 남아 있던 7개는 같은 판별식으로 그 pid 만 종료(뒤 실측 0).
+- **종단 경로 시험(실 경로 · 브리프 §4)**:
+  | 지적 | 시험 | 지나는 실 경로 |
+  |---|---|---|
+  | N3″ ×3 | `realops::tests::reconstruct_fails_closed_when_this_attempt_is_missing_corrupt_or_foreign`(뮤턴트 U2-ATTEMPTOPEN = 4판 fail-open 재현 적색) | 실 `Runner::run`(S8 실 스냅샷) → S9 kill → 기록 부재 / 손상 / 남은 슬롯 txn 불일치(Degraded) → **`Runner::recover`**(실 RealOps) → SeatsBlocked · 부팅 가드 `journal_*` 유지 · 실행층 호출 0 · 사용자 훼손 그대로 · state.json seats_blocked |
+  | M5 ×2(+1) | `realops::tests::reconstruct_restarts_by_daemon_liveness_and_keeps_guard_until_restarted`(뮤턴트 U2-RESTART) | 트리 일치 + S7 에서 내린 데몬 → 정지 0 · 재기동 1 · 종결 / 재기동 실패 → SeatsBlocked · 저널 = 비종결 S7 · 부팅 가드 `recover_pending` → 다음 복구기 S7 행 = 기동·보류 / 데몬 살아 있음 → 호출 0 · 종결(데몬 = 가짜 `cys rotate` 가 만들고 지우는 표지 · RPC 가 그것을 봄) |
+  | 원격 계획 | cys `pack_update_auto_gate_holds_remote_plan_outside_auto_policy` | 실 서명 원격 꾸러미 → 실 서명·digest 검증·전개 → 원격 `plan_install` → 사용자 수정 지침 + 원격 변경(`.new` 병치) = `pack-auto-hold:` · 반영 0 / 같은 꾸러미 수동 = 반영(대조군) / 미수정 = 허용·반영 |
+  | pro revision 행렬 | `pack::tests::pro_revision_advance_kill_matrix_recovers_by_commit_record`(5지점) · `realops::tests::pack_recovery_pro_revision_advance_uses_commit_record_and_tuple`(뮤턴트 U2-PACKPRO 2 = 혼합 팩 재현) | 실 `apply_pack_transactional`(1.0.0/pro.1 → 1.0.0/pro.2 · `.pack-version` 전후 같음) 이 실 `.pack-journal` 을 남기고 journal·install·state(커밋 전) / commit·version(커밋 뒤)에서 죽음 → 실 `recover_pack_journal` = 롤백 / 전진 · U2 종단 = 실 `Runner::run_pack` → PACK_APPLY 뒤 실 트랜잭션 사망 → `Runner::recover` → 실 `recover_pack_at`(튜플) → 되돌림 + 사용자 트리 복원 · 결과 deferred / 전진 · 새 지침 유지 · 결과 pack_ok(to = 팩 판) |
+  | V5 ×3 | `verify::tests::v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits`(뮤턴트 U2-V5PRISTINE) · `realops::tests::refreshed_user_files_is_baseline_pristine_still_matching_new_manifest` | 실 `pack::install_into`(init-pack 과 같은 함수 · RefreshUser D1)로 지침이 바뀐 릴리스: 미수정 교체 → 통과 · 수정본 보존(.new) → 통과 · 수정본 훼손 → V5 · 미수정본 변조 → V5 |
+  | N4 좌석 | smoke ⑥ 셋째 줄 | 실 `rotate --txn` 이 띄운 데몬 → `new-surface` 좌석 셸 → `env` 에 `CYS_UPDATE_TXN*` 0(SEEN_SEAT = `CYS_SURFACE_ID` 판독 대조) |
+- **계약 변화(다른 티켓이 알아야 할 것)**:
+  - 팩 저널 `.pack-journal/index.json` 에 `explicit_commit: true` · 커밋 지점 = `.pack-journal/commit.json`(`{target_version, pro_revision}`) — **커밋 판정은 판 문자열이 아니라 이 기록**(옛 인덱스 = 종전). 팩 저널을 읽는 다른 코드는 이 규칙을 따를 것.
+  - `pack-update`(위임 토큰 = 자동 경로)가 원격 계획 자동 허용 밖이면 `error: pack-auto-hold: <사유>`(rc 1) — 수동 경로 무변화.
+  - `attempt.json` 에 `ended`(종결 표지 · 있으면 원천 아님). 재구성 저널 = `Locked → STOPPED`(비종결 · `write_reconstructed_pending` 전용 전이) → 재기동 확인 뒤 `DEFERRED`.
+  - B0 `user.pristine`(경로 집합) · 사용자 트리에서 `.pristine/**` 제외.
+- **남은 것**: 【확인요청】 · origin u2 push·병합 = master.
+
 ## §0-4 4판 델타(정본 브리프 = ~/axdev/master/briefs/2026-10-07-cysr-118-u2-4r.md · 순환 재개 줄 master#d02ef28b · 착수 03:01)
 - **이월**: 3판 검수 = codex 3R(BLOCK 1 N3′ · MAJOR 1 M4 · MINOR 4) · Fable 3R(BLOCK 1 N4 · MAJOR 4 M5~M8 · MINOR 6 n1~n6) · 원문 = `docs/update/REVIEW-U2-{codex,fable}-3r.md`(git info/exclude · 커밋 불가). 3판 옛 sha 는 02:4x 이력 재작성으로 계보 밖 → 이 문서의 3판 sha 를 현 계보로 교체(n6 · 아래 표).
 - **끝난 것(커밋 · c7df80f3 위 · 코드 끝 0ec3f0fc)**:
@@ -121,9 +144,16 @@
 
 **4판에서 더한 설계와 다른 점**
 15. **재구성 · 새 판 판정**(N3′): 설계 §3-11 ③ 「확정한 판의 팩·사용자 트리를 대조」 중 새 판이면 **사용자 트리만**(V5 바이트 정의) 대조·복원하고 팩 본문은 재기동의 init-pack 이 새 판으로 다시 깐다 — S8 스냅샷은 옛 팩이라 새 판 팩의 대조 원천이 없다. 단점 = S10 뒤 사용자가 고친 `local/` 파일도 스냅샷과 다르면 되돌린다(격리 보존 · V5 와 같은 판정).
-16. **재구성 뒤 재기동 실패**(M5): 처방 문면 「부팅 가드 유지」 대신 seats_blocked 기록 + 로그 1줄 — 재기동(rotate)이 띄우는 데몬 자체가 부팅 가드에 막히므로 종결 저널을 먼저 써야 한다(순서 = 대조·복원 → 종결 저널 → 재기동). 다음 앱 기동이 데몬을 띄운다.
-17. **팩 전용 게이트 2칸**(Fable M6 ②: 공간 ≥ tar×4 · 팩 저널 잔여 0): 매니페스트에 꾸러미 크기 칸이 없어 공간 칸은 두지 않음(pack-update 가 전개 전 검증 · 실패 = PACK_ROLLBACK 복구) · 팩 저널 잔여는 pack-update 착수 때 `recover_pack_journal` 이 먼저 치유 — 부분 채택.
+16. ~~**재구성 뒤 재기동 실패**(M5)~~ → ★5판 개정(codex 4R M5 · 아래 19): 처방 문면 「부팅 가드 유지」 대신 seats_blocked 기록 + 로그 1줄 — 재기동(rotate)이 띄우는 데몬 자체가 부팅 가드에 막히므로 종결 저널을 먼저 써야 한다(순서 = 대조·복원 → 종결 저널 → 재기동). 다음 앱 기동이 데몬을 띄운다.
+17. ~~**팩 전용 게이트 2칸**~~ → ★5판 공간 칸 채택(아래 21)(Fable M6 ②: 공간 ≥ tar×4 · 팩 저널 잔여 0): 매니페스트에 꾸러미 크기 칸이 없어 공간 칸은 두지 않음(pack-update 가 전개 전 검증 · 실패 = PACK_ROLLBACK 복구) · 팩 저널 잔여는 pack-update 착수 때 `recover_pack_journal` 이 먼저 치유 — 부분 채택.
 18. **`plan_restore`**: 보호 경로는 백업에 있어도 덮지 않는다(전엔 「백업에 없는 새 파일」에만 보호 적용) — 기존 호출자는 보호 경로를 백업에 담지 않으므로 행동 무변화 · 새 판 재구성(사용자 트리만)에 필요.
+
+**5판에서 더한 설계와 다른 점**
+19. **재구성 저널 = 비종결 S7 먼저**(M5): 전이표에 없는 `Locked → STOPPED` 를 `write_reconstructed_pending` **한 함수만** 쓴다 — 재기동 데몬이 부팅 가드를 지나려면 「잠금 소유자 토큰 == 비종결 저널 토큰」 이 필요하고(손상 저널 위에선 불가), 재기동 실패 시 가드가 남아야 하기 때문. S7 = 「교체 전·데몬 정지」 와 같은 뜻(재구성의 실물 판정이 S2~S6 을 대신). ⚠정직: 윈 + 정식 자리 = 새 판 + 재기동 실패 → 다음 복구기 S7 행의 `start_old` 는 러너 사본(옛 cys)으로 rotate 한다(맥은 정식 자리 cys) — 윈 실기 미실측(W 요청문 몫).
+20. **n2 재시도 자리**: 처방 「정리 실패 = 비종결 유지」 대신 **다음 팩 갱신 시작(`pack_prepare`)이 지난 종결 트랜잭션 사본을 다시 지움** — PACK_DONE 전에 지우면 그 사이 사망 때 복구가 적용 전 튜플(`pre-version` · 같은 폴더)을 잃어 커밋된 팩의 사용자 트리를 되돌린다(혼합 팩). 단점 = 다음 팩 갱신까지 사본 1벌이 남는다.
+21. **팩 공간식**: 매니페스트에 크기 칸이 없어 dry-run 이 전개한 `.pack-staging` 크기로 잰다(전개 × 2 + 사용자 사본 + 예약 2 GiB · N7 과 같은 예약). 단점 = 판정이 dry-run 뒤(꾸러미는 이미 받음 · 공간 부족 = 보류).
+22. **원격 계획 보류 오류 코드**: 새 `ErrCode` 를 두지 않고 4판 내장 계획 보류와 같은 `BuildInfoMismatch`(단계 `PACK`/`PACK_APPLY` · 사유 = 「팩 자동 보류: …」) — 결과 표·U4 문구 표 변경 0. 단점 = 코드만으로는 「원격 계획 보류」 와 「판 불일치」 를 못 가른다(사유 문자열로 가름).
+23. **V5 미수정본**: 처방 「새 매니페스트 해시와 일치 요구」 + **바이트 동일도 허용**(그 판이 그 지침을 안 바꾼 경우 = 매니페스트도 같은 해시라 동치 · 바이트 동일은 사용자 트리 무변화라 위반일 수 없음).
 
 ## §3 연결하지 않은 것 · 다음 티켓
 - U4: 앱 알림(위 `state.json` 칸 · `seats_blocked` 고정 안내) · 앱 창 재열기 · `macupdate` 앱 쪽 집행 함수 삭제(lib 사본으로 대체).
@@ -228,3 +258,21 @@
 | n5 | Fable MINOR | m2 realops 경로(서명 핀 → 후보 제외) 실 번들 시험 0 | 채택(문서 · 정직 고지) | 이 문서 | §5 ⓙ 1줄 |
 | n6 | Fable MINOR | HANDOFF sha 가 리베이스 전 것 | 채택 | 이 문서 | §0-3·§7-2 현 계보 sha 로 교체(옛 → 새: bf59a37c→b2c59917 · 40a69be7→c077aaf2 · caaab5c7→09c3d01d · d19674a0→b4f7f541 · c98fb2d9→0a607d3c · 64c8795f→aac31cf0 · 6a1da528→01fd8713 · 3c9e585f→5ec9d922 · f790a91a→ce711126 · a3f8d8b1≡9d053ce1 · 9fe2af4c≡c7df80f3 · 7630da0c≡0f34f112+리뷰 원문 2 — 트리 diff 로 확인) |
 - 반박 0. 부분 1(M6 의 팩 전용 공간 칸 · §2-17). 범위 밖 발견 2: ⑴ `pack-plan --json` 잠복 결함(§0-4) ⑵ 3판 V2 시험의 /bin/sleep 사본 = 좀비 이름 경주(e1505391).
+
+### §7-4 4R 채택/반박 표 — codex 8행 + Fable 4행 + master 1행(★5판 · 원문 = `docs/update/REVIEW-U2-{codex,fable}-4r.md` · info/exclude)
+| # | 출처·등급 | 지적(요지) | 판정 | 커밋 | 고친 곳 · 증명 시험(★ = 지적 경로를 실제로 지남) |
+|---|---|---|---|---|---|
+| N3″ | codex BLOCK | attempt 부재·손상 → None → reconstruct Ok(false) → 손상 저널 Deferred 종결·가드 해제 · 종결 삭제 오류 무시·fsync 없음 · 완전 Corrupt = 남은 아무 attempt | 채택 | 599561ed | `runner::{current_attempt → AttemptView, Runner::reconstruct, attempt_end}` · `RealOps::reconstruct(&Attempt)` · ★`reconstruct_fails_closed_when_this_attempt_is_missing_corrupt_or_foreign` · 뮤턴트 U2-ATTEMPTOPEN · (완전 Corrupt 수용 = 수명 보증 강화: 삭제+fsync · 실패 = `ended` 표지) |
+| M4/M6-원격 | codex MAJOR | pack-plan --auto 가 내장 PACK_ALL 검사 · 원격 dry-run 은 pack_plan_auto_allowed 미호출 | 채택(오류 코드 = §2-22) | 56eb36b9 | `pack_update_from_dir_gated` · `PACK_AUTO_HOLD_TAG` · `realops::pack_auto_hold` · ★`pack_update_auto_gate_holds_remote_plan_outside_auto_policy`(실 서명 원격 꾸러미 · 수동 대조군) |
+| M8-pro | codex MAJOR | 커밋 판정 = .pack-version 문자열 → 같은 base pro.1→pro.2 오인(양방향) | 채택 | 599561ed | `pack::{PACK_JOURNAL_COMMIT, JournalIndex.explicit_commit, recover_pack_journal, apply_pack_transactional ③b}` · `realops::{pack_commit_tuple, pack_committed}` · ★`pro_revision_advance_kill_matrix_recovers_by_commit_record` · ★`pack_recovery_pro_revision_advance_uses_commit_record_and_tuple` · 뮤턴트 U2-PACKPRO ×2 |
+| M5 | codex MAJOR | 재기동 = 복원했을 때만 · terminal 먼저 → 실패 시 가드 해제 | 채택(방식 = §2-19) | 599561ed | `journal::write_reconstructed_pending` · `Ops::daemon_alive` · `restart_after_reconstruct` 응답 폴링 · ★`reconstruct_restarts_by_daemon_liveness_and_keeps_guard_until_restarted` · 뮤턴트 U2-RESTART |
+| N4 좌석 | codex MINOR | smoke 는 데몬 env 만 · 좌석 셸 env 단언 없음 | 채택 | 5f186a02 | ★smoke ⑥ 셋째 줄(좌석 1 생성 → 셸 env) |
+| M6 공간 | codex MINOR | 팩 공간 게이트 없음 | 채택(방식 = §2-21) | 5f186a02 | `pack_space_verdict` · `pack_prepare` · `pack_space_verdict_and_backup_sweep` |
+| n2 | codex MINOR | 정리 실패를 영구히 삼킴 | 채택(방식 = §2-20) | 5f186a02 | `pack_backup_cleanup`(1줄) · `pack_backup_sweep`(다음 시작) · 같은 시험 |
+| RecoverPack | codex MINOR | 복구 종결이 결과 계약(pack_ok/rollback_failed · to) 미기록 | 채택 | 599561ed | `Recovery::RecoverPack` record · `Ops::recover_pack → Result<bool>` · `RealOps::recover_pack`(pack_to = 지금 판) · ★pro revision U2 종단(결과 deferred / pack_ok · to = 팩 판) |
+| M9 | Fable MAJOR | V5 바이트 동일 ↔ S10 RefreshUser → 지침 바뀐 릴리스 = 미수정 기계 매번 V5 → 영구 격리 | 채택(+ `.pristine/**` 결함 동반 수리 · §2-23) | d4428aa3 | `verify::{UserTree.pristine, collect_user_tree, v5, is_vendor_merge_base, is_user_path}` · `realops::refreshed_user_files` · ★`v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits`(실 install_into) · 뮤턴트 U2-V5PRISTINE |
+| n7 | Fable MINOR | M8 커밋 판정 한 축(pro_revision) | 채택(= M8-pro) | 599561ed | M8-pro 행 |
+| n8 | Fable MINOR | attempt_begin 이 advance 거부보다 먼저 지난 기록을 덮음 | 채택 | 599561ed | `Runner::enter` + `fresh_txn_allowed` |
+| n9 | Fable MINOR | smoke ⑦ 주석 옛 인자 | 채택 | 56eb36b9 | smoke ⑦ 주석 · (`rotate_ext_split` 시험 입력의 `--json` 은 「--auto 만 떼어냄」 의도 그대로 · 무변경) |
+| ORPHAN | master#a589549f(lead 실측) | smoke 실행마다 debug cysd 고아 1 | 채택 | 5f186a02 | smoke trap EXIT `reap`(격리 소켓 env + 작업트리 cysd 경로) · 「잔존 cysd 0 · 폴더 삭제」 단언 · 기존 7개 = 같은 판별식으로 종료(뒤 0) |
+- 반박 0 · 부분 0(방식 차이 5 = §2-19~23). 범위 밖 발견 1: ★`.pristine/**` 가 V5 사용자 트리에 들어가 있던 결함(1판 기원 · M9 의 실 경로 시험이 처음 드러냄 — Sim·가짜 cys 시험은 init-pack 이 파일을 갈지 않아 못 봄).

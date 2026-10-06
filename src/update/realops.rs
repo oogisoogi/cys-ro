@@ -961,6 +961,12 @@ impl Ops for RealOps {
     }
 
     fn pack_prepare(&mut self, j: &mut Journal) -> Step {
+        // ★5판(codex 4R MINOR 6 · Fable M6): 팩 공간 사실 — dry-run 이 전개한 원격 꾸러미 크기로 판정(매니페스트엔 크기 칸이 없다).
+        let unpacked = super::snapshot::estimate(&self.env.cys_root.join(".pack-staging"), &|_| true).unwrap_or(0);
+        let user = super::snapshot::estimate(&self.env.cys_root, &user_snapshot_filter(&self.env.cys_root)).unwrap_or(0);
+        pack_space_verdict(super::snapshot::free_space(&self.env.cys_root), unpacked, user).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
+        // ★5판(codex 4R MINOR 7 · n2 재시도): 지난 종결 트랜잭션이 못 지운 사용자 트리 사본을 이번 시작에 다시 지운다.
+        pack_backup_sweep(&self.env.update_dir, &j.txn_id);
         let (digest, snap) = pack_user_snapshot(&self.env.update_dir, &j.txn_id, &self.env.cys_root).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
         // ★4판(Fable 3R M8) · ★5판(codex 4R M8-pro): 적용 전 팩 판 튜플(`.pack-version` + pro_revision) — 복구가 「커밋됐나」를 이것과 비교한다.
         let pre = pack_commit_tuple(&self.env.cys_root.join("pack"));
@@ -1198,6 +1204,31 @@ pub fn parse_pack_dry_run(rc_ok: bool, stdout: &str, stderr: &str) -> Option<boo
 
 /// 재구성 뒤 재기동 생존 확인 상한.
 const RESTART_ALIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(if cfg!(test) { 2 } else { 20 });
+
+/// ★5판(codex 4R MINOR 6): 팩 적용 공간식 = 전개 크기 × 2(파일 반영 + 팩 저널 백업) + 사용자 트리 사본 + 예약(N7 과 같은 2 GiB) ·
+/// 여유 판독 불가 = 보류.
+pub fn pack_space_verdict(free: Option<u64>, unpacked: u64, user: u64) -> Result<(), String> {
+    let need = unpacked.saturating_mul(2).saturating_add(user).saturating_add(super::snapshot::RESERVE_BYTES);
+    match free {
+        Some(f) if f >= need => Ok(()),
+        Some(f) => Err(format!("팩 적용 공간 부족(여유 {f} < 필요 {need} = 전개 {unpacked}×2 + 사용자 사본 {user} + 예약)")),
+        None => Err("여유 공간 판독 불가".into()),
+    }
+}
+
+/// ★5판(n2 재시도): `backup/pack-*` 중 지금 txn 이 아닌 것(종결 뒤 정리 실패분) 삭제 — 실패는 다음 팩 갱신이 다시 시도.
+pub fn pack_backup_sweep(update_dir: &Path, keep_txn: &str) {
+    let root = super::snapshot::backup_root(update_dir);
+    let Ok(rd) = std::fs::read_dir(&root) else { return };
+    for e in rd.filter_map(|e| e.ok()) {
+        let n = e.file_name().to_string_lossy().to_string();
+        if n.starts_with("pack-") && n != format!("pack-{keep_txn}") {
+            if let Err(err) = std::fs::remove_dir_all(e.path()) {
+                eprintln!("[update] 팩 사본 정리 실패(다음 갱신이 재시도): {n}: {err}");
+            }
+        }
+    }
+}
 
 /// 팩 적용 전 판 기록 파일(`backup/pack-<txn>/pre-version`).
 pub const PACK_PRE_VERSION: &str = "pre-version";
@@ -1932,6 +1963,24 @@ mod tests {
         assert_eq!(rec.recover(), Outcome::Nothing);
         assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "live", "지난 시도 스냅샷으로 되돌리지 않음");
         assert!(calls(&d).is_empty(), "정지·재기동 0: {:?}", calls(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★5판(codex 4R MINOR 6·7): 팩 공간식(전개×2 + 사용자 사본 + 예약 · 판독 불가 = 보류) · 지난 종결 트랜잭션 사본 정리 재시도(지금 txn 보존).
+    #[test]
+    fn pack_space_verdict_and_backup_sweep() {
+        let r = super::super::snapshot::RESERVE_BYTES;
+        assert!(pack_space_verdict(Some(r + 300), 100, 100).is_ok());
+        assert!(pack_space_verdict(Some(r + 299), 100, 100).unwrap_err().contains("공간 부족"));
+        assert!(pack_space_verdict(None, 0, 0).is_err());
+        let d = std::env::temp_dir().join(format!("cys-u2-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let b = super::super::snapshot::backup_root(&d);
+        for n in ["pack-old1/user", "pack-cur/user", "9-txn"] {
+            std::fs::create_dir_all(b.join(n)).unwrap();
+        }
+        pack_backup_sweep(&d, "cur");
+        assert!(!b.join("pack-old1").exists() && b.join("pack-cur").exists() && b.join("9-txn").exists(), "팩 사본만 · 지금 txn 보존");
         let _ = std::fs::remove_dir_all(&d);
     }
 

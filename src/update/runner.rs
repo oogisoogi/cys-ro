@@ -595,10 +595,16 @@ impl<'a, O: Ops> Runner<'a, O> {
 }
 
 /// ★4판(Fable 3R n2): 팩 단독 갱신 종결 뒤 사용자 트리 사본(`backup/pack-<txn>/`) 정리 — 팩 판마다 `~/.cys/local` 사본이 쌓이지 않게.
+/// ★5판(codex 4R MINOR 7): 실패를 삼키지 않는다 — 1줄 남기고, 다음 팩 갱신의 `pack_prepare`(`realops::pack_backup_sweep`)가 다시 지운다
+/// (종결 뒤라 저널로 되돌아갈 수 없다 · 사본은 종결 트랜잭션의 것이라 지워도 안전).
 fn pack_backup_cleanup(j: &Journal) {
     if let Some(parent) = Path::new(&j.snapshot_dir).parent() {
         if parent.file_name().map(|n| n.to_string_lossy().starts_with("pack-")).unwrap_or(false) {
-            let _ = std::fs::remove_dir_all(parent);
+            if let Err(e) = std::fs::remove_dir_all(parent) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("[update] 팩 사본 정리 실패(다음 팩 갱신이 재시도): {}: {e}", parent.display());
+                }
+            }
         }
     }
 }

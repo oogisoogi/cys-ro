@@ -6,7 +6,8 @@
 #   ⑥ (★3판 N1) 러너 잠금 아래 실 `rotate --skip-drain --txn` → ④ `init-pack --txn` 중첩 위임 rc 0 · (★4판 N4) 그 데몬 env 에 위임 토큰 0
 #   ④ `self-update --auto --spawn` → (★2판 C18) 복구기 등록 실패 = rc 4 · 정상 = 러너 사본·복구기 plist(격리 폴더)·install_id 생성 · 러너가 떠서(피드 file:// 부재 = 미도달) 끝남
 #   ⑤ `rotate --stop-only --skip-drain`: 다른 소유자가 잠금을 쥐면 rc 26(txn_busy) · 잠금 없으면 0
-#   ⑦ (★4판 M4/M6/M7) `self-update --pack-only` 실 팩 경로: pack-plan --auto → pack-update 매니페스트만(꾸러미 0) → 서명 거부 = 보류
+#   ⑦ (★4판 M4/M6/M7) `self-update --pack-only` 실 팩 경로: pack-update 매니페스트만(꾸러미 0) → 서명 거부 = 보류
+#   끝 = (★5판) 이 실행이 띄운 cysd 잔존 0 · /tmp/u2s.* 삭제(trap EXIT · 실패 경로 포함)
 # 사용: scripts/tests/u2-smoke.sh   (cargo build --bin cys --bin cysd 뒤 · target/debug 바이너리를 쓴다) · exit 0 = 전건 OK
 set -u
 ROOT=$(git rev-parse --show-toplevel) || exit 2
@@ -27,6 +28,17 @@ iso() {
 fail=0
 ok() { printf 'OK   %s\n' "$1"; }
 bad() { printf 'BAD  %s\n' "$1"; fail=1; }
+# ★5판(master#a589549f): 이 실행이 띄운 cysd 만 거둔다 — 판별 = 시작 env 의 격리 소켓(`CYS_SOCKET=$SB/s.sock`) + 실행 파일이 이 작업트리 cysd
+#   (pkill·이름 일치 금지 · 다른 세션·설치본 데몬 무접촉). 정상·실패 모두 trap EXIT 로 정리하고 /tmp/u2s.* 도 지운다.
+own_daemons() { ps -axE -ww -o pid=,command= 2>/dev/null | awk -v s="CYS_SOCKET=$SB/s.sock" -v b="$CYSD" '$2 == b && index($0, s) { print $1 }'; }
+reap() {
+  local p
+  for p in $(own_daemons); do kill "$p" 2>/dev/null; done
+  for _ in $(seq 1 30); do [ -z "$(own_daemons)" ] && break; sleep 0.1; done
+  for p in $(own_daemons); do kill -9 "$p" 2>/dev/null; done
+}
+cleanup() { reap; [ -n "${SB:-}" ] && [ -d "$SB" ] && rm -rf "$SB"; }
+trap cleanup EXIT
 # 저널 쓰기(시험 전용 · lib 의 정본 직렬화를 거치게 python 이 아니라 시험 바이너리를 쓰지 않는다 — crc 가 있어 손으로 못 쓴다 →
 #  러너 상태기계가 남긴 저널을 재현하려면 lib 함수가 필요하므로 여기서는 rust 시험이 만든 표본 대신 「손상」·「비종결」 두 가지만 만든다)
 mkjournal() { # $1 = 상태 이름 — crc 는 lib 와 같은 식(정규 직렬화 sha256)이 필요하므로 cys 의 숨은 시험 동사 대신 python 으로 같은 직렬화를 만든다
@@ -123,12 +135,25 @@ try:
     print("DAEMON_ENV_TXN", sum(1 for t in penv.split() if t.startswith("CYS_UPDATE_TXN")), "SEEN_SOCKET", int(f"CYS_SOCKET={sb}/s.sock" in penv))
 except Exception as e:
     print("DAEMON_ENV_TXN ?", e, idn.stdout[:200], idn.stderr[:200])
+# ★5판(codex 4R MINOR 5 · N4): 그 데몬이 만든 **좌석 셸**의 env 에도 위임 토큰 0(좌석 1 생성 → 셸이 env 를 파일로)
+seat_env = os.path.join(sb, "seat.env")
+ns = subprocess.run([cys, "new-surface", "--cmd", f"env > {seat_env}.tmp && mv {seat_env}.tmp {seat_env}; sleep 2"], env=plain, capture_output=True, text=True, timeout=30)
+for _ in range(100):
+    if os.path.exists(seat_env):
+        break
+    time.sleep(0.1)
+try:
+    se = open(seat_env).read()
+    print("SEAT_ENV_TXN", sum(1 for l in se.splitlines() if l.startswith("CYS_UPDATE_TXN")), "SEEN_SEAT", int("CYS_SURFACE_ID=" in se))
+except Exception as e:
+    print("SEAT_ENV_TXN ?", e, ns.stdout[:200], ns.stderr[:200])
 subprocess.run([cys, "daemon", "stop"], env=plain, capture_output=True, timeout=30)
 PY
 if grep -q '^RC 0' "$SB/rot6.log" && ! grep -q '④ 새 팩 반영 실패' "$SB/rot6.log"; then ok "⑥ 실 위임 사슬 러너→rotate --txn→init-pack --txn 왕복 rc 0(★3판 N1)"; else bad "⑥ 위임 사슬 $(tail -c 600 "$SB/rot6.log")"; fi
 # SEEN_SOCKET 1 = ps -E 가 그 데몬의 env 를 실제로 읽었다(못 읽어 0 이 나온 것과 구분)
 if grep -q '^DAEMON_ENV_TXN 0 SEEN_SOCKET 1' "$SB/rot6.log"; then ok "⑥ rotate 가 띄운 데몬 env 에 CYS_UPDATE_TXN* 0(★4판 N4)"; else bad "⑥ 데몬 env 위임 토큰 $(grep DAEMON_ENV "$SB/rot6.log")"; fi
-pkill -f "$SB/s.sock" 2>/dev/null; true
+if grep -q '^SEAT_ENV_TXN 0 SEEN_SEAT 1' "$SB/rot6.log"; then ok "⑥ 그 데몬이 만든 좌석 셸 env 에 CYS_UPDATE_TXN* 0(★5판 N4 좌석)"; else bad "⑥ 좌석 env $(grep SEAT_ENV "$SB/rot6.log")"; fi
+reap
 # ⑦ ★4판(codex·Fable 3R M4/M6/M7) 실 팩 단독 경로: `self-update --pack-only`(디버그 입구) → auto::pack_only → 러너 잠금 → 러너 사본(=실 cys)
 #   `pack-update --dry-run --manifest-url file://… --txn` → 매니페스트·서명만 받음(꾸러미 0) → 서명 거부(시험 키 ≠ 내장 팩 키) = 보류 · 저널 0.
 #   ★5판(codex 4R M4/M6-원격 · Fable n9): 자동 허용 판정은 pack-update 가 원격 꾸러미 계획으로 한다(`pack-plan` 은 이 경로에서 안 부름 ·
@@ -145,5 +170,7 @@ if [ $rc -eq 0 ] && grep -q 'Deferred' "$SB/pack7.log" && grep -q 'pack-update -
   ok "⑦ 실 팩 단독 경로: pack-update 매니페스트만(꾸러미 0) → 서명 거부 = 보류 · 저널 0(★4판 M4/M6/M7)"
 else bad "⑦ rc=$rc dl=$dl $(head -c 400 "$SB/pack7.log") $(ls "$dl" 2>/dev/null) $(ls "$UPD")"; fi
 [ -e "$HOME/Library/LaunchAgents/com.cysjavis.cysr-update-recover.plist" ] && bad "실 LaunchAgents 에 plist 생김(격리 위반)" || ok "격리: 실 LaunchAgents 무접촉"
-rm -rf "$SB"
+cleanup
+left=$(ps -axE -ww -o pid=,command= 2>/dev/null | awk -v s="CYS_SOCKET=$SB/s.sock" -v b="$CYSD" '$2 == b && index($0, s) { print $1 }')
+[ -z "$left" ] && [ ! -d "$SB" ] && ok "정리: 이 실행이 띄운 cysd 잔존 0 · $SB 삭제(★5판 master#a589549f)" || bad "잔존 cysd: $left"
 exit $fail

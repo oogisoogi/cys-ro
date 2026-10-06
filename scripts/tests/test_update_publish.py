@@ -590,6 +590,53 @@ class TestRevocations(Base):
         self.assertEqual(publish(self.fx, "revocations", out, st).returncode, 0)
 
 
+class TestGateVerifyBoundaries(Base):
+    """codex 2R #11 — 게이트의 출발 seq 계획 자체(U1 없이 · 대역 cys 가 seq 별 판정을 돌려준다).
+    agora-client = 명시 설치 seq 경로: low-1 = ⓛ 거부 · lo..seq-1 = 허용 · seq·seq+1 = uptodate · 범위 상한 64."""
+
+    def run_gate(self, plan, seq=5, low=3, component="agora-client"):
+        body = {"kind": "component-release", "component": component, "release_seq": seq,
+                "min_from_release_seq": low, "assets": {"any": {"url": "u", "sha256": "a" * 64, "size": 1}}}
+        env = os.path.join(self.tmp, "env.json")
+        json.dump({"release": base64.b64encode(json.dumps(body).encode()).decode()}, open(env, "w"))
+        for f in (env + ".minisig", os.path.join(self.tmp, "rev.json"), os.path.join(self.tmp, "rev.json.minisig")):
+            open(f, "w").write("x")
+        fake = os.path.join(self.tmp, "fake-cys.py")
+        open(fake, "w").write("""#!%s
+import json, sys
+a = sys.argv; i = int(a[a.index("--installed-release-seq") + 1])
+v = json.loads(%r).get(str(i), {"verdict": "reject", "step": "ⓩ"})
+if v["verdict"] == "apply": v["asset"] = {"url": "u", "sha256": "a" * 64, "size": 1}
+print(json.dumps(v)); open(%r, "a").write("%%d\\n" %% i)
+""" % (sys.executable, json.dumps(plan), os.path.join(self.tmp, "calls")))
+        os.chmod(fake, 0o755)
+        return py("release-gate.py", "verify", "--cys", fake, "--component", component, "--channel", "stable",
+                  "--envelope", env, "--sig", env + ".minisig", "--revocations", os.path.join(self.tmp, "rev.json"),
+                  "--revocations-sig", os.path.join(self.tmp, "rev.json.minisig"))
+
+    GOOD = {"2": {"verdict": "reject", "step": "ⓛ"}, "3": {"verdict": "apply"}, "4": {"verdict": "apply"},
+            "5": {"verdict": "uptodate"}, "6": {"verdict": "uptodate"}}
+
+    def test_boundaries_happy(self):
+        r = self.run_gate(self.GOOD)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(open(os.path.join(self.tmp, "calls")).read().split(), ["2", "3", "4", "5", "6"])
+
+    def test_mut_boundaries(self):
+        for seqk, bad in (("2", {"verdict": "apply"}), ("2", {"verdict": "reject", "step": "ⓖ"}),
+                          ("6", {"verdict": "apply"}), ("5", {"verdict": "apply"})):
+            plan = dict(self.GOOD, **{seqk: bad})
+            r = self.run_gate(plan)
+            self.assertEqual(r.returncode, 1, (seqk, bad))
+            self.assertIn("installed %s" % seqk, r.stderr)
+
+    def test_mut_range_cap(self):
+        r = self.run_gate(self.GOOD, seq=100, low=1)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("상한 64", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "calls")))  # U1 을 부르기 전에 거부
+
+
 NODE = shutil.which("node")
 
 
@@ -887,18 +934,58 @@ class TestUpdateVerifyRoundTrip(Base):
         fm.sign(self.fx.key("f"), out, out + ".minisig", "t")
         return out
 
-    def gate(self, env, expect="apply", now="1790000100", installed="4"):
+    def gate(self, env, expect="apply", now="1790000100", installed=None, cys=None):
         e = dict(os.environ, CYS_UPDATE_TEST_KEYRING=self.fx.keyring, CYS_UPDATE_STATE_DIR=self.state,
                  CYS_UPDATE_NOW=now)
-        return py("release-gate.py", "verify", "--cys", VERIFY_BIN, "--component", "cysr", "--channel", "stable",
+        extra = ["--installed-release-seq", installed] if installed else []
+        return py("release-gate.py", "verify", "--cys", cys or VERIFY_BIN, "--component", "cysr", "--channel", "stable",
                   "--envelope", env, "--sig", env + ".minisig", "--revocations", self.rev,
-                  "--revocations-sig", self.rev + ".minisig", "--installed-release-seq", installed,
-                  "--expect", expect, env=e)
+                  "--revocations-sig", self.rev + ".minisig", "--expect", expect, *extra, env=e)
+
+    def wrapped_cys(self, edit):
+        """진짜 U1 cys 를 부르고 JSON 출력만 `edit`(파이썬 식 · 변수 j)로 고치는 대역 — 게이트의 대조 자체를 재기 위함."""
+        w = os.path.join(self.tmp, "cys-wrap.py")
+        open(w, "w").write("""#!%s
+import json, subprocess, sys
+p = subprocess.run([%r] + sys.argv[1:], capture_output=True, text=True)
+j = json.loads(p.stdout)
+%s
+sys.stdout.write(json.dumps(j)); sys.exit(p.returncode)
+""" % (sys.executable, VERIFY_BIN, edit))
+        os.chmod(w, 0o755)
+        return w
 
     def test_apply_both_rows(self):
         r = self.gate(self.envelope(self.b))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.count("출발 seq 4 전부 허용 판정"), 2)
+        self.assertEqual(r.stdout.count("출발 seq 1,2,3,4,5 전부 허용 판정(열거)"), 2)
+
+    def test_mut_payload_manifest_dropped_or_altered(self):
+        """codex 2R #10: 반환 행 전체 대조에 payload_manifest 포함 — 칸 누락·한 항목 변조 = 적색."""
+        e = self.envelope(self.b)
+        drop = ("for r in j.get('results', []):\n"
+                "    a = r.get('asset') or {}\n"
+                "    a.pop('payload_manifest', None)")
+        r = self.gate(e, cys=self.wrapped_cys(drop))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("payload_manifest", r.stderr)
+        alter = ("for r in j.get('results', []):\n"
+                 "    pm = (r.get('asset') or {}).get('payload_manifest')\n"
+                 "    if pm: pm[0]['sha256'] = '0' * 64")
+        r = self.gate(e, cys=self.wrapped_cys(alter))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("payload_manifest", r.stderr)
+
+    def test_mut_enumerate_range_drift(self):
+        """codex 2R #11: 열거 범위가 max(min_from,1)..=seq 와 다르면(하한 빠짐 · 후보 빠짐) 거부."""
+        e = self.envelope(self.b)
+        for edit in ("j['results'] = j['results'][1:]", "j['results'] = j['results'][:-1]"):
+            r = self.gate(e, cys=self.wrapped_cys(edit))
+            self.assertEqual(r.returncode, 1, edit)
+            self.assertIn("열거 범위", r.stderr)
+        r = self.gate(e, cys=self.wrapped_cys("j['results'][-1]['verdict'] = 'apply'"))
+        self.assertEqual(r.returncode, 1)  # 후보 자신 = uptodate 강제
+        self.assertIn("installed 5", r.stderr)
 
     def test_mut_tampered_body(self):
         raw = bytearray(open(self.b, "rb").read())
@@ -927,8 +1014,11 @@ class TestUpdateVerifyRoundTrip(Base):
         r = self.gate(self.envelope(self.b), now=str(NOW + 15 * 86400))
         self.assertEqual(r.returncode, 1)
 
-    def test_seq_not_newer_is_uptodate(self):
-        self.assertEqual(self.gate(self.envelope(self.b), expect="uptodate", installed="5").returncode, 0)
+    def test_mut_cysr_explicit_installed_refused(self):
+        """U1 2판 B4: cysr 는 명시 설치 seq 를 받지 않는다 — 게이트가 U1 을 부르기 전에 거부(가짜 설치 seq 경로 봉쇄)."""
+        r = self.gate(self.envelope(self.b), expect="uptodate", installed="5")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("명시 설치 seq", r.stderr)
 
     def test_mut_feed_key_used_for_body(self):
         b = json.load(open(self.b))

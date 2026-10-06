@@ -27,12 +27,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 TOMBSTONE = os.path.join(ROOT, "scripts", "release", "latest-tombstone.json")
 
 
-class GateFail(Exception):
-    pass
-
-
-class Undetermined(Exception):
-    pass
+from u1verify import GateFail, Undetermined  # noqa: E402 — 예외는 u1verify 와 하나(게시기·상속기도 같은 것을 잡는다)
 
 
 # ── assets ─────────────────────────────────────────────────────────────────────────
@@ -251,63 +246,14 @@ def stage_revocations(a):
     return out
 
 
-# ── verify(U1 cys update-verify) ─────────────────────────────────────────────────────
-ROW_FIELDS_PENDING_U1 = ("payload_manifest",)  # U1 Asset 에 칸이 생기면 비교에 들어간다(codex 1R #10 · master 가 U1 에 전달)
-
-
-def _run_verify(a, target, installed):
-    cmd = [a.cys, "update-verify", "--component", a.component, "--channel", a.channel,
-           "--envelope", a.envelope, "--sig", a.sig, "--revocations", a.revocations,
-           "--revocations-sig", a.revocations_sig, "--target", target,
-           "--installed-release-seq", str(installed), "--json"]
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    try:
-        return p.returncode, json.loads(p.stdout)
-    except ValueError:
-        raise Undetermined("update-verify 출력이 JSON 아님(rc %d): %s %s" % (p.returncode, p.stdout[-300:], p.stderr[-300:]))
+# ── verify(U1 cys update-verify) — 정본 = u1verify.py(게시기·상속기와 같은 함수) ─────────────────
+from u1verify import verify_envelope  # noqa: E402
 
 
 def stage_verify(a):
-    if not a.cys or not os.access(a.cys, os.X_OK):
-        raise Undetermined("cys 바이너리 없음(update-verify 필요 · U1 이상): %r" % a.cys)
-    env = json.load(open(a.envelope, encoding="utf-8"))
-    body = json.loads(base64.b64decode(env["release"]))
-    targets = a.target or sorted(body["assets"])
     accept = [x.strip() for x in a.expect.split(",") if x.strip()]
-    seq, low = int(body["release_seq"]), int(body["min_from_release_seq"])
-    # ★2판(codex 1R #11): 가짜 installed 0 금지 — 명시값이 없으면 허용 출발 seq 전부(min_from..seq-1 = accept) + seq 자신(uptodate).
-    if a.installed_release_seq is not None:
-        plan = [(a.installed_release_seq, accept)]
-    else:
-        plan = [(i, accept) for i in range(max(low, 1), seq)] + [(seq, ["uptodate"])]
-        if not plan[:-1]:
-            raise GateFail("허용 출발 seq 가 없다(min_from_release_seq %d ≥ release_seq %d)" % (low, seq))
-    out, pending = [], set()
-    for t in targets:
-        for installed, ok in plan:
-            rc, v = _run_verify(a, t, installed)
-            verdict = v.get("verdict")
-            expired_prev = (a.allow_expired and verdict == "reject" and v.get("code") == "update.feed_expired"
-                            and v.get("step") == "ⓔ")
-            if verdict not in ok and not expired_prev:
-                raise GateFail("update-verify[%s · installed %d] = %s/%s(step %s · %s) rc %d — 허용 %s"
-                               % (t, installed, verdict, v.get("code"), v.get("step"), v.get("detail"), rc, ok))
-            if verdict in ("apply", "halt", "not_in_rollout"):
-                # ★2판(codex 1R #10): 반환 행 **전체**를 원문 행과 대조(sha 하나 아님).
-                got, want = v.get("asset") or {}, body["assets"][t]
-                if got:
-                    for k in sorted(set(want) | set(got)):
-                        if k in ROW_FIELDS_PENDING_U1 and k not in got:
-                            pending.add(k)
-                            continue
-                        if got.get(k) != want.get(k) and not (k == "features" and got.get(k) in (None, []) and want.get(k) == []):
-                            raise GateFail("update-verify[%s] 반환 행 칸 %s 가 원문과 다르다: %r ≠ %r" % (t, k, got.get(k), want.get(k)))
-                elif verdict == "apply":
-                    raise GateFail("update-verify[%s] apply 인데 asset 없음" % t)
-        out.append("update-verify[%s] 출발 seq %s 전부 허용 판정" % (t, ",".join(str(i) for i, _ in plan)))
-    for k in sorted(pending):
-        print("::notice::반환 행 칸 %s 비교 생략 — U1 Asset 칸 대기(codex 1R #10)" % k)
-        out.append("반환 행 칸 %s = U1 칸 대기(비교 생략 · 사유 인쇄)" % k)
+    env = json.load(open(a.envelope, encoding="utf-8"))
+    out = verify_envelope(a.cys, a, accept)
     if a.stamp:
         uc.write_stamp(a.envelope, open(a.sig, "rb").read(), env.get("key_id"), "feed", uc.STAMP_BY_U1,
                        uc.trusted_now(), {"kind": "envelope", "feed_rev": env.get("feed_rev"),

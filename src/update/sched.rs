@@ -321,7 +321,7 @@ mod tests {
     /// ★1R MAJOR(M1) 뮤테이션: 구조 손상(`{}`·`{"jobs":"bad"}`·비객체 잡·배열 뿌리) = 사실 None · 이행 쓰기 0.
     #[test]
     fn m1_structure_damage_is_unknown_not_empty() {
-        let d = tmp("m1");
+        let d = tmpdir("m1");
         let pack = d.join("pack");
         std::fs::create_dir_all(&pack).unwrap();
         let p = pack.join("schedule.json");

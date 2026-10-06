@@ -147,7 +147,15 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             0
         }
         UpdCmd::SelfUpdate { check: true, json } => {
-            let dir = buildinfo::state_dir();
+            // ★1R B1: 운영 상태 폴더를 못 정하면 판정 불가(rc 3 · `.` 후퇴 0).
+            let dir = match buildinfo::state_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    let v = serde_json::json!({"decision": "undetermined", "code": "update.verify_failed", "step": "state_dir", "detail": e});
+                    print(json, &v, &format!("decision=undetermined {e}"));
+                    return 3;
+                }
+            };
             let (v, rc) = check::run_check(&dir, &crate::pack::pack_dir(), hooks);
             let hold = v["gates"]["first_hold"]["id"].as_str().unwrap_or("-").to_string();
             print(json, &v, &format!("decision={} feed={} first_hold={hold} (교체 0 · 판정만)", v["decision"], v["feed"]["verdict"]));
@@ -179,13 +187,24 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                 (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
                 (Err(e), ..) | (_, Err(e), ..) | (_, _, Err(e), _) | (_, _, _, Err(e)) => return undetermined(e),
             };
+            // ★1R B4: cysr 의 설치판 seq 는 이 바이너리 내장값뿐 — 호출자 주장(낮춰 부른 seq 로 다운그레이드 판정)은 거부(rc 2).
+            //   외부 seq 는 바이너리 밖에 사는 agora-client 만 받는다.
             let installed = match (installed_release_seq, component.as_str()) {
+                (Some(_), "cysr") if !super::mutant("B4") => {
+                    let detail = "cysr 은 --installed-release-seq 를 받지 않는다(내장 release_seq 만)";
+                    let v = serde_json::json!({"verdict": "reject", "code": "update.verify_failed", "step": "input", "detail": detail});
+                    print(json, &v, &format!("reject update.verify_failed {detail}"));
+                    return 2;
+                }
                 (Some(n), _) => n,
                 (None, "cysr") => buildinfo::release_seq(),
                 (None, _) => return undetermined("--installed-release-seq 필요".into()),
             };
             let target = target.unwrap_or_else(|| if component == "cysr" { buildinfo::TARGET.into() } else { "any".into() });
-            let dir = buildinfo::state_dir();
+            let dir = match buildinfo::state_dir() {
+                Ok(d) => d,
+                Err(e) => return undetermined(e),
+            };
             let trusted = check::read_trusted(&dir);
             let (accepted_rev, last_trusted) = match &trusted {
                 Ok(t) => (t.revocations_rev, t.last_trusted_time),
@@ -215,29 +234,44 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                 rollout_bucket: bucket,
             };
             let o = feed::verify_feed(&inp);
-            let signed_ok = !matches!(o.verdict, Verdict::Reject | Verdict::Undetermined);
             let mut v = o.to_json();
-            if record && signed_ok {
-                let rec = (|| -> Result<(), String> {
-                    check::bump_trusted(&dir, o.revocations.as_ref().map(|r| r.rev), o.trusted_signed_at)?;
+            let mut rc = o.verdict.rc();
+            if record {
+                // ★1R B3: R 검증을 통과한 폐기문은 **판정과 무관하게**(뒤 단계 거부·판정 불가여도) 원문·서명째 내구 기록하고 신뢰
+                //   시각을 올린다. 수용 기록(feed_rev·봉투 sha256)은 uptodate 일 때만. 기록 실패 = rc 3(조용한 rc 0 금지).
+                let strict = !super::mutant("B3r");
+                let signed_ok = !matches!(o.verdict, Verdict::Reject | Verdict::Undetermined);
+                let rec = (|| -> Result<bool, String> {
+                    let mut wrote = false;
+                    if let Some(r) = o.revocations.as_ref().filter(|_| strict || signed_ok) {
+                        check::record_revocations(&dir, &rev, &rev_sig, r.rev, r.signed_at)?;
+                        check::bump_trusted(&dir, o.trusted_signed_at)?;
+                        wrote = true;
+                    }
                     if o.verdict == Verdict::Uptodate {
                         let a = AcceptedFeed {
-                            feed_rev: o.feed_rev.unwrap_or(0),
-                            release_seq: installed,
-                            signed_at: o.envelope_signed_at.unwrap_or(0),
+                            feed_rev: o.feed_rev.ok_or("uptodate 인데 feed_rev 없음")?,
+                            envelope_sha256: o.envelope_sha256.clone().ok_or("uptodate 인데 봉투 sha256 없음")?,
+                            feed_release_seq: o.release_seq.ok_or("uptodate 인데 release_seq 없음")?,
+                            installed_release_seq: installed,
+                            signed_at: o.envelope_signed_at.ok_or("uptodate 인데 봉투 signed_at 없음")?,
                             at: t_now,
                         };
                         feed::write_accepted(&acc_path, &a)?;
+                        wrote = true;
                     }
-                    Ok(())
+                    Ok(wrote)
                 })();
-                v["recorded"] = serde_json::json!(rec.is_ok());
+                v["recorded"] = serde_json::json!(matches!(rec, Ok(true)));
                 if let Err(e) = rec {
                     v["record_error"] = serde_json::json!(e);
+                    if strict {
+                        rc = 3;
+                    }
                 }
             }
             print(json, &v, &format!("{} {} [{}] {}", o.verdict.as_str(), o.code, o.step, o.detail));
-            o.verdict.rc()
+            rc
         }
     }
 }
@@ -266,71 +300,140 @@ mod tests {
         assert_eq!(argv.len(), 4);
     }
 
-    /// `cys update-verify` 종단(시험 키 · 격리 상태 폴더 · 디버그 시험 키링 env): 판정·rc·`--record` 앵커·후퇴 거부.
-    #[test]
-    fn update_verify_end_to_end_with_record() {
+    /// 아고라 클라이언트 피드(시험 키) — 외부 seq 를 받는 유일한 부품이라 `--record` 종단은 이것으로 돈다(1R B4).
+    fn agora_signed(k: &super::super::keys::testkit::Keys, feed_rev: u64, seq: u64, rev: serde_json::Value) -> super::super::feed::fixture::Signed {
         use super::super::feed::fixture::*;
-        use super::super::keys::testkit::Keys;
-        let _k = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let d = std::env::temp_dir().join(format!("cys-u1-cli-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("st")).unwrap();
-        let k = Keys::new();
-        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
-        let _e = (
-            crate::pack::EnvGuard::set("CYS_UPDATE_STATE_DIR", d.join("st")),
-            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
-            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
-        );
-        let write = |feed_rev: u64, seq: u64, rev: u64| {
-            let s = sign_all(&k, &envelope_json(&k, &body_json(&k, seq), feed_rev), &revocations_json(&k, rev, serde_json::json!([])));
-            std::fs::write(d.join("e.json"), &s.env).unwrap();
-            std::fs::write(d.join("e.sig"), &s.env_sig).unwrap();
-            std::fs::write(d.join("r.json"), &s.rev).unwrap();
-            std::fs::write(d.join("r.sig"), &s.rev_sig).unwrap();
-        };
-        let run_v = |installed: u64, record: bool| {
+        let mut body = body_json(k, seq);
+        body["component"] = "agora-client".into();
+        body["requires"] = serde_json::json!({"min_cysr_release_seq": 1, "python": ">=3.9"});
+        body["assets"] = serde_json::json!({"any": {
+            "url": format!("https://jarvis.godmeyou.kr/install/agora-client-0.1.{seq}.zip"), "size": 10, "sha256": "ab".repeat(32),
+            "max_unpacked": 100, "target": "any", "build_id": format!("agora{seq}"), "release_seq": seq, "features": []}});
+        let mut env = envelope_json(k, &body, feed_rev);
+        env["component"] = "agora-client".into();
+        sign_all(k, &env, &rev)
+    }
+
+    struct E2e {
+        d: PathBuf,
+        _e: (crate::pack::EnvGuard, crate::pack::EnvGuard, crate::pack::EnvGuard),
+        _k: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl E2e {
+        fn new(tag: &str, k: &super::super::keys::testkit::Keys) -> E2e {
+            use super::super::feed::fixture::NOW;
+            let lock = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let d = std::env::temp_dir().join(format!("cys-u1-cli-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(d.join("st")).unwrap();
+            std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+            let e = (
+                crate::pack::EnvGuard::set("CYS_UPDATE_STATE_DIR", d.join("st")),
+                crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+                crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+            );
+            E2e { d, _e: e, _k: lock }
+        }
+        fn put(&self, s: &super::super::feed::fixture::Signed) {
+            std::fs::write(self.d.join("e.json"), &s.env).unwrap();
+            std::fs::write(self.d.join("e.sig"), &s.env_sig).unwrap();
+            std::fs::write(self.d.join("r.json"), &s.rev).unwrap();
+            std::fs::write(self.d.join("r.sig"), &s.rev_sig).unwrap();
+        }
+        fn run(&self, component: &str, installed: Option<u64>, record: bool) -> i32 {
             run(
                 UpdCmd::UpdateVerify {
-                    component: "cysr".into(),
+                    component: component.into(),
                     channel: "stable".into(),
-                    envelope: d.join("e.json"),
-                    sig: d.join("e.sig"),
-                    revocations: d.join("r.json"),
-                    revocations_sig: d.join("r.sig"),
-                    installed_release_seq: Some(installed),
+                    envelope: self.d.join("e.json"),
+                    sig: self.d.join("e.sig"),
+                    revocations: self.d.join("r.json"),
+                    revocations_sig: self.d.join("r.sig"),
+                    installed_release_seq: installed,
                     target: Some("macos-arm64".into()),
                     record,
                     json: true,
                 },
                 &check::Hooks { seats: &|| None, pending_approvals: &|| None },
             )
-        };
-        write(5, 9, 2);
-        assert_eq!(run_v(8, false), 0, "apply");
-        assert!(!d.join("st/trusted.json").exists(), "--record 없으면 쓰기 0");
-        assert_eq!(run_v(9, true), 0, "uptodate + record");
-        let acc = feed::read_accepted(&check::accepted_path(&d.join("st"), "cysr", "stable")).unwrap().unwrap();
-        assert_eq!((acc.feed_rev, acc.release_seq), (5, 9));
-        let t = check::read_trusted(&d.join("st")).unwrap();
-        assert_eq!(t.revocations_rev, Some(2));
+        }
+        fn st(&self) -> PathBuf {
+            self.d.join("st")
+        }
+    }
+
+    impl Drop for E2e {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.d);
+        }
+    }
+
+    /// `cys update-verify` 종단(시험 키 · 격리 상태 폴더 · 디버그 시험 키링 env): 판정·rc·`--record` 앵커·후퇴 거부.
+    #[test]
+    fn update_verify_end_to_end_with_record() {
+        use super::super::feed::fixture::*;
+        use super::super::keys::testkit::Keys;
+        let k = Keys::new();
+        let t = E2e::new("rec", &k);
+        let rev = |n: u64| revocations_json(&k, n, serde_json::json!([]));
+        t.put(&agora_signed(&k, 5, 9, rev(2)));
+        assert_eq!(t.run("agora-client", Some(8), false), 0, "apply");
+        assert!(!t.st().join("trusted.json").exists(), "--record 없으면 쓰기 0");
+        assert_eq!(t.run("agora-client", Some(9), true), 0, "uptodate + record");
+        let acc = feed::read_accepted(&check::accepted_path(&t.st(), "agora-client", "stable")).unwrap().unwrap();
+        assert_eq!((acc.feed_rev, acc.feed_release_seq, acc.installed_release_seq), (5, 9, 9));
+        assert_eq!(acc.envelope_sha256, feed::sha256_hex(&std::fs::read(t.d.join("e.json")).unwrap()));
+        assert_eq!(check::read_trusted(&t.st()).unwrap().revocations_rev, Some(2));
         // 순번 역행(feed_rev 4 < 수용 5) = 거부 rc 2 · 폐기문 rev 후퇴(1 < 2) = 거부 rc 2
-        write(4, 9, 2);
-        assert_eq!(run_v(8, true), 2);
-        write(6, 10, 1);
-        assert_eq!(run_v(9, true), 2);
+        t.put(&agora_signed(&k, 4, 9, rev(2)));
+        assert_eq!(t.run("agora-client", Some(8), true), 2);
+        t.put(&agora_signed(&k, 6, 10, rev(1)));
+        assert_eq!(t.run("agora-client", Some(9), true), 2);
         // 서명 깨짐 = rc 2
-        write(6, 10, 2);
-        let mut e = std::fs::read(d.join("e.json")).unwrap();
+        t.put(&agora_signed(&k, 6, 10, rev(2)));
+        let mut e = std::fs::read(t.d.join("e.json")).unwrap();
         let i = e.len() / 2;
         e[i] ^= 1;
-        std::fs::write(d.join("e.json"), e).unwrap();
-        assert_eq!(run_v(9, false), 2);
+        std::fs::write(t.d.join("e.json"), e).unwrap();
+        assert_eq!(t.run("agora-client", Some(9), false), 2);
         // 시계 의심(신뢰 시각보다 1시간 과거) = rc 3
-        write(6, 10, 2);
-        check::bump_trusted(&d.join("st"), None, Some(NOW + 3600)).unwrap();
-        assert_eq!(run_v(9, false), 3);
-        let _ = std::fs::remove_dir_all(&d);
+        t.put(&agora_signed(&k, 6, 10, rev(2)));
+        check::bump_trusted(&t.st(), Some(NOW + 3600)).unwrap();
+        assert_eq!(t.run("agora-client", Some(9), false), 3);
+    }
+
+    /// ★1R B4 뮤테이션: cysr 에 `--installed-release-seq` = 거부 rc 2(내장 seq 만) — 가드를 끄면 낮춰 부른 seq 로 apply(rc 0).
+    #[test]
+    fn b4_cysr_refuses_caller_installed_seq() {
+        use super::super::feed::fixture::*;
+        use super::super::keys::testkit::Keys;
+        let k = Keys::new();
+        let t = E2e::new("b4", &k);
+        let mut body = body_json(&k, 9);
+        body["min_from_release_seq"] = 0.into(); // 로컬 빌드 내장 seq = 0 도 출발 판으로 허용
+        t.put(&sign_all(&k, &envelope_json(&k, &body, 5), &revocations_json(&k, 1, serde_json::json!([]))));
+        assert_eq!(t.run("cysr", Some(1), false), 2, "cysr 외부 seq 주장 = 거부");
+        assert_eq!(t.run("cysr", None, false), 0, "내장 seq(로컬 빌드 0) 로는 판정");
+    }
+
+    /// ★1R B3(CLI) 뮤테이션: 후보가 거부(ⓙ 폐기)돼도 `--record` 는 R 검증을 통과한 새 폐기문을 원문째 기록한다 · 기록 실패 = rc 3.
+    #[test]
+    fn b3r_record_revocations_regardless_of_verdict() {
+        use super::super::feed::fixture::*;
+        use super::super::keys::testkit::Keys;
+        let k = Keys::new();
+        let t = E2e::new("b3r", &k);
+        let revoked = serde_json::json!([{"component": "agora-client", "release_seq": 10, "severity": "advisory"}]);
+        t.put(&agora_signed(&k, 5, 10, revocations_json(&k, 3, revoked)));
+        assert_eq!(t.run("agora-client", Some(9), true), 2, "후보 10 폐기 = 거부");
+        let tr = check::read_trusted(&t.st()).unwrap();
+        assert_eq!(tr.revocations_rev, Some(3), "거부 판정이어도 새 폐기문 rev 기록");
+        assert_eq!(std::fs::read(t.st().join(check::REV_COPY)).unwrap(), std::fs::read(t.d.join("r.json")).unwrap());
+        // 같은 rev 3 인데 다른 원문 = 기록 실패 → rc 3(조용한 rc 0 금지)
+        let other = serde_json::json!([{"component": "agora-client", "release_seq": 99}]);
+        t.put(&agora_signed(&k, 6, 10, revocations_json(&k, 3, other)));
+        assert_eq!(t.run("agora-client", Some(10), true), 3, "기록 실패 = 판정 불가");
     }
 
     #[test]

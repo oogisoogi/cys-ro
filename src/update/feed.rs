@@ -1020,7 +1020,9 @@ mod tests {
         let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
         let mut i = input(&s, &kr, 8);
         i.target = "windows-x64";
-        assert_eq!(verify_feed(&i).code, ErrCode::UrlRefused);
+        // 1R B5 뒤: a2_sig_url 은 ⓖ 본문 서식(기판별 둘째 닻 필수)에서 먼저 걸린다 — 행이 어떤 기판으로 판정되든 같은 본문 거부.
+        let o = verify_feed(&i);
+        assert_eq!((o.code, o.step.as_str()), (ErrCode::ReleaseSigBad, "ⓖ"));
         let s = std_case(&k, 9, 1);
         let mut i = input(&s, &kr, 8);
         i.target = "macos-x64";

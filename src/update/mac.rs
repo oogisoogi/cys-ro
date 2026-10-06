@@ -58,7 +58,13 @@ pub fn real_path(p: &Path, step: &str) -> Result<PathBuf, Fail> {
 pub fn prev_candidates(canonical: &Path, stage: &Path, from_seq: u64, recorded: Option<&Path>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for c in recorded.into_iter().map(Path::to_path_buf).chain([old_path(canonical, from_seq), stage.to_path_buf()]) {
-        if !out.contains(&c) && std::fs::symlink_metadata(&c).map(|m| m.is_dir()).unwrap_or(false) {
+        if !std::fs::symlink_metadata(&c).map(|m| m.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        // ★3판(Fable 2R M2): 저널 기록 = 실경로 · old/stage 자리 = 미해소 경로 → 실경로로 푼 뒤 중복 제거(부모 심링크 = 같은 폴더 2개 →
+        //   pick_unique_old None → RB_FAILED 이던 것). 못 풀면 그대로.
+        let c = std::fs::canonicalize(&c).unwrap_or(c);
+        if !out.contains(&c) {
             out.push(c);
         }
     }
@@ -422,5 +428,19 @@ mod tests {
         rb_swap(&canon, &c[0], Canon::New).unwrap();
         assert_eq!(std::fs::read_to_string(canon.join("v")).unwrap(), "old");
         assert!(prev_candidates(&canon, &staged, 8, Some(&t.join("nope"))).len() == 1, "없는 기록 = 무시");
+    }
+
+    /// ★3판 M2: 부모 경로에 심링크(VM `/tmp/x/cysr.app`)가 있어도 저널 기록(실경로)과 old 자리(미해소)가 같은 폴더면 후보 1개.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn prev_candidates_dedupe_through_parent_symlink() {
+        let t = d("prevlink");
+        std::fs::create_dir_all(t.join("real")).unwrap();
+        std::os::unix::fs::symlink(t.join("real"), t.join("via")).unwrap();
+        let canon_via = t.join("via/cysr.app");
+        std::fs::create_dir_all(t.join("real/.cysr.app.old-8")).unwrap();
+        let recorded = t.join("real/.cysr.app.old-8"); // swap_forward 가 적는 실경로
+        let c = prev_candidates(&canon_via, &staged_path(&canon_via, 9), 8, Some(&recorded));
+        assert_eq!(c, vec![recorded], "같은 폴더 = 1개(2판 = 2개 → 유일 판정 실패)");
     }
 }

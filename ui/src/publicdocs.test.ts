@@ -120,4 +120,17 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     expect(s.includes('fetch("https://api.github.com/repos/oogisoogi/cys-ro/releases/latest")')).toBe(true);
     expect({ 벤더: (s.match(/idoforgod|cys-terminal/gi) ?? []).length }).toEqual({ 벤더: 0 });
   });
+  it("README(한/영) 설치 절 자산명 = 실 릴리스 자산 정규식(다운로드 페이지와 같은 4개 · master#315fae4c)", () => {
+    // 정본 = docs/index.html 의 동적 조회 정규식(v1.1.7 실 자산명 각 1건 일치 실측) — 여기 사본이 페이지 소스에 그대로 있어야 한다.
+    const ASSET_RES = [/^cysr-macos-arm64-v[0-9.]+\.zip$/, /^cysr-macos-x64-v[0-9.]+\.zip$/, /^cysr_[0-9.]+_x64-setup\.exe$/, /^cysr_[0-9.]+_x64-setup\.zip$/];
+    const page = read("../../docs/index.html");
+    for (const re of ASSET_RES) expect({ re: re.source, 페이지에_있음: page.includes(`asset(${re.toString()})`) }).toEqual({ re: re.source, 페이지에_있음: true });
+    for (const d of ["../../README.md", "../../README.en.md"]) {
+      const names = [...read(d).matchAll(/`(cysr?[-_][^`\s]*\.(?:dmg|zip|exe))`/g)].map((m) => m[1]);
+      const asReal = (n: string) => n.replace(/<[^>]+>/g, "1.1.7");
+      expect({ d, 틀린_자산명: names.filter((n) => !ASSET_RES.some((re) => re.test(asReal(n)))) }).toEqual({ d, 틀린_자산명: [] });
+      // 공허 방지 — 맥 두 종·윈 설치기가 다 적혀 있다
+      for (const re of ASSET_RES.slice(0, 3)) expect({ d, re: re.source, 있음: names.some((n) => re.test(asReal(n))) }).toEqual({ d, re: re.source, 있음: true });
+    }
+  });
 });

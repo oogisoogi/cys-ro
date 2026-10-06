@@ -80,11 +80,10 @@ Grab the latest from [Releases](https://github.com/oogisoogi/cys-ro/releases/lat
 Recipients **do not install a daemon separately** — the app boots it and installs the
 pack automatically.
 
-- **macOS**: `cys_<version>_aarch64.dmg` (Apple Silicon). A bundled **"Install cys.app"
-  helper** stages the app hidden, then swaps it into place with a single system call
-  (`renamex_np`), eliminating the race where a Finder drag exposed a half-copied bundle
-  mid-copy. (Use the helper rather than overwriting by drag.)
-- **Windows**: `cys_<version>_x64-setup.exe` — daemon, CLI, and runtime bundled
+- **macOS**: `cysr-macos-arm64-v<version>.zip` (Apple Silicon) · `cysr-macos-x64-v<version>.zip`
+  (Intel) — unzip to get a single `cysr.app` and move it to Applications. The easiest path is
+  the one-line install at [jarvis.godmeyou.kr/get](https://jarvis.godmeyou.kr/get).
+- **Windows**: `cysr_<version>_x64-setup.exe` — daemon, CLI, and runtime bundled
   (self-contained). PE version-resource, manifest, and icon embedding reduce
   SmartScreen/Defender friction, but the build **is still unsigned, so a first-run
   warning can appear**. See

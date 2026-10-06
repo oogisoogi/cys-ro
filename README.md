@@ -66,10 +66,10 @@ cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니�
 [Releases](https://github.com/oogisoogi/cys-ro/releases/latest)에서 받으세요.
 받는 사람은 **데몬을 따로 설치할 필요가 없습니다** — 앱이 자동 기동하고 팩도 자동 설치됩니다.
 
-- **macOS**: `cys_<버전>_aarch64.dmg` (Apple Silicon) — 동봉된 **"Install cys.app" 도우미**가
-  숨김 스테이징 후 단일 시스템콜(`renamex_np`)로 원자 교체해, Finder 드래그가 복사 도중
-  반쪽 번들을 노출하던 경합을 제거합니다(덮어쓰기 대신 도우미 설치 권장).
-- **Windows**: `cys_<버전>_x64-setup.exe` — 데몬·CLI·런타임 동봉(자기완결 설치).
+- **macOS**: `cysr-macos-arm64-v<버전>.zip` (Apple Silicon) · `cysr-macos-x64-v<버전>.zip` (Intel) —
+  압축을 풀면 `cysr.app` 하나가 나옵니다. 응용 프로그램 폴더로 옮기세요. 가장 쉬운 길은
+  자비스 사이트 [jarvis.godmeyou.kr/get](https://jarvis.godmeyou.kr/get) 의 설치 한 줄입니다.
+- **Windows**: `cysr_<버전>_x64-setup.exe` — 데몬·CLI·런타임 동봉(자기완결 설치).
   PE 버전리소스·매니페스트·아이콘 임베드로 SmartScreen/Defender 마찰을 낮췄으나
   **여전히 미서명이라 첫 실행 경고가 뜰 수 있습니다**.
   상세: [docs/INSTALL-Windows-KR.md](docs/INSTALL-Windows-KR.md)

@@ -189,47 +189,49 @@ pub fn def_matches(got: &TaskDef, command: &Path, args: &[&str], me: &str, logon
 }
 
 /// 러너 일회 작업 등록 → 다시 읽어 대조 → 실행(즉시 반환).
-pub fn run_once(runner: &Path, args: &[&str]) -> Result<(), String> {
+pub fn run_once(update_dir: &Path, runner: &Path, args: &[&str]) -> Result<(), String> {
     #[cfg(windows)]
     {
-        com::register_and_verify(RUNNER_TASK, runner, args, false, true)
+        com::register_and_verify(update_dir, RUNNER_TASK, runner, args, false, true)
     }
     #[cfg(not(windows))]
     {
-        let _ = (runner, args);
+        let _ = (update_dir, runner, args);
         Err("윈 전용".into())
     }
 }
 
 /// 러너가 끝날 때 자기 작업을 지운다(best-effort).
-pub fn delete_runner_task() {
+pub fn delete_runner_task(update_dir: &Path) {
     #[cfg(windows)]
     {
-        let _ = com::delete(RUNNER_TASK);
+        let _ = com::delete(update_dir, RUNNER_TASK);
     }
+    #[cfg(not(windows))]
+    let _ = update_dir;
 }
 
-pub fn register_recover_task(runner: &Path) -> Result<(), String> {
+pub fn register_recover_task(update_dir: &Path, runner: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        com::register_and_verify(RECOVER_TASK, runner, &["self-update", "--recover"], true, false)
+        com::register_and_verify(update_dir, RECOVER_TASK, runner, &["self-update", "--recover"], true, false)
     }
     #[cfg(not(windows))]
     {
-        let _ = runner;
+        let _ = (update_dir, runner);
         Err("윈 전용".into())
     }
 }
 
 /// N14(윈): 복구기 로그온 작업 정의 재독 대조.
-pub fn recover_task_ok(runner: &Path) -> Option<bool> {
+pub fn recover_task_ok(update_dir: &Path, runner: &Path) -> Option<bool> {
     #[cfg(windows)]
     {
-        com::verify(RECOVER_TASK, runner, &["self-update", "--recover"], true)
+        com::verify(update_dir, RECOVER_TASK, runner, &["self-update", "--recover"], true)
     }
     #[cfg(not(windows))]
     {
-        let _ = runner;
+        let _ = (update_dir, runner);
         None
     }
 }
@@ -384,9 +386,14 @@ mod com {
         Ok((xml, take_bstr(s)))
     }
 
-    fn our_folder(svc: &Com, create: bool, sddl: &str) -> Result<Com, String> {
-        let dir = crate::update::buildinfo::state_dir()?;
-        let id = crate::update::buildinfo::ensure_install_id(&dir)?;
+    /// ★2판(윈 CI): 갱신 폴더는 호출자가 준다 — 여기서 `state_dir()` 을 다시 구하지 않는다(시험 격리 봉인 · `--check` 가 넘긴 폴더와
+    /// 같은 install_id). 읽기(`create` 거짓)는 install_id 를 만들지 않는다.
+    fn our_folder(dir: &Path, svc: &Com, create: bool, sddl: &str) -> Result<Com, String> {
+        let id = if create {
+            crate::update::buildinfo::ensure_install_id(dir)?
+        } else {
+            crate::update::buildinfo::read_install_id(dir).ok_or("install_id 없음")?
+        };
         let path = format!("\\{FOLDER_ROOT}\\{id}");
         if let Ok(f) = get_folder(svc, &path) {
             return Ok(f);
@@ -402,30 +409,30 @@ mod com {
         create_folder(&top, &id, sddl)
     }
 
-    pub fn verify(name: &str, runner: &Path, args: &[&str], logon: bool) -> Option<bool> {
+    pub fn verify(dir: &Path, name: &str, runner: &Path, args: &[&str], logon: bool) -> Option<bool> {
         let me = crate::update::current_user_sid_pub().ok()?;
         let svc = service().ok()?;
-        let folder = our_folder(&svc, false, "").ok()?;
+        let folder = our_folder(dir, &svc, false, "").ok()?;
         let task = get_task(&folder, name).ok()?;
         let (xml, sddl) = task_xml_sddl(&task).ok()?;
         let def = parse_task_xml(&xml)?;
         Some(def_matches(&def, runner, args, &me, logon) && sddl_exactly(&sddl, &me) && folder_sddl(&folder).map(|s| sddl_exactly(&s, &me)).unwrap_or(false))
     }
 
-    pub fn delete(name: &str) -> Result<(), String> {
+    pub fn delete(dir: &Path, name: &str) -> Result<(), String> {
         let svc = service()?;
-        let folder = our_folder(&svc, false, "")?;
+        let folder = our_folder(dir, &svc, false, "")?;
         let b = Bstr::new(name);
         // ITaskFolder::DeleteTask = 15
         let f: extern "system" fn(Raw, BSTR, i32) -> HRESULT = unsafe { std::mem::transmute(slot(folder.0, 15)) };
         hr(f(folder.0, b.0, 0), "DeleteTask")
     }
 
-    pub fn register_and_verify(name: &str, runner: &Path, args: &[&str], logon: bool, run_now: bool) -> Result<(), String> {
+    pub fn register_and_verify(dir: &Path, name: &str, runner: &Path, args: &[&str], logon: bool, run_now: bool) -> Result<(), String> {
         let me = crate::update::current_user_sid_pub()?;
         let sddl = sddl_for(&me);
         let svc = service()?;
-        let folder = our_folder(&svc, true, &sddl)?;
+        let folder = our_folder(dir, &svc, true, &sddl)?;
         let xml = task_xml(runner, args, &me, logon);
         let (bn, bx, bs) = (Bstr::new(name), Bstr::new(&xml), Bstr::new(&sddl));
         let mut p: Raw = std::ptr::null_mut();
@@ -434,8 +441,8 @@ mod com {
             unsafe { std::mem::transmute(slot(folder.0, 16)) };
         hr(f(folder.0, bn.0, bx.0, TASK_CREATE_OR_UPDATE, empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN, vbstr(&bs), &mut p), "RegisterTask")?;
         let task = Com(p);
-        if verify(name, runner, args, logon) != Some(true) {
-            let _ = delete(name);
+        if verify(dir, name, runner, args, logon) != Some(true) {
+            let _ = delete(dir, name);
             return Err("update.win_task_refused: 다시 읽은 정의·SDDL 불일치".into());
         }
         if run_now {
@@ -476,7 +483,7 @@ mod tests {
     #[test]
     fn xml_roundtrip_and_tamper_detection() {
         let me = "S-1-5-21-1-2-3-1001";
-        let runner = Path::new(r"C:\Users\a b\AppData\Local\cys-update\runner\cys.exe");
+        let runner = Path::new(r"C:\x\a b\cys-update\runner\cys.exe");
         let x = task_xml(runner, &["self-update", "--recover"], me, true);
         let d = parse_task_xml(&x).unwrap();
         assert!(def_matches(&d, runner, &["self-update", "--recover"], me, true));

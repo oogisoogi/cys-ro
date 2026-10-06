@@ -808,7 +808,9 @@ mod tests {
         let h2 = tree_sha(&d).unwrap();
         assert_ne!(h1, h2);
         #[cfg(unix)]
-        std::os::unix::fs::symlink("f", d.join("a/l")).unwrap();
-        assert_ne!(tree_sha(&d).unwrap(), h2);
+        {
+            std::os::unix::fs::symlink("f", d.join("a/l")).unwrap();
+            assert_ne!(tree_sha(&d).unwrap(), h2);
+        }
     }
 }

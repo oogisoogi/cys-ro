@@ -230,11 +230,13 @@ pub fn rb_swap(canonical: &Path, prev: &Path, found: Canon) -> Result<(), Fail> 
 mod tests {
     use super::*;
 
+    /// ★2판(master 게이트 960/1 · 원인 대조 = `TMPDIR=/tmp/`·`/var/folders/…` 재현 · 심링크 없는 경로 = 통과): `/tmp`·`/var` 는
+    /// `/private/…` 를 가리키는 심링크라 `RENAME_NOFOLLOW_ANY` 가 경로 성분에서 거부한다 → 시험 폴더는 실경로로 푼다.
     fn d(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("cys-u2-mac-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
-        p
+        std::fs::canonicalize(&p).unwrap()
     }
 
     #[test]
@@ -304,14 +306,14 @@ mod tests {
             log.push((p.to_path_buf(), renamed));
             Ok(())
         })
-        .unwrap();
+        .unwrap_or_else(|e| panic!("swap_forward 실패 · 시험 폴더 {} · {e:?}", t.display()));
         assert_eq!(std::fs::read_to_string(canon.join("v")).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(old.join("v")).unwrap(), "old");
         assert_eq!(log, vec![(staged.clone(), false), (old.clone(), true)]);
         let found = |c: &Path| if std::fs::read_to_string(c.join("v")).unwrap() == "new" { Canon::New } else { Canon::Old };
-        rb_swap(&canon, &old, found(&canon)).unwrap();
+        rb_swap(&canon, &old, found(&canon)).unwrap_or_else(|e| panic!("rb_swap 1 · {e:?}"));
         assert_eq!(std::fs::read_to_string(canon.join("v")).unwrap(), "old");
-        rb_swap(&canon, &old, found(&canon)).unwrap();
+        rb_swap(&canon, &old, found(&canon)).unwrap_or_else(|e| panic!("rb_swap 2 · {e:?}"));
         assert_eq!(std::fs::read_to_string(canon.join("v")).unwrap(), "old", "RB_SWAPPED 두 번 = 옛 판 그대로");
         // 심링크 경로 성분 = RENAME_NOFOLLOW_ANY 로 거부
         let link = t.join("link.app");

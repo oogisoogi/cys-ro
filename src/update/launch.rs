@@ -61,14 +61,15 @@ pub fn initial_wait_secs(uptime_secs: u64, jitter: u64) -> u64 {
 }
 
 /// 러너 기동(분리 · 즉시 반환).
-pub fn spawn_runner(runner: &Path, args: &[&str]) -> Result<(), String> {
+pub fn spawn_runner(update_dir: &Path, runner: &Path, args: &[&str]) -> Result<(), String> {
     #[cfg(windows)]
     {
-        super::win_task::run_once(runner, args)
+        super::win_task::run_once(update_dir, runner, args)
     }
     #[cfg(not(windows))]
     {
         use crate::SpawnPolicy;
+        let _ = update_dir;
         let mut c = std::process::Command::new(runner);
         c.args(args);
         for k in SEAT_ENV {
@@ -128,7 +129,7 @@ pub fn recover_agent_ok(update_dir: &Path, current: &Path) -> Option<bool> {
     let copy_ok = super::snapshot::sha256_file(&runner).map(|(s, _)| s == want).unwrap_or(false);
     #[cfg(windows)]
     {
-        let reg = super::win_task::recover_task_ok(&runner);
+        let reg = super::win_task::recover_task_ok(update_dir, &runner);
         return Some(copy_ok && reg.unwrap_or(false));
     }
     #[cfg(not(windows))]
@@ -148,7 +149,7 @@ pub fn ensure_recover_agent(update_dir: &Path, current: &Path) -> Result<(), Str
     }
     #[cfg(windows)]
     {
-        super::win_task::register_recover_task(&runner)
+        super::win_task::register_recover_task(update_dir, &runner)
     }
     #[cfg(not(windows))]
     {

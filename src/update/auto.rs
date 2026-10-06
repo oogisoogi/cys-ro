@@ -119,7 +119,7 @@ pub fn auto_spawn(json_out: bool) -> i32 {
             return 3;
         }
     };
-    let r = super::launch::spawn_runner(&runner, &["self-update", "--run"]);
+    let r = super::launch::spawn_runner(&dir, &runner, &["self-update", "--run"]);
     let v = json!({"spawned": r.is_ok(), "runner": runner, "recover_agent": agent.err(), "detail": r.err()});
     print(json_out, &v, &format!("spawned={}", v["spawned"]));
     0
@@ -171,7 +171,9 @@ pub fn recover(json_out: bool) -> i32 {
 /// `--run`(러너 본체).
 pub fn run(json_out: bool, hooks: &check::Hooks) -> i32 {
     let rc = run_inner(json_out, hooks);
-    super::win_task::delete_runner_task(); // 일회 작업 — 끝나면 지운다(윈)
+    if let Ok(dir) = super::buildinfo::state_dir() {
+        super::win_task::delete_runner_task(&dir); // 일회 작업 — 끝나면 지운다(윈)
+    }
     rc
 }
 

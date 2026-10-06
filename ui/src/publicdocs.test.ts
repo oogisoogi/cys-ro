@@ -1,12 +1,20 @@
 // 공개 문서 현행성 게이트(1.1.8 U4 2판 · codex 1R ④ · master#f69113b1).
 //
 // 1.1.8 부터 앱에는 「업데이트」 단추·배지·인앱 설치가 없다(설계 AUTO-UPDATE-118 §5-1) — 새 판은 데몬이 쉬는 시간에 받고(자동 갱신)
-// 앱은 결과 1줄만 알린다. 공개 문서(README 한/영 · USER-MANUAL · 다운로드 페이지)는 **현행만** 적는다: 지운 단추·명령·노브를
+// 앱은 결과 1줄만 알린다. 공개 문서(README 한/영 · USER-MANUAL · 다운로드 페이지 · 설치 상세 · 아키텍처)는 **현행만** 적는다: 지운 단추·명령·노브를
 // 지금 기능처럼 안내하면 사용자가 없는 단추를 찾는다. 옛 경로 서술을 「버전 기록」 으로 남기는 것도 하지 않는다(문서 = 현행).
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const DOCS = ["../../README.md", "../../README.en.md", "../../USER-MANUAL.md", "../../docs/index.html"];
+// 3판(codex 2R MAJOR② · master 번복): README 가 직접 링크하는 현행 설치 문서 docs/INSTALL.md · 저장소 공개 문서 ARCHITECTURE-AND-PHILOSOPHY.md 추가.
+const DOCS = [
+  "../../README.md",
+  "../../README.en.md",
+  "../../USER-MANUAL.md",
+  "../../docs/index.html",
+  "../../docs/INSTALL.md",
+  "../../ARCHITECTURE-AND-PHILOSOPHY.md",
+];
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf-8");
 
 /** 지운 것들의 이름 — 앱 명령 · 환경 노브 · 기록 파일 · 단추/배지 id · 앱의 옛 서명 경로. */
@@ -30,7 +38,7 @@ const GONE = [
   "Tauri updater",
 ];
 
-describe("공개 문서 4종 — 현행만(1.1.8 U4)", () => {
+describe("공개 문서 6종 — 현행만(1.1.8 U4)", () => {
   it("문서가 실제로 있다(공허 방지)", () => {
     for (const d of DOCS) expect({ d, 길이: read(d).length > 1000 }).toEqual({ d, 길이: true });
   });

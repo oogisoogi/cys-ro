@@ -565,6 +565,11 @@ impl<'a, O: Ops> Runner<'a, O> {
         }
         let tok = self.txn_id_or_new();
         self.txn_id = tok;
+        // ★후속(Fable 5R n10): 재구성이 쓸 저널 토큰(= 호출자 잠금 토큰)을 이번 시도 계보에 잇는다 — 재기동 실패(S7 유지) 뒤 한 슬롯이 더
+        //   손상돼도 남은 슬롯 txn 이 계보 안이라 다음 복구기가 같은 시도로 다시 재구성한다(계보 밖 = Mismatch = 사람 필요였다).
+        if !super::mutant("U2-LINEAGE") {
+            attempt_takeover(&self.dir, &attempt.txn_id, &self.txn_id);
+        }
         let j = match journal::write_reconstructed_pending(&self.dir, &self.txn_id, self.epoch) {
             Ok(j) => j,
             Err(e) => return blocked(self.ops, Fail::new(ErrCode::JournalCorrupt, "reconstruct", e)),
@@ -701,21 +706,37 @@ pub fn attempt_set_baseline(dir: &Path, txn: &str, baseline: serde_json::Value) 
     attempt_write(dir, &a)
 }
 
-/// 종결: 지운다(종결 뒤 손상된 저널이 지난 시도의 스냅샷으로 되돌려지지 않게). ★5판(codex 4R N3″): 삭제 + 폴더 fsync · 삭제가 실패하면
-/// 종결 표지(`ended`)를 원자 쓰기로 남긴다 — 둘 다 실패하면 1줄 남긴다(그 기록은 다음 S1 이 덮는다).
+/// 종결: 지운다(종결 뒤 손상된 저널이 지난 시도의 스냅샷으로 되돌려지지 않게). ★5판(codex 4R N3″): 삭제 + 폴더 fsync.
+/// ★후속(Fable 5R n16): 종결 표지(`ended`)를 **먼저** 원자 쓰기(내구 쓰기) → 그 다음 삭제 + 폴더 fsync — 삭제가 실패하거나 fsync 전에
+/// 죽어 파일이 되살아나도 그 기록은 이미 종결 표지다(잔여 창 = 표지 쓰기 실패 + 삭제 실패 둘 다 · 그때 1줄 · 그 기록은 다음 S1 이 덮는다).
 pub fn attempt_end(dir: &Path) {
+    attempt_end_by(dir, |p| std::fs::remove_file(p))
+}
+
+fn attempt_end_by(dir: &Path, remove: impl FnOnce(&Path) -> std::io::Result<()>) {
     let p = dir.join(ATTEMPT_FILE);
-    let removed = match std::fs::remove_file(&p) {
+    let marked = if !p.exists() || super::mutant("U2-ENDFIRST") {
+        Ok(())
+    } else {
+        let mut a = super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).unwrap_or_default();
+        a.ended = true;
+        attempt_write(dir, &a)
+    };
+    let removed = match remove(&p) {
         Ok(()) => journal::sync_dir(dir).is_ok(),
         Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     };
     if removed {
         return;
     }
-    let mut a = super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).unwrap_or_default();
-    a.ended = true;
-    if let Err(e) = attempt_write(dir, &a) {
-        eprintln!("[update] attempt.json 종결 기록 실패: {e}");
+    if super::mutant("U2-ENDFIRST") {
+        let mut a = super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).unwrap_or_default();
+        a.ended = true;
+        if let Err(e) = attempt_write(dir, &a) {
+            eprintln!("[update] attempt.json 종결 기록 실패: {e}");
+        }
+    } else if let Err(e) = marked {
+        eprintln!("[update] attempt.json 종결 기록 실패(표지·삭제 둘 다): {e}");
     }
 }
 
@@ -1043,6 +1064,29 @@ pub(crate) mod tests {
         d
     }
     const T: &str = "0123456789abcdef0123456789abcdef";
+
+    /// ★후속(Fable 5R n16): 종결 = 표지 먼저 — 삭제가 일어나는 순간 디스크의 기록은 이미 `ended`(삭제 실패·fsync 전 죽음으로 되살아나도
+    /// 대조 원천 아님 = Missing) · 삭제 실패 주입 = 표지 남음 · 정상 = 파일 없음. 뮤턴트 U2-ENDFIRST(삭제 먼저 = 5판 순서) = 적.
+    #[test]
+    fn attempt_end_marks_ended_before_removing() {
+        let d = tmp("att-end");
+        std::fs::create_dir_all(&d).unwrap();
+        let read = journal::read(&d);
+        attempt_begin(&d, T).unwrap();
+        attempt_end_by(&d, |p| {
+            let a: Attempt = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+            assert!(a.ended, "삭제 직전 디스크 = 종결 표지");
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert!(d.join(ATTEMPT_FILE).exists(), "삭제 실패 = 표지 남음");
+        assert_eq!(current_attempt(&d, &read), AttemptView::Missing, "표지 = 대조 원천 아님");
+        attempt_begin(&d, T).unwrap();
+        attempt_end(&d);
+        assert!(!d.join(ATTEMPT_FILE).exists(), "정상 = 삭제");
+        attempt_end(&d); // 없음 = 무동작
+        assert!(!d.join(ATTEMPT_FILE).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn run(d: &Path, sim: &mut Sim, fault: Fault) -> Outcome {
         let mut r = Runner::new(d, T, 1, sim);

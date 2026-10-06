@@ -1741,6 +1741,39 @@ mod tests {
         }
     }
 
+    /// ★후속(Fable 5R n10) 종단: 재구성 → 재기동 실패(S7 유지 · 저널 토큰 = 복구기 fedcba…) → **한 슬롯이 더 손상**(Degraded · 남은 슬롯
+    /// txn = fedcba…) → 다음 복구기가 같은 시도로 다시 재구성(계보 = 0123… + fedcba…) → 재기동 · 종결. 계보를 잇지 않으면(뮤턴트
+    /// U2-LINEAGE) 남은 슬롯 txn 이 계보 밖 = Mismatch = seats_blocked(스냅샷이 멀쩡한데 자동 회복 포기).
+    #[cfg(unix)]
+    #[test]
+    fn reconstruct_lineage_survives_restart_failure_then_one_more_torn_slot() {
+        use super::super::journal::{read, ReadOutcome, State, JOURNAL_FILE};
+        use super::super::runner::{boot_guard, Outcome, Runner, ATTEMPT_FILE};
+        let (d, upd, root, mut ops) = recon_rig("recon-n10");
+        ops.judge_is_old = Some(true);
+        killed_after_swap(&upd, &root);
+        std::fs::remove_file(d.join("daemon.up")).unwrap();
+        std::fs::write(d.join("restart.fail"), "1").unwrap();
+        corrupt_journal(&upd);
+        let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+        rec.soft_kill = true;
+        assert!(matches!(rec.recover(), Outcome::SeatsBlocked(_)));
+        assert_eq!(read(&upd).journal().unwrap().state, State::Stopped, "재기동 실패 = 비종결 S7");
+        // 한 슬롯 더 손상 — 남은 슬롯 = 재구성이 쓴 Locked(fedcba…)
+        std::fs::write(upd.join(JOURNAL_FILE), b"{torn").unwrap();
+        assert!(matches!(read(&upd), ReadOutcome::Degraded(ref j, _) if j.txn_id == "fedcba9876543210fedcba9876543210"));
+        std::fs::remove_file(d.join("restart.fail")).unwrap();
+        let mut rec = Runner::new(&upd, "abababababababababababababababab", 3, &mut ops);
+        rec.soft_kill = true;
+        let o = rec.recover();
+        assert_eq!(o, Outcome::Nothing, "같은 시도로 재구성 · 재기동 · 종결: {o:?}");
+        assert!(boot_guard(&upd).is_none() && read(&upd).journal().unwrap().state.is_terminal(), "종결");
+        assert!(d.join("daemon.up").exists(), "재기동");
+        assert!(!upd.join(ATTEMPT_FILE).exists(), "시도 기록 삭제");
+        assert_eq!(std::fs::read_to_string(root.join("local/me.md")).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// ★4판(Fable 3R M8 · n1·n2) 실 경로: 실 Runner::run_pack + 실 RealOps(pack_prepare 사본·pre-version · pack_apply 위임 자식 ·
     /// recover_pack) — 가짜 `cys` 는 dry-run 에 「반영 가능」, 적용에 커밋(.pack-version 1.1.0 + 지침 RefreshUser)만 흉내.
     /// ⓐ 적용 커밋 뒤 PACK_DONE 전 죽음 → 복구 = 전진 완료(지침 = 새 판 · 되돌림 0 · 혼합 팩 0) ⓑ PACK_APPLY 직후 죽음(미적용 · 사용자 파일

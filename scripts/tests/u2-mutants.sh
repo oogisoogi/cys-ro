@@ -44,5 +44,7 @@ U2-ATTEMPTOPEN update::realops::tests::reconstruct_fails_closed_when_this_attemp
 U2-PACKPRO update::realops::tests::pack_recovery_pro_revision_advance_uses_commit_record_and_tuple
 U2-PACKPRO pack::tests::pro_revision_advance_kill_matrix_recovers_by_commit_record
 U2-V5PRISTINE update::verify::tests::v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits
+U2-LINEAGE update::realops::tests::reconstruct_lineage_survives_restart_failure_then_one_more_torn_slot
+U2-ENDFIRST update::runner::tests::attempt_end_marks_ended_before_removing
 LIST
 exit $fail

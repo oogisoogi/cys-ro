@@ -6215,7 +6215,7 @@ fn run(command: Command) -> i32 {
                 Ok(p) => p,
                 Err(rc) => return rc,
             };
-            return run_pack_plan(force);
+            return run_pack_plan(force, ROTATE_EXT.get().map(|e| e.auto).unwrap_or(false));
         }
         Command::PackMerge {
             file, take_new, keep_mine, ai, to_local, propose, yes, force_vendor, dry_run,
@@ -20886,6 +20886,8 @@ const ROTATE_RC_TXN_BUSY: i32 = 26;
 struct RotateExt {
     stop_only: bool,
     txn: Option<String>,
+    /// ★1.1.8 U2 4판(Fable 3R M6): `pack-plan --auto` — 자동 경로 허용 계획만 rc 0(clap 밖 · j3 스택).
+    auto: bool,
 }
 
 static ROTATE_EXT: std::sync::OnceLock<RotateExt> = std::sync::OnceLock::new();
@@ -20905,6 +20907,7 @@ fn rotate_ext_split(args: Vec<std::ffi::OsString>) -> (Vec<std::ffi::OsString>, 
     let pos = args.iter().position(|a| TXN_VERBS.iter().any(|v| a == *v));
     let Some(pos) = pos else { return (args, RotateExt::default()) };
     let is_rotate = args[pos] == "rotate";
+    let is_plan = args[pos] == "pack-plan";
     let mut ext = RotateExt::default();
     let mut out: Vec<std::ffi::OsString> = args[..=pos].to_vec();
     let mut it = args.into_iter().skip(pos + 1);
@@ -20912,6 +20915,8 @@ fn rotate_ext_split(args: Vec<std::ffi::OsString>) -> (Vec<std::ffi::OsString>, 
         let s = a.to_string_lossy().to_string();
         if s == "--stop-only" && is_rotate {
             ext.stop_only = true;
+        } else if s == "--auto" && is_plan {
+            ext.auto = true;
         } else if s == "--txn" {
             ext.txn = it.next().map(|v| v.to_string_lossy().to_string());
         } else if let Some(v) = s.strip_prefix("--txn=") {
@@ -20933,7 +20938,10 @@ mod u2_rotate_ext_tests {
     fn rotate_ext_split_strips_only_after_rotate_verb() {
         let (out, e) = rotate_ext_split(v(&["cys", "rotate", "--stop-only", "--txn", "a:1", "--skip-drain"]));
         assert_eq!(out, v(&["cys", "rotate", "--skip-drain"]));
-        assert_eq!(e, RotateExt { stop_only: true, txn: Some("a:1".into()) });
+        assert_eq!(e, RotateExt { stop_only: true, txn: Some("a:1".into()), auto: false });
+        let (out, e) = rotate_ext_split(v(&["cys", "pack-plan", "--json", "--auto", "--txn", "c:3"]));
+        assert_eq!((out, e.auto, e.txn.as_deref()), (v(&["cys", "pack-plan", "--json"]), true, Some("c:3")), "★4판 M6: pack-plan --auto = clap 밖");
+        assert!(!rotate_ext_split(v(&["cys", "rotate", "--auto"])).1.auto, "--auto 는 pack-plan 만");
         let (out, e) = rotate_ext_split(v(&["cys", "rotate", "--txn=b:2"]));
         assert_eq!((out, e.txn), (v(&["cys", "rotate"]), Some("b:2".into())));
         // rotate 가 아니면 무변경(다른 동사의 같은 철자 인자를 건드리지 않는다)
@@ -20945,7 +20953,7 @@ mod u2_rotate_ext_tests {
         // ★2판 C1: 팩 참가자도 --txn 을 떼어 받는다 · --stop-only 는 rotate 전용(그대로 clap 에 남아 거부된다)
         for verb in ["init-pack", "init-jarvis", "pack-update", "pack-plan"] {
             let (out, e) = rotate_ext_split(v(&["cys", verb, "--txn", "c:3"]));
-            assert_eq!((out, e), (v(&["cys", verb]), RotateExt { stop_only: false, txn: Some("c:3".into()) }), "{verb}");
+            assert_eq!((out, e), (v(&["cys", verb]), RotateExt { stop_only: false, txn: Some("c:3".into()), auto: false }), "{verb}");
         }
         let (out, e) = rotate_ext_split(v(&["cys", "pack-plan", "--stop-only"]));
         assert_eq!((out, e.stop_only), (v(&["cys", "pack-plan", "--stop-only"]), false));
@@ -25323,10 +25331,40 @@ fn consume_reinject_pending(base: &std::path::Path) -> Result<(usize, usize), St
 /// `cys pack-update` 진입점(§2-② 전체 흐름). --from(핵심)·--manifest-url(부차).
 /// ④ 투명성: 내장 팩 반영 드라이런 — install_into 와 **같은 판정 함수**(pack::decide_file_action)를
 /// 쓰는 pack::plan_install 로 갱신/보존/치유/병합대기/정리를 설치 전에 보여준다(쓰기 0·플랜≠실제 드리프트 0).
-fn run_pack_plan(force: bool) -> i32 {
+/// ★1.1.8 U2 4판(Fable 3R M6 · 설계 §3-8 「사용자 소유 행이 RefreshUser|MergeUser|Keep 밖이면 보류」): 자동 경로가 받아들이는 계획인가 —
+/// 차단 · 강제 치유(system 수정본 덮기) · 3-way 자동 병합 · `.new` 병치(사용자 수정본 + 신판 대기)가 하나라도 있으면 Err(사람 몫).
+fn pack_plan_auto_allowed(plan: &cys::pack::InstallPlan) -> Result<(), String> {
+    if let Some(r) = &plan.blocked {
+        return Err(format!("차단: {r}"));
+    }
+    for (name, rows) in [("강제 치유", &plan.heal), ("3-way 병합", &plan.merge3), (".new 병치", &plan.merge_new)] {
+        if !rows.is_empty() {
+            return Err(format!("{name} {}건(사용자 소유 행이 RefreshUser|MergeUser|Keep 밖)", rows.len()));
+        }
+    }
+    Ok(())
+}
+
+/// `pack-plan --auto` rc — 자동 허용 밖.
+const PACK_PLAN_RC_AUTO_REFUSED: i32 = 4;
+
+fn run_pack_plan(force: bool, auto: bool) -> i32 {
     let dir = cys::pack::pack_dir();
     let items: Vec<(&str, &str)> = cys::pack::PACK_ALL.iter().map(|(r, c)| (*r, *c)).collect();
     let plan = cys::pack::plan_install(&dir, &items, force, env!("CARGO_PKG_VERSION"));
+    if auto {
+        // 자동 경로 = 판정만(rc 0 = 허용 · 4 = 사람 몫) — 아래 사람용 표 출력 생략
+        return match pack_plan_auto_allowed(&plan) {
+            Ok(()) => {
+                println!("[pack-plan --auto] 허용");
+                0
+            }
+            Err(why) => {
+                println!("[pack-plan --auto] 보류: {why}");
+                PACK_PLAN_RC_AUTO_REFUSED
+            }
+        };
+    }
     if let Some(reason) = &plan.blocked {
         println!("⛔ 설치 차단: {reason}");
         return 1;
@@ -27256,15 +27294,31 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
         }
 
         // 소스 해석: --from(로컬 디렉터리) 우선. --manifest-url은 staging에 fetch(부차).
-        let from_dir: std::path::PathBuf = match (from, manifest_url) {
-            (Some(d), _) => std::path::PathBuf::from(d),
-            (None, Some(url)) => fetch_remote_pack(&url, &base)?,
-            (None, None) => return Err("--from <dir> 또는 --manifest-url <url> 필요".into()),
-        };
-
         let now_unix = chrono::Utc::now().timestamp();
         let running = env!("CARGO_PKG_VERSION");
         let keyring = cys::packsig::embedded_keyring()?;
+        let from_dir: std::path::PathBuf = match (from, manifest_url) {
+            (Some(d), _) => std::path::PathBuf::from(d),
+            (None, Some(url)) => {
+                // ★1.1.8 U2 4판(Fable 3R M7): 매니페스트(+서명)만 먼저 받아 판 비교 — 이미 최신·본체 대기면 꾸러미(≈49 MiB)를 받지 않는다.
+                //   자동 갱신 트랜잭션 안(위임 토큰)이면 D23 하한 게이트(빈·파싱 불가 min_binary = 거부)도 여기서.
+                let auto = ROTATE_EXT.get().and_then(|e| e.txn.as_ref()).is_some();
+                let dl = fetch_remote_manifest(&url, &base)?;
+                match pack_precheck(&dl, now_unix, &accepted_path, &keyring, running, auto)? {
+                    (VersionGate::UpToDate, v) => {
+                        println!("[pack-update] 이미 최신 — 반영 0 (원격 매니페스트 {v} · 꾸러미 내려받기 0). no-op.");
+                        println!("{}", cys::pack::pack_update_uptodate_line(&v));
+                        return Ok(0);
+                    }
+                    (VersionGate::BinaryTooOld, v) => {
+                        eprintln!("[pack-update] 거부 — 팩 {v}이 더 새 바이너리를 요구한다(min_binary > 실행 {running}). 바이너리 업데이트(재시작) 경로로 진행하세요.");
+                        return Err("binary-too-old".into());
+                    }
+                    (VersionGate::Apply, _) => fetch_remote_tar(&url, &dl)?,
+                }
+            }
+            (None, None) => return Err("--from <dir> 또는 --manifest-url <url> 필요".into()),
+        };
         let outcome = pack_update_from_dir(
             &from_dir,
             &staging,
@@ -27479,20 +27533,58 @@ fn counsel_update_signal_with(
 
 /// 원격 팩 fetch(부차) — 시스템 curl shell-out으로 manifest·sig·tar를 staging 형제 디렉터리에 받는다.
 /// 핵심 검증·반영 로직은 --from과 동일 경로(pack_update_from_dir)를 탄다.
-fn fetch_remote_pack(manifest_url: &str, base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+/// ★1.1.8 U2 4판(Fable 3R M7): 매니페스트·서명만 `.pack-download` 에 받는다(꾸러미 = [`fetch_remote_tar`] — 판 비교 통과 뒤에만).
+fn fetch_remote_manifest(manifest_url: &str, base: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let dl = base.join(".pack-download");
     let _ = std::fs::remove_dir_all(&dl);
     std::fs::create_dir_all(&dl).map_err(|e| format!("download dir 생성 실패: {e}"))?;
-    // manifest_url 형제 경로로 sig·tar URL 유도(같은 디렉터리에 동봉).
-    let base_url = manifest_url
-        .rsplit_once('/')
-        .map(|(b, _)| b.to_string())
-        .ok_or("manifest-url 형식 오류")?;
-    for (url, name) in [
-        (manifest_url.to_string(), "pack-manifest.json"),
-        (format!("{base_url}/pack-manifest.json.minisig"), "pack-manifest.json.minisig"),
-        (format!("{base_url}/pack.tar.gz"), "pack.tar.gz"),
-    ] {
+    let base_url = manifest_url.rsplit_once('/').map(|(b, _)| b.to_string()).ok_or("manifest-url 형식 오류")?;
+    curl_files(&dl, &[(manifest_url.to_string(), "pack-manifest.json"), (format!("{base_url}/pack-manifest.json.minisig"), "pack-manifest.json.minisig")])?;
+    Ok(dl)
+}
+
+fn fetch_remote_tar(manifest_url: &str, dl: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let base_url = manifest_url.rsplit_once('/').map(|(b, _)| b.to_string()).ok_or("manifest-url 형식 오류")?;
+    curl_files(dl, &[(format!("{base_url}/pack.tar.gz"), "pack.tar.gz")])?;
+    Ok(dl.to_path_buf())
+}
+
+/// 원격 팩 사전 판정(순수에 가까움 · 시험 대상) — 서명·신선도 검증(전개 0) 뒤 (원격 튜플 vs 디스크 튜플 · min_binary vs 실행) 3축 게이트.
+/// replay 거부(원격 서명 ≤ 수용본) = 이미 받은 판 = UpToDate. `auto` = 자동 경로 D23 하한(빈·파싱 불가 min_binary = Err).
+fn pack_precheck(
+    dl: &std::path::Path,
+    now_unix: i64,
+    accepted: &std::path::Path,
+    keyring: &cys::packsig::Keyring,
+    running: &str,
+    auto: bool,
+) -> Result<(VersionGate, String), String> {
+    let mb = std::fs::read(dl.join("pack-manifest.json")).map_err(|e| format!("manifest 읽기 실패: {e}"))?;
+    let sb = std::fs::read(dl.join("pack-manifest.json.minisig")).map_err(|e| format!("서명 읽기 실패: {e}"))?;
+    let m = match cys::packsig::verify_with_keyring(&mb, &sb, now_unix, accepted, keyring) {
+        Ok(m) => m,
+        Err(e) if e.starts_with("replay 거부") => {
+            let v = serde_json::from_slice::<Value>(&mb).ok().and_then(|v| v["pack_version"].as_str().map(str::to_string)).unwrap_or_default();
+            return Ok((VersionGate::UpToDate, v));
+        }
+        Err(e) => return Err(format!("manifest 검증 실패: {e}")),
+    };
+    if auto {
+        cys::update::packgate::pack_min_binary_gate(&m.min_binary_version).map_err(|e| format!("{} {}", e.code.as_str(), e.detail))?;
+    }
+    let pack_dir = cys::pack::pack_dir();
+    let disk_version = std::fs::read_to_string(pack_dir.join(".pack-version")).map(|s| s.trim().to_string()).unwrap_or_default();
+    let disk_rev = match cys::pack::read_pack_state(&pack_dir) {
+        cys::pack::PackStateRead::Valid(st) => st.pro_revision,
+        _ => 0,
+    };
+    let g = version_gates((&m.pack_version, m.pro_revision), (&disk_version, disk_rev), &m.min_binary_version, running);
+    Ok((g, m.pack_version))
+}
+
+fn curl_files(dl: &std::path::Path, items: &[(String, &str)]) -> Result<(), String> {
+    for (url, name) in items {
+        let (url, name) = (url.clone(), *name);
         let out = dl.join(name);
         // R-CLI-3: URL 앞에 `--`(옵션 종결자)를 둔다. manifest_url이 원격/입력 유래라 `-`로 시작하면
         // curl 플래그로 해석되던 인자 주입을 차단(옵션 파싱 종료 후 URL을 위치 인자로 강제).
@@ -27507,7 +27599,7 @@ fn fetch_remote_pack(manifest_url: &str, base: &std::path::Path) -> Result<std::
             return Err(format!("fetch 실패({name}): {url}"));
         }
     }
-    Ok(dl)
+    Ok(())
 }
 
 /// 완화책 ③: scoped 실행 — 새 프로세스 그룹에서 실행하고 원장에 등록,
@@ -31150,6 +31242,82 @@ mod tests {
         assert!(outcome.written >= 2, "written {}", outcome.written);
         assert!(acc_exists, "accepted 기록 부재");
         assert!(acc.contains("1.0.0"), "accepted에 pack_version 부재");
+    }
+
+    /// ★1.1.8 U2 4판(Fable 3R M7 · codex/Fable M6): 매니페스트 먼저 — 실 `fetch_remote_manifest`(file:// · curl) 가 꾸러미를 받지 않고,
+    /// `pack_precheck` 가 이미 최신(같은 판 · replay = 수용본) = UpToDate · 더 새 판 = Apply · min_binary 초과 = BinaryTooOld ·
+    /// 자동 경로(auto)에서 빈 min_binary = D23 거부(pack_min_binary_gate 실배선) · 수동 경로는 빈 값 허용(현행).
+    #[test]
+    fn pack_precheck_reads_manifest_only_and_gates_before_tar_download() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let td = std::env::temp_dir().join(format!("cys-pu-pre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pack_dir = td.join("pack");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &pack_dir);
+        let (pk, sign) = gen_signer();
+        let kr = test_keyring("TESTKEY", &pk);
+        let src = td.join("rel");
+        std::fs::create_dir_all(&src).unwrap();
+        let accepted = td.join(".accepted.json");
+        let base = td.join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        let url = format!("file://{}/pack-manifest.json", src.display());
+        let run = |disk: &str, min_bin: &str, signed_at: i64, auto: bool| {
+            std::fs::write(pack_dir.join(".pack-version"), disk).unwrap();
+            build_signed_pack(&src, &[("soul.md", "S\n")], "TESTKEY", "1.2.0", min_bin, signed_at, 9_000_000_000, &sign);
+            std::fs::remove_file(src.join("pack.tar.gz")).unwrap(); // 꾸러미가 없어도 판정이 끝나야 한다
+            let dl = fetch_remote_manifest(&url, &base).expect("매니페스트·서명만");
+            assert!(!dl.join("pack.tar.gz").exists(), "판정 전 꾸러미 내려받기 0");
+            pack_precheck(&dl, 5000, &accepted, &kr, "1.1.8", auto)
+        };
+        let r_same = run("1.2.0", "1.1.8", 1000, true);
+        let r_new = run("1.1.0", "1.1.8", 1000, true);
+        let r_old_bin = run("1.1.0", "9.0.0", 1000, true);
+        let r_empty_auto = run("1.1.0", "", 1000, true);
+        let r_empty_manual = run("1.1.0", "", 1000, false);
+        std::fs::write(&accepted, serde_json::to_vec(&json!({"pack_version": "1.2.0", "signed_at": 2000, "pro_revision": 0})).unwrap()).unwrap();
+        let r_replay = run("1.1.0", "1.1.8", 1000, true);
+        match &saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+        assert_eq!(r_same.unwrap().0, VersionGate::UpToDate, "같은 판 = 이미 최신");
+        assert_eq!(r_new.unwrap().0, VersionGate::Apply, "더 새 판 = 그때만 꾸러미");
+        assert_eq!(r_old_bin.unwrap().0, VersionGate::BinaryTooOld);
+        assert!(r_empty_auto.unwrap_err().contains("pack_min_binary_empty"), "자동 경로 D23");
+        assert_eq!(r_empty_manual.unwrap().0, VersionGate::Apply, "수동 경로 빈 min_binary = 현행(제약 없음)");
+        assert_eq!(r_replay.unwrap().0, VersionGate::UpToDate, "replay(수용본 이하) = 이미 받은 판");
+    }
+
+    /// ★1.1.8 U2 4판: 러너가 부르는 pack-plan 게이트 인자(+ 위임 `--txn`)가 실 파서를 통과한다 — 1~3판 `--json` 은 clap 거부(rc 2)로
+    /// S2·S9b·팩 단독 게이트가 늘 실패했다(smoke ⑦ 이 처음 드러냄).
+    #[test]
+    fn pack_plan_gate_args_parse() {
+        let mut argv: Vec<std::ffi::OsString> = vec!["cys".into()];
+        argv.extend(cys::update::realops::PACK_PLAN_GATE_ARGS.iter().map(std::ffi::OsString::from));
+        argv.extend(["--txn".into(), "0123456789abcdef0123456789abcdef:1".into()]);
+        let (out, ext) = rotate_ext_split(argv);
+        assert!(ext.auto && ext.txn.is_some());
+        assert!(matches!(Cli::try_parse_from(out).map(|c| c.command), Ok(Command::PackPlan { force: false })), "게이트 인자 = 실 파서 통과");
+        assert!(Cli::try_parse_from(["cys", "pack-plan", "--json"]).is_err(), "음성 대조: --json 은 pack-plan 인자가 아니다");
+    }
+
+    /// ★1.1.8 U2 4판(M6): `pack-plan --auto` 허용 = 차단·강제 치유·3-way·.new 병치 0 일 때만.
+    #[test]
+    fn pack_plan_auto_allows_only_user_rows_within_refresh_merge_keep() {
+        let ok = cys::pack::InstallPlan { update: vec!["a".into()], refresh_user: vec!["b".into()], merge_user: vec!["c".into()], keep_user: vec!["d".into()], ..Default::default() };
+        assert!(pack_plan_auto_allowed(&ok).is_ok());
+        for bad in [
+            cys::pack::InstallPlan { heal: vec!["x".into()], ..Default::default() },
+            cys::pack::InstallPlan { merge3: vec!["x".into()], ..Default::default() },
+            cys::pack::InstallPlan { merge_new: vec!["x".into()], ..Default::default() },
+            cys::pack::InstallPlan { blocked: Some("다운그레이드".into()), ..Default::default() },
+        ] {
+            assert!(pack_plan_auto_allowed(&bad).is_err(), "{bad:?}");
+        }
     }
 
     /// ★오프라인 통합 거부 케이스: 위조 서명·만료·구버전·min_binary 초과.

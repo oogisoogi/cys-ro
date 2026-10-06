@@ -78,6 +78,9 @@ enum UpdCmd {
         recover: bool,
         #[arg(long = "verify-payload")]
         verify_payload: bool,
+        /// (디버그 빌드 전용 · 시험) 팩 단독 갱신 1회 — 본체 판정 없이 `auto::pack_only`(실 pack-plan --auto · pack-update) 경로.
+        #[arg(long = "pack-only", hide = true)]
+        pack_only: bool,
         #[arg(long)]
         json: bool,
     },
@@ -182,7 +185,24 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             rc
         }
         // ★1.1.8 U2(AUTO-UPDATE-118 §3-1·§3-11·§7-3): 집행 동사 — 하나만 고른다(섞으면 거부 rc 2).
-        UpdCmd::SelfUpdate { check: false, auto, spawn, run, recover, verify_payload, json } => {
+        UpdCmd::SelfUpdate { check: false, pack_only: true, json, .. } => {
+            // ★4판(M4/M6 실 경로 시험 입구): 디버그 빌드만 — 출시 빌드 = 거부(rc 2)
+            if !cfg!(debug_assertions) {
+                eprintln!("cys self-update: --pack-only 는 시험 빌드 전용");
+                return 2;
+            }
+            let Ok(dir) = super::buildinfo::state_dir() else { return 3 };
+            let channel = check::read_config(&dir).map(|c| c.channel).unwrap_or_else(|_| "stable".into());
+            let o = super::auto::pack_only(&dir, &channel);
+            let line = format!("pack={o:?}");
+            if json {
+                println!("{}", serde_json::json!({"phase": "pack", "outcome": line}));
+            } else {
+                println!("{line}");
+            }
+            0
+        }
+        UpdCmd::SelfUpdate { check: false, auto, spawn, run, recover, verify_payload, json, .. } => {
             match (auto && spawn, run, recover, verify_payload) {
                 (true, false, false, false) => super::auto::auto_spawn(json),
                 (false, true, false, false) if !auto && !spawn => super::auto::run(json, hooks),

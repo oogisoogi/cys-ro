@@ -589,6 +589,9 @@ pub fn run_check(dir: &Path, pack_dir: &Path, hooks: &Hooks) -> (Value, i32) {
     };
     let facts = gather_facts(dir, pack_dir, outcome.as_ref(), &dates, now, hooks);
     let report = gates::evaluate(&facts);
+    // ★1.1.8 U2 4판(codex·Fable 3R M4/M6 · 설계 §3-8): 팩 단독 갱신 게이트 = 본체 게이트의 부분열(재시작 없음 → 전원 N6·롤백 자산 N7·
+    //   복구기 N14 무관) — 러너가 본체 최신(uptodate)일 때 이것으로 팩 경로를 연다.
+    let pack_report = gates::evaluate_pack_only(&facts);
     let decision = decide(outcome.as_ref(), report.pass);
     let out = json!({
         "decision": decision,
@@ -597,6 +600,7 @@ pub fn run_check(dir: &Path, pack_dir: &Path, hooks: &Hooks) -> (Value, i32) {
         "build": buildinfo::build_info(),
         "feed": feed_json,
         "gates": report,
+        "pack_gates": pack_report,
         "facts": facts,
     });
     (out, rc)

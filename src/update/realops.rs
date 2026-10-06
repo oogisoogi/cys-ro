@@ -82,6 +82,11 @@ impl Candidate {
 /// ★4판(Fable 3R M7·n4): `~/.cys` 바로 아래 팩 임시 자리(내려받기·풀기·적용 잠금) — 스냅샷·재구성 대조 제외.
 pub const PACK_TRANSIENT: &[&str] = &[".pack-download", ".pack-staging", ".pack-apply.lock"];
 
+/// ★4판: `pack-plan` 게이트 인자(S2 stage · 윈 S9b · 팩 단독 공통 · 설계 §3-5/§3-8 「사용자 소유 행이 RefreshUser|MergeUser|Keep 밖이면 보류」).
+/// 1~3판의 `["pack-plan", "--json"]` 은 clap 이 거부(`--json` 없음 · rc 2)해 게이트가 **늘 실패**했다(맥 S2 보류 · 윈 S9b 롤백 · 팩 단독 보류) —
+/// cys 시험 `pack_plan_gate_args_parse` 가 실 파서로 이 인자를 핀한다.
+pub const PACK_PLAN_GATE_ARGS: [&str; 2] = ["pack-plan", "--auto"];
+
 /// 보존 자산 파일 이름(`installers/<seq>/`).
 pub const REL_BODY: &str = "release.json";
 pub const REL_SIG: &str = "release.json.minisig";
@@ -147,6 +152,8 @@ pub struct RealOps {
     last_rotate_rc: Option<i32>,
     /// ★4판(Fable 3R M5): 재구성이 판정한 판의 `cys`(복원 뒤 재기동에 쓴다).
     recon_exe: Option<PathBuf>,
+    /// ★4판(Fable 3R n1): 팩 단독 갱신의 새 팩 판(dry-run 판독) — 결과 기록 `to_version`.
+    pack_to: Option<String>,
     /// 시험 전용: 재구성의 정식 자리 판정(맥 codesign·윈 서명 본문)을 대신한다 — true = 옛 판. 그 밖 경로(시도 판정·대조·정지·복원·
     /// 재기동)는 실물 그대로.
     #[cfg(test)]
@@ -168,6 +175,7 @@ impl RealOps {
             b0: None,
             last_rotate_rc: None,
             recon_exe: None,
+            pack_to: None,
             #[cfg(test)]
             judge_is_old: None,
         }
@@ -485,7 +493,7 @@ impl Ops for RealOps {
                 }
                 super::mac::verify_bundle(&staged, a.cdhash.as_deref().unwrap_or(""), &self.expect_new()?)?;
                 // stage 새 바이너리의 pack-plan 게이트(사전 판정 · §3-6 S2)
-                let o = self.child(&staged.join("Contents/MacOS/cys"), &["pack-plan", "--json"])?;
+                let o = self.child(&staged.join("Contents/MacOS/cys"), &PACK_PLAN_GATE_ARGS)?;
                 if !o.status.success() {
                     return Err(fail(ErrCode::BuildInfoMismatch, "S2", "pack-plan 게이트"));
                 }
@@ -704,7 +712,7 @@ impl Ops for RealOps {
             Some(i) if i == self.expect_new()? => {}
             other => return Err(fail(ErrCode::BuildInfoMismatch, "S9b", format!("{other:?}"))),
         }
-        let o = self.child(&self.new_cys(), &["pack-plan", "--json"])?;
+        let o = self.child(&self.new_cys(), &PACK_PLAN_GATE_ARGS)?;
         if !o.status.success() {
             return Err(fail(ErrCode::BuildInfoMismatch, "S9b", "pack-plan 게이트"));
         }
@@ -933,18 +941,30 @@ impl Ops for RealOps {
 
     fn pack_available(&mut self) -> Result<bool, Fail> {
         let exe = self.env.old_cys.clone();
-        let o = self.child(&exe, &["pack-plan", "--json"])?;
+        // ★4판(codex·Fable 3R M4/M6): 자동 허용 계획만 rc 0(`--auto` · 차단·강제 치유·3-way·.new 병치 = 4) — 전엔 blocked 만 막았다.
+        let o = self.child(&exe, &PACK_PLAN_GATE_ARGS)?;
         if !o.status.success() {
-            return Err(fail(ErrCode::BuildInfoMismatch, "PACK", "pack-plan 게이트(사용자 소유 행 = RefreshUser|MergeUser|Keep 밖)"));
+            let why = String::from_utf8_lossy(&o.stdout).lines().last().unwrap_or_default().to_string();
+            return Err(fail(ErrCode::BuildInfoMismatch, "PACK", format!("pack-plan --auto rc {:?} {why}", o.status.code())));
         }
+        // ★4판(Fable 3R M7): pack-update 가 매니페스트(+서명)만 먼저 받아 판 비교 — 이미 최신이면 꾸러미 내려받기 0 · 자동 경로(--txn)
+        //   = D23 하한(빈 min_binary 거부)도 그 안에서.
         let url = pack_manifest_url();
         let o = self.child(&exe, &["pack-update", "--dry-run", "--manifest-url", &url])?;
-        parse_pack_dry_run(o.status.success(), &String::from_utf8_lossy(&o.stdout), &String::from_utf8_lossy(&o.stderr))
-            .ok_or_else(|| fail(ErrCode::RotateFailed, "PACK", format!("pack-update --dry-run rc {:?}", o.status.code())))
+        let out = String::from_utf8_lossy(&o.stdout).to_string();
+        let r = parse_pack_dry_run(o.status.success(), &out, &String::from_utf8_lossy(&o.stderr))
+            .ok_or_else(|| fail(ErrCode::RotateFailed, "PACK", format!("pack-update --dry-run rc {:?}", o.status.code())))?;
+        self.pack_to = parse_pack_version(&out);
+        Ok(r)
     }
 
     fn pack_prepare(&mut self, j: &mut Journal) -> Step {
         let (digest, snap) = pack_user_snapshot(&self.env.update_dir, &j.txn_id, &self.env.cys_root).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
+        // ★4판(Fable 3R M8): 적용 전 팩 판(커밋 표지 `.pack-version`) — 복구가 「커밋됐나」를 이것과 비교한다.
+        let pre = std::fs::read_to_string(self.env.cys_root.join("pack").join(".pack-version")).unwrap_or_default();
+        if let Some(parent) = snap.parent() {
+            super::journal::durable_write(&parent.join(PACK_PRE_VERSION), pre.trim().as_bytes()).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
+        }
         j.stage_tree_sha256 = digest;
         j.snapshot_dir = snap.to_string_lossy().to_string();
         Ok(())
@@ -962,11 +982,7 @@ impl Ops for RealOps {
     }
 
     fn recover_pack(&mut self, j: &Journal) -> Step {
-        crate::pack::recover_pack_journal().map(|_| ()).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))?;
-        // ★2판(codex 1R C14): 팩 저널 복구만으로 PACK_DONE 을 쓰지 않는다 — 사용자 트리 해시 대조·복원까지 성공해야.
-        let q = super::snapshot::quarantine_dir(&self.env.update_dir, &j.txn_id);
-        pack_user_tree_restore(&self.env.cys_root, &j.stage_tree_sha256, Path::new(&j.snapshot_dir), &q)
-            .map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))
+        recover_pack_at(&self.env.update_dir, &self.env.cys_root, j)
     }
 
     fn reconstruct(&mut self, attempt: Option<&Attempt>) -> Result<bool, Fail> {
@@ -1012,7 +1028,13 @@ impl Ops for RealOps {
             release_seq: j.map(|j| j.release_seq).unwrap_or(0),
             from_release_seq: super::buildinfo::release_seq(),
             from_version: self.old_version.clone(),
-            to_version: self.cand.version.clone(),
+            // ★4판(Fable 3R n1): 팩 결과(PACK_* 저널)는 새 팩 판(release_seq 0 = 본체 판 아님 · HANDOFF §0 계약)
+            to_version: match j.map(|j| j.state) {
+                Some(super::journal::State::PackApply | super::journal::State::PackRollback | super::journal::State::PackDone) => {
+                    self.pack_to.clone().unwrap_or_default()
+                }
+                _ => self.cand.version.clone(),
+            },
             force_permanent: f.map(|f| matches!(f.step.as_str(), "V5" | "V7")).unwrap_or(false),
             detail: f.map(|f| super::errors::clip(&f.detail)).unwrap_or_default(),
             notes_ko: self.cand.notes_ko.clone(),
@@ -1137,6 +1159,38 @@ pub fn parse_pack_dry_run(rc_ok: bool, stdout: &str, stderr: &str) -> Option<boo
     } else {
         None
     }
+}
+
+/// 팩 적용 전 판 기록 파일(`backup/pack-<txn>/pre-version`).
+pub const PACK_PRE_VERSION: &str = "pre-version";
+
+/// ★4판(Fable 3R M8): PACK_APPLY·PACK_ROLLBACK 복구 — ① 팩 저널 자가치유(`pack::recover_pack_journal` · 커밋됨 = 정리 · 미커밋 =
+/// 되돌림) ② 커밋 판정 = 지금 `.pack-version` ≠ 적용 전 판(`pre-version`) → **전진 완료**(사용자 트리 무접촉 — 새 팩이 RefreshUser 로
+/// 고친 지침을 옛 사본으로 되돌리면 영구 혼합 팩) ③ 아니면(되돌려짐·미적용) 사용자 트리 해시 대조·복원. 적용 전 판 기록이 없으면 ③(보수).
+pub fn recover_pack_at(update_dir: &Path, cys_root: &Path, j: &Journal) -> Step {
+    crate::pack::recover_pack_journal().map(|_| ()).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))?;
+    let snap = Path::new(&j.snapshot_dir);
+    let pre = snap.parent().and_then(|p| std::fs::read_to_string(p.join(PACK_PRE_VERSION)).ok()).map(|s| s.trim().to_string());
+    let now = std::fs::read_to_string(cys_root.join("pack").join(".pack-version")).map(|s| s.trim().to_string()).unwrap_or_default();
+    if pack_committed(pre.as_deref(), &now) && !super::mutant("U2-PACKCOMMIT") {
+        return Ok(());
+    }
+    // ★2판(codex 1R C14): 되돌려진 팩 = 사용자 트리 해시 대조·복원까지 성공해야 PACK_DONE.
+    let q = super::snapshot::quarantine_dir(update_dir, &j.txn_id);
+    pack_user_tree_restore(cys_root, &j.stage_tree_sha256, snap, &q).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))
+}
+
+/// 커밋 판정(순수): 적용 전 판 기록이 있고 지금 판이 비어 있지 않으며 다르면 커밋됨.
+pub fn pack_committed(pre: Option<&str>, now: &str) -> bool {
+    matches!(pre, Some(p) if !now.is_empty() && p != now)
+}
+
+/// dry-run 출력의 새 팩 판(「팩 <판> 반영 가능」) — 결과 기록용(n1).
+pub fn parse_pack_version(stdout: &str) -> Option<String> {
+    let i = stdout.find("(팩 ")? + "(팩 ".len();
+    let rest = &stdout[i..];
+    let v: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+    (!v.is_empty()).then_some(v)
 }
 
 /// 성공 종결 — PACK_DONE + 사용자 트리 사본 정리.
@@ -1451,6 +1505,62 @@ mod tests {
             assert!(!upd.join(ATTEMPT_FILE).exists(), "{tag}: 시도 기록 삭제");
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// ★4판(Fable 3R M8 · n1·n2) 실 경로: 실 Runner::run_pack + 실 RealOps(pack_prepare 사본·pre-version · pack_apply 위임 자식 ·
+    /// recover_pack) — 가짜 `cys` 는 dry-run 에 「반영 가능」, 적용에 커밋(.pack-version 1.1.0 + 지침 RefreshUser)만 흉내.
+    /// ⓐ 적용 커밋 뒤 PACK_DONE 전 죽음 → 복구 = 전진 완료(지침 = 새 판 · 되돌림 0 · 혼합 팩 0) ⓑ PACK_APPLY 직후 죽음(미적용 · 사용자 파일
+    /// 훼손) → 복구 = 사용자 트리 복원 ⓒ 성공 = PACK_DONE · 사본 정리(n2) · 결과 to_version = 팩 판(n1). 뮤턴트 U2-PACKCOMMIT = ⓐ 적색.
+    #[cfg(unix)]
+    #[test]
+    fn pack_recovery_keeps_committed_pack_and_restores_only_uncommitted() {
+        use super::super::runner::{Fault, Outcome, Runner};
+        use std::os::unix::fs::PermissionsExt;
+        let _l = crate::pack::PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (case, spec) in [("commit", "kill@PACK_DONE:before"), ("partial", "kill@PACK_APPLY:after"), ("ok", "")] {
+            let (d, upd, root, mut ops) = recon_rig(&format!("pack-{case}"));
+            let _e = crate::pack::EnvGuard::set(crate::pack::ENV_PACK_DIR, root.join("pack"));
+            std::fs::write(root.join("pack/.pack-version"), "1.0.0").unwrap();
+            let script = format!(
+                "#!/bin/sh\necho \"$@\" >> '{log}'\ncase \"$*\" in\n  *'pack-update --dry-run'*) echo '[pack-update] dry-run: 검증·게이트 통과(팩 1.1.0 반영 가능)';;\n  *pack-update*) printf 1.1.0 > '{r}/pack/.pack-version'; printf NEW > '{r}/pack/MASTER_DIRECTIVE.md';;\nesac\nexit 0\n",
+                log = d.join("calls.log").display(),
+                r = root.display()
+            );
+            std::fs::write(&ops.env.old_cys, script).unwrap();
+            std::fs::set_permissions(&ops.env.old_cys, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut r = Runner::new(&upd, "0123456789abcdef0123456789abcdef", 1, &mut ops);
+            r.fault = Fault::parse(spec);
+            r.soft_kill = true;
+            let o = r.run_pack();
+            if case == "ok" {
+                assert_eq!(o, Outcome::PackDone);
+            } else {
+                assert!(matches!(o, Outcome::Killed(..)), "{case}: {o:?}");
+                if case == "partial" {
+                    std::fs::write(root.join("pack/MASTER_DIRECTIVE.md"), "clobbered").unwrap(); // 도중 훼손(미커밋)
+                }
+                let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+                rec.soft_kill = true;
+                assert_eq!(rec.recover(), Outcome::PackDone, "{case}");
+            }
+            let dir = std::fs::read_to_string(root.join("pack/MASTER_DIRECTIVE.md")).unwrap();
+            let ver = std::fs::read_to_string(root.join("pack/.pack-version")).unwrap();
+            match case {
+                "partial" => assert_eq!((dir.as_str(), ver.as_str()), ("D1", "1.0.0"), "미커밋 = 사용자 트리 복원"),
+                _ => assert_eq!((dir.as_str(), ver.as_str()), ("NEW", "1.1.0"), "{case}: 커밋된 팩 = 전진 완료(옛 지침 복원 0)"),
+            }
+            assert_eq!(super::super::journal::read(&upd).journal().unwrap().state, super::super::journal::State::PackDone);
+            let left: Vec<_> = std::fs::read_dir(super::super::snapshot::backup_root(&upd)).map(|r| r.filter_map(|e| e.ok()).collect()).unwrap_or_default();
+            assert!(left.is_empty(), "{case}: 팩 사본 정리(n2) {left:?}");
+            if case == "ok" {
+                let st: Value = serde_json::from_slice(&std::fs::read(d.join("counsel/updates.jsonl")).unwrap_or_default().split(|b| *b == b'\n').next().unwrap_or_default()).unwrap_or(Value::Null);
+                assert_eq!(st["to"], "1.1.0", "n1: 팩 결과 to = 팩 판");
+            }
+            drop(_e);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+        assert!(pack_committed(Some("1.0.0"), "1.1.0") && !pack_committed(Some("1.0.0"), "1.0.0") && !pack_committed(None, "1.1.0") && !pack_committed(Some("1.0.0"), ""));
+        assert_eq!(parse_pack_version("[pack-update] dry-run: 검증·게이트 통과(팩 1.2.3 반영 가능)").as_deref(), Some("1.2.3"));
     }
 
     /// ★4판(codex 3R N3′ 반례): 지난 시도(told)의 기록·스냅샷이 남은 채 새 시도가 S3 에서 죽고 저널이 손상 → 복구기는 지난 시도의 옛

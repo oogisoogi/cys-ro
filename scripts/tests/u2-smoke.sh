@@ -6,6 +6,7 @@
 #   ⑥ (★3판 N1) 러너 잠금 아래 실 `rotate --skip-drain --txn` → ④ `init-pack --txn` 중첩 위임 rc 0 · (★4판 N4) 그 데몬 env 에 위임 토큰 0
 #   ④ `self-update --auto --spawn` → (★2판 C18) 복구기 등록 실패 = rc 4 · 정상 = 러너 사본·복구기 plist(격리 폴더)·install_id 생성 · 러너가 떠서(피드 file:// 부재 = 미도달) 끝남
 #   ⑤ `rotate --stop-only --skip-drain`: 다른 소유자가 잠금을 쥐면 rc 26(txn_busy) · 잠금 없으면 0
+#   ⑦ (★4판 M4/M6/M7) `self-update --pack-only` 실 팩 경로: pack-plan --auto → pack-update 매니페스트만(꾸러미 0) → 서명 거부 = 보류
 # 사용: scripts/tests/u2-smoke.sh   (cargo build --bin cys --bin cysd 뒤 · target/debug 바이너리를 쓴다) · exit 0 = 전건 OK
 set -u
 ROOT=$(git rev-parse --show-toplevel) || exit 2
@@ -128,6 +129,20 @@ if grep -q '^RC 0' "$SB/rot6.log" && ! grep -q '④ 새 팩 반영 실패' "$SB/
 # SEEN_SOCKET 1 = ps -E 가 그 데몬의 env 를 실제로 읽었다(못 읽어 0 이 나온 것과 구분)
 if grep -q '^DAEMON_ENV_TXN 0 SEEN_SOCKET 1' "$SB/rot6.log"; then ok "⑥ rotate 가 띄운 데몬 env 에 CYS_UPDATE_TXN* 0(★4판 N4)"; else bad "⑥ 데몬 env 위임 토큰 $(grep DAEMON_ENV "$SB/rot6.log")"; fi
 pkill -f "$SB/s.sock" 2>/dev/null; true
+# ⑦ ★4판(codex·Fable 3R M4/M6/M7) 실 팩 단독 경로: `self-update --pack-only`(디버그 입구) → auto::pack_only → 러너 잠금 → 러너 사본(=실 cys)
+#   `pack-plan --json --auto --txn` → `pack-update --dry-run --manifest-url file://… --txn` → 매니페스트·서명만 받음(꾸러미 0) → 서명 거부(시험 키
+#   ≠ 내장 팩 키) = 보류 · 저널 0. 실 내장 키 서명 매니페스트를 만들 수 없어 「반영 가능」 갈래는 lib 시험(pack_precheck·M8)이 맡는다.
+rm -f "$UPD"/journal*.json "$UPD"/txn.owner.json
+mkdir -p "$SB/rel"
+printf '{"pack_version":"99.0.0","min_binary_version":"1.1.8","key_id":"NOPE","signed_at":1,"expires_at":9999999999,"files":{}}' >"$SB/rel/pack-manifest.json"
+printf 'untrusted comment: x\nRWQ\n' >"$SB/rel/pack-manifest.json.minisig"
+head -c 2000000 /dev/zero >"$SB/rel/pack.tar.gz"
+iso env CYS_UPDATE_PACK_MANIFEST_URL="file://$SB/rel/pack-manifest.json" "$CYS" self-update --pack-only --json >"$SB/pack7.log" 2>&1; rc=$?
+dl=$(find "$SB/home" -type d -name .pack-download 2>/dev/null | head -1)
+if [ $rc -eq 0 ] && grep -q 'Deferred' "$SB/pack7.log" && grep -q 'pack-update --dry-run' "$SB/pack7.log" && [ -n "$dl" ] \
+   && [ -s "$dl/pack-manifest.json" ] && [ ! -e "$dl/pack.tar.gz" ] && ! ls "$UPD"/journal*.json >/dev/null 2>&1; then
+  ok "⑦ 실 팩 단독 경로: pack-plan --auto → pack-update 매니페스트만(꾸러미 0) → 서명 거부 = 보류 · 저널 0(★4판 M4/M6/M7)"
+else bad "⑦ rc=$rc dl=$dl $(head -c 400 "$SB/pack7.log") $(ls "$dl" 2>/dev/null) $(ls "$UPD")"; fi
 [ -e "$HOME/Library/LaunchAgents/com.cysjavis.cysr-update-recover.plist" ] && bad "실 LaunchAgents 에 plist 생김(격리 위반)" || ok "격리: 실 LaunchAgents 무접촉"
 rm -rf "$SB"
 exit $fail

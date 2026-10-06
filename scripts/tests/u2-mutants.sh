@@ -35,6 +35,8 @@ U2-NOFOLLOW update::mac::tests::swap_forward_then_rb_swap_is_idempotent_on_real_
 U2-NEST update::lock::tests::nested_delegation_reenters_child_lock_but_siblings_still_exclude
 U2-NESTSIB update::lock::tests::nested_siblings_at_same_depth_exclude_each_other
 U2-ATTEMPT update::realops::tests::stale_attempt_from_previous_txn_is_never_a_restore_source
+U2-PACKCOMMIT update::realops::tests::pack_recovery_keeps_committed_pack_and_restores_only_uncommitted
+U2-PACKGATE update::auto::tests::pack_route_uses_pack_only_gate_subset
 U2-RESTART update::realops::tests::corrupt_journal_recover_reconstructs_from_this_attempt_and_restarts_daemon
 LIST
 exit $fail

@@ -221,7 +221,8 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     let (report, rc) = check::run_check(&dir, &crate::pack::pack_dir(), hooks);
     let decision = report["decision"].as_str().unwrap_or("").to_string();
     // ★3판(Fable 2R M4 · 설계 §3-8): 본체가 최신이고 게이트가 통과면 팩 단독 갱신(러너 트랜잭션 안 · PACK_APPLY/PACK_ROLLBACK).
-    if decision == "uptodate" && report["gates"]["pass"].as_bool() == Some(true) {
+    // ★4판(M6): 게이트 = 팩 단독 부분열(`pack_gates` = evaluate_pack_only) — 본체 전체 게이트(N6·N7·N14)를 재사용하지 않는다.
+    if wants_pack_only(&report) {
         let o = pack_only(&dir, &cfg.channel);
         print(json_out, &json!({"phase": "pack", "outcome": format!("{o:?}")}), &format!("pack={o:?}"));
         return match o {
@@ -294,8 +295,14 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     }
 }
 
+/// ★4판(codex·Fable 3R M4/M6): 러너 분기(순수) — 본체 최신 + **팩 단독 게이트**(설계 §3-8 부분열) 통과 = 팩 경로.
+pub fn wants_pack_only(report: &Value) -> bool {
+    let key = if super::mutant("U2-PACKGATE") { "gates" } else { "pack_gates" };
+    report["decision"].as_str() == Some("uptodate") && report[key]["pass"].as_bool() == Some(true)
+}
+
 /// 팩 단독 갱신 1회(잠금 = 러너 · 후보 = 빈 행 — 팩 경로는 본체 자산을 쓰지 않는다).
-fn pack_only(dir: &std::path::Path, channel: &str) -> Outcome {
+pub fn pack_only(dir: &std::path::Path, channel: &str) -> Outcome {
     let guard = match super::lock::acquire(dir, "runner") {
         Ok(g) => g,
         Err(_) => return Outcome::Nothing,
@@ -367,6 +374,24 @@ pub fn verify_payload(json_out: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★4판(codex·Fable 3R M4/M6): 러너 분기 = 팩 단독 부분열 — 배터리(N6)·롤백 자산(N7)·복구기(N14) 보류여도 본체 최신이면 팩 경로 ·
+    /// 팩 부분열 게이트(N2 사람 입력 등) 보류면 팩도 안 감 · 본체 판정이 uptodate 아니면 팩 경로 0. 뮤턴트 U2-PACKGATE(본체 게이트 재사용) = 적색.
+    #[test]
+    fn pack_route_uses_pack_only_gate_subset() {
+        use super::super::gates::{self, Power};
+        let mut f = gates::all_pass_facts();
+        f.power = Some(Power { adapter: false, battery_pct: Some(5) });
+        f.rollback_assets_ok = Some(false);
+        f.recover_agent_ok = Some(false);
+        let rep = |f: &gates::Facts, decision: &str| json!({"decision": decision, "gates": gates::evaluate(f), "pack_gates": gates::evaluate_pack_only(f)});
+        assert!(!gates::evaluate(&f).pass, "본체 게이트 = 보류(N6·N7·N14)");
+        assert!(wants_pack_only(&rep(&f, "uptodate")), "팩 = 재시작 없음 → 전원·롤백 자산·복구기 무관");
+        assert!(!wants_pack_only(&rep(&f, "hold")), "본체 판정이 uptodate 아님 = 팩 경로 0");
+        let mut g = gates::all_pass_facts();
+        g.auto_enabled = Some(false); // N1 = 팩 부분열 안
+        assert!(!wants_pack_only(&rep(&g, "uptodate")), "팩 부분열 보류 = 팩도 안 감");
+    }
 
     /// ★2판 C15: B→A 롤백 뒤 남은 B 후보(seq 9)로 A 설치본(seq 8)을 재지 않는다 — 설치판 seq 의 본문만.
     #[test]

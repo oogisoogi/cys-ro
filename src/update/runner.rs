@@ -418,6 +418,7 @@ impl<'a, O: Ops> Runner<'a, O> {
         match self.ops.pack_apply(&j) {
             Ok(()) => {
                 let j = self.enter(State::PackDone, |_| {})?;
+                pack_backup_cleanup(&j);
                 self.ops.record(Some(&j), Kind::PackOk, None);
                 Ok(Outcome::PackDone)
             }
@@ -429,6 +430,7 @@ impl<'a, O: Ops> Runner<'a, O> {
                     return Ok(Outcome::RollbackFailed(f2));
                 }
                 let j = self.enter(State::PackDone, |_| {})?;
+                pack_backup_cleanup(&j);
                 self.ops.record(Some(&j), Kind::Deferred, Some(&f));
                 Ok(Outcome::Deferred(f))
             }
@@ -514,7 +516,8 @@ impl<'a, O: Ops> Runner<'a, O> {
                 }
                 let j = if j.state == State::PackApply { self.enter(State::PackRollback, |_| {})? } else { j };
                 let _ = j;
-                self.enter(State::PackDone, |_| {})?;
+                let j = self.enter(State::PackDone, |_| {})?;
+                pack_backup_cleanup(&j);
                 Ok(Outcome::PackDone)
             }
             Recovery::Nothing | Recovery::Reconstruct => Ok(Outcome::Nothing),
@@ -558,6 +561,15 @@ impl<'a, O: Ops> Runner<'a, O> {
             self.txn_id.clone()
         } else {
             super::buildinfo::random_hex128().unwrap_or_else(|_| "0".repeat(32))
+        }
+    }
+}
+
+/// ★4판(Fable 3R n2): 팩 단독 갱신 종결 뒤 사용자 트리 사본(`backup/pack-<txn>/`) 정리 — 팩 판마다 `~/.cys/local` 사본이 쌓이지 않게.
+fn pack_backup_cleanup(j: &Journal) {
+    if let Some(parent) = Path::new(&j.snapshot_dir).parent() {
+        if parent.file_name().map(|n| n.to_string_lossy().starts_with("pack-")).unwrap_or(false) {
+            let _ = std::fs::remove_dir_all(parent);
         }
     }
 }

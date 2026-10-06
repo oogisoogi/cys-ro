@@ -662,7 +662,10 @@ class Fingerprint(Base):
 
     def test_known_file_rows(self):
         known = jc._read_known(os.path.dirname(BIN))
-        self.assertEqual(sorted(known.values()), ["0.1.12", "0.1.13"])
+        self.assertEqual(sorted(known.values()), ["0.1.12", "0.1.13", "0.1.14"])
+        # ★known 의 동봉 판 줄 = 핀 넷째 칸(다음 판 동봉 때 이 판 PC 가 「모르는 트리」로 남지 않게 · 3판 ⑨)
+        pin = rd(os.path.join(os.path.dirname(BIN), "install", "agora-client.pin"), encoding="utf-8").split()
+        self.assertEqual({v: f for f, v in known.items()}.get(pin[0]), pin[3], "known 의 동봉 판 지문 ≠ 핀 넷째 칸")
         text = rd(os.path.join(os.path.dirname(BIN), "install", jc.KNOWN_FILE), encoding="utf-8")
         for sha in ("0f3f6616a95428cf0712da578221e3f709590cf3e76fbb6f809e615d458e7632",
                     "3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244"):

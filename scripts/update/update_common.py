@@ -285,6 +285,39 @@ def check_signed_at(signed_at, now, prev_signed_at=None, what="signed_at"):
         raise PublishError("%s %d ≤ 직전 %d (시각 역행)" % (what, signed_at, int(prev_signed_at)))
 
 
+# ── 폐기문 후계 규칙(codex 2R #5 · 생성기·게이트·게시기 공용) ─────────────────────────────
+SEVERITY_RANK = {"advisory": 0, "stop_seats": 1}
+
+
+def check_revocations_successor(prev, new):
+    """직전 폐기문의 항목을 **전체 그대로** 보존해야 한다(동일성 비교). 허용되는 변화는 신뢰를 **줄이는** 쪽뿐:
+    폐기 key·릴리스·DR 핀 폐기 추가 · 릴리스 severity `advisory → stop_seats` 승격(역방향 거부) · 위임/DR 추가 핀 빼기.
+    reason_code 변경 · 위임 항목 변경(공개키·만료 연장 등) = 거부."""
+    if not set(prev.get("revoked_key_ids", [])) <= set(new.get("revoked_key_ids", [])):
+        raise PublishError("폐기 key 가 직전보다 줄었다(단조 위반)")
+    nr = {(r.get("component"), r.get("release_seq")): r for r in new.get("revoked_releases", [])}
+    for r in prev.get("revoked_releases", []):
+        k = (r.get("component"), r.get("release_seq"))
+        n = nr.get(k)
+        if n is None:
+            raise PublishError("폐기 릴리스 %s/%s 가 빠졌다(단조 위반)" % k)
+        if n.get("reason_code") != r.get("reason_code"):
+            raise PublishError("폐기 릴리스 %s/%s reason_code 변경 %r → %r(거부)" % (k + (r.get("reason_code"), n.get("reason_code"))))
+        a, b = SEVERITY_RANK.get(r.get("severity")), SEVERITY_RANK.get(n.get("severity"))
+        if a is None or b is None or b < a:
+            raise PublishError("폐기 릴리스 %s/%s severity %s → %s(약화·미지 = 거부 · 허용 = advisory→stop_seats)"
+                               % (k + (r.get("severity"), n.get("severity"))))
+        if {x: y for x, y in r.items() if x != "severity"} != {x: y for x, y in n.items() if x != "severity"}:
+            raise PublishError("폐기 릴리스 %s/%s 항목이 바뀌었다(severity 승격 말고는 동일해야 한다)" % k)
+    nd = {d.get("key_id"): d for d in new.get("delegations", [])}
+    for d in prev.get("delegations", []):
+        if d.get("key_id") in nd and nd[d.get("key_id")] != d:
+            raise PublishError("위임 %s 항목이 바뀌었다(빼기만 허용 · 바꾸려면 빼고 새 키로)" % d.get("key_id"))
+    pp, np_ = prev.get("dr_pins") or {}, new.get("dr_pins") or {}
+    if not set(pp.get("revoke", [])) <= set(np_.get("revoke", [])):
+        raise PublishError("DR 핀 폐기가 직전보다 줄었다(단조 위반)")
+
+
 # ── 암호 검증 + 통과 증표(codex 1R #4) ───────────────────────────────────────────────
 def verify_sig(keyring, purpose, key_id, data, sig_text, now):
     """키링의 `purpose` 키(만료·폐기 반영)로 minisign 서명을 **암호 검증**. 서명 key id = 기대 key id 도 강제."""

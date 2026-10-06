@@ -1,8 +1,8 @@
 # refresh-feed — 자동 갱신 봉투(F) 재서명(1.1.8 U3 · 설계 AUTO-UPDATE-118 §4-1 F 행 · §4-2 feed_rev · §6-1 봉투 표)
 #
 # 하는 일: 사이트에 게시된 봉투(`https://jarvis.godmeyou.kr/update/<component>/<channel>.json`)를 받아
-#   ① **현재 봉투 쌍을 먼저 U1 `cys update-verify` 로 검증**(만료만 허용 · 통과 증표) — 검증된 봉투에서만 feed_rev·
-#   rollout_pct·halt·본문을 상속한다(codex 1R #6 · 위조 현재 봉투의 권한 세탁 차단) ② feed_rev +1 · signed_at = 신뢰 시각 ·
+#   ① **현재 봉투 쌍을 U1 `cys update-verify` 로 직접 다시 검증**(make-envelope 안 · 만료만 허용 · 증표 신뢰 0) — 검증된 봉투에서만
+#   feed_rev·rollout_pct·halt·본문을 상속한다(codex 1R/2R #6 · 위조 현재 봉투의 권한 세탁 차단) ② feed_rev +1 · signed_at = 신뢰 시각 ·
 #   expires_at = +14일로 **다시 만들고**(본문 = U 서명 원문 그대로 · F 는 내용을 바꿀 수 없다) F 키로 서명 ③ 새 봉투를 같은
 #   검증기로 **허용 출발 seq 전부**에 대해 검증(가짜 설치 seq 0 금지 · codex 1R #11) ④ 서명 쌍 + 통과 증표를 아티팩트로 남긴다.
 #   · 주 1회(cron) = 만료 연장만(rollout_pct·halt 는 이어받음) · 발행 때(workflow_dispatch + release_seq) = 새 본문을
@@ -10,7 +10,7 @@
 #     dispatch 의 rollout_pct·halt.
 #
 # ⛔ 이 워크플로는 **게시하지 않는다**(2판 · master 결정 ① [master#8db3b908] · codex 1R #9·#16): CI = 생성 + 검증 + 아티팩트.
-#   게시 = master 가 아티팩트를 받아 `/update/*` 전용 워커의 R2 에 `publish-site.py … --r2`(증표 없으면 게시기가 거부) →
+#   게시 = master 가 아티팩트를 받아 `/update/*` 전용 워커의 R2 에 `publish-site.py envelope --r2 … --cys <U1 cys>`(게시기가 U1 재검증) →
 #   라이브 대조(HANDOFF-U3 §1 ③). 그래서 이 잡에는 사이트·Cloudflare·사이트 저장소 비밀이 **없다**.
 #   fail-safe(설계 「실패 = 이전 봉투 유지」): 어느 단계든 실패 = 아티팩트 0 = 게시할 것 0 · 잡 실패 = GitHub 실패 알림 = 신호.
 #   봉투가 7일 넘게 갱신되지 않으면 기기 쪽 daily 칸이 잡는다(§4-6 「재생·동결」).
@@ -137,18 +137,6 @@ jobs:
         shell: bash
         run: cargo build --release --bin cys
 
-      - name: Verify the CURRENT envelope before inheriting from it (codex 1R #6)
-        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0' && steps.fetch.outputs.have == '1'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 지금 게시된 봉투 쌍 = 상속 원천. 만료(ⓔ)만 허용 — 그 밖의 거부(서명·서식·URL·폐기·feed_rev)는 실패 = 상속 0.
-          # 통과 증표(feed/cur.json.verified.json)가 없으면 make-envelope 가 --prev-envelope 를 거부한다.
-          python3 scripts/update/release-gate.py verify --cys target/release/cys \
-            --component "$C" --channel "$CH" --envelope feed/cur.json --sig feed/cur.json.minisig \
-            --revocations feed/rev.json --revocations-sig feed/rev.json.minisig \
-            --allow-expired --stamp --expect apply,halt,not_in_rollout
-
       - name: Build envelope (unsigned)
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
         shell: bash
@@ -167,7 +155,12 @@ jobs:
           PY
           args=(--component "$C" --channel "$CH" --release-body feed/body.json --release-sig feed/body.json.minisig
                 --key-id "$F_KEY_ID" --keyring cysjavis-pack/trusted-keys.json --out feed/env.json)
-          if [ "${{ steps.fetch.outputs.have }}" = "1" ]; then args+=(--prev-envelope feed/cur.json); else args+=(--first); fi
+          # 상속(have=1) = make-envelope 가 현재 봉투 쌍을 U1 으로 **직접 다시 검증**한 뒤에만(만료 ⓔ 만 허용 · 증표 신뢰 0 · 3판 2R #6).
+          if [ "${{ steps.fetch.outputs.have }}" = "1" ]; then
+            args+=(--prev-envelope feed/cur.json --cys target/release/cys --revocations feed/rev.json)
+          else
+            args+=(--first)
+          fi
           [ -z "$IN_ROLLOUT" ] || args+=(--rollout-pct "$IN_ROLLOUT")
           [ -z "$IN_HALT" ] || args+=(--halt "$IN_HALT")
           python3 scripts/update/make-envelope.py "${args[@]}"
@@ -201,7 +194,7 @@ jobs:
           # 기기는 허용 출발 seq(min_from_release_seq..release_seq-1)의 아무 판에서나 이 봉투를 본다 — 그 전부에서
           #   서명·서식·URL 이 통과해야 한다(--installed-release-seq 를 주지 않는다 = 가짜 설치 seq 0 금지 · codex 1R #11).
           #   halt=true 또는 rollout<100 이면 판정이 halt/not_in_rollout 인 것이 정상(거부·판정 불가만 실패).
-          #   통과 증표(feed/env.json.verified.json) = 게시기(publish-site.py)가 요구하는 입장권.
+          #   통과 증표(feed/env.json.verified.json) = 정보용(게시기는 U1 을 직접 다시 돌린다 · 3판).
           python3 scripts/update/release-gate.py verify --cys target/release/cys \
             --component "$C" --channel "$CH" --envelope feed/env.json --sig feed/env.json.minisig \
             --revocations feed/rev.json --revocations-sig feed/rev.json.minisig \

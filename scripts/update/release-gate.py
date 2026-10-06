@@ -183,9 +183,9 @@ def stage_body(a):
     elif a.stamp:
         raise Undetermined("--stamp 는 --sig 검증과 함께만")
     if a.archive_fs or a.archive_r2:
-        from store import FsStore, R2Store, archive_state
-        store = FsStore(a.archive_fs) if a.archive_fs else R2Store(a.archive_r2, a.wrangler.split())
-        top, body_of = archive_state(store, comp)
+        from store import FsStore, S3Store, archive_state
+        store = FsStore(a.archive_fs) if a.archive_fs else S3Store(a.archive_r2)
+        top, body_of, _ = archive_state(store, comp)
         existing = body_of(seq)
         if existing is not None:
             if existing != raw:
@@ -232,12 +232,11 @@ def stage_revocations(a):
             raise GateFail("직전 폐기문: %s" % e)
         if d["rev"] != p["rev"] + 1:
             raise GateFail("rev %d ≠ 직전 %d + 1" % (d["rev"], p["rev"]))
-        rk = lambda lst: {(r["component"], r["release_seq"]) for r in lst}
-        if not (set(p.get("revoked_key_ids", [])) <= set(d.get("revoked_key_ids", []))
-                and rk(p.get("revoked_releases", [])) <= rk(d.get("revoked_releases", []))
-                and set((p.get("dr_pins") or {}).get("revoke", [])) <= set((d.get("dr_pins") or {}).get("revoke", []))):
-            raise GateFail("폐기 집합이 직전보다 줄었다(단조 위반)")
-        out.append("직전 대비 rev+1 · 폐기 집합 단조 · 시각 단조")
+        try:
+            uc.check_revocations_successor(p, d)
+        except uc.PublishError as e:
+            raise GateFail(str(e))
+        out.append("직전 대비 rev+1 · 후계 규칙(항목 보존 · severity 승격만) · 시각 단조")
     elif not a.first:
         raise GateFail("직전 폐기문(--prev)이 없으면 --first 를 명시하라")
     if a.stamp:
@@ -282,8 +281,7 @@ def main(argv=None):
     s2.add_argument("--sig", default=None)
     s2.add_argument("--keyring", default=None)
     s2.add_argument("--archive-fs", default=None, help="보관소 저장소(FS 백엔드 루트 · publish-site --fs 와 같은 곳)")
-    s2.add_argument("--archive-r2", default=None, help="보관소 저장소(R2 버킷)")
-    s2.add_argument("--wrangler", default="bunx wrangler")
+    s2.add_argument("--archive-r2", default=None, help="보관소 저장소(R2 버킷 · S3 API · env R2_* 자격)")
     s2.add_argument("--expect-seq", type=int, default=None, help="발행 순번 변수(vars.CYSR_RELEASE_SEQ)와 일치 강제")
     s2.add_argument("--first", action="store_true", help="보관소 첫 본문")
     s2.add_argument("--stamp", action="store_true", help="암호 검증 통과 증표(<body>.verified.json)를 쓴다")

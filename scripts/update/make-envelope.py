@@ -8,9 +8,10 @@
   · `feed_rev` = 직전 봉투 + 1(`--prev-envelope`) · 직전 봉투가 없으면 `--first` 를 명시해야 1(실수로 1 로 되돌아가 replay 거부를
     부르는 사고 차단).
   · `expires_at − signed_at` ≤ 14일(기본 14일).
-  · ★2판(codex 1R #6·#19): 직전 봉투는 **U1 `cys update-verify` 통과 증표**(`release-gate.py verify --stamp`)가 그 바이트와 같을
-    때만 상속한다 · 직전보다 낮거나 같은 `release_seq` 의 새 본문 = 예외 없이 거부(같은 본문 재서명은 본문 그대로라 seq 같음 허용) ·
-    본문 서명은 키링 release 키로 **암호 검증** · signed_at = 신뢰 시각(인자 0)이고 직전 봉투보다 뒤.
+  · ★3판(codex 2R #6·#19 — 증표 신뢰 폐지): 직전 봉투는 **U1 검증기를 직접 다시 돌려**(`--cys` · 현재 폐기문 `--revocations` ·
+    만료(ⓔ)만 허용) 통과한 것만 상속한다(증표 파일은 보지 않는다) · 직전보다 낮은 `release_seq` = 거부 · **같은 seq** 면 새 본문·서명이
+    직전 봉투에 실린 원문(= 보관소 불변 객체)과 바이트 동일할 때만(다른 notes_ko 재서명 = 거부) · 본문 서명은 키링 release 키로
+    **암호 검증** · signed_at = 신뢰 시각(인자 0)이고 직전 봉투보다 뒤.
   · `rollout_pct`·`halt` 는 명시하지 않으면 직전 봉투 값을 이어받는다(주간 재서명은 만료만 연장). 첫 봉투는 둘 다 명시.
   · 본문 `.minisig` 의 key id = 본문 `key_id`(U) · 본문 서식 = component-release · component 일치.
 """
@@ -50,7 +51,14 @@ def build(a):
         pb = open(a.prev_envelope, "rb").read()
         if not os.path.isfile(a.prev_envelope + ".minisig"):
             raise uc.PublishError("직전 봉투 서명(.minisig) 없음 — U1 검증 증표가 있을 수 없다")
-        uc.read_stamp(a.prev_envelope, pb, open(a.prev_envelope + ".minisig", "rb").read(), by=uc.STAMP_BY_U1)
+        if not a.cys or not a.revocations:
+            raise uc.PublishError("--prev-envelope 상속은 --cys <U1 cys> 와 --revocations <현재 폐기문> 이 필수다(U1 직접 재검증)")
+        import u1verify
+        try:
+            u1verify.verify_envelope(a.cys, u1verify.args(a.cys, a.component, a.channel, a.prev_envelope, a.revocations,
+                                                          allow_expired=True), ["apply", "halt", "not_in_rollout"])
+        except (u1verify.GateFail, u1verify.Undetermined) as e:
+            raise uc.PublishError("직전 봉투 U1 재검증 거부 — 상속 0: %s" % e)
         prev = json.loads(pb)
         if prev.get("kind") != uc.ENVELOPE_KIND or prev.get("component") != a.component or prev.get("channel") != a.channel:
             raise uc.PublishError("직전 봉투 서식·component·channel 불일치")
@@ -59,6 +67,11 @@ def build(a):
         if int(prev_body.get("release_seq", 0)) > int(body["release_seq"]):
             raise uc.PublishError("직전 봉투 release_seq %s > 새 본문 %s — 채널 내용 후퇴(예외 없음)"
                                   % (prev_body.get("release_seq"), body["release_seq"]))
+        if int(prev_body.get("release_seq", 0)) == int(body["release_seq"]) and (
+                base64.b64decode(prev["release"]) != body_bytes
+                or base64.b64decode(prev["release_sig"]) != sig_text.encode("utf-8")):
+            raise uc.PublishError("같은 release_seq %s 인데 본문·서명이 직전 봉투(= 보관소 불변 객체)와 다르다 — 재서명 거부(2R #19)"
+                                  % body["release_seq"])
         uc.check_signed_at(now, now, prev.get("signed_at"), "새 봉투 signed_at")
     elif a.first:
         feed_rev = 1
@@ -99,7 +112,9 @@ def main(argv=None):
     ap.add_argument("--channel", required=True)
     ap.add_argument("--release-body", required=True, help="U 서명 릴리스 본문(보관소 원문)")
     ap.add_argument("--release-sig", required=True)
-    ap.add_argument("--prev-envelope", default=None)
+    ap.add_argument("--prev-envelope", default=None, help="직전(현재 게시) 봉투 — <파일>.minisig 와 함께 · --cys·--revocations 필수")
+    ap.add_argument("--cys", default=None, help="U1 cys(update-verify) — 직전 봉투 재검증")
+    ap.add_argument("--revocations", default=None, help="현재 게시 폐기문(<파일>.minisig 와 함께)")
     ap.add_argument("--first", action="store_true")
     ap.add_argument("--key-id", required=True, help="F 키 key id")
     ap.add_argument("--keyring", default=os.path.join(uc.REPO_ROOT, "cysjavis-pack", "trusted-keys.json"))

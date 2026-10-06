@@ -80,8 +80,14 @@ def build(a):
             raise uc.PublishError("--revoke-release 형식 = component:seq:severity:reason_code: %r" % spec)
         if comp not in uc.COMPONENTS or seq < 1 or sev not in SEVERITIES or not reason.strip():
             raise uc.PublishError("--revoke-release 값: %r" % spec)
-        if any(r["component"] == comp and r["release_seq"] == seq for r in rr):
-            raise uc.PublishError("이미 폐기된 릴리스 %s/%d" % (comp, seq))
+        same = [r for r in rr if r["component"] == comp and r["release_seq"] == seq]
+        if same:
+            # 이미 폐기된 릴리스 = severity 승격(advisory → stop_seats · 같은 reason)만 허용 — 그 밖은 후계 규칙이 거부.
+            if not (same[0]["severity"] == "advisory" and sev == "stop_seats" and same[0]["reason_code"] == reason):
+                raise uc.PublishError("이미 폐기된 릴리스 %s/%d — 바꿀 수 있는 것은 advisory→stop_seats 승격(같은 reason)뿐"
+                                      % (comp, seq))
+            rr = [dict(r, severity="stop_seats") if r is same[0] else r for r in rr]
+            continue
         rr.append({"component": comp, "release_seq": seq, "severity": sev, "reason_code": reason})
 
     pins = prev.get("dr_pins") or {"add": [], "revoke": []}
@@ -90,14 +96,7 @@ def build(a):
     for p in add + revoke:
         if not uc.HEX40_RE.match(p):
             raise uc.PublishError("DR 핀 형식(40 hex) %r" % p)
-    # 폐기 집합 단조(직전의 상위집합) — 위 구성이 직전에서 출발하므로 늘 참이어야 하고, 아니면 도구 결함이다(fail-closed).
-    def rr_keys(lst):
-        return {(r["component"], r["release_seq"]) for r in lst}
-    if not (set(prev.get("revoked_key_ids", [])) <= set(revoked_keys)
-            and rr_keys(prev.get("revoked_releases", [])) <= rr_keys(rr)
-            and set((prev.get("dr_pins") or {}).get("revoke", [])) <= set(revoke)):
-        raise uc.PublishError("폐기 집합이 직전보다 줄었다(단조 위반)")
-    return {
+    doc = {
         "kind": uc.REVOCATIONS_KIND,
         "rev": rev,
         "key_id": a.key_id,
@@ -107,6 +106,10 @@ def build(a):
         "revoked_releases": rr,
         "dr_pins": {"add": add, "revoke": revoke},
     }
+    # 후계 규칙(codex 2R #5) — 위 구성이 직전에서 출발하므로 늘 참이어야 하고, 아니면 도구 결함이다(fail-closed).
+    uc.check_revocations_successor(prev, doc)
+    return doc
+
 
 
 def main(argv=None):

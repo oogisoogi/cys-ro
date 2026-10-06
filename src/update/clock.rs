@@ -42,6 +42,13 @@ pub fn wall_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// ★4판(codex 3R m4): 겹치지 않는 자리 이름 키 — 벽시계 나노초 + pid + 프로세스 안 순번(같은 초·같은 나노초 두 번 = 다른 키).
+pub fn unique_key() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{ns}-{}-{}", std::process::id(), SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 /// 단조 밀리초(이 부팅 안에서만 의미).
 pub fn mono_ms() -> u64 {
     // ★1R MAJOR(M4): 맥 = 설계 정본 그대로 `mach_continuous_time`(잠자는 동안 포함) × timebase.

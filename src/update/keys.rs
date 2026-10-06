@@ -124,6 +124,19 @@ impl UpdateKeyring {
         self.keys.iter().map(|k| format!("{}:{}", k.purpose.as_str(), k.key_id)).collect()
     }
 
+    /// ★2판: 그 용도의 키 중 하나라도 서명을 받아들이면 Ok(A2 처럼 서명 쪽에 key_id 칸이 없는 자산용). ⚠[`key_ids`] 는
+    /// `용도:key_id` 표시 문자열이라 [`verify`] 의 key_id 로 넘기면 늘 실패한다(1판 S2 A2 검사가 그랬다 — 2판 수리).
+    pub fn verify_any(&self, purpose: Purpose, data: &[u8], sig: &[u8], now: i64) -> Result<(), String> {
+        let mut last = format!("{} 용도 키 없음", purpose.as_str());
+        for k in self.keys.iter().filter(|k| k.purpose == purpose) {
+            match self.verify(purpose, &k.key_id, data, sig, now) {
+                Ok(()) => return Ok(()),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
+
     /// 용도·폐기·만료를 따져 키 1개를 고른다.
     pub fn find(&self, key_id: &str, purpose: Purpose, now: i64) -> Result<&UpdateKey, String> {
         if self.revoked_key_ids.contains(key_id) {

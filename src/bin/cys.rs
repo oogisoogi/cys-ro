@@ -2777,13 +2777,17 @@ fn main() {
         let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
         if cys::update::cli::claims(&args) {
             AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
+            // ★1.1.8 U2: 러너·복구기의 데몬 RPC(정비 모드·좌석 토큰·org.status) — 자동 기동 없이(위 AUTOSTART false).
+            cys::update::auto::set_rpc(|m, p| request(m, p).map_err(|e| e.to_string()));
             let hooks = cys::update::check::Hooks { seats: &update_seat_facts, pending_approvals: &update_pending_approvals };
             if let Some(rc) = cys::update::cli::dispatch(&args, &hooks) {
                 std::process::exit(rc);
             }
         }
     }
-    let cli = Cli::parse();
+    // ★1.1.8 U2(§3-3 · §3-10): `rotate --stop-only` · `rotate --txn <txn:epoch>` 는 clap 앞에서 떼어 낸다(최상위 `Command` 인자 추가 =
+    //   j3 스택 넘침 — 위 갱신 3동사와 같은 이유). 철자 고정 · `rotate` 동사일 때만.
+    let cli = Cli::parse_from(rotate_ext_strip(std::env::args_os().collect()));
     if let Some(s) = &cli.socket {
         std::env::set_var(cys::ENV_SOCKET, s);
     }
@@ -4571,6 +4575,9 @@ const SEAT_IDENTITY_ENV_KEYS: [&str; 5] = [
     "CYS_DEPT_ROTATE",
 ];
 
+/// ★1.1.8 U2 4판(Fable 3R N4): 자동 갱신 위임 env — 데몬 스폰 전 제거(cys-dept cysd 스폰 지점 · cysd 부팅 scrub 과 같은 목록).
+const TXN_ENV_KEYS: [&str; 2] = [cys::update::lock::ENV_TXN, cys::update::lock::ENV_TXN_DEPTH];
+
 fn spawn_detached_daemon(path: &std::path::Path) -> std::io::Result<()> {
     use cys::SpawnPolicy;
     let build = |breakaway: bool| -> std::io::Result<std::process::Command> {
@@ -4586,6 +4593,10 @@ fn spawn_detached_daemon(path: &std::path::Path) -> std::io::Result<()> {
         //   스케줄 승격 틱과 **같은 목록** — schedule.rs `BUILTIN_COMMAND_MIGRATIONS` P8 항목).
         //   ★(1.1.8 합성) breakaway 재시도(2R codex #8) 두 번째 빌드도 같은 클로저라 같은 목록을 지운다.
         for k in SEAT_IDENTITY_ENV_KEYS {
+            cmd.env_remove(k);
+        }
+        // ★1.1.8 U2 4판(Fable 3R N4): 자동 갱신 위임 env 도 데몬에 물려주지 않는다(데몬 → 좌석 셸 상속 = 좌석의 팩·rotate 명령 rc 26).
+        for k in TXN_ENV_KEYS {
             cmd.env_remove(k);
         }
         cmd.spawn_policy(cys::ChildLifetime::Survivor);
@@ -4649,6 +4660,15 @@ fn connect() -> Result<ConnStream, String> {
                 return Err(
                     "완전 초기화가 진행 중이라 데몬을 기동하지 않는다 — 끝난 뒤 다시 실행하라".into(),
                 );
+            }
+            // ★1.1.8 U2(AUTO-UPDATE-118 §3-2 참가자 「CLI 의 데몬 자동 기동」): 자동 갱신 트랜잭션이 잠금을 쥐고 있으면(교체 중) 위임
+            //   토큰 없는 자동 기동을 거부한다 — 옛 데몬이 S7~S10 사이에 되살아나는 길(09-19 HALT4) 차단. 판정 불가 = 평소대로.
+            if std::env::var(cys::update::lock::ENV_TXN).map(|v| v.is_empty()).unwrap_or(true) {
+                if let Ok(d) = cys::update::buildinfo::state_dir() {
+                    if cys::update::lock::is_held(&d) == Some(true) {
+                        return Err("자비스가 지금 새 판으로 바꾸는 중이라 데몬을 기동하지 않는다 — 몇 분 뒤 다시 실행하라".into());
+                    }
+                }
             }
             let socket = socket_path();
             let pack_env = cys::pack::PACK_DIR_ENV_KEYS
@@ -5675,12 +5695,20 @@ fn run(command: Command) -> i32 {
         }
 
         Command::Rotate { timeout, skip_drain, skip_depts } => {
+            // ★1.1.8 U2(§3-2): 트랜잭션 잠금 참가 — 토큰(--txn/env)이 있으면 위임 검증 · 없으면 평소처럼 잠금을 잡는다(자동 갱신 중 = txn_busy).
+            //   쥔 동안 자식(init-pack·restore·daemon install)에 같은 토큰을 env 로 넘긴다.
+            let ext = ROTATE_EXT.get().cloned().unwrap_or_default();
+            let _part = match rotate_participate(ext.txn.as_deref()) {
+                Ok(p) => p,
+                Err(rc) => return counsel_update_signal("host.rotate", rc, None),
+            };
+            let rc = if ext.stop_only {
+                rotate_stop_only(timeout, skip_drain, skip_depts || rotate_skip_depts_env())
+            } else {
+                run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env())
+            };
             // ★T3: 끝난 rc 를 상담소 신호로(조기 return 이 많아 몸통 대신 여기서 — rc 불변).
-            return counsel_update_signal(
-                "host.rotate",
-                run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env()),
-                None,
-            );
+            return counsel_update_signal("host.rotate", rc, None);
         }
 
         Command::Drain { .. } => {
@@ -6165,14 +6193,30 @@ fn run(command: Command) -> i32 {
             })
         }
 
+        // ★1.1.8 U2 2판(codex 1R C1 · §3-2 참가자): 팩을 바꾸는(·판정하는) 동사도 트랜잭션 잠금에 원자 참가한다 — 자동 갱신 중 토큰 없는
+        //   실행 = rc 26(txn_busy · 재시도 0) · 위임(--txn + env) = 자식 잠금.
         Command::InitPack { force, install_hook: _, no_install_hook, claude_settings } => {
+            let _part = match txn_participate("init-pack", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+                Ok(p) => p,
+                Err(rc) => return rc,
+            };
             return run_init_pack(force, no_install_hook, claude_settings);
         }
 
         Command::PackUpdate { from, manifest_url, dry_run } => {
+            let _part = match txn_participate("pack-update", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+                Ok(p) => p,
+                Err(rc) => return rc,
+            };
             return run_pack_update(from, manifest_url, dry_run);
         }
-        Command::PackPlan { force } => return run_pack_plan(force),
+        Command::PackPlan { force } => {
+            let _part = match txn_participate("pack-plan", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+                Ok(p) => p,
+                Err(rc) => return rc,
+            };
+            return run_pack_plan(force, ROTATE_EXT.get().map(|e| e.auto).unwrap_or(false));
+        }
         Command::PackMerge {
             file, take_new, keep_mine, ai, to_local, propose, yes, force_vendor, dry_run,
             force_unsafe_core, revert_merge,
@@ -20834,6 +20878,197 @@ const ROTATE_RC_DAEMON: i32 = 22;
 const ROTATE_RC_DAEMON_UP: i32 = 23;
 const ROTATE_RC_PACK: i32 = 24;
 const ROTATE_RC_RESTORE: i32 = 25;
+/// ★1.1.8 U2: 자동 갱신 트랜잭션 잠금을 얻지 못함(다른 트랜잭션 진행 · 토큰 불일치) — 재시도 0.
+const ROTATE_RC_TXN_BUSY: i32 = 26;
+
+/// `rotate` 의 clap 밖 인자(★U2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RotateExt {
+    stop_only: bool,
+    txn: Option<String>,
+    /// ★1.1.8 U2 4판(Fable 3R M6): `pack-plan --auto` — 자동 경로 허용 계획만 rc 0(clap 밖 · j3 스택).
+    auto: bool,
+}
+
+static ROTATE_EXT: std::sync::OnceLock<RotateExt> = std::sync::OnceLock::new();
+
+/// 잠금 참가 동사(§3-2 · ★2판 C1): `--txn` 을 clap 밖에서 떼어 받는다(`--stop-only` 는 rotate 만).
+const TXN_VERBS: &[&str] = &["rotate", "init-pack", "init-jarvis", "pack-update", "pack-plan"];
+
+/// argv 에서 참가 동사([`TXN_VERBS`]) 뒤의 `--txn <v>`·`--txn=<v>`(rotate 는 `--stop-only` 도)를 떼어 [`ROTATE_EXT`] 에 두고 나머지를
+/// 돌려준다(순수 + 1회 기록).
+fn rotate_ext_strip(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let (out, ext) = rotate_ext_split(args);
+    let _ = ROTATE_EXT.set(ext);
+    out
+}
+
+fn rotate_ext_split(args: Vec<std::ffi::OsString>) -> (Vec<std::ffi::OsString>, RotateExt) {
+    let pos = args.iter().position(|a| TXN_VERBS.iter().any(|v| a == *v));
+    let Some(pos) = pos else { return (args, RotateExt::default()) };
+    let is_rotate = args[pos] == "rotate";
+    let is_plan = args[pos] == "pack-plan";
+    let mut ext = RotateExt::default();
+    let mut out: Vec<std::ffi::OsString> = args[..=pos].to_vec();
+    let mut it = args.into_iter().skip(pos + 1);
+    while let Some(a) = it.next() {
+        let s = a.to_string_lossy().to_string();
+        if s == "--stop-only" && is_rotate {
+            ext.stop_only = true;
+        } else if s == "--auto" && is_plan {
+            ext.auto = true;
+        } else if s == "--txn" {
+            ext.txn = it.next().map(|v| v.to_string_lossy().to_string());
+        } else if let Some(v) = s.strip_prefix("--txn=") {
+            ext.txn = Some(v.to_string());
+        } else {
+            out.push(a);
+        }
+    }
+    (out, ext)
+}
+
+#[cfg(test)]
+mod u2_rotate_ext_tests {
+    use super::*;
+    fn v(xs: &[&str]) -> Vec<std::ffi::OsString> {
+        xs.iter().map(std::ffi::OsString::from).collect()
+    }
+    #[test]
+    fn rotate_ext_split_strips_only_after_rotate_verb() {
+        let (out, e) = rotate_ext_split(v(&["cys", "rotate", "--stop-only", "--txn", "a:1", "--skip-drain"]));
+        assert_eq!(out, v(&["cys", "rotate", "--skip-drain"]));
+        assert_eq!(e, RotateExt { stop_only: true, txn: Some("a:1".into()), auto: false });
+        let (out, e) = rotate_ext_split(v(&["cys", "pack-plan", "--json", "--auto", "--txn", "c:3"]));
+        assert_eq!((out, e.auto, e.txn.as_deref()), (v(&["cys", "pack-plan", "--json"]), true, Some("c:3")), "★4판 M6: pack-plan --auto = clap 밖");
+        assert!(!rotate_ext_split(v(&["cys", "rotate", "--auto"])).1.auto, "--auto 는 pack-plan 만");
+        let (out, e) = rotate_ext_split(v(&["cys", "rotate", "--txn=b:2"]));
+        assert_eq!((out, e.txn), (v(&["cys", "rotate"]), Some("b:2".into())));
+        // rotate 가 아니면 무변경(다른 동사의 같은 철자 인자를 건드리지 않는다)
+        let (out, e) = rotate_ext_split(v(&["cys", "send", "--stop-only"]));
+        assert_eq!((out, e), (v(&["cys", "send", "--stop-only"]), RotateExt::default()));
+        // clap 은 떼어 낸 뒤의 인자를 그대로 받는다
+        let cli = Cli::try_parse_from(rotate_ext_split(v(&["cys", "rotate", "--stop-only", "--skip-drain"])).0).unwrap();
+        assert!(matches!(cli.command, Command::Rotate { skip_drain: true, .. }));
+        // ★2판 C1: 팩 참가자도 --txn 을 떼어 받는다 · --stop-only 는 rotate 전용(그대로 clap 에 남아 거부된다)
+        for verb in ["init-pack", "init-jarvis", "pack-update", "pack-plan"] {
+            let (out, e) = rotate_ext_split(v(&["cys", verb, "--txn", "c:3"]));
+            assert_eq!((out, e), (v(&["cys", verb]), RotateExt { stop_only: false, txn: Some("c:3".into()), auto: false }), "{verb}");
+        }
+        let (out, e) = rotate_ext_split(v(&["cys", "pack-plan", "--stop-only"]));
+        assert_eq!((out, e.stop_only), (v(&["cys", "pack-plan", "--stop-only"]), false));
+    }
+}
+
+/// 잠금 참가(§3-2): 위임 토큰이 있으면 [`cys::update::lock::acquire_or_delegate`] 의 위임 검증 · 없으면 잠금을 잡는다. 쥔 토큰은 env
+/// `CYS_UPDATE_TXN` 으로 자식에게 넘긴다. 갱신 상태 폴더를 모르면(판정 불가) 평소대로 진행(옛 동작 · 설치 링크 무변경).
+/// ★2판(codex 1R C1): 「잠금 파일이 없으면 참가 안 함」 분기 삭제 — 존재 검사와 잠금 사이 창(A 가 없음을 본 직후 B 가 잡음)을 없앤다.
+/// 잠금 파일을 만들 수조차 없을 때(갱신 폴더 생성 불가)만 [`cys::update::lock::participate`] 가 평소대로 진행시킨다.
+fn rotate_participate(arg: Option<&str>) -> Result<Option<cys::update::lock::Participation>, i32> {
+    txn_participate("rotate", arg)
+}
+
+/// ★4판(Fable 3R N4): 이 프로세스가 참가자로 받은 (토큰, 자식 깊이) — 위임 자식 Command 에만 붙인다(프로세스 env 무접촉).
+static TXN_CHILD: std::sync::OnceLock<(String, u32)> = std::sync::OnceLock::new();
+
+/// 참가 자식(rotate ④ init-pack 등)에 위임 토큰 env 와 깊이를 붙인다 · 참가하지 않았으면 무동작. 반환 = 붙인 토큰(인자 `--txn` 용).
+fn txn_child_env(cmd: &mut std::process::Command) -> Option<String> {
+    let (tok, depth) = TXN_CHILD.get()?;
+    cmd.env(cys::update::lock::ENV_TXN, tok);
+    if *depth > 0 {
+        cmd.env(cys::update::lock::ENV_TXN_DEPTH, depth.to_string());
+    }
+    Some(tok.clone())
+}
+
+fn txn_participate(owner: &str, arg: Option<&str>) -> Result<Option<cys::update::lock::Participation>, i32> {
+    let Ok(dir) = cys::update::buildinfo::state_dir() else { return Ok(None) };
+    let env = std::env::var(cys::update::lock::ENV_TXN).ok().filter(|v| !v.is_empty());
+    match cys::update::lock::participate(&dir, owner, arg, env.as_deref()) {
+        Ok(None) => Ok(None),
+        Ok(Some(p)) => {
+            let tok = match &p {
+                cys::update::lock::Participation::Owner(g) => g.token().render(),
+                cys::update::lock::Participation::Delegated(_) => arg.map(str::to_string).or(env).unwrap_or_default(),
+                // 공유 참가자 = 토큰 없음(자식도 각자 공유 참가)
+                cys::update::lock::Participation::Participant(_) => return Ok(Some(p)),
+            };
+            // ★4판(Fable 3R N4): 자기 env 에 심지 않는다(set_var = 이 프로세스가 띄우는 데몬·그 좌석 셸까지 상속 → 좌석의 팩·rotate 명령
+            //   rc 26). 위임 자식에게 넘길 토큰·깊이는 기록만 하고, 참가 자식 Command 에만 [`txn_child_env`] 로 붙인다.
+            // ★3판(Fable 2R N1): 위임 받은 이 프로세스가 다시 위임하는 자식(rotate ④ init-pack)은 깊이 +1 로 자식 잠금 재진입
+            let depth = if matches!(p, cys::update::lock::Participation::Delegated(_)) {
+                std::env::var(cys::update::lock::ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) + 1
+            } else {
+                0
+            };
+            let _ = TXN_CHILD.set((tok, depth));
+            Ok(Some(p))
+        }
+        Err(e) => {
+            eprintln!("[{owner}] {e} — 자비스가 지금 새 판으로 바꾸는 중이거나 토큰이 맞지 않는다(재시도 0)");
+            Err(ROTATE_RC_TXN_BUSY)
+        }
+    }
+}
+
+/// `rotate --stop-only`(§3 S7): ① 저장 검증(건너뛰기 가능) → ② 데몬만 내린다(OS 상시 가동 등록 해제 = launchd·작업 스케줄러가 옛
+/// 데몬을 되살리지 않게) — 새 데몬 기동·팩 반영·복원 0. 기동은 S10 의 새 바이너리 `rotate --skip-drain --txn` 이 한다.
+fn rotate_stop_only(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
+    let Ok(exe) = std::env::current_exe() else {
+        return ROTATE_RC_DAEMON;
+    };
+    let run = |args: &[&str]| -> Option<std::process::Output> {
+        let mut cmd = cys::hidden_command(&exe);
+        cmd.args(args);
+        output_via_file(cmd)
+    };
+    if !skip_drain && connect_raw().is_ok() {
+        let t = timeout.to_string();
+        let mut args = vec!["drain", "--verify", "--timeout", &t];
+        if skip_depts {
+            args.push("--hq-only");
+        }
+        let ok = run(&args)
+            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+            .map(|v| v["total"].as_u64() == Some(0) || v["all_saved"].as_bool() == Some(true))
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("[rotate --stop-only] ① 저장 검증 실패 — 데몬을 내리지 않는다");
+            return ROTATE_RC_DRAIN_PARTIAL;
+        }
+    }
+    let base = cys::lane::socket_is_base(&cys::socket_path().to_string_lossy());
+    if base && (cfg!(target_os = "macos") || cfg!(windows)) {
+        let _ = run(&["daemon", "uninstall"]);
+    }
+    let pid = request("system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_u64());
+    if let Some(pid) = pid {
+        let _ = output_via_file({
+            #[cfg(windows)]
+            let c = {
+                let mut c = cys::hidden_command("taskkill");
+                c.args(["/PID", &pid.to_string(), "/F"]);
+                c
+            };
+            #[cfg(not(windows))]
+            let c = {
+                let mut c = cys::hidden_command("kill");
+                c.args(["-TERM", &pid.to_string()]);
+                c
+            };
+            c
+        });
+    }
+    for _ in 0..50 {
+        if connect_raw().is_err() {
+            eprintln!("[rotate --stop-only] ② 데몬 정지 확인");
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    eprintln!("[rotate --stop-only] ② 데몬이 5초 안에 내려가지 않음");
+    ROTATE_RC_DAEMON
+}
 
 /// 끝까지 돈 rotate 의 종료코드(순수). `drain_ok` = None 이면 건너뛰었거나 살아 있는 자리가 없었다(확인할 것 없음).
 fn rotate_rc(drain_ok: Option<bool>, restore_ok: bool) -> i32 {
@@ -21080,7 +21315,17 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     let marker = root.join(".pending-restore");
     let _ = std::fs::write(&marker, "");
     // ④ 새 팩 반영
-    if !run(&["init-pack", "--no-install-hook"]).map(|o| o.status.success()).unwrap_or(false) {
+    // ★U2 2판(codex 1R C1): 자식 참가자에는 인자 `--txn` 과 env 를 함께 넘긴다(위임 계약 ⓪ — env 만으론 거부).
+    // ★4판(Fable 3R N4): 토큰·깊이 env = 이 자식 Command 에만(txn_child_env) — 프로세스 env 에 심지 않는다.
+    let init_ok = {
+        let mut cmd = cys::hidden_command(&exe);
+        cmd.args(["init-pack", "--no-install-hook"]);
+        if let Some(t) = txn_child_env(&mut cmd) {
+            cmd.args(["--txn", &t]);
+        }
+        output_via_file(cmd).map(|o| o.status.success()).unwrap_or(false)
+    };
+    if !init_ok {
         eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
         return ROTATE_RC_PACK;
     }
@@ -24478,6 +24723,29 @@ fn pack_update_from_dir(
     keyring: &cys::packsig::Keyring,
     do_apply: bool,
 ) -> Result<PackUpdateOutcome, String> {
+    // 자동 갱신 트랜잭션 안(위임 토큰)이면 원격 꾸러미의 실제 계획에 자동 허용 게이트를 건다.
+    let auto_plan = ROTATE_EXT.get().and_then(|e| e.txn.as_ref()).is_some();
+    pack_update_from_dir_gated(from_dir, staging, lock_path, accepted_path, now_unix, running_binary, keyring, do_apply, auto_plan)
+}
+
+/// `pack-update` 가 원격 계획을 자동 경로 밖이라 거부할 때 오류 머리(러너 `pack_available`·`pack_apply` 가 stderr 로 가른다).
+pub(crate) const PACK_AUTO_HOLD_TAG: &str = "pack-auto-hold:";
+
+/// [`pack_update_from_dir`] 본체. ★1.1.8 U2 5판(codex 4R M4/M6-원격): `auto_plan` = 검증·전개된 **원격 꾸러미**로 `plan_install` 을 세워
+/// [`pack_plan_auto_allowed`] 로 판정 — 거부 = Err(`pack-auto-hold: <사유>`) · 반영 0(dry-run·적용 공통 · 적용 직전에도 다시 봄 = dry-run
+/// 뒤 적용 사이 바뀜 차단). 4판까지는 `pack-plan --auto` 가 실행 바이너리의 **내장** 팩만 봐서 원격 heal/merge3/.new 가 자동 적용됐다.
+#[allow(clippy::too_many_arguments)]
+fn pack_update_from_dir_gated(
+    from_dir: &std::path::Path,
+    staging: &std::path::Path,
+    lock_path: &std::path::Path,
+    accepted_path: &std::path::Path,
+    now_unix: i64,
+    running_binary: &str,
+    keyring: &cys::packsig::Keyring,
+    do_apply: bool,
+    auto_plan: bool,
+) -> Result<PackUpdateOutcome, String> {
     let manifest_path = from_dir.join("pack-manifest.json");
     let sig_path = from_dir.join("pack-manifest.json.minisig");
     let tar_path = from_dir.join("pack.tar.gz");
@@ -24573,6 +24841,16 @@ fn pack_update_from_dir(
         &manifest.min_binary_version,
         running_binary,
     );
+
+    if gate == VersionGate::Apply && auto_plan {
+        let tree = collect_tree(staging)?;
+        let items: Vec<(&str, &str)> = tree.iter().map(|(r, c)| (r.as_str(), c.as_str())).collect();
+        let plan = cys::pack::plan_install(&pack_dir, &items, false, &manifest.pack_version);
+        if let Err(why) = pack_plan_auto_allowed(&plan) {
+            let _ = std::fs::remove_dir_all(staging);
+            return Err(format!("{PACK_AUTO_HOLD_TAG} 원격 팩 {} 계획 = 자동 허용 밖({why}) — 사람 몫(cys pack-plan · pack-update 수동)", manifest.pack_version));
+        }
+    }
 
     let mut written = 0;
     let mut kept = 0;
@@ -25086,10 +25364,40 @@ fn consume_reinject_pending(base: &std::path::Path) -> Result<(usize, usize), St
 /// `cys pack-update` 진입점(§2-② 전체 흐름). --from(핵심)·--manifest-url(부차).
 /// ④ 투명성: 내장 팩 반영 드라이런 — install_into 와 **같은 판정 함수**(pack::decide_file_action)를
 /// 쓰는 pack::plan_install 로 갱신/보존/치유/병합대기/정리를 설치 전에 보여준다(쓰기 0·플랜≠실제 드리프트 0).
-fn run_pack_plan(force: bool) -> i32 {
+/// ★1.1.8 U2 4판(Fable 3R M6 · 설계 §3-8 「사용자 소유 행이 RefreshUser|MergeUser|Keep 밖이면 보류」): 자동 경로가 받아들이는 계획인가 —
+/// 차단 · 강제 치유(system 수정본 덮기) · 3-way 자동 병합 · `.new` 병치(사용자 수정본 + 신판 대기)가 하나라도 있으면 Err(사람 몫).
+fn pack_plan_auto_allowed(plan: &cys::pack::InstallPlan) -> Result<(), String> {
+    if let Some(r) = &plan.blocked {
+        return Err(format!("차단: {r}"));
+    }
+    for (name, rows) in [("강제 치유", &plan.heal), ("3-way 병합", &plan.merge3), (".new 병치", &plan.merge_new)] {
+        if !rows.is_empty() {
+            return Err(format!("{name} {}건(사용자 소유 행이 RefreshUser|MergeUser|Keep 밖)", rows.len()));
+        }
+    }
+    Ok(())
+}
+
+/// `pack-plan --auto` rc — 자동 허용 밖.
+const PACK_PLAN_RC_AUTO_REFUSED: i32 = 4;
+
+fn run_pack_plan(force: bool, auto: bool) -> i32 {
     let dir = cys::pack::pack_dir();
     let items: Vec<(&str, &str)> = cys::pack::PACK_ALL.iter().map(|(r, c)| (*r, *c)).collect();
     let plan = cys::pack::plan_install(&dir, &items, force, env!("CARGO_PKG_VERSION"));
+    if auto {
+        // 자동 경로 = 판정만(rc 0 = 허용 · 4 = 사람 몫) — 아래 사람용 표 출력 생략
+        return match pack_plan_auto_allowed(&plan) {
+            Ok(()) => {
+                println!("[pack-plan --auto] 허용");
+                0
+            }
+            Err(why) => {
+                println!("[pack-plan --auto] 보류: {why}");
+                PACK_PLAN_RC_AUTO_REFUSED
+            }
+        };
+    }
     if let Some(reason) = &plan.blocked {
         println!("⛔ 설치 차단: {reason}");
         return 1;
@@ -27019,15 +27327,31 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
         }
 
         // 소스 해석: --from(로컬 디렉터리) 우선. --manifest-url은 staging에 fetch(부차).
-        let from_dir: std::path::PathBuf = match (from, manifest_url) {
-            (Some(d), _) => std::path::PathBuf::from(d),
-            (None, Some(url)) => fetch_remote_pack(&url, &base)?,
-            (None, None) => return Err("--from <dir> 또는 --manifest-url <url> 필요".into()),
-        };
-
         let now_unix = chrono::Utc::now().timestamp();
         let running = env!("CARGO_PKG_VERSION");
         let keyring = cys::packsig::embedded_keyring()?;
+        let from_dir: std::path::PathBuf = match (from, manifest_url) {
+            (Some(d), _) => std::path::PathBuf::from(d),
+            (None, Some(url)) => {
+                // ★1.1.8 U2 4판(Fable 3R M7): 매니페스트(+서명)만 먼저 받아 판 비교 — 이미 최신·본체 대기면 꾸러미(≈49 MiB)를 받지 않는다.
+                //   자동 갱신 트랜잭션 안(위임 토큰)이면 D23 하한 게이트(빈·파싱 불가 min_binary = 거부)도 여기서.
+                let auto = ROTATE_EXT.get().and_then(|e| e.txn.as_ref()).is_some();
+                let dl = fetch_remote_manifest(&url, &base)?;
+                match pack_precheck(&dl, now_unix, &accepted_path, &keyring, running, auto)? {
+                    (VersionGate::UpToDate, v) => {
+                        println!("[pack-update] 이미 최신 — 반영 0 (원격 매니페스트 {v} · 꾸러미 내려받기 0). no-op.");
+                        println!("{}", cys::pack::pack_update_uptodate_line(&v));
+                        return Ok(0);
+                    }
+                    (VersionGate::BinaryTooOld, v) => {
+                        eprintln!("[pack-update] 거부 — 팩 {v}이 더 새 바이너리를 요구한다(min_binary > 실행 {running}). 바이너리 업데이트(재시작) 경로로 진행하세요.");
+                        return Err("binary-too-old".into());
+                    }
+                    (VersionGate::Apply, _) => fetch_remote_tar(&url, &dl)?,
+                }
+            }
+            (None, None) => return Err("--from <dir> 또는 --manifest-url <url> 필요".into()),
+        };
         let outcome = pack_update_from_dir(
             &from_dir,
             &staging,
@@ -27159,6 +27483,7 @@ fn counsel_update_code(op: &str, rc: i32, err: Option<&str>) -> Option<&'static 
             ROTATE_RC_DAEMON_UP => "update.daemon_up",
             ROTATE_RC_PACK => "update.pack",
             ROTATE_RC_RESTORE => "update.restore",
+            ROTATE_RC_TXN_BUSY => "update.txn_busy",
             _ => "update.failed",
         },
         _ if err == Some("binary-too-old") => "update.binary_too_old",
@@ -27241,20 +27566,58 @@ fn counsel_update_signal_with(
 
 /// 원격 팩 fetch(부차) — 시스템 curl shell-out으로 manifest·sig·tar를 staging 형제 디렉터리에 받는다.
 /// 핵심 검증·반영 로직은 --from과 동일 경로(pack_update_from_dir)를 탄다.
-fn fetch_remote_pack(manifest_url: &str, base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+/// ★1.1.8 U2 4판(Fable 3R M7): 매니페스트·서명만 `.pack-download` 에 받는다(꾸러미 = [`fetch_remote_tar`] — 판 비교 통과 뒤에만).
+fn fetch_remote_manifest(manifest_url: &str, base: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let dl = base.join(".pack-download");
     let _ = std::fs::remove_dir_all(&dl);
     std::fs::create_dir_all(&dl).map_err(|e| format!("download dir 생성 실패: {e}"))?;
-    // manifest_url 형제 경로로 sig·tar URL 유도(같은 디렉터리에 동봉).
-    let base_url = manifest_url
-        .rsplit_once('/')
-        .map(|(b, _)| b.to_string())
-        .ok_or("manifest-url 형식 오류")?;
-    for (url, name) in [
-        (manifest_url.to_string(), "pack-manifest.json"),
-        (format!("{base_url}/pack-manifest.json.minisig"), "pack-manifest.json.minisig"),
-        (format!("{base_url}/pack.tar.gz"), "pack.tar.gz"),
-    ] {
+    let base_url = manifest_url.rsplit_once('/').map(|(b, _)| b.to_string()).ok_or("manifest-url 형식 오류")?;
+    curl_files(&dl, &[(manifest_url.to_string(), "pack-manifest.json"), (format!("{base_url}/pack-manifest.json.minisig"), "pack-manifest.json.minisig")])?;
+    Ok(dl)
+}
+
+fn fetch_remote_tar(manifest_url: &str, dl: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let base_url = manifest_url.rsplit_once('/').map(|(b, _)| b.to_string()).ok_or("manifest-url 형식 오류")?;
+    curl_files(dl, &[(format!("{base_url}/pack.tar.gz"), "pack.tar.gz")])?;
+    Ok(dl.to_path_buf())
+}
+
+/// 원격 팩 사전 판정(순수에 가까움 · 시험 대상) — 서명·신선도 검증(전개 0) 뒤 (원격 튜플 vs 디스크 튜플 · min_binary vs 실행) 3축 게이트.
+/// replay 거부(원격 서명 ≤ 수용본) = 이미 받은 판 = UpToDate. `auto` = 자동 경로 D23 하한(빈·파싱 불가 min_binary = Err).
+fn pack_precheck(
+    dl: &std::path::Path,
+    now_unix: i64,
+    accepted: &std::path::Path,
+    keyring: &cys::packsig::Keyring,
+    running: &str,
+    auto: bool,
+) -> Result<(VersionGate, String), String> {
+    let mb = std::fs::read(dl.join("pack-manifest.json")).map_err(|e| format!("manifest 읽기 실패: {e}"))?;
+    let sb = std::fs::read(dl.join("pack-manifest.json.minisig")).map_err(|e| format!("서명 읽기 실패: {e}"))?;
+    let m = match cys::packsig::verify_with_keyring(&mb, &sb, now_unix, accepted, keyring) {
+        Ok(m) => m,
+        Err(e) if e.starts_with("replay 거부") => {
+            let v = serde_json::from_slice::<Value>(&mb).ok().and_then(|v| v["pack_version"].as_str().map(str::to_string)).unwrap_or_default();
+            return Ok((VersionGate::UpToDate, v));
+        }
+        Err(e) => return Err(format!("manifest 검증 실패: {e}")),
+    };
+    if auto {
+        cys::update::packgate::pack_min_binary_gate(&m.min_binary_version).map_err(|e| format!("{} {}", e.code.as_str(), e.detail))?;
+    }
+    let pack_dir = cys::pack::pack_dir();
+    let disk_version = std::fs::read_to_string(pack_dir.join(".pack-version")).map(|s| s.trim().to_string()).unwrap_or_default();
+    let disk_rev = match cys::pack::read_pack_state(&pack_dir) {
+        cys::pack::PackStateRead::Valid(st) => st.pro_revision,
+        _ => 0,
+    };
+    let g = version_gates((&m.pack_version, m.pro_revision), (&disk_version, disk_rev), &m.min_binary_version, running);
+    Ok((g, m.pack_version))
+}
+
+fn curl_files(dl: &std::path::Path, items: &[(String, &str)]) -> Result<(), String> {
+    for (url, name) in items {
+        let (url, name) = (url.clone(), *name);
         let out = dl.join(name);
         // R-CLI-3: URL 앞에 `--`(옵션 종결자)를 둔다. manifest_url이 원격/입력 유래라 `-`로 시작하면
         // curl 플래그로 해석되던 인자 주입을 차단(옵션 파싱 종료 후 URL을 위치 인자로 강제).
@@ -27269,7 +27632,7 @@ fn fetch_remote_pack(manifest_url: &str, base: &std::path::Path) -> Result<std::
             return Err(format!("fetch 실패({name}): {url}"));
         }
     }
-    Ok(dl)
+    Ok(())
 }
 
 /// 완화책 ③: scoped 실행 — 새 프로세스 그룹에서 실행하고 원장에 등록,
@@ -27397,6 +27760,7 @@ mod tests {
         assert_eq!(r(23), Some("update.daemon_up"));
         assert_eq!(r(24), Some("update.pack"));
         assert_eq!(r(25), Some("update.restore"));
+        assert_eq!(r(26), Some("update.txn_busy"));
         assert_eq!(r(1), Some("update.failed"));
         let p = |rc, e| counsel_update_code("host.pack-update", rc, e);
         assert_eq!(p(0, None), None);
@@ -27409,7 +27773,9 @@ mod tests {
         assert_eq!(counsel_update_signal("host.rotate", 0, None), 0);
         let src = include_str!("cys.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
-        assert!(prod.contains("return counsel_update_signal(\n                \"host.rotate\",\n                run_rotate("),
+        // ★1.1.8 U2: rotate 디스패치는 잠금 참가 rc(26)와 --stop-only 갈래까지 같은 신호 래퍼를 거친다.
+        assert!(prod.contains("Err(rc) => return counsel_update_signal(\"host.rotate\", rc, None),"), "rotate 잠금 경합이 신호 래퍼를 안 거친다");
+        assert!(prod.contains("run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env())\n            };\n            // ★T3: 끝난 rc 를 상담소 신호로(조기 return 이 많아 몸통 대신 여기서 — rc 불변).\n            return counsel_update_signal(\"host.rotate\", rc, None);"),
                 "rotate 디스패치가 신호 래퍼를 안 거친다");
         assert!(prod.contains("Ok(code) => counsel_update_signal(\"host.pack-update\", code, None),"));
         assert!(prod.contains("counsel_update_signal(\"host.pack-update\", 1, Some(e.as_str()))"));
@@ -30846,6 +31212,53 @@ mod tests {
     }
 
     /// ★오프라인 통합: 서명된 테스트 팩을 --from 코어로 적용 → .pack-version·파일·accepted 반영.
+    /// ★1.1.8 U2 5판(codex 4R M4/M6-원격) 실 경로: 실 서명 원격 꾸러미(build_signed_pack) → 실 서명·digest 검증·전개 → **원격 계획**
+    /// (`plan_install` = install_into 와 같은 판정) → `pack_plan_auto_allowed`. ⓐ 사용자 수정 지침 + 원격이 그 지침을 바꿈(= `.new` 병치) →
+    /// 자동 경로 = `pack-auto-hold:` 거부 · 반영 0(do_apply 여도) ⓑ 같은 꾸러미 수동 경로 = 종전대로 반영(.new 병치) ⓒ 미수정 지침 = 자동 허용 ·
+    /// 반영. 4판까지 이 판정은 실행 바이너리 내장 팩만 봤다.
+    #[test]
+    fn pack_update_auto_gate_holds_remote_plan_outside_auto_policy() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let saved_cfg = std::env::var(cys::pack::ENV_CONFIG_DIR).ok();
+        let (pk, sign) = gen_signer();
+        let kr = test_keyring("TESTKEY", &pk);
+        let w = "directives/WORKER_DIRECTIVE.md";
+        let mut got = vec![];
+        for (case, user_edit, auto) in [("hold", true, true), ("manual", true, false), ("allow", false, true)] {
+            let td = std::env::temp_dir().join(format!("cys-pu-autogate-{case}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&td);
+            let pack_dir = td.join("pack");
+            std::fs::create_dir_all(&pack_dir).unwrap();
+            std::env::set_var(cys::pack::ENV_PACK_DIR, &pack_dir);
+            std::env::set_var(cys::pack::ENV_CONFIG_DIR, td.join("cysclaude"));
+            cys::pack::install_into(pack_dir.clone(), [(w, "W-OLD\n")], false, "1.0.0", false, false, cys::pack::PackScope::Base, None, None).unwrap();
+            if user_edit {
+                std::fs::write(pack_dir.join(w), "W-MINE\n").unwrap();
+            }
+            let from_dir = td.join("from");
+            std::fs::create_dir_all(&from_dir).unwrap();
+            build_signed_pack(&from_dir, &[(w, "W-NEW\n"), ("lib/x.py", "X\n")], "TESTKEY", "1.1.0", "0.4.1", 1000, 9_000_000_000, &sign);
+            let res = pack_update_from_dir_gated(&from_dir, &td.join("staging"), &td.join(".lock"), &td.join(".acc.json"), 5000, "0.4.1", &kr, true, auto);
+            let disk = std::fs::read_to_string(pack_dir.join(w)).unwrap();
+            let ver = std::fs::read_to_string(pack_dir.join(".pack-version")).unwrap_or_default();
+            got.push((case, res.map(|o| o.pack_version).map_err(|e| e.starts_with(PACK_AUTO_HOLD_TAG) && e.contains(".new 병치")), disk, ver.trim().to_string(), pack_dir.join("lib/x.py").exists()));
+            let _ = std::fs::remove_dir_all(&td);
+        }
+        match &saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        match &saved_cfg {
+            Some(v) => std::env::set_var(cys::pack::ENV_CONFIG_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_CONFIG_DIR),
+        }
+        assert_eq!(got[0], ("hold", Err(true), "W-MINE\n".to_string(), "1.0.0".into(), false), "자동 = 원격 계획 보류 · 반영 0");
+        assert_eq!(got[1], ("manual", Ok("1.1.0".to_string()), "W-MINE\n".to_string(), "1.1.0".into(), true), "수동 = 반영(.new 병치)");
+        assert_eq!(got[2], ("allow", Ok("1.1.0".to_string()), "W-NEW\n".to_string(), "1.1.0".into(), true), "미수정 = 자동 허용");
+        assert_eq!(cys::update::realops::pack_auto_hold("error: pack-auto-hold: 원격 팩 1.1.0 계획 = 자동 허용 밖(x)").as_deref(), Some("팩 자동 보류: 원격 팩 1.1.0 계획 = 자동 허용 밖(x)"));
+    }
+
     #[test]
     fn pack_update_from_dir_applies_signed_pack() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -30909,6 +31322,82 @@ mod tests {
         assert!(outcome.written >= 2, "written {}", outcome.written);
         assert!(acc_exists, "accepted 기록 부재");
         assert!(acc.contains("1.0.0"), "accepted에 pack_version 부재");
+    }
+
+    /// ★1.1.8 U2 4판(Fable 3R M7 · codex/Fable M6): 매니페스트 먼저 — 실 `fetch_remote_manifest`(file:// · curl) 가 꾸러미를 받지 않고,
+    /// `pack_precheck` 가 이미 최신(같은 판 · replay = 수용본) = UpToDate · 더 새 판 = Apply · min_binary 초과 = BinaryTooOld ·
+    /// 자동 경로(auto)에서 빈 min_binary = D23 거부(pack_min_binary_gate 실배선) · 수동 경로는 빈 값 허용(현행).
+    #[test]
+    fn pack_precheck_reads_manifest_only_and_gates_before_tar_download() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let td = std::env::temp_dir().join(format!("cys-pu-pre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pack_dir = td.join("pack");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &pack_dir);
+        let (pk, sign) = gen_signer();
+        let kr = test_keyring("TESTKEY", &pk);
+        let src = td.join("rel");
+        std::fs::create_dir_all(&src).unwrap();
+        let accepted = td.join(".accepted.json");
+        let base = td.join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        let url = format!("file://{}/pack-manifest.json", src.display());
+        let run = |disk: &str, min_bin: &str, signed_at: i64, auto: bool| {
+            std::fs::write(pack_dir.join(".pack-version"), disk).unwrap();
+            build_signed_pack(&src, &[("soul.md", "S\n")], "TESTKEY", "1.2.0", min_bin, signed_at, 9_000_000_000, &sign);
+            std::fs::remove_file(src.join("pack.tar.gz")).unwrap(); // 꾸러미가 없어도 판정이 끝나야 한다
+            let dl = fetch_remote_manifest(&url, &base).expect("매니페스트·서명만");
+            assert!(!dl.join("pack.tar.gz").exists(), "판정 전 꾸러미 내려받기 0");
+            pack_precheck(&dl, 5000, &accepted, &kr, "1.1.8", auto)
+        };
+        let r_same = run("1.2.0", "1.1.8", 1000, true);
+        let r_new = run("1.1.0", "1.1.8", 1000, true);
+        let r_old_bin = run("1.1.0", "9.0.0", 1000, true);
+        let r_empty_auto = run("1.1.0", "", 1000, true);
+        let r_empty_manual = run("1.1.0", "", 1000, false);
+        std::fs::write(&accepted, serde_json::to_vec(&json!({"pack_version": "1.2.0", "signed_at": 2000, "pro_revision": 0})).unwrap()).unwrap();
+        let r_replay = run("1.1.0", "1.1.8", 1000, true);
+        match &saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+        assert_eq!(r_same.unwrap().0, VersionGate::UpToDate, "같은 판 = 이미 최신");
+        assert_eq!(r_new.unwrap().0, VersionGate::Apply, "더 새 판 = 그때만 꾸러미");
+        assert_eq!(r_old_bin.unwrap().0, VersionGate::BinaryTooOld);
+        assert!(r_empty_auto.unwrap_err().contains("pack_min_binary_empty"), "자동 경로 D23");
+        assert_eq!(r_empty_manual.unwrap().0, VersionGate::Apply, "수동 경로 빈 min_binary = 현행(제약 없음)");
+        assert_eq!(r_replay.unwrap().0, VersionGate::UpToDate, "replay(수용본 이하) = 이미 받은 판");
+    }
+
+    /// ★1.1.8 U2 4판: 러너가 부르는 pack-plan 게이트 인자(+ 위임 `--txn`)가 실 파서를 통과한다 — 1~3판 `--json` 은 clap 거부(rc 2)로
+    /// S2·S9b·팩 단독 게이트가 늘 실패했다(smoke ⑦ 이 처음 드러냄).
+    #[test]
+    fn pack_plan_gate_args_parse() {
+        let mut argv: Vec<std::ffi::OsString> = vec!["cys".into()];
+        argv.extend(cys::update::realops::PACK_PLAN_GATE_ARGS.iter().map(std::ffi::OsString::from));
+        argv.extend(["--txn".into(), "0123456789abcdef0123456789abcdef:1".into()]);
+        let (out, ext) = rotate_ext_split(argv);
+        assert!(ext.auto && ext.txn.is_some());
+        assert!(matches!(Cli::try_parse_from(out).map(|c| c.command), Ok(Command::PackPlan { force: false })), "게이트 인자 = 실 파서 통과");
+        assert!(Cli::try_parse_from(["cys", "pack-plan", "--json"]).is_err(), "음성 대조: --json 은 pack-plan 인자가 아니다");
+    }
+
+    /// ★1.1.8 U2 4판(M6): `pack-plan --auto` 허용 = 차단·강제 치유·3-way·.new 병치 0 일 때만.
+    #[test]
+    fn pack_plan_auto_allows_only_user_rows_within_refresh_merge_keep() {
+        let ok = cys::pack::InstallPlan { update: vec!["a".into()], refresh_user: vec!["b".into()], merge_user: vec!["c".into()], keep_user: vec!["d".into()], ..Default::default() };
+        assert!(pack_plan_auto_allowed(&ok).is_ok());
+        for bad in [
+            cys::pack::InstallPlan { heal: vec!["x".into()], ..Default::default() },
+            cys::pack::InstallPlan { merge3: vec!["x".into()], ..Default::default() },
+            cys::pack::InstallPlan { merge_new: vec!["x".into()], ..Default::default() },
+            cys::pack::InstallPlan { blocked: Some("다운그레이드".into()), ..Default::default() },
+        ] {
+            assert!(pack_plan_auto_allowed(&bad).is_err(), "{bad:?}");
+        }
     }
 
     /// ★오프라인 통합 거부 케이스: 위조 서명·만료·구버전·min_binary 초과.
@@ -45229,6 +45718,15 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
                 "cys-dept 가 '{k}' 를 지우지 않는다 — 그 경로로 신원이 샌다"
             );
         }
+        // ④ ★1.1.8 U2 4판(Fable 3R N4): 자동 갱신 위임 env 도 같은 세 자리에서 지운다 — CLI 스폰 · cys-dept cysd 스폰 지점 전부 ·
+        //    cysd 부팅 scrub — 그리고 참가 CLI 는 자기 env 에 심지 않는다(set_var 0 · 자식 Command 에만).
+        assert!(body.contains("for k in TXN_ENV_KEYS") && TXN_ENV_KEYS == ["CYS_UPDATE_TXN", "CYS_UPDATE_TXN_DEPTH"], "스폰 경로가 위임 env 를 지우지 않는다");
+        assert_eq!(dept.matches("-u CYS_DEPT_ROTATE -u CYS_UPDATE_TXN -u CYS_UPDATE_TXN_DEPTH nohup").count(), 5, "cys-dept cysd 스폰 5지점");
+        assert_eq!(dept.matches("-u CYS_DEPT_ROTATE nohup").count(), 0, "위임 env 를 안 지우는 cysd 스폰 지점");
+        let part = refl_fn_body(src, "txn_participate");
+        assert!(!part.contains("set_var("), "참가 CLI 가 자기 env 에 위임 토큰을 심는다(데몬·좌석 상속)");
+        let cysd_main = include_str!("cysd/main.rs");
+        assert!(cysd_main.contains("scrub_update_txn_env();"), "cysd 부팅 scrub 부재");
         // ③ 음성 대조 — 팩 경로 결정(`CYS_PACK_DIR`)까지 지우면 데몬이 레인을 잃는다(G34).
         assert!(
             !SEAT_IDENTITY_ENV_KEYS.contains(&"CYS_PACK_DIR")

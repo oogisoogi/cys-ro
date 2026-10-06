@@ -201,6 +201,8 @@ pub fn spawn_watchdog(daemon: Arc<Daemon>) {
                 // ★(0.14.42 · 수정 2회차 F1 · 재개) 보류한 제출 CR 의 재제출 — 큐 배달 **앞**(입력줄 잔여가 그 좌석 큐를
                 //   세우지 않게). pause 중에는 아무것도 하지 않는다(기록 유지).
                 resubmit_withheld_submits(&daemon);
+                // ★1.1.8 U2(§3-3 S10 재생 ①): 정비 모드가 아니면 보류 로그 → 배송 큐(정확히 한 번 · 좌석 미기동 = 다음 틱).
+                crate::update_hold::tick(&daemon);
                 deliver_queued(
                     &daemon,
                     &mut queue_depth_alerted,
@@ -10175,6 +10177,11 @@ pub(crate) fn deliver_head_locked(
     // ★v116-seat 판정 C: 배달 직전 1곳 — 이 좌석 에이전트의 옛 기동 줄은 배달하지 않고 폐기(이벤트 + 영속).
     //   임계영역 **밖**에서 부른다(persist_queue_state 가 surfaces → pending_queue 를 잡는다 — 큐 락을 쥔 채
     //   부르면 교착). 두 호출자(watchdog 틱 · queue.deliver RPC)는 여기 올 때 락을 쥐고 있지 않다.
+    // ★1.1.8 U2(§3-3): 정비 모드 동안 배달 0 · 보류 재생 항목은 주입 직전 원장 `delivering`(최대 한 번).
+    if crate::update_hold::quiesced() {
+        return None;
+    }
+    let mut hold_mark = crate::update_hold::before_inject(daemon, s)?;
     let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
     let head_id = |s: &Arc<crate::state::Surface>| s.pending_queue.lock().unwrap().front().map(|e| e.id.clone());
     let head_before = head_id(s);
@@ -10297,6 +10304,12 @@ pub(crate) fn deliver_head_locked(
         //   같은 차수라 pending_queue·input_gate 락 보유 시간의 차수가 바뀌지 않는다. 표지 없는 본문은 복사 0.
         let body = cys::paste_fence::sanitize_owned(render_queue_digest(entry.from.as_deref(), &texts));
         let merged_ids: Vec<String> = merged.iter().map(|e| e.id.clone()).collect();
+        // ★1.1.8 U2 2판(codex 1R C4): 실제로 실리는 보류 재생 항목만 지금(원장 선기록 앞 · 주입 전) durable `delivering`.
+        let hold_ids: Vec<String> =
+            merged.iter().filter(|e| e.origin == cys::update::quiesce::ORIGIN).map(|e| e.id.clone()).collect();
+        if !hold_mark.mark_delivering(&hold_ids) {
+            break 'tx None;
+        }
         // ★B1(0.14.30): 큐 배달만 아는 사실을 원장에 동봉한다 — 원장 한 파일로 전수 지연을
         //   계산할 수 있어야 한다(queue-starvation-case.md §4-ⓓ: enqueue 시각 부재 때문에
         //   그 문서의 표본이 155건 중 18건에 그쳤다).
@@ -10507,6 +10520,8 @@ pub(crate) fn deliver_head_locked(
             *s.inject_reservation.lock().unwrap() = None;
         }
     }
+    // ★1.1.8 U2(§3-3 재생 ②): 인계 결판 = 썼다 → 실린 보류 재생 id 는 `delivered`(그 밖 None 경로는 표지 Drop = `aborted`).
+    hold_mark.delivered(&delivered.merged_ids);
     // ★v112-wake: 감시 각성 줄의 PTY 인계 시점 — 제출 실측의 기준점. **pending_queue 락이 풀린 뒤**에
     //   부른다(watch_wake 는 shared → pending_queue 순서로 잡는다 — 여기서 큐 락을 쥔 채 부르면 순서가
     //   역전돼 배달 RPC 와 watchdog 틱이 교차할 때 교착한다 · agy 1R H 지적).

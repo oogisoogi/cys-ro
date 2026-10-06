@@ -74,6 +74,8 @@ pack-files.txt
 pack-manifest.*
 pack.tar.gz
 REVIEW-multimaster-*.md
+# 내부 적대 리뷰 원문(로컬 절대경로·리뷰 본문 — 공개 미러 이력 유출 사고 2026-10-07 02:4x 재발 방지)
+docs/update/REVIEW-*.md
 
 # 로컬 세션 설정·작업 브리프(저장소 자산 아님 — 이 기계의 에이전트 운영물)
 .claude/

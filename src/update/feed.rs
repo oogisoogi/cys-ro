@@ -264,6 +264,9 @@ pub struct FeedOutcome {
     pub revocations: Option<Revocations>,
     pub envelope_signed_at: Option<i64>,
     pub notes_ko: Option<String>,
+    /// ★2판(codex 1R C10·C11): U 서명 본문 원문(base64)·서명 — 수용 커밋이 `installers/<seq>/` 에 보존하고 쓸 때마다 재검증한다.
+    pub release_b64: Option<String>,
+    pub release_sig_b64: Option<String>,
 }
 
 impl FeedOutcome {
@@ -288,6 +291,8 @@ impl FeedOutcome {
             trusted_signed_at: None,
             revocations: None,
             envelope_signed_at: None,
+            release_b64: None,
+            release_sig_b64: None,
             notes_ko: None,
         }
     }
@@ -351,6 +356,16 @@ pub fn check_notes_ko(s: &str) -> Result<(), String> {
 }
 
 /// ⓖ 본문 서식 계약(파싱 뒤 의미 검사).
+/// ★2판(codex 1R C10): 보존된 U 서명 본문 재검증(쓸 때마다) — 서식 · 키(U 용도 · 서명 시점 `signed_at` 기준 유효) · minisign.
+/// 봉투(F)·폐기문(R) 단계는 수용 때 이미 거쳤다 — 여기선 본문 원문이 그때 수용한 서명 그대로인지만 본다.
+pub fn verify_release_body(body_bytes: &[u8], body_sig: &[u8], component: &str, keyring: &UpdateKeyring) -> Result<ReleaseBody, String> {
+    let body: ReleaseBody = serde_json::from_slice(body_bytes).map_err(|e| format!("본문 서식: {e}"))?;
+    check_release_shape(&body, component)?;
+    keyring.find(&body.key_id, Purpose::Release, body.signed_at)?;
+    keyring.verify(Purpose::Release, &body.key_id, body_bytes, body_sig, body.signed_at)?;
+    Ok(body)
+}
+
 fn check_release_shape(r: &ReleaseBody, component: &str) -> Result<(), String> {
     if r.kind != RELEASE_KIND {
         return Err(format!("본문 kind {}", r.kind));
@@ -620,6 +635,8 @@ fn judge_candidate(inp: &FeedInput, c: &Checked, installed: u64) -> FeedOutcome 
         o.halt = env.halt;
         o.rollout_pct = Some(env.rollout_pct);
         o.envelope_signed_at = Some(env.signed_at);
+        o.release_b64 = Some(env.release.clone());
+        o.release_sig_b64 = Some(env.release_sig.clone());
         o.trusted_signed_at = Some(env.signed_at);
         o.notes_ko = Some(body.notes_ko.clone());
         carry(o, &c.revs, inp.component, Some(installed))

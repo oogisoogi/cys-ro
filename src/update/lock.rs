@@ -24,6 +24,21 @@ pub const OWNER_FILE: &str = "txn.owner.json";
 /// 못 연다). 자식은 한 번에 하나(러너는 자식을 차례로 부른다).
 pub const CHILD_LOCK_FILE: &str = "txn.child.lock";
 
+/// ★4판(codex 3R MINOR 승격): 중첩 위임 깊이별 자식 잠금(`txn.child.lock.<깊이>` · 깊이 1..=[`MAX_NEST`]) — 같은 깊이 형제는 서로 막는다.
+pub const MAX_NEST: u32 = 4;
+
+pub fn child_lock_name(depth: u32) -> String {
+    if depth == 0 {
+        CHILD_LOCK_FILE.to_string()
+    } else {
+        format!("{CHILD_LOCK_FILE}.{depth}")
+    }
+}
+/// ★2판(C1 개정 · 윈 CI T8): 토큰 없는 CLI 참가자(rotate·init-pack·pack-update·pack-plan)의 **공유** 잠금 — 여럿이 함께 쥘 수 있고,
+/// 러너·복구기([`acquire`])는 이것이 쥐어져 있으면 트랜잭션을 열지 않는다. 설치기(⓪-a)가 보는 `txn.lock` 은 건드리지 않는다
+/// (짧은 팩 명령이 설치기 「갱신 중」 창을 띄우던 회귀 차단).
+pub const PART_LOCK_FILE: &str = "txn.part.lock";
+
 /// 위임 토큰.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
@@ -127,28 +142,44 @@ pub fn read_owner(dir: &Path) -> Option<Owner> {
 
 /// 잠금이 지금 (누군가에게) 잡혀 있는가 — 비차단 시도가 실패하면 잡혀 있다. 시도가 성공하면 즉시 놓는다.
 /// `None` = 판정 불가(열기 실패 등).
+/// ★3판(Fable 2R M1): 탐침 = **공유** 시도(탐침끼리·공유 참가자와 충돌 0 — 배타 탐침의 순간 잠금이 다른 CLI·러너·설치기 ⓪-a 에 거짓
+/// 「잡힘」 을 주던 창 축소) · `WouldBlock` 이면 25ms × 4 다시 본 뒤에도 막힐 때만 잡힘.
 pub fn is_held(dir: &Path) -> Option<bool> {
     let f = OpenOptions::new().read(true).write(true).open(dir.join(LOCK_FILE)).ok()?;
-    match f.try_lock() {
-        Ok(()) => {
-            let _ = f.unlock();
-            Some(false)
+    for i in 0..5 {
+        match f.try_lock_shared() {
+            Ok(()) => {
+                let _ = f.unlock();
+                return Some(false);
+            }
+            Err(TryLockError::WouldBlock) if i < 4 => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(TryLockError::WouldBlock) => return Some(true),
+            Err(TryLockError::Error(_)) => return None,
         }
-        Err(TryLockError::WouldBlock) => Some(true),
-        Err(TryLockError::Error(_)) => None,
     }
+    Some(true)
 }
 
 /// 잠금을 잡는다(비차단 · 잡혀 있으면 `txn_busy`). 새 `txn_id`·`epoch`(+1)를 소유자 기록에 원자 기록한다.
 pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
     let f = open_lock(dir)?;
-    match f.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            let who = read_owner(dir).map(|o| format!("{}(pid {})", o.owner, o.pid)).unwrap_or_else(|| "?".into());
-            return Err(busy(format!("잠금 소유 중: {who}")));
+    // ★3판(Fable 2R M1): 막혔는데 산 소유자 기록이 없으면(없음·묘비 = 남의 순간 탐침일 수 있음) 짧게 다시 본다(25ms × 8).
+    let mut tries = 0;
+    loop {
+        match f.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) => {
+                let o = read_owner(dir);
+                let live_owner = o.as_ref().map(|o| !o.released).unwrap_or(false);
+                if live_owner || tries >= 8 {
+                    let who = o.map(|o| format!("{}(pid {})", o.owner, o.pid)).unwrap_or_else(|| "?".into());
+                    return Err(busy(format!("잠금 소유 중: {who}")));
+                }
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(TryLockError::Error(e)) => return Err(busy(format!("잠금 시도: {e}"))),
         }
-        Err(TryLockError::Error(e)) => return Err(busy(format!("잠금 시도: {e}"))),
     }
     let prev_owner = std::fs::read(dir.join(OWNER_FILE)).ok();
     let epoch = read_owner(dir).map(|o| o.epoch + 1).unwrap_or(1);
@@ -181,16 +212,36 @@ pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
             let _ = f.unlock();
             busy(why)
         };
-        let child = match open_lock_file(dir, CHILD_LOCK_FILE) {
-            Ok(c) => c,
-            Err(e) => return Err(refuse(format!("자식 잠금 파일: {}", e.detail))),
-        };
-        match child.try_lock() {
-            Ok(()) => {
-                let _ = child.unlock();
+        // ★4판: 깊이 0 + 중첩 깊이별 자식 잠금 전부(부모 위임 자식이 죽어도 손자가 살아 있으면 새 트랜잭션을 열지 않는다)
+        for depth in 0..=MAX_NEST {
+            let name = child_lock_name(depth);
+            if depth > 0 && !dir.join(&name).exists() {
+                continue;
             }
-            Err(TryLockError::WouldBlock) => return Err(refuse("위임 자식이 아직 작업 중(자식 잠금)".into())),
-            Err(TryLockError::Error(e)) => return Err(refuse(format!("자식 잠금 시도: {e}"))),
+            let child = match open_lock_file(dir, &name) {
+                Ok(c) => c,
+                Err(e) => return Err(refuse(format!("자식 잠금 파일: {}", e.detail))),
+            };
+            match child.try_lock() {
+                Ok(()) => {
+                    let _ = child.unlock();
+                }
+                Err(TryLockError::WouldBlock) => return Err(refuse(format!("위임 자식이 아직 작업 중(자식 잠금 {name})"))),
+                Err(TryLockError::Error(e)) => return Err(refuse(format!("자식 잠금 시도: {e}"))),
+            }
+        }
+        // ★2판 C1: 토큰 없는 CLI 참가자(공유 잠금)가 일하는 중이면 열지 않는다 — 순서 = 소유자 기록·txn.lock 을 **먼저** 쥐고 본다
+        //   (그 뒤 공유 잠금을 잡는 참가자는 txn.lock 이 잡힌 것을 보고 물러난다 · 양방향 원자).
+        let part = match open_lock_file(dir, PART_LOCK_FILE) {
+            Ok(p) => p,
+            Err(e) => return Err(refuse(format!("참가자 잠금 파일: {}", e.detail))),
+        };
+        match part.try_lock() {
+            Ok(()) => {
+                let _ = part.unlock();
+            }
+            Err(TryLockError::WouldBlock) => return Err(refuse("CLI 참가자(rotate·팩 명령)가 작업 중(참가자 잠금)".into())),
+            Err(TryLockError::Error(e)) => return Err(refuse(format!("참가자 잠금 시도: {e}"))),
         }
     }
     Ok(TxnGuard { file: Some(f), owner: o, dir: dir.to_path_buf() })
@@ -228,9 +279,38 @@ impl Drop for DelegatedGuard {
     }
 }
 
+/// ★3판(Fable 2R N1): 위임 자식이 다시 위임할 때(rotate → init-pack) 자식에게 넘기는 깊이 표지 — 깊이 ≥1 이면 자식 잠금을 다시 잡지
+/// 않는다(같은 트랜잭션 안 중첩 = 부모가 이미 자식 잠금을 쥠 · 재진입). 토큰·소유자 사슬·조상 검증은 그대로 한다.
+pub const ENV_TXN_DEPTH: &str = "CYS_UPDATE_TXN_DEPTH";
+
 pub fn verify_delegated(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe) -> Result<DelegatedGuard, UpdateErr> {
+    verify_delegated_at(dir, arg, env, probe, 0)
+}
+
+/// `depth` = 이 프로세스의 위임 깊이([`ENV_TXN_DEPTH`] · 0 = 러너의 직접 자식).
+pub fn verify_delegated_at(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe, depth: u32) -> Result<DelegatedGuard, UpdateErr> {
     if env != Some(arg) && !super::mutant("B6") {
         return Err(busy("⓪ --txn 인자 ≠ CYS_UPDATE_TXN"));
+    }
+    if depth > MAX_NEST {
+        return Err(busy(format!("위임 깊이 {depth} > {MAX_NEST}")));
+    }
+    if depth >= 1 && !super::mutant("U2-NEST") {
+        // 부모 위임 자식이 깊이 0 자식 잠금을 쥔 채 우리를 띄웠다 — 그 잠금은 재진입(안 잡음)하되 ★4판(codex 3R): **같은 깊이 형제**는
+        //   깊이별 잠금으로 서로 막는다(전엔 잠금 0 = 형제 둘 다 통과). 사슬 검증(소유 pid = 조상 · 토큰 · 잠금 생존 · 시작 시각)은 그대로.
+        let file = if super::mutant("U2-NESTSIB") {
+            None
+        } else {
+            let f = open_lock_file(dir, &child_lock_name(depth))?;
+            match f.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => return Err(busy(format!("같은 깊이({depth}) 위임 형제가 작업 중"))),
+                Err(TryLockError::Error(e)) => return Err(busy(format!("깊이 {depth} 자식 잠금 시도: {e}"))),
+            }
+            Some(f)
+        };
+        let owner = verify_owner_chain(dir, arg, probe)?;
+        return Ok(DelegatedGuard { file, owner });
     }
     // 자식 잠금을 먼저 잡고(다른 위임 자식 = busy) 아래 검증을 한다 — 검증 실패면 guard drop 으로 놓인다.
     let child = open_lock_file(dir, CHILD_LOCK_FILE)?;
@@ -277,6 +357,22 @@ fn verify_owner_chain(dir: &Path, arg: &Token, probe: &ProcProbe) -> Result<Owne
 pub enum Participation {
     Owner(TxnGuard),
     Delegated(DelegatedGuard),
+    /// ★2판 C1: 토큰 없는 CLI — 참가자 공유 잠금(쥔 동안 러너·복구기가 트랜잭션을 열지 못함).
+    Participant(PartGuard),
+}
+
+/// 참가자 공유 잠금 보유(drop = 놓음).
+#[derive(Debug)]
+pub struct PartGuard {
+    file: Option<File>,
+}
+
+impl Drop for PartGuard {
+    fn drop(&mut self) {
+        if let Some(f) = self.file.take() {
+            let _ = f.unlock();
+        }
+    }
 }
 
 /// 참가자 입구: 토큰(인자 `--txn` · env `CYS_UPDATE_TXN`)이 하나라도 있으면 위임 검증(재잠금 0 · 둘이 같아야 함),
@@ -287,9 +383,56 @@ pub fn acquire_or_delegate(dir: &Path, owner: &str, arg: Option<&str>, env: Opti
         (Some(a), e) => {
             let tok = Token::parse(a).ok_or_else(|| busy("토큰 형식"))?;
             let et = e.and_then(Token::parse);
-            verify_delegated(dir, &tok, et.as_ref(), &ProcProbe::real()).map(Participation::Delegated)
+            let depth = std::env::var(ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            verify_delegated_at(dir, &tok, et.as_ref(), &ProcProbe::real(), depth).map(Participation::Delegated)
         }
         (None, Some(_)) => Err(busy("⓪ env 토큰만 있고 --txn 인자 없음")),
+    }
+}
+
+/// CLI 참가자 입구(★2판 codex 1R C1): 존재 검사 없이 [`acquire_or_delegate`] 로 원자 참가한다. 토큰이 없고 잠금 파일을 **만들 수조차
+/// 없을 때**(갱신 폴더 생성·열기 실패 = 갱신이 돌 수 없는 기계)만 `Ok(None)` = 평소대로 진행(설치기·설치 링크 무변경). 잠금이 잡혀
+/// 있음·토큰 불일치 = Err(txn_busy).
+pub fn participate(dir: &Path, owner: &str, arg: Option<&str>, env: Option<&str>) -> Result<Option<Participation>, UpdateErr> {
+    if arg.is_some() || env.is_some() {
+        return acquire_or_delegate(dir, owner, arg, env).map(Some);
+    }
+    let _ = owner; // 공유 참가자는 소유자 기록을 쓰지 않는다(설치기·부팅 가드가 보는 txn.lock·txn.owner.json 무접촉)
+    // ★2판 C1(개정): 참가자 공유 잠금을 **먼저** 쥐고 txn.lock 을 본다 — 러너는 txn.lock 을 먼저 쥐고 참가자 잠금을 본다(양방향 원자).
+    // ★3판(Fable 2R m1): 평소대로(참가 0) = 갱신 폴더를 만들 수조차 없을 때만 · 권한 불일치 등 그 밖 = Err(조용한 fail-open 0)
+    // ★4판(codex 3R m1): 이미 있는 폴더의 소유자·권한(윈 DACL) 불일치 = Err(조용히 참가 없이 진행하지 않는다) · 폴더가 없고 만들 수도 없을 때만 Ok(None)
+    let existed = dir.exists();
+    if let Err(e) = super::ensure_private_dir(dir) {
+        if existed && !super::mutant("U2-PRIVDIR") {
+            return Err(busy(format!("갱신 폴더 소유자·권한 불일치: {e}")));
+        }
+        return Ok(None);
+    }
+    let part = open_lock_file(dir, PART_LOCK_FILE)?;
+    let mut got = false;
+    for _ in 0..40 {
+        // 러너의 순간 배타 시도(acquire 의 try_lock) 와만 겹친다 — 짧게 다시 본다
+        match part.try_lock_shared() {
+            Ok(()) => {
+                got = true;
+                break;
+            }
+            Err(TryLockError::WouldBlock) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(TryLockError::Error(e)) => return Err(busy(format!("참가자 잠금 시도: {e}"))),
+        }
+    }
+    if !got {
+        return Err(busy("참가자 잠금을 얻지 못함"));
+    }
+    let g = PartGuard { file: Some(part) };
+    let held = if dir.join(LOCK_FILE).exists() { is_held(dir) } else { Some(false) };
+    match held {
+        Some(false) => Ok(Some(Participation::Participant(g))),
+        Some(true) => {
+            let who = read_owner(dir).map(|o| format!("{}(pid {})", o.owner, o.pid)).unwrap_or_else(|| "?".into());
+            Err(busy(format!("잠금 소유 중: {who}")))
+        }
+        None => Err(busy("잠금 판정 불가")),
     }
 }
 
@@ -312,10 +455,16 @@ pub fn pid_is_ancestor(pid: u32) -> Option<bool> {
 /// 프로세스 시작 시각(sysinfo · epoch 초) — 없는 pid = None.
 pub fn pid_start_time(pid: u32) -> Option<u64> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let mut sys = System::new();
     let p = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing());
-    sys.process(p).map(|x| x.start_time())
+    // ★2판: 부하 중 단발 조회가 빈손으로 오는 일이 있어(전수 병렬 실행에서 b6g 1회 적색 · 단독 3/3 초록 — 원인 확정 아님) 3회까지.
+    for _ in 0..3 {
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing());
+        if let Some(t) = sys.process(p).map(|x| x.start_time()) {
+            return Some(t);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -326,6 +475,46 @@ mod tests {
         let d = std::env::temp_dir().join(format!("cys-u1-lock-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    /// ★2판 C1(개정 · 윈 CI T8): 토큰 없는 CLI = 참가자 **공유** 잠금 — 둘이 함께 참가 가능 · 그동안 러너 acquire = 거부 · 러너가 쥔 동안
+    /// 참가 = busy · 참가는 txn.lock·소유자 기록을 만들지 않음(설치기 ⓪-a 무영향) · env 만 = ⓪ 거부.
+    #[test]
+    fn participate_is_atomic_without_exists_shortcut() {
+        let d = tmp("participate");
+        let a = participate(&d, "pack-plan", None, None).unwrap().expect("참가");
+        assert!(matches!(a, Participation::Participant(_)));
+        let b = participate(&d, "init-pack", None, None).unwrap().expect("공유 = 함께 참가");
+        assert!(!d.join(LOCK_FILE).exists() && !d.join(OWNER_FILE).exists(), "설치기가 보는 txn.lock·소유자 기록 무접촉");
+        assert!(acquire(&d, "runner").unwrap_err().detail.contains("참가자"), "참가자 작업 중 = 러너 거부");
+        drop((a, b));
+        let g = acquire(&d, "runner").unwrap();
+        assert!(participate(&d, "init-pack", None, None).is_err(), "러너가 쥔 동안 = txn_busy");
+        let tok = g.token().render();
+        assert!(participate(&d, "pack-plan", None, Some(&tok)).is_err(), "env 만 = ⓪ 거부");
+        drop(g);
+        assert!(participate(&d, "init-pack", None, None).unwrap().is_some(), "놓은 뒤 = 다시 참가");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3판 M1: 탐침이 공유라 공유 보유자(다른 탐침·참가자)와 충돌 0 · 배타 보유(러너)만 잡힘 · 러너 acquire 는 산 소유자 없는
+    /// 순간 막힘(남의 공유 탐침)을 기다려 넘는다.
+    #[test]
+    fn probe_is_shared_and_runner_rides_out_transient_probe() {
+        let d = tmp("probe");
+        std::fs::create_dir_all(&d).unwrap();
+        let f = open_lock(&d).unwrap();
+        f.lock_shared().unwrap(); // 남의 탐침(공유) 보유 중
+        assert_eq!(is_held(&d), Some(false), "공유끼리 = 안 잡힘(1·2판 배타 탐침이면 거짓 잡힘)");
+        let d2 = d.clone();
+        let t = std::thread::spawn(move || acquire(&d2, "runner").map(|_| ()));
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        f.unlock().unwrap(); // 탐침 끝
+        assert!(t.join().unwrap().is_ok(), "산 소유자 없는 순간 막힘 = 재시도로 획득");
+        let g = acquire(&d, "runner").unwrap();
+        assert_eq!(is_held(&d), Some(true), "배타 보유 = 잡힘");
+        drop(g);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -439,6 +628,73 @@ mod tests {
 
     /// ★2R B6/H⑥ 뮤테이션 B6g: 위임 자식의 guard 가 살아 있는 동안 부모가 죽어(잠금 풀림 · 묘비) 새 트랜잭션이 와도 `txn_busy` ·
     /// 거절된 새 시도는 직전 소유자 기록을 되돌린다 · guard drop 뒤에는 연다 · 자식은 한 번에 하나.
+    /// ★3판(Fable 2R N1): 같은 트랜잭션 안 중첩 위임(러너 → rotate(자식 잠금 쥠) → init-pack) = 재진입 통과 · 깊이 없는 둘째 형제 = 여전히 busy ·
+    /// 중첩이어도 토큰 불일치·조상 아님은 거부.
+    #[test]
+    fn nested_delegation_reenters_child_lock_but_siblings_still_exclude() {
+        let d = tmp("nested");
+        let parent = acquire(&d, "runner").unwrap();
+        let tok = parent.token();
+        let rotate = verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap();
+        assert!(verify_delegated(&d, &tok, Some(&tok), &yes()).is_err(), "깊이 0 형제 = 자식 잠금 busy");
+        let init_pack = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).expect("깊이 1 = 재진입");
+        let bad = Token { epoch: tok.epoch + 1, ..tok.clone() };
+        assert!(verify_delegated_at(&d, &bad, Some(&bad), &yes(), 2).is_err(), "중첩이어도 토큰 검증");
+        let no = ProcProbe { is_ancestor: &|_| Some(false), start_time: &|p| pid_start_time(p) };
+        assert!(verify_delegated_at(&d, &tok, Some(&tok), &no, 2).is_err(), "중첩이어도 조상 검증");
+        drop((init_pack, rotate, parent));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★4판(codex 3R m1): 참가 fail-open 범위 — 폴더가 없고 만들 수도 없음 = Ok(None)(평소대로) · 이미 있는데 소유자 전용으로 고칠 수 없음
+    /// (맥 = 불변 플래그로 chmod 실패를 재현 · 실기기 = 다른 소유자·DACL) = Err(rc 26). 뮤턴트 U2-PRIVDIR.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn participate_refuses_existing_dir_with_wrong_mode_but_passes_uncreatable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("privdir");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let c = std::ffi::CString::new(d.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: 널종단 경로 · 플래그만 바꾼다(끝에 되돌림).
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_IMMUTABLE as _) }, 0);
+        let r = participate(&d, "pack-plan", None, None);
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), 0) }, 0);
+        assert!(r.is_err(), "기존 폴더 권한 고칠 수 없음 = 거부(조용한 fail-open 0)");
+        let ro = tmp("privdir-ro");
+        std::fs::create_dir_all(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(matches!(participate(&ro.join("sub"), "pack-plan", None, None), Ok(None)), "만들 수 없음 = 평소대로");
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&ro);
+    }
+
+    /// ★4판(codex 3R MINOR 승격): 같은 rotate 자손이 중첩 명령 둘을 동시에 띄우면 — 깊이 1 형제 둘 중 하나는 busy · 놓으면 다음이
+    /// 들어온다 · 깊이 2 는 깊이 1 과 별개 · 손자가 깊이 잠금을 쥔 동안 부모 위임 자식이 죽어도 새 러너 acquire = 거부. 뮤턴트 U2-NESTSIB.
+    #[test]
+    fn nested_siblings_at_same_depth_exclude_each_other() {
+        let d = tmp("nestsib");
+        let parent = acquire(&d, "runner").unwrap();
+        let tok = parent.token();
+        let rotate = verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap();
+        let a = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).expect("깊이 1 첫째");
+        let e = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).unwrap_err();
+        assert!(e.detail.contains("같은 깊이"), "깊이 1 형제 = busy: {}", e.detail);
+        let deeper = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 2).expect("깊이 2 = 별개 잠금");
+        assert!(verify_delegated_at(&d, &tok, Some(&tok), &yes(), MAX_NEST + 1).is_err(), "깊이 상한");
+        drop(deeper);
+        drop(a);
+        let b = verify_delegated_at(&d, &tok, Some(&tok), &yes(), 1).expect("첫째가 놓으면 형제 진입");
+        drop(rotate);
+        drop(parent);
+        let e = acquire(&d, "other").unwrap_err();
+        assert!(e.detail.contains("txn.child.lock.1"), "손자 생존 = 새 트랜잭션 거부: {}", e.detail);
+        drop(b);
+        assert!(acquire(&d, "other").is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn b6g_delegated_guard_holds_generation_after_parent_death() {
         let d = tmp("b6g");

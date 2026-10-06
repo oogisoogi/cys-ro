@@ -451,6 +451,22 @@ fn builtin_jobs() -> Vec<serde_json::Value> {
             "_builtin": "deptreq",
             "_builtin_version": BUILTIN_JOBS_VERSION
         }),
+        // ── ★1.1.8 U2(AUTO-UPDATE-118 §3-1) 데몬 자동 갱신 틱(6시간) ────────────────────────────
+        // **신규 id 라 BUILTIN_JOBS_VERSION 범프 불요·금지**(R3-P03-3 선례 · 설계 문면 「3→4」 는 이미 4 인 판에서의 서술 — 범프하면
+        // 기존 builtin 전체가 코드 정의로 교체돼 운영자 수기 편집이 소실된다). 잡 본체 = 러너를 설치본 밖 사본에서 띄우고 **즉시 반환**
+        // (600초 시한 안 · 큰 자산은 러너가 받는다) · 지터 0~45분·부팅 뒤 15분은 러너가 단조 시계로 잰다. `bulk:false`·`publish:false`
+        // = 이 잡은 대량 작업도 외부 발행도 아니다(📌14′ 내장 잡 명시 · 코드 리뷰 확인). 부서 데몬은 갱신 주체가 아니다(base_only).
+        json!({
+            "id": "self-update-check",
+            "every_minutes": 360,
+            "action": "command",
+            "base_only": true,
+            "bulk": false,
+            "publish": false,
+            "command": "cys self-update --auto --spawn --json",
+            "_builtin": "selfupdate",
+            "_builtin_version": BUILTIN_JOBS_VERSION
+        }),
         // ── (폐기 · 1.1.8 K49) v113 A3 본부 좌석 컨텍스트 정지선 중계 `ctx-relay-base`(마커 ctxrelay) — 원작자 경보
         //   라우터(alert_route)가 context.threshold 를 소비하므로 두 소비자 공존 = 통보 2벌. 기존 설치본은
         //   retire_builtin_jobs 가 지운다(RETIRED_BUILTIN_JOBS).
@@ -1379,6 +1395,10 @@ fn scheduler_tick(daemon: &Arc<Daemon>) {
     if daemon.paused.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
+    // ★1.1.8 U2(§3-3): 정비 모드 동안 정기 작업 발화 정지(놓친 회차 = 기존 규칙 · 새 규칙 0) — `publish:true` 잡 포함 전부.
+    if crate::update_hold::schedule_frozen() {
+        return;
+    }
     let jobs = load_jobs_hot_reload(); // 핫 리로드: CLI가 schedule.json만 고치면 됨 · 이 틱이 유일한 데몬 writer 자리다
     if jobs.is_empty() {
         return;
@@ -1638,6 +1658,9 @@ pub fn run_now(daemon: &Arc<Daemon>, job_id: &str) -> Result<(), String> {
     // RPC 호출이라 무음 return 대신 거절 사유를 caller에 알린다.
     if daemon.paused.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("paused: kill-switch engaged (system.resume to re-enable firing)".to_string());
+    }
+    if crate::update_hold::schedule_frozen() {
+        return Err("update_quiesced: 자동 갱신 정비 모드 — 끝난 뒤 다시 실행".to_string());
     }
     let job = load_jobs()
         .into_iter()
@@ -3000,7 +3023,8 @@ mod tests {
             "A1-2 대화로 부서 만들기 집행 틱 잡 생성"
         );
         assert!(ids.contains(&"user-custom-job"), "사용자 잡은 보존돼야 한다");
-        assert_eq!(jobs.len(), 11, "사용자1 + built-in10(1.1.8 K49 — ctx-relay-base 폐기)");
+        assert!(ids.contains(&"self-update-check"), "1.1.8 U2 데몬 자동 갱신 틱 잡 생성");
+        assert_eq!(jobs.len(), 12, "사용자1 + built-in11(1.1.8 K49 — ctx-relay-base 폐기 · U2 self-update-check 추가)");
         // 주기 정합(typed): snapshot=6h(360), drill=7일(10080), audit=일(1440), digest=7일(10080),
         // cycle tick=매분(1), verifier watchdog=10분(10), formation heartbeat=10분(10),
         // ceo promote tick=10분(10).
@@ -3129,7 +3153,7 @@ mod tests {
             .filter(|j| j["id"].as_str() == Some("phoenix-snapshot-6h"))
             .count();
         assert_eq!(snap_count, 1, "재실행에도 중복 생성 0");
-        assert_eq!(jobs.len(), 11, "중복 없이 11개 유지(1.1.8 K49 — 중계 폐기)");
+        assert_eq!(jobs.len(), 12, "중복 없이 12개 유지(1.1.8 K49 — 중계 폐기 · U2 self-update-check)");
 
         // 3차: 구버전(마커=0) 항목이 있으면 갱신(교체) → changed=true, 여전히 중복 0.
         for j in jobs.iter_mut() {

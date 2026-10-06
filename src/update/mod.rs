@@ -5,6 +5,7 @@
 //! (수용 기록·잠금·저널·보류 로그·install_id)은 상태 폴더([`state_dir`]) 아래에만 쓴다. 시험은 `CYS_UPDATE_STATE_DIR`
 //! 로 격리한다(실 `~/.cys` 쓰기 0).
 
+pub mod auto;
 pub mod buildinfo;
 pub mod check;
 pub mod cli;
@@ -15,13 +16,25 @@ pub mod feed;
 pub mod gates;
 pub mod hold;
 pub mod journal;
+pub mod launch;
+pub mod mac;
+pub mod macupdate;
 pub mod keys;
 pub mod lock;
 pub mod net;
+pub mod notify;
 pub mod packgate;
+pub mod payload;
+pub mod quiesce;
+pub mod realops;
+pub mod runner;
 pub mod sched;
+pub mod snapshot;
 pub mod url;
+pub mod verify;
 pub mod win;
+pub mod win_install;
+pub mod win_task;
 
 /// 원작자 윈 설치기 실행 판정(📌15 편입 · 파일 통째 · `src/update_launch.rs` 그 자리 그대로 — 아래 근거).
 ///
@@ -178,6 +191,12 @@ fn current_user_sid() -> Result<String, String> {
     }
     // SAFETY: LocalAlloc 블록의 널종단 와이드 문자열.
     Ok(unsafe { take_local_wstr(out) })
+}
+
+/// ★U2: 작업 스케줄러 등록(SDDL 의 나)·재독 대조가 쓰는 같은 SID.
+#[cfg(windows)]
+pub fn current_user_sid_pub() -> Result<String, String> {
+    current_user_sid()
 }
 
 #[cfg(windows)]

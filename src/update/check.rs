@@ -504,7 +504,7 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
     let sched = super::sched::schedule_facts(&super::sched::schedule_files(pack_dir), chrono::Local::now());
     // 보류 로그 미배달 = 마지막 hold_seq − 배달 커서(커서 없음 = 0 = 전부 미배달 · 보수). 읽기 전용(꼬리 자르기 0).
     let hold_undelivered = super::hold::last_seq_readonly(dir).map(|last| {
-        let delivered = std::fs::read(dir.join("hold-cursor.json"))
+        let delivered = std::fs::read(dir.join(super::quiesce::INGESTED_FILE))
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             .and_then(|v| v.get("delivered_hold_seq").and_then(|x| x.as_u64()))
@@ -520,8 +520,8 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
         installed_release_seq: Some(buildinfo::release_seq()),
         min_from_release_seq: outcome.and_then(|o| o.min_from_release_seq),
         clock_suspect: Some(clock::clock_suspect_dates(now, trusted.as_ref().and_then(|t| t.last_trusted_time), http_dates)),
-        // N14: 복구기(LaunchAgent·로그온 작업) 등록·검증은 U2 — 이 판에는 등록이 없으므로 「미등록」(보류).
-        recover_agent_ok: Some(false),
+        // N14(★U2): 복구기 정의를 다시 읽어 경로·인자·러너 사본 sha256 = 지금 판(어긋남·미등록 = 보류 · 판정 불가 = 보류).
+        recover_agent_ok: std::env::current_exe().ok().and_then(|cur| super::launch::recover_agent_ok(dir, &cur)),
         power: power(),
         sac_state: super::win::sac_fact(),
         holds_active: holds_active(dir, now),
@@ -532,9 +532,39 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
         hold_log_undelivered: hold_undelivered,
         seats: (hooks.seats)(),
         os_idle_secs: os_idle_secs(),
-        // N7: 공간 식(§3-5 MA3)의 「직전 실측 백업량」은 U2 스냅샷 실측 뒤 — 지금은 판정 불가(보류).
-        rollback_assets_ok: None,
+        // N7(★U2): 공간 식(§3-5 MA3) + (윈) 설치판 본문·설치기 확보.
+        rollback_assets_ok: rollback_assets_ok(dir, pack_dir, outcome),
     }
+}
+
+/// N7(★U2 · 순수에 가까움): 후보가 없으면 해당 없음(true). 있으면 여유 공간 ≥ 자산 + max_unpacked + 백업 예상(직전 실측 `state.json`
+/// `last_backup_bytes` · 없으면 지금 대상 크기 합) + max_unpacked + 2 GiB · (윈) `installers\<설치판 seq>\` 에 설치기·본문이 있음.
+pub fn rollback_assets_ok(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>) -> Option<bool> {
+    let Some(a) = outcome.and_then(|o| o.asset.as_ref()) else { return Some(true) };
+    let measured = std::fs::read(dir.join("state.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("last_backup_bytes").and_then(Value::as_u64));
+    let estimate = match measured {
+        Some(n) => n,
+        None => {
+            let cys_root = pack_dir.parent().unwrap_or(pack_dir);
+            let st = super::snapshot::estimate(&super::auto::daemon_state_dir(), &|r| !super::snapshot::is_excluded(r)).ok()?;
+            let cy = super::snapshot::estimate(cys_root, &super::realops::RealOps::cys_filter).ok()?;
+            st.saturating_add(cy)
+        }
+    };
+    let need = super::snapshot::space_needed(a.size, a.max_unpacked, estimate);
+    let free = super::snapshot::free_space(dir).or_else(|| dir.parent().and_then(super::snapshot::free_space))?;
+    if free < need {
+        return Some(false);
+    }
+    if cfg!(windows) {
+        // ★2판(codex 1R C10): 있음이 아니라 재검증(U 본문 서명 · 설치기 sha256 = 본문 행 · A2 서명).
+        let seq = buildinfo::release_seq();
+        return Some(super::realops::verify_installer_dir(&dir.join("installers").join(seq.to_string()), seq, true).is_ok());
+    }
+    Some(true)
 }
 
 /// `--check` 본체 — JSON 보고와 rc(0 = 판정함 · 2 = 피드 거부 · 3 = 피드 판정 불가·미도달·install_id 손상).
@@ -559,6 +589,9 @@ pub fn run_check(dir: &Path, pack_dir: &Path, hooks: &Hooks) -> (Value, i32) {
     };
     let facts = gather_facts(dir, pack_dir, outcome.as_ref(), &dates, now, hooks);
     let report = gates::evaluate(&facts);
+    // ★1.1.8 U2 4판(codex·Fable 3R M4/M6 · 설계 §3-8): 팩 단독 갱신 게이트 = 본체 게이트의 부분열(재시작 없음 → 전원 N6·롤백 자산 N7·
+    //   복구기 N14 무관) — 러너가 본체 최신(uptodate)일 때 이것으로 팩 경로를 연다.
+    let pack_report = gates::evaluate_pack_only(&facts);
     let decision = decide(outcome.as_ref(), report.pass);
     let out = json!({
         "decision": decision,
@@ -567,6 +600,7 @@ pub fn run_check(dir: &Path, pack_dir: &Path, hooks: &Hooks) -> (Value, i32) {
         "build": buildinfo::build_info(),
         "feed": feed_json,
         "gates": report,
+        "pack_gates": pack_report,
         "facts": facts,
     });
     (out, rc)
@@ -664,8 +698,8 @@ mod tests {
         let hooks = Hooks { seats: &|| None, pending_approvals: &|| Some(0) };
         let _ = &hooks;
         let f = gather_facts(&d, &pack, None, &[], clock::wall_now(), &hooks);
-        assert_eq!(f.recover_agent_ok, Some(false));
-        assert_eq!(f.rollback_assets_ok, None);
+        assert_eq!(f.recover_agent_ok, Some(false), "★U2: 격리 폴더 = 복구기 미등록(N14 보류)");
+        assert_eq!(f.rollback_assets_ok, Some(true), "★U2: 후보 없음 = N7 해당 없음");
         assert_eq!(f.other_txn, Some(false));
         assert_eq!(f.hold_log_undelivered, Some(0));
         assert!(!gates::evaluate(&f).pass);

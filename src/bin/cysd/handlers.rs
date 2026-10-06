@@ -5425,6 +5425,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             }
         }
 
+        // ★1.1.8 U2(§3-3): 정비 모드 RPC — 트랜잭션 잠금 소유자 토큰(`txn`)이 맞을 때만.
+        "update.quiesce" | "update.seat_token" | "update.release" => Reply::Single(match crate::update_hold::rpc(daemon, req.method.as_str(), &params) {
+            Ok(v) => ok_response(&id, v),
+            Err((code, msg)) => err_response(&id, code, &msg),
+        }),
         "system.identify" => {
             let caller = params.get("caller").cloned().unwrap_or(Value::Null);
             // ★v116-num: 호출 좌석이 목록에 있으면 그 보이는 번호 · 없거나 번호 없음이면 null.
@@ -5439,6 +5444,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     "socket_path": daemon.socket_path.to_string_lossy(),
                     "daemon_pid": std::process::id(),
                     "version": env!("CARGO_PKG_VERSION"),
+                    // ★1.1.8 U2 2판(codex 1R C9): 사후 검증 V1 이 **돌고 있는 데몬**의 빌드를 독립 관측한다(가산 키).
+                    "build_id": cys::pack::build_id(),
                     "started_at": daemon.started_at,
                     "latest_seq": daemon.bus.latest_seq(),
                     "surface_count": daemon.surfaces.lock().unwrap().len(),
@@ -5491,6 +5498,14 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
         }
 
         "surface.create" => {
+            // ★1.1.8 U2 3판(Fable 2R M3 · 설계 §3-10 ③): 설치판이 stop_seats 폐기면 **새 좌석만** 거부(기존 좌석·데몬 유지 · 새 판 = 해제).
+            if let Some(seq) = crate::update_hold::update_dir().and_then(|d| cys::update::runner::seats_stopped(&d)) {
+                return Reply::Single(err_response(
+                    &id,
+                    "update.installed_revoked_stop_seats",
+                    &format!("설치된 판(release_seq {seq})이 좌석 정지 폐기 대상이라 새 좌석을 열지 않는다 — 새 판으로 바뀌면 풀린다"),
+                ));
+            }
             // ★T3-1: 러너가 lease 를 실었으면 **PTY 를 띄우기 전에** CAS 한다. 뒤로 미루면
             //   소유권을 잃은 러너가 좌석을 하나 만들고 나서야 거절당한다(좀비 셸).
             if let Some(reply) = lease_gate(daemon, &params, &id, "surface.create") {
@@ -6094,6 +6109,16 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     ))
                 }
             };
+            // ★1.1.8 U2(AUTO-UPDATE-118 §3-3): 자동 갱신 정비 모드 동안 사람이 아닌 입력은 배달하지 않고 영속 보류 로그에
+            //   fsync 뒤 ACK(`held:true`) — 갱신 뒤 새 데몬이 정확히 한 번 재생한다(사람 키보드 = 막지 않음 · S5 재검사가 잡는다).
+            if !human {
+                if let Some(r) = crate::update_hold::divert(&surface, "send", &text) {
+                    return Reply::Single(match r {
+                        Ok(v) => ok_response(&id, v),
+                        Err(e) => err_response(&id, "update_hold_failed", &e),
+                    });
+                }
+            }
             // ★A9(v4 수리 · D4 DoD "데몬측 예외 1건"): GUI 는 mac 에서 비-휠 마우스 보고를
             // 앱에 forward 하는데 그 경로가 send_input(human=true)라 보고가 사람 타이핑으로
             // 위장된다 — 오너가 pane 을 스크롤해 읽는 동안 --queued 배달이 무기 연기되고
@@ -6745,6 +6770,20 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 Ok(v) => v,
                 Err(e) => return Reply::Single(err_response(&id, "acl_denied", &e)),
             };
+            // ★1.1.8 U2(§3-3): 정비 모드 동안 Return 은 보류 로그로(재생 = 빈 본문 큐 항목 = 제출) · 그 밖 키는 거절(재생 불가 · 보낸 쪽이
+            //   갱신 뒤 다시 보낸다 — 조용히 삼키지 않는다).
+            if crate::update_hold::quiesced() {
+                if key.eq_ignore_ascii_case("return") || key.eq_ignore_ascii_case("enter") {
+                    if let Some(r) = crate::update_hold::divert(&surface, "send-key", "") {
+                        return Reply::Single(match r {
+                            Ok(v) => ok_response(&id, v),
+                            Err(e) => err_response(&id, "update_hold_failed", &e),
+                        });
+                    }
+                } else {
+                    return Reply::Single(err_response(&id, "update_quiesced", "자동 갱신 정비 모드 — 끝난 뒤 다시 보내 주세요"));
+                }
+            }
             // ★(0.14.42 · A2 D3) 짝 Return 흡수 판정 — ACL 뒤(발신자는 자기 짝 Return 만 억제할 수
             //   있다) · queued 팔·타이핑 가드·D-12 **앞**. 흡수는 쓰기 1회를 억제만 한다(새 쓰기·적재 0).
             //   `pair_return` 은 신 CLI 의 단일 `send-key Return|Enter` 만 싣는다 — inject_text·cycle

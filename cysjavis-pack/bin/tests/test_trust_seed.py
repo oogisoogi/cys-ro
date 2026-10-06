@@ -2201,8 +2201,10 @@ class DeptWiringStatic(unittest.TestCase):
             #   그대로이고 벗기는 **목록이 늘었다**. `CYS_DEPT_ROTATE` 는 rotate 재귀 표식으로
             #   자식 cysd → 그 좌석 전부에 상속돼 부서 단일소유 게이트를 영구히 껐다(2026-09-08
             #   라이브 실측: dept-2 cysd pid 2634 · 좌석 4147/5087/7981). 이미 샌 값은 재기동으로 회수된다.
+            # ★재핀(1.1.8 U2 4판 Fable 3R N4 · 항목 추가): 자동 갱신 위임 env(`CYS_UPDATE_TXN`·`_DEPTH`)도 벗긴다 — rotate 위임
+            #   자식이 띄운 부서 cysd → 그 좌석이 상속하면 좌석의 rotate·팩 명령이 rc 26(txn_busy)으로 막힌다.
             self.assertIn("env -u CYS_ROLE -u CYS_SURFACE_ID -u CYS_SURFACE_REF"
-                          " -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE nohup", l, l)
+                          " -u CYS_SEAT_TOKEN -u CYS_DEPT_ROTATE -u CYS_UPDATE_TXN -u CYS_UPDATE_TXN_DEPTH nohup", l, l)
             self.assertNotIn("CYS_SOCKET=", l.split("env -u", 1)[1], "env -u 뒤에 대입이 남아 있다")
 
 

@@ -55,6 +55,7 @@ mod skillrun;
 mod state;
 mod teamtoken;
 mod undo;
+mod update_hold;
 mod usage;
 mod watch_wake;
 // ★U16(0.14.41) 팀 만들기 제안 데몬 잠금 핀 — 테스트 전용 모듈(프로덕션 코드 0).
@@ -1114,6 +1115,17 @@ fn scrub_claude_session_env() {
     }
 }
 
+/// ★1.1.8 U2 4판(Fable 3R N4): 데몬은 자동 갱신 트랜잭션 참가자가 아니다 — 위임 env(`CYS_UPDATE_TXN`·`_DEPTH`)가 스폰 경로로 새어
+/// 들어왔으면 지운다(좌석 셸이 물려받으면 그 좌석의 rotate·init-pack·pack-update·pack-plan 이 rc 26 으로 막힌다). 스폰 쪽 env_remove 와 이중.
+fn scrub_update_txn_env() {
+    for k in [cys::update::lock::ENV_TXN, cys::update::lock::ENV_TXN_DEPTH] {
+        if std::env::var_os(k).is_some() {
+            std::env::remove_var(k);
+            eprintln!("[cysd] scrubbed update txn env: {k}");
+        }
+    }
+}
+
 /// cysd 명령줄 판정(순수 · argv[0] 제외).
 #[derive(Debug, PartialEq, Eq)]
 enum CysdCli {
@@ -1197,6 +1209,7 @@ async fn async_main() {
         crate::schedule::FIX_GENERATION
     );
     scrub_claude_session_env();
+    scrub_update_txn_env();
 
     // ★(1R#4 · 2026-09-10) Windows 자식 수명 결박을 **상속**으로 세운다 — 데몬 자신을 프로세스
     //   수명 Job(KILL_ON_JOB_CLOSE)에 넣으면 이후 CreateProcess 되는 모든 자손이 커널 수준에서
@@ -1218,6 +1231,11 @@ async fn async_main() {
     if std::env::args().any(|a| a == "--oauth-usage-probe") {
         std::process::exit(accounts::oauth_probe_report().await);
     }
+
+    // ★1.1.8 U2(AUTO-UPDATE-118 §3-11 cysd 부팅 가드): 갱신 저널이 비종결(S7~S11·RB·PACK_*)인데 그 트랜잭션을 이끄는 러너·복구기가
+    //   없거나(잠금 풀림) 저널이 손상이면 **좌석·세션·상태 파일을 만들기 전에** 「복구 대기」 rc 로 끝난다(launchd·작업 스케줄러가
+    //   다시 띄워도 같은 판정). 단일 인스턴스 게이트보다 앞 = 부수효과 0.
+    update_hold::boot_guard_or_exit();
 
     // ★W1(조기 단일 인스턴스 게이트): 소켓 경로 확정 직후·pack 설치보다 먼저 단일 인스턴스 게이트를
     // 통과시킨다. 목적 — 락/싱글턴 경쟁의 **패자**가 상태를 오염시키는 부트 부수효과 전에 죽게 하는 것.

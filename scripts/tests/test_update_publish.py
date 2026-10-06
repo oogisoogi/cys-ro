@@ -858,13 +858,21 @@ class TestOfflineRitual(Base):
         open(self.mini, "w").write('#!/bin/sh\nexec "%s" "%s" "$@"\n' % (sys.executable, FAKE))
         os.chmod(self.mini, 0o755)
         self.env = dict(os.environ, MINISIGN=self.mini, CYS_SIGN_MEDIA_PREFIX=self.tmp + "/")
+        # 시험용 사본 트리(3판 · 2R #3): 실 스크립트·모듈은 심링크 · lib/offline-sign.sh 만 「실 lib + 시험 대역」 두 줄.
+        self.dev = os.path.join(self.tmp, "upd-dev")
+        os.makedirs(os.path.join(self.dev, "lib"))
+        for n in os.listdir(UPD):
+            if n not in ("lib", "__pycache__"):
+                os.symlink(os.path.join(UPD, n), os.path.join(self.dev, n))
+        open(os.path.join(self.dev, "lib", "offline-sign.sh"), "w").write(
+            '. "%s"\n. "%s"\n' % (os.path.join(UPD, "lib", "offline-sign.sh"), os.path.join(UPD, "lib", "offline-sign-dev.sh")))
 
     def tearDown(self):
         subprocess.call(["hdiutil", "detach", self.mnt, "-quiet"])
         super().tearDown()
 
     def sign(self, body, key, out, media=None):
-        return run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", body, "--media", media or self.mnt,
+        return run(["bash", os.path.join(self.dev, "sign-release.sh"), "--body", body, "--media", media or self.mnt,
                     "--key", key, "--keyring", self.fx.keyring, "--out-dir", out, "--wait-eject", "0"], env=self.env)
 
     def unsigned_body(self):
@@ -924,7 +932,7 @@ class TestOfflineRitual(Base):
     def test_revocations_ritual(self):
         doc = os.path.join(self.tmp, "rev.json")
         py("make-revocations.py", "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, "--first", "--out", doc)
-        r = run(["bash", os.path.join(UPD, "sign-revocations.sh"), "--doc", doc, "--media", self.mnt,
+        r = run(["bash", os.path.join(self.dev, "sign-revocations.sh"), "--doc", doc, "--media", self.mnt,
                  "--key", os.path.join(self.mnt, "r.key"), "--keyring", self.fx.keyring,
                  "--out-dir", os.path.join(self.tmp, "rout"), "--wait-eject", "0"], env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -936,23 +944,41 @@ class TestOfflineRitual(Base):
         e.update(extra)
         return e
 
-    def test_mut_handle_outside_dev(self):
-        b = self.unsigned_body()
-        for name, val in (("MINISIGN", self.mini), ("CYS_SIGN_MEDIA_PREFIX", self.tmp + "/")):
-            r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
-                     "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
-                     "--out-dir", os.path.join(self.tmp, "out")], env=self.real_env(**{name: val}))
-            self.assertEqual(r.returncode, 2, name)
-            self.assertIn("시험 손잡이 %s" % name, r.stderr)
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
+    def test_real_scripts_have_no_env_handles(self):
+        """3판(2R #3): 실 의식 스크립트·lib 에는 손잡이 env 가 **코드로** 없다(주석 밖 0) — 대역은 시험 사본 트리에서만."""
+        for n in ("lib/offline-sign.sh", "sign-release.sh", "sign-revocations.sh", "gen-offline-key.sh"):
+            code = "\n".join(l for l in open(os.path.join(UPD, n), encoding="utf-8").read().splitlines()
+                             if not l.lstrip().startswith("#"))
+            for h in ("MINISIGN", "CYS_SIGN_MEDIA_PREFIX", "CYS_SIGN_DEV", "offline-sign-dev"):
+                self.assertNotIn(h, code, (n, h))
 
-    def test_mut_wait0_outside_dev(self):
+    def test_mut_real_script_ignores_handles(self):
+        """실 스크립트에 손잡이를 줘도 무시된다 — 매체 부모 = /Volumes 고정이라 가짜 매체(임시 폴더) = 거부 · 산출물 0."""
         b = self.unsigned_body()
         r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
                  "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
-                 "--out-dir", os.path.join(self.tmp, "out"), "--wait-eject", "0"], env=self.real_env())
+                 "--out-dir", os.path.join(self.tmp, "out")], env=dict(self.env, CYS_SIGN_DEV="1"))
         self.assertEqual(r.returncode, 2)
-        self.assertIn("개발 모드 전용", r.stderr)
+        self.assertIn("/Volumes", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
+
+    def test_mut_wait0_real_script(self):
+        b = self.unsigned_body()
+        r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
+                 "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
+                 "--out-dir", os.path.join(self.tmp, "out"), "--wait-eject", "0"], env=self.env)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("실 의식에서 쓸 수 없다", r.stderr)
+
+    def test_mut_dev_lib_refuses_real_media_parent(self):
+        """시험 대역도 매체 부모가 임시 폴더 밖(/Volumes)이면 거부 — 대역으로 실 매체를 여는 길 0."""
+        b = self.unsigned_body()
+        r = run(
+            ["bash", os.path.join(self.dev, "sign-release.sh"), "--body", b, "--media", self.mnt,
+             "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring, "--out-dir",
+             os.path.join(self.tmp, "out"), "--wait-eject", "0"], env=dict(self.env, CYS_SIGN_MEDIA_PREFIX="/Volumes"))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("임시 폴더 밖", r.stderr)
 
     def test_mut_dev_mode_real_key_id(self):
         real = json.load(open(os.path.join(ROOT, "cysjavis-pack", "trusted-keys.json")))["keys"][0]["key_id"]
@@ -973,8 +999,9 @@ class TestOfflineRitual(Base):
         self.addCleanup(subprocess.call, ["hdiutil", "detach", m2, "-quiet"])
         return m2
 
-    def gen(self, *args, env=None):
-        return run(["bash", os.path.join(UPD, "gen-offline-key.sh")] + list(args), env=env or self.env, cwd=self.tmp)
+    def gen(self, *args, env=None, real=False):
+        return run(["bash", os.path.join(UPD if real else self.dev, "gen-offline-key.sh")] + list(args), env=env or self.env,
+                   cwd=self.tmp)
 
     def test_gen_key_r_two_media(self):
         m2 = self.second_media()
@@ -1025,9 +1052,9 @@ class TestOfflineRitual(Base):
         self.assertEqual(r.returncode, 2)
         self.assertIn("마운트 지점이 아니다", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(notmnt, "u.key")))
-        r = self.gen("--media", self.mnt, "--name", "u", env=self.real_env(MINISIGN=self.mini))
+        r = self.gen("--media", self.mnt, "--name", "u", env=self.real_env(MINISIGN=self.mini), real=True)
         self.assertEqual(r.returncode, 2)
-        self.assertIn("시험 손잡이 MINISIGN", r.stderr)
+        self.assertIn("/Volumes", r.stderr)  # 실 스크립트 = 손잡이 무시 · 가짜 매체 거부
         r = self.gen("--media", self.mnt, "--name", "u", "--copy-to", self.mnt)
         self.assertEqual(r.returncode, 2)
         self.assertIn("R(둘째 벌) 전용", r.stderr)

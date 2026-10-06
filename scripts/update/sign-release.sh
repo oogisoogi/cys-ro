@@ -14,7 +14,7 @@
 #       [--keyring cysjavis-pack/trusted-keys.json] [--out-dir dist/update] [--wait-eject 300]
 # 산출: <out-dir>/<component>-release-<seq>.json + .minisig (본문 바이트 그대로 · 서명은 파일 바이트 전체)
 # 종료: 0 = 서명·검증 통과 · 2 = 거부(산출물 0)
-# 시험: CYS_SIGN_DEV=1 + MINISIGN=<가짜 minisign> · CYS_SIGN_MEDIA_PREFIX=<가짜 매체 부모> · --wait-eject 0 — 실키 0.
+# 시험: 이 스크립트는 손잡이 env 가 없다 — 시험은 사본 트리에서 lib/offline-sign-dev.sh(대역)를 함께 읽는다(3판 · 실키 0).
 #   (개발 모드 밖에서 이 손잡이가 보이면 거부 · 개발 모드는 저장소 실 키링 key id 거부 — lib/offline-sign.sh)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

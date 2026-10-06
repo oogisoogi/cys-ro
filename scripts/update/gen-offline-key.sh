@@ -13,7 +13,7 @@
 #   scripts/update/gen-offline-key.sh --media /Volumes/CYS-R1 --name r --copy-to /Volumes/CYS-R2 [--pub-out r.pub]
 #   scripts/update/gen-offline-key.sh --media /Volumes/CYS-U --name u [--pub-out u.pub]
 # 종료: 0 = 생성(+복제) 통과 · 2 = 거부(이미 있는 키는 덮지 않는다)
-# 시험: CYS_SIGN_DEV=1 + MINISIGN=<가짜 minisign> · CYS_SIGN_MEDIA_PREFIX=<가짜 매체 부모> — 실키 0.
+# 시험: 이 스크립트는 손잡이 env 가 없다 — 시험은 사본 트리에서 lib/offline-sign-dev.sh(대역)를 함께 읽는다(3판 · 실키 0).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/offline-sign.sh

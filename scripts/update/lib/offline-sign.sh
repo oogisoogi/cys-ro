@@ -7,40 +7,22 @@
 #   · 이 함수는 개인키 파일을 **읽지도 복사하지도 않는다** — 경로만 minisign 에 넘긴다(클립보드·셸 기록·임시 파일 0).
 #   · 서명 대상(공개 정보)만 매체 쪽 임시 폴더로 옮겨 그 자리에서 서명하고, 서명(.minisig)만 꺼낸다(④).
 #   · 매체를 뺀 뒤(⑤ · 기본 = 빠질 때까지 기다림) 내장 키링의 같은 용도 공개키로 검증해야(⑥) 산출물이 생긴다.
-#   · 시험 손잡이(`MINISIGN` · `CYS_SIGN_MEDIA_PREFIX` · 매체 빼기 대기 0)는 **개발 모드(`CYS_SIGN_DEV=1`)에서만** 받는다 —
-#     실 의식에서 이 셋이 보이면 거부(codex 1R #3 · 의식 우회 봉쇄). 개발 모드는 저장소 실 키링
-#     (`cysjavis-pack/trusted-keys.json`)에 있는 key id 로는 서명하지 않는다(가짜 매체·가짜 minisign 으로 실 키 사용 0).
+#   · ★3판(codex 2R #3): 이 파일(실 의식)에는 **환경 변수 손잡이가 하나도 없다** — minisign = PATH 의 `minisign` · 매체 부모 =
+#     `/Volumes` · 매체 빼기 대기 ≥ 1초가 고정값이다. 시험 대역(가짜 minisign·가짜 매체·대기 0)은 시험 전용 파일
+#     `lib/offline-sign-dev.sh` 가 아래 세 함수를 덮어써서만 생긴다 — 실 스크립트(sign-release.sh · sign-revocations.sh ·
+#     gen-offline-key.sh)는 그 파일을 읽지 않는다(시험은 시험용 사본 트리에서 두 파일을 함께 읽는다).
 # 시험 = 가짜 키(scripts/tests/fixtures/fake_minisign.py) + 가짜 매체(hdiutil 로 만든 진짜 마운트) — 실키 0.
 
-_offline_dev() { [ "${CYS_SIGN_DEV:-}" = 1 ]; }
-
-# offline_dev_policy <expect_key_id|-> <wait_eject_secs> — 통과하면 0, 아니면 이유를 stderr 에 쓰고 2.
+# 실 의식의 고정값(시험 대역이 덮어쓰는 자리는 이 세 함수뿐).
+_offline_minisign() { echo minisign; }
+_offline_prefix() { echo /Volumes; }
+# offline_dev_policy <expect_key_id|-> <wait_eject_secs> — 실 의식: 대기는 정수 ≥ 1(매체 빼기 생략 불가). 0 | 2.
 offline_dev_policy() {
-  local kid="$1" wait="$2" real
-  real="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/cysjavis-pack/trusted-keys.json"
-  if _offline_dev; then
-    [ "$kid" = "-" ] && return 0
-    python3 - "$real" "$kid" <<'PY2' || return 2
-import json, sys
-try:
-    ids = {k.get("key_id") for k in json.load(open(sys.argv[1], encoding="utf-8")).get("keys", [])}
-except (OSError, ValueError) as e:
-    print("거부: 개발 모드인데 저장소 실 키링을 못 읽는다(%s) — 실 키 대조 불가" % e, file=sys.stderr); sys.exit(2)
-if sys.argv[2] in ids:
-    print("거부: 개발 모드(CYS_SIGN_DEV=1)로 저장소 실 키링의 key id %s 를 쓰려 한다" % sys.argv[2], file=sys.stderr); sys.exit(2)
-PY2
-    return 0
-  fi
-  local v
-  for v in MINISIGN CYS_SIGN_MEDIA_PREFIX CYS_TEST_NOW; do
-    [ -z "${!v:-}" ] || { echo "거부: 시험 손잡이 $v 가 설정돼 있다 — 실 의식에서는 쓸 수 없다(개발 모드 = CYS_SIGN_DEV=1 전용)" >&2; return 2; }
-  done
+  local wait="$2"
   case "$wait" in ''|*[!0-9]*) echo "거부: --wait-eject 정수 아님: $wait" >&2; return 2 ;; esac
-  [ "$wait" -ge 1 ] || { echo "거부: --wait-eject 0(매체 빼기 생략)은 개발 모드 전용이다" >&2; return 2; }
+  [ "$wait" -ge 1 ] || { echo "거부: --wait-eject 0(매체 빼기 생략)은 실 의식에서 쓸 수 없다" >&2; return 2; }
   return 0
 }
-
-_offline_minisign() { if _offline_dev; then echo "${MINISIGN:-minisign}"; else echo minisign; fi; }
 
 _os_dev() {  # 경로의 장치 번호(BSD·GNU stat 둘 다 — GNU 의 `stat -f` 는 파일 시스템 정보라 먼저 갈라야 한다)
   if stat --version >/dev/null 2>&1; then stat -c %d "$1"; else stat -f %d "$1"; fi
@@ -53,8 +35,7 @@ _realpath() {
 # offline_media_check <media> — 매체가 /Volumes 아래 마운트 지점이고 빌드 기기 디스크와 다른 장치인가. 0 | 2.
 offline_media_check() {
   local media="$1" prefix rm dm dp p
-  if _offline_dev; then prefix="${CYS_SIGN_MEDIA_PREFIX:-/Volumes}"; else prefix=/Volumes; fi
-  prefix="$(_realpath "$prefix")/"  # 실경로로 맞춘다(/var → /private/var)
+  prefix="$(_realpath "$(_offline_prefix)")/"  # 실경로로 맞춘다(/var → /private/var)
   [ -n "$media" ] && [ -d "$media" ] || { echo "거부: 매체 폴더 없음: $media" >&2; return 2; }
   rm="$(_realpath "$media")"
   case "$rm/" in "$prefix"*) ;; *) echo "거부: 매체가 $prefix 아래 마운트가 아니다: $rm" >&2; return 2 ;; esac
@@ -85,7 +66,7 @@ _mounted() {  # 매체가 아직 마운트돼 있는가(장치가 부모와 다�
 }
 
 # offline_sign <purpose> <doc> <key> <media> <keyring> <expect_key_id> <out_sig> <trusted_comment> <wait_eject_secs>
-#   purpose = release(U) | root(R). wait_eject_secs = 0 이면 기다리지 않는다(개발 모드 전용 — offline_dev_policy).
+#   purpose = release(U) | root(R). wait_eject_secs ≥ 1(실 의식 · 0 은 시험 대역 lib/offline-sign-dev.sh 에서만).
 offline_sign() {
   local purpose="$1" doc="$2" key="$3" media="$4" keyring="$5" kid="$6" out_sig="$7" tc="$8" wait="$9"
   local here mini

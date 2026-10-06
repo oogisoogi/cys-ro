@@ -245,7 +245,7 @@ def find_key(keyring, purpose, key_id, now=None):
 
 # ── 개발(시험) 모드 · 신뢰 시각 ─────────────────────────────────────────────────────
 def dev_mode():
-    """CYS_SIGN_DEV=1 = 시험 전용 모드(가짜 minisign·가짜 매체·NOW 덮어쓰기 허용 · 실 키 서명 거부 — codex 1R #3)."""
+    """CYS_SIGN_DEV=1 = 파이썬 도구의 시험 시각(CYS_TEST_NOW) 허용만 — 서명 의식 셸 스크립트는 이 값을 읽지 않는다(3판 · 2R #3)."""
     return os.environ.get("CYS_SIGN_DEV") == "1"
 
 

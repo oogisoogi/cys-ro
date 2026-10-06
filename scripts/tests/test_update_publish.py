@@ -1368,6 +1368,23 @@ class TestSourcePins(unittest.TestCase):
         self.assertLess(body.index("cargo build --release --bin cys"), body.index("make-envelope.py"))
         self.assertLess(body.index("make-envelope.py"), body.index("--envelope feed/env.json"))
 
+    def test_workflows_actions_sha_pinned(self):
+        """3판(codex 2R #9): 전 워크플로의 서드파티 액션 = 40자 commit SHA(+ 태그 주석) · rust-toolchain 은 toolchain 명시 ·
+        F 비밀 잡 = environment feed."""
+        import glob
+        import re
+        for f in glob.glob(os.path.join(ROOT, ".github", "workflows", "*.yml")):
+            for i, l in enumerate(open(f, encoding="utf-8").read().splitlines(), 1):
+                m = re.match(r"^\s*(?:- )?uses:\s*([^\s#]+)", l)
+                if m and not m.group(1).startswith("./"):
+                    self.assertRegex(m.group(1), r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$", "%s:%d" % (f, i))
+                    self.assertIn("#", l, "%s:%d 태그 주석 없음" % (f, i))
+                    if "dtolnay/rust-toolchain" in l:
+                        nxt = open(f, encoding="utf-8").read().splitlines()[i:i + 4]
+                        self.assertTrue(any("toolchain: stable" in x for x in nxt), "%s:%d" % (f, i))
+        rf = open(os.path.join(ROOT, ".github", "workflows", "refresh-feed.yml"), encoding="utf-8").read()
+        self.assertIn("    environment: feed\n", rf)
+
     def test_release_yml_seq_and_win_inputs(self):
         """2판(codex 1R #1·#18): release_seq 배선 + 빌드 전 정수 검사(cys 빌드 잡 둘) · 윈 재료 스텝 실패 = 릴리스 실패."""
         s = open(os.path.join(ROOT, ".github", "workflows", "release.yml"), encoding="utf-8").read()

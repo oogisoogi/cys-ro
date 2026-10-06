@@ -67,6 +67,10 @@ env:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # ★3판(codex 2R #9 · master 결정): F 비밀은 GitHub environment 「feed」 에만 둔다 — 보호 규칙 = **배포 브랜치 제한만**(main ·
+    #   reviewer 0 = 무료·주간 클릭 0 · 「사람 개입 0」 목표). 다른 가지·PR 워크플로는 이 비밀을 못 읽는다. 액션은 전부 commit SHA 핀.
+    #   잔여 위험(HANDOFF-U3 §6): F 탈취 = 봉투 halt/동결 권한(코드 설치 불가 — 본문 U 서명이 따로) · 완화 = SHA 핀·브랜치 제한·R 로 F 폐기.
+    environment: feed
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -92,7 +96,7 @@ jobs:
             echo "run=1" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         if: steps.leg.outputs.run == '1'
 
       - name: Fetch current envelope · revocations · release body
@@ -127,9 +131,11 @@ jobs:
           fi
           echo "skip=0" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d  # stable
+        with:
+          toolchain: stable  # SHA 핀이면 ref 이름으로 판을 못 고른다 — 명시
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
 
       - name: Build the one verifier (cys update-verify · 내장 키링 출시 빌드)
@@ -165,7 +171,7 @@ jobs:
           [ -z "$IN_HALT" ] || args+=(--halt "$IN_HALT")
           python3 scripts/update/make-envelope.py "${args[@]}"
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
 
       - name: Sign envelope (F · tauri signer → minisign text)
@@ -202,7 +208,7 @@ jobs:
 
       - name: Keep the signed envelope as an artifact
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: envelope-${{ matrix.target.component }}-${{ matrix.target.channel }}
           path: |

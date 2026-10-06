@@ -57,7 +57,7 @@ cys-terminal은 이 세 가지를 **1급 기능**으로 해결하기 위해 처�
 
 작동 방식(디렉티브)과 능력(도구·스킬)은 완비해서 배포하되, 가치관과 기억은 소유자의 것으로
 남긴다. 팩 설치기는 이 원칙을 코드로 강제한다 — soul.md·디렉티브·CLAUDE.md·schedule.json은
-**사용자 수정 시 영구 보존**되고, 업데이트가 이를 덮어쓰지 않는다 (`src/pack.rs`의
+**사용자 수정 시 영구 보존**되고, 갱신이 이를 덮어쓰지 않는다 (`src/pack.rs`의
 `is_user_owned` / 사용자-수정 불가침 설치 로직).
 
 ---
@@ -267,12 +267,12 @@ exit 0: 사용량 관측, statusline)와 **GATE**(deny-by-default·차단이 목
 데몬 소유이므로 **앱을 재시작·재설치해도 세션은 살아 있고 재-attach만 한다**. UI가 hang
 이어도 소켓 제어 채널은 살아 있다(out-of-band 회생).
 
-### 5.6 업데이트 아키텍처 — 이중 채널 + 스큐 교대
+### 5.6 새 판 갱신 아키텍처 — 데몬 자동 갱신 + 스큐 교대
 
 | 채널 | 서명 | 방식 |
 |---|---|---|
-| **앱(바이너리)** | Tauri updater 서명 | 시작 + 6시간마다 확인 → `!` 배지 → 세션 가드 → 설치·재시작 → 복원 |
-| **팩(운영체계)** | minisign (공개키 바이너리 핀) | **무중단** — 서명 검증 → 저널 트랜잭션 반영 → 라이브 노드 재주입. 재시작 0, `↻` 배지 |
+| **앱(바이너리)** | 배포본 서명 + 우리 피드 minisign(봉투·릴리스 본문 두 겹) | 데몬이 쉬는 시간에 우리 피드를 확인 → 사용자·좌석이 한가하고 어댑터가 꽂혀 있거나 배터리가 절반 넘을 때만 받음 → 정비 모드·세션 저장·백업 → 교체 → 복원 → 사후 검증(어긋나면 스스로 되돌림). 결과는 다음 앱 창에서 알림 한 줄 |
+| **팩(운영체계)** | minisign (공개키 바이너리 핀) | **무중단** — 같은 데몬이 팩 매니페스트도 확인 → 서명 검증 → 저널 트랜잭션 반영 → 라이브 노드 재주입. 재시작 0 |
 
 팩 검증 사슬은 전건 fail-closed다: 필수 필드 → 채널 → 키링(폐기·미지·만료 거부) →
 minisign → 다이제스트 → 신선도 창 → **replay 단조성**(이미 수락한 것보다 오래된 팩 거부).
@@ -315,7 +315,7 @@ pro 콘텐츠를 내장 free 팩으로 덮지 않도록 보호된다(강등은 �
    반복 위험 명령은 master가 HMAC-SHA256 signed-prefix로 1회 서명하면 guard 훅이 통과시킨다
    (`cys approval sign` — master surface 전용, 상수시간 비교, 시크릿 0600 파일).
 5. **자기결재 차단** — 승인 요청을 올린 노드가 스스로 승인할 수 없다(pid/pgid/surface 각인).
-6. **공급망** — 앱은 Tauri updater 서명, 팩은 minisign 핀. 발행 전 비밀/PII 게이트
+6. **공급망** — 앱 배포본은 서명돼 나가고 데몬의 자동 갱신이 그 서명을 확인한다. 팩은 minisign 핀. 발행 전 비밀/PII 게이트
    (`scripts/secret-scan.sh --all`, fail-closed)와 팩 전용 스캔이 CI 최우선 단계로 돈다.
 7. **PII** — `CYS_CONTROL_REDACT=1`이면 세션 식별자를 해시로 가리고 집계만 보존.
 
@@ -334,7 +334,7 @@ pro 콘텐츠를 내장 free 팩으로 덮지 않도록 보호된다(강등은 �
 
 ## 7. 영속성과 부활
 
-- **세션 영속** — PTY는 데몬 소유. UI 재시작·앱 재설치·업데이트에도 세션 유지.
+- **세션 영속** — PTY는 데몬 소유. UI 재시작·앱 재설치·갱신에도 세션 유지.
 - **이벤트 연속성** — seq 단조 + 재시작 간 예약 블록으로, 재접속 클라이언트가 이어받는다.
 - **기록 영속** — 3개의 로컬 SQLite(analytics / transcripts+FTS / channels), 전부 WAL,
   열기 실패 시 기능 저하로 우아하게 계속(관측이 본체를 죽이지 않는다).
@@ -392,7 +392,7 @@ pro 콘텐츠를 내장 free 팩으로 덮지 않도록 보호된다(강등은 �
 6. kill-switch(`pause`)는 큐·스케줄을 동결하되 직접 send는 통과한다 — "신경 차단"이지
    행동 정지가 아니며, 재부팅에도 유지된다.
 7. 와이어 응답은 상한과 자기검증 프레이밍의 이중 가드를 거친다.
-8. 사용자 소유 파일(soul·디렉티브·CLAUDE.md·schedule)은 업데이트가 덮지 않는다.
+8. 사용자 소유 파일(soul·디렉티브·CLAUDE.md·schedule)은 갱신이 덮지 않는다.
 9. 페르소나 커스터마이즈는 허용되지만 안전핵(denylist·복구·kill-switch)은 잠겨 있다.
 
 ---
@@ -401,6 +401,6 @@ pro 콘텐츠를 내장 free 팩으로 덮지 않도록 보호된다(강등은 �
 
 - 설치·운용·전체 레퍼런스: [User Manual](USER-MANUAL.md)
 - 설치 상세: [INSTALL.md](docs/INSTALL.md) · [INSTALL-Windows-KR.md](docs/INSTALL-Windows-KR.md)
-- 무중단 팩 업데이트 설계 정본: [DESIGN-noshutdown-pack-update.md](docs/DESIGN-noshutdown-pack-update.md)
+- 무중단 팩 갱신 설계 정본: [DESIGN-noshutdown-pack-update.md](docs/DESIGN-noshutdown-pack-update.md)
 - Control Center 설계: [CONTROL_CENTER_DESIGN.md](docs/CONTROL_CENTER_DESIGN.md)
 - 보안 신고: [SECURITY.md](SECURITY.md) · 기여: [CONTRIBUTING.md](CONTRIBUTING.md)

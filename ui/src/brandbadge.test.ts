@@ -63,9 +63,10 @@ describe("ⓔ Control Center 헤더 경보 배지 제거", () => {
     expect(body).not.toContain(".length}");
   });
 
-  it("승인 대기 배지·Update 배지·경보 스트립 스타일은 남아 있다", () => {
+  it("승인 대기 배지·경보 스트립 스타일은 남아 있다 · (1.1.8 U4 · 설계 §5-2) 업데이트 배지·단추는 없다", () => {
     expect(html).toContain('id="cc-pending-badge"');
-    expect(html).toContain('id="update-badge"');
+    expect(html).not.toContain('id="update-badge"');
+    expect(html).not.toContain('id="btn-update"');
     expect(css).toContain(".cc-alerts {");
   });
 });

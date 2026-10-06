@@ -56,10 +56,8 @@ MUTANTS = [
      "        .ok_or_else(|| UpdateFail::Field(key.to_string()))",
      "        .or(Some(String::new()))\n        .ok_or_else(|| UpdateFail::Field(key.to_string()))",
      RUST + ["macupdate"], "검증 칸 결손의 fail-closed"),
-    ("m7-w3-seal", MAIN,
-     "    let _ = tokio::task::spawn_blocking(|| sealed_sidecar_cys(&[\"drain\"]).status()).await;\n    let _ = app.emit(\"update-progress\", json!({\"phase\": \"handoff\"}));\n    let _ = std::fs::write(pending_restore_path(), \"\");\n    stop_running_daemon().await;\n    app.restart();",
-     "    let _ = tokio::task::spawn_blocking(|| std::process::Command::new(resolve_sidecar(\"cys\")).arg(\"drain\").status()).await;\n    let _ = app.emit(\"update-progress\", json!({\"phase\": \"handoff\"}));\n    let _ = std::fs::write(pending_restore_path(), \"\");\n    stop_running_daemon().await;\n    app.restart();",
-     RUST + ["gui_spec_w3"], "재시작 경로의 봉인 조립점(조준 이사 뒤에도 무는가)"),
+    # (1.1.8 U4 · 설계 §5-2) m7-w3-seal 퇴역 — 겨누던 restart_after_update(맥 교체 뒤 재시작)를 앱 업데이트 경로와 함께 지웠다.
+    #   gui_spec_w3 핀은 남은 두 지점만 재고, 지운 두 함수가 돌아오면 적색이 되는 음성 단언을 갖는다(src-tauri/src/main.rs).
     ("m8-sweep-armed", SWEEP,
      "  if (!armed) return [];",
      "  if (false) return [];",

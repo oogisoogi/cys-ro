@@ -46,10 +46,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMUNBOTE3MjIwNEU5M0UKUldRKzZRUWlGNmtjZzZKdWluYWlzUytJM3RLUUIrcjJhbjRnYTFCVUt0S0RRd2cwL2NvMjJDd3QK",
-      "endpoints": [
-        "https://github.com/oogisoogi/cys-ro/releases/latest/download/latest.json"
-      ]
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMUNBOTE3MjIwNEU5M0UKUldRKzZRUWlGNmtjZzZKdWluYWlzUytJM3RLUUIrcjJhbjRnYTFCVUt0S0RRd2cwL2NvMjJDd3QK"
     }
   }
 }

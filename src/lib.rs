@@ -6557,7 +6557,9 @@ mod spawn_policy_tests {
         ("src-tauri/src/feedback.rs", 6),
         // v114-dept-fd: cys-dept 직접 스폰 3곳 → run_dept_tool_direct 1곳(-2) · 1.1.8 병합 +1 = 원작자
         //   open_privacy_settings `/usr/bin/open`(macOS cfg) · smart_app_control_state `reg.exe`(windows cfg · no_console).
-        ("src-tauri/src/main.rs", 38),
+        // 1.1.8 U4(설계 §5-2 · 앱 updater 경로 삭제) −4 = same_version_rebuild_check `curl`(latest.json) · check_pack_update `curl`(pack-manifest) ·
+        //   install_pack_update 사이드카 `cys pack-update` · smart_app_control_state `reg.exe` — 지점째 지웠다(옮긴 것 0 · 새 스폰 0).
+        ("src-tauri/src/main.rs", 34),
         ("src/app_bundle.rs", 4),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),

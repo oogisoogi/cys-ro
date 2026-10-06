@@ -25,7 +25,7 @@
 //   렌더는 main.ts 가 텍스트 노드·stickyToast 로만 한다(HTML 삽입 없음).
 // ★이 안내는 **표시 전용**이다 — 어떤 명령도 보내지 않는다.
 //
-// ★이 모듈의 불변식(deptprogress.test.ts 가 핀으로 고정 — starvednotice.ts·updatenotice.ts 와 같다):
+// ★이 모듈의 불변식(deptprogress.test.ts 가 핀으로 고정 — starvednotice.ts·updateresult.ts 와 같다):
 //   · 최상위 부수효과 0 — 선언(import/export/const/function/interface/type)만. 브라우저 저장소·문서 객체·창 객체·타이머·IPC 접근 0
 //     (main.js 는 번들 하나라 여기서 평가 중 예외가 나면 앱 전체가 백지가 된다).
 //   · 구형 WKWebView 가 파싱하지 못하는 문법 0 — 정규식 뒤돌아보기·배열 끝 인덱스 접근·뒤에서 찾기·구조 복제·소유 판정 정적 메서드·전체 치환 계열.

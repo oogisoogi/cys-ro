@@ -240,7 +240,7 @@ cp "$DMG" "dist-mac/cysr-${VERSION}-macos-${DIST_ARCH}.dmg"
 # 실패 가시화(2026-07-28): 종전 '>/dev/null || true'는 실패를 완전 무음 처리했다.
 # CI에서는 tauri-action이 latest.json을 생성하므로 이 매니페스트는 미사용(비치명) —
 # 따라서 hard-fail 대신 '보이는 경고'로 표면화한다. 로컬 수동 배포 경로에서만 확인 필요.
-sh scripts/make-update-manifest.sh "$VERSION" idoforgod cys-terminal \
+sh scripts/make-update-manifest.sh "$VERSION" oogisoogi cys-ro \
   || echo "  ⚠ make-update-manifest 실패(비치명 — CI는 tauri-action이 latest.json 생성. 로컬 수동 배포 시에만 조치)" >&2
 echo "✓ 공증 빌드 완료: dist-mac/cysr-${VERSION}-macos-${DIST_ARCH}.dmg"
 echo "  → ad-hoc 재서명·xattr 우회 불필요. gh release 발행은 오너 승인 후."

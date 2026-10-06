@@ -308,6 +308,9 @@ describe("main.ts 소스 핀 — 이벤트·점검 배선(새 setInterval 0 · �
     // (1.1.8 병합) 우리 판 main.ts 는 피드백 2단계 보관함 재시도 타이머(setInterval(() => void invoke("feedback_flush")…) 1곳이 더 있다(우리 cys-feedback-menu) — 10 → 11.
     //   팀원 부팅 안내용 타이머가 아니다(아래 정규식 핀이 그것을 따로 막는다).
     expect(CODE.includes('setInterval(() => void invoke("feedback_flush").catch(() => {}), FEEDBACK_FLUSH_MS);')).toBe(true);
+    // (1.1.8 U4 · 설계 §5-2) 앱 업데이트 6시간 확인 타이머(setInterval(() => updateCheckIfStale(…))를 경로와 함께 지웠다 — 11 → 10.
+    // (1.1.8 U4 2판 · codex 1R ②) 📌18 고정 안내 저율 폴링 setInterval(() => void refreshSeatsBlockedNote(), SEATS_NOTE_POLL_MS) 1곳 — 10 → 11.
+    expect(CODE.includes("setInterval(() => void refreshSeatsBlockedNote(), SEATS_NOTE_POLL_MS);")).toBe(true);
     expect(CODE.split("setInterval(").length - 1).toBe(11);
     // 어디에 있든 setInterval 의 첫 인자가 팀원 부팅 안내 함수면 금지
     expect(/setInterval\([^;]{0,120}(checkDeptFormationNotices|showDeptFormation|noteToastClosedByUser|deptFormation)/.test(CODE)).toBe(false);

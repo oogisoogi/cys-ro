@@ -59,8 +59,8 @@ releases back up gets written down.
    orphan-server accumulation → load explosion → 401/hang at the source.
 3. **Core/UI separation** — the daemon (`cysd`) runs independently of any UI. Even if
    the UI hangs, the socket control channel stays alive (out-of-band recovery).
-4. **Fail-closed signing** — app binaries are signed for the Tauri updater; the pack is
-   signed with minisign (public key pinned in the binary). If verification fails,
+4. **Fail-closed signing** — app releases are signed and the daemon's auto update
+   verifies that signature; the pack is signed with minisign (public key pinned in the binary). If verification fails,
    installation/deployment itself is refused. *Self-sealing invariant* — a signed bundle
    never rewrites its own contents at runtime (3-layer `.pyc` self-generation sealing +
    a post-signing count-reconciliation gate).
@@ -80,11 +80,10 @@ Grab the latest from [Releases](https://github.com/oogisoogi/cys-ro/releases/lat
 Recipients **do not install a daemon separately** — the app boots it and installs the
 pack automatically.
 
-- **macOS**: `cys_<version>_aarch64.dmg` (Apple Silicon). A bundled **"Install cys.app"
-  helper** stages the app hidden, then swaps it into place with a single system call
-  (`renamex_np`), eliminating the race where a Finder drag exposed a half-copied bundle
-  mid-copy. (Use the helper rather than overwriting by drag.)
-- **Windows**: `cys_<version>_x64-setup.exe` — daemon, CLI, and runtime bundled
+- **macOS**: `cysr-macos-arm64-v<version>.zip` (Apple Silicon) · `cysr-macos-x64-v<version>.zip`
+  (Intel) — unzip to get a single `cysr.app` and move it to Applications. The easiest path is
+  the one-line install at [jarvis.godmeyou.kr/get](https://jarvis.godmeyou.kr/get).
+- **Windows**: `cysr_<version>_x64-setup.exe` — daemon, CLI, and runtime bundled
   (self-contained). PE version-resource, manifest, and icon embedding reduce
   SmartScreen/Defender friction, but the build **is still unsigned, so a first-run
   warning can appear**. See
@@ -219,7 +218,7 @@ number re-execution), scored on 10 axes — **wins and losses first**.
 | 5 | Resource control | ✅ ahead | pre-start resource gate · process ledger · group cleanup vs none (relies on container disposal) |
 | 6 | Human-in-the-loop | ✅ ahead | Approval Feed (exit 0/2/3) · kill-switch · denylist boundary vs "do NOT ask for human input" as the spec |
 | 7 | Everyday generality | ✅ ahead | daily operation + 114 skills + departments + offline-local (zero network listeners) vs a single-domain benchmark reproduction requiring Docker + Modal cloud + pinned Harbor (17 days of repo activity) |
-| 8 | Shipping maturity | ✅ ahead | notarization · dual-channel signed auto-update · 6 platform targets · release-gate CI vs no packaging · hardcoded version '0.1.0' · a checksum-less 106MB JAR from Google Drive |
+| 8 | Shipping maturity | ✅ ahead | dual-channel signed auto-update · 6 platform targets · release-gate CI vs no packaging · hardcoded version '0.1.0' · a checksum-less 106MB JAR from Google Drive |
 | 9 | **Measured performance proof** | ❌ **behind** | AgentRadio proved its method on a public benchmark — 124 tasks × 4 configs × 2 model families with statistical testing — **we have no system-level accuracy measurement** (remediation started: JAVIS-BENCH, a pilot on the same task set) |
 | 10 | Ecosystem | ✅ ahead | 86 deterministic tools + 114 skills + heterogeneous CLI adapters **already running in-house** vs 3 primitives (an MCP open-protocol agent-ecosystem ambition exists on their side) |
 
@@ -240,7 +239,7 @@ number re-execution), scored on 10 axes — **wins and losses first**.
 | Code size | ~3,300 lines (Python 2,017 + shell 1,301) | **~169,000 lines** (Rust 63,371 + pack Python 105,833 + more) = **~50 : 1** |
 | Self tests | **0** (no tests or CI for its own harness code) | **~1,700** — Rust `#[test]` 883 (src) · 920 (whole repo) + pack 531 + radio 297 (incl. 23 red-team cases; re-run same-day, all PASS) + 16 UI test files |
 | Communication surface | 3 primitives | 66 CLI subcommands (incl. 17 radio subcommands · a 10-code exit contract) |
-| CI | none (1 visible commit) | 5 lanes + flaky-test gate + notarization regression check |
+| CI | none (1 visible commit) | 5 lanes + flaky-test gate + signature regression check |
 | Benchmark assets | **124 tasks · 1,306 rubrics · contamination canaries · statistical testing** (their strongest suit) | none — JAVIS-BENCH started to close this |
 
 > The 50:1 ratio cuts both ways — evidence of our depth, and of our complexity; their
@@ -295,7 +294,7 @@ side has public benchmark scores (our JAVIS-BENCH is underway). Full evidence: t
 | 3 | Machine-checked "done" | Jarvis rejects an evidence-free "done" by machine. Hermes has checking tools too, but the AI must choose to use them — and its always-on guard describes itself as an advisory that "never blocks completion" |
 | 4 | A review bench from different vendors | Jarvis seats Claude, Gemini and Codex reviewers full-time, wired into pass/fail gates (so they don't share the same blind spots). Hermes has multi-vendor *advice* and delegate-to-other-AI skills — but not a verdict gate |
 | 5 | Agents organizing their own team | The Jarvis master issues tickets, launches workers and checks convergence entirely through tools. Hermes's team topology (verifier/synthesizer) can only be set up by a human at the command line |
-| 6 | Braking before work + signed releases | Jarvis blocks work before it starts if resources fail the check, and refuses to install a release whose signature fails. Hermes has no signing/notarization in CI, and its scripts quietly skip signing when credentials are absent |
+| 6 | Braking before work + signed releases | Jarvis blocks work before it starts if resources fail the check, and refuses to install a release whose signature fails. Hermes has no release signing in CI, and its scripts quietly skip signing when credentials are absent |
 
 ### ❌ Where Hermes is ahead — all of it
 
@@ -340,7 +339,7 @@ evidence: the lane report `자비스-vs-OpenClaw-전수조사-최종보고서-20
 | 1 | Running many AIs as an organization | Jarvis **checks by machine that four seats are alive** — chief of staff, worker, and two reviewers from different vendors — and can clone a whole department. OpenClaw agents spawn children at depth 1 by default, with no master/worker/reviewer roles |
 | 2 | Filtering results before trusting them | Jarvis **machine-rejects an evidence-free "done"**, and reviewers use four closed outcomes (accept/revise/block/escalate) instead of scores, with a counter-argument required before passing. In OpenClaw, verifying a child's result is **one sentence of guidance**, and there is no verifier module |
 | 3 | Security (narrow lead) | Jarvis opens no inbound door, persists risky-command approvals with unforgeable signatures, and has a kill switch plus a pre-flight resource check. OpenClaw's own security engineering is top tier, but in early 2026 it saw **135,000+ instances exposed without a password**, a one-click remote-execution flaw (patched next day), 341→824 malicious skills, and a Chinese government usage restriction |
-| 4 | Release & supply-chain integrity | Jarvis notarizes automatically, signs app and pack separately, and **refuses to install if even one file is missing from the signed manifest**. OpenClaw's dependency hygiene is exemplary, but its open skill marketplace actually shipped malware |
+| 4 | Release & supply-chain integrity | Jarvis signs app and pack separately, and **refuses to install if even one file is missing from the signed manifest**. OpenClaw's dependency hygiene is exemplary, but its open skill marketplace actually shipped malware |
 
 **Even (1) — recovery**: they are stronger at protecting the conversation store; Jarvis is stronger at
 restoring organizational state and at **blocking a convincing but false restore** (claims are
@@ -446,14 +445,11 @@ node's self-approval. Repeated-risk commands are passed by signing once with
 - `cys send --queued` = **followup**: delivered one item per beat once the target has
   been quiet for 3+ seconds.
 
-## Updates — dual channel + zero-downtime
+## Getting new versions — auto update (1.1.8+)
 
-| Badge | Channel | How |
-|---|---|---|
-| `!` | App (binary) | Tauri updater signature verify → session guard → install/restart → pack applied + nodes auto-return |
-| `↻` | Pack (OS) | **Zero-downtime** — minisign verify → atomic transaction → live-node re-injection. No restart; sessions and daemon survive |
+cysr updates itself while it is idle (plugged in, or battery above half). To turn this off, tell Jarvis "turn off auto update". To update right away, paste the one-line install link again.
 
-Checked quietly at startup and every 6 hours. If a "disk has the new version, process is
+The result is shown as one notice line the next time you open the app window. If a "disk has the new version, process is
 the old daemon" skew remains after reinstall, it resolves via a badge-click handover or
 idle auto-handover (when there are 0 live sessions — lossless). Diagnose/repair with
 `cys doctor [--fix]`; self-diagnose the installed build's code-signing seal with
@@ -500,8 +496,8 @@ PTY is daemon-owned — sessions persist across UI restart and app reinstall (re
 - **Attribution (who sent it) is decided by the delivery ledger, not screen strings** —
   self-report and pane text are distrusted, and an attribution claim without ledger
   evidence is treated as void.
-- Dual-signed updates — app via Tauri updater, pack via minisign (public-key binary pin ·
-  replay monotonicity · fail-closed).
+- Dual-signed new versions — app releases are signed and verified by the daemon's auto
+  update; the pack via minisign (public-key binary pin · replay monotonicity · fail-closed).
 - No approval auto-answer (HITL) · self-approval blocked · external URLs are a hard
   allowlist (extendable only via local config).
 - Pre-publish secret/PII gate: `scripts/secret-scan.sh --all` (fail-closed). Invisible-
@@ -530,8 +526,8 @@ Report vulnerabilities per [SECURITY.md](SECURITY.md); details in
 - The **Windows upgrade-atomicity** repair goes as far as code review and model
   verification on a Mac dev machine; real-hardware confirmation is in progress
  .
-- The **macOS build is unsigned** — the installer helper lowers friction, but a first-run
-  warning can still appear, and "half-install vs. quarantine" is disambiguated with
+- The **macOS build is self-signed (no Apple certificate)** — a first-run warning can
+  appear, and "half-install vs. quarantine" is disambiguated with
   `cys doctor app-seal`.
 - **radio** cannot in principle guarantee cross-channel exactly-once or a zero-miss
   window (unresolvable — a managed residual risk).
@@ -539,8 +535,8 @@ Report vulnerabilities per [SECURITY.md](SECURITY.md); details in
 ## Troubleshooting · reset
 
 - macOS **"damaged and can't be opened"** has two causes — ① a half-install (drag-copy
-  race) or ② the quarantine attribute. Disambiguate with `cys doctor app-seal`; prefer
-  the **"Install cys.app" helper** to install.
+  race) or ② the quarantine attribute. Disambiguate with `cys doctor app-seal`; when
+  reinstalling, move the old app to the Trash first instead of overwriting it.
 - For a **full reset** (including Windows WebView2 stored values and leftover department
   isolates), follow [docs/GUIDE-clean-reset-KR.md](docs/GUIDE-clean-reset-KR.md).
 

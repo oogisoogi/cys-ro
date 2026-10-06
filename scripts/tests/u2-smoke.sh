@@ -44,18 +44,30 @@ if kill -0 $p 2>/dev/null; then kill $p; bad "① 부팅 가드 — cysd 가 5�
   if [ $rc -eq 75 ] && grep -q '갱신 복구 대기' "$SB/cysd1.log" && [ ! -e "$SB/state/cys.lock" ] && [ ! -e "$SB/s.sock" ]; then ok "① 부팅 가드 rc 75 · 상태 파일 0"; else bad "① 부팅 가드 rc=$rc $(head -c 200 "$SB/cysd1.log")"; fi
 fi
 python3 - "$UPD" <<'PY' &
-import fcntl,os,sys,time
-fd=os.open(os.path.join(sys.argv[1],"txn.lock"),os.O_RDWR|os.O_CREAT,0o600); os.fchmod(fd,0o600); fcntl.flock(fd,fcntl.LOCK_EX); open(os.path.join(sys.argv[1],".held"),"w").close(); time.sleep(8)
+import fcntl,os,sys,time,json,subprocess
+d=sys.argv[1]
+fd=os.open(os.path.join(d,"txn.lock"),os.O_RDWR|os.O_CREAT,0o600); os.fchmod(fd,0o600); fcntl.flock(fd,fcntl.LOCK_EX); open(os.path.join(d,".held"),"w").close()
+# ★2판 C3: 소유자 기록 없이 잠금만 = 저널 소유자 아님 → 가드 유지 · 그 뒤 저널 토큰·러너 계보·pid 시작 시각이 맞는 기록을 쓴다
+while not os.path.exists(os.path.join(d,".go")): time.sleep(0.05)
+lstart=subprocess.check_output(["ps","-p",str(os.getpid()),"-o","lstart="],env={"LC_ALL":"C","PATH":"/bin:/usr/bin"}).decode().strip()
+st=int(time.mktime(time.strptime(lstart,"%a %b %d %H:%M:%S %Y")))
+o={"owner":"runner","pid":os.getpid(),"txn_id":"0123456789abcdef0123456789abcdef","epoch":1,"started_at":0,"boot_id":0,"start_time":st,"released":False}
+p=os.path.join(d,"txn.owner.json"); open(p,"w").write(json.dumps(o)); os.chmod(p,0o600)
+open(os.path.join(d,".owned"),"w").close(); time.sleep(8)
 PY
 lp=$!
 for _ in $(seq 1 30); do [ -e "$UPD/.held" ] && break; sleep 0.1; done
-iso "$CYSD" >"$SB/cysd2.log" 2>&1 & p=$!
+iso "$CYSD" >"$SB/cysd2.log" 2>&1; rc=$?
+[ $rc -eq 75 ] && ok "① 잠금만 쥠(저널 소유자 기록 없음) = 가드 유지 rc 75(★2판 C3)" || bad "① 소유자 아닌 잠금에 가드 열림 rc=$rc"
+touch "$UPD/.go"
+for _ in $(seq 1 30); do [ -e "$UPD/.owned" ] && break; sleep 0.1; done
+iso "$CYSD" >"$SB/cysd3.log" 2>&1 & p=$!
 sleep 2
-if kill -0 $p 2>/dev/null; then ok "① 살아 있는 잠금 소유자 = 가드 통과(데몬 기동)"; kill $p; wait $p 2>/dev/null; else bad "① 잠금 쥔 러너가 있는데 막힘 $(head -c 200 "$SB/cysd2.log")"; fi
+if kill -0 $p 2>/dev/null; then ok "① 저널 토큰·러너 계보·pid 시작 시각 일치 = 가드 통과(데몬 기동)"; kill $p; wait $p 2>/dev/null; else bad "① 잠금 쥔 러너가 있는데 막힘 $(head -c 200 "$SB/cysd3.log")"; fi
 # ⑤ rotate 잠금 경합(잠금 쥔 채)
 iso "$CYS" rotate --stop-only --skip-drain >"$SB/rot1.log" 2>&1; rc=$?
 [ $rc -eq 26 ] && ok "⑤ rotate --stop-only · 남의 잠금 = rc 26" || bad "⑤ rotate 경합 rc=$rc $(tail -c 200 "$SB/rot1.log")"
-wait $lp 2>/dev/null; rm -f "$UPD/.held"
+wait $lp 2>/dev/null; rm -f "$UPD/.held" "$UPD/.go" "$UPD/.owned"
 iso "$CYS" rotate --stop-only --skip-drain >"$SB/rot2.log" 2>&1; rc=$?
 [ $rc -eq 0 ] && ok "⑤ rotate --stop-only · 잠금 없음·데몬 없음 = 0" || bad "⑤ rotate 단독 rc=$rc $(tail -c 300 "$SB/rot2.log")"
 # ② 손상 저널 → 복구기

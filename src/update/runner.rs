@@ -499,10 +499,25 @@ pub fn boot_guard(dir: &Path) -> Option<String> {
 /// cysd 가 실제로 쓰는 판정: [`boot_guard`] 가 「복구 대기」여도 **트랜잭션 잠금이 지금 잡혀 있으면**(살아 있는 러너·복구기가 이끄는 중 —
 /// S10 의 `rotate --skip-drain` 이 바로 그 데몬을 띄운다) 허용한다. 잠금이 풀린 비종결 저널(죽은 러너) = 막는다(복구기가 먼저).
 /// 저널 손상은 잠금과 무관하게 막는다(재구성 뒤 [`journal::write_reconstructed`] 가 종결 저널을 쓴 다음에만 열린다).
+/// ★2판(codex 1R C3): 「누군가 잠금을 쥠」 만으론 열지 않는다 — 지금 소유자 기록의 `(txn_id, epoch)` = 저널 토큰 · 묘비 아님 · 소유자 =
+/// 러너/복구기 계보(`runner`·`recover`) · 그 pid 의 시작 시각 = 기록값(재사용·사망 아님)일 때만. 토큰 없는 수동 rotate 가 S9 뒤 새 잠금을
+/// 잡고 cysd 를 띄워도 저널 소유자가 아니라 막힌다.
 pub fn boot_blocked(dir: &Path) -> Option<String> {
     let g = boot_guard(dir)?;
     if g.starts_with("recover_pending") && super::lock::is_held(dir) == Some(true) {
-        return None;
+        let j = journal::read(dir);
+        let o = super::lock::read_owner(dir);
+        if let (Some(j), Some(o)) = (j.journal(), o) {
+            let lineage = matches!(o.owner.as_str(), "runner" | "recover");
+            if !o.released
+                && lineage
+                && o.txn_id == j.txn_id
+                && o.epoch == j.epoch
+                && super::lock::pid_start_time(o.pid) == Some(o.start_time)
+            {
+                return None;
+            }
+        }
     }
     Some(g)
 }
@@ -894,8 +909,17 @@ pub(crate) mod tests {
             journal::advance(&d, T, 1, st, |_| {}).unwrap();
         }
         assert!(boot_blocked(&d).unwrap().starts_with("recover_pending"), "잠금 없음(죽은 러너) = 막음");
+        // ★2판 C3: 토큰 없는 수동 rotate 가 새 잠금을 잡음 = 저널 소유자 아님 → 막음
+        let g = crate::update::lock::acquire(&d, "rotate").unwrap();
+        assert!(boot_blocked(&d).is_some(), "저널과 무관한 잠금 = 막음");
+        drop(g);
+        // 러너 계보지만 저널 토큰과 다른 세대 = 막음
         let g = crate::update::lock::acquire(&d, "runner").unwrap();
-        assert!(boot_blocked(&d).is_none(), "살아 있는 러너가 이끄는 중 = 허용");
+        assert!(boot_blocked(&d).is_some(), "토큰 불일치 = 막음");
+        // 복구기 승계(같은 세대) = 허용
+        let t = g.token();
+        journal::takeover(&d, &t.txn_id, t.epoch).unwrap();
+        assert!(boot_blocked(&d).is_none(), "살아 있는 러너/복구기가 같은 세대로 이끄는 중 = 허용");
         drop(g);
         assert!(boot_blocked(&d).is_some());
     }

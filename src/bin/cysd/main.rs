@@ -1115,6 +1115,17 @@ fn scrub_claude_session_env() {
     }
 }
 
+/// ★1.1.8 U2 4판(Fable 3R N4): 데몬은 자동 갱신 트랜잭션 참가자가 아니다 — 위임 env(`CYS_UPDATE_TXN`·`_DEPTH`)가 스폰 경로로 새어
+/// 들어왔으면 지운다(좌석 셸이 물려받으면 그 좌석의 rotate·init-pack·pack-update·pack-plan 이 rc 26 으로 막힌다). 스폰 쪽 env_remove 와 이중.
+fn scrub_update_txn_env() {
+    for k in [cys::update::lock::ENV_TXN, cys::update::lock::ENV_TXN_DEPTH] {
+        if std::env::var_os(k).is_some() {
+            std::env::remove_var(k);
+            eprintln!("[cysd] scrubbed update txn env: {k}");
+        }
+    }
+}
+
 /// cysd 명령줄 판정(순수 · argv[0] 제외).
 #[derive(Debug, PartialEq, Eq)]
 enum CysdCli {
@@ -1198,6 +1209,7 @@ async fn async_main() {
         crate::schedule::FIX_GENERATION
     );
     scrub_claude_session_env();
+    scrub_update_txn_env();
 
     // ★(1R#4 · 2026-09-10) Windows 자식 수명 결박을 **상속**으로 세운다 — 데몬 자신을 프로세스
     //   수명 Job(KILL_ON_JOB_CLOSE)에 넣으면 이후 CreateProcess 되는 모든 자손이 커널 수준에서

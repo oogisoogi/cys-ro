@@ -4575,6 +4575,9 @@ const SEAT_IDENTITY_ENV_KEYS: [&str; 5] = [
     "CYS_DEPT_ROTATE",
 ];
 
+/// ★1.1.8 U2 4판(Fable 3R N4): 자동 갱신 위임 env — 데몬 스폰 전 제거(cys-dept cysd 스폰 지점 · cysd 부팅 scrub 과 같은 목록).
+const TXN_ENV_KEYS: [&str; 2] = [cys::update::lock::ENV_TXN, cys::update::lock::ENV_TXN_DEPTH];
+
 fn spawn_detached_daemon(path: &std::path::Path) -> std::io::Result<()> {
     use cys::SpawnPolicy;
     let build = |breakaway: bool| -> std::io::Result<std::process::Command> {
@@ -4590,6 +4593,10 @@ fn spawn_detached_daemon(path: &std::path::Path) -> std::io::Result<()> {
         //   스케줄 승격 틱과 **같은 목록** — schedule.rs `BUILTIN_COMMAND_MIGRATIONS` P8 항목).
         //   ★(1.1.8 합성) breakaway 재시도(2R codex #8) 두 번째 빌드도 같은 클로저라 같은 목록을 지운다.
         for k in SEAT_IDENTITY_ENV_KEYS {
+            cmd.env_remove(k);
+        }
+        // ★1.1.8 U2 4판(Fable 3R N4): 자동 갱신 위임 env 도 데몬에 물려주지 않는다(데몬 → 좌석 셸 상속 = 좌석의 팩·rotate 명령 rc 26).
+        for k in TXN_ENV_KEYS {
             cmd.env_remove(k);
         }
         cmd.spawn_policy(cys::ChildLifetime::Survivor);
@@ -20953,6 +20960,19 @@ fn rotate_participate(arg: Option<&str>) -> Result<Option<cys::update::lock::Par
     txn_participate("rotate", arg)
 }
 
+/// ★4판(Fable 3R N4): 이 프로세스가 참가자로 받은 (토큰, 자식 깊이) — 위임 자식 Command 에만 붙인다(프로세스 env 무접촉).
+static TXN_CHILD: std::sync::OnceLock<(String, u32)> = std::sync::OnceLock::new();
+
+/// 참가 자식(rotate ④ init-pack 등)에 위임 토큰 env 와 깊이를 붙인다 · 참가하지 않았으면 무동작. 반환 = 붙인 토큰(인자 `--txn` 용).
+fn txn_child_env(cmd: &mut std::process::Command) -> Option<String> {
+    let (tok, depth) = TXN_CHILD.get()?;
+    cmd.env(cys::update::lock::ENV_TXN, tok);
+    if *depth > 0 {
+        cmd.env(cys::update::lock::ENV_TXN_DEPTH, depth.to_string());
+    }
+    Some(tok.clone())
+}
+
 fn txn_participate(owner: &str, arg: Option<&str>) -> Result<Option<cys::update::lock::Participation>, i32> {
     let Ok(dir) = cys::update::buildinfo::state_dir() else { return Ok(None) };
     let env = std::env::var(cys::update::lock::ENV_TXN).ok().filter(|v| !v.is_empty());
@@ -20965,12 +20985,15 @@ fn txn_participate(owner: &str, arg: Option<&str>) -> Result<Option<cys::update:
                 // 공유 참가자 = 토큰 없음(자식도 각자 공유 참가)
                 cys::update::lock::Participation::Participant(_) => return Ok(Some(p)),
             };
-            std::env::set_var(cys::update::lock::ENV_TXN, tok);
-            // ★3판(Fable 2R N1): 위임 받은 이 프로세스가 다시 위임하는 자식(rotate ④ init-pack)은 자식 잠금을 재진입한다
-            if matches!(p, cys::update::lock::Participation::Delegated(_)) {
-                let d = std::env::var(cys::update::lock::ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-                std::env::set_var(cys::update::lock::ENV_TXN_DEPTH, (d + 1).to_string());
-            }
+            // ★4판(Fable 3R N4): 자기 env 에 심지 않는다(set_var = 이 프로세스가 띄우는 데몬·그 좌석 셸까지 상속 → 좌석의 팩·rotate 명령
+            //   rc 26). 위임 자식에게 넘길 토큰·깊이는 기록만 하고, 참가 자식 Command 에만 [`txn_child_env`] 로 붙인다.
+            // ★3판(Fable 2R N1): 위임 받은 이 프로세스가 다시 위임하는 자식(rotate ④ init-pack)은 깊이 +1 로 자식 잠금 재진입
+            let depth = if matches!(p, cys::update::lock::Participation::Delegated(_)) {
+                std::env::var(cys::update::lock::ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) + 1
+            } else {
+                0
+            };
+            let _ = TXN_CHILD.set((tok, depth));
             Ok(Some(p))
         }
         Err(e) => {
@@ -21285,12 +21308,16 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     let _ = std::fs::write(&marker, "");
     // ④ 새 팩 반영
     // ★U2 2판(codex 1R C1): 자식 참가자에는 인자 `--txn` 과 env 를 함께 넘긴다(위임 계약 ⓪ — env 만으론 거부).
-    let txn = std::env::var(cys::update::lock::ENV_TXN).ok().filter(|v| !v.is_empty());
-    let mut ip = vec!["init-pack", "--no-install-hook"];
-    if let Some(t) = txn.as_deref() {
-        ip.extend(["--txn", t]);
-    }
-    if !run(&ip).map(|o| o.status.success()).unwrap_or(false) {
+    // ★4판(Fable 3R N4): 토큰·깊이 env = 이 자식 Command 에만(txn_child_env) — 프로세스 env 에 심지 않는다.
+    let init_ok = {
+        let mut cmd = cys::hidden_command(&exe);
+        cmd.args(["init-pack", "--no-install-hook"]);
+        if let Some(t) = txn_child_env(&mut cmd) {
+            cmd.args(["--txn", &t]);
+        }
+        output_via_file(cmd).map(|o| o.status.success()).unwrap_or(false)
+    };
+    if !init_ok {
         eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
         return ROTATE_RC_PACK;
     }
@@ -45443,6 +45470,15 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
                 "cys-dept 가 '{k}' 를 지우지 않는다 — 그 경로로 신원이 샌다"
             );
         }
+        // ④ ★1.1.8 U2 4판(Fable 3R N4): 자동 갱신 위임 env 도 같은 세 자리에서 지운다 — CLI 스폰 · cys-dept cysd 스폰 지점 전부 ·
+        //    cysd 부팅 scrub — 그리고 참가 CLI 는 자기 env 에 심지 않는다(set_var 0 · 자식 Command 에만).
+        assert!(body.contains("for k in TXN_ENV_KEYS") && TXN_ENV_KEYS == ["CYS_UPDATE_TXN", "CYS_UPDATE_TXN_DEPTH"], "스폰 경로가 위임 env 를 지우지 않는다");
+        assert_eq!(dept.matches("-u CYS_DEPT_ROTATE -u CYS_UPDATE_TXN -u CYS_UPDATE_TXN_DEPTH nohup").count(), 5, "cys-dept cysd 스폰 5지점");
+        assert_eq!(dept.matches("-u CYS_DEPT_ROTATE nohup").count(), 0, "위임 env 를 안 지우는 cysd 스폰 지점");
+        let part = refl_fn_body(src, "txn_participate");
+        assert!(!part.contains("set_var("), "참가 CLI 가 자기 env 에 위임 토큰을 심는다(데몬·좌석 상속)");
+        let cysd_main = include_str!("cysd/main.rs");
+        assert!(cysd_main.contains("scrub_update_txn_env();"), "cysd 부팅 scrub 부재");
         // ③ 음성 대조 — 팩 경로 결정(`CYS_PACK_DIR`)까지 지우면 데몬이 레인을 잃는다(G34).
         assert!(
             !SEAT_IDENTITY_ENV_KEYS.contains(&"CYS_PACK_DIR")

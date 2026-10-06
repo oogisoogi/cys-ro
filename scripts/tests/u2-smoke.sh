@@ -3,7 +3,7 @@
 #   ① cysd 부팅 가드: 비종결 저널(S7) + 잠금 없음 → rc 75(좌석·상태 파일 생성 0) · 같은 저널 + 살아 있는 잠금 → 가드 통과
 #   ② 저널 두 슬롯 손상 + 재구성 불가 → `self-update --recover` rc 2 · state.json seats_blocked · 부팅 가드 유지
 #   ③ `self-update --verify-payload` 매니페스트 없음 → rc 3
-#   ⑥ (★3판 N1) 러너 잠금 아래 실 `rotate --skip-drain --txn` → ④ `init-pack --txn` 중첩 위임 rc 0
+#   ⑥ (★3판 N1) 러너 잠금 아래 실 `rotate --skip-drain --txn` → ④ `init-pack --txn` 중첩 위임 rc 0 · (★4판 N4) 그 데몬 env 에 위임 토큰 0
 #   ④ `self-update --auto --spawn` → (★2판 C18) 복구기 등록 실패 = rc 4 · 정상 = 러너 사본·복구기 plist(격리 폴더)·install_id 생성 · 러너가 떠서(피드 file:// 부재 = 미도달) 끝남
 #   ⑤ `rotate --stop-only --skip-drain`: 다른 소유자가 잠금을 쥐면 rc 26(txn_busy) · 잠금 없으면 0
 # 사용: scripts/tests/u2-smoke.sh   (cargo build --bin cys --bin cysd 뒤 · target/debug 바이너리를 쓴다) · exit 0 = 전건 OK
@@ -112,9 +112,21 @@ env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": f"{sb}/home", "TMPDIR": 
        "CYS_UPDATE_TXN": tok}
 r = subprocess.run([cys, "rotate", "--skip-drain", "--skip-depts", "--txn", tok], env=env, capture_output=True, text=True, timeout=240)
 print("RC", r.returncode); print(r.stderr[-1500:])
-subprocess.run([cys, "daemon", "stop"], env=env, capture_output=True, timeout=30)
+# ★4판(Fable 3R N4): rotate 가 띄운 데몬의 시작 env 에 위임 토큰이 없어야 한다(있으면 그 데몬의 좌석 셸이 상속 → 좌석의 팩·rotate 명령 rc 26).
+#   관측 = 데몬 pid(identify) 의 `ps -E` 시작 env(비-플랫폼 바이너리 = 보임 · 감도 대조는 HANDOFF §4).
+plain = {k: v for k, v in env.items() if not k.startswith("CYS_UPDATE_TXN")}
+idn = subprocess.run([cys, "identify"], env=plain, capture_output=True, text=True, timeout=30)
+try:
+    dpid = json.loads(idn.stdout)["daemon_pid"]
+    penv = subprocess.check_output(["ps", "-E", "-ww", "-o", "command=", "-p", str(dpid)], text=True)
+    print("DAEMON_ENV_TXN", sum(1 for t in penv.split() if t.startswith("CYS_UPDATE_TXN")), "SEEN_SOCKET", int(f"CYS_SOCKET={sb}/s.sock" in penv))
+except Exception as e:
+    print("DAEMON_ENV_TXN ?", e, idn.stdout[:200], idn.stderr[:200])
+subprocess.run([cys, "daemon", "stop"], env=plain, capture_output=True, timeout=30)
 PY
 if grep -q '^RC 0' "$SB/rot6.log" && ! grep -q '④ 새 팩 반영 실패' "$SB/rot6.log"; then ok "⑥ 실 위임 사슬 러너→rotate --txn→init-pack --txn 왕복 rc 0(★3판 N1)"; else bad "⑥ 위임 사슬 $(tail -c 600 "$SB/rot6.log")"; fi
+# SEEN_SOCKET 1 = ps -E 가 그 데몬의 env 를 실제로 읽었다(못 읽어 0 이 나온 것과 구분)
+if grep -q '^DAEMON_ENV_TXN 0 SEEN_SOCKET 1' "$SB/rot6.log"; then ok "⑥ rotate 가 띄운 데몬 env 에 CYS_UPDATE_TXN* 0(★4판 N4)"; else bad "⑥ 데몬 env 위임 토큰 $(grep DAEMON_ENV "$SB/rot6.log")"; fi
 pkill -f "$SB/s.sock" 2>/dev/null; true
 [ -e "$HOME/Library/LaunchAgents/com.cysjavis.cysr-update-recover.plist" ] && bad "실 LaunchAgents 에 plist 생김(격리 위반)" || ok "격리: 실 LaunchAgents 무접촉"
 rm -rf "$SB"

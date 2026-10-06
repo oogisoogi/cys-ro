@@ -6,6 +6,7 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(먼저 읽을 것)
+- ★★★**3판 진행 중(11:3x~ · 후임은 여기부터)** — 지시 = [master#9219ca05](codex 2R = `~/axdev/master/reports/REVIEW-U3-codex-2r.md` · master 가 **머지 기준**(3판 코드)과 **발행 기준**(§1 체크리스트)을 갈랐다) · 항목·순서 = 워커 TODO(`cys todo-path`) 3-A~3-M · 끝나면 §9 「2R 반영표」 · 그 뒤 codex 3R = 마지막.
 - ★★**2판 끝(11:1x · 【확인요청】 2판 · [master#f9d48c3c] 재개 지시분)** — 지시 = [master#f151182e] 10:14:56(codex 1R 판정표 · 원문 `~/axdev/master/reports/REVIEW-U3-codex-1r.md`) · 결정 = [master#8db3b908] 10:04(① /update/* 전용 워커 + R2 · CI 게시 0 ② `vars.CYSR_RELEASE_SEQ` ③ 키 만료 R 2036 · U·F·A2 2028).
   - 1/2 = `ca4c7b6a` · 2/2 = `181fd516`(#3) · `9a2489f3`(#13) · `ea940902`(refresh-feed) · `cc7390e8`(#17) · `bc1ab479`(#1·#18) · `b155da22`(#4 A2) · `62a6f1fa`(update-worker·탐침) · `c11ee1d8`(윈 실기 문안·U5 포인터) · 이 문서.
   - 번호별 처방·커밋·시험 = **§8 1R 반영표**(19행). 남은 것 = 전부 「코드 밖」(U1 머지 · 윈 실기 · U5 · CF 실측 · 키 생성 — §8 잔여 열).

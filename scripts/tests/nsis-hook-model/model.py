@@ -72,10 +72,12 @@ WHAT IS MODELED / NOT MODELED
   not modeled — added after the 1.0.1 pin (1.1.8 U3 · judged invariant-neutral · re-pinned in
              the SAME commit as this note · TICKET=cysr-118-u3-publish):
              * PREINSTALL ⓪-a `cys_txn_*` (auto-update lock token · design AUTO-UPDATE-118 §3-2 📌13′):
-               BEFORE the singleton mutex, if %LOCALAPPDATA%\cys-update\txn.lock is OS-locked the
-               installer proceeds only when /CYSTXN=<txn_id>:<epoch> matches txn.owner.json, else
-               SetErrorLevel 6 + Quit — the same untouched-quit-by-construction class as exit 5 (no
-               file of ours touched yet; reads only the lock/owner files outside $INSTDIR). On a
+               BEFORE the singleton mutex, if %LOCALAPPDATA%\\cys-update\\txn.lock is OS-locked the
+               installer proceeds only when /CYSTXN=<txn_id>:<epoch> is byte-equal to env
+               CYS_UPDATE_TXN and matches txn.owner.json; and /CYSTXN given while the lock is NOT
+               held (stale delegation) also refuses (2판 · codex 1R #13). Refusal = SetErrorLevel 6
+               + Quit — the same untouched-quit-by-construction class as exit 5 (no file of ours
+               touched yet; reads only the lock/owner files outside $INSTDIR and one env var). On a
                match it sets CysTxnDelegated=1 and the singleton's "already exists" branch falls
                through to cys_pre_single — i.e. the modeled machine then runs exactly as the
                single-instance case the model already assumes. Neither branch reads or writes
@@ -143,7 +145,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "119e24adb9aacf240e8cd79fb3dbe8decebcbaffdd081ebb342a1fc624a27157"
+GUARD_PIN = "13452b196980530609c6e435da40c2fac475d806930cc3890c0e56ac2f13a012"
 
 
 def hook_path():

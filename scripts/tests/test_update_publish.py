@@ -907,6 +907,37 @@ class TestSourcePins(unittest.TestCase):
         self.assertIn("SetErrorLevel 6", s)
         self.assertLess(i, j, "⓪-a 는 ⓪ 뮤텍스 앞에 있어야 한다")
 
+    def test_nsis_lock_token_conditions(self):
+        """2판 · codex 1R #13 ⑴~⑷ 소스 핀(실행 증거 아님 — 실행 = 윈 실기 6 시나리오 · docs/update/WIN-NSIS-0A-FIELD.md)."""
+        s = open(os.path.join(ROOT, "src-tauri", "nsis-hooks.nsh"), encoding="utf-8").read()
+        a, b = s.find("!macro NSIS_HOOK_PREINSTALL"), s.find("cys_txn_free:\n")
+        self.assertTrue(0 < a < b)
+        blk = [l.strip() for l in s[a:b].splitlines() if l.strip() and not l.strip().startswith(";")]
+
+        def at(line):
+            self.assertIn(line, blk)
+            return blk.index(line)
+        # ⑴ 잠금 없음(파일 없음 · 비차단 잠금 성공) → cys_txn_notheld → 인자 있으면 refuse
+        at('IfFileExists "$LOCALAPPDATA\\cys-update\\txn.lock" 0 cys_txn_notheld')
+        nh = at("cys_txn_notheld:")
+        self.assertEqual(blk[nh + 1], 'StrCmp $CysTxnArg "1" 0 cys_txn_free')
+        self.assertIn("Goto cys_txn_refuse", blk[nh + 2:nh + 4])
+        jumps_free = [l for l in blk if l.split()[-1:] == ["cys_txn_free"] or l == "Goto cys_txn_free"]
+        self.assertEqual(jumps_free, ['StrCmp $CysTxnArg "1" 0 cys_txn_free'], "잠금 없음 갈래가 인자 검사를 건너뛴다")
+        # ⑵ 인자 = env(대소문자 구분) · 소유자 기록 대조보다 먼저
+        held, env = at("cys_txn_held:"), at('ReadEnvStr $CysTxnTmp "CYS_UPDATE_TXN"')
+        cmp_ = at("StrCmpS $CysTxnTmp $CysTxnTok 0 cys_txn_refuse")
+        owner = next(i for i, l in enumerate(blk) if "txn.owner.json" in l)
+        self.assertTrue(held < env < cmp_ < owner)
+        # ⑷ 위임 켜짐 = cys_txn_ok 한 곳뿐 · ⑴⑵ 뒤
+        self.assertEqual(s.count('StrCpy $CysTxnDelegated "1"'), 1)
+        ok = at("cys_txn_ok:")
+        self.assertIn('StrCpy $CysTxnDelegated "1"', blk[ok + 1:ok + 3])
+        self.assertTrue(cmp_ < ok)
+        self.assertIn('StrCmp $CysTxnDelegated "1" cys_pre_single 0', s)
+        # ⑶ 조상 대조 = 러너 쪽(설계 §3-7 ④ 인용 주석)
+        self.assertIn("설계 §3-7 ④", s[a:b])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

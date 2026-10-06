@@ -586,6 +586,7 @@ Var CysTxnBuf
 Var CysTxnTmp
 Var CysTxnH
 Var CysTxnOv
+Var CysTxnArg
 
 !macro NSIS_HOOK_PREINSTALL
   ; ⓪-a ★자동 갱신 잠금 토큰 (1.1.8 U3 · 설계 AUTO-UPDATE-118 §3-2 📌13′ · §3-7 · ⓪ 뮤텍스보다 먼저).
@@ -595,9 +596,20 @@ Var CysTxnOv
   ;    (= 러너가 위임한 실행). 아니면 exit 6 「자동 갱신 중 · 무접촉」 — 이 시점까지 우리 파일 접촉 0
   ;    이므로 ⓪ 과 같은 이유로 Abort 가 아니라 Quit. 사람 실행이면 1줄 안내(ASCII 규칙 — 위 '컴파일 시점
   ;    계약' · 설계 문안 「자비스가 지금 새 판으로 바꾸는 중이에요. 5분 뒤 다시 실행해 주세요.」의 영어판).
-  ;    · 토큰이 맞으면 CysTxnDelegated=1 → 아래 ⓪ 에서 뮤텍스 「이미 있음」을 러너 보유(S7~S9b 동안
-  ;      러너가 Global\cys-installer 를 쥔다 · 옛 1.1.7 이하 설치기 차단용)의 위임으로 받아들인다.
-  ;    · 잠금이 안 잡혀 있으면(파일 없음 · 비차단 잠금 시도 성공) 종전과 같다(토큰 인자는 무시).
+  ;    위임 조건(설계 §3-2 3조건 · codex 1R #13 — 하나라도 어긋나면 exit 6):
+  ;      ⑴ 잠금 실재 — /CYSTXN 이 있는데 잠금이 안 잡혀 있으면(파일 없음 · 비차단 잠금 시도 성공) exit 6
+  ;         (러너가 끝났거나 죽은 뒤 늦게 뜬 자식 = 낡은 위임 · 정상 설치로 넘어가지 않는다).
+  ;      ⑵ 인자 = env — /CYSTXN 값과 env CYS_UPDATE_TXN 이 바이트로 같아야 한다(러너는 둘 다 같은 값으로 준다 ·
+  ;         대소문자 구분 StrCmpS) + 그 값의 txn_id·epoch 가 소유자 기록과 같아야 한다.
+  ;      ⑶ 조상 pid·생성 시각 = **러너 쪽**에서 끝난다: 설계 §3-7 ④ 「만들어진 프로세스의 이미지를 대조 …
+  ;         전부 일치할 때만 `ResumeThread` · 하나라도 다르면 `TerminateProcess`(실행 0)」 — 러너가 설치기를
+  ;         CREATE_SUSPENDED 로 만들고 이미지·파일 ID 를 대조한 뒤에만 재개하므로, 이 훅이 돈다는 것 자체가
+  ;         「러너가 직접 만든 자식」이다(NSIS 에서 부모 pid 를 다시 재지 않는다 · 사람이 토큰을 베껴 띄운
+  ;         설치기는 ⑵ 의 env 를 갖지 못한다).
+  ;      ⑷ 뮤텍스 수용은 ⑴⑵ 통과 뒤만 — CysTxnDelegated=1 은 cys_txn_ok 한 곳에서만 켜진다 → 아래 ⓪ 에서
+  ;         뮤텍스 「이미 있음」을 러너 보유(S7~S9b 동안 러너가 Global\cys-installer 를 쥔다 · 옛 1.1.7 이하
+  ;         설치기 차단용)의 위임으로 받아들인다. 그 밖(토큰 없음 · 불일치)은 종전대로 exit 5.
+  ;    · /CYSTXN 이 없고 잠금도 없으면 종전과 같다.
   ;    · 판정 불가(잠금 파일을 못 엶)는 「잡혀 있음」 쪽으로 읽는다(fail-closed — 갱신 중일 수 있는데
   ;      사람 설치기가 끼어드는 것이 더 나쁘다 · 대가 = 그동안 수동 설치도 exit 6).
   ;    · 조상 pid 대조(위임 ③)는 NSIS 에서 하지 않는다 — 러너가 설치기를 CREATE_SUSPENDED 로 띄워
@@ -605,7 +617,17 @@ Var CysTxnOv
   ;    · 소유자 기록은 serde 들여쓰기 JSON — 공백·줄바꿈을 걷어 낸 뒤 '"txn_id":"<id>"' 와
   ;      '"epoch":<n>,' 또는 '"epoch":<n>}' 를 대소문자 구분(WordFindS)으로 찾는다.
   StrCpy $CysTxnDelegated "0"
-  IfFileExists "$LOCALAPPDATA\cys-update\txn.lock" 0 cys_txn_free
+  StrCpy $CysTxnArg "0"
+  ${GetParameters} $CysTxnTok
+  ClearErrors
+  ${GetOptions} $CysTxnTok "/CYSTXN=" $CysTxnTok
+  IfErrors cys_txn_noarg 0
+  StrCpy $CysTxnArg "1"
+  Goto cys_txn_probe
+cys_txn_noarg:
+  StrCpy $CysTxnTok ""
+cys_txn_probe:
+  IfFileExists "$LOCALAPPDATA\cys-update\txn.lock" 0 cys_txn_notheld
   System::Call 'kernel32::CreateFileW(w "$LOCALAPPDATA\cys-update\txn.lock", i 0xC0000000, i 7, p 0, i 3, i 0x80, p 0) p .s'
   Pop $CysTxnH
   IntPtrCmp $CysTxnH -1 cys_txn_held 0 0
@@ -618,16 +640,15 @@ Var CysTxnOv
   Pop $CysTxnTmp
   System::Call 'kernel32::CloseHandle(p $CysTxnH)'
   System::Free $CysTxnOv
-  Goto cys_txn_free
+  Goto cys_txn_notheld
 cys_txn_locked:
   System::Call 'kernel32::CloseHandle(p $CysTxnH)'
   System::Free $CysTxnOv
 cys_txn_held:
-  ${GetParameters} $CysTxnTok
-  ClearErrors
-  ${GetOptions} $CysTxnTok "/CYSTXN=" $CysTxnTok
-  IfErrors cys_txn_refuse
+  StrCmp $CysTxnArg "1" 0 cys_txn_refuse
   StrCmp $CysTxnTok "" cys_txn_refuse
+  ReadEnvStr $CysTxnTmp "CYS_UPDATE_TXN"
+  StrCmpS $CysTxnTmp $CysTxnTok 0 cys_txn_refuse
   ClearErrors
   FileOpen $CysTxnH "$LOCALAPPDATA\cys-update\txn.owner.json" r
   IfErrors cys_txn_refuse
@@ -665,6 +686,10 @@ cys_txn_refuse:
 cys_txn_quit:
   SetErrorLevel 6
   Quit
+cys_txn_notheld:
+  StrCmp $CysTxnArg "1" 0 cys_txn_free
+  DetailPrint "cys: /CYSTXN given but no auto-update lock is held (stale delegation)"
+  Goto cys_txn_refuse
 cys_txn_ok:
   DetailPrint "cys: delegated by the auto-update runner (txn token matched)"
   StrCpy $CysTxnDelegated "1"

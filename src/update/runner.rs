@@ -359,11 +359,17 @@ impl<'a, O: Ops> Runner<'a, O> {
     }
 
     /// 복구기(§3-11) — 저널 마지막 상태 + 실물로 앞으로 마치거나 되돌린다. 저널이 없거나 종결이면 [`Outcome::Nothing`].
-    /// 잠금은 호출자가 쥐었다(죽은 소유자의 txn_id 를 이어받는다 — `epoch` 는 저널 값을 쓴다: 옛 토큰 늦은 쓰기 차단은 잠금이 맡는다).
+    /// 잠금은 호출자가 쥐었다. ★2판(codex 1R C2): 인수 규칙 하나 = **새 잠금 세대**. 비종결 저널의 토큰을 호출자 토큰으로
+    /// [`journal::takeover`] 한 뒤 진행한다 — 잠금 소유자·저널·데몬 RPC·자식 토큰이 같은 `(txn_id, epoch)` 가 된다(옛 소유자 = Fenced).
     pub fn recover(&mut self) -> Outcome {
-        let read = journal::read(&self.dir);
+        let mut read = journal::read(&self.dir);
         let rec = journal::recovery_for(&read, self.ops.os());
-        if let Some(j) = read.journal() {
+        if matches!(&read, ReadOutcome::Ok(j) if !j.state.is_terminal()) && !super::mutant("U2-TAKEOVER") {
+            match journal::takeover(&self.dir, &self.txn_id, self.epoch) {
+                Ok(j) => read = ReadOutcome::Ok(j),
+                Err(e) => return Outcome::JournalRefused(format!("takeover: {e:?}")),
+            }
+        } else if let Some(j) = read.journal() {
             self.txn_id = j.txn_id.clone();
             self.epoch = j.epoch;
         }
@@ -698,8 +704,10 @@ pub(crate) mod tests {
         r.soft_kill = true;
         r.run()
     }
+    /// 복구기 = 새 잠금 세대(★2판 C2 — 실제 `recover_if_needed` 처럼 죽은 러너와 다른 토큰).
+    const T2: &str = "fedcba9876543210fedcba9876543210";
     fn recover(d: &Path, sim: &mut Sim) -> Outcome {
-        let mut r = Runner::new(d, T, 1, sim);
+        let mut r = Runner::new(d, T2, 2, sim);
         r.fault = Fault::default();
         r.soft_kill = true;
         r.recover()
@@ -814,8 +822,14 @@ pub(crate) mod tests {
                         let o = run(&d, &mut s, Fault::parse(&spec));
                         assert_eq!(o, Outcome::Killed(*st, after), "{tag}");
                         // 죽은 뒤 = 정비 모드·데몬 상태 그대로(실물) → 복구기
+                        let was_open = journal::read(&d).journal().map(|j| !j.state.is_terminal()).unwrap_or(false);
                         let o2 = recover(&d, &mut s);
                         let fin = journal::read(&d).journal().map(|j| j.state);
+                        if was_open {
+                            // ★2판 C2: 저널 = 복구기 세대 · 죽은 러너의 옛 토큰 늦은 쓰기 = Fenced
+                            let jj = journal::read(&d).journal().cloned().unwrap();
+                            assert_eq!((jj.txn_id.as_str(), jj.epoch), (T2, 2), "{tag}: 세대 승계");
+                        }
                         assert!(fin.map(|f| f.is_terminal()).unwrap_or(true), "{tag}: 종결 아님 {fin:?} {o2:?}");
                         assert!(boot_guard(&d).is_none(), "{tag}: 부팅 가드 남음");
                         assert!(!s.quiesced, "{tag}: 정비 모드 안 풀림");
@@ -837,6 +851,20 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(cells, 2 * (15 + 5) * 2 - 2, "행렬 칸 수");
+    }
+
+    /// ★2판 C2: 세대 승계 = 저널 토큰 원자 교체 → 죽은 러너(옛 토큰)의 늦은 전이는 Fenced · 같은 토큰 재승계 = 무변경.
+    #[test]
+    fn takeover_fences_old_owner_late_write() {
+        let d = tmp("takeover");
+        let mut s = Sim::new(Os::Mac);
+        assert_eq!(run(&d, &mut s, Fault::parse("kill@S9_SWAPPED:after")), Outcome::Killed(State::Swapped, true));
+        let g0 = journal::read(&d).journal().unwrap().generation;
+        let j = journal::takeover(&d, T2, 2).unwrap();
+        assert_eq!((j.state, j.txn_id.as_str(), j.epoch, j.generation), (State::Swapped, T2, 2, g0 + 1));
+        assert!(matches!(journal::advance(&d, T, 1, State::PayloadOk, |_| {}), Err(journal::AdvanceErr::Fenced)), "옛 토큰 늦은 쓰기");
+        assert_eq!(journal::takeover(&d, T2, 2).unwrap().generation, g0 + 1, "같은 세대 = 무변경");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

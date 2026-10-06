@@ -363,17 +363,39 @@ pub fn advance(dir: &Path, txn_id: &str, epoch: u64, to: State, update: impl FnO
     update(&mut next);
     next.txn_id = txn_id.to_string();
     next.epoch = epoch;
+    commit_next(dir, cur.as_ref(), next)
+}
+
+/// ★2판(codex 1R C2 · 복구 토큰 세대 승계): 복구기가 새로 잡은 잠금의 `(txn_id, epoch)` 로 **비종결 저널의 토큰을 원자 교체**한다(상태·
+/// 칸 그대로 · generation +1). 이 뒤 저널 전이·데몬 RPC(`update.release`)·자식 위임이 모두 같은 새 세대를 쓴다 — 옛 소유자의 늦은
+/// 쓰기는 txn_id 가 달라 [`advance`] 가 거부한다(Fenced). 잠금은 호출자가 쥐었다. 종결·같은 토큰 = 무변경.
+pub fn takeover(dir: &Path, txn_id: &str, epoch: u64) -> Result<Journal, AdvanceErr> {
+    let cur = match read(dir) {
+        ReadOutcome::Corrupt(e) | ReadOutcome::Degraded(_, e) => return Err(AdvanceErr::Corrupt(e)),
+        ReadOutcome::Absent => return Err(AdvanceErr::Illegal { from: None, to: Locked }),
+        ReadOutcome::Ok(j) => j,
+    };
+    if cur.state.is_terminal() || (cur.txn_id == txn_id && cur.epoch == epoch) {
+        return Ok(cur);
+    }
+    let mut next = cur.clone();
+    next.txn_id = txn_id.to_string();
+    next.epoch = epoch;
+    commit_next(dir, Some(&cur), next)
+}
+
+fn commit_next(dir: &Path, cur: Option<&Journal>, mut next: Journal) -> Result<Journal, AdvanceErr> {
     let s = super::clock::now_stamp();
     next.boot_id = s.boot_id;
     next.mono_at_write = s.mono_ms;
     next.wall_at_write = s.wall;
-    next.generation = cur.as_ref().map(|c| c.generation + 1).unwrap_or(1);
+    next.generation = cur.map(|c| c.generation + 1).unwrap_or(1);
     let next = next.sealed();
     super::ensure_private_dir(dir).map_err(AdvanceErr::Io)?;
     // ★1R B7: 최신본 슬롯은 **절대 덮지 않는다** — 새 generation 은 다른 슬롯(더 낡은 쪽·빈 쪽)에 원자 쓰기(+ 폴더 fsync).
     //   끊기면 최신본은 그대로 남고, 새 슬롯은 옛 내용 그대로다(rename 원자).
     let target = match slot(&dir.join(JOURNAL_FILE)) {
-        Some(Ok(a)) if Some(a.generation) == cur.as_ref().map(|c| c.generation) => JOURNAL_PREV_FILE,
+        Some(Ok(a)) if Some(a.generation) == cur.map(|c| c.generation) => JOURNAL_PREV_FILE,
         _ => JOURNAL_FILE,
     };
     let b = serde_json::to_vec_pretty(&next).map_err(|e| AdvanceErr::Io(e.to_string()))?;

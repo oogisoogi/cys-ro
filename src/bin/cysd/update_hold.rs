@@ -88,11 +88,29 @@ fn token(daemon: &Arc<Daemon>, txn_id: &str, gen: u64) -> quiesce::Token {
     quiesce::Token { txn_id: txn_id.to_string(), gen, hold_seq, seats }
 }
 
+/// ★2판(codex 1R C2 · 세대 승계): 지금 잠금 소유자로 검증된 토큰이 옛 세대의 정비 세션을 만나면 세션을 그 세대로 넘겨받는다
+/// (복구기 = 죽은 러너의 세션을 `update.release` 로 풀 수 있게 — 최대 TTL 까지 남지 않음). 잠금 소유자는 언제나 하나라 옛 세션의
+/// 주인은 이미 죽었다. 세션 파일도 같은 세대로 고친다(gen·from_hold_seq 그대로).
+fn adopt_session(dir: &std::path::Path, tok: &cys::update::lock::Token) {
+    let mut g = QUIESCE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(q) = g.as_mut() else { return };
+    if q.txn_id == tok.txn_id && q.epoch == tok.epoch {
+        return;
+    }
+    q.txn_id = tok.txn_id.clone();
+    q.epoch = tok.epoch;
+    if let Some(mut s) = quiesce::read_json::<quiesce::Session>(dir, quiesce::SESSION_FILE) {
+        s.txn_id = tok.txn_id.clone();
+        let _ = quiesce::write_json(dir, quiesce::SESSION_FILE, &s);
+    }
+}
+
 /// `update.*` RPC. Err = (code, message).
 pub fn rpc(daemon: &Arc<Daemon>, method: &str, params: &Value) -> Result<Value, (&'static str, String)> {
     let dir = update_dir().ok_or(("update_state_dir", "갱신 상태 폴더 판독 불가".to_string()))?;
     let txn = params.get("txn").and_then(Value::as_str).unwrap_or_default();
     let tok = quiesce::verify_owner_token(&dir, txn).map_err(|e| ("txn_busy", e))?;
+    adopt_session(&dir, &tok);
     match method {
         "update.quiesce" => {
             let ttl = params.get("ttl_secs").and_then(Value::as_u64).unwrap_or(quiesce::DEFAULT_TTL_SECS).clamp(60, 3600);
@@ -279,6 +297,9 @@ impl Drop for HoldMark {
 
 /// 재생 ② 주입 직전 훅(deliver_head_locked 머리). None = 이번엔 주입하지 않는다(원장상 이미 주입했거나 애매 → 큐에서 빼고 보낸 쪽
 /// 통지 · 최대 한 번) · Some(표지) = 진행.
+/// ★2판(codex 1R C4): 여기서는 `delivering` 을 **쓰지 않는다** — 연속 보류 항목 전부를 선기록하면 선기록 직후 죽을 때 아직 고르지도
+/// 주입하지도 않은 뒤 항목까지 재기동 후 `unconfirmed` 로 버려진다. 여기선 이미 표지된 항목(앞 생애의 delivering/delivered)만
+/// 연속 보류 구간 **전체**에서 걸러 내고, 실제로 실릴 항목(`merged_ids`)이 정해진 뒤 [`HoldMark::mark_delivering`] 이 그것만 기록한다.
 pub fn before_inject(daemon: &Arc<Daemon>, s: &Arc<Surface>) -> Option<HoldMark> {
     let heads: Vec<String> = s
         .pending_queue
@@ -294,43 +315,47 @@ pub fn before_inject(daemon: &Arc<Daemon>, s: &Arc<Surface>) -> Option<HoldMark>
     let dir = update_dir()?;
     let _io = IO.lock().unwrap_or_else(|e| e.into_inner());
     let marks = quiesce::ledger_marks(&dir).ok()?; // 원장 판독 불가 = 애매 → 주입 안 함
-    let head = heads[0].clone();
-    let mark = marks.get(&head).copied();
-    if !quiesce::may_inject(mark) {
-        // 이미 delivering/delivered — 다시 보내지 않는다
-        {
-            let mut q = s.pending_queue.lock().unwrap();
-            if q.front().map(|e| e.id == head).unwrap_or(false) {
-                q.pop_front();
-            }
-        }
-        if mark == Some(quiesce::Mark::Delivering) {
-            let _ = quiesce::ledger_append(&dir, &head, quiesce::Mark::Unconfirmed);
+    let stale: Vec<(String, Option<quiesce::Mark>)> =
+        heads.iter().filter(|id| !quiesce::may_inject(marks.get(*id).copied())).map(|id| (id.clone(), marks.get(id).copied())).collect();
+    if stale.is_empty() {
+        return Some(HoldMark { ids: vec![], done: false });
+    }
+    // 이미 delivering/delivered — 다시 보내지 않는다(큐에서 빼고 · delivering 이면 unconfirmed + 보낸 쪽 통지)
+    s.pending_queue.lock().unwrap().retain(|e| !stale.iter().any(|(id, _)| *id == e.id));
+    for (id, mark) in &stale {
+        if *mark == Some(quiesce::Mark::Delivering) {
+            let _ = quiesce::ledger_append(&dir, id, quiesce::Mark::Unconfirmed);
             daemon.bus.publish(
                 "update.hold_unconfirmed",
                 "update",
                 Some(s.id),
-                json!({"queue_entry_id": head, "hint": "갱신 중 보류된 입력 1건의 배달 여부를 확인할 수 없어 다시 보내지 않았습니다 — 필요하면 다시 보내 주세요"}),
+                json!({"queue_entry_id": id, "hint": "갱신 중 보류된 입력 1건의 배달 여부를 확인할 수 없어 다시 보내지 않았습니다 — 필요하면 다시 보내 주세요"}),
             );
         }
-        drop(_io);
-        daemon.persist_queue_state();
-        return None;
     }
-    let mut ids = Vec::new();
-    for id in heads {
-        if !quiesce::may_inject(marks.get(&id).copied()) {
-            break;
+    drop(_io);
+    daemon.persist_queue_state();
+    None
+}
+
+impl HoldMark {
+    /// ★2판 C4: 실제로 실릴 보류 항목(`hold_ids` = 병합이 고른 것 중 보류 출처)만 주입 직전에 durable `delivering` 으로 기록한다.
+    /// 거짓 = 이번 주입 안 함(원장 판독·기록 실패 · 그사이 다른 경로가 표지함) — 이미 쓴 표지는 drop 이 `aborted` 로 닫는다.
+    pub fn mark_delivering(&mut self, hold_ids: &[String]) -> bool {
+        if hold_ids.is_empty() {
+            return true;
         }
-        if quiesce::ledger_append(&dir, &id, quiesce::Mark::Delivering).is_err() {
-            break;
+        let Some(dir) = update_dir() else { return false };
+        let _io = IO.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(marks) = quiesce::ledger_marks(&dir) else { return false };
+        for id in hold_ids {
+            if !quiesce::may_inject(marks.get(id).copied()) || quiesce::ledger_append(&dir, id, quiesce::Mark::Delivering).is_err() {
+                return false;
+            }
+            self.ids.push(id.clone());
         }
-        ids.push(id);
+        true
     }
-    if ids.is_empty() {
-        return None;
-    }
-    Some(HoldMark { ids, done: false })
 }
 
 #[cfg(test)]
@@ -365,6 +390,7 @@ mod tests {
             // 정비 모드 중 = 보류(ACK 뒤 내구)
             let r = divert(&s, "send", "안녕").unwrap().unwrap();
             assert_eq!((r["held"].as_bool(), r["hold_seq"].as_u64()), (Some(true), Some(1)));
+            assert_eq!(divert(&s, "send", "둘").unwrap().unwrap()["hold_seq"].as_u64(), Some(2));
             assert!(s.pending_queue.lock().unwrap().is_empty(), "보류 중 배달 0");
             tick(&daemon);
             assert!(s.pending_queue.lock().unwrap().is_empty(), "정비 모드 중 재생 0");
@@ -373,14 +399,46 @@ mod tests {
             tick(&daemon);
             tick(&daemon); // 두 번 돌려도 한 번만
             let q: Vec<_> = s.pending_queue.lock().unwrap().iter().map(|e| (e.id.clone(), e.text.clone(), e.origin.clone())).collect();
-            assert_eq!(q.len(), 1, "{q:?}");
+            assert_eq!(q.len(), 2, "{q:?}");
             assert!(q[0].0.starts_with("hold:") && q[0].1 == "안녕" && q[0].2 == quiesce::ORIGIN);
-            // 주입 직전 훅 = delivering · 같은 머리가 재기동 뒤 다시 오면 재주입 0
-            let m = before_inject(&daemon, &s).expect("진행");
+            // 주입 직전 훅: before_inject 는 아무것도 선기록하지 않는다 → 실제로 실린 항목(병합이 첫 건만 골랐다고 치자)만 delivering
+            let mut m = before_inject(&daemon, &s).expect("진행");
+            assert!(quiesce::ledger_marks(dir).unwrap().is_empty(), "★2판 C4: 고르기 전 선기록 0");
+            assert!(m.mark_delivering(&[q[0].0.clone()]));
             std::mem::forget(m); // 주입 도중 죽음(표지 delivering 만 남음)
             assert!(before_inject(&daemon, &s).is_none(), "delivering 남은 항목 = 다시 안 보냄");
-            assert!(s.pending_queue.lock().unwrap().is_empty());
+            let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.id.clone()).collect();
+            assert_eq!(left, vec![q[1].0.clone()], "★2판 C4: 고르지 않은 둘째 건은 unconfirmed 로 버려지지 않는다");
+            let mut m2 = before_inject(&daemon, &s).expect("둘째 건 = 주입 가능");
+            assert!(m2.mark_delivering(&[q[1].0.clone()]));
+            m2.delivered(&[q[1].0.clone()]);
             drop(g);
+            let _ = daemon;
+        });
+        *QUIESCE.lock().unwrap() = None;
+    }
+
+    /// ★2판 C2: 러너(세대 1)가 정비 세션을 연 채 죽음 → 복구기가 새 잠금(세대 2)을 잡고 그 토큰으로 `update.release` = 세션이 풀린다
+    /// (최대 TTL 까지 남지 않음) · 세션 파일도 새 세대. 옛 토큰은 소유자가 아니라 거부.
+    #[test]
+    fn recovery_generation_adopts_and_releases_dead_runner_session() {
+        with_dir("adopt", |dir| {
+            let sock = dir.join("d");
+            std::fs::create_dir_all(&sock).unwrap();
+            let daemon = Daemon::new(sock.join("cysd.sock"));
+            let g1 = cys::update::lock::acquire(dir, "runner").unwrap();
+            let t1 = g1.token().render();
+            rpc(&daemon, "update.quiesce", &json!({"txn": t1, "ttl_secs": 600})).unwrap();
+            assert!(quiesced());
+            drop(g1); // 러너 죽음
+            let g2 = cys::update::lock::acquire(dir, "recover").unwrap();
+            let t2 = g2.token();
+            assert_eq!(rpc(&daemon, "update.release", &json!({"txn": t1})).unwrap_err().0, "txn_busy", "옛 세대 거부");
+            assert_eq!(rpc(&daemon, "update.release", &json!({"txn": t2.render()})).unwrap()["released"], true);
+            assert!(!quiesced());
+            let sess: quiesce::Session = quiesce::read_json(dir, quiesce::SESSION_FILE).unwrap();
+            assert_eq!(sess.txn_id, t2.txn_id);
+            drop(g2);
             let _ = daemon;
         });
         *QUIESCE.lock().unwrap() = None;

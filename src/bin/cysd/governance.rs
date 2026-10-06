@@ -10181,7 +10181,7 @@ pub(crate) fn deliver_head_locked(
     if crate::update_hold::quiesced() {
         return None;
     }
-    let hold_mark = crate::update_hold::before_inject(daemon, s)?;
+    let mut hold_mark = crate::update_hold::before_inject(daemon, s)?;
     let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
     let head_id = |s: &Arc<crate::state::Surface>| s.pending_queue.lock().unwrap().front().map(|e| e.id.clone());
     let head_before = head_id(s);
@@ -10304,6 +10304,12 @@ pub(crate) fn deliver_head_locked(
         //   같은 차수라 pending_queue·input_gate 락 보유 시간의 차수가 바뀌지 않는다. 표지 없는 본문은 복사 0.
         let body = cys::paste_fence::sanitize_owned(render_queue_digest(entry.from.as_deref(), &texts));
         let merged_ids: Vec<String> = merged.iter().map(|e| e.id.clone()).collect();
+        // ★1.1.8 U2 2판(codex 1R C4): 실제로 실리는 보류 재생 항목만 지금(원장 선기록 앞 · 주입 전) durable `delivering`.
+        let hold_ids: Vec<String> =
+            merged.iter().filter(|e| e.origin == cys::update::quiesce::ORIGIN).map(|e| e.id.clone()).collect();
+        if !hold_mark.mark_delivering(&hold_ids) {
+            break 'tx None;
+        }
         // ★B1(0.14.30): 큐 배달만 아는 사실을 원장에 동봉한다 — 원장 한 파일로 전수 지연을
         //   계산할 수 있어야 한다(queue-starvation-case.md §4-ⓓ: enqueue 시각 부재 때문에
         //   그 문서의 표본이 155건 중 18건에 그쳤다).

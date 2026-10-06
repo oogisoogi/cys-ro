@@ -55,8 +55,8 @@
 
 ### 2.1 macOS (Apple Silicon)
 
-1. `cys_<버전>_aarch64.dmg`를 열고 `cys.app`을 Applications로 드래그.
-2. 첫 실행에서 Gatekeeper 경고가 뜨면: 공증된 빌드는 그대로 열리고, 아니면 우클릭 → "열기".
+1. 가장 쉬운 길은 위 설치 사이트의 링크 한 줄입니다. 파일로 받으실 때는 `cysr-macos-arm64-v<버전>.zip`(인텔 맥 = `cysr-macos-x64-v<버전>.zip`)을 풀어 나온 `cysr.app`을 Applications로 옮깁니다.
+2. 자체서명 빌드(애플 인증서 없음)라 첫 실행에서 Gatekeeper 경고가 뜰 수 있습니다 — 우클릭 → "열기".
 3. 앱이 데몬(cysd)을 자동 기동하고 launchd에 등록합니다(재부팅 후에도 유지).
 
 ### 2.1a macOS — 폴더 접근이 막혔을 때 (v0.14.41)
@@ -80,7 +80,7 @@ macOS 는 데스크탑·문서·다운로드 같은 폴더를 앱마다 따로 �
 
 ### 2.2 Windows (x64)
 
-1. `cys_<버전>_x64-setup.exe`(NSIS) 실행 — **자기완결 설치**: 데몬·CLI·런타임(Git Bash·
+1. `cysr_<버전>_x64-setup.exe`(NSIS) 실행 — **자기완결 설치**: 데몬·CLI·런타임(Git Bash·
    Python·Node)이 동봉되어 별도 준비물이 없습니다 — **단 예외 하나, AI 노드 CLI
    `claude`(Claude Code)는 동봉되지 않습니다**. PowerShell 에서
    `irm https://claude.ai/install.ps1 | iex` 1줄로 설치하세요(**git·node 불요** — 네이티브
@@ -1984,7 +1984,7 @@ v0.14.43 가산분(`control.hw` 응답의 `npu` 객체 · NPU 전력 읽기 — 
 
 | 증상 | 조치 |
 |---|---|
-| macOS "손상되었기 때문에 열 수 없습니다" | **원인 두 가지 — ①반쪽 설치(덮어쓰기로 설치) ②quarantine/미공증.** ①이 훨씬 흔하다: 기존 `cys.app`을 **먼저 휴지통으로 옮긴 뒤** DMG에서 새로 드래그(덮어쓰기 금지 — 일부 파일만 막혀 세대 혼합 번들이 남는다). ②는 `xattr -d com.apple.quarantine /Applications/cys.app`. 원인 판별은 `cys doctor`(app-seal 항목)·`codesign --verify --strict /Applications/cys.app`. 전체 절차: `docs/INSTALL.md` → "손상되었기 때문에 열 수 없습니다" 해결 |
+| macOS "손상되었기 때문에 열 수 없습니다" | **원인 두 가지 — ①반쪽 설치(덮어쓰기로 설치) ②quarantine(자체서명 빌드).** ①이 훨씬 흔하다: 기존 `cys.app`을 **먼저 휴지통으로 옮긴 뒤** 받은 zip 을 풀어 나온 앱을 새로 옮기기(덮어쓰기 금지 — 일부 파일만 막혀 세대 혼합 번들이 남는다). ②는 `xattr -d com.apple.quarantine /Applications/cys.app`. 원인 판별은 `cys doctor`(app-seal 항목)·`codesign --verify --strict /Applications/cys.app`. 전체 절차: `docs/INSTALL.md` → "손상되었기 때문에 열 수 없습니다" 해결 |
 | 앱이 *"설치본이 온전하지 않습니다 — 재설치 필요"* 안내를 띄움 | 기동 자기점검이 **빠진 구성요소를 이름으로** 찾아낸 것이다(반쪽 설치). 안내에 적힌 파일을 보고 위와 같은 절차로 **통째 재설치**한다. 번들 안 파일만 채워 넣는 부분 수리는 통하지 않는다(macOS 보호에 막히고, 막혀도 서명 봉인이 깨진 채 남는다). 설정·대화기록(`~/.cys`)은 번들 밖이라 보존된다 |
 | `cys ping` 실패 | 앱 실행(데몬 자동 기동) 또는 `cysd` 직접 기동. `cys doctor --fix` |
 | 연습 흔적(부서·세션·기억)이 자꾸 살아나 충돌 | topbar **완전 초기화** 버튼 또는 `cys factory-reset` — 사용 흔적 전부를 격리 보관하고 설치 초기 상태로(§11 "완전 초기화" 참조·격리 폴더 manifest.json으로 복구). 미리보기는 `cys factory-reset --plan`(쓰기 0). CLI 실행 전 앱 종료 필요 |

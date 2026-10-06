@@ -4,7 +4,7 @@
 > 구성되며, **받는 사람은 데몬을 따로 설치할 필요가 없습니다** — 앱·CLI가 자동으로 기동합니다.
 
 > **이 문서는 두 종류의 독자를 위해 명시 분리되어 있습니다.**
-> - 🧑 **[HUMAN]** 표시 = **사람이 직접** 해야 하는 단계(DMG 더블클릭·Gatekeeper·`sudo`). 에이전트는 자율 실행하지 말고 사람에게 위임합니다.
+> - 🧑 **[HUMAN]** 표시 = **사람이 직접** 해야 하는 단계(ZIP 풀기·Gatekeeper·`sudo`). 에이전트는 자율 실행하지 말고 사람에게 위임합니다.
 > - 🤖 **[AGENT]** 표시 = 에이전트(워커)가 부트 시 **결정론으로 따르는** 실행 스텝(`cys boot`/`launch-agent` 등).
 > - 🚧 **[BOUNDARY]** 표시 = 설치 중 **무조건 정지·오너 보고** 대상인 위험 명령(아래 "설치 경계" 섹션 참조).
 >
@@ -20,7 +20,7 @@
    (보존 모드 — 기존 파일은 덮어쓰지 않음).
 3. **pane 내 PATH 주입** — 데몬이 만드는 모든 pane의 `PATH` 선두에 `cys` 바이너리 폴더가 들어가,
    pane 안의 AI가 `cys identify`를 바로 쓸 수 있습니다(심링크 수동 생성 불요).
-4. **오프라인 자기완결 pack** — DMG의 `cys.app` 안에는 ⓐ `cys`/`cysd` 바이너리에 pack 전 트리가
+4. **오프라인 자기완결 pack** — 배포 zip 의 앱 번들 안에는 ⓐ `cys`/`cysd` 바이너리에 pack 전 트리가
    임베드되고, ⓑ 빌드 시(`bundle-prep.sh`) 동일성·콘텐츠 스캔 게이트를 통과한 **단일 `pack.tar.gz`
    (+`pack-manifest.json`)** 가 `Contents/Resources/` 에 동봉됩니다. 따라서 네트워크 없이도 첫 기동에
    pack을 설치할 수 있고(자기완결), 동봉본은 가시적이라 검수·핫스왑이 가능합니다. 동봉 대상은 raw
@@ -41,14 +41,14 @@
 | INST-DENY-01 | `cys daemon install --takeover` | **가동 중인 세션이 소멸**합니다(비가역 — 아래 "C. 상시 가동" line 참조). | 자율 실행 금지 → 정지·오너 보고 |
 | INST-DENY-02 | `sudo ln -sf …` (심링크 덮어쓰기) | `sudo` = 오너 권한 단계 + `-f`로 기존 파일을 묻지 않고 덮어씀 — 그 자리에 실제 파일이 있으면 **백업 없이 소멸**한다. 맨 `ln -sf`/`ln -sfn` 한 줄은 이 문서 어디에도 더 이상 두지 않는다. 수동 설치가 필요하면 §B "폴백 — 수동 sudo" 의 **백업 선행 블록**을 쓴다(있으면 `<원래 경로>.cys-backup-<epoch초>` 로 옮긴 뒤 링크). | 사람(🧑)이 직접 실행 → 워커는 위임. **GUI "셸에 cys 설치"/"셸 cys 해제" 버튼은 사용자 명시 클릭 + osascript 1회 승격이라 이 경계를 위반하지 않지만, 에이전트가 그 버튼을 자율로 클릭하는 것은 여전히 금지**(사람의 클릭이 곧 동의다 — 대리 클릭은 동의가 아님). |
 | INST-DENY-03 | `rm -rf ~/.cys ~/.local/state/cys` | pack·트랜스크립트·상태 **완전 삭제**(비가역). | 자율 실행 금지 → 정지·오너 보고 |
-| INST-DENY-04 | DMG 우클릭·Gatekeeper "열기"·코드사이닝 | 사람 GUI/보안 결정 단계. | 사람(🧑)이 직접 → 워커는 위임 |
+| INST-DENY-04 | 앱 우클릭·Gatekeeper "열기"·코드사이닝 | 사람 GUI/보안 결정 단계. | 사람(🧑)이 직접 → 워커는 위임 |
 
 > 위 경계는 거버넌스 denylist의 **install 특화 투영**입니다(새 denylist 생성 아님). 일반 경계는
 > `WORKER_DIRECTIVE.md §7`이 정본이며 여기서 재서술하지 않습니다 — 충돌·중복 표현형 방지.
 
 ## 선행조건 — git (기능별 필수)
 
-기본 사용(DMG/MSI 설치 → 앱 더블클릭)에는 git이 **필요 없습니다**. 다만 아래 기능을 쓰려면 git이 있어야 합니다:
+기본 사용(ZIP/setup.exe 설치 → 앱 더블클릭)에는 git이 **필요 없습니다**. 다만 아래 기능을 쓰려면 git이 있어야 합니다:
 
 - **소스 기여·직접 빌드**: `git clone https://github.com/idoforgod/cys-terminal`
 - **harness-creator 툴체인 자동 설치**: 부트 프리플라이트(`javis_preflight.py --fix`)가 git으로 자동 클론합니다.
@@ -69,17 +69,17 @@ git --version                 # 설치 확인 (사람·에이전트 공통)
 
 ## macOS
 
-### 🧑 A. 설치파일 (DMG) — 권장 [HUMAN — 사람이 직접]
-1. `cys-0.2.0-macos-arm64.dmg`를 열고 `cys.app`을 `Applications`로 드래그.
-2. 첫 실행 시 Gatekeeper 경고가 나오면: 우클릭 → "열기"(미서명 빌드의 경우). 🚧 [BOUNDARY INST-DENY-04 — 사람 보안 결정]
-   서명·공증된 빌드라면 바로 열립니다.
+### 🧑 A. 설치파일 (ZIP) — 권장 [HUMAN — 사람이 직접]
+1. 가장 쉬운 길 = 자비스 사이트 <https://jarvis.godmeyou.kr/get> 의 설치 한 줄. 파일로 받을 때는 [릴리스](https://github.com/oogisoogi/cys-ro/releases/latest)의
+   `cysr-macos-arm64-v<버전>.zip`(인텔 맥 = `cysr-macos-x64-v<버전>.zip`)을 풀어 나온 `cysr.app`을 `Applications`로 옮깁니다.
+2. 첫 실행 시 Gatekeeper 경고가 나오면: 우클릭 → "열기"(자체서명 빌드 — 애플 인증서 없음). 🚧 [BOUNDARY INST-DENY-04 — 사람 보안 결정]
 3. 끝. 앱이 데몬을 자동 기동합니다.
 4. 데스크탑·문서 폴더 접근이 막혔다는 알림이 뜨면 알림을 누르세요 — 시스템 설정 → 개인정보 보호 및 보안 → **파일 및 폴더**가 열립니다. 목록에서 **「cys」**(앱 아이콘)의 해당 폴더 스위치를 켭니다. 데몬이 안 뜨면 로그인 항목의 「백그라운드에서 허용」에서 「cys」와 개발자 이름 줄(「yoonsik choi」)을 켭니다. 상세·최후 수단(전체 디스크 접근 권한)은 [USER-MANUAL §2.1a](../USER-MANUAL.md#21a-macos--폴더-접근이-막혔을-때-v01441).
 
 #### 받는 분(비기술자)께 — 1페이지 (D6 제품 모드 패키징)
 > 터미널을 한 번도 안 열어도 오너 대표 산출물(통찰보고서·문체 글)을 클릭으로 받을 수 있습니다.
 1. `cys.app`을 `Applications`로 드래그(설치 끝).
-2. 더블클릭 → 열림(공증 빌드면 경고 없음). **"손상되었기 때문에 열 수 없습니다"가 뜨면 아래 [macOS "손상되었기 때문에 열 수 없습니다" 해결](#macos-손상되었기-때문에-열-수-없습니다-해결)을 그대로 따라 하세요** — 원인이 두 가지(미공증 / 반쪽 설치)이고 처방이 다릅니다.
+2. 더블클릭 → 열림(자체서명 빌드라 첫 실행 경고가 뜨면 우클릭 → "열기"). **"손상되었기 때문에 열 수 없습니다"가 뜨면 아래 [macOS "손상되었기 때문에 열 수 없습니다" 해결](#macos-손상되었기-때문에-열-수-없습니다-해결)을 그대로 따라 하세요** — 원인이 두 가지(반쪽 설치 / 격리 표시)이고 처방이 다릅니다.
 3. 우상단 **Control Center → "스킬 보드"** 탭 → "통찰보고서 만들기" 클릭 → 본문 붙여넣기 → 미리보기 확인 → PDF를 받습니다.
 4. ⚠ 산출물은 **"AI 보조 생성 · 오너 검수 전"**입니다. 외부 공유 전 반드시 검수를 받으세요(과대약속 금지).
 5. **청중 맞춤**: `~/.cys/profile.json`의 `audience`를 바꾸면(예: `pastor`·`student`) 그 청중에 맞춰 산출됩니다(기본 `custom`=전체보기).
@@ -100,10 +100,10 @@ git --version                 # 설치 확인 (사람·에이전트 공통)
 **해결 — 덮어쓰지 말고 지운 뒤 새로 설치합니다.**
 
 1. 실행 중인 cys를 완전히 종료합니다.
-2. 최신 설치파일(DMG)을 내려받아 엽니다 — <https://www.cysinsight.com>
+2. 최신 설치파일(ZIP)을 내려받아 풉니다 — <https://github.com/oogisoogi/cys-ro/releases/latest> (가장 쉬운 길 = 자비스 사이트 <https://jarvis.godmeyou.kr/get> 의 설치 한 줄)
 3. **응용 프로그램 폴더의 기존 `cys.app`을 먼저 휴지통으로 옮깁니다.** ← 이 단계를 건너뛰지 마세요.
-4. DMG 안의 `cys.app`을 `응용 프로그램(Applications)` 폴더로 드래그합니다.
-5. 응용 프로그램 폴더의 `cys.app`을 엽니다.
+4. 풀어 나온 `cysr.app`을 `응용 프로그램(Applications)` 폴더로 옮깁니다.
+5. 옮긴 앱을 엽니다.
 
 > ⚠ **덮어쓰기('바꾸기') 금지** — 3번을 건너뛰고 드래그해서 "바꾸기"를 누르면 같은 고장이
 > 그대로 재발합니다. 반드시 **지운 뒤 새로** 넣으세요.
@@ -120,8 +120,8 @@ git --version                 # 설치 확인 (사람·에이전트 공통)
 xattr -d com.apple.quarantine /Applications/cys.app
 ```
 
-그래도 안 되면 그 빌드가 **공증(notarization)되지 않은** 것일 수 있습니다. 보낸 사람에게
-**"공증 빌드"**를 요청하세요(미공증 빌드는 다른 맥에서 차단됩니다 — `RELEASE.md §1 ★Apple 서명·공증`).
+그래도 안 되면 앱을 우클릭 → "열기"(또는 시스템 설정 → 개인정보 보호 및 보안 → 「그래도 열기」)로 한 번 허락하세요 —
+우리 배포본은 자체서명(애플 인증서 없음)이라 처음 한 번은 이렇게 허락해야 할 수 있습니다.
 
 #### 진단 — 무엇이 잘못됐는지 직접 확인
 
@@ -145,7 +145,7 @@ codesign --verify --strict --verbose /Applications/cys.app
 >
 > 1. 실행 중인 cys를 완전히 종료합니다.
 > 2. **응용 프로그램 폴더의 기존 cys.app을 휴지통으로 옮깁니다.** (덮어쓰기 ✗ · 먼저 지우기 ✓)
-> 3. 내려받은 DMG를 열고 cys.app을 응용 프로그램 폴더로 드래그합니다.
+> 3. 내려받은 zip 을 풀어 나온 앱(cysr.app)을 응용 프로그램 폴더로 옮깁니다.
 > 4. 응용 프로그램 폴더의 cys.app을 엽니다.
 >
 > 그래도 열리지 않으면 터미널에 `xattr -d com.apple.quarantine /Applications/cys.app` 을 한 번
@@ -264,7 +264,7 @@ codesign --verify --strict --verbose /Applications/cys.app
     있습니다" 제목이 나갔습니다. 그래서 남의 파일이 하나도 없는 정상 설치 사용자가 Control
     Center를 열 때마다 **거짓 경고**를 봤습니다. 안내 문장의 종류가 늘었는데 제목은 "문장이
     있는가" 하나만 보고 있었기 때문입니다 — 지금은 화면이 실제 상태만 말합니다.)
-  - 앱이 `/Applications` 밖(예: `~/Downloads`, DMG 안)에서 실행 중이면 버튼은 **거부**합니다.
+  - 앱이 `/Applications` 밖(예: `~/Downloads`, 압축을 푼 폴더)에서 실행 중이면 버튼은 **거부**합니다.
      Finder로 응용 프로그램 폴더에 옮긴 뒤 다시 시도하세요.
    - **결과가 "미완료"였다면 버튼은 "셸에 cys 다시 설치"로 남습니다.** 심볼릭 링크 자체는 생겼기
      때문에 예전에는 이 자리가 곧바로 **"셸 cys 해제"** 로 바뀌었고, 방금 "아직 끝나지 않았다"는
@@ -554,17 +554,17 @@ cys daemon uninstall          # 해제
 ## Windows
 
 > 코어(named pipe·ConPTY·DSR)는 검증 완료(docs/WINDOWS_VALIDATION.md). 소비자 Windows 배포본은
-> **NSIS 자기완결 설치본** `cys_<버전>_x64-setup.exe` **하나**이며, GUI 앱·데몬(cysd)·CLI(cys)와
+> **NSIS 자기완결 설치본** `cysr_<버전>_x64-setup.exe` **하나**이며, GUI 앱·데몬(cysd)·CLI(cys)와
 > 런타임(PortableGit + Python embeddable)이 모두 그 안에 들어 있습니다.
 > 근거: `src-tauri/tauri.windows.conf.json` 의 `"targets": ["nsis"]` · `.github/workflows/release.yml`
-> 의 `bundle/nsis/cys_*_x64-setup.exe` 수집.
+> 의 `bundle/nsis/cysr_*_x64-setup.exe` 수집.
 >
 > ⚠ **예전 MSI(WiX)는 폐기됐습니다.** `dist-win/*.wxs` 는 참고용 레거시 잔재로, 어떤 릴리스
 > 워크플로에서도 빌드·배포되지 않습니다(`dist-win/README.md`). 그 MSI는 PATH를 등록했지만
 > **지금 배포되는 setup.exe 는 등록하지 않습니다** — 아래 A의 경고를 보세요.
 
 ### 🧑 A. setup.exe 설치 [HUMAN]
-1. `cys_<버전>_x64-setup.exe` 실행. 미서명 빌드라 SmartScreen 경고가 뜨면 "추가 정보 → 실행".
+1. `cysr_<버전>_x64-setup.exe` 실행. 미서명 빌드라 SmartScreen 경고가 뜨면 "추가 정보 → 실행".
 2. **현재 사용자** 설치입니다(`installMode: currentUser`) — 관리자 권한 없이 `%LOCALAPPDATA%\cys`
    에 설치됩니다.
 3. `cys list` — 데몬이 없으면 자동 기동됩니다.
@@ -579,7 +579,7 @@ cys daemon uninstall          # 해제
 > (USER-MANUAL.md §2.4 와 같은 내용입니다.)
 
 ### 🧑 B. ZIP (`.exe` 직다운이 막힐 때) [HUMAN]
-`cys_<버전>_x64-setup.zip` 은 **위 setup.exe 한 개를 그대로 담은 포장**입니다(기업 프록시·구형
+`cysr_<버전>_x64-setup.zip` 은 **위 setup.exe 한 개를 그대로 담은 포장**입니다(기업 프록시·구형
 브라우저 대응 · `scripts/make-win-zip.py`). 압축을 풀어 그 안의 `setup.exe` 를 실행하면 A와
 같습니다 — 풀어놓은 폴더를 PATH에 넣는 용도가 아닙니다.
 

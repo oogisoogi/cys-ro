@@ -1,7 +1,7 @@
 # cys 터미널 — Windows 설치 안내
 
-> 이 문서는 특정 버전을 표기하지 않습니다 — **항상 홈페이지(www.cysinsight.com)의 최신
-> 설치파일**을 기준으로 하세요. 파일명은 `cys_<버전>_x64-setup.exe` 형식입니다.
+> 이 문서는 특정 버전을 표기하지 않습니다 — **항상 자비스 사이트(jarvis.godmeyou.kr/get) 또는 [우리 릴리스](https://github.com/oogisoogi/cys-ro/releases/latest)의 최신
+> 설치파일**을 기준으로 하세요. 파일명은 `cysr_<버전>_x64-setup.exe` 형식입니다.
 > (구판 안내의 v0.6.x 버전 고정·MSI·수동 init-pack 서술은 전부 폐기됐습니다.)
 
 ## 한눈에
@@ -27,9 +27,8 @@ irm https://claude.ai/install.ps1 | iex
 
 ## 설치 (사람)
 
-1. www.cysinsight.com 에서 **`cys_<버전>_x64-setup.exe`**(NSIS 설치파일)를 내려받아 실행합니다.
-   - SmartScreen 경고가 뜨면 "추가 정보 → 실행"으로 진행합니다(홈페이지의 Defender/SmartScreen
-     안내 섹션 참고).
+1. [우리 릴리스](https://github.com/oogisoogi/cys-ro/releases/latest)에서 **`cysr_<버전>_x64-setup.exe`**(NSIS 설치파일)를 내려받아 실행합니다.
+   - SmartScreen 경고가 뜨면 "추가 정보 → 실행"으로 진행합니다(USER-MANUAL.md §18 참고).
    - 설치 위치는 `%LOCALAPPDATA%\cys` 이고 관리자 권한이 필요 없습니다(현재 사용자 설치).
 2. 설치가 끝나면 **cys 앱을 한 번 실행**합니다. 이때 자동으로:
    ① 운영 팩 설치(`%USERPROFILE%\.cys\pack`)

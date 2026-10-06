@@ -49,6 +49,24 @@ const linkedDocs = (): string[] => {
 const DOCS = [...linkedDocs().map((p) => `../../${p}`), "../../docs/index.html"];
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf-8");
 
+/** 실 릴리스 자산 정규식 4개 — 정본 = docs/index.html 의 동적 조회 정규식(v1.1.7 실 자산명 각 1건 일치 실측 · 아래 시험이 페이지 소스에 같은 정규식이 있음을 단언).
+ *  순서 = 다운로드 버튼 dl-mac-arm · dl-mac-x64 · dl-win · dl-win-zip. */
+const ASSET_RES = [/^cysr-macos-arm64-v[0-9.]+\.zip$/, /^cysr-macos-x64-v[0-9.]+\.zip$/, /^cysr_[0-9.]+_x64-setup\.exe$/, /^cysr_[0-9.]+_x64-setup\.zip$/];
+const DL_IDS = ["dl-mac-arm", "dl-mac-x64", "dl-win", "dl-win-zip"];
+
+/** 7판(codex 재서명 MAJOR-1 · master#1f4bc905): 실 배포 꼴 = 자체서명 ZIP(cysr.app 하나) · 윈 cysr_<판>_x64-setup.exe · 공증 주장 0 · 설치 도우미 0
+ *  (근거 = scripts/release-verify.py MAC_ASSETS 주석 · scripts/build-macos-local.sh 자체서명·ditto zip). 공개 문서 전건에서 아래가 0 이어야 한다. */
+const STALE_INSTALL = [
+  { name: ".dmg", re: /\.dmg\b/gi },
+  { name: "DMG", re: /\bDMG\b/g },
+  { name: "cys_<판>(옛 윈 이름)", re: /\bcys_(?:[0-9]|<)/g },
+  { name: "공증", re: /공증/g },
+  { name: "notariz", re: /notariz/gi },
+  { name: "Install cys.app", re: /Install cys\.app/g },
+  { name: "도우미", re: /도우미/g },
+  { name: "www.cysinsight.com(원작자 내려받기 자리)", re: /www\.cysinsight\.com/g },
+];
+
 /** 지운 것들의 이름 — 앱 명령 · 환경 노브 · 기록 파일 · 단추/배지 id · 앱의 옛 서명 경로. */
 const GONE = [
   "check_update",
@@ -121,8 +139,6 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     expect({ 벤더: (s.match(/idoforgod|cys-terminal/gi) ?? []).length }).toEqual({ 벤더: 0 });
   });
   it("README(한/영) 설치 절 자산명 = 실 릴리스 자산 정규식(다운로드 페이지와 같은 4개 · master#315fae4c)", () => {
-    // 정본 = docs/index.html 의 동적 조회 정규식(v1.1.7 실 자산명 각 1건 일치 실측) — 여기 사본이 페이지 소스에 그대로 있어야 한다.
-    const ASSET_RES = [/^cysr-macos-arm64-v[0-9.]+\.zip$/, /^cysr-macos-x64-v[0-9.]+\.zip$/, /^cysr_[0-9.]+_x64-setup\.exe$/, /^cysr_[0-9.]+_x64-setup\.zip$/];
     const page = read("../../docs/index.html");
     for (const re of ASSET_RES) expect({ re: re.source, 페이지에_있음: page.includes(`asset(${re.toString()})`) }).toEqual({ re: re.source, 페이지에_있음: true });
     for (const d of ["../../README.md", "../../README.en.md"]) {
@@ -132,5 +148,29 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
       // 공허 방지 — 맥 두 종·윈 설치기가 다 적혀 있다
       for (const re of ASSET_RES.slice(0, 3)) expect({ d, re: re.source, 있음: names.some((n) => re.test(asReal(n))) }).toEqual({ d, re: re.source, 있음: true });
     }
+  });
+  it("설치 안내 = 실 배포 꼴 — DMG·옛 윈 이름·공증·설치 도우미·원작자 내려받기 자리 0(공개 문서 전건 · codex 재서명 MAJOR-1)", () => {
+    for (const d of DOCS) {
+      const s = read(d);
+      const hits = STALE_INSTALL.map(({ name, re }) => ({ name, n: (s.match(re) ?? []).length })).filter((h) => h.n > 0);
+      expect({ d, 남은: hits }).toEqual({ d, 남은: [] });
+    }
+  });
+  it("다운로드 버튼 폴백 = 표시 판의 실 자산(태그·파일명·판 결속 · codex 재서명 MINOR-1)", () => {
+    const s = read("../../docs/index.html");
+    const ver = s.match(/<b id="ver">(v[0-9]+(?:\.[0-9]+)+)<\/b>/)?.[1] ?? "";
+    expect({ 표시_판: /^v[0-9]+(\.[0-9]+)+$/.test(ver) }).toEqual({ 표시_판: true });
+    DL_IDS.forEach((id, i) => {
+      const href = s.match(new RegExp(`id="${id}"\\s+href="([^"]+)"`))?.[1] ?? "";
+      const m = href.match(/^https:\/\/github\.com\/oogisoogi\/cys-ro\/releases\/download\/([^/]+)\/([^/]+)$/);
+      const tag = m?.[1] ?? "";
+      const file = m?.[2] ?? "";
+      expect({ id, 태그_일치: tag === ver, 파일_정규식: ASSET_RES[i].test(file), 파일_속_판: file.includes(ver.slice(1)) }).toEqual({
+        id,
+        태그_일치: true,
+        파일_정규식: true,
+        파일_속_판: true,
+      });
+    });
   });
 });

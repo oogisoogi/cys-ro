@@ -48,6 +48,10 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 DR_PIN_ID_CYS_LOCAL = "a426231e7dc737ee1d74962b346c23d3acacb18d"
 # A2(윈 자산 · 기존 TAURI_SIGNING_PRIVATE_KEY) key id — tauri.conf.json plugins.updater.pubkey 에서 파생(§4-1 · §5-3).
 A2_KEY_ID = "831CA9172204E93E"
+# A2 공개키(= 1.1.8 U4 이전 tauri.conf.json plugins.updater.pubkey 값 그대로 · 공개 정보). 발행 게이트 7-b 의 암호 검증 기준 —
+#   직전 판 conf 에 updater 블록이 없을 때(U4 뒤) 이 값으로 .sig 를 검증한다(codex 1R #4). 시험 핀이 파생 key id = A2_KEY_ID 를 잰다.
+A2_PUBKEY = ("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMUNBOTE3MjIwNEU5M0UKUldRKzZRUWlGNmtjZzZK"
+             "dWluYWlzUytJM3RLUUIrcjJhbjRnYTFCVUt0S0RRd2cwL2NvMjJDd3QK")
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))

@@ -38,6 +38,10 @@ _RV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "relea
 _spec = importlib.util.spec_from_file_location("release_verify", _RV_PATH)
 rv = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rv)
+# ★7-b 암호 검증(1.1.8 U3 2판 · codex 1R #4): 픽스처 업데이터 서명을 **진짜 Ed25519** 로 만든다 — 시험 전용 대역
+#   scripts/tests/fixtures/fake_minisign.py(RFC 8032 · 실키 0). 키 = key id 에서 결정론적으로 유도한 시드.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures"))
+import fake_minisign as fm  # noqa: E402
 
 V = "0.14.19"
 # ★검증기 상수에서 **유도**한다(2026-09-09). 종전엔 벤더 URL 을 테스트가 따로 적어 뒀는데,
@@ -129,11 +133,30 @@ def _keyring_json(key_ids, revoked=(), not_after="2100-01-01T00:00:00Z"):
             "revoked_key_ids": list(revoked)}
 
 
+def _seed(key_id):
+    return hashlib.sha256(b"rv-fixture-seed-" + key_id.encode()).digest()
+
+
 def _tauri_pub(key_id):
-    """tauri 표기 공개키(전체 .pub 텍스트 base64) — 본문 = b"Ed" + keynum + 32B."""
-    line = base64.b64encode(b"Ed" + bytes.fromhex(key_id)[::-1] + b"\x07" * 32).decode()
+    """tauri 표기 공개키(전체 .pub 텍스트 base64) — 본문 = b"Ed" + keynum + 진짜 Ed25519 공개키(시드 = key id 유도)."""
+    line = base64.b64encode(b"Ed" + bytes.fromhex(key_id)[::-1] + fm.ed25519_public(_seed(key_id))).decode()
     text = "untrusted comment: minisign public key: %s\n%s\n" % (key_id, line)
     return base64.b64encode(text.encode()).decode()
+
+
+def _updater_sig(data, key_id=FIXTURE_KEY_ID, tag="x"):
+    """tauri updater 서명(.sig) — minisign 4줄(prehash ED)을 base64 로 감싼 한 줄 · `data` 에 대한 **진짜** 서명."""
+    seed, keynum = _seed(key_id), bytes.fromhex(key_id)[::-1]
+    sig = fm.ed25519_sign(seed, hashlib.blake2b(data, digest_size=64).digest())
+    tc = "timestamp:0\tfile:%s" % tag
+    gsig = fm.ed25519_sign(seed, sig + tc.encode())
+    body = ("untrusted comment: signature from tauri secret key\n%s\ntrusted comment: %s\n%s\n"
+            % (base64.b64encode(b"ED" + keynum + sig).decode(), tc, base64.b64encode(gsig).decode()))
+    return base64.b64encode(body.encode()).decode()
+
+
+FIXTURE_PUB = _tauri_pub(FIXTURE_KEY_ID)
+OTHER_PUB = _tauri_pub(OTHER_KEY_ID)
 
 
 def _dmg_bytes(payload):
@@ -187,8 +210,10 @@ def build_fixture(root, mac=True):
                       b"macos-arm-app-payload" * 16)
         _mac_dist_zip(os.path.join(root, "cysr-macos-x64-v%s.zip" % V),
                       b"macos-intel-app-payload" * 16)
-        w("cysr_aarch64.app.tar.gz", gzip.compress(b"macos-arm-app-bundle" * 32))
-        w("cysr_x64.app.tar.gz", gzip.compress(b"macos-intel-app-bundle" * 32))
+        arm_tgz = gzip.compress(b"macos-arm-app-bundle" * 32, mtime=0)
+        intel_tgz = gzip.compress(b"macos-intel-app-bundle" * 32, mtime=0)
+        w("cysr_aarch64.app.tar.gz", arm_tgz)
+        w("cysr_x64.app.tar.gz", intel_tgz)
     w("cysr_%s_x64-setup.exe" % V, exe_bytes)
     w("pack.tar.gz", gzip.compress(b"cysjavis-pack-payload" * 32))
     w("pack-manifest.json", json.dumps({"files": [], "expires_at": "2027-01-01T00:00:00Z",
@@ -200,10 +225,10 @@ def build_fixture(root, mac=True):
     with zipfile.ZipFile(os.path.join(root, "cysr_%s_x64-setup.zip" % V), "w") as z:
         z.writestr("cysr_%s_x64-setup.exe" % V, exe_bytes)
 
-    sigs = {"cysr_%s_x64-setup.exe.sig" % V: _sig_text("win")}
+    sigs = {"cysr_%s_x64-setup.exe.sig" % V: _updater_sig(exe_bytes, tag="win")}
     if mac:
-        sigs["cysr_aarch64.app.tar.gz.sig"] = _sig_text("arm")
-        sigs["cysr_x64.app.tar.gz.sig"] = _sig_text("intel")
+        sigs["cysr_aarch64.app.tar.gz.sig"] = _updater_sig(arm_tgz, tag="arm")
+        sigs["cysr_x64.app.tar.gz.sig"] = _updater_sig(intel_tgz, tag="intel")
     for name, text in sigs.items():
         w(name, (text + "\n").encode())
 
@@ -260,13 +285,13 @@ class ReleaseVerifyTests(unittest.TestCase):
             json.dump(obj, fh, ensure_ascii=False)
 
     def assert_pass(self):
-        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         return assets, platforms, mac_included
 
     def assert_fail(self, needle):
         """비영 종료 사유에 needle 이 들어 있어야 한다 — '조용한 통과'를 막는 본체."""
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
         return str(cm.exception)
@@ -622,12 +647,12 @@ class ReleaseVerifyTests(unittest.TestCase):
     def test_32_empty_dir(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+                rv.verify(V, d, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
             self.assertIn("비어 있다", str(cm.exception))
 
     def test_33_missing_dir(self):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, os.path.join(self.root, "no-such-dir"), VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+            rv.verify(V, os.path.join(self.root, "no-such-dir"), VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         self.assertIn("릴리스 디렉터리가 없다", str(cm.exception))
 
 
@@ -659,17 +684,17 @@ class WindowsOnlyLaneTests(unittest.TestCase):
 
     def assert_fail(self, needle):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
 
     def assert_ok(self):
         """죽지 않아야 하는 입력 — 반환된 맥 포함 판정까지 돌려준다(관용 시험용)."""
-        return rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+        return rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
 
     def test_40_windows_only_passes_and_reports_mac_absent(self):
         """맥 자산 0종 + darwin 행 0 = 통과하되 **미포함으로 판정**돼야 한다."""
-        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+        assets, platforms, mac_included = rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         self.assertFalse(mac_included, "맥 미포함 묶음인데 포함으로 판정됐다")
         self.assertEqual(platforms, sorted(rv.REQUIRED_PLATFORMS))
         # 반환되는 `assets` 는 SUMS 등재분이다 — SHA256SUMS.txt 자신은 자기 제외 규약으로 빠진다.
@@ -762,7 +787,7 @@ class ReleaseRepoBindingTests(unittest.TestCase):
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+                rv.verify(V, d, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
             self.assertIn("url 결속 위반", str(cm.exception))
 
     def test_52_repo_override_changes_the_verdict(self):
@@ -777,8 +802,8 @@ class ReleaseRepoBindingTests(unittest.TestCase):
                 json.dump(latest, fh, ensure_ascii=False)
             write_sums(d)
             with self.assertRaises(rv.VerifyError):
-                rv.verify(V, d, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)                                   # 기본(우리 포크)으로는 실패
-            _, _, mac = rv.verify(V, d, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING, repo="someone/cys-mirror")  # 지목하면 통과
+                rv.verify(V, d, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)                                   # 기본(우리 포크)으로는 실패
+            _, _, mac = rv.verify(V, d, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING, repo="someone/cys-mirror")  # 지목하면 통과
             self.assertFalse(mac)
 
 
@@ -812,12 +837,12 @@ class PackReplayMonotonicTests(unittest.TestCase):
 
     def assert_fail(self, vendor, needle):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, vendor, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+            rv.verify(V, self.root, vendor, FIXTURE_PUB, PREV, PACK_KEYRING)
         self.assertIn(needle, str(cm.exception),
                       "예상 사유 %r 가 아니라 %r 로 죽었다" % (needle, str(cm.exception)))
 
     def test_60_ours_newer_passes(self):
-        rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+        rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         files = rv.collect_files(self.root)
         self.assertEqual(rv.check_pack_replay_monotonic(files, VENDOR),
                          (FIXTURE_SIGNED_AT, FIXTURE_SIGNED_AT - 1))
@@ -951,7 +976,7 @@ class SignedAtPlausibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             build_fixture(d, mac=False)
             with self.assertRaises(rv.VerifyError) as cm:
-                rv.verify(V, d, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING, now=FIXTURE_SIGNED_AT + self.AGE + 10)
+                rv.verify(V, d, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING, now=FIXTURE_SIGNED_AT + self.AGE + 10)
             self.assertIn("타당 범위 밖", str(cm.exception))
 
 
@@ -1049,7 +1074,7 @@ class ExitCodeContractTests(unittest.TestCase):
                     json.dump(vendor, fh)
                 extra = ["--vendor-manifest-file", vf]
             if key_id is not None:
-                extra += ["--updater-key-id", key_id]
+                extra += ["--updater-pubkey", _tauri_pub(key_id)]
             if keyring is not None:
                 kf = os.path.join(vd, "prev-trusted-keys.json")
                 with open(kf, "w", encoding="utf-8") as fh:
@@ -1163,7 +1188,8 @@ class KeyBridgeGateTests(unittest.TestCase):
         for name in sorted(os.listdir(self.root)):
             if not name.endswith(".sig") or (only and name != only):
                 continue
-            text = _sig_text("re-" + name, key_id)
+            with open(os.path.join(self.root, name[:-4]), "rb") as fh:
+                text = _updater_sig(fh.read(), key_id, tag="re-" + name)
             with open(os.path.join(self.root, name), "w", encoding="utf-8") as fh:
                 fh.write(text + "\n")
             asset = name[:-4]
@@ -1176,14 +1202,14 @@ class KeyBridgeGateTests(unittest.TestCase):
 
     def test_kb1_pass_when_sig_key_matches_prev_binary(self):
         build_fixture(self.root)
-        rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+        rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
 
     def test_kb2_reject_when_all_sigs_use_other_key(self):
         """브리지 실수 — 직전 판 바이너리(pubkey=FIXTURE)가 받지 못할 키로 서명한 판."""
         build_fixture(self.root)
         self._resign_all(OTHER_KEY_ID)
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         self.assertIn("업데이터 서명 키 불일치", str(cm.exception))
 
     def test_kb3_reject_when_one_platform_sig_uses_other_key(self):
@@ -1191,19 +1217,19 @@ class KeyBridgeGateTests(unittest.TestCase):
         build_fixture(self.root)
         self._resign_all(OTHER_KEY_ID, only="cysr_x64.app.tar.gz.sig")
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
         self.assertIn("cysr_x64.app.tar.gz.sig", str(cm.exception))
 
     def test_kb4_windows_only_bundle_also_gated(self):
         build_fixture(self.root, mac=False)
         self._resign_all(OTHER_KEY_ID)
         with self.assertRaises(rv.VerifyError):
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, PACK_KEYRING)
-        rv.verify(V, self.root, VENDOR, OTHER_KEY_ID, PREV, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
+        rv.verify(V, self.root, VENDOR, OTHER_PUB, PREV, PACK_KEYRING)
 
     def test_kb5_bad_expected_key_id_format_rejected(self):
         build_fixture(self.root)
-        for bad in ("", "0123456789abcdef", "0123", None):
+        for bad in ("", "0123456789abcdef", "0123", None, FIXTURE_KEY_ID):  # key id 만으로는 기준이 못 된다(공개키 필요)
             with self.assertRaises(rv.VerifyError):
                 rv.verify(V, self.root, VENDOR, bad, PREV, PACK_KEYRING)
 
@@ -1229,7 +1255,7 @@ class KeyBridgeGateTests(unittest.TestCase):
         build_fixture(self.root)
         r = ExitCodeContractTests.run_cli(self, "--version", V, "--release-dir", self.root, key_id=None)
         self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertIn("--updater-key-id", r.stderr)
+        self.assertIn("--updater-pubkey", r.stderr)
 
     def test_kb9_prev_conf_without_pubkey_fails_closed(self):
         # ★1.1.8 U3(설계 §5-3): updater 블록이 **있는데** pubkey 가 비면 = 손상 → 종전대로 거부.
@@ -1250,6 +1276,60 @@ class KeyBridgeGateTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertIn("A2 고정 key id 831CA9172204E93E", r.stderr)
             self.assertIn("업데이터 서명 키 불일치", r.stderr)
+
+
+class UpdaterSigCryptoTests(unittest.TestCase):
+    """★7-b 암호 검증(1.1.8 U3 2판 · codex 1R #4) — key id 가 같아도 서명 바이트가 틀리면 거부."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = self._td.name
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _swap_sig(self, name, text):
+        latest_p = os.path.join(self.root, "latest.json")
+        latest = json.load(open(latest_p, encoding="utf-8"))
+        with open(os.path.join(self.root, name), "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+        for row in latest["platforms"].values():
+            if row["url"].endswith("/" + name[:-4]):
+                row["signature"] = text
+        with open(latest_p, "w", encoding="utf-8") as fh:
+            json.dump(latest, fh, ensure_ascii=False)
+        write_sums(self.root)
+
+    def test_kc1_same_key_id_forged_signature_rejected(self):
+        """codex 1R #4 재현 — 같은 key id 를 넣은 위조 서명(서명 바이트 임의)."""
+        build_fixture(self.root)
+        self._swap_sig("cysr_x64.app.tar.gz.sig", _sig_text("forged", FIXTURE_KEY_ID))
+        with self.assertRaises(rv.VerifyError) as cm:
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
+        self.assertIn("암호 검증 실패", str(cm.exception))
+        self.assertIn("cysr_x64.app.tar.gz.sig", str(cm.exception))
+
+    def test_kc2_valid_signature_over_other_bytes_rejected(self):
+        """진짜 키로 서명했지만 다른 자산의 바이트 — 서명 바꿔치기."""
+        build_fixture(self.root, mac=False)
+        exe = "cysr_%s_x64-setup.exe" % V
+        self._swap_sig(exe + ".sig", _updater_sig(b"some other installer bytes", FIXTURE_KEY_ID))
+        with self.assertRaises(rv.VerifyError) as cm:
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, PACK_KEYRING)
+        self.assertIn("암호 검증 실패", str(cm.exception))
+
+    def test_kc3_a2_constant_used_when_prev_conf_has_no_updater(self):
+        """직전 판 conf 에 updater 블록 없음 → A2 고정 **공개키**(update_common.A2_PUBKEY)로 암호 검증."""
+        with tempfile.TemporaryDirectory() as cd:
+            conf = os.path.join(cd, "tauri.conf.json")
+            with open(conf, "w", encoding="utf-8") as fh:
+                json.dump({"plugins": {}}, fh)
+            pub = rv.pubkey_from_tauri_conf(conf)
+        self.assertEqual(rv.tauri_pubkey_key_id(pub), rv.A2_KEY_ID)
+        conf_pub = json.load(open(os.path.join(os.path.dirname(_RV_PATH), "..", "src-tauri", "tauri.conf.json"),
+                                  encoding="utf-8")).get("plugins", {}).get("updater", {}).get("pubkey")
+        if conf_pub:  # U4 전: 상수 = 현 conf 값 그대로
+            self.assertEqual(pub, conf_pub)
 
 
 class PackSigningKeyGateTests(unittest.TestCase):
@@ -1289,11 +1369,11 @@ class PackSigningKeyGateTests(unittest.TestCase):
 
     def assert_fail(self, keyring, needle, now=None):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, keyring, now=now)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, keyring, now=now)
         self.assertIn(needle, str(cm.exception))
 
     def test_pk1_pass_when_pack_key_in_prev_keyring(self):
-        rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, PREV, self._keyring(OTHER_KEY_ID, FIXTURE_PACK_KEY_ID))
+        rv.verify(V, self.root, VENDOR, FIXTURE_PUB, PREV, self._keyring(OTHER_KEY_ID, FIXTURE_PACK_KEY_ID))
 
     def test_pk2_reject_pack_signed_with_key_absent_from_prev_keyring(self):
         """회전 사고 재현 — 팩이 업데이터 키(FIXTURE_KEY_ID)로 서명됐고 키링엔 팩 키만 있다."""
@@ -1452,17 +1532,17 @@ class VersionProgressGateTests(unittest.TestCase):
 
     def fail_with(self, prev, needle):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, prev, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, prev, PACK_KEYRING)
         self.assertIn(needle, str(cm.exception))
 
     def test_91_higher_version_passes_even_if_previous_has_no_build_id(self):
-        rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, {"version": "0.14.18"}, PACK_KEYRING)          # 0.14.x 구판 = build_id 없음
+        rv.verify(V, self.root, VENDOR, FIXTURE_PUB, {"version": "0.14.18"}, PACK_KEYRING)          # 0.14.x 구판 = build_id 없음
 
     def test_92_same_version_different_build_id_is_refused(self):
         self.fail_with({"version": V, "build_id": "fedcba987654.20260801T0000Z"}, "판번 미증가")
 
     def test_93_same_version_same_build_id_passes(self):
-        rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, {"version": V, "build_id": BID}, PACK_KEYRING)  # 공개된 그 발행의 재검증
+        rv.verify(V, self.root, VENDOR, FIXTURE_PUB, {"version": V, "build_id": BID}, PACK_KEYRING)  # 공개된 그 발행의 재검증
 
     def test_94_lower_version_is_refused(self):
         self.fail_with({"version": "0.14.20", "build_id": BID}, "판번 역행")
@@ -1482,7 +1562,7 @@ class VersionProgressGateTests(unittest.TestCase):
             rv.load_previous_latest("unused", path=os.path.join(self.root, "no-such-latest.json"))
         self.assertIn("조회 불가", str(cm.exception))
         with self.assertRaises(rv.VerifyError):
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, ["not", "an", "object"], PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, ["not", "an", "object"], PACK_KEYRING)
 
     def test_98_previous_latest_has_no_default(self):
         import inspect
@@ -1504,30 +1584,30 @@ class KeyBridgeVersionProgressCrossTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_x1_build_id_gate_passes_and_key_gate_passes(self):
-        rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, self.same_build, PACK_KEYRING)
+        rv.verify(V, self.root, VENDOR, FIXTURE_PUB, self.same_build, PACK_KEYRING)
 
     def test_x2_build_id_gate_passes_but_key_gate_refuses(self):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, OTHER_KEY_ID, self.same_build, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, OTHER_PUB, self.same_build, PACK_KEYRING)
         self.assertIn("업데이터 서명 키 불일치", str(cm.exception))
 
     def test_x3_key_gate_passes_but_version_gate_refuses(self):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, FIXTURE_KEY_ID, {"version": V, "build_id": "fedcba987654.20260801T0000Z"}, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, FIXTURE_PUB, {"version": V, "build_id": "fedcba987654.20260801T0000Z"}, PACK_KEYRING)
         self.assertIn("판번 미증가", str(cm.exception))
 
     def test_x4_both_broken_key_gate_reports_first(self):
         with self.assertRaises(rv.VerifyError) as cm:
-            rv.verify(V, self.root, VENDOR, OTHER_KEY_ID, {"version": "0.14.20", "build_id": BID}, PACK_KEYRING)
+            rv.verify(V, self.root, VENDOR, OTHER_PUB, {"version": "0.14.20", "build_id": BID}, PACK_KEYRING)
         self.assertIn("업데이터 서명 키 불일치", str(cm.exception))
 
     def test_x5_updater_key_id_has_no_default(self):
         import inspect
         params = inspect.signature(rv.verify).parameters
-        self.assertIs(params["updater_key_id"].default, inspect.Parameter.empty,
-                      "verify() 의 updater_key_id 에 기본값이 생겼다 — 7-b 를 생략할 수 있게 된다")
+        self.assertIs(params["updater_pubkey"].default, inspect.Parameter.empty,
+                      "verify() 의 updater_pubkey 에 기본값이 생겼다 — 7-b 를 생략할 수 있게 된다")
         self.assertEqual(list(params)[:5],
-                         ["version", "release_dir", "vendor_manifest", "updater_key_id", "previous_latest"])
+                         ["version", "release_dir", "vendor_manifest", "updater_pubkey", "previous_latest"])
 
     def test_x6_cli_needs_both_sources(self):
         """CLI: 7-b 기준(--prev-tauri-conf)과 9단계 기준(--previous-latest-file)을 함께 받아 둘 다 판정한다."""
@@ -1558,7 +1638,7 @@ class KeyBridgeVersionProgressCrossTests(unittest.TestCase):
         self.assertNotIn("판번 역행", r.stderr)
 
     def test_x8_cli_key_sources_are_mutually_exclusive(self):
-        """codex 1R 지적 경로 — --updater-key-id 와 --prev-tauri-conf 동시 지정은 사용법 오류(2)."""
+        """codex 1R 지적 경로 — --updater-pubkey 와 --prev-tauri-conf 동시 지정은 사용법 오류(2)."""
         with tempfile.TemporaryDirectory() as cd:
             conf = os.path.join(cd, "tauri.conf.json")
             with open(conf, "w", encoding="utf-8") as fh:

@@ -951,6 +951,8 @@ class TestSourcePins(unittest.TestCase):
         pub = ((conf.get("plugins") or {}).get("updater") or {}).get("pubkey")
         if pub:
             self.assertEqual(uc.pubkey_key_id(pub), uc.A2_KEY_ID)
+            self.assertEqual(pub, uc.A2_PUBKEY)  # 2판(codex 1R #4): 7-b 암호 검증 기준 상수 = 현 conf 값
+        self.assertEqual(uc.pubkey_key_id(uc.A2_PUBKEY), uc.A2_KEY_ID)
         rv = open(os.path.join(ROOT, "scripts", "release-verify.py"), encoding="utf-8").read()
         self.assertIn('A2_KEY_ID = "%s"' % uc.A2_KEY_ID, rv)
 

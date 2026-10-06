@@ -33,24 +33,22 @@ export const PROGRESS_TTL_MS = 180_000;
  * 종류 불문 소멸 — 무한 불변식 테스트가 이 id 도 함께 잰다). 접두는 folderaccess.ts 의
  * PERM_TOAST_PREFIX 와 같다(모듈 결합을 피하려 값만 같게 둔다 — 테스트가 두 값을 함께 잰다).
  *
- * ★(0.14.43 · J2) '업데이트가 설치되지 않았습니다'(sticky id `update-not-installed`)도 이 수명을 받는다 — 본문이 이벤트 뷰어 경로를
- * 따라가며 읽는 안내이고, 앱을 다시 연 직후 1분 안에 못 보면 사용자가 실패 자체를 모르고 지나간다(이 알림은 시도 기록을 지우며 **1회만**
- * 나온다 — 놓치면 다시 오지 않는다). 여전히 유한하다(10분). 이 id 는 updatenotice.ts 의 UPDATE_FAILED_TOAST_ID 와 같다(역시 모듈
- * 결합을 피하려 값만 같게 둔다 — 테스트가 두 값을 함께 잰다).
+ * ★(1.1.8 U4 · 설계 §3-12) 자동 갱신 「롤백 실패」 안내(sticky id `update-rollback-failed`)도 이 수명을 받는다 — 사람 손이 필요한
+ * 유일한 결과 알림이고(처음 설치 링크 한 줄을 다시 붙여 넣는 안내) 하루 1회만 나오므로, 앱을 연 직후 1분 안에 못 보면 그날은 다시 오지
+ * 않는다. 여전히 유한하다(10분). 이 id 는 updateresult.ts 의 UPDATE_ROLLBACK_FAILED_TOAST_ID 와 같다(모듈 결합을 피하려 값만 같게
+ * 둔다 — 테스트가 두 값을 함께 잰다). (옛 0.14.43 J2 「업데이트 미설치」 id 는 앱 업데이트 경로와 함께 지웠다.)
  */
 export const GUIDE_TTL_MS = 600_000;
 /** GUIDE_TTL_MS 를 받는 sticky id **접두**(폴더 접근 안내) — 접두가 우연히 겹치는 다른 id 는 연장하지 않는다(정확히 `perm-` 접두만). */
 const GUIDE_STICKY_PREFIXES = ["perm-"] as const;
-/** GUIDE_TTL_MS 를 받는 sticky id **정확 일치**(1회만 나오는 실패 안내) — 접두 일치가 아니다(`update-not-installed-x` 는 연장하지 않는다). */
-const GUIDE_STICKY_IDS = ["update-not-installed"] as const;
+/** GUIDE_TTL_MS 를 받는 sticky id **정확 일치**(하루 1회만 나오는 안내) — 접두 일치가 아니다(`update-rollback-failed-x` 는 연장하지 않는다). */
+const GUIDE_STICKY_IDS = ["update-rollback-failed"] as const;
 
 /** 알람 이력 링버퍼 보관 건수. */
 export const ALARM_HISTORY_CAP = 200;
 
 /** 위 PROGRESS_TTL_MS를 적용받는 sticky id(진행 상태를 스스로 갱신하지 않거나 장기인 것). */
 const PROGRESS_STICKY_IDS = [
-  "upd-bin", // 다운로드 진행률로 자주 갱신되지만 '세션 정리 중' 단계에서 정지 구간이 있다
-  "upd-pack",
   "restore",
   "rotate-daemon",
   "restart-daemon",
@@ -64,10 +62,10 @@ const PROGRESS_STICKY_IDS = [
  */
 const BANNER_ON_EXPIRY_PREFIXES = ["purge-fail-"] as const;
 /**
- * TTL 만료 시 OS 네이티브 배너로 1회 보강할 sticky id **정확 일치** — ★(0.14.43 · J2) 업데이트 미설치 알림은 시도 기록을 지우며 1회만
- * 나오므로 10분 안에 못 본 채 만료되면 사용자가 '업데이트가 안 깔렸다'는 사실 자체를 모른다(값은 updatenotice.ts 의 UPDATE_FAILED_TOAST_ID).
+ * TTL 만료 시 OS 네이티브 배너로 1회 보강할 sticky id **정확 일치** — ★(1.1.8 U4) 롤백 실패 안내는 하루 1회만 나오므로 10분 안에 못 본 채
+ * 만료되면 사용자가 다시 설치해야 한다는 사실 자체를 모른다(값은 updateresult.ts 의 UPDATE_ROLLBACK_FAILED_TOAST_ID).
  */
-const BANNER_ON_EXPIRY_IDS = ["update-not-installed"] as const;
+const BANNER_ON_EXPIRY_IDS = ["update-rollback-failed"] as const;
 
 export type ToastKind = "volatile" | "sticky";
 

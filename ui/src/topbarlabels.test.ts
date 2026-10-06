@@ -26,8 +26,9 @@ describe("D4 #13 상단바 단추 글자 = 한국어", () => {
     }
   });
 
-  it("창 닫기 · 파일 · 업데이트", () => {
-    for (const l of ["창 닫기", "파일", "업데이트"]) expect(labels).toContain(l);
+  it("창 닫기 · 파일 — (1.1.8 U4 · 설계 §5-1) 「업데이트」 단추는 없다(갱신은 데몬이 쉬는 시간에 알아서 · 사용자가 누르는 갱신 단추 0)", () => {
+    for (const l of ["창 닫기", "파일"]) expect(labels).toContain(l);
+    expect(labels).not.toContain("업데이트");
   });
 
   it("안내 문구가 옛 영어 단추 이름을 가리키지 않는다 — ui/src 제품 파일 전부(Fable 적대 2R MAJOR: updateplan.ts 누락)", () => {
@@ -42,7 +43,8 @@ describe("D4 #13 상단바 단추 글자 = 한국어", () => {
       const code = readFileSync(new URL(f, dir), "utf8").split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
       for (const bad of ["Update 버튼", "상단 Update", "Files 버튼", "Close 버튼"]) expect(`${f}: ${code.includes(bad)}`).toBe(`${f}: false`);
     }
-    expect(main).toContain("상단 「업데이트」로 설치"); // (r2 · D4 #14) 문구 개정 — 한국어 단추 이름 지칭은 유지
+    // (1.1.8 U4) 「업데이트」 단추를 지웠으므로 그 단추를 가리키는 안내도 0 — 없는 단추를 누르라고 하지 않는다.
+    expect(main).not.toContain("상단 「업데이트」");
   });
 });
 

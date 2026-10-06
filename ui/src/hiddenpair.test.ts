@@ -239,10 +239,12 @@ describe("[hidden] 짝 규칙 — 판정기 자체 검증(공허한 핀 방지)"
 describe("[hidden] 짝 규칙 — 실제 style.css · index.html · main.ts", () => {
   const els = [...htmlHiddenElements(HTML), ...mainHiddenElements(MAIN, HTML)];
 
-  it("사정권 실존(공허 방지): 숨김 요소를 충분히 찾았고 배지 3종이 그 안에 있다", () => {
+  // (1.1.8 U4) 업데이트 배지(update-badge)는 단추와 함께 지웠다 — 그 자리를 좌석 0 고정 안내(update-hold-note · display 를 주는 숨김 요소)가 잇는다.
+  it("사정권 실존(공허 방지): 숨김 요소를 충분히 찾았고 배지 2종·고정 안내가 그 안에 있다", () => {
     expect(els.length).toBeGreaterThanOrEqual(15);
     const ids = new Set(els.map((e) => e.id));
-    for (const id of ["update-badge", "cc-pending-badge", "cc-feed-tabbadge"]) expect(ids.has(id)).toBe(true);
+    for (const id of ["update-hold-note", "cc-pending-badge", "cc-feed-tabbadge"]) expect(ids.has(id)).toBe(true);
+    expect(ids.has("update-badge")).toBe(false);
   });
 
   it("★display 를 명시한 셀렉터가 hidden 요소에 걸리면 [hidden]{display:none} 짝이 있다", () => {
@@ -257,14 +259,13 @@ describe("[hidden] 짝 규칙 — 실제 style.css · index.html · main.ts", ()
     expect(displayOf(pair!.body)).toBe("none");
   });
 
-  it("Update 배지의 초기 마크업은 hidden + 중립 — 확인 전에 '업데이트 있음'(!·↻·숫자)을 말하지 않는다", () => {
-    const m = /<span id="update-badge"([^>]*)>([^<]*)<\/span>/.exec(HTML);
+  it("(1.1.8 U4 · 📌18) 좌석 0 고정 안내의 초기 마크업은 hidden + 빈 칸 + 닫기 단추 없음 — 문구는 main.ts 가 textContent 로만 넣는다", () => {
+    const m = /<div id="update-hold-note"([^>]*)>([^<]*)<\/div>/.exec(HTML);
     expect(m).not.toBeNull();
-    const attrs = m![1];
-    const text = m![2].trim();
-    expect(/(^|\s)hidden(\s|$)/.test(attrs)).toBe(true);
-    expect(["!", "↻"].includes(text)).toBe(false);
-    expect(/\d/.test(text)).toBe(false);
-    expect(/class="[^"]*\bok\b/.test(attrs)).toBe(true); // 중립색
+    expect(/(^|\s)hidden(\s|$)/.test(m![1])).toBe(true);
+    expect(m![2].trim()).toBe("");
+    const pair = cssRules(CSS).find((r) => r.sel === "#update-hold-note[hidden]");
+    expect(pair === undefined).toBe(false);
+    expect(displayOf(pair!.body)).toBe("none");
   });
 });

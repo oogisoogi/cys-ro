@@ -57,16 +57,13 @@ describe("★R2F-UI(A3 n9) 낡은 주석 넷 — 사실대로", () => {
     expect(ub.slice(at, at + 200).includes("sum")).toBe(true);
     expect(ub.slice(at, at + 400).includes("pv.some(")).toBe(true);
   });
-  it("④ T_SAC 설명 — 이 상한을 쓰는 조회가 둘(smart_app_control · update_checked_launch_enabled)이고 최악의 대기는 상한의 2배라고 말한다", () => {
-    const a = MAIN.indexOf("const T_SAC = winScaled(2_500);");
-    expect(a).toBeGreaterThan(0);
-    const head = MAIN.slice(Math.max(0, a - 1600), a);
-    for (const fact of ["smart_app_control", "update_checked_launch_enabled", "조회 둘", "2배"]) expect({ 사실: fact, 있음: head.includes(fact) }).toEqual({ 사실: fact, 있음: true });
-    // 사실: 그 상한을 쓰는 곳은 promptBinaryPatch 의 두 rpcT 호출뿐이다
+  // ★(1.1.8 U4 · 재조준) ④ 의 대상(T_SAC 와 그 설명 · promptBinaryPatch 의 스마트 앱 컨트롤 사전 조회 둘)은 앱 업데이트 경로와 함께 지웠다
+  //   (설계 §5-2 · DECISION-TABLE §0 14 각주 「X2-W 윈 문안·SAC 사전 검사 UI 삭제」). 설명할 코드가 없으니 설명도 남지 않았는지를 본다.
+  it("④ T_SAC — 상한·설명·조회 둘이 코드와 함께 사라졌다(낡은 설명만 남는 것 금지)", () => {
+    expect(MAIN.includes("T_SAC")).toBe(false);
     const code = CODE(MAIN);
-    expect(code.split(", T_SAC)").length - 1).toBe(2);
-    expect(code.includes('rpcT(invoke("smart_app_control"), T_SAC)')).toBe(true);
-    expect(code.includes('rpcT(invoke("update_checked_launch_enabled"), T_SAC)')).toBe(true);
+    expect(code.includes('invoke("smart_app_control")')).toBe(false);
+    expect(code.includes('invoke("update_checked_launch_enabled")')).toBe(false);
   });
 });
 

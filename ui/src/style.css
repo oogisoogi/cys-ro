@@ -5,6 +5,7 @@
    패널 자기 쌓임 맥락 안의 국소 순서(#cc-header·#cc-tabs 2 등)는 이 표의 대상이 아니다. */
 :root {
   --z-pane-overlay:      5;  /* 작업 영역 안의 겹침 — 분할선 히트존(.divider)·사이드바 폭 핸들(#wsbar-drag) */
+  --z-hold-note:       800;  /* (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내(#update-hold-note · 아래 가장자리) — 복원 카드·메뉴·토스트 아래 · 작업 영역 위 */
   --z-restore-brief:   900;  /* (우리 v116 D4 #21) 복원 카드(#restore-brief · 오른쪽 위) — 토스트 아래 · 컨텍스트 메뉴 아래(값 900 그대로 · 1.1.8 토큰화) */
   --z-ctx-menu:       1000;  /* 컨텍스트 메뉴·팝오버(#ctx-menu·#theme-pop) */
   --z-drop-indicator: 1200;  /* 사이드바 순서 바꾸기 삽입선(pointer-events:none) */
@@ -476,6 +477,15 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 #theme-pop .theme-pop-reset:hover { border-color: var(--accent); }
 
 #body-row { height: calc(100% - var(--topbar-h)); display: flex; }
+/* (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 — 흐름 밖(fixed)이라 #body-row 높이 계산을 건드리지 않는다. 닫기 단추 없음.
+   안심 톤(경고색·빨강 금지 — 위협 표현 0 규칙의 시각판). display 를 주므로 [hidden] 짝 규칙을 함께 둔다(.badge 와 같은 함정). */
+#update-hold-note {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--z-hold-note);
+  padding: 10px 16px; text-align: center;
+  background: var(--bar); color: var(--text); border-top: 1px solid var(--border);
+  font-size: calc(13px * var(--ui-chrome-scale));
+}
+#update-hold-note[hidden] { display: none; }
 #root { flex: 1; display: flex; min-width: 0; }
 #root > * { flex: 1; min-width: 0; min-height: 0; }
 

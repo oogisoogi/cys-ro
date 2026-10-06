@@ -3,8 +3,8 @@
 // ★T-0147-3: "모든 에러 알람은 종류 불문 일정 시간이 지나면 꺼진다" + "정보는 이력에 남는다"의
 // 두 축을 각각 고정한다. ①TTL 정책(종류·id별 수명·무한 잔존 0) ②갱신 리셋 규칙(진행 중 소멸 0)
 // ③이력 링버퍼(cap·최신순·같은 id 합침) ④고위험 만료의 OS 배너 보강.
-// ★(0.14.43 · J2) '업데이트가 설치되지 않았습니다' 알림(update-not-installed)은 안내용 수명(10분)과 만료 배너를 받는다 —
-//   1회만 나오는 알림이라 60초 만에 사라지면 사용자가 실패 자체를 모르고 지나간다(아래 전용 describe).
+// ★(1.1.8 U4 · 재조준) 옛 0.14.43 J2 「업데이트 미설치」 알림(update-not-installed)은 앱 업데이트 경로와 함께 지웠다. 그 자리를 자동 갱신
+//   「롤백 실패」 안내(update-rollback-failed)가 이어받는다 — 하루 1회만 나오는 안내라 안내용 수명(10분)과 만료 배너를 받는다(아래 전용 describe).
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
@@ -22,7 +22,7 @@ import {
   type AlarmRecord,
 } from "./toastttl";
 import { PERM_TOAST_PREFIX } from "./folderaccess";
-import { UPDATE_FAILED_TOAST_ID } from "./updatenotice";
+import { UPDATE_RESULT_TOAST_ID, UPDATE_ROLLBACK_FAILED_TOAST_ID } from "./updateresult";
 
 describe("toastTtl — 종류 불문 유한 수명", () => {
   it("volatile은 구 하드코딩 8초를 승계(회귀 0)", () => {
@@ -30,7 +30,7 @@ describe("toastTtl — 종류 불문 유한 수명", () => {
     expect(toastTtl("volatile").ttlMs).toBe(8000);
   });
   it("volatile은 id를 무시한다(익명 토스트)", () => {
-    expect(toastTtl("volatile", "upd-bin").ttlMs).toBe(VOLATILE_TTL_MS);
+    expect(toastTtl("volatile", "restore").ttlMs).toBe(VOLATILE_TTL_MS);
   });
   it("sticky 기본은 60초 — 구 구현의 '영구 잔존'을 대체", () => {
     expect(STICKY_TTL_MS).toBe(60000);
@@ -43,7 +43,7 @@ describe("toastTtl — 종류 불문 유한 수명", () => {
   });
   it("장기 진행형 sticky는 3분(중간 갱신 없이 60초를 넘겨도 진행 중 소멸 없음)", () => {
     expect(PROGRESS_TTL_MS).toBe(180000);
-    for (const id of ["restore", "rotate-daemon", "transfer", "upd-bin", "upd-pack", "restart-daemon", "daemon-hint"]) {
+    for (const id of ["restore", "rotate-daemon", "transfer", "restart-daemon", "daemon-hint"]) {
       expect(toastTtl("sticky", id).ttlMs).toBe(PROGRESS_TTL_MS);
     }
   });
@@ -61,7 +61,7 @@ describe("toastTtl — 종류 불문 유한 수명", () => {
     expect(toastTtl("volatile", "perm-Desktop").ttlMs).toBe(VOLATILE_TTL_MS);
   });
   it("어떤 조합도 무한(0·Infinity)이 아니다 — 오너 요구의 하드 불변식", () => {
-    const ids = [undefined, "boot-warn", "safe-mode", "restore", "purge-fail-x", "unknown-id", "perm-Desktop", "perm-seat-x", UPDATE_FAILED_TOAST_ID, "update-not-installed-x"];
+    const ids = [undefined, "boot-warn", "safe-mode", "restore", "purge-fail-x", "unknown-id", "perm-Desktop", "perm-seat-x", UPDATE_ROLLBACK_FAILED_TOAST_ID, UPDATE_RESULT_TOAST_ID, "update-rollback-failed-x"];
     for (const kind of ["volatile", "sticky"] as const) {
       for (const id of ids) {
         const { ttlMs } = toastTtl(kind, id);
@@ -74,7 +74,7 @@ describe("toastTtl — 종류 불문 유한 수명", () => {
 
 describe("toastTimerPlan — 갱신 시 리셋(debounce) 규칙", () => {
   it("같은 id 갱신이면 이전 타이머를 걷고 새 수명을 준다", () => {
-    const p = toastTimerPlan("sticky", "upd-bin", true);
+    const p = toastTimerPlan("sticky", "restore", true);
     expect(p.clearPrevious).toBe(true);
     expect(p.ttlMs).toBe(PROGRESS_TTL_MS);
   });
@@ -97,7 +97,7 @@ describe("needsExpiryBanner / expiryBannerText — 고위험 실패의 만료 �
     expect(needsExpiryBanner("purge-fail-/Users/x/.cys/run/dept-1.sock")).toBe(true);
   });
   it("일반 sticky는 배너 보강 없음(배너 남용 방지)", () => {
-    for (const id of ["boot-warn", "safe-mode", "restore", "upd-bin", "perm-Desktop"]) {
+    for (const id of ["boot-warn", "safe-mode", "restore", "perm-Desktop"]) {
       expect(needsExpiryBanner(id)).toBe(false);
     }
   });
@@ -109,29 +109,33 @@ describe("needsExpiryBanner / expiryBannerText — 고위험 실패의 만료 �
   });
 });
 
-describe("★(0.14.43 · J2) 업데이트 미설치 알림(update-not-installed) — 안내용 수명 10분 · 만료 시 OS 배너 1회", () => {
-  it("toastTtl(sticky, update-not-installed) = GUIDE_TTL_MS(10분) — 앱을 다시 연 직후 1분 안에 못 봐도 사라지지 않는다", () => {
-    expect(UPDATE_FAILED_TOAST_ID).toBe("update-not-installed");
-    expect(toastTtl("sticky", UPDATE_FAILED_TOAST_ID).ttlMs).toBe(GUIDE_TTL_MS);
-    expect(toastTtl("sticky", "update-not-installed").ttlMs).toBe(600_000);
+describe("★(1.1.8 U4) 자동 갱신 롤백 실패 안내(update-rollback-failed) — 안내용 수명 10분 · 만료 시 OS 배너 1회 (옛 J2 update-not-installed 자리 재조준)", () => {
+  const ID = UPDATE_ROLLBACK_FAILED_TOAST_ID;
+  it("toastTtl(sticky, update-rollback-failed) = GUIDE_TTL_MS(10분) — 하루 1회만 나오는 안내라 1분 안에 못 봐도 사라지지 않는다", () => {
+    expect(ID).toBe("update-rollback-failed");
+    expect(toastTtl("sticky", ID).ttlMs).toBe(GUIDE_TTL_MS);
+    expect(toastTtl("sticky", "update-rollback-failed").ttlMs).toBe(600_000);
     // 같은 id 로 다시 띄워도(갱신) 같은 수명이고 이전 타이머를 걷는다
-    expect(toastTimerPlan("sticky", UPDATE_FAILED_TOAST_ID, true)).toEqual({ ttlMs: GUIDE_TTL_MS, clearPrevious: true });
-    expect(toastTimerPlan("sticky", UPDATE_FAILED_TOAST_ID, false)).toEqual({ ttlMs: GUIDE_TTL_MS, clearPrevious: false });
+    expect(toastTimerPlan("sticky", ID, true)).toEqual({ ttlMs: GUIDE_TTL_MS, clearPrevious: true });
+    expect(toastTimerPlan("sticky", ID, false)).toEqual({ ttlMs: GUIDE_TTL_MS, clearPrevious: false });
     // 10분도 유한하다(오너 요구 = 종류 불문 소멸)
     expect(Number.isFinite(GUIDE_TTL_MS) && GUIDE_TTL_MS > STICKY_TTL_MS).toBe(true);
   });
 
-  it("정확 일치다 — 이름이 비슷한 id 는 연장하지 않는다(접두·부분·대소문자 불일치)", () => {
-    for (const id of ["update-not-installed-x", "x-update-not-installed", "update-not-installed ", " update-not-installed", "Update-Not-Installed", "update-not", "not-installed", "update-not-installed:1"]) {
+  it("정확 일치다 — 이름이 비슷한 id·다른 결과 알림(update-result)은 연장하지 않는다", () => {
+    for (const id of ["update-rollback-failed-x", "x-update-rollback-failed", "update-rollback-failed ", " update-rollback-failed", "Update-Rollback-Failed", "update-rollback", "rollback-failed", "update-rollback-failed:1", UPDATE_RESULT_TOAST_ID, "update-not-installed"]) {
       expect({ id, ttl: toastTtl("sticky", id).ttlMs }).toEqual({ id, ttl: STICKY_TTL_MS });
     }
     expect(toastTtl("sticky", "").ttlMs).toBe(STICKY_TTL_MS);
     expect(toastTtl("sticky", undefined).ttlMs).toBe(STICKY_TTL_MS);
   });
 
-  it("다른 id 의 기존 수명은 그대로다(진행형 3분 · perm- 10분 · 나머지 60초 · volatile 8초)", () => {
-    for (const id of ["upd-bin", "upd-pack", "restore", "rotate-daemon", "restart-daemon", "transfer", "daemon-hint"]) {
+  it("다른 id 의 기존 수명은 그대로다(진행형 3분 · perm- 10분 · 나머지 60초 · volatile 8초) · 지운 업데이트 진행 id(upd-bin·upd-pack)는 진행형에서 빠졌다", () => {
+    for (const id of ["restore", "rotate-daemon", "restart-daemon", "transfer", "daemon-hint"]) {
       expect({ id, ttl: toastTtl("sticky", id).ttlMs }).toEqual({ id, ttl: PROGRESS_TTL_MS });
+    }
+    for (const id of ["upd-bin", "upd-pack"]) {
+      expect({ id, ttl: toastTtl("sticky", id).ttlMs }).toEqual({ id, ttl: STICKY_TTL_MS });
     }
     for (const id of ["perm-x", "perm-Desktop", "perm-seat-/Volumes/X", `${PERM_TOAST_PREFIX}Documents`]) {
       expect({ id, ttl: toastTtl("sticky", id).ttlMs }).toEqual({ id, ttl: GUIDE_TTL_MS });
@@ -139,17 +143,17 @@ describe("★(0.14.43 · J2) 업데이트 미설치 알림(update-not-installed)
     for (const id of ["purge-fail-1", "boot-warn", "safe-mode", "permission", "bundle-damaged", "claude-missing"]) {
       expect({ id, ttl: toastTtl("sticky", id).ttlMs }).toEqual({ id, ttl: STICKY_TTL_MS });
     }
-    expect(toastTtl("volatile", UPDATE_FAILED_TOAST_ID).ttlMs).toBe(VOLATILE_TTL_MS); // volatile 은 id 를 무시한다
+    expect(toastTtl("volatile", ID).ttlMs).toBe(VOLATILE_TTL_MS); // volatile 은 id 를 무시한다
     expect(toastTtl("volatile", "perm-x").ttlMs).toBe(VOLATILE_TTL_MS);
   });
 
-  it("needsExpiryBanner(update-not-installed) = true — 1회만 나오는 알림이라 만료 때 OS 배너로 한 번 더 알린다", () => {
-    expect(needsExpiryBanner(UPDATE_FAILED_TOAST_ID)).toBe(true);
-    expect(needsExpiryBanner("update-not-installed")).toBe(true);
+  it("needsExpiryBanner(update-rollback-failed) = true — 하루 1회만 나오는 안내라 만료 때 OS 배너로 한 번 더 알린다", () => {
+    expect(needsExpiryBanner(ID)).toBe(true);
+    expect(needsExpiryBanner("update-rollback-failed")).toBe(true);
   });
 
-  it("배너 보강의 범위는 늘지 않았다 — 이름이 비슷한 id·기존 일반 sticky 는 false · purge-fail- 접두는 그대로 true", () => {
-    for (const id of ["update-not-installed-x", "x-update-not-installed", "Update-Not-Installed", "update-not", "upd-bin", "upd-pack", "perm-x", "perm-Desktop", "boot-warn", "bundle-damaged", ""]) {
+  it("배너 보강의 범위는 늘지 않았다 — 이름이 비슷한 id·결과 알림·기존 일반 sticky 는 false · purge-fail- 접두는 그대로 true", () => {
+    for (const id of ["update-rollback-failed-x", "x-update-rollback-failed", "Update-Rollback-Failed", "update-rollback", UPDATE_RESULT_TOAST_ID, "update-not-installed", "perm-x", "perm-Desktop", "boot-warn", "bundle-damaged", ""]) {
       expect({ id, banner: needsExpiryBanner(id) }).toEqual({ id, banner: false });
     }
     for (const id of ["purge-fail-1", "purge-fail-/Users/x/.cys/run/dept-1.sock", "purge-fail-"]) {
@@ -157,44 +161,28 @@ describe("★(0.14.43 · J2) 업데이트 미설치 알림(update-not-installed)
     }
   });
 
-  it("만료 배너 문구는 이 알림에도 '자동 닫힘 + 알람 탭에서 재조회'를 명시한다", () => {
-    const t = expiryBannerText("업데이트가 설치되지 않았습니다", "0.14.43 업데이트가 설치되지 않았습니다 — 지금 버전은 0.14.42 그대로입니다.");
-    expect(t.title).toBe("⚠ 업데이트가 설치되지 않았습니다");
-    expect(t.body).toContain("0.14.42 그대로입니다");
-    expect(t.body).toContain("알람");
-  });
-
-  it("★id 문자열 두 곳이 같다 — updatenotice.ts 의 UPDATE_FAILED_TOAST_ID 와 toastttl.ts 의 안내용 수명·만료 배너 정확 일치 목록(모듈 결합 없이 값만 같게 둔다)", () => {
+  it("★id 문자열 세 곳이 같다 — updnotice.rs(백엔드가 보내는 id) · updateresult.ts(화면이 받는 id) · toastttl.ts 정확 일치 목록(모듈 결합 없이 값만 같게 둔다)", () => {
     const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf-8");
     const ttl = read("./toastttl.ts");
-    const notice = read("./updatenotice.ts");
-    // 정의처: updatenotice.ts 에 상수가 정확히 한 번 정의된다
-    const def = notice.match(/export const UPDATE_FAILED_TOAST_ID = "([^"]*)";/);
-    expect(def === null ? null : def[1]).toBe(UPDATE_FAILED_TOAST_ID);
-    // toastttl.ts 의 두 정확 일치 목록은 그 값 하나씩이다
+    const ts = read("./updateresult.ts");
+    const rs = read("../../src-tauri/src/updnotice.rs");
+    const one = (src: string, re: RegExp): string | null => {
+      const m = src.match(re);
+      return m === null ? null : m[1];
+    };
+    expect(one(ts, /export const UPDATE_ROLLBACK_FAILED_TOAST_ID = "([^"]*)";/)).toBe(ID);
+    expect(one(rs, /pub const TOAST_ID_ROLLBACK_FAILED: &str = "([^"]*)";/)).toBe(ID);
+    expect(one(ts, /export const UPDATE_RESULT_TOAST_ID = "([^"]*)";/)).toBe(UPDATE_RESULT_TOAST_ID);
+    expect(one(rs, /pub const TOAST_ID_RESULT: &str = "([^"]*)";/)).toBe(UPDATE_RESULT_TOAST_ID);
     const listOf = (name: string): string[] => {
       const m = ttl.match(new RegExp(`const ${name} = \\[([^\\]]*)\\] as const;`));
       expect({ 목록: name, 존재: m !== null }).toEqual({ 목록: name, 존재: true });
       return (m![1].match(/"([^"]*)"/g) ?? []).map((x) => x.slice(1, -1));
     };
-    expect(listOf("GUIDE_STICKY_IDS")).toEqual([UPDATE_FAILED_TOAST_ID]);
-    expect(listOf("BANNER_ON_EXPIRY_IDS")).toEqual([UPDATE_FAILED_TOAST_ID]);
-    // 모듈 결합 금지 — toastttl.ts 는 updatenotice.ts 를 import 하지 않는다(값만 같게 둔다)
-    expect(/from\s+["']\.\/updatenotice["']/.test(ttl)).toBe(false);
-  });
-
-  it("★main.ts 가 이 알림을 그 상수 id 로 띄운다 — stickyToast(UPDATE_FAILED_TOAST_ID, …) · 같은 id 의 리터럴 0 · 그 id 는 10분+배너를 받는다", () => {
-    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf-8")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .split("\n")
-      .map((l) => (l.trimStart().startsWith("//") ? "" : l.replace(/\s\/\/.*$/, "")))
-      .join("\n");
-    expect(main.includes('stickyToast(UPDATE_FAILED_TOAST_ID, "health", plan.title, plan.body)')).toBe(true);
-    expect(main.includes('"update-not-installed"')).toBe(false);
-    expect(/import\s*\{[^}]*\bUPDATE_FAILED_TOAST_ID\b[^}]*\}\s*from\s*["']\.\/updatenotice["']/.test(main)).toBe(true);
-    // 그 상수 값으로 실제 수명·배너 판정이 나온다(두 곳이 어긋나면 여기서 갈린다)
-    expect(toastTtl("sticky", UPDATE_FAILED_TOAST_ID).ttlMs).toBe(GUIDE_TTL_MS);
-    expect(needsExpiryBanner(UPDATE_FAILED_TOAST_ID)).toBe(true);
+    expect(listOf("GUIDE_STICKY_IDS")).toEqual([ID]);
+    expect(listOf("BANNER_ON_EXPIRY_IDS")).toEqual([ID]);
+    // 모듈 결합 금지 — toastttl.ts 는 updateresult.ts 를 import 하지 않는다(값만 같게 둔다)
+    expect(/from\s+["']\.\/updateresult["']/.test(ttl)).toBe(false);
   });
 });
 
@@ -232,16 +220,16 @@ describe("pushAlarm — 이력 링버퍼(정보 소실 방지 장치)", () => {
   it("같은 id는 최신 1건으로 합쳐진다 — 진행률 갱신이 이력을 잠식하지 않음", () => {
     let ring: AlarmRecord[] = [];
     for (let i = 1; i <= 50; i++) {
-      ring = pushAlarm(ring, rec({ id: "upd-bin", detail: `${i}%`, ts: i }));
+      ring = pushAlarm(ring, rec({ id: "restore", detail: `${i}%`, ts: i }));
     }
     expect(ring.length).toBe(1);
     expect(ring[0].detail).toBe("50%");
   });
   it("id 있는 갱신은 앞선 실패 알람을 밀어내지 않는다", () => {
     let ring: AlarmRecord[] = [];
-    ring = pushAlarm(ring, rec({ id: "upd-bin", detail: "1%" }));
+    ring = pushAlarm(ring, rec({ id: "restore", detail: "1%" }));
     ring = pushAlarm(ring, rec({ name: "부서 완전 삭제 실패" }));
-    ring = pushAlarm(ring, rec({ id: "upd-bin", detail: "2%" }));
+    ring = pushAlarm(ring, rec({ id: "restore", detail: "2%" }));
     // 최신 진행률 1건 + 실패 1건만 남고, 이전 진행률 항목은 사라진다
     expect(ring.map((r) => r.detail)).toEqual(["2%", "d"]);
     expect(ring.some((r) => r.name === "부서 완전 삭제 실패")).toBe(true);

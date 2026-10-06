@@ -23,8 +23,6 @@ import {
   type TransferRecord,
 } from "./transfer";
 import { planRestartInject, restartInvokeFailureReason } from "./restartplan";
-import { updatePlan } from "./updateplan";
-import { RESTART_PENDING_KEY, RESTART_BUTTON_LABEL, encodeRestartPending, decodeRestartPending, updateButtonAction, restartReadyToast, restartPendingTitle } from "./restartpending";
 import { DEFAULT_BG, readableForeground } from "./theme";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import {
@@ -170,7 +168,7 @@ import {
   windowView,
 } from "./usagebar";
 import { starvedNotice, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
-import { installerLaunchFailure, INSTALLER_LAUNCH_FAILED_TOAST_ID, planUpdateAttemptReport, sacPreflightText, UPDATE_FAILED_TOAST_ID } from "./updatenotice"; // 0.14.43 J2 업데이트 미설치 알림(순수 문구·판정 해석·토스트 id)·설치 전 스마트 앱 컨트롤 고지 · WU 설치 파일 실행 차단 알림
+import { parseResultNotice, seatsBlockedText } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
 import {
   deptPendingText,
   deptProgressId,
@@ -6534,7 +6532,7 @@ function startFtDrag(e0: MouseEvent, full: string) {
 function feedReplyErrorText(e: unknown): string {
   const s = String(e);
   if (s.includes("self_approval_denied"))
-    return "자기승인 차단(§3.2) — 발행자와 같은 프로세스의 승인은 거부됩니다. 데몬이 구버전이면 업데이트 후 다시 시도하세요.";
+    return "자기승인 차단(§3.2) — 발행자와 같은 프로세스의 승인은 거부됩니다. 데몬이 옛 판이면 새 판으로 바뀐 뒤 다시 시도하세요.";
   // ★REVIEW1 m4: operator token 회전 경합(팩 재시작 등)에서 나는 코드 — Tauri 가 1회 재시도해도
   // 좁은 창을 못 넘기면 여기로 온다. 팀 제안처럼 "앱에서만 처리할 수 있는 항목"이면 재클릭이
   // 새 토큰으로 다시 붙는다(allocate 는 멱등이라 팀이 이미 만들어졌어도 다시 만들지 않는다).
@@ -6906,323 +6904,6 @@ async function refreshFeed() {
   }
 }
 
-// ---------- 자동 업데이트 ----------
-
-// invoke 응답의 신뢰 모양 — **명명 타입으로 둔다**(인라인 금지). 아래 checkForUpdate 가
-// `as typeof bin` 으로 단언하던 자리에서 TS2339('… does not exist on type never')가 7건 났던
-// 원인이 이것이다: `as typeof X` 는 선언 타입이 아니라 **그 지점의 좁혀진 타입**을 가리키는데,
-// 바로 위에서 null 로 초기화했으므로 typeof X = null 이 되고 → 대입 후 X 는 null 로 좁혀지며
-// → `X && X.version` 의 truthy 분기가 never 가 된다. 명명 별칭은 좁혀지지 않으므로 원래 의도
-// (응답을 이 모양으로 신뢰)를 그대로 표현하면서 게이트(bunx tsc -p tsconfig.check.json)를 통과한다.
-type BinUpdateInfo = { version: string; current?: string; notes?: string };
-type PackUpdateInfo = { pack_version: string; manifest_url: string; binary_too_old: boolean };
-
-let updateAvailable: { version: string; notes?: string } | null = null;
-// 무중단 팩 업데이트(check_pack_update) 결과 — 팩만 변경 시 세션·데몬 유지 경로(install_pack_update).
-let packUpdateAvailable: PackUpdateInfo | null = null;
-
-// ── 맥 교체 완료 뒤 「다시 켜기」 대기(TICKET=v116-restart-toast · 판정 = restartpending.ts) ──
-// 교체 완료 알림은 60초 뒤 사라진다(오너 정책). 그 뒤에도 누를 곳이 남도록 헤더 「업데이트」 단추가
-// 「다시 켜기」가 된다. 설정 지점 = update-restart-required 리스너 하나(맥 install_update_darwin 만 낸다 —
-// 윈은 곧장 재시작하므로 이 상태가 생기지 않는다). 해제 = 재시작으로 프로세스가 끝나는 것뿐.
-let restartPendingVersion: string | null = null;
-// restartAfterUpdate 진행 중 재진입 차단 — 연타·알림+단추 동시 누름이 저장 지시를 겹쳐 주입하지 않게(4군 ①).
-let restartingAfterUpdate = false;
-// install_update(다운로드·교체) 진행 중 이중 설치 차단(master 판정 ⑵ · 곁 ①) — 진행 중 헤더 재클릭 · 첫 확인 전 두 번 눌러
-// 쌓인 확인 창 둘 다 「설치」가 두 번째 전량 다운로드를 내지 않게. (1.1.8 X2-R) 사전 조회·확인 창 구간부터 세운다(promptBinaryPatch).
-let installingUpdate = false;
-const INSTALL_BUSY_NAME = "새 앱 받는 중";
-const INSTALL_BUSY_DETAIL = "새 앱을 받고 있습니다. 끝나면 알려 드리니 잠시만 기다려 주세요.";
-let restartPendingRestore: Promise<void> | null = null;
-
-/// 헤더 단추·배지를 「다시 켜기」로 칠한다. 마크업은 그대로 두고 첫 글자 노드만 바꾼다
-/// (index.html 의 단추 글자 「업데이트」는 topbarlabels 시험이 읽는다 — span 으로 감싸면 그 핀이 비게 된다).
-function paintRestartPending() {
-  if (restartPendingVersion === null) return;
-  const btn = document.getElementById("btn-update");
-  const badge = document.getElementById("update-badge");
-  if (!btn || !badge) return;
-  const title = restartPendingTitle(restartPendingVersion);
-  if (btn.firstChild?.nodeType === Node.TEXT_NODE) btn.firstChild.nodeValue = `${RESTART_BUTTON_LABEL} `;
-  btn.title = title;
-  badge.hidden = false;
-  badge.textContent = "!";
-  badge.classList.remove("ok");
-  badge.title = title;
-}
-
-/// 교체 완료 이벤트 → 대기 기억(메모리 = 화면의 진실 · sessionStorage = ⌘R 을 넘기는 사본).
-function markRestartPending(version: string) {
-  restartPendingVersion = version;
-  paintRestartPending();
-  void (async () => {
-    try {
-      const appVer = (await invoke("app_version")) as string;
-      const buildId = ((await invoke("app_build_id").catch(() => "")) as string) ?? "";
-      if (appVer) sessionStorage.setItem(RESTART_PENDING_KEY, encodeRestartPending(version, appVer, buildId));
-    } catch {
-      /* 판번 조회·저장 실패 = 새로고침을 넘기지 못할 뿐(메모리 대기는 그대로) */
-    }
-  })();
-}
-
-/// ⌘R 뒤 복원(1회). 판정은 decodeRestartPending — 새 판으로 켜졌거나 검증 못 하면 무효·칸 삭제.
-/// 이벤트가 복원보다 먼저 왔으면 메모리 값을 덮지 않는다.
-function restoreRestartPending(): Promise<void> {
-  restartPendingRestore ??= (async () => {
-    let raw: string | null = null;
-    try {
-      raw = sessionStorage.getItem(RESTART_PENDING_KEY);
-    } catch {
-      return;
-    }
-    if (raw === null) return;
-    let appVer = "";
-    try {
-      appVer = (await invoke("app_version")) as string;
-    } catch {
-      /* 아래에서 처리 */
-    }
-    // 판번을 모르면 검증 불가 → 복원하지 않되 칸은 남긴다(일시 오류로 맞는 기억을 지우지 않게 · 다음 새로고침에 다시 잰다).
-    if (!appVer) return;
-    const buildId = ((await invoke("app_build_id").catch(() => "")) as string) ?? "";
-    const v = decodeRestartPending(raw, appVer, buildId);
-    if (v === null) {
-      try {
-        sessionStorage.removeItem(RESTART_PENDING_KEY);
-      } catch {
-        /* 무시 */
-      }
-      return;
-    }
-    if (restartPendingVersion === null) restartPendingVersion = v;
-  })();
-  return restartPendingRestore;
-}
-
-/// 업데이트 확인. silent=true면 시작 시 백그라운드 체크(결과 없으면 조용히).
-/// 바이너리(check_update·재시작)와 무중단 팩(check_pack_update·세션 유지)을 둘 다 확인해 분기한다.
-async function checkForUpdate(silent: boolean) {
-  // 0) 맥 교체가 이미 끝나 다시 켜기만 남았으면 확인하지 않는다 — 도는 옛 앱은 같은 판을 또 「새 판」이라
-  //    판정하므로, 확인하면 「누르면 설치」 안내·설치 확인 창(= 재다운로드)으로 되돌아간다(v116-restart-toast).
-  //    시작 확인(⌘R 뒤)·6시간 주기·포커스 확인이 모두 이 줄을 지난다.
-  await restoreRestartPending();
-  if (restartPendingVersion !== null) {
-    paintRestartPending();
-    return;
-  }
-  // 1) 바이너리 업데이트(Tauri updater latest.json) — 재시작 경로.
-  let bin: BinUpdateInfo | null = null;
-  let binCheckFailed = false;
-  try {
-    bin = (await invoke("check_update")) as BinUpdateInfo | null;
-  } catch (e) {
-    // ★early-return 안 함(팩 체크는 계속) — 단, 바이너리 상태 불명을 기억해 아래 '최신' 단정을 억제한다.
-    binCheckFailed = true;
-    if (!silent) toast("health", "업데이트 확인 실패", "업데이트 정보를 받아 오지 못했습니다. 인터넷 연결을 확인한 뒤 다시 눌러 주세요.", undefined, String(e));
-  }
-  // 2) 무중단 팩 업데이트(pack-manifest.json) — 세션·데몬 유지 경로. 실패는 조용히(폴링).
-  let pack: PackUpdateInfo | null = null;
-  let packCheckFailed = false;
-  try {
-    pack = (await invoke("check_pack_update")) as PackUpdateInfo | null;
-  } catch {
-    /* 팩 체크 실패(네트워크·부재) = 조용히 무시 */
-    packCheckFailed = true;
-  }
-  // 확인을 기다리는 사이 교체가 끝났으면(이벤트) 설치 안내·설치 확인 창으로 덮지 않는다(클로드 적대 1R #2).
-  if (restartPendingVersion !== null) {
-    paintRestartPending();
-    return;
-  }
-
-  // ★fail-safe: 체크가 성공했을 때만 상태를 갱신한다. 일시 네트워크/업데이터 장애로 체크가 실패하면
-  // 마지막으로 검증된 상태(있던 업데이트 배지)를 보존한다 — 장애로 배지가 사라져 "업데이트 없음"으로
-  // 오인하는 것을 막는다(fresh 성공 시에만 갱신·해제).
-  if (!binCheckFailed) {
-    updateAvailable = bin && bin.version ? { version: bin.version, notes: bin.notes } : null;
-  }
-  if (!packCheckFailed) {
-    packUpdateAvailable =
-      pack && pack.pack_version
-        ? { pack_version: pack.pack_version, manifest_url: pack.manifest_url, binary_too_old: pack.binary_too_old }
-        : null;
-  }
-
-  const badge = document.getElementById("update-badge")!;
-  // 분기 판정은 순수 함수(updateplan.ts — 옵션 2·오너 승인 2026-07-14)로 일원화.
-  // 기존 4분기 배지·문구는 updateplan.test.ts가 문자열 단위로 핀(회귀 0) — 신설은
-  // pack-and-binary(본체+팩 동시·호환 시 팩 무중단을 가리지 않음·T5 불변) 하나뿐이다.
-  const plan = updatePlan({
-    binVersion: updateAvailable ? updateAvailable.version : null,
-    packVersion: packUpdateAvailable ? packUpdateAvailable.pack_version : null,
-    binaryTooOld: packUpdateAvailable ? packUpdateAvailable.binary_too_old : false,
-    binCheckFailed,
-    packCheckFailed,
-  });
-  if (plan.kind !== "unknown") {
-    // unknown = 체크 실패·보존 상태 없음 → 배지 유지('최신' 오단정 금지, 종전 fail-safe).
-    badge.hidden = false;
-    badge.textContent = plan.badge;
-    if (plan.ok) badge.classList.add("ok");
-    else badge.classList.remove("ok");
-    badge.title = plan.title;
-  }
-  switch (plan.kind) {
-    case "pack-and-binary":
-      // ★옵션 2: 팩 무중단이 실행 가능한 액션 — 모달은 팩 하나만(silent 불변식: 모달 금지는
-      // silent 경로에만 해당·비silent도 모달 1개 상한), 본체는 토스트로 병행 안내(T5 경로 유지).
-      if (!silent) {
-        promptPackInstall();
-        toast("feed", "🔄 새 앱도 있음", `새 앱 ${updateAvailable!.version} 도 나왔습니다. 상단 「업데이트」로 설치하고, 다시 켜지면 하던 창이 돌아옵니다.`);
-      } else toast("feed", "↻ 새 자비스 구성 + 새 앱", plan.toastMsg);
-      break;
-    case "binary":
-      // 본체(바이너리) 패치 설치 — 오너 지시(2026-07-15) 재배선(구 T5 홈페이지 전용의 실험적 개정).
-      if (!silent) promptBinaryPatch();
-      else toast("feed", "🔄 새 앱", plan.toastMsg);
-      break;
-    case "pack":
-      // 팩만 변경 + 바이너리 호환 → 무중단 가능(세션·데몬 생존).
-      if (!silent) promptPackInstall();
-      else toast("feed", "↻ 새 자비스 구성", plan.toastMsg);
-      break;
-    case "binary-required":
-      // 팩은 있으나 min_binary_version > 설치 바이너리 → 무중단 불가, 본체 업데이트(홈페이지) 필요(T5 정책).
-      if (!silent) toast("health", "앱 업데이트 필요", plan.toastMsg);
-      else toast("feed", "⚠ 업데이트 있음", plan.toastMsg);
-      break;
-    case "none":
-      // 오너 지시(2026-07-03): 최신 확인 시 숨김 대신 "0" 표시. 중립 스타일(.ok)로 경고색 회피.
-      if (!silent) toast("watchdog", "✅ 최신 버전", "최신 버전입니다. 추가 업데이트가 없습니다.");
-      break;
-    case "unknown":
-      break;
-  }
-}
-
-/// 본체(바이너리) 패치 설치 — 오너 지시(2026-07-15)로 인앱 install_update 재배선(구 T5 홈페이지
-/// 전용 정책의 실험적 개정). install_update = drain 저장 신호 → 다운로드·서명검증 → .app 교체 →
-/// 데몬 핸드오프 → 앱 재시작(부서·노드는 피닉스·resume으로 자동 복원). 진행 표시는
-/// update-progress 리스너("upd-bin" sticky)가 전담한다.
-// ★(0.14.43 · J2) 패치 설치 확인 창을 열기 전 '스마트 앱 컨트롤 상태' 조회의 상한. 넘기면: 안내 문단 없이 확인 창을 연다(조회는 정보일 뿐
-// 설치를 막지 않는다 — 이 조회 때문에 창이 멈추면 안 된다). 맥·리눅스는 프로세스를 띄우지 않고 곧바로 null 이라 이 상한에 닿지 않는다.
-// 윈도우는 reg.exe 1회(Defender 콜드스타트가 겹쳐도 수 초 안)라 winScaled 로 2배(= 5초)다. 부작용 없는 읽기라 rpcT 의 전제를 지킨다.
-// 이 상한은 **조회 둘**이 쓴다 — 스마트 앱 컨트롤 상태(smart_app_control)와, 켜짐일 때 이어서 묻는 확인 실행 노브(update_checked_launch_enabled). 최악 대기 = 상한의 2배.
-const T_SAC = winScaled(2_500);
-async function promptBinaryPatch() {
-  // ★A7(성찰 확정): install_update 는 앱을 교체·재시작한다 — 리셋 실행 중이면 격리 스레드가
-  // 중도 사멸해 manifest(복구 지도) 없는 반쪽 격리가 남는다. 완료 래치 상태에서도 무의미하다.
-  if (daemonActionBlocked()) return;
-  if (installingUpdate) {
-    toast("feed", INSTALL_BUSY_NAME, INSTALL_BUSY_DETAIL);
-    return;
-  }
-  if (!updateAvailable) {
-    await checkForUpdate(false);
-    return;
-  }
-  const v = updateAvailable.version;
-  // ★맥과 윈도의 마지막 한 걸음이 다르다 — 문구도 그 차이만큼만 다르다(B7·B15).
-  //   윈도: 설치 직후 앱이 스스로 재시작. 맥: 교체까지 하고 **재시작을 한 번 더 묻는다**.
-  //   여기서 한 문장으로 뭉뚱그리면 맥 사용자는 "재시작한다더니 안 한다"를 보게 된다.
-  const tail = IS_MACOS
-    ? `받은 파일이 진짜인지 확인한 뒤 앱을 바꿉니다. 바꾸기가 끝나면 다시 켤지 한 번 더 여쭙고, ` +
-      `다시 켜면 부서와 창, 대화가 돌아옵니다.`
-    : IS_WINDOWS
-      ? // ★(1.1.8 병합 X2-W · master#114e0c71 「사실 쪽」) 윈도우 분기에는 drain·핸드오프가 없다 — install_update_checked_windows 는 받기→설치기 실행→
-        //   cleanup_before_exit→process::exit(0) 이고(src-tauri/src/main.rs install_update_checked_windows), 대체 경로도 플러그인이 설치 중 프로세스를 끝내
-        //   drain 단계에 닿지 않는다. 그래서 원작자 R1F-UA(S3 note 14) 윈도우 문면을 쓴다(「미저장분」 한 구절만 우리 D4#14 쉬운 말로). 맥·그 밖(리눅스 = drain 을 지난다)은 종전 문안.
-        `다운로드·서명 검증 뒤 설치 프로그램을 실행합니다(이 앱은 닫히고, 설치가 끝나면 다시 시작됩니다). 부서·노드는 재시작 후 자동 복원됩니다(대화 기억 포함). 저장하지 않은 마지막 입력은 빠질 수 있습니다.`
-      : `받은 파일이 진짜인지 확인한 뒤 앱을 바꾸고 다시 켭니다. 재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.`;
-  // ★(0.14.43 · J2) 설치 전 사실 고지 — Windows 스마트 앱 컨트롤이 켜져 있으면 코드 서명도 평판도 없는 설치 파일의 실행이 막히고, 막히면 업데이트는 설치되지 않은 채
-  //   이 앱이 닫히지 않고 그 사실을 알린다(WU — 아래 catch). **켜짐일 때만** 확인 창 본문 끝에 한 문단을 붙인다 — 설치를 막지는 않는다(계속할지는 사용자가 정한다).
-  //   조회는 정보일 뿐이라 실패·시간 초과는 '문단 없음'으로 접는다(T_SAC 상한 + catch). 문단이 없으면 본문은 종전과 바이트 동일하다.
-  // ★(R1F-UA · S3 minor 4) 켜짐일 때만 '확인 실행'(`CYS_UPDATE_CHECKED_LAUNCH`)이 켜져 있는지 한 번 더 묻는다(같은 상한 T_SAC) — 꺼져 있으면(=0) 막혀도 앱이 알림 없이 닫히므로
-  //   사실대로 적은 판을 쓴다. 이 조회의 실패·시간 초과는 기본값(켜짐)으로 본다 — 문단 자체를 없애지 않는다.
-  //   (1.1.8) 원작자 U9 업데이트 창(updatestate)은 받지 않았다(잠정 X2) — 이 고지와 아래 WU 알림만 우리 설치 확인 창에 붙였다.
-  // ★(1.1.8 병합 X2-R · master#c6a9de68) 진행 중 표식을 **스마트 앱 컨트롤 사전 조회 앞**에서 세운다 — 조회(윈 최대 T_SAC×2)·확인 창이
-  //   떠 있는 동안 다시 눌러도 조회·확인 창이 겹쳐 뜨지 않고 안내 1줄(INSTALL_BUSY)만 낸다(종전 = 설치 호출 동안만 · 조회 3회·확인 창 중첩).
-  //   어떤 갈래로 끝나도(거절·재시작 위임·설치 실패·확인 창 예외) finally 에서 내린다.
-  installingUpdate = true;
-  try {
-    let sacNote: string | null = null;
-    try {
-      const sac = await rpcT(invoke("smart_app_control"), T_SAC);
-      const checked = sac === "on" ? await rpcT(invoke("update_checked_launch_enabled"), T_SAC).catch(() => true) : true;
-      sacNote = sacPreflightText(typeof sac === "string" ? sac : null, checked !== false);
-    } catch {
-      sacNote = null;
-    }
-    const ok = await confirmModal(
-      `새 앱 ${v} 설치`,
-      `새 앱 ${v} 을 설치합니다. ${tail}` +
-        `\n\n지금 설치하시겠습니까?\n수동 설치 — 설치 사이트: https://jarvis-install.godmeyou.kr` +
-        (sacNote ? `\n\n${sacNote}` : ""),
-      "설치",
-    );
-    if (!ok) return;
-    // 확인 창이 떠 있는 사이 다른 설치의 교체가 끝났으면 또 받지 않고 다시 켜기로 넘긴다(v116-restart-toast).
-    if (restartPendingVersion !== null) return restartAfterUpdate(restartPendingVersion);
-    try {
-      await invoke("install_update", { force: true });
-      // 성공 시 백엔드가 app.restart()까지 수행 — 후속 UI 처리 없음(진행은 update-progress 리스너).
-    } catch (e) {
-      dismissToast("upd-bin");
-      // ★(0.14.43 · WU) 윈도우: 설치 파일 실행이 막혔으면(`installer_launch_failed:<코드>:<반환값>`) 앱은 닫히지 않은 채 여기로 온다 — J2 알림과 같은 자리·같은
-      //   지속 알림(수명 10분·만료 배너)으로 사람 말 문구를 보인다. 그 꼴이 아니면 종전 토스트 그대로다.
-      const cur = String((await invoke("app_version").catch(() => "")) ?? "");
-      const lf = installerLaunchFailure(String(e), cur, v);
-      if (lf) stickyToast(INSTALLER_LAUNCH_FAILED_TOAST_ID, "health", lf.title, lf.body);
-      else toast("health", "앱 업데이트 설치 실패", "새 판을 설치하지 못했습니다. 잠시 뒤 상단 「업데이트」를 다시 눌러 주세요.", undefined, String(e));
-    }
-  } finally {
-    installingUpdate = false;
-  }
-}
-
-/// 맥 교체 완료 뒤 「재시작」(B15). 살아있는 세션이 있으면 백엔드가 거부하므로 한 번 확인받고 강행한다 —
-/// 확인 문구·순서는 manualRotateSkewed(수동 교대)와 같은 모양이다(같은 일을 두 문장으로 말하지 않는다).
-async function restartAfterUpdate(version: string) {
-  if (daemonActionBlocked()) return;
-  // 재진입 차단(v116-restart-toast · 4군 ①) — 첫 await 전에 세운다(같은 틱 연타도 1회). 실패·취소 뒤엔 풀려
-  // 다시 누를 수 있다. 성공이면 백엔드가 앱을 재시작하므로 풀릴 일이 없다.
-  if (restartingAfterUpdate) {
-    toast("feed", "다시 켜기 준비 중", "다시 켜기를 준비하고 있습니다. 잠시만 기다려 주세요.");
-    return;
-  }
-  restartingAfterUpdate = true;
-  try {
-    await restartAfterUpdateOnce(version);
-  } finally {
-    restartingAfterUpdate = false;
-  }
-}
-
-async function restartAfterUpdateOnce(version: string) {
-  try {
-    await invoke("restart_after_update", { force: false });
-    return; // 성공하면 백엔드가 재시작까지 한다(여기로 돌아오지 않는다).
-  } catch (e) {
-    const msg = String(e);
-    if (!msg.includes("live_sessions:")) {
-      toast("health", "재시작 실패", "앱을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, msg);
-      return;
-    }
-    const ok = await confirmModal(
-      `재시작 (새 판 v${version})`,
-      `${holdReasonText(msg)}\n\n재시작 직전에 하던 대화를 저장하고, 다시 켜지면 창과 대화가 돌아옵니다. 저장 직전 몇 초 사이의 입력은 빠질 수 있습니다.\n\n지금 재시작하시겠습니까?`,
-      "재시작",
-    );
-    if (!ok) return;
-    try {
-      await invoke("restart_after_update", { force: true });
-    } catch (e2) {
-      toast("health", "재시작 실패", "앱을 다시 켜지 못했습니다. 잠시 뒤 다시 시도해 주세요.", undefined, String(e2));
-    }
-  }
-}
-
 // ── 버전 스큐 세대교체(무중단 rename-swap의 짝) — 메인 + 부서 데몬 ──
 // 업데이트 후 구 데몬(lame-duck)이 세션을 보존하는 동안 "데몬 vX ↔ 앱 vY" 스큐를 비차단으로 알린다.
 // 강제 재시작 없음(세션 보존 우선). 잃을 세션 0인 노드는 무손실 자동 교대, 세션 있는 노드만 배지+1회 안내.
@@ -7358,7 +7039,7 @@ function showSkewBadge(
     ? `데몬 v${daemonVer} · 앱 v${appVer}${suffix} — 세션 보존 중`
     : `앱 v${appVer} · 부서 ${heldDepts.length}개 구버전 — 세션 보존 중`;
   verSkewBadge.title =
-    "업데이트는 받았지만 작업 중인 창을 지키려고 옛 엔진이 계속 돌고 있습니다.\n" +
+    "새 판은 받았지만 작업 중인 창을 지키려고 옛 엔진이 계속 돌고 있습니다.\n" +
     "누르면 하던 대화를 저장하고 본부부터 부서 순으로 새 판 엔진으로 바꾼 뒤 창과 대화를 되돌립니다.";
   verSkewBadge.onclick = () => void manualRotateSkewed(appVer, heldMain, heldDepts);
 }
@@ -7630,47 +7311,6 @@ async function checkVersionSkew() {
     const why = holdReason ? ` ${holdReason}` : "";
     toast("feed", "새 버전 준비", `새 버전 v${appVer} 준비 —${why} 상태바 배지를 눌러 저장 후 교대하세요.`);
   }
-}
-
-/// 무중단 팩 설치 — install_pack_update(세션·데몬 생존, app.restart 없음) 호출.
-/// 진행/완료/경고는 pack-progress·pack-updated·update-warning 리스너가 표시한다(아래 startup).
-/// ★"재시작" 확인 다이얼로그를 띄우지 않는다 — 세션이 죽지 않는 게 바이너리 경로와의 핵심 차이.
-async function promptPackInstall() {
-  // ★A7: 팩 설치는 격리로 이동 중인 ~/.cys/pack 을 재생성한다 — 리셋 진행/완료 중 금지.
-  if (daemonActionBlocked()) return;
-  if (!packUpdateAvailable) {
-    await checkForUpdate(false);
-    return;
-  }
-  const pv = packUpdateAvailable.pack_version;
-  // 지속형 토스트: pack-progress 리스너가 갱신하고 pack-updated/update-warning이 dismiss한다.
-  stickyToast("upd-pack", "feed", "↻ 자비스 구성 업데이트", `새 자비스 구성 ${pv} 적용 중… 하던 창은 그대로이고 재시작하지 않습니다.`);
-  try {
-    await invoke("install_pack_update", { manifestUrl: packUpdateAvailable.manifest_url });
-    // 성공(또는 degraded)은 pack-updated/update-warning 리스너가 후속 처리(sticky도 거기서 dismiss).
-  } catch (e) {
-    dismissToast("upd-pack"); // 완료 이벤트 없이 reject된 경로 — 진행 토스트를 내린다.
-    // 백엔드가 update-error도 emit하지만, join/실행 단계 실패는 emit 없이 reject되므로 여기서 표시.
-    toast("health", "자비스 구성 업데이트 실패", "새 자비스 구성을 적용하지 못했습니다. 지금 쓰던 창은 그대로 두고 잠시 뒤 다시 시도해 주세요.", undefined, String(e));
-  }
-}
-
-/// Update 버튼 — **누를 때마다 새로 확인하고, 그 한 번의 판정으로 배지와 동작을 함께 정한다.**
-/// ★TICKET=cysr-console-flicker-r2 ⓔ(2026-09-16 신규 1.0.0 설치본 실기): 배지는 떠 있는데 누르면
-///   「최신·추가 업데이트 없음」. 종전 디스패처는 **이전 확인이 남긴 캐시**(updateAvailable·
-///   packUpdateAvailable)로 경로를 골라, 배지를 만든 판정과 클릭이 보는 판정이 서로 다른 시점의
-///   값이었다(시작 직후 확인 → 이후 상태 변화). 이제 클릭 = checkForUpdate(false) 하나 —
-///   updatePlan 이 배지 텍스트와 비silent 동작(본체 패치·팩 무중단·본체 필요 안내·최신 안내)을
-///   같은 입력에서 정하고, 「없음」이면 그 자리에서 배지를 "0" 으로 갱신한다.
-///   (본체+팩 동시·호환이면 팩 무중단 + 본체 토스트 — updateplan.ts 옵션 2 설계 그대로.)
-///   (v116-restart-toast) 예외 하나 — 맥 교체가 이미 끝나 다시 켜기만 남았으면 확인 대신 다시 켠다.
-///   대기 판번은 「지난 확인의 캐시」가 아니라 **끝난 교체의 사실**이다(설정 = update-restart-required 뿐).
-async function onUpdateButton() {
-  // ⌘R 직후(복원 전) 누른 첫 클릭도 대기를 보도록 복원을 먼저 기다린다(클로드 적대 1R #4). 같은 틱 연타도
-  // 각자 이 await 뒤에 차례로 이어지고, 첫 번째가 restartAfterUpdate 에서 재진입 플래그를 먼저 세운다.
-  await restoreRestartPending();
-  if (updateButtonAction(restartPendingVersion) === "restart") return restartAfterUpdate(restartPendingVersion!);
-  return checkForUpdate(false);
 }
 
 /// 간단한 확인 모달 (WKWebView confirm 회피). resolve(true/false).
@@ -9464,10 +9104,15 @@ async function start() {
   } catch {
     /* 비-macOS·번들 밖 실행은 해당 없음 */
   }
-  // ★업데이트 미설치 알림 pull(0.14.43 · J2): 설치본 무결성 pull **바로 뒤**. 데몬과 무관한 파일 판정이라 daemon-ready 대기 앞에 둔다.
-  //   fire-and-forget — 이후 부트 코드는 이 결과에 무의존이고, 윈도우에서는 스마트 앱 컨트롤 조회(reg 1회)가 붙을 수 있어 직렬 await 로
-  //   기동을 늦추지 않는다. 판정·재시도·실패 무시는 pullUpdateAttemptReport 가 한다(알림 id = UPDATE_FAILED_TOAST_ID).
-  void pullUpdateAttemptReport();
+  // ★(1.1.8 U4 · 설계 §3-12 · 📌18) 자동 갱신 결과 알림 — 데몬이 쉬는 시간에 바꾼 결과를 이 창에서 토스트 1개로 알리고(결과당 1회 · 중복 ≤1),
+  //   저널을 되살리지 못해 좌석이 하나도 안 뜨는 상태면 창 안에 닫히지 않는 안내 1줄을 둔다. 데몬과 무관한 파일 판정이라 daemon-ready 대기 앞이다.
+  //   fire-and-forget — 판독 실패는 전부 무음(부팅 무영향). 고정 안내는 창이 다시 보일 때마다 다시 잰다(상태가 풀리면 사라진다).
+  void pullUpdateResultNotice();
+  void refreshSeatsBlockedNote();
+  window.addEventListener("focus", () => void refreshSeatsBlockedNote());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void refreshSeatsBlockedNote();
+  });
   // ★INST-1 온보딩 카드(P4-4 · claude CLI 미설치): 의무 CLI가 없으면 팀 부트가 통째로 서는데
   // 종전 신호(boot-warning 계열)는 실패 사실만 말하고 설치 방법이 없었다. 판정·문구는 백엔드
   // claude_missing_hint가 cys agent-detect 단일 오라클(CS-1③)의 typed installed:false + hint
@@ -9644,126 +9289,6 @@ async function start() {
     void injectPathsToPane(rt, paths);
   });
 
-  // 바이너리 업데이트 진행률(install_update가 emit). chunk=이번 청크 바이트(누적 아님), total=전체(Option→null 가능).
-  // ★재활성(오너 2026-07-15): promptBinaryPatch가 install_update를 다시 호출한다 — 이 리스너가
-  //   "upd-bin" sticky 진행 토스트를 전담(backend install_update 주석과 짝).
-  let updDownloaded = 0;
-  await listen("update-progress", (e) => {
-    const p = (e.payload ?? {}) as { phase?: string; chunk?: number; total?: number };
-    const mb = (n: number) => (n / 1048576).toFixed(1);
-    if (p.phase === "download") {
-      if (p.chunk === undefined) {
-        // chunk 없는 첫 download 이벤트 = 시작 신호 → 누적 카운터 리셋
-        updDownloaded = 0;
-        stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "다운로드 시작…");
-        return;
-      }
-      updDownloaded += p.chunk;
-      if (p.total && p.total > 0) {
-        const pct = Math.floor((updDownloaded / p.total) * 100);
-        stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", `다운로드 중 ${mb(updDownloaded)} / ${mb(p.total)} MB (${pct}%)`);
-      } else {
-        stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", `다운로드 중 ${mb(updDownloaded)} MB`);
-      }
-    } else if (p.phase === "verify") {
-      // 맥 경로(B7): 크기·sha256·codesign 봉인·CDHash 를 차례로 본다. 윈도는 플러그인이 minisign 으로 대신한다.
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "받은 파일이 진짜인지 확인하는 중…");
-    } else if (p.phase === "swap") {
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "앱을 새 판으로 바꾸는 중…");
-    } else if (p.phase === "dry-run") {
-      // 개발기 격리 실행 — 검증까지만 하고 교체하지 않았다는 사실을 화면에도 남긴다(무증상 성공 금지).
-      dismissToast("upd-bin");
-      toast("watchdog", "🧪 업데이트 드라이런", "검증 전건 통과 — 교체는 하지 않았습니다(CYS_UPDATE_DRY_RUN=1).");
-    } else if (p.phase === "drain") {
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "하던 대화를 저장하는 중…");
-    } else if (p.phase === "handoff") {
-      stickyToast("upd-bin", "feed", "⬇ 업데이트 설치", "재시작 준비 중…");
-    }
-  });
-
-  // 맥 업데이트 교체 완료 → 「재시작」 1클릭(B15 · TICKET=v110-darwin-update).
-  // ★왜 자동으로 재시작하지 않는가: 교체는 끝났지만 **세션은 아직 살아 있다**. 윈도(NSIS)는
-  //   인스톨러가 앱을 죽이므로 선택지가 없지만, 맥은 우리가 교체했으므로 시점을 사용자가 고를 수 있다.
-  //   토스트를 누르면 저장(drain) → 구 데몬 종료 → 재시작 → 자동 복원이 한 번에 돈다.
-  //   (v116-restart-toast) 알림은 60초 뒤 사라지므로(오너 정책) 헤더 단추도 「다시 켜기」가 된다 — 알림을
-  //   놓쳐도 누를 곳이 남는다. 알림 문구가 그 단추를 가리킨다.
-  await listen("update-restart-required", (e) => {
-    const p = (e.payload ?? {}) as { version?: string };
-    const version = p.version ?? "";
-    dismissToast("upd-bin");
-    markRestartPending(version);
-    const t = restartReadyToast(version);
-    stickyToast("upd-restart", "feed", t.name, t.detail, () => void restartAfterUpdate(version));
-  });
-
-  // 무중단 팩 업데이트 진행 피드백(install_pack_update가 emit). ★app.restart 없음 — 세션 유지된 채 적용.
-  await listen("pack-progress", (e) => {
-    const p = (e.payload ?? {}) as { phase?: string };
-    if (p.phase === "start")
-      stickyToast("upd-pack", "feed", "🔄 자비스 구성 적용 중", "받은 파일을 확인하고 새 구성으로 바꾼 뒤 각 창에 알리는 중…");
-  });
-  await listen("pack-updated", (e) => {
-    // (1.1.8) 원작자 U9 단일 상태(updState)는 받지 않았다(잠정 X2) — 우리 전역(packUpdateAvailable)을 그대로 푼다.
-    //   원작자 U4-B2③ 의 `reinject_skipped`(재주입 자체를 못 함 — '완료' 단정 금지) 갈래만 받았다.
-    const p = (e.payload ?? {}) as {
-      pack_version?: string;
-      reinject_failed?: number;
-      reinject_deferred?: number;
-      reinject_skipped?: boolean; // ★U4-B2③ 재주입 자체를 못 함 — '완료' 단정 금지
-    };
-    packUpdateAvailable = null;
-    dismissToast("upd-pack"); // 진행 토스트를 내리고 아래 완료 토스트로 교대.
-    const badge = document.getElementById("update-badge")!;
-    if (!updateAvailable) badge.hidden = true; // 바이너리 업데이트가 별도로 남아있지 않으면 배지 해제
-    paintRestartPending(); // 맥 교체 뒤 다시 켜기 대기면 배지를 다시 칠한다(클로드 적대 1R #6 · 대기 없으면 무동작)
-    // degraded(reinject 일부 실패/보류)면 '완료' 단정 회피 — 상세는 update-warning이 띄운다(모순 차단).
-    const failed = p.reinject_failed ?? 0;
-    const deferred = p.reinject_deferred ?? 0;
-    if (p.reinject_skipped === true) {
-      // ★review1 m2 FIX: "다음 폴링에서 재시도"는 스킵 팔에는 거짓이다 — 재주입 RPC 자체가 실패한
-      // 경우 pending 을 영속하지 않아(run_pack_update Err 팔) 자동 재시도가 없다. 실제 회복은
-      // 데몬 점검·재기동 또는 각 노드의 다음 /clear 때 새 지침이 적용되는 것뿐이다.
-      toast(
-        "watchdog",
-        "✅ 자비스 구성 적용 · 창에는 아직 못 알림",
-        `새 자비스 구성 ${p.pack_version ?? ""} 을 적용했습니다(재시작 없음). 다만 엔진이 응답하지 않아 열린 창에는 알리지 못했고 자동으로 다시 알리지도 않습니다 — 엔진을 다시 켜거나, 각 창이 다음 /clear 때 새 구성을 받습니다.`,
-      );
-    } else if (failed > 0 || deferred > 0) {
-      toast(
-        "watchdog",
-        "✅ 자비스 구성 적용 · 일부 창 대기",
-        `새 자비스 구성 ${p.pack_version ?? ""} 을 적용했습니다. 몇몇 창에는 아직 알리지 못해 잠시 뒤 자동으로 다시 알립니다.`,
-      );
-    } else {
-      toast(
-        "watchdog",
-        "✅ 자비스 구성 업데이트 완료",
-        `새 자비스 구성 ${p.pack_version ?? ""} 을 적용했고 모든 창에 알렸습니다. 재시작은 없었습니다.`,
-      );
-    }
-  });
-  // ★U9(R5): CLI 가 반영 없이 끝남(no-op) — "완료"라고 말하지 않는다. 브리지가 확인한 경우(disk_parse=ok ∧
-  // disk ≥ remote)만 '이미 적용돼 있음', 아니면 '상태 불명'(디스크 판독 실패도 CLI 는 no-op 로 끝난다).
-  // (1.1.8) 원작자 U9 상태(updState)는 받지 않았다(잠정 X2) — 진행 토스트를 내리고 사실 한 줄만 낸다(이 이벤트가 없으면 진행 토스트가 남는다).
-  await listen("pack-uptodate", (e) => {
-    const p = (e.payload ?? {}) as { confirmed?: boolean; disk_version?: string; remote_version?: string };
-    dismissToast("upd-pack");
-    if (p.confirmed === true) packUpdateAvailable = null;
-    if (p.confirmed === true)
-      toast("watchdog", "ℹ 이미 적용돼 있음", `자비스 구성 ${p.disk_version ?? ""} — 반영할 것이 없습니다(이미 최신).`);
-    else
-      toast(
-        "health",
-        "자비스 구성 상태 불명",
-        `설치된 자비스 구성 버전을 확인하지 못해 반영하지 않았습니다(설치됨 ${p.disk_version ?? "?"} · 공개 ${p.remote_version ?? "?"}). 상단 「업데이트」를 다시 눌러 확인해 주세요.`,
-      );
-  });
-  await listen("update-warning", (e) => {
-    const p = (e.payload ?? {}) as { message?: string };
-    dismissToast("upd-pack"); // 진행 토스트를 내리고 아래 경고 토스트로 교대.
-    toast("health", "⚠ 일부 창이 새 구성을 아직 모릅니다", "새 자비스 구성은 저장됐지만 몇몇 창에 알리지 못했습니다. 그 창들은 하던 대로 계속 돌아갑니다.", undefined, p.message);
-  });
-
   // (T4) 업데이트 후 조직 복원 진행(restore-progress·spawn_org_restore emit) — '직원 복귀 중' 가시화.
   // ★TCC 처방(오너 2026-07-15): macOS 폴더 권한 거부 감지 → 안내(EPERM 실사고 — CLI 자식은
   // 팝업 없이 조용히 거부되므로 GUI가 유일한 안내 주체다).
@@ -9902,8 +9427,8 @@ async function start() {
 
   // (T4) init-pack 실패 등 backend update-error 가시화 — 이제껏 UI 리스너 부재로 침묵하던 갭 해소.
   await listen("update-error", (e) => {
-    const msg = typeof e.payload === "string" ? e.payload : "업데이트 후 처리 중 오류가 발생했습니다.";
-    toast("health", "업데이트 경고", msg);
+    const msg = typeof e.payload === "string" ? e.payload : "새 판 반영 뒤 처리 중 오류가 발생했습니다.";
+    toast("health", "새 판 반영 경고", msg); // (1.1.8 U4) 단추·배지가 없는 앱에서 「업데이트」 낱말을 쓰지 않는다 — 듣개 자체는 §5-1 「남긴다」
   });
 
   // ★팀 기동 경고(적대검증 D-8): 마스터는 떴으나 cys boot가 팀(CSO·워커·리뷰어)을 못 세운 경우
@@ -9986,39 +9511,6 @@ async function start() {
   } catch {
     /* 커맨드 부재(구 백엔드) — 안내 없음 · 부팅 무영향 */
   }
-
-  // 시작 시 + 6시간마다 백그라운드 업데이트 확인 (조용히 — 있으면 badge·toast)
-  // ★v112-wake ④: 「6시간」을 타이머 누적이 아니라 **벽시계**로 잰다. 1.0.1 은 시작 1회 + 6h
-  //   setInterval 뿐이라, 절전·WebView 백그라운드 타이머 스로틀로 그 타이머가 밀리면 시작 때의
-  //   「0」 배지가 몇 날이고 남았다(실패한 백그라운드 확인은 배지를 건드리지 않는다). 그래서 15분마다
-  //   「마지막 확인이 6시간을 넘었나」를 묻고, 창이 다시 보일 때(포커스·visibility)는 30분 문턱으로 묻는다.
-  let lastUpdateCheckAt = Date.now();
-  const updateCheckIfStale = (minGapMs: number) => {
-    if (Date.now() - lastUpdateCheckAt < minGapMs) return;
-    lastUpdateCheckAt = Date.now();
-    checkForUpdate(true);
-  };
-  checkForUpdate(true);
-  setInterval(() => updateCheckIfStale(6 * 3600 * 1000), 15 * 60 * 1000);
-  window.addEventListener("focus", () => updateCheckIfStale(30 * 60 * 1000));
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") updateCheckIfStale(30 * 60 * 1000);
-  });
-
-  // 테스트 전용(패치 채널 E2E — 오너 2026-07-15): CYS_AUTOTEST_PATCH_INSTALL=1 env 기동이면 기동
-  // 직후 패치 설치를 무클릭 자동 발화(Finder 런칭엔 env 부재 → 프로덕션 무영향). install_update가
-  // 자체적으로 업데이트를 재확인하므로 updateAvailable 상태에 의존하지 않는다.
-  (async () => {
-    try {
-      if ((await invoke("autotest_patch_install")) === true) {
-        stickyToast("upd-bin", "feed", "⬇ 패치 설치(자동 테스트)", "패치 업데이트 확인·설치 중…");
-        await invoke("install_update", { force: true });
-      }
-    } catch (e) {
-      dismissToast("upd-bin");
-      toast("health", "자동 테스트 패치 실패", "시험용 자동 설치를 마치지 못했습니다.", undefined, String(e));
-    }
-  })();
 
   // ★W-2-d: 위 리스너 등록·업데이트 확인을 기다리는 사이 초기화가 끝났으면 레이아웃 복원을 하지 않는다.
   if (startHaltedByReset(info)) return;
@@ -10509,24 +10001,34 @@ async function start() {
   setInterval(refreshSidebarStatus, 10000);
 }
 
-/// ★(0.14.43 · J2) 재시작 뒤 1회 판정 pull — 인앱 업데이트를 눌렀는데 설치되지 않은 채 앱이 다시 열렸으면(윈도우 스마트 앱 컨트롤 차단 등)
-/// 한 번 알린다. 백엔드 `update_attempt_report` 가 설치 직전의 '시도 기록'을 읽어 판정한다 — 설치됐거나 기록이 없으면 null(무음).
-/// 설치기가 아직 도는 중일 수 있으면(pending) `wait_secs + 5` 초 뒤 **한 번만** 다시 당긴다 — 타이머 1개 · 그때도 보류면 더 하지 않는다
-/// (재귀·반복 없음). 응답의 해석(알림·재시도·무시)은 순수 함수 planUpdateAttemptReport 가 한다. 조회 실패는 전부 조용히 무시한다 —
-/// 이 알림 때문에 부팅이 막히거나 어긋나지 않는다(기동 pull 의 try/catch 관례).
-/// (정의는 start() 바로 아래다 — 호출은 start() 안, 설치본 무결성 pull 바로 뒤.)
-async function pullUpdateAttemptReport(): Promise<void> {
+/// ★(1.1.8 U4 · 설계 §3-12) 자동 갱신 결과 알림 — 순서 ①~④ 를 지킨다:
+///   ①② `update_result_notice` = 백엔드가 state.json 을 읽고, 보여 줄 것이면 **표시 전에** 앱 장부(shown_count+1)를 원자 기록한 뒤 알림을 준다
+///   ③ stickyToast(textContent 로만 그린다) ④ 다 그린 뒤 `update_result_notice_done` 으로 닫는다.
+///   ③~④ 사이에 앱이 죽으면 다음 기동에서 한 번 더(합계 ≤2) — 그 상한은 백엔드 장부가 지킨다. 갱신을 결정·집행하는 코드는 앱에 0.
+async function pullUpdateResultNotice(): Promise<void> {
   try {
-    let plan = planUpdateAttemptReport(await invoke("update_attempt_report"));
-    if (plan.kind === "retry") {
-      const delayMs = plan.delayMs;
-      await new Promise<void>((res) => setTimeout(res, delayMs)); // 타이머 1개 — 재-pull 은 이 한 번뿐
-      plan = planUpdateAttemptReport(await invoke("update_attempt_report"));
-    }
-    if (plan.kind === "notice") stickyToast(UPDATE_FAILED_TOAST_ID, "health", plan.title, plan.body); // 수명 10분·만료 배너 = toastttl.ts
+    const n = parseResultNotice(await invoke("update_result_notice"));
+    if (n === null) return;
+    stickyToast(n.toastId, "feed", n.title, n.body);
+    await invoke("update_result_notice_done", { resultId: n.resultId });
   } catch {
-    /* 구 백엔드·조회 실패 — 알림 없음 · 부팅 무영향 */
+    /* 구 백엔드·판독 실패 — 알림 없음 · 부팅 무영향 */
   }
+}
+
+/// ★(1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 1줄 — 닫기 단추 없음 · 1회 규칙 없음(창을 열 때·다시 볼 때마다 잰다) · 상태가 풀리면 사라진다.
+///   조회가 실패하면 지금 보이는 상태를 그대로 둔다(일시 실패로 안내를 지우지도, 없는 안내를 만들지도 않는다).
+async function refreshSeatsBlockedNote(): Promise<void> {
+  const el = document.getElementById("update-hold-note");
+  if (!el) return;
+  let text: string | null;
+  try {
+    text = seatsBlockedText(await invoke("update_seats_blocked_notice"));
+  } catch {
+    return;
+  }
+  el.textContent = text ?? "";
+  el.hidden = text === null;
 }
 
 // ---------- ui wiring ----------
@@ -10714,7 +10216,6 @@ document.getElementById("cc-board-search")!.addEventListener("input", (e) => {
   ccBoardSearch = (e.currentTarget as HTMLInputElement).value;
   renderBoardDomains();
 });
-document.getElementById("btn-update")!.addEventListener("click", () => onUpdateButton());
 document.getElementById("btn-restart-daemon")!.addEventListener("click", () => void manualRestartAllDaemons());
 document.getElementById("btn-factory-reset")!.addEventListener("click", () => void factoryResetFlow());
 document.getElementById("btn-theme")!.addEventListener("click", (e) =>

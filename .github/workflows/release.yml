@@ -34,6 +34,11 @@ env:
   #   전파 지점: 이 파일의 build(Windows 직접 빌드)·pack-artifacts(signer sign) +
   #   scripts/build-macos-signed.sh(로컬 동치 기본값 — CI 는 이 env 가 덮는다). 값 변경은 세 곳 동시.
   TAURI_CLI_VERSION: '2.11.4'
+  # ★1.1.8 U3 2판(codex 1R #1 · master 결정 ② [master#8db3b908]): 자동 갱신 릴리스 순번. U1 build.rs 가 이 env 를
+  #   바이너리(build-info release_seq)에 굽는다 — 비면 0 이 구워져 본문 생성기가 「build-info release_seq ≠」 로 거부한다.
+  #   값 = 저장소 변수(태그 전 master 가 「보관소 최댓값 + 1」로 갱신 · HANDOFF-U3 §1 「R-의식 전 seq 변수 갱신」).
+  #   cys 를 빌드하는 두 잡(build · pack-artifacts)의 스텝 「CYSR_RELEASE_SEQ 정수 ≥1」 이 비거나 0 이면 빌드 전에 실패시킨다.
+  CYSR_RELEASE_SEQ: ${{ vars.CYSR_RELEASE_SEQ }}
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════════════
@@ -168,6 +173,15 @@ jobs:
           [[ "$BID" =~ ^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$ ]] || { echo "::error::build_id 형식 오류: $BID"; exit 1; }
           echo "CYSR_BUILD_ID=$BID" >> "$GITHUB_ENV"
           echo "build_id=$BID"
+      # ★1.1.8 U3 2판(codex 1R #1): 자동 갱신 릴리스 순번이 정수 ≥1 이 아니면 빌드 전에 실패 — 0 이 구워진 바이너리로는
+      #   자동 갱신 본문을 만들 수 없는데(생성기 거부) 그 사실이 발행 의식에서야 드러나면 빌드 전부가 버려진다.
+      - name: CYSR_RELEASE_SEQ 정수 ≥1 (빌드 전 · vars.CYSR_RELEASE_SEQ)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${CYSR_RELEASE_SEQ:-}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::CYSR_RELEASE_SEQ='${CYSR_RELEASE_SEQ:-}' — 정수 ≥1 아님(저장소 변수 = 보관소 최댓값 + 1 · HANDOFF-U3 §1)"; exit 1; }
+          echo "release_seq=$CYSR_RELEASE_SEQ"
       # ★(0.14.31 통합 · CONTRACTS E-4 ② 확장 · 마스터 결정 2026-09-08) 이 잡의 python 을
       #   **3.12 로 고정**한다 — ci-branch.yml 잡1(:439)·잡2·windows-health.yml 과 같은 핀이다.
       #   왜: 이 잡의 팩 검체 스텝들은 러너 이미지 기본 python3 로 돌고 있었다. 즉 같은 스위트를
@@ -1147,26 +1161,24 @@ jobs:
       # ★1.1.8 U3 자동 갱신 본문 재료(윈 · 설계 §6-1 · §3-7 ①): 방금 만든 설치기를 러너의 빈 임시 폴더에 무인 설치해
       #   payload_manifest 재료(설치기가 실제로 놓는 바이트)와 설치된 cys.exe build-info 를 아티팩트로 남긴다. 본문 생성
       #   (scripts/update/make-release-json.py)은 발행 의식 때 master 가 이 아티팩트로 한다.
-      #   ⚠continue-on-error — 러너 첫 실측 전(이 기능의 계수·동작은 첫 발행 리허설이 확정 · HANDOFF-U3 §4). 이 스텝이 실패해도
-      #   릴리스 산출물은 그대로이고, 재료가 없으면 본문 생성기가 윈 행을 못 만들어 **발행이 멈춘다**(fail-closed 는 거기서).
+      #   ★2판(codex 1R #18): 실패 = 릴리스 실패(continue-on-error 삭제) — 윈 행 재료가 없는 판은 자동 갱신 본문을 못 만든다.
+      #   payload 는 설치 트리 **전수**(제외 = U2 와 공유하는 명시 규칙 scripts/update/payload-exclude.txt 만 · 수집기 무삭제).
       - name: 자동 갱신 본문 재료 수집 (윈 · payload·build-info)
         if: matrix.platform == 'windows-latest'
-        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           SETUP=(target/${{ matrix.target }}/release/bundle/nsis/cysr_*_x64-setup.exe)
-          [ ${#SETUP[@]} -eq 1 ] && [ -f "${SETUP[0]}" ] || { echo "::warning::setup.exe 후보 이상: ${SETUP[*]}"; exit 1; }
+          [ ${#SETUP[@]} -eq 1 ] && [ -f "${SETUP[0]}" ] || { echo "::error::setup.exe 후보 이상: ${SETUP[*]}"; exit 1; }
           bash scripts/update/collect-inputs.sh win "${SETUP[0]}" "$RUNNER_TEMP/update-inputs"
 
       - name: 자동 갱신 본문 재료 업로드 (윈)
         if: matrix.platform == 'windows-latest'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: update-inputs-windows-x64
           path: ${{ runner.temp }}/update-inputs
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Windows VERSIONINFO 게이트 (cys·cysd·cys-app 수치 버전 == 릴리스 버전)
         if: matrix.platform == 'windows-latest'
@@ -1348,6 +1360,15 @@ jobs:
           [[ "$BID" =~ ^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$ ]] || { echo "::error::build_id 형식 오류: $BID"; exit 1; }
           echo "CYSR_BUILD_ID=$BID" >> "$GITHUB_ENV"
           echo "build_id=$BID"
+      # ★1.1.8 U3 2판(codex 1R #1): 자동 갱신 릴리스 순번이 정수 ≥1 이 아니면 빌드 전에 실패 — 0 이 구워진 바이너리로는
+      #   자동 갱신 본문을 만들 수 없는데(생성기 거부) 그 사실이 발행 의식에서야 드러나면 빌드 전부가 버려진다.
+      - name: CYSR_RELEASE_SEQ 정수 ≥1 (빌드 전 · vars.CYSR_RELEASE_SEQ)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${CYSR_RELEASE_SEQ:-}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::CYSR_RELEASE_SEQ='${CYSR_RELEASE_SEQ:-}' — 정수 ≥1 아님(저장소 변수 = 보관소 최댓값 + 1 · HANDOFF-U3 §1)"; exit 1; }
+          echo "release_seq=$CYSR_RELEASE_SEQ"
       # ★(0.14.31 통합 · CONTRACTS E-4 ② 확장 · 마스터 결정 2026-09-08) 이 잡의 python 을
       #   **3.12 로 고정**한다 — ci-branch.yml 잡1(:439)·잡2·windows-health.yml 과 같은 핀이다.
       #   왜: 이 잡의 팩 검체 스텝들은 러너 이미지 기본 python3 로 돌고 있었다. 즉 같은 스위트를

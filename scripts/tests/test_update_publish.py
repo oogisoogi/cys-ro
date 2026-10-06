@@ -987,6 +987,24 @@ class TestSourcePins(unittest.TestCase):
         self.assertLess(body.index("make-envelope.py"), body.index("--envelope feed/env.json"))
         self.assertIn("feed/env.json.verified.json", body)
 
+    def test_release_yml_seq_and_win_inputs(self):
+        """2판(codex 1R #1·#18): release_seq 배선 + 빌드 전 정수 검사(cys 빌드 잡 둘) · 윈 재료 스텝 실패 = 릴리스 실패."""
+        s = open(os.path.join(ROOT, ".github", "workflows", "release.yml"), encoding="utf-8").read()
+        self.assertIn("  CYSR_RELEASE_SEQ: ${{ vars.CYSR_RELEASE_SEQ }}\n", s[:s.index("\njobs:")])
+        chk = "- name: CYSR_RELEASE_SEQ 정수 ≥1"
+        self.assertEqual(s.count(chk), 2)
+        for job in ("\n  build:\n", "\n  pack-artifacts:\n"):
+            a = s.index(job)
+            nxt = min(i for i in (s.find("\n  %s" % c, a + len(job)) for c in "abcdefghijklmnopqrstuvwxyz") if i > 0)
+            seg = s[a:nxt]
+            self.assertIn(chk, seg, job)
+            self.assertLess(seg.index(chk), seg.index("cargo build") if "cargo build" in seg else len(seg), job)
+        for name in ("자동 갱신 본문 재료 수집 (윈", "자동 갱신 본문 재료 업로드 (윈)"):
+            i = s.index("- name: " + name)
+            step = s[i:s.index("\n      - ", i + 1)]
+            self.assertNotIn("continue-on-error", step, name)
+        self.assertIn("if-no-files-found: error", s[s.index("- name: 자동 갱신 본문 재료 업로드 (윈)"):][:400])
+
     def test_nsis_lock_token_hook(self):
         s = open(os.path.join(ROOT, "src-tauri", "nsis-hooks.nsh"), encoding="utf-8").read()
         i, j = s.find("⓪-a"), s.find("Global\\cys-installer")

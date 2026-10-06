@@ -4878,6 +4878,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_briefing.py":                1,
     "javis_channel_watch.py":           1,
     "javis_channels.py":                1,
+    "javis_counsel.py":                 1,   # T3(agora-t3-pack-collector) — 30분 잡 tick 의 agora·cys 캡처 스폰 = 주기 스폰(test_nowin_periodic_spawns)
     "javis_checklist.py":               1,
     "javis_cli_probe.py":               1,
     "javis_compete.py":                 1,

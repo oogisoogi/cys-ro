@@ -8,7 +8,8 @@
   ④ facts — 가짜 cys(PATH 대역)·가짜 상태 파일로 칸별 산출 · 못 잰 칸은 뺀다(null 0)
   ⑤ ensure-client — 올바른 sha = 설치+.pin · 틀린 sha = 거부 · zip-slip = 거부 · 판정 = 트리 지문(같음 = 무동작 ·
      알려진 옛 판 = 교체 · 고친/모르는 트리 = 불가침) · 설치 잠금(대기/포기) · 남의 lib 위로 rename 0
-  ⑥ tick — 가짜 `lib/bin/agora` 가 받은 인자·AGORA_SIGNING_KEY · 한 판 상한 540초(시간 초과 = 프로세스 그룹째 끝냄)
+  ⑥ tick — 가짜 `lib/bin/agora` 가 받은 인자(`--facts-nonce` = 그 판 nonce · 파일 nonce 와 결박)·AGORA_SIGNING_KEY ·
+     한 판 상한 540초(시간 초과 = 프로세스 그룹째 끝냄)
   ⑧ 팩 쓰기(`signal` 다중 프로세스) ↔ 동봉 아고라 `collector.move_sent` 교차 잠금 경합 — 줄 유실·중복 0 · LF
   ⑦ preflight 신호 블록(C 번호 FAIL/WARN → 한 실행 안 중복 0) · cys-dept EXIT trap(rc 보존 + 신호 1줄)
 
@@ -543,17 +544,24 @@ class EnsureClient(Base):
         r = subprocess.run([sys.executable, SCRIPT, "tick"], capture_output=True, env=env, timeout=120)
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""))
         called = json.loads(rd(self.lib("called.json")))
-        self.assertEqual(called["argv"], ["counsel", "auto", "--facts",
-                                          os.path.join(self.cfg, "counsel", "facts.json")])
+        self.assertEqual(called["argv"][:5], ["counsel", "auto", "--facts",
+                                              os.path.join(self.cfg, "counsel", "facts.json"), "--facts-nonce"])
+        self.assertEqual(len(called["argv"]), 6)
+        nonce1 = called["argv"][5]
+        self.assertRegex(nonce1, r"^[0-9a-f]{32}\Z")
         self.assertEqual(called["key"], key)
         self.assertTrue(os.path.isfile(os.path.join(self.cfg, "counsel", "facts.json")))
+        # ★리뷰 3R ② 4판(b) — 성공 판: 파일 nonce == argv nonce
+        self.assertEqual(json.loads(rd(os.path.join(self.cfg, "counsel", "facts.json")))["nonce"], nonce1)
         ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
         self.assertEqual([(e["event"], e["result"]) for e in ev], [("ensure-client", "installed"), ("tick", "ran")])
         self.assertEqual(ev[-1]["rc"], 0)
         # 이미 정한 키는 덮지 않는다
         env["AGORA_SIGNING_KEY"] = "/elsewhere"
         subprocess.run([sys.executable, SCRIPT, "tick"], capture_output=True, env=env, timeout=120)
-        self.assertEqual(json.loads(rd(self.lib("called.json")))["key"], "/elsewhere")
+        called = json.loads(rd(self.lib("called.json")))
+        self.assertEqual(called["key"], "/elsewhere")
+        self.assertNotEqual(called["argv"][5], nonce1, "nonce 가 판마다 새로 나지 않았다")
 
     def test_daily_due_skips_facts_when_off_or_done(self):
         """꺼짐 = doctor·좌석 조회 0 · 그날(06:00 KST) 일일이 끝났고 pending 없음 = 0 · pending 남음 = 다시 모은다."""
@@ -581,7 +589,7 @@ class EnsureClient(Base):
         os.makedirs(empty)
         real = jc.collect_facts
 
-        def boom(cfg, now=None):
+        def boom(cfg, now=None, nonce=None):
             raise RuntimeError("disk")
         jc.collect_facts = boom
         try:
@@ -596,6 +604,62 @@ class EnsureClient(Base):
         self.assertIn(("facts", "error"), ev)
         self.assertIn(("tick", "facts-failed"), ev)
         self.assertEqual(ev[-1], ("tick", "ran"))
+
+    def _tick_with_failing_facts(self):
+        real = jc.collect_facts
+
+        def boom(cfg, now=None, nonce=None):
+            raise RuntimeError("disk")
+        jc.collect_facts = boom
+        try:
+            with envset(PATH=os.path.join(self.tmp, "emptybin"), CYS_CYS_BIN=None, AGORA_SIGNING_KEY=None):
+                return jc.tick()
+        finally:
+            jc.collect_facts = real
+
+    def test_tick_facts_failure_keeps_old_fresh_facts_unbound(self):
+        """★리뷰 3R ② 4판(a) — 디스크에 지난 판의 **신선한** facts.json(cutoff = 지금 · 옛 nonce)이 있는데 이번 판 쓰기가 실패해도
+        agora 에 넘기는 nonce 는 그 파일의 nonce 와 다르다(아고라 = 사실 없음 → 일일 no_fresh_facts) · 옛 파일은 그대로."""
+        self.put(_zip([("bin/agora", self.AGORA)]))
+        os.makedirs(os.path.join(self.tmp, "emptybin"))
+        os.makedirs(os.path.join(self.cfg, "counsel"))
+        old_nonce = "a" * 32
+        facts = os.path.join(self.cfg, "counsel", "facts.json")
+        now = jc.decide_cutoff()
+        doc = {"cutoff": jc.ms_iso(now), "since": jc.ms_iso(now - 86400), "nonce": old_nonce}
+        with open(facts, "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(self._tick_with_failing_facts(), "ran")
+        argv = json.loads(rd(self.lib("called.json")))["argv"]
+        self.assertEqual(argv[2:5], ["--facts", facts, "--facts-nonce"])
+        self.assertRegex(argv[5], r"^[0-9a-f]{32}\Z")
+        self.assertEqual(json.loads(rd(facts)), doc, "옛 facts.json 이 바뀌었다(실패 판이 썼다)")
+        self.assertEqual(json.loads(rd(facts))["nonce"], old_nonce)
+        self.assertNotEqual(argv[5], old_nonce, "실패 판이 옛 facts 의 nonce 를 넘겼다 — 아고라가 옛 사실을 받는다")
+        ev = [(e["event"], e["result"]) for e in map(json.loads, rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines())]
+        self.assertIn(("tick", "facts-failed"), ev)
+
+    def test_tick_not_due_still_passes_nonce(self):
+        """★리뷰 3R ② 4판(c) — 일일이 필요 없는 판(꺼짐 · 그날 끝남)도 `--facts-nonce` 를 넘긴다 · facts 는 안 쓴다."""
+        self.put(_zip([("bin/agora", self.AGORA)]))
+        os.makedirs(os.path.join(self.tmp, "emptybin"))
+        os.makedirs(os.path.join(self.cfg, "counsel"))
+        import datetime as _dt
+        today = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=3)).date().isoformat()   # = jc._daily_due 의 KST 06:00 선
+        cases = (("done", "state.json", {"daily_day": today}), ("off", "config.json", {"counsel": {"auto": False}}))
+        for name, fname, doc in cases:
+            with self.subTest(name):
+                where = os.path.join(self.cfg, "counsel" if fname == "state.json" else "", fname)
+                with open(where, "w") as f:
+                    json.dump(doc, f)
+                self.assertFalse(jc._daily_due(self.cfg), name)
+                with envset(PATH=os.path.join(self.tmp, "emptybin"), CYS_CYS_BIN=None, AGORA_SIGNING_KEY=None):
+                    self.assertEqual(jc.tick(), "ran")
+                argv = json.loads(rd(self.lib("called.json")))["argv"]
+                self.assertEqual(argv[4], "--facts-nonce", name)
+                self.assertRegex(argv[5], r"^[0-9a-f]{32}\Z")
+                self.assertFalse(os.path.exists(os.path.join(self.cfg, "counsel", "facts.json")), name)
+                os.remove(where)
 
     def test_tick_without_client_logs_and_stops(self):
         empty = os.path.join(self.tmp, "emptybin")

@@ -8,9 +8,12 @@
 동사:
   signal --source <역할|층> --op <op> --error-code <code>   신호 한 줄 append(형식 밖·끔·잠금 2초 초과 = 버림)
   facts          결정론 일일 사실 → `<설정>/counsel/facts.json`(원자 교체 · 못 잰 칸은 뺀다 · null 0 · `cutoff`·`since` = 오류 계수 창 `(since, cutoff]`)
+                 · tick 이 부를 때만 `nonce` 칸(그 판 1회용 · 아래 tick)
   ensure-client  `<팩>/install/agora-client.pin` + `.zip.b64` → `<설정>/lib`(설치 잠금 안 · 판정 = 트리 지문:
                  없음 = 설치 · 핀 지문 = 무동작 · 알려진 옛 판 지문 = 교체 · 그 밖(고친·모르는 트리) = 불가침 + 로그)
-  tick           ensure-client → facts → `agora counsel auto --facts …`(스케줄 잡 `agora-counsel` · 30분 · 한 판 상한 540초)
+  tick           ensure-client → facts → `agora counsel auto --facts … --facts-nonce <그 판 nonce>`(스케줄 잡 `agora-counsel` ·
+                 30분 · 한 판 상한 540초) · ★facts 를 안 썼거나 못 쓴 판도 nonce 는 언제나 넘긴다 — 아고라는 파일의 `nonce` 가
+                 없거나 다르면 사실 없음(일일 no_fresh_facts)으로 본다 → 옛 판의 신선한 facts.json 재사용 0(리뷰 3R ② 4판)
 
 ★언제나 exit 0 · stdout 무출력 — 훅·preflight·cys-dept·Rust 업데이트 경로가 부르므로 이 도구의 실패가 호출자를 바꾸면
   안 된다. 결과는 `<설정>/counsel/tick.log`(JSON 줄 · 256KB 넘으면 `.1`)에만 남긴다.
@@ -486,13 +489,15 @@ def decide_cutoff(now=None):
     return int(t * 1000) / 1000.0
 
 
-def collect_facts(cfg, now=None):
+def collect_facts(cfg, now=None, nonce=None):
     """★cutoff 는 **맨 먼저**(오류 로그를 하나도 읽기 전) 정한다 — 읽는 사이에 붙은 줄은 cutoff 뒤라 다음 창 몫이다.
     since = state.json daily_ok_at(아고라가 일일 성공 때 쓴 지난 cutoff) · 없으면 cutoff − 24h. 둘 다 facts 에 싣는다
     (아고라가 cutoff 를 일일 pending 에 박고 성공 때 daily_ok_at = cutoff · 팩은 daily 완료 표식을 쓰지 않는다)."""
     cutoff = decide_cutoff(now)
     since = since_epoch(cfg, cutoff)
     facts = {"cutoff": ms_iso(cutoff), "since": ms_iso(since)}
+    if nonce is not None:
+        facts["nonce"] = nonce   # ★그 판 결박(리뷰 3R ② 4판) — 아고라가 argv `--facts-nonce` 와 글자 그대로 대조
     probes = (("version", probe_version), ("os", os_tag), ("seats", probe_seats), ("doctor", probe_doctor),
               ("errors", lambda: probe_errors(since, cutoff)), ("depts", probe_depts),
               ("uptime", lambda: probe_uptime(cutoff)))
@@ -506,10 +511,10 @@ def collect_facts(cfg, now=None):
     return facts
 
 
-def write_facts(cfg=None, now=None):
+def write_facts(cfg=None, now=None, nonce=None):
     cfg = cfg or config_dir()
     try:
-        facts = collect_facts(cfg, now)
+        facts = collect_facts(cfg, now, nonce)
         _mkcounsel(cfg)
         path = _counsel(cfg, FACTS_FILE)
         tmp = "%s.tmp-%d-%s" % (path, os.getpid(), secrets.token_hex(4))
@@ -916,13 +921,16 @@ def _kill_group(proc):
 def tick(cfg=None):
     t0 = time.monotonic()
     cfg = cfg or config_dir()
+    # ★리뷰 3R ② 4판 — 그 판 1회용 nonce. facts.json 에 싣고 argv 로도 넘긴다(언제나). 쓰기가 실패하면 디스크에 남은
+    #   옛 facts.json(cutoff 가 아직 2시간 안이라 신선해 보여도)은 다른 nonce 라 아고라가 사실 없음으로 거절한다.
+    nonce = secrets.token_hex(16)
     ensure_client(cfg)
     if _daily_due(cfg):
         try:
-            ok = write_facts(cfg) is not None and os.path.isfile(_counsel(cfg, FACTS_FILE))
+            ok = write_facts(cfg, nonce=nonce) is not None and os.path.isfile(_counsel(cfg, FACTS_FILE))
         except Exception:
             ok = False
-        if not ok:   # ★그래도 agora 는 돈다(신호·주간) — 새 facts 가 없으면 아고라가 일일을 거절한다 · 팩은 완료 표식 0
+        if not ok:   # ★그래도 agora 는 돈다(신호·주간) — 이 판 nonce 의 facts 가 없으니 아고라가 일일을 거절한다 · 팩은 완료 표식 0
             log_event(cfg, "tick", result="facts-failed", note="agora runs anyway; daily refused without fresh facts")
     agora = os.path.join(cfg, "lib", "bin", "agora")
     if not os.path.isfile(agora):
@@ -932,7 +940,7 @@ def tick(cfg=None):
     key = os.path.join(cfg, "id_ed25519")
     if not env.get("AGORA_SIGNING_KEY") and os.path.isfile(key):
         env["AGORA_SIGNING_KEY"] = key
-    argv = [sys.executable, agora, "counsel", "auto", "--facts", _counsel(cfg, FACTS_FILE)]
+    argv = [sys.executable, agora, "counsel", "auto", "--facts", _counsel(cfg, FACTS_FILE), "--facts-nonce", nonce]
     elapsed = time.monotonic() - t0
     timeout = agora_timeout(elapsed)
     if timeout is None:

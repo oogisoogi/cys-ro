@@ -38,6 +38,7 @@ import javis_counsel as jc  # noqa: E402
 
 SCRIPT = os.path.join(BIN, "javis_counsel.py")
 NOW = 1791200000.0   # 2026-10-05T…Z 고정 시각
+POSIX_FAKE_CYS = "가짜 cys = #!/bin/sh 스크립트(윈 shutil.which 는 PATHEXT 만 찾아 실행 불가 · POSIX 전용 검체)"
 
 
 def rd(path, mode="r", encoding=None):
@@ -304,6 +305,7 @@ class FakeCys(Base):
 
 
 class Facts(FakeCys):
+    @unittest.skipIf(os.name == "nt", POSIX_FAKE_CYS)
     def test_facts_end_to_end(self):
         fb = self.make_cys(
             "surface:1\trole=master\tpid=1\texited=false\tno=1\tx\t/a\n"
@@ -388,6 +390,7 @@ class Facts(FakeCys):
         self.assertEqual(facts["errors"], {"tick_errors": 0, "hook_rc_nonzero": 0}, "로그 없음 = 0건(잰 값)")
         self.assertNotIn(None, facts.values())
 
+    @unittest.skipIf(os.name == "nt", POSIX_FAKE_CYS)
     def test_list_failure_omits_seats(self):
         fb = self.make_cys("surface:1\trole=master\texited=false\n", "not json", list_rc=1)
         env = dict(os.environ, PATH=fb + os.pathsep + os.environ.get("PATH", ""))
@@ -396,6 +399,7 @@ class Facts(FakeCys):
             self.assertIsNone(jc.probe_seats())
             self.assertIsNone(jc.probe_doctor())
 
+    @unittest.skipIf(os.name == "nt", POSIX_FAKE_CYS)
     def test_seat_category_table(self):
         table = {"master": "master", "MASTER": "master", "cso": "cso", "cso-2": "cso", "cso-fresh-1791200000": "cso",
                  "worker": "worker", "worker-3": "worker", "worker-oogisoogi-mbp": "worker", "reviewer": "worker",
@@ -1138,6 +1142,62 @@ class CrossLockRace(Base):
         self.assertEqual([n for n in os.listdir(c) if ".tmp-" in n], [])
 
 
+AGORA_HOLD = r'''
+import sys, time
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from agora import collector
+with collector._file_lock(sys.argv[2], wait=(sys.argv[3] == "wait")) as held:
+    print("held" if held else "busy", flush=True)
+    if held:
+        sys.stdin.readline()                     # 부모가 stdin 을 닫을 때까지 쥔다
+'''
+
+
+class ByteZeroLock(Base):
+    """팩 `_acquire`(0번 바이트 · 윈 msvcrt / POSIX flock) ↔ 동봉 아고라 `collector._file_lock` — 서로를 막는다(양방향)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = bundled_client(os.path.join(self.tmp, "client"))
+        self.hold_py = os.path.join(self.tmp, "hold.py")
+        with open(self.hold_py, "w", encoding="utf-8") as f:
+            f.write(AGORA_HOLD)
+        os.makedirs(os.path.join(self.cfg, "counsel"))
+        self.lock = os.path.join(self.cfg, "counsel", "signals.lock")
+
+    def agora(self, mode):
+        return subprocess.Popen([sys.executable, self.hold_py, self.client, self.lock, mode], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+
+    def test_agora_holds_pack_drops(self):
+        p = self.agora("wait")
+        try:
+            self.assertEqual(p.stdout.readline().strip(), b"held", p.stderr.read()[-400:] if p.poll() is not None else "")
+            self.assertEqual(jc.write_signals("pack", [("a", "b")], wait_s=0.4), 0, "아고라가 쥔 잠금을 팩이 뚫었다")
+        finally:
+            p.stdin.close()
+            p.wait(timeout=30)
+            p.stdout.close()
+            p.stderr.close()
+        self.assertEqual(jc.write_signals("pack", [("a", "b")], wait_s=2), 1, "놓은 뒤에는 써야 한다")
+        self.assertEqual(os.path.getsize(self.lock), 0, "잠금 파일에 내용이 쓰였다")
+
+    def test_pack_holds_agora_busy(self):
+        fh = jc._acquire(self.lock, 0)
+        self.assertIsNotNone(fh)
+        try:
+            p = self.agora("nowait")
+            out, err = p.communicate(input=b"", timeout=30)
+            self.assertEqual(out.strip(), b"busy", err[-400:])
+        finally:
+            jc._unlock(fh)
+            fh.close()
+        p = self.agora("nowait")
+        out, err = p.communicate(input=b"", timeout=30)
+        self.assertEqual(out.strip(), b"held", err[-400:])
+
+
 class Preflight(Base):
     def test_signal_pairs_dedup(self):
         import javis_preflight as pf
@@ -1165,6 +1225,8 @@ class Preflight(Base):
         self.assertLess(main.index("_counsel_emit(results)"), main.index("if args.json:"))
 
 
+@unittest.skipIf(os.name == "nt", "cys-dept 를 격리 HOME 에서 bash 로 직접 실행(POSIX 셸·python3 전제) — 윈 cys-dept 실행 단계는 "
+                                   "windows-health 의 부서 실행 단계 스텝이 따로 실기한다")
 class DeptTrap(Base):
     """cys-dept 판독 실패(exit 12) — 종료코드 그대로 + 신호 1줄 · 사용법 오류(exit 2)는 신호 0."""
 

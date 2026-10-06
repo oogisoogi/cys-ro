@@ -129,9 +129,10 @@ jobs:
               ),
               "windows-health": (
                   ".github/workflows/windows-health.yml",
-                  {"test_win_dept_spawn"},
+                  {"test_win_dept_spawn", "test_javis_counsel"},
                   "말로 부서 만들기·닫기의 실행 단계를 **윈도우 CreateProcess** 로 진짜 띄우는 것(precut-fix3 · "
-                  "WinError 193 대조군 포함). 3완전 레인은 맥·우분투라 셔뱅을 알아 이 결함을 원리적으로 못 가른다.",
+                  "WinError 193 대조군 포함). 3완전 레인은 맥·우분투라 셔뱅을 알아 이 결함을 원리적으로 못 가른다. "
+                  "+ 상담소 수집기의 윈 msvcrt 0번 바이트 잠금(팩 ↔ 동봉 아고라 양방향·교차 경합) 실기(T3 3R ⑧).",
               ),
           }
 

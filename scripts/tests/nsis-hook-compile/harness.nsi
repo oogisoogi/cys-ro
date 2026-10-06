@@ -18,6 +18,10 @@ Unicode true
 ; ★ 2026-08-29: 이게 없어서 MUI 가 생성하는 .onUserAbort 와의 중복 정의를
 ; 로컬에서 못 잡았고 CI(run 33246693830)까지 갔다. 그 공백을 여기서 메운다.
 !include MUI2.nsh
+; ── FileFunc·WordFunc — 템플릿도 훅보다 먼저 include 한다(installer.nsi:23·:25) — 순서 패리티.
+;    1.1.8 U3 ⓪-a(자동 갱신 잠금 토큰)가 ${GetParameters}·${GetOptions}·${WordReplace}·${WordFindS} 를 쓴다.
+!include FileFunc.nsh
+!include WordFunc.nsh
 
 ; ── hook include — MUST stay ahead of the template defines below (template parity) ──
 !include "build\nsis-hooks.nsh"

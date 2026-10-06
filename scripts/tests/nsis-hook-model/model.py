@@ -69,6 +69,18 @@ WHAT IS MODELED / NOT MODELED
              success/version marker, or SetErrorLevel — so I1/I3/I4 are unaffected. The
              census pin moved only because labels/tokens, the POSTINSTALL body and its
              !insertmacro sequence (IsShortcutTarget · SetLnkAppUserModelId) changed.
+  not modeled — added after the 1.0.1 pin (1.1.8 U3 · judged invariant-neutral · re-pinned in
+             the SAME commit as this note · TICKET=cysr-118-u3-publish):
+             * PREINSTALL ⓪-a `cys_txn_*` (auto-update lock token · design AUTO-UPDATE-118 §3-2 📌13′):
+               BEFORE the singleton mutex, if %LOCALAPPDATA%\cys-update\txn.lock is OS-locked the
+               installer proceeds only when /CYSTXN=<txn_id>:<epoch> matches txn.owner.json, else
+               SetErrorLevel 6 + Quit — the same untouched-quit-by-construction class as exit 5 (no
+               file of ours touched yet; reads only the lock/owner files outside $INSTDIR). On a
+               match it sets CysTxnDelegated=1 and the singleton's "already exists" branch falls
+               through to cys_pre_single — i.e. the modeled machine then runs exactly as the
+               single-instance case the model already assumes. Neither branch reads or writes
+               cys/cysd/cys-app, the failure file or the markers, so I1/I3/I4 are unaffected; the
+               pin moved only because the PREINSTALL body gained these labels/tokens.
 
 INVARIANTS (mechanical form of hook R1/R3/R4 with the honest scopes of
 NSIS-CONTRACT §9 — the model refuses to over-claim):
@@ -131,7 +143,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "9655bcf5c0b1b65a4dfbc338ed6c2351661268c32ab69632fe3e54b5a8b335b9"
+GUARD_PIN = "119e24adb9aacf240e8cd79fb3dbe8decebcbaffdd081ebb342a1fc624a27157"
 
 
 def hook_path():

@@ -579,7 +579,98 @@ Function cys_on_user_abort
   !insertmacro CYS_ABORT_RESCUE "cys-app" "ua3"
 FunctionEnd
 
+; ── ⓪-a 자동 갱신 잠금 토큰 변수(1.1.8 U3) — Var 는 최상위에서만 선언된다(매크로 안 금지) ──
+Var CysTxnDelegated
+Var CysTxnTok
+Var CysTxnBuf
+Var CysTxnTmp
+Var CysTxnH
+Var CysTxnOv
+
 !macro NSIS_HOOK_PREINSTALL
+  ; ⓪-a ★자동 갱신 잠금 토큰 (1.1.8 U3 · 설계 AUTO-UPDATE-118 §3-2 📌13′ · §3-7 · ⓪ 뮤텍스보다 먼저).
+  ;    자동 갱신 러너가 트랜잭션 중이면(%LOCALAPPDATA%\cys-update\txn.lock 의 OS 잠금이 잡혀 있음)
+  ;    이 설치기는 /CYSTXN=<txn_id>:<epoch> 인자가 소유자 기록 txn.owner.json(U1 lock.rs OWNER_FILE ·
+  ;    잠금 파일과 따로 — 윈 LockFileEx 는 잠긴 범위 읽기도 막는다)의 txn_id·epoch 와 같을 때만 진행한다
+  ;    (= 러너가 위임한 실행). 아니면 exit 6 「자동 갱신 중 · 무접촉」 — 이 시점까지 우리 파일 접촉 0
+  ;    이므로 ⓪ 과 같은 이유로 Abort 가 아니라 Quit. 사람 실행이면 1줄 안내(ASCII 규칙 — 위 '컴파일 시점
+  ;    계약' · 설계 문안 「자비스가 지금 새 판으로 바꾸는 중이에요. 5분 뒤 다시 실행해 주세요.」의 영어판).
+  ;    · 토큰이 맞으면 CysTxnDelegated=1 → 아래 ⓪ 에서 뮤텍스 「이미 있음」을 러너 보유(S7~S9b 동안
+  ;      러너가 Global\cys-installer 를 쥔다 · 옛 1.1.7 이하 설치기 차단용)의 위임으로 받아들인다.
+  ;    · 잠금이 안 잡혀 있으면(파일 없음 · 비차단 잠금 시도 성공) 종전과 같다(토큰 인자는 무시).
+  ;    · 판정 불가(잠금 파일을 못 엶)는 「잡혀 있음」 쪽으로 읽는다(fail-closed — 갱신 중일 수 있는데
+  ;      사람 설치기가 끼어드는 것이 더 나쁘다 · 대가 = 그동안 수동 설치도 exit 6).
+  ;    · 조상 pid 대조(위임 ③)는 NSIS 에서 하지 않는다 — 러너가 설치기를 CREATE_SUSPENDED 로 띄워
+  ;      이미지·파일 ID 를 대조한 뒤에만 재개한다(설계 §3-7 ④). 토큰은 러너 밖 사람이 알 수 없는 128비트 값.
+  ;    · 소유자 기록은 serde 들여쓰기 JSON — 공백·줄바꿈을 걷어 낸 뒤 '"txn_id":"<id>"' 와
+  ;      '"epoch":<n>,' 또는 '"epoch":<n>}' 를 대소문자 구분(WordFindS)으로 찾는다.
+  StrCpy $CysTxnDelegated "0"
+  IfFileExists "$LOCALAPPDATA\cys-update\txn.lock" 0 cys_txn_free
+  System::Call 'kernel32::CreateFileW(w "$LOCALAPPDATA\cys-update\txn.lock", i 0xC0000000, i 7, p 0, i 3, i 0x80, p 0) p .s'
+  Pop $CysTxnH
+  IntPtrCmp $CysTxnH -1 cys_txn_held 0 0
+  System::Call '*(p 0, p 0, i 0, i 0, p 0) p .s'
+  Pop $CysTxnOv
+  System::Call 'kernel32::LockFileEx(p $CysTxnH, i 3, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  StrCmp $CysTxnTmp "0" cys_txn_locked 0
+  System::Call 'kernel32::UnlockFileEx(p $CysTxnH, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  System::Call 'kernel32::CloseHandle(p $CysTxnH)'
+  System::Free $CysTxnOv
+  Goto cys_txn_free
+cys_txn_locked:
+  System::Call 'kernel32::CloseHandle(p $CysTxnH)'
+  System::Free $CysTxnOv
+cys_txn_held:
+  ${GetParameters} $CysTxnTok
+  ClearErrors
+  ${GetOptions} $CysTxnTok "/CYSTXN=" $CysTxnTok
+  IfErrors cys_txn_refuse
+  StrCmp $CysTxnTok "" cys_txn_refuse
+  ClearErrors
+  FileOpen $CysTxnH "$LOCALAPPDATA\cys-update\txn.owner.json" r
+  IfErrors cys_txn_refuse
+  StrCpy $CysTxnBuf ""
+cys_txn_read:
+  ClearErrors
+  FileRead $CysTxnH $CysTxnTmp
+  IfErrors cys_txn_readdone
+  StrCpy $CysTxnBuf "$CysTxnBuf$CysTxnTmp"
+  StrLen $CysTxnTmp $CysTxnBuf
+  IntCmp $CysTxnTmp 4096 cys_txn_readdone cys_txn_read cys_txn_readdone
+cys_txn_readdone:
+  FileClose $CysTxnH
+  ${WordReplace} "$CysTxnBuf" " " "" "+" $CysTxnBuf
+  ${WordReplace} "$CysTxnBuf" "$\r" "" "+" $CysTxnBuf
+  ${WordReplace} "$CysTxnBuf" "$\n" "" "+" $CysTxnBuf
+  ${WordReplace} "$CysTxnBuf" "$\t" "" "+" $CysTxnBuf
+  ClearErrors
+  ${WordFindS} "$CysTxnTok" ":" "E+1{" $CysTxnH
+  IfErrors cys_txn_refuse
+  ${WordFindS} "$CysTxnBuf" '"txn_id":"$CysTxnH"' "E+1{" $CysTxnTmp
+  IfErrors cys_txn_refuse
+  ${WordFindS} "$CysTxnTok" ":" "E+1}" $CysTxnH
+  IfErrors cys_txn_refuse
+  StrCmp $CysTxnH "" cys_txn_refuse
+  ${WordFindS} "$CysTxnBuf" '"epoch":$CysTxnH,' "E+1{" $CysTxnTmp
+  IfErrors 0 cys_txn_ok
+  ClearErrors
+  ${WordFindS} "$CysTxnBuf" '"epoch":$CysTxnH}' "E+1{" $CysTxnTmp
+  IfErrors cys_txn_refuse cys_txn_ok
+cys_txn_refuse:
+  DetailPrint "cys: auto-update transaction in progress - quitting untouched (exit 6)"
+  IfSilent cys_txn_quit 0
+  MessageBox MB_ICONINFORMATION "Jarvis is switching to the new version right now.$\r$\nPlease run this installer again in 5 minutes.$\r$\nNothing was changed by this instance."
+cys_txn_quit:
+  SetErrorLevel 6
+  Quit
+cys_txn_ok:
+  DetailPrint "cys: delegated by the auto-update runner (txn token matched)"
+  StrCpy $CysTxnDelegated "1"
+cys_txn_free:
+  ClearErrors
+
   ; ⓪ ★설치기 싱글톤 (R2 라운드2 신설): 동시 2인스턴스는 `.new`/prev/정식 이름 공간을
   ;    공유해 서로의 트랜잭션을 교차 오염시킨다(실증 트레이스: A 의 fill 5초 재시도 창에서
   ;    B 가 배치를 끝내면, A 의 copy-복귀가 B 의 검증 완료 정식을 구본으로 덮어 B 의 exit 0
@@ -603,6 +694,8 @@ FunctionEnd
   StrCmp $1 "5" 0 cys_pre_single
   StrCmp $0 "0" cys_pre_dup cys_pre_single
 cys_pre_dup:
+  ; ⓪-a 위임이면 뮤텍스 보유자 = 우리 러너(S7~S9b) — 「다른 설치기」가 아니다.
+  StrCmp $CysTxnDelegated "1" cys_pre_single 0
   DetailPrint "cys: another installer instance is running - quitting untouched"
   IfSilent cys_pre_dupquit 0
   MessageBox MB_ICONSTOP "Another cys installer is already running.$\r$\nFinish that installation first, then run this one again.$\r$\nNothing was changed by this instance."

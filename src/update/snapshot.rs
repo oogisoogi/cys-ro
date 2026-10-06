@@ -349,6 +349,8 @@ pub fn plan_restore(snap: &Manifest, live: &BTreeMap<String, Entry>, protected: 
     for (rel, want) in snap {
         match live.get(rel) {
             Some(l) if l == want => out.push(Action::Keep(rel.clone())),
+            // ★4판(N3′ 새 판 재구성): 보호 경로는 백업에 있어도 덮지 않는다(기존 호출자는 보호 경로를 백업에 담지 않으므로 무변화)
+            _ if protected(rel) => out.push(Action::Protected(rel.clone())),
             _ => out.push(Action::Replace(rel.clone())),
         }
     }
@@ -366,10 +368,16 @@ pub fn plan_restore(snap: &Manifest, live: &BTreeMap<String, Entry>, protected: 
 
 /// ★3판(Fable 2R N3): 복원 계획만(백업 재대조 → 표) — 바꾸는 것 0. 「일치하면 손대지 않는다」 판정용.
 pub fn diff(live_root: &Path, snap_dir: &Path, protected: &dyn Fn(&str) -> bool) -> Result<Vec<Action>, String> {
+    diff_in(live_root, snap_dir, &|_| true, protected)
+}
+
+/// [`diff`] 의 범위 한정판(★4판 Fable 3R n3): `scope` 밖(폴더면 그 아래 전체)은 읽지도 해시하지도 않는다 — 스냅샷이 범위 안만 담았을 때
+/// (`~/.cys` 의 팩·사용자 트리) 갱신 폴더 백업·대화 기록까지 해시하던 낭비 제거. 범위 밖 = 보호와 같은 결과(무접촉).
+pub fn diff_in(live_root: &Path, snap_dir: &Path, scope: &dyn Fn(&str) -> bool, protected: &dyn Fn(&str) -> bool) -> Result<Vec<Action>, String> {
     verify(snap_dir).map_err(|e| format!("rollback_blocked: {e}"))?;
     let snap = parse_manifest(&std::fs::read_to_string(snap_dir.join(MANIFEST_FILE)).map_err(|e| e.to_string())?)?;
     let mut live = BTreeMap::new();
-    for rel in list_entries(live_root, &|_| true)? {
+    for rel in list_entries(live_root, scope)? {
         if let Some(e) = observe(&live_root.join(&rel))? {
             live.insert(rel.clone(), e);
         }
@@ -386,6 +394,18 @@ pub fn restore(
     protected: &dyn Fn(&str) -> bool,
     expect: Option<&str>,
 ) -> Result<Vec<Action>, String> {
+    restore_in(live_root, snap_dir, quarantine_root, &|_| true, protected, expect)
+}
+
+/// [`restore`] 의 범위 한정판(★4판 n3 — [`diff_in`] 과 같은 `scope`).
+pub fn restore_in(
+    live_root: &Path,
+    snap_dir: &Path,
+    quarantine_root: &Path,
+    scope: &dyn Fn(&str) -> bool,
+    protected: &dyn Fn(&str) -> bool,
+    expect: Option<&str>,
+) -> Result<Vec<Action>, String> {
     let got = verify(snap_dir).map_err(|e| format!("rollback_blocked: {e}"))?;
     if let Some(want) = expect {
         if !digest_eq(&got, want) {
@@ -394,7 +414,7 @@ pub fn restore(
     }
     let snap = parse_manifest(&std::fs::read_to_string(snap_dir.join(MANIFEST_FILE)).map_err(|e| e.to_string())?)?;
     let mut live = BTreeMap::new();
-    for rel in list_entries(live_root, &|_| true)? {
+    for rel in list_entries(live_root, scope)? {
         if let Some(e) = observe(&live_root.join(&rel))? {
             live.insert(rel.clone(), e);
         }
@@ -418,7 +438,7 @@ pub fn restore(
             Action::Keep(_) | Action::Protected(_) => {}
         }
     }
-    for (rel, want) in &snap {
+    for (rel, want) in snap.iter().filter(|(rel, _)| !protected(rel)) {
         if observe(&live_root.join(rel))?.as_ref() != Some(want) {
             return Err(format!("복원 뒤 불일치 {rel}"));
         }

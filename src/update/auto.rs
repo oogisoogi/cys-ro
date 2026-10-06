@@ -80,6 +80,7 @@ pub fn build_env(update_dir: PathBuf, channel: &str) -> Env {
         rpc: rpc_box(),
         settle_secs: settle,
         dry_run: crate::env_compat("CYS_UPDATE_DRY_RUN").as_deref() == Some("1"),
+        counsel_dir: super::notify::counsel_dir(),
     }
 }
 

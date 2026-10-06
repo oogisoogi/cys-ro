@@ -8,7 +8,7 @@
 
 use super::errors::ErrCode;
 use super::journal::{Journal, Os, PrevInstaller};
-use super::runner::{Canon, Fail, Kind, Ops, Step};
+use super::runner::{Attempt, Canon, Fail, Kind, Ops, Step};
 use super::verify::{self, Baseline, Expect, PackId, Post, SeatKey};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -34,6 +34,8 @@ pub struct Env {
     /// S5 정착 창(초).
     pub settle_secs: u64,
     pub dry_run: bool,
+    /// 상담소 신호 폴더(`counsel/updates.jsonl` · [`super::notify::counsel_dir`]) — 시험 = 격리 폴더.
+    pub counsel_dir: Option<PathBuf>,
 }
 
 /// 후보(S0 판정에서 뽑은 것 · 복구기가 다시 읽을 수 있게 `candidate.json` 으로 남긴다).
@@ -76,6 +78,9 @@ impl Candidate {
         })
     }
 }
+
+/// ★4판(Fable 3R M7·n4): `~/.cys` 바로 아래 팩 임시 자리(내려받기·풀기·적용 잠금) — 스냅샷·재구성 대조 제외.
+pub const PACK_TRANSIENT: &[&str] = &[".pack-download", ".pack-staging", ".pack-apply.lock"];
 
 /// 보존 자산 파일 이름(`installers/<seq>/`).
 pub const REL_BODY: &str = "release.json";
@@ -140,6 +145,12 @@ pub struct RealOps {
     b0: Option<Baseline>,
     /// ★2판 C9: 마지막 `rotate` 자식의 실제 종료 코드(V3 restore_rc — 상수 0 대신).
     last_rotate_rc: Option<i32>,
+    /// ★4판(Fable 3R M5): 재구성이 판정한 판의 `cys`(복원 뒤 재기동에 쓴다).
+    recon_exe: Option<PathBuf>,
+    /// 시험 전용: 재구성의 정식 자리 판정(맥 codesign·윈 서명 본문)을 대신한다 — true = 옛 판. 그 밖 경로(시도 판정·대조·정지·복원·
+    /// 재기동)는 실물 그대로.
+    #[cfg(test)]
+    pub judge_is_old: Option<bool>,
 }
 
 fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
@@ -148,7 +159,18 @@ fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
 
 impl RealOps {
     pub fn new(env: Env, token: String, cand: Candidate, old_version: String) -> RealOps {
-        RealOps { env, token, cand, old_version, q1: None, b0: None, last_rotate_rc: None }
+        RealOps {
+            env,
+            token,
+            cand,
+            old_version,
+            q1: None,
+            b0: None,
+            last_rotate_rc: None,
+            recon_exe: None,
+            #[cfg(test)]
+            judge_is_old: None,
+        }
     }
 
     fn asset(&self) -> Result<&super::feed::Asset, Fail> {
@@ -278,6 +300,10 @@ impl RealOps {
     /// `~/.cys` 뿌리 안에서 스냅샷 대상(§3-5 표 「팩」·「사용자 소유 트리」 행) — 그 밖(계정 폴더·대화 기록·갱신 폴더)은 뺀다.
     pub fn cys_filter(rel: &str) -> bool {
         let first = rel.split('/').next().unwrap_or_default();
+        // ★4판(Fable 3R M7·n4): 팩 내려받기·풀기 임시 자리·적용 잠금은 스냅샷·재구성 대조 대상이 아니다(일시 차이 = 거짓 「어긋남」 · 49 MiB 사본)
+        if PACK_TRANSIENT.contains(&first) {
+            return false;
+        }
         first == "pack"
             || first.starts_with("pack-dept-")
             || first.starts_with(".pack-")
@@ -332,7 +358,7 @@ impl RealOps {
         super::snapshot::restore(&self.env.daemon_state_dir, &root.join("state"), &q.join("state"), &st_prot, want_st)
             .map_err(|e| fail(ErrCode::RollbackBlocked, step, e))?;
         let cys_prot = |rel: &str| !RealOps::cys_filter(rel);
-        super::snapshot::restore(&self.env.cys_root, &root.join("cys"), &q.join("cys"), &cys_prot, want_cy)
+        super::snapshot::restore_in(&self.env.cys_root, &root.join("cys"), &q.join("cys"), &RealOps::cys_filter, &cys_prot, want_cy)
             .map_err(|e| fail(ErrCode::RollbackBlocked, step, e))?;
         Ok(())
     }
@@ -534,8 +560,8 @@ impl Ops for RealOps {
             pack: self.pack_id(),
             platform_mark: self.platform_mark()?.to_string(),
         };
-        super::quiesce::write_json(&self.env.update_dir, "attempt.json", &json!({"txn_id": j.txn_id, "baseline": b}))
-            .map_err(|e| fail(ErrCode::DiskLow, "S5b", e))?;
+        // ★4판 N3′: 이번 시도 기록(S1 에 이 txn 으로 생김)에 더한다 — 통째 덮기 = 계보·스냅샷 자리 유실
+        super::runner::attempt_set_baseline(&self.env.update_dir, &j.txn_id, json!(b)).map_err(|e| fail(ErrCode::DiskLow, "S5b", e))?;
         self.b0 = Some(b);
         Ok(())
     }
@@ -943,46 +969,27 @@ impl Ops for RealOps {
             .map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))
     }
 
-    fn reconstruct(&mut self) -> Step {
+    fn reconstruct(&mut self, attempt: Option<&Attempt>) -> Result<bool, Fail> {
         // §3-11 저널 손상 재구성: 정식 자리 실물이 설치판(옛) 또는 후보(새) 중 정확히 하나와 같으면 확정.
         // ★2판(codex 1R C13): ① 맥 = 번들 바이너리를 실행(build-info)하기 **전에** codesign 엄격 + DR 핀 · 새 판으로 판정되면 cdhash 까지
-        //   (verify_bundle 3겹) ② 윈 = 수용 본문은 서명 재검증된 것만(load_installer_manifest = verify_installer_dir) ③ 옛 판으로 판정되면
-        //   팩·사용자 트리·상태 폴더를 그 판의 최신 검증 스냅샷으로 복원한 뒤에만 종결(복원 중 죽은 경우 · 스냅샷 없음 = S8 전 = 무변경).
+        //   (verify_bundle 3겹) ② 윈 = 수용 본문은 서명 재검증된 것만(load_installer_manifest = verify_installer_dir).
+        // ★4판(codex 3R N3′): 대조 원천 = **이번 시도**(호출자가 저널 txn 계보로 거른 `attempt`)의 S8 스냅샷뿐 · 옛 판이면 팩·사용자 트리 ·
+        //   ★새 판이어도 사용자 트리(V5 와 같은 바이트 대조)는 대조·복원한다(팩 본문은 재기동의 init-pack 이 새 판으로 다시 깐다).
         let rj = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
-        let old = self.expect_old();
-        let new = self.expect_new().ok();
-        let is_old = match self.env.os {
-            Os::Mac => {
-                let canon = super::mac::real_path(&self.env.canonical_app, "reconstruct").map_err(|f| rj(f.detail))?;
-                super::mac::verify_signature_pin(&canon).map_err(|f| rj(format!("서명 검증 전 실행 거부: {}", f.detail)))?;
-                let found = super::mac::bundle_ident(&canon);
-                match (&found, &new) {
-                    (Some(f), _) if f == &old => true,
-                    (Some(f), Some(n)) if f == n => {
-                        super::mac::verify_bundle(&canon, self.cand.asset.cdhash.as_deref().unwrap_or(""), n).map_err(|f| rj(f.detail))?;
-                        false
-                    }
-                    _ => return Err(rj("정식 자리 번들 = 어느 판과도 불일치".into())),
-                }
-            }
-            Os::Win => {
-                let older = load_installer_manifest(&self.installers_dir(old.release_seq));
-                let newer = self.asset().ok().and_then(|a| a.payload_manifest.clone()).filter(|m| !m.is_empty());
-                match (older, newer) {
-                    (Some(m), _) if super::payload::verify_install(&self.env.install_dir, &m, None).ok() => true,
-                    (_, Some(m)) if super::payload::verify_install(&self.env.install_dir, &m, None).ok() => false,
-                    _ => return Err(rj("설치 폴더 = 서명 검증된 수용 매니페스트와 불일치".into())),
-                }
-            }
+        let is_old = self.judge_canonical()?;
+        self.recon_exe = Some(if is_old { self.env.old_cys.clone() } else { self.new_cys() });
+        let Some(snap) = attempt.and_then(|a| a.snapshot_dir.as_deref()).map(|d| PathBuf::from(d).join("cys")) else {
+            return Ok(false);
         };
-        if is_old {
-            // ★3판(Fable 2R N3): 「가장 최근 스냅샷으로 상태 폴더까지 덮기」 → 이번 시도(attempt.json txn)의 스냅샷과 **대조** → 어긋날 때만
-            //   데몬을 내리고 `~/.cys` 의 팩·사용자 트리만 복원(상태 폴더·app-notify.* 무접촉).
-            let (old_cys, upd, root) = (self.env.old_cys.clone(), self.env.update_dir.clone(), self.env.cys_root.clone());
-            let mut stop = || self.rotate(&old_cys, true);
-            reconstruct_trees(&upd, &root, old.release_seq, &mut stop).map_err(|f| rj(f.detail))?;
-        }
-        Ok(())
+        let (old_cys, upd, root) = (self.env.old_cys.clone(), self.env.update_dir.clone(), self.env.cys_root.clone());
+        let protected: &dyn Fn(&str) -> bool = if is_old { &reconstruct_protected } else { &reconstruct_protected_new };
+        let mut stop = || self.rotate(&old_cys, true);
+        reconstruct_trees(&upd, &root, &snap, protected, &mut stop).map_err(|f| rj(f.detail))
+    }
+
+    fn restart_after_reconstruct(&mut self) -> Step {
+        let exe = self.recon_exe.clone().ok_or_else(|| fail(ErrCode::JournalCorrupt, "reconstruct", "판정 전 재기동"))?;
+        self.rotate(&exe, false)
     }
 
     fn record(&mut self, j: Option<&Journal>, kind: Kind, f: Option<&Fail>) {
@@ -1015,7 +1022,7 @@ impl Ops for RealOps {
         let stamp = super::clock::now_stamp();
         let _ = super::notify::update_state(&self.env.update_dir, |m| super::notify::apply(m, &o, &rid, now, Some(&stamp)));
         if kind != Kind::Deferred {
-            if let Some(cd) = super::notify::counsel_dir() {
+            if let Some(cd) = self.env.counsel_dir.clone() {
                 let _ = super::notify::append_update(&cd, &o.from_version, &o.to_version, kname, now);
             }
             super::notify::signal(&self.env.cys_root.join("pack"), if kind == Kind::Ok { ErrCode::Ok } else { o.code });
@@ -1024,6 +1031,41 @@ impl Ops for RealOps {
 }
 
 impl RealOps {
+    /// 재구성의 정식 자리 판정(★2판 C13 그대로) — true = 설치판(옛) · false = 후보(새) · 어느 쪽도 아님 = Err(사람 필요).
+    fn judge_canonical(&self) -> Result<bool, Fail> {
+        let rj = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
+        #[cfg(test)]
+        if let Some(v) = self.judge_is_old {
+            return Ok(v);
+        }
+        let old = self.expect_old();
+        let new = self.expect_new().ok();
+        Ok(match self.env.os {
+            Os::Mac => {
+                let canon = super::mac::real_path(&self.env.canonical_app, "reconstruct").map_err(|f| rj(f.detail))?;
+                super::mac::verify_signature_pin(&canon).map_err(|f| rj(format!("서명 검증 전 실행 거부: {}", f.detail)))?;
+                let found = super::mac::bundle_ident(&canon);
+                match (&found, &new) {
+                    (Some(f), _) if f == &old => true,
+                    (Some(f), Some(n)) if f == n => {
+                        super::mac::verify_bundle(&canon, self.cand.asset.cdhash.as_deref().unwrap_or(""), n).map_err(|f| rj(f.detail))?;
+                        false
+                    }
+                    _ => return Err(rj("정식 자리 번들 = 어느 판과도 불일치".into())),
+                }
+            }
+            Os::Win => {
+                let older = load_installer_manifest(&self.installers_dir(old.release_seq));
+                let newer = self.asset().ok().and_then(|a| a.payload_manifest.clone()).filter(|m| !m.is_empty());
+                match (older, newer) {
+                    (Some(m), _) if super::payload::verify_install(&self.env.install_dir, &m, None).ok() => true,
+                    (_, Some(m)) if super::payload::verify_install(&self.env.install_dir, &m, None).ok() => false,
+                    _ => return Err(rj("설치 폴더 = 서명 검증된 수용 매니페스트와 불일치".into())),
+                }
+            }
+        })
+    }
+
     fn old_payload_ok(&self, j: &Journal) -> bool {
         load_installer_manifest(&self.installers_dir(j.from_release_seq))
             .map(|m| super::payload::verify_install(&self.env.install_dir, &m, None).ok())
@@ -1127,25 +1169,27 @@ pub fn reconstruct_protected(rel: &str) -> bool {
     !RealOps::cys_filter(rel) || rel.split('/').next() == Some("update") || name == "app-notify.json" || name == "app-notify.lock"
 }
 
-/// ★3판(Fable 2R N3): 손상 저널 재구성의 트리 단계 — 원천 = **이번 시도**(`attempt.json` 의 txn_id)의 `backup/<seq>-<txn>/cys` 만(옛 시도의
-/// 스냅샷 0 · 없으면 대조할 것 없음 = 무변경) · 대조(`snapshot::diff`) → 전부 같음 = 손대지 않음(Ok(false)) · 어긋남 = `stop()`(데몬 정지 ·
-/// 실패 = 복원 0) 뒤 팩·사용자 트리만 복원(격리 키 = `reconstruct-<벽시계>`) → Ok(true). 상태 폴더는 대상이 아니다.
-pub fn reconstruct_trees(update_dir: &Path, cys_root: &Path, old_seq: u64, stop: &mut dyn FnMut() -> Step) -> Result<bool, Fail> {
+/// ★4판(codex 3R N3′): 정식 자리 = 새 판일 때의 재구성 보호 — 사용자 트리([`verify::is_user_path`] · V5 와 같은 정의)만 대조·복원하고
+/// 팩 본문은 무접촉(새 판 팩은 재기동 init-pack 몫).
+pub fn reconstruct_protected_new(rel: &str) -> bool {
+    reconstruct_protected(rel) || !verify::is_user_path(rel)
+}
+
+/// 손상 저널 재구성의 트리 단계(★3판 N3 · ★4판 N3′): 원천 = 호출자가 넘긴 **이번 시도** 스냅샷(`snap` = `<S8 자리>/cys`)뿐 · 대조
+/// (`snapshot::diff_in` · 범위 = 팩·사용자 트리 · n3) → 전부 같음 = 손대지 않음(Ok(false)) · 어긋남 = `stop()`(데몬 정지 · 실패 = 복원 0)
+/// 뒤 `protected` 밖만 복원(격리 키 = `reconstruct-<벽시계 ns>-<pid>` · m4) → Ok(true). 상태 폴더는 대상이 아니다.
+pub fn reconstruct_trees(update_dir: &Path, cys_root: &Path, snap: &Path, protected: &dyn Fn(&str) -> bool, stop: &mut dyn FnMut() -> Step) -> Result<bool, Fail> {
     let f = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
-    let Some(txn) = super::quiesce::read_json::<Value>(update_dir, "attempt.json").and_then(|v| v["txn_id"].as_str().map(str::to_string)) else {
-        return Ok(false);
-    };
-    let snap = super::snapshot::backup_root(update_dir).join(super::snapshot::snapshot_name(old_seq, &txn)).join("cys");
     if !snap.join(super::snapshot::MANIFEST_FILE).exists() {
         return Ok(false);
     }
-    let plan = super::snapshot::diff(cys_root, &snap, &reconstruct_protected).map_err(f)?;
+    let plan = super::snapshot::diff_in(cys_root, snap, &RealOps::cys_filter, protected).map_err(f)?;
     if plan.iter().all(|a| matches!(a, super::snapshot::Action::Keep(_) | super::snapshot::Action::Protected(_))) {
         return Ok(false);
     }
     stop().map_err(|e| f(format!("복원 전 데몬 정지 실패: {}", e.detail)))?;
-    let q = super::snapshot::quarantine_dir(update_dir, &format!("reconstruct-{}", super::clock::wall_now()));
-    super::snapshot::restore(cys_root, &snap, &q.join("cys"), &reconstruct_protected, None).map_err(f)?;
+    let q = super::snapshot::quarantine_dir(update_dir, &format!("reconstruct-{}", super::clock::unique_key()));
+    super::snapshot::restore_in(cys_root, snap, &q.join("cys"), &RealOps::cys_filter, protected, None).map_err(f)?;
     Ok(true)
 }
 
@@ -1317,8 +1361,131 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// ★3판 N3: 재구성 = 이번 시도 스냅샷과 대조 — ① 일치 트리 = 손대지 않음(데몬 정지도 0) ② 어긋난 팩만 복원(데몬 정지 1회 ·
-    /// 사용자 파일·상태 폴더·app-notify.* 무접촉) ③ 옛 시도 스냅샷은 원천 아님 ④ 정지 실패 = 복원 0.
+    /// 재구성 종단 시험 틀: 격리 갱신 폴더·`~/.cys`·가짜 `cys`(인자를 기록하고 rc 0) · 상담소 = 격리.
+    #[cfg(unix)]
+    pub(crate) fn recon_rig(tag: &str) -> (PathBuf, PathBuf, PathBuf, RealOps) {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cys-u2-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (upd, root) = (d.join("update"), d.join("cys"));
+        for (p, b) in [("pack/lib/x.py", "v1"), ("pack/MASTER_DIRECTIVE.md", "D1"), ("local/me.md", "mine"), ("update/app-notify.json", "N0")] {
+            std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            std::fs::write(root.join(p), b).unwrap();
+        }
+        std::fs::create_dir_all(&upd).unwrap();
+        let log = d.join("calls.log");
+        let script = format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", log.display());
+        let old_cys = d.join("old/cys");
+        let new_cys = d.join("app/Contents/MacOS/cys");
+        for exe in [&old_cys, &new_cys] {
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(exe, &script).unwrap();
+            std::fs::set_permissions(exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let env = Env {
+            os: Os::Mac,
+            update_dir: upd.clone(),
+            cys_root: root.clone(),
+            daemon_state_dir: d.join("state"),
+            canonical_app: d.join("app"),
+            install_dir: d.join("state"),
+            channel: "stable".into(),
+            old_cys,
+            rpc: Box::new(|_, _| Err("데몬 없음".into())),
+            settle_secs: 0,
+            dry_run: false,
+            counsel_dir: Some(d.join("counsel")),
+        };
+        let a: crate::update::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0, "target": "x", "release_seq": 9})).unwrap();
+        let cand = Candidate { asset: a, version: "1.1.9".into(), release_seq: 9, installed_revoked: false, notes_ko: None, feed_rev: None,
+            envelope_sha256: None, envelope_signed_at: None, release_b64: None, release_sig_b64: None };
+        (d, upd, root, RealOps::new(env, "fedcba9876543210fedcba9876543210:2".into(), cand, "1.1.8".into()))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn calls(d: &Path) -> Vec<String> {
+        std::fs::read_to_string(d.join("calls.log")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// 저널 두 슬롯을 못 읽게(전체 손상).
+    pub(crate) fn corrupt_journal(upd: &Path) {
+        for f in [super::super::journal::JOURNAL_FILE, super::super::journal::JOURNAL_PREV_FILE] {
+            std::fs::write(upd.join(f), b"{torn").unwrap();
+        }
+    }
+
+    /// ★4판(codex 3R N3′ · Fable 3R M5) 종단: 실 러너가 S1→S8(실 스냅샷)→S9 기록 뒤 죽음 → 팩·사용자 파일 어긋남 → 저널 전체 손상 →
+    /// **`Runner::recover`**(실 RealOps) → 이번 시도 판정 → 대조 → 데몬 정지(`rotate --stop-only`) → 복원 → 종결 저널 → **재기동**
+    /// (`rotate --skip-drain`) · 시도 기록 삭제 · 앱 알림 장부 무접촉. 정식 자리 판정만 시험 주입(맥 codesign 실물 = C13 시험).
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_journal_recover_reconstructs_from_this_attempt_and_restarts_daemon() {
+        use super::super::runner::{tests::Sim, Fault, Outcome, Runner, ATTEMPT_FILE};
+        for (judge_old, tag) in [(true, "recon-old"), (false, "recon-new")] {
+            let (d, upd, root, mut ops) = recon_rig(tag);
+            ops.judge_is_old = Some(judge_old);
+            let mut sim = Sim::new(Os::Mac);
+            sim.real_snapshot = Some((root.clone(), super::super::snapshot::backup_root(&upd).join("8-tnow")));
+            let mut r = Runner::new(&upd, "0123456789abcdef0123456789abcdef", 1, &mut sim);
+            r.fault = Fault::parse("kill@S9_SWAPPED:after");
+            r.soft_kill = true;
+            assert!(matches!(r.run(), Outcome::Killed(..)), "{tag}");
+            // 교체 도중: 팩 본문·지침·사용자 파일이 바뀜 + 앱 장부 갱신
+            std::fs::write(root.join("pack/lib/x.py"), "v2-new").unwrap();
+            std::fs::write(root.join("pack/MASTER_DIRECTIVE.md"), "D2").unwrap();
+            std::fs::write(root.join("local/me.md"), "clobbered").unwrap();
+            std::fs::write(root.join("update/app-notify.json"), "N1").unwrap();
+            corrupt_journal(&upd);
+            let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+            rec.soft_kill = true;
+            assert_eq!(rec.recover(), Outcome::Nothing, "{tag}");
+            let c = calls(&d);
+            assert_eq!(c.len(), 2, "{tag}: 정지 1 + 재기동 1 {c:?}");
+            assert!(c[0].contains("--stop-only") && !c[1].contains("--stop-only") && c[1].starts_with("rotate --skip-drain --txn"), "{tag}: {c:?}");
+            assert_eq!(std::fs::read_to_string(root.join("local/me.md")).unwrap(), "mine", "{tag}: 사용자 파일 = 이번 시도 스냅샷");
+            assert_eq!(std::fs::read_to_string(root.join("pack/MASTER_DIRECTIVE.md")).unwrap(), "D1", "{tag}: 사용자 지침 = V5 대조");
+            let want_pack = if judge_old { "v1" } else { "v2-new" };
+            assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), want_pack, "{tag}: 팩 본문(옛 = 복원 · 새 = 무접촉)");
+            assert_eq!(std::fs::read_to_string(root.join("update/app-notify.json")).unwrap(), "N1", "{tag}: app-notify 무접촉");
+            assert!(super::super::journal::read(&upd).journal().map(|j| j.state.is_terminal()).unwrap_or(false), "{tag}: 종결 저널");
+            assert!(!upd.join(ATTEMPT_FILE).exists(), "{tag}: 시도 기록 삭제");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// ★4판(codex 3R N3′ 반례): 지난 시도(told)의 기록·스냅샷이 남은 채 새 시도가 S3 에서 죽고 저널이 손상 → 복구기는 지난 시도의 옛
+    /// 스냅샷으로 되돌리지 **않는다**(이번 시도 = S1 에 새로 쓴 기록 · 스냅샷 전) — 복원 0 · 정지 0. 뮤턴트 U2-ATTEMPT(S1 기록 생략) = 적색.
+    #[cfg(unix)]
+    #[test]
+    fn stale_attempt_from_previous_txn_is_never_a_restore_source() {
+        use super::super::runner::{attempt_begin, attempt_note_snapshot, tests::Sim, Fault, Outcome, Runner};
+        let (d, upd, root, mut ops) = recon_rig("recon-stale");
+        ops.judge_is_old = Some(true);
+        // 지난 시도: 기록 + 옛 스냅샷(내용 ancient) — 종결 뒤 지우기 전에 죽은 것처럼 남김
+        std::fs::write(root.join("pack/lib/x.py"), "ancient").unwrap();
+        let old_snap = super::super::snapshot::backup_root(&upd).join("8-told");
+        super::super::snapshot::take(&root, &old_snap.join("cys"), &RealOps::cys_filter).unwrap();
+        attempt_begin(&upd, "told").unwrap();
+        attempt_note_snapshot(&upd, "told", &old_snap.to_string_lossy()).unwrap();
+        std::fs::write(root.join("pack/lib/x.py"), "live").unwrap();
+        // 새 시도: S3(Quiesced) 직후 죽음 → 저널 손상
+        let mut sim = Sim::new(Os::Mac);
+        let mut r = Runner::new(&upd, "0123456789abcdef0123456789abcdef", 1, &mut sim);
+        r.fault = Fault::parse("kill@S3_QUIESCED:after");
+        r.soft_kill = true;
+        let o = r.run();
+        assert!(matches!(o, Outcome::Killed(..)), "{o:?}");
+        corrupt_journal(&upd);
+        let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+        rec.soft_kill = true;
+        assert_eq!(rec.recover(), Outcome::Nothing);
+        assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "live", "지난 시도 스냅샷으로 되돌리지 않음");
+        assert!(calls(&d).is_empty(), "정지·재기동 0: {:?}", calls(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3판 N3 / 4판 n3·n4·m4: 트리 단계 단위 — 일치 = 무변경·정지 0 · 어긋난 팩만 복원·app-notify 무접촉 · 팩 임시 자리 = 대조 밖 ·
+    /// 정지 실패 = 복원 0 · 같은 초 두 재구성 = 다른 격리 자리.
     #[test]
     fn reconstruct_compares_then_restores_only_mismatched_pack() {
         let d = std::env::temp_dir().join(format!("cys-u2-recon-{}", std::process::id()));
@@ -1329,31 +1496,35 @@ mod tests {
             std::fs::write(root.join(p), b).unwrap();
         }
         std::fs::create_dir_all(&upd).unwrap();
-        super::super::quiesce::write_json(&upd, "attempt.json", &json!({"txn_id": "tnow"})).unwrap();
         let snap = super::super::snapshot::backup_root(&upd).join("8-tnow").join("cys");
         super::super::snapshot::take(&root, &snap, &RealOps::cys_filter).unwrap();
-        // 옛 시도 스냅샷(다른 내용) — 원천이 되면 안 된다
-        std::fs::write(root.join("pack/lib/x.py"), "ancient").unwrap();
-        super::super::snapshot::take(&root, &super::super::snapshot::backup_root(&upd).join("8-told").join("cys"), &RealOps::cys_filter).unwrap();
-        std::fs::write(root.join("pack/lib/x.py"), "v1").unwrap();
         let mut stops = 0;
-        // ① 일치 = 무변경 · 정지 0
-        assert_eq!(reconstruct_trees(&upd, &root, 8, &mut || { stops += 1; Ok(()) }).unwrap(), false);
+        assert_eq!(reconstruct_trees(&upd, &root, &snap, &reconstruct_protected, &mut || { stops += 1; Ok(()) }).unwrap(), false);
         assert_eq!(stops, 0);
-        // ② 팩만 어긋남 + 앱 알림 장부 변화 → 팩만 복원 · 장부 무접촉
         std::fs::write(root.join("pack/lib/x.py"), "v2-new").unwrap();
         std::fs::write(root.join("update/app-notify.json"), "N1").unwrap();
         std::fs::write(root.join("update/app-notify.lock"), "L1").unwrap();
-        assert_eq!(reconstruct_trees(&upd, &root, 8, &mut || { stops += 1; Ok(()) }).unwrap(), true);
+        std::fs::create_dir_all(root.join(".pack-download")).unwrap();
+        std::fs::write(root.join(".pack-download/pack.tar.gz"), "tmp").unwrap();
+        assert_eq!(reconstruct_trees(&upd, &root, &snap, &reconstruct_protected, &mut || { stops += 1; Ok(()) }).unwrap(), true);
         assert_eq!(stops, 1, "복원 전 데몬 정지 1회");
-        assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v1", "이번 시도 스냅샷(옛 시도 아님)");
+        assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v1");
         assert_eq!(std::fs::read_to_string(root.join("local/me.md")).unwrap(), "mine");
         assert_eq!(std::fs::read_to_string(root.join("update/app-notify.json")).unwrap(), "N1", "app-notify 무접촉");
         assert_eq!(std::fs::read_to_string(root.join("update/app-notify.lock")).unwrap(), "L1", ".lock 복원 금지");
-        // ④ 정지 실패 = 복원 0
+        assert!(root.join(".pack-download/pack.tar.gz").exists(), "팩 임시 자리 무접촉");
+        std::fs::write(root.join(".pack-download/pack.tar.gz"), "tmp2").unwrap();
+        assert_eq!(reconstruct_trees(&upd, &root, &snap, &reconstruct_protected, &mut || { stops += 1; Ok(()) }).unwrap(), false, "n4: 임시 내려받기만 다름 = 어긋남 아님");
+        assert_eq!(stops, 1);
         std::fs::write(root.join("pack/lib/x.py"), "v3").unwrap();
-        assert!(reconstruct_trees(&upd, &root, 8, &mut || Err(fail(ErrCode::RotateFailed, "S7", "x"))).is_err());
+        assert!(reconstruct_trees(&upd, &root, &snap, &reconstruct_protected, &mut || Err(fail(ErrCode::RotateFailed, "S7", "x"))).is_err());
         assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v3", "정지 못 하면 덮지 않음");
+        std::fs::write(root.join("pack/lib/new1.py"), "a").unwrap();
+        reconstruct_trees(&upd, &root, &snap, &reconstruct_protected, &mut || Ok(())).unwrap();
+        std::fs::write(root.join("pack/lib/new1.py"), "b").unwrap();
+        reconstruct_trees(&upd, &root, &snap, &reconstruct_protected, &mut || Ok(())).unwrap();
+        assert_eq!(std::fs::read_dir(upd.join("rb-quarantine")).unwrap().count(), 2, "m4: 같은 초 두 재구성의 격리본(new1.py) = 자리 2개(덮어쓰기 0)");
+        assert_ne!(super::super::clock::unique_key(), super::super::clock::unique_key());
         let _ = std::fs::remove_dir_all(&d);
     }
 

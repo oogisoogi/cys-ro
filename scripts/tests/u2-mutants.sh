@@ -33,5 +33,7 @@ U2-S5OUT update::quiesce::tests::s5_recheck_flags_each_change_and_unknown
 U2-V3 update::verify::tests::each_violation_fails_its_row
 U2-NOFOLLOW update::mac::tests::swap_forward_then_rb_swap_is_idempotent_on_real_apfs
 U2-NEST update::lock::tests::nested_delegation_reenters_child_lock_but_siblings_still_exclude
+U2-ATTEMPT update::realops::tests::stale_attempt_from_previous_txn_is_never_a_restore_source
+U2-RESTART update::realops::tests::corrupt_journal_recover_reconstructs_from_this_attempt_and_restarts_daemon
 LIST
 exit $fail

@@ -96,8 +96,11 @@ pub trait Ops {
     fn rb_restore(&mut self, j: &Journal) -> Step;
     /// PACK_APPLY·PACK_ROLLBACK 복구 — `pack::recover_pack_journal()` + 사용자 트리 해시 대조.
     fn recover_pack(&mut self, j: &Journal) -> Step;
-    /// 저널 손상 — 실물 재구성(§3-11 1~3). Ok = 판 확정 · 팩·사용자 트리 대조 끝.
-    fn reconstruct(&mut self) -> Step;
+    /// 저널 손상 — 실물 재구성(§3-11 1~3). `attempt` = **이번 시도**([`current_attempt`] · 저널 txn 계보와 묶인 `attempt.json`) — 없으면
+    /// 대조할 스냅샷 없음. Ok(true) = 데몬을 내리고 트리를 복원했다(→ 종결 저널 뒤 [`Ops::restart_after_reconstruct`]) · Ok(false) = 무변경.
+    fn reconstruct(&mut self, attempt: Option<&Attempt>) -> Result<bool, Fail>;
+    /// ★4판(Fable 3R M5): 재구성 복원 뒤 데몬 재기동 — 판정된 판의 `rotate --skip-drain --txn`(S10 과 같은 길 · 재등록·기동·팩 반영).
+    fn restart_after_reconstruct(&mut self) -> Step;
     /// ★3판(Fable 2R M4 · 설계 §3-8): 팩만 새 판인가 — `pack-plan` 게이트 + `pack-update --dry-run`. Ok(false) = 없음·본체 대기(binary-too-old).
     fn pack_available(&mut self) -> Result<bool, Fail>;
     /// PACK_APPLY 전: 사용자 트리 사본·해시를 저널 칸(`snapshot_dir`·`stage_tree_sha256`)에 채운다.
@@ -213,10 +216,17 @@ impl<'a, O: Ops> Runner<'a, O> {
         Ok(())
     }
 
-    /// write-ahead 전이 + 결함 주입 앞뒤.
+    /// write-ahead 전이 + 결함 주입 앞뒤. ★4판(codex 3R N3′): 새 트랜잭션(S1)은 저널보다 **먼저** `attempt.json` 을 이 txn 으로 새로 쓰고
+    /// (옛 시도 기록을 덮는다) · 종결 전이 뒤 지운다 — 「이번 시도」 = 지금 저널 txn 계보뿐.
     fn enter(&mut self, to: State, f: impl FnOnce(&mut Journal)) -> Result<Journal, Stop> {
         self.hit(to, false)?;
+        if to == State::Locked && !super::mutant("U2-ATTEMPT") {
+            attempt_begin(&self.dir, &self.txn_id).map_err(Stop::Journal)?;
+        }
         let j = journal::advance(&self.dir, &self.txn_id, self.epoch, to, f).map_err(|e| Stop::Journal(format!("{e:?}")))?;
+        if to.is_terminal() {
+            attempt_end(&self.dir);
+        }
         self.hit(to, true)?;
         Ok(j)
     }
@@ -270,6 +280,10 @@ impl<'a, O: Ops> Runner<'a, O> {
             return self.restart_old_and_defer(&j, f);
         }
         self.enter(State::Snapshotted, |n| copy_fields(n, &work))?;
+        // ★4판 N3′: 재구성의 대조 원천 = 이번 시도의 스냅샷(기록 실패 = 대조 불가 → 교체 전 되감기)
+        if let Err(e) = attempt_note_snapshot(&self.dir, &self.txn_id, &work.snapshot_dir) {
+            return self.restart_old_and_defer(&j, Fail::new(ErrCode::DiskLow, "S8", e));
+        }
         j = self.enter(State::CommitCheck, |_| {})?;
         if let Err(f) = self.ops.commit_check(&j) {
             // S8b 어긋남 = S7 되감기(저널을 S7 로 돌려 적고 옛 데몬)
@@ -428,8 +442,12 @@ impl<'a, O: Ops> Runner<'a, O> {
         let mut read = journal::read(&self.dir);
         let rec = journal::recovery_for(&read, self.ops.os());
         if matches!(&read, ReadOutcome::Ok(j) if !j.state.is_terminal()) && !super::mutant("U2-TAKEOVER") {
+            let before = read.journal().map(|j| j.txn_id.clone()).unwrap_or_default();
             match journal::takeover(&self.dir, &self.txn_id, self.epoch) {
-                Ok(j) => read = ReadOutcome::Ok(j),
+                Ok(j) => {
+                    attempt_takeover(&self.dir, &before, &j.txn_id);
+                    read = ReadOutcome::Ok(j)
+                }
                 Err(e) => return Outcome::JournalRefused(format!("takeover: {e:?}")),
             }
         } else if let Some(j) = read.journal() {
@@ -438,7 +456,7 @@ impl<'a, O: Ops> Runner<'a, O> {
         }
         let r = match (rec, read) {
             (Recovery::Nothing, _) => return Outcome::Nothing,
-            (Recovery::Reconstruct, _) => return self.reconstruct(),
+            (Recovery::Reconstruct, read) => return self.reconstruct(&read),
             (rec, ReadOutcome::Ok(j)) => self.recover_from(rec, j),
             (_, other) => return Outcome::JournalRefused(format!("{other:?}")),
         };
@@ -503,11 +521,22 @@ impl<'a, O: Ops> Runner<'a, O> {
         }
     }
 
-    fn reconstruct(&mut self) -> Outcome {
-        let r = if super::mutant("U2-RECON") { Ok(()) } else { self.ops.reconstruct() };
+    /// ★4판: ① 이번 시도 = [`current_attempt`](저널 txn 계보와 묶인 것만 · 옛 시도 0) ② 실물 판정·트리 대조 ③ 종결 저널(부팅 가드 풀림)
+    /// ④ 복원으로 데몬을 내렸으면 같은 판으로 재기동(Fable 3R M5 · 실패 = 좌석 0 기록 · 사람·앱 기동 몫).
+    fn reconstruct(&mut self, read: &ReadOutcome) -> Outcome {
+        let attempt = current_attempt(&self.dir, read);
+        let r = if super::mutant("U2-RECON") { Ok(false) } else { self.ops.reconstruct(attempt.as_ref()) };
         match r {
-            Ok(()) => match journal::write_reconstructed(&self.dir, &self.txn_id_or_new(), self.epoch) {
+            Ok(stopped) => match journal::write_reconstructed(&self.dir, &self.txn_id_or_new(), self.epoch) {
                 Ok(j) => {
+                    attempt_end(&self.dir);
+                    if stopped && !super::mutant("U2-RESTART") {
+                        if let Err(f) = self.ops.restart_after_reconstruct() {
+                            eprintln!("[update] 재구성 뒤 데몬 재기동 실패: {} — 좌석 0(앱을 열면 다시 기동)", f.detail);
+                            self.ops.record(Some(&j), Kind::SeatsBlocked, Some(&f));
+                            return Outcome::SeatsBlocked(f);
+                        }
+                    }
                     self.ops.record(Some(&j), Kind::JournalCorrupt, Some(&Fail::new(ErrCode::JournalCorrupt, "reconstruct", "재구성 성공")));
                     Outcome::Nothing
                 }
@@ -547,6 +576,85 @@ fn copy_fields(n: &mut Journal, w: &Journal) {
     n.payload_manifest_sha256 = w.payload_manifest_sha256.clone();
     n.hold_ingested_upto = w.hold_ingested_upto;
     n.attempt = w.attempt;
+}
+
+// ── ★4판(codex 3R N3′): 「이번 시도」 기록 — 저널 txn 계보와 묶는다 ─────────────────────────────────────────
+
+/// 시도 기록 파일(갱신 폴더 · S5b 기준선 B0 도 여기 · 종결 때 삭제).
+pub const ATTEMPT_FILE: &str = "attempt.json";
+
+/// 이번 시도: S1 의 txn + 복구기 인수(takeover)로 바뀐 토큰 계보 · S8 스냅샷 자리 · S5b 기준선.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Attempt {
+    pub txn_id: String,
+    #[serde(default)]
+    pub lineage: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<serde_json::Value>,
+}
+
+impl Attempt {
+    fn owns(&self, txn: &str) -> bool {
+        self.txn_id == txn || self.lineage.iter().any(|t| t == txn)
+    }
+}
+
+fn attempt_read(dir: &Path) -> Option<Attempt> {
+    super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE)
+}
+
+fn attempt_write(dir: &Path, a: &Attempt) -> Result<(), String> {
+    super::quiesce::write_json(dir, ATTEMPT_FILE, a)
+}
+
+/// S1(저널 Locked 보다 먼저): 이 txn 으로 새로 쓴다 — 지난 시도의 기록(스냅샷 자리 포함)은 여기서 사라진다.
+pub fn attempt_begin(dir: &Path, txn: &str) -> Result<(), String> {
+    attempt_write(dir, &Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None })
+}
+
+/// 복구기 인수: 기록이 그 저널 txn 계보면 새 토큰을 잇는다 · 아니면(낡은 기록) 새 토큰만의 빈 기록(스냅샷 없음 = 대조 원천 0).
+pub fn attempt_takeover(dir: &Path, old_txn: &str, new_txn: &str) {
+    let a = match attempt_read(dir) {
+        Some(mut a) if a.owns(old_txn) => {
+            if !a.owns(new_txn) {
+                a.lineage.push(new_txn.into());
+            }
+            a
+        }
+        _ => Attempt { txn_id: new_txn.into(), lineage: vec![new_txn.into()], snapshot_dir: None, baseline: None },
+    };
+    let _ = attempt_write(dir, &a);
+}
+
+/// S8 직후: 이번 시도의 스냅샷 자리(기록이 이 txn 계보가 아니면 Err — 대조 원천을 남의 시도에 붙이지 않는다).
+pub fn attempt_note_snapshot(dir: &Path, txn: &str, snapshot_dir: &str) -> Result<(), String> {
+    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).ok_or("attempt.json 이 이번 txn 이 아님")?;
+    a.snapshot_dir = Some(snapshot_dir.to_string());
+    attempt_write(dir, &a)
+}
+
+/// S5b: 기준선 B0 를 이번 시도 기록에 더한다(기록이 없거나 남의 것이면 이 txn 으로 새로).
+pub fn attempt_set_baseline(dir: &Path, txn: &str, baseline: serde_json::Value) -> Result<(), String> {
+    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).unwrap_or(Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None });
+    a.baseline = Some(baseline);
+    attempt_write(dir, &a)
+}
+
+/// 종결: 지운다(종결 뒤 손상된 저널이 지난 시도의 스냅샷으로 되돌려지지 않게).
+pub fn attempt_end(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(ATTEMPT_FILE));
+}
+
+/// 재구성이 쓸 「이번 시도」: 기록이 있고 · 남은 저널 슬롯(Degraded)이 있으면 그 txn 이 기록 계보 안일 때만. 저널 전체 손상(Corrupt) =
+/// 기록의 수명(S1 앞 생성 · 종결 뒤 삭제)이 묶음을 보증한다.
+pub fn current_attempt(dir: &Path, read: &ReadOutcome) -> Option<Attempt> {
+    let a = attempt_read(dir)?;
+    match read {
+        ReadOutcome::Degraded(j, _) | ReadOutcome::Ok(j) if !a.owns(&j.txn_id) => None,
+        _ => Some(a),
+    }
 }
 
 /// cysd 부팅 가드(§3-11) — 비종결(S7~S11·RB·PACK_*)이거나 저널 손상(`Corrupt`·`Degraded`)이면 Some(사유) = 좌석·세션을 만들지 않고
@@ -625,6 +733,8 @@ pub(crate) mod tests {
         pub payload_bad_runs: u32,
         pub records: Vec<Kind>,
         pub reconstruct_ok: bool,
+        /// (뿌리, 자리) — S8 에서 실 스냅샷(`RealOps::cys_filter` 범위)을 `<자리>/cys` 에 뜬다(재구성 종단 시험용).
+        pub real_snapshot: Option<(PathBuf, PathBuf)>,
     }
 
     impl Sim {
@@ -644,6 +754,7 @@ pub(crate) mod tests {
                 payload_bad_runs: 0,
                 records: vec![],
                 reconstruct_ok: true,
+                real_snapshot: None,
             }
         }
         fn f(&self, k: &'static str) -> Step {
@@ -690,6 +801,12 @@ pub(crate) mod tests {
         }
         fn snapshot(&mut self, j: &mut Journal) -> Step {
             self.f("snapshot")?;
+            if let Some((root, dst)) = &self.real_snapshot {
+                super::super::snapshot::take(root, &dst.join("cys"), &super::super::realops::RealOps::cys_filter).map_err(|e| Fail::new(ErrCode::DiskLow, "S8", e))?;
+                j.snapshot_dir = dst.to_string_lossy().to_string();
+                j.snapshot_manifest_sha256 = "m".repeat(64);
+                return Ok(());
+            }
             j.snapshot_dir = "/snap".into();
             j.snapshot_manifest_sha256 = "m".repeat(64);
             Ok(())
@@ -792,12 +909,17 @@ pub(crate) mod tests {
         fn recover_pack(&mut self, _: &Journal) -> Step {
             self.f("recover_pack")
         }
-        fn reconstruct(&mut self) -> Step {
+        fn reconstruct(&mut self, _: Option<&Attempt>) -> Result<bool, Fail> {
             if self.reconstruct_ok {
-                Ok(())
+                Ok(false)
             } else {
                 Err(Fail::new(ErrCode::JournalCorrupt, "reconstruct", "후보 0"))
             }
+        }
+        fn restart_after_reconstruct(&mut self) -> Step {
+            self.f("restart")?;
+            self.daemon = Some(if self.canonical_new { "new" } else { "old" });
+            Ok(())
         }
         fn record(&mut self, _: Option<&Journal>, kind: Kind, _: Option<&Fail>) {
             self.records.push(kind);

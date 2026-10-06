@@ -343,8 +343,8 @@ pub fn seats_blocked_at(dir: &Path) -> Option<&'static str> {
 ///   · 다른 참가자가 함께 들어와 있으면(겹침 = 잠금이 뚫림) `.cs-overlap` 을 남긴다.
 ///   · 그리고 시험이 `.cs-go` 를 놓을 때까지 그 자리에 선다 — 시험은 그 사이 두 잠금이 실제로 잡혀 있는지를 **비차단 시도**로 잰다
 ///     ([`mutex_is_held`] · [`lock_file_is_held`]). 시간 유예(옛 300ms)에 기대지 않는다: 잠금이 빠진 뮤턴트는 시도가 성공해 곧바로 적색이다.
-/// 정직: 맥(flock · 실측)의 파일 잠금은 열린 파일 단위라 같은 프로세스의 다른 fd 도 막는다(윈 LockFileEx 도 핸들 단위로 같을 것 — 추정 ·
-///   윈 실기 미측정). 그래서 파일 잠금 보유는 같은 프로세스 스레드에서도, 다른 프로세스에서도 잴 수 있다.
+/// 정직: 맥(flock · 실측)의 파일 잠금은 열린 파일 단위라 같은 프로세스의 다른 fd 도 막는다(윈 LockFileEx 도 핸들 단위 —
+///   실측 = windows-build 레인 updnotice 스텝). 그래서 파일 잠금 보유는 같은 프로세스 스레드에서도, 다른 프로세스에서도 잴 수 있다.
 #[cfg(test)]
 pub(crate) mod cs_probe {
     use std::path::{Path, PathBuf};

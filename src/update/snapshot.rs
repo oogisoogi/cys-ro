@@ -176,9 +176,6 @@ pub fn take(src: &Path, dst: &Path, filter: &dyn Fn(&str) -> bool) -> Result<Str
     let mut m = Manifest::new();
     for rel in &files {
         let (s, n) = durable_copy(&src.join(rel), &dst.join(FILES_DIR).join(rel))?;
-        if super::mutant("U2-SNAPFAULT") && m.len() == 1 {
-            return Err("시험 결함: 백업 중단".into());
-        }
         m.insert(rel.clone(), (s, n));
     }
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;

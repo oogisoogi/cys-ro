@@ -16,7 +16,16 @@ use std::io::Write;
 use std::path::Path;
 
 pub const LEDGER_FILE: &str = "hold-delivery.jsonl";
-pub const INGESTED_FILE: &str = "hold-ingested.json";
+/// 보류 로그 쪽 커서 `{delivered_hold_seq}` — 큐 커밋을 **다시 읽어 확인한 뒤에만** 전진(설계 §3-3 ① · `--check` N3 이 같은 파일을 읽는다).
+pub const INGESTED_FILE: &str = "hold-cursor.json";
+
+pub fn read_cursor(dir: &Path) -> Option<u64> {
+    read_json::<serde_json::Value>(dir, INGESTED_FILE).and_then(|v| v.get("delivered_hold_seq").and_then(|x| x.as_u64()))
+}
+
+pub fn write_cursor(dir: &Path, n: u64) -> Result<(), String> {
+    write_json(dir, INGESTED_FILE, &serde_json::json!({"delivered_hold_seq": n}))
+}
 pub const SESSION_FILE: &str = "hold-session.json";
 /// 기본 TTL(설계 `ttl_secs: 900`).
 pub const DEFAULT_TTL_SECS: u64 = 900;
@@ -88,7 +97,7 @@ pub fn verify_owner_token(dir: &Path, token: &str) -> Result<super::lock::Token,
     if o.txn_id != t.txn_id || o.epoch != t.epoch || o.released {
         return Err("토큰 불일치·해제됨".into());
     }
-    if super::lock::is_held(dir) != Some(true) {
+    if super::lock::is_held(dir) != Some(true) && !super::mutant("U2-TOK") {
         return Err("잠금 없음".into());
     }
     Ok(t)
@@ -250,7 +259,7 @@ mod tests {
                 queue.extend(plan.iter().cloned()); // 큐 원자 쓰기 성공
             }
             if point == "e" || point == "c" || point == "d" {
-                write_json(&d, INGESTED_FILE, &3u64).unwrap();
+                write_cursor(&d, 3).unwrap();
             }
             // 첫 항목 주입 시도
             let first = plan[0].clone();
@@ -267,7 +276,7 @@ mod tests {
             }
             // ── 죽음 → 재기동: 큐 파일(queue)은 남고, 원장·로그는 디스크에서 다시 읽는다 ──
             let marks = ledger_marks(&d).unwrap();
-            let upto: u64 = read_json(&d, INGESTED_FILE).unwrap_or(0);
+            let upto: u64 = read_cursor(&d).unwrap_or(0);
             let again: Vec<String> = plan_replay(txn, &recs, upto, &queue, &marks).iter().map(|r| queue_item_id(txn, r.hold_seq)).collect();
             queue.extend(again.iter().cloned());
             // 정확히 한 번: 3줄 전부가 「큐에 있음 ∪ 원장 표지」 에 정확히 한 번

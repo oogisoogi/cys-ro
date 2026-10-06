@@ -1,0 +1,36 @@
+#!/bin/bash
+# u2-mutants.sh — 1.1.8 U2 수리 증명(브리프 §2-8 「뮤테이션 각 축 1」 · U1 u1-mutants.sh 와 같은 꼴): 가드마다 「가드 있음 = 녹 · 가드 끔 = 적」.
+#   축 = 교체 중 kill(U2-CANON) · 롤백 경로(U2-QUAR) · 저널 손상(U2-RECON) · 잠금 경합(U2-TOK) + 보조(부팅 가드·최대 한 번·정확히 한 번·
+#   S5 재검사·V3·RENAME_NOFOLLOW_ANY). 가드는 `update::mutant("<번호>")`(시험 빌드에서만 켜짐 · env `CYS_U1_MUTANT` 공용).
+#   U2-IMG(윈 이미지 대조)는 윈 전용 코드라 이 맥 목록 밖(윈 러너 몫).
+# 사용: U1_ISO=<격리 래퍼> scripts/tests/u2-mutants.sh   · exit 0 = 전건 OK · 1 = BAD 있음 · 2 = 판정 불가(src/ 더러움)
+set -u
+ROOT=$(git rev-parse --show-toplevel) || exit 2
+cd "$ROOT" || exit 2
+ISO=${U1_ISO:-}
+run() { if [ -n "$ISO" ]; then "$ISO" "$@"; else "$@"; fi; }
+if [ -n "$(git status --porcelain -- src)" ]; then echo "u2-mutants: 판정 불가 — src/ 작업트리가 깨끗하지 않다" >&2; exit 2; fi
+run cargo test -q --lib --no-run >/dev/null 2>&1 || { echo "u2-mutants: 판정 불가 — 시험 빌드 실패" >&2; exit 2; }
+fail=0
+# 적 = 「test result: FAILED」 가 실제로 찍힘(컴파일 실패 101 을 적으로 세지 않는다 — U1 3R F11 교훈)
+red() { run env CYS_U1_MUTANT="$1" cargo test -q --lib "$2" -- --exact 2>&1 | grep -q 'test result: FAILED'; }
+green() { run cargo test -q --lib "$1" -- --exact 2>&1 | grep -q 'test result: ok. 1 passed'; }
+while read -r id test; do
+  [ -z "$id" ] && continue
+  if green "$test"; then g=0; else g=1; fi
+  if red "$id" "$test"; then r=1; else r=0; fi
+  if [ "$g" -eq 0 ] && [ "$r" -eq 1 ]; then v=OK; else v=BAD; fail=1; fi
+  printf '%-4s %-12s 녹=%s 적=%s  %s\n' "$v" "$id" "$g" "$r" "$test"
+done <<'LIST'
+U2-CANON update::runner::tests::kill_matrix_every_state_before_and_after_recovers_to_one_consistent_version
+U2-QUAR update::snapshot::tests::take_verify_restore_file_level_table
+U2-RECON update::runner::tests::corrupt_journal_blocks_boot_then_reconstruct_or_seats_blocked
+U2-TOK update::quiesce::tests::owner_token_must_match_and_lock_must_be_held
+U2-BOOT update::runner::tests::boot_blocked_allows_only_live_lock_holder_for_non_terminal_journal
+U2-ATMOST update::quiesce::tests::b8_crash_matrix_replay_exactly_once_and_inject_at_most_once
+U2-REPLAY update::quiesce::tests::b8_crash_matrix_replay_exactly_once_and_inject_at_most_once
+U2-S5OUT update::quiesce::tests::s5_recheck_flags_each_change_and_unknown
+U2-V3 update::verify::tests::each_violation_fails_its_row
+U2-NOFOLLOW update::mac::tests::swap_forward_then_rb_swap_is_idempotent_on_real_apfs
+LIST
+exit $fail

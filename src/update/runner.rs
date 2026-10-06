@@ -390,7 +390,7 @@ impl<'a, O: Ops> Runner<'a, O> {
                 }
                 self.restart_old_and_defer(&j, Fail::new(ErrCode::RotateFailed, "recover", "S7·S8 중단"))
             }
-            Recovery::MacCheckCanonical => match self.ops.canonical(&j) {
+            Recovery::MacCheckCanonical => match if super::mutant("U2-CANON") { Canon::New } else { self.ops.canonical(&j) } {
                 Canon::New => {
                     let j = self.enter(State::Started, |_| {})?;
                     self.forward_from_started(j)
@@ -433,7 +433,8 @@ impl<'a, O: Ops> Runner<'a, O> {
     }
 
     fn reconstruct(&mut self) -> Outcome {
-        match self.ops.reconstruct() {
+        let r = if super::mutant("U2-RECON") { Ok(()) } else { self.ops.reconstruct() };
+        match r {
             Ok(()) => match journal::write_reconstructed(&self.dir, &self.txn_id_or_new(), self.epoch) {
                 Ok(j) => {
                     self.ops.record(Some(&j), Kind::JournalCorrupt, Some(&Fail::new(ErrCode::JournalCorrupt, "reconstruct", "재구성 성공")));

@@ -170,7 +170,7 @@ pub fn tick(daemon: &Arc<Daemon>) {
     }
     let _io = IO.lock().unwrap_or_else(|e| e.into_inner());
     let Some(sess) = quiesce::read_json::<quiesce::Session>(&dir, quiesce::SESSION_FILE) else { return };
-    let upto: u64 = quiesce::read_json(&dir, quiesce::INGESTED_FILE).unwrap_or(sess.from_hold_seq).max(sess.from_hold_seq);
+    let upto: u64 = quiesce::read_cursor(&dir).unwrap_or(sess.from_hold_seq).max(sess.from_hold_seq);
     let Ok(log) = hold::HoldLog::open(&dir) else { return };
     if log.last_seq() <= upto {
         return;
@@ -213,13 +213,32 @@ pub fn tick(daemon: &Arc<Daemon>) {
     if pushed > 0 {
         daemon.persist_queue_state();
         if !daemon.queue_wal_durable() {
-            return; // 큐가 디스크에 안 섰다 — upto 를 올리지 않는다(다음 틱 · id 중복 제거가 지킨다)
+            return; // 큐가 디스크에 안 섰다 — 커서를 올리지 않는다(다음 틱 · id 중복 제거가 지킨다)
+        }
+        // ACK 재독(§3-3 ①): 큐 파일을 **다시 읽어** 넣은 id 가 전부 있는지 확인한 뒤에만 커서 전진.
+        let wal = crate::state::state_dir(&daemon.socket_path).join("queue-state.json");
+        let on_disk: std::collections::HashSet<String> = std::fs::read(&wal)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Vec<Value>>(&b).ok())
+            .map(|rows| rows.iter().filter_map(|r| r["id"].as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let ok = recs
+            .iter()
+            .filter(|r| r.hold_seq <= new_upto && plan.iter().any(|p| p.hold_seq == r.hold_seq))
+            .all(|r| on_disk.contains(&hold::queue_item_id(&sess.txn_id, r.hold_seq)) || !in_queue_now(&surfaces, &hold::queue_item_id(&sess.txn_id, r.hold_seq)));
+        if !ok {
+            return;
         }
     }
     if new_upto > upto {
-        let _ = quiesce::write_json(&dir, quiesce::INGESTED_FILE, &new_upto);
+        let _ = quiesce::write_cursor(&dir, new_upto);
         daemon.bus.publish("update.hold_replayed", "update", None, json!({"pushed": pushed, "upto": new_upto}));
     }
+}
+
+/// 지금도 메모리 큐에 있는가(이미 배달돼 빠진 항목은 디스크 대조 대상이 아니다).
+fn in_queue_now(surfaces: &[Arc<Surface>], id: &str) -> bool {
+    surfaces.iter().any(|s| s.pending_queue.lock().unwrap().iter().any(|e| e.id == id))
 }
 
 /// 재생 ② 주입 표지 — 주입 직전에 머리부터 이어진 보류 재생 항목 전부(병합 배달에 함께 실릴 수 있는 것)를 원장 `delivering` 으로 적고,

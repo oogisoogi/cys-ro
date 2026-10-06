@@ -371,6 +371,16 @@ impl Ops for RealOps {
         }
         j.snapshot_dir = root.to_string_lossy().to_string();
         j.snapshot_manifest_sha256 = shas.join(",");
+        // N7 「직전 실측 백업량」(MA3) — 다음 틱의 공간식 재료.
+        let bytes: u64 = ["state", "cys"]
+            .iter()
+            .filter_map(|n| std::fs::read_to_string(root.join(n).join(super::snapshot::MANIFEST_FILE)).ok())
+            .filter_map(|t| super::snapshot::parse_manifest(&t).ok())
+            .map(|m| m.values().map(|(_, n)| *n).sum::<u64>())
+            .sum();
+        let _ = super::notify::update_state(&self.env.update_dir, |m| {
+            m.insert("last_backup_bytes".into(), json!(bytes));
+        });
         Ok(())
     }
 

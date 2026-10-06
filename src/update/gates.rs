@@ -37,6 +37,44 @@ pub struct SeatFact {
     pub queue_depth: u64,
 }
 
+/// ★1R MAJOR(M8): 좌석 1개의 사실을 데몬 응답 두 줄(`control.dashboard` 의 fleet 노드 · `org.status` 의 surfaces 행)에서 만든다.
+/// **필수 계기가 하나라도 없거나 타입이 다르면 None**(= 그 좌석 모름 → 호출부가 좌석 사실 전체를 None = 보류) — 누락을 0 으로
+/// 바꾸면 「입력 대기 0·큐 0」 의 거짓 한가함이 된다. 필수 = 노드 `surface_id`·`state`·`idle_secs` · 행 `human_idle_secs` 키(값 null =
+/// 사람 입력 0 회 = 허용)·`pending_input_bytes`·`queue_depth`. `agent_status` 의 null(미보고)은 「일하는 중일 수 있음」으로 보수 처리
+/// (재주입 3신호와 같은 규칙 — 키 부재도 같다). `prompt_ready` = 호출부의 어댑터 화면 판정(CLI 바이너리 몫).
+pub fn seat_fact_from(node: &serde_json::Value, org: &serde_json::Value, prompt_ready: bool) -> Option<SeatFact> {
+    let loose = super::mutant("M8");
+    let u = |v: &serde_json::Value, k: &str| -> Option<u64> {
+        match v.get(k).and_then(|x| x.as_u64()) {
+            Some(n) => Some(n),
+            None if loose => Some(0),
+            None => None,
+        }
+    };
+    let surface_id = node.get("surface_id")?.as_u64()?;
+    let state = node.get("state")?.as_str()?;
+    let quiet_secs = u(node, "idle_secs")?;
+    let human = org.get("human_idle_secs")?; // 키 부재(옛 데몬) = 모름
+    let human_idle_secs = match human {
+        serde_json::Value::Null => None,
+        h => match h.as_u64() {
+            Some(n) => Some(n),
+            None if loose => None,
+            None => return None,
+        },
+    };
+    Some(SeatFact {
+        surface_id,
+        idle: state == "idle",
+        self_not_working: matches!(node.get("agent_status").and_then(|x| x.as_str()), Some(st) if st != "working"),
+        prompt_ready,
+        quiet_secs,
+        human_idle_secs,
+        pending_input_bytes: u(org, "pending_input_bytes")?,
+        queue_depth: u(org, "queue_depth")?,
+    })
+}
+
 /// 전원(N6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Power {
@@ -414,5 +452,33 @@ mod tests {
         f.seats.as_mut().unwrap()[0].idle = false;
         assert_eq!(evaluate_pack_only(&f).first_hold.unwrap().id, "N1");
         assert!(!evaluate(&f).pass);
+    }
+
+    /// ★1R M8 뮤테이션: 필수 계기 하나라도 없거나 타입이 다르면 좌석 사실 None(누락 → 0 의 거짓 한가함 차단).
+    #[test]
+    fn m8_seat_fact_requires_every_instrument() {
+        let node = serde_json::json!({"surface_id": 7, "state": "idle", "idle_secs": 900, "agent_status": "idle"});
+        let org = serde_json::json!({"surface_id": 7, "human_idle_secs": 1500, "pending_input_bytes": 0, "queue_depth": 0});
+        let f = seat_fact_from(&node, &org, true).unwrap();
+        assert_eq!((f.surface_id, f.idle, f.self_not_working, f.quiet_secs, f.human_idle_secs), (7, true, true, 900, Some(1500)));
+        let mut o = org.clone();
+        o["human_idle_secs"] = serde_json::Value::Null;
+        assert_eq!(seat_fact_from(&node, &o, true).unwrap().human_idle_secs, None, "null = 사람 입력 0회(허용)");
+        let mut n = node.clone();
+        n["agent_status"] = serde_json::Value::Null;
+        assert!(!seat_fact_from(&n, &org, true).unwrap().self_not_working, "미보고 = 일하는 중일 수 있음");
+        for k in ["pending_input_bytes", "queue_depth", "human_idle_secs"] {
+            let mut o = org.clone();
+            o.as_object_mut().unwrap().remove(k);
+            assert!(seat_fact_from(&node, &o, true).is_none(), "org.{k} 부재");
+        }
+        let mut o = org.clone();
+        o["queue_depth"] = "3".into();
+        assert!(seat_fact_from(&node, &o, true).is_none(), "타입 어긋남");
+        for k in ["surface_id", "state", "idle_secs"] {
+            let mut n = node.clone();
+            n.as_object_mut().unwrap().remove(k);
+            assert!(seat_fact_from(&n, &org, true).is_none(), "node.{k} 부재");
+        }
     }
 }

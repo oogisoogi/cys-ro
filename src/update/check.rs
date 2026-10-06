@@ -350,6 +350,7 @@ pub fn fetch_and_verify(dir: &Path, channel: &str, now: i64) -> Result<(FeedOutc
         clock_suspect: clock::clock_suspect_dates(now, last_trusted, &dates),
         accepted,
         accepted_rev,
+        last_trusted_time: last_trusted,
         keyring: &keyring,
         installed_release_seq: buildinfo::release_seq(),
         target: buildinfo::TARGET,

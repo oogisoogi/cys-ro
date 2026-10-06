@@ -270,14 +270,17 @@ struct RawDrPins {
     revoke: Vec<String>,
 }
 
-/// ⓐ 폐기문 검증 — 서식 → R 키(내장만 · 루트는 위임 불가) → minisign → `rev` 단조(`accepted_rev` 미만 = 거부).
-/// 실패 코드: 서명·서식 = `feed_sig_bad`(폐기문은 피드 계층의 일부) · `rev` 후퇴 = `feed_replay`.
+/// ⓐ 폐기문 검증 — 서식 → R 키(내장만 · 루트는 위임 불가) → minisign → `rev` 단조(`accepted_rev` 미만 = 거부) →
+/// `signed_at` 미래 거부(기준 = 신뢰 시각 `max(now, last_trusted)` — 미래 서명 폐기문을 받으면 `last_trusted_time` 가 미래로
+/// 밀려 그 시각까지 모든 판정이 「시계 의심」에 갇힌다 · U3 1R).
+/// 실패 코드: 서명·서식 = `feed_sig_bad`(폐기문은 피드 계층의 일부) · `rev` 후퇴 = `feed_replay` · 미래 서명 = `feed_expired`.
 pub fn verify_revocations(
     bytes: &[u8],
     sig: &[u8],
     embedded: &UpdateKeyring,
     accepted_rev: Option<u64>,
     now: i64,
+    last_trusted: Option<i64>,
 ) -> Result<Revocations, UpdateErr> {
     let bad = |d: String| UpdateErr::new(ErrCode::FeedSigBad, "ⓐ", d);
     let raw: RawRevocations = serde_json::from_slice(bytes).map_err(|e| bad(format!("폐기문 서식: {e}")))?;
@@ -290,6 +293,14 @@ pub fn verify_revocations(
         if raw.rev < acc {
             return Err(UpdateErr::new(ErrCode::FeedReplay, "ⓐ", format!("폐기문 rev {} < 수용 {acc}", raw.rev)));
         }
+    }
+    let trusted_now = last_trusted.map_or(now, |t| t.max(now));
+    if raw.signed_at > trusted_now && !super::mutant("RF") {
+        return Err(UpdateErr::new(
+            ErrCode::FeedExpired,
+            "ⓐ",
+            format!("폐기문 signed_at {} > 신뢰 시각 {trusted_now}(미래 서명)", raw.signed_at),
+        ));
     }
     let mut delegations = Vec::new();
     for d in raw.delegations {
@@ -472,7 +483,7 @@ mod tests {
                 ]
             }),
         );
-        let r = verify_revocations(&b, &s, &embedded, Some(2), NOW).unwrap();
+        let r = verify_revocations(&b, &s, &embedded, Some(2), NOW, None).unwrap();
         assert_eq!(r.rev, 3);
         assert_eq!(r.revoked("cysr", 7).unwrap().severity, Severity::StopSeats);
         let unk = r.revoked("cysr", 8).unwrap();
@@ -489,17 +500,32 @@ mod tests {
         let k = Keys::new();
         let kr = k.keyring();
         let (b, s) = revo(&k, 3, serde_json::json!({}));
-        assert_eq!(verify_revocations(&b, &s, &kr, Some(4), NOW).unwrap_err().code, ErrCode::FeedReplay);
-        assert!(verify_revocations(&b, &s, &kr, Some(3), NOW).is_ok(), "같은 rev = 통과(무변화)");
+        assert_eq!(verify_revocations(&b, &s, &kr, Some(4), NOW, None).unwrap_err().code, ErrCode::FeedReplay);
+        assert!(verify_revocations(&b, &s, &kr, Some(3), NOW, None).is_ok(), "같은 rev = 통과(무변화)");
         let mut b2 = b.clone();
         let i = b2.len() - 2;
         b2[i] ^= 1; // 1바이트 변조
-        assert_eq!(verify_revocations(&b2, &s, &kr, None, NOW).unwrap_err().code, ErrCode::FeedSigBad);
+        assert_eq!(verify_revocations(&b2, &s, &kr, None, NOW, None).unwrap_err().code, ErrCode::FeedSigBad);
         // U 키로 서명한 폐기문 = R 용도 아님 → 거부
         let v = serde_json::json!({"kind": REVOCATIONS_KIND, "rev": 1, "key_id": k.u.key_id, "signed_at": NOW});
         let bb = v.to_string().into_bytes();
         let ss = k.u.sign(&bb);
-        assert_eq!(verify_revocations(&bb, &ss, &kr, None, NOW).unwrap_err().code, ErrCode::FeedSigBad);
+        assert_eq!(verify_revocations(&bb, &ss, &kr, None, NOW, None).unwrap_err().code, ErrCode::FeedSigBad);
+    }
+
+    /// ★U3 1R 뮤테이션 RF: 폐기문 `signed_at` 미래 = 거부(기준 = `max(now, 신뢰 시각)`) — 받으면 `last_trusted_time` 가 미래로 밀린다.
+    #[test]
+    fn rf_future_signed_revocations_rejected() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let (b, s) = revo(&k, 1, serde_json::json!({"signed_at": NOW + 3600}));
+        let e = verify_revocations(&b, &s, &kr, None, NOW, None).unwrap_err();
+        assert_eq!((e.code, e.step.as_str()), (ErrCode::FeedExpired, "ⓐ"));
+        assert!(verify_revocations(&b, &s, &kr, None, NOW, Some(NOW + 60)).is_err(), "신뢰 시각보다도 미래");
+        // 벽시계가 신뢰 시각보다 뒤처진 기기: 기준 = 신뢰 시각 → 그 이하 서명은 통과(시계 의심은 ⓔ 가 따로 판정)
+        assert!(verify_revocations(&b, &s, &kr, None, NOW, Some(NOW + 3600)).is_ok());
+        let (b, s) = revo(&k, 1, serde_json::json!({"signed_at": NOW}));
+        assert!(verify_revocations(&b, &s, &kr, None, NOW, None).is_ok(), "지금 서명 = 통과");
     }
 
     #[test]
@@ -508,9 +534,9 @@ mod tests {
         let kr = k.keyring();
         let x = TestKey::new();
         let (b, s) = revo(&k, 1, serde_json::json!({"delegations": [{"key_id": x.key_id, "purpose": "root", "pubkey": x.pubkey, "not_after": NOW + 9}]}));
-        assert!(verify_revocations(&b, &s, &kr, None, NOW).is_err());
+        assert!(verify_revocations(&b, &s, &kr, None, NOW, None).is_err());
         let (b, s) = revo(&k, 1, serde_json::json!({"delegations": [{"key_id": "0000000000000000", "purpose": "feed", "pubkey": x.pubkey, "not_after": NOW + 9}]}));
-        assert!(verify_revocations(&b, &s, &kr, None, NOW).is_err());
+        assert!(verify_revocations(&b, &s, &kr, None, NOW, None).is_err());
     }
 
     /// §4-4·§7-1 「출시 빌드에서 시험 키링 env 무시」.

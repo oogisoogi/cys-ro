@@ -1,0 +1,13 @@
+{"_doc": "생산자(U3 update_common.url_ok_for) ↔ 검증기(U1 url.rs · feed.rs ⓜ) 공통 URL 벡터 — 1.1.8 U3 2판 codex 1R #12. U1 2판도 이 파일을 읽게 master 가 전달.",
+ "cases": [
+  {"component": "cysr", "field": "asset", "url": "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.8/cysr-macos-arm64-v1.1.8.zip", "ok": true},
+  {"component": "cysr", "field": "asset", "url": "https://jarvis.godmeyou.kr/install/agora-client-0.1.11.zip", "ok": false},
+  {"component": "cysr", "field": "asset", "url": "https://github.com/someone/else/releases/download/v1.1.8/x.zip", "ok": false},
+  {"component": "cysr", "field": "asset", "url": "http://github.com/oogisoogi/cys-ro/releases/download/v1.1.8/x.zip", "ok": false},
+  {"component": "cysr", "field": "asset", "url": "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.8/a%2Fb.zip", "ok": false},
+  {"component": "cysr", "field": "a2_sig", "url": "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.8/cysr_1.1.8_x64-setup.exe.sig", "ok": true},
+  {"component": "cysr", "field": "a2_sig", "url": "https://jarvis.godmeyou.kr/update/cysr/stable.json", "ok": false},
+  {"component": "agora-client", "field": "asset", "url": "https://jarvis.godmeyou.kr/install/agora-client-0.1.12.zip", "ok": true},
+  {"component": "agora-client", "field": "asset", "url": "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.8/x.zip", "ok": false},
+  {"component": "agora-client", "field": "asset", "url": "https://jarvis.godmeyou.kr:443/install/agora-client-0.1.12.zip", "ok": false}
+ ]}

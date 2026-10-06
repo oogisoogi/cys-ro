@@ -24189,26 +24189,16 @@ fn update_seat_facts() -> Option<Vec<cys::update::gates::SeatFact>> {
             continue; // 끝난 좌석은 일하지 않는다
         }
         let o = by_id.get(&sid)?;
-        let human = o.get("human_idle_secs")?; // 키 부재(옛 데몬) = 모름
         let agent = node["agent"].as_str().map(|s| s.to_string());
         let idle = node["state"].as_str() == Some("idle");
+        // idle_secs 부재면 아래 seat_fact_from 이 좌석째 None 으로 만든다 — 여기 0 은 화면 판정 입력일 뿐 결과에 남지 않는다.
         let idle_secs = node["idle_secs"].as_u64().unwrap_or(0);
-        // 미보고(null) = working 일 수 있음 → 한가하지 않음(reinject 와 같은 보수).
-        let self_not_working = matches!(node["agent_status"].as_str(), Some(st) if st != "working");
         let tail = request("surface.read_text", json!({"surface_id": sid}))
             .ok()
             .and_then(|r| r["text"].as_str().map(|s| s.to_string()))
             .unwrap_or_default();
-        out.push(cys::update::gates::SeatFact {
-            surface_id: sid,
-            idle,
-            self_not_working,
-            prompt_ready: adapter_ready(&agent, idle, idle_secs, &tail),
-            quiet_secs: idle_secs,
-            human_idle_secs: human.as_u64(),
-            pending_input_bytes: o["pending_input_bytes"].as_u64().unwrap_or(0),
-            queue_depth: o["queue_depth"].as_u64().unwrap_or(0),
-        });
+        // ★1R M8: 필수 계기 하나라도 없으면 좌석 사실 전체 None(보류) — 누락을 0 으로 바꾸지 않는다.
+        out.push(cys::update::gates::seat_fact_from(node, o, adapter_ready(&agent, idle, idle_secs, &tail))?);
     }
     Some(out)
 }

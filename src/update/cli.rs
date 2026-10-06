@@ -49,6 +49,10 @@ enum UpdCmd {
         /// 서명이 전부 맞으면 단조 앵커(폐기문 rev · 신뢰 시각)를 올리고, uptodate 면 수용 기록 feed_rev 를 올린다
         #[arg(long)]
         record: bool,
+        /// 출발 seq 열거(발행 게이트·refresh-feed): 본문이 허용하는 출발 seq(`max(min_from,1)` ~ 후보) 각각을 판정한다 — 설치판
+        /// 주장 없이(가짜 0 금지). `--installed-release-seq`·`--record` 와 함께 못 쓴다.
+        #[arg(long = "enumerate-installed")]
+        enumerate_installed: bool,
         #[arg(long)]
         json: bool,
     },
@@ -175,6 +179,7 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             installed_release_seq,
             target,
             record,
+            enumerate_installed,
             json,
         } => {
             let undetermined = |detail: String| {
@@ -187,6 +192,12 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                 (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
                 (Err(e), ..) | (_, Err(e), ..) | (_, _, Err(e), _) | (_, _, _, Err(e)) => return undetermined(e),
             };
+            if enumerate_installed && (installed_release_seq.is_some() || record) {
+                let detail = "--enumerate-installed 는 --installed-release-seq·--record 와 함께 못 쓴다";
+                let v = serde_json::json!({"verdict": "reject", "code": "update.verify_failed", "step": "input", "detail": detail});
+                print(json, &v, &format!("reject update.verify_failed {detail}"));
+                return 2;
+            }
             // ★1R B4: cysr 의 설치판 seq 는 이 바이너리 내장값뿐 — 호출자 주장(낮춰 부른 seq 로 다운그레이드 판정)은 거부(rc 2).
             //   외부 seq 는 바이너리 밖에 사는 agora-client 만 받는다.
             let installed = match (installed_release_seq, component.as_str()) {
@@ -197,6 +208,8 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                     return 2;
                 }
                 (Some(n), _) => n,
+                // 열거 모드는 이 값을 쓰지 않는다(`verify_feed_enumerate` 가 출발 seq 를 본문에서 정한다).
+                (None, _) if enumerate_installed => 0,
                 (None, "cysr") => buildinfo::release_seq(),
                 (None, _) => return undetermined("--installed-release-seq 필요".into()),
             };
@@ -228,11 +241,15 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                 clock_suspect: clock::clock_suspect(t_now, last_trusted, None),
                 accepted: feed::read_accepted(&acc_path),
                 accepted_rev,
+                last_trusted_time: last_trusted,
                 keyring: &keyring,
                 installed_release_seq: installed,
                 target: &target,
                 rollout_bucket: bucket,
             };
+            if enumerate_installed {
+                return run_enumerate(&inp, json);
+            }
             let o = feed::verify_feed(&inp);
             let mut v = o.to_json();
             let mut rc = o.verdict.rc();
@@ -274,6 +291,53 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             rc
         }
     }
+}
+
+/// `--enumerate-installed` — 서명 단계 실패 = 그 결과·rc · 아니면 출발 seq 마다 판정을 싣고 rc = 가장 나쁜 것(판정 불가 3 > 거부 2 > 0).
+/// 후보 직전까지의 출발 seq 가 하나도 없거나(min_from ≥ 후보) 후보 자신이 uptodate 가 아니면 거부(2).
+fn run_enumerate(inp: &FeedInput, json: bool) -> i32 {
+    let en = match feed::verify_feed_enumerate(inp) {
+        Ok(en) => en,
+        Err(o) => {
+            let mut v = o.to_json();
+            v["mode"] = "enumerate".into();
+            print(json, &v, &format!("{} {} [{}] {}", o.verdict.as_str(), o.code, o.step, o.detail));
+            return o.verdict.rc();
+        }
+    };
+    let mut rc = 0;
+    let mut problems = Vec::new();
+    let mut rows = Vec::new();
+    for (seq, o) in &en.results {
+        rc = rc.max(o.verdict.rc());
+        if *seq == en.release_seq && !matches!(o.verdict, Verdict::Uptodate | Verdict::InstalledRevoked) && o.verdict.rc() == 0 {
+            rc = rc.max(2);
+            problems.push(format!("후보 자신({seq}) 판정 {}", o.verdict.as_str()));
+        }
+        let mut row = o.to_json();
+        row["installed_release_seq"] = (*seq).into();
+        rows.push(row);
+    }
+    if !en.results.iter().any(|(s, _)| *s < en.release_seq) {
+        rc = rc.max(2);
+        problems.push(format!("허용 출발 seq 없음(min_from {} ≥ 후보 {})", en.min_from_release_seq, en.release_seq));
+    }
+    let verdict = match rc {
+        0 => "ok",
+        2 => "reject",
+        _ => "undetermined",
+    };
+    let v = serde_json::json!({
+        "mode": "enumerate",
+        "verdict": verdict,
+        "release_seq": en.release_seq,
+        "min_from_release_seq": en.min_from_release_seq,
+        "problems": problems,
+        "results": rows,
+    });
+    let seqs: Vec<String> = en.results.iter().map(|(s, o)| format!("{s}={}", o.verdict.as_str())).collect();
+    print(json, &v, &format!("enumerate {verdict} {}", seqs.join(" ")));
+    rc
 }
 
 #[cfg(test)]
@@ -342,6 +406,9 @@ mod tests {
             std::fs::write(self.d.join("r.sig"), &s.rev_sig).unwrap();
         }
         fn run(&self, component: &str, installed: Option<u64>, record: bool) -> i32 {
+            self.run_mode(component, installed, record, false)
+        }
+        fn run_mode(&self, component: &str, installed: Option<u64>, record: bool, enumerate_installed: bool) -> i32 {
             run(
                 UpdCmd::UpdateVerify {
                     component: component.into(),
@@ -353,6 +420,7 @@ mod tests {
                     installed_release_seq: installed,
                     target: Some("macos-arm64".into()),
                     record,
+                    enumerate_installed,
                     json: true,
                 },
                 &check::Hooks { seats: &|| None, pending_approvals: &|| None },
@@ -434,6 +502,30 @@ mod tests {
         let other = serde_json::json!([{"component": "agora-client", "release_seq": 99}]);
         t.put(&agora_signed(&k, 6, 10, revocations_json(&k, 3, other)));
         assert_eq!(t.run("agora-client", Some(10), true), 3, "기록 실패 = 판정 불가");
+    }
+
+    /// ★U3 1R #11: `--enumerate-installed` — cysr 도 설치판 주장 없이 출발 seq 전부 판정(rc 0) · 설치 seq·record 동반 = 거부 ·
+    /// 허용 출발 seq 없음(min_from ≥ 후보) = 거부 · 출발 seq 하나라도 거부 = 거부.
+    #[test]
+    fn enumerate_installed_cli_rc() {
+        use super::super::feed::fixture::*;
+        use super::super::keys::testkit::Keys;
+        let k = Keys::new();
+        let t = E2e::new("enum", &k);
+        let put = |min_from: u64, revoked: serde_json::Value| {
+            let mut b = body_json(&k, 9);
+            b["min_from_release_seq"] = min_from.into();
+            t.put(&sign_all(&k, &envelope_json(&k, &b, 5), &revocations_json(&k, 1, revoked)));
+        };
+        put(6, serde_json::json!([]));
+        assert_eq!(t.run_mode("cysr", None, false, true), 0, "출발 6·7·8 apply + 9 uptodate");
+        assert_eq!(t.run_mode("cysr", Some(8), false, true), 2, "설치 seq 동반");
+        assert_eq!(t.run_mode("cysr", None, true, true), 2, "--record 동반");
+        assert!(!t.st().join("trusted.json").exists(), "열거 모드는 쓰기 0");
+        put(9, serde_json::json!([]));
+        assert_eq!(t.run_mode("cysr", None, false, true), 2, "허용 출발 seq 없음");
+        put(6, serde_json::json!([{"component": "cysr", "release_seq": 9}]));
+        assert_eq!(t.run_mode("cysr", None, false, true), 2, "후보 폐기 = 모든 출발 seq 거부");
     }
 
     #[test]

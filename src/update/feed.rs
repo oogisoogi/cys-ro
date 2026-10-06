@@ -87,6 +87,46 @@ pub struct Asset {
     pub dr_pin_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub a2_sig_url: Option<String>,
+    /// ★U3 1R #10 · 설계 §3-7 ①·S9b: 윈 설치 페이로드 전수(설치기가 놓는 모든 파일) — cysr 윈 행 **필수**(ⓖ). 검증 반환 JSON 의
+    /// `asset` 에 그대로 실린다(U2 S9b 전수 대조 · U3 발행 게이트의 행 전체 대조 재료).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_manifest: Option<Vec<PayloadEntry>>,
+}
+
+/// 윈 설치 페이로드 1파일 — 경로 = `/` 구분 상대 경로(U3 `make-release-json.payload_manifest` 생산 규칙과 같은 꼴).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayloadEntry {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// `payload_manifest` 계약 — 비어 있지 않음 · 경로 = 상대(`/`·`\`·`:`·제어문자·빈/`.`/`..` 성분 거부) · sha256 소문자 64 hex ·
+/// 대소문자 무시 경로 중복 거부(윈 파일 시스템).
+fn check_payload_manifest(k: &str, pm: Option<&Vec<PayloadEntry>>) -> Result<(), String> {
+    let pm = match pm {
+        Some(v) if !v.is_empty() => v,
+        _ => return Err(format!("행 {k} payload_manifest 부재·빈 목록")),
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for e in pm {
+        let bad_path = e.path.is_empty()
+            || e.path.starts_with('/')
+            || e.path.contains('\\')
+            || e.path.contains(':')
+            || e.path.chars().any(|c| c.is_control())
+            || e.path.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..");
+        if bad_path {
+            return Err(format!("행 {k} payload_manifest 경로 {:?}", e.path));
+        }
+        if !is_hex(&e.sha256, 64) {
+            return Err(format!("행 {k} payload_manifest {} sha256 형식", e.path));
+        }
+        if !seen.insert(e.path.to_lowercase()) {
+            return Err(format!("행 {k} payload_manifest 경로 중복(대소문자 무시) {}", e.path));
+        }
+    }
+    Ok(())
 }
 
 /// 릴리스 본문(U 서명).
@@ -181,6 +221,8 @@ pub struct FeedInput<'a> {
     pub accepted: Result<Option<AcceptedFeed>, String>,
     /// 수용한 폐기문 `rev`(없으면 신규 기기).
     pub accepted_rev: Option<u64>,
+    /// 마지막 신뢰 시각(`trusted.json`) — 폐기문 `signed_at` 미래 거부의 기준(`max(now, 이 값)`).
+    pub last_trusted_time: Option<i64>,
     /// 바이너리 내장 키링(R·U·F·A2).
     pub keyring: &'a UpdateKeyring,
     pub installed_release_seq: u64,
@@ -362,9 +404,17 @@ fn check_release_shape(r: &ReleaseBody, component: &str) -> Result<(), String> {
             }
             if k.starts_with("windows-") {
                 match a.a2_sig_url.as_deref() {
-                    Some(u) if check_url(u, &[Hop::AssetFirst]).is_ok() => {}
+                    Some(u) if row_url_check(component, UrlField::A2Sig, u).is_ok() => {}
                     _ => return Err(format!("행 {k} a2_sig_url 부재·허용 목록 밖")),
                 }
+            }
+        }
+        // ★U3 1R #10: 윈 페이로드 전수(cysr 윈 행 필수) · 다른 행에 실렸으면 같은 형식 검사.
+        if !super::mutant("PM") {
+            if component == "cysr" && k.starts_with("windows-") {
+                check_payload_manifest(k, a.payload_manifest.as_ref())?;
+            } else if a.payload_manifest.is_some() {
+                check_payload_manifest(k, a.payload_manifest.as_ref())?;
             }
         }
     }
@@ -404,36 +454,46 @@ fn check_requires(r: &ReleaseBody) -> Result<(), UpdateErr> {
     Ok(())
 }
 
-/// 검증 함수 — **하나뿐**(§6-2). 파이썬(T3)은 이 함수를 `cys update-verify` 로 부르고 JSON 만 읽는다.
-pub fn verify_feed(inp: &FeedInput) -> FeedOutcome {
+/// 설치판 폐기·폐기문을 결과에 싣는다 — ★1R B3: R 검증 직후 확정한 것을 뒤 단계(봉투·본문)가 어떻게 실패하든 모든 결과에.
+/// `installed` = None(출발 seq 열거의 서명 단계 실패)이면 설치판 폐기 칸은 비운다(특정 설치판이 없다).
+fn carry(mut o: FeedOutcome, revs: &Revocations, component: &str, installed: Option<u64>) -> FeedOutcome {
+    if super::mutant("B3") {
+        return o;
+    }
+    let inst = installed.and_then(|seq| revs.revoked(component, seq));
+    o.installed_revoked = inst.is_some();
+    o.stop_seats = inst.map(|r| r.severity == Severity::StopSeats).unwrap_or(false);
+    o.unknown_severity = revs.revoked_releases.iter().any(|r| r.unknown_severity);
+    o.revocations = Some(revs.clone());
+    o.trusted_signed_at = Some(o.trusted_signed_at.unwrap_or(i64::MIN).max(revs.signed_at));
+    o
+}
+
+/// ⓐ~ⓘ 를 통과한 재료(설치판 seq 와 무관한 부분 — 서명·서식·순번).
+struct Checked {
+    revs: Revocations,
+    env: Envelope,
+    env_sha: String,
+    body: ReleaseBody,
+}
+
+/// ⓐ~ⓘ — 실패 = 그 결과(설치판 폐기 칸은 `installed` 로 싣는다).
+fn check_signed(inp: &FeedInput, installed: Option<u64>) -> Result<Checked, Box<FeedOutcome>> {
     use Verdict::{Reject, Undetermined};
 
-    // ⓐ 폐기문 — R 서명·rev 단조. 위임은 유효 키링에 반영한다.
-    let revs = match verify_revocations(inp.revocations, inp.revocations_sig, inp.keyring, inp.accepted_rev, inp.now) {
+    // ⓐ 폐기문 — R 서명·rev 단조·signed_at 미래 거부(신뢰 시각 기준). 위임은 유효 키링에 반영한다.
+    let revs = match verify_revocations(inp.revocations, inp.revocations_sig, inp.keyring, inp.accepted_rev, inp.now, inp.last_trusted_time) {
         Ok(r) => r,
-        Err(e) => return FeedOutcome::fail(Reject, e),
+        Err(e) => return Err(Box::new(FeedOutcome::fail(Reject, e))),
     };
     let keyring = inp.keyring.with_revocations(&revs);
-    // ★1R B3: 설치판 폐기(stop_seats)는 R 검증 직후 확정하고, 뒤 단계(봉투·본문)가 어떻게 실패하든 모든 결과에 싣는다.
-    let installed = revs.revoked(inp.component, inp.installed_release_seq).cloned();
-    let unknown_severity = revs.revoked_releases.iter().any(|r| r.unknown_severity);
-    let carry = |mut o: FeedOutcome| -> FeedOutcome {
-        if !super::mutant("B3") {
-            o.installed_revoked = installed.is_some();
-            o.stop_seats = installed.as_ref().map(|r| r.severity == Severity::StopSeats).unwrap_or(false);
-            o.unknown_severity = unknown_severity;
-            o.revocations = Some(revs.clone());
-            o.trusted_signed_at = Some(o.trusted_signed_at.unwrap_or(i64::MIN).max(revs.signed_at));
-        }
-        o
-    };
-    let fail = |v: Verdict, e: UpdateErr| carry(FeedOutcome::fail(v, e));
+    let fail = |v: Verdict, e: UpdateErr| Box::new(carry(FeedOutcome::fail(v, e), &revs, inp.component, installed));
 
     // ⓑ 봉투 서식.
     let fsb = |step: &str, d: String| UpdateErr::new(ErrCode::FeedSigBad, step, d);
     let env: Envelope = match serde_json::from_slice(inp.envelope) {
         Ok(e) => e,
-        Err(e) => return fail(Reject, fsb("ⓑ", format!("봉투 서식: {e}"))),
+        Err(e) => return Err(fail(Reject, fsb("ⓑ", format!("봉투 서식: {e}")))),
     };
     let shape = if env.kind != ENVELOPE_KIND {
         Err(format!("봉투 kind {}", env.kind))
@@ -449,68 +509,74 @@ pub fn verify_feed(inp: &FeedInput) -> FeedOutcome {
         Ok(())
     };
     if let Err(d) = shape {
-        return fail(Reject, fsb("ⓑ", d));
+        return Err(fail(Reject, fsb("ⓑ", d)));
     }
     // ⓒ 봉투 키(F 용도·폐기·만료).
     if let Err(d) = keyring.find(&env.key_id, Purpose::Feed, inp.now) {
-        return fail(Reject, fsb("ⓒ", d));
+        return Err(fail(Reject, fsb("ⓒ", d)));
     }
     // ⓓ 봉투 minisign.
     if let Err(d) = keyring.verify(Purpose::Feed, &env.key_id, inp.envelope, inp.envelope_sig, inp.now) {
-        return fail(Reject, fsb("ⓓ", d));
+        return Err(fail(Reject, fsb("ⓓ", d)));
     }
     // ⓔ 유효창 — 시계 의심이면 판정하지 않는다(N13).
     if inp.clock_suspect {
-        return fail(Undetermined, UpdateErr::new(ErrCode::ClockSuspect, "ⓔ", "N13 시계 의심"));
+        return Err(fail(Undetermined, UpdateErr::new(ErrCode::ClockSuspect, "ⓔ", "N13 시계 의심")));
     }
     if inp.now < env.signed_at || inp.now > env.expires_at {
-        return fail(
+        return Err(fail(
             Reject,
             UpdateErr::new(ErrCode::FeedExpired, "ⓔ", format!("now {} ∉ [{}, {}]", inp.now, env.signed_at, env.expires_at)),
-        );
+        ));
     }
     // ⓕ feed_rev 단조(수용본 미만 = replay · ★1R B2 같은 rev = 봉투 sha256 이 같을 때만 「이미 본 봉투」 · 다르면 replay).
     // 수용 기록 손상 = 판정 불가(손상본이 신규 기기로 강등되는 길 차단).
     let env_sha = sha256_hex(inp.envelope);
     let accepted = match &inp.accepted {
         Ok(a) => a.clone(),
-        Err(e) => return fail(Undetermined, UpdateErr::new(ErrCode::VerifyFailed, "ⓕ", format!("수용 기록 손상: {e}"))),
+        Err(e) => return Err(fail(Undetermined, UpdateErr::new(ErrCode::VerifyFailed, "ⓕ", format!("수용 기록 손상: {e}")))),
     };
     if let Some(a) = &accepted {
         if env.feed_rev < a.feed_rev {
-            return fail(Reject, UpdateErr::new(ErrCode::FeedReplay, "ⓕ", format!("feed_rev {} < 수용 {}", env.feed_rev, a.feed_rev)));
+            return Err(fail(Reject, UpdateErr::new(ErrCode::FeedReplay, "ⓕ", format!("feed_rev {} < 수용 {}", env.feed_rev, a.feed_rev))));
         }
         if env.feed_rev == a.feed_rev && env_sha != a.envelope_sha256 && !super::mutant("B2") {
-            return fail(Reject, UpdateErr::new(ErrCode::FeedReplay, "ⓕ", format!("같은 feed_rev {} 다른 봉투", env.feed_rev)));
+            return Err(fail(Reject, UpdateErr::new(ErrCode::FeedReplay, "ⓕ", format!("같은 feed_rev {} 다른 봉투", env.feed_rev))));
         }
     }
     // ⓖ 본문 서식(봉투 안 base64 원문).
     let rsb = |step: &str, d: String| UpdateErr::new(ErrCode::ReleaseSigBad, step, d);
     let (body_bytes, body_sig) = match (b64(&env.release), b64(&env.release_sig)) {
         (Ok(b), Ok(s)) => (b, s),
-        (Err(e), _) | (_, Err(e)) => return fail(Reject, rsb("ⓖ", e)),
+        (Err(e), _) | (_, Err(e)) => return Err(fail(Reject, rsb("ⓖ", e))),
     };
     let body: ReleaseBody = match serde_json::from_slice(&body_bytes) {
         Ok(b) => b,
-        Err(e) => return fail(Reject, rsb("ⓖ", format!("본문 서식: {e}"))),
+        Err(e) => return Err(fail(Reject, rsb("ⓖ", format!("본문 서식: {e}")))),
     };
     if let Err(d) = check_release_shape(&body, inp.component) {
-        return fail(Reject, rsb("ⓖ", d));
+        return Err(fail(Reject, rsb("ⓖ", d)));
     }
     // ⓗ 본문 키(U 용도).
     if let Err(d) = keyring.find(&body.key_id, Purpose::Release, inp.now) {
-        return fail(Reject, rsb("ⓗ", d));
+        return Err(fail(Reject, rsb("ⓗ", d)));
     }
     // ⓘ 본문 minisign.
     if let Err(d) = keyring.verify(Purpose::Release, &body.key_id, &body_bytes, &body_sig, inp.now) {
-        return fail(Reject, rsb("ⓘ", d));
+        return Err(fail(Reject, rsb("ⓘ", d)));
     }
+    Ok(Checked { revs, env, env_sha, body })
+}
 
+/// ⓙ~ⓝ — 설치판 `installed` 대비 판정(서명 단계를 통과한 재료로).
+fn judge(inp: &FeedInput, c: &Checked, installed: u64) -> FeedOutcome {
+    use Verdict::Reject;
+    let (env, body) = (&c.env, &c.body);
     let base = |mut o: FeedOutcome| -> FeedOutcome {
         o.release_seq = Some(body.release_seq);
         o.version = Some(body.version.clone());
         o.feed_rev = Some(env.feed_rev);
-        o.envelope_sha256 = Some(env_sha.clone());
+        o.envelope_sha256 = Some(c.env_sha.clone());
         o.state_migration = Some(body.state_migration.clone());
         o.min_from_release_seq = Some(body.min_from_release_seq);
         o.halt = env.halt;
@@ -518,33 +584,33 @@ pub fn verify_feed(inp: &FeedInput) -> FeedOutcome {
         o.envelope_signed_at = Some(env.signed_at);
         o.trusted_signed_at = Some(env.signed_at);
         o.notes_ko = Some(body.notes_ko.clone());
-        carry(o)
+        carry(o, &c.revs, inp.component, Some(installed))
     };
 
     // ⓙ 후보 릴리스가 폐기됐는가.
-    if revs.revoked(inp.component, body.release_seq).is_some() {
+    if c.revs.revoked(inp.component, body.release_seq).is_some() {
         return base(FeedOutcome::fail(
             Reject,
             UpdateErr::new(ErrCode::Revoked, "ⓙ", format!("release_seq {} 폐기", body.release_seq)),
         ));
     }
     // ⓚ 설치본 대비 — 같거나 작음 = uptodate(오류 아님 · BLOCK 1·2). 설치판이 폐기됐으면 installed_revoked.
-    if body.release_seq <= inp.installed_release_seq {
+    if body.release_seq <= installed {
         let mut o = base(FeedOutcome::fail(Verdict::Uptodate, UpdateErr::new(ErrCode::Ok, "ⓚ", "")));
         if o.installed_revoked {
             o.verdict = Verdict::InstalledRevoked;
             o.code = ErrCode::InstalledRevoked;
-            o.detail = format!("설치판 {} 폐기 · 더 새 후보 없음", inp.installed_release_seq);
+            o.detail = format!("설치판 {installed} 폐기 · 더 새 후보 없음");
         } else {
-            o.detail = format!("후보 {} ≤ 설치 {}", body.release_seq, inp.installed_release_seq);
+            o.detail = format!("후보 {} ≤ 설치 {installed}", body.release_seq);
         }
         return o;
     }
     // ⓛ 출발 판 하한 · breaking(자동 대상 아님 — 1R MINOR: 게이트 배열 밖으로) · requires.
-    if inp.installed_release_seq < body.min_from_release_seq {
+    if installed < body.min_from_release_seq {
         return base(FeedOutcome::fail(
             Reject,
-            UpdateErr::new(ErrCode::VerifyFailed, "ⓛ", format!("설치 {} < min_from {}", inp.installed_release_seq, body.min_from_release_seq)),
+            UpdateErr::new(ErrCode::VerifyFailed, "ⓛ", format!("설치 {installed} < min_from {}", body.min_from_release_seq)),
         ));
     }
     if body.state_migration == "breaking" && !super::mutant("SM") {
@@ -553,19 +619,18 @@ pub fn verify_feed(inp: &FeedInput) -> FeedOutcome {
             UpdateErr::new(ErrCode::VerifyFailed, "ⓛ", "state_migration=breaking — 링크 재설치 전용"),
         ));
     }
-    if let Err(e) = check_requires(&body) {
+    if let Err(e) = check_requires(body) {
         return base(FeedOutcome::fail(Reject, e));
     }
-    // ⓜ 이 기판 행 · URL 허용 목록(서명된 본문의 url 도 1홉 규칙을 통과해야 한다 — 키 유출 피드의 제3자 URL 차단).
+    // ⓜ 이 기판 행 · URL 허용 목록(서명된 본문의 url 도 부품별 홉 규칙을 통과해야 한다 — 키 유출 피드의 제3자 URL 차단).
     let Some(asset) = body.assets.get(inp.target).or_else(|| body.assets.get("any")).cloned() else {
         return base(FeedOutcome::fail(Reject, UpdateErr::new(ErrCode::VerifyFailed, "ⓜ", format!("기판 행 없음 {}", inp.target))));
     };
-    let hops: &[Hop] = if inp.component == "agora-client" { &[Hop::Feed] } else { &[Hop::AssetFirst] };
-    if let Err(e) = check_url(&asset.url, hops) {
+    if let Err(e) = row_url_check(inp.component, UrlField::Asset, &asset.url) {
         return base(FeedOutcome::fail(Reject, UpdateErr::new(ErrCode::UrlRefused, "ⓜ", e.detail)));
     }
     if let Some(sig_url) = &asset.a2_sig_url {
-        if let Err(e) = check_url(sig_url, &[Hop::AssetFirst]) {
+        if let Err(e) = row_url_check(inp.component, UrlField::A2Sig, sig_url) {
             return base(FeedOutcome::fail(Reject, UpdateErr::new(ErrCode::UrlRefused, "ⓜ", e.detail)));
         }
     }
@@ -578,6 +643,51 @@ pub fn verify_feed(inp: &FeedInput) -> FeedOutcome {
         out.verdict = Verdict::NotInRollout;
     }
     out
+}
+
+/// 검증 함수 — **하나뿐**(§6-2). 파이썬(T3)은 이 함수를 `cys update-verify` 로 부르고 JSON 만 읽는다.
+pub fn verify_feed(inp: &FeedInput) -> FeedOutcome {
+    match check_signed(inp, Some(inp.installed_release_seq)) {
+        Ok(c) => judge(inp, &c, inp.installed_release_seq),
+        Err(o) => *o,
+    }
+}
+
+/// 출발 seq 열거 결과 — 서명 단계(ⓐ~ⓘ)는 한 번 · 판정(ⓙ~ⓝ)은 출발 seq 마다.
+#[derive(Debug, Clone)]
+pub struct Enumerated {
+    pub release_seq: u64,
+    pub min_from_release_seq: u64,
+    /// `(설치판 seq, 그 판정)` — `max(min_from, 1) ..= release_seq`(마지막 = 후보 자신 = uptodate 기대).
+    pub results: Vec<(u64, FeedOutcome)>,
+}
+
+/// ★U3 1R #11 · 출발 seq 열거 모드(발행 게이트·`refresh-feed` 가 부른다): 「가짜 설치판 0」 하나로 판정하지 않고 본문이 허용하는
+/// 출발 seq(`max(min_from, 1)` ~ 후보 직전) **각각**과 후보 자신을 같은 [`verify_feed`] 단계로 판정한다. `inp.installed_release_seq` 는
+/// 쓰지 않는다(설치판이 없는 발행 쪽 질문). 서명 단계 실패 = `Err`(그 결과 하나).
+pub fn verify_feed_enumerate(inp: &FeedInput) -> Result<Enumerated, FeedOutcome> {
+    let c = check_signed(inp, None).map_err(|o| *o)?;
+    let lo = c.body.min_from_release_seq.max(1);
+    let results = (lo..=c.body.release_seq).map(|i| (i, judge(inp, &c, i))).collect();
+    Ok(Enumerated { release_seq: c.body.release_seq, min_from_release_seq: c.body.min_from_release_seq, results })
+}
+
+/// 릴리스 행 URL 칸.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UrlField {
+    Asset,
+    A2Sig,
+}
+
+/// 부품별 행 URL 규칙(U3 `update_common.url_ok_for` 와 1:1 · 공통 벡터 = `scripts/update/url-vectors.json`):
+/// cysr 자산 = github 1홉만 · agora-client 자산 = 사이트(피드 호스트)만 · `a2_sig_url` = cysr 의 github 1홉만(다른 부품 = 거부).
+pub fn row_url_check(component: &str, field: UrlField, url: &str) -> Result<(), UpdateErr> {
+    let hops: &[Hop] = match (component, field) {
+        ("cysr", _) => &[Hop::AssetFirst],
+        ("agora-client", UrlField::Asset) => &[Hop::Feed],
+        _ => return Err(UpdateErr::new(ErrCode::UrlRefused, "url", format!("{component} 의 {field:?} URL 칸 없음"))),
+    };
+    check_url(url, hops).map(|_| ())
 }
 
 // ── 수용 기록(파일) ────────────────────────────────────────────────────────────────────
@@ -638,6 +748,10 @@ pub(crate) mod fixture {
             v["dr_pin_id"] = serde_json::json!("a426231e7dc737ee1d74962b346c23d3acacb18d");
         }
         if target.starts_with("windows-") {
+            v["payload_manifest"] = serde_json::json!([
+                {"path": "cys.exe", "size": 1000, "sha256": "aa".repeat(32)},
+                {"path": "runtime/python312.dll", "size": 234, "sha256": "bb".repeat(32)}
+            ]);
             v["a2_sig_url"] = serde_json::json!(format!("https://github.com/oogisoogi/cys-ro/releases/download/v1.1.{seq}/cysr_x64-setup.exe.sig"));
         }
         v
@@ -699,6 +813,7 @@ pub(crate) mod fixture {
             clock_suspect: false,
             accepted: Ok(None),
             accepted_rev: None,
+            last_trusted_time: None,
             keyring: kr,
             installed_release_seq: installed,
             target: "macos-arm64",
@@ -1192,5 +1307,91 @@ mod tests {
         assert!(write_accepted(&p, &AcceptedFeed { feed_rev: 1, ..a.clone() }).is_err());
         assert_eq!(std::fs::read(&p).unwrap(), b"{bad");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★U3 1R #10 뮤테이션 PM: cysr 윈 행 `payload_manifest` 필수(부재·빈 목록·상대 아닌 경로·중복 = ⓖ 거부) · 반환 JSON 에 실림.
+    #[test]
+    fn pm_payload_manifest_required_on_windows_rows() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let win = |f: &dyn Fn(&mut serde_json::Value)| {
+            let mut b = body_json(&k, 9);
+            f(&mut b["assets"]["windows-x64"]);
+            let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+            let mut i = input(&s, &kr, 8);
+            i.target = "windows-x64";
+            verify_feed(&i)
+        };
+        let ok = win(&|_| {});
+        assert_eq!(ok.verdict, Verdict::Apply);
+        let pm = &ok.to_json()["asset"]["payload_manifest"];
+        assert_eq!(pm[1]["path"], "runtime/python312.dll", "검증 반환 JSON 에 페이로드 전수");
+        for (why, f) in [
+            ("부재", &(|a: &mut serde_json::Value| { a.as_object_mut().unwrap().remove("payload_manifest"); }) as &dyn Fn(&mut serde_json::Value)),
+            ("빈 목록", &|a: &mut serde_json::Value| a["payload_manifest"] = serde_json::json!([])),
+            ("상위 경로", &|a: &mut serde_json::Value| a["payload_manifest"][0]["path"] = "../cys.exe".into()),
+            ("절대 경로", &|a: &mut serde_json::Value| a["payload_manifest"][0]["path"] = "/cys.exe".into()),
+            ("역슬래시", &|a: &mut serde_json::Value| a["payload_manifest"][0]["path"] = "runtime\\x.dll".into()),
+            ("대소문자 중복", &|a: &mut serde_json::Value| a["payload_manifest"][1]["path"] = "CYS.EXE".into()),
+            ("sha256 형식", &|a: &mut serde_json::Value| a["payload_manifest"][0]["sha256"] = "AA".repeat(32).into()),
+        ] {
+            let o = win(f);
+            assert_eq!((o.verdict, o.step.as_str()), (Verdict::Reject, "ⓖ"), "{why}: {}", o.detail);
+        }
+    }
+
+    /// ★U3 1R #12: 생산자(U3 `update_common.url_ok_for`)와 같은 벡터 파일로 행 URL 규칙을 대조한다 — 같은 바이트 사본.
+    /// 정본 = U3 가지 `scripts/update/url-vectors.json`(ca4c7b6a) · U3 머지 때 같은 경로·같은 바이트라 충돌 0 · 갈리면 이 시험이 적색.
+    #[test]
+    fn url_vectors_shared_with_u3_publisher() {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../../scripts/update/url-vectors.json")).unwrap();
+        let cases = v["cases"].as_array().unwrap();
+        assert!(cases.len() >= 10);
+        for c in cases {
+            let field = match c["field"].as_str().unwrap() {
+                "asset" => UrlField::Asset,
+                "a2_sig" => UrlField::A2Sig,
+                f => panic!("미지 field {f}"),
+            };
+            let got = row_url_check(c["component"].as_str().unwrap(), field, c["url"].as_str().unwrap()).is_ok();
+            assert_eq!(got, c["ok"].as_bool().unwrap(), "{c}");
+        }
+        assert!(row_url_check("agora-client", UrlField::A2Sig, "https://github.com/oogisoogi/cys-ro/releases/download/v1/x.sig").is_err());
+    }
+
+    /// ★U3 1R #11: 출발 seq 열거 — `max(min_from,1)..=후보` 각각 판정(가짜 설치판 0 없음) · 서명 단계 실패 = Err 하나.
+    #[test]
+    fn enumerate_judges_each_allowed_start_seq() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let mut b = body_json(&k, 9);
+        b["min_from_release_seq"] = 6.into();
+        let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+        let mut i = input(&s, &kr, 0);
+        i.installed_release_seq = 12345; // 열거 모드는 이 값을 쓰지 않는다
+        let en = verify_feed_enumerate(&i).unwrap();
+        assert_eq!((en.release_seq, en.min_from_release_seq), (9, 6));
+        let got: Vec<(u64, Verdict)> = en.results.iter().map(|(s, o)| (*s, o.verdict)).collect();
+        assert_eq!(got, vec![(6, Verdict::Apply), (7, Verdict::Apply), (8, Verdict::Apply), (9, Verdict::Uptodate)]);
+        // 단일 판정과 같은 단계(같은 함수) — 출발 7 의 결과 = verify_feed(설치 7)
+        let mut one = input(&s, &kr, 7);
+        one.installed_release_seq = 7;
+        assert_eq!(verify_feed(&one).to_json(), en.results[1].1.to_json());
+        // min_from 0 = 출발 1 부터(0 은 판정 대상 아님)
+        let mut b = body_json(&k, 3);
+        b["min_from_release_seq"] = 0.into();
+        let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+        let en = verify_feed_enumerate(&input(&s, &kr, 0)).unwrap();
+        assert_eq!(en.results.iter().map(|(s, _)| *s).collect::<Vec<_>>(), vec![1, 2, 3]);
+        // 설치판 폐기 표시는 출발 seq 마다(2 만 stop_seats)
+        let s = sign_all(&k, &envelope_json(&k, &b, 1),
+            &revocations_json(&k, 1, serde_json::json!([{"component": "cysr", "release_seq": 2, "severity": "stop_seats"}])));
+        let en = verify_feed_enumerate(&input(&s, &kr, 0)).unwrap();
+        assert_eq!(en.results.iter().map(|(_, o)| o.stop_seats).collect::<Vec<_>>(), vec![false, true, false]);
+        // 서명 깨짐 = Err
+        let mut s = std_case(&k, 9, 1);
+        let n = s.env.len() / 2;
+        s.env[n] ^= 1;
+        assert_eq!(verify_feed_enumerate(&input(&s, &kr, 0)).unwrap_err().verdict, Verdict::Reject);
     }
 }

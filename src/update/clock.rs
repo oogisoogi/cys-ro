@@ -47,12 +47,19 @@ pub fn mono_ms() -> u64 {
     // ★1R MAJOR(M4): 맥 = 설계 정본 그대로 `mach_continuous_time`(잠자는 동안 포함) × timebase.
     #[cfg(target_os = "macos")]
     {
+        // libSystem 선언을 직접 둔다(libc 의 mach_timebase_info 는 폐지 예고 경고 — mach2 크레이트를 새로 들이지 않으려고).
+        #[repr(C)]
+        struct MachTimebaseInfo {
+            numer: u32,
+            denom: u32,
+        }
         extern "C" {
             fn mach_continuous_time() -> u64;
+            fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
         }
-        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
-        // SAFETY: tb 는 유효한 지역 구조체 · mach_continuous_time 은 인자 없는 libSystem 조회.
-        let (rc, t) = unsafe { (libc::mach_timebase_info(&mut tb), mach_continuous_time()) };
+        let mut tb = MachTimebaseInfo { numer: 0, denom: 0 };
+        // SAFETY: tb 는 유효한 지역 구조체(mach_timebase_info_data_t 와 같은 배치) · mach_continuous_time 은 인자 없는 조회.
+        let (rc, t) = unsafe { (mach_timebase_info(&mut tb), mach_continuous_time()) };
         if rc != 0 || tb.denom == 0 {
             return 0;
         }

@@ -135,6 +135,13 @@ pub struct Job {
     pub via_queue: bool,
     #[serde(default)]
     pub launch: Option<LaunchSpec>,
+    /// ★(T3 리뷰 3R ⑥) U1 `update::sched` 의 필수 칸 `bulk`·`publish` 를 **보존만** 한다(판정·동작 변화 0).
+    /// 종전엔 구조체에 칸이 없어 재직렬화 경로(동결 원샷 되돌리기 `requeue_oneshot_after_frozen_at`)가 두 칸을 떨어뜨렸고,
+    /// 되돌린 잡은 U1 `validate_job` 적재 게이트에서 거부됐다. 없던 잡은 없는 채로 쓴다(skip_serializing_if).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bulk: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish: Option<bool>,
 }
 
 /// ★(0.14.31 · 독립 판정 triage X8) **수용 시점 정규화** — `#[serde(remote = "Self")]` 는
@@ -3332,6 +3339,8 @@ mod tests {
             base_only: false,
             via_queue: false,
             launch: None,
+            bulk: None,
+            publish: None,
         }
     }
 
@@ -5149,6 +5158,8 @@ mod b2_job_results {
             base_only: false,
             via_queue: false,
             launch: None,
+            bulk: None,
+            publish: None,
         }
     }
 
@@ -5716,6 +5727,45 @@ mod h2_schedule_hold_tests {
         // 주기 잡은 대상이 아니다.
         requeue_oneshot_after_frozen_at(&d, &path, &periodic("p", 5));
         assert!(!root["jobs"].as_array().unwrap().iter().any(|j| j["id"] == "p"));
+        let _ = std::fs::remove_dir_all(&dir);
+        done(&s);
+    }
+
+    /// ★(T3 리뷰 3R ⑥) 동결 원샷 되돌리기(재직렬화)가 U1 필수 칸 `bulk`·`publish` 를 보존한다 → 되돌린 잡이 U1
+    /// `validate_job` 를 통과한다 · 두 칸 없던 잡은 없는 채로 쓴다(동작 변화 0).
+    #[test]
+    fn frozen_oneshot_requeue_keeps_bulk_publish() {
+        let (d, s) = rig("t3-requeue-bulk");
+        let dir = std::env::temp_dir().join(format!("cys-oneshot-bulk-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("schedule.json");
+        std::fs::write(
+            &path,
+            r#"{"jobs": [{"id": "agora-once", "at": 1900000000, "action": "command", "command": "true", "bulk": false, "publish": true},
+                        {"id": "plain-once", "at": 1900000000, "action": "push", "to": "master", "text": "x"}]}"#,
+        )
+        .unwrap();
+        // 스케줄 파일 → 적재(serde 계층 = 운영과 같은 길)
+        let loaded = load_jobs_at(&path, LoadMode::ReadOnly);
+        let once = loaded.iter().find(|j| j.id == "agora-once").cloned().expect("적재");
+        let plain = loaded.iter().find(|j| j.id == "plain-once").cloned().expect("적재");
+        assert_eq!((once.bulk, once.publish), (Some(false), Some(true)));
+        // 틱이 원샷을 파일에서 지운 뒤 동결 → 되돌리기(재직렬화)
+        std::fs::write(&path, r#"{"jobs": []}"#).unwrap();
+        requeue_oneshot_after_frozen_at(&d, &path, &once);
+        requeue_oneshot_after_frozen_at(&d, &path, &plain);
+        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let jobs = root["jobs"].as_array().unwrap();
+        let back = jobs.iter().find(|j| j["id"] == "agora-once").cloned().expect("되돌린 원샷");
+        assert_eq!((back["bulk"].clone(), back["publish"].clone()), (json!(false), json!(true)), "두 칸을 떨어뜨렸다");
+        assert_eq!(back["at"], json!(1_900_000_001i64));
+        assert_eq!(cys::update::sched::validate_job(&back), Ok(()), "U1 적재 게이트 거부");
+        let back_plain = jobs.iter().find(|j| j["id"] == "plain-once").cloned().expect("되돌린 원샷");
+        assert!(back_plain.get("bulk").is_none() && back_plain.get("publish").is_none(), "없던 칸을 지어냈다: {back_plain}");
+        // 다시 적재해도 같은 값(왕복)
+        let again = load_jobs_at(&path, LoadMode::ReadOnly);
+        let j = again.iter().find(|j| j.id == "agora-once").expect("재적재");
+        assert_eq!((j.bulk, j.publish), (Some(false), Some(true)));
         let _ = std::fs::remove_dir_all(&dir);
         done(&s);
     }

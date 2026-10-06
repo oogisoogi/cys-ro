@@ -43,6 +43,16 @@
       "text_command": "printf '[heartbeat] 주간 fleet digest(G5) — 채택 학습물·사후 효과(ROI)·게이트 지출의 결정론 read-only 집계다. 수치 불변으로 보고하라. 추천 0건 지속=게이트 비용 재조정 검토 트리거.\\n'; CYS_ROUND_DIR=\"${CYS_ROUND_DIR:-$HOME/.cys/state}\" python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_fleet_report.py\" --days 7 2>&1 | tail -40",
       "_builtin": "learn",
       "_builtin_version": 4
+    },
+    {
+      "id": "agora-counsel",
+      "every_minutes": 30,
+      "action": "command",
+      "base_only": true,
+      "if_absent": "skip",
+      "bulk": false,
+      "publish": true,
+      "command": "\"${CYS_PY:-python3}\" \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_counsel.py\" tick"
     }
   ]
 }

@@ -2783,7 +2783,9 @@ fn main() {
             }
         }
     }
-    let cli = Cli::parse();
+    // ★1.1.8 U2(§3-3 · §3-10): `rotate --stop-only` · `rotate --txn <txn:epoch>` 는 clap 앞에서 떼어 낸다(최상위 `Command` 인자 추가 =
+    //   j3 스택 넘침 — 위 갱신 3동사와 같은 이유). 철자 고정 · `rotate` 동사일 때만.
+    let cli = Cli::parse_from(rotate_ext_strip(std::env::args_os().collect()));
     if let Some(s) = &cli.socket {
         std::env::set_var(cys::ENV_SOCKET, s);
     }
@@ -4650,6 +4652,15 @@ fn connect() -> Result<ConnStream, String> {
                     "완전 초기화가 진행 중이라 데몬을 기동하지 않는다 — 끝난 뒤 다시 실행하라".into(),
                 );
             }
+            // ★1.1.8 U2(AUTO-UPDATE-118 §3-2 참가자 「CLI 의 데몬 자동 기동」): 자동 갱신 트랜잭션이 잠금을 쥐고 있으면(교체 중) 위임
+            //   토큰 없는 자동 기동을 거부한다 — 옛 데몬이 S7~S10 사이에 되살아나는 길(09-19 HALT4) 차단. 판정 불가 = 평소대로.
+            if std::env::var(cys::update::lock::ENV_TXN).map(|v| v.is_empty()).unwrap_or(true) {
+                if let Ok(d) = cys::update::buildinfo::state_dir() {
+                    if cys::update::lock::is_held(&d) == Some(true) {
+                        return Err("자비스가 지금 새 판으로 바꾸는 중이라 데몬을 기동하지 않는다 — 몇 분 뒤 다시 실행하라".into());
+                    }
+                }
+            }
             let socket = socket_path();
             let pack_env = cys::pack::PACK_DIR_ENV_KEYS
                 .iter()
@@ -5675,12 +5686,20 @@ fn run(command: Command) -> i32 {
         }
 
         Command::Rotate { timeout, skip_drain, skip_depts } => {
+            // ★1.1.8 U2(§3-2): 트랜잭션 잠금 참가 — 토큰(--txn/env)이 있으면 위임 검증 · 없으면 평소처럼 잠금을 잡는다(자동 갱신 중 = txn_busy).
+            //   쥔 동안 자식(init-pack·restore·daemon install)에 같은 토큰을 env 로 넘긴다.
+            let ext = ROTATE_EXT.get().cloned().unwrap_or_default();
+            let _part = match rotate_participate(ext.txn.as_deref()) {
+                Ok(p) => p,
+                Err(rc) => return counsel_update_signal("host.rotate", rc, None),
+            };
+            let rc = if ext.stop_only {
+                rotate_stop_only(timeout, skip_drain, skip_depts || rotate_skip_depts_env())
+            } else {
+                run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env())
+            };
             // ★T3: 끝난 rc 를 상담소 신호로(조기 return 이 많아 몸통 대신 여기서 — rc 불변).
-            return counsel_update_signal(
-                "host.rotate",
-                run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env()),
-                None,
-            );
+            return counsel_update_signal("host.rotate", rc, None);
         }
 
         Command::Drain { .. } => {
@@ -20834,6 +20853,151 @@ const ROTATE_RC_DAEMON: i32 = 22;
 const ROTATE_RC_DAEMON_UP: i32 = 23;
 const ROTATE_RC_PACK: i32 = 24;
 const ROTATE_RC_RESTORE: i32 = 25;
+/// ★1.1.8 U2: 자동 갱신 트랜잭션 잠금을 얻지 못함(다른 트랜잭션 진행 · 토큰 불일치) — 재시도 0.
+const ROTATE_RC_TXN_BUSY: i32 = 26;
+
+/// `rotate` 의 clap 밖 인자(★U2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RotateExt {
+    stop_only: bool,
+    txn: Option<String>,
+}
+
+static ROTATE_EXT: std::sync::OnceLock<RotateExt> = std::sync::OnceLock::new();
+
+/// argv 에서 `rotate` 동사 뒤의 `--stop-only`·`--txn <v>`·`--txn=<v>` 를 떼어 [`ROTATE_EXT`] 에 두고 나머지를 돌려준다(순수 + 1회 기록).
+fn rotate_ext_strip(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let (out, ext) = rotate_ext_split(args);
+    let _ = ROTATE_EXT.set(ext);
+    out
+}
+
+fn rotate_ext_split(args: Vec<std::ffi::OsString>) -> (Vec<std::ffi::OsString>, RotateExt) {
+    let pos = args.iter().position(|a| a == "rotate");
+    let Some(pos) = pos else { return (args, RotateExt::default()) };
+    let mut ext = RotateExt::default();
+    let mut out: Vec<std::ffi::OsString> = args[..=pos].to_vec();
+    let mut it = args.into_iter().skip(pos + 1);
+    while let Some(a) = it.next() {
+        let s = a.to_string_lossy().to_string();
+        if s == "--stop-only" {
+            ext.stop_only = true;
+        } else if s == "--txn" {
+            ext.txn = it.next().map(|v| v.to_string_lossy().to_string());
+        } else if let Some(v) = s.strip_prefix("--txn=") {
+            ext.txn = Some(v.to_string());
+        } else {
+            out.push(a);
+        }
+    }
+    (out, ext)
+}
+
+#[cfg(test)]
+mod u2_rotate_ext_tests {
+    use super::*;
+    fn v(xs: &[&str]) -> Vec<std::ffi::OsString> {
+        xs.iter().map(std::ffi::OsString::from).collect()
+    }
+    #[test]
+    fn rotate_ext_split_strips_only_after_rotate_verb() {
+        let (out, e) = rotate_ext_split(v(&["cys", "rotate", "--stop-only", "--txn", "a:1", "--skip-drain"]));
+        assert_eq!(out, v(&["cys", "rotate", "--skip-drain"]));
+        assert_eq!(e, RotateExt { stop_only: true, txn: Some("a:1".into()) });
+        let (out, e) = rotate_ext_split(v(&["cys", "rotate", "--txn=b:2"]));
+        assert_eq!((out, e.txn), (v(&["cys", "rotate"]), Some("b:2".into())));
+        // rotate 가 아니면 무변경(다른 동사의 같은 철자 인자를 건드리지 않는다)
+        let (out, e) = rotate_ext_split(v(&["cys", "send", "--stop-only"]));
+        assert_eq!((out, e), (v(&["cys", "send", "--stop-only"]), RotateExt::default()));
+        // clap 은 떼어 낸 뒤의 인자를 그대로 받는다
+        let cli = Cli::try_parse_from(rotate_ext_split(v(&["cys", "rotate", "--stop-only", "--skip-drain"])).0).unwrap();
+        assert!(matches!(cli.command, Command::Rotate { skip_drain: true, .. }));
+    }
+}
+
+/// 잠금 참가(§3-2): 위임 토큰이 있으면 [`cys::update::lock::acquire_or_delegate`] 의 위임 검증 · 없으면 잠금을 잡는다. 쥔 토큰은 env
+/// `CYS_UPDATE_TXN` 으로 자식에게 넘긴다. 갱신 상태 폴더를 모르면(판정 불가) 평소대로 진행(옛 동작 · 설치 링크 무변경).
+fn rotate_participate(arg: Option<&str>) -> Result<Option<cys::update::lock::Participation>, i32> {
+    let Ok(dir) = cys::update::buildinfo::state_dir() else { return Ok(None) };
+    let env = std::env::var(cys::update::lock::ENV_TXN).ok().filter(|v| !v.is_empty());
+    if arg.is_none() && env.is_none() && !dir.join(cys::update::lock::LOCK_FILE).exists() {
+        // 갱신을 한 번도 안 한 기계 = 잠금 파일 없음 — 잠금 파일을 새로 만들지 않고 진행(설치기·설치 링크의 rotate 무변경)
+        return Ok(None);
+    }
+    match cys::update::lock::acquire_or_delegate(&dir, "rotate", arg, env.as_deref()) {
+        Ok(p) => {
+            let tok = match &p {
+                cys::update::lock::Participation::Owner(g) => g.token().render(),
+                cys::update::lock::Participation::Delegated(_) => arg.map(str::to_string).or(env).unwrap_or_default(),
+            };
+            std::env::set_var(cys::update::lock::ENV_TXN, tok);
+            Ok(Some(p))
+        }
+        Err(e) => {
+            eprintln!("[rotate] {e} — 자비스가 지금 새 판으로 바꾸는 중이거나 토큰이 맞지 않는다(재시도 0)");
+            Err(ROTATE_RC_TXN_BUSY)
+        }
+    }
+}
+
+/// `rotate --stop-only`(§3 S7): ① 저장 검증(건너뛰기 가능) → ② 데몬만 내린다(OS 상시 가동 등록 해제 = launchd·작업 스케줄러가 옛
+/// 데몬을 되살리지 않게) — 새 데몬 기동·팩 반영·복원 0. 기동은 S10 의 새 바이너리 `rotate --skip-drain --txn` 이 한다.
+fn rotate_stop_only(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
+    let Ok(exe) = std::env::current_exe() else {
+        return ROTATE_RC_DAEMON;
+    };
+    let run = |args: &[&str]| -> Option<std::process::Output> {
+        let mut cmd = cys::hidden_command(&exe);
+        cmd.args(args);
+        output_via_file(cmd)
+    };
+    if !skip_drain && connect_raw().is_ok() {
+        let t = timeout.to_string();
+        let mut args = vec!["drain", "--verify", "--timeout", &t];
+        if skip_depts {
+            args.push("--hq-only");
+        }
+        let ok = run(&args)
+            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+            .map(|v| v["total"].as_u64() == Some(0) || v["all_saved"].as_bool() == Some(true))
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("[rotate --stop-only] ① 저장 검증 실패 — 데몬을 내리지 않는다");
+            return ROTATE_RC_DRAIN_PARTIAL;
+        }
+    }
+    let base = cys::lane::socket_is_base(&cys::socket_path().to_string_lossy());
+    if base && (cfg!(target_os = "macos") || cfg!(windows)) {
+        let _ = run(&["daemon", "uninstall"]);
+    }
+    let pid = request("system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_u64());
+    if let Some(pid) = pid {
+        let _ = output_via_file({
+            #[cfg(windows)]
+            let c = {
+                let mut c = cys::hidden_command("taskkill");
+                c.args(["/PID", &pid.to_string(), "/F"]);
+                c
+            };
+            #[cfg(not(windows))]
+            let c = {
+                let mut c = cys::hidden_command("kill");
+                c.args(["-TERM", &pid.to_string()]);
+                c
+            };
+            c
+        });
+    }
+    for _ in 0..50 {
+        if connect_raw().is_err() {
+            eprintln!("[rotate --stop-only] ② 데몬 정지 확인");
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    eprintln!("[rotate --stop-only] ② 데몬이 5초 안에 내려가지 않음");
+    ROTATE_RC_DAEMON
+}
 
 /// 끝까지 돈 rotate 의 종료코드(순수). `drain_ok` = None 이면 건너뛰었거나 살아 있는 자리가 없었다(확인할 것 없음).
 fn rotate_rc(drain_ok: Option<bool>, restore_ok: bool) -> i32 {

@@ -201,6 +201,8 @@ pub fn spawn_watchdog(daemon: Arc<Daemon>) {
                 // ★(0.14.42 · 수정 2회차 F1 · 재개) 보류한 제출 CR 의 재제출 — 큐 배달 **앞**(입력줄 잔여가 그 좌석 큐를
                 //   세우지 않게). pause 중에는 아무것도 하지 않는다(기록 유지).
                 resubmit_withheld_submits(&daemon);
+                // ★1.1.8 U2(§3-3 S10 재생 ①): 정비 모드가 아니면 보류 로그 → 배송 큐(정확히 한 번 · 좌석 미기동 = 다음 틱).
+                crate::update_hold::tick(&daemon);
                 deliver_queued(
                     &daemon,
                     &mut queue_depth_alerted,
@@ -10175,6 +10177,11 @@ pub(crate) fn deliver_head_locked(
     // ★v116-seat 판정 C: 배달 직전 1곳 — 이 좌석 에이전트의 옛 기동 줄은 배달하지 않고 폐기(이벤트 + 영속).
     //   임계영역 **밖**에서 부른다(persist_queue_state 가 surfaces → pending_queue 를 잡는다 — 큐 락을 쥔 채
     //   부르면 교착). 두 호출자(watchdog 틱 · queue.deliver RPC)는 여기 올 때 락을 쥐고 있지 않다.
+    // ★1.1.8 U2(§3-3): 정비 모드 동안 배달 0 · 보류 재생 항목은 주입 직전 원장 `delivering`(최대 한 번).
+    if crate::update_hold::quiesced() {
+        return None;
+    }
+    let hold_mark = crate::update_hold::before_inject(daemon, s)?;
     let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
     let head_id = |s: &Arc<crate::state::Surface>| s.pending_queue.lock().unwrap().front().map(|e| e.id.clone());
     let head_before = head_id(s);
@@ -10507,6 +10514,8 @@ pub(crate) fn deliver_head_locked(
             *s.inject_reservation.lock().unwrap() = None;
         }
     }
+    // ★1.1.8 U2(§3-3 재생 ②): 인계 결판 = 썼다 → 실린 보류 재생 id 는 `delivered`(그 밖 None 경로는 표지 Drop = `aborted`).
+    hold_mark.delivered(&delivered.merged_ids);
     // ★v112-wake: 감시 각성 줄의 PTY 인계 시점 — 제출 실측의 기준점. **pending_queue 락이 풀린 뒤**에
     //   부른다(watch_wake 는 shared → pending_queue 순서로 잡는다 — 여기서 큐 락을 쥔 채 부르면 순서가
     //   역전돼 배달 RPC 와 watchdog 틱이 교차할 때 교착한다 · agy 1R H 지적).

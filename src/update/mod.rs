@@ -20,14 +20,18 @@ pub mod macupdate;
 pub mod keys;
 pub mod lock;
 pub mod net;
+pub mod notify;
 pub mod packgate;
 pub mod payload;
+pub mod quiesce;
+pub mod realops;
 pub mod runner;
 pub mod sched;
 pub mod snapshot;
 pub mod url;
 pub mod verify;
 pub mod win;
+pub mod win_install;
 
 /// 원작자 윈 설치기 실행 판정(📌15 편입 · 파일 통째 · `src/update_launch.rs` 그 자리 그대로 — 아래 근거).
 ///

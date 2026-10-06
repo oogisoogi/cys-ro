@@ -1379,6 +1379,10 @@ fn scheduler_tick(daemon: &Arc<Daemon>) {
     if daemon.paused.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
+    // ★1.1.8 U2(§3-3): 정비 모드 동안 정기 작업 발화 정지(놓친 회차 = 기존 규칙 · 새 규칙 0) — `publish:true` 잡 포함 전부.
+    if crate::update_hold::schedule_frozen() {
+        return;
+    }
     let jobs = load_jobs_hot_reload(); // 핫 리로드: CLI가 schedule.json만 고치면 됨 · 이 틱이 유일한 데몬 writer 자리다
     if jobs.is_empty() {
         return;
@@ -1638,6 +1642,9 @@ pub fn run_now(daemon: &Arc<Daemon>, job_id: &str) -> Result<(), String> {
     // RPC 호출이라 무음 return 대신 거절 사유를 caller에 알린다.
     if daemon.paused.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("paused: kill-switch engaged (system.resume to re-enable firing)".to_string());
+    }
+    if crate::update_hold::schedule_frozen() {
+        return Err("update_quiesced: 자동 갱신 정비 모드 — 끝난 뒤 다시 실행".to_string());
     }
     let job = load_jobs()
         .into_iter()

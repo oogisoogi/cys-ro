@@ -489,6 +489,17 @@ pub fn boot_guard(dir: &Path) -> Option<String> {
     }
 }
 
+/// cysd 가 실제로 쓰는 판정: [`boot_guard`] 가 「복구 대기」여도 **트랜잭션 잠금이 지금 잡혀 있으면**(살아 있는 러너·복구기가 이끄는 중 —
+/// S10 의 `rotate --skip-drain` 이 바로 그 데몬을 띄운다) 허용한다. 잠금이 풀린 비종결 저널(죽은 러너) = 막는다(복구기가 먼저).
+/// 저널 손상은 잠금과 무관하게 막는다(재구성 뒤 [`journal::write_reconstructed`] 가 종결 저널을 쓴 다음에만 열린다).
+pub fn boot_blocked(dir: &Path) -> Option<String> {
+    let g = boot_guard(dir)?;
+    if g.starts_with("recover_pending") && super::lock::is_held(dir) == Some(true) {
+        return None;
+    }
+    Some(g)
+}
+
 /// 부팅 가드 rc(「복구 대기」) — cysd 가 이 값으로 끝나면 launchd·작업 스케줄러가 다시 띄워도 같은 판정이 반복된다.
 pub const RC_RECOVER_PENDING: i32 = 75;
 
@@ -842,6 +853,22 @@ pub(crate) mod tests {
         assert_eq!(recover(&d, &mut s), Outcome::Nothing);
         assert!(boot_guard(&d).is_none(), "재구성 성공 = 부팅 허용");
         assert!(s.records.contains(&Kind::JournalCorrupt));
+    }
+
+    #[test]
+    fn boot_blocked_allows_only_live_lock_holder_for_non_terminal_journal() {
+        let d = tmp("bootlock");
+        journal::advance(&d, T, 1, State::Locked, |_| {}).unwrap();
+        journal::advance(&d, T, 1, State::Fetched, |_| {}).unwrap();
+        assert!(boot_blocked(&d).is_none(), "S2 = 정비 모드 TTL 구간(막지 않음)");
+        for st in [State::Quiesced, State::Drained, State::Rechecked, State::Baselined, State::Confirmed, State::Stopped] {
+            journal::advance(&d, T, 1, st, |_| {}).unwrap();
+        }
+        assert!(boot_blocked(&d).unwrap().starts_with("recover_pending"), "잠금 없음(죽은 러너) = 막음");
+        let g = crate::update::lock::acquire(&d, "runner").unwrap();
+        assert!(boot_blocked(&d).is_none(), "살아 있는 러너가 이끄는 중 = 허용");
+        drop(g);
+        assert!(boot_blocked(&d).is_some());
     }
 
     #[test]

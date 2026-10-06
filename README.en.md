@@ -59,8 +59,8 @@ releases back up gets written down.
    orphan-server accumulation → load explosion → 401/hang at the source.
 3. **Core/UI separation** — the daemon (`cysd`) runs independently of any UI. Even if
    the UI hangs, the socket control channel stays alive (out-of-band recovery).
-4. **Fail-closed signing** — app binaries are signed for the Tauri updater; the pack is
-   signed with minisign (public key pinned in the binary). If verification fails,
+4. **Fail-closed signing** — app releases are signed and the daemon's auto update
+   verifies that signature; the pack is signed with minisign (public key pinned in the binary). If verification fails,
    installation/deployment itself is refused. *Self-sealing invariant* — a signed bundle
    never rewrites its own contents at runtime (3-layer `.pyc` self-generation sealing +
    a post-signing count-reconciliation gate).
@@ -450,7 +450,7 @@ node's self-approval. Repeated-risk commands are passed by signing once with
 
 cysr updates itself while it is idle (plugged in, or battery above half). To turn this off, tell Jarvis "turn off auto update". To update right away, paste the one-line install link again.
 
-From 1.1.8 the app has no Update button or badge; the result is shown as one notice line the next time you open the app window. If a "disk has the new version, process is
+The result is shown as one notice line the next time you open the app window. If a "disk has the new version, process is
 the old daemon" skew remains after reinstall, it resolves via a badge-click handover or
 idle auto-handover (when there are 0 live sessions — lossless). Diagnose/repair with
 `cys doctor [--fix]`; self-diagnose the installed build's code-signing seal with
@@ -497,8 +497,8 @@ PTY is daemon-owned — sessions persist across UI restart and app reinstall (re
 - **Attribution (who sent it) is decided by the delivery ledger, not screen strings** —
   self-report and pane text are distrusted, and an attribution claim without ledger
   evidence is treated as void.
-- Dual-signed updates — app via Tauri updater, pack via minisign (public-key binary pin ·
-  replay monotonicity · fail-closed).
+- Dual-signed new versions — app releases are signed and verified by the daemon's auto
+  update; the pack via minisign (public-key binary pin · replay monotonicity · fail-closed).
 - No approval auto-answer (HITL) · self-approval blocked · external URLs are a hard
   allowlist (extendable only via local config).
 - Pre-publish secret/PII gate: `scripts/secret-scan.sh --all` (fail-closed). Invisible-

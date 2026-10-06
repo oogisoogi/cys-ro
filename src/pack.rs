@@ -11087,4 +11087,67 @@ mod tests {
         // 락 보유 중 먼저 착지한 쓰기가 병합기의 RMW 에 삼켜지지 않았다(lost update 0 표식).
         assert_eq!(after["naive"], 1, "선행 쓰기가 병합기 RMW 에 지워졌다(lost update)");
     }
+
+    /// ★T3(agora-t3-pack-collector · 리뷰 ⑧): 팩 schedule.json 의 `agora-counsel` 잡 — U1 적재 게이트(`update::sched::validate_job`)
+    /// 를 통과하고, 갱신 두 레인(MergeUser = 사용자 수정본 항목 병합 · RefreshUser = 미수정 갱신)이 파일을 **다시 직렬화해 써도**
+    /// `bulk:false`·`publish:true` 가 남는다(+ U1 이행 `migrate_schedule_file` 이 그 잡을 건드리지 않는다).
+    #[test]
+    fn t3_agora_counsel_job_flags_survive_merge_and_refresh() {
+        use crate::update::sched::{job_flags, migrate_schedule_file, validate_job, JobFlags};
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let embed = PACK_ALL.iter().find(|(r, _)| *r == "schedule.json").map(|(_, c)| *c)
+            .expect("팩에 schedule.json 부재");
+        let ours = |text: &str| -> serde_json::Value {
+            let v: serde_json::Value = serde_json::from_str(text).expect("schedule.json 판독");
+            v["jobs"].as_array().expect("jobs 배열").iter()
+                .find(|j| j["id"] == "agora-counsel").cloned().expect("agora-counsel 잡 부재")
+        };
+        let want = JobFlags { bulk: false, publish: true };
+        // (a) 임베드 그대로 — U1 적재 게이트 통과 · 판정값.
+        let job = ours(embed);
+        validate_job(&job).expect("U1 validate_job 이 agora-counsel 을 거부했다");
+        assert_eq!(job_flags(&job), want);
+        assert_eq!(job["bulk"], serde_json::json!(false), "판독 불가 → true 기본값이 아니라 실제 bool");
+
+        let td = std::env::temp_dir().join(format!("cys-t3-sched-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&td);
+        let v1 = "{\n  \"_doc\": \"d\",\n  \"jobs\": [{\"id\": \"builtin-a\", \"every_minutes\": 5, \"action\": \"command\", \"command\": \"true\"}]\n}\n";
+        let inst = |pd: &PathBuf, sched: &str, ver: &str| {
+            install_into(pd.clone(), [("schedule.json", sched)], false, ver, false, false,
+                         pack_scope_of(pd), None, None).unwrap();
+        };
+        for lane in ["merge", "refresh"] {
+            let pd = td.join(lane);
+            std::fs::create_dir_all(&pd).unwrap();
+            let _env = set_pack_env(&pd, td.join(format!("cfg-{lane}")));
+            inst(&pd, v1, "1.0.0");
+            if lane == "merge" {
+                // 사용자 수정본(오너 잡 1개 추가) → 임베드 전진 = MergeUser(항목 병합 · serde 재직렬화)
+                let mine = "{\n  \"_doc\": \"d\",\n  \"jobs\": [{\"id\": \"builtin-a\", \"every_minutes\": 5, \"action\": \"command\", \"command\": \"true\"}, {\"id\": \"my-job\", \"time\": \"07:00\", \"action\": \"command\", \"command\": \"true\"}]\n}\n";
+                std::fs::write(pd.join("schedule.json"), mine).unwrap();
+            }
+            let items = [("schedule.json", embed)];
+            let plan = plan_install(&pd, &items, false, "1.0.1");
+            let bucket = if lane == "merge" { &plan.merge_user } else { &plan.refresh_user };
+            assert!(bucket.iter().any(|r| r == "schedule.json"), "{lane}: 기대한 갱신 레인이 아니다 {plan:?}");
+            inst(&pd, embed, "1.0.1");
+            let path = pd.join("schedule.json");
+            let disk = std::fs::read_to_string(&path).unwrap();
+            if lane == "merge" {
+                assert_ne!(disk, embed, "merge: 병합본이어야 한다(오너 잡 보존)");
+                assert!(disk.contains("my-job"));
+            } else {
+                assert_eq!(disk, embed, "refresh: 미수정 갱신 = 임베드 바이트");
+            }
+            let job = ours(&disk);
+            assert_eq!((job["bulk"].clone(), job["publish"].clone()),
+                       (serde_json::json!(false), serde_json::json!(true)), "{lane}: 칸이 파일 왕복에서 사라졌다");
+            validate_job(&job).unwrap_or_else(|e| panic!("{lane}: {e}"));
+            // U1 이행(1.1.8 첫 기동) — 이미 bool 인 칸은 건드리지 않는다.
+            let rep = migrate_schedule_file(&path).unwrap();
+            assert!(!rep.migrated_ids.iter().any(|i| i == "agora-counsel"), "{lane}: 이행이 우리 잡을 고쳤다 {rep:?}");
+            assert_eq!(job_flags(&ours(&std::fs::read_to_string(&path).unwrap())), want, "{lane}: 이행 뒤");
+        }
+        let _ = std::fs::remove_dir_all(&td);
+    }
 }

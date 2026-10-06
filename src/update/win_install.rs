@@ -38,7 +38,7 @@ pub fn classify_exit(code: Option<u32>) -> Step {
         Some(0) => Ok(()),
         Some(6) => Err(Fail::new(ErrCode::TxnBusy, "S9", "설치기 ⓪-a 거부(exit 6)")),
         Some(c) => Err(Fail::new(ErrCode::WinInstallerFailed, "S9", format!("설치기 exit {c}"))),
-        None => Err(Fail::new(ErrCode::WinInstallerFailed, "S9", format!("시한 {TIMEOUT_SECS}초 초과"))),
+        None => Err(Fail::new(ErrCode::WinInstallerFailed, "S9", format!("시한 {TIMEOUT_SECS}초 초과 — 설치기 종료 확인 뒤"))),
     }
 }
 
@@ -88,7 +88,7 @@ mod imp {
     use super::*;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FileIdInfo, GetFileAttributesW, GetFileInformationByHandleEx, GetFinalPathNameByHandleW, FILE_ATTRIBUTE_REPARSE_POINT,
         FILE_ID_INFO, FILE_SHARE_READ, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
@@ -115,10 +115,19 @@ mod imp {
             return Ok(());
         }
         let name = wide(std::ffi::OsStr::new(MUTEX_NAME));
+        // ★2판(codex 1R C8): `initial_owner=1` 이어도 이미 있던 뮤텍스(ERROR_ALREADY_EXISTS)면 소유권을 받지 못한다 — 소유하지 않은 채
+        //   진행하던 길 차단. 소유 없이 만들고(·열고) 0ms 대기로 **실제 소유**를 얻을 때만 진행(버려진 뮤텍스 = 소유 획득 · 그 밖 = 거부).
         // SAFETY: NUL 종단 이름 · 보안 속성 기본.
-        let h = unsafe { CreateMutexW(std::ptr::null(), 1, name.as_ptr()) };
+        let h = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
         if h.is_null() {
             return Err(format!("CreateMutexW {}", unsafe { GetLastError() }));
+        }
+        // SAFETY: 방금 받은 핸들.
+        let w = unsafe { WaitForSingleObject(h, 0) };
+        if w != WAIT_OBJECT_0 && w != WAIT_ABANDONED {
+            // SAFETY: 우리 핸들(소유 아님 — ReleaseMutex 0).
+            unsafe { CloseHandle(h) };
+            return Err(format!("설치 뮤텍스를 다른 프로세스가 소유 중(wait {w})"));
         }
         *g = h as isize;
         Ok(())
@@ -245,6 +254,22 @@ mod imp {
         }
         // SAFETY: 프로세스 핸들 대기.
         let w = unsafe { WaitForSingleObject(pi.hProcess, (TIMEOUT_SECS * 1000) as u32) };
+        if w != WAIT_OBJECT_0 {
+            // ★2판(codex 1R C8): 시한 초과 = 설치기를 끝내고 **끝난 것을 확인한 뒤에만** 돌아간다(그 전에 RB 가 옛 설치기를 띄우면 동시
+            //   쓰기). 반쯤 된 설치는 S9b·RB 가 실물로 판정한다. 종료 요청이 거부돼도(권한) 설치기가 스스로 끝날 때까지 기다린다.
+            // SAFETY: 우리가 만든 프로세스.
+            unsafe { TerminateProcess(pi.hProcess, 1) };
+            // SAFETY: 프로세스 핸들 무기한 대기(종료 확인).
+            unsafe { WaitForSingleObject(pi.hProcess, u32::MAX) };
+            // SAFETY: 끝난 프로세스의 핸들 정리.
+            unsafe {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+            drop(img);
+            drop(held);
+            return classify_exit(None);
+        }
         let code = if w == WAIT_OBJECT_0 {
             let mut c = 0u32;
             // SAFETY: 끝난 프로세스.
@@ -253,7 +278,7 @@ mod imp {
         } else {
             None
         };
-        // SAFETY: 핸들 정리(시한 초과 = 설치기를 죽이지 않는다 — 반쯤 설치를 만들지 않게 · S9b·RB 가 실물로 판정).
+        // SAFETY: 핸들 정리.
         unsafe {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);

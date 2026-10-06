@@ -893,8 +893,12 @@ impl Ops for RealOps {
         self.restore_trees(&root, "RB_RESTORED", &j.txn_id, want_st.as_deref(), want_cy.as_deref())
     }
 
-    fn recover_pack(&mut self) -> Step {
-        crate::pack::recover_pack_journal().map(|_| ()).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))
+    fn recover_pack(&mut self, j: &Journal) -> Step {
+        crate::pack::recover_pack_journal().map(|_| ()).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))?;
+        // ★2판(codex 1R C14): 팩 저널 복구만으로 PACK_DONE 을 쓰지 않는다 — 사용자 트리 해시 대조·복원까지 성공해야.
+        let q = super::snapshot::quarantine_dir(&self.env.update_dir, &j.txn_id);
+        pack_user_tree_restore(&self.env.cys_root, &j.stage_tree_sha256, Path::new(&j.snapshot_dir), &q)
+            .map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))
     }
 
     fn reconstruct(&mut self) -> Step {
@@ -984,6 +988,60 @@ impl RealOps {
 }
 
 /// S6·S8b 재확인: 봉투·폐기문을 다시 받아 같은 `release_seq` · halt 아님 · 후보 폐기 아님 · 설치판 폐기 무변화.
+// ── ★2판(codex 1R C14): 팩 참가자 ↔ 전역 상태기 ─────────────────────────────────────────────
+
+fn user_snapshot_filter(root: &Path) -> impl Fn(&str) -> bool + '_ {
+    move |rel: &str| {
+        let first = rel.split('/').next().unwrap_or_default();
+        (first == "local" || first.starts_with("pack")) && (root.join(rel).is_dir() || verify::is_user_path(rel))
+    }
+}
+
+/// 팩을 바꾸는 CLI(init-pack·pack-update)가 **잠금 소유자**로 돌 때 바꾸기 전에 부른다: 비종결 저널이 있으면 거부(복구 먼저) ·
+/// 사용자 트리 사본(`backup/pack-<txn>/user`)과 요약 해시를 저널 PACK_APPLY 에 고정(`stage_tree_sha256` = 해시 · `snapshot_dir` = 사본).
+pub fn pack_txn_begin(update_dir: &Path, txn_id: &str, epoch: u64, cys_root: &Path) -> Result<(), String> {
+    use super::journal::{self, ReadOutcome, State};
+    match journal::read(update_dir) {
+        ReadOutcome::Ok(j) if !j.state.is_terminal() => return Err(format!("복구 대기 저널 {}", j.state.name())),
+        ReadOutcome::Corrupt(e) | ReadOutcome::Degraded(_, e) => return Err(format!("저널 손상 {e}")),
+        _ => {}
+    }
+    let digest = verify::user_tree_digest(cys_root)?;
+    let snap = super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")).join("user");
+    let _ = std::fs::remove_dir_all(&snap);
+    super::snapshot::take(cys_root, &snap, &user_snapshot_filter(cys_root))?;
+    journal::advance(update_dir, txn_id, epoch, State::Locked, |_| {}).map_err(|e| format!("{e:?}"))?;
+    journal::advance(update_dir, txn_id, epoch, State::PackApply, |n| {
+        n.stage_tree_sha256 = digest.clone();
+        n.snapshot_dir = snap.to_string_lossy().to_string();
+    })
+    .map_err(|e| format!("{e:?}"))?;
+    Ok(())
+}
+
+/// 성공 종결 — PACK_DONE + 사용자 트리 사본 정리.
+pub fn pack_txn_end(update_dir: &Path, txn_id: &str, epoch: u64) -> Result<(), String> {
+    super::journal::advance(update_dir, txn_id, epoch, super::journal::State::PackDone, |_| {}).map_err(|e| format!("{e:?}"))?;
+    let _ = std::fs::remove_dir_all(super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")));
+    Ok(())
+}
+
+/// PACK 복구 뒤 사용자 트리 검증·복원(순수에 가까움 · 시험 대상): 지금 해시 = 고정값이면 끝 · 아니면 사본으로 사용자 경로만 복원(나머지
+/// 보호) → 다시 같아야 Ok.
+pub fn pack_user_tree_restore(cys_root: &Path, want_digest: &str, snap: &Path, quarantine: &Path) -> Result<(), String> {
+    if want_digest.is_empty() {
+        return Err("저널에 사용자 트리 해시 없음".into());
+    }
+    if verify::user_tree_digest(cys_root)? == want_digest {
+        return Ok(());
+    }
+    super::snapshot::restore(cys_root, snap, quarantine, &|rel: &str| !verify::is_user_path(rel), None)?;
+    if verify::user_tree_digest(cys_root)? != want_digest {
+        return Err("복원 뒤 사용자 트리 해시 불일치".into());
+    }
+    Ok(())
+}
+
 /// ★2판 C13: 판 `seq` 의 스냅샷(`backup/<seq>-<txn>`) 중 두 뿌리가 모두 검증되는 가장 최근 것(수정 시각) — 저널 손상 재구성용.
 pub fn latest_verified_snapshot(update_dir: &Path, seq: u64) -> Option<PathBuf> {
     let root = super::snapshot::backup_root(update_dir);
@@ -1120,6 +1178,36 @@ mod tests {
         for no in ["claude/x", "update/journal.json", "state/x", "round/a"] {
             assert!(!RealOps::cys_filter(no), "{no}");
         }
+    }
+
+    /// ★2판 C14: PACK_APPLY 중 죽음(사용자 파일이 바뀌고 새 사용자 파일이 생김) → 복구 = 사용자 트리 해시 대조 → 사본으로 사용자 경로만
+    /// 복원(팩 본문 무접촉 · 새 사용자 파일 격리) → 해시 일치 · 저널 PACK_APPLY 고정값 · 성공 종결 = PACK_DONE + 사본 정리.
+    #[test]
+    fn pack_txn_pins_user_tree_and_recovery_restores_it() {
+        let d = std::env::temp_dir().join(format!("cys-u2-packtxn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (upd, root) = (d.join("update"), d.join("cys"));
+        for (p, b) in [("local/me.md", "mine"), ("pack/soul.md", "S"), ("pack/agents.json", r#"{"agents":{}}"#), ("pack/lib/x.py", "v1")] {
+            std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            std::fs::write(root.join(p), b).unwrap();
+        }
+        let want = verify::user_tree_digest(&root).unwrap();
+        pack_txn_begin(&upd, "t1", 1, &root).unwrap();
+        let j = super::super::journal::read(&upd).journal().cloned().unwrap();
+        assert_eq!((j.state, j.stage_tree_sha256.as_str()), (super::super::journal::State::PackApply, want.as_str()));
+        assert!(pack_txn_begin(&upd, "t2", 2, &root).unwrap_err().contains("복구 대기"), "비종결 저널 위 새 팩 트랜잭션 거부");
+        // 도중 죽음: 사용자 파일 덮임 · 새 사용자 파일 · 팩 본문 변경
+        std::fs::write(root.join("local/me.md"), "clobbered").unwrap();
+        std::fs::write(root.join("local/new.md"), "n").unwrap();
+        std::fs::write(root.join("pack/lib/x.py"), "v2").unwrap();
+        pack_user_tree_restore(&root, &j.stage_tree_sha256, Path::new(&j.snapshot_dir), &d.join("q")).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("local/me.md")).unwrap(), "mine");
+        assert!(!root.join("local/new.md").exists() && d.join("q/local/new.md").exists(), "새 사용자 파일 = 격리");
+        assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v2", "팩 본문 = 팩 저널 몫(무접촉)");
+        assert!(pack_user_tree_restore(&root, "", Path::new(&j.snapshot_dir), &d.join("q")).is_err(), "고정값 없음 = 실패");
+        pack_txn_end(&upd, "t1", 1).unwrap();
+        assert_eq!(super::super::journal::read(&upd).journal().unwrap().state, super::super::journal::State::PackDone);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// ★2판 C13: 재구성 복원 원천 = 그 판의 스냅샷 중 두 뿌리가 검증되는 최신 것(손상·다른 판 제외).

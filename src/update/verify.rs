@@ -205,6 +205,24 @@ pub fn passed(checks: &[Check]) -> bool {
 
 const BYTE_NAMES: &[&str] = &["soul.md", "CLAUDE.md"];
 
+/// ★2판(codex 1R C14): 사용자 트리 경로 판정(`~/.cys` 기준 상대 경로 · [`collect_user_tree`] 와 같은 정의) — `local/**` ·
+/// `pack*/…` 의 지침(`*_DIRECTIVE.md`)·soul·CLAUDE·schedule/acl/agents.json.
+pub fn is_user_path(rel: &str) -> bool {
+    let first = rel.split('/').next().unwrap_or_default();
+    let name = rel.rsplit('/').next().unwrap_or_default();
+    first == "local"
+        || (first.starts_with("pack")
+            && rel.contains('/')
+            && (name.ends_with("_DIRECTIVE.md") || BYTE_NAMES.contains(&name) || ["schedule.json", "acl.json", "agents.json"].contains(&name)))
+}
+
+/// 사용자 트리 요약 해시(정규 직렬화 sha256).
+pub fn user_tree_digest(cys_root: &Path) -> Result<String, String> {
+    let t = collect_user_tree(cys_root)?;
+    let b = serde_json::to_vec(&t).map_err(|e| e.to_string())?;
+    Ok(super::feed::sha256_hex(&b))
+}
+
 /// `cys_root`(= `~/.cys`) 아래 사용자 소유 트리를 읽는다: `local/**` · 본부 `pack` + 모든 `pack-dept-*` 의 지침 `*_DIRECTIVE.md`·
 /// `soul.md`·`CLAUDE.md`(바이트) · `schedule.json`·`acl.json`·`agents.json`(의미).
 pub fn collect_user_tree(cys_root: &Path) -> Result<UserTree, String> {

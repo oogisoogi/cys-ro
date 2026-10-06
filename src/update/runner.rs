@@ -95,7 +95,7 @@ pub trait Ops {
     /// RB_RESTORED — 팩·사용자 트리·상태 폴더 파일 단위 복원.
     fn rb_restore(&mut self, j: &Journal) -> Step;
     /// PACK_APPLY·PACK_ROLLBACK 복구 — `pack::recover_pack_journal()` + 사용자 트리 해시 대조.
-    fn recover_pack(&mut self) -> Step;
+    fn recover_pack(&mut self, j: &Journal) -> Step;
     /// 저널 손상 — 실물 재구성(§3-11 1~3). Ok = 판 확정 · 팩·사용자 트리 대조 끝.
     fn reconstruct(&mut self) -> Step;
     /// 결과 기록(state.json `last_result` · 실패 분류 · 상담소 신호 · `counsel/updates.jsonl`).
@@ -431,7 +431,7 @@ impl<'a, O: Ops> Runner<'a, O> {
             }
             Recovery::ResumeRollback(_) => self.rollback_from(j, Fail::new(ErrCode::RotateFailed, "recover", "롤백 이어하기")),
             Recovery::RecoverPack => {
-                if let Err(f) = self.ops.recover_pack() {
+                if let Err(f) = self.ops.recover_pack(&j) {
                     return Ok(Outcome::RollbackFailed(f));
                 }
                 let j = if j.state == State::PackApply { self.enter(State::PackRollback, |_| {})? } else { j };
@@ -711,7 +711,7 @@ pub(crate) mod tests {
             self.restored += 1;
             Ok(())
         }
-        fn recover_pack(&mut self) -> Step {
+        fn recover_pack(&mut self, _: &Journal) -> Step {
             self.f("recover_pack")
         }
         fn reconstruct(&mut self) -> Step {

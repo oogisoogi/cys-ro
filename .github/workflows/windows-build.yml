@@ -142,6 +142,48 @@ jobs:
           fi
           echo "OK: NSIS 빌드 로그 가드 통과 (훅 컴파일 가드 문자열 0건)"
 
+      # ★(1.1.8 U4 5판 · master#75977c49) 앱 알림 장부 잠금(updnotice)의 **윈 실측** — 프로세스 뮤텍스 + `app-notify.lock`
+      #   파일 잠금(윈 = LockFileEx)이 같은 프로세스 스레드·다른 프로세스를 실제로 막는지는 맥 flock 실측만으로 말할 수 없다.
+      #   앱 빌드 뒤(사이드카·ui/dist 가 이미 있는 자리)에서 cys-app 시험 바이너리의 updnotice 묶음을 돈다 —
+      #   잠금 시험 3건(threads_take · take_then_done · two_processes = current_exe() 재호출 자식 프로세스)이 이름으로 ok 여야 한다.
+      #   돌지 않는 초록 금지(windows-health 의 cargo_filter_count 꼴): 필터 0건 = 실패 · 「test result」 줄 부재 = 실패 · 결과 ok 아님 = 실패.
+      - name: cargo test -p cys-app --bins updnotice (알림 장부 잠금 · Windows 실기)
+        shell: bash
+        run: |
+          set -euo pipefail
+          list="${RUNNER_TEMP:-/tmp}/cys-app-updnotice-list.txt"
+          if cargo test -p cys-app --bins updnotice -- --list > "$list" 2>&1; then rc=0; else rc=$?; fi
+          if [ "$rc" -ne 0 ]; then
+            tail -40 "$list"
+            echo "::error::cargo test -p cys-app --bins updnotice -- --list 실패(rc=$rc) — 필터를 셀 수 없으면 실행도 근거가 없다(fail-closed)"
+            exit 1
+          fi
+          n=$(grep -c ': test$' "$list" || true)
+          if [ "${n:-0}" -lt 1 ]; then
+            tail -20 "$list"
+            echo "::error::updnotice 필터에 걸리는 테스트가 0건 — 모듈 이름이 바뀌었다(돌지 않는 초록 금지)"
+            exit 1
+          fi
+          echo "[filter-count] cargo test -p cys-app --bins updnotice → ${n}건"
+          if out="$(cargo test -p cys-app --bins updnotice 2>&1)"; then rc=0; else rc=$?; fi
+          out="$(printf '%s\n' "$out" | tr -d '\r')"
+          echo "$out" | grep -E '^test |^test result:' || true
+          summary="$(echo "$out" | grep -E '^test result:' | tail -1 || true)"
+          if [ -z "$summary" ]; then
+            echo "$out" | tail -40
+            echo "::error::rc=$rc 인데 'test result' 요약이 없다 — 컴파일 실패이거나 하네스가 요약 전에 죽었다('실패한 테스트 없음' 이 아니다)"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ] || ! echo "$summary" | grep -q '^test result: ok\.'; then
+            echo "$out" | tail -60
+            echo "::error::updnotice 윈 실기 적색(rc=$rc · $summary)"
+            exit 1
+          fi
+          for t in threads_take_one_at_a_time_inside_the_ledger_section take_then_done_inside_the_section_shows_exactly_once two_processes_take_one_at_a_time_through_the_lock_file; do
+            echo "$out" | grep -q "^test updnotice::tests::$t \.\.\. ok$" || { echo "::error::잠금 시험 $t 가 윈에서 ok 로 실행되지 않았다(이름 불일치·필터 0건·skip)"; exit 1; }
+          done
+          echo "OK: updnotice 윈 실기 — $summary · 잠금 시험 3건 ok"
+
       - name: Upload NSIS installer artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4

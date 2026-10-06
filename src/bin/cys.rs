@@ -27173,11 +27173,7 @@ fn counsel_update_code(op: &str, rc: i32, err: Option<&str>) -> Option<&'static 
 /// rc ≠ 0 이면 팩 `bin/javis_counsel.py signal --source update` 를 띄운다 — 잠금·형식·끄기는 그 도구가 가진다.
 /// 실패는 전부 삼키고 **rc 를 그대로 돌려준다**(대기 상한 5초 · 넘으면 자식을 두고 떠난다).
 fn counsel_update_signal(op: &str, rc: i32, err: Option<&str>) -> i32 {
-    let Some(code) = counsel_update_code(op, rc, err) else {
-        return rc;
-    };
-    let script = cys::pack::pack_dir().join("bin").join("javis_counsel.py");
-    if !script.is_file() {
+    if counsel_update_code(op, rc, err).is_none() {
         return rc;
     }
     let exe_dir = std::env::current_exe()
@@ -27196,14 +27192,38 @@ fn counsel_update_signal(op: &str, rc: i32, err: Option<&str>) -> i32 {
                 .map(|p| p.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "python3".to_string());
+    counsel_update_signal_with(op, rc, err, &cys::pack::pack_dir(), &py, &exe_dir)
+}
+
+/// 신호 도구 인자(순수) — `<팩>/bin/javis_counsel.py signal --source update --op <op> --error-code <code>`.
+fn counsel_update_args(pack: &std::path::Path, op: &str, code: &str) -> Vec<std::ffi::OsString> {
+    let mut v: Vec<std::ffi::OsString> = vec![pack.join("bin").join("javis_counsel.py").into_os_string()];
+    v.extend(["signal", "--source", "update", "--op", op, "--error-code", code].map(std::ffi::OsString::from));
+    v
+}
+
+/// 주입판(★T3 리뷰 ⑪ · 시험이 가짜 인터프리터를 넘긴다) — 팩 자리·인터프리터를 인자로 받는다. rc 불변.
+fn counsel_update_signal_with(
+    op: &str,
+    rc: i32,
+    err: Option<&str>,
+    pack: &std::path::Path,
+    py: &str,
+    exe_dir: &std::path::Path,
+) -> i32 {
+    let Some(code) = counsel_update_code(op, rc, err) else {
+        return rc;
+    };
+    if !pack.join("bin").join("javis_counsel.py").is_file() {
+        return rc;
+    }
     // ★SEAL-1: 팩토리 경유(.pyc 번들 오염 차단) · 등급 Attached(윈 콘솔 숨김).
-    let mut cmd = cys::python_command(&py);
-    cmd.arg(&script)
-        .args(["signal", "--source", "update", "--op", op, "--error-code", code])
+    let mut cmd = cys::python_command(py);
+    cmd.args(counsel_update_args(pack, op, code))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    for (k, v) in cys::spawn_env_pairs_from_process(&exe_dir) {
+    for (k, v) in cys::spawn_env_pairs_from_process(exe_dir) {
         cmd.env(k, v);
     }
     cys::SpawnPolicy::spawn_policy(&mut cmd, cys::ChildLifetime::Attached);
@@ -27393,6 +27413,48 @@ mod tests {
                 "rotate 디스패치가 신호 래퍼를 안 거친다");
         assert!(prod.contains("Ok(code) => counsel_update_signal(\"host.pack-update\", code, None),"));
         assert!(prod.contains("counsel_update_signal(\"host.pack-update\", 1, Some(e.as_str()))"));
+    }
+
+    /// ★T3 리뷰 ⑪: 실제 스폰 — 가짜 인터프리터(sh)가 argv 를 적고 한 줄 append → 인자 · 정확히 1회 · rc 불변(여러 rc).
+    #[cfg(unix)]
+    #[test]
+    fn counsel_update_signal_spawns_pack_tool_once_rc_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = std::env::temp_dir().join(format!("cys-t3-counsel-spawn-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pack = td.join("pack");
+        std::fs::create_dir_all(pack.join("bin")).unwrap();
+        std::fs::write(pack.join("bin").join("javis_counsel.py"), "# stub\n").unwrap();
+        let fake = td.join("fakepy");
+        std::fs::write(&fake, "#!/bin/sh\nd=\"$(dirname \"$0\")\"\n: > \"$d/argv.txt\"\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$d/argv.txt\"; done\necho call >> \"$d/calls.txt\"\nexit 9\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let py = fake.to_string_lossy().into_owned();
+        let script = pack.join("bin").join("javis_counsel.py").to_string_lossy().into_owned();
+        let read = |n: &str| std::fs::read_to_string(td.join(n)).unwrap_or_default();
+        let cases: [(&str, i32, Option<&str>, &str); 6] = [
+            ("host.rotate", 22, None, "update.daemon"),
+            ("host.rotate", 21, None, "update.drain_partial"),
+            ("host.rotate", 99, None, "update.failed"),
+            ("host.pack-update", 3, None, "update.reinject_degraded"),
+            ("host.pack-update", 4, None, "update.accepted_degraded"),
+            ("host.pack-update", 1, Some("binary-too-old"), "update.binary_too_old"),
+        ];
+        for (op, rc, err, code) in cases {
+            let _ = std::fs::remove_file(td.join("argv.txt"));
+            let _ = std::fs::remove_file(td.join("calls.txt"));
+            assert_eq!(counsel_update_signal_with(op, rc, err, &pack, &py, &td), rc, "{op} rc {rc} 가 바뀌었다");
+            let argv: Vec<String> = read("argv.txt").lines().map(str::to_string).collect();
+            assert_eq!(argv, vec![script.as_str(), "signal", "--source", "update", "--op", op, "--error-code", code],
+                       "{op} rc {rc}");
+            assert_eq!(read("calls.txt").lines().count(), 1, "{op} rc {rc}: 스폰이 정확히 1회가 아니다");
+        }
+        // rc 0 = 스폰 0 · 팩에 도구 없음 = 스폰 0(둘 다 rc 그대로).
+        let _ = std::fs::remove_file(td.join("calls.txt"));
+        assert_eq!(counsel_update_signal_with("host.rotate", 0, None, &pack, &py, &td), 0);
+        let empty = td.join("nopack");
+        assert_eq!(counsel_update_signal_with("host.rotate", 22, None, &empty, &py, &td), 22);
+        assert_eq!(read("calls.txt"), "", "rc 0·도구 없음인데 띄웠다");
+        let _ = std::fs::remove_dir_all(&td);
     }
 
 

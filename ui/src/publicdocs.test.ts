@@ -4,20 +4,45 @@
 // 앱은 결과 1줄만 알린다. 공개 문서(README 한/영 · USER-MANUAL · 다운로드 페이지 · 설치 상세 · 아키텍처)는 **현행만** 적는다: 지운 단추·명령·노브를
 // 지금 기능처럼 안내하면 사용자가 없는 단추를 찾는다. 옛 경로 서술을 「버전 기록」 으로 남기는 것도 하지 않는다(문서 = 현행).
 import { describe, it, expect } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 // 4판(Fable 3R MAJOR-1 · MINOR-1 · master#741101b5): 화이트리스트가 아니라 **README(한/영)가 링크하는 모든 .md 를 자동 수집**한다 —
 // 새 공개 문서가 README 에 링크되면 그대로 검사 대상이 된다(2판 4종 → 3판 6종 → 손으로 넓히다 SECURITY.md 를 놓친 꼴 재발 방지).
 // 다운로드 페이지(docs/index.html)는 README 가 .md 로 링크하지 않으므로 명시로 더한다.
+// 6판(codex 최종 MINOR-1 · master#43ab7cee): 수집기가 인라인 `[x](y)` 단순형만 봤다 → 폴더 링크 `docs/`(그 안 README.md) ·
+// 참조식 `[x][d]` + `[d]: y` · HTML `<a href>` · 제목 달린 링크 `[x](y "t")` · 괄호 든 파일명 · `<y>` 꺾쇠형까지 모은다(아래 시험이 반례 5종을 잰다).
 const ROOT = new URL("../../", import.meta.url);
+/** 문서 하나의 링크 대상 중 저장소 안 .md 를 모은다(순수 — `exists` 로 폴더 README 판정). 반환 = 저장소 뿌리 기준 경로. */
+export const collectMdLinks = (text: string, exists: (rootRel: string) => boolean): string[] => {
+  const raw: string[] = [];
+  // 인라인: ](대상 "제목"?) — 대상 = <꺾쇠> 또는 공백 없는 문자열(괄호 한 겹 허용)
+  for (const m of text.matchAll(/\]\(\s*(<[^>\n]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g)) raw.push(m[1]);
+  // 참조 정의: [이름]: 대상 "제목"?
+  for (const m of text.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*(<[^>\n]+>|\S+)/gm)) raw.push(m[1]);
+  // HTML 앵커
+  for (const m of text.matchAll(/<a\s[^>]*?href\s*=\s*["']([^"']+)["']/gi)) raw.push(m[1]);
+  const out = new Set<string>();
+  for (let t of raw) {
+    t = t.replace(/^<|>$/g, "").split("#")[0].split("?")[0];
+    if (!t || /^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith("//")) continue;
+    try {
+      t = decodeURI(t);
+    } catch {
+      continue;
+    }
+    const rel = new URL(t.replace(/ /g, "%20"), ROOT).href.slice(ROOT.href.length).replace(/%20/g, " "); // URL 해석 = ./ · ../ 정규화
+    if (rel.endsWith(".md")) out.add(rel);
+    else if (rel === "" || rel.endsWith("/") || !/\.[A-Za-z0-9]+$/.test(rel)) {
+      const idx = `${rel.replace(/\/?$/, rel === "" ? "" : "/")}README.md`;
+      if (exists(idx)) out.add(idx);
+    }
+  }
+  return [...out];
+};
 const linkedDocs = (): string[] => {
   const out = new Set<string>(["README.md", "README.en.md"]);
   for (const r of ["README.md", "README.en.md"]) {
-    for (const m of readFileSync(new URL(r, ROOT), "utf-8").matchAll(/\]\(([^)\s]+)\)/g)) {
-      const p = m[1].split("#")[0];
-      if (!p || /^[a-z]+:/i.test(p) || !p.endsWith(".md")) continue;
-      out.add(new URL(p, ROOT).href.slice(ROOT.href.length)); // URL 해석 = ./ · ../ 정규화
-    }
+    for (const p of collectMdLinks(readFileSync(new URL(r, ROOT), "utf-8"), (q) => existsSync(new URL(q, ROOT)))) out.add(p);
   }
   return [...out].sort();
 };
@@ -70,5 +95,29 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     for (const d of ["../../README.md", "../../USER-MANUAL.md"]) expect({ d, 있음: read(d).includes(line) }).toEqual({ d, 있음: true });
     expect(read("../../docs/index.html").includes(line)).toBe(true);
     expect(read("../../README.en.md").includes("cysr updates itself while it is idle (plugged in, or battery above half).")).toBe(true);
+  });
+  it("수집기 반례 5종(codex 최종 MINOR-1) — 폴더 링크·참조식·HTML·제목 달린 링크·괄호 든 파일명 · 꺾쇠형 · 외부/앵커 제외", () => {
+    const md = [
+      "[폴더](docs/evidence/)",
+      "[참조][d]",
+      "[d]: SECURITY.md \"제목\"",
+      '<a href="NOTICE.md">공지</a>',
+      '[제목 달린](CONTRIBUTING.md "기여 안내")',
+      "[괄호](docs/notes(1).md)",
+      "[꺾쇠](<docs/a b.md>)",
+      "[외부](https://example.com/x.md) [앵커](#설치) [그림](docs/x.png)",
+    ].join("\n");
+    const got = collectMdLinks(md, (q) => q === "docs/evidence/README.md").sort();
+    expect(got).toEqual(["CONTRIBUTING.md", "NOTICE.md", "SECURITY.md", "docs/a b.md", "docs/evidence/README.md", "docs/notes(1).md"]);
+  });
+  it("다운로드 페이지 = 우리 저장소(oogisoogi/cys-ro) 최신 릴리스 — 벤더(idoforgod · cys-terminal) 주소 0(codex 최종 MAJOR-1)", () => {
+    const s = read("../../docs/index.html");
+    const R = "https://github.com/oogisoogi/cys-ro/releases/download/";
+    for (const id of ["dl-mac-arm", "dl-mac-x64", "dl-win", "dl-win-zip"]) {
+      const href = s.match(new RegExp(`id="${id}"\\s+href="([^"]+)"`))?.[1] ?? "";
+      expect({ id, 우리_릴리스: href.startsWith(R) }).toEqual({ id, 우리_릴리스: true });
+    }
+    expect(s.includes('fetch("https://api.github.com/repos/oogisoogi/cys-ro/releases/latest")')).toBe(true);
+    expect({ 벤더: (s.match(/idoforgod|cys-terminal/gi) ?? []).length }).toEqual({ 벤더: 0 });
   });
 });

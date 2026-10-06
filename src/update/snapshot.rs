@@ -623,6 +623,26 @@ mod tests {
         assert_eq!(std::fs::read_to_string(live.join("bin/run.sh")).unwrap(), "#!/bin/sh", "덮지 않음");
     }
 
+    /// ★2판 C16(실 부작용 안 경계): 백업 도중 죽음 = 사본 일부·임시 파일만 있고 MANIFEST 없음 → 다시 take = 완주·검증(반쪽 사본을 백업으로
+    /// 인정하지 않음) · MANIFEST 가 생긴 뒤엔 덮지 않음(재개는 verify 로).
+    #[test]
+    fn snapshot_interrupted_mid_copy_resumes_cleanly() {
+        let d = tmp("midcopy");
+        let live = d.join("live");
+        put(&live, "a", "A");
+        put(&live, "b/c", "C");
+        let snap = d.join("snap");
+        // 첫 파일만 복사되고 둘째 파일 임시본이 남은 채 죽음
+        put(&snap, "files/a", "A");
+        put(&snap, "files/b/.c.cys-tmp", "C-torn");
+        assert!(verify(&snap).is_err(), "MANIFEST 없음 = 백업 아님");
+        let m = take(&live, &snap, &|_| true).unwrap();
+        assert_eq!(verify(&snap).unwrap(), m);
+        let man = parse_manifest(&std::fs::read_to_string(snap.join(MANIFEST_FILE)).unwrap()).unwrap();
+        assert_eq!(man.keys().cloned().collect::<Vec<_>>(), vec!["a", "b/c"], "임시본은 매니페스트 밖");
+        assert!(take(&live, &snap, &|_| true).is_err(), "완성된 백업은 덮지 않음");
+    }
+
     #[test]
     fn generations_keep_two_and_never_prune_before_fresh_verified() {
         let names: Vec<String> = ["3-a", "1-b", "2-c"].iter().map(|s| s.to_string()).collect();

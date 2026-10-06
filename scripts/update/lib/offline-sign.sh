@@ -7,7 +7,40 @@
 #   · 이 함수는 개인키 파일을 **읽지도 복사하지도 않는다** — 경로만 minisign 에 넘긴다(클립보드·셸 기록·임시 파일 0).
 #   · 서명 대상(공개 정보)만 매체 쪽 임시 폴더로 옮겨 그 자리에서 서명하고, 서명(.minisig)만 꺼낸다(④).
 #   · 매체를 뺀 뒤(⑤ · 기본 = 빠질 때까지 기다림) 내장 키링의 같은 용도 공개키로 검증해야(⑥) 산출물이 생긴다.
+#   · 시험 손잡이(`MINISIGN` · `CYS_SIGN_MEDIA_PREFIX` · 매체 빼기 대기 0)는 **개발 모드(`CYS_SIGN_DEV=1`)에서만** 받는다 —
+#     실 의식에서 이 셋이 보이면 거부(codex 1R #3 · 의식 우회 봉쇄). 개발 모드는 저장소 실 키링
+#     (`cysjavis-pack/trusted-keys.json`)에 있는 key id 로는 서명하지 않는다(가짜 매체·가짜 minisign 으로 실 키 사용 0).
 # 시험 = 가짜 키(scripts/tests/fixtures/fake_minisign.py) + 가짜 매체(hdiutil 로 만든 진짜 마운트) — 실키 0.
+
+_offline_dev() { [ "${CYS_SIGN_DEV:-}" = 1 ]; }
+
+# offline_dev_policy <expect_key_id|-> <wait_eject_secs> — 통과하면 0, 아니면 이유를 stderr 에 쓰고 2.
+offline_dev_policy() {
+  local kid="$1" wait="$2" real
+  real="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/cysjavis-pack/trusted-keys.json"
+  if _offline_dev; then
+    [ "$kid" = "-" ] && return 0
+    python3 - "$real" "$kid" <<'PY2' || return 2
+import json, sys
+try:
+    ids = {k.get("key_id") for k in json.load(open(sys.argv[1], encoding="utf-8")).get("keys", [])}
+except (OSError, ValueError) as e:
+    print("거부: 개발 모드인데 저장소 실 키링을 못 읽는다(%s) — 실 키 대조 불가" % e, file=sys.stderr); sys.exit(2)
+if sys.argv[2] in ids:
+    print("거부: 개발 모드(CYS_SIGN_DEV=1)로 저장소 실 키링의 key id %s 를 쓰려 한다" % sys.argv[2], file=sys.stderr); sys.exit(2)
+PY2
+    return 0
+  fi
+  local v
+  for v in MINISIGN CYS_SIGN_MEDIA_PREFIX CYS_TEST_NOW; do
+    [ -z "${!v:-}" ] || { echo "거부: 시험 손잡이 $v 가 설정돼 있다 — 실 의식에서는 쓸 수 없다(개발 모드 = CYS_SIGN_DEV=1 전용)" >&2; return 2; }
+  done
+  case "$wait" in ''|*[!0-9]*) echo "거부: --wait-eject 정수 아님: $wait" >&2; return 2 ;; esac
+  [ "$wait" -ge 1 ] || { echo "거부: --wait-eject 0(매체 빼기 생략)은 개발 모드 전용이다" >&2; return 2; }
+  return 0
+}
+
+_offline_minisign() { if _offline_dev; then echo "${MINISIGN:-minisign}"; else echo minisign; fi; }
 
 _os_dev() {  # 경로의 장치 번호(BSD·GNU stat 둘 다 — GNU 의 `stat -f` 는 파일 시스템 정보라 먼저 갈라야 한다)
   if stat --version >/dev/null 2>&1; then stat -c %d "$1"; else stat -f %d "$1"; fi
@@ -17,27 +50,33 @@ _realpath() {
   python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
-# offline_media_guard <media> <key> — 통과하면 0, 아니면 이유를 stderr 에 쓰고 2.
-offline_media_guard() {
-  local media="$1" key="$2" prefix
-  prefix="$(_realpath "${CYS_SIGN_MEDIA_PREFIX:-/Volumes}")/"  # 실경로로 맞춘다(/var → /private/var)
+# offline_media_check <media> — 매체가 /Volumes 아래 마운트 지점이고 빌드 기기 디스크와 다른 장치인가. 0 | 2.
+offline_media_check() {
+  local media="$1" prefix rm dm dp p
+  if _offline_dev; then prefix="${CYS_SIGN_MEDIA_PREFIX:-/Volumes}"; else prefix=/Volumes; fi
+  prefix="$(_realpath "$prefix")/"  # 실경로로 맞춘다(/var → /private/var)
   [ -n "$media" ] && [ -d "$media" ] || { echo "거부: 매체 폴더 없음: $media" >&2; return 2; }
-  [ -n "$key" ] || { echo "거부: 키 경로 없음" >&2; return 2; }
-  [ -L "$key" ] && { echo "거부: 키 경로가 심링크다: $key" >&2; return 2; }
-  [ -f "$key" ] || { echo "거부: 키 파일 없음: $key" >&2; return 2; }
-  local rm rk
-  rm="$(_realpath "$media")"; rk="$(_realpath "$key")"
+  rm="$(_realpath "$media")"
   case "$rm/" in "$prefix"*) ;; *) echo "거부: 매체가 $prefix 아래 마운트가 아니다: $rm" >&2; return 2 ;; esac
-  case "$rk" in "$rm"/*) ;; *) echo "거부: 키(-s)가 매체 아래가 아니다: $rk (매체 $rm)" >&2; return 2 ;; esac
-  local dm dp
   dm="$(_os_dev "$rm")"; dp="$(_os_dev "$(dirname "$rm")")"
   [ "$dm" != "$dp" ] || { echo "거부: 매체 경로가 마운트 지점이 아니다(부모와 같은 장치 $dm): $rm" >&2; return 2; }
-  local p
   for p in / "$HOME" "$(pwd)" "${TMPDIR:-/tmp}"; do
     [ -e "$p" ] || continue
     [ "$(_os_dev "$p")" != "$dm" ] || { echo "거부: 매체가 빌드 기기 디스크와 같은 장치다($p): $rm" >&2; return 2; }
   done
-  [ "$(_os_dev "$rk")" = "$dm" ] || { echo "거부: 키 파일 장치 ≠ 매체 장치" >&2; return 2; }
+  return 0
+}
+
+# offline_media_guard <media> <key> — 매체 검사 + 키가 그 매체 안의 실파일인가. 통과하면 0, 아니면 이유를 stderr 에 쓰고 2.
+offline_media_guard() {
+  local media="$1" key="$2" rm rk
+  [ -n "$key" ] || { echo "거부: 키 경로 없음" >&2; return 2; }
+  [ -L "$key" ] && { echo "거부: 키 경로가 심링크다: $key" >&2; return 2; }
+  [ -f "$key" ] || { echo "거부: 키 파일 없음: $key" >&2; return 2; }
+  offline_media_check "$media" || return 2
+  rm="$(_realpath "$media")"; rk="$(_realpath "$key")"
+  case "$rk" in "$rm"/*) ;; *) echo "거부: 키(-s)가 매체 아래가 아니다: $rk (매체 $rm)" >&2; return 2 ;; esac
+  [ "$(_os_dev "$rk")" = "$(_os_dev "$rm")" ] || { echo "거부: 키 파일 장치 ≠ 매체 장치" >&2; return 2; }
   return 0
 }
 
@@ -46,13 +85,14 @@ _mounted() {  # 매체가 아직 마운트돼 있는가(장치가 부모와 다�
 }
 
 # offline_sign <purpose> <doc> <key> <media> <keyring> <expect_key_id> <out_sig> <trusted_comment> <wait_eject_secs>
-#   purpose = release(U) | root(R). wait_eject_secs = 0 이면 기다리지 않는다(시험).
+#   purpose = release(U) | root(R). wait_eject_secs = 0 이면 기다리지 않는다(개발 모드 전용 — offline_dev_policy).
 offline_sign() {
   local purpose="$1" doc="$2" key="$3" media="$4" keyring="$5" kid="$6" out_sig="$7" tc="$8" wait="$9"
   local here mini
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  mini="${MINISIGN:-minisign}"
   umask 077
+  offline_dev_policy "$kid" "$wait" || return 2
+  mini="$(_offline_minisign)"
   [ -f "$doc" ] && [ ! -L "$doc" ] || { echo "거부: 서명 대상 없음(또는 심링크): $doc" >&2; return 2; }
   [ -e "$out_sig" ] && { echo "거부: 산출 서명이 이미 있다(덮어쓰기 0): $out_sig" >&2; return 2; }
   offline_media_guard "$media" "$key" || return 2
@@ -87,7 +127,7 @@ PY
     || { echo "거부: 매체 쪽 서명 대상이 바뀌었다" >&2; rm -f "$tmp_sig" "$pub"; return 2; }
   rm -f "$mw/doc" "$mw/doc.minisig"; rmdir "$mw" 2>/dev/null
   # ⑤ 매체를 뺀다(사람 손 1단계) — 기다린다.
-  if [ "${wait:-0}" -gt 0 ]; then
+  if [ "$wait" -gt 0 ]; then
     echo "⑤ 서명을 꺼냈습니다. 이제 매체를 빼 주세요(최대 ${wait}초 기다림): $media" >&2
     local t=0
     while _mounted "$media"; do

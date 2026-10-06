@@ -635,6 +635,109 @@ class TestOfflineRitual(Base):
                  "--out-dir", os.path.join(self.tmp, "rout"), "--wait-eject", "0"], env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    # ── codex 1R #3: 시험 손잡이는 개발 모드 전용 · 개발 모드는 실 키 거부 · 키 생성도 매체 안 ─────────────
+    def real_env(self, **extra):
+        e = {k: v for k, v in os.environ.items() if k not in ("CYS_SIGN_DEV", "CYS_TEST_NOW", "MINISIGN",
+                                                              "CYS_SIGN_MEDIA_PREFIX")}
+        e.update(extra)
+        return e
+
+    def test_mut_handle_outside_dev(self):
+        b = self.unsigned_body()
+        for name, val in (("MINISIGN", self.mini), ("CYS_SIGN_MEDIA_PREFIX", self.tmp + "/")):
+            r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
+                     "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
+                     "--out-dir", os.path.join(self.tmp, "out")], env=self.real_env(**{name: val}))
+            self.assertEqual(r.returncode, 2, name)
+            self.assertIn("시험 손잡이 %s" % name, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
+
+    def test_mut_wait0_outside_dev(self):
+        b = self.unsigned_body()
+        r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
+                 "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
+                 "--out-dir", os.path.join(self.tmp, "out"), "--wait-eject", "0"], env=self.real_env())
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("개발 모드 전용", r.stderr)
+
+    def test_mut_dev_mode_real_key_id(self):
+        real = json.load(open(os.path.join(ROOT, "cysjavis-pack", "trusted-keys.json")))["keys"][0]["key_id"]
+        b = self.unsigned_body()
+        d = json.load(open(b))
+        d["key_id"] = real
+        json.dump(d, open(b, "w"))
+        r = self.sign(b, os.path.join(self.mnt, "u.key"), os.path.join(self.tmp, "out"))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("저장소 실 키링의 key id", r.stderr)
+
+    def second_media(self):
+        m2 = os.path.join(self.tmp, "mnt2")
+        os.makedirs(m2)
+        dmg = os.path.join(self.tmp, "m2.dmg")
+        subprocess.check_call(["hdiutil", "create", "-size", "4m", "-fs", "HFS+", "-volname", "U3FAKE2", "-quiet", dmg])
+        subprocess.check_call(["hdiutil", "attach", dmg, "-mountpoint", m2, "-nobrowse", "-quiet"])
+        self.addCleanup(subprocess.call, ["hdiutil", "detach", m2, "-quiet"])
+        return m2
+
+    def gen(self, *args, env=None):
+        return run(["bash", os.path.join(UPD, "gen-offline-key.sh")] + list(args), env=env or self.env, cwd=self.tmp)
+
+    def test_gen_key_r_two_media(self):
+        m2 = self.second_media()
+        os.remove(os.path.join(self.mnt, "r.key"))
+        pub = os.path.join(self.tmp, "new-r.pub")
+        r = self.gen("--media", self.mnt, "--name", "r", "--copy-to", m2, "--pub-out", pub)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        k1, k2 = os.path.join(self.mnt, "r.key"), os.path.join(m2, "r.key")
+        self.assertEqual(open(k1, "rb").read(), open(k2, "rb").read())
+        kid = uc.pubkey_key_id(open(pub).read())
+        self.assertIn(kid, r.stdout)
+        secret = open(k1).read().splitlines()[1]
+        for dp, _, fns in os.walk(self.tmp):
+            if dp.startswith(self.mnt) or dp.startswith(m2):
+                continue
+            for n in fns:
+                if n.endswith(".dmg"):
+                    continue
+                self.assertNotIn(secret, open(os.path.join(dp, n), errors="ignore").read(),
+                                 "개인키가 매체 밖 파일에 생김: %s" % os.path.join(dp, n))
+        # 새 키로 R 의식이 실제로 돈다(공개키 = 꺼낸 .pub)
+        msg = os.path.join(self.tmp, "m.txt")
+        open(msg, "w").write("x")
+        fm.sign(k2, msg, msg + ".minisig", "t")
+        self.assertTrue(fm.verify(pub, msg, msg + ".minisig"))
+
+    def test_mut_gen_existing_key(self):
+        r = self.gen("--media", self.mnt, "--name", "u", "--pub-out", os.path.join(self.tmp, "x.pub"))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("이미 있다", r.stderr)
+
+    def test_mut_gen_copy_to_same_media(self):
+        os.remove(os.path.join(self.mnt, "r.key"))
+        os.makedirs(os.path.join(self.mnt, "sub"))
+        pub = os.path.join(self.tmp, "new-r.pub")
+        r = self.gen("--media", self.mnt, "--name", "r", "--copy-to", os.path.join(self.mnt, "sub"), "--pub-out", pub)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("마운트 지점이 아니다", r.stderr)
+        r = self.gen("--media", self.mnt, "--name", "r", "--copy-to", self.mnt, "--pub-out", pub)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("같은 장치", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.mnt, "r.key")))
+
+    def test_mut_gen_outside_media_and_handles(self):
+        notmnt = os.path.join(self.tmp, "notmnt")
+        os.makedirs(notmnt)
+        r = self.gen("--media", notmnt, "--name", "u")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("마운트 지점이 아니다", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(notmnt, "u.key")))
+        r = self.gen("--media", self.mnt, "--name", "u", env=self.real_env(MINISIGN=self.mini))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("시험 손잡이 MINISIGN", r.stderr)
+        r = self.gen("--media", self.mnt, "--name", "u", "--copy-to", self.mnt)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("R(둘째 벌) 전용", r.stderr)
+
 
 @unittest.skipUnless(VERIFY_BIN, "U1 미머지 — CYS_UPDATE_VERIFY_BIN(디버그 cys) 없음: update-verify 왕복 미실행")
 class TestUpdateVerifyRoundTrip(Base):

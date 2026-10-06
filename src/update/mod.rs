@@ -196,7 +196,16 @@ fn check_private_sd(path: &std::path::Path, what: &str) -> Result<(), String> {
 /// ∧ 그 밖 ACE 형(개체 ACE 등) = 거부. 상속·보호 표지는 보지 않는다 — 대신 **물려받은 ACE 도 같은 주체 규칙으로 센다**(무시하면
 /// 물려받은 Everyone·Users 가 지나간다).
 pub fn sd_is_private(sddl: &str, me: &str) -> bool {
-    let me_alias: &str = if me == "S-1-5-18" { "SY" } else { me };
+    // SDDL 은 이 기계의 잘 알려진 계정을 약어로 적는다(윈 러너 실측 2런: 내장 Administrator RID 500 = `O:LA`) — 나의 약어도 나다.
+    let me_alias: &str = if me == "S-1-5-18" {
+        "SY"
+    } else if me.starts_with("S-1-5-21-") && me.ends_with("-500") {
+        "LA"
+    } else if me.starts_with("S-1-5-21-") && me.ends_with("-501") {
+        "LG"
+    } else {
+        me
+    };
     let (owner, dacl) = match (sddl.find("O:"), sddl.find("D:")) {
         (Some(o), Some(d)) if o < d => {
             let owner_end = sddl[o + 2..].find("G:").map(|g| o + 2 + g).unwrap_or(d).min(d);
@@ -282,5 +291,9 @@ mod tests {
         assert!(!p("D:(A;;FA;;;OW)", me), "소유자 칸 없음");
         assert!(!p("", me));
         assert!(p("O:SYD:(A;;FA;;;SY)", "S-1-5-18"), "SYSTEM 으로 도는 서비스");
+        let admin500 = "S-1-5-21-1643835476-1616584234-1346609752-500";
+        assert!(p("O:LAD:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)", admin500), "윈 러너 실측 2런(내장 Administrator = O:LA)");
+        assert!(p("O:LAD:(A;;FA;;;OW)(A;;FA;;;LA)", admin500));
+        assert!(!p("O:LAD:(A;;FA;;;OW)", me), "RID 500 이 아닌 나에게 LA 는 남");
     }
 }

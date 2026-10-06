@@ -6,6 +6,7 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(먼저 읽을 것)
+- ★★★★**4판 끝(12:1x · 【확인요청】 4판 · [master#4468fec2] · Fable 3R = 머지 BLOCK 0 · 소수정)** — `a0afcb09`(MAJOR-1 열거 행 outcome 중첩 + U1 소스 핀 · MAJOR-2 첫 판 seq 1 = 후보 uptodate 1행) · `c786d463`(MAJOR-3 묘비 포인터) · `d60139ff`(MINOR-2 시험 시각 env 거부 · tauri-action 주석) · 이 문서(§6 · §9-2). 게이트 = U1 HEAD `e1034052` 사본 빌드(라이브 트리 아님 · scratch `u1head` 워크트리) strict — 실측 §9-2 · ⚠MAJOR-2 의 U1 cli 쪽(「허용 출발 seq 없음」 거부 해제)은 291 몫 — 그 전까지 seq 1 시험은 U1 출력에서 그 거부만 걷는 대역으로 게이트 규칙을 잰다.
 - ★★★**3판 끝(11:4x · 【확인요청】 3판)** — 지시 = [master#9219ca05](codex 2R = `~/axdev/master/reports/REVIEW-U3-codex-2r.md` · master 가 **머지 기준**(3판 코드)과 **발행 기준**(§1 ⑥ 표)을 갈랐다) · 반영표 = **§9**(19행).
   - 커밋: `4991230b`(U1 2판 계약 · #10 · #11) · `cd4c7152`(#4·#5·#6·#8·#15·#16·#19 + 워커 502) · `d45255b9`(#3) · `90af8cd9`(#9) · `e6e7ae5c`(#13·#14 모델) · 이 문서.
   - 게이트(11:4x 실측): `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<U1 2판 디버그 cys(~/axdev/.wt/cys-118-u1 · 0fb4d824 빌드 11:07 사본 sha256 7f976fc6…)>` test_update_publish **87/0 · 건너뜀 0** · 단독 87/0 + 12 건너뜀 · test_release_verify 140/0 · nsis 컴파일 OK · 모델 39082 + ⓪-a 270(Z1~Z6) OK · lane-parity strict/self-test 0 · secret-scan clean(26 파일).
@@ -71,7 +72,7 @@
 ### ⑤ 발행 리허설 순서(태그 드라이런)
 | 단계 | 무엇 | 판정 |
 |---|---|---|
-| R0 | U1 2판 머지 → 이 가지 rebase(★U1 2판 CLI 계약 = HANDOFF-U1 ⑨·§7 ⑷: cysr 에 `--installed-release-seq` 금지 · 출발 seq = `--enumerate-installed`) → `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<머지 트리 디버그 cys> python3 scripts/tests/test_update_publish.py` · CI 맥 두 레인 초록 | 3판 = 87/0(0 건너뜀 · 실측 §0) |
+| R0 | U1 2판 머지 → 이 가지 rebase(★U1 2판 CLI 계약 = HANDOFF-U1 ⑨·§7 ⑷: cysr 에 `--installed-release-seq` 금지 · 출발 seq = `--enumerate-installed`) → `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<머지 트리 디버그 cys> python3 scripts/tests/test_update_publish.py` · CI 맥 두 레인 초록 | 4판 = 91/0(0 건너뜀 · 실측 §9-2) |
 | R1 | ①② 키 생성·키링 기입·④ 비밀·변수 | `cys build-info` keyring_ids 4 |
 | R2 | 변수 `CYSR_RELEASE_SEQ` 갱신(§1 ③ 1) 뒤 태그 → release.yml draft | 새 스텝 초록: 「CYSR_RELEASE_SEQ 정수 ≥1」(두 잡) · 맥·윈 「동봉 매니페스트 min_binary」 · pack-artifacts 「min_binary」 · 윈 「본문 재료 수집·업로드」(2판: 실패 = 릴리스 실패) |
 | R3 | 맥 로컬 빌드 zip → `scripts/update/collect-inputs.sh mac <zip> macos-arm64 inputs/` · `gh run download <run> -n update-inputs-windows-x64 -D inputs/` · draft 자산 받기 | 재료 4종(cdhash·build-info×2·payload 트리) |
@@ -138,7 +139,8 @@
 
 ## §6 미측정 · 남은 위험(정직)
 - ★3판 잔여 위험(master 결정으로 수용 · 발행 기준 표에 명시): **F 탈취 = 봉투 halt/동결 권한**(코드 설치 불가 — 본문은 U 서명이 따로 · F 로 본문 서명 = U1 거부) · 완화 = 액션 SHA 핀 · environment `feed` 브랜치 제한 · R 위임문으로 F 폐기. **R10 = 빌드 호스트 장악 시 U 안전을 주장하지 않는다**(minisign 이 이 기기 프로세스라 서명 순간 개인키가 메모리를 지난다 · 네트워크 단절 서명기/HSM 없음 · master 결정 「비용 0」).
-- S3Store(R2 조건부 PUT/DELETE · SigV4)는 **R2 실측 0** — 로컬 가짜 S3 로 의미만 잰다. 특히 R2 가 `DELETE` 의 `If-Match` 를 지키는지 미확인(첫 게시 되돌리기 = 삭제 경로) → 첫 R2 게시 전 1회 실측(빈 키에 조건부 PUT 두 번 → 둘째 412 · 조건부 DELETE 낡은 ETag → 412).
+- S3Store(R2 조건부 PUT · SigV4)는 **R2 실측 0** — 로컬 가짜 S3 로 의미만 잰다. ★4판(Fable 3R MAJOR-3): **R2 DeleteObject 는 조건부(If-Match)를 지원하지 않는다**(R2 문서) → 삭제 API 를 아예 쓰지 않고 「없앰」 = 묘비 포인터(`{"tombstone": true}`) 조건부 PUT. 첫 R2 게시 전 1회 실측 = 빈 키에 `If-None-Match: *` PUT 두 번(둘째 412) · 낡은 ETag 로 `If-Match` PUT(412).
+- BACKLOG(다음 판 · Fable 3R MINOR 9 · master 판정): restore 탈출구 입력 무검증 · 중복 revoked_releases 거부 · agora-client min_from=0 경계 · rc 5 인쇄 형식 · 묘비 위 봉투 단조 시험 · ETag `W/` 접두 · 주석 3.
 - 윈 재료 수집(무인 설치로 payload 측정)과 refresh-feed.yml 은 **러너에서 한 번도 안 돌았다**(이 기계엔 윈 실행 기층·GitHub 실행 0) — 첫 발행 리허설(§1 ⑤ R2·R6)이 첫 실측. 2판부터 윈 수집 실패 = 릴리스 실패(첫 실측에서 수집기가 틀리면 태그가 적색 — 되돌리기 = 그 스텝 수리 뒤 재태그).
 - update-worker · cf-route-probe 는 **Cloudflare 에서 한 번도 안 돌았다**(워커는 node 하네스로 같은 배치를 서빙해 잼 · 탐침의 `wrangler delete --force` 철자 미확인) — §1 ③ 0 이 첫 실측.
 - ⓪-a 의 동작 증거 = 윈 실기 8 시나리오(`WIN-NSIS-0A-FIELD.md`)가 첫 실측 — 이 기계 근거는 컴파일·소스 핀·모델(3판: ⓪-a 결정 나무 270 상태 · 손으로 맞춘 거울)뿐.
@@ -200,4 +202,15 @@
 | 워커 | 502 한쪽만 | 머지 | 포인터의 두 객체 모두 검사 · 하나라도 불일치 = 둘 다 502 · 세대 포인터 정확 키 조회(`05` 404) | `cd4c7152` | 본문 객체 변조 = [502, 502] |
 | HANDOFF | 첫 게시 `--first` 누락 | 머지 | §1 ③ 2·3 정정(게이트·게시 둘 다 · 둘째부터 없음) | 이 문서 | — |
 - 잔여(정직): S3Store = **R2 실측 0**(가짜 S3 로만) — R2 조건부 DELETE 지원 여부 미확인(§6) · 모델의 ⓪-a 는 손으로 맞춘 거울(훅을 실행하지 않음) · agora-client 열거 경계는 대역 cys 로만 쟀다(U1 실물 agora 픽스처 없음).
+
+## §9-2 Fable 3R 반영표(4판 · 원문 `~/axdev/master/reports/REVIEW-U3-fable-3r.md` · master 판정 [master#4468fec2] = 머지 BLOCK 0 · 소수정)
+| 항목 | 처방 | 커밋 | 시험 |
+|---|---|---|---|
+| MAJOR-1 열거 행 중첩 드리프트 | u1verify = 행 `outcome` 안의 판정·asset 을 읽음(없으면 GateFail) · 대역 래퍼 편집도 중첩으로 | `a0afcb09` | U1 가지 `feed::render_enum_row` 소스 핀(키 `installed_release_seq`·`outcome`) · U1 HEAD 사본 빌드 왕복 |
+| MAJOR-2 첫 판 seq 1 영원 거부 | `lo == seq` = 후보 uptodate 1행으로 통과(`lo > seq` 만 거부) · U1 cli 공동 수정 = 291 | `a0afcb09` | seq 1(min_from 0) 봉투 = 통과 · 후보 apply = 거부(U1 의 「출발 seq 없음」 거부만 대역이 걷음) |
+| MAJOR-3 R2 조건부 DELETE 미지원 | 삭제 API 제거 · 없앰 = 묘비 포인터 조건부 PUT · load 가 묘비 = 없음 · 워커 묘비 = 404 | `c786d463` | live 불일치 되돌리기 = 묘비 · 묘비 위 재게시 · rc 5 → restore = 묘비 · 가짜 S3 = DELETE 0 · 워커 [404, 404] |
+| MINOR-2 시험 시각 env | 실 의식 셸 진입에 `CYS_SIGN_DEV`·`CYS_TEST_NOW` 가 있으면(빈 값 포함) rc 2 | `d60139ff` | sign-release 3 · gen-offline-key 1 · 손잡이 핀 = 그 이름은 거부 줄에만 |
+| 주석 | tauri-action 핀 = `action-v0.6.2`(gh api 로 같은 커밋 확인) | `d60139ff` | SHA 핀 시험 |
+| MINOR 9 | 다음 판 BACKLOG(§6 1줄) | 이 문서 | — |
+- 게이트(12:1x 실측 · U1 HEAD `e1034052` 사본 빌드 sha256 `05336d34…` · 라이브 트리 아님): test_update_publish strict **91/0 · 건너뜀 0** · 단독 91/0 + 14 건너뜀 · test_release_verify 140/0 · nsis 컴파일 OK · 모델 39082 + ⓪-a 270 OK · lane-parity strict/self-test 0 · secret-scan clean(4판 변경 7 파일) · 워커 node --check OK.
 

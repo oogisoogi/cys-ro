@@ -955,15 +955,19 @@ class TestOfflineRitual(Base):
         for n in ("lib/offline-sign.sh", "sign-release.sh", "sign-revocations.sh", "gen-offline-key.sh"):
             code = "\n".join(l for l in open(os.path.join(UPD, n), encoding="utf-8").read().splitlines()
                              if not l.lstrip().startswith("#"))
-            for h in ("MINISIGN", "CYS_SIGN_MEDIA_PREFIX", "CYS_SIGN_DEV", "offline-sign-dev"):
+            for h in ("MINISIGN", "CYS_SIGN_MEDIA_PREFIX", "offline-sign-dev"):
                 self.assertNotIn(h, code, (n, h))
+            for l in code.splitlines():  # 4판: 시험 시각 손잡이 이름은 「보이면 거부」 줄에만
+                if "CYS_SIGN_DEV" in l or "CYS_TEST_NOW" in l:
+                    self.assertTrue("+x}" in l or "거부" in l, (n, l))
 
     def test_mut_real_script_ignores_handles(self):
         """실 스크립트에 손잡이를 줘도 무시된다 — 매체 부모 = /Volumes 고정이라 가짜 매체(임시 폴더) = 거부 · 산출물 0."""
         b = self.unsigned_body()
         r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
                  "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
-                 "--out-dir", os.path.join(self.tmp, "out")], env=dict(self.env, CYS_SIGN_DEV="1"))
+                 "--out-dir", os.path.join(self.tmp, "out")],
+                env=self.real_env(MINISIGN=self.mini, CYS_SIGN_MEDIA_PREFIX=self.tmp + "/"))
         self.assertEqual(r.returncode, 2)
         self.assertIn("/Volumes", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
@@ -972,9 +976,22 @@ class TestOfflineRitual(Base):
         b = self.unsigned_body()
         r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
                  "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
-                 "--out-dir", os.path.join(self.tmp, "out"), "--wait-eject", "0"], env=self.env)
+                 "--out-dir", os.path.join(self.tmp, "out"), "--wait-eject", "0"], env=self.real_env())
         self.assertEqual(r.returncode, 2)
         self.assertIn("실 의식에서 쓸 수 없다", r.stderr)
+
+    def test_mut_real_script_refuses_test_time_env(self):
+        """4판(3R MINOR-2): 실 의식 셸 진입에 CYS_SIGN_DEV·CYS_TEST_NOW 가 보이면 거부(rc 2 · 무시가 아니라)."""
+        b = self.unsigned_body()
+        for k, v in (("CYS_SIGN_DEV", "1"), ("CYS_TEST_NOW", "1790000000"), ("CYS_SIGN_DEV", "")):
+            r = run(["bash", os.path.join(UPD, "sign-release.sh"), "--body", b, "--media", self.mnt,
+                     "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring,
+                     "--out-dir", os.path.join(self.tmp, "out")], env=self.real_env(**{k: v}))
+            self.assertEqual(r.returncode, 2, k)
+            self.assertIn("시험 시각 손잡이", r.stderr)
+        r = self.gen("--media", self.mnt, "--name", "u", env=self.real_env(CYS_TEST_NOW="1"), real=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("시험 시각 손잡이", r.stderr)
 
     def test_mut_dev_lib_refuses_real_media_parent(self):
         """시험 대역도 매체 부모가 임시 폴더 밖(/Volumes)이면 거부 — 대역으로 실 매체를 여는 길 0."""

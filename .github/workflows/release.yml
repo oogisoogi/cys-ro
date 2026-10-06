@@ -1250,7 +1250,7 @@ jobs:
         #   tauri-action 이 **빈손으로 성공**하거나 재빌드를 시도한다(둘 다 거짓 초록의 경로다).
         #   Windows 레그는 이 조건과 무관하게 항상 돈다.
         if: matrix.platform != 'macos-latest' || steps.macsign.outputs.enabled == 'true'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # action-v0.6.2 (= v0 가 가리키던 커밋)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CYS_TARGET: ${{ matrix.target }}    # bundle-prep.sh가 매트릭스 타깃으로 사이드카(cys-<target>)를 크로스 빌드

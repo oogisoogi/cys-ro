@@ -19,6 +19,10 @@ _offline_prefix() { echo /Volumes; }
 # offline_dev_policy <expect_key_id|-> <wait_eject_secs> — 실 의식: 대기는 정수 ≥ 1(매체 빼기 생략 불가). 0 | 2.
 offline_dev_policy() {
   local wait="$2"
+  # 4판(Fable 3R MINOR-2): 파이썬 도구의 시험 시각 손잡이가 보이면 실 의식을 시작하지 않는다(무시가 아니라 거부 · rc 2).
+  if [ -n "${CYS_SIGN_DEV+x}" ] || [ -n "${CYS_TEST_NOW+x}" ]; then
+    echo "거부: 실 의식인데 시험 시각 손잡이(CYS_SIGN_DEV/CYS_TEST_NOW)가 환경에 있다 — 새 셸에서 다시" >&2; return 2
+  fi
   case "$wait" in ''|*[!0-9]*) echo "거부: --wait-eject 정수 아님: $wait" >&2; return 2 ;; esac
   [ "$wait" -ge 1 ] || { echo "거부: --wait-eject 0(매체 빼기 생략)은 실 의식에서 쓸 수 없다" >&2; return 2; }
   return 0

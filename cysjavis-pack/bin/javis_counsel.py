@@ -702,33 +702,45 @@ def _noreplace_fn():
     return _NOREPLACE[0]
 
 
+class NoAtomicNoReplace(OSError):
+    """원자 「있으면 실패」 rename 수단이 없다(옛 libc · 지원 안 하는 파일 시스템) — 게시하지 않는다(fail-closed)."""
+
+
+def noreplace_available():
+    """윈 = `os.rename`(MoveFileEx · 덮어쓰기 플래그 없음 = 있으면 실패) · POSIX = renamex_np/renameat2 이 있어야 참."""
+    return os.name == "nt" or _noreplace_fn() is not None
+
+
 def _rename_noreplace(src, dst):
     """`dst` 가 있으면(빈 폴더라도) FileExistsError — ★POSIX `rename` 은 빈 폴더를 조용히 덮는다.
-    윈 `os.rename`(MoveFileEx · 덮어쓰기 플래그 없음)은 원래 있으면 실패한다."""
-    if os.name != "nt":
-        fn = _noreplace_fn()
-        if fn is not None:
-            import ctypes
-            if fn(os.fsencode(src), os.fsencode(dst)) == 0:
-                return
-            err = ctypes.get_errno()
-            if err in (errno.EEXIST, errno.ENOTEMPTY):
-                raise FileExistsError(err, os.strerror(err), dst)
-            if err not in (errno.ENOSYS, errno.EINVAL, getattr(errno, "ENOTSUP", -1), getattr(errno, "EOPNOTSUPP", -1)):
-                raise OSError(err, os.strerror(err), dst)
-        if os.path.lexists(dst):   # 수단 없는 판(옛 libc · 지원 안 하는 파일 시스템) = 확인 뒤 rename
-            raise FileExistsError(errno.EEXIST, "exists", dst)
-    os.rename(src, dst)
+    ★리뷰 3R ④: 원자 수단이 없거나 그 파일 시스템이 거절하면(ENOSYS·EINVAL·ENOTSUP) NoAtomicNoReplace —
+      옛 「lexists 확인 뒤 rename」 대체 길은 확인과 rename 사이 경합이 남아 지웠다."""
+    if os.name == "nt":
+        os.rename(src, dst)
+        return
+    fn = _noreplace_fn()
+    if fn is None:
+        raise NoAtomicNoReplace(errno.ENOSYS, "no atomic no-replace rename", dst)
+    import ctypes
+    if fn(os.fsencode(src), os.fsencode(dst)) == 0:
+        return
+    err = ctypes.get_errno()
+    if err in (errno.EEXIST, errno.ENOTEMPTY):
+        raise FileExistsError(err, os.strerror(err), dst)
+    if err in (errno.ENOSYS, errno.EINVAL, getattr(errno, "ENOTSUP", -1), getattr(errno, "EOPNOTSUPP", -1)):
+        raise NoAtomicNoReplace(err, os.strerror(err), dst)
+    raise OSError(err, os.strerror(err), dst)
 
 
 def _sweep(cfg):
-    """끊긴 판의 찌꺼기(`lib.tmp-*` · `lib.old-*`) — 설치 잠금 안에서만 부른다(그 이름은 잠금 쥔 우리만 만든다)."""
+    """끊긴 판의 찌꺼기 `lib.tmp-*`(우리가 풀다 만 새 판) — 설치 잠금 안에서만 부른다(그 이름은 잠금 쥔 우리만 만든다).
+    ★`lib.old-*`(옆으로 치운 옛 판)는 치우지 않는다(리뷰 3R ④) — 게시가 끊기거나 경합이면 그것이 사용자의 유일한 옛 판이다."""
     try:
         names = os.listdir(cfg)
     except OSError:
         return
     for n in names:
-        if n.startswith(("lib.tmp-", "lib.old-")):
+        if n.startswith("lib.tmp-"):
             shutil.rmtree(os.path.join(cfg, n), ignore_errors=True)
 
 
@@ -770,6 +782,11 @@ def ensure_client(cfg=None, pack=None, wait_s=INSTALL_LOCK_WAIT_S):
         return "error"
 
 
+def _kept(old):
+    """옆으로 치운 옛 판이 남아 있으면 로그 칸 {kept_old: 이름}."""
+    return {"kept_old": os.path.basename(old)} if old and os.path.lexists(old) else {}
+
+
 def _refused(cfg, ver, why, **kw):
     log_event(cfg, "ensure-client", result="refused", why=why, want=ver, **kw)
     return "refused"
@@ -803,6 +820,9 @@ def _ensure_locked(cfg, pack, pin, blob):
             log_event(cfg, "ensure-client", result="foreign", why="modified or unknown client", want=ver,
                       have_fp=have[:16], formula=FP_FORMULA)
             return "foreign"
+    if not noreplace_available():          # ★수단 없음 = 아무것도 안 한다(풀지도 옮기지도 않는다)
+        log_event(cfg, "ensure-client", result="refused", why="no_atomic_noreplace", want=ver)
+        return "refused"
     tmp = os.path.join(cfg, "lib.tmp-%s" % secrets.token_hex(4))
     old = None
     try:
@@ -813,18 +833,22 @@ def _ensure_locked(cfg, pack, pin, blob):
             raise ValueError("unpacked fingerprint mismatch" if got != want else "bundled zip makes irregular tree")
         with open(os.path.join(tmp, ".pin"), "w", encoding="utf-8", newline="\n") as f:
             f.write("%s %s %d %s\n" % (ver, pin["sha"], pin["size"], want))
-        if replace_from is not None:       # 옛 판은 옆으로 → 새 판 게시 → 옛 판 삭제(사이에 끊기면 lib 없음 = 다음 판이 새로 깐다)
+        if replace_from is not None:       # 옛 판은 옆으로 → 새 판 게시 → 성공 때만 옛 판 삭제(끊기면 lib 없음 = 다음 판이 새로 깐다 · lib.old-* 는 남긴다)
             old = os.path.join(cfg, "lib.old-%s" % secrets.token_hex(4))
             _rename_noreplace(lib, old)
         _rename_noreplace(tmp, lib)
     except ValueError as e:
         shutil.rmtree(tmp, ignore_errors=True)
         return _refused(cfg, ver, str(e)[:120])
+    except NoAtomicNoReplace:
+        shutil.rmtree(tmp, ignore_errors=True)
+        kept = _kept(old)
+        log_event(cfg, "ensure-client", result="refused", why="no_atomic_noreplace", want=ver, **kept)
+        return "refused"
     except FileExistsError:
         shutil.rmtree(tmp, ignore_errors=True)
-        if old:
-            shutil.rmtree(old, ignore_errors=True)
-        log_event(cfg, "ensure-client", result="raced", why="lib appeared meanwhile", want=ver)
+        kept = _kept(old)                  # ★옆으로 치운 옛 판은 지우지 않는다 — 그 사이 생긴 lib 는 남의 것
+        log_event(cfg, "ensure-client", result="raced", why="lib appeared meanwhile", want=ver, **kept)
         return "raced"
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)

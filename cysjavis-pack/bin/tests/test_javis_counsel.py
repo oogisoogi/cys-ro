@@ -901,14 +901,96 @@ class Fingerprint(Base):
         self.assertEqual([n for n in os.listdir(self.cfg) if n.startswith("lib.tmp-")], [])
 
     def test_crash_between_aside_and_publish_recovers(self):
-        """옛 판을 옆으로 치운 뒤 끊김 = lib 없음 + 찌꺼기 → 다음 판이 새로 깔고 찌꺼기를 치운다."""
+        """옛 판을 옆으로 치운 뒤 끊김 = lib 없음 + 찌꺼기 → 다음 판이 새로 깐다 · lib.tmp-* 는 치우고 ★lib.old-* 는 남긴다(3R ④)."""
         new = _zip(self.NEW)
         self.put(new)
         os.makedirs(os.path.join(self.cfg, "lib.old-dead", "agora"))
         os.makedirs(os.path.join(self.cfg, "lib.tmp-dead", "bin"))
         self.assertEqual(jc.ensure_client(), "installed")
         self.assertEqual(jc.tree_fingerprint(self.lib()), jc.zip_fingerprint(new))
-        self.assertEqual(sorted(n for n in os.listdir(self.cfg) if n.startswith("lib")), ["lib", "lib.install.lock"])
+        self.assertEqual(sorted(n for n in os.listdir(self.cfg) if n.startswith("lib")),
+                         ["lib", "lib.install.lock", "lib.old-dead"])
+        self.assertTrue(os.path.isdir(os.path.join(self.cfg, "lib.old-dead", "agora")), "옆으로 치운 옛 판을 지웠다")
+
+    def test_replace_race_keeps_moved_aside_old(self):
+        """★3R ④ — 옛 판을 옆으로 옮긴 직후 남이 lib 를 만들었다 = raced · 옮긴 옛 판(lib.old-*)은 지우지 않고 로그."""
+        old = _zip(self.OLD)
+        self.unpack_like_invite(old)
+        self.known(("0.1.13", jc.zip_fingerprint(old)))
+        self.put(_zip(self.NEW))
+        real = jc._rename_noreplace
+        calls = []
+
+        def racing(src, dst):
+            real(src, dst)
+            calls.append(os.path.basename(dst))
+            if len(calls) == 1:
+                os.makedirs(self.lib())                 # lib → lib.old-* 직후 남이 빈 lib 를 만든다
+        jc._rename_noreplace = racing
+        try:
+            self.assertEqual(jc.ensure_client(), "raced")
+        finally:
+            jc._rename_noreplace = real
+        olds = [n for n in os.listdir(self.cfg) if n.startswith("lib.old-")]
+        self.assertEqual(len(olds), 1, "옮긴 옛 판을 지웠다")
+        self.assertEqual(jc.tree_fingerprint(os.path.join(self.cfg, olds[0])), jc.zip_fingerprint(old))
+        self.assertEqual(os.listdir(self.lib()), [], "남의 lib 를 건드렸다")
+        self.assertEqual([n for n in os.listdir(self.cfg) if n.startswith("lib.tmp-")], [])
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        self.assertEqual((ev[-1]["result"], ev[-1]["kept_old"]), ("raced", olds[0]))
+        self.assertEqual(jc.ensure_client(), "foreign")      # 다음 판도 옛 판을 치우지 않는다
+        self.assertEqual([n for n in os.listdir(self.cfg) if n.startswith("lib.old-")], olds)
+
+    @unittest.skipIf(os.name == "nt", "윈 = os.rename 이 원래 「있으면 실패」(수단 판정 대상 아님)")
+    def test_no_atomic_noreplace_fails_closed(self):
+        """★3R ④ — 원자 「있으면 실패」 수단 없음 = 풀지도 옮기지도 않는다 · 옛 lexists 대체 길 0."""
+        real_fn, real_extract = jc._noreplace_fn, jc._extract
+        extracted = []
+        jc._noreplace_fn = lambda: None
+        jc._extract = lambda data, dest: (extracted.append(dest), real_extract(data, dest))
+        try:
+            with self.assertRaises(jc.NoAtomicNoReplace):
+                jc._rename_noreplace(os.path.join(self.tmp, "nope-src"), os.path.join(self.tmp, "nope-dst"))
+            self.put(_zip(self.NEW))
+            self.assertEqual(jc.ensure_client(), "refused")
+            self.assertFalse(os.path.exists(self.lib()))
+            old = _zip(self.OLD)
+            self.unpack_like_invite(old)
+            self.known(("0.1.13", jc.zip_fingerprint(old)))
+            self.assertEqual(jc.ensure_client(), "refused")
+            self.assertEqual(jc.tree_fingerprint(self.lib()), jc.zip_fingerprint(old), "옛 판을 건드렸다")
+        finally:
+            jc._noreplace_fn, jc._extract = real_fn, real_extract
+        self.assertEqual([d for d in extracted if "lib.tmp-" in d], [], "수단이 없는데 풀었다")
+        self.assertEqual([n for n in os.listdir(self.cfg) if n.startswith(("lib.tmp-", "lib.old-"))], [])
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        self.assertEqual([e["why"] for e in ev[-2:]], ["no_atomic_noreplace"] * 2)
+
+    @unittest.skipIf(os.name == "nt", "POSIX libc 경로")
+    def test_noreplace_unsupported_fs_fails_closed(self):
+        """수단은 있는데 그 파일 시스템이 거절(ENOSYS·EINVAL·ENOTSUP) = NoAtomicNoReplace · lib 무접촉."""
+        import ctypes
+        import errno as _errno
+        real_fn = jc._noreplace_fn
+        for err in (_errno.ENOSYS, _errno.EINVAL, getattr(_errno, "ENOTSUP", _errno.EINVAL)):
+            def fake(a, b, err=err):
+                ctypes.set_errno(err)
+                return -1
+            jc._noreplace_fn = lambda: fake
+            try:
+                shutil.rmtree(self.cfg, ignore_errors=True)
+                shutil.rmtree(os.path.join(self.pack, "install"), ignore_errors=True)
+                old = _zip(self.OLD)
+                self.unpack_like_invite(old)
+                self.known(("0.1.13", jc.zip_fingerprint(old)))
+                self.put(_zip(self.NEW))
+                self.assertEqual(jc.ensure_client(), "refused", err)
+            finally:
+                jc._noreplace_fn = real_fn
+            self.assertEqual(jc.tree_fingerprint(self.lib()), jc.zip_fingerprint(old), err)
+            self.assertEqual([n for n in os.listdir(self.cfg) if n.startswith(("lib.tmp-", "lib.old-"))], [], err)
+            ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+            self.assertEqual(ev[-1]["why"], "no_atomic_noreplace", err)
 
 
 class TickCap(Base):

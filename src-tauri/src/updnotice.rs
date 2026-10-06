@@ -17,6 +17,11 @@
 //!   ④ 표시 뒤 `last_notified_result_id = result_id` 원자 기록.
 //!   ③~④ 사이에 죽으면 다음 기동 때 `shown_count` 를 보고 **최대 1번 더**(합계 ≤ 2) 보여 주고 ④ 로 닫는다.
 //!   롤백 실패만 닫힌 뒤에도 **하루 1회** 다시 보여 준다(`rollback_failed_last_shown_at` — 이것도 표시 전에 기록).
+//!
+//! ★(2판 · codex 1R ①) 장부의 읽기→판정→쓰기는 **한 덩어리로 직렬화**한다 — 프로세스 안 뮤텍스 + 상태 폴더의 `app-notify.lock`
+//!   파일 잠금(`File::lock` · 다른 앱 인스턴스까지). 임시 파일은 호출마다 `create_new` 로 새 이름을 쓴다(고정 PID 이름은 두 호출이
+//!   서로의 임시 파일을 truncate 한다 — `src/pack.rs` 의 같은 꼴 실사고). 병렬 두 호출이 둘 다 `shown_count=0` 을 읽어
+//!   합계 2 를 넘기는 길이 이것으로 닫힌다.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,8 +35,11 @@ pub const ACK_FILE: &str = "app-notify.json";
 pub const MAX_SHOWS: u32 = 2;
 /// 롤백 실패 재안내 간격(초) — 하루 1회.
 pub const ROLLBACK_FAILED_REPEAT_SECS: i64 = 86_400;
-/// 릴리스 노트(`notes_ko`) 표시 상한(글자).
-pub const NOTES_MAX_CHARS: usize = 300;
+/// 릴리스 노트(`notes_ko`) 표시 상한(글자) — 설계 §6-1 「문자열 ≤80자 · 알림 1줄」 · 발행·검증 쪽 `cys::update::feed::NOTES_MAX_CHARS` 와 같은 값
+/// (아래 시험이 두 값을 대조한다 · codex 1R ⑥).
+pub const NOTES_MAX_CHARS: usize = 80;
+/// 앱 장부 직렬화용 잠금 파일(앱만 쓴다 · 내용 없음) — codex 1R ① 처방(읽기→판정→쓰기 한 덩어리).
+pub const LOCK_FILE: &str = "app-notify.lock";
 
 /// 토스트 id — 롤백 실패만 안내용 수명(10분)·만료 배너를 받는다(ui/src/toastttl.ts 의 정확 일치 목록과 값이 같다).
 pub const TOAST_ID_RESULT: &str = "update-result";
@@ -137,17 +145,15 @@ pub fn is_forbidden_char(c: char) -> bool {
         )
 }
 
-/// `notes_ko` 검증 — 금지 글자가 하나라도 있으면 **통째로 거부**(None · 고쳐서 보여 주지 않는다) · 앞뒤 공백 뒤 빈 값·상한 초과도 None.
+/// `notes_ko` 검증 — 발행·검증 쪽 판정(`cys::update::feed::check_notes_ko` — ≤80자 · 제어문자 0 · 금지 어휘 0 · 비어 있지 않음)을
+/// **그대로 한 벌** 쓰고, 화면에는 줄 나눔·방향 바꿈 글자까지 더 막는다. 하나라도 걸리면 **통째로 거부**(None · 고쳐서 보여 주지 않는다).
 pub fn sanitize_notes(n: Option<&str>) -> Option<&str> {
     let n = n?;
-    if n.chars().any(is_forbidden_char) {
+    if cys::update::feed::check_notes_ko(n).is_err() || n.chars().any(is_forbidden_char) {
         return None;
     }
     let t = n.trim();
-    if t.is_empty() || t.chars().count() > NOTES_MAX_CHARS {
-        return None;
-    }
-    Some(t)
+    (!t.is_empty() && t.chars().count() <= NOTES_MAX_CHARS).then_some(t)
 }
 
 fn toast_for(kind: Kind, result_id: &str, last: &Value) -> Toast {
@@ -158,7 +164,8 @@ fn toast_for(kind: Kind, result_id: &str, last: &Value) -> Toast {
                 None => TEXT_OK.to_string(),
             };
             if let Some(n) = sanitize_notes(last.get("notes_ko").and_then(Value::as_str)) {
-                body.push('\n');
+                // 알림 1줄(설계 §6-1) — 줄바꿈 없이 같은 줄에 잇는다.
+                body.push(' ');
                 body.push_str(NOTES_LEAD);
                 body.push_str(n);
             }
@@ -182,6 +189,10 @@ pub fn plan(state: &Value, ack: &Ack, now: i64) -> Plan {
     let Some(kind) = last.get("kind").and_then(Value::as_str).and_then(Kind::parse) else {
         return Plan::Nothing;
     };
+    // 필수 칸 `release_seq`(설계 §3-12 last_result 정의) — 정수 ≥1 이 아니면 결과 기록으로 믿지 않는다(codex 1R ⑤).
+    if last.get("release_seq").and_then(Value::as_u64).filter(|n| *n >= 1).is_none() {
+        return Plan::Nothing;
+    }
     // 이미 닫힌 결과 — 롤백 실패만 하루 1회 다시(그 밖은 끝).
     if ack.last_notified_result_id.as_deref() == Some(result_id) {
         if kind != Kind::RollbackFailed {
@@ -250,9 +261,13 @@ pub fn read_ack(dir: &Path) -> Ack {
 pub fn write_ack(dir: &Path, ack: &Ack) -> std::io::Result<()> {
     use std::io::Write;
     let bytes = serde_json::to_vec(ack).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let tmp = dir.join(format!(".{ACK_FILE}.tmp-{}", std::process::id()));
+    // 호출마다 새 이름(pid · 단조 일련 · 나노초) + create_new — 남의 임시 파일을 열어 truncate 하지 않는다.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let tmp = dir.join(format!(".{ACK_FILE}.tmp-{}-{seq}-{nanos}", std::process::id()));
     let res = (|| {
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         f.write_all(&bytes)?;
         f.sync_all()?;
         drop(f);
@@ -267,20 +282,36 @@ pub fn write_ack(dir: &Path, ack: &Ack) -> std::io::Result<()> {
     res
 }
 
+/// 장부 임계 구역 — 프로세스 안 뮤텍스 + `app-notify.lock` 배타 파일 잠금(블로킹) 안에서 `f` 를 돈다. 잠금을 못 잡으면 Err(호출부 = 아무것도 안 함).
+fn with_ack_lock<T>(dir: &Path, f: impl FnOnce() -> T) -> std::io::Result<T> {
+    static ACK_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = ACK_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let lf = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(LOCK_FILE))?;
+    lf.lock()?;
+    let out = f();
+    let _ = lf.unlock();
+    Ok(out)
+}
+
 /// ①② 집행 — 판정하고, 보여 줄 것이면 **표시 전에** 장부를 기록한 뒤 토스트를 돌려준다.
 /// 기록이 실패하면 보여 주지 않는다(None) — 기록 없이 보여 주면 「중복 ≤ 1」 상한이 사라진다.
 /// 이미 최대 횟수면 ④ 로 닫고 None.
 pub fn take_at(dir: &Path, now: i64) -> Option<Toast> {
+    // 판정할 것이 없으면 잠금 파일도 만들지 않는다(갱신 기록이 없는 기기의 상태 폴더를 건드리지 않게).
     let state = read_state(dir).ok()??;
-    let ack = read_ack(dir);
-    match plan(&state, &ack, now) {
-        Plan::Nothing => None,
-        Plan::Close { result_id } => {
-            let _ = write_ack(dir, &close(&ack, &result_id));
-            None
+    with_ack_lock(dir, || {
+        let ack = read_ack(dir);
+        match plan(&state, &ack, now) {
+            Plan::Nothing => None,
+            Plan::Close { result_id } => {
+                let _ = write_ack(dir, &close(&ack, &result_id));
+                None
+            }
+            Plan::Show { ack: next, toast } => write_ack(dir, &next).ok().map(|_| toast),
         }
-        Plan::Show { ack: next, toast } => write_ack(dir, &next).ok().map(|_| toast),
-    }
+    })
+    .ok()
+    .flatten()
 }
 
 /// ④ 집행 — 표시 뒤 닫기. 형식이 틀린 id 는 기록하지 않는다.
@@ -288,7 +319,7 @@ pub fn done_at(dir: &Path, result_id: &str) -> bool {
     if !valid_result_id(result_id) {
         return false;
     }
-    write_ack(dir, &close(&read_ack(dir), result_id)).is_ok()
+    with_ack_lock(dir, || write_ack(dir, &close(&read_ack(dir), result_id)).is_ok()).unwrap_or(false)
 }
 
 /// 📌18 집행 — 판독 불가·없음 = None.
@@ -357,6 +388,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// ② 가 실패하면 ③ 도 없다(잠금은 잡히는데 장부 쓰기만 실패 — 장부 자리에 비지 않은 폴더 · 2판: 아래 읽기 전용 시험은 잠금 단계에서 먼저 끝나
+    /// 이 경로를 밟지 않으므로 따로 둔다 · 뮤턴트 M7).
+    #[test]
+    fn no_show_when_only_the_ledger_write_fails() {
+        let d = tmpdir("ackdir");
+        put_state(&d, &st("r-1", "ok"));
+        std::fs::create_dir_all(d.join(ACK_FILE).join("x")).unwrap();
+        assert_eq!(take_at(&d, 5), None, "장부를 못 쓰면(rename 실패) 보여 주지 않는다");
+        assert!(d.join(LOCK_FILE).exists(), "잠금 단계는 지났다(이 시험이 쓰기 실패 경로를 밟는다는 증거)");
+        let stray: Vec<_> = std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".tmp-")).collect();
+        assert!(stray.is_empty(), "실패한 임시 파일은 지운다: {stray:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// ② 가 실패하면 ③ 도 없다 — 기록 없이 보여 주면 상한이 사라진다.
     #[cfg(unix)]
     #[test]
@@ -406,6 +451,90 @@ mod tests {
         assert!(!done_at(&std::env::temp_dir(), "a/b"), "④ 도 형식이 틀린 id 는 쓰지 않는다");
     }
 
+    /// 필수 칸 `release_seq` — 정수 ≥1 만 결과 기록으로 믿는다(codex 1R ⑤ · 반례 = 누락·0·음수·문자열·소수).
+    #[test]
+    fn release_seq_must_be_a_positive_integer() {
+        let mk = |seq: Option<Value>| {
+            let mut last = json!({"result_id": "r-1", "kind": "ok"});
+            if let Some(v) = seq {
+                last["release_seq"] = v;
+            }
+            json!({"last_result": last})
+        };
+        let a = Ack::default();
+        for (why, seq) in [("누락", None), ("0", Some(json!(0))), ("음수", Some(json!(-1))), ("문자열", Some(json!("7"))), ("소수", Some(json!(1.5))), ("null", Some(Value::Null))] {
+            assert_eq!(plan(&mk(seq), &a, 0), Plan::Nothing, "release_seq {why} = 알림 0");
+        }
+        assert!(matches!(plan(&mk(Some(json!(1))), &a, 0), Plan::Show { .. }), "1 = 통과");
+        assert!(matches!(plan(&mk(Some(json!(u64::MAX))), &a, 0), Plan::Show { .. }), "큰 정수 = 통과");
+    }
+
+    /// ★(2판 · codex 1R ①) 병렬 경쟁 — 같은 결과를 여러 호출이 동시에 집어도(배리어로 한꺼번에 출발) 표시 합계 ≤ 2 · 장부는 언제나 유효 JSON ·
+    /// 임시 파일 잔존 0. 잠금(읽기→판정→쓰기 직렬화)이 없으면 모두가 shown_count=0 을 읽어 한 판에 여럿이 보여 준다(뮤턴트 M11 적색).
+    #[test]
+    fn parallel_takes_never_show_more_than_twice_and_keep_the_ledger_valid() {
+        const THREADS: usize = 8;
+        for round in 0..12 {
+            let d = tmpdir(&format!("race-tt-{round}"));
+            put_state(&d, &st(&format!("r-{round}"), "ok"));
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+            let shown: usize = (0..THREADS)
+                .map(|_| {
+                    let (d, b) = (d.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        take_at(&d, 1).is_some() as usize
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .sum();
+            assert!(shown >= 1 && shown <= MAX_SHOWS as usize, "판 {round}: 병렬 {THREADS} 호출의 표시 합계 = {shown}(1~2 여야 한다)");
+            let raw = std::fs::read(d.join(ACK_FILE)).unwrap();
+            let a: Ack = serde_json::from_slice(&raw).expect("장부가 유효 JSON 이어야 한다(서로 truncate 금지)");
+            assert!(a.pending_notification.map(|p| p.shown_count).unwrap_or(MAX_SHOWS) <= MAX_SHOWS);
+            let stray: Vec<_> = std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".tmp-")).collect();
+            assert!(stray.is_empty(), "임시 파일 잔존: {stray:?}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// ★(2판 · codex 1R ①) take 와 done 이 겹쳐도 — 「여러 번의 기동」을 병렬로 흉내 내 표시 합계 ≤ 2 · 장부 유효 JSON.
+    #[test]
+    fn parallel_take_and_done_keep_the_total_at_most_two() {
+        for round in 0..8 {
+            let d = tmpdir(&format!("race-td-{round}"));
+            let id = format!("r-{round}");
+            put_state(&d, &st(&id, "installed_revoked"));
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let shown: usize = (0..8)
+                .map(|i| {
+                    let (d, b, id) = (d.clone(), barrier.clone(), id.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        if i % 2 == 0 {
+                            take_at(&d, 1).is_some() as usize
+                        } else {
+                            done_at(&d, &id);
+                            0
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .sum();
+            assert!(shown <= MAX_SHOWS as usize, "판 {round}: take/done 겹침의 표시 합계 = {shown}");
+            let a: Ack = serde_json::from_slice(&std::fs::read(d.join(ACK_FILE)).unwrap()).expect("유효 JSON");
+            // 끝난 뒤 다시 기동해도 닫혔거나(=0) 상한 안에서만 더 보인다
+            let more = (0..4).filter(|_| take_at(&d, 2).is_some()).count();
+            let first = a.pending_notification.as_ref().map(|p| p.shown_count as usize).unwrap_or(0);
+            assert!(shown + more <= MAX_SHOWS as usize || a.last_notified_result_id.as_deref() == Some(id.as_str()) && more == 0, "판 {round}: 합계 {shown}+{more} (대기 {first})");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
     /// 판 표시 — 숫자 마디만 · 아니면 괄호째 뺀다.
     #[test]
     fn version_is_shown_only_when_it_looks_like_a_version() {
@@ -420,7 +549,7 @@ mod tests {
         }
     }
 
-    /// `notes_ko` — 금지 글자(제어·줄 나눔·방향 바꿈)가 하나라도 있으면 통째로 거부 · 정상이면 둘째 줄에.
+    /// `notes_ko` — 금지 글자(제어·줄 나눔·방향 바꿈)·금지 어휘가 하나라도 있으면 통째로 거부 · 80자 상한 · 정상이면 **같은 줄**에(설계 §6-1 「알림 1줄」).
     #[test]
     fn notes_with_control_chars_are_refused_whole() {
         let mk = |n: &str| json!({"last_result": {"result_id": "r", "kind": "ok", "release_seq": 1, "notes_ko": n}});
@@ -428,12 +557,18 @@ mod tests {
             Plan::Show { toast, .. } => toast.body,
             p => panic!("{p:?}"),
         };
-        assert_eq!(body("  창 정렬이 빨라졌어요  "), format!("{TEXT_OK}\n{NOTES_LEAD}창 정렬이 빨라졌어요"));
+        assert_eq!(body("  창 정렬이 빨라졌어요  "), format!("{TEXT_OK} {NOTES_LEAD}창 정렬이 빨라졌어요"));
+        assert!(!body("창 정렬이 빨라졌어요").contains('\n'), "알림은 한 줄 — 노트를 붙여도 줄바꿈 0");
+        for bad_word in ["오류 수정", "실패 줄임", "위험 제거", "손상 복구", "경고 정리"] {
+            assert_eq!(body(bad_word), TEXT_OK, "금지 어휘 = 통째 거부: {bad_word}");
+        }
         for bad in ["a\nb", "a\rb", "a\u{0}b", "a\u{1b}[31mb", "a\u{7f}b", "a\u{85}b", "a\u{2028}b", "a\u{2029}b", "a\u{202E}b", "a\u{2066}b", "a\u{200F}b", "a\u{061C}b", "\t", "   "] {
             assert_eq!(body(bad), TEXT_OK, "거부돼야 한다: {bad:?}");
         }
-        assert_eq!(body(&"가".repeat(NOTES_MAX_CHARS)).chars().count(), TEXT_OK.chars().count() + 1 + NOTES_LEAD.chars().count() + NOTES_MAX_CHARS);
-        assert_eq!(body(&"가".repeat(NOTES_MAX_CHARS + 1)), TEXT_OK, "상한 초과 = 거부");
+        assert_eq!(NOTES_MAX_CHARS, 80, "설계 §6-1 notes_ko ≤80자");
+        assert_eq!(NOTES_MAX_CHARS, cys::update::feed::NOTES_MAX_CHARS, "발행·검증 쪽 상한과 같은 값");
+        assert_eq!(body(&"가".repeat(80)).chars().count(), TEXT_OK.chars().count() + 1 + NOTES_LEAD.chars().count() + 80, "80자 = 통과");
+        assert_eq!(body(&"가".repeat(81)), TEXT_OK, "81자 = 거부(codex 1R ⑥ 반례)");
         // 노트는 성공 알림에만 붙는다
         let rb = json!({"last_result": {"result_id": "r", "kind": "rollback_ok", "release_seq": 1, "notes_ko": "x"}});
         assert!(matches!(plan(&rb, &Ack::default(), 0), Plan::Show { toast, .. } if toast.body == TEXT_ROLLBACK_OK));
@@ -489,7 +624,7 @@ mod tests {
         let names: Vec<String> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         let mut names = names;
         names.sort();
-        assert_eq!(names, vec![ACK_FILE.to_string(), STATE_FILE.to_string()], "임시 파일이 남지 않는다");
+        assert_eq!(names, vec![ACK_FILE.to_string(), LOCK_FILE.to_string(), STATE_FILE.to_string()], "임시 파일이 남지 않는다(장부·잠금·상태 셋뿐)");
         // 깨진 장부는 빈 장부로 읽고 다음 쓰기가 통째로 바꾼다
         std::fs::write(d.join(ACK_FILE), b"garbage").unwrap();
         assert_eq!(read_ack(&d), Ack::default());

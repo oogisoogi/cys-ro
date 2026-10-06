@@ -10343,6 +10343,29 @@ exit 0
         assert!(code.contains("o.custom_flags(FILE_ATTRIBUTE_TEMPORARY);"), "설치 파일을 임시 속성으로 만들지 않는다(플러그인의 tempfile 과 다르다)");
     }
 
+    /// ★(1.1.8 U4 2판 · codex 1R ③ · master#f69113b1) 맥 교체 부품의 주인은 라이브러리 하나다(설계 §5-1 「옮긴다」 → `src/update/mac.rs`).
+    /// U4 는 앱 쪽 집행 함수만 지웠고 `src-tauri/src/macupdate.rs` + `mod macupdate;` 는 U2 병합 통합 커밋(master)이 거둔다 — 그 일이
+    /// 「병합 때 거둠」 이라는 문장으로만 남지 않게 이 핀이 **조건부로 켜진다**(무시 표지 없음):
+    ///   · 라이브러리에 `src/update/mac.rs` 가 **있으면**(= U2 병합 뒤): 앱 트리에 `src/macupdate.rs` 파일·`mod macupdate;` 선언이 없어야 한다(두 벌 = 적색).
+    ///   · **없으면**(= 지금 · U2 병합 전): 앱 쪽 macupdate 는 호출부 0 이어야 한다(되살아난 앱 집행 경로 = 적색).
+    #[test]
+    fn macupdate_lives_only_in_the_library_after_u2_merge() {
+        let app_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let lib_mac = app_root.join("../src/update/mac.rs");
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let code = wu_code(prod);
+        if lib_mac.exists() {
+            assert!(
+                !app_root.join("src/macupdate.rs").exists(),
+                "U2 병합 뒤에도 src-tauri/src/macupdate.rs 가 남았다 — 라이브러리 src/update/mac.rs 와 두 벌(설계 §5-1 단일 주인 위반 · HANDOFF-U4 §1 삭제 줄)"
+            );
+            assert!(!code.contains("mod macupdate;"), "U2 병합 뒤에도 앱 main.rs 에 `mod macupdate;` 선언이 남았다");
+        } else {
+            assert!(!code.contains("macupdate::"), "앱 쪽 macupdate 호출부가 되살아났다 — 1.1.8 앱은 갱신을 집행하지 않는다(설계 §5-1)");
+        }
+    }
+
     // HUD-2: open_url 화이트리스트 — https·허용 도메인만 통과, 위장 host(userinfo/서브도메인 사칭) 차단.
     #[test]
     fn open_url_whitelist_blocks_spoofed_and_nonhttps() {

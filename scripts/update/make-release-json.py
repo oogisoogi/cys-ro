@@ -25,7 +25,6 @@ import argparse
 import json
 import os
 import sys
-import time
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,7 +61,9 @@ def read_sums(path):
 
 
 def payload_manifest(root):
-    """설치 폴더에 놓일 모든 파일 {path, size, sha256}(경로 = '/' 구분 상대 경로 · 정렬). 심링크·특수 파일 = 거부."""
+    """설치 폴더에 놓일 모든 파일 {path, size, sha256}(경로 = '/' 구분 상대 경로 · 정렬). 심링크·특수 파일 = 거부.
+    제외 = scripts/update/payload-exclude.txt 의 명시 규칙만(U2 S9b 와 공유 · codex 1R #18)."""
+    excl = uc.load_payload_excludes()
     rows = []
     root = os.path.abspath(root)
     if not os.path.isdir(root):
@@ -76,6 +77,10 @@ def payload_manifest(root):
             if os.path.islink(p) or not os.path.isfile(p):
                 raise uc.PublishError("payload 안 심링크·특수 파일: %s" % p)
             rel = os.path.relpath(p, root).replace(os.sep, "/")
+            if rel.lower() in excl:
+                if rel.lower() == "cys-install-failure.txt":
+                    raise uc.PublishError("payload 에 설치 실패 기록이 있다(실패한 설치): %s" % p)
+                continue
             rows.append({"path": rel, "size": os.path.getsize(p), "sha256": uc.sha256_file(p)})
     if not rows:
         raise uc.PublishError("payload 비었음: %s" % root)
@@ -147,7 +152,7 @@ def build(args):
         if sums.get(fn) != h:
             raise uc.PublishError("SHA256SUMS ↔ 잰 값 불일치(또는 목록 밖): %s" % fn)
         url = urls_in.get(t) or uc.asset_url(args.version, fn)
-        if not uc.url_ok(url, ("asset", "site")):
+        if not uc.url_ok_for(args.component, "asset", url):
             raise uc.PublishError("자산 url 규칙 밖(§4-4): %s" % url)
         row = {"url": url, "size": os.path.getsize(p), "sha256": h, "target": t,
                "release_seq": args.release_seq, "features": [], "build_id": ""}
@@ -191,7 +196,7 @@ def build(args):
             if sums.get(sigf) is None:
                 raise uc.PublishError("윈 행 %s A2 서명이 SHA256SUMS 목록 밖: %s" % (t, sigf))
             su = uc.asset_url(args.version, sigf)
-            if not uc.url_ok(su, ("asset",)):
+            if not uc.url_ok_for(args.component, "a2_sig", su):
                 raise uc.PublishError("a2_sig_url 규칙 밖: %s" % su)
             row["a2_sig_url"] = su
             if t not in pdirs:
@@ -216,7 +221,7 @@ def build(args):
         "release_seq": args.release_seq,
         "version": args.version,
         "key_id": args.key_id,
-        "signed_at": int(args.signed_at if args.signed_at is not None else time.time()),
+        "signed_at": uc.trusted_now(),
         "min_from_release_seq": args.min_from_release_seq,
         "requires": requires,
         "state_migration": args.state_migration,
@@ -234,7 +239,6 @@ def main(argv=None):
     ap.add_argument("--state-migration", required=True)
     ap.add_argument("--notes-ko", required=True)
     ap.add_argument("--key-id", required=True, help="U 키 key id(서명 의식이 같은 키인지 대조한다)")
-    ap.add_argument("--signed-at", type=int, default=None)
     ap.add_argument("--requires-min-binary-for-pack", default=None)
     ap.add_argument("--requires-min-cysr-release-seq", type=int, default=None)
     ap.add_argument("--requires-python", default=None)

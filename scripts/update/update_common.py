@@ -8,9 +8,14 @@
 잡는다(생산자 검사 통과 · 검증기 거부 = 게이트 실패). 규칙 원문 = 설계 §4-4 표 · §6-1 표 · §3-12.
 """
 import base64
+import calendar
+import email.utils
 import hashlib
 import json
+import os
 import re
+import time
+import urllib.request
 
 COMPONENTS = ("cysr", "agora-client")
 CHANNELS = ("stable", "next")
@@ -43,6 +48,12 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 DR_PIN_ID_CYS_LOCAL = "a426231e7dc737ee1d74962b346c23d3acacb18d"
 # A2(윈 자산 · 기존 TAURI_SIGNING_PRIVATE_KEY) key id — tauri.conf.json plugins.updater.pubkey 에서 파생(§4-1 · §5-3).
 A2_KEY_ID = "831CA9172204E93E"
+
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+# 통과 증표의 검증기 이름(증표 읽는 쪽이 기대값으로 대조).
+STAMP_BY_U1 = "cys update-verify"
+STAMP_BY_PY = "scripts/update/minisign_verify.py"
 
 
 class PublishError(Exception):
@@ -80,6 +91,31 @@ def url_ok(url, hops):
     if "asset" in hops and host == ASSET_HOST and ASSET_PATH_RE.match(path):
         return True
     return False
+
+
+# component 별 자산 홉 — U1 feed.rs ⓜ 와 1:1(codex 1R #12): cysr = github 1홉만 · agora-client = 사이트(/install zip)만.
+ASSET_HOPS = {"cysr": ("asset",), "agora-client": ("site",)}
+
+
+def url_ok_for(component, field, url):
+    """`field` = asset | a2_sig. 벡터 = scripts/update/url-vectors.json(U1 과 공유)."""
+    if field == "a2_sig":
+        return component == "cysr" and url_ok(url, ("asset",))
+    return url_ok(url, ASSET_HOPS.get(component, ()))
+
+
+def load_payload_excludes(path=None):
+    p = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "payload-exclude.txt")
+    out = {}
+    for line in open(p, encoding="utf-8"):
+        line = line.rstrip("\n")
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if " # " not in line:
+            raise PublishError("payload-exclude 줄에 사유(' # ') 없음: %r" % line)
+        rel, why = line.split(" # ", 1)
+        out[rel.strip().lower()] = why.strip()
+    return out
 
 
 def asset_url(version, filename):
@@ -184,10 +220,102 @@ def keys_by_purpose(keyring, purpose):
     return out
 
 
-def find_key(keyring, purpose, key_id):
+def _not_after_epoch(k):
+    try:
+        return calendar.timegm(time.strptime(k.get("not_after") or "", "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        raise PublishError("키 %s not_after 부재·형식(RFC3339 Z)" % k.get("key_id"))
+
+
+def find_key(keyring, purpose, key_id, now=None):
+    """용도·폐기·**만료**(codex 1R #15 · U1 keys.rs find 와 같은 규칙: now ≥ not_after = 거부)를 따져 키 1개."""
+    if key_id in keyring.get("revoked_key_ids", []):
+        raise PublishError("폐기된 key_id %s" % key_id)
     for k in keys_by_purpose(keyring, purpose):
         if k["key_id"] == key_id:
-            if key_id in keyring.get("revoked_key_ids", []):
-                raise PublishError("폐기된 key_id %s" % key_id)
+            if (now if now is not None else int(time.time())) >= _not_after_epoch(k):
+                raise PublishError("만료된 키 %s(not_after %s)" % (key_id, k.get("not_after")))
             return k
     raise PublishError("키링에 %s 용도 key_id %s 없음" % (purpose, key_id))
+
+
+# ── 개발(시험) 모드 · 신뢰 시각 ─────────────────────────────────────────────────────
+def dev_mode():
+    """CYS_SIGN_DEV=1 = 시험 전용 모드(가짜 minisign·가짜 매체·NOW 덮어쓰기 허용 · 실 키 서명 거부 — codex 1R #3)."""
+    return os.environ.get("CYS_SIGN_DEV") == "1"
+
+
+TIME_SOURCE = "https://%s/" % SITE_HOST
+MAX_CLOCK_SKEW_SECS = 300
+
+
+def trusted_now():
+    """서명 시각(codex 1R #15 — 생성기는 signed_at 을 인자로 받지 않는다): 벽시계를 HTTPS 응답 Date 와 대조해 5분 넘게
+    다르면 거부(U1 N13 과 같은 생각 · 발행 쪽은 더 엄격). 대조 못 하면(오프라인) 거부 — 서명 의식은 온라인 기기에서 한다.
+    개발 모드만 `CYS_TEST_NOW` 덮어쓰기·대조 생략."""
+    if dev_mode():
+        v = os.environ.get("CYS_TEST_NOW")
+        return int(v) if v else int(time.time())
+    now = int(time.time())
+    try:
+        req = urllib.request.Request(TIME_SOURCE, method="HEAD")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            date = r.headers.get("Date")
+    except Exception as e:
+        raise PublishError("신뢰 시각 대조 불가(%s 응답 없음: %s) — 네트워크 연결 뒤 다시" % (TIME_SOURCE, e))
+    if not date:
+        raise PublishError("신뢰 시각 대조 불가(Date 헤더 없음)")
+    remote = int(calendar.timegm(email.utils.parsedate_tz(date)[:9]))
+    if abs(remote - now) > MAX_CLOCK_SKEW_SECS:
+        raise PublishError("벽시계 의심: 이 기기 %d ↔ HTTPS Date %d (차 %d초 > %d)" % (now, remote, now - remote, MAX_CLOCK_SKEW_SECS))
+    return now
+
+
+def check_signed_at(signed_at, now, prev_signed_at=None, what="signed_at"):
+    """미래 시각(1분 넘게) · 직전 서명 시각 역행 거부(codex 1R #15)."""
+    if not isinstance(signed_at, int):
+        raise PublishError("%s 정수 아님" % what)
+    if signed_at > now + 60:
+        raise PublishError("%s %d 가 미래(지금 %d)" % (what, signed_at, now))
+    if prev_signed_at is not None and signed_at <= int(prev_signed_at):
+        raise PublishError("%s %d ≤ 직전 %d (시각 역행)" % (what, signed_at, int(prev_signed_at)))
+
+
+# ── 암호 검증 + 통과 증표(codex 1R #4) ───────────────────────────────────────────────
+def verify_sig(keyring, purpose, key_id, data, sig_text, now):
+    """키링의 `purpose` 키(만료·폐기 반영)로 minisign 서명을 **암호 검증**. 서명 key id = 기대 key id 도 강제."""
+    import minisign_verify as mv
+    k = find_key(keyring, purpose, key_id, now)
+    try:
+        got = mv.verify(k["pubkey"], data, sig_text)
+    except mv.VerifyFail as e:
+        raise PublishError("%s 서명 검증 실패(key %s): %s" % (purpose, key_id, e))
+    if got != key_id:
+        raise PublishError("서명 key id %s ≠ 기대 %s" % (got, key_id))
+    return got
+
+
+def stamp_path(doc_path):
+    return doc_path + ".verified.json"
+
+
+def write_stamp(doc_path, sig_bytes, key_id, purpose, by, now, extra=None):
+    """통과 증표 = 검증한 **바이트**의 sha256(본문·서명) + 키 id + 용도 + 시각 + 검증기. 게시기는 이것이 지금 파일과 같을 때만 쓴다."""
+    st = {"doc_sha256": sha256_bytes(open(doc_path, "rb").read()), "sig_sha256": sha256_bytes(sig_bytes),
+          "key_id": key_id, "purpose": purpose, "verified_at": now, "by": by}
+    st.update(extra or {})
+    with open(stamp_path(doc_path), "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, sort_keys=True)
+    return st
+
+
+def read_stamp(doc_path, doc_bytes, sig_bytes, by=None):
+    try:
+        st = json.load(open(stamp_path(doc_path), encoding="utf-8"))
+    except (OSError, ValueError):
+        raise PublishError("검증 증표 없음: %s (발행 게이트를 먼저 통과시켜라)" % stamp_path(doc_path))
+    if st.get("doc_sha256") != sha256_bytes(doc_bytes) or st.get("sig_sha256") != sha256_bytes(sig_bytes):
+        raise PublishError("검증 증표가 지금 파일과 다르다(검증 뒤 바뀜): %s" % doc_path)
+    if by and st.get("by") != by:
+        raise PublishError("검증 증표의 검증기 %r ≠ 기대 %r" % (st.get("by"), by))
+    return st

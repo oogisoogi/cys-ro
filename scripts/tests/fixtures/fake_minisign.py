@@ -21,60 +21,10 @@ import hashlib
 import os
 import sys
 
-# ── RFC 8032 §6 참조 구현(느리지만 정확 · 시험용) ─────────────────────────────────────
-_p = 2 ** 255 - 19
-_L = 2 ** 252 + 27742317777372353535851937790883648493
-_d = -121665 * pow(121666, _p - 2, _p) % _p
-_I = pow(2, (_p - 1) // 4, _p)
-
-
-def _xrecover(y):
-    xx = (y * y - 1) * pow(_d * y * y + 1, _p - 2, _p)
-    x = pow(xx, (_p + 3) // 8, _p)
-    if (x * x - xx) % _p != 0:
-        x = (x * _I) % _p
-    if x % 2 != 0:
-        x = _p - x
-    return x
-
-
-_By = 4 * pow(5, _p - 2, _p) % _p
-_B = (_xrecover(_By), _By, 1, _xrecover(_By) * _By % _p)
-
-
-def _add(P, Q):
-    A = (P[1] - P[0]) * (Q[1] - Q[0]) % _p
-    B = (P[1] + P[0]) * (Q[1] + Q[0]) % _p
-    C = 2 * P[3] * Q[3] * _d % _p
-    D = 2 * P[2] * Q[2] % _p
-    E, F, G, H = B - A, D - C, D + C, B + A
-    return (E * F % _p, G * H % _p, F * G % _p, E * H % _p)
-
-
-def _mul(s, P):
-    Q = (0, 1, 1, 0)
-    while s > 0:
-        if s & 1:
-            Q = _add(Q, P)
-        P = _add(P, P)
-        s >>= 1
-    return Q
-
-
-def _enc(P):
-    zi = pow(P[2], _p - 2, _p)
-    x, y = P[0] * zi % _p, P[1] * zi % _p
-    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
-
-
-def _dec(s):
-    y = int.from_bytes(s, "little")
-    sign = y >> 255
-    y &= (1 << 255) - 1
-    x = _xrecover(y)
-    if (x & 1) != sign:
-        x = _p - x
-    return (x, y, 1, x * y % _p)
+# ── RFC 8032 §6 — 곡선 연산·검증은 발행 쪽 검증기(scripts/update/minisign_verify.py)와 **같은 코드**를 쓴다(두 벌 0).
+#    이 대역이 덧붙이는 것은 서명(비밀 스칼라 확장·서명 생성)뿐이다.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "update"))
+from minisign_verify import B as _B, _L, mul as _mul, enc as _enc, ed25519_verify  # noqa: E402
 
 
 def _h(m):
@@ -102,17 +52,6 @@ def ed25519_sign(seed, msg):
     k = int.from_bytes(_h(R + A + msg), "little") % _L
     s = (r + k * a) % _L
     return R + int.to_bytes(s, 32, "little")
-
-
-def ed25519_verify(pub, msg, sig):
-    if len(sig) != 64:
-        return False
-    R, s = sig[:32], int.from_bytes(sig[32:], "little")
-    if s >= _L:
-        return False
-    A = _dec(pub)
-    k = int.from_bytes(_h(R + pub + msg), "little") % _L
-    return _enc(_mul(s, _B)) == _enc(_add(_dec(R), _mul(k, A)))
 
 
 # ── minisign 형식 ───────────────────────────────────────────────────────────────────
@@ -163,20 +102,13 @@ def sign(key_path, msg_path, sig_path, trusted):
 
 
 def verify(pub_path, msg_path, sig_path):
-    with open(pub_path, encoding="utf-8") as f:
-        pl = [l for l in f.read().splitlines() if l and not l.startswith("untrusted comment:")]
-    praw = base64.b64decode(pl[-1])
-    with open(sig_path, encoding="utf-8") as f:
-        sl = f.read().splitlines()
-    sraw = base64.b64decode(sl[1])
-    tc = sl[2][len("trusted comment: "):].encode()
-    gsig = base64.b64decode(sl[3])
-    if praw[2:10] != sraw[2:10]:
+    import minisign_verify as mv
+    try:
+        mv.verify(open(pub_path, encoding="utf-8").read(), open(msg_path, "rb").read(),
+                  open(sig_path, encoding="utf-8").read())
+        return True
+    except mv.VerifyFail:
         return False
-    with open(msg_path, "rb") as f:
-        msg = f.read()
-    m = hashlib.blake2b(msg, digest_size=64).digest() if sraw[:2] == b"ED" else msg
-    return ed25519_verify(praw[10:], m, sraw[10:]) and ed25519_verify(praw[10:], sraw[10:] + tc, gsig)
 
 
 def main(argv=None):

@@ -7,8 +7,8 @@
 #       (맥 자산은 master 로컬 빌드 — 설계 §4-1 · 그래서 이 모드는 master 기기에서 돈다)
 #   collect-inputs.sh win <setup.exe> <outdir>            (윈 · Git Bash — release.yml 윈 레그가 부른다)
 #       설치기를 빈 임시 폴더에 무인 설치(/S /D=…)해 **설치기가 실제로 놓는 바이트**를 잰다 → <outdir>/payload-windows-x64/
-#       (설치기가 만드는 파일 중 판마다 같다는 보장이 없는 uninstall.exe 는 뺀다 · 실패 기록 cys-install-failure.txt 가
-#       있으면 설치 실패이므로 중단) · 설치된 cys.exe build-info --json → <outdir>/build-info-windows-x64.json
+#       (아무것도 지우지 않는다 — 제외는 make-release-json 이 scripts/update/payload-exclude.txt 명시 규칙으로만 · 실패 기록
+#       cys-install-failure.txt 가 있으면 설치 실패이므로 중단) · 설치된 cys.exe build-info --json → <outdir>/build-info-windows-x64.json
 #       ⚠러너 첫 실측 전(이 기계엔 윈 실행 기층이 없다) — 첫 발행 리허설이 계수·동작을 확정한다(HANDOFF-U3 §4).
 # 종료: 0 = 재료 생성 · 2 = 거부(재료 0 — 본문 생성기가 그 행을 만들지 못해 발행이 멈춘다 = fail-closed).
 set -euo pipefail
@@ -59,7 +59,6 @@ case "$mode" in
     [ ! -e "$dest/cys-install-failure.txt" ] || die "설치기가 실패 기록을 남겼다: $(head -c 400 "$dest/cys-install-failure.txt")"
     [ -x "$dest/cys.exe" ] || die "설치된 cys.exe 없음"
     "$dest/cys.exe" build-info --json > "$out/build-info-windows-x64.json.tmp" || die "cys build-info 실패(1.1.8 U1 이전 바이너리?)"
-    rm -f "$dest/uninstall.exe"
     mv "$out/build-info-windows-x64.json.tmp" "$out/build-info-windows-x64.json"
     echo "✅ 윈 재료 — 페이로드 $(find "$dest" -type f | wc -l | tr -d ' ')개 파일 · build-info $(tr -d '\r\n' < "$out/build-info-windows-x64.json" | cut -c1-120)"
     ;;

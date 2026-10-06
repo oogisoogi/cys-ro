@@ -28,14 +28,26 @@ import update_common as uc  # noqa: E402
 import fake_minisign as fm  # noqa: E402
 
 VERIFY_BIN = os.environ.get("CYS_UPDATE_VERIFY_BIN", "")
+NOW = 1790000000
+# 시험 전용 모드(실 키 서명 거부 · 신뢰 시각 덮어쓰기 · 가짜 minisign/매체 허용 — codex 1R #3·#15)
+os.environ["CYS_SIGN_DEV"] = "1"
+os.environ["CYS_TEST_NOW"] = str(NOW)
 
 
 def run(args, **kw):
     return subprocess.run(args, capture_output=True, text=True, **kw)
 
 
-def py(script, *args, **kw):
+def py(script, *args, now=None, **kw):
+    if now is not None:
+        kw["env"] = dict(kw.get("env") or os.environ, CYS_TEST_NOW=str(now))
     return run([sys.executable, os.path.join(UPD, script)] + list(args), **kw)
+
+
+def u1_stamp(path, purpose="feed"):
+    """U1 update-verify 통과를 흉내 낸 증표(시험 전용 · 실제 게시 경로는 release-gate verify --stamp 만 쓴다)."""
+    uc.write_stamp(path, open(path + ".minisig", "rb").read(), json.load(open(path)).get("key_id"), purpose,
+                   uc.STAMP_BY_U1, NOW)
 
 
 class Fixture:
@@ -97,8 +109,7 @@ class Fixture:
         a = {"--component": "cysr", "--release-seq": str(self.seq), "--version": v,
              "--min-from-release-seq": "1", "--state-migration": "additive",
              "--notes-ko": "새 판을 받아 두었어요", "--key-id": self.kid("u"),
-             "--requires-min-binary-for-pack": "1.1.8", "--release-dir": self.rel,
-             "--signed-at": "1790000000", "--out": out}
+             "--requires-min-binary-for-pack": "1.1.8", "--release-dir": self.rel, "--out": out}
         a.update(over)
         args = []
         for k, val in a.items():
@@ -206,13 +217,16 @@ class TestGenerator(Base):
 
 
 class TestEnvelope(Base):
+    now = NOW
+
     def env(self, *extra, name="env.json"):
         b = os.path.join(self.tmp, "body.json")
         if not os.path.exists(b):
             self.fx.body()
         out = os.path.join(self.tmp, name)
         return py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", b,
-                  "--release-sig", b + ".minisig", "--key-id", self.fx.kid("f"), "--out", out, *extra), out
+                  "--release-sig", b + ".minisig", "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring,
+                  "--out", out, *extra, now=self.now), out
 
     def test_first_and_increment(self):
         r, out = self.env("--first", "--rollout-pct", "10", "--halt", "false")
@@ -220,6 +234,12 @@ class TestEnvelope(Base):
         e = json.load(open(out))
         self.assertEqual((e["feed_rev"], e["rollout_pct"], e["halt"]), (1, 10, False))
         self.assertLessEqual(e["expires_at"] - e["signed_at"], 14 * 86400)
+        r0, _ = self.env("--prev-envelope", out, name="env1b.json")
+        self.assertEqual(r0.returncode, 2)  # U1 통과 증표 없는 직전 봉투 = 상속 거부(codex 1R #6)
+        self.assertIn("증표", r0.stderr)
+        fm.sign(self.fx.key("f"), out, out + ".minisig", "t")
+        u1_stamp(out)
+        self.now = NOW + 60
         r2, out2 = self.env("--prev-envelope", out, name="env2.json")
         self.assertEqual(r2.returncode, 0, r2.stderr)
         e2 = json.load(open(out2))
@@ -239,7 +259,7 @@ class TestEnvelope(Base):
         b = self.fx.body()
         r = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", b,
                "--release-sig", b + ".minisig", "--key-id", self.fx.kid("u"), "--first", "--rollout-pct", "1",
-               "--halt", "false", "--out", os.path.join(self.tmp, "e.json"))
+               "--halt", "false", "--keyring", self.fx.keyring, "--out", os.path.join(self.tmp, "e.json"))
         self.assertEqual(r.returncode, 2)
         self.assertIn("용도 분리", r.stderr)
 
@@ -253,49 +273,115 @@ class TestEnvelope(Base):
         b4 = fx2.body()
         r2 = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", b4,
                 "--release-sig", b4 + ".minisig", "--key-id", self.fx.kid("f"), "--prev-envelope", out,
-                "--out", os.path.join(self.tmp, "e3.json"))
+                "--keyring", self.fx.keyring, "--out", os.path.join(self.tmp, "e3.json"))
         self.assertEqual(r2.returncode, 2)
-        self.assertIn("후퇴", r2.stderr)
+        self.assertIn("증표", r2.stderr)  # 증표 없는 직전 봉투는 상속 자체가 거부된다
+        fm.sign(self.fx.key("f"), out, out + ".minisig", "t")
+        u1_stamp(out)
+        r3 = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", b4,
+                "--release-sig", b4 + ".minisig", "--key-id", self.fx.kid("f"), "--prev-envelope", out,
+                "--keyring", self.fx.keyring, "--out", os.path.join(self.tmp, "e4.json"), now=NOW + 60)
+        self.assertEqual(r3.returncode, 2)
+        self.assertIn("후퇴", r3.stderr)
+
+    def test_mut_forged_body_sig_same_key_id(self):
+        b = self.fx.body()
+        raw = open(b + ".minisig").read().splitlines()
+        sraw = bytearray(base64.b64decode(raw[1]))
+        sraw[20] ^= 1  # key id 바이트는 그대로 · 서명만 위조
+        raw[1] = base64.b64encode(bytes(sraw)).decode()
+        open(b + ".minisig", "w").write("\n".join(raw) + "\n")
+        r, _ = self.env("--first", "--rollout-pct", "10", "--halt", "false")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("서명 검증 실패", r.stderr)
+
+
+def gate_stamp_body(fx, b):
+    r = py("release-gate.py", "body", "--body", b, "--sig", b + ".minisig", "--keyring", fx.keyring, "--stamp")
+    assert r.returncode == 0, r.stderr
+    return b
+
+
+def publish(fx, kind, f, store, *extra):
+    return py("publish-site.py", kind, "--fs", store, "--file", f, "--keyring", fx.keyring,
+              "--lock-file", os.path.join(store + ".lock"), *extra)
 
 
 class TestPublishSite(Base):
-    def test_archive_immutable(self):
-        b = self.fx.body()
-        site = os.path.join(self.tmp, "site")
-        self.assertEqual(py("publish-site.py", "archive", "--site-dir", site, "--file", b).returncode, 0)
-        p = os.path.join(site, "update", "cysr", "releases", "5.json")
-        self.assertTrue(os.path.isfile(p) and os.path.isfile(p + ".minisig"))
-        r = py("publish-site.py", "archive", "--site-dir", site, "--file", b)
+    def test_archive_immutable_and_index(self):
+        b = gate_stamp_body(self.fx, self.fx.body())
+        st = os.path.join(self.tmp, "store")
+        r = publish(self.fx, "archive", b, st)
+        self.assertEqual(r.returncode, 3)  # 색인 없음 + --first 없음
+        self.assertEqual(publish(self.fx, "archive", b, st, "--first").returncode, 0)
+        ptr = json.load(open(os.path.join(st, "ptr/update/cysr/releases/5.json")))
+        self.assertEqual(open(os.path.join(st, ptr["json"]), "rb").read(), open(b, "rb").read())
+        self.assertEqual(json.load(open(os.path.join(st, "ptr/update/cysr/releases/_index")))["max_seq"], 5)
+        r = publish(self.fx, "archive", b, st)
         self.assertEqual(r.returncode, 0)
         self.assertIn("멱등", r.stdout)
-        b2 = self.fx.body(name="body2.json", **{"--notes-ko": "다른 문구예요"})
-        r = py("publish-site.py", "archive", "--site-dir", site, "--file", b2)
-        self.assertEqual(r.returncode, 3, r.stderr)
-        self.assertIn("덮어쓰기 거부", r.stderr)
-        self.assertEqual(open(p, "rb").read(), open(b, "rb").read())
+        b2 = gate_stamp_body(self.fx, self.fx.body(name="body2.json", **{"--notes-ko": "다른 문구예요"}))
+        r = publish(self.fx, "archive", b2, st)
+        self.assertEqual(r.returncode, 3, r.stderr)  # 같은 seq 다른 바이트 — 색인 단계에서 seq ≠ max+1 로도 거부
 
-    def test_envelope_monotone(self):
+    def test_mut_no_stamp_or_tampered(self):
         b = self.fx.body()
-        site = os.path.join(self.tmp, "site")
-        e1 = os.path.join(self.tmp, "e1.json")
-        py("make-envelope.py", "--component", "cysr", "--channel", "next", "--release-body", b, "--release-sig",
-           b + ".minisig", "--key-id", self.fx.kid("f"), "--first", "--rollout-pct", "5", "--halt", "false",
-           "--signed-at", "1790000000", "--out", e1)
-        fm.sign(self.fx.key("f"), e1, e1 + ".minisig", "t")
-        self.assertEqual(py("publish-site.py", "envelope", "--site-dir", site, "--file", e1).returncode, 0)
-        e0 = os.path.join(self.tmp, "e0.json")
-        py("make-envelope.py", "--component", "cysr", "--channel", "next", "--release-body", b, "--release-sig",
-           b + ".minisig", "--key-id", self.fx.kid("f"), "--first", "--rollout-pct", "50", "--halt", "false",
-           "--signed-at", "1790000001", "--out", e0)
-        fm.sign(self.fx.key("f"), e0, e0 + ".minisig", "t")
-        r = py("publish-site.py", "envelope", "--site-dir", site, "--file", e0)
+        st = os.path.join(self.tmp, "store")
+        r = publish(self.fx, "archive", b, st, "--first")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("증표", r.stderr)
+        gate_stamp_body(self.fx, b)
+        open(b, "ab").write(b" ")
+        r = publish(self.fx, "archive", b, st, "--first")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("검증 뒤 바뀜", r.stderr)
+
+    def test_mut_low_seq_archive(self):
+        st = os.path.join(self.tmp, "store")
+        self.assertEqual(publish(self.fx, "archive", gate_stamp_body(self.fx, self.fx.body()), st, "--first").returncode, 0)
+        d = os.path.join(self.tmp, "low")
+        os.makedirs(d)
+        fx4 = Fixture(d, seq=4)
+        fx4.keys, fx4.keyring = self.fx.keys, self.fx.keyring
+        shutil.copy(self.fx.key("u"), fx4.key("u"))
+        b4 = gate_stamp_body(fx4, fx4.body())
+        r = publish(self.fx, "archive", b4, st)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("최댓값", r.stderr)
+
+    def test_envelope_monotone_and_pair_atomic(self):
+        b = self.fx.body()
+        st = os.path.join(self.tmp, "store")
+
+        def env(name, *extra, now=NOW):
+            out = os.path.join(self.tmp, name)
+            r = py("make-envelope.py", "--component", "cysr", "--channel", "next", "--release-body", b, "--release-sig",
+                   b + ".minisig", "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring, "--out", out, *extra, now=now)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            fm.sign(self.fx.key("f"), out, out + ".minisig", "t")
+            u1_stamp(out)
+            return out
+        e1 = env("e1.json", "--first", "--rollout-pct", "5", "--halt", "false")
+        self.assertEqual(publish(self.fx, "envelope", e1, st).returncode, 0)
+        e0 = env("e0.json", "--first", "--rollout-pct", "50", "--halt", "false")
+        r = publish(self.fx, "envelope", e0, st)
         self.assertEqual(r.returncode, 3)
         self.assertIn("단조 위반", r.stderr)
-        e2 = os.path.join(self.tmp, "e2.json")
-        py("make-envelope.py", "--component", "cysr", "--channel", "next", "--release-body", b, "--release-sig",
-           b + ".minisig", "--key-id", self.fx.kid("f"), "--prev-envelope", e1, "--out", e2)
-        fm.sign(self.fx.key("f"), e2, e2 + ".minisig", "t")
-        self.assertEqual(py("publish-site.py", "envelope", "--site-dir", site, "--file", e2).returncode, 0)
+        e2 = env("e2.json", "--prev-envelope", e1, now=NOW + 60)
+        self.assertEqual(publish(self.fx, "envelope", e2, st).returncode, 0)
+        ptr = json.load(open(os.path.join(st, "ptr/update/cysr/next.json")))
+        self.assertEqual((ptr["feed_rev"], ptr["json_sha256"]), (2, uc.sha256_bytes(open(e2, "rb").read())))
+        self.assertEqual(ptr["sig_sha256"], uc.sha256_bytes(open(e2 + ".minisig", "rb").read()))
+
+    def test_concurrent_publish_two(self):
+        b = gate_stamp_body(self.fx, self.fx.body())
+        st = os.path.join(self.tmp, "store")
+        procs = [subprocess.Popen([sys.executable, os.path.join(UPD, "publish-site.py"), "archive", "--fs", st, "--file", b,
+                                   "--keyring", self.fx.keyring, "--lock-file", st + ".lock", "--first"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+        rcs = sorted(p.wait() for p in procs)
+        self.assertEqual(rcs, [0, 0])  # 하나는 게시 · 하나는 잠금 뒤 재검사 = 멱등(같은 바이트)
+        self.assertEqual(json.load(open(os.path.join(st, "ptr/update/cysr/releases/_index")))["max_seq"], 5)
 
 
 class TestGateAssets(Base):
@@ -334,43 +420,41 @@ class TestGateAssets(Base):
 
 
 class TestGateBody(Base):
-    def archive(self, b):
-        site = os.path.join(self.tmp, "site")
-        self.assertEqual(py("publish-site.py", "archive", "--site-dir", site, "--file", b).returncode, 0)
-        return os.path.join(site, "update")
+    def store_with(self, b):
+        st = os.path.join(self.tmp, "store")
+        self.assertEqual(publish(self.fx, "archive", gate_stamp_body(self.fx, b), st, "--first").returncode, 0)
+        return st
 
     def next_body(self, version, seq):
         d = os.path.join(self.tmp, "v%s-%d" % (version, seq))
         os.makedirs(d)
         fx = Fixture(d, version=version, seq=seq)
-        fx.keys["u"] = self.fx.keys["u"]
+        fx.keys, fx.keyring = self.fx.keys, self.fx.keyring
         shutil.copy(self.fx.key("u"), fx.key("u"))
         return fx.body()
 
-    def test_seq_and_version_progress(self):
-        arch = self.archive(self.fx.body())
-        ok = self.next_body("1.1.9", 6)
-        self.assertEqual(py("release-gate.py", "body", "--body", ok, "--archive-dir", arch).returncode, 0)
-        same = self.next_body("1.1.8", 7)
-        r = py("release-gate.py", "body", "--body", same, "--archive-dir", arch)
+    def test_seq_progress_and_version_warning(self):
+        st = self.store_with(self.fx.body())
+        self.assertEqual(py("release-gate.py", "body", "--body", self.next_body("1.1.9", 6), "--archive-fs", st,
+                            "--expect-seq", "6").returncode, 0)
+        r = py("release-gate.py", "body", "--body", self.next_body("1.1.8", 6), "--archive-fs", st)
+        self.assertEqual(r.returncode, 0, r.stderr)  # 판 문자열 = 비보안 경고(codex 1R #19)
+        self.assertIn("비보안 경고", r.stderr)
+        r = py("release-gate.py", "body", "--body", self.next_body("1.1.10", 7), "--archive-fs", st)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("판 증가 위반", r.stderr)
-        older = self.next_body("1.1.7", 4)
-        r = py("release-gate.py", "body", "--body", older, "--archive-dir", arch)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("역행", r.stderr)
+        self.assertIn("최댓값", r.stderr)  # 건너뜀
+        r = py("release-gate.py", "body", "--body", self.next_body("1.1.7", 4), "--archive-fs", st)
+        self.assertEqual(r.returncode, 1)  # 역행
 
-    def test_canary_needs_flag(self):
-        arch = self.archive(self.fx.body())
-        can = self.next_body("1.1.8+canary.1", 6)
-        self.assertEqual(py("release-gate.py", "body", "--body", can, "--archive-dir", arch).returncode, 1)
-        self.assertEqual(py("release-gate.py", "body", "--body", can, "--archive-dir", arch,
-                            "--allow-canary").returncode, 0)
+    def test_expect_seq_mismatch(self):
+        r = py("release-gate.py", "body", "--body", self.fx.body(), "--expect-seq", "9")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("vars.CYSR_RELEASE_SEQ", r.stderr)
 
     def test_archive_same_seq_different_bytes(self):
-        arch = self.archive(self.fx.body())
+        st = self.store_with(self.fx.body())
         b2 = self.fx.body(name="b2.json", **{"--notes-ko": "다른 문구예요"})
-        r = py("release-gate.py", "body", "--body", b2, "--archive-dir", arch)
+        r = py("release-gate.py", "body", "--body", b2, "--archive-fs", st)
         self.assertEqual(r.returncode, 1)
         self.assertIn("덮어쓰기 거부", r.stderr)
 
@@ -386,6 +470,13 @@ class TestGateBody(Base):
     def test_mut_url_outside_rules(self):
         self._mutate(lambda b: b["assets"]["macos-arm64"].update(url="https://evil.example/x.zip"), "url 규칙 밖")
 
+    def test_mut_site_url_for_cysr_asset(self):
+        self._mutate(lambda b: b["assets"]["macos-arm64"].update(
+            url="https://jarvis.godmeyou.kr/install/agora-client-0.1.11.zip"), "url 규칙 밖")
+
+    def test_mut_future_signed_at(self):
+        self._mutate(lambda b: b.update(signed_at=NOW + 3600), "미래")
+
     def test_mut_requires_empty(self):
         self._mutate(lambda b: b["requires"].update(min_binary_for_pack=""), "빈 값")
 
@@ -393,35 +484,69 @@ class TestGateBody(Base):
         self._mutate(lambda b: b["assets"]["windows-x64"]["payload_manifest"].append(
             {"path": "../x", "size": 1, "sha256": "c" * 64}), "payload_manifest 항목")
 
-    def test_mut_sig_wrong_key(self):
+    def test_mut_sig_wrong_key_and_forged(self):
         b = self.fx.body()
         fm.sign(self.fx.key("f"), b, b + ".minisig", "t")
-        r = py("release-gate.py", "body", "--body", b, "--sig", b + ".minisig")
+        r = py("release-gate.py", "body", "--body", b, "--sig", b + ".minisig", "--keyring", self.fx.keyring)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("서명 key id", r.stderr)
+        fm.sign(self.fx.key("u"), b, b + ".minisig", "t")
+        raw = open(b + ".minisig").read().splitlines()
+        sraw = bytearray(base64.b64decode(raw[1]))
+        sraw[30] ^= 1
+        raw[1] = base64.b64encode(bytes(sraw)).decode()
+        open(b + ".minisig", "w").write("\n".join(raw) + "\n")
+        r = py("release-gate.py", "body", "--body", b, "--sig", b + ".minisig", "--keyring", self.fx.keyring)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("서명 검증 실패", r.stderr)  # 같은 key id 위조 서명(codex 1R #4)
+
+    def test_url_vectors_shared_with_u1(self):
+        v = json.load(open(os.path.join(UPD, "url-vectors.json")))
+        for c in v["cases"]:
+            self.assertEqual(uc.url_ok_for(c["component"], c["field"], c["url"]), c["ok"], c)
 
 
 class TestRevocations(Base):
+    def mk(self, *args, now=NOW):
+        return py("make-revocations.py", "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, *args, now=now)
+
     def test_rev_and_rules(self):
         out = os.path.join(self.tmp, "rev.json")
-        self.assertEqual(py("make-revocations.py", "--key-id", self.fx.kid("r"), "--first", "--out", out).returncode, 0)
-        r = py("make-revocations.py", "--key-id", self.fx.kid("r"), "--out", os.path.join(self.tmp, "x.json"))
-        self.assertEqual(r.returncode, 2)
+        self.assertEqual(self.mk("--first", "--out", out).returncode, 0)
+        r = self.mk("--prev", out, "--out", os.path.join(self.tmp, "x.json"), now=NOW + 60)
+        self.assertEqual(r.returncode, 2)  # 직전 서명 없음
+        fm.sign(self.fx.key("r"), out, out + ".minisig", "t")
         out2 = os.path.join(self.tmp, "rev2.json")
-        r = py("make-revocations.py", "--key-id", self.fx.kid("r"), "--prev", out,
-               "--revoke-release", "cysr:5:stop_seats:bad_build",
-               "--delegate", "feed:%s:1900000000" % os.path.join(self.tmp, "u.pub"), "--out", out2)
+        r = self.mk("--prev", out, "--revoke-release", "cysr:5:stop_seats:bad_build",
+                    "--delegate", "feed:%s:1900000000" % os.path.join(self.tmp, "u.pub"), "--out", out2, now=NOW + 60)
         self.assertEqual(r.returncode, 0, r.stderr)
         d = json.load(open(out2))
-        self.assertEqual(d["rev"], 2)
+        self.assertEqual((d["rev"], d["signed_at"]), (2, NOW + 60))
         self.assertEqual(d["revoked_releases"][0]["severity"], "stop_seats")
-        self.assertEqual(d["delegations"][0]["key_id"], self.fx.kid("u"))
         for bad in (["--delegate", "root:%s:1900000000" % os.path.join(self.tmp, "u.pub")],
-                    ["--revoke-key", self.fx.kid("r")],
-                    ["--revoke-release", "cysr:5:panic:x"]):
-            r = py("make-revocations.py", "--key-id", self.fx.kid("r"), "--prev", out, "--out",
-                   os.path.join(self.tmp, "y.json"), *bad)
+                    ["--revoke-key", self.fx.kid("r")], ["--revoke-release", "cysr:5:panic:x"]):
+            r = self.mk("--prev", out, "--out", os.path.join(self.tmp, "y.json"), *bad, now=NOW + 60)
             self.assertEqual(r.returncode, 2, bad)
+        r = self.mk("--prev", out, "--out", os.path.join(self.tmp, "z.json"), now=NOW)
+        self.assertEqual(r.returncode, 2)  # 시각 역행(직전과 같음)
+
+    def test_mut_forged_prev_rev999(self):
+        out = os.path.join(self.tmp, "fake.json")
+        open(out, "wb").write(uc.dump_json_bytes({"kind": "update-revocations", "rev": 999, "key_id": self.fx.kid("r"),
+                                                  "signed_at": NOW - 10, "delegations": [], "revoked_key_ids": [],
+                                                  "revoked_releases": [], "dr_pins": {"add": [], "revoke": []}}))
+        fm.sign(self.fx.key("f"), out, out + ".minisig", "t")  # R 이 아닌 키로 서명(=위조)
+        r = self.mk("--prev", out, "--out", os.path.join(self.tmp, "n.json"), now=NOW + 60)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("서명 검증 실패", r.stderr)
+
+    def test_gate_revocations_stage(self):
+        out = os.path.join(self.tmp, "rev.json")
+        self.mk("--first", "--out", out)
+        fm.sign(self.fx.key("r"), out, out + ".minisig", "t")
+        self.assertEqual(py("release-gate.py", "revocations", "--doc", out, "--keyring", self.fx.keyring, "--first",
+                            "--stamp").returncode, 0)
+        st = os.path.join(self.tmp, "store")
+        self.assertEqual(publish(self.fx, "revocations", out, st).returncode, 0)
 
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("hdiutil"), "가짜 매체 = hdiutil 마운트(맥 전용)")
@@ -504,7 +629,7 @@ class TestOfflineRitual(Base):
 
     def test_revocations_ritual(self):
         doc = os.path.join(self.tmp, "rev.json")
-        py("make-revocations.py", "--key-id", self.fx.kid("r"), "--first", "--out", doc)
+        py("make-revocations.py", "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, "--first", "--out", doc)
         r = run(["bash", os.path.join(UPD, "sign-revocations.sh"), "--doc", doc, "--media", self.mnt,
                  "--key", os.path.join(self.mnt, "r.key"), "--keyring", self.fx.keyring,
                  "--out-dir", os.path.join(self.tmp, "rout"), "--wait-eject", "0"], env=self.env)
@@ -517,17 +642,28 @@ class TestUpdateVerifyRoundTrip(Base):
         super().setUp()
         self.b = self.fx.body()
         self.rev = os.path.join(self.tmp, "rev.json")
-        py("make-revocations.py", "--key-id", self.fx.kid("r"), "--first", "--signed-at", "1790000000", "--out", self.rev)
+        py("make-revocations.py", "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, "--first", "--out", self.rev)
         fm.sign(self.fx.key("r"), self.rev, self.rev + ".minisig", "t")
         self.state = os.path.join(self.tmp, "st")
         os.makedirs(self.state)
 
-    def envelope(self, body, name="env.json", signed_at="1790000000", **kw):
+    def envelope(self, body, name="env.json"):
         out = os.path.join(self.tmp, name)
         r = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", body,
-               "--release-sig", body + ".minisig", "--key-id", self.fx.kid("f"), "--first", "--rollout-pct", "100",
-               "--halt", "false", "--signed-at", signed_at, "--out", out)
+               "--release-sig", body + ".minisig", "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring,
+               "--first", "--rollout-pct", "100", "--halt", "false", "--out", out)
         self.assertEqual(r.returncode, 0, r.stderr)
+        fm.sign(self.fx.key("f"), out, out + ".minisig", "t")
+        return out
+
+    def hand_envelope(self, body):
+        """생산자 검사를 거치지 않은 봉투(검증기 자체를 재기 위함)."""
+        env = {"kind": "component-update-feed", "component": "cysr", "channel": "stable", "feed_rev": 1,
+               "key_id": self.fx.kid("f"), "signed_at": NOW, "expires_at": NOW + 86400, "rollout_pct": 100, "halt": False,
+               "release": base64.b64encode(open(body, "rb").read()).decode(),
+               "release_sig": base64.b64encode(open(body + ".minisig", "rb").read()).decode()}
+        out = os.path.join(self.tmp, "hand.json")
+        open(out, "wb").write(uc.dump_json_bytes(env))
         fm.sign(self.fx.key("f"), out, out + ".minisig", "t")
         return out
 
@@ -542,38 +678,44 @@ class TestUpdateVerifyRoundTrip(Base):
     def test_apply_both_rows(self):
         r = self.gate(self.envelope(self.b))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.count("= apply"), 2)
+        self.assertEqual(r.stdout.count("출발 seq 4 전부 허용 판정"), 2)
 
     def test_mut_tampered_body(self):
         raw = bytearray(open(self.b, "rb").read())
         raw[raw.index(b"additive")] = ord("A")
         open(self.b, "wb").write(bytes(raw))
-        r = self.gate(self.envelope(self.b))
-        self.assertEqual(r.returncode, 1)
+        r = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", self.b,
+               "--release-sig", self.b + ".minisig", "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring,
+               "--first", "--rollout-pct", "100", "--halt", "false", "--out", os.path.join(self.tmp, "x.json"))
+        self.assertEqual(r.returncode, 2)  # 생산자가 먼저 막는다(본문 서명 암호 검증)
+        r = self.gate(self.hand_envelope(self.b))
+        self.assertEqual(r.returncode, 1)  # 검증기도 막는다
         self.assertIn("reject", r.stderr)
 
+    def test_installed_range_default_and_stamp(self):
+        e = self.envelope(self.b)
+        env = dict(os.environ, CYS_UPDATE_TEST_KEYRING=self.fx.keyring, CYS_UPDATE_STATE_DIR=self.state,
+                   CYS_UPDATE_NOW=str(NOW + 100))
+        r = py("release-gate.py", "verify", "--cys", VERIFY_BIN, "--component", "cysr", "--channel", "stable",
+               "--envelope", e, "--sig", e + ".minisig", "--revocations", self.rev, "--revocations-sig", self.rev + ".minisig",
+               "--stamp", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1,2,3,4,5", r.stdout)  # min_from 1 .. seq-1 = apply · seq 5 = uptodate
+        self.assertEqual(json.load(open(uc.stamp_path(e)))["by"], uc.STAMP_BY_U1)
+
     def test_mut_expired_envelope(self):
-        r = self.gate(self.envelope(self.b), now=str(1790000000 + 15 * 86400))
+        r = self.gate(self.envelope(self.b), now=str(NOW + 15 * 86400))
         self.assertEqual(r.returncode, 1)
 
     def test_seq_not_newer_is_uptodate(self):
         self.assertEqual(self.gate(self.envelope(self.b), expect="uptodate", installed="5").returncode, 0)
 
     def test_mut_feed_key_used_for_body(self):
-        # 생산자(make-envelope)는 F=U 를 먼저 막는다 — 여기서는 봉투를 손으로 만들어 **검증기**의 용도 대조(ⓗ)를 잰다.
         b = json.load(open(self.b))
         b["key_id"] = self.fx.kid("f")
         open(self.b, "wb").write(uc.dump_json_bytes(b))
         fm.sign(self.fx.key("f"), self.b, self.b + ".minisig", "t")
-        env = {"kind": "component-update-feed", "component": "cysr", "channel": "stable", "feed_rev": 1,
-               "key_id": self.fx.kid("f"), "signed_at": 1790000000, "expires_at": 1790000000 + 86400,
-               "rollout_pct": 100, "halt": False,
-               "release": base64.b64encode(open(self.b, "rb").read()).decode(),
-               "release_sig": base64.b64encode(open(self.b + ".minisig", "rb").read()).decode()}
-        out = os.path.join(self.tmp, "hand.json")
-        open(out, "wb").write(uc.dump_json_bytes(env))
-        fm.sign(self.fx.key("f"), out, out + ".minisig", "t")
-        r = self.gate(out)
+        r = self.gate(self.hand_envelope(self.b))
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("reject", r.stderr)
 

@@ -9,6 +9,8 @@ R 의식은 **사건 때만** 돈다(키 위임·폐기 · 특정 릴리스 무�
    dr_pins{add[], revoke[]}}
 
 입력 = 직전 폐기문(있으면 그 위에 **더한다** — 빼는 것은 `--drop-*` 로 명시) + 이번 사건 칸. 규칙(어기면 rc 2):
+  · ★2판(codex 1R #5·#15): 직전 폐기문은 `.minisig` 를 키링 root 키로 **암호 검증**한 것만 받는다 · 폐기 집합(revoked_key_ids ·
+    revoked_releases · dr_pins.revoke)은 직전의 **상위집합**이어야 한다 · signed_at = 신뢰 시각(인자 0)이고 직전보다 뒤.
   · rev = 직전 + 1(직전 없음 = `--first` 명시 → 1) · 위임 용도는 root·pack 불가 · 위임 key_id = 공개키 파생값 ·
     severity ∈ {advisory, stop_seats} · component ∈ {cysr, agora-client} · R 키 자신을 revoked_key_ids 에 넣지 못함.
   · 7-b 기준 A2 key id(설계 §5-3) = update_common.A2_KEY_ID — A2 교체는 여기 `--delegate win-asset:…` 로 한다.
@@ -17,7 +19,6 @@ import argparse
 import json
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import update_common as uc  # noqa: E402
@@ -29,10 +30,16 @@ SEVERITIES = ("advisory", "stop_seats")
 def build(a):
     if not uc.KEY_ID_RE.match(a.key_id or ""):
         raise uc.PublishError("R key_id 형식")
+    now = uc.trusted_now()
+    keyring = uc.load_keyring(a.keyring)
+    uc.find_key(keyring, "root", a.key_id, now)
     if a.prev:
-        prev = json.load(open(a.prev, encoding="utf-8"))
+        pb = open(a.prev, "rb").read()
+        prev = json.loads(pb)
         if prev.get("kind") != uc.REVOCATIONS_KIND:
             raise uc.PublishError("직전 폐기문 kind")
+        uc.verify_sig(keyring, "root", prev.get("key_id"), pb, open(a.prev + ".minisig", encoding="utf-8").read(), now)
+        uc.check_signed_at(now, now, prev.get("signed_at"), "새 폐기문 signed_at")
         rev = int(prev["rev"]) + 1
     elif a.first:
         prev, rev = {}, 1
@@ -83,11 +90,18 @@ def build(a):
     for p in add + revoke:
         if not uc.HEX40_RE.match(p):
             raise uc.PublishError("DR 핀 형식(40 hex) %r" % p)
+    # 폐기 집합 단조(직전의 상위집합) — 위 구성이 직전에서 출발하므로 늘 참이어야 하고, 아니면 도구 결함이다(fail-closed).
+    def rr_keys(lst):
+        return {(r["component"], r["release_seq"]) for r in lst}
+    if not (set(prev.get("revoked_key_ids", [])) <= set(revoked_keys)
+            and rr_keys(prev.get("revoked_releases", [])) <= rr_keys(rr)
+            and set((prev.get("dr_pins") or {}).get("revoke", [])) <= set(revoke)):
+        raise uc.PublishError("폐기 집합이 직전보다 줄었다(단조 위반)")
     return {
         "kind": uc.REVOCATIONS_KIND,
         "rev": rev,
         "key_id": a.key_id,
-        "signed_at": int(a.signed_at if a.signed_at is not None else time.time()),
+        "signed_at": now,
         "delegations": deleg,
         "revoked_key_ids": revoked_keys,
         "revoked_releases": rr,
@@ -98,9 +112,9 @@ def build(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="폐기문(서명 없음) 생성 — 설계 §4-1")
     ap.add_argument("--key-id", required=True, help="R 키 key id")
-    ap.add_argument("--prev", default=None)
+    ap.add_argument("--prev", default=None, help="직전 폐기문(같은 자리에 .minisig 필수 · R 서명 암호 검증)")
     ap.add_argument("--first", action="store_true")
-    ap.add_argument("--signed-at", type=int, default=None)
+    ap.add_argument("--keyring", default=os.path.join(uc.REPO_ROOT, "cysjavis-pack", "trusted-keys.json"))
     ap.add_argument("--delegate", action="append", help="purpose:pub파일:not_after")
     ap.add_argument("--drop-delegation", action="append")
     ap.add_argument("--revoke-key", action="append")

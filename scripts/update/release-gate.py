@@ -14,10 +14,8 @@
 """
 import argparse
 import base64
-import glob
 import json
 import os
-import re
 import subprocess
 import sys
 
@@ -87,16 +85,6 @@ def stage_assets(a):
 
 
 # ── body ───────────────────────────────────────────────────────────────────────────
-def archive_bodies(archive_dir, component):
-    d = os.path.join(archive_dir, component, "releases")
-    out = {}
-    for p in glob.glob(os.path.join(d, "*.json")):
-        m = re.match(r"^(\d+)\.json$", os.path.basename(p))
-        if m:
-            out[int(m.group(1))] = p
-    return out
-
-
 def check_body_shape(b):
     if b.get("kind") != uc.RELEASE_KIND:
         raise GateFail("본문 kind %r" % b.get("kind"))
@@ -112,8 +100,10 @@ def check_body_shape(b):
         raise GateFail("state_migration %r" % b.get("state_migration"))
     if not uc.KEY_ID_RE.match(b.get("key_id") or ""):
         raise GateFail("key_id 형식")
-    if not isinstance(b.get("signed_at"), int):
-        raise GateFail("signed_at 정수 아님")
+    try:
+        uc.check_signed_at(b.get("signed_at"), uc.trusted_now(), None, "본문 signed_at")
+    except uc.PublishError as e:
+        raise GateFail(str(e))
     try:
         uc.check_notes_ko(b.get("notes_ko"))
         uc.semver_core(b.get("version"))
@@ -142,7 +132,7 @@ def check_body_shape(b):
             raise GateFail("행 %s release_seq ≠ 본문" % t)
         if not uc.HEX64_RE.match(r.get("sha256") or "") or not r.get("size") or not r.get("max_unpacked"):
             raise GateFail("행 %s sha256/size/max_unpacked" % t)
-        if not uc.url_ok(r.get("url"), ("asset", "site")):
+        if not uc.url_ok_for(comp, "asset", r.get("url")):
             raise GateFail("행 %s url 규칙 밖(§4-4): %s" % (t, r.get("url")))
         if not str(r.get("build_id") or "").strip() or not isinstance(r.get("features"), list):
             raise GateFail("행 %s build_id/features" % t)
@@ -154,7 +144,7 @@ def check_body_shape(b):
                                                and uc.HEX40_RE.match(r.get("dr_pin_id") or "")):
                 raise GateFail("맥 행 %s cdhash/dr_pin_id(40 hex)" % t)
             if t.startswith("windows-"):
-                if not uc.url_ok(r.get("a2_sig_url"), ("asset",)):
+                if not uc.url_ok_for(comp, "a2_sig", r.get("a2_sig_url")):
                     raise GateFail("윈 행 %s a2_sig_url 규칙 밖" % t)
                 pm = r.get("payload_manifest")
                 if not isinstance(pm, list) or not pm:
@@ -178,73 +168,151 @@ def stage_body(a):
     except ValueError as e:
         raise GateFail("본문 JSON 아님: %s" % e)
     comp, seq = check_body_shape(b)
-    out = ["본문 서식·필수 행·notes_ko·requires·URL 통과 (%s seq %d)" % (comp, seq)]
+    out = ["본문 서식·필수 행·notes_ko·requires·URL(component 표) 통과 (%s seq %d)" % (comp, seq)]
+    if a.expect_seq is not None and seq != a.expect_seq:
+        raise GateFail("release_seq %d ≠ 발행 순번 변수 %d(vars.CYSR_RELEASE_SEQ)" % (seq, a.expect_seq))
     if a.sig:
-        sig_text = open(a.sig, encoding="utf-8").read()
+        # ★2판(codex 1R #4): key id 바이트가 아니라 **암호 검증**(키링 release · 만료·폐기 반영) → 통과 증표.
+        if not a.keyring:
+            raise Undetermined("--sig 검증에는 --keyring 이 필요하다")
+        sig_bytes = open(a.sig, "rb").read()
+        now = uc.trusted_now()
         try:
-            sk = uc.sig_key_id(sig_text)
+            kid = uc.verify_sig(uc.load_keyring(a.keyring), "release", b["key_id"], raw, sig_bytes.decode("utf-8"), now)
         except uc.PublishError as e:
             raise GateFail(str(e))
-        if sk != b["key_id"]:
-            raise GateFail("본문 서명 key id %s ≠ 본문 key_id %s" % (sk, b["key_id"]))
-        out.append("서명 key id = 본문 key_id %s" % sk)
-    if a.keyring:
-        try:
-            uc.find_key(uc.load_keyring(a.keyring), "release", b["key_id"])
-        except uc.PublishError as e:
-            raise GateFail("본문 key_id 가 키링 release 용도에 없다: %s" % e)
-        out.append("key_id ∈ 키링 release")
-    if a.archive_dir:
-        bodies = archive_bodies(a.archive_dir, comp)
-        if seq in bodies:
-            if open(bodies[seq], "rb").read() != raw:
+        out.append("본문 서명 암호 검증 통과(key %s)" % kid)
+        if a.stamp:
+            uc.write_stamp(a.body, sig_bytes, kid, "release", uc.STAMP_BY_PY, now, {"kind": "archive", "seq": seq})
+            out.append("통과 증표 %s" % uc.stamp_path(a.body))
+    elif a.stamp:
+        raise Undetermined("--stamp 는 --sig 검증과 함께만")
+    if a.archive_fs or a.archive_r2:
+        from store import FsStore, R2Store, archive_state
+        store = FsStore(a.archive_fs) if a.archive_fs else R2Store(a.archive_r2, a.wrangler.split())
+        top, body_of = archive_state(store, comp)
+        existing = body_of(seq)
+        if existing is not None:
+            if existing != raw:
                 raise GateFail("보관소에 release_seq %d 가 이미 있고 바이트가 다르다(덮어쓰기 거부)" % seq)
             out.append("보관소 seq %d 이미 같은 바이트(멱등)" % seq)
-        older = [s for s in bodies if s < seq]
-        newer = [s for s in bodies if s > seq]
-        if newer:
-            raise GateFail("release_seq 역행: 보관소에 더 큰 seq %s 가 있다" % sorted(newer))
-        if older:
-            prev = json.load(open(bodies[max(older)], encoding="utf-8"))
-            pc, nc = uc.semver_core(prev["version"]), uc.semver_core(b["version"])
-            if nc > pc:
-                out.append("판 증가 %s → %s (seq %d → %d)" % (prev["version"], b["version"], max(older), seq))
-            elif nc == pc and b["version"] != prev["version"] and "+" in b["version"] and a.allow_canary:
-                out.append("캐너리 판(같은 3마디 · 빌드 꼬리 · --allow-canary) %s → %s" % (prev["version"], b["version"]))
-            else:
-                raise GateFail("release_seq 증가 ⇒ 판 증가 위반: %s(seq %d) → %s(seq %d)"
-                               % (prev["version"], max(older), b["version"], seq))
         else:
-            out.append("보관소 첫 본문(직전 없음)")
+            if top is not None and seq != top + 1:
+                raise GateFail("release_seq %d ≠ 보관소 최댓값 %d + 1(역행·건너뜀 거부)" % (seq, top))
+            if top is None and not a.first:
+                raise GateFail("보관소가 비었다 — 첫 본문이면 --first 를 명시하라")
+            out.append("순번 = 보관소 최댓값+1 (%s → %d)" % (top, seq))
+            prev_raw = body_of(top) if top is not None else None
+            if prev_raw:
+                # ★2판(codex 1R #19): 순서 판정은 release_seq 하나 — 판 문자열은 비보안 경고(게이트 실패 아님).
+                pv = json.loads(prev_raw)["version"]
+                if uc.semver_core(b["version"]) < uc.semver_core(pv) or b["version"] == pv:
+                    print("::warning::판 문자열이 직전(seq %d · %s)보다 크지 않다: %s — 순서는 release_seq 로 판정(비보안 경고)"
+                          % (top, pv, b["version"]), file=sys.stderr)
+                    out.append("판 문자열 경고(비보안): %s → %s" % (pv, b["version"]))
+    return out
+
+
+def stage_revocations(a):
+    raw = open(a.doc, "rb").read()
+    d = json.loads(raw)
+    if d.get("kind") != uc.REVOCATIONS_KIND or not isinstance(d.get("rev"), int) or d["rev"] < 1:
+        raise GateFail("폐기문 서식(kind/rev)")
+    now = uc.trusted_now()
+    kr = uc.load_keyring(a.keyring)
+    sig_bytes = open(a.doc + ".minisig", "rb").read()
+    try:
+        uc.check_signed_at(d.get("signed_at"), now, None, "폐기문 signed_at")
+        kid = uc.verify_sig(kr, "root", d.get("key_id"), raw, sig_bytes.decode("utf-8"), now)
+    except uc.PublishError as e:
+        raise GateFail(str(e))
+    out = ["폐기문 R 서명 암호 검증 통과(rev %d · key %s)" % (d["rev"], kid)]
+    if a.prev:
+        pb = open(a.prev, "rb").read()
+        p = json.loads(pb)
+        try:
+            uc.verify_sig(kr, "root", p.get("key_id"), pb, open(a.prev + ".minisig", encoding="utf-8").read(), now)
+            uc.check_signed_at(d["signed_at"], now, p.get("signed_at"), "폐기문 signed_at")
+        except uc.PublishError as e:
+            raise GateFail("직전 폐기문: %s" % e)
+        if d["rev"] != p["rev"] + 1:
+            raise GateFail("rev %d ≠ 직전 %d + 1" % (d["rev"], p["rev"]))
+        rk = lambda lst: {(r["component"], r["release_seq"]) for r in lst}
+        if not (set(p.get("revoked_key_ids", [])) <= set(d.get("revoked_key_ids", []))
+                and rk(p.get("revoked_releases", [])) <= rk(d.get("revoked_releases", []))
+                and set((p.get("dr_pins") or {}).get("revoke", [])) <= set((d.get("dr_pins") or {}).get("revoke", []))):
+            raise GateFail("폐기 집합이 직전보다 줄었다(단조 위반)")
+        out.append("직전 대비 rev+1 · 폐기 집합 단조 · 시각 단조")
+    elif not a.first:
+        raise GateFail("직전 폐기문(--prev)이 없으면 --first 를 명시하라")
+    if a.stamp:
+        uc.write_stamp(a.doc, sig_bytes, kid, "root", uc.STAMP_BY_PY, now, {"kind": "revocations", "rev": d["rev"]})
+        out.append("통과 증표 %s" % uc.stamp_path(a.doc))
     return out
 
 
 # ── verify(U1 cys update-verify) ─────────────────────────────────────────────────────
+ROW_FIELDS_PENDING_U1 = ("payload_manifest",)  # U1 Asset 에 칸이 생기면 비교에 들어간다(codex 1R #10 · master 가 U1 에 전달)
+
+
+def _run_verify(a, target, installed):
+    cmd = [a.cys, "update-verify", "--component", a.component, "--channel", a.channel,
+           "--envelope", a.envelope, "--sig", a.sig, "--revocations", a.revocations,
+           "--revocations-sig", a.revocations_sig, "--target", target,
+           "--installed-release-seq", str(installed), "--json"]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        return p.returncode, json.loads(p.stdout)
+    except ValueError:
+        raise Undetermined("update-verify 출력이 JSON 아님(rc %d): %s %s" % (p.returncode, p.stdout[-300:], p.stderr[-300:]))
+
+
 def stage_verify(a):
     if not a.cys or not os.access(a.cys, os.X_OK):
         raise Undetermined("cys 바이너리 없음(update-verify 필요 · U1 이상): %r" % a.cys)
     env = json.load(open(a.envelope, encoding="utf-8"))
     body = json.loads(base64.b64decode(env["release"]))
     targets = a.target or sorted(body["assets"])
-    out = []
+    accept = [x.strip() for x in a.expect.split(",") if x.strip()]
+    seq, low = int(body["release_seq"]), int(body["min_from_release_seq"])
+    # ★2판(codex 1R #11): 가짜 installed 0 금지 — 명시값이 없으면 허용 출발 seq 전부(min_from..seq-1 = accept) + seq 자신(uptodate).
+    if a.installed_release_seq is not None:
+        plan = [(a.installed_release_seq, accept)]
+    else:
+        plan = [(i, accept) for i in range(max(low, 1), seq)] + [(seq, ["uptodate"])]
+        if not plan[:-1]:
+            raise GateFail("허용 출발 seq 가 없다(min_from_release_seq %d ≥ release_seq %d)" % (low, seq))
+    out, pending = [], set()
     for t in targets:
-        cmd = [a.cys, "update-verify", "--component", a.component, "--channel", a.channel,
-               "--envelope", a.envelope, "--sig", a.sig, "--revocations", a.revocations,
-               "--revocations-sig", a.revocations_sig, "--target", t,
-               "--installed-release-seq", str(a.installed_release_seq), "--json"]
-        p = subprocess.run(cmd, capture_output=True, text=True)
-        try:
-            v = json.loads(p.stdout)
-        except ValueError:
-            raise Undetermined("update-verify 출력이 JSON 아님(rc %d): %s %s" % (p.returncode, p.stdout[-300:], p.stderr[-300:]))
-        accept = [x.strip() for x in a.expect.split(",") if x.strip()]
-        if v.get("verdict") not in accept or (v.get("verdict") not in ("reject", "undetermined") and p.returncode != 0):
-            raise GateFail("update-verify[%s] = %s/%s(step %s · %s) rc %d — 기대 %s"
-                           % (t, v.get("verdict"), v.get("code"), v.get("step"), v.get("detail"), p.returncode, a.expect))
-        asset = v.get("asset") or {}
-        if v.get("verdict") == "apply" and asset.get("sha256") != body["assets"][t]["sha256"]:
-            raise GateFail("update-verify[%s] asset 이 본문 행과 다르다" % t)
-        out.append("update-verify[%s] = %s rc %d" % (t, v.get("verdict"), p.returncode))
+        for installed, ok in plan:
+            rc, v = _run_verify(a, t, installed)
+            verdict = v.get("verdict")
+            expired_prev = (a.allow_expired and verdict == "reject" and v.get("code") == "update.feed_expired"
+                            and v.get("step") == "ⓔ")
+            if verdict not in ok and not expired_prev:
+                raise GateFail("update-verify[%s · installed %d] = %s/%s(step %s · %s) rc %d — 허용 %s"
+                               % (t, installed, verdict, v.get("code"), v.get("step"), v.get("detail"), rc, ok))
+            if verdict in ("apply", "halt", "not_in_rollout"):
+                # ★2판(codex 1R #10): 반환 행 **전체**를 원문 행과 대조(sha 하나 아님).
+                got, want = v.get("asset") or {}, body["assets"][t]
+                if got:
+                    for k in sorted(set(want) | set(got)):
+                        if k in ROW_FIELDS_PENDING_U1 and k not in got:
+                            pending.add(k)
+                            continue
+                        if got.get(k) != want.get(k) and not (k == "features" and got.get(k) in (None, []) and want.get(k) == []):
+                            raise GateFail("update-verify[%s] 반환 행 칸 %s 가 원문과 다르다: %r ≠ %r" % (t, k, got.get(k), want.get(k)))
+                elif verdict == "apply":
+                    raise GateFail("update-verify[%s] apply 인데 asset 없음" % t)
+        out.append("update-verify[%s] 출발 seq %s 전부 허용 판정" % (t, ",".join(str(i) for i, _ in plan)))
+    for k in sorted(pending):
+        print("::notice::반환 행 칸 %s 비교 생략 — U1 Asset 칸 대기(codex 1R #10)" % k)
+        out.append("반환 행 칸 %s = U1 칸 대기(비교 생략 · 사유 인쇄)" % k)
+    if a.stamp:
+        uc.write_stamp(a.envelope, open(a.sig, "rb").read(), env.get("key_id"), "feed", uc.STAMP_BY_U1,
+                       uc.trusted_now(), {"kind": "envelope", "feed_rev": env.get("feed_rev"),
+                                          "revocations_sha256": uc.sha256_bytes(open(a.revocations, "rb").read())})
+        out.append("통과 증표 %s" % uc.stamp_path(a.envelope))
     return out
 
 
@@ -267,8 +335,18 @@ def main(argv=None):
     s2.add_argument("--body", required=True)
     s2.add_argument("--sig", default=None)
     s2.add_argument("--keyring", default=None)
-    s2.add_argument("--archive-dir", default=None, help="사이트 /update 원본 폴더(<c>/releases/<seq>.json)")
-    s2.add_argument("--allow-canary", action="store_true")
+    s2.add_argument("--archive-fs", default=None, help="보관소 저장소(FS 백엔드 루트 · publish-site --fs 와 같은 곳)")
+    s2.add_argument("--archive-r2", default=None, help="보관소 저장소(R2 버킷)")
+    s2.add_argument("--wrangler", default="bunx wrangler")
+    s2.add_argument("--expect-seq", type=int, default=None, help="발행 순번 변수(vars.CYSR_RELEASE_SEQ)와 일치 강제")
+    s2.add_argument("--first", action="store_true", help="보관소 첫 본문")
+    s2.add_argument("--stamp", action="store_true", help="암호 검증 통과 증표(<body>.verified.json)를 쓴다")
+    s2v = sub.add_parser("revocations")
+    s2v.add_argument("--doc", required=True)
+    s2v.add_argument("--keyring", required=True)
+    s2v.add_argument("--prev", default=None)
+    s2v.add_argument("--first", action="store_true")
+    s2v.add_argument("--stamp", action="store_true")
     s3 = sub.add_parser("verify")
     s3.add_argument("--cys", required=True)
     s3.add_argument("--component", required=True)
@@ -278,11 +356,14 @@ def main(argv=None):
     s3.add_argument("--revocations", required=True)
     s3.add_argument("--revocations-sig", required=True)
     s3.add_argument("--target", action="append")
-    s3.add_argument("--installed-release-seq", type=int, default=0)
+    s3.add_argument("--installed-release-seq", type=int, default=None, help="기본 = 본문 허용 출발 seq 전부")
+    s3.add_argument("--allow-expired", action="store_true", help="직전(현재 게시) 봉투 상속 검증용 — 만료(ⓔ)만 허용")
+    s3.add_argument("--stamp", action="store_true", help="통과 증표(<envelope>.verified.json)를 쓴다")
     s3.add_argument("--expect", default="apply", help="허용 판정(쉼표 구분 · 예: apply,halt,not_in_rollout)")
     a = ap.parse_args(argv)
     try:
-        lines = {"assets": stage_assets, "body": stage_body, "verify": stage_verify}[a.stage](a)
+        lines = {"assets": stage_assets, "body": stage_body, "revocations": stage_revocations,
+                 "verify": stage_verify}[a.stage](a)
     except GateFail as e:
         print("::error::발행 게이트 거부(%s) — %s" % (a.stage, e), file=sys.stderr)
         return 1

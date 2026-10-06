@@ -7,7 +7,7 @@
 
 동사:
   signal --source <역할|층> --op <op> --error-code <code>   신호 한 줄 append(형식 밖·끔·잠금 2초 초과 = 버림)
-  facts          결정론 일일 사실 → `<설정>/counsel/facts.json`(원자 교체 · 못 잰 칸은 뺀다 · null 0)
+  facts          결정론 일일 사실 → `<설정>/counsel/facts.json`(원자 교체 · 못 잰 칸은 뺀다 · null 0 · `cutoff`·`since` = 오류 계수 창 `(since, cutoff]`)
   ensure-client  `<팩>/install/agora-client.pin` + `.zip.b64` → `<설정>/lib`(설치 잠금 안 · 판정 = 트리 지문:
                  없음 = 설치 · 핀 지문 = 무동작 · 알려진 옛 판 지문 = 교체 · 그 밖(고친·모르는 트리) = 불가침 + 로그)
   tick           ensure-client → facts → `agora counsel auto --facts …`(스케줄 잡 `agora-counsel` · 30분 · 한 판 상한 540초)
@@ -390,15 +390,17 @@ def since_epoch(cfg, now):
     return now - 86400
 
 
-def _count_after(paths, since, parse):
-    """줄머리 시각이 since 보다 뒤인 줄 수 · 파일 없음 = 0 · 그 밖의 판독 실패 = None(못 잼)."""
+def _count_window(paths, since, cutoff, parse):
+    """줄머리 시각이 `since < t <= cutoff` 인 줄 수 · 파일 없음 = 0 · 그 밖의 판독 실패 = None(못 잼).
+    ★창의 양 끝 = 아고라가 일일 성공 때 daily_ok_at 으로 박는 cutoff 와 같은 값 — 이번 창 `(since, cutoff]` 과
+      다음 창 `(cutoff, 다음 cutoff]` 이 겹치지도 비지도 않는다(cutoff 뒤에 생긴 줄은 다음 날 몫)."""
     n = 0
     for p in paths:
         try:
             with open(p, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     t = parse(line)
-                    if t is not None and t > since:
+                    if t is not None and since < t <= cutoff:
                         n += 1
         except FileNotFoundError:
             continue
@@ -424,12 +426,11 @@ def _utc_head(line):
     return t.replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
-def probe_errors(cfg, now):
-    since = since_epoch(cfg, now)
+def probe_errors(since, cutoff):
     req = os.environ.get("CYS_DEPT_REQUESTS") or os.path.join(os.path.expanduser("~"), ".cys", "dept-requests")
     hook = os.path.join(state_dir(), "hook-errors.log")
-    tick = _count_after([os.path.join(req, "tick-errors.log")], since, _local_head)
-    hooks = _count_after([hook + ".1", hook], since, _utc_head)
+    tick = _count_window([os.path.join(req, "tick-errors.log")], since, cutoff, _local_head)
+    hooks = _count_window([hook + ".1", hook], since, cutoff, _utc_head)
     if tick is None or hooks is None:
         return None
     return {"tick_errors": tick, "hook_rc_nonzero": hooks}
@@ -479,11 +480,22 @@ def probe_uptime(now):
     return {"last_boot": ms_iso(t), "uptime_s": int(now - t)}
 
 
+def decide_cutoff(now=None):
+    """창 끝 = 지금(밀리초로 자른 값 · 그 글자 `ms_iso` 가 아고라 daily_ok_at 이 된다 → 다음 since 와 같은 값)."""
+    t = time.time() if now is None else now
+    return int(t * 1000) / 1000.0
+
+
 def collect_facts(cfg, now=None):
-    now = time.time() if now is None else now
-    facts = {}
+    """★cutoff 는 **맨 먼저**(오류 로그를 하나도 읽기 전) 정한다 — 읽는 사이에 붙은 줄은 cutoff 뒤라 다음 창 몫이다.
+    since = state.json daily_ok_at(아고라가 일일 성공 때 쓴 지난 cutoff) · 없으면 cutoff − 24h. 둘 다 facts 에 싣는다
+    (아고라가 cutoff 를 일일 pending 에 박고 성공 때 daily_ok_at = cutoff · 팩은 daily 완료 표식을 쓰지 않는다)."""
+    cutoff = decide_cutoff(now)
+    since = since_epoch(cfg, cutoff)
+    facts = {"cutoff": ms_iso(cutoff), "since": ms_iso(since)}
     probes = (("version", probe_version), ("os", os_tag), ("seats", probe_seats), ("doctor", probe_doctor),
-              ("errors", lambda: probe_errors(cfg, now)), ("depts", probe_depts), ("uptime", lambda: probe_uptime(now)))
+              ("errors", lambda: probe_errors(since, cutoff)), ("depts", probe_depts),
+              ("uptime", lambda: probe_uptime(cutoff)))
     for key, fn in probes:
         try:
             v = fn()
@@ -835,7 +847,12 @@ def tick(cfg=None):
     cfg = cfg or config_dir()
     ensure_client(cfg)
     if _daily_due(cfg):
-        write_facts(cfg)
+        try:
+            ok = write_facts(cfg) is not None and os.path.isfile(_counsel(cfg, FACTS_FILE))
+        except Exception:
+            ok = False
+        if not ok:   # ★그래도 agora 는 돈다(신호·주간) — 새 facts 가 없으면 아고라가 일일을 거절한다 · 팩은 완료 표식 0
+            log_event(cfg, "tick", result="facts-failed", note="agora runs anyway; daily refused without fresh facts")
     agora = os.path.join(cfg, "lib", "bin", "agora")
     if not os.path.isfile(agora):
         log_event(cfg, "tick", result="no-client")

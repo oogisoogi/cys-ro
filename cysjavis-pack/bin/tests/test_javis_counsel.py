@@ -361,6 +361,8 @@ class Facts(FakeCys):
         self.assertEqual(facts["doctor"], {"ok": 12, "warn": 2, "fail": 1, "skip": 2,
                                            "warn_ids": ["dept-awakening-seed", "hook"], "fail_ids": ["socket"]})
         self.assertEqual(facts["errors"], {"tick_errors": 2, "hook_rc_nonzero": 2})
+        self.assertEqual(facts["since"], jc.ms_iso(since), "since = state.json daily_ok_at 그대로")
+        self.assertTrue(jc.TS_RE.match(facts["cutoff"]) and facts["since"] < facts["cutoff"], facts)
         self.assertEqual(facts["depts"], {"active": 2, "tombstones": 3})
         self.assertEqual(facts["uptime"]["last_boot"], jc.ms_iso(started))
         self.assertTrue(7195 <= facts["uptime"]["uptime_s"] <= 7300, facts["uptime"])
@@ -408,6 +410,36 @@ class Facts(FakeCys):
                            "surface:4\trole=master\texited=true\n", "{}")
         with envset(PATH=fb + os.pathsep + os.environ.get("PATH", ""), CYS_CYS_BIN=None):
             self.assertEqual(jc.probe_seats(), {"count": 3, "roles": ["cso", "pack", "worker"]})
+
+    def test_error_window_boundaries(self):
+        """★리뷰 3R ③ — 창 = (since, cutoff]: since 정각 줄 = 뺌 · cutoff 정각 줄 = 셈 · cutoff 뒤 줄 = 뺌(다음 창 몫)."""
+        S, C = 1791100000, 1791100000 + 7200
+        st, req = os.path.join(self.tmp, "state"), os.path.join(self.tmp, "req")
+        os.makedirs(st)
+        os.makedirs(req)
+        os.makedirs(os.path.join(self.cfg, "counsel"))
+        with open(os.path.join(self.cfg, "counsel", "state.json"), "w") as f:
+            json.dump({"daily_ok_at": jc.ms_iso(S)}, f)
+        loc = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t))
+        utc = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+        with open(os.path.join(req, "tick-errors.log"), "w", encoding="utf-8") as f:
+            f.write("".join("%s t%d\n" % (loc(t), i) for i, t in enumerate((S - 1, S, S + 1, C - 1, C, C + 1, C + 999))))
+        with open(os.path.join(st, "hook-errors.log.1"), "w", encoding="utf-8") as f:
+            f.write("%s h rc=1\n%s h rc=1\n" % (utc(S), utc(S + 1)))
+        with open(os.path.join(st, "hook-errors.log"), "w", encoding="utf-8") as f:
+            f.write("%s h rc=1\n%s h rc=1\n" % (utc(C), utc(C + 1)))
+        empty = os.path.join(self.tmp, "emptybin")
+        os.makedirs(empty)
+        with envset(PATH=empty, CYS_CYS_BIN=None, CYS_STATE_DIR=st, CYS_DEPT_REQUESTS=req):
+            facts = jc.collect_facts(self.cfg, now=C + 0.0004)        # cutoff = 밀리초로 자른 C
+            self.assertEqual((facts["since"], facts["cutoff"]), (jc.ms_iso(S), jc.ms_iso(C)))
+            self.assertEqual(facts["errors"], {"tick_errors": 3, "hook_rc_nonzero": 2},
+                             "S+1·C−1·C 만 · S 정각·C 뒤 = 0")
+            self.assertEqual(jc.probe_errors(S, C - 1), {"tick_errors": 2, "hook_rc_nonzero": 1})
+            os.remove(os.path.join(self.cfg, "counsel", "state.json"))   # daily_ok_at 없음 = cutoff − 24h
+            facts = jc.collect_facts(self.cfg, now=C)
+            self.assertEqual(facts["since"], jc.ms_iso(C - 86400))
+            self.assertEqual(facts["errors"], {"tick_errors": 5, "hook_rc_nonzero": 3})
 
     def test_since_default_24h(self):
         self.assertEqual(jc.since_epoch(self.cfg, NOW), NOW - 86400)
@@ -537,6 +569,29 @@ class EnsureClient(Base):
         with open(os.path.join(self.cfg, "config.json"), "w") as f:
             json.dump({"counsel": {"auto": False}}, f)
         self.assertFalse(jc._daily_due(self.cfg, now))
+
+    def test_tick_facts_failure_still_runs_agora(self):
+        """★리뷰 3R ③ — facts 쓰기 실패 = 로그 + agora 는 그대로 돈다 · 팩은 daily 완료 표식(state.json)을 쓰지 않는다."""
+        self.put(_zip([("bin/agora", self.AGORA)]))
+        empty = os.path.join(self.tmp, "emptybin")
+        os.makedirs(empty)
+        real = jc.collect_facts
+
+        def boom(cfg, now=None):
+            raise RuntimeError("disk")
+        jc.collect_facts = boom
+        try:
+            with envset(PATH=empty, CYS_CYS_BIN=None, AGORA_SIGNING_KEY=None):
+                self.assertEqual(jc.tick(), "ran")
+        finally:
+            jc.collect_facts = real
+        self.assertTrue(os.path.isfile(self.lib("called.json")), "facts 실패에 agora 를 건너뛰었다")
+        self.assertFalse(os.path.exists(os.path.join(self.cfg, "counsel", "facts.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.cfg, "counsel", "state.json")), "팩이 state 를 썼다")
+        ev = [(e["event"], e["result"]) for e in map(json.loads, rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines())]
+        self.assertIn(("facts", "error"), ev)
+        self.assertIn(("tick", "facts-failed"), ev)
+        self.assertEqual(ev[-1], ("tick", "ran"))
 
     def test_tick_without_client_logs_and_stops(self):
         empty = os.path.join(self.tmp, "emptybin")

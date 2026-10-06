@@ -3,6 +3,39 @@
 > 브리프 = [master#71f53d34](파일 정본 `~/axdev/master/briefs/2026-10-06-cysr-118-u2-runner.md`) · 설계 정본 = `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md`(4판 · U1 편입).
 > 가지 `u2/runner-118` off `e2515bb0` · 워커 = worker-2(계정2 · Opus) · 커밋 = `git log --oneline e2515bb0..HEAD`.
 
+## §0-6 후속 델타(TICKET=cysr-118-u2-followup · 정본 브리프 = ~/axdev/master/briefs/2026-10-07-cysr-118-u2-followup.md · master#dce9c476 · 가지 `u2/followup-118` off `8ba48f9e` · 착수 07:59)
+- **이월**: U2 = 병합 완료(merge/v0.14.43 `e664ec08` → U4 `8bcd39aa` → `8ba48f9e`) · Fable 5R = BLOCK 0 · MAJOR 0 · MINOR 8(n10~n17 · 「병합 뒤 별도 티켓」) + 5판 정직 고지 2 · 원문 = `docs/update/REVIEW-U2-fable-5r.md`(이제 .gitignore). 기준선 = `cargo test --lib update::` **223/0**(수정 0 · 08:00).
+- **항목표(8 + 정직 고지 2 + 범위 밖 1) — 판정 = 전부 「발행 전 해소」**(발행 뒤로 미룬 것 0):
+  | # | 지적(요지) | 판정 | 커밋 · 소요 | 고친 곳(파일:줄) | 증명 시험 · 뮤턴트(수리 끄면 적) |
+  |---|---|---|---|---|---|
+  | n10 | 재구성 저널 토큰이 attempt 계보 밖 → 재기동 실패 뒤 한 슬롯 더 손상 = Mismatch(사람 필요) | 해소 | a953c9f7 · 07:59→08:02 | `runner.rs:578`(`attempt_takeover(시도 txn → 재구성 토큰)`) | `realops::tests::reconstruct_lineage_survives_restart_failure_then_one_more_torn_slot`(실 RealOps · S7 유지 → journal.json 손상 = Degraded(남은 슬롯 = 재구성 Locked) → 다음 복구기 = 같은 시도로 재구성·재기동·종결) · U2-LINEAGE |
+  | n16 | `attempt_end` 삭제 먼저 → 삭제 실패·fsync 전 죽음에 종결된 기록이 원천으로 남음 | 해소(잔여 창 = 표지 쓰기 + 삭제 둘 다 실패 · 1줄) | a953c9f7 | `runner.rs:755`(`attempt_end_by` = `ended` 내구 쓰기 → 삭제 + 폴더 fsync) | `runner::tests::attempt_end_marks_ended_before_removing`(삭제가 일어나는 순간 디스크 = ended 단언 · 삭제 실패 주입 = 표지 남음 = Missing) · U2-ENDFIRST |
+  | n11 · 정직 고지 2 | 윈: 새 판 재구성 + 재기동 실패 → 다음 복구기 S7 행이 러너 사본(옛 cys)으로 기동 = 정식 새 판 + 옛 데몬 혼합 | 해소(맥 = 원래 정식 자리 · 무변화) | b46ebb7a · 08:02→08:09 | `realops.rs:1044`(판정 → `attempt.json recon`) · `realops.rs:878`(`start_old` = 윈 + 새 판 재구성 계보면 `install_dir/cys.exe`) · `runner.rs:728`(`attempt_note_recon`) | `realops::tests::win_s7_row_after_new_reconstruct_restart_failure_starts_canonical_new_cys`(모의 윈 · 정식 자리 cys.exe 의 기록 머리 = NEW) · U2-RECONEXE · 실기 = 아래 윈 검체 |
+  | n17 | 재구성이 새 판으로 종결하면 S11 생략(수용 기록·윈 `installers/<seq>/` 0 → 다음 갱신 N7 보류) | 해소(러너 쪽 S11 몫 · 첫 설치 bootstrap = U5 몫 · §5 ⓔ) | b46ebb7a | `runner.rs:111`(`Ops::accept_reconstructed`) · `runner.rs:592`·`:361`(재구성 종결 · S7 행 종결 둘 다 · 종결 전) · `runner.rs:605`(`record_accepted` = ok · release_seq = 새 판) · `realops.rs:204`(`accept_release` = 보존·재검증 + 수용 기록 · commit 과 공용) · `realops.rs:1023` | `realops::tests::new_reconstruct_terminal_preserves_release_and_records_acceptance`(서명 시험 본문 · 재기동 성공 / 실패 → S7 행 두 갈래 · `installers/9` 재검증 · 수용 기록 설치 seq 9 · last_result ok) · U2-RECONACCEPT |
+  | ★범위 밖 | (n17 실 경로에서 발견) `stage_dir`·S11 스냅샷 보호 이름이 **지금 저널 txn** — 복구기 인수 뒤엔 새 토큰이라 윈 S9~S11 중단 복구의 S11 보존이 없는 `stage/<새 토큰>/setup.exe` 를 찾아 실패 → **롤백**(전진 완료 불가) · stage 삭제 빗나감 | 해소 | b46ebb7a | `realops.rs:197`(`origin_txn` = 이번 시도 S1 txn · 기록 없으면 저널 txn) | `realops::tests::stage_after_takeover_is_this_attempts_s1_stage`(윈 setup.exe + A2 → `installers/9` 재검증) · U2-STAGETXN(= 종전 = 「No such file … stage/<새 토큰>/setup.exe」 적색 실측) |
+  | n12 | `pack-auto-hold` 가 꾸러미 내려받기·전개 **뒤** → 보류 중 6h 틱마다 ≈49 MiB 재다운로드(치명 4군 「폭주」) | 해소 | efe53bb1 · 08:09→08:16 | `cys.rs:24909`(보류 때 메모 `.pack-auto-hold.json` · 허용 = 삭제) · `cys.rs:24752`(`pack_hold_memo_hit`) · `cys.rs:24762`(`pack_remote_source` = 매니페스트만 받은 뒤 메모 대조 → 꾸러미 받기 전 같은 보류) · `pack.rs:2891`(`plan_disk_fingerprint` = plan_install 의 디스크 입력 전부) | cys `pack_auto_hold_memo_skips_download_until_inputs_change`(원격 꾸러미를 치운 채 같은 보류 · 내려받기 0 · 판정 입력 밖 round/ 변화 = 적중 · 사용자 되돌림 = 다시 판정·허용·메모 삭제 · 수동 = 메모 무관) · U2-HOLDMEMO |
+  | n13 | `pack-update --txn` 글루가 실 프로세스에서 유효 서명으로 지나는 시험 0 | 해소(잔여 1 · 아래) | efe53bb1 | `cys.rs:24727`(글루 무변경 · 스위치만) | cys `pack_update_txn_glue_holds_in_a_real_process`(시험 바이너리를 자식으로 다시 띄움 → 실 argv 분리 `rotate_ext_strip`(OnceLock 1회) → clap → 비-gated `pack_update_from_dir` → 시험 키 유효 서명 꾸러미 · `--txn` = 보류·반영 0 / 수동 = 반영) · U2-TXNGLUE |
+  | n14 | smoke `own_daemons` 판별식 양성 대조 없음 → reap·「잔존 0」 공허 통과 가능 | 해소 | 77feabc7 · 08:16→08:29 | `u2-smoke.sh:160`(⑥ 데몬 생존 중 소켓이 밝힌 pid ∈ own_daemons) | smoke 18/18 · 손 뮤턴트(판별식 깨뜨림) = 양성 대조 BAD · **같은 실행의 「잔존 0」 은 거짓 통과 + 실제 고아 1**(지적이 실물로 재현 → 그 pid 만 정리 · 뒤 0) |
+  | n15 · 정직 고지 1 | `u2-realroots.sh` 가 `U2_REALROOTS_OUT` 을 안 만듦 → 목록 0 · rc 1 · 판정 무효 | 해소 | 77feabc7 | `u2-realroots.sh:14`(`mkdir -p`) · 목록 부재 = 「판정 불가」 rc 2 | 없는 폴더를 지정해 재실행(아래 §0-6 결과) |
+- **§7-4 잔여 대조**: codex 4R 8행 + Fable 4R 4행 + master 1행 = 전부 「채택 · 커밋」(보류·발행 뒤·미해소 표기 0 · 방식 차이 5 = §2-19~23 은 각 근거 있음) → **잔여 0**.
+- **계약 변화(다른 티켓이 알아야 할 것)**:
+  - `attempt.json` `recon`(`old`·`new` · 재구성 판정) — S7 행 기동 바이너리(윈)·종결 S11 몫의 근거.
+  - 새 판 재구성 종결 = 결과 기록 `journal_corrupt`(재구성 성공) 다음 `ok`(release_seq = 새 판) — 앱 「갱신됨」 안내가 이 경우에도 뜬다.
+  - stage·S11 스냅샷 보호 이름 = 이번 시도 S1 txn(복구기 인수 뒤에도).
+  - 팩 상태 폴더(`~/.cys`) `.pack-auto-hold.json`(자동 보류 메모 · 수동 경로 무관 · 허용 판정 때 삭제) · 메모 적중 stderr = `pack-auto-hold: <사유> (보류 메모 · 꾸러미 내려받기 0)`.
+  - `u2-realroots.sh` rc 2 = 판정 불가(종전 rc 1 과 섞이던 것) · `u2-mutants.sh` 줄 머리 `bin:` = `--bin cys` 시험.
+- **잔여(정직)**:
+  - n13 = 「실 cys 바이너리 + 실 서명」 은 불가 — 팩 키링(`packsig::embedded_keyring`)에 시험 키 덮어쓰기 경로가 없다(만들면 서명 계약 변화 → 안 만듦). 남은 차이 = `main` 의 `rotate_ext_strip` 호출 1줄(자식 시험이 같은 함수를 부름).
+  - n16 = 표지 쓰기와 삭제가 **둘 다** 실패하는 창(같은 폴더 권한 사고 · 1줄) — 다음 S1 이 덮는다.
+  - n17 = 윈 **첫 설치** 의 `installers\<seq>\` 는 U5(298 · 설치 링크) 몫 — 러너 쪽(S11 · 새 판 재구성)은 여기서 닫음.
+- **윈 실기 검체(267 relay · n11 · 정직 고지 2 — W 요청문에 「재구성 뒤 재기동 실패」 항목으로)**: 전제 = 디버그 빌드 · 격리 `CYS_UPDATE_STATE_DIR`(아래 `%U%`) · 정식 자리 `%LOCALAPPDATA%\cys\cys.exe` 가 새 판인 상태에서 저널 두 슬롯 손상 + 재기동 실패 주입(`%U%\restart` 실패 = 새 판 cys.exe 를 잠시 다른 이름으로).
+  1. 읽기: `type %U%\attempt.json` → `"recon": "new"` 줄이 있다.
+  2. 읽기: `cys self-update --recover --json` 첫 회 → `recovered` 에 `SeatsBlocked` · `type %U%\journal.json` 의 `"state": "S7_STOPPED"`.
+  3. 새 판 cys.exe 이름 복구 뒤 두 번째 `cys self-update --recover --json` → `Deferred`.
+  4. 판정: `%LOCALAPPDATA%\cys\cys.exe identify` 의 데몬 판(버전·빌드) = 새 판 · 관측 기록 = `powershell -c "Get-CimInstance Win32_Process -Filter \"Name='cysd.exe'\" | Select ProcessId,ExecutablePath,CommandLine"`(러너 사본 `%LOCALAPPDATA%\cys-update\runner\cys.exe` 는 옆에 cysd.exe 가 없어 그 rotate 가 어느 cysd 를 띄우는지 **맥에서 미확인** — 데몬 판이 옛 판이면 5판 결함 재현 · 경로 줄은 판정 아닌 기록).
+  5. 판정: `dir %U%\installers\<새 판 seq>` 에 `release.json`·서명·`setup.exe`·A2 서명 4개 · `self-update --check --json` 이 N7 보류 아님(n17).
+- **시험 결과(격리 래퍼 · 전수 전체를 `u2-realroots.sh` 로 감쌈 = 5판 정직 고지 1 의 「다음 판 전수 한 번」 · 08:31~08:56)**: lib **1002/0**(1 ignored) · cys **591/0** · cysd **2464/0**(7 ignored) · smoke **18/18**(n14 양성 대조 포함) · mutants **29/29**(5판 22 + U2-LINEAGE·ENDFIRST·RECONEXE·RECONACCEPT·STAGETXN·HOLDMEMO·TXNGLUE) · cys-app **260/0**(기반 8ba48f9e 의 수 · 5판 296 은 옛 기반) · 윈 타입체크 오류 **0** · real-roots = 출력 폴더 미리 없음 → 목록 생성 · 155,951→155,954 항목 · 변화 47 · **U2 이름공간 0**(rc 0) · 앞선 묶음 재실행(update:: 228 · pack:: 138 · cys pack_ 42 · smoke 18) real-roots 도 U2 0.
+
 ## §0-5 5판 델타(마지막 수리 판 · 정본 브리프 = ~/axdev/master/briefs/2026-10-07-cysr-118-u2-5r.md · 순환 재개 줄 master#076fe54a · 추가 1줄 master#a589549f · 착수 05:12)
 - **이월**: 4판 검수 = codex 4R(BLOCK 1 N3″ · MAJOR 3 M4/M6-원격·M8-pro·M5 · MINOR 4) · Fable 4R(BLOCK 0 · MAJOR 1 M9 · MINOR 3 n7~n9) · 원문 = `docs/update/REVIEW-U2-{codex,fable}-4r.md`(info/exclude · 커밋 불가).
 - **끝난 것(커밋 · 431d5d66 위)**:

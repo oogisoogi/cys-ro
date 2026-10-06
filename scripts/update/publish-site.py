@@ -12,7 +12,7 @@
     교체 — 다른 게시자가 그 사이 바꿨으면 거부(rc 3 · 다시 실행 = 처음부터 재검사). 보관소는 포인터와 색인이 **세대 포인터 하나**
     (`ptr/update/<c>/releases/_gen`)라 중단돼도 「멱등인데 색인 없음」 상태가 없다(재실행 = 객체 확인 → 세대 교체).
   · **라이브 대조 + 자동 되돌리기**(2R #16 · `--live-check`): 교체 뒤 공개 URL 의 본문·서명 sha256 이 포인터 값이 아니면 옛 포인터를
-    **방금 쓴 ETag 조건으로** 되돌린다(rc 4). 되돌리기 CAS 마저 실패하면(그 사이 누가 또 바꿈) rc 5 + 사람이 칠 명령 1줄
+    **방금 쓴 ETag 조건으로** 되돌린다(rc 4 · 첫 게시였으면 묘비 포인터 · 4판 = R2 조건부 DELETE 미지원). 되돌리기 CAS 마저 실패하면(그 사이 누가 또 바꿈) rc 5 + 사람이 칠 명령 1줄
     (`publish-site.py restore …` · 옛 포인터 사본 = `~/.cache/cys-update-rollback/`).
 저장소: `--fs <폴더>`(시험·드라이런 · 같은 호스트 flock) | `--r2 <버킷>`(S3 호환 API · env R2_ACCOUNT_ID·R2_ACCESS_KEY_ID·
   R2_SECRET_ACCESS_KEY = master 로컬 · 버킷 생성 = master). 배치 = scripts/update/store.py 머리말.
@@ -30,7 +30,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import update_common as uc  # noqa: E402
-from store import CasFail, FsStore, S3Store, gen_key, put_object  # noqa: E402
+from store import TOMBSTONE, CasFail, FsStore, S3Store, gen_key, load, put_object  # noqa: E402
 import u1verify  # noqa: E402
 
 ROLLBACK_DIR = os.path.expanduser("~/.cache/cys-update-rollback")
@@ -83,8 +83,8 @@ def plan(store, kind, doc, data, sig, a, now):
     if kind == "archive":
         comp, seq = doc["component"], int(doc["release_seq"])
         key = gen_key(comp)
-        raw, etag = store.get(key)
-        g = json.loads(raw) if raw else {"max_seq": None, "seqs": {}}
+        g, raw, etag = load(store, key)
+        g = g or {"max_seq": None, "seqs": {}}
         cur = g["seqs"].get(str(seq))
         if cur:
             if _same(cur, data, sig):
@@ -102,8 +102,7 @@ def plan(store, kind, doc, data, sig, a, now):
         g2 = {"max_seq": seq, "seqs": dict(g["seqs"], **{str(seq): _entry(data, sig, {"seq": seq})})}
         return key, (json.dumps(g2, sort_keys=True) + "\n").encode(), raw, etag
     key = "ptr" + rel
-    raw, etag = store.get(key)
-    old = json.loads(raw) if raw else None
+    old, raw, etag = load(store, key)
     if _same(old, data, sig):
         return key, None, raw, etag
     field = "feed_rev" if kind == "envelope" else "rev"
@@ -127,14 +126,13 @@ def verify_envelope_now(store, doc, data, sig, a, tmp):
     import base64
     body_raw, body_sig = base64.b64decode(doc["release"]), base64.b64decode(doc["release_sig"])
     seq = int(json.loads(body_raw)["release_seq"])
-    graw, _ = store.get(gen_key(doc["component"]))
-    e = (json.loads(graw)["seqs"].get(str(seq)) if graw else None)
+    g = load(store, gen_key(doc["component"]))[0]
+    e = g["seqs"].get(str(seq)) if g else None
     if not e or not _same(e, body_raw, body_sig):
         raise Refuse("봉투에 실은 본문·서명(seq %d)이 보관소 불변 객체와 바이트로 같지 않다(먼저 archive 게시 · 2R #19)" % seq)
-    rraw, _ = store.get("ptr" + uc.REVOCATIONS_PATH)
-    if not rraw:
+    rp = load(store, "ptr" + uc.REVOCATIONS_PATH)[0]
+    if not rp:
         raise Refuse("게시된 폐기문이 없다 — 봉투보다 폐기문을 먼저 게시하라(U1 검증에 필요)")
-    rp = json.loads(rraw)
     rev = os.path.join(tmp, "revocations.json")
     open(rev, "wb").write(_obj(store, rp["json"]))
     open(rev + ".minisig", "wb").write(_obj(store, rp["sig"]))
@@ -174,7 +172,7 @@ def _save_rollback(key, old_raw, d):
     p = os.path.join(d, "%d-%s" % (int(time.time()), key.replace("/", "_")))
     open(p, "wb").write(old_raw if old_raw is not None else b"")
     if old_raw is None:
-        open(p + ".absent", "w").write("직전 포인터 없음(첫 게시) — 되돌리기 = 삭제\n")
+        open(p + ".absent", "w").write("직전 포인터 없음(첫 게시) — 되돌리기 = 묘비 포인터 조건부 PUT\n")
     return p
 
 
@@ -186,10 +184,8 @@ def cmd_restore(a):
     """비상 되돌리기(rc 5 뒤 사람이 1회): 지금 ETag 가 --if-match 일 때만 옛 포인터 바이트로(또는 삭제)."""
     store = _store(a)
     try:
-        if os.path.exists(a.from_file + ".absent"):
-            store.cas_delete(a.key, a.if_match)
-        else:
-            store.cas(a.key, open(a.from_file, "rb").read(), a.if_match)
+        old = TOMBSTONE if os.path.exists(a.from_file + ".absent") else open(a.from_file, "rb").read()
+        store.cas(a.key, old, a.if_match)
     except CasFail as e:
         print("::error::되돌리기 CAS 실패 — %s(지금 ETag 를 다시 읽고 판단)" % e, file=sys.stderr)
         return 3
@@ -264,10 +260,7 @@ def main(argv=None):
             live_check(rel, ptr, a.live_check, a.live_tries, a.live_interval)
         except LiveFail as e:
             try:
-                if old_raw is None:
-                    store.cas_delete(ptr_key, new_etag)
-                else:
-                    store.cas(ptr_key, old_raw, new_etag)
+                store.cas(ptr_key, old_raw if old_raw is not None else TOMBSTONE, new_etag)  # 묘비 = 없앰(삭제 API 0)
             except CasFail as e2:
                 _, cur = store.get(ptr_key)
                 print("::error::비상 — %s · 되돌리기 CAS 실패(%s). 확인 뒤 이 1줄을 실행:\n"

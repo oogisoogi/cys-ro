@@ -385,8 +385,10 @@ class TestPublishSite(Base):
         r = publish(self.fx, "archive", b, st, "--first", "--live-check", self.live_server(), "--live-tries", "1")
         self.assertEqual(r.returncode, 4, r.stderr)
         self.assertIn("되돌렸다", r.stderr)
-        self.assertFalse(os.path.exists(os.path.join(st, "ptr", "update", "cysr", "releases", "_gen")))
-        self.assertEqual(publish(self.fx, "archive", b, st, "--first").returncode, 0)  # 되돌린 뒤 정상 게시 가능
+        tomb = open(os.path.join(st, "ptr", "update", "cysr", "releases", "_gen"), "rb").read()
+        self.assertEqual(tomb, b'{"tombstone": true}\n')  # 4판: 없앰 = 묘비 포인터(조건부 PUT · 삭제 API 0)
+        self.assertEqual(publish(self.fx, "archive", b, st, "--first").returncode, 0)  # 묘비 위 정상 게시(그 ETag 로 CAS)
+        self.assertEqual(gen_of(st)["max_seq"], 5)
 
     def test_mut_live_check_rollback_cas_fails_rc5(self):
         """되돌리기 CAS 마저 실패(대조 중 누가 또 바꿈) = rc 5 + 실행 가능한 restore 명령 1줄 → 그 명령으로 복구."""
@@ -401,7 +403,7 @@ class TestPublishSite(Base):
         import shlex
         rr = run(shlex.split(line[0]))
         self.assertEqual(rr.returncode, 0, rr.stderr)
-        self.assertFalse(os.path.exists(gp))  # 첫 게시였으므로 복구 = 삭제
+        self.assertEqual(open(gp, "rb").read(), b'{"tombstone": true}\n')  # 첫 게시였으므로 복구 = 묘비
 
     def test_s3store_conditional_put_against_fake_s3(self):
         """S3Store 의 HTTP 경로(SigV4 헤더 · If-None-Match/If-Match · 412 = CasFail) — 로컬 가짜 S3(R2 실측 0 · 의미 대역)."""
@@ -451,10 +453,9 @@ class TestPublishSite(Base):
         e2 = st.cas("ptr/x", b"two", e1)
         with self.assertRaises(stm.CasFail):
             st.cas("ptr/x", b"three", e1)
-        with self.assertRaises(stm.CasFail):
-            st.cas_delete("ptr/x", e1)
-        st.cas_delete("ptr/x", e2)
-        self.assertEqual(st.get("ptr/x"), (None, None))
+        e3 = st.cas("ptr/x", stm.TOMBSTONE, e2)                       # 없앰 = 묘비 조건부 PUT(4판 · DELETE 0)
+        self.assertEqual(stm.load(st, "ptr/x")[::2], (None, e3))
+        self.assertFalse(hasattr(st, "cas_delete"))
         self.assertTrue(all(a.startswith("AWS4-HMAC-SHA256 Credential=AK/") for a in seen))
 
     def test_mut_cas_etag_mismatch(self):
@@ -834,6 +835,11 @@ class TestUpdateWorker(Base):
         self.assertIn("드라이런", r.stdout)
         self.assertIn("/update/__route_probe/*", r.stdout)
         self.assertEqual(run(["bash", os.path.join(UPD, "cf-route-probe.sh"), "--bogus"]).returncode, 2)
+
+    def test_tombstone_pointer_is_404(self):
+        open(os.path.join(self.st, "ptr", "update", "cysr", "next.json"), "wb").write(b'{"tombstone": true}\n')
+        self.assertEqual([g["status"] for g in self.serve(("GET", "/update/cysr/next.json"),
+                                                         ("GET", "/update/cysr/next.json.minisig"))], [404, 404])
 
     def test_mut_object_tampered_is_502(self):
         ptr = json.load(open(os.path.join(self.st, "ptr", "update", "cysr", "next.json")))

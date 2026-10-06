@@ -7,10 +7,10 @@
   ptr/update/<c>/releases/_gen         보관소 **세대 포인터** {max_seq, seqs: {"<seq>": 포인터}}  — 〃(포인터와 색인을 한 객체로
                                        합쳐 한 번의 CAS 로 바뀐다 · 2판의 「포인터 → 색인」 두 쓰기 사이 중단 상태가 없다)
 CAS(비교 후 교환): `get` 이 (바이트, ETag) 를 주고 `cas(key, data, etag)` 는 지금 ETag 가 그 값일 때만 쓴다(`etag=None` = 없을
-때만). 어긋나면 CasFail — 게시기가 「다른 게시자가 먼저 바꿨다」로 거부한다(재시도는 처음부터 = 재검사).
+때만). 삭제 API 는 쓰지 않는다 — 없앰 = 묘비 포인터(TOMBSTONE) 조건부 PUT(4판 · R2 조건부 DELETE 미지원). 어긋나면 CasFail — 게시기가 「다른 게시자가 먼저 바꿨다」로 거부한다(재시도는 처음부터 = 재검사).
 백엔드:
   FsStore(root)   파일 시스템(시험·드라이런) · ETag = sha256 · CAS = 저장소 잠금(flock) 안 비교+원자 교체(같은 호스트 한정).
-  S3Store(...)    R2 S3 호환 API(표준 라이브러리 SigV4 · 조건부 PUT/DELETE 헤더) · 자격 = master 로컬 env
+  S3Store(...)    R2 S3 호환 API(표준 라이브러리 SigV4 · 조건부 PUT 헤더만) · 자격 = master 로컬 env
                   `R2_ACCOUNT_ID`·`R2_ACCESS_KEY_ID`·`R2_SECRET_ACCESS_KEY`(값 = 저장소 밖 · 워커는 읽기 전용 바인딩).
 """
 import datetime
@@ -29,6 +29,19 @@ import update_common as uc
 
 class CasFail(Exception):
     """조건부 쓰기 실패(지금 ETag ≠ 기대 · 또는 이미 있음)."""
+
+
+# ★4판(Fable 3R MAJOR-3): R2 DeleteObject 는 조건부(If-Match)를 지원하지 않는다 → 「없앰」 = **묘비 포인터를 조건부 PUT**.
+#   읽는 쪽(게시기·게이트·워커)은 묘비를 「없음」으로 읽고, 다음 게시는 그 묘비의 ETag 로 CAS 한다(삭제 API 를 쓰지 않는다).
+TOMBSTONE = b'{"tombstone": true}\n'
+
+
+def load(store, key):
+    """(문서 dict 또는 None(없음·묘비), 원 바이트, ETag)."""
+    raw, etag = store.get(key)
+    if raw is None or raw == TOMBSTONE:
+        return None, raw, etag
+    return json.loads(raw), raw, etag
 
 
 def gen_key(component):
@@ -72,19 +85,12 @@ class FsStore:
             os.replace(tmp, p)
         return hashlib.sha256(data).hexdigest()
 
-    def cas_delete(self, key, etag):
-        with self._locked():
-            _, cur = self.get(key)
-            if cur != etag:
-                raise CasFail("%s: 지금 ETag %s ≠ 기대 %s(삭제 거부)" % (key, cur, etag))
-            os.remove(self._p(key))
-
     def describe(self):
         return "--fs %s" % self.root
 
 
 class S3Store:
-    """R2 S3 호환 API — `If-None-Match: *` / `If-Match: "<etag>"` 조건부 PUT(R2 지원 · codex 2R 근거 링크).
+    """R2 S3 호환 API — `If-None-Match: *` / `If-Match: "<etag>"` 조건부 **PUT 만**(R2 지원 · DELETE 조건부는 미지원이라 안 쓴다).
     ⚠실측 0(이 기계에 R2 자격 없음) — 시험은 같은 의미의 로컬 가짜 S3 서버로 잰다(`endpoint` 인자)."""
 
     def __init__(self, bucket, endpoint=None, access_key=None, secret_key=None, region="auto"):
@@ -144,13 +150,6 @@ class S3Store:
             raise CasFail("%s: PUT 뒤 재독 불일치(동시 교체)" % key)
         return new
 
-    def cas_delete(self, key, etag):
-        st, body, _ = self._req("DELETE", key, b"", {"If-Match": '"%s"' % etag})
-        if st == 412:
-            raise CasFail("%s: 조건부 DELETE 412" % key)
-        if st not in (200, 204):
-            raise uc.PublishError("R2 DELETE %s = HTTP %d" % (key, st))
-
     def describe(self):
         return "--r2 %s" % self.bucket
 
@@ -170,8 +169,7 @@ def put_object(store, key, data):
 
 def archive_state(store, component):
     """보관소 (max_seq 또는 None, seq → 본문 바이트 함수, seq → 서명 바이트 함수) — 세대 포인터 하나에서."""
-    raw, _ = store.get(gen_key(component))
-    g = json.loads(raw) if raw else {"max_seq": None, "seqs": {}}
+    g = load(store, gen_key(component))[0] or {"max_seq": None, "seqs": {}}
 
     def obj(seq, field):
         e = g["seqs"].get(str(seq))

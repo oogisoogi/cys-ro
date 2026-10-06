@@ -51,7 +51,8 @@ export default {
     let ptr;
     try {
       ptr = JSON.parse(await ptrObj.text());
-      if (arch) ptr = Object.hasOwn(ptr.seqs || {}, arch[2]) ? ptr.seqs[arch[2]] : null;
+      if (ptr && ptr.tombstone === true) ptr = null; // 묘비 = 없음(4판 · 삭제 대신 조건부 PUT)
+      else if (arch) ptr = Object.hasOwn(ptr.seqs || {}, arch[2]) ? ptr.seqs[arch[2]] : null;
     } catch {
       return plain(502, "bad pointer");
     }

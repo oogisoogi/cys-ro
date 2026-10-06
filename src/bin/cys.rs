@@ -2777,6 +2777,8 @@ fn main() {
         let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
         if cys::update::cli::claims(&args) {
             AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
+            // ★1.1.8 U2: 러너·복구기의 데몬 RPC(정비 모드·좌석 토큰·org.status) — 자동 기동 없이(위 AUTOSTART false).
+            cys::update::auto::set_rpc(|m, p| request(m, p).map_err(|e| e.to_string()));
             let hooks = cys::update::check::Hooks { seats: &update_seat_facts, pending_approvals: &update_pending_approvals };
             if let Some(rc) = cys::update::cli::dispatch(&args, &hooks) {
                 std::process::exit(rc);

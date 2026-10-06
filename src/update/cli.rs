@@ -62,11 +62,22 @@ enum UpdCmd {
         #[arg(long)]
         json: bool,
     },
-    /// 자동 갱신 — 이 판(1.1.8 U1)은 `--check`(판정만 · 교체 0)뿐이다
+    /// 자동 갱신 — `--check`(판정만 · 교체 0) · `--auto --spawn`(내장 잡: 러너를 띄우고 즉시 반환) · `--run`(러너) ·
+    /// `--recover`(복구기) · `--verify-payload`(윈 설치 폴더 전수 대조 진단)
     #[command(name = "self-update")]
     SelfUpdate {
         #[arg(long)]
         check: bool,
+        #[arg(long)]
+        auto: bool,
+        #[arg(long)]
+        spawn: bool,
+        #[arg(long)]
+        run: bool,
+        #[arg(long)]
+        recover: bool,
+        #[arg(long = "verify-payload")]
+        verify_payload: bool,
         #[arg(long)]
         json: bool,
     },
@@ -155,7 +166,7 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             print(json, &v, &format!("{} build_id={} release_seq={} target={}", b.version, b.build_id, b.release_seq, b.target));
             0
         }
-        UpdCmd::SelfUpdate { check: true, json } => {
+        UpdCmd::SelfUpdate { check: true, json, .. } => {
             // ★1R B1: 운영 상태 폴더를 못 정하면 판정 불가(rc 3 · `.` 후퇴 0).
             let dir = match buildinfo::state_dir() {
                 Ok(d) => d,
@@ -170,9 +181,18 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             print(json, &v, &format!("decision={} feed={} first_hold={hold} (교체 0 · 판정만)", v["decision"], v["feed"]["verdict"]));
             rc
         }
-        UpdCmd::SelfUpdate { check: false, .. } => {
-            eprintln!("cys self-update: 이 판은 --check(판정만)만 있습니다 — 교체·자동 실행은 다음 판(U2)에서 들어옵니다.");
-            2
+        // ★1.1.8 U2(AUTO-UPDATE-118 §3-1·§3-11·§7-3): 집행 동사 — 하나만 고른다(섞으면 거부 rc 2).
+        UpdCmd::SelfUpdate { check: false, auto, spawn, run, recover, verify_payload, json } => {
+            match (auto && spawn, run, recover, verify_payload) {
+                (true, false, false, false) => super::auto::auto_spawn(json),
+                (false, true, false, false) if !auto && !spawn => super::auto::run(json, hooks),
+                (false, false, true, false) if !auto && !spawn => super::auto::recover(json),
+                (false, false, false, true) if !auto && !spawn => super::auto::verify_payload(json),
+                _ => {
+                    eprintln!("cys self-update: --check | --auto --spawn | --run | --recover | --verify-payload 중 하나만");
+                    2
+                }
+            }
         }
         UpdCmd::UpdateVerify {
             component,

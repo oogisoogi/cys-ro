@@ -253,6 +253,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn entry_names_and_tree_checks() {
         assert!(check_entry_names(&["cysr.app/Contents/Info.plist".into()]).is_ok());

@@ -36,11 +36,28 @@ pub struct Env {
     pub dry_run: bool,
 }
 
+/// 후보(S0 판정에서 뽑은 것 · 복구기가 다시 읽을 수 있게 `candidate.json` 으로 남긴다).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Candidate {
+    pub asset: super::feed::Asset,
+    pub version: String,
+    pub release_seq: u64,
+    pub installed_revoked: bool,
+}
+
+pub const CANDIDATE_FILE: &str = "candidate.json";
+
+impl Candidate {
+    pub fn from_outcome(o: &super::feed::FeedOutcome) -> Option<Candidate> {
+        Some(Candidate { asset: o.asset.clone()?, version: o.version.clone().unwrap_or_default(), release_seq: o.release_seq?, installed_revoked: o.installed_revoked })
+    }
+}
+
 pub struct RealOps {
     pub env: Env,
     pub token: String,
-    /// S0 판정(후보 행 포함) — 러너 시작 전에 호출자가 채운다.
-    pub outcome: super::feed::FeedOutcome,
+    /// S0 후보(행 포함) — 러너 시작 전에 호출자가 채운다(복구기 = `candidate.json`).
+    pub cand: Candidate,
     pub old_version: String,
     q1: Option<super::quiesce::Token>,
     b0: Option<Baseline>,
@@ -51,12 +68,12 @@ fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
 }
 
 impl RealOps {
-    pub fn new(env: Env, token: String, outcome: super::feed::FeedOutcome, old_version: String) -> RealOps {
-        RealOps { env, token, outcome, old_version, q1: None, b0: None }
+    pub fn new(env: Env, token: String, cand: Candidate, old_version: String) -> RealOps {
+        RealOps { env, token, cand, old_version, q1: None, b0: None }
     }
 
     fn asset(&self) -> Result<&super::feed::Asset, Fail> {
-        self.outcome.asset.as_ref().ok_or_else(|| fail(ErrCode::ReleaseSigBad, "S2", "후보 행 없음"))
+        Ok(&self.cand.asset)
     }
 
     fn stage_dir(&self, j: &Journal) -> PathBuf {
@@ -318,7 +335,7 @@ impl Ops for RealOps {
     }
 
     fn confirm(&mut self, _j: &Journal) -> Step {
-        reconfirm(&self.env.update_dir, &self.env.channel, &self.outcome)
+        reconfirm(&self.env.update_dir, &self.env.channel, &self.cand)
     }
 
     fn stop(&mut self, _j: &Journal) -> Step {
@@ -358,7 +375,7 @@ impl Ops for RealOps {
     }
 
     fn commit_check(&mut self, j: &Journal) -> Step {
-        reconfirm(&self.env.update_dir, &self.env.channel, &self.outcome)?;
+        reconfirm(&self.env.update_dir, &self.env.channel, &self.cand)?;
         if let Some(t1) = self.q1.clone() {
             // 데몬은 섰다 — 세대 토큰은 S5 에서 확정 · 보류 로그 증가만 다시 본다(정지 뒤 보류 = 0 이어야 함)
             let now = super::hold::last_seq_readonly(&self.env.update_dir).unwrap_or(u64::MAX);
@@ -637,7 +654,7 @@ impl Ops for RealOps {
             Kind::JournalCorrupt => ("journal_corrupt", ErrCode::JournalCorrupt),
             Kind::SeatsBlocked => ("seats_blocked", ErrCode::JournalCorrupt),
         };
-        let a = self.outcome.asset.clone();
+        let a = Some(self.cand.asset.clone());
         let o = super::notify::Outcome {
             kind: kname,
             code: if kind == Kind::Rollback { f.map(|f| f.code).unwrap_or(ErrCode::RollbackOk) } else { code },
@@ -647,7 +664,7 @@ impl Ops for RealOps {
             release_seq: j.map(|j| j.release_seq).unwrap_or(0),
             from_release_seq: super::buildinfo::release_seq(),
             from_version: self.old_version.clone(),
-            to_version: self.outcome.version.clone().unwrap_or_default(),
+            to_version: self.cand.version.clone(),
             force_permanent: f.map(|f| matches!(f.step.as_str(), "V5" | "V7")).unwrap_or(false),
             detail: f.map(|f| super::errors::clip(&f.detail)).unwrap_or_default(),
         };
@@ -673,7 +690,7 @@ impl RealOps {
 }
 
 /// S6·S8b 재확인: 봉투·폐기문을 다시 받아 같은 `release_seq` · halt 아님 · 후보 폐기 아님 · 설치판 폐기 무변화.
-pub fn reconfirm(dir: &Path, channel: &str, first: &super::feed::FeedOutcome) -> Step {
+pub fn reconfirm(dir: &Path, channel: &str, first: &Candidate) -> Step {
     let now = super::clock::wall_now();
     let id = super::buildinfo::read_install_id(dir);
     let (res, _) = super::check::fetch_and_verify(dir, channel, now, id.as_deref().map(super::feed::rollout_bucket));
@@ -682,14 +699,14 @@ pub fn reconfirm(dir: &Path, channel: &str, first: &super::feed::FeedOutcome) ->
 }
 
 /// 재확인 판정(순수).
-pub fn same_decision(first: &super::feed::FeedOutcome, again: &super::feed::FeedOutcome) -> Step {
+pub fn same_decision(first: &Candidate, again: &super::feed::FeedOutcome) -> Step {
     if again.halt {
         return Err(fail(ErrCode::RotateFailed, "S6", "halt"));
     }
     if again.verdict != super::feed::Verdict::Apply {
         return Err(fail(again.code, "S6", format!("판정 {}", again.verdict.as_str())));
     }
-    if again.release_seq != first.release_seq || again.installed_revoked != first.installed_revoked {
+    if again.release_seq != Some(first.release_seq) || again.installed_revoked != first.installed_revoked {
         return Err(fail(ErrCode::RotateFailed, "S6", "release_seq·폐기 바뀜"));
     }
     Ok(())

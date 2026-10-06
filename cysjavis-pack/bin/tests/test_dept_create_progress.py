@@ -35,6 +35,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -155,9 +156,13 @@ PYTHON_WRAP = "#!/bin/sh\ncase \" $* \" in\n  *\" restamp:\"*) echo \"[mock pyth
 UP_AT_PING = "130"
 
 
+_SANDBOXES = []   # ★⑦ 이 모듈이 만든 샌드박스 전부 — tearDownModule 의 「전수 뒤 잔존 0」 단언이 본다
+
+
 class Sandbox(object):
     def __init__(self, restamp_fail=False, **env_extra):
         self.tmp = tempfile.mkdtemp(prefix="gp-")
+        _SANDBOXES.append(self)
         self.home = os.path.join(self.tmp, "home")
         self.calls = os.path.join(self.tmp, "calls.log")
         self.pings = os.path.join(self.tmp, "pings.log")
@@ -180,20 +185,66 @@ class Sandbox(object):
             json.dump({"claude": {"cmd": "claude", "env": {"CLAUDE_CONFIG_DIR": "/base"}}}, f)
         self.reg = os.path.join(self.home, ".cys", "depts.json")
         env = dict(os.environ)
+        # ★publish-docs-118 ⑦(10-07 02:18 CSO 실측 · 설치본 cysd 74개 2.8GB 누적): 물려받은 CYS_* 는 **전부** 뺀다. cys-dept(dbg-D3 F1)는
+        #   CYS_CYSD_BIN·CYS_CYS_BIN 을 PATH 보다 먼저 쓴다 — cys 좌석 안에서 돌리면 둘 다 /Applications/…/MacOS 를 가리켜 PATH 선두 목을
+        #   건너뛰고 실 cysd 를 가짜 HOME 에 nohup 으로 띄웠다(목 우회 · 아무도 안 거둠). 이름 목록으로 빼던 옛 꼴은 새 노브가 생길 때마다
+        #   같은 구멍이 다시 열린다(test_dept_name_guard 09-24 18개 · test_team_create_u16 과 같은 원인) → 접두로 막는다.
         for k in list(env):
-            if k.startswith("STUB_") or k.startswith("_CYS_TT_"):
+            if k.startswith(("STUB_", "_CYS_TT_", "CYS_")):
                 env.pop(k)
-        for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_NO_AUTOSTART", "CYS_DEPT_ROTATE", "CYS_DEPT_CATALOG",
-                  "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT", "CYS_DEPT_CWD", "CYS_DEPT_READY_SECS",
-                  "CYS_DEPT_RESERVE_GRACE", "CYS_DEPT_CAP", "CYS_SURFACE_ID", "CYS_DEPT_NO_MASTER"):
-            env.pop(k, None)
         env.update({"HOME": self.home, "CYS_DEPTS_JSON": self.reg, "CYS_DEPT_NO_MASTER": "1",
                     "PATH": bindir + os.pathsep + env.get("PATH", "")})
         env.update(env_extra)
         self.env = env
 
     def cleanup(self):
+        """케이스 끝 — ①이 샌드박스가 띄우고 남긴 프로세스를 거둔다(아래 reap · 자기 것만) ②임시 폴더(gp-*)를 지운다 ③남은 것이
+        있었다면 거둔 뒤 적색(⑦ 회귀 = 목 우회 재발 신호 · 거두기만 하고 조용히 넘기면 74개 누적이 다시 안 보인다)."""
+        leaked = self.reap()
         shutil.rmtree(self.tmp, ignore_errors=True)
+        if leaked:
+            raise AssertionError("샌드박스가 띄운 프로세스가 케이스 끝에 남았다(거둠 · 목 우회 의심): %r" % (leaked,))
+
+    def owned_procs(self):
+        """이 샌드박스가 띄운 프로세스 = **이 케이스 고유 임시 폴더(self.tmp) 아래 파일을 열고 있는** 프로세스(cwd·로그·소켓 —
+        cys-dept 는 cysd 표준출력을 <HOME>/.local/state/cys-dept-*/cysd.log 로 연다). 이름(pkill)으로 고르지 않는다 — 같은 이름의
+        운영 데몬·다른 좌석 프로세스를 건드리지 않기 위해서다. 나 자신·내 조상(ppid 사슬)은 언제나 뺀다.
+        반환 [(pid, ppid, pgid, comm)] · lsof 가 없는 곳(윈 등) = None(판정 불가 — 거두지 않는다)."""
+        lsof = shutil.which("lsof")
+        if os.name == "nt" or not lsof or not os.path.isdir(self.tmp):
+            return None
+        r = subprocess.run([lsof, "-t", "+D", self.tmp], capture_output=True, text=True, timeout=60)
+        mine, p = set(), os.getpid()
+        while p > 1 and p not in mine:   # 나 + 조상
+            mine.add(p)
+            q = subprocess.run(["ps", "-o", "ppid=", "-p", str(p)], capture_output=True, text=True).stdout.strip()
+            p = int(q) if q.isdigit() else 1
+        out = []
+        for pid in sorted({int(x) for x in r.stdout.split() if x.isdigit()} - mine):
+            q = subprocess.run(["ps", "-o", "ppid=,pgid=,comm=", "-p", str(pid)], capture_output=True, text=True).stdout.split(None, 2)
+            if len(q) == 3:
+                out.append((pid, int(q[0]), int(q[1]), q[2].strip()))
+        return out
+
+    def reap(self):
+        """owned_procs 만 끝낸다 — SIGTERM → 최대 3초 → 아직 이 폴더를 쥐고 있는 것만 SIGKILL(pid 재사용 오살 차단 = 매번 다시 대조)."""
+        found = self.owned_procs()
+        if not found:
+            return []
+        for pid, _pp, _pg, _c in found:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end and self.owned_procs():
+            time.sleep(0.1)
+        for pid, _pp, _pg, _c in self.owned_procs() or []:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        return found
 
     def run(self, *args, **kw):
         r = subprocess.run(["bash", DEPT] + list(args), capture_output=True, text=True, encoding="utf-8",
@@ -1735,6 +1786,67 @@ class Census(unittest.TestCase):
         self.assertLess(i_grace, i_dead, "부팅 유예 판정이 '죽은 등록' 삭제보다 앞이어야 한다")
         self.assertIn("reap(dry): SKIP", seg, "--dry 출력에 건너뜀 사유가 없다")
         self.assertIn('dept_reserve_grace 2>/dev/null', seg, "예약 유예는 reap 에서 한 번 계산하고 경고는 버린다")
+
+
+class SandboxReapGuard(unittest.TestCase):
+    """⑦ 거두기 장치 자신의 계측 타당성 — 남은 프로세스가 0 이라 초록인 핀은 장치가 고장나도 초록이다. 샌드박스 안에 일부러 남긴
+    분리된 자식(nohup & 와 같은 꼴 · 새 세션)을 cleanup 이 ①찾고 ②그것만 끝내고 ③적색으로 알리는지 잰다. 밖의 프로세스(같은 꼴의
+    대조군 · cwd = 샌드박스 밖)는 건드리지 않아야 한다."""
+
+    def test_inherited_cys_env_never_reaches_sandbox(self):
+        """⑦ 원인 핀 — 러너(cys 좌석)가 물려준 CYS_CYSD_BIN·CYS_CYS_BIN(→ 설치본 절대 경로)·그 밖의 CYS_* 가 샌드박스 env 에 0.
+        남으면 cys-dept 가 PATH 선두 목보다 그것을 먼저 써서 실 cysd 를 가짜 HOME 에 띄운다(10-07 74개 누적의 원인)."""
+        inherited = {"CYS_CYSD_BIN": "/Applications/cys.app/Contents/MacOS/cysd",
+                     "CYS_CYS_BIN": "/Applications/cys.app/Contents/MacOS/cys", "CYS_SOME_FUTURE_KNOB": "1"}
+        saved = {k: os.environ.get(k) for k in inherited}
+        os.environ.update(inherited)
+        try:
+            sb = Sandbox()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(sb.cleanup)
+        self.assertEqual(sorted(k for k in sb.env if k.startswith("CYS_")), ["CYS_DEPTS_JSON", "CYS_DEPT_NO_MASTER"])
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("lsof"), "lsof 기반 소유 판정(POSIX)")
+    def test_cleanup_reaps_only_own_leftover_and_fails(self):
+        sb = Sandbox()
+        outside = tempfile.mkdtemp(prefix="gp-outside-")
+        self.addCleanup(shutil.rmtree, outside, True)
+        hold = [sys.executable, "-c", "import time; time.sleep(60)"]
+        inner = subprocess.Popen(hold, cwd=sb.home, start_new_session=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        other = subprocess.Popen(hold, cwd=outside, start_new_session=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (other.kill(), other.wait()))
+        self.addCleanup(lambda: (inner.kill(), inner.wait()) if inner.poll() is None else None)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and inner.pid not in [x[0] for x in sb.owned_procs() or []]:
+            time.sleep(0.1)
+        self.assertIn(inner.pid, [x[0] for x in sb.owned_procs()], "샌드박스 안 프로세스를 소유로 못 찾았다")
+        self.assertNotIn(other.pid, [x[0] for x in sb.owned_procs()], "샌드박스 밖 프로세스를 소유로 잡았다")
+        with self.assertRaises(AssertionError) as cm:
+            sb.cleanup()
+        self.assertIn(str(inner.pid), str(cm.exception))
+        self.assertIsNotNone(inner.wait(timeout=10), "거둔다던 프로세스가 살아 있다")
+        self.assertIsNone(other.poll(), "샌드박스 밖 프로세스가 같이 죽었다(소유 판정 과잉)")
+        self.assertFalse(os.path.isdir(sb.tmp), "임시 폴더(gp-*)가 남았다")
+
+
+def tearDownModule():
+    """★⑦ 전수 뒤 단언 — 이 모듈이 만든 샌드박스 전부: 남은 프로세스 0(있으면 거둔 뒤 적색) · 안 지운 임시 폴더(gp-*)는 지운다."""
+    left = []
+    for sb in _SANDBOXES:
+        if os.path.isdir(sb.tmp):
+            found = sb.reap()
+            if found:
+                left.append((sb.tmp, found))
+            shutil.rmtree(sb.tmp, ignore_errors=True)
+    if left:
+        raise AssertionError("전수 뒤 샌드박스가 띄운 프로세스가 남았다(거둠): %r" % (left,))
 
 
 if __name__ == "__main__":

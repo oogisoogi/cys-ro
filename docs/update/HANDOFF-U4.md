@@ -7,6 +7,13 @@
 - ⚠U2 겹침: `src/update/win.rs` 의 시험 1건(`same_rules_as_app_original`)과 `src/lib.rs` 인구조사 1줄을 고쳤다(제품 코드 0) — U2 가 같은 파일을 고치면 병합 때 이 두 곳을 본다.
 - 표식: 【관측】 = 명령 출력으로 확인 · 【추정】 = 근거 있는 추론.
 
+## §0-3판 델타(브리프 2026-10-07-cysr-118-u4-3r · codex 2R = BLOCK 0 · MAJOR 2 · MINOR 1 → 3건 전부 채택 · 표 = §9-2)
+- 3판 커밋: `f2c3b0b1`(① 시험 결정론화 · 뮤턴트 M11a·M11b) · `cd29acf3`(② 공개 문서 6종) · (이 문서 — ③ §1 접점 표 ≤80자·한 줄 · §5 ⑦ 갱신 · §9-2).
+- ① 병렬 시험 2건(배리어 = `take_at` 직전) → **임계 구역 탐침**(`#[cfg(test)] cs_probe` · 장부 읽은 뒤·쓰기 전) 위 결정론 시험 3건 + 자식 진입점 1: 스레드 take×2(표시 정확히 2) · take→done(정확히 1 · 0 = 적색) · **두 프로세스**(시험 바이너리 `current_exe()` 재호출 · `U4_CS_CHILD_DIR`). updnotice 15 → **17**.
+- 뮤테이션 **16/16 적색 · 생존 0**(2판 14 + M11a 뮤텍스만 제거 · M11b `lf.lock()` 만 제거 — 각 단독 적색 · M11 문자열은 탐침 줄에 맞춰 갱신) 【관측】.
+- 맥 전수(격리 env · HEAD `cd29acf3` · 00:19–00:56): **lib 899/0/1 · cys 584/0 · cysd 2461/0/7 · cys-app 277/0/1**(2판 275 − 병렬 2 + 결정론 3 + 자식 진입점 1) · updnotice **17/0** · bun **2663 pass / 71 skip / 0 fail**(publicdocs 4 = 6종 대상) · tsc 0 · `scripts/win-typecheck.sh` 오류 0 · 측정 뒤 u4 잔존 시험 프로세스 0 【관측】.
+- ★측정 사고(정직): 새 좌석의 격리 래퍼가 `TMPDIR` 를 긴 scratchpad 경로로 바꿔 1회차에 cys 4 · cysd 6 · cys-app 2 가 **SUN_LEN(유닉스 소켓 경로 104바이트) 초과**로 적색(`path must be shorter than SUN_LEN` · cysd deadman.rs:276 예산 단언) — 이 가지의 `src/` 변경 0(`git diff a8abfa44 -- src/` 빈 출력) · 래퍼에서 TMPDIR 를 빼고 재측정한 값이 위 줄.
+
 ## §0-2판 델타(master#f69113b1 · codex 1R = BLOCK 1 · MAJOR 3 · MINOR 2 → 6건 전부 채택)
 - 2판 커밋: `084f45a7`(① 장부 경쟁 직렬화 · ⑤ release_seq · ⑥ notes_ko 80자 한 줄 · ③ 조건부 핀) · `c31138f0`(② 고정 안내 자동 소거 · ⑥ 화면 한 줄) · `2e39b8cd`(④ 공개 문서 현행만 + 게이트 시험) · (이 문서·뮤턴트 확장 커밋).
 - 뮤테이션 1판 10 + 2판 4(M11 잠금 없음 · M12 release_seq 무검사 · M13 역순 응답 적용 · M14 폴링 없음) = **14/14 적색**. 2판 잠금이 생기면서 1판 M7(기록 실패해도 표시)이 한 번 생존 → 「잠금은 잡히고 장부 쓰기만 실패」 반례 시험 추가 뒤 적색.
@@ -19,7 +26,7 @@
 ## §1 U2 접점(병합 때 이름 일치 — master 가 296 에 같은 정의 전달 · [#971bdf3c])
 | 파일 | 쓰는 이 | 칸 | 앱의 읽기 규칙 |
 |---|---|---|---|
-| `<상태 폴더>/state.json` | 러너(U2) **만** | `last_result{result_id, kind, release_seq, version?, notes_ko?}` | `result_id` = 1~64자 `[A-Za-z0-9._:-]` · `kind` ∈ `ok` · `rollback_ok` · `rollback_failed` · `installed_revoked`(그 밖 = 무음) · `version` = 숫자 마디 1~4개(아니면 괄호째 생략) · `notes_ko` = 제어문자·줄 나눔(U+2028/9)·방향 바꿈(U+200E/F·U+061C·U+202A–E·U+2066–9) 하나라도 있으면 통째 거부 · 300자 상한 · 성공 알림에만 둘째 줄 |
+| `<상태 폴더>/state.json` | 러너(U2) **만** | `last_result{result_id, kind, release_seq, version?, notes_ko?}` | `result_id` = 1~64자 `[A-Za-z0-9._:-]` · `kind` ∈ `ok` · `rollback_ok` · `rollback_failed` · `installed_revoked`(그 밖 = 무음) · `version` = 숫자 마디 1~4개(아니면 괄호째 생략) · `notes_ko` = 제어문자·줄 나눔(U+2028/9)·방향 바꿈(U+200E/F·U+061C·U+202A–E·U+2066–9) 하나라도 있으면 통째 거부 · **≤80자**(설계 §6-1 L505 · 검사 = `cys::update::feed::check_notes_ko` 한 벌 · 금지 어휘 5 포함) · 알림 **한 줄**(본문 같은 줄에 「달라진 점: …」 로 잇기 · 설계 §3-12 L339) |
 | 같은 파일 | 러너 | `seats_blocked{reason}` | `reason == "journal_unrecoverable"` 일 때만 📌18 고정 안내 · 그 밖·판독 불가 = 안내 없음 |
 | `<상태 폴더>/app-notify.json` | 앱 **만** | `pending_notification{result_id, shown_count}` · `last_notified_result_id` · `rollback_failed_last_shown_at`(유닉스 초) | 원자 쓰기 = 임시 파일 → fsync → rename → (유닉스) 폴더 fsync · 깨지면 빈 장부로 읽고 다음 쓰기가 통째로 바꾼다 |
 - **병합 때 삭제할 것(③ · 집행 = U2 병합 통합 커밋 master)**: ⑴ 파일 `src-tauri/src/macupdate.rs`(674줄 · 앱 쪽 옛 판정·교체 부품 — 라이브러리 `src/update/mac.rs`·`src/update/macupdate.rs` 가 대신함) ⑵ `src-tauri/src/main.rs` 19-22행 4줄(@`084f45a7` 실측 · 주석 2줄 `// ★(1.1.8 U4 · 설계 §5-1 「옮긴다」) …` · `//   U2 가 데몬 쪽(…)으로 옮긴다. …` · `#[allow(dead_code)]` · `mod macupdate;` — 18행은 앞 모듈의 주석이라 남긴다). 핀 `macupdate_lives_only_in_the_library_after_u2_merge`(main.rs 시험)가 라이브러리 `src/update/mac.rs` 실재 시 ⑴⑵ 부재를 요구하므로, 지우지 않고 병합하면 cys-app 시험이 적색이 된다(의도).
@@ -70,7 +77,7 @@
 - ③ H⑬(build-info `features` 정본 ID · V7): 앱은 features 를 읽지 않는다(갱신 결정 0) → 이 티켓 코드 0. 정본 ID 목록은 U2·master.
 - ④ `macupdate.rs` 는 호출부 0 인 채 남았다(U2 가 데몬 쪽으로 옮기는 중) — 2판: 병합 때 거두지 않으면 핀 `macupdate_lives_only_in_the_library_after_u2_merge` 가 적색이 된다(삭제 줄 = §1).
 - ⑤ `packsig.rs` 재현 시험 겨눔 변경 = U2 러너 A2 검증이 생길 때(§2 표 끝 행).
-- ⑦ (2판) 공개 문서 3종 밖에 같은 꼴 옛 서술이 남아 있다(이번 범위 밖 · 서브에이전트 보고 실측): `ARCHITECTURE-AND-PHILOSOPHY.md:274·318`(「Tauri updater 서명 … `!` 배지」) · `docs/INSTALL.md:676-677`(CYS_UPDATE_VERIFY·CYS_UPDATE_CHECKED_LAUNCH 행) · `docs/DESIGN-factory-reset.md:60`(`.update-attempt.json`) · `cysjavis-pack/bin/tests/run_bootstrap_health.py`(옛 「GUI 인앱 업데이트」 서술) — 정리 여부 = master.
+- ⑦ (2판 → 3판) 공개 문서 밖 옛 서술: `ARCHITECTURE-AND-PHILOSOPHY.md`·`docs/INSTALL.md` 는 **3판에서 공개 문서로 편입·정리**(master 번복 · `cd29acf3` · 게이트 6종). 남은 2곳 = 내부 문서·시험 — `docs/DESIGN-factory-reset.md:60`(`.update-attempt.json`) · `cysjavis-pack/bin/tests/run_bootstrap_health.py`(옛 「GUI 인앱 업데이트」 서술) = master 백로그(범위 밖 그대로).
 - ⑧ (2판) 📌18 폴링 = 60초 간격이라 seats_blocked 가 풀린 뒤 안내가 사라지기까지 최대 60초 · 상태 변경 이벤트가 생기면(U2) 그쪽으로 바꾸는 것이 낫다.
 - ⑥ 롤백 실패 「하루 1회」는 벽시계 24시간 간격이다(시계가 하루 넘게 뒤로 간 기록은 믿지 않고 다시 보여 준다 · 그보다 작은 뒤로 감은 기다린다).
 
@@ -106,6 +113,7 @@ sh scripts/win-typecheck.sh                # 오류 0
 - [x] 5. §5-4 도움말 1줄
 - [x] 6. 시험: 단위 + 뮤테이션 + ui tsc/bun + 윈 타입체크 + 문구 grep · Rust 3묶음 = §3·§6
 - [x] 7. 커밋 묶음 · HANDOFF-U4 · 【확인요청】
+- [x] 3판(브리프 2026-10-07-cysr-118-u4-3r): ① 시험 결정론화 + M11a·M11b · ② 공개 문서 6종 · ③ §1 접점 표 → 맥 전수·뮤턴트 16·윈 타입체크 → 미러 3런 → 【확인요청】
 - 배선 사건: 스폰 때 role=worker-3 이 293(lms)과 겹쳐 `cys todo-path` 가 293 의 TODO 를 가리켰다 → 293 파일은 건드리지 않았고(읽기만) 내 TODO 는 별도 파일 → master 지시로 `cys claim-role worker-4` 재등록(21:25 · `cys list` surface:1296 role=worker-4).
 
 ## §9 codex 1R 6건 처리표(채택 / 반박 — 근거 = 코드 줄 + 시험)
@@ -117,3 +125,12 @@ sh scripts/win-typecheck.sh                # 오류 0
 | ④ | MAJOR · 도움말 잔재(Tauri updater · 지운 env 2 · 지운 RPC · 없는 단추 · 「업데이트」 재사용) | **채택**(버전 기록 격리 아님 · 삭제) | `2e39b8cd` · README.md:53·466·509 · README.en.md:62·453·500 · USER-MANUAL 전반(env 2행·앱 명령 4항·증상 1행·실기 블록·한계 1항 삭제 · 나머지 「업데이트」→「갱신」) | `ui/src/publicdocs.test.ts` 4건(문서 4종 「업데이트」·「Update」 0 · 지운 이름 17종 0 · 도움말 1줄 존재 · 공허 방지) |
 | ⑤ | MINOR · release_seq 미검사 | **채택** | `084f45a7` · `updnotice.rs:193`(정수 ≥1 아니면 알림 0) | `release_seq_must_be_a_positive_integer`(누락·0·음수·문자열·소수·null)(M12 적색) |
 | ⑥ | MINOR · notes_ko 300자·둘째 줄 = 설계 이탈 | **채택** — 설계 §6-1 505행 「`notes_ko` 문자열 ≤80자 · 알림 1줄(제어문자 0 · 금지 어휘 0)」 | `084f45a7` · `updnotice.rs:152`(`cys::update::feed::check_notes_ko` 한 벌 재사용 + 화면용 줄 나눔·방향 바꿈 거부) · `:168` 같은 줄 잇기 · `c31138f0` 화면도 본문 줄바꿈 거부 | `notes_with_control_chars_are_refused_whole`(80 통과 · 81 거부 · 금지 어휘 5 · 줄바꿈 0 · 상한 = lib 상수 대조)(M5 적색) |
+
+## §9-2 codex 2R 3건 처리표(BLOCK 0 · MAJOR 2 · MINOR 1 · 브리프 2026-10-07-cysr-118-u4-3r §1 · 전부 채택)
+| # | 등급 · 지적 | 판정 | 수정 sha · 코드 줄 | 시험(뮤턴트) |
+|---|---|---|---|---|
+| 2R-① | MAJOR · M11 이 두 잠금을 한꺼번에 제거 → 각 잠금 단독 회귀핀 없음 · 배리어가 `take_at` 직전뿐(순차 완주 반례 못 막음) · take/done 시험이 합계 0 도 통과 | **채택** | `f2c3b0b1` · `updnotice.rs` `cs_probe`(#[cfg(test)] · 장부 읽은 뒤·쓰기 전 탐침 · 겹침 시 먼저 들어온 쪽이 나중 기록을 덮게 해 잃어버린 갱신을 결정론화 · `arrive` = 프로세스 뮤텍스 통과 뒤 자동 표기) · `ACK_MUTEX` 모듈 수준으로 | `threads_take_one_at_a_time_inside_the_ledger_section`(정확히 2 · 장부 2 · 세 번째 0) · `take_then_done_inside_the_section_shows_exactly_once`(정확히 1) · `two_processes_take_one_at_a_time_through_the_lock_file`(`current_exe()` 재호출 · `U4_CS_CHILD_DIR`) — M11a(뮤텍스만) · M11b(`lf.lock()` 만) · M11(둘 다) **각 단독 적색** |
+| 2R-② | MAJOR · 공개 문서 게이트 4종만 — README 가 링크하는 `docs/INSTALL.md` · `ARCHITECTURE-AND-PHILOSOPHY.md` 에 옛 인앱 갱신 서술 잔존 | **채택**(master 번복) | `cd29acf3` · INSTALL env 2행 삭제 · ARCH §5.6 표 현행화 · 공급망 문장 · 「업데이트」→「갱신」 | `publicdocs.test.ts` DOCS 6종 · 음성: 각 파일 옛 판으로 되돌리면 2 fail |
+| 2R-③ | MINOR · HANDOFF §1 접점 표 「300자·둘째 줄」 ↔ §9 「80자·한 줄」 자기모순 | **채택** | (이 문서 커밋) §1 표 = ≤80자 · 한 줄(설계 §3-12 L339 · §6-1 L505) | — |
+- 정직(M11a): 맥(flock · 【관측】 M11a 에서 겹침 0)·윈(LockFileEx · 【추정】 핸들 단위 — 윈 실기 미측정) 파일 잠금은 열린 파일 단위라 같은 프로세스의 스레드끼리도 막는다 → 뮤텍스만 빼도 **겹침은 생기지 않는다**. 그래서 M11a 의 적색은 행동(경쟁)이 아니라 탐침의 「임계 구역 안에서 프로세스 뮤텍스가 잡혀 있어야 한다」(`.cs-mutex-free`) 단언에서 나온다(구조 핀). 뮤텍스의 실제 몫 = fcntl 식 프로세스 단위 잠금 플랫폼 대비 이중 방어.
+- 1회차 실측 사고(고침): 자식 프로세스 시험이 처음엔 M11b 에서 **생존** — 부모가 다른 병렬 시험 때문에 자기 프로세스 뮤텍스에서 기다리는 동안 자식의 300ms 유예가 흘러 순차가 됐다. → 프로세스 시험은 「도착」을 뮤텍스 **통과 뒤** 코드가 적게 바꿈(`arrive`) → 2회 연속 적색.

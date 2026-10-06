@@ -4,12 +4,13 @@
 > 대상 파일은 **이 저장소 밖**이다 = `~/axdev/jarvis-habitat/install-master/bootstrap.{sh,ps1}`(@`558fbb0` 기준 줄 번호) → 사이트 사본.
 > ⛔ 이 문서는 명세뿐이다 — 설치 링크 변경·사본 배포 = **설치기 변경(비가역 · master 게이트 · 윈 실기 = 윈 master)**.
 > 잠금 모듈 정본 = U1 `src/update/lock.rs`(잠금 `txn.lock` · 소유자 기록 `txn.owner.json` · 토큰 `<txn_id 32 hex>:<epoch>`).
+> ★구현·윈 실기 검증 = 별도 티켓 **`cysr-118-u5-install-link`**(codex 1R #2 · 이 명세가 그 티켓의 입력 · U3 완료 범위 밖). NSIS ⓪-a 실기 6 시나리오 = `docs/update/WIN-NSIS-0A-FIELD.md`.
 
 ## 1. 무엇을 바꾸나 (세 군데)
 | # | 자리 | 지금 | 1.1.8 부터 |
 |---|---|---|---|
 | L1 | 두 설치 링크의 **시작 직후**(기존 데몬 선확인보다 앞) | 잠금 개념 없음 | `cys`(새로 받은 1.1.8 바이너리)로 전역 잠금을 잡는다. 못 잡으면(자동 갱신이 쥐고 있음) **문구 1줄로 끝** — 「자비스가 지금 새 판으로 바꾸는 중이에요. 5분 뒤 다시 붙여 넣어 주세요.」 · 3회까지 30초 간격 재시도 뒤 끝(설계 「재시도 3」). 잠금이 풀린 뒤 저널이 비종결이면 「복구 대기」 문구로 끝(복구기가 먼저 — §3-11). |
-| L2 | 설치 링크가 부르는 하위 명령: 윈 NSIS(`bootstrap.ps1:3336-3343` `Start-Process $dst /S`) · rotate(`bootstrap.ps1:3460~` · `bootstrap.sh:3815~`) · init-pack | 토큰 없음 | 자기 토큰을 **위임**: NSIS = `/S /CYSTXN=<txn_id>:<epoch>`(⓪-a 가 대조 · `src-tauri/nsis-hooks.nsh`) · `cys rotate … --txn <토큰>` + env `CYS_UPDATE_TXN=<토큰>`(U2 의 `--txn` 배선 뒤). 끝나면 잠금 해제(프로세스 종료 = OS 해제). |
+| L2 | 설치 링크가 부르는 하위 명령: 윈 NSIS(`bootstrap.ps1:3336-3343` `Start-Process $dst /S`) · rotate(`bootstrap.ps1:3460~` · `bootstrap.sh:3815~`) · init-pack | 토큰 없음 | 자기 토큰을 **위임**: NSIS = `/S /CYSTXN=<txn_id>:<epoch>` + **같은 값의 env `CYS_UPDATE_TXN`**(⓪-a 가 둘 다 대조 — 하나라도 없거나 다르면 exit 6 · 2판 · `src-tauri/nsis-hooks.nsh`) · `cys rotate … --txn <토큰>` + env `CYS_UPDATE_TXN=<토큰>`(U2 의 `--txn` 배선 뒤). 끝나면 잠금 해제(프로세스 종료 = OS 해제). |
 | L3 | 윈 설치가 성공한 뒤(`bootstrap.ps1` 설치 검증 통과 직후) | 받은 `setup.exe` 는 임시 폴더에 남거나 지워짐 | **설치판 본문 + 설치기 보존**: `%LOCALAPPDATA%\cys-update\installers\<release_seq>\` 에 ⓐ 불변 보관소의 U 서명 본문(`https://jarvis.godmeyou.kr/update/cysr/releases/<seq>.json` + `.minisig`) ⓑ 방금 깐 `cysr_<v>_x64-setup.exe` — ⓑ 의 sha256 = ⓐ 의 `windows-x64` 행 sha256 일 때만(아니면 보존 0 + 로그 1줄) · 쓰기 = 임시 파일 → fsync → rename. 이것이 자동 갱신 첫 회의 롤백 자산(N7)이다 — 없으면 러너가 보관소에서 받는다(§3-7 ②). |
 
 ## 2. 왜 이 순서인가 (한 줄씩)

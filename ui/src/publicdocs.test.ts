@@ -5,7 +5,6 @@
 // 지금 기능처럼 안내하면 사용자가 없는 단추를 찾는다. 옛 경로 서술을 「버전 기록」 으로 남기는 것도 하지 않는다(문서 = 현행).
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { normalize } from "node:path";
 
 // 4판(Fable 3R MAJOR-1 · MINOR-1 · master#741101b5): 화이트리스트가 아니라 **README(한/영)가 링크하는 모든 .md 를 자동 수집**한다 —
 // 새 공개 문서가 README 에 링크되면 그대로 검사 대상이 된다(2판 4종 → 3판 6종 → 손으로 넓히다 SECURITY.md 를 놓친 꼴 재발 방지).
@@ -17,7 +16,7 @@ const linkedDocs = (): string[] => {
     for (const m of readFileSync(new URL(r, ROOT), "utf-8").matchAll(/\]\(([^)\s]+)\)/g)) {
       const p = m[1].split("#")[0];
       if (!p || /^[a-z]+:/i.test(p) || !p.endsWith(".md")) continue;
-      out.add(normalize(p).replace(/^\.\//, ""));
+      out.add(new URL(p, ROOT).href.slice(ROOT.href.length)); // URL 해석 = ./ · ../ 정규화
     }
   }
   return [...out].sort();

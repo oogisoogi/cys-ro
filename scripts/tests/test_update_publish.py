@@ -579,6 +579,82 @@ class TestRevocations(Base):
         self.assertEqual(publish(self.fx, "revocations", out, st).returncode, 0)
 
 
+NODE = shutil.which("node")
+
+
+@unittest.skipUnless(NODE, "node 없음 — update-worker 하네스 미실행")
+class TestUpdateWorker(Base):
+    """update-worker(R2 읽기 전용 · 2판 결정 ①)가 publish-site.py 가 쓴 **같은 배치**를 그대로 내보내는가."""
+
+    def setUp(self):
+        super().setUp()
+        self.st = os.path.join(self.tmp, "store")
+        b = gate_stamp_body(self.fx, self.fx.body())
+        self.assertEqual(publish(self.fx, "archive", b, self.st, "--first").returncode, 0)
+        self.body = b
+        e = os.path.join(self.tmp, "e1.json")
+        r = py("make-envelope.py", "--component", "cysr", "--channel", "next", "--release-body", b, "--release-sig",
+               b + ".minisig", "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring, "--out", e, "--first",
+               "--rollout-pct", "5", "--halt", "false")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        fm.sign(self.fx.key("f"), e, e + ".minisig", "t")
+        u1_stamp(e)
+        self.assertEqual(publish(self.fx, "envelope", e, self.st).returncode, 0)
+        self.env = e
+        rv = os.path.join(self.tmp, "rev.json")
+        py("make-revocations.py", "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, "--first", "--out", rv)
+        fm.sign(self.fx.key("r"), rv, rv + ".minisig", "t")
+        self.assertEqual(py("release-gate.py", "revocations", "--doc", rv, "--keyring", self.fx.keyring, "--first",
+                            "--stamp").returncode, 0)
+        self.assertEqual(publish(self.fx, "revocations", rv, self.st).returncode, 0)
+        self.rev = rv
+
+    def serve(self, *reqs):
+        r = run([NODE, os.path.join(ROOT, "update-worker", "test", "fs-harness.mjs"), self.st,
+                 json.dumps([{"method": m, "url": "https://jarvis.godmeyou.kr" + p} for m, p in reqs])])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def sha(self, f):
+        return uc.sha256_bytes(open(f, "rb").read())
+
+    def test_serves_published_pairs_with_cache_policy(self):
+        got = self.serve(("GET", "/update/cysr/releases/5.json"), ("GET", "/update/cysr/releases/5.json.minisig"),
+                         ("GET", "/update/cysr/next.json"), ("GET", "/update/cysr/next.json.minisig"),
+                         ("GET", "/update/revocations.json"), ("HEAD", "/update/revocations.json.minisig"))
+        want = [self.body, self.body + ".minisig", self.env, self.env + ".minisig", self.rev]
+        for g, f in zip(got, want):
+            self.assertEqual((g["status"], g["sha256"]), (200, self.sha(f)), f)
+        self.assertIn("immutable", got[0]["headers"]["cache-control"])
+        for g in got[2:]:
+            self.assertEqual(g["headers"]["cache-control"], "no-store")
+        self.assertEqual((got[5]["status"], got[5]["size"]), (200, 0))
+        self.assertEqual(got[1]["headers"]["content-type"], "text/plain; charset=utf-8")
+        self.assertEqual(got[0]["headers"]["etag"], '"%s"' % self.sha(self.body))
+
+    def test_mut_refuses_outside_paths_and_methods(self):
+        got = self.serve(("GET", "/update/cysr/releases/_index"), ("GET", "/update/cysr/stable.json"),
+                         ("GET", "/update/cysr%2Fnext.json"), ("GET", "/update/other/next.json"),
+                         ("GET", "/install/agora-client-0.1.11.zip"), ("POST", "/update/cysr/next.json"),
+                         ("GET", "/update/cysr/releases/5.json.minisig.bak"))
+        self.assertEqual([g["status"] for g in got], [404, 404, 404, 404, 404, 405, 404])
+
+    def test_cf_route_probe_dry_run_only(self):
+        """탐침 스크립트 기본 = 드라이런(네트워크·CF 0) — 실행은 master 의 --execute 만."""
+        r = run(["bash", os.path.join(UPD, "cf-route-probe.sh")], env=dict(os.environ, WRANGLER="false"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("드라이런", r.stdout)
+        self.assertIn("/update/__route_probe/*", r.stdout)
+        self.assertEqual(run(["bash", os.path.join(UPD, "cf-route-probe.sh"), "--bogus"]).returncode, 2)
+
+    def test_mut_object_tampered_is_502(self):
+        ptr = json.load(open(os.path.join(self.st, "ptr", "update", "cysr", "next.json")))
+        with open(os.path.join(self.st, ptr["json"]), "ab") as f:
+            f.write(b" ")
+        got = self.serve(("GET", "/update/cysr/next.json"), ("GET", "/update/cysr/next.json.minisig"))
+        self.assertEqual([g["status"] for g in got], [502, 200])
+
+
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("hdiutil"), "가짜 매체 = hdiutil 마운트(맥 전용)")
 class TestOfflineRitual(Base):
     def setUp(self):

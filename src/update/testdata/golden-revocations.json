@@ -1,0 +1,16 @@
+{
+  "kind": "update-revocations",
+  "rev": 7,
+  "key_id": "@R_KEY_ID@",
+  "signed_at": 1789999000,
+  "delegations": [
+    {"key_id": "@DELEG_KEY_ID@", "purpose": "feed", "pubkey": "@DELEG_PUBKEY@", "not_after": 1795000000}
+  ],
+  "revoked_key_ids": ["0123456789ABCDEF"],
+  "revoked_releases": [
+    {"component": "cysr", "release_seq": 12, "severity": "stop_seats", "reason_code": "crash-on-start"},
+    {"component": "agora-client", "release_seq": 3, "severity": "advisory"},
+    {"component": "cysr", "release_seq": 11}
+  ],
+  "dr_pins": {"add": ["a426231e7dc737ee1d74962b346c23d3acacb18d"], "revoke": ["0000000000000000000000000000000000000001"]}
+}

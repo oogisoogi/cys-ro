@@ -115,20 +115,69 @@ pub struct Trusted {
 
 pub const REV_COPY: &str = "revocations.accepted.json";
 pub const REV_COPY_SIG: &str = "revocations.accepted.json.minisig";
+pub const TRUSTED_FILE: &str = "trusted.json";
+/// ★2R N6: 신뢰 기록 세 파일(`trusted.json` · 폐기문 원문 · 서명)은 `<상태>/trusted/gen-<N>/` 한 세대에 함께 두고 `trusted/CURRENT`
+/// (세대 번호 1줄) 하나를 원자 교체해 **한 커밋**으로 바꾼다 — 세 번의 독립 rename 사이에 죽어도 직전 세대가 온전하다.
+pub const TRUSTED_DIR: &str = "trusted";
+pub const TRUSTED_POINTER: &str = "CURRENT";
 /// 폐기문 대체본 수명(§4-1 「못 읽으면 마지막 수용본으로 판정하되 그 수용본이 30일 넘었으면 보류」).
 pub const REVOCATIONS_MAX_AGE_SECS: u64 = 30 * 86_400;
 
-pub fn read_trusted(dir: &Path) -> Result<Trusted, String> {
-    match std::fs::read(dir.join("trusted.json")) {
-        Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("trusted.json 손상: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Trusted::default()),
-        Err(e) => Err(e.to_string()),
+/// 현재 세대 폴더 — 포인터 없음 = Ok(None)(신규 기기) · 포인터 손상·가리키는 세대 없음 = Err.
+pub fn trusted_current_dir(dir: &Path) -> Result<Option<std::path::PathBuf>, String> {
+    let root = dir.join(TRUSTED_DIR);
+    let n = match std::fs::read_to_string(root.join(TRUSTED_POINTER)) {
+        Ok(s) => s.trim().parse::<u64>().map_err(|_| format!("trusted/CURRENT 손상 {s:?}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let g = root.join(format!("gen-{n}"));
+    if !g.join(TRUSTED_FILE).exists() {
+        return Err(format!("trusted/CURRENT 가 가리키는 세대 {n} 없음"));
     }
+    Ok(Some(g))
 }
 
-fn write_trusted(dir: &Path, t: &Trusted) -> Result<(), String> {
+pub fn read_trusted(dir: &Path) -> Result<Trusted, String> {
+    let Some(g) = trusted_current_dir(dir)? else { return Ok(Trusted::default()) };
+    let b = std::fs::read(g.join(TRUSTED_FILE)).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&b).map_err(|e| format!("trusted.json 손상: {e}"))
+}
+
+/// 새 세대 커밋: gen-<N+1>/ 에 trusted.json + 폐기문 원문·서명(새로 받은 것 · 없으면 현 세대 것을 그대로 복사)을 쓰고 폴더 fsync →
+/// CURRENT 원자 교체(+ 폴더 fsync) → 두 세대 전 정리. CURRENT 교체 전에 죽으면 새 세대는 고아일 뿐 읽히지 않는다.
+fn commit_trusted(dir: &Path, t: &Trusted, rev: Option<(&[u8], &[u8])>) -> Result<(), String> {
+    let root = dir.join(TRUSTED_DIR);
+    super::ensure_private_dir(&root)?;
+    let cur = trusted_current_dir(dir)?;
+    let cur_n = cur
+        .as_ref()
+        .and_then(|g| g.file_name()?.to_str()?.strip_prefix("gen-")?.parse::<u64>().ok())
+        .unwrap_or(0);
+    let next = cur_n + 1;
+    let g = root.join(format!("gen-{next}"));
+    let _ = std::fs::remove_dir_all(&g); // 앞선 시도의 고아 세대
+    super::ensure_private_dir(&g)?;
+    match (rev, &cur) {
+        (Some((b, s)), _) => {
+            super::write_private(&g.join(REV_COPY), b)?;
+            super::write_private(&g.join(REV_COPY_SIG), s)?;
+        }
+        (None, Some(c)) if c.join(REV_COPY).exists() => {
+            super::write_private(&g.join(REV_COPY), &std::fs::read(c.join(REV_COPY)).map_err(|e| e.to_string())?)?;
+            super::write_private(&g.join(REV_COPY_SIG), &std::fs::read(c.join(REV_COPY_SIG)).map_err(|e| e.to_string())?)?;
+        }
+        _ => {}
+    }
     let b = serde_json::to_vec_pretty(t).map_err(|e| e.to_string())?;
-    super::write_private(&dir.join("trusted.json"), &b)
+    super::write_private(&g.join(TRUSTED_FILE), &b)?;
+    super::journal::sync_dir(&g)?;
+    super::write_private(&root.join(TRUSTED_POINTER), format!("{next}\n").as_bytes())?;
+    super::journal::sync_dir(&root)?;
+    if next >= 3 {
+        let _ = std::fs::remove_dir_all(root.join(format!("gen-{}", next - 2)));
+    }
+    Ok(())
 }
 
 /// 신뢰 시각 단조 상향(내려가지 않음).
@@ -140,14 +189,16 @@ pub fn bump_trusted(dir: &Path, signed_at: Option<i64>) -> Result<Trusted, Strin
     };
     if next != t.last_trusted_time {
         t.last_trusted_time = next;
-        write_trusted(dir, &t)?;
+        commit_trusted(dir, &t, None)?;
     }
     Ok(t)
 }
 
 /// ★1R B3: R 검증을 통과한 폐기문을 **그 즉시** 내구 기록(원문·서명·sha256·rev·수용 Stamp) — 뒤 단계(봉투·본문) 실패와 무관.
 /// rev 후퇴 = 거부 · 같은 rev 인데 원문이 다름 = 거부(옛 기록 유지 · R 서명자 실수 신호) · 같은 원문 = 수용 시각만 새로.
-pub fn record_revocations(dir: &Path, bytes: &[u8], sig: &[u8], rev: u64, signed_at: i64) -> Result<Trusted, String> {
+/// ★2R N5: `bump_trust` = false(시계 의심 — HTTP Date·신뢰 시각과 충돌)면 원문은 기록하되 신뢰 시각은 올리지 않는다.
+/// ★2R N6: 세 파일 = 한 세대 커밋([`commit_trusted`]).
+pub fn record_revocations(dir: &Path, bytes: &[u8], sig: &[u8], rev: u64, signed_at: i64, bump_trust: bool) -> Result<Trusted, String> {
     let mut t = read_trusted(dir)?;
     let sha = super::feed::sha256_hex(bytes);
     if let Some(cur) = t.revocations_rev {
@@ -158,13 +209,13 @@ pub fn record_revocations(dir: &Path, bytes: &[u8], sig: &[u8], rev: u64, signed
             return Err(format!("같은 폐기문 rev {rev} 다른 원문 — 기록 거부"));
         }
     }
-    super::write_private(&dir.join(REV_COPY), bytes)?;
-    super::write_private(&dir.join(REV_COPY_SIG), sig)?;
     t.revocations_rev = Some(rev);
     t.revocations_sha256 = Some(sha);
     t.revocations_accepted_at = Some(clock::now_stamp());
-    t.last_trusted_time = Some(t.last_trusted_time.unwrap_or(i64::MIN).max(signed_at));
-    write_trusted(dir, &t)?;
+    if bump_trust || super::mutant("N5r") {
+        t.last_trusted_time = Some(t.last_trusted_time.unwrap_or(i64::MIN).max(signed_at));
+    }
+    commit_trusted(dir, &t, Some((bytes, sig)))?;
     Ok(t)
 }
 
@@ -176,8 +227,9 @@ pub fn load_accepted_revocations(dir: &Path, now: &clock::Stamp, wall_suspect: b
     if age > REVOCATIONS_MAX_AGE_SECS && !super::mutant("B3") {
         return Err(format!("수용 폐기문 30일 넘음({}일) — 보류", age / 86_400));
     }
-    let b = std::fs::read(dir.join(REV_COPY)).map_err(|e| e.to_string())?;
-    let s = std::fs::read(dir.join(REV_COPY_SIG)).map_err(|e| e.to_string())?;
+    let g = trusted_current_dir(dir)?.ok_or("수용 폐기문 없음")?;
+    let b = std::fs::read(g.join(REV_COPY)).map_err(|e| e.to_string())?;
+    let s = std::fs::read(g.join(REV_COPY_SIG)).map_err(|e| e.to_string())?;
     if t.revocations_sha256.as_deref() != Some(super::feed::sha256_hex(&b).as_str()) {
         return Err("수용 폐기문 원문 sha256 불일치".into());
     }
@@ -310,53 +362,70 @@ pub fn parse_hid_idle_secs(s: &str) -> Option<u64> {
 
 // ── 판정 ─────────────────────────────────────────────────────────────────────────────
 
-/// 피드 받기 + 검증(읽기 전용). Err = 미도달(조용히 끝 · daily 칸). 폐기문만 못 받으면 30일 이내 수용본으로 대신한다(§4-1).
-pub fn fetch_and_verify(dir: &Path, channel: &str, now: i64) -> Result<(FeedOutcome, Vec<Option<i64>>), String> {
+/// 피드 받기 + 검증(읽기 전용) — 실 네트워크 getter 로 [`fetch_and_verify_with`].
+pub fn fetch_and_verify(dir: &Path, channel: &str, now: i64, bucket: Option<u8>) -> (Result<FeedOutcome, String>, Vec<Option<i64>>) {
     let base = net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
     let get = |rel: &str| net::fetch_feed_file(&base, rel).map_err(|e| format!("{rel}: {e:?}"));
-    let env = get(&format!("cysr/{channel}.json"))?;
-    let env_sig = get(&format!("cysr/{channel}.json.minisig"))?;
-    let trusted = read_trusted(dir);
-    let (accepted_rev, last_trusted) = match &trusted {
-        Ok(t) => (t.revocations_rev, t.last_trusted_time),
-        Err(_) => (None, None),
+    fetch_and_verify_with(dir, channel, now, bucket, &get)
+}
+
+/// 받기 + 검증. Err = 미도달(조용히 끝 · daily 칸). 폐기문만 못 받으면 30일 이내 수용본으로 대신한다(§4-1).
+/// ★2R M4: 응답 Date 는 네 요청 **각각** — 성공한 응답의 Date 는 짝 요청의 성공 여부·미도달 판정과 무관하게 모두 돌려준다(N13 재료).
+pub fn fetch_and_verify_with(
+    dir: &Path,
+    channel: &str,
+    now: i64,
+    bucket: Option<u8>,
+    get: &dyn Fn(&str) -> Result<net::Fetched, String>,
+) -> (Result<FeedOutcome, String>, Vec<Option<i64>>) {
+    let mut dates = Vec::new();
+    let mut take = |r: Result<net::Fetched, String>| -> Result<Vec<u8>, String> {
+        r.map(|f| {
+            dates.push(f.http_date);
+            f.bytes
+        })
     };
-    let mut dates = vec![env.http_date, env_sig.http_date];
-    let (rev_bytes, rev_sig) = match (get("revocations.json"), get("revocations.json.minisig")) {
-        (Ok(a), Ok(b)) => {
-            dates.push(a.http_date);
-            dates.push(b.http_date);
-            (a.bytes, b.bytes)
-        }
-        _ => {
-            let suspect = clock::clock_suspect_dates(now, last_trusted, &dates);
-            load_accepted_revocations(dir, &clock::now_stamp(), suspect).map_err(|e| format!("폐기문 미도달 · {e}"))?
-        }
-    };
-    let accepted: Result<Option<AcceptedFeed>, String> = match &trusted {
-        Err(e) => Err(e.clone()),
-        Ok(_) => feed::read_accepted(&accepted_path(dir, "cysr", channel)),
-    };
-    let keyring = UpdateKeyring::embedded().map_err(|e| format!("내장 키링: {e}"))?;
-    let bucket = buildinfo::read_install_id(dir).map(|id| feed::rollout_bucket(&id));
-    let inp = FeedInput {
-        component: "cysr",
-        channel,
-        envelope: &env.bytes,
-        envelope_sig: &env_sig.bytes,
-        revocations: &rev_bytes,
-        revocations_sig: &rev_sig,
-        now,
-        clock_suspect: clock::clock_suspect_dates(now, last_trusted, &dates),
-        accepted,
-        accepted_rev,
-        last_trusted_time: last_trusted,
-        keyring: &keyring,
-        installed_release_seq: buildinfo::release_seq(),
-        target: buildinfo::TARGET,
-        rollout_bucket: bucket,
-    };
-    Ok((feed::verify_feed(&inp), dates))
+    let env = take(get(&format!("cysr/{channel}.json")));
+    let env_sig = take(get(&format!("cysr/{channel}.json.minisig")));
+    let rev = take(get("revocations.json"));
+    let rev_sig = take(get("revocations.json.minisig"));
+    let out = (|| -> Result<FeedOutcome, String> {
+        let (env, env_sig) = (env?, env_sig?);
+        let trusted = read_trusted(dir);
+        let (accepted_rev, last_trusted) = match &trusted {
+            Ok(t) => (t.revocations_rev, t.last_trusted_time),
+            Err(_) => (None, None),
+        };
+        let suspect = clock::clock_suspect_dates(now, last_trusted, &dates);
+        let (rev_bytes, rev_sig) = match (rev, rev_sig) {
+            (Ok(a), Ok(b)) => (a, b),
+            _ => load_accepted_revocations(dir, &clock::now_stamp(), suspect).map_err(|e| format!("폐기문 미도달 · {e}"))?,
+        };
+        let accepted: Result<Option<AcceptedFeed>, String> = match &trusted {
+            Err(e) => Err(e.clone()),
+            Ok(_) => feed::read_accepted(&accepted_path(dir, "cysr", channel)),
+        };
+        let keyring = UpdateKeyring::embedded().map_err(|e| format!("내장 키링: {e}"))?;
+        let inp = FeedInput {
+            component: "cysr",
+            channel,
+            envelope: &env,
+            envelope_sig: &env_sig,
+            revocations: &rev_bytes,
+            revocations_sig: &rev_sig,
+            now,
+            clock_suspect: suspect,
+            accepted,
+            accepted_rev,
+            last_trusted_time: last_trusted,
+            keyring: &keyring,
+            installed_release_seq: buildinfo::release_seq(),
+            target: buildinfo::TARGET,
+            rollout_bucket: bucket,
+        };
+        Ok(feed::verify_feed(&inp))
+    })();
+    (out, dates)
 }
 
 /// 게이트 사실 모으기(읽기 전용).
@@ -436,25 +505,29 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
     }
 }
 
-/// `--check` 본체 — JSON 보고와 rc(0 = 판정함 · 2 = 피드 거부 · 3 = 피드 판정 불가·미도달).
+/// `--check` 본체 — JSON 보고와 rc(0 = 판정함 · 2 = 피드 거부 · 3 = 피드 판정 불가·미도달·install_id 손상).
+/// ★2R M5: 진입에서 `install_id` 를 보장한다(없으면 원자 생성 · 손상 = 판정 불가 — 단계 배포 버킷이 「없음 = 100% 일 때만」 으로
+/// 영구히 빠지는 길 차단). ★2R N4: 설치판 `stop_seats` 폐기 = 결정 `stop_seats`(강제 상태 — apply/hold 로 접지 않는다).
 pub fn run_check(dir: &Path, pack_dir: &Path, hooks: &Hooks) -> (Value, i32) {
     let now = clock::wall_now();
     let cfg = read_config(dir).unwrap_or_default();
-    let (feed_json, outcome, dates, rc) = match fetch_and_verify(dir, &cfg.channel, now) {
-        Ok((o, d)) => {
-            let rc = o.verdict.rc();
-            (o.to_json(), Some(o), d, rc)
+    let id = match buildinfo::ensure_install_id(dir) {
+        Ok(id) => id,
+        Err(e) => {
+            return (json!({"decision": "undetermined", "replace": false, "code": "update.verify_failed", "step": "install_id", "detail": e}), 3);
         }
-        Err(e) => (json!({"verdict": "unreachable", "detail": e}), None, vec![], 3),
+    };
+    let (res, dates) = fetch_and_verify(dir, &cfg.channel, now, Some(feed::rollout_bucket(&id)));
+    let (feed_json, outcome, rc) = match res {
+        Ok(o) => {
+            let rc = o.verdict.rc();
+            (o.to_json(), Some(o), rc)
+        }
+        Err(e) => (json!({"verdict": "unreachable", "detail": e}), None, 3),
     };
     let facts = gather_facts(dir, pack_dir, outcome.as_ref(), &dates, now, hooks);
     let report = gates::evaluate(&facts);
-    let decision = match outcome.as_ref().map(|o| o.verdict) {
-        Some(Verdict::Apply) if report.pass => "apply",
-        Some(Verdict::Apply) => "hold",
-        Some(v) => v.as_str(),
-        None => "unreachable",
-    };
+    let decision = decide(outcome.as_ref(), report.pass);
     let out = json!({
         "decision": decision,
         "replace": false, // U1 = 판정만(교체 0)
@@ -465,6 +538,19 @@ pub fn run_check(dir: &Path, pack_dir: &Path, hooks: &Hooks) -> (Value, i32) {
         "facts": facts,
     });
     (out, rc)
+}
+
+/// 결정(순수) — `stop_seats` 가 무엇보다 먼저(판정이 거부·판정 불가여도 설치판 정지는 집행 대상).
+pub fn decide(outcome: Option<&FeedOutcome>, gates_pass: bool) -> &'static str {
+    match outcome {
+        Some(o) if o.stop_seats && !super::mutant("N4c") => "stop_seats",
+        Some(o) => match o.verdict {
+            Verdict::Apply if gates_pass => "apply",
+            Verdict::Apply => "hold",
+            v => v.as_str(),
+        },
+        None => "unreachable",
+    }
 }
 
 #[cfg(test)]
@@ -517,21 +603,22 @@ mod tests {
     #[test]
     fn b3_revocations_copy_freshness_and_integrity() {
         let d = tmp("b3");
-        let t = record_revocations(&d, b"rev-v3", b"sig", 3, 1_000).unwrap();
+        let t = record_revocations(&d, b"rev-v3", b"sig", 3, 1_000, true).unwrap();
         assert_eq!((t.revocations_rev, t.last_trusted_time), (Some(3), Some(1_000)));
         let now = clock::now_stamp();
         assert_eq!(load_accepted_revocations(&d, &now, false).unwrap().0, b"rev-v3");
-        assert!(record_revocations(&d, b"rev-v3-other", b"sig", 3, 1_000).is_err(), "같은 rev 다른 원문");
-        assert!(record_revocations(&d, b"rev-v2", b"sig", 2, 1_000).is_err(), "rev 후퇴");
+        assert!(record_revocations(&d, b"rev-v3-other", b"sig", 3, 1_000, true).is_err(), "같은 rev 다른 원문");
+        assert!(record_revocations(&d, b"rev-v2", b"sig", 2, 1_000, true).is_err(), "rev 후퇴");
         // 수용 시각을 31일 전(다른 부팅)으로 — 낡음
         let mut tr = read_trusted(&d).unwrap();
         tr.revocations_accepted_at = Some(clock::Stamp { boot_id: now.boot_id + 1, mono_ms: 0, wall: now.wall - 31 * 86_400 });
-        std::fs::write(d.join("trusted.json"), serde_json::to_vec(&tr).unwrap()).unwrap();
+        let g = trusted_current_dir(&d).unwrap().unwrap();
+        std::fs::write(g.join(TRUSTED_FILE), serde_json::to_vec(&tr).unwrap()).unwrap();
         assert!(load_accepted_revocations(&d, &now, false).unwrap_err().contains("30일"));
         // 원문 변조 = 거부
         tr.revocations_accepted_at = Some(now);
-        std::fs::write(d.join("trusted.json"), serde_json::to_vec(&tr).unwrap()).unwrap();
-        std::fs::write(d.join(REV_COPY), b"tampered").unwrap();
+        std::fs::write(g.join(TRUSTED_FILE), serde_json::to_vec(&tr).unwrap()).unwrap();
+        std::fs::write(g.join(REV_COPY), b"tampered").unwrap();
         assert!(load_accepted_revocations(&d, &now, false).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -550,6 +637,84 @@ mod tests {
         assert_eq!(f.other_txn, Some(false));
         assert_eq!(f.hold_log_undelivered, Some(0));
         assert!(!gates::evaluate(&f).pass);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★2R N6: 세 파일 = 한 세대 커밋 — 새 세대를 쓰다 죽음(CURRENT 교체 전) = 직전 세대 온전 · 포인터가 없는 세대를 가리킴 = 손상.
+    #[test]
+    fn n6_trusted_generation_commit_is_atomic() {
+        let d = tmp("n6");
+        record_revocations(&d, b"rev-v1", b"sig1", 1, 1_000, true).unwrap();
+        record_revocations(&d, b"rev-v2", b"sig2", 2, 2_000, true).unwrap();
+        let before = read_trusted(&d).unwrap();
+        // 세대 3 을 쓰다 죽음: 원문만 쓰고 trusted.json·CURRENT 는 못 씀
+        let g3 = d.join(TRUSTED_DIR).join("gen-3");
+        std::fs::create_dir_all(&g3).unwrap();
+        std::fs::write(g3.join(REV_COPY), b"rev-v3-torn").unwrap();
+        assert_eq!(read_trusted(&d).unwrap(), before, "직전 세대 그대로");
+        assert_eq!(load_accepted_revocations(&d, &clock::now_stamp(), false).unwrap(), (b"rev-v2".to_vec(), b"sig2".to_vec()));
+        // 다음 커밋은 고아 세대를 치우고 그 자리에 온전히 쓴다
+        bump_trusted(&d, Some(3_000)).unwrap();
+        assert_eq!(read_trusted(&d).unwrap().last_trusted_time, Some(3_000));
+        assert_eq!(load_accepted_revocations(&d, &clock::now_stamp(), false).unwrap().0, b"rev-v2", "신뢰 시각만 바뀐 세대도 원문 동반");
+        assert!(!d.join(TRUSTED_DIR).join("gen-1").exists(), "두 세대 전 정리");
+        std::fs::write(d.join(TRUSTED_DIR).join(TRUSTED_POINTER), b"9\n").unwrap();
+        assert!(read_trusted(&d).is_err(), "없는 세대 = 손상(신규 기기로 강등 금지)");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★2R N5 뮤테이션 N5r: 시계 의심 기록 = 원문은 기록 · 신뢰 시각은 그대로.
+    #[test]
+    fn n5r_suspect_record_keeps_trusted_time() {
+        let d = tmp("n5r");
+        bump_trusted(&d, Some(5_000)).unwrap();
+        let t = record_revocations(&d, b"rev", b"sig", 1, 9_000, false).unwrap();
+        assert_eq!((t.revocations_rev, t.last_trusted_time), (Some(1), Some(5_000)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn fetched(date: Option<i64>, body: &[u8]) -> Result<net::Fetched, String> {
+        Ok(net::Fetched { bytes: body.to_vec(), http_date: date, hops: vec![] })
+    }
+
+    /// ★2R M4(소스 변이 patch `m4-partial-fetch`): 폐기문 원문만 받고 서명은 못 받아도 원문 응답의 Date 는 N13 재료로 남는다.
+    #[test]
+    fn m4_partial_fetch_keeps_every_success_date() {
+        let d = tmp("m4p");
+        let get = |rel: &str| -> Result<net::Fetched, String> {
+            match rel {
+                "revocations.json" => fetched(Some(4_000_000_000), b"{}"),
+                "revocations.json.minisig" => Err("404".into()),
+                _ => fetched(Some(1_790_000_000), b"{}"),
+            }
+        };
+        let (_, dates) = fetch_and_verify_with(&d, "stable", 1_790_000_000, None, &get);
+        assert_eq!(dates, vec![Some(1_790_000_000), Some(1_790_000_000), Some(4_000_000_000)]);
+        assert!(clock::clock_suspect_dates(1_790_000_000, None, &dates), "짝이 실패해도 큰 시각 차 = 시계 의심");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★2R N4 뮤테이션 N4c: 결정 = stop_seats 가 무엇보다 먼저(판정 거부·apply 여도).
+    #[test]
+    fn n4c_stop_seats_is_forced_decision() {
+        let mut o = feed::FeedOutcome::fail_for_test(Verdict::Apply);
+        assert_eq!(decide(Some(&o), true), "apply");
+        assert_eq!(decide(Some(&o), false), "hold");
+        o.stop_seats = true;
+        assert_eq!(decide(Some(&o), true), "stop_seats");
+        o.verdict = Verdict::Reject;
+        assert_eq!(decide(Some(&o), true), "stop_seats");
+        assert_eq!(decide(None, true), "unreachable");
+    }
+
+    /// ★2R M5: install_id 손상 = 판정 불가(rc 3 · 피드 받기 전).
+    #[test]
+    fn m5_corrupt_install_id_is_undetermined() {
+        let d = tmp("m5");
+        std::fs::write(buildinfo::install_id_path(&d), b"not-an-id").unwrap();
+        let hooks = Hooks { seats: &|| None, pending_approvals: &|| Some(0) };
+        let (v, rc) = run_check(&d, &d.join("pack"), &hooks);
+        assert_eq!((v["decision"].as_str(), v["step"].as_str(), rc), (Some("undetermined"), Some("install_id"), 3));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

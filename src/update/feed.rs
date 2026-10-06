@@ -163,6 +163,11 @@ pub fn sha256_hex(b: &[u8]) -> String {
     format!("{:x}", Sha256::digest(b))
 }
 
+/// 소문자 40 hex(cdhash·dr_pin_id·dr_pins 공용).
+pub fn is_hex40(s: &str) -> bool {
+    is_hex(s, 40)
+}
+
 fn is_hex(s: &str, n: usize) -> bool {
     s.len() == n && s.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
 }
@@ -287,6 +292,11 @@ impl FeedOutcome {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_for_test(v: Verdict) -> FeedOutcome {
+        FeedOutcome::fail(v, UpdateErr::new(ErrCode::Ok, "t", ""))
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "verdict": self.verdict.as_str(),
@@ -354,6 +364,10 @@ fn check_release_shape(r: &ReleaseBody, component: &str) -> Result<(), String> {
     if r.version.trim().is_empty() {
         return Err("version 비었음".into());
     }
+    // ★2R N3: 출발 판 하한은 후보보다 작아야 한다(같거나 크면 아무도 올 수 없는 본문 · 열거 범위도 이것으로 닫힌다).
+    if r.min_from_release_seq >= r.release_seq {
+        return Err(format!("min_from_release_seq {} ≥ release_seq {}", r.min_from_release_seq, r.release_seq));
+    }
     if !matches!(r.state_migration.as_str(), "none" | "additive" | "breaking") {
         return Err(format!("state_migration {}", r.state_migration));
     }
@@ -363,6 +377,10 @@ fn check_release_shape(r: &ReleaseBody, component: &str) -> Result<(), String> {
     for (k, a) in &r.assets {
         if !TARGETS.contains(&k.as_str()) {
             return Err(format!("미지 기판 {k}"));
+        }
+        // ★2R B5/N7: cysr 은 `any` 행 금지 — any 는 기판별 둘째 닻·페이로드 전수 검사를 피해 맥·윈 fallback 으로 뽑힌다.
+        if component == "cysr" && k == "any" {
+            return Err("cysr 본문의 any 행 금지(기판별 행만)".into());
         }
         if &a.target != k {
             return Err(format!("행 target {}≠{k}", a.target));
@@ -391,34 +409,41 @@ fn check_release_shape(r: &ReleaseBody, component: &str) -> Result<(), String> {
                 }
             }
         }
-        // ★1R B5: 기판별 둘째 닻 필수(§4-3) — 맥 = cdhash(40 hex) + dr_pin_id(인증서 leaf sha1 40 hex) · 윈 = a2_sig_url
-        //   (자산 1홉 규칙). U 서명만 있는 자산은 Apply 에 닿지 않는다.
-        if component == "cysr" && !super::mutant("B5") {
-            if k.starts_with("macos-") {
-                if !a.cdhash.as_deref().map(|h| is_hex(h, 40)).unwrap_or(false) {
-                    return Err(format!("행 {k} cdhash 부재·형식(40 hex)"));
-                }
-                if !a.dr_pin_id.as_deref().map(|h| is_hex(h, 40)).unwrap_or(false) {
-                    return Err(format!("행 {k} dr_pin_id 부재·형식(40 hex)"));
-                }
+        check_row_anchors(component, k, a)?;
+    }
+    check_notes_ko(&r.notes_ko)
+}
+
+/// ★1R B5 · U3 1R #10 · 2R B5/N7: 기판별 둘째 닻과 윈 페이로드 전수 — 본문 서식(ⓖ · 행 키 기준)과 판정(ⓜ · **실제 `inp.target`**
+/// 기준) 두 곳에서 같은 함수로 본다(선택된 행이 다른 키로 뽑혀 검사를 비켜 가는 길 차단).
+fn check_row_anchors(component: &str, k: &str, a: &Asset) -> Result<(), String> {
+    // ★1R B5: 기판별 둘째 닻 필수(§4-3) — 맥 = cdhash(40 hex) + dr_pin_id(인증서 leaf sha1 40 hex) · 윈 = a2_sig_url
+    //   (자산 1홉 규칙). U 서명만 있는 자산은 Apply 에 닿지 않는다.
+    if component == "cysr" && !super::mutant("B5") {
+        if k.starts_with("macos-") {
+            if !a.cdhash.as_deref().map(|h| is_hex(h, 40)).unwrap_or(false) {
+                return Err(format!("행 {k} cdhash 부재·형식(40 hex)"));
             }
-            if k.starts_with("windows-") {
-                match a.a2_sig_url.as_deref() {
-                    Some(u) if row_url_check(component, UrlField::A2Sig, u).is_ok() => {}
-                    _ => return Err(format!("행 {k} a2_sig_url 부재·허용 목록 밖")),
-                }
+            if !a.dr_pin_id.as_deref().map(|h| is_hex(h, 40)).unwrap_or(false) {
+                return Err(format!("행 {k} dr_pin_id 부재·형식(40 hex)"));
             }
         }
-        // ★U3 1R #10: 윈 페이로드 전수(cysr 윈 행 필수) · 다른 행에 실렸으면 같은 형식 검사.
-        if !super::mutant("PM") {
-            if component == "cysr" && k.starts_with("windows-") {
-                check_payload_manifest(k, a.payload_manifest.as_ref())?;
-            } else if a.payload_manifest.is_some() {
-                check_payload_manifest(k, a.payload_manifest.as_ref())?;
+        if k.starts_with("windows-") {
+            match a.a2_sig_url.as_deref() {
+                Some(u) if row_url_check(component, UrlField::A2Sig, u).is_ok() => {}
+                _ => return Err(format!("행 {k} a2_sig_url 부재·허용 목록 밖")),
             }
         }
     }
-    check_notes_ko(&r.notes_ko)
+    // ★U3 1R #10: 윈 페이로드 전수(cysr 윈 행 필수) · 다른 행에 실렸으면 같은 형식 검사.
+    if !super::mutant("PM") {
+        if component == "cysr" && k.starts_with("windows-") {
+            check_payload_manifest(k, a.payload_manifest.as_ref())?;
+        } else if a.payload_manifest.is_some() {
+            check_payload_manifest(k, a.payload_manifest.as_ref())?;
+        }
+    }
+    Ok(())
 }
 
 /// ⓛ `requires` 계약 — 부품별 필수 키 · 빈 값·파싱 불가 거부.
@@ -568,8 +593,21 @@ fn check_signed(inp: &FeedInput, installed: Option<u64>) -> Result<Checked, Box<
     Ok(Checked { revs, env, env_sha, body })
 }
 
-/// ⓙ~ⓝ — 설치판 `installed` 대비 판정(서명 단계를 통과한 재료로).
+/// ⓙ~ⓝ — 설치판 `installed` 대비 판정. ★2R N4: 설치판이 `stop_seats` 폐기면 판정(apply·halt·not_in_rollout·uptodate)보다
+/// `installed_revoked` 가 **우선**한다 — 더 새 후보의 행·판 정보는 그대로 실어 둔다(집행 = 좌석 정지 · 갱신 여부는 호출부).
+/// 거부·판정 불가는 그 코드를 유지하되 `stop_seats` 칸은 이미 실려 있다(B3).
 fn judge(inp: &FeedInput, c: &Checked, installed: u64) -> FeedOutcome {
+    let mut o = judge_candidate(inp, c, installed);
+    if o.stop_seats && o.verdict.rc() == 0 && o.verdict != Verdict::InstalledRevoked && !super::mutant("N4") {
+        let was = o.verdict.as_str();
+        o.verdict = Verdict::InstalledRevoked;
+        o.code = ErrCode::InstalledRevoked;
+        o.detail = format!("설치판 {installed} stop_seats 폐기 — 우선 판정(후보 판정 = {was})");
+    }
+    o
+}
+
+fn judge_candidate(inp: &FeedInput, c: &Checked, installed: u64) -> FeedOutcome {
     use Verdict::Reject;
     let (env, body) = (&c.env, &c.body);
     let base = |mut o: FeedOutcome| -> FeedOutcome {
@@ -626,6 +664,9 @@ fn judge(inp: &FeedInput, c: &Checked, installed: u64) -> FeedOutcome {
     let Some(asset) = body.assets.get(inp.target).or_else(|| body.assets.get("any")).cloned() else {
         return base(FeedOutcome::fail(Reject, UpdateErr::new(ErrCode::VerifyFailed, "ⓜ", format!("기판 행 없음 {}", inp.target))));
     };
+    if let Err(d) = check_row_anchors(inp.component, inp.target, &asset) {
+        return base(FeedOutcome::fail(Reject, UpdateErr::new(ErrCode::VerifyFailed, "ⓜ", format!("선택 행 · 실제 기판 {} 기준: {d}", inp.target))));
+    }
     if let Err(e) = row_url_check(inp.component, UrlField::Asset, &asset.url) {
         return base(FeedOutcome::fail(Reject, UpdateErr::new(ErrCode::UrlRefused, "ⓜ", e.detail)));
     }
@@ -653,6 +694,19 @@ pub fn verify_feed(inp: &FeedInput) -> FeedOutcome {
     }
 }
 
+/// 출발 seq 열거 폭 상한(★2R N3).
+pub const ENUMERATE_MAX: u64 = 256;
+
+/// ★2R N2: 판정 1건의 직렬화 — 단일 판정(`cys update-verify --json`)과 열거의 각 행이 **이 함수 하나**로 같은 바이트를 낸다.
+pub fn render_outcome(o: &FeedOutcome) -> String {
+    o.to_json().to_string()
+}
+
+/// 열거 행 `{"installed_release_seq":N,"outcome":<render_outcome 바이트 그대로>}` — 바깥 칸은 판정 바이트를 건드리지 않는다.
+pub fn render_enum_row(installed: u64, o: &FeedOutcome) -> String {
+    format!("{{\"installed_release_seq\":{installed},\"outcome\":{}}}", render_outcome(o))
+}
+
 /// 출발 seq 열거 결과 — 서명 단계(ⓐ~ⓘ)는 한 번 · 판정(ⓙ~ⓝ)은 출발 seq 마다.
 #[derive(Debug, Clone)]
 pub struct Enumerated {
@@ -668,6 +722,17 @@ pub struct Enumerated {
 pub fn verify_feed_enumerate(inp: &FeedInput) -> Result<Enumerated, FeedOutcome> {
     let c = check_signed(inp, None).map_err(|o| *o)?;
     let lo = c.body.min_from_release_seq.max(1);
+    // ★2R N3: 열거 폭 상한 — 서명된 본문이라도 큰 간격(seq 1 ~ 10⁹)이 CPU·메모리를 태우지 않게. 넘으면 판정 불가(rc 3).
+    let width = c.body.release_seq.saturating_sub(lo).saturating_add(1);
+    if width > ENUMERATE_MAX {
+        let mut o = FeedOutcome::fail(
+            Verdict::Undetermined,
+            UpdateErr::new(ErrCode::VerifyFailed, "enumerate", format!("열거 폭 {width} > 상한 {ENUMERATE_MAX}(min_from {} · 후보 {})", c.body.min_from_release_seq, c.body.release_seq)),
+        );
+        o.release_seq = Some(c.body.release_seq);
+        o.min_from_release_seq = Some(c.body.min_from_release_seq);
+        return Err(o);
+    }
     let results = (lo..=c.body.release_seq).map(|i| (i, judge(inp, &c, i))).collect();
     Ok(Enumerated { release_seq: c.body.release_seq, min_from_release_seq: c.body.min_from_release_seq, results })
 }
@@ -1085,10 +1150,15 @@ mod tests {
         // 다른 부품의 같은 번호는 무관
         let s = sign_all(&k, &env, &revocations_json(&k, 1, serde_json::json!([{"component": "agora-client", "release_seq": 9}])));
         assert_eq!(verify_feed(&input(&s, &kr, 8)).verdict, Verdict::Apply);
-        // ① 설치판 8 폐기 + 더 새 후보 9 = apply(우선 후보) · 표시 installed_revoked
+        // ① ★2R N4(뮤테이션 N4): 설치판 8 stop_seats 폐기 + 더 새 후보 9 = installed_revoked **우선**(apply 아님) · 후보 행·판은 실어 둠
         let s = sign_all(&k, &env, &revocations_json(&k, 1, serde_json::json!([{"component": "cysr", "release_seq": 8, "severity": "stop_seats"}])));
         let o = verify_feed(&input(&s, &kr, 8));
-        assert_eq!((o.verdict, o.installed_revoked, o.stop_seats), (Verdict::Apply, true, true));
+        assert_eq!((o.verdict, o.code, o.installed_revoked, o.stop_seats), (Verdict::InstalledRevoked, ErrCode::InstalledRevoked, true, true));
+        assert_eq!((o.release_seq, o.asset.is_some()), (Some(9), true), "후보 정보 유지");
+        // ①′ advisory 폐기 + 더 새 후보 = apply(우선 후보) · 표시 installed_revoked
+        let s = sign_all(&k, &env, &revocations_json(&k, 1, serde_json::json!([{"component": "cysr", "release_seq": 8}])));
+        let o = verify_feed(&input(&s, &kr, 8));
+        assert_eq!((o.verdict, o.installed_revoked, o.stop_seats), (Verdict::Apply, true, false));
         // ②③ 설치판 9 폐기 + 후보 9(같음) = installed_revoked 판정(rc 0)
         let s = sign_all(&k, &env, &revocations_json(&k, 1, serde_json::json!([{"component": "cysr", "release_seq": 10}])));
         let o = verify_feed(&input(&s, &kr, 10));
@@ -1376,7 +1446,7 @@ mod tests {
         // 단일 판정과 같은 단계(같은 함수) — 출발 7 의 결과 = verify_feed(설치 7)
         let mut one = input(&s, &kr, 7);
         one.installed_release_seq = 7;
-        assert_eq!(verify_feed(&one).to_json(), en.results[1].1.to_json());
+        assert_eq!(render_outcome(&verify_feed(&one)), render_outcome(&en.results[1].1), "★2R N2: 직렬화 바이트 동일");
         // min_from 0 = 출발 1 부터(0 은 판정 대상 아님)
         let mut b = body_json(&k, 3);
         b["min_from_release_seq"] = 0.into();
@@ -1393,5 +1463,45 @@ mod tests {
         let n = s.env.len() / 2;
         s.env[n] ^= 1;
         assert_eq!(verify_feed_enumerate(&input(&s, &kr, 0)).unwrap_err().verdict, Verdict::Reject);
+    }
+
+    /// ★2R B5/N7(소스 변이 patch `b5-any`): cysr 본문의 `any` 행 = ⓖ 거부(둘째 닻·페이로드 검사 우회 차단) · agora-client 는 any 허용.
+    #[test]
+    fn b5_cysr_any_row_rejected() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let mut b = body_json(&k, 9);
+        b["assets"] = serde_json::json!({"any": asset("any", 9)});
+        let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+        for t in ["macos-arm64", "windows-x64"] {
+            let mut i = input(&s, &kr, 8);
+            i.target = t;
+            let o = verify_feed(&i);
+            assert_eq!((o.verdict, o.step.as_str()), (Verdict::Reject, "ⓖ"), "{t}: {}", o.detail);
+        }
+        let mut b = body_json(&k, 9);
+        b["assets"]["any"] = asset("any", 9);
+        let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+        assert_eq!(verify_feed(&input(&s, &kr, 8)).step, "ⓖ", "기판 행과 섞여도 any 금지");
+    }
+
+    /// ★2R N3: 본문 min_from ≥ release_seq = ⓖ 거부 · 열거 폭 > 256 = 판정 불가(rc 3) · 256 = 허용.
+    #[test]
+    fn n3_min_from_bound_and_enumerate_width_cap() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let mk = |seq: u64, min_from: u64| {
+            let mut b = body_json(&k, seq);
+            b["min_from_release_seq"] = min_from.into();
+            sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])))
+        };
+        let s = mk(9, 9);
+        let o = verify_feed(&input(&s, &kr, 8));
+        assert_eq!((o.verdict, o.step.as_str()), (Verdict::Reject, "ⓖ"));
+        let s = mk(300, 0);
+        let e = verify_feed_enumerate(&input(&s, &kr, 0)).unwrap_err();
+        assert_eq!((e.verdict, e.verdict.rc(), e.step.as_str()), (Verdict::Undetermined, 3, "enumerate"));
+        let s = mk(256, 0);
+        assert_eq!(verify_feed_enumerate(&input(&s, &kr, 0)).unwrap().results.len(), 256);
     }
 }

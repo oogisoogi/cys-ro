@@ -287,14 +287,16 @@ pub fn verify_revocations(
     if raw.kind != REVOCATIONS_KIND {
         return Err(bad(format!("폐기문 kind {}", raw.kind)));
     }
+    // ★2R N5: 시각 기준 = 신뢰 시각 `max(now, last_trusted)` — 과거로 돌린 시계에서 이미 만료된 R 키가 다시 유효해지지 않게
+    //   (키 만료와 아래 signed_at 미래 거부가 같은 기준).
+    let trusted_now = if super::mutant("N5") { now } else { last_trusted.map_or(now, |t| t.max(now)) };
     // R 은 내장 키만(위임문이 스스로 루트를 늘리는 순환 차단). 내장 키링의 폐기 목록만 본다.
-    embedded.verify(Purpose::Root, &raw.key_id, bytes, sig, now).map_err(bad)?;
+    embedded.verify(Purpose::Root, &raw.key_id, bytes, sig, trusted_now).map_err(bad)?;
     if let Some(acc) = accepted_rev {
         if raw.rev < acc {
             return Err(UpdateErr::new(ErrCode::FeedReplay, "ⓐ", format!("폐기문 rev {} < 수용 {acc}", raw.rev)));
         }
     }
-    let trusted_now = last_trusted.map_or(now, |t| t.max(now));
     if raw.signed_at > trusted_now && !super::mutant("RF") {
         return Err(UpdateErr::new(
             ErrCode::FeedExpired,
@@ -312,6 +314,13 @@ pub fn verify_revocations(
             return Err(bad(format!("위임 key_id≠공개키 {}", d.key_id)));
         }
         delegations.push(Delegation { key_id: d.key_id, purpose, pubkey: d.pubkey, not_after: d.not_after });
+    }
+    // ★2R B9: 폐기 항목 component = 부품 목록 안 · dr_pins = 인증서 leaf sha1 소문자 40 hex.
+    if let Some(r) = raw.revoked_releases.iter().find(|r| !super::feed::COMPONENTS.contains(&r.component.as_str())) {
+        return Err(bad(format!("폐기 항목 component {:?}", r.component)));
+    }
+    if let Some(p) = raw.dr_pins.iter().flat_map(|d| d.add.iter().chain(&d.revoke)).find(|p| !super::feed::is_hex40(p)) {
+        return Err(bad(format!("dr_pins 형식(소문자 40 hex) {p:?}")));
     }
     let revoked_releases = raw
         .revoked_releases
@@ -526,6 +535,68 @@ mod tests {
         assert!(verify_revocations(&b, &s, &kr, None, NOW, Some(NOW + 3600)).is_ok());
         let (b, s) = revo(&k, 1, serde_json::json!({"signed_at": NOW}));
         assert!(verify_revocations(&b, &s, &kr, None, NOW, None).is_ok(), "지금 서명 = 통과");
+    }
+
+    /// ★2R N5 뮤테이션 N5: R 키 만료도 신뢰 시각 기준 — 시계를 과거로 돌려도(now < 만료 ≤ 신뢰 시각) 만료된 R 키는 거부.
+    #[test]
+    fn n5_r_key_expiry_uses_trusted_time() {
+        let k = Keys::new();
+        let mut v: serde_json::Value = serde_json::from_str(&k.keyring_json()).unwrap();
+        for e in v["keys"].as_array_mut().unwrap() {
+            if e["purpose"] == "root" {
+                e["not_after"] = "2026-09-01T00:00:00Z".into(); // 1_788_220_800 < NOW
+            }
+        }
+        let kr = UpdateKeyring::from_trusted_keys_json(&v.to_string()).unwrap();
+        let rewound = NOW - 40 * 86_400; // 만료 전 시각으로 돌린 시계
+        let (b, s) = revo(&k, 1, serde_json::json!({"signed_at": rewound - 10}));
+        assert!(verify_revocations(&b, &s, &kr, None, rewound, None).is_ok(), "신뢰 시각 모름 = 벽시계 기준(대조군)");
+        let e = verify_revocations(&b, &s, &kr, None, rewound, Some(NOW)).unwrap_err();
+        assert_eq!(e.code, ErrCode::FeedSigBad, "{}", e.detail);
+    }
+
+    /// ★2R B9: 폐기 항목 component = 부품 목록 · dr_pins = 소문자 40 hex.
+    #[test]
+    fn b9_revocation_field_domains() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let (b, s) = revo(&k, 1, serde_json::json!({"revoked_releases": [{"component": "evil", "release_seq": 1}]}));
+        assert!(verify_revocations(&b, &s, &kr, None, NOW, None).unwrap_err().detail.contains("component"));
+        for bad in ["ABCDEF0123456789ABCDEF0123456789ABCDEF01", "abc", "zz26231e7dc737ee1d74962b346c23d3acacb18d"] {
+            let (b, s) = revo(&k, 1, serde_json::json!({"dr_pins": {"add": [bad]}}));
+            assert!(verify_revocations(&b, &s, &kr, None, NOW, None).unwrap_err().detail.contains("dr_pins"), "{bad}");
+        }
+        let (b, s) = revo(&k, 1, serde_json::json!({"dr_pins": {"revoke": ["a426231e7dc737ee1d74962b346c23d3acacb18d"]}}));
+        assert!(verify_revocations(&b, &s, &kr, None, NOW, None).is_ok());
+    }
+
+    /// ★2R B9: golden 왕복 — HANDOFF §8 schema 문면 그대로 쓴 폐기문(`testdata/golden-revocations.json`)이 서명·검증을 지나 모든 칸이
+    /// 그 값으로 읽힌다(자리표시 = 시험 키). U3 발행기가 같은 문면을 내면 같은 결과.
+    #[test]
+    fn b9_golden_revocations_roundtrip() {
+        let k = Keys::new();
+        let kr = k.keyring();
+        let x = TestKey::new();
+        let text = include_str!("testdata/golden-revocations.json")
+            .replace("@R_KEY_ID@", &k.r.key_id)
+            .replace("@DELEG_KEY_ID@", &x.key_id)
+            .replace("@DELEG_PUBKEY@", &x.pubkey);
+        let b = text.into_bytes();
+        let s = k.r.sign(&b);
+        let r = verify_revocations(&b, &s, &kr, Some(7), NOW, Some(NOW)).unwrap();
+        assert_eq!((r.rev, r.signed_at, r.key_id.as_str()), (7, 1_789_999_000, k.r.key_id.as_str()));
+        assert_eq!(r.delegations, vec![Delegation { key_id: x.key_id.clone(), purpose: Purpose::Feed, pubkey: x.pubkey.clone(), not_after: 1_795_000_000 }]);
+        assert_eq!(r.revoked_key_ids, vec!["0123456789ABCDEF".to_string()]);
+        let rr: Vec<(&str, u64, Severity, bool, &str)> =
+            r.revoked_releases.iter().map(|x| (x.component.as_str(), x.release_seq, x.severity, x.unknown_severity, x.reason_code.as_str())).collect();
+        assert_eq!(rr, vec![
+            ("cysr", 12, Severity::StopSeats, false, "crash-on-start"),
+            ("agora-client", 3, Severity::Advisory, false, ""),
+            ("cysr", 11, Severity::Advisory, false, ""),
+        ]);
+        assert_eq!(r.dr_pins.add, vec!["a426231e7dc737ee1d74962b346c23d3acacb18d".to_string()]);
+        assert_eq!(r.dr_pins.revoke.len(), 1);
+        assert_eq!(r.revoked("cysr", 12).map(|x| x.severity), Some(Severity::StopSeats));
     }
 
     #[test]

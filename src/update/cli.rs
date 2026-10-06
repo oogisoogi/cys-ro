@@ -235,6 +235,7 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             };
             let t_now = now();
             let bucket = buildinfo::read_install_id(&dir).map(|id| feed::rollout_bucket(&id));
+            let suspect = clock::clock_suspect(t_now, last_trusted, None);
             let inp = FeedInput {
                 component: &component,
                 channel: &channel,
@@ -243,7 +244,7 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                 revocations: &rev,
                 revocations_sig: &rev_sig,
                 now: t_now,
-                clock_suspect: clock::clock_suspect(t_now, last_trusted, None),
+                clock_suspect: suspect,
                 accepted: feed::read_accepted(&acc_path),
                 accepted_rev,
                 last_trusted_time: last_trusted,
@@ -266,8 +267,11 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                 let rec = (|| -> Result<bool, String> {
                     let mut wrote = false;
                     if let Some(r) = o.revocations.as_ref().filter(|_| strict || signed_ok) {
-                        check::record_revocations(&dir, &rev, &rev_sig, r.rev, r.signed_at)?;
-                        check::bump_trusted(&dir, o.trusted_signed_at)?;
+                        // ★2R N5: 시계 의심이면 원문은 기록하되 신뢰 시각은 올리지 않는다(어긋난 시계로 앵커를 밀지 않음).
+                        check::record_revocations(&dir, &rev, &rev_sig, r.rev, r.signed_at, !suspect)?;
+                        if !suspect {
+                            check::bump_trusted(&dir, o.trusted_signed_at)?;
+                        }
                         wrote = true;
                     }
                     if o.verdict == Verdict::Uptodate {
@@ -292,36 +296,51 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                     }
                 }
             }
-            print(json, &v, &format!("{} {} [{}] {}", o.verdict.as_str(), o.code, o.step, o.detail));
+            if json && !record {
+                println!("{}", feed::render_outcome(&o)); // ★2R N2: 열거 행과 같은 직렬화 함수
+            } else {
+                print(json, &v, &format!("{} {} [{}] {}", o.verdict.as_str(), o.code, o.step, o.detail));
+            }
             rc
         }
     }
 }
 
 /// `--enumerate-installed` — 서명 단계 실패 = 그 결과·rc · 아니면 출발 seq 마다 판정을 싣고 rc = 가장 나쁜 것(판정 불가 3 > 거부 2 > 0).
-/// 후보 직전까지의 출발 seq 가 하나도 없거나(min_from ≥ 후보) 후보 자신이 uptodate 가 아니면 거부(2).
+/// 후보 직전까지의 출발 seq 가 하나도 없거나(min_from ≥ 후보 — 2판 N3 뒤로는 본문 서식에서 먼저 거부) 후보 자신이 uptodate 가
+/// 아니면 거부(2).
 fn run_enumerate(inp: &FeedInput, json: bool) -> i32 {
-    let en = match feed::verify_feed_enumerate(inp) {
-        Ok(en) => en,
+    match feed::verify_feed_enumerate(inp) {
+        Ok(en) => {
+            let (text, rc) = enumerate_text(&en);
+            if json {
+                println!("{text}");
+            } else {
+                let seqs: Vec<String> = en.results.iter().map(|(s, o)| format!("{s}={}", o.verdict.as_str())).collect();
+                println!("enumerate rc={rc} {}", seqs.join(" "));
+            }
+            rc
+        }
         Err(o) => {
             let mut v = o.to_json();
             v["mode"] = "enumerate".into();
             print(json, &v, &format!("{} {} [{}] {}", o.verdict.as_str(), o.code, o.step, o.detail));
-            return o.verdict.rc();
+            o.verdict.rc()
         }
-    };
+    }
+}
+
+/// 열거 JSON 문자열 — ★2R N2: 각 행 = `feed::render_enum_row`(판정 바이트 = 단일 판정 `feed::render_outcome` 과 같은 바이트) ·
+/// 머리 칸(mode·verdict·release_seq·min_from_release_seq·problems)은 바깥에.
+fn enumerate_text(en: &feed::Enumerated) -> (String, i32) {
     let mut rc = 0;
     let mut problems = Vec::new();
-    let mut rows = Vec::new();
     for (seq, o) in &en.results {
         rc = rc.max(o.verdict.rc());
         if *seq == en.release_seq && !matches!(o.verdict, Verdict::Uptodate | Verdict::InstalledRevoked) && o.verdict.rc() == 0 {
             rc = rc.max(2);
             problems.push(format!("후보 자신({seq}) 판정 {}", o.verdict.as_str()));
         }
-        let mut row = o.to_json();
-        row["installed_release_seq"] = (*seq).into();
-        rows.push(row);
     }
     if !en.results.iter().any(|(s, _)| *s < en.release_seq) {
         rc = rc.max(2);
@@ -332,17 +351,16 @@ fn run_enumerate(inp: &FeedInput, json: bool) -> i32 {
         2 => "reject",
         _ => "undetermined",
     };
-    let v = serde_json::json!({
+    let head = serde_json::json!({
         "mode": "enumerate",
         "verdict": verdict,
         "release_seq": en.release_seq,
         "min_from_release_seq": en.min_from_release_seq,
         "problems": problems,
-        "results": rows,
-    });
-    let seqs: Vec<String> = en.results.iter().map(|(s, o)| format!("{s}={}", o.verdict.as_str())).collect();
-    print(json, &v, &format!("enumerate {verdict} {}", seqs.join(" ")));
-    rc
+    })
+    .to_string();
+    let rows: Vec<String> = en.results.iter().map(|(s, o)| feed::render_enum_row(*s, o)).collect();
+    (format!("{},\"results\":[{}]}}", &head[..head.len() - 1], rows.join(",")), rc)
 }
 
 #[cfg(test)]
@@ -452,7 +470,7 @@ mod tests {
         let rev = |n: u64| revocations_json(&k, n, serde_json::json!([]));
         t.put(&agora_signed(&k, 5, 9, rev(2)));
         assert_eq!(t.run("agora-client", Some(8), false), 0, "apply");
-        assert!(!t.st().join("trusted.json").exists(), "--record 없으면 쓰기 0");
+        assert!(!t.st().join(check::TRUSTED_DIR).exists(), "--record 없으면 쓰기 0");
         assert_eq!(t.run("agora-client", Some(9), true), 0, "uptodate + record");
         let acc = feed::read_accepted(&check::accepted_path(&t.st(), "agora-client", "stable")).unwrap().unwrap();
         assert_eq!((acc.feed_rev, acc.feed_release_seq, acc.installed_release_seq), (5, 9, 9));
@@ -502,7 +520,8 @@ mod tests {
         assert_eq!(t.run("agora-client", Some(9), true), 2, "후보 10 폐기 = 거부");
         let tr = check::read_trusted(&t.st()).unwrap();
         assert_eq!(tr.revocations_rev, Some(3), "거부 판정이어도 새 폐기문 rev 기록");
-        assert_eq!(std::fs::read(t.st().join(check::REV_COPY)).unwrap(), std::fs::read(t.d.join("r.json")).unwrap());
+        let g = check::trusted_current_dir(&t.st()).unwrap().unwrap();
+        assert_eq!(std::fs::read(g.join(check::REV_COPY)).unwrap(), std::fs::read(t.d.join("r.json")).unwrap());
         // 같은 rev 3 인데 다른 원문 = 기록 실패 → rc 3(조용한 rc 0 금지)
         let other = serde_json::json!([{"component": "agora-client", "release_seq": 99}]);
         t.put(&agora_signed(&k, 6, 10, revocations_json(&k, 3, other)));
@@ -526,11 +545,34 @@ mod tests {
         assert_eq!(t.run_mode("cysr", None, false, true), 0, "출발 6·7·8 apply + 9 uptodate");
         assert_eq!(t.run_mode("cysr", Some(8), false, true), 2, "설치 seq 동반");
         assert_eq!(t.run_mode("cysr", None, true, true), 2, "--record 동반");
-        assert!(!t.st().join("trusted.json").exists(), "열거 모드는 쓰기 0");
+        assert!(!t.st().join(check::TRUSTED_DIR).exists(), "열거 모드는 쓰기 0");
         put(9, serde_json::json!([]));
         assert_eq!(t.run_mode("cysr", None, false, true), 2, "허용 출발 seq 없음");
         put(6, serde_json::json!([{"component": "cysr", "release_seq": 9}]));
         assert_eq!(t.run_mode("cysr", None, false, true), 2, "후보 폐기 = 모든 출발 seq 거부");
+    }
+
+    /// ★2R N2(소스 변이 patch `enum-json`): 열거 JSON 의 각 행 `outcome` = 단일 판정 직렬화(`feed::render_outcome`)와 **같은 바이트**
+    /// · 출발 seq 는 바깥 칸.
+    #[test]
+    fn n2_enumerate_rows_are_single_verdict_bytes() {
+        use super::super::feed::fixture::*;
+        use super::super::keys::testkit::Keys;
+        let k = Keys::new();
+        let kr = k.keyring();
+        let mut b = body_json(&k, 9);
+        b["min_from_release_seq"] = 6.into();
+        let s = sign_all(&k, &envelope_json(&k, &b, 5), &revocations_json(&k, 1, serde_json::json!([])));
+        let en = feed::verify_feed_enumerate(&input(&s, &kr, 0)).unwrap();
+        let (text, rc) = enumerate_text(&en);
+        assert_eq!(rc, 0);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["results"].as_array().unwrap().len(), 4);
+        for seq in 6..=9u64 {
+            let single = feed::render_outcome(&feed::verify_feed(&input(&s, &kr, seq)));
+            let row = format!("{{\"installed_release_seq\":{seq},\"outcome\":{single}}}");
+            assert!(text.contains(&row), "출발 {seq} 행 바이트 = 단일 판정 바이트");
+        }
     }
 
     #[test]

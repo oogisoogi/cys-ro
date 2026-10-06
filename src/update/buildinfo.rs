@@ -165,9 +165,8 @@ pub fn ensure_install_id(dir: &std::path::Path) -> Result<String, String> {
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             let id = random_hex128()?;
-            crate::pack::write_atomic(&p, id.as_bytes()).map_err(|e| format!("{}: {e}", p.display()))?;
+            super::write_private(&p, id.as_bytes())?; // 소유자 전용 폴더·파일(2R M3 와 같은 규칙)
             Ok(id)
         }
         Err(e) => Err(format!("{}: {e}", p.display())),

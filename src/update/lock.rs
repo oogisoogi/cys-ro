@@ -131,28 +131,44 @@ pub fn read_owner(dir: &Path) -> Option<Owner> {
 
 /// 잠금이 지금 (누군가에게) 잡혀 있는가 — 비차단 시도가 실패하면 잡혀 있다. 시도가 성공하면 즉시 놓는다.
 /// `None` = 판정 불가(열기 실패 등).
+/// ★3판(Fable 2R M1): 탐침 = **공유** 시도(탐침끼리·공유 참가자와 충돌 0 — 배타 탐침의 순간 잠금이 다른 CLI·러너·설치기 ⓪-a 에 거짓
+/// 「잡힘」 을 주던 창 축소) · `WouldBlock` 이면 25ms × 4 다시 본 뒤에도 막힐 때만 잡힘.
 pub fn is_held(dir: &Path) -> Option<bool> {
     let f = OpenOptions::new().read(true).write(true).open(dir.join(LOCK_FILE)).ok()?;
-    match f.try_lock() {
-        Ok(()) => {
-            let _ = f.unlock();
-            Some(false)
+    for i in 0..5 {
+        match f.try_lock_shared() {
+            Ok(()) => {
+                let _ = f.unlock();
+                return Some(false);
+            }
+            Err(TryLockError::WouldBlock) if i < 4 => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(TryLockError::WouldBlock) => return Some(true),
+            Err(TryLockError::Error(_)) => return None,
         }
-        Err(TryLockError::WouldBlock) => Some(true),
-        Err(TryLockError::Error(_)) => None,
     }
+    Some(true)
 }
 
 /// 잠금을 잡는다(비차단 · 잡혀 있으면 `txn_busy`). 새 `txn_id`·`epoch`(+1)를 소유자 기록에 원자 기록한다.
 pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
     let f = open_lock(dir)?;
-    match f.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            let who = read_owner(dir).map(|o| format!("{}(pid {})", o.owner, o.pid)).unwrap_or_else(|| "?".into());
-            return Err(busy(format!("잠금 소유 중: {who}")));
+    // ★3판(Fable 2R M1): 막혔는데 산 소유자 기록이 없으면(없음·묘비 = 남의 순간 탐침일 수 있음) 짧게 다시 본다(25ms × 8).
+    let mut tries = 0;
+    loop {
+        match f.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) => {
+                let o = read_owner(dir);
+                let live_owner = o.as_ref().map(|o| !o.released).unwrap_or(false);
+                if live_owner || tries >= 8 {
+                    let who = o.map(|o| format!("{}(pid {})", o.owner, o.pid)).unwrap_or_else(|| "?".into());
+                    return Err(busy(format!("잠금 소유 중: {who}")));
+                }
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(TryLockError::Error(e)) => return Err(busy(format!("잠금 시도: {e}"))),
         }
-        Err(TryLockError::Error(e)) => return Err(busy(format!("잠금 시도: {e}"))),
     }
     let prev_owner = std::fs::read(dir.join(OWNER_FILE)).ok();
     let epoch = read_owner(dir).map(|o| o.epoch + 1).unwrap_or(1);
@@ -436,6 +452,26 @@ mod tests {
         assert!(participate(&d, "pack-plan", None, Some(&tok)).is_err(), "env 만 = ⓪ 거부");
         drop(g);
         assert!(participate(&d, "init-pack", None, None).unwrap().is_some(), "놓은 뒤 = 다시 참가");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3판 M1: 탐침이 공유라 공유 보유자(다른 탐침·참가자)와 충돌 0 · 배타 보유(러너)만 잡힘 · 러너 acquire 는 산 소유자 없는
+    /// 순간 막힘(남의 공유 탐침)을 기다려 넘는다.
+    #[test]
+    fn probe_is_shared_and_runner_rides_out_transient_probe() {
+        let d = tmp("probe");
+        std::fs::create_dir_all(&d).unwrap();
+        let f = open_lock(&d).unwrap();
+        f.lock_shared().unwrap(); // 남의 탐침(공유) 보유 중
+        assert_eq!(is_held(&d), Some(false), "공유끼리 = 안 잡힘(1·2판 배타 탐침이면 거짓 잡힘)");
+        let d2 = d.clone();
+        let t = std::thread::spawn(move || acquire(&d2, "runner").map(|_| ()));
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        f.unlock().unwrap(); // 탐침 끝
+        assert!(t.join().unwrap().is_ok(), "산 소유자 없는 순간 막힘 = 재시도로 획득");
+        let g = acquire(&d, "runner").unwrap();
+        assert_eq!(is_held(&d), Some(true), "배타 보유 = 잡힘");
+        drop(g);
         let _ = std::fs::remove_dir_all(&d);
     }
 

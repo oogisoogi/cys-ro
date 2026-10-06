@@ -139,7 +139,9 @@ pub fn signal(pack_dir: &Path, code: ErrCode) {
         return;
     }
     let py = if cfg!(windows) { "python" } else { "python3" };
-    let _ = std::process::Command::new(py)
+    use crate::SpawnPolicy;
+    let _ = crate::python_command(py)
+        .spawn_policy(crate::ChildLifetime::Attached)
         .arg(&script)
         .args(["signal", "--source", "update", "--op", "update.apply", "--error-code", &code.to_string()])
         .stdin(std::process::Stdio::null())

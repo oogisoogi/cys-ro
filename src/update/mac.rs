@@ -134,7 +134,7 @@ pub fn bundle_ident(bundle: &Path) -> Option<Ident> {
 
 /// 실행 파일 하나의 `build-info --json`(윈 `cys.exe` 도 같은 함수).
 pub fn bundle_ident_exe(exe: &Path) -> Option<Ident> {
-    let out = std::process::Command::new(exe).args(["build-info", "--json"]).env_remove("CYS_UPDATE_STATE_DIR").output().ok()?;
+    let out = crate::hidden_command(exe).args(["build-info", "--json"]).env_remove("CYS_UPDATE_STATE_DIR").output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -166,7 +166,7 @@ pub fn pick_unique_old(cands: &[(PathBuf, Option<Ident>)], from: &Ident) -> Opti
 }
 
 fn run(cmd: &str, args: &[&str]) -> (bool, String) {
-    match std::process::Command::new(cmd).args(args).output() {
+    match crate::hidden_command(cmd).args(args).output() {
         Ok(o) => (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
         Err(e) => (false, e.to_string()),
     }

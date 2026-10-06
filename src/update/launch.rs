@@ -161,8 +161,8 @@ pub fn ensure_recover_agent(update_dir: &Path, current: &Path) -> Result<(), Str
             // SAFETY: 인자 없는 조회.
             let uid = unsafe { libc::getuid() };
             let dom = format!("gui/{uid}");
-            let _ = std::process::Command::new("/bin/launchctl").args(["bootout", &dom]).arg(&path).output();
-            let o = std::process::Command::new("/bin/launchctl").args(["bootstrap", &dom]).arg(&path).output().map_err(|e| e.to_string())?;
+            let _ = crate::hidden_command("/bin/launchctl").args(["bootout", &dom]).arg(&path).output();
+            let o = crate::hidden_command("/bin/launchctl").args(["bootstrap", &dom]).arg(&path).output().map_err(|e| e.to_string())?;
             if !o.status.success() {
                 return Err(format!("launchctl bootstrap: {}", String::from_utf8_lossy(&o.stderr)));
             }

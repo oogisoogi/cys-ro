@@ -86,7 +86,7 @@ impl RealOps {
 
     /// 자식 명령(위임 토큰 동반).
     fn child(&self, exe: &Path, args: &[&str]) -> Result<std::process::Output, Fail> {
-        let mut c = std::process::Command::new(exe);
+        let mut c = crate::hidden_command(exe);
         c.args(args).env(super::lock::ENV_TXN, &self.token).stdin(std::process::Stdio::null());
         c.output().map_err(|e| fail(ErrCode::RotateFailed, "child", format!("{}: {e}", exe.display())))
     }
@@ -244,14 +244,14 @@ impl Ops for RealOps {
                     super::mac::check_entry_names(&names).map_err(|e| fail(ErrCode::ArchiveRefused, "S2", e))?;
                     let tmp = stage.join("unpacked");
                     let _ = std::fs::remove_dir_all(&tmp);
-                    let o = std::process::Command::new("/usr/bin/ditto").args(["-x", "-k"]).arg(&dst).arg(&tmp).output();
+                    let o = crate::hidden_command("/usr/bin/ditto").args(["-x", "-k"]).arg(&dst).arg(&tmp).output();
                     if !o.map(|o| o.status.success()).unwrap_or(false) {
                         return Err(fail(ErrCode::ArchiveRefused, "S2", "ditto 풀기 실패"));
                     }
                     super::mac::check_extracted_tree(&tmp, a.max_unpacked).map_err(|e| fail(ErrCode::ArchiveRefused, "S2", e))?;
                     let entries: Vec<PathBuf> = std::fs::read_dir(&tmp).map_err(|e| fail(ErrCode::ArchiveRefused, "S2", e.to_string()))?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
                     let app = super::macupdate::sole_app_bundle(&entries).map_err(|e| fail(ErrCode::ArchiveRefused, "S2", e.to_string()))?;
-                    let _ = std::process::Command::new("/usr/bin/xattr").arg("-cr").arg(&app).output();
+                    let _ = crate::hidden_command("/usr/bin/xattr").arg("-cr").arg(&app).output();
                     std::fs::rename(&app, &staged).map_err(|e| fail(ErrCode::MacAppsNotWritable, "S2", e.to_string()))?;
                 }
                 super::mac::verify_bundle(&staged, a.cdhash.as_deref().unwrap_or(""), &self.expect_new()?)?;
@@ -733,7 +733,7 @@ pub fn load_installer_manifest(dir: &Path) -> Option<Vec<super::feed::PayloadEnt
 
 /// zip 항목 이름(`unzip -Z1`).
 fn zip_names(zip: &Path) -> Result<Vec<String>, String> {
-    let o = std::process::Command::new("/usr/bin/unzip").arg("-Z1").arg(zip).output().map_err(|e| e.to_string())?;
+    let o = crate::hidden_command("/usr/bin/unzip").arg("-Z1").arg(zip).output().map_err(|e| e.to_string())?;
     if !o.status.success() {
         return Err("unzip -Z1 실패".into());
     }

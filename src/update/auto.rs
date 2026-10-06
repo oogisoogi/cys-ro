@@ -31,6 +31,18 @@ fn rpc_box() -> super::realops::Rpc {
 
 pub const ENV_NO_JITTER: &str = "CYS_UPDATE_NO_JITTER";
 pub const ENV_SETTLE: &str = "CYS_UPDATE_SETTLE_SECS";
+/// 윈 시험 폴더 설치(W2~W4 · 디버그 빌드만): 설치 폴더 = 상태 폴더 규칙을 시험 폴더 안에서 재현.
+pub const ENV_INSTALL_DIR: &str = "CYS_UPDATE_INSTALL_DIR";
+
+/// 설치 폴더(윈) — 기본 = 데몬 상태 폴더(설계 L4 · 설치 폴더 = 상태 폴더) · 디버그 빌드는 [`ENV_INSTALL_DIR`] 덮어쓰기.
+pub fn install_dir() -> PathBuf {
+    if cfg!(debug_assertions) {
+        if let Some(v) = std::env::var_os(ENV_INSTALL_DIR).filter(|v| !v.is_empty()) {
+            return PathBuf::from(v);
+        }
+    }
+    daemon_state_dir()
+}
 
 fn os() -> Os {
     if cfg!(windows) {
@@ -60,8 +72,8 @@ pub fn build_env(update_dir: PathBuf, channel: &str) -> Env {
         os: os(),
         update_dir,
         cys_root,
-        install_dir: state.clone(),
-        daemon_state_dir: state,
+        install_dir: if cfg!(windows) { install_dir() } else { state.clone() },
+        daemon_state_dir: if cfg!(windows) { install_dir() } else { state },
         canonical_app,
         channel: channel.to_string(),
         old_cys,
@@ -223,7 +235,7 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
 /// `--verify-payload --json`(윈 S9b 진단): 설치 폴더 = 지금 판 매니페스트 전수 대조(후보가 있으면 그 판 · 없으면 설치판 본문).
 pub fn verify_payload(json_out: bool) -> i32 {
     let Ok(dir) = super::buildinfo::state_dir() else { return 3 };
-    let install = daemon_state_dir();
+    let install = install_dir();
     let manifest = super::quiesce::read_json::<Candidate>(&dir, CANDIDATE_FILE)
         .and_then(|c| c.asset.payload_manifest)
         .filter(|m| !m.is_empty())

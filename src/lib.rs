@@ -6574,6 +6574,8 @@ mod spawn_policy_tests {
         ("src/factory_reset.rs", 7),
         ("src/launchd.rs", 4),
         ("src/lib.rs", 6),
+        // 1.1.8 U2(AUTO-UPDATE-118 §3-1): 러너 분리 기동 1곳 — 체인에 `spawn_policy(ChildLifetime::Survivor)` 등급을 단다(cys→cysd 와 같은 꼴).
+        ("src/update/launch.rs", 1),
     ];
 
     #[test]

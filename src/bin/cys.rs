@@ -27325,6 +27325,7 @@ fn counsel_update_code(op: &str, rc: i32, err: Option<&str>) -> Option<&'static 
             ROTATE_RC_DAEMON_UP => "update.daemon_up",
             ROTATE_RC_PACK => "update.pack",
             ROTATE_RC_RESTORE => "update.restore",
+            ROTATE_RC_TXN_BUSY => "update.txn_busy",
             _ => "update.failed",
         },
         _ if err == Some("binary-too-old") => "update.binary_too_old",
@@ -27563,6 +27564,7 @@ mod tests {
         assert_eq!(r(23), Some("update.daemon_up"));
         assert_eq!(r(24), Some("update.pack"));
         assert_eq!(r(25), Some("update.restore"));
+        assert_eq!(r(26), Some("update.txn_busy"));
         assert_eq!(r(1), Some("update.failed"));
         let p = |rc, e| counsel_update_code("host.pack-update", rc, e);
         assert_eq!(p(0, None), None);
@@ -27575,7 +27577,9 @@ mod tests {
         assert_eq!(counsel_update_signal("host.rotate", 0, None), 0);
         let src = include_str!("cys.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
-        assert!(prod.contains("return counsel_update_signal(\n                \"host.rotate\",\n                run_rotate("),
+        // ★1.1.8 U2: rotate 디스패치는 잠금 참가 rc(26)와 --stop-only 갈래까지 같은 신호 래퍼를 거친다.
+        assert!(prod.contains("Err(rc) => return counsel_update_signal(\"host.rotate\", rc, None),"), "rotate 잠금 경합이 신호 래퍼를 안 거친다");
+        assert!(prod.contains("run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env())\n            };\n            // ★T3: 끝난 rc 를 상담소 신호로(조기 return 이 많아 몸통 대신 여기서 — rc 불변).\n            return counsel_update_signal(\"host.rotate\", rc, None);"),
                 "rotate 디스패치가 신호 래퍼를 안 거친다");
         assert!(prod.contains("Ok(code) => counsel_update_signal(\"host.pack-update\", code, None),"));
         assert!(prod.contains("counsel_update_signal(\"host.pack-update\", 1, Some(e.as_str()))"));

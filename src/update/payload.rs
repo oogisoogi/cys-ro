@@ -149,7 +149,7 @@ mod tests {
         assert!(ours.contains("uninstall.exe") && ours.contains("cys-install-failure.txt"));
         let disk = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/update/payload-exclude.txt")).unwrap();
         assert_eq!(disk, EXCLUDE_TEXT, "include_str 사본 = 저장소 파일");
-        let py = std::process::Command::new("python3")
+        let py = crate::python_command("python3")
             .args(["-I", "-c", "import sys,json;sys.path.insert(0,sys.argv[1]);import update_common as u;print(json.dumps(sorted(x.lower() for x in u.load_payload_excludes())))"])
             .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/update"))
             .output();

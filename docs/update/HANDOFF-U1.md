@@ -5,6 +5,7 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(다음 사람이 먼저 읽을 것)
+- ★★★★**3판 진행 중(11:4x · 지시 = [master#2dc1891f] · 2R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-codex-2r.md` · 기준 커밋 502c9fe2)** — 범위 = B5/N7(cysr any 금지·실제 target 재검증) · B6/H⑥(위임 guard 잠금 보유) · B7/H⑦(단일 슬롯 gen≥2 = Degraded) · N4(stop_seats 우선·check 강제 상태) · N5(R 키 만료 = trusted_now · 시계 의심 record = 상향 금지) · M3(기존 파일 0600 재검증·윈 생성 시 DACL+read-back) · M4(Date 각각 누적) · M5(check 진입 ensure_install_id) · N2(공통 row serializer·바이트 비교) · N3(min_from<seq·열거 상한 256) · N6(trusted 세대 디렉터리+포인터) · B9 코드(component enum·dr_pins 40hex·golden 왕복) · M10/N8(scripts/tests/u1-mutants.sh + 실제 소스 변이 patch 4). 진행 표시 = 아래 항목별 커밋 · 끝나면 이 줄을 「3판 끝」으로 교체.
 - ★★★**2판 끝(11:2x · 재개 [master#113a3975] 10:52 · 소요 10:52–11:25 ≈ 33분)** — 산출 = 【확인요청】 2판:
   - **커밋**: `0ea0381a`(cli.rs 6오류 · B1 호출부 · B3 CLI · B4 · 종단 시험 agora-client 로 재작성) · `0fb4d824`(U3 이관 4 ⑴~⑷ + M8 + mach 경고 제거) · 이 문서 커밋(MINOR help/actions · §7 1R 반영표 · §8 schema 부록). push 0.
   - **시험(격리 · §4)**: Rust lib **878/0**(1 ignored) · cys **582/0**(j3 포함 — after_help 1줄로 스택 영향 없음) · cysd **2460/0**(7 ignored) · cys-app **296/0**(1 ignored) · `update::` 106/0 · **뮤테이션 22쌍 전건 적/녹 OK**(§7).

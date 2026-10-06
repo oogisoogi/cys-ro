@@ -282,6 +282,12 @@ pub fn read(dir: &Path) -> ReadOutcome {
     match (a, b) {
         (None, None) => ReadOutcome::Absent,
         (Some(Ok(x)), Some(Ok(y))) => ReadOutcome::Ok(if x.generation >= y.generation { x } else { y }),
+        // ★2R B7/H⑦: 두 슬롯은 generation 2 부터 늘 둘 다 있다(1 = 첫 쓰기만 한 슬롯). generation ≥2 인데 상대 슬롯이 **없으면**
+        //   더 새 본이 지워졌을 수 있다 — 낡은 단일 슬롯을 Ok 로 믿지 않는다(재구성).
+        (Some(Ok(x)), None) | (None, Some(Ok(x))) if x.generation >= 2 => {
+            let g = x.generation;
+            ReadOutcome::Degraded(x, format!("상대 슬롯 없음(generation {g} ≥ 2 — 더 새 본 유실 가능)"))
+        }
         (Some(Ok(x)), None) | (None, Some(Ok(x))) => ReadOutcome::Ok(x),
         (Some(Ok(x)), Some(Err(e))) | (Some(Err(e)), Some(Ok(x))) => {
             if super::mutant("B7") {
@@ -559,6 +565,27 @@ mod tests {
         let r = read(&d);
         assert_eq!(r.journal().map(|j| j.state), Some(CommitCheck), "남은 본 = S8b");
         assert_eq!(recovery_for(&r, Os::Win), Recovery::Reconstruct, "S8b 를 믿고 옛 바이너리 기동 = 금지");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★2R B7/H⑦(소스 변이 patch `b7-single-slot`): 최신 슬롯이 **지워져**(손상 아님 · 부재) 낡은 단일 슬롯만 남음 = Degraded →
+    /// 재구성(낡은 S8b 를 Ok 로 믿고 옛 바이너리 기동 = 금지) · 첫 쓰기(generation 1)의 단일 슬롯은 정상 Ok.
+    #[test]
+    fn b7_single_slot_with_missing_peer_is_degraded() {
+        let d = tmp("b7s");
+        advance(&d, T, 1, Locked, |_| {}).unwrap();
+        assert!(matches!(read(&d), ReadOutcome::Ok(_)), "generation 1 단일 슬롯 = 정상");
+        for st in [Fetched, Quiesced, Drained, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped] {
+            advance(&d, T, 1, st, |_| {}).unwrap();
+        }
+        let latest_slot = [JOURNAL_FILE, JOURNAL_PREV_FILE]
+            .into_iter()
+            .find(|f| serde_json::from_slice::<Journal>(&std::fs::read(d.join(f)).unwrap()).unwrap().state == Swapped)
+            .unwrap();
+        std::fs::remove_file(d.join(latest_slot)).unwrap();
+        let r = read(&d);
+        assert!(matches!(r, ReadOutcome::Degraded(..)), "{r:?}");
+        assert_eq!(recovery_for(&r, Os::Win), Recovery::Reconstruct);
         let _ = std::fs::remove_dir_all(&d);
     }
 

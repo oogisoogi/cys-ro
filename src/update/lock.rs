@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 pub const ENV_TXN: &str = "CYS_UPDATE_TXN";
 pub const LOCK_FILE: &str = "txn.lock";
 pub const OWNER_FILE: &str = "txn.owner.json";
+/// ★2R B6/H⑥: 위임 자식 잠금 — 위임 받은 자식이 작업 끝까지 쥔다(부모가 죽어 `txn.lock` 이 풀려도 새 트랜잭션은 이것이 풀릴 때까지
+/// 못 연다). 자식은 한 번에 하나(러너는 자식을 차례로 부른다).
+pub const CHILD_LOCK_FILE: &str = "txn.child.lock";
 
 /// 위임 토큰.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +102,11 @@ fn busy(d: impl Into<String>) -> UpdateErr {
 }
 
 fn open_lock(dir: &Path) -> Result<File, UpdateErr> {
+    open_lock_file(dir, LOCK_FILE)
+}
+
+/// 잠금 파일 열기(0600 으로 만들고 · ★2R M3: 이미 있던 파일도 소유자 전용인지 재검증 — 아니면 판정 불가).
+fn open_lock_file(dir: &Path, name: &str) -> Result<File, UpdateErr> {
     super::ensure_private_dir(dir).map_err(busy)?;
     let mut o = OpenOptions::new();
     o.read(true).write(true).create(true).truncate(false);
@@ -107,7 +115,10 @@ fn open_lock(dir: &Path) -> Result<File, UpdateErr> {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
-    o.open(dir.join(LOCK_FILE)).map_err(|e| busy(format!("잠금 파일: {e}")))
+    let path = dir.join(name);
+    let f = o.open(&path).map_err(|e| busy(format!("잠금 파일: {e}")))?;
+    super::check_private_file(&path).map_err(busy)?;
+    Ok(f)
 }
 
 pub fn read_owner(dir: &Path) -> Option<Owner> {
@@ -139,6 +150,7 @@ pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
         }
         Err(TryLockError::Error(e)) => return Err(busy(format!("잠금 시도: {e}"))),
     }
+    let prev_owner = std::fs::read(dir.join(OWNER_FILE)).ok();
     let epoch = read_owner(dir).map(|o| o.epoch + 1).unwrap_or(1);
     let pid = std::process::id();
     let o = Owner {
@@ -153,6 +165,31 @@ pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
     };
     let bytes = serde_json::to_vec_pretty(&o).map_err(|e| busy(e.to_string()))?;
     super::write_private(&dir.join(OWNER_FILE), &bytes).map_err(|e| busy(format!("소유자 기록: {e}")))?;
+    // ★2R B6/H⑥: 옛 트랜잭션의 위임 자식이 아직 일하는 중이면(자식 잠금 쥠) 새로 열지 않는다. 순서 = 새 소유자 기록을 **먼저** 쓰고
+    //   자식 잠금을 본다 — 그 뒤에 자식 잠금을 잡는 옛 자식은 ① 에서 새 기록(토큰 불일치)을 읽고 물러난다. 거절이면 직전 기록 복원.
+    if !super::mutant("B6g") {
+        let child = open_lock_file(dir, CHILD_LOCK_FILE)?;
+        match child.try_lock() {
+            Ok(()) => {
+                let _ = child.unlock();
+            }
+            Err(e) => {
+                match &prev_owner {
+                    Some(b) => {
+                        let _ = super::write_private(&dir.join(OWNER_FILE), b);
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(dir.join(OWNER_FILE));
+                    }
+                }
+                let _ = f.unlock();
+                return Err(busy(match e {
+                    TryLockError::WouldBlock => "위임 자식이 아직 작업 중(자식 잠금)".to_string(),
+                    TryLockError::Error(e) => format!("자식 잠금 시도: {e}"),
+                }));
+            }
+        }
+    }
     Ok(TxnGuard { file: Some(f), owner: o, dir: dir.to_path_buf() })
 }
 
@@ -172,10 +209,38 @@ impl ProcProbe<'static> {
 /// 조상 → ② 잠금 실재 → ①′ 소유자 기록 **다시 읽기** = 처음과 같음(그 사이 옛 소유자가 묘비를 쓰고 놓았거나 새 소유자가 기록을
 /// 바꿨으면 다름 — 기록은 「소유자 → 묘비 → 새 소유자」로만 바뀌므로 두 번 같으면 ② 시점의 잠금 주인 = 그 소유자) → ③′ 소유 pid 의
 /// 시작 시각 = 기록(죽은 소유자 pid 재사용 차단 · 윈 「PID + 생성 시각」). 하나라도 어긋나면 `txn_busy`.
-pub fn verify_delegated(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe) -> Result<Owner, UpdateErr> {
+/// ★2R B6/H⑥: 위임 받은 자식의 잠금 증표 — 자식 잠금(`txn.child.lock`)을 쥐고 있다. drop(자식 작업 끝) 때 놓는다. 부모가 먼저
+/// 죽어 `txn.lock` 이 풀려도 이것이 살아 있는 동안 [`acquire`] 는 `txn_busy` 다(잠금 세대 유지).
+#[derive(Debug)]
+pub struct DelegatedGuard {
+    file: Option<File>,
+    pub owner: Owner,
+}
+
+impl Drop for DelegatedGuard {
+    fn drop(&mut self) {
+        if let Some(f) = self.file.take() {
+            let _ = f.unlock();
+        }
+    }
+}
+
+pub fn verify_delegated(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe) -> Result<DelegatedGuard, UpdateErr> {
     if env != Some(arg) && !super::mutant("B6") {
         return Err(busy("⓪ --txn 인자 ≠ CYS_UPDATE_TXN"));
     }
+    // 자식 잠금을 먼저 잡고(다른 위임 자식 = busy) 아래 검증을 한다 — 검증 실패면 guard drop 으로 놓인다.
+    let child = open_lock_file(dir, CHILD_LOCK_FILE)?;
+    match child.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Err(busy("다른 위임 자식이 작업 중(자식 잠금)")),
+        Err(TryLockError::Error(e)) => return Err(busy(format!("자식 잠금 시도: {e}"))),
+    }
+    let owner = verify_owner_chain(dir, arg, probe)?; // 실패 = `child` drop = 자식 잠금 놓음
+    Ok(DelegatedGuard { file: Some(child), owner })
+}
+
+fn verify_owner_chain(dir: &Path, arg: &Token, probe: &ProcProbe) -> Result<Owner, UpdateErr> {
     let o = read_owner(dir).ok_or_else(|| busy("① 소유자 기록 없음"))?;
     if o.released {
         return Err(busy("① 소유자가 이미 놓음(묘비)"));
@@ -208,7 +273,7 @@ pub fn verify_delegated(dir: &Path, arg: &Token, env: Option<&Token>, probe: &Pr
 #[derive(Debug)]
 pub enum Participation {
     Owner(TxnGuard),
-    Delegated(Owner),
+    Delegated(DelegatedGuard),
 }
 
 /// 참가자 입구: 토큰(인자 `--txn` · env `CYS_UPDATE_TXN`)이 하나라도 있으면 위임 검증(재잠금 0 · 둘이 같아야 함),
@@ -366,6 +431,47 @@ mod tests {
         assert_eq!(mode(&d.join(LOCK_FILE)), 0o600);
         assert_eq!(mode(&d.join(OWNER_FILE)), 0o600);
         drop(g);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★2R B6/H⑥ 뮤테이션 B6g: 위임 자식의 guard 가 살아 있는 동안 부모가 죽어(잠금 풀림 · 묘비) 새 트랜잭션이 와도 `txn_busy` ·
+    /// 거절된 새 시도는 직전 소유자 기록을 되돌린다 · guard drop 뒤에는 연다 · 자식은 한 번에 하나.
+    #[test]
+    fn b6g_delegated_guard_holds_generation_after_parent_death() {
+        let d = tmp("b6g");
+        let parent = acquire(&d, "runner").unwrap();
+        let tok = parent.token();
+        let child = verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap();
+        assert_eq!(child.owner.epoch, tok.epoch);
+        assert!(verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap_err().detail.contains("자식 잠금"), "둘째 자식");
+        drop(parent); // 부모 사망 = txn.lock 풀림
+        assert_eq!(is_held(&d), Some(false));
+        let before = std::fs::read(d.join(OWNER_FILE)).unwrap();
+        let e = acquire(&d, "other").unwrap_err();
+        assert!(e.detail.contains("위임 자식"), "{}", e.detail);
+        assert_eq!(std::fs::read(d.join(OWNER_FILE)).unwrap(), before, "거절 = 직전 소유자 기록 복원");
+        assert_eq!(is_held(&d), Some(false), "거절 = txn.lock 도 놓음");
+        drop(child);
+        let g = acquire(&d, "other").unwrap();
+        assert_eq!(g.owner.epoch, tok.epoch + 1);
+        // 검증 실패한 자식은 자식 잠금을 남기지 않는다
+        assert!(verify_delegated(&d, &tok, Some(&tok), &yes()).is_err());
+        let tok2 = g.token();
+        assert!(verify_delegated(&d, &tok2, Some(&tok2), &yes()).is_ok());
+        drop(g);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★2R M3: 이미 있던 잠금 파일이 넓은 권한이면 판정 불가(txn_busy) — 열 때 0600 으로 만든 것만이 아니라 기존 파일도 재검증.
+    #[cfg(unix)]
+    #[test]
+    fn m3_existing_wide_lock_file_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("m3b");
+        drop(acquire(&d, "runner").unwrap());
+        std::fs::set_permissions(d.join(LOCK_FILE), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let e = acquire(&d, "runner").unwrap_err();
+        assert!(e.detail.contains("권한 불일치"), "{}", e.detail);
         let _ = std::fs::remove_dir_all(&d);
     }
 

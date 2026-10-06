@@ -59,6 +59,7 @@ impl HoldLog {
             o.mode(0o600);
         }
         let mut f = o.open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        super::check_private_file(&path)?; // ★2R M3: 이미 있던 파일도 소유자 전용(아니면 Err = 판정 불가)
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
         let keep = match buf.iter().rposition(|&b| b == b'\n') {
@@ -134,6 +135,7 @@ pub fn last_seq_readonly(dir: &Path) -> Option<u64> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(0),
         Err(_) => return None,
     };
+    super::check_private_file(&dir.join(HOLD_FILE)).ok()?; // ★2R M3: 소유자 전용 아님 = 모름(보류)
     let keep = buf.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
     let mut last = 0;
     for line in buf[..keep].split(|&b| b == b'\n').filter(|l| !l.is_empty()) {

@@ -160,7 +160,18 @@ fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
         None => {
             // 후보 기록 없음 = S2 전(아무것도 안 바뀜) 또는 손상 — 상태만으로 판정하는 갈래(보류 정리·재구성)는 빈 후보로 충분하다.
             let a: super::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0, "target": super::buildinfo::TARGET, "release_seq": 0})).ok()?;
-            Candidate { asset: a, version: String::new(), release_seq: 0, installed_revoked: false, notes_ko: None }
+            Candidate {
+                asset: a,
+                version: String::new(),
+                release_seq: 0,
+                installed_revoked: false,
+                notes_ko: None,
+                feed_rev: None,
+                envelope_sha256: None,
+                envelope_signed_at: None,
+                release_b64: None,
+                release_sig_b64: None,
+            }
         }
     };
     let tok = guard.token();
@@ -307,11 +318,24 @@ mod tests {
         let row = |p: &str| json!([{"path": p, "size": 1, "sha256": "a".repeat(64)}]);
         let asset: super::super::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0,
             "target": super::super::buildinfo::TARGET, "release_seq": 9, "payload_manifest": row("B.exe")})).unwrap();
-        let c = Candidate { asset, version: "B".into(), release_seq: 9, installed_revoked: false, notes_ko: None };
+        let c = Candidate {
+            asset,
+            version: "B".into(),
+            release_seq: 9,
+            installed_revoked: false,
+            notes_ko: None,
+            feed_rev: None,
+            envelope_sha256: None,
+            envelope_signed_at: None,
+            release_b64: None,
+            release_sig_b64: None,
+        };
         super::super::quiesce::write_json(&d, CANDIDATE_FILE, &c).unwrap();
         let rel = json!({"assets": [{"target": super::super::buildinfo::TARGET, "payload_manifest": row("A.exe")}]});
         std::fs::write(d.join("installers/8/release.json"), rel.to_string()).unwrap();
-        assert_eq!(pick_payload_manifest(&d, 8).unwrap()[0].path, "A.exe", "롤백 뒤 = 설치판 A 본문");
+        // 롤백 뒤(설치판 8) = B 후보를 쓰지 않는다 · 서명 없는 release.json 은 ★2판 C10 재검증에서 거부(서명된 본문 경로 =
+        // realops::tests::installer_dir_is_reverified_on_every_use)
+        assert!(pick_payload_manifest(&d, 8).is_none(), "B 후보로 A 를 재지 않음 · 서명 없는 본문 = 신뢰 0");
         assert_eq!(pick_payload_manifest(&d, 9).unwrap()[0].path, "B.exe", "후보 = 설치판일 때만");
         assert!(pick_payload_manifest(&d, 7).is_none());
         let _ = std::fs::remove_dir_all(&d);

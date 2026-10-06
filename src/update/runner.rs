@@ -303,7 +303,10 @@ impl<'a, O: Ops> Runner<'a, O> {
         if let Err(f) = v {
             return self.rollback(&j, f);
         }
-        let _ = self.ops.commit(&j);
+        // ★2판(codex 1R C11): 수용 기록·롤백 자산 durable commit 성공 = DONE 의 필수 선행(실패 = 롤백 · 조용한 ok 0).
+        if let Err(f) = self.ops.commit(&j) {
+            return self.rollback(&j, f);
+        }
         let j = self.enter(State::Done, |_| {})?;
         self.ops.record(Some(&j), Kind::Ok, None);
         Ok(Outcome::Done)
@@ -419,7 +422,9 @@ impl<'a, O: Ops> Runner<'a, O> {
                 if let Err(f) = self.ops.start_new(&j).and_then(|_| self.ops.post_verify(&j, false)) {
                     return self.rollback(&j, f);
                 }
-                let _ = self.ops.commit(&j);
+                if let Err(f) = self.ops.commit(&j) {
+                    return self.rollback(&j, f);
+                }
                 let j = self.enter(State::Done, |_| {})?;
                 self.ops.record(Some(&j), Kind::Ok, None);
                 Ok(Outcome::Done)
@@ -659,6 +664,9 @@ pub(crate) mod tests {
             self.f("verify")
         }
         fn commit(&mut self, _: &Journal) -> Step {
+            if let Some(c) = self.fail_at.get("commit") {
+                return Err(Fail::new(*c, "S11", "결함 주입 commit"));
+            }
             self.stage = false;
             Ok(())
         }
@@ -866,6 +874,20 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(cells, 2 * (15 + 5) * 2 - 2, "행렬 칸 수");
+    }
+
+    /// ★2판 C11: S11 durable commit(수용 기록·롤백 자산) 실패 = DONE 아님 → 롤백(옛 판) · 결과 = rollback.
+    #[test]
+    fn commit_failure_is_not_done_and_rolls_back() {
+        for os in [Os::Mac, Os::Win] {
+            let d = tmp(&format!("commitfail-{os:?}"));
+            let mut s = Sim::new(os);
+            s.fail_at.insert("commit", ErrCode::RotateFailed);
+            let o = run(&d, &mut s, Fault::default());
+            assert!(matches!(o, Outcome::RolledBack(_)), "{os:?} {o:?}");
+            assert_eq!(state(&d), State::RbDone);
+            assert!(!s.canonical_new, "{os:?}: 옛 판");
+        }
     }
 
     /// ★2판 C2: 세대 승계 = 저널 토큰 원자 교체 → 죽은 러너(옛 토큰)의 늦은 전이는 Fenced · 같은 토큰 재승계 = 무변경.

@@ -560,8 +560,9 @@ pub fn rollback_assets_ok(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutc
         return Some(false);
     }
     if cfg!(windows) {
-        let inst = dir.join("installers").join(buildinfo::release_seq().to_string());
-        return Some(inst.join("setup.exe").is_file() && inst.join("release.json").is_file());
+        // ★2판(codex 1R C10): 있음이 아니라 재검증(U 본문 서명 · 설치기 sha256 = 본문 행 · A2 서명).
+        let seq = buildinfo::release_seq();
+        return Some(super::realops::verify_installer_dir(&dir.join("installers").join(seq.to_string()), seq, true).is_ok());
     }
     Some(true)
 }

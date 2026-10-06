@@ -45,14 +45,89 @@ pub struct Candidate {
     pub installed_revoked: bool,
     #[serde(default)]
     pub notes_ko: Option<String>,
+    /// ★2판(codex 1R C11): 수용 기록 재료(S11 durable commit) + U 서명 본문(base64)·서명 — 없으면 S11 이 실패한다(DONE 0).
+    #[serde(default)]
+    pub feed_rev: Option<u64>,
+    #[serde(default)]
+    pub envelope_sha256: Option<String>,
+    #[serde(default)]
+    pub envelope_signed_at: Option<i64>,
+    #[serde(default)]
+    pub release_b64: Option<String>,
+    #[serde(default)]
+    pub release_sig_b64: Option<String>,
 }
 
 pub const CANDIDATE_FILE: &str = "candidate.json";
 
 impl Candidate {
     pub fn from_outcome(o: &super::feed::FeedOutcome) -> Option<Candidate> {
-        Some(Candidate { asset: o.asset.clone()?, version: o.version.clone().unwrap_or_default(), release_seq: o.release_seq?, installed_revoked: o.installed_revoked, notes_ko: o.notes_ko.clone() })
+        Some(Candidate {
+            asset: o.asset.clone()?,
+            version: o.version.clone().unwrap_or_default(),
+            release_seq: o.release_seq?,
+            installed_revoked: o.installed_revoked,
+            notes_ko: o.notes_ko.clone(),
+            feed_rev: o.feed_rev,
+            envelope_sha256: o.envelope_sha256.clone(),
+            envelope_signed_at: o.envelope_signed_at,
+            release_b64: o.release_b64.clone(),
+            release_sig_b64: o.release_sig_b64.clone(),
+        })
     }
+}
+
+/// 보존 자산 파일 이름(`installers/<seq>/`).
+pub const REL_BODY: &str = "release.json";
+pub const REL_SIG: &str = "release.json.minisig";
+pub const SETUP: &str = "setup.exe";
+pub const SETUP_SIG: &str = "setup.exe.sig";
+
+/// 재검증된 보존 판(★2판 C10).
+#[derive(Debug, Clone)]
+pub struct VerifiedRelease {
+    pub manifest: Vec<super::feed::PayloadEntry>,
+    /// 설치기 sha256(`need_installer` 일 때만).
+    pub setup_sha256: Option<String>,
+}
+
+/// ★2판(codex 1R C10): `installers/<seq>/` 를 **쓸 때마다** 재검증 — U 서명 본문(서식·키·서명) · 본문 seq = 폴더 seq · 이 대상 행 ·
+/// (`need_installer`) 설치기 바이트 sha256 = 본문 행 · A2 서명. 하나라도 어긋나면 Err(임의 파일을 놓아도 신뢰하지 않는다).
+pub fn verify_installer_dir(dir: &Path, seq: u64, need_installer: bool) -> Result<VerifiedRelease, String> {
+    let body = std::fs::read(dir.join(REL_BODY)).map_err(|e| format!("{REL_BODY}: {e}"))?;
+    let sig = std::fs::read(dir.join(REL_SIG)).map_err(|e| format!("{REL_SIG}: {e}"))?;
+    let kr = super::keys::UpdateKeyring::embedded()?;
+    verify_installer_dir_with(dir, seq, need_installer, &body, &sig, &kr)
+}
+
+pub fn verify_installer_dir_with(
+    dir: &Path,
+    seq: u64,
+    need_installer: bool,
+    body: &[u8],
+    sig: &[u8],
+    kr: &super::keys::UpdateKeyring,
+) -> Result<VerifiedRelease, String> {
+    let rb = super::feed::verify_release_body(body, sig, "cysr", kr)?;
+    if rb.release_seq != seq {
+        return Err(format!("본문 seq {} ≠ 폴더 {seq}", rb.release_seq));
+    }
+    let a = rb.assets.values().find(|a| a.target == super::buildinfo::TARGET).ok_or("이 대상 행 없음")?;
+    let manifest = a.payload_manifest.clone().unwrap_or_default();
+    let setup_sha256 = if need_installer {
+        let bytes = std::fs::read(dir.join(SETUP)).map_err(|e| format!("{SETUP}: {e}"))?;
+        if super::feed::sha256_hex(&bytes) != a.sha256 {
+            return Err("설치기 sha256 ≠ 본문 행".into());
+        }
+        let s = std::fs::read(dir.join(SETUP_SIG)).map_err(|e| format!("{SETUP_SIG}: {e}"))?;
+        if kr.verify_any(super::keys::Purpose::WinAsset, &bytes, &s, rb.signed_at).is_err() {
+            return Err("설치기 A2 서명 불일치".into());
+        }
+        Some(a.sha256.clone())
+    } else {
+        None
+    };
+    Ok(VerifiedRelease { manifest, setup_sha256 })
 }
 
 pub struct RealOps {
@@ -170,6 +245,39 @@ impl RealOps {
     }
 
     /// 상태 폴더 안 보호·제외 판정(윈 = 페이로드 매니페스트 경로도 보호 · ⓐ).
+    /// S11 보존(★2판 C11): `installers/.<seq>.tmp` 에 본문·서명(+윈 설치기·서명)을 쓰고 재검증한 뒤 `installers/<seq>` 로 rename.
+    /// 이미 있고 재검증 통과 = 그대로(멱등).
+    fn preserve_release(&self, j: &Journal) -> Step {
+        let f = |d: String| fail(ErrCode::RotateFailed, "S11", d);
+        let seq = self.cand.release_seq;
+        let need_inst = self.env.os == Os::Win;
+        let dst = self.installers_dir(seq);
+        if verify_installer_dir(&dst, seq, need_inst).is_ok() {
+            return Ok(());
+        }
+        let e = base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let body = e.decode(self.cand.release_b64.as_deref().ok_or_else(|| f("후보에 서명 본문 없음".into()))?.trim()).map_err(|x| f(x.to_string()))?;
+        let sig = e.decode(self.cand.release_sig_b64.as_deref().ok_or_else(|| f("후보에 본문 서명 없음".into()))?.trim()).map_err(|x| f(x.to_string()))?;
+        let parent = dst.parent().ok_or_else(|| f("installers 부모 없음".into()))?;
+        let tmp = parent.join(format!(".{seq}.tmp"));
+        let _ = std::fs::remove_dir_all(&tmp);
+        super::ensure_private_dir(&tmp).map_err(f)?;
+        super::journal::durable_write(&tmp.join(REL_BODY), &body).map_err(f)?;
+        super::journal::durable_write(&tmp.join(REL_SIG), &sig).map_err(f)?;
+        if need_inst {
+            let stage = self.stage_dir(j);
+            super::snapshot::durable_copy(&stage.join(SETUP), &tmp.join(SETUP)).map_err(f)?;
+            super::snapshot::durable_copy(&stage.join(SETUP_SIG), &tmp.join(SETUP_SIG)).map_err(f)?;
+        }
+        verify_installer_dir(&tmp, seq, need_inst).map_err(|e| f(format!("보존본 재검증: {e}")))?;
+        if dst.exists() {
+            std::fs::remove_dir_all(&dst).map_err(|e| f(e.to_string()))?;
+        }
+        std::fs::rename(&tmp, &dst).map_err(|e| f(e.to_string()))?;
+        super::journal::sync_dir(parent).map_err(f)
+    }
+
     fn state_filter(&self) -> impl Fn(&str) -> bool + '_ {
         let payload: std::collections::BTreeSet<String> = self
             .asset()
@@ -281,10 +389,12 @@ impl Ops for RealOps {
                 let sig = super::net::fetch(&sig_url, super::url::Hop::AssetFirst, 4096).map_err(|_| fail(ErrCode::WinA2SigBad, "S2", "서명 미도달"))?.bytes;
                 let kr = super::keys::UpdateKeyring::embedded().map_err(|e| fail(ErrCode::WinA2SigBad, "S2", e))?;
                 let now = super::clock::wall_now();
-                let ok = kr.key_ids().iter().any(|k| kr.verify(super::keys::Purpose::WinAsset, k, &bytes, &sig, now).is_ok());
+                let ok = kr.verify_any(super::keys::Purpose::WinAsset, &bytes, &sig, now).is_ok();
                 if !ok {
                     return Err(fail(ErrCode::WinA2SigBad, "S2", "A2 서명 불일치"));
                 }
+                // ★2판 C11: 서명도 stage 에 둔다(S11 이 installers/<seq>/ 로 함께 보존 · 쓸 때마다 재검증)
+                super::journal::durable_write(&stage.join(SETUP_SIG), &sig).map_err(|e| fail(ErrCode::DiskLow, "S2", e))?;
                 let pm = a.payload_manifest.clone().ok_or_else(|| fail(ErrCode::WinPayloadMismatch, "S2", "payload_manifest 없음"))?;
                 j.payload_manifest_sha256 = super::payload::manifest_sha256(&pm);
                 j.stage_path = dst.to_string_lossy().to_string();
@@ -372,10 +482,12 @@ impl Ops for RealOps {
             shas.push(format!("{name}:{sha}"));
         }
         if self.env.os == Os::Win {
-            // 롤백 자산(N7 · §3-7 ②): 설치판 본문·설치기가 installers\<seq>\ 에 있어야 한다(검증은 확보 단계 몫 — 없으면 보류).
+            // 롤백 자산(N7 · §3-7 ②): 설치판 본문·설치기가 installers\<seq>\ 에 있어야 한다 — ★2판 C10: 그 자리에서 U 본문 서명·설치기
+            //   sha256·A2 서명을 다시 검증한 것만(현장 해시를 신뢰하지 않는다).
             let dir = self.installers_dir(j.from_release_seq);
-            let inst = dir.join("setup.exe");
-            let (sha, _) = super::snapshot::sha256_file(&inst).map_err(|_| fail(ErrCode::NoRollbackAsset, "S8", "설치판 설치기 없음"))?;
+            let inst = dir.join(SETUP);
+            let v = verify_installer_dir(&dir, j.from_release_seq, true).map_err(|e| fail(ErrCode::NoRollbackAsset, "S8", format!("설치판 롤백 자산: {e}")))?;
+            let sha = v.setup_sha256.unwrap_or_default();
             j.prev_installer = Some(PrevInstaller { path: inst.to_string_lossy().to_string(), sha256: sha, release_seq: j.from_release_seq });
         }
         j.snapshot_dir = root.to_string_lossy().to_string();
@@ -543,6 +655,20 @@ impl Ops for RealOps {
     }
 
     fn commit(&mut self, j: &Journal) -> Step {
+        // ★2판(codex 1R C11): DONE 의 필수 선행 = ① 새 판 서명 본문(+윈 설치기·A2 서명)을 installers/<seq>/ 에 원자 보존·재검증
+        //   ② 수용 기록(feed_rev·봉투 sha256·signed_at · 설치 seq = 새 판) durable 쓰기. 실패 = Err(호출자가 롤백) · stage 는 그 뒤에 지운다.
+        self.preserve_release(j)?;
+        let c = &self.cand;
+        let acc = super::feed::AcceptedFeed {
+            feed_rev: c.feed_rev.ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 feed_rev 없음"))?,
+            envelope_sha256: c.envelope_sha256.clone().ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 봉투 sha256 없음"))?,
+            feed_release_seq: c.release_seq,
+            installed_release_seq: c.release_seq,
+            signed_at: c.envelope_signed_at.ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 signed_at 없음"))?,
+            at: super::clock::wall_now(),
+        };
+        super::feed::write_accepted(&super::check::accepted_path(&self.env.update_dir, "cysr", &self.env.channel), &acc)
+            .map_err(|e| fail(ErrCode::RotateFailed, "S11", format!("수용 기록: {e}")))?;
         let _ = std::fs::remove_dir_all(self.stage_dir(j));
         let names: Vec<String> = std::fs::read_dir(super::snapshot::backup_root(&self.env.update_dir))
             .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
@@ -620,6 +746,12 @@ impl Ops for RealOps {
                     return Ok(());
                 }
                 let pi = j.prev_installer.as_ref().ok_or_else(|| fail(ErrCode::NoRollbackAsset, "RB_SWAPPED", "설치판 설치기 기록 없음"))?;
+                // ★2판 C10: 실행 직전 재검증(본문 서명·설치기 sha256·A2) — 저널 sha 와도 같아야 한다(실행은 그 sha 로 쥔 핸들).
+                let v = verify_installer_dir(&self.installers_dir(j.from_release_seq), j.from_release_seq, true)
+                    .map_err(|e| fail(ErrCode::NoRollbackAsset, "RB_SWAPPED", format!("설치판 롤백 자산: {e}")))?;
+                if v.setup_sha256.as_deref() != Some(pi.sha256.as_str()) {
+                    return Err(fail(ErrCode::NoRollbackAsset, "RB_SWAPPED", "설치판 설치기 sha256 ≠ 저널"));
+                }
                 super::win_install::run_installer(Path::new(&pi.path), &self.env.install_dir, &self.token, &pi.sha256)?;
                 let newer = self.asset()?.payload_manifest.clone().unwrap_or_default();
                 if let Some(older) = load_installer_manifest(&self.installers_dir(j.from_release_seq)) {
@@ -759,12 +891,10 @@ pub fn same_decision(first: &Candidate, again: &super::feed::FeedOutcome) -> Ste
 }
 
 /// 설치판 본문(`installers\<seq>\release.json` 의 이 기판 행 `payload_manifest`).
+/// 보존 판 본문의 페이로드 매니페스트 — ★2판 C10: 서명 재검증을 통과한 본문만(폴더 이름 = seq).
 pub fn load_installer_manifest(dir: &Path) -> Option<Vec<super::feed::PayloadEntry>> {
-    let v: Value = serde_json::from_slice(&std::fs::read(dir.join("release.json")).ok()?).ok()?;
-    let rows = v.get("assets").and_then(Value::as_array).cloned().or_else(|| v.get("platforms").and_then(Value::as_object).map(|o| o.values().cloned().collect()))?;
-    rows.into_iter()
-        .find(|r| r.get("target").and_then(Value::as_str) == Some(super::buildinfo::TARGET) || r.get("payload_manifest").is_some())
-        .and_then(|r| serde_json::from_value(r.get("payload_manifest")?.clone()).ok())
+    let seq: u64 = dir.file_name()?.to_str()?.parse().ok()?;
+    verify_installer_dir(dir, seq, false).ok().map(|v| v.manifest).filter(|m| !m.is_empty())
 }
 
 /// zip 항목 이름(`unzip -Z1`).
@@ -828,6 +958,38 @@ mod tests {
         for no in ["claude/x", "update/journal.json", "state/x", "round/a"] {
             assert!(!RealOps::cys_filter(no), "{no}");
         }
+    }
+
+    /// ★2판 C10: installers/<seq>/ = 쓸 때마다 재검증 — U 서명 본문 · seq · 설치기 sha256 = 본문 행 · A2 서명. 임의 파일·변조 = 거부.
+    #[test]
+    fn installer_dir_is_reverified_on_every_use() {
+        use crate::update::feed::fixture::body_json;
+        use crate::update::keys::testkit::Keys;
+        let k = Keys::new();
+        let kr = k.keyring();
+        let d = std::env::temp_dir().join(format!("cys-u2-inst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let setup = b"MZ-setup".to_vec();
+        let mut body = body_json(&k, 8);
+        for a in body["assets"].as_object_mut().unwrap().values_mut() {
+            a["sha256"] = json!(crate::update::feed::sha256_hex(&setup));
+        }
+        let bb = body.to_string().into_bytes();
+        let sig = k.u.sign(&bb);
+        std::fs::write(d.join(SETUP), &setup).unwrap();
+        std::fs::write(d.join(SETUP_SIG), k.a2.sign(&setup)).unwrap();
+        let v = verify_installer_dir_with(&d, 8, true, &bb, &sig, &kr).unwrap();
+        assert_eq!(v.setup_sha256.as_deref(), Some(crate::update::feed::sha256_hex(&setup).as_str()));
+        assert!(verify_installer_dir_with(&d, 9, true, &bb, &sig, &kr).unwrap_err().contains("seq"), "폴더 seq 다름");
+        assert!(verify_installer_dir_with(&d, 8, true, &bb, &k.f.sign(&bb), &kr).is_err(), "U 아닌 키 서명");
+        std::fs::write(d.join(SETUP), b"MZ-evil").unwrap();
+        assert!(verify_installer_dir_with(&d, 8, true, &bb, &sig, &kr).unwrap_err().contains("sha256"), "임의 설치기");
+        std::fs::write(d.join(SETUP), &setup).unwrap();
+        std::fs::write(d.join(SETUP_SIG), k.u.sign(&setup)).unwrap();
+        assert!(verify_installer_dir_with(&d, 8, true, &bb, &sig, &kr).unwrap_err().contains("A2"), "A2 아닌 서명");
+        assert!(verify_installer_dir_with(&d, 8, false, &bb, &sig, &kr).is_ok(), "본문만(맥·매니페스트) = 설치기 무관");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

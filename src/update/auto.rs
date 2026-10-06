@@ -145,7 +145,7 @@ fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
         None => {
             // 후보 기록 없음 = S2 전(아무것도 안 바뀜) 또는 손상 — 상태만으로 판정하는 갈래(보류 정리·재구성)는 빈 후보로 충분하다.
             let a: super::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0, "target": super::buildinfo::TARGET, "release_seq": 0})).ok()?;
-            Candidate { asset: a, version: String::new(), release_seq: 0, installed_revoked: false }
+            Candidate { asset: a, version: String::new(), release_seq: 0, installed_revoked: false, notes_ko: None }
         }
     };
     let tok = guard.token();
@@ -197,7 +197,23 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
                 m.insert("last_defer".into(), json!({"code": report["gates"]["first_hold"]["code"], "gate": report["gates"]["first_hold"]["id"], "at": super::clock::wall_now()}));
             }
             if decision == "stop_seats" || report["feed"]["installed_revoked"].as_bool() == Some(true) {
-                m.insert("installed_revoked".into(), json!({"stop_seats": decision == "stop_seats", "at": super::clock::wall_now()}));
+                // ★U4 접점: 설치판 폐기 = last_result kind installed_revoked(결과 id = 설치판 seq 고정 → 앱이 결과당 1회만 알림)
+                let seq = super::buildinfo::release_seq();
+                let o = super::notify::Outcome {
+                    kind: "installed_revoked",
+                    code: super::errors::ErrCode::InstalledRevoked,
+                    component: "cysr".into(),
+                    channel: cfg.channel.clone(),
+                    target: super::buildinfo::TARGET.into(),
+                    release_seq: seq,
+                    from_release_seq: seq,
+                    from_version: env!("CARGO_PKG_VERSION").into(),
+                    to_version: String::new(),
+                    force_permanent: false,
+                    detail: String::new(),
+                    notes_ko: None,
+                };
+                super::notify::apply(m, &o, &format!("installed_revoked:{seq}"), super::clock::wall_now(), None);
             }
         });
         print(json_out, &json!({"phase": "decide", "decision": decision}), &format!("decision={decision}"));

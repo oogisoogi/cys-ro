@@ -43,13 +43,15 @@ pub struct Candidate {
     pub version: String,
     pub release_seq: u64,
     pub installed_revoked: bool,
+    #[serde(default)]
+    pub notes_ko: Option<String>,
 }
 
 pub const CANDIDATE_FILE: &str = "candidate.json";
 
 impl Candidate {
     pub fn from_outcome(o: &super::feed::FeedOutcome) -> Option<Candidate> {
-        Some(Candidate { asset: o.asset.clone()?, version: o.version.clone().unwrap_or_default(), release_seq: o.release_seq?, installed_revoked: o.installed_revoked })
+        Some(Candidate { asset: o.asset.clone()?, version: o.version.clone().unwrap_or_default(), release_seq: o.release_seq?, installed_revoked: o.installed_revoked, notes_ko: o.notes_ko.clone() })
     }
 }
 
@@ -677,6 +679,7 @@ impl Ops for RealOps {
             to_version: self.cand.version.clone(),
             force_permanent: f.map(|f| matches!(f.step.as_str(), "V5" | "V7")).unwrap_or(false),
             detail: f.map(|f| super::errors::clip(&f.detail)).unwrap_or_default(),
+            notes_ko: self.cand.notes_ko.clone(),
         };
         let now = super::clock::wall_now();
         let rid = format!("{}:{}", j.map(|j| j.txn_id.as_str()).unwrap_or("-"), kname);

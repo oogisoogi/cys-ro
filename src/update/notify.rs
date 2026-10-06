@@ -32,6 +32,8 @@ pub struct Outcome {
     /// V5·V7 위반 = 영구(MA7) — 코드 분류를 덮어쓴다.
     pub force_permanent: bool,
     pub detail: String,
+    /// 릴리스 본문 `notes_ko`(표시용 · 제어문자면 싣지 않음).
+    pub notes_ko: Option<String>,
 }
 
 fn read_obj(dir: &Path) -> Result<Map<String, Value>, String> {
@@ -55,12 +57,35 @@ pub fn update_state(dir: &Path, f: impl FnOnce(&mut Map<String, Value>)) -> Resu
 }
 
 /// 결과 기록(순수 부분 = 칸 계산). `now` = 벽시계 초 · `stamp` = N8 용 Stamp.
+/// ★U4 접점(master#60227839 · 병합 때 이름 일치 필수): `last_result{result_id, kind ∈ ok|rollback_ok|rollback_failed|installed_revoked,
+/// release_seq, version?(표시용), notes_ko?(제어문자 금지)}` · `seats_blocked{reason:"journal_unrecoverable"}`. 앱은 읽기만 하고 자기 장부
+/// `app-notify.json`(같은 폴더)에 쓴다 — 러너·데몬은 그 파일을 **건드리지 않는다**(이 함수는 state.json 만 고친다).
+pub fn contract_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "ok" => Some("ok"),
+        "rollback" => Some("rollback_ok"),
+        "rollback_failed" => Some("rollback_failed"),
+        "installed_revoked" => Some("installed_revoked"),
+        _ => None,
+    }
+}
+
+/// `notes_ko` — 제어문자가 하나라도 있으면 싣지 않는다(MI2 · 발행·검증 둘 다 거부하는 칸이지만 여기서도 한 번 더).
+pub fn clean_notes(n: Option<&str>) -> Option<String> {
+    n.filter(|s| !s.is_empty() && !s.chars().any(char::is_control)).map(str::to_string)
+}
+
 pub fn apply(m: &mut Map<String, Value>, o: &Outcome, result_id: &str, now: i64, stamp: Option<&super::clock::Stamp>) {
-    m.insert(
-        "last_result".into(),
-        json!({"result_id": result_id, "kind": o.kind, "release_seq": o.release_seq, "from_release_seq": o.from_release_seq,
-               "code": o.code.to_string(), "at": now}),
-    );
+    if let Some(k) = contract_kind(o.kind) {
+        let mut r = json!({"result_id": result_id, "kind": k, "release_seq": o.release_seq});
+        if !o.to_version.is_empty() {
+            r["version"] = json!(o.to_version);
+        }
+        if let Some(n) = clean_notes(o.notes_ko.as_deref()) {
+            r["notes_ko"] = json!(n);
+        }
+        m.insert("last_result".into(), r);
+    }
     let key = super::check::failure_key(&o.component, &o.channel, &o.target, o.release_seq);
     match o.kind {
         "ok" => {
@@ -82,6 +107,7 @@ pub fn apply(m: &mut Map<String, Value>, o: &Outcome, result_id: &str, now: i64,
         "journal_corrupt" => {
             m.remove("seats_blocked");
         }
+        "installed_revoked" => {}
         _ => record_failure(m, &key, o, now, false),
     }
 }
@@ -167,6 +193,7 @@ mod tests {
             to_version: "1.1.9".into(),
             force_permanent: false,
             detail: String::new(),
+            notes_ko: Some("새 판".into()),
         }
     }
 
@@ -181,7 +208,8 @@ mod tests {
         update_state(&d, |m| apply(m, &o("rollback", ErrCode::VerifyFailed), "r1", 1000, None)).unwrap();
         let v: Value = serde_json::from_slice(&std::fs::read(d.join(STATE_FILE)).unwrap()).unwrap();
         assert_eq!(v["last_notified_result_id"], "r0", "앱 알림 칸 보존");
-        assert_eq!(v["last_result"]["kind"], "rollback");
+        assert_eq!(v["last_result"]["kind"], "rollback_ok", "U4 접점 이름");
+        assert_eq!((v["last_result"]["version"].as_str(), v["last_result"]["notes_ko"].as_str()), (Some("1.1.9"), Some("새 판")));
         let f = &v["failures"]["cysr/stable/darwin-aarch64/9"];
         assert_eq!((f["class"].as_str(), f["count"].as_u64(), f["next_at"].as_i64()), (Some("transient"), Some(1), Some(1000 + 6 * 3600)));
         // V5/V7 위반 = 영구
@@ -200,6 +228,14 @@ mod tests {
         let v: Value = serde_json::from_slice(&std::fs::read(d.join(STATE_FILE)).unwrap()).unwrap();
         assert_eq!(v["last_defer"]["code"], ErrCode::DiskLow.to_string());
         assert!(v["failures"].get("cysr/stable/darwin-aarch64/9").is_none());
+        // 보류·재구성은 last_result 를 바꾸지 않는다(계약 kind 4종 밖) · app-notify.json 무접촉
+        let before = v["last_result"].clone();
+        std::fs::write(d.join("app-notify.json"), b"{\"app\":1}").unwrap();
+        update_state(&d, |m| apply(m, &o("journal_corrupt", ErrCode::JournalCorrupt), "r6", 6000, None)).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(d.join(STATE_FILE)).unwrap()).unwrap();
+        assert_eq!(v["last_result"], before);
+        assert_eq!(std::fs::read(d.join("app-notify.json")).unwrap(), b"{\"app\":1}");
+        assert_eq!(clean_notes(Some("a\u{7}b")), None, "제어문자 = 싣지 않음");
         // 손상 state.json 은 덮지 않는다
         std::fs::write(d.join(STATE_FILE), b"[1").unwrap();
         assert!(update_state(&d, |_| {}).is_err());

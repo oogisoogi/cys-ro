@@ -221,6 +221,63 @@ class Signal(Base):
         rows = [json.loads(x) for x in self.sig_lines()]
         self.assertEqual([(x["source"], x["op"]) for x in rows], [("worker", "hook.x")])
 
+    def _off_race(self, actor):
+        """첫 끄기 확인 통과 → (이음새) actor 가 끈다 → 쓰는 쪽 재개. 쓴 줄 수."""
+        jc._BEFORE_SIGNALS_LOCK = actor
+        try:
+            return jc.write_signals("pack", [("a", "b")])
+        finally:
+            jc._BEFORE_SIGNALS_LOCK = None
+
+    def test_off_between_check_and_lock_writes_nothing(self):
+        """★리뷰 3R ① — 아고라 set_auto 꼴: 설정 끔 → signals.lock 쥐고 지움 → 놓음. 그 뒤 잠금을 잡은 쓰는 쪽 = 0줄."""
+        self.assertEqual(jc.write_signals("pack", [("x", "y")]), 1)
+
+        def agora_off():
+            self.config('{"counsel": {"auto": false}}')
+            fh = jc._acquire(os.path.join(self.cfg, "counsel", "signals.lock"), 2)
+            try:
+                open(self.sig_path(), "w").close()
+            finally:
+                jc._unlock(fh)
+                fh.close()
+        self.assertEqual(self._off_race(agora_off), 0)
+        self.assertEqual(self.sig_lines(), [], "끈 뒤에 새 줄이 생겼다")
+
+    def test_off_while_writer_waits_on_lock(self):
+        """끄는 쪽이 잠금을 쥔 채 끄고 잠시 머문다 — 쓰는 쪽은 잠금을 기다렸다 잡은 뒤 재확인에서 멈춘다."""
+        held, release = threading.Event(), threading.Event()
+
+        def holder():
+            fh = jc._acquire(os.path.join(self.cfg, "counsel", "signals.lock"), 2)
+            self.config('{"counsel": {"auto": false}}')
+            held.set()
+            release.wait(5)
+            jc._unlock(fh)
+            fh.close()
+        th = threading.Thread(target=holder)
+
+        def actor():
+            th.start()
+            held.wait(5)
+            threading.Timer(0.3, release.set).start()
+        self.assertEqual(self._off_race(actor), 0)
+        th.join()
+        self.assertEqual(self.sig_lines(), [])
+
+    def test_off_by_real_agora_set_auto(self):
+        """동봉 아고라의 진짜 `collector.set_auto(on=False)`(별 프로세스)가 끼어들어도 0줄."""
+        client = bundled_client(os.path.join(self.tmp, "client"))
+        code = ("import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1]);"
+                "from agora import collector; collector.set_auto(sys.argv[2], on=False)")
+
+        def actor():
+            r = subprocess.run([sys.executable, "-c", code, client, self.cfg], capture_output=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[-600:])
+        self.assertEqual(self._off_race(actor), 0)
+        self.assertFalse(jc.auto_enabled(self.cfg))
+        self.assertEqual(self.sig_lines(), [])
+
     def test_batch_one_lock(self):
         self.assertEqual(jc.write_signals("pack", [("a", "b"), ("bad op", "x"), ("c", "d")]), 2)
         self.assertEqual([json.loads(x)["op"] for x in self.sig_lines()], ["a", "c"])

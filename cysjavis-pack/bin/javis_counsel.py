@@ -187,6 +187,9 @@ def _acquire(path, wait_s):
 
 
 # ── 신호 ───────────────────────────────────────────────────────────────────
+_BEFORE_SIGNALS_LOCK = None   # 시험 이음새: 첫 끄기 확인 뒤 · 잠금 잡기 전에 부를 callable
+
+
 def map_source(value):
     """CYS_ROLE 값 또는 층 이름 → 계약 source(master·worker·cso·pack·update) — 모르는 것·빈 값 = pack."""
     v = (value or "").strip().lower()
@@ -228,11 +231,17 @@ def write_signals(source, pairs, *, now=None, cfg=None, wait_s=LOCK_WAIT_S):
         if not rows:
             return 0
         _mkcounsel(cfg)
+        if _BEFORE_SIGNALS_LOCK is not None:
+            _BEFORE_SIGNALS_LOCK()          # 시험 이음새(경합 재현) — 운영 = None
         fh = _acquire(_counsel(cfg, SIGNALS_LOCK), wait_s)
         if fh is None:
             return 0
         n = 0
         try:
+            # ★잠금 안 재확인(리뷰 3R ①) — 첫 확인과 잠금 사이에 `agora counsel off` 가 설정을 끄고 모은 줄을 지웠으면
+            #   여기서 멈춘다(안 그러면 지운 뒤에 새 줄이 생겨 다시 켤 때 몰아 보낸다).
+            if not auto_enabled(cfg):
+                return 0
             path = _counsel(cfg, SIGNALS_FILE)
             with open(path, "a", encoding="utf-8", newline="\n") as out:
                 for row in rows:

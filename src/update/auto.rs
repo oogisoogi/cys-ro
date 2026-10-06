@@ -245,8 +245,8 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
             }
         });
         if decision == "stop_seats" {
-            // ★2판(codex 1R C12): 기록만 하고 끝내지 않는다 — 집행 = ① 표지(이 판 데몬의 부팅 가드 · 새 판이면 자동 해제) ② 지금 데몬을
-            //   내린다(좌석 차단 · 잠금 참가 · 실패 = rc 2). 완화 폐기(advisory)의 자동 RB 는 HANDOFF-U2 §5 ⓐ(미구현 · 정직).
+            // ★2판 C12 → ★3판 M3: 집행 = 표지(그 판 데몬이 새 좌석 생성 거부 · 기존 좌석 유지 · 새 판이면 자동 해제). 완화 폐기
+            //   (advisory)의 자동 RB 는 HANDOFF-U2 §5 ⓐ(미구현 · 정직).
             let seq = super::buildinfo::release_seq();
             let rc2 = enforce_stop_seats(&dir, seq);
             print(json_out, &json!({"phase": "decide", "decision": decision, "stop_seats_enforced": rc2 == 0}), &format!("decision={decision} enforced={}", rc2 == 0));
@@ -284,29 +284,15 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     }
 }
 
-/// ★2판 C12: stop_seats 집행 — 표지를 먼저 durable 하게 쓰고(데몬이 다시 떠도 좌석 0) 잠금을 잡아 지금 데몬을 내린다
-/// (`rotate --stop-only --skip-drain --txn` = 러너 사본 · 자식 위임). 0 = 집행 · 2 = 내리기 실패(표지는 남음 → 다음 기동부터 막힘).
+/// ★3판(Fable 2R M3 · 설계 §3-10 ③): stop_seats 집행 = 표지 durable 기록뿐 — 데몬이 그 판에서 **새 좌석 생성**을 거부한다(cysd
+/// `surface.create` · 기존 좌석·부팅 유지 · 2판의 `rotate --stop-only --skip-drain` 전체 정지 = 설계 초과 → 철회). 0 = 기록 · 2 = 기록 실패.
 pub fn enforce_stop_seats(dir: &std::path::Path, seq: u64) -> i32 {
-    if super::runner::seats_stop_seq(dir) != Some(seq)
-        && super::quiesce::write_json(dir, super::runner::SEATS_STOP_FILE, &json!({"release_seq": seq, "at": super::clock::wall_now()})).is_err()
-    {
-        return 2;
+    if super::runner::seats_stop_seq(dir) == Some(seq) {
+        return 0;
     }
-    let Ok(g) = super::lock::acquire(dir, "runner") else { return 2 };
-    let t = g.token().render();
-    let exe = super::launch::runner_copy_path(dir);
-    let ok = crate::hidden_command(&exe)
-        .args(["rotate", "--stop-only", "--skip-drain", "--txn", &t])
-        .env(super::lock::ENV_TXN, &t)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    drop(g);
-    if ok {
-        0
-    } else {
-        2
+    match super::quiesce::write_json(dir, super::runner::SEATS_STOP_FILE, &json!({"release_seq": seq, "at": super::clock::wall_now()})) {
+        Ok(()) => 0,
+        Err(_) => 2,
     }
 }
 

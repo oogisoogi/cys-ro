@@ -5498,6 +5498,14 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
         }
 
         "surface.create" => {
+            // ★1.1.8 U2 3판(Fable 2R M3 · 설계 §3-10 ③): 설치판이 stop_seats 폐기면 **새 좌석만** 거부(기존 좌석·데몬 유지 · 새 판 = 해제).
+            if let Some(seq) = crate::update_hold::update_dir().and_then(|d| cys::update::runner::seats_stopped(&d)) {
+                return Reply::Single(err_response(
+                    &id,
+                    "update.installed_revoked_stop_seats",
+                    &format!("설치된 판(release_seq {seq})이 좌석 정지 폐기 대상이라 새 좌석을 열지 않는다 — 새 판으로 바뀌면 풀린다"),
+                ));
+            }
             // ★T3-1: 러너가 lease 를 실었으면 **PTY 를 띄우기 전에** CAS 한다. 뒤로 미루면
             //   소유권을 잃은 러너가 좌석을 하나 만들고 나서야 거절당한다(좀비 셸).
             if let Some(reply) = lease_gate(daemon, &params, &id, "surface.create") {

@@ -245,9 +245,23 @@ impl Drop for DelegatedGuard {
     }
 }
 
+/// ★3판(Fable 2R N1): 위임 자식이 다시 위임할 때(rotate → init-pack) 자식에게 넘기는 깊이 표지 — 깊이 ≥1 이면 자식 잠금을 다시 잡지
+/// 않는다(같은 트랜잭션 안 중첩 = 부모가 이미 자식 잠금을 쥠 · 재진입). 토큰·소유자 사슬·조상 검증은 그대로 한다.
+pub const ENV_TXN_DEPTH: &str = "CYS_UPDATE_TXN_DEPTH";
+
 pub fn verify_delegated(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe) -> Result<DelegatedGuard, UpdateErr> {
+    verify_delegated_at(dir, arg, env, probe, false)
+}
+
+/// `nested` = 이 프로세스가 위임 자식의 자식(깊이 ≥1 · [`ENV_TXN_DEPTH`]).
+pub fn verify_delegated_at(dir: &Path, arg: &Token, env: Option<&Token>, probe: &ProcProbe, nested: bool) -> Result<DelegatedGuard, UpdateErr> {
     if env != Some(arg) && !super::mutant("B6") {
         return Err(busy("⓪ --txn 인자 ≠ CYS_UPDATE_TXN"));
+    }
+    if nested && !super::mutant("U2-NEST") {
+        // 부모 위임 자식이 자식 잠금을 쥔 채 우리를 띄웠다 — 사슬 검증만(소유 pid = 조상 · 토큰 · 잠금 생존 · 시작 시각)
+        let owner = verify_owner_chain(dir, arg, probe)?;
+        return Ok(DelegatedGuard { file: None, owner });
     }
     // 자식 잠금을 먼저 잡고(다른 위임 자식 = busy) 아래 검증을 한다 — 검증 실패면 guard drop 으로 놓인다.
     let child = open_lock_file(dir, CHILD_LOCK_FILE)?;
@@ -320,7 +334,8 @@ pub fn acquire_or_delegate(dir: &Path, owner: &str, arg: Option<&str>, env: Opti
         (Some(a), e) => {
             let tok = Token::parse(a).ok_or_else(|| busy("토큰 형식"))?;
             let et = e.and_then(Token::parse);
-            verify_delegated(dir, &tok, et.as_ref(), &ProcProbe::real()).map(Participation::Delegated)
+            let nested = std::env::var(ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) >= 1;
+            verify_delegated_at(dir, &tok, et.as_ref(), &ProcProbe::real(), nested).map(Participation::Delegated)
         }
         (None, Some(_)) => Err(busy("⓪ env 토큰만 있고 --txn 인자 없음")),
     }
@@ -535,6 +550,24 @@ mod tests {
 
     /// ★2R B6/H⑥ 뮤테이션 B6g: 위임 자식의 guard 가 살아 있는 동안 부모가 죽어(잠금 풀림 · 묘비) 새 트랜잭션이 와도 `txn_busy` ·
     /// 거절된 새 시도는 직전 소유자 기록을 되돌린다 · guard drop 뒤에는 연다 · 자식은 한 번에 하나.
+    /// ★3판(Fable 2R N1): 같은 트랜잭션 안 중첩 위임(러너 → rotate(자식 잠금 쥠) → init-pack) = 재진입 통과 · 깊이 없는 둘째 형제 = 여전히 busy ·
+    /// 중첩이어도 토큰 불일치·조상 아님은 거부.
+    #[test]
+    fn nested_delegation_reenters_child_lock_but_siblings_still_exclude() {
+        let d = tmp("nested");
+        let parent = acquire(&d, "runner").unwrap();
+        let tok = parent.token();
+        let rotate = verify_delegated(&d, &tok, Some(&tok), &yes()).unwrap();
+        assert!(verify_delegated(&d, &tok, Some(&tok), &yes()).is_err(), "깊이 0 형제 = 자식 잠금 busy");
+        let init_pack = verify_delegated_at(&d, &tok, Some(&tok), &yes(), true).expect("깊이 1 = 재진입");
+        let bad = Token { epoch: tok.epoch + 1, ..tok.clone() };
+        assert!(verify_delegated_at(&d, &bad, Some(&bad), &yes(), true).is_err(), "중첩이어도 토큰 검증");
+        let no = ProcProbe { is_ancestor: &|_| Some(false), start_time: &|p| pid_start_time(p) };
+        assert!(verify_delegated_at(&d, &tok, Some(&tok), &no, true).is_err(), "중첩이어도 조상 검증");
+        drop((init_pack, rotate, parent));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn b6g_delegated_guard_holds_generation_after_parent_death() {
         let d = tmp("b6g");

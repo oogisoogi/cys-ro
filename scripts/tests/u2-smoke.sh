@@ -3,6 +3,7 @@
 #   ① cysd 부팅 가드: 비종결 저널(S7) + 잠금 없음 → rc 75(좌석·상태 파일 생성 0) · 같은 저널 + 살아 있는 잠금 → 가드 통과
 #   ② 저널 두 슬롯 손상 + 재구성 불가 → `self-update --recover` rc 2 · state.json seats_blocked · 부팅 가드 유지
 #   ③ `self-update --verify-payload` 매니페스트 없음 → rc 3
+#   ⑥ (★3판 N1) 러너 잠금 아래 실 `rotate --skip-drain --txn` → ④ `init-pack --txn` 중첩 위임 rc 0
 #   ④ `self-update --auto --spawn` → (★2판 C18) 복구기 등록 실패 = rc 4 · 정상 = 러너 사본·복구기 plist(격리 폴더)·install_id 생성 · 러너가 떠서(피드 file:// 부재 = 미도달) 끝남
 #   ⑤ `rotate --stop-only --skip-drain`: 다른 소유자가 잠금을 쥐면 rc 26(txn_busy) · 잠금 없으면 0
 # 사용: scripts/tests/u2-smoke.sh   (cargo build --bin cys --bin cysd 뒤 · target/debug 바이너리를 쓴다) · exit 0 = 전건 OK
@@ -92,6 +93,29 @@ if [ $rc -eq 0 ] && grep -q '"spawned":true' "$SB/auto.log" && [ -x "$UPD/runner
 else bad "④ rc=$rc $(head -c 300 "$SB/auto.log") $(ls "$UPD")"; fi
 gone=1; for _ in $(seq 1 60); do pgrep -f "$UPD/runner/cys self-update --run" >/dev/null || { gone=0; break; }; sleep 0.5; done
 [ $gone -eq 0 ] && ok "④ 러너 끝남(피드 미도달 = 조용히 끝 · 30초 안)" || bad "④ 러너가 30초 뒤에도 남음"
+# ⑥ ★3판(Fable 2R N1): 실 위임 사슬 — 러너(잠금 소유자 · 이 python) → `rotate --skip-drain --txn T`(자식 잠금 쥠) → ④ `init-pack --txn T`
+#   (중첩 = 깊이 1 재진입) 왕복 rc 0. 비-기본(격리) 소켓이라 launchd 무접촉 · 데몬은 격리 소켓에 자동 기동 → 끝에 내린다.
+rm -f "$UPD"/journal*.json "$UPD"/txn.owner.json
+python3 - "$UPD" "$CYS" "$SB" <<'PY' >"$SB/rot6.log" 2>&1
+import fcntl, os, sys, time, json, subprocess, secrets
+d, cys, sb = sys.argv[1], sys.argv[2], sys.argv[3]
+fd = os.open(os.path.join(d, "txn.lock"), os.O_RDWR | os.O_CREAT, 0o600); os.fchmod(fd, 0o600); fcntl.flock(fd, fcntl.LOCK_EX)
+lstart = subprocess.check_output(["ps", "-p", str(os.getpid()), "-o", "lstart="], env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"}).decode().strip()
+st = int(time.mktime(time.strptime(lstart, "%a %b %d %H:%M:%S %Y")))
+txn = secrets.token_hex(16)
+o = {"owner": "runner", "pid": os.getpid(), "txn_id": txn, "epoch": 1, "started_at": 0, "boot_id": 0, "start_time": st, "released": False}
+p = os.path.join(d, "txn.owner.json"); open(p, "w").write(json.dumps(o)); os.chmod(p, 0o600)
+tok = f"{txn}:1"
+env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": f"{sb}/home", "TMPDIR": sb, "LANG": "ko_KR.UTF-8",
+       "CYS_SOCKET": f"{sb}/s.sock", "CYS_STATE_DIR": f"{sb}/state", "CYS_PACK_DIR": f"{sb}/home/.cys/pack", "CYS_ROOT": f"{sb}/home/.cys",
+       "CYS_UPDATE_STATE_DIR": d, "CYS_UPDATE_LAUNCHAGENTS_DIR": f"{sb}/agents", "AGORA_CONFIG_DIR": f"{sb}/agora",
+       "CYS_UPDATE_TXN": tok}
+r = subprocess.run([cys, "rotate", "--skip-drain", "--skip-depts", "--txn", tok], env=env, capture_output=True, text=True, timeout=240)
+print("RC", r.returncode); print(r.stderr[-1500:])
+subprocess.run([cys, "daemon", "stop"], env=env, capture_output=True, timeout=30)
+PY
+if grep -q '^RC 0' "$SB/rot6.log" && ! grep -q '④ 새 팩 반영 실패' "$SB/rot6.log"; then ok "⑥ 실 위임 사슬 러너→rotate --txn→init-pack --txn 왕복 rc 0(★3판 N1)"; else bad "⑥ 위임 사슬 $(tail -c 600 "$SB/rot6.log")"; fi
+pkill -f "$SB/s.sock" 2>/dev/null; true
 [ -e "$HOME/Library/LaunchAgents/com.cysjavis.cysr-update-recover.plist" ] && bad "실 LaunchAgents 에 plist 생김(격리 위반)" || ok "격리: 실 LaunchAgents 무접촉"
 rm -rf "$SB"
 exit $fail

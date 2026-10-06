@@ -32,5 +32,6 @@ U2-REPLAY update::quiesce::tests::b8_crash_matrix_replay_exactly_once_and_inject
 U2-S5OUT update::quiesce::tests::s5_recheck_flags_each_change_and_unknown
 U2-V3 update::verify::tests::each_violation_fails_its_row
 U2-NOFOLLOW update::mac::tests::swap_forward_then_rb_swap_is_idempotent_on_real_apfs
+U2-NEST update::lock::tests::nested_delegation_reenters_child_lock_but_siblings_still_exclude
 LIST
 exit $fail

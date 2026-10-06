@@ -20966,6 +20966,11 @@ fn txn_participate(owner: &str, arg: Option<&str>) -> Result<Option<cys::update:
                 cys::update::lock::Participation::Participant(_) => return Ok(Some(p)),
             };
             std::env::set_var(cys::update::lock::ENV_TXN, tok);
+            // ★3판(Fable 2R N1): 위임 받은 이 프로세스가 다시 위임하는 자식(rotate ④ init-pack)은 자식 잠금을 재진입한다
+            if matches!(p, cys::update::lock::Participation::Delegated(_)) {
+                let d = std::env::var(cys::update::lock::ENV_TXN_DEPTH).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+                std::env::set_var(cys::update::lock::ENV_TXN_DEPTH, (d + 1).to_string());
+            }
             Ok(Some(p))
         }
         Err(e) => {

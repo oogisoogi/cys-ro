@@ -160,16 +160,19 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     const s = read("../../docs/index.html");
     const ver = s.match(/<b id="ver">(v[0-9]+(?:\.[0-9]+)+)<\/b>/)?.[1] ?? "";
     expect({ 표시_판: /^v[0-9]+(\.[0-9]+)+$/.test(ver) }).toEqual({ 표시_판: true });
+    // 기대 이름 = 표시 판으로 직접 구성(완전 일치 · codex 재서명 2 MINOR — 부분문자열 판 대조는 v1.1.70 · v1.1.7. 를 통과시켰다)
+    const v = ver.slice(1);
+    const EXPECTED = [`cysr-macos-arm64-v${v}.zip`, `cysr-macos-x64-v${v}.zip`, `cysr_${v}_x64-setup.exe`, `cysr_${v}_x64-setup.zip`];
     DL_IDS.forEach((id, i) => {
       const href = s.match(new RegExp(`id="${id}"\\s+href="([^"]+)"`))?.[1] ?? "";
       const m = href.match(/^https:\/\/github\.com\/oogisoogi\/cys-ro\/releases\/download\/([^/]+)\/([^/]+)$/);
       const tag = m?.[1] ?? "";
       const file = m?.[2] ?? "";
-      expect({ id, 태그_일치: tag === ver, 파일_정규식: ASSET_RES[i].test(file), 파일_속_판: file.includes(ver.slice(1)) }).toEqual({
+      expect({ id, 태그_일치: tag === ver, 파일_정규식: ASSET_RES[i].test(file), 파일_완전_일치: file === EXPECTED[i] }).toEqual({
         id,
         태그_일치: true,
         파일_정규식: true,
-        파일_속_판: true,
+        파일_완전_일치: true,
       });
     });
   });

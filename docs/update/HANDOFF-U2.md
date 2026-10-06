@@ -87,6 +87,7 @@
 10. **PACK 저널 칸**(C14): 저널 스키마를 늘리지 않으려고 `stage_tree_sha256` = 사용자 트리 해시 · `snapshot_dir` = 사용자 트리 사본으로 **재사용**(PACK_* 상태에서만 그 뜻).
 11. **좌석 키**(C9): org.status 에 재기동을 넘는 surface 고유 id 가 없어 `surface_uuid` 칸 = `role:<역할>`(UUID 인 척 0 · 주석 명시) · `session_id` 칸 = `<에이전트>|<등록 세션>`(에이전트 교체 = 다른 좌석).
 13. **CLI 참가 = 공유 잠금**(C1 개정 · a36892cd): 설계 §3-2 는 참가자 모두 같은 `txn.lock` — 2판 첫 구현(854e0615)대로 CLI 가 배타 txn.lock 을 쥐자 윈 CI T8(사람 실행 설치기 = 화면 0)이 적색(앱 기동 `init-pack` 과 설치기 ⓪-a 가 겹치면 「갱신 중」 창). 지금 = 토큰 없는 CLI 는 `txn.part.lock` 공유 · 러너만 배타 txn.lock + 참가자 잠금 확인. 러너↔CLI 배타는 그대로(양방향 원자) · CLI 끼리는 서로 막지 않음(1판 전과 같음) · 설치기 ⓪-a 무영향. 단점 = 설치기와 CLI 팩 명령이 겹치는 것은 막지 않는다(기반 판과 같은 상태 — U3 설치기가 참가자 잠금을 보게 할지는 📌).
+14. **S8b 재검사 범위**(Fable 2R m7): 설계 S8b 문면(3R MAJOR 2)의 N3·N4·N5 재판정·세대 토큰 무변화는 **재지 않는다** — S8b 는 데몬이 선 뒤(S7 이후)라 좌석·승인 게이트(N3~N5)를 잴 데몬이 없고, 세대 토큰은 정비 세션과 함께 데몬 쪽에 있다. 재는 것 = 피드 재확인(같은 결정) · 보류 로그 증가 · stage 트리 해시. 그 사이 위험은 S5 재검사(T1→정착→T2)와 정비 모드가 덮는다.
 12. **codex 「설계 차이 6 판정」 응답**: ⑴ 파일 사본 = 링크·권한 보강(C5) ⑵ 별도 원장 = 다중 항목 선기록 수정(C4) ⑶ RB 종결 = 정식 자리 옛 판 즉시 no-op(C7) ⑸ 조건부 참가 = 철회(C1) · ⑷⑹ 수용 그대로.
 
 ## §3 연결하지 않은 것 · 다음 티켓
@@ -113,6 +114,7 @@
 - ⓕ ★2판: 완화(advisory) 폐기의 「수용된 최신 비폐기 세대로 자동 RB」 = 미구현(ⓐ 와 같음) · stop_seats 집행만 함(C12).
 - ⓖ ★2판: 매 부작용 **안** fault hook 일반화 · 실 큐·원장 재기동 통합행렬 = 미착수(C16 부분 — 실 경계 시험 5종은 §7 C16 행).
 - ⓗ ★2판 · 📌 master 결정 필요: 팩 CLI(init-pack·pack-update)를 전역 저널 PACK_APPLY 에 묶는 배선(C14)을 a36892cd 에서 **철회** — 앱이 기동마다 `init-pack` 을 부르므로 그동안 부팅 가드가 데몬을 막고(rc 75) 설치기와도 겹친다. 남은 길 = ① 러너 트랜잭션 안의 팩 적용(S10 rotate→init-pack 위임)만 PACK_* 를 쓰게(권고 · 설계 §3-11 의 「PACK_*」 출처가 러너 경로라면 이것) ② CLI 도 쓰되 부팅 가드에서 PACK_* 를 「참가자 잠금이 쥐어져 있으면 허용」 으로 완화. 지금은 팩 저널(.pack-journal)이 CLI 도중 죽음을 맡고, 전역 PACK_* 복구는 사용자 트리 검증까지 한다.
+- ⓘ ★3판(Fable 2R m6): 설계 §3-11 재구성 ①(윈 = 설치판 설치기 재실행 → 재대조) ②(맥 = `.cysr.app.old-*` 중 옛 판 일치본을 정식으로 승격) 미구현 — 지금은 정식 자리가 어느 판과도 안 맞으면 즉시 좌석 0(seats_blocked · fail-closed · 사람 필요). 다음 판.
 - ⓓ `pack::recover_pack_journal` 부팅 때 호출 경로는 복구기(`--recover`)에만 — cysd 부팅 자체는 부르지 않는다(부팅 가드가 PACK_* 를 막고 복구기가 종결).
 - 함정: 시험 하네스가 잠금 파일을 0644 로 만들면 lock 모듈이 「권한 불일치」로 fail-closed(첫 종단 실행 BAD 2의 원인 · 제품 결함 아님 · 0600 으로 고침).
 - 함정: 러너 판정은 pmset/ioreg 등으로 수 초 걸린다 — 종단 시험 대기 3초는 짧다(30초 폴링으로 고침).
@@ -144,3 +146,21 @@
 | C17 | MAJOR | 「실 ~/.cys 쓰기 0」 = 끝 한 점 확인뿐 | 채택 | 333e8d81 | `scripts/tests/u2-realroots.sh`(두 실 루트 + LaunchAgents 전후 전수 메타데이터) · 결과 = §4 「2판 전수」 |
 | C18 | MINOR | 복구기 등록·spawn 실패도 rc 0 | 채택 | 3f84f44b | `auto_spawn` rc 4/5 · u2-smoke ④ LaunchAgents 자리 = 파일 → rc 4·러너 0 |
 - 반박 0 — BLOCK 반박 조건(시험 1개로 증명)을 채울 항목이 없었다: 18항 모두 코드에서 지적 경로를 재확인했다.
+
+### §7-2 Fable 2R 14행(★3판 · 원문 = `docs/update/REVIEW-U2-fable-2r.md` · untracked)
+| # | 등급 | 지적(요지) | 판정 | 커밋 | 고친 곳 · 증명 시험(★ = BLOCK 경로를 실제로 지남) |
+|---|---|---|---|---|---|
+| N1 | BLOCK | rotate(위임 · 자식 잠금 쥠) → init-pack --txn 자식 WouldBlock → S10·RB start_old 실패 | 채택 | bf59a37c | `CYS_UPDATE_TXN_DEPTH` 재진입 · `verify_delegated_at` · ★u2-smoke ⑥ 실 rotate→init-pack 왕복 rc 0(음성 대조 rc 24) · `nested_delegation_reenters_child_lock_but_siblings_still_exclude` · 뮤턴트 U2-NEST |
+| N2 | BLOCK | V2 = 이 사용자 cysd 전수(부서 21개) → V2·RB_VERIFIED 결정론 실패 | 채택 | 40a69be7 · 6a1da528 | `hq_daemon_count`(본부 소켓 identify pid 1) · ★`v2_counts_only_the_hq_daemon_identified_by_socket`(가짜 cysd 2 + 본부 = 1) |
+| N3 | BLOCK | 재구성 = 최근 스냅샷으로 상태 폴더까지 무대조·데몬 생존 중 덮음 | 채택 | caaab5c7 | `reconstruct_trees`·`snapshot::diff`·`reconstruct_protected` · ★`reconstruct_compares_then_restores_only_mismatched_pack`(일치 무변경 · 어긋난 팩만 · 옛 시도 스냅샷 아님 · app-notify 무접촉 · 정지 실패 = 복원 0) |
+| M1 | MAJOR | is_held 배타 탐침 = 거짓 rc 26·거짓 busy·설치기 창 | 채택 | d19674a0 | 공유 탐침 + 재탐침 · 러너 acquire 순간 막힘 재시도 · `probe_is_shared_and_runner_rides_out_transient_probe` |
+| M2 | MAJOR | prev 후보 문자열 중복 제거 → 부모 심링크에서 RB_FAILED | 채택 | c98fb2d9 | canonicalize 뒤 중복 제거 · `prev_candidates_dedupe_through_parent_symlink` |
+| M3 | MAJOR | stop_seats = --skip-drain 전체 정지(설계 ③ 초과) | 채택 | 64c8795f | 표지만 · cysd `surface.create` 새 좌석만 거부 · 부팅·기존 좌석 유지 · `stop_seats_marker_blocks_new_seats_only_for_revoked_installed_seq` |
+| M4 | MAJOR | PACK_* 생산 쓰기 경로 0(§3-8 미구현) | ⟨M4⟩ | ⟨M4SHA⟩ | ⟨M4TEST⟩ |
+| m1 | MINOR | participate Ok(None) 범위 넓음(fail-open) | 채택 | 6a1da528 | 폴더 생성 불가만 Ok(None) · 그 밖 Err |
+| m2 | MINOR | build-info 실행 전 서명 검증 없음(canonical·후보) | 채택 | 6a1da528 | `verify_signature_pin` 선행 · 실패 = 판독 불가/후보 제외 |
+| m3 | MINOR | 윈 시한 뒤 종료 실패 = 무기한 대기 | ⟨m3⟩ | ⟨m3SHA⟩ | ⟨m3TEST⟩ |
+| m4 | MINOR | 재구성 격리 키 고정 | 채택 | caaab5c7 | `reconstruct-<벽시계>` |
+| m5 | MINOR | realroots 정규식에 상담소 신호 경로 없음 | 채택 | 6a1da528 | `counsel/` 전체 U2 이름공간 |
+| m6 | MINOR | §3-11 재구성 ①②(윈 설치기 재실행 · 맥 .old-* 승격) 미구현이 HANDOFF 에 없음 | 채택(문서) | 이 문서 | §5 ⓘ 명기 · 지금 = 불일치 즉시 좌석 0(fail-closed) |
+| m7 | MINOR | S8b 가 N3~N5·세대 토큰 재판정 안 함 — 생략 근거 미기록 | 채택(문서) | 이 문서 | §2-14 명기 |

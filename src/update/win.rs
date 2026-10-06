@@ -142,17 +142,23 @@ mod tests {
     }
 
     /// 앱 쪽 원본(src-tauri)과 판독 규칙이 갈라지지 않았는지 — 두 함수 본문의 판정 줄이 같다.
+    /// ★(1.1.8 U4 · 재조준) 앱 쪽 원본(`parse_sac_state`·`smart_app_control_state` · 스마트 앱 컨트롤 사전 검사 UI)은 설계 §5-2 ·
+    ///   DECISION-TABLE §0 14 각주대로 지웠다 — 이제 판독 규칙의 주인은 이 파일 하나다(설계 §5-1 O3 「→ src/update/win.rs」 완결).
+    ///   그래서 「두 벌이 같다」 대신 「앱에 두 번째 판독기가 다시 생기지 않는다 + 규칙 줄은 여기에 그대로 있다」를 잰다.
     #[test]
     fn same_rules_as_app_original() {
         let app = include_str!("../../src-tauri/src/main.rs");
+        assert!(
+            !app.contains("VerifiedAndReputablePolicyState"),
+            "앱(src-tauri)에 스마트 앱 컨트롤 판독기가 다시 생겼다 — 판독 규칙은 update::win 한 곳이어야 한다(두 벌은 갈라진다)"
+        );
         for needle in [
             "if !name.eq_ignore_ascii_case(\"VerifiedAndReputablePolicyState\") || !kind.eq_ignore_ascii_case(\"REG_DWORD\") {",
             "0 => Some(\"off\"),",
             "1 => Some(\"on\"),",
             "2 => Some(\"eval\"),",
         ] {
-            assert!(app.contains(needle), "앱 원본에서 사라짐: {needle}");
-            assert!(include_str!("win.rs").contains(needle));
+            assert!(include_str!("win.rs").contains(needle), "update::win 판독 규칙 줄 소실: {needle}");
         }
     }
 }

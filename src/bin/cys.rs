@@ -15,7 +15,9 @@ use std::io::{BufRead, BufReader, Read, Write};
     // = 「Usage: cys」) — 정본 이름으로 고정해 어느 이름으로 불러도 같은 도움말이 나오게 한다.
     bin_name = "cysr",
     version,
-    about = "cysr — the CYSJavis terminal CLI (bidirectional socket, multi-agent OS)"
+    about = "cysr — the CYSJavis terminal CLI (bidirectional socket, multi-agent OS)",
+    // ★1.1.8 U1(1R MINOR): 갱신 3동사는 최상위 열거형 밖 별도 파서라(j3 스택) 목록에 안 보인다 — 한 줄로 알린다.
+    after_help = "Update verbs (separate parser): cysr update-verify | build-info | self-update --check  (each: --help)"
 )]
 struct Cli {
     /// Socket path override (default: AITERM_SOCKET or platform default)
@@ -2768,6 +2770,19 @@ fn main() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    // ★1.1.8 U1(AUTO-UPDATE-118 §6-2·§4-2·§8): 갱신 3동사(update-verify·build-info·self-update)는 최상위 `Command` **밖**에서
+    //   먼저 처리한다 — 최상위 clap 열거형에 변형을 더하면 j3 시험이 기본 2MB 시험 스레드에서 스택 넘침(1.1.8 W1 실측 ·
+    //   DaemonAction::DeptStatus 주석과 같은 이유). 셋 다 판정·자기 보고라 데몬 자동 기동 0.
+    {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        if cys::update::cli::claims(&args) {
+            AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
+            let hooks = cys::update::check::Hooks { seats: &update_seat_facts, pending_approvals: &update_pending_approvals };
+            if let Some(rc) = cys::update::cli::dispatch(&args, &hooks) {
+                std::process::exit(rc);
+            }
+        }
+    }
     let cli = Cli::parse();
     if let Some(s) = &cli.socket {
         std::env::set_var(cys::ENV_SOCKET, s);
@@ -5303,8 +5318,10 @@ fn run(command: Command) -> i32 {
             // 데이터 파생 명령 카탈로그 — clap 정의가 단일 진실원천(self-describing). 에이전트/LLM
             // 노드가 산문 표(CLAUDE.md) 재파싱 대신 이 기계 출력을 읽는다(eval-driven: 기계 산출만이 사실).
             let app = <Cli as clap::CommandFactory>::command();
+            // ★1.1.8 U1(1R MINOR): 갱신 3동사(별도 파서 `update::cli`)도 같은 카탈로그에 싣는다.
+            let upd = cys::update::cli::command();
             let mut actions: Vec<Value> = Vec::new();
-            for sub in app.get_subcommands() {
+            for sub in app.get_subcommands().chain(upd.get_subcommands()) {
                 if sub.get_name() == "help" {
                     continue;
                 }
@@ -24155,6 +24172,45 @@ fn reinject_decision(
         return ReinjectDecision::Defer;
     }
     ReinjectDecision::Inject
+}
+
+/// ★1.1.8 U1(AUTO-UPDATE-118 §3-3·§3-4 N1~N3): `cys self-update --check` 의 좌석 사실 — 재주입 3신호(`reinject_decision`)와
+/// **같은 계기**(control.dashboard 의 state·agent_status + `adapter_ready` 화면 판정)에 org.status 의 큐 깊이·미제출 입력·
+/// 사람 입력 경과(`human_idle_secs`)를 붙인다. 데몬 없음·응답 어긋남·옛 데몬(`human_idle_secs` 키 없음) = None(판정 불가 = 보류).
+fn update_seat_facts() -> Option<Vec<cys::update::gates::SeatFact>> {
+    let dash = request("control.dashboard", json!({})).ok()?;
+    let org = request("org.status", json!({})).ok()?;
+    let mut by_id: std::collections::HashMap<u64, Value> = std::collections::HashMap::new();
+    for s in org["surfaces"].as_array()? {
+        if let Some(id) = s["surface_id"].as_u64() {
+            by_id.insert(id, s.clone());
+        }
+    }
+    let mut out = Vec::new();
+    for node in dash["fleet"].as_array()? {
+        let sid = node["surface_id"].as_u64()?;
+        if node["state"].as_str() == Some("offline") {
+            continue; // 끝난 좌석은 일하지 않는다
+        }
+        let o = by_id.get(&sid)?;
+        let agent = node["agent"].as_str().map(|s| s.to_string());
+        let idle = node["state"].as_str() == Some("idle");
+        // idle_secs 부재면 아래 seat_fact_from 이 좌석째 None 으로 만든다 — 여기 0 은 화면 판정 입력일 뿐 결과에 남지 않는다.
+        let idle_secs = node["idle_secs"].as_u64().unwrap_or(0);
+        let tail = request("surface.read_text", json!({"surface_id": sid}))
+            .ok()
+            .and_then(|r| r["text"].as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        // ★1R M8: 필수 계기 하나라도 없으면 좌석 사실 전체 None(보류) — 누락을 0 으로 바꾸지 않는다.
+        out.push(cys::update::gates::seat_fact_from(node, o, adapter_ready(&agent, idle, idle_secs, &tail))?);
+    }
+    Some(out)
+}
+
+/// ★1.1.8 U1(§3-4 N5 ⓑ · 📌16): 응답 대기 승인 요청 수(외부 발행 예정의 대리 신호). 데몬 없음 = None(보류).
+fn update_pending_approvals() -> Option<u64> {
+    let r = request("feed.list", json!({"status": "pending"})).ok()?;
+    Some(r["items"].as_array()?.len() as u64)
 }
 
 /// sha256 hex — 디렉티브 해시(§7-② ⓐ 선검사용). pack.rs content_hash와 동일 산식.

@@ -45,6 +45,15 @@ fn main() {
     };
     println!("cargo:rustc-env=CYS_BUILD_ID={build_id}");
 
+    // ★1.1.8 데몬 자동 갱신(AUTO-UPDATE-118 §4-2 · U1): 전 채널 공통 전역 순번 `release_seq` 를 바이너리에 박는다.
+    //   순서 판정은 판 문자열이 아니라 이 정수만 본다(`parse_semver` 는 3마디만 읽는다 — `1.1.8+canary.1` = `1.1.8`).
+    //   발행 CI 가 `CYSR_RELEASE_SEQ` 를 넘기고, 로컬 빌드는 0(= 미발행 · 어떤 릴리스의 `min_from_release_seq`(≥1)도
+    //   못 넘으므로 자동 갱신 대상이 아니다). 윈 VERSIONINFO 4번째 마디(u16)에도 같은 값을 싣는다(아래 · R7) —
+    //   그래서 상한 65535 를 넘으면 빌드를 죽인다(조용히 잘린 순번 = 순서 역전).
+    println!("cargo:rerun-if-env-changed=CYSR_RELEASE_SEQ");
+    let release_seq = release_seq_from_env();
+    println!("cargo:rustc-env=CYSR_RELEASE_SEQ={release_seq}");
+
     // 추적 파일 → cysjavis-pack/ 접두 제거한 rel. 제외규칙(기존 walk와 동형): 경로 컴포넌트가
     // '.'로 시작(.gitignore 등 dotfile/dotdir)·tests·__pycache__ 이면 배포 대상이 아니다.
     let mut rels: Vec<String> = Vec::new();
@@ -270,7 +279,20 @@ fn embed_windows_resources() {
     // 하드코딩을 배제하고 SOT 연동을 분명히 한다.
     let version = env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION 없음");
 
+    // ★1.1.8 U1(R7 · AUTO-UPDATE-118 §7-4): VERSIONINFO 숫자 판 4번째 마디 = `release_seq`. winresource 0.1.31 은
+    //   major.minor.patch 만 채우고 4번째를 0 으로 둔다(`CARGO_PKG_VERSION_PRE` 줄이 주석 처리 · lib.rs:205-221) →
+    //   `1.1.8` 과 `1.1.8+canary.1` 이 같은 DWORD 2개가 되어 NSIS 절대 오라클(R2 · GetDLLVersion)이 「이미 신본」으로
+    //   단락한다. 오라클의 기대값은 같은 원본에서 `!getdllversion /packed` 로 뽑으므로 4번째 마디를 바꿔도 형식 불일치는 없다.
+    let seq: u64 = release_seq_from_env();
+    let pkg = |k: &str| env::var(k).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) & 0xFFFF;
+    let packed = (pkg("CARGO_PKG_VERSION_MAJOR") << 48)
+        | (pkg("CARGO_PKG_VERSION_MINOR") << 32)
+        | (pkg("CARGO_PKG_VERSION_PATCH") << 16)
+        | seq;
+
     let mut res = WindowsResource::new();
+    res.set_version_info(winresource::VersionInfo::FILEVERSION, packed)
+        .set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
     res.set_icon(icon)
         .set("ProductName", "cys")
         .set("CompanyName", "cysjavis")
@@ -281,6 +303,24 @@ fn embed_windows_resources() {
         .set_manifest(MANIFEST);
     res.compile()
         .expect("Windows 리소스 컴파일 실패(rc.exe 부재?) — PE 메타데이터 임베드 불가");
+}
+
+/// `CYSR_RELEASE_SEQ`(발행 CI) → 정수. 미지정·빈 값 = 0(로컬 빌드). 정수 아님·65535 초과 = 빌드 중단
+/// (윈 VERSIONINFO 4번째 마디가 u16 — 넘으면 조용히 잘려 순서가 뒤집힌다).
+fn release_seq_from_env() -> u64 {
+    match env::var("CYSR_RELEASE_SEQ") {
+        Ok(v) if !v.trim().is_empty() => {
+            let n: u64 = v
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("CYSR_RELEASE_SEQ={v:?} 가 정수가 아니다 — 빌드 중단"));
+            if n > 0xFFFF {
+                panic!("CYSR_RELEASE_SEQ={n} > 65535(VERSIONINFO 4번째 마디 u16) — 빌드 중단");
+            }
+            n
+        }
+        _ => 0,
+    }
 }
 
 /// CYSR_BUILD_ID 미지정(로컬 빌드)일 때의 build_id — `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`.

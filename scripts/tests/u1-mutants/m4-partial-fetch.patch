@@ -1,0 +1,17 @@
+diff --git a/src/update/check.rs b/src/update/check.rs
+index ae1dfbef..5718de5a 100644
+--- a/src/update/check.rs
++++ b/src/update/check.rs
+@@ -387,8 +387,10 @@ pub fn fetch_and_verify_with(
+     };
+     let env = take(get(&format!("cysr/{channel}.json")));
+     let env_sig = take(get(&format!("cysr/{channel}.json.minisig")));
+-    let rev = take(get("revocations.json"));
+-    let rev_sig = take(get("revocations.json.minisig"));
++    let (rev, rev_sig) = match (get("revocations.json"), get("revocations.json.minisig")) {
++        (Ok(a), Ok(b)) => (take(Ok(a)), take(Ok(b))),
++        (a, b) => (a.map(|f| f.bytes), b.map(|f| f.bytes)),
++    };
+     let out = (|| -> Result<FeedOutcome, String> {
+         let (env, env_sig) = (env?, env_sig?);
+         let trusted = read_trusted(dir);

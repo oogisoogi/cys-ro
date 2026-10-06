@@ -1,0 +1,15 @@
+diff --git a/src/update/feed.rs b/src/update/feed.rs
+index 17dc5602..def561ac 100644
+--- a/src/update/feed.rs
++++ b/src/update/feed.rs
+@@ -704,7 +704,9 @@ pub fn render_outcome(o: &FeedOutcome) -> String {
+ 
+ /// 열거 행 `{"installed_release_seq":N,"outcome":<render_outcome 바이트 그대로>}` — 바깥 칸은 판정 바이트를 건드리지 않는다.
+ pub fn render_enum_row(installed: u64, o: &FeedOutcome) -> String {
+-    format!("{{\"installed_release_seq\":{installed},\"outcome\":{}}}", render_outcome(o))
++    let mut v = o.to_json();
++    v["installed_release_seq"] = installed.into();
++    format!("{{\"installed_release_seq\":{installed},\"outcome\":{v}}}")
+ }
+ 
+ /// 출발 seq 열거 결과 — 서명 단계(ⓐ~ⓘ)는 한 번 · 판정(ⓙ~ⓝ)은 출발 seq 마다.

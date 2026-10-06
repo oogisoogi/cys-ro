@@ -278,6 +278,12 @@ jobs:
           #   이 두 줄에도 `if:` 를 달지 마라.
           cargo_filter_count --lib update_launch::
           CYS_PACK_DIR="$(mktemp -d)" cargo test --lib update_launch:: -- --test-threads=1
+          # ★(1.1.8 U1 · 적대 3R F3) 여섯째 모듈 `update::`(데몬 자동 갱신 공용 모듈) 편입 — 윈도우 전용 코드(보호 DACL 을 만들 때 넣고
+          #   `GetFileSecurityW` 로 되읽는 소유자 전용 폴더 · `RegGetValueW` SAC 판독 · `LockFileEx` 잠금·위임 자식 잠금 · `GetTickCount64` 시계)가
+          #   타입체크(win-typecheck.sh)만으로는 실행 증거가 없다. 필터 = `update::` 하위만(1.1.8 U1 5판 기준 윈 123건 · 맥 126건 = 유닉스 전용 권한 시험 3 차이 · `update_launch::` 와 겹치지 않음).
+          #   실패 = 적색(머지 조건). 이 두 줄에도 `if:` 를 달지 마라.
+          cargo_filter_count --lib update::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib update:: -- --test-threads=1
 
       # ★D5 env 게이트의 Windows 파이프라인 실기 검증 (v0.14 품질 라인 · 적대검증 2R major 수리).
       #

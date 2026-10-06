@@ -1,0 +1,15 @@
+diff --git a/src/update/journal.rs b/src/update/journal.rs
+index ab96f460..105dfc8a 100644
+--- a/src/update/journal.rs
++++ b/src/update/journal.rs
+@@ -284,10 +284,6 @@ pub fn read(dir: &Path) -> ReadOutcome {
+         (Some(Ok(x)), Some(Ok(y))) => ReadOutcome::Ok(if x.generation >= y.generation { x } else { y }),
+         // ★2R B7/H⑦: 두 슬롯은 generation 2 부터 늘 둘 다 있다(1 = 첫 쓰기만 한 슬롯). generation ≥2 인데 상대 슬롯이 **없으면**
+         //   더 새 본이 지워졌을 수 있다 — 낡은 단일 슬롯을 Ok 로 믿지 않는다(재구성).
+-        (Some(Ok(x)), None) | (None, Some(Ok(x))) if x.generation >= 2 => {
+-            let g = x.generation;
+-            ReadOutcome::Degraded(x, format!("상대 슬롯 없음(generation {g} ≥ 2 — 더 새 본 유실 가능)"))
+-        }
+         (Some(Ok(x)), None) | (None, Some(Ok(x))) => ReadOutcome::Ok(x),
+         (Some(Ok(x)), Some(Err(e))) | (Some(Err(e)), Some(Ok(x))) => {
+             if super::mutant("B7") {

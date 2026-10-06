@@ -9,7 +9,7 @@
   ⑤ ensure-client — 올바른 sha = 설치+.pin · 틀린 sha = 거부 · zip-slip = 거부 · 판정 = 트리 지문(같음 = 무동작 ·
      알려진 옛 판 = 교체 · 고친/모르는 트리 = 불가침) · 설치 잠금(대기/포기) · 남의 lib 위로 rename 0
   ⑥ tick — 가짜 `lib/bin/agora` 가 받은 인자(`--facts-nonce` = 그 판 nonce · 파일 nonce 와 결박)·AGORA_SIGNING_KEY ·
-     한 판 상한 540초(시간 초과 = 프로세스 그룹째 끝냄)
+     한 판 상한 540초(agora 몫 ≤500 + 끝내기 몫 40 · 시작 → 반환 벽시계 · 시간 초과 = 프로세스 그룹째 끝냄)
   ⑧ 팩 쓰기(`signal` 다중 프로세스) ↔ 동봉 아고라 `collector.move_sent` 교차 잠금 경합 — 줄 유실·중복 0 · LF
   ⑦ preflight 신호 블록(C 번호 FAIL/WARN → 한 실행 안 중복 0) · cys-dept EXIT trap(rc 보존 + 신호 1줄)
 
@@ -1065,34 +1065,66 @@ class Fingerprint(Base):
 
 
 class TickCap(Base):
-    """⑨ 한 판 상한 540초 — agora 몫 = 540 − 경과 · 남은 몫 < 30 = 안 띄움(no_time) · 넘으면 프로세스 그룹째 끝내고 로그."""
+    """⑨ 한 판 상한 540초 — agora 몫 = 540 − 끝내기 몫 40(taskkill 30 + 회수 10) − 경과(Popen 직전에 잰다) · 남은 몫 < 30 =
+    안 띄움(no_time) · 넘으면 프로세스 그룹째 끝내고 로그. ★리뷰 3R ④ 4판 = 시작 → 반환 벽시계 ≤ 540(끝내기 포함)."""
 
     put = EnsureClient.put
     lib = EnsureClient.lib
 
+    def _patch(self, **kv):
+        old = {k: getattr(jc, k) for k in kv}
+        for k, v in kv.items():
+            setattr(jc, k, v)
+        self.addCleanup(lambda: [setattr(jc, k, v) for k, v in old.items()])
+
     def test_timeout_budget(self):
-        self.assertEqual(jc.TICK_CAP_S, 540)
-        table = {0: 540, 0.4: 539, 100: 440, 509: 31, 510: 30, 510.5: None, 511: None, 539: None, 540: None,
-                 590: None, 900: None}
+        self.assertEqual((jc.TICK_CAP_S, jc.TASKKILL_TIMEOUT_S, jc.REAP_TIMEOUT_S, jc.KILL_BUDGET_S), (540, 30, 10, 40))
+        table = {0: 500, 0.4: 499, 100: 400, 469: 31, 470: 30, 470.5: None, 471: None, 500: None, 539: None,
+                 540: None, 590: None, 900: None}
         self.assertEqual({e: jc.agora_timeout(e) for e in table}, table)
-        for e in [x / 10 for x in range(0, 6001, 7)]:
+        for e in [x / 100 for x in range(0, 60001, 7)]:
             t = jc.agora_timeout(e)
-            if t is not None:
-                self.assertLessEqual(e + t, jc.TICK_CAP_S, e)      # ★한 판 총합 ≤ 540
-                self.assertGreaterEqual(t, jc.AGORA_MIN_TIMEOUT_S, e)
+            if t is None:
+                self.assertGreater(e, jc.TICK_CAP_S - jc.KILL_BUDGET_S - jc.AGORA_MIN_TIMEOUT_S, e)   # 몫 < 30 일 때만 None
+                continue
+            self.assertLessEqual(e + t + jc.KILL_BUDGET_S, jc.TICK_CAP_S, e)   # ★경과 + 몫 + 끝내기 ≤ 540
+            self.assertLessEqual(e + t, 500, e)
+            self.assertGreaterEqual(t, jc.AGORA_MIN_TIMEOUT_S, e)
+
+    def test_wall_clock_scaled_cap_includes_spawn_and_kill(self):
+        """★리뷰 3R ④ 4판 — 상수를 줄인 축척판(상한 5 · 끝내기 몫 2 → agora 몫 ≤3 · 내림으로 실제 2): 띄우는 데 2.5초
+        걸리고(Popen 대역이 늦춤) 끝나지 않는 agora 여도 tick 시작 → 반환 ≤ 상한. 띄우는 시간을 몫 밖에서 셌다면(옛 꼴 =
+        Popen 뒤 communicate(timeout=몫)) 2.5 + 2 ≈ 4.5초 → 아래 「몫 상한 + 1초」 단언이 적색(뮤턴트 실측)."""
+        hang = "#!/usr/bin/env python3\nimport time\ntime.sleep(10000)\n"
+        self.put(_zip([("bin/agora", hang)]))
+        empty = os.path.join(self.tmp, "emptybin")
+        os.makedirs(empty)
+        self._patch(TICK_CAP_S=5, TASKKILL_TIMEOUT_S=1, REAP_TIMEOUT_S=1, KILL_BUDGET_S=2, AGORA_MIN_TIMEOUT_S=1)
+        real_popen = jc.subprocess.Popen
+
+        def slow_popen(argv, *a, **kw):
+            if "counsel" in argv:
+                time.sleep(2.5)
+            return real_popen(argv, *a, **kw)
+        jc.subprocess.Popen = slow_popen
+        try:
+            with envset(PATH=empty, CYS_CYS_BIN=None, AGORA_SIGNING_KEY=None):
+                t0 = time.monotonic()
+                self.assertEqual(jc.tick(), "timeout")
+                took = time.monotonic() - t0
+        finally:
+            jc.subprocess.Popen = real_popen
+        self.assertLessEqual(took, jc.TICK_CAP_S, took)
+        self.assertLess(took, jc.TICK_CAP_S - jc.KILL_BUDGET_S + 1.0, "띄우는 시간이 agora 몫 밖에서 셌다: %.2f" % took)
 
     def test_no_time_skips_agora(self):
         """남은 몫 < 30초 = agora 를 띄우지 않는다 · tick.log `no_time`."""
         self.put(_zip([("bin/agora", EnsureClient.AGORA)]))
         empty = os.path.join(self.tmp, "emptybin")
         os.makedirs(empty)
-        old = jc.TICK_CAP_S
-        jc.TICK_CAP_S = 29                                        # 경과 ≈ 0 → 남은 몫 29 = 511초 경과와 같은 자리
-        try:
-            with envset(PATH=empty, CYS_CYS_BIN=None):
-                self.assertEqual(jc.tick(), "no_time")
-        finally:
-            jc.TICK_CAP_S = old
+        self._patch(TICK_CAP_S=jc.KILL_BUDGET_S + 29)              # 경과 ≈ 0 → 남은 몫 29 = 471초 경과와 같은 자리
+        with envset(PATH=empty, CYS_CYS_BIN=None):
+            self.assertEqual(jc.tick(), "no_time")
         self.assertFalse(os.path.exists(self.lib("called.json")), "남은 몫이 없는데 agora 를 띄웠다")
         ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
         self.assertEqual((ev[-1]["event"], ev[-1]["result"]), ("tick", "no_time"))
@@ -1107,15 +1139,11 @@ class TickCap(Base):
         self.put(_zip([("bin/agora", hang)]))
         empty = os.path.join(self.tmp, "emptybin")
         os.makedirs(empty)
-        old = (jc.TICK_CAP_S, jc.AGORA_MIN_TIMEOUT_S)
-        jc.TICK_CAP_S, jc.AGORA_MIN_TIMEOUT_S = 3, 1
-        try:
-            with envset(PATH=empty, CYS_CYS_BIN=None):
-                t0 = time.monotonic()
-                self.assertEqual(jc.tick(), "timeout")
-                self.assertLess(time.monotonic() - t0, 30)
-        finally:
-            jc.TICK_CAP_S, jc.AGORA_MIN_TIMEOUT_S = old
+        self._patch(TICK_CAP_S=3 + jc.KILL_BUDGET_S, AGORA_MIN_TIMEOUT_S=1)   # agora 몫 3
+        with envset(PATH=empty, CYS_CYS_BIN=None):
+            t0 = time.monotonic()
+            self.assertEqual(jc.tick(), "timeout")
+            self.assertLess(time.monotonic() - t0, 30)
         child, grand = map(int, rd(self.lib("pids")).split())
 
         def alive(pid):

@@ -12,8 +12,9 @@
   ensure-client  `<팩>/install/agora-client.pin` + `.zip.b64` → `<설정>/lib`(설치 잠금 안 · 판정 = 트리 지문:
                  없음 = 설치 · 핀 지문 = 무동작 · 알려진 옛 판 지문 = 교체 · 그 밖(고친·모르는 트리) = 불가침 + 로그)
   tick           ensure-client → facts → `agora counsel auto --facts … --facts-nonce <그 판 nonce>`(스케줄 잡 `agora-counsel` ·
-                 30분 · 한 판 상한 540초) · ★facts 를 안 썼거나 못 쓴 판도 nonce 는 언제나 넘긴다 — 아고라는 파일의 `nonce` 가
-                 없거나 다르면 사실 없음(일일 no_fresh_facts)으로 본다 → 옛 판의 신선한 facts.json 재사용 0(리뷰 3R ② 4판)
+                 30분 · 한 판 상한 540초 = agora 몫 ≤500 + 끝내기 몫 40) · ★facts 를 안 썼거나 못 쓴 판도 nonce 는
+                 언제나 넘긴다 — 아고라는 파일의 `nonce` 가 없거나 다르면 사실 없음(일일 no_fresh_facts)으로 본다 →
+                 옛 판의 신선한 facts.json 재사용 0(리뷰 3R ② 4판)
 
 ★언제나 exit 0 · stdout 무출력 — 훅·preflight·cys-dept·Rust 업데이트 경로가 부르므로 이 도구의 실패가 호출자를 바꾸면
   안 된다. 결과는 `<설정>/counsel/tick.log`(JSON 줄 · 256KB 넘으면 `.1`)에만 남긴다.
@@ -62,6 +63,9 @@ LOCK_RETRY_S = 0.05
 DOCTOR_TIMEOUT_S = 60
 CLI_TIMEOUT_S = 20
 TICK_CAP_S = 540                       # 한 판 전체 상한 — cysd command 잡 600초 안쪽(cysd 는 시간 초과 자식을 안 죽인다)
+TASKKILL_TIMEOUT_S = 30                # 시간 초과 뒤 윈 taskkill /T /F 상한
+REAP_TIMEOUT_S = 10                    # 끝낸 뒤 communicate(파이프 회수) 상한
+KILL_BUDGET_S = TASKKILL_TIMEOUT_S + REAP_TIMEOUT_S   # ★리뷰 3R ④ 4판 — 끝내기 몫(40초)을 540 안에 미리 뺀다 → agora 몫 상한 500
 AGORA_MIN_TIMEOUT_S = 30               # 남은 몫이 이보다 작으면 agora 를 띄우지 않는다(no_time) — 바닥으로 늘리지 않는다
 INSTALL_LOCK = "lib.install.lock"      # <설정> 옆 파일 · 존재 판정 ~ 게시까지 한 손
 INSTALL_LOCK_WAIT_S = 60.0
@@ -888,9 +892,11 @@ def _daily_due(cfg, now=None):
 
 
 def agora_timeout(elapsed):
-    """agora 에 줄 시간(정수 초) = 한 판 상한(540초) − 지금까지 쓴 시간(내림) · 남은 몫 < 30초면 None(띄우지 않는다).
-    ★리뷰 3R ⑦ — 옛 「바닥 30초」는 남은 몫보다 크게 줘서 한 판이 540초를 넘었다 · 경과 + 반환값 ≤ 540 이 불변식."""
-    remaining = int(TICK_CAP_S - elapsed)
+    """agora 에 줄 시간(정수 초) = (한 판 상한 540 − 끝내기 몫 40 = 500) − 지금까지 쓴 시간(내림) · 남은 몫 < 30초면 None(띄우지 않는다).
+    ★리뷰 3R ⑦ — 옛 「바닥 30초」는 남은 몫보다 크게 줘서 한 판이 540초를 넘었다.
+    ★리뷰 3R ④ 4판 — 시간 초과 뒤 taskkill(≤30) + communicate(≤10)도 540 안이어야 한다 · 불변식 = 경과 + 반환값 ≤ 500
+    (= 경과 + 반환값 + 끝내기 몫 ≤ 540). 경과는 Popen **직전**에 잰다(띄우는 시간도 몫 안 — tick 의 deadline)."""
+    remaining = int(TICK_CAP_S - KILL_BUDGET_S - elapsed)
     if remaining < AGORA_MIN_TIMEOUT_S:
         return None
     return remaining
@@ -901,7 +907,7 @@ def _kill_group(proc):
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, **NOWIN)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=TASKKILL_TIMEOUT_S, **NOWIN)
             how = "taskkill"
         except (OSError, subprocess.SubprocessError):
             how = "kill"
@@ -941,11 +947,13 @@ def tick(cfg=None):
     if not env.get("AGORA_SIGNING_KEY") and os.path.isfile(key):
         env["AGORA_SIGNING_KEY"] = key
     argv = [sys.executable, agora, "counsel", "auto", "--facts", _counsel(cfg, FACTS_FILE), "--facts-nonce", nonce]
-    elapsed = time.monotonic() - t0
+    spawn_at = time.monotonic()                      # ★Popen 직전 — 띄우는 시간도 agora 몫(≤500) 안에서 센다
+    elapsed = spawn_at - t0
     timeout = agora_timeout(elapsed)
     if timeout is None:
         log_event(cfg, "tick", result="no_time", elapsed_s=int(elapsed))
         return "no_time"
+    deadline = spawn_at + timeout                    # t0 + 경과 + 몫 ≤ t0 + 500
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=env, start_new_session=(os.name != "nt"), **NOWIN)
@@ -953,11 +961,11 @@ def tick(cfg=None):
         log_event(cfg, "tick", result="error", why=type(e).__name__)
         return "error"
     try:
-        out, err = proc.communicate(timeout=timeout)
+        out, err = proc.communicate(timeout=max(0.0, deadline - time.monotonic()))   # 남은 몫 = 띄운 뒤 다시 잰 값
     except subprocess.TimeoutExpired:
-        how = _kill_group(proc)
+        how = _kill_group(proc)                      # 윈 ≤ TASKKILL_TIMEOUT_S
         try:
-            proc.communicate(timeout=10)
+            proc.communicate(timeout=REAP_TIMEOUT_S)
         except (OSError, subprocess.SubprocessError, ValueError):
             pass
         log_event(cfg, "tick", result="timeout", timeout_s=timeout, killed=how)

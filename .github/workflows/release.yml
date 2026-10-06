@@ -860,6 +860,8 @@ jobs:
 
       # (cysr 1.1.8 U3) 발행 쪽 스크립트 시험 — ci-branch·pack-release 와 같은 커밋 3레인 대칭(게이트 소비 레인이 셋 다).
       #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(위 4종 스텝과 같은 관례).
+      #   ★2판(codex 1R #17): 디버그 cys(update-verify)를 U1 왕복 검증기로 주입 + CYS_U3_REQUIRE_ALL=1(건너뜀 = 실패) ·
+      #   U1 머지 전엔 적색 = 의도.
       - name: 발행 쪽 U3 스크립트 (test_update_publish · macOS 전용)
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
@@ -867,7 +869,8 @@ jobs:
           set -euo pipefail
           f="scripts/tests/test_update_publish.py"
           [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
-          python3 "$f"
+          cargo build --bin cys
+          CYS_UPDATE_VERIFY_BIN="$PWD/target/debug/cys" CYS_U3_REQUIRE_ALL=1 python3 "$f"
 
       - name: Import Developer ID into ephemeral keychain (macOS 전용)
         if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'

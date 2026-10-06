@@ -28,6 +28,8 @@ import update_common as uc  # noqa: E402
 import fake_minisign as fm  # noqa: E402
 
 VERIFY_BIN = os.environ.get("CYS_UPDATE_VERIFY_BIN", "")
+# CI(맥 레인)는 1 을 준다 — U1 왕복·hdiutil 매체 묶음이 **반드시** 돈다: 전제 부재 = 모듈 오류 · 건너뜀 1건이라도 = 실패(codex 1R #17).
+REQUIRE_ALL = os.environ.get("CYS_U3_REQUIRE_ALL") == "1"
 NOW = 1790000000
 # 시험 전용 모드(실 키 서명 거부 · 신뢰 시각 덮어쓰기 · 가짜 minisign/매체 허용 — codex 1R #3·#15)
 os.environ["CYS_SIGN_DEV"] = "1"
@@ -36,6 +38,34 @@ os.environ["CYS_TEST_NOW"] = str(NOW)
 
 def run(args, **kw):
     return subprocess.run(args, capture_output=True, text=True, **kw)
+
+
+def setUpModule():
+    """REQUIRE_ALL 전제 확인 — 건너뛸 이유가 생기기 전에 크게 실패한다(VERIFY_BIN 실행 가능 · hdiutil 로 매체 실제 마운트)."""
+    if not REQUIRE_ALL:
+        return
+    bad = []
+    if not VERIFY_BIN or not os.access(VERIFY_BIN, os.X_OK):
+        bad.append("CYS_UPDATE_VERIFY_BIN 실행 파일 없음: %r" % VERIFY_BIN)
+    elif run([VERIFY_BIN, "update-verify", "--help"]).returncode != 0:
+        bad.append("CYS_UPDATE_VERIFY_BIN 에 update-verify 없음(U1 미머지 cys?): %s" % VERIFY_BIN)
+    if sys.platform != "darwin" or not shutil.which("hdiutil"):
+        bad.append("hdiutil 없음(맥 매체 묶음 실행 불가)")
+    else:
+        d = tempfile.mkdtemp(prefix="u3-req-")
+        try:
+            dmg, mnt = os.path.join(d, "p.dmg"), os.path.join(d, "mnt")
+            os.makedirs(mnt)
+            r = run(["hdiutil", "create", "-size", "1m", "-fs", "HFS+", "-volname", "U3PROBE", "-quiet", dmg])
+            r = r if r.returncode else run(["hdiutil", "attach", dmg, "-mountpoint", mnt, "-nobrowse", "-quiet"])
+            if r.returncode:
+                bad.append("hdiutil 매체 생성·마운트 실패(rc %d): %s" % (r.returncode, (r.stderr or r.stdout).strip()[-200:]))
+            else:
+                run(["hdiutil", "detach", mnt, "-quiet"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    if bad:
+        raise RuntimeError("CYS_U3_REQUIRE_ALL=1 전제 부재 — " + " · ".join(bad))
 
 
 def py(script, *args, now=None, **kw):
@@ -998,4 +1028,9 @@ class TestSourcePins(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=1)
+    _r = unittest.main(verbosity=1, exit=False).result
+    if REQUIRE_ALL and _r.skipped:
+        print("::error::CYS_U3_REQUIRE_ALL=1 인데 건너뜀 %d건 = 실패(codex 1R #17): %s"
+              % (len(_r.skipped), " · ".join("%s(%s)" % (t.id().split(".")[-1], why) for t, why in _r.skipped)))
+        sys.exit(1)
+    sys.exit(0 if _r.wasSuccessful() else 1)

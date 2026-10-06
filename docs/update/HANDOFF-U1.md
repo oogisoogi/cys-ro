@@ -5,6 +5,11 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(다음 사람이 먼저 읽을 것)
+- ★★★★★**4판 끝(13:1x · 지시 = [master#9112a952] 12:47 · 3R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-fable-3r.md` · 수렴 예 · BLOCK 0)** — 산출 = 【확인요청】 4판(4R 없음 · master 정독+게이트) · 반영표 = §9-2 · BACKLOG F5~F11 = §6:
+  - **커밋**: 40fa1e9c(F1 trusted 잠금 · F2 첫 판 탐침 · F3 windows-health update:: 스텝 · F4 복원) · 192262f0(F1 결정론 뮤테이션 시험) · 이 문서 커밋. push 0.
+  - **시험(격리)**: 40fa1e9c 기준 lib **897/0**(1 ignored · 302초) · 192262f0 뒤 `update::` **126/0** · `scripts/tests/u1-mutants.sh` **35/35 OK**(13:03–13:09 · 가드 31 + 소스 변이 patch 4) · 윈 타입체크 오류 0(12:56–13:01). cys·cysd·cys-app = 4판이 `src/update/{check,cli,feed,lock}.rs` 안만 바꿔 3판 수치 유지(재실행 0 — 정직).
+  - **정직 1**: 첫 F1 시험(4스레드 경합)은 뮤테이션 1회차에서 가드를 끈 채 녹이 나왔다(경합 확률적) → 결정론 배타 시험으로 교체 · 경합 시험은 부하 시험으로 남김.
+  - **다음**: master push → 윈 러너 windows-health `update::` 126건 초록 = 머지 조건 → merge/v0.14.43 머지.
 - ★★★★**3판 끝(12:3x · 지시 = [master#2dc1891f] 11:42 + 추가 1항 [master#450449c8] 12:02 · 2R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-codex-2r.md` · 기준 502c9fe2)** — 산출 = 【확인요청】 3판 · 반영표 = §9:
   - **커밋**: bcc3c457(B6·B7·M3) · 59bdd263(B5·N4·N5·M4·M5·N2·N3·N6·B9) · e1034052(뮤테이션 저장소 편입 + 소스 변이 patch 4) · bbff9184(첫 판 seq 1 = SEQ1) · 이 문서 커밋. push 0.
   - **시험(격리)**: e1034052 기준 lib **893/0** · cys **582/0** · cysd **2460/0** · cys-app **296/0** · bbff9184(cli.rs 1함수 변경) 뒤 lib+cys 재측정 = §4 · `scripts/tests/u1-mutants.sh` = §4 · 로컬 윈 타입체크(`scripts/win-typecheck.sh`) 오류 0.
@@ -92,6 +97,7 @@
 - 새 CLI 동사를 최상위 `Command` 에 넣지 말 것(j3 스택 넘침).
 
 ## §6 재현
+- ★**다음 판 BACKLOG(적대 3R MINOR · [master#9112a952] 지정 · 코드 0)**: F5 stop_seats 우선 판정 때 후보의 not_in_rollout 사실이 detail 문자열에만(JSON 칸 없음 — U2 「stop_seats 탈출 = 후보 적용」 이 rollout 을 무시할 길) · F6 F·U·위임 키 만료 판정이 `now`(R 만 신뢰 시각) — 비대칭(되감기 창 ≤5분) · F7 trusted/ 세대 정리가 gen-(next−2) 하나뿐 — CURRENT 쓰기와 정리 사이 죽음마다 폴더 1개 누수 · F8/F9 install_id(손상 복구 경로·생성 경합) · F10 `--record --json` 출력 = render_outcome 의 superset(recorded 칸) — 바이트 동일 아님 · F11 u1-mutants.sh 「적 = rc≠0」 이 컴파일 실패(101)도 적으로 셈 → `test result: FAILED` 판정으로. 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-fable-3r.md`.
 - `git log --oneline 7e7aa5da..HEAD` · `cargo test --lib update::`(격리 래퍼 안) · VERSIONINFO 실측 = 스크래치 크레이트(winresource =0.1.31 · env HOST/TARGET/CARGO_MANIFEST_DIR/CARGO_PKG_* 지정)에서 `write_resource_file` 로 .rc 생성 → `FILEVERSION 1, 1, 8, 0`(기본) vs `1, 1, 8, 42`(set_version_info).
 
 ## §7 1R 반영표(2판 · [master#9f66c96f] · [master#113a3975] · 1R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-codex-1r.md`)
@@ -238,4 +244,14 @@
 | IDNA | 비 ASCII 전량 거부 유지(master 채택 · 설계 문면 「ASCII authority 만」 = master 편입) | — | 결정됨 |
 
 **계약 변화(다른 티켓이 알아야 할 것)**: ① 열거 JSON 행 모양 = `results[{installed_release_seq, outcome:{…}}]`(2판 `results[{installed_release_seq, …판정 칸}]` 에서 바뀜 — U3 release-gate 열거 분기는 `outcome` 아래를 읽을 것) ② `--check` 결정에 `stop_seats` 추가 ③ cysr 본문 any 행 금지 · min_from < release_seq(U3 발행 게이트 `0 ≤ min_from < seq` 와 같음) ④ 신뢰 기록 파일 배치(`trusted/…`) — U2 가 읽는다면 `check::read_trusted`·`trusted_current_dir` 로 ⑤ 첫 판 seq 1 봉투 = 열거 uptodate 1행 통과(U3 `u1verify.py` 는 294 가 같은 규칙).
+
+## §9-2 3R 반영표(4판 · [master#9112a952] · 3R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-fable-3r.md` · 수렴 예 · BLOCK 0)
+| 3R 번호 | 처방(구현) | 증명 | 결과 |
+|---|---|---|---|
+| F1(MAJOR) | `check::with_trusted_lock` — `trusted/.lock`(0600 · 기존 파일 재검증) 배타 잠금(차단 대기) 안에서 `record_revocations`·`bump_trusted` 의 읽기 → 세대 번호 → `commit_trusted` 전부 · 동시 두 주체(러너·T3)에도 CURRENT 늘 실재 세대 · rev·신뢰 시각 후퇴(늦은 쓰기 덮음) 0 | 가드 F1 · `check::f1_trusted_lock_excludes_second_writer`(결정론 — 잠금 쥔 동안 둘째 커밋은 해제 뒤에야 끝남) + 부하 시험 `check::f1_concurrent_trusted_commits_keep_current_valid`(4스레드 × 15회 · 경합 확률적이라 뮤테이션 목록 밖 — 첫 실행에서 가드 끈 채 녹 1회 관측 → 결정론 시험으로 교체) | OK |
+| F2(MAJOR) | `verify_feed_enumerate` — `lo == release_seq`(첫 판)이면 설치 0 탐침 `judge(.., 0)` 1건으로 ⓛ requires·ⓜ 자산/a2 URL 평가 · 거부·판정 불가면 열거 전체 = 그 결과(판정 행은 uptodate 유지) | 가드 F2 · `cli::f2_first_release_still_checks_requires_and_urls`(URL 밖 = url_refused rc 2 · min_binary 빈 값 = ⓛ rc 2) | OK |
+| F3(MAJOR · 게이트) | `.github/workflows/windows-health.yml` — `update_launch::` 다음에 `cargo_filter_count --lib update::` + `cargo test --lib update:: -- --test-threads=1`(0매치·실패 = 적색 · `if:` 없음) · 필터 실측 = 126건(4판) 전부 `update::` 하위(`update_launch::` 와 안 겹침) · YAML 파싱 확인 | 윈 러너 = master push 뒤 | 워크플로 커밋 |
+| F4(MINOR) | `acquire` 거절 분기 하나로 — 자식 잠금 파일 열기 실패(권한 불일치 등)도 직전 소유자 기록 복원 + 잠금 놓음 | `lock::f4_child_lock_open_failure_restores_owner` | 녹 |
+| F5~F11 | 다음 판 BACKLOG(§6 1줄) | — | 지시대로 0 |
+| F12 | 정본 편입 = master | — | — |
 

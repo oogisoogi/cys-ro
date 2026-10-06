@@ -858,6 +858,17 @@ jobs:
             python3 "$f"
           done
 
+      # (cysr 1.1.8 U3) 발행 쪽 스크립트 시험 — ci-branch·pack-release 와 같은 커밋 3레인 대칭(게이트 소비 레인이 셋 다).
+      #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(위 4종 스텝과 같은 관례).
+      - name: 발행 쪽 U3 스크립트 (test_update_publish · macOS 전용)
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_update_publish.py"
+          [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          python3 "$f"
+
       - name: Import Developer ID into ephemeral keychain (macOS 전용)
         if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'
         shell: bash
@@ -894,6 +905,8 @@ jobs:
             rm -rf "$TD/.fingerprint"/cys-* "$TD"/cys "$TD"/cysd "$TD"/cys-app* "$TD"/deps/cys* 2>/dev/null || true
           done
           bash scripts/build-macos-signed.sh "$TRIPLE"
+          # ★1.1.8 U3 발행 게이트(assets · 동봉 팩 매니페스트 min_binary 빈 값 = 거부 · bundle-prep.sh 수리의 이중 벨트).
+          python3 scripts/update/release-gate.py assets --bundled-manifest src-tauri/resources/pack-manifest.json
           # ★경로 정규화 — 스크립트는 네이티브(호스트=타깃) 빌드에서 target/release/bundle 을 쓰지만,
           #   아래 tauri-action(tauriScript=true·args --target)은 target/<triple>/release/bundle 에서 수집한다.
           #   러너=arm64 → aarch64 레그가 네이티브라 이 불일치가 실재한다(비대칭 실패 방지 — 기획 §8-3).
@@ -1091,6 +1104,8 @@ jobs:
           echo "✓ NSIS 빌드 로그 가드 통과: 훅 컴파일 가드 문자열 0건 (nsis-build.log $(wc -l <nsis-build.log | tr -d ' ')줄)"
           # ② CRT 게이트 — 업로드 전 최종 바이트 검증
           PY=python; command -v python3 >/dev/null 2>&1 && PY=python3
+          # ★1.1.8 U3 발행 게이트(assets · 동봉 팩 매니페스트 min_binary 빈 값 = 거부 — 맥 레그와 대칭).
+          "$PY" scripts/update/release-gate.py assets --bundled-manifest src-tauri/resources/pack-manifest.json
           # ★R1-repair(2026-08-29): 게이트 **도구 자체**의 밀폐 스위트를 소비 직전에 돌린다 —
           #   scripts/tests/test_verify_win_crt.py 는 W4-C 편입 후 어느 CI 레인에서도 0회
           #   실행이었다("안 도는 검체는 게이트가 아니다"). 합성 PE 픽스처·tempfile 만 사용(러너
@@ -1847,6 +1862,11 @@ jobs:
           # tauri .sig(전체 base64) → 표준 minisign 텍스트(.minisig).
           base64 --decode pack-manifest.json.sig > pack-manifest.json.minisig
           echo "── pack-manifest.json.minisig (head) ──"; head -2 pack-manifest.json.minisig
+
+      # ★1.1.8 U3 발행 게이트(assets · TICKETS ★U3 추가): 서명된 팩 매니페스트 min_binary_version 빈 값 = 발행 거부
+      #   (U1 D23 cutover 2026-11-01T00:00Z 뒤 빈 값 서명 = 1.1.8+ 기기 전량 거부 — 앞단에서 막는다). pack-release.yml 과 대칭.
+      - name: Release gate — pack manifest min_binary non-empty
+        run: python3 scripts/update/release-gate.py assets --pack-manifest pack-manifest.json
 
       # ★실서명→실검증 폐포 게이트(릴리스 전 결정론 검증). 방금 PRODUCTION 서명기
       # (bunx @tauri-apps/cli signer → base64 --decode → .minisig)가 낸 실제 아티팩트를

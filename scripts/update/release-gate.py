@@ -237,17 +237,24 @@ def stage_verify(a):
             v = json.loads(p.stdout)
         except ValueError:
             raise Undetermined("update-verify 출력이 JSON 아님(rc %d): %s %s" % (p.returncode, p.stdout[-300:], p.stderr[-300:]))
-        if v.get("verdict") != a.expect or (a.expect not in ("reject", "undetermined") and p.returncode != 0):
+        accept = [x.strip() for x in a.expect.split(",") if x.strip()]
+        if v.get("verdict") not in accept or (v.get("verdict") not in ("reject", "undetermined") and p.returncode != 0):
             raise GateFail("update-verify[%s] = %s/%s(step %s · %s) rc %d — 기대 %s"
                            % (t, v.get("verdict"), v.get("code"), v.get("step"), v.get("detail"), p.returncode, a.expect))
         asset = v.get("asset") or {}
-        if a.expect == "apply" and asset.get("sha256") != body["assets"][t]["sha256"]:
+        if v.get("verdict") == "apply" and asset.get("sha256") != body["assets"][t]["sha256"]:
             raise GateFail("update-verify[%s] asset 이 본문 행과 다르다" % t)
         out.append("update-verify[%s] = %s rc %d" % (t, v.get("verdict"), p.returncode))
     return out
 
 
 def main(argv=None):
+    # 윈 러너 콘솔(cp1252)에서 한국어 출력이 UnicodeEncodeError 로 죽지 않게(bundle-prep.sh 와 같은 처방).
+    for st in (sys.stdout, sys.stderr):
+        try:
+            st.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description="발행 게이트 — 설계 §8 U3")
     sub = ap.add_subparsers(dest="stage", required=True)
     s1 = sub.add_parser("assets")
@@ -272,7 +279,7 @@ def main(argv=None):
     s3.add_argument("--revocations-sig", required=True)
     s3.add_argument("--target", action="append")
     s3.add_argument("--installed-release-seq", type=int, default=0)
-    s3.add_argument("--expect", default="apply")
+    s3.add_argument("--expect", default="apply", help="허용 판정(쉼표 구분 · 예: apply,halt,not_in_rollout)")
     a = ap.parse_args(argv)
     try:
         lines = {"assets": stage_assets, "body": stage_body, "verify": stage_verify}[a.stage](a)

@@ -99,6 +99,10 @@ jobs:
           test -f .release-tools/scripts/release-verify.py \
             || { echo "verifier missing from tooling checkout" >&2; exit 1; }
           python3 .release-tools/scripts/tests/test_release_verify.py
+          # ★1.1.8 U3 발행 게이트도 믿기 전에 자기시험(시험 키 · 맥 매체·U1 왕복 묶음은 이 러너에서 건너뜀을 명시 출력).
+          test -f .release-tools/scripts/update/release-gate.py \
+            || { echo "release gate missing from tooling checkout" >&2; exit 1; }
+          python3 .release-tools/scripts/tests/test_update_publish.py
 
       - name: Download the draft and verify it (publishes nothing)
         env:
@@ -130,6 +134,11 @@ jobs:
             --version "$VERSION" --release-dir reviewed-release --print-assets \
             --prev-tauri-conf prev-tauri.conf.json \
             --prev-pack-keyring prev-trusted-keys.json
+          # ★1.1.8 U3 발행 게이트(assets · 설계 §5-3 · TICKETS ★U3 추가) — 두 잡 대칭: 모든 릴리스 latest.json 자산
+          #   의무(scripts/release/latest-tombstone.json 이 생기면 = 다리 기간 끝 → 그 바이트와 같아야 함) ·
+          #   팩 매니페스트 min_binary_version 빈 값 = 발행 거부(D23 cutover 뒤 빈 값 서명 = 1.1.8+ 기기 전량 거부).
+          python3 .release-tools/scripts/update/release-gate.py assets \
+            --release-dir reviewed-release --pack-manifest reviewed-release/pack-manifest.json
           ACTUAL_BUNDLE_SHA256="$(shasum -a 256 reviewed-release/SHA256SUMS.txt | awk '{print $1}')"
           [ "$ACTUAL_BUNDLE_SHA256" = "$EXPECTED_BUNDLE_SHA256" ] || {
             echo "reviewed release digest mismatch" >&2
@@ -192,6 +201,10 @@ jobs:
           test -f .release-tools/scripts/release-verify.py \
             || { echo "verifier missing from tooling checkout" >&2; exit 1; }
           python3 .release-tools/scripts/tests/test_release_verify.py
+          # ★1.1.8 U3 발행 게이트도 믿기 전에 자기시험(시험 키 · 맥 매체·U1 왕복 묶음은 이 러너에서 건너뜀을 명시 출력).
+          test -f .release-tools/scripts/update/release-gate.py \
+            || { echo "release gate missing from tooling checkout" >&2; exit 1; }
+          python3 .release-tools/scripts/tests/test_update_publish.py
 
       - name: Re-download and verify the exact draft subject
         env:
@@ -221,6 +234,11 @@ jobs:
             --version "$VERSION" --release-dir reviewed-release \
             --prev-tauri-conf prev-tauri.conf.json \
             --prev-pack-keyring prev-trusted-keys.json
+          # ★1.1.8 U3 발행 게이트(assets · 설계 §5-3 · TICKETS ★U3 추가) — 두 잡 대칭: 모든 릴리스 latest.json 자산
+          #   의무(scripts/release/latest-tombstone.json 이 생기면 = 다리 기간 끝 → 그 바이트와 같아야 함) ·
+          #   팩 매니페스트 min_binary_version 빈 값 = 발행 거부(D23 cutover 뒤 빈 값 서명 = 1.1.8+ 기기 전량 거부).
+          python3 .release-tools/scripts/update/release-gate.py assets \
+            --release-dir reviewed-release --pack-manifest reviewed-release/pack-manifest.json
           ACTUAL_BUNDLE_SHA256="$(shasum -a 256 reviewed-release/SHA256SUMS.txt | awk '{print $1}')"
           [ "$ACTUAL_BUNDLE_SHA256" = "$EXPECTED_BUNDLE_SHA256" ] || {
             echo "reviewed release digest mismatch" >&2

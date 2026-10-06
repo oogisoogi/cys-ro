@@ -9,8 +9,8 @@
 #   · 매체를 뺀 뒤(⑤ · 기본 = 빠질 때까지 기다림) 내장 키링의 같은 용도 공개키로 검증해야(⑥) 산출물이 생긴다.
 # 시험 = 가짜 키(scripts/tests/fixtures/fake_minisign.py) + 가짜 매체(hdiutil 로 만든 진짜 마운트) — 실키 0.
 
-_os_dev() {  # 경로의 장치 번호(BSD·GNU stat 둘 다)
-  stat -f %d "$1" 2>/dev/null || stat -c %d "$1"
+_os_dev() {  # 경로의 장치 번호(BSD·GNU stat 둘 다 — GNU 의 `stat -f` 는 파일 시스템 정보라 먼저 갈라야 한다)
+  if stat --version >/dev/null 2>&1; then stat -c %d "$1"; else stat -f %d "$1"; fi
 }
 
 _realpath() {

@@ -1240,6 +1240,17 @@ jobs:
             python3 "$f"
           done
 
+      # (cysr 1.1.8 U3) 발행 쪽 스크립트 시험 — 본문 생성기·U/R 오프라인 매체 의식(hdiutil 진짜 마운트 = 가짜 매체)·봉투·폐기문·
+      #   사이트 게시 준비·발행 게이트. 게이트(scripts/update/release-gate.py)를 실행하는 release·pack-release 와 같은 커밋 3레인 대칭.
+      #   stdlib · 네트워크 0 · 시험 키만(실키 0). U1 update-verify 왕복 묶음은 CYS_UPDATE_VERIFY_BIN 없으면 「미실행」을 찍고 건너뜀.
+      - name: 발행 쪽 U3 스크립트 (test_update_publish · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_update_publish.py"
+          [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          python3 "$f"
+
       # ★todo **스캔 집합** 2언어 파리티(설계 §14 S18 · W14). 위 파서 파리티와 **다른 표면**이다:
       #   그쪽은 "같은 파일을 같게 판정하는가", 여기는 "**애초에 같은 파일을 보는가**"를 묻는다.
       #   실측 결함 — 소비자 C1(Python 보고기)·C2(Rust 데몬)의 배제 정책은 이미 같았는데 데몬이

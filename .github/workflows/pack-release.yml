@@ -660,6 +660,23 @@ jobs:
           python3 scripts/release-verify.py --pack-only --pack-manifest pack-manifest.json \
             --prev-pack-keyring prev-trusted-keys.json
 
+      # (cysr 1.1.8 U3) 발행 게이트를 믿기 전에 그 시험부터 — ci-branch·release 와 같은 커밋 3레인 대칭(우분투 =
+      #   맥 매체 묶음은 건너뜀을 명시 출력 · stdlib · 네트워크 0 · 시험 키만).
+      - name: 발행 쪽 U3 스크립트 (test_update_publish)
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_update_publish.py"
+          [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          python3 "$f"
+
+      # ★1.1.8 U3 발행 게이트(assets · 설계 §5-3 · TICKETS ★U3 추가) — 본체 레인(release-publish.yml)과 대칭:
+      #   팩 단독 릴리스(pack-v*)도 latest.json 자산 의무(다리 · 기간 뒤 tombstone 바이트) · 팩 매니페스트 min_binary 빈 값 = 거부.
+      - name: Release gate — latest.json present + min_binary non-empty
+        run: |
+          python3 scripts/update/release-gate.py assets --release-dir . \
+            --asset-list pack.tar.gz,pack-manifest.json,pack-manifest.json.minisig,latest.json \
+            --pack-manifest pack-manifest.json
+
       - name: Create pack release + upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

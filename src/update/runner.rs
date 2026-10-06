@@ -492,6 +492,12 @@ fn copy_fields(n: &mut Journal, w: &Journal) {
 /// cysd 부팅 가드(§3-11) — 비종결(S7~S11·RB·PACK_*)이거나 저널 손상(`Corrupt`·`Degraded`)이면 Some(사유) = 좌석·세션을 만들지 않고
 /// 「복구 대기」 rc 로 끝. 저널 없음·종결·S1~S6 = None(정비 모드 TTL 이 지키는 구간).
 pub fn boot_guard(dir: &Path) -> Option<String> {
+    // ★2판(codex 1R C12): 설치판이 stop_seats 폐기 = 이 판(같은 release_seq)의 데몬은 좌석을 열지 않는다(새 판으로 바뀌면 자동 해제).
+    if let Some(seq) = seats_stop_seq(dir) {
+        if seq == super::buildinfo::release_seq() {
+            return Some(format!("installed_revoked_stop_seats: {seq}"));
+        }
+    }
     match journal::read(dir) {
         ReadOutcome::Absent => None,
         ReadOutcome::Corrupt(e) => Some(format!("journal_corrupt: {e}")),
@@ -525,6 +531,13 @@ pub fn boot_blocked(dir: &Path) -> Option<String> {
         }
     }
     Some(g)
+}
+
+/// ★2판 C12: 설치판 stop_seats 폐기 표지(`seats-stop.json {release_seq, at}`).
+pub const SEATS_STOP_FILE: &str = "seats-stop.json";
+
+pub fn seats_stop_seq(dir: &Path) -> Option<u64> {
+    super::quiesce::read_json::<serde_json::Value>(dir, SEATS_STOP_FILE).and_then(|v| v.get("release_seq").and_then(|x| x.as_u64()))
 }
 
 /// 부팅 가드 rc(「복구 대기」) — cysd 가 이 값으로 끝나면 launchd·작업 스케줄러가 다시 띄워도 같은 판정이 반복된다.
@@ -874,6 +887,21 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(cells, 2 * (15 + 5) * 2 - 2, "행렬 칸 수");
+    }
+
+    /// ★2판 C12: stop_seats 표지 = 같은 설치판 seq 의 데몬 부팅 막음(잠금이 있어도) · 다른 seq(새 판) = 해제 · 표지 쓰기 = auto 집행.
+    #[test]
+    fn stop_seats_marker_blocks_boot_for_revoked_installed_seq_only() {
+        let d = tmp("stopseats");
+        assert!(boot_blocked(&d).is_none());
+        let seq = super::super::buildinfo::release_seq();
+        super::super::quiesce::write_json(&d, SEATS_STOP_FILE, &serde_json::json!({"release_seq": seq, "at": 1})).unwrap();
+        assert!(boot_blocked(&d).unwrap().starts_with("installed_revoked_stop_seats"));
+        let g = crate::update::lock::acquire(&d, "runner").unwrap();
+        assert!(boot_blocked(&d).is_some(), "잠금 쥔 러너도 우회 못 함");
+        drop(g);
+        super::super::quiesce::write_json(&d, SEATS_STOP_FILE, &serde_json::json!({"release_seq": seq + 1, "at": 1})).unwrap();
+        assert!(boot_blocked(&d).is_none(), "다른 판 = 해제");
     }
 
     /// ★2판 C11: S11 durable commit(수용 기록·롤백 자산) 실패 = DONE 아님 → 롤백(옛 판) · 결과 = rollback.

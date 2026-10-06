@@ -322,10 +322,16 @@ pub fn pid_is_ancestor(pid: u32) -> Option<bool> {
 /// 프로세스 시작 시각(sysinfo · epoch 초) — 없는 pid = None.
 pub fn pid_start_time(pid: u32) -> Option<u64> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let mut sys = System::new();
     let p = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing());
-    sys.process(p).map(|x| x.start_time())
+    // ★2판: 부하 중 단발 조회가 빈손으로 오는 일이 있어(전수 병렬 실행에서 b6g 1회 적색 · 단독 3/3 초록 — 원인 확정 아님) 3회까지.
+    for _ in 0..3 {
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing());
+        if let Some(t) = sys.process(p).map(|x| x.start_time()) {
+            return Some(t);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

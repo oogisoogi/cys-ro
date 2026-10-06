@@ -99,5 +99,5 @@ cys daemon status    (등록 상태 확인)
 
 - 구판 안내의 **MSI(cys-0.2.x)** 는 폐기된 방식입니다. 현재 소비자 배포본은 위 **NSIS
   setup.exe(runtime 동봉)** 하나입니다.
-- 부서·업데이트·역할 노드 등 세부 동작은 앱 내 안내와 `USER-MANUAL.md`·`docs/INSTALL.md`(공통)를
+- 부서·새 판 자동 갱신·역할 노드 등 세부 동작은 앱 내 안내와 `USER-MANUAL.md`·`docs/INSTALL.md`(공통)를
   함께 참고하세요.

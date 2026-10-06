@@ -3,7 +3,25 @@
 > 브리프 = [master#71f53d34](파일 정본 `~/axdev/master/briefs/2026-10-06-cysr-118-u2-runner.md`) · 설계 정본 = `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md`(4판 · U1 편입).
 > 가지 `u2/runner-118` off `e2515bb0` · 워커 = worker-2(계정2 · Opus) · 커밋 = `git log --oneline e2515bb0..HEAD`.
 
-## §0 델타(다음 사람이 먼저 읽을 것)
+## §0-2 2판 델타(master#4c87d585 · #23c2f094 · #3f846d60 · 2026-10-06 · 다음 사람이 **이것부터** 읽을 것)
+- **범위**: 결정론 적색 3(윈 CI 2 + master 스냅샷 게이트 1) + codex 1R 18항(BLOCK 12 · MAJOR 5 · MINOR 1) + master 추가 지시 2건. 커밋 = `git log --oneline ad3d5eb5..HEAD`(17커밋 · 마지막 = 이 문서 · 코드 끝 = a36892cd).
+- **결정론 적색 3 → 42cd1562**: ⓐ secret-scan WIN-PATH(`win_task` 시험 경로 → `C:\x\a b\…`) · ⓑ① `tree_sha` 시험 심링크 단언을 `#[cfg(unix)]` 안으로 · ⓑ② 윈 `u1_facts_never_pass_gates` = `gather_facts → recover_agent_ok → win_task::our_folder` 가 `state_dir()` 를 **다시** 구하던 것 → 갱신 폴더를 호출자에서 내려받음(시험 env 심기 0 · 읽기는 install_id 를 만들지 않음) · ⓒ mac swap 시험 = 원인 확정(lead 대조 3 + 내 재현 3: `TMPDIR=/var/folders/…`·`/tmp/` = FAIL · 심링크 없는 경로 = 통과) — `/tmp`·`/var` 경로 성분 심링크를 `RENAME_NOFOLLOW_ANY` 가 ELOOP 로 거부. 1판 961/0 은 격리 래퍼(isoenv.sh)의 TMPDIR 가 심링크 없는 경로였던 탓 = **기본 환경 결정론 실패**였다(정정).
+- **master#3f846d60 처분 → ① 42cd1562(시험 폴더 canonicalize · Err 내용 panic 메시지) ② 8f085359(제품: `mac::real_path` = 부모 canonicalize + 마지막 성분 실 디렉터리 확인 · 링크 = `MacAppsNotWritable`「정식 경로가 링크」 · S2 에서 미리 판정 = 보류 · NOFOLLOW_ANY 유지)**. 기본 TMPDIR lib 결과 = §4 「2판 전수」 줄.
+- **codex 1R 18항 = §7 표**(채택 14 · 부분 채택 4 · 반박 0). 부분 4 = C10(윈 신설치 bootstrap = 설치기 레인) · C12(완화 폐기 자동 RB) · C14(CLI→PACK_APPLY 배선 철회) · C16(부작용 내부 fault hook 일반화).
+- **윈 CI T8 적색(37472105082 @ 333e8d81) → a36892cd**: 인자 없는 설치 TIMEOUT · 기반 e2515bb0·U4 가지 = 초록 → 2판 C1(CLI 배타 txn.lock) 을 원인으로 **추정**(윈 로그에 설치기 창 내용 없음 — 확정 아님) · CLI 참가 = 공유 잠금으로 개정(§2-13) · 결과 = §4 「2판 CI」.
+- **부수 발견(1판 결함 · 고침)**: S2 A2 서명 검사가 `UpdateKeyring::key_ids()`(「용도:key_id」 **표시 문자열**)를 key_id 로 넘겨 **늘 실패**하던 것 → `verify_any`(caa33833). 데몬 `system.identify` 에 `build_id` 가 없어 V1 의 데몬 빌드 대조가 설치본 값으로 메워지던 것 → 가산 키(e0fcb525).
+- **계약 변화(다른 티켓이 알아야 할 것 · 1판 §0 에 더해)**:
+  - `rotate`·`init-pack`/`init-jarvis`·`pack-update`·`pack-plan` = 트랜잭션 참가(자동 갱신 중 토큰 없음 = rc **26**) — 토큰 없는 CLI 는 **공유** `txn.part.lock`(txn.lock·소유자 기록 무접촉) · `--txn` 을 clap 밖에서 받는다(`TXN_VERBS`) · 위임 자식엔 `--txn` 인자 + env 를 **함께**.
+  - 새 잠금 파일 `<갱신 폴더>/txn.part.lock`(0600) — 러너·복구기 acquire 가 이것이 쥐어져 있으면 트랜잭션을 열지 않는다.
+  - `installers/<seq>/` 보존 꼴 = `release.json`(U 서명 본문 원문) · `release.json.minisig` · (윈) `setup.exe` · `setup.exe.sig` — S11 이 만들고 **쓸 때마다 재검증**. ★윈 신설치(자동 갱신을 거치지 않은 첫 설치)에는 이 폴더가 없다 → N7 보류(fail-closed) — 설치기(U3)가 첫 설치 때 같은 꼴로 놓아야 풀린다(📌 master 결정 필요 · §5 ⓔ).
+  - 수용 기록 `accepted-cysr-<channel>.json` = S11 에서도 씀(설치 seq = 새 판) — 실패 = 롤백.
+  - `seats-stop.json{release_seq}` = 설치판 stop_seats 폐기 표지(그 seq 데몬 부팅 rc 75 · 새 판 자동 해제).
+  - 스냅샷 매니페스트 줄 꼴 = `<sha>  <크기>  <f|l><8진 권한>  <경로>`(1판 꼴 = 거부 · 1판 백업은 실기 0 이라 이행 대상 없음).
+  - `--auto --spawn` rc **4** = 복구기 등록 실패 · **5** = 러너 기동 실패.
+  - `system.identify` 결과에 `build_id` 가산.
+- **cysd 전수 FAIL 이름 · alert_route 대조군(master#23c2f094)** = §4 「2판 전수」 줄.
+
+## §0 델타(1판 · 다음 사람이 먼저 읽을 것)
 - **끝난 것**: 브리프 §2 1~8 의 코드 몫 전부(아래 §1 표) + 실기 문안(`docs/update/U2-FIELD-TESTS.md` = VM M1~M3 · 윈 W1~W4 요청문 · 윈 시험 설명서).
 - **안 한 것(정직 · §5)**: ⓐ `installed_revoked` ② 갈래(폐기된 설치판 → 세대 백업의 옛 판으로 **자동** 롤백) — 판정·기록(③)만 · ⓑ `schedule.json` 이행 ①~⑤ 의 cysd 첫 기동 배선(U1 §3 · 설계 §8 비가역 ⑦ = 1.1.8 발행과 함께 · U2 행 밖) · ⓒ 잠금 참가자 중 `pack-update`·`pack-plan`·`init-pack` 의 잠금 배선(rotate·CLI 자동 기동·러너·복구기·데몬 RPC 만 함) · ⓓ 맥 앱 창 재열기(§3-6 ⑥ — U4 와 경계) · ⓔ 실 VM·윈 실기 0(문안만 · 브리프 지시).
 - **계약 변화(다른 티켓이 알아야 할 것)**:
@@ -41,15 +59,28 @@
 2. **`hold_ingested` 자리**: 큐 파일 머리 칸이 아니라 **재생 원장**(`hold-delivery.jsonl` · 주입 전 `delivering` fsync) + 커서 파일 — `queue-state.json` 은 JSON **배열**이고 옛 데몬(롤백 대상)이 배열로 읽어 머리 칸을 넣으면 롤백 판독 불능. 보장(정확히 한 번 · 최대 한 번)은 같고 B8 행렬 6지점 + 뮤테이션 2(U2-REPLAY·U2-ATMOST)로 증명.
 3. **맥 S9 에서 교환 전 끊김**(정식 자리 = 옛 판): 설계 「S7 행으로(보류)」 대신 RB 경로로 종결 — 저널 전이표(U1)에 S9→DEFERRED 가 없고, RB 는 실물 판정이라 RB_SWAPPED = 무동작·복원 = 전부 Keep(부작용 0). 대가 = 결과 kind 가 `rollback`(알림 문구 「원래 판으로 돌려 두었어요」 — 사실과 어긋나지 않음).
 4. **복구기 등록 시점**: 「1.1.8 첫 실행 때 데몬이 한 번」 대신 **잡 진입(`--auto --spawn`)마다 멱등 대조·등록** — cysd 기동 경로에 파일 쓰기를 더하지 않으려고. 첫 등록 = 부팅 뒤 첫 잡(≤6h · 지터와 무관) · 그 전 N14 = 보류(교체 0) = fail-closed.
-5. **rotate 잠금 참가**: 토큰 없는 rotate 는 잠금 파일이 **있을 때만** 잡는다 — 갱신을 한 번도 안 한 기계에 잠금 파일을 새로 만들지 않으려고(그 기계엔 잠금을 쥔 러너가 있을 수 없으므로 의미 동일).
+5. ~~**rotate 잠금 참가**: 토큰 없는 rotate 는 잠금 파일이 **있을 때만** 잡는다~~ — ★2판 **철회**(codex C1 · 존재 검사와 잠금 사이 창). 지금 = 존재 검사 없이 원자 참가 · 잠금 파일을 만들 수조차 없을 때만 평소대로.
 6. **S5 재검사**: 「drain 이 쓴 출력은 drain 기록과 대조해 제외」 대신 **drain 직후 토큰 T1 → 정착 창(기본 20초) → T2** 비교 — drain 출력은 T1 앞에 끝난다. 단점 = 정착 창만큼 느림.
+
+**2판에서 더한 설계와 다른 점**
+7. **정식 경로 실경로화**(master#3f846d60 ②): 교환 전 부모 canonicalize + 번들 자체 링크 거부(`MacAppsNotWritable` · S2 보류) — 설계 문면은 `RENAME_NOFOLLOW_ANY` 만. 단점 = `/Applications` 위쪽이 링크인 기계에서도 교환은 되되 푼 경로로 한다(같은 볼륨이라 의미 동일).
+8. **prev_bundle**(C7): codex 처방 「교환 전 저널링」 대신 **교환 전에 이미 저널에 있던 값**(`stage_path` · `from_release_seq`)과 정식 경로로 후보를 정하고(old 자리 · stage 자리 · 기록) 신원 = 옛 판인 **유일한** 것을 고른다 — 저널 전이를 하나 더 두지 않으려고(S9 앞 새 전이 = U1 전이표 변경). 정식 자리 = 옛 판이면 prev 없이 즉시 끝.
+9. **stop_seats 집행**(C12): 좌석 「즉시 차단」 = 지금 데몬을 내림(`rotate --stop-only`) + 같은 seq 부팅 가드 — 좌석 하나씩 닫는 데몬 RPC 를 새로 두지 않음. 단점 = 그 기계 좌석 전부가 한꺼번에 멈춘다(폐기 severity 의 뜻과 같음).
+10. **PACK 저널 칸**(C14): 저널 스키마를 늘리지 않으려고 `stage_tree_sha256` = 사용자 트리 해시 · `snapshot_dir` = 사용자 트리 사본으로 **재사용**(PACK_* 상태에서만 그 뜻).
+11. **좌석 키**(C9): org.status 에 재기동을 넘는 surface 고유 id 가 없어 `surface_uuid` 칸 = `role:<역할>`(UUID 인 척 0 · 주석 명시) · `session_id` 칸 = `<에이전트>|<등록 세션>`(에이전트 교체 = 다른 좌석).
+13. **CLI 참가 = 공유 잠금**(C1 개정 · a36892cd): 설계 §3-2 는 참가자 모두 같은 `txn.lock` — 2판 첫 구현(854e0615)대로 CLI 가 배타 txn.lock 을 쥐자 윈 CI T8(사람 실행 설치기 = 화면 0)이 적색(앱 기동 `init-pack` 과 설치기 ⓪-a 가 겹치면 「갱신 중」 창). 지금 = 토큰 없는 CLI 는 `txn.part.lock` 공유 · 러너만 배타 txn.lock + 참가자 잠금 확인. 러너↔CLI 배타는 그대로(양방향 원자) · CLI 끼리는 서로 막지 않음(1판 전과 같음) · 설치기 ⓪-a 무영향. 단점 = 설치기와 CLI 팩 명령이 겹치는 것은 막지 않는다(기반 판과 같은 상태 — U3 설치기가 참가자 잠금을 보게 할지는 📌).
+12. **codex 「설계 차이 6 판정」 응답**: ⑴ 파일 사본 = 링크·권한 보강(C5) ⑵ 별도 원장 = 다중 항목 선기록 수정(C4) ⑶ RB 종결 = 정식 자리 옛 판 즉시 no-op(C7) ⑸ 조건부 참가 = 철회(C1) · ⑷⑹ 수용 그대로.
 
 ## §3 연결하지 않은 것 · 다음 티켓
 - U4: 앱 알림(위 `state.json` 칸 · `seats_blocked` 고정 안내) · 앱 창 재열기 · `macupdate` 앱 쪽 집행 함수 삭제(lib 사본으로 대체).
 - U3/master(비가역): 설치기 변경 0(이번 티켓 무변경 — ⓪-a 는 U3 판 그대로 소비) · 실키·피드 게시 0.
 - §5 미결 ⓐ~ⓓ.
 
-## §4 시험 결과(격리 래퍼 `/private/tmp/claude-501/s118/u2/isoenv.sh` = EVIDENCE-118 §8 꼴 · 실 `~/.cys`·실 LaunchAgents·실 counsel 쓰기 0 — 끝에 `ls` 로 확인: `~/.cys/update` 없음 · plist 0 · updates.jsonl 없음)
+## §4 시험 결과(격리 래퍼 `/private/tmp/claude-501/s118/u2/isoenv.sh` = EVIDENCE-118 §8 꼴)
+- ★2판 정정: 1판의 「실 `~/.cys`·실 LaunchAgents·실 counsel 쓰기 0 — 끝에 `ls` 로 확인」 은 **검증된 주장이 아니었다**(codex C17 · 끝 상태 한 점만 봄). 2판 = `scripts/tests/u2-realroots.sh` 로 전수 대조(아래 「2판 전수」 줄).
+- **2판 전수**: `scripts/tests/u2-realroots.sh` 가 전체를 감쌈(22:35–22:57 · 1295s · 실 두 루트 + LaunchAgents 154,511 항목 전후 대조) — lib **975/0**(1 ignored · **기본 env = 기본 TMPDIR `/var/folders/…`** · 22:36–22:44 · master#3f846d60 요청분) · cys **585/0**(isoenv · 22:44–22:47 · lead 게이트의 dbg_r12 584/1 은 이 실행에선 초록 — 기록만) · cysd **2463/0**(7 ignored · isoenv · 22:47–22:54 · ★FAIL 이름 전건 = 없음 · master#23c2f094 의 `alert_route::drills::drill_edge_loop_clear_signals_are_never_held_by_the_hourly_cap` = **ok** → 「FAIL 이면 기반 e2515bb0 단독 대조」 조건 불성립이라 대조군 미실행 · census·hwmon·b6_lsof 도 초록) · u2-smoke **12/12** · u2-mutants **10/10**(U2-NOFOLLOW 포함) · cys-app **296/0**(1 ignored · `cargo test -p cys-app --bins`) · 윈 타입체크 오류 0(커밋마다) · ui tsc = 2판 ui 변경 0(`git diff --stat ad3d5eb5..HEAD -- ui` = 0) · 이 작업트리 node_modules·bun 없음 → 미실행(정직) · **real-roots 판정 = U2 이름공간 실 쓰기 0**(`~/.cys/update` 미생성 · 복구기 plist 0 · counsel/updates.jsonl 0) · 그 밖 변화 56 = `~/.local/state/cys` 14 · `~/.cys/secure-backups` 12 · `~/.cys/claude` 14 · `~/.cys/state` 9 · `~/.cys/pack/round`(이 워커 TODO) 등 — 살아 있는 데몬·다른 세션·내 TODO 쓰기로 보이나 프로세스 귀속은 못 함(판정 밖 · 목록 보존)
+- **a36892cd 재측정(C1 공유 잠금 개정 뒤 · 23:27–23:40)**: `update::` 202/0(기본 env) · cys 585/0(isoenv) · cysd **2463/0**(7 ignored · isoenv · FAIL 0) · u2-smoke 12/12 · 윈 타입체크 오류 0. (lib 전수·mutants·cys-app 은 333e8d81 값 — a36892cd 의 변경은 `lock.rs`·`cys.rs` 참가 경로·주석뿐이고 그 경로의 시험은 위 묶음에 있다.)
+- **2판 CI(미러 fix/u2-runner-118)**: ① 333e8d81 — windows-health ✓ 37472105085 · ci-branch ✓ 37472105099 · windows-build ✗ 37472105082(T8 인자 없는 설치 TIMEOUT · 위 §0-2) ② **a36892cd — windows-build ✓ 37479834798(31m · T8 포함) · windows-health ✓ 37479834600(37m) · ci-branch ✓ 37479834529(45m)** = 3런 전부 success. 1판 ci-branch 적색(37464122311)은 secret-scan·mac swap 두 원인 그대로였다(둘 다 42cd1562 에서 고침). 이 문서 커밋 = 문서만(push 하면 CI 3런이 다시 돈다 — 로컬 커밋으로 둠).
 - `update::` 188/0(lib 부분) · cysd 전수 **2462/0**(7 ignored · 정비 모드 배선 뒤 · 20:37–20:44) · 스케줄 묶음 102/0(내장 잡 추가 뒤) · 윈 타입체크(`scripts/win-typecheck.sh`) **오류 0**(2회차 · COM 포함).
 - 전수 3묶음 + cys-app 재측정 = 아래 「전수」 줄(이 문서 커밋 직전 실행 · 환경 3 = census·hwmon·b6_lsof 분리 규칙).
 - **전수(수리 뒤 재측정 · 격리)**: lib **961/0**(1 ignored · 21:21–21:28) · cys **585/0**(21:28–21:30) · cysd **2462/0**(7 ignored · 21:13–21:19 · 수리분 = lib 스폰 헬퍼 교체뿐이라 cysd 행동 무변경) · cys-app **296/0**(1 ignored · 21:21) · 윈 타입체크 3회차 오류 0(21:30–21:31) · `update::` 188/0 · u2-smoke 10/10 · u2-mutants 10/10. 환경 3(census·hwmon·b6_lsof) 이번 실행에선 전부 초록.
@@ -60,6 +91,10 @@
 - ⓐ `installed_revoked` ② 자동 롤백 미구현 — 지금은 판정 칸 + `state.json installed_revoked{stop_seats}` + 결정 `stop_seats` 로 교체 0. 구현 시 맥 = `/Applications/.cysr.app.old-<seq>` 를 자산 삼은 RB 경로 · 윈 = `installers\<seq>\` 설치기.
 - ⓑ 러너 생존 R1(맥 Survivor · cysd 정지 중) = **실측 0** → VM M1.
 - ⓒ 윈 COM vtable 칸 번호(taskschd.h 순서)·작업 XML 이 실제로 등록·재독되는지 = **실측 0**(타입체크만) → W1 ⑤ · W2 ⑦.
+- ⓔ ★2판 · 📌 master 결정 필요: 윈 신설치 bootstrap — `installers\<설치판 seq>\`(U 서명 본문·서명·setup.exe·A2 서명)를 첫 설치 때 놓는 경로가 없다(설치기 = U3 레인). 그 전까지 윈은 첫 자동 갱신이 N7 보류(fail-closed · 교체 0). 선택지 = ① U3 설치기가 같은 꼴로 복사(권고 · 설치기 1곳) ② 러너가 피드의 `prev_release`(봉투 칸)로 받아 검증 뒤 보존(피드 의존 · 옛 판이 피드에 남아 있어야 함).
+- ⓕ ★2판: 완화(advisory) 폐기의 「수용된 최신 비폐기 세대로 자동 RB」 = 미구현(ⓐ 와 같음) · stop_seats 집행만 함(C12).
+- ⓖ ★2판: 매 부작용 **안** fault hook 일반화 · 실 큐·원장 재기동 통합행렬 = 미착수(C16 부분 — 실 경계 시험 5종은 §7 C16 행).
+- ⓗ ★2판 · 📌 master 결정 필요: 팩 CLI(init-pack·pack-update)를 전역 저널 PACK_APPLY 에 묶는 배선(C14)을 a36892cd 에서 **철회** — 앱이 기동마다 `init-pack` 을 부르므로 그동안 부팅 가드가 데몬을 막고(rc 75) 설치기와도 겹친다. 남은 길 = ① 러너 트랜잭션 안의 팩 적용(S10 rotate→init-pack 위임)만 PACK_* 를 쓰게(권고 · 설계 §3-11 의 「PACK_*」 출처가 러너 경로라면 이것) ② CLI 도 쓰되 부팅 가드에서 PACK_* 를 「참가자 잠금이 쥐어져 있으면 허용」 으로 완화. 지금은 팩 저널(.pack-journal)이 CLI 도중 죽음을 맡고, 전역 PACK_* 복구는 사용자 트리 검증까지 한다.
 - ⓓ `pack::recover_pack_journal` 부팅 때 호출 경로는 복구기(`--recover`)에만 — cysd 부팅 자체는 부르지 않는다(부팅 가드가 PACK_* 를 막고 복구기가 종결).
 - 함정: 시험 하네스가 잠금 파일을 0644 로 만들면 lock 모듈이 「권한 불일치」로 fail-closed(첫 종단 실행 BAD 2의 원인 · 제품 결함 아님 · 0600 으로 고침).
 - 함정: 러너 판정은 pmset/ioreg 등으로 수 초 걸린다 — 종단 시험 대기 3초는 짧다(30초 폴링으로 고침).
@@ -68,3 +103,26 @@
 ## §6 재현
 - `git log --oneline e2515bb0..HEAD` · `isoenv.sh cargo test --lib update::` · `isoenv.sh cargo test --bin cysd update_hold` ·
   `U1_ISO=<isoenv.sh> scripts/tests/u2-mutants.sh` · `cargo build --bin cys --bin cysd && scripts/tests/u2-smoke.sh` · `scripts/win-typecheck.sh`.
+
+## §7 codex 1R(gpt-5.6-sol · high) 채택/반박 표 — 18행(★2판 · 원문 = `docs/update/REVIEW-U2-codex-1r.md` · untracked · 줄 번호 대신 함수명으로 대조)
+| # | 등급 | 지적(요지) | 판정 | 커밋 | 고친 곳(함수) · 증명 시험 |
+|---|---|---|---|---|---|
+| C1 | BLOCK | init-pack·pack-update·pack-plan 잠금 미참가 · rotate `exists()` 뒤 무잠금 진행 · pack-plan env 만 | 채택(방식 개정 = §2-13) | 854e0615 · **a36892cd** | `lock::participate`(존재 검사 0 · 토큰 없는 CLI = 참가자 **공유** 잠금 `txn.part.lock` → txn.lock 확인) · `acquire`(러너·복구기 = 참가자 잠금 try_lock · 쥐어져 있으면 거부) · cys `txn_participate`·`TXN_VERBS` · `RealOps::child`·rotate→init-pack 에 `--txn`+env · `participate_is_atomic_without_exists_shortcut`(공유 2 · 러너 거부 · txn.lock 무접촉) · `rotate_ext_split` 팩 동사 |
+| C2 | BLOCK | 복구기 새 토큰 ↔ Runner 옛 저널 토큰 ↔ RPC 새 토큰 → 정비 세션 TTL 까지 잔존 | 채택 | 4bca3724 | `journal::takeover` · `Runner::recover` · cysd `adopt_session` · `takeover_fences_old_owner_late_write` · 78칸 행렬 복구기 = 다른 토큰·세대 승계 단언 · `recovery_generation_adopts_and_releases_dead_runner_session` |
+| C3 | BLOCK | 부팅 가드 = 아무 잠금 소유로 통과 | 채택 | e3d4109b | `runner::boot_blocked`(토큰·묘비·계보 runner/recover·pid 시작 시각) · `boot_blocked_allows_only_live_lock_holder_for_non_terminal_journal` · u2-smoke ① 잠금만 = rc 75 |
+| C4 | BLOCK | 연속 hold 항목 전부 `delivering` 선기록 → 고르지 않은 둘째 건 unconfirmed 소실 | 채택 | 4bca3724 | `before_inject`(선기록 0) · `HoldMark::mark_delivering`(병합 뒤 실리는 것만) · governance `deliver_head_locked` · cysd 시험 2건 보류 → 첫 건 표지 뒤 죽음 → 둘째 건 주입 |
+| C5 | BLOCK | 스냅샷 심링크 조용히 누락 · 모드·링크 미기록 · `set_permissions` 실패 무시 | 채택(소유권 = 같은 사용자 쓰기라 생략 · 근거 주석) | 0e73ad52 | `snapshot::list_entries`·`Entry{kind,mode}`·`observe`·`put_entry`·`durable_copy`(권한 실패 = Err) · `links_and_modes_survive_and_journal_digest_pins_backup` · 매니페스트 파서 |
+| C6 | MAJOR | 저널 `snapshot_manifest_sha256` 미대조 | 채택 | 0e73ad52 | `rb_prepare`·`rb_restore` → `snapshot::digest_eq`(상수시간) · `restore(…, expect)` · 같은 시험(사본+매니페스트 동시 변조 = 거부) |
+| C7 | BLOCK | S9 기록 뒤·prev_bundle 기록 전 죽음 = RB_FAILED/복구 불가 | 채택(방식 = §2-8) | 8f085359 | `realops::rb_swap`(정식 옛 판 = 즉시 끝 · `mac::prev_candidates`+`pick_unique_old`) · `rb_finds_prev_bundle_without_journal_record_after_swap_crash`(실 APFS) |
+| C8 | BLOCK | 기존 뮤텍스 미소유 진행 · 시한 초과 = 설치기 생존 중 RB | 채택 | 4b6ca28b | `win_install::imp::hold_mutex`(WaitForSingleObject 0 = 실제 소유만) · `run_installer`(시한 = Terminate + 종료 확인) · 윈 타입체크 0 · 실행 = 윈 실기 W(맥 불가) |
+| C9 | BLOCK | V1~V9 상수·복사 · 좌석 키 role/agent 오기 · doctor 실패 = FAIL 0 | 채택 | e0fcb525 | `post_verify`·`baseline`·`platform_mark`·`cysd_procs`·`forbidden_jobs`·`doctor_fail`·`seats_from_org` · cysd `system.identify` build_id · `observations_fail_closed` · seats dept/agent |
+| C10 | BLOCK | 윈 N7 = 존재만 · 생성 경로 없음 · 임의 설치기 현장 해시 신뢰 | **부분 채택** | caa33833 | `verify_installer_dir`(U 본문 서명·seq·설치기 sha256·A2) 를 N7·S8·RB 직전·manifest 판독마다 · 생성 = S11 `preserve_release` · `installer_dir_is_reverified_on_every_use` · ✗**신설치 bootstrap = 설치기 레인(§5 ⓔ · 📌)** |
+| C11 | BLOCK | S11 이 수용 기록·서명 본문·새 설치기 미보존 · commit 실패 무시 DONE | 채택 | caa33833 | `Candidate` 증거 칸 · `commit`(preserve_release + write_accepted · 실패 = Err) · `Runner` 2곳 commit 실패 = 롤백 · `commit_failure_is_not_done_and_rolls_back` |
+| C12 | BLOCK | installed_revoked/stop_seats = 기록만 | **부분 채택** | 3692bd2f | `auto::enforce_stop_seats`(표지 + 지금 데몬 내림) · `boot_guard` seats-stop · `stop_seats_marker_blocks_boot_for_revoked_installed_seq_only` · ✗**완화 폐기 자동 RB 미구현(§5 ⓕ)** |
+| C13 | BLOCK | 손상 저널 재구성 = 서명 검증 전 번들 실행 · 윈 무서명 본문 · 트리 대조 없이 종결 | 채택 | aa0c0419 | `realops::reconstruct`(real_path → `mac::verify_signature_pin` → 실행 · 새 판 = cdhash 까지 · 윈 = 서명 재검증 본문 · 옛 판 = `latest_verified_snapshot` 으로 `restore_trees`) · `unsigned_bundle_is_refused_before_execution` · `latest_verified_snapshot_skips_corrupt_and_other_seq` |
+| C14 | MAJOR | PACK 복구 = 팩 저널만 · 생산 코드에 PACK 상태 쓰는 경로 0 | **부분 채택** | 210ec49e · a36892cd(CLI 배선 철회) | 유지 = `recover_pack(&저널)` 가 팩 저널 복구 + `pack_user_tree_restore`(사용자 트리 해시 대조·복원 성공해야 PACK_DONE) · lib `pack_txn_begin/end` · `pack_txn_pins_user_tree_and_recovery_restores_it` · ✗**생산 코드가 PACK_* 를 쓰는 배선 = 철회(§5 ⓗ · 📌)** |
+| C15 | MAJOR | `--verify-payload` 가 남은 후보 우선(B→A 롤백 뒤 거짓 진단) | 채택 | 3f84f44b | `auto::pick_payload_manifest`(설치판 seq 일치만) · `verify_payload_uses_installed_release_manifest_only` |
+| C16 | MAJOR | 78칸 = enter 앞뒤·Sim · 실 부작용 창·PACK·실 큐 재기동 없음 | **부분 채택** | 102c4cdd | 실 경계 시험 5 = 백업 복사 도중 죽음(`snapshot_interrupted_mid_copy_resumes_cleanly`) · RENAME_SWAP 직후(C7) · hold 2건 실 cysd(C4) · PACK 실파일(C14) · S11 commit 실패(C11) · ✗**부작용 내부 fault hook 일반화·실 큐 재기동 행렬 미착수(§5 ⓖ)** |
+| C17 | MAJOR | 「실 ~/.cys 쓰기 0」 = 끝 한 점 확인뿐 | 채택 | 333e8d81 | `scripts/tests/u2-realroots.sh`(두 실 루트 + LaunchAgents 전후 전수 메타데이터) · 결과 = §4 「2판 전수」 |
+| C18 | MINOR | 복구기 등록·spawn 실패도 rc 0 | 채택 | 3f84f44b | `auto_spawn` rc 4/5 · u2-smoke ④ LaunchAgents 자리 = 파일 → rc 4·러너 0 |
+- 반박 0 — BLOCK 반박 조건(시험 1개로 증명)을 채울 항목이 없었다: 18항 모두 코드에서 지적 경로를 재확인했다.

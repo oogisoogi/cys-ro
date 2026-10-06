@@ -138,6 +138,8 @@ pub struct RealOps {
     pub old_version: String,
     q1: Option<super::quiesce::Token>,
     b0: Option<Baseline>,
+    /// ★2판 C9: 마지막 `rotate` 자식의 실제 종료 코드(V3 restore_rc — 상수 0 대신).
+    last_rotate_rc: Option<i32>,
 }
 
 fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
@@ -146,7 +148,7 @@ fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
 
 impl RealOps {
     pub fn new(env: Env, token: String, cand: Candidate, old_version: String) -> RealOps {
-        RealOps { env, token, cand, old_version, q1: None, b0: None }
+        RealOps { env, token, cand, old_version, q1: None, b0: None, last_rotate_rc: None }
     }
 
     fn asset(&self) -> Result<&super::feed::Asset, Fail> {
@@ -173,12 +175,15 @@ impl RealOps {
         c.output().map_err(|e| fail(ErrCode::RotateFailed, "child", format!("{}: {e}", exe.display())))
     }
 
-    fn rotate(&self, exe: &Path, stop_only: bool) -> Step {
+    fn rotate(&mut self, exe: &Path, stop_only: bool) -> Step {
         let mut args = vec!["rotate", "--skip-drain", "--txn", self.token.as_str()];
         if stop_only {
             args.push("--stop-only");
         }
         let o = self.child(exe, &args)?;
+        if !stop_only {
+            self.last_rotate_rc = Some(o.status.code().unwrap_or(-1));
+        }
         if o.status.success() {
             Ok(())
         } else {
@@ -215,12 +220,63 @@ impl RealOps {
         Ok(seats_from_org(&org))
     }
 
+    /// ★2판(codex 1R C9): doctor 실행·판독 실패를 「FAIL 0」 으로 접지 않는다 — 관측 실패 = `doctor_unavailable` FAIL 1건(V4 실패 ·
+    /// 기준선에서도 실패였으면 새 FAIL 아님).
     fn doctor_fail(&self, exe: &Path) -> std::collections::BTreeSet<String> {
         self.child(exe, &["doctor", "--json"])
             .ok()
             .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+            .filter(|v| v["checks"].is_array())
             .map(|v| doctor_fails(&v))
-            .unwrap_or_default()
+            .unwrap_or_else(|| ["doctor_unavailable".to_string()].into())
+    }
+
+    /// ★2판 C9: 기판 표지 실측 — 맥 = 정식 자리 번들 CDHash(codesign -dvvv) · 윈 = 설치 폴더 cys.exe sha256. 관측 실패 = Err.
+    fn platform_mark(&self) -> Result<String, Fail> {
+        match self.env.os {
+            Os::Mac => {
+                let out = crate::hidden_command("/usr/bin/codesign")
+                    .args(["-dvvv"])
+                    .arg(&self.env.canonical_app)
+                    .output()
+                    .map_err(|e| fail(ErrCode::VerifyFailed, "V1", e.to_string()))?;
+                let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+                super::macupdate::parse_cdhash(&text).ok_or_else(|| fail(ErrCode::VerifyFailed, "V1", "CDHash 판독 불가"))
+            }
+            Os::Win => super::snapshot::sha256_file(&self.env.install_dir.join("cys.exe")).map(|(s, _)| s).map_err(|e| fail(ErrCode::VerifyFailed, "V1", e)),
+        }
+    }
+
+    /// ★2판 C9: 이 사용자 cysd 프로세스 수 실측(sysinfo · 이름 cysd/cysd.exe).
+    fn cysd_procs(&self) -> u32 {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_user(sysinfo::UpdateKind::Always));
+        let me = sys.process(sysinfo::Pid::from_u32(std::process::id())).and_then(|p| p.user_id().cloned());
+        sys.processes()
+            .values()
+            .filter(|p| {
+                let n = p.name().to_string_lossy();
+                (n == "cysd" || n.eq_ignore_ascii_case("cysd.exe")) && (me.is_none() || p.user_id() == me.as_ref())
+            })
+            .count() as u32
+    }
+
+    /// ★2판 C9: 금지 내장 잡 실측 = 데몬 `schedule.status` 의 잡 id ∩ [`verify::FORBIDDEN_JOBS`] · 판독 실패 = `observe_failed`(V6 실패).
+    fn forbidden_jobs(&self) -> Vec<String> {
+        match (self.env.rpc)("schedule.status", json!({})) {
+            Ok(v) => v["jobs"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|j| j["id"].as_str())
+                        .filter(|id| verify::FORBIDDEN_JOBS.contains(id))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["observe_failed".into()]),
+            Err(_) => vec!["observe_failed".into()],
+        }
     }
 
     fn pack_id(&self) -> PackId {
@@ -314,11 +370,18 @@ pub fn seats_from_org(org: &Value) -> std::collections::BTreeSet<SeatKey> {
         .map(|a| {
             a.iter()
                 .filter(|s| s["exited"].as_bool() != Some(true))
+                // ★2판(codex 1R C9): 데몬 재기동을 넘는 surface 고유 id 가 org.status 에 없다(surface_id·display_no 는 재기동마다
+                //   바뀜) — 좌석 주소 = 역할(role · 배선 권위)이고 `surface_uuid` 칸에는 그 사실을 `role:` 접두로 적는다(UUID 인 척 0).
+                //   `dept` = 행의 `dept`(없으면 빈 값 — 에이전트 이름을 넣지 않는다) · 에이전트 이름은 `session_id` 와 함께 따로 대조.
                 .map(|s| SeatKey {
                     surface_uuid: format!("role:{}", s["role"].as_str().unwrap_or("")),
                     role: s["role"].as_str().unwrap_or("").to_string(),
-                    dept: s["agent"].as_str().unwrap_or("").to_string(),
-                    session_id: s["registered_session_id"].as_str().unwrap_or("").to_string(),
+                    dept: s["dept"].as_str().unwrap_or("").to_string(),
+                    session_id: format!(
+                        "{}|{}",
+                        s["agent"].as_str().unwrap_or(""),
+                        s["registered_session_id"].as_str().unwrap_or("")
+                    ),
                 })
                 .collect()
         })
@@ -464,6 +527,7 @@ impl Ops for RealOps {
             features: super::buildinfo::FEATURES.iter().map(|s| s.to_string()).collect(),
             hold_seq: super::hold::last_seq_readonly(&self.env.update_dir).unwrap_or(0),
             pack: self.pack_id(),
+            platform_mark: self.platform_mark()?.to_string(),
         };
         super::quiesce::write_json(&self.env.update_dir, "attempt.json", &json!({"txn_id": j.txn_id, "baseline": b}))
             .map_err(|e| fail(ErrCode::DiskLow, "S5b", e))?;
@@ -625,13 +689,46 @@ impl Ops for RealOps {
         };
         let (exe, exp) = if rollback {
             let o = self.expect_old();
-            (self.env.old_cys.clone(), Expect { release_seq: o.release_seq, build_id: o.build_id, target: o.target, ..Default::default() })
+            (
+                self.env.old_cys.clone(),
+                Expect { release_seq: o.release_seq, build_id: o.build_id, target: o.target, platform_mark: b0.platform_mark.clone(), ..Default::default() },
+            )
         } else {
             let a = self.asset()?;
             let bp = a.bundled_pack.as_ref().map(|p| PackId { version: p.version.clone(), digest: p.digest.clone() }).unwrap_or_default();
-            (self.new_cys(), Expect { release_seq: a.release_seq, build_id: a.build_id.clone(), target: a.target.clone(), bundled_pack: bp, ..Default::default() })
+            // ★2판 C9: 기판 표지 기대 = 본문 행(맥 cdhash · 윈 페이로드 매니페스트의 cys.exe sha256)
+            let mark = match self.env.os {
+                Os::Mac => a.cdhash.clone().unwrap_or_default(),
+                Os::Win => a
+                    .payload_manifest
+                    .as_ref()
+                    .and_then(|m| m.iter().find(|e| super::payload::norm(&e.path) == "cys.exe").map(|e| e.sha256.clone()))
+                    .unwrap_or_default(),
+            };
+            (
+                self.new_cys(),
+                Expect { release_seq: a.release_seq, build_id: a.build_id.clone(), target: a.target.clone(), bundled_pack: bp, platform_mark: mark, ..Default::default() },
+            )
         };
-        let ident = super::mac::bundle_ident_exe(&exe).unwrap_or_default();
+        // ★2판(codex 1R C9): 아래 칸은 전부 **독립 관측**이다 — 상수·기준선 복사·기대값 복사 0. 관측 실패는 그 V 의 실패로 닫힌다.
+        let bi = self.child(&exe, &["build-info", "--json"]).ok().filter(|o| o.status.success()).and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
+        let ident = super::mac::Ident {
+            release_seq: bi.as_ref().and_then(|v| v["release_seq"].as_u64()).unwrap_or(0),
+            build_id: bi.as_ref().and_then(|v| v["build_id"].as_str()).unwrap_or("").to_string(),
+            target: bi.as_ref().and_then(|v| v["target"].as_str()).unwrap_or("").to_string(),
+        };
+        let features: std::collections::BTreeSet<String> = bi
+            .as_ref()
+            .and_then(|v| v["features"].as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let platform_mark = self.platform_mark().map(|m| m.to_string()).unwrap_or_else(|f| format!("관측 실패: {}", f.detail));
+        let hold_now = super::hold::last_seq_readonly(&self.env.update_dir);
+        let delivered = std::fs::read(self.env.update_dir.join(super::quiesce::INGESTED_FILE))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v["delivered_hold_seq"].as_u64())
+            .unwrap_or(0);
         let identify = (self.env.rpc)("system.identify", json!({})).unwrap_or(Value::Null);
         let mut ping = 0;
         for _ in 0..3 {
@@ -643,22 +740,24 @@ impl Ops for RealOps {
             release_seq: ident.release_seq,
             build_id: ident.build_id.clone(),
             target: ident.target.clone(),
-            daemon_build_id: identify["build_id"].as_str().unwrap_or(&ident.build_id).to_string(),
-            platform_mark: String::new(),
+            // 데몬이 build_id 를 말하지 않으면 빈 값(설치본 값으로 메우지 않는다 → V1 불일치)
+            daemon_build_id: identify["build_id"].as_str().unwrap_or("").to_string(),
+            platform_mark,
             ping_ok_streak: ping,
-            cysd_procs: 1,
+            cysd_procs: self.cysd_procs(),
             seats: self.seats()?,
             drain_seats: None,
-            restore_rc: 0,
+            restore_rc: self.last_rotate_rc.unwrap_or(-1),
             doctor_fail: self.doctor_fail(&exe),
             user: verify::collect_user_tree(&self.env.cys_root).map_err(|e| fail(ErrCode::VerifyFailed, "V5", e))?,
-            forbidden_jobs: vec![],
-            features: b0.features.clone(),
+            forbidden_jobs: self.forbidden_jobs(),
+            features,
             merge_pending_new: vec![],
-            pack: if rollback { self.pack_id() } else { exp.bundled_pack.clone() },
-            hold_last_seq: super::hold::last_seq_readonly(&self.env.update_dir).unwrap_or(0),
-            hold_delivered_seq: 0,
-            hold_lost: 0,
+            pack: self.pack_id(),
+            hold_last_seq: hold_now.unwrap_or(0),
+            hold_delivered_seq: delivered,
+            // 보류 로그 판독 불가 = 관측 실패 = 사라짐 1 이상으로 닫음 · 판독됨 = 기준선보다 줄어든 seq 수(seq 단조라 줄 소실 = 후퇴)
+            hold_lost: hold_now.map(|n| b0.hold_seq.saturating_sub(n)).unwrap_or(1),
         };
         let _ = j;
         let checks = verify::judge(&b0, &post, &exp, rollback);
@@ -981,6 +1080,34 @@ mod tests {
         ]});
         let after = json!({"surfaces": [{"surface_id": 91, "role": "master", "agent": "claude", "registered_session_id": "s1"}]});
         assert_eq!(seats_from_org(&org), seats_from_org(&after), "재기동으로 번호가 바뀌어도 같은 좌석");
+        // ★2판 C9: dept = 행의 dept(에이전트 이름 아님) · 같은 역할이라도 에이전트가 바뀌면 다른 좌석
+        let k = seats_from_org(&json!({"surfaces": [{"role": "worker-1", "dept": "edu", "agent": "claude", "registered_session_id": "s9"}]}));
+        let k = k.into_iter().next().unwrap();
+        assert_eq!((k.dept.as_str(), k.session_id.as_str()), ("edu", "claude|s9"));
+        let codex = json!({"surfaces": [{"surface_id": 5, "role": "master", "agent": "codex", "registered_session_id": "s1"}]});
+        assert_ne!(seats_from_org(&org), seats_from_org(&codex), "에이전트 교체 = 다른 좌석");
+    }
+
+    /// ★2판 C9: 관측 실패를 통과로 접지 않는다 — doctor 판독 불가 = FAIL 1건 · 이 사용자 cysd 수 = 실측(시험 프로세스엔 0).
+    #[cfg(unix)]
+    #[test]
+    fn observations_fail_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cys-u2-obs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let exe = d.join("fake-cys");
+        std::fs::write(&exe, "#!/bin/sh\necho not-json\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = crate::update::auto::build_env(d.clone(), "stable");
+        env.rpc = Box::new(|_, _| Err("데몬 없음".into()));
+        let a: crate::update::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0, "target": "x", "release_seq": 1})).unwrap();
+        let cand = Candidate { asset: a, version: String::new(), release_seq: 1, installed_revoked: false, notes_ko: None, feed_rev: None,
+            envelope_sha256: None, envelope_signed_at: None, release_b64: None, release_sig_b64: None };
+        let ops = RealOps::new(env, "t:1".into(), cand, String::new());
+        assert_eq!(ops.doctor_fail(&exe).into_iter().collect::<Vec<_>>(), vec!["doctor_unavailable"]);
+        assert_eq!(ops.forbidden_jobs(), vec!["observe_failed"], "schedule.status 판독 불가 = V6 실패");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

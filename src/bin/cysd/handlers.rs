@@ -5444,6 +5444,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     "socket_path": daemon.socket_path.to_string_lossy(),
                     "daemon_pid": std::process::id(),
                     "version": env!("CARGO_PKG_VERSION"),
+                    // ★1.1.8 U2 2판(codex 1R C9): 사후 검증 V1 이 **돌고 있는 데몬**의 빌드를 독립 관측한다(가산 키).
+                    "build_id": cys::pack::build_id(),
                     "started_at": daemon.started_at,
                     "latest_seq": daemon.bus.latest_seq(),
                     "surface_count": daemon.surfaces.lock().unwrap().len(),

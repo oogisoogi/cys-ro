@@ -47,6 +47,9 @@ pub struct Baseline {
     pub features: BTreeSet<String>,
     pub hold_seq: u64,
     pub pack: PackId,
+    /// ★2판(codex 1R C9): 옛 판 기판 표지 실측(맥 CDHash · 윈 설치 cys.exe sha256) — 롤백 V1 의 기대값.
+    #[serde(default)]
+    pub platform_mark: String,
 }
 
 /// 갱신(또는 롤백) 뒤 사실.

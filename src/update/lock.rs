@@ -168,26 +168,29 @@ pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
     // ★2R B6/H⑥: 옛 트랜잭션의 위임 자식이 아직 일하는 중이면(자식 잠금 쥠) 새로 열지 않는다. 순서 = 새 소유자 기록을 **먼저** 쓰고
     //   자식 잠금을 본다 — 그 뒤에 자식 잠금을 잡는 옛 자식은 ① 에서 새 기록(토큰 불일치)을 읽고 물러난다. 거절이면 직전 기록 복원.
     if !super::mutant("B6g") {
-        let child = open_lock_file(dir, CHILD_LOCK_FILE)?;
+        // 거절(자식 잠금 쥐어짐 · ★3R F4: 자식 잠금 파일을 못 엶·권한 불일치 포함) = 직전 소유자 기록 복원 + 잠금 놓음.
+        let refuse = |why: String| -> UpdateErr {
+            match &prev_owner {
+                Some(b) => {
+                    let _ = super::write_private(&dir.join(OWNER_FILE), b);
+                }
+                None => {
+                    let _ = std::fs::remove_file(dir.join(OWNER_FILE));
+                }
+            }
+            let _ = f.unlock();
+            busy(why)
+        };
+        let child = match open_lock_file(dir, CHILD_LOCK_FILE) {
+            Ok(c) => c,
+            Err(e) => return Err(refuse(format!("자식 잠금 파일: {}", e.detail))),
+        };
         match child.try_lock() {
             Ok(()) => {
                 let _ = child.unlock();
             }
-            Err(e) => {
-                match &prev_owner {
-                    Some(b) => {
-                        let _ = super::write_private(&dir.join(OWNER_FILE), b);
-                    }
-                    None => {
-                        let _ = std::fs::remove_file(dir.join(OWNER_FILE));
-                    }
-                }
-                let _ = f.unlock();
-                return Err(busy(match e {
-                    TryLockError::WouldBlock => "위임 자식이 아직 작업 중(자식 잠금)".to_string(),
-                    TryLockError::Error(e) => format!("자식 잠금 시도: {e}"),
-                }));
-            }
+            Err(TryLockError::WouldBlock) => return Err(refuse("위임 자식이 아직 작업 중(자식 잠금)".into())),
+            Err(TryLockError::Error(e)) => return Err(refuse(format!("자식 잠금 시도: {e}"))),
         }
     }
     Ok(TxnGuard { file: Some(f), owner: o, dir: dir.to_path_buf() })
@@ -459,6 +462,22 @@ mod tests {
         let tok2 = g.token();
         assert!(verify_delegated(&d, &tok2, Some(&tok2), &yes()).is_ok());
         drop(g);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3R F4: 자식 잠금 파일이 넓은 권한(열기 거절)이어도 새 소유자 기록을 남기지 않는다(직전 기록 복원 · 잠금 놓음).
+    #[cfg(unix)]
+    #[test]
+    fn f4_child_lock_open_failure_restores_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("f4");
+        drop(acquire(&d, "runner").unwrap());
+        let before = std::fs::read(d.join(OWNER_FILE)).unwrap();
+        std::fs::set_permissions(d.join(CHILD_LOCK_FILE), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let e = acquire(&d, "other").unwrap_err();
+        assert!(e.detail.contains("자식 잠금 파일"), "{}", e.detail);
+        assert_eq!(std::fs::read(d.join(OWNER_FILE)).unwrap(), before, "직전 기록 복원");
+        assert_eq!(is_held(&d), Some(false));
         let _ = std::fs::remove_dir_all(&d);
     }
 

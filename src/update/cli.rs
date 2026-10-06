@@ -610,6 +610,27 @@ mod tests {
         assert_eq!(feed::verify_feed_enumerate(&input(&s, &kr, 0)).unwrap_err().step, "ⓖ");
     }
 
+    /// ★3R F2 뮤테이션: 첫 판 seq 1 본문이라도 ⓛ requires·ⓜ 자산 URL 규칙 위반 = 열거 거부(rc 2) — uptodate 조기 반환에 묻히지 않는다.
+    #[test]
+    fn f2_first_release_still_checks_requires_and_urls() {
+        use super::super::feed::fixture::*;
+        use super::super::keys::testkit::Keys;
+        let k = Keys::new();
+        let kr = k.keyring();
+        let seq1 = |f: &dyn Fn(&mut serde_json::Value)| {
+            let mut b = body_json(&k, 1);
+            b["min_from_release_seq"] = 0.into();
+            f(&mut b);
+            let s = sign_all(&k, &envelope_json(&k, &b, 1), &revocations_json(&k, 1, serde_json::json!([])));
+            feed::verify_feed_enumerate(&input(&s, &kr, 0))
+        };
+        assert!(seq1(&|_| {}).is_ok(), "정상 첫 판 = 통과");
+        let e = seq1(&|b| b["assets"]["macos-arm64"]["url"] = "https://evil.example/x.zip".into()).unwrap_err();
+        assert_eq!((e.verdict.rc(), e.code), (2, super::super::errors::ErrCode::UrlRefused));
+        let e = seq1(&|b| b["requires"]["min_binary_for_pack"] = "".into()).unwrap_err();
+        assert_eq!((e.verdict.rc(), e.step.as_str()), (2, "ⓛ"));
+    }
+
     #[test]
     fn parser_accepts_design_spelling() {
         let c = UpdCli::try_parse_from(a(&["cys", "update-verify", "--component", "cysr", "--channel", "stable",

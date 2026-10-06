@@ -733,6 +733,14 @@ pub fn verify_feed_enumerate(inp: &FeedInput) -> Result<Enumerated, FeedOutcome>
         o.min_from_release_seq = Some(c.body.min_from_release_seq);
         return Err(o);
     }
+    // ★3R F2: 첫 판(lo == release_seq · 출발 seq 없음)의 1행은 ⓚ uptodate 로 조기 반환해 ⓛ requires·ⓜ 자산 URL 규칙이 발행 게이트에서
+    //   한 번도 평가되지 않는다 — 설치판 0 탐침 1건으로 ⓛⓜ 를 돌리고, 거부·판정 불가면 열거 전체를 그 결과로(판정 행은 uptodate 유지).
+    if lo == c.body.release_seq && !super::mutant("F2") {
+        let probe = judge(inp, &c, 0);
+        if probe.verdict.rc() != 0 {
+            return Err(probe);
+        }
+    }
     let results = (lo..=c.body.release_seq).map(|i| (i, judge(inp, &c, i))).collect();
     Ok(Enumerated { release_seq: c.body.release_seq, min_from_release_seq: c.body.min_from_release_seq, results })
 }

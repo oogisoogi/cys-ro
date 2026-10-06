@@ -54,6 +54,8 @@ N4 update::feed::tests::revoked_releases_and_installed_revoked
 N4c update::check::tests::n4c_stop_seats_is_forced_decision
 N5 update::keys::tests::n5_r_key_expiry_uses_trusted_time
 N5r update::check::tests::n5r_suspect_record_keeps_trusted_time
+F1 update::check::tests::f1_concurrent_trusted_commits_keep_current_valid
+F2 update::cli::tests::f2_first_release_still_checks_requires_and_urls
 SEQ1 update::cli::tests::seq1_first_release_enumerates_as_single_uptodate_row
 LIST
 

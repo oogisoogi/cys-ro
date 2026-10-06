@@ -144,6 +144,30 @@ pub fn read_trusted(dir: &Path) -> Result<Trusted, String> {
     serde_json::from_slice(&b).map_err(|e| format!("trusted.json 손상: {e}"))
 }
 
+/// ★3R F1: `trusted/` 쓰기(읽기→세대 번호→커밋)를 `trusted/.lock` 배타 잠금(차단 대기) 안에서 — 러너와 아고라 클라이언트(T3)가 같은
+/// 폴더에 동시에 `--record` 해도 세대 번호 충돌·서로의 세대 삭제·rev 후퇴(늦은 쓰기가 앞선 rev 를 덮음)가 없다.
+fn with_trusted_lock<T>(dir: &Path, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    if super::mutant("F1") {
+        return f();
+    }
+    let root = dir.join(TRUSTED_DIR);
+    super::ensure_private_dir(&root)?;
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let path = root.join(".lock");
+    let lock = o.open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    super::check_private_file(&path)?;
+    lock.lock().map_err(|e| format!("trusted 잠금: {e}"))?;
+    let r = f();
+    let _ = lock.unlock();
+    r
+}
+
 /// 새 세대 커밋: gen-<N+1>/ 에 trusted.json + 폐기문 원문·서명(새로 받은 것 · 없으면 현 세대 것을 그대로 복사)을 쓰고 폴더 fsync →
 /// CURRENT 원자 교체(+ 폴더 fsync) → 두 세대 전 정리. CURRENT 교체 전에 죽으면 새 세대는 고아일 뿐 읽히지 않는다.
 fn commit_trusted(dir: &Path, t: &Trusted, rev: Option<(&[u8], &[u8])>) -> Result<(), String> {
@@ -182,6 +206,10 @@ fn commit_trusted(dir: &Path, t: &Trusted, rev: Option<(&[u8], &[u8])>) -> Resul
 
 /// 신뢰 시각 단조 상향(내려가지 않음).
 pub fn bump_trusted(dir: &Path, signed_at: Option<i64>) -> Result<Trusted, String> {
+    with_trusted_lock(dir, || bump_trusted_locked(dir, signed_at))
+}
+
+fn bump_trusted_locked(dir: &Path, signed_at: Option<i64>) -> Result<Trusted, String> {
     let mut t = read_trusted(dir)?;
     let next = match (t.last_trusted_time, signed_at) {
         (Some(a), Some(b)) => Some(a.max(b)),
@@ -199,6 +227,10 @@ pub fn bump_trusted(dir: &Path, signed_at: Option<i64>) -> Result<Trusted, Strin
 /// ★2R N5: `bump_trust` = false(시계 의심 — HTTP Date·신뢰 시각과 충돌)면 원문은 기록하되 신뢰 시각은 올리지 않는다.
 /// ★2R N6: 세 파일 = 한 세대 커밋([`commit_trusted`]).
 pub fn record_revocations(dir: &Path, bytes: &[u8], sig: &[u8], rev: u64, signed_at: i64, bump_trust: bool) -> Result<Trusted, String> {
+    with_trusted_lock(dir, || record_revocations_locked(dir, bytes, sig, rev, signed_at, bump_trust))
+}
+
+fn record_revocations_locked(dir: &Path, bytes: &[u8], sig: &[u8], rev: u64, signed_at: i64, bump_trust: bool) -> Result<Trusted, String> {
     let mut t = read_trusted(dir)?;
     let sha = super::feed::sha256_hex(bytes);
     if let Some(cur) = t.revocations_rev {
@@ -715,6 +747,38 @@ mod tests {
         let hooks = Hooks { seats: &|| None, pending_approvals: &|| Some(0) };
         let (v, rc) = run_check(&d, &d.join("pack"), &hooks);
         assert_eq!((v["decision"].as_str(), v["step"].as_str(), rc), (Some("undetermined"), Some("install_id"), 3));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3R F1 뮤테이션: 두 쓰기 주체가 동시에 신뢰 기록을 커밋해도 CURRENT 는 언제나 실재 세대 · 최종 rev·신뢰 시각 = 최댓값.
+    #[test]
+    fn f1_concurrent_trusted_commits_keep_current_valid() {
+        let d = tmp("f1");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let hs: Vec<_> = (0..4u64)
+            .map(|w| {
+                let (d, b) = (d.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    b.wait();
+                    for i in 0..15u64 {
+                        let n = i * 4 + w + 1;
+                        if w % 2 == 0 {
+                            let _ = record_revocations(&d, format!("rev-{n}").as_bytes(), b"sig", n, n as i64, true);
+                        } else {
+                            let _ = bump_trusted(&d, Some(n as i64));
+                        }
+                        assert!(read_trusted(&d).is_ok(), "CURRENT → 실재 세대(작업자 {w} · {i})");
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        let t = read_trusted(&d).unwrap();
+        assert_eq!(t.last_trusted_time, Some(60), "신뢰 시각 = 최댓값(늦은 쓰기가 덮지 않음)");
+        let rev = t.revocations_rev.unwrap();
+        assert!(rev >= 57, "rev 후퇴 없음(마지막 기록 rev {rev})");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

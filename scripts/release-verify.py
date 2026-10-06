@@ -854,6 +854,11 @@ def load_pack_keyring(path):
         raise VerifyError("직전 판 팩 키링 revoked_key_ids 형식 오류: %s" % path)
     out = {}
     for k in keys:
+        # ★1.1.8 U3(설계 §4-1): 키링에 갱신 용도 키(root·release·feed·win-asset)가 함께 실린다 — 팩 서명 기준은
+        #   `purpose` 가 pack 인 키만(부재 = pack · 하위 호환 · U1 keys.rs Purpose::parse 와 같은 규칙). 그렇지 않으면
+        #   U/F 키로 서명한 팩 매니페스트가 이 게이트를 통과한다(교차 사용 · §4-6).
+        if isinstance(k, dict) and (k.get("purpose") or "pack") != "pack":
+            continue
         kid = k.get("key_id") if isinstance(k, dict) else None
         if not isinstance(kid, str) or not KEY_ID_RE.match(kid):
             raise VerifyError("직전 판 팩 키링 key_id 형식 오류(16자 대문자 hex): %r" % (kid,))

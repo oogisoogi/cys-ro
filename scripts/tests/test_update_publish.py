@@ -578,6 +578,47 @@ class TestUpdateVerifyRoundTrip(Base):
         self.assertIn("reject", r.stderr)
 
 
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("codesign") and VERIFY_BIN,
+                     "맥 재료 수집기 = codesign + build-info 가진 cys(CYS_UPDATE_VERIFY_BIN) 필요")
+class TestCollectMac(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="u3c-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def bundle(self, signed):
+        self.n = getattr(self, "n", 0) + 1
+        app = os.path.join(self.tmp, "b%d-%d" % (signed, self.n), "cysr.app")
+        os.makedirs(os.path.join(app, "Contents", "MacOS"))
+        shutil.copy(VERIFY_BIN, os.path.join(app, "Contents", "MacOS", "cys"))
+        open(os.path.join(app, "Contents", "Info.plist"), "w").write(
+            '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key>'
+            '<string>test.u3.fake</string><key>CFBundleExecutable</key><string>cys</string></dict></plist>')
+        if signed:
+            subprocess.check_call(["codesign", "-s", "-", "--force", app], stderr=subprocess.DEVNULL)
+        z = os.path.join(self.tmp, "b%d-%d.zip" % (signed, self.n))
+        subprocess.check_call(["ditto", "-c", "-k", "--keepParent", app, z])
+        return z
+
+    def test_signed_and_unsigned(self):
+        out = os.path.join(self.tmp, "out")
+        env = dict(os.environ, CYS_UPDATE_STATE_DIR=os.path.join(self.tmp, "st"), CYS_COLLECT_DR_PIN="none")
+        r = run(["bash", os.path.join(UPD, "collect-inputs.sh"), "mac", self.bundle(1), "macos-arm64", out], env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(open(os.path.join(out, "cdhash-macos-arm64.txt")).read().strip(), r"^[0-9a-f]{40}$")
+        self.assertIn("build_id", json.load(open(os.path.join(out, "build-info-macos-arm64.json"))))
+        r = run(["bash", os.path.join(UPD, "collect-inputs.sh"), "mac", self.bundle(0), "macos-arm64",
+                 os.path.join(self.tmp, "out2")], env=env)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("봉인되지 않은", r.stderr)  # 링커 서명 Mach-O 만으로도 CDHash 는 읽힌다 — 봉인 검사가 막는다
+        env.pop("CYS_COLLECT_DR_PIN")
+        r = run(["bash", os.path.join(UPD, "collect-inputs.sh"), "mac", self.bundle(1), "macos-arm64",
+                 os.path.join(self.tmp, "out3")], env=env)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("DR 핀 불일치", r.stderr)  # 애드혹 서명 ≠ cys-local leaf
+
+
 class TestSourcePins(unittest.TestCase):
     """저장소 소스 핀 — 수리가 되돌려지면 여기서 잡힌다."""
 
@@ -595,6 +636,23 @@ class TestSourcePins(unittest.TestCase):
             self.assertEqual(uc.pubkey_key_id(pub), uc.A2_KEY_ID)
         rv = open(os.path.join(ROOT, "scripts", "release-verify.py"), encoding="utf-8").read()
         self.assertIn('A2_KEY_ID = "%s"' % uc.A2_KEY_ID, rv)
+
+    def test_release_verify_pack_keyring_ignores_update_keys(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("rv", os.path.join(ROOT, "scripts", "release-verify.py"))
+        rv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rv)
+        d = tempfile.mkdtemp()
+        try:
+            fx = Fixture(d)
+            kr = json.load(open(fx.keyring))
+            pack = dict(kr["keys"][0], purpose="pack")
+            kr["keys"].append(pack)
+            json.dump(kr, open(fx.keyring, "w"))
+            got, _ = rv.load_pack_keyring(fx.keyring)
+            self.assertEqual(list(got), [pack["key_id"]])  # root·release·feed 키는 팩 기준에서 빠진다
+        finally:
+            shutil.rmtree(d)
 
     def test_nsis_lock_token_hook(self):
         s = open(os.path.join(ROOT, "src-tauri", "nsis-hooks.nsh"), encoding="utf-8").read()

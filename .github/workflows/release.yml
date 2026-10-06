@@ -1141,6 +1141,30 @@ jobs:
       #   "세 산출물 모두 수치 VERSIONINFO == 릴리스 버전"을 단언하는 2차 오라클이다(레인 변경·
       #   가드 회귀에도 생존). 수치 = VS_FIXEDFILEINFO(File{Major,Minor,Build,Private}Part) —
       #   GetDLLVersion/!getdllversion 이 읽는 바로 그 DWORD 다(문자열 FileVersion 이 아니다).
+      # ★1.1.8 U3 자동 갱신 본문 재료(윈 · 설계 §6-1 · §3-7 ①): 방금 만든 설치기를 러너의 빈 임시 폴더에 무인 설치해
+      #   payload_manifest 재료(설치기가 실제로 놓는 바이트)와 설치된 cys.exe build-info 를 아티팩트로 남긴다. 본문 생성
+      #   (scripts/update/make-release-json.py)은 발행 의식 때 master 가 이 아티팩트로 한다.
+      #   ⚠continue-on-error — 러너 첫 실측 전(이 기능의 계수·동작은 첫 발행 리허설이 확정 · HANDOFF-U3 §4). 이 스텝이 실패해도
+      #   릴리스 산출물은 그대로이고, 재료가 없으면 본문 생성기가 윈 행을 못 만들어 **발행이 멈춘다**(fail-closed 는 거기서).
+      - name: 자동 갱신 본문 재료 수집 (윈 · payload·build-info)
+        if: matrix.platform == 'windows-latest'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETUP=(target/${{ matrix.target }}/release/bundle/nsis/cysr_*_x64-setup.exe)
+          [ ${#SETUP[@]} -eq 1 ] && [ -f "${SETUP[0]}" ] || { echo "::warning::setup.exe 후보 이상: ${SETUP[*]}"; exit 1; }
+          bash scripts/update/collect-inputs.sh win "${SETUP[0]}" "$RUNNER_TEMP/update-inputs"
+
+      - name: 자동 갱신 본문 재료 업로드 (윈)
+        if: matrix.platform == 'windows-latest'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-inputs-windows-x64
+          path: ${{ runner.temp }}/update-inputs
+          if-no-files-found: warn
+
       - name: Windows VERSIONINFO 게이트 (cys·cysd·cys-app 수치 버전 == 릴리스 버전)
         if: matrix.platform == 'windows-latest'
         shell: pwsh

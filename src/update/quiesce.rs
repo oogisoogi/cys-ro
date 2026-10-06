@@ -239,7 +239,7 @@ mod tests {
     fn b8_crash_matrix_replay_exactly_once_and_inject_at_most_once() {
         let base = std::env::temp_dir().join(format!("cys-u2-b8-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        for point in ["a", "b", "c", "d", "e"] {
+        for point in ["a", "b", "c", "d", "e", "f"] {
             let d = base.join(point);
             let mut h = HoldLog::open(&d).unwrap();
             for i in 0..3 {
@@ -263,21 +263,28 @@ mod tests {
             }
             // 첫 항목 주입 시도
             let first = plan[0].clone();
-            if matches!(point, "c" | "d" | "e") {
+            if matches!(point, "c" | "d" | "e" | "f") {
                 assert!(may_inject(ledger_marks(&d).unwrap().get(&first).copied()));
                 ledger_append(&d, &first, Mark::Delivering).unwrap();
                 if point != "c" {
                     injected.push(first.clone());
                 }
-                if point == "e" {
+                if point == "e" || point == "f" {
                     ledger_append(&d, &first, Mark::Delivered).unwrap();
                     queue.remove(&first);
                 }
+            }
+            if point == "f" {
+                // ⓕ 큐 쓰기 → 첫 항목 배달·큐에서 빠짐 → 커서 기록 **전에** 죽음(upto 0 그대로)
+                let _ = std::fs::remove_file(d.join(INGESTED_FILE));
             }
             // ── 죽음 → 재기동: 큐 파일(queue)은 남고, 원장·로그는 디스크에서 다시 읽는다 ──
             let marks = ledger_marks(&d).unwrap();
             let upto: u64 = read_cursor(&d).unwrap_or(0);
             let again: Vec<String> = plan_replay(txn, &recs, upto, &queue, &marks).iter().map(|r| queue_item_id(txn, r.hold_seq)).collect();
+            if point == "f" {
+                assert!(!again.contains(&first), "f: 배달돼 큐에서 빠진 항목을 다시 넣지 않는다(재생 원장)");
+            }
             queue.extend(again.iter().cloned());
             // 정확히 한 번: 3줄 전부가 「큐에 있음 ∪ 원장 표지」 에 정확히 한 번
             for r in &recs {
@@ -314,8 +321,12 @@ mod tests {
         let mut bad = crate::update::lock::Token::parse(&t).unwrap();
         bad.epoch += 1;
         assert!(verify_owner_token(&d, &bad.render()).is_err());
+        let owner = std::fs::read(d.join(crate::update::lock::OWNER_FILE)).unwrap();
         drop(g);
         assert!(verify_owner_token(&d, &t).is_err(), "해제 뒤 = 거부");
+        // 죽은 소유자(묘비를 못 쓰고 죽음 · OS 가 잠금만 풂): 소유자 기록은 그대로 맞지만 잠금이 없다 → 거부(잠금 실재 검사)
+        std::fs::write(d.join(crate::update::lock::OWNER_FILE), &owner).unwrap();
+        assert!(verify_owner_token(&d, &t).is_err(), "잠금 없는 옛 소유자 토큰 = 거부");
     }
 
     #[test]

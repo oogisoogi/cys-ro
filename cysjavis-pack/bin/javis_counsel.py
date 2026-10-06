@@ -8,8 +8,9 @@
 동사:
   signal --source <역할|층> --op <op> --error-code <code>   신호 한 줄 append(형식 밖·끔·잠금 2초 초과 = 버림)
   facts          결정론 일일 사실 → `<설정>/counsel/facts.json`(원자 교체 · 못 잰 칸은 뺀다 · null 0)
-  ensure-client  `<팩>/install/agora-client.pin` + `.zip.b64` → `<설정>/lib`(없을 때만 · 남의 lib 불가침)
-  tick           ensure-client → facts → `agora counsel auto --facts …`(스케줄 잡 `agora-counsel` · 30분)
+  ensure-client  `<팩>/install/agora-client.pin` + `.zip.b64` → `<설정>/lib`(설치 잠금 안 · 판정 = 트리 지문:
+                 없음 = 설치 · 핀 지문 = 무동작 · 알려진 옛 판 지문 = 교체 · 그 밖(고친·모르는 트리) = 불가침 + 로그)
+  tick           ensure-client → facts → `agora counsel auto --facts …`(스케줄 잡 `agora-counsel` · 30분 · 한 판 상한 540초)
 
 ★언제나 exit 0 · stdout 무출력 — 훅·preflight·cys-dept·Rust 업데이트 경로가 부르므로 이 도구의 실패가 호출자를 바꾸면
   안 된다. 결과는 `<설정>/counsel/tick.log`(JSON 줄 · 256KB 넘으면 `.1`)에만 남긴다.
@@ -17,6 +18,7 @@
 """
 import base64
 import datetime
+import errno
 import hashlib
 import io
 import json
@@ -24,6 +26,8 @@ import os
 import re
 import secrets
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import time
@@ -38,7 +42,6 @@ OP_RE = re.compile(r"^[a-z0-9_.-]{1,32}\Z", re.ASCII)
 ERROR_CODE_RE = re.compile(r"^[a-z0-9._-]{1,48}\Z", re.ASCII)
 VERSION_RE = re.compile(r"^[0-9A-Za-z.+-]{1,32}\Z", re.ASCII)
 OS_RE = re.compile(r"^(macos|windows|linux)(-[0-9.]{1,16})?\Z", re.ASCII)
-ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}\Z", re.ASCII)
 CHECK_ID_RE = re.compile(r"^[a-z0-9-]{1,40}\Z", re.ASCII)
 SHA_RE = re.compile(r"^[0-9a-f]{64}\Z", re.ASCII)
 SIGNAL_SOURCES = ("master", "worker", "cso", "pack", "update")
@@ -55,7 +58,11 @@ LOCK_WAIT_S = 2.0                      # 쓰는 쪽은 훅을 붙잡지 않는�
 LOCK_RETRY_S = 0.05
 DOCTOR_TIMEOUT_S = 60
 CLI_TIMEOUT_S = 20
-AGORA_TIMEOUT_S = 900
+TICK_CAP_S = 540                       # 한 판 전체 상한 — cysd command 잡 600초 안쪽(cysd 는 시간 초과 자식을 안 죽인다)
+AGORA_MIN_TIMEOUT_S = 30               # agora 에 남은 몫(540 − 경과)의 바닥
+INSTALL_LOCK = "lib.install.lock"      # <설정> 옆 파일 · 존재 판정 ~ 게시까지 한 손
+INSTALL_LOCK_WAIT_S = 60.0
+KNOWN_FILE = "agora-client-known.txt"  # 자동 교체해도 되는 옛 판 지문 표(`<판본> <트리 지문>`)
 MAX_LIST = 64
 
 
@@ -139,6 +146,7 @@ def _try_lock(fh):
     if os.name == "nt":
         import msvcrt
         try:
+            fh.seek(0)   # ★매 시도 0번 바이트(아고라 _lock 과 같은 자리)
             msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
             return True
         except OSError:
@@ -295,6 +303,19 @@ def probe_version():
     return out or None
 
 
+def seat_category(role):
+    """좌석 역할 → 범주(★원 이름은 사용자·호스트 이름을 품을 수 있어 싣지 않는다):
+    master · cso(cso·cso-*) · worker(worker·worker-*·reviewer*·planner*) · 그 밖(빈 값 포함) = pack."""
+    v = (role or "").strip().lower()
+    if v == "master":
+        return "master"
+    if v == "cso" or v.startswith("cso-"):
+        return "cso"
+    if v == "worker" or v.startswith(("worker-", "reviewer", "planner")):
+        return "worker"
+    return "pack"
+
+
 def probe_seats():
     exe = cys_bin()
     if not exe:
@@ -311,9 +332,8 @@ def probe_seats():
         if m_ex and m_ex.group(1).lower() == "true":
             continue
         count += 1
-        if ROLE_RE.match(m_role.group(1)):
-            roles.add(m_role.group(1))
-    return {"count": count, "roles": sorted(roles)[:MAX_LIST]}
+        roles.add(seat_category(m_role.group(1)))
+    return {"count": count, "roles": sorted(roles)}
 
 
 def _count_ok(v):
@@ -483,14 +503,31 @@ def write_facts(cfg=None, now=None):
 
 # ── 동봉 클라이언트 설치 ───────────────────────────────────────────────────────
 def _read_pin(pack):
-    """핀 한 줄 `<판본> <sha256> <바이트>` → (줄, 판본, sha, 바이트) · 없음/형식 밖 = None."""
+    """핀 한 줄 `<판본> <zip sha256> <zip 바이트> [<트리 지문>]` → dict · 없음/형식 밖 = None.
+    ★3칸(옛 꼴)도 받는다 — 그때 지문은 None 이고 동봉 zip 에서 실행 때 잰다."""
     line = _first_line(os.path.join(pack, "install", "agora-client.pin"))
     if not line:
         return None
-    parts = line.split()
-    if len(parts) != 3 or not VERSION_RE.match(parts[0]) or not SHA_RE.match(parts[1]) or not parts[2].isdigit():
+    p = line.split()
+    if len(p) not in (3, 4) or not VERSION_RE.match(p[0]) or not SHA_RE.match(p[1]) or not p[2].isdigit():
         return None
-    return " ".join(parts), parts[0], parts[1], int(parts[2])
+    if len(p) == 4 and not SHA_RE.match(p[3]):
+        return None
+    return {"ver": p[0], "sha": p[1], "size": int(p[2]), "fp": p[3] if len(p) == 4 else None}
+
+
+def _read_known(pack):
+    """`install/agora-client-known.txt` → {트리 지문: 판본} · `#` 줄·형식 밖 줄은 건너뛴다 · 파일 없음 = {}."""
+    out = {}
+    try:
+        with open(os.path.join(pack, "install", KNOWN_FILE), encoding="utf-8-sig") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 2 and not p[0].startswith("#") and VERSION_RE.match(p[0]) and SHA_RE.match(p[1]):
+                    out[p[1]] = p[0]
+    except (OSError, ValueError):
+        pass
+    return out
 
 
 def _safe_parts(name):
@@ -501,6 +538,55 @@ def _safe_parts(name):
     if any(p == ".." for p in parts):
         return None
     return parts
+
+
+# ── 트리 지문 — 「같은 판인가」는 `.pin` 글자가 아니라 **설치된 트리 내용**으로 판다 ─────────────
+# 지문 = sha256( 정렬한 줄 `<posix 상대경로>\t<파일 바이트 sha256 hex>\n` 의 UTF-8 ) · 대상 = 일반 파일 전부
+# · 뺌 = 맨 위 `.pin`(우리 표식) · `__pycache__/` 아래 · `*.pyc`(실행만 해도 생기는 것 — 사람 손이 아니다).
+def _fp_skip(parts):
+    return parts == [".pin"] or "__pycache__" in parts or parts[-1].endswith(".pyc")
+
+
+def _fp_digest(rows):
+    text = "".join(sorted("%s\t%s\n" % (rel, h) for rel, h in rows.items()))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def tree_fingerprint(root):
+    """폴더 트리 지문(링크는 따라가지 않는다 · 일반 파일 아닌 것은 빼서 지문이 달라진다 = 고친 트리)."""
+    rows = {}
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x != "__pycache__"]
+        for name in files:
+            p = os.path.join(d, name)
+            if not stat.S_ISREG(os.lstat(p).st_mode):
+                continue
+            rel = os.path.relpath(p, root).replace(os.sep, "/")
+            if not _fp_skip(rel.split("/")):
+                rows[rel] = _sha_file(p)
+    return _fp_digest(rows)
+
+
+def zip_fingerprint(data):
+    """zip 항목으로 잰 지문 — 그 zip 을 `_extract` 로 푼 트리의 `tree_fingerprint` 와 같다(같은 이름은 뒤 항목이 이긴다)."""
+    rows = {}
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for info in zf.infolist():
+            parts = _safe_parts(info.filename)
+            if parts is None:
+                raise ValueError("zip-slip:%s" % info.filename[:80])
+            if not parts or info.is_dir() or _fp_skip(parts):
+                continue
+            rows["/".join(parts)] = hashlib.sha256(zf.read(info)).hexdigest()
+    return _fp_digest(rows)
 
 
 def _extract(data, dest):
@@ -527,50 +613,164 @@ def _extract(data, dest):
                 shutil.copyfileobj(src, out)
 
 
-def ensure_client(cfg=None, pack=None):
-    """결과 문자열(시험용) — no-pin · same · foreign · installed · refused · error."""
+_NOREPLACE = []
+
+
+def _noreplace_fn():
+    """POSIX 의 「있으면 실패」 rename(맥 renamex_np RENAME_EXCL · 리눅스 renameat2 RENAME_NOREPLACE) · 없으면 None."""
+    if not _NOREPLACE:
+        fn = None
+        try:
+            import ctypes
+            libc = ctypes.CDLL(None, use_errno=True)
+            if sys.platform == "darwin":
+                f = libc.renamex_np
+                f.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+                fn = lambda a, b: f(a, b, 0x4)                       # RENAME_EXCL
+            elif hasattr(libc, "renameat2"):
+                f = libc.renameat2
+                f.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+                fn = lambda a, b: f(-100, a, -100, b, 1)             # AT_FDCWD · RENAME_NOREPLACE
+        except Exception:
+            fn = None
+        _NOREPLACE.append(fn)
+    return _NOREPLACE[0]
+
+
+def _rename_noreplace(src, dst):
+    """`dst` 가 있으면(빈 폴더라도) FileExistsError — ★POSIX `rename` 은 빈 폴더를 조용히 덮는다.
+    윈 `os.rename`(MoveFileEx · 덮어쓰기 플래그 없음)은 원래 있으면 실패한다."""
+    if os.name != "nt":
+        fn = _noreplace_fn()
+        if fn is not None:
+            import ctypes
+            if fn(os.fsencode(src), os.fsencode(dst)) == 0:
+                return
+            err = ctypes.get_errno()
+            if err in (errno.EEXIST, errno.ENOTEMPTY):
+                raise FileExistsError(err, os.strerror(err), dst)
+            if err not in (errno.ENOSYS, errno.EINVAL, getattr(errno, "ENOTSUP", -1), getattr(errno, "EOPNOTSUPP", -1)):
+                raise OSError(err, os.strerror(err), dst)
+        if os.path.lexists(dst):   # 수단 없는 판(옛 libc · 지원 안 하는 파일 시스템) = 확인 뒤 rename
+            raise FileExistsError(errno.EEXIST, "exists", dst)
+    os.rename(src, dst)
+
+
+def _sweep(cfg):
+    """끊긴 판의 찌꺼기(`lib.tmp-*` · `lib.old-*`) — 설치 잠금 안에서만 부른다(그 이름은 잠금 쥔 우리만 만든다)."""
+    try:
+        names = os.listdir(cfg)
+    except OSError:
+        return
+    for n in names:
+        if n.startswith(("lib.tmp-", "lib.old-")):
+            shutil.rmtree(os.path.join(cfg, n), ignore_errors=True)
+
+
+def _blob_bytes(blob, pin):
+    """동봉 b64 → zip 바이트 · 핀 sha·바이트와 다르면 None."""
+    with open(blob, encoding="ascii") as f:
+        data = base64.b64decode("".join(f.read().split()), validate=True)
+    if len(data) != pin["size"] or hashlib.sha256(data).hexdigest() != pin["sha"]:
+        return None
+    return data
+
+
+def ensure_client(cfg=None, pack=None, wait_s=INSTALL_LOCK_WAIT_S):
+    """결과 문자열(시험용) — no-pin · same · foreign · installed · replaced · refused · busy · raced · error.
+    ★설치 잠금(`<설정>/lib.install.lock`)을 존재 판정부터 게시까지 쥔다 · 잠금 안에서 다시 판다 · 남의 `lib` 위로 rename 0."""
     cfg = cfg or config_dir()
     pack = pack or pack_dir()
     try:
         pin = _read_pin(pack)
         if pin is None:
             return "no-pin"
-        line, ver, sha, size = pin
-        blob = os.path.join(pack, "install", "agora-client-%s.zip.b64" % ver)
+        blob = os.path.join(pack, "install", "agora-client-%s.zip.b64" % pin["ver"])
         if not os.path.isfile(blob):
             return "no-pin"
-        lib = os.path.join(cfg, "lib")
-        if os.path.lexists(lib):
-            if _first_line(os.path.join(lib, ".pin")) == line:
-                return "same"
-            log_event(cfg, "ensure-client", result="foreign", why="foreign client", want=ver)
-            return "foreign"
-        with open(blob, encoding="ascii") as f:
-            data = base64.b64decode("".join(f.read().split()), validate=True)
-        got = hashlib.sha256(data).hexdigest()
-        if len(data) != size or got != sha:
-            log_event(cfg, "ensure-client", result="refused", why="pin mismatch", want=ver, bytes=len(data))
-            return "refused"
         os.makedirs(cfg, mode=0o700, exist_ok=True)
-        tmp = os.path.join(cfg, "lib.tmp-%s" % secrets.token_hex(4))
+        fh = _acquire(os.path.join(cfg, INSTALL_LOCK), wait_s)
+        if fh is None:
+            log_event(cfg, "ensure-client", result="busy", why="install lock held", want=pin["ver"])
+            return "busy"
         try:
-            os.makedirs(tmp)
-            _extract(data, tmp)
-            with open(os.path.join(tmp, ".pin"), "w", encoding="utf-8", newline="\n") as f:
-                f.write(line + "\n")
-            os.rename(tmp, lib)
-        except ValueError as e:
-            shutil.rmtree(tmp, ignore_errors=True)
-            log_event(cfg, "ensure-client", result="refused", why=str(e)[:120], want=ver)
-            return "refused"
-        except Exception:
-            shutil.rmtree(tmp, ignore_errors=True)
-            raise
-        log_event(cfg, "ensure-client", result="installed", version=ver)
-        return "installed"
+            return _ensure_locked(cfg, pack, pin, blob)
+        except ValueError as e:            # zip-slip · 깨진 b64/zip(지문 재는 자리) = 거부
+            return _refused(cfg, pin["ver"], str(e)[:120])
+        finally:
+            _unlock(fh)
+            fh.close()
     except Exception as e:
         log_event(cfg, "ensure-client", result="error", why=type(e).__name__)
         return "error"
+
+
+def _refused(cfg, ver, why, **kw):
+    log_event(cfg, "ensure-client", result="refused", why=why, want=ver, **kw)
+    return "refused"
+
+
+def _ensure_locked(cfg, pack, pin, blob):
+    ver = pin["ver"]
+    lib = os.path.join(cfg, "lib")
+    _sweep(cfg)
+    data = None
+    want = pin["fp"]
+    if want is None:                       # 3칸 핀 — 지문을 동봉 zip 에서 잰다
+        data = _blob_bytes(blob, pin)
+        if data is None:
+            return _refused(cfg, ver, "pin mismatch")
+        want = zip_fingerprint(data)
+    replace_from = None
+    if os.path.lexists(lib):
+        if os.path.islink(lib) or not os.path.isdir(lib):
+            log_event(cfg, "ensure-client", result="foreign", why="lib is not a directory", want=ver)
+            return "foreign"
+        have = tree_fingerprint(lib)
+        if have == want:
+            return "same"
+        replace_from = _read_known(pack).get(have)
+        if replace_from is None:
+            log_event(cfg, "ensure-client", result="foreign", why="modified or unknown client", want=ver,
+                      have_fp=have[:16])
+            return "foreign"
+    if data is None:
+        data = _blob_bytes(blob, pin)
+        if data is None:
+            return _refused(cfg, ver, "pin mismatch")
+    if zip_fingerprint(data) != want:
+        return _refused(cfg, ver, "pin fingerprint mismatch")
+    tmp = os.path.join(cfg, "lib.tmp-%s" % secrets.token_hex(4))
+    old = None
+    try:
+        os.makedirs(tmp)
+        _extract(data, tmp)
+        if tree_fingerprint(tmp) != want:
+            raise ValueError("unpacked fingerprint mismatch")
+        with open(os.path.join(tmp, ".pin"), "w", encoding="utf-8", newline="\n") as f:
+            f.write("%s %s %d %s\n" % (ver, pin["sha"], pin["size"], want))
+        if replace_from is not None:       # 옛 판은 옆으로 → 새 판 게시 → 옛 판 삭제(사이에 끊기면 lib 없음 = 다음 판이 새로 깐다)
+            old = os.path.join(cfg, "lib.old-%s" % secrets.token_hex(4))
+            _rename_noreplace(lib, old)
+        _rename_noreplace(tmp, lib)
+    except ValueError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return _refused(cfg, ver, str(e)[:120])
+    except FileExistsError:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if old:
+            shutil.rmtree(old, ignore_errors=True)
+        log_event(cfg, "ensure-client", result="raced", why="lib appeared meanwhile", want=ver)
+        return "raced"
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    if old:
+        shutil.rmtree(old, ignore_errors=True)
+        log_event(cfg, "ensure-client", result="replaced", version=ver, was=replace_from)
+        return "replaced"
+    log_event(cfg, "ensure-client", result="installed", version=ver)
+    return "installed"
 
 
 # ── 틱 ─────────────────────────────────────────────────────────────────────
@@ -594,7 +794,35 @@ def _daily_due(cfg, now=None):
     return not (st.get("daily_day") == today and not st.get("daily_pending"))
 
 
+def agora_timeout(elapsed):
+    """agora 에 줄 시간 = 한 판 상한(540초) − 지금까지 쓴 시간 · 바닥 30초."""
+    return max(AGORA_MIN_TIMEOUT_S, int(TICK_CAP_S - elapsed))
+
+
+def _kill_group(proc):
+    """시간 초과 자식을 **자손째** 끝낸다 — POSIX = 새 세션의 프로세스 그룹 killpg · 윈 = taskkill /T /F. 쓴 수단 이름."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, **NOWIN)
+            how = "taskkill"
+        except (OSError, subprocess.SubprocessError):
+            how = "kill"
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)   # start_new_session → 그룹 id = 자식 pid
+            how = "killpg"
+        except OSError:
+            how = "kill"
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    return how
+
+
 def tick(cfg=None):
+    t0 = time.monotonic()
     cfg = cfg or config_dir()
     ensure_client(cfg)
     if _daily_due(cfg):
@@ -608,18 +836,26 @@ def tick(cfg=None):
     if not env.get("AGORA_SIGNING_KEY") and os.path.isfile(key):
         env["AGORA_SIGNING_KEY"] = key
     argv = [sys.executable, agora, "counsel", "auto", "--facts", _counsel(cfg, FACTS_FILE)]
+    timeout = agora_timeout(time.monotonic() - t0)
     try:
-        r = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           env=env, timeout=AGORA_TIMEOUT_S, **NOWIN)
-    except subprocess.TimeoutExpired:
-        log_event(cfg, "tick", result="timeout", timeout_s=AGORA_TIMEOUT_S)
-        return "timeout"
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=env, start_new_session=(os.name != "nt"), **NOWIN)
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         log_event(cfg, "tick", result="error", why=type(e).__name__)
         return "error"
-    tail = (r.stdout or b"").decode("utf-8", errors="replace").strip()[-300:]
-    err = (r.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
-    log_event(cfg, "tick", result="ran", rc=r.returncode, out=tail, err=err)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        how = _kill_group(proc)
+        try:
+            proc.communicate(timeout=10)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        log_event(cfg, "tick", result="timeout", timeout_s=timeout, killed=how)
+        return "timeout"
+    tail = (out or b"").decode("utf-8", errors="replace").strip()[-300:]
+    err = (err or b"").decode("utf-8", errors="replace").strip()[-300:]
+    log_event(cfg, "tick", result="ran", rc=proc.returncode, out=tail, err=err)
     return "ran"
 
 

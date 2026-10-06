@@ -1,0 +1,8 @@
+# 자동 교체해도 되는 옛 아고라 클라이언트 — `<판본> <트리 지문>` (TICKET=agora-t3-pack-collector · javis_counsel.ensure_client)
+# 트리 지문 = sha256( 정렬한 줄 `<posix 상대경로>\t<파일 sha256>\n` 의 UTF-8 ) · 뺌 = 맨 위 .pin · __pycache__/ · *.pyc
+# ★설치된 `<설정>/lib` 의 지문이 여기 있으면(= 손대지 않은 그 판) 동봉 판으로 바꾼다 · 없으면 불가침 + 로그.
+# ★동봉 판을 올릴 때 지금 판의 지문을 여기 한 줄 더한다(안 그러면 그 판을 깐 PC 는 영영 「모르는 트리」).
+# 0.1.12 = 사이트 agora-client-0.1.12.zip sha256 0f3f6616a95428cf0712da578221e3f709590cf3e76fbb6f809e615d458e7632 · 648,304B · 55 항목
+0.1.12 aae378a33f7bfe9aec2323929b0b50a7fa77eb50802c9ad168e98e94d182cc6e
+# 0.1.13 = 사이트 agora-client-0.1.13.zip sha256 3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244 · 680,840B · 55 항목
+0.1.13 85b8a369901a8872f39eb5bd76cf931bb1e3a9998196db1f4fa555715c561bff

@@ -86,7 +86,7 @@
 | `version.host` | `cys --version`(clap · `cys.rs:17`) | 그대로 |
 | `version.pack` | `<팩>/.pack-version` 첫 줄(`pack.rs:1981`) | 그대로 |
 | `os` | `platform.mac_ver()` / `platform.release()` → `macos-15.6` · `windows-11` | 정규식 밖이면 `macos`·`windows` 만 |
-| `seats` | `cys list` 의 `role=` 열 → ⑷ 접힌 이름이 아니라 **역할 이름 그대로**(명세 `[a-z][a-z0-9-]{0,31}`) · 정렬·중복 제거 | 그대로 |
+| `seats` | `cys list` 의 `role=` 열 → ★**범주로 접는다**(리뷰 ⑬ · 원 역할 이름엔 사용자·호스트 이름이 들 수 있다): `master` · `cso`(cso·cso-*) · `worker`(worker·worker-*·reviewer*·planner*) · 그 밖(빈 값 포함) = `pack` · `roles` = 범주 정렬·중복 제거 · `count` = 비종료 좌석 수 | 그대로 |
 | `doctor` | **`cys doctor --json`**(Rust · `cys.rs:10798` · `summary{ok,warn,fail,skip}` L10852 · 항목 이름 16개 전부 `[a-z0-9-]{1,40}` 적합 · 명세 예시 `dept-awakening-seed`·`runtime-seal` 이 이 이름) | 그대로 |
 | `errors.tick_errors` | `~/.cys/dept-requests/tick-errors.log` 새 줄(`javis_dept_request.py:1923` · 줄 머리 iso) | 그대로 · 그 밖 tick 오류 계수기는 없음(미확인 = 0건) |
 | `errors.hook_rc_nonzero` | `${CYS_STATE_DIR:-~/.cys/state}/hook-errors.log` 새 줄(`_lib.sh:536-552`) | 그대로 |
@@ -103,7 +103,7 @@
 1. **동봉 형식 — 결정 1 「핀 zip 동봉」이 그대로는 안 된다.** 팩은 `include_str!` 로 바이너리에 박힌다(`build.rs:15-21·48-61` · UTF-8 텍스트만 · CRLF 면 빌드 실패) → zip(바이너리) 불가.
    **권고 ⓐ** = `install/agora-client-<판>.zip.b64`(base64 텍스트 · 줄 76자 LF) + `install/agora-client.pin`(`<판> <sha256> <바이트>`) — 풀 때 디코드 → **사이트 zip 과 같은 sha256** 대조(지문 대조가 그대로 산다) → `<설정>/lib/` 에 풀고 `<설정>/lib/.pin` 표식. 단점 = 바이너리 +약 0.9MB(680,840B × 4/3) · 팩 파일 1개가 큼.
    ⓑ 클라이언트 소스 트리를 팩에 그대로(55파일 텍스트) — 단점: 사이트 zip 지문과 다른 이름(트리 해시) · 팩 git 에 아고라 사본. ⓒ 첫 tick 때 사이트에서 핀 sha 로 내려받기 — 단점: 사이트·네트워크 의존(설치기 옛 방식 · 09-09 분리 이전).
-   **무접촉 규칙**: `<설정>/lib` 가 이미 있고 `.pin` 판·sha = 핀 → 무접촉 · `.pin` 없거나 다른 판(사람·옛 설치기가 깐 것) → **무접촉 + 로그**(교체 = U1/U2 `agora-client` component) → 그 PC 는 그 클라이언트가 `counsel auto` 를 모르면 발신 0(state 에 사유).
+   **무접촉 규칙**: `<설정>/lib` 가 이미 있고 `.pin` 판·sha = 핀 → 무접촉 · `.pin` 없거나 다른 판(사람·옛 설치기가 깐 것) → **무접촉 + 로그**(교체 = U1/U2 `agora-client` component) → 그 PC 는 그 클라이언트가 `counsel auto` 를 모르면 발신 0(state 에 사유). ⇒ **§9 로 대체**(`.pin` 글자 → 트리 지문 · known 옛 판은 교체).
    ★**판 순서**: 동봉할 zip 은 T3 클라이언트 코드가 든 **0.1.14**(0.1.13 에는 `counsel auto` 가 없다) → 순서 = 아고라 T3 커밋 → 0.1.14 빌드(지문) → 팩에 b64·핀 → 게시는 master.
 2. **훅 신호의 실제 범위**: 명세 「훅 39개 중 38개가 쓰는 프리루드의 종료 자리」는 실재하지 않는다 — 훅은 계약상 늘 exit 0 이고 rc 를 남기는 자리는 `cys_hook_fail` 6곳(5개 훅)뿐 · 훅 프로세스 자체 rc 를 모으는 곳은 없음(실측 0건). 권고 = **그 6곳만**(`cys_hook_fail` 끝 1줄 · 실패 경로에서만 파이썬 1회 · 늘 return 0 유지). 단점 = 다른 훅 내부 실패는 신호가 안 된다.
 3. **doctor 신호 `op` 접힘**: 명세 꼴(`preflight.c<NN>`)을 따르면 C82(2개)·C83(2개)·C03.pin.*(6개)가 한 줄로 묶인다. 권고 = 명세 꼴 유지(이름까지 넣으면 `op` 32자 초과 2건 · `doctor.c38.silent-failure-catalog` 33·`doctor.c79.cycle-verifier-heartbeat` 35). 단점 = 그 몇 검사는 데스크에서 구분 안 됨.
@@ -123,3 +123,9 @@
 - ★**접기(추가 1) 명세 대조 1줄**: 명세 §1-1 items 는 `count` 칸을 가진다 → 같은 묶기 키(= `source`·`op`·`error_code`·`version` 의 sha256 앞 32) 줄은 발신 때 **한 항목 + `count`**(그날 첫 줄만 남기는 길은 쓰지 않음 · `os` = 그 묶음 마지막 줄 값 · `first_seen`/`last_seen` = 최소/최대 ts). 판이 다른 같은 오류는 묶기 키가 달라 다른 항목이다(명세 그대로).
 - U1 잡 칸 = `bulk:false` · `publish:true`(현 스케줄러가 모르는 칸을 받는지는 팩 구현에서 실측 후 반영).
 - 이 문서 자리 이동: 아고라 저장소(공개 표현 규약 = 이 문서의 터미널 내부 이름이 금칙어) → 팩 저장소 `docs/design/` · 아고라 쪽 0106476 커밋은 push 전이라 되감았다(작성자 판단).
+
+## 9. 리뷰 반영(2026-10-06 · 판 가지 `t3/collector-118` 을 U1 병합본 4d0aab95 위로 옮긴 뒤)
+- **설치 잠금(⑥)**: `ensure_client` 는 `<설정>/lib.install.lock`(신호 잠금과 같은 수단 · `a+` · 0번 바이트 · 대기 상한 60초 → `busy`)을 존재 판정부터 게시까지 쥐고, 잠금 안에서 다시 판다. 게시는 **덮지 않는 rename**(맥 `renamex_np RENAME_EXCL` · 리눅스 `renameat2 RENAME_NOREPLACE` · 윈 `MoveFileEx` 기본) — 그 사이 `lib` 가 생기면 임시 트리를 버린다(`raced`).
+- **같은 판 = 트리 지문(⑦)**: 지문 = sha256(정렬한 `<posix 상대경로>\t<파일 sha256>\n` 줄의 UTF-8 · 맨 위 `.pin`·`__pycache__/`·`*.pyc` 뺌). 핀 = `<판> <zip sha256> <zip 바이트> <트리 지문>`(3칸 옛 꼴도 받는다 — 지문을 동봉 zip 에서 잰다). 없음 = 설치 · 핀 지문 = 무동작 · `install/agora-client-known.txt`(0.1.12 · 0.1.13) 지문 = 교체(옆으로 치움 → 게시 → 삭제 · 사이에 끊기면 `lib` 없음 = 다음 판이 새로 깐다 · 찌꺼기 `lib.tmp-*`·`lib.old-*` 는 잠금 안에서 치운다) · 그 밖 = 불가침 + 로그. ⚠동봉 판을 올릴 때 지금 판 지문을 known 에 더해야 그 판 PC 가 따라온다.
+- **한 판 상한(⑨)**: tick 전체 540초(cysd 600초 안) · agora 몫 = 540 − 경과(바닥 30) · 넘으면 자식 프로세스 그룹째 끝낸다(POSIX `start_new_session` + `killpg` · 윈 `taskkill /T /F`) + `tick.log` `timeout`.
+- **BACKLOG(cysd · 이 티켓 밖)**: cysd 는 600초 시간 초과된 command 잡의 자식(그룹)을 죽이지 않는다(`schedule.rs:2784-2786` `fire_command` = `tokio::time::timeout(600s, c.output())` · `kill_on_drop` 미설정 → 「command timed out (600s)」 오류만 · 셸·그 자손은 계속 돈다) — 잡 쪽 자기 상한이 유일한 방어선이다.

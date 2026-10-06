@@ -529,7 +529,7 @@ jobs:
           #   test_mission_anomaly_provenance(D15 · tmp · 0s) · test_preflight_fresh_full_json(C61 · 신선 팩 사본 전체 실행 · 13s) ·
           #   test_report_gate_win_na(D2 · 문면 · 0s) · test_resource_gate_win_roster(D3 · 대역 · 0s) · test_session_state_canon(D14 · 격리 · 1s).
           #   ★T3(TICKET=agora-t3-pack-collector): test_javis_counsel(상담소 신호·사실·동봉 클라이언트·틱 · 격리 agora 설정·가짜 cys ·
-          #   실측 2026-10-06 · 빈 HOME · CYS_PACK_DIR=mktemp · 26 OK · 약 4s(잠금 상한 2초 대기 1회 포함) · HOME 생성물 0).
+          #   실측 2026-10-06 · 빈 HOME · CYS_PACK_DIR=mktemp · 43 OK · 약 8s(잠금 상한 2초 대기 1회 · 경합 60 프로세스 포함) · HOME 생성물 0).
           #   윈 이름 검체 4종은 posix 모의라 완전 레인 소속(windows-health 부분 레인 계약 ⊆·⊇ 무관 · test_win_dept_spawn 그대로).
           for t in test_todo_decl test_todo_stamp test_report_ghost test_hud_bridge_skew \
                    test_report_gate test_todo_shared_constants test_import_guard test_radio test_scrub \
@@ -1496,7 +1496,7 @@ jobs:
           #   test_mission_anomaly_provenance(D15 · tmp · 0s) · test_preflight_fresh_full_json(C61 · 신선 팩 사본 전체 실행 · 13s) ·
           #   test_report_gate_win_na(D2 · 문면 · 0s) · test_resource_gate_win_roster(D3 · 대역 · 0s) · test_session_state_canon(D14 · 격리 · 1s).
           #   ★T3(TICKET=agora-t3-pack-collector): test_javis_counsel(상담소 신호·사실·동봉 클라이언트·틱 · 격리 agora 설정·가짜 cys ·
-          #   실측 2026-10-06 · 빈 HOME · CYS_PACK_DIR=mktemp · 26 OK · 약 4s(잠금 상한 2초 대기 1회 포함) · HOME 생성물 0).
+          #   실측 2026-10-06 · 빈 HOME · CYS_PACK_DIR=mktemp · 43 OK · 약 8s(잠금 상한 2초 대기 1회 · 경합 60 프로세스 포함) · HOME 생성물 0).
           #   윈 이름 검체 4종은 posix 모의라 완전 레인 소속(windows-health 부분 레인 계약 ⊆·⊇ 무관 · test_win_dept_spawn 그대로).
           for t in test_todo_decl test_todo_stamp test_report_ghost test_hud_bridge_skew \
                    test_report_gate test_todo_shared_constants test_import_guard test_radio test_scrub \

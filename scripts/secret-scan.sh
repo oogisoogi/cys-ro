@@ -98,11 +98,11 @@ win_dummy_user_re='[A-Za-z]:\\+Users\\+('"$dummy_names"')([^A-Za-z0-9._-]|$)'
 #   1,439행짜리 feedback.rs(테스트 포함) 전체가 면제돼, 앞으로 그 파일에 실수로 들어오는
 #   다른 실주소(디버그 프린트·오타 픽스처 등)를 H-SECRET 게이트가 조용히 통과시킨다 — 파일
 #   단위 skip 자체가 오탐(false-negative) 확대 경로다. 네 파일 모두 **같은 공개 주소**
-#   (cysinsight@gmail.com — README·SECURITY 취약점 신고 연락처 = feedback.rs FEEDBACK_TO,
+#   (oogisoogi@gmail.com — README·SECURITY 취약점 신고 연락처 = feedback.rs FEEDBACK_TO(2026-10-07 포크 주소로 교체 · 옛 cysinsight@gmail.com 은 LICENSE·릴리스 노트 이력에 남아 함께 허용),
 #   feedbackwiring.test.ts 가 두 문서와 대조)뿐이므로, 파일을 통째로 빼는 대신 **그 주소 하나만**
 #   전역 오탐 목록(email_fp_re)에 올린다 — 이 네 파일을 포함해 저장소 어디서든 다른 실주소는
 #   그대로 잡힌다(허용 폭이 파일에서 리터럴 주소로 좁아졌다).
-email_fp_re='example\.(com|org|net)|noreply|@types/|@google/|@tauri|@scope|user@host|you@|cysinsight@gmail\.com'
+email_fp_re='example\.(com|org|net)|noreply|@types/|@google/|@tauri|@scope|user@host|you@|cysinsight@gmail\.com|oogisoogi@gmail\.com'
 # 개인 계정 핸들 denylist(맨몸) — /Users·.claude- 접두 없이 계정키·설정값으로 박힌 개인 핸들도 차단한다.
 # 넓은 패턴 대신 '알려진 개인 핸들'만 명시 등재해 제네릭 영어단어 오탐을 배제한다(deny-by-default 유지).
 # ysfuture = 오너 개인 alias·이메일 prefix. 부분일치라 'claude-ysfuture'·'ysfuture@…'도 함께 걸린다.

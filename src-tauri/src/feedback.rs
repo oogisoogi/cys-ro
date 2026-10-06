@@ -1177,7 +1177,7 @@ use crate::no_console;
 
 /// 받는 주소 — README.md(문의)·SECURITY.md 의 공식 연락 주소. **이 상수 한 곳에만** 둔다
 /// (UI 는 묶음 보고의 `to` 로 받는다 · ui/src/feedbackwiring.test.ts 가 두 문서와 대조).
-pub const FEEDBACK_TO: &str = "cysinsight@gmail.com";
+pub const FEEDBACK_TO: &str = "oogisoogi@gmail.com";
 
 // 상한 — UI(ui/src/feedback.ts)가 먼저 알려 주고 여기서 다시 강제한다(값 파리티는 feedback.test.ts).
 const MAX_FILES: usize = 10;

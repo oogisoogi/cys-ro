@@ -543,4 +543,4 @@ Report vulnerabilities per [SECURITY.md](SECURITY.md); details in
 ## Contributing · License
 
 See [CONTRIBUTING.md](CONTRIBUTING.md); third-party attributions in [NOTICE.md](NOTICE.md).
-MIT License ([LICENSE](LICENSE)) · Contact: **cysinsight@gmail.com**
+MIT License ([LICENSE](LICENSE)) · Contact: **oogisoogi@gmail.com**

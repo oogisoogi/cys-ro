@@ -245,6 +245,8 @@ impl Ops for RealOps {
         }
         match self.env.os {
             Os::Mac => {
+                // ★2판(master#3f846d60 ②): 정식 경로가 링크·디렉터리 아님 = 여기(S2 · 아무것도 안 바꿈)서 보류 종결.
+                super::mac::real_path(&self.env.canonical_app, "S2")?;
                 let staged = super::mac::staged_path(&self.env.canonical_app, a.release_seq);
                 if !staged.exists() {
                     let names = zip_names(&dst).map_err(|e| fail(ErrCode::ArchiveRefused, "S2", e))?;
@@ -590,11 +592,22 @@ impl Ops for RealOps {
         let found = self.canonical(j);
         match self.env.os {
             Os::Mac => {
-                let prev = j
-                    .prev_bundle
-                    .as_ref()
-                    .map(|p| PathBuf::from(&p.path))
-                    .ok_or_else(|| fail(ErrCode::RecoverAnomaly, "RB_SWAPPED", "prev_bundle 없음"))?;
+                // ★2판(codex 1R C7): 정식 자리 = 옛 판이면 prev_bundle 없이 즉시 끝(kill@S9:after · 교환 전 죽음). 새 판이면 옛 번들을
+                //   교환 전에 정해진 후보(저널 기록 · old 자리 · stage 자리) 중 신원이 옛 판과 같은 **유일한** 것으로 찾는다.
+                if found == Canon::Old {
+                    return Ok(());
+                }
+                let recorded = j.prev_bundle.as_ref().map(|p| PathBuf::from(&p.path));
+                let cands: Vec<(PathBuf, Option<super::mac::Ident>)> =
+                    super::mac::prev_candidates(&self.env.canonical_app, Path::new(&j.stage_path), j.from_release_seq, recorded.as_deref())
+                        .into_iter()
+                        .map(|c| {
+                            let id = super::mac::bundle_ident(&c);
+                            (c, id)
+                        })
+                        .collect();
+                let prev = super::mac::pick_unique_old(&cands, &self.expect_old())
+                    .ok_or_else(|| fail(ErrCode::RecoverAnomaly, "RB_SWAPPED", format!("옛 번들 후보 판정 불가({}개)", cands.len())))?;
                 super::mac::rb_swap(&self.env.canonical_app, &prev, found)
             }
             Os::Win => {

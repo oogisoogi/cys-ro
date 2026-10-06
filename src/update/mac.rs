@@ -32,6 +32,39 @@ pub fn old_path(canonical: &Path, release_seq: u64) -> PathBuf {
     sibling(canonical, &format!(".cysr.app.old-{release_seq}"))
 }
 
+/// ★2판(master#3f846d60 ② · 제품): 교환 경로를 실경로로 푼다 — 부모 디렉터리는 `canonicalize`(위쪽 경로 성분의 심링크 =
+/// `/var`·`/tmp` 처럼 풀어 준다) · 마지막 성분(앱 번들 자체)은 `symlink_metadata` 로 **실 디렉터리**인지 확인한다. 링크 =
+/// [`ErrCode::MacAppsNotWritable`](「정식 경로가 링크」 · 보류 종결 — ELOOP→RotateFailed 재시도 고리 아님). 풀린 경로에도
+/// [`rename_swap`] 의 `RENAME_NOFOLLOW_ANY` 는 그대로 둔다(푼 뒤 바뀐 링크·마지막 성분 방어).
+pub fn real_path(p: &Path, step: &str) -> Result<PathBuf, Fail> {
+    let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else {
+        return Err(Fail::new(ErrCode::MacAppsNotWritable, step, format!("정식 경로 형식 {}", p.display())));
+    };
+    let parent = std::fs::canonicalize(parent).map_err(|e| Fail::new(ErrCode::MacAppsNotWritable, step, format!("부모 실경로 {}: {e}", parent.display())))?;
+    let real = parent.join(name);
+    let md = std::fs::symlink_metadata(&real).map_err(|e| Fail::new(ErrCode::MacAppsNotWritable, step, format!("{}: {e}", real.display())))?;
+    if md.file_type().is_symlink() {
+        return Err(Fail::new(ErrCode::MacAppsNotWritable, step, format!("정식 경로가 링크 {}", real.display())));
+    }
+    if !md.is_dir() {
+        return Err(Fail::new(ErrCode::MacAppsNotWritable, step, format!("번들 디렉터리 아님 {}", real.display())));
+    }
+    Ok(real)
+}
+
+/// ★2판(codex 1R C7): 옛 번들 후보 — 저널 기록(`prev_bundle` · 있으면) · 결정론 자리 `old_path(정식, from)` · stage 자리(RENAME_SWAP
+/// 직후 · staged→old 이름 바꾸기 전에 죽은 경우 옛 판이 여기 있다). 모두 교환 **전에** 저널에 있던 값(stage_path·from_release_seq)과
+/// 정식 경로만으로 정해진다 — 교환 직후 전원 차단(prev_bundle 미기록)도 복구 가능. 중복 제거 · 있는 것만.
+pub fn prev_candidates(canonical: &Path, stage: &Path, from_seq: u64, recorded: Option<&Path>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for c in recorded.into_iter().map(Path::to_path_buf).chain([old_path(canonical, from_seq), stage.to_path_buf()]) {
+        if !out.contains(&c) && std::fs::symlink_metadata(&c).map(|m| m.is_dir()).unwrap_or(false) {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn sibling(canonical: &Path, name: &str) -> PathBuf {
     canonical.parent().map(|p| p.join(name)).unwrap_or_else(|| PathBuf::from(name))
 }
@@ -203,6 +236,8 @@ pub fn swap_forward(
     from_seq: u64,
     on_swapped: &mut dyn FnMut(&Path, bool) -> Result<(), Fail>,
 ) -> Result<PathBuf, Fail> {
+    let canonical = &real_path(canonical, "S9")?;
+    let staged = &real_path(staged, "S9")?;
     rename_swap(staged, canonical)?;
     on_swapped(staged, false)?;
     let old = old_path(canonical, from_seq);
@@ -221,7 +256,7 @@ pub fn swap_forward(
 pub fn rb_swap(canonical: &Path, prev: &Path, found: Canon) -> Result<(), Fail> {
     match found {
         Canon::Old => Ok(()),
-        Canon::New => rename_swap(prev, canonical),
+        Canon::New => rename_swap(&real_path(prev, "RB_SWAPPED")?, &real_path(canonical, "RB_SWAPPED")?),
         Canon::Unknown => Err(Fail::new(ErrCode::RecoverAnomaly, "RB_SWAPPED", "정식 자리 판독 불가")),
     }
 }
@@ -319,5 +354,47 @@ mod tests {
         let link = t.join("link.app");
         std::os::unix::fs::symlink(&canon, &link).unwrap();
         assert!(rename_swap(&old, &link.join("v")).is_err());
+    }
+
+    /// ★2판(master#3f846d60 ②): 위쪽 경로 성분의 심링크(`/tmp`·`/var` 처럼) = 풀어서 교환 성공 · 마지막 성분(번들)이 링크 = 명시 코드
+    /// MacAppsNotWritable(ELOOP·RotateFailed 아님).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn real_path_resolves_parent_links_and_refuses_bundle_link() {
+        let t = d("realpath");
+        std::fs::create_dir_all(t.join("real/cysr.app")).unwrap();
+        std::fs::write(t.join("real/cysr.app/v"), "old").unwrap();
+        std::os::unix::fs::symlink(t.join("real"), t.join("via")).unwrap();
+        let canon_via_link = t.join("via/cysr.app");
+        assert_eq!(real_path(&canon_via_link, "S9").unwrap(), t.join("real/cysr.app"));
+        let staged = staged_path(&canon_via_link, 9);
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("v"), "new").unwrap();
+        let old = swap_forward(&canon_via_link, &staged, 8, &mut |_, _| Ok(())).unwrap_or_else(|e| panic!("부모 링크 경로 교환 {e:?}"));
+        assert_eq!(std::fs::read_to_string(t.join("real/cysr.app/v")).unwrap(), "new");
+        assert!(old.starts_with(t.join("real")));
+        std::os::unix::fs::symlink(t.join("real/cysr.app"), t.join("linked.app")).unwrap();
+        let e = real_path(&t.join("linked.app"), "S2").unwrap_err();
+        assert_eq!(e.code, ErrCode::MacAppsNotWritable);
+        assert!(e.detail.contains("링크"), "{e:?}");
+    }
+
+    /// ★2판 C7: RENAME_SWAP 직후(staged→old 이름 바꾸기 전) 죽음 = 옛 판이 stage 자리에 · 저널 prev_bundle 없음 → 후보에서 찾아 되교환.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rb_finds_prev_bundle_without_journal_record_after_swap_crash() {
+        let t = d("prevcand");
+        let canon = t.join("cysr.app");
+        std::fs::create_dir_all(&canon).unwrap();
+        std::fs::write(canon.join("v"), "old").unwrap();
+        let staged = staged_path(&canon, 9);
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("v"), "new").unwrap();
+        rename_swap(&staged, &canon).unwrap(); // 교환만 · 곧바로 전원 차단
+        let c = prev_candidates(&canon, &staged, 8, None);
+        assert_eq!(c, vec![staged.clone()], "old_path 없음 · stage 자리 = 옛 판");
+        rb_swap(&canon, &c[0], Canon::New).unwrap();
+        assert_eq!(std::fs::read_to_string(canon.join("v")).unwrap(), "old");
+        assert!(prev_candidates(&canon, &staged, 8, Some(&t.join("nope"))).len() == 1, "없는 기록 = 무시");
     }
 }

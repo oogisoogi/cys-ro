@@ -2885,6 +2885,33 @@ pub struct InstallPlan {
     pub blocked: Option<String>,          // 다운그레이드 등 설치 차단 사유(파일 판정 무의미)
 }
 
+/// ★1.1.8 U2 후속(Fable 5R n12): [`plan_install`] 이 **디스크에서 읽는 입력 전부**의 지문 — 항목 파일 · 그 `.pristine/` 기준본 · 설치
+/// 매니페스트(와 그 항목 = prune 프리뷰) · `.pack-version` · CEO 영수증 · `.pack-state.json` · 스코프. 같은 원격 꾸러미(항목 `rels`)에
+/// 이 지문이 같으면 계획도 같다 — 자동 보류 메모가 꾸러미를 다시 받지 않아도 되는 근거. 과대포함만 허용(과소포함 = 낡은 보류).
+pub fn plan_disk_fingerprint(dir: &Path, rels: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let manifest: std::collections::BTreeMap<String, String> = std::fs::read_to_string(dir.join(INSTALL_MANIFEST))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut paths: std::collections::BTreeSet<String> = rels.iter().cloned().collect();
+    paths.extend(rels.iter().map(|r| format!("{PRISTINE_DIR}/{r}")));
+    paths.extend(manifest.into_keys());
+    paths.extend([PACK_VERSION_FILE, INSTALL_MANIFEST, CEO_RECEIPT_PACK_REL, PACK_STATE_FILE].map(str::to_string));
+    let mut h = Sha256::new();
+    h.update(format!("{:?}\n", pack_scope_of(dir)));
+    for p in &paths {
+        h.update(p.as_bytes());
+        h.update([0u8]);
+        match std::fs::read(dir.join(p)) {
+            Ok(b) => h.update(format!("{:x}", Sha256::digest(&b))),
+            Err(_) => h.update(b"-"),
+        }
+        h.update(b"\n");
+    }
+    format!("{:x}", h.finalize())
+}
+
 /// install_into 와 **같은 판정 함수**로 드라이런 리포트를 만든다(쓰기 0·드리프트 0).
 pub fn plan_install(
     dir: &Path,

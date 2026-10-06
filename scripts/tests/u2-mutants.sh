@@ -11,10 +11,13 @@ ISO=${U1_ISO:-}
 run() { if [ -n "$ISO" ]; then "$ISO" "$@"; else "$@"; fi; }
 if [ -n "$(git status --porcelain -- src)" ]; then echo "u2-mutants: 판정 불가 — src/ 작업트리가 깨끗하지 않다" >&2; exit 2; fi
 run cargo test -q --lib --no-run >/dev/null 2>&1 || { echo "u2-mutants: 판정 불가 — 시험 빌드 실패" >&2; exit 2; }
+run cargo test -q --bin cys --no-run >/dev/null 2>&1 || { echo "u2-mutants: 판정 불가 — cys 시험 빌드 실패" >&2; exit 2; }
 fail=0
 # 적 = 「test result: FAILED」 가 실제로 찍힘(컴파일 실패 101 을 적으로 세지 않는다 — U1 3R F11 교훈)
-red() { run env CYS_U1_MUTANT="$1" cargo test -q --lib "$2" -- --exact 2>&1 | grep -q 'test result: FAILED'; }
-green() { run cargo test -q --lib "$1" -- --exact 2>&1 | grep -q 'test result: ok. 1 passed'; }
+# 대상 = 기본 lib · 「bin:<이름>」 = cys 바이너리 시험(★후속 n12·n13 — 바이너리 쪽 스위치는 cys.rs 안 같은 env)
+tgt() { case "$1" in bin:*) echo "--bin cys ${1#bin:}" ;; *) echo "--lib $1" ;; esac; }
+red() { run env CYS_U1_MUTANT="$1" cargo test -q $(tgt "$2") -- --exact 2>&1 | grep -q 'test result: FAILED'; }
+green() { run cargo test -q $(tgt "$1") -- --exact 2>&1 | grep -q 'test result: ok. 1 passed'; }
 while read -r id test; do
   [ -z "$id" ] && continue
   if green "$test"; then g=0; else g=1; fi
@@ -49,5 +52,7 @@ U2-ENDFIRST update::runner::tests::attempt_end_marks_ended_before_removing
 U2-RECONEXE update::realops::tests::win_s7_row_after_new_reconstruct_restart_failure_starts_canonical_new_cys
 U2-RECONACCEPT update::realops::tests::new_reconstruct_terminal_preserves_release_and_records_acceptance
 U2-STAGETXN update::realops::tests::stage_after_takeover_is_this_attempts_s1_stage
+U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
+U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 LIST
 exit $fail

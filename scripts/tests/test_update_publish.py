@@ -822,6 +822,48 @@ class TestUpdateVerifyRoundTrip(Base):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("reject", r.stderr)
 
+    def test_refresh_chain_inherits_only_verified_current(self):
+        """refresh-feed.yml 순서(2판 · codex 1R #6·#11): 현재 봉투 verify --allow-expired --stamp → make-envelope
+        --prev-envelope → 새 봉투 verify(출발 seq 전수) --stamp. 위조 현재 봉투 = 증표 0 = 상속 0."""
+        e1 = self.envelope(self.b, "cur.json")
+        later = NOW + 15 * 86400  # 현재 봉투는 만료(주간 재서명이 늦은 경우)
+        env = dict(os.environ, CYS_UPDATE_TEST_KEYRING=self.fx.keyring, CYS_UPDATE_STATE_DIR=self.state,
+                   CYS_UPDATE_NOW=str(later), CYS_TEST_NOW=str(later))
+
+        def verify(e, *extra):
+            return py("release-gate.py", "verify", "--cys", VERIFY_BIN, "--component", "cysr", "--channel", "stable",
+                      "--envelope", e, "--sig", e + ".minisig", "--revocations", self.rev,
+                      "--revocations-sig", self.rev + ".minisig", "--stamp", "--expect", "apply,halt,not_in_rollout",
+                      *extra, env=env)
+        r = verify(e1)
+        self.assertEqual(r.returncode, 1, "만료 봉투는 --allow-expired 없이는 통과하면 안 된다")
+        r = verify(e1, "--allow-expired")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        e2 = os.path.join(self.tmp, "env2.json")
+        r = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", self.b,
+               "--release-sig", self.b + ".minisig", "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring,
+               "--prev-envelope", e1, "--out", e2, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.load(open(e2))["feed_rev"], 2)
+        fm.sign(self.fx.key("f"), e2, e2 + ".minisig", "t")
+        r = verify(e2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1,2,3,4,5", r.stdout)
+        # 위조 현재 봉투(feed_rev 1000 · halt · rollout 0 · F 아닌 키 서명) → 검증 거부 · 증표 0 → 생성기 거부
+        forged = os.path.join(self.tmp, "forged.json")
+        d = json.load(open(e1))
+        d.update(feed_rev=1000, halt=True, rollout_pct=0)
+        open(forged, "wb").write(uc.dump_json_bytes(d))
+        fm.sign(self.fx.key("u"), forged, forged + ".minisig", "t")
+        r = verify(forged, "--allow-expired")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertFalse(os.path.exists(uc.stamp_path(forged)))
+        r = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", self.b,
+               "--release-sig", self.b + ".minisig", "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring,
+               "--prev-envelope", forged, "--out", os.path.join(self.tmp, "env3.json"), env=env)
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "env3.json")))
+
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("codesign") and VERIFY_BIN,
                      "맥 재료 수집기 = codesign + build-info 가진 cys(CYS_UPDATE_VERIFY_BIN) 필요")
@@ -898,6 +940,22 @@ class TestSourcePins(unittest.TestCase):
             self.assertEqual(list(got), [pack["key_id"]])  # root·release·feed 키는 팩 기준에서 빠진다
         finally:
             shutil.rmtree(d)
+
+    def test_refresh_feed_workflow_shape(self):
+        """2판(codex 1R #6·#9·#11·#16): CI = 생성+검증+아티팩트 · 게시·사이트 비밀 0 · 현재 봉투 검증이 상속보다 먼저."""
+        s = open(os.path.join(ROOT, ".github", "workflows", "refresh-feed.yml"), encoding="utf-8").read()
+        body = "\n".join(l for l in s[s.index("\njobs:"):].splitlines() if not l.lstrip().startswith("#"))
+        import re
+        self.assertEqual(sorted(set(re.findall(r"secrets\.([A-Z_]+)", body))),
+                         ["CYS_FEED_SIGNING_PRIVATE_KEY", "CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD"])
+        for bad in ("wrangler", "git push", "publish-site.py", "--installed-release-seq", "AI_JARVIS", "CLOUDFLARE",
+                    "inputs.publish"):
+            self.assertNotIn(bad, body, bad)
+        cur = body.index("--envelope feed/cur.json")
+        self.assertIn("--allow-expired --stamp", body[cur:cur + 300])
+        self.assertLess(cur, body.index("make-envelope.py"))
+        self.assertLess(body.index("make-envelope.py"), body.index("--envelope feed/env.json"))
+        self.assertIn("feed/env.json.verified.json", body)
 
     def test_nsis_lock_token_hook(self):
         s = open(os.path.join(ROOT, "src-tauri", "nsis-hooks.nsh"), encoding="utf-8").read()

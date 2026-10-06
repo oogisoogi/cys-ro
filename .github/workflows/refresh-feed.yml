@@ -1,24 +1,23 @@
-# refresh-feed — 자동 갱신 봉투(F) 재서명·게시(1.1.8 U3 · 설계 AUTO-UPDATE-118 §4-1 F 행 · §4-2 feed_rev · §6-1 봉투 표)
+# refresh-feed — 자동 갱신 봉투(F) 재서명(1.1.8 U3 · 설계 AUTO-UPDATE-118 §4-1 F 행 · §4-2 feed_rev · §6-1 봉투 표)
 #
 # 하는 일: 사이트에 게시된 봉투(`https://jarvis.godmeyou.kr/update/<component>/<channel>.json`)를 받아
-#   feed_rev +1 · signed_at = 지금 · expires_at = 지금 + 14일로 **다시 만들고**(본문 = U 서명 원문 그대로 · F 는 내용을
-#   바꿀 수 없다) F 키로 서명 → U1 `cys update-verify` 로 검증 → (게시 스위치가 켜졌을 때만) 사이트에 게시.
+#   ① **현재 봉투 쌍을 먼저 U1 `cys update-verify` 로 검증**(만료만 허용 · 통과 증표) — 검증된 봉투에서만 feed_rev·
+#   rollout_pct·halt·본문을 상속한다(codex 1R #6 · 위조 현재 봉투의 권한 세탁 차단) ② feed_rev +1 · signed_at = 신뢰 시각 ·
+#   expires_at = +14일로 **다시 만들고**(본문 = U 서명 원문 그대로 · F 는 내용을 바꿀 수 없다) F 키로 서명 ③ 새 봉투를 같은
+#   검증기로 **허용 출발 seq 전부**에 대해 검증(가짜 설치 seq 0 금지 · codex 1R #11) ④ 서명 쌍 + 통과 증표를 아티팩트로 남긴다.
 #   · 주 1회(cron) = 만료 연장만(rollout_pct·halt 는 이어받음) · 발행 때(workflow_dispatch + release_seq) = 새 본문을
-#     불변 보관소(`/update/<c>/releases/<seq>.json`)에서 받아 싣는다 · 단계 배포·비상 정지 = dispatch 의 rollout_pct·halt.
+#     불변 보관소(`/update/<c>/releases/<seq>.json`)에서 받아 싣는다(본문 U 서명은 생성기가 암호 검증) · 단계 배포·비상 정지 =
+#     dispatch 의 rollout_pct·halt.
 #
-# fail-safe(설계 「실패 = 이전 봉투 유지」): 게시 전 어느 단계든 실패하면 사이트는 그대로다(아무것도 안 올림) · 잡 실패 =
-#   GitHub 실패 알림 = 신호. 게시 순서 = **배포 먼저 → 사이트 저장소 push 나중**: 배포가 실패하면 push 0(저장소·라이브 둘 다
-#   옛 봉투) · 배포 뒤 push 가 실패해도 다음 회차는 라이브 봉투를 직전으로 삼으므로 feed_rev 가 꼬이지 않는다.
+# ⛔ 이 워크플로는 **게시하지 않는다**(2판 · master 결정 ① [master#8db3b908] · codex 1R #9·#16): CI = 생성 + 검증 + 아티팩트.
+#   게시 = master 가 아티팩트를 받아 `/update/*` 전용 워커의 R2 에 `publish-site.py … --r2`(증표 없으면 게시기가 거부) →
+#   라이브 대조(HANDOFF-U3 §1 ③). 그래서 이 잡에는 사이트·Cloudflare·사이트 저장소 비밀이 **없다**.
+#   fail-safe(설계 「실패 = 이전 봉투 유지」): 어느 단계든 실패 = 아티팩트 0 = 게시할 것 0 · 잡 실패 = GitHub 실패 알림 = 신호.
 #   봉투가 7일 넘게 갱신되지 않으면 기기 쪽 daily 칸이 잡는다(§4-6 「재생·동결」).
-#
-# ⛔ 이 워크플로는 기본적으로 **아무것도 게시하지 않는다**: 게시 = dispatch 의 publish=true, 또는 cron 이면 저장소 변수
-#   `UPDATE_FEED_PUBLISH` = 'on'. 첫 게시(봉투·폐기문·보관소)·스위치 켜기 = master 집행(비가역 · HANDOFF-U3 §1).
 #
 # 비밀(이름만 · 값 = master 가 GitHub 설정에 넣는다 — 이 파일·저장소에 값 0):
 #   CYS_FEED_SIGNING_PRIVATE_KEY · CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD  F 키(tauri signer 키 파일 전문 · 팩 키와 같은 형식)
-#   AI_JARVIS_PUSH_TOKEN                                                  사이트 원본 저장소(oogisoogi/ai-jarvis) 쓰기
-#   CLOUDFLARE_API_TOKEN · CLOUDFLARE_ACCOUNT_ID                          사이트 워커(jarvis-site) 배포
-# 변수: CYS_FEED_KEY_ID(F key id · 키링 purpose=feed 에 있어야 함) · UPDATE_FEED_PUBLISH('on' = cron 게시)
+# 변수: CYS_FEED_KEY_ID(F key id · 키링 purpose=feed 에 있어야 함)
 name: refresh-feed
 
 on:
@@ -53,16 +52,12 @@ on:
         description: '이 (component, channel) 의 첫 봉투(게시된 봉투 없음 · feed_rev 1) — master 첫 게시 때만'
         type: boolean
         default: false
-      publish:
-        description: '게시(false = 만들고 검증만 · 아티팩트로 남김)'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: refresh-feed   # 모든 봉투가 같은 사이트를 배포한다 — 한 번에 하나
+  group: refresh-feed   # 봉투 feed_rev 는 라이브 봉투 + 1 — 한 번에 하나
   cancel-in-progress: false
 
 env:
@@ -132,6 +127,28 @@ jobs:
           fi
           echo "skip=0" >> "$GITHUB_OUTPUT"
 
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+      - uses: swatinem/rust-cache@v2
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+
+      - name: Build the one verifier (cys update-verify · 내장 키링 출시 빌드)
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+        shell: bash
+        run: cargo build --release --bin cys
+
+      - name: Verify the CURRENT envelope before inheriting from it (codex 1R #6)
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0' && steps.fetch.outputs.have == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 지금 게시된 봉투 쌍 = 상속 원천. 만료(ⓔ)만 허용 — 그 밖의 거부(서명·서식·URL·폐기·feed_rev)는 실패 = 상속 0.
+          # 통과 증표(feed/cur.json.verified.json)가 없으면 make-envelope 가 --prev-envelope 를 거부한다.
+          python3 scripts/update/release-gate.py verify --cys target/release/cys \
+            --component "$C" --channel "$CH" --envelope feed/cur.json --sig feed/cur.json.minisig \
+            --revocations feed/rev.json --revocations-sig feed/rev.json.minisig \
+            --allow-expired --stamp --expect apply,halt,not_in_rollout
+
       - name: Build envelope (unsigned)
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
         shell: bash
@@ -149,7 +166,7 @@ jobs:
           print("F key %s ∈ 내장 키링 feed" % sys.argv[1])
           PY
           args=(--component "$C" --channel "$CH" --release-body feed/body.json --release-sig feed/body.json.minisig
-                --key-id "$F_KEY_ID" --out feed/env.json)
+                --key-id "$F_KEY_ID" --keyring cysjavis-pack/trusted-keys.json --out feed/env.json)
           if [ "${{ steps.fetch.outputs.have }}" = "1" ]; then args+=(--prev-envelope feed/cur.json); else args+=(--first); fi
           [ -z "$IN_ROLLOUT" ] || args+=(--rollout-pct "$IN_ROLLOUT")
           [ -z "$IN_HALT" ] || args+=(--halt "$IN_HALT")
@@ -176,23 +193,19 @@ jobs:
           rm -f feed/env.json.sig
           python3 -c 'import sys; sys.path.insert(0,"scripts/update"); import update_common as uc; k=uc.sig_key_id(open("feed/env.json.minisig").read()); assert k==sys.argv[1], (k, sys.argv[1]); print("서명 key id =", k)' "$F_KEY_ID"
 
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
-      - uses: swatinem/rust-cache@v2
-        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
-
-      - name: Verify with the one verifier (cys update-verify · 내장 키링 출시 빌드)
+      - name: Verify the NEW envelope (cys update-verify · 허용 출발 seq 전부)
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --bin cys
-          # 기기는 아무 판에서나 이 봉투를 본다 — installed 0 기준으로 서명·서식·URL 전부 통과해야 한다.
+          # 기기는 허용 출발 seq(min_from_release_seq..release_seq-1)의 아무 판에서나 이 봉투를 본다 — 그 전부에서
+          #   서명·서식·URL 이 통과해야 한다(--installed-release-seq 를 주지 않는다 = 가짜 설치 seq 0 금지 · codex 1R #11).
           #   halt=true 또는 rollout<100 이면 판정이 halt/not_in_rollout 인 것이 정상(거부·판정 불가만 실패).
+          #   통과 증표(feed/env.json.verified.json) = 게시기(publish-site.py)가 요구하는 입장권.
           python3 scripts/update/release-gate.py verify --cys target/release/cys \
             --component "$C" --channel "$CH" --envelope feed/env.json --sig feed/env.json.minisig \
             --revocations feed/rev.json --revocations-sig feed/rev.json.minisig \
-            --installed-release-seq 0 --expect apply,halt,not_in_rollout
+            --stamp --expect apply,halt,not_in_rollout
 
       - name: Keep the signed envelope as an artifact
         if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
@@ -202,36 +215,4 @@ jobs:
           path: |
             feed/env.json
             feed/env.json.minisig
-
-      - name: Publish (deploy first · push after) — switch-gated
-        if: >-
-          steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0' &&
-          ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
-           (github.event_name == 'schedule' && vars.UPDATE_FEED_PUBLISH == 'on'))
-        shell: bash
-        env:
-          AI_JARVIS_PUSH_TOKEN: ${{ secrets.AI_JARVIS_PUSH_TOKEN }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          test -n "${AI_JARVIS_PUSH_TOKEN:-}" && test -n "${CLOUDFLARE_API_TOKEN:-}" \
-            || { echo "::error::게시 비밀 미설정 — 게시 0(이전 봉투 유지)"; exit 1; }
-          git clone --depth 1 "https://x-access-token:${AI_JARVIS_PUSH_TOKEN}@github.com/oogisoogi/ai-jarvis.git" site-repo
-          python3 scripts/update/publish-site.py envelope --site-dir site-repo/site --file feed/env.json
-          ( cd site-repo && bash web/build-web.sh >/dev/null && cd web && bunx wrangler@3 deploy )
-          # 라이브 대조(배포 반영 대기 최대 60초) — 다르면 실패 = 신호(저장소 push 0).
-          want="$(sha256sum feed/env.json | cut -d' ' -f1)"
-          for i in 1 2 3 4 5 6; do
-            got="$(curl -fsS "$SITE/update/$C/$CH.json" | sha256sum | cut -d' ' -f1 || true)"
-            [ "$got" = "$want" ] && break
-            sleep 10
-          done
-          [ "$got" = "$want" ] || { echo "::error::라이브 봉투 sha256 불일치(배포 반영 안 됨) — 저장소 push 0"; exit 1; }
-          cd site-repo
-          git config user.name "refresh-feed[bot]"
-          git config user.email "refresh-feed@users.noreply.github.com"
-          git add "site/update/$C/$CH.json" "site/update/$C/$CH.json.minisig"
-          git commit -q -m "update feed: $C/$CH feed_rev $(python3 -c 'import json; print(json.load(open("../feed/env.json"))["feed_rev"])')"
-          git push -q origin HEAD
-          echo "✅ 게시 — $C/$CH · sha256 $want"
+            feed/env.json.verified.json

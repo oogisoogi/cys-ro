@@ -34,6 +34,11 @@ env:
   #   전파 지점: 이 파일의 build(Windows 직접 빌드)·pack-artifacts(signer sign) +
   #   scripts/build-macos-signed.sh(로컬 동치 기본값 — CI 는 이 env 가 덮는다). 값 변경은 세 곳 동시.
   TAURI_CLI_VERSION: '2.11.4'
+  # ★1.1.8 U3 2판(codex 1R #1 · master 결정 ② [master#8db3b908]): 자동 갱신 릴리스 순번. U1 build.rs 가 이 env 를
+  #   바이너리(build-info release_seq)에 굽는다 — 비면 0 이 구워져 본문 생성기가 「build-info release_seq ≠」 로 거부한다.
+  #   값 = 저장소 변수(태그 전 master 가 「보관소 최댓값 + 1」로 갱신 · HANDOFF-U3 §1 「R-의식 전 seq 변수 갱신」).
+  #   cys 를 빌드하는 두 잡(build · pack-artifacts)의 스텝 「CYSR_RELEASE_SEQ 정수 ≥1」 이 비거나 0 이면 빌드 전에 실패시킨다.
+  CYSR_RELEASE_SEQ: ${{ vars.CYSR_RELEASE_SEQ }}
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════════════
@@ -153,7 +158,7 @@ jobs:
       PYTHONUTF8: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       # ★cysr 1.0.0 build_id(TICKET=cysr-brand-version · master 결정 2026-09-15): 같은 판번 안에서 내용이
       #   바뀐 발행을 업데이터가 구별하는 표식. 형식 = `<커밋 12자>.<커밋 시각 UTC yyyymmddTHHMMZ>`.
@@ -168,6 +173,15 @@ jobs:
           [[ "$BID" =~ ^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$ ]] || { echo "::error::build_id 형식 오류: $BID"; exit 1; }
           echo "CYSR_BUILD_ID=$BID" >> "$GITHUB_ENV"
           echo "build_id=$BID"
+      # ★1.1.8 U3 2판(codex 1R #1): 자동 갱신 릴리스 순번이 정수 ≥1 이 아니면 빌드 전에 실패 — 0 이 구워진 바이너리로는
+      #   자동 갱신 본문을 만들 수 없는데(생성기 거부) 그 사실이 발행 의식에서야 드러나면 빌드 전부가 버려진다.
+      - name: CYSR_RELEASE_SEQ 정수 ≥1 (빌드 전 · vars.CYSR_RELEASE_SEQ)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${CYSR_RELEASE_SEQ:-}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::CYSR_RELEASE_SEQ='${CYSR_RELEASE_SEQ:-}' — 정수 ≥1 아님(저장소 변수 = 보관소 최댓값 + 1 · HANDOFF-U3 §1)"; exit 1; }
+          echo "release_seq=$CYSR_RELEASE_SEQ"
       # ★(0.14.31 통합 · CONTRACTS E-4 ② 확장 · 마스터 결정 2026-09-08) 이 잡의 python 을
       #   **3.12 로 고정**한다 — ci-branch.yml 잡1(:439)·잡2·windows-health.yml 과 같은 핀이다.
       #   왜: 이 잡의 팩 검체 스텝들은 러너 이미지 기본 python3 로 돌고 있었다. 즉 같은 스위트를
@@ -178,7 +192,7 @@ jobs:
       #   python 은 prep-mac-runtime.sh 가 python-build-standalone 3.12.13 을 따로 내려받고
       #   precompile-bundled-python.sh 가 **동봉 인터프리터 자신**으로 컴파일한다(호스트 무관).
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
@@ -323,7 +337,7 @@ jobs:
 
       # 프런트엔드 번들러(ui/build.sh가 bun 사용). beforeBuildCommand가 bun을 호출하므로 PATH 필수.
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
 
       # UI 회귀 게이트 — 한글 IME 리듀서(ui/src/ime.ts) 프로필 A/B/C/Windows 시퀀스 테스트.
       # 실패=릴리스 차단. 배경: WKWebView 프로필별 자모 유출·이중전송 재발 방지(fix/ime-hybrid-profile).
@@ -335,12 +349,13 @@ jobs:
         run: cd ui && bun test
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d  # stable
         with:
+          toolchain: stable  # SHA 핀이면 ref 이름으로 판을 못 고른다 — 명시
           targets: ${{ matrix.target }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2
         with:
           workspaces: './src-tauri -> target'
           key: ${{ matrix.target }}
@@ -858,6 +873,20 @@ jobs:
             python3 "$f"
           done
 
+      # (cysr 1.1.8 U3) 발행 쪽 스크립트 시험 — ci-branch·pack-release 와 같은 커밋 3레인 대칭(게이트 소비 레인이 셋 다).
+      #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(위 4종 스텝과 같은 관례).
+      #   ★2판(codex 1R #17): 디버그 cys(update-verify)를 U1 왕복 검증기로 주입 + CYS_U3_REQUIRE_ALL=1(건너뜀 = 실패) ·
+      #   U1 머지 전엔 적색 = 의도.
+      - name: 발행 쪽 U3 스크립트 (test_update_publish · macOS 전용)
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_update_publish.py"
+          [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          cargo build --bin cys
+          CYS_UPDATE_VERIFY_BIN="$PWD/target/debug/cys" CYS_U3_REQUIRE_ALL=1 python3 "$f"
+
       - name: Import Developer ID into ephemeral keychain (macOS 전용)
         if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'
         shell: bash
@@ -894,6 +923,8 @@ jobs:
             rm -rf "$TD/.fingerprint"/cys-* "$TD"/cys "$TD"/cysd "$TD"/cys-app* "$TD"/deps/cys* 2>/dev/null || true
           done
           bash scripts/build-macos-signed.sh "$TRIPLE"
+          # ★1.1.8 U3 발행 게이트(assets · 동봉 팩 매니페스트 min_binary 빈 값 = 거부 · bundle-prep.sh 수리의 이중 벨트).
+          python3 scripts/update/release-gate.py assets --bundled-manifest src-tauri/resources/pack-manifest.json
           # ★경로 정규화 — 스크립트는 네이티브(호스트=타깃) 빌드에서 target/release/bundle 을 쓰지만,
           #   아래 tauri-action(tauriScript=true·args --target)은 target/<triple>/release/bundle 에서 수집한다.
           #   러너=arm64 → aarch64 레그가 네이티브라 이 불일치가 실재한다(비대칭 실패 방지 — 기획 §8-3).
@@ -1091,6 +1122,8 @@ jobs:
           echo "✓ NSIS 빌드 로그 가드 통과: 훅 컴파일 가드 문자열 0건 (nsis-build.log $(wc -l <nsis-build.log | tr -d ' ')줄)"
           # ② CRT 게이트 — 업로드 전 최종 바이트 검증
           PY=python; command -v python3 >/dev/null 2>&1 && PY=python3
+          # ★1.1.8 U3 발행 게이트(assets · 동봉 팩 매니페스트 min_binary 빈 값 = 거부 — 맥 레그와 대칭).
+          "$PY" scripts/update/release-gate.py assets --bundled-manifest src-tauri/resources/pack-manifest.json
           # ★R1-repair(2026-08-29): 게이트 **도구 자체**의 밀폐 스위트를 소비 직전에 돌린다 —
           #   scripts/tests/test_verify_win_crt.py 는 W4-C 편입 후 어느 CI 레인에서도 0회
           #   실행이었다("안 도는 검체는 게이트가 아니다"). 합성 PE 픽스처·tempfile 만 사용(러너
@@ -1126,6 +1159,28 @@ jobs:
       #   "세 산출물 모두 수치 VERSIONINFO == 릴리스 버전"을 단언하는 2차 오라클이다(레인 변경·
       #   가드 회귀에도 생존). 수치 = VS_FIXEDFILEINFO(File{Major,Minor,Build,Private}Part) —
       #   GetDLLVersion/!getdllversion 이 읽는 바로 그 DWORD 다(문자열 FileVersion 이 아니다).
+      # ★1.1.8 U3 자동 갱신 본문 재료(윈 · 설계 §6-1 · §3-7 ①): 방금 만든 설치기를 러너의 빈 임시 폴더에 무인 설치해
+      #   payload_manifest 재료(설치기가 실제로 놓는 바이트)와 설치된 cys.exe build-info 를 아티팩트로 남긴다. 본문 생성
+      #   (scripts/update/make-release-json.py)은 발행 의식 때 master 가 이 아티팩트로 한다.
+      #   ★2판(codex 1R #18): 실패 = 릴리스 실패(continue-on-error 삭제) — 윈 행 재료가 없는 판은 자동 갱신 본문을 못 만든다.
+      #   payload 는 설치 트리 **전수**(제외 = U2 와 공유하는 명시 규칙 scripts/update/payload-exclude.txt 만 · 수집기 무삭제).
+      - name: 자동 갱신 본문 재료 수집 (윈 · payload·build-info)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETUP=(target/${{ matrix.target }}/release/bundle/nsis/cysr_*_x64-setup.exe)
+          [ ${#SETUP[@]} -eq 1 ] && [ -f "${SETUP[0]}" ] || { echo "::error::setup.exe 후보 이상: ${SETUP[*]}"; exit 1; }
+          bash scripts/update/collect-inputs.sh win "${SETUP[0]}" "$RUNNER_TEMP/update-inputs"
+
+      - name: 자동 갱신 본문 재료 업로드 (윈)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: update-inputs-windows-x64
+          path: ${{ runner.temp }}/update-inputs
+          if-no-files-found: error
+
       - name: Windows VERSIONINFO 게이트 (cys·cysd·cys-app 수치 버전 == 릴리스 버전)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -1195,7 +1250,7 @@ jobs:
         #   tauri-action 이 **빈손으로 성공**하거나 재빌드를 시도한다(둘 다 거짓 초록의 경로다).
         #   Windows 레그는 이 조건과 무관하게 항상 돈다.
         if: matrix.platform != 'macos-latest' || steps.macsign.outputs.enabled == 'true'
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # action-v0.6.2 (= v0 가 가리키던 커밋)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CYS_TARGET: ${{ matrix.target }}    # bundle-prep.sh가 매트릭스 타깃으로 사이드카(cys-<target>)를 크로스 빌드
@@ -1291,7 +1346,7 @@ jobs:
       #   표면을 지시하면 1.1.8 로 올려야 한다 — 판번 SOT 단계 결정(병합 갈림 R2 · pack-release.yml 과 동시).
       PACK_MIN_BINARY: '1.1.7'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       # ★cysr 1.0.0 build_id(TICKET=cysr-brand-version · master 결정 2026-09-15): 같은 판번 안에서 내용이
       #   바뀐 발행을 업데이터가 구별하는 표식. 형식 = `<커밋 12자>.<커밋 시각 UTC yyyymmddTHHMMZ>`.
@@ -1306,6 +1361,15 @@ jobs:
           [[ "$BID" =~ ^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$ ]] || { echo "::error::build_id 형식 오류: $BID"; exit 1; }
           echo "CYSR_BUILD_ID=$BID" >> "$GITHUB_ENV"
           echo "build_id=$BID"
+      # ★1.1.8 U3 2판(codex 1R #1): 자동 갱신 릴리스 순번이 정수 ≥1 이 아니면 빌드 전에 실패 — 0 이 구워진 바이너리로는
+      #   자동 갱신 본문을 만들 수 없는데(생성기 거부) 그 사실이 발행 의식에서야 드러나면 빌드 전부가 버려진다.
+      - name: CYSR_RELEASE_SEQ 정수 ≥1 (빌드 전 · vars.CYSR_RELEASE_SEQ)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${CYSR_RELEASE_SEQ:-}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::CYSR_RELEASE_SEQ='${CYSR_RELEASE_SEQ:-}' — 정수 ≥1 아님(저장소 변수 = 보관소 최댓값 + 1 · HANDOFF-U3 §1)"; exit 1; }
+          echo "release_seq=$CYSR_RELEASE_SEQ"
       # ★(0.14.31 통합 · CONTRACTS E-4 ② 확장 · 마스터 결정 2026-09-08) 이 잡의 python 을
       #   **3.12 로 고정**한다 — ci-branch.yml 잡1(:439)·잡2·windows-health.yml 과 같은 핀이다.
       #   왜: 이 잡의 팩 검체 스텝들은 러너 이미지 기본 python3 로 돌고 있었다. 즉 같은 스위트를
@@ -1316,7 +1380,7 @@ jobs:
       #   python 은 prep-mac-runtime.sh 가 python-build-standalone 3.12.13 을 따로 내려받고
       #   precompile-bundled-python.sh 가 **동봉 인터프리터 자신**으로 컴파일한다(호스트 무관).
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
@@ -1346,13 +1410,15 @@ jobs:
           python3 "$R" --only H-SECRET-1
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d  # stable
+        with:
+          toolchain: stable  # SHA 핀이면 ref 이름으로 판을 못 고른다 — 명시
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2
         with:
           key: pack-artifacts
 
@@ -1848,6 +1914,11 @@ jobs:
           base64 --decode pack-manifest.json.sig > pack-manifest.json.minisig
           echo "── pack-manifest.json.minisig (head) ──"; head -2 pack-manifest.json.minisig
 
+      # ★1.1.8 U3 발행 게이트(assets · TICKETS ★U3 추가): 서명된 팩 매니페스트 min_binary_version 빈 값 = 발행 거부
+      #   (U1 D23 cutover 2026-11-01T00:00Z 뒤 빈 값 서명 = 1.1.8+ 기기 전량 거부 — 앞단에서 막는다). pack-release.yml 과 대칭.
+      - name: Release gate — pack manifest min_binary non-empty
+        run: python3 scripts/update/release-gate.py assets --pack-manifest pack-manifest.json
+
       # ★실서명→실검증 폐포 게이트(릴리스 전 결정론 검증). 방금 PRODUCTION 서명기
       # (bunx @tauri-apps/cli signer → base64 --decode → .minisig)가 낸 실제 아티팩트를
       # PRODUCTION 검증기(cys pack-update → packsig::verify_minisign → minisign_verify)에
@@ -1891,7 +1962,7 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Stamp build_id into draft latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

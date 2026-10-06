@@ -23,7 +23,7 @@
 
 1. **팩 키링이 업데이터 공개키에서 떨어졌다.** 종전 `build.rs` 는 `tauri.conf.json` 의 updater pubkey 를 `cysjavis-pack/trusted-keys.json` 의 빈 `pubkey` 칸에 주입했다. 업데이터 키를 A2 로 바꾸면 그 주입이 팩 키 항목(`54FB…`)에 **A2 공개키**를 넣어, 옛 키로 서명한 팩이 전부 거부됐을 것이다. 이제 공개키는 `trusted-keys.json` 에 명시돼 있고 주입은 없다. 빈 pubkey·형식이 틀린 key_id 는 빌드를 죽인다.
 2. **시험이 키링 정합을 잰다** (`cargo test --lib packsig`): 모든 항목의 key_id == 공개키에서 파생한 key_id · 내장 키링 == 파일 원문(주입 재발 검출) · 업데이터 브리지 3판정 · 팩 이중 신뢰.
-3. **발행 게이트** (`scripts/release-verify.py` 7-b): 업데이터 서명(.sig) **전부**의 key id 가 **직전 공개 판 태그의 `tauri.conf.json` pubkey** key id 와 같아야 발행된다. `release-publish.yml` 두 잡이 직전 판 태그의 conf 를 꺼내 `--prev-tauri-conf` 로 넘긴다. 1.0.0 을 A2 로 서명하는 실수도, 1.0.1 을 옛 키로 서명하는 실수도 여기서 죽는다.
+3. **발행 게이트** (`scripts/release-verify.py` 7-b): 업데이터 서명(.sig) **전부**의 key id 가 **직전 공개 판 태그의 `tauri.conf.json` pubkey** key id 와 같고 그 pubkey 로 자산 바이트 **암호 검증**(1.1.8 U3 2판 · 직전 conf 에 updater 블록이 없으면 A2 고정 공개키 `scripts/update/update_common.py` `A2_PUBKEY`)을 통과해야 발행된다. `release-publish.yml` 두 잡이 직전 판 태그의 conf 를 꺼내 `--prev-tauri-conf` 로 넘긴다. 1.0.0 을 A2 로 서명하는 실수도, 1.0.1 을 옛 키로 서명하는 실수도 여기서 죽는다.
    - 사거리: key id 대조까지다. 서명의 암호학적 진위는 CI 실서명 경로와 앱 업데이터가 진다.
 4. **공개키 기입 도구** `scripts/key-bridge-install.py`: A2·P2 공개키 파일을 받아 두 파일을 한 번에 고친다(비밀키는 받지 않는다). 거부 조건은 스크립트 머리말 참조 — 거부되면 파일은 바뀌지 않는다.
 

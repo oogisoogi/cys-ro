@@ -52,7 +52,13 @@ else
 fi
 
 mkdir -p src-tauri/resources
-"$manifest_cys" pack-manifest > src-tauri/resources/pack-manifest.json
+# ★min_binary 빈 값 금지(1.1.8 U3 · TICKETS ★U3 추가 · U1 HANDOFF §3): 종전 이 줄은 --min-binary-version 없이 불러
+#   동봉 manifest 의 min_binary_version 이 빈 문자열이었다(cys pack-manifest 기본값 · 윈 %LOCALAPPDATA%\cys\pack-manifest.json
+#   이 그 사본). 값 = CYS_PACK_MIN_BINARY(발행 레인이 서명 레인 PACK_MIN_BINARY 와 같은 값을 줄 때) → 없으면 이 앱 자신의
+#   판(Cargo.toml version — 이 앱 안에 동봉된 팩은 이 앱 바이너리에서 늘 돈다 = 언제나 참인 하한). 비면 빌드 중단.
+min_binary="${CYS_PACK_MIN_BINARY:-$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)}"
+[ -n "$min_binary" ] || { echo "bundle-prep: min_binary 빈 값 — 동봉 팩 매니페스트를 만들 수 없다(CYS_PACK_MIN_BINARY 또는 Cargo.toml version)" >&2; exit 1; }
+"$manifest_cys" pack-manifest --min-binary-version "$min_binary" > src-tauri/resources/pack-manifest.json
 "$PY" - <<'PY'
 import gzip, hashlib, io, json, os, sys, tarfile
 

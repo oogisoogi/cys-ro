@@ -1,0 +1,217 @@
+# refresh-feed — 자동 갱신 봉투(F) 재서명(1.1.8 U3 · 설계 AUTO-UPDATE-118 §4-1 F 행 · §4-2 feed_rev · §6-1 봉투 표)
+#
+# 하는 일: 사이트에 게시된 봉투(`https://jarvis.godmeyou.kr/update/<component>/<channel>.json`)를 받아
+#   ① **현재 봉투 쌍을 U1 `cys update-verify` 로 직접 다시 검증**(make-envelope 안 · 만료만 허용 · 증표 신뢰 0) — 검증된 봉투에서만
+#   feed_rev·rollout_pct·halt·본문을 상속한다(codex 1R/2R #6 · 위조 현재 봉투의 권한 세탁 차단) ② feed_rev +1 · signed_at = 신뢰 시각 ·
+#   expires_at = +14일로 **다시 만들고**(본문 = U 서명 원문 그대로 · F 는 내용을 바꿀 수 없다) F 키로 서명 ③ 새 봉투를 같은
+#   검증기로 **허용 출발 seq 전부**에 대해 검증(가짜 설치 seq 0 금지 · codex 1R #11) ④ 서명 쌍 + 통과 증표를 아티팩트로 남긴다.
+#   · 주 1회(cron) = 만료 연장만(rollout_pct·halt 는 이어받음) · 발행 때(workflow_dispatch + release_seq) = 새 본문을
+#     불변 보관소(`/update/<c>/releases/<seq>.json`)에서 받아 싣는다(본문 U 서명은 생성기가 암호 검증) · 단계 배포·비상 정지 =
+#     dispatch 의 rollout_pct·halt.
+#
+# ⛔ 이 워크플로는 **게시하지 않는다**(2판 · master 결정 ① [master#8db3b908] · codex 1R #9·#16): CI = 생성 + 검증 + 아티팩트.
+#   게시 = master 가 아티팩트를 받아 `/update/*` 전용 워커의 R2 에 `publish-site.py envelope --r2 … --cys <U1 cys>`(게시기가 U1 재검증) →
+#   라이브 대조(HANDOFF-U3 §1 ③). 그래서 이 잡에는 사이트·Cloudflare·사이트 저장소 비밀이 **없다**.
+#   fail-safe(설계 「실패 = 이전 봉투 유지」): 어느 단계든 실패 = 아티팩트 0 = 게시할 것 0 · 잡 실패 = GitHub 실패 알림 = 신호.
+#   봉투가 7일 넘게 갱신되지 않으면 기기 쪽 daily 칸이 잡는다(§4-6 「재생·동결」).
+#
+# 비밀(이름만 · 값 = master 가 GitHub 설정에 넣는다 — 이 파일·저장소에 값 0):
+#   CYS_FEED_SIGNING_PRIVATE_KEY · CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD  F 키(tauri signer 키 파일 전문 · 팩 키와 같은 형식)
+# 변수: CYS_FEED_KEY_ID(F key id · 키링 purpose=feed 에 있어야 함)
+name: refresh-feed
+
+on:
+  schedule:
+    - cron: '17 0 * * 1'   # 매주 월 00:17 UTC(09:17 KST) — 14일 유효창의 절반 주기
+  workflow_dispatch:
+    inputs:
+      component:
+        description: 부품
+        type: choice
+        options: [cysr, agora-client]
+        default: cysr
+      channel:
+        description: 채널
+        type: choice
+        options: [stable, next]
+        default: next
+      release_seq:
+        description: '새로 실을 릴리스 seq(빈 값 = 지금 봉투의 본문 그대로 · 만료만 연장)'
+        required: false
+        default: ''
+      rollout_pct:
+        description: '단계 배포 비율 0~100(빈 값 = 이어받음 · 첫 봉투는 필수)'
+        required: false
+        default: ''
+      halt:
+        description: '비상 정지(빈 값 = 이어받음)'
+        type: choice
+        options: ['', 'true', 'false']
+        default: ''
+      first:
+        description: '이 (component, channel) 의 첫 봉투(게시된 봉투 없음 · feed_rev 1) — master 첫 게시 때만'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-feed   # 봉투 feed_rev 는 라이브 봉투 + 1 — 한 번에 하나
+  cancel-in-progress: false
+
+env:
+  TAURI_CLI_VERSION: '2.11.4'
+  SITE: https://jarvis.godmeyou.kr
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # ★3판(codex 2R #9 · master 결정): F 비밀은 GitHub environment 「feed」 에만 둔다 — 보호 규칙 = **배포 브랜치 제한만**(main ·
+    #   reviewer 0 = 무료·주간 클릭 0 · 「사람 개입 0」 목표). 다른 가지·PR 워크플로는 이 비밀을 못 읽는다. 액션은 전부 commit SHA 핀.
+    #   잔여 위험(HANDOFF-U3 §6): F 탈취 = 봉투 halt/동결 권한(코드 설치 불가 — 본문 U 서명이 따로) · 완화 = SHA 핀·브랜치 제한·R 로 F 폐기.
+    environment: feed
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        # cron = 네 봉투 전부(게시된 것만 · 없으면 그 레그는 「없음」으로 끝) · dispatch = 고른 하나(나머지 레그는 건너뜀)
+        target:
+          - { component: cysr, channel: stable }
+          - { component: cysr, channel: next }
+          - { component: agora-client, channel: stable }
+          - { component: agora-client, channel: next }
+    env:
+      C: ${{ matrix.target.component }}
+      CH: ${{ matrix.target.channel }}
+    steps:
+      - name: Select leg
+        id: leg
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "$C" = "${{ inputs.component }}" ] && [ "$CH" = "${{ inputs.channel }}" ]; then echo "run=1" >> "$GITHUB_OUTPUT"; else echo "run=0" >> "$GITHUB_OUTPUT"; fi
+          else
+            echo "run=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        if: steps.leg.outputs.run == '1'
+
+      - name: Fetch current envelope · revocations · release body
+        if: steps.leg.outputs.run == '1'
+        id: fetch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p feed && cd feed
+          get() { curl -fsS --proto '=https' --max-redirs 0 -o "$2" "$SITE$1"; }
+          FIRST="${{ github.event_name == 'workflow_dispatch' && inputs.first || false }}"
+          if get "/update/$C/$CH.json" cur.json && get "/update/$C/$CH.json.minisig" cur.json.minisig; then
+            [ "$FIRST" != "true" ] || { echo "::error::first=true 인데 $C/$CH 봉투가 이미 게시돼 있다"; exit 1; }
+            echo "have=1" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$FIRST" != "true" ]; then
+              echo "::notice::$C/$CH 게시된 봉투 없음 — 이 레그는 할 일 없음(첫 게시 = master · first=true)"
+              echo "have=0" >> "$GITHUB_OUTPUT"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "have=0" >> "$GITHUB_OUTPUT"
+          fi
+          get /update/revocations.json rev.json
+          get /update/revocations.json.minisig rev.json.minisig
+          SEQ="${{ github.event_name == 'workflow_dispatch' && inputs.release_seq || '' }}"
+          if [ -n "$SEQ" ]; then
+            [[ "$SEQ" =~ ^[0-9]+$ ]] || { echo "::error::release_seq 정수 아님"; exit 1; }
+            get "/update/$C/releases/$SEQ.json" body.json
+            get "/update/$C/releases/$SEQ.json.minisig" body.json.minisig
+          else
+            [ -f cur.json ] || { echo "::error::첫 봉투는 release_seq 가 필요하다"; exit 1; }
+            python3 -c 'import base64,json; e=json.load(open("cur.json")); open("body.json","wb").write(base64.b64decode(e["release"])); open("body.json.minisig","wb").write(base64.b64decode(e["release_sig"]))'
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d  # stable
+        with:
+          toolchain: stable  # SHA 핀이면 ref 이름으로 판을 못 고른다 — 명시
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+
+      - name: Build the one verifier (cys update-verify · 내장 키링 출시 빌드)
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+        shell: bash
+        run: cargo build --release --bin cys
+
+      - name: Build envelope (unsigned)
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+        shell: bash
+        env:
+          F_KEY_ID: ${{ vars.CYS_FEED_KEY_ID }}
+          IN_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.rollout_pct || '' }}
+          IN_HALT: ${{ github.event_name == 'workflow_dispatch' && inputs.halt || '' }}
+        run: |
+          set -euo pipefail
+          test -n "${F_KEY_ID:-}" || { echo "::error::변수 CYS_FEED_KEY_ID 미설정"; exit 1; }
+          python3 - "$F_KEY_ID" <<'PY'
+          import sys; sys.path.insert(0, "scripts/update")
+          import update_common as uc
+          uc.find_key(uc.load_keyring("cysjavis-pack/trusted-keys.json"), "feed", sys.argv[1])
+          print("F key %s ∈ 내장 키링 feed" % sys.argv[1])
+          PY
+          args=(--component "$C" --channel "$CH" --release-body feed/body.json --release-sig feed/body.json.minisig
+                --key-id "$F_KEY_ID" --keyring cysjavis-pack/trusted-keys.json --out feed/env.json)
+          # 상속(have=1) = make-envelope 가 현재 봉투 쌍을 U1 으로 **직접 다시 검증**한 뒤에만(만료 ⓔ 만 허용 · 증표 신뢰 0 · 3판 2R #6).
+          if [ "${{ steps.fetch.outputs.have }}" = "1" ]; then
+            args+=(--prev-envelope feed/cur.json --cys target/release/cys --revocations feed/rev.json)
+          else
+            args+=(--first)
+          fi
+          [ -z "$IN_ROLLOUT" ] || args+=(--rollout-pct "$IN_ROLLOUT")
+          [ -z "$IN_HALT" ] || args+=(--halt "$IN_HALT")
+          python3 scripts/update/make-envelope.py "${args[@]}"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+
+      - name: Sign envelope (F · tauri signer → minisign text)
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+        shell: bash
+        env:
+          CYS_FEED_SIGNING_PRIVATE_KEY: ${{ secrets.CYS_FEED_SIGNING_PRIVATE_KEY }}
+          CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD }}
+          F_KEY_ID: ${{ vars.CYS_FEED_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "${CYS_FEED_SIGNING_PRIVATE_KEY:-}" || { echo "::error::CYS_FEED_SIGNING_PRIVATE_KEY 미설정 — 봉투 서명 불가(이전 봉투 유지)"; exit 1; }
+          bunx "@tauri-apps/cli@${TAURI_CLI_VERSION}" signer sign \
+            --private-key "$CYS_FEED_SIGNING_PRIVATE_KEY" \
+            --password "${CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+            feed/env.json
+          base64 --decode feed/env.json.sig > feed/env.json.minisig
+          rm -f feed/env.json.sig
+          python3 -c 'import sys; sys.path.insert(0,"scripts/update"); import update_common as uc; k=uc.sig_key_id(open("feed/env.json.minisig").read()); assert k==sys.argv[1], (k, sys.argv[1]); print("서명 key id =", k)' "$F_KEY_ID"
+
+      - name: Verify the NEW envelope (cys update-verify · 허용 출발 seq 전부)
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 기기는 허용 출발 seq(min_from_release_seq..release_seq-1)의 아무 판에서나 이 봉투를 본다 — 그 전부에서
+          #   서명·서식·URL 이 통과해야 한다(--installed-release-seq 를 주지 않는다 = 가짜 설치 seq 0 금지 · codex 1R #11).
+          #   halt=true 또는 rollout<100 이면 판정이 halt/not_in_rollout 인 것이 정상(거부·판정 불가만 실패).
+          #   통과 증표(feed/env.json.verified.json) = 정보용(게시기는 U1 을 직접 다시 돌린다 · 3판).
+          python3 scripts/update/release-gate.py verify --cys target/release/cys \
+            --component "$C" --channel "$CH" --envelope feed/env.json --sig feed/env.json.minisig \
+            --revocations feed/rev.json --revocations-sig feed/rev.json.minisig \
+            --stamp --expect apply,halt,not_in_rollout
+
+      - name: Keep the signed envelope as an artifact
+        if: steps.leg.outputs.run == '1' && steps.fetch.outputs.skip == '0'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: envelope-${{ matrix.target.component }}-${{ matrix.target.channel }}
+          path: |
+            feed/env.json
+            feed/env.json.minisig
+            feed/env.json.verified.json

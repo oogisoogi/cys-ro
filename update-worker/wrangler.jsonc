@@ -1,0 +1,17 @@
+{
+  // update-worker — jarvis.godmeyou.kr/update/* 전용 읽기 워커(1.1.8 U3 2판 · master 결정 ① · 원문 src/index.js 머리말).
+  //   배포·버킷 생성·라우트 연결 = master(외부 계정 · 비가역). 먼저 scripts/update/cf-route-probe.sh 로
+  //   「경로 라우트가 사이트 커스텀 도메인(jarvis-site)보다 먼저 잡히는가」를 실측한 뒤에만 배포한다.
+  "name": "cys-update",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-04",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "jarvis.godmeyou.kr/update/*", "zone_name": "godmeyou.kr" }
+  ],
+  "r2_buckets": [
+    // bucket_name = 【master 결정 자리】 — 정할 때까지 이 값은 존재할 수 없는 이름이라 배포가 실패한다(fail-closed).
+    //   publish-site.py --r2 <같은 이름> 과 같아야 한다.
+    { "binding": "UPDATE_BUCKET", "bucket_name": "MASTER-DECIDES--bucket-name" }
+  ]
+}

@@ -579,7 +579,144 @@ Function cys_on_user_abort
   !insertmacro CYS_ABORT_RESCUE "cys-app" "ua3"
 FunctionEnd
 
+; ── ⓪-a 자동 갱신 잠금 토큰 변수(1.1.8 U3) — Var 는 최상위에서만 선언된다(매크로 안 금지) ──
+Var CysTxnDelegated
+Var CysTxnTok
+Var CysTxnBuf
+Var CysTxnTmp
+Var CysTxnH
+Var CysTxnOv
+Var CysTxnArg
+Var CysTxnLk
+
 !macro NSIS_HOOK_PREINSTALL
+  ; ⓪-a ★자동 갱신 잠금 토큰 (1.1.8 U3 · 설계 AUTO-UPDATE-118 §3-2 📌13′ · §3-7 · ⓪ 뮤텍스보다 먼저).
+  ;    자동 갱신 러너가 트랜잭션 중이면(%LOCALAPPDATA%\cys-update\txn.lock 의 OS 잠금이 잡혀 있음)
+  ;    이 설치기는 /CYSTXN=<txn_id>:<epoch> 인자가 소유자 기록 txn.owner.json(U1 lock.rs OWNER_FILE ·
+  ;    잠금 파일과 따로 — 윈 LockFileEx 는 잠긴 범위 읽기도 막는다)의 txn_id·epoch 와 같을 때만 진행한다
+  ;    (= 러너가 위임한 실행). 아니면 exit 6 「자동 갱신 중 · 무접촉」 — 이 시점까지 우리 파일 접촉 0
+  ;    이므로 ⓪ 과 같은 이유로 Abort 가 아니라 Quit. 사람 실행이면 1줄 안내(ASCII 규칙 — 위 '컴파일 시점
+  ;    계약' · 설계 문안 「자비스가 지금 새 판으로 바꾸는 중이에요. 5분 뒤 다시 실행해 주세요.」의 영어판).
+  ;    위임 조건(설계 §3-2 3조건 · codex 1R #13 — 하나라도 어긋나면 exit 6):
+  ;      ⑴ 잠금 실재 — /CYSTXN 이 있는데 잠금이 안 잡혀 있으면(파일 없음 · 비차단 잠금 시도 성공) exit 6
+  ;         (러너가 끝났거나 죽은 뒤 늦게 뜬 자식 = 낡은 위임 · 정상 설치로 넘어가지 않는다).
+  ;      ⑵ 인자 = env — /CYSTXN 값과 env CYS_UPDATE_TXN 이 바이트로 같아야 한다(러너는 둘 다 같은 값으로 준다 ·
+  ;         대소문자 구분 StrCmpS) + 그 값의 txn_id·epoch 가 소유자 기록과 같아야 한다.
+  ;      ⑶ 조상 pid·생성 시각 = **러너 쪽**에서 끝난다: 설계 §3-7 ④ 「만들어진 프로세스의 이미지를 대조 …
+  ;         전부 일치할 때만 `ResumeThread` · 하나라도 다르면 `TerminateProcess`(실행 0)」 — 러너가 설치기를
+  ;         CREATE_SUSPENDED 로 만들고 이미지·파일 ID 를 대조한 뒤에만 재개하므로, 이 훅이 돈다는 것 자체가
+  ;         「러너가 직접 만든 자식」이다(NSIS 에서 부모 pid 를 다시 재지 않는다 · 사람이 토큰을 베껴 띄운
+  ;         설치기는 ⑵ 의 env 를 갖지 못한다).
+  ;      ⑵′ (3판 · 2R #13) 잠금 재확인 — ⑵ 대조 **뒤** 처음 쥔 핸들로 잠금을 다시 시도해 아직 잡혀 있을 때만(cys_txn_recheck)
+  ;         · 풀려 있으면 토큰이 맞아도 exit 6 · 판정 불가(잠금 파일 못 엶)는 위임 불가.
+  ;      ⑷ 뮤텍스 수용은 ⑴⑵⑵′ 통과 뒤만 — CysTxnDelegated=1 은 cys_txn_ok 한 곳에서만 켜진다 → 아래 ⓪ 에서
+  ;         뮤텍스 「이미 있음」을 러너 보유(S7~S9b 동안 러너가 Global\cys-installer 를 쥔다 · 옛 1.1.7 이하
+  ;         설치기 차단용)의 위임으로 받아들인다. 그 밖(토큰 없음 · 불일치)은 종전대로 exit 5.
+  ;    · /CYSTXN 이 없고 잠금도 없으면 종전과 같다.
+  ;    · 판정 불가(잠금 파일을 못 엶)는 「잡혀 있음」 쪽으로 읽는다(fail-closed — 갱신 중일 수 있는데
+  ;      사람 설치기가 끼어드는 것이 더 나쁘다 · 대가 = 그동안 수동 설치도 exit 6).
+  ;    · 조상 pid 대조(위임 ③)는 NSIS 에서 하지 않는다 — 러너가 설치기를 CREATE_SUSPENDED 로 띄워
+  ;      이미지·파일 ID 를 대조한 뒤에만 재개한다(설계 §3-7 ④). 토큰은 러너 밖 사람이 알 수 없는 128비트 값.
+  ;    · 소유자 기록은 serde 들여쓰기 JSON — 공백·줄바꿈을 걷어 낸 뒤 '"txn_id":"<id>"' 와
+  ;      '"epoch":<n>,' 또는 '"epoch":<n>}' 를 대소문자 구분(WordFindS)으로 찾는다.
+  StrCpy $CysTxnDelegated "0"
+  StrCpy $CysTxnArg "0"
+  ${GetParameters} $CysTxnTok
+  ClearErrors
+  ${GetOptions} $CysTxnTok "/CYSTXN=" $CysTxnTok
+  IfErrors cys_txn_noarg 0
+  StrCpy $CysTxnArg "1"
+  Goto cys_txn_probe
+cys_txn_noarg:
+  StrCpy $CysTxnTok ""
+cys_txn_probe:
+  IfFileExists "$LOCALAPPDATA\cys-update\txn.lock" 0 cys_txn_notheld
+  System::Call 'kernel32::CreateFileW(w "$LOCALAPPDATA\cys-update\txn.lock", i 0xC0000000, i 7, p 0, i 3, i 0x80, p 0) p .s'
+  Pop $CysTxnH
+  StrCpy $CysTxnLk $CysTxnH
+  IntPtrCmp $CysTxnH -1 cys_txn_held 0 0
+  System::Call '*(p 0, p 0, i 0, i 0, p 0) p .s'
+  Pop $CysTxnOv
+  System::Call 'kernel32::LockFileEx(p $CysTxnH, i 3, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  StrCmp $CysTxnTmp "0" cys_txn_locked 0
+  System::Call 'kernel32::UnlockFileEx(p $CysTxnH, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  System::Call 'kernel32::CloseHandle(p $CysTxnH)'
+  System::Free $CysTxnOv
+  Goto cys_txn_notheld
+cys_txn_locked:
+  ; ★3판(codex 2R #13 TOCTOU): 핸들·OVERLAPPED 를 대조가 끝날 때까지 쥔다 — 소유자 기록 대조 **뒤** 같은 핸들로 잠금을 다시 재
+  ;   「아직 잡혀 있음」일 때만 위임을 켠다(cys_txn_recheck). 잠금 파일을 못 연 판정 불가(핸들 -1)는 위임 불가(그대로 exit 6).
+cys_txn_held:
+  StrCmp $CysTxnArg "1" 0 cys_txn_refuse
+  StrCmp $CysTxnTok "" cys_txn_refuse
+  ReadEnvStr $CysTxnTmp "CYS_UPDATE_TXN"
+  StrCmpS $CysTxnTmp $CysTxnTok 0 cys_txn_refuse
+  ClearErrors
+  FileOpen $CysTxnH "$LOCALAPPDATA\cys-update\txn.owner.json" r
+  IfErrors cys_txn_refuse
+  StrCpy $CysTxnBuf ""
+cys_txn_read:
+  ClearErrors
+  FileRead $CysTxnH $CysTxnTmp
+  IfErrors cys_txn_readdone
+  StrCpy $CysTxnBuf "$CysTxnBuf$CysTxnTmp"
+  StrLen $CysTxnTmp $CysTxnBuf
+  IntCmp $CysTxnTmp 4096 cys_txn_readdone cys_txn_read cys_txn_readdone
+cys_txn_readdone:
+  FileClose $CysTxnH
+  ${WordReplace} "$CysTxnBuf" " " "" "+" $CysTxnBuf
+  ${WordReplace} "$CysTxnBuf" "$\r" "" "+" $CysTxnBuf
+  ${WordReplace} "$CysTxnBuf" "$\n" "" "+" $CysTxnBuf
+  ${WordReplace} "$CysTxnBuf" "$\t" "" "+" $CysTxnBuf
+  ClearErrors
+  ${WordFindS} "$CysTxnTok" ":" "E+1{" $CysTxnH
+  IfErrors cys_txn_refuse
+  ${WordFindS} "$CysTxnBuf" '"txn_id":"$CysTxnH"' "E+1{" $CysTxnTmp
+  IfErrors cys_txn_refuse
+  ${WordFindS} "$CysTxnTok" ":" "E+1}" $CysTxnH
+  IfErrors cys_txn_refuse
+  StrCmp $CysTxnH "" cys_txn_refuse
+  ${WordFindS} "$CysTxnBuf" '"epoch":$CysTxnH,' "E+1{" $CysTxnTmp
+  IfErrors 0 cys_txn_recheck
+  ClearErrors
+  ${WordFindS} "$CysTxnBuf" '"epoch":$CysTxnH}' "E+1{" $CysTxnTmp
+  IfErrors cys_txn_refuse cys_txn_recheck
+cys_txn_recheck:
+  ; 소유자 기록·인자·env 가 다 맞았다 — 그 사이 러너가 잠금을 놓지 않았는지 쥐고 있던 핸들로 다시 잰다.
+  ;   $CysTxnH 는 위 토큰 쪼개기에 썼으므로 핸들은 $CysTxnOv 짝과 함께 $CysTxnLk 에 보관돼 있다.
+  IntPtrCmp $CysTxnLk -1 cys_txn_refuse 0 0
+  System::Call 'kernel32::LockFileEx(p $CysTxnLk, i 3, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  StrCmp $CysTxnTmp "0" cys_txn_still 0
+  System::Call 'kernel32::UnlockFileEx(p $CysTxnLk, i 0, i 1, i 0, p $CysTxnOv) i .s'
+  Pop $CysTxnTmp
+  System::Call 'kernel32::CloseHandle(p $CysTxnLk)'
+  System::Free $CysTxnOv
+  DetailPrint "cys: auto-update lock was released during the token check (stale delegation)"
+  Goto cys_txn_refuse
+cys_txn_still:
+  System::Call 'kernel32::CloseHandle(p $CysTxnLk)'
+  System::Free $CysTxnOv
+  Goto cys_txn_ok
+cys_txn_refuse:
+  DetailPrint "cys: auto-update transaction in progress - quitting untouched (exit 6)"
+  IfSilent cys_txn_quit 0
+  MessageBox MB_ICONINFORMATION "Jarvis is switching to the new version right now.$\r$\nPlease run this installer again in 5 minutes.$\r$\nNothing was changed by this instance."
+cys_txn_quit:
+  SetErrorLevel 6
+  Quit
+cys_txn_notheld:
+  StrCmp $CysTxnArg "1" 0 cys_txn_free
+  DetailPrint "cys: /CYSTXN given but no auto-update lock is held (stale delegation)"
+  Goto cys_txn_refuse
+cys_txn_ok:
+  DetailPrint "cys: delegated by the auto-update runner (txn token matched)"
+  StrCpy $CysTxnDelegated "1"
+cys_txn_free:
+  ClearErrors
+
   ; ⓪ ★설치기 싱글톤 (R2 라운드2 신설): 동시 2인스턴스는 `.new`/prev/정식 이름 공간을
   ;    공유해 서로의 트랜잭션을 교차 오염시킨다(실증 트레이스: A 의 fill 5초 재시도 창에서
   ;    B 가 배치를 끝내면, A 의 copy-복귀가 B 의 검증 완료 정식을 구본으로 덮어 B 의 exit 0
@@ -603,6 +740,8 @@ FunctionEnd
   StrCmp $1 "5" 0 cys_pre_single
   StrCmp $0 "0" cys_pre_dup cys_pre_single
 cys_pre_dup:
+  ; ⓪-a 위임이면 뮤텍스 보유자 = 우리 러너(S7~S9b) — 「다른 설치기」가 아니다.
+  StrCmp $CysTxnDelegated "1" cys_pre_single 0
   DetailPrint "cys: another installer instance is running - quitting untouched"
   IfSilent cys_pre_dupquit 0
   MessageBox MB_ICONSTOP "Another cys installer is already running.$\r$\nFinish that installation first, then run this one again.$\r$\nNothing was changed by this instance."

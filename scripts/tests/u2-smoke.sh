@@ -131,6 +131,7 @@ plain = {k: v for k, v in env.items() if not k.startswith("CYS_UPDATE_TXN")}
 idn = subprocess.run([cys, "identify"], env=plain, capture_output=True, text=True, timeout=30)
 try:
     dpid = json.loads(idn.stdout)["daemon_pid"]
+    print("DPID", dpid)
     penv = subprocess.check_output(["ps", "-E", "-ww", "-o", "command=", "-p", str(dpid)], text=True)
     print("DAEMON_ENV_TXN", sum(1 for t in penv.split() if t.startswith("CYS_UPDATE_TXN")), "SEEN_SOCKET", int(f"CYS_SOCKET={sb}/s.sock" in penv))
 except Exception as e:
@@ -147,12 +148,17 @@ try:
     print("SEAT_ENV_TXN", sum(1 for l in se.splitlines() if l.startswith("CYS_UPDATE_TXN")), "SEEN_SEAT", int("CYS_SURFACE_ID=" in se))
 except Exception as e:
     print("SEAT_ENV_TXN ?", e, ns.stdout[:200], ns.stderr[:200])
-subprocess.run([cys, "daemon", "stop"], env=plain, capture_output=True, timeout=30)
 PY
 if grep -q '^RC 0' "$SB/rot6.log" && ! grep -q '④ 새 팩 반영 실패' "$SB/rot6.log"; then ok "⑥ 실 위임 사슬 러너→rotate --txn→init-pack --txn 왕복 rc 0(★3판 N1)"; else bad "⑥ 위임 사슬 $(tail -c 600 "$SB/rot6.log")"; fi
 # SEEN_SOCKET 1 = ps -E 가 그 데몬의 env 를 실제로 읽었다(못 읽어 0 이 나온 것과 구분)
 if grep -q '^DAEMON_ENV_TXN 0 SEEN_SOCKET 1' "$SB/rot6.log"; then ok "⑥ rotate 가 띄운 데몬 env 에 CYS_UPDATE_TXN* 0(★4판 N4)"; else bad "⑥ 데몬 env 위임 토큰 $(grep DAEMON_ENV "$SB/rot6.log")"; fi
 if grep -q '^SEAT_ENV_TXN 0 SEEN_SEAT 1' "$SB/rot6.log"; then ok "⑥ 그 데몬이 만든 좌석 셸 env 에 CYS_UPDATE_TXN* 0(★5판 N4 좌석)"; else bad "⑥ 좌석 env $(grep SEAT_ENV "$SB/rot6.log")"; fi
+# ★후속(Fable 5R n14): reap·「잔존 0」 판별식(own_daemons)의 양성 대조 — 데몬이 살아 있는 지금, 소켓이 밝힌 그 pid 를 판별식이 잡아야 한다
+#   (못 잡으면 reap 도 끝의 「잔존 cysd 0」 도 공허 통과). 정지는 그 뒤.
+dpid=$(awk '/^DPID /{print $2}' "$SB/rot6.log")
+own=$(own_daemons)
+if [ -n "$dpid" ] && printf '%s\n' $own | grep -qx "$dpid"; then ok "⑥ own_daemons 양성 대조 — 살아 있는 데몬 pid $dpid 를 판별식이 잡음(★후속 n14)"; else bad "⑥ own_daemons 양성 대조 실패 dpid=[$dpid] own=[$own]"; fi
+iso "$CYS" daemon stop >/dev/null 2>&1
 reap
 # ⑦ ★4판(codex·Fable 3R M4/M6/M7) 실 팩 단독 경로: `self-update --pack-only`(디버그 입구) → auto::pack_only → 러너 잠금 → 러너 사본(=실 cys)
 #   `pack-update --dry-run --manifest-url file://… --txn` → 매니페스트·서명만 받음(꾸러미 0) → 서명 거부(시험 키 ≠ 내장 팩 키) = 보류 · 저널 0.

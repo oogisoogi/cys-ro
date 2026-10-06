@@ -129,8 +129,12 @@ pub struct Ident {
 
 /// 번들 안 `cys build-info --json` 읽기(판독 불가 = None).
 pub fn bundle_ident(bundle: &Path) -> Option<Ident> {
-    let exe = bundle.join("Contents/MacOS/cys");
-    let out = std::process::Command::new(&exe).args(["build-info", "--json"]).env_remove("CYS_UPDATE_STATE_DIR").output().ok()?;
+    bundle_ident_exe(&bundle.join("Contents/MacOS/cys"))
+}
+
+/// 실행 파일 하나의 `build-info --json`(윈 `cys.exe` 도 같은 함수).
+pub fn bundle_ident_exe(exe: &Path) -> Option<Ident> {
+    let out = std::process::Command::new(exe).args(["build-info", "--json"]).env_remove("CYS_UPDATE_STATE_DIR").output().ok()?;
     if !out.status.success() {
         return None;
     }

@@ -282,10 +282,14 @@ pub fn write_ack(dir: &Path, ack: &Ack) -> std::io::Result<()> {
     res
 }
 
+/// 장부 임계 구역의 프로세스 안 뮤텍스(같은 앱 프로세스의 스레드끼리).
+static ACK_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 장부 임계 구역 — 프로세스 안 뮤텍스 + `app-notify.lock` 배타 파일 잠금(블로킹) 안에서 `f` 를 돈다. 잠금을 못 잡으면 Err(호출부 = 아무것도 안 함).
 fn with_ack_lock<T>(dir: &Path, f: impl FnOnce() -> T) -> std::io::Result<T> {
-    static ACK_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = ACK_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(test)]
+    cs_probe::arrive(dir);
     let lf = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(LOCK_FILE))?;
     lf.lock()?;
     let out = f();
@@ -301,6 +305,8 @@ pub fn take_at(dir: &Path, now: i64) -> Option<Toast> {
     let state = read_state(dir).ok()??;
     with_ack_lock(dir, || {
         let ack = read_ack(dir);
+        #[cfg(test)]
+        let _cs = cs_probe::enter(dir);
         match plan(&state, &ack, now) {
             Plan::Nothing => None,
             Plan::Close { result_id } => {
@@ -319,12 +325,123 @@ pub fn done_at(dir: &Path, result_id: &str) -> bool {
     if !valid_result_id(result_id) {
         return false;
     }
-    with_ack_lock(dir, || write_ack(dir, &close(&read_ack(dir), result_id)).is_ok()).unwrap_or(false)
+    with_ack_lock(dir, || {
+        let ack = read_ack(dir);
+        #[cfg(test)]
+        let _cs = cs_probe::enter(dir);
+        write_ack(dir, &close(&ack, result_id)).is_ok()
+    })
+    .unwrap_or(false)
 }
 
 /// 📌18 집행 — 판독 불가·없음 = None.
 pub fn seats_blocked_at(dir: &Path) -> Option<&'static str> {
     read_state(dir).ok()?.as_ref().and_then(seats_blocked_text)
+}
+
+/// ★(3판 · codex 2R MAJOR①) 시험 전용 임계 구역 탐침 — 장부를 **읽은 뒤 · 쓰기 전**(`take_at`·`done_at` 의 그 자리)에 선다.
+/// 상태 폴더에 `.cs-probe`(내용 = 참가자 수 N · 뒤에 ` arrive` 가 붙으면 도착 방식) 가 있을 때만 움직인다(그 밖 = 아무것도 안 함 · 제품 빌드에는 없다).
+///   · 들어오면 `.cs-in-<나노초>-<pid>-<스레드>` 를 만들고, 그 파일은 **쓰기가 끝날 때**(가드 Drop)까지 남는다.
+///   · 프로세스 뮤텍스가 이 스레드에 잡혀 있지 않으면(`try_lock` 성공) `.cs-mutex-free` 를 남긴다(뮤텍스 회귀핀 — 아래 정직 주석).
+///   · 다른 참가자가 함께 들어와 있으면(겹침 = 잠금이 뚫림) `.cs-overlap` 을 남기고, **먼저 들어온 쪽이 나중 쪽의 쓰기가 끝날 때까지 기다렸다가**
+///     자기 것을 쓴다 — 겹침이 나면 언제나 「먼저 읽은 낡은 장부가 나중 기록을 덮는」 잃어버린 갱신이 된다(반례 스케줄을 운에 맡기지 않는다).
+///   · 혼자면 참가자 N 명이 모두 `.cs-try-*` 로 「곧 들어간다」를 알린 뒤 300ms 를 더 기다린다 — 잠금이 없으면 그 사이 다른 참가자가 반드시 들어온다.
+///     알림 = 시험 코드의 [`declare`](스레드 시험) 또는 도착 방식의 [`arrive`](프로세스 시험 — 프로세스 뮤텍스를 **지난 뒤** 자동으로 적는다:
+///     부모가 다른 시험 때문에 자기 프로세스 뮤텍스에서 기다리는 동안 자식의 300ms 가 흘러 겹침을 놓치는 반례를 막는다 · 1회차 M11b 생존의 원인).
+/// 정직: 맥(flock)·윈(LockFileEx)의 파일 잠금은 열린 파일 단위라 같은 프로세스 스레드끼리도 막는다 → 뮤텍스만 빼면(M11a) 겹침은 생기지 않는다.
+///   그래서 뮤텍스 회귀핀은 행동(겹침)이 아니라 `.cs-mutex-free`(임계 구역 안에서 뮤텍스가 잡혀 있어야 한다) 로 잰다. 파일 잠금(M11b)은 자식 프로세스 시험이 행동으로 잰다.
+#[cfg(test)]
+pub(crate) mod cs_probe {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    pub(crate) const CFG: &str = ".cs-probe";
+    pub(crate) const OVERLAP: &str = ".cs-overlap";
+    pub(crate) const MUTEX_FREE: &str = ".cs-mutex-free";
+    const GRACE: Duration = Duration::from_millis(300);
+    const DEADLINE: Duration = Duration::from_secs(15);
+
+    pub(crate) struct Inside(Option<PathBuf>);
+    impl Drop for Inside {
+        fn drop(&mut self) {
+            if let Some(p) = self.0.take() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    fn names(dir: &Path, prefix: &str) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(prefix)).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    fn cfg(dir: &Path) -> Option<(usize, bool)> {
+        let s = std::fs::read_to_string(dir.join(CFG)).ok()?;
+        let mut it = s.split_whitespace();
+        let want = it.next()?.parse().ok()?;
+        Some((want, it.next() == Some("arrive")))
+    }
+
+    /// 도착 방식 — 프로세스 뮤텍스를 지나 파일 잠금을 잡으러 가는 참가자를 적는다(`with_ack_lock` 안).
+    pub(crate) fn arrive(dir: &Path) {
+        if let Some((_, true)) = cfg(dir) {
+            let tid: String = format!("{:?}", std::thread::current().id()).chars().filter(char::is_ascii_digit).collect();
+            let _ = std::fs::write(dir.join(format!(".cs-try-arr-{}-{tid}", std::process::id())), b"");
+        }
+    }
+
+    /// 참가자가 「곧 임계 구역에 들어간다」를 알린다(`take_at`·`done_at` 부르기 직전).
+    pub(crate) fn declare(dir: &Path, who: &str) {
+        std::fs::write(dir.join(format!(".cs-try-{who}")), b"").unwrap();
+    }
+
+    pub(crate) fn enter(dir: &Path) -> Inside {
+        let Some((want, _)) = cfg(dir) else {
+            return Inside(None);
+        };
+        if super::ACK_MUTEX.try_lock().is_ok() {
+            let _ = std::fs::write(dir.join(MUTEX_FREE), b"");
+        }
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let tid: String = format!("{:?}", std::thread::current().id()).chars().filter(char::is_ascii_digit).collect();
+        let me = format!(".cs-in-{nanos:024}-{}-{tid}", std::process::id());
+        std::fs::write(dir.join(&me), b"").unwrap();
+        let t0 = Instant::now();
+        let mut all_declared_at: Option<Instant> = None;
+        while t0.elapsed() < DEADLINE {
+            let inside = names(dir, ".cs-in-");
+            if inside.len() > 1 {
+                let _ = std::fs::write(dir.join(OVERLAP), b"");
+                if inside[0] == me {
+                    // 먼저 들어온 쪽 — 나중 쪽들이 쓰고 나갈 때까지 기다렸다가 낡은 장부로 쓴다(결정론 잃어버린 갱신).
+                    while names(dir, ".cs-in-").len() > 1 && t0.elapsed() < DEADLINE {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+                break;
+            }
+            if names(dir, ".cs-try-").len() >= want {
+                let at = *all_declared_at.get_or_insert_with(Instant::now);
+                if at.elapsed() >= GRACE {
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        Inside(Some(dir.join(me)))
+    }
+
+    /// 다른 참가자가 임계 구역 안에 서 있을 때까지 기다린다(시험의 출발 순서 고정용).
+    pub(crate) fn wait_someone_inside(dir: &Path) {
+        let t0 = Instant::now();
+        while names(dir, ".cs-in-").is_empty() {
+            assert!(t0.elapsed() < DEADLINE, "참가자가 임계 구역에 들어오지 않았다");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -469,70 +586,122 @@ mod tests {
         assert!(matches!(plan(&mk(Some(json!(u64::MAX))), &a, 0), Plan::Show { .. }), "큰 정수 = 통과");
     }
 
-    /// ★(2판 · codex 1R ①) 병렬 경쟁 — 같은 결과를 여러 호출이 동시에 집어도(배리어로 한꺼번에 출발) 표시 합계 ≤ 2 · 장부는 언제나 유효 JSON ·
-    /// 임시 파일 잔존 0. 잠금(읽기→판정→쓰기 직렬화)이 없으면 모두가 shown_count=0 을 읽어 한 판에 여럿이 보여 준다(뮤턴트 M11 적색).
-    #[test]
-    fn parallel_takes_never_show_more_than_twice_and_keep_the_ledger_valid() {
-        const THREADS: usize = 8;
-        for round in 0..12 {
-            let d = tmpdir(&format!("race-tt-{round}"));
-            put_state(&d, &st(&format!("r-{round}"), "ok"));
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
-            let shown: usize = (0..THREADS)
-                .map(|_| {
-                    let (d, b) = (d.clone(), barrier.clone());
-                    std::thread::spawn(move || {
-                        b.wait();
-                        take_at(&d, 1).is_some() as usize
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                .sum();
-            assert!(shown >= 1 && shown <= MAX_SHOWS as usize, "판 {round}: 병렬 {THREADS} 호출의 표시 합계 = {shown}(1~2 여야 한다)");
-            let raw = std::fs::read(d.join(ACK_FILE)).unwrap();
-            let a: Ack = serde_json::from_slice(&raw).expect("장부가 유효 JSON 이어야 한다(서로 truncate 금지)");
-            assert!(a.pending_notification.map(|p| p.shown_count).unwrap_or(MAX_SHOWS) <= MAX_SHOWS);
-            let stray: Vec<_> = std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".tmp-")).collect();
-            assert!(stray.is_empty(), "임시 파일 잔존: {stray:?}");
-            let _ = std::fs::remove_dir_all(&d);
-        }
+    /// 탐침 폴더 — `.cs-probe` 에 참가자 수를 적어 임계 구역 탐침을 켠다.
+    fn probe_dir(tag: &str, id: &str, kind: &str, participants: &str) -> std::path::PathBuf {
+        let d = tmpdir(tag);
+        put_state(&d, &st(id, kind));
+        std::fs::write(d.join(cs_probe::CFG), participants).unwrap();
+        d
+    }
+    fn ledger(d: &Path) -> Ack {
+        serde_json::from_slice(&std::fs::read(d.join(ACK_FILE)).unwrap()).expect("장부가 유효 JSON 이어야 한다(서로 truncate 금지)")
+    }
+    /// 탐침 판정 — 겹침 0 · 임계 구역 안에서 뮤텍스가 잡혀 있었다 · 임시 파일 잔존 0.
+    fn assert_serialized(d: &Path, what: &str) {
+        assert!(!d.join(cs_probe::OVERLAP).exists(), "{what}: 두 참가자가 장부 읽기→쓰기 구간에 함께 섰다(잠금이 뚫림)");
+        assert!(!d.join(cs_probe::MUTEX_FREE).exists(), "{what}: 임계 구역 안인데 프로세스 뮤텍스가 잡혀 있지 않다");
+        let stray: Vec<_> = std::fs::read_dir(d).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".tmp-")).collect();
+        assert!(stray.is_empty(), "{what}: 임시 파일 잔존 {stray:?}");
     }
 
-    /// ★(2판 · codex 1R ①) take 와 done 이 겹쳐도 — 「여러 번의 기동」을 병렬로 흉내 내 표시 합계 ≤ 2 · 장부 유효 JSON.
+    /// ★(3판 · codex 2R MAJOR① ⓑ) 같은 프로세스 두 스레드 — A 가 장부를 **읽고 쓰기 전**(탐침)에 서 있는 동안 B 가 들어오려 한다.
+    /// 잠금이 있으면 B 는 A 의 기록을 읽는다 → 표시 정확히 2 · 장부 shown_count 2 · 세 번째 기동 = 닫힘(0).
+    /// 잠금이 없으면 탐침이 B 를 같은 구간에 세워 A 가 낡은 장부(0)로 B 의 기록을 덮는다 → 장부 1 · 세 번째 기동이 또 보여 준다(M11 적색).
+    /// 뮤텍스만 빠지면(M11a) 파일 잠금이 여전히 막지만 탐침이 「뮤텍스 미보유」를 잡는다(적색).
     #[test]
-    fn parallel_take_and_done_keep_the_total_at_most_two() {
-        for round in 0..8 {
-            let d = tmpdir(&format!("race-td-{round}"));
-            let id = format!("r-{round}");
-            put_state(&d, &st(&id, "installed_revoked"));
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
-            let shown: usize = (0..8)
-                .map(|i| {
-                    let (d, b, id) = (d.clone(), barrier.clone(), id.clone());
-                    std::thread::spawn(move || {
-                        b.wait();
-                        if i % 2 == 0 {
-                            take_at(&d, 1).is_some() as usize
-                        } else {
-                            done_at(&d, &id);
-                            0
-                        }
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                .sum();
-            assert!(shown <= MAX_SHOWS as usize, "판 {round}: take/done 겹침의 표시 합계 = {shown}");
-            let a: Ack = serde_json::from_slice(&std::fs::read(d.join(ACK_FILE)).unwrap()).expect("유효 JSON");
-            // 끝난 뒤 다시 기동해도 닫혔거나(=0) 상한 안에서만 더 보인다
-            let more = (0..4).filter(|_| take_at(&d, 2).is_some()).count();
-            let first = a.pending_notification.as_ref().map(|p| p.shown_count as usize).unwrap_or(0);
-            assert!(shown + more <= MAX_SHOWS as usize || a.last_notified_result_id.as_deref() == Some(id.as_str()) && more == 0, "판 {round}: 합계 {shown}+{more} (대기 {first})");
-            let _ = std::fs::remove_dir_all(&d);
-        }
+    fn threads_take_one_at_a_time_inside_the_ledger_section() {
+        let d = probe_dir("cs-threads-tt", "r-tt", "ok", "2");
+        let a = {
+            let d = d.clone();
+            std::thread::spawn(move || {
+                cs_probe::declare(&d, "a");
+                take_at(&d, 1).is_some() as usize
+            })
+        };
+        cs_probe::wait_someone_inside(&d);
+        let b = {
+            let d = d.clone();
+            std::thread::spawn(move || {
+                cs_probe::declare(&d, "b");
+                take_at(&d, 1).is_some() as usize
+            })
+        };
+        let shown = a.join().unwrap() + b.join().unwrap();
+        assert_serialized(&d, "스레드 take×2");
+        assert_eq!(shown, 2, "두 기동의 표시 합계는 정확히 2");
+        assert_eq!(ledger(&d).pending_notification.map(|p| p.shown_count), Some(2), "장부 = 실제 표시 수(잃어버린 갱신 0)");
+        let _ = std::fs::remove_file(d.join(cs_probe::CFG));
+        assert!(take_at(&d, 2).is_none(), "상한 2 를 채운 뒤의 기동은 보여 주지 않는다");
+        assert_eq!(ledger(&d).last_notified_result_id.as_deref(), Some("r-tt"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★(3판 · codex 2R MAJOR① ⓑⓒ) take 가 장부를 읽고 쓰기 전에 서 있는 동안 done(④ 닫기) 이 들어오려 한다.
+    /// 잠금이 있으면 순서 = take(표시 1 · 대기 1) → done(닫힘) → 뒤 기동 0 ⇒ 표시 합계 **정확히 1**(0 이면 적색 · 2 면 적색).
+    /// 잠금이 없으면 탐침이 done 을 같은 구간에 세우고 take 가 낡은 장부로 닫힘을 덮는다 → 뒤 기동이 또 보여 준다(합계 2 · M11 적색).
+    #[test]
+    fn take_then_done_inside_the_section_shows_exactly_once() {
+        let d = probe_dir("cs-threads-td", "r-td", "installed_revoked", "2");
+        let t = {
+            let d = d.clone();
+            std::thread::spawn(move || {
+                cs_probe::declare(&d, "take");
+                take_at(&d, 1).is_some() as usize
+            })
+        };
+        cs_probe::wait_someone_inside(&d);
+        let c = {
+            let d = d.clone();
+            std::thread::spawn(move || {
+                cs_probe::declare(&d, "done");
+                done_at(&d, "r-td")
+            })
+        };
+        let first = t.join().unwrap();
+        assert!(c.join().unwrap(), "닫기 기록 성공");
+        assert_serialized(&d, "스레드 take+done");
+        let _ = std::fs::remove_file(d.join(cs_probe::CFG));
+        let later = (0..3).filter(|_| take_at(&d, 2).is_some()).count();
+        assert_eq!(first + later, 1, "표시 합계는 정확히 1(take {first} + 뒤 기동 {later})");
+        let a = ledger(&d);
+        assert_eq!(a.last_notified_result_id.as_deref(), Some("r-td"));
+        assert!(a.pending_notification.is_none(), "닫힌 결과의 대기 표지가 되살아나면 안 된다: {:?}", a.pending_notification);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 자식 프로세스 진입점 — 부모 시험이 `U4_CS_CHILD_DIR` 을 주고 이 시험 하나만 다시 부른다. 환경변수가 없으면(보통 실행) 아무것도 안 한다.
+    #[test]
+    fn cross_process_child_entry() {
+        let Some(dir) = std::env::var_os("U4_CS_CHILD_DIR").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let shown = take_at(&dir, 1).is_some();
+        std::fs::write(dir.join("child-shown"), if shown { "1" } else { "0" }).unwrap();
+    }
+
+    /// ★(3판 · codex 2R MAJOR① ⓐ) 두 **프로세스**(앱 창 둘) — 프로세스 뮤텍스는 프로세스 경계를 못 넘으므로 `app-notify.lock` 파일 잠금만이 막는다.
+    /// 자식(이 시험 바이너리를 `current_exe()` 로 다시 띄움)이 장부를 읽고 쓰기 전에 서 있는 동안 부모가 들어오려 한다.
+    /// 잠금이 있으면 표시 정확히 2 · 장부 2 · 세 번째 = 닫힘. 파일 잠금만 빠지면(M11b) 탐침이 겹침을 만들고 자식이 부모 기록을 덮는다(적색).
+    #[test]
+    fn two_processes_take_one_at_a_time_through_the_lock_file() {
+        let d = probe_dir("cs-procs", "r-xp", "ok", "2 arrive");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "updnotice::tests::cross_process_child_entry", "--test-threads=1", "--quiet"])
+            .env("U4_CS_CHILD_DIR", &d)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("시험 바이너리 재호출");
+        cs_probe::wait_someone_inside(&d);
+        let parent = take_at(&d, 1).is_some() as usize;
+        assert!(child.wait().unwrap().success(), "자식 프로세스 시험 실패");
+        let child_shown: usize = std::fs::read_to_string(d.join("child-shown")).expect("자식이 결과를 남겨야 한다").trim().parse().unwrap();
+        assert_eq!(child_shown, 1, "먼저 들어간 자식이 첫 표시");
+        assert!(!d.join(cs_probe::OVERLAP).exists(), "두 프로세스가 장부 읽기→쓰기 구간에 함께 섰다(파일 잠금이 뚫림)");
+        assert_eq!(child_shown + parent, 2, "두 앱 창의 표시 합계는 정확히 2");
+        assert_eq!(ledger(&d).pending_notification.map(|p| p.shown_count), Some(2), "장부 = 실제 표시 수(잃어버린 갱신 0)");
+        let _ = std::fs::remove_file(d.join(cs_probe::CFG));
+        assert!(take_at(&d, 2).is_none(), "상한 2 를 채운 뒤의 기동은 보여 주지 않는다");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// 판 표시 — 숫자 마디만 · 아니면 괄호째 뺀다.

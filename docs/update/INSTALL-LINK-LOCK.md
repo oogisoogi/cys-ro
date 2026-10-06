@@ -4,7 +4,7 @@
 > 대상 파일은 **이 저장소 밖**이다 = `~/axdev/jarvis-habitat/install-master/bootstrap.{sh,ps1}`(@`558fbb0` 기준 줄 번호) → 사이트 사본.
 > ⛔ 이 문서는 명세뿐이다 — 설치 링크 변경·사본 배포 = **설치기 변경(비가역 · master 게이트 · 윈 실기 = 윈 master)**.
 > 잠금 모듈 정본 = U1 `src/update/lock.rs`(잠금 `txn.lock` · 소유자 기록 `txn.owner.json` · 토큰 `<txn_id 32 hex>:<epoch>`).
-> ★구현·윈 실기 검증 = 별도 티켓 **`cysr-118-u5-install-link`**(codex 1R #2 · 이 명세가 그 티켓의 입력 · U3 완료 범위 밖). NSIS ⓪-a 실기 6 시나리오 = `docs/update/WIN-NSIS-0A-FIELD.md`.
+> ★구현·윈 실기 검증 = 별도 티켓 **`cysr-118-u5-install-link`**(codex 1R #2 · 이 명세가 그 티켓의 입력 · U3 완료 범위 밖). NSIS ⓪-a 실기 8 시나리오 = `docs/update/WIN-NSIS-0A-FIELD.md`.
 
 ## 1. 무엇을 바꾸나 (세 군데)
 | # | 자리 | 지금 | 1.1.8 부터 |

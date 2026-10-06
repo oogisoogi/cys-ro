@@ -6,7 +6,10 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(먼저 읽을 것)
-- ★★★**3판 진행 중(11:3x~ · 후임은 여기부터)** — 지시 = [master#9219ca05](codex 2R = `~/axdev/master/reports/REVIEW-U3-codex-2r.md` · master 가 **머지 기준**(3판 코드)과 **발행 기준**(§1 체크리스트)을 갈랐다) · 항목·순서 = 워커 TODO(`cys todo-path`) 3-A~3-M · 끝나면 §9 「2R 반영표」 · 그 뒤 codex 3R = 마지막.
+- ★★★**3판 끝(11:4x · 【확인요청】 3판)** — 지시 = [master#9219ca05](codex 2R = `~/axdev/master/reports/REVIEW-U3-codex-2r.md` · master 가 **머지 기준**(3판 코드)과 **발행 기준**(§1 ⑥ 표)을 갈랐다) · 반영표 = **§9**(19행).
+  - 커밋: `4991230b`(U1 2판 계약 · #10 · #11) · `cd4c7152`(#4·#5·#6·#8·#15·#16·#19 + 워커 502) · `d45255b9`(#3) · `90af8cd9`(#9) · `e6e7ae5c`(#13·#14 모델) · 이 문서.
+  - 게이트(11:4x 실측): `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<U1 2판 디버그 cys(~/axdev/.wt/cys-118-u1 · 0fb4d824 빌드 11:07 사본 sha256 7f976fc6…)>` test_update_publish **87/0 · 건너뜀 0** · 단독 87/0 + 12 건너뜀 · test_release_verify 140/0 · nsis 컴파일 OK · 모델 39082 + ⓪-a 270(Z1~Z6) OK · lane-parity strict/self-test 0 · secret-scan clean(26 파일).
+  - 다음 = codex 3R(마지막) + master 게이트 → 머지(U1 머지 뒤 rebase).
 - ★★**2판 끝(11:1x · 【확인요청】 2판 · [master#f9d48c3c] 재개 지시분)** — 지시 = [master#f151182e] 10:14:56(codex 1R 판정표 · 원문 `~/axdev/master/reports/REVIEW-U3-codex-1r.md`) · 결정 = [master#8db3b908] 10:04(① /update/* 전용 워커 + R2 · CI 게시 0 ② `vars.CYSR_RELEASE_SEQ` ③ 키 만료 R 2036 · U·F·A2 2028).
   - 1/2 = `ca4c7b6a` · 2/2 = `181fd516`(#3) · `9a2489f3`(#13) · `ea940902`(refresh-feed) · `cc7390e8`(#17) · `bc1ab479`(#1·#18) · `b155da22`(#4 A2) · `62a6f1fa`(update-worker·탐침) · `c11ee1d8`(윈 실기 문안·U5 포인터) · 이 문서.
   - 번호별 처방·커밋·시험 = **§8 1R 반영표**(19행). 남은 것 = 전부 「코드 밖」(U1 머지 · 윈 실기 · U5 · CF 실측 · 키 생성 — §8 잔여 열).
@@ -49,9 +52,9 @@
 ### ③ 첫 게시(외부 발행) — 순서 고정(봉투 CI 가 라이브의 보관소·폐기문을 읽으므로) · 게시 = R2 + `/update/*` 전용 워커(결정 ①)
 0. **준비(1회)**: R2 버킷 생성(이름 = master 결정 → `update-worker/wrangler.jsonc` `bucket_name` 자리) → `scripts/update/cf-route-probe.sh`(드라이런으로 명령 확인) → `--execute`(실행 직전 확인 대상 · 탐침 워커를 스테이징 경로에만 올렸다 지움) **rc 0 일 때만** → `cd update-worker && bunx wrangler@3 deploy`. rc 1(커스텀 도메인이 이김) = 배포 금지 · 대안 결정 필요.
 1. **R-의식 전 seq 변수 갱신**(결정 ②): 저장소 변수 `CYSR_RELEASE_SEQ` = 보관소 최댓값 + 1(첫 판 = 1) → 그 뒤에 태그(release.yml 빌드 전 스텝이 정수 ≥1 을 강제 · 게시기가 「최댓값 + 1」 아니면 거부).
-2. 보관소: U 의식 산출 `dist/update/cysr-release-<seq>.json(.minisig)` → `release-gate.py body --body … --sig … --keyring cysjavis-pack/trusted-keys.json --archive-r2 <버킷> --expect-seq <seq> --stamp` → `python3 scripts/update/publish-site.py archive --r2 <버킷> --file dist/update/cysr-release-<seq>.json --first --live-check https://jarvis.godmeyou.kr`(둘째 판부터 `--first` 없음).
-3. 폐기문(첫 = 빈 목록): `python3 scripts/update/make-revocations.py --key-id <R id> --first --out revocations.json` → `scripts/update/sign-revocations.sh --doc revocations.json --media /Volumes/<R1> --key /Volumes/<R1>/r.key --out-dir dist/update` → `release-gate.py revocations --doc dist/update/revocations.json --keyring … --first --stamp` → `publish-site.py revocations --r2 <버킷> --file dist/update/revocations.json --live-check https://jarvis.godmeyou.kr`.
-4. 첫 봉투(F = CI 만 · CI 는 만들고 검증만): `gh workflow run refresh-feed.yml -R oogisoogi/cys-ro -f component=cysr -f channel=next -f release_seq=<seq> -f rollout_pct=100 -f halt=false -f first=true` → 아티팩트 `envelope-cysr-next`(env.json · .minisig · .verified.json) 받기 → `publish-site.py envelope --r2 <버킷> --file env.json --live-check https://jarvis.godmeyou.kr`(증표 없으면 게시기 거부).
+2. 보관소: U 의식 산출 `dist/update/cysr-release-<seq>.json(.minisig)` → `release-gate.py body --body … --sig … --keyring cysjavis-pack/trusted-keys.json --archive-r2 <버킷> --expect-seq <seq> --first`(★2R 정정: 첫 판은 게이트에도 `--first` · 둘째 판부터 둘 다 없음) → `python3 scripts/update/publish-site.py archive --r2 <버킷> --file dist/update/cysr-release-<seq>.json --first --live-check https://jarvis.godmeyou.kr`. R2 자격 = master 로컬 env `R2_ACCOUNT_ID`·`R2_ACCESS_KEY_ID`·`R2_SECRET_ACCESS_KEY`(S3 API 토큰 · 그 버킷 객체 읽기·쓰기만 · 저장소·CI 에 값 0) · 라이브 불일치 = 자동 되돌리기(rc 4) · 되돌리기도 실패 = rc 5 + 인쇄된 `restore` 1줄.
+3. 폐기문(첫 = 빈 목록): `python3 scripts/update/make-revocations.py --key-id <R id> --first --out revocations.json` → `scripts/update/sign-revocations.sh --doc revocations.json --media /Volumes/<R1> --key /Volumes/<R1>/r.key --out-dir dist/update` → `release-gate.py revocations --doc dist/update/revocations.json --keyring … --first` → `publish-site.py revocations --r2 <버킷> --file dist/update/revocations.json --first --live-check https://jarvis.godmeyou.kr`(둘째부터 게이트 `--prev prev.json` · 게시 `--first` 없음 · 게시기가 게시본 대비 rev+1·후계 규칙을 다시 잰다).
+4. 첫 봉투(F = CI 만 · CI 는 만들고 검증만): `gh workflow run refresh-feed.yml -R oogisoogi/cys-ro -f component=cysr -f channel=next -f release_seq=<seq> -f rollout_pct=100 -f halt=false -f first=true` → 아티팩트 `envelope-cysr-next` 받기 → `publish-site.py envelope --r2 <버킷> --file env.json --cys <U1 출시 cys> --live-check https://jarvis.godmeyou.kr`(★3판: 게시기가 U1 을 **직접 다시 돌린다**(게시된 폐기문과 함께 · cysr = 열거) · 실은 본문 = 보관소 객체 바이트 동일 · 증표 파일은 정보용).
 5. 주 1회: cron 이 네 봉투를 재서명·검증해 아티팩트로 남긴다 → master 가 4 와 같은 게시 1줄(자동 게시 0 — 결정 ①). 봉투 유효창 14일 · 7일 넘게 안 바뀌면 기기 daily 칸이 잡는다.
 
 ### ④ CI 비밀·변수 이름(값 = master 가 GitHub 설정에 · 저장소에 값 0)
@@ -59,6 +62,8 @@
 |---|---|---|
 | `CYS_FEED_SIGNING_PRIVATE_KEY` · `CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD` | 비밀 | refresh-feed.yml 서명 |
 | `CYS_FEED_KEY_ID` | 변수 | refresh-feed.yml(F key id · 내장 키링 feed 에 있어야 함 — 스텝이 대조) |
+| environment `feed` | 설정 | refresh-feed 잡 — F 비밀 두 개를 여기에 · 보호 = 배포 브랜치 `main` 만(reviewer 0 · 주간 무인) |
+| (CI 아님) `R2_ACCOUNT_ID` · `R2_ACCESS_KEY_ID` · `R2_SECRET_ACCESS_KEY` | master 로컬 env | publish-site.py `--r2`(S3 API · 그 버킷만) |
 | `CYSR_RELEASE_SEQ` | 변수 | release.yml 최상위 env → U1 build.rs 가 build-info release_seq 로 굽는다(태그 전 갱신 · 정수 ≥1) |
 | (2판에서 삭제) `AI_JARVIS_PUSH_TOKEN` · `CLOUDFLARE_*` · `UPDATE_FEED_PUBLISH` | — | CI 게시 0(결정 ①) — 설정에 넣지 않는다(이미 넣었으면 지워도 됨) |
 | (기존) `TAURI_SIGNING_PRIVATE_KEY`(A2) · `CYS_PACK_SIGNING_PRIVATE_KEY`(P2) | 비밀 | 변화 없음 |
@@ -66,7 +71,7 @@
 ### ⑤ 발행 리허설 순서(태그 드라이런)
 | 단계 | 무엇 | 판정 |
 |---|---|---|
-| R0 | U1 2판 머지 → 이 가지 rebase → `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<머지 트리 디버그 cys> python3 scripts/tests/test_update_publish.py` · CI 맥 두 레인 초록 | 72/0(0 건너뜀) |
+| R0 | U1 2판 머지 → 이 가지 rebase(★U1 2판 CLI 계약 = HANDOFF-U1 ⑨·§7 ⑷: cysr 에 `--installed-release-seq` 금지 · 출발 seq = `--enumerate-installed`) → `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<머지 트리 디버그 cys> python3 scripts/tests/test_update_publish.py` · CI 맥 두 레인 초록 | 3판 = 87/0(0 건너뜀 · 실측 §0) |
 | R1 | ①② 키 생성·키링 기입·④ 비밀·변수 | `cys build-info` keyring_ids 4 |
 | R2 | 변수 `CYSR_RELEASE_SEQ` 갱신(§1 ③ 1) 뒤 태그 → release.yml draft | 새 스텝 초록: 「CYSR_RELEASE_SEQ 정수 ≥1」(두 잡) · 맥·윈 「동봉 매니페스트 min_binary」 · pack-artifacts 「min_binary」 · 윈 「본문 재료 수집·업로드」(2판: 실패 = 릴리스 실패) |
 | R3 | 맥 로컬 빌드 zip → `scripts/update/collect-inputs.sh mac <zip> macos-arm64 inputs/` · `gh run download <run> -n update-inputs-windows-x64 -D inputs/` · draft 자산 받기 | 재료 4종(cdhash·build-info×2·payload 트리) |
@@ -75,6 +80,16 @@
 | R6 | §1 ③ 0~4(탐침 rc 0 → 워커 배포 → 보관소 → 폐기문 → 봉투 아티팩트 → 게시) | 각 게시 `--live-check` rc 0 · refresh-feed verify 두 스텝 초록 |
 | R7 | release-publish.yml dry_run(새 게이트 = latest.json·min_binary 두 잡) → 승인 → 발행 | — |
 | R8 | 캐너리 C1(설계 §7-4) | — |
+
+### ⑥ 발행 기준(3판 · master 가 머지 기준과 가른 것 · 코드 0 · 전부 1.1.8 발행 전 필수)
+| 2R # | 항목 | 해소 판정 |
+|---|---|---|
+| 1 | U1 머지 → 실 R·U·F·A2 공개키 내장(§1 ②) | `cys build-info --json` keyring_ids 4개 · `cargo test --lib packsig::` 초록 |
+| 2 | 설치 링크 잠금·위임·윈 본문 보존 = 티켓 `cysr-118-u5-install-link` | U5 완료 보고 + 윈 실기 |
+| 14 | ⓪-a 윈 실기 **8** 시나리오(`WIN-NSIS-0A-FIELD.md`) | 결과 칸 8/8 기대대로(F7·F8 = 3판 추가) |
+| 17 | strict 0-skip 초록 = 머지 트리 + 맥 CI(ci-branch·release aarch64) | 두 레인 U3 스텝 초록 · 「건너뜀 0」 출력 |
+| 18 | payload 제외 규칙 = U2 S9b 가 같은 `scripts/update/payload-exclude.txt` 를 로드 + 불일치 시험(U2 브리프에 master 기록) | U2 시험 이름 1줄 |
+| R10 | 서명 기기 분리 안 함 = 잔여 위험 명시(§6 첫 줄) | 이 표의 이 줄이 있음 |
 
 ## §2 어느 레인이 어느 게이트를 부르나
 | 레인 · 잡 | `release-gate.py` 단계 | 재는 것 |
@@ -122,9 +137,11 @@
 - 저장소 게이트: 브리프의 `tests/commit_gate` 류 파일은 이 저장소에 **없다**(`git ls-files | grep -i commit.gate` 0건) → 대신 secret-scan(변경 파일 전수 clean) · lane-parity(--strict·--self-test) · test_release_verify · nsis 컴파일 하네스 · nsis 모델을 돌렸다.
 
 ## §6 미측정 · 남은 위험(정직)
+- ★3판 잔여 위험(master 결정으로 수용 · 발행 기준 표에 명시): **F 탈취 = 봉투 halt/동결 권한**(코드 설치 불가 — 본문은 U 서명이 따로 · F 로 본문 서명 = U1 거부) · 완화 = 액션 SHA 핀 · environment `feed` 브랜치 제한 · R 위임문으로 F 폐기. **R10 = 빌드 호스트 장악 시 U 안전을 주장하지 않는다**(minisign 이 이 기기 프로세스라 서명 순간 개인키가 메모리를 지난다 · 네트워크 단절 서명기/HSM 없음 · master 결정 「비용 0」).
+- S3Store(R2 조건부 PUT/DELETE · SigV4)는 **R2 실측 0** — 로컬 가짜 S3 로 의미만 잰다. 특히 R2 가 `DELETE` 의 `If-Match` 를 지키는지 미확인(첫 게시 되돌리기 = 삭제 경로) → 첫 R2 게시 전 1회 실측(빈 키에 조건부 PUT 두 번 → 둘째 412 · 조건부 DELETE 낡은 ETag → 412).
 - 윈 재료 수집(무인 설치로 payload 측정)과 refresh-feed.yml 은 **러너에서 한 번도 안 돌았다**(이 기계엔 윈 실행 기층·GitHub 실행 0) — 첫 발행 리허설(§1 ⑤ R2·R6)이 첫 실측. 2판부터 윈 수집 실패 = 릴리스 실패(첫 실측에서 수집기가 틀리면 태그가 적색 — 되돌리기 = 그 스텝 수리 뒤 재태그).
 - update-worker · cf-route-probe 는 **Cloudflare 에서 한 번도 안 돌았다**(워커는 node 하네스로 같은 배치를 서빙해 잼 · 탐침의 `wrangler delete --force` 철자 미확인) — §1 ③ 0 이 첫 실측.
-- ⓪-a 의 동작 증거 = 윈 실기 6 시나리오(`WIN-NSIS-0A-FIELD.md`)가 첫 실측 — 이 기계 근거는 컴파일·소스 핀·모델(⓪-a 모델 밖)뿐.
+- ⓪-a 의 동작 증거 = 윈 실기 8 시나리오(`WIN-NSIS-0A-FIELD.md`)가 첫 실측 — 이 기계 근거는 컴파일·소스 핀·모델(3판: ⓪-a 결정 나무 270 상태 · 손으로 맞춘 거울)뿐.
 - payload 제외 규칙(`scripts/update/payload-exclude.txt` · 수집기 무삭제)이 S9b 와 맞는지(설치기 생성 파일이 판마다 같은지 미측정) = U2 S9b 설계와 대조 필요.
 - GitHub 맥 러너에서 `hdiutil attach`(가짜 매체 시험)가 되는지 미측정 — 안 되면 그 묶음만 실패한다(ci-branch 맥 첫 실행이 잰다).
 - `bunx wrangler@3` 판 고정은 실제 사용 판과 대조하지 않았다(update-worker 배포·R2 게시 첫 실행이 잰다).
@@ -157,4 +174,30 @@
 | 18 | 윈 payload 실패해도 릴리스 · uninstall.exe 임의 제외 | 수집·업로드 `continue-on-error` 삭제(`if-no-files-found: error`) · 수집기 무삭제 + 공유 제외 규칙 `payload-exclude.txt` | `ca4c7b6a` · `bc1ab479` | 형태 핀(되돌리면 적색) | 제외 규칙을 U2 S9b 와 대조 = U2 |
 | 19 | `--allow-older-release` 우회 · 판 문자열 과잉 강제 | 후퇴 예외 삭제(같은 본문 재서명만 seq 같음 허용) · 순서 = release_seq 하나 · 판 문자열 = 비보안 경고 | `ca4c7b6a` | 채널 후퇴 거부 | — |
 - 📌 내가 범위 밖이라 **하지 않은 것**(필요하면 지시): ① #9 의 액션 SHA 고정·F 서명 잡 `environment:` 보호(설정 = GitHub · master) ② #14 를 이 기계에서 더 당기는 「⓪-a 블록 미니 해석기 시험」(소스 텍스트를 그대로 실행하는 파이썬 해석기 · 실기 대체 아님) ③ #3 서명 기기 분리.
+
+## §9 codex 2R 반영표(3판 · 원문 `~/axdev/master/reports/REVIEW-U3-codex-2r.md` · master 판정 [master#9219ca05] = 머지 기준 / 발행 기준)
+| # | 2R 지적(요지) | 분류 | 처방(이 가지) | 커밋 | 음성 시험(뮤테이션 = 적색 확인) |
+|---|---|---|---|---|---|
+| 1 | 실 키링 비어 있음 | 발행 | §1 ⑥ 표 · U1 머지 뒤 §1 ② | — | — |
+| 2 | 설치 링크 = 명세뿐 | 발행 | U5 티켓 · §1 ⑥ | — | — |
+| 3 | `CYS_SIGN_DEV` 하나로 우회 | 머지 | 실 의식 lib·스크립트 env 손잡이 **0**(고정값) · 대역 = `lib/offline-sign-dev.sh`(시험 사본 트리만 · 매체 부모 = 임시 폴더만 · 실 키링 id 거부) | `d45255b9` | 손잡이 코드 0 핀 · 실 스크립트에 손잡이 줘도 /Volumes 거부 · 대기 0 거부 · 대역의 /Volumes 거부 |
+| 4 | 증표 = 서명 없는 JSON | 머지 | 증표 신뢰 **폐지**(정보용) · `u1verify.verify_envelope` 한 함수 · 게시기 envelope = `--cys` 필수 U1 직접 재실행(게시된 폐기문과 함께) · archive·revocations = 키링 암호 재검증 | `cd4c7152` | 위조 증표+변조 본문 = rc 2 · F 정상 서명이지만 U1 만 거부하는 봉투 = 「U1 재검증 거부」(U1 호출 삭제 = 적색) |
+| 5 | severity 약화 통과 | 머지 | `check_revocations_successor`(항목 전체 보존 · advisory→stop_seats 만 · reason 변경 거부 · 위임 항목 변경 거부) — 생성기·게이트·게시기 공용 · 생성기 = 승격만 | `cd4c7152` | stop_seats→advisory · reason 변경 = 게이트 rc 1 · 게시 rc 2(약화 허용 뮤테이션 = 적색) · 승격 = rc 0 |
+| 6 | 상속기 = 증표만 신뢰 | 머지 | make-envelope `--prev-envelope` = `--cys`·`--revocations` 필수 U1 재검증(만료 ⓔ 만 허용) · refresh-feed 배선 | `cd4c7152` | 위조 현재 봉투 + 위조 증표 = 「U1 재검증 거부」 · `--cys` 없음 = rc 2 |
+| 7 | — | 해소(2R) | — | — | — |
+| 8 | R2 무조건 PUT · 포인터→색인 중단 | 머지 | store = CAS(`If-None-Match: *` 객체 · `If-Match` 포인터 · FsStore flock · S3Store 표준 라이브러리 SigV4) · 보관소 = **세대 포인터 한 객체**(포인터+색인) | `cd4c7152` | ETag 불일치·이미 있음 = CasFail(Fs·가짜 S3 둘 다) · 객체만 있는 중단 상태 재실행 = 색인까지 완성(멱등 아님) |
+| 9 | F environment 없음 · 가변 태그 | 머지 | 전 워크플로 서드파티 액션 48곳 SHA 핀(+ 태그 주석) · rust-toolchain `toolchain: stable` 명시 · refresh-feed `environment: feed`(브랜치 제한만 · reviewer 0 = master 결정) · 잔여 위험 §6 | `90af8cd9` | 핀 시험(40자 SHA · 주석 · toolchain · environment) |
+| 10 | payload_manifest 비교 생략 | 머지 | U1 2판 칸 → 전체 행 대조에 포함 · 대기 분기 삭제 | `4991230b` | U1 반환에서 칸 누락 · 한 항목 sha 변조(대역 래퍼) = rc 1 |
+| 11 | low-1·seq+1 경계 미검사 | 머지 | cysr = 열거 범위 = max(min_from,1)..=seq **정확 일치** · 후보 = uptodate · agora-client = low-1 ⓛ 거부·seq·seq+1 uptodate · 상한 64 | `4991230b` | 범위 하한·후보 빠짐 · 후보 apply · low-1 apply/엉뚱한 단계 · seq+1 apply · 상한 초과(U1 호출 전 거부) |
+| 12 | — | 해소(2R) | — | — | — |
+| 13 | NSIS 잠금 해제 경합 · 조상 pid | 머지 | 핸들을 끝까지 쥐고 대조 뒤 같은 핸들로 재시도(`cys_txn_recheck`) · 풀렸으면 exit 6 · 판정 불가 = 위임 불가 · 조상 pid = 러너 유지(기각 · §3-7 ④ 주석) | `e6e7ae5c` | 소스 핀(재확인 우회 뮤테이션 = 적색) · 모델 Z6 |
+| 14 | ⓪-a 실행 0 · 모델 제외 | 머지+발행 | model.py = ⓪-a 결정 나무 포함(270 상태 · Z1~Z6) · 윈 실기 = 8 시나리오(F7 대조 중 해제 · F8 타 프로세스 뮤텍스) | `e6e7ae5c` · 이 문서 | 모델에서 재확인 갈래 삭제 = Z1 위반 · 실기 = 발행 기준 |
+| 15 | 게시기 signed_at 직접 검사 안 함 | 머지 | 게시 단계에서 신뢰 시각(미래 거부) + 직전 게시본 signed_at(역행 거부) — 세 종류 모두 | `cd4c7152` | (생성 쪽 미래·역행 시험 유지) · 게시 쪽 = U1 재검증 음성과 같은 경로 |
+| 16 | live-check 실패 뒤 복구 없음 | 머지 | 불일치 = 옛 포인터로 ETag 조건 자동 되돌리기(rc 4 · 첫 게시 = 조건부 삭제) · 되돌리기 CAS 실패 = rc 5 + 실행 가능한 `restore` 1줄 | `cd4c7152` | 로컬 서버 불일치 주입 = rc 4 + 세대 포인터 원복 · 경쟁 주입 = rc 5 → 인쇄 명령 실행 = 복구 |
+| 17 | strict 0 tests | 발행 | §1 ⑥ 표(머지 트리 + 맥 CI) · 이 기계 strict 87/0 건너뜀 0 | — | — |
+| 18 | 제외 파일 U3 만 읽음 | 발행 | §1 ⑥ 표(U2 S9b 로드 + 불일치 시험) | — | — |
+| 19 | 같은 seq 다른 본문 허용 | 머지 | make-envelope = 같은 seq 면 직전 봉투 원문·서명과 바이트 동일만 · 게시기 envelope = 실은 본문·서명 = 보관소 세대 포인터 객체와 바이트 동일 | `cd4c7152` | 다른 notes_ko 같은 seq = 「재서명 거부」 · 보관소에 없는 seq 봉투 게시 = rc 3 |
+| 워커 | 502 한쪽만 | 머지 | 포인터의 두 객체 모두 검사 · 하나라도 불일치 = 둘 다 502 · 세대 포인터 정확 키 조회(`05` 404) | `cd4c7152` | 본문 객체 변조 = [502, 502] |
+| HANDOFF | 첫 게시 `--first` 누락 | 머지 | §1 ③ 2·3 정정(게이트·게시 둘 다 · 둘째부터 없음) | 이 문서 | — |
+- 잔여(정직): S3Store = **R2 실측 0**(가짜 S3 로만) — R2 조건부 DELETE 지원 여부 미확인(§6) · 모델의 ⓪-a 는 손으로 맞춘 거울(훅을 실행하지 않음) · agora-client 열거 경계는 대역 cys 로만 쟀다(U1 실물 agora 픽스처 없음).
 

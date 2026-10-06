@@ -7,7 +7,7 @@
 //   ④ 앱에 갱신을 결정·집행하는 호출이 없다(설계 §5-1 — 사용자가 누르는 갱신 단추 0).
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { parseResultNotice, seatsBlockedText, UPDATE_RESULT_TOAST_ID, UPDATE_ROLLBACK_FAILED_TOAST_ID } from "./updateresult";
+import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS, UPDATE_RESULT_TOAST_ID, UPDATE_ROLLBACK_FAILED_TOAST_ID } from "./updateresult";
 
 const ok = { toast_id: "update-result", result_id: "r-1", title: "자비스 새 판", body: "자비스가 새 판으로 바뀌었어요. 하던 일은 그대로 이어집니다." };
 
@@ -27,8 +27,9 @@ describe("parseResultNotice — 응답 모양 의심", () => {
     expect(parseResultNotice({ ...ok, result_id: "x".repeat(64) })?.resultId).toBe("x".repeat(64));
     for (const t of ["", 3, null]) expect(parseResultNotice({ ...ok, title: t })).toBe(null);
   });
-  it("제어문자·줄 나눔·방향 바꿈 글자는 통째로 거부 — 본문의 줄바꿈(릴리스 노트 둘째 줄)만 허용", () => {
-    expect(parseResultNotice({ ...ok, body: "첫 줄\n달라진 점: 둘째 줄" })?.body).toBe("첫 줄\n달라진 점: 둘째 줄");
+  it("제어문자·줄바꿈·줄 나눔·방향 바꿈 글자는 통째로 거부 — 알림은 한 줄(설계 §6-1 · 2판 codex 1R ⑥)", () => {
+    expect(parseResultNotice({ ...ok, body: "첫 문장. 달라진 점: 같은 줄" })?.body).toBe("첫 문장. 달라진 점: 같은 줄");
+    expect(parseResultNotice({ ...ok, body: "첫 줄\n달라진 점: 둘째 줄" })).toBe(null);
     expect(parseResultNotice({ ...ok, title: "제목\n둘째" })).toBe(null);
     for (const bad of ["a\rb", "a\u0000b", "a\u001b[31mb", "a\u007fb", "a\u0085b", "a b", "a b", "a‮b", "a⁦b", "a‏b", "a؜b", "a\tb"]) {
       expect({ bad, n: parseResultNotice({ ...ok, body: bad }) }).toEqual({ bad, n: null });
@@ -74,17 +75,20 @@ describe("main.ts 배선 — 순서 ①②→③→④ · 고정 안내", () => 
   });
   it("결과 알림은 기동 때 1회만 부른다(창 하나에 토스트 1개) · 고정 안내는 기동·포커스·다시 보일 때", () => {
     expect(CODE.split("void pullUpdateResultNotice();").length - 1).toBe(1);
-    expect(CODE.split("void refreshSeatsBlockedNote()").length - 1).toBe(3);
+    expect(CODE.split("void refreshSeatsBlockedNote()").length - 1).toBe(4); // 기동 · 포커스 · 저율 폴링 · 다시 보일 때
   });
-  it("고정 안내: textContent 로만 · innerHTML 0 · 닫기 단추 만들지 않음 · 조회 실패면 손대지 않음", () => {
-    const b = fnBody("refreshSeatsBlockedNote");
+  it("고정 안내: textContent 로만 · innerHTML 0 · 닫기 단추 만들지 않음 · 조회는 latestOnly 경유(실패 = 손대지 않음 · 역순 응답 폐기)", () => {
+    const b = fnBody("applySeatsBlockedNote");
     expect(b).toContain('getElementById("update-hold-note")');
     expect(b).toContain("el.textContent = text ?? \"\";");
     expect(b).toContain("el.hidden = text === null;");
     expect(b).not.toContain("innerHTML");
     expect(b).not.toContain("createElement");
-    const catchAt = b.indexOf("} catch {");
-    expect(b.slice(catchAt, catchAt + 40)).toContain("return;");
+    expect(CODE).toContain('const refreshSeatsBlockedNote = latestOnly(() => invoke("update_seats_blocked_notice"), applySeatsBlockedNote);');
+  });
+  it("(2판 · codex 1R ②) 포커스·보임이 그대로여도 저율 폴링으로 다시 잰다 — 간격 ≥30초(비용 0 에 가깝게)", () => {
+    expect(CODE).toContain("setInterval(() => void refreshSeatsBlockedNote(), SEATS_NOTE_POLL_MS);");
+    expect(SEATS_NOTE_POLL_MS).toBeGreaterThanOrEqual(30_000);
   });
   it("★앱에 갱신을 결정·집행하는 호출이 없다 — 옛 명령 이름 0(설계 §5-1·§5-2)", () => {
     for (const cmd of ["check_update", "install_update", "check_pack_update", "install_pack_update", "restart_after_update", "update_attempt_report", "smart_app_control", "update_checked_launch_enabled", "autotest_patch_install"]) {
@@ -95,5 +99,57 @@ describe("main.ts 배선 — 순서 ①②→③→④ · 고정 안내", () => 
     }
     // 남기는 것(설계 §5-1 「남긴다」): update-error 듣개
     expect(CODE.includes('listen("update-error"')).toBe(true);
+  });
+});
+
+describe("latestOnly — 겹친 조회의 역순 응답 폐기 · 포커스 유지 중 자동 소거(2판 · codex 1R ②)", () => {
+  type Deferred = { promise: Promise<unknown>; resolve: (v: unknown) => void; reject: (e: unknown) => void };
+  const deferred = (): Deferred => {
+    let resolve!: (v: unknown) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<unknown>((a, b) => {
+      resolve = a;
+      reject = b;
+    });
+    return { promise, resolve, reject };
+  };
+  const BLOCKED = "자비스가 잠깐 쉬고 있어요. 처음 설치할 때 쓴 링크 한 줄을 다시 붙여 넣으시면 바로 다시 쓸 수 있어요.";
+
+  it("옛 조회(차단됨)가 새 조회(풀림)보다 늦게 끝나도 안내를 되살리지 않는다", async () => {
+    const calls: Deferred[] = [];
+    const shown: (string | null)[] = [];
+    const refresh = latestOnly(() => {
+      const d = deferred();
+      calls.push(d);
+      return d.promise;
+    }, (v) => shown.push(seatsBlockedText(v)));
+    const old = refresh();
+    const fresh = refresh();
+    calls[1].resolve(null); // 새 조회 = 풀림
+    await fresh;
+    calls[0].resolve(BLOCKED); // 옛 조회 = 차단됨(늦게 도착)
+    await old;
+    expect(shown).toEqual([null]);
+  });
+
+  it("조회가 던지면 아무것도 바꾸지 않는다(일시 실패로 안내를 지우지도 만들지도 않음)", async () => {
+    const shown: unknown[] = [];
+    await latestOnly(() => Promise.reject(new Error("x")), (v) => shown.push(v))();
+    expect(shown).toEqual([]);
+  });
+
+  it("★포커스 유지 중 복구 — 이벤트 없이 폴링 틱만으로 차단 → 풀림이 화면에 반영된다", async () => {
+    let backend: unknown = BLOCKED;
+    const note = { text: "", hidden: true };
+    const refresh = latestOnly(() => Promise.resolve(backend), (v) => {
+      const t = seatsBlockedText(v);
+      note.text = t ?? "";
+      note.hidden = t === null;
+    });
+    await refresh(); // 기동
+    expect(note).toEqual({ text: BLOCKED, hidden: false });
+    backend = null; // 창은 그대로(포커스·보임 이벤트 없음) · 러너가 seats_blocked 를 지움
+    await refresh(); // 저율 폴링 한 틱
+    expect(note).toEqual({ text: "", hidden: true });
   });
 });

@@ -168,7 +168,7 @@ import {
   windowView,
 } from "./usagebar";
 import { starvedNotice, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
-import { parseResultNotice, seatsBlockedText } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
+import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
 import {
   deptPendingText,
   deptProgressId,
@@ -9110,6 +9110,8 @@ async function start() {
   void pullUpdateResultNotice();
   void refreshSeatsBlockedNote();
   window.addEventListener("focus", () => void refreshSeatsBlockedNote());
+  // (2판 · codex 1R ②) 창이 포커스·보임을 유지한 채 러너가 seats_blocked 를 지우면 위 두 이벤트가 오지 않는다 — 저율 폴링으로 소거한다.
+  setInterval(() => void refreshSeatsBlockedNote(), SEATS_NOTE_POLL_MS);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void refreshSeatsBlockedNote();
   });
@@ -10016,20 +10018,17 @@ async function pullUpdateResultNotice(): Promise<void> {
   }
 }
 
-/// ★(1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 1줄 — 닫기 단추 없음 · 1회 규칙 없음(창을 열 때·다시 볼 때마다 잰다) · 상태가 풀리면 사라진다.
-///   조회가 실패하면 지금 보이는 상태를 그대로 둔다(일시 실패로 안내를 지우지도, 없는 안내를 만들지도 않는다).
-async function refreshSeatsBlockedNote(): Promise<void> {
+/// ★(1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 1줄 — 닫기 단추 없음 · 1회 규칙 없음(기동·포커스·다시 보일 때·저율 폴링마다 잰다) · 상태가 풀리면 사라진다.
+///   조회가 실패하면 지금 보이는 상태를 그대로 둔다(일시 실패로 안내를 지우지도, 없는 안내를 만들지도 않는다 — latestOnly 가 던진 조회를 무시).
+///   겹친 조회는 가장 나중에 시작한 것의 응답만 적용한다(2판 · codex 1R ② — 역순 응답이 안내를 되살리지 않게).
+function applySeatsBlockedNote(v: unknown): void {
   const el = document.getElementById("update-hold-note");
   if (!el) return;
-  let text: string | null;
-  try {
-    text = seatsBlockedText(await invoke("update_seats_blocked_notice"));
-  } catch {
-    return;
-  }
+  const text = seatsBlockedText(v);
   el.textContent = text ?? "";
   el.hidden = text === null;
 }
+const refreshSeatsBlockedNote = latestOnly(() => invoke("update_seats_blocked_notice"), applySeatsBlockedNote);
 
 // ---------- ui wiring ----------
 

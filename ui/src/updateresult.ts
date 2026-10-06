@@ -24,7 +24,7 @@ export interface ResultNotice {
 
 const MAX_TEXT = 600;
 
-/** 제어문자(줄바꿈 제외)·줄/문단 나눔·방향 바꿈 글자가 있으면 거짓. 본문의 줄바꿈 1개(릴리스 노트 둘째 줄)는 허용한다. */
+/** 제어문자·줄/문단 나눔·방향 바꿈 글자가 있으면 null(allowNewline 이 참일 때만 줄바꿈 허용 — 지금 호출부는 전부 거짓 = 한 줄). */
 function cleanText(v: unknown, allowNewline: boolean): string | null {
   if (typeof v !== "string" || v.length === 0 || v.length > MAX_TEXT) return null;
   for (let i = 0; i < v.length; i++) {
@@ -45,9 +45,30 @@ export function parseResultNotice(v: unknown): ResultNotice | null {
   if (toastId !== UPDATE_RESULT_TOAST_ID && toastId !== UPDATE_ROLLBACK_FAILED_TOAST_ID) return null;
   const resultId = typeof o.result_id === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(o.result_id) ? o.result_id : null;
   const title = cleanText(o.title, false);
-  const body = cleanText(o.body, true);
+  const body = cleanText(o.body, false); // 알림 1줄(설계 §6-1 · 2판 codex 1R ⑥ — 노트도 같은 줄에 붙는다)
   if (resultId === null || title === null || body === null) return null;
   return { toastId, resultId, title, body };
+}
+
+/** 📌18 고정 안내 재조회 간격 — 창이 열린 채(포커스·보임 유지) 러너가 `seats_blocked` 를 지워도 안내가 사라지게 하는 저율 폴링(codex 1R ②).
+ *  조회 1번 = 상태 폴더 파일 하나 읽기라 CPU·토큰 비용은 0 에 가깝다. 30초 이상이어야 한다(시험이 하한을 잰다). */
+export const SEATS_NOTE_POLL_MS = 60_000;
+
+/** 겹친 조회의 **역순 응답을 버린다** — 가장 나중에 시작한 조회의 결과만 `apply` 한다(세대 번호). 조회가 던지면 아무것도 바꾸지 않는다.
+ *  예: 「차단됨」을 묻는 느린 옛 조회가 「풀림」을 받은 새 조회보다 늦게 끝나도 안내를 되살리지 않는다(codex 1R ②). */
+export function latestOnly<T>(fetch: () => Promise<T>, apply: (v: T) => void): () => Promise<void> {
+  let gen = 0;
+  return async () => {
+    const mine = ++gen;
+    let v: T;
+    try {
+      v = await fetch();
+    } catch {
+      return;
+    }
+    if (mine !== gen) return;
+    apply(v);
+  };
 }
 
 /** `update_seats_blocked_notice` 응답 → 창 고정 안내 문구(📌18) 또는 null(안내 없음). */

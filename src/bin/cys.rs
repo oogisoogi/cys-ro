@@ -6189,22 +6189,19 @@ fn run(command: Command) -> i32 {
         // ★1.1.8 U2 2판(codex 1R C1 · §3-2 참가자): 팩을 바꾸는(·판정하는) 동사도 트랜잭션 잠금에 원자 참가한다 — 자동 갱신 중 토큰 없는
         //   실행 = rc 26(txn_busy · 재시도 0) · 위임(--txn + env) = 자식 잠금.
         Command::InitPack { force, install_hook: _, no_install_hook, claude_settings } => {
-            let part = match txn_participate("init-pack", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+            let _part = match txn_participate("init-pack", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
                 Ok(p) => p,
                 Err(rc) => return rc,
             };
-            return pack_txn_wrap(part.as_ref(), || run_init_pack(force, no_install_hook, claude_settings));
+            return run_init_pack(force, no_install_hook, claude_settings);
         }
 
         Command::PackUpdate { from, manifest_url, dry_run } => {
-            let part = match txn_participate("pack-update", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+            let _part = match txn_participate("pack-update", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
                 Ok(p) => p,
                 Err(rc) => return rc,
             };
-            if dry_run {
-                return run_pack_update(from, manifest_url, dry_run);
-            }
-            return pack_txn_wrap(part.as_ref(), || run_pack_update(from, manifest_url, dry_run));
+            return run_pack_update(from, manifest_url, dry_run);
         }
         Command::PackPlan { force } => {
             let _part = match txn_participate("pack-plan", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
@@ -20956,29 +20953,6 @@ fn rotate_participate(arg: Option<&str>) -> Result<Option<cys::update::lock::Par
     txn_participate("rotate", arg)
 }
 
-/// ★2판(codex 1R C14): 팩을 바꾸는 동사가 **잠금 소유자**로 돌 때(위임 = 바깥 트랜잭션 저널 몫이라 제외) 전역 저널에 PACK_APPLY(사용자
-/// 트리 해시·사본 고정) → 성공 rc 0 = PACK_DONE. 실패 rc·도중 죽음 = PACK_APPLY 가 남아 부팅 가드 → 복구기가 팩 저널 복구 + 사용자
-/// 트리 대조·복원 뒤에만 PACK_DONE. 시작 거부(복구 대기 저널 등) = rc 26.
-fn pack_txn_wrap(part: Option<&cys::update::lock::Participation>, body: impl FnOnce() -> i32) -> i32 {
-    let Some(cys::update::lock::Participation::Owner(g)) = part else { return body() };
-    let Ok(dir) = cys::update::buildinfo::state_dir() else { return body() };
-    let pack = cys::pack::pack_dir();
-    let root = pack.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| pack.clone());
-    let t = g.token();
-    if let Err(e) = cys::update::realops::pack_txn_begin(&dir, &t.txn_id, t.epoch, &root) {
-        eprintln!("[pack] 갱신 저널 시작 거부: {e} — 복구가 먼저다(재시도 0)");
-        return ROTATE_RC_TXN_BUSY;
-    }
-    let rc = body();
-    if rc == 0 {
-        if let Err(e) = cys::update::realops::pack_txn_end(&dir, &t.txn_id, t.epoch) {
-            eprintln!("[pack] PACK_DONE 기록 실패: {e}");
-            return ROTATE_RC_TXN_BUSY;
-        }
-    }
-    rc
-}
-
 fn txn_participate(owner: &str, arg: Option<&str>) -> Result<Option<cys::update::lock::Participation>, i32> {
     let Ok(dir) = cys::update::buildinfo::state_dir() else { return Ok(None) };
     let env = std::env::var(cys::update::lock::ENV_TXN).ok().filter(|v| !v.is_empty());
@@ -20988,6 +20962,8 @@ fn txn_participate(owner: &str, arg: Option<&str>) -> Result<Option<cys::update:
             let tok = match &p {
                 cys::update::lock::Participation::Owner(g) => g.token().render(),
                 cys::update::lock::Participation::Delegated(_) => arg.map(str::to_string).or(env).unwrap_or_default(),
+                // 공유 참가자 = 토큰 없음(자식도 각자 공유 참가)
+                cys::update::lock::Participation::Participant(_) => return Ok(Some(p)),
             };
             std::env::set_var(cys::update::lock::ENV_TXN, tok);
             Ok(Some(p))

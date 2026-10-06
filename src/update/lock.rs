@@ -23,6 +23,10 @@ pub const OWNER_FILE: &str = "txn.owner.json";
 /// ★2R B6/H⑥: 위임 자식 잠금 — 위임 받은 자식이 작업 끝까지 쥔다(부모가 죽어 `txn.lock` 이 풀려도 새 트랜잭션은 이것이 풀릴 때까지
 /// 못 연다). 자식은 한 번에 하나(러너는 자식을 차례로 부른다).
 pub const CHILD_LOCK_FILE: &str = "txn.child.lock";
+/// ★2판(C1 개정 · 윈 CI T8): 토큰 없는 CLI 참가자(rotate·init-pack·pack-update·pack-plan)의 **공유** 잠금 — 여럿이 함께 쥘 수 있고,
+/// 러너·복구기([`acquire`])는 이것이 쥐어져 있으면 트랜잭션을 열지 않는다. 설치기(⓪-a)가 보는 `txn.lock` 은 건드리지 않는다
+/// (짧은 팩 명령이 설치기 「갱신 중」 창을 띄우던 회귀 차단).
+pub const PART_LOCK_FILE: &str = "txn.part.lock";
 
 /// 위임 토큰.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +196,19 @@ pub fn acquire(dir: &Path, owner: &str) -> Result<TxnGuard, UpdateErr> {
             Err(TryLockError::WouldBlock) => return Err(refuse("위임 자식이 아직 작업 중(자식 잠금)".into())),
             Err(TryLockError::Error(e)) => return Err(refuse(format!("자식 잠금 시도: {e}"))),
         }
+        // ★2판 C1: 토큰 없는 CLI 참가자(공유 잠금)가 일하는 중이면 열지 않는다 — 순서 = 소유자 기록·txn.lock 을 **먼저** 쥐고 본다
+        //   (그 뒤 공유 잠금을 잡는 참가자는 txn.lock 이 잡힌 것을 보고 물러난다 · 양방향 원자).
+        let part = match open_lock_file(dir, PART_LOCK_FILE) {
+            Ok(p) => p,
+            Err(e) => return Err(refuse(format!("참가자 잠금 파일: {}", e.detail))),
+        };
+        match part.try_lock() {
+            Ok(()) => {
+                let _ = part.unlock();
+            }
+            Err(TryLockError::WouldBlock) => return Err(refuse("CLI 참가자(rotate·팩 명령)가 작업 중(참가자 잠금)".into())),
+            Err(TryLockError::Error(e)) => return Err(refuse(format!("참가자 잠금 시도: {e}"))),
+        }
     }
     Ok(TxnGuard { file: Some(f), owner: o, dir: dir.to_path_buf() })
 }
@@ -277,6 +294,22 @@ fn verify_owner_chain(dir: &Path, arg: &Token, probe: &ProcProbe) -> Result<Owne
 pub enum Participation {
     Owner(TxnGuard),
     Delegated(DelegatedGuard),
+    /// ★2판 C1: 토큰 없는 CLI — 참가자 공유 잠금(쥔 동안 러너·복구기가 트랜잭션을 열지 못함).
+    Participant(PartGuard),
+}
+
+/// 참가자 공유 잠금 보유(drop = 놓음).
+#[derive(Debug)]
+pub struct PartGuard {
+    file: Option<File>,
+}
+
+impl Drop for PartGuard {
+    fn drop(&mut self) {
+        if let Some(f) = self.file.take() {
+            let _ = f.unlock();
+        }
+    }
 }
 
 /// 참가자 입구: 토큰(인자 `--txn` · env `CYS_UPDATE_TXN`)이 하나라도 있으면 위임 검증(재잠금 0 · 둘이 같아야 함),
@@ -297,10 +330,37 @@ pub fn acquire_or_delegate(dir: &Path, owner: &str, arg: Option<&str>, env: Opti
 /// 없을 때**(갱신 폴더 생성·열기 실패 = 갱신이 돌 수 없는 기계)만 `Ok(None)` = 평소대로 진행(설치기·설치 링크 무변경). 잠금이 잡혀
 /// 있음·토큰 불일치 = Err(txn_busy).
 pub fn participate(dir: &Path, owner: &str, arg: Option<&str>, env: Option<&str>) -> Result<Option<Participation>, UpdateErr> {
-    if arg.is_none() && env.is_none() && open_lock(dir).is_err() {
-        return Ok(None);
+    if arg.is_some() || env.is_some() {
+        return acquire_or_delegate(dir, owner, arg, env).map(Some);
     }
-    acquire_or_delegate(dir, owner, arg, env).map(Some)
+    let _ = owner; // 공유 참가자는 소유자 기록을 쓰지 않는다(설치기·부팅 가드가 보는 txn.lock·txn.owner.json 무접촉)
+    // ★2판 C1(개정): 참가자 공유 잠금을 **먼저** 쥐고 txn.lock 을 본다 — 러너는 txn.lock 을 먼저 쥐고 참가자 잠금을 본다(양방향 원자).
+    let Ok(part) = open_lock_file(dir, PART_LOCK_FILE) else { return Ok(None) };
+    let mut got = false;
+    for _ in 0..40 {
+        // 러너의 순간 배타 시도(acquire 의 try_lock) 와만 겹친다 — 짧게 다시 본다
+        match part.try_lock_shared() {
+            Ok(()) => {
+                got = true;
+                break;
+            }
+            Err(TryLockError::WouldBlock) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(TryLockError::Error(e)) => return Err(busy(format!("참가자 잠금 시도: {e}"))),
+        }
+    }
+    if !got {
+        return Err(busy("참가자 잠금을 얻지 못함"));
+    }
+    let g = PartGuard { file: Some(part) };
+    let held = if dir.join(LOCK_FILE).exists() { is_held(dir) } else { Some(false) };
+    match held {
+        Some(false) => Ok(Some(Participation::Participant(g))),
+        Some(true) => {
+            let who = read_owner(dir).map(|o| format!("{}(pid {})", o.owner, o.pid)).unwrap_or_else(|| "?".into());
+            Err(busy(format!("잠금 소유 중: {who}")))
+        }
+        None => Err(busy("잠금 판정 불가")),
+    }
 }
 
 /// `pid` 가 이 프로세스의 조상(부모·조부모 …)인가 — sysinfo 부모 사슬(최대 64단). 판정 불가 = None.
@@ -344,21 +404,23 @@ mod tests {
         d
     }
 
-    /// ★2판 C1: 참가 = 존재 검사 없는 원자 잠금 — 잠금 파일이 없던 기계도 첫 참가자가 잡고, 그동안 다른 참가자 = busy · env 만 = 거부.
+    /// ★2판 C1(개정 · 윈 CI T8): 토큰 없는 CLI = 참가자 **공유** 잠금 — 둘이 함께 참가 가능 · 그동안 러너 acquire = 거부 · 러너가 쥔 동안
+    /// 참가 = busy · 참가는 txn.lock·소유자 기록을 만들지 않음(설치기 ⓪-a 무영향) · env 만 = ⓪ 거부.
     #[test]
     fn participate_is_atomic_without_exists_shortcut() {
         let d = tmp("participate");
-        assert!(!d.join(LOCK_FILE).exists());
-        let a = participate(&d, "pack-plan", None, None).unwrap().expect("잠금 파일 없던 기계 = 참가(소유)");
-        assert!(matches!(a, Participation::Owner(_)));
-        assert!(participate(&d, "init-pack", None, None).is_err(), "A 가 쥔 동안 B = txn_busy(존재 검사 창 0)");
-        let tok = match &a {
-            Participation::Owner(g) => g.token().render(),
-            _ => unreachable!(),
-        };
+        let a = participate(&d, "pack-plan", None, None).unwrap().expect("참가");
+        assert!(matches!(a, Participation::Participant(_)));
+        let b = participate(&d, "init-pack", None, None).unwrap().expect("공유 = 함께 참가");
+        assert!(!d.join(LOCK_FILE).exists() && !d.join(OWNER_FILE).exists(), "설치기가 보는 txn.lock·소유자 기록 무접촉");
+        assert!(acquire(&d, "runner").unwrap_err().detail.contains("참가자"), "참가자 작업 중 = 러너 거부");
+        drop((a, b));
+        let g = acquire(&d, "runner").unwrap();
+        assert!(participate(&d, "init-pack", None, None).is_err(), "러너가 쥔 동안 = txn_busy");
+        let tok = g.token().render();
         assert!(participate(&d, "pack-plan", None, Some(&tok)).is_err(), "env 만 = ⓪ 거부");
-        drop(a);
-        assert!(participate(&d, "init-pack", None, None).unwrap().is_some(), "놓은 뒤 = 다시 잡힘");
+        drop(g);
+        assert!(participate(&d, "init-pack", None, None).unwrap().is_some(), "놓은 뒤 = 다시 참가");
         let _ = std::fs::remove_dir_all(&d);
     }
 

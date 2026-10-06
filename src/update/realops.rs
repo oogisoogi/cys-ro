@@ -997,7 +997,8 @@ fn user_snapshot_filter(root: &Path) -> impl Fn(&str) -> bool + '_ {
     }
 }
 
-/// 팩을 바꾸는 CLI(init-pack·pack-update)가 **잠금 소유자**로 돌 때 바꾸기 전에 부른다: 비종결 저널이 있으면 거부(복구 먼저) ·
+/// (★2판 C14 · ⚠CLI 미배선 — 윈 CI T8 뒤 철회: 앱 기동 init-pack 마다 PACK_APPLY 가 데몬 부팅을 막고 설치기와 겹친다 · HANDOFF §5 ⓗ 📌)
+/// 팩을 바꾸는 트랜잭션 소유자가 바꾸기 전에 부른다: 비종결 저널이 있으면 거부(복구 먼저) ·
 /// 사용자 트리 사본(`backup/pack-<txn>/user`)과 요약 해시를 저널 PACK_APPLY 에 고정(`stage_tree_sha256` = 해시 · `snapshot_dir` = 사본).
 pub fn pack_txn_begin(update_dir: &Path, txn_id: &str, epoch: u64, cys_root: &Path) -> Result<(), String> {
     use super::journal::{self, ReadOutcome, State};

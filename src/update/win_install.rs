@@ -259,8 +259,18 @@ mod imp {
             //   쓰기). 반쯤 된 설치는 S9b·RB 가 실물로 판정한다. 종료 요청이 거부돼도(권한) 설치기가 스스로 끝날 때까지 기다린다.
             // SAFETY: 우리가 만든 프로세스.
             unsafe { TerminateProcess(pi.hProcess, 1) };
-            // SAFETY: 프로세스 핸들 무기한 대기(종료 확인).
-            unsafe { WaitForSingleObject(pi.hProcess, u32::MAX) };
+            // ★3판(Fable 2R m3): 종료 확인 상한 10분 — 그래도 살아 있으면 RB 금지(RollbackBlocked → 러너가 RB_FAILED 직행 · 사람 필요).
+            // SAFETY: 프로세스 핸들 대기.
+            let w2 = unsafe { WaitForSingleObject(pi.hProcess, 600_000) };
+            if w2 != WAIT_OBJECT_0 {
+                unsafe {
+                    CloseHandle(pi.hThread);
+                    CloseHandle(pi.hProcess);
+                }
+                drop(img);
+                drop(held);
+                return Err(Fail::new(ErrCode::RollbackBlocked, "S9", "update.win_installer_stuck: 시한 뒤 설치기 종료를 확인하지 못함 — 되감기 금지"));
+            }
             // SAFETY: 끝난 프로세스의 핸들 정리.
             unsafe {
                 CloseHandle(pi.hThread);

@@ -333,6 +333,14 @@ impl<'a, O: Ops> Runner<'a, O> {
 
     /// §3-10 RB 하위 상태(들어가기 전에 적고 · 각 단계 멱등).
     fn rollback(&mut self, _j: &Journal, f: Fail) -> Result<Outcome, Stop> {
+        // ★3판(Fable 2R m3): 원인이 「되감기 금지」(윈 설치기 종료 확인 불가 = 옛 설치기를 띄우면 동시 쓰기)면 RB 단계를 밟지 않고
+        //   RB_FAILED(사람 필요 · 부팅 가드 유지)로 바로 간다.
+        if f.code == ErrCode::RollbackBlocked {
+            let j = self.enter(State::RbPrepared, |_| {})?;
+            let j = self.enter(State::RbFailed, |_| {})?;
+            self.ops.record(Some(&j), Kind::RollbackFailed, Some(&f));
+            return Ok(Outcome::RollbackFailed(f));
+        }
         let j = self.enter(State::RbPrepared, |_| {})?;
         self.rollback_from(j, f)
     }
@@ -900,6 +908,18 @@ pub(crate) mod tests {
         assert_eq!(seats_stopped(&d), Some(seq), "새 좌석 = 거부");
         super::super::quiesce::write_json(&d, SEATS_STOP_FILE, &serde_json::json!({"release_seq": seq + 1, "at": 1})).unwrap();
         assert_eq!(seats_stopped(&d), None, "다른 판 = 해제");
+    }
+
+    /// ★3판 m3: 윈 설치기 종료 확인 불가(RollbackBlocked) = RB 단계 0(옛 설치기 재실행 0) · RB_FAILED · 결과 rollback_failed.
+    #[test]
+    fn installer_stuck_goes_straight_to_rb_failed_without_rerunning_installer() {
+        let d = tmp("stuck");
+        let mut s = Sim::new(Os::Win);
+        s.fail_at.insert("swap", ErrCode::RollbackBlocked);
+        let o = run(&d, &mut s, Fault::default());
+        assert!(matches!(o, Outcome::RollbackFailed(_)), "{o:?}");
+        assert_eq!(state(&d), State::RbFailed);
+        assert_eq!(s.installer_runs, 0, "옛 설치기 재실행 0");
     }
 
     /// ★2판 C11: S11 durable commit(수용 기록·롤백 자산) 실패 = DONE 아님 → 롤백(옛 판) · 결과 = rollback.

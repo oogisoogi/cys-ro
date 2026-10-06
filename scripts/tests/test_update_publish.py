@@ -1196,7 +1196,7 @@ sys.stdout.write(json.dumps(j)); sys.exit(p.returncode)
 
     def test_first_release_seq1_uptodate_only(self):
         """4판(3R MAJOR-2 · master 결정 ①): 첫 판(seq 1 · 허용 출발 seq 없음) = 「후보 uptodate 1행」 으로 통과.
-        U1 cli 쪽 같은 규칙(291 공동 수정)이 들어오기 전에도 게이트 규칙을 재도록 U1 의 「출발 seq 없음」 거부만 걷어 낸다."""
+        R0(4d0aab95): U1 cli 의 같은 규칙(SEQ1 · cli.rs first_release)이 병합 트리에 있다 — 대역 없이 실제 U1 으로 잰다."""
         d = os.path.join(self.tmp, "s1")
         os.makedirs(d)
         fx1 = Fixture(d, seq=1)
@@ -1204,23 +1204,19 @@ sys.stdout.write(json.dumps(j)); sys.exit(p.returncode)
         for k in ("u", "f"):
             shutil.copy(self.fx.key(k), fx1.key(k))
         e = self.envelope(fx1.body(**{"--min-from-release-seq": "0"}), "s1.json")  # 생성기 규칙 0 ≤ min_from < seq
-        undo = ("if j.get('mode') == 'enumerate' and j['verdict'] == 'reject' and len(j['results']) == 1 "
-                "and j['results'][0]['outcome']['verdict'] == 'uptodate':\n"
-                "    j['verdict'] = 'ok'; j['problems'] = []")
-        r = self.gate(e, cys=self.wrapped_cys(undo))
+        r = self.gate(e)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("출발 seq 1 전부 허용 판정(열거)", r.stdout)
-        r = self.gate(e, cys=self.wrapped_cys(undo + "\nj['results'][0]['outcome']['verdict'] = 'apply'"))
+        r = self.gate(e, cys=self.wrapped_cys("j['results'][0]['outcome']['verdict'] = 'apply'"))
         self.assertEqual(r.returncode, 1)  # 후보 자신은 여전히 uptodate 여야 한다
 
     def test_u1_enum_row_keys_source_pin(self):
-        """4판(3R MAJOR-1): 게이트가 읽는 열거 행 키 = U1 가지 feed::render_enum_row 가 쓰는 키(소스 대조 · 재발 드리프트 벨트)."""
-        p = subprocess.run(["git", "-C", ROOT, "show", "u1/autoupdate-118:src/update/feed.rs"], capture_output=True, text=True)
-        if p.returncode != 0:
-            self.skipTest("U1 가지 없음(이 저장소 사본에 u1/autoupdate-118 ref 없음)")
-        i = p.stdout.find("fn render_enum_row(")
+        """4판(3R MAJOR-1): 게이트가 읽는 열거 행 키 = U1 feed::render_enum_row 가 쓰는 키(소스 대조 · 재발 드리프트 벨트).
+        R0(4d0aab95): U1 이 병합 트리에 있다 — 가지 ref 가 아니라 이 트리의 src/update/feed.rs 를 읽는다(건너뜀 0)."""
+        feed = open(os.path.join(ROOT, "src", "update", "feed.rs"), encoding="utf-8").read()
+        i = feed.find("fn render_enum_row(")
         self.assertGreater(i, 0, "U1 render_enum_row 를 찾지 못함")
-        fn = p.stdout[i:p.stdout.find("\n}\n", i)]
+        fn = feed[i:feed.find("\n}\n", i)]
         self.assertIn('\\"installed_release_seq\\":', fn)
         self.assertIn('\\"outcome\\":', fn)
         src = open(os.path.join(UPD, "u1verify.py"), encoding="utf-8").read()

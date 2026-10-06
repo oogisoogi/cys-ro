@@ -5,6 +5,7 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(다음 사람이 먼저 읽을 것)
+- ★**최종(09:0x · [master#226f0314])**: 산출 = 수용 후보(master 독립 게이트 스냅샷 + codex 적대 1R 뒤 확정) · 【결정필요】 ① = **A 확정**(그 자리 + `update::launch_win` 재노출 · 설계 §5-1 경로 1줄 정정 = master) · ② = **채택**(cutover 2026-11-01T00:00Z 상수 유지 · U3 발행 게이트 「min_binary 빈 값 = 발행 거부」 = master 추가) · 팩 메모리 등재 = master 보류 · U2 상한 = 코드 몫(이 계수) / 실기 몫(실측 없음) 둘로 · **CYCLE-SAVED · 새 작업 0 · 대기**.
 - 끝난 것: `src/update/` 17파일(5.6천 줄 · 시험 82) + build.rs · packsig · cysd org.status 가산 키 1 · cys.rs main 앞단 배선. 커밋 9개(아래 §1).
 - 시험: Rust lib 852/0 · cys 582/0 · cysd 2460/0(격리 env · 실패 0 · 환경 3 census·hwmon·b6_lsof 도 이번 실행에선 초록) · cys-app 296/0(§4).
 - **U1 판의 `cys self-update --check` 결정은 언제나 `hold`** 다 — N14(복구기 등록 = U2)·N7(롤백 자산 공간식 = U2 스냅샷 실측 뒤)이 사실상 「없음」이기 때문이고, 교체 경로가 없는 판에서 그것이 올바른 답이다.

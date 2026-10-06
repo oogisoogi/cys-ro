@@ -5675,7 +5675,12 @@ fn run(command: Command) -> i32 {
         }
 
         Command::Rotate { timeout, skip_drain, skip_depts } => {
-            return run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env());
+            // ★T3: 끝난 rc 를 상담소 신호로(조기 return 이 많아 몸통 대신 여기서 — rc 불변).
+            return counsel_update_signal(
+                "host.rotate",
+                run_rotate(timeout, skip_drain, skip_depts || rotate_skip_depts_env()),
+                None,
+            );
         }
 
         Command::Drain { .. } => {
@@ -27133,12 +27138,85 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
         }
     })();
     match result {
-        Ok(code) => code,
+        Ok(code) => counsel_update_signal("host.pack-update", code, None),
         Err(e) => {
             eprintln!("error: {e}");
-            1
+            counsel_update_signal("host.pack-update", 1, Some(e.as_str()))
         }
     }
+}
+
+/// ★T3(agora-t3-pack-collector): 업데이트 경로 종료코드 → 상담소 신호 error_code(순수). 0 = 신호 없음.
+/// rotate 는 `ROTATE_RC_*` 표, pack-update 는 `binary-too-old` 오류·degraded 두 rc 를 가른다.
+fn counsel_update_code(op: &str, rc: i32, err: Option<&str>) -> Option<&'static str> {
+    if rc == 0 {
+        return None;
+    }
+    Some(match op {
+        "host.rotate" => match rc {
+            ROTATE_RC_DRAIN_PARTIAL => "update.drain_partial",
+            ROTATE_RC_DAEMON => "update.daemon",
+            ROTATE_RC_DAEMON_UP => "update.daemon_up",
+            ROTATE_RC_PACK => "update.pack",
+            ROTATE_RC_RESTORE => "update.restore",
+            _ => "update.failed",
+        },
+        _ if err == Some("binary-too-old") => "update.binary_too_old",
+        _ => match rc {
+            cys::pack::EXIT_REINJECT_DEGRADED => "update.reinject_degraded",
+            cys::pack::EXIT_ACCEPTED_DEGRADED => "update.accepted_degraded",
+            _ => "update.failed",
+        },
+    })
+}
+
+/// rc ≠ 0 이면 팩 `bin/javis_counsel.py signal --source update` 를 띄운다 — 잠금·형식·끄기는 그 도구가 가진다.
+/// 실패는 전부 삼키고 **rc 를 그대로 돌려준다**(대기 상한 5초 · 넘으면 자식을 두고 떠난다).
+fn counsel_update_signal(op: &str, rc: i32, err: Option<&str>) -> i32 {
+    let Some(code) = counsel_update_code(op, rc, err) else {
+        return rc;
+    };
+    let script = cys::pack::pack_dir().join("bin").join("javis_counsel.py");
+    if !script.is_file() {
+        return rc;
+    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let names: &[&str] = if cfg!(windows) { &["python3.exe", "python.exe"] } else { &["python3"] };
+    let py = std::env::var("CYS_PY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            cys::runtime_bin_dirs(&exe_dir)
+                .into_iter()
+                .flat_map(|d| names.iter().map(move |n| d.join(n)))
+                .find(|p| p.is_file())
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "python3".to_string());
+    // ★SEAL-1: 팩토리 경유(.pyc 번들 오염 차단) · 등급 Attached(윈 콘솔 숨김).
+    let mut cmd = cys::python_command(&py);
+    cmd.arg(&script)
+        .args(["signal", "--source", "update", "--op", op, "--error-code", code])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in cys::spawn_env_pairs_from_process(&exe_dir) {
+        cmd.env(k, v);
+    }
+    cys::SpawnPolicy::spawn_policy(&mut cmd, cys::ChildLifetime::Attached);
+    if let Ok(mut child) = cmd.spawn() {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < std::time::Duration::from_secs(5) {
+            match child.try_wait() {
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                _ => break,
+            }
+        }
+    }
+    rc
 }
 
 /// 원격 팩 fetch(부차) — 시스템 curl shell-out으로 manifest·sig·tar를 staging 형제 디렉터리에 받는다.
@@ -27288,6 +27366,35 @@ extern "C" fn scoped_cleanup_handler(sig: libc::c_int) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★T3(agora-t3-pack-collector): 업데이트 rc → 상담소 error_code 표(순수) · 0 = 신호 없음.
+    #[test]
+    fn counsel_update_code_table() {
+        let r = |rc| counsel_update_code("host.rotate", rc, None);
+        assert_eq!(r(0), None);
+        assert_eq!(r(21), Some("update.drain_partial"));
+        assert_eq!(r(22), Some("update.daemon"));
+        assert_eq!(r(23), Some("update.daemon_up"));
+        assert_eq!(r(24), Some("update.pack"));
+        assert_eq!(r(25), Some("update.restore"));
+        assert_eq!(r(1), Some("update.failed"));
+        let p = |rc, e| counsel_update_code("host.pack-update", rc, e);
+        assert_eq!(p(0, None), None);
+        assert_eq!(p(1, Some("binary-too-old")), Some("update.binary_too_old"));
+        assert_eq!(p(1, Some("--from <dir> 또는 --manifest-url <url> 필요")), Some("update.failed"));
+        assert_eq!(p(3, None), Some("update.reinject_degraded"));
+        assert_eq!(p(4, None), Some("update.accepted_degraded"));
+        assert_eq!(p(7, None), Some("update.failed"));
+        // rc 0 이면 스폰 없이 그대로 · 비0 도 rc 불변(팩에 도구가 없거나 스폰 실패여도).
+        assert_eq!(counsel_update_signal("host.rotate", 0, None), 0);
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
+        assert!(prod.contains("return counsel_update_signal(\n                \"host.rotate\",\n                run_rotate("),
+                "rotate 디스패치가 신호 래퍼를 안 거친다");
+        assert!(prod.contains("Ok(code) => counsel_update_signal(\"host.pack-update\", code, None),"));
+        assert!(prod.contains("counsel_update_signal(\"host.pack-update\", 1, Some(e.as_str()))"));
+    }
+
 
     /// ★(v112-restore ①-b) 겹친 복원의 두 번째 경로는 기동하지 않는다 — 윈 image(71) 사건의 표.
     #[test]

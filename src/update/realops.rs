@@ -11,6 +11,7 @@ use super::journal::{Journal, Os, PrevInstaller};
 use super::runner::{Attempt, Canon, Fail, Kind, Ops, Step};
 use super::verify::{self, Baseline, Expect, PackId, Post, SeatKey};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub type Rpc = Box<dyn Fn(&str, Value) -> Result<Value, String>>;
@@ -1005,7 +1006,11 @@ impl Ops for RealOps {
             return if is_old { Ok(false) } else { Err(rj("정식 자리 = 새 판인데 이번 시도 스냅샷 기록 없음".into())) };
         };
         let (old_cys, upd, root) = (self.env.old_cys.clone(), self.env.update_dir.clone(), self.env.cys_root.clone());
-        let protected: &dyn Fn(&str) -> bool = if is_old { &reconstruct_protected } else { &reconstruct_protected_new };
+        // ★5판(Fable 4R M9): 새 판 갈래 = V5 와 같은 정의 — 기준선(B0)에서 사용자 미수정이었고 지금 새 설치 매니페스트와 일치하는 지침은
+        //   벤더 갱신(RefreshUser)이라 옛 바이트로 되돌리지 않는다(되돌리면 새 매니페스트와 어긋나 재기동 init-pack 이 「사용자 수정」으로 오인).
+        let refreshed: BTreeSet<String> = if is_old { BTreeSet::new() } else { refreshed_user_files(&root, attempt) };
+        let protected_new = |rel: &str| reconstruct_protected_new(rel) || refreshed.contains(rel);
+        let protected: &dyn Fn(&str) -> bool = if is_old { &reconstruct_protected } else { &protected_new };
         let mut stop = || self.rotate(&old_cys, true);
         reconstruct_trees(&upd, &root, &snap, protected, &mut stop).map_err(|f| rj(f.detail))
     }
@@ -1271,6 +1276,22 @@ pub fn reconstruct_protected(rel: &str) -> bool {
 /// 팩 본문은 무접촉(새 판 팩은 재기동 init-pack 몫).
 pub fn reconstruct_protected_new(rel: &str) -> bool {
     reconstruct_protected(rel) || !verify::is_user_path(rel)
+}
+
+/// ★5판(Fable 4R M9): 이번 시도 기준선(B0)에서 미수정(`pristine`)이었고 지금도 설치 매니페스트와 일치하는 사용자 파일(`~/.cys` 기준 상대 경로).
+/// 기준선이 없으면 빈 집합(전부 대조·복원 = 사용자 바이트 보존 쪽).
+pub fn refreshed_user_files(cys_root: &Path, attempt: &Attempt) -> BTreeSet<String> {
+    let b0: BTreeSet<String> = attempt
+        .baseline
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<Baseline>(v.clone()).ok())
+        .map(|b| b.user.pristine)
+        .unwrap_or_default();
+    if b0.is_empty() {
+        return b0;
+    }
+    let now = verify::collect_user_tree(cys_root).map(|t| t.pristine).unwrap_or_default();
+    b0.intersection(&now).cloned().collect()
 }
 
 /// 손상 저널 재구성의 트리 단계(★3판 N3 · ★4판 N3′): 원천 = 호출자가 넘긴 **이번 시도** 스냅샷(`snap` = `<S8 자리>/cys`)뿐 · 대조
@@ -1903,6 +1924,29 @@ mod tests {
         assert_eq!(rec.recover(), Outcome::Nothing);
         assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "live", "지난 시도 스냅샷으로 되돌리지 않음");
         assert!(calls(&d).is_empty(), "정지·재기동 0: {:?}", calls(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★5판(Fable 4R M9 · N3′ 새 판 갈래): 재구성이 되돌리지 않을 「벤더 갱신된 미수정 지침」 = 기준선 pristine ∩ 지금 pristine(실
+    /// `install_into` 로 갱신) · 사용자 수정본·기준선 없음 = 빈 집합(대조·복원 대상).
+    #[test]
+    fn refreshed_user_files_is_baseline_pristine_still_matching_new_manifest() {
+        let d = std::env::temp_dir().join(format!("cys-u2-refreshed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let pack = d.join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        let (w, c) = ("directives/WORKER_DIRECTIVE.md", "directives/CSO_DIRECTIVE.md");
+        let install = |items: &[(&str, &str)], ver: &str| {
+            crate::pack::install_into(pack.clone(), items.iter().copied(), false, ver, false, false, crate::pack::PackScope::Base, None, None).unwrap();
+        };
+        install(&[(w, "W-OLD\n"), (c, "C-OLD\n")], "1.0.0");
+        std::fs::write(pack.join(c), "C-MINE\n").unwrap();
+        let b0 = Baseline { user: verify::collect_user_tree(&d).unwrap(), ..Default::default() };
+        install(&[(w, "W-NEW\n"), (c, "C-NEW\n")], "1.1.0");
+        let a = Attempt { txn_id: "t".into(), lineage: vec!["t".into()], snapshot_dir: None, baseline: Some(json!(b0)), ended: false };
+        assert_eq!(refreshed_user_files(&d, &a), [format!("pack/{w}")].into_iter().collect::<BTreeSet<_>>());
+        let none = Attempt { baseline: None, ..a };
+        assert!(refreshed_user_files(&d, &none).is_empty(), "기준선 없음 = 보호 0(전부 대조)");
         let _ = std::fs::remove_dir_all(&d);
     }
 

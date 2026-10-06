@@ -29,6 +29,10 @@ pub struct UserTree {
     pub acl_rules: BTreeMap<String, Value>,
     /// 파일 → 에이전트 이름 → `cmd`(모델 핀).
     pub agents_cmd: BTreeMap<String, BTreeMap<String, String>>,
+    /// ★5판(Fable 4R M9): `bytes` 중 지침·soul·CLAUDE 로서 지금 바이트가 그 팩의 설치 매니페스트(`.install-manifest.json`) 해시와 같은 것
+    /// = **사용자 미수정**(init-pack 이 신판으로 갈아 끼우는 RefreshUser 대상 · D1). 요약 해시([`user_tree_digest`])에는 넣지 않는다.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pristine: BTreeSet<String>,
 }
 
 /// 팩 판.
@@ -106,6 +110,9 @@ fn v5(b: &UserTree, p: &UserTree) -> Result<(), String> {
     for (k, h) in &b.bytes {
         match p.bytes.get(k) {
             Some(h2) if h2 == h => {}
+            // ★5판(Fable 4R M9): 갱신 전 미수정본이 갱신 뒤 **새 설치 매니페스트 해시와 일치** = 벤더 갱신(RefreshUser) — 통과.
+            //   사용자 수정본(기준선 pristine 아님)은 종전대로 바이트 동일만.
+            Some(_) if b.pristine.contains(k) && p.pristine.contains(k) && !super::mutant("U2-V5PRISTINE") => {}
             Some(_) => return Err(format!("{k} 바뀜")),
             None => return Err(format!("{k} 사라짐")),
         }
@@ -203,6 +210,12 @@ pub fn passed(checks: &[Check]) -> bool {
 
 // ── 사용자 소유 트리 수집(§3-5 표 「사용자 소유 트리」 · B0·V5 재료) ─────────────────────────
 
+/// ★5판(M9 실 경로에서 드러남): 팩 안 `.pristine/**` = 벤더 3-way 병합 기준 사본(init-pack 이 매 신판으로 갱신 · 사용자 파일 아님) — 지침
+/// 이름이라도 사용자 트리 밖. 넣으면 지침이 바뀐 모든 릴리스에서 V5 「.pristine/… 바뀜」(수정·미수정 무관).
+fn is_vendor_merge_base(pack_rel: &str) -> bool {
+    pack_rel.split('/').next() == Some(crate::pack::PRISTINE_DIR) && !super::mutant("U2-V5PRISTINE")
+}
+
 const BYTE_NAMES: &[&str] = &["soul.md", "CLAUDE.md"];
 
 /// ★2판(codex 1R C14): 사용자 트리 경로 판정(`~/.cys` 기준 상대 경로 · [`collect_user_tree`] 와 같은 정의) — `local/**` ·
@@ -213,12 +226,15 @@ pub fn is_user_path(rel: &str) -> bool {
     first == "local"
         || (first.starts_with("pack")
             && rel.contains('/')
+            && !is_vendor_merge_base(rel.split_once('/').map(|x| x.1).unwrap_or_default())
             && (name.ends_with("_DIRECTIVE.md") || BYTE_NAMES.contains(&name) || ["schedule.json", "acl.json", "agents.json"].contains(&name)))
 }
 
 /// 사용자 트리 요약 해시(정규 직렬화 sha256).
 pub fn user_tree_digest(cys_root: &Path) -> Result<String, String> {
-    let t = collect_user_tree(cys_root)?;
+    let mut t = collect_user_tree(cys_root)?;
+    t.pristine.clear(); // 내용 요약 — 매니페스트 관계는 제외
+
     let b = serde_json::to_vec(&t).map_err(|e| e.to_string())?;
     Ok(super::feed::sha256_hex(&b))
 }
@@ -242,12 +258,21 @@ pub fn collect_user_tree(cys_root: &Path) -> Result<UserTree, String> {
         if !root.is_dir() {
             continue;
         }
+        let manifest: BTreeMap<String, String> =
+            std::fs::read(root.join(crate::pack::INSTALL_MANIFEST)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         for rel in super::snapshot::list_files(&root, &|_| true)? {
+            if is_vendor_merge_base(&rel) {
+                continue;
+            }
             let name = rel.rsplit('/').next().unwrap_or_default();
             let key = format!("{p}/{rel}");
             let full = root.join(&rel);
             if name.ends_with("_DIRECTIVE.md") || BYTE_NAMES.contains(&name) {
-                t.bytes.insert(key, super::snapshot::sha256_file(&full)?.0);
+                let h = super::snapshot::sha256_file(&full)?.0;
+                if manifest.get(&rel) == Some(&h) {
+                    t.pristine.insert(key.clone());
+                }
+                t.bytes.insert(key, h);
             } else if rel == "schedule.json" || rel == "acl.json" || rel == "agents.json" {
                 let v: Value = serde_json::from_slice(&std::fs::read(&full).map_err(|e| e.to_string())?).map_err(|e| format!("{key}: {e}"))?;
                 match rel.as_str() {
@@ -341,6 +366,40 @@ mod tests {
         let c = judge(&b, &p, &e, false);
         assert!(passed(&c), "{c:?}");
         assert!(!c.iter().find(|c| c.id == "V8").unwrap().detail.is_empty());
+    }
+
+    /// ★5판(Fable 4R M9) 실 경로: 실 `pack::install_into`(init-pack 과 같은 함수 · RefreshUser D1)로 지침이 바뀐 릴리스를 깐다 —
+    /// ⓐ 미수정 지침(디스크 = 설치 매니페스트) → 신판으로 교체돼도 V5 통과 ⓑ 사용자 수정 지침 → 보존(Keep + .new) → V5 통과
+    /// ⓒ 사용자 수정 지침이 갱신 뒤 바뀜(벤더 덮어씀 흉내) → V5 실패. 뮤턴트 U2-V5PRISTINE(미수정 갈래 끔) = ⓐ 적색(= 4판의 영구 격리).
+    #[test]
+    fn v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits() {
+        let d = std::env::temp_dir().join(format!("cys-u2-v5pristine-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let pack = d.join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        let (w, c) = ("directives/WORKER_DIRECTIVE.md", "directives/CSO_DIRECTIVE.md");
+        let install = |items: &[(&str, &str)], ver: &str| {
+            crate::pack::install_into(pack.clone(), items.iter().copied(), false, ver, false, false, crate::pack::PackScope::Base, None, None).unwrap();
+        };
+        install(&[(w, "W-OLD\n"), (c, "C-OLD\n")], "1.0.0");
+        std::fs::write(pack.join(c), "C-MINE\n").unwrap(); // 사용자 수정
+        let b0 = collect_user_tree(&d).unwrap();
+        assert!(b0.pristine.contains(&format!("pack/{w}")) && !b0.pristine.contains(&format!("pack/{c}")), "{:?}", b0.pristine);
+        install(&[(w, "W-NEW\n"), (c, "C-NEW\n")], "1.1.0");
+        assert_eq!(std::fs::read_to_string(pack.join(w)).unwrap(), "W-NEW\n", "미수정 = RefreshUser");
+        assert_eq!(std::fs::read_to_string(pack.join(c)).unwrap(), "C-MINE\n", "수정본 = 보존");
+        let post = collect_user_tree(&d).unwrap();
+        assert_eq!(v5(&b0, &post), Ok(()), "ⓐⓑ 신판 지침 릴리스 + 미수정 기계 = 통과(영구 격리 0)");
+        std::fs::write(pack.join(c), "C-CLOBBERED\n").unwrap();
+        let post2 = collect_user_tree(&d).unwrap();
+        assert!(v5(&b0, &post2).unwrap_err().contains(c), "ⓒ 수정본 훼손 = V5");
+        // 미수정본이 새 매니페스트와도 어긋나면(설치 뒤 누가 바꿈) = V5
+        std::fs::write(pack.join(w), "W-TAMPER\n").unwrap();
+        std::fs::write(pack.join(c), "C-MINE\n").unwrap();
+        let post3 = collect_user_tree(&d).unwrap();
+        assert!(v5(&b0, &post3).unwrap_err().contains(w), "미수정본 + 매니페스트 불일치 = V5");
+        assert_eq!(user_tree_digest(&d).unwrap(), { let mut t = post3.clone(); t.pristine.clear(); crate::update::feed::sha256_hex(&serde_json::to_vec(&t).unwrap()) });
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// §7-1 사후 검증 시험 행(V3 같은 수·다른 좌석 · V5 job 소실 · cmd 변경 · local 1바이트 · V7 누락 · V9 더 새 독립 팩).

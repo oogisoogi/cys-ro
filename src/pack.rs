@@ -4701,8 +4701,8 @@ const PACK_JOURNAL_DIR: &str = ".pack-journal";
 /// 커밋을 가르지 못한다 — 이 기록이 있으면 커밋(전진 완료) · 없으면 미커밋(되돌림). 이 기록을 쓰는 저널은 인덱스에 `explicit_commit`.
 const PACK_JOURNAL_COMMIT: &str = "commit.json";
 
-/// 시험 전용 결함 주입(프로세스 사망 흉내 = 그 자리에서 Err · 되돌림 없이 반환): `journal`(저널 뒤) · `install`(파일 반영 뒤) ·
-/// `state`(.pack-state.json 뒤) · `commit`(커밋 기록 뒤) · `version`(.pack-version 뒤 · 저널 삭제 전).
+// 시험 전용 결함 주입(프로세스 사망 흉내 = 그 자리에서 Err · 되돌림 없이 반환): `journal`(저널 뒤) · `install`(파일 반영 뒤) ·
+// `state`(.pack-state.json 뒤) · `commit`(커밋 기록 뒤) · `version`(.pack-version 뒤 · 저널 삭제 전).
 #[cfg(test)]
 thread_local! {
     pub static PACK_TXN_KILL: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };

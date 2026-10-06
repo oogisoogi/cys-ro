@@ -43,5 +43,6 @@ U2-RESTART update::realops::tests::reconstruct_restarts_by_daemon_liveness_and_k
 U2-ATTEMPTOPEN update::realops::tests::reconstruct_fails_closed_when_this_attempt_is_missing_corrupt_or_foreign
 U2-PACKPRO update::realops::tests::pack_recovery_pro_revision_advance_uses_commit_record_and_tuple
 U2-PACKPRO pack::tests::pro_revision_advance_kill_matrix_recovers_by_commit_record
+U2-V5PRISTINE update::verify::tests::v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits
 LIST
 exit $fail

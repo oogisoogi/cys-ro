@@ -37,9 +37,25 @@ function New-CysTxnDir {
 }
 function Write-CysTxnFile([string]$Path, [byte[]]$Bytes) {
     # 원자 쓰기(임시 → 바꾸기) — 소유자 기록은 cys·설치기 ⓪-a 가 읽는다(찢어진 내용 0)
+    #   ⚠윈은 방금 쓴 파일을 백신·색인이 잠깐 열어 두어 바꾸기가 공유 위반으로 실패한다(CI 37548178821 실측: 두 번째 쓰기 = 묘비가 실패).
+    #   ⇒ 100ms 간격 30번(3초)까지 다시 해 보고, 그래도 안 되면 지우고 옮긴다(그 사이 기록 없음 = 위임 자식은 거부 = 안전한 쪽).
     $tmp = $Path + '.u5.' + $PID
     [System.IO.File]::WriteAllBytes($tmp, $Bytes)
-    if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, $null) } else { [System.IO.File]::Move($tmp, $Path) }
+    $last = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        try {
+            if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, $null) } else { [System.IO.File]::Move($tmp, $Path) }
+            return
+        } catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds 100 }
+    }
+    try {
+        [System.IO.File]::Delete($Path); [System.IO.File]::Move($tmp, $Path)
+        Write-Log ('txn: 바꾸기 실패 3초 → 지우고 옮김 · ' + $last)
+        return
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        throw ('바꾸기 실패: ' + $last + ' · 지우고 옮기기 실패: ' + $_.Exception.Message)
+    }
 }
 function ConvertTo-CysTxnOwnerJson($o) {
     # lock.rs Owner 와 같은 칸 · 들여쓰기 JSON(설치기 ⓪-a 는 공백을 걷어 '"txn_id":"<id>"' · '"epoch":<n>,' 를 찾는다)

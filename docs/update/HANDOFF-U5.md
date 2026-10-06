@@ -45,7 +45,10 @@
 - cys: `CYS_PACK_DIR=$(mktemp -d) cargo test --lib update:: -- --test-threads=1` → 227 passed 0 failed(07:4x) · `update::install_link` 4/0.
 - 맥 실물: `bash tests/install-u5/u5-mac-lock.sh --cys target/debug/cys --cys-tree <cys>` → ok 23 · FAIL 0(실 cys pack-plan 위임 수용 · env 누락/epoch 틀림/토큰 없음/시작 시각 틀림 = rc 26 · 셸 SIGKILL 뒤 1.5초 안 묘비+해제 · 남이 쥠 = 4번 시도 뒤 J-UPD-01 · 자식 잠금 쥠 = 직전 기록 복원 · 저널 4갈래 · 거부 → 한 번 더 · 구조 3 · 사본 대조).
 - pwsh(맥): `u5-win-lock.ps1` 22/0 · 하네스 12/0 · `scripts/secret-scan.sh --all` clean.
-- 미러 CI(fix/u5-install-link-118 @0f38e898): ci-branch · windows-health · windows-build — 【대기 · 결과는 인박스 보고】.
+- 미러 CI(fix/u5-install-link-118 @0f38e898): ci-branch success · windows-build success · windows-health **failure 1건 = U5 계약 스텝**(37543489313 · ok 18 · FAIL 7).
+  · 윈 실물 **통과**: [ⓐ] 잡기 · 쥔 동안 남 배타 불가 · **실 cys.exe 가 PowerShell 이 쓴 소유자 기록으로 위임을 받음**(= FILETIME 식 시작 시각 ③′ 짝 · LockFile(0,1) ↔ LockFileEx 교차 · 손 JSON ↔ serde 실증) · [ⓒ] 남이 쥠 = busy·J-UPD-01·기록 무변화 · [ⓖ] 실 기록 = ⓪-a 꼴.
+  · 적색 7: 거부 갈래(env 누락·epoch 틀림·토큰 없음·시작 시각 틀림)마다 **debug cys.exe 가 `thread 'main' has overflowed its stack`(0xC00000FD)** — 거부 rc 26 대신 죽음. 그 뒤 놓기·자식 잠금·재시도 시험이 연쇄 적색(죽은 프로세스 정리 중 소유자 기록 교체 실패로 추정 — 덤프 추가).
+  · 조치(f1819e50): 계약 스텝을 **출시 빌드 cys.exe** 로(제품 형상) + 적색 시 txn 기록 덤프. 출시 빌드도 넘치면 = U2 참가 거부 갈래의 윈 제품 결함(【경고】 대상 · 이 티켓 밖 수리).
 
 ## §5 재현
 ```

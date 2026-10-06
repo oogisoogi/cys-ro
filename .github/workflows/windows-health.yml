@@ -306,8 +306,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --bin cys
-          CYS_EXE="$(cygpath -w "$PWD/target/debug/cys.exe")"
+          # 출시 빌드로 잰다 — 제품 형상(설치 도우미가 부르는 것은 출시 cys.exe) · 1차 런(debug)은 위임 거부 갈래에서 debug 프레임이
+          #   윈 주 스레드 1MB 스택을 넘겼다(0xC00000FD · 37543489313). 출시 빌드도 넘치면 그것은 U2 참가 갈래의 제품 결함이다.
+          cargo build --release --bin cys
+          CYS_EXE="$(cygpath -w "$PWD/target/release/cys.exe")"
           T="$(cygpath -w "$PWD/scripts/tests/install-link-u5/u5-win-lock.ps1")"
           H="$(cygpath -w "$PWD/scripts/tests/install-link-u5/u5-harness.ps1")"
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$T" -Ps1 "$H" -Cys "$CYS_EXE" | tee "${RUNNER_TEMP:-/tmp}/u5-ps51.txt"

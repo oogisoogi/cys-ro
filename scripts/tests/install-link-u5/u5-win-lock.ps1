@@ -150,6 +150,11 @@ if ($isWin -and $Cys) {
 foreach ($k in $kids) { Stop-Process -Id $k.Id -Force -ErrorAction SilentlyContinue }
 Unlock-CysTxn
 Remove-Item -Recurse -Force -LiteralPath $base -ErrorAction SilentlyContinue
+if ($script:fail -gt 0) {
+    # 적색이면 설치 도우미 기록(txn 줄)을 그대로 찍는다 — 원격 CI 에서 원인을 재현 없이 읽게
+    $lf = Join-Path $env:JARVIS_HOME 'bootstrap.log'
+    if (Test-Path -LiteralPath $lf) { Write-Host '--- bootstrap.log (txn) ---'; Get-Content -LiteralPath $lf -Encoding UTF8 | Where-Object { $_ -match 'txn|rollback' } | Select-Object -Last 40 | ForEach-Object { Write-Host ('  ' + $_) } }
+}
 Write-Host ("== 합계: ok " + $script:pass + " · FAIL " + $script:fail + " ==")
 Write-Host ("U5-RESULT ok=" + $script:pass + " fail=" + $script:fail + " real=" + $script:real)   # ASCII 판정 줄(CI 콘솔 글자표와 무관)
 if ($script:fail -gt 0) { exit 1 } else { exit 0 }

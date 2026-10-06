@@ -24,6 +24,7 @@
 | `<상태 폴더>/app-notify.json` | 앱 **만** | `pending_notification{result_id, shown_count}` · `last_notified_result_id` · `rollback_failed_last_shown_at`(유닉스 초) | 원자 쓰기 = 임시 파일 → fsync → rename → (유닉스) 폴더 fsync · 깨지면 빈 장부로 읽고 다음 쓰기가 통째로 바꾼다 |
 - **병합 때 삭제할 것(③ · 집행 = U2 병합 통합 커밋 master)**: ⑴ 파일 `src-tauri/src/macupdate.rs`(674줄 · 앱 쪽 옛 판정·교체 부품 — 라이브러리 `src/update/mac.rs`·`src/update/macupdate.rs` 가 대신함) ⑵ `src-tauri/src/main.rs` 19-22행 4줄(@`084f45a7` 실측 · 주석 2줄 `// ★(1.1.8 U4 · 설계 §5-1 「옮긴다」) …` · `//   U2 가 데몬 쪽(…)으로 옮긴다. …` · `#[allow(dead_code)]` · `mod macupdate;` — 18행은 앞 모듈의 주석이라 남긴다). 핀 `macupdate_lives_only_in_the_library_after_u2_merge`(main.rs 시험)가 라이브러리 `src/update/mac.rs` 실재 시 ⑴⑵ 부재를 요구하므로, 지우지 않고 병합하면 cys-app 시험이 적색이 된다(의도).
 - 앱 장부 잠금 파일 `app-notify.lock`(같은 상태 폴더 · 앱만 쓴다 · 내용 없음) — U2 가 상태 폴더 「전체 − 명시 제외」 스냅샷(§3-5)을 뜰 때 `app-notify.json`·`app-notify.lock` 을 사용자 파일로 볼지 제외할지 U2 판단(앱 장부라 롤백해도 무해 — 되돌아가면 알림이 최대 1번 더 뜰 뿐).
+  - ★결정(master#3108fbd1): `app-notify.json`·`app-notify.lock` = 갱신 상태 폴더 소속 · **U2 스냅샷·복원 제외 + `.lock` 은 어떤 경우에도 복원 금지**(갱신 결과를 알리는 파일을 롤백이 되돌리면 안내가 거짓이 된다) — U2 병합 때 master 가 296 쪽 제외 목록에 넣는다.
 - 상태 폴더 = `cys::update::buildinfo::state_dir()`(U1 · 맥 `~/.cys/update` · 윈 `%LOCALAPPDATA%\cys-update` · 디버그 빌드만 `CYS_UPDATE_STATE_DIR`).
 - `state.json` 을 못 읽으면(손상·권한) 앱은 아무것도 보여 주지 않는다(추측 금지) · 앱 장부 쓰기가 실패하면 토스트도 없다(② 없이 ③ 금지).
 - 📌18 의 「cysd 복구 대기 rc」 읽기(설계 §3-12 판정 줄)는 하지 않았다 — 앱은 `seats_blocked` 하나로 고른다(rc 는 U2 부팅 가드의 몫 · U2 가 복구 대기 때 `seats_blocked` 를 반드시 적어야 안내가 뜬다 = U2 확인 항목).

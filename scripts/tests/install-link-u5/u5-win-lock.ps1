@@ -41,7 +41,7 @@ T ((Get-CysTxnJournalWord '{"detail":"x","journal":"degraded","lock_held":false,
 T ((Get-CysTxnJournalWord '{"detail":null,"journal":"ok","lock_held":false,"state":"DONE","terminal":true}') -eq 'go') '[순수] 종결 = go' 'x'
 T ((Get-CysTxnJournalWord 'error: unexpected argument') -eq '') '[순수] 못 읽음(옛 판) = 빈 값 → 다음 후보' 'x'
 $script:CysTxnToken = ''
-T ((Get-CysSetupArgs 'C:\Users\a b\AppData\Local\cys') -ceq '/S /D=C:\Users\a b\AppData\Local\cys') '[순수] 잠금 없음 = 종전 인자 그대로' (Get-CysSetupArgs 'C:\x')
+T ((Get-CysSetupArgs 'D:\app data\cys') -ceq '/S /D=D:\app data\cys') '[순수] 잠금 없음 = 종전 인자 그대로' (Get-CysSetupArgs 'C:\x')
 $script:CysTxnToken = ('ab' * 16) + ':7'
 T ((Get-CysSetupArgs 'C:\x') -ceq ('/S /CYSTXN=' + ('ab' * 16) + ':7 /D=C:\x')) '[순수] 잠금 쥠 = /CYSTXN=<토큰> 바이트 그대로 · /D 마지막' (Get-CysSetupArgs 'C:\x')
 $script:CysTxnToken = ''

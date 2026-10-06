@@ -385,7 +385,7 @@ impl Ops for RealOps {
             .iter()
             .filter_map(|n| std::fs::read_to_string(root.join(n).join(super::snapshot::MANIFEST_FILE)).ok())
             .filter_map(|t| super::snapshot::parse_manifest(&t).ok())
-            .map(|m| m.values().map(|(_, n)| *n).sum::<u64>())
+            .map(|m| m.values().map(|e| e.size).sum::<u64>())
             .sum();
         let _ = super::notify::update_state(&self.env.update_dir, |m| {
             m.insert("last_backup_bytes".into(), json!(bytes));
@@ -583,7 +583,12 @@ impl Ops for RealOps {
         let _ = self.rotate(&self.new_cys(), true);
         let root = PathBuf::from(&j.snapshot_dir);
         for (name, _) in self.snapshot_roots() {
-            super::snapshot::verify(&root.join(name)).map_err(|e| fail(ErrCode::RollbackBlocked, "RB_PREPARED", e))?;
+            let got = super::snapshot::verify(&root.join(name)).map_err(|e| fail(ErrCode::RollbackBlocked, "RB_PREPARED", e))?;
+            // ★2판(codex 1R C6): 저널이 S8 에 고정한 뿌리별 매니페스트 sha256 과 상수시간 비교(사본+매니페스트를 함께 바꾼 백업 거부).
+            let want = journal_snapshot_sha(j, name).ok_or_else(|| fail(ErrCode::RollbackBlocked, "RB_PREPARED", format!("저널에 {name} 매니페스트 sha 없음")))?;
+            if !super::snapshot::digest_eq(&got, &want) {
+                return Err(fail(ErrCode::RollbackBlocked, "RB_PREPARED", format!("{name} 매니페스트 sha256 ≠ 저널 고정값")));
+            }
         }
         Ok(())
     }
@@ -639,10 +644,15 @@ impl Ops for RealOps {
             .map(|m| m.iter().map(|e| super::payload::norm(&e.path)).collect())
             .unwrap_or_default();
         let st_prot = move |rel: &str| super::snapshot::is_excluded(rel) || payload.contains(&super::payload::norm(rel));
-        super::snapshot::restore(&self.env.daemon_state_dir, &root.join("state"), &q.join("state"), &st_prot)
+        let want_st = journal_snapshot_sha(j, "state");
+        let want_cy = journal_snapshot_sha(j, "cys");
+        if want_st.is_none() || want_cy.is_none() {
+            return Err(fail(ErrCode::RollbackBlocked, "RB_RESTORED", "저널 매니페스트 sha 없음"));
+        }
+        super::snapshot::restore(&self.env.daemon_state_dir, &root.join("state"), &q.join("state"), &st_prot, want_st.as_deref())
             .map_err(|e| fail(ErrCode::RollbackBlocked, "RB_RESTORED", e))?;
         let cys_prot = |rel: &str| !RealOps::cys_filter(rel);
-        super::snapshot::restore(&self.env.cys_root, &root.join("cys"), &q.join("cys"), &cys_prot)
+        super::snapshot::restore(&self.env.cys_root, &root.join("cys"), &q.join("cys"), &cys_prot, want_cy.as_deref())
             .map_err(|e| fail(ErrCode::RollbackBlocked, "RB_RESTORED", e))?;
         Ok(())
     }
@@ -721,6 +731,11 @@ impl RealOps {
 }
 
 /// S6·S8b 재확인: 봉투·폐기문을 다시 받아 같은 `release_seq` · halt 아님 · 후보 폐기 아님 · 설치판 폐기 무변화.
+/// 저널 `snapshot_manifest_sha256`(= `state:<sha>,cys:<sha>`)에서 뿌리 하나의 값.
+pub fn journal_snapshot_sha(j: &Journal, name: &str) -> Option<String> {
+    j.snapshot_manifest_sha256.split(',').find_map(|kv| kv.split_once(':').filter(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
+}
+
 pub fn reconfirm(dir: &Path, channel: &str, first: &Candidate) -> Step {
     let now = super::clock::wall_now();
     let id = super::buildinfo::read_install_id(dir);

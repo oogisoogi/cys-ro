@@ -108,7 +108,36 @@ pub fn list_files(root: &Path, filter: &dyn Fn(&str) -> bool) -> Result<Vec<Stri
     Ok(out)
 }
 
-/// 원자 파일 쓰기(같은 폴더 임시 → fsync → rename → 부모 fsync).
+/// ★2판(codex 1R C5): 스냅샷 항목 목록 = 정규 파일 **+ 심링크**(따라가지 않고 링크 자체 · 「전체 − 제외」 에서 조용히 빠지던 것).
+/// 소켓·장치는 싣지 않는다. 폴더는 실 폴더만 내려간다(링크된 폴더 = 링크 항목 하나).
+pub fn list_entries(root: &Path, filter: &dyn Fn(&str) -> bool) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    if !root.exists() {
+        return Ok(out);
+    }
+    let mut stack = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = stack.pop() {
+        let rd = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for ent in rd {
+            let ent = ent.map_err(|e| e.to_string())?;
+            let name = ent.file_name().to_string_lossy().to_string();
+            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            if !filter(&rel) {
+                continue;
+            }
+            let ft = ent.file_type().map_err(|e| e.to_string())?;
+            if ft.is_dir() {
+                stack.push((ent.path(), rel));
+            } else if ft.is_file() || ft.is_symlink() {
+                out.push(rel);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// 원자 파일 쓰기(같은 폴더 임시 → fsync → rename → 부모 fsync). ★2판 C5: 원본 권한 비트를 옮기지 못하면 Err(보존 실패 = 실패).
 pub fn durable_copy(src: &Path, dst: &Path) -> Result<(String, u64), String> {
     let parent = dst.parent().ok_or("부모 없음")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -129,33 +158,61 @@ pub fn durable_copy(src: &Path, dst: &Path) -> Result<(String, u64), String> {
     }
     w.sync_all().map_err(|e| format!("fsync {}: {e}", tmp.display()))?;
     drop(w);
-    if let Ok(md) = std::fs::metadata(src) {
-        let _ = std::fs::set_permissions(&tmp, md.permissions());
+    let md = std::fs::metadata(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    if let Err(e) = std::fs::set_permissions(&tmp, md.permissions()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("권한 보존 {}: {e}", dst.display()));
     }
     std::fs::rename(&tmp, dst).map_err(|e| format!("rename {}: {e}", dst.display()))?;
     super::journal::sync_dir(parent)?;
     Ok((format!("{:x}", h.finalize()), n))
 }
 
-/// 매니페스트 = 상대 경로 → (sha256, 크기).
-pub type Manifest = BTreeMap<String, (String, u64)>;
+/// 항목 종류(★2판 C5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    File,
+    Link,
+}
 
+/// 매니페스트 항목: sha256(파일 = 내용 · 링크 = 링크 대상 경로 바이트) · 크기 · 종류 · 권한 비트(유닉스 `mode & 0o7777` · 링크·윈 = 0).
+/// 소유권(uid)은 싣지 않는다 — 백업·복원 모두 같은 사용자 프로세스가 자기 폴더에 쓰므로 새로 만든 파일의 소유자는 늘 그 사용자다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub sha: String,
+    pub size: u64,
+    pub kind: Kind,
+    pub mode: u32,
+}
+
+/// 매니페스트 = 상대 경로 → 항목.
+pub type Manifest = BTreeMap<String, Entry>;
+
+/// 한 줄 = `<sha>  <크기>  <f|l><8진 권한>  <경로>`.
 pub fn render_manifest(m: &Manifest) -> String {
-    m.iter().map(|(p, (s, n))| format!("{s}  {n}  {p}\n")).collect()
+    m.iter()
+        .map(|(p, e)| format!("{}  {}  {}{:o}  {p}\n", e.sha, e.size, if e.kind == Kind::Link { 'l' } else { 'f' }, e.mode))
+        .collect()
 }
 
 pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let mut m = Manifest::new();
     for (i, line) in text.lines().enumerate() {
-        let mut it = line.splitn(3, "  ");
-        let (Some(s), Some(n), Some(p)) = (it.next(), it.next(), it.next()) else {
+        let mut it = line.splitn(4, "  ");
+        let (Some(s), Some(n), Some(km), Some(p)) = (it.next(), it.next(), it.next(), it.next()) else {
             return Err(format!("매니페스트 {}번째 줄 형식", i + 1));
         };
         let n: u64 = n.parse().map_err(|_| format!("매니페스트 {}번째 줄 크기", i + 1))?;
-        if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) || p.is_empty() || p.split('/').any(|c| c == ".." || c.is_empty()) {
+        let kind = match km.as_bytes().first() {
+            Some(b'f') => Kind::File,
+            Some(b'l') => Kind::Link,
+            _ => return Err(format!("매니페스트 {}번째 줄 종류", i + 1)),
+        };
+        let mode = u32::from_str_radix(&km[1..], 8).map_err(|_| format!("매니페스트 {}번째 줄 권한", i + 1))?;
+        if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) || p.is_empty() || p.split('/').any(|c| c == ".." || c.is_empty()) || mode > 0o7777 {
             return Err(format!("매니페스트 {}번째 줄 값", i + 1));
         }
-        if m.insert(p.to_string(), (s.to_string(), n)).is_some() {
+        if m.insert(p.to_string(), Entry { sha: s.to_string(), size: n, kind, mode }).is_some() {
             return Err(format!("매니페스트 경로 중복 {p}"));
         }
     }
@@ -166,17 +223,88 @@ fn sha_hex(b: &[u8]) -> String {
     format!("{:x}", Sha256::digest(b))
 }
 
-/// 뿌리 하나 백업: `src` 의 「전체 − 제외」(`filter` true 만) → `dst/files/…` + `dst/MANIFEST.sha256` → **전수 재독 대조** →
-/// 매니페스트 sha256. 데몬이 선 상태에서만 부른다(S7 뒤 · 한 시점).
+fn mode_of(md: &std::fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        md.permissions().mode() & 0o7777
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        0
+    }
+}
+
+fn link_target_bytes(p: &Path) -> Result<Vec<u8>, String> {
+    let t = std::fs::read_link(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    Ok(t.to_string_lossy().as_bytes().to_vec())
+}
+
+/// 지금 경로의 항목 실측(lstat · 링크를 따라가지 않는다). 없음 = Ok(None).
+pub fn observe(p: &Path) -> Result<Option<Entry>, String> {
+    let md = match std::fs::symlink_metadata(p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", p.display())),
+    };
+    if md.file_type().is_symlink() {
+        let t = link_target_bytes(p)?;
+        return Ok(Some(Entry { sha: sha_hex(&t), size: t.len() as u64, kind: Kind::Link, mode: 0 }));
+    }
+    if !md.is_file() {
+        return Ok(Some(Entry { sha: String::new(), size: 0, kind: Kind::File, mode: u32::MAX }));
+    }
+    let (sha, size) = sha256_file(p)?;
+    Ok(Some(Entry { sha, size, kind: Kind::File, mode: mode_of(&md) }))
+}
+
+/// 링크를 원자적으로 만든다(같은 폴더 임시 링크 → rename · 기존 파일·링크를 대체 · 링크를 따라 쓰지 않는다).
+fn durable_symlink(target: &Path, dst: &Path) -> Result<(), String> {
+    let parent = dst.parent().ok_or("부모 없음")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    let tmp = parent.join(format!(".{}.cys-tmpl", dst.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+    let _ = std::fs::remove_file(&tmp);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, &tmp).map_err(|e| format!("링크 {}: {e}", dst.display()))?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(target, &tmp).map_err(|e| format!("링크(윈) {}: {e}", dst.display()))?;
+    std::fs::rename(&tmp, dst).map_err(|e| format!("rename {}: {e}", dst.display()))?;
+    super::journal::sync_dir(parent)
+}
+
+/// 항목 하나를 `src` → `dst` 로 옮겨 쓰고(파일 = 내용+권한 · 링크 = 같은 대상) 기대 항목과 실측이 같은지 확인한다.
+fn put_entry(src: &Path, dst: &Path, want: &Entry) -> Result<(), String> {
+    match want.kind {
+        Kind::File => {
+            durable_copy(src, dst)?;
+        }
+        Kind::Link => {
+            let t = std::fs::read_link(src).map_err(|e| format!("{}: {e}", src.display()))?;
+            durable_symlink(&t, dst)?;
+        }
+    }
+    match observe(dst)? {
+        Some(got) if got == *want => Ok(()),
+        got => Err(format!("보존 불일치 {} (기대 {want:?} · 실측 {got:?})", dst.display())),
+    }
+}
+
+/// 뿌리 하나 백업: `src` 의 「전체 − 제외」(`filter` true 만 · 파일+링크) → `dst/files/…` + `dst/MANIFEST.sha256` → **전수 재독 대조** →
+/// 매니페스트 sha256. 데몬이 선 상태에서만 부른다(S7 뒤 · 한 시점). ★2판 C5: 링크·권한 비트까지 싣고 보존 실패 = Err(S8 실패).
 pub fn take(src: &Path, dst: &Path, filter: &dyn Fn(&str) -> bool) -> Result<String, String> {
     if dst.join(MANIFEST_FILE).exists() {
         return Err(format!("이미 있는 스냅샷 {} — 덮지 않는다", dst.display()));
     }
-    let files = list_files(src, filter)?;
+    let files = list_entries(src, filter)?;
     let mut m = Manifest::new();
     for rel in &files {
-        let (s, n) = durable_copy(&src.join(rel), &dst.join(FILES_DIR).join(rel))?;
-        m.insert(rel.clone(), (s, n));
+        let Some(e) = observe(&src.join(rel))? else { continue }; // 그사이 사라짐(데몬 정지 뒤라 드묾)
+        if e.mode == u32::MAX {
+            continue;
+        }
+        put_entry(&src.join(rel), &dst.join(FILES_DIR).join(rel), &e)?;
+        m.insert(rel.clone(), e);
     }
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     let text = render_manifest(&m);
@@ -184,17 +312,21 @@ pub fn take(src: &Path, dst: &Path, filter: &dyn Fn(&str) -> bool) -> Result<Str
     verify(dst)
 }
 
-/// 백업 검증(BLOCK 12): 매니페스트를 읽고 사본 **전부를 다시 읽어** 대조 → 매니페스트 sha256. 하나라도 어긋나면 Err.
+/// 백업 검증(BLOCK 12 · ★2판 C5): 매니페스트를 읽고 사본 **전부를 다시 읽어**(lstat · 링크·권한 포함) 대조 → 매니페스트 sha256.
 pub fn verify(dst: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(dst.join(MANIFEST_FILE)).map_err(|e| format!("매니페스트 읽기: {e}"))?;
     let m = parse_manifest(&text)?;
-    for (rel, (s, n)) in &m {
-        let (s2, n2) = sha256_file(&dst.join(FILES_DIR).join(rel))?;
-        if &s2 != s || &n2 != n {
+    for (rel, want) in &m {
+        if observe(&dst.join(FILES_DIR).join(rel))?.as_ref() != Some(want) {
             return Err(format!("백업 불일치 {rel}"));
         }
     }
     Ok(sha_hex(text.as_bytes()))
+}
+
+/// ★2판(codex 1R C6): 재계산한 매니페스트 sha256 과 저널 고정값의 상수시간 비교(길이 다름 = 거짓).
+pub fn digest_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// 복원 동작(§3-5 표).
@@ -210,13 +342,13 @@ pub enum Action {
     Quarantine(String),
 }
 
-/// 복원 계획(순수): `live` = 지금 그 뿌리의 파일 → sha256(없으면 키 없음) · `protected` = 보호 경로 판정(ⓐ 새·옛 페이로드
-/// 매니페스트 · ⓑ EXCLUDE · ⓒ 갱신 원장).
-pub fn plan_restore(snap: &Manifest, live: &BTreeMap<String, String>, protected: &dyn Fn(&str) -> bool) -> Vec<Action> {
+/// 복원 계획(순수): `live` = 지금 그 뿌리의 항목(없으면 키 없음 · 종류·권한 포함 — 내용이 같아도 권한·종류가 다르면 교체) ·
+/// `protected` = 보호 경로 판정(ⓐ 새·옛 페이로드 매니페스트 · ⓑ EXCLUDE · ⓒ 갱신 원장).
+pub fn plan_restore(snap: &Manifest, live: &BTreeMap<String, Entry>, protected: &dyn Fn(&str) -> bool) -> Vec<Action> {
     let mut out = Vec::new();
-    for (rel, (s, _)) in snap {
+    for (rel, want) in snap {
         match live.get(rel) {
-            Some(l) if l == s => out.push(Action::Keep(rel.clone())),
+            Some(l) if l == want => out.push(Action::Keep(rel.clone())),
             _ => out.push(Action::Replace(rel.clone())),
         }
     }
@@ -232,40 +364,49 @@ pub fn plan_restore(snap: &Manifest, live: &BTreeMap<String, String>, protected:
     out
 }
 
-/// 뿌리 하나 복원: 백업을 먼저 재대조(불일치 = 덮지 않고 Err = `update.rollback_blocked`) → 표 적용 → 매니페스트 전수 재대조.
-/// `walk_filter` = 지금 뿌리에서 살펴볼 범위(보호 경로도 살펴보되 [`Action::Protected`] 로 무접촉).
+/// 뿌리 하나 복원: 백업을 먼저 재대조(불일치 = 덮지 않고 Err = `update.rollback_blocked` · ★2판 C6: `expect` = 저널이 고정한 매니페스트
+/// sha256 — 다르면 같은 Err) → 표 적용 → 매니페스트 전수 재대조(링크·권한 포함).
 pub fn restore(
     live_root: &Path,
     snap_dir: &Path,
     quarantine_root: &Path,
     protected: &dyn Fn(&str) -> bool,
+    expect: Option<&str>,
 ) -> Result<Vec<Action>, String> {
-    verify(snap_dir).map_err(|e| format!("rollback_blocked: {e}"))?;
+    let got = verify(snap_dir).map_err(|e| format!("rollback_blocked: {e}"))?;
+    if let Some(want) = expect {
+        if !digest_eq(&got, want) {
+            return Err("rollback_blocked: 매니페스트 sha256 ≠ 저널 고정값".into());
+        }
+    }
     let snap = parse_manifest(&std::fs::read_to_string(snap_dir.join(MANIFEST_FILE)).map_err(|e| e.to_string())?)?;
     let mut live = BTreeMap::new();
-    for rel in list_files(live_root, &|_| true)? {
-        live.insert(rel.clone(), sha256_file(&live_root.join(&rel))?.0);
+    for rel in list_entries(live_root, &|_| true)? {
+        if let Some(e) = observe(&live_root.join(&rel))? {
+            live.insert(rel.clone(), e);
+        }
     }
     let plan = plan_restore(&snap, &live, protected);
     for a in &plan {
         match a {
             Action::Replace(rel) => {
-                durable_copy(&snap_dir.join(FILES_DIR).join(rel), &live_root.join(rel))?;
+                put_entry(&snap_dir.join(FILES_DIR).join(rel), &live_root.join(rel), &snap[rel])?;
             }
             Action::Quarantine(rel) => {
                 let to = quarantine_root.join(rel);
                 std::fs::create_dir_all(to.parent().ok_or("부모 없음")?).map_err(|e| e.to_string())?;
                 if std::fs::rename(live_root.join(rel), &to).is_err() {
                     // 다른 볼륨 = 복사 후 지움(격리는 되돌릴 수 있어야 하므로 사본이 먼저 durable)
-                    durable_copy(&live_root.join(rel), &to)?;
+                    let e = observe(&live_root.join(rel))?.ok_or("격리 대상 사라짐")?;
+                    put_entry(&live_root.join(rel), &to, &e)?;
                     std::fs::remove_file(live_root.join(rel)).map_err(|e| e.to_string())?;
                 }
             }
             Action::Keep(_) | Action::Protected(_) => {}
         }
     }
-    for (rel, (s, _)) in &snap {
-        if sha256_file(&live_root.join(rel))?.0 != *s {
+    for (rel, want) in &snap {
+        if observe(&live_root.join(rel))?.as_ref() != Some(want) {
             return Err(format!("복원 뒤 불일치 {rel}"));
         }
     }
@@ -296,8 +437,8 @@ pub fn space_needed(asset: u64, max_unpacked: u64, backup_estimate: u64) -> u64 
 /// 백업 예상량 = `filter` 를 통과하는 정규 파일 크기 합(첫 회 실측).
 pub fn estimate(root: &Path, filter: &dyn Fn(&str) -> bool) -> Result<u64, String> {
     let mut sum = 0u64;
-    for rel in list_files(root, filter)? {
-        sum = sum.saturating_add(std::fs::metadata(root.join(&rel)).map(|m| m.len()).unwrap_or(0));
+    for rel in list_entries(root, filter)? {
+        sum = sum.saturating_add(std::fs::symlink_metadata(root.join(&rel)).map(|m| m.len()).unwrap_or(0));
     }
     Ok(sum)
 }
@@ -395,7 +536,7 @@ mod tests {
         put(&live, "update/journal.json", "J1");
         let prot = |r: &str| is_excluded(r);
         let q = d.join("q");
-        let plan = restore(&live, &snap, &q, &prot).unwrap();
+        let plan = restore(&live, &snap, &q, &prot, None).unwrap();
         assert!(plan.contains(&Action::Replace("a.json".into())));
         assert!(plan.contains(&Action::Replace("db/x.db-wal".into())));
         assert!(plan.contains(&Action::Quarantine("new-state.json".into())));
@@ -407,7 +548,7 @@ mod tests {
         assert!(!live.join("new-state.json").exists());
         assert_eq!(std::fs::read_to_string(q.join("new-state.json")).unwrap(), "N", "지우지 않고 격리");
         // 멱등: 다시 돌리면 전부 Keep/Protected
-        let again = restore(&live, &snap, &q, &prot).unwrap();
+        let again = restore(&live, &snap, &q, &prot, None).unwrap();
         assert!(again.iter().all(|a| matches!(a, Action::Keep(_) | Action::Protected(_))), "{again:?}");
     }
 
@@ -420,7 +561,7 @@ mod tests {
         take(&live, &snap, &|_| true).unwrap();
         put(&snap, "files/a", "X"); // 사본 변조
         put(&live, "a", "NEW");
-        let e = restore(&live, &snap, &d.join("q"), &|_| false).unwrap_err();
+        let e = restore(&live, &snap, &d.join("q"), &|_| false, None).unwrap_err();
         assert!(e.starts_with("rollback_blocked"), "{e}");
         assert_eq!(std::fs::read_to_string(live.join("a")).unwrap(), "NEW", "불일치 백업으로 덮지 않는다");
     }
@@ -435,8 +576,51 @@ mod tests {
         let snap = d.join("snap");
         take(&live, &snap, &|_| true).unwrap();
         let m = parse_manifest(&std::fs::read_to_string(snap.join(MANIFEST_FILE)).unwrap()).unwrap();
-        assert_eq!(m.len(), 1, "심링크는 싣지 않는다");
+        #[cfg(unix)]
+        {
+            // ★2판 C5: 링크는 따라가지 않고 링크 자체로 싣는다(대상 /etc/hosts 내용 0)
+            assert_eq!(m.len(), 2);
+            assert_eq!(m["link"].kind, Kind::Link);
+            assert_eq!(std::fs::read_link(snap.join(FILES_DIR).join("link")).unwrap(), PathBuf::from("/etc/hosts"));
+        }
         assert!(take(&live, &snap, &|_| true).is_err());
+    }
+
+    /// ★2판 C5·C6: 실행 비트·링크가 사라지면 복원이 되살린다 · 권한만 다른 같은 내용도 교체 · 사본+매니페스트를 함께 바꾼 백업은
+    /// 내부 verify 는 통과해도 저널 고정 sha 와 달라 거부.
+    #[cfg(unix)]
+    #[test]
+    fn links_and_modes_survive_and_journal_digest_pins_backup() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("modes");
+        let live = d.join("live");
+        put(&live, "bin/run.sh", "#!/bin/sh");
+        std::fs::set_permissions(live.join("bin/run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("bin/run.sh", live.join("run")).unwrap();
+        let snap = d.join("snap");
+        let pinned = take(&live, &snap, &|_| true).unwrap();
+        let m = parse_manifest(&std::fs::read_to_string(snap.join(MANIFEST_FILE)).unwrap()).unwrap();
+        assert_eq!((m["bin/run.sh"].mode, m["run"].kind), (0o755, Kind::Link));
+        // 새 판이 실행 비트를 지우고 링크를 파일로 바꿈
+        std::fs::set_permissions(live.join("bin/run.sh"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_file(live.join("run")).unwrap();
+        put(&live, "run", "plain");
+        let plan = restore(&live, &snap, &d.join("q"), &|_| false, Some(&pinned)).unwrap();
+        assert!(plan.contains(&Action::Replace("bin/run.sh".into())), "같은 내용 · 권한만 다름 = 교체");
+        assert_eq!(std::fs::metadata(live.join("bin/run.sh")).unwrap().permissions().mode() & 0o7777, 0o755);
+        assert_eq!(std::fs::read_link(live.join("run")).unwrap(), PathBuf::from("bin/run.sh"));
+        // 사본과 매니페스트를 함께 바꿈 = 내부 verify 통과 · 저널 고정값과 다름 = 거부
+        put(&snap, "files/bin/run.sh", "evil");
+        let mut m2 = m.clone();
+        let (s2, n2) = sha256_file(&snap.join("files/bin/run.sh")).unwrap();
+        m2.get_mut("bin/run.sh").unwrap().sha = s2;
+        m2.get_mut("bin/run.sh").unwrap().size = n2;
+        std::fs::write(snap.join(MANIFEST_FILE), render_manifest(&m2)).unwrap();
+        std::fs::set_permissions(snap.join("files/bin/run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(verify(&snap).is_ok(), "내부 검증은 통과");
+        let e = restore(&live, &snap, &d.join("q"), &|_| false, Some(&pinned)).unwrap_err();
+        assert!(e.contains("저널 고정값"), "{e}");
+        assert_eq!(std::fs::read_to_string(live.join("bin/run.sh")).unwrap(), "#!/bin/sh", "덮지 않음");
     }
 
     #[test]
@@ -457,8 +641,12 @@ mod tests {
     #[test]
     fn manifest_parser_rejects_traversal_and_dupes() {
         let s = "a".repeat(64);
-        assert!(parse_manifest(&format!("{s}  1  ../x\n")).is_err());
-        assert!(parse_manifest(&format!("{s}  1  x\n{s}  1  x\n")).is_err());
-        assert!(parse_manifest(&format!("{s}  q  x\n")).is_err());
+        assert!(parse_manifest(&format!("{s}  1  f644  ../x\n")).is_err());
+        assert!(parse_manifest(&format!("{s}  1  f644  x\n{s}  1  f644  x\n")).is_err());
+        assert!(parse_manifest(&format!("{s}  q  f644  x\n")).is_err());
+        assert!(parse_manifest(&format!("{s}  1  z644  x\n")).is_err(), "종류");
+        assert!(parse_manifest(&format!("{s}  1  f99999  x\n")).is_err(), "권한");
+        assert!(parse_manifest(&format!("{s}  1  x\n")).is_err(), "2판 전 형식 = 거부");
+        assert_eq!(parse_manifest(&format!("{s}  1  l0  a b\n")).unwrap()["a b"].kind, Kind::Link);
     }
 }

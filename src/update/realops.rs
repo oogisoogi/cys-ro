@@ -939,9 +939,11 @@ impl Ops for RealOps {
             }
         };
         if is_old {
-            if let Some(snap) = latest_verified_snapshot(&self.env.update_dir, old.release_seq) {
-                self.restore_trees(&snap, "reconstruct", "reconstruct", None, None).map_err(|f| rj(f.detail))?;
-            }
+            // ★3판(Fable 2R N3): 「가장 최근 스냅샷으로 상태 폴더까지 덮기」 → 이번 시도(attempt.json txn)의 스냅샷과 **대조** → 어긋날 때만
+            //   데몬을 내리고 `~/.cys` 의 팩·사용자 트리만 복원(상태 폴더·app-notify.* 무접촉).
+            let (old_cys, upd, root) = (self.env.old_cys.clone(), self.env.update_dir.clone(), self.env.cys_root.clone());
+            let mut stop = || self.rotate(&old_cys, true);
+            reconstruct_trees(&upd, &root, old.release_seq, &mut stop).map_err(|f| rj(f.detail))?;
         }
         Ok(())
     }
@@ -1046,6 +1048,35 @@ pub fn pack_user_tree_restore(cys_root: &Path, want_digest: &str, snap: &Path, q
         return Err("복원 뒤 사용자 트리 해시 불일치".into());
     }
     Ok(())
+}
+
+/// 재구성 복원 보호 경로(`~/.cys` 기준): 팩·사용자 트리 밖(`cys_filter` 거짓) · 갱신 폴더 · 앱 알림 장부(`app-notify.json`·`.lock` —
+/// 어떤 경우에도 복원 금지 · U4 접점).
+pub fn reconstruct_protected(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or_default();
+    !RealOps::cys_filter(rel) || rel.split('/').next() == Some("update") || name == "app-notify.json" || name == "app-notify.lock"
+}
+
+/// ★3판(Fable 2R N3): 손상 저널 재구성의 트리 단계 — 원천 = **이번 시도**(`attempt.json` 의 txn_id)의 `backup/<seq>-<txn>/cys` 만(옛 시도의
+/// 스냅샷 0 · 없으면 대조할 것 없음 = 무변경) · 대조(`snapshot::diff`) → 전부 같음 = 손대지 않음(Ok(false)) · 어긋남 = `stop()`(데몬 정지 ·
+/// 실패 = 복원 0) 뒤 팩·사용자 트리만 복원(격리 키 = `reconstruct-<벽시계>`) → Ok(true). 상태 폴더는 대상이 아니다.
+pub fn reconstruct_trees(update_dir: &Path, cys_root: &Path, old_seq: u64, stop: &mut dyn FnMut() -> Step) -> Result<bool, Fail> {
+    let f = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
+    let Some(txn) = super::quiesce::read_json::<Value>(update_dir, "attempt.json").and_then(|v| v["txn_id"].as_str().map(str::to_string)) else {
+        return Ok(false);
+    };
+    let snap = super::snapshot::backup_root(update_dir).join(super::snapshot::snapshot_name(old_seq, &txn)).join("cys");
+    if !snap.join(super::snapshot::MANIFEST_FILE).exists() {
+        return Ok(false);
+    }
+    let plan = super::snapshot::diff(cys_root, &snap, &reconstruct_protected).map_err(f)?;
+    if plan.iter().all(|a| matches!(a, super::snapshot::Action::Keep(_) | super::snapshot::Action::Protected(_))) {
+        return Ok(false);
+    }
+    stop().map_err(|e| f(format!("복원 전 데몬 정지 실패: {}", e.detail)))?;
+    let q = super::snapshot::quarantine_dir(update_dir, &format!("reconstruct-{}", super::clock::wall_now()));
+    super::snapshot::restore(cys_root, &snap, &q.join("cys"), &reconstruct_protected, None).map_err(f)?;
+    Ok(true)
 }
 
 /// ★2판 C13: 판 `seq` 의 스냅샷(`backup/<seq>-<txn>`) 중 두 뿌리가 모두 검증되는 가장 최근 것(수정 시각) — 저널 손상 재구성용.
@@ -1213,6 +1244,46 @@ mod tests {
         assert!(pack_user_tree_restore(&root, "", Path::new(&j.snapshot_dir), &d.join("q")).is_err(), "고정값 없음 = 실패");
         pack_txn_end(&upd, "t1", 1).unwrap();
         assert_eq!(super::super::journal::read(&upd).journal().unwrap().state, super::super::journal::State::PackDone);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3판 N3: 재구성 = 이번 시도 스냅샷과 대조 — ① 일치 트리 = 손대지 않음(데몬 정지도 0) ② 어긋난 팩만 복원(데몬 정지 1회 ·
+    /// 사용자 파일·상태 폴더·app-notify.* 무접촉) ③ 옛 시도 스냅샷은 원천 아님 ④ 정지 실패 = 복원 0.
+    #[test]
+    fn reconstruct_compares_then_restores_only_mismatched_pack() {
+        let d = std::env::temp_dir().join(format!("cys-u2-recon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (upd, root) = (d.join("update"), d.join("cys"));
+        for (p, b) in [("pack/lib/x.py", "v1"), ("local/me.md", "mine"), ("update/app-notify.json", "N0"), ("update/app-notify.lock", "L0")] {
+            std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            std::fs::write(root.join(p), b).unwrap();
+        }
+        std::fs::create_dir_all(&upd).unwrap();
+        super::super::quiesce::write_json(&upd, "attempt.json", &json!({"txn_id": "tnow"})).unwrap();
+        let snap = super::super::snapshot::backup_root(&upd).join("8-tnow").join("cys");
+        super::super::snapshot::take(&root, &snap, &RealOps::cys_filter).unwrap();
+        // 옛 시도 스냅샷(다른 내용) — 원천이 되면 안 된다
+        std::fs::write(root.join("pack/lib/x.py"), "ancient").unwrap();
+        super::super::snapshot::take(&root, &super::super::snapshot::backup_root(&upd).join("8-told").join("cys"), &RealOps::cys_filter).unwrap();
+        std::fs::write(root.join("pack/lib/x.py"), "v1").unwrap();
+        let mut stops = 0;
+        // ① 일치 = 무변경 · 정지 0
+        assert_eq!(reconstruct_trees(&upd, &root, 8, &mut || { stops += 1; Ok(()) }).unwrap(), false);
+        assert_eq!(stops, 0);
+        // ② 팩만 어긋남 + 앱 알림 장부 변화 → 팩만 복원 · 장부 무접촉
+        std::fs::write(root.join("pack/lib/x.py"), "v2-new").unwrap();
+        std::fs::write(root.join("update/app-notify.json"), "N1").unwrap();
+        std::fs::write(root.join("update/app-notify.lock"), "L1").unwrap();
+        assert_eq!(reconstruct_trees(&upd, &root, 8, &mut || { stops += 1; Ok(()) }).unwrap(), true);
+        assert_eq!(stops, 1, "복원 전 데몬 정지 1회");
+        assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v1", "이번 시도 스냅샷(옛 시도 아님)");
+        assert_eq!(std::fs::read_to_string(root.join("local/me.md")).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(root.join("update/app-notify.json")).unwrap(), "N1", "app-notify 무접촉");
+        assert_eq!(std::fs::read_to_string(root.join("update/app-notify.lock")).unwrap(), "L1", ".lock 복원 금지");
+        // ④ 정지 실패 = 복원 0
+        std::fs::write(root.join("pack/lib/x.py"), "v3").unwrap();
+        assert!(reconstruct_trees(&upd, &root, 8, &mut || Err(fail(ErrCode::RotateFailed, "S7", "x"))).is_err());
+        assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v3", "정지 못 하면 덮지 않음");
         let _ = std::fs::remove_dir_all(&d);
     }
 

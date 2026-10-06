@@ -364,6 +364,19 @@ pub fn plan_restore(snap: &Manifest, live: &BTreeMap<String, Entry>, protected: 
     out
 }
 
+/// ★3판(Fable 2R N3): 복원 계획만(백업 재대조 → 표) — 바꾸는 것 0. 「일치하면 손대지 않는다」 판정용.
+pub fn diff(live_root: &Path, snap_dir: &Path, protected: &dyn Fn(&str) -> bool) -> Result<Vec<Action>, String> {
+    verify(snap_dir).map_err(|e| format!("rollback_blocked: {e}"))?;
+    let snap = parse_manifest(&std::fs::read_to_string(snap_dir.join(MANIFEST_FILE)).map_err(|e| e.to_string())?)?;
+    let mut live = BTreeMap::new();
+    for rel in list_entries(live_root, &|_| true)? {
+        if let Some(e) = observe(&live_root.join(&rel))? {
+            live.insert(rel.clone(), e);
+        }
+    }
+    Ok(plan_restore(&snap, &live, protected))
+}
+
 /// 뿌리 하나 복원: 백업을 먼저 재대조(불일치 = 덮지 않고 Err = `update.rollback_blocked` · ★2판 C6: `expect` = 저널이 고정한 매니페스트
 /// sha256 — 다르면 같은 Err) → 표 적용 → 매니페스트 전수 재대조(링크·권한 포함).
 pub fn restore(

@@ -6,6 +6,7 @@ rc 127 이 「명령 없음」인지 「실행 전 기본값(해석기 미해소
 계약: ①한 줄(시각·훅·역할·surface·rc·사유·해석기·cys/cat 보임·PATH 앞부분) ②stdout 무출력 · 종료 코드 불변
 ③PATH 가 깨진 순간(cat·date 없음 = D10)에도 기록 ④상태 dir 을 못 써도 무해 ⑤session-start 폴백이 사유를 갈라 기록
 ⑥형제 주입 훅 5곳이 같은 기록을 부른다.
+⑦(T3) 같은 실패를 상담소 신호 한 줄로도 남긴다 · 끄면 0줄 · rc·stdout·호출 훅 CYS_PY 불변.
 """
 import json
 import os
@@ -100,6 +101,37 @@ class T(unittest.TestCase):
             self.assertIn("role=master surface=7", ln[0])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def _counsel_env(self, config=None):
+        # ★T3(agora-t3-pack-collector): 가짜 팩(.pack-version + bin/javis_counsel.py 사본) · 격리 agora 설정 폴더
+        pack = os.path.join(self.st, "pack")
+        os.makedirs(os.path.join(pack, "bin"))
+        open(os.path.join(pack, ".pack-version"), "w").write("1.1.8\n")
+        shutil.copy(os.path.join(os.path.dirname(HOOKS), "bin", "javis_counsel.py"), os.path.join(pack, "bin"))
+        cfg = os.path.join(self.st, "agora")
+        if config is not None:
+            os.makedirs(cfg)
+            open(os.path.join(cfg, "config.json"), "w").write(config)
+        return dict(self.env, CYS_PACK_DIR=pack, AGORA_CONFIG_DIR=cfg), os.path.join(cfg, "counsel", "signals.jsonl")
+
+    def test_counsel_signal_line(self):
+        # ★T3: 같은 실패가 상담소 신호 한 줄로도 남는다 — source=역할 매핑 · op=hook.<훅> · error_code=hook.rc<rc> · rc·stdout 불변.
+        env, sig = self._counsel_env()
+        r = _sh('. "%s/_lib.sh"; cys_hook_fail session-start 127 "core_inject:x"; exit 3' % HOOKS, env)
+        self.assertEqual((r.returncode, r.stdout), (3, ""))
+        self.assertEqual(len(self.lines()), 1, "기존 파일 기록이 사라졌다")
+        rows = [json.loads(x) for x in open(sig, encoding="utf-8").read().splitlines()]
+        self.assertEqual([(x["source"], x["op"], x["error_code"], x["version"]) for x in rows],
+                         [("cso", "hook.session-start", "hook.rc127", "1.1.8")])
+        r = _sh('. "%s/_lib.sh"; CYS_PY=/nonexistent/py; cys_hook_fail h 1 y; echo "py=$CYS_PY"' % HOOKS, env)
+        self.assertEqual((r.returncode, r.stdout), (0, "py=/nonexistent/py\n"), "호출 훅의 CYS_PY 를 바꿨다")
+
+    def test_counsel_off_writes_nothing(self):
+        env, sig = self._counsel_env('{"counsel": {"auto": false}}')
+        r = _sh('. "%s/_lib.sh"; cys_hook_fail h 1 y; exit 0' % HOOKS, env)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertEqual(len(self.lines()), 1)
+        self.assertFalse(os.path.exists(sig), "끈 상태에서 신호를 썼다")
 
     def test_sibling_hooks_call_recorder(self):
         want = {

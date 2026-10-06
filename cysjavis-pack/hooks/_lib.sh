@@ -548,6 +548,16 @@ cys_hook_fail() {
       "${CYS_ROLE:-?}" "${CYS_SURFACE_ID:-?}" "${2:-?}" "${3:--}" "${CYS_PY:-미해소}" \
       "$_cys_hf_cys" "$_cys_hf_cat" "$_cys_hf_path" >> "$_cys_hf_f"
   } >/dev/null 2>&1
+  # ★T3(agora-t3-pack-collector): 같은 실패를 상담소 신호 한 줄로도 남긴다(끔·형식 밖·잠금 2초 초과 = 그 도구가 버림).
+  #   해석기는 서브셸에서 해소한다(호출 훅의 CYS_PY 불변 · CLT 스텁 실행 0) · 출력 전부 버림 · 결과와 무관하게 return 0.
+  _cys_hf_cc="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_counsel.py"
+  if [ -f "$_cys_hf_cc" ]; then
+    _cys_hf_py="$(cys_resolve_py >/dev/null 2>&1 && printf '%s' "${CYS_PY:-}")" || _cys_hf_py=""
+    if [ -n "$_cys_hf_py" ]; then
+      "$_cys_hf_py" "$_cys_hf_cc" signal --source "${CYS_ROLE:-}" --op "hook.${1:-}" \
+        --error-code "hook.rc${2:-}" </dev/null >/dev/null 2>&1 || :
+    fi
+  fi
   return 0
 }
 

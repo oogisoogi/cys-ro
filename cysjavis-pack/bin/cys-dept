@@ -417,16 +417,30 @@ dept_teardown_owned(){   # $1=name
 
 # reserve=신규 예약만 회수, keep=기존 REUSE_DEAD 예약 보존, down=기동 후 종전 teardown.
 # 정리 자체가 rc 12를 만나도 owned PID는 회수하고 원본 레지스트리는 그대로 둔다.
+# ★T3(agora-t3-pack-collector): 비정상 종료(rc ∉ {0,2})를 상담소 신호 한 줄로 — source pack · op dept.<동사> ·
+#   error_code dept.exit<rc>. EXIT trap 은 하나뿐이라 동사별 trap(아래 dept_creation_failed)이 덮는 동안은 그 안에서
+#   부르고, 회수 취소 자리는 trap 을 지우지 않고 이 기본 trap 으로 되돌린다(_cys_dept_counsel_arm). 출력 0 · 실패 삼킴 ·
+#   종료코드 불변(trap 안에서 exit 를 부르지 않는다 · 형식 밖 동사는 도구가 버린다).
+_cys_dept_counsel_exit(){
+  case "${1:-0}" in 0|2) return 0 ;; esac
+  [ -f "${_CYS_DEPT_COUNSEL_CC:-}" ] || return 0
+  { python3 "$_CYS_DEPT_COUNSEL_CC" signal --source pack --op "dept.${_CYS_DEPT_COUNSEL_VERB:-}" \
+      --error-code "dept.exit$1"; } </dev/null >/dev/null 2>&1 || true
+  return 0
+}
+_cys_dept_counsel_arm(){ trap '_cys_dept_counsel_exit "$?"' EXIT; }
+
 dept_creation_failed(){
   local rc="$1" name="$2" mode="$3" cleanup_rc=0
-  if [ "$rc" = 12 ]; then cleanup_owned_dept_spawn; exit 12; fi
+  if [ "$rc" = 12 ]; then cleanup_owned_dept_spawn; _cys_dept_counsel_exit 12; exit 12; fi
   case "$mode" in
     reserve) reg_remove "$name" || cleanup_rc=$? ;;
     down) dept_teardown_owned "$name" || cleanup_rc=$? ;;
   esac
-  if [ "$cleanup_rc" = 12 ]; then cleanup_owned_dept_spawn; exit 12; fi
+  if [ "$cleanup_rc" = 12 ]; then cleanup_owned_dept_spawn; _cys_dept_counsel_exit 12; exit 12; fi
   # ready 실패 등 스폰 직후의 실패도 예약 회수만으로 프로세스를 남기지 않는다.
   if [ "$mode" != down ]; then cleanup_owned_dept_spawn; fi
+  _cys_dept_counsel_exit "$rc"
   exit "$rc"
 }
 
@@ -2091,6 +2105,9 @@ cmd="${1:?usage: cys-dept launch|allocate|create|down|down-sock|rotate|reap|prom
 #   무관. ★name 위치의 --help/-h는 usage가 아니라 검증 거부 exit 2다(`launch --help`가 '--help' 부서를
 #   등재→껍데기 CEO 승격까지 간 실사고의 재발 차단 — 가드(exit 7)는 name 검증보다는 선행 유지).
 case "$cmd" in --help|-h) usage; exit 0 ;; esac
+_CYS_DEPT_COUNSEL_VERB="$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')" || _CYS_DEPT_COUNSEL_VERB=""
+_CYS_DEPT_COUNSEL_CC="${CYS_PACK_DIR:-$PACK_DEFAULT}/bin/javis_counsel.py"
+_cys_dept_counsel_arm   # ★T3: 기본 EXIT trap(동사별 trap 이 덮었다가 `_cys_dept_counsel_arm` 으로 되돌린다)
 # ★0.14.31 P6 R1 — rotate 재귀 표식은 **argv** 다(상속 env 아님).
 #   왜: `CYS_DEPT_ROTATE=1` 은 rotate 가 띄운 cysd → 그 cysd 가 띄운 모든 좌석으로 상속돼
 #   그 부서에서 아래 `cysd_role_gate` 와 `dept_tombstone_remove` 를 **영구히 껐다**(라이브 실측).
@@ -2801,11 +2818,11 @@ PY
     # ★Fix1' 계정격리: agents.json CLAUDE_CONFIG_DIR 을 fork dir로 치환(F1). 실패=비격리 → fail-closed teardown.
     if ! seed_agents_account "$pack" "$acctdir"; then
       echo "[cys-dept] ERROR: $name agents.json 계정시드 실패 — fail-closed: 부트 중단·teardown" >&2
-      dept_teardown_owned "$name" || { _rc=$?; [ "$_rc" != 12 ] || exit 12; }; trap - EXIT; exit 6   # ★fatal-fix R4-N1: 토큰 경로는 in-process
+      dept_teardown_owned "$name" || { _rc=$?; [ "$_rc" != 12 ] || exit 12; }; _cys_dept_counsel_arm; exit 6   # ★fatal-fix R4-N1: 토큰 경로는 in-process
     fi
     # 시드 실패 뒤 down의 판독도 실패할 수 있다. 준비가 끝난 뒤 승격해 rc 12에 CEO 변경을 남기지 않는다.
     ceo_promote 1>&2   # 승격 메시지는 stderr — allocate stdout은 name만(파서 오염 차단)
-    trap - EXIT   # 격리 확정 — 회수 취소
+    _cys_dept_counsel_arm   # 격리 확정 — 회수 취소
     if [ -n "$_dept_spawn_pid" ]; then disown "$_dept_spawn_pid" 2>/dev/null || true; fi
     # ★결함#1: CEO 승격·계정격리 확정 이후 티켓 자동 발급(fail-open). 빈 셸 생성 **이전**에 둔다 —
     #   오너가 그 셸에서 즉시 claude 를 띄워 선언해도 티켓이 이미 있어야 팀이 기동된다.
@@ -3127,7 +3144,7 @@ PY
       exit 6
     fi
     ceo_promote 1>&2   # 메타 등재·계정시드 성공 뒤에만 승격(판독 실패에서 CEO 보존)
-    trap - EXIT   # 격리 확정 — 이후 빈 셸 생성
+    _cys_dept_counsel_arm   # 격리 확정 — 이후 빈 셸 생성
     if [ -n "$_dept_spawn_pid" ]; then disown "$_dept_spawn_pid" 2>/dev/null || true; fi
     # ★결함#1: allocate 와 동형 — CEO 승격·계정격리 확정 후, 빈 셸 생성 이전에 티켓 자동 발급(fail-open).
     #   REUSE_UP/REUSE_BOOTING 은 위에서 이미 exit 0 으로 빠졌다(신규 생성 아님 — 기존 부서 재사용).

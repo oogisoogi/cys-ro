@@ -15,6 +15,8 @@ pub mod feed;
 pub mod gates;
 pub mod hold;
 pub mod journal;
+pub mod mac;
+pub mod macupdate;
 pub mod keys;
 pub mod lock;
 pub mod net;

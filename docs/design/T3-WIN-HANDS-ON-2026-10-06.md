@@ -102,12 +102,12 @@ python3 -c "import json,os;s=json.load(open(os.path.join(os.environ['CFG'],'coun
 - 4 의 counsel.log 에 `weekly.result=empty` 와 그 `cycle`(예 `2026-W40`)이 있고, 같은 판 일일 통의 칸 목록(`daily.칸`)에 `weekly_skipped` 가 있어야 한다.
 - 데스크 쪽 확인 = master(데스크 `mail sync` 뒤 inbox 에 이 참가자 일일 1통 · `weekly_skipped` = 그 주기).
 
-## 6. 끄기 확인(그 키만 · 모은 줄 삭제 · whoami 셋째 칸)
+## 6. 끄기 확인(그 키만 · 모은 줄 삭제 · whoami 첫 칸)
 ```bash
 CYS_ROLE=worker python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_counsel.py" signal --source worker --op hook.session-start --error-code hook.rc1
 $A counsel off --dir "$CFG"
 wc -c "$CFG/counsel/signals.jsonl"                                  # 기대: 0
-$A whoami --dir "$CFG" | grep autosend_counsel                      # 기대: "상담소 자동 전달: 꺼짐"
+$A whoami --dir "$CFG" | grep advice_autosend                       # 기대: 첫 칸(`{` 다음 줄) "advice_autosend": "상담소 자동 전달: 꺼짐"
 CYS_ROLE=worker python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_counsel.py" signal --source worker --op hook.session-start --error-code hook.rc1
 wc -c "$CFG/counsel/signals.jsonl"                                  # 기대: 0(꺼진 동안은 쓰지도 않는다)
 python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_counsel.py" tick; tail -1 "$CFG/counsel/counsel.log"   # 기대: result=off

@@ -129,3 +129,12 @@
 - **같은 판 = 트리 지문(⑦)**: 지문 = sha256(정렬한 `<posix 상대경로>\t<파일 sha256>\n` 줄의 UTF-8 · 맨 위 `.pin`·`__pycache__/`·`*.pyc` 뺌). 핀 = `<판> <zip sha256> <zip 바이트> <트리 지문>`(3칸 옛 꼴도 받는다 — 지문을 동봉 zip 에서 잰다). 없음 = 설치 · 핀 지문 = 무동작 · `install/agora-client-known.txt`(0.1.12 · 0.1.13) 지문 = 교체(옆으로 치움 → 게시 → 삭제 · 사이에 끊기면 `lib` 없음 = 다음 판이 새로 깐다 · 찌꺼기 `lib.tmp-*`·`lib.old-*` 는 잠금 안에서 치운다) · 그 밖 = 불가침 + 로그. ⚠동봉 판을 올릴 때 지금 판 지문을 known 에 더해야 그 판 PC 가 따라온다.
 - **한 판 상한(⑨)**: tick 전체 540초(cysd 600초 안) · agora 몫 = 540 − 경과(바닥 30) · 넘으면 자식 프로세스 그룹째 끝낸다(POSIX `start_new_session` + `killpg` · 윈 `taskkill /T /F`) + `tick.log` `timeout`.
 - **BACKLOG(cysd · 이 티켓 밖)**: cysd 는 600초 시간 초과된 command 잡의 자식(그룹)을 죽이지 않는다(`schedule.rs:2784-2786` `fire_command` = `tokio::time::timeout(600s, c.output())` · `kill_on_drop` 미설정 → 「command timed out (600s)」 오류만 · 셸·그 자손은 계속 돈다) — 잡 쪽 자기 상한이 유일한 방어선이다.
+
+## 10. 리뷰 3R 반영(2026-10-06 · §9 의 일부를 대체)
+- **①** 신호 쓰기 = `signals.lock` 을 잡은 **뒤** 끄기 재확인 — 첫 확인과 잠금 사이 `agora counsel off`(설정 끔 → 잠금 쥐고 모은 줄 지움)가 끼면 0줄.
+- **③** facts = `cutoff`(지금 · 밀리초로 자름)를 오류 로그 읽기 **전에** 정하고 계수 창 = `(since, cutoff]`(since = state.json `daily_ok_at` 또는 cutoff − 24h) · facts.json 에 `cutoff`·`since` · 아고라가 cutoff 를 일일 pending 에 박고 성공 때 `daily_ok_at = cutoff`(facts 없음·cutoff 없음·2시간 넘음 = 일일 거절). 팩 tick 은 facts 쓰기 실패여도 로그 남기고 agora 를 돌린다(daily 완료 표식은 팩이 쓰지 않는다).
+- **④** 게시 = 원자 「있으면 실패」 rename 만(맥 `renamex_np RENAME_EXCL` · 리눅스 `renameat2 RENAME_NOREPLACE` · 윈 `os.rename`) · 수단 없음/파일 시스템 거절 = 아무것도 안 함 + `no_atomic_noreplace`(옛 lexists→rename 대체 길 삭제) · 교체 중 경합 = 옆으로 옮긴 `lib.old-*` 는 지우지 않고 로그(`kept_old`) · 자동 청소 = `lib.tmp-*` 만(§9 의 「`lib.old-*` 도 치운다」 폐기).
+- **⑤** 트리 지문 **v2** = sha256(정렬한 `<종류>\t<posix 상대경로>\t<sha256 또는 ->\n`) · 종류 f·d(빈 폴더 포함)·l·o · 뺌 그대로 · zip 지문 = 같은 산식(폴더 = 명시 항목 + 모든 항목 상위 경로) · 설치된 트리에 링크·특수 파일·빈 폴더 = 불가침 + 로그 · 빈 폴더를 만드는 동봉 zip = 거부 · 핀 넷째 칸 ≠ 동봉 zip v2 지문 = 설치 거부(`pin_fingerprint_mismatch`) · known 표 v2 재계산(0.1.12 `1362a6e5…` · 0.1.13 `2f7b44a0…`).
+- **⑥** cysd `Job` 이 `bulk`·`publish` 를 보존(동결 원샷 재직렬화가 떨어뜨려 U1 `validate_job` 이 거부하던 자리 · 동작 변화 0).
+- **⑦** 한 판 상한 = 남은 몫(540 − 경과 · 내림) < 30초면 agora 를 띄우지 않는다(`no_time`) · 그 밖 = 남은 몫 그대로(§9 의 「바닥 30」 폐기 — 총합이 540 을 넘었다).
+- **⑧** 윈 CI(`windows-health.yml`)가 `test_javis_counsel.py` 를 실기로 돌린다(교차 잠금 경합·0번 바이트 잠금 포함 · POSIX 전용 검체만 사유 붙여 건너뜀).

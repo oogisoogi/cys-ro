@@ -15,8 +15,8 @@
   - m1·m2·m5 6a1da528(participate fail-open 축소 · build-info 실행 전 서명 핀 · realroots counsel/) · m4 = N3 커밋.
 - **남은 것(후임 · 순서대로)**:
   1. **M4**(Fable 2R · 브리프 §2 「러너 트랜잭션 안 팩 적용 경로 1개를 실제로 구현」): 러너 S0 에서 팩 단독 판정(새 바이너리 없음 · 팩 매니페스트만 새것) → `realops::pack_txn_begin`(lib 에 있음 · 지금 호출부 = 시험뿐) → `pack-update --txn`(위임 · `RealOps::child` 가 --txn 붙임) → 성공 `pack_txn_end`(PACK_DONE) · 실패 = PACK_ROLLBACK → 복구 = `recover_pack(&j)`(사용자 트리 복원 포함 · 있음) + kill 행렬 2칸(PACK_APPLY 직전·직후). 팩 매니페스트 조회 = `cys pack-update --dry-run --json` 또는 피드의 팩 행(설계 §3-8 · `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md` 를 먼저 읽을 것).
-  2. **m3**(윈 시한 뒤 종료 실패 = 무기한 대기): 상한(10분) + 초과 = RB 금지 상태(`RbFailed` 직행 · 옛 설치기 동시 실행 0) + `update.win_installer_stuck` 신호 — 또는 반박 근거 1줄. **m6**·**m7** = HANDOFF §5/§2 에 「안 한 것·생략한 것」 1줄씩(설계 §3-11 재구성 ①② 미구현 · S8b 가 N3~N5·세대 토큰을 재지 않는 이유).
-  3. §7 표에 **2R 14행**(N1~N3·M1~M4·m1~m7) 추가 — 위 커밋 sha 그대로.
+  2. ~~m3·m6·m7~~ = 끝(m3 f790a91a · m6/m7 = §5 ⓘ · §2-14).
+  3. §7-2 표 = 14행 있음 · M4 행만 채울 것(⟨M4⟩ 자리).
   4. 전수: lib(기본 env) · cys/cysd/cys-app(`/private/tmp/claude-501/s118/u2/isoenv.sh` · app = `cargo test -p cys-app --bins`) · u2-smoke(13개 = ⑥ 포함) · u2-mutants(11 = U2-NEST 포함 · `U1_ISO=<isoenv.sh>`) · ★브리프는 **tsc·bun** 도 요구 — 이 트리엔 ui/node_modules·bun 없음 → lead 방식: `cp -cR ~/axdev/.wt/cys-118-u4/ui/node_modules ui/` · PATH 에 `$HOME/.bun/bin` · `(cd ui && bunx tsc -p tsconfig.check.json)` · `(cd ui && bun test)`(복사본 = 커밋 0). 전체를 `scripts/tests/u2-realroots.sh` 로 감싼다.
   5. push = `/usr/bin/git push origin HEAD:fix/u2-runner-118`(번들 git 은 https 헬퍼 없음) → 3런(windows-build·windows-health·ci-branch) success 번호 → HANDOFF §4 「3판 전수/CI」 줄 → 【확인요청】(브리프 §3 형식).
 - **함정**: ① 새 시험이 부하(전수 병렬)에서 시각 의존이면 폴링으로(N2 실례). ② u2-smoke ⑥ 은 격리 데몬을 띄운다 — 끝에 `cys daemon stop` + pkill(스크립트에 있음). ③ `cargo` 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH`.
@@ -159,7 +159,7 @@
 | M4 | MAJOR | PACK_* 생산 쓰기 경로 0(§3-8 미구현) | ⟨M4⟩ | ⟨M4SHA⟩ | ⟨M4TEST⟩ |
 | m1 | MINOR | participate Ok(None) 범위 넓음(fail-open) | 채택 | 6a1da528 | 폴더 생성 불가만 Ok(None) · 그 밖 Err |
 | m2 | MINOR | build-info 실행 전 서명 검증 없음(canonical·후보) | 채택 | 6a1da528 | `verify_signature_pin` 선행 · 실패 = 판독 불가/후보 제외 |
-| m3 | MINOR | 윈 시한 뒤 종료 실패 = 무기한 대기 | ⟨m3⟩ | ⟨m3SHA⟩ | ⟨m3TEST⟩ |
+| m3 | MINOR | 윈 시한 뒤 종료 실패 = 무기한 대기 | 채택 | f790a91a | 종료 확인 상한 10분 · 초과 = RollbackBlocked → RB_FAILED 직행 · `installer_stuck_goes_straight_to_rb_failed_without_rerunning_installer` |
 | m4 | MINOR | 재구성 격리 키 고정 | 채택 | caaab5c7 | `reconstruct-<벽시계>` |
 | m5 | MINOR | realroots 정규식에 상담소 신호 경로 없음 | 채택 | 6a1da528 | `counsel/` 전체 U2 이름공간 |
 | m6 | MINOR | §3-11 재구성 ①②(윈 설치기 재실행 · 맥 .old-* 승격) 미구현이 HANDOFF 에 없음 | 채택(문서) | 이 문서 | §5 ⓘ 명기 · 지금 = 불일치 즉시 좌석 0(fail-closed) |

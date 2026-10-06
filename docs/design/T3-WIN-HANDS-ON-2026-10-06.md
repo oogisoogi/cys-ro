@@ -45,6 +45,48 @@ EOF
 ```
 기대: `LF only · no BOM` · 마지막 줄 `{"error_code":"hook.rc1","op":"hook.session-start","os":"windows-…","source":"worker","ts":"…Z","version":"1.1.8"}`.
 
+## 3-1. 잠금 경합 — 팩 쓰기 ↔ 아고라 옮기기(윈 `msvcrt` 0번 바이트 상호배제 확인)
+맥은 시험(`test_javis_counsel.CrossLockRace`)으로 확인했다. 윈은 잠금 수단이 `msvcrt.locking`(파일 위치 기준 바이트 범위)이라
+양쪽이 **같은 0번 바이트**를 잠그는지가 실기 질문이다. 아래는 이 팩에 실린 클라이언트를 임시 폴더에 풀어
+`agora.collector.move_sent` 를 되풀이 돌리는 동안 `javis_counsel.py signal` 60개를 20개씩 동시에 띄운다(설정 폴더도 임시 · `$CFG` 무접촉).
+```bash
+python3 - <<'PY'
+import base64, collections, json, os, subprocess, sys, tempfile, time
+pk = os.environ.get("CYS_PACK_DIR") or os.path.join(os.path.expanduser("~"), ".cys", "pack")
+sys.path.insert(0, os.path.join(pk, "bin"))
+import javis_counsel as jc
+assert jc.pack_version(pk), "팩 .pack-version 판독 불가 — signal 이 한 줄도 안 쓴다"
+t = tempfile.mkdtemp(prefix="t3race-")
+pin = jc._read_pin(pk)
+data = jc._blob_bytes(os.path.join(pk, "install", "agora-client-%s.zip.b64" % pin["ver"]), pin)
+client = os.path.join(t, "client"); os.makedirs(client); jc._extract(data, client)
+cfg = os.path.join(t, "cfg"); os.makedirs(os.path.join(cfg, "counsel"))
+stop = os.path.join(t, "stop")
+mover = os.path.join(t, "mover.py")
+open(mover, "w").write(
+    "import os, sys, time\nsys.dont_write_bytecode = True\nsys.path.insert(0, sys.argv[1])\n"
+    "from agora import collector\np = os.path.join(sys.argv[2], 'counsel', 'signals.jsonl')\nn = r = 0\n"
+    "while True:\n    done = os.path.exists(sys.argv[3])\n    ls = collector._signal_lines(p)\n"
+    "    if ls: n += collector.move_sent(sys.argv[2], ls)\n    r += 1\n    if done: break\n    time.sleep(0.002)\n"
+    "print(r, n)\n")
+env = dict(os.environ, AGORA_CONFIG_DIR=cfg, PYTHONDONTWRITEBYTECODE="1")
+m = subprocess.Popen([sys.executable, mover, client, cfg, stop], stdout=subprocess.PIPE, env=env)
+ops = ["race.w%03d" % i for i in range(60)]
+for k in range(0, 60, 20):
+    ps = [subprocess.Popen([sys.executable, os.path.join(pk, "bin", "javis_counsel.py"), "signal", "--source", "worker",
+                            "--op", op, "--error-code", "race.e1"], env=env) for op in ops[k:k + 20]]
+    [p.wait() for p in ps]
+open(stop, "w").close()
+print("mover rounds/moved:", m.communicate(timeout=120)[0].decode().strip())
+c = os.path.join(cfg, "counsel")
+raw = b"".join(open(os.path.join(c, f), "rb").read() for f in ("signals.jsonl", "signals-sent.jsonl") if os.path.exists(os.path.join(c, f)))
+got = collections.Counter(json.loads(x)["op"] for x in raw.decode("utf-8").split("\n") if x)
+print("CR" if b"\r" in raw else "LF only", "lines", sum(got.values()),
+      "lost", sorted(set(ops) - set(got)), "dup", sorted(k for k, v in got.items() if v > 1))
+PY
+```
+기대: `mover rounds/moved: <2 이상> 60` · `LF only lines 60 lost [] dup []`. 하나라도 `lost`·`dup` 이 차면 FAIL(그 출력 원문 회신).
+
 ## 4. 한 판(=일정이 30분마다 부르는 것과 같은 명령) — 신호 1통 + 일일 1통
 ```bash
 python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_counsel.py" tick

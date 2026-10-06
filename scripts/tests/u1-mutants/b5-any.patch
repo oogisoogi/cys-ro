@@ -1,0 +1,14 @@
+diff --git a/src/update/feed.rs b/src/update/feed.rs
+index 17dc5602..f9675862 100644
+--- a/src/update/feed.rs
++++ b/src/update/feed.rs
+@@ -379,9 +379,6 @@ fn check_release_shape(r: &ReleaseBody, component: &str) -> Result<(), String> {
+             return Err(format!("미지 기판 {k}"));
+         }
+         // ★2R B5/N7: cysr 은 `any` 행 금지 — any 는 기판별 둘째 닻·페이로드 전수 검사를 피해 맥·윈 fallback 으로 뽑힌다.
+-        if component == "cysr" && k == "any" {
+-            return Err("cysr 본문의 any 행 금지(기판별 행만)".into());
+-        }
+         if &a.target != k {
+             return Err(format!("행 target {}≠{k}", a.target));
+         }

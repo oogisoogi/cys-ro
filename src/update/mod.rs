@@ -99,66 +99,128 @@ pub fn ensure_private_dir(dir: &std::path::Path) -> Result<(), String> {
                 return Err(format!("갱신 폴더 만들기 실패 {}", dir.display()));
             }
         }
-        let got = read_dacl_sddl(dir)?;
-        if !mutant("M3") && !dacl_is_private(&got) {
-            return Err(format!("갱신 폴더 DACL 불일치 {} ({got})", dir.display()));
-        }
-        Ok(())
+        check_private_sd(dir, "폴더")
     }
 }
 
-/// 폴더·파일의 DACL 을 SDDL 문자열로 다시 읽는다(read-back).
+/// 폴더·파일의 보안 기술자(소유자 + DACL)를 SDDL 문자열로 다시 읽는다(read-back).
 #[cfg(windows)]
-fn read_dacl_sddl(path: &std::path::Path) -> Result<String, String> {
+fn read_sd_sddl(path: &std::path::Path) -> Result<String, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1};
-    use windows_sys::Win32::Security::{GetFileSecurityW, DACL_SECURITY_INFORMATION};
+    use windows_sys::Win32::Security::{GetFileSecurityW, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION};
+    let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     let w: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let mut need = 0u32;
     // SAFETY: 크기 질의(버퍼 널 · 길이 0) — 필요한 바이트 수를 need 에 받는다.
-    unsafe { GetFileSecurityW(w.as_ptr(), DACL_SECURITY_INFORMATION, std::ptr::null_mut(), 0, &mut need) };
+    unsafe { GetFileSecurityW(w.as_ptr(), info, std::ptr::null_mut(), 0, &mut need) };
     if need == 0 {
-        return Err(format!("DACL 크기 조회 실패 {}", path.display()));
+        return Err(format!("보안 기술자 크기 조회 실패 {}", path.display()));
     }
     let mut buf = vec![0u8; need as usize];
     // SAFETY: buf 는 need 바이트.
-    if unsafe { GetFileSecurityW(w.as_ptr(), DACL_SECURITY_INFORMATION, buf.as_mut_ptr() as _, need, &mut need) } == 0 {
-        return Err(format!("DACL 읽기 실패 {}", path.display()));
+    if unsafe { GetFileSecurityW(w.as_ptr(), info, buf.as_mut_ptr() as _, need, &mut need) } == 0 {
+        return Err(format!("보안 기술자 읽기 실패 {}", path.display()));
     }
     let mut out: windows_sys::core::PWSTR = std::ptr::null_mut();
     let mut len = 0u32;
     // SAFETY: buf 는 자기상대 보안 기술자 · out 은 성공 시 LocalAlloc 블록.
-    let ok = unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(buf.as_ptr() as _, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut out, &mut len)
-    };
+    let ok = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(buf.as_ptr() as _, SDDL_REVISION_1, info, &mut out, &mut len) };
     if ok == 0 || out.is_null() {
-        return Err("DACL 문자열 변환 실패".into());
+        return Err("보안 기술자 문자열 변환 실패".into());
     }
-    // SAFETY: out 은 널종단 와이드 문자열(len 은 종단 포함 길이일 수 있어 널까지 센다).
-    let s = unsafe {
-        let mut n = 0usize;
-        while *out.add(n) != 0 {
-            n += 1;
-        }
-        String::from_utf16_lossy(std::slice::from_raw_parts(out, n))
-    };
-    // SAFETY: Convert… 가 LocalAlloc 으로 준 블록.
-    unsafe { windows_sys::Win32::Foundation::LocalFree(out as _) };
+    // SAFETY: out 은 LocalAlloc 블록의 널종단 와이드 문자열.
+    let s = unsafe { take_local_wstr(out) };
     Ok(s)
 }
 
-/// DACL SDDL 판정(순수 · 모든 기판에서 시험): ACE 가 1개 이상이고 전부 「허용 · 전체 권한 · 소유자 권한(OW) 또는 SYSTEM(SY)」
-/// 뿐 · 그리고 상속이 끊겼거나(`D:` 뒤 표지에 `P` — 폴더) ACE 가 전부 물려받은 것(`ID` — 보호 폴더 안의 파일).
-pub fn dacl_is_private(sddl: &str) -> bool {
-    let Some(rest) = sddl.strip_prefix("D:") else { return false };
-    let flags_end = rest.find('(').unwrap_or(rest.len());
-    let protected = rest[..flags_end].contains('P');
-    let aces: Vec<Vec<&str>> =
-        rest[flags_end..].split(['(', ')']).filter(|x| !x.is_empty()).map(|a| a.split(';').collect()).collect();
-    let all_inherited = aces.iter().all(|f| f.get(1).map(|fl| fl.contains("ID")).unwrap_or(false));
-    !aces.is_empty()
-        && (protected || all_inherited)
-        && aces.iter().all(|f| f.len() == 6 && f[0] == "A" && f[2] == "FA" && matches!(f[5], "OW" | "SY"))
+/// LocalAlloc 으로 받은 널종단 와이드 문자열을 String 으로 옮기고 해제한다.
+#[cfg(windows)]
+unsafe fn take_local_wstr(p: windows_sys::core::PWSTR) -> String {
+    let mut n = 0usize;
+    while *p.add(n) != 0 {
+        n += 1;
+    }
+    let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+    windows_sys::Win32::Foundation::LocalFree(p as _);
+    s
+}
+
+/// 이 프로세스 사용자 SID 문자열(`S-1-5-21-…`) — 토큰의 TokenUser.
+#[cfg(windows)]
+fn current_user_sid() -> Result<String, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut tok: HANDLE = std::ptr::null_mut();
+    // SAFETY: 의사 핸들 · tok 은 성공 시 닫아야 하는 토큰 핸들.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) } == 0 {
+        return Err("프로세스 토큰 열기 실패".into());
+    }
+    let mut need = 0u32;
+    // SAFETY: 크기 질의.
+    unsafe { GetTokenInformation(tok, TokenUser, std::ptr::null_mut(), 0, &mut need) };
+    let mut buf = vec![0u8; need.max(1) as usize];
+    // SAFETY: buf 는 need 바이트.
+    let ok = unsafe { GetTokenInformation(tok, TokenUser, buf.as_mut_ptr() as _, need, &mut need) };
+    // SAFETY: OpenProcessToken 이 준 핸들.
+    unsafe { CloseHandle(tok) };
+    if ok == 0 {
+        return Err("토큰 사용자 조회 실패".into());
+    }
+    // SAFETY: GetTokenInformation(TokenUser) 성공 = buf 머리가 TOKEN_USER(SID 포인터는 buf 안).
+    let sid = unsafe { (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid };
+    let mut out: windows_sys::core::PWSTR = std::ptr::null_mut();
+    // SAFETY: sid 유효 · out 은 성공 시 LocalAlloc 블록.
+    if unsafe { ConvertSidToStringSidW(sid, &mut out) } == 0 || out.is_null() {
+        return Err("SID 문자열 변환 실패".into());
+    }
+    // SAFETY: LocalAlloc 블록의 널종단 와이드 문자열.
+    Ok(unsafe { take_local_wstr(out) })
+}
+
+#[cfg(windows)]
+fn check_private_sd(path: &std::path::Path, what: &str) -> Result<(), String> {
+    let got = read_sd_sddl(path)?;
+    let me = current_user_sid()?;
+    if !mutant("M3") && !sd_is_private(&got, &me) {
+        return Err(format!("갱신 {what} DACL 불일치 {} ({got} · 나 = {me})", path.display()));
+    }
+    Ok(())
+}
+
+/// ★5판(윈 러너 실측 — 생성 시 보호 DACL 폴더 안 파일 = `D:(A;;FA;;;OW)(A;;FA;;;SY)` · 상속 표지 없음): 보안 기술자 SDDL 을
+/// **의미로** 판정(순수 · 모든 기판에서 시험). 소유자 ∈ {나(`me` SID 문자열), Administrators(BA), SYSTEM(SY)} ∧ DACL 이 있음
+/// (NULL DACL = 누구나 = 거부) ∧ 허용(A) ACE 의 주체가 전부 {소유자 권한(OW), SYSTEM, Administrators, 나} 안 ∧ 거부(D) ACE 는 무관
+/// ∧ 그 밖 ACE 형(개체 ACE 등) = 거부. 상속·보호 표지는 보지 않는다 — 대신 **물려받은 ACE 도 같은 주체 규칙으로 센다**(무시하면
+/// 물려받은 Everyone·Users 가 지나간다).
+pub fn sd_is_private(sddl: &str, me: &str) -> bool {
+    let me_alias: &str = if me == "S-1-5-18" { "SY" } else { me };
+    let (owner, dacl) = match (sddl.find("O:"), sddl.find("D:")) {
+        (Some(o), Some(d)) if o < d => {
+            let owner_end = sddl[o + 2..].find("G:").map(|g| o + 2 + g).unwrap_or(d).min(d);
+            (&sddl[o + 2..owner_end], &sddl[d + 2..])
+        }
+        _ => return false,
+    };
+    if !(owner == me || owner == me_alias || owner == "BA" || owner == "SY") {
+        return false;
+    }
+    let dacl = dacl.split("S:").next().unwrap_or(dacl); // SACL 은 판정 밖
+    let flags_end = dacl.find('(').unwrap_or(dacl.len());
+    if dacl[..flags_end].contains("NO_ACCESS_CONTROL") {
+        return false;
+    }
+    dacl[flags_end..].split(['(', ')']).filter(|x| !x.is_empty()).all(|ace| {
+        let f: Vec<&str> = ace.split(';').collect();
+        f.len() == 6
+            && match f[0] {
+                "A" => matches!(f[5], "OW" | "SY" | "BA") || f[5] == me || f[5] == me_alias,
+                "D" => true,
+                _ => false,
+            }
+    })
 }
 
 /// ★2R M3: 이미 있는 갱신 파일이 소유자 전용인가(유닉스 = 소유 uid 나 · 그룹·기타 비트 0 · 일반 파일 · 윈 = DACL read-back).
@@ -179,11 +241,7 @@ pub fn check_private_file(path: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        let got = read_dacl_sddl(path)?;
-        if !mutant("M3") && !dacl_is_private(&got) {
-            return Err(format!("갱신 파일 DACL 불일치 {} ({got})", path.display()));
-        }
-        Ok(())
+        check_private_sd(path, "파일")
     }
 }
 
@@ -201,18 +259,28 @@ pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 
 #[cfg(test)]
 mod tests {
-    /// ★2R M3: 윈 DACL read-back 판정(순수 — 맥에서도 돈다).
+    /// ★2R M3 · 5판: 윈 보안 기술자 read-back 의미 판정(순수 — 맥에서도 돈다). 러너 꼴(보호 폴더 안 파일 · 표지 없음)과 로컬 꼴(보호
+    /// 폴더 · 상속 표지 · 사용자 프로필 상속)이 모두 통과 · Everyone·Users·인증 사용자·남의 SID·NULL DACL·남이 소유자 = 거부.
     #[test]
-    fn dacl_private_rule() {
-        use super::dacl_is_private as p;
-        assert!(p("D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"), "폴더(보호)");
-        assert!(p("D:PAI(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"));
-        assert!(p("D:AI(A;ID;FA;;;OW)(A;ID;FA;;;SY)"), "보호 폴더 안 파일(전부 물려받음)");
-        assert!(!p("D:AI(A;ID;FA;;;OW)(A;;FA;;;SY)"), "보호 아님 + 직접 ACE");
-        assert!(!p("D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;BU)"), "사용자 그룹");
-        assert!(!p("D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;WD)"), "모두");
-        assert!(!p("D:P(A;OICI;FR;;;OW)"), "전체 권한 아님");
-        assert!(!p("D:P"), "ACE 0 = 거부");
-        assert!(!p(""));
+    fn sd_private_rule() {
+        use super::sd_is_private as p;
+        let me = "S-1-5-21-1-2-3-1001";
+        assert!(p("O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FA;;;SY)", me), "러너 실측 꼴(표지 없음)");
+        assert!(p("O:BAD:(A;;FA;;;OW)(A;;FA;;;SY)", me), "관리자 러너 = 소유자 BA");
+        assert!(p("O:S-1-5-21-1-2-3-1001G:S-1-5-21-1-2-3-513D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)", me), "보호 폴더(그룹 칸 포함)");
+        assert!(p("O:S-1-5-21-1-2-3-1001D:AI(A;ID;FA;;;OW)(A;ID;FA;;;SY)", me), "상속 표지");
+        assert!(p("O:S-1-5-21-1-2-3-1001D:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;S-1-5-21-1-2-3-1001)", me), "사용자 프로필 상속");
+        assert!(p("O:S-1-5-21-1-2-3-1001D:(D;;FA;;;WD)(A;;FA;;;OW)", me), "거부 ACE 는 무관");
+        assert!(p("O:S-1-5-21-1-2-3-1001D:P", me), "빈 DACL = 아무도 못 씀(허용)");
+        assert!(!p("O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FR;;;WD)", me), "Everyone");
+        assert!(!p("O:S-1-5-21-1-2-3-1001D:AI(A;OICIID;FA;;;OW)(A;OICIID;0x1200a9;;;BU)", me), "물려받은 Users");
+        assert!(!p("O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FA;;;AU)", me), "인증 사용자");
+        assert!(!p("O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FA;;;S-1-5-21-9-9-9-1002)", me), "남의 SID");
+        assert!(!p("O:S-1-5-21-9-9-9-1002D:(A;;FA;;;OW)", me), "남이 소유자");
+        assert!(!p("O:S-1-5-21-1-2-3-1001D:NO_ACCESS_CONTROL", me), "NULL DACL");
+        assert!(!p("O:S-1-5-21-1-2-3-1001D:(OA;;FA;guid;;OW)", me), "개체 ACE");
+        assert!(!p("D:(A;;FA;;;OW)", me), "소유자 칸 없음");
+        assert!(!p("", me));
+        assert!(p("O:SYD:(A;;FA;;;SY)", "S-1-5-18"), "SYSTEM 으로 도는 서비스");
     }
 }

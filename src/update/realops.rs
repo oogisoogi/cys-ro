@@ -278,6 +278,24 @@ impl RealOps {
         super::journal::sync_dir(parent).map_err(f)
     }
 
+    /// 상태 폴더 + `~/.cys`(팩·사용자 트리) 파일 단위 복원(RB_RESTORED · 재구성 공용).
+    fn restore_trees(&self, root: &Path, step: &str, qkey: &str, want_st: Option<&str>, want_cy: Option<&str>) -> Step {
+        let q = super::snapshot::quarantine_dir(&self.env.update_dir, qkey);
+        let payload: std::collections::BTreeSet<String> = self
+            .asset()
+            .ok()
+            .and_then(|a| a.payload_manifest.as_ref())
+            .map(|m| m.iter().map(|e| super::payload::norm(&e.path)).collect())
+            .unwrap_or_default();
+        let st_prot = move |rel: &str| super::snapshot::is_excluded(rel) || payload.contains(&super::payload::norm(rel));
+        super::snapshot::restore(&self.env.daemon_state_dir, &root.join("state"), &q.join("state"), &st_prot, want_st)
+            .map_err(|e| fail(ErrCode::RollbackBlocked, step, e))?;
+        let cys_prot = |rel: &str| !RealOps::cys_filter(rel);
+        super::snapshot::restore(&self.env.cys_root, &root.join("cys"), &q.join("cys"), &cys_prot, want_cy)
+            .map_err(|e| fail(ErrCode::RollbackBlocked, step, e))?;
+        Ok(())
+    }
+
     fn state_filter(&self) -> impl Fn(&str) -> bool + '_ {
         let payload: std::collections::BTreeSet<String> = self
             .asset()
@@ -768,25 +786,12 @@ impl Ops for RealOps {
 
     fn rb_restore(&mut self, j: &Journal) -> Step {
         let root = PathBuf::from(&j.snapshot_dir);
-        let q = super::snapshot::quarantine_dir(&self.env.update_dir, &j.txn_id);
-        let payload: std::collections::BTreeSet<String> = self
-            .asset()
-            .ok()
-            .and_then(|a| a.payload_manifest.as_ref())
-            .map(|m| m.iter().map(|e| super::payload::norm(&e.path)).collect())
-            .unwrap_or_default();
-        let st_prot = move |rel: &str| super::snapshot::is_excluded(rel) || payload.contains(&super::payload::norm(rel));
         let want_st = journal_snapshot_sha(j, "state");
         let want_cy = journal_snapshot_sha(j, "cys");
         if want_st.is_none() || want_cy.is_none() {
             return Err(fail(ErrCode::RollbackBlocked, "RB_RESTORED", "저널 매니페스트 sha 없음"));
         }
-        super::snapshot::restore(&self.env.daemon_state_dir, &root.join("state"), &q.join("state"), &st_prot, want_st.as_deref())
-            .map_err(|e| fail(ErrCode::RollbackBlocked, "RB_RESTORED", e))?;
-        let cys_prot = |rel: &str| !RealOps::cys_filter(rel);
-        super::snapshot::restore(&self.env.cys_root, &root.join("cys"), &q.join("cys"), &cys_prot, want_cy.as_deref())
-            .map_err(|e| fail(ErrCode::RollbackBlocked, "RB_RESTORED", e))?;
-        Ok(())
+        self.restore_trees(&root, "RB_RESTORED", &j.txn_id, want_st.as_deref(), want_cy.as_deref())
     }
 
     fn recover_pack(&mut self) -> Step {
@@ -795,25 +800,42 @@ impl Ops for RealOps {
 
     fn reconstruct(&mut self) -> Step {
         // §3-11 저널 손상 재구성: 정식 자리 실물이 설치판(옛) 또는 후보(새) 중 정확히 하나와 같으면 확정.
+        // ★2판(codex 1R C13): ① 맥 = 번들 바이너리를 실행(build-info)하기 **전에** codesign 엄격 + DR 핀 · 새 판으로 판정되면 cdhash 까지
+        //   (verify_bundle 3겹) ② 윈 = 수용 본문은 서명 재검증된 것만(load_installer_manifest = verify_installer_dir) ③ 옛 판으로 판정되면
+        //   팩·사용자 트리·상태 폴더를 그 판의 최신 검증 스냅샷으로 복원한 뒤에만 종결(복원 중 죽은 경우 · 스냅샷 없음 = S8 전 = 무변경).
+        let rj = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
         let old = self.expect_old();
         let new = self.expect_new().ok();
-        match self.env.os {
+        let is_old = match self.env.os {
             Os::Mac => {
-                let found = super::mac::bundle_ident(&self.env.canonical_app);
+                let canon = super::mac::real_path(&self.env.canonical_app, "reconstruct").map_err(|f| rj(f.detail))?;
+                super::mac::verify_signature_pin(&canon).map_err(|f| rj(format!("서명 검증 전 실행 거부: {}", f.detail)))?;
+                let found = super::mac::bundle_ident(&canon);
                 match (&found, &new) {
-                    (Some(f), _) if f == &old => Ok(()),
-                    (Some(f), Some(n)) if f == n => Ok(()),
-                    _ => Err(fail(ErrCode::JournalCorrupt, "reconstruct", "정식 자리 번들 = 어느 판과도 불일치")),
+                    (Some(f), _) if f == &old => true,
+                    (Some(f), Some(n)) if f == n => {
+                        super::mac::verify_bundle(&canon, self.cand.asset.cdhash.as_deref().unwrap_or(""), n).map_err(|f| rj(f.detail))?;
+                        false
+                    }
+                    _ => return Err(rj("정식 자리 번들 = 어느 판과도 불일치".into())),
                 }
             }
             Os::Win => {
                 let older = load_installer_manifest(&self.installers_dir(old.release_seq));
-                match older {
-                    Some(m) if super::payload::verify_install(&self.env.install_dir, &m, None).ok() => Ok(()),
-                    _ => Err(fail(ErrCode::JournalCorrupt, "reconstruct", "설치 폴더 = 수용 매니페스트 불일치")),
+                let newer = self.asset().ok().and_then(|a| a.payload_manifest.clone()).filter(|m| !m.is_empty());
+                match (older, newer) {
+                    (Some(m), _) if super::payload::verify_install(&self.env.install_dir, &m, None).ok() => true,
+                    (_, Some(m)) if super::payload::verify_install(&self.env.install_dir, &m, None).ok() => false,
+                    _ => return Err(rj("설치 폴더 = 서명 검증된 수용 매니페스트와 불일치".into())),
                 }
             }
+        };
+        if is_old {
+            if let Some(snap) = latest_verified_snapshot(&self.env.update_dir, old.release_seq) {
+                self.restore_trees(&snap, "reconstruct", "reconstruct", None, None).map_err(|f| rj(f.detail))?;
+            }
         }
+        Ok(())
     }
 
     fn record(&mut self, j: Option<&Journal>, kind: Kind, f: Option<&Fail>) {
@@ -863,6 +885,19 @@ impl RealOps {
 }
 
 /// S6·S8b 재확인: 봉투·폐기문을 다시 받아 같은 `release_seq` · halt 아님 · 후보 폐기 아님 · 설치판 폐기 무변화.
+/// ★2판 C13: 판 `seq` 의 스냅샷(`backup/<seq>-<txn>`) 중 두 뿌리가 모두 검증되는 가장 최근 것(수정 시각) — 저널 손상 재구성용.
+pub fn latest_verified_snapshot(update_dir: &Path, seq: u64) -> Option<PathBuf> {
+    let root = super::snapshot::backup_root(update_dir);
+    let mut c: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().split_once('-').map(|(s, _)| s == seq.to_string()).unwrap_or(false))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    c.sort();
+    c.into_iter().rev().map(|(_, p)| p).find(|p| ["state", "cys"].iter().all(|n| super::snapshot::verify(&p.join(n)).is_ok()))
+}
+
 /// 저널 `snapshot_manifest_sha256`(= `state:<sha>,cys:<sha>`)에서 뿌리 하나의 값.
 pub fn journal_snapshot_sha(j: &Journal, name: &str) -> Option<String> {
     j.snapshot_manifest_sha256.split(',').find_map(|kv| kv.split_once(':').filter(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
@@ -958,6 +993,28 @@ mod tests {
         for no in ["claude/x", "update/journal.json", "state/x", "round/a"] {
             assert!(!RealOps::cys_filter(no), "{no}");
         }
+    }
+
+    /// ★2판 C13: 재구성 복원 원천 = 그 판의 스냅샷 중 두 뿌리가 검증되는 최신 것(손상·다른 판 제외).
+    #[test]
+    fn latest_verified_snapshot_skips_corrupt_and_other_seq() {
+        let d = std::env::temp_dir().join(format!("cys-u2-lvs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let src = d.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a"), "1").unwrap();
+        let root = super::super::snapshot::backup_root(&d);
+        for name in ["8-old", "8-new", "9-x"] {
+            for r in ["state", "cys"] {
+                super::super::snapshot::take(&src, &root.join(name).join(r), &|_| true).unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::fs::write(root.join("8-new/cys/files/a"), "X").unwrap(); // 최신 것 손상
+        assert_eq!(latest_verified_snapshot(&d, 8), Some(root.join("8-old")));
+        assert_eq!(latest_verified_snapshot(&d, 9), Some(root.join("9-x")));
+        assert_eq!(latest_verified_snapshot(&d, 7), None);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// ★2판 C10: installers/<seq>/ = 쓸 때마다 재검증 — U 서명 본문 · seq · 설치기 sha256 = 본문 행 · A2 서명. 임의 파일·변조 = 거부.

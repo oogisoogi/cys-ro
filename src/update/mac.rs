@@ -208,14 +208,7 @@ fn run(cmd: &str, args: &[&str]) -> (bool, String) {
 /// 검증 3겹(§3-6 ②): ① `codesign --verify --deep --strict` ② DR 핀(내장 leaf 중 하나) ③ CDHash = 본문 · build-info = 본문 행.
 pub fn verify_bundle(bundle: &Path, expect_cdhash: &str, expect: &Ident) -> Result<(), Fail> {
     let b = bundle.to_string_lossy().to_string();
-    let (ok, out) = run("/usr/bin/codesign", &["--verify", "--deep", "--strict", &b]);
-    if !ok {
-        return Err(Fail::new(ErrCode::MacCodesignFail, "S2", out));
-    }
-    let pinned = DR_PIN_LEAFS.iter().any(|leaf| run("/usr/bin/codesign", &["--verify", &format!("-R={}", dr_requirement(leaf)), &b]).0);
-    if !pinned {
-        return Err(Fail::new(ErrCode::MacDrMismatch, "S2", "DR 핀 불일치"));
-    }
+    verify_signature_pin(bundle)?;
     let (_, dv) = run("/usr/bin/codesign", &["-dvvv", &b]);
     let cd = super::macupdate::parse_cdhash(&dv);
     if super::macupdate::verify_cdhash(cd.as_deref(), expect_cdhash).is_err() {
@@ -225,6 +218,23 @@ pub fn verify_bundle(bundle: &Path, expect_cdhash: &str, expect: &Ident) -> Resu
         Some(i) if &i == expect => Ok(()),
         other => Err(Fail::new(ErrCode::BuildInfoMismatch, "S2", format!("{other:?}"))),
     }
+}
+
+/// 검증 ①② 만(★2판 codex 1R C13): codesign 엄격 검증 + DR 핀 — 번들 안 바이너리를 **실행하기 전에** 부른다(재구성·실물 판정).
+pub fn verify_signature_pin(bundle: &Path) -> Result<(), Fail> {
+    if super::mutant("U2-SIGPIN") {
+        return Ok(());
+    }
+    let b = bundle.to_string_lossy().to_string();
+    let (ok, out) = run("/usr/bin/codesign", &["--verify", "--deep", "--strict", &b]);
+    if !ok {
+        return Err(Fail::new(ErrCode::MacCodesignFail, "S2", out));
+    }
+    let pinned = DR_PIN_LEAFS.iter().any(|leaf| run("/usr/bin/codesign", &["--verify", &format!("-R={}", dr_requirement(leaf)), &b]).0);
+    if !pinned {
+        return Err(Fail::new(ErrCode::MacDrMismatch, "S2", "DR 핀 불일치"));
+    }
+    Ok(())
 }
 
 /// S9 앞으로 교환(멱등 = 정식 자리가 이미 새 판이면 호출자가 부르지 않는다): `staged` ↔ `canonical` → 교환 직후 `on_swapped(prev_bundle 자리,
@@ -377,6 +387,22 @@ mod tests {
         let e = real_path(&t.join("linked.app"), "S2").unwrap_err();
         assert_eq!(e.code, ErrCode::MacAppsNotWritable);
         assert!(e.detail.contains("링크"), "{e:?}");
+    }
+
+    /// ★2판 C13: 서명 없는(·변조된) 번들은 build-info 를 실행하기 전에 거부 — 실행되면 흔적 파일을 남기는 가짜 cys 로 확인.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unsigned_bundle_is_refused_before_execution() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = d("sigpin");
+        let b = t.join("cysr.app");
+        std::fs::create_dir_all(b.join("Contents/MacOS")).unwrap();
+        let mark = t.join("ran");
+        let exe = b.join("Contents/MacOS/cys");
+        std::fs::write(&exe, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(verify_signature_pin(&b).is_err(), "서명 없음 = 거부");
+        assert!(!mark.exists(), "검증 단계에서 번들 바이너리 실행 0");
     }
 
     /// ★2판 C7: RENAME_SWAP 직후(staged→old 이름 바꾸기 전) 죽음 = 옛 판이 stage 자리에 · 저널 prev_bundle 없음 → 후보에서 찾아 되교환.

@@ -45,7 +45,8 @@ def load(p):
     return d
 b, a, out = load(sys.argv[1]), load(sys.argv[2]), sys.argv[3]
 home = os.path.expanduser("~")
-u2 = re.compile(r"^(%s/\.cys/update(/|$)|.*cysr-update-recover|.*/counsel/updates\.jsonl$)" % re.escape(home))
+# ★3판(Fable 2R m5): 상담소 신호(notify::signal → javis_counsel 대기열)도 U2 쓰기 — counsel 폴더 전체를 U2 이름공간에
+u2 = re.compile(r"^(%s/\.cys/update(/|$)|.*cysr-update-recover|.*/counsel(/|$))" % re.escape(home))
 changed = sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
 hits = [p for p in changed if u2.match(p)]
 with open(os.path.join(out, "changed.txt"), "w") as f:

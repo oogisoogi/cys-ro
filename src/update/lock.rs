@@ -366,7 +366,11 @@ pub fn participate(dir: &Path, owner: &str, arg: Option<&str>, env: Option<&str>
     }
     let _ = owner; // 공유 참가자는 소유자 기록을 쓰지 않는다(설치기·부팅 가드가 보는 txn.lock·txn.owner.json 무접촉)
     // ★2판 C1(개정): 참가자 공유 잠금을 **먼저** 쥐고 txn.lock 을 본다 — 러너는 txn.lock 을 먼저 쥐고 참가자 잠금을 본다(양방향 원자).
-    let Ok(part) = open_lock_file(dir, PART_LOCK_FILE) else { return Ok(None) };
+    // ★3판(Fable 2R m1): 평소대로(참가 0) = 갱신 폴더를 만들 수조차 없을 때만 · 권한 불일치 등 그 밖 = Err(조용한 fail-open 0)
+    if super::ensure_private_dir(dir).is_err() {
+        return Ok(None);
+    }
+    let part = open_lock_file(dir, PART_LOCK_FILE)?;
     let mut got = false;
     for _ in 0..40 {
         // 러너의 순간 배타 시도(acquire 의 try_lock) 와만 겹친다 — 짧게 다시 본다

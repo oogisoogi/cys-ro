@@ -613,7 +613,13 @@ impl Ops for RealOps {
     fn canonical(&mut self, _j: &Journal) -> Canon {
         let (Ok(new), old) = (self.expect_new(), self.expect_old()) else { return Canon::Unknown };
         match self.env.os {
-            Os::Mac => super::mac::judge_canonical(super::mac::bundle_ident(&self.env.canonical_app).as_ref(), &new, &old),
+            // ★3판(Fable 2R m2): 번들 바이너리(build-info) 실행 전 서명·DR 핀 — 실패 = 판독 불가
+            Os::Mac => {
+                if super::mac::verify_signature_pin(&self.env.canonical_app).is_err() {
+                    return Canon::Unknown;
+                }
+                super::mac::judge_canonical(super::mac::bundle_ident(&self.env.canonical_app).as_ref(), &new, &old)
+            }
             Os::Win => {
                 let pm = self.asset().ok().and_then(|a| a.payload_manifest.clone()).unwrap_or_default();
                 if !pm.is_empty() && super::payload::verify_install(&self.env.install_dir, &pm, None).ok() {
@@ -855,7 +861,8 @@ impl Ops for RealOps {
                     super::mac::prev_candidates(&self.env.canonical_app, Path::new(&j.stage_path), j.from_release_seq, recorded.as_deref())
                         .into_iter()
                         .map(|c| {
-                            let id = super::mac::bundle_ident(&c);
+                            // ★3판 m2: 서명·DR 핀 실패 후보 = 실행하지 않고 판독 불가(후보 제외와 같음)
+                            let id = if super::mac::verify_signature_pin(&c).is_ok() { super::mac::bundle_ident(&c) } else { None };
                             (c, id)
                         })
                         .collect();
@@ -1319,8 +1326,16 @@ mod tests {
         let fake = d.join("cysd");
         std::fs::copy("/bin/sleep", &fake).unwrap();
         let mut kids: Vec<std::process::Child> = (0..2).map(|_| std::process::Command::new(&fake).arg("30").spawn().unwrap()).collect();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        assert_eq!(hq_daemon_count(&json!({"daemon_pid": kids[0].id()})), 1, "가짜 cysd 2개 있어도 본부 1");
+        // 부하 중엔 exec 직후 이름이 늦게 보인다(전수 병렬 1회 적색) — 3초까지 기다린다
+        let mut n = 0;
+        for _ in 0..60 {
+            n = hq_daemon_count(&json!({"daemon_pid": kids[0].id()}));
+            if n == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(n, 1, "가짜 cysd 2개 있어도 본부 1");
         assert_eq!(hq_daemon_count(&json!({})), 0, "응답 없음");
         let sleeper = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
         assert_eq!(hq_daemon_count(&json!({"daemon_pid": sleeper.id()})), 0, "이름 cysd 아님");

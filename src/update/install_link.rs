@@ -259,6 +259,52 @@ mod tests {
         assert!(crate::update::check::installer_assets_ok(&f.upd(), 8), "embedded(시험 키링 env) 판정도 참");
         assert_eq!(run_preserve(&f.d.join("dl/setup.exe"), Some(&sig), Some(9), true), 4, "보관소에 9 없음 = rc 4");
         assert!(!f.upd().join("installers/9").exists());
+        // ★브리프 ④: 놓은 뒤 N7(`rollback_assets_ok` 그 함수 · 윈 갈래) = Some(true) · 4파일 중 하나라도 빠지면 Some(false)
+        std::fs::write(f.upd().join("state.json"), r#"{"last_backup_bytes": 1}"#).unwrap();
+        let o = n7_outcome(&f);
+        let n7 = |win: bool| crate::update::check::rollback_assets_ok_at(&f.upd(), &f.d.join("pack"), Some(&o), 8, win);
+        assert_eq!(n7(true), Some(true), "신설치 뒤 N7 = Some(true)");
+        for n in [REL_BODY, REL_SIG, SETUP, SETUP_SIG] {
+            let p = f.upd().join("installers/8").join(n);
+            let keep = std::fs::read(&p).unwrap();
+            std::fs::remove_file(&p).unwrap();
+            assert_eq!(n7(true), Some(false), "{n} 누락 = N7 Some(false)");
+            assert_eq!(n7(false), Some(true), "맥 갈래는 설치기 자산을 보지 않는다(§3-6 세대 백업)");
+            std::fs::write(&p, keep).unwrap();
+        }
+        assert_eq!(crate::update::check::rollback_assets_ok_at(&f.upd(), &f.d.join("pack"), Some(&o), 9, true), Some(false), "다른 판 seq = 자산 없음");
+    }
+
+    /// N7 판정용 후보(공간 칸만 의미 — 자산 크기 작게).
+    fn n7_outcome(f: &Fx) -> crate::update::feed::FeedOutcome {
+        let rb: crate::update::feed::ReleaseBody = serde_json::from_slice(&f.body).unwrap();
+        let mut a = rb.assets.values().next().unwrap().clone();
+        a.size = 1;
+        a.max_unpacked = 1;
+        crate::update::feed::FeedOutcome {
+            verdict: crate::update::feed::Verdict::Apply,
+            code: crate::update::errors::ErrCode::Ok,
+            step: String::new(),
+            detail: String::new(),
+            asset: Some(a),
+            release_seq: Some(9),
+            version: None,
+            feed_rev: None,
+            envelope_sha256: None,
+            installed_revoked: false,
+            stop_seats: false,
+            unknown_severity: false,
+            state_migration: None,
+            min_from_release_seq: None,
+            halt: false,
+            rollout_pct: None,
+            trusted_signed_at: None,
+            revocations: None,
+            envelope_signed_at: None,
+            notes_ko: None,
+            release_b64: None,
+            release_sig_b64: None,
+        }
     }
 
     /// 저널 판정: 없음 = 종결 · 온전 비종결 = terminal false · 손상 = corrupt(terminal null → 설치 링크는 📌18 경로로 진행).

@@ -540,6 +540,11 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
 /// N7(★U2 · 순수에 가까움): 후보가 없으면 해당 없음(true). 있으면 여유 공간 ≥ 자산 + max_unpacked + 백업 예상(직전 실측 `state.json`
 /// `last_backup_bytes` · 없으면 지금 대상 크기 합) + max_unpacked + 2 GiB · (윈) `installers\<설치판 seq>\` 에 설치기·본문이 있음.
 pub fn rollback_assets_ok(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>) -> Option<bool> {
+    rollback_assets_ok_at(dir, pack_dir, outcome, buildinfo::release_seq(), cfg!(windows))
+}
+
+/// [`rollback_assets_ok`] 본체 — 설치판 seq·기판을 인자로(★U5: 설치 링크가 놓은 자산으로 N7 을 기판 무관하게 시험).
+pub fn rollback_assets_ok_at(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, installed_seq: u64, windows: bool) -> Option<bool> {
     let Some(a) = outcome.and_then(|o| o.asset.as_ref()) else { return Some(true) };
     let measured = std::fs::read(dir.join("state.json"))
         .ok()
@@ -559,9 +564,9 @@ pub fn rollback_assets_ok(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutc
     if free < need {
         return Some(false);
     }
-    if cfg!(windows) {
+    if windows {
         // ★2판(codex 1R C10): 있음이 아니라 재검증(U 본문 서명 · 설치기 sha256 = 본문 행 · A2 서명).
-        return Some(installer_assets_ok(dir, buildinfo::release_seq()));
+        return Some(installer_assets_ok(dir, installed_seq));
     }
     Some(true)
 }

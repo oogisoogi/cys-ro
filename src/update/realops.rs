@@ -247,21 +247,6 @@ impl RealOps {
         }
     }
 
-    /// ★2판 C9: 이 사용자 cysd 프로세스 수 실측(sysinfo · 이름 cysd/cysd.exe).
-    fn cysd_procs(&self) -> u32 {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_user(sysinfo::UpdateKind::Always));
-        let me = sys.process(sysinfo::Pid::from_u32(std::process::id())).and_then(|p| p.user_id().cloned());
-        sys.processes()
-            .values()
-            .filter(|p| {
-                let n = p.name().to_string_lossy();
-                (n == "cysd" || n.eq_ignore_ascii_case("cysd.exe")) && (me.is_none() || p.user_id() == me.as_ref())
-            })
-            .count() as u32
-    }
-
     /// ★2판 C9: 금지 내장 잡 실측 = 데몬 `schedule.status` 의 잡 id ∩ [`verify::FORBIDDEN_JOBS`] · 판독 실패 = `observe_failed`(V6 실패).
     fn forbidden_jobs(&self) -> Vec<String> {
         match (self.env.rpc)("schedule.status", json!({})) {
@@ -386,6 +371,26 @@ pub fn seats_from_org(org: &Value) -> std::collections::BTreeSet<SeatKey> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// ★3판(Fable 2R N2): V2 「cysd 1개」 = **이 설치본 본부 소켓이 스스로 밝힌 데몬 1개** — `system.identify.daemon_pid` 가 살아 있고 이름이
+/// cysd(.exe)이며 같은 사용자일 때 1 · 그 밖(응답 없음·죽음·다른 이름) 0. 부서 데몬·다른 설치본 데몬은 계수 밖(이 맥 `pgrep -x cysd` = 21 ·
+/// 2판의 「이 사용자 cysd 전수」 는 부서가 있는 기계에서 V2·RB_VERIFIED 를 결정론으로 떨어뜨렸다).
+pub fn hq_daemon_count(identify: &Value) -> u32 {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let Some(pid) = identify["daemon_pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else { return 0 };
+    let mut sys = System::new();
+    let me = Pid::from_u32(std::process::id());
+    let them = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[me, them]), true, ProcessRefreshKind::nothing().with_user(UpdateKind::Always));
+    let Some(p) = sys.process(them) else { return 0 };
+    let n = p.name().to_string_lossy();
+    let named = n == "cysd" || n.eq_ignore_ascii_case("cysd.exe");
+    let same_user = match (sys.process(me).and_then(|x| x.user_id()), p.user_id()) {
+        (Some(a), Some(b)) => a == b,
+        _ => true, // 판정 불가(윈 일부) = 이름·생존으로만
+    };
+    u32::from(named && same_user)
 }
 
 /// `cys doctor --json` → FAIL 항목 id 집합(순수).
@@ -744,7 +749,7 @@ impl Ops for RealOps {
             daemon_build_id: identify["build_id"].as_str().unwrap_or("").to_string(),
             platform_mark,
             ping_ok_streak: ping,
-            cysd_procs: self.cysd_procs(),
+            cysd_procs: hq_daemon_count(&identify),
             seats: self.seats()?,
             drain_seats: None,
             restore_rc: self.last_rotate_rc.unwrap_or(-1),
@@ -1230,6 +1235,29 @@ mod tests {
         assert_eq!(latest_verified_snapshot(&d, 8), Some(root.join("8-old")));
         assert_eq!(latest_verified_snapshot(&d, 9), Some(root.join("9-x")));
         assert_eq!(latest_verified_snapshot(&d, 7), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3판 N2: 부서 데몬처럼 cysd 이름 프로세스가 여럿이어도 V2 = 본부 소켓이 밝힌 pid 1개만 센다 · 죽은 pid·다른 이름·응답 없음 = 0.
+    #[cfg(unix)]
+    #[test]
+    fn v2_counts_only_the_hq_daemon_identified_by_socket() {
+        let d = std::env::temp_dir().join(format!("cys-u2-v2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let fake = d.join("cysd");
+        std::fs::copy("/bin/sleep", &fake).unwrap();
+        let mut kids: Vec<std::process::Child> = (0..2).map(|_| std::process::Command::new(&fake).arg("30").spawn().unwrap()).collect();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(hq_daemon_count(&json!({"daemon_pid": kids[0].id()})), 1, "가짜 cysd 2개 있어도 본부 1");
+        assert_eq!(hq_daemon_count(&json!({})), 0, "응답 없음");
+        let sleeper = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        assert_eq!(hq_daemon_count(&json!({"daemon_pid": sleeper.id()})), 0, "이름 cysd 아님");
+        for k in kids.iter_mut().chain(std::iter::once(&mut { sleeper })) {
+            let _ = k.kill();
+            let _ = k.wait();
+        }
+        assert_eq!(hq_daemon_count(&json!({"daemon_pid": kids[1].id()})), 0, "죽은 pid");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -35,6 +35,7 @@ TARGETS = (
     "javis_learn.py",             # learn-ttl-audit(1일)
     "javis_fleet_report.py",      # fleet-digest(7일)
     "javis_hud_bridge.py",        # 원조 처방 — 회귀 방지로 함께 묶는다
+    "javis_counsel.py",           # agora-counsel(30분 · 팩 schedule.json) — cys list·doctor·agora 스폰(T3)
 )
 SPAWNS = ("run", "Popen", "check_output", "call", "check_call")
 CREATE_NO_WINDOW = 0x08000000

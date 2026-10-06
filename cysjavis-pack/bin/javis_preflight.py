@@ -11049,6 +11049,36 @@ def _only_usage_exit(json_mode, mode, detail):
     return 2
 
 
+# ★T3(agora-t3-pack-collector): FAIL·WARN 행을 상담소 신호 한 줄씩으로(C 번호 단위 · 한 실행 안 중복 0).
+_COUNSEL_CID_RE = re.compile(r"^C(\d+)", re.I)
+
+
+def _counsel_signal_pairs(results):
+    """결과 행 → [(op, error_code)] — `C<NN>…` id 의 FAIL/WARN 만 · `preflight.c<NN>` / `doctor.c<NN>.fail|warn`."""
+    out, seen = [], set()
+    for r in results:
+        st = r.get("status")
+        m = _COUNSEL_CID_RE.match(str(r.get("id") or "")) if st in (FAIL, WARN) else None
+        if not m:
+            continue
+        pair = ("preflight.c%s" % m.group(1), "doctor.c%s.%s" % (m.group(1), "fail" if st == FAIL else "warn"))
+        if pair not in seen:
+            seen.add(pair)
+            out.append(pair)
+    return out
+
+
+def _counsel_emit(results):
+    """출력·종료코드 무관 — 실패 전부 삼킴(잠금 1회 · 상한 2초)."""
+    try:
+        pairs = _counsel_signal_pairs(results)
+        if pairs:
+            import javis_counsel as _jcounsel   # 형제 모듈 — 모듈 머리 _SELF_DIR 가드 뒤
+            _jcounsel.write_signals("pack", pairs)
+    except Exception:
+        pass
+
+
 def main():
     # --self-test 가로채기 — argparse 앞(팩 bin 도구 관례: 인자 스키마와 독립인 자기검증 채널).
 
@@ -11103,6 +11133,7 @@ def main():
     fails = sum(1 for r in results if r["status"] == FAIL)
 
     warns = sum(1 for r in results if r["status"] == WARN)
+    _counsel_emit(results)
     # ★(0.14.41 U4 C2 ③) 재지 못한 SKIP(판정 불가·미측정)의 수 — '해당 없음' SKIP 과 구분한다.
     #   **exit code 는 바꾸지 않는다**(① 비치명 계약·`--only` rc 2 계약 불변). 드러내기만 한다.
     unmeasured = [r for r in results if r["status"] == SKIP and r.get("unmeasured")]

@@ -103,6 +103,11 @@ fn split_args(args: &[OsString]) -> Option<(Vec<OsString>, Option<OsString>)> {
     verb_seen.then_some((out, socket))
 }
 
+/// 갱신 동사 파서의 clap 정의 — `cys actions` 카탈로그가 최상위 정의와 함께 싣는다(1R MINOR).
+pub fn command() -> clap::Command {
+    <UpdCli as clap::CommandFactory>::command()
+}
+
 /// 첫 동사가 갱신 동사인가(전역 `--socket` 건너뜀).
 pub fn claims(args: &[OsString]) -> bool {
     split_args(args).is_some()

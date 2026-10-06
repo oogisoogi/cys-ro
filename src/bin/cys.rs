@@ -15,7 +15,9 @@ use std::io::{BufRead, BufReader, Read, Write};
     // = 「Usage: cys」) — 정본 이름으로 고정해 어느 이름으로 불러도 같은 도움말이 나오게 한다.
     bin_name = "cysr",
     version,
-    about = "cysr — the CYSJavis terminal CLI (bidirectional socket, multi-agent OS)"
+    about = "cysr — the CYSJavis terminal CLI (bidirectional socket, multi-agent OS)",
+    // ★1.1.8 U1(1R MINOR): 갱신 3동사는 최상위 열거형 밖 별도 파서라(j3 스택) 목록에 안 보인다 — 한 줄로 알린다.
+    after_help = "Update verbs (separate parser): cysr update-verify | build-info | self-update --check  (each: --help)"
 )]
 struct Cli {
     /// Socket path override (default: AITERM_SOCKET or platform default)
@@ -5316,8 +5318,10 @@ fn run(command: Command) -> i32 {
             // 데이터 파생 명령 카탈로그 — clap 정의가 단일 진실원천(self-describing). 에이전트/LLM
             // 노드가 산문 표(CLAUDE.md) 재파싱 대신 이 기계 출력을 읽는다(eval-driven: 기계 산출만이 사실).
             let app = <Cli as clap::CommandFactory>::command();
+            // ★1.1.8 U1(1R MINOR): 갱신 3동사(별도 파서 `update::cli`)도 같은 카탈로그에 싣는다.
+            let upd = cys::update::cli::command();
             let mut actions: Vec<Value> = Vec::new();
-            for sub in app.get_subcommands() {
+            for sub in app.get_subcommands().chain(upd.get_subcommands()) {
                 if sub.get_name() == "help" {
                     continue;
                 }

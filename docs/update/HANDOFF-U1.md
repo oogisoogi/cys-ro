@@ -5,6 +5,13 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(다음 사람이 먼저 읽을 것)
+- ★★★**2판 끝(11:2x · 재개 [master#113a3975] 10:52 · 소요 10:52–11:25 ≈ 33분)** — 산출 = 【확인요청】 2판:
+  - **커밋**: `0ea0381a`(cli.rs 6오류 · B1 호출부 · B3 CLI · B4 · 종단 시험 agora-client 로 재작성) · `0fb4d824`(U3 이관 4 ⑴~⑷ + M8 + mach 경고 제거) · 이 문서 커밋(MINOR help/actions · §7 1R 반영표 · §8 schema 부록). push 0.
+  - **시험(격리 · §4)**: Rust lib **878/0**(1 ignored) · cys **582/0**(j3 포함 — after_help 1줄로 스택 영향 없음) · cysd **2460/0**(7 ignored) · cys-app **296/0**(1 ignored) · `update::` 106/0 · **뮤테이션 22쌍 전건 적/녹 OK**(§7).
+  - **남은 것(U1 범위 밖 · 기록)**: B8·install_id = U2 · 설계 문서 편입(§8 schema · H⑦ 상태명 · §5-1 경로) = master · 윈 전용 새 코드 컴파일 = 윈 CI 런 필요(아래 정직 줄 그대로).
+  - ★**교차 영향(U3)**: B4 뒤 cysr 에 `--installed-release-seq` = rc 2 → U3 `release-gate.py` 는 cysr 열거를 `--enumerate-installed` 로 바꿔야 한다(§7 끝 단락).
+  - 【결정필요】 ③ MINOR IDNA = 비 ASCII 호스트 전량 거부 **유지** 권고(§7 · 단점 1줄 = 설계 문면 「IDNA 정규화 뒤 대조」와 다름 → 설계 한 줄 정정 필요).
+- (이력) 아래 「2판 진행 중 매듭」 줄은 09:3x 순환 직전 기록 — 위 줄로 대체됨.
 - ★★**2판 진행 중 매듭(09:3x · [master#8b1000e9] CTX 65% · 2판 지시 = [master#9f66c96f] · 1R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-codex-1r.md`)** — 후임은 이 줄부터:
   - **상태**: WIP 커밋(이 커밋) = **lib 컴파일 실패 6건, 전부 `src/update/cli.rs`**(호출부가 바뀐 API 를 아직 안 따름: `buildinfo::state_dir()` 가 이제 `Result` · `check::bump_trusted(dir, signed_at)` 인자 2개 · `AcceptedFeed` 칸 = `{feed_rev, envelope_sha256, feed_release_seq, installed_release_seq, signed_at, at}`). 그 밖 모듈은 컴파일된다(`cargo build --lib` 오류가 cli.rs 뿐). **시험은 아직 한 번도 안 돌렸다**(새 뮤테이션 시험 포함).
   - **증명 장치**: `update::mutant("<번호>")` = 시험 빌드에서만 `CYS_U1_MUTANT=<번호>` 일 때 그 수리 가드 1곳을 끈다. 증명 = 각 시험을 `CYS_U1_MUTANT=<번호>` 로 돌려 적색 · 없이 돌려 초록(격리 래퍼 `/private/tmp/claude-501/s118/u1/isoenv.sh` · 예: `isoenv.sh env CYS_U1_MUTANT=B2 cargo test --lib update::feed::tests::b2_`). 번호 ↔ 시험: B1 `b1_release_ignores_env…`(buildinfo) · B2 `b2_same_feed_rev…`(feed) · B3 `b3_installed_stop_seats…`(feed) + `b3_revocations_copy…`(check) · B5 `b5_second_anchor…` · M9 `m9_common_required_fields` · SM `sm_breaking_release_is_feed_reject` · M6 `accepted_record_roundtrip…`(끝 2줄) · B6 `b6_arg_must_equal_env` + `b6_handover_race…`(lock) · M3 `m3_private_permissions`(lock) · B7 `b7_post_side_effect…`(journal) · M7 `m7_readonly_last_seq…`(hold) · M1 `m1_structure_damage…`(sched) · M2 `m2_only_file_not_found…`(win) + gates `each_gate_true_false` 의 N12 "garbage" 행 · M4 `m4_every_response_date…`(clock).
@@ -45,10 +52,10 @@
 - ⑤ 폐기문 서식 표지 `kind = "update-revocations"` 추가(§4-6 교차 사용 원칙을 폐기문에도).
 - ⑥ 잠금 소유자 내용을 `txn.lock` 이 아니라 **`txn.owner.json`**(원자 쓰기)에 둔다 — 윈 `LockFileEx` 는 잠긴 범위를 다른 핸들이 읽지도 못하게 막아 「자식이 소유자 내용을 읽는다」(위임 ①)와 충돌. 낡은 기록은 위임 ②(잠금 실재)가 거른다.
 - ⑦ 저널 종결 표지 **`DONE`·`DEFERRED`·`PACK_DONE`** 추가 — 설계 상태 = 「들어가는 단계」라 끝난 뒤 이름이 없고, 복구기·부팅 가드가 「비종결」을 가르려면 필요. 정식 이름(S1_LOCKED … RB_FAILED · PACK_APPLY/PACK_ROLLBACK)은 설계 철자 그대로. 저널마다 `crc`(본문 sha256) — 파싱은 되나 값이 바뀐 손상도 손상으로 읽는다.
-- ⑧ CLI 3동사 **배치**: 최상위 `Command` 가 아니라 `main` 의 `Cli::parse()` 앞 별도 파서(`update::cli::dispatch`) — 최상위 clap 열거형을 늘리면 j3 시험 스택 넘침(1.1.8 W1 실측). 철자는 설계 그대로. 대가 = `cys --help`·`cys actions` 목록에 안 보인다.
-- ⑨ `update-verify` 보충 인자 `--installed-release-seq`(agora-client 필수) · `--target` · `--record`(서명 전부 통과 때만 단조 앵커 = 폐기문 rev·신뢰 시각 상향 · uptodate 면 수용 기록 feed_rev — §6-3) · 디버그 빌드 전용 `CYS_UPDATE_NOW`.
+- ⑧ CLI 3동사 **배치**: 최상위 `Command` 가 아니라 `main` 의 `Cli::parse()` 앞 별도 파서(`update::cli::dispatch`) — 최상위 clap 열거형을 늘리면 j3 시험 스택 넘침(1.1.8 W1 실측). 철자는 설계 그대로. 대가였던 「`cys --help`·`cys actions` 목록에 안 보인다」 = 2판에서 정적 1줄 + actions 편입으로 닫음(§7 MINOR help).
+- ⑨ `update-verify` 보충 인자 `--installed-release-seq`(**agora-client 전용** · 필수 — 2판 B4: cysr 에 주면 rc 2) · `--target` · `--record`(2판 B3: R 검증을 통과한 폐기문은 판정과 무관하게 원문째 기록 + 신뢰 시각 상향 · uptodate 면 수용 기록 · 기록 실패 = rc 3 — §6-3) · `--enumerate-installed`(2판 · 출발 seq 열거 · §7 ⑷) · 디버그 빌드 전용 `CYS_UPDATE_NOW`.
 - ⑩ 오류코드 매핑(사전에 「서식 오류」 낱말이 없음): 봉투 계층 서식·키·서명 = `feed_sig_bad` · 본문 계층 = `release_sig_bad` · ⓛⓜ 계약 위반 = `verify_failed`(URL = `url_refused` · cysr `requires.min_binary_for_pack` = `pack_min_binary_empty`) — 단계는 `step` 칸(ⓐ~ⓝ).
-- ⑪ 상태 폴더 작은 기록의 이름·서식 = `config.json{auto, channel}`(N9 · 부재 = auto ON · stable) · `holds.json{holds[{until,reason}]}` · `state.json{last_success, failures}` · `trusted.json{revocations_rev, last_trusted_time}` · `hold-cursor.json{delivered_hold_seq}` — 설계는 `state.json`·`holds.json` 이름만 줬다.
+- ⑪ 상태 폴더 작은 기록의 이름·서식 = `config.json{auto, channel}`(N9 · 부재 = auto ON · stable) · `holds.json{holds[{until,reason}]}` · `state.json{last_success, failures}` · `trusted.json{revocations_rev, revocations_sha256, revocations_accepted_at(Stamp), last_trusted_time}` + `revocations.accepted.json`·`.minisig`(2판 B3 · H⑪) · `hold-cursor.json{delivered_hold_seq}` — 설계는 `state.json`·`holds.json` 이름만 줬다.
 - ⑫ N12: 윈에서 SAC 값 없음(윈10 · `reg` 비 0 종료) = `"absent"` = 통과(SAC 가 없으면 4551 차단도 없다 · 실제로 막히면 원작자 `classify_launch_error` 가 잡는다).
 - ⑬ build-info `features` = 빈 목록(V7 정본 ID 목록은 U2·U4 — 근거 없는 ID 를 지어 넣지 않음).
 
@@ -62,6 +69,8 @@
 - 동봉 팩 매니페스트 빈 `min_binary` 의 원인(보고만 · 수정 0): `scripts/bundle-prep.sh:55` 가 `cys pack-manifest` 를 `--min-binary-version` 없이 불러 `src-tauri/resources/pack-manifest.json`(앱 번들 동봉 · **서명 없는** 사본)을 만든다(`cys pack-manifest` 기본값 = 빈 문자열 · cys.rs 시험 핀 「min_binary_version 기본 빈문자열」). 윈 설치 폴더의 `%LOCALAPPDATA%\cys\pack-manifest.json` 이 그 사본. 서명 레인 manifest 는 값이 있다.
 
 ## §4 시험 결과(격리 env · 래퍼 `/private/tmp/claude-501/s118/u1/isoenv.sh` = EVIDENCE-118 §8 꼴 · 실 ~/.cys 쓰기 0)
+- ★**2판 재측정(11:07–11:23)**: `cargo test -p cys-terminal --lib --bins --no-fail-fast` = lib **878 passed / 0 failed / 1 ignored**(270초) · cys **582/0**(139초) · cysd **2460/0 / 7 ignored**(404초) · `cargo test -p cys-app` = **296/0 / 1 ignored**(사이드카 사본 = 11:09 디버그 빌드로 갱신). 측정 뒤 격리 디버그 cysd 잔존 0(`pgrep` 빈 출력). 뮤테이션 = `mutants.sh` 22쌍(11:03–11:06) 전건 OK. CLI 실측 = `cys --help` 끝 줄 · `cys actions` 81개(갱신 3동사 포함 · `update-verify` 인자에 `enumerate-installed`).
+- (1판 기록 — 아래 줄들은 08:43–09:0x 측정)
 - Rust 전체(`cargo test -p cys-terminal --lib --bins --no-fail-fast` · 08:43–08:58): **lib 852 passed / 0 failed / 1 ignored · cys 582/0 · cysd 2460/0 / 7 ignored**. 실패 0 이라 환경 3(census·hwmon·b6_lsof) 분리 보고 대상 없음. (이 실행은 failures.rs 등록 전 — 그 2시험은 `cargo test --lib update::` 82/0 으로 따로 확인.)
 - cys-app(`cargo test -p cys-app` · 09:0x): **296 passed / 0 failed / 1 ignored**(W3 수치 296/0 과 같음). 빌드 전제(전부 git 제외 · 로컬만): `src-tauri/binaries/{cys,cysd}-aarch64-apple-darwin` = 이 작업트리 디버그 빌드 사본 · `src-tauri/resources/{pack.tar.gz(빈 파일), pack-manifest.json("{}")}` · `src-tauri/runtime/` 빈 폴더 · `ui/dist/index.html` 자리표시(앱 시험은 번들 자원을 읽지 않는다 — 없으면 tauri 빌드 스크립트·`generate_context!` 가 컴파일 단계에서 멈춘다).
 - 격리 확인: 측정 뒤 격리 HOME 디버그 cysd 잔존 0(`pgrep -fl cys-118-u1/target/debug/cysd` 빈 출력). 표지 뒤 실 `~/.cys`·`~/.local/state/cys` 변경 = 라이브 데몬·다른 좌석 자기 기록(heartbeat·event.seq·schedule_state·다른 워커 TODO)뿐 · 갱신 경로(`~/.cys/update`) 0.
@@ -78,3 +87,123 @@
 
 ## §6 재현
 - `git log --oneline 7e7aa5da..HEAD` · `cargo test --lib update::`(격리 래퍼 안) · VERSIONINFO 실측 = 스크래치 크레이트(winresource =0.1.31 · env HOST/TARGET/CARGO_MANIFEST_DIR/CARGO_PKG_* 지정)에서 `write_resource_file` 로 .rc 생성 → `FILEVERSION 1, 1, 8, 0`(기본) vs `1, 1, 8, 42`(set_version_info).
+
+## §7 1R 반영표(2판 · [master#9f66c96f] · [master#113a3975] · 1R 원문 = `~/axdev/master/reports/cysr-118-plan/REVIEW-U1-codex-1r.md`)
+적/녹 = `/private/tmp/claude-501/s118/u1/mutants.sh` 실측(11:03–11:06 · 22쌍 전건 「가드 켜면 녹(0) · `CYS_U1_MUTANT=<번호>` 로 가드 끄면 적(101)」). 가드 = `update::mutant("<번호>")`(시험 빌드에서만 켜짐 — `cfg!(test)` 거짓이면 분기째 지워짐).
+
+| 번호 | 처방(1줄) | 가드 · 시험 | 적/녹 |
+|---|---|---|---|
+| B1 | 출시 빌드 = `CYS_UPDATE_STATE_DIR` 무시 · HOME/LOCALAPPDATA 없음·상대 경로 = Err(`.` 후퇴 0) · CLI 두 호출부 Err = rc 3 | B1 · `buildinfo::b1_release_ignores_env…` | OK |
+| B2 | 수용 기록에 봉투 sha256 · 같은 feed_rev 다른 봉투 = replay | B2 · `feed::b2_same_feed_rev…` | OK |
+| B3 | R 검증 직후 설치판 폐기·stop_seats·폐기문을 모든 뒤 실패 결과에 · 원문·서명·sha·rev·수용 Stamp 내구 기록 · 30일 대체본 | B3 · `feed::b3_installed_stop_seats…` + `check::b3_revocations_copy…` | OK |
+| B3(CLI) | `--record` = 폐기문은 판정과 무관하게 기록 + 신뢰 시각 상향 · uptodate 면 수용 기록(feed seq·설치 seq 분리) · 기록 실패 = rc 3 | B3r · `cli::b3r_record_revocations…` | OK |
+| B4 | cysr 에 `--installed-release-seq` = rc 2(내장 seq 만) · agora-client 만 외부 seq | B4 · `cli::b4_cysr_refuses_caller_installed_seq` | OK |
+| B5 | cysr 맥 행 cdhash·dr_pin_id 40 hex · 윈 행 a2_sig_url(github 1홉) 필수(ⓖ) | B5 · `feed::b5_second_anchor…` | OK |
+| B6 | 묘비 뒤 해제 · ⓪ 인자 = env · ①′ 소유자 기록 이중 읽기 · ③′ pid 시작 시각 | B6 · `lock::b6_arg_must_equal_env` + `lock::b6_handover_race…` | OK |
+| B7 | 저널 A/B 슬롯 generation · 최신본 안 덮음 · 한 슬롯 손상 = Degraded(재구성 · 쓰기 거부) | B7 · `journal::b7_post_side_effect…` | OK |
+| B8 | 보류 로그 원자 커밋·ACK 재독·crash 행렬 | — | **U2 이관**(기록만) |
+| B9 · H③④⑤ · H⑩ | schema 문면 = 아래 §8(설계 §4-1·§6-1 편입 = master) | — | 문서 |
+| MAJOR schedule | 루트 객체·jobs 배열·job 객체 필수 · 구조 불명 = None(이행 쓰기 0) | M1 · `sched::m1_structure_damage…` | OK |
+| MAJOR SAC · H⑫ | `RegGetValueW` 3갈래 · 값 없음만 absent · 게이트 N12 통과 = off/absent/n/a | M2 · `win::m2_only_file_not_found…` + `gates::each_gate_true_false` | OK |
+| MAJOR 권한 | 갱신 폴더 0700 재검증 · 기록 파일 0600 · 윈 보호 DACL(소유자·SYSTEM) | M3 · `lock::m3_private_permissions` | OK(윈 갈래 컴파일 미확인 — 아래 정직) |
+| MAJOR 시계 | 맥 `mach_continuous_time` · 모든 응답 Date 대조 | M4 · `clock::m4_every_response_date…` | OK |
+| MAJOR install_id | 운영 생성 배선 | — | **U2 이관**(기록만) |
+| MAJOR 수용 기록 · H⑪ | 손상 = 쓰지 않음 · feed seq/설치 seq 분리 · `trusted.json` = rev·sha256·수용 Stamp·신뢰 시각 | M6 · `feed::accepted_record_roundtrip…` | OK |
+| MAJOR N3 | 읽기 전용 판독도 해시·엄격 단조 | M7 · `hold::m7_readonly_last_seq…` | OK |
+| MAJOR 좌석 사실(M8) | `gates::seat_fact_from` — 필수 계기(노드 surface_id·state·idle_secs · 행 human_idle_secs 키·pending_input_bytes·queue_depth) 하나라도 없거나 타입 어긋남 = None → 좌석 사실 전체 None(보류) · cys.rs 가 사용 · 데몬 두 RPC 가 칸을 실제로 낸다(handlers.rs 실측) | M8 · `gates::m8_seat_fact_requires_every_instrument` | OK |
+| MAJOR 필수 칸 | build_id·features 전 부품 · cysr bundled_pack{version, digest 64hex} | M9 · `feed::m9_common_required_fields` | OK |
+| MINOR SM | breaking = 피드 ⓛ 거부 · 게이트 배열 = 정본 순서 | SM · `feed::sm_breaking_release…` | OK |
+| MINOR IDNA | **유지(비 ASCII 호스트 전량 거부)** — 허용 호스트가 전부 ASCII 라 정규화 결과가 목록과 같아지는 경우는 전각·호환 문자 같은 「다르게 보이는 입력」뿐이고, 생산자(U3 `url_ok`)도 비정규형을 거부한다. 정규화 수용은 공격면만 넓힌다 | — | 【결정필요】 ③ |
+| MINOR help | `cys --help` 끝 1줄(after_help) · `cys actions` 가 `update::cli::command()` 하위 명령도 싣기(81개 · 실측) | — | 실측 |
+| 뮤테이션 공백 | 위 22쌍 | — | OK |
+| H① | 위치 유지 + `update::launch_win` 재노출 | — | master 결정 A(설계 §5-1 한 줄 = master) |
+| H② | cutover 상수 유지 · 두 발행 레인 빈 값 거부 핀 | — | U3 몫(master 추가) |
+| H⑥ | 잠금 파일 ↔ 소유자 기록 분리는 유지(윈 LockFileEx 가 잠긴 범위 읽기를 막음) · 결박은 B6 의 ⓪·①′·③′ 로 | B6 | OK(구조 결박이 아니라 검증 결박 — 정직) |
+| H⑦ | generation + 손상 = 재구성(B7) · 새 상태명(DONE·DEFERRED·PACK_DONE) 정본 전이표 편입 | B7 | 편입 = master(설계) |
+| H⑧ | 별도 파서 유지 + 정적 도움말 | — | 위 MINOR help |
+| H⑨ | 부품별 인자 권한(B4) · record 실패 rc 3(B3r) · `--enumerate-installed` 는 `--installed-release-seq`·`--record` 와 배타 | B4 · B3r | OK |
+| H⑬ | features 빈 목록 = U2/U4 전 미완료 표지 유지 | — | U2/U4 |
+
+**U3 1R 에서 넘어온 4(2판 포함 · [master#113a3975])**
+
+| 번호 | 처방 | 가드 · 시험 | 적/녹 |
+|---|---|---|---|
+| ⑴ payload_manifest | `Asset.payload_manifest: [{path, size, sha256}]` — cysr 윈 행 **필수**(부재·빈 목록 = ⓖ 거부) · 경로 = 상대(`/` 시작·`\`·`:`·제어문자·빈/`.`/`..` 성분 거부) · sha256 소문자 64 hex · 대소문자 무시 중복 거부 · 다른 행에 실렸으면 같은 검사 · 검증 반환 JSON `asset` 에 그대로 | PM · `feed::pm_payload_manifest_required_on_windows_rows` | OK |
+| ⑵ URL 벡터 공유 | 행 URL 규칙을 `feed::row_url_check(component, field, url)` 하나로(ⓖ a2_sig·ⓜ 자산·a2_sig 모두) — U3 `update_common.url_ok_for` 와 1:1(cysr = github 1홉 · agora-client 자산 = 사이트 · a2_sig = cysr 만) · 시험이 `scripts/update/url-vectors.json` 을 `include_str!` 로 읽음 — U3 가지 ca4c7b6a 의 **같은 바이트 사본**(sha256 `a419b604…`) · U3 머지 때 같은 경로라 충돌 0 · 갈리면 시험 적색 | `feed::url_vectors_shared_with_u3_publisher` | 녹 |
+| ⑶ R signed_at 미래 | `verify_revocations(…, now, last_trusted)` — `signed_at > max(now, 신뢰 시각)` = `update.feed_expired`(ⓐ) · `FeedInput.last_trusted_time` 칸 추가(check·cli 가 `trusted.json` 값을 넘김) | RF · `keys::rf_future_signed_revocations_rejected` | OK |
+| ⑷ 출발 seq 열거 | `feed::verify_feed_enumerate(inp) -> Result<Enumerated, FeedOutcome>` — 서명 단계(ⓐ~ⓘ) 1회 + 판정(ⓙ~ⓝ)을 `max(min_from,1)..=release_seq` 각각(같은 함수 — 단일 판정과 바이트 같은 JSON 실측) · `inp.installed_release_seq` 안 씀 · CLI = `cys update-verify … --enumerate-installed --json` → `{mode:"enumerate", verdict: ok|reject|undetermined, release_seq, min_from_release_seq, problems[], results[{installed_release_seq, …판정}]}` · rc = 가장 나쁜 것(3 > 2 > 0) · 허용 출발 seq 없음·후보 자신이 uptodate 아님 = 2 · `--installed-release-seq`·`--record` 동반 = 2 · 쓰기 0 | `feed::enumerate_judges_each_allowed_start_seq` · `cli::enumerate_installed_cli_rc` | 녹 |
+
+★**U3 에 넘길 것(교차 영향 · master 전달)**: B4 로 **cysr 에 `--installed-release-seq` 를 주면 이제 rc 2** 다. U3 `release-gate.py _run_verify` 는 cysr 에도 그 인자를 늘 붙이므로(ca4c7b6a 기준) U1 머지 뒤 cysr 레인이 전부 거부로 바뀐다 → U3 는 `--installed-release-seq` 미지정 경로를 `--enumerate-installed` 1회 호출로 바꾸고(명시값 경로는 agora-client 만), `ROW_FIELDS_PENDING_U1 = ("payload_manifest",)` 를 비워 행 전체 대조에 넣으면 된다.
+
+## §8 부록 — 피드·폐기문·키링 schema 문면(B9 · H③④⑤ · H⑩ · 설계 §4-1·§6-1 편입 재료 · 코드 = 정본)
+모든 정수 시각 = Unix 초(i64). 「필수」 = 칸 부재·형식 위반 = 거부. 서명 = minisign(서명 대상 = 파일 바이트 전체 · 검증 = `packsig::verify_minisign`).
+
+**폐기문 `revocations.json`**(R 서명 · 내장 R 키만 · 위임 불가)
+```
+{ "kind": "update-revocations",                 필수 · 고정(교차 사용 차단)
+  "rev": u64,                                    필수 · 수용 rev 미만 = update.feed_replay
+  "key_id": "<16 hex 대문자>",                    필수 · 내장 키링의 purpose=root 키
+  "signed_at": i64,                              필수 · > max(now, 신뢰 시각) = update.feed_expired(ⓐ · 2판)
+  "delegations": [                               선택(기본 [])
+     { "key_id": "<16 hex>",                     = pubkey_key_id(pubkey) 이어야 함
+       "purpose": "release" | "feed" | "win-asset",   root·pack = 거부
+       "pubkey": "<base64>",                     아래 「공개키 인코딩」
+       "not_after": i64 } ],                     ★키링(RFC3339 문자열)과 달리 정수 초
+  "revoked_key_ids": ["<16 hex>"],               선택
+  "revoked_releases": [                          선택
+     { "component": "cysr" | "agora-client",     필수(seq 는 부품별 번호 — cysr 7 ≠ agora 7)
+       "release_seq": u64,                       필수
+       "severity": "advisory" | "stop_seats",    선택 · 부재 = advisory · 미지 값 = advisory + unknown_severity 신호
+       "reason_code": "<str>" } ],               선택
+  "dr_pins": { "add": ["<40 hex>"], "revoke": ["<40 hex>"] } }   선택
+```
+
+**봉투 `<component>/<channel>.json`**(F 서명)
+```
+{ "kind": "component-update-feed", "component": "cysr"|"agora-client", "channel": "stable"|"next",
+  "feed_rev": u64(단조 · 같은 rev = 봉투 sha256 같을 때만), "key_id": F, "signed_at": i64, "expires_at": i64(≤ signed_at + 14일),
+  "rollout_pct": 0..100, "halt": bool,
+  "release": base64(본문 파일 바이트), "release_sig": base64(본문 .minisig 파일 바이트),
+  "prev_release"?: base64, "prev_release_sig"?: base64 }
+```
+
+**릴리스 본문**(U 서명)
+```
+{ "kind": "component-release", "component", "release_seq": ≥1, "version": 비지 않음, "key_id": U, "signed_at": i64,
+  "min_from_release_seq": u64(발행 쪽 = 0 ≤ 값 < release_seq · 열거 출발 = max(값,1)),
+  "requires": { cysr: "min_binary_for_pack" = semver 필수 · agora-client: "min_cysr_release_seq" = u64 + "python" 비지 않음 ·
+                모든 값 null·빈 문자열 = 거부 },
+  "state_migration": "none"|"additive"|"breaking"(breaking = ⓛ 거부 · 링크 재설치 전용),
+  "assets": { "<target>": 행 } 비지 않음(target ∈ macos-arm64·macos-x64·windows-x64·any),
+  "notes_ko": ≤80자 · 제어문자 0 · 금지 어휘(오류·실패·위험·손상·경고) 0 }
+```
+행: `url`(부품별 홉 규칙 · §7 ⑵) · `size`>0 · `sha256`(소문자 64 hex) · `max_unpacked`>0 · `target`(= 키) · `build_id`(비지 않음) · `release_seq`(= 본문) · `features`(배열 · 칸 필수 · 빈 배열 허용) · cysr: `bundled_pack{version 비지 않음, digest 소문자 64 hex}` 필수 · cysr 맥: `cdhash`(40 hex) · `dr_pin_id`(인증서 leaf sha1 40 hex) 필수 · cysr 윈: `a2_sig_url`(github 1홉) · `payload_manifest[{path, size, sha256}]` 필수.
+
+**키링 `cysjavis-pack/trusted-keys.json`**(바이너리 내장 · TOFU 0)
+```
+{ "keys": [ { "key_id": "<16 hex 대문자>", "pubkey": "<base64>", "not_after": "<RFC3339>",
+              "purpose": "root"|"release"|"feed"|"win-asset"|"pack" } ],   purpose 부재 = pack(하위 호환) · 미지 값 = 키링 오류
+  "revoked_key_ids": [] }
+```
+**공개키 인코딩 · key_id 산식**(`packsig::pubkey_key_id`): `pubkey` = minisign 공개키 **raw 키라인**(2바이트 알고리즘 `Ed` + 8바이트 keynum + 32바이트 공개키 = 42바이트)의 base64, 또는 `.pub` 파일 **전체 텍스트**의 base64(주석 줄 뒤 마지막 키라인을 읽는다). `key_id` = keynum 8바이트를 **리틀엔디언으로 뒤집어** 대문자 16진 16자(minisign `{:016X}` 표기와 같음).
+
+**오류코드 매핑(H⑩ · 고정 사전 §3-12 안에서 · 단계는 `step` 칸)**
+| 단계 | 실패 | 코드 | rc |
+|---|---|---|---|
+| input | 파일 읽기·상태 폴더 못 정함·키링 | `update.verify_failed` | 3 |
+| input | cysr 외부 seq · 열거 모드 배타 위반 | `update.verify_failed` | 2 |
+| ⓐ | 폐기문 서식·kind·R 키·서명·위임 | `update.feed_sig_bad` | 2 |
+| ⓐ | rev 후퇴 | `update.feed_replay` | 2 |
+| ⓐ | signed_at 미래(2판) | `update.feed_expired` | 2 |
+| ⓑⓒⓓ | 봉투 서식·F 키·서명 | `update.feed_sig_bad` | 2 |
+| ⓔ | 시계 의심 | `update.clock_suspect` | 3 |
+| ⓔ | 유효창 밖 | `update.feed_expired` | 2 |
+| ⓕ | feed_rev 후퇴·같은 rev 다른 봉투 | `update.feed_replay` | 2 |
+| ⓕ | 수용 기록 손상 | `update.verify_failed` | 3 |
+| ⓖⓗⓘ | 본문 서식·필수 칸·U 키·서명 | `update.release_sig_bad` | 2 |
+| ⓙ | 후보 폐기 | `update.revoked` | 2 |
+| ⓚ | 후보 ≤ 설치(판정) · 설치판 폐기 | `update.ok` · `update.installed_revoked` | 0 |
+| ⓛ | 출발 판 하한·breaking·requires(cysr min_binary = `update.pack_min_binary_empty`) | `update.verify_failed` | 2 |
+| ⓜ | 기판 행 없음 · URL 규칙 밖 | `update.verify_failed` · `update.url_refused` | 2 |
+| ⓝ | apply·halt·not_in_rollout(표시) | `update.ok` | 0 |
+| `--record` | 기록 실패(2판) | 판정 코드 유지 + `record_error` 칸 | 3 |

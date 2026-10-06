@@ -219,6 +219,15 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     // S0 — 판정(--check 와 같은 계산 · 결정 apply 일 때만 교체)
     let (report, rc) = check::run_check(&dir, &crate::pack::pack_dir(), hooks);
     let decision = report["decision"].as_str().unwrap_or("").to_string();
+    // ★3판(Fable 2R M4 · 설계 §3-8): 본체가 최신이고 게이트가 통과면 팩 단독 갱신(러너 트랜잭션 안 · PACK_APPLY/PACK_ROLLBACK).
+    if decision == "uptodate" && report["gates"]["pass"].as_bool() == Some(true) {
+        let o = pack_only(&dir, &cfg.channel);
+        print(json_out, &json!({"phase": "pack", "outcome": format!("{o:?}")}), &format!("pack={o:?}"));
+        return match o {
+            Outcome::PackDone | Outcome::Nothing | Outcome::Deferred(_) => 0,
+            _ => 2,
+        };
+    }
     if decision != "apply" {
         let _ = super::notify::update_state(&dir, |m| {
             if decision == "hold" {
@@ -282,6 +291,35 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
         Outcome::RolledBack(_) => 1,
         _ => 2,
     }
+}
+
+/// 팩 단독 갱신 1회(잠금 = 러너 · 후보 = 빈 행 — 팩 경로는 본체 자산을 쓰지 않는다).
+fn pack_only(dir: &std::path::Path, channel: &str) -> Outcome {
+    let guard = match super::lock::acquire(dir, "runner") {
+        Ok(g) => g,
+        Err(_) => return Outcome::Nothing,
+    };
+    let Ok(a) = serde_json::from_value::<super::feed::Asset>(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0, "target": super::buildinfo::TARGET, "release_seq": 0}))
+    else {
+        return Outcome::Nothing;
+    };
+    let cand = Candidate {
+        asset: a,
+        version: String::new(),
+        release_seq: 0,
+        installed_revoked: false,
+        notes_ko: None,
+        feed_rev: None,
+        envelope_sha256: None,
+        envelope_signed_at: None,
+        release_b64: None,
+        release_sig_b64: None,
+    };
+    let tok = guard.token();
+    let mut ops = RealOps::new(build_env(dir.to_path_buf(), channel), tok.render(), cand, env!("CARGO_PKG_VERSION").to_string());
+    let o = Runner::new(dir, &tok.txn_id, tok.epoch, &mut ops).run_pack();
+    drop(guard);
+    o
 }
 
 /// ★3판(Fable 2R M3 · 설계 §3-10 ③): stop_seats 집행 = 표지 durable 기록뿐 — 데몬이 그 판에서 **새 좌석 생성**을 거부한다(cysd

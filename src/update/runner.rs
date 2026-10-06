@@ -98,6 +98,12 @@ pub trait Ops {
     fn recover_pack(&mut self, j: &Journal) -> Step;
     /// 저널 손상 — 실물 재구성(§3-11 1~3). Ok = 판 확정 · 팩·사용자 트리 대조 끝.
     fn reconstruct(&mut self) -> Step;
+    /// ★3판(Fable 2R M4 · 설계 §3-8): 팩만 새 판인가 — `pack-plan` 게이트 + `pack-update --dry-run`. Ok(false) = 없음·본체 대기(binary-too-old).
+    fn pack_available(&mut self) -> Result<bool, Fail>;
+    /// PACK_APPLY 전: 사용자 트리 사본·해시를 저널 칸(`snapshot_dir`·`stage_tree_sha256`)에 채운다.
+    fn pack_prepare(&mut self, j: &mut Journal) -> Step;
+    /// 팩 적용(`pack-update --txn` 위임).
+    fn pack_apply(&mut self, j: &Journal) -> Step;
     /// 결과 기록(state.json `last_result` · 실패 분류 · 상담소 신호 · `counsel/updates.jsonl`).
     fn record(&mut self, j: Option<&Journal>, kind: Kind, fail: Option<&Fail>);
 }
@@ -369,6 +375,52 @@ impl<'a, O: Ops> Runner<'a, O> {
         Ok(Outcome::RolledBack(cause))
     }
 
+    /// ★3판(Fable 2R M4 · 설계 §3-8): 팩 단독 갱신 1회(본체 같음) — 새 팩 없음 = 저널 0 · 있으면 S1 → PACK_APPLY(사용자 트리 사본·해시 고정)
+    /// → 적용 → PACK_DONE · 적용 실패 = PACK_ROLLBACK → `recover_pack`(팩 저널 복구 + 사용자 트리 대조·복원) → PACK_DONE. 잠금은 호출자가 쥐었다.
+    pub fn run_pack(&mut self) -> Outcome {
+        match self.run_pack_inner() {
+            Ok(o) => o,
+            Err(s) => Self::stop_to_outcome(s),
+        }
+    }
+
+    fn run_pack_inner(&mut self) -> Result<Outcome, Stop> {
+        match self.ops.pack_available() {
+            Ok(false) => return Ok(Outcome::Nothing),
+            Err(f) => {
+                self.ops.record(None, Kind::Deferred, Some(&f));
+                return Ok(Outcome::Deferred(f));
+            }
+            Ok(true) => {}
+        }
+        let j = self.enter(State::Locked, |_| {})?;
+        let mut work = j.clone();
+        if let Err(f) = self.ops.pack_prepare(&mut work) {
+            let j = self.enter(State::Deferred, |_| {})?;
+            self.ops.record(Some(&j), Kind::Deferred, Some(&f));
+            return Ok(Outcome::Deferred(f));
+        }
+        let j = self.enter(State::PackApply, |n| copy_fields(n, &work))?;
+        match self.ops.pack_apply(&j) {
+            Ok(()) => {
+                let j = self.enter(State::PackDone, |_| {})?;
+                self.ops.record(Some(&j), Kind::PackOk, None);
+                Ok(Outcome::PackDone)
+            }
+            Err(f) => {
+                let j = self.enter(State::PackRollback, |_| {})?;
+                if let Err(f2) = self.ops.recover_pack(&j) {
+                    // PACK_ROLLBACK 에 남긴다 — 부팅 가드 유지 · 복구기가 다시 시도
+                    self.ops.record(Some(&j), Kind::RollbackFailed, Some(&f2));
+                    return Ok(Outcome::RollbackFailed(f2));
+                }
+                let j = self.enter(State::PackDone, |_| {})?;
+                self.ops.record(Some(&j), Kind::Deferred, Some(&f));
+                Ok(Outcome::Deferred(f))
+            }
+        }
+    }
+
     /// 복구기(§3-11) — 저널 마지막 상태 + 실물로 앞으로 마치거나 되돌린다. 저널이 없거나 종결이면 [`Outcome::Nothing`].
     /// 잠금은 호출자가 쥐었다. ★2판(codex 1R C2): 인수 규칙 하나 = **새 잠금 세대**. 비종결 저널의 토큰을 호출자 토큰으로
     /// [`journal::takeover`] 한 뒤 진행한다 — 잠금 소유자·저널·데몬 RPC·자식 토큰이 같은 `(txn_id, epoch)` 가 된다(옛 소유자 = Fenced).
@@ -568,6 +620,8 @@ pub(crate) mod tests {
         pub swaps: u32,
         pub installer_runs: u32,
         pub fail_at: BTreeMap<&'static str, ErrCode>,
+        pub pack_new: bool,
+        pub pack_applied: u32,
         pub payload_bad_runs: u32,
         pub records: Vec<Kind>,
         pub reconstruct_ok: bool,
@@ -584,6 +638,8 @@ pub(crate) mod tests {
                 restored: 0,
                 swaps: 0,
                 installer_runs: 0,
+                pack_new: false,
+                pack_applied: 0,
                 fail_at: BTreeMap::new(),
                 payload_bad_runs: 0,
                 records: vec![],
@@ -717,6 +773,20 @@ pub(crate) mod tests {
         fn rb_restore(&mut self, _: &Journal) -> Step {
             self.f("rb_restore")?;
             self.restored += 1;
+            Ok(())
+        }
+        fn pack_available(&mut self) -> Result<bool, Fail> {
+            self.f("pack_available")?;
+            Ok(self.pack_new)
+        }
+        fn pack_prepare(&mut self, j: &mut Journal) -> Step {
+            self.f("pack_prepare")?;
+            j.stage_tree_sha256 = "user-digest".into();
+            Ok(())
+        }
+        fn pack_apply(&mut self, _: &Journal) -> Step {
+            self.f("pack_apply")?;
+            self.pack_applied += 1;
             Ok(())
         }
         fn recover_pack(&mut self, _: &Journal) -> Step {
@@ -908,6 +978,45 @@ pub(crate) mod tests {
         assert_eq!(seats_stopped(&d), Some(seq), "새 좌석 = 거부");
         super::super::quiesce::write_json(&d, SEATS_STOP_FILE, &serde_json::json!({"release_seq": seq + 1, "at": 1})).unwrap();
         assert_eq!(seats_stopped(&d), None, "다른 판 = 해제");
+    }
+
+    /// ★3판 M4(설계 §3-8): 팩 단독 갱신 — 새 팩 없음 = 저널 0 · 적용 성공 = PACK_DONE · 적용 실패 = PACK_ROLLBACK → 복구 → PACK_DONE ·
+    /// kill 행렬 2칸(PACK_APPLY 직전·직후) → 복구기 = PACK_DONE · 부팅 가드 풀림 · 재복구 멱등.
+    #[test]
+    fn pack_only_update_journals_pack_states_and_recovers_from_kills() {
+        let d = tmp("packonly-none");
+        let mut s = Sim::new(Os::Mac);
+        let mut r = Runner::new(&d, T, 1, &mut s);
+        assert_eq!(r.run_pack(), Outcome::Nothing);
+        assert!(matches!(journal::read(&d), ReadOutcome::Absent), "새 팩 없음 = 저널 0");
+        let d = tmp("packonly-ok");
+        let mut s = Sim::new(Os::Mac);
+        s.pack_new = true;
+        assert_eq!(Runner::new(&d, T, 1, &mut s).run_pack(), Outcome::PackDone);
+        assert_eq!((state(&d), s.pack_applied), (State::PackDone, 1));
+        let d = tmp("packonly-fail");
+        let mut s = Sim::new(Os::Mac);
+        s.pack_new = true;
+        s.fail_at.insert("pack_apply", ErrCode::RotateFailed);
+        assert!(matches!(Runner::new(&d, T, 1, &mut s).run_pack(), Outcome::Deferred(_)));
+        assert_eq!(state(&d), State::PackDone, "실패 = PACK_ROLLBACK → 복구 → PACK_DONE");
+        for after in [false, true] {
+            let d = tmp(&format!("packonly-kill-{after}"));
+            let mut s = Sim::new(Os::Mac);
+            s.pack_new = true;
+            let mut r = Runner::new(&d, T, 1, &mut s);
+            r.fault = Fault::parse(&format!("kill@PACK_APPLY:{}", if after { "after" } else { "before" }));
+            r.soft_kill = true;
+            assert_eq!(r.run_pack(), Outcome::Killed(State::PackApply, after));
+            if after {
+                assert!(boot_guard(&d).is_some(), "PACK_APPLY 잔존 = 부팅 가드");
+            }
+            let _ = recover(&d, &mut s);
+            let fin = journal::read(&d).journal().map(|j| j.state);
+            assert!(fin.map(|f| f.is_terminal()).unwrap_or(true), "{after}: 종결 아님 {fin:?}");
+            assert!(boot_guard(&d).is_none(), "{after}: 부팅 가드 남음");
+            assert_eq!(recover(&d, &mut s), Outcome::Nothing, "{after}: 재복구 멱등");
+        }
     }
 
     /// ★3판 m3: 윈 설치기 종료 확인 불가(RollbackBlocked) = RB 단계 0(옛 설치기 재실행 0) · RB_FAILED · 결과 rollback_failed.

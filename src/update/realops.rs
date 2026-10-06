@@ -905,6 +905,36 @@ impl Ops for RealOps {
         self.restore_trees(&root, "RB_RESTORED", &j.txn_id, want_st.as_deref(), want_cy.as_deref())
     }
 
+    fn pack_available(&mut self) -> Result<bool, Fail> {
+        let exe = self.env.old_cys.clone();
+        let o = self.child(&exe, &["pack-plan", "--json"])?;
+        if !o.status.success() {
+            return Err(fail(ErrCode::BuildInfoMismatch, "PACK", "pack-plan 게이트(사용자 소유 행 = RefreshUser|MergeUser|Keep 밖)"));
+        }
+        let url = pack_manifest_url();
+        let o = self.child(&exe, &["pack-update", "--dry-run", "--manifest-url", &url])?;
+        parse_pack_dry_run(o.status.success(), &String::from_utf8_lossy(&o.stdout), &String::from_utf8_lossy(&o.stderr))
+            .ok_or_else(|| fail(ErrCode::RotateFailed, "PACK", format!("pack-update --dry-run rc {:?}", o.status.code())))
+    }
+
+    fn pack_prepare(&mut self, j: &mut Journal) -> Step {
+        let (digest, snap) = pack_user_snapshot(&self.env.update_dir, &j.txn_id, &self.env.cys_root).map_err(|e| fail(ErrCode::DiskLow, "PACK", e))?;
+        j.stage_tree_sha256 = digest;
+        j.snapshot_dir = snap.to_string_lossy().to_string();
+        Ok(())
+    }
+
+    fn pack_apply(&mut self, _j: &Journal) -> Step {
+        let exe = self.env.old_cys.clone();
+        let url = pack_manifest_url();
+        let o = self.child(&exe, &["pack-update", "--manifest-url", &url])?;
+        if o.status.success() {
+            Ok(())
+        } else {
+            Err(fail(ErrCode::RotateFailed, "PACK_APPLY", format!("pack-update rc {:?}", o.status.code())))
+        }
+    }
+
     fn recover_pack(&mut self, j: &Journal) -> Step {
         crate::pack::recover_pack_journal().map(|_| ()).map_err(|e| fail(ErrCode::RollbackFailed, "PACK", e))?;
         // ★2판(codex 1R C14): 팩 저널 복구만으로 PACK_DONE 을 쓰지 않는다 — 사용자 트리 해시 대조·복원까지 성공해야.
@@ -1021,10 +1051,7 @@ pub fn pack_txn_begin(update_dir: &Path, txn_id: &str, epoch: u64, cys_root: &Pa
         ReadOutcome::Corrupt(e) | ReadOutcome::Degraded(_, e) => return Err(format!("저널 손상 {e}")),
         _ => {}
     }
-    let digest = verify::user_tree_digest(cys_root)?;
-    let snap = super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")).join("user");
-    let _ = std::fs::remove_dir_all(&snap);
-    super::snapshot::take(cys_root, &snap, &user_snapshot_filter(cys_root))?;
+    let (digest, snap) = pack_user_snapshot(update_dir, txn_id, cys_root)?;
     journal::advance(update_dir, txn_id, epoch, State::Locked, |_| {}).map_err(|e| format!("{e:?}"))?;
     journal::advance(update_dir, txn_id, epoch, State::PackApply, |n| {
         n.stage_tree_sha256 = digest.clone();
@@ -1032,6 +1059,42 @@ pub fn pack_txn_begin(update_dir: &Path, txn_id: &str, epoch: u64, cys_root: &Pa
     })
     .map_err(|e| format!("{e:?}"))?;
     Ok(())
+}
+
+/// 사용자 트리 요약 해시 + 사본(`backup/pack-<txn>/user`) — PACK_APPLY 의 고정값.
+pub fn pack_user_snapshot(update_dir: &Path, txn_id: &str, cys_root: &Path) -> Result<(String, PathBuf), String> {
+    let digest = verify::user_tree_digest(cys_root)?;
+    let snap = super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")).join("user");
+    let _ = std::fs::remove_dir_all(&snap);
+    super::snapshot::take(cys_root, &snap, &user_snapshot_filter(cys_root))?;
+    Ok((digest, snap))
+}
+
+/// 팩 매니페스트(설계 §3-8 · 앱 `main.rs` 상수와 같은 자리) — 디버그·시험 빌드만 `CYS_UPDATE_PACK_MANIFEST_URL` 덮어쓰기.
+pub fn pack_manifest_url() -> String {
+    let default = "https://github.com/oogisoogi/cys-ro/releases/latest/download/pack-manifest.json".to_string();
+    if cfg!(debug_assertions) {
+        std::env::var("CYS_UPDATE_PACK_MANIFEST_URL").ok().filter(|v| !v.is_empty()).unwrap_or(default)
+    } else {
+        default
+    }
+}
+
+/// `pack-update --dry-run` 출력 판독(순수): Some(true) = 반영 가능 · Some(false) = 이미 최신·본체 대기(binary-too-old = 정상) · None = 실패.
+pub fn parse_pack_dry_run(rc_ok: bool, stdout: &str, stderr: &str) -> Option<bool> {
+    if stderr.contains("binary-too-old") {
+        return Some(false);
+    }
+    if !rc_ok {
+        return None;
+    }
+    if stdout.contains("dry-run: 검증·게이트 통과") {
+        Some(true)
+    } else if stdout.contains("이미 최신") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// 성공 종결 — PACK_DONE + 사용자 트리 사본 정리.
@@ -1314,6 +1377,16 @@ mod tests {
         assert_eq!(latest_verified_snapshot(&d, 9), Some(root.join("9-x")));
         assert_eq!(latest_verified_snapshot(&d, 7), None);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3판 M4: pack-update --dry-run 판독 — 반영 가능 · 이미 최신 · 본체 대기(binary-too-old = 정상) · 그 밖 = 실패.
+    #[test]
+    fn pack_dry_run_parse() {
+        assert_eq!(parse_pack_dry_run(true, "[pack-update] dry-run: 검증·게이트 통과(팩 1.2 반영 가능)", ""), Some(true));
+        assert_eq!(parse_pack_dry_run(true, "[pack-update] 이미 최신 — 반영 0", ""), Some(false));
+        assert_eq!(parse_pack_dry_run(false, "", "오류: binary-too-old"), Some(false));
+        assert_eq!(parse_pack_dry_run(false, "", "서명 실패"), None);
+        assert_eq!(parse_pack_dry_run(true, "???", ""), None);
     }
 
     /// ★3판 N2: 부서 데몬처럼 cysd 이름 프로세스가 여럿이어도 V2 = 본부 소켓이 밝힌 pid 1개만 센다 · 죽은 pid·다른 이름·응답 없음 = 0.

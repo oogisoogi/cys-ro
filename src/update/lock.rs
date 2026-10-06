@@ -293,6 +293,16 @@ pub fn acquire_or_delegate(dir: &Path, owner: &str, arg: Option<&str>, env: Opti
     }
 }
 
+/// CLI 참가자 입구(★2판 codex 1R C1): 존재 검사 없이 [`acquire_or_delegate`] 로 원자 참가한다. 토큰이 없고 잠금 파일을 **만들 수조차
+/// 없을 때**(갱신 폴더 생성·열기 실패 = 갱신이 돌 수 없는 기계)만 `Ok(None)` = 평소대로 진행(설치기·설치 링크 무변경). 잠금이 잡혀
+/// 있음·토큰 불일치 = Err(txn_busy).
+pub fn participate(dir: &Path, owner: &str, arg: Option<&str>, env: Option<&str>) -> Result<Option<Participation>, UpdateErr> {
+    if arg.is_none() && env.is_none() && open_lock(dir).is_err() {
+        return Ok(None);
+    }
+    acquire_or_delegate(dir, owner, arg, env).map(Some)
+}
+
 /// `pid` 가 이 프로세스의 조상(부모·조부모 …)인가 — sysinfo 부모 사슬(최대 64단). 판정 불가 = None.
 pub fn pid_is_ancestor(pid: u32) -> Option<bool> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -326,6 +336,24 @@ mod tests {
         let d = std::env::temp_dir().join(format!("cys-u1-lock-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    /// ★2판 C1: 참가 = 존재 검사 없는 원자 잠금 — 잠금 파일이 없던 기계도 첫 참가자가 잡고, 그동안 다른 참가자 = busy · env 만 = 거부.
+    #[test]
+    fn participate_is_atomic_without_exists_shortcut() {
+        let d = tmp("participate");
+        assert!(!d.join(LOCK_FILE).exists());
+        let a = participate(&d, "pack-plan", None, None).unwrap().expect("잠금 파일 없던 기계 = 참가(소유)");
+        assert!(matches!(a, Participation::Owner(_)));
+        assert!(participate(&d, "init-pack", None, None).is_err(), "A 가 쥔 동안 B = txn_busy(존재 검사 창 0)");
+        let tok = match &a {
+            Participation::Owner(g) => g.token().render(),
+            _ => unreachable!(),
+        };
+        assert!(participate(&d, "pack-plan", None, Some(&tok)).is_err(), "env 만 = ⓪ 거부");
+        drop(a);
+        assert!(participate(&d, "init-pack", None, None).unwrap().is_some(), "놓은 뒤 = 다시 잡힘");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

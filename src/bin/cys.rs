@@ -6186,14 +6186,30 @@ fn run(command: Command) -> i32 {
             })
         }
 
+        // ★1.1.8 U2 2판(codex 1R C1 · §3-2 참가자): 팩을 바꾸는(·판정하는) 동사도 트랜잭션 잠금에 원자 참가한다 — 자동 갱신 중 토큰 없는
+        //   실행 = rc 26(txn_busy · 재시도 0) · 위임(--txn + env) = 자식 잠금.
         Command::InitPack { force, install_hook: _, no_install_hook, claude_settings } => {
+            let _part = match txn_participate("init-pack", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+                Ok(p) => p,
+                Err(rc) => return rc,
+            };
             return run_init_pack(force, no_install_hook, claude_settings);
         }
 
         Command::PackUpdate { from, manifest_url, dry_run } => {
+            let _part = match txn_participate("pack-update", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+                Ok(p) => p,
+                Err(rc) => return rc,
+            };
             return run_pack_update(from, manifest_url, dry_run);
         }
-        Command::PackPlan { force } => return run_pack_plan(force),
+        Command::PackPlan { force } => {
+            let _part = match txn_participate("pack-plan", ROTATE_EXT.get().and_then(|e| e.txn.as_deref())) {
+                Ok(p) => p,
+                Err(rc) => return rc,
+            };
+            return run_pack_plan(force);
+        }
         Command::PackMerge {
             file, take_new, keep_mine, ai, to_local, propose, yes, force_vendor, dry_run,
             force_unsafe_core, revert_merge,
@@ -20867,7 +20883,11 @@ struct RotateExt {
 
 static ROTATE_EXT: std::sync::OnceLock<RotateExt> = std::sync::OnceLock::new();
 
-/// argv 에서 `rotate` 동사 뒤의 `--stop-only`·`--txn <v>`·`--txn=<v>` 를 떼어 [`ROTATE_EXT`] 에 두고 나머지를 돌려준다(순수 + 1회 기록).
+/// 잠금 참가 동사(§3-2 · ★2판 C1): `--txn` 을 clap 밖에서 떼어 받는다(`--stop-only` 는 rotate 만).
+const TXN_VERBS: &[&str] = &["rotate", "init-pack", "init-jarvis", "pack-update", "pack-plan"];
+
+/// argv 에서 참가 동사([`TXN_VERBS`]) 뒤의 `--txn <v>`·`--txn=<v>`(rotate 는 `--stop-only` 도)를 떼어 [`ROTATE_EXT`] 에 두고 나머지를
+/// 돌려준다(순수 + 1회 기록).
 fn rotate_ext_strip(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let (out, ext) = rotate_ext_split(args);
     let _ = ROTATE_EXT.set(ext);
@@ -20875,14 +20895,15 @@ fn rotate_ext_strip(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
 }
 
 fn rotate_ext_split(args: Vec<std::ffi::OsString>) -> (Vec<std::ffi::OsString>, RotateExt) {
-    let pos = args.iter().position(|a| a == "rotate");
+    let pos = args.iter().position(|a| TXN_VERBS.iter().any(|v| a == *v));
     let Some(pos) = pos else { return (args, RotateExt::default()) };
+    let is_rotate = args[pos] == "rotate";
     let mut ext = RotateExt::default();
     let mut out: Vec<std::ffi::OsString> = args[..=pos].to_vec();
     let mut it = args.into_iter().skip(pos + 1);
     while let Some(a) = it.next() {
         let s = a.to_string_lossy().to_string();
-        if s == "--stop-only" {
+        if s == "--stop-only" && is_rotate {
             ext.stop_only = true;
         } else if s == "--txn" {
             ext.txn = it.next().map(|v| v.to_string_lossy().to_string());
@@ -20914,20 +20935,30 @@ mod u2_rotate_ext_tests {
         // clap 은 떼어 낸 뒤의 인자를 그대로 받는다
         let cli = Cli::try_parse_from(rotate_ext_split(v(&["cys", "rotate", "--stop-only", "--skip-drain"])).0).unwrap();
         assert!(matches!(cli.command, Command::Rotate { skip_drain: true, .. }));
+        // ★2판 C1: 팩 참가자도 --txn 을 떼어 받는다 · --stop-only 는 rotate 전용(그대로 clap 에 남아 거부된다)
+        for verb in ["init-pack", "init-jarvis", "pack-update", "pack-plan"] {
+            let (out, e) = rotate_ext_split(v(&["cys", verb, "--txn", "c:3"]));
+            assert_eq!((out, e), (v(&["cys", verb]), RotateExt { stop_only: false, txn: Some("c:3".into()) }), "{verb}");
+        }
+        let (out, e) = rotate_ext_split(v(&["cys", "pack-plan", "--stop-only"]));
+        assert_eq!((out, e.stop_only), (v(&["cys", "pack-plan", "--stop-only"]), false));
     }
 }
 
 /// 잠금 참가(§3-2): 위임 토큰이 있으면 [`cys::update::lock::acquire_or_delegate`] 의 위임 검증 · 없으면 잠금을 잡는다. 쥔 토큰은 env
 /// `CYS_UPDATE_TXN` 으로 자식에게 넘긴다. 갱신 상태 폴더를 모르면(판정 불가) 평소대로 진행(옛 동작 · 설치 링크 무변경).
+/// ★2판(codex 1R C1): 「잠금 파일이 없으면 참가 안 함」 분기 삭제 — 존재 검사와 잠금 사이 창(A 가 없음을 본 직후 B 가 잡음)을 없앤다.
+/// 잠금 파일을 만들 수조차 없을 때(갱신 폴더 생성 불가)만 [`cys::update::lock::participate`] 가 평소대로 진행시킨다.
 fn rotate_participate(arg: Option<&str>) -> Result<Option<cys::update::lock::Participation>, i32> {
+    txn_participate("rotate", arg)
+}
+
+fn txn_participate(owner: &str, arg: Option<&str>) -> Result<Option<cys::update::lock::Participation>, i32> {
     let Ok(dir) = cys::update::buildinfo::state_dir() else { return Ok(None) };
     let env = std::env::var(cys::update::lock::ENV_TXN).ok().filter(|v| !v.is_empty());
-    if arg.is_none() && env.is_none() && !dir.join(cys::update::lock::LOCK_FILE).exists() {
-        // 갱신을 한 번도 안 한 기계 = 잠금 파일 없음 — 잠금 파일을 새로 만들지 않고 진행(설치기·설치 링크의 rotate 무변경)
-        return Ok(None);
-    }
-    match cys::update::lock::acquire_or_delegate(&dir, "rotate", arg, env.as_deref()) {
-        Ok(p) => {
+    match cys::update::lock::participate(&dir, owner, arg, env.as_deref()) {
+        Ok(None) => Ok(None),
+        Ok(Some(p)) => {
             let tok = match &p {
                 cys::update::lock::Participation::Owner(g) => g.token().render(),
                 cys::update::lock::Participation::Delegated(_) => arg.map(str::to_string).or(env).unwrap_or_default(),
@@ -20936,7 +20967,7 @@ fn rotate_participate(arg: Option<&str>) -> Result<Option<cys::update::lock::Par
             Ok(Some(p))
         }
         Err(e) => {
-            eprintln!("[rotate] {e} — 자비스가 지금 새 판으로 바꾸는 중이거나 토큰이 맞지 않는다(재시도 0)");
+            eprintln!("[{owner}] {e} — 자비스가 지금 새 판으로 바꾸는 중이거나 토큰이 맞지 않는다(재시도 0)");
             Err(ROTATE_RC_TXN_BUSY)
         }
     }
@@ -21246,7 +21277,13 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     let marker = root.join(".pending-restore");
     let _ = std::fs::write(&marker, "");
     // ④ 새 팩 반영
-    if !run(&["init-pack", "--no-install-hook"]).map(|o| o.status.success()).unwrap_or(false) {
+    // ★U2 2판(codex 1R C1): 자식 참가자에는 인자 `--txn` 과 env 를 함께 넘긴다(위임 계약 ⓪ — env 만으론 거부).
+    let txn = std::env::var(cys::update::lock::ENV_TXN).ok().filter(|v| !v.is_empty());
+    let mut ip = vec!["init-pack", "--no-install-hook"];
+    if let Some(t) = txn.as_deref() {
+        ip.extend(["--txn", t]);
+    }
+    if !run(&ip).map(|o| o.status.success()).unwrap_or(false) {
         eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
         return ROTATE_RC_PACK;
     }

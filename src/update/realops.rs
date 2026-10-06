@@ -86,10 +86,15 @@ impl RealOps {
         self.env.update_dir.join("installers").join(seq.to_string())
     }
 
-    /// 자식 명령(위임 토큰 동반).
+    /// 자식 명령(위임 토큰 동반 · ★2판 C1: 인자 `--txn` 과 env 를 함께 — 위임 계약 ⓪).
     fn child(&self, exe: &Path, args: &[&str]) -> Result<std::process::Output, Fail> {
         let mut c = crate::hidden_command(exe);
-        c.args(args).env(super::lock::ENV_TXN, &self.token).stdin(std::process::Stdio::null());
+        c.args(args);
+        let participant = matches!(args.first(), Some(&("rotate" | "init-pack" | "pack-update" | "pack-plan")));
+        if participant && !args.contains(&"--txn") {
+            c.args(["--txn", self.token.as_str()]);
+        }
+        c.env(super::lock::ENV_TXN, &self.token).stdin(std::process::Stdio::null());
         c.output().map_err(|e| fail(ErrCode::RotateFailed, "child", format!("{}: {e}", exe.display())))
     }
 

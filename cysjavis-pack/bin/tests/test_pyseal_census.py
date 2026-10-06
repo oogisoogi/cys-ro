@@ -244,6 +244,9 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   자기가 검사할 대상을 오염시켜 '추가 파일' 오탐을 만든다(SEAL-1 과 같은 계급).
     ".github/workflows/release.yml",
     ".github/workflows/windows-build.yml",
+    # ★2026-10-06 등재(TICKET=agora-t3-pack-collector · 3판 ⑧). **봉인 점검 결과(등재 = 이 선언)**: 진짜 강제점이다 — 상담소 수집기
+    #   팩 시험 스텝이 러너 python 을 부르는 줄 앞에 `PYTHONDONTWRITEBYTECODE=1` 을 인라인으로 건다(그 실행에 봉인이 적용된다).
+    ".github/workflows/windows-health.yml",
     # ★2026-09-22 통합(0.14.39 · WP-D-cli autopilot self-test) 등재. **봉인 점검 결과(등재 = 이 선언)**:
     #   새 python 진입점도 강제점도 **아니다**. 니들은 이 모듈의 자기검체(`--self-test`)가 쓰는 **밀폐
     #   env 한 줄**(`"PYTHONDONTWRITEBYTECODE": "1"`)이다 — javis_wakeup 배달 멱등키 전제를 셸 스텁
@@ -278,6 +281,9 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   따라서 새 python 진입점도 강제점도 아니다. 니들을 보유하는 이유는 단 하나, 프리루드의
     #   봉인(SEAL-1)이 훅 본체까지 **상속되는지 관측**하기 때문이다(PRELUDE-1b).
     "cysjavis-pack/bin/tests/test_hook_launcher_split.py",
+    # ★2026-10-06 등재(T3). **봉인 점검 결과**: 시험 안 자식(진짜 set_auto 별 프로세스·팩 writer 경합)의 env 에 봉인을
+    #   **상속 방향으로** 다시 건다(test_role_authority_shell.py 와 같은 계급) · 프로덕션 진입점 아님.
+    "cysjavis-pack/bin/tests/test_javis_counsel.py",
     # ★2026-09-21 WP-B-hooks 등재 — 레인 가드 위임(R안)·표식·C83 검체. **봉인 점검 결과(등재 = 이 선언)**:
     #   새 python 진입점도 강제점도 **아니다**. 이 검체가 띄우는 것은 `sh <훅>`(훅이 `$CYS_PY` 로 python 을
     #   exec 하는 능력 게이트 포함)과 `sys.executable` 로 도는 `javis_mission.py status --json` 뿐이고,
@@ -323,6 +329,8 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   회귀 테스트)를 사용자 언어로 설명하는 **산문 1줄**에만 있다. 등재 이유는 이 센서스가
     #   확장자 기준 전수 스캔이라 산문 언급도 집합에 들어오기 때문이다(누락이 아니라 성격 표기).
     "docs/RELEASE_NOTES_0.14.30.md",
+    # ★2026-10-06 등재(T3). **봉인 점검 결과**: 윈 실기 문안의 경합 스크립트 예시 한 줄(사람이 치는 명령 · 자식 env 에 봉인) — 강제점 아님.
+    "docs/design/T3-WIN-HANDS-ON-2026-10-06.md",
     "docs/plans/v4-repair-spec.md",
     "scripts/deploy_gate.py",
     "scripts/installer-app/install-core.sh",

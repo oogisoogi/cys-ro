@@ -72,8 +72,9 @@ def verify_envelope(cys, a, accept):
     lo = max(low, 1)
     if seq - lo + 1 > MAX_ENUM:
         raise GateFail("출발 seq 범위 %d..%d = %d개 > 상한 %d(min_from_release_seq 를 올려라)" % (lo, seq, seq - lo + 1, MAX_ENUM))
-    if lo >= seq:
-        raise GateFail("허용 출발 seq 가 없다(min_from_release_seq %d ≥ release_seq %d)" % (low, seq))
+    if lo > seq:
+        raise GateFail("허용 출발 seq 가 없다(min_from_release_seq %d > release_seq %d)" % (low, seq))
+    # lo == seq(첫 판 seq 1 등 · 4판 master 결정 ①): 출발 seq 없이 「후보 자신 = uptodate」 1행만으로 통과 — U1 cli 도 같은 규칙(291 공동 수정).
     out = []
     for t in targets:
         if a.component == "cysr":
@@ -86,17 +87,22 @@ def verify_envelope(cys, a, accept):
             if v.get("mode") != "enumerate" or v.get("verdict") != "ok":
                 raise GateFail("update-verify[%s] 열거 = %s/%s(step %s · %s · problems %s) rc %d"
                                % (t, v.get("verdict"), v.get("code"), v.get("step"), v.get("detail"), v.get("problems"), rc))
+            # ★4판(3R MAJOR-1 · U1 3판 feed::render_enum_row): 행 = {"installed_release_seq": N, "outcome": {판정 · asset …}}
+            #   — 판정 본문은 단일 판정(render_outcome)과 같은 바이트로 `outcome` 안에 있다(키 이름은 U1 소스 핀 시험이 잰다).
             res = v.get("results") or []
             got = [r.get("installed_release_seq") for r in res]
             if got != list(range(lo, seq + 1)):
                 raise GateFail("update-verify[%s] 열거 범위 %s ≠ 기대 %d..%d" % (t, got, lo, seq))
             for r in res:
+                o = r.get("outcome")
+                if not isinstance(o, dict):
+                    raise GateFail("update-verify[%s] 열거 행에 outcome 객체가 없다(U1 열거 서식 변경?): %r" % (t, r))
                 ok = ["uptodate"] if r["installed_release_seq"] == seq else accept
-                if r.get("verdict") not in ok:
+                if o.get("verdict") not in ok:
                     raise GateFail("update-verify[%s · installed %d] = %s/%s(step %s · %s) — 허용 %s"
-                                   % (t, r["installed_release_seq"], r.get("verdict"), r.get("code"), r.get("step"),
-                                      r.get("detail"), ok))
-                _row_check(t, r, body)
+                                   % (t, r["installed_release_seq"], o.get("verdict"), o.get("code"), o.get("step"),
+                                      o.get("detail"), ok))
+                _row_check(t, o, body)
             out.append("update-verify[%s] 출발 seq %s 전부 허용 판정(열거)" % (t, ",".join(str(i) for i in got)))
         else:
             if a.installed_release_seq is not None:

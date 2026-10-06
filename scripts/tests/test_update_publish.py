@@ -1121,13 +1121,13 @@ sys.stdout.write(json.dumps(j)); sys.exit(p.returncode)
         """codex 2R #10: 반환 행 전체 대조에 payload_manifest 포함 — 칸 누락·한 항목 변조 = 적색."""
         e = self.envelope(self.b)
         drop = ("for r in j.get('results', []):\n"
-                "    a = r.get('asset') or {}\n"
+                "    a = r['outcome'].get('asset') or {}\n"
                 "    a.pop('payload_manifest', None)")
         r = self.gate(e, cys=self.wrapped_cys(drop))
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("payload_manifest", r.stderr)
         alter = ("for r in j.get('results', []):\n"
-                 "    pm = (r.get('asset') or {}).get('payload_manifest')\n"
+                 "    pm = (r['outcome'].get('asset') or {}).get('payload_manifest')\n"
                  "    if pm: pm[0]['sha256'] = '0' * 64")
         r = self.gate(e, cys=self.wrapped_cys(alter))
         self.assertEqual(r.returncode, 1, r.stdout)
@@ -1140,7 +1140,7 @@ sys.stdout.write(json.dumps(j)); sys.exit(p.returncode)
             r = self.gate(e, cys=self.wrapped_cys(edit))
             self.assertEqual(r.returncode, 1, edit)
             self.assertIn("열거 범위", r.stderr)
-        r = self.gate(e, cys=self.wrapped_cys("j['results'][-1]['verdict'] = 'apply'"))
+        r = self.gate(e, cys=self.wrapped_cys("j['results'][-1]['outcome']['verdict'] = 'apply'"))
         self.assertEqual(r.returncode, 1)  # 후보 자신 = uptodate 강제
         self.assertIn("installed 5", r.stderr)
 
@@ -1170,6 +1170,39 @@ sys.stdout.write(json.dumps(j)); sys.exit(p.returncode)
     def test_mut_expired_envelope(self):
         r = self.gate(self.envelope(self.b), now=str(NOW + 15 * 86400))
         self.assertEqual(r.returncode, 1)
+
+    def test_first_release_seq1_uptodate_only(self):
+        """4판(3R MAJOR-2 · master 결정 ①): 첫 판(seq 1 · 허용 출발 seq 없음) = 「후보 uptodate 1행」 으로 통과.
+        U1 cli 쪽 같은 규칙(291 공동 수정)이 들어오기 전에도 게이트 규칙을 재도록 U1 의 「출발 seq 없음」 거부만 걷어 낸다."""
+        d = os.path.join(self.tmp, "s1")
+        os.makedirs(d)
+        fx1 = Fixture(d, seq=1)
+        fx1.keys, fx1.keyring = self.fx.keys, self.fx.keyring
+        for k in ("u", "f"):
+            shutil.copy(self.fx.key(k), fx1.key(k))
+        e = self.envelope(fx1.body(**{"--min-from-release-seq": "0"}), "s1.json")  # 생성기 규칙 0 ≤ min_from < seq
+        undo = ("if j.get('mode') == 'enumerate' and j['verdict'] == 'reject' and len(j['results']) == 1 "
+                "and j['results'][0]['outcome']['verdict'] == 'uptodate':\n"
+                "    j['verdict'] = 'ok'; j['problems'] = []")
+        r = self.gate(e, cys=self.wrapped_cys(undo))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("출발 seq 1 전부 허용 판정(열거)", r.stdout)
+        r = self.gate(e, cys=self.wrapped_cys(undo + "\nj['results'][0]['outcome']['verdict'] = 'apply'"))
+        self.assertEqual(r.returncode, 1)  # 후보 자신은 여전히 uptodate 여야 한다
+
+    def test_u1_enum_row_keys_source_pin(self):
+        """4판(3R MAJOR-1): 게이트가 읽는 열거 행 키 = U1 가지 feed::render_enum_row 가 쓰는 키(소스 대조 · 재발 드리프트 벨트)."""
+        p = subprocess.run(["git", "-C", ROOT, "show", "u1/autoupdate-118:src/update/feed.rs"], capture_output=True, text=True)
+        if p.returncode != 0:
+            self.skipTest("U1 가지 없음(이 저장소 사본에 u1/autoupdate-118 ref 없음)")
+        i = p.stdout.find("fn render_enum_row(")
+        self.assertGreater(i, 0, "U1 render_enum_row 를 찾지 못함")
+        fn = p.stdout[i:p.stdout.find("\n}\n", i)]
+        self.assertIn('\\"installed_release_seq\\":', fn)
+        self.assertIn('\\"outcome\\":', fn)
+        src = open(os.path.join(UPD, "u1verify.py"), encoding="utf-8").read()
+        self.assertIn('r.get("outcome")', src)
+        self.assertIn('r.get("installed_release_seq")', src)
 
     def test_mut_cysr_explicit_installed_refused(self):
         """U1 2판 B4: cysr 는 명시 설치 seq 를 받지 않는다 — 게이트가 U1 을 부르기 전에 거부(가짜 설치 seq 경로 봉쇄)."""

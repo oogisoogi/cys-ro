@@ -6,19 +6,11 @@
 - 이 문서의 시각·수는 전부 도구 출력(git 커밋 시각 · `date` · 시험 결과 줄)에서 옮겼다.
 
 ## §0 델타(먼저 읽을 것)
-- ★★**2판 진행 중(10:26 · CYCLE-SAVED · 후임은 여기부터)** — 지시 = [master#f151182e] 10:14:56(codex 1R 판정표 · 원문 `~/axdev/master/reports/REVIEW-U3-codex-1r.md`) · 결정 = [master#8db3b908] 10:04(① /update/* 전용 워커 + R2 · CI 게시 0 ② `vars.CYSR_RELEASE_SEQ` ③ 키 만료 R 2036 · U·F·A2 2028).
-  - **끝난 것(ca4c7b6a · 「1/2」)**: #4(파이썬 검증기 `minisign_verify.py` + 증표 — 단 A2 게이트 암호화는 아직) · #5 · #6(make-envelope 쪽 — refresh-feed.yml 배선은 아직) · #7 · #8 · #10(게이트 쪽 전체 행 대조) · #11(게이트 쪽 — 워크플로 배선 아직) · #12 · #15 · #19 · #1 일부(게이트 `--expect-seq`) · #18 일부(제외 규칙 파일 · 수집기 무삭제). 시험 = U1 왕복 56/0 · 단독 49/0+7 건너뜀 · test_release_verify 137/0.
-  - **남은 것(「2/2」 · 이 순서 권고)**:
-    1. #3 우회 변수 봉쇄: `offline-sign.sh` 의 `MINISIGN`·`CYS_SIGN_MEDIA_PREFIX`·`--wait-eject 0` 을 `CYS_SIGN_DEV=1`(= `uc.dev_mode()`)일 때만 · 개발 모드에서 기대 key id 가 **저장소 실 키링**(`cysjavis-pack/trusted-keys.json`)에 있으면 거부 · 새 `scripts/update/gen-offline-key.sh --media <마운트> --name u|r [--copy-to <둘째 매체>]`(키 생성도 매체 안에서만 · 같은 가드).
-    2. #13 NSIS ⓪-a: ⑴ `/CYSTXN` 이 있는데 잠금이 안 잡혀 있으면 exit 6 ⑵ `ReadEnvStr CYS_UPDATE_TXN` = 인자 토큰 ⑶ 조상 pid·생성시각 = 러너 쪽(설계 §3-7 ④ 줄 인용 주석) ⑷ 뮤텍스 수용은 ⑴⑵ 뒤만 → `scripts/tests/nsis-hook-compile/run.sh` · `nsis-hook-model/model.py`(설명 갱신 + `CYS_MODEL_REPIN=1` 재핀 · 같은 커밋) · 소스 핀 시험 갱신.
-    3. #9·#16·#6·#11 `refresh-feed.yml`: Cloudflare·PAT 비밀과 Publish 스텝 **삭제**(CI = 생성+검증+아티팩트) · 현재 봉투 쌍을 먼저 `release-gate.py verify --allow-expired --stamp`(출시 cys) 로 검증 → `make-envelope --prev-envelope cur.json --keyring …` · 새 봉투 검증은 `--installed-release-seq` 없이(출발 seq 전수) · 비밀 표·주석 갱신.
-    4. #17 CI: ci-branch(맥)·release(맥 aarch64) 스텝에서 `cargo build --bin cys` → `CYS_UPDATE_VERIFY_BIN=target/debug/cys CYS_U3_REQUIRE_ALL=1` · 시험 모듈에 「REQUIRE_ALL 이면 건너뜀 = 실패」(setUpModule 에서 VERIFY_BIN·hdiutil 확인) · ⚠U1 머지 전 이 가지 cys 엔 update-verify 가 없어 그 두 레인은 적색 = 의도(머지 뒤 rebase 로 초록).
-    5. #18 release.yml 윈 「재료 수집·업로드」 두 스텝의 `continue-on-error` 삭제 · #1 release.yml 최상위 env `CYSR_RELEASE_SEQ: ${{ vars.CYSR_RELEASE_SEQ }}` + 빌드 앞 「정수 ≥1 아니면 실패」 스텝.
-    6. #4 A2: `release-verify.py check_updater_signing_key` 를 key id → **암호 검증**(공개키 = 직전 conf pubkey · 블록 없으면 `update_common` 에 A2 공개키 상수 추가 · `minisign_verify` import) — test_release_verify 픽스처의 가짜 .sig 를 fake_minisign 실서명으로 바꿔야 한다(영향 범위 먼저 grep).
-    7. 결정 ①: `update-worker/`(R2 읽기 전용 · `ptr/<경로>` → `obj/<sha>` · 경로 = 설계 §4-4 정규식 · 봉투·폐기문 no-store · 보관소 immutable) + `wrangler.jsonc`(버킷 바인딩 이름 = master 결정 자리) + `scripts/update/cf-route-probe.sh`(스테이징 경로 빈 워커 → /update/x 응답 헤더 대조 — **실행 = master 실행직전확인**).
-    8. #14 윈 실기 문안 6 시나리오(잠금 없음 / 정상 위임 / 변조 토큰 / 해제 후 늦은 자식 / 타 설치기 뮤텍스 / exit 6 무접촉)를 판정 가능한 관측 줄로 — `docs/update/INSTALL-LINK-LOCK.md` 또는 새 `WIN-NSIS-0A-FIELD.md`. #2 = 별도 티켓 `cysr-118-u5-install-link` 포인터 1줄.
-    9. 문서: §1(첫 게시 = R2 `publish-site --r2` 로 교체 · 「R-의식 전 seq 변수 갱신」 1줄 · 결정 ③ 날짜) · R-RITUAL(「U·F·A2 갱신 = 만료 90일 전 · R 서명 위임」 1줄 · make-revocations `--prev` 는 .minisig 필수·`--keyring`) · **§8 1R 반영표**(번호 1~19 × 처방 × 커밋 × 시험) → 게이트(§7 전건) → 【확인요청】 2판.
-  - 함정: 시험은 모듈 머리에서 `CYS_SIGN_DEV=1`·`CYS_TEST_NOW=1790000000` 을 켠다(생성기가 신뢰 시각을 HTTPS 로 대조하므로) · 연속 서명 단계는 `py(..., now=NOW+60)` 로 시각을 민다 · U1 왕복 바이너리 = scratch `u1ref`(102859e3) 디버그 빌드(U1 ef933bc8 은 lib 컴파일 실패 wip).
+- ★★**2판 끝(11:1x · 【확인요청】 2판 · [master#f9d48c3c] 재개 지시분)** — 지시 = [master#f151182e] 10:14:56(codex 1R 판정표 · 원문 `~/axdev/master/reports/REVIEW-U3-codex-1r.md`) · 결정 = [master#8db3b908] 10:04(① /update/* 전용 워커 + R2 · CI 게시 0 ② `vars.CYSR_RELEASE_SEQ` ③ 키 만료 R 2036 · U·F·A2 2028).
+  - 1/2 = `ca4c7b6a` · 2/2 = `181fd516`(#3) · `9a2489f3`(#13) · `ea940902`(refresh-feed) · `cc7390e8`(#17) · `bc1ab479`(#1·#18) · `b155da22`(#4 A2) · `62a6f1fa`(update-worker·탐침) · `c11ee1d8`(윈 실기 문안·U5 포인터) · 이 문서.
+  - 번호별 처방·커밋·시험 = **§8 1R 반영표**(19행). 남은 것 = 전부 「코드 밖」(U1 머지 · 윈 실기 · U5 · CF 실측 · 키 생성 — §8 잔여 열).
+  - 게이트(11:1x 실측): `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<U1 102859e3 디버그 cys>` test_update_publish **72/0 · 건너뜀 0** · 단독 72/0 + 8 건너뜀(맥 매체 아님 → U1 왕복 7 + 맥 수집 1) · test_release_verify **140/0** · nsis 컴파일 OK(N1~N8) · 모델 39082 OK · lane-parity `--strict` 0 · `--self-test` 0 · secret-scan clean(변경 19 파일).
+  - 함정(다음 사람): 시험은 모듈 머리에서 `CYS_SIGN_DEV=1`·`CYS_TEST_NOW=1790000000` 을 켠다 · 실 의식(개발 모드 밖)에서는 `MINISIGN`·`CYS_SIGN_MEDIA_PREFIX`·`CYS_TEST_NOW`·`--wait-eject 0` 이 **거부**된다 · U1 왕복 바이너리 = scratch `u1ref`(102859e3) 디버그 빌드(`CARGO_TARGET_DIR` 를 따로 줘서 빌드 · ~25초 증분).
 - 끝난 것 = 브리프 §2 의 1~9 전부(아래 §5 표) · 커밋 6개(`329c1ae5`·`09a79e7f`·`db2f7cbf`·`2cfb9117`·`0ea451cc` + 이 문서).
 - 【결정필요】 3건 = §3 ①②③(전부 master 결정 범위 · 박사님 결정 항목 0).
 - **설계·U2 에 알릴 실측 2건**: ⑴ 맥 DR 핀 대조의 `codesign -R` 문법 — 설계 §3-6 ② 의 `-R='=designated => identifier … and certificate leaf = H"…"'` 는 이 macOS 에서 **문법 오류**(`line 1:1: unexpected token: =`)이고 `-R='identifier "com.cysjavis.terminal" and certificate leaf = H"a426…b18d"'` 가 맞다(실 `/Applications/cys.app` 양성 rc 0 · 엉뚱한 leaf 음성 rc 3). ⑵ **CDHash 가 읽힌다고 서명된 번들이 아니다** — 애플 실리콘 링커가 Mach-O 를 자동 서명해서 봉인 안 된 번들도 `codesign -dvvv` 가 CDHash 를 낸다(실측) → 수집기는 `--verify --deep --strict` + DR 핀까지 본다. U2 의 S2 검증 3겹도 같은 함정이 있는지 대조 필요.
@@ -28,8 +20,9 @@
 
 ### ① R·U·F 키 생성
 - 준비: master 기기에 `brew install minisign`(U·R 의식이 `minisign -S` 를 부른다 · 이 기계엔 지금 없다 — 실측 `minisign not found`).
-- **R**(오프라인 2벌 · 서로 다른 장소 · 📌11): R 매체 1 을 꽂고 `minisign -G -p r.pub -s /Volumes/<R1>/r.key`(비밀번호 설정) → 매체 2 로 `cp /Volumes/<R1>/r.key /Volumes/<R2>/r.key`(매체→매체 · 빌드 디스크 경유 0) → 두 매체 분리 보관. `r.pub` 은 공개 정보(저장소에 둬도 됨).
-- **U**(빌드 기기 밖 매체 · 📌11): `minisign -G -p u.pub -s /Volumes/<U>/u.key`.
+- **R**(오프라인 2벌 · 서로 다른 장소 · 📌11): R 매체 두 개를 꽂고 `scripts/update/gen-offline-key.sh --media /Volumes/<R1> --name r --copy-to /Volumes/<R2> --pub-out r.pub`(키 생성 = 매체 안 · 둘째 벌 = 매체→매체 복사 + 바이트 대조 · 두 매체가 같은 장치·마운트 아님·빌드 디스크와 같은 장치면 거부 · 비밀번호 = minisign 이 직접 묻는다) → 두 매체 분리 보관. `r.pub` 은 공개 정보(저장소에 둬도 됨).
+- **U**(빌드 기기 밖 매체 · 📌11): `scripts/update/gen-offline-key.sh --media /Volumes/<U> --name u --pub-out u.pub`.
+- ⚠정직(codex 1R #3 잔여): minisign 은 이 기기의 프로세스라 생성·서명 순간 개인키 바이트는 이 기기 메모리를 지난다(파일·클립보드 0). 네트워크와 분리된 서명 기기/HSM 은 범위 밖 — 위협 모델상 필요하면 별도 결정(§8 #3 잔여).
 - **F**(CI 비밀): `bunx @tauri-apps/cli@2.11.4 signer generate -w "$TMPDIR/f.key"` → `f.key` 파일 **내용 전문** = 비밀 `CYS_FEED_SIGNING_PRIVATE_KEY` · 입력한 비밀번호 = `CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD`(팩 키 P2 와 같은 형식 · release.yml 서명 스텝과 같은 도구) → 등록 뒤 로컬 `f.key` 삭제 권고(분실해도 R 위임으로 새 F 를 들인다).
 - key id 확인: `python3 -c 'import sys; sys.path.insert(0,"scripts/update"); import update_common as uc; print(uc.pubkey_key_id(open(sys.argv[1]).read()))' u.pub`(R·U·F·A2 넷이 서로 달라야 한다).
 
@@ -45,39 +38,40 @@
       try: t = base64.b64decode(t).decode()   # tauri .pub 는 이미 base64
       except Exception: pass
       print(json.dumps({"key_id": uc.pubkey_key_id(t), "pubkey": base64.b64encode(t.encode()).decode(),
-                        "not_after": "<결정 ③>", "purpose": purpose, "comment": "용도=%s · 1.1.8 자동 갱신" % purpose}, ensure_ascii=False))
+                        "not_after": {"root": "2036-01-01T00:00:00Z"}.get(purpose, "2028-01-01T00:00:00Z"),  # 결정 ③
+                        "purpose": purpose, "comment": "용도=%s · 1.1.8 자동 갱신" % purpose}, ensure_ascii=False))
   PY
   ```
 - **A2** 항목도 같은 파일에 `purpose: "win-asset"` 로: `key_id` = `831CA9172204E93E` · `pubkey` = `src-tauri/tauri.conf.json` `plugins.updater.pubkey` 값 그대로(시험 핀 `test_a2_key_id_matches_tauri_conf` 가 그 파생값 = 상수임을 잰다).
 - 기입 뒤: `cys build-info --json` 의 `keyring_ids` 가 4개(`root:…`·`release:…`·`feed:…`·`win-asset:…`)인지 · `cargo test --lib packsig::` 의 키링 파생 대조 초록.
 
-### ③ 첫 게시(외부 발행) — 순서 고정(봉투 CI 가 라이브의 보관소·폐기문을 읽으므로)
-1. 보관소: U 의식 산출 `dist/update/cysr-release-<seq>.json(.minisig)` → `python3 scripts/update/publish-site.py archive --site-dir ~/axdev/ai-jarvis/site --file dist/update/cysr-release-<seq>.json`
-2. 폐기문(첫 = 빈 목록): `python3 scripts/update/make-revocations.py --key-id <R id> --first --out revocations.json` → `scripts/update/sign-revocations.sh --doc revocations.json --media /Volumes/<R1> --key /Volumes/<R1>/r.key --out-dir dist/update` → `publish-site.py revocations --site-dir … --file dist/update/revocations.json`
-3. 사이트 배포(master 수동 · 지금 관행): `cd ~/axdev/ai-jarvis && bash web/build-web.sh && (cd web && bunx wrangler deploy)` → `curl -fsS https://jarvis.godmeyou.kr/update/cysr/releases/<seq>.json | shasum -a 256` = 로컬 · revocations 도 같게 · 그 뒤 ai-jarvis 커밋.
-4. 첫 봉투(F = CI 만): `gh workflow run refresh-feed.yml -R oogisoogi/cys-ro -f component=cysr -f channel=next -f release_seq=<seq> -f rollout_pct=100 -f halt=false -f first=true -f publish=false` → 아티팩트 `envelope-cysr-next` 확인 → 같은 명령 `-f publish=true`.
-5. 주 1회 자동 재서명 켜기 = 저장소 변수 `UPDATE_FEED_PUBLISH=on`(켜기 전까지 cron 은 만들고 검증만 · 게시 0).
+### ③ 첫 게시(외부 발행) — 순서 고정(봉투 CI 가 라이브의 보관소·폐기문을 읽으므로) · 게시 = R2 + `/update/*` 전용 워커(결정 ①)
+0. **준비(1회)**: R2 버킷 생성(이름 = master 결정 → `update-worker/wrangler.jsonc` `bucket_name` 자리) → `scripts/update/cf-route-probe.sh`(드라이런으로 명령 확인) → `--execute`(실행 직전 확인 대상 · 탐침 워커를 스테이징 경로에만 올렸다 지움) **rc 0 일 때만** → `cd update-worker && bunx wrangler@3 deploy`. rc 1(커스텀 도메인이 이김) = 배포 금지 · 대안 결정 필요.
+1. **R-의식 전 seq 변수 갱신**(결정 ②): 저장소 변수 `CYSR_RELEASE_SEQ` = 보관소 최댓값 + 1(첫 판 = 1) → 그 뒤에 태그(release.yml 빌드 전 스텝이 정수 ≥1 을 강제 · 게시기가 「최댓값 + 1」 아니면 거부).
+2. 보관소: U 의식 산출 `dist/update/cysr-release-<seq>.json(.minisig)` → `release-gate.py body --body … --sig … --keyring cysjavis-pack/trusted-keys.json --archive-r2 <버킷> --expect-seq <seq> --stamp` → `python3 scripts/update/publish-site.py archive --r2 <버킷> --file dist/update/cysr-release-<seq>.json --first --live-check https://jarvis.godmeyou.kr`(둘째 판부터 `--first` 없음).
+3. 폐기문(첫 = 빈 목록): `python3 scripts/update/make-revocations.py --key-id <R id> --first --out revocations.json` → `scripts/update/sign-revocations.sh --doc revocations.json --media /Volumes/<R1> --key /Volumes/<R1>/r.key --out-dir dist/update` → `release-gate.py revocations --doc dist/update/revocations.json --keyring … --first --stamp` → `publish-site.py revocations --r2 <버킷> --file dist/update/revocations.json --live-check https://jarvis.godmeyou.kr`.
+4. 첫 봉투(F = CI 만 · CI 는 만들고 검증만): `gh workflow run refresh-feed.yml -R oogisoogi/cys-ro -f component=cysr -f channel=next -f release_seq=<seq> -f rollout_pct=100 -f halt=false -f first=true` → 아티팩트 `envelope-cysr-next`(env.json · .minisig · .verified.json) 받기 → `publish-site.py envelope --r2 <버킷> --file env.json --live-check https://jarvis.godmeyou.kr`(증표 없으면 게시기 거부).
+5. 주 1회: cron 이 네 봉투를 재서명·검증해 아티팩트로 남긴다 → master 가 4 와 같은 게시 1줄(자동 게시 0 — 결정 ①). 봉투 유효창 14일 · 7일 넘게 안 바뀌면 기기 daily 칸이 잡는다.
 
 ### ④ CI 비밀·변수 이름(값 = master 가 GitHub 설정에 · 저장소에 값 0)
 | 이름 | 종류 | 쓰는 곳 |
 |---|---|---|
 | `CYS_FEED_SIGNING_PRIVATE_KEY` · `CYS_FEED_SIGNING_PRIVATE_KEY_PASSWORD` | 비밀 | refresh-feed.yml 서명 |
-| `AI_JARVIS_PUSH_TOKEN` | 비밀 | refresh-feed.yml 사이트 저장소 push(배포 성공 뒤) |
-| `CLOUDFLARE_API_TOKEN` · `CLOUDFLARE_ACCOUNT_ID` | 비밀 | refresh-feed.yml `wrangler deploy`(jarvis-site 워커) — 결정 §3 ① 에 따라 바뀔 수 있음 |
 | `CYS_FEED_KEY_ID` | 변수 | refresh-feed.yml(F key id · 내장 키링 feed 에 있어야 함 — 스텝이 대조) |
-| `UPDATE_FEED_PUBLISH` | 변수 | `on` = cron 게시 |
+| `CYSR_RELEASE_SEQ` | 변수 | release.yml 최상위 env → U1 build.rs 가 build-info release_seq 로 굽는다(태그 전 갱신 · 정수 ≥1) |
+| (2판에서 삭제) `AI_JARVIS_PUSH_TOKEN` · `CLOUDFLARE_*` · `UPDATE_FEED_PUBLISH` | — | CI 게시 0(결정 ①) — 설정에 넣지 않는다(이미 넣었으면 지워도 됨) |
 | (기존) `TAURI_SIGNING_PRIVATE_KEY`(A2) · `CYS_PACK_SIGNING_PRIVATE_KEY`(P2) | 비밀 | 변화 없음 |
 
 ### ⑤ 발행 리허설 순서(태그 드라이런)
 | 단계 | 무엇 | 판정 |
 |---|---|---|
-| R0 | U1 2판 머지 → 이 가지 rebase → `CYS_UPDATE_VERIFY_BIN=<머지 트리 디버그 cys> python3 scripts/tests/test_update_publish.py` | 46/0(0 건너뜀) |
+| R0 | U1 2판 머지 → 이 가지 rebase → `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<머지 트리 디버그 cys> python3 scripts/tests/test_update_publish.py` · CI 맥 두 레인 초록 | 72/0(0 건너뜀) |
 | R1 | ①② 키 생성·키링 기입·④ 비밀·변수 | `cys build-info` keyring_ids 4 |
-| R2 | `CYSR_RELEASE_SEQ` 값 결정·주입(결정 §3 ②) 뒤 태그 → release.yml draft | 새 스텝 초록: 맥·윈 「동봉 매니페스트 min_binary」 · pack-artifacts 「min_binary」 · 윈 「본문 재료 수집」(아티팩트 `update-inputs-windows-x64` 존재 — continue-on-error 라 **눈으로 확인**) |
+| R2 | 변수 `CYSR_RELEASE_SEQ` 갱신(§1 ③ 1) 뒤 태그 → release.yml draft | 새 스텝 초록: 「CYSR_RELEASE_SEQ 정수 ≥1」(두 잡) · 맥·윈 「동봉 매니페스트 min_binary」 · pack-artifacts 「min_binary」 · 윈 「본문 재료 수집·업로드」(2판: 실패 = 릴리스 실패) |
 | R3 | 맥 로컬 빌드 zip → `scripts/update/collect-inputs.sh mac <zip> macos-arm64 inputs/` · `gh run download <run> -n update-inputs-windows-x64 -D inputs/` · draft 자산 받기 | 재료 4종(cdhash·build-info×2·payload 트리) |
-| R4 | `make-release-json.py … --build-info macos-arm64=inputs/build-info-macos-arm64.json --build-info windows-x64=inputs/build-info-windows-x64.json --cdhash macos-arm64=$(cat inputs/cdhash-macos-arm64.txt) --a2-sig windows-x64=cysr_<v>_x64-setup.exe.sig --payload-dir windows-x64=inputs/payload-windows-x64 …` → `release-gate.py body --body … --keyring cysjavis-pack/trusted-keys.json --archive-dir ~/axdev/ai-jarvis/site/update` | rc 0 |
+| R4 | `make-release-json.py … --build-info macos-arm64=inputs/build-info-macos-arm64.json --build-info windows-x64=inputs/build-info-windows-x64.json --cdhash macos-arm64=$(cat inputs/cdhash-macos-arm64.txt) --a2-sig windows-x64=cysr_<v>_x64-setup.exe.sig --payload-dir windows-x64=inputs/payload-windows-x64 …` → `release-gate.py body --body … --keyring cysjavis-pack/trusted-keys.json --archive-r2 <버킷> --expect-seq <seq>` | rc 0 |
 | R5 | U 의식(`sign-release.sh` · 박사님 매체 1단계) → `release-gate.py body --sig …` | rc 0 |
-| R6 | §1 ③ 1~4(publish=false 먼저) | 봉투 아티팩트 + verify 스텝 초록 |
+| R6 | §1 ③ 0~4(탐침 rc 0 → 워커 배포 → 보관소 → 폐기문 → 봉투 아티팩트 → 게시) | 각 게시 `--live-check` rc 0 · refresh-feed verify 두 스텝 초록 |
 | R7 | release-publish.yml dry_run(새 게이트 = latest.json·min_binary 두 잡) → 승인 → 발행 | — |
 | R8 | 캐너리 C1(설계 §7-4) | — |
 
@@ -88,11 +82,12 @@
 | release.yml pack-artifacts | assets `--pack-manifest` | 서명 팩 매니페스트 min_binary 빈 값 = 거부 |
 | pack-release.yml | assets `--asset-list … --pack-manifest` | 팩 단독 릴리스도 latest.json 의무 + min_binary |
 | release-publish.yml verify · publish(대칭) | assets `--release-dir --pack-manifest` | latest.json 의무(tombstone 파일이 있으면 바이트 고정) + min_binary · 게이트 자기시험 선행 |
-| refresh-feed.yml | verify(U1 `cys update-verify` · 출시 빌드 내장 키링) | 새 봉투 서명·서식·URL — apply/halt/not_in_rollout 만 통과 |
+| refresh-feed.yml | verify ×2(U1 `cys update-verify` · 출시 빌드 내장 키링) | ① 현재 봉투 쌍 `--allow-expired --stamp`(통과해야 상속) ② 새 봉투 = 허용 출발 seq 전수 · apply/halt/not_in_rollout 만 · 증표 |
+| ci-branch(맥) · release(맥 aarch64) | 시험 test_update_publish `CYS_U3_REQUIRE_ALL=1` + 그 가지 디버그 cys | 건너뜀 1건 = 실패 · ⚠U1 머지 전 적색 = 의도 |
 | master(발행 의식) | body · verify | §1 ⑤ R4·R5·R6 |
 - 시험 `scripts/tests/test_update_publish.py` 등재 = ci-branch(맥) · release(맥 aarch64) · pack-release + release-publish 두 잡(자기시험) — `lane-parity-rehearsal.sh --strict` rc 0 · `--self-test` rc 0.
 
-## §3 【결정필요】(master 범위 · 각 권고 + 단점 1줄)
+## §3 【결정필요】(master 범위 · 각 권고 + 단점 1줄) — ★2판: ①②③ 전부 [master#8db3b908] 로 결정됨(아래는 기록)
 - ① **봉투 CI 게시가 사이트 전체를 배포한다**: refresh-feed.yml 은 ai-jarvis `main` 머리로 `build-web.sh` → `wrangler deploy`(jarvis-site 워커 = 사이트 전체)를 한다 → master 가 main 에 올려 두고 아직 배포 안 한 사이트 변경이 있으면 **주간 cron 이 그것까지 공개**한다. 권고 = `/update/*` 전용 워커(정적 자산 = update/ 만 · 경로 라우트 `jarvis.godmeyou.kr/update/*`)로 분리하고 CI 는 그 워커만 배포 · 단점 = 커스텀 도메인(jarvis-site)과 경로 라우트의 우선순위를 CF 에서 실측해야 한다(이 티켓은 미측정 · 외부 계정 = master). 분리 전까지는 `UPDATE_FEED_PUBLISH` 를 켜지 말고 dispatch 게시만 쓰는 것이 안전.
 - ② **`release_seq` 값의 출처**: U1 build.rs 는 `CYSR_RELEASE_SEQ` env 를 굽는데 release.yml 은 아직 그 값을 주지 않는다(주지 않으면 build-info `release_seq=0` → 생성기가 「build-info release_seq ≠」 로 거부 = fail-closed). 판 번호 = master 결정이라 배선하지 않았다. 권고 = release.yml 최상위 env `CYSR_RELEASE_SEQ: ${{ vars.CYSR_RELEASE_SEQ }}` + 태그 전 변수 갱신(값은 직전 보관소 seq + 1 · 게이트가 역행·판 미증가를 잡음) · 단점 = 변수 갱신을 잊으면 같은 seq 재사용 → 게이트 body 가 「보관소 seq 이미 있음·바이트 다름」으로 막는다(발행 지연 · 위험 0).
 - ③ **키 만료(`not_after`)**: 권고 = R 2036-01-01 · U·F·A2 2028-01-01(교체는 R 위임으로 새 바이너리 없이) · 단점 = U·F 만료 전 위임을 잊으면 그날 전 기기 갱신이 「만료된 키」로 멈춘다(daily 칸에 보임) → BACKLOG 에 2027-10 위임 알림 1줄.
@@ -122,14 +117,43 @@
 | 8 | 시험 | `scripts/tests/test_update_publish.py` · `fixtures/fake_minisign.py` | **46/0**(U1 디버그 cys `102859e3` 왕복 = apply 2행 · 본문 변조 reject · 만료 · seq 같음 uptodate · F 키 본문 reject) · 단독 40/0 + 6 건너뜀 · test_release_verify 137/0 · lane-parity --strict 0 · --self-test 0 · secret-scan clean · fake_minisign RFC 8032 벡터 1 일치 | 전 커밋 |
 | 9 | HANDOFF | 이 문서 | — | (이 커밋) |
 - 소요: 브리프 09:21 → 설계·U1 정독·TODO 09:21–09:24 · 스크립트·시험 1차 커밋 09:41(17분) · bundle-prep·7-b·NSIS 09:41 · CI·레인 09:49(8분) · 수집기·문서 09:57(8분) · HANDOFF 09:5x–10:0x. **총 ≈ 40분**(계수 = U1 51분 대비 · 「스크립트·YAML 2배」 추정은 과대였다 — 실측은 0.8배).
+- 2판 소요(실측 · 커밋 시각): 1/2 = 10:14 지시 → 10:26 `ca4c7b6a`(12분 · 순환 전) · 2/2 = 10:3x 재개 → #3 10:56 · #13 10:59 · refresh-feed 11:01 · #17 11:04 · #1·#18 11:05 · #4 A2 11:08 · worker 11:10 · 윈 문안 11:11 · 게이트·문서 11:1x–11:2x ⇒ **2/2 ≈ 45분**(9항목 · 항목당 ≈ 5분 · 상한 2h 대비 0.4배).
 - 저장소 게이트: 브리프의 `tests/commit_gate` 류 파일은 이 저장소에 **없다**(`git ls-files | grep -i commit.gate` 0건) → 대신 secret-scan(변경 파일 전수 clean) · lane-parity(--strict·--self-test) · test_release_verify · nsis 컴파일 하네스 · nsis 모델을 돌렸다.
 
 ## §6 미측정 · 남은 위험(정직)
-- 윈 재료 수집(무인 설치로 payload 측정)과 refresh-feed.yml 은 **러너에서 한 번도 안 돌았다**(이 기계엔 윈 실행 기층·GitHub 실행 0) — 첫 발행 리허설(§1 ⑤ R2·R6)이 첫 실측. 윈 수집 스텝은 continue-on-error 라 실패해도 릴리스는 나가고, 재료 부재는 본문 생성 단계에서 막힌다(R3 에서 아티팩트 존재를 **눈으로** 확인).
-- uninstall.exe 를 payload 에서 뺀 것이 S9b 와 맞는지(설치기 생성 파일이 판마다 같은지 미측정) = U2 S9b 설계와 대조 필요.
+- 윈 재료 수집(무인 설치로 payload 측정)과 refresh-feed.yml 은 **러너에서 한 번도 안 돌았다**(이 기계엔 윈 실행 기층·GitHub 실행 0) — 첫 발행 리허설(§1 ⑤ R2·R6)이 첫 실측. 2판부터 윈 수집 실패 = 릴리스 실패(첫 실측에서 수집기가 틀리면 태그가 적색 — 되돌리기 = 그 스텝 수리 뒤 재태그).
+- update-worker · cf-route-probe 는 **Cloudflare 에서 한 번도 안 돌았다**(워커는 node 하네스로 같은 배치를 서빙해 잼 · 탐침의 `wrangler delete --force` 철자 미확인) — §1 ③ 0 이 첫 실측.
+- ⓪-a 의 동작 증거 = 윈 실기 6 시나리오(`WIN-NSIS-0A-FIELD.md`)가 첫 실측 — 이 기계 근거는 컴파일·소스 핀·모델(⓪-a 모델 밖)뿐.
+- payload 제외 규칙(`scripts/update/payload-exclude.txt` · 수집기 무삭제)이 S9b 와 맞는지(설치기 생성 파일이 판마다 같은지 미측정) = U2 S9b 설계와 대조 필요.
 - GitHub 맥 러너에서 `hdiutil attach`(가짜 매체 시험)가 되는지 미측정 — 안 되면 그 묶음만 실패한다(ci-branch 맥 첫 실행이 잰다).
-- `bunx wrangler@3` 판 고정은 사이트 저장소의 실제 사용 판과 대조하지 않았다(§3 ① 결정과 함께).
+- `bunx wrangler@3` 판 고정은 실제 사용 판과 대조하지 않았다(update-worker 배포·R2 게시 첫 실행이 잰다).
 
 ## §7 재현
 - `git log --oneline 7e7aa5da..HEAD` · `python3 scripts/tests/test_update_publish.py`(단독) · U1 왕복 = U1 커밋본 작업트리에서 `cargo build --bin cys` → `CYS_UPDATE_VERIFY_BIN=<그 cys> python3 scripts/tests/test_update_publish.py`
 - `bash scripts/tests/nsis-hook-compile/run.sh` · `python3 scripts/tests/nsis-hook-model/model.py` · `bash scripts/lane-parity-rehearsal.sh --strict`
+- 2판: CI 와 같은 엄격 모드 = `CYS_U3_REQUIRE_ALL=1 CYS_UPDATE_VERIFY_BIN=<디버그 cys> python3 scripts/tests/test_update_publish.py`(건너뜀 = 실패) · `python3 scripts/tests/test_release_verify.py` · update-worker = 같은 스위트의 `TestUpdateWorker`(node 필요) · `bash scripts/update/cf-route-probe.sh`(드라이런) · `bash scripts/secret-scan.sh $(git diff --name-only c3582be6..HEAD)`
+
+## §8 codex 1R 반영표(2판 · 원문 `~/axdev/master/reports/REVIEW-U3-codex-1r.md` · BLOCK 14 · MAJOR 5)
+| # | 지적(요지) | 처방(이 가지) | 커밋 | 시험(음성 = 뮤테이션) | 잔여(코드 밖 · 누가) |
+|---|---|---|---|---|---|
+| 1 | release_seq 미주입 · 키링 미기입 | release.yml 최상위 env `CYSR_RELEASE_SEQ` + 두 빌드 잡 「정수 ≥1」 스텝 · 게이트 `--expect-seq` · 게시기 「최댓값 + 1」 | `ca4c7b6a` · `bc1ab479` | `test_release_yml_seq_and_win_inputs`(스텝 삭제 = 적색) · 보관소 역행·건너뜀 거부 | 키 생성·키링 기입 = U1 머지 뒤 master(§1 ①②) |
+| 2 | 설치 링크 참가자 미구현 | 명세 유지 + 별도 티켓 포인터 | `c11ee1d8` | — | **`cysr-118-u5-install-link`**(외부 저장소 · 윈 실기) |
+| 3 | 오프라인 서명 우회 손잡이 · 키가 호스트에 닿음 | 손잡이 3종 = `CYS_SIGN_DEV=1` 전용(밖에서 보이면 거부) · 개발 모드 실 키링 key id 거부 · `gen-offline-key.sh`(생성 = 매체 안 · R 둘째 벌 매체→매체) | `181fd516` | 손잡이 밖 거부 2 · 대기 0 거부 · 실 key id 거부 · 생성 4(뮤테이션 3 적색) | 서명 기기/HSM 분리 = 범위 밖(§1 ① ⚠ · master 판단) |
+| 4 | 게이트·게시기 서명 진위 미검증 · A2 key id 만 | U·R·F 암호 검증 + 통과 증표(게시기는 증표 + 재검증) · 7-b = 자산 바이트 암호 검증(직전 conf pubkey · 없으면 `A2_PUBKEY`) | `ca4c7b6a` · `b155da22` | 같은 key id 위조 서명 · 다른 바이트 서명 = 거부(검증 삭제 = 적색 2) · test_release_verify 픽스처 = 실서명 | — |
+| 5 | R 생성기 직전 폐기문 미인증 | 직전 `.minisig` R 암호 검증 · rev = 직전 + 1 · 집합 단조 포함 · 시각 단조 | `ca4c7b6a` | 위조 prev(rev 999 · R 아닌 키) · 시각 역행 · 집합 단조 = 구조(직전 집합 ∪ 새 항목 · 빼기 = `--drop-delegation` 만 · 음성 시험 없음) | — |
+| 6 | 주간 CI 가 미인증 현재 봉투 상속 | make-envelope = U1 증표 있는 직전만 · refresh-feed = 현재 봉투 verify `--allow-expired --stamp` 먼저 | `ca4c7b6a` · `ea940902` | 워크플로 사슬 U1 왕복(위조 현재 봉투 = 증표 0 = 상속 0 · 증표 확인 삭제 = 적색) | — |
+| 7 | 게시기 전역 seq 단조 없음 | archive = 색인 최댓값 + 1 만(첫 = `--first`) | `ca4c7b6a` | 역행·건너뜀·색인 없음 | — |
+| 8 | 게시 TOCTOU · 쌍 비원자 | 불변 객체 `obj/<sha>` + 단일 포인터 교체 · flock + 잠금 안 재검사 | `ca4c7b6a` | 동시 게시 2 · 포인터 원자 | — |
+| 9 | CI 게시 스위치 = 승인 게이트 아님 · 비밀 과다 | CI 게시 **삭제**(생성+검증+아티팩트) · 사이트·CF·PAT 비밀 0 · 게시 = master 로컬 R2(전용 워커) | `ea940902` · `62a6f1fa` | 워크플로 형태 핀(비밀 = F 둘뿐 · wrangler/push/publish 0) | 액션 SHA 고정·F 서명 잡 보호 환경 = 미처리(📌 master) |
+| 10 | payload_manifest = U1 계약 밖 | 게이트 = 반환 행 **전체** 대조(칸 대기 = 사유 인쇄) | `ca4c7b6a` | 양성만(U1 왕복 apply 행 전체 일치) · 음성(칸 불일치) **미시험**(U1 반환을 변조할 손잡이 없음) | U1 `Asset` 에 칸 추가 = U1/U2(master 전달) |
+| 11 | refresh 가 installed 0 으로 검증 | 기본 = 허용 출발 seq 전수 + seq 자신 uptodate · 워크플로에서 `--installed-release-seq` 삭제 | `ca4c7b6a` · `ea940902` | `1,2,3,4,5` 전수 · 형태 핀 | — |
+| 12 | URL 생산자 검사 > U1 | component별 홉 표 = U1 과 같은 벡터(`url-vectors.json`) | `ca4c7b6a` | 벡터 양쪽 | — |
+| 13 | NSIS ⓪-a 조건 3개 생략 | ⑴ 토큰+잠금 없음 = exit 6 ⑵ 인자 = env(StrCmpS) ⑶ 조상 = 러너 §3-7 ④(인용 주석) ⑷ 위임 = ⑴⑵ 뒤 한 곳 | `9a2489f3` | 소스 핀(뮤테이션 3 적색) · 컴파일 · 모델 재핀 | 실행 증거 = #14 |
+| 14 | ⓪-a 실행 시험 0 | 윈 실기 6 시나리오 문안(차리기 PowerShell + 판정 줄) | `c11ee1d8` | — | **윈 master 실기**(`WIN-NSIS-0A-FIELD.md` · 실패 1 = 채택 보류) |
+| 15 | 키 만료·서명 시각 역행 미검사 | `find_key` 만료 · 신뢰 시각(HTTPS Date 대조) · 미래·역행 거부(생성·서명·게시) | `ca4c7b6a` | 만료 키(`test_mut_expired_key` · 2판 추가) · 미래 signed_at · 역행 | — |
+| 16 | 배포·커밋 비원자 · 라이브 서명 미확인 | CI 게시 삭제 · 게시기 `--live-check` = 본문·서명 두 sha 대조(아니면 rc 4 + 되돌리기 명령) | `ca4c7b6a` · `ea940902` | 형태 핀(CI 게시 0) · live-check 불일치 **미시험**(재시도 30초 · 로컬 서버 필요) | 첫 R2 게시가 잰다 |
+| 17 | 시험 수 재현 안 됨 · U1 왕복 skip | CI 맥 레인 = 디버그 cys 주입 + `CYS_U3_REQUIRE_ALL=1`(전제 부재 = 모듈 오류 · 건너뜀 = 실패) | `cc7390e8` | 전제 부재 rc 1 실측 · 72/0 건너뜀 0 | U1 머지 전 두 레인 적색 = 의도 · hdiutil 러너 가능 여부 = 첫 CI 실행이 잰다 |
+| 18 | 윈 payload 실패해도 릴리스 · uninstall.exe 임의 제외 | 수집·업로드 `continue-on-error` 삭제(`if-no-files-found: error`) · 수집기 무삭제 + 공유 제외 규칙 `payload-exclude.txt` | `ca4c7b6a` · `bc1ab479` | 형태 핀(되돌리면 적색) | 제외 규칙을 U2 S9b 와 대조 = U2 |
+| 19 | `--allow-older-release` 우회 · 판 문자열 과잉 강제 | 후퇴 예외 삭제(같은 본문 재서명만 seq 같음 허용) · 순서 = release_seq 하나 · 판 문자열 = 비보안 경고 | `ca4c7b6a` | 채널 후퇴 거부 | — |
+- 📌 내가 범위 밖이라 **하지 않은 것**(필요하면 지시): ① #9 의 액션 SHA 고정·F 서명 잡 `environment:` 보호(설정 = GitHub · master) ② #14 를 이 기계에서 더 당기는 「⓪-a 블록 미니 해석기 시험」(소스 텍스트를 그대로 실행하는 파이썬 해석기 · 실기 대체 아님) ③ #3 서명 기기 분리.
+

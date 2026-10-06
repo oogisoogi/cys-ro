@@ -293,6 +293,17 @@ class TestEnvelope(Base):
         self.assertEqual(r.returncode, 2)
         self.assertIn("용도 분리", r.stderr)
 
+    def test_mut_expired_key(self):
+        """codex 1R #15: 신뢰 시각 ≥ 키 not_after(픽스처 2030-01-01) = 거부 — 생성 단계에서."""
+        b = self.fx.body()
+        r = py("make-envelope.py", "--component", "cysr", "--channel", "stable", "--release-body", b,
+               "--release-sig", b + ".minisig", "--key-id", self.fx.kid("f"), "--first", "--rollout-pct", "1",
+               "--halt", "false", "--keyring", self.fx.keyring, "--out", os.path.join(self.tmp, "e.json"),
+               now=1893456000)  # 2030-01-01T00:00:00Z
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("만료된 키", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "e.json")))
+
     def test_mut_older_release(self):
         r, out = self.env("--first", "--rollout-pct", "10", "--halt", "false")
         d = os.path.join(self.tmp, "o")

@@ -106,6 +106,11 @@ pub trait Ops {
     fn restart_after_reconstruct(&mut self) -> Step;
     /// ★5판(codex 4R M5): 본부 데몬이 지금 살아 응답하나(소켓 `system.identify` 실측) — 재구성 뒤 재기동 판정은 「복원했나」가 아니라 이것.
     fn daemon_alive(&mut self) -> bool;
+    /// ★후속(Fable 5R n17): 재구성이 정식 자리를 **새 판**으로 판정한 시도(`attempt.json` `recon = new`)면 S11 몫(설치기·서명 본문 보존 +
+    /// 수용 기록)을 수행한다 — Some(Ok(새 판 release_seq)) · 실패 = Some(Err) · 새 판 재구성이 아님 = None. 종결 전에 부른다.
+    fn accept_reconstructed(&mut self, _j: &Journal) -> Option<Result<u64, Fail>> {
+        None
+    }
     /// ★3판(Fable 2R M4 · 설계 §3-8): 팩만 새 판인가 — `pack-plan` 게이트 + `pack-update --dry-run`. Ok(false) = 없음·본체 대기(binary-too-old).
     fn pack_available(&mut self) -> Result<bool, Fail>;
     /// PACK_APPLY 전: 사용자 트리 사본·해시를 저널 칸(`snapshot_dir`·`stage_tree_sha256`)에 채운다.
@@ -352,9 +357,12 @@ impl<'a, O: Ops> Runner<'a, O> {
             self.ops.record(Some(j), Kind::RollbackFailed, Some(&f2));
             return Ok(Outcome::RollbackFailed(f2));
         }
+        // ★후속(Fable 5R n17): 새 판 재구성 뒤 재기동 실패로 남은 S7 행이면 수용(S11 몫)도 여기서 — release(stage 삭제) 전에.
+        let accepted = if super::mutant("U2-RECONACCEPT") { None } else { self.ops.accept_reconstructed(j) };
         self.ops.release(j);
         let j = self.enter(State::Deferred, |_| {})?;
         self.ops.record(Some(&j), Kind::Deferred, Some(&f));
+        self.record_accepted(&j, accepted);
         Ok(Outcome::Deferred(f))
     }
 
@@ -581,12 +589,28 @@ impl<'a, O: Ops> Runner<'a, O> {
                 return Outcome::SeatsBlocked(f);
             }
         }
+        let accepted = if super::mutant("U2-RECONACCEPT") { None } else { self.ops.accept_reconstructed(&j) };
         match self.enter(State::Deferred, |_| {}) {
             Ok(j) => {
                 self.ops.record(Some(&j), Kind::JournalCorrupt, Some(&Fail::new(ErrCode::JournalCorrupt, "reconstruct", "재구성 성공")));
+                self.record_accepted(&j, accepted);
                 Outcome::Nothing
             }
             Err(s) => Self::stop_to_outcome(s),
+        }
+    }
+
+    /// ★후속(Fable 5R n17): 새 판 재구성의 S11 몫 결과 기록 — 수용 = `ok`(실물 = 새 판 · 앱 「갱신됨」) · 실패 = 1줄(교체는 이미 끝났다 ·
+    /// 윈 설치기 보존이 없으면 다음 자동 갱신은 N7 보류 = fail-closed).
+    fn record_accepted(&mut self, j: &Journal, accepted: Option<Result<u64, Fail>>) {
+        match accepted {
+            Some(Ok(seq)) => {
+                let mut jr = j.clone();
+                jr.release_seq = seq;
+                self.ops.record(Some(&jr), Kind::Ok, None);
+            }
+            Some(Err(f)) => eprintln!("[update] 새 판 재구성 수용 기록 실패(다음 갱신 = N7 보류 가능): {}", f.detail),
+            None => {}
         }
     }
 
@@ -648,6 +672,9 @@ pub struct Attempt {
     /// ★5판(codex 4R N3″): 종결 표지 — 삭제가 실패했을 때의 대체(종결된 시도는 대조 원천이 아니다).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ended: bool,
+    /// ★후속(Fable 5R n11·n17): 재구성이 판정한 정식 자리 판(`old`·`new`) — 재기동 실패로 남은 S7 행의 기동 바이너리·S11 몫의 근거.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recon: Option<String>,
 }
 
 impl Attempt {
@@ -675,7 +702,7 @@ fn attempt_write(dir: &Path, a: &Attempt) -> Result<(), String> {
 
 /// S1(저널 Locked 보다 먼저): 이 txn 으로 새로 쓴다 — 지난 시도의 기록(스냅샷 자리 포함)은 여기서 사라진다.
 pub fn attempt_begin(dir: &Path, txn: &str) -> Result<(), String> {
-    attempt_write(dir, &Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false })
+    attempt_write(dir, &Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false, recon: None })
 }
 
 /// 복구기 인수: 기록이 그 저널 txn 계보면 새 토큰을 잇는다 · 아니면(낡은 기록) 새 토큰만의 빈 기록(스냅샷 없음 = 대조 원천 0).
@@ -687,9 +714,21 @@ pub fn attempt_takeover(dir: &Path, old_txn: &str, new_txn: &str) {
             }
             a
         }
-        _ => Attempt { txn_id: new_txn.into(), lineage: vec![new_txn.into()], snapshot_dir: None, baseline: None, ended: false },
+        _ => Attempt { txn_id: new_txn.into(), lineage: vec![new_txn.into()], snapshot_dir: None, baseline: None, ended: false, recon: None },
     };
     let _ = attempt_write(dir, &a);
+}
+
+/// 이 저널 txn 계보의 이번 시도 기록(종결 표지·남의 계보 = None).
+pub fn attempt_for(dir: &Path, txn: &str) -> Option<Attempt> {
+    attempt_read(dir).filter(|a| a.owns(txn))
+}
+
+/// ★후속(Fable 5R n11): 재구성 판정(`old`·`new`)을 이번 시도 기록에 남긴다 — 재기동 실패 뒤 다음 복구기의 S7 행이 판정된 판을 띄우게.
+pub fn attempt_note_recon(dir: &Path, txn: &str, recon: &str) -> Result<(), String> {
+    let mut a = attempt_for(dir, txn).ok_or("attempt.json 이 이번 txn 이 아님")?;
+    a.recon = Some(recon.to_string());
+    attempt_write(dir, &a)
 }
 
 /// S8 직후: 이번 시도의 스냅샷 자리(기록이 이 txn 계보가 아니면 Err — 대조 원천을 남의 시도에 붙이지 않는다).
@@ -701,7 +740,7 @@ pub fn attempt_note_snapshot(dir: &Path, txn: &str, snapshot_dir: &str) -> Resul
 
 /// S5b: 기준선 B0 를 이번 시도 기록에 더한다(기록이 없거나 남의 것이면 이 txn 으로 새로).
 pub fn attempt_set_baseline(dir: &Path, txn: &str, baseline: serde_json::Value) -> Result<(), String> {
-    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).unwrap_or(Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false });
+    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).unwrap_or(Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false, recon: None });
     a.baseline = Some(baseline);
     attempt_write(dir, &a)
 }

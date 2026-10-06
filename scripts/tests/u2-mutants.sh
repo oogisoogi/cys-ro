@@ -46,5 +46,8 @@ U2-PACKPRO pack::tests::pro_revision_advance_kill_matrix_recovers_by_commit_reco
 U2-V5PRISTINE update::verify::tests::v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits
 U2-LINEAGE update::realops::tests::reconstruct_lineage_survives_restart_failure_then_one_more_torn_slot
 U2-ENDFIRST update::runner::tests::attempt_end_marks_ended_before_removing
+U2-RECONEXE update::realops::tests::win_s7_row_after_new_reconstruct_restart_failure_starts_canonical_new_cys
+U2-RECONACCEPT update::realops::tests::new_reconstruct_terminal_preserves_release_and_records_acceptance
+U2-STAGETXN update::realops::tests::stage_after_takeover_is_this_attempts_s1_stage
 LIST
 exit $fail

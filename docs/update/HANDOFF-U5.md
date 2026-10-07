@@ -49,6 +49,9 @@
   · 윈 실물 **통과**: [ⓐ] 잡기 · 쥔 동안 남 배타 불가 · **실 cys.exe 가 PowerShell 이 쓴 소유자 기록으로 위임을 받음**(= FILETIME 식 시작 시각 ③′ 짝 · LockFile(0,1) ↔ LockFileEx 교차 · 손 JSON ↔ serde 실증) · [ⓒ] 남이 쥠 = busy·J-UPD-01·기록 무변화 · [ⓖ] 실 기록 = ⓪-a 꼴.
   · 적색 7: 거부 갈래(env 누락·epoch 틀림·토큰 없음·시작 시각 틀림)마다 **debug cys.exe 가 `thread 'main' has overflowed its stack`(0xC00000FD)** — 거부 rc 26 대신 죽음. 그 뒤 놓기·자식 잠금·재시도 시험이 연쇄 적색(죽은 프로세스 정리 중 소유자 기록 교체 실패로 추정 — 덤프 추가).
   · 조치(f1819e50): 계약 스텝을 **출시 빌드 cys.exe** 로(제품 형상) + 적색 시 txn 기록 덤프. 출시 빌드도 넘치면 = U2 참가 거부 갈래의 윈 제품 결함(【경고】 대상 · 이 티켓 밖 수리).
+  · 2차(f1819e50 · 37548178821 · 출시 빌드): 거부 갈래 3 = **rc 26 정상**(스택 넘침 = debug 전용 확정 · U2 제품 결함 아님) · 남은 적색 4 = 소유자 기록 **두 번째 바꾸기(묘비) 실패**에서 연쇄(윈 `File.Replace` · 방금 쓴 파일 공유 위반 꼴).
+  · 3차(b6bb636e · windows-health 37548828686 **success** · windows-build success): `Write-CysTxnFile` 재시도 100ms×30 → 지우고 옮기기 폴백 → **PowerShell 5.1 ok 25 · FAIL 0 · 7 ok 25 · FAIL 0 · real=1**.
+  · ⚠debug cys.exe 의 윈 주 스레드 스택 넘침(거부 갈래 = 0xC00000FD)은 시험 빌드 한정 관측 — 출시 무관이나 윈에서 debug cys 로 참가 거부를 재는 시험은 같은 함정(기록만).
 
 ## §5 재현
 ```

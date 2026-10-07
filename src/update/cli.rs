@@ -78,7 +78,7 @@ enum UpdCmd {
         recover: bool,
         #[arg(long = "verify-payload")]
         verify_payload: bool,
-        /// (설치 링크 · U5) 저널 판정만 — {journal: none|ok|degraded|corrupt, state, terminal, lock_held} · 쓰기·잠금 0
+        /// (설치 링크 · U5) 저널 판정 + 이 판 롤백 자산 판정 — {journal: none|ok|degraded|corrupt, state, terminal, lock_held, seq, n7_installer} · 쓰기·잠금 0
         #[arg(long = "journal-state")]
         journal_state: bool,
         /// (설치 링크 · U5 · 윈 롤백 자산 §3-7 ②) 방금 깐 설치기 + 보관소 본문을 `installers/<이 판 seq>/` 에 놓는다(호출자가 txn.lock 을 쥔 채)
@@ -205,8 +205,8 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
                 print(json, &serde_json::json!({"journal": "undetermined", "detail": "state_dir"}), "journal=undetermined");
                 return 3;
             };
-            let v = super::install_link::journal_state(&dir);
-            print(json, &v, &format!("journal={} state={} terminal={}", v["journal"], v["state"], v["terminal"]));
+            let v = super::install_link::link_state(&dir);
+            print(json, &v, &format!("journal={} state={} terminal={} n7_installer={}", v["journal"], v["state"], v["terminal"], v["n7_installer"]));
             0
         }
         UpdCmd::SelfUpdate { check: false, journal_state: false, preserve_installer: true, auto: false, spawn: false, run: false, recover: false, verify_payload: false, pack_only: false, setup, setup_sig, seq, json } => {

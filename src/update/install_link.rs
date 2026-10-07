@@ -12,6 +12,16 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 /// 저널 판정 JSON(`journal` ∈ none·ok·degraded·corrupt · `state` · `terminal` · `lock_held`).
+/// `--journal-state` 본체 = [`journal_state`] + 이 바이너리 판(`seq`)의 롤백 자산 재검증(`n7_installer` = check::installer_assets_ok · 러너 N7 과 같은 판정).
+/// ★3판(Opus 2R N10): 설치 링크는 자산 「있음」을 스스로 보지 않고 이 값을 쓴다(존재만 보기 = 손상·서명 불일치를 놓친다).
+pub fn link_state(dir: &Path) -> Value {
+    let mut v = journal_state(dir);
+    let seq = super::buildinfo::release_seq();
+    v["seq"] = serde_json::json!(seq);
+    v["n7_installer"] = serde_json::json!(super::check::installer_assets_ok(dir, seq));
+    v
+}
+
 pub fn journal_state(dir: &Path) -> Value {
     use super::journal::ReadOutcome;
     let lock_held = if dir.join(super::lock::LOCK_FILE).exists() { super::lock::is_held(dir) } else { Some(false) };
@@ -322,6 +332,25 @@ mod tests {
         let v = journal_state(&d);
         assert_eq!(v["journal"].as_str(), Some("corrupt"), "{v}");
         assert!(v["terminal"].is_null());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★3판(Opus 2R N10): `--journal-state` = 저널 칸 그대로 + seq·n7_installer(= check::installer_assets_ok) — 자산 없음·가짜 4파일 = false.
+    #[test]
+    fn link_state_adds_seq_and_n7_from_reverification() {
+        let d = std::env::temp_dir().join(format!("cys-u5-ls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let v = link_state(&d);
+        assert_eq!(v["journal"].as_str(), Some("none"));
+        assert_eq!(v["seq"].as_u64(), Some(crate::update::buildinfo::release_seq()));
+        assert_eq!(v["n7_installer"].as_bool(), Some(false), "자산 없음");
+        let s = d.join("installers").join(crate::update::buildinfo::release_seq().to_string());
+        std::fs::create_dir_all(&s).unwrap();
+        for n in ["release.json", "release.json.minisig", "setup.exe", "setup.exe.sig"] {
+            std::fs::write(s.join(n), b"x").unwrap();
+        }
+        assert_eq!(link_state(&d)["n7_installer"].as_bool(), Some(false), "있음만으로는 참이 아니다(재검증)");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

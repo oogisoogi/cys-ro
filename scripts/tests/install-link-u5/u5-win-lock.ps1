@@ -6,7 +6,7 @@
 #   · 윈도우 + -Cys <cys.exe>(1.1.8 debug 또는 설치본) = 실물 — 잡기 → 실 cys 가 --txn 위임을 받음 · 뮤테이션(env 누락 · 토큰 틀림 · 토큰 없음 ·
 #     시작 시각 틀림 = 전부 rc 26) · 남이 쥠(다른 프로세스) = 재시도 뒤 rc 26 + J-UPD-01 + 소유자 기록 무변화 · 위임 자식 잠금 쥠 = busy ·
 #     소유자 전용 아님·연결점·위임 거부 = J-UPD-03(3판 · 원격 해결 열림) ·
-#     놓기 = 묘비 뒤 해제 · 위임 거부(rc 26) → 놓고 토큰 없이 한 번 더
+#     놓기 = 묘비 뒤 해제(못 쓰면 쥔 채) · 위임 거부(rc 26) → J-UPD-03 + 끝(무잠금 재실행 0)
 # 쓰는 법: pwsh -NoProfile -File tests/install-u5/u5-win-lock.ps1 [-Cys <cys.exe>] [-Ps1 <bootstrap.ps1>]   · rc 0 = 통과
 # ⛔바깥에 닿지 않는다 — LOCALAPPDATA·JARVIS_HOME 을 임시 폴더로 · 진행 전송 끔(JARVIS_LIB_ONLY) · 이 시험이 띄운 프로세스만 거둔다.
 param([string]$Cys = '', [string]$Ps1 = '')
@@ -28,6 +28,8 @@ $env:JARVIS_HOME = Join-Path $base 'install-jarvis'
 New-Item -ItemType Directory -Force -Path $env:JARVIS_HOME | Out-Null
 $env:JARVIS_LIB_ONLY = '1'
 $env:JARVIS_TXN_RETRY_SEC = '0'
+$env:JARVIS_TXN_RECHECK_SEC = '0'
+$env:JARVIS_NO_PROGRESS = '1'
 Remove-Item Env:CYS_UPDATE_TXN -ErrorAction SilentlyContinue
 Remove-Item Env:CYS_UPDATE_STATE_DIR -ErrorAction SilentlyContinue
 $env:CYS_PACK_DIR = Join-Path $base 'pack'
@@ -98,6 +100,44 @@ $psx = (Get-Process -Id $PID).Path
 $ro = (& $psx -NoProfile -Command ("`$env:JARVIS_LIB_ONLY='1'; . '" + $Ps1 + "' *> `$null; Stop-CysTxnRefused 'rotate'") 2>&1) -join "`n"
 $rrc = $LASTEXITCODE
 T (($rrc -eq 26) -and $ro.Contains('J-UPD-03') -and $ro.Contains('넘겨받지 못해 여기서 멈췄습니다')) '[N3] 위임 거부 실본문 = 원인 문구 · J-UPD-03 · exit 26' ("rc=$rrc out=" + $ro)
+# 4판(Opus 3R m2) — 판정할 cys 없음 + 종결(DONE) 저널 = go(끝난 갱신의 평상 기록) · 비종결 = nojudge
+Set-Content -LiteralPath $jf -Value '{"state":"DONE","epoch":3}'
+$vt = Get-CysTxnJournalVerdict
+Set-Content -LiteralPath $jf -Value '{"state":"S7_STOPPED","epoch":3}'
+$vn = Get-CysTxnJournalVerdict
+Remove-Item -LiteralPath $jf -Force
+T (($vt -eq 'go') -and ($vn -eq 'nojudge')) '[순수] 판정 cys 없음 + 종결 저널 = go · 비종결 = nojudge(4판 m2)' ("done=$vt stopped=$vn")
+# 4판(m9·m4) — 윈 nodir/nolock 분류 + nolock 제자리 재확인 정확히 3 → J-UPD-03(busy 기다림 0)
+$saveDir = $CysUpdateDir
+$fp = Join-Path $base 'afile'; Set-Content -LiteralPath $fp -Value 'x'
+$CysUpdateDir = Join-Path $fp 'cys-update'; Lock-CysTxnOnce; $s1 = $script:CysTxnState   # 부모가 파일 = 없고 못 만듦
+$CysUpdateDir = $fp; Lock-CysTxnOnce; $s2 = $script:CysTxnState                         # 자리에 파일 = 있는데 못 씀
+$script:JCode = ''
+$rc5 = Enter-CysTxn *> $null; $s3 = $script:CysTxnState; $j3 = $script:JCode
+$CysUpdateDir = Join-Path $fp 'cys-update'; $script:JCode = ''
+$rc6 = Enter-CysTxn
+$CysUpdateDir = $saveDir
+$rech = @(Get-Content -LiteralPath $LogFile -Encoding UTF8 | Where-Object { $_ -match 'txn: nolock — 재확인' }).Count
+T (($s1 -eq 'nodir') -and ($s2 -eq 'nolock') -and ($s3 -eq 'nolock') -and ($j3 -eq 'J-UPD-03') -and ($rech -eq 3) -and ($rc6 -eq 0) -and (-not $script:JCode)) '[분류] 윈 nodir = 잠금 없이 진행(rc 0) · nolock = 제자리 재확인 정확히 3 뒤 J-UPD-03(4판 m4·m9)' ("nodir=$s1 nolock=$s2/$s3 j=$j3 rech=$rech rc6=$rc6")
+# 4판(Opus 3R M1·m1·m9) — 자산용 설치기 받기: 붙기만 하고 답이 없는 서버 → 상한 안에 끝 · 화면·기록 1줄 · return 0(설치 계속)
+$lsn = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0); $lsn.Start()
+$saveUrl = $CysDownloadUrl; $saveTo = $CysAssetsDlTimeoutSec
+$CysDownloadUrl = 'http://127.0.0.1:' + $lsn.LocalEndpoint.Port + '/setup.exe'; $CysAssetsDlTimeoutSec = 3
+$dlDst = Join-Path $base 'dl\setup.exe'
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$rcDl = Receive-CysSetupForAssets $dlDst
+$secs = $sw.Elapsed.TotalSeconds
+$lsn.Stop(); $CysDownloadUrl = $saveUrl; $CysAssetsDlTimeoutSec = $saveTo
+$logTxt = (Get-Content -LiteralPath $LogFile -Encoding UTF8) -join "`n"
+T (($rcDl -eq 0) -and ($secs -lt 30) -and (-not (Test-Path -LiteralPath $dlDst)) -and (-not (Test-Path -LiteralPath ($dlDst + '.u5part'))) -and $logTxt.Contains('자동 갱신을 위한 준비 파일을 이번에는 받지 못했습니다 — 설치는 계속됩니다') -and $logTxt.Contains('rollback assets: 설치기 받기 실패')) '[받기] 답 없는 서버 = 상한(시험 3초) 안에 끝 · 화면·기록 1줄 · return 0 · 찌꺼기 0(4판 M1·m1)' ("rc=$rcDl secs=" + [int]$secs)
+# 4판(m9) — Invoke-CysCapped 실 경로(하네스는 본문에서 뗀 u5-deps.ps1 = 핀 대상): 표준 출력 · rc ≠ 0 = $null · 상한 = $null
+$px = (Get-Process -Id $PID).Path
+$c1 = Invoke-CysCapped $px '-NoProfile -Command "Write-Output u5ok"' 20000
+$c2 = Invoke-CysCapped $px '-NoProfile -Command "exit 3"' 20000
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$c3 = Invoke-CysCapped $px '-NoProfile -Command "Start-Sleep 20"' 1500
+$c3s = $sw.Elapsed.TotalSeconds
+T (([string]$c1).Contains('u5ok') -and ($null -eq $c2) -and ($null -eq $c3) -and ($c3s -lt 10)) '[실경로] Invoke-CysCapped = 출력 · rc≠0 null · 상한 null(4판 m9)' ("c1=$c1 c2=$c2 c3s=" + [int]$c3s)
 $st = Get-CysTxnStartTime
 if (-not $isWin) {
     $ls = (& /bin/sh -c ('TZ=UTC0 LC_ALL=C ps -o lstart= -p ' + $PID)).Trim()
@@ -212,7 +252,7 @@ if ($isWin -and $Cys) {
     Lock-CysTxnOnce
     T (($script:CysTxnState -eq 'busy') -and ((Get-FileHash -LiteralPath (Join-Path $U 'txn.owner.json')).Hash -eq $before) -and (Test-CysTxnFree (Join-Path $U 'txn.lock'))) '[ⓒ′] 위임 자식 잠금 쥠 = busy · 직전 기록 복원 · txn.lock 놓음' ("state=" + $script:CysTxnState)
     Stop-Process -Id $h2.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1
-    # ⓕ 위임 거부 → 놓고 한 번 더
+    # ⓕ 위임 거부 → 끝(호출 1회 · 무잠금 재실행 0)
     $fake = Join-Path $base 'fakecli.cmd'
     Set-Content -LiteralPath $fake -Encoding ASCII -Value "@echo off`r`necho %*>>`"$base\calls.txt`"`r`necho %* | findstr /C:`"--txn`" >nul && exit /b 26`r`nexit /b 0`r`n"
     [void](Enter-CysTxn)

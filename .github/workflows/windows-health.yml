@@ -328,7 +328,7 @@ jobs:
           u5_pin_ok "$D" || { echo "::error::계약 사본 ≠ 핀 — ai-jarvis tests/install-u5/sync-cys-contract.py --write 로 다시 옮겨라"; exit 1; }
           echo "U5-PIN ok (음성 대조 적색 확인 · $(grep '^# aj_commit' "$D/CONTRACT.sha256"))"
           # 3판(Opus 2R · codex8/agy2 잔여): 공개 스테이징 /install/next/bootstrap.ps1 의 「자동 갱신 잠금」 블록 = 핀인가 — 배포본이 시험한 계약과 다르면 적색.
-          #   skip(명시) = 404 · 블록 표지 없음(U5 미배포 옛 판) · 망 오류(경고). 추출 = sync-cys-contract.py block() 과 같은 식(BOM + 표지 사이 · 줄바꿈 정규화).
+          #   skip(명시) = 404 · 블록 표지 없음(U5 미배포 옛 판) · 403 = 러너 차단(지금 실측 · 대조 0 · 경고) · 망 오류(경고). 추출 = sync-cys-contract.py block() 과 같은 식.
           NX="${RUNNER_TEMP:-/tmp}/u5-next.ps1"
           code="$(curl -sS -o "$NX" -w '%{http_code}' https://jarvis.godmeyou.kr/install/next/bootstrap.ps1 || echo neterr)"
           case "$code" in
@@ -341,6 +341,7 @@ jobs:
               elif [ "$v" = "$want" ]; then echo "U5-NEXT ok (스테이징 블록 = 핀)"
               else echo "::error::스테이징 /install/next/bootstrap.ps1 블록 ≠ 핀(배포본 $v · 핀 $want) — 시험한 계약과 다른 것이 배포돼 있다"; exit 1; fi ;;
             404) echo "U5-NEXT skip (스테이징 404 · 미배포)" ;;
+            403) echo "::warning::U5-NEXT 대조 0 — 러너 차단(403 · 사이트 규칙). 실효 관문 = 배포 전 sync-cys-contract.py --check(HANDOFF-U5 §6)" ;;
             *) echo "::warning::U5-NEXT skip (스테이징 받기 실패 $code · 망)" ;;
           esac
           # 출시 빌드로 잰다 — 제품 형상(설치 도우미가 부르는 것은 출시 cys.exe) · 1차 런(debug)은 위임 거부 갈래에서 debug 프레임이

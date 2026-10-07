@@ -4,12 +4,26 @@
 - 트리 2: cys `~/axdev/.wt/cys-118-u5`(가지 u5/install-link-118 off 8bcd39aa) · ai-jarvis `~/axdev/.wt/aj-118-u5`(같은 가지명 · push 0)
 - 설계 정본 = `DESIGN-AUTOUPDATE-118.md` §3-2(136~142행) · §3-7 ②(245행) · 계약 정본 = 코드(`src/update/lock.rs`)
 
+## §0-4 4판 델타(master#c60b7de4 · agy 3R 수렴 예 · Opus 3R MAJOR 1·MINOR 9 · 전건 채택 · 상한 1.5h · 원문 = docs/update/REVIEW-U5-{agy,opus}-3r.md untracked)
+| # | 지적 | 4판 수리 | 커밋(aj · cys) |
+|---|---|---|---|
+| ① | M1 자산용 설치기 받기 시한 없음 | `-TimeoutSec $CysAssetsDlTimeoutSec`(900 = 본 받기와 같게 · 시험만 env 로 줄임) · 시한 초과 = catch = 설치 계속 · 맥 = 이 갈래 없음(롤백 자산 = 윈 전용 · 맥 cys 받기 = `curl --max-time 900` 확인) | aj 38244b5 |
+| ② | m1·m9 실패 갈래 무화면·무집계 · 시험 0 | 화면 1줄 「자동 갱신을 위한 준비 파일을 이번에는 받지 못했습니다 — 설치는 계속됩니다(이 설치 한 줄을 다시 실행하시면 다시 받아 봅니다)」(위협·일정 약속 0) + 기록 1줄 + `Send-Progress '5/10' info rollback-assets:dl-fail` · 시험 = 답 없는 TCP(붙기만) 서버로 그 갈래를 실제 통과(pwsh 맥·윈 · 맥 셸 = 해당 갈래 없음) | aj 38244b5 |
+| ③ | m2 종결 저널까지 J-UPD-03 | 판정 cys 없음일 때 journal.json `state` 가 종결(DONE·DEFERRED·RB_DONE·RB_FAILED·PACK_DONE = cys is_terminal)이면 go · 맥 ⓓ · 윈 순수 1 | aj 38244b5 |
+| ④ | m4 순간 실패까지 J-UPD-03 | nolock 만 제자리 재확인 3회(1초 · 맥은 회당 배경 perl 응답 대기 ≤10초 = 상한 ≈33초) 뒤 J-UPD-03 · 그사이 busy = J-UPD-01 즉시(기다림 루프 재진입 0) · 맥 ⓙ(재확인 정확히 3) · 윈 분류 1 | aj 38244b5 |
+| ⑤ | m3 저널 판정에 132MB 재검증 | `--journal-state` = 저널만(seq 포함) · `--assets` 를 줄 때만 n7_installer · 소비자 = bootstrap 두 갈래뿐(runner·U2·check grep 0 — U2 러너 결과 계약 무관) | cys bb7fe634 · aj 38244b5 |
+| ⑥ | m5·m6 CI 403 · 핀 = 파일 커밋 | CI 403 = 「러너 차단 · 대조 0」 따로 이름 · §6·§0-3 ③ 문구 정정 · `--check` 판정 = 해시 줄만(aj_commit = 정보) — 블록 밖 수정 = same · 맥 ⓘ′ | aj 38244b5 · cys (이 커밋) |
+| ⑦ | m7·m8 낡은 주석 · 일정 약속 문구 | sh·ps1·맥·윈 시험 머리·HANDOFF §2·§0 결정 3 · 「고치는 중입니다」 괄호 삭제 · nolock 복원 실패 기록 줄 = 실제 상태 | aj 38244b5 · cys |
+| ⑧ | m9 윈 분류 시험 · 하네스 대역 | 윈 nodir/nolock 분류 + 재확인 시험 · 하네스 = 본문에서 뗀 `u5-deps.ps1`(핀 3번째 줄) + 실 경로 단언(출력 · rc≠0 null · 상한 null) | aj 38244b5 · cys |
+- 설계 문서(DESIGN-AUTOUPDATE-118 §3-2 140행)에 J-UPD-03·nodir 편입 줄 = master 문서(3R m7 끝 · 워커 무접촉).
+- 잔여 고지(3R N4): 맥 `txn_check_holder` 는 창을 좁힐 뿐 닫지 않는다 — 확인(kill -0) ↔ 위임 cys 호출 사이(rotate 쪽 최대 약 10초 = 기준선 list·--version) 창은 남는다(배경 perl 만 따로 SIGKILL 되는 빈도 낮은 꼴).
+
 ## §0-3 3판 델타(master#2f038a50 · 적대 agy 2R BLOCK 1·MINOR 1 + Opus 2R MAJOR 3·MINOR 9 · 전건 채택 · 상한 1.5h · 원문 = docs/update/REVIEW-U5-{agy,opus}-2r.md untracked)
 | # | 지적 | 3판 수리 | 커밋(aj · cys) |
 |---|---|---|---|
 | ① | 「기다림」 오분류 4(N1 · agy BLOCK·MINOR) | busy 만 J-UPD-01(재시도 3 · 첫 재시도 화면 1줄) · unsafe · nolock(자리는 있는데 못 엶·씀·복원 실패 · 파일이 폴더 자리 차지) · 위임 거부 · 판정 cys 없는 30분+ 저널 = **J-UPD-03 「잠금 자리 이상」**(원인별 문구 · 재시도 0 · 원격 해결 열림 · help/J-UPD-03) · 폴더 없고 못 만듦 = nodir → lock.rs participate 처럼 잠금 없이 진행 + 기록 1줄 · 판정 cys 없음 + 저널 방금 = J-UPD-02 | ca9cec9 |
 | ② | 같은 판 자산 없음 재다운 실패 = 막힘(N2) | `Receive-CysSetupForAssets` = 1회만 받기 · 실패(404·410·망·지문) = 화면·기록 1줄 + return 0 → [6/10] 건너뜀(설계 결정 4 복원) | ca9cec9 |
-| ③ | CI 대조 = 사본↔핀뿐(codex8/agy2 잔여) | §6 스테이징 배포 필수 관문 `sync --check <cys main>`(master 집행) · CI 계약 스텝 = 공개 /install/next/ 블록 ↔ 핀(불일치 적색 · 404·블록 없음 = skip 명시 · 망 = 경고) · yml 주석 정정 | (이 커밋) |
+| ③ | CI 대조 = 사본↔핀뿐(codex8/agy2 잔여) | §6 스테이징 배포 필수 관문 `sync --check <cys main>`(master 집행) · CI 계약 스텝 = 공개 /install/next/ 블록 ↔ 핀(불일치 적색 · 404·블록 없음 = skip 명시 · 망 = 경고 · ⚠4판 정정: GitHub 러너 = 403 차단이라 **지금 대조 0**(경고) — 실효 관문 = §6 sync --check) · yml 주석 정정 | (이 커밋) |
 | ④ | 위임 거부 단언 1갈래(N3) | Stop-CysTxnRefused **실본문**을 자식 프로세스로(문구 · J-UPD-03 · exit 26) · 구조 단언 = rotate rc 26 · 설치기 exit 6 · setup.exe `Invoke-WithCysTxnEnv` 포장 | ca9cec9 |
 | ⑤ | acquire 순서 서술 · perl 단독 SIGKILL · 복원 실패 삼킴(N4·N6) | HANDOFF:13·94 정정 · 맥 `txn_check_holder`(위임 init-pack·rotate 직전 perl 생존 → 죽었으면 J-UPD-03 끝) + `cys_txn_env` 토큰 미적재 · 복원 실패 = 기록 1줄 + nolock(J-UPD-03) | ca9cec9 |
 | ⑥ | 묘비 실패 + 창 폴백 · 재시도 무화면(N5·N8) | 창 폴백 직전 안내 1줄(맥 TXN_STUCK · 윈 CysTxnLock 남음) · 첫 재시도 화면 1줄 | ca9cec9 |
@@ -40,7 +54,7 @@
   근거 1줄: 설치 **전**엔 믿을 cys 가 없고(윈은 NSIS 안 cys.exe 를 꺼낼 수 없다) · 위임 검증 ③ 이 「소유자 pid = 자식의 조상」을 요구해 따로 뜬 도우미 프로세스는 소유자가 될 수 없다.
   대가: 소유자 기록·시작 시각을 스크립트가 cys 와 같은 식으로 만든다(③′ 짝) → 맥은 실 cys 위임 수용 + 뮤테이션으로 실증 · 윈은 windows-health 계약 스텝이 실물로 잰다.
 - ~~★설계 결정 2~~(2판 폐기 → 위임 거부 = J-UPD-01 끝 → 3판 J-UPD-03 끝): 위임이 거부되면(cys rc 26 · 설치기 exit 6 — 시작 시각을 못 맞춘 기계 등) **잠금을 놓고 토큰 없이 한 번 더**(설치는 끝까지 · 그 명령은 평소 참가자). 설치를 깨뜨리는 쪽보다 보호를 한 단계 낮추는 쪽을 골랐다.
-- ★설계 결정 3(「판정할 cys 없음 = 진행」 부분은 2판 폐기 → J-UPD-02 · 3판: 저널 30분+ = J-UPD-03): 저널 판정은 스크립트가 하지 않고 cys 새 입구 `self-update --journal-state`(러너 사본 → 설치본 순) — 온전·비종결 = 「복구 대기」(J-UPD-02) · 손상(degraded·corrupt) = 📌18 재설치 길이라 진행 · 판정할 cys 없음 = 진행(기록 1줄).
+- ★설계 결정 3(「판정할 cys 없음 = 진행」 부분은 2판 폐기 → J-UPD-02 · 3판: 저널 30분+ = J-UPD-03): 저널 판정은 스크립트가 하지 않고 cys 새 입구 `self-update --journal-state`(러너 사본 → 설치본 순) — 온전·비종결 = 「복구 대기」(J-UPD-02) · 손상(degraded·corrupt) = 📌18 재설치 길이라 진행 · ~~판정할 cys 없음 = 진행(기록 1줄)~~(2판 폐기).
 - ★설계 결정 4: 롤백 자산 = cys 새 입구 `self-update --preserve-installer --setup <설치기>`(본문 받기·검증·놓기 = cys 한 곳 · 러너 S11 보존과 같은 꼴). 못 챙기면(보관소 404 등) 설치는 계속하되 화면 2줄 + 진행 info(조용한 hold 0).
 - 덧붙인 것(브리프 밖 · 고지): ① J-UPD-01·02 도움말 페이지 2 + 목록 1줄(설치 창이 그 주소를 안내) ② 두 코드는 「기다림」이라 원격 해결을 열지 않음(맥·윈 각 1줄) ③ 이 창에서 자비스를 띄우는 길(맥 `exec claude` · 윈 `& claude`) 직전 잠금 놓기 — 안 놓으면 자비스 세션 내내 잠금·토큰 env 잔존(그 안 rotate·팩 명령 rc 26).
 - 이월 해소: U2 HANDOFF §5 ⓒ(pack-update·pack-plan·init-pack 잠금 배선)는 **이미 병합 트리에 있다**(`src/bin/cys.rs` InitPack·PackUpdate·PackPlan 의 `txn_participate` · 2판 C1) — 이 티켓에서 cys CLI 배선 보강 0.
@@ -61,7 +75,7 @@
 - `cys self-update --preserve-installer --setup <p> [--setup-sig <p>] --json` → rc 0 놓음+N7 참 · 2 거부 · 3 쓰기/seq 0 · 4 받지 못함 · seq = 이 바이너리(`--seq` = 시험 빌드 전용) · 호출자가 txn.lock 을 쥔 채.
 - 설치 도우미 소유자 기록 = `{owner:"install-link", pid, txn_id(32 hex), epoch(+1), started_at, boot_id, start_time, released}` · 순서 = lock.rs acquire(배타 → 기록 → 자식·참가자 잠금 확인 → 아니면 직전 기록 복원) · 놓기 = 묘비 → 해제.
 - 위임 = 참가 명령에만 `--txn`/`/CYSTXN=` + **그 호출에만** env `CYS_UPDATE_TXN`(맥 `cys_txn_env` · 윈 `Invoke-WithCysTxnEnv`·rotate psi) · 데몬을 띄울 수 있는 cys 호출도 그 호출에만 · 프로세스 전체 env 0(2판 ④).
-- 기다림 rc = 26(설치 도우미 끝 코드) · 진단 코드 J-UPD-01(잡혀 있음·nolock = 30초 × 3 재시도 뒤 · 위임 거부 · unsafe = 즉시) · J-UPD-02(복구 대기 · 저널 판정 불가 포함).
+- 기다림 rc = 26(설치 도우미 끝 코드) · 진단 코드 J-UPD-01(busy = 남이 쥠 · 30초 × 3 재시도 뒤 · 첫 재시도 화면 1줄) · J-UPD-02(복구 대기 · 판정 cys 없음 + 비종결 저널 방금) · J-UPD-03(잠금 자리 이상 = unsafe · nolock(제자리 재확인 3 뒤) · 위임 거부 · 판정 cys 없음 + 비종결 저널 30분+ · 원격 해결 열림) · nodir(폴더 없고 못 만듦) = 잠금 없이 진행 · 판정 cys 없음 + 종결 저널 = 진행(4판).
 - 놓기 = 묘비 → 해제 · 묘비를 3초 안에 못 쓰면 **쥔 채**(맥 perl 은 소유 셸이 끝날 때까지 · 윈은 FileStream 유지 · 다음 Unlock 이 재시도) · 토큰·env 는 언제나 거둠(2판 ③).
 - 핀 = `scripts/tests/install-link-u5/CONTRACT.sha256`(`# aj_commit <40hex>` + 사본 sha256 2줄) — 손으로 고치지 않는다(sync --write 만).
 
@@ -100,7 +114,7 @@ python3 ~/axdev/.wt/aj-118-u5/tests/install-u5/sync-cys-contract.py --check ~/ax
 ```
 
 ## §6 master 몫(비가역 · 워커 실행 0)
-- ★3판(Opus 2R · codex8/agy2 잔여) **스테이징 배포 필수 관문**: 배포 직전 `python3 <aj>/tests/install-u5/sync-cys-contract.py --check <cys main 작업 트리>` = 전부 `same`(사본·핀이 배포할 aj 원본과 같다) — 아니면 배포 중단. CI 는 사본↔핀 · 공개 /install/next/ 블록↔핀(배포 뒤 다음 cys 런 · 404·블록 없음 = skip 명시)까지만 잰다. help 장 = J-UPD-01·02·03 3장.
+- ★3판(Opus 2R · codex8/agy2 잔여) **스테이징 배포 필수 관문**: 배포 직전 `python3 <aj>/tests/install-u5/sync-cys-contract.py --check <cys main 작업 트리>` = 전부 `same`(사본·핀이 배포할 aj 원본과 같다) (4판: 판정 = 블록·시험·본문 대역 해시만 — 원본의 블록 밖 수정은 `same`(aj_commit 다름 = 정보 줄) · 블록 안 변경 = DIFF → `--write` + cys 커밋 + CI 뒤 배포) — 아니면 배포 중단. CI 가 실제로 재는 것 = 사본↔핀(음성 대조 포함)뿐 — 공개 /install/next/ 블록↔핀 스텝은 GitHub 러너가 403 차단이라 **지금 대조 0**(경고 1줄 · 4판 정정) ⇒ 이 관문이 유일한 실효 대조다. help 장 = J-UPD-01·02·03 3장.
 - 스테이징 `/install/next/` 배포(aj bootstrap.sh·.ps1 + help 3장 · 라이브 무접촉) → 윈 실기 `docs/WIN-FIELD-TEST-U5.md` relay(267) · 라이브 `/install/` 교체 · 핀 1.1.8 올림 · 보관소 본문 게시는 U3 의식.
 
 ## §7 적대 1R 채택/반박 표(codex 8 + agy 3 = 11행 · 원문 = docs/update/REVIEW-U5-{codex,agy}-1r.md)
@@ -136,3 +150,17 @@ python3 ~/axdev/.wt/aj-118-u5/tests/install-u5/sync-cys-contract.py --check ~/ax
 | N9 | 맥 감지 표 미포장 · ping 서술(MINOR) | 채택 | §0-3 ⑦ | ca9cec9 | — |
 | N10 | 자산 판정 = 존재만(MINOR) | 채택 | §0-3 ⑧ | cys 6baee372 · ca9cec9 | cys link_state 1 · 윈 순수 2 |
 | N11 | 윈 journal-state 시한 0(MINOR) | 채택 | §0-3 ⑧ | ca9cec9 | 윈 순수(nojudge 경로) |
+
+## §9 적대 3R 채택/반박 표(agy 0 + Opus 10 = 10행 · master#c60b7de4 전건 채택)
+| # | 지적(등급) | 판정 | 수리 | 시험(음성 대조) |
+|---|---|---|---|---|
+| M1 | 자산 받기 시한 없음(MAJOR) | 채택 | §0-4 ① | pwsh [받기] 답 없는 서버 3초 상한 — 시한 제거 시 45초 알람까지 멈춤(적색 확인) |
+| m1 | 실패 갈래 무화면·무집계(MINOR) | 채택 | §0-4 ② — 문구는 master 견본의 「다음에 자동으로 다시 받습니다」 대신 「이 설치 한 줄을 다시 실행하시면 다시 받아 봅니다」(러너 받기 = 296 미출고 · 지금 거짓이 될 약속 0) | [받기] 문구·기록 단언 |
+| m2 | 종결 저널까지 J-UPD-03(MINOR) | 채택 | §0-4 ③ | 맥 ⓓ · 윈 순수 |
+| m3 | 저널 판정에 재검증 묶임(MINOR) | 채택 | §0-4 ⑤ | cys link_state(--assets 없으면 칸 0) |
+| m4 | 순간 실패까지 J-UPD-03(MINOR) | 채택 | §0-4 ④ | 맥 ⓙ 재확인 3 · 윈 [분류] |
+| m5 | CI 403 인데 「잰다」(MINOR) | 채택 | §0-4 ⑥ | — |
+| m6 | 핀 = 파일 커밋(MINOR) | 채택(배포 입구 배선 = 범위 밖 · master) | §0-4 ⑥ | 맥 ⓘ′(블록 밖 same · 블록 안 DIFF) |
+| m7 | 낡은 주석·문서(MINOR) | 채택(설계 문서 = master) | §0-4 ⑦ | — |
+| m8 | 일정 약속 문구(MINOR) | 채택 | §0-4 ⑦ | — |
+| m9 | 시험이 경로를 안 지남(MINOR) | 채택 | §0-4 ②⑧ | [받기] · [분류] · [실경로] |

@@ -21,7 +21,11 @@ $CysTxnOddSay = @{
     refused = '자비스의 새 판 바꾸기 자리를 이 설치 도우미가 넘겨받지 못해 여기서 멈췄습니다.'
     nojudge = '지난번 새 판 바꾸기 기록이 오래 남아 있는데 판정할 프로그램이 없어, 덮어 깔지 않고 멈췄습니다.'
 }
-$CysTxnJournalStaleMin = 30   # 3판(N1 ⑥): 판정할 cys 가 없는 저널이 이보다 오래면 기다려도 안 풀린다 = J-UPD-03
+$CysTxnJournalStaleMin = 30   # 3판(N1 ⑥): 판정할 cys 가 없는 저널이 이보다 오래면 기다려도 안 풀린다 = J-UPD-03(종결 저널은 제외 · 4판 m2)
+$CysTxnRecheckMax = 3          # 4판(Opus 3R m4): nolock(자리를 못 엶·씀)은 J-UPD-03 전에 제자리 짧은 재확인 — 백신 순간 잠김 흡수 · busy 기다림과 별개
+$CysTxnRecheckSec = $(if ($null -ne $env:JARVIS_TXN_RECHECK_SEC) { [int]$env:JARVIS_TXN_RECHECK_SEC } else { 1 })   # 상한 = 3 × 1초(시험만 줄인다)
+$CysTxnTerminalStates = @('DONE', 'DEFERRED', 'RB_DONE', 'RB_FAILED', 'PACK_DONE')   # cys journal::State::is_terminal 과 같은 칸
+$CysAssetsDlTimeoutSec = $(if ($env:JARVIS_ASSETS_DL_TIMEOUT_SEC) { [int]$env:JARVIS_ASSETS_DL_TIMEOUT_SEC } else { 900 })   # 4판(Opus 3R M1): 본 받기([5/10] -TimeoutSec 900)와 같은 상한
 $script:CysTxnLock  = $null   # 쥔 FileStream
 $script:CysTxnToken = ''
 $script:CysTxnOwner = $null   # 소유자 기록 칸(묘비를 쓸 때 다시 쓴다)
@@ -196,7 +200,7 @@ function Lock-CysTxnOnce {
         $restored = $true
         try { if ($prev) { Write-CysTxnFile $ownerPath $prev } else { Remove-Item -LiteralPath $ownerPath -Force -ErrorAction Stop } } catch { $restored = $false; Write-Log ('txn: 직전 소유자 기록 복원 실패 — 끝(3판 N6 · ' + $_.Exception.Message + ')') }
         $lk.Unlock(0, 1); $lk.Close()
-        $script:CysTxnState = $(if ($restored) { 'busy' } else { 'nolock' }); Write-Log ('txn: busy ' + $n); return
+        $script:CysTxnState = $(if ($restored) { 'busy' } else { 'nolock' }); Write-Log ('txn: ' + $script:CysTxnState + ' ' + $n); return
     }
     $script:CysTxnLock = $lk; $script:CysTxnOwner = $o; $script:CysTxnToken = ($id + ':' + $epoch); $script:CysTxnState = 'ok'
 }
@@ -259,6 +263,7 @@ function Get-CysTxnJournalVerdict {
             return $v
         } catch { continue }
     }
+    if (Test-CysTxnJournalTerminal) { Write-Log 'txn: 판정할 cys 없음 · 저널 = 종결 상태 — 진행(4판 m2)'; return 'go' }
     Write-Log 'txn: 저널 판정 불가(판정할 cys 없음) — 덮지 않는다(2판 codex 6)'
     return 'nojudge'
 }
@@ -276,6 +281,14 @@ function Enter-CysTxn {
         if ($n -eq 1) { Say $CysTxnWaitSay }
         Write-Log ('txn: busy — ' + $CysTxnRetrySec + 's 뒤 다시(' + $n + '/' + $CysTxnRetryMax + ')')
         Start-Sleep -Seconds $CysTxnRetrySec
+    }
+    if ($script:CysTxnState -eq 'nolock') {
+        # 4판(m4): 「자리 이상」 판정 전 제자리 재확인(최대 $CysTxnRecheckMax × $CysTxnRecheckSec 초) — 그사이 busy 가 되면 그대로 J-UPD-01(기다림 루프로 되돌아가지 않는다)
+        for ($i = 1; $i -le $CysTxnRecheckMax -and $script:CysTxnState -eq 'nolock'; $i++) {
+            Write-Log ('txn: nolock — 재확인 ' + $i + '/' + $CysTxnRecheckMax)
+            Start-Sleep -Seconds $CysTxnRecheckSec
+            Lock-CysTxnOnce
+        }
     }
     if ($script:CysTxnState -eq 'nodir') {
         Write-Log 'txn: 갱신 폴더가 없고 만들 수도 없음 — 잠금 없이 진행(lock.rs participate 와 같이 · 3판 N1)'
@@ -298,6 +311,11 @@ function Enter-CysTxn {
     Set-NextStepRerun '5분 뒤 아래 「다시 하시는 법」대로 다시 실행해 주십시오.'
     return 26
 }
+function Test-CysTxnJournalTerminal {
+    # 4판(Opus 3R m2): 판정할 cys 가 없을 때만 — journal.json 의 state 가 종결(cys is_terminal 과 같은 칸)이면 참(끝난 갱신의 평상 기록 · 멈춘 트랜잭션 아님) · 못 읽음 = 거짓
+    try { $s = [string](([System.IO.File]::ReadAllText((Join-Path $CysUpdateDir 'journal.json')) | ConvertFrom-Json).state) } catch { return $false }
+    return ($CysTxnTerminalStates -contains $s)
+}
 function Test-CysTxnJournalStale {
     # 저널(journal.json · journal.prev.json 중 새 것)이 $CysTxnJournalStaleMin 분보다 오래됐는가 — 복구기가 도는 중이면 저널은 금방 바뀐다
     $ts = @(@('journal.json', 'journal.prev.json') | ForEach-Object { Join-Path $CysUpdateDir $_ } | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { (Get-Item -LiteralPath $_).LastWriteTimeUtc })
@@ -318,7 +336,7 @@ function Stop-CysTxnRefused([string]$What) {
     exit 26
 }
 function Invoke-CysTxnLogged($what, $cli, $cmdArgs) {
-    # Invoke-Logged 와 같되 잠금을 쥐었으면 --txn 위임(env 는 이 호출에만) · 위임 거부(rc 26)면 J-UPD-01 + 끝(2판 codex 1)
+    # Invoke-Logged 와 같되 잠금을 쥐었으면 --txn 위임(env 는 이 호출에만) · 위임 거부(rc 26)면 J-UPD-03 + 끝(2판 codex 1 · 3판 N1)
     if ($script:CysTxnToken) {
         $rc = Invoke-WithCysTxnEnv { Invoke-Logged $what $cli (@($cmdArgs) + @('--txn', $script:CysTxnToken)) }
         if ($rc -ne 26) { return $rc }
@@ -339,7 +357,7 @@ function Test-CysRollbackAssetsPresent([string]$Dir) {
     #   판정할 cys 가 없거나 그 칸이 없는 옛 판(1.1.7 이하 = 자동 갱신 없음) = 참(챙길 것이 없다) · 시한 20초
     $cli = Join-Path $Dir 'cys.exe'
     if (-not (Test-Path -LiteralPath $cli)) { return $true }
-    $w = Get-CysAssetsWord ([string](Invoke-CysCapped $cli 'self-update --journal-state --json' 20000))
+    $w = Get-CysAssetsWord ([string](Invoke-CysCapped $cli 'self-update --journal-state --assets --json' 20000))   # 4판 m3: 재검증은 --assets 를 줄 때만
     Write-Log ('rollback assets: n7_installer=' + $w)
     return ($w -ne $false)
 }
@@ -352,15 +370,16 @@ function Receive-CysSetupForAssets([string]$Dst) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Dst) | Out-Null
         if ((Test-Path -LiteralPath $Dst) -and ((Get-CysFileSha256 $Dst) -eq $CysWinSha256)) { return 0 }
         $pp = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
-        try { Invoke-WebRequest -Uri $CysDownloadUrl -OutFile $tmp -UseBasicParsing -ErrorAction Stop } finally { $ProgressPreference = $pp }
+        try { Invoke-WebRequest -Uri $CysDownloadUrl -OutFile $tmp -UseBasicParsing -TimeoutSec $CysAssetsDlTimeoutSec -ErrorAction Stop } finally { $ProgressPreference = $pp }   # 4판 M1: 상한 = 본 받기와 같게(기본 무한 금지)
         if (((Get-Item -LiteralPath $tmp).Length -ne $CysWinBytes) -or ((Get-CysFileSha256 $tmp) -ne $CysWinSha256)) { throw '크기·지문 불일치' }
         Move-Item -LiteralPath $tmp -Destination $Dst -Force
         [void](Clear-WebMark $Dst 'cys setup')
         Say '[5/10] 받았습니다 (되돌림 파일용 · 크기·지문 확인).'
     } catch {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-        Say '[5/10] 되돌림 파일용 설치 파일을 이번에는 받지 못했습니다 — 설치는 그대로 이어 갑니다(지금 쓰시는 데는 지장이 없습니다).'
-        Write-Log ('rollback assets: 설치기 받기 실패 — [6/10] 건너뜀으로 계속(3판 N2) · ' + $_.Exception.Message)
+        Say '[5/10] 자동 갱신을 위한 준비 파일을 이번에는 받지 못했습니다 — 설치는 계속됩니다(이 설치 한 줄을 다시 실행하시면 다시 받아 봅니다).'
+        Write-Log ('rollback assets: 설치기 받기 실패 — 자동 갱신 hold(N7) · [6/10] 건너뜀으로 계속(3판 N2 · 4판 M1·m1) · ' + $_.Exception.Message)
+        Send-Progress '5/10' 'info' $null 'rollback-assets:dl-fail' $null
     }
     return 0
 }
@@ -375,7 +394,7 @@ function Save-CysRollbackAssets([string]$Dir, [string]$Setup) {
     if ($rc -eq 0) { return 'ok' }
     if ($out -match 'unrecognized|unexpected argument') { return 'skip' }   # 옛 판(1.1.7 이하)은 이 입구가 없다 — 그 판엔 자동 갱신도 없다
     Say '     자비스가 나중에 새 판으로 바꿀 때 쓸 되돌림 파일을 이번에는 챙기지 못했습니다. 지금 쓰시는 데는 지장이 없습니다.'
-    Say '     그 파일이 없는 동안 자비스의 자동 새 판 바꾸기는 멈춰 있습니다 — 이 설치 한 줄을 나중에 다시 실행하시면 다시 챙겨 봅니다(자비스도 스스로 다시 받아 보도록 고치는 중입니다).'   # 3판(Opus 2R codex7 부분): 「챙긴다」 약속 = 404 지속 때 거짓 → 「챙겨 봅니다」
+    Say '     그 파일이 없는 동안 자비스의 자동 새 판 바꾸기는 멈춰 있습니다 — 이 설치 한 줄을 나중에 다시 실행하시면 다시 챙겨 봅니다.'   # 3판: 「챙긴다」 약속 삭제 · 4판(m8): 개발 일정 약속 괄호 삭제(공개 문구 규칙)
     Write-Log ('rollback assets: 못 챙김 rc=' + $rc + ' — 자동 갱신 hold(N7 설치판 자산 없음) · 설치 링크 재실행 = 다시 챙김(2판 codex7 · master#c72a59df ⓑ)')
     Send-Progress '6/10' 'info' $null ('rollback-assets:fail rc=' + $rc) $null
     return ('fail-' + $rc)

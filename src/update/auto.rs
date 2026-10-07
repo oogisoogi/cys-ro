@@ -145,7 +145,7 @@ pub const RC_SPAWN: i32 = 5;
 /// 복구기는 S2·S3 를 다시 밟지 않지만 후보는 **이 파일에서 복원된다**(「늘 비어 있다」 는 파일이 없을 때만) · 없음·손상 = 빈 후보 → 새 판
 /// 판정 자체가 불가(정식 자리 = 후보 판 대조가 새 판 판정의 조건) = 상태만으로 판정하는 갈래(보류 정리·옛 판 재구성)만.
 pub(crate) fn recovery_candidate(dir: &std::path::Path) -> Option<Candidate> {
-    Some(match super::quiesce::read_json(dir, CANDIDATE_FILE) {
+    Some(match super::quiesce::read_json::<Candidate>(dir, CANDIDATE_FILE).and_then(|c| if super::mutant("U2-CANDVERIFY") { Some(c) } else { verified_candidate(c) }) {
         Some(c) => c,
         None => {
             // 후보 기록 없음 = S2 전(아무것도 안 바뀜) 또는 손상 — 상태만으로 판정하는 갈래(보류 정리·재구성)는 빈 후보로 충분하다.
@@ -164,6 +164,23 @@ pub(crate) fn recovery_candidate(dir: &std::path::Path) -> Option<Candidate> {
             }
         }
     })
+}
+
+/// ★후속 3판(Opus 2R M1): candidate.json 은 날 JSON 이라 믿지 않는다 — 안의 U 서명 본문(`release_b64`·`release_sig_b64`)을 다시 검증하고
+/// 그 본문의 이 기판 행으로 자산(sha256·크기·페이로드 매니페스트 …)·판·release_seq 를 **다시 만든다**(파일의 asset 칸은 버림). 본문 없음·
+/// 서명 실패·이 기판 행 없음·판 어긋남 = None(빈 후보 = 새 판 판정 불가). S11 재료(feed_rev·봉투 sha256·signed_at)는 수용 기록에만 쓰인다.
+fn verified_candidate(c: Candidate) -> Option<Candidate> {
+    use base64::Engine;
+    let e = base64::engine::general_purpose::STANDARD;
+    let body = e.decode(c.release_b64.as_deref()?.trim()).ok()?;
+    let sig = e.decode(c.release_sig_b64.as_deref()?.trim()).ok()?;
+    let kr = super::keys::UpdateKeyring::embedded().ok()?;
+    let rb = super::feed::verify_release_body(&body, &sig, "cysr", &kr).ok()?;
+    if rb.release_seq != c.release_seq {
+        return None;
+    }
+    let asset = rb.assets.values().find(|a| a.target == super::buildinfo::TARGET)?.clone();
+    Some(Candidate { asset, version: rb.version.clone(), release_seq: rb.release_seq, ..c })
 }
 
 /// 러너 · 복구기 공통: 비종결 저널이면 복구부터(잠금 = 복구기 몫 · 잡혀 있으면 조용히 끝).

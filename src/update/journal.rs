@@ -236,7 +236,8 @@ impl Journal {
         self
     }
 
-    fn check(&self) -> bool {
+    /// crc 봉인 일치(★후속 3판 M1: 재구성이 쓰는 시도 기록의 저널 사본도 이것으로 본다 — 파싱은 되나 값이 바뀐 사본 = 손상).
+    pub fn check(&self) -> bool {
         !self.crc.is_empty() && self.crc == self.compute_crc()
     }
 }

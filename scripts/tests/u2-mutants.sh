@@ -57,6 +57,9 @@ U2-TXNFORM update::runner::tests::malformed_attempt_tokens_are_never_a_source
 U2-CANDSEQ update::realops::tests::reconstruct_new_needs_restored_candidate_of_the_same_release
 U2-PVATTEMPT update::realops::tests::post_verify_baseline_only_from_live_attempt_of_this_lineage
 U2-FILL update::realops::tests::win_s8_fills_missing_rollback_assets_from_archive_or_holds_with_reason
+U2-COPYCHECK update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-CANDVERIFY update::realops::tests::reconstruct_new_needs_restored_candidate_of_the_same_release
+U2-STAGESIG update::realops::tests::win_s9b_rerun_reverifies_stage_installer_before_running_it
 U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
 U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 U2-MEMOCHECK bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply

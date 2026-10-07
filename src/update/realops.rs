@@ -804,6 +804,9 @@ impl Ops for RealOps {
         }
         if !r.ok() {
             // 같은 설치기 **1회** 재실행 → 다시 대조(폭주 방지 — 재시도 상한 1)
+            // ★후속 3판(Opus 2R M1 · agy 1R a4 잔여): 재실행 전 stage 설치기를 해시만이 아니라 후보 행(sha256)·A2 서명으로 다시 본다
+            //   — 재구성으로 온 저널은 사본 값이 닻이라, 바이트가 바뀐 설치기는 여기서 실행 0.
+            self.verify_stage_installer(j)?;
             super::win_install::run_installer(Path::new(&j.stage_path), &self.env.install_dir, &self.token, &j.stage_tree_sha256)?;
             r = check(&self.env.install_dir);
             if !r.ok() {
@@ -1119,6 +1122,11 @@ impl Ops for RealOps {
             if seq != self.cand.release_seq {
                 return Err(rj(format!("새 판 판정 · 시도 저널 사본 판 {seq} ≠ 후보 {}", self.cand.release_seq)));
             }
+            // ★후속 3판(Opus 2R M1): (윈) 사본의 stage 해시 = 서명 재검증한 후보 행 sha256(S9b 재실행의 닻)
+            let st = attempt.journal.as_ref().map(|c| c.stage_tree_sha256.as_str()).unwrap_or("");
+            if self.env.os == Os::Win && st != self.cand.asset.sha256 {
+                return Err(rj("새 판 판정 · 시도 저널 사본 stage 해시 ≠ 후보 행".into()));
+            }
         }
         self.recon_new = !is_old;
         // ★5판(codex 4R N3″): 스냅샷 자리 없음 = S8 전(교체 0) — 옛 판이면 대조할 것 없음 · 새 판이면 모순(S9 는 S8 기록 뒤에만) = 사람 필요.
@@ -1200,6 +1208,28 @@ impl Ops for RealOps {
 }
 
 impl RealOps {
+    /// ★후속 3판(Opus 2R M1): stage 설치기 = 원점 stage 의 `setup.exe` · 크기·sha256 = 후보 행 · 저널 `stage_tree_sha256` = 후보 행 · A2 서명
+    /// (`setup.exe.sig` · S2 가 둔 것) 검증 — 하나라도 어긋남 = 실행 0.
+    fn verify_stage_installer(&self, j: &Journal) -> Step {
+        let f = |d: String| fail(ErrCode::WinA2SigBad, "S9b", d);
+        if super::mutant("U2-STAGESIG") {
+            return Ok(());
+        }
+        let a = self.asset()?;
+        let stage = self.stage_dir(j).ok_or_else(|| f("저널 원점 txn 없음".into()))?;
+        let exe = stage.join(SETUP);
+        if Path::new(&j.stage_path) != exe {
+            return Err(f(format!("stage_path ≠ 원점 stage 의 {SETUP}")));
+        }
+        let bytes = std::fs::read(&exe).map_err(|e| f(e.to_string()))?;
+        if bytes.len() as u64 != a.size || super::feed::sha256_hex(&bytes) != a.sha256 || j.stage_tree_sha256 != a.sha256 {
+            return Err(f("stage 설치기 크기·sha256 ≠ 후보 행".into()));
+        }
+        let sig = std::fs::read(stage.join(SETUP_SIG)).map_err(|e| f(format!("{SETUP_SIG}: {e}")))?;
+        let kr = super::keys::UpdateKeyring::embedded().map_err(f)?;
+        kr.verify_any(super::keys::Purpose::WinAsset, &bytes, &sig, super::clock::wall_now()).map_err(|e| f(format!("A2 서명: {e}")))
+    }
+
     /// ★후속 2판 ⑫: 설치판(`seq`) 롤백 자산을 채운다(윈만 · 맥 = 정식 자리 옛 번들이 롤백 자산) — 실패 = `update.no_rollback_asset`(일시 =
     /// 6h·12h·24h·48h 백오프 · §3-10 MA7) + 사유 1줄(조용한 보류 0).
     fn fill_rollback_assets(&self, seq: u64, step: &str) -> Step {
@@ -1986,15 +2016,36 @@ mod tests {
     #[test]
     fn reconstruct_new_needs_restored_candidate_of_the_same_release() {
         use super::super::runner::{attempt_begin, attempt_note_journal, current_attempt, AttemptView};
+        use crate::update::feed::fixture::{body_json, NOW};
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (d, upd, _root, mut ops) = recon_rig("recon-cand");
-        // 복원 입구: 있으면 S11 재료 그대로 · 없으면 빈 후보
+        let k = Keys::new();
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+        );
+        // 복원 입구: 서명 본문을 다시 검증하고 그 본문 행으로 자산을 **다시 만든다**(★후속 3판 Opus 2R M1) · S11 재료 그대로
+        let bb = body_json(&k, 9).to_string().into_bytes();
+        let e = base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
         ops.cand.feed_rev = Some(7);
         ops.cand.envelope_sha256 = Some("ab".repeat(32));
         ops.cand.envelope_signed_at = Some(1);
-        ops.cand.release_b64 = Some("Ym9keQ==".into());
-        ops.cand.release_sig_b64 = Some("c2ln".into());
-        super::super::quiesce::write_json(&upd, CANDIDATE_FILE, &ops.cand).unwrap();
-        assert_eq!(super::super::auto::recovery_candidate(&upd).as_ref(), Some(&ops.cand), "candidate.json = S11 재료째 복원");
+        ops.cand.release_b64 = Some(e.encode(&bb));
+        ops.cand.release_sig_b64 = Some(e.encode(k.u.sign(&bb)));
+        let mut forged = ops.cand.clone();
+        forged.asset.sha256 = "ee".repeat(32); // 파일의 자산 칸 변조 — 무시돼야 한다
+        super::super::quiesce::write_json(&upd, CANDIDATE_FILE, &forged).unwrap();
+        let got = super::super::auto::recovery_candidate(&upd).unwrap();
+        assert_eq!((got.feed_rev, got.release_seq, got.release_b64.as_deref()), (Some(7), 9, ops.cand.release_b64.as_deref()), "S11 재료째 복원");
+        assert!(got.asset.sha256 != forged.asset.sha256 && got.asset.target == crate::update::buildinfo::TARGET, "자산 = 서명 본문 행(파일 칸 무시)");
+        let mut bad = ops.cand.clone();
+        bad.release_sig_b64 = Some(e.encode(k.f.sign(&bb)));
+        super::super::quiesce::write_json(&upd, CANDIDATE_FILE, &bad).unwrap();
+        assert_eq!(super::super::auto::recovery_candidate(&upd).unwrap().release_seq, 0, "본문 서명 실패 = 빈 후보");
+        ops.cand = got;
         std::fs::remove_file(upd.join(CANDIDATE_FILE)).unwrap();
         let empty = super::super::auto::recovery_candidate(&upd).unwrap();
         assert!(empty.feed_rev.is_none() && empty.release_seq == 0, "파일 없음 = 빈 후보");
@@ -2005,6 +2056,7 @@ mod tests {
         copy.state = super::super::journal::State::Swapped;
         copy.release_seq = 8;
         copy.snapshot_dir = upd.join("backup/8-x").to_string_lossy().to_string();
+        let _ = &d;
         attempt_note_journal(&upd, &copy).unwrap();
         let a = match current_attempt(&upd, &super::super::journal::ReadOutcome::Absent) {
             AttemptView::Ok(a) => a,
@@ -2019,6 +2071,42 @@ mod tests {
         ops.judge_is_old = None;
         assert!(ops.reconstruct(&a).is_err() && !ops.reconstructed_new(), "빈 후보 = 새 판 판정 0");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R M1 · agy 1R a4 잔여): 윈 S9b 재실행 전 stage 설치기 재검증 — 페이로드 불일치로 재실행 갈래에 들어가도 ⓐ 설치기
+    /// 바이트 변조 ⓑ A2 서명 아닌 키 ⓒ stage_path 가 원점 stage 밖 = `update.win_a2_sig_bad`(S9b) · 설치기 실행 0. 뮤턴트 U2-STAGESIG = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_s9b_rerun_reverifies_stage_installer_before_running_it() {
+        use crate::update::feed::fixture::NOW;
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let t1 = "0123456789abcdef0123456789abcdef";
+        for case in ["tamper", "badsig", "elsewhere"] {
+            let (d, upd, _root, mut ops) = recon_rig(&format!("s9b-{case}"));
+            std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+            let _e = (
+                crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+                crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+            );
+            ops.env.os = Os::Win;
+            let setup = b"MZ-setup-9".to_vec();
+            ops.cand.asset.sha256 = crate::update::feed::sha256_hex(&setup);
+            ops.cand.asset.size = setup.len() as u64;
+            ops.cand.asset.payload_manifest = Some(vec![crate::update::feed::PayloadEntry { path: "cys.exe".into(), size: 1, sha256: "aa".repeat(32) }]);
+            let stage = upd.join("stage").join(t1);
+            std::fs::create_dir_all(&stage).unwrap();
+            std::fs::write(stage.join(SETUP), if case == "tamper" { b"MZ-evil-9!".to_vec() } else { setup.clone() }).unwrap();
+            std::fs::write(stage.join(SETUP_SIG), if case == "badsig" { k.u.sign(&setup) } else { k.a2.sign(&setup) }).unwrap();
+            let mut j = super::super::journal::Journal::new(t1, 1);
+            j.stage_path = if case == "elsewhere" { d.join("x/setup.exe") } else { stage.join(SETUP) }.to_string_lossy().to_string();
+            j.stage_tree_sha256 = ops.cand.asset.sha256.clone();
+            j.from_release_seq = 8;
+            let f = ops.payload_ok(&j).unwrap_err();
+            assert!(f.code == ErrCode::WinA2SigBad && f.step == "S9b", "{case}: 설치기 실행 전 거부 {f:?}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     /// ★후속 2판(codex 1R #8 · agy 1R #6): post_verify 의 기준선 원천 = 이 저널 계보의 **종결 안 된** 시도 기록뿐 — 종결 표지(`ended`) 기록·

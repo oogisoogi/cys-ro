@@ -596,6 +596,13 @@ impl<'a, O: Ops> Runner<'a, O> {
             let Some(copy) = attempt.journal.clone() else {
                 return blocked(self.ops, rj("정식 자리 = 새 판인데 이번 시도의 저널 사본 없음".into()));
             };
+            // ★후속 3판(Opus 2R M1): 사본 = 저널과 같은 무결성 규칙 — crc 봉인 · 이 시도 계보의 토큰 · 원점 = 시도 원점 · 스냅샷 자리 = 시도
+            //   기록 값. 하나라도 어긋남 = 손상 사본(새 crc 로 세탁하지 않는다 · 재구성 불가 = 사람 필요).
+            if !super::mutant("U2-COPYCHECK") {
+                if let Err(e) = verify_journal_copy(&attempt, &copy) {
+                    return blocked(self.ops, rj(format!("시도 저널 사본 {e}")));
+                }
+            }
             let j = match journal::write_reconstructed(&self.dir, &self.txn_id, self.epoch, State::Swapped, |n| {
                 copy_fields(n, &copy);
                 n.origin_txn = origin;
@@ -747,6 +754,27 @@ pub fn attempt_takeover(dir: &Path, old_txn: &str, new_txn: &str) -> Result<(), 
 /// 이 저널 txn 계보의 이번 시도 기록(종결 표지·남의 계보 = None).
 pub fn attempt_for(dir: &Path, txn: &str) -> Option<Attempt> {
     attempt_read(dir).filter(|a| a.owns(txn))
+}
+
+/// ★후속 3판(Opus 2R M1): 시도 기록의 저널 사본 검사 — crc 봉인 · 사본 토큰 ∈ 시도 계보 · 원점 = 시도 원점 · 스냅샷 자리 = 시도 기록 값
+/// · S9 이상(교환 기록 뒤 사본).
+pub fn verify_journal_copy(a: &Attempt, c: &Journal) -> Result<(), String> {
+    if !c.check() {
+        return Err("crc 불일치".into());
+    }
+    if !a.owns(&c.txn_id) {
+        return Err(format!("토큰 {} 이 시도 계보 밖", c.txn_id));
+    }
+    if !c.origin_txn.is_empty() && c.origin_txn != a.txn_id {
+        return Err("원점 ≠ 시도 원점".into());
+    }
+    if a.snapshot_dir.as_deref() != Some(c.snapshot_dir.as_str()) {
+        return Err("스냅샷 자리 ≠ 시도 기록".into());
+    }
+    if !matches!(c.state, State::Swapped | State::PayloadOk | State::Started | State::Committed) {
+        return Err(format!("상태 {} = 교환 기록 전", c.state.name()));
+    }
+    Ok(())
 }
 
 /// ★후속 2판: 저널 사본 갱신 — 이 저널 txn 계보의 시도 기록이 있을 때만(없으면 원천도 없다 = 할 일 없음) · 쓰기 실패 = Err(호출자가 멈춤).
@@ -1442,16 +1470,21 @@ pub(crate) mod tests {
     /// U2-JCOPY(사본 기록 끔) = 적.
     #[test]
     fn new_reconstruct_routes_through_s9_row_v_checks_and_single_ok() {
-        for (case, os) in [("ok", Os::Mac), ("verify", Os::Mac), ("commit", Os::Mac), ("payload", Os::Win), ("ok-win", Os::Win), ("nocopy", Os::Mac)] {
+        for (case, os) in [("ok", Os::Mac), ("verify", Os::Mac), ("commit", Os::Mac), ("payload", Os::Win), ("ok-win", Os::Win), ("nocopy", Os::Mac), ("tamper", Os::Mac)] {
             let d = tmp(&format!("recon-new-{case}"));
             let mut s = Sim::new(os);
             assert!(matches!(run(&d, &mut s, Fault::parse("kill@S10_STARTED:after")), Outcome::Killed(..)), "{case}");
             assert!(s.canonical_new, "{case}: 교환됨");
             let copy = attempt_for(&d, T).and_then(|a| a.journal).expect("저널 사본");
             assert!(matches!(copy.state, State::Swapped | State::PayloadOk | State::Started | State::Committed) && copy.snapshot_manifest_sha256 == "m".repeat(64), "{case}: 사본 = S9 이상 · 롤백 칸 {copy:?}");
-            if case == "nocopy" {
+            if case == "nocopy" || case == "tamper" {
                 let mut a = attempt_for(&d, T).unwrap();
-                a.journal = None;
+                if case == "nocopy" {
+                    a.journal = None;
+                } else {
+                    // ★후속 3판(Opus 2R M1): 파싱은 되나 값이 바뀐 사본(crc 그대로) = 손상 — 새 crc 로 세탁하지 않는다
+                    a.journal.as_mut().unwrap().stage_tree_sha256 = "e".repeat(64);
+                }
                 attempt_write(&d, &a).unwrap();
             }
             corrupt_both(&d);
@@ -1478,6 +1511,10 @@ pub(crate) mod tests {
                     assert!(!d.join(ATTEMPT_FILE).exists(), "{case}: 성공 뒤에만 시도 기록 삭제");
                 }
                 "nocopy" => assert!(matches!(&o, Outcome::SeatsBlocked(f) if f.detail.contains("저널 사본 없음")), "{case}: {o:?}"),
+                "tamper" => {
+                    assert!(matches!(&o, Outcome::SeatsBlocked(f) if f.detail.contains("crc")), "{case}: {o:?}");
+                    assert!(boot_guard(&d).unwrap().starts_with("journal_"), "{case}: 손상 저널 그대로 = 부팅 가드");
+                }
                 _ => {
                     assert!(matches!(o, Outcome::RolledBack(_)), "{case}: {o:?}");
                     assert_eq!(s.records, vec![Kind::Rollback], "{case}: ok 0 · deferred 0");

@@ -15,7 +15,7 @@
 | ⑥ | 묘비 실패 + 창 폴백 · 재시도 무화면(N5·N8) | 창 폴백 직전 안내 1줄(맥 TXN_STUCK · 윈 CysTxnLock 남음) · 첫 재시도 화면 1줄 | ca9cec9 |
 | ⑦ | 주석·문서 잔존 · 맥 감지 표 미포장 · ping 서술(N7·N9) | sh·ps1 저널 판정 머리 · u5-mac-lock.sh:8 · HANDOFF:28-29 폐기 표시 · yml · 맥 phoenix-identity·agent-detect·doctor = cys_txn_env · HANDOFF:14 정정 | ca9cec9 · (이 커밋) |
 | ⑧ | 자산 = 존재만 · 윈 journal-state 시한 0(N10·N11) | cys `--journal-state` 에 `seq`·`n7_installer`(check::installer_assets_ok 재검증) · ps1 = Get-CysAssetsWord · journal-state·자산 판정 = Invoke-CysCapped 20초 | cys 6baee372 · ca9cec9 |
-- 덧붙인 것(고지): 롤백 자산 못 챙김 문구 「챙깁니다」 → 「챙겨 봅니다」(Opus codex7 부분 지적 · 404 지속 때 거짓 약속) aj a0827c9 · 맥 「폴더 자리에 파일」 = nolock(lock.rs 「있는데 못 씀」 짝 · nodir 아님).
+- 덧붙인 것(고지): 자산 판정 seq 0(미발행 빌드) = 판정 없음(aj 9f0ab37 · 실측: 로컬 debug cys `--journal-state` = seq 0 · n7 false → 그대로면 [5/10] 이 매번 받음) · 롤백 자산 못 챙김 문구 「챙깁니다」 → 「챙겨 봅니다」(Opus codex7 부분 지적 · 404 지속 때 거짓 약속) aj a0827c9 · 맥 「폴더 자리에 파일」 = nolock(lock.rs 「있는데 못 씀」 짝 · nodir 아님).
 - 시험(맥): u5-mac-lock 36/0(ⓙ′ nodir · ⓝ perl 단독 사망 · ⓓ 오래된 저널 J-UPD-03 · ⓒ 기다림 1줄 · ⓕ 실본문 문구) · 음성 대조 = ⓝ(holder 확인 제거 → 위임 호출이 나감 = 적색) · pwsh 32/0 · 하네스 20/0 · CI 스텝 본문 맥 실행 = 실 스테이징 skip(옛 판) · 모의 같음 ok · 모의 1바이트 다름 적색.
 
 ## §0-2 2판 델타(master#9502b67b · 적대 codex 1R BLOCK 3·MAJOR 5 + agy 1R BLOCK 1·MAJOR 2 · 전건 채택 · 상한 2.5h · 원문 = docs/update/REVIEW-U5-{codex,agy}-1r.md untracked)

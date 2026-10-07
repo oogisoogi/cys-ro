@@ -330,6 +330,7 @@ function Get-CysAssetsWord([string]$Json) {
     # 순수 — `cys self-update --journal-state --json` 의 n7_installer → $true · $false · $null(그 칸 없음 = 옛 판 · 못 읽음)
     try { $j = $Json | ConvertFrom-Json } catch { return $null }
     if ($null -eq $j -or $null -eq $j.n7_installer) { return $null }
+    if ($j.seq -eq 0) { return $null }   # 미발행 빌드(release_seq 0) = 놓을 자산이 없다(보관소 행 없음) — 다시 받지 않는다
     return [bool]$j.n7_installer
 }
 function Test-CysRollbackAssetsPresent([string]$Dir) {

@@ -81,8 +81,8 @@ $sdv = @(
 $bad = @($sdv | Where-Object { (Test-CysTxnSddlPrivate $_[1] $_[2]) -ne $_[0] } | ForEach-Object { $_[1] })
 T ($bad.Count -eq 0) ('[순수] SDDL 소유자 전용 규칙 = cys sd_private_rule 벡터 ' + $sdv.Count + '개 일치(2판 codex 5)') ($bad -join ' | ')
 # 3판(Opus 2R N10) — 롤백 자산 판정 = cys 의 n7_installer(재검증) · 그 칸 없음(옛 판)·못 읽음 = $null → 참(챙길 것 없음)
-$aw = @((Get-CysAssetsWord '{"journal":"none","seq":7,"n7_installer":false}'), (Get-CysAssetsWord '{"journal":"none","seq":7,"n7_installer":true}'), (Get-CysAssetsWord '{"journal":"none"}'), (Get-CysAssetsWord 'error: unexpected argument'))
-T (($aw[0] -eq $false) -and ($aw[1] -eq $true) -and ($null -eq $aw[2]) -and ($null -eq $aw[3])) '[순수] 롤백 자산 = cys n7_installer 그대로 · 칸 없음·못 읽음 = 판정 없음(3판 N10)' ($aw -join ',')
+$aw = @((Get-CysAssetsWord '{"journal":"none","seq":7,"n7_installer":false}'), (Get-CysAssetsWord '{"journal":"none","seq":7,"n7_installer":true}'), (Get-CysAssetsWord '{"journal":"none"}'), (Get-CysAssetsWord 'error: unexpected argument'), (Get-CysAssetsWord '{"journal":"none","seq":0,"n7_installer":false}'))
+T (($aw[0] -eq $false) -and ($aw[1] -eq $true) -and ($null -eq $aw[2]) -and ($null -eq $aw[3]) -and ($null -eq $aw[4])) '[순수] 롤백 자산 = cys n7_installer 그대로 · 칸 없음·못 읽음·seq 0(미발행) = 판정 없음(3판 N10)' ($aw -join ',')
 T (Test-CysRollbackAssetsPresent (Join-Path $base 'no-cys-here')) '[순수] 판정할 cys 없음 = 참(챙길 것 없음 · 다시 받지 않는다)' 'x'
 # 3판(N1 ⑥) — 저널 있음 + 판정할 cys 없음 = nojudge · 오래됨(30분+) 판정
 New-Item -ItemType Directory -Force -Path $CysUpdateDir | Out-Null

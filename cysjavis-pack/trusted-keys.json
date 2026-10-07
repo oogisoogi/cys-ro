@@ -11,6 +11,34 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4MUJDQTdCODk1NzhGREUKUldUZWoxZUplOG9ieVBHWTV5MHovMjhXYXN3bjR5OWttRFZCWFpFMEx3cnR5S2QwNEU4KzBWcWgK",
       "not_after": "2030-01-01T00:00:00Z",
       "comment": "용도=pack · P2(키 브리지로 추가 — 신뢰 시작 = 이 키가 박힌 바이너리 배포 시점). docs/KEY-ROTATION.md"
+    },
+    {
+      "key_id": "E2EDBBF9B1CBDBB9",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgRTJFREJCRjlCMUNCREJCOQpSV1M1Mjh1eCtidnQ0bFVuditjNmRyODVsRlJLZXpNQlFuTUVqNW5jRHkzbzhrQmM4V3RxbkJ5NQo=",
+      "not_after": "2036-01-01T00:00:00Z",
+      "purpose": "root",
+      "comment": "용도=root · 1.1.8 자동 갱신"
+    },
+    {
+      "key_id": "49E63A352CC87151",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgNDlFNjNBMzUyQ0M4NzE1MQpSV1JSY2Nnc05Ucm1TV2ZJTFVXSklFeCsrV1g3L1hIWDhsa09sYm5vNUhrMjZkUGx2NjhvVTViRQo=",
+      "not_after": "2028-01-01T00:00:00Z",
+      "purpose": "release",
+      "comment": "용도=release · 1.1.8 자동 갱신"
+    },
+    {
+      "key_id": "20ADC40AE5764C8A",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwQURDNDBBRTU3NjRDOEEKUldTS1RIYmxDc1N0SU8vUmVFZ1VDNHZXYVFvSTd4eVVoTVQ5TWlhdG1YOHd5VmRpRDlRV0JVSGIK",
+      "not_after": "2028-01-01T00:00:00Z",
+      "purpose": "feed",
+      "comment": "용도=feed · 1.1.8 자동 갱신"
+    },
+    {
+      "key_id": "831CA9172204E93E",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMUNBOTE3MjIwNEU5M0UKUldRKzZRUWlGNmtjZzZKdWluYWlzUytJM3RLUUIrcjJhbjRnYTFCVUt0S0RRd2cwL2NvMjJDd3QK",
+      "not_after": "2028-01-01T00:00:00Z",
+      "purpose": "win-asset",
+      "comment": "용도=win-asset · 1.1.8 자동 갱신"
     }
   ],
   "revoked_key_ids": []

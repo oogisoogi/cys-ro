@@ -514,9 +514,11 @@ mod tests {
         assert!(e.contains("알 수 없는 key_id"), "{e}");
         let m = manifest_json(&id_pack, "1.1.8", now - 10, now + 100);
         verify_with_keyring(&m, sign_pack(&m).as_bytes(), now, &acc, &kr).expect("팩 키 서명 = 통과");
-        // 내장 키링(이 판): 전부 팩 용도 — 걸러지는 키 0
+        // 내장 키링(1.1.8 · TICKET=cysr-118-keyring): 팩 키 2 + 갱신 키 4(R·U·F·A2) — 팩 검증 키링에는 팩 키 2개만 남는다
         let raw: Keyring = serde_json::from_str(TRUSTED_KEYS_JSON).unwrap();
-        assert_eq!(embedded_keyring().unwrap().keys.len(), raw.keys.len());
+        assert_eq!(raw.keys.len(), 6);
+        let pack_ids: Vec<String> = embedded_keyring().unwrap().keys.iter().map(|k| k.key_id.clone()).collect();
+        assert_eq!(pack_ids, vec!["54FBA04AD0E0F49D".to_string(), "C81BCA7B89578FDE".to_string()]);
     }
 
     /// 키 분리(TICKET=key-bridge): 키링의 **모든** 항목에서 key_id == 공개키 파생 key_id.

@@ -312,9 +312,17 @@ function Enter-CysTxn {
     return 26
 }
 function Test-CysTxnJournalTerminal {
-    # 4판(Opus 3R m2): 판정할 cys 가 없을 때만 — journal.json 의 state 가 종결(cys is_terminal 과 같은 칸)이면 참(끝난 갱신의 평상 기록 · 멈춘 트랜잭션 아님) · 못 읽음 = 거짓
-    try { $s = [string](([System.IO.File]::ReadAllText((Join-Path $CysUpdateDir 'journal.json')) | ConvertFrom-Json).state) } catch { return $false }
-    return ($CysTxnTerminalStates -contains $s)
+    # 4판(Opus 3R m2) · 5판(Opus 4R n1): 판정할 cys 가 없을 때만 — 두 슬롯(journal.json · journal.prev.json) 중 generation 큰 쪽(= cys 가 최신으로 읽는 쪽 ·
+    #   journal.rs commit_next 가 번갈아 쓴다)의 state 가 종결(cys is_terminal 과 같은 칸)이면 참 · 한쪽만 읽히면 그쪽 · 둘 다 못 읽음 = 거짓(종전 갈래)
+    $best = $null
+    foreach ($n in @('journal.json', 'journal.prev.json')) {
+        try { $j = [System.IO.File]::ReadAllText((Join-Path $CysUpdateDir $n)) | ConvertFrom-Json } catch { continue }
+        if ($null -eq $j -or $null -eq $j.state) { continue }
+        $g = [long]0; if ($null -ne $j.generation) { $g = [long]$j.generation }
+        if ($null -eq $best -or $g -gt $best.g) { $best = [pscustomobject]@{ g = $g; s = [string]$j.state } }
+    }
+    if ($null -eq $best) { return $false }
+    return ($CysTxnTerminalStates -contains $best.s)
 }
 function Test-CysTxnJournalStale {
     # 저널(journal.json · journal.prev.json 중 새 것)이 $CysTxnJournalStaleMin 분보다 오래됐는가 — 복구기가 도는 중이면 저널은 금방 바뀐다

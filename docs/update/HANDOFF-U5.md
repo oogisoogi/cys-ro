@@ -4,10 +4,14 @@
 - 트리 2: cys `~/axdev/.wt/cys-118-u5`(가지 u5/install-link-118 off 8bcd39aa) · ai-jarvis `~/axdev/.wt/aj-118-u5`(같은 가지명 · push 0)
 - 설계 정본 = `DESIGN-AUTOUPDATE-118.md` §3-2(136~142행) · §3-7 ②(245행) · 계약 정본 = 코드(`src/update/lock.rs`)
 
+## §0-5 5판 델타(master#1e386cf2 · Opus 4R 수렴 예 MINOR 2 · agy 4R 수렴 예 · cys 쪽 = merge/v0.14.43 fb6fbf37 병합 진행)
+- ① n1 = 판정 cys 없음일 때 종결 판정을 두 슬롯 중 `generation` 큰 쪽으로(cys journal.rs commit_next 와 같은 최신 판별 · 한쪽만 = 그쪽 · 둘 다 못 읽음 = 종전 갈래) — aj 2a091fc · 시험 맥 ⓓ 2(음성 대조 = 한 슬롯만 읽으면 적색) · pwsh 순수 2 · 사본·핀 재동기.
+- ② n2 = §0-4 ① 에 잔여 고지 1줄(본문 받는 중 정지 = 시한 밖일 수 있음 · 미실측).
+
 ## §0-4 4판 델타(master#c60b7de4 · agy 3R 수렴 예 · Opus 3R MAJOR 1·MINOR 9 · 전건 채택 · 상한 1.5h · 원문 = docs/update/REVIEW-U5-{agy,opus}-3r.md untracked)
 | # | 지적 | 4판 수리 | 커밋(aj · cys) |
 |---|---|---|---|
-| ① | M1 자산용 설치기 받기 시한 없음 | `-TimeoutSec $CysAssetsDlTimeoutSec`(900 = 본 받기와 같게 · 시험만 env 로 줄임) · 시한 초과 = catch = 설치 계속 · 맥 = 이 갈래 없음(롤백 자산 = 윈 전용 · 맥 cys 받기 = `curl --max-time 900` 확인) | aj 38244b5 |
+| ① | M1 자산용 설치기 받기 시한 없음 | `-TimeoutSec $CysAssetsDlTimeoutSec`(900 = 본 받기와 같게 · 시험만 env 로 줄임) · 시한 초과 = catch = 설치 계속 · 맥 = 이 갈래 없음(롤백 자산 = 윈 전용 · 맥 cys 받기 = `curl --max-time 900` 확인) · ⚠잔여(5판 n2 · **미실측**): `-TimeoutSec` 은 응답 머리 전 정지만 끊는다고 알려져 있다 — 본문을 받는 도중 멈추면(PS 7.4+ 등) 이 시한이 안 걸릴 수 있다 · 본 받기([5/10] `-TimeoutSec 900`)와 같은 잔여 · 시험은 「붙기만 하고 머리 전 무응답」 꼴만 잰다 | aj 38244b5 |
 | ② | m1·m9 실패 갈래 무화면·무집계 · 시험 0 | 화면 1줄 「자동 갱신을 위한 준비 파일을 이번에는 받지 못했습니다 — 설치는 계속됩니다(이 설치 한 줄을 다시 실행하시면 다시 받아 봅니다)」(위협·일정 약속 0) + 기록 1줄 + `Send-Progress '5/10' info rollback-assets:dl-fail` · 시험 = 답 없는 TCP(붙기만) 서버로 그 갈래를 실제 통과(pwsh 맥·윈 · 맥 셸 = 해당 갈래 없음) | aj 38244b5 |
 | ③ | m2 종결 저널까지 J-UPD-03 | 판정 cys 없음일 때 journal.json `state` 가 종결(DONE·DEFERRED·RB_DONE·RB_FAILED·PACK_DONE = cys is_terminal)이면 go · 맥 ⓓ · 윈 순수 1 | aj 38244b5 |
 | ④ | m4 순간 실패까지 J-UPD-03 | nolock 만 제자리 재확인 3회(1초 · 맥은 회당 배경 perl 응답 대기 ≤10초 = 상한 ≈33초) 뒤 J-UPD-03 · 그사이 busy = J-UPD-01 즉시(기다림 루프 재진입 0) · 맥 ⓙ(재확인 정확히 3) · 윈 분류 1 | aj 38244b5 |

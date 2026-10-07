@@ -107,6 +107,14 @@ Set-Content -LiteralPath $jf -Value '{"state":"S7_STOPPED","epoch":3}'
 $vn = Get-CysTxnJournalVerdict
 Remove-Item -LiteralPath $jf -Force
 T (($vt -eq 'go') -and ($vn -eq 'nojudge')) '[순수] 판정 cys 없음 + 종결 저널 = go · 비종결 = nojudge(4판 m2)' ("done=$vt stopped=$vn")
+# 5판(n1) — 두 슬롯 = generation 큰 쪽: 최신 = prev 쪽 종결 → go · 최신 = prev 쪽 진행 중 → nojudge
+$jp = Join-Path $CysUpdateDir 'journal.prev.json'
+Set-Content -LiteralPath $jf -Value '{"state":"S7_STOPPED","generation":4}'; Set-Content -LiteralPath $jp -Value '{"state":"DONE","generation":5}'
+$v5a = Get-CysTxnJournalVerdict
+Set-Content -LiteralPath $jf -Value '{"state":"DONE","generation":4}'; Set-Content -LiteralPath $jp -Value '{"state":"S7_STOPPED","generation":5}'
+$v5b = Get-CysTxnJournalVerdict
+Remove-Item -LiteralPath $jf, $jp -Force
+T (($v5a -eq 'go') -and ($v5b -eq 'nojudge')) '[순수] 두 슬롯 = generation 큰 쪽 — 최신 prev 종결 = go · 최신 prev 진행 중 = nojudge(5판 n1)' ("a=$v5a b=$v5b")
 # 4판(m9·m4) — 윈 nodir/nolock 분류 + nolock 제자리 재확인 정확히 3 → J-UPD-03(busy 기다림 0)
 $saveDir = $CysUpdateDir
 $fp = Join-Path $base 'afile'; Set-Content -LiteralPath $fp -Value 'x'

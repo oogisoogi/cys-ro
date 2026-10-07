@@ -38,7 +38,7 @@ describe("D4 #14 원문을 본문에 싣는 알림 0", () => {
   });
   it("대표 경로 — 부서 완전 삭제·완전 초기화 실패(고위험 경보)는 원문을 「자세히」로 보존", () => {
     expect(main).toContain('stickyToast(failId, "watchdog", "부서 완전 삭제 실패", `${nm} 부서는 삭제되지 않았습니다. 다시 시도해 주세요.`, undefined, String(e));');
-    expect(main).toContain("undefined, `${String(e)}\\n상태 확인: cys factory-reset --plan`);");
+    expect(main).toContain("undefined, `${String(e)}\\n상태 확인: cysr factory-reset --plan`);");
   });
 });
 

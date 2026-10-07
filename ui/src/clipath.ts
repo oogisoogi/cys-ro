@@ -225,7 +225,7 @@ export function unverifiedCause(reason: string | null | undefined): UnverifiedCa
 /// ★대화형(-lic)으로 바꾸는 안은 채택하지 않는다: 버튼 클릭의 부작용으로 사용자의 대화형 rc 를
 /// 실행하면 nvm·conda·oh-my-zsh 같은 것이 백그라운드 프로세스를 띄울 수 있다. 정직한 문구가 답이다.
 export const NONINTERACTIVE_PROBE_NOTE =
-  "이 확인은 비대화형 로그인 셸 기준입니다 — 터미널에서 cys 가 이미 동작한다면 무시해도 됩니다.";
+  "이 확인은 비대화형 로그인 셸 기준입니다 — 터미널에서 'cys' 가 이미 동작한다면 무시해도 됩니다.";
 
 /// (MINOR-N7) PATH 를 정말 고쳐야 할 때 **실제로 읽히는 파일**만 지목한다. `~/.zshrc` 를 고치라던
 /// 예전 안내는 그대로 따라도 이 경고가 사라지지 않는 실행 불가능한 지시였다.
@@ -287,7 +287,7 @@ export function installResultToast(rep: InstallCliReport): ToastPlan {
     return {
       category: "system",
       title: "✅ 셸 설치 완료",
-      body: `${links} — 새 터미널에서 'cys' 를 바로 쓸 수 있습니다.`,
+      body: `${links} — 새 터미널에서 'cysr' 을 바로 쓸 수 있습니다.`,
       sticky: false,
       id: INSTALL_TOAST_ID,
     };
@@ -305,7 +305,7 @@ export function installResultToast(rep: InstallCliReport): ToastPlan {
       title: "⚠ 셸 설치 완료 — 확인할 항목이 있습니다",
       body:
         `확인이 필요한 항목:${tail}\n\n` +
-        `${links} — 링크는 만들어졌고 새 터미널에서 'cys' 를 바로 쓸 수 있습니다` +
+        `${links} — 링크는 만들어졌고 새 터미널에서 'cysr' 을 바로 쓸 수 있습니다` +
         `(설치 자체가 실패한 것은 아닙니다).`,
       sticky: true,
       id: INSTALL_TOAST_ID,
@@ -328,14 +328,14 @@ export function installResultToast(rep: InstallCliReport): ToastPlan {
     const by = shadowTarget(rep.shadowed_by);
     const advice = by.path
       ? `PATH에서 /usr/local/bin 을 ${by.path} 가 있는 폴더보다 앞으로 옮기면 파일을 하나도 건드리지 않고 ` +
-        `우리 cys 가 먼저 잡힙니다 — 이 방법을 먼저 쓰세요. 그 파일이 무엇인지는 'ls -l ${by.path}' 로 ` +
+        `우리 'cys' 가 먼저 잡힙니다 — 이 방법을 먼저 쓰세요. 그 파일이 무엇인지는 'ls -l ${by.path}' 로 ` +
         `확인할 수 있습니다(다른 도구가 설치했거나 직접 만든 것일 수 있습니다). 정말 필요 없는 것이라고 ` +
         `확인한 뒤에만 지우세요 — 지우면 되돌릴 수 없습니다. 그런 뒤 `
       : `가리는 경로를 하나로 특정하지 못했으므로(측정 출력이 경로 한 줄이 아닙니다) 지울 대상을 ` +
         `단정하지 않습니다. PATH에서 /usr/local/bin 을 앞으로 옮긴 뒤, `;
     return {
       category: "watchdog",
-      title: "⚠ 셸 설치 미완료 — 다른 cys가 앞을 가립니다",
+      title: "⚠ 셸 설치 미완료 — 다른 'cys' 가 앞을 가립니다",
       body:
         `심링크(${links})는 만들었지만, 로그인 셸 기준으로는 PATH 앞쪽의 ${by.label} 가 먼저 잡힙니다 — ` +
         `터미널에서 'cys' 를 치면 아직 그쪽이 실행됩니다. ${advice}` +
@@ -351,9 +351,9 @@ export function installResultToast(rep: InstallCliReport): ToastPlan {
   if (cause === "not_on_path") {
     return {
       category: "watchdog",
-      title: "⚠ 셸 설치 미완료 — PATH에서 cys를 찾지 못했습니다",
+      title: "⚠ 셸 설치 미완료 — PATH에서 'cys' 를 찾지 못했습니다",
       body:
-        `심링크(${links})는 만들었지만, 로그인 셸의 PATH에서 cys 를 찾지 못했습니다 — ` +
+        `심링크(${links})는 만들었지만, 로그인 셸의 PATH에서 'cys' 를 찾지 못했습니다 — ` +
         `PATH에 /usr/local/bin 이 들어 있지 않을 수 있습니다(설치 자체가 실패한 것은 아닙니다). ` +
         `${NONINTERACTIVE_PROBE_NOTE} 그래도 안 잡히면 ${LOGIN_SHELL_PATH_FILES}에 ` +
         `/usr/local/bin 을 PATH로 추가하세요 — ~/.zshrc 는 이 확인에서 읽히지 않습니다.${tail}`,
@@ -366,8 +366,8 @@ export function installResultToast(rep: InstallCliReport): ToastPlan {
       category: "watchdog",
       title: "⚠ 셸 설치 확인 불가",
       body:
-        `심링크(${links})는 만들었지만, 확인 명령(which -a cys)이 실패했거나 비정상 종료·무응답이라 ` +
-        `실제로 어떤 cys가 잡히는지 확인하지 못했습니다. 새 터미널에서 'which -a cys' 를 직접 ` +
+        `심링크(${links})는 만들었지만, 확인 명령('which -a cys')이 실패했거나 비정상 종료·무응답이라 ` +
+        `실제로 어떤 'cys' 가 잡히는지 확인하지 못했습니다. 새 터미널에서 'which -a cys' 를 직접 ` +
         `실행해 1순위가 /usr/local/bin/cys 인지 확인하세요. ${NONINTERACTIVE_PROBE_NOTE}${tail}`,
       sticky: true,
       id: INSTALL_TOAST_ID,
@@ -377,7 +377,7 @@ export function installResultToast(rep: InstallCliReport): ToastPlan {
     category: "watchdog",
     title: "⚠ 셸 설치 확인 불가",
     body:
-      `심링크(${links})는 만들었지만, 실제로 어떤 cys가 잡히는지 확인하지 못했습니다 — ` +
+      `심링크(${links})는 만들었지만, 실제로 어떤 'cys' 가 잡히는지 확인하지 못했습니다 — ` +
       `확인 명령이 실패했거나, 로그인 셸의 PATH에 /usr/local/bin 이 없는 경우입니다(어느 쪽인지는 ` +
       `단정하지 않습니다). 새 터미널에서 'which -a cys' 를 직접 실행해 확인하세요. ` +
       `${NONINTERACTIVE_PROBE_NOTE}${tail}`,
@@ -486,7 +486,7 @@ export const MV_EMPTY_CAVEAT =
   "것으로 보아 덮어씁니다";
 
 export const FOREIGN_BACKUP_NOTICE =
-  "설치를 누르면 이 자리에는 cys 링크가 놓입니다 — 지금 있는 것이 실제 파일·폴더든 다른 곳을 " +
+  "설치를 누르면 이 자리에는 'cys' 링크가 놓입니다 — 지금 있는 것이 실제 파일·폴더든 다른 곳을 " +
   "가리키던 심볼릭 링크든, 이 앱이 만든 링크가 아니면 지우지 않고 같은 폴더에 " +
   "'<원래 경로>.cys-backup-<숫자>' 로 옮겨 보관합니다(<숫자>는 백업한 시각의 epoch 초). " +
   "옮긴 경로는 결과 알림과 이 버튼 툴팁에 그대로 나오며, 되돌리는 명령은 " +
@@ -537,17 +537,17 @@ export function cliButtonView(
       : "";
   if (intent === "reinstall") {
     return {
-      label: "셸에 cys 다시 설치",
+      label: "셸에 cysr 다시 설치",
       intent,
       title:
-        "직전 설치가 '완료'로 확인되지 않았습니다(PATH 앞을 다른 cys가 가리거나 확인에 실패) — " +
+        "직전 설치가 '완료'로 확인되지 않았습니다(PATH 앞을 다른 'cys' 가 가리거나 확인에 실패) — " +
         "이 버튼은 해제가 아니라 설치를 다시 시도합니다. 해제하려면 Control Center 를 닫았다 " +
         "다시 열어 현재 상태로 라벨을 되돌리세요." + suffix,
     };
   }
   if (intent === "uninstall") {
     return {
-      label: "셸 cys 해제",
+      label: "셸 cysr 해제",
       intent,
       title:
         "/usr/local/bin 의 cys·cysd·cysr 심링크 제거(1회 관리자 승인) — 확인 창이 먼저 뜹니다" + suffix,
@@ -555,16 +555,16 @@ export function cliButtonView(
   }
   if (state === "absent") {
     return {
-      label: "셸에 cys 설치",
+      label: "셸에 cysr 설치",
       intent,
-      title: "외부 터미널에서 cys 명령 쓰기(1회 관리자 승인)" + suffix,
+      title: "외부 터미널에서 cysr 명령 쓰기(1회 관리자 승인)" + suffix,
     };
   }
   return {
-    label: "셸에 cys 설치",
+    label: "셸에 cysr 설치",
     intent,
     title:
-      "외부 터미널에서 cys 명령 쓰기(1회 관리자 승인) — 현재 설치 상태는 확인하지 못했습니다" + suffix,
+      "외부 터미널에서 cysr 명령 쓰기(1회 관리자 승인) — 현재 설치 상태는 확인하지 못했습니다" + suffix,
   };
 }
 
@@ -600,7 +600,7 @@ export function backupOrigin(backupPath: string): string | null {
 
 // ── (MAJOR-6 · 2026-08-25 11R) **되돌아오는 것은 하나뿐이다** ─────────────────
 /// 결함(실측): `cliNoticeLines` 는 backups 를 하나씩 `backupNoticeLine` 에 넘겼고, `ours` 갈래는
-/// 백업본 **각각**에 대해 "'셸 cys 해제' 를 누르면 … 이 원본을 제자리에 되돌립니다" 라고 말했다.
+/// 백업본 **각각**에 대해 "'셸 cysr 해제' 를 누르면 … 이 원본을 제자리에 되돌립니다" 라고 말했다.
 /// 그런데 Rust `pick_restore_backup`(src-tauri/src/main.rs:2509)은 한 대상 경로에 대해 **스탬프가
 /// 가장 큰 하나만** 고르고, `plan_cli_uninstall` 은 그 하나만 `restore` 쌍에 넣는다. 같은 자리의
 /// 오래된 백업본은 해제해도 **영영 자동 복원되지 않는다.** 그 위에 10R 이 붙인
@@ -765,7 +765,7 @@ export function backupNoticeLine(
     // 해제 버튼이 링크를 지운 자리에 이 원본을 되돌려 준다(Rust I3③ restored).
     return (
       `${head} 지금 ${origin} 자리는 이 앱이 만든 링크가 차지하고 있어 손으로 옮길 수 없습니다 — ` +
-      `'셸 cys 해제' 를 누르면 앱이 그 링크를 지우고 이 원본을 제자리에 되돌립니다` +
+      `'셸 cysr 해제' 를 누르면 앱이 그 링크를 지우고 이 원본을 제자리에 되돌립니다` +
       `(한 자리에 백업본이 여럿이면 가장 최근 것 하나만 되돌립니다). ${drop}`
     );
   }
@@ -836,12 +836,12 @@ export function withCliNotice(plan: ToastPlan, lines: readonly string[]): ToastP
 /// 같은 사실이 결과 토스트에 이미 실려 있어 sticky 가 둘이 되기 때문이다(main.ts 는 그 경로에서
 /// `withCliNotice(결과, cliNoticeLines(status))` 로 하나만 낸다).
 /// (MAJOR-D) 상시 고지 토스트의 제목 셋. **제목이 곧 등급 표시**이므로 세 종류를 구분한다.
-export const NOTICE_TITLE_FOREIGN = "⚠ /usr/local/bin 에 이 앱의 것이 아닌 cys 파일이 있습니다";
+export const NOTICE_TITLE_FOREIGN = "⚠ /usr/local/bin 에 이 앱의 것이 아닌 'cys' 파일이 있습니다";
 export const NOTICE_TITLE_BACKUP = "설치 때 백업해 둔 원본이 남아 있습니다";
-export const NOTICE_TITLE_INFO = "셸 cys 설치 상태 안내";
+export const NOTICE_TITLE_INFO = "셸 cysr 설치 상태 안내";
 /// ★MAJOR-1(2026-08-25 7R) 네 번째 제목. `state=="partial"` = **한쪽만 우리 것**인 반쪽 상태다.
 export const NOTICE_TITLE_PARTIAL =
-  "⚠ 셸 cys 설치가 한쪽만 되어 있습니다 — 아래 내용을 확인하세요";
+  "⚠ 셸 cysr 설치가 한쪽만 되어 있습니다 — 아래 내용을 확인하세요";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ★MAJOR-1(7R) — MAJOR-D 수리가 경고 방향을 **반대로 뒤집은** 자리
@@ -854,7 +854,7 @@ export const NOTICE_TITLE_PARTIAL =
 //     → decide_cli_uninstall = Remove / SkipNotSymlink
 //     → classify_cli_links(ours=1, foreign=1) = Partial → state="partial", installed=true
 //   이때 Rust 는 notes 에 '심볼릭이 아닌 실제 파일이 이미 있습니다' 를 싣는데, UI 는 ⚠ 도 경고
-//   테두리도 없는 "셸 cys 설치 상태 안내"(category:"system")를 냈다.
+//   테두리도 없는 "셸 cysr 설치 상태 안내"(category:"system")를 냈다.
 //
 // 가설이 아니다: 설치 스크립트는 `… && {cys링크} && {cysd링크}` 체인이라 cysd 의 백업 mv 가
 // 거부되면 정확히 이 상태로 끝난다.
@@ -974,13 +974,13 @@ export function uninstallConfirmText(
         ]
       : [];
   return {
-    title: "셸 cys 해제",
+    title: "셸 cysr 해제",
     body: [
       "/usr/local/bin/cys · /usr/local/bin/cysd 심링크를 제거합니다 (관리자 승인 1회).",
       "",
       "· 제거 대상은 이 앱이 만든 심볼릭 링크뿐입니다. 같은 이름의 일반 파일(다른 도구가 설치한 실체 바이너리)이나 다른 앱을 가리키는 링크는 건드리지 않고 건너뜁니다.",
       "· 설치할 때 그 자리에 있던 것(실제 파일이든 다른 곳을 가리키던 심볼릭 링크든)을 '<원래 경로>.cys-backup-<숫자>' 로 옮겨 두었다면, 해제하면서 그 원본을 제자리에 되돌립니다(<숫자>는 백업한 시각의 epoch 초 · 한 자리에 사본이 여럿이면 가장 최근 것 하나만 되돌립니다 · 되돌린 경로는 결과 알림에 나옵니다).",
-      "· 해제 후에는 외부 터미널에서 'cys' 명령을 쓸 수 없습니다. 앱 pane 안에서는 PATH가 자동 주입되므로 그대로 동작합니다.",
+      "· 해제 후에는 외부 터미널에서 'cysr'·'cys' 명령을 쓸 수 없습니다. 앱 pane 안에서는 PATH가 자동 주입되므로 그대로 동작합니다.",
       "· 다시 필요하면 같은 버튼으로 언제든 설치할 수 있습니다.",
       ...backupLines,
       ...stateLines,
@@ -1136,7 +1136,7 @@ export function uninstallResultToast(rep: UninstallCliReport, links: readonly st
       lines.push(`아직 남아 있는 링크 ${leftovers.length}건 — 직접 지우려면:`);
       for (const p of leftovers)
         lines.push(
-          `   • ${p} — 'ls -l ${p}' 로 cys.app 안을 가리키는 심볼릭 링크인지 먼저 확인한 뒤 'sudo rm ${p}'` +
+          `   • ${p} — 'ls -l ${p}' 로 cysr.app(옛 이름 cys.app) 안을 가리키는 심볼릭 링크인지 먼저 확인한 뒤 'sudo rm ${p}'` +
             ` (실제 파일이면 다른 도구의 설치본일 수 있으니 지우지 마세요).`,
         );
     }
@@ -1146,7 +1146,7 @@ export function uninstallResultToast(rep: UninstallCliReport, links: readonly st
     }
     return {
       category: "watchdog",
-      title: removed.length > 0 ? "⚠ 셸 cys 해제 부분 완료" : "⚠ 셸 cys 해제 — 지운 것이 없습니다",
+      title: removed.length > 0 ? "⚠ 셸 cysr 해제 부분 완료" : "⚠ 셸 cysr 해제 — 지운 것이 없습니다",
       body: lines.join("\n"),
       sticky: true,
       id: UNINSTALL_TOAST_ID,
@@ -1157,9 +1157,9 @@ export function uninstallResultToast(rep: UninstallCliReport, links: readonly st
     const tail = parts.benign.length > 0 ? `\n(이미 없던 항목: ${parts.benign.join(" · ")})` : "";
     return {
       category: "system",
-      title: "✅ 셸 cys 해제 완료",
+      title: "✅ 셸 cysr 해제 완료",
       body:
-        `${removed.join(" · ")} 를 제거했습니다 — 새 터미널에서는 'cys' 명령이 더 이상 잡히지 않습니다.` +
+        `${removed.join(" · ")} 를 제거했습니다 — 새 터미널에서는 'cysr'·'cys' 명령이 더 이상 잡히지 않습니다.` +
         `${restoredNote}${tail}${warnTail("·")}`,
       // 복원 통보·백업 고지는 8초에 사라지면 안 된다 — 설치 쪽 규약과 같은 모양.
       sticky: warnings.length > 0,

@@ -64,9 +64,9 @@ describe("classifyPendingFeed — pending 조작면 분류(패널·팔레트 공
 });
 
 describe("cycle-verify 안내 문구 — 문자열 핀(기만·무고지 금지)", () => {
-  test("안내: 판정 주체(지정 검증자)·유효 경로(cys feed reply)·GUI 승인 불가 사유를 전부 적는다", () => {
+  test("안내: 판정 주체(지정 검증자)·유효 경로(cysr feed reply)·GUI 승인 불가 사유를 전부 적는다", () => {
     expect(CYCLE_VERIFY_NOTE).toContain("지정 검증자");
-    expect(CYCLE_VERIFY_NOTE).toContain("cys feed reply");
+    expect(CYCLE_VERIFY_NOTE).toContain("cysr feed reply");
     expect(CYCLE_VERIFY_NOTE).toContain("clear 미실행");
   });
   test("치우기 title: '판정이 아님'과 진행 중 cycle 안전 중단 부작용을 고지한다", () => {

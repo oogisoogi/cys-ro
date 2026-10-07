@@ -959,9 +959,9 @@ fn boot_verdict() -> Option<String> {
 fn translocation_guidance(verdict: BootPathVerdict) -> String {
     let cause = match verdict {
         BootPathVerdict::Translocated => {
-            "Safari 등에서 내려받은 DMG 안의 앱을 곧바로 열어 macOS가 cys.app을 임시 위치에서 실행 중입니다."
+            "Safari 등에서 내려받은 DMG 안의 앱을 곧바로 열어 macOS가 cysr.app을 임시 위치에서 실행 중입니다."
         }
-        _ => "cys.app이 정규 설치 위치(Applications) 밖에서 실행 중입니다.",
+        _ => "cysr.app이 정규 설치 위치(Applications) 밖에서 실행 중입니다.",
     };
     format!(
         "{cause} 이 상태로는 백그라운드 서비스를 안전하게 등록할 수 없어 안전모드로 멈췄습니다.\n\n\
@@ -2079,13 +2079,13 @@ fn plan_cli_install(
 ) -> Result<CliInstallPlan, String> {
     match classify_bundle_dir(macos_dir) {
         BundleKind::Translocated => {
-            return Err("cys.app이 Gatekeeper에 의해 임시 위치에서 실행 중입니다. \
-Finder에서 cys.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
+            return Err("cysr.app이 Gatekeeper에 의해 임시 위치에서 실행 중입니다. \
+Finder에서 cysr.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
                 .into());
         }
         BundleKind::Backup => {
             return Err("백업 번들에서 실행 중입니다. \
-정규 cys.app(Applications)에서 실행한 뒤 시도하세요."
+정규 cysr.app(Applications)에서 실행한 뒤 시도하세요."
                 .into());
         }
         // ★D5(2026-08-23) NonStandard 경고 → **거부** 승격. 예전에는 경고만 달고 진행했으나,
@@ -2831,7 +2831,7 @@ fn plan_cli_uninstall(probes: &[LinkProbe], backups: &[String]) -> CliUninstallP
             }
             UninstallAction::SkipForeignTarget => {
                 skipped.push(format!(
-                    "{} — cys.app 번들이 아닌 곳({})을 가리키는 링크라 건드리지 않았습니다.",
+                    "{} — 이 앱 번들(cysr.app·옛 이름 cys.app)이 아닌 곳({})을 가리키는 링크라 건드리지 않았습니다.",
                     p.path,
                     p.link_target.as_deref().unwrap_or("대상 읽기 실패")
                 ));
@@ -3289,7 +3289,7 @@ async fn cli_install_status() -> Result<CliInstallStatusReport, String> {
                     p.path
                 )),
                 UninstallAction::SkipForeignTarget => Some(format!(
-                    "{} — cys.app 번들 밖({})을 가리키는 링크입니다.",
+                    "{} — 이 앱 번들(cysr.app·옛 이름 cys.app) 밖({})을 가리키는 링크입니다.",
                     p.path,
                     p.link_target.as_deref().unwrap_or("대상 읽기 실패")
                 )),
@@ -3423,7 +3423,7 @@ fn classify_hook_settings(settings: &std::path::Path, pack: &std::path::Path) ->
         return HookPresence::Installed;
     }
     if is_link {
-        return HookPresence::Undeterminable("다른 파일을 가리키는 링크(심볼릭 링크)라 cys 가 고쳐 쓰지 않습니다".into());
+        return HookPresence::Undeterminable("다른 파일을 가리키는 링크(심볼릭 링크)라 cysr 이 고쳐 쓰지 않습니다".into());
     }
     let Some(obj) = root.as_object() else {
         return HookPresence::Undeterminable("맨 바깥이 JSON 객체({ … })가 아닙니다".into());
@@ -6291,9 +6291,9 @@ fn cys_boot_signal(code: Option<i32>, stdout: &str) -> BootSignal {
         Some(0) => BootSignal::Silent,
         // exit 1 = Fatal 이지만 role 표를 못 읽은 경우(스큐·파싱 실패) — fail-closed 로 경고한다.
         Some(c) => BootSignal::Warn(format!(
-            "팀 기동이 실패했습니다(cys boot exit {c}) — `cys list` 로 노드 상태를 확인하세요."
+            "팀 기동이 실패했습니다(cys boot exit {c}) — `cysr list` 로 노드 상태를 확인하세요."
         )),
-        None => BootSignal::Warn("팀 기동 프로세스가 비정상 종료했습니다(시그널) — `cys list` 확인.".into()),
+        None => BootSignal::Warn("팀 기동 프로세스가 비정상 종료했습니다(시그널) — `cysr list` 확인.".into()),
     }
 }
 
@@ -6948,7 +6948,7 @@ async fn factory_reset_execute(
     // 그 경우 리셋이 자기 세션을 끊으므로 거부한다(CLI run_factory_reset 과 같은 근거).
     if std::env::var("CYS_SURFACE_ID").map(|v| !v.is_empty()).unwrap_or(false) {
         return Err(
-            "cys surface 안에서 기동된 앱에서는 완전 초기화를 실행할 수 없다 — 앱을 독립 실행하라"
+            "cysr 창(surface) 안에서 기동된 앱에서는 완전 초기화를 실행할 수 없다 — 앱을 독립 실행하라"
                 .into(),
         );
     }

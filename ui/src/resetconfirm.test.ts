@@ -55,7 +55,7 @@ describe("resetPhraseMatches", () => {
     }
   });
 
-  it("문구 상수는 CLI(cys factory-reset FACTORY_RESET_PHRASE)와 동일 계약", () => {
+  it("문구 상수는 CLI(cysr factory-reset FACTORY_RESET_PHRASE)와 동일 계약", () => {
     expect(RESET_PHRASE).toBe("완전 초기화");
   });
 });
@@ -180,7 +180,7 @@ describe("resetResultTitle / resetResultBody", () => {
       moved: 3,
       deferred: [{ path: "/L/com.cysjavis.terminal", error: "in use" }],
     });
-    expect(body).toContain("cys factory-reset");
+    expect(body).toContain("cysr factory-reset");
     expect(body).not.toContain("종료 후 다시 실행하면 정리됩니다");
   });
 });

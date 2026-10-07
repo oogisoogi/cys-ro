@@ -967,7 +967,7 @@ fn translocation_guidance(verdict: BootPathVerdict) -> String {
         "{cause} 이 상태로는 백그라운드 서비스를 안전하게 등록할 수 없어 안전모드로 멈췄습니다.\n\n\
          다음 순서로 설치해 주세요:\n\
          1) Finder에서 cysr.app을 응용 프로그램(Applications) 폴더로 드래그해 복사합니다.\n\
-         2) 이미 설치된 구버전(cysr.app · 1.0.0 이전 판은 옛 이름 cys.app)이 실행 중이면 먼저 종료하고, 지운 뒤 새 버전을 넣습니다.\n\
+         2) 이미 설치된 구버전이 실행 중이면 먼저 종료하고, 지운 뒤 새 버전을 넣습니다(이름은 cysr.app 또는 옛 이름 cys.app — 옛 판의 앱 안 갱신 단추로 새 판을 받은 맥은 판과 무관하게 cys.app 일 수 있으니 둘 다 확인하세요).\n\
          3) 그래도 '손상됨'으로 열리지 않으면 터미널에서 아래를 한 번 실행하세요:\n\
          \u{2003}xattr -d com.apple.quarantine /Applications/cysr.app\n\n\
          설치 후 응용 프로그램 폴더의 cysr.app을 다시 열면 정상 부팅됩니다."
@@ -6343,7 +6343,7 @@ fn bootstrap_chain_signal(code: Option<i32>, stdout: &str, stderr: &str) -> Boot
             "팀 기동 체인이 {} 단계에서 멈췄습니다(javis_bootstrap exit {c}).\n{detail}",
             match c {
                 3 => "데몬 확인(②ping)",
-                4 => "팀 기동(④cys boot)",
+                4 => "팀 기동(④cysr boot)",
                 6 => "노드 생존 확인(⑤check)",
                 8 => "레인↔팩 정합(⓪lane-pack)",
                 9 => "자원 게이트(④′resource-gate)",
@@ -6459,7 +6459,7 @@ fn spawn_orchestra_boot(app: AppHandle, socket: Option<String>, surface_ref: Opt
             ),
             Err(e) => emit_boot_signal(
                 &app,
-                BootSignal::Warn(format!("팀 기동(cys boot) 실행 실패: {e}")),
+                BootSignal::Warn(format!("팀 기동(cysr boot) 실행 실패: {e}")),
             ),
         }
     });
@@ -12857,7 +12857,7 @@ echo {PROBE_BEGIN_MARK_D}; which -a cysd-no-such-binary-xyz; echo {PROBE_END_MAR
         let se = "[bootstrap] 단계 실패: ④boot (exit 1)\n의무(Fatal) 역할 기동 실패: cso=missing [claude 설치: curl -fsSL https://claude.ai/install.sh | bash]";
         match bootstrap_chain_signal(Some(4), "", se) {
             BootSignal::Warn(m) => {
-                assert!(m.contains("팀 기동(④cys boot)"), "단계 라벨 누락: {m}");
+                assert!(m.contains("팀 기동(④cysr boot)"), "단계 라벨 누락: {m}");
                 assert!(m.contains("claude.ai/install.sh"), "생산자 힌트 미인용: {m}");
             }
             other => panic!("체인 실패가 경고가 아니다: {other:?}"),

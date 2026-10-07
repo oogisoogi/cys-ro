@@ -69,6 +69,7 @@
   · approval r2f_dm — accounts.rs seed_known_ignores_antigravity_dir 가 HOME 만 돌림 → 이음매(with_store_root/test_home::set)로
   · d6_probe_tests d6_1_mixed_statusline… · d6_1_dead_statusline… — 갈래 B 📌5 「전체 순위(OAuth 우선)」 와 우리 D6-1 시험 충돌 · B 결정 필요 (a) 전체 순위 = 패널 최대 ~4분 지연 vs 창 밖 보고만 강등(1줄)
   · handlers b3_status_polling — 원작자판도 적색(손대지 않음)
+    · 정정 10-08: 이 시험의 적·녹은 부하가 아니라 실행 기계 $HOME 의 프로필 폴더 수로 결정된다(빈 홈 = 통과 · 1개 = left 1 · 2개 = left 2 · v0.14.43 도 같음) — 시험에 accounts::test_home 이음매 1줄로 수리 · TICKET=cysr-118-r2-b3status
   · state inject_track_handoff_pending_until_an_arm_ends — 새 적색(K17 거부 모드가 S21 표식을 올리게 바꾼 것과 관련 추정 · 미확인)
 - ui(17f40a9c 뒤): tsc 0 · bun 91 실패 = 결정 필요 묶음(DECISIONS 「수리 1차」 절: DS-1 · X2-R · X2-W · UNW ≈80 · cysr 문구).
 - 팩: 갈래 D(fix-pack) 진행 중 — 끝나면 커밋(파일 = cysjavis-pack/ · 지침 제외) · 미커밋 팩 변경이 작업트리에 있음.

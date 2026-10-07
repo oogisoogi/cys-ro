@@ -452,12 +452,26 @@ mod tests {
         assert!(UpdateKeyring::from_trusted_keys_json(bad).is_err());
     }
 
-    /// 내장 키링(이 판) = 팩 키뿐 → 갱신 용도 키 0(R·U·F 실키 기입 = U3 · 자리표시).
+    /// 내장 키링(1.1.8 · TICKET=cysr-118-keyring · 2026-10-07 키 의식) = 갱신 용도 키 정확히 4개(R·U·F·A2) — 각자 제 용도로만 찾히고
+    /// 팩 키는 갱신 키링에 들어오지 않는다. (U1 판 핀 「갱신 키 0 = 전부 닫힘」 의 후계 — 실키 기입으로 뒤집힌다.)
     #[test]
-    fn embedded_keyring_has_no_update_keys_yet_so_everything_fails_closed() {
+    fn embedded_keyring_has_exactly_the_four_update_keys() {
         let kr = UpdateKeyring::from_trusted_keys_json(crate::packsig::TRUSTED_KEYS_JSON).unwrap();
-        assert!(kr.keys.is_empty(), "실키 기입은 U3(master 게이트) — U1 판에 갱신 키가 있으면 안 된다: {:?}", kr.key_ids());
+        assert_eq!(
+            kr.key_ids(),
+            vec!["root:E2EDBBF9B1CBDBB9", "release:49E63A352CC87151", "feed:20ADC40AE5764C8A", "win-asset:831CA9172204E93E"]
+        );
+        for (id, purpose, wrong) in [
+            ("E2EDBBF9B1CBDBB9", Purpose::Root, Purpose::Release),
+            ("49E63A352CC87151", Purpose::Release, Purpose::Feed),
+            ("20ADC40AE5764C8A", Purpose::Feed, Purpose::Release),
+            ("831CA9172204E93E", Purpose::WinAsset, Purpose::Release),
+        ] {
+            assert!(kr.find(id, purpose, NOW).is_ok(), "{id} 가 제 용도로 안 찾힌다");
+            assert!(kr.find(id, wrong, NOW).unwrap_err().contains("용도 불일치"), "{id} 가 다른 용도로 찾혔다");
+        }
         assert!(kr.find("54FBA04AD0E0F49D", Purpose::Pack, NOW).is_err(), "팩 키는 갱신 키링에 들어오지 않는다");
+        assert!(kr.find("C81BCA7B89578FDE", Purpose::Pack, NOW).is_err(), "팩 키는 갱신 키링에 들어오지 않는다");
     }
 
     #[test]

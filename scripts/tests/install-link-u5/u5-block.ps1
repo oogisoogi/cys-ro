@@ -3,8 +3,9 @@
 #   · 잠금 = %LOCALAPPDATA%\cys-update\txn.lock 의 0번 바이트 배타 잠금(LockFileEx · FileStream.Lock) — **이 PowerShell 프로세스가 쥔다**
 #     (설치 도우미는 `powershell -File` 로 따로 뜬 프로세스라 끝나면 OS 가 푼다). cys 의 잠금(전 범위)·설치기 ⓪-a(0번 바이트)와 겹쳐 서로 막는다.
 #   · 소유자 기록 pid = $PID · start_time = 이 프로세스 생성 시각(FILETIME ÷ 10^7 − 11644473600 = cys 가 sysinfo 로 재는 값과 같은 식).
-#   · 위임 = env CYS_UPDATE_TXN(이 프로세스 전체 — 설치기 ⓪-a 는 env 와 /CYSTXN 둘 다 본다) + setup.exe /CYSTXN · init-pack·rotate --txn.
-#     ⛔오래 사는 자식(cysr 앱 창 · 이 창에서 띄우는 자비스)에게는 물려주지 않는다 — 그 안의 rotate·팩 명령이 rc 26 이 된다(Invoke-WithoutCysTxnEnv).
+#   · 위임 = setup.exe /CYSTXN · init-pack·rotate --txn + **그 자식에만** env CYS_UPDATE_TXN(Invoke-WithCysTxnEnv · rotate 는 psi 환경) · 데몬을 띄울 수 있는
+#     cys 호출(ping·daemon·new-surface·감지 표)도 그 호출에만(잠금을 쥔 동안 토큰 없는 자동 기동은 cys 가 거부한다).
+#     ⛔프로세스 전체 $env: 0(2판 agy1·codex4) — 클로드 설치기·로그인·앱 창·자비스는 토큰을 못 본다(그 후손이 토큰으로 참가 명령을 부르면 조상 검증까지 통과한다).
 #   · 롤백 자산 = 새 cys.exe 의 `self-update --preserve-installer`(본문은 불변 보관소에서 · 검증·놓기는 cys 한 곳 · 여기서는 부르기만).
 $CysUpdateDir   = Join-Path $env:LOCALAPPDATA 'cys-update'
 $CysTxnRetryMax = 3
@@ -169,6 +170,12 @@ function Unlock-CysTxn {
     Remove-Item Env:CYS_UPDATE_TXN -ErrorAction SilentlyContinue
     Remove-Item Env:CYS_UPDATE_TXN_DEPTH -ErrorAction SilentlyContinue
 }
+function Invoke-WithCysTxnEnv([scriptblock]$Body) {
+    # 2판(agy1·codex4): 이 블록에서 띄우는 프로세스에만 토큰 env(참가 명령 · 설치기 · 데몬을 띄울 수 있는 cys 호출) · 쥔 것이 없으면 그대로 · 뒤에 지운다
+    if (-not $script:CysTxnToken) { return (& $Body) }
+    $env:CYS_UPDATE_TXN = $script:CysTxnToken
+    try { return (& $Body) } finally { Remove-Item Env:CYS_UPDATE_TXN -ErrorAction SilentlyContinue }
+}
 function Invoke-WithoutCysTxnEnv([scriptblock]$Body) {
     # 오래 사는 자식(앱 창 · 자비스)을 띄울 때만 토큰 env 를 잠깐 걷는다 — 띄운 뒤 되돌린다
     $saved = $env:CYS_UPDATE_TXN
@@ -209,6 +216,8 @@ function Get-CysTxnJournalVerdict {
 function Enter-CysTxn {
     # 본문 시작 직후 · 0 = 계속 · 26 = 끝(문구·진단 코드를 찍었다)
     if ($Mode -ne 'full') { return 0 }
+    Remove-Item Env:CYS_UPDATE_TXN -ErrorAction SilentlyContinue   # 2판(agy1·codex4): 물려받은 토큰도 프로세스 전체에 두지 않는다
+    Remove-Item Env:CYS_UPDATE_TXN_DEPTH -ErrorAction SilentlyContinue
     $n = 0
     while ($true) {
         Lock-CysTxnOnce
@@ -224,7 +233,6 @@ function Enter-CysTxn {
         Set-NextStepRerun '5분 뒤 아래 「다시 하시는 법」대로 다시 실행해 주십시오.'
         return 26
     }
-    $env:CYS_UPDATE_TXN = $script:CysTxnToken
     Write-Log ('txn: held ' + $script:CysTxnToken + ' (owner pid ' + $PID + ')')
     if ((Get-CysTxnJournalVerdict) -eq 'wait') {
         Unlock-CysTxn
@@ -244,9 +252,9 @@ function Stop-CysTxnRefused([string]$What) {
     exit 26
 }
 function Invoke-CysTxnLogged($what, $cli, $cmdArgs) {
-    # Invoke-Logged 와 같되 잠금을 쥐었으면 --txn 위임 · 위임 거부(rc 26)면 잠금을 놓고 토큰 없이 한 번 더(설치는 끝까지)
+    # Invoke-Logged 와 같되 잠금을 쥐었으면 --txn 위임(env 는 이 호출에만) · 위임 거부(rc 26)면 J-UPD-01 + 끝(2판 codex 1)
     if ($script:CysTxnToken) {
-        $rc = Invoke-Logged $what $cli (@($cmdArgs) + @('--txn', $script:CysTxnToken))
+        $rc = Invoke-WithCysTxnEnv { Invoke-Logged $what $cli (@($cmdArgs) + @('--txn', $script:CysTxnToken)) }
         if ($rc -ne 26) { return $rc }
         Stop-CysTxnRefused $what   # 2판(codex 1): 위임 거부 = 문구 1줄 + 끝(잠금 없이 다시 하지 않는다)
     }

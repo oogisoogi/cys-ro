@@ -53,6 +53,14 @@ $pj = $js | ConvertFrom-Json
 T (($pj.owner -eq 'install-link') -and ($pj.pid -eq 4242) -and ($pj.start_time -eq 1789999999) -and ($pj.released -eq $false) -and ($null -ne $pj.boot_id) -and ($null -ne $pj.started_at)) '[순수] 소유자 기록 = cys Owner 칸 8개' $js
 $o.released = $true
 T (([System.Text.Encoding]::UTF8.GetString((ConvertTo-CysTxnOwnerJson $o)) -replace '\s', '').Contains('"released":true}')) '[순수] 묘비 = released:true' 'x'
+$script:CysTxnToken = ('ef' * 16) + ':3'
+$in1 = Invoke-WithCysTxnEnv { [string]$env:CYS_UPDATE_TXN }
+$after1 = [string]$env:CYS_UPDATE_TXN
+$script:CysTxnToken = ''
+$in2 = Invoke-WithCysTxnEnv { [string]$env:CYS_UPDATE_TXN }
+T (($in1 -eq (('ef' * 16) + ':3')) -and (-not $after1) -and (-not $in2)) '[순수] 토큰 env = Invoke-WithCysTxnEnv 블록 안에만 · 뒤에 지움 · 쥔 것 없으면 0(2판 agy1·codex4)' ("in=$in1 after=$after1 none=$in2")
+$edef = [string](Get-Command Enter-CysTxn -CommandType Function -ErrorAction SilentlyContinue).Definition
+T (($edef -match 'Remove-Item Env:CYS_UPDATE_TXN') -and ($edef -notmatch '\$env:CYS_UPDATE_TXN\s*=')) '[구조] Enter-CysTxn = 프로세스 전체 토큰 env 0 · 물려받은 것도 지움' 'x'
 $env:CYS_UPDATE_TXN = 'zz'
 $inside = Invoke-WithoutCysTxnEnv { [string]$env:CYS_UPDATE_TXN }
 T (($inside -eq '') -and ($env:CYS_UPDATE_TXN -eq 'zz')) '[순수] 오래 사는 자식을 띄우는 동안만 토큰 env 0 · 뒤에 되돌림' ('inside=' + $inside + ' after=' + $env:CYS_UPDATE_TXN)
@@ -86,11 +94,9 @@ $kids = @()
 if ($isWin -and $Cys) {
     $Cys = (Resolve-Path $Cys).Path
     function Probe([string[]]$CysArgs, [bool]$NoEnv) {
-        $saved = $env:CYS_UPDATE_TXN
-        if ($NoEnv) { Remove-Item Env:CYS_UPDATE_TXN -ErrorAction SilentlyContinue }
-        $o = (& $Cys @CysArgs 2>&1) -join ' '
+        # NoEnv = 보통 호출(토큰 env 0) · 아니면 Invoke-WithCysTxnEnv(그 호출에만 토큰 env — 설치 도우미가 참가 명령을 부르는 꼴)
+        if ($NoEnv) { $o = (& $Cys @CysArgs 2>&1) -join ' ' } else { $o = Invoke-WithCysTxnEnv { (& $Cys @CysArgs 2>&1) -join ' ' } }
         $rc = $LASTEXITCODE
-        if ($NoEnv -and $saved) { $env:CYS_UPDATE_TXN = $saved }
         return @($rc, $o)
     }
     function HolderProc([string]$Path) {
@@ -101,7 +107,9 @@ if ($isWin -and $Cys) {
     }
     $script:real = 1
     $rc = Enter-CysTxn
-    T (($rc -eq 0) -and ($script:CysTxnState -eq 'ok') -and ($env:CYS_UPDATE_TXN -eq $script:CysTxnToken)) '[ⓐ] 잡기 = 0 · 토큰 = env' ("rc=$rc state=$($script:CysTxnState)")
+    T (($rc -eq 0) -and ($script:CysTxnState -eq 'ok') -and $script:CysTxnToken) '[ⓐ] 잡기 = 0 · 토큰 있음' ("rc=$rc state=$($script:CysTxnState)")
+    $childEnv = ((& (Get-Process -Id $PID).Path -NoProfile -Command '[string]$env:CYS_UPDATE_TXN') -join '').Trim()   # 실제 자식 프로세스가 물려받는 env
+    T (-not $childEnv) '[ⓛ] 잡은 뒤 프로세스 전체 토큰 env 0(클로드 설치기·로그인 꼴 자식이 못 본다 · 2판 agy1·codex4)' ("env=" + $childEnv)
     T (-not (Test-CysTxnFree (Join-Path $U 'txn.lock'))) '[ⓐ] 쥔 동안 0번 바이트 배타 불가' 'x'
     $tok = $script:CysTxnToken
     $r = Probe @('pack-plan', '--txn', $tok) $false

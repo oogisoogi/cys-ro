@@ -69,6 +69,9 @@
   · 조치(f1819e50): 계약 스텝을 **출시 빌드 cys.exe** 로(제품 형상) + 적색 시 txn 기록 덤프. 출시 빌드도 넘치면 = U2 참가 거부 갈래의 윈 제품 결함(【경고】 대상 · 이 티켓 밖 수리).
   · 2차(f1819e50 · 37548178821 · 출시 빌드): 거부 갈래 3 = **rc 26 정상**(스택 넘침 = debug 전용 확정 · U2 제품 결함 아님) · 남은 적색 4 = 소유자 기록 **두 번째 바꾸기(묘비) 실패**에서 연쇄(윈 `File.Replace` · 방금 쓴 파일 공유 위반 꼴).
   · 3차(b6bb636e · windows-health 37548828686 **success** · windows-build success): `Write-CysTxnFile` 재시도 100ms×30 → 지우고 옮기기 폴백 → **PowerShell 5.1 ok 25 · FAIL 0 · 7 ok 25 · FAIL 0 · real=1**.
+  · ★2판(18a92a12 · 10-07): ci-branch 37556601892 **success** · windows-build 37556601987 **success** · windows-health 37556602014 **success** — U5 스텝: U5-PIN ok(음성 대조 「핀 불일치: u5-block.ps1」 적색 확인 · aj_commit 8fd43bc) · PowerShell 5.1 ok 36 · FAIL 0 · 7 ok 36 · FAIL 0 · real=1(ⓚ 묘비 실패 쥔 채 · ⓛ 자식 env 0 · ⓜ Everyone ACE·junction = unsafe · SDDL 벡터 20 · 롤백 자산 판정).
+  · ★[ⓔ] 놓기(묘비 쓰기) = ⓖ 뒤 16ms(1차 3.3초 = File.Replace 30번 실패 후 폴백) — FileRenameInfoEx 바꿔치기가 윈 러너에서 첫 시도에 통과.
+  · 맥: u5-mac-lock 31/0 · pwsh 28/0 · 하네스 17/0 · `cargo test --lib update::` 227/0 · `cargo test --bin cys` 589/0 · secret-scan clean.
   · ⚠debug cys.exe 의 윈 주 스레드 스택 넘침(거부 갈래 = 0xC00000FD)은 시험 빌드 한정 관측 — 출시 무관이나 윈에서 debug cys 로 참가 거부를 재는 시험은 같은 함정(기록만).
 
 ## §5 재현

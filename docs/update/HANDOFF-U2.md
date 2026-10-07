@@ -12,6 +12,14 @@
   - ③ [MINOR·n3] 「새 판 + 사본 무효 = 사람 필요」 가 설계 §3-11 문면(좌석 엶)보다 엄격 → HANDOFF §0-8 설계 개정 제안에 이 갈래 1줄 추가(설계 문서 본문 수정 = master).
 - **상한** 1h(순환 포함) · 기반 = 지금 가지 b4616f66 위 · 본 가지 push 0 · 미러 push = `fix/u2-followup-118` 1회(`/usr/bin/git push origin HEAD:fix/u2-followup-118`).
 - **순환 시점 상태(15:2x · CYCLE)**: HEAD f7b3e221(★재작성 전 5e5b06fb · 트리 깨끗 · 미러 마지막 push = b4616f66 · CI 3런 success) · 4판 ①②③ = **미착수** · 미해결 게이트 = master 3판 게이트 2단(lib·cys) 진행 중(결과 통지 대기) · 다음 액션 = ①(auto.rs S0 N7 받기 → 전역 잠금 안 · 시험 1) → ②(auto.rs --verify-payload = recovery_candidate · 시험 1) → ③(§0-8 설계 개정 제안 1줄) → 전수 → 미러 push 1회 → 3런 → 【확인요청】.
+- **4판 결과(후임 · 15:2x 복원 = 원장 대조 master#9ad63a78 → surface:1295 성립)**:
+  | # | 커밋 | 고친 곳 · 시험 · 뮤턴트 |
+  |---|---|---|
+  | ① n1 | c936af22 | `auto::fill_under_lock`(갱신 잠금 `lock::acquire(dir,"runner")` 쥔 동안만 `fill_rollback_assets_net` · 잡혀 있으면 받기 0 + 사유 「갱신 잠금 사용 중」 = `last_defer.detail` 사유 있는 보류 · 받은 뒤 놓음 → 재판정은 잠금 밖 = 종전) · 시험 `n7_archive_fill_writes_only_while_holding_the_global_lock`(남이 쥔 잠금 = 진입 0 · 받는 동안 `is_held` = true · 뒤 false) · U2-N7LOCK |
+  | ② n2 | c936af22 | `pick_payload_manifest` 후보 읽기 = `recovery_candidate`(서명 재검증 · 본문 행으로 자산 재생성) · 시험 `verify_payload_rejects_tampered_candidate_manifest`(파일 매니페스트 칸 변조 무시 · 서명 실패·본문 없음 = 진단 거부) · 기존 C15 시험 = 서명 후보로 갱신 · U2-CANDVERIFY 줄 추가 |
+  | ③ n3 | bb9fa726 | §0-8 ④ 설계 개정 제안 1줄(「새 판 + 사본 무효 = 사람 필요」) |
+  - **전수**(격리 래퍼 · `u2-realroots.sh` 로 감쌈 · HEAD 9a39ba9f(재작성 전 · 코드 = bb9fa726 와 같음) · 15:28~15:58): lib **1022/0**(1 ignored) · cys **593/0** · cysd **2464/0**(7 ignored · 3판의 잠금 시한 간헐 2건 이번엔 재현 0) · smoke **18/18** · mutants **48/48** · cys-app **260/0** · 윈 타입체크 오류 **0** · real-roots U2 이름공간 **0**(rc 0 · 변화 49 = 「그 밖」).
+  - **미러 push** = `b4616f66..9a39ba9f`(15:59) → windows-build secret-scan 적색(인수 메모 줄의 TODO 절대경로 · PATH 규칙) → master#07d3ceb9 지시로 **이력 재작성**(5e5b06fb·98c9ed5b·9a39ba9f → f7b3e221·c936af22·bb9fa726 · 코드 diff 0 · 인수 메모 = 자리표시자 · 옛 §0-x 의 격리 래퍼 절대경로 2곳도 `<격리 래퍼>`) → `--force-with-lease` 1회(16:30 · 9a39ba9f → bb9fa726) · CI 3런(bb9fa726) = ci-branch 37587772354 success · windows-build 37587772534 success · windows-health 37587772462 success(attempt 2 — 1차 적색 = 상담소 팩 `test_writers_vs_mover` · 이 변경 무관 · master 재실행 · 별 티켓) · 재작성 질의 처분 = `~/.cys/update`·`~/.cys/pack/round`·`~/.local/state/cys` = 제품 표준 폴더 → 그대로(master#52e8b077).
 - **인수 메모(전임 → 후임)**: 격리 래퍼 = `<격리 래퍼>`(EVIDENCE-118 §8 꼴 · 워커 로컬) · 전수 = `<scratchpad>/full8.sh` 꼴을 `u2-realroots.sh` 로 감쌈(`U2_REALROOTS_OUT=<새 폴더>`) · 뮤턴트 = `U1_ISO=<래퍼> scripts/tests/u2-mutants.sh`(줄 머리 `bin:` = cys 시험) · TODO = `$(cys todo-path)` · 보고 = `<인박스 헬퍼> "worker-2@surface:1295"` 인용 heredoc · 헤더 `[u2@surface:1295 → cmux master]` · cysd schedule:: 잠금 시한 2건 = 부하 간헐(단독 ×3 녹 · 3판 기록).
 
 ## §0-8 후속 3판 델타(master#1bfaba79 · 원문 = `docs/update/REVIEW-U2F-{agy,opus}-2r.md`(ignored) · 착수 12:40 · 2판 게이트 c8666da4 = 유효 PASS(master#1a4f6b3c))

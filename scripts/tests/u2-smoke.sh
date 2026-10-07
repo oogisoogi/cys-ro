@@ -30,7 +30,8 @@ ok() { printf 'OK   %s\n' "$1"; }
 bad() { printf 'BAD  %s\n' "$1"; fail=1; }
 # ★5판(master#a589549f): 이 실행이 띄운 cysd 만 거둔다 — 판별 = 시작 env 의 격리 소켓(`CYS_SOCKET=$SB/s.sock`) + 실행 파일이 이 작업트리 cysd
 #   (pkill·이름 일치 금지 · 다른 세션·설치본 데몬 무접촉). 정상·실패 모두 trap EXIT 로 정리하고 /tmp/u2s.* 도 지운다.
-own_daemons() { ps -axE -ww -o pid=,command= 2>/dev/null | awk -v s="CYS_SOCKET=$SB/s.sock" -v b="$CYSD" '$2 == b && index($0, s) { print $1 }'; }
+# ★후속 2판(agy 1R #9): 실행 파일 대조 = 칸 나누기($2) 대신 pid 뒤 명령 문자열 머리 전체(경로에 공백이 있어도 · 「경로 + 공백」 또는 경로 끝).
+own_daemons() { ps -axE -ww -o pid=,command= 2>/dev/null | awk -v s="CYS_SOCKET=$SB/s.sock" -v b="$CYSD" '{ c = $0; sub(/^ *[0-9]+ /, "", c) } (c == b || index(c, b " ") == 1) && index($0, s) { print $1 }'; }
 reap() {
   local p
   for p in $(own_daemons); do kill "$p" 2>/dev/null; done

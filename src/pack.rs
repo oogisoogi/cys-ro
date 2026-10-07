@@ -2888,7 +2888,9 @@ pub struct InstallPlan {
 /// ★1.1.8 U2 후속(Fable 5R n12): [`plan_install`] 이 **디스크에서 읽는 입력 전부**의 지문 — 항목 파일 · 그 `.pristine/` 기준본 · 설치
 /// 매니페스트(와 그 항목 = prune 프리뷰) · `.pack-version` · CEO 영수증 · `.pack-state.json` · 스코프. 같은 원격 꾸러미(항목 `rels`)에
 /// 이 지문이 같으면 계획도 같다 — 자동 보류 메모가 꾸러미를 다시 받지 않아도 되는 근거. 과대포함만 허용(과소포함 = 낡은 보류).
-pub fn plan_disk_fingerprint(dir: &Path, rels: &[String]) -> String {
+/// ★후속 2판(codex 1R #7): 항목마다 **종류를 가른다** — 없음(`A`) · 파일(`F:<sha256>`) · 폴더(`D`) · 링크(`L:<대상>`) · 그 밖(`O`) — 그리고
+/// 「없음」 밖의 I/O 오류(권한 등)가 하나라도 있으면 None(지문 없음 = 메모를 만들지도 맞추지도 않는다 · 늘 받아서 다시 판정).
+pub fn plan_disk_fingerprint(dir: &Path, rels: &[String]) -> Option<String> {
     use sha2::{Digest, Sha256};
     let manifest: std::collections::BTreeMap<String, String> = std::fs::read_to_string(dir.join(INSTALL_MANIFEST))
         .ok()
@@ -2901,15 +2903,21 @@ pub fn plan_disk_fingerprint(dir: &Path, rels: &[String]) -> String {
     let mut h = Sha256::new();
     h.update(format!("{:?}\n", pack_scope_of(dir)));
     for p in &paths {
+        let full = dir.join(p);
+        let tag = match std::fs::symlink_metadata(&full) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "A".to_string(),
+            Err(_) => return None,
+            Ok(m) if m.file_type().is_symlink() => format!("L:{}", std::fs::read_link(&full).ok()?.display()),
+            Ok(m) if m.is_dir() => "D".to_string(),
+            Ok(m) if m.is_file() => format!("F:{:x}", Sha256::digest(std::fs::read(&full).ok()?)),
+            Ok(_) => "O".to_string(),
+        };
         h.update(p.as_bytes());
         h.update([0u8]);
-        match std::fs::read(dir.join(p)) {
-            Ok(b) => h.update(format!("{:x}", Sha256::digest(&b))),
-            Err(_) => h.update(b"-"),
-        }
+        h.update(tag.as_bytes());
         h.update(b"\n");
     }
-    format!("{:x}", h.finalize())
+    Some(format!("{:x}", h.finalize()))
 }
 
 /// install_into 와 **같은 판정 함수**로 드라이런 리포트를 만든다(쓰기 0·드리프트 0).

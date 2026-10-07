@@ -154,7 +154,8 @@ def live_check(rel, ptr, base, tries, interval):
         got = None
         for i in range(tries):
             try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers={"Cache-Control": "no-cache"}),
+                with urllib.request.urlopen(urllib.request.Request(url, headers={"Cache-Control": "no-cache",
+                                                                                "User-Agent": uc.HTTP_USER_AGENT}),
                                             timeout=15) as r:
                     got = uc.sha256_bytes(r.read())
             except Exception:

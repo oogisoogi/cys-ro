@@ -543,6 +543,76 @@ class TestGateAssets(Base):
         self.assertEqual(py("release-gate.py", "assets").returncode, 3)
 
 
+class TestUserAgent(unittest.TestCase):
+    """1.1.8 R4 실측(2026-10-08): SITE_HOST 앞단 Cloudflare 가 파이썬 기본 UA(`Python-urllib/…`)만 403 — 발행 도구의
+    urllib 요청은 전부 uc.HTTP_USER_AGENT 를 싣는다. 가짜 사이트 = 기본 UA 403 · 그 밖 200 + Date(그 규칙의 대역)."""
+
+    def site(self):
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def _answer(self):
+                ua = self.headers.get("User-Agent", "")
+                seen.append(ua)
+                self.send_response(403 if ua.startswith("Python-urllib") else 200)
+                self.end_headers()
+
+            do_HEAD = do_GET = _answer
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return "http://127.0.0.1:%d/" % srv.server_address[1], seen
+
+    def trusted_now_against(self, url, ua):
+        old = (uc.TIME_SOURCE, uc.HTTP_USER_AGENT, os.environ.pop("CYS_SIGN_DEV"))
+        try:
+            uc.TIME_SOURCE, uc.HTTP_USER_AGENT = url, ua
+            return uc.trusted_now()
+        finally:
+            uc.TIME_SOURCE, uc.HTTP_USER_AGENT = old[0], old[1]
+            os.environ["CYS_SIGN_DEV"] = old[2]
+
+    def test_trusted_now_sends_publish_ua(self):
+        url, seen = self.site()
+        self.assertIsInstance(self.trusted_now_against(url, uc.HTTP_USER_AGENT), int)
+        self.assertEqual(seen, ["cysr-publish/1"])
+
+    def test_mut_default_python_ua_is_403(self):
+        """음성 대조: 상수가 파이썬 기본 UA 와 같으면 가짜 사이트가 403 → 신뢰 시각 대조 불가(그 실측의 재현)."""
+        url, seen = self.site()
+        import urllib.request
+        with self.assertRaises(uc.PublishError) as cm:
+            self.trusted_now_against(url, "Python-urllib/%d.%d" % sys.version_info[:2])
+        self.assertIn("403", str(cm.exception))
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(dict(urllib.request.build_opener().addheaders)["User-agent"].startswith("Python-urllib"))
+
+    def test_every_urllib_request_in_publish_tools_carries_ua(self):
+        """소스 검사: scripts/update/*.py 의 urllib Request 생성마다 HTTP_USER_AGENT · Request 없이 urlopen(문자열) 0."""
+        import re
+        found = 0
+        for n in sorted(os.listdir(UPD)):
+            if not n.endswith(".py"):
+                continue
+            with open(os.path.join(UPD, n), encoding="utf-8") as f:
+                s = f.read()
+            for m in re.finditer(r"urllib\.request\.Request\(", s):
+                found += 1
+                depth, i = 1, m.end()
+                while depth:
+                    depth += {"(": 1, ")": -1}.get(s[i], 0)
+                    i += 1
+                self.assertIn("HTTP_USER_AGENT", s[m.end():i], "%s:%d" % (n, s.count("\n", 0, m.start()) + 1))
+            for m in re.finditer(r"urlopen\((?!req\b|urllib\.request\.Request\()", s):
+                self.fail("%s:%d urlopen 이 Request(UA) 없이 불린다" % (n, s.count("\n", 0, m.start()) + 1))
+        self.assertEqual(found, 3)  # update_common.trusted_now · publish-site.live_check · store.S3Store._req
+
+
 class TestGateBody(Base):
     def store_with(self, b):
         st = os.path.join(self.tmp, "store")

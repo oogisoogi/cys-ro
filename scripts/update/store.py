@@ -122,7 +122,8 @@ class S3Store:
         h["authorization"] = "AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s" % (
             self.ak, scope, ";".join(names), sig)
         req = urllib.request.Request(self.endpoint + path, data=data if method == "PUT" else None, method=method,
-                                     headers={k: v for k, v in h.items() if k != "host"})
+                                     headers={**{k: v for k, v in h.items() if k != "host"},
+                                              "User-Agent": uc.HTTP_USER_AGENT})  # 서명 밖 헤더(SignedHeaders 무관)
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, r.read(), (r.headers.get("ETag") or "").strip('"')

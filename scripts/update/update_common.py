@@ -31,6 +31,9 @@ NOTES_FORBIDDEN = ("오류", "실패", "위험", "손상", "경고")
 REQUIRED_CYSR_TARGETS = ("macos-arm64", "windows-x64")
 
 SITE_HOST = "jarvis.godmeyou.kr"
+# 발행 도구가 urllib 로 부르는 모든 요청의 User-Agent(1.1.8 R4 실측 2026-10-08: 파이썬 기본 `Python-urllib/…` 은
+#   SITE_HOST 앞단 Cloudflare 가 403 — curl·UA 없음·이 값 = 200). 새 urllib 호출도 이 상수를 싣는다.
+HTTP_USER_AGENT = "cysr-publish/1"
 ASSET_HOST = "github.com"
 ASSET_REPO = "oogisoogi/cys-ro"
 # §4-4 홉 규칙(정규화 뒤 대조 · U1 url.rs 와 같은 정규식).
@@ -262,7 +265,7 @@ def trusted_now():
         return int(v) if v else int(time.time())
     now = int(time.time())
     try:
-        req = urllib.request.Request(TIME_SOURCE, method="HEAD")
+        req = urllib.request.Request(TIME_SOURCE, method="HEAD", headers={"User-Agent": HTTP_USER_AGENT})
         with urllib.request.urlopen(req, timeout=10) as r:
             date = r.headers.get("Date")
     except Exception as e:

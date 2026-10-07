@@ -20,6 +20,8 @@
       해소 판정: 시험 전후 `pgrep -f '/Applications/cys.app/.*/cysd'` 증가 0 + 새 단언 초록
 - [x] 7. 맥 전수 → 미러 `fix/publish-docs-118` push → CI 3런 success
       해소 판정: `gh run list --branch fix/publish-docs-118` 3런 success
+- [x] 9. ⑨ 공식 명칭 cysr 통일(master#c33d2ec7 · 범위 결정 #db5ba8ef · 상한 +2h → 13:0x)
+      해소 판정: publicdocs 「공식 명칭 = cysr」 초록 + 8ba48f9e 판 문서 음성 대조 적색 · bun 전건 초록
 - [x] 8. 이 파일 완성(판독표 · 변경표 · 게이트 범위 제안) → 【확인요청】
       해소 판정: 인박스 헬퍼 재독 일치
 
@@ -80,3 +82,41 @@
 - Rust(격리 · USER-MANUAL 이 cys·cysd 시험의 include_str 대상이라 실행 · lib / --bin cys / --bin cysd / -p cys-app) · 미러 `fix/publish-docs-118` CI 3런(ci-branch · windows-build · windows-health)
   = 결과는 **【확인요청】 인박스 줄**에 싣는다(CI 는 이 커밋 자신에 돌므로 결과를 이 문서에 다시 적으면 커밋이 바뀌어 CI 를 다시 돌려야 한다).
 - 상한 3h 대비: 착수 07:59 → 3커밋 08:18 → 이 문서 08:3x.
+
+## §5 ⑨ 공식 명칭 cysr 통일 (박사님 10-07 「우리 자비스 공식명칭은 cysr이다. 이 외 다른 명칭은 쓰지 않는다. 모든 문서를 통일한다.」)
+커밋 = `4739c88a`(문서 + 게이트 + cysd 매뉴얼 핀 2) · `d1ac126b`(UI 문자열 + ui 시험 핀 + main.rs 안내 3) — ★두 커밋 한 묶음(문서 커밋 단독이면 clipath 거울쌍 고지 제목 4건 적색 · UI 커밋에서 맞물림).
+
+**규칙(변환기 + 손 판독)**: 산문 CYSJavis·cys 터미널·cys-terminal·단독 cys → cysr(조사 보정 를→을·가→이·는→은·와→과 · 괄호 뒤 조사는 앞말 기준이라 그대로) · 사람이 치는 명령 `cys …` → `cysr …`(펜스·인라인 명령 자리만 — `pkill -x cys`·`for f in cys cysd cysr`·`which -a cys` 같은 파일 이름은 그대로) · 기계 식별자 = 백틱 · 화면 문자열 거울 = 'cys' 홑따옴표 · 원작자 크레딧 줄 = 무접촉.
+**명칭이 아니라 파일 이름인 곳은 cysr 로 바꾸지 않았다**: 셸 설치 고지의 탐색 대상은 `which -a cys` 라 「다른 'cys' 가 앞을 가립니다」 등은 'cys' 를 지켰다(cysr 로 바꾸면 거짓 안내). 단추·제목·기능 이름은 cysr.
+
+판독표(5e0949ae → 4739c88a · 열 = 바뀐 줄 · 명칭(CYSJavis·cys 터미널·cys-terminal 지운 수) · 명령(cysr … 로 바뀐 명령 자리) · 식별자(새로 백틱 친 수) · 크레딧 = README 한/영 「…에서 출발」 3줄 무접촉):
+
+| 파일 | 줄 | 명칭 | 명령 | 식별자 |
+|---|---|---|---|---|
+| ARCHITECTURE-AND-PHILOSOPHY.md | 14 | 10 | 7 | 0 |
+| CONTRIBUTING.md | 4 | 1 | 3 | 0 |
+| NOTICE.md | 1 | 1 | 1 | 0 |
+| README.en.md | 51 | 11 | 48 | 0 |
+| README.md | 67 | 11 | 52 | 0 |
+| USER-MANUAL.md | 235 | 6 | 204 | 0 |
+| docs/GUIDE-clean-reset-KR.md | 22 | 3 | 4 | 0 |
+| docs/GUIDE-empty-surface-KR.md | 42 | 1 | 37 | 0 |
+| docs/GUIDE-fullauto-cycle-KR.md | 7 | 1 | 7 | 0 |
+| docs/GUIDE-policy-json-KR.md | 3 | 0 | 1 | 0 |
+| docs/INSTALL-Windows-KR.md | 10 | 1 | 4 | 0 |
+| docs/INSTALL.md | 47 | 1 | 21 | 0 |
+| docs/RELEASE.md | 24 | 4 | 15 | 0 |
+| docs/RELEASE_NOTES_1.0.0.md | 2 | 3 | 0 | 0 |
+| docs/RELEASE_NOTES_1.0.1.md | 6 | 3 | 0 | 2 |
+| docs/RELEASE_NOTES_1.0.2.md | 5 | 3 | 0 | 0 |
+| docs/index.html | 2 | 1 | 0 | 0 |
+
+UI(`d1ac126b` · 바뀐 줄 = git show --stat 실측): clipath.ts 30줄(단추·제목·본문 + 같은 문구 주석) · usagebar.ts 11 · main.ts 5(옛 앱 이름 cys.app 안내 1 포함) · resetconfirm.ts 3 · index.html 단추 1 · feedclass·feedback_u6·feedbackmodal 각 1 · main.rs 사용자 안내 11줄(Translocation·Applications 밖 안내 cys.app → cysr.app = ★옛 이름 결함 정정 포함). 유지 = 팔레트 재기동이 주입하는 `cys launch-agent`(기계 명령 · 별칭 동작) · `[cys-app]` 로그 머리 · ws-credit(원작자 크레딧) · `cys-dept …` 명령 안내(식별자).
+
+게이트(`ui/src/publicdocs.test.ts` 「공식 명칭 = cysr」): 공개 문서 전건(README 링크 수집 10 + index.html) — 「CYSJavis」 0 · 코드 꼴(백틱·펜스·'ASCII'·URL·링크 대상) 밖 `\bcys\b` 0 · 「출발|started from」 줄 예외. 음성 대조 = 8ba48f9e 판 문서 → CYSJavis 5 적색 · INSTALL-Windows-KR 옛 판만 → 코드 꼴 밖 cys 6줄 적색.
+시험: bun 2671/0 · tsc 0 · win-typecheck 0 · cys-app 260/0 · cysd accounts:: 146/0 · cys cycle_agent 14/0 · 팩 문서 시험 5종 초록 · 앵커 깨짐 1 → 수리(USER-MANUAL #12-cysr-팩-운용).
+
+**제외·사유**(#db5ba8ef ⑵⑶ · 변환 뒤 되돌림 69 파일): docs/RELEASE_NOTES_0.x = 원작자 판 이력(이름이 역사적으로 정확) · docs/update/* = 296·298 작업 중(병합 충돌) · 내부 HANDOFF·DESIGN·REVIEW·report·rebase·plans 등 = 이력(브리프 §1) · LICENSE 저작권 줄 = 크레딧.
+되돌린 파일: docs/CONSOLE-FLICKER-R2.md · docs/CONTROL_CENTER_DESIGN.md · docs/CYSR-BRAND-VERSION.md · docs/DARWIN-UPDATER-LEGACY-LANE.md · docs/DESIGN-dept-by-conversation.md · docs/DESIGN-dept-qualified-keys-v2.md · docs/DESIGN-factory-reset.md · docs/DESIGN-noshutdown-pack-update.md · docs/DESIGN-seamless-update.md · docs/DESIGN-v116-ceo-directive-hold.md · docs/FEEDBACK-MENU.md · docs/HANDOFF-A1-2.md · docs/HANDOFF-A1-2b.md · docs/HANDOFF-usage-two-accounts.md · docs/HANDOFF-v110-integ.md · docs/HANDOFF-v110-panetitle.md · docs/HANDOFF-v111-drain.md · docs/HANDOFF-v111-restore.md · docs/HANDOFF-v112-restore.md · docs/HANDOFF-v113-dept.md · docs/HANDOFF-v113-restore.md · docs/HANDOFF-v114-dept-fd.md · docs/HANDOFF-v115-dept.md · docs/HANDOFF-v115-restore.md · docs/HANDOFF-v115r2-pack.md · docs/HANDOFF-v115r2-ui.md · docs/HANDOFF-v115r3-d7.md · docs/HANDOFF-v115r4-dbg.md · docs/HANDOFF-v115r5-t1.md · docs/HANDOFF-v115r5-t4f1.md · docs/HANDOFF-v116-app-firstrun.md · docs/HANDOFF-v116-ceo-directive-hold.md · docs/HANDOFF-v116-integ.md · docs/HANDOFF-v116-phoenix-e2e.md · docs/HANDOFF-v116-rel.md · docs/HANDOFF-v116-restart-toast.md · docs/HANDOFF-v116-restore-card-producer.md · docs/HANDOFF-v116-seat.md · docs/HANDOFF-v116-usage.md · docs/KEY-ROTATION.md · docs/MIGRATION-seed-once-state-restore.md · docs/RELEASE-ROLLBACK.md · docs/REVIEW-TRIAGE-A1-2.md · docs/REVIEW-factory-reset-simulation.md · docs/RSI_LEARNING_DESIGN.md · docs/RSI_LEARNING_DIRECTIVE.draft.md · docs/SEAT-FOLDERS.md · docs/THREAT-MODEL-mission-gate.md · docs/USAGE_OBSERVABILITY_PHASE2_PLAN.md · docs/WINDOWS-UPGRADE-ATOMICITY-CHECKLIST.md · docs/WINTEST-v116-bundle-draft.md · docs/agy-verdicts-phoenix-korean-windows-2026-09-08.md · docs/agy-verdicts-phoenix-s3-master-persist-2026-09-08.md · docs/backlog-exited-surface-auto-reap-2026-07-13.md · docs/cysjavis-editor-primitives-design.md · docs/design-layout-persistence-2026-07-20.md · docs/fix-dock-ghost-tile-2026-07-20.md · docs/impl-pane-title-numbering-2026-07-27.md · docs/installer-remedy-proposal-pythonutf8-2026-09-08.md · docs/javis-native-features-proposal-2026-06-12.md · docs/participant-formation-findings-2026-09-10.md · docs/rebase-v0.14.10-report-2026-08-02.md · docs/rebase-v0.14.27-report-2026-08-28.md · docs/rebase-v0.14.30-report-2026-09-08.md · docs/report-cys-release-first-publish-2026-09-09.md · docs/s3-master-role-not-persisted-findings-2026-09-08.md · docs/s6-windows-autostart-env-capability-2026-09-08.md · docs/upstream-pr-draft-phoenix-korean-windows-2026-09-08.md · docs/verdict-pane-title-numbering-2026-07-27.md
+
+⑨ 별건(【결정필요】 후보): ① NOTICE.md 3행 「cys-terminal is licensed under the MIT License」 → 「cysr is licensed …」 로 바꿨다(우리 판 라이선스 서술 · 원작자 저작권 줄은 LICENSE 에 그대로) — 법적 고지 문구라 다르게 원하시면 1줄 되돌림. ② CLI `--help`(src/bin/cys.rs 의 about·예시)·팩 지침(directives) 안 `cys …` 명령 예시는 이번 범위 밖(사람 화면이지만 문서·UI 문자열 아님) — 통일하려면 별 티켓. ③ 판독표 수치는 diff 정규식 계수(도구 출력)다.

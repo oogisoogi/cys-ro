@@ -218,6 +218,11 @@ pub struct RealOps {
     /// 시험 전용: 자산 받기(github 1홉 규칙 URL 을 시험 파일로).
     #[cfg(test)]
     pub asset_get: Option<Box<dyn Fn(&str, u64) -> Result<Vec<u8>, String>>>,
+    /// 시험 전용(★후속 3판 m1): 정식 자리 판정(맥 codesign 실물) · 사후 검증 V1~V9(좌석·doctor·codesign 실물) 주입 — 그 밖은 실물.
+    #[cfg(test)]
+    pub canon_override: Option<Canon>,
+    #[cfg(test)]
+    pub verify_ok: bool,
 }
 
 fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
@@ -241,6 +246,10 @@ impl RealOps {
             judge_is_old: None,
             #[cfg(test)]
             asset_get: None,
+            #[cfg(test)]
+            canon_override: None,
+            #[cfg(test)]
+            verify_ok: false,
         }
     }
 
@@ -747,6 +756,10 @@ impl Ops for RealOps {
     }
 
     fn canonical(&mut self, _j: &Journal) -> Canon {
+        #[cfg(test)]
+        if let Some(c) = self.canon_override {
+            return c;
+        }
         let (Ok(new), old) = (self.expect_new(), self.expect_old()) else { return Canon::Unknown };
         match self.env.os {
             // ★3판(Fable 2R m2): 번들 바이너리(build-info) 실행 전 서명·DR 핀 — 실패 = 판독 불가
@@ -830,6 +843,10 @@ impl Ops for RealOps {
     }
 
     fn post_verify(&mut self, j: &Journal, rollback: bool) -> Step {
+        #[cfg(test)]
+        if self.verify_ok && !rollback {
+            return Ok(());
+        }
         let b0 = match &self.b0 {
             Some(b) => b.clone(),
             None => {
@@ -2089,6 +2106,58 @@ mod tests {
         ops.env.os = Os::Win;
         ops.judge_is_old = None;
         assert!(ops.reconstruct(&a).is_err() && !ops.reconstructed_new(), "빈 후보 = 새 판 판정 0");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R m1): 새 판 재구성 **성공 경로를 실 RealOps 로** — 실 러너가 S9 기록 뒤 죽음(실 스냅샷 · 시도 기록 저널 사본) → 두 슬롯
+    /// 손상 → 실 `Runner::recover`(실 RealOps · candidate 는 서명 본문 · 시험 키링) → 재구성(사본 검사) → S9 재기록 → 정식 자리 판정(주입 = 새 판) →
+    /// S10 실 `rotate`(가짜 cys 가 데몬 표지 생성) → V1~V9(주입 = 통과) → **실 S11**(installers/9 보존·재검증 + 수용 기록) → DONE · 결과 =
+    /// last_result `ok` 하나 · 시도 기록 삭제. 주입은 맥 codesign 실물·좌석·doctor 가 필요한 두 판정뿐.
+    #[cfg(unix)]
+    #[test]
+    fn new_reconstruct_success_path_through_real_ops_reaches_done_with_s11() {
+        use super::super::runner::{Outcome, Runner, ATTEMPT_FILE};
+        use crate::update::feed::fixture::{body_json, NOW};
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let (d, upd, root, mut ops) = recon_rig("recon-real-ok");
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+        );
+        let bb = body_json(&k, 9).to_string().into_bytes();
+        let e = base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let mut c = ops.cand.clone();
+        c.release_seq = 9;
+        c.feed_rev = Some(7);
+        c.envelope_sha256 = Some("ab".repeat(32));
+        c.envelope_signed_at = Some(NOW - 50);
+        c.release_b64 = Some(e.encode(&bb));
+        c.release_sig_b64 = Some(e.encode(k.u.sign(&bb)));
+        super::super::quiesce::write_json(&upd, CANDIDATE_FILE, &c).unwrap();
+        ops.cand = super::super::auto::recovery_candidate(&upd).unwrap(); // 복구기 입구와 같은 복원(서명 본문 재검증)
+        assert_eq!(ops.cand.release_seq, 9);
+        killed_after_swap(&upd, &root);
+        std::fs::remove_file(d.join("daemon.up")).unwrap();
+        corrupt_journal(&upd);
+        ops.judge_is_old = Some(false);
+        ops.canon_override = Some(Canon::New);
+        ops.verify_ok = true;
+        let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+        rec.soft_kill = true;
+        let o = rec.recover();
+        assert_eq!(o, Outcome::Done, "{o:?}");
+        assert_eq!(super::super::journal::read(&upd).journal().unwrap().state, super::super::journal::State::Done);
+        assert!(d.join("daemon.up").exists() && calls(&d).iter().any(|l| l.starts_with("rotate --skip-drain")), "S10 실 rotate: {:?}", calls(&d));
+        assert!(verify_installer_dir(&upd.join("installers/9"), 9, false).is_ok(), "S11 = installers/9 보존·재검증");
+        let acc: Value = serde_json::from_slice(&std::fs::read(super::super::check::accepted_path(&upd, "cysr", "stable")).unwrap()).unwrap();
+        assert_eq!(acc["installed_release_seq"], json!(9), "S11 수용 기록");
+        let st: Value = serde_json::from_slice(&std::fs::read(upd.join("state.json")).unwrap()).unwrap();
+        assert_eq!(st["last_result"]["kind"], json!("ok"), "결과 = ok {st}");
+        assert!(!upd.join(ATTEMPT_FILE).exists(), "성공 뒤 시도 기록 삭제");
         let _ = std::fs::remove_dir_all(&d);
     }
 

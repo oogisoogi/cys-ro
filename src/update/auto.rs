@@ -183,6 +183,31 @@ fn verified_candidate(c: Candidate) -> Option<Candidate> {
     Some(Candidate { asset, version: rb.version.clone(), release_seq: rb.release_seq, ..c })
 }
 
+/// ★후속 3판 ②: 첫 보류가 N7 이고 윈이면 `fill`(보관소 받기) 1회 → 성공 = `recheck` 로 다시 판정 · 실패 = 보고 그대로 + 사유(Some).
+/// 그 밖(맥 · 다른 게이트 보류 · apply) = 받기 0.
+pub(crate) fn retry_after_n7_fill(
+    report: Value,
+    rc: i32,
+    windows: bool,
+    fill: impl FnOnce() -> Result<bool, String>,
+    recheck: impl FnOnce() -> (Value, i32),
+) -> (Value, i32, Option<String>) {
+    let n7_only = report["decision"] == "hold" && report["gates"]["first_hold"]["id"] == "N7";
+    if !windows || !n7_only || super::mutant("U2-N7FILL") {
+        return (report, rc, None);
+    }
+    match fill() {
+        Ok(_) => {
+            let (r, c) = recheck();
+            (r, c, None)
+        }
+        Err(e) => {
+            eprintln!("[update] N7 보류 — {e}");
+            (report, rc, Some(e))
+        }
+    }
+}
+
 /// 러너 · 복구기 공통: 비종결 저널이면 복구부터(잠금 = 복구기 몫 · 잡혀 있으면 조용히 끝).
 fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
     let read = super::journal::read(dir);
@@ -243,6 +268,11 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     }
     // S0 — 판정(--check 와 같은 계산 · 결정 apply 일 때만 교체)
     let (report, rc) = check::run_check(&dir, &crate::pack::pack_dir(), hooks);
+    // ★후속 3판 ②(설계 §3-7 ② · master#c72a59df): 윈 N7 이 **유일한** 보류(첫 보류 = N7 · 순서상 마지막 게이트)면 이 주기에서 보관소 받기 →
+    //   다시 판정. 실패 = 사유 있는 보류(last_defer.detail · 다음 주기 재시도 · 영구 아님).
+    let (report, rc, n7_fill) = retry_after_n7_fill(report, rc, cfg!(windows), || super::realops::fill_rollback_assets_net(&dir, super::buildinfo::release_seq()), || {
+        check::run_check(&dir, &crate::pack::pack_dir(), hooks)
+    });
     let decision = report["decision"].as_str().unwrap_or("").to_string();
     // ★3판(Fable 2R M4 · 설계 §3-8): 본체가 최신이고 게이트가 통과면 팩 단독 갱신(러너 트랜잭션 안 · PACK_APPLY/PACK_ROLLBACK).
     // ★4판(M6): 게이트 = 팩 단독 부분열(`pack_gates` = evaluate_pack_only) — 본체 전체 게이트(N6·N7·N14)를 재사용하지 않는다.
@@ -257,7 +287,7 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     if decision != "apply" {
         let _ = super::notify::update_state(&dir, |m| {
             if decision == "hold" {
-                m.insert("last_defer".into(), json!({"code": report["gates"]["first_hold"]["code"], "gate": report["gates"]["first_hold"]["id"], "at": super::clock::wall_now()}));
+                m.insert("last_defer".into(), json!({"code": report["gates"]["first_hold"]["code"], "gate": report["gates"]["first_hold"]["id"], "at": super::clock::wall_now(), "detail": n7_fill.clone().unwrap_or_default()}));
             }
             if decision == "stop_seats" || report["feed"]["installed_revoked"].as_bool() == Some(true) {
                 // ★U4 접점: 설치판 폐기 = last_result kind installed_revoked(결과 id = 설치판 seq 고정 → 앱이 결과당 1회만 알림)
@@ -398,6 +428,22 @@ pub fn verify_payload(json_out: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★후속 3판 ②: 러너 S0 — 윈 + 첫 보류 N7 = 보관소 받기 1회 → 성공 = 다시 판정 · 실패 = 같은 보류 + 사유 · 맥·다른 게이트 보류 = 받기 0.
+    /// 뮤턴트 U2-N7FILL(받기 끔 = 3판 전 = 사유 없는 영구 보류) = 적.
+    #[test]
+    fn n7_hold_on_windows_triggers_archive_fill_then_recheck_or_reasoned_hold() {
+        let hold = |id: &str| json!({"decision": "hold", "gates": {"first_hold": {"id": id, "code": "update.no_rollback_asset"}}});
+        let calls = std::cell::Cell::new(0);
+        let (r, _, why) = retry_after_n7_fill(hold("N7"), 0, true, || { calls.set(calls.get() + 1); Ok(true) }, || (json!({"decision": "apply"}), 0));
+        assert_eq!((r["decision"].as_str(), why, calls.get()), (Some("apply"), None, 1), "받아 채움 → 다시 판정 = apply");
+        let (r, _, why) = retry_after_n7_fill(hold("N7"), 0, true, || Err("설치판 롤백 자산 받기(보관소): 미도달".into()), || panic!("실패면 재판정 0"));
+        assert!(r["decision"] == "hold" && why.as_deref().map(|w| w.contains("보관소")).unwrap_or(false), "사유 있는 보류");
+        let (_, _, why) = retry_after_n7_fill(hold("N7"), 0, false, || panic!("맥 = 받기 0"), || panic!());
+        assert!(why.is_none());
+        let (_, _, why) = retry_after_n7_fill(hold("N5"), 0, true, || panic!("다른 게이트 보류 = 받기 0"), || panic!());
+        assert!(why.is_none());
+    }
 
     /// ★4판(codex·Fable 3R M4/M6): 러너 분기 = 팩 단독 부분열 — 배터리(N6)·롤백 자산(N7)·복구기(N14) 보류여도 본체 최신이면 팩 경로 ·
     /// 팩 부분열 게이트(N2 사람 입력 등) 보류면 팩도 안 감 · 본체 판정이 uptodate 아니면 팩 경로 0. 뮤턴트 U2-PACKGATE(본체 게이트 재사용) = 적색.

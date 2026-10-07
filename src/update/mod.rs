@@ -15,6 +15,7 @@ pub mod failures;
 pub mod feed;
 pub mod gates;
 pub mod hold;
+pub mod install_link;
 pub mod journal;
 pub mod launch;
 pub mod mac;

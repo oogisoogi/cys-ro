@@ -153,46 +153,34 @@ pub fn fill_installer_dir(
     get_feed: &dyn Fn(&str) -> Result<Vec<u8>, String>,
     get_asset: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
 ) -> Result<bool, String> {
-    // ★후속 3판: 설치판 seq 0(내장 판 없음 · 개발 빌드) = 판정 불가(U5 preserve_installer 와 같은 규칙)
-    if seq == 0 {
-        return Err("설치판 release_seq 0 — 롤백 자산을 정할 수 없음".into());
-    }
+    // ★후속 3판 ②: 본문 받기·검증 · 4파일 놓기 = 설치 링크(`install_link::preserve_installer`)와 **같은 함수**(한 벌) — 러너 몫 = 설치기를
+    //   본문 행 url 에서 받는 것뿐.
     let dst = update_dir.join("installers").join(seq.to_string());
-    if let (Ok(b), Ok(s)) = (std::fs::read(dst.join(REL_BODY)), std::fs::read(dst.join(REL_SIG))) {
-        if verify_installer_dir_with(&dst, seq, true, &b, &s, kr).is_ok() {
-            return Ok(false);
+    if seq != 0 {
+        if let (Ok(b), Ok(s)) = (std::fs::read(dst.join(REL_BODY)), std::fs::read(dst.join(REL_SIG))) {
+            if verify_installer_dir_with(&dst, seq, true, &b, &s, kr).is_ok() {
+                return Ok(false);
+            }
         }
     }
-    let body = get_feed(&format!("cysr/releases/{seq}.json")).map_err(|e| format!("보관소 본문: {e}"))?;
-    let sig = get_feed(&format!("cysr/releases/{seq}.json.minisig")).map_err(|e| format!("보관소 서명: {e}"))?;
-    let rb = super::feed::verify_release_body(&body, &sig, "cysr", kr).map_err(|e| format!("보관소 본문 검증: {e}"))?;
-    if rb.release_seq != seq {
-        return Err(format!("보관소 본문 seq {} ≠ {seq}", rb.release_seq));
-    }
-    let row = rb.assets.values().find(|a| a.target == super::buildinfo::TARGET).ok_or("보관소 본문에 이 대상 행 없음")?;
+    let pe = |e: super::install_link::PreserveErr| format!("{}: {}", e.reason, e.detail);
+    let (body, sig, row) = super::install_link::fetch_archive_body(seq, kr, get_feed).map_err(|e| format!("보관소 본문 — {}", pe(e)))?;
     let sig_url = row.a2_sig_url.clone().ok_or("보관소 본문 행에 a2_sig_url 없음")?;
     let setup = get_asset(&row.url, row.size).map_err(|e| format!("설치기: {e}"))?;
     if setup.len() as u64 != row.size || super::feed::sha256_hex(&setup) != row.sha256 {
         return Err("설치기 크기·sha256 ≠ 보관소 본문 행".into());
     }
     let a2 = get_asset(&sig_url, 4096).map_err(|e| format!("설치기 A2 서명: {e}"))?;
-    let parent = dst.parent().ok_or("installers 부모 없음")?;
-    let tmp = parent.join(format!(".{seq}.fill.tmp"));
-    let _ = std::fs::remove_dir_all(&tmp);
-    super::ensure_private_dir(&tmp)?;
-    for (name, bytes) in [(REL_BODY, &body), (REL_SIG, &sig), (SETUP, &setup), (SETUP_SIG, &a2)] {
-        super::journal::durable_write(&tmp.join(name), bytes)?;
-    }
-    if let Err(e) = verify_installer_dir_with(&tmp, seq, true, &body, &sig, kr) {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err(format!("받은 자산 재검증: {e}"));
-    }
-    if dst.exists() {
-        std::fs::remove_dir_all(&dst).map_err(|e| format!("낡은 installers/{seq}: {e}"))?;
-    }
-    std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())?;
-    super::journal::sync_dir(parent)?;
-    Ok(true)
+    super::install_link::place_installer_files(update_dir, seq, &body, &sig, &setup, &a2, kr).map(|_| true).map_err(|e| format!("받은 자산 — {}", pe(e)))
+}
+
+/// 실 네트워크(피드 뿌리 보관소 + 자산 1홉 규칙)로 [`fill_installer_dir`] — 러너 S0(N7)·S2·S8·RB 공용 · Err = 사유 1줄.
+pub fn fill_rollback_assets_net(update_dir: &Path, seq: u64) -> Result<bool, String> {
+    let kr = super::keys::UpdateKeyring::embedded()?;
+    let base = super::net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
+    let get_feed = |rel: &str| super::net::fetch_feed_file(&base, rel).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
+    let get_asset = |url: &str, max: u64| super::net::fetch(url, super::url::Hop::AssetFirst, max).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
+    fill_installer_dir(update_dir, seq, &kr, &get_feed, &get_asset).map_err(|e| format!("설치판 롤백 자산 받기(보관소): {e}"))
 }
 
 pub struct RealOps {
@@ -1265,19 +1253,16 @@ impl RealOps {
         if super::mutant("U2-FILL") {
             return Err(fail(ErrCode::NoRollbackAsset, step, "설치판 롤백 자산 없음"));
         }
-        let kr = super::keys::UpdateKeyring::embedded().map_err(|e| fail(ErrCode::NoRollbackAsset, step, e))?;
-        let base = super::net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
-        let get_feed = |rel: &str| super::net::fetch_feed_file(&base, rel).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
         #[cfg(test)]
         if let Some(g) = &self.asset_get {
+            let kr = super::keys::UpdateKeyring::embedded().map_err(|e| fail(ErrCode::NoRollbackAsset, step, e))?;
+            let base = super::net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
+            let get_feed = |rel: &str| super::net::fetch_feed_file(&base, rel).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
             return fill_installer_dir(&self.env.update_dir, seq, &kr, &get_feed, g.as_ref())
                 .map(|_| ())
                 .map_err(|e| fail(ErrCode::NoRollbackAsset, step, format!("설치판 롤백 자산 받기(보관소): {e}")));
         }
-        let get_asset = |url: &str, max: u64| super::net::fetch(url, super::url::Hop::AssetFirst, max).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
-        fill_installer_dir(&self.env.update_dir, seq, &kr, &get_feed, &get_asset)
-            .map(|_| ())
-            .map_err(|e| fail(ErrCode::NoRollbackAsset, step, format!("설치판 롤백 자산 받기(보관소): {e}")))
+        fill_rollback_assets_net(&self.env.update_dir, seq).map(|_| ()).map_err(|e| fail(ErrCode::NoRollbackAsset, step, e))
     }
 
     /// 재구성의 정식 자리 판정(★2판 C13 그대로) — true = 설치판(옛) · false = 후보(새) · 어느 쪽도 아님 = Err(사람 필요).
@@ -2329,8 +2314,8 @@ mod tests {
         let e1 = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), sig.clone()), &asset(b"MZ-evil-08".to_vec())).unwrap_err();
         let e2 = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), k.f.sign(&bb)), &asset(setup.clone())).unwrap_err();
         let e3 = fill_installer_dir(&d, 8, &kr, &|_r: &str| Err("미도달".to_string()), &asset(setup.clone())).unwrap_err();
-        assert!(e1.contains("sha256") && e2.contains("보관소 본문 검증") && e3.contains("보관소 본문"), "ⓒ 사유: {e1} / {e2} / {e3}");
-        assert!(!inst.exists() && !d.join("installers/.8.fill.tmp").exists(), "ⓒ 자리 무변경");
+        assert!(e1.contains("sha256") && e2.contains("body_rejected") && e3.contains("보관소 본문"), "ⓒ 사유: {e1} / {e2} / {e3}");
+        assert!(!inst.exists() && !d.join("installers/.8.tmp").exists(), "ⓒ 자리 무변경");
         let _ = std::fs::remove_dir_all(&d);
     }
 

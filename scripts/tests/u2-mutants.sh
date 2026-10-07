@@ -66,6 +66,7 @@ U2-RBFILL update::realops::tests::win_rollback_refills_missing_rollback_assets_f
 U2-LINKFP pack::tests::plan_fingerprint_follows_symlink_target_content
 U2-WITHIN update::runner::tests::pack_backup_cleanup_deletes_only_inside_backup_root
 U2-S2FILL update::realops::tests::win_s2_fetches_rollback_assets_before_candidate_download_and_daemon_stop
+U2-N7FILL update::auto::tests::n7_hold_on_windows_triggers_archive_fill_then_recheck_or_reasoned_hold
 U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
 U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 U2-MEMOCHECK bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply

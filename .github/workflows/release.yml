@@ -967,8 +967,11 @@ jobs:
       #   그래서 그 스텝 **바로 뒤**, Gatekeeper 게이트와 tauri-action 업로드 **앞**에 둔다 — 실패하면 업로드가 일어나지 않는다. 서명·공증은 로드 명령(의존 dylib)을 바꾸지
       #   않으므로 서명 뒤에 봐도 같은 판정이다. 브랜치 CI(ci-branch.yml 맥 레인)가 같은 스크립트를 push 마다 먼저 돈다 — 여기는 최종 백스톱이다.
       #   ★windows 레그에서는 이 스텝이 돌지 않는다(`if`) — 스크립트도 맥이 아니면 '건너뜀'으로 통과한다.
+      # ★TICKET=cysr-118-r2-maclegs-gate(r2 리허설 37642949667): 판정 대상(`.app` 안 cysd)은 위 서명 레그 번들 스텝만 만든다 — 그 스텝과 같은 macsign 게이트.
+      #   APPLE_* 부재(윈도우 단독 배포)면 번들이 없어 이 스텝이 「파일이 없다 · exit 2」로 맥 레그를 붉혀 pack-artifacts(needs: build)까지 막았다.
+      #   조건 허용 = ci-branch.yml MUST_RUN_TOKEN_CONDITIONS(이 실행 줄 토큰에만 묶임 · 다른 필수 명령은 이 조건으로 못 끈다).
       - name: cysd 산출물 IOReport 링크 게이트 (otool -L · macOS 전용 · 업로드 전)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail

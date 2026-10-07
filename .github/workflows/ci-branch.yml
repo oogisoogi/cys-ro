@@ -216,6 +216,18 @@ jobs:
               },
           }
 
+          # ★TICKET=cysr-118-r2-maclegs-gate(master#39a7a1e9): **토큰에 묶인** 조건 허용. ALLOWED_STEP_CONDITIONS 는 레인 전체에 걸려 거기 넣으면
+          #   다른 필수 명령 스텝도 같은 조건으로 조용히 꺼질 수 있다(실측: UI 회귀 스텝에 같은 조건 = 초록). 이 표의 조건은 그 토큰의 스텝에만 통한다.
+          MUST_RUN_TOKEN_CONDITIONS = {
+              "release": {
+                  'bash scripts/check-no-ioreport-link.sh "$SRC/macos/cysr.app/Contents/MacOS/cysd"': {
+                      "matrix.platform == 'macos-latest' && steps.macsign.outputs.enabled == 'true'":
+                          "판정 대상(`.app` 안 cysd)은 서명 레그의 번들 스텝만 만든다 — APPLE_* 부재(enabled=false · 윈도우 단독 배포)면 판정할 파일 자체가 없다"
+                          "(r2 리허설 37642949667 x86_64 레그 = 「파일이 없다 · exit 2」). 서명 on 레그에서는 번들·업로드와 함께 무조건 돈다.",
+                  },
+              },
+          }
+
           # ★D10(반성 라운드 2026-09-10): 필터형 cargo 게이트의 '측정 ≥1' 폐쇄. windows-health.yml 의
           #   `cargo test --lib <모듈>::` / `--bin <bin> <필터>` 는 Windows 실기에서 ConPTY 문면 검체가
           #   도는 **유일한** 자리인데 cargo 필터는 0매치도 초록이라 모듈 경로가 바뀌면 조용한 초록으로
@@ -603,6 +615,7 @@ jobs:
               return out
 
           cond_err, used_conds = [], {lane: set() for lane in LANES}
+          used_tok_conds = set()
           for lane, path in LANES.items():
               allowed = ALLOWED_STEP_CONDITIONS.get(lane, {})
               for n in sorted(sets[lane]):
@@ -618,11 +631,21 @@ jobs:
                   if not any(tok in line for line in code_lines(path)):
                       cond_err.append(f"{lane}: 필수 명령 '{tok}' 이 {path} 의 코드 줄에 없다 — {why}")
                       continue
+                  tok_allowed = MUST_RUN_TOKEN_CONDITIONS.get(lane, {}).get(tok, {})
                   for cond in step_conditions(path, tok):
                       if cond in allowed:
                           used_conds[lane].add(cond)
                           continue
+                      if cond in tok_allowed:
+                          used_tok_conds.add((lane, tok, cond))
+                          continue
                       cond_err.append(f"{lane}: 필수 명령 '{tok}' 의 스텝이 등재되지 않은 조건부다(`if: {cond}`) — {why}")
+          for lane, toks in MUST_RUN_TOKEN_CONDITIONS.items():
+              for tok, conds in toks.items():
+                  if tok not in MUST_RUN_TOKENS.get(lane, {}):
+                      cond_err.append(f"{lane}: MUST_RUN_TOKEN_CONDITIONS 의 토큰 '{tok}' 이 MUST_RUN_TOKENS 에 없다 — 토큰 전용 허용은 필수 명령에만 단다")
+                  for cond in sorted(set(conds) - {c for (l, t, c) in used_tok_conds if (l, t) == (lane, tok)}):
+                      print(f"::warning::MUST_RUN_TOKEN_CONDITIONS[{lane!r}][{tok!r}] 의 '{cond}' 가 쓰이지 않는다 — 등재를 지워라(목록이 썩는다)")
           for lane, allowed in ALLOWED_STEP_CONDITIONS.items():
               for cond in sorted(set(allowed) - used_conds[lane]):
                   print(f"::warning::ALLOWED_STEP_CONDITIONS[{lane!r}] 의 '{cond}' 가 어느 스위트에도 "

@@ -31519,6 +31519,7 @@ mod tests {
     /// 판별 → `rotate_ext_strip`(OnceLock) → clap → 최상위 dispatch → 잠금 참가(`txn_participate` · 부모가 쥔 러너 잠금의 토큰) →
     /// `run_pack_update` → 비-gated `pack_update_from_dir` → 원격 계획 게이트(시험 키 = `CYS_TEST_PACK_KEY` · 시험 빌드 전용) → 종료 코드.
     /// `--txn` = rc 1 · stderr `pack-auto-hold:` · 반영 0 / 수동 = rc 0 · 반영. 뮤턴트 U2-TXNGLUE(글루 끔) = 적.
+    #[cfg(unix)]
     #[test]
     fn pack_update_txn_glue_holds_in_a_real_process() {
         if std::env::var("CYS_N13_CHILD").is_ok() {

@@ -1194,7 +1194,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           if (-not $v) { throw 'tauri.conf.json version 파싱 실패' }
-          $expected = "$v.0"
+          # ★1.1.8 U1(R7 · build.rs:282): cys·cysd 의 4번째 마디 = release_seq(NSIS 절대 오라클 nsis-hooks.nsh:90-91 이 이 둘만 읽는다) ·
+          #   cys-app(src-tauri/build.rs · 4번째 마디 지정 없음) = 0. 종전 「전부 .0」 기대는 R2 리허설 37642949667 윈 레그에서 1.1.8.1 != 1.1.8.0 적색.
+          $seq = "$env:CYSR_RELEASE_SEQ"
+          if ($seq -notmatch '^[1-9][0-9]*$') { throw "CYSR_RELEASE_SEQ='$seq' — 정수 ≥1 아님(앞 스텝과 같은 계약)" }
+          $want = @{
+            'src-tauri/binaries/cys-x86_64-pc-windows-msvc.exe' = "$v.$seq"
+            'src-tauri/binaries/cysd-x86_64-pc-windows-msvc.exe' = "$v.$seq"
+            'target/${{ matrix.target }}/release/cys-app.exe' = "$v.0"
+          }
           $files = @(
             'src-tauri/binaries/cys-x86_64-pc-windows-msvc.exe',
             'src-tauri/binaries/cysd-x86_64-pc-windows-msvc.exe',
@@ -1202,6 +1210,7 @@ jobs:
           )
           $bad = @()
           foreach ($f in $files) {
+            $expected = $want[$f]
             if (-not (Test-Path $f)) { $bad += "${f}: 파일 부재(빌드 산출 경로 회귀)"; continue }
             $vi = (Get-Item $f).VersionInfo
             $num = '{0}.{1}.{2}.{3}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
@@ -1213,7 +1222,7 @@ jobs:
             $bad | ForEach-Object { Write-Host "::error::VERSIONINFO 게이트: $_" }
             throw "VERSIONINFO 게이트 실패 ($($bad.Count)건) — 이 산출물은 업로드 금지"
           }
-          Write-Host "VERSIONINFO 게이트 통과: 3종 전부 수치 버전 == $expected"
+          Write-Host "VERSIONINFO 게이트 통과: cys·cysd == $v.$seq · cys-app == $v.0"
 
       # ★릴리스 본문 설치 안내는 **그 태그에 실제로 오르는 자산**에서 파생한다(2026-09-11 · 항목9).
       #   종전 본문은 "macOS는 .dmg, Windows는 -setup.exe"를 **리터럴**로 박았다. 맥 서명 시크릿이

@@ -3,13 +3,13 @@
 > **이 문서는 따라 하는 절차가 아니다.** 원작자(벤더) 레인과 0.14.x 시절의 기록을 리베이스 대조용으로 남긴 것이다 —
 > DMG·Apple 서명·공증·인앱 Update 버튼·원작자 홈페이지(`www.cysinsight.com`)·`cys-terminal` 저장소 절차는 **우리 포크(cysr · `oogisoogi/cys-ro`)가 쓰지 않는다**.
 > 아래 본문의 「현행」「필수」「정본」 같은 말은 **그 시절의 말**이다. 지금 발행 절차의 정본 = [`docs/RELEASE.md`](../RELEASE.md) 맨 위 「현행 정본」 절.
-> 옮긴 날 = 2026-10-07(TICKET=cysr-118-publish-docs 2판 · master#0885ae7a ⑥ · codex 1R MAJOR · agy 1R MINOR). 본문은 옮긴 그대로다(손대지 않음).
+> 옮긴 날 = 2026-10-07(TICKET=cysr-118-publish-docs 2판 · master#0885ae7a ⑥ · codex 1R MAJOR · agy 1R MINOR). 본문 = 기반 `8ba48f9e` 의 원문 그대로(3판 · master#62af6f8e ⑥ — 2판 이식본에 섞였던 1판 명칭 변환을 걷어 냄 · 절 머리의 「— 원작자 레인…」 꼬리표도 없는 원문).
 
 ---
 
 ## (이력) 옛 표준 절차 상자(원작자·0.14.x 시절)
 
-> **(원작자·0.14.x 시절) 표준 절차(2026-07 정정 · 이력)**: 릴리스는 **release.yml 자동화**가 정본이다 —
+> **현행 표준 절차(2026-07 정정)**: 릴리스는 **release.yml 자동화**가 정본이다 —
 > ①버전 범프(아래 §0 **8곳** = 수동 6 + `Cargo.lock` 2패키지)+`cargo build`(Cargo.lock 재생성)
 > +로컬 `bash scripts/secret-scan.sh --all` clean 확인
 > ②main push ③`git tag vX.Y.Z && git push origin vX.Y.Z`(태그=오너 직접·가드)
@@ -30,7 +30,7 @@
 
 ## (이력) §0-A 업데이트 발행 이원화 정책(인앱 Update 버튼·홈페이지 시절)
 
-## 0-A. 업데이트 발행 이원화 정책 (2026-07-12 오너 확정 · 원작자 레인 시절 기록 — 「홈페이지」 = 원작자 홈페이지 · 우리 받는 길 = 맨 위 정본 절)
+## 0-A. 업데이트 발행 이원화 정책 (2026-07-12 오너 확정)
 
 > **두 레인으로 발행한다.**
 > ① **팩-온리 패치 (기본)** — Rust/GUI 코드가 안 바뀐 릴리스는 pack 3종
@@ -55,7 +55,7 @@
 
 ## (이력) §1 macOS 빌드 — DMG·Apple 서명·공증·실사용자 경로 게이트
 
-## 1. macOS 빌드 (DMG + 앱 번들 + 업데이트 아티팩트) — 원작자 레인(DMG·Apple 공증) · 우리 맥 자산 = 맨 위 정본 절 4단계
+## 1. macOS 빌드 (DMG + 앱 번들 + 업데이트 아티팩트)
 
 > **자동 업데이트가 켜져 있으므로(`createUpdaterArtifacts: true`) 빌드 시 서명 키가 필요합니다.**
 > 키 없이 빌드하면 `.app.tar.gz.sig`가 안 생기고 업데이트 manifest를 만들 수 없습니다.
@@ -79,7 +79,7 @@ sh scripts/make-update-manifest.sh 0.2.0 <OWNER> cys-terminal
 #  → dist-update/latest.json, dist-update/cys-0.2.0-macos-aarch64.app.tar.gz
 ```
 
-`beforeBuildCommand`(scripts/bundle-prep.sh)가 UI 번들 + `cys/cysd` 릴리스 빌드 + `externalBin` 배치를
+`beforeBuildCommand`(scripts/bundle-prep.sh)가 UI 번들 + cys/cysd 릴리스 빌드 + `externalBin` 배치를
 자동 수행합니다. Intel 빌드가 필요하면 `--target x86_64-apple-darwin` 추가(manifest의 `darwin-x86_64`에 키 추가).
 
 ### ★Apple 서명·공증 (다른 맥 배포의 유일한 정공법 — 2026-06-15)
@@ -110,7 +110,7 @@ bash scripts/build-macos-signed.sh  # env 검증 → tauri build(자동 공증) 
 #  (반드시 bash — 스크립트가 프로세스 치환 `< <(...)`(bash 전용)을 쓴다. `sh`로 실행하면 line 57 syntax error.)
 ```
 - 배선: `tauri.conf.json > bundle.macOS.entitlements = entitlements.plist`(hardened runtime +
-  사이드카 cysd·cysr 로드 허용). Tauri가 빌드 중 Developer ID codesign + notarytool 제출 +
+  사이드카 cysd·cys 로드 허용). Tauri가 빌드 중 Developer ID codesign + notarytool 제출 +
   staple 을 자동 수행한다(별도 `codesign`/`notarytool` 수동 호출 불요).
 - **검증 통과 기준**: `spctl -a -vv cys.app` = **accepted**. (rejected면 공증 실패 — 빌드
   로그의 notarization 결과 확인.)
@@ -219,7 +219,7 @@ GUI 앱의 Windows Tauri 빌드는 잔여 — 현재 Windows는 CLI+데몬 중�
 
 Windows 머신이 없어도 macOS에서 MSI까지 만들 수 있다. **windows-gnu 타깃**(wxs Source가
 가리키는 `x86_64-pc-windows-gnu`·`aarch64-pc-windows-gnullvm`)을 zig 링커로 크로스컴파일하고,
-WiX 대신 **msitools(wixl)**로 MSI를 만든다. (`cys.wxs`는 표준 WiX v3라 wixl이 그대로 읽는다.)
+WiX 대신 **msitools(wixl)**로 MSI를 만든다. (cys.wxs는 표준 WiX v3라 wixl이 그대로 읽는다.)
 
 ```sh
 # 사전: rustup(homebrew rust와 별개) · cargo-zigbuild · zig · msitools(wixl)
@@ -243,9 +243,9 @@ zip -j dist-win/cys-0.2.1-windows-arm64.zip target/aarch64-pc-windows-gnullvm/re
 
 ⚠ **한계(정직)**: 크로스빌드 산출물은 PE 포맷·아키텍처는 검증되나(`file`로 PE32+ x86-64 /
 Aarch64 확인) **실제 Windows에서 실행 검증은 불가**하다. 광범위 배포 전 Windows 머신에서
-스모크테스트(설치→`cysr status`) 권장.
+스모크테스트(설치→`cys status`) 권장.
 
-## 3. GitHub 저장소 최초 설정 (1회) — 원작자 레인 기록(우리 저장소 = `oogisoogi/cys-ro` · 이미 설정됨)
+## 3. GitHub 저장소 최초 설정 (1회)
 
 자동 업데이트의 endpoint가 GitHub Releases이므로 **공개 repo가 있어야** 작동합니다.
 
@@ -260,7 +260,7 @@ gh repo create <OWNER>/cys-terminal --public --source . --remote origin
 git push -u origin main
 ```
 
-## 4. GitHub 릴리스 — 원작자 레인 기록(DMG·MSI 예시 · 우리 순서 = 맨 위 정본 절)
+## 4. GitHub 릴리스
 
 `latest.json`을 **항상 최신 릴리스에 포함**해야 updater가 찾습니다(endpoint가 `/releases/latest/`).
 
@@ -279,7 +279,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
   dist-win/cys-0.2.0-windows-x64.zip
 ```
 
-### 자동 업데이트 동작 요약 (사용자 입장) — 옛 판 동작 기록(옛 인앱 갱신 화면 = 1.1.8 에서 삭제)
+### 자동 업데이트 동작 요약 (사용자 입장)
 - 앱이 시작 시 + 6시간마다 `latest.json`을 조용히 확인 → 새 버전이면 상단 **Update** 버튼에 `!` 배지.
 - 버튼 클릭 → 세션이 0개면 자동 설치, 세션이 있으면 "N개 종료됩니다" 확인 후 설치.
 - 설치 = 새 `.app` 교체 + 구 데몬 SIGTERM + 앱 재시작(새 cysd 자동 기동). **재설치 불필요.**
@@ -292,7 +292,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
 
 ## (이력) 체크리스트 — DMG 실사용자 경로 게이트 · 원작자 메인 페이지(cysinsight) 원격 검증
 
-- [ ] **★★실사용자 경로 게이트 — DMG 2종 전부 exit 0 (2026-08-01 신설 · 필수 · 생략 불가)** ⚠원작자 레인(DMG) 항목 — 우리 포크는 DMG 를 발행하지 않는다
+- [ ] **★★실사용자 경로 게이트 — DMG 2종 전부 exit 0 (2026-08-01 신설 · 필수 · 생략 불가)**
 
       ```sh
       # 로컬 빌드 산출물 이름은 dist-mac/cys-<V>-macos-{arm64,x64}.dmg 다
@@ -318,7 +318,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
         유실 복구 등으로 재후처리할 때는 ⑤ SEAL-2 정적 검사가 구조적으로 FAIL 한다: 이미
         발행·검증된 과거 실물 바이트에 한해 `--unsafe-skip-gatekeeper` 로 우회한다
         (LOUD 경고 감수 · 신규 발행에는 절대 사용 금지).
-- [ ] **★메인 페이지(`/`) 원격 검증 — 6항목 전부 (S28 + 2026-07-29 오너 지시 ⓐⓑⓒ · 자동화 밖의 수동 게이트)** ⚠원작자 레인(원작자 홈페이지) 항목 — 우리 포크 대응 = 맨 위 정본 절 7단계(설치 사이트 핀)
+- [ ] **★메인 페이지(`/`) 원격 검증 — 6항목 전부 (S28 + 2026-07-29 오너 지시 ⓐⓑⓒ · 자동화 밖의 수동 게이트)**
 
       원 레인에서 이 격차의 형태는 "원격 검증기(`verify-release-remote.sh`)·조립기
       (`release-assemble.py`)가 `/downloads/` 만 보고 메인 페이지는 아예 보지 않는다"였다.
@@ -458,3 +458,23 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
 ## (이력) 체크리스트 — 공증된 DMG 실기
 
 - [ ] **★공증된 DMG 실기 — 상태: 실기 미검증 (0.14.43 E2 · 바이너리 릴리스 발행 뒤)** ⚠원작자 공증 레인 항목이다 — 우리 포크는 공증 DMG 를 발행하지 않는다(자체서명 맥 레인에서는 같은 확인을 설치된 앱의 cysd 로 한다). 공증된 DMG 의 cysd 에서 `control.hw` 의 `npu.status` 가 `ok` 인가(강화 런타임에서 시스템 dylib dlopen — 실패해도 데몬은 뜬다: `unavailable` + `reason`).
+
+---
+
+## (이력) CI 이전 수동 팩 발행 절차(1.1.7 이하 앱 배지 확인 포함 · 현행 = docs/RELEASE.md §0-P `pack-v*` 태그 레인)
+
+### 팩-온리 발행 절차 (현행 수동 — CI 자동화는 Phase2 별도 과제)
+
+pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs build_pack_manifest_value`)
+팩만 발행해도 **버전 범프 + cys 재빌드**가 필요하다(§0 전 위치 갱신 — version-check.sh 통과).
+
+1. 버전 범프(§0) → `cargo build --release --bin cys` (Tauri 빌드 불요 — cys 단독).
+2. pack 3종 생성 — release.yml `pack-artifacts` 잡과 동일 파라미터(스캔 게이트 2종 선행 포함):
+   `cys pack-manifest --key-id … --signed-at … --expires-at … --min-binary-version $PACK_MIN_BINARY > pack-manifest.json`
+   (`$PACK_MIN_BINARY` = release.yml `PACK_MIN_BINARY` env 와 **동일값** — 현행 1.1.7(2026-09-29 상향 · phoenix G2 `reinject --check --ack-only` · 그 전 1.0.0 = 2026-09-16 · 아래 근거 항목). 수기 리터럴 금지:
+   두 레인 값보다 낮게 서명하면 아래 불변 규칙이 막은 스큐가 이 수동 문으로 재개방된다.)
+   → 결정론 tar(`--mtime` 고정) → minisign 서명.
+3. **직전 릴리스의 latest.json + 바이너리 업데이트 자산을 그대로 동봉**해 새 릴리스를 만들고
+   `--latest`로 마킹한다(바이너리 버전은 그대로 → 바이너리 배지 안 뜸).
+4. 검증: 앱 배지 = `↻`(무중단 팩)만 표시, `!`(바이너리) 미표시. 구버전(min_binary 하한 미만) 기기는
+   "바이너리 업데이트 필요" 안내가 뜨는 것이 정상(하한 게이트 동작).

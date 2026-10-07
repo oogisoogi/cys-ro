@@ -236,7 +236,7 @@ pkill -x cys-app; pkill -x cysd; pkill -x cys
 # ④ 앱 삭제 (비밀번호를 물어보면 맥 로그인 비밀번호 입력)
 #    🚧 되돌릴 수 없습니다. 다만 다시 쓰고 싶으면 홈페이지에서 새로 받아 설치하면 됩니다.
 #    이름만 보고 지우지 않습니다 — 정말 이 앱의 번들일 때만 지웁니다(아래 두 검사).
-#    지금 판의 자리 = /Applications/cysr.app · 옛 이름 자리 = /Applications/cys.app(1.0.0 이전 판) — 둘 다 봅니다.
+#    지금 판의 자리 = /Applications/cysr.app · 옛 이름 자리 = /Applications/cys.app(1.0.0 까지 설치했거나 옛 판의 앱 안 갱신 단추로 새 판을 받은 맥은 판과 무관하게 이 이름) — 둘 다 봅니다.
 sudo sh -c '
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 rc=0

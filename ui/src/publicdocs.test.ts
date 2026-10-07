@@ -113,36 +113,58 @@ export const NAME_CREDITS: Record<string, string[]> = {
   // 앱 화면 출발지 표기 = 박사님 09-27 「도의상 cys가 출발지였다는 내용만 표시」(brandbadge.test · test_default_fleet_formation ⓕ 5자리 결박) — README 문장 그대로 + 짧은 꼬리표
   "ui/index.html": [`title="${CREDIT_README}">cys 터미널에서 출발`],
 };
-export const NAME_QUOTED_OK = ["'cys'", "'cys-dept-*'"];
-/** 순수 판정 — 크레딧(정확한 문장)을 지운 뒤 CYSJavis 개수 · 코드 꼴 밖 낱말 cys 가 있는 줄 · 등재됐지만 없는 크레딧. */
+// ③ 3판(master#62af6f8e ① · Opus 2R M1): 홑따옴표 'cys' 의 면제는 **문맥 결박** — 화면 알림 문구를 옮겨 적은 정확한 조각 4개 안에서만.
+//    (2판은 'cys' 토큰을 어디서나 지워 「제품 이름은 'cys' 입니다」 가 초록이었다.) 조각 = clipath.ts 고지 제목·본문의 'cys'(탐침 `which -a cys` 의 파일 이름).
+export const NAME_QUOTED_PHRASES = [
+  "PATH 앞의 다른 'cys' 가 cysr 설치를 가립니다",
+  "PATH 앞쪽의 다른 'cys' 가 먼저 잡힙니다",
+  "PATH에서 'cys' 를 찾지 못했습니다",
+  "이 앱의 것이 아닌 'cys' 파일이",
+];
+// ② 3판(master#62af6f8e ② · Opus 2R M2): 펜스 안도 **사람이 치는 명령 머리**는 본다 — 줄머리·`$ `·상자 칸(│)·`→`·`;`·`&&`·`||`·`|`·`$(` 다음의
+//    `cys <소문자 서브명령>` 은 `cysr …` 이어야 한다(박사님 규칙 「사람이 치는 명령 예시 = cysr」). 셸 변수·`pkill -x cys`·`-name cys` 같은 식별자 문맥은 머리가 아니라 걸리지 않는다.
+const FENCE_CMD_HEAD = /(?:^|[│┃;(]|→|&&|\|\||\||\$\()\s*(?:\$\s+)?(?:[A-Z_][A-Z0-9_]*=\S*\s+)*cys\s+-{0,2}[a-z]/;
+const MD_HTML_TAG = /<\/?(?:a|abbr|b|br|center|del|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|small|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|u|ul)\b[^<>]*\/?>/gi;
+const VISIBLE_ATTRS = /\b(?:title|alt|aria-label|placeholder|content|value)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+const tagToVisible = (tag: string) => [...tag.matchAll(VISIBLE_ATTRS)].map((m) => ` ${m[1] ?? m[2]} `).join("");
+/** 순수 판정 — 크레딧(정확한 문장)을 지운 뒤 CYSJavis 개수 · 코드 꼴 밖 낱말 cys(펜스 안 = 명령 머리) 줄 · 등재됐지만 없는 크레딧 · 닫히지 않은 펜스. */
 export const nameViolations = (text: string, isHtml: boolean, credits: string[]) => {
   let t = text;
+  const keepNl = (m: string) => m.replace(/[^\n]/g, "");
   if (isHtml) {
-    const keepNl = (m: string) => m.replace(/[^\n]/g, "");
-    t = t.replace(/<!--[\s\S]*?-->/g, keepNl).replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, keepNl).replace(/<code>[\s\S]*?<\/code>/gi, keepNl); // <code> = HTML 의 코드 꼴
+    // <code> = HTML 의 코드 꼴 · 주석·script·style = 화면 밖
+    t = t.replace(/<!--[\s\S]*?-->/g, keepNl).replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, keepNl).replace(/<code>[\s\S]*?<\/code>/gi, keepNl);
   }
   const unusedCredits = credits.filter((c) => !t.includes(c));
   for (const c of credits) t = t.split(c).join("");
-  if (isHtml) {
-    // 태그는 지우되 사람이 보는 속성 값(title·alt·aria-label·placeholder·content)은 남긴다(툴팁도 화면 문자열이다)
-    t = t.replace(/<[^>]*>/g, (tag) => [...tag.matchAll(/\b(?:title|alt|aria-label|placeholder|content)\s*=\s*"([^"]*)"/gi)].map((m) => ` ${m[1]} `).join(""));
-  }
+  if (isHtml) t = t.replace(/<[^>]*>/g, tagToVisible); // 태그는 지우되 사람이 보는 속성 값(큰·홑따옴표)은 남긴다
   const cysjavis = (t.match(/CYSJavis/g) ?? []).length;
   const lines: number[] = [];
-  let fence = false;
+  let fence: string | null = null;
+  let fenceOpenedAt = 0;
   t.split("\n").forEach((line, i) => {
-    if (/^\s*(?:>\s*)*(```|~~~)/.test(line)) {
-      fence = !fence;
+    const fm = line.match(/^\s*(?:>\s*)*(`{3,}|~{3,})/);
+    if (fm && (fence === null || fm[1][0] === fence[0])) {
+      if (fence === null) {
+        fence = fm[1];
+        fenceOpenedAt = i + 1;
+      } else fence = null;
       return;
     }
-    if (fence) return;
+    if (fence !== null) {
+      const body = line.replace(/^\s*(?:>\s*)*/, "");
+      // 상자 줄(│·┃ 로 시작 = 사람이 읽는 요약표)은 칸 이름 뒤에 명령이 온다 → 그 줄 안의 `cys <서브명령>` 은 전부 명령 자리
+      if (FENCE_CMD_HEAD.test(body) || (/^[│┃]/.test(body) && /(?:^|\s)cys\s+-{0,2}[a-z]/.test(body))) lines.push(i + 1);
+      return;
+    }
     let prose = line.replace(/``[^`]*``|`[^`\n]*`/g, "");
-    for (const q of NAME_QUOTED_OK) prose = prose.split(q).join("");
-    prose = prose.replace(/\]\([^)]*\)/g, "](").replace(/https?:\/\/\S+/g, "");
-    if (!isHtml) prose = prose.replace(/<[^>\n]*>/g, "");
+    for (const q of NAME_QUOTED_PHRASES) prose = prose.split(q).join("");
+    prose = prose.replace(/\]\([^)]*\)/g, "](").replace(/<https?:\/\/[^>\s]*>/g, "").replace(/https?:\/\/\S+/g, "");
+    // md 의 꺾쇠: 태그(<a …>·<br> 등)만 지우고 보이는 속성은 남긴다 · 자리표시·그 밖의 <…> 는 산문으로 남긴다(2판은 <…cys…> 를 통째로 면제했다)
+    if (!isHtml) prose = prose.replace(MD_HTML_TAG, tagToVisible);
     if (/\bcys\b/.test(prose)) lines.push(i + 1);
   });
-  return { cysjavis, lines, unusedCredits };
+  return { cysjavis, lines, unusedCredits, unclosedFenceAt: fence === null ? 0 : fenceOpenedAt };
 };
 
 describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현행만(1.1.8 U4)", () => {
@@ -238,7 +260,7 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
   it("공식 명칭 = cysr — 매니페스트 전건: 「CYSJavis」 0 · 코드 꼴 밖 낱말 cys 0 · 크레딧은 파일별 정확한 문장만(⑨ 2판)", () => {
     for (const f of NAME_MANIFEST) {
       const v = nameViolations(read(`../../${f}`), f.endsWith(".html"), NAME_CREDITS[f] ?? []);
-      expect({ f, ...v }).toEqual({ f, cysjavis: 0, lines: [], unusedCredits: [] });
+      expect({ f, ...v }).toEqual({ f, cysjavis: 0, lines: [], unusedCredits: [], unclosedFenceAt: 0 });
     }
   });
   it("공식 명칭 매니페스트 ⊇ README 링크 공개 문서 · 전부 실재(새 공개 문서는 등재해야 초록)", () => {
@@ -248,17 +270,33 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     }
     for (const f of NAME_MANIFEST) expect({ f, 있음: existsSync(new URL(`../../${f}`, import.meta.url)) }).toEqual({ f, 있음: true });
   });
-  it("공식 명칭 판정기 반례(codex 1R) — 홑따옴표로 감싼 제품명 · 「출발」 낱말이 든 줄의 다른 자리 · 크레딧 뒤 덧붙임은 적색", () => {
-    expect(nameViolations("제품 이름은 'cys' 가 아니라 'cysr' 입니다 — 제품 이름은 'cys 터미널' 입니다", false, []).lines).toEqual([1]);
+  it("공식 명칭 판정기 반례 — codex 1R 원 반례 원문 2 · 펜스 명령 머리 · 꺾쇠 · 홑따옴표 속성 · 닫히지 않은 펜스는 적색(3판)", () => {
+    // codex 1R 원 반례 원문 그대로(2판은 첫 문장 뒤에 덧붙인 꼴로 재서 원문이 초록이었다 — Opus 2R M1)
+    expect(nameViolations("제품 이름은 'cys' 입니다", false, []).lines).toEqual([1]);
     expect(nameViolations("이 제품은 cys에서 출발하지만 공식 이름도 cys입니다", false, []).lines).toEqual([1]);
+    // 승인 조각 안의 'cys' 만 면제
+    expect(nameViolations("- **\"PATH에서 'cys' 를 찾지 못했습니다\"** — 확인", false, []).lines).toEqual([]);
     expect(nameViolations(`${CREDIT_README} 그리고 cys 를 쓰세요`, false, [CREDIT_README]).lines).toEqual([1]);
-    expect(nameViolations(CREDIT_README, false, [CREDIT_README])).toEqual({ cysjavis: 0, lines: [], unusedCredits: [] });
+    expect(nameViolations(CREDIT_README, false, [CREDIT_README])).toEqual({ cysjavis: 0, lines: [], unusedCredits: [], unclosedFenceAt: 0 });
+    expect(nameViolations("문장만", false, [CREDIT_README]).unusedCredits).toEqual([CREDIT_README]);
     expect(nameViolations("CYSJavis 팩", false, []).cysjavis).toBe(1);
+    // 펜스 안 명령 머리(Opus 2R M2 · GUIDE-empty-surface 「한 장 요약」 옛 6줄 꼴) — 식별자 문맥은 통과
+    expect(nameViolations("```\n│  급할 때     cys pause          전부 멈춤 │\n│  결재하기    cysr feed list → cys feed reply 1 allow │\n```", false, []).lines).toEqual([2, 3]);
+    expect(nameViolations("```sh\n$ cys status\nCYS_SOCKET=/a cys ping && cysr list\n```", false, []).lines).toEqual([2, 3]);
+    expect(nameViolations("```sh\npkill -x cys; for f in cys cysd cysr; do :; done\nfind . -name cys -o -name 'cys-dept-*'\n```", false, []).lines).toEqual([]);
+    expect(nameViolations("> ```bash\n> cysr status\n> ```", false, []).lines).toEqual([]);
+    // 꺾쇠(md) — 자리표시·꺾쇠 안 산문은 면제가 아니다 · 자동 링크는 면제
+    expect(nameViolations("설명 <cys 터미널 안내> 끝", false, []).lines).toEqual([1]);
+    expect(nameViolations("<https://example.com/cys/x>", false, []).lines).toEqual([]);
+    expect(nameViolations('<img src="x.png" alt="cys 로고">', false, []).lines).toEqual([1]);
+    // HTML 속성 — 큰·홑따옴표 모두 · <code> 는 코드 꼴
     expect(nameViolations('<button title="cys launch-agent 로도">x</button>', true, []).lines).toEqual([1]);
+    expect(nameViolations("<button title='cys launch-agent 로도'>x</button>", true, []).lines).toEqual([1]);
     expect(nameViolations("<div>산출물 (<code>~/.cys/x</code>)</div>", true, []).lines).toEqual([]);
     expect(nameViolations("<div>산출물 (~/.cys/x)</div>", true, []).lines).toEqual([1]);
-    expect(nameViolations("> ```bash\n> cys status\n> ```", false, []).lines).toEqual([]);
-    expect(nameViolations("문장만", false, [CREDIT_README]).unusedCredits).toEqual([CREDIT_README]);
+    // 닫히지 않은 펜스 = 실패(그 아래 전부가 면제되던 구멍) · ``` 와 ~~~ 는 서로를 닫지 않는다
+    expect(nameViolations("본문\n```\ncys 는 제품", false, []).unclosedFenceAt).toBe(2);
+    expect(nameViolations("```\n~~~\n```\ncys 제품", false, []).lines).toEqual([4]);
   });
   it("다운로드 버튼 폴백 = 표시 판의 실 자산(태그·파일명·판 결속 · codex 재서명 MINOR-1)", () => {
     const s = read("../../docs/index.html");

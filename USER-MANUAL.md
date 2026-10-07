@@ -1984,7 +1984,7 @@ v0.14.43 가산분(`control.hw` 응답의 `npu` 객체 · NPU 전력 읽기 — 
 
 | 증상 | 조치 |
 |---|---|
-| macOS "손상되었기 때문에 열 수 없습니다" | **원인 두 가지 — ①반쪽 설치(덮어쓰기로 설치) ②quarantine(자체서명 빌드).** ①이 훨씬 흔하다: 기존 앱(`cysr.app` · 1.0.0 이전 판이면 옛 이름 `cys.app`)을 **먼저 휴지통으로 옮긴 뒤** 받은 zip 을 풀어 나온 앱을 새로 옮기기(덮어쓰기 금지 — 일부 파일만 막혀 세대 혼합 번들이 남는다). ②는 `xattr -d com.apple.quarantine /Applications/cysr.app`. 원인 판별은 `cysr doctor`(app-seal 항목)·`codesign --verify --strict /Applications/cysr.app`. 전체 절차: `docs/INSTALL.md` → "손상되었기 때문에 열 수 없습니다" 해결 |
+| macOS "손상되었기 때문에 열 수 없습니다" | **원인 두 가지 — ①반쪽 설치(덮어쓰기로 설치) ②quarantine(자체서명 빌드).** ①이 훨씬 흔하다: 기존 앱(`cysr.app` · 그리고 옛 이름 `cys.app` — 옛 판의 앱 안 갱신 단추로 새 판을 받은 맥은 판과 무관하게 이 이름일 수 있어 둘 다 확인)을 **먼저 휴지통으로 옮긴 뒤** 받은 zip 을 풀어 나온 앱을 새로 옮기기(덮어쓰기 금지 — 일부 파일만 막혀 세대 혼합 번들이 남는다). ②는 `xattr -d com.apple.quarantine /Applications/cysr.app`. 원인 판별은 `cysr doctor`(app-seal 항목)·`codesign --verify --strict /Applications/cysr.app`. 전체 절차: `docs/INSTALL.md` → "손상되었기 때문에 열 수 없습니다" 해결 |
 | 앱이 *"설치본이 온전하지 않습니다 — 재설치 필요"* 안내를 띄움 | 기동 자기점검이 **빠진 구성요소를 이름으로** 찾아낸 것이다(반쪽 설치). 안내에 적힌 파일을 보고 위와 같은 절차로 **통째 재설치**한다. 번들 안 파일만 채워 넣는 부분 수리는 통하지 않는다(macOS 보호에 막히고, 막혀도 서명 봉인이 깨진 채 남는다). 설정·대화기록(`~/.cys`)은 번들 밖이라 보존된다 |
 | `cysr ping` 실패 | 앱 실행(데몬 자동 기동) 또는 `cysd` 직접 기동. `cysr doctor --fix` |
 | 연습 흔적(부서·세션·기억)이 자꾸 살아나 충돌 | topbar **완전 초기화** 버튼 또는 `cysr factory-reset` — 사용 흔적 전부를 격리 보관하고 설치 초기 상태로(§11 "완전 초기화" 참조·격리 폴더 manifest.json으로 복구). 미리보기는 `cysr factory-reset --plan`(쓰기 0). CLI 실행 전 앱 종료 필요 |

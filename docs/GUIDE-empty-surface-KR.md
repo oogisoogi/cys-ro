@@ -300,13 +300,13 @@ A. `cysr resume`. 컴퓨터를 껐다 켜도 멈춤이 유지되므로, 잊지 �
 │  이 빈 창 = 당신(사장)의 책상입니다. 고장이 아닙니다.        │
 ├───────────────────────────────────────────────────────────┤
 │  제일 먼저   제목 줄 우클릭 → [이름 변경] → "◆ 내 자리"      │
-│  켜 두기     cys events --reconnect   (회사가 흐르는 창문)   │
+│  켜 두기     cysr events --reconnect  (회사가 흐르는 창문)   │
 ├───────────────────────────────────────────────────────────┤
-│  급할 때     cys pause          전부 멈춤 (풀기: resume)    │
-│  살펴보기    cys status         전 직원 현황                │
-│  되돌리기    cys queue clear    안 보낸 지시 취소            │
-│  결재하기    cys feed list      →  cys feed reply <번호> allow │
-│  되살리기    cys restore --include-master                   │
+│  급할 때     cysr pause         전부 멈춤 (풀기: resume)    │
+│  살펴보기    cysr status        전 직원 현황                │
+│  되돌리기    cysr queue clear   안 보낸 지시 취소            │
+│  결재하기    cysr feed list     → cysr feed reply <번호> allow │
+│  되살리기    cysr restore --include-master                  │
 ├───────────────────────────────────────────────────────────┤
 │  못 하는 것  ① 인감(approval sign) ② 장부 실행(cysr run)     │
 │              ③ 이름으로 불리기  → 전부 정상입니다            │

@@ -2,9 +2,9 @@
 
 ## ★현행 정본 — 우리 포크(cysr · `oogisoogi/cys-ro`) 발행 절차 (1.1.8 현행화 · 2026-10-07)
 
-> 우리 포크의 발행은 **이 절이 정본**이다. 아래 본문(§0-P 이하)은 이 순서가 부르는 세부(팩 채널 · 버전 위치 · 태그 전 게이트 ·
-> 맥 CI 레그 게이트 · 체크리스트)다. 원작자 레인(DMG·Apple 공증·원작자 홈페이지·`cys-terminal` 저장소)은 이 문서에 없다 —
-> 비실행 이력으로 `docs/legacy/RELEASE-upstream.md` 에 따로 있다(리베이스 대조용).
+> 우리 포크의 발행은 **이 절이 정본**이다. 아래 §0-P(팩 채널)·§0(버전 위치)·§0-B·§0-C(태그 전 게이트)·체크리스트는 이 순서가 부르는 세부다.
+> **§1 맥 CI 레그 게이트(DMG·공증 전제)는 잠복 레그 기록**이다 — 맥 레그가 Apple 자격 없음으로 비발행이라 현행 순서(4단계 = 로컬 zip 손 업로드)는 부르지 않는다.
+> 원작자 레인(DMG·Apple 공증·원작자 홈페이지·`cys-terminal` 저장소)과 CI 이전 수동 팩 절차는 비실행 이력으로 `docs/legacy/RELEASE-upstream.md` 에 있다.
 
 | 항목 | 우리 포크 실물 | 근거(실측 출처) |
 |---|---|---|
@@ -12,7 +12,7 @@
 | 맥 자산 | `cysr-macos-arm64-v<판>.zip` · `cysr-macos-x64-v<판>.zip` — zip 최상위 = **`cysr.app` 하나** · 자체서명(`cys-local`) · **Apple 공증 없음** · **로컬 빌드 + 손 업로드**(CI 맥 레그는 Apple 자격 없음으로 비발행) | `scripts/release-verify.py` `MAC_ASSETS` · `release.yml` build 매트릭스 x86 레그 주석 |
 | 윈 자산 | `cysr_<판>_x64-setup.exe`(+ 같은 파일을 담은 `cysr_<판>_x64-setup.zip`) — CI NSIS · Authenticode 미서명 | `scripts/release-verify.py` `REQUIRED_ASSETS` |
 | 받는 길 | 설치 사이트 <https://jarvis.godmeyou.kr/get> 의 한 줄(설치기가 위 자산을 판 핀·크기·지문으로 받는다) · 파일 직접 = 릴리스 페이지 | `ai-jarvis` `site/install/bootstrap.sh` · `bootstrap.ps1` 핀 |
-| 설치 자리 | 맥 `/Applications/cysr.app`(옛 이름 자리 `/Applications/cys.app` = 0.14.x·1.0.0·원작자 판 — 설치기가 비켜 둔다) · 윈 = 설치 폴더 안 실행 파일 이름은 그대로 `cys.exe`·`cysd.exe`·`cys-app.exe` | `bootstrap.sh` `CYS_FORK_APP`·`CYS_OLD_APP` · `bootstrap.ps1` `Test-CysDirHasBins` |
+| 설치 자리 | 맥 `/Applications/cysr.app`(옛 이름 자리 `/Applications/cys.app` = 0.14.x·1.0.0·원작자 판으로 설치한 맥 + 그 뒤 옛 판의 앱 안 갱신 단추로 새 판을 받은 맥(업데이터가 기존 번들 자리에 넣는다 — tauri-plugin-updater 2.10.1 updater.rs:1238·1302) — 설치기가 비켜 둔다) · 윈 = 설치 폴더 안 실행 파일 이름은 그대로 `cys.exe`·`cysd.exe`·`cys-app.exe` | `bootstrap.sh` `CYS_FORK_APP`·`CYS_OLD_APP` · `bootstrap.ps1` `Test-CysDirHasBins` |
 
 **순서**(각 단계 실패 = 그 자리에서 멈춤 · 외부 발행 단계는 master 만):
 1. **판 번호·범프** — 판 규약 = `docs/RELEASE-ROLLBACK.md` §0. 버전 SOT 8곳 범프(아래 §0) + **태그 전 사전 게이트 4종 rc=0**(아래 §0-C).
@@ -36,21 +36,13 @@
 
 ## 0-P. 팩 채널 발행 (`pack-v*` 태그 · `pack-release.yml` · 본체 발행과 별도 레인)
 
-### 팩-온리 발행 절차 (현행 수동 — CI 자동화는 Phase2 별도 과제)
+현행 = **`pack-v*` 태그 레인** — `scripts/release-lane-check.sh` 로 팩만 바뀌었는지 판별한 뒤 `git tag pack-vX.Y.Z && git push origin pack-vX.Y.Z`
+→ `.github/workflows/pack-release.yml` 이 `release.yml` `pack-artifacts` 잡과 같은 게이트(시크릿 2중 스캔·역커버리지·실서명→실검증)로 팩 3종을 만들고
+직전 릴리스의 `latest.json` 을 이어 싣는다. ⚠**이 레인은 승인 게이트 없이 곧장 공개된다**(`docs/RELEASE-ROLLBACK.md` §1 — 본체 발행과 혼동 금지 · 태그 push = master 집행).
+버전 규칙: `pack-vX.Y.Z` 는 직전 `pack_version` 보다 커야 하고, 다음 본체 판은 최신 `pack-v` 보다 커야 한다(`release-lane-check.sh` 가 기계 검사).
 
-pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs build_pack_manifest_value`)
-팩만 발행해도 **버전 범프 + cysr 재빌드**가 필요하다(§0 전 위치 갱신 — version-check.sh 통과).
-
-1. 버전 범프(§0) → `cargo build --release --bin cys` (Tauri 빌드 불요 — cysr 단독).
-2. pack 3종 생성 — release.yml `pack-artifacts` 잡과 동일 파라미터(스캔 게이트 2종 선행 포함):
-   `cysr pack-manifest --key-id … --signed-at … --expires-at … --min-binary-version $PACK_MIN_BINARY > pack-manifest.json`
-   (`$PACK_MIN_BINARY` = release.yml `PACK_MIN_BINARY` env 와 **동일값** — 현행 1.1.7(2026-09-29 상향 · phoenix G2 `reinject --check --ack-only` · 그 전 1.0.0 = 2026-09-16 · 아래 근거 항목). 수기 리터럴 금지:
-   두 레인 값보다 낮게 서명하면 아래 불변 규칙이 막은 스큐가 이 수동 문으로 재개방된다.)
-   → 결정론 tar(`--mtime` 고정) → minisign 서명.
-3. **직전 릴리스의 latest.json + 바이너리 업데이트 자산을 그대로 동봉**해 새 릴리스를 만들고
-   `--latest`로 마킹한다(바이너리 버전은 그대로 → 바이너리 배지 안 뜸).
-4. 검증: 앱 배지 = `↻`(무중단 팩)만 표시, `!`(바이너리) 미표시. 구버전(min_binary 하한 미만) 기기는
-   "바이너리 업데이트 필요" 안내가 뜨는 것이 정상(하한 게이트 동작).
+> 확인: 1.1.7 이하 기기는 앱 배지 `↻`(무중단 팩)로 보인다. **1.1.8 부터 앱에는 배지·Update 단추가 없다**(U4) — 1.1.8 기기에서 새 팩 적용을 확인하는 법은
+> 【미확정】(자동 갱신 설계 정본을 확인한 뒤 이 줄을 채운다 · publish-docs-118 3판 m3). CI 이전 수동 팩 발행 절차(배지 확인 포함)는 `docs/legacy/RELEASE-upstream.md` 이력.
 
 **불변 규칙 (실사고 이력 근거 — 위반 금지)**:
 - `--min-binary-version` **0.12.48 이상 필수**. seed-once 상태 보호(memory/·SESSION_STATE 불가침)는

@@ -147,8 +147,8 @@ function Get-CysTxnJournalVerdict {
             return $v
         } catch { continue }
     }
-    Write-Log 'txn: 저널 판정 불가(판정할 cys 없음) — 진행'
-    return 'go'
+    Write-Log 'txn: 저널 판정 불가(판정할 cys 없음) — 복구 대기(2판 codex 6: 판정 못 하면 덮지 않는다)'
+    return 'wait'
 }
 function Enter-CysTxn {
     # 본문 시작 직후 · 0 = 계속 · 26 = 끝(문구·진단 코드를 찍었다)
@@ -156,19 +156,18 @@ function Enter-CysTxn {
     $n = 0
     while ($true) {
         Lock-CysTxnOnce
-        if ($script:CysTxnState -ne 'busy') { break }
+        if ($script:CysTxnState -eq 'ok') { break }   # 2판(codex 2): 잡을 자리를 못 만듦(nolock)도 busy 와 같다 — 잠금 없이 진행 0
         $n++
         if ($n -gt $CysTxnRetryMax) { break }
         Write-Log ('txn: busy — ' + $CysTxnRetrySec + 's 뒤 다시(' + $n + '/' + $CysTxnRetryMax + ')')
         Start-Sleep -Seconds $CysTxnRetrySec
     }
-    if ($script:CysTxnState -eq 'busy') {
+    if ($script:CysTxnState -ne 'ok') {
         Say $CysTxnBusySay
         Write-JCode 'J-UPD-01' '자비스가 새 판으로 바꾸는 중이라 이번에는 아무것도 바꾸지 않았습니다'
         Set-NextStepRerun '5분 뒤 아래 「다시 하시는 법」대로 다시 실행해 주십시오.'
         return 26
     }
-    if ($script:CysTxnState -ne 'ok') { return 0 }
     $env:CYS_UPDATE_TXN = $script:CysTxnToken
     Write-Log ('txn: held ' + $script:CysTxnToken + ' (owner pid ' + $PID + ')')
     if ((Get-CysTxnJournalVerdict) -eq 'wait') {
@@ -180,13 +179,20 @@ function Enter-CysTxn {
     }
     return 0
 }
+function Stop-CysTxnRefused([string]$What) {
+    # 위임이 거부됐다(cys rc 26 · 설치기 exit 6) — 설계 §3-2 「못 잡으면 문구로 끝」 · 잠금은 본문 finally 가 놓는다
+    Write-Log ('txn: ' + $What + ' 위임 거부 — 끝(2판 codex 1 · 무잠금 재실행 0)')
+    Say $CysTxnBusySay
+    Write-JCode 'J-UPD-01' '자비스가 새 판으로 바꾸는 중이라 이번에는 여기서 멈췄습니다'
+    Set-NextStepRerun '5분 뒤 아래 「다시 하시는 법」대로 다시 실행해 주십시오.'
+    exit 26
+}
 function Invoke-CysTxnLogged($what, $cli, $cmdArgs) {
     # Invoke-Logged 와 같되 잠금을 쥐었으면 --txn 위임 · 위임 거부(rc 26)면 잠금을 놓고 토큰 없이 한 번 더(설치는 끝까지)
     if ($script:CysTxnToken) {
         $rc = Invoke-Logged $what $cli (@($cmdArgs) + @('--txn', $script:CysTxnToken))
         if ($rc -ne 26) { return $rc }
-        Write-Log ('txn: ' + $what + ' 위임 거부(rc 26) — 잠금을 놓고 토큰 없이 한 번 더')
-        Unlock-CysTxn
+        Stop-CysTxnRefused $what   # 2판(codex 1): 위임 거부 = 문구 1줄 + 끝(잠금 없이 다시 하지 않는다)
     }
     return (Invoke-Logged $what $cli $cmdArgs)
 }

@@ -141,9 +141,13 @@ if ($isWin -and $Cys) {
     $fake = Join-Path $base 'fakecli.cmd'
     Set-Content -LiteralPath $fake -Encoding ASCII -Value "@echo off`r`necho %*>>`"$base\calls.txt`"`r`necho %* | findstr /C:`"--txn`" >nul && exit /b 26`r`nexit /b 0`r`n"
     [void](Enter-CysTxn)
-    $rc = Invoke-CysTxnLogged 'init-pack' $fake @('init-pack')
+    function Stop-CysTxnRefused([string]$What) { throw ('U5REFUSED:' + $What) }   # 진짜는 exit 26 — 시험 프로세스를 끝내지 않게 표지로 바꿔 잰다
+    $refused = ''
+    try { [void](Invoke-CysTxnLogged 'init-pack' $fake @('init-pack')) } catch { $refused = [string]$_.Exception.Message }
     $calls = @(Get-Content -LiteralPath (Join-Path $base 'calls.txt'))
-    T (($rc -eq 0) -and ($calls.Count -eq 2) -and (-not $script:CysTxnLock) -and (-not $env:CYS_UPDATE_TXN)) '[ⓕ] 위임 거부 → 잠금 놓고 토큰 없이 한 번 더(호출 2회 · rc 0)' ("rc=$rc calls=" + ($calls -join '|'))
+    T (($refused -eq 'U5REFUSED:init-pack') -and ($calls.Count -eq 1)) '[ⓕ] 위임 거부(rc 26) = 끝 · 무잠금 재실행 0(호출 1회 · 2판 codex 1)' ("refused=$refused calls=" + ($calls -join '|'))
+    Unlock-CysTxn
+    . $Ps1 *> $null
 } elseif ($isWin) {
     Write-Host '  (실물 생략 — -Cys <1.1.8 cys.exe> 를 주면 잠금·위임 실측까지 돈다)'
 }

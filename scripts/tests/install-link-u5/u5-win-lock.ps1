@@ -65,6 +65,20 @@ $env:CYS_UPDATE_TXN = 'zz'
 $inside = Invoke-WithoutCysTxnEnv { [string]$env:CYS_UPDATE_TXN }
 T (($inside -eq '') -and ($env:CYS_UPDATE_TXN -eq 'zz')) '[순수] 오래 사는 자식을 띄우는 동안만 토큰 env 0 · 뒤에 되돌림' ('inside=' + $inside + ' after=' + $env:CYS_UPDATE_TXN)
 Remove-Item Env:CYS_UPDATE_TXN -ErrorAction SilentlyContinue
+# 2판(codex 5) — SDDL 규칙 = cys update::tests::sd_private_rule 벡터 그대로(같은 규칙 · 다르면 둘 중 하나가 틀렸다)
+$me = 'S-1-5-21-1-2-3-1001'; $a500 = 'S-1-5-21-1643835476-1616584234-1346609752-500'
+$sdv = @(
+    @($true, 'O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FA;;;SY)', $me), @($true, 'O:BAD:(A;;FA;;;OW)(A;;FA;;;SY)', $me),
+    @($true, 'O:S-1-5-21-1-2-3-1001G:S-1-5-21-1-2-3-513D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)', $me), @($true, 'O:S-1-5-21-1-2-3-1001D:AI(A;ID;FA;;;OW)(A;ID;FA;;;SY)', $me),
+    @($true, 'O:S-1-5-21-1-2-3-1001D:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;S-1-5-21-1-2-3-1001)', $me), @($true, 'O:S-1-5-21-1-2-3-1001D:(D;;FA;;;WD)(A;;FA;;;OW)', $me),
+    @($true, 'O:S-1-5-21-1-2-3-1001D:P', $me), @($false, 'O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FR;;;WD)', $me),
+    @($false, 'O:S-1-5-21-1-2-3-1001D:AI(A;OICIID;FA;;;OW)(A;OICIID;0x1200a9;;;BU)', $me), @($false, 'O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FA;;;AU)', $me),
+    @($false, 'O:S-1-5-21-1-2-3-1001D:(A;;FA;;;OW)(A;;FA;;;S-1-5-21-9-9-9-1002)', $me), @($false, 'O:S-1-5-21-9-9-9-1002D:(A;;FA;;;OW)', $me),
+    @($false, 'O:S-1-5-21-1-2-3-1001D:NO_ACCESS_CONTROL', $me), @($false, 'O:S-1-5-21-1-2-3-1001D:(OA;;FA;guid;;OW)', $me), @($false, 'D:(A;;FA;;;OW)', $me), @($false, '', $me),
+    @($true, 'O:SYD:(A;;FA;;;SY)', 'S-1-5-18'), @($true, 'O:LAD:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)', $a500), @($true, 'O:LAD:(A;;FA;;;OW)(A;;FA;;;LA)', $a500), @($false, 'O:LAD:(A;;FA;;;OW)', $me)
+)
+$bad = @($sdv | Where-Object { (Test-CysTxnSddlPrivate $_[1] $_[2]) -ne $_[0] } | ForEach-Object { $_[1] })
+T ($bad.Count -eq 0) ('[순수] SDDL 소유자 전용 규칙 = cys sd_private_rule 벡터 ' + $sdv.Count + '개 일치(2판 codex 5)') ($bad -join ' | ')
 $st = Get-CysTxnStartTime
 if (-not $isWin) {
     $ls = (& /bin/sh -c ('TZ=UTC0 LC_ALL=C ps -o lstart= -p ' + $PID)).Trim()
@@ -136,6 +150,25 @@ if ($isWin -and $Cys) {
     Unlock-CysTxn
     $rel = ([System.IO.File]::ReadAllText($own) | ConvertFrom-Json).released
     T (($rel -eq $true) -and (Test-CysTxnFree (Join-Path $U 'txn.lock')) -and ($null -eq $script:CysTxnLock) -and (@(Get-ChildItem -LiteralPath $U -Filter '*.u5.*').Count -eq 0)) '[ⓚ] 다시 놓기 = 묘비 + 해제 · 임시 파일 0' ("released=$rel")
+    # ⓜ 소유자 전용 아님(Everyone 읽기 ACE 추가) · 연결점(junction) = 다시 해 보지 않고 unsafe · J-UPD-01(2판 codex 5)
+    $acl0 = (Get-Acl -LiteralPath $U).Sddl
+    $acl = Get-Acl -LiteralPath $U
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('Everyone', 'Read', 'Allow')))
+    Set-Acl -LiteralPath $U -AclObject $acl
+    $script:JCode = ''
+    $rc = Enter-CysTxn *> $null
+    T (($script:CysTxnState -eq 'unsafe') -and ($script:JCode -eq 'J-UPD-01') -and (-not $script:CysTxnToken)) '[ⓜ] 갱신 폴더에 Everyone ACE = unsafe · J-UPD-01' ("state=" + $script:CysTxnState + ' sddl=' + (Get-Acl -LiteralPath $U).Sddl)
+    $acl = Get-Acl -LiteralPath $U; $acl.SetSecurityDescriptorSddlForm($acl0); Set-Acl -LiteralPath $U -AclObject $acl
+    $jt = Join-Path $base 'jtarget'; New-Item -ItemType Directory -Force -Path $jt | Out-Null
+    $jp = Join-Path $base 'jlink'; New-Item -ItemType Junction -Path $jp -Target $jt | Out-Null
+    $saveDir = $CysUpdateDir; $CysUpdateDir = $jp
+    $script:JCode = ''
+    $rc = Enter-CysTxn *> $null
+    $CysUpdateDir = $saveDir
+    T (($script:CysTxnState -eq 'unsafe') -and ($script:JCode -eq 'J-UPD-01') -and (-not (Test-Path -LiteralPath (Join-Path $jt 'txn.lock')))) '[ⓜ] 갱신 폴더 = 연결점(junction) = unsafe · 링크 너머 잠금 파일 0' ("state=" + $script:CysTxnState)
+    [void](Enter-CysTxn)
+    T ($script:CysTxnState -eq 'ok') '[ⓜ] 되돌린 뒤 = ok(보호 DACL 폴더 통과)' ("state=" + $script:CysTxnState + ' sddl=' + (Get-Acl -LiteralPath $U).Sddl)
+    Unlock-CysTxn
     # ⓑ′ 시작 시각 틀림
     function Get-CysTxnStartTime { return [long]1000000000 }
     [void](Enter-CysTxn)

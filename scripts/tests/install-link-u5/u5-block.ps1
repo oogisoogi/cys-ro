@@ -36,6 +36,39 @@ function New-CysTxnDir {
     }
     return (Test-Path -LiteralPath $CysUpdateDir -PathType Container)
 }
+function Test-CysTxnSddlPrivate([string]$Sddl, [string]$Me) {
+    # 순수 — cys update::sd_is_private 와 같은 규칙: 소유자 = 나·BA·SY · 허용 ACE = OW·SY·BA·나 뿐 · 거부 ACE 무관 · NO_ACCESS_CONTROL·못 읽는 꼴 = 아님
+    $alias = $Me
+    if ($Me -eq 'S-1-5-18') { $alias = 'SY' } elseif ($Me -match '^S-1-5-21-.*-500$') { $alias = 'LA' } elseif ($Me -match '^S-1-5-21-.*-501$') { $alias = 'LG' }
+    $o = $Sddl.IndexOf('O:'); $d = $Sddl.IndexOf('D:')
+    if ($o -lt 0 -or $d -lt 0 -or $o -gt $d) { return $false }
+    $g = $Sddl.IndexOf('G:', $o + 2)
+    $oe = if ($g -ge 0 -and $g -lt $d) { $g } else { $d }
+    $owner = $Sddl.Substring($o + 2, $oe - $o - 2)
+    if (-not (($owner -ceq $Me) -or ($owner -ceq $alias) -or ($owner -ceq 'BA') -or ($owner -ceq 'SY'))) { return $false }
+    $dacl = $Sddl.Substring($d + 2)
+    $s = $dacl.IndexOf('S:'); if ($s -ge 0) { $dacl = $dacl.Substring(0, $s) }
+    $fe = $dacl.IndexOf('('); if ($fe -lt 0) { $fe = $dacl.Length }
+    if ($dacl.Substring(0, $fe).Contains('NO_ACCESS_CONTROL')) { return $false }
+    foreach ($ace in @($dacl.Substring($fe) -split '[()]' | Where-Object { $_ })) {
+        $f = $ace.Split(';')
+        if ($f.Count -ne 6) { return $false }
+        if ($f[0] -ceq 'A') { if (-not (($f[5] -ceq 'OW') -or ($f[5] -ceq 'SY') -or ($f[5] -ceq 'BA') -or ($f[5] -ceq $Me) -or ($f[5] -ceq $alias))) { return $false } }
+        elseif ($f[0] -cne 'D') { return $false }
+    }
+    return $true
+}
+function Test-CysTxnPathPrivate([string]$Path) {
+    # 2판(codex 5): 진입마다 — 갱신 폴더·잠금·소유자 기록이 연결점(reparse·junction)이 아니고 소유자 전용(DACL read-back)인가 · 없음 = 참(우리가 만든다) · 못 읽음 = 아님
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    try {
+        $it = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ($it.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
+        if ([System.Environment]::OSVersion.Platform -ne 'Win32NT') { return $true }   # 윈 아닌 곳(맥 pwsh 시험) = 연결점만 본다
+        $sddl = (Get-Acl -LiteralPath $Path -ErrorAction Stop).Sddl
+        return (Test-CysTxnSddlPrivate $sddl ([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
+    } catch { return $false }
+}
 $CysTxnRenameSource = @'
 using System;
 using System.Runtime.InteropServices;
@@ -123,13 +156,16 @@ function Test-CysTxnFree([string]$Path) {
     } catch { return $false } finally { if ($f) { $f.Close() } }
 }
 function Lock-CysTxnOnce {
-    # 한 번 잡아 본다 → $script:CysTxnState = ok · busy · nolock (순서 = lock.rs acquire 그대로)
+    # 한 번 잡아 본다 → $script:CysTxnState = ok · busy · nolock · unsafe(폴더·파일이 소유자 전용 아님 / 연결점 = 다시 해 보지 않고 끝) (순서 = lock.rs acquire 그대로)
     $script:CysTxnState = 'nolock'
-    if (-not (New-CysTxnDir)) { Write-Log 'txn: 갱신 폴더를 만들 수 없음 — 잠금 없이 진행'; return }
+    if (-not (New-CysTxnDir)) { Write-Log 'txn: 갱신 폴더를 만들 수 없음'; return }
     $lockPath = Join-Path $CysUpdateDir 'txn.lock'
     $ownerPath = Join-Path $CysUpdateDir 'txn.owner.json'
+    foreach ($pp in @($CysUpdateDir, $lockPath, $ownerPath)) {
+        if (-not (Test-CysTxnPathPrivate $pp)) { $script:CysTxnState = 'unsafe'; Write-Log ('txn: 소유자 전용이 아니거나 연결점 — 끝(2판 codex 5) · ' + (Redact $pp)); return }
+    }
     $lk = $null
-    try { $lk = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'ReadWrite') } catch { Write-Log ('txn: 잠금 파일을 열 수 없음 — 잠금 없이 진행 · ' + $_.Exception.Message); return }
+    try { $lk = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'ReadWrite') } catch { Write-Log ('txn: 잠금 파일을 열 수 없음(nolock = busy 와 같게) · ' + $_.Exception.Message); return }
     try { $lk.Lock(0, 1) } catch { $lk.Close(); $script:CysTxnState = 'busy'; Write-Log 'txn: busy txn.lock'; return }
     $prev = $null; $epoch = 1
     if (Test-Path -LiteralPath $ownerPath) {
@@ -141,7 +177,7 @@ function Lock-CysTxnOnce {
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $boot = $now - [long]([System.Diagnostics.Stopwatch]::GetTimestamp() / [System.Diagnostics.Stopwatch]::Frequency)
     $o = [pscustomobject]@{ pid = $PID; txn_id = $id; epoch = $epoch; started_at = $now; boot_id = $boot; start_time = (Get-CysTxnStartTime); released = $false }
-    try { Write-CysTxnFile $ownerPath (ConvertTo-CysTxnOwnerJson $o) } catch { $lk.Unlock(0, 1); $lk.Close(); Write-Log ('txn: 소유자 기록을 쓸 수 없음 — 잠금 없이 진행 · ' + $_.Exception.Message); return }
+    try { Write-CysTxnFile $ownerPath (ConvertTo-CysTxnOwnerJson $o) } catch { $lk.Unlock(0, 1); $lk.Close(); Write-Log ('txn: 소유자 기록을 쓸 수 없음(nolock = busy 와 같게) · ' + $_.Exception.Message); return }
     # 옛 트랜잭션의 위임 자식·토큰 없는 참가 명령이 아직 일하는 중이면 열지 않는다(소유자 기록을 먼저 쓴 뒤에 본다 · 거절이면 직전 기록 복원)
     $names = @('txn.child.lock') + @(1..4 | ForEach-Object { 'txn.child.lock.' + $_ } | Where-Object { Test-Path -LiteralPath (Join-Path $CysUpdateDir $_) }) + @('txn.part.lock')
     foreach ($n in $names) {
@@ -222,6 +258,7 @@ function Enter-CysTxn {
     while ($true) {
         Lock-CysTxnOnce
         if ($script:CysTxnState -eq 'ok') { break }   # 2판(codex 2): 잡을 자리를 못 만듦(nolock)도 busy 와 같다 — 잠금 없이 진행 0
+        if ($script:CysTxnState -eq 'unsafe') { break }   # 2판(codex 5): 기다려도 바뀌지 않는다 — 바로 끝
         $n++
         if ($n -gt $CysTxnRetryMax) { break }
         Write-Log ('txn: busy — ' + $CysTxnRetrySec + 's 뒤 다시(' + $n + '/' + $CysTxnRetryMax + ')')

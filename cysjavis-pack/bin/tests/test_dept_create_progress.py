@@ -185,13 +185,18 @@ class Sandbox(object):
             json.dump({"claude": {"cmd": "claude", "env": {"CLAUDE_CONFIG_DIR": "/base"}}}, f)
         self.reg = os.path.join(self.home, ".cys", "depts.json")
         env = dict(os.environ)
-        # ★publish-docs-118 ⑦(10-07 02:18 CSO 실측 · 설치본 cysd 74개 2.8GB 누적): 물려받은 CYS_* 는 **전부** 뺀다. cys-dept(dbg-D3 F1)는
-        #   CYS_CYSD_BIN·CYS_CYS_BIN 을 PATH 보다 먼저 쓴다 — cys 좌석 안에서 돌리면 둘 다 /Applications/…/MacOS 를 가리켜 PATH 선두 목을
-        #   건너뛰고 실 cysd 를 가짜 HOME 에 nohup 으로 띄웠다(목 우회 · 아무도 안 거둠). 이름 목록으로 빼던 옛 꼴은 새 노브가 생길 때마다
-        #   같은 구멍이 다시 열린다(test_dept_name_guard 09-24 18개 · test_team_create_u16 과 같은 원인) → 접두로 막는다.
         for k in list(env):
-            if k.startswith(("STUB_", "_CYS_TT_", "CYS_")):
+            if k.startswith("STUB_") or k.startswith("_CYS_TT_"):
                 env.pop(k)
+        # ★publish-docs-118 ⑦(10-07 02:18 CSO 실측 · 설치본 cysd 74개 2.8GB 누적): 원인 변수 CYS_CYSD_BIN·CYS_CYS_BIN 을 뺀다 — cys-dept(dbg-D3 F1)는
+        #   둘을 PATH 보다 먼저 쓴다. cys 좌석 안에서 돌리면 둘 다 /Applications/…/MacOS 를 가리켜 PATH 선두 목을 건너뛰고 실 cysd 를 가짜 HOME 에
+        #   nohup 으로 띄웠다(test_team_create_u16 과 같은 원인). 2판(master#0885ae7a ⑤ · agy5): 접두 일괄 삭제는 다른 하네스가 주입하는 CYS_* 까지
+        #   지워 그 전제를 깬다 → 원인 변수만 명시한다(새 실행 파일 노브가 생기면 이 목록에 더하고 SandboxReapGuard 원인 핀을 늘린다).
+        for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_NO_AUTOSTART", "CYS_DEPT_ROTATE", "CYS_DEPT_CATALOG",
+                  "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT", "CYS_DEPT_CWD", "CYS_DEPT_READY_SECS",
+                  "CYS_DEPT_RESERVE_GRACE", "CYS_DEPT_CAP", "CYS_SURFACE_ID", "CYS_DEPT_NO_MASTER",
+                  "CYS_CYSD_BIN", "CYS_CYS_BIN", "CYS_BIN"):
+            env.pop(k, None)
         env.update({"HOME": self.home, "CYS_DEPTS_JSON": self.reg, "CYS_DEPT_NO_MASTER": "1",
                     "PATH": bindir + os.pathsep + env.get("PATH", "")})
         env.update(env_extra)
@@ -210,21 +215,27 @@ class Sandbox(object):
         cys-dept 는 cysd 표준출력을 <HOME>/.local/state/cys-dept-*/cysd.log 로 연다). 이름(pkill)으로 고르지 않는다 — 같은 이름의
         운영 데몬·다른 좌석 프로세스를 건드리지 않기 위해서다. 나 자신·내 조상(ppid 사슬)은 언제나 뺀다.
         반환 [(pid, ppid, pgid, comm)] · lsof 가 없는 곳(윈 등) = None(판정 불가 — 거두지 않는다)."""
-        lsof = shutil.which("lsof")
-        if os.name == "nt" or not lsof or not os.path.isdir(self.tmp):
+        lsof, ps = shutil.which("lsof"), shutil.which("ps")
+        # 2판(master#0885ae7a ⑤ · codex7): ps 도 선검사 — 관리 환경에서 ps 실행이 막히면(PermissionError) 본시험·cleanup·tearDownModule 이
+        #   오류로 끝났다. 도구가 없거나 못 돌리면 「판정 불가」(None) — 거두지 않는다(원인 수리는 env 라 플랫폼·권한 무관).
+        if os.name == "nt" or not lsof or not ps or not os.access(ps, os.X_OK) or not os.path.isdir(self.tmp):
             return None
-        r = subprocess.run([lsof, "-t", "+D", self.tmp], capture_output=True, text=True, timeout=60)
-        mine, p = set(), os.getpid()
-        while p > 1 and p not in mine:   # 나 + 조상
-            mine.add(p)
-            q = subprocess.run(["ps", "-o", "ppid=", "-p", str(p)], capture_output=True, text=True).stdout.strip()
-            p = int(q) if q.isdigit() else 1
-        out = []
-        for pid in sorted({int(x) for x in r.stdout.split() if x.isdigit()} - mine):
-            q = subprocess.run(["ps", "-o", "ppid=,pgid=,comm=", "-p", str(pid)], capture_output=True, text=True).stdout.split(None, 2)
-            if len(q) == 3:
-                out.append((pid, int(q[0]), int(q[1]), q[2].strip()))
-        return out
+        try:
+            r = subprocess.run([lsof, "-t", "+D", self.tmp], capture_output=True, text=True, timeout=60)
+            mine, p = set(), os.getpid()
+            while p > 1 and p not in mine:   # 나 + 조상
+                mine.add(p)
+                q = subprocess.run([ps, "-o", "ppid=", "-p", str(p)], capture_output=True, text=True, timeout=10).stdout.strip()
+                p = int(q) if q.isdigit() else 1
+            out = []
+            for pid in sorted({int(x) for x in r.stdout.split() if x.isdigit()} - mine):
+                q = subprocess.run([ps, "-o", "ppid=,pgid=,comm=", "-p", str(pid)], capture_output=True, text=True,
+                                   timeout=10).stdout.split(None, 2)
+                if len(q) == 3:
+                    out.append((pid, int(q[0]), int(q[1]), q[2].strip()))
+            return out
+        except (OSError, subprocess.SubprocessError):
+            return None
 
     def reap(self):
         """owned_procs 만 끝낸다 — SIGTERM → 최대 3초 → 아직 이 폴더를 쥐고 있는 것만 SIGKILL(pid 재사용 오살 차단 = 매번 다시 대조)."""
@@ -1794,7 +1805,7 @@ class SandboxReapGuard(unittest.TestCase):
     대조군 · cwd = 샌드박스 밖)는 건드리지 않아야 한다."""
 
     def test_inherited_cys_env_never_reaches_sandbox(self):
-        """⑦ 원인 핀 — 러너(cys 좌석)가 물려준 CYS_CYSD_BIN·CYS_CYS_BIN(→ 설치본 절대 경로)·그 밖의 CYS_* 가 샌드박스 env 에 0.
+        """⑦ 원인 핀 — 러너(cys 좌석)가 물려준 CYS_CYSD_BIN·CYS_CYS_BIN(→ 설치본 절대 경로)이 샌드박스 env 에 0 · 원인 아닌 CYS_* 는 그대로(2판).
         남으면 cys-dept 가 PATH 선두 목보다 그것을 먼저 써서 실 cysd 를 가짜 HOME 에 띄운다(10-07 74개 누적의 원인)."""
         inherited = {"CYS_CYSD_BIN": "/Applications/cys.app/Contents/MacOS/cysd",
                      "CYS_CYS_BIN": "/Applications/cys.app/Contents/MacOS/cys", "CYS_SOME_FUTURE_KNOB": "1"}
@@ -1809,9 +1820,30 @@ class SandboxReapGuard(unittest.TestCase):
                 else:
                     os.environ[k] = v
         self.addCleanup(sb.cleanup)
-        self.assertEqual(sorted(k for k in sb.env if k.startswith("CYS_")), ["CYS_DEPTS_JSON", "CYS_DEPT_NO_MASTER"])
+        self.assertNotIn("CYS_CYSD_BIN", sb.env, "원인 변수 CYS_CYSD_BIN 이 샌드박스에 남았다")
+        self.assertNotIn("CYS_CYS_BIN", sb.env, "원인 변수 CYS_CYS_BIN 이 샌드박스에 남았다")
+        self.assertEqual(sb.env.get("CYS_SOME_FUTURE_KNOB"), "1", "원인 아닌 CYS_* 까지 지웠다(다른 하네스 전제 파괴 · 2판 agy5)")
 
-    @unittest.skipIf(os.name == "nt" or not shutil.which("lsof"), "lsof 기반 소유 판정(POSIX)")
+    def test_blocked_ps_is_undeterminable_not_error(self):
+        """2판(master#0885ae7a ⑤ · codex7 실측 = 관리 환경 `PermissionError: ps` 로 본시험·cleanup·tearDownModule 오류 3건): 외부 도구 실행이
+        막히면 owned_procs = None(판정 불가) · reap = [] · cleanup = 오류 없이 임시 폴더만 지운다."""
+        sb = Sandbox()
+        real_run = subprocess.run
+
+        def blocked(argv, *a, **kw):
+            if argv and os.path.basename(str(argv[0])) in ("ps", "lsof"):
+                raise PermissionError(1, "Operation not permitted", argv[0])
+            return real_run(argv, *a, **kw)
+        subprocess.run = blocked
+        try:
+            self.assertIsNone(sb.owned_procs())
+            self.assertEqual(sb.reap(), [])
+            sb.cleanup()
+        finally:
+            subprocess.run = real_run
+        self.assertFalse(os.path.isdir(sb.tmp), "판정 불가여도 임시 폴더(gp-*)는 지운다")
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("lsof") or not shutil.which("ps"), "lsof·ps 기반 소유 판정(POSIX)")
     def test_cleanup_reaps_only_own_leftover_and_fails(self):
         sb = Sandbox()
         outside = tempfile.mkdtemp(prefix="gp-outside-")
@@ -1823,6 +1855,8 @@ class SandboxReapGuard(unittest.TestCase):
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(lambda: (other.kill(), other.wait()))
         self.addCleanup(lambda: (inner.kill(), inner.wait()) if inner.poll() is None else None)
+        if sb.owned_procs() is None:
+            self.skipTest("소유 판정 불가(lsof·ps 실행이 막힌 환경) — cleanup 은 거두지 않고 오류도 내지 않는다(아래 권한 시험)")
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and inner.pid not in [x[0] for x in sb.owned_procs() or []]:
             time.sleep(0.1)

@@ -31,6 +31,7 @@
   · 2판 S2 받기 · S8 재받기 · RB 재받기는 그대로(멱등 · N7 통과 뒤 사라진 경우의 방어).
 - **남은 것(옛 줄 · ② 이전 기록)**: ② M2(N7 윈 존치 + 받기 공용 함수 한 벌 — **master 의 「U5 merge/v0.14.43 편입」 통지 뒤** rebase/merge · check.rs 접점 · U5 `preserve_installer` ↔ `fill_installer_dir` 갈린 세부 표 · HANDOFF 의 `u5-block.ps1:309` 인용 정정 = 이름 정본은 U5 `install_link.rs`) · ③ 의 `--check` N7 윈 실제 결과(②와 묶음) · 전수 · 미러 push 1회 · 【확인요청】.
 - **CTX**: 12:5x ≈56%(jsonl 라이브).
+- **시험 결과(격리 래퍼 · 전수 전체를 `u2-realroots.sh` 로 감쌈 · HEAD a97a8f8b · 13:50~14:23)**: lib **1020/0**(1 ignored) · cys **593/0** · cysd **2462/2**(★`schedule::tests::stale_schedule_lock_is_broken_and_live_lock_times_out` · `schedule_writers_serialize_under_the_lock_and_no_add_is_lost` = 잠금 시한 시험 · 이 가지의 cysd 변경 0(`git diff 8ba48f9e..HEAD -- src/bin/cysd` = 0) · 단독 ×3 = 녹 2/0 ×3 = 부하성 간헐 · 정직 기록) · smoke **18/18** · mutants **46/46** · cys-app **260/0** · 윈 타입체크 오류 **0** · real-roots U2 이름공간 **0**(rc 0 · 변화 2907 = 같은 시간 다른 세션 · 「그 밖」).
 
 ## §0-7 후속 2판 델타(master#147e7d04 · 원문 = `docs/update/REVIEW-U2F-{codex,agy}-1r.md`(ignored) · 착수 10:44 · 커밋 3143237c · f8d30969 · 9f86c38d)
 - **이월**: 1판(§0-6) 검수 = master 게이트 PASS · codex 1R 수렴 아니오(BLOCK 2 · MAJOR 5 · MINOR 3) · agy 1R 수렴 아니오(BLOCK 2 · MAJOR 3 · MINOR 4) · master 채택 = 전건 + ⑫(예고분 · 러너 보관소 받기).

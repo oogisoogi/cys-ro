@@ -78,9 +78,12 @@ enum UpdCmd {
         recover: bool,
         #[arg(long = "verify-payload")]
         verify_payload: bool,
-        /// (설치 링크 · U5) 저널 판정 + 이 판 롤백 자산 판정 — {journal: none|ok|degraded|corrupt, state, terminal, lock_held, seq, n7_installer} · 쓰기·잠금 0
+        /// (설치 링크 · U5) 저널 판정만 — {journal: none|ok|degraded|corrupt, state, terminal, lock_held, seq} · 쓰기·잠금 0 · 가볍다(설치기 읽기 0)
         #[arg(long = "journal-state")]
         journal_state: bool,
+        /// `--journal-state` 에 이 판 롤백 자산 재검증(`n7_installer` = check::installer_assets_ok · 설치기 전체 읽기 + 서명)을 덧붙인다 — 필요할 때만(4판 m3)
+        #[arg(long)]
+        assets: bool,
         /// (설치 링크 · U5 · 윈 롤백 자산 §3-7 ②) 방금 깐 설치기 + 보관소 본문을 `installers/<이 판 seq>/` 에 놓는다(호출자가 txn.lock 을 쥔 채)
         #[arg(long = "preserve-installer")]
         preserve_installer: bool,
@@ -200,16 +203,16 @@ fn run(cmd: UpdCmd, hooks: &check::Hooks) -> i32 {
             rc
         }
         // ★U5(설치 링크 입구 2): 판정·보존은 집행 동사와 섞지 않는다(섞으면 거부 rc 2).
-        UpdCmd::SelfUpdate { check: false, journal_state: true, preserve_installer: false, auto: false, spawn: false, run: false, recover: false, verify_payload: false, pack_only: false, json, .. } => {
+        UpdCmd::SelfUpdate { check: false, journal_state: true, preserve_installer: false, auto: false, spawn: false, run: false, recover: false, verify_payload: false, pack_only: false, assets, json, .. } => {
             let Ok(dir) = buildinfo::state_dir() else {
                 print(json, &serde_json::json!({"journal": "undetermined", "detail": "state_dir"}), "journal=undetermined");
                 return 3;
             };
-            let v = super::install_link::link_state(&dir);
+            let v = super::install_link::link_state(&dir, assets);
             print(json, &v, &format!("journal={} state={} terminal={} n7_installer={}", v["journal"], v["state"], v["terminal"], v["n7_installer"]));
             0
         }
-        UpdCmd::SelfUpdate { check: false, journal_state: false, preserve_installer: true, auto: false, spawn: false, run: false, recover: false, verify_payload: false, pack_only: false, setup, setup_sig, seq, json } => {
+        UpdCmd::SelfUpdate { check: false, journal_state: false, preserve_installer: true, auto: false, spawn: false, run: false, recover: false, verify_payload: false, pack_only: false, assets: false, setup, setup_sig, seq, json } => {
             let Some(setup) = setup else {
                 eprintln!("cys self-update --preserve-installer: --setup <설치기> 필요");
                 return 2;

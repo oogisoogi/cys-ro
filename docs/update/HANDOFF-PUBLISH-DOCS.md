@@ -25,6 +25,41 @@
 - [x] 8. 이 파일 완성(판독표 · 변경표 · 게이트 범위 제안) → 【확인요청】
       해소 판정: 인박스 헬퍼 재독 일치
 
+## §0-2 2판 델타 (master#0885ae7a · 2026-10-07 10:45 착수 → 11:0x)
+1판 적대 = codex 1R(BLOCK 1 · MAJOR 8 · MINOR 4) + agy 1R(BLOCK 1 · MAJOR 5 · MINOR 3) 수렴 아니오 → master 채택 전건 + 별건 처분 4.
+커밋 = `1d835a29`(앱 코드·워크플로) · `a5d02646`(팩 시험 ⑤) · `f01b630b`(UI ④) · `29c29859`(문서·게이트 ②③⑥⑦⑨ⓐ) · 이 문서. ★`f01b630b`·`29c29859` 한 묶음(clipath 거울쌍·명칭 매니페스트가 서로의 파일을 본다).
+시험(맥): bun 2673/0 · tsc 0 · win-typecheck 0 · cys-app 260/0 · cysd accounts:: 146/0 · cys cycle_agent 14/0 · lane-parity --strict 0 · --self-test 0 · test_dept_create_progress 격리 OK · 실 설치본 경로 주입 OK(cysd 1=1) · SandboxReapGuard 3/3 · pyseal census OK · default_fleet 128/128 · 문서 계약 3종 OK.
+반박 2(아래 표): agy1 BLOCK(CYSR_RELEASE_SEQ 가 정본) · ④ 중 ui/index.html:58 출발지 표기 유지(박사님 09-27 결정 결박).
+
+### 채택/반박 표 (codex 13 · agy 9 = 22행 — master 지시 「21행(codex 12)」 대비 codex 원문 실측 13건)
+| # | 출처·등급 | 지적 | 처분 | 근거·커밋 |
+|---|---|---|---|---|
+| c1 | codex BLOCK | main.rs 안전모드·CLI 거부문 옛 cys.app·DMG | 채택 | `1d835a29` — 962·969·2103·2120·5068 = cysr.app · DMG→zip · 시험 3 교체(translocation 2 · pull 1) |
+| c2 | codex MAJOR | GUIDE-clean-reset:20 펜스 안 백틱 명령치환 | 채택 | `29c29859` — "$HOME/…" 인용 · 원인 = 블록인용 펜스(`> ```) 미인식 → 같은 꼴 전수 스캔 3건(나머지 1건 정상) |
+| c3 | codex MAJOR | GUIDE:173 작업 관리자 검색 cysr | 채택 | `cys` 검색(cys·cysd·cys-app 셋) · 같은 종류 = 앱 목록 검색도 `cys`(새·옛 이름 둘 다) |
+| c4 | codex MAJOR | RELEASE_NOTES_1.0.x 역사 뒤집힘·원작자 허위 | 채택 | 옛 이름 `cys` 4곳 · 원작자 문장 원문 3곳 |
+| c5 | codex MAJOR | 게이트 예외 과다(홑따옴표·「출발」 줄 통째) | 채택 | 크레딧 = 파일별 정확한 문장 · 홑따옴표 = 승인 토큰 2 · 반례 2 적색 시험 |
+| c6 | codex MAJOR | 수집 집합에 dist-win·1.x 노트·ui/index.html 없음 | 채택 | NAME_MANIFEST 20 + 「⊇ README 링크」 시험 · dist-win 합성 적색 |
+| c7 | codex MAJOR | ps PermissionError → 오류 3건 | 채택 | `a5d02646` — 선검사 + 예외 = 판정 불가 · 권한 차단 시험 |
+| c8 | codex MAJOR | RELEASE.md 원작자 절의 명령형 「현행」 | 채택 | docs/legacy/RELEASE-upstream.md 로 419줄 격리(비실행 머리) · 상단 1줄 링크 |
+| c9 | codex MAJOR | ui/index.html CYSJavis Terminal·cys 터미널·cys launch-agent | 부분 채택 | `f01b630b` — 제목 cysr · launch-agent cysr · ★58 출발지 표기 유지(박사님 09-27 「도의상 출발지 표시」 · 5자리 결박 · README 정확한 문장 = 게이트 허용 등재) → 【결정필요】 |
+| c10 | codex MINOR | INSTALL:168 가림 대상 cysr 오변환 | 채택 | `cys` 복원 |
+| c11 | codex MINOR | main.rs:3015 「cysr 가」 · 시험이 앞부분만 | 채택 | 「cysr 이」 · 시험 = 완전 문장 2 |
+| c12 | codex MINOR | main.rs:6294 cys boot exit | 채택 | 「cysr boot exit」 |
+| c13 | codex MINOR | RELEASE.md:478 백틱 깨짐 | 채택 | 한 줄 코드 꼴 · 현 빌드 이름 cysr.app |
+| a1 | agy BLOCK | RELEASE.md:19 CYS_RELEASE_SEQ → CYSR_ 오변환 | **반박** | 정본 = `CYSR_RELEASE_SEQ`(release.yml·build.rs·scripts 32곳 · `CYS_RELEASE_SEQ` 0곳) · 그 줄은 1판에 손으로 쓴 것(변환기 무관) — 바꾸면 릴리스 seq 가 끊긴다 |
+| a2 | agy MAJOR | INSTALL:299 다중 슬래시 정규화 없음 | 채택 | 3블록 = SHELL_PATH_NORMALIZER 같은 sed 두 식 · 모의 `//`·끝 `/` = 우리 것 |
+| a3 | agy MAJOR | 「출발」 줄 통째 예외 | 채택 | c5 와 같은 수리 |
+| a4 | agy MAJOR | dist-win 수집 누락 | 채택 | c6 와 같은 수리 |
+| a5 | agy MAJOR | CYS_ 접두 일괄 삭제 | 채택 | 원인 3변수만 · 원인 핀 뮤턴트 2 적색 |
+| a6 | agy MAJOR | NOTICE 라이선스 고지 | 채택(master ⑨ⓐ 문안) | 원문 복원 + 파생 1줄 |
+| a7 | agy MINOR | clipath:338 경고 cys 기준 | 채택 | 「PATH 앞의 다른 'cys' 가 cysr 설치를 가립니다」(탐침 사실 유지) · 문서 거울 2 |
+| a8 | agy MINOR | 1.0.1 원작자 계정명 오변환 | 채택 | c4 와 같은 수리 |
+| a9 | agy MINOR | RELEASE.md 옛 절차 본문 잔존 | 채택 | c8 와 같은 수리 |
+
+별건 처분(master): ⓐ NOTICE = a6 · ⓑ release.yml:977 + 주석 = `1d835a29`(ci-branch 필수 실행 줄 핀·lane-parity 변이 앵커 동기 · 잠복 결함) · ⓒ main.rs 옛 주석 2 = `1d835a29` · ⓓ CLI --help·팩 지침 명령 예시 = **1.1.9 식별자 전환 티켓(이 티켓 밖)**.
+【결정필요】 1: ui/index.html 출발지 표기(ws-credit 「cys 터미널에서 출발」 꼬리표 + README 문장 툴팁) — 박사님 09-27 결정과 ⑨ 「크레딧 README 1문장만」 이 충돌 · 권고 = 유지(문장은 README 정확한 1문장 · 꼬리표만 다름) · 단점 = 화면에 「cys 터미널」 4글자가 남는다.
+
 ## §0 결과 한눈에 (2026-10-07 08:3x)
 | 커밋 | 범위 | 검증 |
 |---|---|---|

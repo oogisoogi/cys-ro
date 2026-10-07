@@ -153,6 +153,10 @@ pub fn fill_installer_dir(
     get_feed: &dyn Fn(&str) -> Result<Vec<u8>, String>,
     get_asset: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
 ) -> Result<bool, String> {
+    // ★후속 3판: 설치판 seq 0(내장 판 없음 · 개발 빌드) = 판정 불가(U5 preserve_installer 와 같은 규칙)
+    if seq == 0 {
+        return Err("설치판 release_seq 0 — 롤백 자산을 정할 수 없음".into());
+    }
     let dst = update_dir.join("installers").join(seq.to_string());
     if let (Ok(b), Ok(s)) = (std::fs::read(dst.join(REL_BODY)), std::fs::read(dst.join(REL_SIG))) {
         if verify_installer_dir_with(&dst, seq, true, &b, &s, kr).is_ok() {
@@ -536,7 +540,7 @@ impl Ops for RealOps {
     fn fetch(&mut self, j: &mut Journal) -> Step {
         let a = self.asset()?.clone();
         // ★후속 2판 ⑫: 윈 설치판 롤백 자산(설치 링크가 못 챙긴 기기 = 종전엔 N7 영구 보류) — 데몬을 내리기 전(S2)에 보관소에서 받아 채운다.
-        if self.env.os == Os::Win {
+        if self.env.os == Os::Win && !super::mutant("U2-S2FILL") {
             self.fill_rollback_assets(super::buildinfo::release_seq(), "S2")?;
         }
         let stage = self.stage_dir(j).ok_or_else(|| fail(ErrCode::DiskLow, "S2", "저널 원점 txn 없음"))?;
@@ -2085,6 +2089,24 @@ mod tests {
         ops.env.os = Os::Win;
         ops.judge_is_old = None;
         assert!(ops.reconstruct(&a).is_err() && !ops.reconstructed_new(), "빈 후보 = 새 판 판정 0");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R m6): ⑫ 배선 = 윈 **S2**(데몬 정지 호출 전 · 후보 내려받기 전)에서 설치판 롤백 자산을 받는다 — 보관소에 없으면
+    /// S2 가 `update.no_rollback_asset` 로 멈춘다(후보 내려받기·rotate 호출 0). 뮤턴트 U2-S2FILL(S2 호출 끔) = 후보 내려받기 단계 오류 = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_s2_fetches_rollback_assets_before_candidate_download_and_daemon_stop() {
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (d, _upd, _root, mut ops) = recon_rig("s2-fill");
+        std::fs::create_dir_all(d.join("arch")).unwrap();
+        let _e = crate::pack::EnvGuard::set(super::super::net::ENV_FEED_URL, format!("file://{}", d.join("arch").display()));
+        ops.env.os = Os::Win;
+        ops.cand.asset.url = "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.9/cysr_x64-setup.exe".into();
+        let mut j = super::super::journal::Journal::new("0123456789abcdef0123456789abcdef", 1);
+        let f = ops.fetch(&mut j).unwrap_err();
+        assert!(f.code == ErrCode::NoRollbackAsset && f.step == "S2", "S2 = 롤백 자산 먼저: {f:?}");
+        assert!(calls(&d).is_empty(), "rotate·자식 호출 0: {:?}", calls(&d));
         let _ = std::fs::remove_dir_all(&d);
     }
 

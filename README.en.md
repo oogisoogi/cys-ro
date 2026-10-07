@@ -1,9 +1,9 @@
-# cys-terminal
+# cysr
 
 **An orchestration terminal for commanding fleets of AI agents.** Cross-platform: macOS & Windows.
 
 A terminal multiplexer, a local daemon, a mission-control dashboard, and a multi-agent
-operating system (the CYSJavis pack) in one body. Run several CLI agents (Claude Code,
+operating system (the cysr pack) in one body. Run several CLI agents (Claude Code,
 Codex, …) in parallel under distinct roles — **master, worker, CSO, reviewer** — let them
 talk to each other over sockets, and monitor cost, context, and hardware in real time.
 
@@ -33,11 +33,11 @@ cysr started from the cys terminal (github.com/idoforgod/cys-terminal).
 Existing terminals and multiplexers are built for humans typing commands. Run several
 AI agents in them and you hit real limits fast: panes cannot talk to each other, orphan
 servers left behind by agents pile up until the machine chokes, and nobody can see who
-is spending what. cys-terminal is an independent, from-scratch implementation that makes
+is spending what. cysr is an independent, from-scratch implementation that makes
 those three problems first-class features.
 
 And a **fourth problem** — *how do you organize the agents into an organization?* — is
-solved by a built-in pack (**CYSJavis**: role-based absolute directives + deterministic
+solved by a built-in pack (**cysr**: role-based absolute directives + deterministic
 operational tools).
 
 The resource wall is handled not only while agents run but **during deploy and upgrade**
@@ -52,9 +52,9 @@ releases back up gets written down.
 
 1. **Bidirectional socket communication** — no one-way send + capture polling.
    Every pane on the same socket is an **equal node** that can actively push to any
-   other pane by surface ID: `cys send --surface surface:31 "..."` + `send-key Return`
+   other pane by surface ID: `cysr send --surface surface:31 "..."` + `send-key Return`
    injects **directly into the target pane's PTY stdin**, arriving as a new user turn.
-   Server→client is the `cys events` push stream (sequence numbers, resume on reconnect).
+   Server→client is the `cysr events` push stream (sequence numbers, resume on reconnect).
 2. **Resource governance as a first-class feature** — built-in mitigation that stops
    orphan-server accumulation → load explosion → 401/hang at the source.
 3. **Core/UI separation** — the daemon (`cysd`) runs independently of any UI. Even if
@@ -65,7 +65,7 @@ releases back up gets written down.
    never rewrites its own contents at runtime (3-layer `.pyc` self-generation sealing +
    a post-signing count-reconciliation gate).
 5. **Directives and machine as one body** — the role-based absolute directives,
-   operational tools, and skills (the CYSJavis pack) are built, signed, and shipped
+   operational tools, and skills (the cysr pack) are built, signed, and shipped
    together with the terminal, and auto-injected when a node boots.
 6. **Passive cognition layer (radio)** — discovery notifications and decisions are kept
    physically separate. Principle 1 (active push) is the decision/steering channel;
@@ -88,9 +88,9 @@ pack automatically.
   SmartScreen/Defender friction, but the build **is still unsigned, so a first-run
   warning can appear**. See
   [docs/INSTALL-Windows-KR.md](docs/INSTALL-Windows-KR.md).
-- Optional 24/365 always-on: `cys daemon install` (launchd KeepAlive / Task Scheduler).
+- Optional 24/365 always-on: `cysr daemon install` (launchd KeepAlive / Task Scheduler).
 - The command is **`cysr`** (from 1.0.1; `cys` keeps working — two names for the same program).
-- Use `cysr` from an external terminal (macOS): one click on **"셸에 cys 설치"** (Install cys
+- Use `cysr` from an external terminal (macOS): one click on **"셸에 cysr 설치"** (Install cysr
   into the shell) in the Control Center header — recommended, one admin prompt, and the same
   button uninstalls it; it links `cys`, `cysd` and `cysr` — or the manual symlink fallback. See
   [docs/INSTALL.md](docs/INSTALL.md) §B. The Windows installer does not register PATH (it ships
@@ -102,14 +102,14 @@ Install/uninstall details: [docs/INSTALL.md](docs/INSTALL.md). Full usage:
 ## Quick Start
 
 ```bash
-cys identify                                  # who am I (surface address)
-cys launch-agent --role worker --agent claude # boot a role node (directives auto-injected)
-cys send --to worker "status report, please"  # push by role address
-cys send-key --to worker Return               # confirm submission
-cys status --json                             # one-call fleet snapshot
-cys events --reconnect                        # push event stream (replaces polling)
-cys run -- python -m http.server              # lifecycle-managed scoped execution
-cys boot                                      # boot the standard node set (auto-detects installed CLIs)
+cysr identify                                  # who am I (surface address)
+cysr launch-agent --role worker --agent claude # boot a role node (directives auto-injected)
+cysr send --to worker "status report, please"  # push by role address
+cysr send-key --to worker Return               # confirm submission
+cysr status --json                             # one-call fleet snapshot
+cysr events --reconnect                        # push event stream (replaces polling)
+cysr run -- python -m http.server              # lifecycle-managed scoped execution
+cysr boot                                      # boot the standard node set (auto-detects installed CLIs)
 ```
 
 ## Architecture
@@ -128,19 +128,19 @@ pack     cysjavis-pack/: 10 absolute directives · 90+ deterministic tools · 25
 ```
 
 Every pane process gets `CYS_SURFACE_ID`, `CYS_SURFACE_REF`, and `CYS_SOCKET` injected
-automatically — the AI inside a pane learns its own address instantly via `cys identify`.
+automatically — the AI inside a pane learns its own address instantly via `cysr identify`.
 The PTY is owned by the daemon, so sessions survive app restart, reinstall, and update
 (re-attach).
 
-## CYSJavis Pack — the built-in multi-agent OS
+## cysr Pack — the built-in multi-agent OS
 
 Install the terminal and connect an AI CLI, and a **master–worker–CSO–reviewer
 multi-agent operating system** comes online. The system has three layers:
 
 | Layer | Contents | Source |
 |---|---|---|
-| Core (machine functions) | Bidirectional sockets · approval Feed · watchdog/ledger · event push · session persistence | cys-terminal core |
-| CYSJavis pack | Role-based absolute directives · deterministic operational tools · hooks · skills | `cys init-pack` |
+| Core (machine functions) | Bidirectional sockets · approval Feed · watchdog/ledger · event push · session persistence | cysr core |
+| cysr pack | Role-based absolute directives · deterministic operational tools · hooks · skills | `cysr init-pack` |
 | Personal layer | `soul.md` (priorities/red-lines) · long-term memory | **accumulated by you as you use it** |
 
 The four roles are distinct: **master** decides and supervises, **worker** implements,
@@ -170,14 +170,14 @@ Details: [Architecture & Philosophy](ARCHITECTURE-AND-PHILOSOPHY.md) §2–4; op
 
 ## What you get — three configurations compared
 
-cys-terminal is different from a traditional terminal **even if you just connect plain
+cysr is different from a traditional terminal **even if you just connect plain
 `claude`** with no Jarvis onboarding. Three configurations were compared across
 33 items × 6 areas (fresh-machine E2E measurement skeleton + v0.14.x release-code
 tracing + pack-number re-measurement):
 
 - **①** Traditional terminal (iTerm, …) + claude CLI
-- **②** cys-terminal + plain claude (everyday use, no Jarvis onboarding)
-- **③** cys-terminal + Jarvis onboarding ("you are the master" → 5-node full system, **the baseline**)
+- **②** cysr + plain claude (everyday use, no Jarvis onboarding)
+- **③** cysr + Jarvis onboarding ("you are the master" → 5-node full system, **the baseline**)
 
 The **①→②** gap is what you get **from installation alone** — auto-deployment of the
 full skill set (a 570+ file pack) into an isolated config, observation, inter-pane
@@ -196,7 +196,7 @@ Moving from ② to ③ is a **single sentence**: "you are the master."
 
 ## JavisRadio vs AgentRadio — where we lead, where we fall short
 
-cys's passive-awareness layer (Design Principle 6 · T5-20) is a re-implementation of the
+cysr's passive-awareness layer (Design Principle 6 · T5-20) is a re-implementation of the
 three primitives of **AgentRadio** (arXiv:2607.28430) by Coral Protocol, hardened with
 machine gates. The original research showed that letting four coding agents listen
 *while* they work lifts SWE-Atlas QnA task accuracy from 32.3% (single agent) to 62.1%
@@ -207,7 +207,7 @@ Below is the verdict of a full source-level survey of the original paper and rep
 (2026-08-14; triple-verified — two independent sessions + two adversarial reviewers +
 number re-execution), scored on 10 axes — **wins and losses first**.
 
-### At a glance — from cys/Jarvis's side: 8 ahead · 1 conditional · 1 behind
+### At a glance — from cysr/Jarvis's side: 8 ahead · 1 conditional · 1 behind
 
 | # | Axis | Verdict | One-line reason |
 |---|---|:---:|---|
@@ -234,7 +234,7 @@ number re-execution), scored on 10 axes — **wins and losses first**.
 
 ### The quantitative scale — size and depth, all re-measured
 
-| Metric | AgentRadio | cys/Jarvis stack |
+| Metric | AgentRadio | cysr/Jarvis stack |
 |---|---|---|
 | Code size | ~3,300 lines (Python 2,017 + shell 1,301) | **~169,000 lines** (Rust 63,371 + pack Python 105,833 + more) = **~50 : 1** |
 | Self tests | **0** (no tests or CI for its own harness code) | **~1,700** — Rust `#[test]` 883 (src) · 920 (whole repo) + pack 531 + radio 297 (incl. 23 red-team cases; re-run same-day, all PASS) + 16 UI test files |
@@ -257,7 +257,7 @@ number re-execution), scored on 10 axes — **wins and losses first**.
 
 ### Detail — the radio layer 1:1 (the evidence behind the structural lead)
 
-| | AgentRadio (original research) | JavisRadio (cys pack) |
+| | AgentRadio (original research) | JavisRadio (cysr pack) |
 |---|---|---|
 | Surface | 3 primitives (create_thread / send_message / wait_for_mention) | those 3 + 14 defense commands = 17 subcommands |
 | Broadcast truth | none — content relayed as-is | FACT claims machine-verified against evidence (file · line · snippet); failures auto-demoted to hypothesis/unverified |
@@ -398,21 +398,21 @@ trust badges) · **Approval Feed** (Allow/Deny). Plus: ⌘K Command Palette, Gla
 > mechanization ② self-report first, screen-parsing is the fallback ③ 3-tier automation
 > safety (alert → escalate → act, deny-by-default).
 
-- **T1 — identity & reporting**: self-reported status/context%/task (`cys set-status`);
-  one-call fleet board (`cys status`, `cys fleet`); sender identity + role→role ACL
+- **T1 — identity & reporting**: self-reported status/context%/task (`cysr set-status`);
+  one-call fleet board (`cysr status`, `cysr fleet`); sender identity + role→role ACL
   (kernel peer-pid `from` verification).
 - **T2 — resilience**: context-cycle executor (save → file gate → clear → re-inject →
-  resume, `cys cycle-agent`); instant agent-death detection + optional recovery (blocked
+  resume, `cysr cycle-agent`); instant agent-death detection + optional recovery (blocked
   on auth error); org restore (topology persistence + bulk re-boot/re-inject); directive
-  drift detection/re-injection (`cys reinject`); orchestrator dead-man (`master.deadman`).
+  drift detection/re-injection (`cysr reinject`); orchestrator dead-man (`master.deadman`).
 - **T3 — coordination**: todo watch (per-role TODO mtime → progress rollup); one-shot
-  timers with fresh TTL; role-glob broadcast (`cys send --to 'reviewer-*'`); feed-aging
+  timers with fresh TTL; role-glob broadcast (`cysr send --to 'reviewer-*'`); feed-aging
   re-alert; input safety (typing guard, atomic authority delivery); delta read + wait
-  (`cys read-screen --since N`, `cys watch --until <re>`).
-- **T4 — safety & attestation**: **kill-switch** (`cys pause/resume`, `cys gate-check`);
+  (`cysr read-screen --since N`, `cysr watch --until <re>`).
+- **T4 — safety & attestation**: **kill-switch** (`cysr pause/resume`, `cysr gate-check`);
   approval escalation (screen scan → event + feed, never auto-answers); health-rule
   action binding (opt-in, pauses queued delivery only); transcript hash-chain
-  attestation (`cys attest pin/verify`, producer≠evaluator); recall retention policy.
+  attestation (`cysr attest pin/verify`, producer≠evaluator); recall retention policy.
 - **T5 — cognition & attribution**: **radio** — parallel workers share findings, FACT
   truth-checking (file·line·snippet, unverified is auto-demoted), BLOCKER gate, decision
   traffic forbidden (`javis_radio open/send/wait/read`); **BOOT_SNAPSHOT** — restores
@@ -425,24 +425,24 @@ trust badges) · **Approval Feed** (Allow/Deny). Plus: ⌘K Command Palette, Gla
 
 | Mitigation | What it does | Command / event |
 |---|---|---|
-| ① Login-loss detection | Every output line is matched against health rules (default: `Not logged in` · 401 · token expired · rate limit) → 30 s debounced push. **Self-amplification is blocked**: alert lines mask their own triggers (send-side sealing) and lines *discussing* an alert are excluded from matching (receive-side isolation). | `health.alert` · `cys add-health-rule <name> <regex>` |
+| ① Login-loss detection | Every output line is matched against health rules (default: `Not logged in` · 401 · token expired · rate limit) → 30 s debounced push. **Self-amplification is blocked**: alert lines mask their own triggers (send-side sealing) and lines *discussing* an alert are excluded from matching (receive-side isolation). | `health.alert` · `cysr add-health-rule <name> <regex>` |
 | ② Short work units | Idle detection (default 300 s of no output) pushes → split/check decision. | `pane.idle` event |
-| ③ Forced server teardown | **Scoped execution** (new process group + ledger, torn down as a group on exit) · **close-surface** (child tree killed) · **watchdog** (load / child-count / duplicate-command detection). | `cys run -- <cmd>` · `cys ps` · `cys kill <pid>` · `watchdog.*` |
+| ③ Forced server teardown | **Scoped execution** (new process group + ledger, torn down as a group on exit) · **close-surface** (child tree killed) · **watchdog** (load / child-count / duplicate-command detection). | `cysr run -- <cmd>` · `cysr ps` · `cysr kill <pid>` · `watchdog.*` |
 
 ## Approval Feed · in-flight queue
 
 ```bash
-cys feed push --wait --title "approve git push" --body "..."   # blocks until decided (exit 0=allow, 2=deny, 3=timeout)
-cys feed reply <request_id> allow                              # CLI, or the UI Allow/Deny buttons
+cysr feed push --wait --title "approve git push" --body "..."   # blocks until decided (exit 0=allow, 2=deny, 3=timeout)
+cysr feed reply <request_id> allow                              # CLI, or the UI Allow/Deny buttons
 ```
 
 There is **no auto-answer** (human-in-the-loop) — the daemon even refuses a requesting
 node's self-approval. Repeated-risk commands are passed by signing once with
-`cys approval sign` (master-only, HMAC signed-prefix).
+`cysr approval sign` (master-only, HMAC signed-prefix).
 
-- Default send (`cys send`) = **steer**: injected into stdin immediately, absorbed as
+- Default send (`cysr send`) = **steer**: injected into stdin immediately, absorbed as
   steering while the target is running.
-- `cys send --queued` = **followup**: delivered one item per beat once the target has
+- `cysr send --queued` = **followup**: delivered one item per beat once the target has
   been quiet for 3+ seconds.
 
 ## Getting new versions — auto update (1.1.8+)
@@ -452,20 +452,20 @@ cysr updates itself while it is idle (plugged in, or battery above half). To tur
 The result is shown as one notice line the next time you open the app window. If a "disk has the new version, process is
 the old daemon" skew remains after reinstall, it resolves via a badge-click handover or
 idle auto-handover (when there are 0 live sessions — lossless). Diagnose/repair with
-`cys doctor [--fix]`; self-diagnose the installed build's code-signing seal with
-`cys doctor app-seal`.
+`cysr doctor [--fix]`; self-diagnose the installed build's code-signing seal with
+`cysr doctor app-seal`.
 
 **Coexists with customization**: updates never destroy user-modified files — user-owned
 files are preserved with the new version placed alongside as `.new`, system files are
 preserved as `.user` before healing, and the `~/.cys/local/` overlay (directive append,
-skill shadowing, hook trailing) is invisible to updates. Preview with `cys pack-plan`;
-merge with `cys pack-merge` (3-way / AI).
+skill shadowing, hook trailing) is invisible to updates. Preview with `cysr pack-plan`;
+merge with `cysr pack-merge` (3-way / AI).
 
 ## Channel bridge (Slack · Discord)
 
 Export the fleet's approval requests and reports to an external messenger and accept
 remote approvals from permitted senders — sender allowlist · separate grant for remote
-approval · instant lockdown · shape-based redaction built in. See `cys channel status`.
+approval · instant lockdown · shape-based redaction built in. See `cysr channel status`.
 
 ## Protocol · environment variables
 
@@ -515,7 +515,7 @@ Report vulnerabilities per [SECURITY.md](SECURITY.md); details in
 
 - On macOS, if sysinfo can't read the full cmdline, processes are grouped by name
   (possible over-grouping).
-- If the CLI dies via Ctrl-C during `cys run`, group cleanup falls to the watchdog cycle (5 s).
+- If the CLI dies via Ctrl-C during `cysr run`, group cleanup falls to the watchdog cycle (5 s).
 - Real-time GPU/NPU in Control Center is currently macOS (Apple Silicon) only — Windows
   shows CPU/MEM only. NPU has no utilization-% public API, so actual power (W) is shown.
 - Single-UID trust model — approval signing and self-approval blocking are a
@@ -528,14 +528,14 @@ Report vulnerabilities per [SECURITY.md](SECURITY.md); details in
  .
 - The **macOS build is self-signed (no Apple certificate)** — a first-run warning can
   appear, and "half-install vs. quarantine" is disambiguated with
-  `cys doctor app-seal`.
+  `cysr doctor app-seal`.
 - **radio** cannot in principle guarantee cross-channel exactly-once or a zero-miss
   window (unresolvable — a managed residual risk).
 
 ## Troubleshooting · reset
 
 - macOS **"damaged and can't be opened"** has two causes — ① a half-install (drag-copy
-  race) or ② the quarantine attribute. Disambiguate with `cys doctor app-seal`; when
+  race) or ② the quarantine attribute. Disambiguate with `cysr doctor app-seal`; when
   reinstalling, move the old app to the Trash first instead of overwriting it.
 - For a **full reset** (including Windows WebView2 stored values and leftover department
   isolates), follow [docs/GUIDE-clean-reset-KR.md](docs/GUIDE-clean-reset-KR.md).

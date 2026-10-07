@@ -179,6 +179,32 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
       expect({ d, 원작자_주소_줄: bad }).toEqual({ d, 원작자_주소_줄: [] });
     }
   });
+  // ⑨(master#c33d2ec7 · 박사님 10-07 「우리 자비스 공식명칭은 cysr이다. 이 외 다른 명칭은 쓰지 않는다. 모든 문서를 통일한다.」):
+  // 제품 이름 = cysr. 「CYSJavis」 0 · 코드 꼴 밖 단독 낱말 cys 0 — 기계 식별자(실행 파일 cys·cysd · ~/.cys · cys.app · cys-dept · CYS_* …)는
+  // 코드 꼴(백틱 · 펜스 블록 · 화면 문자열을 옮겨 적은 '…' 홑따옴표 ASCII 꼴) 안에서만. 예외 = 원작자 크레딧 1문장(「…에서 출발」 줄).
+  it("공식 명칭 = cysr — 「CYSJavis」 0 · 코드 꼴 밖 낱말 cys 0(원작자 크레딧 1문장 예외 · 공개 문서 전건)", () => {
+    for (const d of DOCS) {
+      const raw = read(d);
+      const text = d.endsWith(".html") ? raw.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, (m) => m.replace(/[^\n]/g, "")) : raw;
+      const bad: number[] = [];
+      let fence = false;
+      text.split("\n").forEach((line, i) => {
+        if (/^\s*(```|~~~)/.test(line)) {
+          fence = !fence;
+          return;
+        }
+        if (fence || /출발|started from/i.test(line)) return;
+        const prose = line
+          .replace(/``[^`]*``|`[^`\n]*`/g, "")
+          .replace(/'[\x20-\x26\x28-\x7e]*'/g, "")
+          .replace(/\]\([^)]*\)/g, "](")
+          .replace(/https?:\/\/\S+/g, "")
+          .replace(/<[^>\n]*>/g, "");
+        if (/\bcys\b/.test(prose)) bad.push(i + 1);
+      });
+      expect({ d, CYSJavis: (raw.match(/CYSJavis/g) ?? []).length, 코드_꼴_밖_cys_줄: bad }).toEqual({ d, CYSJavis: 0, 코드_꼴_밖_cys_줄: [] });
+    }
+  });
   it("다운로드 버튼 폴백 = 표시 판의 실 자산(태그·파일명·판 결속 · codex 재서명 MINOR-1)", () => {
     const s = read("../../docs/index.html");
     const ver = s.match(/<b id="ver">(v[0-9]+(?:\.[0-9]+)+)<\/b>/)?.[1] ?? "";

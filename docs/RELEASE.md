@@ -1,4 +1,4 @@
-# 릴리스 절차 (cys 터미널)
+# 릴리스 절차 (cysr)
 
 ## ★현행 정본 — 우리 포크(cysr · `oogisoogi/cys-ro`) 발행 절차 (1.1.8 현행화 · 2026-10-07)
 
@@ -74,11 +74,11 @@
 ### 팩-온리 발행 절차 (현행 수동 — CI 자동화는 Phase2 별도 과제)
 
 pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs build_pack_manifest_value`)
-팩만 발행해도 **버전 범프 + cys 재빌드**가 필요하다(§0 전 위치 갱신 — version-check.sh 통과).
+팩만 발행해도 **버전 범프 + cysr 재빌드**가 필요하다(§0 전 위치 갱신 — version-check.sh 통과).
 
-1. 버전 범프(§0) → `cargo build --release --bin cys` (Tauri 빌드 불요 — cys 단독).
+1. 버전 범프(§0) → `cargo build --release --bin cys` (Tauri 빌드 불요 — cysr 단독).
 2. pack 3종 생성 — release.yml `pack-artifacts` 잡과 동일 파라미터(스캔 게이트 2종 선행 포함):
-   `cys pack-manifest --key-id … --signed-at … --expires-at … --min-binary-version $PACK_MIN_BINARY > pack-manifest.json`
+   `cysr pack-manifest --key-id … --signed-at … --expires-at … --min-binary-version $PACK_MIN_BINARY > pack-manifest.json`
    (`$PACK_MIN_BINARY` = release.yml `PACK_MIN_BINARY` env 와 **동일값** — 현행 1.1.7(2026-09-29 상향 · phoenix G2 `reinject --check --ack-only` · 그 전 1.0.0 = 2026-09-16 · 아래 근거 항목). 수기 리터럴 금지:
    두 레인 값보다 낮게 서명하면 아래 불변 규칙이 막은 스큐가 이 수동 문으로 재개방된다.)
    → 결정론 tar(`--mtime` 고정) → minisign 서명.
@@ -113,9 +113,9 @@ pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs bu
   사용자의 바이너리 확인 채널이 파손된다.
 - 팩-온리 적용 후 "디스크 팩 > 바이너리 임베드 팩" 상태가 일상화된다 — 이때 부트 스윕은
   pack_current_for 게이트(디스크 ≥ 바이너리 = 스킵)로 아예 실행되지 않는 것이 **정상 동작**이다
-  (2026-07-12 도입 — 종전의 "스윕 실행 → 다운그레이드 가드 no-op" 소음 제거). 수동 `cys init-pack`은
+  (2026-07-12 도입 — 종전의 "스윕 실행 → 다운그레이드 가드 no-op" 소음 제거). 수동 `cysr init-pack`은
   게이트를 타지 않고 여전히 다운그레이드 가드에 막힌다(동일 최종 상태·이중 방어).
-- **★PACK_MIN_BINARY 0.14.29 유지 근거 — v0.14.36 판정 (2026-09-12 · TICKET=cys-v01436-pack-url r2)**.
+- **★PACK_MIN_BINARY 0.14.29 유지 근거 — v0.14.36 판정 (2026-09-12 · TICKET=`cys-v01436-pack-url` r2)**.
   ⓐ 이 판의 팩 트리는 v0.14.35 와 **바이트 동일**하다: `git diff v0.14.35 -- cysjavis-pack/` = 0줄.
   이번 릴리스로 팩 쪽 위험이 늘지 않는다.
   ⓑ v0.14.35 팩이 쓰는 표면 중 **0.14.29 바이너리에 없는 것은 6종**이고, 전부 런타임 탐침·폴백이 있다
@@ -124,8 +124,8 @@ pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs bu
 
   | # | 0.14.29 에 없는 표면 | 팩 쪽 탐침·폴백 위치(v0.14.36 트리) | 0.14.29 에서의 거동 |
   |---|---|---|---|
-  | 1 | `cys hook user-prompt-submit --input` | `cysjavis-pack/hooks/role-bootstrap.sh:115` `--help` 탐침 → `role-bootstrap-legacy.sh`(:179-180) | 종전 경로(3왕복)로 동작 |
-  | 2 | `cys restore --help` 의 `per-entry-cwd` 토큰 | `cysjavis-pack/bin/javis_phoenix.py:1487` `restore_supports_per_entry_cwd`(:1503 토큰 대조) → `:1521` `per_entry=False` | 전원 홈 좌석일 때만 cwd override(종전 계약) |
+  | 1 | `cysr hook user-prompt-submit --input` | `cysjavis-pack/hooks/role-bootstrap.sh:115` `--help` 탐침 → `role-bootstrap-legacy.sh`(:179-180) | 종전 경로(3왕복)로 동작 |
+  | 2 | `cysr restore --help` 의 `per-entry-cwd` 토큰 | `cysjavis-pack/bin/javis_phoenix.py:1487` `restore_supports_per_entry_cwd`(:1503 토큰 대조) → `:1521` `per_entry=False` | 전원 홈 좌석일 때만 cwd override(종전 계약) |
   | 3 | `org.status` 키 `boot_v2_enabled` | `cysjavis-pack/bin/javis_orchestra.py:869-882` `ack_axis_enabled` — 부재 = False | ACK 축 꺼짐 |
   | 4 | `org.status` 키 `surfaces[].ack_nonce_ok` | `cysjavis-pack/bin/javis_orchestra.py:891` — 키 부재 = 미측정 | 게이트가 막지 않음 |
   | 5 | `org.status` 키 `daemon.npm_prefix_polluted` | `cysjavis-pack/bin/javis_preflight.py:5507-5508` — 키 부재 = SKIP | C81 SKIP |
@@ -138,7 +138,7 @@ pack_version은 빌드 시점 `CARGO_PKG_VERSION`에 용접돼 있어(`cys.rs bu
   는 하한 바이너리로 서명·설치 dry-run 을 증명할 뿐 위 6종의 런타임 폴백은 재지 않는다. 줄번호는
   v0.14.36 트리 기준이라 뒤 판에서 옮겨질 수 있다.
 
-### 팩 replay 단조 런북 (2026-09-12 · TICKET=cys-v01436-pack-url r2)
+### 팩 replay 단조 런북 (2026-09-12 · TICKET=`cys-v01436-pack-url` r2)
 
 사용자 기계는 받은 팩의 signed_at 을 `~/.cys/.pack-accepted.json` 에 적고, 그 값 **이하** signed_at 의 팩을
 replay 로 거부한다(`src/packsig.rs` ⓔ). 벤더 팩을 받은 기계는 벤더 signed_at 을 기준선으로 들고 있다.
@@ -215,7 +215,7 @@ replay 로 거부한다(`src/packsig.rs` ⓔ). 벤더 팩을 받은 기계는 �
 > ★왜: v0.14.34 는 브랜치 push(10:49:46Z) **58초 뒤** 태그됐다(10:50:44Z). 같은 커밋 88c1ca2 의 브랜치
 > `windows-build` 는 11:00:31Z 에 failure 였고(윈도우에서만 나는 컴파일 오류 3건 — `src-tauri/src/main.rs` 의
 > 유닉스 전용 dev/ino 가 cfg 밖), 태그 레인은 브랜치 런의 결과를 보지 않는다. macOS 레인(`ci-branch`)은 윈도우
-> cfg 를 컴파일하지 않고, `windows-health` 는 루트 크레이트만 컴파일해 cys-app 파손을 원리적으로 못 본다.
+> cfg 를 컴파일하지 않고, `windows-health` 는 루트 크레이트만 컴파일해 `cys-app` 파손을 원리적으로 못 본다.
 > 그래서 파손본이 태그됐고 태그 레인의 윈도우 빌드에서야 드러났다.
 
 > ★왜 4번째가 생겼나(2026-09-23 · v0.14.40 릴리스 수리): v0.14.39 는 위 3종이 전부 rc=0 이고 브랜치 CI 도
@@ -232,7 +232,7 @@ replay 로 거부한다(`src/packsig.rs` ⓔ). 벤더 팩을 받은 기계는 �
 1. **버전 SOT 8곳** — `sh scripts/version-check.sh vX.Y.Z` (§0).
 2. **★윈도우 교차 타입체크** — `sh scripts/win-typecheck.sh` (로컬 · 이 맥 실측 콜드 약 3분 / 웜 수 초~십수 초).
    - rc: 0 = 통과 · 1 = 윈도우 컴파일 오류(태그 금지) · 2 = 판정 불가(타깃·도구 부재·우회 실패 — **통과 아님**).
-   - 증명하는 것: cys-app 전체(bin·bin test + 의존 cys-terminal lib)가 `x86_64-pc-windows-msvc` cfg 로 타입체크·린트 통과.
+   - 증명하는 것: `cys-app` 전체(bin·bin test + 의존 cysr lib)가 `x86_64-pc-windows-msvc` cfg 로 타입체크·린트 통과.
    - 증명하지 않는 것: 링크·NSIS 번들·런타임 — 그건 `windows-build`·`release` 레인(윈도우 실기) 몫이다.
    - 사전: `rustup target add x86_64-pc-windows-msvc` (스크립트는 자동 설치하지 않고 rc=2 로 알린다).
    - 같은 스크립트가 `ci-branch.yml` 의 macOS 잡에서도 돈다(실패 = 잡 실패) — 아래 3번이 그 결과를 태그 조건으로 묶는다.
@@ -295,7 +295,7 @@ sh scripts/make-update-manifest.sh 0.2.0 <OWNER> cys-terminal
 #  → dist-update/latest.json, dist-update/cys-0.2.0-macos-aarch64.app.tar.gz
 ```
 
-`beforeBuildCommand`(scripts/bundle-prep.sh)가 UI 번들 + cys/cysd 릴리스 빌드 + `externalBin` 배치를
+`beforeBuildCommand`(scripts/bundle-prep.sh)가 UI 번들 + `cys/cysd` 릴리스 빌드 + `externalBin` 배치를
 자동 수행합니다. Intel 빌드가 필요하면 `--target x86_64-apple-darwin` 추가(manifest의 `darwin-x86_64`에 키 추가).
 
 ### ★Apple 서명·공증 (다른 맥 배포의 유일한 정공법 — 2026-06-15)
@@ -326,7 +326,7 @@ bash scripts/build-macos-signed.sh  # env 검증 → tauri build(자동 공증) 
 #  (반드시 bash — 스크립트가 프로세스 치환 `< <(...)`(bash 전용)을 쓴다. `sh`로 실행하면 line 57 syntax error.)
 ```
 - 배선: `tauri.conf.json > bundle.macOS.entitlements = entitlements.plist`(hardened runtime +
-  사이드카 cysd·cys 로드 허용). Tauri가 빌드 중 Developer ID codesign + notarytool 제출 +
+  사이드카 cysd·cysr 로드 허용). Tauri가 빌드 중 Developer ID codesign + notarytool 제출 +
   staple 을 자동 수행한다(별도 `codesign`/`notarytool` 수동 호출 불요).
 - **검증 통과 기준**: `spctl -a -vv cys.app` = **accepted**. (rejected면 공증 실패 — 빌드
   로그의 notarization 결과 확인.)
@@ -476,7 +476,7 @@ bash scripts/release-gate-gatekeeper.sh <DMG | .app>
 
 > 인증서가 없을 때(개발용): env 없이 `bun x @tauri-apps/cli build` → ad-hoc 빌드. 이 빌드는
 > **다른 맥 전송 시 "손상됨"**이 뜨므로, 받은 맥에서 `xattr -dr com.apple.quarantine
-> /Applications/cys.app` 로만 우회 가능(배포용 아님).
+> `/Applications/cys.app`` 로만 우회 가능(배포용 아님).
 
 #### ★업로드 차단 게이트 — cysd 의 비공개 라이브러리 링크 검사 `scripts/check-no-ioreport-link.sh` (0.14.43 신설 · release.yml 이 업로드 전 자동 실행)
 
@@ -515,7 +515,7 @@ bash scripts/check-no-ioreport-link.sh <cysd 바이너리 경로>
       잡는 유일한 검사다. 비기술자는 이 화면을 만나면 **문의 없이 그냥 이탈한다** —
       실패가 신고로 나타나지 않으므로 기계 게이트로만 막을 수 있다.
 - [ ] **신뢰선 라벨 활성** — 스킬 보드 산출물에 "🔒 AI 보조 생성 · 오너 검수 전"이 부착되는지(과대약속 "80~90%" 금지).
-- [ ] **외부발행은 master 승인 경유** — 제3자 공유/전송은 자율주행 denylist의 "외부발행(비가역)"에 해당. `cys feed push --wait`(master 승인)를 거친다. 임의 전송 금지(§4 외부발행 원칙 계승).
+- [ ] **외부발행은 master 승인 경유** — 제3자 공유/전송은 자율주행 denylist의 "외부발행(비가역)"에 해당. `cysr feed push --wait`(master 승인)를 거친다. 임의 전송 금지(§4 외부발행 원칙 계승).
 - [ ] **HITL 미리보기 보존** — 제품 모드도 입력 모달·validate_ir 게이트·미리보기 확인을 우회하지 않는다("1클릭"이라도 게이트 제거는 REJECT).
 - [ ] **청중 프로파일 확인** — `~/.cys/profile.json` audience가 대상 청중과 일치(민감 스킬은 카탈로그 미포함=암묵 차단).
 
@@ -546,7 +546,7 @@ GUI 앱의 Windows Tauri 빌드는 잔여 — 현재 Windows는 CLI+데몬 중�
 
 Windows 머신이 없어도 macOS에서 MSI까지 만들 수 있다. **windows-gnu 타깃**(wxs Source가
 가리키는 `x86_64-pc-windows-gnu`·`aarch64-pc-windows-gnullvm`)을 zig 링커로 크로스컴파일하고,
-WiX 대신 **msitools(wixl)**로 MSI를 만든다. (cys.wxs는 표준 WiX v3라 wixl이 그대로 읽는다.)
+WiX 대신 **msitools(wixl)**로 MSI를 만든다. (`cys.wxs`는 표준 WiX v3라 wixl이 그대로 읽는다.)
 
 ```sh
 # 사전: rustup(homebrew rust와 별개) · cargo-zigbuild · zig · msitools(wixl)
@@ -570,7 +570,7 @@ zip -j dist-win/cys-0.2.1-windows-arm64.zip target/aarch64-pc-windows-gnullvm/re
 
 ⚠ **한계(정직)**: 크로스빌드 산출물은 PE 포맷·아키텍처는 검증되나(`file`로 PE32+ x86-64 /
 Aarch64 확인) **실제 Windows에서 실행 검증은 불가**하다. 광범위 배포 전 Windows 머신에서
-스모크테스트(설치→`cys status`) 권장.
+스모크테스트(설치→`cysr status`) 권장.
 
 ## 3. GitHub 저장소 최초 설정 (1회) — 원작자 레인 기록(우리 저장소 = `oogisoogi/cys-ro` · 이미 설정됨)
 
@@ -624,8 +624,8 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
 ## 4. 릴리스 전 체크리스트
 
 - [ ] `cargo build --release` 무오류 · `cargo clippy --bins` 0경고 · `cargo test` 통과
-- [ ] 신규 머신 시뮬레이션: 빈 HOME에서 `cys list` → 데몬 자동기동 + pack 자동설치 확인
-- [ ] DMG에서 설치 → 앱 실행 → `cys status` 동작
+- [ ] 신규 머신 시뮬레이션: 빈 HOME에서 `cysr list` → 데몬 자동기동 + pack 자동설치 확인
+- [ ] DMG에서 설치 → 앱 실행 → `cysr status` 동작
 - [ ] 버전 문자열 **8곳(수동 6 + `Cargo.lock` 2패키지)** 일치 — `sh scripts/version-check.sh vX.Y.Z` rc=0
 - [ ] **★태그 전 사전 게이트 4종 rc=0 — §0-C** (version-check · `sh scripts/win-typecheck.sh` ·
       `python3 scripts/pre-tag-ci-check.py --wait 60` = 같은 SHA 의 ci-branch·windows-build·windows-health success ·
@@ -806,11 +806,11 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
             env 관측 스텝). 마지막 분절 — **벤더(claude CLI)가 그 env 를 존중해 훅을 실제
             발화하는가** — 는 claude 인증이 필요해 어떤 CI 에도 실을 수 없다(src/lib.rs U-20
             주석 자인: "실제 훅이 뜨는가는 실기 재현의 몫 — 과장하지 않는다"). 실기 판정:
-            Windows 실기의 cys pane 에서 `$env:CLAUDE_CODE_GIT_BASH_PATH` 값 + `Test-Path`
+            Windows 실기의 cysr pane 에서 `$env:CLAUDE_CODE_GIT_BASH_PATH` 값 + `Test-Path`
             확인 → `claude` 기동 → SessionStart 훅 실발화(역할 부트스트랩 배너) 관측.
             PASS 후에만 이 행의 상태 표기를 갱신한다.
       - [ ] **P1 좌석 토큰 '체인 단절 + 토큰 = 성공' 확인 — 상태: 실기 미검증** (P1 이월)
-            조상 체인 해석이 끊기는 실기 조건(S1/S3 계급 — `cys claim-role` 이 rc 6 을 내던
+            조상 체인 해석이 끊기는 실기 조건(S1/S3 계급 — `cysr claim-role` 이 rc 6 을 내던
             그 기계 상태)에서, pane PTY env 로 배달된 `CYS_SEAT_TOKEN` 만으로 claim 이
             성공(rc 0 · `registered:` 출력)해야 한다. CI 는 토큰 **배달**까지만 관측하고
             (위 ② 분절), 체인 단절 실조건은 실기 claude 세션에서만 재현된다.
@@ -855,7 +855,7 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
       갈음했다고 자인한 분절이다 — 어느 CI 초록·PTY 캡처도 이 분절의 증거가 아니다(캡처가
       실증한 것은 ready 화면 문면 `? for shortcuts` 의 출현·재현성까지다).
 
-      실기 판정: 라이브 codex 로 `cys launch-agent`(reviewer-codex) 기동 → 디렉티브 주입 →
+      실기 판정: 라이브 codex 로 `cysr launch-agent`(reviewer-codex) 기동 → 디렉티브 주입 →
       재주입 경로(readiness `Site::Reinject` — scrollback 꼬리 마커 감지) 왕복 **1회**가
       실제 도달해야 PASS. 같은 라이브 런에서 P0-6 분절 ②(업데이트/로그인 화면 비출현)도
       함께 관측·기록한다.
@@ -871,12 +871,12 @@ gh release create v0.2.0 --draft --title "cys 0.2.0" --notes-file docs/RELEASE_N
       은 `src/pack.rs ownership()` 상 **`Ownership::User`** 다 — 업데이터는 디스크≠임베드이면
       매니페스트 해시가 일치해도·`--force` 여도 본문을 **덮지 않는다**(`decide_file_action` 의
       User 분기 = `Keep{new_pending}`). 즉 이번 릴리스의 그 개정은 **신규 설치본에만 자동
-      도달**하고, 기존 인구에는 `<파일>.new` 병치 + `cys pack-merge` 를 거쳐야 도달한다.
+      도달**하고, 기존 인구에는 `<파일>.new` 병치 + `cysr pack-merge` 를 거쳐야 도달한다.
 
       - [ ] 이번 diff 에서 위 목록의 파일이 바뀌었는지 확인:
             `git diff <이전태그>..HEAD --name-only -- cysjavis-pack/directives cysjavis-pack/soul.md cysjavis-pack/CLAUDE.md cysjavis-pack/schedule.json cysjavis-pack/agents.json cysjavis-pack/acl.json`
       - [ ] 바뀌었다면 **릴리스 노트 상단에** 해소 명령을 고지한다 —
-            `cys pack-merge`(대기 목록) → `cys pack-merge --file directives/MASTER_DIRECTIVE.md --take-new`
+            `cysr pack-merge`(대기 목록) → `cysr pack-merge --file directives/MASTER_DIRECTIVE.md --take-new`
             (무수정본) 또는 `--keep-mine`/3-way. **CEO 승격 기계는 md 가 CEO 템플릿 사본이라
             `--take-new` 를 쓰지 말고** preflight `C03.pin.master` 안내(D1(a)형 갱신)를 따른다.
       - [ ] 규칙이 **훅·데몬 등 System 층에도 실려** 기존 인구에서 기계 거동이 성립하는지 확인

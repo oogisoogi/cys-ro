@@ -1,4 +1,4 @@
-# cys 터미널 — Windows 설치 안내
+# cysr — Windows 설치 안내
 
 > 이 문서는 특정 버전을 표기하지 않습니다 — **항상 자비스 사이트(jarvis.godmeyou.kr/get) 또는 [우리 릴리스](https://github.com/oogisoogi/cys-ro/releases/latest)의 최신
 > 설치파일**을 기준으로 하세요. 파일명은 `cysr_<버전>_x64-setup.exe` 형식입니다.
@@ -22,20 +22,20 @@ irm https://claude.ai/install.ps1 | iex
 ```
 
 - **git·node 불요** — Claude Code 네이티브 설치기라 다른 준비물이 없습니다.
-- 설치 후 **자비스(cys 앱)를 재시작**하면 됩니다(앱의 안내 카드도 같은 절차를 안내합니다).
-- cys 설치 전·후 어느 시점에 해도 됩니다.
+- 설치 후 **자비스(cysr 앱)를 재시작**하면 됩니다(앱의 안내 카드도 같은 절차를 안내합니다).
+- cysr 설치 전·후 어느 시점에 해도 됩니다.
 
 ## 설치 (사람)
 
 1. [우리 릴리스](https://github.com/oogisoogi/cys-ro/releases/latest)에서 **`cysr_<버전>_x64-setup.exe`**(NSIS 설치파일)를 내려받아 실행합니다.
    - SmartScreen 경고가 뜨면 "추가 정보 → 실행"으로 진행합니다(USER-MANUAL.md §18 참고).
    - 설치 위치는 `%LOCALAPPDATA%\cys` 이고 관리자 권한이 필요 없습니다(현재 사용자 설치).
-2. 설치가 끝나면 **cys 앱을 한 번 실행**합니다. 이때 자동으로:
+2. 설치가 끝나면 **cysr 앱을 한 번 실행**합니다. 이때 자동으로:
    ① 운영 팩 설치(`%USERPROFILE%\.cys\pack`)
    ② Claude Code 역할 각성 훅 등록
    ③ 로그온 시 데몬 자동 기동 등록(작업 스케줄러 `cysd`)
    — 사람이 따로 명령을 칠 필요가 없습니다.
-3. 앱에서 터미널 pane 을 열고 `cys list` 를 실행해 데몬이 뜨는지 확인합니다(자동 기동됩니다).
+3. 앱에서 터미널 pane 을 열고 `cysr list` 를 실행해 데몬이 뜨는지 확인합니다(자동 기동됩니다).
 
 ## 확인 (설치가 잘 됐는지)
 
@@ -59,7 +59,7 @@ claude --version                          (선행조건 CLI 가 설치돼 있으
 
 1. **제외 등록(먼저)**: Windows 보안 → 바이러스 및 위협 방지 → 설정 관리 →
    제외 추가/제거 → 폴더 **`%LOCALAPPDATA%\cys`** 추가.
-2. **복원(그다음)**: 같은 화면의 보호 기록(격리된 항목)에서 cys 관련 파일을 **복원**.
+2. **복원(그다음)**: 같은 화면의 보호 기록(격리된 항목)에서 cysr 관련 파일을 **복원**.
 3. 앱을 재시작합니다 — 안내가 다시 뜨지 않으면 복구 완료입니다.
 4. 격리 이력이 없거나 복원해도 안내가 반복되면, (제외 등록을 유지한 채) 홈페이지의 최신
    설치파일로 **재설치**합니다. 재설치 직후 같은 안내가 또 뜨면 백신이 새 파일을 다시 격리한
@@ -89,14 +89,14 @@ claude --version                          (선행조건 CLI 가 설치돼 있으
 자동 온보딩이 어떤 이유로 빠졌다면 아래를 직접 실행할 수 있습니다(모두 여러 번 실행해도 안전).
 
 ```
-cys init-pack        (팩 + 역할 각성 hook 재설치)
-cys daemon install   (로그온 자동기동 재등록)
-cys daemon status    (등록 상태 확인)
+cysr init-pack        (팩 + 역할 각성 hook 재설치)
+cysr daemon install   (로그온 자동기동 재등록)
+cysr daemon status    (등록 상태 확인)
 ```
 
 ## 참고
 
-- 구판 안내의 **MSI(cys-0.2.x)** 는 폐기된 방식입니다. 현재 소비자 배포본은 위 **NSIS
+- 구판 안내의 **MSI(`cys-0.2.x`)** 는 폐기된 방식입니다. 현재 소비자 배포본은 위 **NSIS
   setup.exe(runtime 동봉)** 하나입니다.
 - 부서·새 판 자동 갱신·역할 노드 등 세부 동작은 앱 내 안내와 `USER-MANUAL.md`·`docs/INSTALL.md`(공통)를
   함께 참고하세요.

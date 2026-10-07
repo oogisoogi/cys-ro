@@ -25,6 +25,19 @@
 - [x] 8. 이 파일 완성(판독표 · 변경표 · 게이트 범위 제안) → 【확인요청】
       해소 판정: 인박스 헬퍼 재독 일치
 
+## §0-4 4판 지시(master#141c5b48 · 2026-10-07 · 원문 그대로 · ★순환 선행)
+【4판 지시 · TICKET=cysr-118-publish-docs · ★순환 선행】 3판 판정: 게이트 = lead 진행 중 · 적대 = **agy 3R 수렴 아니오(0·0·MINOR 1)** + **Opus 3R 수렴 아니오(BLOCK 0 · MAJOR 1 · MINOR 6 · 2R = 해소 9 · 부분 1(m3) · 이월 1(m7))**. 원문 = 네 트리 docs/update/REVIEW-PD-agy-3r.md · REVIEW-PD-opus-3r.md(ignored).
+★절차: 네 CTX 63% → **먼저 이 지시 본문을 HANDOFF-PUBLISH-DOCS.md §0-4 「4판 지시(master#이 메시지)」 로 그대로 옮겨 커밋** → `cys cycle-agent` 순환 요청을 [순환 통보]로 CSO 에(재개 줄 = 「TICKET=cysr-118-publish-docs 4판 · HANDOFF §0-4 ①~⑥ 집행 → 전수 · 미러 push 1회 · 3런 success 뒤 【확인요청】」) → 후임이 집행. master 가 CSO 에 집행 허가를 같이 보낸다.
+① [MAJOR·M-1] Control Center 기본 탭 `cysjavis-pack/web/office3d.html`·`office-boot.js` 명칭 미통일: 제목 「CYSJAVIS · Metaverse Office」 → cysr · 단추 「지시 전송 → cys-terminal」·상태 「cys-terminal 반영」 5곳 → cysr · 배너의 사람이 칠 명령 `cys init-pack --force` → `cysr init-pack --force`(사람이 치는 명령 = cysr 규칙) · 기계 식별자(파일명·경로·RPC 이름)는 불변. 게이트 = 수집 매니페스트에 pack web 사용자 화면 HTML/JS 추가 · HTML 검사가 `<script>` 를 통째로 지우지 말고 사용자 노출 문자열(textContent·title·label 리터럴) 검사 · `CYSJavis` 검사 대소문자 무시. 음성 대조 = 3판 트리 office3d.html 적색 실측. (팩 web 은 디렉티브 아님 — 단 팩 매니페스트·서명 대상이면 해시 갱신 절차 따르라.)
+② [MINOR·m-1] README.md:106 `cys actions` 펜스 명령 머리 누락 + 인라인 코드·sudo/env 앞머리·닫는 펜스 판정 구멍 → 각 반례 1 적색.
+③ [MINOR·m-2] USER-MANUAL.md:1087·1425 스크립트가 실제로 부르는 `cys` 를 `cysr` 로 오변환 → 원래 `cys` 복원(기계 호출).
+④ [MINOR·m-3·m-4·m3] RELEASE.md:330 `cys.app` → 코드와 같은 `cysr.app` · :45 【미확정】 = 해소 판정 1줄 붙이거나 내부 티켓 이름 빼고 공개 문서 밖(HANDOFF)으로.
+⑤ [MINOR·m-5] [SKIP·판정 제한] = stderr 만 → 시험 결과 요약에도(stdout 집계 줄) · 윈 경로도 같은 표시.
+⑥ [MINOR·m-6·agy] CYS_STATE_DIR 음성 대조 = 대상 미통과 → 실제로 그 변수를 읽는 경로로 음성 대조(뮤턴트 적색 실측) · agy 「제거 목록 → 화이트리스트」 = 반박 가능(근거 1줄) 또는 채택 — 판단 근거 HANDOFF.
+상한 1.5h(순환 포함) · 본 가지 push 0.
+
+후임 첫 행동: 이 §0-4 Read → docs/update/REVIEW-PD-opus-3r.md · REVIEW-PD-agy-3r.md(ignored · 추적 금지) Read → ①~⑥ 집행. 이월 맥락: 게이트 = ui/src/publicdocs.test.ts `nameViolations`·NAME_MANIFEST·NAME_CREDITS·NAME_QUOTED_PHRASES · dept 하네스 = cysjavis-pack/bin/tests/test_dept_create_progress.py Sandbox·SandboxReapGuard · 격리 실행 = 스크래치 isoenv.sh(HOME 임시·CYS_* 제거) · 음성 대조·되돌림은 python try/finally(zsh 루프 금지) · 미러 push = `/usr/bin/git push origin HEAD:refs/heads/fix/publish-docs-118`.
+
 ## §0-3 3판 델타 (master#62af6f8e · 2026-10-07 12:00 착수 → 12:2x)
 2판 적대 = agy 2R(BLOCK 0 · MAJOR 0 · MINOR 1) + Opus 2R(BLOCK 0 · MAJOR 2 · MINOR 8 · 1R 22건 = 해소 15 · 반박 타당 1 · 부분 5) · codex = 한도 0.
 ★정정(Opus M1): 2판 §0-2 c5 「반례 2 적색 시험」은 **틀린 진술**이었다 — 반례 시험이 codex 원 반례 「제품 이름은 'cys' 입니다」 뒤에 승인 토큰이 아닌 `'cys 터미널'` 을 덧붙여 그 덧붙인 조각에서 적색이 났고, 원문 자체는 초록이었다. 3판은 원문 그대로 적색을 실측했다(아래 ①).

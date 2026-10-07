@@ -323,7 +323,6 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     #   (빼면 검체가 팩 트리를 오염시킨다 = SEAL-1 과 같은 계급).
     "cysjavis-pack/bin/tests/test_role_authority_triage.py",
     "cysjavis-pack/hooks/_lib.sh",
-    "docs/RELEASE.md",
     # ★2026-09-04 W-C 등재 — 사용자 대면 릴리스 노트. **봉인 점검 결과**: 진입점도 강제점도
     #   아니다. python 을 한 번도 띄우지 않으며, 니들은 W-A A6(번들 파이썬 캐시 차단의 전 지점
     #   회귀 테스트)를 사용자 언어로 설명하는 **산문 1줄**에만 있다. 등재 이유는 이 센서스가
@@ -331,6 +330,9 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     "docs/RELEASE_NOTES_0.14.30.md",
     # ★2026-10-06 등재(T3). **봉인 점검 결과**: 윈 실기 문안의 경합 스크립트 예시 한 줄(사람이 치는 명령 · 자식 env 에 봉인) — 강제점 아님.
     "docs/design/T3-WIN-HANDS-ON-2026-10-06.md",
+    # ★2026-10-07 이동(publish-docs-118 2판 · master#0885ae7a ⑥): docs/RELEASE.md 의 원작자 레인 절(⑥-B SEAL-1 서술)이 이력 문서로 옮겨 왔다.
+    #   **봉인 점검 결과**: 비실행 이력 문서의 산문 — 진입점도 강제점도 아니다(옛 docs/RELEASE.md 등재와 같은 성격).
+    "docs/legacy/RELEASE-upstream.md",
     "docs/plans/v4-repair-spec.md",
     "scripts/deploy_gate.py",
     "scripts/installer-app/install-core.sh",

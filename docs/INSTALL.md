@@ -165,8 +165,8 @@ codesign --verify --strict --verbose /Applications/cysr.app
      그 항목이 적힙니다(설치 자체가 실패한 것은 아닙니다). ⚠ 한 줄이 ✅ 알림 안에 숨지 않도록
      한 알림은 한 등급만 주장합니다. 다음 세 경우는 **아직 끝난 게 아닙니다**
      (경고 알림은 60초 동안 떠 있고, 그 뒤에도 Control Center의 **알람 탭**에서 다시 볼 수 있습니다):
-     - **"다른 'cys' 가 앞을 가립니다"** — 심링크는 생겼지만 로그인 셸 기준으로 PATH 앞쪽의 다른
-       cysr(예: 다른 도구가 설치한 사본)가 먼저 잡힙니다. 알림에 적힌 그 경로를 지우거나
+     - **"PATH 앞의 다른 'cys' 가 cysr 설치를 가립니다"** — 심링크는 생겼지만 로그인 셸 기준으로 PATH 앞쪽의 다른
+       `cys`(예: 다른 도구가 설치한 사본)가 먼저 잡힙니다. 알림에 적힌 그 경로를 지우거나
        `/usr/local/bin`을 PATH 앞으로 옮긴 뒤, 새 터미널에서 `which -a cys` 로 1순위를 확인하세요.
        - 드물게 알림이 **"가리는 경로를 하나로 특정하지 못했습니다"** 라고 말할 때가 있습니다.
          확인 명령이 뱉은 줄이 경로 한 개로 읽히지 않는 경우입니다(로그인 프로필이 배너를
@@ -295,7 +295,7 @@ for f in cys cysd cysr; do
   if [ -e "$d" ] || [ -L "$d" ]; then
     ours=no
     if [ -L "$d" ]; then
-      case "$(readlink "$d")" in
+      case "$(readlink "$d" | sed -e "s|//*|/|g" -e "s|\(.\)/\$|\1|")" in
         */cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd|*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd) ours=yes ;;
       esac
     fi
@@ -329,9 +329,10 @@ done
   **"백업본을 손으로 되돌리기"** 3) 블록으로 하나씩 되돌리세요.
 - 같은 블록을 두 번 돌려도 백업이 쌓이지 않습니다 — 이미 이 앱을 가리키는 링크는 백업하지 않고
   링크만 다시 겁니다(멱등).
-- 이 블록은 `readlink` 가 돌려주는 **문자 그대로**의 경로가 `…/cysr.app/Contents/MacOS/cys`(옛 이름 `…/cys.app/…` 포함 · 또는
-  `cysd`)로 끝날 때만 "이 앱의 링크"로 봅니다. 손으로 만든 `…/MacOS//cys` 같은 변칙 표기는
-  남의 것으로 보아 **백업**합니다 — 안전한 쪽으로 틀립니다(잃는 것은 없고 백업본이 하나 늘 뿐).
+- 이 블록은 `readlink` 가 돌려주는 경로를 **버튼과 같은 규칙으로 정규화**한 뒤(연속 슬래시 `//` → `/` · 끝의 `/` 제거 —
+  앱 `SHELL_PATH_NORMALIZER` 와 같은 `sed` 두 식) `…/cysr.app/Contents/MacOS/cys`(옛 이름 `…/cys.app/…` 포함 · 또는
+  `cysd`)로 끝날 때만 "이 앱의 링크"로 봅니다. 그래서 손으로 만든 `…/MacOS//cys` 같은 표기도 버튼과 똑같이 이 앱의 링크로
+  읽습니다(2026-10-07 이전 이 블록은 원문 그대로 대조해 그런 링크를 남의 것으로 보고 백업했다 — 버튼과 판정이 갈렸다).
 
 **해제 방법** — 같은 버튼이 상태에 따라 **"셸 cysr 해제"** 로 바뀝니다. 누르면 확인 창이 먼저 뜨고,
 승인하면 `/usr/local/bin/cys`·`cysd` **심볼릭 링크만** 제거합니다(관리자 승인 1회). 같은 이름의
@@ -353,7 +354,7 @@ for d in /usr/local/bin/cys /usr/local/bin/cysd /usr/local/bin/cysr; do
     else echo "없습니다: $d"; fi
     continue
   fi
-  case "$(readlink "$d")" in
+  case "$(readlink "$d" | sed -e "s|//*|/|g" -e "s|\(.\)/\$|\1|")" in
     */cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd|*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd)
       rm -f "$d" && echo "지웠습니다: $d" ;;
     *) echo "건너뜁니다(다른 곳을 가리키는 링크입니다): $d" ;;
@@ -418,7 +419,7 @@ D=/usr/local/bin/cys
 B=/usr/local/bin/cys.cys-backup-1756089600
 if [ ! -e "$B" ] && [ ! -L "$B" ]; then echo "중단: 백업본이 없습니다 — $B"; exit 1; fi
 if [ -L "$D" ]; then
-  case "$(readlink "$D")" in
+  case "$(readlink "$D" | sed -e "s|//*|/|g" -e "s|\(.\)/\$|\1|")" in
     */cysr.app/Contents/MacOS/cys|*/cysr.app/Contents/MacOS/cysd|*/cys.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cysd)
       rm -f "$D" && echo "이 앱의 링크를 지웠습니다: $D" ;;
     *) echo "중단: 그 자리는 다른 곳을 가리키는 링크입니다 — 직접 확인하세요: $D"; exit 1 ;;

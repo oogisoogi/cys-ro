@@ -89,6 +89,62 @@ const GONE = [
   "Tauri updater",
 ];
 
+// ⑨ 공식 명칭 게이트(publish-docs-118 · master#c33d2ec7 → 2판 #0885ae7a ③ · codex 1R MAJOR 5·6 / agy 1R MAJOR 3·4).
+// 박사님 10-07 「우리 자비스 공식명칭은 cysr이다. 이 외 다른 명칭은 쓰지 않는다. 모든 문서를 통일한다.」
+//  ① 대상 = **명시 매니페스트**(발행 표면) — README 링크 수집에 기대지 않는다(링크 밖 dist-win·1.x 노트·앱 화면이 빠졌던 구멍). README 가 새 문서를
+//     링크하면 아래 「매니페스트 ⊇ README 링크」 시험이 붉어져 등재를 강제한다.
+//  ② 크레딧 = **파일별 정확한 문장만** 허용(줄 통째 예외 금지 — 같은 줄 다른 자리의 오변환을 놓쳤다) · 등재된 문장이 실제로 없으면 붉다(묵은 허용 금지).
+//  ③ 홑따옴표 꼴 = **승인 토큰만** 코드 꼴로 친다(화면 문자열이 파일 이름 'cys' 를 그대로 옮긴 자리 · 파일 패턴).
+export const NAME_MANIFEST = [
+  "README.md", "README.en.md", "SECURITY.md", "CONTRIBUTING.md", "NOTICE.md", "USER-MANUAL.md", "ARCHITECTURE-AND-PHILOSOPHY.md",
+  "docs/INSTALL.md", "docs/INSTALL-Windows-KR.md", "docs/GUIDE-clean-reset-KR.md", "docs/GUIDE-empty-surface-KR.md",
+  "docs/GUIDE-fullauto-cycle-KR.md", "docs/GUIDE-policy-json-KR.md", "docs/RELEASE.md", "dist-win/README.md",
+  "docs/RELEASE_NOTES_1.0.0.md", "docs/RELEASE_NOTES_1.0.1.md", "docs/RELEASE_NOTES_1.0.2.md", "docs/index.html", "ui/index.html",
+];
+const CREDIT_KO_RN = "cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다. 원작 저장소: https://github.com/idoforgod/cys-terminal";
+const CREDIT_README = "cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니다.";
+export const NAME_CREDITS: Record<string, string[]> = {
+  "README.md": [CREDIT_README],
+  "README.en.md": ["cysr started from the cys terminal (github.com/idoforgod/cys-terminal).", CREDIT_README],
+  "NOTICE.md": ["cys-terminal is licensed under the MIT License (see `LICENSE`).", "cysr is a derivative of cys-terminal (Copyright (c) 2026 CYSJavis); see LICENSE."],
+  "docs/RELEASE_NOTES_1.0.0.md": [CREDIT_KO_RN],
+  "docs/RELEASE_NOTES_1.0.1.md": [CREDIT_KO_RN],
+  "docs/RELEASE_NOTES_1.0.2.md": [CREDIT_KO_RN],
+  // 앱 화면 출발지 표기 = 박사님 09-27 「도의상 cys가 출발지였다는 내용만 표시」(brandbadge.test · test_default_fleet_formation ⓕ 5자리 결박) — README 문장 그대로 + 짧은 꼬리표
+  "ui/index.html": [`title="${CREDIT_README}">cys 터미널에서 출발`],
+};
+export const NAME_QUOTED_OK = ["'cys'", "'cys-dept-*'"];
+/** 순수 판정 — 크레딧(정확한 문장)을 지운 뒤 CYSJavis 개수 · 코드 꼴 밖 낱말 cys 가 있는 줄 · 등재됐지만 없는 크레딧. */
+export const nameViolations = (text: string, isHtml: boolean, credits: string[]) => {
+  let t = text;
+  if (isHtml) {
+    const keepNl = (m: string) => m.replace(/[^\n]/g, "");
+    t = t.replace(/<!--[\s\S]*?-->/g, keepNl).replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, keepNl).replace(/<code>[\s\S]*?<\/code>/gi, keepNl); // <code> = HTML 의 코드 꼴
+  }
+  const unusedCredits = credits.filter((c) => !t.includes(c));
+  for (const c of credits) t = t.split(c).join("");
+  if (isHtml) {
+    // 태그는 지우되 사람이 보는 속성 값(title·alt·aria-label·placeholder·content)은 남긴다(툴팁도 화면 문자열이다)
+    t = t.replace(/<[^>]*>/g, (tag) => [...tag.matchAll(/\b(?:title|alt|aria-label|placeholder|content)\s*=\s*"([^"]*)"/gi)].map((m) => ` ${m[1]} `).join(""));
+  }
+  const cysjavis = (t.match(/CYSJavis/g) ?? []).length;
+  const lines: number[] = [];
+  let fence = false;
+  t.split("\n").forEach((line, i) => {
+    if (/^\s*(?:>\s*)*(```|~~~)/.test(line)) {
+      fence = !fence;
+      return;
+    }
+    if (fence) return;
+    let prose = line.replace(/``[^`]*``|`[^`\n]*`/g, "");
+    for (const q of NAME_QUOTED_OK) prose = prose.split(q).join("");
+    prose = prose.replace(/\]\([^)]*\)/g, "](").replace(/https?:\/\/\S+/g, "");
+    if (!isHtml) prose = prose.replace(/<[^>\n]*>/g, "");
+    if (/\bcys\b/.test(prose)) lines.push(i + 1);
+  });
+  return { cysjavis, lines, unusedCredits };
+};
+
 describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현행만(1.1.8 U4)", () => {
   it("수집이 공허하지 않다 — 알려진 공개 문서가 다 들어 있고 각 파일이 실재·비어 있지 않다", () => {
     for (const must of ["SECURITY.md", "docs/INSTALL.md", "ARCHITECTURE-AND-PHILOSOPHY.md", "USER-MANUAL.md", "docs/INSTALL-Windows-KR.md", "docs/GUIDE-clean-reset-KR.md"]) {
@@ -179,31 +235,30 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
       expect({ d, 원작자_주소_줄: bad }).toEqual({ d, 원작자_주소_줄: [] });
     }
   });
-  // ⑨(master#c33d2ec7 · 박사님 10-07 「우리 자비스 공식명칭은 cysr이다. 이 외 다른 명칭은 쓰지 않는다. 모든 문서를 통일한다.」):
-  // 제품 이름 = cysr. 「CYSJavis」 0 · 코드 꼴 밖 단독 낱말 cys 0 — 기계 식별자(실행 파일 cys·cysd · ~/.cys · cys.app · cys-dept · CYS_* …)는
-  // 코드 꼴(백틱 · 펜스 블록 · 화면 문자열을 옮겨 적은 '…' 홑따옴표 ASCII 꼴) 안에서만. 예외 = 원작자 크레딧 1문장(「…에서 출발」 줄).
-  it("공식 명칭 = cysr — 「CYSJavis」 0 · 코드 꼴 밖 낱말 cys 0(원작자 크레딧 1문장 예외 · 공개 문서 전건)", () => {
-    for (const d of DOCS) {
-      const raw = read(d);
-      const text = d.endsWith(".html") ? raw.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, (m) => m.replace(/[^\n]/g, "")) : raw;
-      const bad: number[] = [];
-      let fence = false;
-      text.split("\n").forEach((line, i) => {
-        if (/^\s*(```|~~~)/.test(line)) {
-          fence = !fence;
-          return;
-        }
-        if (fence || /출발|started from/i.test(line)) return;
-        const prose = line
-          .replace(/``[^`]*``|`[^`\n]*`/g, "")
-          .replace(/'[\x20-\x26\x28-\x7e]*'/g, "")
-          .replace(/\]\([^)]*\)/g, "](")
-          .replace(/https?:\/\/\S+/g, "")
-          .replace(/<[^>\n]*>/g, "");
-        if (/\bcys\b/.test(prose)) bad.push(i + 1);
-      });
-      expect({ d, CYSJavis: (raw.match(/CYSJavis/g) ?? []).length, 코드_꼴_밖_cys_줄: bad }).toEqual({ d, CYSJavis: 0, 코드_꼴_밖_cys_줄: [] });
+  it("공식 명칭 = cysr — 매니페스트 전건: 「CYSJavis」 0 · 코드 꼴 밖 낱말 cys 0 · 크레딧은 파일별 정확한 문장만(⑨ 2판)", () => {
+    for (const f of NAME_MANIFEST) {
+      const v = nameViolations(read(`../../${f}`), f.endsWith(".html"), NAME_CREDITS[f] ?? []);
+      expect({ f, ...v }).toEqual({ f, cysjavis: 0, lines: [], unusedCredits: [] });
     }
+  });
+  it("공식 명칭 매니페스트 ⊇ README 링크 공개 문서 · 전부 실재(새 공개 문서는 등재해야 초록)", () => {
+    for (const d of DOCS) {
+      const rel = d.replace(/^\.\.\/\.\.\//, "");
+      expect({ rel, 등재: NAME_MANIFEST.includes(rel) }).toEqual({ rel, 등재: true });
+    }
+    for (const f of NAME_MANIFEST) expect({ f, 있음: existsSync(new URL(`../../${f}`, import.meta.url)) }).toEqual({ f, 있음: true });
+  });
+  it("공식 명칭 판정기 반례(codex 1R) — 홑따옴표로 감싼 제품명 · 「출발」 낱말이 든 줄의 다른 자리 · 크레딧 뒤 덧붙임은 적색", () => {
+    expect(nameViolations("제품 이름은 'cys' 가 아니라 'cysr' 입니다 — 제품 이름은 'cys 터미널' 입니다", false, []).lines).toEqual([1]);
+    expect(nameViolations("이 제품은 cys에서 출발하지만 공식 이름도 cys입니다", false, []).lines).toEqual([1]);
+    expect(nameViolations(`${CREDIT_README} 그리고 cys 를 쓰세요`, false, [CREDIT_README]).lines).toEqual([1]);
+    expect(nameViolations(CREDIT_README, false, [CREDIT_README])).toEqual({ cysjavis: 0, lines: [], unusedCredits: [] });
+    expect(nameViolations("CYSJavis 팩", false, []).cysjavis).toBe(1);
+    expect(nameViolations('<button title="cys launch-agent 로도">x</button>', true, []).lines).toEqual([1]);
+    expect(nameViolations("<div>산출물 (<code>~/.cys/x</code>)</div>", true, []).lines).toEqual([]);
+    expect(nameViolations("<div>산출물 (~/.cys/x)</div>", true, []).lines).toEqual([1]);
+    expect(nameViolations("> ```bash\n> cys status\n> ```", false, []).lines).toEqual([]);
+    expect(nameViolations("문장만", false, [CREDIT_README]).unusedCredits).toEqual([CREDIT_README]);
   });
   it("다운로드 버튼 폴백 = 표시 판의 실 자산(태그·파일명·판 결속 · codex 재서명 MINOR-1)", () => {
     const s = read("../../docs/index.html");

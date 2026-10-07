@@ -34,7 +34,7 @@
 
 ## 폴더 접근 안내에 앱 이름을 cysr 로 표기합니다(맥)
 
-문서·데스크탑 폴더 접근이 막혔을 때 뜨는 안내에서, 시스템 설정에서 허용할 앱 이름을 cysr 이 아니라
+문서·데스크탑 폴더 접근이 막혔을 때 뜨는 안내에서, 시스템 설정에서 허용할 앱 이름을 `cys` 가 아니라
 실제 목록에 보이는 이름인 **cysr** 로 안내합니다.
 
 ## 개발자 도구가 없는 맥에서 자동 점검 기능이 조용히 멈추던 문제를 고쳤습니다(맥)
@@ -50,4 +50,4 @@
 추가했습니다.
 
 ---
-cysr의 원작자는 cysr(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다. 원작 저장소: https://github.com/idoforgod/cys-terminal
+cys 터미널의 원작자는 CYSJavis(GitHub: idoforgod)입니다. 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포하는 파생판입니다. 원작 저장소: https://github.com/idoforgod/cys-terminal

@@ -1,6 +1,7 @@
 # NOTICE — Third-Party Attributions
 
-cysr is licensed under the MIT License (see `LICENSE`).
+cys-terminal is licensed under the MIT License (see `LICENSE`).
+cysr is a derivative of cys-terminal (Copyright (c) 2026 CYSJavis); see LICENSE.
 This file consolidates third-party attributions for discoverability.
 
 ## Vendored code

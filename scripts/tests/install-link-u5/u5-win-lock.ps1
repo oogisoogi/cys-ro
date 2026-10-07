@@ -79,6 +79,17 @@ $sdv = @(
 )
 $bad = @($sdv | Where-Object { (Test-CysTxnSddlPrivate $_[1] $_[2]) -ne $_[0] } | ForEach-Object { $_[1] })
 T ($bad.Count -eq 0) ('[순수] SDDL 소유자 전용 규칙 = cys sd_private_rule 벡터 ' + $sdv.Count + '개 일치(2판 codex 5)') ($bad -join ' | ')
+# 2판(codex7·agy2) — 롤백 자산 있음 판정(installers\<seq>\ 4파일) · seq 0 = 참(옛 판 · 챙길 것 없음)
+$ia = Join-Path (Join-Path $CysUpdateDir 'installers') '7'
+$r0 = Test-CysRollbackAssetsPresent 'C:\nowhere' 0
+$r1 = Test-CysRollbackAssetsPresent 'C:\nowhere' 7
+New-Item -ItemType Directory -Force -Path $ia | Out-Null
+foreach ($n in @('release.json', 'release.json.minisig', 'setup.exe')) { Set-Content -LiteralPath (Join-Path $ia $n) -Value 'x' }
+$r2 = Test-CysRollbackAssetsPresent 'C:\nowhere' 7
+Set-Content -LiteralPath (Join-Path $ia 'setup.exe.sig') -Value 'x'
+$r3 = Test-CysRollbackAssetsPresent 'C:\nowhere' 7
+Remove-Item -Recurse -Force -LiteralPath (Join-Path $CysUpdateDir 'installers') -ErrorAction SilentlyContinue
+T ($r0 -and (-not $r1) -and (-not $r2) -and $r3) '[순수] 롤백 자산 있음 = installers\<seq>\ 4파일 · seq 0 = 참 · 없음·3파일 = 거짓(2판 codex7)' ("seq0=$r0 none=$r1 three=$r2 four=$r3")
 $st = Get-CysTxnStartTime
 if (-not $isWin) {
     $ls = (& /bin/sh -c ('TZ=UTC0 LC_ALL=C ps -o lstart= -p ' + $PID)).Trim()
@@ -100,6 +111,7 @@ T ($txt -match "Invoke-CysTxnLogged 'init-pack' \`$cli @\('init-pack'\)") '[구�
 T ($txt -match "' --txn ' \+ \`$script:CysTxnToken") '[구조] rotate = --txn 위임' 'x'
 T ($txt -match "Get-CysSetupArgs \`$dir\) -PassThru") '[구조] 설치기 = Get-CysSetupArgs(/CYSTXN)' 'x'
 T ($txt -match "\[void\]\(Save-CysRollbackAssets \`$dir \`$dst\)") '[구조] 설치 확인 뒤 롤백 자산 보존' 'x'
+T ($txt -match "\`$assets = Test-CysRollbackAssetsPresent") '[구조] [5/10] 같은 판 건너뜀 = 롤백 자산 있음까지(없으면 설치기만 다시 받음 · 2판 codex7)' 'x'
 T ($txt -match "if \(\`$script:JCode -in @\('J-UPD-01', 'J-UPD-02'\)\) \{ return \}") '[구조] 기다림 코드(J-UPD-01·02)는 원격 해결을 열지 않는다' 'x'
 } else { Write-Host '  (구조 생략 — 블록만 읽은 하네스)' }
 

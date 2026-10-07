@@ -297,6 +297,18 @@ function Invoke-CysTxnLogged($what, $cli, $cmdArgs) {
     }
     return (Invoke-Logged $what $cli $cmdArgs)
 }
+function Test-CysRollbackAssetsPresent([string]$Dir, [long]$Seq = -1) {
+    # 2판(codex7·agy2): 깔린 판의 롤백 자산 4파일이 installers\<seq>\ 에 있는가(있음만 · 재검증은 cys 몫) — 없으면 [5/10] 이 같은 판이어도 핀 설치기를 다시 받고
+    #   [6/10] 건너뜀 갈래가 Save-CysRollbackAssets 를 다시 부른다(러너는 보관소에서 받지 않는다 — 이 설치 한 줄이 유일한 채움 길 · 10-07 실측).
+    #   seq = cys.exe VERSIONINFO 4번째 마디(= release_seq · build.rs) · 0(미발행·1.1.7 이하) 또는 못 읽음 = 참(챙길 것이 없다)
+    if ($Seq -lt 0) {
+        try { $Seq = [long](Get-Item -LiteralPath (Join-Path $Dir 'cys.exe') -ErrorAction Stop).VersionInfo.FilePrivatePart } catch { return $true }
+    }
+    if ($Seq -le 0) { return $true }
+    $d = Join-Path (Join-Path $CysUpdateDir 'installers') ([string]$Seq)
+    foreach ($n in @('release.json', 'release.json.minisig', 'setup.exe', 'setup.exe.sig')) { if (-not (Test-Path -LiteralPath (Join-Path $d $n))) { return $false } }
+    return $true
+}
 function Save-CysRollbackAssets([string]$Dir, [string]$Setup) {
     # 방금 깐 설치기를 자동 갱신의 롤백 자산으로 보존(N7) — cys.exe 가 받고·검증하고·놓는다 · 돌려주는 것 = ok · skip · fail-<rc>
     #   ⚠설치는 이미 끝났다 — 못 챙겨도 지금 쓰는 데는 지장이 없다. 대신 조용히 넘어가지 않고 한 줄로 말한다(자동 갱신이 이 기계에서 멈춰 서는 까닭이 된다).

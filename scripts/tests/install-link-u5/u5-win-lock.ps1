@@ -66,6 +66,8 @@ if (-not $isWin) {
     T ($st -gt 1700000000) '[식] 시작 시각 = epoch 초(윈 · 실 대조는 아래 실 cys 위임 수용)' "$st"
 }
 # 구조 — 놓기·위임 자리(맥판 ⓗ 짝) · cys 저장소 계약 하네스(블록만)에서는 본문이 없어 건너뛴다(그 대조는 맥 시험 --cys-tree 가 원본으로 한다)
+$wdef = [string](Get-Command Write-CysTxnFile -CommandType Function -ErrorAction SilentlyContinue).Definition
+T (($wdef -match 'Rename-CysTxnReplace') -and ($wdef -notmatch '::Delete\(')) '[구조] 소유자 기록 바꿔치기 = 지우고 옮기기 폴백 0(2판 codex 3)' 'x'
 if ($txt -match 'function Step-InstallCys') {
 T ($txt -match "(?m)^\s+Unlock-CysTxn\r?\n\s+& \`$fallbackExe --dangerously-skip-permissions") '[구조] 이 창에서 자비스를 띄우기 바로 앞에 Unlock-CysTxn' 'x'
 T ($txt -match "(?m)^\s+try \{ Unlock-CysTxn \} catch \{ \}\s+# 1\.1\.8 U5[^\n]*\r?\n\s+try \{ Write-ClosingNote \}") '[구조] 본문 finally 첫 줄 = Unlock-CysTxn(끝맺음·원격 해결 전)' 'x'
@@ -115,6 +117,17 @@ if ($isWin -and $Cys) {
     Unlock-CysTxn
     $ow = [System.IO.File]::ReadAllText((Join-Path $U 'txn.owner.json')) | ConvertFrom-Json
     T (($ow.released -eq $true) -and (Test-CysTxnFree (Join-Path $U 'txn.lock')) -and (-not $env:CYS_UPDATE_TXN)) '[ⓔ] 놓기 = 묘비 + 해제 + env 지움' ("released=" + $ow.released)
+    # ⓚ 묘비를 못 쓰면 놓지 않는다(2판 codex 3) — 소유자 기록을 읽기 전용으로(바꿔치기 거부 주입) → 잠금 쥔 채 · 묘비 없음 · 토큰·env 거둠 · 다시 놓으면 묘비 + 해제
+    [void](Enter-CysTxn)
+    $own = Join-Path $U 'txn.owner.json'
+    Set-ItemProperty -LiteralPath $own -Name IsReadOnly -Value $true
+    Unlock-CysTxn
+    $rel = ([System.IO.File]::ReadAllText($own) | ConvertFrom-Json).released
+    T ((-not (Test-CysTxnFree (Join-Path $U 'txn.lock'))) -and ($rel -eq $false) -and ($null -ne $script:CysTxnLock) -and (-not $script:CysTxnToken) -and (-not $env:CYS_UPDATE_TXN)) '[ⓚ] 묘비 실패 = 잠금 쥔 채 · 묘비 없음 · 토큰·env 거둠(2판 codex 3)' ("released=$rel lock=" + ($null -ne $script:CysTxnLock))
+    Set-ItemProperty -LiteralPath $own -Name IsReadOnly -Value $false
+    Unlock-CysTxn
+    $rel = ([System.IO.File]::ReadAllText($own) | ConvertFrom-Json).released
+    T (($rel -eq $true) -and (Test-CysTxnFree (Join-Path $U 'txn.lock')) -and ($null -eq $script:CysTxnLock) -and (@(Get-ChildItem -LiteralPath $U -Filter '*.u5.*').Count -eq 0)) '[ⓚ] 다시 놓기 = 묘비 + 해제 · 임시 파일 0' ("released=$rel")
     # ⓑ′ 시작 시각 틀림
     function Get-CysTxnStartTime { return [long]1000000000 }
     [void](Enter-CysTxn)

@@ -35,27 +35,77 @@ function New-CysTxnDir {
     }
     return (Test-Path -LiteralPath $CysUpdateDir -PathType Container)
 }
+$CysTxnRenameSource = @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace Jarvis {
+public static class TxnRename {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr tmpl);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFileInformationByHandle(SafeFileHandle h, int cls, IntPtr info, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool MoveFileExW(string src, string dst, uint flags);
+    // 0 = 바꿔치기 됨 · 아니면 마지막 Win32 오류. 순서 = Rust std::fs::rename(윈)과 같다: FileRenameInfoEx(바꾸기 + POSIX 꼴) → MoveFileEx(바꾸기)
+    public static int Replace(string src, string dst) {
+        int err = 0;
+        using (SafeFileHandle h = CreateFileW(src, 0x00010000 | 0x00100000, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+            if (h.IsInvalid) { err = Marshal.GetLastWin32Error(); }
+            else {
+                byte[] name = System.Text.Encoding.Unicode.GetBytes(dst.StartsWith(@"\\?\") ? dst : @"\\?\" + dst);
+                int off = 2 * IntPtr.Size + 4;
+                int size = off + name.Length + 2;
+                IntPtr buf = Marshal.AllocHGlobal(size);
+                try {
+                    for (int i = 0; i < size; i++) { Marshal.WriteByte(buf, i, 0); }
+                    Marshal.WriteInt32(buf, 0, 0x1 | 0x2);
+                    Marshal.WriteInt32(buf, 2 * IntPtr.Size, name.Length);
+                    Marshal.Copy(name, 0, IntPtr.Add(buf, off), name.Length);
+                    if (SetFileInformationByHandle(h, 22, buf, (uint)size)) { return 0; }
+                    err = Marshal.GetLastWin32Error();
+                } finally { Marshal.FreeHGlobal(buf); }
+            }
+        }
+        if (MoveFileExW(src, dst, 0x1 | 0x8)) { return 0; }
+        int e2 = Marshal.GetLastWin32Error();
+        return (e2 != 0) ? e2 : err;
+    }
+}
+}
+'@
+$script:CysTxnRenameOk = $null
+function Rename-CysTxnReplace([string]$Src, [string]$Dst) {
+    # 임시 → 제자리 바꿔치기 한 번 — cys write_atomic(std::fs::rename)과 같은 운영체제 길(윈) · 그 함수를 못 붙이는 기계·윈 아닌 곳 = File.Replace/Move
+    if ($null -eq $script:CysTxnRenameOk) {
+        $script:CysTxnRenameOk = $false
+        if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') {
+            try {
+                if (-not ('Jarvis.TxnRename' -as [type])) { Add-Type -TypeDefinition $CysTxnRenameSource -Language CSharp -ErrorAction Stop }
+                $script:CysTxnRenameOk = $true
+            } catch { Write-Log ('txn: 바꿔치기 함수를 못 붙임 — File.Replace 로 · ' + $_.Exception.Message) }
+        }
+    }
+    if ($script:CysTxnRenameOk) {
+        $e = [Jarvis.TxnRename]::Replace([System.IO.Path]::GetFullPath($Src), [System.IO.Path]::GetFullPath($Dst))
+        if ($e -ne 0) { throw ('Win32 ' + $e + ' ' + ([System.ComponentModel.Win32Exception]::new([int]$e)).Message) }
+        return
+    }
+    if (Test-Path -LiteralPath $Dst) { [System.IO.File]::Replace($Src, $Dst, $null) } else { [System.IO.File]::Move($Src, $Dst) }
+}
 function Write-CysTxnFile([string]$Path, [byte[]]$Bytes) {
-    # 원자 쓰기(임시 → 바꾸기) — 소유자 기록은 cys·설치기 ⓪-a 가 읽는다(찢어진 내용 0)
-    #   ⚠윈은 방금 쓴 파일을 백신·색인이 잠깐 열어 두어 바꾸기가 공유 위반으로 실패한다(CI 37548178821 실측: 두 번째 쓰기 = 묘비가 실패).
-    #   ⇒ 100ms 간격 30번(3초)까지 다시 해 보고, 그래도 안 되면 지우고 옮긴다(그 사이 기록 없음 = 위임 자식은 거부 = 안전한 쪽).
+    # 원자 쓰기(임시 → 바꿔치기) — 소유자 기록은 cys·설치기 ⓪-a 가 읽는다(찢어진 내용 0)
+    #   ⚠File.Replace 는 윈 CI 에서 방금 쓴 기록 위로 3초 내내 실패했다(37548178821 · 37548828686 의 [ⓔ] 3.3초 = 옛 「지우고 옮기기」 폴백이 살림)
+    #     ⇒ 바꿔치기 = Rename-CysTxnReplace(cys 와 같은 길) · 100ms 간격 30번(3초)까지 다시 해 본다.
+    #   ⛔2판(codex 3): 「지우고 옮기기」 폴백 삭제 — 기록이 없는 창은 정상 위임 자식을 rc 26 으로 만든다 · 끝내 못 바꾸면 throw(부르는 쪽이 잠금을 쥔 채 판단).
     $tmp = $Path + '.u5.' + $PID
     [System.IO.File]::WriteAllBytes($tmp, $Bytes)
-    $last = $null
+    $last = ''
     for ($i = 0; $i -lt 30; $i++) {
-        try {
-            if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, $null) } else { [System.IO.File]::Move($tmp, $Path) }
-            return
-        } catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds 100 }
+        try { Rename-CysTxnReplace $tmp $Path; return } catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds 100 }
     }
-    try {
-        [System.IO.File]::Delete($Path); [System.IO.File]::Move($tmp, $Path)
-        Write-Log ('txn: 바꾸기 실패 3초 → 지우고 옮김 · ' + $last)
-        return
-    } catch {
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-        throw ('바꾸기 실패: ' + $last + ' · 지우고 옮기기 실패: ' + $_.Exception.Message)
-    }
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    throw ('바꿔치기 실패(3초): ' + $last)
 }
 function ConvertTo-CysTxnOwnerJson($o) {
     # lock.rs Owner 와 같은 칸 · 들여쓰기 JSON(설치기 ⓪-a 는 공백을 걷어 '"txn_id":"<id>"' · '"epoch":<n>,' 를 찾는다)
@@ -102,14 +152,20 @@ function Lock-CysTxnOnce {
     $script:CysTxnLock = $lk; $script:CysTxnOwner = $o; $script:CysTxnToken = ($id + ':' + $epoch); $script:CysTxnState = 'ok'
 }
 function Unlock-CysTxn {
-    # 놓기 = 묘비(released:true)를 먼저 쓰고 잠금을 푼다(lock.rs 와 같은 순서) · env 지움 · 쥔 것이 없으면 env 만 지운다
+    # 놓기 = 묘비(released:true)를 먼저 쓰고 잠금을 푼다(lock.rs 와 같은 순서) · 토큰·env 는 언제나 거둔다 · 쥔 것이 없으면 env 만 지운다
+    #   ⛔2판(codex 3): 묘비를 못 쓰면 **잠금을 쥔 채** 둔다 — 「잠금 풀림 + 묘비 없는 옛 기록 + 이 창 생존」 이면 새 러너가 잠금을 잡고 기록을 쓰기 전 창에서
+    #     옛 토큰이 새 세대 잠금 아래 받아들여질 수 있다. 쥔 채면 이 창이 끝날 때 OS 가 풀고(그때 옛 토큰의 조상 검증이 깨진다) · 다음 Unlock-CysTxn 이 묘비를 다시 해 본다.
     if ($script:CysTxnLock) {
-        try { $script:CysTxnOwner.released = $true; Write-CysTxnFile (Join-Path $CysUpdateDir 'txn.owner.json') (ConvertTo-CysTxnOwnerJson $script:CysTxnOwner) } catch { Write-Log ('txn: 묘비를 쓰지 못함 · ' + $_.Exception.Message) }
-        try { $script:CysTxnLock.Unlock(0, 1) } catch { }
-        try { $script:CysTxnLock.Close() } catch { }
-        Write-Log ('txn: released ' + $script:CysTxnToken)
+        $tomb = $false
+        try { $script:CysTxnOwner.released = $true; Write-CysTxnFile (Join-Path $CysUpdateDir 'txn.owner.json') (ConvertTo-CysTxnOwnerJson $script:CysTxnOwner); $tomb = $true } catch { Write-Log ('txn: 묘비를 쓰지 못함 — 잠금은 이 창이 끝날 때까지 쥔다(2판 codex 3) · ' + $_.Exception.Message) }
+        if ($tomb) {
+            try { $script:CysTxnLock.Unlock(0, 1) } catch { }
+            try { $script:CysTxnLock.Close() } catch { }
+            $script:CysTxnLock = $null
+            Write-Log ('txn: released ' + $script:CysTxnOwner.txn_id + ':' + $script:CysTxnOwner.epoch)
+        }
     }
-    $script:CysTxnLock = $null; $script:CysTxnToken = ''
+    $script:CysTxnToken = ''
     Remove-Item Env:CYS_UPDATE_TXN -ErrorAction SilentlyContinue
     Remove-Item Env:CYS_UPDATE_TXN_DEPTH -ErrorAction SilentlyContinue
 }

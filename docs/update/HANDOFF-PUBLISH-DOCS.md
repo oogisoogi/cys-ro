@@ -36,6 +36,9 @@
 ⑥ [MINOR·m-6·agy] CYS_STATE_DIR 음성 대조 = 대상 미통과 → 실제로 그 변수를 읽는 경로로 음성 대조(뮤턴트 적색 실측) · agy 「제거 목록 → 화이트리스트」 = 반박 가능(근거 1줄) 또는 채택 — 판단 근거 HANDOFF.
 상한 1.5h(순환 포함) · 본 가지 push 0.
 
+**순환 저장(2026-10-07 13:07 · [CYCLE])**: 상태 = 4판 ①~⑥ **미착수**(지시 원문 기록·커밋까지) · HEAD c2ca9536(로컬 · 미러 마지막 push = a11ebf4b · 3판 3런 success) · 작업 트리 깨끗 · 미해결 게이트 = master 3판 lead 게이트 진행 중 · 다음 액션 = 아래 「후임 첫 행동」 → ①~⑥ 집행 → 전수(bun·tsc·win-typecheck·cys-app·accounts::·팩 해당 시험) → 미러 push 1회 → 3런 success → 【확인요청】.
+해소 판정: `gh run list -R oogisoogi/cys-ro --branch fix/publish-docs-118 --json headSha,conclusion -L 6` 에 4판 HEAD 3런 success + 인박스에 4판 【확인요청】 1줄.
+
 후임 첫 행동: 이 §0-4 Read → docs/update/REVIEW-PD-opus-3r.md · REVIEW-PD-agy-3r.md(ignored · 추적 금지) Read → ①~⑥ 집행. 이월 맥락: 게이트 = ui/src/publicdocs.test.ts `nameViolations`·NAME_MANIFEST·NAME_CREDITS·NAME_QUOTED_PHRASES · dept 하네스 = cysjavis-pack/bin/tests/test_dept_create_progress.py Sandbox·SandboxReapGuard · 격리 실행 = 스크래치 isoenv.sh(HOME 임시·CYS_* 제거) · 음성 대조·되돌림은 python try/finally(zsh 루프 금지) · 미러 push = `/usr/bin/git push origin HEAD:refs/heads/fix/publish-docs-118`.
 
 ## §0-3 3판 델타 (master#62af6f8e · 2026-10-07 12:00 착수 → 12:2x)

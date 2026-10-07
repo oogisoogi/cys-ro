@@ -297,10 +297,13 @@ jobs:
       #   무엇을 보는가: PowerShell 이 쥔 0번 바이트 잠금(FileStream.Lock = LockFile) ↔ cys 의 LockFileEx 전 범위 잠금이 서로 막는가 ·
       #   PowerShell 이 적는 시작 시각(FILETIME 식) = cys 가 sysinfo 로 재는 값인가(③′) · 손으로 쓴 소유자 기록을 cys(serde)가 읽고 위임을
       #   받는가(pack-plan --txn + env = rc ≠ 26) · 뮤테이션(env 누락 · 토큰 틀림 · 토큰 없음 · 시작 시각 틀림 = rc 26) · 남이 쥠 = busy ·
-      #   위임 자식 잠금 쥠 = busy + 직전 기록 복원 · 놓기 = 묘비 뒤 해제 · 위임 거부 → 놓고 한 번 더.
+      #   위임 자식 잠금 쥠 = busy + 직전 기록 복원 · 놓기 = 묘비 뒤 해제(못 쓰면 쥔 채) · 위임 거부 = J-UPD-03 + 끝(무잠금 재실행 0) ·
+      #   소유자 전용 아님·연결점 = J-UPD-03 · 토큰 env = 그 호출에만.
       #   왜 여기: 맥 레인은 flock 이라 이 축(LockFileEx·FILETIME)을 원리적으로 못 가른다 — 윈 실기 노트북(267) 전에 CI 가 먼저 잰다.
       #   코드 = scripts/tests/install-link-u5/u5-block.ps1 — ai-jarvis bootstrap.ps1 「자동 갱신 잠금」 절의 **바이트 그대로 사본**
-      #   (ai-jarvis tests/install-u5/sync-cys-contract.py --check 가 같음을 잰다 · 다르면 이 초록은 거짓). 5.1(설치 도우미가 도는 셸)과 7 둘 다.
+      #   — 이 CI 가 재는 것 = 사본 ↔ 핀(CONTRACT.sha256) · 공개 스테이징 /install/next/ 블록 ↔ 핀(배포됐을 때). ai-jarvis 작업 트리 원본 ↔ 사본은
+      #   이 CI 가 못 본다(그 저장소 접근 0) → 스테이징 배포 절차의 필수 관문 `sync-cys-contract.py --check <cys main>`(HANDOFF-U5 §6 · master 집행).
+      #   5.1(설치 도우미가 도는 셸)과 7 둘 다.
       #   ⚠이 스텝에 `if:`/continue-on-error 를 달지 마라(잡 머리말의 '돌지 않는 초록 금지').
       - name: 설치 링크 자동 갱신 잠금 계약 (Windows 실기 · 1.1.8 U5 · PowerShell 잠금 ↔ cys 위임)
         shell: bash
@@ -324,6 +327,22 @@ jobs:
           if u5_pin_ok "$NEG"; then echo "::error::핀 검사 음성 대조 실패 — 1바이트 변조를 못 잡았다"; exit 1; fi
           u5_pin_ok "$D" || { echo "::error::계약 사본 ≠ 핀 — ai-jarvis tests/install-u5/sync-cys-contract.py --write 로 다시 옮겨라"; exit 1; }
           echo "U5-PIN ok (음성 대조 적색 확인 · $(grep '^# aj_commit' "$D/CONTRACT.sha256"))"
+          # 3판(Opus 2R · codex8/agy2 잔여): 공개 스테이징 /install/next/bootstrap.ps1 의 「자동 갱신 잠금」 블록 = 핀인가 — 배포본이 시험한 계약과 다르면 적색.
+          #   skip(명시) = 404 · 블록 표지 없음(U5 미배포 옛 판) · 망 오류(경고). 추출 = sync-cys-contract.py block() 과 같은 식(BOM + 표지 사이 · 줄바꿈 정규화).
+          NX="${RUNNER_TEMP:-/tmp}/u5-next.ps1"
+          code="$(curl -sS -o "$NX" -w '%{http_code}' https://jarvis.godmeyou.kr/install/next/bootstrap.ps1 || echo neterr)"
+          case "$code" in
+            200)
+              v="$(python -c "import sys,hashlib; t=open(sys.argv[1],encoding='utf-8-sig').read(); S='# ── 자동 갱신 잠금 참가·위임 · 롤백 자산 보존'; E='# 시험이 이 파일을 「함수 묶음」으로만 읽는 문'
+          if S not in t or E not in t: print('absent'); sys.exit(0)
+          a=t.index(S); b=t.index(E); print(hashlib.sha256(('﻿'+t[a:b]).encode('utf-8')).hexdigest())" "$NX")"
+              want="$(awk '$2=="u5-block.ps1"{print $1}' "$D/CONTRACT.sha256")"
+              if [ "$v" = absent ]; then echo "U5-NEXT skip (스테이징 = U5 블록 없는 옛 판 · 미배포)"
+              elif [ "$v" = "$want" ]; then echo "U5-NEXT ok (스테이징 블록 = 핀)"
+              else echo "::error::스테이징 /install/next/bootstrap.ps1 블록 ≠ 핀(배포본 $v · 핀 $want) — 시험한 계약과 다른 것이 배포돼 있다"; exit 1; fi ;;
+            404) echo "U5-NEXT skip (스테이징 404 · 미배포)" ;;
+            *) echo "::warning::U5-NEXT skip (스테이징 받기 실패 $code · 망)" ;;
+          esac
           # 출시 빌드로 잰다 — 제품 형상(설치 도우미가 부르는 것은 출시 cys.exe) · 1차 런(debug)은 위임 거부 갈래에서 debug 프레임이
           #   윈 주 스레드 1MB 스택을 넘겼다(0xC00000FD · 37543489313). 출시 빌드도 넘치면 그것은 U2 참가 갈래의 제품 결함이다.
           cargo build --release --bin cys

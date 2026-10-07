@@ -4,14 +4,28 @@
 - 트리 2: cys `~/axdev/.wt/cys-118-u5`(가지 u5/install-link-118 off 8bcd39aa) · ai-jarvis `~/axdev/.wt/aj-118-u5`(같은 가지명 · push 0)
 - 설계 정본 = `DESIGN-AUTOUPDATE-118.md` §3-2(136~142행) · §3-7 ②(245행) · 계약 정본 = 코드(`src/update/lock.rs`)
 
+## §0-3 3판 델타(master#2f038a50 · 적대 agy 2R BLOCK 1·MINOR 1 + Opus 2R MAJOR 3·MINOR 9 · 전건 채택 · 상한 1.5h · 원문 = docs/update/REVIEW-U5-{agy,opus}-2r.md untracked)
+| # | 지적 | 3판 수리 | 커밋(aj · cys) |
+|---|---|---|---|
+| ① | 「기다림」 오분류 4(N1 · agy BLOCK·MINOR) | busy 만 J-UPD-01(재시도 3 · 첫 재시도 화면 1줄) · unsafe · nolock(자리는 있는데 못 엶·씀·복원 실패 · 파일이 폴더 자리 차지) · 위임 거부 · 판정 cys 없는 30분+ 저널 = **J-UPD-03 「잠금 자리 이상」**(원인별 문구 · 재시도 0 · 원격 해결 열림 · help/J-UPD-03) · 폴더 없고 못 만듦 = nodir → lock.rs participate 처럼 잠금 없이 진행 + 기록 1줄 · 판정 cys 없음 + 저널 방금 = J-UPD-02 | ca9cec9 |
+| ② | 같은 판 자산 없음 재다운 실패 = 막힘(N2) | `Receive-CysSetupForAssets` = 1회만 받기 · 실패(404·410·망·지문) = 화면·기록 1줄 + return 0 → [6/10] 건너뜀(설계 결정 4 복원) | ca9cec9 |
+| ③ | CI 대조 = 사본↔핀뿐(codex8/agy2 잔여) | §6 스테이징 배포 필수 관문 `sync --check <cys main>`(master 집행) · CI 계약 스텝 = 공개 /install/next/ 블록 ↔ 핀(불일치 적색 · 404·블록 없음 = skip 명시 · 망 = 경고) · yml 주석 정정 | (이 커밋) |
+| ④ | 위임 거부 단언 1갈래(N3) | Stop-CysTxnRefused **실본문**을 자식 프로세스로(문구 · J-UPD-03 · exit 26) · 구조 단언 = rotate rc 26 · 설치기 exit 6 · setup.exe `Invoke-WithCysTxnEnv` 포장 | ca9cec9 |
+| ⑤ | acquire 순서 서술 · perl 단독 SIGKILL · 복원 실패 삼킴(N4·N6) | HANDOFF:13·94 정정 · 맥 `txn_check_holder`(위임 init-pack·rotate 직전 perl 생존 → 죽었으면 J-UPD-03 끝) + `cys_txn_env` 토큰 미적재 · 복원 실패 = 기록 1줄 + nolock(J-UPD-03) | ca9cec9 |
+| ⑥ | 묘비 실패 + 창 폴백 · 재시도 무화면(N5·N8) | 창 폴백 직전 안내 1줄(맥 TXN_STUCK · 윈 CysTxnLock 남음) · 첫 재시도 화면 1줄 | ca9cec9 |
+| ⑦ | 주석·문서 잔존 · 맥 감지 표 미포장 · ping 서술(N7·N9) | sh·ps1 저널 판정 머리 · u5-mac-lock.sh:8 · HANDOFF:28-29 폐기 표시 · yml · 맥 phoenix-identity·agent-detect·doctor = cys_txn_env · HANDOFF:14 정정 | ca9cec9 · (이 커밋) |
+| ⑧ | 자산 = 존재만 · 윈 journal-state 시한 0(N10·N11) | cys `--journal-state` 에 `seq`·`n7_installer`(check::installer_assets_ok 재검증) · ps1 = Get-CysAssetsWord · journal-state·자산 판정 = Invoke-CysCapped 20초 | cys 6baee372 · ca9cec9 |
+- 덧붙인 것(고지): 롤백 자산 못 챙김 문구 「챙깁니다」 → 「챙겨 봅니다」(Opus codex7 부분 지적 · 404 지속 때 거짓 약속) aj a0827c9 · 맥 「폴더 자리에 파일」 = nolock(lock.rs 「있는데 못 씀」 짝 · nodir 아님).
+- 시험(맥): u5-mac-lock 36/0(ⓙ′ nodir · ⓝ perl 단독 사망 · ⓓ 오래된 저널 J-UPD-03 · ⓒ 기다림 1줄 · ⓕ 실본문 문구) · 음성 대조 = ⓝ(holder 확인 제거 → 위임 호출이 나감 = 적색) · pwsh 32/0 · 하네스 20/0 · CI 스텝 본문 맥 실행 = 실 스테이징 skip(옛 판) · 모의 같음 ok · 모의 1바이트 다름 적색.
+
 ## §0-2 2판 델타(master#9502b67b · 적대 codex 1R BLOCK 3·MAJOR 5 + agy 1R BLOCK 1·MAJOR 2 · 전건 채택 · 상한 2.5h · 원문 = docs/update/REVIEW-U5-{codex,agy}-1r.md untracked)
 - ★1판 설계 결정 2(위임 거부 → 무잠금 재실행)·nolock 폴백·결정 3 의 「판정할 cys 없음 = go」 는 **폐기**(설계 §3-2 140행이 이긴다). 아래 수리 설계가 2판 정본.
 | # | 지적 | 2판 수리(파일·자리) | 상태 |
 |---|---|---|---|
 | ① codex1 BLOCK | 위임 거부 시 무잠금 재실행 | sh `txn_invoke_logged`·`cys_rotate_state` rc26 갈래 · ps1 `Invoke-CysTxnLogged`·`Get-CysRotateState` rc26 · `Step-InstallCys` exit 6 갈래 → 전부 「J-UPD-01 + 문구 + 설치 즉시 끝(rc 26)」 · 재실행 삭제 | ✅ 맥 aj 554ba4c · 윈 aj(이 커밋 다음) · 사본 재동기 |
 | ② codex2 BLOCK | nolock = 성공처럼 진행 | sh `txn_hold_try` nolock → busy 와 같은 재시도(4번) 뒤 끝 · ps1 `Lock-CysTxnOnce`·`Enter-CysTxn` 같음 · 시험 = 폴더 쓰기 불가 주입 → rc 26 | ✅ 맥 aj 554ba4c · 윈 aj(이 커밋 다음) · 사본 재동기 |
-| ③ codex3 BLOCK | 묘비 실패 삼킴 · Delete→Move 창 | ps1 `Write-CysTxnFile` 폴백 삭제(임시 → Replace 재시도만 · 실패 = throw) · `Unlock-CysTxn` 묘비 실패 = **잠금을 쥔 채** 재시도(100ms×30) 뒤 그래도 실패면 쥔 채 종료(프로세스 끝 = OS 해제 · 묘비 없는 낡은 기록은 ② 로 걸러짐 — 단 codex 시나리오는 「잠금 풀림 + 묘비 없음」 창이라 프로세스 종료 전까지 쥐는 것이 핵심) · sh perl `wr` 실패 = 해제 0 · 쥔 채 종료 · lock.rs:326-350 무수정(관찰: 검증이 「잠금 held + 기록 두 번 동일」 이라 묘비 없는 옛 기록 + 새 러너 잠금 창을 구조로 못 가른다 — 새 소유자가 기록을 먼저 쓰는 acquire 순서가 그 창을 닫는다) | ✅ aj 1d7c8b0 · cys df427993 — 바꿔치기 = FileRenameInfoEx(바꾸기+POSIX) → MoveFileEx(Rust std::fs::rename 과 같은 길 · CI [ⓔ] 3.3초 = File.Replace 상시 실패 실측 → 폴백 삭제만 하면 적색이라 바꿈) · 맥 ⓚ 2 · 윈 ⓚ 2 + 구조 1 |
-| ④ agy1 BLOCK · codex4 | 토큰 env 프로세스 전체 | sh: `export CYS_UPDATE_TXN` 삭제 → `txn_invoke_logged`·rotate 호출 줄에만 `CYS_UPDATE_TXN="$TXN_TOKEN"` 앞붙이기 · 데몬 자동 기동이 필요한 일반 cys 호출(ping·list 등)은 잠금 쥔 동안 자동 기동 거부(cys.rs:4665) → 그 호출들에도 토큰 env 를 줄 것인가 = 자동 기동 가드는 env **존재만** 본다 → 일반 cys 호출 래퍼 1개(`cys_txn_env`)로 그 호출에만 env · `open -a` = `env -u CYS_UPDATE_TXN` · `exec claude` = 해제 → 즉시 exec(그 사이 cys 호출 0 · TOCTOU 사유: 러너는 N2 사람 입력 20분 유휴·지터 0~45분이라 해제~exec 수 ms 창에 S7 진입 불가 + exec 대상은 claude(러너 교체 대상 아님)) · ps1: `$env:` 전역 대신 `Invoke-WithCysTxnEnv { … }`(참가 명령·setup.exe·daemon 자동 기동 호출만) · Claude 설치기/로그인 = 토큰 0 | ✅ aj 6bdde7b · cys 4e35a19e — 맥 cys_txn_env 7곳 + rotate 앞붙이기 · 윈 Invoke-WithCysTxnEnv 11곳 + rotate psi · 물려받은 토큰도 진입에서 지움 · `open -a`·`env -u` 는 불요(셸에 토큰이 없다) · 맥 ⓛ 2 · 윈 ⓛ 실물 1 + 순수 1 + 구조 1 |
+| ③ codex3 BLOCK | 묘비 실패 삼킴 · Delete→Move 창 | ps1 `Write-CysTxnFile` 폴백 삭제(임시 → Replace 재시도만 · 실패 = throw) · `Unlock-CysTxn` 묘비 실패 = **잠금을 쥔 채** 재시도(100ms×30) 뒤 그래도 실패면 쥔 채 종료(프로세스 끝 = OS 해제 · 묘비 없는 낡은 기록은 ② 로 걸러짐 — 단 codex 시나리오는 「잠금 풀림 + 묘비 없음」 창이라 프로세스 종료 전까지 쥐는 것이 핵심) · sh perl `wr` 실패 = 해제 0 · 쥔 채 종료 · lock.rs:326-350 무수정(관찰: 검증이 「잠금 held + 기록 두 번 동일」 이라 묘비 없는 옛 기록 + 새 러너 잠금 창을 구조로 못 가른다 — acquire 순서 = 배타 잠금(flock/LockFileEx) → 새 소유자 기록 — 그 사이 창은 새 소유자가 잠금을 쥔 뒤라 구조로 남는다 · 이 창을 닫는 것은 「옛 소유자가 묘비 없이 잠금을 놓지 않는다」(③) 쪽이다 · 3판 정정(Opus 2R N4)) | ✅ aj 1d7c8b0 · cys df427993 — 바꿔치기 = FileRenameInfoEx(바꾸기+POSIX) → MoveFileEx(Rust std::fs::rename 과 같은 길 · CI [ⓔ] 3.3초 = File.Replace 상시 실패 실측 → 폴백 삭제만 하면 적색이라 바꿈) · 맥 ⓚ 2 · 윈 ⓚ 2 + 구조 1 |
+| ④ agy1 BLOCK · codex4 | 토큰 env 프로세스 전체 | sh: `export CYS_UPDATE_TXN` 삭제 → `txn_invoke_logged`·rotate 호출 줄에만 `CYS_UPDATE_TXN="$TXN_TOKEN"` 앞붙이기 · 데몬 자동 기동이 필요한 일반 cys 호출(new-surface·daemon install·list 등 — ping·daemon status 는 순수 프로브라 자동 기동 0 · cys.rs:2795-2799 · 3판 정정 N9)은 잠금 쥔 동안 자동 기동 거부(cys.rs:4665) → 그 호출들에도 토큰 env 를 줄 것인가 = 자동 기동 가드는 env **존재만** 본다 → 일반 cys 호출 래퍼 1개(`cys_txn_env`)로 그 호출에만 env · `open -a` = `env -u CYS_UPDATE_TXN` · `exec claude` = 해제 → 즉시 exec(그 사이 cys 호출 0 · TOCTOU 사유: 러너는 N2 사람 입력 20분 유휴·지터 0~45분이라 해제~exec 수 ms 창에 S7 진입 불가 + exec 대상은 claude(러너 교체 대상 아님)) · ps1: `$env:` 전역 대신 `Invoke-WithCysTxnEnv { … }`(참가 명령·setup.exe·daemon 자동 기동 호출만) · Claude 설치기/로그인 = 토큰 0 | ✅ aj 6bdde7b · cys 4e35a19e — 맥 cys_txn_env 7곳 + rotate 앞붙이기 · 윈 Invoke-WithCysTxnEnv 11곳 + rotate psi · 물려받은 토큰도 진입에서 지움 · `open -a`·`env -u` 는 불요(셸에 토큰이 없다) · 맥 ⓛ 2 · 윈 ⓛ 실물 1 + 순수 1 + 구조 1 |
 | ⑤ codex5 MAJOR | 기존 폴더 DACL·reparse 미검사 | ps1 `New-CysTxnDir` → 진입마다 `Get-Acl` SDDL read-back(소유자 = 나 · 허용 ACE = OW·SY·나·BA 상속 꼴만 = cys sd_is_private 규칙) + `(Get-Item).Attributes -band ReparsePoint` = 0 · txn.lock·txn.owner.json 파일도 같은 검사 · 불일치 = J-UPD-01 끝 · sh = `stat` uid=나·mode&077=0·심링크 아님(perl 안 lstat) | ✅ aj 3cc3e2f · cys 6418abee — 윈 Test-CysTxnPathPrivate(ReparsePoint + SDDL = sd_is_private 이식 · 벡터 20 그대로) · 맥 perl priv · 불일치 = unsafe(재시도 0) → J-UPD-01 · 맥 ⓜ 3 · 윈 실물 3 + 순수 1 |
 | ⑥ codex6 MAJOR | 저널 있음 + 판정 cys 없음 = go | sh `txn_journal_verdict`·ps1 `Get-CysTxnJournalVerdict` 끝 줄 go → **wait** · 재설치 허용 = cys 가 degraded·corrupt 를 명시한 때만 | ✅ 맥 aj 554ba4c · 윈 aj(이 커밋 다음) · 사본 재동기 |
 | ⑦ codex7·agy2 MAJOR | 본문 404 → N7 영구 hold | 실측(10-07 09:4x): 러너는 보관소에서 받지 않는다 — `grep 'releases/\|archive' src/update/{realops,check,auto}.rs` = 0(N7 = 검증만 `check.rs:547-570`) ⇒ bootstrap: 설치판 자산이 없으면(`cys self-update --preserve-installer` 가 아니라 먼저 판정 — `installers\<seq>` 4파일 없음) 같은 판이어도 [5/10] 이 핀 설치기를 다시 받고 [6/10] 건너뜀 갈래에서 `Save-CysRollbackAssets` 재시도(설치 재실행 때마다) + 296(u2-followup n17)에 【질문】 1줄(러너 S8 보관소 받기 미구현) | ✅ aj 1232238 · 8fd43bc · cys 78221478 — Test-CysRollbackAssetsPresent(seq = VERSIONINFO 4번째) · [5/10] 같은 판이어도 자산 없으면 설치기만 받음 · [6/10] 재실행마다 재시도 · hold 사유 = 화면·bootstrap.log 1줄 · 296 【질문】 발신(10:15) → master#c72a59df 답: 러너 S8 받기 = U2 후속 2판 발주 · 접점 계약 무변경 |
@@ -25,8 +39,8 @@
 - ★설계 결정 1(브리프 §2-1 「네 설계」): **잠금을 쥐는 것 = 설치 도우미 스크립트 자신(ⓐ)** — 맥 = 배경 perl 의 flock(소유자 pid = 설치기 셸 `$$`) · 윈 = 설치기 PowerShell 프로세스의 `FileStream.Lock(0,1)`(소유자 pid = `$PID`).
   근거 1줄: 설치 **전**엔 믿을 cys 가 없고(윈은 NSIS 안 cys.exe 를 꺼낼 수 없다) · 위임 검증 ③ 이 「소유자 pid = 자식의 조상」을 요구해 따로 뜬 도우미 프로세스는 소유자가 될 수 없다.
   대가: 소유자 기록·시작 시각을 스크립트가 cys 와 같은 식으로 만든다(③′ 짝) → 맥은 실 cys 위임 수용 + 뮤테이션으로 실증 · 윈은 windows-health 계약 스텝이 실물로 잰다.
-- ★설계 결정 2: 위임이 거부되면(cys rc 26 · 설치기 exit 6 — 시작 시각을 못 맞춘 기계 등) **잠금을 놓고 토큰 없이 한 번 더**(설치는 끝까지 · 그 명령은 평소 참가자). 설치를 깨뜨리는 쪽보다 보호를 한 단계 낮추는 쪽을 골랐다.
-- ★설계 결정 3: 저널 판정은 스크립트가 하지 않고 cys 새 입구 `self-update --journal-state`(러너 사본 → 설치본 순) — 온전·비종결 = 「복구 대기」(J-UPD-02) · 손상(degraded·corrupt) = 📌18 재설치 길이라 진행 · 판정할 cys 없음 = 진행(기록 1줄).
+- ~~★설계 결정 2~~(2판 폐기 → 위임 거부 = J-UPD-01 끝 → 3판 J-UPD-03 끝): 위임이 거부되면(cys rc 26 · 설치기 exit 6 — 시작 시각을 못 맞춘 기계 등) **잠금을 놓고 토큰 없이 한 번 더**(설치는 끝까지 · 그 명령은 평소 참가자). 설치를 깨뜨리는 쪽보다 보호를 한 단계 낮추는 쪽을 골랐다.
+- ★설계 결정 3(「판정할 cys 없음 = 진행」 부분은 2판 폐기 → J-UPD-02 · 3판: 저널 30분+ = J-UPD-03): 저널 판정은 스크립트가 하지 않고 cys 새 입구 `self-update --journal-state`(러너 사본 → 설치본 순) — 온전·비종결 = 「복구 대기」(J-UPD-02) · 손상(degraded·corrupt) = 📌18 재설치 길이라 진행 · 판정할 cys 없음 = 진행(기록 1줄).
 - ★설계 결정 4: 롤백 자산 = cys 새 입구 `self-update --preserve-installer --setup <설치기>`(본문 받기·검증·놓기 = cys 한 곳 · 러너 S11 보존과 같은 꼴). 못 챙기면(보관소 404 등) 설치는 계속하되 화면 2줄 + 진행 info(조용한 hold 0).
 - 덧붙인 것(브리프 밖 · 고지): ① J-UPD-01·02 도움말 페이지 2 + 목록 1줄(설치 창이 그 주소를 안내) ② 두 코드는 「기다림」이라 원격 해결을 열지 않음(맥·윈 각 1줄) ③ 이 창에서 자비스를 띄우는 길(맥 `exec claude` · 윈 `& claude`) 직전 잠금 놓기 — 안 놓으면 자비스 세션 내내 잠금·토큰 env 잔존(그 안 rotate·팩 명령 rc 26).
 - 이월 해소: U2 HANDOFF §5 ⓒ(pack-update·pack-plan·init-pack 잠금 배선)는 **이미 병합 트리에 있다**(`src/bin/cys.rs` InitPack·PackUpdate·PackPlan 의 `txn_participate` · 2판 C1) — 이 티켓에서 cys CLI 배선 보강 0.
@@ -83,7 +97,8 @@ python3 ~/axdev/.wt/aj-118-u5/tests/install-u5/sync-cys-contract.py --check ~/ax
 ```
 
 ## §6 master 몫(비가역 · 워커 실행 0)
-- 스테이징 `/install/next/` 배포(aj bootstrap.sh·.ps1 + help 2장 · 라이브 무접촉) → 윈 실기 `docs/WIN-FIELD-TEST-U5.md` relay(267) · 라이브 `/install/` 교체 · 핀 1.1.8 올림 · 보관소 본문 게시는 U3 의식.
+- ★3판(Opus 2R · codex8/agy2 잔여) **스테이징 배포 필수 관문**: 배포 직전 `python3 <aj>/tests/install-u5/sync-cys-contract.py --check <cys main 작업 트리>` = 전부 `same`(사본·핀이 배포할 aj 원본과 같다) — 아니면 배포 중단. CI 는 사본↔핀 · 공개 /install/next/ 블록↔핀(배포 뒤 다음 cys 런 · 404·블록 없음 = skip 명시)까지만 잰다. help 장 = J-UPD-01·02·03 3장.
+- 스테이징 `/install/next/` 배포(aj bootstrap.sh·.ps1 + help 3장 · 라이브 무접촉) → 윈 실기 `docs/WIN-FIELD-TEST-U5.md` relay(267) · 라이브 `/install/` 교체 · 핀 1.1.8 올림 · 보관소 본문 게시는 U3 의식.
 
 ## §7 적대 1R 채택/반박 표(codex 8 + agy 3 = 11행 · 원문 = docs/update/REVIEW-U5-{codex,agy}-1r.md)
 - ⚠번호 정정: §0-2 표 머리의 agy 번호(⑦=agy2 · ⑧=agy3)는 원문 파일 순서와 엇갈린다 — 원문 순서 = agy1 open-a·TOCTOU · agy2 sync 미실행 · agy3 롤백 자산 hold(아래 표가 원문 순서).
@@ -91,7 +106,7 @@ python3 ~/axdev/.wt/aj-118-u5/tests/install-u5/sync-cys-contract.py --check ~/ax
 |---|---|---|---|---|---|
 | codex1 | 위임 거부 → 무잠금 재실행(BLOCK) | 채택 | rc 26·exit 6 = J-UPD-01 + 끝 · 재실행 삭제(설계 §3-2 140행) | 554ba4c·aa7d9e7 · 사본 | 맥 ⓕ · 윈 ⓕ |
 | codex2 | nolock = 성공처럼 진행(BLOCK) | 채택 | nolock = busy 와 같게 4번 시도 뒤 끝 | 554ba4c·aa7d9e7 | 맥 ⓙ |
-| codex3 | 묘비 실패 삼킴 · Delete→Move 창(BLOCK) | 채택 | 묘비 실패 = 쥔 채 · 폴백 삭제 · 바꿔치기 = FileRenameInfoEx→MoveFileEx · lock.rs 무수정(새 소유자가 기록을 먼저 쓰는 acquire 순서가 그 창을 닫는다) | 1d7c8b0 · df427993 | 맥 ⓚ 2(음성 대조 적색) · 윈 ⓚ 2 + 구조 |
+| codex3 | 묘비 실패 삼킴 · Delete→Move 창(BLOCK) | 채택 | 묘비 실패 = 쥔 채 · 폴백 삭제 · 바꿔치기 = FileRenameInfoEx→MoveFileEx · lock.rs 무수정(그 창(새 러너 잠금 → 기록 사이)은 acquire 순서상 남는다 — 닫는 것은 「묘비 없이 놓지 않기」 · 3판 정정 N4) | 1d7c8b0 · df427993 | 맥 ⓚ 2(음성 대조 적색) · 윈 ⓚ 2 + 구조 |
 | codex4 | 토큰 env 프로세스 전체(MAJOR) | 채택 | ④ = agy1 앞 절반과 같은 수리 | 6bdde7b · 4e35a19e | 맥 ⓛ 2(음성 대조 적색) · 윈 ⓛ 3 |
 | codex5 | 기존 폴더 DACL·reparse 미검사(MAJOR) | 채택 | 진입마다 폴더·txn.lock·txn.owner.json 검사 · 불일치 = J-UPD-01 즉시 | 3cc3e2f · 6418abee | 맥 ⓜ 3(음성 대조 적색 2) · 윈 ⓜ 3 + 벡터 20 |
 | codex6 | 저널 있음 + 판정 cys 없음 = go(MAJOR) | 채택 | wait(J-UPD-02) · 재설치 = cys 가 degraded·corrupt 를 명시한 때만 | 554ba4c·aa7d9e7 | 맥 ⓓ 4 |
@@ -100,3 +115,21 @@ python3 ~/axdev/.wt/aj-118-u5/tests/install-u5/sync-cys-contract.py --check ~/ax
 | agy1 | `open -a` 토큰 유출 · exec 직전 해제 TOCTOU(BLOCK) | 앞 = 채택 · 뒤 = 반박 | 앞: 셸에 토큰이 없다(④ · `env -u` 불요). 뒤: 해제~exec 는 같은 셸의 연속 두 줄(그 사이 cys 호출 0 · ms 창) · 러너 진입 = N2 사람 입력 20분 유휴 + 지터 0~45분이라 설치 직후 그 창에 S7 진입 불가 · exec 대상 = claude(러너 교체 대상 아님) | 6bdde7b | 맥 ⓗ·ⓛ |
 | agy2 | sync --check 주석에만(MAJOR) | 채택 | codex8 앞 절반과 같은 수리 | 8fd43bc · 18a92a12 | CI 음성 대조 |
 | agy3 | 롤백 자산 실패 → 조용한 hold(MAJOR) | 채택 | codex7 과 같은 수리 · 설치 중단은 반박(이미 깔린 판은 쓸 수 있다 — 깨는 쪽보다 재실행 안내) | 1232238·8fd43bc | 윈 순수 1 |
+
+## §8 적대 2R 채택/반박 표(agy 2 + Opus 12 = 14행 · master#2f038a50 전건 채택)
+| # | 지적(등급) | 판정 | 수리·근거 | 커밋 | 시험 |
+|---|---|---|---|---|---|
+| agy-B1 | nolock 영구 오류에 90초 대기(BLOCK) | 채택 | nolock = 재시도 0 · J-UPD-03 | aj ca9cec9 | 맥 ⓙ(재시도 0 단언) |
+| agy-m1 | unsafe 에 「바꾸는 중」 문구(MINOR) | 채택 | J-UPD-03 원인별 문구 | ca9cec9 | 맥 ⓜ · 윈 ⓜ 2 |
+| N1 | 기다림 오분류 4(MAJOR) | 채택 | §0-3 ① | ca9cec9 | 맥 ⓙ·ⓙ′·ⓓ·ⓕ · 윈 순수 nojudge |
+| N2 | 같은 판 자산 재다운 실패 = 막힘(MAJOR) | 채택 | §0-3 ② | ca9cec9 | 윈 구조 1(실 다운로드 = 윈 실기 몫) |
+| codex8/agy2 잔여 | CI = 사본↔핀뿐(MAJOR) | 채택 | §0-3 ③ — aj 원본 직접 대조는 CI 밖(저장소 접근 0) → 배포 관문으로 | cys (이 커밋) | CI 스텝 맥 실행 3갈래 |
+| N3 | 위임 거부 단언 1(MINOR) | 채택 | §0-3 ④ | ca9cec9 | 윈 실본문 1 + 구조 1 · 맥 ⓕ 문구 |
+| N4 | acquire 서술 · perl 단독 SIGKILL(MINOR) | 채택 | §0-3 ⑤ · 윈은 해당 없음(잠금 = 설치 도우미 프로세스 자신) | ca9cec9 | 맥 ⓝ(음성 대조 적색) |
+| N5 | 묘비 실패 + 창 폴백(MINOR) | 채택 | §0-3 ⑥ | ca9cec9 | 맥 ⓗ 구조 · 윈 구조 |
+| N6 | 직전 기록 복원 실패 삼킴(MINOR) | 채택 | §0-3 ⑤ | ca9cec9 | (주입 시험 없음 — 복원 실패 주입 = 폴더 쓰기 막힘이 잡기 전 단계에서 먼저 걸려 갈래를 못 가른다 · 정직) |
+| N7 | 주석·문서 잔존 5(MINOR) | 채택 | §0-3 ⑦ | ca9cec9 · cys | — |
+| N8 | 재시도 ≈130초 무화면(MINOR) | 채택 | §0-3 ⑥ | ca9cec9 | 맥 ⓒ(1줄 단언) |
+| N9 | 맥 감지 표 미포장 · ping 서술(MINOR) | 채택 | §0-3 ⑦ | ca9cec9 | — |
+| N10 | 자산 판정 = 존재만(MINOR) | 채택 | §0-3 ⑧ | cys 6baee372 · ca9cec9 | cys link_state 1 · 윈 순수 2 |
+| N11 | 윈 journal-state 시한 0(MINOR) | 채택 | §0-3 ⑧ | ca9cec9 | 윈 순수(nojudge 경로) |

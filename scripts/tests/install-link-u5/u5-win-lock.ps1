@@ -5,6 +5,7 @@
 #     시작 시각 식(맥은 ps 의 커널 시작 시각과 대조) · 토큰 env 걷기 · 놓기·위임 자리 구조
 #   · 윈도우 + -Cys <cys.exe>(1.1.8 debug 또는 설치본) = 실물 — 잡기 → 실 cys 가 --txn 위임을 받음 · 뮤테이션(env 누락 · 토큰 틀림 · 토큰 없음 ·
 #     시작 시각 틀림 = 전부 rc 26) · 남이 쥠(다른 프로세스) = 재시도 뒤 rc 26 + J-UPD-01 + 소유자 기록 무변화 · 위임 자식 잠금 쥠 = busy ·
+#     소유자 전용 아님·연결점·위임 거부 = J-UPD-03(3판 · 원격 해결 열림) ·
 #     놓기 = 묘비 뒤 해제 · 위임 거부(rc 26) → 놓고 토큰 없이 한 번 더
 # 쓰는 법: pwsh -NoProfile -File tests/install-u5/u5-win-lock.ps1 [-Cys <cys.exe>] [-Ps1 <bootstrap.ps1>]   · rc 0 = 통과
 # ⛔바깥에 닿지 않는다 — LOCALAPPDATA·JARVIS_HOME 을 임시 폴더로 · 진행 전송 끔(JARVIS_LIB_ONLY) · 이 시험이 띄운 프로세스만 거둔다.
@@ -79,17 +80,24 @@ $sdv = @(
 )
 $bad = @($sdv | Where-Object { (Test-CysTxnSddlPrivate $_[1] $_[2]) -ne $_[0] } | ForEach-Object { $_[1] })
 T ($bad.Count -eq 0) ('[순수] SDDL 소유자 전용 규칙 = cys sd_private_rule 벡터 ' + $sdv.Count + '개 일치(2판 codex 5)') ($bad -join ' | ')
-# 2판(codex7·agy2) — 롤백 자산 있음 판정(installers\<seq>\ 4파일) · seq 0 = 참(옛 판 · 챙길 것 없음)
-$ia = Join-Path (Join-Path $CysUpdateDir 'installers') '7'
-$r0 = Test-CysRollbackAssetsPresent 'C:\nowhere' 0
-$r1 = Test-CysRollbackAssetsPresent 'C:\nowhere' 7
-New-Item -ItemType Directory -Force -Path $ia | Out-Null
-foreach ($n in @('release.json', 'release.json.minisig', 'setup.exe')) { Set-Content -LiteralPath (Join-Path $ia $n) -Value 'x' }
-$r2 = Test-CysRollbackAssetsPresent 'C:\nowhere' 7
-Set-Content -LiteralPath (Join-Path $ia 'setup.exe.sig') -Value 'x'
-$r3 = Test-CysRollbackAssetsPresent 'C:\nowhere' 7
-Remove-Item -Recurse -Force -LiteralPath (Join-Path $CysUpdateDir 'installers') -ErrorAction SilentlyContinue
-T ($r0 -and (-not $r1) -and (-not $r2) -and $r3) '[순수] 롤백 자산 있음 = installers\<seq>\ 4파일 · seq 0 = 참 · 없음·3파일 = 거짓(2판 codex7)' ("seq0=$r0 none=$r1 three=$r2 four=$r3")
+# 3판(Opus 2R N10) — 롤백 자산 판정 = cys 의 n7_installer(재검증) · 그 칸 없음(옛 판)·못 읽음 = $null → 참(챙길 것 없음)
+$aw = @((Get-CysAssetsWord '{"journal":"none","seq":7,"n7_installer":false}'), (Get-CysAssetsWord '{"journal":"none","seq":7,"n7_installer":true}'), (Get-CysAssetsWord '{"journal":"none"}'), (Get-CysAssetsWord 'error: unexpected argument'))
+T (($aw[0] -eq $false) -and ($aw[1] -eq $true) -and ($null -eq $aw[2]) -and ($null -eq $aw[3])) '[순수] 롤백 자산 = cys n7_installer 그대로 · 칸 없음·못 읽음 = 판정 없음(3판 N10)' ($aw -join ',')
+T (Test-CysRollbackAssetsPresent (Join-Path $base 'no-cys-here')) '[순수] 판정할 cys 없음 = 참(챙길 것 없음 · 다시 받지 않는다)' 'x'
+# 3판(N1 ⑥) — 저널 있음 + 판정할 cys 없음 = nojudge · 오래됨(30분+) 판정
+New-Item -ItemType Directory -Force -Path $CysUpdateDir | Out-Null
+$jf = Join-Path $CysUpdateDir 'journal.json'; Set-Content -LiteralPath $jf -Value '{}'
+$jv = Get-CysTxnJournalVerdict
+$fresh = Test-CysTxnJournalStale
+(Get-Item -LiteralPath $jf).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-45)
+$stale = Test-CysTxnJournalStale
+Remove-Item -LiteralPath $jf -Force
+T (($jv -eq 'nojudge') -and (-not $fresh) -and $stale -and ((Get-CysTxnJournalVerdict) -eq 'go')) '[순수] 저널 있음 + 판정 cys 없음 = nojudge · 방금 = 기다림 · 45분 전 = 오래됨(J-UPD-03) · 저널 없음 = go' ("v=$jv fresh=$fresh stale=$stale")
+# 3판(N3) — Stop-CysTxnRefused **실본문**(throw 치환 없이 자식 프로세스에서): 문구 · J-UPD-03 · exit 26
+$psx = (Get-Process -Id $PID).Path
+$ro = (& $psx -NoProfile -Command ("`$env:JARVIS_LIB_ONLY='1'; . '" + $Ps1 + "' *> `$null; Stop-CysTxnRefused 'rotate'") 2>&1) -join "`n"
+$rrc = $LASTEXITCODE
+T (($rrc -eq 26) -and $ro.Contains('J-UPD-03') -and $ro.Contains('넘겨받지 못해 여기서 멈췄습니다')) '[N3] 위임 거부 실본문 = 원인 문구 · J-UPD-03 · exit 26' ("rc=$rrc out=" + $ro)
 $st = Get-CysTxnStartTime
 if (-not $isWin) {
     $ls = (& /bin/sh -c ('TZ=UTC0 LC_ALL=C ps -o lstart= -p ' + $PID)).Trim()
@@ -102,7 +110,7 @@ if (-not $isWin) {
 $wdef = [string](Get-Command Write-CysTxnFile -CommandType Function -ErrorAction SilentlyContinue).Definition
 T (($wdef -match 'Rename-CysTxnReplace') -and ($wdef -notmatch '::Delete\(')) '[구조] 소유자 기록 바꿔치기 = 지우고 옮기기 폴백 0(2판 codex 3)' 'x'
 if ($txt -match 'function Step-InstallCys') {
-T ($txt -match "(?m)^\s+Unlock-CysTxn\r?\n\s+& \`$fallbackExe --dangerously-skip-permissions") '[구조] 이 창에서 자비스를 띄우기 바로 앞에 Unlock-CysTxn' 'x'
+T ($txt -match "(?m)^\s+Unlock-CysTxn\r?\n\s+if \(\`$script:CysTxnLock\) \{ Say [^\n]*\r?\n\s+& \`$fallbackExe --dangerously-skip-permissions") '[구조] 이 창에서 자비스를 띄우기 바로 앞에 Unlock-CysTxn · 묘비 실패면 안내 1줄(3판 N5)' 'x'
 T ($txt -match "(?m)^\s+try \{ Unlock-CysTxn \} catch \{ \}\s+# 1\.1\.8 U5[^\n]*\r?\n\s+try \{ Write-ClosingNote \}") '[구조] 본문 finally 첫 줄 = Unlock-CysTxn(끝맺음·원격 해결 전)' 'x'
 T ($txt -match "(?m)^\s+\`$rc = Enter-CysTxn; if \(\`$rc -ne 0\) \{ exit \`$rc \}") '[구조] 본문 시작에 Enter-CysTxn' 'x'
 T ($txt -match "Invoke-WithoutCysTxnEnv \{ \[void\]\(Start-Process -FilePath \`$exe") '[구조] 앱 창 = 토큰 env 0' 'x'
@@ -111,8 +119,9 @@ T ($txt -match "Invoke-CysTxnLogged 'init-pack' \`$cli @\('init-pack'\)") '[구�
 T ($txt -match "' --txn ' \+ \`$script:CysTxnToken") '[구조] rotate = --txn 위임' 'x'
 T ($txt -match "Get-CysSetupArgs \`$dir\) -PassThru") '[구조] 설치기 = Get-CysSetupArgs(/CYSTXN)' 'x'
 T ($txt -match "\[void\]\(Save-CysRollbackAssets \`$dir \`$dst\)") '[구조] 설치 확인 뒤 롤백 자산 보존' 'x'
-T ($txt -match "\`$assets = Test-CysRollbackAssetsPresent") '[구조] [5/10] 같은 판 건너뜀 = 롤백 자산 있음까지(없으면 설치기만 다시 받음 · 2판 codex7)' 'x'
-T ($txt -match "if \(\`$script:JCode -in @\('J-UPD-01', 'J-UPD-02'\)\) \{ return \}") '[구조] 기다림 코드(J-UPD-01·02)는 원격 해결을 열지 않는다' 'x'
+T ($txt -match "if \(Test-CysRollbackAssetsPresent \(\[string\]\`$b0\.Path\)\)[^\n]*\r?\n[^\n]*\r?\n\s+return \(Receive-CysSetupForAssets") '[구조] [5/10] 같은 판 = 자산 있으면 건너뜀 · 없으면 설치기만 받음(못 받아도 계속 · 3판 N2)' 'x'
+T (($txt -match "\`$p = Invoke-WithCysTxnEnv \{ Start-Process -FilePath \`$dst -ArgumentList \(Get-CysSetupArgs") -and ($txt -match "ExitCode -eq 6\) \{ Stop-CysTxnRefused '설치기' \}") -and ($txt -match "if \(\`$rc -eq 26 -and \`$script:CysTxnToken\) \{ Stop-CysTxnRefused 'rotate' \}")) '[구조] 위임 거부 3갈래(init-pack 시험 · rotate rc 26 · 설치기 exit 6) = Stop-CysTxnRefused · 설치기 = Invoke-WithCysTxnEnv 포장(3판 N3)' 'x'
+T ($txt -match "if \(\`$script:JCode -in @\('J-UPD-01', 'J-UPD-02'\)\) \{ return \}") '[구조] 기다림 코드(J-UPD-01·02)만 원격 해결을 열지 않는다(J-UPD-03 은 연다)' 'x'
 } else { Write-Host '  (구조 생략 — 블록만 읽은 하네스)' }
 
 # ── 실물 (윈도우 + 실 cys) ──
@@ -162,14 +171,14 @@ if ($isWin -and $Cys) {
     Unlock-CysTxn
     $rel = ([System.IO.File]::ReadAllText($own) | ConvertFrom-Json).released
     T (($rel -eq $true) -and (Test-CysTxnFree (Join-Path $U 'txn.lock')) -and ($null -eq $script:CysTxnLock) -and (@(Get-ChildItem -LiteralPath $U -Filter '*.u5.*').Count -eq 0)) '[ⓚ] 다시 놓기 = 묘비 + 해제 · 임시 파일 0' ("released=$rel")
-    # ⓜ 소유자 전용 아님(Everyone 읽기 ACE 추가) · 연결점(junction) = 다시 해 보지 않고 unsafe · J-UPD-01(2판 codex 5)
+    # ⓜ 소유자 전용 아님(Everyone 읽기 ACE 추가) · 연결점(junction) = 다시 해 보지 않고 unsafe · J-UPD-03(2판 codex 5 · 3판 N1)
     $acl0 = (Get-Acl -LiteralPath $U).Sddl
     $acl = Get-Acl -LiteralPath $U
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('Everyone', 'Read', 'Allow')))
     Set-Acl -LiteralPath $U -AclObject $acl
     $script:JCode = ''
     $rc = Enter-CysTxn *> $null
-    T (($script:CysTxnState -eq 'unsafe') -and ($script:JCode -eq 'J-UPD-01') -and (-not $script:CysTxnToken)) '[ⓜ] 갱신 폴더에 Everyone ACE = unsafe · J-UPD-01' ("state=" + $script:CysTxnState + ' sddl=' + (Get-Acl -LiteralPath $U).Sddl)
+    T (($script:CysTxnState -eq 'unsafe') -and ($script:JCode -eq 'J-UPD-03') -and (-not $script:CysTxnToken)) '[ⓜ] 갱신 폴더에 Everyone ACE = unsafe · J-UPD-03' ("state=" + $script:CysTxnState + ' sddl=' + (Get-Acl -LiteralPath $U).Sddl)
     $acl = Get-Acl -LiteralPath $U; $acl.SetSecurityDescriptorSddlForm($acl0); Set-Acl -LiteralPath $U -AclObject $acl
     $jt = Join-Path $base 'jtarget'; New-Item -ItemType Directory -Force -Path $jt | Out-Null
     $jp = Join-Path $base 'jlink'; New-Item -ItemType Junction -Path $jp -Target $jt | Out-Null
@@ -177,7 +186,7 @@ if ($isWin -and $Cys) {
     $script:JCode = ''
     $rc = Enter-CysTxn *> $null
     $CysUpdateDir = $saveDir
-    T (($script:CysTxnState -eq 'unsafe') -and ($script:JCode -eq 'J-UPD-01') -and (-not (Test-Path -LiteralPath (Join-Path $jt 'txn.lock')))) '[ⓜ] 갱신 폴더 = 연결점(junction) = unsafe · 링크 너머 잠금 파일 0' ("state=" + $script:CysTxnState)
+    T (($script:CysTxnState -eq 'unsafe') -and ($script:JCode -eq 'J-UPD-03') -and (-not (Test-Path -LiteralPath (Join-Path $jt 'txn.lock')))) '[ⓜ] 갱신 폴더 = 연결점(junction) = unsafe · 링크 너머 잠금 파일 0' ("state=" + $script:CysTxnState)
     [void](Enter-CysTxn)
     T ($script:CysTxnState -eq 'ok') '[ⓜ] 되돌린 뒤 = ok(보호 DACL 폴더 통과)' ("state=" + $script:CysTxnState + ' sddl=' + (Get-Acl -LiteralPath $U).Sddl)
     Unlock-CysTxn

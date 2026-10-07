@@ -22,4 +22,20 @@ function Invoke-Logged($what, $cmd, $cmdArgs) {
     Write-Log "[$what] rc=$code"
     return $code
 }
+function Invoke-CysCapped([string]$Cli, [string]$ArgLine, [int]$CapMs) {
+    # 본문(bootstrap.ps1)과 같은 뜻 — 표준 출력 · 상한·실패·rc ≠ 0 = $null · CYS_NO_AUTOSTART=1
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Cli; $psi.Arguments = $ArgLine; $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.CreateNoWindow = $true
+        $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $psi.EnvironmentVariables['CYS_NO_AUTOSTART'] = '1'
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $so = $p.StandardOutput.ReadToEndAsync(); [void]$p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($CapMs)) { try { $p.Kill() } catch { }; return $null }
+        if (-not $so.Wait(2000)) { return $null }
+        if ($p.ExitCode -ne 0) { return $null }
+        return $so.Result
+    } catch { return $null }
+}
 . (Join-Path $PSScriptRoot 'u5-block.ps1')

@@ -3,6 +3,24 @@
 > 브리프 = [master#71f53d34](파일 정본 `~/axdev/master/briefs/2026-10-06-cysr-118-u2-runner.md`) · 설계 정본 = `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md`(4판 · U1 편입).
 > 가지 `u2/runner-118` off `e2515bb0` · 워커 = worker-2(계정2 · Opus) · 커밋 = `git log --oneline e2515bb0..HEAD`.
 
+## §0-8 후속 3판 델타(master#1bfaba79 · 원문 = `docs/update/REVIEW-U2F-{agy,opus}-2r.md`(ignored) · 착수 12:40 · 2판 게이트 c8666da4 = 유효 PASS(master#1a4f6b3c))
+- **이월**: 2판 검수 = agy 2R(BLOCK 0 · MAJOR 0 · MINOR 1) · Opus 2R(BLOCK 0 · MAJOR 2 · MINOR 8) · codex = 한도 0 · master 채택 ①~⑨.
+- **끝난 것(커밋 · 각 뮤턴트 녹/적 확인)**:
+  | # | 지적 | 커밋 | 고친 곳 · 시험 · 뮤턴트 |
+  |---|---|---|---|
+  | ① M1 | 재구성 원천(사본·candidate) 무결성 없이 S9 승격(새 crc 세탁) · S9b 재실행 = 해시만 | 7a84de14 | `runner::verify_journal_copy`(crc · 계보 · 원점 · snapshot_dir · S9 이상) · `Journal::check` 공개 · `auto::verified_candidate`(candidate.json 의 U 서명 본문 재검증 → 본문 행으로 자산 재생성 · 실패 = 빈 후보) · (윈) 사본 stage 해시 = 후보 행 · `realops::verify_stage_installer`(S9b 재실행 전 stage_path = 원점 stage · 크기·sha256 = 후보 행 · A2 서명) · 시험 Sim 「tamper」 · `reconstruct_new_needs_restored_candidate_of_the_same_release`(파일 asset 칸 변조 무시 · 남의 키 = 빈 후보) · `win_s9b_rerun_reverifies_stage_installer_before_running_it` · U2-COPYCHECK · U2-CANDVERIFY · U2-STAGESIG · 음성 대조: 사본 값 변조 = **재구성 불가**(롤백 아님 — 롤백 칸도 그 사본에서 오므로) |
+  | ④ m2 | 새 판 재구성에서 journal_corrupt 신호 소실 | 3e1fbdf8 | `Ops::signal`(결과 기록 밖 · RealOps = notify::signal) · Sim `signals == [JournalCorrupt]` + `records == [Ok]` · U2-RECONSIGNAL · **설계 §3-11 ④ 개정 제안 1줄**: 「새 판 재구성 = 즉시 신호 `update.journal_corrupt` 1통(상담소 신호) + 결과 기록은 정상 행의 ok/rollback 하나」 |
+  | ⑤ m3 | 보조 사본 실패가 S9~S11 전진을 멈춤 | 3e1fbdf8 | `enter` 사본 실패 = 1줄 + 전진 · Fault `copy_fail` · `journal_copy_failure_is_recorded_but_never_stops_forward_progress` · U2-COPYSTOP |
+  | ⑦ m5 | 링크 지문 = 대상 내용 없음 | 3e1fbdf8 | `L:<대상>:<따라간 내용 sha256 · 없음 - · 폴더 D>` · `pack::tests::plan_fingerprint_follows_symlink_target_content` · U2-LINKFP |
+  | ⑧ m7 | 윈 RB_SWAPPED 자산 재받기 0 | 3e1fbdf8 | 재검증 실패 시 보관소 1회 재받기(실패 = 1줄 · 판정은 뒤 재검증) · `win_rollback_refills_missing_rollback_assets_from_archive` · U2-RBFILL |
+  | ⑨ m8 | containment = remove_stage 뿐 | 01f7ce07 | `snapshot::remove_dir_within` 공용 문 · 아래 grep 목록 · `pack_backup_cleanup_deletes_only_inside_backup_root` · U2-WITHIN |
+  | ⑥ m4 · agy | 메모 「위조 방지」 과장 · 보류 비가시 | d5b43276 | `cys doctor` `pack-auto-hold`(WARN + 사유 · 손상 WARN) · `doctor_shows_pack_auto_hold_with_reason` · 메모 = 정확한 입력 키(서명 매니페스트 바이트 + 지문)에만 적중 · 자기 sha256 = 손상 검사 · **HMAC 불요 근거**: 같은 계정이 쓰는 파일이라 비밀 키도 같은 계정 손에 있다(이득 0) — 위조의 최대 결과 = 자동 팩 갱신 보류 + doctor WARN(보이는 보류) |
+  | ③ m6 | ⑫ S2 배선 증명 0 | 470d8639 | `win_s2_fetches_rollback_assets_before_candidate_download_and_daemon_stop`(후보 받기·rotate 전 · 자식 호출 0) · U2-S2FILL · `fill_installer_dir` seq 0 = Err(U5 규칙) |
+  | ③ m1 | 새 판 재구성 성공 경로 RealOps 증명 0 | 9b045043 | `new_reconstruct_success_path_through_real_ops_reaches_done_with_s11`(실 recover · 서명 candidate 복원 · 실 rotate · 실 S11 installers/9·수용 기록 · DONE · last_result ok) · 주입 = 맥 codesign 정식 자리 판정 · V1~V9 두 곳(cfg(test)) |
+- **⑨ 경로 재료 grep 목록**(`grep -n 'remove_dir_all\|remove_file' src/update/{runner,realops,snapshot}.rs`): 삭제 = `remove_stage`(stage/<origin>) · `pack_backup_cleanup`(저널 snapshot_dir 부모) · commit 세대 정리(backup_root 목록) · `pack_backup_sweep` · `pack_txn_end`(pack-<txn>) · `pack_user_snapshot`(pack-<txn>/user) → 전부 `remove_dir_within` · 쓰기 = S8 스냅샷 자리·`pack_user_snapshot` = `valid_txn` 토큰만 · `quarantine_dir` 열쇠 = 영숫자·`-` · 고정 이름(installers/<u64> · `.<seq>.tmp` · `.<seq>.fill.tmp` · mac staged_path(seq)) = 재료 안전.
+- **남은 것**: ② M2(N7 윈 존치 + 받기 공용 함수 한 벌 — **master 의 「U5 merge/v0.14.43 편입」 통지 뒤** rebase/merge · check.rs 접점 · U5 `preserve_installer` ↔ `fill_installer_dir` 갈린 세부 표 · HANDOFF 의 `u5-block.ps1:309` 인용 정정 = 이름 정본은 U5 `install_link.rs`) · ③ 의 `--check` N7 윈 실제 결과(②와 묶음) · 전수 · 미러 push 1회 · 【확인요청】.
+- **CTX**: 12:5x ≈56%(jsonl 라이브).
+
 ## §0-7 후속 2판 델타(master#147e7d04 · 원문 = `docs/update/REVIEW-U2F-{codex,agy}-1r.md`(ignored) · 착수 10:44 · 커밋 3143237c · f8d30969 · 9f86c38d)
 - **이월**: 1판(§0-6) 검수 = master 게이트 PASS · codex 1R 수렴 아니오(BLOCK 2 · MAJOR 5 · MINOR 3) · agy 1R 수렴 아니오(BLOCK 2 · MAJOR 3 · MINOR 4) · master 채택 = 전건 + ⑫(예고분 · 러너 보관소 받기).
 - **설계 한 줄(②③④⑥ 한 뿌리)**: 1판의 「새 판 재구성 = 별도 수용 갈래(accept_reconstructed) + S7 행 새 판 기동(recon 표지)」 를 **폐기**하고, `Runner::enter` 가 S8~S11 저널 칸 사본을 `attempt.json journal` 에 내구 기록 → 재구성이 새 판이면 그 사본(+원점)으로 **S9(SWAPPED) 를 다시 써 정상 복구 행**(맥 정식 자리 서명·판 재대조 / 윈 S9b 페이로드 전수·build-info 재대조 → S10 → V1~V9 → S11 → DONE 단일 `ok` · 어디서든 실패 = 롤백)으로 보낸다. 상태기계 밖 경로가 사라져 검증·롤백·결과 계약이 정상 실행과 같다.

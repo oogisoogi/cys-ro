@@ -1,8 +1,8 @@
-# cys-terminal
+# cysr
 
 **AI 에이전트 함대를 지휘하는 오케스트레이션 터미널.** macOS · Windows 크로스플랫폼.
 
-터미널 멀티플렉서 + 로컬 데몬 + 관제 대시보드 + 멀티에이전트 운영체계(CYSJavis 팩)가
+터미널 멀티플렉서 + 로컬 데몬 + 관제 대시보드 + 멀티에이전트 운영체계(cysr 팩)가
 한 몸입니다. Claude Code·Codex 같은 CLI 에이전트 여러 개를 역할(마스터·워커·CSO·리뷰어)로
 나눠 동시에 굴리고, 서로 소켓으로 대화시키고, 비용·컨텍스트·하드웨어를 실시간 관제합니다.
 
@@ -30,11 +30,11 @@ cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니�
 
 기존 터미널·멀티플렉서는 "사람이 명령을 치는 곳"입니다. AI 에이전트를 여러 개 띄우면
 곧바로 한계가 옵니다 — pane끼리 서로 말을 걸 수 없고, 에이전트가 남긴 고아 서버가 쌓여
-시스템이 마비되고, 누가 얼마나 쓰는지 보이지 않습니다. cys-terminal은 그 문제들을
+시스템이 마비되고, 누가 얼마나 쓰는지 보이지 않습니다. cysr은 그 문제들을
 1급 기능으로 해결하기 위해 처음부터 새로 작성한 독자 구현입니다.
 
 그리고 네 번째 문제 — **에이전트들을 어떻게 조직으로 묶을 것인가** — 를 내장 팩
-(CYSJavis: 역할별 절대지침 + 결정론 운영 도구)으로 해결합니다.
+(cysr: 역할별 절대지침 + 결정론 운영 도구)으로 해결합니다.
 
 자원의 벽은 실행 중만이 아니라 **배포·업그레이드 중에도** 다룹니다 — 앱을 새 버전으로
 교체하는 순간에도 "정지" 명령을 잃지 않는 것(크로스플랫폼 원자 교체)이 1급 목표입니다.
@@ -46,15 +46,15 @@ cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니�
 
 1. **양방향 소켓통신** — 단방향 send + capture 폴링을 쓰지 않는다.
    같은 소켓에 물린 모든 pane은 surface ID만 알면 서로에게 능동 push하는 **동등 노드**다.
-   `cys send --surface surface:31 "..."` + `send-key Return` → 대상 pane의 **PTY stdin에 직접 주입** → 새 user turn 도착.
-   서버→클라이언트 방향은 `cys events` 푸시 스트림(시퀀스 번호·재접속 이어받기).
+   `cysr send --surface surface:31 "..."` + `send-key Return` → 대상 pane의 **PTY stdin에 직접 주입** → 새 user turn 도착.
+   서버→클라이언트 방향은 `cysr events` 푸시 스트림(시퀀스 번호·재접속 이어받기).
 2. **자원 거버넌스 1급 기능** — 고아 서버 누적 → load 폭주 → 401·hang을 원천 차단하는 완화책 내장.
 3. **코어/UI 분리** — 데몬(cysd)은 UI와 무관하게 동작. UI가 hang이어도 소켓 제어 채널은 항상 살아있다(OOB 회생).
 4. **fail-closed 서명** — 앱 배포본은 서명돼 나가고 데몬의 자동 갱신이 그 서명을 확인한다. 팩은 minisign(공개키 바이너리 핀).
    검증에 실패하면 설치·전개 자체가 거부된다.
    *자기봉인 불변식* — 서명된 번들은 실행 중 자기 내용을 바꾸지 않는다(번들 `.pyc`
    자기생성 봉인 3층 + 서명 후 개수 대조 게이트).
-5. **지침과 기계의 한 몸** — 역할별 절대지침·운영 도구·스킬(CYSJavis 팩)이 터미널과 함께
+5. **지침과 기계의 한 몸** — 역할별 절대지침·운영 도구·스킬(cysr 팩)이 터미널과 함께
    빌드·서명·배포되고, 노드 기동 시 자동 주입된다.
 6. **수동적 인지 계층(radio)** — 발견 알림과 결정을 물리적으로 분리한다.
    원칙1(능동 push)이 결정·조향 채널이라면, radio는 다중 워커가 병렬로 티켓을 돌 때
@@ -73,9 +73,9 @@ cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니�
   PE 버전리소스·매니페스트·아이콘 임베드로 SmartScreen/Defender 마찰을 낮췄으나
   **여전히 미서명이라 첫 실행 경고가 뜰 수 있습니다**.
   상세: [docs/INSTALL-Windows-KR.md](docs/INSTALL-Windows-KR.md)
-- 24/365 상시 가동(선택): `cys daemon install` (launchd KeepAlive / 작업 스케줄러).
+- 24/365 상시 가동(선택): `cysr daemon install` (launchd KeepAlive / 작업 스케줄러).
 - 명령 이름은 **`cysr`** 입니다(1.0.1부터 · 기존 `cys` 도 그대로 동작 — 같은 프로그램의 두 이름).
-- 외부 터미널에서 `cysr` 쓰기(macOS): Control Center 헤더의 **"셸에 cys 설치"** 1클릭(권장 ·
+- 외부 터미널에서 `cysr` 쓰기(macOS): Control Center 헤더의 **"셸에 cysr 설치"** 1클릭(권장 ·
   관리자 승인 1회 · 같은 버튼으로 해제 · `cys`·`cysd`·`cysr` 링크)이거나, GUI를 못 쓸 때의 수동 심링크 폴백 —
   [docs/INSTALL.md](docs/INSTALL.md) §B. Windows 설치기는 PATH를 등록하지 않습니다(§Windows · 설치 폴더에 `cysr.exe` 동봉).
 
@@ -85,42 +85,42 @@ cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니�
 ## 빠른 시작
 
 ```bash
-cys identify                                  # 내 surface 주소 확인
-cys launch-agent --role worker --agent claude # 역할 노드 기동(절대지침 자동 주입)
-cys send --to worker "상태 보고해줘"            # 역할 주소로 push
-cys send-key --to worker Return               # 전송 확정
-cys status --json                             # 전 노드 1콜 스냅샷
-cys events --reconnect                        # 이벤트 푸시 구독 (폴링 대체)
-cys run -- python -m http.server              # 생명주기 관리되는 스코프드 실행
-cys boot                                      # 표준 노드 세트 일괄 기동(설치된 CLI 자동 감지)
+cysr identify                                  # 내 surface 주소 확인
+cysr launch-agent --role worker --agent claude # 역할 노드 기동(절대지침 자동 주입)
+cysr send --to worker "상태 보고해줘"            # 역할 주소로 push
+cysr send-key --to worker Return               # 전송 확정
+cysr status --json                             # 전 노드 1콜 스냅샷
+cysr events --reconnect                        # 이벤트 푸시 구독 (폴링 대체)
+cysr run -- python -m http.server              # 생명주기 관리되는 스코프드 실행
+cysr boot                                      # 표준 노드 세트 일괄 기동(설치된 CLI 자동 감지)
 ```
 
 ## 구조
 
 ```
-cys.app  Tauri 데스크톱 앱: 터미널 UI(xterm.js, TUI 위에서도 휠 스크롤·드래그 선택·복사
+cysr.app Tauri 데스크톱 앱: 터미널 UI(xterm.js, TUI 위에서도 휠 스크롤·드래그 선택·복사
          기본 복원) + Control Center — 데몬의 thin client
 cysd     헤드리스 코어 데몬: NDJSON 소켓 서버(UDS / win named pipe), PTY(portable-pty:
          macOS openpty·Windows ConPTY), vt100 화면 재구성, 이벤트 버스, watchdog,
          프로세스 원장, 사용량/비용 수집기, 영속 분석(SQLite), 스케줄러
-cys      CLI: pane 안의 AI가 쓰는 동등 노드 클라이언트 (수십 종 서브커맨드 — `cys actions`로 열람)
+cys      CLI: pane 안의 AI가 쓰는 동등 노드 클라이언트 (수십 종 서브커맨드 — `cysr actions`로 열람)
 pack     cysjavis-pack/: 절대지침 10·결정론 도구 90+·훅 25+·스킬 114+·스키마 4
          (빌드 시 임베드 · minisign 서명 배포 · 사용자 수정 파일 불가침)
 ```
 
 모든 pane 프로세스에 `CYS_SURFACE_ID`·`CYS_SURFACE_REF`·`CYS_SOCKET` 자동 주입 —
-pane 안의 AI는 `cys identify`로 자기 주소를 즉시 안다. PTY는 데몬 소유라서 앱을
+pane 안의 AI는 `cysr identify`로 자기 주소를 즉시 안다. PTY는 데몬 소유라서 앱을
 재시작·재설치·갱신해도 세션은 살아 있다(재attach).
 
-## CYSJavis 팩 — 내장 멀티에이전트 운영체계
+## cysr 팩 — 내장 멀티에이전트 운영체계
 
 터미널을 설치하고 AI CLI를 연결하면 **master–worker–CSO–reviewer 멀티에이전트 운영체계**가
 바로 구동됩니다. 시스템은 3층입니다:
 
 | 층 | 내용 | 출처 |
 |---|---|---|
-| 코어 (기계 기능) | 양방향 소켓·승인 Feed·watchdog/원장·이벤트 push·세션 영속 | cys-terminal 코어 |
-| CYSJavis 팩 | 역할별 절대지침·결정론 운영 도구·훅·스킬 | `cys init-pack` |
+| 코어 (기계 기능) | 양방향 소켓·승인 Feed·watchdog/원장·이벤트 push·세션 영속 | cysr 코어 |
+| cysr 팩 | 역할별 절대지침·결정론 운영 도구·훅·스킬 | `cysr init-pack` |
 | 개인 층 | soul.md(우선순위·금지선)·장기기억 | **사용자가 사용하며 축적** |
 
 **마스터 선언 위계 폴백** — 오너가 친 "너는 마스터다" 한 문장으로 5노드 팀이 자동
@@ -141,18 +141,18 @@ soul.md와 memory/는 **의도적으로 비어 있는 골격**입니다 — "운
 
 ## 세 가지 사용 구성 비교 — 온보딩 없이도 무엇을 얻는가
 
-cys-terminal은 자비스 온보딩 없이 **그냥 claude만 연결해도** 전통 터미널과 다른 경험을 제공합니다.
+cysr은 자비스 온보딩 없이 **그냥 claude만 연결해도** 전통 터미널과 다른 경험을 제공합니다.
 세 구성을 33항목 × 6영역으로 비교한 결과입니다 (신선 기계 E2E 실측 골격 + 배포 코드 v0.14.x 라인 추적·팩 수치 재측정 기반):
 
 - **①** 전통 터미널(iTerm 등) + claude CLI
-- **②** cys-terminal + 순정 claude (자비스 온보딩 없이 일상 사용)
-- **③** cys-terminal + 자비스 온보딩 ("너는 마스터다" 선언 → 5노드 풀 시스템, **기준**)
+- **②** cysr + 순정 claude (자비스 온보딩 없이 일상 사용)
+- **③** cysr + 자비스 온보딩 ("너는 마스터다" 선언 → 5노드 풀 시스템, **기준**)
 
 기호: **✕** 없음/불가 · **△** 부분/조건부 · **○** 제공 · **◎** 강화 체계 · **[실측]** 신선 기계 E2E 직접 확인
 
 ### A. 설치·시작 경험
 
-| 항목 | ① 전통 터미널 + claude | ② cys + 순정 claude | ③ cys + 자비스 (기준) |
+| 항목 | ① 전통 터미널 + claude | ② cysr + 순정 claude | ③ cysr + 자비스 (기준) |
 |---|---|---|---|
 | 자동 배치 | ✕ | ○ 전 스킬 세트(팩 570+파일)+격리 config [실측] | ○ 동일 + preflight 전체 배선 |
 | 개인 `~/.claude` 보호 | — (직접 사용) | ○ 불가침 [실측] | △ base 온보딩 시 계장 가능 |
@@ -162,28 +162,28 @@ cys-terminal은 자비스 온보딩 없이 **그냥 claude만 연결해도** 전
 
 ### B. 세션 컨텍스트 — claude가 알고 시작하는 것
 
-| 항목 | ① 전통 터미널 | ② cys + 순정 | ③ cys + 자비스 |
+| 항목 | ① 전통 터미널 | ② cysr + 순정 | ③ cysr + 자비스 |
 |---|---|---|---|
-| 자동 주입 지침 | ✕ | ○ cys 치트시트+4대 지침+품질 게이트 | ◎ 디렉티브+soul 전문 |
+| 자동 주입 지침 | ✕ | ○ cysr 치트시트+4대 지침+품질 게이트 | ◎ 디렉티브+soul 전문 |
 | 시작 주입량 | 0 | ~1.4KB [실측] | ~134KB [실측] |
 | 등록 훅 수 | 0 | 2개 [실측] | 10개+ [실측] |
 | 권한 모드 | 사용자 선택 | 사용자 선택 | bypass + guard 짝 |
 
 ### C. 에이전트 능력 — claude가 할 수 있는 것
 
-| 항목 | ① 전통 터미널 | ② cys + 순정 | ③ cys + 자비스 |
+| 항목 | ① 전통 터미널 | ② cysr + 순정 | ③ cysr + 자비스 |
 |---|---|---|---|
-| 타 pane 관측 | ✕ 서로 존재 모름 | ○ `cys list`·`read-screen` 자발 사용 실증 [실측] | ◎ 능동 모니터링 체계 |
-| pane 간 메시지 | ✕ | ○ `cys send --surface` 자발 사용 실증 [실측] | ◎ 역할 주소·양방향 소켓 |
-| GUI 승인 요청 | ✕ 터미널 프롬프트뿐 | ○ `cys feed push --wait` | ◎ 승인 자동화 체계 |
-| 이벤트 push 구독 | ✕ 폴링뿐 | ○ `cys events` | ◎ EVT v1 계약 12종 |
-| 서버 생명주기 | ✕ 수동 | ○ `cys run` | ◎ + 사전 자원 게이트 |
-| 예약·웨이크업 | ✕ OS cron 수동 | ○ `cys schedule` | ◎ 자율주행 웨이크업 |
+| 타 pane 관측 | ✕ 서로 존재 모름 | ○ `cysr list`·`read-screen` 자발 사용 실증 [실측] | ◎ 능동 모니터링 체계 |
+| pane 간 메시지 | ✕ | ○ `cysr send --surface` 자발 사용 실증 [실측] | ◎ 역할 주소·양방향 소켓 |
+| GUI 승인 요청 | ✕ 터미널 프롬프트뿐 | ○ `cysr feed push --wait` | ◎ 승인 자동화 체계 |
+| 이벤트 push 구독 | ✕ 폴링뿐 | ○ `cysr events` | ◎ EVT v1 계약 12종 |
+| 서버 생명주기 | ✕ 수동 | ○ `cysr run` | ◎ + 사전 자원 게이트 |
+| 예약·웨이크업 | ✕ OS cron 수동 | ○ `cysr schedule` | ◎ 자율주행 웨이크업 |
 | 역할 주소 통신 | — | ✕ | ○ master·cso·worker·reviewer |
 
 ### D. 환경 서비스 — 데몬이 묻지 않고 주는 것
 
-| 항목 | ① 전통 터미널 | ② cys + 순정 | ③ cys + 자비스 |
+| 항목 | ① 전통 터미널 | ② cysr + 순정 | ③ cysr + 자비스 |
 |---|---|---|---|
 | 컨텍스트% 관측 | ✕ | ○ usage-register 자동 [실측] | ◎ + 60% /clear 관리 |
 | 폭주·중복 서버 감지 | ✕ | ○ watchdog 전 surface | ◎ + 착수 전 게이트 |
@@ -194,7 +194,7 @@ cys-terminal은 자비스 온보딩 없이 **그냥 claude만 연결해도** 전
 
 ### E. 스킬·지식 자산
 
-| 항목 | ① 전통 터미널 | ② cys + 순정 | ③ cys + 자비스 |
+| 항목 | ① 전통 터미널 | ② cysr + 순정 | ③ cysr + 자비스 |
 |---|---|---|---|
 | 스킬 보유 | ✕ 수동 설치 | ○ 114+종 + 보드 6종 [실측] | ◎ + 프로필 설치·role 주입 |
 | 스킬 실행 | ✕ 수동 호출 | ○ 보드 → 75초 완주 [실측] | ◎ + 티켓·게이트·검증 |
@@ -204,7 +204,7 @@ cys-terminal은 자비스 온보딩 없이 **그냥 claude만 연결해도** 전
 
 ### F. 조직·자율성 — 자비스 온보딩의 고유 가치
 
-| 항목 | ① 전통 터미널 | ② cys + 순정 | ③ cys + 자비스 |
+| 항목 | ① 전통 터미널 | ② cysr + 순정 | ③ cysr + 자비스 |
 |---|---|---|---|
 | 팀 구성 | ✕ | ✕ (선언 1문장 승격 가능) | ○ 5노드 자동 + 부서 자동 기동(2번째 선언) |
 | 위임·검증 루프 | ✕ | ✕ | ○ 티켓·리뷰어·RSI·eval |
@@ -224,7 +224,7 @@ cys-terminal은 자비스 온보딩 없이 **그냥 claude만 연결해도** 전
 
 ## JavisRadio vs AgentRadio — 우리가 우세한 것, 부족한 것
 
-cys의 수동적 인지 계층(설계 원칙 6 · T5-20)은 Coral Protocol의 연구 **AgentRadio**
+cysr의 수동적 인지 계층(설계 원칙 6 · T5-20)은 Coral Protocol의 연구 **AgentRadio**
 (arXiv:2607.28430)의 3 프리미티브를 이식해 기계 게이트로 격상한 재구현입니다.
 원 연구는 "4개의 코딩 에이전트가 일을 멈추지 않고 서로의 방송을 듣게 하면"(passive
 awareness) SWE-Atlas QnA 124태스크에서 단일 32.3% → 4에이전트 62.1%가 됨을 통계
@@ -234,7 +234,7 @@ awareness) SWE-Atlas QnA 124태스크에서 단일 32.3% → 4에이전트 62.1%
 두 독립 세션 + 적대 검증 2기 + 수치 재실행의 삼중 검증)로 10개 축을 채점한 판정 —
 **어디서 이기고 어디서 지는지**를 먼저 보입니다.
 
-### 한눈에 보는 판정 — cys/자비스 기준: 우세 8 · 조건부 우세 1 · 열세 1
+### 한눈에 보는 판정 — cysr/자비스 기준: 우세 8 · 조건부 우세 1 · 열세 1
 
 | # | 비교 축 | 판정 | 한 줄 근거 |
 |---|---|:---:|---|
@@ -258,7 +258,7 @@ awareness) SWE-Atlas QnA 124태스크에서 단일 32.3% → 4에이전트 62.1%
 
 ### 정량 저울 — 숫자로 보는 체급 차이 (전 수치 실측·재검증)
 
-| 지표 | AgentRadio | cys/자비스 스택 |
+| 지표 | AgentRadio | cysr/자비스 스택 |
 |---|---|---|
 | 코드 규모 | 약 3,300줄 (Python 2,017 + 셸 1,301) | **약 169,000줄** (Rust 63,371 + 팩 Python 105,833 등) = **약 50 : 1** |
 | 자체 코드 테스트 | **0건** (자체 하네스 테스트·CI 없음) | **약 1,700건** — Rust `#[test]` 883(src)·920(전 레포) + 팩 531 + radio 297(레드팀 23종 포함·당일 재실행 전건 PASS) + UI 테스트 파일 16 |
@@ -281,7 +281,7 @@ awareness) SWE-Atlas QnA 124태스크에서 단일 32.3% → 4에이전트 62.1%
 
 ### 상세 — radio 계층 1:1 대조 (구조 우위의 근거)
 
-| | AgentRadio (원 연구) | JavisRadio (cys 팩) |
+| | AgentRadio (원 연구) | JavisRadio (cysr 팩) |
 |---|---|---|
 | 표면적 | 프리미티브 3종 (create_thread / send_message / wait_for_mention) | 대응 3종 + 방어 14종 = 서브커맨드 17종 |
 | 방송 진위 | 검증 없음 — 내용 그대로 전파 | FACT는 증거(파일·라인·스니펫) 실존을 기계 검증 — 실패 시 가설·미검증으로 자동 강등 |
@@ -415,24 +415,24 @@ RBAC PII 가림(`CYS_CONTROL_REDACT=1`). 상세 설계: docs/CONTROL_CENTER_DESI
 
 | # | 기능 | 명령/이벤트 |
 |---|---|---|
-| T1-1 | **자기보고**: 에이전트가 상태·컨텍스트%·작업을 직접 신고 | `cys set-status --state working --context 57` → `status.changed` |
-| T1-2 | **관제 보드**: 전 노드 1콜 요약 | `cys status [--json]` · `cys fleet`(전 부서) |
+| T1-1 | **자기보고**: 에이전트가 상태·컨텍스트%·작업을 직접 신고 | `cysr set-status --state working --context 57` → `status.changed` |
+| T1-2 | **관제 보드**: 전 노드 1콜 요약 | `cysr status [--json]` · `cysr fleet`(전 부서) |
 | T1-3 | **발신자 신원·ACL**: 커널 peer pid로 from 검증 + role→role 송신 정책 | `acl.json` · 거부 시 `acl.denied` |
-| T2-4 | **컨텍스트 사이클 집행기**: 저장 지시→파일 게이트→clear→지침 재주입→재개 | `cys cycle-agent --role worker` |
-| T2-5 | **에이전트 사망 즉시 감지** (+옵션 자동 재기동, 인증 오류 시 차단) | `agent.exited/recovered` · `cys node-recover --role X` |
-| T2-6 | **조직 복원**: 토폴로지 영속 + 일괄 재기동·재주입 | `cys restore [--include-master]` |
-| T2-7 | **디렉티브 드리프트 감지·재주입** | `cys reinject --role X [--check]` |
+| T2-4 | **컨텍스트 사이클 집행기**: 저장 지시→파일 게이트→clear→지침 재주입→재개 | `cysr cycle-agent --role worker` |
+| T2-5 | **에이전트 사망 즉시 감지** (+옵션 자동 재기동, 인증 오류 시 차단) | `agent.exited/recovered` · `cysr node-recover --role X` |
+| T2-6 | **조직 복원**: 토폴로지 영속 + 일괄 재기동·재주입 | `cysr restore [--include-master]` |
+| T2-7 | **디렉티브 드리프트 감지·재주입** | `cysr reinject --role X [--check]` |
 | T2-8 | **오케스트레이터 dead-man**: 단일 장애점 봉합 | `master.deadman` 이벤트 |
-| T3-9 | **todo 워치**: 역할별 TODO 파일 mtime 감시→진행률 집계 | `todo.updated` · `cys todo-path` |
-| T3-10 | **원샷 타이머** (+fresh TTL `--close-after`) | `cys schedule add --id x --in 20m --text ... --to role` |
-| T3-11 | **역할 글롭 브로드캐스트** | `cys send --to 'reviewer-*' "..."` |
+| T3-9 | **todo 워치**: 역할별 TODO 파일 mtime 감시→진행률 집계 | `todo.updated` · `cysr todo-path` |
+| T3-10 | **원샷 타이머** (+fresh TTL `--close-after`) | `cysr schedule add --id x --in 20m --text ... --to role` |
+| T3-11 | **역할 글롭 브로드캐스트** | `cysr send --to 'reviewer-*' "..."` |
 | T3-12 | **feed aging 재알림**: pending 승인 무음 적체 차단 | `feed.item.aging` |
 | T3-13 | **입력 안전**: 타이핑 가드 · 원자 권위 전달 | `typing_guard` 거부 |
-| T3-14 | **델타 읽기·완료 대기**: 단조 라인 커서 + 데몬측 regex 감시 | `cys read-screen --since N` · `cys watch --until <re>` |
-| T4-15 | **kill-switch**: 큐 배달·스케줄 발화 동결 | `cys pause/resume` · `cys gate-check` |
+| T3-14 | **델타 읽기·완료 대기**: 단조 라인 커서 + 데몬측 regex 감시 | `cysr read-screen --since N` · `cysr watch --until <re>` |
+| T4-15 | **kill-switch**: 큐 배달·스케줄 발화 동결 | `cysr pause/resume` · `cysr gate-check` |
 | T4-16 | **승인 격상**: 화면 스캔→이벤트+feed (자동 응답 절대 없음) | `approval.request` |
-| T4-17 | **헬스룰 조치 바인딩**(opt-in): queued 배달만 일시정지 | `cys add-health-rule n p --action pause-queue` |
-| T4-18 | **트랜스크립트 해시체인 attest**: 변조 증거성(producer≠evaluator) | `cys attest pin/verify` |
+| T4-17 | **헬스룰 조치 바인딩**(opt-in): queued 배달만 일시정지 | `cysr add-health-rule n p --action pause-queue` |
+| T4-18 | **트랜스크립트 해시체인 attest**: 변조 증거성(producer≠evaluator) | `cysr attest pin/verify` |
 | T4-19 | **recall 보존 정책**: 트랜스크립트 무한 성장 차단 | `CYS_RECALL_RETAIN_DAYS` |
 | T5-20 | **수동적 인지(radio)**: 병렬 워커의 발견 공유 · FACT 진위검증(파일·라인·스니펫, 미검증은 자동 강등) · BLOCKER 게이트 · 결정 트래픽 금지 | `javis_radio open/send/wait/read` |
 | T5-21 | **BOOT_SNAPSHOT**: clear/컴팩트 후 기억을 읽기전용 원장 다이제스트로 복원(명령형 문구 0 · 마스터 게이트 · 워커·리뷰어 pane 주입 0) | `javis_snapshot generate` |
@@ -442,22 +442,22 @@ RBAC PII 가림(`CYS_CONTROL_REDACT=1`). 상세 설계: docs/CONTROL_CENTER_DESI
 
 | 완화책 | 기능 | 명령/이벤트 |
 |---|---|---|
-| ① 로그인 감지 강화 | 모든 출력 라인에 헬스 룰(기본: Not logged in·401·token expired·rate limit) 매칭 → 30초 디바운스 push. **자기증폭 차단**: 경보 문장은 `‹health-rule›`로 전 트리거를 마스킹해 내보내고(발신 봉인 — 어떤 룰에도 재매칭 불가), 경보를 논하는 줄(기계장치 이름·인용·한글 산문)은 매칭에서 제외(수신 격리) | `health.alert` · `cys add-health-rule <name> <regex>` · `CYS_HEALTH_NARRATION_CJK_MIN` |
+| ① 로그인 감지 강화 | 모든 출력 라인에 헬스 룰(기본: Not logged in·401·token expired·rate limit) 매칭 → 30초 디바운스 push. **자기증폭 차단**: 경보 문장은 `‹health-rule›`로 전 트리거를 마스킹해 내보내고(발신 봉인 — 어떤 룰에도 재매칭 불가), 경보를 논하는 줄(기계장치 이름·인용·한글 산문)은 매칭에서 제외(수신 격리) | `health.alert` · `cysr add-health-rule <name> <regex>` · `CYS_HEALTH_NARRATION_CJK_MIN` |
 | ② 짧은 작업 단위 | idle(기본 300초 무출력) 감지 push → 분할·점검 판단 | `pane.idle` 이벤트 |
-| ③ 서버 생명주기 강제 종료 | **scoped 실행**(새 프로세스 그룹+원장, 종료 시 그룹째 정리) · **close-surface**(자식 트리 전멸) · **watchdog**(load/자식 수/중복 명령 감지) | `cys run -- <cmd>` · `cys ps` · `cys kill <pid>` · `watchdog.*` |
+| ③ 서버 생명주기 강제 종료 | **scoped 실행**(새 프로세스 그룹+원장, 종료 시 그룹째 정리) · **close-surface**(자식 트리 전멸) · **watchdog**(load/자식 수/중복 명령 감지) | `cysr run -- <cmd>` · `cysr ps` · `cysr kill <pid>` · `watchdog.*` |
 
 ## 승인 Feed · 인플라이트 큐
 
 ```bash
-cys feed push --wait --title "git push 승인" --body "..."   # 결정까지 블록 (exit 0=allow, 2=deny, 3=timeout)
-cys feed reply <request_id> allow                            # CLI 또는 UI Allow/Deny 버튼
+cysr feed push --wait --title "git push 승인" --body "..."   # 결정까지 블록 (exit 0=allow, 2=deny, 3=timeout)
+cysr feed reply <request_id> allow                            # CLI 또는 UI Allow/Deny 버튼
 ```
 
 자동 응답은 없습니다(HITL) — 요청 노드의 자기결재도 데몬이 거부합니다. 반복 위험 명령은
-`cys approval sign`(master 전용, HMAC signed-prefix)으로 1회 서명해 통과시킵니다.
+`cysr approval sign`(master 전용, HMAC signed-prefix)으로 1회 서명해 통과시킵니다.
 
-- 기본 전송(`cys send`)=**steer**: 즉시 stdin 주입 — 실행 중 입력을 조향으로 소화.
-- `cys send --queued`=**followup**: 대상이 3초 이상 조용해지면 한 틱에 한 건씩 자동 배달.
+- 기본 전송(`cysr send`)=**steer**: 즉시 stdin 주입 — 실행 중 입력을 조향으로 소화.
+- `cysr send --queued`=**followup**: 대상이 3초 이상 조용해지면 한 틱에 한 건씩 자동 배달.
 
 ## 새 판 받기 — 자동 갱신(1.1.8~)
 
@@ -465,19 +465,19 @@ cys feed reply <request_id> allow                            # CLI 또는 UI All
 
 결과는 다음에 앱 창을 열 때 알림 한 줄로 알려 드립니다. 재설치 후 "디스크는 새 버전·프로세스는 구 데몬" 스큐가
 남으면 배지 클릭 교대 또는 유휴 자동 교대(라이브 세션 0일 때 — 무손실)로 해소됩니다.
-진단·수리는 `cys doctor [--fix]`, 설치본 코드서명 봉인 자가진단은 `cys doctor app-seal`.
+진단·수리는 `cysr doctor [--fix]`, 설치본 코드서명 봉인 자가진단은 `cysr doctor app-seal`.
 
 **커스터마이즈와 공존**: 사용자 수정본은 갱신이 파괴하지 않습니다 — user-owned 파일은
 보존+신버전 `.new` 병치, system 파일은 치유 전 `.user` 보존, `~/.cys/local/` 오버레이
 (디렉티브 append·스킬 shadowing·훅 후행)는 갱신이 존재 자체를 모릅니다.
-`cys pack-plan`(사전 미리보기) · `cys pack-merge`(3-way/AI 병합) — 상세는
+`cysr pack-plan`(사전 미리보기) · `cysr pack-merge`(3-way/AI 병합) — 상세는
 [User Manual §12.7](USER-MANUAL.md#127-커스터마이징--새-판-갱신과-공존하는-방법).
 
 ## 채널 브리지 (Slack·Discord)
 
 함대의 승인 요청·보고를 외부 메신저로 내보내고, 허가된 발신자의 원격 승인을 받습니다 —
 발신자 allowlist · 원격 승인 별도 허가 · 즉시 잠금(lockdown) · 모양 기반 redact 내장.
-`cys channel status` 참조.
+`cysr channel status` 참조.
 
 ## 프로토콜 · 환경변수
 
@@ -521,7 +521,7 @@ UI 재시작·앱 재설치에도 세션 유지(재attach).
 ## 알려진 한계
 
 - macOS에서 sysinfo가 cmdline 전체를 못 읽으면 프로세스명으로 중복 그룹핑(과탐 가능).
-- `cys run` 중 Ctrl-C로 CLI가 죽으면 그룹 정리가 watchdog 주기(5초)로 넘어감.
+- `cysr run` 중 Ctrl-C로 CLI가 죽으면 그룹 정리가 watchdog 주기(5초)로 넘어감.
 - Control Center의 GPU/NPU 실시간은 현재 macOS(Apple Silicon) 전용 — Windows는 CPU/MEM만.
 - NPU는 활용률(%) 공개 API가 없어 실측 전력(W)으로 표시(macOS).
 - 단일-UID 신뢰 모델 — 승인 서명·자기결재 차단은 같은 계정 내 악성 프로세스에 대한
@@ -529,13 +529,13 @@ UI 재시작·앱 재설치에도 세션 유지(재attach).
 - **임무 게이트**는 동일 UID의 위조를 암호학적으로 막지 못합니다 — 배달 원장 감사흔적으로 다룹니다.
 - **Windows 업그레이드 원자성** 수리는 맥 개발기 코드판독·모델검증까지이며, 실기 확인은 진행 중입니다.
 - **macOS 설치본은 자체서명(애플 인증서 없음)**입니다 — 첫 실행 경고가 뜰 수 있고,
-  '반쪽 설치 vs quarantine' 판별은 `cys doctor app-seal`로 합니다.
+  '반쪽 설치 vs quarantine' 판별은 `cysr doctor app-seal`로 합니다.
 - **radio**는 교차채널 exactly-once·난청(놓침) 창 0을 원리적으로 보장하지 못합니다(해소 불가 — 관리 대상 잔여 리스크).
 
 ## 문제 해결 · 초기화
 
 - macOS **"손상되어 열 수 없음"** 은 두 원인입니다 — ① 반쪽 설치(드래그 복사 경합) ② quarantine 속성.
-  판별은 `cys doctor app-seal` 로 하고, 다시 설치할 때는 기존 앱을 먼저 휴지통으로 옮긴 뒤 새로 넣으세요(덮어쓰기 금지).
+  판별은 `cysr doctor app-seal` 로 하고, 다시 설치할 때는 기존 앱을 먼저 휴지통으로 옮긴 뒤 새로 넣으세요(덮어쓰기 금지).
 - **완전 초기화**(윈도우 WebView2 저장값·잔존 부서 격리본 삭제 포함)는
   [docs/GUIDE-clean-reset-KR.md](docs/GUIDE-clean-reset-KR.md)를 따르세요.
 

@@ -57,7 +57,7 @@ hostinger-ftp.env·license.json)까지 파괴한다.
   accounts.json, policy.json, profile.json, approvals.json, .approval-secret,
   .master-bootstrapped*, .gui-onboarded, .gui-onboard-attempts, .last-app-version, .pending-restore,
   ime-debug, allow-app-mouse, url-allow-hosts, harness-creator,
-  .update-attempt.json(0.14.43 — 인앱 업데이트 시도 기록 · 기본 격리: 남으면 초기화 뒤 첫 기동이 '업데이트가 설치되지 않았습니다' 를 낼 수 있다)
+  .update-attempt.json(0.14.43~1.1.7 판이 남긴 옛 시도 기록 파일 · 그 기록을 쓰고 읽던 기능은 1.1.8 에서 삭제됨 · 옛 판이 남긴 파일만 기본 격리 — `src/factory_reset.rs` 목록과 같음)
 - `~/.local/state/`: cys, cys-dept-* (등록·고아 불문. cys-trash 제외 — 격리 목적지)
 - 프로젝트 작업기억: `~/_round`, `${CYS_ROOT:-~/Desktop/CYSjavis}/_round`, 그리고 그
   둘의 `_round/ACTIVE_PROJECT` 가 가리키는 프로젝트의 `_round` — **_round 하위
@@ -139,11 +139,11 @@ CLAUDE.md/.mcp.json/.vibecoding(작업 폴더 불가침 — 경로 안내만), �
 - GUI: topbar "완전 초기화" 버튼 → `factory_reset_preview` → 타이핑 확인 모달
   (resetconfirm.ts 순수 판정) → `factory_reset_execute`(`reset-progress` 단계 이벤트)
   → 완료 모달 → `factory_reset_quit_app`(app.exit). **재시작(app.restart)을 쓰지 않는 이유**:
-  single-instance 락 레이스(install_update 주석의 재활성화 경고)를 피하고, 종료가 라이브
+  single-instance 락 레이스(옛 인앱 설치 명령 주석에 있던 재활성화 경고 · 그 명령은 1.1.8 에서 삭제됨)를 피하고, 종료가 라이브
   WebView·cfprefsd 의 재기록 창을 닫는 유일한 확실한 방법이다.
 - GUI 완료 래치: 격리가 시작된 순간부터 이 앱 프로세스는 반쪽 상태이므로 데몬·부서를 만드는
-  모든 경로(재시작·스큐 교대·＋부서·팔레트·업데이트·팩 설치·새 pane·분할·새 워크스페이스)를
-  종료 전까지 영구 차단한다(무반응 아님 — 항상 사유 토스트 · P1-3).
+  모든 경로(재시작·스큐 교대·＋부서·팔레트·팩 설치·새 pane·분할·새 워크스페이스)를
+  종료 전까지 영구 차단한다(무반응 아님 — 항상 사유 토스트 · P1-3 · 목록에 있던 옛 갱신 경로는 1.1.8 에서 삭제됨).
 - 리셋 중 UI 정합(P1-3): ①부트 재시도 루프가 `reset_in_progress` 를 보고 "로그인 항목 허용"
   대신 초기화 안내를 낸다 ②확인 모달이 떠 있으면 전역 파괴 단축키(⌘W/T/D)를 관통시키지 않고
   Esc 로 취소된다 ③종료 직전 `localStorage.clear()` 로 화면 저장값을 직접 비운다(이연 여부와

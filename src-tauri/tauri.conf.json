@@ -11,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "cysr — CYSJavis Terminal",
+        "title": "cysr",
         "width": 1280,
         "height": 820
       }

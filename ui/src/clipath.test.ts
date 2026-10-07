@@ -290,7 +290,7 @@ function statusReport(over: Partial<CliInstallStatusReport> = {}): CliInstallSta
 const SKIP_NOT_SYMLINK =
   "/usr/local/bin/cysd — 심볼릭이 아니라 실제 파일입니다. 다른 도구가 설치한 것일 수 있어 건드리지 않았습니다.";
 const SKIP_FOREIGN =
-  "/usr/local/bin/cys — cys.app 번들이 아닌 곳(/opt/other/cys)을 가리키는 링크라 건드리지 않았습니다.";
+  "/usr/local/bin/cys — 이 앱 번들(cysr.app·옛 이름 cys.app)이 아닌 곳(/opt/other/cys)을 가리키는 링크라 건드리지 않았습니다.";
 const SKIP_ABSENT = "/usr/local/bin/cysd — 없음(이미 해제된 상태)";
 /// ★(R1 · 6R) **픽스처 드리프트 수리.** 예전 값은 `… — 터미널에서 'sudo rm …' 로 지우세요.` 였는데,
 /// Rust 는 5R(G2)에서 복구 명령 산문을 뺐다(main.rs: "…가 아직 남아 있습니다 — 자동으로 제거하지
@@ -340,7 +340,7 @@ const NOTE_NOT_SYMLINK =
 //   ② 문구를 어떻게 섞어도 분기가 흔들리지 않는지
 // 를 검사하는 데만 쓴다. 그래서 Rust 가 문구를 다듬어도 이 파일은 빨개지지 않는다(그것이 목적이다).
 const WARN_NOT_ON_PATH =
-  "PATH 확인 결과: 검증 명령은 정상 실행됐지만 로그인 셸(zsh) PATH에서 cys를 찾지 못했습니다(PATH에 /usr/local/bin/cys의 폴더가 없을 수 있습니다). 새 터미널을 열어 'which -a cys'로 확인하세요.";
+  "PATH 확인 결과: 검증 명령은 정상 실행됐지만 로그인 셸(zsh) PATH에서 'cys' 를 찾지 못했습니다(PATH에 /usr/local/bin/cys의 폴더가 없을 수 있습니다). 새 터미널을 열어 'which -a cys'로 확인하세요.";
 const WARN_PROBE_FAILED =
   "PATH 확인 실패: 심볼릭은 만들었지만 로그인 셸(zsh)로 'which -a cys'를 실행하지 못했습니다: zsh 타임아웃(5초 초과). 새 터미널에서 'which -a cys'로 직접 확인하세요.";
 /// 같은 warnings 배열에 **합류하는 남의 문장** — 예전 정규식은 이런 문장까지 함께 읽어 판정했다.
@@ -506,7 +506,7 @@ describe("★MAJOR-2 관통 — InstallCliReport 의 기계 필드가 설치 토
     expect(installText(installReport())).toContain("✅ 셸 설치 완료");
     expect(
       installText(installReport({ ok: false, status: "installed_shadowed", shadowed_by: "/opt/homebrew/bin/cys" })),
-    ).toContain("다른 cys가 앞을 가립니다");
+    ).toContain("PATH 앞의 다른 'cys' 가 cysr 설치를 가립니다");
     expect(installText(installReport({ ok: false, status: "unverified", unverified_reason: "probe_failed" }))).toContain(
       "⚠ 셸 설치 확인 불가",
     );
@@ -517,7 +517,7 @@ describe("★MAJOR-2 관통 — InstallCliReport 의 기계 필드가 설치 토
       installReport({ ok: false, status: "unverified", unverified_reason: "not_on_path", effective_cys: null, warnings: [WARN_NOT_ON_PATH] }),
     );
     // 원인이 특정된 갈래 — 제목이 원인을 말하고, 본문이 **읽히는 프로필 파일**을 지목한다.
-    expect(notOnPath).toContain("PATH에서 cys를 찾지 못했습니다");
+    expect(notOnPath).toContain("PATH에서 'cys' 를 찾지 못했습니다");
     expect(notOnPath).toContain(LOGIN_SHELL_PATH_FILES);
     // 원인 불명 갈래로 떨어지면 이 문장이 나온다 — 그것이 곧 판독기가 필드를 버렸다는 증거다.
     expect(notOnPath).not.toContain("어느 쪽인지는 단정하지 않습니다");
@@ -525,7 +525,7 @@ describe("★MAJOR-2 관통 — InstallCliReport 의 기계 필드가 설치 토
     const probeFailed = installText(
       installReport({ ok: false, status: "unverified", unverified_reason: "probe_failed", effective_cys: null, warnings: [WARN_PROBE_FAILED] }),
     );
-    expect(probeFailed).toContain("확인 명령(which -a cys)이 실패했거나 비정상 종료·무응답이라");
+    expect(probeFailed).toContain("확인 명령('which -a cys')이 실패했거나 비정상 종료·무응답이라");
     expect(probeFailed).not.toContain("어느 쪽인지는 단정하지 않습니다");
 
     // 그리고 **정말로 없을 때만** 원인 불명 문구가 나온다(구 백엔드 = 필드 부재).
@@ -587,8 +587,8 @@ describe("★MAJOR-2 관통 — UninstallCliReport 의 기계 필드가 해제 �
   const CYSD = "/usr/local/bin/cysd";
 
   it("ok — 등급의 근본 신호. 참/거짓이 서로 다른 제목으로 나간다", () => {
-    expect(uninstallText(uninstallReport({ ok: true, removed: [CYS, CYSD] }))).toContain("✅ 셸 cys 해제 완료");
-    expect(uninstallText(uninstallReport({ ok: false, removed: [CYS] }))).toContain("⚠ 셸 cys 해제 부분 완료");
+    expect(uninstallText(uninstallReport({ ok: true, removed: [CYS, CYSD] }))).toContain("✅ 셸 cysr 해제 완료");
+    expect(uninstallText(uninstallReport({ ok: false, removed: [CYS] }))).toContain("⚠ 셸 cysr 해제 부분 완료");
   });
 
   it("removed — 지운 경로가 본문에 나온다(버리면 '지운 것이 없습니다' 로 무너진다)", () => {
@@ -610,11 +610,11 @@ describe("★MAJOR-2 관통 — UninstallCliReport 의 기계 필드가 해제 �
     const base = { ok: true, removed: [CYS], skipped: [SKIP_ABSENT], skipped_reasons: [SKIP_REASON_ABSENT] };
     // true = '애초에 지울 게 없었다' → 정상 해제(✅) + 괄호 안내
     const benign = uninstallText(uninstallReport({ ...base, skipped_benign: true }));
-    expect(benign).toContain("✅ 셸 cys 해제 완료");
+    expect(benign).toContain("✅ 셸 cysr 해제 완료");
     expect(benign).toContain("(이미 없던 항목:");
     // false = '무해하다고 말할 수 없다' → 조치 필요(⚠). 판독기가 bool 을 상수로 접으면 한쪽이 깨진다.
     const attention = uninstallText(uninstallReport({ ...base, skipped_benign: false }));
-    expect(attention).toContain("⚠ 셸 cys 해제 부분 완료");
+    expect(attention).toContain("⚠ 셸 cysr 해제 부분 완료");
     expect(attention).toContain("건너뜀 1건");
   });
 
@@ -632,9 +632,9 @@ describe("★MAJOR-2 관통 — UninstallCliReport 의 기계 필드가 해제 �
         skipped_benign: true,
       }),
     );
-    expect(t).toContain("⚠ 셸 cys 해제 부분 완료");
+    expect(t).toContain("⚠ 셸 cysr 해제 부분 완료");
     expect(t).toContain(SKIP_FOREIGN);
-    expect(t).not.toContain("✅ 셸 cys 해제 완료");
+    expect(t).not.toContain("✅ 셸 cysr 해제 완료");
   });
 
   it("★restored — '되돌린 원본'이 문구까지 도착한다(I3③ 의 회귀 자물쇠)", () => {
@@ -664,8 +664,8 @@ describe("★MAJOR-2 관통 — CliInstallStatusReport 의 기계 필드가 고�
   });
 
   it("installed — 버튼 라벨이 이 bool 하나로 뒤집힌다", () => {
-    expect(statusText(statusReport({ installed: true, state: "ours" }))).toContain("label=셸 cys 해제");
-    expect(statusText(statusReport({ installed: false, state: "absent" }))).toContain("label=셸에 cys 설치");
+    expect(statusText(statusReport({ installed: true, state: "ours" }))).toContain("label=셸 cysr 해제");
+    expect(statusText(statusReport({ installed: false, state: "absent" }))).toContain("label=셸에 cysr 설치");
   });
 
   it("★state — 상시 고지의 **제목(=등급 표시)** 이 이 문자열 하나로 갈린다(MAJOR-D · MAJOR-1)", () => {
@@ -900,9 +900,9 @@ describe("installResultToast — 등급 분리(installed 만 성공)", () => {
         warnings: [WARN_NOT_ON_PATH],
       }),
     );
-    expect(t.title).toContain("PATH에서 cys를 찾지 못했");
+    expect(t.title).toContain("PATH에서 'cys' 를 찾지 못했");
     expect(t.body).toContain("/usr/local/bin 이 들어 있지 않을 수 있습니다");
-    expect(t.body).not.toContain("확인 명령(which -a cys)이 실패");
+    expect(t.body).not.toContain("확인 명령('which -a cys')이 실패");
     expect(t.sticky).toBe(true);
   });
 
@@ -987,7 +987,7 @@ describe("산문 파싱 금지 가드 — 분기의 유일 근거는 unverified_
     const a = installResultToast(
       installReport({ status: "unverified", unverified_reason: "not_on_path", warnings: [WARN_PROBE_FAILED] }),
     );
-    expect(a.title).toContain("PATH에서 cys를 찾지 못했");
+    expect(a.title).toContain("PATH에서 'cys' 를 찾지 못했");
     // 반대 방향도 같다.
     const b = installResultToast(
       installReport({ status: "unverified", unverified_reason: "probe_failed", warnings: [WARN_NOT_ON_PATH] }),
@@ -1251,17 +1251,17 @@ describe("FOREIGN_BACKUP_NOTICE — 동의 문구가 실제 집행과 같은 말
 describe("cliButtonView — 라벨과 툴팁을 함께 산출 + notes 노출(BLOCK-1(d))", () => {
   it("설치됨이면 해제 라벨", () => {
     const v = cliButtonView("installed");
-    expect(v.label).toBe("셸 cys 해제");
+    expect(v.label).toBe("셸 cysr 해제");
     expect(v.title).toContain("제거");
     expect(v.intent).toBe("uninstall");
   });
   it("미설치면 설치 라벨(=index.html 초기값과 동일)", () => {
-    expect(cliButtonView("absent").label).toBe("셸에 cys 설치");
+    expect(cliButtonView("absent").label).toBe("셸에 cysr 설치");
     expect(cliButtonView("absent").intent).toBe("install");
   });
   it("unknown 은 설치 쪽 — 비가역 해제로 기울지 않는다", () => {
     const v = cliButtonView("unknown");
-    expect(v.label).toBe("셸에 cys 설치");
+    expect(v.label).toBe("셸에 cysr 설치");
     expect(v.title).toContain("확인하지 못했");
     expect(v.intent).toBe("install");
   });
@@ -1291,17 +1291,17 @@ describe("cliButtonIntent — 직전 설치 결과와 라벨이 어긋나지 않
   it("직전 설치가 그림자화면 링크가 있어도 '다시 설치'다", () => {
     expect(cliButtonIntent("installed", "installed_shadowed")).toBe("reinstall");
     const v = cliButtonView("installed", [], "installed_shadowed");
-    expect(v.label).toBe("셸에 cys 다시 설치");
+    expect(v.label).toBe("셸에 cysr 다시 설치");
     expect(v.label).not.toContain("해제");
     expect(v.intent).toBe("reinstall");
   });
   it("직전 설치가 확인 불가여도 '다시 설치'다(측정 불능은 완료가 아니다)", () => {
     expect(cliButtonIntent("installed", "unverified")).toBe("reinstall");
-    expect(cliButtonView("installed", [], "unverified").label).toBe("셸에 cys 다시 설치");
+    expect(cliButtonView("installed", [], "unverified").label).toBe("셸에 cysr 다시 설치");
   });
   it("직전 설치가 완료면 정상대로 '해제'다", () => {
     expect(cliButtonIntent("installed", "installed")).toBe("uninstall");
-    expect(cliButtonView("installed", [], "installed").label).toBe("셸 cys 해제");
+    expect(cliButtonView("installed", [], "installed").label).toBe("셸 cysr 해제");
   });
   it("래치가 비어 있으면(패널 재열기·앱 기동 직후) 상태 그대로 판정한다", () => {
     expect(cliButtonIntent("installed", null)).toBe("uninstall");
@@ -1439,7 +1439,7 @@ describe("withCliNotice — 결과 토스트에 상시 고지를 접어 넣는�
   it("★해제 실패 경로에도 같은 고지가 붙는다(G1 대칭 — 실패만 덜 말하지 않는다)", () => {
     const failed = {
       category: "watchdog",
-      title: "셸 cys 해제 실패",
+      title: "셸 cysr 해제 실패",
       body: "Error: User canceled.",
       sticky: true,
       id: UNINSTALL_TOAST_ID,
@@ -1527,7 +1527,7 @@ describe("statusNoticePlan — notes 를 토스트로도 낸다(BLOCK-1(d))", ()
 // ★MAJOR-D(6R) — 정상 사용자에게 **매번 거짓 경고**를 내지 않는다(제목은 기계 필드가 정한다)
 // ══════════════════════════════════════════════════════════════════════════════
 // 실사고: G4 가 `cli_install_status.notes` 에 PATH-그림자·프로브실패 문장을 새로 실었는데, 제목은
-// 여전히 `notes.length > 0` 하나로 "⚠ /usr/local/bin 에 이 앱의 것이 아닌 cys 파일이 있습니다" 로
+// 여전히 `notes.length > 0` 하나로 "⚠ /usr/local/bin 에 이 앱의 것이 아닌 'cys' 파일이 있습니다" 로
 // 고정돼 있었다 — 남의 파일이 **하나도 없는** 정상 설치 사용자가 Control Center 를 열 때마다
 // 거짓 경고를 봤다. notes 는 성격이 다른 문장이 합류하는 채널이라 '들어 있음'이 종류를 말해 주지
 // 않는다(채널의 내용물 유무로 판정을 추정하는, 이 계열이 반복해 온 형태).
@@ -2031,8 +2031,8 @@ describe("★MAJOR-1 — 버리기 안내에 가드와 비가역 경고가 함�
       "이 앱이 만든 링크가 아니면 지우지 않고 같은 폴더에 옮겨 보관합니다.",
       "실제 파일이면 다른 도구의 설치본일 수 있으니 지우지 마세요.",
       "그래서 지우는 명령은 드리지 않습니다.",
-      "'셸 cys 해제' 를 누르면 앱이 그 링크를 지우고 이 원본을 제자리에 되돌립니다.",
-      "⚠ 셸 cys 해제 — 지운 것이 없습니다",
+      "'셸 cysr 해제' 를 누르면 앱이 그 링크를 지우고 이 원본을 제자리에 되돌립니다.",
+      "⚠ 셸 cysr 해제 — 지운 것이 없습니다",
       "제거한 항목 없음",
       "지우면 되돌릴 수 없습니다",
       "정말 버릴 때가 아니면 그대로 두세요",
@@ -2163,7 +2163,7 @@ describe("★MAJOR-1 — 버리기 안내에 가드와 비가역 경고가 함�
 // ══════════════════════════════════════════════════════════════════════════════
 // Rust `pick_restore_backup`(src-tauri/src/main.rs:2509)은 한 대상 경로에 대해 스탬프가 가장 큰
 // 하나만 고르고, `plan_cli_uninstall` 은 그 하나만 restore 쌍에 넣는다. 10R 까지 UI 는 백업본
-// **각각**에 대해 "'셸 cys 해제' 를 누르면 … 이 원본을 제자리에 되돌립니다" 라고 말했다 —
+// **각각**에 대해 "'셸 cysr 해제' 를 누르면 … 이 원본을 제자리에 되돌립니다" 라고 말했다 —
 // 앱이 지키지 못할 약속을 하고, 그 약속을 근거로 사용자가 옛 사본을 지우게 유도했다.
 // Rust 는 고치지 않는다. **UI 문구가 Rust 의 실제 동작에 맞아야 한다.**
 describe("★MAJOR-6 — 다중 백업본에서 복원 약속은 최신 하나에만 붙는다", () => {

@@ -16,8 +16,11 @@ const conf = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", 
 
 describe("ⓐ 표시명 cysr", () => {
   it("창 제목·문서 제목·좌상단 이름이 cysr 다", () => {
-    expect(conf.app.windows[0].title).toBe("cysr — CYSJavis Terminal");
-    expect(html).toContain("<title>cysr — CYSJavis Terminal</title>");
+    expect(conf.app.windows[0].title).toBe("cysr");
+    expect(html).toContain("<title>cysr</title>");
+    // ⑨(publish-docs-118 2판 · 박사님 10-07 「공식명칭은 cysr · 이 외 다른 명칭은 쓰지 않는다」): 「CYSJavis Terminal」 꼬리 삭제
+    expect(html).not.toContain("CYSJavis Terminal");
+    expect(conf.app.windows[0].title).not.toContain("CYSJavis");
     expect(html).toContain('<span id="brand">cysr</span>');
   });
 

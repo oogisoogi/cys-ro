@@ -426,7 +426,7 @@ async function runFeedbackModal(deps: FeedbackDeps): Promise<void> {
       const note = mailSizeNote(rep.total_bytes);
       if (note) lines.push(note);
     }
-    lines.push("cys 는 자동으로 아무것도 보내지 않습니다 — 메일에서 직접 [보내기]를 누르실 때만 전달됩니다.");
+    lines.push("cysr 은 자동으로 아무것도 보내지 않습니다 — 메일에서 직접 [보내기]를 누르실 때만 전달됩니다.");
     q<HTMLElement>(".fb-done-note").textContent = lines.join("\n");
     folderBtn.hidden = false;
     mailAppBtn.hidden = !(deps.platform === "mac" && rep.mail_app && files > 0);

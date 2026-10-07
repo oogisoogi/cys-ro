@@ -769,7 +769,7 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
       const mkCtxTitle = (nowSecs2: number) => {
         // 이름 행은 「페인 N」이 아니다 — cys surface가 아니라 cmux 페인의 Claude다.
         const where = c.name
-          ? `${c.name} (cmux 페인 · cys surface 없음)`
+          ? `${c.name} (cmux 페인 · cysr surface 없음)`
           : `페인 ${c.surfaceId}${tag ? ` (데몬 ${tag} · ${c.socket})` : ""}`;
         if (c.ctxPct == null) return `${where} · 아직 관측치 없음\n(측정 전이라는 뜻이지 0% 라는 뜻이 아니다)`;
         return `${where} · CTX ${Math.round(c.ctxPct)}%\n${(g as { title: string }).title}\n관측 ${ageText(
@@ -1608,7 +1608,7 @@ function taskRow(s: any, deptKey: string): string {
     label = (idle > 60 ? "대기" : "활동") + (view.report === "stale" ? " (자기보고 낡음)" : "");
   }
   const trust = freshReport
-    ? `<span class="cc-trust-badge self" title="노드가 cys set-status로 직접 보고한 상태">📍자기보고</span>`
+    ? `<span class="cc-trust-badge self" title="노드가 cysr set-status로 직접 보고한 상태">📍자기보고</span>`
     : view.seat === "hollow"
       ? `<span class="cc-trust-badge derived" title="역할 이름표는 있으나 에이전트 프로세스가 보이지 않습니다(데몬: 셸 아래 프로세스 0 · 에이전트 미관측)">⚙파생</span>`
       : view.report === "stale"
@@ -8248,7 +8248,7 @@ async function factoryResetFlow() {
         toast("feed", "⏳ 앱 시작을 마무리하는 중입니다", "아무것도 바뀌지 않았습니다 — 시작 작업이 끝나면 완전 초기화를 쓸 수 있습니다. 잠시 후 다시 눌러 주세요.", undefined, String(e));
         return;
       }
-      stickyToast(failId, "watchdog", "완전 초기화 실패", "초기화가 끝나지 않았습니다. 아무것도 바뀌지 않았거나 일부만 바뀌었을 수 있으니 다시 시도해 주세요. 상태 확인 명령은 「자세히」 안에 있습니다.", undefined, `${String(e)}\n상태 확인: cys factory-reset --plan`);
+      stickyToast(failId, "watchdog", "완전 초기화 실패", "초기화가 끝나지 않았습니다. 아무것도 바뀌지 않았거나 일부만 바뀌었을 수 있으니 다시 시도해 주세요. 상태 확인 명령은 「자세히」 안에 있습니다.", undefined, `${String(e)}\n상태 확인: cysr factory-reset --plan`);
       return;
     }
     dismissToast("factory-reset");
@@ -9463,7 +9463,7 @@ async function start() {
     const msg =
       typeof e.payload === "string"
         ? e.payload
-        : "cys.app을 응용 프로그램(Applications) 폴더로 옮긴 뒤 다시 열어 주세요.";
+        : "cysr.app을 응용 프로그램(Applications) 폴더로 옮긴 뒤 다시 열어 주세요.";
     stickyToast("safe-mode", "health", "안전모드 — 설치 위치를 옮겨 주세요", msg);
   });
 
@@ -10130,7 +10130,7 @@ document.getElementById("btn-install-cli")?.addEventListener("click", async () =
     // 그 사실은 실패 알림에도 실려야 한다 — 실패 경로만 덜 말하면 그것이 곧 자기보고 미도달이다.
     plan = {
       category: "watchdog",
-      title: wantUninstall ? "셸 cys 해제 실패" : "셸 설치 실패",
+      title: wantUninstall ? "셸 cysr 해제 실패" : "셸 설치 실패",
       body: String(e),
       sticky: true,
       id: wantUninstall ? UNINSTALL_TOAST_ID : INSTALL_TOAST_ID,

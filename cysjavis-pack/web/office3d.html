@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<title>CYSJAVIS · Metaverse Office</title>
+<title>cysr · Metaverse Office</title>
 <style>
   html,body{margin:0;height:100%;background:#05080f;overflow:hidden;
     font-family:'SF Mono',Menlo,monospace;color:#cfeeff}
@@ -133,12 +133,12 @@ if (window.self !== window.top) document.documentElement.classList.add("embed");
 <body>
 <canvas id="scene"></canvas>
 <div class="hud" id="hud-tl">
-  <h1>CYSJAVIS · METAVERSE OFFICE</h1>
+  <h1>cysr · METAVERSE OFFICE</h1>
   <div class="sub"><span id="conn"></span><span id="conn-t">연결 중…</span> · 127.0.0.1 · 노드 클릭=지시 패널</div>
   <div class="stats" id="stats">—</div>
   <div class="sub">🎮 주인 조종: 방향키/WASD 보행 · 바닥 클릭 이동 · 엘리베이터 안 ⬆⬇=층 이동(진입 시 줌인)</div>
 </div>
-<div class="hud" id="ticker"><div class="h">LIVE EVENTS ─ cys events</div><div id="tick-rows"></div></div>
+<div class="hud" id="ticker"><div class="h">LIVE EVENTS ─ cysr events</div><div id="tick-rows"></div></div>
 <div class="hud" id="legend"></div>
 <div class="hud" id="clock"></div>
 <div class="hud" id="paused">PAUSED</div>
@@ -179,10 +179,10 @@ if (window.self !== window.top) document.documentElement.classList.add("embed");
   <div class="meta" id="p-meta">—</div>
   <textarea id="p-text" placeholder="이 직원에게 보낼 지시를 입력… (1줄 · 전송 시 Return까지 주입)"></textarea>
   <div class="row2">
-    <button id="p-send">지시 전송 → cys-terminal</button>
+    <button id="p-send">지시 전송 → cysr</button>
     <span id="p-status" class="status"></span>
   </div>
-  <div class="note">전송 = cys send + Return (해당 pane에 즉시 타이핑됨). 배달은
+  <div class="note">전송 = cysr send + Return (해당 pane에 즉시 타이핑됨). 배달은
     surface.input_injected 이벤트로 이 화면에 되돌아와 확인된다(동시성 루프).</div>
 </div>
 <div id="shop">
@@ -978,7 +978,7 @@ function makePopupStore(y, cx=-4.6, cz=0.8){
   htag.position.set(hx, y+1.0, cz+0.15); g.add(htag);
   const neon = textSprite('✦ POP-UP ✦', { size:24, color:'#ff8fb8' });
   neon.position.set(cx, y+2.35, cz-0.6); g.add(neon);
-  const ver = textSprite('신상: cys v' + (lastWorld?.daemon?.version || '—'),
+  const ver = textSprite('신상: cysr v' + (lastWorld?.daemon?.version || '—'),
     { size:16, color:'#ffd77a' });
   ver.position.set(cx-0.9, y+1.05, cz+0.35); g.add(ver);
   return g;
@@ -1153,7 +1153,7 @@ function drawBillboard(){
   g.fillStyle = 'rgba(6,16,30,0.95)'; g.fillRect(0,0,512,256);
   g.strokeStyle = '#3fa8e0'; g.lineWidth=3; g.strokeRect(4,4,504,248);
   g.fillStyle = '#7fe3ff'; g.font = '600 30px Menlo,monospace';
-  g.fillText('CYSJAVIS OPERATIONS', 24, 46);
+  g.fillText('cysr OPERATIONS', 24, 46);
   let active=0; nodes.forEach(e=>{ if(e.data.presence==='active') active++; });
   g.fillStyle = '#cfeeff'; g.font = '24px Menlo,monospace';
   g.fillText(`부서 ${worldMeta.deps} · 직원 ${worldMeta.total} · 활동 ${active}`, 24, 92);
@@ -1612,8 +1612,8 @@ function fxDoc(f){                                         // #11 배달 모션
   const from = f.from ? nodes.get(f.from) : null;
   addTick(`📄 ${f.from?labelOf(f.from):'외부'} → ${labelOf(f.to)} 배달 ${f.bytes?`(${f.bytes}B)`:''}`, 0);
   if (pendingCmd && f.to === pendingCmd.key){
-    setPanelStatus(`✅ cys-terminal 반영 확인 (input_injected ${f.bytes||''}B 수신)`, 'ok');
-    if (talkKey === f.to) talkStatus.textContent = `✅ cys-terminal 반영 확인 (${f.bytes||''}B 수신)`;
+    setPanelStatus(`✅ cysr 반영 확인 (input_injected ${f.bytes||''}B 수신)`, 'ok');
+    if (talkKey === f.to) talkStatus.textContent = `✅ cysr 반영 확인 (${f.bytes||''}B 수신)`;
     pendingCmd = null;
   }
   // from 귀속 + 같은 층 + 유휴 아바타 → 서류 들고 보행 배달. 아니면 종이비행기 아크.
@@ -2322,7 +2322,7 @@ document.getElementById('p-send').onclick = async ()=>{
     const j = await r.json();
     if (j.ok){
       pendingCmd = { key: selected, at: performance.now() };
-      setPanelStatus('주입됨 — cys-terminal pane 반영·배달 이벤트 대기…', 'ok');
+      setPanelStatus('주입됨 — cysr pane 반영·배달 이벤트 대기…', 'ok');
       addTick(`🕹 지시 전송 → ${labelOf(selected)}: ${text.slice(0,40)}`, 1);
       document.getElementById('p-text').value = '';
     } else setPanelStatus(`거부: ${j.error}`, 'err');
@@ -2374,7 +2374,7 @@ async function giftTo(key){
     : `[카페 알림] 🎁 스킬 '${shopItem.name}' 추천 — 필요 시 사용`;
   setShopStatus('전송 중…', '');
   const ok = await postCommand(key, text, false);       // 알림 텍스트만 (실명령 아님 — Phase C 제외)
-  if (ok){ setShopStatus(`✅ ${labelOf(key)}에게 전달됨 — cys-terminal 반영 대기`, 'ok');
+  if (ok){ setShopStatus(`✅ ${labelOf(key)}에게 전달됨 — cysr 반영 대기`, 'ok');
     addTick(`${shopItem.kind==='latte'?'☕':'🎁'} 카페 선물 → ${labelOf(key)}`, 0);
     showGiftMug(key); }
   else setShopStatus('게이트 거부 또는 브리지 오류', 'err');
@@ -2668,7 +2668,7 @@ function showTalk(ent){
   document.getElementById('chat-target').textContent = '대상: ' + labelOf(talkKey);
   document.getElementById('t-title').textContent =
     `💬 ${ent.deptId} · ${ent.data.role} — 근접 대화 (Enter로 입력)`;
-  talkStatus.textContent = '실전달 모드: 입력 즉시 cys send + Return';
+  talkStatus.textContent = '실전달 모드: 입력 즉시 cysr send + Return';
   talkEl.style.display = 'block';
 }
 function hideTalk(){
@@ -2712,7 +2712,7 @@ async function talkSend(){
   addChat('o', '👑 주인(근접)', text);
   talkStatus.textContent = '전송 중…';
   const ok = await postCommand(talkKey, text, false);       // 실전달 — cys send + Return
-  talkStatus.textContent = ok ? '주입됨 — cys-terminal 반영 대기…' : '게이트 거부 또는 브리지 오류';
+  talkStatus.textContent = ok ? '주입됨 — cysr 반영 대기…' : '게이트 거부 또는 브리지 오류';
 }
 talkInput.addEventListener('keydown', e=>{
   if (e.key === 'Enter'){ talkSend(); e.stopPropagation(); }

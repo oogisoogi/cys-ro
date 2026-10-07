@@ -308,7 +308,7 @@ describe("패널 모델 — 정직한 공백", () => {
     const a = acct({ source: "statusline-outside", rate: [win("5h", 40)] });
     expect(isLiveAccount(a)).toBe(true);
     const t = buildUsageBarModel([a], NOW, ok, noRedact).primary!.tooltip;
-    expect(t).toContain("관측: cys 창 밖 상태줄"); // 출처 줄 자체가 사람 말(고지 문구에 기대지 않는다)
+    expect(t).toContain("관측: cysr 창 밖 상태줄"); // 출처 줄 자체가 사람 말(고지 문구에 기대지 않는다)
   });
   it("나머지 관측 계정은 한 줄씩 · 주 계정 제외 · 상한 초과분은 개수", () => {
     const many = Array.from({ length: USAGE_OTHERS_MAX + 3 }, (_, i) =>
@@ -381,7 +381,7 @@ describe("0.14.42 — 발견된 계정은 전부 한 줄씩(오너 제보: 클�
     expect(c4.text.includes("%")).toBe(false);
     expect(c4.tooltip).toContain("외부 터미널"); // 왜 비었는지 — 창 밖 세션도 상태줄이 cys 로 연결돼 있어야 모인다
     expect(c4.tooltip).not.toContain("집계되지 않습니다"); // 수정 전 문구(0.14.42 RC4-b 로 거짓이 됨)
-    expect(c4.text).not.toContain("cys 창에서"); // 창 안에서만 들어온다는 사유는 더 이상 참이 아니다
+    expect(c4.text).not.toContain("cysr 창에서"); // 창 안에서만 들어온다는 사유는 더 이상 참이 아니다
   });
   it("agy CSRF 거절(agy_csrf_required)은 '무엇을 하면 값이 들어오나'(상태줄 연결)를 말한다", () => {
     const rows = live();

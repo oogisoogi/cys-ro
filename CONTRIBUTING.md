@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in cys-terminal.
+Thanks for your interest in cysr.
 
 ## Ground rules
 
@@ -67,7 +67,7 @@ can corrupt it. Three structural seals enforce this — you normally do nothing:
   `set_var`/`remove_var`, so no "env-is-empty" window is left for a sibling test.
 - **positive write authorization** — pack write paths hard-refuse (`Err`) to write
   the live default path unless given a `PackWriteAuth` token, granted only by the
-  production entry points (`cys init-pack`, pack-update/downgrade, cysd boot).
+  production entry points (`cysr init-pack`, pack-update/downgrade, cysd boot).
 
 Release binaries are unaffected: the sandbox env only exists under cargo, so a
 shipped `cys` still resolves `~/.cys/pack` normally.
@@ -76,7 +76,7 @@ shipped `cys` still resolves `~/.cys/pack` normally.
 
 The W0 seals cover `cargo test`/`cargo run` only. A **built binary** run by an
 E2E is a production entry point, and one write surface ignores the pack env
-isolation entirely: `cys init-pack` registers the awakening hooks into every
+isolation entirely: `cysr init-pack` registers the awakening hooks into every
 personal profile `$HOME/.claude*/settings.json` discovered via
 `dirs::home_dir()` (`run_init_pack` → `discover_claude_settings` →
 `pack::personal_profile_settings_paths`), even when `CYS_PACK_DIR`,
@@ -90,7 +90,7 @@ vars but not `HOME` accumulated 3 pairs of dead SessionStart/UserPromptSubmit
 hooks (session-scratchpad and `/var/folders/…` pack paths) in each of the
 user's four live `~/.claude*/settings.json`, so every live session start and
 prompt attempted to run missing scripts until the entries were pruned
-(`cys hooks-prune --pack-dir <scratch>/pack --allow-base`).
+(`cysr hooks-prune --pack-dir <scratch>/pack --allow-base`).
 
 Therefore, for any E2E that executes a built `cys` (`init-pack`,
 pack-update/downgrade, boot):

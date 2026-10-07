@@ -430,12 +430,12 @@ export interface UsageFetchState {
  *  Claude 세션도 그 프로필의 상태줄이 cys 로 연결돼 있으면 계정 전용 입구(`usage.report_account`)로 모인다(RC4-b).
  *  창 밖 값은 **표시용**이다 — 같은 UID 의 프로세스가 보낼 수 있어 계정 경보의 근거로 쓰지 않는다(데몬 alert_rates). */
 export const USAGE_SCOPE_NOTE =
-  "집계 범위: cys 창 안 세션과, 상태줄이 cys 로 연결된 외부 터미널(cys 창 밖) Claude 세션이 계정에 모입니다" +
+  "집계 범위: cysr 창 안 세션과, 상태줄이 cysr 로 연결된 외부 터미널(cysr 창 밖) Claude 세션이 계정에 모입니다" +
   " — 창 밖 값은 표시용(경보 제외)이고, 명명 규칙 밖 설정 폴더·창 밖 agy 세션은 집계 대상이 아닙니다.";
 
 /** 관측 출처(source) → 툴팁용 사람 말. 모르는 출처는 원문 그대로(정직). */
 function sourceLabel(src: unknown): string {
-  if (src === "statusline-outside") return "cys 창 밖 상태줄";
+  if (src === "statusline-outside") return "cysr 창 밖 상태줄";
   if (src === "agy-statusline") return "agy 상태줄";
   return typeof src === "string" && src ? src : "?";
 }
@@ -452,20 +452,20 @@ function sourceErrorText(code: string): { short: string; detail: string } {
     return {
       short: "agy 상태줄 연결 필요",
       detail:
-        "agy(1.2 이후) 언어 서버가 쿼터 조회에 CSRF 토큰을 요구합니다. cys 는 그 토큰을 읽지 않습니다 — " +
-        "agy 설정의 상태줄(statusLine)을 cys 로 연결하면 값이 들어옵니다(사용 설명서 「사이드바 바닥: 사용량」).",
+        "agy(1.2 이후) 언어 서버가 쿼터 조회에 CSRF 토큰을 요구합니다. cysr 은 그 토큰을 읽지 않습니다 — " +
+        "agy 설정의 상태줄(statusLine)을 cysr 로 연결하면 값이 들어옵니다(사용 설명서 「사이드바 바닥: 사용량」).",
     };
   // fatal-fix W5: RPC 경로가 구조적으로 없는 플랫폼(Windows — 언어 서버 포트를 찾을 길이 없다) — 값을 얻는 길을 가리킨다.
   if (code === "agy_statusline_required")
     return {
       short: "agy 상태줄 연결 필요",
       detail:
-        "이 컴퓨터(Windows)에서는 cys 가 agy 내부 서버에서 쿼터를 읽을 수 없습니다 — " +
-        "agy 설정의 상태줄(statusLine)을 cys 로 연결하면 값이 들어옵니다(사용 설명서 「사이드바 바닥: 사용량」).",
+        "이 컴퓨터(Windows)에서는 cysr 이 agy 내부 서버에서 쿼터를 읽을 수 없습니다 — " +
+        "agy 설정의 상태줄(statusLine)을 cysr 로 연결하면 값이 들어옵니다(사용 설명서 「사이드바 바닥: 사용량」).",
     };
   if (code === "agy_no_quota") return { short: "agy 응답에 쿼터 없음", detail: "agy 가 답했지만 Gemini 쿼터 항목이 없습니다." };
   if (code === "agy_unreachable") return { short: "agy 응답 없음", detail: "agy 언어 서버 포트가 응답하지 않습니다." };
-  if (code === "agy_no_port") return { short: "agy 포트 못 찾음", detail: "cys 창의 agy 가 연 포트를 찾지 못했습니다." };
+  if (code === "agy_no_port") return { short: "agy 포트 못 찾음", detail: "cysr 창의 agy 가 연 포트를 찾지 못했습니다." };
   if (code === "agy_no_process") return { short: "agy 프로세스 없음", detail: "agy 좌석 아래에서 agy 프로세스를 찾지 못했습니다." };
   return { short: "관측 경로 오류", detail: "관측 경로가 오류를 보고했습니다." };
 }
@@ -484,15 +484,15 @@ export function unobservedStatus(a: AcctRow): { text: string; detail: string } {
     return {
       text: "관측 전 · agy 상태줄 연결 후",
       detail:
-        "cys 창의 agy 좌석에서 agy 상태줄(statusLine)이 cys 로 연결돼 있으면 값이 들어옵니다(사용 설명서 「사이드바 바닥: 사용량」).",
+        "cysr 창의 agy 좌석에서 agy 상태줄(statusLine)이 cysr 로 연결돼 있으면 값이 들어옵니다(사용 설명서 「사이드바 바닥: 사용량」).",
     };
   if (p === "codex")
-    return { text: "관측 전 · cys 창 codex 응답 후", detail: "cys 창의 codex 좌석이 응답하면 값이 들어옵니다." };
+    return { text: "관측 전 · cysr 창 codex 응답 후", detail: "cysr 창의 codex 좌석이 응답하면 값이 들어옵니다." };
   return {
     text: "관측 전 · Claude 응답 후 표시",
     detail:
-      "이 계정으로 Claude 가 응답하면 값이 들어옵니다 — cys 창 안이든 외부 터미널(cys 창 밖)이든, 그 프로필의 상태줄이 " +
-      "cys 로 연결돼 있으면 모입니다(cys 설치가 연결합니다). 명명 규칙 밖 설정 폴더(CLAUDE_CONFIG_DIR)의 세션은 모이지 않습니다.",
+      "이 계정으로 Claude 가 응답하면 값이 들어옵니다 — cysr 창 안이든 외부 터미널(cysr 창 밖)이든, 그 프로필의 상태줄이 " +
+      "cysr 로 연결돼 있으면 모입니다(cysr 설치가 연결합니다). 명명 규칙 밖 설정 폴더(CLAUDE_CONFIG_DIR)의 세션은 모이지 않습니다.",
   };
 }
 const PROVIDER_ORDER = ["claude", "codex", "antigravity"];

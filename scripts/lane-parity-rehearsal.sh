@@ -671,12 +671,12 @@ PYM
   mut_reset; python3 - "$MUT_ROOT/.github/workflows/release.yml" <<'PYM'
 import sys
 p = sys.argv[1]; t = open(p, encoding="utf-8").read()
-a = '          bash scripts/check-no-ioreport-link.sh "$SRC/macos/cys.app/Contents/MacOS/cysd"\n'
+a = '          bash scripts/check-no-ioreport-link.sh "$SRC/macos/cysr.app/Contents/MacOS/cysd"\n'
 assert t.count(a) == 1, "변이 앵커 부재(release IOReport 게이트 실행 줄)"
 t = t.replace(a, "          echo skipped-ioreport-gate\n", 1)
 open(p, "w", encoding="utf-8", newline="").write(t)
 PYM
-  mut_expect 1 "IOReport 게이트 실행 줄 소거(release 맥 레그)" 'check-no-ioreport-link.sh "$SRC/macos/cys.app/Contents/MacOS/cysd"'
+  mut_expect 1 "IOReport 게이트 실행 줄 소거(release 맥 레그)" 'check-no-ioreport-link.sh "$SRC/macos/cysr.app/Contents/MacOS/cysd"'
   mut_reset; python3 - "$MUT_ROOT/.github/workflows/ci-branch.yml" <<'PYM'
 import sys
 p = sys.argv[1]; t = open(p, encoding="utf-8").read()

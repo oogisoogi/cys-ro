@@ -162,7 +162,7 @@ export function resetNoticeLines(info: ResetPreview): string[] {
   }
 
   lines.push(
-    "복구: 즉시 삭제가 아니라 격리 보관되어 되돌릴 수 있습니다 — 완료 후 안내되는 폴더에서 `cys factory-reset --undo <폴더>`. 격리본은 약 14일 뒤 정리 작업에서 소거될 수 있습니다.",
+    "복구: 즉시 삭제가 아니라 격리 보관되어 되돌릴 수 있습니다 — 완료 후 안내되는 폴더에서 `cysr factory-reset --undo <폴더>`. 격리본은 약 14일 뒤 정리 작업에서 소거될 수 있습니다.",
   );
   lines.push("완료 후 앱을 다시 실행하면 설치 온보딩이 처음부터 시작됩니다.");
   lines.push(`계속하려면 아래에 "${RESET_PHRASE}" 를 정확히 입력하세요.`);
@@ -256,7 +256,7 @@ export function resetResultBody(rep: ResetResult): string {
   );
   if (deferred.length > 0) {
     parts.push(
-      `앱이 사용 중이라 ${deferred.length}건(화면 저장값)은 옮기지 못했습니다 — 앱을 종료한 뒤 외부 터미널에서 \`cys factory-reset\` 을 한 번 더 실행하면 정리됩니다.`,
+      `앱이 사용 중이라 ${deferred.length}건(화면 저장값)은 옮기지 못했습니다 — 앱을 종료한 뒤 외부 터미널에서 \`cysr factory-reset\` 을 한 번 더 실행하면 정리됩니다.`,
     );
   }
   if (rep.manifest_written === false) {
@@ -264,7 +264,7 @@ export function resetResultBody(rep: ResetResult): string {
   }
   if (rep.trash_dir) parts.push(`격리 위치: ${rep.trash_dir}`);
   if (rep.report_path) parts.push(`결과 요약 파일: ${rep.report_path} (이 창을 닫아도 남습니다)`);
-  if (rep.trash_dir) parts.push(`되돌리려면: cys factory-reset --undo ${rep.trash_dir}`);
+  if (rep.trash_dir) parts.push(`되돌리려면: cysr factory-reset --undo ${rep.trash_dir}`);
   parts.push(
     "지금 앱을 종료하세요. 다시 실행하면 설치 온보딩이 처음부터 시작됩니다.\n(종료 전까지는 데몬·부서 생성이 차단됩니다 — 반쪽 상태에서의 재생성 방지)",
   );

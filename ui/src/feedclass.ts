@@ -52,7 +52,7 @@ export function classifyPendingFeed(i: {
 // '치우기'의 부작용(진행 중 cycle 안전 중단)을 숨기지 않는다 — 무고지 부작용 금지 관례.
 export const CYCLE_VERIFY_NOTE =
   "컨텍스트 순환(cycle) 전 저장 검증 요청입니다 — 판정은 지정 검증자 pane에서 " +
-  "`cys feed reply <id> allow|deny`로만 유효합니다. 여기서는 승인할 수 없습니다: " +
+  "`cysr feed reply <id> allow|deny`로만 유효합니다. 여기서는 승인할 수 없습니다: " +
   "GUI 승인에는 검증자 영수증(resolver)이 없어 cycle이 안전 중단(clear 미실행)됩니다. " +
   "('알림 치우기'는 판정이 아니라 목록 정리 전용이며, 진행 중인 cycle이 있으면 역시 안전 중단됩니다.)";
 

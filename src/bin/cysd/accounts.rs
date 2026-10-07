@@ -4088,7 +4088,7 @@ mod tests {
         assert!(para.contains(&win), "윈도우 예시가 코드의 명령({win})과 다르다:\n{para}");
         assert!(!para.contains(r#"bash \"C:/"#), "따옴표 두른 윈도우 예시가 남았다");
         assert!(para.contains("아직 실제로 확인하지 못했습니다"), "윈도우 미검증 고지가 없다");
-        assert!(para.contains("Windows 에서는 cys 가 agy 내부 서버를 아예 찾을 수 없어"), "W5 고지가 없다");
+        assert!(para.contains("Windows 에서는 cysr 이 agy 내부 서버를 아예 찾을 수 없어"), "W5 고지가 없다");
     }
 
     /// ★0.14.42 agy 상태줄 자동 연결(오너 승인 2026-09-24) — 매뉴얼이 코드의 계약을 그대로 적는다: 넣는 명령(표지 포함)·
@@ -4107,7 +4107,7 @@ mod tests {
         assert!(para.contains("덮지 않습니다"), "사용자 설정 불가침 고지가 없다");
         assert!(para.contains(&format!("{}=0", agy::ENV_KNOB)) && para.contains(&format!("~/.cys/{}", agy::OFF_FILE)), "되돌리기 노브");
         assert!(para.contains("Windows 는 자동으로 연결하지 않습니다"), "윈도우 끔 고지");
-        assert!(para.contains("다시 넣지 않습니다") && para.contains("cys doctor --fix"), "다시 넣지 않음·다시 연결 방법");
+        assert!(para.contains("다시 넣지 않습니다") && para.contains("cysr doctor --fix"), "다시 넣지 않음·다시 연결 방법");
         assert!(para.contains(agy::BACKUP_SUFFIX), "백업 고지");
         // 재개(2026-09-24 15시): macOS 판 agy 역어셈블 사실(`sh -c` · 5초) · 래퍼 부재 시 미연결 · 윈도우 Git Bash 부재 시 동작
         assert!(para.contains("`sh -c`") && para.contains("5초"), "agy 가 상태줄을 부르는 방식(macOS 판 확인)이 없다");

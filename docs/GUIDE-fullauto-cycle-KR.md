@@ -1,11 +1,11 @@
 # 컨텍스트 사이클 전자동화(fullauto-cycle) — 운영자 가이드
 
 > v0.14 동봉. builtin 잡 2종(`cycle-autopilot-tick` 매분 · `cycle-verifier-watchdog` 10분)이 데몬 부트 시 **자동 배선**된다 — 단 **shadow 기본**: live 승격(§3-5 파일 채널) 전에는 clear 발화도, 검증자 pane 상주(자동 기동)도 집행하지 않는다(원장에 would_fire 기록뿐).
-> 대상 독자: cys 터미널로 멀티에이전트 플릿을 운영하는 관리자.
+> 대상 독자: cysr로 멀티에이전트 플릿을 운영하는 관리자.
 
 ## 1. 무엇인가
 
-"컨텍스트 60% 도달 시 저장→clear 사이클"과 "주요 이벤트 기계 원장 기록"을 사람·LLM 판단 없이 결정론 코드로 수행하는 외곽 자동화다. `cys cycle-agent`(5단계 집행기)와 데몬은 수정하지 않는다 — 개시·검증·사후검증을 코드가 담당한다.
+"컨텍스트 60% 도달 시 저장→clear 사이클"과 "주요 이벤트 기계 원장 기록"을 사람·LLM 판단 없이 결정론 코드로 수행하는 외곽 자동화다. `cysr cycle-agent`(5단계 집행기)와 데몬은 수정하지 않는다 — 개시·검증·사후검증을 코드가 담당한다.
 
 | 구성물 | 역할 |
 |---|---|
@@ -16,12 +16,12 @@
 
 ## 2. 안전 불변식 (설계 계약)
 
-- 자동 clear의 유일 경로는 `cys cycle-agent --verifier`(2-phase handshake) — self-clear 코드 차단 불변.
-- kill-switch 4중: ①`cys pause`(스케줄 동결) ②`cys gate-check` ③`$CYS_PACK_DIR/AUTOPILOT_PAUSED` 또는 `<프로젝트>/_round/AUTOPILOT_PAUSED` 파일(하나라도 존재=무집행) ④집행 중 1~5s 폴링·감지 시 SIGTERM.
+- 자동 clear의 유일 경로는 `cysr cycle-agent --verifier`(2-phase handshake) — self-clear 코드 차단 불변.
+- kill-switch 4중: ①`cysr pause`(스케줄 동결) ②`cysr gate-check` ③`$CYS_PACK_DIR/AUTOPILOT_PAUSED` 또는 `<프로젝트>/_round/AUTOPILOT_PAUSED` 파일(하나라도 존재=무집행) ④집행 중 1~5s 폴링·감지 시 SIGTERM.
 - 검증자는 반드시 **별도 pane 포그라운드**로 상주(`bootstrap-verifier`가 생성). detached·데몬 스폰은 데몬의 self-approval 게이트가 범주적으로 거부한다. 맨 셸·LLM pane 금지.
 - 측정은 statusline 서버 진실만 판정 투입(claude 노드 한정). 자기보고·transcript 추정은 판정 금지.
 - **실패**(`failed`·`failed_preclear`·`indeterminate`) 종결 후 재발화는 운영자 `reset` + 쿨다운(180s)으로만. **비파괴 보류**(`held_noop` · cycle-agent exit 84/85)는 실패가 아니라 자동 재시도 대상이다 — §4-b 표. `--force-no-verify`는 어떤 경로로도 사용되지 않는다.
-- 즉시 전체 무력화: 환경변수 `CYS_STATE_LEDGER_DISABLE=1`(원장 훅) + 스케줄 잡 제거 또는 `cys pause`.
+- 즉시 전체 무력화: 환경변수 `CYS_STATE_LEDGER_DISABLE=1`(원장 훅) + 스케줄 잡 제거 또는 `cysr pause`.
 
 ## 3. 활성화 절차 (단계적 — 건너뛰지 말 것)
 
@@ -52,7 +52,7 @@
 | 86 | clear 는 **이미 실효**(session_file 교체 확인)했으나 재주입 직전 대상이 유휴가 안 됨 · RESUME 은 최선노력 송신 | **1건(발효)** | 사후검증(held 아님) | 손으로 다시 clear **금지** — 좌석에 [RESUME] 이 없으면 재주입만 |
 
 - **자동 재시도 규칙(게이트5)**: `held_noop` 뒤 쿨다운은 연속 보류 횟수에 따라 지수 증가 — 1회 300s → 2회 600s → 3회 이상 1200s(성공 사이클 쿨다운과 같은 상한). 대상이 살아서 턴을 도는 한(rc84 비구조 · rc85) **하드 정지 없음**. 다른 게이트(유휴·임계·오너 부재·single-flight·검증자 heartbeat)는 그대로 겹쳐 잡는다.
-- **구조적 보류 상한**: rc84 문면에 `[diag=quiet_secs_unreported]` 가 붙으면(데몬이 `quiet_secs` 를 보고하지 않는 구 데몬 · 재시도가 원리적으로 무의미) 그 보류만 세어 연속 3회(`HELD_RETRY_MAX`)에 도달하면 자동 재시도를 멈추고 `autopilot-held-limit` 통지 1회를 낸다. 해제 = 데몬 갱신(`cys daemon restart` 또는 팩 업그레이드) 후 `reset --role <r>`.
+- **구조적 보류 상한**: rc84 문면에 `[diag=quiet_secs_unreported]` 가 붙으면(데몬이 `quiet_secs` 를 보고하지 않는 구 데몬 · 재시도가 원리적으로 무의미) 그 보류만 세어 연속 3회(`HELD_RETRY_MAX`)에 도달하면 자동 재시도를 멈추고 `autopilot-held-limit` 통지 1회를 낸다. 해제 = 데몬 갱신(`cysr daemon restart` 또는 팩 업그레이드) 후 `reset --role <r>`.
 - **통지는 보류 연속 구간당 유한**: `autopilot-held` 는 1회째와 `HELD_NOTIFY_EVERY`(=3)의 배수 회(3·6·9…)에서만, `autopilot-held-limit` 는 도달 순간 1회. tick 은 통지하지 않는다(javis_wakeup 멱등키는 배달 뒤 소멸하므로 tick 재통지 = 매분 홍수). ★통지 주기(`HELD_NOTIFY_EVERY`)와 구조적 보류 하드 상한(`HELD_RETRY_MAX`)은 **서로 다른 노브**다 — digest 가 잦아 주기를 늘려도 사람 개입 시점(상한)은 밀리지 않는다. 예외로 종결 뒤 원장 재조회 값이 예측과 어긋나면(경합 · 원장 손상) 주기와 무관하게 `autopilot-held` 1건을 반드시 내고 문면에 `원장 재조회 불일치(예측 N != 원장 M)` 를 싣는다(침묵 금지). 원장 `detail`: `held_streak`·`held_structural_streak`·`structural`·`alive_evidence`·`keys_sent`·`cooldown_secs`·`retry_after_ts`·`residual_window_secs`(검증자 allow→clear 실측 · 자식 stderr 파싱 · 미보고면 null).
 - **`keys_sent` 는 어댑터와 무관하게 읽는다**: rc85 타이핑 가드 거부 경로의 `C-u` 1건 선행 여부는 자식 문면의 `C-u 1건은 선행 송신됨`·`[cycle 5/7] 입력 버퍼 정리 + '` 로 판정한다 — `agents.json` 의 `clear_cmd` 가 `/clear` 든 `/new` 든 같게 기록된다(종전에는 `/clear` 좌석에서만 맞았다).
 - 84~86 을 **실패로 읽고 손으로 강제 clear 를 치는 것**이 이 장치가 막는 사고다. 원장 `phase` 가 `held_noop` 이면 기다려라.
@@ -61,4 +61,4 @@
 
 ## 5. 제거(롤백)
 
-settings.json 가산 블록 제거(백업 복원) → `$HOME/.cys/local/hooks/PostToolUse.d/50-state-ledger.sh` 및 훅 3종 삭제 → mode 파일 삭제(shadow 강등) + 정지가 필요하면 PAUSED 파일 또는 `cys pause`(builtin 잡은 데몬 부트 시 재-upsert 되므로 잡 삭제만으로는 정지가 아니다) → 검증자 pane close. 원장 파일은 감사 기록이므로 삭제하지 말고 보관 이동만.
+settings.json 가산 블록 제거(백업 복원) → `$HOME/.cys/local/hooks/PostToolUse.d/50-state-ledger.sh` 및 훅 3종 삭제 → mode 파일 삭제(shadow 강등) + 정지가 필요하면 PAUSED 파일 또는 `cysr pause`(builtin 잡은 데몬 부트 시 재-upsert 되므로 잡 삭제만으로는 정지가 아니다) → 검증자 pane close. 원장 파일은 감사 기록이므로 삭제하지 말고 보관 이동만.

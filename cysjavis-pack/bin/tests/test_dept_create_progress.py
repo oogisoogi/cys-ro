@@ -31,10 +31,13 @@
     CYS_PACK_DIR="$(mktemp -d)" python3 cysjavis-pack/bin/tests/test_dept_create_progress.py
 돌연변이 검증용: CYS_DEPT_UNDER_TEST=<변이본 경로> — 제품 대신 그 스크립트를 대상으로 같은 핀을 돌린다(옆 파일은 변이본 폴더에 둔다).
 """
+import contextlib
+import io
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -155,9 +158,39 @@ PYTHON_WRAP = "#!/bin/sh\ncase \" $* \" in\n  *\" restamp:\"*) echo \"[mock pyth
 UP_AT_PING = "130"
 
 
+_SANDBOXES = []   # ★⑦ 이 모듈이 만든 샌드박스 전부 — tearDownModule 의 「전수 뒤 잔존 0」 단언이 본다
+_UNDETERMINED = []  # ★3판 ⑧ 소유 판정이 제한된 사례(사유 1줄씩) — tearDownModule 이 모아 낸다(조용한 초록 금지)
+SANDBOX_KEEP_CYS = ("CYS_PY", "CYS_PY_ORIGIN")   # ★4판 ⑥ 화이트리스트 — 샌드박스가 물려받는 CYS_* 는 이 둘뿐(인터프리터 해소 · 아래 Sandbox 주석)
+
+
+def _mark_undetermined(line):
+    """★3판 ⑧ · 4판(master#141c5b48 ⑤ · Opus 3R m-5): 판정 제한 1줄 — stderr + (GitHub Actions 면) `::warning::` 주석(stdout · 실행 요약에 뜬다).
+    CI 레인은 종료 코드만 보므로 stderr 줄만으로는 수천 줄 로그에 묻힌다."""
+    if line in _UNDETERMINED:
+        return
+    _UNDETERMINED.append(line)
+    sys.stderr.write(line + "\n")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        sys.stdout.write("::warning title=dept 하네스 판정 제한::%s\n" % line)
+        sys.stdout.flush()
+
+
+def _report_undetermined(out=None):
+    """모듈 끝 집계 — **stdout**(시험 결과 요약 곁) 에 집계 줄 · GitHub Actions 면 `::warning::` 1줄(4판 ⑤ — 3판은 stderr 뿐)."""
+    if not _UNDETERMINED:
+        return
+    out = out or sys.stdout
+    out.write("[SKIP·판정 제한 집계] %d건 — 이 환경에서는 거두기 판정이 제한됐다(사유는 아래 줄들):\n  %s\n"
+              % (len(_UNDETERMINED), "\n  ".join(_UNDETERMINED)))
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        out.write("::warning title=dept 하네스 판정 제한 집계::%d건 — %s\n" % (len(_UNDETERMINED), " | ".join(_UNDETERMINED)))
+    out.flush()
+
+
 class Sandbox(object):
     def __init__(self, restamp_fail=False, **env_extra):
         self.tmp = tempfile.mkdtemp(prefix="gp-")
+        _SANDBOXES.append(self)
         self.home = os.path.join(self.tmp, "home")
         self.calls = os.path.join(self.tmp, "calls.log")
         self.pings = os.path.join(self.tmp, "pings.log")
@@ -180,20 +213,98 @@ class Sandbox(object):
             json.dump({"claude": {"cmd": "claude", "env": {"CLAUDE_CONFIG_DIR": "/base"}}}, f)
         self.reg = os.path.join(self.home, ".cys", "depts.json")
         env = dict(os.environ)
+        # ★publish-docs-118 ⑦(10-07 02:18 CSO 실측 · 설치본 cysd 74개 2.8GB 누적): 원인 변수 CYS_CYSD_BIN·CYS_CYS_BIN — cys-dept(dbg-D3 F1)는 둘을 PATH 보다
+        #   먼저 써서, cys 좌석 안에서 돌리면 PATH 선두 목을 건너뛰고 실 cysd 를 가짜 HOME 에 nohup 으로 띄웠다(test_team_create_u16 과 같은 원인).
+        #   3판(m5): 좌석이 물려주는 실 상태·계정 경로(CYS_ACCOUNT_DIR — cysd 가 부서 좌석에 전파 · cys-dept lane 계정 dir 1순위)도 같은 꼴로 샜다.
+        # ★4판(master#141c5b48 ⑥ · agy 3R): 제거 목록 → **화이트리스트** — 상속 CYS_* 는 인터프리터 해소용 2종(CYS_PY·CYS_PY_ORIGIN)만 남기고 전부 뺀다.
+        #   근거: 3판 m5 누설은 목록이 cys-dept 의 경로 변수를 다 따라가지 못한 꼴이었다(목록식은 새 변수마다 재발). 2판 a5 의 반대 근거(접두 삭제가 다른
+        #   하네스가 넣는 CYS_* 전제를 깬다)는 실측 0건 — CI 3레인(ci-branch·release·pack-release)이 이 시험에 넣는 CYS_* 는 CYS_PACK_DIR 하나(원래 제거
+        #   대상)이고, 케이스별 노브(CYS_DEPT_READY_SECS 등)는 아래 env_extra 로 **제거 뒤에** 준다.
         for k in list(env):
-            if k.startswith("STUB_") or k.startswith("_CYS_TT_"):
+            if k.startswith("STUB_") or k.startswith("_CYS_TT_") or (k.startswith("CYS_") and k not in SANDBOX_KEEP_CYS):
                 env.pop(k)
-        for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_NO_AUTOSTART", "CYS_DEPT_ROTATE", "CYS_DEPT_CATALOG",
-                  "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT", "CYS_DEPT_CWD", "CYS_DEPT_READY_SECS",
-                  "CYS_DEPT_RESERVE_GRACE", "CYS_DEPT_CAP", "CYS_SURFACE_ID", "CYS_DEPT_NO_MASTER"):
-            env.pop(k, None)
         env.update({"HOME": self.home, "CYS_DEPTS_JSON": self.reg, "CYS_DEPT_NO_MASTER": "1",
                     "PATH": bindir + os.pathsep + env.get("PATH", "")})
         env.update(env_extra)
         self.env = env
 
     def cleanup(self):
+        """케이스 끝 — ①이 샌드박스가 띄우고 남긴 프로세스를 거둔다(아래 reap · 자기 것만) ②임시 폴더(gp-*)를 지운다 ③남은 것이
+        있었다면 거둔 뒤 적색(⑦ 회귀 = 목 우회 재발 신호 · 거두기만 하고 조용히 넘기면 74개 누적이 다시 안 보인다)."""
+        leaked = self.reap()
         shutil.rmtree(self.tmp, ignore_errors=True)
+        if leaked:
+            raise AssertionError("샌드박스가 띄운 프로세스가 케이스 끝에 남았다(거둠 · 목 우회 의심): %r" % (leaked,))
+
+    def owned_procs(self):
+        """이 샌드박스가 띄운 프로세스 = **이 케이스 고유 임시 폴더(self.tmp) 아래 파일을 열고 있는** 프로세스(cwd·로그·소켓 —
+        cys-dept 는 cysd 표준출력을 <HOME>/.local/state/cys-dept-*/cysd.log 로 연다). 이름(pkill)으로 고르지 않는다 — 같은 이름의
+        운영 데몬·다른 좌석 프로세스를 건드리지 않기 위해서다. 나 자신·내 조상(ppid 사슬)은 언제나 뺀다.
+        반환 [(pid, ppid, pgid, comm)] · lsof 가 없는 곳(윈 등) = None(판정 불가 — 거두지 않는다)."""
+        # 2판(codex7): 도구 선검사 · 예외 = 판정 불가. 3판(master#62af6f8e ⑧ · Opus m6·agy): **조용한 초록 금지** — 판정이 제한되면 stderr 에
+        #   [SKIP·판정 제한] 1줄 + 모듈 끝 집계(tearDownModule). ps 만 막혔으면 lsof 소유 판정은 살리고 조상 제외를 「나·부모」로 좁힌 대체 판정으로 계속 거둔다.
+        #   4판(⑤ · Opus 3R m-5): 윈도 경로도 같은 표시(모듈 1회 — 3판은 표시 없이 None 이었다).
+        if os.name == "nt":
+            _mark_undetermined("[SKIP·판정 제한] (모듈) 윈도 — lsof 기반 소유 판정 없음 · 케이스 끝 거두기 생략(거두지 않음)")
+            return None
+        lsof, ps = shutil.which("lsof"), shutil.which("ps")
+        if not lsof or not os.path.isdir(self.tmp):
+            if os.path.isdir(self.tmp):
+                self._undetermined("lsof 없음 — 소유 판정 불가(거두지 않음)")
+            return None
+        try:
+            r = subprocess.run([lsof, "-t", "+D", self.tmp], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            self._undetermined("lsof 실행 불가(%s) — 소유 판정 불가(거두지 않음)" % type(e).__name__)
+            return None
+        pids = {int(x) for x in r.stdout.split() if x.isdigit()}
+        mine = {os.getpid(), os.getppid()}
+        ps_ok = bool(ps) and os.access(ps, os.X_OK)
+        try:
+            seen, p = set(), os.getpid()
+            while ps_ok and p > 1 and p not in seen:   # 나 + 조상 사슬 전부
+                seen.add(p)
+                q = subprocess.run([ps, "-o", "ppid=", "-p", str(p)], capture_output=True, text=True, timeout=10).stdout.strip()
+                p = int(q) if q.isdigit() else 1
+            mine |= seen
+        except (OSError, subprocess.SubprocessError):
+            ps_ok = False
+        out = []
+        for pid in sorted(pids - mine):
+            q = []
+            if ps_ok:
+                try:
+                    q = subprocess.run([ps, "-o", "ppid=,pgid=,comm=", "-p", str(pid)], capture_output=True, text=True,
+                                       timeout=10).stdout.split(None, 2)
+                except (OSError, subprocess.SubprocessError):
+                    ps_ok = False
+            out.append((pid, int(q[0]), int(q[1]), q[2].strip()) if len(q) == 3 else (pid, -1, -1, "?"))
+        if not ps_ok:
+            self._undetermined("ps 차단 — 대체 판정(소유 = 이 gp-* 폴더를 연 프로세스 · 조상 제외 = 나·부모만) · 대상 %d건" % len(out))
+        return out
+
+    def _undetermined(self, why):
+        _mark_undetermined("[SKIP·판정 제한] %s · %s" % (os.path.basename(self.tmp), why))
+
+    def reap(self):
+        """owned_procs 만 끝낸다 — SIGTERM → 최대 3초 → 아직 이 폴더를 쥐고 있는 것만 SIGKILL(pid 재사용 오살 차단 = 매번 다시 대조)."""
+        found = self.owned_procs()
+        if not found:
+            return []
+        for pid, _pp, _pg, _c in found:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end and self.owned_procs():
+            time.sleep(0.1)
+        for pid, _pp, _pg, _c in self.owned_procs() or []:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        return found
 
     def run(self, *args, **kw):
         r = subprocess.run(["bash", DEPT] + list(args), capture_output=True, text=True, encoding="utf-8",
@@ -1735,6 +1846,237 @@ class Census(unittest.TestCase):
         self.assertLess(i_grace, i_dead, "부팅 유예 판정이 '죽은 등록' 삭제보다 앞이어야 한다")
         self.assertIn("reap(dry): SKIP", seg, "--dry 출력에 건너뜀 사유가 없다")
         self.assertIn('dept_reserve_grace 2>/dev/null', seg, "예약 유예는 reap 에서 한 번 계산하고 경고는 버린다")
+
+
+class SandboxReapGuard(unittest.TestCase):
+    """⑦ 거두기 장치 자신의 계측 타당성 — 남은 프로세스가 0 이라 초록인 핀은 장치가 고장나도 초록이다. 샌드박스 안에 일부러 남긴
+    분리된 자식(nohup & 와 같은 꼴 · 새 세션)을 cleanup 이 ①찾고 ②그것만 끝내고 ③적색으로 알리는지 잰다. 밖의 프로세스(같은 꼴의
+    대조군 · cwd = 샌드박스 밖)는 건드리지 않아야 한다."""
+
+    def test_inherited_cys_env_never_reaches_sandbox(self):
+        """⑦ 원인 핀 — 러너(cys 좌석)가 물려준 CYS_CYSD_BIN·CYS_CYS_BIN(→ 설치본 절대 경로)이 샌드박스 env 에 0.
+        남으면 cys-dept 가 PATH 선두 목보다 그것을 먼저 써서 실 cysd 를 가짜 HOME 에 띄운다(10-07 74개 누적의 원인).
+        4판(⑥ 화이트리스트): 앞으로 생길 CYS_* 도 0 · 인터프리터 해소 2종(CYS_PY·CYS_PY_ORIGIN)만 그대로 · 케이스 노브(env_extra)는 제거 뒤라 살아 있다."""
+        inherited = {"CYS_CYSD_BIN": "/Applications/cys.app/Contents/MacOS/cysd",
+                     "CYS_CYS_BIN": "/Applications/cys.app/Contents/MacOS/cys", "CYS_SOME_FUTURE_KNOB": "1",
+                     "CYS_PY": "/x/python3", "CYS_PY_ORIGIN": "env"}
+        saved = {k: os.environ.get(k) for k in inherited}
+        os.environ.update(inherited)
+        try:
+            sb = Sandbox(CYS_DEPT_READY_SECS="7")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(sb.cleanup)
+        self.assertNotIn("CYS_CYSD_BIN", sb.env, "원인 변수 CYS_CYSD_BIN 이 샌드박스에 남았다")
+        self.assertNotIn("CYS_CYS_BIN", sb.env, "원인 변수 CYS_CYS_BIN 이 샌드박스에 남았다")
+        self.assertNotIn("CYS_SOME_FUTURE_KNOB", sb.env, "화이트리스트 밖 CYS_* 가 샌드박스에 남았다(4판 ⑥ — 목록식 누설 재발 꼴)")
+        self.assertEqual((sb.env.get("CYS_PY"), sb.env.get("CYS_PY_ORIGIN")), ("/x/python3", "env"), "인터프리터 해소 2종까지 지웠다")
+        self.assertEqual(sb.env.get("CYS_DEPT_READY_SECS"), "7", "케이스 노브(env_extra)가 제거에 휩쓸렸다")
+        self.assertEqual(sorted(k for k in sb.env if k.startswith("CYS_")),
+                         sorted(["CYS_PY", "CYS_PY_ORIGIN", "CYS_DEPTS_JSON", "CYS_DEPT_NO_MASTER", "CYS_DEPT_READY_SECS"]),
+                         "샌드박스 CYS_* = 화이트리스트 2 + 하네스가 정한 2 + 케이스 노브뿐")
+
+    def test_inherited_real_state_paths_are_not_touched(self):
+        """3판 ⑦ 음성 대조(계정 쪽): 좌석이 물려준 CYS_ACCOUNT_DIR 가 **샌드박스 밖 실 경로**를 가리켜도 launch 가 그 자리를 건드리지 않는다
+        (표지 폴더를 심고 전 과정 뒤 비어 있음을 단언 · 화이트리스트에 넣으면 계정 표지 폴더에 lane 계정 파일이 생긴다).
+        4판 정정(Opus 3R m-6): CYS_STATE_DIR 쪽은 이 시험으로는 공회전이다 — cys-dept 는 그 변수를 쓰지 않고 **읽기만** 한다(티켓 판정). 그 경로는
+        아래 test_inherited_state_dir_ticket_is_not_read 가 실제로 지난다."""
+        outside = tempfile.mkdtemp(prefix="gp-realpath-")
+        self.addCleanup(shutil.rmtree, outside, True)
+        acct, state = os.path.join(outside, "acct"), os.path.join(outside, "state")   # 만들지 않는다 — cys-dept 의 `mkdir -p "$acctdir"` 가 생기게 하면 접촉이다
+        saved = {k: os.environ.get(k) for k in ("CYS_ACCOUNT_DIR", "CYS_STATE_DIR")}
+        os.environ.update({"CYS_ACCOUNT_DIR": acct, "CYS_STATE_DIR": state})
+        try:
+            sb = Sandbox(STUB_PING_OK_FROM=UP_AT_PING)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(sb.cleanup)
+        self.assertNotIn("CYS_ACCOUNT_DIR", sb.env)
+        self.assertNotIn("CYS_STATE_DIR", sb.env)
+        rc, out, err = sb.run("launch", "a")   # launch = resolve_lane_acctdir 가 CYS_ACCOUNT_DIR 를 1순위로 읽는 동사(cys-dept resolve_lane_acctdir)
+        self.assertEqual(rc, 0, err[-800:])
+        touched = sorted(os.path.relpath(os.path.join(d, x), outside) for d, ds, fs in os.walk(outside) for x in ds + fs)
+        self.assertEqual(touched, [], "샌드박스 밖 실 경로(표지)를 건드렸다: %r" % touched)
+
+    def test_inherited_state_dir_ticket_is_not_read(self):
+        """4판(master#141c5b48 ⑥ · Opus 3R m-6) 음성 대조(상태 쪽): cys-dept 가 CYS_STATE_DIR 를 **실제로 읽는 경로** = CEO 티켓 멱등 판정
+        (dept_ticket_valid · TICKET_DIR=${CYS_STATE_DIR:-$HOME/.cys/state}/dept-boot-tickets). 샌드박스 밖 상태 폴더에 유효 티켓을 심고 발급기 목을
+        샌드박스 팩에 둔다 → 변수가 샜다면 바깥 티켓을 보고 「유효 CEO 티켓 기존재 — 재발급 생략」으로 발급을 건너뛴다(= 실 상태를 읽은 것).
+        새지 않았다면 샌드박스 HOME 의 빈 상태를 보고 발급기를 1회 부른다."""
+        outside = tempfile.mkdtemp(prefix="gp-realstate-")
+        self.addCleanup(shutil.rmtree, outside, True)
+        tdir = os.path.join(outside, "state", "dept-boot-tickets")
+        os.makedirs(tdir)
+        ticket = os.path.join(tdir, "a.ticket")
+        with open(ticket, "w", encoding="utf-8") as f:
+            json.dump({"dept": "a", "issued_at": time.time()}, f)
+        before = _read(ticket)
+        saved = os.environ.get("CYS_STATE_DIR")
+        os.environ["CYS_STATE_DIR"] = os.path.join(outside, "state")
+        try:
+            sb = Sandbox(STUB_PING_OK_FROM=UP_AT_PING)
+        finally:
+            if saved is None:
+                os.environ.pop("CYS_STATE_DIR", None)
+            else:
+                os.environ["CYS_STATE_DIR"] = saved
+        self.addCleanup(sb.cleanup)
+        calls = os.path.join(sb.home, "bootstrap-calls.txt")
+        os.makedirs(os.path.join(sb.home, ".cys", "pack", "bin"), exist_ok=True)
+        _write_exec(os.path.join(sb.home, ".cys", "pack", "bin", "javis_bootstrap.py"),
+                    "import sys\nopen(%r, 'a', encoding='utf-8').write(' '.join(sys.argv[1:]) + '\\n')\n" % calls)
+        rc, out, err = sb.run("launch", "a")
+        self.assertEqual(rc, 0, err[-800:])
+        self.assertNotIn("유효 CEO 티켓 기존재", err, "샌드박스가 바깥 실 상태 폴더의 티켓을 읽었다(CYS_STATE_DIR 누설)")
+        self.assertEqual(_read(calls).splitlines() if os.path.exists(calls) else [], ["issue-ticket --dept a"],
+                         "발급기 호출이 1회가 아니다 — 샌드박스 상태(빈 티켓 폴더)로 판정하지 않았다")
+        self.assertEqual(_read(ticket), before, "바깥 티켓이 바뀌었다")
+        self.assertEqual(sorted(os.listdir(tdir)), ["a.ticket"], "바깥 티켓 폴더에 무엇이 생겼다")
+
+    def test_windows_path_marks_undetermined(self):
+        """4판(⑤ · Opus 3R m-5): 윈도 경로(lsof 없음)도 조용히 None 이 아니라 [SKIP·판정 제한] 을 낸다(모듈 1회)."""
+        sb = Sandbox()
+        self.addCleanup(sb.cleanup)
+        err = io.StringIO()
+        real_name, saved_list = os.name, list(_UNDETERMINED)
+        try:
+            os.name = "nt"
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                got = sb.owned_procs()
+            marked = list(_UNDETERMINED)
+        finally:
+            os.name = real_name
+            _UNDETERMINED[:] = saved_list   # 흉내 낸 윈도 표시가 이 기계의 실 집계에 섞이지 않게
+        self.assertIsNone(got)
+        self.assertTrue(any(x.startswith("[SKIP·판정 제한] (모듈) 윈도") for x in marked), marked)
+
+    def test_undetermined_summary_reaches_stdout_and_ci_annotation(self):
+        """4판(⑤ · Opus 3R m-5): 모듈 끝 집계는 stdout(시험 결과 요약 곁)에 나오고, GitHub Actions 면 `::warning::` 주석으로 실행 요약에 뜬다."""
+        saved_list, saved_env = list(_UNDETERMINED), os.environ.get("GITHUB_ACTIONS")
+        try:
+            _UNDETERMINED[:] = ["[SKIP·판정 제한] gp-x · ps 차단 — 대체 판정"]
+            os.environ["GITHUB_ACTIONS"] = "true"
+            out = io.StringIO()
+            _report_undetermined(out)
+            self.assertIn("[SKIP·판정 제한 집계] 1건", out.getvalue())
+            self.assertIn("::warning title=dept 하네스 판정 제한 집계::1건", out.getvalue())
+            os.environ.pop("GITHUB_ACTIONS")
+            out = io.StringIO()
+            _report_undetermined(out)
+            self.assertIn("[SKIP·판정 제한 집계] 1건", out.getvalue())
+            self.assertNotIn("::warning", out.getvalue(), "CI 밖에서는 주석 명령을 내지 않는다")
+            line_out, err = io.StringIO(), io.StringIO()
+            os.environ["GITHUB_ACTIONS"] = "true"
+            with contextlib.redirect_stdout(line_out), contextlib.redirect_stderr(err):
+                _mark_undetermined("[SKIP·판정 제한] gp-y · lsof 없음")
+            self.assertIn("[SKIP·판정 제한] gp-y", err.getvalue())
+            self.assertIn("::warning title=dept 하네스 판정 제한::[SKIP·판정 제한] gp-y", line_out.getvalue())
+        finally:
+            _UNDETERMINED[:] = saved_list
+            if saved_env is None:
+                os.environ.pop("GITHUB_ACTIONS", None)
+            else:
+                os.environ["GITHUB_ACTIONS"] = saved_env
+
+    def test_blocked_ps_is_undeterminable_not_error(self):
+        """2판(master#0885ae7a ⑤ · codex7 실측 = 관리 환경 `PermissionError: ps` 로 본시험·cleanup·tearDownModule 오류 3건): 외부 도구 실행이
+        막히면 owned_procs = None(판정 불가) · reap = [] · cleanup = 오류 없이 임시 폴더만 지운다."""
+        sb = Sandbox()
+        real_run = subprocess.run
+
+        def blocked(argv, *a, **kw):
+            if argv and os.path.basename(str(argv[0])) in ("ps", "lsof"):
+                raise PermissionError(1, "Operation not permitted", argv[0])
+            return real_run(argv, *a, **kw)
+        err, saved_list = io.StringIO(), list(_UNDETERMINED)
+        try:
+            subprocess.run = blocked
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                self.assertIsNone(sb.owned_procs())
+                self.assertEqual(sb.reap(), [])
+                sb.cleanup()
+        finally:
+            subprocess.run = real_run
+            _UNDETERMINED[:] = saved_list   # 4판 ⑤: 흉내 낸 차단은 실 집계·CI 주석에 섞지 않는다(매 실행 거짓 경고 방지)
+        self.assertFalse(os.path.isdir(sb.tmp), "판정 불가여도 임시 폴더(gp-*)는 지운다")
+        self.assertIn("[SKIP·판정 제한]", err.getvalue(), "판정 불가가 조용히 지나갔다(3판 ⑧ · 조용한 초록 금지)")
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("lsof"), "lsof 기반 소유 판정(POSIX)")
+    def test_ps_blocked_falls_back_and_still_reaps(self):
+        """3판 ⑧: ps 만 막혀도 lsof 소유 판정(이 gp-* 폴더를 연 프로세스)으로 남은 자식을 거두고 적색 · 판정 제한을 표시한다."""
+        sb = Sandbox()
+        hold = [sys.executable, "-c", "import time; time.sleep(60)"]
+        inner = subprocess.Popen(hold, cwd=sb.home, start_new_session=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (inner.kill(), inner.wait()) if inner.poll() is None else None)
+        real_run = subprocess.run
+
+        def ps_blocked(argv, *a, **kw):
+            if argv and os.path.basename(str(argv[0])) == "ps":
+                raise PermissionError(1, "Operation not permitted", argv[0])
+            return real_run(argv, *a, **kw)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and inner.pid not in [x[0] for x in sb.owned_procs() or []]:
+            time.sleep(0.1)
+        err, saved_list = io.StringIO(), list(_UNDETERMINED)
+        try:
+            subprocess.run = ps_blocked
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(AssertionError) as cm:
+                sb.cleanup()
+        finally:
+            subprocess.run = real_run
+            _UNDETERMINED[:] = saved_list   # 4판 ⑤: 흉내 낸 차단은 실 집계·CI 주석에 섞지 않는다
+        self.assertIn(str(inner.pid), str(cm.exception))
+        self.assertIsNotNone(inner.wait(timeout=10), "ps 차단 대체 판정이 남은 자식을 거두지 못했다")
+        self.assertIn("ps 차단 — 대체 판정", err.getvalue())
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("lsof") or not shutil.which("ps"), "lsof·ps 기반 소유 판정(POSIX)")
+    def test_cleanup_reaps_only_own_leftover_and_fails(self):
+        sb = Sandbox()
+        outside = tempfile.mkdtemp(prefix="gp-outside-")
+        self.addCleanup(shutil.rmtree, outside, True)
+        hold = [sys.executable, "-c", "import time; time.sleep(60)"]
+        inner = subprocess.Popen(hold, cwd=sb.home, start_new_session=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        other = subprocess.Popen(hold, cwd=outside, start_new_session=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (other.kill(), other.wait()))
+        self.addCleanup(lambda: (inner.kill(), inner.wait()) if inner.poll() is None else None)
+        if sb.owned_procs() is None:
+            self.skipTest("소유 판정 불가(lsof·ps 실행이 막힌 환경) — cleanup 은 거두지 않고 오류도 내지 않는다(아래 권한 시험)")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and inner.pid not in [x[0] for x in sb.owned_procs() or []]:
+            time.sleep(0.1)
+        self.assertIn(inner.pid, [x[0] for x in sb.owned_procs()], "샌드박스 안 프로세스를 소유로 못 찾았다")
+        self.assertNotIn(other.pid, [x[0] for x in sb.owned_procs()], "샌드박스 밖 프로세스를 소유로 잡았다")
+        with self.assertRaises(AssertionError) as cm:
+            sb.cleanup()
+        self.assertIn(str(inner.pid), str(cm.exception))
+        self.assertIsNotNone(inner.wait(timeout=10), "거둔다던 프로세스가 살아 있다")
+        self.assertIsNone(other.poll(), "샌드박스 밖 프로세스가 같이 죽었다(소유 판정 과잉)")
+        self.assertFalse(os.path.isdir(sb.tmp), "임시 폴더(gp-*)가 남았다")
+
+
+def tearDownModule():
+    """★⑦ 전수 뒤 단언 — 이 모듈이 만든 샌드박스 전부: 남은 프로세스 0(있으면 거둔 뒤 적색) · 안 지운 임시 폴더(gp-*)는 지운다."""
+    left = []
+    for sb in _SANDBOXES:
+        if os.path.isdir(sb.tmp):
+            found = sb.reap()
+            if found:
+                left.append((sb.tmp, found))
+            shutil.rmtree(sb.tmp, ignore_errors=True)
+    _report_undetermined()
+    if left:
+        raise AssertionError("전수 뒤 샌드박스가 띄운 프로세스가 남았다(거둠): %r" % (left,))
 
 
 if __name__ == "__main__":

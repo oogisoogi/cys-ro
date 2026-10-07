@@ -959,18 +959,18 @@ fn boot_verdict() -> Option<String> {
 fn translocation_guidance(verdict: BootPathVerdict) -> String {
     let cause = match verdict {
         BootPathVerdict::Translocated => {
-            "Safari 등에서 내려받은 DMG 안의 앱을 곧바로 열어 macOS가 cys.app을 임시 위치에서 실행 중입니다."
+            "내려받은 zip 을 푼 자리(다운로드 폴더 등)에서 앱을 곧바로 열어 macOS가 cysr.app을 임시 위치에서 실행 중입니다."
         }
-        _ => "cys.app이 정규 설치 위치(Applications) 밖에서 실행 중입니다.",
+        _ => "cysr.app이 정규 설치 위치(Applications) 밖에서 실행 중입니다.",
     };
     format!(
         "{cause} 이 상태로는 백그라운드 서비스를 안전하게 등록할 수 없어 안전모드로 멈췄습니다.\n\n\
          다음 순서로 설치해 주세요:\n\
-         1) Finder에서 cys.app을 응용 프로그램(Applications) 폴더로 드래그해 복사합니다.\n\
-         2) 이미 설치된 구버전 cys.app이 실행 중이면 먼저 종료한 뒤 새 버전으로 교체합니다.\n\
+         1) Finder에서 cysr.app을 응용 프로그램(Applications) 폴더로 드래그해 복사합니다.\n\
+         2) 이미 설치된 구버전이 실행 중이면 먼저 종료하고, 지운 뒤 새 버전을 넣습니다(이름은 cysr.app 또는 옛 이름 cys.app — 옛 판의 앱 안 갱신 단추로 새 판을 받은 맥은 판과 무관하게 cys.app 일 수 있으니 둘 다 확인하세요).\n\
          3) 그래도 '손상됨'으로 열리지 않으면 터미널에서 아래를 한 번 실행하세요:\n\
-         \u{2003}xattr -d com.apple.quarantine /Applications/cys.app\n\n\
-         설치 후 응용 프로그램 폴더의 cys.app을 다시 열면 정상 부팅됩니다."
+         \u{2003}xattr -d com.apple.quarantine /Applications/cysr.app\n\n\
+         설치 후 응용 프로그램 폴더의 cysr.app을 다시 열면 정상 부팅됩니다."
     )
 }
 
@@ -2079,13 +2079,13 @@ fn plan_cli_install(
 ) -> Result<CliInstallPlan, String> {
     match classify_bundle_dir(macos_dir) {
         BundleKind::Translocated => {
-            return Err("cys.app이 Gatekeeper에 의해 임시 위치에서 실행 중입니다. \
-Finder에서 cys.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
+            return Err("cysr.app이 Gatekeeper에 의해 임시 위치에서 실행 중입니다. \
+Finder에서 cysr.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
                 .into());
         }
         BundleKind::Backup => {
             return Err("백업 번들에서 실행 중입니다. \
-정규 cys.app(Applications)에서 실행한 뒤 시도하세요."
+정규 cysr.app(Applications)에서 실행한 뒤 시도하세요."
                 .into());
         }
         // ★D5(2026-08-23) NonStandard 경고 → **거부** 승격. 예전에는 경고만 달고 진행했으나,
@@ -2100,8 +2100,8 @@ Finder에서 cys.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도�
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| macos_dir.to_string_lossy().to_string());
             return Err(format!(
-                "cys.app이 표준 위치(Applications)가 아닌 곳에서 실행 중입니다: {bundle}\n\
-Finder에서 cys.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
+                "cysr.app이 표준 위치(Applications)가 아닌 곳에서 실행 중입니다: {bundle}\n\
+Finder에서 cysr.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
             ));
         }
         BundleKind::Canonical => {}
@@ -2117,9 +2117,9 @@ Finder에서 cys.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도�
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| macos_dir.to_string_lossy().to_string());
         return Err(format!(
-            "cys.app이 표준 Applications 폴더가 아닌 곳에서 실행 중입니다: {bundle}\n\
-정확히 /Applications 또는 홈 폴더의 Applications 안에 있는 cys.app에서만 설치할 수 있습니다. \
-Finder에서 cys.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
+            "cysr.app이 표준 Applications 폴더가 아닌 곳에서 실행 중입니다: {bundle}\n\
+정확히 /Applications 또는 홈 폴더의 Applications 안에 있는 cysr.app에서만 설치할 수 있습니다. \
+Finder에서 cysr.app을 Applications 폴더로 옮긴 뒤 다시 열고 시도하세요."
         ));
     }
     // 가드를 모두 통과한 Canonical 경로만 여기까지 온다 — 위치 경고는 더 이상 존재하지 않는다.
@@ -2831,7 +2831,7 @@ fn plan_cli_uninstall(probes: &[LinkProbe], backups: &[String]) -> CliUninstallP
             }
             UninstallAction::SkipForeignTarget => {
                 skipped.push(format!(
-                    "{} — cys.app 번들이 아닌 곳({})을 가리키는 링크라 건드리지 않았습니다.",
+                    "{} — 이 앱 번들(cysr.app·옛 이름 cys.app)이 아닌 곳({})을 가리키는 링크라 건드리지 않았습니다.",
                     p.path,
                     p.link_target.as_deref().unwrap_or("대상 읽기 실패")
                 ));
@@ -3012,7 +3012,7 @@ cysr 로도 실행됩니다 · 지금도 cys 는 그대로 동작합니다.",
             alias.path
         )),
         UninstallAction::SkipNotSymlink | UninstallAction::SkipForeignTarget => Some(format!(
-            "{} — 이 앱의 것이 아닌 cysr 가 이미 있어 별칭 링크를 쓰지 않습니다(설치를 다시 하면 \
+            "{} — 이 앱의 것이 아닌 cysr 이 이미 있어 별칭 링크를 쓰지 않습니다(설치를 다시 하면 \
 백업한 뒤 링크합니다).",
             alias.path
         )),
@@ -3289,7 +3289,7 @@ async fn cli_install_status() -> Result<CliInstallStatusReport, String> {
                     p.path
                 )),
                 UninstallAction::SkipForeignTarget => Some(format!(
-                    "{} — cys.app 번들 밖({})을 가리키는 링크입니다.",
+                    "{} — 이 앱 번들(cysr.app·옛 이름 cys.app) 밖({})을 가리키는 링크입니다.",
                     p.path,
                     p.link_target.as_deref().unwrap_or("대상 읽기 실패")
                 )),
@@ -3423,7 +3423,7 @@ fn classify_hook_settings(settings: &std::path::Path, pack: &std::path::Path) ->
         return HookPresence::Installed;
     }
     if is_link {
-        return HookPresence::Undeterminable("다른 파일을 가리키는 링크(심볼릭 링크)라 cys 가 고쳐 쓰지 않습니다".into());
+        return HookPresence::Undeterminable("다른 파일을 가리키는 링크(심볼릭 링크)라 cysr 이 고쳐 쓰지 않습니다".into());
     }
     let Some(obj) = root.as_object() else {
         return HookPresence::Undeterminable("맨 바깥이 JSON 객체({ … })가 아닙니다".into());
@@ -4069,7 +4069,7 @@ fn decide_pending_update(
     }
 }
 
-/// 업데이트(인앱 재시작 OR 홈페이지 수동설치로 인한 버전변경)이면 두 가지를 한다:
+/// 판 변경 뒤 첫 기동(새 판 설치 · 옛 인앱 갱신은 1.1.8 에서 삭제됨)이면 두 가지를 한다:
 ///  ① 새 기능 배포 — 새 cys 바이너리에 embed된 팩(pack.rs include_str! + build.rs PACK_SKILLS)을
 ///     `cys init-pack --no-install-hook`으로 ~/.cys/pack에 반영한다. --no-install-hook: hook 등록은
 ///     최초 설치/launch-agent에서 끝나므로 매 업데이트마다 settings.json을 건드리지 않는다(.bak-cys
@@ -4101,9 +4101,9 @@ fn maybe_apply_pending_update(app: &AppHandle) {
         PendingUpdatePlan::Apply => {}
     }
     // ① 새 팩(새 기능) 반영 — 성공 여부를 검사한다(침묵 실패 차단).
-    // ★U-19 도달성 앵커(2026-08-24): 인앱 업데이트는 **항상** `--no-install-hook` 이다. 즉
+    // ★U-19 도달성 앵커(2026-08-24): 판 변경 기동은 **항상** `--no-install-hook` 이다. 즉
     //   `pack.rs setup_isolated_config_dir` 의 `if !install_hooks { return; }` **아래**에 놓인
-    //   시드·치유는 **업데이트로 올라온 사용자 전원에게 영영 도달하지 않는다**(신규 설치에만
+    //   시드·치유는 **새 판으로 올라온 사용자 전원에게 영영 도달하지 않는다**(신규 설치에만
     //   닿는다 = `agents.json` 값 수정이 기존 기계에 안 닿는 K-1 과 같은 계열의 도달성 결함).
     //   첫기동 관문 시드(`seed_first_run_gates`)는 그래서 훅과 **독립 플래그**로 제어되며 그
     //   조기 return **위**에 있다 — 순서가 뒤집히면 H-SEED-U19 가 적색이 된다.
@@ -5065,7 +5065,7 @@ async fn maybe_autoregister_launchd() -> bool {
     if !autoregister_allowed(&kind) {
         eprintln!(
             "[cys-app] launchd autoregister skipped: 비정규 실행 위치({kind:?}) — \
-             Finder에서 cys.app을 Applications로 옮겨 다시 여세요"
+             Finder에서 cysr.app을 Applications로 옮겨 다시 여세요"
         );
         return false;
     }
@@ -6291,9 +6291,9 @@ fn cys_boot_signal(code: Option<i32>, stdout: &str) -> BootSignal {
         Some(0) => BootSignal::Silent,
         // exit 1 = Fatal 이지만 role 표를 못 읽은 경우(스큐·파싱 실패) — fail-closed 로 경고한다.
         Some(c) => BootSignal::Warn(format!(
-            "팀 기동이 실패했습니다(cys boot exit {c}) — `cys list` 로 노드 상태를 확인하세요."
+            "팀 기동이 실패했습니다(cysr boot exit {c}) — `cysr list` 로 노드 상태를 확인하세요."
         )),
-        None => BootSignal::Warn("팀 기동 프로세스가 비정상 종료했습니다(시그널) — `cys list` 확인.".into()),
+        None => BootSignal::Warn("팀 기동 프로세스가 비정상 종료했습니다(시그널) — `cysr list` 확인.".into()),
     }
 }
 
@@ -6343,7 +6343,7 @@ fn bootstrap_chain_signal(code: Option<i32>, stdout: &str, stderr: &str) -> Boot
             "팀 기동 체인이 {} 단계에서 멈췄습니다(javis_bootstrap exit {c}).\n{detail}",
             match c {
                 3 => "데몬 확인(②ping)",
-                4 => "팀 기동(④cys boot)",
+                4 => "팀 기동(④cysr boot)",
                 6 => "노드 생존 확인(⑤check)",
                 8 => "레인↔팩 정합(⓪lane-pack)",
                 9 => "자원 게이트(④′resource-gate)",
@@ -6459,7 +6459,7 @@ fn spawn_orchestra_boot(app: AppHandle, socket: Option<String>, surface_ref: Opt
             ),
             Err(e) => emit_boot_signal(
                 &app,
-                BootSignal::Warn(format!("팀 기동(cys boot) 실행 실패: {e}")),
+                BootSignal::Warn(format!("팀 기동(cysr boot) 실행 실패: {e}")),
             ),
         }
     });
@@ -6948,7 +6948,7 @@ async fn factory_reset_execute(
     // 그 경우 리셋이 자기 세션을 끊으므로 거부한다(CLI run_factory_reset 과 같은 근거).
     if std::env::var("CYS_SURFACE_ID").map(|v| !v.is_empty()).unwrap_or(false) {
         return Err(
-            "cys surface 안에서 기동된 앱에서는 완전 초기화를 실행할 수 없다 — 앱을 독립 실행하라"
+            "cysr 창(surface) 안에서 기동된 앱에서는 완전 초기화를 실행할 수 없다 — 앱을 독립 실행하라"
                 .into(),
         );
     }
@@ -11094,8 +11094,8 @@ echo '{MSG}/usr/local/bin/cysd.cys-backup-1700000000 (그 자리의 /usr/local/b
             assert_eq!(cli_alias_note(false, probe), None, "설치 전에는 말하지 않는다");
         }
         assert!(cli_alias_note(true, &absent).unwrap().contains("링크가 없습니다"));
-        assert!(cli_alias_note(true, &file).unwrap().contains("이 앱의 것이 아닌 cysr"));
-        assert!(cli_alias_note(true, &foreign).unwrap().contains("이 앱의 것이 아닌 cysr"));
+        assert!(cli_alias_note(true, &file).unwrap().contains("이 앱의 것이 아닌 cysr 이 이미 있어 별칭 링크를 쓰지 않습니다(설치를 다시 하면 백업한 뒤 링크합니다)."));
+        assert!(cli_alias_note(true, &foreign).unwrap().contains("이 앱의 것이 아닌 cysr 이 이미 있어 별칭 링크를 쓰지 않습니다(설치를 다시 하면 백업한 뒤 링크합니다)."));
     }
 
     /// ★C1(2026-08-25 4R) **파괴 대칭 회귀 핀**: 설치는 남의 *심볼릭*도 백업한다.
@@ -11610,12 +11610,12 @@ __cys_probe_begin_d__\n/b/cysd\n__cys_probe_end_d__\n";
         assert!(g.contains("Applications"), "① Applications 드래그 설치 안내 포함");
         assert!(g.contains("구버전") && g.contains("종료"), "② 구버전 종료·교체 안내 포함");
         assert!(
-            g.contains("xattr -d com.apple.quarantine /Applications/cys.app"),
+            g.contains("xattr -d com.apple.quarantine /Applications/cysr.app"),
             "③ quarantine 제거 명령 포함",
         );
         // NonCanonical 도 동일 복구 절차를 안내한다(원인 문구만 일반화).
         let n = translocation_guidance(BootPathVerdict::NonCanonical);
-        assert!(n.contains("xattr -d com.apple.quarantine /Applications/cys.app"));
+        assert!(n.contains("xattr -d com.apple.quarantine /Applications/cysr.app"));
     }
 
     #[cfg(target_os = "macos")]
@@ -11629,7 +11629,7 @@ __cys_probe_begin_d__\n/b/cysd\n__cys_probe_end_d__\n";
         let g = boot_verdict();
         assert!(g.is_some(), "비정규 실행(test 하네스 경로)에서 pull 은 안내 문구를 반환");
         assert!(
-            g.unwrap().contains("xattr -d com.apple.quarantine /Applications/cys.app"),
+            g.unwrap().contains("xattr -d com.apple.quarantine /Applications/cysr.app"),
             "pull 이 반환한 안내에 복구 명령 포함(프론트 stickyToast 본문)",
         );
         std::env::set_var("CYS_ALLOW_NONCANONICAL", "1");
@@ -12857,7 +12857,7 @@ echo {PROBE_BEGIN_MARK_D}; which -a cysd-no-such-binary-xyz; echo {PROBE_END_MAR
         let se = "[bootstrap] 단계 실패: ④boot (exit 1)\n의무(Fatal) 역할 기동 실패: cso=missing [claude 설치: curl -fsSL https://claude.ai/install.sh | bash]";
         match bootstrap_chain_signal(Some(4), "", se) {
             BootSignal::Warn(m) => {
-                assert!(m.contains("팀 기동(④cys boot)"), "단계 라벨 누락: {m}");
+                assert!(m.contains("팀 기동(④cysr boot)"), "단계 라벨 누락: {m}");
                 assert!(m.contains("claude.ai/install.sh"), "생산자 힌트 미인용: {m}");
             }
             other => panic!("체인 실패가 경고가 아니다: {other:?}"),

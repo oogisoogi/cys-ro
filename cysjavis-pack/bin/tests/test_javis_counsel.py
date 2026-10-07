@@ -1210,12 +1210,29 @@ def bundled_client(dest):
     return dest
 
 
+RACE_WRITER = r'''
+import sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import javis_counsel as jc
+# 쓴 줄 수를 종료 코드로 돌려준다(0 = 한 줄 씀 · 3 = 못 씀). 상한은 넉넉히 — 이 시험이 재는 것은 「잠금이 서로를 막는가」다.
+sys.exit(0 if jc.write_signals("worker", [(sys.argv[2], "race.e1")], wait_s=float(sys.argv[3])) == 1 else 3)
+'''
+
+
 class CrossLockRace(Base):
-    """⑩ 팩 쓰기(`javis_counsel.py signal` 동시 다발) ↔ 동봉 아고라 `collector.move_sent` 반복 — 같은 옆 잠금
-    (`signals.lock` 0번 바이트)으로 막히는가. 모든 줄이 signals.jsonl ∪ signals-sent.jsonl 에 정확히 한 번 · LF."""
+    """⑩ 팩 쓰기(`write_signals` 동시 다발 · 별 프로세스) ↔ 동봉 아고라 `collector.move_sent` 반복 — 같은 옆 잠금
+    (`signals.lock` 0번 바이트)으로 막히는가. 모든 줄이 signals.jsonl ∪ signals-sent.jsonl 에 정확히 한 번 · LF.
+
+    ★상한(TICKET=cysr-118-counsel-race · 2026-10-07): 쓰는 쪽은 넉넉한 상한(RACE_WAIT_S)으로 부르고 **각자 썼는지**를 종료 코드로 단언한다.
+      종전은 CLI(`signal` · 기본 상한 2초 · 넘으면 설계상 버리고 exit 0)로 불러 「버린 쓰기」와 「쓴 뒤 사라진 줄」을 가르지 못했다 —
+      윈 러너 부하에서 쓰기 한 번이 2초를 넘어(실측 최대 3.58초 · 옮기는 쪽 보유 최대 1.05초) 설계대로 버려진 줄이 「줄 유실」 적색이 됐다
+      (CI 3회 · 누락 21·26·9줄 · 프로브: 부하 30판 중 2판 적색 · 누락 25줄 전부 반환 0 · 쓴 뒤 사라짐 0 · 상한 60초 30판 0 적색).
+      2초 버림 계약은 Signal.test_lock_held_drops_after_timeout 이 따로 잰다(CLI 포함)."""
 
     N = 60
     WAVE = 20
+    RACE_WAIT_S = 60.0
 
     def test_writers_vs_mover(self):
         client = bundled_client(os.path.join(self.tmp, "client"))
@@ -1227,14 +1244,19 @@ class CrossLockRace(Base):
         os.makedirs(os.path.join(self.cfg, "counsel"))
         mover = subprocess.Popen([sys.executable, mover_py, client, self.cfg, stop], stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, env=env)
+        writer_py = os.path.join(self.tmp, "writer.py")
+        with open(writer_py, "w") as f:
+            f.write(RACE_WRITER)
         try:
             ops = ["race.w%03d" % i for i in range(self.N)]
+            not_written = []
             for k in range(0, self.N, self.WAVE):
-                procs = [subprocess.Popen([sys.executable, SCRIPT, "signal", "--source", "worker", "--op", op,
-                                           "--error-code", "race.e1"], env=env)
+                procs = [(op, subprocess.Popen([sys.executable, writer_py, BIN, op, str(self.RACE_WAIT_S)], env=env))
                          for op in ops[k:k + self.WAVE]]
-                for p in procs:
-                    self.assertEqual(p.wait(timeout=60), 0)
+                for op, p in procs:
+                    if p.wait(timeout=self.RACE_WAIT_S + 60) != 0:
+                        not_written.append(op)
+            self.assertEqual(not_written, [], "쓰는 쪽이 상한(%s초) 안에 잠금을 못 잡았다(기아) — 줄 유실과 다른 실패" % self.RACE_WAIT_S)
         finally:
             open(stop, "w").close()
             out, err = mover.communicate(timeout=60)

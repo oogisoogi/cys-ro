@@ -86,6 +86,9 @@
   · ★2판(18a92a12 · 10-07): ci-branch 37556601892 **success** · windows-build 37556601987 **success** · windows-health 37556602014 **success** — U5 스텝: U5-PIN ok(음성 대조 「핀 불일치: u5-block.ps1」 적색 확인 · aj_commit 8fd43bc) · PowerShell 5.1 ok 36 · FAIL 0 · 7 ok 36 · FAIL 0 · real=1(ⓚ 묘비 실패 쥔 채 · ⓛ 자식 env 0 · ⓜ Everyone ACE·junction = unsafe · SDDL 벡터 20 · 롤백 자산 판정).
   · ★[ⓔ] 놓기(묘비 쓰기) = ⓖ 뒤 16ms(1차 3.3초 = File.Replace 30번 실패 후 폴백) — FileRenameInfoEx 바꿔치기가 윈 러너에서 첫 시도에 통과.
   · 맥: u5-mac-lock 31/0 · pwsh 28/0 · 하네스 17/0 · `cargo test --lib update::` 227/0 · `cargo test --bin cys` 589/0 · secret-scan clean.
+  · ★3판(a56d010e · 10-07): ci-branch 37562611253 **success** · windows-build 37562611247 **success** · windows-health 37562611289 1차 **failure** = 상담소 팩 `test_writers_vs_mover`(교차 잠금 경합 · 줄 유실 — U5 무관 · 18a92a12 이후 cysjavis-pack 변경 0) → 실패 잡만 재실행(attempt 2) **success**(그 시험 ok ×2). U5 스텝 두 번 다 PS 5.1·7 각 ok 39 FAIL 0 real=1 · U5-PIN ok(aj 9f0ab37).
+  · ⚠U5-NEXT(스테이징 블록 ↔ 핀) = GitHub 러너에서 **403**(맥 로컬 curl = 200) → 경고 skip. 러너 IP 차단(Cloudflare 규칙)으로 추정 — 이 대조는 지금 러너에서 실제로 돌지 않는다. 실효 관문 = §6 배포 전 `sync --check`(master). 러너에서 돌리려면 사이트 쪽 허용 규칙 = master 판단.
+  · 맥(3판): u5-mac-lock 37/0 · pwsh 32/0 · 하네스 20/0 · `update::` 228/0 · `--bin cys` 589/0 · secret-scan clean.
   · ⚠debug cys.exe 의 윈 주 스레드 스택 넘침(거부 갈래 = 0xC00000FD)은 시험 빌드 한정 관측 — 출시 무관이나 윈에서 debug cys 로 참가 거부를 재는 시험은 같은 함정(기록만).
 
 ## §5 재현

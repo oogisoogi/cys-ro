@@ -31,6 +31,8 @@
     CYS_PACK_DIR="$(mktemp -d)" python3 cysjavis-pack/bin/tests/test_dept_create_progress.py
 돌연변이 검증용: CYS_DEPT_UNDER_TEST=<변이본 경로> — 제품 대신 그 스크립트를 대상으로 같은 핀을 돌린다(옆 파일은 변이본 폴더에 둔다).
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -157,6 +159,7 @@ UP_AT_PING = "130"
 
 
 _SANDBOXES = []   # ★⑦ 이 모듈이 만든 샌드박스 전부 — tearDownModule 의 「전수 뒤 잔존 0」 단언이 본다
+_UNDETERMINED = []  # ★3판 ⑧ 소유 판정이 제한된 사례(사유 1줄씩) — tearDownModule 이 모아 stderr 에 낸다(조용한 초록 금지)
 
 
 class Sandbox(object):
@@ -195,7 +198,15 @@ class Sandbox(object):
         for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_NO_AUTOSTART", "CYS_DEPT_ROTATE", "CYS_DEPT_CATALOG",
                   "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT", "CYS_DEPT_CWD", "CYS_DEPT_READY_SECS",
                   "CYS_DEPT_RESERVE_GRACE", "CYS_DEPT_CAP", "CYS_SURFACE_ID", "CYS_DEPT_NO_MASTER",
-                  "CYS_CYSD_BIN", "CYS_CYS_BIN", "CYS_BIN"):
+                  "CYS_CYSD_BIN", "CYS_CYS_BIN", "CYS_BIN",
+                  # 3판(master#62af6f8e ⑦ · Opus 2R m5): 좌석·부서 좌석이 물려주는 **실 상태·계정 경로**와 좌석 신원 — cys-dept 가 읽는 CYS_* 전수
+                  #   (`grep -o '${CYS_…' cys-dept` 실측) 중 실 경로·실 좌석을 가리킬 수 있는 것. CYS_ACCOUNT_DIR 은 cysd 가 부서 좌석에 전파하고
+                  #   (src/bin/cysd/state.rs) cys-dept 가 lane 계정 dir 1순위로 쓴다 — 남으면 샌드박스가 실 계정 폴더에서 mkdir·시드한다.
+                  #   (남기는 것: CYS_PY·CYS_PY_ORIGIN = 인터프리터 해소용 · 윈 CI 가 준다)
+                  "CYS_ACCOUNT_DIR", "CYS_STATE_DIR", "CYS_DEPT_MISSIONS", "CYS_DEPT_SPAWN_PATH", "CYS_DEPT_SEED_CREDS",
+                  "CYS_TRASH_TTL_DAYS", "CYS_TRASH_STAMP", "CYS_SEAT_TOKEN", "CYS_SURFACE_REF", "CYS_RESOLVED_ROLE",
+                  "CYS_RESOLVED_ROLE_SOURCE", "CYS_DEPT_EXPECT_GEN", "CYS_DEPT_REAP_GRACE", "CYS_DEPT_BOOT_STALL_S",
+                  "CYS_DEPT_BOOT_MAX_S"):
             env.pop(k, None)
         env.update({"HOME": self.home, "CYS_DEPTS_JSON": self.reg, "CYS_DEPT_NO_MASTER": "1",
                     "PATH": bindir + os.pathsep + env.get("PATH", "")})
@@ -216,26 +227,48 @@ class Sandbox(object):
         운영 데몬·다른 좌석 프로세스를 건드리지 않기 위해서다. 나 자신·내 조상(ppid 사슬)은 언제나 뺀다.
         반환 [(pid, ppid, pgid, comm)] · lsof 가 없는 곳(윈 등) = None(판정 불가 — 거두지 않는다)."""
         lsof, ps = shutil.which("lsof"), shutil.which("ps")
-        # 2판(master#0885ae7a ⑤ · codex7): ps 도 선검사 — 관리 환경에서 ps 실행이 막히면(PermissionError) 본시험·cleanup·tearDownModule 이
-        #   오류로 끝났다. 도구가 없거나 못 돌리면 「판정 불가」(None) — 거두지 않는다(원인 수리는 env 라 플랫폼·권한 무관).
-        if os.name == "nt" or not lsof or not ps or not os.access(ps, os.X_OK) or not os.path.isdir(self.tmp):
+        # 2판(codex7): 도구 선검사 · 예외 = 판정 불가. 3판(master#62af6f8e ⑧ · Opus m6·agy): **조용한 초록 금지** — 판정이 제한되면 stderr 에
+        #   [SKIP·판정 제한] 1줄 + 모듈 끝 집계(tearDownModule). ps 만 막혔으면 lsof 소유 판정은 살리고 조상 제외를 「나·부모」로 좁힌 대체 판정으로 계속 거둔다.
+        if os.name == "nt" or not lsof or not os.path.isdir(self.tmp):
+            if os.name != "nt" and os.path.isdir(self.tmp):
+                self._undetermined("lsof 없음 — 소유 판정 불가(거두지 않음)")
             return None
         try:
             r = subprocess.run([lsof, "-t", "+D", self.tmp], capture_output=True, text=True, timeout=60)
-            mine, p = set(), os.getpid()
-            while p > 1 and p not in mine:   # 나 + 조상
-                mine.add(p)
+        except (OSError, subprocess.SubprocessError) as e:
+            self._undetermined("lsof 실행 불가(%s) — 소유 판정 불가(거두지 않음)" % type(e).__name__)
+            return None
+        pids = {int(x) for x in r.stdout.split() if x.isdigit()}
+        mine = {os.getpid(), os.getppid()}
+        ps_ok = bool(ps) and os.access(ps, os.X_OK)
+        try:
+            seen, p = set(), os.getpid()
+            while ps_ok and p > 1 and p not in seen:   # 나 + 조상 사슬 전부
+                seen.add(p)
                 q = subprocess.run([ps, "-o", "ppid=", "-p", str(p)], capture_output=True, text=True, timeout=10).stdout.strip()
                 p = int(q) if q.isdigit() else 1
-            out = []
-            for pid in sorted({int(x) for x in r.stdout.split() if x.isdigit()} - mine):
-                q = subprocess.run([ps, "-o", "ppid=,pgid=,comm=", "-p", str(pid)], capture_output=True, text=True,
-                                   timeout=10).stdout.split(None, 2)
-                if len(q) == 3:
-                    out.append((pid, int(q[0]), int(q[1]), q[2].strip()))
-            return out
+            mine |= seen
         except (OSError, subprocess.SubprocessError):
-            return None
+            ps_ok = False
+        out = []
+        for pid in sorted(pids - mine):
+            q = []
+            if ps_ok:
+                try:
+                    q = subprocess.run([ps, "-o", "ppid=,pgid=,comm=", "-p", str(pid)], capture_output=True, text=True,
+                                       timeout=10).stdout.split(None, 2)
+                except (OSError, subprocess.SubprocessError):
+                    ps_ok = False
+            out.append((pid, int(q[0]), int(q[1]), q[2].strip()) if len(q) == 3 else (pid, -1, -1, "?"))
+        if not ps_ok:
+            self._undetermined("ps 차단 — 대체 판정(소유 = 이 gp-* 폴더를 연 프로세스 · 조상 제외 = 나·부모만) · 대상 %d건" % len(out))
+        return out
+
+    def _undetermined(self, why):
+        line = "[SKIP·판정 제한] %s · %s" % (os.path.basename(self.tmp), why)
+        if line not in _UNDETERMINED:
+            _UNDETERMINED.append(line)
+            sys.stderr.write(line + "\n")
 
     def reap(self):
         """owned_procs 만 끝낸다 — SIGTERM → 최대 3초 → 아직 이 폴더를 쥐고 있는 것만 SIGKILL(pid 재사용 오살 차단 = 매번 다시 대조)."""
@@ -1824,6 +1857,30 @@ class SandboxReapGuard(unittest.TestCase):
         self.assertNotIn("CYS_CYS_BIN", sb.env, "원인 변수 CYS_CYS_BIN 이 샌드박스에 남았다")
         self.assertEqual(sb.env.get("CYS_SOME_FUTURE_KNOB"), "1", "원인 아닌 CYS_* 까지 지웠다(다른 하네스 전제 파괴 · 2판 agy5)")
 
+    def test_inherited_real_state_paths_are_not_touched(self):
+        """3판 ⑦ 음성 대조: 좌석이 물려준 CYS_ACCOUNT_DIR·CYS_STATE_DIR 가 **샌드박스 밖 실 경로**를 가리켜도 launch 가 그 자리를 건드리지 않는다
+        (표지 폴더 2개를 심고 전 과정 뒤 비어 있음을 단언 · 제거 목록에서 빼면 계정 표지 폴더에 lane 계정 파일이 생긴다)."""
+        outside = tempfile.mkdtemp(prefix="gp-realpath-")
+        self.addCleanup(shutil.rmtree, outside, True)
+        acct, state = os.path.join(outside, "acct"), os.path.join(outside, "state")   # 만들지 않는다 — cys-dept 의 `mkdir -p "$acctdir"` 가 생기게 하면 접촉이다
+        saved = {k: os.environ.get(k) for k in ("CYS_ACCOUNT_DIR", "CYS_STATE_DIR")}
+        os.environ.update({"CYS_ACCOUNT_DIR": acct, "CYS_STATE_DIR": state})
+        try:
+            sb = Sandbox(STUB_PING_OK_FROM=UP_AT_PING)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(sb.cleanup)
+        self.assertNotIn("CYS_ACCOUNT_DIR", sb.env)
+        self.assertNotIn("CYS_STATE_DIR", sb.env)
+        rc, out, err = sb.run("launch", "a")   # launch = resolve_lane_acctdir 가 CYS_ACCOUNT_DIR 를 1순위로 읽는 동사(cys-dept resolve_lane_acctdir)
+        self.assertEqual(rc, 0, err[-800:])
+        touched = sorted(os.path.relpath(os.path.join(d, x), outside) for d, ds, fs in os.walk(outside) for x in ds + fs)
+        self.assertEqual(touched, [], "샌드박스 밖 실 경로(표지)를 건드렸다: %r" % touched)
+
     def test_blocked_ps_is_undeterminable_not_error(self):
         """2판(master#0885ae7a ⑤ · codex7 실측 = 관리 환경 `PermissionError: ps` 로 본시험·cleanup·tearDownModule 오류 3건): 외부 도구 실행이
         막히면 owned_procs = None(판정 불가) · reap = [] · cleanup = 오류 없이 임시 폴더만 지운다."""
@@ -1834,14 +1891,45 @@ class SandboxReapGuard(unittest.TestCase):
             if argv and os.path.basename(str(argv[0])) in ("ps", "lsof"):
                 raise PermissionError(1, "Operation not permitted", argv[0])
             return real_run(argv, *a, **kw)
-        subprocess.run = blocked
+        err = io.StringIO()
         try:
-            self.assertIsNone(sb.owned_procs())
-            self.assertEqual(sb.reap(), [])
-            sb.cleanup()
+            subprocess.run = blocked
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(sb.owned_procs())
+                self.assertEqual(sb.reap(), [])
+                sb.cleanup()
         finally:
             subprocess.run = real_run
         self.assertFalse(os.path.isdir(sb.tmp), "판정 불가여도 임시 폴더(gp-*)는 지운다")
+        self.assertIn("[SKIP·판정 제한]", err.getvalue(), "판정 불가가 조용히 지나갔다(3판 ⑧ · 조용한 초록 금지)")
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("lsof"), "lsof 기반 소유 판정(POSIX)")
+    def test_ps_blocked_falls_back_and_still_reaps(self):
+        """3판 ⑧: ps 만 막혀도 lsof 소유 판정(이 gp-* 폴더를 연 프로세스)으로 남은 자식을 거두고 적색 · 판정 제한을 표시한다."""
+        sb = Sandbox()
+        hold = [sys.executable, "-c", "import time; time.sleep(60)"]
+        inner = subprocess.Popen(hold, cwd=sb.home, start_new_session=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (inner.kill(), inner.wait()) if inner.poll() is None else None)
+        real_run = subprocess.run
+
+        def ps_blocked(argv, *a, **kw):
+            if argv and os.path.basename(str(argv[0])) == "ps":
+                raise PermissionError(1, "Operation not permitted", argv[0])
+            return real_run(argv, *a, **kw)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and inner.pid not in [x[0] for x in sb.owned_procs() or []]:
+            time.sleep(0.1)
+        err = io.StringIO()
+        try:
+            subprocess.run = ps_blocked
+            with contextlib.redirect_stderr(err), self.assertRaises(AssertionError) as cm:
+                sb.cleanup()
+        finally:
+            subprocess.run = real_run
+        self.assertIn(str(inner.pid), str(cm.exception))
+        self.assertIsNotNone(inner.wait(timeout=10), "ps 차단 대체 판정이 남은 자식을 거두지 못했다")
+        self.assertIn("ps 차단 — 대체 판정", err.getvalue())
 
     @unittest.skipIf(os.name == "nt" or not shutil.which("lsof") or not shutil.which("ps"), "lsof·ps 기반 소유 판정(POSIX)")
     def test_cleanup_reaps_only_own_leftover_and_fails(self):
@@ -1879,6 +1967,9 @@ def tearDownModule():
             if found:
                 left.append((sb.tmp, found))
             shutil.rmtree(sb.tmp, ignore_errors=True)
+    if _UNDETERMINED:
+        sys.stderr.write("[SKIP·판정 제한 집계] %d건 — 이 환경에서는 거두기 판정이 제한됐다(사유는 위 줄들):\n  %s\n"
+                         % (len(_UNDETERMINED), "\n  ".join(_UNDETERMINED)))
     if left:
         raise AssertionError("전수 뒤 샌드박스가 띄운 프로세스가 남았다(거둠): %r" % (left,))
 

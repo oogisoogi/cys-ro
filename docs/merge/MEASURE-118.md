@@ -14,6 +14,7 @@
 | cysd | 2,391 | 53 |
 - 근본 67(짧은 TMPDIR 재측정 기준 · 긴 TMPDIR 1차 근본 75 중 10 = SUN_LEN 환경 적색 · 동시 실행 흔들림 4).
 - 원작자 기준판(up/v0.14.43 · 같은 격리 env): lib 702/0 · cys 464/0 · cysd 2,126/2 ⇒ 원작자 판은 사실상 초록. 병합본 근본 67 중 **원작자판에서도 적색 = 1**(b3_status_polling_does_not_restat_the_identity_file).
+  - 정정 10-08: 이 시험의 적·녹은 부하가 아니라 실행 기계 $HOME 의 프로필 폴더 수로 결정된다(빈 홈 = 통과 · 1개 = left 1 · 2개 = left 2 · v0.14.43 도 같음) — 시험에 accounts::test_home 이음매 1줄로 수리 · TICKET=cysr-118-r2-b3status
 - 출처: 원작자 시험 49 · 우리 시험 18. 원인 갈래(대표): H1 사람 신뢰 축 오버레이(d12_*·v7_*·send_settle·return_absorb a2 ≈10 = 결정 ② 고정물 조정 대상) · agy 휴면(U1/C4 · accounts·usage·handlers ≈11) · D-TEAM 휴면(team_propose·team_token 파싱 2) · schedule 버전·이관(K49 4) · G1 승인 축 OR(c5·wp5 ApprovalPending↔PromptGate 3) · H2 허용목록 · S1 보존소 · 소스 핀(census·settle helper·output_generation·macos_devtools 등) · 우리 결합 시험(v115 seat_inject_guarded 함수명 · v114 owner token · u8 ack-only · d6_1 · delivery f1 583↔829 · released_tables CEO_TEMPLATE 해시 → 생성기 재실행 필요 = 잠금 오염 52 의 뿌리 후보).
 - 전 목록 = scratchpad rust-red-classified.tsv.
 

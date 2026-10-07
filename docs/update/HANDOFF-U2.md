@@ -3,6 +3,16 @@
 > 브리프 = [master#71f53d34](파일 정본 `~/axdev/master/briefs/2026-10-06-cysr-118-u2-runner.md`) · 설계 정본 = `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md`(4판 · U1 편입).
 > 가지 `u2/runner-118` off `e2515bb0` · 워커 = worker-2(계정2 · Opus) · 커밋 = `git log --oneline e2515bb0..HEAD`.
 
+## §0-9 4판 지시(이 메시지 = master#9ad63a78 원문 그대로 · 후임은 이것부터 집행)
+- **3판 판정 = 수렴**: agy 3R 수렴 예(0·0·0) · Opus 3R 수렴 예(BLOCK 0 · MAJOR 0 · MINOR 3 · 2R 11건 전건 해소 · M1 「재구성 불가(사람 필요)」 판단 = 타당 판정) · 게이트 1단 = smoke 18/18 · cysd 기지 4 · 2단(lib·cys) 진행 중. 원문 = `docs/update/REVIEW-U2F-{agy,opus}-3r.md`(ignored · 추적 금지).
+- **절차**: CTX ≈61% → 이 지시를 §0-9 로 옮겨 커밋 → [순환 통보] CSO cycle-agent → 후임 집행. 재개 줄 = 「TICKET=cysr-118-u2-followup 4판 · HANDOFF §0-9 ①~③ 집행 → 전수 · 미러 push 1회 · 3런 success 뒤 【확인요청】」.
+- **4판(사용자 체감 결함 = 발행 전 필수 · 작게)**:
+  - ① [MINOR·n1] 러너 S0 의 N7 보관소 받기가 **전역 잠금 전**에 `installers/<seq>` 를 씀(`auto.rs:273-275` · 잠금 `:329`) · 임시 폴더 이름(`.<seq>.tmp`)이 U5 와 같아 사용자가 설치 링크를 다시 붙이면 같은 자리 경쟁 → 설치 링크 실패·오류 화면 가능 → **받기를 전역 잠금 안으로** 옮김 · 시험 1(잠금 쥔 상태에서 받기 진입 0 / 잠금 안에서만 씀 단언).
+  - ② [MINOR·n2] `--verify-payload` 진단(`auto.rs:401-406`)이 미검증 candidate.json 목록 대조 → 서명 재검증 복원 함수 `recovery_candidate` 로 교체(실기 P1·P2 증거가 이 출력) · 시험 1(변조 candidate → 진단 거부).
+  - ③ [MINOR·n3] 「새 판 + 사본 무효 = 사람 필요」 가 설계 §3-11 문면(좌석 엶)보다 엄격 → HANDOFF §0-8 설계 개정 제안에 이 갈래 1줄 추가(설계 문서 본문 수정 = master).
+- **상한** 1h(순환 포함) · 기반 = 지금 가지 b4616f66 위 · 본 가지 push 0 · 미러 push = `fix/u2-followup-118` 1회(`/usr/bin/git push origin HEAD:fix/u2-followup-118`).
+- **인수 메모(전임 → 후임)**: 격리 래퍼 = `<격리 래퍼>`(EVIDENCE-118 §8 꼴 · 워커 로컬) · 전수 = `<scratchpad>/full8.sh` 꼴을 `u2-realroots.sh` 로 감쌈(`U2_REALROOTS_OUT=<새 폴더>`) · 뮤턴트 = `U1_ISO=<래퍼> scripts/tests/u2-mutants.sh`(줄 머리 `bin:` = cys 시험) · TODO = `$(cys todo-path)` · 보고 = `<인박스 헬퍼> "worker-2@surface:1295"` 인용 heredoc · 헤더 `[u2@surface:1295 → cmux master]` · cysd schedule:: 잠금 시한 2건 = 부하 간헐(단독 ×3 녹 · 3판 기록).
+
 ## §0-8 후속 3판 델타(master#1bfaba79 · 원문 = `docs/update/REVIEW-U2F-{agy,opus}-2r.md`(ignored) · 착수 12:40 · 2판 게이트 c8666da4 = 유효 PASS(master#1a4f6b3c))
 - **이월**: 2판 검수 = agy 2R(BLOCK 0 · MAJOR 0 · MINOR 1) · Opus 2R(BLOCK 0 · MAJOR 2 · MINOR 8) · codex = 한도 0 · master 채택 ①~⑨.
 - **끝난 것(커밋 · 각 뮤턴트 녹/적 확인)**:
@@ -162,7 +172,7 @@
   1. ~~M4~~ = 끝(5ec9d922 · Runner::run_pack · kill 2칸). 아래는 당시 메모: 러너 S0 에서 팩 단독 판정(새 바이너리 없음 · 팩 매니페스트만 새것) → `realops::pack_txn_begin`(lib 에 있음 · 지금 호출부 = 시험뿐) → `pack-update --txn`(위임 · `RealOps::child` 가 --txn 붙임) → 성공 `pack_txn_end`(PACK_DONE) · 실패 = PACK_ROLLBACK → 복구 = `recover_pack(&j)`(사용자 트리 복원 포함 · 있음) + kill 행렬 2칸(PACK_APPLY 직전·직후). 팩 매니페스트 조회 = `cys pack-update --dry-run --json` 또는 피드의 팩 행(설계 §3-8 · `~/axdev/master/reports/cysr-118-plan/DESIGN-AUTOUPDATE-118.md` 를 먼저 읽을 것).
   2. ~~m3·m6·m7~~ = 끝(m3 ce711126 · m6/m7 = §5 ⓘ · §2-14).
   3. §7-2 표 = 14행 완료.
-  4. 전수: lib(기본 env) · cys/cysd/cys-app(`/private/tmp/claude-501/s118/u2/isoenv.sh` · app = `cargo test -p cys-app --bins`) · u2-smoke(13개 = ⑥ 포함) · u2-mutants(11 = U2-NEST 포함 · `U1_ISO=<isoenv.sh>`) · ★브리프는 **tsc·bun** 도 요구 — 이 트리엔 ui/node_modules·bun 없음 → lead 방식: `cp -cR ~/axdev/.wt/cys-118-u4/ui/node_modules ui/` · PATH 에 `$HOME/.bun/bin` · `(cd ui && bunx tsc -p tsconfig.check.json)` · `(cd ui && bun test)`(복사본 = 커밋 0). 전체를 `scripts/tests/u2-realroots.sh` 로 감싼다.
+  4. 전수: lib(기본 env) · cys/cysd/cys-app(`<격리 래퍼>` · app = `cargo test -p cys-app --bins`) · u2-smoke(13개 = ⑥ 포함) · u2-mutants(11 = U2-NEST 포함 · `U1_ISO=<isoenv.sh>`) · ★브리프는 **tsc·bun** 도 요구 — 이 트리엔 ui/node_modules·bun 없음 → lead 방식: `cp -cR ~/axdev/.wt/cys-118-u4/ui/node_modules ui/` · PATH 에 `$HOME/.bun/bin` · `(cd ui && bunx tsc -p tsconfig.check.json)` · `(cd ui && bun test)`(복사본 = 커밋 0). 전체를 `scripts/tests/u2-realroots.sh` 로 감싼다.
   5. push = `/usr/bin/git push origin HEAD:fix/u2-runner-118`(번들 git 은 https 헬퍼 없음) → 3런(windows-build·windows-health·ci-branch) success 번호 → HANDOFF §4 「3판 전수/CI」 줄 → 【확인요청】(브리프 §3 형식).
 - **함정**: ① 새 시험이 부하(전수 병렬)에서 시각 의존이면 폴링으로(N2 실례). ② u2-smoke ⑥ 은 격리 데몬을 띄운다 — 끝에 `cys daemon stop` + pkill(스크립트에 있음). ③ `cargo` 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH`.
 
@@ -253,7 +263,7 @@
 - U3/master(비가역): 설치기 변경 0(이번 티켓 무변경 — ⓪-a 는 U3 판 그대로 소비) · 실키·피드 게시 0.
 - §5 미결 ⓐ~ⓓ.
 
-## §4 시험 결과(격리 래퍼 `/private/tmp/claude-501/s118/u2/isoenv.sh` = EVIDENCE-118 §8 꼴)
+## §4 시험 결과(격리 래퍼 `<격리 래퍼>` = EVIDENCE-118 §8 꼴)
 - ★2판 정정: 1판의 「실 `~/.cys`·실 LaunchAgents·실 counsel 쓰기 0 — 끝에 `ls` 로 확인」 은 **검증된 주장이 아니었다**(codex C17 · 끝 상태 한 점만 봄). 2판 = `scripts/tests/u2-realroots.sh` 로 전수 대조(아래 「2판 전수」 줄).
 - **2판 전수**: `scripts/tests/u2-realroots.sh` 가 전체를 감쌈(22:35–22:57 · 1295s · 실 두 루트 + LaunchAgents 154,511 항목 전후 대조) — lib **975/0**(1 ignored · **기본 env = 기본 TMPDIR `/var/folders/…`** · 22:36–22:44 · master#3f846d60 요청분) · cys **585/0**(isoenv · 22:44–22:47 · lead 게이트의 dbg_r12 584/1 은 이 실행에선 초록 — 기록만) · cysd **2463/0**(7 ignored · isoenv · 22:47–22:54 · ★FAIL 이름 전건 = 없음 · master#23c2f094 의 `alert_route::drills::drill_edge_loop_clear_signals_are_never_held_by_the_hourly_cap` = **ok** → 「FAIL 이면 기반 e2515bb0 단독 대조」 조건 불성립이라 대조군 미실행 · census·hwmon·b6_lsof 도 초록) · u2-smoke **12/12** · u2-mutants **10/10**(U2-NOFOLLOW 포함) · cys-app **296/0**(1 ignored · `cargo test -p cys-app --bins`) · 윈 타입체크 오류 0(커밋마다) · ui tsc = 2판 ui 변경 0(`git diff --stat ad3d5eb5..HEAD -- ui` = 0) · 이 작업트리 node_modules·bun 없음 → 미실행(정직) · **real-roots 판정 = U2 이름공간 실 쓰기 0**(`~/.cys/update` 미생성 · 복구기 plist 0 · counsel/updates.jsonl 0) · 그 밖 변화 56 = `~/.local/state/cys` 14 · `~/.cys/secure-backups` 12 · `~/.cys/claude` 14 · `~/.cys/state` 9 · `~/.cys/pack/round`(이 워커 TODO) 등 — 살아 있는 데몬·다른 세션·내 TODO 쓰기로 보이나 프로세스 귀속은 못 함(판정 밖 · 목록 보존)
 - **★5판 전수(5f186a02 · 05:40–06:02 · 1324s)**: lib **997/0**(1 ign · 기본 env·기본 TMPDIR) · cys **589/0**(isoenv) · cysd **2464/0**(7 ign · isoenv · FAIL 0) · u2-smoke **17 OK / BAD 0**(⑥ 좌석 셸 env · 끝 「잔존 cysd 0 · 폴더 삭제」 포함) · u2-mutants **22/22**(U2-ATTEMPTOPEN·U2-PACKPRO×2·U2-V5PRISTINE·U2-RESTART(M5) 추가) · cys-app **296/0**(1 ign) · 윈 타입체크 오류 0 · ui 변경 0(tsc·bun 미실행 = 4판 값 유효) · `test_dept_create_progress.py` 제외 유지. ⚠정직: 이 전수를 감싼 real-roots 는 출력 폴더를 미리 만들지 않아 **판정 무효**(목록 파일 없음 · rc 1) → 실 경로를 건드릴 수 있는 묶음(lib `update::` 223/0 · `pack::` 138/0 · smoke 17/17)만 다시 감싸 실행(06:03–06:09 · 376s) = **U2 이름공간 실 쓰기 0** · 그 밖 30(`~/.local/state/cys` 11 · `~/.cys/state/report_gate` 6 · `~/.cys/claude` 5 등 = 살아 있는 데몬·Claude 세션 · 팩 저널·팩 임시 경로 0). cys·cysd·cys-app 은 이번 대조 밖(4판 대조에서 U2 이름공간 0).

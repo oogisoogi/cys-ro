@@ -540,6 +540,11 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
 /// N7(★U2 · 순수에 가까움): 후보가 없으면 해당 없음(true). 있으면 여유 공간 ≥ 자산 + max_unpacked + 백업 예상(직전 실측 `state.json`
 /// `last_backup_bytes` · 없으면 지금 대상 크기 합) + max_unpacked + 2 GiB · (윈) `installers\<설치판 seq>\` 에 설치기·본문이 있음.
 pub fn rollback_assets_ok(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>) -> Option<bool> {
+    rollback_assets_ok_at(dir, pack_dir, outcome, buildinfo::release_seq(), cfg!(windows))
+}
+
+/// [`rollback_assets_ok`] 본체 — 설치판 seq·기판을 인자로(★U5: 설치 링크가 놓은 자산으로 N7 을 기판 무관하게 시험).
+pub fn rollback_assets_ok_at(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, installed_seq: u64, windows: bool) -> Option<bool> {
     let Some(a) = outcome.and_then(|o| o.asset.as_ref()) else { return Some(true) };
     let measured = std::fs::read(dir.join("state.json"))
         .ok()
@@ -559,12 +564,24 @@ pub fn rollback_assets_ok(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutc
     if free < need {
         return Some(false);
     }
-    if cfg!(windows) {
+    if windows {
         // ★2판(codex 1R C10): 있음이 아니라 재검증(U 본문 서명 · 설치기 sha256 = 본문 행 · A2 서명).
-        let seq = buildinfo::release_seq();
-        return Some(super::realops::verify_installer_dir(&dir.join("installers").join(seq.to_string()), seq, true).is_ok());
+        return Some(installer_assets_ok(dir, installed_seq));
     }
     Some(true)
+}
+
+/// N7 의 윈 설치기 칸(★U5 — 설치 링크 `--preserve-installer` 자기 검증과 같은 판정): `installers/<seq>/` 재검증 통과.
+pub fn installer_assets_ok(dir: &Path, seq: u64) -> bool {
+    super::keys::UpdateKeyring::embedded().map(|kr| installer_assets_ok_with(dir, seq, &kr)).unwrap_or(false)
+}
+
+pub fn installer_assets_ok_with(dir: &Path, seq: u64, kr: &super::keys::UpdateKeyring) -> bool {
+    let d = dir.join("installers").join(seq.to_string());
+    match (std::fs::read(d.join(super::realops::REL_BODY)), std::fs::read(d.join(super::realops::REL_SIG))) {
+        (Ok(body), Ok(sig)) => super::realops::verify_installer_dir_with(&d, seq, true, &body, &sig, kr).is_ok(),
+        _ => false,
+    }
 }
 
 /// `--check` 본체 — JSON 보고와 rc(0 = 판정함 · 2 = 피드 거부 · 3 = 피드 판정 불가·미도달·install_id 손상).

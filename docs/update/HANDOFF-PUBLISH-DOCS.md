@@ -25,6 +25,29 @@
 - [x] 8. 이 파일 완성(판독표 · 변경표 · 게이트 범위 제안) → 【확인요청】
       해소 판정: 인박스 헬퍼 재독 일치
 
+## §0-3 3판 델타 (master#62af6f8e · 2026-10-07 12:00 착수 → 12:2x)
+2판 적대 = agy 2R(BLOCK 0 · MAJOR 0 · MINOR 1) + Opus 2R(BLOCK 0 · MAJOR 2 · MINOR 8 · 1R 22건 = 해소 15 · 반박 타당 1 · 부분 5) · codex = 한도 0.
+★정정(Opus M1): 2판 §0-2 c5 「반례 2 적색 시험」은 **틀린 진술**이었다 — 반례 시험이 codex 원 반례 「제품 이름은 'cys' 입니다」 뒤에 승인 토큰이 아닌 `'cys 터미널'` 을 덧붙여 그 덧붙인 조각에서 적색이 났고, 원문 자체는 초록이었다. 3판은 원문 그대로 적색을 실측했다(아래 ①).
+
+| # | 지시 | 처분 | 해소 판정 실측 |
+|---|---|---|---|
+| ① | M1 홑따옴표 'cys' 전역 면제 | 채택 | 승인 = 정확한 조각 4개(화면 알림 문구 거울 · NAME_QUOTED_PHRASES)만 · 반례 시험 = codex 원 반례 **원문 그대로** 2문장 → 둘 다 `lines:[1]` 적색(publicdocs 「판정기 반례」) |
+| ② | M2 펜스 통째 면제 · GUIDE-empty-surface 상자 6줄 | 채택 | 상자 6줄 `cysr …`(테두리 폭 유지 · 글자 수 동일) · 게이트 = 펜스 안 명령 머리(줄머리·`$ `·`→`·`;`·`&&`·`\|\|`·`\|`·`$(` 다음 · 상자 줄 │ 안) 검사 · **전수(같은 규칙 파이썬 판): 0f3e1863 = 6줄(GUIDE-empty-surface 303·305-309) → 3판 0줄** · 0f3e1863 판 그 문서 = 게이트 적색(303~309) |
+| ③ | m1 「1.0.0 이전 판이면 옛 이름 cys.app」 사실 오류 | 채택 | **실측**: tauri-plugin-updater 2.10.1 `updater.rs:1238` 이 tar 최상위 이름을 버리고(`skip(1)`) `:1302` 가 기존 번들 자리(`extract_path` = 실행 중 번들)로 rename → 앱 안 갱신으로 올라온 맥은 **판과 무관하게 cys.app**. 8곳 정정(main.rs 안전모드 안내 · INSTALL 94·104·147·630 · USER-MANUAL 1987 · GUIDE-clean-reset 239 · RELEASE 15) — 「둘 다 확인」 꼴 · 공개 문서는 U4 게이트(「Update」 낱말 0)에 맞춰 「옛 판의 앱 안 갱신 단추로 새 판을 받은 맥」 |
+| ④ | m2 팀 기동 「cys boot」 2곳 | 채택 | main.rs 6346·6462 = `cysr boot` · 시험 핀 12860 동기 |
+| ⑤ | m3 RELEASE.md 머리말이 옛 절차를 현행으로 | 채택 | 머리 = §1 맥 CI 레그 게이트는 **잠복 레그 기록**(현행 순서가 부르지 않음) · §0-P = 현행 `pack-v*` 태그 레인(`pack-release.yml` · 승인 게이트 없이 공개 경고) · CI 이전 수동 팩 절차(앱 배지 확인 포함) 16줄 → legacy(8ba48f9e 원문) · 1.1.8 기기 팩 적용 확인법 = 【미확정】 1줄(자동 갱신 설계 정본이 이 저장소에 없음) |
+| ⑥ | m4 legacy 문서에 1판 오변환 이식 | 채택 | legacy 본문 = 8ba48f9e 원문으로 재구성(5e0949ae↔8ba48f9e 줄 정렬 · 범위 7개 전부 연속) · 본문 354줄 전부 기반 파일에 그대로 있음(불일치 0) · `cysd·cys`·`cys status` 원문 |
+| ⑦ | m5 CYS_ACCOUNT_DIR 누설 | 채택 | 좌석 env 실측(`CYS_CYS_BIN CYS_CYSD_BIN CYS_PACK_DIR CYS_ROLE CYS_SEAT_TOKEN CYS_SOCKET CYS_SURFACE_ID CYS_SURFACE_REF`) + cys-dept 가 읽는 CYS_* 29종 실측 → 실 경로·좌석 신원 15종 제거 목록 추가(CYS_PY·CYS_PY_ORIGIN 은 인터프리터 해소라 유지) · 음성 대조 = 없는 표지 경로 2개(CYS_ACCOUNT_DIR·CYS_STATE_DIR)를 심고 launch → 생성 0 · 뮤턴트(목록에서 뺌) = 표지 계정 폴더 생성 적색 |
+| ⑧ | m6·agy 판정 불가 조용한 초록 | 채택 | `[SKIP·판정 제한]` stderr 1줄 + 모듈 끝 집계 · ps 만 막히면 대체 판정(이 gp-* 폴더를 연 프로세스 · 조상 제외 = 나·부모)으로 **계속 거둠**(시험: ps 차단에서 남긴 자식 거둠·적색·표시) · lsof 까지 막히면 판정 불가 표시(거두지 않음) |
+| ⑨ | m8 게이트 구조 구멍 | 채택 | 반례 시험(전부 적색 실측): 꺾쇠 `<cys 터미널 안내>` · `<img alt="cys 로고">` · 홑따옴표 속성 `title='cys …'` · 닫히지 않은 펜스(`unclosedFenceAt` = 여는 줄) · ``` 와 ~~~ 교차 · md 태그 제거 = 실 HTML 태그 이름 목록만 · 자동 링크 `<https…>` 만 면제 |
+| ⑩ | m7 build.rs:300 FileDescription 「(CYSJavis terminal)」 | 이월(master 처분) | **1.1.9 식별자 전환 티켓** — 바이너리 메타데이터 = 빌드 산출물 변경 · 이 티켓 범위 밖 |
+| ⑪ | 【결정필요】 1 ws-credit | 유지(master 처분) | 게이트 허용 = 그 정확한 문자열 1개(NAME_CREDITS["ui/index.html"]) |
+
+범위 밖(master): CLI --help·팩 지침 명령 예시 = 1.1.9.
+**순환 경계(master#92293cb4 · CTX 61.9% · 12:1x)**: 3판 ①~⑪ 전부 완료·커밋. **남은 항목 = ⓐ 미러 `fix/publish-docs-118` CI 3런(ci-branch·windows-build·windows-health) success 확인 → ⓑ 【확인요청】(채택/반박 표 = 이 절 · 해소 판정 실측 = 위 표 · 「반례 2 적색」 정정 포함)**.
+해소 판정: `gh run list -R oogisoogi/cys-ro --branch fix/publish-docs-118 --json headSha,name,conclusion -L 6` 에서 HEAD sha 3런이 모두 success.
+시험(맥): bun 2673/0 · tsc 0 · win-typecheck 0 · cys-app 260/0 · cysd accounts:: 146/0 · pyseal census OK · default_fleet 128/128 · SandboxReapGuard 5/5 · dept 파일 격리 OK · 실 설치본 경로 + CYS_ACCOUNT_DIR 주입 OK(cysd 1=1 · 주입 경로 생성 0).
+
 ## §0-2 2판 델타 (master#0885ae7a · 2026-10-07 10:45 착수 → 11:0x)
 1판 적대 = codex 1R(BLOCK 1 · MAJOR 8 · MINOR 4) + agy 1R(BLOCK 1 · MAJOR 5 · MINOR 3) 수렴 아니오 → master 채택 전건 + 별건 처분 4.
 커밋 = `1d835a29`(앱 코드·워크플로) · `a5d02646`(팩 시험 ⑤) · `f01b630b`(UI ④) · `29c29859`(문서·게이트 ②③⑥⑦⑨ⓐ) · 이 문서. ★`f01b630b`·`29c29859` 한 묶음(clipath 거울쌍·명칭 매니페스트가 서로의 파일을 본다).

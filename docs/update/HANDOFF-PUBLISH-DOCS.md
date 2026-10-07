@@ -22,8 +22,27 @@
       해소 판정: `gh run list --branch fix/publish-docs-118` 3런 success
 - [x] 9. ⑨ 공식 명칭 cysr 통일(master#c33d2ec7 · 범위 결정 #db5ba8ef · 상한 +2h → 13:0x)
       해소 판정: publicdocs 「공식 명칭 = cysr」 초록 + 8ba48f9e 판 문서 음성 대조 적색 · bun 전건 초록
+- [x] 10. 4판 ①~⑥ (master#141c5b48 · §0-5)
+      해소 판정: §0-5 표 6행 · 미러 4판 HEAD 3런 success + 인박스 4판 【확인요청】
 - [x] 8. 이 파일 완성(판독표 · 변경표 · 게이트 범위 제안) → 【확인요청】
       해소 판정: 인박스 헬퍼 재독 일치
+
+## §0-5 4판 델타 (master#141c5b48 · 2026-10-07 13:1x 착수 → 순환 후임 집행)
+커밋: `01c5cb7c`(①②③④ 문서·게이트) · `dc0a1dbb`(⑤⑥ dept 하네스) · (이 문서).
+
+| # | 지시 | 처분 | 해소 판정 실측 |
+|---|---|---|---|
+| ① | M-1 오피스(Control Center 기본 탭) 명칭 · 게이트가 안 봄 | 채택 | office3d.html 화면 문자열 = `cysr`: 제목·h1(`cysr · …`) · 이벤트 띠 `cysr events` · 단추 「지시 전송 → cysr」 · 안내 `cysr send + Return` · 3D 이름표 `신상: cysr v…` · 캔버스 `cysr OPERATIONS` · 상태 5곳 「cysr 반영 …」 · `실전달 모드 … cysr send` · office-boot.js 배너 `cysr init-pack --force`. 스크립트 **주석** 3곳(230·232·2714)은 화면 밖이라 그대로. 게이트 = NAME_MANIFEST 에 두 파일 · `<script>`/`.js` = **문자열 리터럴만** 추출(`jsVisibleStrings` — 주석 제외 · 템플릿 `${}` · 정규식 리터럴 판별) · CYSJavis = `/cysjavis/gi`(기계 식별자 `cysjavis-pack`·`com.cysjavis.` 만 제외). **음성 대조(3판 원문)**: office3d.html = CYSJavis 3(5·136·1156) + 10줄(141·182·185·981·1615·1616·2325·2377·2671·2715 — 이 중 7줄은 스크립트 리터럴 = 3판 판정기로는 못 보는 자리) · office-boot.js = 22 적색. 팩 서명 해시: 저장소 안 정적 해시 목록 0(`git ls-files cysjavis-pack` 실측 — 매니페스트는 설치 때 생성 · 서명은 발행 CI) → 갱신 대상 없음 |
+| ② | m-1 명령 머리 구멍 | 채택(master 지정 범위) | README:106 `cysr actions` · `FENCE_CMD_HEAD` 앞 글자에 백틱 · 앞머리 sudo/env/nohup/exec/time(옵션 포함) · 목록 표지(`1)`·`- `) · 펜스 밖 **인라인 코드** 조각 머리 = 같은 규칙 · 닫는 펜스 = 같은 글자 · 여는 길이 이상 · 정보 문자열 없음. 반례 시험(전부 적색 실측): 구조표 `` `cys actions` `` · `sudo -E`/`env X=1`/`nohup`/`1)`/`- `/`time` 6줄 · 인라인 `` `cys status` ``·`` `sudo cys doctor` `` · 「```bash 가 펜스를 닫던」 원문(6줄 산문) · 4/3 백틱 길이. 통과 대조: `which -a cys`·`pkill -x cys`·`` `cys` ``·`cys.app`. 음성 대조: 3판 README = 106 적색. **안 한 것(Opus m-1 중 master 지시 밖)**: 날 URL 정규식 좁히기 · `CYS`/`Cys` 대소문자 변형(낱말 cys) — 현재 실례 0 · 1.1.9 판단 대상 |
+| ③ | m-2 기계 호출 오변환 | 채택 | USER-MANUAL:1087 `cys usage-report-stdin`(실물 hooks/cys-statusline.sh:13·17) · :1425 `cys claim-role`(실물 role-bootstrap-legacy.sh) — 기반 8ba48f9e 원문 그대로. 인라인 명령 머리 규칙과 충돌하므로 `NAME_MACHINE_CALLS` = 파일별 **정확한 조각 2개만** 허용(없으면 `unusedMachineCalls` 적색). 같은 꼴 전수(→·호출·각성·훅 동반 줄의 `` `cysr …` ``): 나머지는 사람이 치거나 훅에 적어 넣는 예시(:1152 등)라 유지. 음성 대조: 3판 USER-MANUAL = 조각 2 미사용 적색 |
+| ④ | m-3·m-4·m3 RELEASE.md | 채택 | :330 `macos/cysr.app/Contents/MacOS/cysd`(= release.yml 977) · :45 【미확정】 문장(내부 티켓 이름 포함) 삭제 → 공개 문서 밖 미결 1건(아래) |
+| ⑤ | m-5 [SKIP·판정 제한] 이 CI 로그에 묻힘 · 윈도 무표시 | 채택 | `_mark_undetermined` = stderr + GitHub Actions 면 `::warning title=dept 하네스 판정 제한::…`(stdout) · 모듈 끝 `_report_undetermined` = **stdout 집계 줄** + `::warning` 1줄 · 윈도(`os.name == "nt"`) = 모듈 1회 표시. 흉내 차단 시험 3개는 표시를 가두고 원복 — 안 그러면 CI 가 매 실행 거짓 경고를 낸다(`GITHUB_ACTIONS=true` 격리 실행 = `::warning` 0건 실측) |
+| ⑥ | m-6 CYS_STATE_DIR 음성 대조 공회전 · agy 화이트리스트 | 채택 둘 다 | **새 음성 대조** `test_inherited_state_dir_ticket_is_not_read`: cys-dept 가 그 변수를 실제로 읽는 경로 = CEO 티켓 멱등 판정(dept_ticket_valid · TICKET_DIR) — 바깥 상태 폴더에 유효 티켓 + 샌드박스 팩에 발급기 목 → 「기존재 — 재발급 생략」 0 · 발급기 1회 단언. 3판 시험 docstring 은 「계정 쪽」으로 좁힘. **화이트리스트 채택 근거**: 2판 a5 의 반대 근거(접두 삭제가 다른 하네스의 CYS_* 전제를 깬다)는 실측 0건 — CI 3레인이 이 시험에 넣는 CYS_* 는 `CYS_PACK_DIR` 하나(원래 제거 대상)이고 케이스 노브는 env_extra 로 **제거 뒤에** 준다. 반대로 목록식은 새는 꼴이 실재: 뮤턴트 M3(3판 목록식) 실행에서 격리 env 의 `CYS_CONFIG_DIR·CYS_LOCAL_DIR·CYS_ROOT·CYS_ROUND_DIR·CYS_PACK_CAPTURES_DIR` 가 샌드박스까지 넘어갔다. 남기는 것 = `CYS_PY`·`CYS_PY_ORIGIN`(인터프리터 해소) |
+
+뮤턴트(python try/finally · 원본 복원 확인) 5/5 적색: M1 STATE_DIR 허용 → 「기존재」 적색 · M2 ACCOUNT_DIR 허용 → 적색 · M3 3판 목록식 → 미래 CYS_* 잔존 적색 · M4 윈도 표시 없음 → 적색 · M5 CI 주석 없음 → 적색.
+시험(맥 · 격리 env): bun 2674/71/0 · tsc 0 · test_dept_create_progress 105 OK(판정 제한 0) · pyseal census OK · bootv2 doc contract OK · default_fleet 128/128 · cys cycle_agent 14/0 · cysd accounts:: 146/0 · 설치본 cysd 0→0. Rust 소스 변경 0 → win-typecheck·cys-app 은 3판 결과 그대로(이 판 diff 에 .rs 없음).
+공개 문서 밖 미결 1(④에서 옮김): 1.1.8 기기에서 `pack-v*` 새 팩이 적용됐는지 확인하는 법.
+  해소 판정: src/update(realops.rs `.pack-version` 커밋 판정)가 pack-v 레인 latest.json 을 받아 적용하는지 시험 1건 또는 실기기 관측(`pack-v` 발행 뒤 1.1.8 기기 `~/.cys/pack/.pack-version` = 새 판) — 확인되면 RELEASE.md §0-P 「확인」 줄에 그 방법을 적는다.
 
 ## §0-4 4판 지시(master#141c5b48 · 2026-10-07 · 원문 그대로 · ★순환 선행)
 【4판 지시 · TICKET=cysr-118-publish-docs · ★순환 선행】 3판 판정: 게이트 = lead 진행 중 · 적대 = **agy 3R 수렴 아니오(0·0·MINOR 1)** + **Opus 3R 수렴 아니오(BLOCK 0 · MAJOR 1 · MINOR 6 · 2R = 해소 9 · 부분 1(m3) · 이월 1(m7))**. 원문 = 네 트리 docs/update/REVIEW-PD-agy-3r.md · REVIEW-PD-opus-3r.md(ignored).

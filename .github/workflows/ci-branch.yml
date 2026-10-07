@@ -210,7 +210,8 @@ jobs:
                       "믿고 태그한 빌드가 UI 회귀를 싣고 나간다.",
                   # ★R2F-PK(A4 n6): 릴리스 맥 레그의 같은 게이트(업로드 전 · `.app` 안 cysd) — 태그 레인에서 처음 도는 스텝이라 지워져도 브랜치 초록이 알려 주지 못한다. 이 스텝의 `if` 는
                   #   `matrix.platform == 'macos-latest'` 한 가지뿐이고 아래 ALLOWED_STEP_CONDITIONS 에 이미 등재돼 있다(그 밖의 조건·`if: false` 는 붉다).
-                  'bash scripts/check-no-ioreport-link.sh "$SRC/macos/cys.app/Contents/MacOS/cysd"':
+                  # publish-docs-118 2판(master#0885ae7a ⑨ⓑ): 맥 번들 이름 = cysr.app(productName cysr) — 옛 경로 cys.app 은 레그가 살아나는 날 「파일 없음」 적색이었다(잠복).
+                  'bash scripts/check-no-ioreport-link.sh "$SRC/macos/cysr.app/Contents/MacOS/cysd"':
                       "IOReport 강링크 산출물 게이트(릴리스 맥 레그 · 업로드 전) — 브랜치 ci-branch 의 같은 게이트와 쌍이다. 빠지면 출하되는 `.app` 안 cysd 가 IOReport 를 강링크해도 업로드가 일어난다.",
               },
           }

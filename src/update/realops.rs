@@ -1012,6 +1012,13 @@ impl Ops for RealOps {
                 }
                 let pi = j.prev_installer.as_ref().ok_or_else(|| fail(ErrCode::NoRollbackAsset, "RB_SWAPPED", "설치판 설치기 기록 없음"))?;
                 // ★2판 C10: 실행 직전 재검증(본문 서명·설치기 sha256·A2) — 저널 sha 와도 같아야 한다(실행은 그 sha 로 쥔 핸들).
+                // ★후속 3판(Opus 2R m7): S8 뒤 사라졌거나 망가졌으면(백신 격리 등) 보관소에서 1회 다시 받는다(§3-7 ② 를 롤백에도 · 멱등) —
+                //   받기 실패는 1줄만 남기고 아래 재검증이 판정한다(롤백 자체를 받기로 막지 않는다).
+                if verify_installer_dir(&self.installers_dir(j.from_release_seq), j.from_release_seq, true).is_err() && !super::mutant("U2-RBFILL") {
+                    if let Err(f) = self.fill_rollback_assets(j.from_release_seq, "RB_SWAPPED") {
+                        eprintln!("[update] 롤백 자산 재받기 실패: {}", f.detail);
+                    }
+                }
                 let v = verify_installer_dir(&self.installers_dir(j.from_release_seq), j.from_release_seq, true)
                     .map_err(|e| fail(ErrCode::NoRollbackAsset, "RB_SWAPPED", format!("설치판 롤백 자산: {e}")))?;
                 if v.setup_sha256.as_deref() != Some(pi.sha256.as_str()) {
@@ -1161,6 +1168,10 @@ impl Ops for RealOps {
 
     fn daemon_alive(&mut self) -> bool {
         (self.env.rpc)("system.identify", json!({})).ok().and_then(|v| v.get("daemon_pid").and_then(|p| p.as_u64())).map(|p| p > 0).unwrap_or(false)
+    }
+
+    fn signal(&mut self, code: ErrCode) {
+        super::notify::signal(&self.env.cys_root.join("pack"), code);
     }
 
     fn record(&mut self, j: Option<&Journal>, kind: Kind, f: Option<&Fail>) {
@@ -2070,6 +2081,39 @@ mod tests {
         ops.env.os = Os::Win;
         ops.judge_is_old = None;
         assert!(ops.reconstruct(&a).is_err() && !ops.reconstructed_new(), "빈 후보 = 새 판 판정 0");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R m7): 윈 롤백(RB_SWAPPED)에서 설치판 자산이 S8 뒤 사라졌으면 보관소에서 1회 다시 받아 재검증을 지난다(그 뒤 옛
+    /// 설치기 실행 — 이 맥 시험에선 실행 단계의 다른 실패만 남는다) · 뮤턴트 U2-RBFILL(재받기 0 = 2판) = `update.no_rollback_asset` = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_rollback_refills_missing_rollback_assets_from_archive() {
+        use crate::update::feed::fixture::NOW;
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let (bb, sig, setup, a2, url, sig_url) = archive_fixture(&k);
+        let (d, upd, _root, mut ops) = recon_rig("rb-refill");
+        let arch = d.join("arch");
+        std::fs::create_dir_all(arch.join("cysr/releases")).unwrap();
+        std::fs::write(arch.join("cysr/releases/8.json"), &bb).unwrap();
+        std::fs::write(arch.join("cysr/releases/8.json.minisig"), &sig).unwrap();
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+            crate::pack::EnvGuard::set(super::super::net::ENV_FEED_URL, format!("file://{}", arch.display())),
+        );
+        ops.env.os = Os::Win;
+        let (s2, a22) = (setup.clone(), a2.clone());
+        ops.asset_get = Some(Box::new(move |u: &str, _m: u64| if u == url { Ok(s2.clone()) } else if u == sig_url { Ok(a22.clone()) } else { Err(format!("없음 {u}")) }));
+        let mut j = super::super::journal::Journal::new("0123456789abcdef0123456789abcdef", 1);
+        j.from_release_seq = 8;
+        j.prev_installer = Some(PrevInstaller { path: upd.join("installers/8").join(SETUP).to_string_lossy().to_string(), sha256: crate::update::feed::sha256_hex(&setup), release_seq: 8 });
+        let r = ops.rb_swap(&j);
+        assert!(verify_installer_dir(&upd.join("installers/8"), 8, true).is_ok(), "롤백 중 보관소에서 다시 채움: {r:?}");
+        assert!(!matches!(&r, Err(f) if f.code == ErrCode::NoRollbackAsset), "롤백 자산 판정 통과: {r:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

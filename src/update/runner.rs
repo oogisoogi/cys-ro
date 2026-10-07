@@ -119,6 +119,8 @@ pub trait Ops {
     fn pack_apply(&mut self, j: &Journal) -> Step;
     /// 결과 기록(state.json `last_result` · 실패 분류 · 상담소 신호 · `counsel/updates.jsonl`).
     fn record(&mut self, j: Option<&Journal>, kind: Kind, fail: Option<&Fail>);
+    /// ★후속 3판(Opus 2R m2 · 설계 §3-11 ④): 결과 기록(`last_result`)을 건드리지 않는 즉시 신호 1통(상담소 신호 = 별 채널).
+    fn signal(&mut self, _code: ErrCode) {}
 }
 
 /// 결함 주입(디버그 빌드만 — 출시 빌드에서는 [`Fault::from_env`] 가 늘 빈 값).
@@ -128,6 +130,8 @@ pub struct Fault {
     pub kills: Vec<(String, bool)>,
     pub verify_v3: bool,
     pub pauses: Vec<String>,
+    /// ★후속 3판(Opus 2R m3): 보조 저널 사본 쓰기 실패 주입.
+    pub copy_fail: bool,
 }
 
 pub const ENV_FAULT: &str = "CYS_UPDATE_FAULT";
@@ -138,6 +142,8 @@ impl Fault {
         for t in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             if t == "verify_v3" {
                 f.verify_v3 = true;
+            } else if t == "copy_fail" {
+                f.copy_fail = true;
             } else if let Some(r) = t.strip_prefix("kill@") {
                 let (st, ph) = r.split_once(':').unwrap_or((r, "before"));
                 f.kills.push((st.to_string(), ph == "after"));
@@ -240,7 +246,15 @@ impl<'a, O: Ops> Runner<'a, O> {
             attempt_end(&self.dir);
         } else if JOURNAL_COPY_STATES.contains(&to) && !super::mutant("U2-JCOPY") {
             // ★후속 2판: S8 이후 저널 칸의 사본을 이번 시도 기록에 — 두 슬롯이 다 손상돼도 새 판 재구성이 S9 행을 다시 쓸 재료(롤백 칸 포함).
-            attempt_note_journal(&self.dir, &j).map_err(Stop::Journal)?;
+            // ★후속 3판(Opus 2R m3): 사본 = **보조** — 실패는 1줄 기록만 하고 전진을 멈추지 않는다(정본 = 방금 fsync 한 저널 · 사본이 없거나
+            //   낡으면 재구성은 [`verify_journal_copy`] 에서 「사람 필요」로 닫힌다).
+            let r = if self.fault.copy_fail { Err("결함 주입 copy_fail".to_string()) } else { attempt_note_journal(&self.dir, &j) };
+            if let Err(e) = r {
+                if super::mutant("U2-COPYSTOP") {
+                    return Err(Stop::Journal(e));
+                }
+                eprintln!("[update] 시도 기록 저널 사본 쓰기 실패({}) — 전진 유지(재구성 원천만 잃음): {e}", to.name());
+            }
         }
         self.hit(to, true)?;
         Ok(j)
@@ -611,6 +625,10 @@ impl<'a, O: Ops> Runner<'a, O> {
                 Err(e) => return blocked(self.ops, rj(e)),
             };
             eprintln!("[update] 저널 손상 재구성 = 새 판 — S9 행으로 재대조 → S10 → V1~V9 → S11(실패 = 롤백)");
+            // ★후속 3판(Opus 2R m2): 「저널이 찢겼다」(디스크·전원 이상 징후) 즉시 신호 1통 — 결과 기록은 정상 행의 ok/rollback 하나 그대로.
+            if !super::mutant("U2-RECONSIGNAL") {
+                self.ops.signal(ErrCode::JournalCorrupt);
+            }
             let rec = journal::recovery_for(&ReadOutcome::Ok(j.clone()), self.ops.os());
             return match self.recover_from(rec, j) {
                 Ok(o) => o,
@@ -955,6 +973,7 @@ pub(crate) mod tests {
         pub pack_applied: u32,
         pub payload_bad_runs: u32,
         pub records: Vec<Kind>,
+        pub signals: Vec<ErrCode>,
         pub reconstruct_ok: bool,
         /// ★후속 2판: 재구성 판정 = 새 판(참이면 러너가 S9 행으로 보낸다).
         pub recon_new: bool,
@@ -978,6 +997,7 @@ pub(crate) mod tests {
                 fail_at: BTreeMap::new(),
                 payload_bad_runs: 0,
                 records: vec![],
+                signals: vec![],
                 reconstruct_ok: true,
                 recon_new: false,
                 real_snapshot: None,
@@ -1155,6 +1175,9 @@ pub(crate) mod tests {
         }
         fn record(&mut self, _: Option<&Journal>, kind: Kind, _: Option<&Fail>) {
             self.records.push(kind);
+        }
+        fn signal(&mut self, code: ErrCode) {
+            self.signals.push(code);
         }
     }
 
@@ -1506,6 +1529,7 @@ pub(crate) mod tests {
                 "ok" | "ok-win" => {
                     assert_eq!(o, Outcome::Done, "{case}");
                     assert_eq!(s.records, vec![Kind::Ok], "{case}: 결과 = ok 하나");
+                    assert_eq!(s.signals, vec![ErrCode::JournalCorrupt], "{case}: 저널 손상 신호 1통(별 채널 · ★3판 m2)");
                     assert_eq!(state(&d), State::Done);
                     assert_eq!(s.daemon, Some("new"));
                     assert!(!d.join(ATTEMPT_FILE).exists(), "{case}: 성공 뒤에만 시도 기록 삭제");
@@ -1521,6 +1545,20 @@ pub(crate) mod tests {
                     assert!(!s.canonical_new && s.daemon == Some("old"), "{case}: 옛 판으로 되돌림");
                 }
             }
+        }
+    }
+
+    /// ★후속 3판(Opus 2R m3): 보조 저널 사본 쓰기가 S8~S11 내내 실패해도 정상 실행은 DONE 까지 간다(사본 = 재구성 원천일 뿐 · 정본 저널은
+    /// 매번 fsync). 뮤턴트 U2-COPYSTOP(2판 = 사본 실패에 Stop) = S8 에서 멈춤 = 적.
+    #[test]
+    fn journal_copy_failure_is_recorded_but_never_stops_forward_progress() {
+        for os in [Os::Mac, Os::Win] {
+            let d = tmp(&format!("copyfail-{os:?}"));
+            let mut s = Sim::new(os);
+            assert_eq!(run(&d, &mut s, Fault::parse("copy_fail")), Outcome::Done, "{os:?}");
+            assert_eq!(state(&d), State::Done);
+            assert_eq!(s.records, vec![Kind::Ok]);
+            let _ = std::fs::remove_dir_all(&d);
         }
     }
 

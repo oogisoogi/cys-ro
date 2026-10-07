@@ -2907,7 +2907,18 @@ pub fn plan_disk_fingerprint(dir: &Path, rels: &[String]) -> Option<String> {
         let tag = match std::fs::symlink_metadata(&full) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => "A".to_string(),
             Err(_) => return None,
-            Ok(m) if m.file_type().is_symlink() => format!("L:{}", std::fs::read_link(&full).ok()?.display()),
+            // ★후속 3판(Opus 2R m5): 링크 = 대상 경로 + **따라간 내용**(plan_install 은 링크를 따라 읽는다) · 대상 없음 = `-` · 그 밖 오류 = None
+            Ok(m) if m.file_type().is_symlink() => {
+                let to = std::fs::read_link(&full).ok()?;
+                let body = match std::fs::read(&full) {
+                    Ok(b) if !(cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U2-LINKFP")) => format!("{:x}", Sha256::digest(&b)),
+                    Ok(_) => String::new(),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => "-".to_string(),
+                    Err(e) if e.kind() == std::io::ErrorKind::IsADirectory || std::fs::metadata(&full).map(|m| m.is_dir()).unwrap_or(false) => "D".to_string(),
+                    Err(_) => return None,
+                };
+                format!("L:{}:{body}", to.display())
+            }
             Ok(m) if m.is_dir() => "D".to_string(),
             Ok(m) if m.is_file() => format!("F:{:x}", Sha256::digest(std::fs::read(&full).ok()?)),
             Ok(_) => "O".to_string(),
@@ -9701,6 +9712,27 @@ mod tests {
     /// 같다) kill 행렬 — **실 `apply_pack_transactional` 이 만든 실 `.pack-journal`** 위에서 각 사망 지점 뒤 `recover_pack_journal`:
     /// 커밋 기록 전(journal·install·state) = 롤백(옛 본문 · pro.1) · 뒤(commit·version) = 전진 완료(새 본문 · pro.2 · .pack-version 목표).
     /// 옛 판 판정(판 문자열 == 목표 = 커밋)이었다면 앞 셋이 「커밋」으로 오인돼 혼합 팩이 남는다.
+    /// ★1.1.8 U2 후속 3판(Opus 2R m5): 판정 입력이 링크면 지문 = 대상 경로 + 따라간 내용 — 대상 내용이 바뀌거나 대상이 사라지면 지문이
+    /// 바뀐다(낡은 보류 메모 적중 0). 뮤턴트 U2-LINKFP(내용 뺌 = 2판) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn plan_fingerprint_follows_symlink_target_content() {
+        let d = std::env::temp_dir().join(format!("cys-pack-fp-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("directives")).unwrap();
+        std::fs::write(d.join("real.md"), "A").unwrap();
+        std::os::unix::fs::symlink(d.join("real.md"), d.join("directives/W.md")).unwrap();
+        let rels = vec!["directives/W.md".to_string()];
+        let f1 = plan_disk_fingerprint(&d, &rels).unwrap();
+        std::fs::write(d.join("real.md"), "B").unwrap();
+        let f2 = plan_disk_fingerprint(&d, &rels).unwrap();
+        std::fs::remove_file(d.join("real.md")).unwrap();
+        let f3 = plan_disk_fingerprint(&d, &rels).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_ne!(f1, f2, "대상 내용 변화 = 지문 변화");
+        assert_ne!(f2, f3, "대상 사라짐 = 지문 변화");
+    }
+
     #[test]
     fn pro_revision_advance_kill_matrix_recovers_by_commit_record() {
         let _g = PACK_ENV_LOCK.lock().unwrap();

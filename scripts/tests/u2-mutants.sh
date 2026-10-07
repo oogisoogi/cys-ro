@@ -60,6 +60,10 @@ U2-FILL update::realops::tests::win_s8_fills_missing_rollback_assets_from_archiv
 U2-COPYCHECK update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
 U2-CANDVERIFY update::realops::tests::reconstruct_new_needs_restored_candidate_of_the_same_release
 U2-STAGESIG update::realops::tests::win_s9b_rerun_reverifies_stage_installer_before_running_it
+U2-COPYSTOP update::runner::tests::journal_copy_failure_is_recorded_but_never_stops_forward_progress
+U2-RECONSIGNAL update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-RBFILL update::realops::tests::win_rollback_refills_missing_rollback_assets_from_archive
+U2-LINKFP pack::tests::plan_fingerprint_follows_symlink_target_content
 U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
 U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 U2-MEMOCHECK bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply

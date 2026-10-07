@@ -9749,6 +9749,26 @@ fn diag_state_base_unlistable(name: &'static str, ctx: &DoctorCtx, e: &std::io::
     }
 }
 
+/// ★1.1.8 U2 후속 3판: 팩 자동 보류 메모(`~/.cys/.pack-auto-hold.json`) — 있으면 WARN + 사유 · 손상이면 WARN(다음 자동 틱이 무시하고
+/// 다시 판정) · 없으면 OK. 메모는 **같은 서명 매니페스트 바이트 + 같은 판정 입력 지문**에만 적중하는 다운로드 생략 표지다(위조 방지
+/// 장치가 아니다 — 같은 계정이 쓸 수 있는 파일이라 비밀 키 HMAC 도 이득 0 · 위조돼도 결과는 「자동 팩 갱신 보류 + 이 WARN」 뿐).
+fn diag_pack_auto_hold(ctx: &DoctorCtx) -> DiagItem {
+    let p = ctx.state_base.join(PACK_AUTO_HOLD_MEMO);
+    let (status, detail, action) = match std::fs::read(&p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (DiagStatus::Ok, "팩 자동 보류 없음".to_string(), String::new()),
+        Err(e) => (DiagStatus::Warn, format!("팩 자동 보류 메모 판독 불가: {e}"), String::new()),
+        Ok(b) => match serde_json::from_slice::<PackHoldMemo>(&b) {
+            Ok(m) => (
+                DiagStatus::Warn,
+                format!("팩 자동 보류 중 — {}", m.why),
+                "cys pack-plan 으로 계획 확인 → cys pack-update(수동) 반영 성공 = 보류 해제 · 원격 팩·지침이 바뀌면 자동 재판정".to_string(),
+            ),
+            Err(_) => (DiagStatus::Warn, "팩 자동 보류 메모 손상(다음 자동 틱 = 무시하고 다시 판정)".to_string(), String::new()),
+        },
+    };
+    DiagItem { name: "pack-auto-hold", status, detail, action }
+}
+
 fn diag_staging_residue(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     let mut residue: Vec<std::path::PathBuf> = Vec::new();
     let listed = match std::fs::read_dir(&ctx.state_base) {
@@ -10496,6 +10516,8 @@ fn run_doctor_diagnostics(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
         diag_orphan_socket(ctx, fix),
         diag_stale_lock(ctx, fix),
         diag_staging_residue(ctx, fix),
+        // ★1.1.8 U2 후속 3판(Opus 2R m4 · agy 2R): 팩 자동 보류 중이면 사유와 함께 보인다(읽기 전용).
+        diag_pack_auto_hold(ctx),
         diag_channels_db(ctx),
         diag_legacy_config(ctx),
         // M3: 자기 앱 번들 코드서명 봉인(설치본이 스스로 봉인을 깼는지) — 읽기 전용, --fix 무관.
@@ -24759,7 +24781,9 @@ pub(crate) const PACK_AUTO_HOLD_MEMO: &str = ".pack-auto-hold.json";
 
 /// ★후속 2판(codex 1R #7 · agy 1R #7): 메모 = 판 1 · 매니페스트 바이트 sha256 · 판정 입력 지문 · 사유 · **자기 sha256**(앞 네 칸) — 읽을 때
 /// 크기 상한 · 모르는 칸 거부 · 판 · 사유 1줄·길이 · 자기 sha256 을 전부 검사(하나라도 어긋남 = 메모 없음 = 받아서 다시 판정). 항목 목록은
-/// 메모에 두지 않는다 — 같은 서명 매니페스트 바이트의 `files` 에서 매번 다시 만든다(위조 메모가 빈 목록으로 지문을 맞출 수 없다).
+/// 메모에 두지 않는다 — 같은 서명 매니페스트 바이트의 `files` 에서 매번 다시 만든다. ★3판(Opus 2R m4 · agy 2R): 자기 sha256 = **손상 검사**일
+/// 뿐 위조 방지가 아니다(공식 공개 · 같은 계정 파일 = 비밀 키 HMAC 도 이득 0) — 메모는 정확한 입력 키(매니페스트 바이트 + 지문)에만 적중하는
+/// 다운로드 생략 표지이고, 보류 중임은 `cys doctor` 의 `pack-auto-hold` WARN 으로 사유와 함께 보인다(수동 반영 성공 = 삭제).
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PackHoldMemo {
@@ -31443,6 +31467,29 @@ mod tests {
         assert!(matches!(&d, Err(e) if !e.contains("보류 메모")), "수동 = 메모 무관: {d:?}");
         assert!(matches!(&c, Ok(Some(Ok(v))) if v == "1.1.0"), "판정 입력 변화 = 다시 판정 → 허용: {c:?}");
         assert!(!memo_left, "허용 = 메모 삭제");
+    }
+
+    /// ★1.1.8 U2 후속 3판(Opus 2R m4 · agy 2R): 팩 자동 보류는 `cys doctor` 에 사유와 함께 보인다 — 메모 없음 = OK · 진짜 보류 메모 = WARN +
+    /// 사유 · 손상 메모 = WARN(다음 틱 무시).
+    #[test]
+    fn doctor_shows_pack_auto_hold_with_reason() {
+        let base = std::env::temp_dir().join(format!("cys-doctor-hold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let ctx = doctor_ctx_at(&base);
+        let item = |ctx: &DoctorCtx| diag_pack_auto_hold(ctx);
+        let a = item(&ctx);
+        let memo = ctx.state_base.join(PACK_AUTO_HOLD_MEMO);
+        std::fs::create_dir_all(&ctx.state_base).unwrap();
+        let (ms, fp, why) = ("ab".repeat(32), "cd".repeat(32), "원격 팩 1.1.0 계획 = 자동 허용 밖(.new 병치 1건)");
+        std::fs::write(&memo, json!({"v": 1, "manifest_sha256": ms, "fingerprint": fp, "why": why, "self_sha256": pack_hold_memo_seal(&ms, &fp, why)}).to_string()).unwrap();
+        let b = item(&ctx);
+        std::fs::write(&memo, b"{torn").unwrap();
+        let c = item(&ctx);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(matches!(a.status, DiagStatus::Ok), "{}", a.detail);
+        assert!(matches!(b.status, DiagStatus::Warn) && b.detail.contains(why), "{}", b.detail);
+        assert!(matches!(c.status, DiagStatus::Warn) && c.detail.contains("손상"), "{}", c.detail);
     }
 
     /// ★1.1.8 U2 후속 2판(codex 1R #7 · agy 1R #7): 보류 메모 검사 — ⓐ 진짜 보류가 만든 메모 = 적중 ⓑ 자기 sha256 어긋남·모르는 칸·크기 초과

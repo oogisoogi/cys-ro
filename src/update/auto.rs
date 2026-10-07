@@ -208,6 +208,18 @@ pub(crate) fn retry_after_n7_fill(
     }
 }
 
+/// ★후속 4판 ①(Opus 3R n1): N7 보관소 받기는 **전역 잠금을 쥔 동안에만** 쓴다 — `installers/<seq>` 와 임시 폴더 `.<seq>.tmp` 는 설치 링크
+/// (U5 · 잠금을 쥔 설치 스크립트가 cys 에 위임)와 같은 자리라, 잠금 밖에서 쓰면 사용자가 설치 링크를 다시 붙인 순간 두 쪽이 같은 임시
+/// 폴더를 쓴다(설치 링크 실패 · 오류 화면). 잠금이 잡혀 있으면 받기 0 + 사유(= 사유 있는 보류 · 다음 주기 재시도). 잠금은 받기 뒤 놓는다.
+pub(crate) fn fill_under_lock(dir: &std::path::Path, fill: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
+    let _guard = if super::mutant("U2-N7LOCK") {
+        None
+    } else {
+        Some(super::lock::acquire(dir, "runner").map_err(|e| format!("설치판 롤백 자산 받기 보류 — 갱신 잠금 사용 중({e})"))?)
+    };
+    fill()
+}
+
 /// 러너 · 복구기 공통: 비종결 저널이면 복구부터(잠금 = 복구기 몫 · 잡혀 있으면 조용히 끝).
 fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
     let read = super::journal::read(dir);
@@ -270,9 +282,14 @@ fn run_inner(json_out: bool, hooks: &check::Hooks) -> i32 {
     let (report, rc) = check::run_check(&dir, &crate::pack::pack_dir(), hooks);
     // ★후속 3판 ②(설계 §3-7 ② · master#c72a59df): 윈 N7 이 **유일한** 보류(첫 보류 = N7 · 순서상 마지막 게이트)면 이 주기에서 보관소 받기 →
     //   다시 판정. 실패 = 사유 있는 보류(last_defer.detail · 다음 주기 재시도 · 영구 아님).
-    let (report, rc, n7_fill) = retry_after_n7_fill(report, rc, cfg!(windows), || super::realops::fill_rollback_assets_net(&dir, super::buildinfo::release_seq()), || {
-        check::run_check(&dir, &crate::pack::pack_dir(), hooks)
-    });
+    // ★후속 4판 ①(Opus 3R n1): 받기 = 전역 잠금 안(`fill_under_lock`) — installers/<seq>·`.<seq>.tmp` 는 설치 링크(U5)와 같은 자리다.
+    let (report, rc, n7_fill) = retry_after_n7_fill(
+        report,
+        rc,
+        cfg!(windows),
+        || fill_under_lock(&dir, || super::realops::fill_rollback_assets_net(&dir, super::buildinfo::release_seq())),
+        || check::run_check(&dir, &crate::pack::pack_dir(), hooks),
+    );
     let decision = report["decision"].as_str().unwrap_or("").to_string();
     // ★3판(Fable 2R M4 · 설계 §3-8): 본체가 최신이고 게이트가 통과면 팩 단독 갱신(러너 트랜잭션 안 · PACK_APPLY/PACK_ROLLBACK).
     // ★4판(M6): 게이트 = 팩 단독 부분열(`pack_gates` = evaluate_pack_only) — 본체 전체 게이트(N6·N7·N14)를 재사용하지 않는다.
@@ -398,8 +415,10 @@ pub fn enforce_stop_seats(dir: &std::path::Path, seq: u64) -> i32 {
 
 /// ★2판(codex 1R C15): 대조 매니페스트 = **지금 설치판**(build-info release_seq) 것만 — 후보 기록은 그 판과 seq 가 같을 때만 쓰고
 /// (B→A 롤백 뒤 남은 B 후보로 A 설치본을 재던 거짓 진단 차단) 아니면 `installers\<설치판 seq>\release.json`.
+/// ★후속 4판 ②(Opus 3R n2): 후보 기록 = 서명 재검증 입구 [`recovery_candidate`](본문 행으로 자산을 다시 만듦) — 날 candidate.json 의
+/// 매니페스트 칸은 믿지 않는다(변조 = 서명 실패 = 빈 후보 → 설치판 본문 · 그것도 없으면 진단 거부).
 pub fn pick_payload_manifest(dir: &std::path::Path, installed_seq: u64) -> Option<Vec<super::feed::PayloadEntry>> {
-    super::quiesce::read_json::<Candidate>(dir, CANDIDATE_FILE)
+    recovery_candidate(dir)
         .filter(|c| c.release_seq == installed_seq && c.asset.release_seq == installed_seq)
         .and_then(|c| c.asset.payload_manifest)
         .filter(|m| !m.is_empty())
@@ -445,6 +464,31 @@ mod tests {
         assert!(why.is_none());
     }
 
+    /// ★후속 4판 ①: N7 보관소 받기 = 전역 잠금 안에서만 — 남(설치 링크 등)이 잠금을 쥐었으면 받기 진입 0 + 사유 · 받는 동안 잠금 잡힘 ·
+    /// 받은 뒤 놓음. 뮤턴트 U2-N7LOCK(잠금 없이 받기 = 4판 전) = 적.
+    #[test]
+    fn n7_archive_fill_writes_only_while_holding_the_global_lock() {
+        use super::super::lock;
+        let d = std::env::temp_dir().join(format!("cys-u2-n7lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let held = lock::acquire(&d, "install-link").unwrap();
+        let entered = std::cell::Cell::new(false);
+        let r = fill_under_lock(&d, || {
+            entered.set(true);
+            Ok(true)
+        });
+        assert!(!entered.get(), "남이 쥔 잠금 = 받기 진입 0");
+        assert!(r.as_ref().err().map(|e| e.contains("잠금")).unwrap_or(false), "사유 있는 보류: {r:?}");
+        drop(held);
+        let r = fill_under_lock(&d, || {
+            assert_eq!(lock::is_held(&d), Some(true), "받는 동안 = 잠금 안");
+            Ok(true)
+        });
+        assert_eq!(r, Ok(true));
+        assert_eq!(lock::is_held(&d), Some(false), "받은 뒤 잠금 놓음");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// ★4판(codex·Fable 3R M4/M6): 러너 분기 = 팩 단독 부분열 — 배터리(N6)·롤백 자산(N7)·복구기(N14) 보류여도 본체 최신이면 팩 경로 ·
     /// 팩 부분열 게이트(N2 사람 입력 등) 보류면 팩도 안 감 · 본체 판정이 uptodate 아니면 팩 경로 0. 뮤턴트 U2-PACKGATE(본체 게이트 재사용) = 적색.
     #[test]
@@ -463,28 +507,46 @@ mod tests {
         assert!(!wants_pack_only(&rep(&g, "uptodate")), "팩 부분열 보류 = 팩도 안 감");
     }
 
-    /// ★2판 C15: B→A 롤백 뒤 남은 B 후보(seq 9)로 A 설치본(seq 8)을 재지 않는다 — 설치판 seq 의 본문만.
-    #[test]
-    fn verify_payload_uses_installed_release_manifest_only() {
-        let d = std::env::temp_dir().join(format!("cys-u2-vp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("installers/8")).unwrap();
+    /// 시험: 서명된 후보(이 기판 행의 페이로드 매니페스트 = `path`) — 파일의 asset 칸은 `file_path` 로 따로 적는다(변조 흉내).
+    fn signed_cand(k: &super::super::keys::testkit::Keys, seq: u64, path: &str, file_path: &str, sig_ok: bool) -> Candidate {
+        use base64::Engine;
         let row = |p: &str| json!([{"path": p, "size": 1, "sha256": "a".repeat(64)}]);
+        let mut body = super::super::feed::fixture::body_json(k, seq);
+        body["assets"][super::super::buildinfo::TARGET]["payload_manifest"] = row(path);
+        let bb = body.to_string().into_bytes();
+        let e = base64::engine::general_purpose::STANDARD;
         let asset: super::super::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0,
-            "target": super::super::buildinfo::TARGET, "release_seq": 9, "payload_manifest": row("B.exe")})).unwrap();
-        let c = Candidate {
+            "target": super::super::buildinfo::TARGET, "release_seq": seq, "payload_manifest": row(file_path)})).unwrap();
+        Candidate {
             asset,
-            version: "B".into(),
-            release_seq: 9,
+            version: format!("1.1.{seq}"),
+            release_seq: seq,
             installed_revoked: false,
             notes_ko: None,
             feed_rev: None,
             envelope_sha256: None,
             envelope_signed_at: None,
-            release_b64: None,
-            release_sig_b64: None,
-        };
-        super::super::quiesce::write_json(&d, CANDIDATE_FILE, &c).unwrap();
+            release_b64: Some(e.encode(&bb)),
+            release_sig_b64: Some(e.encode(if sig_ok { k.u.sign(&bb) } else { k.f.sign(&bb) })),
+        }
+    }
+
+    /// ★2판 C15: B→A 롤백 뒤 남은 B 후보(seq 9)로 A 설치본(seq 8)을 재지 않는다 — 설치판 seq 의 본문만.
+    #[test]
+    fn verify_payload_uses_installed_release_manifest_only() {
+        use super::super::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = std::env::temp_dir().join(format!("cys-u2-vp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("installers/8")).unwrap();
+        let k = Keys::new();
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", super::super::feed::fixture::NOW.to_string()),
+        );
+        let row = |p: &str| json!([{"path": p, "size": 1, "sha256": "a".repeat(64)}]);
+        super::super::quiesce::write_json(&d, CANDIDATE_FILE, &signed_cand(&k, 9, "B.exe", "B.exe", true)).unwrap();
         let rel = json!({"assets": [{"target": super::super::buildinfo::TARGET, "payload_manifest": row("A.exe")}]});
         std::fs::write(d.join("installers/8/release.json"), rel.to_string()).unwrap();
         // 롤백 뒤(설치판 8) = B 후보를 쓰지 않는다 · 서명 없는 release.json 은 ★2판 C10 재검증에서 거부(서명된 본문 경로 =
@@ -492,6 +554,33 @@ mod tests {
         assert!(pick_payload_manifest(&d, 8).is_none(), "B 후보로 A 를 재지 않음 · 서명 없는 본문 = 신뢰 0");
         assert_eq!(pick_payload_manifest(&d, 9).unwrap()[0].path, "B.exe", "후보 = 설치판일 때만");
         assert!(pick_payload_manifest(&d, 7).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 4판 ②(Opus 3R n2): `--verify-payload` 의 후보 = 서명 재검증 입구 — 파일의 매니페스트 칸 변조는 무시(서명 본문 행) ·
+    /// 본문 서명 실패·본문 없음 = 후보 불신(설치판 본문도 없으면 진단 거부 = 매니페스트 없음). 뮤턴트 U2-CANDVERIFY(재검증 끔) = 적.
+    #[test]
+    fn verify_payload_rejects_tampered_candidate_manifest() {
+        use super::super::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = std::env::temp_dir().join(format!("cys-u2-vpt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let k = Keys::new();
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", super::super::feed::fixture::NOW.to_string()),
+        );
+        super::super::quiesce::write_json(&d, CANDIDATE_FILE, &signed_cand(&k, 9, "cys.exe", "EVIL.exe", true)).unwrap();
+        assert_eq!(pick_payload_manifest(&d, 9).unwrap()[0].path, "cys.exe", "파일 칸 변조 무시 = 서명 본문 행");
+        super::super::quiesce::write_json(&d, CANDIDATE_FILE, &signed_cand(&k, 9, "cys.exe", "EVIL.exe", false)).unwrap();
+        assert!(pick_payload_manifest(&d, 9).is_none(), "본문 서명 실패 = 진단 거부");
+        let mut unsigned = signed_cand(&k, 9, "cys.exe", "EVIL.exe", true);
+        unsigned.release_b64 = None;
+        unsigned.release_sig_b64 = None;
+        super::super::quiesce::write_json(&d, CANDIDATE_FILE, &unsigned).unwrap();
+        assert!(pick_payload_manifest(&d, 9).is_none(), "서명 본문 없음 = 진단 거부");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

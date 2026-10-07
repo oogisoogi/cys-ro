@@ -59,6 +59,7 @@ U2-PVATTEMPT update::realops::tests::post_verify_baseline_only_from_live_attempt
 U2-FILL update::realops::tests::win_s8_fills_missing_rollback_assets_from_archive_or_holds_with_reason
 U2-COPYCHECK update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
 U2-CANDVERIFY update::realops::tests::reconstruct_new_needs_restored_candidate_of_the_same_release
+U2-CANDVERIFY update::auto::tests::verify_payload_rejects_tampered_candidate_manifest
 U2-STAGESIG update::realops::tests::win_s9b_rerun_reverifies_stage_installer_before_running_it
 U2-COPYSTOP update::runner::tests::journal_copy_failure_is_recorded_but_never_stops_forward_progress
 U2-RECONSIGNAL update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
@@ -67,6 +68,7 @@ U2-LINKFP pack::tests::plan_fingerprint_follows_symlink_target_content
 U2-WITHIN update::runner::tests::pack_backup_cleanup_deletes_only_inside_backup_root
 U2-S2FILL update::realops::tests::win_s2_fetches_rollback_assets_before_candidate_download_and_daemon_stop
 U2-N7FILL update::auto::tests::n7_hold_on_windows_triggers_archive_fill_then_recheck_or_reasoned_hold
+U2-N7LOCK update::auto::tests::n7_archive_fill_writes_only_while_holding_the_global_lock
 U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
 U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 U2-MEMOCHECK bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply

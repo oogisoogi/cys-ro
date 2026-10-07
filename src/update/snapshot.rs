@@ -515,7 +515,27 @@ pub fn backup_root(update_dir: &Path) -> PathBuf {
 }
 
 pub fn quarantine_dir(update_dir: &Path, txn_id: &str) -> PathBuf {
-    update_dir.join("rb-quarantine").join(txn_id)
+    // ★후속 3판(Opus 2R m8): 열쇠는 경로 성분 1개로만 — 영숫자·`-` 밖 문자 제거(`/`·`.` 0 = 탈출 0)
+    let k: String = txn_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    update_dir.join("rb-quarantine").join(if k.is_empty() { "invalid".to_string() } else { k })
+}
+
+/// ★후속 3판(Opus 2R m8 · 1R c1 「모든 곳」): 경로 재료(txn·원점·저널 경로 칸)로 만든 폴더 삭제의 공용 문 — `p` 가 링크가 아닌 실 폴더이고
+/// 실경로의 부모 = `base` 의 실경로일 때만 지운다(밖으로 해소·링크·없음 = 무접촉 Ok(false)).
+pub fn remove_dir_within(base: &Path, p: &Path) -> std::io::Result<bool> {
+    let inside = match (std::fs::symlink_metadata(p), p.canonicalize(), base.canonicalize()) {
+        (Ok(m), Ok(c), Ok(b)) => m.is_dir() && c.parent() == Some(b.as_path()),
+        _ => false,
+    };
+    if inside && !super::mutant("U2-WITHIN") {
+        std::fs::remove_dir_all(p)?;
+        return Ok(true);
+    }
+    if super::mutant("U2-WITHIN") && std::fs::symlink_metadata(p).is_ok() {
+        std::fs::remove_dir_all(p)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

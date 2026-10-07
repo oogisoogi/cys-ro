@@ -255,14 +255,7 @@ impl RealOps {
     /// stage 삭제(검증된 원점만 · 실물이 `update/stage/` 바로 아래 실 폴더일 때만 — 심볼릭 링크·밖으로 해소되는 경로 = 무접촉).
     fn remove_stage(&self, j: &Journal) {
         let Some(p) = self.stage_dir(j) else { return };
-        let base = self.env.update_dir.join("stage");
-        let inside = match (std::fs::symlink_metadata(&p), p.canonicalize(), base.canonicalize()) {
-            (Ok(m), Ok(c), Ok(b)) => m.is_dir() && c.parent() == Some(b.as_path()),
-            _ => false,
-        };
-        if inside {
-            let _ = std::fs::remove_dir_all(&p);
-        }
+        let _ = super::snapshot::remove_dir_within(&self.env.update_dir.join("stage"), &p);
     }
 
     /// S11 몫 = ① 새 판 서명 본문(+윈 설치기·A2 서명) `installers/<seq>/` 원자 보존·재검증 ② 수용 기록 durable 쓰기 — 정상 S11([`Ops::commit`])
@@ -685,6 +678,9 @@ impl Ops for RealOps {
     }
 
     fn snapshot(&mut self, j: &mut Journal) -> Step {
+        if !super::journal::valid_txn(&j.txn_id) {
+            return Err(fail(ErrCode::DiskLow, "S8", "스냅샷 자리 토큰 형식 밖"));
+        }
         let root = super::snapshot::backup_root(&self.env.update_dir).join(super::snapshot::snapshot_name(j.from_release_seq, &j.txn_id));
         let mut shas = Vec::new();
         for (name, src) in self.snapshot_roots() {
@@ -939,7 +935,8 @@ impl Ops for RealOps {
         let fresh = Path::new(&j.snapshot_dir).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let never: std::collections::BTreeSet<String> = [fresh.clone()].into();
         for n in super::snapshot::prune_plan(&names, 2, true, &never) {
-            let _ = std::fs::remove_dir_all(super::snapshot::backup_root(&self.env.update_dir).join(n));
+            let br = super::snapshot::backup_root(&self.env.update_dir);
+            let _ = super::snapshot::remove_dir_within(&br, &br.join(n));
         }
         if self.env.os == Os::Mac {
             if let Some(pb) = &j.prev_bundle {
@@ -1337,8 +1334,12 @@ pub fn pack_txn_begin(update_dir: &Path, txn_id: &str, epoch: u64, cys_root: &Pa
 /// 사용자 트리 요약 해시 + 사본(`backup/pack-<txn>/user`) — PACK_APPLY 의 고정값.
 pub fn pack_user_snapshot(update_dir: &Path, txn_id: &str, cys_root: &Path) -> Result<(String, PathBuf), String> {
     let digest = verify::user_tree_digest(cys_root)?;
+    // ★후속 3판(Opus 2R m8): 경로 성분 = 검증된 토큰만
+    if !super::journal::valid_txn(txn_id) {
+        return Err(format!("팩 사본 자리 토큰 형식 밖: {txn_id:?}"));
+    }
     let snap = super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")).join("user");
-    let _ = std::fs::remove_dir_all(&snap);
+    let _ = super::snapshot::remove_dir_within(&snap.parent().unwrap_or(&snap).to_path_buf(), &snap);
     super::snapshot::take(cys_root, &snap, &user_snapshot_filter(cys_root))?;
     Ok((digest, snap))
 }
@@ -1396,7 +1397,7 @@ pub fn pack_backup_sweep(update_dir: &Path, keep_txn: &str) {
     for e in rd.filter_map(|e| e.ok()) {
         let n = e.file_name().to_string_lossy().to_string();
         if n.starts_with("pack-") && n != format!("pack-{keep_txn}") {
-            if let Err(err) = std::fs::remove_dir_all(e.path()) {
+            if let Err(err) = super::snapshot::remove_dir_within(&root, &e.path()) {
                 eprintln!("[update] 팩 사본 정리 실패(다음 갱신이 재시도): {n}: {err}");
             }
         }
@@ -1457,7 +1458,10 @@ pub fn parse_pack_version(stdout: &str) -> Option<String> {
 /// 성공 종결 — PACK_DONE + 사용자 트리 사본 정리.
 pub fn pack_txn_end(update_dir: &Path, txn_id: &str, epoch: u64) -> Result<(), String> {
     super::journal::advance(update_dir, txn_id, epoch, super::journal::State::PackDone, |_| {}).map_err(|e| format!("{e:?}"))?;
-    let _ = std::fs::remove_dir_all(super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")));
+    let br = super::snapshot::backup_root(update_dir);
+    if super::journal::valid_txn(txn_id) {
+        let _ = super::snapshot::remove_dir_within(&br, &br.join(format!("pack-{txn_id}")));
+    }
     Ok(())
 }
 
@@ -1674,10 +1678,10 @@ mod tests {
             std::fs::write(root.join(p), b).unwrap();
         }
         let want = verify::user_tree_digest(&root).unwrap();
-        pack_txn_begin(&upd, "t1", 1, &root).unwrap();
+        pack_txn_begin(&upd, "1111111111111111111111111111111a", 1, &root).unwrap();
         let j = super::super::journal::read(&upd).journal().cloned().unwrap();
         assert_eq!((j.state, j.stage_tree_sha256.as_str()), (super::super::journal::State::PackApply, want.as_str()));
-        assert!(pack_txn_begin(&upd, "t2", 2, &root).unwrap_err().contains("복구 대기"), "비종결 저널 위 새 팩 트랜잭션 거부");
+        assert!(pack_txn_begin(&upd, "2222222222222222222222222222222b", 2, &root).unwrap_err().contains("복구 대기"), "비종결 저널 위 새 팩 트랜잭션 거부");
         // 도중 죽음: 사용자 파일 덮임 · 새 사용자 파일 · 팩 본문 변경
         std::fs::write(root.join("local/me.md"), "clobbered").unwrap();
         std::fs::write(root.join("local/new.md"), "n").unwrap();
@@ -1687,7 +1691,7 @@ mod tests {
         assert!(!root.join("local/new.md").exists() && d.join("q/local/new.md").exists(), "새 사용자 파일 = 격리");
         assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v2", "팩 본문 = 팩 저널 몫(무접촉)");
         assert!(pack_user_tree_restore(&root, "", Path::new(&j.snapshot_dir), &d.join("q")).is_err(), "고정값 없음 = 실패");
-        pack_txn_end(&upd, "t1", 1).unwrap();
+        pack_txn_end(&upd, "1111111111111111111111111111111a", 1).unwrap();
         assert_eq!(super::super::journal::read(&upd).journal().unwrap().state, super::super::journal::State::PackDone);
         let _ = std::fs::remove_dir_all(&d);
     }

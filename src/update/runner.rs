@@ -447,7 +447,7 @@ impl<'a, O: Ops> Runner<'a, O> {
         match self.ops.pack_apply(&j) {
             Ok(()) => {
                 let j = self.enter(State::PackDone, |_| {})?;
-                pack_backup_cleanup(&j);
+                pack_backup_cleanup(&self.dir, &j);
                 self.ops.record(Some(&j), Kind::PackOk, None);
                 Ok(Outcome::PackDone)
             }
@@ -459,7 +459,7 @@ impl<'a, O: Ops> Runner<'a, O> {
                     return Ok(Outcome::RollbackFailed(f2));
                 }
                 let j = self.enter(State::PackDone, |_| {})?;
-                pack_backup_cleanup(&j);
+                pack_backup_cleanup(&self.dir, &j);
                 self.ops.record(Some(&j), Kind::Deferred, Some(&f));
                 Ok(Outcome::Deferred(f))
             }
@@ -564,7 +564,7 @@ impl<'a, O: Ops> Runner<'a, O> {
                 let j = if j.state == State::PackApply { self.enter(State::PackRollback, |_| {})? } else { j };
                 let _ = j;
                 let j = self.enter(State::PackDone, |_| {})?;
-                pack_backup_cleanup(&j);
+                pack_backup_cleanup(&self.dir, &j);
                 if committed {
                     self.ops.record(Some(&j), Kind::PackOk, None);
                 } else {
@@ -667,10 +667,11 @@ impl<'a, O: Ops> Runner<'a, O> {
 /// ★4판(Fable 3R n2): 팩 단독 갱신 종결 뒤 사용자 트리 사본(`backup/pack-<txn>/`) 정리 — 팩 판마다 `~/.cys/local` 사본이 쌓이지 않게.
 /// ★5판(codex 4R MINOR 7): 실패를 삼키지 않는다 — 1줄 남기고, 다음 팩 갱신의 `pack_prepare`(`realops::pack_backup_sweep`)가 다시 지운다
 /// (종결 뒤라 저널로 되돌아갈 수 없다 · 사본은 종결 트랜잭션의 것이라 지워도 안전).
-fn pack_backup_cleanup(j: &Journal) {
+fn pack_backup_cleanup(dir: &Path, j: &Journal) {
     if let Some(parent) = Path::new(&j.snapshot_dir).parent() {
         if parent.file_name().map(|n| n.to_string_lossy().starts_with("pack-")).unwrap_or(false) {
-            if let Err(e) = std::fs::remove_dir_all(parent) {
+            // ★후속 3판(Opus 2R m8): 저널 경로 칸 = `update/backup` 바로 아래 실 폴더일 때만(밖 = 무접촉)
+            if let Err(e) = super::snapshot::remove_dir_within(&super::snapshot::backup_root(dir), parent) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     eprintln!("[update] 팩 사본 정리 실패(다음 팩 갱신이 재시도): {}: {e}", parent.display());
                 }
@@ -1546,6 +1547,30 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// ★후속 3판(Opus 2R m8): 경로 재료 삭제 = 공용 문(`snapshot::remove_dir_within`) — 저널 `snapshot_dir` 의 부모가 `pack-` 이름이어도
+    /// `update/backup` 밖(또는 밖을 가리키는 링크)이면 무접촉 · 안의 실 폴더만 정리. 뮤턴트 U2-WITHIN(검사 끔) = 밖 희생 폴더 삭제 = 적.
+    #[cfg(unix)]
+    #[test]
+    fn pack_backup_cleanup_deletes_only_inside_backup_root() {
+        let d = tmp("within");
+        let victim = d.join("elsewhere/pack-evil");
+        std::fs::create_dir_all(victim.join("user")).unwrap();
+        let br = crate::update::snapshot::backup_root(&d);
+        std::fs::create_dir_all(br.join("pack-ok/user")).unwrap();
+        std::os::unix::fs::symlink(&victim, br.join("pack-link")).unwrap();
+        for snap in [victim.join("user"), br.join("pack-link/user")] {
+            let mut j = Journal::new(T, 1);
+            j.snapshot_dir = snap.to_string_lossy().to_string();
+            pack_backup_cleanup(&d, &j);
+        }
+        assert!(victim.join("user").exists(), "밖 · 밖을 가리키는 링크 = 무접촉");
+        let mut j = Journal::new(T, 1);
+        j.snapshot_dir = br.join("pack-ok/user").to_string_lossy().to_string();
+        pack_backup_cleanup(&d, &j);
+        assert!(!br.join("pack-ok").exists(), "안의 실 폴더 = 정리");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// ★후속 3판(Opus 2R m3): 보조 저널 사본 쓰기가 S8~S11 내내 실패해도 정상 실행은 DONE 까지 간다(사본 = 재구성 원천일 뿐 · 정본 저널은

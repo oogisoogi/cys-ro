@@ -320,7 +320,8 @@ function Save-CysRollbackAssets([string]$Dir, [string]$Setup) {
     if ($rc -eq 0) { return 'ok' }
     if ($out -match 'unrecognized|unexpected argument') { return 'skip' }   # 옛 판(1.1.7 이하)은 이 입구가 없다 — 그 판엔 자동 갱신도 없다
     Say '     자비스가 나중에 새 판으로 바꿀 때 쓸 되돌림 파일을 이번에는 챙기지 못했습니다. 지금 쓰시는 데는 지장이 없습니다.'
-    Say '     이 설치 한 줄을 나중에 다시 실행하시면 다시 챙깁니다.'
+    Say '     그 파일이 없는 동안 자비스의 자동 새 판 바꾸기는 멈춰 있습니다 — 이 설치 한 줄을 나중에 다시 실행하시면 다시 챙기고 이어집니다.'
+    Write-Log ('rollback assets: 못 챙김 rc=' + $rc + ' — 자동 갱신 hold(N7 설치판 자산 없음) · 설치 링크 재실행 = 다시 챙김(2판 codex7 · master#c72a59df ⓑ)')
     Send-Progress '6/10' 'info' $null ('rollback-assets:fail rc=' + $rc) $null
     return ('fail-' + $rc)
 }

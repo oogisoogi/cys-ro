@@ -1,0 +1,4 @@
+# 1.1.8 U5 계약 사본 핀 — ai-jarvis tests/install-u5/sync-cys-contract.py --write 가 만든다(손으로 고치지 마라)
+# aj_commit 8fd43bc6ed67bd6b12fdc161ac5893122e6bfbb8
+638bf68be5ccfb8d326f0bdfd2db6cd1402678d680a9f01a87949c3e4c771985  u5-block.ps1
+20077958fdd4556786423e71720f9f98fb5de1ba4287ab1eed9fe5d9938c0931  u5-win-lock.ps1

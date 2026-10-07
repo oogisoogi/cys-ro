@@ -103,6 +103,8 @@
   · ★3판(a56d010e · 10-07): ci-branch 37562611253 **success** · windows-build 37562611247 **success** · windows-health 37562611289 1차 **failure** = 상담소 팩 `test_writers_vs_mover`(교차 잠금 경합 · 줄 유실 — U5 무관 · 18a92a12 이후 cysjavis-pack 변경 0) → 실패 잡만 재실행(attempt 2) **success**(그 시험 ok ×2). U5 스텝 두 번 다 PS 5.1·7 각 ok 39 FAIL 0 real=1 · U5-PIN ok(aj 9f0ab37).
   · ⚠U5-NEXT(스테이징 블록 ↔ 핀) = GitHub 러너에서 **403**(맥 로컬 curl = 200) → 경고 skip. 러너 IP 차단(Cloudflare 규칙)으로 추정 — 이 대조는 지금 러너에서 실제로 돌지 않는다. 실효 관문 = §6 배포 전 `sync --check`(master). 러너에서 돌리려면 사이트 쪽 허용 규칙 = master 판단.
   · 맥(3판): u5-mac-lock 37/0 · pwsh 32/0 · 하네스 20/0 · `update::` 228/0 · `--bin cys` 589/0 · secret-scan clean.
+  · ★4판(fecf311d · 10-07): ci-branch 37568832613 · windows-build 37568832619 · windows-health 37568832575 = 셋 다 1차 **success** · U5 스텝 PS 5.1·7 각 ok 43 FAIL 0 real=1([받기] 답 없는 서버 3초 상한 · [분류] 재확인 3 · [실경로] 윈 실물 통과) · U5-PIN ok(aj 38244b5 · 핀 3줄) · U5-NEXT = 「러너 차단 403 · 대조 0」 경고(정정된 이름).
+  · 맥(4판): u5-mac-lock 39/0(ⓘ′ 블록 해시) · pwsh 36/0 · 하네스 24/0 · `update::` 228/0 · `--bin cys` 589/0 · secret-scan clean · M1 음성 대조 = 시한 제거본이 45초 알람까지 멈춤.
   · ⚠debug cys.exe 의 윈 주 스레드 스택 넘침(거부 갈래 = 0xC00000FD)은 시험 빌드 한정 관측 — 출시 무관이나 윈에서 debug cys 로 참가 거부를 재는 시험은 같은 함정(기록만).
 
 ## §5 재현

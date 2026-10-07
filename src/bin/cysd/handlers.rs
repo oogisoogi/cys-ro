@@ -33476,6 +33476,10 @@ mod tests {
         #[test]
         fn b3_status_polling_does_not_restat_the_identity_file() {
             let (daemon, seat, home, folder, _t) = b3_reported_seat("h8", 995_141);
+            // ★r2-b3status: 계정 축(`control.dashboard` → `accounts::local_json` → `known_profile_identities`)은 **홈의 프로필 폴더 전부**를
+            //   같은 캐시로 읽고 `reads` 에 센다 — 홈을 이 검체의 홈으로 고정하지 않으면 실행 기계 $HOME 의 프로필 폴더 수만큼 실판독이 잡힌다
+            //   (빈 홈 0 · `~/.claude` 1 · 둘 2 — 74476bbd·v0.14.43 같은 값 · release 런 37642949667 aarch64 left 1). 이 홈엔 좌석 폴더만 있어 보고가 채운 캐시에 적중한다.
+            let _h = crate::accounts::test_home::set(&home);
             for _ in 0..4 {
                 let _ = b3_usage_objs(&daemon, seat);
             }

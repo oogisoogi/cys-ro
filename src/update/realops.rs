@@ -141,6 +141,56 @@ pub fn verify_installer_dir_with(
     Ok(VerifiedRelease { manifest, setup_sha256 })
 }
 
+/// ★후속 2판 ⑫(설계 §3-7 ② · §6-1 불변 본문 보관소): 설치판 롤백 자산 받아 채우기 — `installers/<seq>/` 가 재검증을 통과하면 그대로
+/// (Ok(false)) · 아니면 ① 보관소 `cysr/releases/<seq>.json(.minisig)`(U 서명 · `get_feed` = 피드 뿌리 기준 상대 경로) → 서명·서식·seq 검증
+/// ② 그 본문의 이 대상 행 `url`(설치기 · 크기·sha256 = 본문 행) · `a2_sig_url`(A2 서명) → ③ 임시 자리(`installers/.<seq>.fill.tmp`)에 접점
+/// 파일 4개(`release.json`·`.minisig`·`setup.exe`·`setup.exe.sig` = 설치 링크·S11 과 같은 이름)를 내구 쓰기 → [`verify_installer_dir_with`]
+/// 재검증 → `installers/<seq>` 로 rename + 폴더 fsync = Ok(true). 어느 단계든 실패 = Err(사유 · 자리 무변경).
+pub fn fill_installer_dir(
+    update_dir: &Path,
+    seq: u64,
+    kr: &super::keys::UpdateKeyring,
+    get_feed: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    get_asset: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
+) -> Result<bool, String> {
+    let dst = update_dir.join("installers").join(seq.to_string());
+    if let (Ok(b), Ok(s)) = (std::fs::read(dst.join(REL_BODY)), std::fs::read(dst.join(REL_SIG))) {
+        if verify_installer_dir_with(&dst, seq, true, &b, &s, kr).is_ok() {
+            return Ok(false);
+        }
+    }
+    let body = get_feed(&format!("cysr/releases/{seq}.json")).map_err(|e| format!("보관소 본문: {e}"))?;
+    let sig = get_feed(&format!("cysr/releases/{seq}.json.minisig")).map_err(|e| format!("보관소 서명: {e}"))?;
+    let rb = super::feed::verify_release_body(&body, &sig, "cysr", kr).map_err(|e| format!("보관소 본문 검증: {e}"))?;
+    if rb.release_seq != seq {
+        return Err(format!("보관소 본문 seq {} ≠ {seq}", rb.release_seq));
+    }
+    let row = rb.assets.values().find(|a| a.target == super::buildinfo::TARGET).ok_or("보관소 본문에 이 대상 행 없음")?;
+    let sig_url = row.a2_sig_url.clone().ok_or("보관소 본문 행에 a2_sig_url 없음")?;
+    let setup = get_asset(&row.url, row.size).map_err(|e| format!("설치기: {e}"))?;
+    if setup.len() as u64 != row.size || super::feed::sha256_hex(&setup) != row.sha256 {
+        return Err("설치기 크기·sha256 ≠ 보관소 본문 행".into());
+    }
+    let a2 = get_asset(&sig_url, 4096).map_err(|e| format!("설치기 A2 서명: {e}"))?;
+    let parent = dst.parent().ok_or("installers 부모 없음")?;
+    let tmp = parent.join(format!(".{seq}.fill.tmp"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    super::ensure_private_dir(&tmp)?;
+    for (name, bytes) in [(REL_BODY, &body), (REL_SIG, &sig), (SETUP, &setup), (SETUP_SIG, &a2)] {
+        super::journal::durable_write(&tmp.join(name), bytes)?;
+    }
+    if let Err(e) = verify_installer_dir_with(&tmp, seq, true, &body, &sig, kr) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!("받은 자산 재검증: {e}"));
+    }
+    if dst.exists() {
+        std::fs::remove_dir_all(&dst).map_err(|e| format!("낡은 installers/{seq}: {e}"))?;
+    }
+    std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())?;
+    super::journal::sync_dir(parent)?;
+    Ok(true)
+}
+
 pub struct RealOps {
     pub env: Env,
     pub token: String,
@@ -161,6 +211,9 @@ pub struct RealOps {
     /// 재기동)는 실물 그대로.
     #[cfg(test)]
     pub judge_is_old: Option<bool>,
+    /// 시험 전용: 자산 받기(github 1홉 규칙 URL 을 시험 파일로).
+    #[cfg(test)]
+    pub asset_get: Option<Box<dyn Fn(&str, u64) -> Result<Vec<u8>, String>>>,
 }
 
 fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
@@ -182,6 +235,8 @@ impl RealOps {
             pack_to: None,
             #[cfg(test)]
             judge_is_old: None,
+            #[cfg(test)]
+            asset_get: None,
         }
     }
 
@@ -487,6 +542,10 @@ impl Ops for RealOps {
 
     fn fetch(&mut self, j: &mut Journal) -> Step {
         let a = self.asset()?.clone();
+        // ★후속 2판 ⑫: 윈 설치판 롤백 자산(설치 링크가 못 챙긴 기기 = 종전엔 N7 영구 보류) — 데몬을 내리기 전(S2)에 보관소에서 받아 채운다.
+        if self.env.os == Os::Win {
+            self.fill_rollback_assets(super::buildinfo::release_seq(), "S2")?;
+        }
         let stage = self.stage_dir(j).ok_or_else(|| fail(ErrCode::DiskLow, "S2", "저널 원점 txn 없음"))?;
         super::ensure_private_dir(&stage).map_err(|e| fail(ErrCode::DiskLow, "S2", e))?;
         let name = if self.env.os == Os::Win { "setup.exe" } else { "asset.zip" };
@@ -646,6 +705,10 @@ impl Ops for RealOps {
             //   sha256·A2 서명을 다시 검증한 것만(현장 해시를 신뢰하지 않는다).
             let dir = self.installers_dir(j.from_release_seq);
             let inst = dir.join(SETUP);
+            // ★후속 2판 ⑫: S2 뒤 사라졌거나 망가졌으면 1회 다시 받는다(그래도 실패 = 사유 있는 되감기)
+            if verify_installer_dir(&dir, j.from_release_seq, true).is_err() {
+                self.fill_rollback_assets(j.from_release_seq, "S8")?;
+            }
             let v = verify_installer_dir(&dir, j.from_release_seq, true).map_err(|e| fail(ErrCode::NoRollbackAsset, "S8", format!("설치판 롤백 자산: {e}")))?;
             let sha = v.setup_sha256.unwrap_or_default();
             j.prev_installer = Some(PrevInstaller { path: inst.to_string_lossy().to_string(), sha256: sha, release_seq: j.from_release_seq });
@@ -1137,6 +1200,27 @@ impl Ops for RealOps {
 }
 
 impl RealOps {
+    /// ★후속 2판 ⑫: 설치판(`seq`) 롤백 자산을 채운다(윈만 · 맥 = 정식 자리 옛 번들이 롤백 자산) — 실패 = `update.no_rollback_asset`(일시 =
+    /// 6h·12h·24h·48h 백오프 · §3-10 MA7) + 사유 1줄(조용한 보류 0).
+    fn fill_rollback_assets(&self, seq: u64, step: &str) -> Step {
+        if super::mutant("U2-FILL") {
+            return Err(fail(ErrCode::NoRollbackAsset, step, "설치판 롤백 자산 없음"));
+        }
+        let kr = super::keys::UpdateKeyring::embedded().map_err(|e| fail(ErrCode::NoRollbackAsset, step, e))?;
+        let base = super::net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
+        let get_feed = |rel: &str| super::net::fetch_feed_file(&base, rel).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
+        #[cfg(test)]
+        if let Some(g) = &self.asset_get {
+            return fill_installer_dir(&self.env.update_dir, seq, &kr, &get_feed, g.as_ref())
+                .map(|_| ())
+                .map_err(|e| fail(ErrCode::NoRollbackAsset, step, format!("설치판 롤백 자산 받기(보관소): {e}")));
+        }
+        let get_asset = |url: &str, max: u64| super::net::fetch(url, super::url::Hop::AssetFirst, max).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
+        fill_installer_dir(&self.env.update_dir, seq, &kr, &get_feed, &get_asset)
+            .map(|_| ())
+            .map_err(|e| fail(ErrCode::NoRollbackAsset, step, format!("설치판 롤백 자산 받기(보관소): {e}")))
+    }
+
     /// 재구성의 정식 자리 판정(★2판 C13 그대로) — true = 설치판(옛) · false = 후보(새) · 어느 쪽도 아님 = Err(사람 필요).
     fn judge_canonical(&self) -> Result<bool, Fail> {
         let rj = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
@@ -1957,6 +2041,118 @@ mod tests {
         let ended = ops.post_verify(&j, false).unwrap_err();
         assert_eq!(ended.step, "V0", "종결 표지 기록 = 원천 아님: {ended:?}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 2판 ⑫ 시험 재료: 설치판 seq 8 의 U 서명 본문(모든 행 sha256 = 시험 설치기 · 이 기판 행에 a2_sig_url) + 받기 짝.
+    #[cfg(unix)]
+    fn archive_fixture(k: &crate::update::keys::testkit::Keys) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, String, String) {
+        use crate::update::feed::fixture::body_json;
+        let setup = b"MZ-setup-8".to_vec();
+        let mut body = body_json(k, 8);
+        for a in body["assets"].as_object_mut().unwrap().values_mut() {
+            a["sha256"] = json!(crate::update::feed::sha256_hex(&setup));
+            a["size"] = json!(setup.len());
+            a["a2_sig_url"] = json!("https://github.com/oogisoogi/cys-ro/releases/download/v1.1.8/cysr_x64-setup.exe.sig");
+        }
+        let row = body["assets"].as_object().unwrap().values().find(|a| a["target"] == json!(crate::update::buildinfo::TARGET)).unwrap().clone();
+        let bb = body.to_string().into_bytes();
+        let sig = k.u.sign(&bb);
+        let a2 = k.a2.sign(&setup);
+        (bb, sig, setup, a2, row["url"].as_str().unwrap().to_string(), row["a2_sig_url"].as_str().unwrap().to_string())
+    }
+
+    /// ★후속 2판 ⑫(설계 §3-7 ② · §6-1): 보관소에서 설치판 롤백 자산 받아 채우기 — ⓐ 없음 → 보관소 본문·서명 + 본문 행 url 의 설치기·A2
+    /// 서명 → 재검증 통과 → `installers/8/` 접점 파일 4개 = Ok(true) ⓑ 다시 = 이미 있음 Ok(false)(받기 0) ⓒ 설치기 바꿔치기(sha256) · 본문
+    /// 서명 아닌 키 · 보관소 미도달 = Err(사유) · 자리 무변경(임시 자리 남김 0).
+    #[cfg(unix)]
+    #[test]
+    fn fill_installer_dir_from_archive_verifies_and_places_contract_files() {
+        use crate::update::keys::testkit::Keys;
+        let k = Keys::new();
+        let kr = k.keyring();
+        let (bb, sig, setup, a2, url, sig_url) = archive_fixture(&k);
+        let d = std::env::temp_dir().join(format!("cys-u2-fill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let feed = |b: Vec<u8>, s: Vec<u8>| move |rel: &str| match rel {
+            "cysr/releases/8.json" => Ok(b.clone()),
+            "cysr/releases/8.json.minisig" => Ok(s.clone()),
+            r => Err(format!("없음 {r}")),
+        };
+        let gets = std::cell::Cell::new(0);
+        let asset = |set: Vec<u8>| {
+            let (url, sig_url, a2) = (url.clone(), sig_url.clone(), a2.clone());
+            let gets = &gets;
+            move |u: &str, _max: u64| {
+                gets.set(gets.get() + 1);
+                if u == url { Ok(set.clone()) } else if u == sig_url { Ok(a2.clone()) } else { Err(format!("없음 {u}")) }
+            }
+        };
+        let r = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), sig.clone()), &asset(setup.clone()));
+        assert_eq!(r, Ok(true), "ⓐ 받아 채움");
+        let inst = d.join("installers/8");
+        assert!(verify_installer_dir_with(&inst, 8, true, &bb, &sig, &kr).is_ok());
+        for f in [REL_BODY, REL_SIG, SETUP, SETUP_SIG] {
+            assert!(inst.join(f).is_file(), "접점 파일 {f}");
+        }
+        let n = gets.get();
+        assert_eq!(fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), sig.clone()), &asset(setup.clone())), Ok(false), "ⓑ 이미 있음");
+        assert_eq!(gets.get(), n, "ⓑ 받기 0");
+        std::fs::remove_dir_all(&inst).unwrap();
+        let e1 = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), sig.clone()), &asset(b"MZ-evil-08".to_vec())).unwrap_err();
+        let e2 = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), k.f.sign(&bb)), &asset(setup.clone())).unwrap_err();
+        let e3 = fill_installer_dir(&d, 8, &kr, &|_r: &str| Err("미도달".to_string()), &asset(setup.clone())).unwrap_err();
+        assert!(e1.contains("sha256") && e2.contains("보관소 본문 검증") && e3.contains("보관소 본문"), "ⓒ 사유: {e1} / {e2} / {e3}");
+        assert!(!inst.exists() && !d.join("installers/.8.fill.tmp").exists(), "ⓒ 자리 무변경");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 2판 ⑫ 배선: 윈 S8 — `installers/<설치판>/` 이 없으면 실 RealOps 가 피드 뿌리(`CYS_UPDATE_FEED_URL` = file 보관소)의
+    /// `cysr/releases/8.json` 에서 받아 채운 뒤 재검증하고 `prev_installer` 를 적는다 · 보관소에 없으면 `update.no_rollback_asset` + 보관소
+    /// 사유(조용한 보류 0 · 일시 = 백오프). 뮤턴트 U2-FILL(받기 끔 = 2판 이전) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_s8_fills_missing_rollback_assets_from_archive_or_holds_with_reason() {
+        use crate::update::feed::fixture::NOW;
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let (bb, sig, setup, a2, url, sig_url) = archive_fixture(&k);
+        for case in ["ok", "absent"] {
+            let (d, upd, _root, mut ops) = recon_rig(&format!("fill-s8-{case}"));
+            let arch = d.join("arch");
+            std::fs::create_dir_all(arch.join("cysr/releases")).unwrap();
+            if case == "ok" {
+                std::fs::write(arch.join("cysr/releases/8.json"), &bb).unwrap();
+                std::fs::write(arch.join("cysr/releases/8.json.minisig"), &sig).unwrap();
+            }
+            std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+            let _e = (
+                crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+                crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+                crate::pack::EnvGuard::set(super::super::net::ENV_FEED_URL, format!("file://{}", arch.display())),
+            );
+            ops.env.os = Os::Win;
+            let (s2, u2, a22, url2, sig_url2) = (setup.clone(), url.clone(), a2.clone(), url.clone(), sig_url.clone());
+            let _ = u2;
+            ops.asset_get = Some(Box::new(move |u: &str, _m: u64| if u == url2 { Ok(s2.clone()) } else if u == sig_url2 { Ok(a22.clone()) } else { Err(format!("없음 {u}")) }));
+            let mut j = super::super::journal::Journal::new("0123456789abcdef0123456789abcdef", 1);
+            j.from_release_seq = 8;
+            j.release_seq = 9;
+            let r = ops.snapshot(&mut j);
+            match case {
+                "ok" => {
+                    assert!(r.is_ok(), "{r:?}");
+                    assert!(verify_installer_dir(&upd.join("installers/8"), 8, true).is_ok(), "보관소에서 채움");
+                    assert_eq!(j.prev_installer.as_ref().map(|p| p.release_seq), Some(8));
+                }
+                _ => {
+                    let f = r.unwrap_err();
+                    assert!(f.code == ErrCode::NoRollbackAsset && f.detail.contains("보관소"), "사유 있는 보류: {f:?}");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     /// ★4판(Fable 3R M8 · n1·n2) 실 경로: 실 Runner::run_pack + 실 RealOps(pack_prepare 사본·pre-version · pack_apply 위임 자식 ·

@@ -559,11 +559,9 @@ pub fn rollback_assets_ok(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutc
     if free < need {
         return Some(false);
     }
-    if cfg!(windows) {
-        // ★2판(codex 1R C10): 있음이 아니라 재검증(U 본문 서명 · 설치기 sha256 = 본문 행 · A2 서명).
-        let seq = buildinfo::release_seq();
-        return Some(super::realops::verify_installer_dir(&dir.join("installers").join(seq.to_string()), seq, true).is_ok());
-    }
+    // ★후속 2판 ⑫(설계 §3-7 ②): (윈) 설치판 본문·설치기가 `installers\<seq>\` 에 없거나 재검증 실패여도 여기서 보류하지 않는다 — 러너 S2 가
+    //   불변 보관소에서 받아 채우고(실패 = `update.no_rollback_asset` 사유 + 백오프) · S8 이 다시 재검증한다(2판까지 = 설치 링크가 못 챙긴
+    //   기기는 N7 거짓 = 사유 없는 영구 보류였다). 공간 식은 그대로.
     Some(true)
 }
 

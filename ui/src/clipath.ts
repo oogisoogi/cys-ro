@@ -335,7 +335,8 @@ export function installResultToast(rep: InstallCliReport): ToastPlan {
         `단정하지 않습니다. PATH에서 /usr/local/bin 을 앞으로 옮긴 뒤, `;
     return {
       category: "watchdog",
-      title: "⚠ 셸 설치 미완료 — 다른 'cys' 가 앞을 가립니다",
+      title: "⚠ 셸 설치 미완료 — PATH 앞의 다른 'cys' 가 cysr 설치를 가립니다",
+      // ⑨ 2판(agy7): 제목은 cysr 설치 기준 · 탐침은 `which -a cys` 라 가리는 대상 이름은 'cys' 그대로(cysr 가림은 따로 재지 않는다 — 거짓 주장 금지).
       body:
         `심링크(${links})는 만들었지만, 로그인 셸 기준으로는 PATH 앞쪽의 ${by.label} 가 먼저 잡힙니다 — ` +
         `터미널에서 'cys' 를 치면 아직 그쪽이 실행됩니다. ${advice}` +

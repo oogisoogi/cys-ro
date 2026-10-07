@@ -506,7 +506,7 @@ describe("★MAJOR-2 관통 — InstallCliReport 의 기계 필드가 설치 토
     expect(installText(installReport())).toContain("✅ 셸 설치 완료");
     expect(
       installText(installReport({ ok: false, status: "installed_shadowed", shadowed_by: "/opt/homebrew/bin/cys" })),
-    ).toContain("다른 'cys' 가 앞을 가립니다");
+    ).toContain("PATH 앞의 다른 'cys' 가 cysr 설치를 가립니다");
     expect(installText(installReport({ ok: false, status: "unverified", unverified_reason: "probe_failed" }))).toContain(
       "⚠ 셸 설치 확인 불가",
     );

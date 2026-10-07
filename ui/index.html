@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>cysr — CYSJavis Terminal</title>
+  <title>cysr</title>
   <link rel="stylesheet" href="./xterm.css" />
   <link rel="stylesheet" href="./style.css" />
 </head>
@@ -47,7 +47,7 @@
              않고 기본값에서만 치운다」). 그래서 제거가 아니라 hidden 이다.
            · #ws-expert 는 CSS 에서 display:flex 라 **[hidden] 무효화 함정**이 있다 — style.css 에
              #ws-expert[hidden]{display:none} 를 반드시 함께 둔다(wsbar.test.ts 가 그 짝을 잰다). -->
-      <div id="ws-dept-row"><div id="ws-dept-hint">새 부서가 필요하면 마스터에게 말로 부탁하세요</div><div id="ws-expert" hidden><button id="btn-master-start" title="CEO 시작 — 본부(base)에 마스터 오브 마스터 노드를 기동합니다. 부서가 있으면 승인 후 CEO 규약으로 승격됩니다. 마스터는 조직(본부/부서) 단위 1명·부서장은 부서 탭의 ▶부서장으로.  대체 경로: pane 마스터 선언·cys launch-agent 로도 기동할 수 있습니다.">▶CEO</button><button id="btn-dept-master" title="부서장 시작 — 지금 보고 있는 부서 탭의 데몬에 마스터(부서장) 노드를 기동합니다(부서마다 독립 1명).  대체 경로: pane 마스터 선언·cys launch-agent 로도 기동할 수 있습니다.">▶부서장</button><button id="btn-ws-dept" title="새 부서 — 클릭하면 부서 선택(미사용 부서 + 레거시 dept-N)">＋부서</button><button id="btn-pane-create" title="창 만들기(가로/세로) — 누르면 「오른쪽에 새 창」·「아래에 새 창」을 고릅니다. 단축키 ⌘D · ⌘⇧D">창 만들기</button></div></div>
+      <div id="ws-dept-row"><div id="ws-dept-hint">새 부서가 필요하면 마스터에게 말로 부탁하세요</div><div id="ws-expert" hidden><button id="btn-master-start" title="CEO 시작 — 본부(base)에 마스터 오브 마스터 노드를 기동합니다. 부서가 있으면 승인 후 CEO 규약으로 승격됩니다. 마스터는 조직(본부/부서) 단위 1명·부서장은 부서 탭의 ▶부서장으로.  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶CEO</button><button id="btn-dept-master" title="부서장 시작 — 지금 보고 있는 부서 탭의 데몬에 마스터(부서장) 노드를 기동합니다(부서마다 독립 1명).  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶부서장</button><button id="btn-ws-dept" title="새 부서 — 클릭하면 부서 선택(미사용 부서 + 레거시 dept-N)">＋부서</button><button id="btn-pane-create" title="창 만들기(가로/세로) — 누르면 「오른쪽에 새 창」·「아래에 새 창」을 고릅니다. 단축키 ⌘D · ⌘⇧D">창 만들기</button></div></div>
       <div id="ws-tabs"></div>
       <!-- 사용량 패널(오너 요청 2026-08-07): 주간 토큰 사용량 + 페인별 CTX를 한 곳에 모아 표시.
            워크스페이스 목록 아래 빈 공간에 상주한다. 데이터가 없으면 통째로 숨는다(hidden). -->
@@ -176,7 +176,7 @@
           <div class="cc-board-note">클릭 = 보이는 일회용 워커가 task-prompt 티켓(성공기준·4규칙) 경유로 실행합니다. 산출물은 "AI 보조 생성 · 오너 검수 전"입니다.</div>
           <div class="cc-section"><div class="cc-h">최근 실행</div><div id="cc-board-runs"></div></div>
           <div class="cc-section"><div class="cc-h">스킬 보드 (클릭 = 일회용 워커 실행)</div><input id="cc-board-search" placeholder="스킬 검색(카탈로그)" /><div id="cc-board-domains"></div></div>
-          <div class="cc-section"><div class="cc-h">산출물 회수 (~/.cys/_round/skill-out)</div><div id="cc-board-out"></div></div>
+          <div class="cc-section"><div class="cc-h">산출물 회수 (<code>~/.cys/_round/skill-out</code>)</div><div id="cc-board-out"></div></div>
         </div>
         <div id="cc-view-tasks" hidden>
           <div class="cc-board-note">모든 부서의 모든 노드가 지금 무슨 업무를 하는지 실시간 표시(관측 전용·입력 주입 없음). 📍자기보고 = 노드가 보고한 업무 · ⚙파생 = 활동 추론.</div>

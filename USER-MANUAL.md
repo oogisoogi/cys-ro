@@ -1084,7 +1084,7 @@ cysr watch --surface surface:3 --until "DONE"   # scrollback이 regex에 맞을 
 - `?` — 판정 불가(자기보고가 낡음/나이 미상 · 좌석 종료·에이전트 사망으로 동결된 값)
 - `-` — 없음(두 축 다 없음). agy/gemini 좌석은 실측이 없어 `~`/`?` 가 정상
 
-실측 `usage.ctx_pct` 의 주 출처는 claude 좌석의 **상태줄**(`cys-statusline.sh` → `cysr usage-report-stdin`)입니다.
+실측 `usage.ctx_pct` 의 주 출처는 claude 좌석의 **상태줄**(`cys-statusline.sh` → `cys usage-report-stdin`)입니다.
 v0.14.42 부터 이 보고는 데몬을 **새로 띄우지 않고**, 데몬이 응답하지 않으면 **1초(Windows 2초) 안에 포기**합니다
 (종전: 최대 40초 기다리며 데몬 자동 기동을 시도 — 데몬이 멈춘 동안 상태줄마다 cysr 이 쌓였습니다). 포기한 보고가
 이미 데몬에 전달됐으면 데몬이 깨어난 뒤 반영되고, 전달되지 않았으면 데몬의 대화 기록 수집이 1분 안에 CTX 를
@@ -1422,7 +1422,7 @@ cysr init-pack --install-hook --claude-settings ~/.claude/settings.json   # (선
 ### 12.2 역할 선언 부트스트랩
 
 프로젝트 루트에 `CLAUDE.md.template`를 복사해 두면, 에이전트에게 "너는 마스터다/워커다"
-라고 선언하는 것만으로 부트스트랩됩니다: 해당 디렉티브+soul.md 각성 → `cysr claim-role` →
+라고 선언하는 것만으로 부트스트랩됩니다: 해당 디렉티브+soul.md 각성 → `cys claim-role` →
 (마스터면) 결정론 프리플라이트:
 
 ```bash

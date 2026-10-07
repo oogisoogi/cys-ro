@@ -19,7 +19,7 @@
 
   var BANNER_ID = "office-boot-banner";
   var MSG = "⚠ 오피스 자산 유실 — " +
-            "터미널에서  cys init-pack --force  " +
+            "터미널에서  cysr init-pack --force  " +
             "실행 후 새로고침";
 
   // THREE 렌더 성공 여부 — setSize가 남기는 비파괴 지문으로 판정(본문 무접촉)

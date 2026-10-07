@@ -103,7 +103,7 @@ cysr.app Tauri 데스크톱 앱: 터미널 UI(xterm.js, TUI 위에서도 휠 스
 cysd     헤드리스 코어 데몬: NDJSON 소켓 서버(UDS / win named pipe), PTY(portable-pty:
          macOS openpty·Windows ConPTY), vt100 화면 재구성, 이벤트 버스, watchdog,
          프로세스 원장, 사용량/비용 수집기, 영속 분석(SQLite), 스케줄러
-cys      CLI: pane 안의 AI가 쓰는 동등 노드 클라이언트 (수십 종 서브커맨드 — `cys actions`로 열람)
+cys      CLI: pane 안의 AI가 쓰는 동등 노드 클라이언트 (수십 종 서브커맨드 — `cysr actions`로 열람)
 pack     cysjavis-pack/: 절대지침 10·결정론 도구 90+·훅 25+·스킬 114+·스키마 4
          (빌드 시 임베드 · minisign 서명 배포 · 사용자 수정 파일 불가침)
 ```

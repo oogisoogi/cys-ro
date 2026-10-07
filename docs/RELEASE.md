@@ -41,8 +41,8 @@
 직전 릴리스의 `latest.json` 을 이어 싣는다. ⚠**이 레인은 승인 게이트 없이 곧장 공개된다**(`docs/RELEASE-ROLLBACK.md` §1 — 본체 발행과 혼동 금지 · 태그 push = master 집행).
 버전 규칙: `pack-vX.Y.Z` 는 직전 `pack_version` 보다 커야 하고, 다음 본체 판은 최신 `pack-v` 보다 커야 한다(`release-lane-check.sh` 가 기계 검사).
 
-> 확인: 1.1.7 이하 기기는 앱 배지 `↻`(무중단 팩)로 보인다. **1.1.8 부터 앱에는 배지·Update 단추가 없다**(U4) — 1.1.8 기기에서 새 팩 적용을 확인하는 법은
-> 【미확정】(자동 갱신 설계 정본을 확인한 뒤 이 줄을 채운다 · publish-docs-118 3판 m3). CI 이전 수동 팩 발행 절차(배지 확인 포함)는 `docs/legacy/RELEASE-upstream.md` 이력.
+> 확인: 1.1.7 이하 기기는 앱 배지 `↻`(무중단 팩)로 보인다. **1.1.8 부터 앱에는 배지·Update 단추가 없다**(U4).
+> CI 이전 수동 팩 발행 절차(배지 확인 포함)는 `docs/legacy/RELEASE-upstream.md` 이력.
 
 **불변 규칙 (실사고 이력 근거 — 위반 금지)**:
 - `--min-binary-version` **0.12.48 이상 필수**. seed-once 상태 보호(memory/·SESSION_STATE 불가침)는
@@ -327,7 +327,7 @@ bash scripts/check-no-ioreport-link.sh <cysd 바이너리 경로>
 ```
 
 - **어디서 도는가**: `release.yml` 의 macOS 두 레그가 서명·공증 스텝 **뒤**, Gatekeeper 게이트와 tauri-action 업로드 **앞**에서
-  자기 레그의 `.app` 안 cysd(`<번들 기준>/macos/cys.app/Contents/MacOS/cysd`)에 돌린다 — `if: matrix.platform == 'macos-latest'`
+  자기 레그의 `.app` 안 cysd(`<번들 기준>/macos/cysr.app/Contents/MacOS/cysd`)에 돌린다 — `if: matrix.platform == 'macos-latest'`
   라 Windows 레그에서는 돌지 않는다. 붉으면 업로드가 일어나지 않는다(서명·공증은 로드 명령을 바꾸지 않으므로 서명 뒤에 봐도
   같은 판정이라는 것이 워크플로 주석의 판단이다). 브랜치 CI(`ci-branch.yml` 의 macOS 레인)가 같은 스크립트를 push 마다 먼저
   돌린다(`cargo build --bin cysd` 로 만든 `target/debug/cysd`) — 릴리스 레그는 최종 백스톱이다.

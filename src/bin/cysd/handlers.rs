@@ -21512,6 +21512,10 @@ mod tests {
         assert_eq!(daemon.roles.lock().unwrap().get("cso-2").copied(), Some(holder), "cso-2 매핑이 넘어갔다");
         // 대조 ①: **명시 승계**(`takeover_empty_seat`) 경로는 게이트가 닫지 않는다 — 답은 좌석
         //   판정(`seat_claimable_now` · 이 프로세스 표의 Empty 여부)을 그대로 따른다.
+        // ★(cysr-118-claimrole-flaky · ci-branch 37646557164) 판정 입력(실 프로세스 표)이 **정착한 뒤** 읽는다 — 로그인 셸(-lc)
+        //   프로필 로딩이 자손을 잠깐 띄웠다 접는 과도기(Occupied→Empty)가 이 시험의 판독과 dispatch 의 판독 사이에 걸리면 두
+        //   판독이 갈린다(느린 프로필 모사 = 2/30 재현). 판정 로직은 그대로 — 픽스처만 기다린다(`wait_seat_settled` 와 같은 처방).
+        wait_seat_settled(&daemon, holder);
         let hs = daemon.get_surface(holder).unwrap();
         let claimable = crate::governance::seat_claimable_now(&hs);
         let req = Request { id: json!(1), method: "system.claim_role".into(),

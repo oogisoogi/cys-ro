@@ -141,22 +141,11 @@ pub const RC_RECOVER_AGENT: i32 = 4;
 /// `--auto --spawn` rc(★2판 C18): 러너 기동 실패.
 pub const RC_SPAWN: i32 = 5;
 
-/// 러너 · 복구기 공통: 비종결 저널이면 복구부터(잠금 = 복구기 몫 · 잡혀 있으면 조용히 끝).
-fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
-    let read = super::journal::read(dir);
-    let pending = match &read {
-        super::journal::ReadOutcome::Absent => false,
-        super::journal::ReadOutcome::Ok(j) => !j.state.is_terminal(),
-        _ => true,
-    };
-    if !pending {
-        return None;
-    }
-    let guard = match super::lock::acquire(dir, "recover") {
-        Ok(g) => g,
-        Err(_) => return Some(Outcome::Nothing), // 다른 소유자가 이끄는 중
-    };
-    let cand: Candidate = match super::quiesce::read_json(dir, CANDIDATE_FILE) {
+/// 복구기의 후보 = 러너가 S2 전에 남긴 `candidate.json`(S11 재료 = feed_rev·봉투 sha256·signed_at·서명 본문 포함). ★후속 2판(agy 1R #1 실측):
+/// 복구기는 S2·S3 를 다시 밟지 않지만 후보는 **이 파일에서 복원된다**(「늘 비어 있다」 는 파일이 없을 때만) · 없음·손상 = 빈 후보 → 새 판
+/// 판정 자체가 불가(정식 자리 = 후보 판 대조가 새 판 판정의 조건) = 상태만으로 판정하는 갈래(보류 정리·옛 판 재구성)만.
+pub(crate) fn recovery_candidate(dir: &std::path::Path) -> Option<Candidate> {
+    Some(match super::quiesce::read_json(dir, CANDIDATE_FILE) {
         Some(c) => c,
         None => {
             // 후보 기록 없음 = S2 전(아무것도 안 바뀜) 또는 손상 — 상태만으로 판정하는 갈래(보류 정리·재구성)는 빈 후보로 충분하다.
@@ -174,7 +163,25 @@ fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
                 release_sig_b64: None,
             }
         }
+    })
+}
+
+/// 러너 · 복구기 공통: 비종결 저널이면 복구부터(잠금 = 복구기 몫 · 잡혀 있으면 조용히 끝).
+fn recover_if_needed(dir: &std::path::Path, channel: &str) -> Option<Outcome> {
+    let read = super::journal::read(dir);
+    let pending = match &read {
+        super::journal::ReadOutcome::Absent => false,
+        super::journal::ReadOutcome::Ok(j) => !j.state.is_terminal(),
+        _ => true,
     };
+    if !pending {
+        return None;
+    }
+    let guard = match super::lock::acquire(dir, "recover") {
+        Ok(g) => g,
+        Err(_) => return Some(Outcome::Nothing), // 다른 소유자가 이끄는 중
+    };
+    let cand = recovery_candidate(dir)?;
     let tok = guard.token();
     let mut ops = RealOps::new(build_env(dir.to_path_buf(), channel), tok.render(), cand, env!("CARGO_PKG_VERSION").to_string());
     let mut r = Runner::new(dir, &tok.txn_id, tok.epoch, &mut ops);

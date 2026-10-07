@@ -49,9 +49,13 @@ U2-PACKPRO pack::tests::pro_revision_advance_kill_matrix_recovers_by_commit_reco
 U2-V5PRISTINE update::verify::tests::v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits
 U2-LINEAGE update::realops::tests::reconstruct_lineage_survives_restart_failure_then_one_more_torn_slot
 U2-ENDFIRST update::runner::tests::attempt_end_marks_ended_before_removing
-U2-RECONEXE update::realops::tests::win_s7_row_after_new_reconstruct_restart_failure_starts_canonical_new_cys
-U2-RECONACCEPT update::realops::tests::new_reconstruct_terminal_preserves_release_and_records_acceptance
-U2-STAGETXN update::realops::tests::stage_after_takeover_is_this_attempts_s1_stage
+U2-STAGETXN update::realops::tests::stage_is_the_journal_origin_never_the_attempt_or_recovery_token
+U2-RECONROUTE update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-JCOPY update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-TAKEORDER update::runner::tests::takeover_writes_lineage_before_journal_token_and_stops_on_failure
+U2-TXNFORM update::runner::tests::malformed_attempt_tokens_are_never_a_source
+U2-CANDSEQ update::realops::tests::reconstruct_new_needs_restored_candidate_of_the_same_release
+U2-PVATTEMPT update::realops::tests::post_verify_baseline_only_from_live_attempt_of_this_lineage
 U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
 U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 LIST

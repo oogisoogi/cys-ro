@@ -186,6 +186,10 @@ pub struct Journal {
     pub wall_at_write: i64,
     #[serde(default)]
     pub attempt: u32,
+    /// ★후속 2판(codex 1R #1·#6 · agy 1R #4): 이 시도의 **S1 txn**(소문자 32-hex) — stage 자리(`stage/<origin>`)의 열쇠. S1 에서 정하고
+    /// 복구기 인수(takeover)·재구성이 바꾸지 않는다(토큰은 바뀌어도 원점은 하나). 비었거나 형식 밖 = stage 자리 없음(가장 0).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin_txn: String,
     /// 위 칸들(`crc` 제외)의 정규 직렬화 sha256.
     #[serde(default)]
     pub crc: String,
@@ -214,6 +218,7 @@ impl Journal {
             mono_at_write: s.mono_ms,
             wall_at_write: s.wall,
             attempt: 0,
+            origin_txn: txn_id.to_string(),
             crc: String::new(),
         }
     }
@@ -463,6 +468,13 @@ pub fn recovery_for(read: &ReadOutcome, os: Os) -> Recovery {
 /// S7 행(옛 바이너리 기동 뒤 보류). 이 함수 밖에서 손상 저널 위 쓰기는 여전히 거부된다([`advance`] 의 `Corrupt`).
 /// `Locked → Stopped` 는 일반 전이표에 없다 — 이 함수만 쓴다(재구성 = 실물 판정이 S2~S6 을 대신한다).
 pub fn write_reconstructed_pending(dir: &Path, txn_id: &str, epoch: u64) -> Result<Journal, String> {
+    write_reconstructed(dir, txn_id, epoch, Stopped, |_| {})
+}
+
+/// ★후속 2판(codex 1R #2 · agy 1R #1·#2): 재구성 저널을 `state` 로 다시 쓴다(손상 슬롯 보존 → Locked → `state` · `fill` = 칸 복원).
+/// 옛 판 = [`write_reconstructed_pending`](S7) · 새 판 = 이번 시도의 저널 사본으로 S9(Swapped) — 그 뒤는 정상 복구 행(S9 재대조 → S10 →
+/// V1~V9 → S11 → DONE · 실패 = 롤백)이 맡는다. 일반 전이표 밖 전이는 이 함수만 쓴다.
+pub fn write_reconstructed(dir: &Path, txn_id: &str, epoch: u64, state: State, fill: impl FnOnce(&mut Journal)) -> Result<Journal, String> {
     let wall = super::clock::now_stamp().wall;
     for (f, tag) in [(JOURNAL_FILE, "json"), (JOURNAL_PREV_FILE, "prev.json")] {
         let p = dir.join(f);
@@ -473,8 +485,16 @@ pub fn write_reconstructed_pending(dir: &Path, txn_id: &str, epoch: u64) -> Resu
     sync_dir(dir)?;
     let cur = advance(dir, txn_id, epoch, Locked, |_| {}).map_err(|e| format!("{e:?}"))?;
     let mut next = cur.clone();
-    next.state = Stopped;
+    fill(&mut next);
+    next.state = state;
+    next.txn_id = txn_id.to_string();
+    next.epoch = epoch;
     commit_next(dir, Some(&cur), next).map_err(|e| format!("{e:?}"))
+}
+
+/// 토큰 형식(★후속 2판 codex 1R #1): 소문자 32-hex 만 — 경로 성분으로 쓰이는 txn 은 이 검사를 지난 것만.
+pub fn valid_txn(t: &str) -> bool {
+    t.len() == 32 && t.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 pub fn journal_path(dir: &Path) -> PathBuf {

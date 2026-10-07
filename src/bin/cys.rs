@@ -2757,6 +2757,28 @@ enum TeamTokenAction {
     },
 }
 
+/// 프로세스 인자. ★1.1.8 U2 후속 2판(codex 1R #9 · agy 1R #8): **시험 빌드에서만** `CYS_TEST_ARGV`(JSON 문자열 배열)로 바꿔 끼울 수 있다 —
+/// 시험이 자식 프로세스에서 진짜 `main()` 을 그 인자로 관통시키는 경계(출시·디버그 실행 바이너리 = `cfg!(test)` 거짓 = 늘 OS 인자).
+fn process_args() -> Vec<std::ffi::OsString> {
+    if cfg!(test) {
+        if let Some(v) = std::env::var("CYS_TEST_ARGV").ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()) {
+            return v.into_iter().map(std::ffi::OsString::from).collect();
+        }
+    }
+    std::env::args_os().collect()
+}
+
+/// 팩 서명 키링. ★1.1.8 U2 후속 2판: **시험 빌드에서만** `CYS_TEST_PACK_KEY`(`<key_id>:<공개키>`)로 시험 키 1개를 쓴다(위와 같은 경계 ·
+/// 출시·디버그 실행 바이너리 = 내장 키링만).
+fn pack_keyring() -> Result<cys::packsig::Keyring, String> {
+    if cfg!(test) {
+        if let Some((id, pk)) = std::env::var("CYS_TEST_PACK_KEY").ok().as_deref().and_then(|v| v.split_once(':')).map(|(a, b)| (a.to_string(), b.to_string())) {
+            return Ok(cys::packsig::Keyring { keys: vec![cys::packsig::TrustedKey { key_id: id, pubkey: pk, not_after: "2099-01-01T00:00:00Z".to_string() }], revoked_key_ids: vec![] });
+        }
+    }
+    cys::packsig::embedded_keyring()
+}
+
 fn main() {
     // ★SEAL-1 층3: 스레드 생성 전 프로세스 env 봉인 — 이 CLI 가 띄우는 **모든** 자손
     // (`cys run -- <임의명령>`·`launch-agent` 로 뜨는 pane·팩 python 헬퍼)이 상속으로 덮인다.
@@ -2774,7 +2796,7 @@ fn main() {
     //   먼저 처리한다 — 최상위 clap 열거형에 변형을 더하면 j3 시험이 기본 2MB 시험 스레드에서 스택 넘침(1.1.8 W1 실측 ·
     //   DaemonAction::DeptStatus 주석과 같은 이유). 셋 다 판정·자기 보고라 데몬 자동 기동 0.
     {
-        let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        let args: Vec<std::ffi::OsString> = process_args();
         if cys::update::cli::claims(&args) {
             AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
             // ★1.1.8 U2: 러너·복구기의 데몬 RPC(정비 모드·좌석 토큰·org.status) — 자동 기동 없이(위 AUTOSTART false).
@@ -2787,7 +2809,7 @@ fn main() {
     }
     // ★1.1.8 U2(§3-3 · §3-10): `rotate --stop-only` · `rotate --txn <txn:epoch>` 는 clap 앞에서 떼어 낸다(최상위 `Command` 인자 추가 =
     //   j3 스택 넘침 — 위 갱신 3동사와 같은 이유). 철자 고정 · `rotate` 동사일 때만.
-    let cli = Cli::parse_from(rotate_ext_strip(std::env::args_os().collect()));
+    let cli = Cli::parse_from(rotate_ext_strip(process_args()));
     if let Some(s) = &cli.socket {
         std::env::set_var(cys::ENV_SOCKET, s);
     }
@@ -9727,6 +9749,26 @@ fn diag_state_base_unlistable(name: &'static str, ctx: &DoctorCtx, e: &std::io::
     }
 }
 
+/// ★1.1.8 U2 후속 3판: 팩 자동 보류 메모(`~/.cys/.pack-auto-hold.json`) — 있으면 WARN + 사유 · 손상이면 WARN(다음 자동 틱이 무시하고
+/// 다시 판정) · 없으면 OK. 메모는 **같은 서명 매니페스트 바이트 + 같은 판정 입력 지문**에만 적중하는 다운로드 생략 표지다(위조 방지
+/// 장치가 아니다 — 같은 계정이 쓸 수 있는 파일이라 비밀 키 HMAC 도 이득 0 · 위조돼도 결과는 「자동 팩 갱신 보류 + 이 WARN」 뿐).
+fn diag_pack_auto_hold(ctx: &DoctorCtx) -> DiagItem {
+    let p = ctx.state_base.join(PACK_AUTO_HOLD_MEMO);
+    let (status, detail, action) = match std::fs::read(&p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (DiagStatus::Ok, "팩 자동 보류 없음".to_string(), String::new()),
+        Err(e) => (DiagStatus::Warn, format!("팩 자동 보류 메모 판독 불가: {e}"), String::new()),
+        Ok(b) => match serde_json::from_slice::<PackHoldMemo>(&b) {
+            Ok(m) => (
+                DiagStatus::Warn,
+                format!("팩 자동 보류 중 — {}", m.why),
+                "cys pack-plan 으로 계획 확인 → cys pack-update(수동) 반영 성공 = 보류 해제 · 원격 팩·지침이 바뀌면 자동 재판정".to_string(),
+            ),
+            Err(_) => (DiagStatus::Warn, "팩 자동 보류 메모 손상(다음 자동 틱 = 무시하고 다시 판정)".to_string(), String::new()),
+        },
+    };
+    DiagItem { name: "pack-auto-hold", status, detail, action }
+}
+
 fn diag_staging_residue(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     let mut residue: Vec<std::path::PathBuf> = Vec::new();
     let listed = match std::fs::read_dir(&ctx.state_base) {
@@ -10474,6 +10516,8 @@ fn run_doctor_diagnostics(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
         diag_orphan_socket(ctx, fix),
         diag_stale_lock(ctx, fix),
         diag_staging_residue(ctx, fix),
+        // ★1.1.8 U2 후속 3판(Opus 2R m4 · agy 2R): 팩 자동 보류 중이면 사유와 함께 보인다(읽기 전용).
+        diag_pack_auto_hold(ctx),
         diag_channels_db(ctx),
         diag_legacy_config(ctx),
         // M3: 자기 앱 번들 코드서명 봉인(설치본이 스스로 봉인을 깼는지) — 읽기 전용, --fix 무관.
@@ -24723,13 +24767,115 @@ fn pack_update_from_dir(
     keyring: &cys::packsig::Keyring,
     do_apply: bool,
 ) -> Result<PackUpdateOutcome, String> {
-    // 자동 갱신 트랜잭션 안(위임 토큰)이면 원격 꾸러미의 실제 계획에 자동 허용 게이트를 건다.
-    let auto_plan = ROTATE_EXT.get().and_then(|e| e.txn.as_ref()).is_some();
+    // 자동 갱신 트랜잭션 안(위임 토큰)이면 원격 꾸러미의 실제 계획에 자동 허용 게이트를 건다(★후속 n13: 실 프로세스 시험이 이 줄을 지난다).
+    let auto_plan = ROTATE_EXT.get().and_then(|e| e.txn.as_ref()).is_some() && !(cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U2-TXNGLUE"));
     pack_update_from_dir_gated(from_dir, staging, lock_path, accepted_path, now_unix, running_binary, keyring, do_apply, auto_plan)
 }
 
 /// `pack-update` 가 원격 계획을 자동 경로 밖이라 거부할 때 오류 머리(러너 `pack_available`·`pack_apply` 가 stderr 로 가른다).
 pub(crate) const PACK_AUTO_HOLD_TAG: &str = "pack-auto-hold:";
+
+/// ★1.1.8 U2 후속(Fable 5R n12): 자동 보류 메모(팩 상태 폴더 · 수용 기록 옆) — 5판 게이트는 꾸러미를 받아 전개한 **뒤**에 판정해서
+/// 사람이 풀 때까지 6h 틱마다 ≈49 MiB 를 다시 받았다. 메모 = (서명 매니페스트 바이트 sha256 · 꾸러미 항목 · 판정 입력 지문 · 사유).
+pub(crate) const PACK_AUTO_HOLD_MEMO: &str = ".pack-auto-hold.json";
+
+/// ★후속 2판(codex 1R #7 · agy 1R #7): 메모 = 판 1 · 매니페스트 바이트 sha256 · 판정 입력 지문 · 사유 · **자기 sha256**(앞 네 칸) — 읽을 때
+/// 크기 상한 · 모르는 칸 거부 · 판 · 사유 1줄·길이 · 자기 sha256 을 전부 검사(하나라도 어긋남 = 메모 없음 = 받아서 다시 판정). 항목 목록은
+/// 메모에 두지 않는다 — 같은 서명 매니페스트 바이트의 `files` 에서 매번 다시 만든다. ★3판(Opus 2R m4 · agy 2R): 자기 sha256 = **손상 검사**일
+/// 뿐 위조 방지가 아니다(공식 공개 · 같은 계정 파일 = 비밀 키 HMAC 도 이득 0) — 메모는 정확한 입력 키(매니페스트 바이트 + 지문)에만 적중하는
+/// 다운로드 생략 표지이고, 보류 중임은 `cys doctor` 의 `pack-auto-hold` WARN 으로 사유와 함께 보인다(수동 반영 성공 = 삭제).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackHoldMemo {
+    v: u32,
+    manifest_sha256: String,
+    fingerprint: String,
+    why: String,
+    self_sha256: String,
+}
+
+const PACK_HOLD_MEMO_MAX: u64 = 16 * 1024;
+
+fn sha256_hex_bytes(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(b))
+}
+
+fn pack_hold_memo_seal(manifest_sha256: &str, fingerprint: &str, why: &str) -> String {
+    sha256_hex_bytes(format!("1\0{manifest_sha256}\0{fingerprint}\0{why}").as_bytes())
+}
+
+/// 서명 매니페스트 바이트의 항목(`files` 키) — 메모의 판정 입력 범위.
+fn pack_manifest_rels(manifest_bytes: &[u8]) -> Option<Vec<String>> {
+    let m: cys::packsig::PackManifest = serde_json::from_slice(manifest_bytes).ok()?;
+    Some(m.files.into_keys().collect())
+}
+
+/// 보류 메모 쓰기(지문을 못 만들면 = 판정 입력 일부 판독 불가 → 쓰지 않는다).
+fn pack_hold_memo_write(memo: &std::path::Path, manifest_bytes: &[u8], pack_dir: &std::path::Path, why: &str) {
+    let Some(rels) = pack_manifest_rels(manifest_bytes) else { return };
+    let Some(fp) = cys::pack::plan_disk_fingerprint(pack_dir, &rels) else { return };
+    let ms = sha256_hex_bytes(manifest_bytes);
+    let m = PackHoldMemo { v: 1, self_sha256: pack_hold_memo_seal(&ms, &fp, why), manifest_sha256: ms, fingerprint: fp, why: why.to_string() };
+    if let Ok(b) = serde_json::to_vec(&m) {
+        let _ = cys::pack::write_atomic(memo, &b);
+    }
+}
+
+/// 메모 적중 = 검사 전건 통과 + 같은 서명 매니페스트(바이트) + 판정 입력(디스크) 무변화 → 같은 보류 사유(꾸러미 내려받기 0). 무엇이든
+/// 다르거나 읽을 수 없으면 None(받아서 다시 판정).
+fn pack_hold_memo_hit(memo: &std::path::Path, manifest_bytes: &[u8], pack_dir: &std::path::Path) -> Option<String> {
+    // 수리 증명 스위치(lib `update::mutant` 와 같은 꼴 · 시험 빌드에서만)
+    if cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U2-HOLDMEMO") {
+        return None;
+    }
+    let lax = cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U2-MEMOCHECK");
+    let meta = std::fs::symlink_metadata(memo).ok()?;
+    if !lax && (!meta.is_file() || meta.len() > PACK_HOLD_MEMO_MAX) {
+        return None;
+    }
+    let m: PackHoldMemo = serde_json::from_slice(&std::fs::read(memo).ok()?).ok()?;
+    let ms = sha256_hex_bytes(manifest_bytes);
+    let sane = m.v == 1 && !m.why.is_empty() && m.why.len() <= 1024 && !m.why.contains(['\n', '\r']) && m.self_sha256 == pack_hold_memo_seal(&m.manifest_sha256, &m.fingerprint, &m.why);
+    if !(sane || lax) || m.manifest_sha256 != ms {
+        return None;
+    }
+    let rels = pack_manifest_rels(manifest_bytes)?;
+    (cys::pack::plan_disk_fingerprint(pack_dir, &rels)? == m.fingerprint).then_some(m.why)
+}
+
+/// `--manifest-url` 소스 해석(★4판 M7 매니페스트 먼저 · ★후속 n12 보류 메모): 이미 최신 = Ok(None) · 꾸러미 받음 = Ok(Some(폴더)).
+fn pack_remote_source(
+    url: &str,
+    base: &std::path::Path,
+    now_unix: i64,
+    accepted_path: &std::path::Path,
+    keyring: &cys::packsig::Keyring,
+    running: &str,
+    auto: bool,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let dl = fetch_remote_manifest(url, base)?;
+    match pack_precheck(&dl, now_unix, accepted_path, keyring, running, auto)? {
+        (VersionGate::UpToDate, v) => {
+            println!("[pack-update] 이미 최신 — 반영 0 (원격 매니페스트 {v} · 꾸러미 내려받기 0). no-op.");
+            println!("{}", cys::pack::pack_update_uptodate_line(&v));
+            Ok(None)
+        }
+        (VersionGate::BinaryTooOld, v) => {
+            eprintln!("[pack-update] 거부 — 팩 {v}이 더 새 바이너리를 요구한다(min_binary > 실행 {running}). 바이너리 업데이트(재시작) 경로로 진행하세요.");
+            Err("binary-too-old".into())
+        }
+        (VersionGate::Apply, _) => {
+            if auto {
+                let mb = std::fs::read(dl.join("pack-manifest.json")).map_err(|e| format!("manifest 읽기 실패: {e}"))?;
+                if let Some(why) = pack_hold_memo_hit(&accepted_path.with_file_name(PACK_AUTO_HOLD_MEMO), &mb, &cys::pack::pack_dir()) {
+                    return Err(format!("{PACK_AUTO_HOLD_TAG} {why} (보류 메모 · 꾸러미 내려받기 0)"));
+                }
+            }
+            fetch_remote_tar(url, &dl).map(Some)
+        }
+    }
+}
 
 /// [`pack_update_from_dir`] 본체. ★1.1.8 U2 5판(codex 4R M4/M6-원격): `auto_plan` = 검증·전개된 **원격 꾸러미**로 `plan_install` 을 세워
 /// [`pack_plan_auto_allowed`] 로 판정 — 거부 = Err(`pack-auto-hold: <사유>`) · 반영 0(dry-run·적용 공통 · 적용 직전에도 다시 봄 = dry-run
@@ -24846,10 +24992,15 @@ fn pack_update_from_dir_gated(
         let tree = collect_tree(staging)?;
         let items: Vec<(&str, &str)> = tree.iter().map(|(r, c)| (r.as_str(), c.as_str())).collect();
         let plan = cys::pack::plan_install(&pack_dir, &items, false, &manifest.pack_version);
+        let memo = accepted_path.with_file_name(PACK_AUTO_HOLD_MEMO);
         if let Err(why) = pack_plan_auto_allowed(&plan) {
             let _ = std::fs::remove_dir_all(staging);
-            return Err(format!("{PACK_AUTO_HOLD_TAG} 원격 팩 {} 계획 = 자동 허용 밖({why}) — 사람 몫(cys pack-plan · pack-update 수동)", manifest.pack_version));
+            let why = format!("원격 팩 {} 계획 = 자동 허용 밖({why}) — 사람 몫(cys pack-plan · pack-update 수동)", manifest.pack_version);
+            // ★후속(Fable 5R n12): 같은 매니페스트·같은 판정 입력이면 다음 틱은 꾸러미를 받지 않고 이 보류를 그대로 낸다
+            pack_hold_memo_write(&memo, &manifest_bytes, &pack_dir, &why);
+            return Err(format!("{PACK_AUTO_HOLD_TAG} {why}"));
         }
+        let _ = std::fs::remove_file(&memo);
     }
 
     let mut written = 0;
@@ -24885,6 +25036,10 @@ fn pack_update_from_dir_gated(
         written = w;
         kept = k;
         accepted_recorded = post_ok;
+        // ★후속 2판(agy 1R #7): 반영 성공(자동·수동 공통) = 보류 메모 삭제 — 사람이 수동으로 푼 뒤 낡은 메모가 남지 않게.
+        if !(cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U2-MEMOCLEAR")) {
+            let _ = std::fs::remove_file(accepted_path.with_file_name(PACK_AUTO_HOLD_MEMO));
+        }
     } else if gate == VersionGate::UpToDate
         && do_apply
         && manifest.channel == disk_channel
@@ -27329,25 +27484,16 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
         // 소스 해석: --from(로컬 디렉터리) 우선. --manifest-url은 staging에 fetch(부차).
         let now_unix = chrono::Utc::now().timestamp();
         let running = env!("CARGO_PKG_VERSION");
-        let keyring = cys::packsig::embedded_keyring()?;
+        let keyring = pack_keyring()?;
         let from_dir: std::path::PathBuf = match (from, manifest_url) {
             (Some(d), _) => std::path::PathBuf::from(d),
             (None, Some(url)) => {
                 // ★1.1.8 U2 4판(Fable 3R M7): 매니페스트(+서명)만 먼저 받아 판 비교 — 이미 최신·본체 대기면 꾸러미(≈49 MiB)를 받지 않는다.
-                //   자동 갱신 트랜잭션 안(위임 토큰)이면 D23 하한 게이트(빈·파싱 불가 min_binary = 거부)도 여기서.
+                //   자동 갱신 트랜잭션 안(위임 토큰)이면 D23 하한 게이트(빈·파싱 불가 min_binary = 거부) + ★후속 n12 보류 메모도 여기서.
                 let auto = ROTATE_EXT.get().and_then(|e| e.txn.as_ref()).is_some();
-                let dl = fetch_remote_manifest(&url, &base)?;
-                match pack_precheck(&dl, now_unix, &accepted_path, &keyring, running, auto)? {
-                    (VersionGate::UpToDate, v) => {
-                        println!("[pack-update] 이미 최신 — 반영 0 (원격 매니페스트 {v} · 꾸러미 내려받기 0). no-op.");
-                        println!("{}", cys::pack::pack_update_uptodate_line(&v));
-                        return Ok(0);
-                    }
-                    (VersionGate::BinaryTooOld, v) => {
-                        eprintln!("[pack-update] 거부 — 팩 {v}이 더 새 바이너리를 요구한다(min_binary > 실행 {running}). 바이너리 업데이트(재시작) 경로로 진행하세요.");
-                        return Err("binary-too-old".into());
-                    }
-                    (VersionGate::Apply, _) => fetch_remote_tar(&url, &dl)?,
+                match pack_remote_source(&url, &base, now_unix, &accepted_path, &keyring, running, auto)? {
+                    Some(dir) => dir,
+                    None => return Ok(0),
                 }
             }
             (None, None) => return Err("--from <dir> 또는 --manifest-url <url> 필요".into()),
@@ -31257,6 +31403,235 @@ mod tests {
         assert_eq!(got[1], ("manual", Ok("1.1.0".to_string()), "W-MINE\n".to_string(), "1.1.0".into(), true), "수동 = 반영(.new 병치)");
         assert_eq!(got[2], ("allow", Ok("1.1.0".to_string()), "W-NEW\n".to_string(), "1.1.0".into(), true), "미수정 = 자동 허용");
         assert_eq!(cys::update::realops::pack_auto_hold("error: pack-auto-hold: 원격 팩 1.1.0 계획 = 자동 허용 밖(x)").as_deref(), Some("팩 자동 보류: 원격 팩 1.1.0 계획 = 자동 허용 밖(x)"));
+    }
+
+    /// ★1.1.8 U2 후속(Fable 5R n12): 자동 보류 메모 — ⓐ 첫 틱 = 매니페스트 → 꾸러미 받음 → 원격 계획 보류 + 메모 ⓑ 같은 매니페스트·판정 입력
+    /// 무변화 = 꾸러미 내려받기 0 으로 같은 보류(원격 꾸러미를 치워 둬 받으려 하면 실패하게) · 판정 입력 밖 파일(round/) 변화 = 그대로 적중
+    /// ⓒ 사용자가 수정을 되돌림(판정 입력 변화) = 메모 무시 → 받아서 다시 판정 → 허용 · 메모 삭제 ⓓ 수동 경로 = 메모 무관.
+    /// 뮤턴트 U2-HOLDMEMO(메모 무시 = 5판) = ⓑ 에서 꾸러미를 받으려다 실패 = 적.
+    #[test]
+    fn pack_auto_hold_memo_skips_download_until_inputs_change() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let saved_cfg = std::env::var(cys::pack::ENV_CONFIG_DIR).ok();
+        let (pk, sign) = gen_signer();
+        let kr = test_keyring("TESTKEY", &pk);
+        let w = "directives/WORKER_DIRECTIVE.md";
+        let td = std::env::temp_dir().join(format!("cys-pu-holdmemo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pack_dir = td.join("pack");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &pack_dir);
+        std::env::set_var(cys::pack::ENV_CONFIG_DIR, td.join("cysclaude"));
+        cys::pack::install_into(pack_dir.clone(), [(w, "W-OLD\n")], false, "1.0.0", false, false, cys::pack::PackScope::Base, None, None).unwrap();
+        std::fs::write(pack_dir.join(w), "W-MINE\n").unwrap();
+        let src = td.join("rel");
+        std::fs::create_dir_all(&src).unwrap();
+        build_signed_pack(&src, &[(w, "W-NEW\n"), ("lib/x.py", "X\n")], "TESTKEY", "1.1.0", "0.4.1", 1000, 9_000_000_000, &sign);
+        let url = format!("file://{}/pack-manifest.json", src.display());
+        let base = td.join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        let acc = base.join(".pack-accepted.json");
+        let memo = base.join(PACK_AUTO_HOLD_MEMO);
+        let gated = |dl: &std::path::Path| pack_update_from_dir_gated(dl, &td.join("staging"), &td.join(".lock"), &acc, 5000, "0.4.1", &kr, false, true);
+        // ⓐ
+        let dl = pack_remote_source(&url, &base, 5000, &acc, &kr, "0.4.1", true).unwrap().expect("꾸러미 받음");
+        assert!(dl.join("pack.tar.gz").exists());
+        let a = gated(&dl);
+        assert!(matches!(&a, Err(e) if e.starts_with(PACK_AUTO_HOLD_TAG) && e.contains(".new 병치")), "{a:?}");
+        assert!(memo.exists(), "보류 메모");
+        // ⓑ 원격 꾸러미를 치운다 — 받으려 하면 curl 실패
+        std::fs::rename(src.join("pack.tar.gz"), td.join("tar.bak")).unwrap();
+        std::fs::create_dir_all(pack_dir.join("round")).unwrap();
+        std::fs::write(pack_dir.join("round/T.md"), "busy").unwrap();
+        let b = pack_remote_source(&url, &base, 5000, &acc, &kr, "0.4.1", true);
+        let b_dl = base.join(".pack-download/pack.tar.gz").exists();
+        // ⓓ 수동 = 메모 무관(꾸러미를 받으려다 실패)
+        let d = pack_remote_source(&url, &base, 5000, &acc, &kr, "0.4.1", false);
+        // ⓒ 사용자 되돌림 → 메모 무시 → 받음 → 허용 · 메모 삭제
+        std::fs::rename(td.join("tar.bak"), src.join("pack.tar.gz")).unwrap();
+        std::fs::write(pack_dir.join(w), "W-OLD\n").unwrap();
+        let c = pack_remote_source(&url, &base, 5000, &acc, &kr, "0.4.1", true).map(|o| o.map(|dl| gated(&dl).map(|o| o.pack_version)));
+        let memo_left = memo.exists();
+        match &saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        match &saved_cfg {
+            Some(v) => std::env::set_var(cys::pack::ENV_CONFIG_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_CONFIG_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+        assert!(matches!(&b, Err(e) if e.starts_with(PACK_AUTO_HOLD_TAG) && e.contains(".new 병치") && e.contains("보류 메모")), "같은 입력 = 메모 보류: {b:?}");
+        assert!(!b_dl, "메모 보류 = 꾸러미 내려받기 0");
+        assert!(matches!(&d, Err(e) if !e.contains("보류 메모")), "수동 = 메모 무관: {d:?}");
+        assert!(matches!(&c, Ok(Some(Ok(v))) if v == "1.1.0"), "판정 입력 변화 = 다시 판정 → 허용: {c:?}");
+        assert!(!memo_left, "허용 = 메모 삭제");
+    }
+
+    /// ★1.1.8 U2 후속 3판(Opus 2R m4 · agy 2R): 팩 자동 보류는 `cys doctor` 에 사유와 함께 보인다 — 메모 없음 = OK · 진짜 보류 메모 = WARN +
+    /// 사유 · 손상 메모 = WARN(다음 틱 무시).
+    #[test]
+    fn doctor_shows_pack_auto_hold_with_reason() {
+        let base = std::env::temp_dir().join(format!("cys-doctor-hold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let ctx = doctor_ctx_at(&base);
+        let item = |ctx: &DoctorCtx| diag_pack_auto_hold(ctx);
+        let a = item(&ctx);
+        let memo = ctx.state_base.join(PACK_AUTO_HOLD_MEMO);
+        std::fs::create_dir_all(&ctx.state_base).unwrap();
+        let (ms, fp, why) = ("ab".repeat(32), "cd".repeat(32), "원격 팩 1.1.0 계획 = 자동 허용 밖(.new 병치 1건)");
+        std::fs::write(&memo, json!({"v": 1, "manifest_sha256": ms, "fingerprint": fp, "why": why, "self_sha256": pack_hold_memo_seal(&ms, &fp, why)}).to_string()).unwrap();
+        let b = item(&ctx);
+        std::fs::write(&memo, b"{torn").unwrap();
+        let c = item(&ctx);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(matches!(a.status, DiagStatus::Ok), "{}", a.detail);
+        assert!(matches!(b.status, DiagStatus::Warn) && b.detail.contains(why), "{}", b.detail);
+        assert!(matches!(c.status, DiagStatus::Warn) && c.detail.contains("손상"), "{}", c.detail);
+    }
+
+    /// ★1.1.8 U2 후속 2판(codex 1R #7 · agy 1R #7): 보류 메모 검사 — ⓐ 진짜 보류가 만든 메모 = 적중 ⓑ 자기 sha256 어긋남·모르는 칸·크기 초과
+    /// = 무시 ⓒ 봉인까지 맞춘 위조(빈 항목 목록의 지문) = 항목은 서명 매니페스트에서 다시 만들어 지문 불일치 = 무시 ⓓ 판정 입력 하나가
+    /// 읽기 불가(권한) = 지문 없음 = 무시(받아서 다시 판정) ⓔ 같은 꾸러미 수동 반영 성공 = 메모 삭제. 뮤턴트 U2-MEMOCHECK(검사 끔) ·
+    /// U2-MEMOCLEAR(수동 성공 삭제 끔) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+        let saved_cfg = std::env::var(cys::pack::ENV_CONFIG_DIR).ok();
+        let (pk, sign) = gen_signer();
+        let kr = test_keyring("TESTKEY", &pk);
+        let w = "directives/WORKER_DIRECTIVE.md";
+        let td = std::env::temp_dir().join(format!("cys-pu-memochk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        let pack_dir = td.join("pack");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &pack_dir);
+        std::env::set_var(cys::pack::ENV_CONFIG_DIR, td.join("cysclaude"));
+        cys::pack::install_into(pack_dir.clone(), [(w, "W-OLD\n")], false, "1.0.0", false, false, cys::pack::PackScope::Base, None, None).unwrap();
+        std::fs::write(pack_dir.join(w), "W-MINE\n").unwrap();
+        let from = td.join("from");
+        std::fs::create_dir_all(&from).unwrap();
+        build_signed_pack(&from, &[(w, "W-NEW\n"), ("lib/x.py", "X\n")], "TESTKEY", "1.1.0", "0.4.1", 1000, 9_000_000_000, &sign);
+        let mb = std::fs::read(from.join("pack-manifest.json")).unwrap();
+        let acc = td.join(".pack-accepted.json");
+        let memo = td.join(PACK_AUTO_HOLD_MEMO);
+        let gated = |apply: bool, auto: bool| pack_update_from_dir_gated(&from, &td.join("staging"), &td.join(".lock"), &acc, 5000, "0.4.1", &kr, apply, auto);
+        assert!(gated(false, true).is_err() && memo.exists(), "보류 + 메모");
+        let a = pack_hold_memo_hit(&memo, &mb, &pack_dir);
+        let real: serde_json::Value = serde_json::from_slice(&std::fs::read(&memo).unwrap()).unwrap();
+        // ⓑ 봉인 어긋남
+        let mut bad = real.clone();
+        bad["why"] = json!("임의 사유");
+        std::fs::write(&memo, bad.to_string()).unwrap();
+        let b = pack_hold_memo_hit(&memo, &mb, &pack_dir);
+        // ⓒ 봉인까지 맞춘 위조(빈 항목 목록의 지문)
+        let ms = sha256_hex_bytes(&mb);
+        let fp = cys::pack::plan_disk_fingerprint(&pack_dir, &[]).unwrap();
+        let why = "위조 보류";
+        let forged = json!({"v": 1, "manifest_sha256": ms, "fingerprint": fp, "why": why, "self_sha256": pack_hold_memo_seal(&ms, &fp, why)});
+        std::fs::write(&memo, forged.to_string()).unwrap();
+        let c = pack_hold_memo_hit(&memo, &mb, &pack_dir);
+        // ⓓ 판정 입력 읽기 불가
+        std::fs::write(&memo, real.to_string()).unwrap();
+        std::fs::set_permissions(pack_dir.join(w), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let d = pack_hold_memo_hit(&memo, &mb, &pack_dir);
+        std::fs::set_permissions(pack_dir.join(w), std::fs::Permissions::from_mode(0o644)).unwrap();
+        // ⓔ 수동 반영 성공 = 메모 삭제
+        let e = gated(true, false).map(|o| o.pack_version);
+        let memo_left = memo.exists();
+        match &saved {
+            Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+        }
+        match &saved_cfg {
+            Some(v) => std::env::set_var(cys::pack::ENV_CONFIG_DIR, v),
+            None => std::env::remove_var(cys::pack::ENV_CONFIG_DIR),
+        }
+        let _ = std::fs::remove_dir_all(&td);
+        assert!(a.as_deref().map(|w| w.contains(".new 병치")).unwrap_or(false), "ⓐ 진짜 메모 = 적중: {a:?}");
+        assert_eq!(b, None, "ⓑ 봉인 어긋남 = 무시");
+        assert_eq!(c, None, "ⓒ 빈 항목 위조 = 무시");
+        assert_eq!(d, None, "ⓓ 판정 입력 읽기 불가 = 무시");
+        assert_eq!(e.as_deref(), Ok("1.1.0"), "ⓔ 수동 반영");
+        assert!(!memo_left, "ⓔ 수동 반영 성공 = 메모 삭제");
+    }
+
+    /// ★1.1.8 U2 후속(Fable 5R n13) · ★2판(codex 1R #9 · agy 1R #8): `pack-update --txn` 을 **실 `main()` 관통**으로 — 이 시험 바이너리를
+    /// 자식으로 다시 띄워 그 안에서 진짜 `main()` 을 실 인자(`CYS_TEST_ARGV` · 시험 빌드 전용 경계)로 부른다: `process_args` → 갱신 동사
+    /// 판별 → `rotate_ext_strip`(OnceLock) → clap → 최상위 dispatch → 잠금 참가(`txn_participate` · 부모가 쥔 러너 잠금의 토큰) →
+    /// `run_pack_update` → 비-gated `pack_update_from_dir` → 원격 계획 게이트(시험 키 = `CYS_TEST_PACK_KEY` · 시험 빌드 전용) → 종료 코드.
+    /// `--txn` = rc 1 · stderr `pack-auto-hold:` · 반영 0 / 수동 = rc 0 · 반영. 뮤턴트 U2-TXNGLUE(글루 끔) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn pack_update_txn_glue_holds_in_a_real_process() {
+        if std::env::var("CYS_N13_CHILD").is_ok() {
+            main();
+            unreachable!("main() 은 process::exit 로 끝난다");
+        }
+        let (pk, sign) = gen_signer();
+        let w = "directives/WORKER_DIRECTIVE.md";
+        let mut got = vec![];
+        for txn in [true, false] {
+            let td = std::env::temp_dir().join(format!("cys-pu-n13-{txn}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&td);
+            let pack_dir = td.join("pack");
+            std::fs::create_dir_all(&pack_dir).unwrap();
+            let upd = td.join("upd");
+            std::fs::create_dir_all(&upd).unwrap();
+            std::fs::set_permissions(&upd, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+            {
+                let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let saved = std::env::var(cys::pack::ENV_PACK_DIR).ok();
+                std::env::set_var(cys::pack::ENV_PACK_DIR, &pack_dir);
+                cys::pack::install_into(pack_dir.clone(), [(w, "W-OLD\n")], false, "1.0.0", false, false, cys::pack::PackScope::Base, None, None).unwrap();
+                match &saved {
+                    Some(v) => std::env::set_var(cys::pack::ENV_PACK_DIR, v),
+                    None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+                }
+            }
+            std::fs::write(pack_dir.join(w), "W-MINE\n").unwrap();
+            let from = td.join("from");
+            std::fs::create_dir_all(&from).unwrap();
+            build_signed_pack(&from, &[(w, "W-NEW\n")], "TESTKEY", "1.1.0", "0.4.1", 1000, 9_000_000_000, &sign);
+            // --txn = 러너 잠금(부모 = 소유자) 아래 위임 참가(러너와 같이 인자 + env 둘 다) · 수동 = 잠금 없음
+            let guard = txn.then(|| cys::update::lock::acquire(&upd, "runner").unwrap());
+            let tok = guard.as_ref().map(|g| g.token().render());
+            let mut argv = vec!["cys".to_string(), "pack-update".to_string(), "--from".to_string(), from.to_string_lossy().to_string()];
+            if let Some(t) = &tok {
+                argv.extend(["--txn".to_string(), t.clone()]);
+            }
+            let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+            if let Some(t) = &tok {
+                c.env(cys::update::lock::ENV_TXN, t);
+            }
+            let o = c
+                .args(["pack_update_txn_glue_holds_in_a_real_process", "--nocapture", "--test-threads=1"])
+                .env("CYS_N13_CHILD", "1")
+                .env("CYS_TEST_ARGV", serde_json::to_string(&argv).unwrap())
+                .env("CYS_TEST_PACK_KEY", format!("TESTKEY:{pk}"))
+                .env(cys::pack::ENV_PACK_DIR, &pack_dir)
+                .env(cys::pack::ENV_CONFIG_DIR, td.join("cysclaude"))
+                .env("CYS_UPDATE_STATE_DIR", &upd)
+                .env("CYS_SOCKET", td.join("s.sock"))
+                .env("CYS_NO_AUTOSTART", "1")
+                .env("HOME", td.join("home"))
+                .output()
+                .unwrap();
+            drop(guard);
+            let err = String::from_utf8_lossy(&o.stderr).to_string();
+            got.push((txn, o.status.code(), err.contains("pack-auto-hold:"), std::fs::read_to_string(pack_dir.join(".pack-version")).unwrap_or_default().trim().to_string()));
+            if got.last().map(|g| g.1 != Some(if txn { 1 } else { 0 })).unwrap_or(true) {
+                eprintln!("자식 stderr({txn}): {}", &err[err.len().saturating_sub(1500)..]);
+            }
+            let _ = std::fs::remove_dir_all(&td);
+        }
+        assert_eq!(got[0], (true, Some(1), true, "1.0.0".to_string()), "--txn = 실 main 관통 · 원격 계획 보류 · 반영 0");
+        assert_eq!(got[1], (false, Some(0), false, "1.1.0".to_string()), "수동 = 반영");
     }
 
     #[test]

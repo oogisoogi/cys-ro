@@ -11,10 +11,13 @@ ISO=${U1_ISO:-}
 run() { if [ -n "$ISO" ]; then "$ISO" "$@"; else "$@"; fi; }
 if [ -n "$(git status --porcelain -- src)" ]; then echo "u2-mutants: 판정 불가 — src/ 작업트리가 깨끗하지 않다" >&2; exit 2; fi
 run cargo test -q --lib --no-run >/dev/null 2>&1 || { echo "u2-mutants: 판정 불가 — 시험 빌드 실패" >&2; exit 2; }
+run cargo test -q --bin cys --no-run >/dev/null 2>&1 || { echo "u2-mutants: 판정 불가 — cys 시험 빌드 실패" >&2; exit 2; }
 fail=0
 # 적 = 「test result: FAILED」 가 실제로 찍힘(컴파일 실패 101 을 적으로 세지 않는다 — U1 3R F11 교훈)
-red() { run env CYS_U1_MUTANT="$1" cargo test -q --lib "$2" -- --exact 2>&1 | grep -q 'test result: FAILED'; }
-green() { run cargo test -q --lib "$1" -- --exact 2>&1 | grep -q 'test result: ok. 1 passed'; }
+# 대상 = 기본 lib · 「bin:<이름>」 = cys 바이너리 시험(★후속 n12·n13 — 바이너리 쪽 스위치는 cys.rs 안 같은 env)
+tgt() { case "$1" in bin:*) echo "--bin cys ${1#bin:}" ;; *) echo "--lib $1" ;; esac; }
+red() { run env CYS_U1_MUTANT="$1" cargo test -q $(tgt "$2") -- --exact 2>&1 | grep -q 'test result: FAILED'; }
+green() { run cargo test -q $(tgt "$1") -- --exact 2>&1 | grep -q 'test result: ok. 1 passed'; }
 while read -r id test; do
   [ -z "$id" ] && continue
   if green "$test"; then g=0; else g=1; fi
@@ -44,5 +47,31 @@ U2-ATTEMPTOPEN update::realops::tests::reconstruct_fails_closed_when_this_attemp
 U2-PACKPRO update::realops::tests::pack_recovery_pro_revision_advance_uses_commit_record_and_tuple
 U2-PACKPRO pack::tests::pro_revision_advance_kill_matrix_recovers_by_commit_record
 U2-V5PRISTINE update::verify::tests::v5_allows_vendor_refresh_of_unmodified_directive_but_guards_user_edits
+U2-LINEAGE update::realops::tests::reconstruct_lineage_survives_restart_failure_then_one_more_torn_slot
+U2-ENDFIRST update::runner::tests::attempt_end_marks_ended_before_removing
+U2-STAGETXN update::realops::tests::stage_is_the_journal_origin_never_the_attempt_or_recovery_token
+U2-RECONROUTE update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-JCOPY update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-TAKEORDER update::runner::tests::takeover_writes_lineage_before_journal_token_and_stops_on_failure
+U2-TXNFORM update::runner::tests::malformed_attempt_tokens_are_never_a_source
+U2-CANDSEQ update::realops::tests::reconstruct_new_needs_restored_candidate_of_the_same_release
+U2-PVATTEMPT update::realops::tests::post_verify_baseline_only_from_live_attempt_of_this_lineage
+U2-FILL update::realops::tests::win_s8_fills_missing_rollback_assets_from_archive_or_holds_with_reason
+U2-COPYCHECK update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-CANDVERIFY update::realops::tests::reconstruct_new_needs_restored_candidate_of_the_same_release
+U2-CANDVERIFY update::auto::tests::verify_payload_rejects_tampered_candidate_manifest
+U2-STAGESIG update::realops::tests::win_s9b_rerun_reverifies_stage_installer_before_running_it
+U2-COPYSTOP update::runner::tests::journal_copy_failure_is_recorded_but_never_stops_forward_progress
+U2-RECONSIGNAL update::runner::tests::new_reconstruct_routes_through_s9_row_v_checks_and_single_ok
+U2-RBFILL update::realops::tests::win_rollback_refills_missing_rollback_assets_from_archive
+U2-LINKFP pack::tests::plan_fingerprint_follows_symlink_target_content
+U2-WITHIN update::runner::tests::pack_backup_cleanup_deletes_only_inside_backup_root
+U2-S2FILL update::realops::tests::win_s2_fetches_rollback_assets_before_candidate_download_and_daemon_stop
+U2-N7FILL update::auto::tests::n7_hold_on_windows_triggers_archive_fill_then_recheck_or_reasoned_hold
+U2-N7LOCK update::auto::tests::n7_archive_fill_writes_only_while_holding_the_global_lock
+U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
+U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
+U2-MEMOCHECK bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply
+U2-MEMOCLEAR bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply
 LIST
 exit $fail

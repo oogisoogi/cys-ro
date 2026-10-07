@@ -9,6 +9,9 @@ set -u
 [ $# -ge 1 ] || { echo "사용: $0 <명령…>" >&2; exit 2; }
 ROOTS=("$HOME/.cys" "$HOME/.local/state/cys" "$HOME/Library/LaunchAgents")
 OUT=${U2_REALROOTS_OUT:-$(mktemp -d /tmp/u2rr.XXXXXX)}
+# ★후속(Fable 5R n15 · 5판 정직 고지 1): 지정 폴더가 없으면 만든다(5판 첫 전수 = 부재 → 목록 0 · rc 1 · 판정 무효였다) · 그래도 목록이 안
+#   생기면 「판정 불가」 rc 2(U2 쓰기 rc 1 과 가른다).
+mkdir -p "$OUT" || { echo "u2-realroots: 판정 불가 — 출력 폴더 $OUT 생성 실패" >&2; exit 2; }
 list() { # $1 = 출력 파일
   python3 - "$1" "${ROOTS[@]}" <<'PY'
 import os, sys, stat
@@ -31,11 +34,15 @@ PY
   sort -o "$1" "$1"
 }
 list "$OUT/before.tsv"
+[ -f "$OUT/before.tsv" ] || { echo "u2-realroots: 판정 불가 — 시작 전 목록 없음($OUT)" >&2; exit 2; }
 start=$(date +%s)
 "$@"
 rc=$?
 list "$OUT/after.tsv"
-python3 - "$OUT/before.tsv" "$OUT/after.tsv" "$OUT" <<'PY'
+[ -f "$OUT/after.tsv" ] || { echo "u2-realroots: 판정 불가 — 끝난 뒤 목록 없음($OUT)" >&2; exit 2; }
+NS=$(dirname "$0")/u2-namespace.txt
+[ -s "$NS" ] || { echo "u2-realroots: 판정 불가 — 이름공간 계약 목록 없음($NS)" >&2; exit 2; }
+U2_NS_FILE=$NS python3 - "$OUT/before.tsv" "$OUT/after.tsv" "$OUT" <<'PY'
 import sys, re, os
 def load(p):
     d = {}
@@ -46,7 +53,15 @@ def load(p):
 b, a, out = load(sys.argv[1]), load(sys.argv[2]), sys.argv[3]
 home = os.path.expanduser("~")
 # ★3판(Fable 2R m5): 상담소 신호(notify::signal → javis_counsel 대기열)도 U2 쓰기 — counsel 폴더 전체를 U2 이름공간에
-u2 = re.compile(r"^(%s/\.cys/update(/|$)|.*cysr-update-recover|.*/counsel(/|$))" % re.escape(home))
+# ★후속 2판(codex 1R #10): U2 이름공간 = 계약 목록 파일(u2-namespace.txt)에서 만든다 — 새 U2 파일을 코드에만 더하고 판정에서 빠지는 일 차단.
+pats = []
+for line in open(os.environ["U2_NS_FILE"]):
+    line = line.split("#", 1)[0].strip()
+    if line:
+        pats.append(line if line.startswith(".*") else re.escape(home) + "/" + line)
+if not pats:
+    sys.exit(2)
+u2 = re.compile("^(" + "|".join(pats) + ")")
 changed = sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
 hits = [p for p in changed if u2.match(p)]
 with open(os.path.join(out, "changed.txt"), "w") as f:

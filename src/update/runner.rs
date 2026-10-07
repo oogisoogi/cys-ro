@@ -106,6 +106,11 @@ pub trait Ops {
     fn restart_after_reconstruct(&mut self) -> Step;
     /// ★5판(codex 4R M5): 본부 데몬이 지금 살아 응답하나(소켓 `system.identify` 실측) — 재구성 뒤 재기동 판정은 「복원했나」가 아니라 이것.
     fn daemon_alive(&mut self) -> bool;
+    /// ★후속 2판(codex 1R #2·#4·#5 · agy 1R #1·#2·#5): 직전 [`Ops::reconstruct`] 가 정식 자리를 **새 판**으로 판정했나 — 참이면 러너는
+    /// 별도 수용 갈래 없이 이번 시도의 저널 사본으로 S9 를 다시 써 정상 복구 행(재대조 → S10 → V1~V9 → S11 → DONE · 실패 = 롤백)으로 보낸다.
+    fn reconstructed_new(&self) -> bool {
+        false
+    }
     /// ★3판(Fable 2R M4 · 설계 §3-8): 팩만 새 판인가 — `pack-plan` 게이트 + `pack-update --dry-run`. Ok(false) = 없음·본체 대기(binary-too-old).
     fn pack_available(&mut self) -> Result<bool, Fail>;
     /// PACK_APPLY 전: 사용자 트리 사본·해시를 저널 칸(`snapshot_dir`·`stage_tree_sha256`)에 채운다.
@@ -114,6 +119,8 @@ pub trait Ops {
     fn pack_apply(&mut self, j: &Journal) -> Step;
     /// 결과 기록(state.json `last_result` · 실패 분류 · 상담소 신호 · `counsel/updates.jsonl`).
     fn record(&mut self, j: Option<&Journal>, kind: Kind, fail: Option<&Fail>);
+    /// ★후속 3판(Opus 2R m2 · 설계 §3-11 ④): 결과 기록(`last_result`)을 건드리지 않는 즉시 신호 1통(상담소 신호 = 별 채널).
+    fn signal(&mut self, _code: ErrCode) {}
 }
 
 /// 결함 주입(디버그 빌드만 — 출시 빌드에서는 [`Fault::from_env`] 가 늘 빈 값).
@@ -123,6 +130,8 @@ pub struct Fault {
     pub kills: Vec<(String, bool)>,
     pub verify_v3: bool,
     pub pauses: Vec<String>,
+    /// ★후속 3판(Opus 2R m3): 보조 저널 사본 쓰기 실패 주입.
+    pub copy_fail: bool,
 }
 
 pub const ENV_FAULT: &str = "CYS_UPDATE_FAULT";
@@ -133,6 +142,8 @@ impl Fault {
         for t in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             if t == "verify_v3" {
                 f.verify_v3 = true;
+            } else if t == "copy_fail" {
+                f.copy_fail = true;
             } else if let Some(r) = t.strip_prefix("kill@") {
                 let (st, ph) = r.split_once(':').unwrap_or((r, "before"));
                 f.kills.push((st.to_string(), ph == "after"));
@@ -233,6 +244,17 @@ impl<'a, O: Ops> Runner<'a, O> {
         let j = journal::advance(&self.dir, &self.txn_id, self.epoch, to, f).map_err(|e| Stop::Journal(format!("{e:?}")))?;
         if to.is_terminal() {
             attempt_end(&self.dir);
+        } else if JOURNAL_COPY_STATES.contains(&to) && !super::mutant("U2-JCOPY") {
+            // ★후속 2판: S8 이후 저널 칸의 사본을 이번 시도 기록에 — 두 슬롯이 다 손상돼도 새 판 재구성이 S9 행을 다시 쓸 재료(롤백 칸 포함).
+            // ★후속 3판(Opus 2R m3): 사본 = **보조** — 실패는 1줄 기록만 하고 전진을 멈추지 않는다(정본 = 방금 fsync 한 저널 · 사본이 없거나
+            //   낡으면 재구성은 [`verify_journal_copy`] 에서 「사람 필요」로 닫힌다).
+            let r = if self.fault.copy_fail { Err("결함 주입 copy_fail".to_string()) } else { attempt_note_journal(&self.dir, &j) };
+            if let Err(e) = r {
+                if super::mutant("U2-COPYSTOP") {
+                    return Err(Stop::Journal(e));
+                }
+                eprintln!("[update] 시도 기록 저널 사본 쓰기 실패({}) — 전진 유지(재구성 원천만 잃음): {e}", to.name());
+            }
         }
         self.hit(to, true)?;
         Ok(j)
@@ -425,7 +447,7 @@ impl<'a, O: Ops> Runner<'a, O> {
         match self.ops.pack_apply(&j) {
             Ok(()) => {
                 let j = self.enter(State::PackDone, |_| {})?;
-                pack_backup_cleanup(&j);
+                pack_backup_cleanup(&self.dir, &j);
                 self.ops.record(Some(&j), Kind::PackOk, None);
                 Ok(Outcome::PackDone)
             }
@@ -437,7 +459,7 @@ impl<'a, O: Ops> Runner<'a, O> {
                     return Ok(Outcome::RollbackFailed(f2));
                 }
                 let j = self.enter(State::PackDone, |_| {})?;
-                pack_backup_cleanup(&j);
+                pack_backup_cleanup(&self.dir, &j);
                 self.ops.record(Some(&j), Kind::Deferred, Some(&f));
                 Ok(Outcome::Deferred(f))
             }
@@ -457,9 +479,18 @@ impl<'a, O: Ops> Runner<'a, O> {
         }
         if matches!(&read, ReadOutcome::Ok(j) if !j.state.is_terminal()) && !super::mutant("U2-TAKEOVER") {
             let before = read.journal().map(|j| j.txn_id.clone()).unwrap_or_default();
+            // ★후속 2판(codex 1R #3 · agy 1R #3): 새 토큰을 시도 계보에 **먼저** 내구 기록 → 그 다음 저널 인수. 계보 쓰기 실패 = 저널 무변경으로 멈춤
+            //   (종전 = 저널 먼저·계보 실패 삼킴 → 그 사이 죽으면 계보 밖 토큰 = 다음 손상 때 같은 시도 복원 불가).
+            if before != self.txn_id && !super::mutant("U2-TAKEORDER") {
+                if let Err(e) = attempt_takeover(&self.dir, &before, &self.txn_id) {
+                    return Outcome::JournalRefused(format!("attempt 계보: {e}"));
+                }
+            }
             match journal::takeover(&self.dir, &self.txn_id, self.epoch) {
                 Ok(j) => {
-                    attempt_takeover(&self.dir, &before, &j.txn_id);
+                    if super::mutant("U2-TAKEORDER") {
+                        let _ = attempt_takeover(&self.dir, &before, &j.txn_id);
+                    }
                     read = ReadOutcome::Ok(j)
                 }
                 Err(e) => return Outcome::JournalRefused(format!("takeover: {e:?}")),
@@ -533,7 +564,7 @@ impl<'a, O: Ops> Runner<'a, O> {
                 let j = if j.state == State::PackApply { self.enter(State::PackRollback, |_| {})? } else { j };
                 let _ = j;
                 let j = self.enter(State::PackDone, |_| {})?;
-                pack_backup_cleanup(&j);
+                pack_backup_cleanup(&self.dir, &j);
                 if committed {
                     self.ops.record(Some(&j), Kind::PackOk, None);
                 } else {
@@ -546,28 +577,67 @@ impl<'a, O: Ops> Runner<'a, O> {
     }
 
     /// ★4판·★5판: ① 이번 시도 = [`current_attempt`] — 부재·손상·txn 불일치 = **재구성 불가**(codex 4R N3″ · fail-closed: 손상 저널
-    /// 그대로 = 부팅 가드 유지 · seats_blocked · 사람 필요 1줄) ② 실물 판정·트리 대조 ③ 저널을 **비종결 S7(STOPPED)** 로 다시 쓴다(부팅 가드
-    /// 유지 · 잠금 소유자 토큰 = 저널 토큰이라 이 복구기가 띄우는 데몬만 통과) ④ 데몬 생존 실측 — 죽어 있으면(복원으로 내렸든 S7·S8 에서
-    /// 이미 내렸든) 판정된 판으로 재기동 · 실패 = S7 그대로(가드 유지 · 다음 복구기 = 옛 바이너리 기동) + seats_blocked ⑤ 그 뒤에만 종결.
+    /// 그대로 = 부팅 가드 유지 · seats_blocked · 사람 필요 1줄) ② 실물 판정·트리 대조 ③ 시도 계보에 이 토큰(★후속 n10 · 2판 = 실패 시 멈춤)
+    /// ④ 옛 판 = 저널을 **비종결 S7(STOPPED)** 로 다시 쓰고 데몬 생존 실측 — 죽어 있으면 옛 판 재기동 · 실패 = S7 그대로(가드 유지) +
+    /// seats_blocked · 그 뒤에만 종결 ⑤ ★후속 2판 새 판 = 이번 시도의 저널 사본으로 **S9(SWAPPED)** 를 다시 써 정상 복구 행으로 —
+    /// 맥 = 정식 자리 서명·판 재대조 / 윈 = 페이로드 전수·build-info 재대조(S9b) → S10 → V1~V9 → S11(설치기 보존·수용 기록) → DONE 단일 `ok`
+    /// · 어디서든 실패 = 롤백(사본의 S8 스냅샷·옛 번들/설치기 칸). 별도 「수용 갈래」·S7 행 새 판 기동은 없다.
     fn reconstruct(&mut self, read: &ReadOutcome) -> Outcome {
         let blocked = |ops: &mut O, f: Fail| {
             eprintln!("[update] 사람 필요 — 저널 손상 재구성 불가: {} (부팅 가드 유지 · 좌석 0)", f.detail);
             ops.record(None, Kind::SeatsBlocked, Some(&f));
             Outcome::SeatsBlocked(f)
         };
+        let rj = |d: String| Fail::new(ErrCode::JournalCorrupt, "reconstruct", d);
         let attempt = match current_attempt(&self.dir, read) {
             AttemptView::Ok(a) => a,
             _ if super::mutant("U2-ATTEMPTOPEN") => Attempt::default(),
-            v => return blocked(self.ops, Fail::new(ErrCode::JournalCorrupt, "reconstruct", format!("이번 시도 기록 {}", v.why()))),
+            v => return blocked(self.ops, rj(format!("이번 시도 기록 {}", v.why()))),
         };
         if let Err(f) = if super::mutant("U2-RECON") { Ok(false) } else { self.ops.reconstruct(&attempt) } {
             return blocked(self.ops, f);
         }
         let tok = self.txn_id_or_new();
         self.txn_id = tok;
-        let j = match journal::write_reconstructed_pending(&self.dir, &self.txn_id, self.epoch) {
+        // ★후속(Fable 5R n10): 재구성이 쓸 저널 토큰(= 호출자 잠금 토큰)을 이번 시도 계보에 잇는다 — ★2판: 실패 = 저널을 쓰지 않고 멈춤.
+        if !super::mutant("U2-LINEAGE") {
+            if let Err(e) = attempt_takeover(&self.dir, &attempt.txn_id, &self.txn_id) {
+                return blocked(self.ops, rj(format!("시도 계보 기록: {e}")));
+            }
+        }
+        let origin = attempt.txn_id.clone();
+        if self.ops.reconstructed_new() && !super::mutant("U2-RECONROUTE") {
+            let Some(copy) = attempt.journal.clone() else {
+                return blocked(self.ops, rj("정식 자리 = 새 판인데 이번 시도의 저널 사본 없음".into()));
+            };
+            // ★후속 3판(Opus 2R M1): 사본 = 저널과 같은 무결성 규칙 — crc 봉인 · 이 시도 계보의 토큰 · 원점 = 시도 원점 · 스냅샷 자리 = 시도
+            //   기록 값. 하나라도 어긋남 = 손상 사본(새 crc 로 세탁하지 않는다 · 재구성 불가 = 사람 필요).
+            if !super::mutant("U2-COPYCHECK") {
+                if let Err(e) = verify_journal_copy(&attempt, &copy) {
+                    return blocked(self.ops, rj(format!("시도 저널 사본 {e}")));
+                }
+            }
+            let j = match journal::write_reconstructed(&self.dir, &self.txn_id, self.epoch, State::Swapped, |n| {
+                copy_fields(n, &copy);
+                n.origin_txn = origin;
+            }) {
+                Ok(j) => j,
+                Err(e) => return blocked(self.ops, rj(e)),
+            };
+            eprintln!("[update] 저널 손상 재구성 = 새 판 — S9 행으로 재대조 → S10 → V1~V9 → S11(실패 = 롤백)");
+            // ★후속 3판(Opus 2R m2): 「저널이 찢겼다」(디스크·전원 이상 징후) 즉시 신호 1통 — 결과 기록은 정상 행의 ok/rollback 하나 그대로.
+            if !super::mutant("U2-RECONSIGNAL") {
+                self.ops.signal(ErrCode::JournalCorrupt);
+            }
+            let rec = journal::recovery_for(&ReadOutcome::Ok(j.clone()), self.ops.os());
+            return match self.recover_from(rec, j) {
+                Ok(o) => o,
+                Err(s) => Self::stop_to_outcome(s),
+            };
+        }
+        let j = match journal::write_reconstructed(&self.dir, &self.txn_id, self.epoch, State::Stopped, |n| n.origin_txn = origin) {
             Ok(j) => j,
-            Err(e) => return blocked(self.ops, Fail::new(ErrCode::JournalCorrupt, "reconstruct", e)),
+            Err(e) => return blocked(self.ops, rj(e)),
         };
         if !self.ops.daemon_alive() && !super::mutant("U2-RESTART") {
             if let Err(f) = self.ops.restart_after_reconstruct() {
@@ -597,10 +667,11 @@ impl<'a, O: Ops> Runner<'a, O> {
 /// ★4판(Fable 3R n2): 팩 단독 갱신 종결 뒤 사용자 트리 사본(`backup/pack-<txn>/`) 정리 — 팩 판마다 `~/.cys/local` 사본이 쌓이지 않게.
 /// ★5판(codex 4R MINOR 7): 실패를 삼키지 않는다 — 1줄 남기고, 다음 팩 갱신의 `pack_prepare`(`realops::pack_backup_sweep`)가 다시 지운다
 /// (종결 뒤라 저널로 되돌아갈 수 없다 · 사본은 종결 트랜잭션의 것이라 지워도 안전).
-fn pack_backup_cleanup(j: &Journal) {
+fn pack_backup_cleanup(dir: &Path, j: &Journal) {
     if let Some(parent) = Path::new(&j.snapshot_dir).parent() {
         if parent.file_name().map(|n| n.to_string_lossy().starts_with("pack-")).unwrap_or(false) {
-            if let Err(e) = std::fs::remove_dir_all(parent) {
+            // ★후속 3판(Opus 2R m8): 저널 경로 칸 = `update/backup` 바로 아래 실 폴더일 때만(밖 = 무접촉)
+            if let Err(e) = super::snapshot::remove_dir_within(&super::snapshot::backup_root(dir), parent) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     eprintln!("[update] 팩 사본 정리 실패(다음 팩 갱신이 재시도): {}: {e}", parent.display());
                 }
@@ -627,6 +698,10 @@ fn copy_fields(n: &mut Journal, w: &Journal) {
 
 // ── ★4판(codex 3R N3′): 「이번 시도」 기록 — 저널 txn 계보와 묶는다 ─────────────────────────────────────────
 
+/// ★후속 2판: 저널 사본을 시도 기록에 남기는 상태(S8 스냅샷 칸이 생긴 뒤 ~ S11) — 교환(S9)은 Swapped 기록 **뒤**에 일어나므로 실물이
+/// 새 판이면 사본은 늘 S9 이상이다.
+const JOURNAL_COPY_STATES: [State; 6] = [State::Snapshotted, State::CommitCheck, State::Swapped, State::PayloadOk, State::Started, State::Committed];
+
 /// 시도 기록 파일(갱신 폴더 · S5b 기준선 B0 도 여기 · 종결 때 삭제).
 pub const ATTEMPT_FILE: &str = "attempt.json";
 
@@ -643,16 +718,24 @@ pub struct Attempt {
     /// ★5판(codex 4R N3″): 종결 표지 — 삭제가 실패했을 때의 대체(종결된 시도는 대조 원천이 아니다).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ended: bool,
+    /// ★후속 2판: 이 시도의 저널 사본(S8~S11 · [`JOURNAL_COPY_STATES`]) — 새 판 재구성이 S9 행을 다시 쓰는 재료.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal: Option<Journal>,
 }
 
 impl Attempt {
     fn owns(&self, txn: &str) -> bool {
         self.txn_id == txn || self.lineage.iter().any(|t| t == txn)
     }
+
+    /// ★후속 2판(codex 1R #1): 원점·계보 토큰이 전부 소문자 32-hex(경로 성분으로 쓰일 수 있는 값만 믿는다).
+    fn well_formed(&self) -> bool {
+        journal::valid_txn(&self.txn_id) && self.lineage.iter().all(|t| journal::valid_txn(t))
+    }
 }
 
 fn attempt_read(dir: &Path) -> Option<Attempt> {
-    super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).filter(|a| !a.ended)
+    super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).filter(|a| !a.ended && (a.well_formed() || super::mutant("U2-TXNFORM")))
 }
 
 /// 새 트랜잭션(Locked)을 열 수 있나 — 저널 없음·종결([`journal::advance`] 의 Locked 규칙과 같은 술어).
@@ -670,11 +753,11 @@ fn attempt_write(dir: &Path, a: &Attempt) -> Result<(), String> {
 
 /// S1(저널 Locked 보다 먼저): 이 txn 으로 새로 쓴다 — 지난 시도의 기록(스냅샷 자리 포함)은 여기서 사라진다.
 pub fn attempt_begin(dir: &Path, txn: &str) -> Result<(), String> {
-    attempt_write(dir, &Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false })
+    attempt_write(dir, &Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false, journal: None })
 }
 
 /// 복구기 인수: 기록이 그 저널 txn 계보면 새 토큰을 잇는다 · 아니면(낡은 기록) 새 토큰만의 빈 기록(스냅샷 없음 = 대조 원천 0).
-pub fn attempt_takeover(dir: &Path, old_txn: &str, new_txn: &str) {
+pub fn attempt_takeover(dir: &Path, old_txn: &str, new_txn: &str) -> Result<(), String> {
     let a = match attempt_read(dir) {
         Some(mut a) if a.owns(old_txn) => {
             if !a.owns(new_txn) {
@@ -682,9 +765,42 @@ pub fn attempt_takeover(dir: &Path, old_txn: &str, new_txn: &str) {
             }
             a
         }
-        _ => Attempt { txn_id: new_txn.into(), lineage: vec![new_txn.into()], snapshot_dir: None, baseline: None, ended: false },
+        _ => Attempt { txn_id: new_txn.into(), lineage: vec![new_txn.into()], snapshot_dir: None, baseline: None, ended: false, journal: None },
     };
-    let _ = attempt_write(dir, &a);
+    attempt_write(dir, &a)
+}
+
+/// 이 저널 txn 계보의 이번 시도 기록(종결 표지·남의 계보 = None).
+pub fn attempt_for(dir: &Path, txn: &str) -> Option<Attempt> {
+    attempt_read(dir).filter(|a| a.owns(txn))
+}
+
+/// ★후속 3판(Opus 2R M1): 시도 기록의 저널 사본 검사 — crc 봉인 · 사본 토큰 ∈ 시도 계보 · 원점 = 시도 원점 · 스냅샷 자리 = 시도 기록 값
+/// · S9 이상(교환 기록 뒤 사본).
+pub fn verify_journal_copy(a: &Attempt, c: &Journal) -> Result<(), String> {
+    if !c.check() {
+        return Err("crc 불일치".into());
+    }
+    if !a.owns(&c.txn_id) {
+        return Err(format!("토큰 {} 이 시도 계보 밖", c.txn_id));
+    }
+    if !c.origin_txn.is_empty() && c.origin_txn != a.txn_id {
+        return Err("원점 ≠ 시도 원점".into());
+    }
+    if a.snapshot_dir.as_deref() != Some(c.snapshot_dir.as_str()) {
+        return Err("스냅샷 자리 ≠ 시도 기록".into());
+    }
+    if !matches!(c.state, State::Swapped | State::PayloadOk | State::Started | State::Committed) {
+        return Err(format!("상태 {} = 교환 기록 전", c.state.name()));
+    }
+    Ok(())
+}
+
+/// ★후속 2판: 저널 사본 갱신 — 이 저널 txn 계보의 시도 기록이 있을 때만(없으면 원천도 없다 = 할 일 없음) · 쓰기 실패 = Err(호출자가 멈춤).
+pub fn attempt_note_journal(dir: &Path, j: &Journal) -> Result<(), String> {
+    let Some(mut a) = attempt_for(dir, &j.txn_id) else { return Ok(()) };
+    a.journal = Some(j.clone());
+    attempt_write(dir, &a)
 }
 
 /// S8 직후: 이번 시도의 스냅샷 자리(기록이 이 txn 계보가 아니면 Err — 대조 원천을 남의 시도에 붙이지 않는다).
@@ -696,26 +812,42 @@ pub fn attempt_note_snapshot(dir: &Path, txn: &str, snapshot_dir: &str) -> Resul
 
 /// S5b: 기준선 B0 를 이번 시도 기록에 더한다(기록이 없거나 남의 것이면 이 txn 으로 새로).
 pub fn attempt_set_baseline(dir: &Path, txn: &str, baseline: serde_json::Value) -> Result<(), String> {
-    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).unwrap_or(Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false });
+    let mut a = attempt_read(dir).filter(|a| a.owns(txn)).unwrap_or(Attempt { txn_id: txn.into(), lineage: vec![txn.into()], snapshot_dir: None, baseline: None, ended: false, journal: None });
     a.baseline = Some(baseline);
     attempt_write(dir, &a)
 }
 
-/// 종결: 지운다(종결 뒤 손상된 저널이 지난 시도의 스냅샷으로 되돌려지지 않게). ★5판(codex 4R N3″): 삭제 + 폴더 fsync · 삭제가 실패하면
-/// 종결 표지(`ended`)를 원자 쓰기로 남긴다 — 둘 다 실패하면 1줄 남긴다(그 기록은 다음 S1 이 덮는다).
+/// 종결: 지운다(종결 뒤 손상된 저널이 지난 시도의 스냅샷으로 되돌려지지 않게). ★5판(codex 4R N3″): 삭제 + 폴더 fsync.
+/// ★후속(Fable 5R n16): 종결 표지(`ended`)를 **먼저** 원자 쓰기(내구 쓰기) → 그 다음 삭제 + 폴더 fsync — 삭제가 실패하거나 fsync 전에
+/// 죽어 파일이 되살아나도 그 기록은 이미 종결 표지다(잔여 창 = 표지 쓰기 실패 + 삭제 실패 둘 다 · 그때 1줄 · 그 기록은 다음 S1 이 덮는다).
 pub fn attempt_end(dir: &Path) {
+    attempt_end_by(dir, |p| std::fs::remove_file(p))
+}
+
+fn attempt_end_by(dir: &Path, remove: impl FnOnce(&Path) -> std::io::Result<()>) {
     let p = dir.join(ATTEMPT_FILE);
-    let removed = match std::fs::remove_file(&p) {
+    let marked = if !p.exists() || super::mutant("U2-ENDFIRST") {
+        Ok(())
+    } else {
+        let mut a = super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).unwrap_or_default();
+        a.ended = true;
+        attempt_write(dir, &a)
+    };
+    let removed = match remove(&p) {
         Ok(()) => journal::sync_dir(dir).is_ok(),
         Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     };
     if removed {
         return;
     }
-    let mut a = super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).unwrap_or_default();
-    a.ended = true;
-    if let Err(e) = attempt_write(dir, &a) {
-        eprintln!("[update] attempt.json 종결 기록 실패: {e}");
+    if super::mutant("U2-ENDFIRST") {
+        let mut a = super::quiesce::read_json::<Attempt>(dir, ATTEMPT_FILE).unwrap_or_default();
+        a.ended = true;
+        if let Err(e) = attempt_write(dir, &a) {
+            eprintln!("[update] attempt.json 종결 기록 실패: {e}");
+        }
+    } else if let Err(e) = marked {
+        eprintln!("[update] attempt.json 종결 기록 실패(표지·삭제 둘 다): {e}");
     }
 }
 
@@ -757,6 +889,9 @@ pub fn current_attempt(dir: &Path, read: &ReadOutcome) -> AttemptView {
     };
     if a.ended || a.txn_id.is_empty() {
         return AttemptView::Missing;
+    }
+    if !a.well_formed() && !super::mutant("U2-TXNFORM") {
+        return AttemptView::Corrupt("txn 형식 밖(소문자 32-hex 아님)".into());
     }
     match read {
         ReadOutcome::Degraded(j, _) | ReadOutcome::Ok(j) if !a.owns(&j.txn_id) => AttemptView::Mismatch(j.txn_id.clone()),
@@ -839,7 +974,10 @@ pub(crate) mod tests {
         pub pack_applied: u32,
         pub payload_bad_runs: u32,
         pub records: Vec<Kind>,
+        pub signals: Vec<ErrCode>,
         pub reconstruct_ok: bool,
+        /// ★후속 2판: 재구성 판정 = 새 판(참이면 러너가 S9 행으로 보낸다).
+        pub recon_new: bool,
         /// (뿌리, 자리) — S8 에서 실 스냅샷(`RealOps::cys_filter` 범위)을 `<자리>/cys` 에 뜬다(재구성 종단 시험용).
         pub real_snapshot: Option<(PathBuf, PathBuf)>,
     }
@@ -860,7 +998,9 @@ pub(crate) mod tests {
                 fail_at: BTreeMap::new(),
                 payload_bad_runs: 0,
                 records: vec![],
+                signals: vec![],
                 reconstruct_ok: true,
+                recon_new: false,
                 real_snapshot: None,
             }
         }
@@ -1023,6 +1163,9 @@ pub(crate) mod tests {
                 Err(Fail::new(ErrCode::JournalCorrupt, "reconstruct", "후보 0"))
             }
         }
+        fn reconstructed_new(&self) -> bool {
+            self.recon_new
+        }
         fn restart_after_reconstruct(&mut self) -> Step {
             self.f("restart")?;
             self.daemon = Some(if self.canonical_new { "new" } else { "old" });
@@ -1034,6 +1177,9 @@ pub(crate) mod tests {
         fn record(&mut self, _: Option<&Journal>, kind: Kind, _: Option<&Fail>) {
             self.records.push(kind);
         }
+        fn signal(&mut self, code: ErrCode) {
+            self.signals.push(code);
+        }
     }
 
     pub fn tmp(tag: &str) -> PathBuf {
@@ -1043,6 +1189,29 @@ pub(crate) mod tests {
         d
     }
     const T: &str = "0123456789abcdef0123456789abcdef";
+
+    /// ★후속(Fable 5R n16): 종결 = 표지 먼저 — 삭제가 일어나는 순간 디스크의 기록은 이미 `ended`(삭제 실패·fsync 전 죽음으로 되살아나도
+    /// 대조 원천 아님 = Missing) · 삭제 실패 주입 = 표지 남음 · 정상 = 파일 없음. 뮤턴트 U2-ENDFIRST(삭제 먼저 = 5판 순서) = 적.
+    #[test]
+    fn attempt_end_marks_ended_before_removing() {
+        let d = tmp("att-end");
+        std::fs::create_dir_all(&d).unwrap();
+        let read = journal::read(&d);
+        attempt_begin(&d, T).unwrap();
+        attempt_end_by(&d, |p| {
+            let a: Attempt = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+            assert!(a.ended, "삭제 직전 디스크 = 종결 표지");
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert!(d.join(ATTEMPT_FILE).exists(), "삭제 실패 = 표지 남음");
+        assert_eq!(current_attempt(&d, &read), AttemptView::Missing, "표지 = 대조 원천 아님");
+        attempt_begin(&d, T).unwrap();
+        attempt_end(&d);
+        assert!(!d.join(ATTEMPT_FILE).exists(), "정상 = 삭제");
+        attempt_end(&d); // 없음 = 무동작
+        assert!(!d.join(ATTEMPT_FILE).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn run(d: &Path, sim: &mut Sim, fault: Fault) -> Outcome {
         let mut r = Runner::new(d, T, 1, sim);
@@ -1311,6 +1480,151 @@ pub(crate) mod tests {
         assert_eq!(recover(&d, &mut s), Outcome::Nothing);
         assert!(boot_guard(&d).is_none(), "재구성 성공 = 부팅 허용");
         assert!(s.records.contains(&Kind::JournalCorrupt));
+    }
+
+    fn corrupt_both(d: &Path) {
+        std::fs::write(d.join(journal::JOURNAL_FILE), b"{broken").unwrap();
+        std::fs::write(d.join(journal::JOURNAL_PREV_FILE), b"{broken").unwrap();
+    }
+
+    /// ★후속 2판(codex 1R #2·#4·#5 · agy 1R #1·#2·#5): 새 판 재구성 = 이번 시도의 저널 사본으로 S9 를 다시 써 **정상 복구 행**으로 —
+    /// ⓐ 맥 성공 = 정식 자리 재대조 → S10 → V1~V9 → S11 → DONE · 결과 기록 = `ok` **하나**(journal_corrupt→ok 연속 쓰기 0) · 시도 기록 삭제
+    /// ⓑ V 실패 = 롤백(옛 판으로 되교환 · ok 0) ⓒ S11 수용(commit) 실패 = 롤백(Deferred 종결·시도 삭제 0) ⓓ 윈 = S9b 페이로드 재대조가
+    /// 실행 전에 돈다(불일치 = 롤백 · 새 cys 기동 0) ⓔ 사본 없음 = 재구성 불가(사람 필요). 뮤턴트 U2-RECONROUTE(1판 = S7 종결 + 수용 갈래) ·
+    /// U2-JCOPY(사본 기록 끔) = 적.
+    #[test]
+    fn new_reconstruct_routes_through_s9_row_v_checks_and_single_ok() {
+        for (case, os) in [("ok", Os::Mac), ("verify", Os::Mac), ("commit", Os::Mac), ("payload", Os::Win), ("ok-win", Os::Win), ("nocopy", Os::Mac), ("tamper", Os::Mac)] {
+            let d = tmp(&format!("recon-new-{case}"));
+            let mut s = Sim::new(os);
+            assert!(matches!(run(&d, &mut s, Fault::parse("kill@S10_STARTED:after")), Outcome::Killed(..)), "{case}");
+            assert!(s.canonical_new, "{case}: 교환됨");
+            let copy = attempt_for(&d, T).and_then(|a| a.journal).expect("저널 사본");
+            assert!(matches!(copy.state, State::Swapped | State::PayloadOk | State::Started | State::Committed) && copy.snapshot_manifest_sha256 == "m".repeat(64), "{case}: 사본 = S9 이상 · 롤백 칸 {copy:?}");
+            if case == "nocopy" || case == "tamper" {
+                let mut a = attempt_for(&d, T).unwrap();
+                if case == "nocopy" {
+                    a.journal = None;
+                } else {
+                    // ★후속 3판(Opus 2R M1): 파싱은 되나 값이 바뀐 사본(crc 그대로) = 손상 — 새 crc 로 세탁하지 않는다
+                    a.journal.as_mut().unwrap().stage_tree_sha256 = "e".repeat(64);
+                }
+                attempt_write(&d, &a).unwrap();
+            }
+            corrupt_both(&d);
+            s.daemon = None;
+            s.recon_new = true;
+            s.records.clear();
+            if let Some(k) = match case {
+                "verify" => Some("verify"),
+                "payload" => Some("payload"),
+                _ => None,
+            } {
+                s.fail_at.insert(k, ErrCode::VerifyFailed);
+            }
+            if case == "commit" {
+                s.fail_at.insert("commit", ErrCode::RotateFailed);
+            }
+            let o = recover(&d, &mut s);
+            match case {
+                "ok" | "ok-win" => {
+                    assert_eq!(o, Outcome::Done, "{case}");
+                    assert_eq!(s.records, vec![Kind::Ok], "{case}: 결과 = ok 하나");
+                    assert_eq!(s.signals, vec![ErrCode::JournalCorrupt], "{case}: 저널 손상 신호 1통(별 채널 · ★3판 m2)");
+                    assert_eq!(state(&d), State::Done);
+                    assert_eq!(s.daemon, Some("new"));
+                    assert!(!d.join(ATTEMPT_FILE).exists(), "{case}: 성공 뒤에만 시도 기록 삭제");
+                }
+                "nocopy" => assert!(matches!(&o, Outcome::SeatsBlocked(f) if f.detail.contains("저널 사본 없음")), "{case}: {o:?}"),
+                "tamper" => {
+                    assert!(matches!(&o, Outcome::SeatsBlocked(f) if f.detail.contains("crc")), "{case}: {o:?}");
+                    assert!(boot_guard(&d).unwrap().starts_with("journal_"), "{case}: 손상 저널 그대로 = 부팅 가드");
+                }
+                _ => {
+                    assert!(matches!(o, Outcome::RolledBack(_)), "{case}: {o:?}");
+                    assert_eq!(s.records, vec![Kind::Rollback], "{case}: ok 0 · deferred 0");
+                    assert!(!s.canonical_new && s.daemon == Some("old"), "{case}: 옛 판으로 되돌림");
+                }
+            }
+        }
+    }
+
+    /// ★후속 3판(Opus 2R m8): 경로 재료 삭제 = 공용 문(`snapshot::remove_dir_within`) — 저널 `snapshot_dir` 의 부모가 `pack-` 이름이어도
+    /// `update/backup` 밖(또는 밖을 가리키는 링크)이면 무접촉 · 안의 실 폴더만 정리. 뮤턴트 U2-WITHIN(검사 끔) = 밖 희생 폴더 삭제 = 적.
+    #[cfg(unix)]
+    #[test]
+    fn pack_backup_cleanup_deletes_only_inside_backup_root() {
+        let d = tmp("within");
+        let victim = d.join("elsewhere/pack-evil");
+        std::fs::create_dir_all(victim.join("user")).unwrap();
+        let br = crate::update::snapshot::backup_root(&d);
+        std::fs::create_dir_all(br.join("pack-ok/user")).unwrap();
+        std::os::unix::fs::symlink(&victim, br.join("pack-link")).unwrap();
+        for snap in [victim.join("user"), br.join("pack-link/user")] {
+            let mut j = Journal::new(T, 1);
+            j.snapshot_dir = snap.to_string_lossy().to_string();
+            pack_backup_cleanup(&d, &j);
+        }
+        assert!(victim.join("user").exists(), "밖 · 밖을 가리키는 링크 = 무접촉");
+        let mut j = Journal::new(T, 1);
+        j.snapshot_dir = br.join("pack-ok/user").to_string_lossy().to_string();
+        pack_backup_cleanup(&d, &j);
+        assert!(!br.join("pack-ok").exists(), "안의 실 폴더 = 정리");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R m3): 보조 저널 사본 쓰기가 S8~S11 내내 실패해도 정상 실행은 DONE 까지 간다(사본 = 재구성 원천일 뿐 · 정본 저널은
+    /// 매번 fsync). 뮤턴트 U2-COPYSTOP(2판 = 사본 실패에 Stop) = S8 에서 멈춤 = 적.
+    #[test]
+    fn journal_copy_failure_is_recorded_but_never_stops_forward_progress() {
+        for os in [Os::Mac, Os::Win] {
+            let d = tmp(&format!("copyfail-{os:?}"));
+            let mut s = Sim::new(os);
+            assert_eq!(run(&d, &mut s, Fault::parse("copy_fail")), Outcome::Done, "{os:?}");
+            assert_eq!(state(&d), State::Done);
+            assert_eq!(s.records, vec![Kind::Ok]);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// ★후속 2판(codex 1R #3 · agy 1R #3): 복구기 인수 = 새 토큰을 시도 계보에 **먼저** 내구 기록 → 그 다음 저널 토큰 교체. 계보 쓰기
+    /// 실패(attempt.json 자리가 폴더 = rename 불가) = JournalRefused · 저널 토큰 그대로(옛 소유자 계보 유지). 정상 = 계보에 새 토큰 + 저널 토큰
+    /// 교체. 뮤턴트 U2-TAKEORDER(저널 먼저 · 계보 실패 삼킴 = 1판) = 적.
+    #[test]
+    fn takeover_writes_lineage_before_journal_token_and_stops_on_failure() {
+        let d = tmp("takeorder");
+        attempt_begin(&d, T).unwrap();
+        for st in [State::Locked, State::Fetched, State::Quiesced, State::Drained, State::Rechecked, State::Baselined, State::Confirmed, State::Stopped] {
+            journal::advance(&d, T, 1, st, |_| {}).unwrap();
+        }
+        std::fs::remove_file(d.join(ATTEMPT_FILE)).unwrap();
+        std::fs::create_dir_all(d.join(ATTEMPT_FILE).join("x")).unwrap(); // 쓰기 불가 자리
+        let mut s = Sim::new(Os::Mac);
+        let o = recover(&d, &mut s);
+        assert!(matches!(&o, Outcome::JournalRefused(e) if e.contains("attempt 계보")), "{o:?}");
+        assert_eq!(journal::read(&d).journal().unwrap().txn_id, T, "계보 실패 = 저널 토큰 무변경");
+        std::fs::remove_dir_all(d.join(ATTEMPT_FILE)).unwrap();
+        attempt_begin(&d, T).unwrap();
+        let o = recover(&d, &mut s);
+        assert!(matches!(o, Outcome::Deferred(_)), "{o:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 2판(codex 1R #1): 시도 기록의 원점·계보 토큰이 소문자 32-hex 가 아니면(`../..` 등) 그 기록은 원천이 아니다 — 손상(Corrupt) =
+    /// 재구성 불가 · 계보 판정(`attempt_for`) 0. 뮤턴트 U2-TXNFORM(형식 검사 끔) = 적.
+    #[test]
+    fn malformed_attempt_tokens_are_never_a_source() {
+        let d = tmp("txnform");
+        std::fs::create_dir_all(&d).unwrap();
+        let bad = serde_json::json!({"txn_id": "../..", "lineage": ["../..", T2]});
+        std::fs::write(d.join(ATTEMPT_FILE), bad.to_string()).unwrap();
+        assert!(attempt_for(&d, T2).is_none(), "형식 밖 = 계보 판정 0");
+        corrupt_both(&d);
+        let read = journal::read(&d);
+        assert!(matches!(current_attempt(&d, &read), AttemptView::Corrupt(e) if e.contains("32-hex")));
+        let mut s = Sim::new(Os::Mac);
+        assert!(matches!(recover(&d, &mut s), Outcome::SeatsBlocked(f) if f.detail.contains("손상")));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

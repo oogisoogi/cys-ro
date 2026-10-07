@@ -56,8 +56,66 @@ fn perr(rc: i32, reason: &'static str, d: impl Into<String>) -> PreserveErr {
     PreserveErr { rc, reason, detail: d.into() }
 }
 
+/// ★U2 후속 3판 ②(받기 공용 1벌 · 설치 링크 = 이 파일 · 러너 = `realops::fill_installer_dir`): 보관소 본문 받기·검증 — `cysr/releases/<seq>.json`
+/// (+`.minisig`) → U 서명·서식 → seq 일치 → 이 기판 행. seq 0 = 발행판 아님(거부).
+pub(crate) fn fetch_archive_body(
+    seq: u64,
+    kr: &super::keys::UpdateKeyring,
+    fetch_body: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<(Vec<u8>, Vec<u8>, super::feed::Asset), PreserveErr> {
+    if seq == 0 {
+        return Err(perr(3, "seq_zero", "release_seq 0 = 발행판이 아닌 빌드(보관소에 본문 없음)"));
+    }
+    let rel = format!("cysr/releases/{seq}.json");
+    let body = fetch_body(&rel).map_err(|e| perr(4, "body_unreachable", format!("{rel}: {e}")))?;
+    let sig = fetch_body(&format!("{rel}.minisig")).map_err(|e| perr(4, "body_unreachable", format!("{rel}.minisig: {e}")))?;
+    let rb = super::feed::verify_release_body(&body, &sig, "cysr", kr).map_err(|e| perr(2, "body_rejected", e))?;
+    if rb.release_seq != seq {
+        return Err(perr(2, "body_rejected", format!("본문 seq {} ≠ 이 판 {seq}", rb.release_seq)));
+    }
+    let row = rb.assets.values().find(|a| a.target == super::buildinfo::TARGET).cloned().ok_or_else(|| perr(2, "body_rejected", "이 대상 행 없음"))?;
+    Ok((body, sig, row))
+}
+
+/// ★U2 후속 3판 ②(공용 1벌): 검증된 본문·서명 + 설치기 바이트 + A2 서명 → `installers/<seq>/` 4파일 놓기(멱등 = 이미 재검증 통과 + 본문 바이트
+/// 같음 → 그대로 · 아니면 소유자 전용 임시 폴더 → 내구 쓰기 → 재검증 → rename + 폴더 fsync).
+pub(crate) fn place_installer_files(
+    update_dir: &Path,
+    seq: u64,
+    body: &[u8],
+    sig: &[u8],
+    setup: &[u8],
+    a2: &[u8],
+    kr: &super::keys::UpdateKeyring,
+) -> Result<PathBuf, PreserveErr> {
+    let dst = update_dir.join("installers").join(seq.to_string());
+    if verify_installer_dir_with(&dst, seq, true, body, sig, kr).is_ok() && std::fs::read(dst.join(REL_BODY)).ok().as_deref() == Some(body) {
+        return Ok(dst); // 이미 놓여 있고 재검증 통과(멱등)
+    }
+    let w = |e: String| perr(3, "write_failed", e);
+    let parent = dst.parent().ok_or_else(|| w("installers 부모 없음".into()))?;
+    super::ensure_private_dir(parent).map_err(w)?;
+    let tmp = parent.join(format!(".{seq}.tmp"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    super::ensure_private_dir(&tmp).map_err(w)?;
+    super::journal::durable_write(&tmp.join(REL_BODY), body).map_err(w)?;
+    super::journal::durable_write(&tmp.join(REL_SIG), sig).map_err(w)?;
+    super::journal::durable_write(&tmp.join(SETUP), setup).map_err(w)?;
+    super::journal::durable_write(&tmp.join(SETUP_SIG), a2).map_err(w)?;
+    if let Err(e) = verify_installer_dir_with(&tmp, seq, true, body, sig, kr) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(perr(2, "setup_mismatch", format!("보존본 재검증: {e}")));
+    }
+    if dst.exists() {
+        std::fs::remove_dir_all(&dst).map_err(|e| w(e.to_string()))?;
+    }
+    std::fs::rename(&tmp, &dst).map_err(|e| w(e.to_string()))?;
+    super::journal::sync_dir(parent).map_err(w)?;
+    Ok(dst)
+}
+
 /// `installers/<seq>/` 4파일 놓기(멱등 — 이미 재검증 통과면 그대로). `fetch_body(rel)` = 보관소 상대 경로 → 바이트 ·
-/// `fetch_sig(url)` = 본문 행 `a2_sig_url` → A2 서명 바이트(`setup_sig` 를 주면 부르지 않는다).
+/// `fetch_sig(url)` = 본문 행 `a2_sig_url` → A2 서명 바이트(`setup_sig` 를 주면 부르지 않는다). ★U2 후속 3판: 본문 받기·놓기 = 공용 함수.
 pub fn preserve_installer(
     update_dir: &Path,
     seq: u64,
@@ -67,18 +125,7 @@ pub fn preserve_installer(
     fetch_body: &dyn Fn(&str) -> Result<Vec<u8>, String>,
     fetch_sig: &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, PreserveErr> {
-    if seq == 0 {
-        return Err(perr(3, "seq_zero", "release_seq 0 = 발행판이 아닌 빌드(보관소에 본문 없음)"));
-    }
-    let dst = update_dir.join("installers").join(seq.to_string());
-    let rel = format!("cysr/releases/{seq}.json");
-    let body = fetch_body(&rel).map_err(|e| perr(4, "body_unreachable", format!("{rel}: {e}")))?;
-    let sig = fetch_body(&format!("{rel}.minisig")).map_err(|e| perr(4, "body_unreachable", format!("{rel}.minisig: {e}")))?;
-    let rb = super::feed::verify_release_body(&body, &sig, "cysr", kr).map_err(|e| perr(2, "body_rejected", e))?;
-    if rb.release_seq != seq {
-        return Err(perr(2, "body_rejected", format!("본문 seq {} ≠ 이 판 {seq}", rb.release_seq)));
-    }
-    let row = rb.assets.values().find(|a| a.target == super::buildinfo::TARGET).ok_or_else(|| perr(2, "body_rejected", "이 대상 행 없음"))?;
+    let (body, sig, row) = fetch_archive_body(seq, kr, fetch_body)?;
     let setup_bytes = std::fs::read(setup).map_err(|e| perr(3, "setup_unreadable", format!("{}: {e}", setup.display())))?;
     if super::feed::sha256_hex(&setup_bytes) != row.sha256 {
         return Err(perr(2, "setup_mismatch", "설치기 sha256 ≠ 본문 행(방금 깐 설치기가 이 판의 것이 아님)"));
@@ -90,29 +137,7 @@ pub fn preserve_installer(
             fetch_sig(url).map_err(|e| perr(4, "sig_unreachable", format!("{url}: {e}")))?
         }
     };
-    if verify_installer_dir_with(&dst, seq, true, &body, &sig, kr).is_ok() && std::fs::read(dst.join(REL_BODY)).ok().as_deref() == Some(&body[..]) {
-        return Ok(dst); // 이미 놓여 있고 재검증 통과(멱등)
-    }
-    let w = |e: String| perr(3, "write_failed", e);
-    let parent = dst.parent().ok_or_else(|| w("installers 부모 없음".into()))?;
-    super::ensure_private_dir(parent).map_err(w)?;
-    let tmp = parent.join(format!(".{seq}.tmp"));
-    let _ = std::fs::remove_dir_all(&tmp);
-    super::ensure_private_dir(&tmp).map_err(w)?;
-    super::journal::durable_write(&tmp.join(REL_BODY), &body).map_err(w)?;
-    super::journal::durable_write(&tmp.join(REL_SIG), &sig).map_err(w)?;
-    super::snapshot::durable_copy(setup, &tmp.join(SETUP)).map_err(w)?;
-    super::journal::durable_write(&tmp.join(SETUP_SIG), &sig_bytes).map_err(w)?;
-    if let Err(e) = verify_installer_dir_with(&tmp, seq, true, &body, &sig, kr) {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err(perr(2, "setup_mismatch", format!("보존본 재검증: {e}")));
-    }
-    if dst.exists() {
-        std::fs::remove_dir_all(&dst).map_err(|e| w(e.to_string()))?;
-    }
-    std::fs::rename(&tmp, &dst).map_err(|e| w(e.to_string()))?;
-    super::journal::sync_dir(parent).map_err(w)?;
-    Ok(dst)
+    place_installer_files(update_dir, seq, &body, &sig, &setup_bytes, &sig_bytes, kr)
 }
 
 /// CLI 본체(`--preserve-installer`) — JSON 1줄 + rc(0 놓음·재검증 통과 · 2 거부 · 3 쓰기·판정 불가 · 4 받지 못함).

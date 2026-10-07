@@ -8,7 +8,7 @@
 
 use super::errors::ErrCode;
 use super::journal::{Journal, Os, PrevInstaller};
-use super::runner::{Attempt, Canon, Fail, Kind, Ops, Step};
+use super::runner::{attempt_for, Attempt, Canon, Fail, Kind, Ops, Step};
 use super::verify::{self, Baseline, Expect, PackId, Post, SeatKey};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -141,6 +141,48 @@ pub fn verify_installer_dir_with(
     Ok(VerifiedRelease { manifest, setup_sha256 })
 }
 
+/// ★후속 2판 ⑫(설계 §3-7 ② · §6-1 불변 본문 보관소): 설치판 롤백 자산 받아 채우기 — `installers/<seq>/` 가 재검증을 통과하면 그대로
+/// (Ok(false)) · 아니면 ① 보관소 `cysr/releases/<seq>.json(.minisig)`(U 서명 · `get_feed` = 피드 뿌리 기준 상대 경로) → 서명·서식·seq 검증
+/// ② 그 본문의 이 대상 행 `url`(설치기 · 크기·sha256 = 본문 행) · `a2_sig_url`(A2 서명) → ③ 임시 자리(`installers/.<seq>.fill.tmp`)에 접점
+/// 파일 4개(`release.json`·`.minisig`·`setup.exe`·`setup.exe.sig` = 설치 링크·S11 과 같은 이름)를 내구 쓰기 → [`verify_installer_dir_with`]
+/// 재검증 → `installers/<seq>` 로 rename + 폴더 fsync = Ok(true). 어느 단계든 실패 = Err(사유 · 자리 무변경).
+pub fn fill_installer_dir(
+    update_dir: &Path,
+    seq: u64,
+    kr: &super::keys::UpdateKeyring,
+    get_feed: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    get_asset: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
+) -> Result<bool, String> {
+    // ★후속 3판 ②: 본문 받기·검증 · 4파일 놓기 = 설치 링크(`install_link::preserve_installer`)와 **같은 함수**(한 벌) — 러너 몫 = 설치기를
+    //   본문 행 url 에서 받는 것뿐.
+    let dst = update_dir.join("installers").join(seq.to_string());
+    if seq != 0 {
+        if let (Ok(b), Ok(s)) = (std::fs::read(dst.join(REL_BODY)), std::fs::read(dst.join(REL_SIG))) {
+            if verify_installer_dir_with(&dst, seq, true, &b, &s, kr).is_ok() {
+                return Ok(false);
+            }
+        }
+    }
+    let pe = |e: super::install_link::PreserveErr| format!("{}: {}", e.reason, e.detail);
+    let (body, sig, row) = super::install_link::fetch_archive_body(seq, kr, get_feed).map_err(|e| format!("보관소 본문 — {}", pe(e)))?;
+    let sig_url = row.a2_sig_url.clone().ok_or("보관소 본문 행에 a2_sig_url 없음")?;
+    let setup = get_asset(&row.url, row.size).map_err(|e| format!("설치기: {e}"))?;
+    if setup.len() as u64 != row.size || super::feed::sha256_hex(&setup) != row.sha256 {
+        return Err("설치기 크기·sha256 ≠ 보관소 본문 행".into());
+    }
+    let a2 = get_asset(&sig_url, 4096).map_err(|e| format!("설치기 A2 서명: {e}"))?;
+    super::install_link::place_installer_files(update_dir, seq, &body, &sig, &setup, &a2, kr).map(|_| true).map_err(|e| format!("받은 자산 — {}", pe(e)))
+}
+
+/// 실 네트워크(피드 뿌리 보관소 + 자산 1홉 규칙)로 [`fill_installer_dir`] — 러너 S0(N7)·S2·S8·RB 공용 · Err = 사유 1줄.
+pub fn fill_rollback_assets_net(update_dir: &Path, seq: u64) -> Result<bool, String> {
+    let kr = super::keys::UpdateKeyring::embedded()?;
+    let base = super::net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
+    let get_feed = |rel: &str| super::net::fetch_feed_file(&base, rel).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
+    let get_asset = |url: &str, max: u64| super::net::fetch(url, super::url::Hop::AssetFirst, max).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
+    fill_installer_dir(update_dir, seq, &kr, &get_feed, &get_asset).map_err(|e| format!("설치판 롤백 자산 받기(보관소): {e}"))
+}
+
 pub struct RealOps {
     pub env: Env,
     pub token: String,
@@ -153,12 +195,22 @@ pub struct RealOps {
     last_rotate_rc: Option<i32>,
     /// ★4판(Fable 3R M5): 재구성이 판정한 판의 `cys`(복원 뒤 재기동에 쓴다).
     recon_exe: Option<PathBuf>,
+    /// ★후속 2판: 직전 재구성이 새 판으로 판정했나.
+    recon_new: bool,
     /// ★4판(Fable 3R n1): 팩 단독 갱신의 새 팩 판(dry-run 판독) — 결과 기록 `to_version`.
     pack_to: Option<String>,
     /// 시험 전용: 재구성의 정식 자리 판정(맥 codesign·윈 서명 본문)을 대신한다 — true = 옛 판. 그 밖 경로(시도 판정·대조·정지·복원·
     /// 재기동)는 실물 그대로.
     #[cfg(test)]
     pub judge_is_old: Option<bool>,
+    /// 시험 전용: 자산 받기(github 1홉 규칙 URL 을 시험 파일로).
+    #[cfg(test)]
+    pub asset_get: Option<Box<dyn Fn(&str, u64) -> Result<Vec<u8>, String>>>,
+    /// 시험 전용(★후속 3판 m1): 정식 자리 판정(맥 codesign 실물) · 사후 검증 V1~V9(좌석·doctor·codesign 실물) 주입 — 그 밖은 실물.
+    #[cfg(test)]
+    pub canon_override: Option<Canon>,
+    #[cfg(test)]
+    pub verify_ok: bool,
 }
 
 fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
@@ -176,9 +228,16 @@ impl RealOps {
             b0: None,
             last_rotate_rc: None,
             recon_exe: None,
+            recon_new: false,
             pack_to: None,
             #[cfg(test)]
             judge_is_old: None,
+            #[cfg(test)]
+            asset_get: None,
+            #[cfg(test)]
+            canon_override: None,
+            #[cfg(test)]
+            verify_ok: false,
         }
     }
 
@@ -186,8 +245,36 @@ impl RealOps {
         Ok(&self.cand.asset)
     }
 
-    fn stage_dir(&self, j: &Journal) -> PathBuf {
-        self.env.update_dir.join("stage").join(&j.txn_id)
+    /// stage 자리 = S2 가 만든 `stage/<S1 txn>`. ★후속 2판(codex 1R #1·#6 · agy 1R #4): 열쇠 = **저널의 `origin_txn`**(S1 에서 정하고 인수·
+    /// 재구성이 보존 · 소문자 32-hex 만) — 시도 기록(`attempt.json`)은 더 이상 경로 재료가 아니다(형식 검사 없는 값의 `../..` 결합 = 재귀 삭제
+    /// 탈출이었다). 원점이 없거나 형식 밖 = None(복구기 토큰을 원점으로 가장하지 않는다 · 보존·삭제 0).
+    fn stage_dir(&self, j: &Journal) -> Option<PathBuf> {
+        let o = if super::mutant("U2-STAGETXN") { j.txn_id.as_str() } else { j.origin_txn.as_str() };
+        super::journal::valid_txn(o).then(|| self.env.update_dir.join("stage").join(o))
+    }
+
+    /// stage 삭제(검증된 원점만 · 실물이 `update/stage/` 바로 아래 실 폴더일 때만 — 심볼릭 링크·밖으로 해소되는 경로 = 무접촉).
+    fn remove_stage(&self, j: &Journal) {
+        let Some(p) = self.stage_dir(j) else { return };
+        let _ = super::snapshot::remove_dir_within(&self.env.update_dir.join("stage"), &p);
+    }
+
+    /// S11 몫 = ① 새 판 서명 본문(+윈 설치기·A2 서명) `installers/<seq>/` 원자 보존·재검증 ② 수용 기록 durable 쓰기 — 정상 S11([`Ops::commit`])
+    /// 과 ★후속(Fable 5R n17) 새 판 재구성 종결([`Ops::accept_reconstructed`])이 함께 쓴다.
+    fn accept_release(&self, j: &Journal) -> Step {
+        self.preserve_release(j)?;
+        let c = &self.cand;
+        let acc = super::feed::AcceptedFeed {
+            feed_rev: c.feed_rev.ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 feed_rev 없음"))?,
+            envelope_sha256: c.envelope_sha256.clone().ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 봉투 sha256 없음"))?,
+            feed_release_seq: c.release_seq,
+            installed_release_seq: c.release_seq,
+            signed_at: c.envelope_signed_at.ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 signed_at 없음"))?,
+            at: super::clock::wall_now(),
+        };
+        super::feed::write_accepted(&super::check::accepted_path(&self.env.update_dir, "cysr", &self.env.channel), &acc)
+            .map_err(|e| fail(ErrCode::RotateFailed, "S11", format!("수용 기록: {e}")))?;
+        Ok(())
     }
 
     fn installers_dir(&self, seq: u64) -> PathBuf {
@@ -342,7 +429,7 @@ impl RealOps {
         super::journal::durable_write(&tmp.join(REL_BODY), &body).map_err(f)?;
         super::journal::durable_write(&tmp.join(REL_SIG), &sig).map_err(f)?;
         if need_inst {
-            let stage = self.stage_dir(j);
+            let stage = self.stage_dir(j).ok_or_else(|| f("저널 원점 txn 없음 — stage 자리 모름".into()))?;
             super::snapshot::durable_copy(&stage.join(SETUP), &tmp.join(SETUP)).map_err(f)?;
             super::snapshot::durable_copy(&stage.join(SETUP_SIG), &tmp.join(SETUP_SIG)).map_err(f)?;
         }
@@ -449,7 +536,11 @@ impl Ops for RealOps {
 
     fn fetch(&mut self, j: &mut Journal) -> Step {
         let a = self.asset()?.clone();
-        let stage = self.stage_dir(j);
+        // ★후속 2판 ⑫: 윈 설치판 롤백 자산(설치 링크가 못 챙긴 기기 = 종전엔 N7 영구 보류) — 데몬을 내리기 전(S2)에 보관소에서 받아 채운다.
+        if self.env.os == Os::Win && !super::mutant("U2-S2FILL") {
+            self.fill_rollback_assets(super::buildinfo::release_seq(), "S2")?;
+        }
+        let stage = self.stage_dir(j).ok_or_else(|| fail(ErrCode::DiskLow, "S2", "저널 원점 txn 없음"))?;
         super::ensure_private_dir(&stage).map_err(|e| fail(ErrCode::DiskLow, "S2", e))?;
         let name = if self.env.os == Os::Win { "setup.exe" } else { "asset.zip" };
         let dst = stage.join(name);
@@ -588,6 +679,9 @@ impl Ops for RealOps {
     }
 
     fn snapshot(&mut self, j: &mut Journal) -> Step {
+        if !super::journal::valid_txn(&j.txn_id) {
+            return Err(fail(ErrCode::DiskLow, "S8", "스냅샷 자리 토큰 형식 밖"));
+        }
         let root = super::snapshot::backup_root(&self.env.update_dir).join(super::snapshot::snapshot_name(j.from_release_seq, &j.txn_id));
         let mut shas = Vec::new();
         for (name, src) in self.snapshot_roots() {
@@ -608,6 +702,10 @@ impl Ops for RealOps {
             //   sha256·A2 서명을 다시 검증한 것만(현장 해시를 신뢰하지 않는다).
             let dir = self.installers_dir(j.from_release_seq);
             let inst = dir.join(SETUP);
+            // ★후속 2판 ⑫: S2 뒤 사라졌거나 망가졌으면 1회 다시 받는다(그래도 실패 = 사유 있는 되감기)
+            if verify_installer_dir(&dir, j.from_release_seq, true).is_err() {
+                self.fill_rollback_assets(j.from_release_seq, "S8")?;
+            }
             let v = verify_installer_dir(&dir, j.from_release_seq, true).map_err(|e| fail(ErrCode::NoRollbackAsset, "S8", format!("설치판 롤백 자산: {e}")))?;
             let sha = v.setup_sha256.unwrap_or_default();
             j.prev_installer = Some(PrevInstaller { path: inst.to_string_lossy().to_string(), sha256: sha, release_seq: j.from_release_seq });
@@ -646,6 +744,10 @@ impl Ops for RealOps {
     }
 
     fn canonical(&mut self, _j: &Journal) -> Canon {
+        #[cfg(test)]
+        if let Some(c) = self.canon_override {
+            return c;
+        }
         let (Ok(new), old) = (self.expect_new(), self.expect_old()) else { return Canon::Unknown };
         match self.env.os {
             // ★3판(Fable 2R m2): 번들 바이너리(build-info) 실행 전 서명·DR 핀 — 실패 = 판독 불가
@@ -703,6 +805,9 @@ impl Ops for RealOps {
         }
         if !r.ok() {
             // 같은 설치기 **1회** 재실행 → 다시 대조(폭주 방지 — 재시도 상한 1)
+            // ★후속 3판(Opus 2R M1 · agy 1R a4 잔여): 재실행 전 stage 설치기를 해시만이 아니라 후보 행(sha256)·A2 서명으로 다시 본다
+            //   — 재구성으로 온 저널은 사본 값이 닻이라, 바이트가 바뀐 설치기는 여기서 실행 0.
+            self.verify_stage_installer(j)?;
             super::win_install::run_installer(Path::new(&j.stage_path), &self.env.install_dir, &self.token, &j.stage_tree_sha256)?;
             r = check(&self.env.install_dir);
             if !r.ok() {
@@ -726,11 +831,21 @@ impl Ops for RealOps {
     }
 
     fn post_verify(&mut self, j: &Journal, rollback: bool) -> Step {
+        #[cfg(test)]
+        if self.verify_ok && !rollback {
+            return Ok(());
+        }
         let b0 = match &self.b0 {
             Some(b) => b.clone(),
             None => {
-                let v: Value = super::quiesce::read_json(&self.env.update_dir, "attempt.json").ok_or_else(|| fail(ErrCode::VerifyFailed, "V0", "기준선 없음"))?;
-                serde_json::from_value(v["baseline"].clone()).map_err(|e| fail(ErrCode::VerifyFailed, "V0", e.to_string()))?
+                // ★후속 2판(codex 1R #8 · agy 1R #6): 기준선 원천 = 이 저널 계보의 종결 안 된 시도 기록뿐(원시 JSON 읽기 폐기)
+                let a = if super::mutant("U2-PVATTEMPT") {
+                    super::quiesce::read_json::<Attempt>(&self.env.update_dir, super::runner::ATTEMPT_FILE)
+                } else {
+                    attempt_for(&self.env.update_dir, &j.txn_id)
+                };
+                let v = a.and_then(|a| a.baseline).ok_or_else(|| fail(ErrCode::VerifyFailed, "V0", "기준선 없음(이 시도 계보 · 종결 안 됨)"))?;
+                serde_json::from_value(v).map_err(|e| fail(ErrCode::VerifyFailed, "V0", e.to_string()))?
             }
         };
         let (exe, exp) = if rollback {
@@ -820,26 +935,17 @@ impl Ops for RealOps {
     fn commit(&mut self, j: &Journal) -> Step {
         // ★2판(codex 1R C11): DONE 의 필수 선행 = ① 새 판 서명 본문(+윈 설치기·A2 서명)을 installers/<seq>/ 에 원자 보존·재검증
         //   ② 수용 기록(feed_rev·봉투 sha256·signed_at · 설치 seq = 새 판) durable 쓰기. 실패 = Err(호출자가 롤백) · stage 는 그 뒤에 지운다.
-        self.preserve_release(j)?;
-        let c = &self.cand;
-        let acc = super::feed::AcceptedFeed {
-            feed_rev: c.feed_rev.ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 feed_rev 없음"))?,
-            envelope_sha256: c.envelope_sha256.clone().ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 봉투 sha256 없음"))?,
-            feed_release_seq: c.release_seq,
-            installed_release_seq: c.release_seq,
-            signed_at: c.envelope_signed_at.ok_or_else(|| fail(ErrCode::RotateFailed, "S11", "후보에 signed_at 없음"))?,
-            at: super::clock::wall_now(),
-        };
-        super::feed::write_accepted(&super::check::accepted_path(&self.env.update_dir, "cysr", &self.env.channel), &acc)
-            .map_err(|e| fail(ErrCode::RotateFailed, "S11", format!("수용 기록: {e}")))?;
-        let _ = std::fs::remove_dir_all(self.stage_dir(j));
+        self.accept_release(j)?;
+        self.remove_stage(j);
         let names: Vec<String> = std::fs::read_dir(super::snapshot::backup_root(&self.env.update_dir))
             .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
             .unwrap_or_default();
-        let fresh = super::snapshot::snapshot_name(j.from_release_seq, &j.txn_id);
+        // 이번 시도의 스냅샷 = 저널 칸 그대로(토큰으로 이름을 다시 만들지 않는다 — 인수 뒤 토큰은 S8 의 것이 아니다)
+        let fresh = Path::new(&j.snapshot_dir).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let never: std::collections::BTreeSet<String> = [fresh.clone()].into();
         for n in super::snapshot::prune_plan(&names, 2, true, &never) {
-            let _ = std::fs::remove_dir_all(super::snapshot::backup_root(&self.env.update_dir).join(n));
+            let br = super::snapshot::backup_root(&self.env.update_dir);
+            let _ = super::snapshot::remove_dir_within(&br, &br.join(n));
         }
         if self.env.os == Os::Mac {
             if let Some(pb) = &j.prev_bundle {
@@ -853,13 +959,14 @@ impl Ops for RealOps {
     fn release(&mut self, j: &Journal) {
         super::win_install::release_installer_mutex();
         let _ = (self.env.rpc)("update.release", json!({"txn": self.token}));
-        let _ = std::fs::remove_dir_all(self.stage_dir(j));
+        self.remove_stage(j);
         if self.env.os == Os::Mac {
             let _ = std::fs::remove_dir_all(super::mac::staged_path(&self.env.canonical_app, j.release_seq));
         }
     }
 
     fn start_old(&mut self, _j: &Journal) -> Step {
+        // ★후속 2판: 새 판 재구성은 S7 행으로 오지 않는다(S9 행 · 아래 reconstruct) — 「옛」 = 언제나 옛 판(1판 n11 의 표지 갈래 폐기).
         let exe = match self.env.os {
             Os::Mac => self.env.canonical_app.join("Contents/MacOS/cys"),
             Os::Win => self.env.old_cys.clone(),
@@ -911,6 +1018,13 @@ impl Ops for RealOps {
                 }
                 let pi = j.prev_installer.as_ref().ok_or_else(|| fail(ErrCode::NoRollbackAsset, "RB_SWAPPED", "설치판 설치기 기록 없음"))?;
                 // ★2판 C10: 실행 직전 재검증(본문 서명·설치기 sha256·A2) — 저널 sha 와도 같아야 한다(실행은 그 sha 로 쥔 핸들).
+                // ★후속 3판(Opus 2R m7): S8 뒤 사라졌거나 망가졌으면(백신 격리 등) 보관소에서 1회 다시 받는다(§3-7 ② 를 롤백에도 · 멱등) —
+                //   받기 실패는 1줄만 남기고 아래 재검증이 판정한다(롤백 자체를 받기로 막지 않는다).
+                if verify_installer_dir(&self.installers_dir(j.from_release_seq), j.from_release_seq, true).is_err() && !super::mutant("U2-RBFILL") {
+                    if let Err(f) = self.fill_rollback_assets(j.from_release_seq, "RB_SWAPPED") {
+                        eprintln!("[update] 롤백 자산 재받기 실패: {}", f.detail);
+                    }
+                }
                 let v = verify_installer_dir(&self.installers_dir(j.from_release_seq), j.from_release_seq, true)
                     .map_err(|e| fail(ErrCode::NoRollbackAsset, "RB_SWAPPED", format!("설치판 롤백 자산: {e}")))?;
                 if v.setup_sha256.as_deref() != Some(pi.sha256.as_str()) {
@@ -1001,6 +1115,10 @@ impl Ops for RealOps {
         r
     }
 
+    fn reconstructed_new(&self) -> bool {
+        self.recon_new
+    }
+
     fn reconstruct(&mut self, attempt: &Attempt) -> Result<bool, Fail> {
         // §3-11 저널 손상 재구성: 정식 자리 실물이 설치판(옛) 또는 후보(새) 중 정확히 하나와 같으면 확정.
         // ★2판(codex 1R C13): ① 맥 = 번들 바이너리를 실행(build-info)하기 **전에** codesign 엄격 + DR 핀 · 새 판으로 판정되면 cdhash 까지
@@ -1010,6 +1128,20 @@ impl Ops for RealOps {
         let rj = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
         let is_old = self.judge_canonical()?;
         self.recon_exe = Some(if is_old { self.env.old_cys.clone() } else { self.new_cys() });
+        // ★후속 2판(agy 1R #1): 새 판 판정 = 정식 자리가 후보(candidate.json 복원본)의 판과 같다는 뜻 — 사본 저널의 판까지 같아야 그 사본으로
+        //   S9 행을 다시 쓴다(후보·시도가 다른 실행의 것이면 재구성 불가).
+        if !is_old && !super::mutant("U2-CANDSEQ") {
+            let seq = attempt.journal.as_ref().map(|c| c.release_seq).unwrap_or(0);
+            if seq != self.cand.release_seq {
+                return Err(rj(format!("새 판 판정 · 시도 저널 사본 판 {seq} ≠ 후보 {}", self.cand.release_seq)));
+            }
+            // ★후속 3판(Opus 2R M1): (윈) 사본의 stage 해시 = 서명 재검증한 후보 행 sha256(S9b 재실행의 닻)
+            let st = attempt.journal.as_ref().map(|c| c.stage_tree_sha256.as_str()).unwrap_or("");
+            if self.env.os == Os::Win && st != self.cand.asset.sha256 {
+                return Err(rj("새 판 판정 · 시도 저널 사본 stage 해시 ≠ 후보 행".into()));
+            }
+        }
+        self.recon_new = !is_old;
         // ★5판(codex 4R N3″): 스냅샷 자리 없음 = S8 전(교체 0) — 옛 판이면 대조할 것 없음 · 새 판이면 모순(S9 는 S8 기록 뒤에만) = 사람 필요.
         let Some(snap) = attempt.snapshot_dir.as_deref().map(|d| PathBuf::from(d).join("cys")) else {
             return if is_old { Ok(false) } else { Err(rj("정식 자리 = 새 판인데 이번 시도 스냅샷 기록 없음".into())) };
@@ -1042,6 +1174,10 @@ impl Ops for RealOps {
 
     fn daemon_alive(&mut self) -> bool {
         (self.env.rpc)("system.identify", json!({})).ok().and_then(|v| v.get("daemon_pid").and_then(|p| p.as_u64())).map(|p| p > 0).unwrap_or(false)
+    }
+
+    fn signal(&mut self, code: ErrCode) {
+        super::notify::signal(&self.env.cys_root.join("pack"), code);
     }
 
     fn record(&mut self, j: Option<&Journal>, kind: Kind, f: Option<&Fail>) {
@@ -1089,6 +1225,46 @@ impl Ops for RealOps {
 }
 
 impl RealOps {
+    /// ★후속 3판(Opus 2R M1): stage 설치기 = 원점 stage 의 `setup.exe` · 크기·sha256 = 후보 행 · 저널 `stage_tree_sha256` = 후보 행 · A2 서명
+    /// (`setup.exe.sig` · S2 가 둔 것) 검증 — 하나라도 어긋남 = 실행 0.
+    fn verify_stage_installer(&self, j: &Journal) -> Step {
+        let f = |d: String| fail(ErrCode::WinA2SigBad, "S9b", d);
+        if super::mutant("U2-STAGESIG") {
+            return Ok(());
+        }
+        let a = self.asset()?;
+        let stage = self.stage_dir(j).ok_or_else(|| f("저널 원점 txn 없음".into()))?;
+        let exe = stage.join(SETUP);
+        if Path::new(&j.stage_path) != exe {
+            return Err(f(format!("stage_path ≠ 원점 stage 의 {SETUP}")));
+        }
+        let bytes = std::fs::read(&exe).map_err(|e| f(e.to_string()))?;
+        if bytes.len() as u64 != a.size || super::feed::sha256_hex(&bytes) != a.sha256 || j.stage_tree_sha256 != a.sha256 {
+            return Err(f("stage 설치기 크기·sha256 ≠ 후보 행".into()));
+        }
+        let sig = std::fs::read(stage.join(SETUP_SIG)).map_err(|e| f(format!("{SETUP_SIG}: {e}")))?;
+        let kr = super::keys::UpdateKeyring::embedded().map_err(f)?;
+        kr.verify_any(super::keys::Purpose::WinAsset, &bytes, &sig, super::clock::wall_now()).map_err(|e| f(format!("A2 서명: {e}")))
+    }
+
+    /// ★후속 2판 ⑫: 설치판(`seq`) 롤백 자산을 채운다(윈만 · 맥 = 정식 자리 옛 번들이 롤백 자산) — 실패 = `update.no_rollback_asset`(일시 =
+    /// 6h·12h·24h·48h 백오프 · §3-10 MA7) + 사유 1줄(조용한 보류 0).
+    fn fill_rollback_assets(&self, seq: u64, step: &str) -> Step {
+        if super::mutant("U2-FILL") {
+            return Err(fail(ErrCode::NoRollbackAsset, step, "설치판 롤백 자산 없음"));
+        }
+        #[cfg(test)]
+        if let Some(g) = &self.asset_get {
+            let kr = super::keys::UpdateKeyring::embedded().map_err(|e| fail(ErrCode::NoRollbackAsset, step, e))?;
+            let base = super::net::feed_base(cfg!(debug_assertions), |k| std::env::var(k).ok());
+            let get_feed = |rel: &str| super::net::fetch_feed_file(&base, rel).map(|f| f.bytes).map_err(|e| format!("{e:?}"));
+            return fill_installer_dir(&self.env.update_dir, seq, &kr, &get_feed, g.as_ref())
+                .map(|_| ())
+                .map_err(|e| fail(ErrCode::NoRollbackAsset, step, format!("설치판 롤백 자산 받기(보관소): {e}")));
+        }
+        fill_rollback_assets_net(&self.env.update_dir, seq).map(|_| ()).map_err(|e| fail(ErrCode::NoRollbackAsset, step, e))
+    }
+
     /// 재구성의 정식 자리 판정(★2판 C13 그대로) — true = 설치판(옛) · false = 후보(새) · 어느 쪽도 아님 = Err(사람 필요).
     fn judge_canonical(&self) -> Result<bool, Fail> {
         let rj = |d: String| fail(ErrCode::JournalCorrupt, "reconstruct", d);
@@ -1164,8 +1340,12 @@ pub fn pack_txn_begin(update_dir: &Path, txn_id: &str, epoch: u64, cys_root: &Pa
 /// 사용자 트리 요약 해시 + 사본(`backup/pack-<txn>/user`) — PACK_APPLY 의 고정값.
 pub fn pack_user_snapshot(update_dir: &Path, txn_id: &str, cys_root: &Path) -> Result<(String, PathBuf), String> {
     let digest = verify::user_tree_digest(cys_root)?;
+    // ★후속 3판(Opus 2R m8): 경로 성분 = 검증된 토큰만
+    if !super::journal::valid_txn(txn_id) {
+        return Err(format!("팩 사본 자리 토큰 형식 밖: {txn_id:?}"));
+    }
     let snap = super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")).join("user");
-    let _ = std::fs::remove_dir_all(&snap);
+    let _ = super::snapshot::remove_dir_within(&snap.parent().unwrap_or(&snap).to_path_buf(), &snap);
     super::snapshot::take(cys_root, &snap, &user_snapshot_filter(cys_root))?;
     Ok((digest, snap))
 }
@@ -1223,7 +1403,7 @@ pub fn pack_backup_sweep(update_dir: &Path, keep_txn: &str) {
     for e in rd.filter_map(|e| e.ok()) {
         let n = e.file_name().to_string_lossy().to_string();
         if n.starts_with("pack-") && n != format!("pack-{keep_txn}") {
-            if let Err(err) = std::fs::remove_dir_all(e.path()) {
+            if let Err(err) = super::snapshot::remove_dir_within(&root, &e.path()) {
                 eprintln!("[update] 팩 사본 정리 실패(다음 갱신이 재시도): {n}: {err}");
             }
         }
@@ -1284,7 +1464,10 @@ pub fn parse_pack_version(stdout: &str) -> Option<String> {
 /// 성공 종결 — PACK_DONE + 사용자 트리 사본 정리.
 pub fn pack_txn_end(update_dir: &Path, txn_id: &str, epoch: u64) -> Result<(), String> {
     super::journal::advance(update_dir, txn_id, epoch, super::journal::State::PackDone, |_| {}).map_err(|e| format!("{e:?}"))?;
-    let _ = std::fs::remove_dir_all(super::snapshot::backup_root(update_dir).join(format!("pack-{txn_id}")));
+    let br = super::snapshot::backup_root(update_dir);
+    if super::journal::valid_txn(txn_id) {
+        let _ = super::snapshot::remove_dir_within(&br, &br.join(format!("pack-{txn_id}")));
+    }
     Ok(())
 }
 
@@ -1501,10 +1684,10 @@ mod tests {
             std::fs::write(root.join(p), b).unwrap();
         }
         let want = verify::user_tree_digest(&root).unwrap();
-        pack_txn_begin(&upd, "t1", 1, &root).unwrap();
+        pack_txn_begin(&upd, "1111111111111111111111111111111a", 1, &root).unwrap();
         let j = super::super::journal::read(&upd).journal().cloned().unwrap();
         assert_eq!((j.state, j.stage_tree_sha256.as_str()), (super::super::journal::State::PackApply, want.as_str()));
-        assert!(pack_txn_begin(&upd, "t2", 2, &root).unwrap_err().contains("복구 대기"), "비종결 저널 위 새 팩 트랜잭션 거부");
+        assert!(pack_txn_begin(&upd, "2222222222222222222222222222222b", 2, &root).unwrap_err().contains("복구 대기"), "비종결 저널 위 새 팩 트랜잭션 거부");
         // 도중 죽음: 사용자 파일 덮임 · 새 사용자 파일 · 팩 본문 변경
         std::fs::write(root.join("local/me.md"), "clobbered").unwrap();
         std::fs::write(root.join("local/new.md"), "n").unwrap();
@@ -1514,7 +1697,7 @@ mod tests {
         assert!(!root.join("local/new.md").exists() && d.join("q/local/new.md").exists(), "새 사용자 파일 = 격리");
         assert_eq!(std::fs::read_to_string(root.join("pack/lib/x.py")).unwrap(), "v2", "팩 본문 = 팩 저널 몫(무접촉)");
         assert!(pack_user_tree_restore(&root, "", Path::new(&j.snapshot_dir), &d.join("q")).is_err(), "고정값 없음 = 실패");
-        pack_txn_end(&upd, "t1", 1).unwrap();
+        pack_txn_end(&upd, "1111111111111111111111111111111a", 1).unwrap();
         assert_eq!(super::super::journal::read(&upd).journal().unwrap().state, super::super::journal::State::PackDone);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -1602,7 +1785,8 @@ mod tests {
     #[test]
     fn corrupt_journal_recover_reconstructs_from_this_attempt_and_restarts_daemon() {
         use super::super::runner::{tests::Sim, Fault, Outcome, Runner, ATTEMPT_FILE};
-        for (judge_old, tag) in [(true, "recon-old"), (false, "recon-new")] {
+        // ★후속 2판: 새 판 판정은 S9 행으로 간다(러너 시험 new_reconstruct_routes_through_s9_row_… · 아래 reconstruct_new_…) — 여기는 옛 판
+        for (judge_old, tag) in [(true, "recon-old")] {
             let (d, upd, root, mut ops) = recon_rig(tag);
             ops.judge_is_old = Some(judge_old);
             let mut sim = Sim::new(Os::Mac);
@@ -1735,6 +1919,448 @@ mod tests {
                     assert_eq!(o, Outcome::Nothing, "{case}");
                     assert!(c.is_empty(), "{case}: 호출 0 {c:?}");
                     assert!(boot_guard(&upd).is_none(), "{case}");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// ★후속(Fable 5R n10) 종단: 재구성 → 재기동 실패(S7 유지 · 저널 토큰 = 복구기 fedcba…) → **한 슬롯이 더 손상**(Degraded · 남은 슬롯
+    /// txn = fedcba…) → 다음 복구기가 같은 시도로 다시 재구성(계보 = 0123… + fedcba…) → 재기동 · 종결. 계보를 잇지 않으면(뮤턴트
+    /// U2-LINEAGE) 남은 슬롯 txn 이 계보 밖 = Mismatch = seats_blocked(스냅샷이 멀쩡한데 자동 회복 포기).
+    #[cfg(unix)]
+    #[test]
+    fn reconstruct_lineage_survives_restart_failure_then_one_more_torn_slot() {
+        use super::super::journal::{read, ReadOutcome, State, JOURNAL_FILE};
+        use super::super::runner::{boot_guard, Outcome, Runner, ATTEMPT_FILE};
+        let (d, upd, root, mut ops) = recon_rig("recon-n10");
+        ops.judge_is_old = Some(true);
+        killed_after_swap(&upd, &root);
+        std::fs::remove_file(d.join("daemon.up")).unwrap();
+        std::fs::write(d.join("restart.fail"), "1").unwrap();
+        corrupt_journal(&upd);
+        let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+        rec.soft_kill = true;
+        assert!(matches!(rec.recover(), Outcome::SeatsBlocked(_)));
+        assert_eq!(read(&upd).journal().unwrap().state, State::Stopped, "재기동 실패 = 비종결 S7");
+        // 한 슬롯 더 손상 — 남은 슬롯 = 재구성이 쓴 Locked(fedcba…)
+        std::fs::write(upd.join(JOURNAL_FILE), b"{torn").unwrap();
+        assert!(matches!(read(&upd), ReadOutcome::Degraded(ref j, _) if j.txn_id == "fedcba9876543210fedcba9876543210"));
+        std::fs::remove_file(d.join("restart.fail")).unwrap();
+        let mut rec = Runner::new(&upd, "abababababababababababababababab", 3, &mut ops);
+        rec.soft_kill = true;
+        let o = rec.recover();
+        assert_eq!(o, Outcome::Nothing, "같은 시도로 재구성 · 재기동 · 종결: {o:?}");
+        assert!(boot_guard(&upd).is_none() && read(&upd).journal().unwrap().state.is_terminal(), "종결");
+        assert!(d.join("daemon.up").exists(), "재기동");
+        assert!(!upd.join(ATTEMPT_FILE).exists(), "시도 기록 삭제");
+        assert_eq!(std::fs::read_to_string(root.join("local/me.md")).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 2판(codex 1R #1·#6 · agy 1R #4): stage 자리의 열쇠 = **저널 `origin_txn`**(S1 txn · 인수 뒤에도 그대로) — ⓐ 인수 뒤(저널 txn =
+    /// 새 토큰) 윈 S11 보존 = `stage/<원점>` 의 설치기를 복사 → `installers/9` 재검증(옛 stage 재사용 = 복사본의 설치기 sha256·A2 서명 재검증)
+    /// ⓑ 시도 기록에 `../..` 을 심어도 경로 재료가 아니다 — release() 뒤 `update/` 밖 희생 폴더 그대로 ⓒ 원점 없음(형식 밖·빈 값) = stage 자리
+    /// 없음 → 보존 실패(사유)·삭제 0(복구기 토큰을 원점으로 가장 0) ⓓ `stage/<원점>` 이 밖을 가리키는 심볼릭 링크 = 삭제 0.
+    /// 뮤턴트 U2-STAGETXN(열쇠 = 지금 저널 txn = 1판 이전) = ⓐ 적.
+    #[cfg(unix)]
+    #[test]
+    fn stage_is_the_journal_origin_never_the_attempt_or_recovery_token() {
+        use super::super::runner::{attempt_begin, attempt_takeover, ATTEMPT_FILE};
+        use crate::update::feed::fixture::{body_json, NOW};
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let (d, upd, _root, mut ops) = recon_rig("stage-origin");
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+        );
+        let (t1, t2) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
+        let setup = b"MZ-setup".to_vec();
+        let mut body = body_json(&k, 9);
+        for a in body["assets"].as_object_mut().unwrap().values_mut() {
+            a["sha256"] = json!(crate::update::feed::sha256_hex(&setup));
+        }
+        let bb = body.to_string().into_bytes();
+        let e = base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        ops.env.os = Os::Win;
+        ops.cand.release_b64 = Some(e.encode(&bb));
+        ops.cand.release_sig_b64 = Some(e.encode(k.u.sign(&bb)));
+        let stage = upd.join("stage").join(t1);
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join(SETUP), &setup).unwrap();
+        std::fs::write(stage.join(SETUP_SIG), k.a2.sign(&setup)).unwrap();
+        // ⓐ 인수 뒤 저널(txn = t2 · 원점 = t1)
+        let mut j = super::super::journal::Journal::new(t1, 1);
+        j.txn_id = t2.into();
+        j.release_seq = 9;
+        let r = ops.preserve_release(&j);
+        assert!(r.is_ok(), "ⓐ 인수 뒤 S11 보존 = 원점 stage 의 설치기: {r:?}");
+        assert!(verify_installer_dir(&upd.join("installers/9"), 9, true).is_ok());
+        assert_eq!(ops.stage_dir(&j), Some(stage.clone()));
+        // ⓑ 시도 기록에 경로 탈출 값
+        let victim = d.join("victim");
+        std::fs::create_dir_all(victim.join("keep")).unwrap();
+        attempt_begin(&upd, t1).unwrap();
+        attempt_takeover(&upd, t1, t2).unwrap();
+        std::fs::write(upd.join(ATTEMPT_FILE), json!({"txn_id": "../../victim", "lineage": [t2]}).to_string()).unwrap();
+        let mut stray = super::super::journal::Journal::new("../../victim", 1);
+        stray.txn_id = t2.into();
+        ops.release(&j);
+        ops.release(&stray);
+        assert!(victim.join("keep").exists(), "ⓑ 경로 탈출 값 = 삭제 0");
+        assert!(!stage.exists(), "검증된 원점 stage 는 정리");
+        // ⓒ 원점 없음 = 가장 0
+        let mut lost = super::super::journal::Journal::new(t2, 2);
+        lost.origin_txn = String::new();
+        lost.release_seq = 9;
+        let _ = std::fs::remove_dir_all(upd.join("installers/9"));
+        assert_eq!(ops.stage_dir(&lost), None, "ⓒ 원점 없음 = stage 자리 없음");
+        assert!(ops.preserve_release(&lost).unwrap_err().detail.contains("원점"), "ⓒ 보존 실패 사유");
+        // ⓓ 원점 stage 가 밖을 가리키는 링크
+        std::fs::create_dir_all(upd.join("stage")).unwrap();
+        std::os::unix::fs::symlink(&victim, upd.join("stage").join(t1)).unwrap();
+        ops.release(&j);
+        assert!(victim.join("keep").exists(), "ⓓ 밖을 가리키는 링크 = 삭제 0");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 2판(agy 1R #1 실측 재현): 「복구기의 후보는 늘 비어 있다」 → 반은 아니다 — 후보는 러너가 S2 전에 남긴 `candidate.json` 에서
+    /// 복원되고(S11 재료 feed_rev·봉투·signed_at·서명 본문 그대로) · 파일이 없을 때만 빈 후보다. 빈 후보면 **새 판 판정 자체가 불가**(윈 실
+    /// 판정 = 후보 페이로드 매니페스트 대조 · 빈 후보 = 대조 재료 없음 → 재구성 불가) · 후보가 있어도 시도 저널 사본의 판이 후보와 다르면
+    /// 재구성 불가(다른 실행의 후보·시도 섞임 차단). 1판 시험이 못 잡은 이유 = 후보 칸을 시험이 손으로 채우고 판정을 주입(judge_is_old)해
+    /// 복원 입구(`recovery_candidate`)와 판정의 후보 묶음을 둘 다 우회했다.
+    #[cfg(unix)]
+    #[test]
+    fn reconstruct_new_needs_restored_candidate_of_the_same_release() {
+        use super::super::runner::{attempt_begin, attempt_note_journal, current_attempt, AttemptView};
+        use crate::update::feed::fixture::{body_json, NOW};
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (d, upd, _root, mut ops) = recon_rig("recon-cand");
+        let k = Keys::new();
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+        );
+        // 복원 입구: 서명 본문을 다시 검증하고 그 본문 행으로 자산을 **다시 만든다**(★후속 3판 Opus 2R M1) · S11 재료 그대로
+        let bb = body_json(&k, 9).to_string().into_bytes();
+        let e = base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        ops.cand.feed_rev = Some(7);
+        ops.cand.envelope_sha256 = Some("ab".repeat(32));
+        ops.cand.envelope_signed_at = Some(1);
+        ops.cand.release_b64 = Some(e.encode(&bb));
+        ops.cand.release_sig_b64 = Some(e.encode(k.u.sign(&bb)));
+        let mut forged = ops.cand.clone();
+        forged.asset.sha256 = "ee".repeat(32); // 파일의 자산 칸 변조 — 무시돼야 한다
+        super::super::quiesce::write_json(&upd, CANDIDATE_FILE, &forged).unwrap();
+        let got = super::super::auto::recovery_candidate(&upd).unwrap();
+        assert_eq!((got.feed_rev, got.release_seq, got.release_b64.as_deref()), (Some(7), 9, ops.cand.release_b64.as_deref()), "S11 재료째 복원");
+        assert!(got.asset.sha256 != forged.asset.sha256 && got.asset.target == crate::update::buildinfo::TARGET, "자산 = 서명 본문 행(파일 칸 무시)");
+        let mut bad = ops.cand.clone();
+        bad.release_sig_b64 = Some(e.encode(k.f.sign(&bb)));
+        super::super::quiesce::write_json(&upd, CANDIDATE_FILE, &bad).unwrap();
+        assert_eq!(super::super::auto::recovery_candidate(&upd).unwrap().release_seq, 0, "본문 서명 실패 = 빈 후보");
+        ops.cand = got;
+        std::fs::remove_file(upd.join(CANDIDATE_FILE)).unwrap();
+        let empty = super::super::auto::recovery_candidate(&upd).unwrap();
+        assert!(empty.feed_rev.is_none() && empty.release_seq == 0, "파일 없음 = 빈 후보");
+        // 시도(S9 사본 = 판 8 · 후보 = 9) — 실 판정 대신 주입한 「새 판」 이어도 판이 다르면 재구성 불가
+        let t1 = "0123456789abcdef0123456789abcdef";
+        attempt_begin(&upd, t1).unwrap();
+        let mut copy = super::super::journal::Journal::new(t1, 1);
+        copy.state = super::super::journal::State::Swapped;
+        copy.release_seq = 8;
+        copy.snapshot_dir = upd.join("backup/8-x").to_string_lossy().to_string();
+        let _ = &d;
+        attempt_note_journal(&upd, &copy).unwrap();
+        let a = match current_attempt(&upd, &super::super::journal::ReadOutcome::Absent) {
+            AttemptView::Ok(a) => a,
+            v => panic!("{v:?}"),
+        };
+        ops.judge_is_old = Some(false);
+        let e = ops.reconstruct(&a).unwrap_err();
+        assert!(e.detail.contains("≠ 후보"), "판 불일치 = 재구성 불가: {}", e.detail);
+        // 빈 후보 + 실 윈 판정 = 새 판 판정 불가(대조 재료 없음)
+        ops.cand = empty;
+        ops.env.os = Os::Win;
+        ops.judge_is_old = None;
+        assert!(ops.reconstruct(&a).is_err() && !ops.reconstructed_new(), "빈 후보 = 새 판 판정 0");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R m1): 새 판 재구성 **성공 경로를 실 RealOps 로** — 실 러너가 S9 기록 뒤 죽음(실 스냅샷 · 시도 기록 저널 사본) → 두 슬롯
+    /// 손상 → 실 `Runner::recover`(실 RealOps · candidate 는 서명 본문 · 시험 키링) → 재구성(사본 검사) → S9 재기록 → 정식 자리 판정(주입 = 새 판) →
+    /// S10 실 `rotate`(가짜 cys 가 데몬 표지 생성) → V1~V9(주입 = 통과) → **실 S11**(installers/9 보존·재검증 + 수용 기록) → DONE · 결과 =
+    /// last_result `ok` 하나 · 시도 기록 삭제. 주입은 맥 codesign 실물·좌석·doctor 가 필요한 두 판정뿐.
+    #[cfg(unix)]
+    #[test]
+    fn new_reconstruct_success_path_through_real_ops_reaches_done_with_s11() {
+        use super::super::runner::{Outcome, Runner, ATTEMPT_FILE};
+        use crate::update::feed::fixture::{body_json, NOW};
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let (d, upd, root, mut ops) = recon_rig("recon-real-ok");
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+        );
+        let bb = body_json(&k, 9).to_string().into_bytes();
+        let e = base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let mut c = ops.cand.clone();
+        c.release_seq = 9;
+        c.feed_rev = Some(7);
+        c.envelope_sha256 = Some("ab".repeat(32));
+        c.envelope_signed_at = Some(NOW - 50);
+        c.release_b64 = Some(e.encode(&bb));
+        c.release_sig_b64 = Some(e.encode(k.u.sign(&bb)));
+        super::super::quiesce::write_json(&upd, CANDIDATE_FILE, &c).unwrap();
+        ops.cand = super::super::auto::recovery_candidate(&upd).unwrap(); // 복구기 입구와 같은 복원(서명 본문 재검증)
+        assert_eq!(ops.cand.release_seq, 9);
+        killed_after_swap(&upd, &root);
+        std::fs::remove_file(d.join("daemon.up")).unwrap();
+        corrupt_journal(&upd);
+        ops.judge_is_old = Some(false);
+        ops.canon_override = Some(Canon::New);
+        ops.verify_ok = true;
+        let mut rec = Runner::new(&upd, "fedcba9876543210fedcba9876543210", 2, &mut ops);
+        rec.soft_kill = true;
+        let o = rec.recover();
+        assert_eq!(o, Outcome::Done, "{o:?}");
+        assert_eq!(super::super::journal::read(&upd).journal().unwrap().state, super::super::journal::State::Done);
+        assert!(d.join("daemon.up").exists() && calls(&d).iter().any(|l| l.starts_with("rotate --skip-drain")), "S10 실 rotate: {:?}", calls(&d));
+        assert!(verify_installer_dir(&upd.join("installers/9"), 9, false).is_ok(), "S11 = installers/9 보존·재검증");
+        let acc: Value = serde_json::from_slice(&std::fs::read(super::super::check::accepted_path(&upd, "cysr", "stable")).unwrap()).unwrap();
+        assert_eq!(acc["installed_release_seq"], json!(9), "S11 수용 기록");
+        let st: Value = serde_json::from_slice(&std::fs::read(upd.join("state.json")).unwrap()).unwrap();
+        assert_eq!(st["last_result"]["kind"], json!("ok"), "결과 = ok {st}");
+        assert!(!upd.join(ATTEMPT_FILE).exists(), "성공 뒤 시도 기록 삭제");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R m6): ⑫ 배선 = 윈 **S2**(데몬 정지 호출 전 · 후보 내려받기 전)에서 설치판 롤백 자산을 받는다 — 보관소에 없으면
+    /// S2 가 `update.no_rollback_asset` 로 멈춘다(후보 내려받기·rotate 호출 0). 뮤턴트 U2-S2FILL(S2 호출 끔) = 후보 내려받기 단계 오류 = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_s2_fetches_rollback_assets_before_candidate_download_and_daemon_stop() {
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (d, _upd, _root, mut ops) = recon_rig("s2-fill");
+        std::fs::create_dir_all(d.join("arch")).unwrap();
+        let _e = crate::pack::EnvGuard::set(super::super::net::ENV_FEED_URL, format!("file://{}", d.join("arch").display()));
+        ops.env.os = Os::Win;
+        ops.cand.asset.url = "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.9/cysr_x64-setup.exe".into();
+        let mut j = super::super::journal::Journal::new("0123456789abcdef0123456789abcdef", 1);
+        let f = ops.fetch(&mut j).unwrap_err();
+        assert!(f.code == ErrCode::NoRollbackAsset && f.step == "S2", "S2 = 롤백 자산 먼저: {f:?}");
+        assert!(calls(&d).is_empty(), "rotate·자식 호출 0: {:?}", calls(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R m7): 윈 롤백(RB_SWAPPED)에서 설치판 자산이 S8 뒤 사라졌으면 보관소에서 1회 다시 받아 재검증을 지난다(그 뒤 옛
+    /// 설치기 실행 — 이 맥 시험에선 실행 단계의 다른 실패만 남는다) · 뮤턴트 U2-RBFILL(재받기 0 = 2판) = `update.no_rollback_asset` = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_rollback_refills_missing_rollback_assets_from_archive() {
+        use crate::update::feed::fixture::NOW;
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let (bb, sig, setup, a2, url, sig_url) = archive_fixture(&k);
+        let (d, upd, _root, mut ops) = recon_rig("rb-refill");
+        let arch = d.join("arch");
+        std::fs::create_dir_all(arch.join("cysr/releases")).unwrap();
+        std::fs::write(arch.join("cysr/releases/8.json"), &bb).unwrap();
+        std::fs::write(arch.join("cysr/releases/8.json.minisig"), &sig).unwrap();
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+            crate::pack::EnvGuard::set(super::super::net::ENV_FEED_URL, format!("file://{}", arch.display())),
+        );
+        ops.env.os = Os::Win;
+        let (s2, a22) = (setup.clone(), a2.clone());
+        ops.asset_get = Some(Box::new(move |u: &str, _m: u64| if u == url { Ok(s2.clone()) } else if u == sig_url { Ok(a22.clone()) } else { Err(format!("없음 {u}")) }));
+        let mut j = super::super::journal::Journal::new("0123456789abcdef0123456789abcdef", 1);
+        j.from_release_seq = 8;
+        j.prev_installer = Some(PrevInstaller { path: upd.join("installers/8").join(SETUP).to_string_lossy().to_string(), sha256: crate::update::feed::sha256_hex(&setup), release_seq: 8 });
+        let r = ops.rb_swap(&j);
+        assert!(verify_installer_dir(&upd.join("installers/8"), 8, true).is_ok(), "롤백 중 보관소에서 다시 채움: {r:?}");
+        assert!(!matches!(&r, Err(f) if f.code == ErrCode::NoRollbackAsset), "롤백 자산 판정 통과: {r:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 3판(Opus 2R M1 · agy 1R a4 잔여): 윈 S9b 재실행 전 stage 설치기 재검증 — 페이로드 불일치로 재실행 갈래에 들어가도 ⓐ 설치기
+    /// 바이트 변조 ⓑ A2 서명 아닌 키 ⓒ stage_path 가 원점 stage 밖 = `update.win_a2_sig_bad`(S9b) · 설치기 실행 0. 뮤턴트 U2-STAGESIG = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_s9b_rerun_reverifies_stage_installer_before_running_it() {
+        use crate::update::feed::fixture::NOW;
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let t1 = "0123456789abcdef0123456789abcdef";
+        for case in ["tamper", "badsig", "elsewhere"] {
+            let (d, upd, _root, mut ops) = recon_rig(&format!("s9b-{case}"));
+            std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+            let _e = (
+                crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+                crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+            );
+            ops.env.os = Os::Win;
+            let setup = b"MZ-setup-9".to_vec();
+            ops.cand.asset.sha256 = crate::update::feed::sha256_hex(&setup);
+            ops.cand.asset.size = setup.len() as u64;
+            ops.cand.asset.payload_manifest = Some(vec![crate::update::feed::PayloadEntry { path: "cys.exe".into(), size: 1, sha256: "aa".repeat(32) }]);
+            let stage = upd.join("stage").join(t1);
+            std::fs::create_dir_all(&stage).unwrap();
+            std::fs::write(stage.join(SETUP), if case == "tamper" { b"MZ-evil-9!".to_vec() } else { setup.clone() }).unwrap();
+            std::fs::write(stage.join(SETUP_SIG), if case == "badsig" { k.u.sign(&setup) } else { k.a2.sign(&setup) }).unwrap();
+            let mut j = super::super::journal::Journal::new(t1, 1);
+            j.stage_path = if case == "elsewhere" { d.join("x/setup.exe") } else { stage.join(SETUP) }.to_string_lossy().to_string();
+            j.stage_tree_sha256 = ops.cand.asset.sha256.clone();
+            j.from_release_seq = 8;
+            let f = ops.payload_ok(&j).unwrap_err();
+            assert!(f.code == ErrCode::WinA2SigBad && f.step == "S9b", "{case}: 설치기 실행 전 거부 {f:?}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// ★후속 2판(codex 1R #8 · agy 1R #6): post_verify 의 기준선 원천 = 이 저널 계보의 **종결 안 된** 시도 기록뿐 — 종결 표지(`ended`) 기록·
+    /// 남의 계보 = V0(기준선 없음). 살아 있는 기록 = V0 통과(그 뒤 V 들은 시험 틀에서 실패해도 V0 는 아님). 뮤턴트 U2-PVATTEMPT(원시 읽기) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn post_verify_baseline_only_from_live_attempt_of_this_lineage() {
+        use super::super::runner::{attempt_begin, attempt_set_baseline, ATTEMPT_FILE};
+        let (d, upd, root, mut ops) = recon_rig("pv-attempt");
+        let t1 = "0123456789abcdef0123456789abcdef";
+        attempt_begin(&upd, t1).unwrap();
+        let b0 = Baseline { user: verify::collect_user_tree(&root).unwrap(), ..Default::default() };
+        attempt_set_baseline(&upd, t1, json!(b0)).unwrap();
+        let j = super::super::journal::Journal::new(t1, 1);
+        let live = ops.post_verify(&j, false).unwrap_err();
+        assert_ne!(live.step, "V0", "살아 있는 기록 = 기준선 있음: {live:?}");
+        let mut a: Value = serde_json::from_slice(&std::fs::read(upd.join(ATTEMPT_FILE)).unwrap()).unwrap();
+        a["ended"] = json!(true);
+        std::fs::write(upd.join(ATTEMPT_FILE), a.to_string()).unwrap();
+        let ended = ops.post_verify(&j, false).unwrap_err();
+        assert_eq!(ended.step, "V0", "종결 표지 기록 = 원천 아님: {ended:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 2판 ⑫ 시험 재료: 설치판 seq 8 의 U 서명 본문(모든 행 sha256 = 시험 설치기 · 이 기판 행에 a2_sig_url) + 받기 짝.
+    #[cfg(unix)]
+    fn archive_fixture(k: &crate::update::keys::testkit::Keys) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, String, String) {
+        use crate::update::feed::fixture::body_json;
+        let setup = b"MZ-setup-8".to_vec();
+        let mut body = body_json(k, 8);
+        for a in body["assets"].as_object_mut().unwrap().values_mut() {
+            a["sha256"] = json!(crate::update::feed::sha256_hex(&setup));
+            a["size"] = json!(setup.len());
+            a["a2_sig_url"] = json!("https://github.com/oogisoogi/cys-ro/releases/download/v1.1.8/cysr_x64-setup.exe.sig");
+        }
+        let row = body["assets"].as_object().unwrap().values().find(|a| a["target"] == json!(crate::update::buildinfo::TARGET)).unwrap().clone();
+        let bb = body.to_string().into_bytes();
+        let sig = k.u.sign(&bb);
+        let a2 = k.a2.sign(&setup);
+        (bb, sig, setup, a2, row["url"].as_str().unwrap().to_string(), row["a2_sig_url"].as_str().unwrap().to_string())
+    }
+
+    /// ★후속 2판 ⑫(설계 §3-7 ② · §6-1): 보관소에서 설치판 롤백 자산 받아 채우기 — ⓐ 없음 → 보관소 본문·서명 + 본문 행 url 의 설치기·A2
+    /// 서명 → 재검증 통과 → `installers/8/` 접점 파일 4개 = Ok(true) ⓑ 다시 = 이미 있음 Ok(false)(받기 0) ⓒ 설치기 바꿔치기(sha256) · 본문
+    /// 서명 아닌 키 · 보관소 미도달 = Err(사유) · 자리 무변경(임시 자리 남김 0).
+    #[cfg(unix)]
+    #[test]
+    fn fill_installer_dir_from_archive_verifies_and_places_contract_files() {
+        use crate::update::keys::testkit::Keys;
+        let k = Keys::new();
+        let kr = k.keyring();
+        let (bb, sig, setup, a2, url, sig_url) = archive_fixture(&k);
+        let d = std::env::temp_dir().join(format!("cys-u2-fill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let feed = |b: Vec<u8>, s: Vec<u8>| move |rel: &str| match rel {
+            "cysr/releases/8.json" => Ok(b.clone()),
+            "cysr/releases/8.json.minisig" => Ok(s.clone()),
+            r => Err(format!("없음 {r}")),
+        };
+        let gets = std::cell::Cell::new(0);
+        let asset = |set: Vec<u8>| {
+            let (url, sig_url, a2) = (url.clone(), sig_url.clone(), a2.clone());
+            let gets = &gets;
+            move |u: &str, _max: u64| {
+                gets.set(gets.get() + 1);
+                if u == url { Ok(set.clone()) } else if u == sig_url { Ok(a2.clone()) } else { Err(format!("없음 {u}")) }
+            }
+        };
+        let r = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), sig.clone()), &asset(setup.clone()));
+        assert_eq!(r, Ok(true), "ⓐ 받아 채움");
+        let inst = d.join("installers/8");
+        assert!(verify_installer_dir_with(&inst, 8, true, &bb, &sig, &kr).is_ok());
+        for f in [REL_BODY, REL_SIG, SETUP, SETUP_SIG] {
+            assert!(inst.join(f).is_file(), "접점 파일 {f}");
+        }
+        let n = gets.get();
+        assert_eq!(fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), sig.clone()), &asset(setup.clone())), Ok(false), "ⓑ 이미 있음");
+        assert_eq!(gets.get(), n, "ⓑ 받기 0");
+        std::fs::remove_dir_all(&inst).unwrap();
+        let e1 = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), sig.clone()), &asset(b"MZ-evil-08".to_vec())).unwrap_err();
+        let e2 = fill_installer_dir(&d, 8, &kr, &feed(bb.clone(), k.f.sign(&bb)), &asset(setup.clone())).unwrap_err();
+        let e3 = fill_installer_dir(&d, 8, &kr, &|_r: &str| Err("미도달".to_string()), &asset(setup.clone())).unwrap_err();
+        assert!(e1.contains("sha256") && e2.contains("body_rejected") && e3.contains("보관소 본문"), "ⓒ 사유: {e1} / {e2} / {e3}");
+        assert!(!inst.exists() && !d.join("installers/.8.tmp").exists(), "ⓒ 자리 무변경");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★후속 2판 ⑫ 배선: 윈 S8 — `installers/<설치판>/` 이 없으면 실 RealOps 가 피드 뿌리(`CYS_UPDATE_FEED_URL` = file 보관소)의
+    /// `cysr/releases/8.json` 에서 받아 채운 뒤 재검증하고 `prev_installer` 를 적는다 · 보관소에 없으면 `update.no_rollback_asset` + 보관소
+    /// 사유(조용한 보류 0 · 일시 = 백오프). 뮤턴트 U2-FILL(받기 끔 = 2판 이전) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn win_s8_fills_missing_rollback_assets_from_archive_or_holds_with_reason() {
+        use crate::update::feed::fixture::NOW;
+        use crate::update::keys::testkit::Keys;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let k = Keys::new();
+        let (bb, sig, setup, a2, url, sig_url) = archive_fixture(&k);
+        for case in ["ok", "absent"] {
+            let (d, upd, _root, mut ops) = recon_rig(&format!("fill-s8-{case}"));
+            let arch = d.join("arch");
+            std::fs::create_dir_all(arch.join("cysr/releases")).unwrap();
+            if case == "ok" {
+                std::fs::write(arch.join("cysr/releases/8.json"), &bb).unwrap();
+                std::fs::write(arch.join("cysr/releases/8.json.minisig"), &sig).unwrap();
+            }
+            std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+            let _e = (
+                crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+                crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+                crate::pack::EnvGuard::set(super::super::net::ENV_FEED_URL, format!("file://{}", arch.display())),
+            );
+            ops.env.os = Os::Win;
+            let (s2, u2, a22, url2, sig_url2) = (setup.clone(), url.clone(), a2.clone(), url.clone(), sig_url.clone());
+            let _ = u2;
+            ops.asset_get = Some(Box::new(move |u: &str, _m: u64| if u == url2 { Ok(s2.clone()) } else if u == sig_url2 { Ok(a22.clone()) } else { Err(format!("없음 {u}")) }));
+            let mut j = super::super::journal::Journal::new("0123456789abcdef0123456789abcdef", 1);
+            j.from_release_seq = 8;
+            j.release_seq = 9;
+            let r = ops.snapshot(&mut j);
+            match case {
+                "ok" => {
+                    assert!(r.is_ok(), "{r:?}");
+                    assert!(verify_installer_dir(&upd.join("installers/8"), 8, true).is_ok(), "보관소에서 채움");
+                    assert_eq!(j.prev_installer.as_ref().map(|p| p.release_seq), Some(8));
+                }
+                _ => {
+                    let f = r.unwrap_err();
+                    assert!(f.code == ErrCode::NoRollbackAsset && f.detail.contains("보관소"), "사유 있는 보류: {f:?}");
                 }
             }
             let _ = std::fs::remove_dir_all(&d);
@@ -1947,8 +2573,9 @@ mod tests {
         std::fs::write(root.join("pack/lib/x.py"), "ancient").unwrap();
         let old_snap = super::super::snapshot::backup_root(&upd).join("8-told");
         super::super::snapshot::take(&root, &old_snap.join("cys"), &RealOps::cys_filter).unwrap();
-        attempt_begin(&upd, "told").unwrap();
-        attempt_note_snapshot(&upd, "told", &old_snap.to_string_lossy()).unwrap();
+        let told = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; // ★후속 2판: 시도 토큰 = 소문자 32-hex 만(형식 밖 = 원천 아님)
+        attempt_begin(&upd, told).unwrap();
+        attempt_note_snapshot(&upd, told, &old_snap.to_string_lossy()).unwrap();
         std::fs::write(root.join("pack/lib/x.py"), "live").unwrap();
         // 새 시도: S3(Quiesced) 직후 죽음 → 저널 손상
         let mut sim = Sim::new(Os::Mac);
@@ -2000,7 +2627,7 @@ mod tests {
         std::fs::write(pack.join(c), "C-MINE\n").unwrap();
         let b0 = Baseline { user: verify::collect_user_tree(&d).unwrap(), ..Default::default() };
         install(&[(w, "W-NEW\n"), (c, "C-NEW\n")], "1.1.0");
-        let a = Attempt { txn_id: "t".into(), lineage: vec!["t".into()], snapshot_dir: None, baseline: Some(json!(b0)), ended: false };
+        let a = Attempt { txn_id: "t".into(), lineage: vec!["t".into()], snapshot_dir: None, baseline: Some(json!(b0)), ended: false, journal: None };
         assert_eq!(refreshed_user_files(&d, &a), [format!("pack/{w}")].into_iter().collect::<BTreeSet<_>>());
         let none = Attempt { baseline: None, ..a };
         assert!(refreshed_user_files(&d, &none).is_empty(), "기준선 없음 = 보호 0(전부 대조)");

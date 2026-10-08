@@ -130,11 +130,17 @@ import {
 } from "./wsusage";
 import {
   COUNSEL_COPY,
+  UNREAD_NONE,
+  UNREAD_POLL_MS,
+  badgeText,
   buildCounselView,
   commentCountLabel,
+  counselTooltip,
   fmtWhen,
   newAnswersLine,
+  parseUnread,
   statusCopy,
+  type UnreadState,
   type Comment as CounselComment,
   type Post as CounselPost,
 } from "./counsel";
@@ -10567,7 +10573,36 @@ setInterval(() => void invoke("feedback_flush").catch(() => {}), FEEDBACK_FLUSH_
 // ★남이 쓴 글자는 textContent 로만 넣는다 — 아래 틀(innerHTML)에는 우리 고정 태그만 있고 남의 글자는 0이다.
 // ★1.1.9 앱은 읽음 처리를 하지 않는다(master 판정 Q1) — 새 답 개수는 마스터가 답을 보여 줄 때 줄어든다.
 let counselOpen = false;
-let counselNewAnswers = 0;
+let counselUnread: UnreadState = UNREAD_NONE;
+let counselUnreadMtime = -1;
+// 뱃지 = 아고라 클라이언트가 쓰는 unread.json(§11) — 45초마다 수정 시각을 보고 바뀌었을 때만 다시 판독한다.
+// 없음 = 숨김 · 깨짐 = 직전 값 · 판(v) 다름 = 직전 값 + 「앱 갱신 필요」(판독 규칙 = counsel.ts parseUnread).
+function renderCounselBadge() {
+  const b = document.getElementById("counsel-badge");
+  const t = badgeText(counselUnread.count);
+  if (b) {
+    b.hidden = t === null;
+    b.textContent = t ?? "0";
+  }
+  const btn = document.getElementById("btn-counsel");
+  if (btn) btn.title = counselTooltip(counselUnread);
+}
+async function pollCounselUnread() {
+  let res: any;
+  try {
+    res = await invoke("counsel_unread");
+  } catch {
+    return; // 명령 실패 = 아무것도 바꾸지 않는다(직전 값 유지)
+  }
+  const exists = res?.exists === true;
+  const mtime = Number(res?.mtime_ms ?? 0);
+  if (exists && mtime === counselUnreadMtime) return;
+  counselUnreadMtime = exists ? mtime : -1;
+  counselUnread = parseUnread(exists ? (typeof res.text === "string" ? res.text : "") : null, counselUnread);
+  renderCounselBadge();
+}
+void pollCounselUnread();
+setInterval(() => void pollCounselUnread(), UNREAD_POLL_MS);
 function counselItemEl(it: CounselComment, cls: string): HTMLElement {
   const box = document.createElement("div");
   box.className = cls + (it.isMine ? " mine" : "");
@@ -10675,10 +10710,14 @@ function openCounselPanel() {
   const q = <T extends Element>(sel: string) => ov.querySelector(sel) as T;
   q<HTMLElement>(".counsel-h").textContent = COUNSEL_COPY.heading;
   q<HTMLElement>(".counsel-notice").textContent = COUNSEL_COPY.notice;
-  const line = newAnswersLine(counselNewAnswers);
+  const lines = [
+    newAnswersLine(counselUnread.count),
+    counselUnread.needsUpdate ? COUNSEL_COPY.needsUpdate : null,
+    counselUnread.held > 0 ? COUNSEL_COPY.held : null,
+  ].filter((l): l is string => l !== null);
   const nl = q<HTMLElement>(".counsel-newline");
-  nl.hidden = line === null;
-  nl.textContent = line ?? "";
+  nl.hidden = lines.length === 0;
+  nl.textContent = lines.join("\n");
   q<HTMLButtonElement>(".counsel-refresh").textContent = COUNSEL_COPY.refresh;
   const closeBtn = q<HTMLButtonElement>(".counsel-close");
   closeBtn.textContent = COUNSEL_COPY.close;

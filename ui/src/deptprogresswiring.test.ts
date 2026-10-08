@@ -311,7 +311,9 @@ describe("main.ts 소스 핀 — 이벤트·점검 배선(새 setInterval 0 · �
     // (1.1.8 U4 · 설계 §5-2) 앱 업데이트 6시간 확인 타이머(setInterval(() => updateCheckIfStale(…))를 경로와 함께 지웠다 — 11 → 10.
     // (1.1.8 U4 2판 · codex 1R ②) 📌18 고정 안내 저율 폴링 setInterval(() => void refreshSeatsBlockedNote(), SEATS_NOTE_POLL_MS) 1곳 — 10 → 11.
     expect(CODE.includes("setInterval(() => void refreshSeatsBlockedNote(), SEATS_NOTE_POLL_MS);")).toBe(true);
-    expect(CODE.split("setInterval(").length - 1).toBe(11);
+    // (1.1.9 T4 · cysr-119-t4-app) 상담소 뱃지 unread.json 45초 수정 시각 확인(§11 「30~60초」) 1곳 — 11 → 12. 팀원 부팅 안내용 아님.
+    expect(CODE.includes("setInterval(() => void pollCounselUnread(), UNREAD_POLL_MS);")).toBe(true);
+    expect(CODE.split("setInterval(").length - 1).toBe(12);
     // 어디에 있든 setInterval 의 첫 인자가 팀원 부팅 안내 함수면 금지
     expect(/setInterval\([^;]{0,120}(checkDeptFormationNotices|showDeptFormation|noteToastClosedByUser|deptFormation)/.test(CODE)).toBe(false);
     // 새 코드가 쓰는 setTimeout 은 renderIdleWorkspace 의 일회성 하나뿐(60초 창이 끝날 때 문구를 한 번 고친다)

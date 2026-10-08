@@ -205,7 +205,7 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 /* 상담소 창 — .modal 재사용 · 남의 글은 textContent 로만(줄바꿈은 pre-wrap 으로 보인다). */
 .modal.counsel-modal { max-width: 640px; width: calc(100vw - 48px); max-height: 88vh; overflow-y: auto; }
 .counsel-modal p.counsel-notice { font-size: 12px; line-height: 1.5; color: #94a3b8; margin: 4px 0 8px; }
-.counsel-modal p.counsel-newline { font-size: 13px; color: var(--accent); margin: 0 0 8px; }
+.counsel-modal p.counsel-newline { font-size: 13px; color: var(--accent); margin: 0 0 8px; white-space: pre-line; }
 .counsel-modal p.counsel-status { font-size: 13px; margin: 6px 0; min-height: 16px; color: #94a3b8; }
 .counsel-modal p.counsel-intro { font-size: 12px; color: #94a3b8; white-space: pre-wrap; margin: 0 0 8px; }
 .counsel-modal h4 { font-size: 13px; margin: 12px 0 6px; color: var(--text, #e2e8f0); }

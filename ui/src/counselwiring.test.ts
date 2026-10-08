@@ -69,3 +69,25 @@ describe("상담소 창 — 남의 글자는 textContent 로만", () => {
     expect(main).toContain('document.getElementById("btn-counsel")!.addEventListener("click", () => openCounselPanel());');
   });
 });
+
+describe("상담소 뱃지 배선(§11 — 읽기만 · 판독 = parseUnread)", () => {
+  const poll = fnBody(main, "async function pollCounselUnread(");
+  const render = fnBody(main, "function renderCounselBadge(");
+  it("unread.json 은 Rust counsel_unread 로 읽고 수정 시각이 같으면 다시 판독하지 않는다", () => {
+    expect(poll).toContain('invoke("counsel_unread")');
+    expect(poll).toContain("if (exists && mtime === counselUnreadMtime) return;");
+    expect(poll).toContain("parseUnread(");
+  });
+  it("숫자는 textContent 로 · 0 이면 숨김", () => {
+    expect(render).toContain("b.hidden = t === null;");
+    expect(render).toContain("b.textContent = t ?? \"0\";");
+  });
+  it("주기 = UNREAD_POLL_MS(45초 · §11 30~60초 안)", () => {
+    expect(main).toContain("setInterval(() => void pollCounselUnread(), UNREAD_POLL_MS);");
+  });
+  it("앱은 읽음 처리를 하지 않는다(master 판정 Q1) — ack·read 쓰기 명령 0", () => {
+    expect(/invoke\("counsel_(ack|seen|mark|read)/.test(main)).toBe(false);
+    expect(main.includes("mail_ack")).toBe(false);
+  });
+});
+

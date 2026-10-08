@@ -267,6 +267,29 @@ pub(crate) async fn counsel_room_list() -> Value {
         .unwrap_or_else(|_| json!({"status": "error", "detail": "join"}))
 }
 
+// ── 뱃지(§11 `mailbox/unread.json` · 읽기만) ─────────────────────────────────
+/// 뱃지 파일 상한 — 정상 파일은 수 KB(대화 최대 50행). 넘으면 깨진 파일로 본다(UI 가 직전 값 유지).
+const UNREAD_MAX_BYTES: u64 = 256 * 1024;
+
+/// 뱃지 파일의 수정 시각(ms)과 글자. 없으면 `exists:false`(UI = 숨김). 판독(깨짐·판 `v`)은 UI 순수 모듈 몫이다.
+pub(crate) fn unread_at(cfg: &Path) -> Value {
+    let p = cfg.join("mailbox").join("unread.json");
+    let Ok(meta) = std::fs::metadata(&p) else { return json!({"exists": false}) };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let text = if meta.len() > UNREAD_MAX_BYTES { None } else { std::fs::read_to_string(&p).ok() };
+    json!({"exists": true, "mtime_ms": mtime, "text": text})
+}
+
+#[tauri::command]
+pub(crate) fn counsel_unread() -> Value {
+    unread_at(&config_dir())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +440,23 @@ room NOT-HEX\n";
         let d3 = fixture("0.1.14", "{}");
         std::fs::write(d3.path().join("lib").join("config").join("desk-pin.txt"), "# 빈 핀\n").unwrap();
         assert_eq!(room_list_at(d3.path())["status"], "no_room");
+    }
+
+    #[test]
+    fn unread_file_is_read_only_with_mtime_and_size_cap() {
+        let d = tempfile_lite::Dir::new("counsel-unread");
+        assert_eq!(unread_at(d.path()), json!({"exists": false}), "없으면 exists:false(UI = 숨김)");
+        std::fs::create_dir_all(d.path().join("mailbox")).unwrap();
+        let p = d.path().join("mailbox").join("unread.json");
+        std::fs::write(&p, r#"{"v":1,"count":2}"#).unwrap();
+        let v = unread_at(d.path());
+        assert_eq!(v["exists"], true);
+        assert_eq!(v["text"], r#"{"v":1,"count":2}"#);
+        assert!(v["mtime_ms"].as_u64().unwrap() > 0);
+        std::fs::write(&p, vec![b' '; (UNREAD_MAX_BYTES + 1) as usize]).unwrap();
+        assert_eq!(unread_at(d.path())["text"], Value::Null, "상한 초과 = 깨진 파일 취급(UI 직전 값)");
+        // 읽기만 — 파일이 그대로다.
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), UNREAD_MAX_BYTES + 1);
     }
 
     /// 시험 전용 임시 폴더(의존성 0 · 끝나면 지운다).

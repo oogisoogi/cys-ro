@@ -8784,13 +8784,24 @@ fn default_health_rules() -> Vec<HealthRule> {
             "login_required",
             r"(?i)(please|run).{0,30}(/login|log ?in again)",
         ),
+        // ★1.1.9(윈 실기 D-U3 · 안 B): 공급사 오류 **서식**만 잡는다 — 맨 「rate limit」·맨 「429」는 경보를 보고·재진술하는
+        //   좌석 출력(「rate limit 이 걸렸다고 보고합니다」 · 「PR #429」)이 그 좌석 경보로 되먹였다. 잡는 것 = API 오류 형식
+        //   `rate_limit_error` · 상태 줄 `HTTP[/1.1] 429` · `API Error: 429` · `429 Too Many Requests` · 공급사 문구 `usage limit reached`.
         (
             "rate_limited",
-            r"(?i)rate.?limit(ed)?|too many requests|\b429\b",
+            r"(?i)\brate_limit_error\b|\bHTTP(/\d(\.\d)?)?\s+429\b|\bAPI Error:?\s*429\b|\b429\s+Too Many Requests\b|\busage limit reached\b",
         ),
     ];
     defaults
         .iter()
+        .map(|(name, pat)| {
+            // 뮤턴트 U3-RATEWIDE(종전 넓은 정규식 복귀) — 시험 빌드에서만.
+            if *name == "rate_limited" && cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U3-RATEWIDE") {
+                (*name, r"(?i)rate.?limit(ed)?|too many requests|\b429\b")
+            } else {
+                (*name, *pat)
+            }
+        })
         .filter_map(|(name, pat)| {
             Regex::new(pat).ok().map(|regex| HealthRule {
                 name: name.to_string(),
@@ -10809,13 +10820,20 @@ mod tests {
         assert!(m("login_required", "please log in again"));
         assert!(!m("login_required", "you are logged in"));
 
-        // rate_limited — rate limit(ed)? | too many requests | 429
-        assert!(m("rate_limited", "rate limited"));
-        assert!(m("rate_limited", "ratelimit"));
-        assert!(m("rate_limited", "rate-limited"));
-        assert!(m("rate_limited", "too many requests"));
+        // rate_limited — ★1.1.9(D-U3 안 B) 공급사 오류 **서식**만(양성 = 실제 API·HTTP 오류 문면 · 음성 = 경보 보고 재진술 · 맨 숫자).
+        //   뮤턴트 U3-RATEWIDE(종전 넓은 정규식) = 음성 쪽 적.
         assert!(m("rate_limited", "HTTP 429 Too Many Requests"));
+        assert!(m("rate_limited", "HTTP/1.1 429 Too Many Requests"));
+        assert!(m("rate_limited", r#"API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}"#));
+        assert!(m("rate_limited", "exceeded retry limit, last status: 429 Too Many Requests"));
+        assert!(m("rate_limited", "Claude AI usage limit reached|1760000000"));
         assert!(!m("rate_limited", "all good, build complete"));
+        assert!(!m("rate_limited", "rate limited"), "맨 「rate limited」 = 보고·재진술 문면");
+        assert!(!m("rate_limited", "surface 122 가 rate limit 이 걸렸다고 보고합니다"));
+        assert!(!m("rate_limited", "CSO: worker reported rate-limited earlier, retrying now"));
+        assert!(!m("rate_limited", "merged PR #429 into dev"), "맨 숫자 429");
+        assert!(!m("rate_limited", "surface:429 idle"));
+        assert!(!m("rate_limited", "too many requests from the CSO queue"), "맨 「too many requests」 = 산문");
 
         // 내장 룰은 alert-only(조치 미바인딩) + threshold/pause 기본값 박제
         for r in &rules {
@@ -10855,9 +10873,11 @@ mod tests {
     /// 하던 구 로직 그대로다(D5 `ingest_step_pre_refactor` 와 동일 관행: 비교 기준을 코드로 박제).
     /// 이 미러가 매칭하는데 프로덕션 경로가 매칭하지 않으면 = 자기증폭 차단이 실제로 작동한 것.
     fn health_matches_pre_fix(line: &str) -> Vec<String> {
+        // ★1.1.9(D-U3 안 B): 미러는 **사고 당시** 룰 그대로다 — rate_limited 는 넓은 구 정규식(지금 프로덕션은 공급사 서식 한정).
+        let legacy_rate = Regex::new(r"(?i)rate.?limit(ed)?|too many requests|\b429\b").unwrap();
         default_health_rules()
             .into_iter()
-            .filter(|r| r.regex.is_match(line))
+            .filter(|r| if r.name == "rate_limited" { legacy_rate.is_match(line) } else { r.regex.is_match(line) })
             .map(|r| r.name)
             .collect()
     }
@@ -11051,7 +11071,7 @@ mod tests {
         };
         // ① 기계장치 식별자
         assert_eq!(
-            judge("health.alert rule=rate_limited line=\"rate limit\"", "rate_limited"),
+            judge("health.alert rule=rate_limited line=\"rate_limit_error\"", "rate_limited"),
             Some("alert-machinery-token")
         );
         // ② 룰 이름 언급(식별자 꼴)
@@ -11060,10 +11080,10 @@ mod tests {
             Some("rule-name-mention")
         );
         // ③ 인용 표기
-        assert_eq!(judge("the \"rate limit\" alarm was noisy", "rate_limited"), Some("quoted-mention"));
+        assert_eq!(judge("the \"HTTP 429\" alarm was noisy", "rate_limited"), Some("quoted-mention"));
         // ④ 한글 산문 서술
         assert_eq!(
-            judge("이 경보를 논의하는 산문이 새 경보를 발화시킨다 (rate limit 언급 자체가 트리거)", "rate_limited"),
+            judge("이 경보를 논의하는 산문이 새 경보를 발화시킨다 (HTTP 429 언급 자체가 트리거)", "rate_limited"),
             Some("narration-prose")
         );
         // ⑤ ★위음성 금지 — 진짜 에러 라인은 전부 통과(None)
@@ -11092,7 +11112,7 @@ mod tests {
         assert!(!masked.contains("not logged in"), "트리거 원문 잔존");
 
         // ★다중 트리거 한 줄 — 발화 룰 하나만 가리면 나머지가 새어 나간다(회귀 핀).
-        let multi = "api: 401 Unauthorized and your token has expired, rate limit hit";
+        let multi = "api: 401 Unauthorized and your token has expired, HTTP 429 hit";
         let masked_multi = mask_health_line(multi, &rules);
         for r in &rules {
             assert!(
@@ -11117,7 +11137,8 @@ mod tests {
         feed_lines_collect_alerts(&daemon, &s, INCIDENT_PROSE);
         let sup = daemon.health_suppressed.lock().unwrap();
         let total: u64 = sup.values().sum();
-        assert!(total >= INCIDENT_PROSE.len() as u64 - 2, "억제 집계 누락: {sup:?}");
+        // ★1.1.9(D-U3 안 B): rate limit 산문 줄은 이제 공급사 서식 룰에 아예 안 걸린다(억제할 것 없음) → 하한 = 그 밖의 줄 수.
+        assert!(total >= INCIDENT_PROSE.len() as u64 - 3, "억제 집계 누락: {sup:?}");
         assert!(
             sup.keys().any(|(_, reason)| *reason == "narration-prose"),
             "한글 서술 억제 사유 미기록: {sup:?}"
@@ -11210,16 +11231,16 @@ mod tests {
             alert_discourse_reason(line, m.start(), m.end(), &rules)
         };
         // ① 구조화 에러 출력(JSON 값 자리·logfmt 값 자리) = 진짜 신호 → 통과(None)
-        assert_eq!(judge(r#"{"error":"rate limit"}"#), None);
-        assert_eq!(judge(r#"level=error msg="rate limit" svc=api"#), None);
+        assert_eq!(judge(r#"{"error":"rate_limit_error"}"#), None);
+        assert_eq!(judge(r#"level=error msg="HTTP 429" svc=api"#), None);
         // ② 산문 인용 = 여전히 담화(회귀 금지 — T2 판정 그대로 보존)
         assert_eq!(
-            judge("the \"rate limit\" alarm was noisy"),
+            judge("the \"HTTP 429\" alarm was noisy"),
             Some("quoted-mention")
         );
         // ③ 실제 발신 경로에서도 구조화 라인은 경보를 낸다
         let (daemon, s) = health_probe_daemon("health-structured");
-        let alerts = feed_lines_collect_alerts(&daemon, &s, &[r#"{"error":"rate limit"}"#]);
+        let alerts = feed_lines_collect_alerts(&daemon, &s, &[r#"{"error":"rate_limit_error"}"#]);
         assert!(!alerts.is_empty(), "구조화 실패 신호가 경보를 내지 못함");
     }
 
@@ -11237,7 +11258,7 @@ mod tests {
         ));
         // ② 담화 라인을 링 용량의 두 배 넘게 쏟아붓는다(수다로 밀어내기 시도).
         let chatter: Vec<String> = (0..HEALTH_RING_CAP * 2)
-            .map(|i| format!("[CSO] {i}번째 보고: rate limit 경보를 계속 논의하는 중입니다"))
+            .map(|i| format!("[CSO] {i}번째 보고: HTTP 429 경보를 계속 논의하는 중입니다"))
             .collect();
         let refs: Vec<&str> = chatter.iter().map(|s| s.as_str()).collect();
         let alerts = feed_lines_collect_alerts(&daemon, &s, &refs);

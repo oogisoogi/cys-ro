@@ -12,6 +12,8 @@
   D  옛 자리 이관 판정·집행(정본 골격일 때만 복사 · 백업 · 옛 파일 무접촉 · retire 는 개명)
   E  inject-context: lead(master) 좌석 = 정본 주입 + 옛 기록 이관 1줄 / member 좌석 = 종전(프로젝트 _round)
   F  save-state: lead 좌석의 .state_log 가 정본 round/ 에 쌓인다
+  G  ★cso-round(1.1.8 재빌드 · 윈 실기 D-U1/D-U4): 정본 이관·주입은 master 좌석만 — CSO 는 자기 `<cwd>/_round`(1.1.7)를
+     싣고 정본을 건드리지 않는다(두 좌석 이중 adopt 0) · 통지 문구 = 실제 동작(복사 · 옛 파일 그대로 · 손실 지시 0)
 """
 import json
 import os
@@ -198,6 +200,48 @@ def main():
     base, pk, work, h = fixture("f-member")
     run_hook("save-state.sh", base, pk, work, h, "worker", json.dumps({"cwd": work, "hook_event_name": "Stop"}))
     check("F2 member .state_log = 종전 자리", os.path.isfile(os.path.join(work, "_round", ".state_log")))
+
+    # ── G cso-round ──
+    CSO_REAL = "# SESSION_STATE\n- CSO 누적 기록(감시 로그 9508B 대역)\n"
+    for role in ("cso", "cso-2"):
+        base, pk, work, h = fixture("g-" + role)
+        cso_cwd = os.path.join(work, "cso")
+        write(os.path.join(cso_cwd, "_round", "SESSION_STATE.md"), CSO_REAL)
+        r = run_hook("inject-context.sh", base, pk, cso_cwd, h, role,
+                     json.dumps({"source": "startup", "cwd": cso_cwd}))
+        out = r.stdout
+        check("G1 %s 출처 = 자기 <cwd>/_round(1.1.7)" % role,
+              ("출처: %s" % os.path.join(cso_cwd, "_round", "SESSION_STATE.md")) in out, out[-1500:])
+        check("G2 %s 는 이관하지 않는다(통지 0)" % role, "작업기억 이관" not in out and "옛 위치" not in out, out[-1500:])
+        check("G3 %s 는 정본을 건드리지 않는다" % role, read(os.path.join(pk, "round", "SESSION_STATE.md")) == SKEL)
+    # 두 좌석 순서(master 먼저 → CSO): 정본 = master 기록 그대로 · CSO 는 자기 파일
+    base, pk, work, h = fixture("g-two")
+    cso_cwd = os.path.join(work, "cso")
+    write(os.path.join(cso_cwd, "_round", "SESSION_STATE.md"), CSO_REAL)
+    run_hook("inject-context.sh", base, pk, work, h, "master")
+    r = run_hook("inject-context.sh", base, pk, cso_cwd, h, "cso", json.dumps({"source": "startup", "cwd": cso_cwd}))
+    canon_g = os.path.join(pk, "round", "SESSION_STATE.md")
+    check("G4 두 좌석: 정본 = master 이관분 그대로(CSO 가 덮지 않음)", read(canon_g) == REAL)
+    check("G5 두 좌석: CSO 파일 무접촉", read(os.path.join(cso_cwd, "_round", "SESSION_STATE.md")) == CSO_REAL)
+    check("G6 두 좌석: 정본 백업 1개(이중 adopt 0)",
+          len([n for n in os.listdir(os.path.dirname(canon_g)) if n.startswith("SESSION_STATE.md.bak-")]) == 1)
+    # save-state: CSO 는 자기 <cwd>/_round
+    base, pk, work, h = fixture("g-save")
+    cso_cwd = os.path.join(work, "cso")
+    write(os.path.join(cso_cwd, "_round", "SESSION_STATE.md"), CSO_REAL)
+    run_hook("save-state.sh", base, pk, cso_cwd, h, "cso", json.dumps({"cwd": cso_cwd, "hook_event_name": "Stop"}))
+    check("G7 CSO .state_log = 자기 <cwd>/_round(정본 round/ 0)",
+          os.path.isfile(os.path.join(cso_cwd, "_round", ".state_log"))
+          and not os.path.exists(os.path.join(pk, "round", ".state_log")))
+    # 통지 문구 = 실제 동작
+    ad = JS.say_line({"action": "adopt", "legacy": "/L", "canonical": "/C", "backup": "/C.bak-1", "bytes": 123})
+    kp = JS.say_line({"action": "keep", "reason": "canonical-written", "legacy": "/L", "canonical": "/C"})
+    check("G8 adopt 통지 = 복사 · 바이트 · 백업 이름 · 옛 파일 그대로",
+          "복사했다" in ad and "123바이트" in ad and "/C.bak-1" in ad and "옮겼다" not in ad and "그대로" in ad, ad)
+    check("G9 keep 통지 = 손실 지시 0(정리·「아무도 읽지 않는다」 없음 · 덮어쓰기·삭제 금지 명시)",
+          "정리하라" not in kp and "아무도 읽지 않는다" not in kp and "지우지 마라" in kp and "덮어쓰거나" in kp, kp)
+    r = JS.adopt(os.path.join(root, "d", "proj", "_round", "SESSION_STATE.md"), os.path.join(root, "g-b", "C.md"), now=0)
+    check("G10 adopt 결과에 실제 복사 바이트", r.get("bytes") == len(read(os.path.join(root, "g-b", "C.md")).encode("utf-8")), r)
 
     shutil.rmtree(root, ignore_errors=True)
     print("\n=== %s ===" % ("ALL PASS" if not fails else "FAIL %d: %s" % (len(fails), fails)))

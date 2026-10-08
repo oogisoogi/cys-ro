@@ -139,17 +139,17 @@ _ic_resolve_role() {
 # 판별 순서: ① env `CYS_ROLE` 이 lead 면 그대로 lead — 조회 0(lead 좌석의 비용·출력 불변을 구조로 보장한다.
 #   env 가 낡았더라도 귀결은 종전 문안 = 현행 동작이다) ② 그 밖은 정본 해소(위 `_ic_resolve_role`).
 # 프리루드에 문안 함수가 없으면(부분 갱신) 종전 출력 그대로 — 모르는 상태를 새 거동으로 바꾸지 않는다.
-_IC_GATE="lead"
+_IC_GATE="lead"; _IC_LEAD_ROLE=""
 if command -v cys_start_gate_is_lead >/dev/null 2>&1 && command -v cys_start_gate_note >/dev/null 2>&1; then
   # env 는 첫 줄 + 양끝 공백 트림(정본 `cys_role_line` · 외부 명령 0 — CR 도 여기서 끊긴다).
   _IC_ENV_ROLE=""
   command -v cys_role_line >/dev/null 2>&1 && _IC_ENV_ROLE="$(cys_role_line "${CYS_ROLE:-}")"
   if cys_start_gate_is_lead "$_IC_ENV_ROLE"; then
-    _IC_GATE="lead"
+    _IC_GATE="lead"; _IC_LEAD_ROLE="$_IC_ENV_ROLE"
   else
     _ic_resolve_role
     if cys_start_gate_is_lead "$_IC_ROLE"; then
-      _IC_GATE="lead"
+      _IC_GATE="lead"; _IC_LEAD_ROLE="$_IC_ROLE"
     elif [ -n "$_IC_ROLE" ]; then
       _IC_GATE="member"
     else
@@ -207,7 +207,11 @@ else
   #   lead 좌석은 정본(cys_session_state_path — python 쌍둥이 javis_session.py)만 싣는다. 옛 자리에 기록이
   #   있으면(위 루프·ACTIVE_PROJECT) 정본이 설치 골격일 때만 정본으로 복사한다(백업 · 옛 파일 무접촉 · 삭제 0)
   #   — 결과는 1줄로 알린다. member·역할 미상 좌석은 종전 그대로(프로젝트 `_round` 는 그 프로젝트의 기억이다).
-  if [ "$_IC_GATE" = "lead" ] && command -v cys_session_state_path >/dev/null 2>&1; then
+  # ★cso-round(1.1.8 재빌드 · 윈 실기 D-U1/D-U4): 정본 이관·주입은 **master 좌석만**이다. CSO 는 자기 기억
+  #   (`<좌석 cwd>/_round/SESSION_STATE.md`)을 1.1.7 처럼 위 상향탐색으로 싣는다 — 정본은 master 와 공유하는 파일이라
+  #   CSO 가 싣고 쓰면 잠금 없는 통째 쓰기끼리 서로 덮는다(master 체크포인트 유실) · 두 좌석이 동시에 adopt 하던
+  #   이중 실행도 여기서 사라진다.
+  if [ "$_IC_GATE" = "lead" ] && [ "$_IC_LEAD_ROLE" = "master" ] && command -v cys_session_state_path >/dev/null 2>&1; then
     _IC_CANON="$(cys_session_state_path)"
     if [ -n "$STATE" ] || [ -f "$ROOT/_round/ACTIVE_PROJECT" ]; then
       _IC_SESS_PY="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_session.py"

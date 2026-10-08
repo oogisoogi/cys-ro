@@ -467,7 +467,8 @@ try:
                     fx = gate_fixture(os.path.join(tmp, "g12c-%s-%d-%s" % (role, dept, src)),
                                       dept=dept, seats=2, daemon=role)
                     a = gate_run(fx, role_env=role, source=src, hook=old)
-                    a_out = a.stdout if dept else d14_to_canon(fx, a.stdout)
+                    # ★cso-round(1.1.8 재빌드): 정본 이관·주입 = master 만 — CSO 는 기준 훅(cwd `_round`)과 **변환 없이** 같아야 한다.
+                    a_out = a.stdout if (dept or role != "master") else d14_to_canon(fx, a.stdout)
                     b = gate_run(fx, role_env=role, source=src)
                     if a_out != b.stdout or a.returncode != b.returncode:
                         diffs.append("%s/%s/%s" % (role, "dept" if dept else "hub", src))

@@ -1243,5 +1243,42 @@ class QueuedReportChannel(_HookEnv):
                 r = self.run_hook("Bash", {"command": cmd}, CYS_ROLE="cso")
                 self.assertTrue(r.denied, "본문의 `--queued` 문자열이 옵션으로 읽혔다: %r" % cmd)
 
+class CsoSeatRoundWrites(_HookEnv):
+    """★cso-round(1.1.8 재빌드 · 윈 실기 D-U1/D-U4): 실 훅이 하네스 입력의 `cwd`(없으면 훅 프로세스 cwd)로 CSO 좌석
+    `_round/` 를 해소한다 — 자기 기억·재시작 표식 = 허용 · 팩 round/ SESSION_STATE(master 정본) = 거부.
+    ⚠한계(정직): 이 검체의 HOME 은 임시 폴더 아래라 게이트의 임시 뿌리 허용(/var/folders · /private/tmp)이 좌석 허용과
+    겹친다 — 좌석 허용·거부의 **판정**은 내장 self-test(CSO-ROUND · cwd 를 주입한 Ctx)가 잰다. 여기서 재는 것은 실 훅 경로에서
+    팩 round/ 거부가 좌석 허용보다 먼저 닫힌다는 것과 정상 쓰기가 막히지 않는다는 것이다."""
+
+    def run_with_cwd(self, tool_input, payload_cwd, proc_cwd, **envkw):
+        env = dict(self.env)
+        env.update({k: str(v) for k, v in envkw.items()})
+        doc = {"session_id": "s-1", "tool_name": "Write", "tool_input": tool_input}
+        if payload_cwd is not None:
+            doc["cwd"] = str(payload_cwd)
+        r = subprocess.run([SH, str(HOOK)], input=json.dumps(doc), env=env, cwd=str(proc_cwd),
+                           capture_output=True, text=True, timeout=90)
+        return HookRun(r.returncode, r.stdout, r.stderr)
+
+    def test_seat_round_allowed_and_master_canon_denied(self):
+        pack = self.home / ".cys" / "pack"
+        (pack / "round").mkdir(parents=True, exist_ok=True)
+        seat = self.home / "work" / "cso"
+        (seat / "_round").mkdir(parents=True, exist_ok=True)
+        env = {"CYS_ROLE": "cso", "CYS_PACK_DIR": str(pack)}
+        own = {"file_path": str(seat / "_round" / "SESSION_STATE.md"), "content": "s"}
+        mark = {"file_path": str(seat / "_round" / "checkpoint-cys-7.md"), "content": "s"}
+        canon = {"file_path": str(pack / "round" / "SESSION_STATE.md"), "content": "s"}
+        r = self.run_with_cwd(own, seat, self.home, **env)
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertFalse(r.denied, "하네스 cwd 의 좌석 기억 쓰기가 막혔다: %r/%r" % (r.out, r.err))
+        r = self.run_with_cwd(mark, seat, self.home, **env)
+        self.assertFalse(r.denied, "재시작 표식 쓰기가 막혔다: %r/%r" % (r.out, r.err))
+        r = self.run_with_cwd(own, None, seat, **env)
+        self.assertFalse(r.denied, "하네스 cwd 부재 = 훅 프로세스 cwd 폴백이 안 됐다: %r/%r" % (r.out, r.err))
+        r = self.run_with_cwd(canon, seat, self.home, **env)
+        self.assertTrue(r.denied, "CSO 가 master 정본(팩 round/SESSION_STATE)을 썼다: %r/%r" % (r.out, r.err))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

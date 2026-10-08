@@ -338,6 +338,7 @@ def adopt(legacy, canonical, retire=False, now=None):
             shutil.copy2(canonical, bak)
             plan["backup"] = bak
         _write_atomic(canonical, text)
+        plan["bytes"] = len(text.encode("utf-8"))
     if retire and plan["action"] in ("adopt", "same"):
         moved = "%s%s-%s" % (legacy, LEGACY_MOVED_SUFFIX, stamp)
         os.replace(legacy, moved)
@@ -346,17 +347,20 @@ def adopt(legacy, canonical, retire=False, now=None):
 
 
 def say_line(row):
-    """복원 훅(inject-context)이 그대로 싣는 1줄 — 이관 결과를 좌석이 알게 한다(무음 이관 금지)."""
+    """복원 훅(inject-context)이 그대로 싣는 1줄 — 이관 결과를 좌석이 알게 한다(무음 이관 금지).
+    ★cso-round(윈 실기 D-U1): 실제 동작만 말한다(복사 · 옛 파일 그대로) — 옛 파일을 지우라거나 「아무도 안 읽는다」는
+    문구는 쓰지 않는다(따르면 기록 유실 · 정본 통째 덮어쓰기)."""
     act, leg, canon = row.get("action"), row.get("legacy"), row.get("canonical")
     if act == "adopt":
         bak = row.get("backup")
-        return ("■ 작업기억 이관(D14): 옛 위치 %s 의 기록을 정본 %s 로 옮겼다%s. 이제부터 정본만 읽고 쓴다 — 옛 파일은 손대지 않았다."
-                % (leg, canon, (" (설치 골격은 %s 로 백업)" % bak) if bak else ""))
+        return ("■ 작업기억 이관(D14): 옛 위치 %s 의 기록(%s바이트)을 정본 %s 로 복사했다%s. 이제부터 정본을 읽고 쓴다 — "
+                "옛 파일은 지우거나 고치지 않았다(그대로 남아 있다)."
+                % (leg, row.get("bytes", "?"), canon, (" (덮기 전 정본은 %s 로 백업)" % bak) if bak else ""))
     if act == "same":
-        return "ℹ 옛 위치 %s 는 정본 %s 와 같은 내용이다 — 정본만 쓴다." % (leg, canon)
+        return "ℹ 옛 위치 %s 는 정본 %s 와 같은 내용이다 — 정본을 쓴다(옛 파일은 그대로)." % (leg, canon)
     if act == "keep" and row.get("reason") == "canonical-written":
-        return ("⚠ 옛 위치 %s 에 정본(%s)과 다른 작업기억이 남아 있다 — 정본은 하나다(옛 파일은 이제 아무도 읽지 않는다). "
-                "옛 내용 중 필요한 것은 정본으로 옮겨 적고 옛 파일은 정리하라." % (leg, canon))
+        return ("⚠ 옛 위치 %s 에 정본(%s)과 다른 작업기억이 있다 — 정본이 이미 쓰여 있어 자동 복사하지 않았다(두 파일 모두 그대로). "
+                "옛 파일에 필요한 줄이 있으면 정본에 덧붙여라 — 정본을 통째로 덮어쓰거나 옛 파일을 지우지 마라." % (leg, canon))
     return ""
 
 

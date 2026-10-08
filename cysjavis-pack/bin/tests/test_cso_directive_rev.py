@@ -2439,7 +2439,8 @@ class CsoDirectiveRevision(unittest.TestCase):
         ★래칫: 지침을 **줄이면 아래 상한도 함께 낮춘다** — 줄인 커밋이 이 숫자를 새 크기로 내리지 않으면 그 여유가 다음 증가를 조용히 받아 준다. 늘려야 할 때는 이 숫자를 올리는 것이 아니라 먼저 다른 곳을 줄인다
         (예산을 올리는 변경은 그 사유를 커밋 메시지에 적는다 — 이 핀이 붉어지는 순간이 그 결정을 사람 눈에 올리는 자리다). 단위 = 파일의 UTF-8 바이트(줄바꿈 포함)."""
         size = lambda name: os.path.getsize(os.path.join(REAL_DIRECTIVES_DIR, name))   # 실제 파일(전체 검체 재실행이 DIRECTIVES_DIR 을 임시 사본으로 바꿔도 영향 없다)
-        self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57368, "CSO_DIRECTIVE.md 바이트 예산(57,368) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        # ★cso-round(1.1.8 재빌드): §1-1 허용 경로 줄 정정(SESSION_STATE = 좌석 `_round/`)으로 21B 줄어 상한을 함께 낮춘다(57,368 → 57,347).
+        self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57347, "CSO_DIRECTIVE.md 바이트 예산(57,347) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
         self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 99272, "MASTER_DIRECTIVE.md 바이트 예산(99,272) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
         self.assertLessEqual(size("CEO_TEMPLATE.md"), 107886, "CEO_TEMPLATE.md 바이트 예산(107,886) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 

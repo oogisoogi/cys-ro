@@ -49,8 +49,8 @@ fi
 #   env 역할만 본다(조회 0 — 훅 지연 불변) · member·미상 좌석은 종전 그대로.
 _SS_ROLE=""
 command -v cys_role_line >/dev/null 2>&1 && _SS_ROLE="$(cys_role_line "${CYS_ROLE:-}")"
-if command -v cys_session_state_path >/dev/null 2>&1 && command -v cys_start_gate_is_lead >/dev/null 2>&1 \
-   && cys_start_gate_is_lead "$_SS_ROLE"; then
+# ★cso-round(1.1.8 재빌드): 정본은 master 좌석만(inject-context 와 같은 술어) — CSO 는 자기 `<cwd>/_round` 그대로.
+if command -v cys_session_state_path >/dev/null 2>&1 && [ "$_SS_ROLE" = "master" ]; then
   _SS_CANON_D="$(dirname "$(cys_session_state_path)")"
   [ -d "$_SS_CANON_D" ] && RD="$_SS_CANON_D"
 fi

@@ -1846,7 +1846,7 @@ class Ctx(object):
     """판정 문맥 — 순수 판정기에 환경을 주입한다(검체가 같은 판정기를 다른 세계로 부를 수 있게)."""
 
     def __init__(self, pack=None, state=None, home=None, tool_calls=None,
-                 approver=None, reader=None, tempdir=None, background=False):
+                 approver=None, reader=None, tempdir=None, background=False, cwd=None):
         env = os.environ
         self.pack = pack if pack is not None else pack_dir(env)
         self.state = state if state is not None else state_root(env)
@@ -1856,6 +1856,9 @@ class Ctx(object):
         self.reader = reader                  # (path) -> str|None (없으면 실제 파일)
         self.tempdir = tempdir if tempdir is not None else tempfile.gettempdir()
         self.background = bool(background)
+        # ★cso-round(1.1.8 재빌드 · 윈 실기 D-U4): 좌석 작업 폴더 — CSO 자기 기억(`<cwd>/_round/SESSION_STATE*`)과
+        #   재시작 표식(`<cwd>/_round/checkpoint-*.md`)의 뿌리. None = 모름 → 그 허용은 꺼진다(결측은 값이 아니다).
+        self.cwd = cwd
 
     def read_text(self, path):
         if self.reader is not None:
@@ -1888,6 +1891,19 @@ def is_cso_state_file(path):
     """
     base = _fold(os.path.basename(_norm(path)))
     return any(base.startswith(_fold(n)) for n in CSO_STATE_BASENAMES)
+
+
+def is_seat_round_file(path, ctx):
+    """★cso-round: `<좌석 cwd>/_round/` **바로 아래**의 `SESSION_STATE*` · `checkpoint-*.md` 인가(1.1.7 의 CSO 기억 자리 ·
+    [DRAIN]/[DRAIN-VERIFY] ①② 가 쓰라는 자리). 하위 폴더·다른 이름(예: `PROTOCOL_CSO.md`)은 아니다 · cwd 모름 = 아니다."""
+    if not path or not ctx.cwd:
+        return False
+    seat_round = _fold(_norm(os.path.join(ctx.cwd, "_round")))
+    ap = _fold(_norm(path))
+    if not seat_round or os.path.dirname(ap) != seat_round:
+        return False
+    base = os.path.basename(ap)
+    return base.startswith(_fold("SESSION_STATE")) or (base.startswith("checkpoint-") and base.endswith(".md"))
 
 
 def is_cycle_evidence_file(path, ctx):
@@ -1925,10 +1941,14 @@ def cso_path_allowed(path, ctx):
                        "자기 집행 상태를 고치지 않는다")
     round_root = os.path.join(ctx.pack, "round")
     if _under(path, round_root):
-        if is_cso_state_file(path):
+        # ★cso-round(1.1.8 재빌드 · 윈 실기 D-U1/D-U4): 팩 round/ 의 SESSION_STATE* 는 master 정본(D14)이다 — CSO 가
+        #   쓰면 잠금 없는 통째 쓰기로 master 체크포인트를 덮는다. CSO 기억은 아래 자기 좌석 `_round/` 에 둔다.
+        if _fold(os.path.basename(_norm(path))).startswith(_fold("CSO_")):
             return True, "자기 레인 팩 round/ 의 자기 소유 상태 파일"
         return False, ("자기 레인 팩 round/ 이지만 자기 소유 파일이 아니다"
-                       "(허용 = CSO_* · SESSION_STATE*)")
+                       "(허용 = CSO_* · SESSION_STATE 는 master 정본 — CSO 는 자기 좌석 `_round/`)")
+    if is_seat_round_file(path, ctx):
+        return True, "자기 좌석 `_round/` 의 자기 기억·재시작 표식(SESSION_STATE* · checkpoint-*.md)"
     for r in cso_write_roots(ctx)[1:]:
         if _under(path, r):
             return True, "허용 경로(%s)" % r
@@ -2939,7 +2959,8 @@ def main():
         # ★deny 된 호출도 센다 — 그것도 도구 호출이고, 세지 않으면 막힌 시도를 반복하는 세션이
         #   예산을 영원히 넘지 않아 사이클 신호가 오지 않는다.
         count = bump_tool_calls(key, root)
-        ctx = Ctx(tool_calls=count)
+        _cwd = data.get("cwd")
+        ctx = Ctx(tool_calls=count, cwd=_cwd if isinstance(_cwd, str) and _cwd.strip() else os.getcwd())
         if count is not None and BUDGET_WARN <= count < BUDGET_DENY:
             pending_warn = ("[CSO 예산 경고] tool_calls=%d (경고 %d · 비필수 deny %d). 지금 "
                             "SESSION_STATE·CSO_TODO 를 저장하고 §2 절차대로 사이클을 준비하라 — "
@@ -3098,7 +3119,7 @@ def self_test():
 
     def ctx(tool_calls=None, approver=lambda c: False):
         return Ctx(pack=PACK, state=STATE, home=HOME, tool_calls=tool_calls,
-                   approver=approver, reader=reader, tempdir="/w/tmp")
+                   approver=approver, reader=reader, tempdir="/w/tmp", cwd="/w/cwd")
 
     # ★실제 CSO 트랜스크립트 5종(감사 2026-09-06 에러 1·3의 실물 행동) — 전부 deny 여야 한다.
     cso_transcript_denies = [
@@ -3167,7 +3188,8 @@ def self_test():
         ("Bash", {"command": "cat /w/pack/round/SESSION_STATE.md"}),
         ("Bash", {"command": "shasum -a 256 /w/pack/round/SESSION_STATE.md"}),
         ("Bash", {"command": "python3 /w/pack/bin/javis_cycle_autopilot.py tick"}),
-        ("Write", {"file_path": PACK + "/round/SESSION_STATE.md", "content": "저장"}),
+        # ★cso-round: CSO 기억 저장 = 자기 좌석 `_round/`(팩 round/ SESSION_STATE 는 master 정본 — 아래 CSO-ROUND 음성 대조).
+        ("Write", {"file_path": "/w/cwd/_round/SESSION_STATE.md", "content": "저장"}),
         ("Edit", {"file_path": PACK + "/round/CSO_TODO.md", "old_string": "x" * 100,
                   "new_string": ""}),
     ]
@@ -3178,6 +3200,29 @@ def self_test():
     b, _ = decide("Bash", {"command": "cys gate-check"}, "cso", over)
     if not b:
         fails.append("BUDGET-NO-DENY: 예산 초과인데 비필수가 통과했다")
+    # ★cso-round(1.1.8 재빌드 · 윈 실기 D-U1/D-U4): CSO 기억 = 자기 좌석 `<cwd>/_round/`(1.1.7 자리 · [DRAIN] ①② 표식 자리) ·
+    #   팩 round/ SESSION_STATE* = master 정본 → CSO 쓰기 거부(덮어쓰기 경로 차단). `~/Desktop/CYSjavis/_round/PROTOCOL_CSO.md`
+    #   deny(위 cso_transcript_denies)는 그대로 — 좌석 `_round/` 허용은 cwd 바로 아래 · 두 이름(SESSION_STATE* · checkpoint-*.md)뿐.
+    for tool, ti, want_block, why in (
+        ("Write", {"file_path": "/w/cwd/_round/SESSION_STATE.md", "content": "s"}, False, "좌석 기억"),
+        ("Write", {"file_path": "/w/cwd/_round/checkpoint-cys-7.md", "content": "s"}, False, "재시작 표식"),
+        ("Bash", {"command": "cys status > /w/cwd/_round/checkpoint-cys-7.md"}, False, "표식 셸 기록"),
+        ("Write", {"file_path": PACK + "/round/SESSION_STATE.md", "content": "s"}, True, "master 정본"),
+        ("Edit", {"file_path": PACK + "/round/session_state.md", "old_string": "a", "new_string": "b"}, True,
+         "master 정본(대소문자 별칭)"),
+        ("Write", {"file_path": PACK + "/round/SESSION_STATE.md.bak", "content": "s"}, True, "master 정본 접두"),
+        ("Write", {"file_path": "/w/cwd/_round/PROTOCOL_CSO.md", "content": "s"}, True, "좌석 _round 다른 이름"),
+        ("Write", {"file_path": "/w/cwd/_round/sub/SESSION_STATE.md", "content": "s"}, True, "좌석 _round 하위 폴더"),
+        ("Write", {"file_path": "/w/_round/SESSION_STATE.md", "content": "s"}, True, "좌석 위 폴더 _round"),
+        ("Write", {"file_path": "/w/cwd/_round/checkpoint-x.txt", "content": "s"}, True, "표식 확장자 밖"),
+    ):
+        b, r = decide(tool, ti, "cso", ctx())
+        if b != want_block:
+            fails.append("CSO-ROUND(%s · 기대 %s): %s %r → %s" % (why, "deny" if want_block else "allow", tool, ti, r))
+    b, r = decide("Write", {"file_path": "/w/cwd/_round/SESSION_STATE.md", "content": "s"}, "cso",
+                  Ctx(pack=PACK, state=STATE, home=HOME, reader=reader, tempdir="/w/tmp"))
+    if not b:
+        fails.append("CSO-ROUND(cwd 모름 = 좌석 허용 꺼짐): 통과했다 (%s)" % r)
     b, _ = decide("WebSearch", {"query": "x"}, "cso", ctx())
     if not b:
         fails.append("CSO-BYPASS: WebSearch")
@@ -3392,7 +3437,7 @@ def self_test_r1(fails):
 
     def ctx(tool_calls=None, approver=lambda c: False):
         return Ctx(pack=PACK, state=STATE, home=HOME, tool_calls=tool_calls,
-                   approver=approver, reader=reader, tempdir="/w/tmp")
+                   approver=approver, reader=reader, tempdir="/w/tmp", cwd="/w/cwd")
 
     def want(deny, tool, ti, label, c=None, role="cso"):
         b, r = decide(tool, ti, role, c if c is not None else ctx())
@@ -3556,7 +3601,7 @@ def self_test_r1(fails):
     b, r = decide_multi("Edit", {"file_path": "/w/repo/src/a.rs"}, ["cso", "reviewer-codex"], ctx())
     if not b:
         fails.append("R1[미확정 교집합]: reviewer 변형 금지가 사라졌다 (%s)" % r)
-    b, r = decide_multi("Write", {"file_path": PACK + "/round/SESSION_STATE.md", "content": "x"},
+    b, r = decide_multi("Write", {"file_path": "/w/cwd/_round/SESSION_STATE.md", "content": "x"},
                         ["cso", "reviewer-codex"], ctx())
     if b:
         fails.append("R1[미확정 예외]: 사이클 필수 저장이 막혔다 — 봉인표 ② (%s)" % r)

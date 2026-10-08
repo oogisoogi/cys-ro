@@ -11,8 +11,29 @@
 use super::errors::UpdateErr;
 use super::url::{check_redirect, check_url, CheckedUrl, Hop, MAX_HOPS};
 
-/// 피드 본문 상한(봉투·폐기문·본문 — 작은 JSON).
+/// 피드 문서 상한 — **홉(상대 경로)별**([`feed_max_bytes`]). ★1.1.8 본체 실기(2026-10-08): 옛 단일 1 MiB 가 윈 행
+/// `payload_manifest`(11,676 행) 를 실은 릴리스 본문 2,474,038 B 를 curl rc 63 으로 막아 `--preserve-installer` 가 rc 4 였다 —
+/// 같은 본문을 base64 로 싣는 봉투(≈3.3 MB)도 같은 상한에 걸려 자동 갱신 첫 받기부터 끊긴다.
+/// 발행 쪽(`scripts/update/update_common.py` `FEED_*_MAX_BYTES`)이 같은 값으로 초과 문서를 거부한다(대조 시험 = 양쪽 상수 일치).
+/// 폐기문·서명(`.minisig`)·그 밖 = 작은 JSON·텍스트.
 pub const FEED_MAX_BYTES: u64 = 1 << 20;
+/// 릴리스 본문(`<c>/releases/<seq>.json`) — 1.1.8 실측 2,474,038 B 의 약 3.4배.
+pub const FEED_BODY_MAX_BYTES: u64 = 8 << 20;
+/// 봉투(`<c>/<channel>.json`) — 본문 원문·서명을 base64(4/3배)로 싣는다 + 칸 여유.
+pub const FEED_ENVELOPE_MAX_BYTES: u64 = 12 << 20;
+const _: () = assert!(FEED_ENVELOPE_MAX_BYTES >= FEED_BODY_MAX_BYTES.div_ceil(3) * 4 + (64 << 10), "봉투 상한 < 최대 본문의 base64 + 여유");
+
+/// 상대 경로 → 그 홉의 상한(`.minisig` = 작은 상한 · `<c>/releases/<n>.json` = 본문 · `<c>/<x>.json` = 봉투 · 그 밖 = 작은 상한).
+pub fn feed_max_bytes(rel: &str) -> u64 {
+    if rel.ends_with(".minisig") {
+        return FEED_MAX_BYTES;
+    }
+    match rel.split('/').collect::<Vec<_>>()[..] {
+        [_, "releases", f] if f.ends_with(".json") => FEED_BODY_MAX_BYTES,
+        [_, f] if f.ends_with(".json") => FEED_ENVELOPE_MAX_BYTES,
+        _ => FEED_MAX_BYTES,
+    }
+}
 pub const ENV_FEED_URL: &str = "CYS_UPDATE_FEED_URL";
 /// 정식 피드 뿌리.
 pub const FEED_BASE: &str = "https://jarvis.godmeyou.kr/update";
@@ -44,18 +65,26 @@ pub fn feed_base(debug: bool, get: impl Fn(&str) -> Option<String>) -> String {
     FEED_BASE.to_string()
 }
 
-/// `<뿌리>/<rel>` 를 가져온다. `file://` 뿌리는 디버그 덮어쓰기에서만 온다.
+/// `<뿌리>/<rel>` 를 가져온다(상한 = [`feed_max_bytes`]). `file://` 뿌리는 디버그 덮어쓰기에서만 온다(상한도 같게 잰다).
 pub fn fetch_feed_file(base: &str, rel: &str) -> Result<Fetched, NetErr> {
+    fetch_feed_file_with(base, rel, &fetch)
+}
+
+/// [`fetch_feed_file`] 본체 — https 갈래의 받기 함수를 주입받는다(시험이 그 갈래에 넘어가는 상한을 잰다).
+fn fetch_feed_file_with(base: &str, rel: &str, https: &dyn Fn(&str, Hop, u64) -> Result<Fetched, NetErr>) -> Result<Fetched, NetErr> {
     let url = format!("{base}/{rel}");
+    let max = feed_max_bytes(rel);
     if let Some(path) = url.strip_prefix("file://") {
         if !cfg!(debug_assertions) {
             return Err(NetErr::Refused(UpdateErr::new(super::ErrCode::UrlRefused, "net", "출시 빌드 file 스킴")));
         }
-        return std::fs::read(path)
-            .map(|bytes| Fetched { bytes, http_date: None, hops: vec![url.clone()] })
-            .map_err(|e| NetErr::Unreachable(format!("{path}: {e}")));
+        let bytes = std::fs::read(path).map_err(|e| NetErr::Unreachable(format!("{path}: {e}")))?;
+        if bytes.len() as u64 > max {
+            return Err(NetErr::Unreachable("본문 상한 초과".into()));
+        }
+        return Ok(Fetched { bytes, http_date: None, hops: vec![url.clone()] });
     }
-    fetch(&url, Hop::Feed, FEED_MAX_BYTES)
+    https(&url, Hop::Feed, max)
 }
 
 /// 허용 목록 대조 + 수동 redirect 로 1개를 받는다.
@@ -188,6 +217,51 @@ mod tests {
         let f = fetch_feed_file(&base, "cysr/stable.json").unwrap();
         assert_eq!(f.bytes, b"{}");
         assert!(matches!(fetch_feed_file(&base, "cysr/none.json"), Err(NetErr::Unreachable(_))));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 홉별 상한 분류(본문·봉투·폐기문·서명) — 1.1.8 본체 실기 rc 63 회귀.
+    #[test]
+    fn feed_max_bytes_per_hop() {
+        assert_eq!(feed_max_bytes("cysr/releases/1.json"), FEED_BODY_MAX_BYTES);
+        assert_eq!(feed_max_bytes("agora-client/releases/12.json"), FEED_BODY_MAX_BYTES);
+        assert_eq!(feed_max_bytes("cysr/stable.json"), FEED_ENVELOPE_MAX_BYTES);
+        assert_eq!(feed_max_bytes("cysr/next.json"), FEED_ENVELOPE_MAX_BYTES);
+        for small in ["revocations.json", "revocations.json.minisig", "cysr/releases/1.json.minisig", "cysr/stable.json.minisig"] {
+            assert_eq!(feed_max_bytes(small), FEED_MAX_BYTES, "{small}");
+        }
+        assert!(FEED_BODY_MAX_BYTES > 2_474_038, "1.1.8 실측 본문이 상한 안");
+        assert!(FEED_ENVELOPE_MAX_BYTES > 2_474_038_u64.div_ceil(3) * 4, "1.1.8 실측 본문을 실은 봉투가 상한 안");
+    }
+
+    /// https 갈래(기기 실경로)도 홉별 상한을 curl 에 넘긴다 — 받기 함수 주입으로 넘어간 값을 잰다.
+    #[test]
+    fn https_branch_passes_per_hop_cap() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let spy = |u: &str, h: Hop, m: u64| -> Result<Fetched, NetErr> {
+            seen.borrow_mut().push((u.to_string(), h, m));
+            Err(NetErr::Unreachable("spy".into()))
+        };
+        for rel in ["cysr/releases/1.json", "cysr/stable.json", "revocations.json", "cysr/releases/1.json.minisig"] {
+            let _ = fetch_feed_file_with(FEED_BASE, rel, &spy);
+        }
+        let got: Vec<u64> = seen.borrow().iter().map(|(_, _, m)| *m).collect();
+        assert_eq!(got, vec![FEED_BODY_MAX_BYTES, FEED_ENVELOPE_MAX_BYTES, FEED_MAX_BYTES, FEED_MAX_BYTES]);
+        assert!(seen.borrow().iter().all(|(u, h, _)| u.starts_with(FEED_BASE) && *h == Hop::Feed));
+    }
+
+    /// 상한 경계 ±1(본문·봉투·폐기문) — 같은 바이트 수 = 받음 · +1 = 미도달(curl `--max-filesize` 와 같은 「초과만 거부」).
+    #[test]
+    fn feed_cap_boundary_plus_minus_one() {
+        let d = std::env::temp_dir().join(format!("cys-u1-net-cap-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("cysr/releases")).unwrap();
+        let base = format!("file://{}", d.display());
+        for (rel, max) in [("cysr/releases/1.json", FEED_BODY_MAX_BYTES), ("cysr/stable.json", FEED_ENVELOPE_MAX_BYTES), ("revocations.json", FEED_MAX_BYTES)] {
+            std::fs::write(d.join(rel), vec![b' '; max as usize]).unwrap();
+            assert_eq!(fetch_feed_file(&base, rel).unwrap().bytes.len() as u64, max, "{rel} = 상한");
+            std::fs::write(d.join(rel), vec![b' '; max as usize + 1]).unwrap();
+            assert!(matches!(fetch_feed_file(&base, rel), Err(NetErr::Unreachable(m)) if m == "본문 상한 초과"), "{rel} = 상한+1");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 }

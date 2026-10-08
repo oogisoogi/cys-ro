@@ -132,6 +132,11 @@ def main(argv=None):
         print("::error::폐기문 생성 거부 — %s" % e, file=sys.stderr)
         return 2
     data = uc.dump_json_bytes(doc)
+    try:
+        uc.check_feed_size("revocations", len(data))
+    except uc.PublishError as e:
+        print("::error::폐기문 생성 거부 — %s" % e, file=sys.stderr)
+        return 2
     with open(a.out + ".tmp", "wb") as f:
         f.write(data)
         f.flush()

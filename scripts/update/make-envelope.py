@@ -130,6 +130,11 @@ def main(argv=None):
         print("::error::봉투 생성 거부 — %s" % e, file=sys.stderr)
         return 2
     data = uc.dump_json_bytes(env)
+    try:
+        uc.check_feed_size("envelope", len(data))
+    except uc.PublishError as e:
+        print("::error::봉투 생성 거부 — %s" % e, file=sys.stderr)
+        return 2
     with open(a.out + ".tmp", "wb") as f:
         f.write(data)
         f.flush()

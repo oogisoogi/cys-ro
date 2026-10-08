@@ -156,7 +156,18 @@ def check_body_shape(b):
     return comp, seq
 
 
+def feed_cap(kind, path):
+    """기기 받기 상한(uc.FEED_MAX_BYTES_BY_KIND = net.rs) 초과 = 게이트 실패."""
+    try:
+        uc.check_feed_size(kind, os.path.getsize(path))
+    except uc.PublishError as e:
+        raise GateFail("%s: %s" % (os.path.basename(path), e))
+
+
 def stage_body(a):
+    feed_cap("body", a.body)
+    if a.sig:
+        feed_cap("sig", a.sig)
     raw = open(a.body, "rb").read()
     try:
         b = json.loads(raw)
@@ -209,6 +220,8 @@ def stage_body(a):
 
 
 def stage_revocations(a):
+    feed_cap("revocations", a.doc)
+    feed_cap("sig", a.doc + ".minisig")
     raw = open(a.doc, "rb").read()
     d = json.loads(raw)
     if d.get("kind") != uc.REVOCATIONS_KIND or not isinstance(d.get("rev"), int) or d["rev"] < 1:
@@ -250,6 +263,10 @@ from u1verify import verify_envelope  # noqa: E402
 
 
 def stage_verify(a):
+    feed_cap("envelope", a.envelope)
+    feed_cap("sig", a.sig)
+    feed_cap("revocations", a.revocations)
+    feed_cap("sig", a.revocations_sig)
     accept = [x.strip() for x in a.expect.split(",") if x.strip()]
     env = json.load(open(a.envelope, encoding="utf-8"))
     out = verify_envelope(a.cys, a, accept)

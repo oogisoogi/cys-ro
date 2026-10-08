@@ -226,6 +226,8 @@ def main(argv=None):
         data, sig = open(a.file, "rb").read(), open(a.sig or a.file + ".minisig", "rb").read()
         doc = json.loads(data)
         rel, purpose = classify(a.kind, doc)
+        uc.check_feed_size({"archive": "body", "envelope": "envelope", "revocations": "revocations"}[a.kind], len(data))
+        uc.check_feed_size("sig", len(sig))
         now = uc.trusted_now()
         uc.verify_sig(uc.load_keyring(a.keyring), purpose, doc.get("key_id"), data, sig.decode("utf-8"), now)
         uc.check_signed_at(doc.get("signed_at"), now, None, "%s signed_at" % a.kind)

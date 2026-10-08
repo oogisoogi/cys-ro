@@ -34,6 +34,14 @@ SITE_HOST = "jarvis.godmeyou.kr"
 # 발행 도구가 urllib 로 부르는 모든 요청의 User-Agent(1.1.8 R4 실측 2026-10-08: 파이썬 기본 `Python-urllib/…` 은
 #   SITE_HOST 앞단 Cloudflare 가 403 — curl·UA 없음·이 값 = 200). 새 urllib 호출도 이 상수를 싣는다.
 HTTP_USER_AGENT = "cysr-publish/1"
+# 피드 문서 크기 상한 — 기기(Rust `src/update/net.rs` FEED_MAX_BYTES·FEED_BODY_MAX_BYTES·FEED_ENVELOPE_MAX_BYTES)와 **같은 값**
+#   (대조 시험 test_update_publish TestFeedCaps 가 net.rs 를 읽어 맞춘다). 기기가 못 받는 문서는 만들지도·게시하지도 않는다(1.1.8 본체 실기
+#   2026-10-08: 본문 2,474,038 B ↔ 옛 단일 1 MiB = 기기 curl rc 63).
+FEED_DOC_MAX_BYTES = 1 << 20           # 폐기문 · 서명(.minisig)
+FEED_BODY_MAX_BYTES = 8 << 20          # 릴리스 본문(<c>/releases/<seq>.json)
+FEED_ENVELOPE_MAX_BYTES = 12 << 20     # 봉투(<c>/<channel>.json · 본문을 base64 로 싣는다)
+FEED_MAX_BYTES_BY_KIND = {"body": FEED_BODY_MAX_BYTES, "envelope": FEED_ENVELOPE_MAX_BYTES,
+                          "revocations": FEED_DOC_MAX_BYTES, "sig": FEED_DOC_MAX_BYTES}
 ASSET_HOST = "github.com"
 ASSET_REPO = "oogisoogi/cys-ro"
 # §4-4 홉 규칙(정규화 뒤 대조 · U1 url.rs 와 같은 정규식).
@@ -65,6 +73,13 @@ STAMP_BY_PY = "scripts/update/minisign_verify.py"
 
 class PublishError(Exception):
     """생산자 검사 거부 — 발행하지 않는다."""
+
+
+def check_feed_size(kind, n):
+    """기기 받기 상한(FEED_MAX_BYTES_BY_KIND) 초과 = 거부 — 같은 바이트 수는 통과(기기 curl `--max-filesize` 와 같은 「초과만 거부」)."""
+    cap = FEED_MAX_BYTES_BY_KIND[kind]
+    if n > cap:
+        raise PublishError("%s %d B > 기기 받기 상한 %d B(src/update/net.rs) — 기기가 받지 못한다" % (kind, n, cap))
 
 
 def sha256_bytes(b):

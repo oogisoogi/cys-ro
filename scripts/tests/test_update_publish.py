@@ -613,6 +613,81 @@ class TestUserAgent(unittest.TestCase):
         self.assertEqual(found, 3)  # update_common.trusted_now · publish-site.live_check · store.S3Store._req
 
 
+class TestFeedCaps(Base):
+    """1.1.8 본체 실기(2026-10-08): 기기 받기 상한(net.rs) 밖 문서를 발행 쪽이 만들지도·통과시키지도·게시하지도 않는다.
+    단일 출처 = net.rs — 이 시험이 그 파일의 상수를 읽어 update_common 과 맞춘다(한쪽만 바뀌면 적색)."""
+
+    def rust_caps(self):
+        import re
+        with open(os.path.join(ROOT, "src", "update", "net.rs"), encoding="utf-8") as f:
+            s = f.read()
+        caps = {}
+        for name in ("FEED_MAX_BYTES", "FEED_BODY_MAX_BYTES", "FEED_ENVELOPE_MAX_BYTES"):
+            m = re.search(r"pub const %s: u64 = (\d+) << (\d+);" % name, s)
+            self.assertIsNotNone(m, name)
+            caps[name] = int(m.group(1)) << int(m.group(2))
+        return caps
+
+    def test_caps_match_rust_net_rs(self):
+        c = self.rust_caps()
+        self.assertEqual(uc.FEED_DOC_MAX_BYTES, c["FEED_MAX_BYTES"])
+        self.assertEqual(uc.FEED_BODY_MAX_BYTES, c["FEED_BODY_MAX_BYTES"])
+        self.assertEqual(uc.FEED_ENVELOPE_MAX_BYTES, c["FEED_ENVELOPE_MAX_BYTES"])
+        self.assertGreater(uc.FEED_BODY_MAX_BYTES, 2474038)  # 1.1.8 실측 본문(윈 payload 11,676 행)
+
+    def test_check_feed_size_boundary(self):
+        for kind, cap in uc.FEED_MAX_BYTES_BY_KIND.items():
+            uc.check_feed_size(kind, cap)
+            with self.assertRaises(uc.PublishError):
+                uc.check_feed_size(kind, cap + 1)
+
+    def test_generator_refuses_over_device_cap(self):
+        """본문 생성기: 상한 = 본문 길이 → rc 0 · 상한 = 길이 − 1 → rc 2(같은 입력 · 상한만 옮겨 ±1)."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mrj", os.path.join(UPD, "make-release-json.py"))
+        mrj = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mrj)
+        n = os.path.getsize(self.fx.body("probe.json"))
+        old = uc.FEED_MAX_BYTES_BY_KIND["body"]
+        try:
+            for cap, want in ((n, 0), (n - 1, 2)):
+                uc.FEED_MAX_BYTES_BY_KIND["body"] = cap
+                out = os.path.join(self.tmp, "cap-%d.json" % cap)
+                self.assertEqual(mrj.main(self.fx.gen_args(out)), want, cap)
+                self.assertEqual(os.path.exists(out), want == 0)
+        finally:
+            uc.FEED_MAX_BYTES_BY_KIND["body"] = old
+
+    def test_gate_body_refuses_over_device_cap(self):
+        """발행 게이트 body: 실제 상한(8 MiB) 바이트 = 통과 · +1 = 실패(끝 공백으로 늘린 같은 JSON)."""
+        b = self.fx.body()
+        with open(b, "rb") as f:
+            raw = f.read()
+        for extra, rc in ((0, 0), (1, 1)):
+            p = os.path.join(self.tmp, "pad-%d.json" % extra)
+            with open(p, "wb") as f:
+                f.write(raw + b" " * (uc.FEED_BODY_MAX_BYTES - len(raw) + extra))
+            r = py("release-gate.py", "body", "--body", p)
+            self.assertEqual(r.returncode, rc, r.stdout + r.stderr)
+            if rc:
+                self.assertIn("기기 받기 상한", r.stdout + r.stderr)
+
+    def test_publish_site_refuses_over_device_cap(self):
+        """게시기: 상한 초과 본문 = rc 2 · 보관소 쓰기 0."""
+        b = self.fx.body()
+        with open(b, "rb") as f:
+            raw = f.read()
+        p = os.path.join(self.tmp, "big.json")
+        with open(p, "wb") as f:
+            f.write(raw + b" " * (uc.FEED_BODY_MAX_BYTES - len(raw) + 1))
+        shutil.copy(b + ".minisig", p + ".minisig")
+        st = os.path.join(self.tmp, "store")
+        r = publish(self.fx, "archive", p, st, "--first")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("기기 받기 상한", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(st, "obj")))
+
+
 class TestGateBody(Base):
     def store_with(self, b):
         st = os.path.join(self.tmp, "store")

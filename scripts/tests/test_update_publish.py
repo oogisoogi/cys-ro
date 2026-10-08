@@ -641,22 +641,45 @@ class TestFeedCaps(Base):
             with self.assertRaises(uc.PublishError):
                 uc.check_feed_size(kind, cap + 1)
 
-    def test_generator_refuses_over_device_cap(self):
-        """본문 생성기: 상한 = 본문 길이 → rc 0 · 상한 = 길이 − 1 → rc 2(같은 입력 · 상한만 옮겨 ±1)."""
+    def gen_main(self, script):
         import importlib.util
-        spec = importlib.util.spec_from_file_location("mrj", os.path.join(UPD, "make-release-json.py"))
-        mrj = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mrj)
-        n = os.path.getsize(self.fx.body("probe.json"))
-        old = uc.FEED_MAX_BYTES_BY_KIND["body"]
+        spec = importlib.util.spec_from_file_location(script.replace("-", "_")[:-3], os.path.join(UPD, script))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m.main
+
+    def check_generator_cap(self, script, kind, args_for):
+        """생성기 ±1: 기본 상한으로 한 번 만들어 길이 n 을 잰 뒤 상한 = n → rc 0(파일 생김) · n − 1 → rc 2(파일 0) — 같은 입력."""
+        main = self.gen_main(script)
+        probe = os.path.join(self.tmp, "%s-probe.json" % kind)
+        self.assertEqual(main(args_for(probe)), 0, script)
+        n = os.path.getsize(probe)
+        old = uc.FEED_MAX_BYTES_BY_KIND[kind]
         try:
             for cap, want in ((n, 0), (n - 1, 2)):
-                uc.FEED_MAX_BYTES_BY_KIND["body"] = cap
-                out = os.path.join(self.tmp, "cap-%d.json" % cap)
-                self.assertEqual(mrj.main(self.fx.gen_args(out)), want, cap)
-                self.assertEqual(os.path.exists(out), want == 0)
+                uc.FEED_MAX_BYTES_BY_KIND[kind] = cap
+                out = os.path.join(self.tmp, "%s-cap-%d.json" % (kind, cap))
+                self.assertEqual(main(args_for(out)), want, (script, cap))
+                self.assertEqual(os.path.exists(out), want == 0, (script, cap))
         finally:
-            uc.FEED_MAX_BYTES_BY_KIND["body"] = old
+            uc.FEED_MAX_BYTES_BY_KIND[kind] = old
+
+    def test_generator_refuses_over_device_cap(self):
+        """본문 생성기(make-release-json) ±1."""
+        self.check_generator_cap("make-release-json.py", "body", self.fx.gen_args)
+
+    def test_envelope_generator_refuses_over_device_cap(self):
+        """봉투 생성기(make-envelope) ±1 — 봉투는 본문을 base64 로 싣는다(기기 상한 12 MiB)."""
+        b = self.fx.body()
+        self.check_generator_cap("make-envelope.py", "envelope", lambda out: [
+            "--component", "cysr", "--channel", "stable", "--release-body", b, "--release-sig", b + ".minisig",
+            "--key-id", self.fx.kid("f"), "--keyring", self.fx.keyring, "--first", "--rollout-pct", "10", "--halt", "false",
+            "--out", out])
+
+    def test_revocations_generator_refuses_over_device_cap(self):
+        """폐기문 생성기(make-revocations) ±1(기기 상한 1 MiB)."""
+        self.check_generator_cap("make-revocations.py", "revocations", lambda out: [
+            "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, "--first", "--out", out])
 
     def test_gate_body_refuses_over_device_cap(self):
         """발행 게이트 body: 실제 상한(8 MiB) 바이트 = 통과 · +1 = 실패(끝 공백으로 늘린 같은 JSON)."""

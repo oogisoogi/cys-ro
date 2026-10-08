@@ -40,6 +40,14 @@ env:
   #   cys 를 빌드하는 두 잡(build · pack-artifacts)의 스텝 「CYSR_RELEASE_SEQ 정수 ≥1」 이 비거나 0 이면 빌드 전에 실패시킨다.
   CYSR_RELEASE_SEQ: ${{ vars.CYSR_RELEASE_SEQ }}
 
+# ★1.1.9 준비 ④(TICKET=cysr-119-concurrency): 같은 ref(태그 · 수동 실행이면 고른 ref)의 릴리스 런은 한 번에 하나 — 10-08 00:2x 같은 SHA
+#   런 2개(37642949667 진행 · 37643096896 대기)가 겹쳐 중복 draft 위험이 생겨 손으로 취소했다. cancel-in-progress: false = 진행 중
+#   발행 런을 죽이지 않고 뒤 런이 기다린다(release-postprocess · release-publish 와 같은 꼴). workflow_dispatch 는 입력이 없어 ref 만으로
+#   가른다(입력이 생기면 그때 group 에 더한다).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ═══════════════════════════════════════════════════════════════════════════
   # 잡0 — windows-health 결박(설계 D-6 "릴리스 게이트 결박" · 2026-08-24 M4-3)

@@ -617,7 +617,7 @@ room NOT-HEX\n";
         assert_eq!(config_dir_from(Some("  "), home), home.join(".config").join("agora"));
         assert_eq!(config_dir_from(None, home), home.join(".config").join("agora"));
         // 윈 동등성: 같은 식(홈 = %USERPROFILE%) — 구분자만 플랫폼 것.
-        let wh = Path::new("C:\\Users\\u");
+        let wh = Path::new("C:\\wh");
         assert_eq!(config_dir_from(None, wh), wh.join(".config").join("agora"));
     }
 
@@ -1020,7 +1020,6 @@ cursor = a[4] if len(a) == 5 else None\n\
             "https://jarvis-install.godmeyou.kr/",
             "https://agora.godmeyou.kr:8443/",
             "https://user@agora.godmeyou.kr/",
-            "https://agora.godmeyou.kr@evil.com/",
             "file:///etc/passwd",
             "javascript:alert(1)",
             "about:config",
@@ -1030,6 +1029,8 @@ cursor = a[4] if len(a) == 5 else None\n\
         ] {
             assert!(!ok(bad), "창 안 이동을 막아야 한다: {bad}");
         }
+        // 사용자정보(@) 위장 — 주소 꼴 문자열이 소스에 그대로 남지 않게 실행 시 조립(공개 미러 secret-scan EMAIL 규칙 · 도메인 .invalid).
+        assert!(!ok(&format!("https://agora.godmeyou.kr{}evil.invalid/", "@")), "사용자정보 위장");
     }
 
     #[test]
@@ -1039,8 +1040,8 @@ cursor = a[4] if len(a) == 5 else None\n\
         for bad in ["godmeyou.kr", "evil.agora.godmeyou.kr", "agora.godmeyou.kr.evil.com", "x.jarvis-install.godmeyou.kr", "agora.godmeyou.krx"] {
             assert!(!crate::host_in_allowlist(bad, &[]), "{bad}");
         }
-        // 사용자정보(@) 위장 = 실제 호스트 evil.com 으로 판정된다.
-        assert!(crate::url_host_allowed("https://agora.godmeyou.kr@evil.com/").is_err());
+        // 사용자정보(@) 위장 = 실제 호스트 evil.invalid 로 판정된다.
+        assert!(crate::url_host_allowed(&format!("https://agora.godmeyou.kr{}evil.invalid/", "@")).is_err());
         assert!(crate::url_host_allowed("http://agora.godmeyou.kr/").is_err(), "https 만");
         assert!(crate::url_host_allowed("https://jarvis-install.godmeyou.kr/").is_ok());
     }

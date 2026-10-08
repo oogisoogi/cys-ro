@@ -74,3 +74,12 @@ COUNSEL_LIVE_CFG=<폴더> COUNSEL_LIVE_OUT=<json> cargo test -p cys-app --bins l
 # 헤드리스 게이트
 sh ui/build.sh && python3 ui/e2e/counsel_gate.py [<json>]
 ```
+
+## 5. 종결(2026-10-09 08:4x)
+- **병합 = 45ed1133**(merge/v0.14.43 ← feat/119-t4-app `--no-ff` · 9d8fff71..ee899c67 · master 직접 판독 + 스냅샷 게이트 ee899c67 전건 녹 = ui 0 fail · tsc 0 · cys-app 287/0 · lib 1027/0) · codex 3R 잔여 BLOCK 0·MAJOR 0.
+- **남은 한계 = 실 앱 창 미실행**(작업트리 사이드카가 빈 자리표라 Tauri 창을 띄운 적 없음 · 아고라 창의 이동 차단·incognito·바깥 링크 안내·내 글 강조는 단위 시험 + 헤드리스만).
+  - 맥 실기(10-16 · 1.1.9 후보 설치본) 1회: 사이드바 「아고라」 → 상단 「설치 안내 →」 클릭 = 창 이동 0 + 아래 안내 1줄(주소 포함) · 「상담소」 = 클라이언트 0.1.14 이면 방 소개 + 「아직 글이 없어요」(0.1.4 면 「도구가 아직 준비되지 않았어요」 카드).
+  - 윈 키트(wintest-v1.1.9) 1줄 추가: 같은 두 동작 + 아고라 창을 닫았다 다시 열어 저장소가 비어 있는지(incognito = WebView2 InPrivate 【추정】 확인).
+  - 그때 볼 명령 2줄:
+    `python3 ui/e2e/agora_frames_probe.py`   # 실 로비 틀 탐색·확인 스크립트 막음에도 목록 정상(두 엔진)
+    `COUNSEL_LIVE_CFG=<0.1.14 설정 폴더> cargo test -p cys-app --bins live_room_list_with_real_client -- --ignored`   # 실 방 읽기 status ok

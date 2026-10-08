@@ -958,6 +958,17 @@ class DU5IdleHoldAndRefireBundle(unittest.TestCase):
             fired = self._run_cycles(t, [self._rep(state="waiting") for _ in range(60)])
             self.assertEqual(fired, [], "명시 보류(waiting) 좌석이 stall 을 울렸다 — D-U5 재발")
 
+    def test_stale_waiting_at_baseline_still_fires_after_ttl(self):
+        # ★codex 1R BLOCK①: 기준선에서 이미 하루 묵은 waiting(age 86400) = TTL 밖 → 억제하지 않는다.
+        with tempfile.TemporaryDirectory() as t:
+            reps = [self._rep(state="waiting", age=86400 + 300 * i) for i in range(10)]
+            self.assertTrue(self._run_cycles(t, reps), "하루 묵은 waiting 이 영구 억제했다")
+
+    def test_fresh_waiting_at_baseline_is_honored_within_ttl(self):
+        with tempfile.TemporaryDirectory() as t:
+            reps = [self._rep(state="waiting", age=600 + 300 * i) for i in range(30)]
+            self.assertEqual(self._run_cycles(t, reps), [], "TTL 안 waiting 은 믿는다")
+
     def test_done_idle_seat_never_fires(self):
         with tempfile.TemporaryDirectory() as t:
             self.assertEqual(self._run_cycles(t, [self._rep(state="done") for _ in range(30)]), [])

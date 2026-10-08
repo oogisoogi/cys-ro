@@ -126,6 +126,7 @@ STALL_COOLDOWN_SECS = 3600     # stall 재발화 쿨다운(1h·12주기) — 202
 #   ② 반복 묶음 — 같은 정체 구간 안의 재발화 간격을 배로 늘린다(1h→2h→4h · 상한 STALL_COOLDOWN_MAX_SECS).
 #     진행이 바뀌면 횟수·간격 모두 리셋(다음 정체는 즉시 알린다 — 종전 규칙 유지).
 STALL_HOLD_STATES = ("waiting", "done")
+STALL_HOLD_TTL_SECS = 12 * 3600        # ★codex 1R BLOCK①: 구간 시작 미관측(기준선·GAP)일 때 믿는 보류 보고의 최대 나이
 STALL_COOLDOWN_MAX_SECS = 4 * 3600
 LEDGER_MAX_BYTES = 5 * 1024 * 1024   # 대장 5MB 도달 시 ledger.jsonl.1로 1세대 로테이션
 
@@ -1207,13 +1208,15 @@ def build_stall_warnings(counters, report, cycle_minutes, stall_cycles, now_iso,
             last_stall = 0            # 진행 재개 = 쿨다운도 리셋(다음 정체는 즉시 알린다)
             fires = 0
             # ★D-U5 ①: 구간 시작 시각은 **변화를 실제로 본 때만** 적는다. 첫 관측(기준선·GAP 리셋)은
-            #   None = 「언제 시작했는지 모름」 → 보류 보고의 선후를 따지지 않고 보류를 믿는다.
+            #   None = 「언제 시작했는지 모름」 → 보류 보고는 유한 TTL(STALL_HOLD_TTL_SECS) 안의 것만 믿는다
+            #   (codex 1R BLOCK①: 종전엔 나이와 무관하게 영구 억제). 첫 관측 시각은 따로 남긴다(first_obs_epoch · 감사용).
             #   변화는 직전 주기와 이번 주기 사이 어딘가에서 났으므로 하한(직전 주기 시각)을 적는다 —
             #   「체크 → 곧바로 waiting 보고 → 다음 주기에 변화 관측」이 낡은 보류로 오판되지 않게.
             change_epoch = (now_epoch - cycle_minutes * 60) if (pc and now_epoch) else None
+        first_obs = (pc.get("first_obs_epoch") if pc else None) or (now_epoch or None)
         new_nodes[label] = {"sig": sig, "count": count, "last_change_ts": last_change,
                             "last_stall_fired": last_stall, "stall_fires": fires,
-                            "last_change_epoch": change_epoch}
+                            "last_change_epoch": change_epoch, "first_obs_epoch": first_obs}
 
         in_progress = n.get("total", 0) > 0 and n.get("done", 0) < n.get("total", 0)
         if in_progress and count >= stall_cycles:
@@ -1284,6 +1287,8 @@ def stall_held(ms, roles, change_epoch, now_epoch):
 
     · 전원(AND): 가족 라벨에서 하나라도 보류가 아니면 그 좌석이 멈췄을 수 있다 → 울린다.
     · 선후: 보류 보고 뒤에 todo 가 바뀌었다면(새 임무가 들어왔다) 그 보류는 낡은 것이다 → 울린다.
+    · 구간 시작 미관측(change_epoch None): 보고 나이 ≤ STALL_HOLD_TTL_SECS 일 때만 믿는다(codex 1R BLOCK① ·
+      하루 묵은 waiting 이 영구 억제하던 구멍). 나이 미측정 = 믿지 않는다.
     · state·age 미측정 = 보류 아님(fail-closed — 종전처럼 울린다)."""
     if not roles:
         return False
@@ -1291,12 +1296,14 @@ def stall_held(ms, roles, change_epoch, now_epoch):
         m = ms.get(r) or {}
         if m.get("state") not in STALL_HOLD_STATES:
             return False
+        age = m.get("status_age_secs")
+        if not isinstance(age, (int, float)) or isinstance(age, bool):
+            return False              # 나이 모름 = 선후·TTL 판정 불가 = 보류 아님(fail-closed)
         if change_epoch and now_epoch:
-            age = m.get("status_age_secs")
-            if not isinstance(age, (int, float)) or isinstance(age, bool):
-                return False
             if (now_epoch - age) < change_epoch:
                 return False          # 보류 보고가 구간 시작(마지막 진행 변화)보다 앞 = 낡은 보류
+        elif age > STALL_HOLD_TTL_SECS:
+            return False              # 구간 시작 미관측 + TTL 넘은 보류 = 믿지 않는다
     return True
 
 

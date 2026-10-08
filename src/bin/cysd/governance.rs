@@ -3041,6 +3041,14 @@ fn check_launch_flags(
 /// restore 는 어차피 재생성(새 토큰)이라 회복 가치가 0이다. 이 함수는 필드를 손으로 골라
 /// json! 조립하므로 '조립에 추가하지 않는 한' 배제가 기본값이다 — 아래 조립에 seat_token 을
 /// 추가하는 변경은 계약 위반(회귀 핀 `seat_token_never_persisted_or_listed` 가 적색으로 잡는다).
+/// ★D-mac-1: 좌석의 관측 프로필 dir — claude 좌석의 관측 transcript 경로(`<프로필>/projects/<슬러그>/<id>.jsonl`)
+/// 에서 프로필 폴더만. 관측 없음·비 claude·경로 꼴 밖 = None.
+fn seat_profile_of(s: &crate::state::Surface) -> Option<String> {
+    let u = s.observed_usage.lock().unwrap();
+    let u = u.as_ref().filter(|u| cys::is_claude_agent(&u.agent))?;
+    crate::accounts::profile_dir_from_session(&u.session_file).map(|p| p.to_string_lossy().into_owned())
+}
+
 pub fn persist_topology(daemon: &Arc<Daemon>) {
     // ★R3-1c(0.14.42 · 현행 라이브 결함): 스냅샷→rev→원자 쓰기 전체를 직렬화한다. 동시 호출은 같은 임시 파일
     //   (`.topology.json.tmp`)의 같은 inode 를 나눠 써, 이미 교체된 topology.json 을 제자리에서 덮거나 찢는다
@@ -3068,6 +3076,11 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
                        // 데몬 env 변동에도 원 대화(.jsonl)로 정확히 재개한다. 구 topology(필드 없음)는
                        // 로드 시 None → 기존 동작(템플릿 전개)으로 하위호환.
                        "claude_config_dir": s.claude_config_dir.lock().unwrap().clone(),
+                       // ★D-mac-1(1.1.9): 관측 프로필 — claude 가 실제로 쓰는 transcript 의 `<프로필>/projects/…`
+                       // 앞부분. 좌석 안 `CLAUDE_CONFIG_DIR=…` 로 띄운 좌석은 위 기록값이 데몬 기본으로 남아,
+                       // 부활이 다른 계정으로 떴다(10-08 8/8). restore 는 이 칸을 먼저 본다(`cys::restore_config_dir`).
+                       // 관측 전·비 claude = null(종전 동작).
+                       "seat_profile": seat_profile_of(s),
                        "pack_reinject": s.pack_reinject.lock().unwrap().clone(),
                        // ★(W2 · B6) 각성 래치 영속 — 데몬 재시작 생존이 **필수**다(비평2 B-1).
                        // 인메모리 단독이면 재시작 직후 건강한 전 팀이 래치를 잃고, 부트 체인은

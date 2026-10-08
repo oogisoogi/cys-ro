@@ -9268,6 +9268,50 @@ mod tests {
                 "master 부활 시 master_claimed_at 스탬프돼야 approval.sign 가능(P1-2)");
     }
 
+    /// ★D-mac-1(1.1.9 · TICKET=cysr-119-defects) — 좌석 안 `CLAUDE_CONFIG_DIR=<계정2> claude` 로 뜬 좌석:
+    /// 기록값(claude_config_dir)은 데몬 기본으로 남지만 관측 transcript 가 계정2 폴더면 topology 의
+    /// `seat_profile` = 계정2 → 부활(`cys::restore_config_dir`)이 계정2 를 승계한다. 관측 전·비 claude = null.
+    #[test]
+    fn d_mac_1_topology_persists_observed_seat_profile() {
+        let sock = isolated_sock("dmac1-topo");
+        let daemon = Daemon::new(sock.clone());
+        let mk = |role: &str| {
+            daemon
+                .create_surface_with_env(Some("/home/x/wf".into()), Some("sleep 30".into()), None,
+                                         Some(role.into()), 24, 80, &[], None, None)
+                .unwrap()
+        };
+        let obs = |agent: &str, file: &str| crate::usage::ObservedUsage {
+            agent: agent.into(), ctx_tokens: None, ctx_window: None, ctx_pct: None, rate: vec![],
+            source: "statusline".into(), session_file: file.into(), updated_at: 1.0,
+            rate_observed_at: 0.0, rate_account: None,
+        };
+        let acct2 = mk("worker-2");
+        *acct2.observed_usage.lock().unwrap() =
+            Some(obs("claude", "/home/x/.claude-acct2/projects/-home-x-wf/abc.jsonl"));
+        let fresh = mk("worker-3"); // 관측 전
+        let codex = mk("worker-4");
+        *codex.observed_usage.lock().unwrap() = Some(obs("codex", "/home/x/.codex/sessions/r.jsonl"));
+        let odd = mk("worker-5"); // claude 인데 경로 꼴 밖(projects 없음)
+        *odd.observed_usage.lock().unwrap() = Some(obs("claude", "/home/x/stray.jsonl"));
+        crate::governance::persist_topology(&daemon);
+        let entries = crate::governance::load_topology(&daemon);
+        let get = |role: &str| {
+            entries.as_array().unwrap().iter().find(|e| e["role"].as_str() == Some(role)).cloned()
+                .unwrap_or_else(|| panic!("{role} entry 영속"))
+        };
+        let e2 = get("worker-2");
+        assert_eq!(e2["seat_profile"].as_str(), Some("/home/x/.claude-acct2"), "관측 프로필 영속");
+        assert_ne!(e2["claude_config_dir"].as_str(), Some("/home/x/.claude-acct2"), "재현 전제: 기록값은 데몬 기본");
+        assert_eq!(cys::restore_config_dir(&e2).as_deref(), Some("/home/x/.claude-acct2"), "부활 = 관측 프로필 승계");
+        for r in ["worker-3", "worker-4", "worker-5"] {
+            let e = get(r);
+            assert!(e["seat_profile"].is_null(), "{r}: 관측 전·비 claude·꼴 밖 = null");
+            assert_eq!(cys::restore_config_dir(&e), e["claude_config_dir"].as_str().map(String::from),
+                       "{r}: 종전 기록값 그대로");
+        }
+    }
+
     /// (W1-6 a·d) 계정 config_dir 영속 라운드트립 + 구 topology 하위호환.
     #[test]
     fn w1_topology_persists_config_dir_and_old_compat() {

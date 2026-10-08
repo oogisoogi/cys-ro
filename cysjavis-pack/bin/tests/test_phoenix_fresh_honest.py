@@ -362,6 +362,12 @@ def main():
         for name, cwd in (("empty", ""), ("None", None)):
             check("session project " + name + " cwd", m._session_project_dir(dict(entry, cwd=cwd))
                   == "%s/projects/" % td)
+        # ★D-mac-1(1.1.9): 관측 프로필(seat_profile)이 기록값을 이긴다 — Rust `cys::restore_config_dir` 와 같은 규칙.
+        check("session project seat_profile wins",
+              m._session_project_dir(dict(entry, seat_profile="/acct2")) == "/acct2/projects/-tmp-a-b-c")
+        for name, sp in (("blank", "  "), ("None", None), ("non-string", 7)):
+            check("session project seat_profile " + name + " falls back",
+                  m._session_project_dir(dict(entry, seat_profile=sp)) == "%s/projects/-tmp-a-b-c" % td)
 
         inventory_entry = dict(entry, cwd="/inventory")
         project_dir = "%s/projects/-inventory" % td

@@ -19049,7 +19049,7 @@ fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Op
         return None;
     }
     let sid = entry["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty())?;
-    let cfg = entry["claude_config_dir"].as_str().map(String::from);
+    let cfg = cys::restore_config_dir(entry); // ★D-mac-1: 관측 프로필 우선
     Some((sid.to_string(), cfg))
 }
 
@@ -23349,7 +23349,7 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
         let sess = entry["session_id"].as_str().map(String::from);
         // (W1) 같은 pane 재기동(restore=false → 인라인 없음)이나 resume 게이트엔 기록된 config_dir·cwd를 쓴다.
         let rec_cwd = entry["cwd"].as_str().map(String::from);
-        let rec_cfg = entry["claude_config_dir"].as_str().map(String::from);
+        let rec_cfg = cys::restore_config_dir(&entry); // ★D-mac-1: 관측 프로필 우선
         // 기동 send_text/Return 도 같은 접기 — C-u 는 지났는데 그 200ms 창에 사람이 치면 같은 코드로 거부된다.
         let verdict = boot_agent_on_surface(
             sid,
@@ -23580,7 +23580,7 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
             // (4b) saved entry의 session_id를 꺼내 정확한 세션 재개(없으면 fallback)
             let sess = entry["session_id"].as_str().map(String::from);
             // (W1) topology에 기록된 원 계정 config_dir을 넘긴다(구 topology=None → 기존 템플릿 동작).
-            let cfg = entry["claude_config_dir"].as_str().map(String::from);
+            let cfg = cys::restore_config_dir(&entry); // ★D-mac-1: 관측 프로필 우선(없으면 종전 기록값)
             // ★SEAT in-seat 연결(오너 의도: "최초로 만들어지는 surface에 클로드가 연결되고 마스터로
             // 부활"): 그 역할의 좌석이 이미 있고 비어 있으면 **새 surface 를 만들지 않고 그 좌석에
             // 직접** 에이전트를 기동한다. 좌석이 늘지 않고(796형 잔존 pane 0) 사용자가 보는 그 pane 이

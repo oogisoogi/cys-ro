@@ -205,8 +205,11 @@ def _default_claude_config_dir():
 #   (`{cfg}/projects/{comp}/{sid}.jsonl`) 만든다 — 두 벌이 갈리면 성공한 fresh 각성이 'fork 의심' 으로 오보된다.
 def _session_project_dir(entry):
     """topology entry → claude 세션 파일 디렉터리 `{cfg}/projects/{munge(cwd)}` (Rust format 그대로 · 정규화 0).
-    cfg None/부재 → 기본값 · 빈 문자열은 Rust `Some("")` 처럼 빈 접두 그대로 · cwd 부재 → 빈 munge(이중 슬래시)."""
-    cfg = entry.get("claude_config_dir")
+    cfg None/부재 → 기본값 · 빈 문자열은 Rust `Some("")` 처럼 빈 접두 그대로 · cwd 부재 → 빈 munge(이중 슬래시).
+    ★D-mac-1(1.1.9): 관측 프로필 `seat_profile`(공백 아닌 문자열)이 있으면 그것이 먼저다 — Rust
+    `cys::restore_config_dir` 와 같은 규칙(부활 CLI 가 그 dir 로 띄우므로 예상도 같아야 fork 의심 오보 0)."""
+    sp = entry.get("seat_profile")
+    cfg = sp.strip() if isinstance(sp, str) and sp.strip() else entry.get("claude_config_dir")
     if not isinstance(cfg, str):
         cfg = _default_claude_config_dir()
     comp = _claude_project_component(entry.get("cwd") or "")

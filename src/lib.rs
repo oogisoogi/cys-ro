@@ -2328,6 +2328,23 @@ pub fn home_dir() -> PathBuf {
 /// 동일 규칙을 **현재 프로세스 env**로 전개한다. pane 셸(=데몬 자식)이 실제로 해소하는 값과 일치하려면
 /// 실제 전개 주체인 **데몬 프로세스에서 호출**하는 것이 권위다(state.rs의 CYS_ACCOUNT_DIR 전파와 정합).
 /// discover 스캔(usage.rs)이 ~/.cys/claude를 원리적으로 못 보므로, config_dir 권위는 이 결정론 해소뿐이다.
+/// ★D-mac-1(1.1.9 · TICKET=cysr-119-defects): topology(·phoenix 명부) 엔트리 → 부활 때 쓸 계정 프로필 dir.
+///
+/// 우선순위 = `seat_profile`(데몬이 **관측한** 좌석 transcript 경로의 프로필 폴더 · `<프로필>/projects/…`) →
+/// `claude_config_dir`(좌석 생성 때 데몬이 **기록한** 값 — 종전 정본) → None(호출부가 템플릿·기본값으로 접는다).
+///
+/// **왜 관측이 기록을 이기나**: 좌석 안에서 `CLAUDE_CONFIG_DIR=<계정2> claude …` 로 띄운 좌석(계정 전환·
+/// spawn 래퍼)은 데몬이 모르는 env 라 기록값이 데몬 기본(`~/.cys/claude`)으로 남는다. 콜드부트 부활이 그
+/// 기록값을 쓰면 좌석이 다른 계정으로 떠 한도 정지한다(10-08 실측 8/8). 관측값은 claude 가 실제로 쓰는
+/// 파일 위치라 그 좌석의 진짜 프로필이다. 관측이 없으면(구 topology·관측 전 종료) 종전 그대로다.
+/// 빈 문자열 `seat_profile` 은 없음으로 본다(`claude_config_dir` 의 `Some("")` 의미는 종전 그대로 보존).
+pub fn restore_config_dir(entry: &serde_json::Value) -> Option<String> {
+    if let Some(p) = entry["seat_profile"].as_str().map(str::trim).filter(|p| !p.is_empty()) {
+        return Some(p.to_string());
+    }
+    entry["claude_config_dir"].as_str().map(String::from)
+}
+
 pub fn resolve_claude_config_dir() -> String {
     std::env::var("CYS_ACCOUNT_DIR")
         .ok()
@@ -5800,6 +5817,20 @@ mod tests {
             "-Users-user-Desktop-ProjX"
         );
         assert_eq!(claude_project_component("/tmp/a.b_c"), "-tmp-a-b-c");
+    }
+
+    #[test]
+    fn restore_config_dir_prefers_observed_seat_profile() {
+        // ★D-mac-1: 관측 프로필 > 기록 config dir > None.
+        let both = serde_json::json!({"seat_profile": "/h/.claude-acct2", "claude_config_dir": "/h/.cys/claude"});
+        assert_eq!(restore_config_dir(&both).as_deref(), Some("/h/.claude-acct2"));
+        let rec_only = serde_json::json!({"claude_config_dir": "/h/.cys/claude"});
+        assert_eq!(restore_config_dir(&rec_only).as_deref(), Some("/h/.cys/claude"));
+        let blank = serde_json::json!({"seat_profile": "  ", "claude_config_dir": "/h/.cys/claude", "x": 1});
+        assert_eq!(restore_config_dir(&blank).as_deref(), Some("/h/.cys/claude"), "빈 관측 = 없음");
+        let null_obs = serde_json::json!({"seat_profile": null, "claude_config_dir": ""});
+        assert_eq!(restore_config_dir(&null_obs).as_deref(), Some(""), "기록 Some(\"\") 의미 보존");
+        assert_eq!(restore_config_dir(&serde_json::json!({"role": "w"})), None);
     }
 
     #[test]

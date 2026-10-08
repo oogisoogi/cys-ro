@@ -726,16 +726,17 @@ class Fingerprint(Base):
 
     def test_known_file_rows(self):
         known = jc._read_known(os.path.dirname(BIN))
-        # ★D-mac-3(1.1.9): 공식 발행판 0.1.4~0.1.11 도 표에 있어야 한다(빠지면 그 판 PC 가 영원히 foreign).
+        # ★D-mac-3(1.1.9): 공식 발행판 0.1.0~0.1.11 도 표에 있어야 한다(빠지면 그 판 PC 가 영원히 foreign).
         self.assertEqual(sorted(known.values(), key=lambda v: tuple(int(x) for x in v.split("."))),
-                         ["0.1.%d" % i for i in range(4, 15)])
+                         ["0.1.%d" % i for i in range(0, 15)])
         # ★known 의 동봉 판 줄 = 핀 넷째 칸(다음 판 동봉 때 이 판 PC 가 「모르는 트리」로 남지 않게 · 3판 ⑨)
         pin = rd(os.path.join(os.path.dirname(BIN), "install", "agora-client.pin"), encoding="utf-8").split()
         self.assertEqual({v: f for f, v in known.items()}.get(pin[0]), pin[3], "known 의 동봉 판 지문 ≠ 핀 넷째 칸")
         text = rd(os.path.join(os.path.dirname(BIN), "install", jc.KNOWN_FILE), encoding="utf-8")
         for sha in ("0f3f6616a95428cf0712da578221e3f709590cf3e76fbb6f809e615d458e7632",
                     "3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244",
-                    # D-mac-3 — 0.1.4 · 0.1.6·0.1.7(= 아고라 RELEASES.md 핀) · 0.1.11
+                    # D-mac-3 — 0.1.0 · 0.1.4 · 0.1.6·0.1.7(= 아고라 RELEASES.md 핀) · 0.1.11
+                    "5171b1161fc5e326486e9ffdd96034a22e194dafba610ee94eeb670aa81e4b64",
                     "7b4d94a121989b464bb8934f013f7897d5e5c5805a10073c38b6ebdd4585f86b",
                     "04ee6d4b16941c1fe2df048540dff419522839d968c952f889fcdec29e135536",
                     "8ecf1c3fc51cf541a6da229addfe129cee149026ccdbbbf00b2620c73fedf371",

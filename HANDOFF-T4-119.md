@@ -83,3 +83,8 @@ sh ui/build.sh && python3 ui/e2e/counsel_gate.py [<json>]
   - 그때 볼 명령 2줄:
     `python3 ui/e2e/agora_frames_probe.py`   # 실 로비 틀 탐색·확인 스크립트 막음에도 목록 정상(두 엔진)
     `COUNSEL_LIVE_CFG=<0.1.14 설정 폴더> cargo test -p cys-app --bins live_room_list_with_real_client -- --ignored`   # 실 방 읽기 status ok
+
+## 6. 공개 미러 CI ⓒ(iii) 적색 해소(2026-10-09 · TICKET=cysr-119-t4-pyseal · 98ae0efe)
+- 원인 = 2언어 미러 불일치: Rust 핀(src/lib.rs expected)엔 T4 가 counsel.rs:1 을 이미 등재했는데 파이썬 미러 `test_pyseal_census.py` RUST_SPAWN_PIN 엔 없었다(run 37860860661 · 두 잡 같은 1건).
+- 봉인 = 코드 무변경 — counsel.rs `read_command` 가 이미 `inject_runtime_path`(ENV_PY_NO_BYTECODE · main.rs 4지점과 같은 GUI 규약) + `-I -B` + spawn_policy(Attached). 고친 것 = 미러 핀 1줄 + lib.rs 전수 열거 주석 1줄.
+- 실측: census FAIL 0 · lib 핀 1 passed · cys-app counsel 27/0(1 ignored) · secret-scan --all clean.

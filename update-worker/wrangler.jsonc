@@ -10,8 +10,8 @@
     { "pattern": "jarvis.godmeyou.kr/update/*", "zone_name": "godmeyou.kr" }
   ],
   "r2_buckets": [
-    // bucket_name = 【master 결정 자리】 — 정할 때까지 이 값은 존재할 수 없는 이름이라 배포가 실패한다(fail-closed).
+    // bucket_name = cysr-update(master 결정 2026-10-08 10:2x · R6 · 버킷 생성 완료).
     //   publish-site.py --r2 <같은 이름> 과 같아야 한다.
-    { "binding": "UPDATE_BUCKET", "bucket_name": "MASTER-DECIDES--bucket-name" }
+    { "binding": "UPDATE_BUCKET", "bucket_name": "cysr-update" }
   ]
 }

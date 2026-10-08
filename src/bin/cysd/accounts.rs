@@ -2340,7 +2340,8 @@ fn collect_seat_rows(daemon: &Arc<Daemon>) -> Option<Vec<(u64, Option<String>, O
             continue;
         }
         let meta_agent = s.agent_meta.lock().ok()?.as_ref().map(|(a, _)| a.clone());
-        let config_dir = s.claude_config_dir.lock().ok()?.clone();
+        // ★D-mac-5: 권위 설정 폴더 = OS 관측 > 기록값(자기보고는 아래 resolve_seat_folder 의 폴백에만 · 격상 0).
+        let config_dir = s.authoritative_config_dir();
         let (obs_agent, session_file) = match s.observed_usage.lock().ok()?.as_ref() {
             Some(u) => (Some(u.agent.clone()), u.session_file.clone()),
             None => (None, String::new()),

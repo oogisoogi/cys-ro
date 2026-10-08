@@ -9998,7 +9998,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             if cys::is_claude_agent(&agent) && !rate.is_empty() {
                 let session_file = param_str(&params, "session_file").unwrap_or_default();
                 let now = report_now;
-                let cfg = surface.claude_config_dir.lock().unwrap().clone().filter(|c| !c.trim().is_empty());
+                // ★D-mac-5: 좌석 설정 폴더 = OS 관측(좌석 claude 프로세스 env) > 기록값 — 자기보고(session_file)는 대조 대상이지
+                //   입력이 아니다(RV-SP-1 그대로). 좌석 안 `CLAUDE_CONFIG_DIR=<계정2>` 로 뜬 좌석이 계정1 로 귀속되던 결함의 수리.
+                let cfg = surface.authoritative_config_dir();
                 rate_account = match cfg {
                     None => crate::accounts::note_rate_resolved(daemon, "claude", &session_file, &rate, "statusline", now),
                     Some(c) if crate::accounts::session_in_profile(&session_file, &c) => {
@@ -23587,6 +23589,42 @@ mod tests {
             vec![("own@example.test".to_string(), "5h".to_string(), 97.0)],
             "좌석 자기 프로필 보고가 경보 입력이 되지 않았다(회귀)"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// ★D-mac-5(1.1.9 · master#848f963a): 기록값은 데몬 기본(계정1)인데 좌석 claude 가 `CLAUDE_CONFIG_DIR=<계정2>` 로 떠 있는 좌석.
+    /// ⓐ OS 관측(좌석 claude 프로세스 env) 이 없으면 계정2 transcript 보고는 종전처럼 경보 입력이 아니다(자기보고만으로는 격상 0 ·
+    /// RV-SP-1 그대로) ⓑ OS 관측 = 계정2 이면 같은 보고가 계정2 경보 입력이 된다 ⓒ OS 관측이 있어도 **다른** 프로필(foreign)
+    /// transcript 는 여전히 거른다.
+    #[test]
+    fn d_mac_5_os_observed_config_dir_drives_attribution_but_self_report_alone_never_does() {
+        let daemon = claim_daemon();
+        let seat = make_surface(&daemon, Some("worker-d5"));
+        set_agent(&daemon, seat, "claude", "claude");
+        let home = std::env::temp_dir().join(format!("cys-d5-{}-{}", std::process::id(), seat));
+        let _ = std::fs::remove_dir_all(&home);
+        let _acct1 = seat_profile(&home, ".cys/claude", "u-d5-one", "one@example.test", true);
+        let acct2 = seat_profile(&home, ".claude-acct2", "u-d5-two", "two@example.test", true);
+        let foreign = seat_profile(&home, ".claude-8", "u-d5-foreign", "foreign@example.test", false);
+        set_config_dir(&daemon, seat, &home.join(".cys/claude"));
+        let pid = 994_455_u32;
+        bind_caller(&daemon, pid, seat);
+        let rep = |file: &str| {
+            usage_report(&daemon, seat, json!({"ctx_pct": 20, "session_file": file, "rate": [{"label": "5h", "used_pct": 88.0}]}), Some(pid))
+        };
+        assert_eq!(rep(&acct2)["ok"], json!(true));
+        assert!(crate::accounts::alert_rates(&daemon).is_empty(), "ⓐ 자기보고만으로 계정2 경보가 됐다(RV-SP-1 우회)");
+        let os2 = home.join(".claude-acct2").to_string_lossy().into_owned();
+        *daemon.surfaces.lock().unwrap()[&seat].os_config_dir.lock().unwrap() = Some((4242, Some(os2.clone())));
+        assert_eq!(daemon.surfaces.lock().unwrap()[&seat].authoritative_config_dir().as_deref(), Some(os2.as_str()));
+        assert_eq!(rep(&acct2)["ok"], json!(true));
+        assert_eq!(
+            crate::accounts::alert_rates(&daemon),
+            vec![("two@example.test".to_string(), "5h".to_string(), 88.0)],
+            "ⓑ OS 관측 계정2 좌석의 보고가 계정2 경보 입력이 되지 않았다"
+        );
+        assert_eq!(rep(&foreign)["ok"], json!(true));
+        assert_eq!(crate::accounts::alert_rates(&daemon).len(), 1, "ⓒ OS 관측 밖 프로필이 경보 입력이 됐다");
         let _ = std::fs::remove_dir_all(&home);
     }
 

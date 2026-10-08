@@ -2233,6 +2233,13 @@ pub struct Surface {
     pub pending_agent_obs: Mutex<Option<(String, String, f64)>>,
     /// T5 사용량 관측 스냅샷 (usage.rs 수집기가 갱신 — 자기보고 agent_status와 별개 층위)
     pub observed_usage: Mutex<Option<crate::usage::ObservedUsage>>,
+    /// ★D-mac-5(1.1.9 · TICKET=cysr-119-defects · master#848f963a): **OS 가 답한** 이 좌석 claude 프로세스의
+    /// `CLAUDE_CONFIG_DIR` — `(그 값을 읽은 에이전트 pid, 값)`. 감시 틱이 에이전트 pid 가 바뀔 때만 1회 읽는다
+    /// (`governance::refresh_os_config_dir`). 좌석 안 `CLAUDE_CONFIG_DIR=<계정2> claude` 처럼 데몬이 모르는 env 로 뜬
+    /// 좌석의 진짜 프로필이고, 자기보고(statusline session_file)와 달리 좌석이 지어낼 수 없다.
+    /// 에이전트가 사라져도 마지막 값을 지킨다(죽은 좌석의 부활 입력이 이것이다). 윈도우·판독 실패 = 값 None(종전).
+    /// 규칙: OS 관측 > 기록값(`claude_config_dir`) · 자기보고만으로는 격상 0(RV-SP-1 유지) — [`Surface::authoritative_config_dir`].
+    pub os_config_dir: Mutex<Option<(u32, Option<String>)>>,
     /// T5 세션 트랜스크립트 등록 (`usage.register` — SessionStart hook의 결정론 매핑)
     pub registered_transcript: Mutex<Option<String>>,
     /// ★R3-1(0.14.42 · 리뷰 F3) /clear 재핀 연속성(ⓐ)의 기준 — 마지막 등록 중 **좌석 최상위 claude 의 훅이 아니라고
@@ -2628,6 +2635,23 @@ pub enum EscRecount {
 }
 
 impl Surface {
+    /// ★D-mac-5: OS 가 답한 이 좌석 claude 의 `CLAUDE_CONFIG_DIR`(공백 아닌 값만) — [`Surface::os_config_dir`].
+    pub fn os_observed_config_dir(&self) -> Option<String> {
+        self.os_config_dir
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(_, v)| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(String::from))
+    }
+
+    /// ★D-mac-5: 이 좌석의 **권위** 설정 폴더 = OS 관측 > 기록값(`claude_config_dir` · 공백 = 없음). 자기보고는 들어오지 않는다.
+    /// 소비처 = 계정 경보 귀속(handlers usage.report) · 신원 뷰(accounts collect_seat_rows).
+    pub fn authoritative_config_dir(&self) -> Option<String> {
+        self.os_observed_config_dir().or_else(|| {
+            self.claude_config_dir.lock().unwrap().clone().filter(|c| !c.trim().is_empty())
+        })
+    }
+
     /// ★(0.14.31 · 리뷰 R2 · codex blocking) 결판 대기 중인 인계를 **취소**한다(처분자 전용).
     ///
     /// 반환 = **취소하지 못한** 항목 id 들(= writer 가 이미 쓰기로 확정 = 지금 배달 중). 호출부는
@@ -7447,6 +7471,7 @@ impl Daemon {
             last_injected: Mutex::new(None),
             inject_track,
             observed_usage: Mutex::new(None),
+            os_config_dir: Mutex::new(None),
             registered_transcript: Mutex::new(None),
             repin_anchor: Mutex::new(None),
             agent_session_id: Mutex::new(None),
@@ -9268,9 +9293,10 @@ mod tests {
                 "master 부활 시 master_claimed_at 스탬프돼야 approval.sign 가능(P1-2)");
     }
 
-    /// ★D-mac-1(1.1.9 · TICKET=cysr-119-defects) — 좌석 안 `CLAUDE_CONFIG_DIR=<계정2> claude` 로 뜬 좌석:
-    /// 기록값(claude_config_dir)은 데몬 기본으로 남지만 관측 transcript 가 계정2 폴더면 topology 의
-    /// `seat_profile` = 계정2 → 부활(`cys::restore_config_dir`)이 계정2 를 승계한다. 관측 전·비 claude = null.
+    /// ★D-mac-1 → D-mac-5(master#848f963a) — 좌석 안 `CLAUDE_CONFIG_DIR=<계정2> claude` 로 뜬 좌석: 기록값(claude_config_dir)은
+    /// 데몬 기본으로 남지만 **OS 관측**(좌석 claude 프로세스 env)이 계정2 면 topology `seat_profile` = 계정2 → 부활
+    /// (`cys::restore_config_dir`)이 계정2 를 승계한다. ★자기보고(statusline session_file)만 있는 좌석은 null — 7d298e35 판의
+    /// 자기보고 의존을 뺐다. 윈 꼴(판독 불가 = 값 None) · 관측 전 = null(종전 기록값).
     #[test]
     fn d_mac_1_topology_persists_observed_seat_profile() {
         let sock = isolated_sock("dmac1-topo");
@@ -9281,19 +9307,17 @@ mod tests {
                                          Some(role.into()), 24, 80, &[], None, None)
                 .unwrap()
         };
-        let obs = |agent: &str, file: &str| crate::usage::ObservedUsage {
-            agent: agent.into(), ctx_tokens: None, ctx_window: None, ctx_pct: None, rate: vec![],
-            source: "statusline".into(), session_file: file.into(), updated_at: 1.0,
-            rate_observed_at: 0.0, rate_account: None,
-        };
         let acct2 = mk("worker-2");
-        *acct2.observed_usage.lock().unwrap() =
-            Some(obs("claude", "/home/x/.claude-acct2/projects/-home-x-wf/abc.jsonl"));
+        *acct2.os_config_dir.lock().unwrap() = Some((101, Some("/home/x/.claude-acct2".into())));
         let fresh = mk("worker-3"); // 관측 전
-        let codex = mk("worker-4");
-        *codex.observed_usage.lock().unwrap() = Some(obs("codex", "/home/x/.codex/sessions/r.jsonl"));
-        let odd = mk("worker-5"); // claude 인데 경로 꼴 밖(projects 없음)
-        *odd.observed_usage.lock().unwrap() = Some(obs("claude", "/home/x/stray.jsonl"));
+        let selfrep = mk("worker-4"); // 자기보고만(statusline session_file = 계정2) — 격상 0
+        *selfrep.observed_usage.lock().unwrap() = Some(crate::usage::ObservedUsage {
+            agent: "claude".into(), ctx_tokens: None, ctx_window: None, ctx_pct: None, rate: vec![],
+            source: "statusline".into(), session_file: "/home/x/.claude-acct2/projects/-home-x-wf/abc.jsonl".into(),
+            updated_at: 1.0, rate_observed_at: 0.0, rate_account: None,
+        });
+        let win = mk("worker-5"); // 윈 꼴 = 판독 시도했으나 값 없음
+        *win.os_config_dir.lock().unwrap() = Some((102, None));
         crate::governance::persist_topology(&daemon);
         let entries = crate::governance::load_topology(&daemon);
         let get = |role: &str| {
@@ -9301,15 +9325,37 @@ mod tests {
                 .unwrap_or_else(|| panic!("{role} entry 영속"))
         };
         let e2 = get("worker-2");
-        assert_eq!(e2["seat_profile"].as_str(), Some("/home/x/.claude-acct2"), "관측 프로필 영속");
+        assert_eq!(e2["seat_profile"].as_str(), Some("/home/x/.claude-acct2"), "OS 관측 프로필 영속");
         assert_ne!(e2["claude_config_dir"].as_str(), Some("/home/x/.claude-acct2"), "재현 전제: 기록값은 데몬 기본");
-        assert_eq!(cys::restore_config_dir(&e2).as_deref(), Some("/home/x/.claude-acct2"), "부활 = 관측 프로필 승계");
+        assert_eq!(cys::restore_config_dir(&e2).as_deref(), Some("/home/x/.claude-acct2"), "부활 = OS 관측 프로필 승계");
         for r in ["worker-3", "worker-4", "worker-5"] {
             let e = get(r);
-            assert!(e["seat_profile"].is_null(), "{r}: 관측 전·비 claude·꼴 밖 = null");
+            assert!(e["seat_profile"].is_null(), "{r}: 관측 전·자기보고만·윈 꼴 = null");
             assert_eq!(cys::restore_config_dir(&e), e["claude_config_dir"].as_str().map(String::from),
                        "{r}: 종전 기록값 그대로");
         }
+    }
+
+    /// ★D-mac-5: 권위 설정 폴더 = OS 관측 > 기록값 · 공백 OS 값 = 없음 · 자기보고는 들어오지 않는다.
+    #[test]
+    fn d_mac_5_authoritative_config_dir_precedence() {
+        let sock = isolated_sock("dmac5-auth");
+        let daemon = Daemon::new(sock);
+        let s = daemon
+            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("worker-6".into()), 24, 80, &[],
+                                     Some("/rec".into()), None)
+            .unwrap();
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/rec"), "OS 관측 없음 = 기록값");
+        *s.observed_usage.lock().unwrap() = Some(crate::usage::ObservedUsage {
+            agent: "claude".into(), ctx_tokens: None, ctx_window: None, ctx_pct: None, rate: vec![],
+            source: "statusline".into(), session_file: "/self/projects/-w/s.jsonl".into(),
+            updated_at: 1.0, rate_observed_at: 0.0, rate_account: None,
+        });
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/rec"), "자기보고가 권위를 바꿨다");
+        *s.os_config_dir.lock().unwrap() = Some((7, Some("  ".into())));
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/rec"), "공백 OS 값 = 없음");
+        *s.os_config_dir.lock().unwrap() = Some((7, Some("/os".into())));
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/os"), "OS 관측이 기록값을 이긴다");
     }
 
     /// (W1-6 a·d) 계정 config_dir 영속 라운드트립 + 구 topology 하위호환.

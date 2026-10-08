@@ -961,6 +961,14 @@ fn check_agent_death_with_model(
             0
         };
         sync_lone_key_exempt(&s, model, Some((&agent, strict_now, agent_fg)), &mut adapters);
+        // ★D-mac-5: claude 좌석이면 에이전트 프로세스 env 의 CLAUDE_CONFIG_DIR 를 OS 에서 읽는다(pid 가 바뀔 때만 1회).
+        //   엄격 증거가 있을 때만 — 광의 일치(경로 조각) 자손의 env 를 좌석 프로필로 오인하지 않게.
+        if strict_now && cys::is_claude_agent(&agent) {
+            let root_is_agent = root_agent_cmd(sys, s.pid, &[(agent.clone(), bin_base.clone())])
+                .is_some_and(|c| cmdline_matches_agent_exec(&c, &bin_base));
+            let pid = pick_agent_env_pid(s.pid, root_is_agent, &descendants, &bin_base);
+            refresh_os_config_dir(&s, pid, |p| process_env_value(p, "CLAUDE_CONFIG_DIR"));
+        }
         if alive {
             s.agent_seen.store(true, Ordering::Relaxed);
             // ★(⑶ 재확인) 되살아났으면 사망 타이머를 0으로 되돌린다 — 자가 업데이트류
@@ -3041,12 +3049,65 @@ fn check_launch_flags(
 /// restore 는 어차피 재생성(새 토큰)이라 회복 가치가 0이다. 이 함수는 필드를 손으로 골라
 /// json! 조립하므로 '조립에 추가하지 않는 한' 배제가 기본값이다 — 아래 조립에 seat_token 을
 /// 추가하는 변경은 계약 위반(회귀 핀 `seat_token_never_persisted_or_listed` 가 적색으로 잡는다).
-/// ★D-mac-1: 좌석의 관측 프로필 dir — claude 좌석의 관측 transcript 경로(`<프로필>/projects/<슬러그>/<id>.jsonl`)
-/// 에서 프로필 폴더만. 관측 없음·비 claude·경로 꼴 밖 = None.
+/// ★D-mac-1 → D-mac-5(master#848f963a): 좌석의 관측 프로필 dir = **OS 가 답한** 좌석 claude 프로세스의 `CLAUDE_CONFIG_DIR`
+/// (`Surface::os_config_dir`). 종전 판(7d298e35)은 statusline 의 session_file(좌석 자기보고)에서 지었다 — 그 의존을 뺐다.
+/// OS 관측 없음(관측 전·윈도우·판독 실패) = None → restore 는 기록값으로(종전).
 fn seat_profile_of(s: &crate::state::Surface) -> Option<String> {
-    let u = s.observed_usage.lock().unwrap();
-    let u = u.as_ref().filter(|u| cys::is_claude_agent(&u.agent))?;
-    crate::accounts::profile_dir_from_session(&u.session_file).map(|p| p.to_string_lossy().into_owned())
+    s.os_observed_config_dir()
+}
+
+/// ★D-mac-5: 좌석 에이전트 pid 고르기(순수) — 뿌리(좌석 pid)가 에이전트면 뿌리, 아니면 엄격 일치한 자손의 **첫** 것
+/// (`collect_descendants_with_cmd` 순서 · 셸 exec 여부 무관). 없으면 None.
+pub(crate) fn pick_agent_env_pid(root: u32, root_is_agent: bool, descendants: &[(u32, String)], bin_base: &str) -> Option<u32> {
+    if root_is_agent {
+        return Some(root);
+    }
+    descendants.iter().find(|(_, cmd)| cmdline_matches_agent_exec(cmd, bin_base)).map(|(pid, _)| *pid)
+}
+
+/// ★D-mac-5: 프로세스 env 의 한 값 — **OS 사실**(맥 = KERN_PROCARGS2 · 리눅스 = /proc/<pid>/environ · sysinfo environ 갈래 ·
+/// 격리 스냅샷 1회). 윈도우 = 읽지 않는다(None · 정직 고지: 다른 프로세스 env 판독 = PEB 원격 읽기라 이 단위에서 켜지 않는다).
+/// 권한 없음·종료 경주·키 없음 = None(폴백).
+pub(crate) fn process_env_value(pid: u32, key: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let _ = (pid, key);
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let target = Pid::from_u32(pid);
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[target]),
+            false,
+            sysinfo::ProcessRefreshKind::nothing().with_environ(sysinfo::UpdateKind::Always),
+        );
+        let pr = sys.process(target)?;
+        let prefix = format!("{key}=");
+        pr.environ().iter().find_map(|kv| {
+            let kv = kv.to_string_lossy();
+            kv.strip_prefix(&prefix).map(String::from)
+        })
+    }
+}
+
+/// ★D-mac-5: 좌석의 OS 관측 설정 폴더 갱신 — 에이전트 pid 가 **바뀔 때만** `read` 1회(좌석당 syscall 1회 · 같은 pid = 0회).
+/// pid None(에이전트 안 보임) = 무접촉(마지막 값 유지 — 죽은 좌석의 부활 입력). 반환 = 읽었는가.
+pub(crate) fn refresh_os_config_dir(
+    s: &crate::state::Surface,
+    agent_pid: Option<u32>,
+    read: impl FnOnce(u32) -> Option<String>,
+) -> bool {
+    let Some(pid) = agent_pid else {
+        return false;
+    };
+    if matches!(s.os_config_dir.lock().unwrap().as_ref(), Some((p, _)) if *p == pid) {
+        return false;
+    }
+    let v = read(pid);
+    *s.os_config_dir.lock().unwrap() = Some((pid, v));
+    true
 }
 
 pub fn persist_topology(daemon: &Arc<Daemon>) {
@@ -13077,6 +13138,101 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
     // ★U-5 · sysinfo 프로세스 정보 갱신 승격(argv) — 계측 타당성 + 비용
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// ★D-mac-5 시험 자식 — 이 시험 바이너리를 자식으로 띄워 env 를 지닌 채 잠깐 산다(`CYS_D5_CHILD=1` 일 때만 · 평소 무시).
+    /// ★왜 /bin/sh 가 아닌가: macOS 는 **Apple 플랫폼 바이너리**(/bin/sh·/bin/sleep)의 env 를 KERN_PROCARGS2 에서 숨긴다
+    ///   (10-09 실측: sleep env 0개 · 좌석 claude env 56개 = 판독됨). 실제 대상(claude)은 플랫폼 바이너리가 아니므로
+    ///   같은 조건의 자식 = 이 시험 바이너리(링커 ad-hoc 서명)다.
+    #[test]
+    #[ignore]
+    fn d_mac_5_env_probe_child() {
+        if std::env::var("CYS_D5_CHILD").as_deref() == Ok("1") {
+            std::thread::sleep(std::time::Duration::from_secs(20));
+        }
+    }
+
+    /// ★D-mac-5(1.1.9 · master#848f963a): OS 관측 — 좌석 프로세스 env 의 CLAUDE_CONFIG_DIR 를 **실 프로세스**에서 읽는다.
+    /// 계정2 env 자식 = 그 값 · env 없는 자식 = None · 없는 pid = None. (윈 꼴 = 함수가 None — 아래 cfg(windows) 시험.)
+    #[cfg(unix)]
+    #[test]
+    fn d_mac_5_process_env_value_reads_real_child_env() {
+        let exe = std::env::current_exe().expect("시험 바이너리 경로");
+        let spawn = |cfg: Option<&str>| {
+            let mut c = std::process::Command::new(&exe);
+            c.args(["--exact", "governance::tests::d_mac_5_env_probe_child", "--ignored", "--test-threads=1", "-q"])
+                .env("CYS_D5_CHILD", "1")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            match cfg {
+                Some(v) => c.env("CLAUDE_CONFIG_DIR", v),
+                None => c.env_remove("CLAUDE_CONFIG_DIR"),
+            };
+            c.spawn().expect("spawn child")
+        };
+        let mut with = spawn(Some("/x/.claude-acct2"));
+        let mut without = spawn(None);
+        // fork 직후 exec 전에는 부모(시험 프로세스) env 가 보인다 — exec 가 끝날 때까지 짧게 기다린다(상한 5초).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let got_with = loop {
+            let v = super::process_env_value(with.id(), "CLAUDE_CONFIG_DIR");
+            if v.is_some() || std::time::Instant::now() >= deadline {
+                break v;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let got_without = super::process_env_value(without.id(), "CLAUDE_CONFIG_DIR");
+        let without_alive = without.try_wait().ok().flatten().is_none();
+        let _ = with.kill();
+        let _ = without.kill();
+        let _ = with.wait();
+        let _ = without.wait();
+        assert_eq!(got_with.as_deref(), Some("/x/.claude-acct2"), "계정2 env 좌석을 OS 에서 못 읽었다");
+        assert!(without_alive, "env 없는 자식이 판독 전에 끝났다(음성 대조 무효)");
+        assert_eq!(got_without, None, "env 없는 좌석에 값이 생겼다");
+        assert_eq!(super::process_env_value(u32::MAX - 7, "CLAUDE_CONFIG_DIR"), None, "없는 pid");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn d_mac_5_process_env_value_is_none_on_windows() {
+        assert_eq!(super::process_env_value(std::process::id(), "PATH"), None, "윈 = 읽지 않는다(종전 · 정직 고지)");
+    }
+
+    /// ★D-mac-5: 에이전트 pid 고르기 — 뿌리 우선 · 아니면 엄격 일치 첫 자손 · 없으면 None.
+    #[test]
+    fn d_mac_5_pick_agent_env_pid() {
+        let d = vec![(11, "/bin/zsh -l".to_string()), (12, "claude --model m".to_string()), (13, "claude -p x".to_string())];
+        assert_eq!(super::pick_agent_env_pid(10, true, &d, "claude"), Some(10), "뿌리가 에이전트(셸 exec)");
+        assert_eq!(super::pick_agent_env_pid(10, false, &d, "claude"), Some(12), "첫 엄격 일치 자손");
+        assert_eq!(super::pick_agent_env_pid(10, false, &d[..1], "claude"), None);
+    }
+
+    /// ★D-mac-5: 갱신 = pid 가 바뀔 때만 1회 판독 · pid 없음 = 마지막 값 유지(죽은 좌석의 부활 입력).
+    #[test]
+    fn d_mac_5_refresh_reads_once_per_pid_and_keeps_last_value() {
+        let dir = std::env::temp_dir().join(format!("cys-d5r-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("worker-d5r".into()), 24, 80, &[], None, None)
+            .unwrap();
+        let reads = std::cell::Cell::new(0);
+        let rd = |v: &'static str| {
+            let reads = &reads;
+            move |_pid: u32| {
+                reads.set(reads.get() + 1);
+                Some(v.to_string())
+            }
+        };
+        assert!(super::refresh_os_config_dir(&s, Some(50), rd("/a2")));
+        assert!(!super::refresh_os_config_dir(&s, Some(50), rd("/other")), "같은 pid 재판독");
+        assert_eq!(reads.get(), 1);
+        assert!(!super::refresh_os_config_dir(&s, None, rd("/x")), "에이전트 안 보임 = 무접촉");
+        assert_eq!(s.os_observed_config_dir().as_deref(), Some("/a2"), "마지막 값 유지");
+        assert!(super::refresh_os_config_dir(&s, Some(51), rd("/a3")), "새 pid = 다시 읽는다");
+        assert_eq!(s.os_observed_config_dir().as_deref(), Some("/a3"));
+        assert_eq!(reads.get(), 2);
+    }
 
     /// 드릴 자식: **이름에는 에이전트 식별자가 없고 argv 에만 있는** 프로세스를 띄운다.
     /// `sh -c '<script>' <argv0> <arg1>` 형식이라 name 은 `sh`, argv 는 5토큰이 된다.
